@@ -17,6 +17,8 @@ import {
   wrapExecuteTool,
 } from "./tools.js";
 
+const DEFAULT_MAX_ROUNDS = 16;
+
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
@@ -27,6 +29,7 @@ const HELP_TEXT = `用法：
 
   --stream              流式输出模型文本
   --session <id>        REPL 会话 ID（默认按工作目录自动派生）
+  --max-rounds <n>      工具循环最大轮数（默认：16）
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -262,6 +265,7 @@ async function runChat({
     initialUserMessage: prompt,
     tools: tools.tools,
     executeTool: wrapExecuteTool(tools.executeTool),
+    maxRounds: maxRounds ?? DEFAULT_MAX_ROUNDS,
     maxTokens,
     stream,
     onDelta: stream ? (chunk) => process.stdout.write(chunk) : undefined,
@@ -270,8 +274,6 @@ async function runChat({
       `[round ${info.round}]${info.folded ? "（含折叠）" : ""}`,
     ),
   };
-
-  if (maxRounds !== undefined) loopOptions.maxRounds = maxRounds;
 
   const result = await runToolLoop(loopOptions);
   const compacted = result.compactionStats.some((stat) => stat.compacted === true);

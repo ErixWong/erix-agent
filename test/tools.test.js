@@ -80,6 +80,20 @@ test("exec starts background commands without waiting", async () => {
   assert.match(result, /已启动|PID/);
 });
 
+test("exec keeps nohup commands in the foreground unless they end with &", async () => {
+  const { executeTool } = createCliTools();
+
+  const chainedResult = await executeTool("exec", {
+    command: "nohup sh -c 'sleep 0.1' >/dev/null 2>&1 & sleep 0.2 && printf foreground",
+  });
+  assert.equal(chainedResult, "foreground");
+
+  const plainResult = await executeTool("exec", {
+    command: "nohup printf nohup-foreground",
+  });
+  assert.equal(plainResult, "nohup-foreground");
+});
+
 test("exec timeout defaults to 120 seconds and accepts a valid environment override", () => {
   const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
   try {

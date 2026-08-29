@@ -19,7 +19,7 @@ import {
 } from "./tools.js";
 
 const DEFAULT_MODEL = "kimi-for-coding";
-const DEFAULT_MAX_ROUNDS = 8;
+const DEFAULT_MAX_ROUNDS = 16;
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
@@ -29,6 +29,7 @@ const NON_TTY_MESSAGE =
 const REPL_HELP_TEXT = `REPL 用法：
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>]
   --session <id>        会话 ID（默认按工作目录自动派生）
+  --max-rounds <n>      工具循环最大轮数（默认：16）
 
 命令：
   /help                 显示此帮助
@@ -98,6 +99,7 @@ export function parseReplArgs(argv, cwd = process.cwd()) {
   const options = {
     session: defaultSessionId(cwd),
     dir: join(homedir(), ".erix"),
+    maxRounds: DEFAULT_MAX_ROUNDS,
   };
   const seenOptions = new Set();
 

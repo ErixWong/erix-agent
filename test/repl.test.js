@@ -17,6 +17,7 @@ test("parseReplArgs uses the default session and directory", () => {
   assert.deepEqual(parseReplArgs([]), {
     session: defaultSessionId(process.cwd()),
     dir: join(homedir(), ".erix"),
+    maxRounds: 16,
   });
 });
 

@@ -132,8 +132,7 @@ function normalizeToolInput(input) {
 }
 
 function isBackgroundCommand(command) {
-  const trimmed = command.trim();
-  return trimmed.endsWith("&") || /\b(?:nohup|setsid)\b/u.test(trimmed);
+  return command.trim().endsWith("&");
 }
 
 function executeExecCommand(input, cwd) {
