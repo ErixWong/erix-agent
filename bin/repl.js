@@ -11,6 +11,10 @@ import {
   runToolLoop,
 } from "../src/index.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
+import {
+  closeAllMcpServers,
+  createMcpProxyTool,
+} from "./mcp.js";
 import { buildSkillTools } from "./skills.js";
 import {
   CLI_TOOLS_SYSTEM_PROMPT,
@@ -34,6 +38,7 @@ const REPL_HELP_TEXT = `REPL 用法：
 命令：
   /help                 显示此帮助
   /skills               显示当前技能
+  /mcp                  显示 MCP server 状态
   /exit, /quit          保存并退出
   /clear                清屏（保留上下文）
   /reset                清空上下文并删除会话存档
@@ -48,6 +53,7 @@ const REPL_HELP_TEXT = `REPL 用法：
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
+  MCP 配置默认读取当前目录 .mcp.json 或 ~/.erix/mcp.json。
   slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。
   slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。`;
 
@@ -156,7 +162,7 @@ export function parseCommand(line) {
   const tokens = trimmed.slice(1).split(/\s+/);
   const name = tokens.shift()?.toLowerCase() ?? "";
   const args = tokens;
-  if (name === "help" || name === "skills" || name === "clear" || name === "reset" || name === "tokens") {
+  if (name === "help" || name === "skills" || name === "clear" || name === "reset" || name === "tokens" || name === "mcp") {
     return { command: name, args };
   }
   if (name === "exit" || name === "quit") {
@@ -225,6 +231,19 @@ function clearScreen(output) {
   }
 }
 
+function buildExecuteTool(cliTools, skillTools, mcpProxy) {
+  const skillToolNames = new Set(skillTools.tools.map((tool) => tool.name));
+  return async (name, input, context) => {
+    if (name === "mcp" && mcpProxy?.enabled) {
+      return mcpProxy.execute(input);
+    }
+    if (skillToolNames.has(name)) {
+      return skillTools.executeTool(name, input, context);
+    }
+    return cliTools.executeTool(name, input, context);
+  };
+}
+
 export async function runRepl(argv, io = {}) {
   const cwd = process.cwd();
   const options = parseReplArgs(argv, cwd);
@@ -249,15 +268,11 @@ export async function runRepl(argv, io = {}) {
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,
-    builtinNames: cliTools.tools.map((tool) => tool.name),
+    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
-  const skillToolNames = new Set(skillTools.tools.map((tool) => tool.name));
+  const mcpProxy = createMcpProxyTool({ mcpConfigPath: options.configPath, cwd });
   const executeTool = wrapExecuteTool(
-    (name, input, context) => (
-      skillToolNames.has(name)
-        ? skillTools.executeTool(name, input, context)
-        : cliTools.executeTool(name, input, context)
-    ),
+    buildExecuteTool(cliTools, skillTools, mcpProxy),
     { output: (line) => writeLine(output, line) },
   );
   let messages = await loadSession(options.dir, options.session);
@@ -266,6 +281,13 @@ export async function runRepl(argv, io = {}) {
 
   if (existsSync(archivePath)) {
     writeLine(output, `已恢复会话 ${options.session}（${messages.length} 条消息）`);
+  }
+
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${process.cwd()}。${CLI_TOOLS_SYSTEM_PROMPT}`;
+  if (mcpProxy?.enabled) {
+    systemPrompt += `
+
+MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=search query=关键词 查找工具；action=call server=... tool=... args=... 调用工具。`;
   }
 
   const rl = createInterface({
@@ -329,12 +351,25 @@ export async function runRepl(argv, io = {}) {
       } else {
         writeLine(output, "技能加载错误：");
         for (const item of skillTools.errors) {
-          writeLine(output, `  - ${item.skillId}（${item.dir}）：${item.error}`);
+          writeLine(output, `  - ${item.skillId}：${item.error}`);
         }
       }
       return;
     }
-    if (command.command === "exit") {
+    if (command.command === "mcp") {
+      if (!mcpProxy?.enabled) {
+        writeLine(output, "未找到 MCP 配置文件（~/.erix/mcp.json 或当前目录 .mcp.json）");
+        return;
+      }
+      const status = mcpProxy.status();
+      writeLine(output, "MCP server 状态：");
+      for (const server of mcpProxy.listConfiguredServers()) {
+        const state = status[server] ?? "idle";
+        writeLine(output, `  - ${server}：${state}`);
+      }
+      return;
+    }
+    if (command.command === "exit" || command.command === "quit") {
       rl.close();
       return;
     }
@@ -343,10 +378,9 @@ export async function runRepl(argv, io = {}) {
       return;
     }
     if (command.command === "reset") {
-      await deleteSession(options.dir, options.session);
       messages = [];
-      usage = { input_tokens: 0, output_tokens: 0 };
-      writeLine(output, "已开始新会话");
+      await deleteSession(options.dir, options.session);
+      writeLine(output, "已清空上下文并删除会话存档");
       return;
     }
     if (command.command === "tokens") {
@@ -383,16 +417,20 @@ export async function runRepl(argv, io = {}) {
         { role: "user", content: [{ type: "text", text: line }] },
       ];
       const context = buildCompactionContext(config, options.compactBudget);
+      const tools = [...cliTools.tools, ...skillTools.tools];
+      if (mcpProxy?.enabled) {
+        tools.push(mcpProxy.schema);
+      }
       const loopOptions = {
         ...(context ? { context } : {}),
         provider,
-        system: `你是 erix 编码助手，工作目录 ${process.cwd()}。${CLI_TOOLS_SYSTEM_PROMPT}`,
+        system: systemPrompt,
         initialMessages: roundMessages,
         initialUserMessage: line,
         maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
         maxTokens: config.maxOutputTokens,
         completion: { maxNoToolRounds: 1 },
-        tools: [...cliTools.tools, ...skillTools.tools],
+        tools,
         executeTool,
         stream: true,
         onDelta: (chunk) => output.write(chunk),
@@ -430,6 +468,10 @@ export async function runRepl(argv, io = {}) {
         printError(output, error);
         if (!rl.closed) rl.prompt();
       });
+  });
+
+  rl.on("close", () => {
+    processing = processing.finally(() => closeAllMcpServers());
   });
 
   rl.prompt();

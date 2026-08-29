@@ -9,6 +9,11 @@ import {
   runToolLoop,
 } from "../src/index.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
+import {
+  closeAllMcpServers,
+  createMcpProxyTool,
+  loadMcpConfig,
+} from "./mcp.js";
 import { runRepl } from "./repl.js";
 import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import {
@@ -25,6 +30,7 @@ const HELP_TEXT = `用法：
   erix chat "<prompt>" [--stream] [--config <path>] [--skills-dir <path>] [--compact-budget <tokens>] [--max-rounds <n>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--compact-budget <tokens>] [--max-rounds <n>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
+  erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
 
   --stream              流式输出模型文本
@@ -39,8 +45,14 @@ const HELP_TEXT = `用法：
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
+  MCP 配置默认读取当前目录 .mcp.json 或 ~/.erix/mcp.json。
   slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。
- slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。`;
+  slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。`;
+
+const MCP_HELP_TEXT = `用法：
+  erix mcp [--config <path>]
+
+列出 ~/.erix/mcp.json 或当前目录 .mcp.json 中配置的 MCP server 及连接状态。`;
 
 class CliError extends Error {
   constructor(message, { showHelp = false } = {}) {
@@ -130,50 +142,95 @@ function parseChatArgs(args) {
       continue;
     }
 
-    if (argument.startsWith("-")) {
+    if (argument.startsWith("--")) {
       usageError(`未知参数：${argument}`);
     }
-    if (prompt !== undefined) {
-      usageError(`只能提供一个 prompt，收到多余参数：${argument}`);
+    if (prompt === undefined) {
+      prompt = argument;
+    } else {
+      prompt = `${prompt} ${argument}`;
     }
-    prompt = argument;
   }
 
   return { prompt, ...options };
 }
 
 function parseSkillsArgs(args) {
+  if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
+    return { showHelp: true };
+  }
+
   const options = {};
   const seenOptions = new Set();
+
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument !== "--skills-dir") {
+    if (argument === "--skills-dir") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      const rawValue = args[index + 1];
+      if (rawValue === undefined || rawValue.startsWith("--")) {
+        usageError(`${argument} 缺少数值`);
+      }
+      if (rawValue.trim() === "") usageError("--skills-dir 不能为空");
+      options.skillsDir = rawValue;
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--")) {
       usageError(`未知参数：${argument}`);
     }
-    if (seenOptions.has(argument)) {
-      usageError(`参数重复：${argument}`);
-    }
-    seenOptions.add(argument);
-    const rawValue = args[index + 1];
-    if (rawValue === undefined || rawValue.startsWith("--")) {
-      usageError(`${argument} 缺少数值`);
-    }
-    if (rawValue.trim() === "") usageError("--skills-dir 不能为空");
-    options.skillsDir = rawValue;
-    index += 1;
+    usageError(`未知参数：${argument}`);
   }
   return options;
 }
 
-function combineTools(cliTools, skillTools) {
+function parseMcpArgs(args) {
+  if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
+    return { showHelp: true };
+  }
+  const options = {};
+  const seenOptions = new Set();
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--config") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      const rawValue = args[index + 1];
+      if (rawValue === undefined || rawValue.startsWith("--")) {
+        usageError(`${argument} 缺少数值`);
+      }
+      if (rawValue.trim() === "") usageError("--config 不能为空");
+      options.configPath = rawValue;
+      index += 1;
+      continue;
+    }
+    usageError(`未知参数：${argument}`);
+  }
+  return options;
+}
+
+function combineTools(cliTools, skillTools, mcpProxy) {
+  const tools = [...cliTools.tools];
+  if (mcpProxy?.enabled) {
+    tools.push(mcpProxy.schema);
+  }
   const skillToolNames = new Set(skillTools.tools.map((tool) => tool.name));
   return {
-    tools: [...cliTools.tools, ...skillTools.tools],
-    executeTool: (name, input, context) => (
-      skillToolNames.has(name)
-        ? skillTools.executeTool(name, input, context)
-        : cliTools.executeTool(name, input, context)
-    ),
+    tools,
+    executeTool: async (name, input, context) => {
+      if (name === "mcp" && mcpProxy?.enabled) {
+        return mcpProxy.execute(input);
+      }
+      if (skillToolNames.has(name)) {
+        return skillTools.executeTool(name, input, context);
+      }
+      return cliTools.executeTool(name, input, context);
+    },
   };
 }
 
@@ -193,7 +250,7 @@ async function runSkills({ skillsDir }) {
   const loaded = await loadAllSkills(options);
   const built = await buildSkillTools({
     ...options,
-    builtinNames: ["readFile", "rg", "tree", "writeFile", "exec"],
+    builtinNames: ["readFile", "rg", "tree", "writeFile", "exec", "mcp"],
   });
   const errorsByDir = new Map(built.errors.map((item) => [item.dir, item]));
   const skillsByDir = new Map(loaded.skills.map((skill) => [skill.dir, skill]));
@@ -229,6 +286,33 @@ async function runSkills({ skillsDir }) {
   }
 }
 
+async function runMcp({ configPath }) {
+  let config;
+  try {
+    config = loadMcpConfig(configPath, process.cwd());
+  } catch (error) {
+    console.error(`错误：${error?.message ?? String(error)}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!config) {
+    console.log("未找到 MCP 配置文件（~/.erix/mcp.json 或当前目录 .mcp.json）");
+    return;
+  }
+
+  console.log("MCP server 配置：");
+  const proxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd: process.cwd() });
+  if (!proxy.enabled) {
+    console.log("  配置文件无效或没有可用的 server");
+    return;
+  }
+  const status = proxy.status();
+  for (const server of proxy.listConfiguredServers()) {
+    const state = status[server] ?? "idle";
+    console.log(`  - ${server}：${state}`);
+  }
+}
+
 async function runChat({
   prompt,
   configPath,
@@ -254,14 +338,23 @@ async function runChat({
   const skillTools = await buildSkillTools({
     cwd: process.cwd(),
     skillsDir,
-    builtinNames: cliTools.tools.map((tool) => tool.name),
+    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
-  const tools = combineTools(cliTools, skillTools);
+  const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd: process.cwd() });
+  const tools = combineTools(cliTools, skillTools, mcpProxy);
   const context = buildCompactionContext(config, compactBudget);
+
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${process.cwd()}。${CLI_TOOLS_SYSTEM_PROMPT}`;
+  if (mcpProxy?.enabled) {
+    systemPrompt += `
+
+MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=search query=关键词 查找工具；action=call server=... tool=... args=... 调用工具。`;
+  }
+
   const loopOptions = {
     ...(context ? { context } : {}),
     provider,
-    system: `你是 erix 编码助手，工作目录 ${process.cwd()}。${CLI_TOOLS_SYSTEM_PROMPT}`,
+    system: systemPrompt,
     initialUserMessage: prompt,
     tools: tools.tools,
     executeTool: wrapExecuteTool(tools.executeTool),
@@ -307,7 +400,20 @@ async function main(args) {
   }
   if (command === "skills") {
     const skillsArgs = parseSkillsArgs(args.slice(1));
+    if (skillsArgs.showHelp) {
+      printHelp();
+      return;
+    }
     await runSkills(skillsArgs);
+    return;
+  }
+  if (command === "mcp") {
+    const mcpArgs = parseMcpArgs(args.slice(1));
+    if (mcpArgs.showHelp) {
+      console.log(MCP_HELP_TEXT);
+      return;
+    }
+    await runMcp(mcpArgs);
     return;
   }
   if (command !== "chat") {
@@ -336,5 +442,7 @@ if (
     console.error(`错误：${error?.message ?? String(error)}`);
     if (error?.showHelp) console.error(`\n${HELP_TEXT}`);
     process.exitCode = 1;
+  } finally {
+    await closeAllMcpServers();
   }
 }
