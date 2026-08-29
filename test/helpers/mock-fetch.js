@@ -46,6 +46,13 @@ function makeResponse(step) {
     async json() {
       return JSON.parse(bodyText);
     },
+    // 与标准 fetch 对齐的流式 body（SSE 测试用）
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(bodyText));
+        controller.close();
+      },
+    }),
   };
 }
 
