@@ -71,6 +71,11 @@ test("exec runs arbitrary shell commands", async () => {
   assert.match(await executeTool("exec", { command: "ls /" }), /bin/);
 });
 
+test("exec reports exit code when a successful command has no output", async () => {
+  const { executeTool } = createCliTools();
+  assert.equal(await executeTool("exec", { command: "true" }), "exit 0（无输出）");
+});
+
 test("exec starts background commands without waiting", async () => {
   const { executeTool } = createCliTools();
   const startedAt = Date.now();

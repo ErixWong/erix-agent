@@ -67,7 +67,7 @@ test("exec runs git add, commit, and push commands", async () => {
     await writeFile(join(cwd, "tracked.txt"), "tracked\n", "utf8");
     const { executeTool } = createCliTools({ cwd });
 
-    assert.equal(await executeTool("exec", { command: "git add tracked.txt" }), "(无输出)");
+    assert.equal(await executeTool("exec", { command: "git add tracked.txt" }), "exit 0（无输出）");
     const commitResult = await executeTool(
       "exec",
       { command: 'git commit -m "codewrite commit"' },

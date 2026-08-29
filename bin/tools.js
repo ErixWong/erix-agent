@@ -175,10 +175,10 @@ function executeExecCommand(input, cwd) {
           return;
         }
         if (error) {
-          resolve(`错误：命令执行失败（退出码 ${error.code ?? "未知"}）`);
+          resolve(`exit ${error.code ?? "未知"}（命令失败）`);
           return;
         }
-        resolve("(无输出)");
+        resolve("exit 0（无输出）");
       },
     );
   });
