@@ -29,10 +29,26 @@ const EXEC_WHITELIST = new Set([
   "uname",
   "whoami",
   "find",
+  "git",
 ]);
+const GIT_READONLY_SUBCOMMANDS = new Set([
+  "status",
+  "log",
+  "diff",
+  "remote",
+  "ls-files",
+  "show",
+  "rev-parse",
+  "blame",
+  "shortlog",
+  "grep",
+  "describe",
+]);
+const GIT_BRANCH_READONLY_OPTIONS = new Set(["-a", "-r", "-v", "-vv", "-l"]);
+const GIT_BRANCH_WRITE_OPTIONS = new Set(["-d", "-D", "-m", "-M", "-c", "-C"]);
 const EXEC_TOOL_SCHEMA = {
   name: "exec",
-  description: "执行白名单内的只读 shell 命令并返回输出。白名单：cat head tail grep wc sort uniq cut tr diff ls pwd echo file stat which date uname whoami find。禁止管道/重定向/命令替换。",
+  description: "执行白名单内的只读 shell 命令并返回输出。白名单：cat head tail grep wc sort uniq cut tr diff ls pwd echo file stat which date uname whoami find git。git 仅支持只读子命令 status/log/diff/remote/ls-files/show/rev-parse/blame/shortlog/grep/describe，branch 仅支持列表选项。禁止管道/重定向/命令替换。",
   inputSchema: {
     type: "object",
     properties: { command: { type: "string", maxLength: 500 } },
@@ -42,7 +58,7 @@ const EXEC_TOOL_SCHEMA = {
 };
 
 export const CLI_TOOLS_SYSTEM_PROMPT =
-  "可用只读文件工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，tree 列出目录树。这些文件工具只能读取当前工作目录树；越出当前目录、以及敏感目录（~/.erix、~/.pi、.git）均不可读。另有 exec 执行白名单内的只读 shell 命令并返回输出，白名单：cat head tail grep wc sort uniq cut tr diff ls pwd echo file stat which date uname whoami find；exec 禁止管道、重定向、命令替换和通配。";
+  "可用只读文件工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，tree 列出目录树。这些文件工具只能读取当前工作目录树；越出当前目录、以及敏感目录（~/.erix、~/.pi、.git）均不可读。另有 exec 执行白名单内的只读 shell 命令并返回输出，白名单：cat head tail grep wc sort uniq cut tr diff ls pwd echo file stat which date uname whoami find git；git 仅支持只读子命令 status/log/diff/remote/ls-files/show/rev-parse/blame/shortlog/grep/describe，branch 仅支持列表选项；exec 禁止管道、重定向、命令替换和通配。";
 
 function isWithin(root, target) {
   const relative = path.relative(root, target);
@@ -92,6 +108,35 @@ function unsafeExecSyntax(command) {
   return /[|><;&*`]|[$]\(|[\r\n]/.test(command);
 }
 
+function gitCommandError(subcommand) {
+  return `错误：git 仅支持只读子命令：${[...GIT_READONLY_SUBCOMMANDS].join("/")}，禁止 ${subcommand}`;
+}
+
+function validateGitCommand(tokens) {
+  const subcommand = tokens[1];
+  if (
+    subcommand === undefined
+    || subcommand === "--version"
+    || subcommand === "--help"
+  ) {
+    return null;
+  }
+  if (GIT_READONLY_SUBCOMMANDS.has(subcommand)) return null;
+
+  if (subcommand === "branch") {
+    const args = tokens.slice(2);
+    const writeOption = args.find((arg) => GIT_BRANCH_WRITE_OPTIONS.has(arg));
+    if (writeOption !== undefined) {
+      return gitCommandError(`branch ${writeOption}`);
+    }
+    if (args.length === 0 || args.every((arg) => GIT_BRANCH_READONLY_OPTIONS.has(arg))) {
+      return null;
+    }
+  }
+
+  return gitCommandError(subcommand);
+}
+
 function executeExecCommand(input, cwd = process.cwd()) {
   const command = input?.command;
   if (typeof command !== "string") {
@@ -104,11 +149,16 @@ function executeExecCommand(input, cwd = process.cwd()) {
     return Promise.resolve("错误：命令含不安全语法");
   }
 
-  const bin = command.trim().split(/\s+/)[0] ?? "";
+  const tokens = String(command).trim().split(/\s+/);
+  const bin = tokens[0] ?? "";
   if (!EXEC_WHITELIST.has(bin)) {
     return Promise.resolve(
       `错误：命令 "${bin}" 不在白名单（${[...EXEC_WHITELIST].join(" ")}）`,
     );
+  }
+  if (bin === "git") {
+    const gitError = validateGitCommand(tokens);
+    if (gitError !== null) return Promise.resolve(gitError);
   }
 
   return new Promise((resolve) => {

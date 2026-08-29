@@ -1,10 +1,14 @@
+import { execFile } from "node:child_process";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { createCliTools, truncateResult } from "../bin/tools.js";
+
+const execFileAsync = promisify(execFile);
 
 async function withDirectory(callback) {
   const directory = await mkdtemp(join(tmpdir(), "erix-cli-tools-test-"));
@@ -13,6 +17,30 @@ async function withDirectory(callback) {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+async function initializeGitRepository(cwd) {
+  await execFileAsync("git", ["init"], { cwd });
+  await writeFile(join(cwd, "tracked.txt"), "tracked\n", "utf8");
+  await execFileAsync("git", ["add", "tracked.txt"], { cwd });
+  await execFileAsync(
+    "git",
+    [
+      "-c",
+      "user.name=Erix Test",
+      "-c",
+      "user.email=erix-test@example.com",
+      "commit",
+      "-m",
+      "initial commit",
+    ],
+    { cwd },
+  );
+  await execFileAsync(
+    "git",
+    ["remote", "add", "origin", "https://example.invalid/erix.git"],
+    { cwd },
+  );
 }
 
 async function withHome(callback) {
@@ -46,6 +74,52 @@ test("exec runs allowlisted read-only commands", async () => {
     const { executeTool } = createCliTools({ cwd });
     assert.equal(await executeTool("exec", { command: "pwd" }), `${cwd}\n`);
     assert.equal(await executeTool("exec", { command: "echo hello" }), "hello\n");
+  });
+});
+
+test("exec runs read-only git subcommands in a temporary repository", async () => {
+  await withDirectory(async (cwd) => {
+    await initializeGitRepository(cwd);
+    const { executeTool } = createCliTools({ cwd });
+
+    const status = await executeTool("exec", { command: "git status" });
+    const log = await executeTool("exec", { command: "git log --oneline -3" });
+    const remote = await executeTool("exec", { command: "git remote -v" });
+    const files = await executeTool("exec", { command: "git ls-files" });
+
+    assert.match(status, /nothing to commit|working tree clean/);
+    assert.match(log, /initial commit/);
+    assert.match(remote, /origin/);
+    assert.match(files, /tracked\.txt/);
+  });
+});
+
+test("exec rejects write-capable git subcommands", async () => {
+  const { executeTool } = createCliTools();
+  for (const command of [
+    "git push",
+    "git checkout main",
+    "git reset --hard",
+    "git commit -m x",
+    "git add .",
+    "git branch -d x",
+  ]) {
+    assert.match(
+      await executeTool("exec", { command }),
+      /错误：git 仅支持只读子命令：.*，禁止 /,
+      command,
+    );
+  }
+});
+
+test("exec allows git version, help, no-argument, and read-only branch listings", async () => {
+  await withDirectory(async (cwd) => {
+    await initializeGitRepository(cwd);
+    const { executeTool } = createCliTools({ cwd });
+    for (const command of ["git", "git --version", "git --help", "git branch", "git branch -a"]) {
+      const result = await executeTool("exec", { command });
+      assert.doesNotMatch(result, /不在白名单|git 仅支持只读子命令/, command);
+    }
   });
 });
 
