@@ -143,8 +143,8 @@ test("wrapExecuteTool logs calls and truncates result summaries", async () => {
 
   assert.equal(result, `${"x".repeat(250)}\nsecond line`);
   assert.equal(lines[0], "→ exec: ls -la");
-  assert.equal(lines[1], `← exec: ${"x".repeat(200)}…`);
-  assert.doesNotMatch(lines[1], /second line/);
+  assert.equal(lines[1], `← exec: ${'x'.repeat(250)}\nsecond line`);
+  assert.match(lines[1], /second line/);
 });
 
 test("wrapExecuteTool redacts sensitive generic input fields", async () => {

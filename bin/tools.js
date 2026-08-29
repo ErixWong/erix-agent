@@ -125,7 +125,8 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 
 [收尾]
 - 任务完成或已无需更多工具时，直接输出最终答复，不要空转
-- 默认用中文回答；复杂任务结构化汇报：做了什么、结果、遗留问题`;
+- 默认用中文回答；复杂任务结构化汇报：做了什么、结果、遗留问题
+- 汇报关键状态声明（如"服务仍在运行"）前，先用工具验证（curl/检查进程），不要凭推断下结论`;
 
 function resolveToolPath(root, value) {
   return path.resolve(root, value);
@@ -206,6 +207,7 @@ export function truncateResult(result) {
 
 const TOOL_INPUT_LIMIT = 120;
 const TOOL_RESULT_LIMIT = 200;
+const TOOL_EXEC_RESULT_LIMIT = 4096;
 const TOOL_FIELD_LIMIT = 80;
 const SENSITIVE_INPUT_KEY = /(?:api[-_]?key|private[-_]?key|access[-_]?token|token|secret|password|authorization|credential)/iu;
 
@@ -239,8 +241,9 @@ function summarizeToolInput(name, input) {
 
 function summarizeToolResult(name, result) {
   const text = String(result ?? "");
-  const summary = name === "exec" ? text.split(/\r?\n/u, 1)[0] : text;
-  return truncateDisplayText(summary, TOOL_RESULT_LIMIT);
+  // exec 输出可能是验证/回归脚本的多行结果，必须完整可见（对齐 exec 内部 4096 截断）
+  const limit = name === "exec" ? TOOL_EXEC_RESULT_LIMIT : TOOL_RESULT_LIMIT;
+  return truncateDisplayText(text, limit);
 }
 
 export function wrapExecuteTool(executeTool, { output = console.log } = {}) {
