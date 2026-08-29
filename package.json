@@ -1,0 +1,17 @@
+{
+  "name": "@erix/llm-kit",
+  "version": "0.0.0",
+  "description": "跨项目共享的 LLM 对话循环引擎：协议适配 + 工具调用循环 + 上下文预算压缩（脑干，不是 agent）",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "exports": {
+    ".": "./src/index.js",
+    "./tools": "./src/tools/index.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/index.js"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
