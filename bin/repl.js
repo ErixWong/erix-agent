@@ -224,7 +224,7 @@ export async function runRepl(argv, io = {}) {
   }
 
   const config = await loadCliConfig({ configPath: options.configPath });
-  const cliTools = createCliTools({ cwd: process.cwd() });
+  const cliTools = createCliTools();
   const skillTools = await buildSkillTools({
     cwd: process.cwd(),
     skillsDir: options.skillsDir,

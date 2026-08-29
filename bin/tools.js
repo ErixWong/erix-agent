@@ -1,93 +1,112 @@
 import { execFile } from "node:child_process";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { createFileTools, createJail, JailError } from "../src/tools/index.js";
-
+const MAX_FILE_BYTES = 1024 * 1024;
+const MAX_TREE_ENTRIES = 500;
 const OUTPUT_LIMIT = 4096;
 const EXEC_TIMEOUT_MS = 10_000;
 const EXEC_MAX_BUFFER = 1024 * 1024;
-const READ_ONLY_TOOL_NAMES = new Set(["readFile", "rg", "tree"]);
-const EXEC_WHITELIST = new Set([
-  "cat",
-  "head",
-  "tail",
-  "grep",
-  "wc",
-  "sort",
-  "uniq",
-  "cut",
-  "tr",
-  "diff",
-  "ls",
-  "pwd",
-  "echo",
-  "file",
-  "stat",
-  "which",
-  "date",
-  "uname",
-  "whoami",
-  "find",
-  "git",
-]);
-const GIT_READONLY_SUBCOMMANDS = new Set([
-  "status",
-  "log",
-  "diff",
-  "remote",
-  "ls-files",
-  "show",
-  "rev-parse",
-  "blame",
-  "shortlog",
-  "grep",
-  "describe",
-]);
-const GIT_BRANCH_READONLY_OPTIONS = new Set(["-a", "-r", "-v", "-vv", "-l"]);
-const GIT_BRANCH_WRITE_OPTIONS = new Set(["-d", "-D", "-m", "-M", "-c", "-C"]);
-const EXEC_TOOL_SCHEMA = {
-  name: "exec",
-  description: "执行白名单内的只读 shell 命令并返回输出。白名单：cat head tail grep wc sort uniq cut tr diff ls pwd echo file stat which date uname whoami find git。git 仅支持只读子命令 status/log/diff/remote/ls-files/show/rev-parse/blame/shortlog/grep/describe，branch 仅支持列表选项。禁止管道/重定向/命令替换。",
-  inputSchema: {
-    type: "object",
-    properties: { command: { type: "string", maxLength: 500 } },
-    required: ["command"],
-    additionalProperties: false,
+
+function normalizeNonNegativeInteger(value, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
+}
+
+function splitLines(text) {
+  if (text === "") return [];
+  const lines = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+function normalizeSchema(schema) {
+  const result = { ...schema };
+  if (result.inputSchema === undefined && result.input_schema !== undefined) {
+    result.inputSchema = result.input_schema;
+    delete result.input_schema;
+  }
+  return result;
+}
+
+const schemas = [
+  {
+    name: "readFile",
+    description: "Read a text file by line range.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        offset: { type: "integer" },
+        limit: { type: "integer" },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
   },
-};
+  {
+    name: "rg",
+    description: "Recursively search text files with a regular expression.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern: { type: "string" },
+        path: { type: "string" },
+        maxResults: { type: "integer" },
+      },
+      required: ["pattern"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "tree",
+    description: "List a directory tree.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        depth: { type: "integer" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "writeFile",
+    description: "Write UTF-8 text to any path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+      },
+      required: ["path", "content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "exec",
+    description: "Execute any shell command and return its output.",
+    inputSchema: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+      additionalProperties: false,
+    },
+  },
+].map(normalizeSchema);
 
 export const CLI_TOOLS_SYSTEM_PROMPT =
-  "可用只读文件工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，tree 列出目录树。这些文件工具只能读取当前工作目录树；越出当前目录、以及敏感目录（~/.erix、~/.pi、.git）均不可读。另有 exec 执行白名单内的只读 shell 命令并返回输出，白名单：cat head tail grep wc sort uniq cut tr diff ls pwd echo file stat which date uname whoami find git；git 仅支持只读子命令 status/log/diff/remote/ls-files/show/rev-parse/blame/shortlog/grep/describe，branch 仅支持列表选项；exec 禁止管道、重定向、命令替换和通配。";
+  "可用工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出。按用户要求直接调用工具完成操作，不要只提供操作说明。本 CLI 不提供安全边界，运行环境负责隔离。";
 
-function isWithin(root, target) {
-  const relative = path.relative(root, target);
-  return relative === ""
-    || (!relative.startsWith(`..${path.sep}`)
-      && relative !== ".."
-      && !path.isAbsolute(relative));
-}
-
-function readableMaskedPaths(root, extraMaskedPaths) {
-  const requestedPaths = [
-    path.join(homedir(), ".erix"),
-    path.join(homedir(), ".pi"),
-    path.join(root, ".git"),
-    ...(Array.isArray(extraMaskedPaths) ? extraMaskedPaths : []),
-  ];
-
-  return requestedPaths
-    .filter((value) => typeof value === "string")
-    .map((value) => path.resolve(root, value))
-    .filter((value) => isWithin(root, value));
-}
-
-function forbiddenPathMessage(input) {
-  const value = input && typeof input === "object" ? input.path : undefined;
-  const displayPath = typeof value === "string" && value.length > 0
-    ? value
-    : "该路径";
-  return `路径被禁止：${displayPath}`;
+function resolveToolPath(root, value) {
+  return path.resolve(root, value);
 }
 
 function expandHomePath(value) {
@@ -104,61 +123,10 @@ function normalizeToolInput(input) {
   return { ...input, path: expandHomePath(input.path) };
 }
 
-function unsafeExecSyntax(command) {
-  return /[|><;&*`]|[$]\(|[\r\n]/.test(command);
-}
-
-function gitCommandError(subcommand) {
-  return `错误：git 仅支持只读子命令：${[...GIT_READONLY_SUBCOMMANDS].join("/")}，禁止 ${subcommand}`;
-}
-
-function validateGitCommand(tokens) {
-  const subcommand = tokens[1];
-  if (
-    subcommand === undefined
-    || subcommand === "--version"
-    || subcommand === "--help"
-  ) {
-    return null;
-  }
-  if (GIT_READONLY_SUBCOMMANDS.has(subcommand)) return null;
-
-  if (subcommand === "branch") {
-    const args = tokens.slice(2);
-    const writeOption = args.find((arg) => GIT_BRANCH_WRITE_OPTIONS.has(arg));
-    if (writeOption !== undefined) {
-      return gitCommandError(`branch ${writeOption}`);
-    }
-    if (args.length === 0 || args.every((arg) => GIT_BRANCH_READONLY_OPTIONS.has(arg))) {
-      return null;
-    }
-  }
-
-  return gitCommandError(subcommand);
-}
-
-function executeExecCommand(input, cwd = process.cwd()) {
+function executeExecCommand(input, cwd) {
   const command = input?.command;
   if (typeof command !== "string") {
     return Promise.resolve("错误：命令必须是字符串");
-  }
-  if (command.length > 500) {
-    return Promise.resolve("错误：命令超过 500 字符");
-  }
-  if (unsafeExecSyntax(command)) {
-    return Promise.resolve("错误：命令含不安全语法");
-  }
-
-  const tokens = String(command).trim().split(/\s+/);
-  const bin = tokens[0] ?? "";
-  if (!EXEC_WHITELIST.has(bin)) {
-    return Promise.resolve(
-      `错误：命令 "${bin}" 不在白名单（${[...EXEC_WHITELIST].join(" ")}）`,
-    );
-  }
-  if (bin === "git") {
-    const gitError = validateGitCommand(tokens);
-    if (gitError !== null) return Promise.resolve(gitError);
   }
 
   return new Promise((resolve) => {
@@ -197,21 +165,120 @@ export function truncateResult(result) {
   return `${text.slice(0, OUTPUT_LIMIT)}\n[已截断，共 ${text.length} 字符]`;
 }
 
-export function createCliTools({ cwd = process.cwd(), maskedPaths = [] } = {}) {
+export function createCliTools({ cwd = process.cwd() } = {}) {
   const root = path.resolve(cwd);
-  const jail = createJail({
-    root,
-    maskedPaths: readableMaskedPaths(root, maskedPaths),
-  });
-  const fileTools = createFileTools(jail);
-  const tools = [
-    ...fileTools.schemas.filter((schema) => READ_ONLY_TOOL_NAMES.has(schema.name)),
-    structuredClone(EXEC_TOOL_SCHEMA),
-  ];
+
+  async function readFile({ path: filePath, offset = 0, limit = 200 }) {
+    const text = readFileSync(resolveToolPath(root, filePath), "utf8");
+    const lines = splitLines(text);
+    const start = normalizeNonNegativeInteger(offset, 0);
+    const count = normalizeNonNegativeInteger(limit, 200);
+    const selected = lines
+      .slice(start, start + count)
+      .map((line, index) => `${start + index + 1}: ${line}`);
+
+    if (start + count < lines.length) {
+      selected.push(`[共 ${lines.length} 行，offset=${start + count} 继续]`);
+    }
+    return selected.join("\n");
+  }
+
+  async function rg({ pattern, path: searchPath = ".", maxResults = 50 }) {
+    const expression = new RegExp(String(pattern));
+    const resultLimit = normalizeNonNegativeInteger(maxResults, 50);
+    const resolvedSearchPath = resolveToolPath(root, searchPath);
+    const displayBase = root;
+    const results = [];
+    const visitedDirectories = new Set();
+
+    const displayName = (filePath) => {
+      const relative = path.relative(displayBase, filePath);
+      return (relative || path.basename(filePath)).split(path.sep).join("/");
+    };
+
+    const searchFile = (filePath, stat) => {
+      if (results.length >= resultLimit || stat.size > MAX_FILE_BYTES) return;
+      const bytes = readFileSync(filePath);
+      if (bytes.includes(0)) return;
+      const lines = splitLines(bytes.toString("utf8"));
+      for (let index = 0; index < lines.length; index += 1) {
+        expression.lastIndex = 0;
+        if (!expression.test(lines[index])) continue;
+        results.push(`${displayName(filePath)}:${index + 1}:${lines[index]}`);
+        if (results.length >= resultLimit) return;
+      }
+    };
+
+    const visit = (currentPath) => {
+      if (results.length >= resultLimit) return;
+      const stat = statSync(currentPath);
+      if (stat.isFile()) {
+        searchFile(currentPath, stat);
+        return;
+      }
+      if (!stat.isDirectory() || visitedDirectories.has(currentPath)) return;
+      visitedDirectories.add(currentPath);
+
+      const entries = readdirSync(currentPath, { withFileTypes: true })
+        .sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        if (results.length >= resultLimit) return;
+        visit(path.join(currentPath, entry.name));
+      }
+    };
+
+    visit(resolvedSearchPath);
+    return results.join("\n");
+  }
+
+  async function tree({ path: treePath = ".", depth = 3 }) {
+    const resolvedTreePath = resolveToolPath(root, treePath);
+    const maxDepth = normalizeNonNegativeInteger(depth, 3);
+    const rootStat = statSync(resolvedTreePath);
+    const rootLabel = treePath === "." ? "." : path.basename(resolvedTreePath);
+    const lines = [rootLabel + (rootStat.isDirectory() ? "/" : "")];
+    const visitedDirectories = new Set();
+    let entries = 1;
+
+    const visit = (currentPath, currentDepth) => {
+      if (entries >= MAX_TREE_ENTRIES || currentDepth >= maxDepth) return;
+      if (!statSync(currentPath).isDirectory()) return;
+      if (visitedDirectories.has(currentPath)) return;
+      visitedDirectories.add(currentPath);
+
+      const children = readdirSync(currentPath, { withFileTypes: true })
+        .sort((left, right) => left.name.localeCompare(right.name));
+      for (const child of children) {
+        if (entries >= MAX_TREE_ENTRIES) return;
+        const childPath = path.join(currentPath, child.name);
+        const childStat = statSync(childPath);
+        lines.push(`${"  ".repeat(currentDepth + 1)}${child.name}${childStat.isDirectory() ? "/" : ""}`);
+        entries += 1;
+        if (childStat.isDirectory()) visit(childPath, currentDepth + 1);
+      }
+    };
+
+    if (rootStat.isDirectory()) {
+      visit(resolvedTreePath, 0);
+    }
+    return lines.join("\n");
+  }
+
+  async function writeFile({ path: filePath, content }) {
+    if (typeof content !== "string") {
+      throw new TypeError("writeFile content must be a string");
+    }
+    const target = resolveToolPath(root, filePath);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, content, "utf8");
+    return Buffer.byteLength(content, "utf8");
+  }
+
   const executors = {
-    ...Object.fromEntries(
-      [...READ_ONLY_TOOL_NAMES].map((name) => [name, fileTools.executors[name]]),
-    ),
+    readFile,
+    rg,
+    tree,
+    writeFile,
     exec: (input) => executeExecCommand(input, root),
   };
 
@@ -220,14 +287,12 @@ export function createCliTools({ cwd = process.cwd(), maskedPaths = [] } = {}) {
     if (typeof executor !== "function") {
       throw new Error(`未知工具：${name}`);
     }
-
-    try {
-      return await executor(normalizeToolInput(input));
-    } catch (error) {
-      if (error instanceof JailError) return forbiddenPathMessage(input);
-      throw error;
-    }
+    return executor(normalizeToolInput(input));
   }
 
-  return { tools, executeTool, truncateResult };
+  return {
+    tools: schemas.map((schema) => structuredClone(schema)),
+    executeTool,
+    truncateResult,
+  };
 }

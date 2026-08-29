@@ -183,7 +183,7 @@ async function runSkills({ skillsDir }) {
   const loaded = await loadAllSkills(options);
   const built = await buildSkillTools({
     ...options,
-    builtinNames: ["readFile", "rg", "tree"],
+    builtinNames: ["readFile", "rg", "tree", "writeFile", "exec"],
   });
   const errorsByDir = new Map(built.errors.map((item) => [item.dir, item]));
   const skillsByDir = new Map(loaded.skills.map((skill) => [skill.dir, skill]));

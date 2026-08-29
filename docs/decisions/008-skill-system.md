@@ -46,8 +46,9 @@
   erix 单用户场景暂不需要——列为后续增强
 - 工具入参校验走 `createToolRegistry`（name 分发 + inputSchema 校验 + 未知工具
   友好返回）
-- 内置工具的 jail 不动（安全基石）；skill 工具**不套 jail**（用户自己的脚本，
-  能读用户能读的），文档写明信任边界
+- **安全边界不内嵌 agent**（ADR-009）：skill 工具与内置工具一样不套 jail、不限
+  路径命令——安全由运行环境提供（用户机器=信任域；嵌入容器/沙盒场景由宿主隔离）。
+  库的 createJail/file-tools 保留为参考实现，供需要自建沙盒的调用方取用
 - 结果截断沿用 onToolResult（OUTPUT_LIMIT）
 
 ## 命令面
