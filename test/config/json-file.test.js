@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { createJsonFileModelConfigProvider } from "../../src/config/json-file.js";
 import { KitError } from "../../src/providers/errors.js";
+import { modelConfigProviderContract } from "../contract/model-config-provider.js";
+
+const KEY_ENV = `ERIX_JSON_CONTRACT_KEY_${process.pid}`;
 
 async function withConfig(config, callback) {
   const directory = await mkdtemp(join(tmpdir(), "erix-llm-kit-config-"));
@@ -18,44 +20,30 @@ async function withConfig(config, callback) {
   }
 }
 
-test("resolves a slot, materializes apiKeyEnv, and falls back to default", async () => {
-  const envName = `ERIX_JSON_FILE_KEY_${process.pid}`;
-  const previous = process.env[envName];
-  process.env[envName] = "env-secret";
-
-  try {
-    await withConfig({
-      slots: {
-        default: { protocol: "anthropic", model: "default-model" },
-        fold: { protocol: "openai", model: "fold-model", apiKeyEnv: envName },
-      },
-    }, async (path) => {
-      const provider = createJsonFileModelConfigProvider({ path });
-      assert.deepEqual(await provider.resolve("fold"), {
-        protocol: "openai",
-        model: "fold-model",
-        apiKeyEnv: envName,
-        apiKey: "env-secret",
-      });
-      assert.deepEqual(await provider.resolve("missing"), {
-        protocol: "anthropic",
-        model: "default-model",
-      });
-    });
-  } finally {
-    if (previous === undefined) delete process.env[envName];
-    else process.env[envName] = previous;
-  }
+modelConfigProviderContract("json-file", async () => {
+  process.env[KEY_ENV] = "json-contract-secret";
+  // json-file 每次 resolve 重读文件：目录须活过整个契约套件，进程退出后由 OS 清理
+  const directory = await mkdtemp(join(tmpdir(), "erix-json-contract-"));
+  const path = join(directory, "models.json");
+  await writeFile(path, JSON.stringify({
+    slots: {
+      default: { protocol: "anthropic", endpoint: "https://example.invalid", model: "default-model" },
+      fold: { protocol: "openai", endpoint: "https://example.invalid", model: "fold-model", apiKeyEnv: KEY_ENV },
+    },
+  }), "utf8");
+  return {
+    provider: createJsonFileModelConfigProvider({ path }),
+    slot: "fold",
+    expect: { defaultModel: "default-model", slotModel: "fold-model", materializedKey: "json-contract-secret" },
+  };
 });
 
-test("materializes apiKeyFile and reads the file again on every resolve", async () => {
+// ---- 实现特有行为 ----
+
+test("json-file: apiKeyFile 物化且每次 resolve 重读文件", async () => {
   await withConfig({
     slots: {
-      default: {
-        protocol: "openai",
-        model: "file-model",
-        apiKeyFile: "placeholder",
-      },
+      default: { protocol: "openai", model: "file-model", apiKeyFile: "placeholder" },
     },
   }, async (path, directory) => {
     const keyPath = join(directory, "secret.key");
@@ -72,7 +60,7 @@ test("materializes apiKeyFile and reads the file again on every resolve", async 
   });
 });
 
-test("throws a KitError when the requested and default slots are absent", async () => {
+test("json-file: 请求的槽位与 default 都不存在时抛 KitError", async () => {
   await withConfig({ slots: { fold: { model: "fold-model" } } }, async (path) => {
     const provider = createJsonFileModelConfigProvider({ path });
     await assert.rejects(

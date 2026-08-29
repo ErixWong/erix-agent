@@ -76,9 +76,15 @@
 
 - touwaka 侧先迁纯函数层（token-utils / history-compactor），其测试全绿；
 - **行为对比**：迁移前后相同对话 fixture 的压缩水位线/摘要输出一致（快照对比）；
-- MariaDB 适配器（touwaka 项目侧交付物）：接口契约测试可复用本库 fixtures
-  （同一组 RoundRecord 样本，memory/file/mariadb 三实现跑同一套断言——**契约测试套件**，
-  建议 v0.2 把 store 的断言抽成可复用 `test/contract/transcript-store.js`，项目侧直接引用）。
+- MariaDB 适配器（touwaka 项目侧交付物）：接口契约测试复用本库 **`test/contract/` 套件**
+  （已落地，`@erix/llm-kit/contract-tests` 子路径导出）——同一组 fixtures，memory/file/mariadb
+  三实现跑同一套断言：
+  ```js
+  import { transcriptStoreContract, modelConfigProviderContract } from "@erix/llm-kit/contract-tests";
+  transcriptStoreContract("mariadb", () => createMariaTranscriptStore(...));
+  modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }));
+  ```
+  实现特有行为（连接管理/清理/崩溃恢复）由实现方自行补测，不进契约。
 
 ## 5. 横切约定
 

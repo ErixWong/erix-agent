@@ -1,45 +1,38 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-
 import { createEnvModelConfigProvider } from "../../src/config/env.js";
+import { modelConfigProviderContract } from "../contract/model-config-provider.js";
 
-test("reads prefixed model variables and converts numeric values", async () => {
-  const prefix = `ERIX_LLM_KIT_${process.pid}_`;
-  const keyEnvName = `${prefix}REFERENCED_KEY`;
-  const variables = {
-    [`${prefix}PROTOCOL`]: "anthropic",
-    [`${prefix}ENDPOINT`]: "https://example.invalid",
-    [`${prefix}MODEL`]: "env-model",
-    [`${prefix}API_KEY_ENV`]: keyEnvName,
-    [`${prefix}CONTEXT_WINDOW_TOKENS`]: "200000",
-    [`${prefix}MAX_OUTPUT_TOKENS`]: "8192",
-    [`${prefix}TEMPERATURE`]: "0.2",
-    [`${prefix}TOP_P`]: "0.95",
-    [keyEnvName]: "env-secret",
+const PREFIX = `ERIX_ENV_CONTRACT_${process.pid}_`;
+const KEY_ENV = `${PREFIX}REFERENCED_KEY`;
+
+function setupEnv() {
+  process.env[`${PREFIX}PROTOCOL`] = "openai";
+  process.env[`${PREFIX}ENDPOINT`] = "https://example.invalid";
+  process.env[`${PREFIX}MODEL`] = "env-model";
+  process.env[`${PREFIX}API_KEY_ENV`] = KEY_ENV;
+  process.env[KEY_ENV] = "env-contract-secret";
+}
+
+// env 提供者是单配置形态：任何 slot 都返回同一份配置（slotModel === defaultModel）
+modelConfigProviderContract("env", async () => {
+  setupEnv();
+  return {
+    provider: createEnvModelConfigProvider(PREFIX),
+    slot: "audit",
+    expect: { defaultModel: "env-model", slotModel: "env-model", materializedKey: "env-contract-secret" },
   };
-  const previous = new Map();
+});
 
-  try {
-    for (const [name, value] of Object.entries(variables)) {
-      previous.set(name, process.env[name]);
-      process.env[name] = value;
-    }
+// ---- 实现特有：数字字段转换 ----
+test("env: 数字字段转 number", async () => {
+  setupEnv();
+  process.env[`${PREFIX}CONTEXT_WINDOW_TOKENS`] = "200000";
+  process.env[`${PREFIX}MAX_OUTPUT_TOKENS`] = "8192";
+  process.env[`${PREFIX}TEMPERATURE`] = "0.2";
 
-    assert.deepEqual(await createEnvModelConfigProvider(prefix).resolve("audit"), {
-      protocol: "anthropic",
-      endpoint: "https://example.invalid",
-      model: "env-model",
-      apiKeyEnv: keyEnvName,
-      contextWindowTokens: 200000,
-      maxOutputTokens: 8192,
-      temperature: 0.2,
-      topP: 0.95,
-      apiKey: "env-secret",
-    });
-  } finally {
-    for (const [name, value] of previous) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-  }
+  const config = await createEnvModelConfigProvider(PREFIX).resolve();
+  assert.equal(config.contextWindowTokens, 200000);
+  assert.equal(config.maxOutputTokens, 8192);
+  assert.equal(config.temperature, 0.2);
 });

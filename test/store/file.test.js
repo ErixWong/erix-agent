@@ -4,73 +4,55 @@ import { appendFile, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileTranscriptStore } from "../../src/store/file.js";
+import { transcriptStoreContract } from "../contract/transcript-store.js";
 
 async function makeTempDir() {
   return mkdtemp(join(tmpdir(), "erix-llm-kit-file-store-"));
 }
 
-test("appends and loads records, creating nested directories automatically", async () => {
+// 通用行为：契约套件（每次给干净目录 = 干净 store）
+transcriptStoreContract("file", async () => {
+  const dir = await makeTempDir();
+  return createFileTranscriptStore({ dir });
+});
+
+// ---- 以下为 file 实现特有行为（不进契约）----
+
+test("file: 自动创建嵌套目录", async () => {
   const root = await makeTempDir();
   const dir = join(root, "nested", "transcripts");
   try {
     const store = createFileTranscriptStore({ dir });
-    const records = [
-      {
-        round: 1,
-        messages: [{ role: "user", content: [{ type: "text", text: "start" }] }],
-      },
-      {
-        round: 2,
-        folded: true,
-        ts: "2026-08-29T00:00:00.000Z",
-        messages: [{
-          role: "assistant",
-          content: [{ type: "text", text: "done" }],
-        }],
-        foldedPayload: [{ round: 1 }],
-      },
-    ];
-
-    await store.appendRound("run-1", records[0]);
-    await store.appendRound("run-1", records[1]);
-
-    assert.deepEqual(await store.load("run-1"), records);
+    await store.appendRound("run-1", {
+      round: 1,
+      messages: [{ role: "user", content: [{ type: "text", text: "start" }] }],
+    });
     assert.deepEqual(await readdir(dir), ["run-1.jsonl"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("isolates runs and sanitizes run ids into safe filenames", async () => {
+test("file: runId 安全化为合法文件名", async () => {
   const root = await makeTempDir();
   try {
     const store = createFileTranscriptStore({ dir: root });
     const unsafeRunId = "../odd run?*";
-    const safeFile = ".._odd_run__.jsonl";
-    const record = {
+    await store.appendRound(unsafeRunId, {
       round: 1,
       messages: [{ role: "assistant", content: [{ type: "text", text: "one" }] }],
-    };
-
-    await store.appendRound(unsafeRunId, record);
-    await store.appendRound("other", {
-      round: 1,
-      messages: [{ role: "assistant", content: [{ type: "text", text: "two" }] }],
     });
 
-    assert.deepEqual(await store.load(unsafeRunId), [record]);
-    assert.deepEqual(await store.load("other"), [{
-      round: 1,
-      messages: [{ role: "assistant", content: [{ type: "text", text: "two" }] }],
-    }]);
-    assert.deepEqual((await readdir(root)).sort(), [safeFile, "other.jsonl"].sort());
-    assert.match(safeFile, /^[A-Za-z0-9._-]+\.jsonl$/);
+    const files = await readdir(root);
+    assert.equal(files.length, 1);
+    assert.match(files[0], /^[A-Za-z0-9._-]+\.jsonl$/);
+    assert.equal((await store.load(unsafeRunId)).length, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("ignores an incomplete final JSONL record", async () => {
+test("file: 崩溃安全——容忍末行写一半（残段丢弃）", async () => {
   const root = await makeTempDir();
   try {
     const store = createFileTranscriptStore({ dir: root });
@@ -86,46 +68,6 @@ test("ignores an incomplete final JSONL record", async () => {
     );
 
     assert.deepEqual(await store.load("run"), [complete]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("recalls text using memory-store range, pattern, and empty-result semantics", async () => {
-  const root = await makeTempDir();
-  try {
-    const store = createFileTranscriptStore({ dir: root });
-    await store.appendRound("run", {
-      round: 1,
-      messages: [
-        { role: "user", content: "inspect files" },
-        {
-          role: "assistant",
-          content: [{
-            type: "tool_use",
-            name: "list",
-            input: { path: "." },
-          }],
-        },
-        {
-          role: "user",
-          content: [{ type: "tool_result", content: "README.md" }],
-        },
-      ],
-    });
-    await store.appendRound("run", {
-      round: 2,
-      messages: [{ role: "assistant", content: [{ type: "text", text: "summary" }] }],
-    });
-
-    assert.equal(
-      await store.recall("run", 1, 1),
-      'inspect files\nlist{"path":"."}\nREADME.md',
-    );
-    assert.equal(await store.recall("run", undefined, undefined, "README"), "README.md");
-    assert.equal(await store.recall("run", 2, 2), "summary");
-    assert.equal(await store.recall("run", undefined, undefined, "missing"), "");
-    assert.equal(await store.recall("missing"), "");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

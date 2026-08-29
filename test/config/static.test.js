@@ -1,42 +1,16 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-
 import { createStaticModelConfigProvider } from "../../src/config/static.js";
+import { modelConfigProviderContract } from "../contract/model-config-provider.js";
 
-test("resolves a single static config and materializes its direct key", async () => {
-  const input = {
-    protocol: "openai",
-    endpoint: "https://example.invalid",
-    model: "test-model",
-    apiKey: "secret",
-  };
-  const result = await createStaticModelConfigProvider(input).resolve();
+const KEY_ENV = `ERIX_STATIC_CONTRACT_KEY_${process.pid}`;
+process.env[KEY_ENV] = "static-contract-secret";
 
-  assert.deepEqual(result, input);
-  assert.deepEqual(input, {
-    protocol: "openai",
-    endpoint: "https://example.invalid",
-    model: "test-model",
-    apiKey: "secret",
-  });
-});
-
-test("falls back from a missing slot to default", async () => {
-  const provider = createStaticModelConfigProvider({
+modelConfigProviderContract("static", async () => ({
+  provider: createStaticModelConfigProvider({
     slots: {
-      default: {
-        protocol: "anthropic",
-        endpoint: "https://example.invalid",
-        model: "default-model",
-      },
-      audit: {
-        protocol: "openai",
-        endpoint: "https://example.invalid",
-        model: "audit-model",
-      },
+      default: { protocol: "anthropic", endpoint: "https://example.invalid", model: "default-model" },
+      audit: { protocol: "openai", endpoint: "https://example.invalid", model: "audit-model", apiKeyEnv: KEY_ENV },
     },
-  });
-
-  assert.equal((await provider.resolve("audit")).model, "audit-model");
-  assert.equal((await provider.resolve("missing")).model, "default-model");
-});
+  }),
+  slot: "audit",
+  expect: { defaultModel: "default-model", slotModel: "audit-model", materializedKey: "static-contract-secret" },
+}));

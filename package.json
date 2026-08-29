@@ -6,7 +6,8 @@
   "engines": { "node": ">=22" },
   "exports": {
     ".": "./src/index.js",
-    "./tools": "./src/tools/index.js"
+    "./tools": "./src/tools/index.js",
+    "./contract-tests": "./test/contract/index.js"
   },
   "scripts": {
     "test": "node --test",
