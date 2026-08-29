@@ -43,7 +43,7 @@
 - Anthropic 线：一轮 = `assistant`（含 tool_use 块）+ 紧随的 `user`（tool_result 块）
 - OpenAI 线：一轮 = `assistant`（含 tool_calls）+ 紧随的连续 `tool` 消息
 - 纯文本 assistant（无工具调用）独立成一轮
-- system / 真实 user 消息属于"头部"，永不折叠
+- 头部 = system + **首个**真实 user 消息，永不折叠（与 FR-3.3 / 不变量 3 一致；后续真实 user 消息可参与折叠）
 
 ## 3. 核心接口
 
@@ -88,14 +88,14 @@ runToolLoop({
   context: {                 // 压缩（FR-3），缺省不压缩 = 现状行为
     strategy,                // CompactionStrategy 实例
     budgetTokens,
-    keepRounds = 6,
+    keepRounds = 6,          // 库默认值；app_container 现状硬滑窗为 10 轮，迁移时显式传 10 保持行为
   },
   retry: { attempts = 2, backoffBaseMs = 1500, backoffMaxMs = 10000 },
   stallDetection: { window = 4 } | false,
   completion: { signals = [], maxNoToolRounds = 3 } | false,  // 无工具轮策略
   store,                     // TranscriptStore（可选）：每轮快照落 store，支持崩溃续跑
   runId,                     // store 的键
-  resume = false,            // true 时从 store 恢复上次进度
+  resume = false,            // true 时从 store 恢复上次进度（忽略 initialUserMessage/initialMessages，消息与轮次以 store 为准）
   onRound, onDelta, signal,
   onToolResult,              // 钩子：结果回喂前的截断/脱敏后处理（调用方政策点）
 }) => Promise<{
@@ -167,6 +167,8 @@ createToolRegistry({ executors, schemas }) => {
 内置 provider：`static`（默认）/ `json-file` / `composite`；DB 适配器在项目侧。
 `runToolLoop` 在调用执行器前按 schema 做入参最小校验（required/type/maxLength），
 校验失败回 tool_result 错误，不碰执行器。
+
+## 4. 源码结构
 
 ```
 src/

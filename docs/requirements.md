@@ -92,13 +92,16 @@
 
 | 版本 | 内容 | 验收 |
 |---|---|---|
-| **v0.1** | providers + messages + tokens + loop（FR-1/2 全量）+ sliding-window + fold-statistical + memory store | app_container 迁移完成，原有 `npm test` 全绿；24 轮开发场景不再静默丢历史 |
+| **v0.0** | **MVP 垂直切片**（issue #1）：openai provider（非流式）+ canonical + tokens + runToolLoop 最小版（maxRounds / executeTool / 死循环检测）+ memory store + `examples/exec-demo`（exec 工具在 demo 侧，实证"库不执行"红线） | `node --test` 全绿（mock fetch）；exec demo 对真实 LLM（本机 relay）跑通多轮工具调用，transcript 完整 |
+| **v0.1** | providers 全量（+Anthropic +流式）+ messages + tokens + loop（FR-1/2 全量）+ sliding-window + fold-statistical + memory store + config（static / env） | app_container **完整迁移 runToolLoop**（只迁纯函数层不算完成），原有 `npm test` 全绿；24 轮开发场景不再静默丢历史；**行为指标**：折叠后模型"重做已完成工作"次数较硬滑窗基线可观测下降 |
 | **v0.2** | file store(JSONL) + recall 工具 + json-file config + fold-llm summarizer + tools 子路径（牢笼+文件工具+registry/ToolProvider） | 崩溃续跑演示；折叠后 recall 能取回原文 |
 | **v1.0** | touwaka 迁移（第一步只换 token-utils/history-compactor，AgentLoop 本体看收益再定）+ 文档完善 | touwaka 侧测试全绿、行为无回归 |
 | **v2 候选** | psyche 策略（对话场景）、每轮反思、Gemini native（触发 AI SDK 底座重估） | 另行立项 |
 
 ## 5. 非功能需求
 
+- `examples/` 是一等公民：每个里程碑附可运行 demo（exec / 对话 / 审计），新消费方按 demo 接入；demo 同时承担"调用方角色"的实证职责（执行体全在 demo 侧）
+- 存储策略：库内置 memory → file(JSONL) 先行，文件系统即可跑通全链路；DB 适配器用本机 MariaDB，但永远在**消费方项目侧**实现 TranscriptStore / ModelConfigProvider 接口，不进库（ADR-001/002）
 - 零运行时依赖；devDependencies 也不引入（node --test 够用）
 - 库内任何文件不含密钥；配置适配器的 apiKey 间接引用机制是第一公民（ADR-001）
 - 所有压缩/重试行为有 `node --test` 单测锁定；协议适配层用 mock fetch 测
@@ -111,3 +114,6 @@
 | 抽象泄漏：双协议归一后某协议特性丢失 | v0.1 验收以 app_container 全量测试通过为准；canonical 格式保留 `raw` 逃生舱 |
 | touwaka 迁移回归（AgentLoop 有 R15/R16/R19 一串实战修复） | v1.0 只迁纯函数层；AgentLoop 本体迁移单列决策 |
 | 单维护者项目的发布摩擦 | 版本语义化 + CHANGELOG；消费方锁版本升级 |
+| 迁移搁置：库做好了消费方不迁（迁移有成本无即时收益，单维护者尤其容易搁置） | v0.1 验收绑死 app_container 完整迁移 runToolLoop；库退化为"纯 utils 包"即视为失败 |
+| 上游 API 侵蚀：商业 API 内建 context editing / 服务端循环能力 | 价值锚点绑定自托管 relay + 开源模型场景（服务端能力不可用，自研是唯一解）；触发重估条件不变（README） |
+| 压缩谱系造了四级只用第一级 | v0.1 验收含行为指标；谱系升级必须实证驱动（ADR-004 的升级阶梯，不跳级） |

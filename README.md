@@ -25,13 +25,14 @@
 ```
 src/
 ├── providers/     # OpenAI 兼容 + Anthropic 双协议 → 统一内部块格式（流式/非流式）
-├── messages/      # 规范消息模型 + 轮次分组（两种协议的成对规则）
-├── tokens.js      # 中英混合保守 token 估算
-├── compact/       # 压缩策略：sliding-window / fold-statistical / fold-llm（psyche v2）
-├── store/         # TranscriptStore 适配器：memory / file(JSONL)；DB 适配器在项目侧
-├── config/        # ModelConfigProvider 适配器：static / env / json-file
-├── tools/         # 可选工具库（subpath export）：路径牢笼 + 文件工具参考实现 + recall
-└── loop.js        # runToolLoop：轮内快照重试、死循环检测、完成信号、每轮压缩检查
+│                  #   v0.0: openai 非流式 · v0.1: +anthropic +流式
+├── messages/      # 规范消息模型 + 轮次分组（两种协议的成对规则）  v0.0
+├── tokens.js      # 中英混合保守 token 估算  v0.0
+├── compact/       # 压缩策略  v0.1: sliding-window / fold-statistical · v0.2: fold-llm · v2: psyche
+├── store/         # TranscriptStore：v0.0 memory · v0.2 file(JSONL) · DB 适配器在项目侧（MariaDB）
+├── config/        # ModelConfigProvider：v0.1 static / env · v0.2 json-file · DB 适配器在项目侧
+├── tools/         # 【v0.2】可选工具库（subpath export）：路径牢笼 + 文件工具参考实现 + recall + registry
+└── loop.js        # runToolLoop  v0.0: 最小版 · v0.1: 轮内快照重试/死循环检测/完成信号/每轮压缩检查 全量
 ```
 
 ## 工程约束
@@ -50,4 +51,6 @@ src/
 
 ## 状态
 
-2026-08-29：需求文档阶段。仓库待建（git.erix.vip），建库后补 Gitea issue 跟踪。
+2026-08-29：文档定稿，仓库已建（[git.erix.vip/eric/erix-llm-kit](https://git.erix.vip/eric/erix-llm-kit)）。
+当前里程碑：**v0.0 MVP 垂直切片**（[issue #1](https://git.erix.vip/eric/erix-llm-kit/issues/1)）——
+最小实现跑通「LLM 请求工具 → 调用方执行 → 结果回喂 → 终稿」全链路，附 exec demo。
