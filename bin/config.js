@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createJsonFileModelConfigProvider } from "../src/config/json-file.js";
 
 const DEFAULT_MODEL = "kimi-for-coding";
-const DEFAULT_MAX_OUTPUT_TOKENS = 8192;
+const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
 
 export function defaultConfigPath() {
   const xdgConfigHome = process.env.XDG_CONFIG_HOME?.trim();
@@ -33,11 +33,6 @@ function parsePositiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
-function parseEnvironmentPositiveInteger(value) {
-  if (typeof value !== "string" || !/^\d+$/u.test(value)) return undefined;
-  return parsePositiveInteger(Number(value));
-}
-
 function missingConfigError(missing) {
   return new Error(
     `缺少环境变量：${missing.join("、")}。\n请先设置，例如：\n  export LLM_KIT_ENDPOINT="https://你的 OpenAI 兼容 API 地址"\n  export LLM_KIT_API_KEY="你的 API 密钥"`,
@@ -52,8 +47,7 @@ export async function loadCliConfig({ configPath } = {}) {
     || fileConfig.model
     || DEFAULT_MODEL;
   const maxOutputTokens =
-    parseEnvironmentPositiveInteger(readEnvironmentValue("LLM_KIT_MAX_TOKENS"))
-    ?? parsePositiveInteger(fileConfig.maxOutputTokens)
+    parsePositiveInteger(fileConfig.maxOutputTokens)
     ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const missing = [];
 

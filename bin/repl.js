@@ -44,7 +44,6 @@ const REPL_HELP_TEXT = `REPL 用法：
   LLM_KIT_ENDPOINT      OpenAI 兼容 API 地址（必填）
   LLM_KIT_API_KEY       API 密钥（必填）
   LLM_KIT_MODEL         初始模型名称（默认：${DEFAULT_MODEL}）
-  LLM_KIT_MAX_TOKENS    输出 token 上限（默认：8192，可覆盖配置）
   ERIX_EXEC_TIMEOUT_MS  exec 前台命令超时毫秒数（默认：120000）
 
 配置文件：

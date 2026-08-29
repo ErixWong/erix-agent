@@ -33,11 +33,11 @@ const HELP_TEXT = `用法：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
   LLM_KIT_API_KEY    API 密钥（必填）
   LLM_KIT_MODEL      模型名称（默认：kimi-for-coding）
-  LLM_KIT_MAX_TOKENS 输出 token 上限（默认：8192，可覆盖配置）
   ERIX_EXEC_TIMEOUT_MS exec 前台命令超时毫秒数（默认：120000）
 
 配置文件：
-  默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。`;
+  默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
+  slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。`;
 
 class CliError extends Error {
   constructor(message, { showHelp = false } = {}) {

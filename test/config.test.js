@@ -89,7 +89,7 @@ test("loadCliConfig reads file values and applies the default model", async () =
   });
 });
 
-test("loadCliConfig gives environment values priority over file values", async () => {
+test("loadCliConfig env overrides endpoint/apiKey/model but not maxOutputTokens", async () => {
   await withDirectory(async (directory) => {
     const configPath = await writeConfig(directory, {
       slots: {
@@ -112,7 +112,7 @@ test("loadCliConfig gives environment values priority over file values", async (
         endpoint: "https://env.example.invalid",
         apiKey: "env-key",
         model: "env-model",
-        maxOutputTokens: 2048,
+        maxOutputTokens: 4096,
       });
     });
   });
@@ -130,7 +130,7 @@ test("loadCliConfig treats a missing config file as an empty config", async () =
         endpoint: "https://env.example.invalid",
         apiKey: "env-key",
         model: "kimi-for-coding",
-        maxOutputTokens: 8192,
+        maxOutputTokens: 16384,
       });
     });
   });
@@ -153,7 +153,7 @@ test("loadCliConfig reads an explicitly supplied config path", async () => {
         endpoint: "https://explicit.example.invalid",
         apiKey: "explicit-key",
         model: "explicit-model",
-        maxOutputTokens: 8192,
+        maxOutputTokens: 16384,
       });
     });
   });
@@ -178,7 +178,7 @@ test("loadCliConfig resolves apiKeyFile from the config slot", async () => {
         endpoint: "https://file-key.example.invalid",
         apiKey: "file-key",
         model: "file-key-model",
-        maxOutputTokens: 8192,
+        maxOutputTokens: 16384,
       });
     });
   });
@@ -199,7 +199,7 @@ test("loadCliConfig falls back to the default for invalid maxOutputTokens", asyn
 
       await withEnvironment({}, async () => {
         const config = await loadCliConfig({ configPath });
-        assert.equal(config.maxOutputTokens, 8192);
+        assert.equal(config.maxOutputTokens, 16384);
       });
     });
   }
