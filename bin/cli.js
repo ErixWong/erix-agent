@@ -18,9 +18,6 @@ import {
   wrapExecuteTool,
 } from "./tools.js";
 
-// Keep CLI model responses bounded.
-const DEFAULT_MAX_TOKENS = 8192;
-
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
@@ -36,6 +33,8 @@ const HELP_TEXT = `用法：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
   LLM_KIT_API_KEY    API 密钥（必填）
   LLM_KIT_MODEL      模型名称（默认：kimi-for-coding）
+  LLM_KIT_MAX_TOKENS 输出 token 上限（默认：8192，可覆盖配置）
+  ERIX_EXEC_TIMEOUT_MS exec 前台命令超时毫秒数（默认：120000）
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。`;
@@ -236,6 +235,7 @@ async function runChat({
   stream,
 }) {
   const config = await loadCliConfig({ configPath });
+  const maxTokens = config.maxOutputTokens;
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new CliError("chat 需要提供 prompt，例如：erix chat \"你好\"");
   }
@@ -245,7 +245,7 @@ async function runChat({
     apiKey: config.apiKey,
     model: config.model,
     timeoutMs: 120_000,
-    maxTokens: DEFAULT_MAX_TOKENS,
+    maxTokens,
   });
   const cliTools = createCliTools({ cwd: process.cwd() });
   const skillTools = await buildSkillTools({
@@ -260,7 +260,7 @@ async function runChat({
     initialUserMessage: prompt,
     tools: tools.tools,
     executeTool: wrapExecuteTool(tools.executeTool),
-    maxTokens: DEFAULT_MAX_TOKENS,
+    maxTokens,
     stream,
     onDelta: stream ? (chunk) => process.stdout.write(chunk) : undefined,
     onToolResult: (_name, result) => cliTools.truncateResult(result),

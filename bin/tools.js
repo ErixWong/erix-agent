@@ -12,8 +12,16 @@ import path from "node:path";
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
 const OUTPUT_LIMIT = 4096;
-const EXEC_TIMEOUT_MS = 10_000;
+const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const EXEC_MAX_BUFFER = 1024 * 1024;
+
+// ERIX_EXEC_TIMEOUT_MS overrides the default timeout for foreground commands.
+export function getExecTimeoutMs() {
+  const configured = Number(process.env.ERIX_EXEC_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_EXEC_TIMEOUT_MS;
+}
 
 function normalizeNonNegativeInteger(value, fallback) {
   if (!Number.isFinite(value)) return fallback;
@@ -146,18 +154,19 @@ function executeExecCommand(input, cwd) {
     );
   }
 
+  const timeoutMs = getExecTimeoutMs();
   return new Promise((resolve) => {
     execFile(
       "/bin/sh",
       ["-c", command],
-      { cwd, timeout: EXEC_TIMEOUT_MS, maxBuffer: EXEC_MAX_BUFFER },
+      { cwd, timeout: timeoutMs, maxBuffer: EXEC_MAX_BUFFER },
       (error, stdout, stderr) => {
         if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
           resolve("错误：命令输出超过 1MB 上限");
           return;
         }
         if (error?.killed || error?.code === "ETIMEDOUT") {
-          resolve(`错误：命令超时（${EXEC_TIMEOUT_MS}ms）被终止`);
+          resolve(`错误：命令超时（${timeoutMs}ms）被终止`);
           return;
         }
 

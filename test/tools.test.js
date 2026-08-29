@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import {
   createCliTools,
+  getExecTimeoutMs,
   truncateResult,
   wrapExecuteTool,
 } from "../bin/tools.js";
@@ -77,6 +78,23 @@ test("exec starts background commands without waiting", async () => {
 
   assert.ok(Date.now() - startedAt < 5000);
   assert.match(result, /已启动|PID/);
+});
+
+test("exec timeout defaults to 120 seconds and accepts a valid environment override", () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  try {
+    delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    assert.equal(getExecTimeoutMs(), 120_000);
+
+    process.env.ERIX_EXEC_TIMEOUT_MS = "2500";
+    assert.equal(getExecTimeoutMs(), 2500);
+
+    process.env.ERIX_EXEC_TIMEOUT_MS = "not-a-number";
+    assert.equal(getExecTimeoutMs(), 120_000);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
+  }
 });
 
 test("exec truncates output at 4096 characters", async () => {

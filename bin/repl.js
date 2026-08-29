@@ -21,8 +21,6 @@ import {
 
 const DEFAULT_MODEL = "kimi-for-coding";
 const DEFAULT_MAX_ROUNDS = 8;
-// Keep REPL model responses bounded.
-const DEFAULT_MAX_TOKENS = 8192;
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
@@ -46,6 +44,8 @@ const REPL_HELP_TEXT = `REPL 用法：
   LLM_KIT_ENDPOINT      OpenAI 兼容 API 地址（必填）
   LLM_KIT_API_KEY       API 密钥（必填）
   LLM_KIT_MODEL         初始模型名称（默认：${DEFAULT_MODEL}）
+  LLM_KIT_MAX_TOKENS    输出 token 上限（默认：8192，可覆盖配置）
+  ERIX_EXEC_TIMEOUT_MS  exec 前台命令超时毫秒数（默认：120000）
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。`;
@@ -374,7 +374,7 @@ export async function runRepl(argv, io = {}) {
         apiKey: config.apiKey,
         model,
         timeoutMs: 120_000,
-        maxTokens: DEFAULT_MAX_TOKENS,
+        maxTokens: config.maxOutputTokens,
       });
       const roundMessages = [
         ...messages,
@@ -386,7 +386,7 @@ export async function runRepl(argv, io = {}) {
         initialMessages: roundMessages,
         initialUserMessage: line,
         maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
-        maxTokens: DEFAULT_MAX_TOKENS,
+        maxTokens: config.maxOutputTokens,
         tools: [...cliTools.tools, ...skillTools.tools],
         executeTool,
         stream: true,

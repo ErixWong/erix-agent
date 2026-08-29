@@ -12,6 +12,7 @@ const ENV_NAMES = [
   "LLM_KIT_ENDPOINT",
   "LLM_KIT_API_KEY",
   "LLM_KIT_MODEL",
+  "LLM_KIT_MAX_TOKENS",
 ];
 
 async function withEnvironment(values, callback) {
@@ -72,6 +73,7 @@ test("loadCliConfig reads file values and applies the default model", async () =
         default: {
           endpoint: "https://file.example.invalid",
           apiKey: "file-config-key",
+          maxOutputTokens: 4096,
         },
       },
     });
@@ -81,6 +83,7 @@ test("loadCliConfig reads file values and applies the default model", async () =
         endpoint: "https://file.example.invalid",
         apiKey: "file-config-key",
         model: "kimi-for-coding",
+        maxOutputTokens: 4096,
       });
     });
   });
@@ -94,6 +97,7 @@ test("loadCliConfig gives environment values priority over file values", async (
           endpoint: "https://file.example.invalid",
           model: "file-model",
           apiKey: "file-config-key",
+          maxOutputTokens: 4096,
         },
       },
     });
@@ -102,11 +106,13 @@ test("loadCliConfig gives environment values priority over file values", async (
       LLM_KIT_ENDPOINT: " https://env.example.invalid ",
       LLM_KIT_API_KEY: " env-key ",
       LLM_KIT_MODEL: " env-model ",
+      LLM_KIT_MAX_TOKENS: "2048",
     }, async () => {
       assert.deepEqual(await loadCliConfig({ configPath }), {
         endpoint: "https://env.example.invalid",
         apiKey: "env-key",
         model: "env-model",
+        maxOutputTokens: 2048,
       });
     });
   });
@@ -124,6 +130,7 @@ test("loadCliConfig treats a missing config file as an empty config", async () =
         endpoint: "https://env.example.invalid",
         apiKey: "env-key",
         model: "kimi-for-coding",
+        maxOutputTokens: 8192,
       });
     });
   });
@@ -146,6 +153,7 @@ test("loadCliConfig reads an explicitly supplied config path", async () => {
         endpoint: "https://explicit.example.invalid",
         apiKey: "explicit-key",
         model: "explicit-model",
+        maxOutputTokens: 8192,
       });
     });
   });
@@ -170,9 +178,31 @@ test("loadCliConfig resolves apiKeyFile from the config slot", async () => {
         endpoint: "https://file-key.example.invalid",
         apiKey: "file-key",
         model: "file-key-model",
+        maxOutputTokens: 8192,
       });
     });
   });
+});
+
+test("loadCliConfig falls back to the default for invalid maxOutputTokens", async () => {
+  for (const value of [0, -1, 1.5, "4096", null]) {
+    await withDirectory(async (directory) => {
+      const configPath = await writeConfig(directory, {
+        slots: {
+          default: {
+            endpoint: "https://invalid-max.example.invalid",
+            apiKey: "file-config-key",
+            maxOutputTokens: value,
+          },
+        },
+      });
+
+      await withEnvironment({}, async () => {
+        const config = await loadCliConfig({ configPath });
+        assert.equal(config.maxOutputTokens, 8192);
+      });
+    });
+  }
 });
 
 test("loadCliConfig preserves the existing missing endpoint and API key error", async () => {
