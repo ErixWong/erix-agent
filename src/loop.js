@@ -68,7 +68,7 @@ function defaultSleep(ms) {
  * Run the minimum tool-calling loop against an injected provider.
  *
  * @param {{
- *   provider: {chat: (request: object) => Promise<object>},
+ *   provider: {chat: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
  *   system?: string,
  *   initialUserMessage?: string,
  *   initialMessages?: object[],
@@ -90,6 +90,8 @@ function defaultSleep(ms) {
  *   onRound?: Function,
  *   onToolResult?: Function,
  *   signal?: AbortSignal,
+ *   stream?: boolean,
+ *   onDelta?: (chunk:string) => void,
  * }} options
  * @returns {Promise<{
  *   finalText:string,
@@ -123,6 +125,8 @@ export async function runToolLoop({
   onRound,
   onToolResult,
   signal,
+  stream = false,
+  onDelta,
 }) {
   let messages = initialMessages !== undefined
     ? [...initialMessages]
@@ -200,6 +204,12 @@ export async function runToolLoop({
         if (maxTokens !== undefined) request.maxTokens = maxTokens;
         if (temperature !== undefined) request.temperature = temperature;
         if (topP !== undefined) request.topP = topP;
+        if (stream && typeof provider.chatStream === "function") {
+          return await provider.chatStream({
+            ...request,
+            onDelta: (chunk) => onDelta?.(chunk),
+          });
+        }
         return await provider.chat(request);
       } catch (error) {
         if (retryOptions === null || error?.retryable !== true) {

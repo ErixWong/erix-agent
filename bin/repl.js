@@ -366,8 +366,13 @@ export async function runRepl(argv, io = {}) {
         maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
         tools: [...cliTools.tools, ...skillTools.tools],
         executeTool,
-        onToolResult: (_name, result) => cliTools.truncateResult(result),
-        onRound: (info) => writeLine(output, `[round ${info.round}]`),
+        stream: true,
+        onDelta: (chunk) => output.write(chunk),
+        onToolResult: (name, result) => {
+          writeLine(output, `\n→ 调用了 ${name}`);
+          return cliTools.truncateResult(result);
+        },
+        onRound: (info) => writeLine(output, `\n[round ${info.round}]`),
       };
       if (options.compactBudget !== undefined) {
         loopOptions.context = {
@@ -385,7 +390,7 @@ export async function runRepl(argv, io = {}) {
         ? result.usage.output_tokens
         : 0;
       const compacted = result.compactionStats.some((stat) => stat.compacted === true);
-      writeLine(output, result.finalText);
+      writeLine(output);
       writeLine(
         output,
         `[rounds=${result.rounds} usage=${JSON.stringify(result.usage)} compacted=${compacted}]`,

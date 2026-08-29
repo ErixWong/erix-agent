@@ -17,10 +17,12 @@ import { CLI_TOOLS_SYSTEM_PROMPT, createCliTools } from "./tools.js";
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--config <path>] [--skills-dir <path>] [--compact-budget <tokens>] [--max-rounds <n>]
+  erix chat "<prompt>" [--stream] [--config <path>] [--skills-dir <path>] [--compact-budget <tokens>] [--max-rounds <n>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--compact-budget <tokens>] [--max-rounds <n>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   （无参数直接进入交互式模式，等同 erix repl）
+
+  --stream              流式输出模型文本
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -76,6 +78,14 @@ function parseChatArgs(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
+    if (argument === "--stream") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.stream = true;
+      continue;
+    }
     if (
       argument === "--config"
       || argument === "--skills-dir"
@@ -209,7 +219,14 @@ async function runSkills({ skillsDir }) {
   }
 }
 
-async function runChat({ prompt, configPath, skillsDir, compactBudget, maxRounds }) {
+async function runChat({
+  prompt,
+  configPath,
+  skillsDir,
+  compactBudget,
+  maxRounds,
+  stream,
+}) {
   const config = await loadCliConfig({ configPath });
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new CliError("chat 需要提供 prompt，例如：erix chat \"你好\"");
@@ -234,6 +251,8 @@ async function runChat({ prompt, configPath, skillsDir, compactBudget, maxRounds
     initialUserMessage: prompt,
     tools: tools.tools,
     executeTool: tools.executeTool,
+    stream,
+    onDelta: stream ? (chunk) => process.stdout.write(chunk) : undefined,
     onToolResult: (_name, result) => cliTools.truncateResult(result),
     onRound: (info) => console.log(`[round ${info.round}]`),
   };
