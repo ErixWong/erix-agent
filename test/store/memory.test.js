@@ -33,3 +33,18 @@ test("memory transcript store appends, loads, and recalls by range and pattern",
   assert.equal(await store.recall("run-1", undefined, undefined, "README"), "README.md");
   assert.equal(await store.recall("missing"), "");
 });
+
+test("recall 覆盖 foldedPayload（折叠原文同属档案，ADR-007）", async () => {
+  const store = createMemoryTranscriptStore();
+  await store.appendRound("r1", {
+    round: 2,
+    messages: [{ role: "assistant", content: [{ type: "text", text: "当轮消息" }] }],
+    folded: true,
+    foldedPayload: [{ role: "user", content: [{ type: "text", text: "早期原文里的遥测阈值 42.5" }] }],
+    ts: new Date().toISOString(),
+  });
+  const hit = await store.recall("r1", undefined, undefined, "42.5");
+  assert.ok(hit.includes("42.5"), "pattern 应命中 foldedPayload");
+  const ranged = await store.recall("r1", 2, 2);
+  assert.ok(ranged.includes("42.5"), "范围查询应含 foldedPayload");
+});

@@ -40,3 +40,9 @@ DB 适配器（app_container 落 `task_runs`、touwaka 落 payload 缓存）留�
 
 - file store 目录需要调用方管理生命周期（任务结束清理/归档），库只提供 `load/recall`，不做 GC。
 - runId 唯一性由调用方保证（建议 = 任务/run 主键）。
+- **档案完整性补记（2026-08-29，v0.2 记忆基准实测发现）**：
+  ① 初始消息（initialMessages/initialUserMessage）不进每轮增量记录——runToolLoop 启动时先写
+  **round 0 种子记录**，否则初始历史永不在档案中，fold 后 recall 找不到；resume 续跑基数改取
+  max(record.round)（兼容种子记录）。
+  ② `recall` 检索语料必须**同时覆盖 record.messages 与 record.foldedPayload**（被折轮次的原文在
+  foldedPayload 里）——memory/file 两实现及 tools/recall 均已修正并加回归测试。

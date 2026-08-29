@@ -90,7 +90,7 @@ export function createFoldStatisticalStrategy() {
         const summary = [
           `【上下文折叠】早期第 1–${folded.length} 轮（共 ${folded.length} 轮）已折叠。`,
           `工具足迹：${toolFootprint(folded)}。`,
-          "原文留存 transcript store。",
+          `可用 recall(pattern: "关键词") 搜回细节，或 recall(fromRound: 1, toRound: ${folded.length}) 取原文（大段可能截断，优先关键词）。`,
         ].join("");
         compactedHead = prependSummary(head, summary);
       }

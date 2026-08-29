@@ -86,6 +86,7 @@ function defaultSleep(ms) {
  *   context?: {strategy?: object, budgetTokens?:number, keepRounds?:number},
  *   store?: {appendRound?: Function},
  *   runId?: string,
+ *   resume?: boolean,
  *   onRound?: Function,
  *   onToolResult?: Function,
  *   signal?: AbortSignal,
@@ -118,6 +119,7 @@ export async function runToolLoop({
   context,
   store,
   runId,
+  resume = false,
   onRound,
   onToolResult,
   signal,
@@ -127,6 +129,22 @@ export async function runToolLoop({
     : initialUserMessage !== undefined
       ? [{ role: "user", content: [{ type: "text", text: initialUserMessage }] }]
       : [];
+  let rounds = 0;
+  if (resume && store && runId !== undefined) {
+    const records = await store.load(runId);
+    if (records.length === 0) throw new Error("resume: 无可恢复记录");
+    messages = records.flatMap((record) => record.messages);
+    // 以最大 round 为续跑基数（含 round 0 种子记录时 records.length 会多算一轮）
+    rounds = Math.max(...records.map((record) => record.round ?? 0));
+  } else if (store && runId !== undefined && messages.length > 0) {
+    // 种子记录：初始消息（initialMessages/initialUserMessage）先入档，
+    // 否则它们永不在 store 中——recall 在 fold 后找不到被折的初始历史（ADR-002 档案完整性）
+    try {
+      await store.appendRound(runId, { round: 0, messages: [...messages], ts: new Date().toISOString() });
+    } catch {
+      // 快照容错：持久化失败不中断循环（与轮内快照一致）
+    }
+  }
   const recentSignatures = [];
   const stallWindow = stallDetection === false
     ? 0
@@ -155,7 +173,6 @@ export async function runToolLoop({
     : 3;
   const compactionStats = [];
   let finalText = "";
-  let rounds = 0;
   let hadToolUse = hasToolUseInMessages(messages);
   let noToolRounds = 0;
 

@@ -58,6 +58,13 @@ export function createMemoryTranscriptStore() {
             if (text !== null) fragments.push(text);
           }
         }
+        // 折叠原文同属档案，一并纳入检索（fold 只影响视图）
+        for (const message of record.foldedPayload ?? []) {
+          for (const block of blocksFor(message?.content)) {
+            const text = blockText(block);
+            if (text !== null) fragments.push(text);
+          }
+        }
       }
 
       const selected = pattern === undefined

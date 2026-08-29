@@ -159,11 +159,12 @@ test("stores each round snapshot and can rebuild the transcript", async () => {
   });
   const records = await store.load("run-1");
 
-  assert.equal(records.length, 2);
-  assert.deepEqual(records.map((record) => record.round), [1, 2]);
-  assert.equal(records[0].messages.at(-1).content[0].content, "worked");
-  assert.equal(records[1].messages[0].content[0].text, "complete");
-  assert.deepEqual(result.messages, [result.messages[0], ...records.flatMap((record) => record.messages)]);
+  assert.equal(records.length, 3);
+  assert.deepEqual(records.map((record) => record.round), [0, 1, 2]);
+  assert.deepEqual(records[0].messages, result.messages.slice(0, 1)); // round 0 种子 = 初始消息入档
+  assert.equal(records[1].messages.at(-1).content[0].content, "worked");
+  assert.equal(records[2].messages[0].content[0].text, "complete");
+  assert.deepEqual(result.messages, records.flatMap((record) => record.messages));
 });
 
 test("accumulates input and output usage", async () => {

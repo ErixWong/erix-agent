@@ -27,7 +27,7 @@ test("prepends a deterministic tool-footprint summary to the head user", async (
   const strategy = createFoldStatisticalStrategy();
   const result = await strategy.compact(messages, { keepRounds: 1, budgetTokens: 0 });
   const summary =
-    "【上下文折叠】早期第 1–2 轮（共 2 轮）已折叠。工具足迹：exec×1, writeFile×1。原文留存 transcript store。";
+    "【上下文折叠】早期第 1–2 轮（共 2 轮）已折叠。工具足迹：exec×1, writeFile×1。可用 recall(pattern: \"关键词\") 搜回细节，或 recall(fromRound: 1, toRound: 2) 取原文（大段可能截断，优先关键词）。";
 
   assert.equal(strategy.name, "fold-statistical");
   assert.deepEqual(result.messages, [

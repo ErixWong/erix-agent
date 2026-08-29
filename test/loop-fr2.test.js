@@ -291,8 +291,8 @@ test("compacts context before the second round and records its payload and stats
   assert.equal(shouldCompactCalls.length, 2);
   assert.equal(shouldCompactCalls[0].budgetTokens, 99);
   assert.deepEqual(provider.requests[1].messages[0], replacement[0]);
-  assert.equal(records[1].folded, true);
-  assert.deepEqual(records[1].foldedPayload, foldedPayload);
+  assert.equal(records[2].folded, true);
+  assert.deepEqual(records[2].foldedPayload, foldedPayload);
   assert.deepEqual(result.compactionStats, [{
     compacted: true,
     foldedRounds: 1,
