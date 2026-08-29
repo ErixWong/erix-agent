@@ -28,17 +28,51 @@ async function withHome(callback) {
   }
 }
 
-test("createCliTools exposes only read-only file tools", async () => {
+test("createCliTools exposes only read-only tools", async () => {
   await withHome(async () => {
     await withDirectory(async (cwd) => {
       const { tools } = createCliTools({ cwd });
       assert.deepEqual(
         tools.map((tool) => tool.name).sort(),
-        ["readFile", "rg", "tree"],
+        ["exec", "readFile", "rg", "tree"],
       );
       assert.equal(tools.some((tool) => tool.name === "writeFile"), false);
     });
   });
+});
+
+test("exec runs allowlisted read-only commands", async () => {
+  await withDirectory(async (cwd) => {
+    const { executeTool } = createCliTools({ cwd });
+    assert.equal(await executeTool("exec", { command: "pwd" }), `${cwd}\n`);
+    assert.equal(await executeTool("exec", { command: "echo hello" }), "hello\n");
+  });
+});
+
+test("exec rejects commands outside the whitelist", async () => {
+  const { executeTool } = createCliTools();
+  const rmResult = await executeTool("exec", { command: "rm -rf /tmp/x" });
+  const sudoResult = await executeTool("exec", { command: "sudo" });
+  assert.match(rmResult, /不在白名单/);
+  assert.match(sudoResult, /不在白名单/);
+});
+
+test("exec rejects unsafe shell syntax", async () => {
+  const { executeTool } = createCliTools();
+  for (const command of ["ls | wc", "cat x > y", "date; whoami", "$(rm)", "ls *"]) {
+    assert.equal(
+      await executeTool("exec", { command }),
+      "错误：命令含不安全语法",
+      command,
+    );
+  }
+});
+
+test("exec truncates output using the shared result limit", async () => {
+  const { executeTool } = createCliTools();
+  const result = await executeTool("exec", { command: "head -c 5000 /dev/zero" });
+  assert.equal(result.slice(0, 4096), "\0".repeat(4096));
+  assert.match(result, /\n\[已截断，共 5000 字符\]$/);
 });
 
 test("executeTool readFile reads a file inside the jail", async () => {

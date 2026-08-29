@@ -10,6 +10,7 @@ import {
   runToolLoop,
 } from "../src/index.js";
 import { loadCliConfig } from "./config.js";
+import { buildSkillTools } from "./skills.js";
 import { CLI_TOOLS_SYSTEM_PROMPT, createCliTools } from "./tools.js";
 
 const DEFAULT_MODEL = "kimi-for-coding";
@@ -21,10 +22,11 @@ const NON_TTY_MESSAGE =
   'repl 需要交互式终端，单次对话请用：erix chat "<prompt>"';
 
 const REPL_HELP_TEXT = `REPL 用法：
-  erix repl [--config <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>]
 
 命令：
   /help                 显示此帮助
+  /skills               显示当前技能
   /exit, /quit          保存并退出
   /clear                清屏（保留上下文）
   /reset                清空上下文并删除会话存档
@@ -89,6 +91,7 @@ export function parseReplArgs(argv) {
       argument === "--session"
       || argument === "--dir"
       || argument === "--config"
+      || argument === "--skills-dir"
       || argument === "--compact-budget"
       || argument === "--max-rounds"
     ) {
@@ -108,6 +111,9 @@ export function parseReplArgs(argv) {
       } else if (argument === "--config") {
         if (rawValue.trim() === "") usageError("--config 不能为空");
         options.configPath = rawValue;
+      } else if (argument === "--skills-dir") {
+        if (rawValue.trim() === "") usageError("--skills-dir 不能为空");
+        options.skillsDir = rawValue;
       } else if (argument === "--compact-budget") {
         options.compactBudget = parseIntegerOption(argument, rawValue, 0);
       } else {
@@ -132,7 +138,7 @@ export function parseCommand(line) {
   const tokens = trimmed.slice(1).split(/\s+/);
   const name = tokens.shift()?.toLowerCase() ?? "";
   const args = tokens;
-  if (name === "help" || name === "clear" || name === "reset" || name === "tokens") {
+  if (name === "help" || name === "skills" || name === "clear" || name === "reset" || name === "tokens") {
     return { command: name, args };
   }
   if (name === "exit" || name === "quit") {
@@ -219,6 +225,17 @@ export async function runRepl(argv, io = {}) {
 
   const config = await loadCliConfig({ configPath: options.configPath });
   const cliTools = createCliTools({ cwd: process.cwd() });
+  const skillTools = await buildSkillTools({
+    cwd: process.cwd(),
+    skillsDir: options.skillsDir,
+    builtinNames: cliTools.tools.map((tool) => tool.name),
+  });
+  const skillToolNames = new Set(skillTools.tools.map((tool) => tool.name));
+  const executeTool = (name, input, context) => (
+    skillToolNames.has(name)
+      ? skillTools.executeTool(name, input, context)
+      : cliTools.executeTool(name, input, context)
+  );
   const archivePath = sessionPath(options.dir, options.session);
   let messages = await loadSession(options.dir, options.session);
   let model = config.model;
@@ -275,6 +292,25 @@ export async function runRepl(argv, io = {}) {
       writeLine(output, REPL_HELP_TEXT);
       return;
     }
+    if (command.command === "skills") {
+      if (skillTools.tools.length === 0) {
+        writeLine(output, "当前未加载 skill 工具");
+      } else {
+        writeLine(output, "当前已加载 skill 工具：");
+        for (const tool of skillTools.tools) {
+          writeLine(output, `  - ${tool.name}`);
+        }
+      }
+      if (skillTools.errors.length === 0) {
+        writeLine(output, "技能加载错误：无");
+      } else {
+        writeLine(output, "技能加载错误：");
+        for (const item of skillTools.errors) {
+          writeLine(output, `  - ${item.skillId}（${item.dir}）：${item.error}`);
+        }
+      }
+      return;
+    }
     if (command.command === "exit") {
       rl.close();
       return;
@@ -328,8 +364,8 @@ export async function runRepl(argv, io = {}) {
         initialMessages: roundMessages,
         initialUserMessage: line,
         maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
-        tools: cliTools.tools,
-        executeTool: cliTools.executeTool,
+        tools: [...cliTools.tools, ...skillTools.tools],
+        executeTool,
         onToolResult: (_name, result) => cliTools.truncateResult(result),
         onRound: (info) => writeLine(output, `[round ${info.round}]`),
       };

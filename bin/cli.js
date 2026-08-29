@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   createFoldStatisticalStrategy,
@@ -9,13 +11,15 @@ import {
 } from "../src/index.js";
 import { loadCliConfig } from "./config.js";
 import { runRepl } from "./repl.js";
+import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import { CLI_TOOLS_SYSTEM_PROMPT, createCliTools } from "./tools.js";
 
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--config <path>] [--compact-budget <tokens>] [--max-rounds <n>]
-  erix repl [--config <path>] [--session <id>] [--compact-budget <tokens>] [--max-rounds <n>]  （交互式模式）
+  erix chat "<prompt>" [--config <path>] [--skills-dir <path>] [--compact-budget <tokens>] [--max-rounds <n>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--compact-budget <tokens>] [--max-rounds <n>]  （交互式模式）
+  erix skills [--skills-dir <path>]  列出已发现的技能
   （无参数直接进入交互式模式，等同 erix repl）
 
 环境变量：
@@ -74,6 +78,7 @@ function parseChatArgs(args) {
     const argument = args[index];
     if (
       argument === "--config"
+      || argument === "--skills-dir"
       || argument === "--compact-budget"
       || argument === "--max-rounds"
     ) {
@@ -84,7 +89,8 @@ function parseChatArgs(args) {
 
       const rawValue = args[index + 1];
       if (rawValue === undefined || (
-        argument === "--config" && rawValue.startsWith("--")
+        (argument === "--config" || argument === "--skills-dir")
+        && rawValue.startsWith("--")
       )) {
         usageError(`${argument} 缺少数值`);
       }
@@ -93,6 +99,9 @@ function parseChatArgs(args) {
       if (argument === "--config") {
         if (rawValue.trim() === "") usageError("--config 不能为空");
         options.configPath = rawValue;
+      } else if (argument === "--skills-dir") {
+        if (rawValue.trim() === "") usageError("--skills-dir 不能为空");
+        options.skillsDir = rawValue;
       } else if (argument === "--compact-budget") {
         options.compactBudget = parseIntegerOption(argument, rawValue, 0);
       } else {
@@ -113,7 +122,94 @@ function parseChatArgs(args) {
   return { prompt, ...options };
 }
 
-async function runChat({ prompt, configPath, compactBudget, maxRounds }) {
+function parseSkillsArgs(args) {
+  const options = {};
+  const seenOptions = new Set();
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument !== "--skills-dir") {
+      usageError(`未知参数：${argument}`);
+    }
+    if (seenOptions.has(argument)) {
+      usageError(`参数重复：${argument}`);
+    }
+    seenOptions.add(argument);
+    const rawValue = args[index + 1];
+    if (rawValue === undefined || rawValue.startsWith("--")) {
+      usageError(`${argument} 缺少数值`);
+    }
+    if (rawValue.trim() === "") usageError("--skills-dir 不能为空");
+    options.skillsDir = rawValue;
+    index += 1;
+  }
+  return options;
+}
+
+function combineTools(cliTools, skillTools) {
+  const skillToolNames = new Set(skillTools.tools.map((tool) => tool.name));
+  return {
+    tools: [...cliTools.tools, ...skillTools.tools],
+    executeTool: (name, input, context) => (
+      skillToolNames.has(name)
+        ? skillTools.executeTool(name, input, context)
+        : cliTools.executeTool(name, input, context)
+    ),
+  };
+}
+
+function skillDirectoryLabels(skillsDir) {
+  if (skillsDir !== undefined) {
+    return [path.resolve(process.cwd(), skillsDir)];
+  }
+  return [
+    path.join(homedir(), ".erix", "skills"),
+    path.join(process.cwd(), ".erix", "skills"),
+  ];
+}
+
+async function runSkills({ skillsDir }) {
+  const options = { cwd: process.cwd(), skillsDir };
+  const discovered = discoverSkills(options);
+  const loaded = await loadAllSkills(options);
+  const built = await buildSkillTools({
+    ...options,
+    builtinNames: ["readFile", "rg", "tree"],
+  });
+  const errorsByDir = new Map(built.errors.map((item) => [item.dir, item]));
+  const skillsByDir = new Map(loaded.skills.map((skill) => [skill.dir, skill]));
+
+  console.log("技能目录：");
+  for (const directory of skillDirectoryLabels(skillsDir)) {
+    console.log(`  - ${directory}`);
+  }
+  console.log("发现的 skill：");
+  if (discovered.length === 0) {
+    console.log("  （无）");
+  } else {
+    for (const candidate of discovered) {
+      const skill = skillsByDir.get(candidate.dir);
+      const error = errorsByDir.get(candidate.dir);
+      if (error) {
+        console.log(`  - ${candidate.id}（${candidate.dir}）：加载失败`);
+      } else {
+        console.log(
+          `  - ${skill.skillId}（${candidate.dir}）：工具 ${skill.tools.length}`,
+        );
+      }
+    }
+  }
+
+  console.log("errors：");
+  if (built.errors.length === 0) {
+    console.log("  （无）");
+  } else {
+    for (const item of built.errors) {
+      console.log(`  - ${item.skillId}（${item.dir}）：${item.error}`);
+    }
+  }
+}
+
+async function runChat({ prompt, configPath, skillsDir, compactBudget, maxRounds }) {
   const config = await loadCliConfig({ configPath });
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new CliError("chat 需要提供 prompt，例如：erix chat \"你好\"");
@@ -126,12 +222,18 @@ async function runChat({ prompt, configPath, compactBudget, maxRounds }) {
     timeoutMs: 120_000,
   });
   const cliTools = createCliTools({ cwd: process.cwd() });
+  const skillTools = await buildSkillTools({
+    cwd: process.cwd(),
+    skillsDir,
+    builtinNames: cliTools.tools.map((tool) => tool.name),
+  });
+  const tools = combineTools(cliTools, skillTools);
   const loopOptions = {
     provider,
     system: `你是 erix-llm-kit 的对话循环引擎演示。${CLI_TOOLS_SYSTEM_PROMPT}`,
     initialUserMessage: prompt,
-    tools: cliTools.tools,
-    executeTool: cliTools.executeTool,
+    tools: tools.tools,
+    executeTool: tools.executeTool,
     onToolResult: (_name, result) => cliTools.truncateResult(result),
     onRound: (info) => console.log(`[round ${info.round}]`),
   };
@@ -171,6 +273,11 @@ async function main(args) {
   }
   if (command === "repl") {
     await runRepl(args.slice(1));
+    return;
+  }
+  if (command === "skills") {
+    const skillsArgs = parseSkillsArgs(args.slice(1));
+    await runSkills(skillsArgs);
     return;
   }
   if (command !== "chat") {
