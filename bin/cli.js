@@ -4,12 +4,12 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import {
   createFoldStatisticalStrategy,
-  createMemoryTranscriptStore,
   createOpenAIProvider,
   runToolLoop,
 } from "../src/index.js";
 import { loadCliConfig } from "./config.js";
 import { runRepl } from "./repl.js";
+import { CLI_TOOLS_SYSTEM_PROMPT, createCliTools } from "./tools.js";
 
 const HELP_TEXT = `用法：
   erix --version, -v
@@ -125,13 +125,14 @@ async function runChat({ prompt, configPath, compactBudget, maxRounds }) {
     model: config.model,
     timeoutMs: 120_000,
   });
-  const store = createMemoryTranscriptStore();
+  const cliTools = createCliTools({ cwd: process.cwd() });
   const loopOptions = {
     provider,
-    system: "你是 erix-llm-kit 的对话循环引擎演示。当前没有可用工具，请直接回答用户的问题。",
+    system: `你是 erix-llm-kit 的对话循环引擎演示。${CLI_TOOLS_SYSTEM_PROMPT}`,
     initialUserMessage: prompt,
-    store,
-    runId: `cli-${Date.now()}`,
+    tools: cliTools.tools,
+    executeTool: cliTools.executeTool,
+    onToolResult: (_name, result) => cliTools.truncateResult(result),
     onRound: (info) => console.log(`[round ${info.round}]`),
   };
 

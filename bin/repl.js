@@ -10,14 +10,13 @@ import {
   runToolLoop,
 } from "../src/index.js";
 import { loadCliConfig } from "./config.js";
+import { CLI_TOOLS_SYSTEM_PROMPT, createCliTools } from "./tools.js";
 
 const DEFAULT_MODEL = "kimi-for-coding";
 const DEFAULT_MAX_ROUNDS = 8;
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
-const SYSTEM_PROMPT =
-  "你是 erix-llm-kit 的交互式 REPL 助手。当前没有可用工具，请直接回答用户的问题。";
 const NON_TTY_MESSAGE =
   'repl 需要交互式终端，单次对话请用：erix chat "<prompt>"';
 
@@ -219,6 +218,7 @@ export async function runRepl(argv, io = {}) {
   }
 
   const config = await loadCliConfig({ configPath: options.configPath });
+  const cliTools = createCliTools({ cwd: process.cwd() });
   const archivePath = sessionPath(options.dir, options.session);
   let messages = await loadSession(options.dir, options.session);
   let model = config.model;
@@ -324,10 +324,13 @@ export async function runRepl(argv, io = {}) {
       ];
       const loopOptions = {
         provider,
-        system: SYSTEM_PROMPT,
+        system: `你是 erix-llm-kit 的交互式 REPL 助手。${CLI_TOOLS_SYSTEM_PROMPT}`,
         initialMessages: roundMessages,
         initialUserMessage: line,
         maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
+        tools: cliTools.tools,
+        executeTool: cliTools.executeTool,
+        onToolResult: (_name, result) => cliTools.truncateResult(result),
         onRound: (info) => writeLine(output, `[round ${info.round}]`),
       };
       if (options.compactBudget !== undefined) {
