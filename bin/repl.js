@@ -21,6 +21,8 @@ import {
 
 const DEFAULT_MODEL = "kimi-for-coding";
 const DEFAULT_MAX_ROUNDS = 8;
+// Keep REPL model responses bounded.
+const DEFAULT_MAX_TOKENS = 8192;
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
@@ -372,6 +374,7 @@ export async function runRepl(argv, io = {}) {
         apiKey: config.apiKey,
         model,
         timeoutMs: 120_000,
+        maxTokens: DEFAULT_MAX_TOKENS,
       });
       const roundMessages = [
         ...messages,
@@ -383,6 +386,7 @@ export async function runRepl(argv, io = {}) {
         initialMessages: roundMessages,
         initialUserMessage: line,
         maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
+        maxTokens: DEFAULT_MAX_TOKENS,
         tools: [...cliTools.tools, ...skillTools.tools],
         executeTool,
         stream: true,

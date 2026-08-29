@@ -18,6 +18,9 @@ import {
   wrapExecuteTool,
 } from "./tools.js";
 
+// Keep CLI model responses bounded.
+const DEFAULT_MAX_TOKENS = 8192;
+
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
@@ -242,6 +245,7 @@ async function runChat({
     apiKey: config.apiKey,
     model: config.model,
     timeoutMs: 120_000,
+    maxTokens: DEFAULT_MAX_TOKENS,
   });
   const cliTools = createCliTools({ cwd: process.cwd() });
   const skillTools = await buildSkillTools({
@@ -256,6 +260,7 @@ async function runChat({
     initialUserMessage: prompt,
     tools: tools.tools,
     executeTool: wrapExecuteTool(tools.executeTool),
+    maxTokens: DEFAULT_MAX_TOKENS,
     stream,
     onDelta: stream ? (chunk) => process.stdout.write(chunk) : undefined,
     onToolResult: (_name, result) => cliTools.truncateResult(result),

@@ -70,6 +70,15 @@ test("exec runs arbitrary shell commands", async () => {
   assert.match(await executeTool("exec", { command: "ls /" }), /bin/);
 });
 
+test("exec starts background commands without waiting", async () => {
+  const { executeTool } = createCliTools();
+  const startedAt = Date.now();
+  const result = await executeTool("exec", { command: "sleep 30 &" });
+
+  assert.ok(Date.now() - startedAt < 5000);
+  assert.match(result, /已启动|PID/);
+});
+
 test("exec truncates output at 4096 characters", async () => {
   const { executeTool } = createCliTools();
   const result = await executeTool("exec", { command: "head -c 5000 /dev/zero" });

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import {
   mkdirSync,
   readdirSync,
@@ -123,10 +123,27 @@ function normalizeToolInput(input) {
   return { ...input, path: expandHomePath(input.path) };
 }
 
+function isBackgroundCommand(command) {
+  const trimmed = command.trim();
+  return trimmed.endsWith("&") || /\b(?:nohup|setsid)\b/u.test(trimmed);
+}
+
 function executeExecCommand(input, cwd) {
   const command = input?.command;
   if (typeof command !== "string") {
     return Promise.resolve("错误：命令必须是字符串");
+  }
+
+  if (isBackgroundCommand(command)) {
+    const child = spawn(
+      "/bin/sh",
+      ["-c", command],
+      { cwd, detached: true, stdio: "ignore" },
+    );
+    child.unref();
+    return Promise.resolve(
+      `服务已启动（PID ${child.pid ?? "未知"}）：${truncateDisplayText(command.trim(), 200)}`,
+    );
   }
 
   return new Promise((resolve) => {
