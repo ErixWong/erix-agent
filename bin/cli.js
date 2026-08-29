@@ -22,7 +22,7 @@ import {
   wrapExecuteTool,
 } from "./tools.js";
 
-const DEFAULT_MAX_ROUNDS = 16;
+const DEFAULT_MAX_ROUNDS = 32;
 
 const HELP_TEXT = `用法：
   erix --version, -v

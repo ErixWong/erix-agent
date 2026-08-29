@@ -23,7 +23,7 @@ import {
 } from "./tools.js";
 
 const DEFAULT_MODEL = "kimi-for-coding";
-const DEFAULT_MAX_ROUNDS = 16;
+const DEFAULT_MAX_ROUNDS = 32;
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
