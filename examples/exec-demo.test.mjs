@@ -24,6 +24,30 @@ test("exec-demo：真实 LLM 多轮工具调用", { skip: !E2E && "设 LLM_KIT_E
   assert.ok(recalled.includes("exec"), "recall 能检索到 exec 调用足迹");
 });
 
+test("exec-demo：小预算强制触发 fold-statistical 压缩", { skip: !E2E && "设 LLM_KIT_E2E=1", timeout: 300_000 }, async () => {
+  // 构造一段早期对话历史（真实 user/assistant 文本轮），小预算下首轮即被折叠——
+  // 不依赖模型的分轮行为，确定性触发
+  const longText = "这是一段早期讨论的上下文占位文本，内容足够长以便超出压缩预算。".repeat(20);
+  const { result, store, runId } = await runExecDemo(undefined, {
+    compactBudgetTokens: 500, keepRounds: 1,
+    initialMessages: [
+      { role: "user", content: "项目背景确认：" + longText },
+      { role: "assistant", content: "已了解背景。" + longText },
+      { role: "user", content: "补充约束：" + longText },
+      { role: "assistant", content: "约束已记录。" + longText },
+      { role: "user", content: "列出当前目录的文件，简要总结" },
+    ],
+  });
+  assert.ok(result.finalText.length > 0);
+  assert.ok(result.compactionStats.length >= 1, "应至少发生一次压缩");
+  assert.ok(result.compactionStats[0].compacted, "首次压缩应真实折叠轮次");
+  assert.ok(result.compactionStats[0].foldedRounds >= 1);
+  const transcript = await store.load(runId);
+  const folded = transcript.filter((r) => r.folded);
+  assert.ok(folded.length >= 1, "store 应有 folded 记录");
+  assert.ok(folded[0].foldedPayload?.length >= 1, "foldedPayload 应含被折叠轮次原文");
+});
+
 test("loadRelayConfig：models.json 可读且不含硬编码凭据", { skip: !E2E && "设 LLM_KIT_E2E=1" }, async () => {
   const cfg = await loadRelayConfig();
   assert.ok(cfg.endpoint.startsWith("https://"));

@@ -306,13 +306,3 @@ test("passes through upstream error.message for non-2xx responses", async () => 
     },
   );
 });
-
-test("chatStream reports that streaming is not implemented", async () => {
-  const { provider } = makeProvider([]);
-
-  await assert.rejects(provider.chatStream({}), (err) => {
-    assert.ok(err instanceof KitError);
-    assert.equal(err.code, "unknown");
-    return true;
-  });
-});

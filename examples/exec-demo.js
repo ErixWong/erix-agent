@@ -14,7 +14,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createOpenAIProvider, runToolLoop, createMemoryTranscriptStore } from "../src/index.js";
+import { createOpenAIProvider, runToolLoop, createMemoryTranscriptStore, createFoldStatisticalStrategy } from "../src/index.js";
 
 /** 从 pi models.json 读 relay 配置（单一来源，不复制凭据） */
 export async function loadRelayConfig() {
@@ -73,8 +73,8 @@ async function executeTool(name, input) {
   });
 }
 
-/** 跑一次 demo，返回 loop 结果（测试与 CLI 共用） */
-export async function runExecDemo(task = "查看当前目录有哪些文件，并简要总结这个项目") {
+/** 跑一次 demo，返回 loop 结果（测试与 CLI 共用）。opts.compactBudgetTokens 设小预算可强制触发 fold-statistical 压缩 */
+export async function runExecDemo(task = "查看当前目录有哪些文件，并简要总结这个项目", opts = {}) {
   const cfg = await loadRelayConfig();
   const provider = createOpenAIProvider({
     endpoint: cfg.endpoint, apiKey: cfg.apiKey, model: cfg.model, timeoutMs: 120_000,
@@ -85,13 +85,17 @@ export async function runExecDemo(task = "查看当前目录有哪些文件，�
   const result = await runToolLoop({
     provider,
     system: "你是一个命令行助手。用 exec 工具完成用户的查看类任务，然后用中文简要总结。命令必须在白名单内。",
-    initialUserMessage: task,
+    initialUserMessage: opts.initialMessages ? undefined : task,
+    initialMessages: opts.initialMessages,
     tools,
     executeTool,
     maxRounds: 8,
     store,
     runId,
-    onRound: (info) => console.log(`[round ${info.round}] +${info.messages.length} 条消息`),
+    ...(opts.compactBudgetTokens
+      ? { context: { strategy: createFoldStatisticalStrategy(), budgetTokens: opts.compactBudgetTokens, keepRounds: opts.keepRounds ?? 1 } }
+      : {}),
+    onRound: (info) => console.log(`[round ${info.round}] +${info.messages.length} 条消息${info.folded ? "（含折叠）" : ""}`),
   });
   return { result, store, runId, model: cfg.model };
 }

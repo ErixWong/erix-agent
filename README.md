@@ -52,6 +52,8 @@ src/
 
 ## 状态
 
-2026-08-29：文档定稿，仓库已建（[git.erix.vip/eric/erix-llm-kit](https://git.erix.vip/eric/erix-llm-kit)）。
-当前里程碑：**v0.0 MVP 垂直切片**（[issue #1](https://git.erix.vip/eric/erix-llm-kit/issues/1)）——
-最小实现跑通「LLM 请求工具 → 调用方执行 → 结果回喂 → 终稿」全链路，附 exec demo。
+2026-08-29：v0.0 MVP（[issue #1](https://git.erix.vip/eric/erix-llm-kit/issues/1)，PR #2）与
+v0.1 库侧（[issue #3](https://git.erix.vip/eric/erix-llm-kit/issues/3)，PR #4）已完成——
+双协议（OpenAI + Anthropic，流式/非流式）、FR-2 全量循环、压缩①②、static/env config 均已落地，
+92 单测全绿，真实 relay e2e 跑通多轮工具调用与强制压缩。
+下一里程碑：app_container 迁移（v0.1 最终验收）→ v0.2（file store / recall / fold-llm / tools 子路径）。
