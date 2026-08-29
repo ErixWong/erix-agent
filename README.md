@@ -48,7 +48,8 @@ src/
 - [docs/requirements.md](docs/requirements.md) — 需求与分期
 - [docs/architecture.md](docs/architecture.md) — 接口契约与数据流
 - [docs/decisions/](docs/decisions/) — 六个核心设计决策（配置/存取/压缩/反思/工具体系/工具定义分层）
-- [docs/testing.md](docs/testing.md) — 测试方案（分层/基建/各阶段测试清单）
+- [docs/testing.md](docs/testing.md) — 测试方案（分层/基建/各阶段测试清单/行为指标）
+- [docs/research/](docs/research/) — 调研报告（记忆系统与上下文压缩外部实践，2026-08-29）
 
 ## 状态
 

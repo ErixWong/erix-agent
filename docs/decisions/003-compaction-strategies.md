@@ -11,6 +11,7 @@
 
 | 级 | 策略 | 机制 | 信息保留 | LLM 成本 | 适用 |
 |---|---|---|---|---|---|
+| ①a | `clear-results`（调研补记，v1.x） | 旧 tool_result 换占位符，**保留 tool_use 足迹与最近 N 个完整结果**；protect 名单可配 | 工具足迹 + 近期结果 | 0 | 结果可重获取的工具循环（实证：成本降 52% 解决率反升，见 docs/research §3.1） |
 | ① | `sliding-window` | 超预算整组丢弃早期轮 | 无（可配 recall 兜底） | 0 | 短任务兜底、预算极紧 |
 | ② | `fold-statistical` | 整组折叠为**确定性统计摘要**（"共14轮 writeProjectFile×12, exec×5，可 recall 取回"） | 工具调用足迹 | 0 | **工具循环默认**（v0.1） |
 | ③ | `fold-llm` | 折叠点注入一次 LLM 调用，把被折叠轮次合并成**工作日志**（阶段/已改文件/已验证项/下一步），结果必过确定性尺寸执法 | 叙事级 | 每次折叠 1 次 | 长开发任务二次折叠后升级（v0.2） |
@@ -39,3 +40,8 @@
 
 - v0.1 只实现 ①②；③ 随 v0.2（依赖 json-file config 的 fold 槽位）；④ 明确 v2 且限对话场景。
 - psyche 实现时优先移植 touwaka `lib/psyche/` 已验证代码，不重新发明。
+- **调研补记（2026-08-29，docs/research/2026-08-29-memory-context-research.md）**：
+  ①a clear-results 级来自外部最佳实践（先清结果再谈摘要）；与 recall 配合后超越 Anthropic clearing（清了的原文可经 store 取回）。
+  触发阈值：外部建议有效窗口 ~70% 即压缩（context rot）；本库公式余量 max(2000,10%) ≈ 90% 触发，
+  但 token 估算宁高勿低 +15% 等效提前，默认暂不改，待 app_container 实测校准。
+  fold-llm 摘要模板必须含"已完成项禁止重做"（外部实证：摘要掩盖停止信号 → 轨迹延长 13–15%）。
