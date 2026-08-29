@@ -212,7 +212,7 @@ test("loadAllSkills keeps valid skills when another skill fails", async () => {
       }
     `);
 
-    const result = await loadAllSkills({ cwd });
+    const result = await loadAllSkills({ home: cwd, cwd });
     assert.deepEqual(result.skills.map((skill) => skill.skillId), ["valid"]);
     assert.equal(result.errors.length, 1);
     assert.equal(result.errors[0].skillId, "invalid");
@@ -224,6 +224,7 @@ test("buildSkillTools reports conflicts with built-in tools", async () => {
     const skillsDirectory = join(cwd, ".erix", "skills");
     await writeSkill(skillsDirectory, "conflict", v1Definition("conflict", "readFile"));
     const result = await buildSkillTools({
+      home: cwd,
       cwd,
       builtinNames: ["readFile", "rg", "tree"],
     });
