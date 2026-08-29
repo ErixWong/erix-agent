@@ -8,16 +8,22 @@ import {
   createOpenAIProvider,
   runToolLoop,
 } from "../src/index.js";
+import { loadCliConfig } from "./config.js";
+import { runRepl } from "./repl.js";
 
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--compact-budget <tokens>] [--max-rounds <n>]
+  erix chat "<prompt>" [--config <path>] [--compact-budget <tokens>] [--max-rounds <n>]
+  erix repl [--config <path>] [--session <id>] [--compact-budget <tokens>] [--max-rounds <n>]  （交互式模式）
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
   LLM_KIT_API_KEY    API 密钥（必填）
-  LLM_KIT_MODEL      模型名称（默认：kimi-for-coding）`;
+  LLM_KIT_MODEL      模型名称（默认：kimi-for-coding）
+
+配置文件：
+  默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。`;
 
 class CliError extends Error {
   constructor(message, { showHelp = false } = {}) {
@@ -65,19 +71,28 @@ function parseChatArgs(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "--compact-budget" || argument === "--max-rounds") {
+    if (
+      argument === "--config"
+      || argument === "--compact-budget"
+      || argument === "--max-rounds"
+    ) {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
       }
       seenOptions.add(argument);
 
       const rawValue = args[index + 1];
-      if (rawValue === undefined) {
+      if (rawValue === undefined || (
+        argument === "--config" && rawValue.startsWith("--")
+      )) {
         usageError(`${argument} 缺少数值`);
       }
       index += 1;
 
-      if (argument === "--compact-budget") {
+      if (argument === "--config") {
+        if (rawValue.trim() === "") usageError("--config 不能为空");
+        options.configPath = rawValue;
+      } else if (argument === "--compact-budget") {
         options.compactBudget = parseIntegerOption(argument, rawValue, 0);
       } else {
         options.maxRounds = parseIntegerOption(argument, rawValue, 1);
@@ -97,25 +112,8 @@ function parseChatArgs(args) {
   return { prompt, ...options };
 }
 
-function readEnvironment() {
-  const endpoint = process.env.LLM_KIT_ENDPOINT?.trim();
-  const apiKey = process.env.LLM_KIT_API_KEY?.trim();
-  const model = process.env.LLM_KIT_MODEL?.trim() || "kimi-for-coding";
-  const missing = [];
-
-  if (!endpoint) missing.push("LLM_KIT_ENDPOINT");
-  if (!apiKey) missing.push("LLM_KIT_API_KEY");
-  if (missing.length > 0) {
-    throw new CliError(
-      `缺少环境变量：${missing.join("、")}。\n请先设置，例如：\n  export LLM_KIT_ENDPOINT="https://你的 OpenAI 兼容 API 地址"\n  export LLM_KIT_API_KEY="你的 API 密钥"`,
-    );
-  }
-
-  return { endpoint, apiKey, model };
-}
-
-async function runChat({ prompt, compactBudget, maxRounds }) {
-  const config = readEnvironment();
+async function runChat({ prompt, configPath, compactBudget, maxRounds }) {
+  const config = await loadCliConfig({ configPath });
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new CliError("chat 需要提供 prompt，例如：erix chat \"你好\"");
   }
@@ -148,7 +146,7 @@ async function runChat({ prompt, compactBudget, maxRounds }) {
   const compacted = result.compactionStats.some((stat) => stat.compacted === true);
   console.log(`\n=== 终稿 ===\n${result.finalText}`);
   console.log(
-    `\n=== 统计 === rounds=${result.rounds} truncated=${result.truncated} usage=${JSON.stringify(result.usage)} compacted=${compacted}`,
+    `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} usage=${JSON.stringify(result.usage)} compacted=${compacted}`,
   );
 }
 
@@ -167,6 +165,10 @@ async function main(args) {
   if (command === "--help" || command === "-h") {
     if (args.length !== 1) usageError(`未知参数：${args[1]}`);
     printHelp();
+    return;
+  }
+  if (command === "repl") {
+    await runRepl(args.slice(1));
     return;
   }
   if (command !== "chat") {
