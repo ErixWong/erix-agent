@@ -4,6 +4,9 @@
   "description": "跨项目共享的 LLM 对话循环引擎：协议适配 + 工具调用循环 + 上下文预算压缩（脑干，不是 agent）",
   "type": "module",
   "engines": { "node": ">=22" },
+  "bin": { "erix": "bin/cli.js" },
+  "files": ["src", "bin", "README.md"],
+  "repository": { "type": "git", "url": "https://git.erix.vip/eric/erix-llm-kit.git" },
   "exports": {
     ".": "./src/index.js",
     "./tools": "./src/tools/index.js",
