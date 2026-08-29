@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  defaultSessionId,
   loadSession,
   parseCommand,
   parseReplArgs,
@@ -14,9 +15,19 @@ import {
 
 test("parseReplArgs uses the default session and directory", () => {
   assert.deepEqual(parseReplArgs([]), {
-    session: "default",
+    session: defaultSessionId(process.cwd()),
     dir: join(homedir(), ".erix"),
   });
+});
+
+test("defaultSessionId is stable, path-specific, and includes the basename", () => {
+  const first = defaultSessionId("/tmp/workspace-one/project");
+  const same = defaultSessionId("/tmp/workspace-one/project");
+  const second = defaultSessionId("/tmp/workspace-two/project");
+
+  assert.equal(first, same);
+  assert.notEqual(first, second);
+  assert.match(first, /^project-[a-f0-9]{8}$/);
 });
 
 test("parseReplArgs accepts session and directory overrides", () => {
@@ -35,6 +46,7 @@ test("parseReplArgs accepts session and directory overrides", () => {
     compactBudget: 1200,
     maxRounds: 3,
   });
+  assert.equal(parseReplArgs(["--session", "work"], "/tmp/other").session, "work");
 });
 
 test("parseReplArgs rejects an invalid compact budget", () => {

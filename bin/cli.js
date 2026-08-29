@@ -12,7 +12,11 @@ import {
 import { loadCliConfig } from "./config.js";
 import { runRepl } from "./repl.js";
 import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
-import { CLI_TOOLS_SYSTEM_PROMPT, createCliTools } from "./tools.js";
+import {
+  CLI_TOOLS_SYSTEM_PROMPT,
+  createCliTools,
+  wrapExecuteTool,
+} from "./tools.js";
 
 const HELP_TEXT = `用法：
   erix --version, -v
@@ -23,6 +27,7 @@ const HELP_TEXT = `用法：
   （无参数直接进入交互式模式，等同 erix repl）
 
   --stream              流式输出模型文本
+  --session <id>        REPL 会话 ID（默认按工作目录自动派生）
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -250,7 +255,7 @@ async function runChat({
     system: `你是 erix-llm-kit 的对话循环引擎演示。${CLI_TOOLS_SYSTEM_PROMPT}`,
     initialUserMessage: prompt,
     tools: tools.tools,
-    executeTool: tools.executeTool,
+    executeTool: wrapExecuteTool(tools.executeTool),
     stream,
     onDelta: stream ? (chunk) => process.stdout.write(chunk) : undefined,
     onToolResult: (_name, result) => cliTools.truncateResult(result),

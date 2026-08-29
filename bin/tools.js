@@ -165,6 +165,66 @@ export function truncateResult(result) {
   return `${text.slice(0, OUTPUT_LIMIT)}\n[已截断，共 ${text.length} 字符]`;
 }
 
+const TOOL_INPUT_LIMIT = 120;
+const TOOL_RESULT_LIMIT = 200;
+const TOOL_FIELD_LIMIT = 80;
+const SENSITIVE_INPUT_KEY = /(?:api[-_]?key|private[-_]?key|access[-_]?token|token|secret|password|authorization|credential)/iu;
+
+function truncateDisplayText(value, limit) {
+  const text = String(value ?? "");
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}…`;
+}
+
+function summarizeToolInput(name, input) {
+  if (
+    input
+    && typeof input === "object"
+    && !Array.isArray(input)
+    && (name === "exec" || name === "readFile" || name === "writeFile")
+  ) {
+    const primaryField = name === "exec" ? "command" : "path";
+    if (typeof input[primaryField] === "string") {
+      return truncateDisplayText(input[primaryField], TOOL_INPUT_LIMIT);
+    }
+  }
+
+  const serialized = JSON.stringify(input, (key, value) => {
+    if (key !== "" && SENSITIVE_INPUT_KEY.test(key)) return "[已隐藏]";
+    return typeof value === "string"
+      ? truncateDisplayText(value, TOOL_FIELD_LIMIT)
+      : value;
+  });
+  return truncateDisplayText(serialized ?? input, TOOL_INPUT_LIMIT);
+}
+
+function summarizeToolResult(name, result) {
+  const text = String(result ?? "");
+  const summary = name === "exec" ? text.split(/\r?\n/u, 1)[0] : text;
+  return truncateDisplayText(summary, TOOL_RESULT_LIMIT);
+}
+
+export function wrapExecuteTool(executeTool, { output = console.log } = {}) {
+  if (typeof executeTool !== "function") {
+    throw new TypeError("executeTool must be a function");
+  }
+  if (typeof output !== "function") {
+    throw new TypeError("output must be a function");
+  }
+
+  return async (name, input, context) => {
+    output(`→ ${name}: ${summarizeToolInput(name, input)}`);
+    try {
+      const result = await executeTool(name, input, context);
+      output(`← ${name}: ${summarizeToolResult(name, result)}`);
+      return result;
+    } catch (error) {
+      output(`← ${name}: ${summarizeToolResult(name, `错误：${error?.message ?? String(error)}`)}`);
+      throw error;
+    }
+  };
+}
+
 export function createCliTools({ cwd = process.cwd() } = {}) {
   const root = path.resolve(cwd);
 

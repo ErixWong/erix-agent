@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
+import path from "node:path";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -11,7 +13,11 @@ import {
 } from "../src/index.js";
 import { loadCliConfig } from "./config.js";
 import { buildSkillTools } from "./skills.js";
-import { CLI_TOOLS_SYSTEM_PROMPT, createCliTools } from "./tools.js";
+import {
+  CLI_TOOLS_SYSTEM_PROMPT,
+  createCliTools,
+  wrapExecuteTool,
+} from "./tools.js";
 
 const DEFAULT_MODEL = "kimi-for-coding";
 const DEFAULT_MAX_ROUNDS = 8;
@@ -23,6 +29,7 @@ const NON_TTY_MESSAGE =
 
 const REPL_HELP_TEXT = `REPL 用法：
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>]
+  --session <id>        会话 ID（默认按工作目录自动派生）
 
 命令：
   /help                 显示此帮助
@@ -73,14 +80,21 @@ function optionValue(args, index, option) {
   return value;
 }
 
-export function parseReplArgs(argv) {
+export function defaultSessionId(cwd) {
+  const normalizedCwd = path.resolve(String(cwd));
+  const baseName = path.basename(normalizedCwd) || "root";
+  const hash8 = createHash("sha256").update(normalizedCwd).digest("hex").slice(0, 8);
+  return `${baseName}-${hash8}`;
+}
+
+export function parseReplArgs(argv, cwd = process.cwd()) {
   const args = Array.isArray(argv) ? argv : [];
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
     return { showHelp: true };
   }
 
   const options = {
-    session: "default",
+    session: defaultSessionId(cwd),
     dir: join(homedir(), ".erix"),
   };
   const seenOptions = new Set();
@@ -208,7 +222,8 @@ function clearScreen(output) {
 }
 
 export async function runRepl(argv, io = {}) {
-  const options = parseReplArgs(argv);
+  const cwd = process.cwd();
+  const options = parseReplArgs(argv, cwd);
   const input = io.input ?? process.stdin;
   const output = io.output ?? process.stdout;
 
@@ -223,20 +238,24 @@ export async function runRepl(argv, io = {}) {
     return;
   }
 
+  const archivePath = sessionPath(options.dir, options.session);
+  writeLine(output, `会话：${options.session}（工作目录：${cwd}，存档 ${archivePath}）`);
   const config = await loadCliConfig({ configPath: options.configPath });
-  const cliTools = createCliTools();
+  const cliTools = createCliTools({ cwd });
   const skillTools = await buildSkillTools({
-    cwd: process.cwd(),
+    cwd,
     skillsDir: options.skillsDir,
     builtinNames: cliTools.tools.map((tool) => tool.name),
   });
   const skillToolNames = new Set(skillTools.tools.map((tool) => tool.name));
-  const executeTool = (name, input, context) => (
-    skillToolNames.has(name)
-      ? skillTools.executeTool(name, input, context)
-      : cliTools.executeTool(name, input, context)
+  const executeTool = wrapExecuteTool(
+    (name, input, context) => (
+      skillToolNames.has(name)
+        ? skillTools.executeTool(name, input, context)
+        : cliTools.executeTool(name, input, context)
+    ),
+    { output: (line) => writeLine(output, line) },
   );
-  const archivePath = sessionPath(options.dir, options.session);
   let messages = await loadSession(options.dir, options.session);
   let model = config.model;
   let usage = { input_tokens: 0, output_tokens: 0 };
@@ -368,10 +387,7 @@ export async function runRepl(argv, io = {}) {
         executeTool,
         stream: true,
         onDelta: (chunk) => output.write(chunk),
-        onToolResult: (name, result) => {
-          writeLine(output, `\n→ 调用了 ${name}`);
-          return cliTools.truncateResult(result);
-        },
+        onToolResult: (_name, result) => cliTools.truncateResult(result),
         onRound: (info) => writeLine(output, `\n[round ${info.round}]`),
       };
       if (options.compactBudget !== undefined) {
