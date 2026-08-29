@@ -16,6 +16,7 @@ const HELP_TEXT = `用法：
   erix --help, -h
   erix chat "<prompt>" [--config <path>] [--compact-budget <tokens>] [--max-rounds <n>]
   erix repl [--config <path>] [--session <id>] [--compact-budget <tokens>] [--max-rounds <n>]  （交互式模式）
+  （无参数直接进入交互式模式，等同 erix repl）
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -152,7 +153,7 @@ async function runChat({ prompt, configPath, compactBudget, maxRounds }) {
 
 async function main(args) {
   if (args.length === 0) {
-    printHelp();
+    await runRepl([]);
     return;
   }
 
