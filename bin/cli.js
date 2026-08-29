@@ -5,11 +5,10 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  createFoldStatisticalStrategy,
   createOpenAIProvider,
   runToolLoop,
 } from "../src/index.js";
-import { loadCliConfig } from "./config.js";
+import { buildCompactionContext, loadCliConfig } from "./config.js";
 import { runRepl } from "./repl.js";
 import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import {
@@ -37,7 +36,8 @@ const HELP_TEXT = `用法：
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
-  slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。`;
+  slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。
+ slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。`;
 
 class CliError extends Error {
   constructor(message, { showHelp = false } = {}) {
@@ -254,7 +254,9 @@ async function runChat({
     builtinNames: cliTools.tools.map((tool) => tool.name),
   });
   const tools = combineTools(cliTools, skillTools);
+  const context = buildCompactionContext(config, compactBudget);
   const loopOptions = {
+    ...(context ? { context } : {}),
     provider,
     system: `你是 erix-llm-kit 的对话循环引擎演示。${CLI_TOOLS_SYSTEM_PROMPT}`,
     initialUserMessage: prompt,
@@ -264,16 +266,12 @@ async function runChat({
     stream,
     onDelta: stream ? (chunk) => process.stdout.write(chunk) : undefined,
     onToolResult: (_name, result) => cliTools.truncateResult(result),
-    onRound: (info) => console.log(`[round ${info.round}]`),
+    onRound: (info) => console.log(
+      `[round ${info.round}]${info.folded ? "（含折叠）" : ""}`,
+    ),
   };
 
   if (maxRounds !== undefined) loopOptions.maxRounds = maxRounds;
-  if (compactBudget !== undefined) {
-    loopOptions.context = {
-      strategy: createFoldStatisticalStrategy(),
-      budgetTokens: compactBudget,
-    };
-  }
 
   const result = await runToolLoop(loopOptions);
   const compacted = result.compactionStats.some((stat) => stat.compacted === true);

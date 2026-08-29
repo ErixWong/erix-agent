@@ -7,11 +7,10 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 import {
-  createFoldStatisticalStrategy,
   createOpenAIProvider,
   runToolLoop,
 } from "../src/index.js";
-import { loadCliConfig } from "./config.js";
+import { buildCompactionContext, loadCliConfig } from "./config.js";
 import { buildSkillTools } from "./skills.js";
 import {
   CLI_TOOLS_SYSTEM_PROMPT,
@@ -47,7 +46,9 @@ const REPL_HELP_TEXT = `REPL 用法：
   ERIX_EXEC_TIMEOUT_MS  exec 前台命令超时毫秒数（默认：120000）
 
 配置文件：
-  默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。`;
+  默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
+  slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。
+  slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。`;
 
 class ReplUsageError extends Error {
   constructor(message) {
@@ -379,7 +380,9 @@ export async function runRepl(argv, io = {}) {
         ...messages,
         { role: "user", content: [{ type: "text", text: line }] },
       ];
+      const context = buildCompactionContext(config, options.compactBudget);
       const loopOptions = {
+        ...(context ? { context } : {}),
         provider,
         system: `你是 erix-llm-kit 的交互式 REPL 助手。${CLI_TOOLS_SYSTEM_PROMPT}`,
         initialMessages: roundMessages,
@@ -391,14 +394,11 @@ export async function runRepl(argv, io = {}) {
         stream: true,
         onDelta: (chunk) => output.write(chunk),
         onToolResult: (_name, result) => cliTools.truncateResult(result),
-        onRound: (info) => writeLine(output, `\n[round ${info.round}]`),
+        onRound: (info) => writeLine(
+          output,
+          `\n[round ${info.round}]${info.folded ? "（含折叠）" : ""}`,
+        ),
       };
-      if (options.compactBudget !== undefined) {
-        loopOptions.context = {
-          strategy: createFoldStatisticalStrategy(),
-          budgetTokens: options.compactBudget,
-        };
-      }
 
       const result = await runToolLoop(loopOptions);
       messages = result.messages;

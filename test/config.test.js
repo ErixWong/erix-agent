@@ -4,7 +4,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { defaultConfigPath, loadCliConfig } from "../bin/config.js";
+import {
+  buildCompactionContext,
+  defaultConfigPath,
+  loadCliConfig,
+} from "../bin/config.js";
 
 const ENV_NAMES = [
   "HOME",
@@ -74,6 +78,7 @@ test("loadCliConfig reads file values and applies the default model", async () =
           endpoint: "https://file.example.invalid",
           apiKey: "file-config-key",
           maxOutputTokens: 4096,
+          contextWindowTokens: 32768,
         },
       },
     });
@@ -84,6 +89,7 @@ test("loadCliConfig reads file values and applies the default model", async () =
         apiKey: "file-config-key",
         model: "kimi-for-coding",
         maxOutputTokens: 4096,
+        contextWindowTokens: 32768,
       });
     });
   });
@@ -98,6 +104,7 @@ test("loadCliConfig env overrides endpoint/apiKey/model but not maxOutputTokens"
           model: "file-model",
           apiKey: "file-config-key",
           maxOutputTokens: 4096,
+          contextWindowTokens: 32768,
         },
       },
     });
@@ -113,6 +120,7 @@ test("loadCliConfig env overrides endpoint/apiKey/model but not maxOutputTokens"
         apiKey: "env-key",
         model: "env-model",
         maxOutputTokens: 4096,
+        contextWindowTokens: 32768,
       });
     });
   });
@@ -131,6 +139,7 @@ test("loadCliConfig treats a missing config file as an empty config", async () =
         apiKey: "env-key",
         model: "kimi-for-coding",
         maxOutputTokens: 16384,
+        contextWindowTokens: undefined,
       });
     });
   });
@@ -154,6 +163,7 @@ test("loadCliConfig reads an explicitly supplied config path", async () => {
         apiKey: "explicit-key",
         model: "explicit-model",
         maxOutputTokens: 16384,
+        contextWindowTokens: undefined,
       });
     });
   });
@@ -179,6 +189,7 @@ test("loadCliConfig resolves apiKeyFile from the config slot", async () => {
         apiKey: "file-key",
         model: "file-key-model",
         maxOutputTokens: 16384,
+        contextWindowTokens: undefined,
       });
     });
   });
@@ -200,9 +211,79 @@ test("loadCliConfig falls back to the default for invalid maxOutputTokens", asyn
       await withEnvironment({}, async () => {
         const config = await loadCliConfig({ configPath });
         assert.equal(config.maxOutputTokens, 16384);
+        assert.equal(config.contextWindowTokens, undefined);
       });
     });
   }
+});
+
+test("loadCliConfig parses contextWindowTokens and ignores invalid values", async () => {
+  await withDirectory(async (directory) => {
+    const configPath = await writeConfig(directory, {
+      slots: {
+        default: {
+          endpoint: "https://context.example.invalid",
+          apiKey: "file-config-key",
+          contextWindowTokens: 20000,
+        },
+      },
+    });
+
+    await withEnvironment({}, async () => {
+      assert.equal(
+        (await loadCliConfig({ configPath })).contextWindowTokens,
+        20000,
+      );
+    });
+  });
+
+  for (const value of [0, -1, 1.5, "20000", null]) {
+    await withDirectory(async (directory) => {
+      const configPath = await writeConfig(directory, {
+        slots: {
+          default: {
+            endpoint: "https://invalid-context.example.invalid",
+            apiKey: "file-config-key",
+            contextWindowTokens: value,
+          },
+        },
+      });
+
+      await withEnvironment({}, async () => {
+        assert.equal(
+          (await loadCliConfig({ configPath })).contextWindowTokens,
+          undefined,
+        );
+      });
+    });
+  }
+});
+
+test("buildCompactionContext prioritizes an explicit budget", () => {
+  const context = buildCompactionContext({
+    contextWindowTokens: 20000,
+    maxOutputTokens: 2000,
+  }, 8000);
+
+  assert.equal(context.budgetTokens, 8000);
+  assert.equal(context.strategy.name, "fold-statistical");
+});
+
+test("buildCompactionContext computes a budget from the context window", () => {
+  const context = buildCompactionContext({
+    contextWindowTokens: 20000,
+    maxOutputTokens: 2000,
+  });
+
+  assert.equal(context.budgetTokens, 16000);
+  assert.equal(context.strategy.name, "fold-statistical");
+});
+
+test("buildCompactionContext is disabled without a context window", () => {
+  assert.equal(
+    buildCompactionContext({ maxOutputTokens: 2000 }),
+    undefined,
+  );
 });
 
 test("loadCliConfig preserves the existing missing endpoint and API key error", async () => {

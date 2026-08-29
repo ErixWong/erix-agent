@@ -3,6 +3,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { createJsonFileModelConfigProvider } from "../src/config/json-file.js";
+import {
+  computeBudget,
+  createFoldStatisticalStrategy,
+} from "../src/index.js";
 
 const DEFAULT_MODEL = "kimi-for-coding";
 const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
@@ -49,11 +53,37 @@ export async function loadCliConfig({ configPath } = {}) {
   const maxOutputTokens =
     parsePositiveInteger(fileConfig.maxOutputTokens)
     ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const contextWindowTokens = parsePositiveInteger(fileConfig.contextWindowTokens);
   const missing = [];
 
   if (!endpoint) missing.push("LLM_KIT_ENDPOINT");
   if (!apiKey) missing.push("LLM_KIT_API_KEY");
   if (missing.length > 0) throw missingConfigError(missing);
 
-  return { endpoint, apiKey, model, maxOutputTokens };
+  return {
+    endpoint,
+    apiKey,
+    model,
+    maxOutputTokens,
+    contextWindowTokens,
+  };
+}
+
+export function buildCompactionContext(config, explicitBudget) {
+  if (explicitBudget !== undefined) {
+    return {
+      strategy: createFoldStatisticalStrategy(),
+      budgetTokens: explicitBudget,
+    };
+  }
+  if (!config.contextWindowTokens) return undefined;
+
+  const budget = computeBudget({
+    contextWindowTokens: config.contextWindowTokens,
+    maxOutputTokens: config.maxOutputTokens ?? 65536,
+  });
+  return {
+    strategy: createFoldStatisticalStrategy(),
+    budgetTokens: budget,
+  };
 }
