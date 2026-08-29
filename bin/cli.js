@@ -261,7 +261,7 @@ async function runChat({
   const loopOptions = {
     ...(context ? { context } : {}),
     provider,
-    system: `你是 erix-llm-kit 的对话循环引擎演示。${CLI_TOOLS_SYSTEM_PROMPT}任务完成或已无需更多工具时，直接输出最终答复，不要空转。`,
+    system: `你是 erix 编码助手，工作目录 ${process.cwd()}。${CLI_TOOLS_SYSTEM_PROMPT}`,
     initialUserMessage: prompt,
     tools: tools.tools,
     executeTool: wrapExecuteTool(tools.executeTool),

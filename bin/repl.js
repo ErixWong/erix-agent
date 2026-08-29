@@ -386,7 +386,7 @@ export async function runRepl(argv, io = {}) {
       const loopOptions = {
         ...(context ? { context } : {}),
         provider,
-        system: `你是 erix-llm-kit 的交互式 REPL 助手。${CLI_TOOLS_SYSTEM_PROMPT}任务完成或已无需更多工具时，直接输出最终答复，不要空转。`,
+        system: `你是 erix 编码助手，工作目录 ${process.cwd()}。${CLI_TOOLS_SYSTEM_PROMPT}`,
         initialMessages: roundMessages,
         initialUserMessage: line,
         maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
