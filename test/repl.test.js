@@ -18,6 +18,7 @@ test("parseReplArgs uses the default session and directory", () => {
     session: defaultSessionId(process.cwd()),
     dir: join(homedir(), ".erix"),
     maxRounds: 32,
+    idleTimeout: 0,
   });
 });
 
@@ -41,11 +42,14 @@ test("parseReplArgs accepts session and directory overrides", () => {
     "1200",
     "--max-rounds",
     "3",
+    "--idle-timeout",
+    "5",
   ]), {
     session: "work",
     dir: "/tmp/erix-sessions",
     compactBudget: 1200,
     maxRounds: 3,
+    idleTimeout: 5,
   });
   assert.equal(parseReplArgs(["--session", "work"], "/tmp/other").session, "work");
 });

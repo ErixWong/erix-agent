@@ -18,6 +18,9 @@ import {
 const mockServerPath = fileURLToPath(
   new URL("../fixtures/mock-mcp-server.mjs", import.meta.url),
 );
+const mockHttpServerPath = fileURLToPath(
+  new URL("../fixtures/mock-mcp-http-server.mjs", import.meta.url),
+);
 
 async function withTempDir(callback) {
   const dir = await mkdtemp(join(tmpdir(), "erix-mcp-test-"));
@@ -365,5 +368,126 @@ rl.on("line", (line) => {
       });
       assert.equal(callResult, "world");
     });
+  });
+});
+
+async function startMockHttpServer() {
+  const mod = await import(mockHttpServerPath);
+  return mod.start();
+}
+
+test("HTTP MCP server: list and call tools via JSON response", async () => {
+  await withTempDir(async (dir) => {
+    const { server, port } = await startMockHttpServer();
+    try {
+      await writeMcpConfig(dir, {
+        httpMock: { url: `http://127.0.0.1:${port}/json` },
+      });
+      await withMcpCleanup(async () => {
+        const proxy = createMcpProxyTool({ cwd: dir });
+        const listResult = await proxy.execute({ action: "list" });
+        assert.match(listResult, /httpMock：1 个工具/);
+        assert.match(listResult, /echo/);
+        const callResult = await proxy.execute({
+          action: "call",
+          server: "httpMock",
+          tool: "echo",
+          args: { message: "from-http" },
+        });
+        assert.equal(callResult, "from-http");
+        assert.deepEqual(getMcpPoolStatus(), { httpMock: "connected" });
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
+test("HTTP MCP server: headers expand !cat with relative path", async () => {
+  await withTempDir(async (dir) => {
+    const tokenPath = join(dir, "token.txt");
+    await writeFile(tokenPath, "secret-token-value\n", "utf8");
+    const { server, port } = await startMockHttpServer();
+    let seenAuth = null;
+    const originalHandler = server.listeners("request")[0];
+    server.removeListener("request", originalHandler);
+    server.on("request", (req, res) => {
+      const auth = req.headers.authorization;
+      if (auth) seenAuth = auth;
+      originalHandler(req, res);
+    });
+    try {
+      await writeMcpConfig(dir, {
+        httpMock: {
+          url: `http://127.0.0.1:${port}/json`,
+          headers: { Authorization: "!cat token.txt" },
+        },
+      });
+      await withMcpCleanup(async () => {
+        const proxy = createMcpProxyTool({ cwd: dir });
+        await proxy.execute({ action: "list" });
+        assert.equal(seenAuth, "secret-token-value");
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
+test("HTTP MCP server: caches Mcp-Session-Id for subsequent requests", async () => {
+  await withTempDir(async (dir) => {
+    const { server, port } = await startMockHttpServer();
+    const sessions = [];
+    const originalHandler = server.listeners("request")[0];
+    server.removeListener("request", originalHandler);
+    server.on("request", (req, res) => {
+      const sessionId = req.headers["mcp-session-id"];
+      if (sessionId) sessions.push(sessionId);
+      originalHandler(req, res);
+    });
+    try {
+      await writeMcpConfig(dir, {
+        httpMock: { url: `http://127.0.0.1:${port}/json` },
+      });
+      await withMcpCleanup(async () => {
+        const proxy = createMcpProxyTool({ cwd: dir });
+        await proxy.execute({ action: "list" });
+        await proxy.execute({
+          action: "call",
+          server: "httpMock",
+          tool: "echo",
+          args: { message: "second" },
+        });
+        assert.ok(sessions.length >= 2, `应至少 2 个后续请求带 session id，实际 ${sessions.length}`);
+        assert.ok(sessions[0]);
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
+test("HTTP MCP server: SSE response", async () => {
+  await withTempDir(async (dir) => {
+    const { server, port } = await startMockHttpServer();
+    try {
+      await writeMcpConfig(dir, {
+        httpMock: { url: `http://127.0.0.1:${port}/sse` },
+      });
+      await withMcpCleanup(async () => {
+        const proxy = createMcpProxyTool({ cwd: dir });
+        const listResult = await proxy.execute({ action: "list" });
+        assert.match(listResult, /echo/);
+        const callResult = await proxy.execute({
+          action: "call",
+          server: "httpMock",
+          tool: "echo",
+          args: { message: "sse-works" },
+        });
+        assert.equal(callResult, "sse-works");
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });

@@ -23,12 +23,13 @@ import {
 } from "./tools.js";
 
 const DEFAULT_MAX_ROUNDS = 32;
+const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--config <path>] [--skills-dir <path>] [--compact-budget <tokens>] [--max-rounds <n>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--compact-budget <tokens>] [--max-rounds <n>]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--config <path>] [--skills-dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
@@ -36,6 +37,7 @@ const HELP_TEXT = `用法：
   --stream              流式输出模型文本
   --session <id>        REPL 会话 ID（默认按工作目录自动派生）
   --max-rounds <n>      工具循环最大轮数（默认：16）
+  --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -59,6 +61,14 @@ class CliError extends Error {
     super(message);
     this.name = "CliError";
     this.showHelp = showHelp;
+  }
+}
+
+class IdleTimeoutError extends Error {
+  constructor(seconds) {
+    super(`任务 ${seconds} 秒无进展，已中止`);
+    this.name = "IdleTimeoutError";
+    this.code = "idle_timeout";
   }
 }
 
@@ -89,13 +99,35 @@ function parseIntegerOption(name, rawValue, minimum) {
   return value;
 }
 
+function createIdleTimeout(seconds) {
+  if (!Number.isInteger(seconds) || seconds <= 0) return null;
+  const controller = new AbortController();
+  let timer;
+  let timedOut = false;
+  const touch = () => {
+    if (timedOut) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, seconds * 1000);
+  };
+  touch();
+  return {
+    controller,
+    timedOut: () => timedOut,
+    touch,
+    dispose: () => clearTimeout(timer),
+  };
+}
+
 function parseChatArgs(args) {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
     return { showHelp: true };
   }
 
   let prompt;
-  const options = {};
+  const options = { idleTimeout: DEFAULT_IDLE_TIMEOUT_SECONDS };
   const seenOptions = new Set();
 
   for (let index = 0; index < args.length; index += 1) {
@@ -113,6 +145,7 @@ function parseChatArgs(args) {
       || argument === "--skills-dir"
       || argument === "--compact-budget"
       || argument === "--max-rounds"
+      || argument === "--idle-timeout"
     ) {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
@@ -136,8 +169,10 @@ function parseChatArgs(args) {
         options.skillsDir = rawValue;
       } else if (argument === "--compact-budget") {
         options.compactBudget = parseIntegerOption(argument, rawValue, 0);
-      } else {
+      } else if (argument === "--max-rounds") {
         options.maxRounds = parseIntegerOption(argument, rawValue, 1);
+      } else {
+        options.idleTimeout = parseIntegerOption(argument, rawValue, 0);
       }
       continue;
     }
@@ -320,6 +355,7 @@ async function runChat({
   compactBudget,
   maxRounds,
   stream,
+  idleTimeout = DEFAULT_IDLE_TIMEOUT_SECONDS,
 }) {
   const config = await loadCliConfig({ configPath });
   const maxTokens = config.maxOutputTokens;
@@ -343,6 +379,8 @@ async function runChat({
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd: process.cwd() });
   const tools = combineTools(cliTools, skillTools, mcpProxy);
   const context = buildCompactionContext(config, compactBudget);
+  const idle = createIdleTimeout(idleTimeout);
+  const executeTool = wrapExecuteTool(tools.executeTool);
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${process.cwd()}。${CLI_TOOLS_SYSTEM_PROMPT}`;
   if (mcpProxy?.enabled) {
@@ -357,24 +395,45 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     system: systemPrompt,
     initialUserMessage: prompt,
     tools: tools.tools,
-    executeTool: wrapExecuteTool(tools.executeTool),
+    executeTool: async (name, input, toolContext) => {
+      const result = await executeTool(name, input, toolContext);
+      idle?.touch();
+      return result;
+    },
     maxRounds: maxRounds ?? DEFAULT_MAX_ROUNDS,
     maxTokens,
     completion: { maxNoToolRounds: 1 },
     stream,
-    onDelta: stream ? (chunk) => process.stdout.write(chunk) : undefined,
-    onToolResult: (_name, result) => cliTools.truncateResult(result),
-    onRound: (info) => console.log(
-      `[round ${info.round}]${info.folded ? "（含折叠）" : ""}`,
-    ),
+    signal: idle?.controller.signal,
+    onDelta: stream
+      ? (chunk) => {
+        idle?.touch();
+        process.stdout.write(chunk);
+      }
+      : undefined,
+    onToolResult: (_name, result) => {
+      idle?.touch();
+      return cliTools.truncateResult(result);
+    },
+    onRound: (info) => {
+      idle?.touch();
+      console.log(`[round ${info.round}]${info.folded ? "（含折叠）" : ""}`);
+    },
   };
 
-  const result = await runToolLoop(loopOptions);
-  const compacted = result.compactionStats.some((stat) => stat.compacted === true);
-  console.log(`\n=== 终稿 ===\n${result.finalText}`);
-  console.log(
-    `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} usage=${JSON.stringify(result.usage)} compacted=${compacted}`,
-  );
+  try {
+    const result = await runToolLoop(loopOptions);
+    const compacted = result.compactionStats.some((stat) => stat.compacted === true);
+    console.log(`\n=== 终稿 ===\n${result.finalText}`);
+    console.log(
+      `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} usage=${JSON.stringify(result.usage)} compacted=${compacted}`,
+    );
+  } catch (error) {
+    if (idle?.timedOut()) throw new IdleTimeoutError(idleTimeout);
+    throw error;
+  } finally {
+    idle?.dispose();
+  }
 }
 
 async function main(args) {
@@ -439,7 +498,11 @@ if (
   try {
     await main(process.argv.slice(2));
   } catch (error) {
-    console.error(`错误：${error?.message ?? String(error)}`);
+    if (error?.code === "idle_timeout") {
+      console.error(error.message);
+    } else {
+      console.error(`错误：${error?.message ?? String(error)}`);
+    }
     if (error?.showHelp) console.error(`\n${HELP_TEXT}`);
     process.exitCode = 1;
   } finally {

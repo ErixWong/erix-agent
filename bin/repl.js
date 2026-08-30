@@ -24,6 +24,7 @@ import {
 
 const DEFAULT_MODEL = "kimi-for-coding";
 const DEFAULT_MAX_ROUNDS = 32;
+const DEFAULT_IDLE_TIMEOUT_SECONDS = 0;
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
@@ -31,9 +32,10 @@ const NON_TTY_MESSAGE =
   'repl 需要交互式终端，单次对话请用：erix chat "<prompt>"';
 
 const REPL_HELP_TEXT = `REPL 用法：
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]
   --session <id>        会话 ID（默认按工作目录自动派生）
   --max-rounds <n>      工具循环最大轮数（默认：16）
+  --idle-timeout <秒>   无进展自动中止（默认：0=不启用）
 
 命令：
   /help                 显示此帮助
@@ -65,6 +67,14 @@ class ReplUsageError extends Error {
   }
 }
 
+class IdleTimeoutError extends Error {
+  constructor(seconds) {
+    super(`任务 ${seconds} 秒无进展，已中止`);
+    this.name = "IdleTimeoutError";
+    this.code = "idle_timeout";
+  }
+}
+
 function usageError(message) {
   throw new ReplUsageError(message);
 }
@@ -89,6 +99,28 @@ function optionValue(args, index, option) {
   return value;
 }
 
+function createIdleTimeout(seconds) {
+  if (!Number.isInteger(seconds) || seconds <= 0) return null;
+  const controller = new AbortController();
+  let timer;
+  let timedOut = false;
+  const touch = () => {
+    if (timedOut) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, seconds * 1000);
+  };
+  touch();
+  return {
+    controller,
+    timedOut: () => timedOut,
+    touch,
+    dispose: () => clearTimeout(timer),
+  };
+}
+
 export function defaultSessionId(cwd) {
   const normalizedCwd = path.resolve(String(cwd));
   const baseName = path.basename(normalizedCwd) || "root";
@@ -106,6 +138,7 @@ export function parseReplArgs(argv, cwd = process.cwd()) {
     session: defaultSessionId(cwd),
     dir: join(homedir(), ".erix"),
     maxRounds: DEFAULT_MAX_ROUNDS,
+    idleTimeout: DEFAULT_IDLE_TIMEOUT_SECONDS,
   };
   const seenOptions = new Set();
 
@@ -118,6 +151,7 @@ export function parseReplArgs(argv, cwd = process.cwd()) {
       || argument === "--skills-dir"
       || argument === "--compact-budget"
       || argument === "--max-rounds"
+      || argument === "--idle-timeout"
     ) {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
@@ -140,8 +174,10 @@ export function parseReplArgs(argv, cwd = process.cwd()) {
         options.skillsDir = rawValue;
       } else if (argument === "--compact-budget") {
         options.compactBudget = parseIntegerOption(argument, rawValue, 0);
-      } else {
+      } else if (argument === "--max-rounds") {
         options.maxRounds = parseIntegerOption(argument, rawValue, 1);
+      } else {
+        options.idleTimeout = parseIntegerOption(argument, rawValue, 0);
       }
       continue;
     }
@@ -421,6 +457,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       if (mcpProxy?.enabled) {
         tools.push(mcpProxy.schema);
       }
+      const idle = createIdleTimeout(options.idleTimeout);
+      const executeToolForLoop = async (name, input, toolContext) => {
+        const result = await executeTool(name, input, toolContext);
+        idle?.touch();
+        return result;
+      };
       const loopOptions = {
         ...(context ? { context } : {}),
         provider,
@@ -431,31 +473,48 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         maxTokens: config.maxOutputTokens,
         completion: { maxNoToolRounds: 1 },
         tools,
-        executeTool,
+        executeTool: executeToolForLoop,
+        signal: idle?.controller.signal,
         stream: true,
-        onDelta: (chunk) => output.write(chunk),
-        onToolResult: (_name, result) => cliTools.truncateResult(result),
-        onRound: (info) => writeLine(
-          output,
-          `\n[round ${info.round}]${info.folded ? "（含折叠）" : ""}`,
-        ),
+        onDelta: (chunk) => {
+          idle?.touch();
+          output.write(chunk);
+        },
+        onToolResult: (_name, result) => {
+          idle?.touch();
+          return cliTools.truncateResult(result);
+        },
+        onRound: (info) => {
+          idle?.touch();
+          writeLine(
+            output,
+            `\n[round ${info.round}]${info.folded ? "（含折叠）" : ""}`,
+          );
+        },
       };
 
-      const result = await runToolLoop(loopOptions);
-      messages = result.messages;
-      usage.input_tokens += Number.isFinite(result.usage?.input_tokens)
-        ? result.usage.input_tokens
-        : 0;
-      usage.output_tokens += Number.isFinite(result.usage?.output_tokens)
-        ? result.usage.output_tokens
-        : 0;
-      const compacted = result.compactionStats.some((stat) => stat.compacted === true);
-      writeLine(output);
-      writeLine(
-        output,
-        `[rounds=${result.rounds} usage=${JSON.stringify(result.usage)} compacted=${compacted}]`,
-      );
-      await saveSession(options.dir, options.session, messages);
+      try {
+        const result = await runToolLoop(loopOptions);
+        messages = result.messages;
+        usage.input_tokens += Number.isFinite(result.usage?.input_tokens)
+          ? result.usage.input_tokens
+          : 0;
+        usage.output_tokens += Number.isFinite(result.usage?.output_tokens)
+          ? result.usage.output_tokens
+          : 0;
+        const compacted = result.compactionStats.some((stat) => stat.compacted === true);
+        writeLine(output);
+        writeLine(
+          output,
+          `[rounds=${result.rounds} usage=${JSON.stringify(result.usage)} compacted=${compacted}]`,
+        );
+        await saveSession(options.dir, options.session, messages);
+      } catch (error) {
+        if (idle?.timedOut()) throw new IdleTimeoutError(options.idleTimeout);
+        throw error;
+      } finally {
+        idle?.dispose();
+      }
     }
 
     if (!rl.closed) rl.prompt();
@@ -465,7 +524,11 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     processing = processing
       .then(() => handleInput(line))
       .catch((error) => {
-        printError(output, error);
+        if (error?.code === "idle_timeout") {
+          writeLine(output, error.message);
+        } else {
+          printError(output, error);
+        }
         if (!rl.closed) rl.prompt();
       });
   });

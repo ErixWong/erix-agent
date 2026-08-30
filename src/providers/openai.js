@@ -94,8 +94,11 @@ export function createOpenAIProvider({
     const payload = buildPayload(req, false, model);
 
     const controller = new AbortController();
+    const signal = req?.signal;
     let timedOut = false;
     let timer;
+    let removeAbortListener;
+    let rejectAbort;
     const timeoutPromise = new Promise((_, reject) => {
       timer = setTimeout(() => {
         timedOut = true;
@@ -103,9 +106,41 @@ export function createOpenAIProvider({
         reject(timeoutError());
       }, timeoutMs);
     });
+    const abortPromise = signal
+      ? new Promise((_, reject) => {
+        rejectAbort = () => reject(abortReason(signal));
+      })
+      : undefined;
+    const raceRequest = (promise) => Promise.race([
+      promise,
+      timeoutPromise,
+      ...(abortPromise ? [abortPromise] : []),
+    ]);
+    const throwIfAborted = () => {
+      if (!signal?.aborted) return;
+      const reason = abortReason(signal);
+      if (reason instanceof KitError) throw reason;
+      throw classifyFetchException(reason);
+    };
+
+    if (signal) {
+      const abort = () => {
+        controller.abort(signal.reason);
+        rejectAbort?.();
+      };
+      if (signal.aborted) {
+        abort();
+      } else if (typeof signal.addEventListener === "function") {
+        signal.addEventListener("abort", abort, { once: true });
+        if (typeof signal.removeEventListener === "function") {
+          removeAbortListener = () => signal.removeEventListener("abort", abort);
+        }
+      }
+    }
 
     try {
-      const response = await Promise.race([
+      throwIfAborted();
+      const response = await raceRequest(
         fetchImpl(url, {
           method: "POST",
           headers: {
@@ -115,14 +150,13 @@ export function createOpenAIProvider({
           body: JSON.stringify(payload),
           signal: controller.signal,
         }),
-        timeoutPromise,
-      ]);
+      );
 
+      throwIfAborted();
       if (timedOut) throw timeoutError();
-      const bodyText = String(await Promise.race([
+      const bodyText = String(await raceRequest(
         readResponseBody(response),
-        timeoutPromise,
-      ]) ?? "");
+      ) ?? "");
       if (timedOut) throw timeoutError();
 
       const { parsed, value } = parseJson(bodyText);
@@ -152,6 +186,7 @@ export function createOpenAIProvider({
       if (timedOut) throw timeoutError(err);
       throw classifyFetchException(err);
     } finally {
+      removeAbortListener?.();
       clearTimeout(timer);
     }
   }
