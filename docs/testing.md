@@ -1,4 +1,4 @@
-# 测试方案 — erix-llm-kit
+# 测试方案 — erix-agent
 
 > 原则：零依赖（只用 `node:test` + `node:assert`）、协议层 mock fetch、循环层 fake provider、
 > 真实 LLM 只做少量 e2e 且可开关。本库无浏览器/UI，不需要 playwright/vision。

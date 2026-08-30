@@ -116,7 +116,7 @@ episode = {
 
 ## 附录：示例场景（真实案例锚定）
 
-以 2026-08-29 erix-llm-kit v0.1 开发（~40 轮工具调用）为完整示例：
+以 2026-08-29 erix-agent v0.1 开发（~40 轮工具调用）为完整示例：
 episode 含 phases（契约脚手架→四 worker 并行→集成排障→合入）、decisions（relay 拒 Qwen3.5 换
 kimi-for-coding；强制压缩 e2e 用 initialMessages 构造历史确定性触发）、artifacts（31 文件/commits 8cd7022/
 92 测试绿）、openItems（app_container 迁移）；三天后 recall({pattern:"强制压缩"}) 命中摘录、

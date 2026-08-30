@@ -1,4 +1,4 @@
-# 需求文档 — erix-llm-kit
+# 需求文档 — erix-agent
 
 > 2026-08-29 初版。背景：app_container 与 touwaka 各自实现了 LLM 工具循环与上下文管理，
 > 逻辑重复（两份 token 估算、两份压缩、两份协议适配），且各自缺对方已验证的能力。
@@ -105,7 +105,7 @@
 - 零运行时依赖；devDependencies 也不引入（node --test 够用）
 - 库内任何文件不含密钥；配置适配器的 apiKey 间接引用机制是第一公民（ADR-001）
 - 所有压缩/重试行为有 `node --test` 单测锁定；协议适配层用 mock fetch 测
-- 发布走 Gitea npm registry（`erix-agent`），消费方 docker build 用 secret mount 注入 npmrc token
+- 发布走公开 npm（`erix-agent`）
 
 ## 6. 风险
 

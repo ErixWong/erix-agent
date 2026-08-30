@@ -1,4 +1,4 @@
-# 架构与接口契约 — erix-llm-kit
+# 架构与接口契约 — erix-agent
 
 > 接口以 JSDoc typedef 表达（消费双方都是纯 JS ESM，库不引 TypeScript 工具链）。
 

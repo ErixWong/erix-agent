@@ -1,15 +1,21 @@
-# erix-llm-kit
+# erix-agent
 
-跨项目共享的 **LLM 对话循环引擎**：协议适配 + 工具调用循环 + 上下文预算压缩。
-消费方：`app_container`（PI Agent 审计/开发链路）、`touwaka`（AgentLoop / 对话链路）。
+**自研轻量编码 agent**：零依赖的 LLM 对话循环引擎 + 交互式 CLI（erix）+ 可扩展生态（skill 自描述协议 / MCP 对接 / 任务管理）。
 
-> **定位红线：这是"脑干"，不是 agent。**
-> 本库**不自带任何工具、不执行任何东西、没有人格、不做持久化决策**。
-> 它只做一件事：把"LLM 请求工具调用 → 回调可信代码执行 → 结果回喂 → 直到终稿"
-> 这段循环做到**长任务不爆窗、抖动不重跑、协议可换**。
-> 执行永远在调用方；安全边界由运行环境提供（[ADR-009](docs/decisions/009-safety-layering.md)）：
-> **谁用这个 agent 谁负责安全**——本地跑就是你的机器（信任域），嵌入容器/沙盒场景由宿主隔离。
+**定位：这是一个完整的 agent，不是库。** 三件套：
+
+1. **引擎**（src/，零执行零安全）：协议适配 + 工具调用循环 + 上下文预算压缩——
+   流式/压缩折叠/续写/死循环检测/信号中止，长任务不爆窗、抖动不重跑、协议可换。
+2. **CLI**（bin/，erix 命令）：交互式 TUI + 单次对话；工具面全面直通（readFile/writeFile/rg/tree/exec，
+   任意路径任意命令）；配置/会话/任务全量家目录管理（~/.erix/）。
+3. **生态**（可扩展）：skill 自描述协议（~/.erix/skills/*，脚本自报工具，ADR-008）+ **MCP 对接**
+   （单代理工具访问任意 MCP server，stdio + HTTP，复用标准 .mcp.json 配置）+ todo 任务管理。
+
+> **安全边界由运行环境提供**（[ADR-009](docs/decisions/009-safety-layering.md)）：**谁用这个 agent 谁负责安全**——
+> 本地跑就是你的机器（信任域），嵌入容器/沙盒场景由宿主隔离。
 > CLI 不内置白名单/牢笼/确认弹窗，工具面全面直通（含写与执行）。
+
+消费方：`app_container`（PI Agent 审计/开发链路）、`touwaka`（AgentLoop / 对话链路）。
 
 ## 为什么是自研而不是 Vercel AI SDK / LangChain
 
@@ -47,13 +53,14 @@ src/
 
 ## CLI：erix（agent 形态）
 
-`erix` 是构建在本库上的交互式编码助手（薄壳）：
+`erix` 是构建在本库上的交互式编码助手：
 
 - **入口**：`erix` 直接进交互 TUI（`erix repl` 等价）；`erix chat "<prompt>" [--stream]` 单次对话
 - **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）——无内置安全层，见 ADR-009
-- **skill 系统**：`~/.erix/skills/<id>/skill.mjs` 自描述脚本，导出 `getSkillDefinition()` 自报工具（ADR-008）；`erix skills` 查看
-- **配置**：`~/.erix/config.json`（或 `$XDG_CONFIG_HOME/erix/`），env 优先；会话存档 `~/.erix/<session>.json`
-- **流式**：repl 默认打字机；`chat --stream` 逐字输出
+- **skill 系统**：`~/.erix/skills/<id>/skill.mjs` 自描述脚本，导出 `getSkillDefinition()` 自报工具（ADR-008）；`erix skills` 查看；todo skill（跨会话任务清单，长任务拆解/划掉/恢复）
+- **MCP 对接**：`~/.erix/mcp.json` 标准配置，单代理工具（list/search/call/status）访问任意 MCP server（stdio + HTTP；实测 unifuncs 联网搜索、filesystem 读文件）
+- **配置**：`~/.erix/config.json`（或 `$XDG_CONFIG_HOME/erix/`），env 优先；会话存档 `~/.erix/<session>.json`；todo 清单 `~/.erix/todos/`
+- **流式**：repl 默认打字机；`chat --stream` 逐字输出；`--idle-timeout` 无进展自动中止；自动压缩预算（按模型窗口折叠）
 
 > ⚠️ 安全声明：erix **不提供安全边界**。模型能读写任意文件、执行任意命令——
 > 只在你自己信任的机器/沙盒里运行，别在不可信环境裸跑。
@@ -68,9 +75,9 @@ src/
 
 ## 状态
 
-2026-08-30：v0.0/v0.1/v0.2 库侧与 CLI 均已落地——
-双协议流式、FR-2 全量循环、压缩策略、file store/recall/fold-llm、json-file config、
-可选工具库（jail/file-tools/registry）全绿；CLI 具备交互 TUI、配置/会话持久化、
-skill 自描述生态、内置工具面（读写执行）、流式打字机。189 单测全绿（+4 条件跳过），
-真实 relay e2e 跑通多轮工具调用、压缩与流式。
-下一里程碑：app_container 迁移（以 erix-llm-kit 为引擎构建可控编码 agent，容器沙盒由 app_container 提供）→ 通用 sandbox 组件（独立于 agent，另立 ADR）。
+2026-08-30：改名 **erix-agent** 并推 GitHub（ErixWong/erix-agent）——
+双协议流式、FR-2 全量循环、压缩策略（自动预算折叠）、file store/recall/fold-llm、json-file config、
+CLI 交互 TUI、配置/会话持久化、skill 自描述生态（todo 任务管理）、内置工具面（读写执行）、
+流式打字机、MCP 对接（stdio + HTTP，联网搜索实测）、idle 超时。236 单测全绿（+4 条件跳过），
+真实 e2e 跑通多轮工具调用、压缩、流式与 MCP 联网调研。
+下一里程碑：npm 发布（erix-agent）→ app_container 迁移（以 erix-agent 引擎构建可控编码 agent，容器沙盒由 app_container 提供）→ 通用 sandbox 组件（独立于 agent，另立 ADR）。

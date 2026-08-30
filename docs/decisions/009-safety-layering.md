@@ -10,7 +10,7 @@
 
 ### 1. agent（库 + CLI）不内置安全策略
 
-- 库（erix-llm-kit）零执行零安全规则（ADR-005 已定，不变）。
+- 库（erix-agent）零执行零安全规则（ADR-005 已定，不变）。
 - CLI（erix）工具面**全面直通**：readFile/writeFile/rg/tree/exec 任意路径、
   任意 shell 命令、git 不限子命令。删除 createJail/白名单/语法拦截/确认机制/maskedPaths。
 

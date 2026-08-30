@@ -1,12 +1,12 @@
 {
   "name": "erix-agent",
   "version": "0.0.0",
-  "description": "跨项目共享的 LLM 对话循环引擎：协议适配 + 工具调用循环 + 上下文预算压缩（脑干，不是 agent）",
+  "description": "自研轻量编码 agent：零依赖 LLM 对话引擎 + 交互式 CLI + skill 自描述协议 + MCP 对接",
   "type": "module",
   "engines": { "node": ">=22" },
   "bin": { "erix": "bin/cli.js" },
   "files": ["src", "bin", "README.md"],
-  "repository": { "type": "git", "url": "https://git.erix.vip/eric/erix-llm-kit.git" },
+  "repository": { "type": "git", "url": "https://github.com/ErixWong/erix-agent.git" },
   "exports": {
     ".": "./src/index.js",
     "./tools": "./src/tools/index.js",
