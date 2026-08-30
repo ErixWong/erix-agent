@@ -95,12 +95,27 @@ function abortReason(signal) {
   return error;
 }
 
+function fetchOptionsWithTransport(options, transport) {
+  if (transport === undefined) return options;
+  if (typeof transport === "function") {
+    const enhanced = transport(options);
+    if (enhanced === undefined) return options;
+    if (enhanced === null || typeof enhanced !== "object") {
+      throw new TypeError("transport fetch-options enhancer must return an object");
+    }
+    return enhanced;
+  }
+  return { ...options, dispatcher: transport };
+}
+
 export function createOpenAIProvider({
   endpoint,
   apiKey,
   model,
   model_name,
   fetchImpl = fetch,
+  transport,
+  contextWindowTokens,
   timeoutMs,
   timeout,
   requestTimeoutMs,
@@ -231,7 +246,7 @@ export function createOpenAIProvider({
     try {
       throwIfAborted();
       const response = await raceRequest(
-        fetchImpl(url, {
+        fetchImpl(url, fetchOptionsWithTransport({
           method: "POST",
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -239,7 +254,7 @@ export function createOpenAIProvider({
           },
           body: JSON.stringify(payload),
           signal: controller.signal,
-        }),
+        }, transport)),
       );
 
       throwIfAborted();
@@ -319,7 +334,7 @@ export function createOpenAIProvider({
     let streamPhase = "request";
     try {
       context.throwIfAborted();
-      const response = await context.race(fetchImpl(url, {
+      const response = await context.race(fetchImpl(url, fetchOptionsWithTransport({
         method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -327,7 +342,7 @@ export function createOpenAIProvider({
         },
         body: JSON.stringify(payload),
         signal: context.controller.signal,
-      }), [{ phase: "request", duration: requestTimeouts.requestTimeoutMs }]);
+      }, transport)), [{ phase: "request", duration: requestTimeouts.requestTimeoutMs }]);
 
       context.throwIfAborted();
       status = Number(response?.status);
@@ -524,7 +539,10 @@ export function createOpenAIProvider({
         try {
           input = JSON.parse(rawArguments);
         } catch {
-          input = { _raw: rawArguments };
+          input = {
+            _truncatedArguments: rawArguments,
+            _raw: rawArguments,
+          };
         }
         content.push({
           type: "tool_use",
@@ -574,5 +592,7 @@ export function createOpenAIProvider({
     ...(model_type === undefined ? {} : { model_type }),
     ...(supports_reasoning === undefined ? {} : { supports_reasoning }),
     ...(thinking_format === undefined ? {} : { thinking_format }),
+    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
   };
 }

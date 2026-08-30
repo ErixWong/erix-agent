@@ -1,4 +1,9 @@
-import { validateMessages } from "./messages/rounds.js";
+import { KitError } from "./providers/errors.js";
+import { computeBudget } from "./compact/budget.js";
+import { createSlidingWindowStrategy } from "./compact/sliding-window.js";
+import { enforceSize } from "./compact/enforce-size.js";
+import { estimateMessageTokens, estimateTokens } from "./tokens.js";
+import { groupIntoRounds, validateMessages } from "./messages/rounds.js";
 
 function blocksFor(content) {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -67,6 +72,215 @@ function cloneState(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function isProtectedMessage(message, guard) {
+  if (typeof guard === "function") return guard(message) === true;
+  if (typeof guard === "string") return message?.role === guard;
+  if (Array.isArray(guard)) return guard.includes(message?.role);
+  return false;
+}
+
+function validateBudget(budgetTokens) {
+  if (!Number.isSafeInteger(budgetTokens) || budgetTokens <= 0) {
+    throw new KitError(
+      "invalid_budget",
+      `budgetTokens must be a positive integer (got ${String(budgetTokens)})`,
+      { retryable: false },
+    );
+  }
+  return budgetTokens;
+}
+
+function modelMetadataFor({ modelConfig, modelMetadata, model, provider, context }) {
+  const candidates = [modelConfig, modelMetadata, model, provider, context];
+  return candidates.find((candidate) => (
+    candidate
+    && typeof candidate === "object"
+    && (
+      candidate.contextWindowTokens !== undefined
+      || candidate.maxOutputTokens !== undefined
+    )
+  ));
+}
+
+function toolContextFor({
+  toolContext,
+  context,
+  expert,
+  user,
+  task,
+  session,
+  requestId,
+}) {
+  const result = {
+    ...(context?.toolContext && typeof context.toolContext === "object"
+      ? context.toolContext
+      : {}),
+    ...(toolContext && typeof toolContext === "object" ? toolContext : {}),
+  };
+  for (const [key, value] of Object.entries({
+    expert: expert !== undefined ? expert : context?.expert,
+    user: user !== undefined ? user : context?.user,
+    task: task !== undefined ? task : context?.task,
+    session: session !== undefined ? session : context?.session,
+    requestId: requestId !== undefined ? requestId : context?.requestId,
+  })) {
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+function toolResultData(value) {
+  return value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.prototype.hasOwnProperty.call(value, "data")
+    ? value
+    : undefined;
+}
+
+function truncateTextToBudget(text, budgetTokens) {
+  const value = String(text ?? "");
+  if (estimateTokens(value) <= budgetTokens) return value;
+  const characters = Array.from(value);
+  let low = 0;
+  let high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (estimateTokens(characters.slice(0, middle).join("")) <= budgetTokens) low = middle;
+    else high = middle - 1;
+  }
+  return characters.slice(0, low).join("");
+}
+
+function dropOldestUnprotectedRound(messages, protectedMessage) {
+  const { head, rounds } = groupIntoRounds(messages);
+  const index = rounds.findIndex((round) => !round.messages.some((message) => (
+    isProtectedMessage(message, protectedMessage)
+  )));
+  if (index < 0) return false;
+  const start = head.length + rounds
+    .slice(0, index)
+    .reduce((total, round) => total + round.messages.length, 0);
+  const count = rounds[index].messages.length;
+  messages.splice(start, count);
+  return true;
+}
+
+function safeTruncateMessages(messages, budgetTokens, protectedMessage) {
+  const result = cloneState(messages);
+  while (estimateMessageTokens(result) > budgetTokens
+    && dropOldestUnprotectedRound(result, protectedMessage)) {
+    // Remove complete rounds before reducing individual message content.
+  }
+
+  const fields = [];
+  const references = [];
+  result.forEach((message, messageIndex) => {
+    const protectedMessageValue = isProtectedMessage(message, protectedMessage);
+    if (typeof message.content === "string") {
+      fields.push({
+        key: `message-${messageIndex}`,
+        text: message.content,
+        priority: protectedMessageValue ? Number.MAX_SAFE_INTEGER : messageIndex,
+      });
+      references.push({
+        fieldIndex: fields.length - 1,
+        messageIndex,
+        blockIndex: undefined,
+      });
+      return;
+    }
+    for (const [blockIndex, block] of (message.content ?? []).entries()) {
+      let text;
+      let kind;
+      if (block?.type === "text" || block?.type === "reasoning") {
+        text = block.text;
+        kind = "text";
+      } else if (block?.type === "tool_result") {
+        text = block.content;
+        kind = "content";
+      }
+      if (text === undefined) continue;
+      fields.push({
+        key: `message-${messageIndex}-block-${blockIndex}`,
+        text: String(text),
+        priority: protectedMessageValue ? Number.MAX_SAFE_INTEGER : messageIndex,
+      });
+      references.push({
+        fieldIndex: fields.length - 1,
+        messageIndex,
+        blockIndex,
+        kind,
+      });
+    }
+  });
+  const enforced = enforceSize(fields, budgetTokens);
+  for (const reference of references) {
+    const text = enforced.fields[reference.fieldIndex].text;
+    if (reference.blockIndex === undefined) {
+      result[reference.messageIndex].content = truncateTextToBudget(
+        text,
+        budgetTokens,
+      );
+    } else if (reference.kind === "text") {
+      result[reference.messageIndex].content[reference.blockIndex].text =
+        truncateTextToBudget(text, budgetTokens);
+    } else {
+      result[reference.messageIndex].content[reference.blockIndex].content =
+        truncateTextToBudget(text, budgetTokens);
+    }
+  }
+
+  result.forEach((message) => {
+    if (!Array.isArray(message.content)) return;
+    message.content = message.content.filter((block) => (
+      block?.type !== "image" && block?.type !== "image_url"
+    )).map((block) => {
+      if (block?.type !== "tool_use") return block;
+      return { ...block, input: {} };
+    });
+  });
+
+  while (estimateMessageTokens(result) > budgetTokens) {
+    const removableIndex = result.findIndex((message) => (
+      !isProtectedMessage(message, protectedMessage)
+    ));
+    if (removableIndex < 0) {
+      throw new KitError(
+        "invalid_budget",
+        "Protected messages cannot fit within budgetTokens",
+        { retryable: false },
+      );
+    }
+    const message = result[removableIndex];
+    const uses = blocksFor(message.content).filter((block) => block?.type === "tool_use");
+    const results = blocksFor(message.content).filter((block) => block?.type === "tool_result");
+    if (uses.length > 0 && result[removableIndex + 1]?.role === "user") {
+      if (isProtectedMessage(result[removableIndex + 1], protectedMessage)) {
+        throw new KitError(
+          "invalid_budget",
+          "Protected messages cannot fit within budgetTokens",
+          { retryable: false },
+        );
+      }
+      result.splice(removableIndex, 2);
+    } else if (results.length > 0 && removableIndex > 0
+      && result[removableIndex - 1]?.role === "assistant") {
+      if (isProtectedMessage(result[removableIndex - 1], protectedMessage)) {
+        throw new KitError(
+          "invalid_budget",
+          "Protected messages cannot fit within budgetTokens",
+          { retryable: false },
+        );
+      }
+      result.splice(removableIndex - 1, 2);
+    } else {
+      result.splice(removableIndex, 1);
+    }
+  }
+  return { messages: result, tokensAfter: estimateMessageTokens(result), enforced };
+}
+
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
   const error = new Error(signal?.reason === undefined
@@ -130,7 +344,9 @@ function defaultSleep(ms, signal) {
  *   initialUserMessage?: string,
  *   initialMessages?: object[],
  *   tools?: object[],
- *   executeTool: (name:string, input:object) => Promise<string>,
+ *   executeTool: ((name:string, input:object) => Promise<string>)
+ *     | ((options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
+ *       => Promise<string|{success?:boolean, data:any, duration?:number, toolMessageId?:string}>),
  *   maxRounds?: number,
  *   maxTokens?: number,
  *   temperature?: number,
@@ -140,12 +356,18 @@ function defaultSleep(ms, signal) {
  *     sleepImpl?:(ms:number)=>Promise<void>}|false,
  *   completion?: {signals?:string[], maxNoToolRounds?:number}|false,
  *   maxTokenContinuations?: number,
- *   context?: {strategy?: object, budgetTokens?:number, keepRounds?:number},
- *   store?: {appendRound?: Function},
+ *   context?: {strategy?: object, budgetTokens?:number, keepRounds?:number, toolContext?:object},
+ *   modelConfig?: {contextWindowTokens?:number, maxOutputTokens?:number},
+ *   modelMetadata?: {contextWindowTokens?:number, maxOutputTokens?:number},
+ *   model?: {contextWindowTokens?:number, maxOutputTokens?:number},
+ *   expert?:any, user?:any, task?:any, session?:any, requestId?:string, toolContext?:object,
+ *   store?: {appendRound?: Function, saveCheckpoint?:Function, appendCheckpoint?:Function,
+ *     markRunState?:Function, loadLatestCheckpoint?:Function},
  *   runId?: string,
  *   resume?: boolean,
  *   onRound?: Function,
  *   onToolResult?: Function,
+ *   onPersistenceError?: (error:Error) => void,
  *   signal?: AbortSignal,
  *   stream?: boolean,
  *   onDelta?: (chunk:string) => void,
@@ -177,14 +399,24 @@ export async function runToolLoop({
   topP,
   stallDetection = { window: 4 },
   retry = false,
-  completion = false,
+  completion = { signals: [], maxNoToolRounds: 3 },
   maxTokenContinuations = 3,
   context,
+  modelConfig,
+  modelMetadata,
+  model,
+  expert,
+  user,
+  task,
+  session,
+  requestId,
+  toolContext,
   store,
   runId,
   resume = false,
   onRound,
   onToolResult,
+  onPersistenceError,
   signal,
   stream = false,
   onDelta,
@@ -193,26 +425,137 @@ export async function runToolLoop({
   onUsage,
   onEvent,
 }) {
+  const reportPersistenceError = (error) => {
+    if (typeof onPersistenceError === "function") {
+      onPersistenceError(error);
+      return;
+    }
+    console.error("Transcript persistence error:", error);
+  };
+  const persist = async (method, ...args) => {
+    if (typeof store?.[method] !== "function") return;
+    try {
+      await store[method](...args);
+    } catch (error) {
+      reportPersistenceError(error);
+    }
+  };
+  const markRunState = async (state) => {
+    await persist("markRunState", runId, state);
+  };
+  const metadata = modelMetadataFor({ modelConfig, modelMetadata, model, provider, context });
+  let budgetTokens = context?.budgetTokens;
+  if (budgetTokens === undefined
+    && metadata?.contextWindowTokens !== undefined
+    && metadata?.maxOutputTokens !== undefined) {
+    budgetTokens = computeBudget({
+      contextWindowTokens: metadata.contextWindowTokens,
+      maxOutputTokens: metadata.maxOutputTokens,
+    });
+  }
+  if (budgetTokens !== undefined) validateBudget(budgetTokens);
+  const compactionContext = context === undefined && budgetTokens === undefined
+    ? undefined
+    : {
+        ...(context ?? {}),
+        ...(budgetTokens === undefined ? {} : { budgetTokens }),
+      };
+  const baseToolContext = toolContextFor({
+    toolContext,
+    context,
+    expert,
+    user,
+    task,
+    session,
+    requestId,
+  });
+  const toolSignal = signal ?? new AbortController().signal;
   let messages = initialMessages !== undefined
     ? [...initialMessages]
     : initialUserMessage !== undefined
       ? [{ role: "user", content: [{ type: "text", text: initialUserMessage }] }]
       : [];
+  const messageRounds = new WeakMap();
+  for (const message of messages) messageRounds.set(message, 0);
   let rounds = 0;
+  let foldedThrough = 0;
+  let resumeCheckpoint;
+  let resumePendingTool;
+  let resumeTranscriptStart;
+  const resumeExecutedToolIds = new Set();
+  const resumeCheckpointResults = new Map();
+  await markRunState("running");
   if (resume && store && runId !== undefined) {
-    const records = await store.load(runId);
-    if (records.length === 0) throw new Error("resume: 无可恢复记录");
-    messages = records.flatMap((record) => record.messages);
-    // 以最大 round 为续跑基数（含 round 0 种子记录时 records.length 会多算一轮）
-    rounds = Math.max(...records.map((record) => record.round ?? 0));
+    try {
+      const records = await store.load(runId);
+      if (records.length === 0) throw new Error("resume: 无可恢复记录");
+      messages = records.flatMap((record) => record.messages ?? []);
+      for (const record of records) {
+        for (const message of record.messages ?? []) {
+          messageRounds.set(message, record.round ?? 0);
+        }
+      }
+      // 以最大 round 为续跑基数（含 round 0 种子记录时 records.length 会多算一轮）
+      rounds = Math.max(...records.map((record) => record.round ?? 0));
+      foldedThrough = Math.max(
+        0,
+        ...records.map((record) => record.foldedRoundRange?.to ?? 0),
+      );
+      if (typeof store.loadLatestCheckpoint === "function") {
+        resumeCheckpoint = await store.loadLatestCheckpoint(runId);
+        if (resumeCheckpoint?.round > rounds && Array.isArray(resumeCheckpoint.messages)) {
+          const recordedMessages = messages;
+          resumeTranscriptStart = recordedMessages.length;
+          messages = cloneState(resumeCheckpoint.messages);
+          for (let index = 0; index < messages.length; index += 1) {
+            const recordedRound = messageRounds.get(recordedMessages[index]);
+            messageRounds.set(
+              messages[index],
+              recordedRound ?? resumeCheckpoint.round,
+            );
+          }
+          rounds = resumeCheckpoint.round;
+          for (const id of resumeCheckpoint.executedToolIds ?? []) {
+            resumeExecutedToolIds.add(id);
+          }
+          for (const entry of resumeCheckpoint.toolResults ?? []) {
+            if (entry?.toolUseId !== undefined && entry.toolResult !== undefined) {
+              resumeCheckpointResults.set(entry.toolUseId, entry.toolResult);
+            }
+          }
+          const recordedIds = new Set(
+            messages.flatMap((message) => blocksFor(message?.content))
+              .filter((block) => block?.type === "tool_result")
+              .map((block) => block.tool_use_id),
+          );
+          const replayResults = [...resumeCheckpointResults.values()]
+            .filter((toolResult) => !recordedIds.has(toolResult.tool_use_id));
+          if (replayResults.length > 0) {
+            const replayMessage = { role: "user", content: replayResults };
+            messages.push(replayMessage);
+            messageRounds.set(replayMessage, resumeCheckpoint.round);
+          }
+          const pendingTools = resumeCheckpoint.pendingToolUses
+            ?? (resumeCheckpoint.pendingToolUse ? [resumeCheckpoint.pendingToolUse] : []);
+          resumePendingTool = pendingTools.find((pendingTool) => (
+            !resumeCheckpoint.executedToolIds?.includes(pendingTool.id)
+            && !resumeCheckpointResults.has(pendingTool.id)
+          ));
+        }
+      }
+    } catch (error) {
+      await markRunState(signal?.aborted ? "aborted" : "failed");
+      throw error;
+    }
   } else if (store && runId !== undefined && messages.length > 0) {
     // 种子记录：初始消息（initialMessages/initialUserMessage）先入档，
     // 否则它们永不在 store 中——recall 在 fold 后找不到被折的初始历史（ADR-002 档案完整性）
-    try {
-      await store.appendRound(runId, { round: 0, messages: [...messages], ts: new Date().toISOString() });
-    } catch {
-      // 快照容错：持久化失败不中断循环（与轮内快照一致）
-    }
+    await persist("appendRound", runId, {
+      round: 0,
+      roundKey: `${String(runId)}:round:0`,
+      messages: [...messages],
+      ts: new Date().toISOString(),
+    });
   }
   const recentSignatures = [];
   const stallWindow = stallDetection === false
@@ -285,6 +628,131 @@ export async function runToolLoop({
     const sleeping = Promise.resolve().then(() => sleepImpl(delay, signal));
     await awaitWithAbort(sleeping);
     throwIfAborted(signal);
+  };
+
+  const executedToolIds = new Set(resumeExecutedToolIds);
+  const checkpointResults = new Map(resumeCheckpointResults);
+  const persistCheckpoint = async ({
+    round,
+    pendingToolUse,
+    pendingToolUses = [],
+    toolResults = [],
+    status = "pending",
+    messagesOverride,
+  }) => {
+    const method = typeof store?.saveCheckpoint === "function"
+      ? "saveCheckpoint"
+      : typeof store?.appendCheckpoint === "function"
+        ? "appendCheckpoint"
+        : undefined;
+    if (method === undefined) return;
+    await persist(method, runId, {
+      round,
+      status,
+      pendingToolUse: cloneState(pendingToolUse),
+      toolUse: cloneState(pendingToolUse),
+      pendingToolUses: cloneState(pendingToolUses),
+      messages: cloneState(messagesOverride ?? messages),
+      executedToolIds: [...executedToolIds],
+      toolResults: toolResults.map((toolResult) => ({
+        toolUseId: toolResult.tool_use_id,
+        toolResult: cloneState(toolResult),
+      })),
+      ts: new Date().toISOString(),
+    });
+  };
+
+  const normalizeExecutionResult = (value, startedAt) => {
+    const structured = toolResultData(value);
+    if (structured === undefined) {
+      return { content: toolResultContent(value), metadata: {}, success: true };
+    }
+    const metadata = Object.fromEntries(
+      Object.entries(structured).filter(([key]) => (
+        !["data", "type", "tool_use_id", "content"].includes(key)
+      )),
+    );
+    metadata.success = structured.success ?? true;
+    metadata.duration = Date.now() - startedAt;
+    return {
+      content: toolResultContent(structured.data),
+      metadata,
+      success: metadata.success !== false,
+    };
+  };
+
+  const executeToolBlock = async (block, round, toolResults, pendingToolUses = []) => {
+    await persistCheckpoint({
+      round,
+      pendingToolUse: block,
+      pendingToolUses,
+      toolResults,
+    });
+    const startedAt = Date.now();
+    let execution;
+    let isError = false;
+    try {
+      const structuredOptions = {
+        id: block.id,
+        name: block.name,
+        input: block.input,
+        context: { ...baseToolContext, round },
+        signal: toolSignal,
+      };
+      const result = executeTool.length <= 1
+        ? await awaitWithAbort(Promise.resolve().then(() => executeTool(structuredOptions)))
+        : await awaitWithAbort(Promise.resolve().then(() => (
+          executeTool(block.name, block.input)
+        )));
+      execution = normalizeExecutionResult(result, startedAt);
+    } catch (error) {
+      if (signal?.aborted) throwIfAborted(signal);
+      isError = true;
+      execution = {
+        content: String(error?.message ?? error),
+        metadata: {},
+        success: false,
+      };
+    }
+
+    if (onToolResult) {
+      const rewritten = await onToolResult(
+        block.name,
+        execution.content,
+        execution.metadata,
+      );
+      if (rewritten !== undefined) {
+        const normalized = normalizeExecutionResult(rewritten, startedAt);
+        execution = {
+          ...normalized,
+          metadata: { ...execution.metadata, ...normalized.metadata },
+          success: execution.success && normalized.success,
+        };
+      }
+    }
+
+    const toolResult = {
+      type: "tool_result",
+      tool_use_id: block.id,
+      content: execution.content,
+      ...execution.metadata,
+    };
+    if (isError || execution.success === false) toolResult.is_error = true;
+    toolResults.push(toolResult);
+    if (block.id !== undefined) executedToolIds.add(block.id);
+    checkpointResults.set(block.id, toolResult);
+    await persistCheckpoint({
+      round,
+      pendingToolUse: block,
+      pendingToolUses,
+      toolResults,
+      status: "executed",
+      messagesOverride: [
+        ...messages,
+        { role: "user", content: cloneState(toolResults) },
+      ],
+    });
+    return toolResult;
   };
 
   const callProvider = async ({ allowPendingToolUse = false, round } = {}) => {
@@ -394,45 +862,166 @@ export async function runToolLoop({
     }
   };
 
+  const roundNumbersForMessages = (currentMessages) => {
+    const grouped = groupIntoRounds(currentMessages).rounds;
+    return grouped.map((group, index) => {
+      const known = group.messages
+        .map((message) => messageRounds.get(message))
+        .find((roundNumber) => Number.isSafeInteger(roundNumber) && roundNumber > 0);
+      return known ?? foldedThrough + index + 1;
+    });
+  };
+
   const compactBeforeRound = async () => {
     normalizeMessages(messages);
-    const strategy = context?.strategy;
-    if (strategy && await strategy.shouldCompact(messages, context.budgetTokens)) {
-      const result = await strategy.compact(messages, {
-        keepRounds: context.keepRounds ?? 6,
-        budgetTokens: context.budgetTokens,
+    const configuredStrategy = compactionContext?.strategy;
+    const overBudget = budgetTokens !== undefined
+      && estimateMessageTokens(messages) > budgetTokens;
+    const strategyRequestsCompaction = configuredStrategy
+      ? await configuredStrategy.shouldCompact(messages, budgetTokens)
+      : false;
+    if (strategyRequestsCompaction || overBudget) {
+      const strategy = strategyRequestsCompaction
+        ? configuredStrategy
+        : createSlidingWindowStrategy();
+      const tokensBefore = estimateMessageTokens(messages);
+      const compactOptions = {
+        keepRounds: compactionContext.keepRounds ?? 6,
+        budgetTokens,
+      };
+      Object.defineProperty(compactOptions, "roundNumbers", {
+        value: roundNumbersForMessages(messages),
+        enumerable: false,
       });
+      if (foldedThrough > 0) compactOptions.roundOffset = foldedThrough;
+      for (const key of [
+        "summaryRole",
+        "protectedMessage",
+        "stripHistoricalImages",
+        "onBeforeFold",
+        "onAfterFold",
+      ]) {
+        if (compactionContext[key] !== undefined) compactOptions[key] = compactionContext[key];
+      }
+      const result = await strategy.compact(messages, compactOptions);
       if (!Array.isArray(result?.messages)) {
         throw new TypeError("Compaction strategy must return a messages array");
       }
-      messages = result.messages;
+      let compactedMessages = result.messages;
+      let foldedPayload = Array.isArray(result.foldedPayload)
+        ? result.foldedPayload
+        : [];
+      let foldedRoundRange = result.foldedRoundRange;
+      let foldedRounds = Number.isSafeInteger(result.foldedRounds)
+        ? result.foldedRounds
+        : 0;
+      let compacted = result.compacted === true;
+      let tokensAfter = estimateMessageTokens(compactedMessages);
+      if (tokensAfter > budgetTokens) {
+        const fallback = await createSlidingWindowStrategy().compact(compactedMessages, {
+          keepRounds: 0,
+          budgetTokens,
+          protectedMessage: compactionContext.protectedMessage,
+          stripHistoricalImages: compactionContext.stripHistoricalImages,
+          roundOffset: foldedThrough,
+          roundNumbers: roundNumbersForMessages(compactedMessages),
+        });
+        compactedMessages = fallback.messages;
+        foldedPayload = [...foldedPayload, ...(fallback.foldedPayload ?? [])];
+        foldedRounds += fallback.foldedRounds ?? 0;
+        compacted = compacted || fallback.compacted === true;
+        if (foldedRoundRange === undefined) foldedRoundRange = fallback.foldedRoundRange;
+        tokensAfter = estimateMessageTokens(compactedMessages);
+      }
+      if (tokensAfter > budgetTokens) {
+        const fallback = safeTruncateMessages(
+          compactedMessages,
+          budgetTokens,
+          compactionContext.protectedMessage,
+        );
+        compactedMessages = fallback.messages;
+        tokensAfter = fallback.tokensAfter;
+      }
+      messages = compactedMessages;
       hadToolUse = hadToolUse || hasToolUseInMessages(messages);
+      if (foldedRoundRange?.to !== undefined) {
+        foldedThrough = Math.max(foldedThrough, foldedRoundRange.to);
+      }
       compactionStats.push({
-        compacted: result.compacted,
-        foldedRounds: result.foldedRounds,
-        tokensBefore: result.tokensBefore,
-        tokensAfter: result.tokensAfter,
+        compacted,
+        foldedRounds,
+        tokensBefore,
+        tokensAfter,
       });
       normalizeMessages(messages);
       return {
-        folded: result.compacted === true,
-        foldedPayload: result.compacted === true ? result.foldedPayload : undefined,
+        folded: compacted,
+        foldedPayload: compacted ? foldedPayload : undefined,
+        foldedRoundRange,
       };
     }
     return { folded: false, foldedPayload: undefined };
   };
 
-  const finish = (truncated) => ({
-    finalText,
-    messages,
-    transcript: [...messages],
-    rounds,
-    truncated,
-    usage,
-    compactionStats,
-  });
+  const appendToolResultsToTranscript = (toolResults, roundNumber) => {
+    if (toolResults.length === 0) return;
+    const previous = messages.at(-2);
+    const last = messages.at(-1);
+    const previousUses = blocksFor(previous?.content)
+      .filter((block) => block?.type === "tool_use");
+    const lastResults = blocksFor(last?.content)
+      .filter((block) => block?.type === "tool_result");
+    if (previous?.role === "assistant"
+      && last?.role === "user"
+      && previousUses.length > 0
+      && lastResults.length > 0) {
+      last.content = [...lastResults, ...toolResults];
+      if (roundNumber !== undefined) messageRounds.set(last, roundNumber);
+      return;
+    }
+    const message = { role: "user", content: toolResults };
+    messages.push(message);
+    if (roundNumber !== undefined) messageRounds.set(message, roundNumber);
+  };
 
-  while (rounds < maxRounds) {
+  const finish = async (truncated) => {
+    await markRunState("succeeded");
+    return {
+      finalText,
+      messages,
+      transcript: [...messages],
+      rounds,
+      truncated,
+      usage,
+      compactionStats,
+    };
+  };
+
+  try {
+    if (resumePendingTool) {
+      const resumedToolResults = [];
+      emitEvent({ type: "tool_use", round: rounds, toolUse: cloneState(resumePendingTool) });
+      await executeToolBlock(
+        resumePendingTool,
+        rounds,
+        resumedToolResults,
+        [resumePendingTool],
+      );
+      appendToolResultsToTranscript(resumedToolResults, rounds);
+      resumePendingTool = undefined;
+    }
+    if (resumeCheckpoint && resumeTranscriptStart !== undefined) {
+      await persist("appendRound", runId, {
+        round: resumeCheckpoint.round,
+        roundKey: `${String(runId)}:round:${String(resumeCheckpoint.round)}`,
+        dedupKey: `${String(runId)}:round:${String(resumeCheckpoint.round)}`,
+        messages: cloneState(messages.slice(resumeTranscriptStart)),
+        ts: new Date().toISOString(),
+      });
+      resumeTranscriptStart = undefined;
+    }
+
+    while (rounds < maxRounds) {
     const round = rounds + 1;
     roundEventDeltas = [];
     roundStopReason = undefined;
@@ -443,7 +1032,9 @@ export async function runToolLoop({
     let response = providerResult.response;
     let content = blocksFor(response?.content);
 
-    messages.push({ role: "assistant", content });
+    const assistantMessage = { role: "assistant", content };
+    messages.push(assistantMessage);
+    messageRounds.set(assistantMessage, round);
     addUsage(response);
     if (!providerResult.usageEmitted && response?.usage !== undefined) {
       emitEvent({ type: "usage", round, usage: response.usage });
@@ -463,7 +1054,9 @@ export async function runToolLoop({
         content = appendAssistantContent(content, continuation);
       } else {
         content = appendAssistantContent(content, continuation);
-        messages.push({ role: "assistant", content });
+        const assistantMessage = { role: "assistant", content };
+        messages.push(assistantMessage);
+        messageRounds.set(assistantMessage, round);
       }
       addUsage(response);
       if (!providerResult.usageEmitted && response?.usage !== undefined) {
@@ -482,6 +1075,7 @@ export async function runToolLoop({
 
     if (response?.stopReason === "tool_use") {
       const toolResults = [];
+      const pendingToolUses = content.filter((candidate) => candidate?.type === "tool_use");
       for (const block of content) {
         if (block?.type !== "tool_use") continue;
         emitEvent({ type: "tool_use", round, toolUse: cloneState(block) });
@@ -500,29 +1094,22 @@ export async function runToolLoop({
           if (recentSignatures.length > stallWindow) recentSignatures.shift();
         }
 
-        let result;
-        let isError = false;
-        try {
-          result = await executeTool(block.name, block.input);
-        } catch (error) {
-          isError = true;
-          result = String(error?.message ?? error);
-        }
-        if (onToolResult) {
-          result = await onToolResult(block.name, result);
-        }
-
-        const toolResult = {
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: toolResultContent(result),
-        };
-        if (isError) toolResult.is_error = true;
-        toolResults.push(toolResult);
+        const recordedToolResult = checkpointResults.get(block.id);
+        const toolResult = executedToolIds.has(block.id) && recordedToolResult !== undefined
+          ? cloneState(recordedToolResult)
+          : await executeToolBlock(
+            block,
+            round,
+            toolResults,
+            pendingToolUses.slice(pendingToolUses.findIndex((candidate) => candidate === block)),
+          );
+        if (!toolResults.includes(toolResult)) toolResults.push(toolResult);
         emitEvent({ type: "tool_result", round, toolResult: cloneState(toolResult) });
       }
       if (toolResults.length > 0) {
-        messages.push({ role: "user", content: toolResults });
+        const toolResultMessage = { role: "user", content: toolResults };
+        messages.push(toolResultMessage);
+        messageRounds.set(toolResultMessage, round);
       }
     }
 
@@ -535,10 +1122,12 @@ export async function runToolLoop({
       if (!hasSignal && hadToolUse) {
         noToolRounds += 1;
         if (noToolRounds < maxNoToolRounds) {
-          messages.push({
+          const continuationMessage = {
             role: "user",
             content: [{ type: "text", text: "（请继续完成任务）" }],
-          });
+          };
+          messages.push(continuationMessage);
+          messageRounds.set(continuationMessage, round);
           shouldContinue = true;
         } else {
           shouldContinue = false;
@@ -550,6 +1139,8 @@ export async function runToolLoop({
 
     const record = {
       round,
+      roundKey: `${String(runId)}:round:${String(round)}`,
+      dedupKey: `${String(runId)}:round:${String(round)}`,
       messages: messages.slice(roundStart),
       ts: new Date().toISOString(),
       response: {
@@ -565,17 +1156,16 @@ export async function runToolLoop({
       if (compaction.foldedPayload !== undefined) {
         record.foldedPayload = compaction.foldedPayload;
       }
-    }
-    if (typeof store?.appendRound === "function") {
-      try {
-        await store.appendRound(runId, record);
-      } catch {
-        // Transcript persistence is best effort and must not stop the loop.
+      if (compaction.foldedRoundRange !== undefined) {
+        record.foldedRoundRange = compaction.foldedRoundRange;
       }
     }
+    await persist("appendRound", runId, record);
     if (onRound) await onRound(record);
 
     rounds = round;
+    executedToolIds.clear();
+    checkpointResults.clear();
     emitEvent({
       type: "round_end",
       round,
@@ -585,6 +1175,10 @@ export async function runToolLoop({
     });
     if (continuationExhausted) return finish(true);
     if (!shouldContinue) return finish(false);
+    }
+  } catch (error) {
+    await markRunState(signal?.aborted ? "aborted" : "failed");
+    throw error;
   }
 
   return finish(true);

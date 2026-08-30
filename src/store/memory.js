@@ -5,6 +5,8 @@
  *   folded?:boolean,
  *   ts?:string,
  *   foldedPayload?:any,
+ *   dedupKey?:string,
+ *   foldedRoundRange?:{from:number,to:number},
  *   response?:{content:object[], stopReason?:string, usage?:object},
  *   textPreview?:string,
  *   toolUses?:number
@@ -36,15 +38,28 @@ function blockText(block) {
  * @returns {{
  *   appendRound: (runId:string, record:RoundRecord) => Promise<void>,
  *   load: (runId:string) => Promise<RoundRecord[]>,
- *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string>
+ *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string>,
+ *   markRunState: (runId:string, state:string) => Promise<void>,
+ *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
+ *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
  * }}
  */
 export function createMemoryTranscriptStore() {
   const transcripts = new Map();
+  const checkpoints = new Map();
+  const runStates = new Map();
+
+  const recordKey = (runId, record) => (
+    record?.dedupKey
+      ?? record?.roundKey
+      ?? `${String(runId)}:round:${String(record?.round)}`
+  );
 
   return {
     async appendRound(runId, record) {
       const records = transcripts.get(runId) ?? [];
+      const key = recordKey(runId, record);
+      if (records.some((existing) => recordKey(runId, existing) === key)) return;
       records.push(copyRecord(record));
       transcripts.set(runId, records);
     },
@@ -80,6 +95,32 @@ export function createMemoryTranscriptStore() {
         ? fragments
         : fragments.filter((fragment) => fragment.includes(pattern));
       return selected.join("\n");
+    },
+
+    async markRunState(runId, state) {
+      runStates.set(runId, {
+        runId,
+        state,
+        ts: new Date().toISOString(),
+      });
+    },
+
+    async saveCheckpoint(runId, checkpoint) {
+      checkpoints.set(runId, copyRecord(checkpoint));
+    },
+
+    async appendCheckpoint(runId, checkpoint) {
+      await this.saveCheckpoint(runId, checkpoint);
+    },
+
+    async loadLatestCheckpoint(runId) {
+      const checkpoint = checkpoints.get(runId);
+      return checkpoint === undefined ? undefined : copyRecord(checkpoint);
+    },
+
+    async loadRunState(runId) {
+      const state = runStates.get(runId);
+      return state === undefined ? undefined : copyRecord(state);
     },
   };
 }

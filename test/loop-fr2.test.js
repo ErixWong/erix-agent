@@ -268,8 +268,8 @@ test("compacts context before the second round and records its payload and stats
         messages: replacement,
         compacted: true,
         foldedRounds: 1,
-        tokensBefore: 120,
-        tokensAfter: 20,
+        tokensBefore: 17,
+        tokensAfter: 10,
         foldedPayload,
       };
     },
@@ -279,6 +279,7 @@ test("compacts context before the second round and records its payload and stats
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
+    completion: false,
     context: { strategy, budgetTokens: 99, keepRounds: 4 },
     store: {
       async appendRound(_runId, record) {
@@ -296,7 +297,7 @@ test("compacts context before the second round and records its payload and stats
   assert.deepEqual(result.compactionStats, [{
     compacted: true,
     foldedRounds: 1,
-    tokensBefore: 120,
-    tokensAfter: 20,
+    tokensBefore: 17,
+    tokensAfter: 10,
   }]);
 });

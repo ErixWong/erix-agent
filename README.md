@@ -51,6 +51,25 @@ src/
 - 分发：公开 npm（`erix-agent`），代码托管在 GitHub（ErixWong/erix-agent）
 - 任何提交禁止 token/密钥明文
 
+## v0.2.0-rc API additions
+
+- `runToolLoop` completion is enabled by default with `{ signals: [], maxNoToolRounds: 3 }`;
+  pass `completion: false` to retain immediate end-turn behavior. Provider retries remain opt-in:
+  `retry: false` is the default.
+- `executeTool` accepts either the existing positional `(name, input)` form or
+  `({ id, name, input, context, signal })`. The structured form may return
+  `{ success, data, duration, toolMessageId }`; the loop keeps string tool-result content and
+  adds metadata such as measured `duration`.
+- Compaction budgets can be derived from model `contextWindowTokens` and `maxOutputTokens`.
+  Strategies also accept `summaryRole`, `protectedMessage`, `stripHistoricalImages`,
+  `onBeforeFold`, and `onAfterFold`.
+  `TranscriptStore.appendRound` is idempotent by run/round key; stores may also implement
+  `markRunState`, `saveCheckpoint`/`appendCheckpoint`, and `loadLatestCheckpoint`. The loop
+  checkpoints before tool execution and replays recorded results on resume.
+- Provider `transport` is forwarded to `fetch` as `dispatcher`. Malformed OpenAI tool arguments
+  use canonical `_truncatedArguments`, with `_raw` retained as a compatibility alias. Unsafe file
+  store run IDs map to `run-<first-24-sha256-hex>`; simple IDs are kept unchanged.
+
 ## CLI：erix（agent 形态）
 
 `erix` 是构建在本库上的交互式编码助手：

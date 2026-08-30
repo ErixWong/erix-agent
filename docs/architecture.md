@@ -104,6 +104,8 @@ runToolLoop({
 }>
 ```
 
+`retry` is opt-in: omitted or `false` means no provider retries.
+
 ### 3.3 CompactionStrategy（FR-3，详见 ADR-003）
 
 ```js

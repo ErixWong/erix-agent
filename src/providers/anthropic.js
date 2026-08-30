@@ -51,6 +51,53 @@ function serverError(bodyText) {
   return new KitError("server", upstreamErrorMessage(bodyText));
 }
 
+function fetchOptionsWithTransport(options, transport) {
+  if (transport === undefined) return options;
+  if (typeof transport === "function") {
+    const enhanced = transport(options);
+    if (enhanced === undefined) return options;
+    if (enhanced === null || typeof enhanced !== "object") {
+      throw new TypeError("transport fetch-options enhancer must return an object");
+    }
+    return enhanced;
+  }
+  return { ...options, dispatcher: transport };
+}
+
+function systemMessageText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return String(content ?? "");
+  return content
+    .map((block) => {
+      if (block?.type === "text" || block?.type === "reasoning") {
+        return String(block.text ?? "");
+      }
+      return JSON.stringify(block);
+    })
+    .join("");
+}
+
+function normalizeAnthropicSystemMessages(request) {
+  const systemMessages = [];
+  const messages = [];
+  for (const message of request.messages ?? []) {
+    if (message?.role === "system") systemMessages.push(message);
+    else messages.push(message);
+  }
+  if (systemMessages.length === 0) return request;
+
+  const systemParts = [];
+  if (request.system !== undefined && request.system !== "") {
+    systemParts.push(systemMessageText(request.system));
+  }
+  systemParts.push(...systemMessages.map((message) => systemMessageText(message.content)));
+  return {
+    ...request,
+    system: systemParts.join("\n"),
+    messages,
+  };
+}
+
 function parseSseEvent(eventType, dataLines) {
   if (dataLines.length === 0) return undefined;
   const text = dataLines.join("\n");
@@ -213,6 +260,8 @@ export function createAnthropicProvider({
   model,
   model_name,
   fetchImpl = fetch,
+  transport,
+  contextWindowTokens,
   timeoutMs,
   timeout: timeoutOption,
   requestTimeoutMs,
@@ -304,17 +353,19 @@ export function createAnthropicProvider({
   }
 
   async function chat(req) {
-    const payload = canonicalToAnthropicRequest(requestWithDefaults(req));
+    const payload = canonicalToAnthropicRequest(
+      normalizeAnthropicSystemMessages(requestWithDefaults(req)),
+    );
     const context = createRequestContext(requestTimeout, req?.signal);
 
     try {
       const response = await Promise.race([
-        fetchImpl(url, {
+        fetchImpl(url, fetchOptionsWithTransport({
           method: "POST",
           headers,
           body: JSON.stringify(payload),
           signal: context.controller.signal,
-        }),
+        }, transport)),
         context.timeoutPromise,
         context.abortPromise,
       ]);
@@ -377,7 +428,9 @@ export function createAnthropicProvider({
   }
 
   async function chatStream(req) {
-    const payload = canonicalToAnthropicRequest(requestWithDefaults(req, true));
+    const payload = canonicalToAnthropicRequest(
+      normalizeAnthropicSystemMessages(requestWithDefaults(req, true)),
+    );
     const requestTimeouts = resolveProviderTimeouts({
       ...providerTimeoutOptions,
       ...req,
@@ -393,12 +446,12 @@ export function createAnthropicProvider({
     try {
       context.throwIfAborted();
       const response = await context.race(
-        fetchImpl(url, {
+        fetchImpl(url, fetchOptionsWithTransport({
           method: "POST",
           headers,
           body: JSON.stringify(payload),
           signal: context.controller.signal,
-        }),
+        }, transport)),
         [{ phase: "request", duration: requestTimeouts.requestTimeoutMs }],
       );
       context.throwIfAborted();
@@ -453,5 +506,7 @@ export function createAnthropicProvider({
     ...(model_type === undefined ? {} : { model_type }),
     ...(supports_reasoning === undefined ? {} : { supports_reasoning }),
     ...(thinking_format === undefined ? {} : { thinking_format }),
+    ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
   };
 }

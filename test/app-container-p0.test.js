@@ -225,6 +225,7 @@ test("includes the canonical response summary in onRound records", async () => {
     provider,
     initialUserMessage: "write",
     executeTool: async () => "written",
+    completion: false,
     onRound: async (record) => records.push(record),
   });
 

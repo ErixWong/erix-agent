@@ -1,6 +1,14 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 import { enforceSize } from "./enforce-size.js";
+import {
+  cloneFoldPayload,
+  foldOptions,
+  optionValue,
+  roundRangeForIndexes,
+  runFoldHook,
+  selectFoldedRounds,
+} from "./helpers.js";
 
 export const SUMMARIZER_PROMPT_GUIDE = `请把被折叠轮次整理成可继续工作的日志，并严格使用以下分节：
 ## 阶段
@@ -42,7 +50,23 @@ function isRealUser(message) {
     || blocks.some((block) => block?.type !== "tool_result");
 }
 
-function prependSummary(head, summary) {
+function prependSummary(head, summary, summaryRole = "user") {
+  if (summaryRole === "system") {
+    const systemIndex = head.findLastIndex((message) => message?.role === "system");
+    if (systemIndex < 0) {
+      return [{ role: "system", content: [{ type: "text", text: summary }] }, ...head];
+    }
+    const updatedHead = head.slice();
+    const system = updatedHead[systemIndex];
+    const content = typeof system.content === "string"
+      ? [{ type: "text", text: system.content }]
+      : Array.isArray(system.content) ? system.content : [];
+    updatedHead[systemIndex] = {
+      ...system,
+      content: [{ type: "text", text: summary }, ...content],
+    };
+    return updatedHead;
+  }
   const userIndex = head.findLastIndex(isRealUser);
   if (userIndex < 0) return head;
 
@@ -160,6 +184,11 @@ function enforceSummarySize(summary, maxSummaryTokens) {
  * @param {{
  *   summarizer: (input: {messages: object[], roundRange: {from:number, to:number}}) => Promise<string>|string,
  *   maxSummaryTokens?: number,
+ *   summaryRole?: "user"|"system",
+ *   protectedMessage?: Function|string|string[],
+ *   stripHistoricalImages?: boolean,
+ *   onBeforeFold?: Function,
+ *   onAfterFold?: Function,
  * }} options
  * @returns {{
  *   name: string,
@@ -167,7 +196,11 @@ function enforceSummarySize(summary, maxSummaryTokens) {
  *   compact: (messages: object[], options?: {keepRounds?: number, budgetTokens?: number}) => Promise<object>,
  * }}
  */
-export function createFoldLlmStrategy({ summarizer, maxSummaryTokens = 800 } = {}) {
+export function createFoldLlmStrategy({
+  summarizer,
+  maxSummaryTokens = 800,
+  ...options
+} = {}) {
   if (typeof summarizer !== "function") {
     throw new TypeError("fold-llm summarizer must be a function");
   }
@@ -180,26 +213,46 @@ export function createFoldLlmStrategy({ summarizer, maxSummaryTokens = 800 } = {
       return estimateMessageTokens(messages) > budgetTokens;
     },
 
-    async compact(messages, { keepRounds } = {}) {
+    async compact(messages, callOptions = {}) {
       const tokensBefore = estimateMessageTokens(messages);
       const { head, rounds } = groupIntoRounds(messages);
-      const keep = normalizedKeepRounds(keepRounds);
-      const foldedCount = Math.max(0, rounds.length - keep);
-      const folded = rounds.slice(0, foldedCount);
-      const retained = rounds.slice(foldedCount);
-      const foldedPayload = folded.flatMap((round) => round.messages);
+      const settings = foldOptions(options, callOptions);
+      const keep = normalizedKeepRounds(
+        optionValue(callOptions, options, "keepRounds", undefined),
+      );
+      const { folded, retained, foldedIndexes } = selectFoldedRounds(
+        rounds,
+        keep,
+        settings.protectedMessage,
+      );
+      const foldedPayload = cloneFoldPayload(
+        folded.flatMap((round) => round.messages),
+        settings.stripHistoricalImages,
+      );
+      const roundRange = roundRangeForIndexes(
+        foldedIndexes,
+        settings.roundOffset,
+        settings.roundNumbers,
+      );
+      await runFoldHook(settings.onBeforeFold, {
+        messages,
+        folded,
+        retained,
+        foldedPayload,
+        roundRange,
+      });
 
       let compactedHead = head;
       if (folded.length > 0) {
         const summary = await summarizer({
           messages: foldedPayload,
-          roundRange: { from: 1, to: folded.length },
+          roundRange: roundRange ?? { from: 1, to: folded.length },
         });
         if (typeof summary !== "string") {
           throw new TypeError("fold-llm summarizer must return a string");
         }
         const compactedSummary = enforceSummarySize(summary, summaryBudget);
-        compactedHead = prependSummary(head, compactedSummary);
+        compactedHead = prependSummary(head, compactedSummary, settings.summaryRole);
       }
 
       const compactedMessages = [
@@ -208,14 +261,17 @@ export function createFoldLlmStrategy({ summarizer, maxSummaryTokens = 800 } = {
       ];
       const tokensAfter = estimateMessageTokens(compactedMessages);
 
-      return {
+      const result = {
         messages: compactedMessages,
         compacted: folded.length > 0,
         foldedRounds: folded.length,
         tokensBefore,
         tokensAfter,
         foldedPayload,
+        ...(roundRange === undefined ? {} : { foldedRoundRange: roundRange }),
       };
+      await runFoldHook(settings.onAfterFold, { ...result, roundRange });
+      return result;
     },
   };
 }

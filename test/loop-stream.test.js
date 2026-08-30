@@ -100,6 +100,7 @@ test("streams tool-loop responses while executing tools normally", async () => {
       executed.push({ name, input });
       return "found";
     },
+    completion: false,
     stream: true,
     onDelta: (chunk) => streamedChunks.push(chunk),
   });
