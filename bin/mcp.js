@@ -26,17 +26,17 @@ function readVersion() {
   }
 }
 
-export function resolveMcpConfigPath(explicitPath, cwd = process.cwd()) {
+export function resolveMcpConfigPath(explicitPath, cwd = process.cwd(), home = homedir()) {
   if (explicitPath) return path.resolve(explicitPath);
-  const candidates = [path.join(cwd, ".mcp.json"), path.join(homedir(), ".erix", "mcp.json")];
+  const candidates = [path.join(cwd, ".mcp.json"), path.join(home, ".erix", "mcp.json")];
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
   return null;
 }
 
-export function loadMcpConfig(configPath, cwd = process.cwd()) {
-  const resolved = resolveMcpConfigPath(configPath, cwd);
+export function loadMcpConfig(configPath, cwd = process.cwd(), home = homedir()) {
+  const resolved = resolveMcpConfigPath(configPath, cwd, home);
   if (!resolved) return null;
   try {
     const raw = readFileSync(resolved, "utf8");
@@ -648,10 +648,10 @@ function parseInternalToolId(toolId) {
   return null;
 }
 
-export function createMcpProxyTool({ mcpConfigPath, cwd = process.cwd() } = {}) {
+export function createMcpProxyTool({ mcpConfigPath, cwd = process.cwd(), home = homedir() } = {}) {
   let config;
   try {
-    config = loadMcpConfig(mcpConfigPath, cwd);
+    config = loadMcpConfig(mcpConfigPath, cwd, home);
   } catch (error) {
     return { enabled: false, error };
   }
@@ -767,7 +767,13 @@ export function createMcpProxyTool({ mcpConfigPath, cwd = process.cwd() } = {}) 
     schema: {
       name: "mcp",
       description:
-        "访问 MCP 服务器工具。action：list（列全部 server 工具）/ search（按关键词搜工具）/ call（调用工具）/ status（连接状态）；call 需 server/tool/args，search 需 query，其余 action 可选 server 过滤",
+        "访问 MCP 服务器工具（外部能力，如 unifuncs 联网搜索、playwright 浏览器等）。\n" +
+        "action 语义（重要）：\n" +
+        "- call：真正执行工具，需 server+tool+args。例：联网搜索网页用 {action:'call', server:'unifuncs', tool:'web-search', args:{query:'...'}}\n" +
+        "- list：列出全部可用 server 的工具清单\n" +
+        "- search：在已连接的 MCP 工具清单里按关键词查找工具名/描述（元数据搜索，不是互联网搜索）\n" +
+        "- status：各 server 连接状态\n" +
+        "需要联网搜索/读网页时，直接用 call 调 unifuncs 的 web-search/web-reader；不要用 search（那是查工具清单的）。",
       inputSchema: {
         type: "object",
         properties: {

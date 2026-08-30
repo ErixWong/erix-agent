@@ -50,25 +50,30 @@ async function withMcpCleanup(callback) {
 test("resolveMcpConfigPath resolves explicit path", () => {
   assert.equal(resolveMcpConfigPath("/tmp/explicit.json"), "/tmp/explicit.json");
   assert.equal(resolveMcpConfigPath("/tmp/explicit.json", "/other"), "/tmp/explicit.json");
-  assert.equal(resolveMcpConfigPath(), null);
+});
+
+test("resolveMcpConfigPath returns null without any config (isolated home)", async () => {
+  await withTempDir(async (dir) => {
+    assert.equal(resolveMcpConfigPath(undefined, dir, dir), null);
+  });
 });
 
 test("resolveMcpConfigPath finds .mcp.json in cwd", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, {});
-    assert.equal(resolveMcpConfigPath(undefined, dir), join(dir, ".mcp.json"));
+    assert.equal(resolveMcpConfigPath(undefined, dir, dir), join(dir, ".mcp.json"));
   });
 });
 
 test("resolveMcpConfigPath returns null when no config exists", async () => {
   await withTempDir(async (dir) => {
-    assert.equal(resolveMcpConfigPath(undefined, dir), null);
+    assert.equal(resolveMcpConfigPath(undefined, dir, dir), null);
   });
 });
 
 test("loadMcpConfig returns null when no config is found", async () => {
   await withTempDir(async (dir) => {
-    assert.equal(loadMcpConfig(undefined, dir), null);
+    assert.equal(loadMcpConfig(undefined, dir, dir), null);
   });
 });
 
@@ -76,7 +81,7 @@ test("loadMcpConfig loads a valid mcpServers config", async () => {
   await withTempDir(async (dir) => {
     const servers = { mock: { command: "node", args: [mockServerPath] } };
     await writeMcpConfig(dir, servers);
-    const config = loadMcpConfig(undefined, dir);
+    const config = loadMcpConfig(undefined, dir, dir);
     assert.deepEqual(config, { mcpServers: servers });
   });
 });
@@ -84,20 +89,20 @@ test("loadMcpConfig loads a valid mcpServers config", async () => {
 test("loadMcpConfig throws when mcpServers is missing", async () => {
   await withTempDir(async (dir) => {
     await writeFile(join(dir, ".mcp.json"), "{}", "utf8");
-    assert.throws(() => loadMcpConfig(undefined, dir), /缺少 mcpServers/);
+    assert.throws(() => loadMcpConfig(undefined, dir, dir), /缺少 mcpServers/);
   });
 });
 
 test("loadMcpConfig throws on invalid JSON", async () => {
   await withTempDir(async (dir) => {
     await writeFile(join(dir, ".mcp.json"), "{ not json", "utf8");
-    assert.throws(() => loadMcpConfig(undefined, dir), /读取 MCP 配置失败/);
+    assert.throws(() => loadMcpConfig(undefined, dir, dir), /读取 MCP 配置失败/);
   });
 });
 
 test("createMcpProxyTool is disabled without config", async () => {
   await withTempDir(async (dir) => {
-    const proxy = createMcpProxyTool({ cwd: dir });
+    const proxy = createMcpProxyTool({ cwd: dir, home: dir });
     assert.equal(proxy.enabled, false);
     assert.equal(proxy.schema, undefined);
   });
@@ -106,7 +111,7 @@ test("createMcpProxyTool is disabled without config", async () => {
 test("createMcpProxyTool is disabled when config is invalid", async () => {
   await withTempDir(async (dir) => {
     await writeFile(join(dir, ".mcp.json"), "{ not json", "utf8");
-    const proxy = createMcpProxyTool({ cwd: dir });
+    const proxy = createMcpProxyTool({ cwd: dir, home: dir });
     assert.equal(proxy.enabled, false);
     assert.ok(proxy.error);
   });
