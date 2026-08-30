@@ -1,6 +1,6 @@
 {
   "name": "erix-agent",
-  "version": "0.1.1",
+  "version": "0.2.0-alpha",
   "description": "自研轻量编码 agent：零依赖 LLM 对话引擎 + 交互式 CLI + skill 自描述协议 + MCP 对接",
   "type": "module",
   "engines": {

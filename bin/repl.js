@@ -442,10 +442,11 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       await handleCommand(parseCommand(line));
     } else if (line.length > 0) {
       const provider = createOpenAIProvider({
+        ...config,
         endpoint: config.endpoint,
         apiKey: config.apiKey,
         model,
-        timeoutMs: 300_000,
+        timeoutMs: config.timeout ?? 300_000,
         maxTokens: config.maxOutputTokens,
       });
       const roundMessages = [

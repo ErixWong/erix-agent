@@ -9,6 +9,10 @@ import {
   canonicalToolsToOpenAI,
   openAIResponseToCanonical,
 } from "../messages/canonical.js";
+import {
+  applyProviderPayloadOptions,
+  resolveProviderTimeout,
+} from "./payload.js";
 
 function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
@@ -44,15 +48,21 @@ function timeoutError(cause) {
   });
 }
 
-function buildPayload(req, stream = false, model) {
+function buildPayload(req = {}, stream = false, model, defaults = {}) {
   const payload = {
     model,
     messages: canonicalToOpenAIMessages(req.system, req.messages),
   };
   if (req.tools?.length) payload.tools = canonicalToolsToOpenAI(req.tools);
-  if (req.maxTokens !== undefined) payload.max_tokens = req.maxTokens;
-  if (req.temperature !== undefined) payload.temperature = req.temperature;
-  if (req.topP !== undefined) payload.top_p = req.topP;
+  const maxTokens = req.maxTokens !== undefined
+    ? req.maxTokens
+    : defaults.maxTokens ?? defaults.maxOutputTokens;
+  const temperature = req.temperature !== undefined ? req.temperature : defaults.temperature;
+  const topP = req.topP !== undefined ? req.topP : defaults.topP;
+  if (maxTokens !== undefined) payload.max_tokens = maxTokens;
+  if (temperature !== undefined) payload.temperature = temperature;
+  if (topP !== undefined) payload.top_p = topP;
+  applyProviderPayloadOptions(payload, req, "openai", defaults);
   if (stream) {
     payload.stream = true;
     payload.stream_options = { include_usage: true };
@@ -85,13 +95,49 @@ export function createOpenAIProvider({
   endpoint,
   apiKey,
   model,
+  model_name,
   fetchImpl = fetch,
-  timeoutMs = 120000,
+  timeoutMs,
+  timeout,
+  maxTokens,
+  maxOutputTokens,
+  temperature,
+  topP,
+  thinking,
+  reasoning,
+  reasoning_effort,
+  enable_thinking,
+  chat_template_kwargs,
+  providerOptions,
+  frequency_penalty,
+  presence_penalty,
+  response_format,
+  protocol = "openai",
+  model_type,
+  supports_reasoning,
+  thinking_format,
 }) {
+  const selectedModel = model ?? model_name;
+  const requestTimeout = resolveProviderTimeout(timeout, timeoutMs);
+  const payloadDefaults = {
+    maxTokens,
+    maxOutputTokens,
+    temperature,
+    topP,
+    thinking,
+    reasoning,
+    reasoning_effort,
+    enable_thinking,
+    chat_template_kwargs,
+    providerOptions,
+    frequency_penalty,
+    presence_penalty,
+    response_format,
+  };
   const url = `${String(endpoint).replace(/\/+$/, "")}/chat/completions`;
 
   async function chat(req) {
-    const payload = buildPayload(req, false, model);
+    const payload = buildPayload(req, false, selectedModel, payloadDefaults);
 
     const controller = new AbortController();
     const signal = req?.signal;
@@ -104,7 +150,7 @@ export function createOpenAIProvider({
         timedOut = true;
         controller.abort();
         reject(timeoutError());
-      }, timeoutMs);
+      }, requestTimeout);
     });
     const abortPromise = signal
       ? new Promise((_, reject) => {
@@ -191,25 +237,9 @@ export function createOpenAIProvider({
     }
   }
 
-  async function chatStream({
-    system,
-    messages,
-    tools,
-    maxTokens,
-    temperature,
-    topP,
-    onDelta,
-    signal,
-  }) {
-    const req = {
-      system,
-      messages,
-      tools,
-      maxTokens,
-      temperature,
-      topP,
-    };
-    const payload = buildPayload(req, true, model);
+  async function chatStream(req = {}) {
+    const { onDelta, signal } = req;
+    const payload = buildPayload(req, true, selectedModel, payloadDefaults);
     const controller = new AbortController();
     let timedOut = false;
     let timer;
@@ -220,7 +250,7 @@ export function createOpenAIProvider({
         timedOut = true;
         controller.abort();
         reject(timeoutError());
-      }, timeoutMs);
+      }, requestTimeout);
     });
     const abortPromise = signal
       ? new Promise((_, reject) => {
@@ -446,9 +476,12 @@ export function createOpenAIProvider({
   }
 
   return {
-    protocol: "openai",
-    model,
+    protocol,
+    model: selectedModel,
     chat,
     chatStream,
+    ...(model_type === undefined ? {} : { model_type }),
+    ...(supports_reasoning === undefined ? {} : { supports_reasoning }),
+    ...(thinking_format === undefined ? {} : { thinking_format }),
   };
 }

@@ -60,10 +60,32 @@ export async function loadCliConfig({ configPath } = {}) {
   if (!apiKey) missing.push("LLM_KIT_API_KEY");
   if (missing.length > 0) throw missingConfigError(missing);
 
+  const forwardedFields = [
+    "protocol",
+    "timeout",
+    "model_type",
+    "supports_reasoning",
+    "thinking_format",
+    "thinking",
+    "reasoning",
+    "reasoning_effort",
+    "enable_thinking",
+    "chat_template_kwargs",
+    "providerOptions",
+    "frequency_penalty",
+    "presence_penalty",
+    "response_format",
+  ];
+  const modelOptions = {};
+  for (const field of forwardedFields) {
+    if (fileConfig[field] !== undefined) modelOptions[field] = fileConfig[field];
+  }
+
   return {
     endpoint,
     apiKey,
     model,
+    ...modelOptions,
     maxOutputTokens,
     contextWindowTokens,
   };
