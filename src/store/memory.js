@@ -1,5 +1,14 @@
 /**
- * @typedef {{round:number, messages: object[], folded?:boolean, ts?:string, foldedPayload?:any}} RoundRecord
+ * @typedef {{
+ *   round:number,
+ *   messages: object[],
+ *   folded?:boolean,
+ *   ts?:string,
+ *   foldedPayload?:any,
+ *   response?:{content:object[], stopReason?:string, usage?:object},
+ *   textPreview?:string,
+ *   toolUses?:number
+ * }} RoundRecord
  */
 
 function copyRecord(record) {

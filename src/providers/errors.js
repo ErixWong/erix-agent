@@ -34,6 +34,22 @@ function parseBody(bodyText) {
   }
 }
 
+export function validateProviderConfig(provider, { endpoint, apiKey, model } = {}) {
+  for (const [field, value] of [
+    ["endpoint", endpoint],
+    ["apiKey", apiKey],
+    ["model", model],
+  ]) {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new KitError(
+        "provider_config",
+        `${provider} provider ${field} must be a non-empty string`,
+        { retryable: false },
+      );
+    }
+  }
+}
+
 export function upstreamErrorMessage(bodyText) {
   const text = asBodyText(bodyText);
   const { value } = parseBody(text);
@@ -87,9 +103,15 @@ export function classifyHttpError(status, bodyText, opts = {}) {
 
 function isTimeoutException(err) {
   if (!err) return false;
-  if (err.name === "AbortError" || err.name === "TimeoutError") return true;
+  if (err.name === "TimeoutError") return true;
   if (err.code === "ETIMEDOUT" || err.code === "ESOCKETTIMEDOUT") return true;
   return /\b(?:timed?\s*out|timeout|deadline exceeded)\b/i.test(String(err.message ?? ""));
+}
+
+function isAbortException(err, signal) {
+  return signal?.aborted === true
+    || err?.name === "AbortError"
+    || err?.code === "ABORT_ERR";
 }
 
 function errorCode(err) {
@@ -111,7 +133,7 @@ function isRetryableNetworkException(err) {
  * Classify a fetch failure without losing stream/request timing metadata.
  *
  * @param {any} err
- * @param {{phase?:string, elapsedMs?:number, status?:number}} [opts]
+ * @param {{phase?:string, elapsedMs?:number, status?:number, signal?:AbortSignal}} [opts]
  * @returns {KitError}
  */
 export function classifyFetchException(err, opts = {}) {
@@ -121,6 +143,13 @@ export function classifyFetchException(err, opts = {}) {
     ...(opts.elapsedMs === undefined ? {} : { elapsedMs: opts.elapsedMs }),
     ...(status === undefined ? {} : { status }),
   };
+  if (isAbortException(err, opts.signal)) {
+    return new KitError("aborted", err?.message || "Request aborted", {
+      retryable: false,
+      cause: err,
+      ...metadata,
+    });
+  }
   if (isTimeoutException(err)) {
     return new KitError("timeout", "Request timed out", {
       retryable: true,
