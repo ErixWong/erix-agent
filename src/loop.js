@@ -1,3 +1,5 @@
+import { validateMessages } from "./messages/rounds.js";
+
 function blocksFor(content) {
   if (typeof content === "string") return [{ type: "text", text: content }];
   return Array.isArray(content) ? content : [];
@@ -189,10 +191,11 @@ export async function runToolLoop({
     }
   };
 
-  const callProvider = async () => {
+  const callProvider = async ({ allowPendingToolUse = false } = {}) => {
     let retryIndex = 0;
     while (true) {
       normalizeMessages(messages);
+      validateMessages(messages, { allowPendingToolUse });
       const snapshotLen = messages.length;
       try {
         const request = {
@@ -276,7 +279,7 @@ export async function runToolLoop({
     while (response?.stopReason === "max_tokens"
       && tokenContinuationCount < continuationLimit) {
       tokenContinuationCount += 1;
-      response = await callProvider();
+      response = await callProvider({ allowPendingToolUse: true });
       const continuation = blocksFor(response?.content);
       const assistant = messages.at(-1);
       if (assistant?.role === "assistant") {

@@ -9,6 +9,7 @@ import {
   canonicalToAnthropicRequest,
   createAnthropicStreamAssembler,
 } from "../messages/anthropic.js";
+import { resolveProviderTimeout } from "./payload.js";
 
 function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
@@ -164,9 +165,44 @@ export function createAnthropicProvider({
   endpoint,
   apiKey,
   model,
+  model_name,
   fetchImpl = fetch,
-  timeoutMs = 120000,
+  timeoutMs,
+  timeout,
+  maxTokens,
+  maxOutputTokens,
+  temperature,
+  topP,
+  thinking,
+  reasoning,
+  reasoning_effort,
+  enable_thinking,
+  chat_template_kwargs,
+  providerOptions,
+  frequency_penalty,
+  presence_penalty,
+  response_format,
+  protocol = "anthropic",
+  model_type,
+  supports_reasoning,
+  thinking_format,
 }) {
+  const selectedModel = model ?? model_name;
+  const requestTimeout = resolveProviderTimeout(timeout, timeoutMs);
+  const requestDefaults = {
+    maxTokens: maxTokens ?? maxOutputTokens,
+    temperature,
+    topP,
+    thinking,
+    reasoning,
+    reasoning_effort,
+    enable_thinking,
+    chat_template_kwargs,
+    providerOptions,
+    frequency_penalty,
+    presence_penalty,
+    response_format,
+  };
   const base = String(endpoint).replace(/\/+$/, "");
   const url = base.endsWith("/v1") ? `${base}/messages` : `${base}/v1/messages`;
   const headers = {
@@ -175,9 +211,22 @@ export function createAnthropicProvider({
     "content-type": "application/json",
   };
 
+  function requestWithDefaults(req, stream = false) {
+    const request = { ...requestDefaults };
+    for (const [key, value] of Object.entries(req ?? {})) {
+      if (value !== undefined) request[key] = value;
+    }
+    if (req?.maxTokens == null && requestDefaults.maxTokens !== undefined) {
+      request.maxTokens = requestDefaults.maxTokens;
+    }
+    request.model = selectedModel;
+    if (stream) request.stream = true;
+    return request;
+  }
+
   async function chat(req) {
-    const payload = canonicalToAnthropicRequest({ ...req, model });
-    const context = createRequestContext(timeoutMs, req?.signal);
+    const payload = canonicalToAnthropicRequest(requestWithDefaults(req));
+    const context = createRequestContext(requestTimeout, req?.signal);
 
     try {
       const response = await Promise.race([
@@ -226,8 +275,8 @@ export function createAnthropicProvider({
   }
 
   async function chatStream(req) {
-    const payload = canonicalToAnthropicRequest({ ...req, model, stream: true });
-    const context = createRequestContext(timeoutMs, req?.signal);
+    const payload = canonicalToAnthropicRequest(requestWithDefaults(req, true));
+    const context = createRequestContext(requestTimeout, req?.signal);
 
     try {
       const response = await Promise.race([
@@ -268,9 +317,12 @@ export function createAnthropicProvider({
   }
 
   return {
-    protocol: "anthropic",
-    model,
+    protocol,
+    model: selectedModel,
     chat,
     chatStream,
+    ...(model_type === undefined ? {} : { model_type }),
+    ...(supports_reasoning === undefined ? {} : { supports_reasoning }),
+    ...(thinking_format === undefined ? {} : { thinking_format }),
   };
 }

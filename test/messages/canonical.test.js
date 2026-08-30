@@ -66,9 +66,14 @@ test("serializes assistant text, tool calls, and mixed content", () => {
           {
             id: "call-2",
             type: "function",
-            function: { name: "lookup", arguments: '{"q":"y"}' },
+            function: { name: "lookup", arguments: '{"q":"y"}'             },
           },
         ],
+        raw_blocks: [{
+          type: "raw",
+          protocol: "vendor",
+          payload: { ignored: true },
+        }],
       },
     ],
   );

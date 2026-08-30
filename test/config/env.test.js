@@ -36,3 +36,23 @@ test("env: 数字字段转 number", async () => {
   assert.equal(config.maxOutputTokens, 8192);
   assert.equal(config.temperature, 0.2);
 });
+
+test("env: exposes reasoning model and payload fields", async () => {
+  setupEnv();
+  process.env[`${PREFIX}MODEL_TYPE`] = "chat";
+  process.env[`${PREFIX}TIMEOUT`] = "45000";
+  process.env[`${PREFIX}SUPPORTS_REASONING`] = "true";
+  process.env[`${PREFIX}THINKING_FORMAT`] = "deepseek";
+  process.env[`${PREFIX}THINKING`] = '{"type":"enabled"}';
+  process.env[`${PREFIX}ENABLE_THINKING`] = "true";
+
+  const config = await createEnvModelConfigProvider(PREFIX).resolve();
+  assert.equal(config.protocol, "openai");
+  assert.equal(config.model_type, "chat");
+  assert.equal(config.timeout, 45000);
+  assert.equal(config.supports_reasoning, true);
+  assert.equal(config.thinking_format, "deepseek");
+  assert.deepEqual(config.thinking, { type: "enabled" });
+  assert.equal(config.enable_thinking, true);
+  assert.equal(config.apiKey, "env-contract-secret");
+});

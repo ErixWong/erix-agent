@@ -364,10 +364,11 @@ async function runChat({
   }
 
   const provider = createOpenAIProvider({
+    ...config,
     endpoint: config.endpoint,
     apiKey: config.apiKey,
     model: config.model,
-    timeoutMs: 300_000,
+    timeoutMs: config.timeout ?? 300_000,
     maxTokens,
   });
   const cliTools = createCliTools({ cwd: process.cwd() });

@@ -12,8 +12,15 @@ export {
   anthropicResponseToCanonical,
   createAnthropicStreamAssembler,
 } from "./messages/anthropic.js";
-export { groupIntoRounds } from "./messages/rounds.js";
-export { estimateTokens, estimateMessageTokens } from "./tokens.js";
+export { groupIntoRounds, validateMessages } from "./messages/rounds.js";
+export {
+  estimateTokens,
+  estimateMessageTokens,
+  estimateMessagesTokens,
+  IMAGE_TOKEN_COST,
+  MESSAGE_OVERHEAD,
+  MESSAGE_OVERHEAD_TOKENS,
+} from "./tokens.js";
 export { computeBudget } from "./compact/budget.js";
 export { createSlidingWindowStrategy } from "./compact/sliding-window.js";
 export { createFoldStatisticalStrategy } from "./compact/fold-statistical.js";

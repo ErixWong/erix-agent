@@ -44,10 +44,49 @@ test("sums string content and supported canonical blocks", () => {
   ];
 
   const expected =
+    3 * 4 +
     estimateTokens("hello") +
     estimateTokens("你好") +
     estimateTokens(JSON.stringify({ q: "中" })) +
-    estimateTokens("结果");
+    estimateTokens("结果") +
+    estimateTokens(JSON.stringify({ ignored: true }));
   assert.equal(estimateMessageTokens(messages), expected);
   assert.equal(estimateMessageTokens([]), 0);
+});
+
+test("accounts for configurable message, image, reasoning, and raw block costs", () => {
+  const options = {
+    messageOverhead: 4,
+    imageTokenCost: 1000,
+    reasoningBlockCost: 5,
+    rawBlockCost: 7,
+  };
+  const rawPayload = { kind: "trace", value: "x" };
+  const messages = [{
+    role: "assistant",
+    content: [
+      { type: "text", text: "answer" },
+      { type: "image", url: "https://example.test/image.png" },
+      { type: "reasoning", text: "think" },
+      { type: "raw", protocol: "vendor", payload: rawPayload },
+    ],
+  }];
+
+  assert.equal(
+    estimateMessageTokens(messages, options),
+    options.messageOverhead
+      + estimateTokens("answer", options)
+      + options.imageTokenCost
+      + estimateTokens("think", options)
+      + options.reasoningBlockCost
+      + estimateTokens(JSON.stringify(rawPayload), options)
+      + options.rawBlockCost,
+  );
+  assert.equal(
+    estimateMessageTokens([{
+      role: "user",
+      content: [{ type: "image_url", image_url: { url: "https://example.test/image.png" } }],
+    }]),
+    4 + 1000,
+  );
 });

@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { groupIntoRounds } from "../../src/messages/rounds.js";
+import { groupIntoRounds, validateMessages } from "../../src/messages/rounds.js";
+import { KitError } from "../../src/providers/errors.js";
 import {
   multiRoundMixedConversation,
   multipleToolCallsRound,
@@ -80,5 +81,24 @@ test("rejects mismatched and orphan tool results with their index", () => {
       { role: "user", content: [{ type: "tool_result", tool_use_id: "orphan", content: "nope" }] },
     ]),
     (error) => /index 0/.test(error.message) && /tool_result/.test(error.message),
+  );
+});
+
+test("rejects tool blocks in roles that cannot carry them", () => {
+  assert.throws(
+    () => validateMessages([{
+      role: "user",
+      content: [{ type: "tool_use", id: "call-1", name: "exec", input: {} }],
+    }]),
+    (error) => error instanceof KitError
+      && error.code === "invalid_messages"
+      && /only legal in assistant/.test(error.message),
+  );
+  assert.throws(
+    () => validateMessages([{
+      role: "assistant",
+      content: [{ type: "tool_result", tool_use_id: "call-1", content: "nope" }],
+    }]),
+    (error) => error?.code === "invalid_messages",
   );
 });
