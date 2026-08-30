@@ -1,12 +1,24 @@
 {
   "name": "erix-agent",
-  "version": "0.0.0",
+  "version": "0.1.1",
   "description": "自研轻量编码 agent：零依赖 LLM 对话引擎 + 交互式 CLI + skill 自描述协议 + MCP 对接",
   "type": "module",
-  "engines": { "node": ">=22" },
-  "bin": { "erix": "bin/cli.js" },
-  "files": ["src", "bin", "README.md"],
-  "repository": { "type": "git", "url": "https://github.com/ErixWong/erix-agent.git" },
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "erix": "bin/cli.js"
+  },
+  "files": [
+    "src",
+    "bin",
+    "README.md",
+    "test/contract"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ErixWong/erix-agent.git"
+  },
   "exports": {
     ".": "./src/index.js",
     "./tools": "./src/tools/index.js",
@@ -16,6 +28,5 @@
     "test": "node --test",
     "check": "node --check src/index.js"
   },
-  "license": "UNLICENSED",
-  "private": true
+  "license": "UNLICENSED"
 }
