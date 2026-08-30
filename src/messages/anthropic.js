@@ -294,18 +294,33 @@ function parsedInput(partialJson) {
 /**
  * Assemble Anthropic server-sent events into a canonical response.
  *
- * @param {(delta:string)=>void} [onDelta]
+ * @param {(delta:string)=>void|{
+ *   onDelta?:(delta:string)=>void,
+ *   onReasoningDelta?:(delta:string, metadata?:object)=>void,
+ *   onToolCall?:(fragment:object)=>void,
+ *   onUsage?:(usage:object)=>void,
+ *   onEvent?:(event:object)=>void
+ * }} [callbacks]
  * @returns {{
  *   push:(eventType:string, data:object|string)=>void,
  *   finish:()=>{content:Block[], stopReason:string, usage?:{input_tokens?:number, output_tokens?:number}}
  * }}
  */
-export function createAnthropicStreamAssembler(onDelta) {
+export function createAnthropicStreamAssembler(callbacks) {
+  const options = typeof callbacks === "function" ? { onDelta: callbacks } : callbacks ?? {};
+  const {
+    onDelta,
+    onReasoningDelta,
+    onToolCall,
+    onUsage,
+    onEvent,
+  } = options;
   const blockStates = [];
   const usage = {};
   let hasUsage = false;
   let stopReason;
   let nextImplicitIndex = 0;
+  let usageEmitted = false;
 
   function addUsage(source) {
     if (source == null || typeof source !== "object") return;
@@ -332,7 +347,9 @@ export function createAnthropicStreamAssembler(onDelta) {
 
     const block = type === "tool_use"
       ? { type: "tool_use", input: {} }
-      : { type: "text", text: "" };
+      : type === "thinking" || type === "reasoning"
+        ? { type: "reasoning", text: "" }
+        : { type: "text", text: "" };
     const state = {
       block,
       type,
@@ -357,7 +374,11 @@ export function createAnthropicStreamAssembler(onDelta) {
     if (eventType === "content_block_start") {
       const source = data.content_block ?? {};
       const index = blockIndex(data);
-      const type = source.type === "tool_use" ? "tool_use" : source.type;
+      const type = source.type === "tool_use"
+        ? "tool_use"
+        : source.type === "thinking" || source.type === "reasoning"
+          ? "reasoning"
+          : source.type;
       const state = ensureState(index, type);
 
       if (type === "tool_use") {
@@ -367,10 +388,31 @@ export function createAnthropicStreamAssembler(onDelta) {
           name: source.name,
           input: source.input ?? {},
         };
+        onToolCall?.({
+          index,
+          ...(source.id === undefined ? {} : { id: source.id }),
+          ...(source.name === undefined ? {} : { name: String(source.name) }),
+        });
+        onEvent?.({
+          type: "tool_call",
+          index,
+          ...(source.id === undefined ? {} : { id: source.id }),
+          ...(source.name === undefined ? {} : { name: String(source.name) }),
+        });
       } else if (type === "text") {
         state.block = {
           type: "text",
           text: typeof source.text === "string" ? source.text : "",
+        };
+      } else if (type === "reasoning") {
+        state.block = {
+          type: "reasoning",
+          text: typeof source.thinking === "string"
+            ? source.thinking
+            : typeof source.text === "string"
+              ? source.text
+              : "",
+          ...(source.signature === undefined ? {} : { signature: source.signature }),
         };
       } else {
         state.block = { ...source };
@@ -379,8 +421,16 @@ export function createAnthropicStreamAssembler(onDelta) {
       return;
     }
 
-    if (eventType === "content_block_delta") {
-      const delta = data.delta ?? {};
+    if (
+      eventType === "content_block_delta"
+      || eventType === "thinking_delta"
+      || eventType === "thinking_delta.snapshot"
+      || eventType === "signature"
+      || eventType === "signature_delta"
+    ) {
+      const delta = data.delta ?? (
+        eventType === "content_block_delta" ? {} : { ...data, type: eventType }
+      );
       const index = blockIndex(data);
 
       if (delta.type === "text_delta") {
@@ -389,13 +439,56 @@ export function createAnthropicStreamAssembler(onDelta) {
         state.block.type = "text";
         state.block.text = `${state.block.text ?? ""}${text}`;
         onDelta?.(text);
+        onEvent?.({ type: "delta", delta: text });
+      } else if (
+        delta.type === "thinking_delta"
+        || delta.type === "thinking_delta.snapshot"
+      ) {
+        const state = ensureState(index, "reasoning");
+        const snapshot = delta.type.endsWith(".snapshot") || delta.snapshot === true;
+        const value = typeof delta.thinking === "string"
+          ? delta.thinking
+          : typeof delta.text === "string"
+            ? delta.text
+            : typeof delta.snapshot === "string"
+              ? delta.snapshot
+              : "";
+        const previous = String(state.block.text ?? "");
+        const fragment = snapshot && value.startsWith(previous)
+          ? value.slice(previous.length)
+          : value;
+        state.type = "reasoning";
+        state.block.type = "reasoning";
+        state.block.text = snapshot ? value : `${previous}${value}`;
+        if (fragment.length > 0) {
+          onReasoningDelta?.(fragment);
+          onEvent?.({ type: "reasoning_delta", delta: fragment });
+        }
+      } else if (delta.type === "signature_delta" || delta.type === "signature") {
+        const state = ensureState(index, "reasoning");
+        const signature = typeof delta.signature === "string" ? delta.signature : "";
+        state.type = "reasoning";
+        state.block.type = "reasoning";
+        if (signature.length > 0) state.block.signature = signature;
+        onEvent?.({
+          type: "reasoning_delta",
+          delta: "",
+          ...(signature.length > 0 ? { signature } : {}),
+        });
       } else if (delta.type === "input_json_delta") {
         const state = ensureState(index, "tool_use");
         state.type = "tool_use";
-        state.partialJson += typeof delta.partial_json === "string"
-          ? delta.partial_json
-          : "";
+        const partial = typeof delta.partial_json === "string" ? delta.partial_json : "";
+        state.partialJson += partial;
         state.hasJsonDelta = true;
+        const fragment = {
+          index,
+          ...(state.block.id === undefined ? {} : { id: state.block.id }),
+          ...(state.block.name === undefined ? {} : { name: String(state.block.name) }),
+          ...(partial.length > 0 ? { argumentsDelta: partial } : {}),
+        };
+        onToolCall?.(fragment);
+        onEvent?.({ type: "tool_call", ...fragment });
       }
       return;
     }
@@ -405,6 +498,9 @@ export function createAnthropicStreamAssembler(onDelta) {
       const state = blockStates[index];
       if (state?.type === "tool_use" && state.hasJsonDelta) {
         state.block.input = parsedInput(state.partialJson);
+      }
+      if (state?.type === "reasoning" && data.signature !== undefined) {
+        state.block.signature = data.signature;
       }
       return;
     }
@@ -424,14 +520,25 @@ export function createAnthropicStreamAssembler(onDelta) {
   }
 
   function finish() {
+    for (const state of blockStates) {
+      if (state?.type === "tool_use" && state.hasJsonDelta) {
+        state.block.input = parsedInput(state.partialJson);
+      }
+    }
     const content = blockStates
       .filter((state) => state !== undefined)
       .map((state) => state.block);
-    return {
+    const response = {
       content,
       stopReason,
       ...(hasUsage ? { usage } : {}),
     };
+    if (hasUsage && !usageEmitted) {
+      usageEmitted = true;
+      onUsage?.(usage);
+      onEvent?.({ type: "usage", usage });
+    }
+    return response;
   }
 
   return { push, finish };

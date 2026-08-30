@@ -11,8 +11,9 @@ import {
 } from "../messages/canonical.js";
 import {
   applyProviderPayloadOptions,
-  resolveProviderTimeout,
+  resolveProviderTimeouts,
 } from "./payload.js";
+import { createProviderTimeoutContext } from "./timeout.js";
 
 function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
@@ -41,9 +42,11 @@ function parseJson(bodyText) {
   }
 }
 
-function timeoutError(cause) {
+function timeoutError(cause, { phase = "request", elapsedMs } = {}) {
   return new KitError("timeout", "Request timed out", {
     retryable: true,
+    phase,
+    ...(elapsedMs === undefined ? {} : { elapsedMs }),
     ...(cause === undefined ? {} : { cause }),
   });
 }
@@ -99,6 +102,20 @@ export function createOpenAIProvider({
   fetchImpl = fetch,
   timeoutMs,
   timeout,
+  requestTimeoutMs,
+  request_timeout_ms,
+  requestTimeout: requestTimeoutOption,
+  firstByteTimeoutMs,
+  first_byte_timeout_ms,
+  firstByteTimeout,
+  streamIdleTimeoutMs,
+  stream_idle_timeout_ms,
+  streamIdleTimeout,
+  streamTotalTimeoutMs,
+  stream_total_timeout_ms,
+  streamTotalTimeout,
+  timeouts,
+  clock,
   maxTokens,
   maxOutputTokens,
   temperature,
@@ -118,7 +135,25 @@ export function createOpenAIProvider({
   thinking_format,
 }) {
   const selectedModel = model ?? model_name;
-  const requestTimeout = resolveProviderTimeout(timeout, timeoutMs);
+  const providerTimeoutOptions = {
+    timeout,
+    timeoutMs,
+    requestTimeoutMs,
+    request_timeout_ms,
+    requestTimeout: requestTimeoutOption,
+    firstByteTimeoutMs,
+    first_byte_timeout_ms,
+    firstByteTimeout,
+    streamIdleTimeoutMs,
+    stream_idle_timeout_ms,
+    streamIdleTimeout,
+    streamTotalTimeoutMs,
+    stream_total_timeout_ms,
+    streamTotalTimeout,
+    timeouts,
+  };
+  const providerTimeouts = resolveProviderTimeouts(providerTimeoutOptions);
+  const requestTimeout = providerTimeouts.requestTimeoutMs;
   const payloadDefaults = {
     maxTokens,
     maxOutputTokens,
@@ -141,6 +176,7 @@ export function createOpenAIProvider({
 
     const controller = new AbortController();
     const signal = req?.signal;
+    const startedAt = Date.now();
     let timedOut = false;
     let timer;
     let removeAbortListener;
@@ -149,7 +185,10 @@ export function createOpenAIProvider({
       timer = setTimeout(() => {
         timedOut = true;
         controller.abort();
-        reject(timeoutError());
+        reject(timeoutError(undefined, {
+          phase: "request",
+          elapsedMs: Date.now() - startedAt,
+        }));
       }, requestTimeout);
     });
     const abortPromise = signal
@@ -157,6 +196,7 @@ export function createOpenAIProvider({
         rejectAbort = () => reject(abortReason(signal));
       })
       : undefined;
+    abortPromise?.catch(() => {});
     const raceRequest = (promise) => Promise.race([
       promise,
       timeoutPromise,
@@ -165,8 +205,7 @@ export function createOpenAIProvider({
     const throwIfAborted = () => {
       if (!signal?.aborted) return;
       const reason = abortReason(signal);
-      if (reason instanceof KitError) throw reason;
-      throw classifyFetchException(reason);
+      throw reason;
     };
 
     if (signal) {
@@ -199,16 +238,29 @@ export function createOpenAIProvider({
       );
 
       throwIfAborted();
-      if (timedOut) throw timeoutError();
+      if (timedOut) {
+        throw timeoutError(undefined, {
+          phase: "request",
+          elapsedMs: Date.now() - startedAt,
+        });
+      }
       const bodyText = String(await raceRequest(
         readResponseBody(response),
       ) ?? "");
-      if (timedOut) throw timeoutError();
+      if (timedOut) {
+        throw timeoutError(undefined, {
+          phase: "request",
+          elapsedMs: Date.now() - startedAt,
+        });
+      }
 
       const { parsed, value } = parseJson(bodyText);
       const status = Number(response?.status);
       if (status < 200 || status >= 300) {
-        throw classifyHttpError(status, bodyText);
+        throw classifyHttpError(status, bodyText, {
+          phase: "request",
+          elapsedMs: Date.now() - startedAt,
+        });
       }
 
       if (
@@ -228,8 +280,14 @@ export function createOpenAIProvider({
 
       return openAIResponseToCanonical(value);
     } catch (err) {
+      if (signal?.aborted) throw abortReason(signal);
       if (err instanceof KitError) throw err;
-      if (timedOut) throw timeoutError(err);
+      if (timedOut) {
+        throw timeoutError(err, {
+          phase: "request",
+          elapsedMs: Date.now() - startedAt,
+        });
+      }
       throw classifyFetchException(err);
     } finally {
       removeAbortListener?.();
@@ -238,77 +296,52 @@ export function createOpenAIProvider({
   }
 
   async function chatStream(req = {}) {
-    const { onDelta, signal } = req;
+    const { signal } = req;
     const payload = buildPayload(req, true, selectedModel, payloadDefaults);
-    const controller = new AbortController();
-    let timedOut = false;
-    let timer;
-    let removeAbortListener;
-    let rejectAbort;
-    const timeoutPromise = new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-        reject(timeoutError());
-      }, requestTimeout);
+    const requestTimeouts = resolveProviderTimeouts({
+      ...providerTimeoutOptions,
+      ...req,
     });
-    const abortPromise = signal
-      ? new Promise((_, reject) => {
-        rejectAbort = () => reject(abortReason(signal));
-      })
-      : undefined;
-    const raceRequest = (promise) => Promise.race([
-      promise,
-      timeoutPromise,
-      ...(abortPromise ? [abortPromise] : []),
-    ]);
-    const throwIfAborted = () => {
-      if (!signal?.aborted) return;
-      const reason = abortReason(signal);
-      if (reason instanceof KitError) throw reason;
-      throw classifyFetchException(reason);
-    };
-
-    if (signal) {
-      const abort = () => {
-        controller.abort(signal.reason);
-        rejectAbort?.();
-      };
-      if (signal.aborted) {
-        abort();
-      } else if (typeof signal.addEventListener === "function") {
-        signal.addEventListener("abort", abort, { once: true });
-        if (typeof signal.removeEventListener === "function") {
-          removeAbortListener = () => signal.removeEventListener("abort", abort);
-        }
-      }
-    }
-
+    const context = createProviderTimeoutContext({
+      timeouts: requestTimeouts,
+      externalSignal: signal,
+      clock: req.clock ?? clock,
+    });
     let reader;
+    let status;
+    let streamPhase = "request";
     try {
-      throwIfAborted();
-      const response = await raceRequest(fetchImpl(url, {
+      context.throwIfAborted();
+      const response = await context.race(fetchImpl(url, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
-        signal: controller.signal,
-      }));
+        signal: context.controller.signal,
+      }), [{ phase: "request", duration: requestTimeouts.requestTimeoutMs }]);
 
-      throwIfAborted();
-      if (timedOut) throw timeoutError();
-      const status = Number(response?.status);
+      context.throwIfAborted();
+      status = Number(response?.status);
       if (status < 200 || status >= 300) {
-        const bodyText = String(await raceRequest(readResponseBody(response)) ?? "");
-        if (timedOut) throw timeoutError();
-        throw classifyHttpError(status, bodyText);
+        const bodyText = String(await context.race(
+          readResponseBody(response),
+          [{ phase: "request", duration: requestTimeouts.requestTimeoutMs }],
+        ) ?? "");
+        context.throwIfAborted();
+        throw classifyHttpError(status, bodyText, {
+          phase: "request",
+          elapsedMs: context.elapsedMs(),
+        });
       }
 
       if (typeof response?.body?.getReader !== "function") {
-        const bodyText = String(await raceRequest(readResponseBody(response)) ?? "");
-        if (timedOut) throw timeoutError();
+        const bodyText = String(await context.race(
+          readResponseBody(response),
+          [{ phase: "request", duration: requestTimeouts.requestTimeoutMs }],
+        ) ?? "");
+        context.throwIfAborted();
         const { parsed, value } = parseJson(bodyText);
         if (parsed && value && typeof value === "object" && hasOwn(value, "error")) {
           throw new KitError("server", upstreamErrorMessage(bodyText));
@@ -321,11 +354,19 @@ export function createOpenAIProvider({
       let buffer = "";
       let rawBody = "";
       let text = "";
+      let reasoning = "";
       let finishReason;
       let lastUsage;
       let sawData = false;
       let streamDone = false;
       const toolSlots = [];
+      let firstByteSeen = false;
+      context.beginStream();
+      streamPhase = "firstByte";
+
+      const emitEvent = (event) => {
+        req.onEvent?.(event);
+      };
 
       const processEvent = (eventText) => {
         const dataLines = eventText
@@ -365,7 +406,14 @@ export function createOpenAIProvider({
 
         if (typeof delta.content === "string") {
           text += delta.content;
-          onDelta?.(delta.content);
+          req.onDelta?.(delta.content);
+          emitEvent({ type: "delta", delta: delta.content });
+        }
+
+        if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+          reasoning += delta.reasoning_content;
+          req.onReasoningDelta?.(delta.reasoning_content);
+          emitEvent({ type: "reasoning_delta", delta: delta.reasoning_content });
         }
 
         if (!Array.isArray(delta.tool_calls)) return;
@@ -384,11 +432,25 @@ export function createOpenAIProvider({
 
           if (toolCall.id !== undefined) slot.id = toolCall.id;
           const functionDelta = toolCall.function;
-          if (!functionDelta || typeof functionDelta !== "object") continue;
-          if (functionDelta.name !== undefined) slot.name = functionDelta.name;
-          if (functionDelta.arguments !== undefined) {
-            slot.arguments = `${slot.arguments ?? ""}${String(functionDelta.arguments)}`;
+          if (functionDelta && typeof functionDelta === "object") {
+            if (functionDelta.name !== undefined) slot.name = functionDelta.name;
+            if (functionDelta.arguments !== undefined) {
+              slot.arguments = `${slot.arguments ?? ""}${String(functionDelta.arguments)}`;
+            }
           }
+
+          const fragment = {
+            index,
+            ...(slot.id === undefined ? {} : { id: slot.id }),
+            ...(!functionDelta || functionDelta.name === undefined
+              ? {}
+              : { name: String(functionDelta.name) }),
+            ...(!functionDelta || functionDelta.arguments === undefined
+              ? {}
+              : { argumentsDelta: String(functionDelta.arguments) }),
+          };
+          req.onToolCall?.(fragment);
+          emitEvent({ type: "tool_call", ...fragment });
         }
       };
 
@@ -404,8 +466,22 @@ export function createOpenAIProvider({
       };
 
       while (!streamDone) {
-        const result = await raceRequest(reader.read());
+        streamPhase = firstByteSeen ? "streamIdle" : "firstByte";
+        const entries = [{
+          phase: streamPhase,
+          duration: firstByteSeen
+            ? requestTimeouts.streamIdleTimeoutMs
+            : requestTimeouts.firstByteTimeoutMs,
+        }];
+        const totalRemaining = requestTimeouts.streamTotalTimeoutMs === undefined
+          ? undefined
+          : requestTimeouts.streamTotalTimeoutMs - context.streamElapsedMs();
+        if (totalRemaining !== undefined) {
+          entries.push({ phase: "streamTotal", duration: Math.max(0, totalRemaining) });
+        }
+        const result = await context.race(reader.read(), entries);
         if (result.done) break;
+        if (result.value && result.value.byteLength > 0) firstByteSeen = true;
         const chunk = decoder.decode(result.value, { stream: true });
         rawBody += chunk;
         buffer += chunk;
@@ -432,6 +508,7 @@ export function createOpenAIProvider({
       }
 
       const content = [];
+      if (reasoning.length > 0) content.push({ type: "reasoning", text: reasoning });
       if (text.length > 0) content.push({ type: "text", text });
       for (const slot of toolSlots) {
         if (!slot) continue;
@@ -462,16 +539,22 @@ export function createOpenAIProvider({
         if (lastUsage.completion_tokens !== undefined) {
           chatResponse.usage.output_tokens = lastUsage.completion_tokens;
         }
+        req.onUsage?.(lastUsage);
+        emitEvent({ type: "usage", usage: lastUsage });
       }
       return chatResponse;
     } catch (err) {
+      if (context.didExternalAbort()) throw context.externalError();
+      if (context.didTimeout()) throw context.timeoutError();
       if (err instanceof KitError) throw err;
-      if (timedOut) throw timeoutError(err);
-      throw classifyFetchException(err);
+      throw classifyFetchException(err, {
+        phase: streamPhase,
+        elapsedMs: context.elapsedMs(),
+        ...(status === undefined ? {} : { status }),
+      });
     } finally {
       if (reader) reader.releaseLock();
-      removeAbortListener?.();
-      clearTimeout(timer);
+      context.dispose();
     }
   }
 
