@@ -1,5 +1,13 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { estimateMessageTokens } from "../tokens.js";
+import {
+  cloneFoldPayload,
+  foldOptions,
+  optionValue,
+  roundRangeForIndexes,
+  runFoldHook,
+  selectFoldedRounds,
+} from "./helpers.js";
 
 function normalizedKeepRounds(value) {
   if (value === undefined) return 6;
@@ -41,7 +49,23 @@ function toolFootprint(rounds) {
     .join(", ");
 }
 
-function prependSummary(head, summary) {
+function prependSummary(head, summary, summaryRole = "user") {
+  if (summaryRole === "system") {
+    const systemIndex = head.findLastIndex((message) => message?.role === "system");
+    if (systemIndex < 0) {
+      return [{ role: "system", content: [{ type: "text", text: summary }] }, ...head];
+    }
+    const updatedHead = head.slice();
+    const system = updatedHead[systemIndex];
+    const content = typeof system.content === "string"
+      ? [{ type: "text", text: system.content }]
+      : Array.isArray(system.content) ? system.content : [];
+    updatedHead[systemIndex] = {
+      ...system,
+      content: [{ type: "text", text: summary }, ...content],
+    };
+    return updatedHead;
+  }
   const userIndex = head.findLastIndex(isRealUser);
   if (userIndex < 0) return head;
 
@@ -68,7 +92,7 @@ function prependSummary(head, summary) {
  *   compact: (messages: object[], options?: object) => Promise<object>
  * }}
  */
-export function createFoldStatisticalStrategy() {
+export function createFoldStatisticalStrategy(options = {}) {
   return {
     name: "fold-statistical",
 
@@ -76,23 +100,44 @@ export function createFoldStatisticalStrategy() {
       return estimateMessageTokens(messages) > budgetTokens;
     },
 
-    async compact(messages, { keepRounds } = {}) {
+    async compact(messages, callOptions = {}) {
       const tokensBefore = estimateMessageTokens(messages);
       const { head, rounds } = groupIntoRounds(messages);
-      const keep = normalizedKeepRounds(keepRounds);
-      const foldedCount = Math.max(0, rounds.length - keep);
-      const folded = rounds.slice(0, foldedCount);
-      const retained = rounds.slice(foldedCount);
-      const foldedPayload = folded.flatMap((round) => round.messages);
+      const settings = foldOptions(options, callOptions);
+      const keep = normalizedKeepRounds(
+        optionValue(callOptions, options, "keepRounds", undefined),
+      );
+      const { folded, retained, foldedIndexes } = selectFoldedRounds(
+        rounds,
+        keep,
+        settings.protectedMessage,
+      );
+      const foldedPayload = cloneFoldPayload(
+        folded.flatMap((round) => round.messages),
+        settings.stripHistoricalImages,
+      );
+      const roundRange = roundRangeForIndexes(
+        foldedIndexes,
+        settings.roundOffset,
+        settings.roundNumbers,
+      );
+      await runFoldHook(settings.onBeforeFold, {
+        messages,
+        folded,
+        retained,
+        foldedPayload,
+        roundRange,
+      });
 
       let compactedHead = head;
       if (folded.length > 0) {
+        const range = roundRange ?? { from: 1, to: folded.length };
         const summary = [
-          `【上下文折叠】早期第 1–${folded.length} 轮（共 ${folded.length} 轮）已折叠。`,
+          `【上下文折叠】早期第 ${range.from}–${range.to} 轮（共 ${folded.length} 轮）已折叠。`,
           `工具足迹：${toolFootprint(folded)}。`,
-          `可用 recall(pattern: "关键词") 搜回细节，或 recall(fromRound: 1, toRound: ${folded.length}) 取原文（大段可能截断，优先关键词）。`,
+          `可用 recall(pattern: "关键词") 搜回细节，或 recall(fromRound: ${range.from}, toRound: ${range.to}) 取原文（大段可能截断，优先关键词）。`,
         ].join("");
-        compactedHead = prependSummary(head, summary);
+        compactedHead = prependSummary(head, summary, settings.summaryRole);
       }
 
       const compactedMessages = [
@@ -101,14 +146,17 @@ export function createFoldStatisticalStrategy() {
       ];
       const tokensAfter = estimateMessageTokens(compactedMessages);
 
-      return {
+      const result = {
         messages: compactedMessages,
         compacted: folded.length > 0,
         foldedRounds: folded.length,
         tokensBefore,
         tokensAfter,
         foldedPayload,
+        ...(roundRange === undefined ? {} : { foldedRoundRange: roundRange }),
       };
+      await runFoldHook(settings.onAfterFold, { ...result, roundRange });
+      return result;
     },
   };
 }

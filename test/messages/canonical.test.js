@@ -195,7 +195,12 @@ test("parses text and tool calls, preserving invalid arguments as raw input", ()
       content: [
         { type: "text", text: "I will check." },
         { type: "tool_use", id: "call-good", name: "good", input: { value: 1 } },
-        { type: "tool_use", id: "call-bad", name: "bad", input: { _raw: '{"value":' } },
+        {
+          type: "tool_use",
+          id: "call-bad",
+          name: "bad",
+          input: { _truncatedArguments: '{"value":', _raw: '{"value":' },
+        },
       ],
       stopReason: "tool_use",
       usage: { input_tokens: 12, output_tokens: 7 },

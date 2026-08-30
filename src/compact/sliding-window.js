@@ -1,5 +1,13 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { estimateMessageTokens } from "../tokens.js";
+import {
+  cloneFoldPayload,
+  foldOptions,
+  optionValue,
+  roundRangeForIndexes,
+  runFoldHook,
+  selectFoldedRounds,
+} from "./helpers.js";
 
 function normalizedKeepRounds(value) {
   if (value === undefined) return 6;
@@ -35,7 +43,7 @@ function compactRounds(messages, keepRounds) {
  *   compact: (messages: object[], options?: object) => Promise<object>
  * }}
  */
-export function createSlidingWindowStrategy() {
+export function createSlidingWindowStrategy(options = {}) {
   return {
     name: "sliding-window",
 
@@ -43,22 +51,51 @@ export function createSlidingWindowStrategy() {
       return estimateMessageTokens(messages) > budgetTokens;
     },
 
-    async compact(messages, { keepRounds } = {}) {
+    async compact(messages, callOptions = {}) {
       const tokensBefore = estimateMessageTokens(messages);
-      const { compactedMessages, folded, foldedPayload } = compactRounds(
-        messages,
-        keepRounds,
+      const settings = foldOptions(options, callOptions);
+      const { head, rounds } = groupIntoRounds(messages);
+      const keepRounds = normalizedKeepRounds(
+        optionValue(callOptions, options, "keepRounds", undefined),
       );
+      const { folded, retained, foldedIndexes } = selectFoldedRounds(
+        rounds,
+        keepRounds,
+        settings.protectedMessage,
+      );
+      const foldedPayload = cloneFoldPayload(
+        folded.flatMap((round) => round.messages),
+        settings.stripHistoricalImages,
+      );
+      const roundRange = roundRangeForIndexes(
+        foldedIndexes,
+        settings.roundOffset,
+        settings.roundNumbers,
+      );
+      await runFoldHook(settings.onBeforeFold, {
+        messages,
+        folded,
+        retained,
+        foldedPayload,
+        roundRange,
+      });
+      const compactedMessages = [
+        ...head,
+        ...retained.flatMap((round) => round.messages),
+      ];
       const tokensAfter = estimateMessageTokens(compactedMessages);
-
-      return {
+      const result = {
         messages: compactedMessages,
         compacted: folded.length > 0,
         foldedRounds: folded.length,
         tokensBefore,
         tokensAfter,
         foldedPayload,
+        ...(roundRange === undefined ? {} : { foldedRoundRange: roundRange }),
       };
+      await runFoldHook(settings.onAfterFold, { ...result, roundRange });
+
+      return result;
     },
   };
 }

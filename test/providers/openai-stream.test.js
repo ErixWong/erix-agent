@@ -210,7 +210,7 @@ test("preserves invalid streamed tool arguments as raw input", async () => {
     type: "tool_use",
     id: "call_invalid",
     name: "lookup",
-    input: { _raw: '{"city":Paris' },
+    input: { _truncatedArguments: '{"city":Paris', _raw: '{"city":Paris' },
   }]);
 });
 

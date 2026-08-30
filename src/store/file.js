@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
-import { appendFile, mkdir } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -9,18 +10,40 @@ import { join } from "node:path";
  *   folded?:boolean,
  *   ts?:string,
  *   foldedPayload?:any,
+ *   dedupKey?:string,
+ *   foldedRoundRange?:{from:number,to:number},
  *   response?:{content:object[], stopReason?:string, usage?:object},
  *   textPreview?:string,
  *   toolUses?:number
  * }} RoundRecord
  */
 
-function safeRunId(runId) {
-  return String(runId).replace(/[^A-Za-z0-9._-]/g, "_");
+export function safeRunId(runId) {
+  const value = String(runId);
+  if (/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(value)
+    && value !== "." && value !== "..") {
+    return value;
+  }
+  const digest = createHash("sha256").update(value).digest("hex").slice(0, 24);
+  return `run-${digest}`;
 }
 
 function transcriptPath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.jsonl`);
+}
+
+function checkpointPath(dir, runId) {
+  return join(dir, `${safeRunId(runId)}.checkpoint.json`);
+}
+
+function statePath(dir, runId) {
+  return join(dir, `${safeRunId(runId)}.state.json`);
+}
+
+function recordKey(runId, record) {
+  return record?.dedupKey
+    ?? record?.roundKey
+    ?? `${String(runId)}:round:${String(record?.round)}`;
 }
 
 function blocksFor(content) {
@@ -67,26 +90,51 @@ async function* readRecords(path) {
  * @returns {{
  *   appendRound: (runId:string, record:RoundRecord) => Promise<void>,
  *   load: (runId:string) => Promise<RoundRecord[]>,
- *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string>
+ *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string>,
+ *   markRunState: (runId:string, state:string) => Promise<void>,
+ *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
+ *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
  * }}
  */
 export function createFileTranscriptStore({ dir }) {
+  const appendLocks = new Map();
+  const loadRecords = async (runId) => {
+    const records = [];
+    for await (const record of readRecords(transcriptPath(dir, runId))) {
+      records.push(record);
+    }
+    return records;
+  };
+  const withAppendLock = async (runId, operation) => {
+    const key = safeRunId(runId);
+    const previous = appendLocks.get(key) ?? Promise.resolve();
+    const current = previous.then(operation, operation);
+    appendLocks.set(key, current);
+    try {
+      return await current;
+    } finally {
+      if (appendLocks.get(key) === current) appendLocks.delete(key);
+    }
+  };
+
   return {
     async appendRound(runId, record) {
-      await mkdir(dir, { recursive: true });
-      await appendFile(
-        transcriptPath(dir, runId),
-        `${JSON.stringify(record)}\n`,
-        "utf8",
-      );
+      await withAppendLock(runId, async () => {
+        await mkdir(dir, { recursive: true });
+        const records = await loadRecords(runId);
+        if (records.some((existing) => recordKey(runId, existing) === recordKey(runId, record))) {
+          return;
+        }
+        await appendFile(
+          transcriptPath(dir, runId),
+          `${JSON.stringify(record)}\n`,
+          "utf8",
+        );
+      });
     },
 
     async load(runId) {
-      const records = [];
-      for await (const record of readRecords(transcriptPath(dir, runId))) {
-        records.push(record);
-      }
-      return records;
+      return loadRecords(runId);
     },
 
     async recall(runId, fromRound, toRound, pattern) {
@@ -121,6 +169,45 @@ export function createFileTranscriptStore({ dir }) {
       }
 
       return result;
+    },
+
+    async markRunState(runId, state) {
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        statePath(dir, runId),
+        `${JSON.stringify({ runId, state, ts: new Date().toISOString() })}\n`,
+        "utf8",
+      );
+    },
+
+    async saveCheckpoint(runId, checkpoint) {
+      await mkdir(dir, { recursive: true });
+      const target = checkpointPath(dir, runId);
+      const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+      await writeFile(temporary, `${JSON.stringify(checkpoint)}\n`, "utf8");
+      await rename(temporary, target);
+    },
+
+    async appendCheckpoint(runId, checkpoint) {
+      await this.saveCheckpoint(runId, checkpoint);
+    },
+
+    async loadLatestCheckpoint(runId) {
+      try {
+        return JSON.parse(await readFile(checkpointPath(dir, runId), "utf8"));
+      } catch (error) {
+        if (error?.code === "ENOENT") return undefined;
+        throw error;
+      }
+    },
+
+    async loadRunState(runId) {
+      try {
+        return JSON.parse(await readFile(statePath(dir, runId), "utf8"));
+      } catch (error) {
+        if (error?.code === "ENOENT") return undefined;
+        throw error;
+      }
     },
   };
 }

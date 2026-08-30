@@ -375,7 +375,10 @@ export function openAIResponseToCanonical(json) {
     try {
       input = JSON.parse(rawArguments === undefined ? "{}" : rawArguments);
     } catch {
-      input = { _raw: rawArguments };
+      input = {
+        _truncatedArguments: rawArguments,
+        _raw: rawArguments,
+      };
     }
     content.push({
       type: "tool_use",

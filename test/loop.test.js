@@ -37,6 +37,7 @@ test("feeds tool results back to the provider on the next round", async () => {
     provider,
     initialUserMessage: "find x",
     executeTool: async (name, input) => `${name}:${input.key}`,
+    completion: false,
   });
 
   assert.equal(result.finalText, "found");
@@ -110,6 +111,7 @@ test("feeds executeTool errors back as is_error and continues", async () => {
     executeTool: async () => {
       throw new Error("permission denied");
     },
+    completion: false,
   });
 
   assert.equal(result.finalText, "recovered");
@@ -134,6 +136,7 @@ test("onToolResult can rewrite a result before it is fed back", async () => {
     provider,
     initialUserMessage: "read",
     executeTool: async () => "top secret",
+    completion: false,
     onToolResult: async (name, result) => `${name}:${result.replace("top ", "")}`,
   });
 
@@ -156,6 +159,7 @@ test("stores each round snapshot and can rebuild the transcript", async () => {
     initialUserMessage: "start",
     executeTool: async () => "worked",
     store,
+    completion: false,
   });
   const records = await store.load("run-1");
 
@@ -185,6 +189,7 @@ test("accumulates input and output usage", async () => {
     provider,
     initialUserMessage: "start",
     executeTool: async () => "done",
+    completion: false,
   });
 
   assert.deepEqual(result.usage, { input_tokens: 11, output_tokens: 5 });
