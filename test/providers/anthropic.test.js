@@ -172,7 +172,7 @@ test("classifies timeout, rate limit, auth, server, and network errors", async (
   const abortError = new Error("aborted");
   abortError.name = "AbortError";
   const cases = [
-    { name: "timeout", script: [{ throw: abortError }], code: "timeout", retryable: true },
+    { name: "aborted", script: [{ throw: abortError }], code: "aborted", retryable: false },
     {
       name: "rate limited",
       script: [{ status: 429, json: { error: { message: "Slow down" } } }],

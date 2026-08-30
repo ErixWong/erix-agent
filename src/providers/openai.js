@@ -2,6 +2,7 @@ import {
   KitError,
   classifyFetchException,
   classifyHttpError,
+  validateProviderConfig,
   upstreamErrorMessage,
 } from "./errors.js";
 import {
@@ -133,8 +134,9 @@ export function createOpenAIProvider({
   model_type,
   supports_reasoning,
   thinking_format,
-}) {
+} = {}) {
   const selectedModel = model ?? model_name;
+  validateProviderConfig("OpenAI", { endpoint, apiKey, model: selectedModel });
   const providerTimeoutOptions = {
     timeout,
     timeoutMs,
@@ -169,7 +171,10 @@ export function createOpenAIProvider({
     presence_penalty,
     response_format,
   };
-  const url = `${String(endpoint).replace(/\/+$/, "")}/chat/completions`;
+  const base = String(endpoint).replace(/\/+$/, "");
+  const url = base.endsWith("/v1")
+    ? `${base}/chat/completions`
+    : `${base}/v1/chat/completions`;
 
   async function chat(req) {
     const payload = buildPayload(req, false, selectedModel, payloadDefaults);
@@ -280,7 +285,9 @@ export function createOpenAIProvider({
 
       return openAIResponseToCanonical(value);
     } catch (err) {
-      if (signal?.aborted) throw abortReason(signal);
+      if (signal?.aborted) {
+        throw classifyFetchException(abortReason(signal), { signal });
+      }
       if (err instanceof KitError) throw err;
       if (timedOut) {
         throw timeoutError(err, {
@@ -288,7 +295,7 @@ export function createOpenAIProvider({
           elapsedMs: Date.now() - startedAt,
         });
       }
-      throw classifyFetchException(err);
+      throw classifyFetchException(err, { signal });
     } finally {
       removeAbortListener?.();
       clearTimeout(timer);
@@ -550,6 +557,7 @@ export function createOpenAIProvider({
       throw classifyFetchException(err, {
         phase: streamPhase,
         elapsedMs: context.elapsedMs(),
+        signal,
         ...(status === undefined ? {} : { status }),
       });
     } finally {

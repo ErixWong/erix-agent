@@ -2,6 +2,7 @@ import {
   KitError,
   classifyFetchException,
   classifyHttpError,
+  validateProviderConfig,
   upstreamErrorMessage,
 } from "./errors.js";
 import {
@@ -245,8 +246,9 @@ export function createAnthropicProvider({
   model_type,
   supports_reasoning,
   thinking_format,
-}) {
+} = {}) {
   const selectedModel = model ?? model_name;
+  validateProviderConfig("Anthropic", { endpoint, apiKey, model: selectedModel });
   const providerTimeoutOptions = {
     timeout: timeoutOption,
     timeoutMs,
@@ -267,7 +269,7 @@ export function createAnthropicProvider({
   const providerTimeouts = resolveProviderTimeouts(providerTimeoutOptions);
   const requestTimeout = providerTimeouts.requestTimeoutMs;
   const requestDefaults = {
-    maxTokens: maxTokens ?? maxOutputTokens,
+    maxTokens: maxTokens ?? maxOutputTokens ?? 4096,
     temperature,
     topP,
     thinking,
@@ -368,7 +370,7 @@ export function createAnthropicProvider({
           elapsedMs: context.elapsedMs(),
         });
       }
-      throw classifyFetchException(err);
+      throw classifyFetchException(err, { signal: req?.signal });
     } finally {
       context.dispose();
     }
@@ -435,6 +437,7 @@ export function createAnthropicProvider({
       throw classifyFetchException(err, {
         phase: streamPhase,
         elapsedMs: context.elapsedMs(),
+        signal: req?.signal,
         ...(status === undefined ? {} : { status }),
       });
     } finally {

@@ -121,6 +121,9 @@ function defaultSleep(ms, signal) {
 /**
  * Run the minimum tool-calling loop against an injected provider.
  *
+ * Stall detection defaults to `appear`, which detects a signature anywhere in
+ * the window; `consecutive` requires the entire window to match.
+ *
  * @param {{
  *   provider: {chat: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
  *   system?: string,
@@ -132,7 +135,7 @@ function defaultSleep(ms, signal) {
  *   maxTokens?: number,
  *   temperature?: number,
  *   topP?: number,
- *   stallDetection?: {window?:number}|false,
+ *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false,
  *   retry?: {attempts?:number, backoffBaseMs?:number, backoffMaxMs?:number,
  *     sleepImpl?:(ms:number)=>Promise<void>}|false,
  *   completion?: {signals?:string[], maxNoToolRounds?:number}|false,
@@ -217,6 +220,7 @@ export async function runToolLoop({
     : Number.isInteger(stallDetection?.window) && stallDetection.window > 0
       ? stallDetection.window
       : 4;
+  const stallMode = stallDetection?.mode === "consecutive" ? "consecutive" : "appear";
   const usage = { input_tokens: 0, output_tokens: 0 };
   const retryOptions = retry && typeof retry === "object" ? retry : null;
   const retryAttempts = Number.isInteger(retryOptions?.attempts)
@@ -467,6 +471,8 @@ export async function runToolLoop({
       }
       roundStopReason = response?.stopReason;
     }
+    const continuationExhausted = response?.stopReason === "max_tokens"
+      && tokenContinuationCount >= continuationLimit;
     finalText = textFromBlocks(content);
 
     if (hasToolUse(content)) {
@@ -481,9 +487,12 @@ export async function runToolLoop({
         emitEvent({ type: "tool_use", round, toolUse: cloneState(block) });
 
         const signature = `${block.name}${JSON.stringify(block.input)}`;
-        if (stallWindow > 0
-          && recentSignatures.length >= stallWindow
-          && recentSignatures.includes(signature)) {
+        const stalled = stallMode === "consecutive"
+          ? recentSignatures.length >= stallWindow
+            && recentSignatures.slice(-stallWindow).every((recent) => recent === signature)
+          : recentSignatures.length >= stallWindow
+            && recentSignatures.includes(signature);
+        if (stallWindow > 0 && stalled) {
           throw stallError(signature);
         }
         if (stallWindow > 0) {
@@ -543,6 +552,13 @@ export async function runToolLoop({
       round,
       messages: messages.slice(roundStart),
       ts: new Date().toISOString(),
+      response: {
+        content,
+        stopReason: response?.stopReason,
+        ...(response?.usage === undefined ? {} : { usage: response.usage }),
+      },
+      textPreview: textFromBlocks(content),
+      toolUses: content.filter((block) => block?.type === "tool_use").length,
     };
     if (compaction.folded) {
       record.folded = true;
@@ -567,6 +583,7 @@ export async function runToolLoop({
       stopReason: roundStopReason,
       usage: { ...usage },
     });
+    if (continuationExhausted) return finish(true);
     if (!shouldContinue) return finish(false);
   }
 
