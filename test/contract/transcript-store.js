@@ -1,7 +1,7 @@
 // TranscriptStore 契约测试套件（ADR-002）
 // 任何 TranscriptStore 实现（库内置 memory/file、项目侧 MariaDB/PG 适配器）
 // 都必须通过同一组断言。用法：
-//   import { transcriptStoreContract } from "@erix/llm-kit/contract-tests";
+//   import { transcriptStoreContract } from "erix-agent/contract-tests";
 //   transcriptStoreContract("mariadb", () => createMariaTranscriptStore(...));
 // 实现特有行为（崩溃恢复/连接管理/清理）由实现方自行补充测试，不进契约。
 

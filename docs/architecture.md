@@ -194,7 +194,7 @@ src/
 ├── config/
 │   ├── static.js env.js  # v0.1
 │   └── json-file.js      # v0.2：含 slot 与 apiKey 间接引用解析
-├── tools/                # subpath export @erix/llm-kit/tools（v0.2）
+├── tools/                # subpath export erix-agent/tools（v0.2）
 │   ├── jail.js           # 路径牢笼助手（root 内解析、writable 子树、maskedPaths 拒读）
 │   ├── file-tools.js     # readFile/rg/tree/writeFile 参考实现（建在 jail 上）
 │   ├── recall.js         # recall 工具（建在 TranscriptStore 上）

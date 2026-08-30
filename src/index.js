@@ -1,4 +1,4 @@
-// @erix/llm-kit 公共导出（tools 子路径 v0.2 才落地，见 package.json exports）
+// erix-agent 公共导出（tools 子路径 v0.2 才落地，见 package.json exports）
 export { KitError, classifyHttpError, classifyFetchException } from "./providers/errors.js";
 export { createOpenAIProvider } from "./providers/openai.js";
 export { createAnthropicProvider } from "./providers/anthropic.js";

@@ -16,9 +16,9 @@
 - `onToolResult` 钩子：结果回喂 LLM 前的后处理点（截断/脱敏/扫描），
   项目政策（如 app_container 的 secret 复查）挂在这里，库提供挂载点不提供规则。
 
-### 第二层：可选工具库（`@erix/llm-kit/tools` 子路径导出，v0.2）
+### 第二层：可选工具库（`erix-agent/tools` 子路径导出，v0.2）
 
-不进主导出，显式 `import … from "@erix/llm-kit/tools"` 才可用。三件：
+不进主导出，显式 `import … from "erix-agent/tools"` 才可用。三件：
 
 1. **`createJail({ root, writable = [], maskedPaths = [] })`** —— 路径牢笼助手。
    解析后必须仍在 root 内（越界抛错）、写仅限 writable 子树、maskedPaths 拒读。

@@ -85,7 +85,7 @@
 | # | 需求 | 详见 |
 |---|---|---|
 | FR-5.1 | 规范工具 schema + 协议序列化由适配层负责；执行永远在调用方 | ADR-005 |
-| FR-5.2 | 可选子路径导出 `@erix/llm-kit/tools`：路径牢笼助手 + 文件工具参考实现 + recall | ADR-005 |
+| FR-5.2 | 可选子路径导出 `erix-agent/tools`：路径牢笼助手 + 文件工具参考实现 + recall | ADR-005 |
 | FR-5.3 | ToolProvider 分层：定义可插拔（static/json-file/composite，DB 在项目侧），执行器注册表永远在代码，求交 fail closed | ADR-006 |
 
 ## 4. 分期
@@ -105,7 +105,7 @@
 - 零运行时依赖；devDependencies 也不引入（node --test 够用）
 - 库内任何文件不含密钥；配置适配器的 apiKey 间接引用机制是第一公民（ADR-001）
 - 所有压缩/重试行为有 `node --test` 单测锁定；协议适配层用 mock fetch 测
-- 发布走 Gitea npm registry（`@erix/llm-kit`），消费方 docker build 用 secret mount 注入 npmrc token
+- 发布走 Gitea npm registry（`erix-agent`），消费方 docker build 用 secret mount 注入 npmrc token
 
 ## 6. 风险
 

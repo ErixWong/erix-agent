@@ -42,7 +42,7 @@ src/
 - **零运行时依赖**、纯 ESM、Node 22+、无构建步骤
 - 测试：`node --test`（app_container 侧需 Node 24 跑 `await using`，库本身 22 可测）
 - 类型：JSDoc typedef（两个消费项目都是纯 JS）
-- 分发：公开 npm（`@erix/llm-kit`），代码托管在自托管 Gitea
+- 分发：公开 npm（`erix-agent`），代码托管在 GitHub（ErixWong/erix-agent）
 - 任何提交禁止 token/密钥明文
 
 ## CLI：erix（agent 形态）

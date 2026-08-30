@@ -1,5 +1,5 @@
 {
-  "name": "@erix/llm-kit",
+  "name": "erix-agent",
   "version": "0.0.0",
   "description": "跨项目共享的 LLM 对话循环引擎：协议适配 + 工具调用循环 + 上下文预算压缩（脑干，不是 agent）",
   "type": "module",
