@@ -331,7 +331,7 @@ async function runChat({
     endpoint: config.endpoint,
     apiKey: config.apiKey,
     model: config.model,
-    timeoutMs: 120_000,
+    timeoutMs: 300_000,
     maxTokens,
   });
   const cliTools = createCliTools({ cwd: process.cwd() });

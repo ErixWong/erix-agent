@@ -409,7 +409,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         endpoint: config.endpoint,
         apiKey: config.apiKey,
         model,
-        timeoutMs: 120_000,
+        timeoutMs: 300_000,
         maxTokens: config.maxOutputTokens,
       });
       const roundMessages = [
