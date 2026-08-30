@@ -117,3 +117,90 @@ export function applyProviderPayloadOptions(
 export function resolveProviderTimeout(timeout, timeoutMs) {
   return timeout ?? timeoutMs ?? 120000;
 }
+
+function timeoutValue(options, names) {
+  const nestedTimeout = options?.timeout !== null
+    && typeof options?.timeout === "object"
+    ? options.timeout
+    : undefined;
+  for (const source of [options, options?.timeouts, nestedTimeout]) {
+    for (const name of names) {
+      if (source?.[name] !== undefined && source[name] !== null) {
+        return source[name];
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolve legacy and explicit request/stream timeout settings.
+ *
+ * `timeout`/`timeoutMs` remain one request-wide deadline. Supplying any
+ * phase-specific setting opts into the three-phase stream model.
+ */
+export function resolveProviderTimeouts(options = {}) {
+  const legacy = timeoutValue(options, ["timeout", "timeoutMs"]);
+  const phaseValues = [
+    "requestTimeoutMs",
+    "request_timeout_ms",
+    "requestTimeout",
+    "request_timeout",
+    "request",
+    "firstByteTimeoutMs",
+    "first_byte_timeout_ms",
+    "firstByteTimeout",
+    "first_byte_timeout",
+    "firstByte",
+    "streamIdleTimeoutMs",
+    "stream_idle_timeout_ms",
+    "streamIdleTimeout",
+    "stream_idle_timeout",
+    "streamIdle",
+    "streamTotalTimeoutMs",
+    "stream_total_timeout_ms",
+    "streamTotalTimeout",
+    "stream_total_timeout",
+    "streamTotal",
+  ];
+  const hasExplicitPhase = phaseValues.some((name) => (
+    timeoutValue(options, [name]) !== undefined
+  ));
+  const requestTimeoutMs = timeoutValue(options, [
+    "requestTimeoutMs",
+    "request_timeout_ms",
+    "requestTimeout",
+    "request_timeout",
+    "request",
+  ]) ?? legacy ?? 120000;
+  const firstByteTimeoutMs = timeoutValue(options, [
+    "firstByteTimeoutMs",
+    "first_byte_timeout_ms",
+    "firstByteTimeout",
+    "first_byte_timeout",
+    "firstByte",
+  ]) ?? 120000;
+  const streamIdleTimeoutMs = timeoutValue(options, [
+    "streamIdleTimeoutMs",
+    "stream_idle_timeout_ms",
+    "streamIdleTimeout",
+    "stream_idle_timeout",
+    "streamIdle",
+  ]) ?? 120000;
+  const streamTotalTimeoutMs = timeoutValue(options, [
+    "streamTotalTimeoutMs",
+    "stream_total_timeout_ms",
+    "streamTotalTimeout",
+    "stream_total_timeout",
+    "streamTotal",
+  ]) ?? 300000;
+
+  return {
+    requestTimeoutMs,
+    firstByteTimeoutMs,
+    streamIdleTimeoutMs,
+    streamTotalTimeoutMs,
+    legacyTimeoutMs: hasExplicitPhase ? undefined : requestTimeoutMs,
+    explicitPhase: hasExplicitPhase,
+  };
+}

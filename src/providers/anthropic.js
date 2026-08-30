@@ -9,7 +9,8 @@ import {
   canonicalToAnthropicRequest,
   createAnthropicStreamAssembler,
 } from "../messages/anthropic.js";
-import { resolveProviderTimeout } from "./payload.js";
+import { resolveProviderTimeouts } from "./payload.js";
+import { createProviderTimeoutContext } from "./timeout.js";
 
 function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
@@ -27,9 +28,11 @@ function parseJson(bodyText) {
   }
 }
 
-function timeoutError(cause) {
+function timeoutError(cause, { phase = "request", elapsedMs } = {}) {
   return new KitError("timeout", "Request timed out", {
     retryable: true,
+    phase,
+    ...(elapsedMs === undefined ? {} : { elapsedMs }),
     ...(cause === undefined ? {} : { cause }),
   });
 }
@@ -64,7 +67,7 @@ function parseSseEvent(eventType, dataLines) {
   return { type, data: value };
 }
 
-async function readSseBody(response, assembler, timeoutPromise) {
+async function readSseBody(response, assembler, context, timeouts) {
   if (!response?.body || typeof response.body.getReader !== "function") {
     throw new KitError("server", "Anthropic response is missing a stream body");
   }
@@ -96,8 +99,24 @@ async function readSseBody(response, assembler, timeoutPromise) {
     }
   };
 
+  let firstByteSeen = false;
+  context.beginStream();
   while (true) {
-    const result = await Promise.race([reader.read(), timeoutPromise]);
+    const streamPhase = firstByteSeen ? "streamIdle" : "firstByte";
+    const entries = [{
+      phase: streamPhase,
+      duration: firstByteSeen
+        ? timeouts.streamIdleTimeoutMs
+        : timeouts.firstByteTimeoutMs,
+    }];
+    const totalRemaining = timeouts.streamTotalTimeoutMs === undefined
+      ? undefined
+      : timeouts.streamTotalTimeoutMs - context.streamElapsedMs();
+    if (totalRemaining !== undefined) {
+      entries.push({ phase: "streamTotal", duration: Math.max(0, totalRemaining) });
+    }
+    const result = await context.race(reader.read(), entries);
+    if (result.value && result.value.byteLength > 0) firstByteSeen = true;
     const text = decoder.decode(result.value, { stream: !result.done });
     buffer += text;
 
@@ -118,20 +137,42 @@ async function readSseBody(response, assembler, timeoutPromise) {
 
 function createRequestContext(timeoutMs, externalSignal) {
   const controller = new AbortController();
+  const startedAt = Date.now();
   let timedOut = false;
+  let externalFailure;
   let timer;
   let removeExternalListener;
+  let rejectExternal;
+  const abortPromise = new Promise((_, reject) => {
+    rejectExternal = reject;
+  });
+  abortPromise.catch(() => {});
 
   const timeoutPromise = new Promise((_, reject) => {
     timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
-      reject(timeoutError());
+      reject(timeoutError(undefined, {
+        phase: "request",
+        elapsedMs: Date.now() - startedAt,
+      }));
     }, timeoutMs);
   });
 
   if (externalSignal) {
-    const abort = () => controller.abort(externalSignal.reason);
+    const abort = () => {
+      externalFailure = externalSignal.reason instanceof Error
+        ? externalSignal.reason
+        : (() => {
+            const error = new Error(externalSignal.reason === undefined
+              ? "The operation was aborted"
+              : String(externalSignal.reason));
+            error.name = "AbortError";
+            return error;
+          })();
+      controller.abort(externalFailure);
+      rejectExternal(externalFailure);
+    };
     if (externalSignal.aborted) {
       abort();
     } else {
@@ -143,7 +184,11 @@ function createRequestContext(timeoutMs, externalSignal) {
   return {
     controller,
     timeoutPromise,
+    abortPromise,
     didTimeout: () => timedOut,
+    didExternalAbort: () => externalFailure !== undefined,
+    externalError: () => externalFailure,
+    elapsedMs: () => Date.now() - startedAt,
     dispose() {
       clearTimeout(timer);
       removeExternalListener?.();
@@ -168,7 +213,21 @@ export function createAnthropicProvider({
   model_name,
   fetchImpl = fetch,
   timeoutMs,
-  timeout,
+  timeout: timeoutOption,
+  requestTimeoutMs,
+  request_timeout_ms,
+  requestTimeout: requestTimeoutOption,
+  firstByteTimeoutMs,
+  first_byte_timeout_ms,
+  firstByteTimeout,
+  streamIdleTimeoutMs,
+  stream_idle_timeout_ms,
+  streamIdleTimeout,
+  streamTotalTimeoutMs,
+  stream_total_timeout_ms,
+  streamTotalTimeout,
+  timeouts,
+  clock,
   maxTokens,
   maxOutputTokens,
   temperature,
@@ -188,7 +247,25 @@ export function createAnthropicProvider({
   thinking_format,
 }) {
   const selectedModel = model ?? model_name;
-  const requestTimeout = resolveProviderTimeout(timeout, timeoutMs);
+  const providerTimeoutOptions = {
+    timeout: timeoutOption,
+    timeoutMs,
+    requestTimeoutMs,
+    request_timeout_ms,
+    requestTimeout: requestTimeoutOption,
+    firstByteTimeoutMs,
+    first_byte_timeout_ms,
+    firstByteTimeout,
+    streamIdleTimeoutMs,
+    stream_idle_timeout_ms,
+    streamIdleTimeout,
+    streamTotalTimeoutMs,
+    stream_total_timeout_ms,
+    streamTotalTimeout,
+    timeouts,
+  };
+  const providerTimeouts = resolveProviderTimeouts(providerTimeoutOptions);
+  const requestTimeout = providerTimeouts.requestTimeoutMs;
   const requestDefaults = {
     maxTokens: maxTokens ?? maxOutputTokens,
     temperature,
@@ -237,19 +314,36 @@ export function createAnthropicProvider({
           signal: context.controller.signal,
         }),
         context.timeoutPromise,
+        context.abortPromise,
       ]);
-      if (context.didTimeout()) throw timeoutError();
+      if (context.didExternalAbort()) throw context.externalError();
+      if (context.didTimeout()) {
+        throw timeoutError(undefined, {
+          phase: "request",
+          elapsedMs: context.elapsedMs(),
+        });
+      }
 
       const bodyText = String(await Promise.race([
         readResponseBody(response),
         context.timeoutPromise,
+        context.abortPromise,
       ]) ?? "");
-      if (context.didTimeout()) throw timeoutError();
+      if (context.didExternalAbort()) throw context.externalError();
+      if (context.didTimeout()) {
+        throw timeoutError(undefined, {
+          phase: "request",
+          elapsedMs: context.elapsedMs(),
+        });
+      }
 
       const { parsed, value } = parseJson(bodyText);
       const status = Number(response?.status);
       if (status < 200 || status >= 300) {
-        throw classifyHttpError(status, bodyText);
+        throw classifyHttpError(status, bodyText, {
+          phase: "request",
+          elapsedMs: context.elapsedMs(),
+        });
       }
       if (
         !parsed
@@ -266,8 +360,14 @@ export function createAnthropicProvider({
 
       return anthropicResponseToCanonical(value);
     } catch (err) {
+      if (context.didExternalAbort()) throw context.externalError();
       if (err instanceof KitError) throw err;
-      if (context.didTimeout()) throw timeoutError(err);
+      if (context.didTimeout()) {
+        throw timeoutError(err, {
+          phase: "request",
+          elapsedMs: context.elapsedMs(),
+        });
+      }
       throw classifyFetchException(err);
     } finally {
       context.dispose();
@@ -276,41 +376,67 @@ export function createAnthropicProvider({
 
   async function chatStream(req) {
     const payload = canonicalToAnthropicRequest(requestWithDefaults(req, true));
-    const context = createRequestContext(requestTimeout, req?.signal);
+    const requestTimeouts = resolveProviderTimeouts({
+      ...providerTimeoutOptions,
+      ...req,
+    });
+    const context = createProviderTimeoutContext({
+      timeouts: requestTimeouts,
+      externalSignal: req?.signal,
+      clock: req?.clock ?? clock,
+    });
+    let status;
+    let streamPhase = "request";
 
     try {
-      const response = await Promise.race([
+      context.throwIfAborted();
+      const response = await context.race(
         fetchImpl(url, {
           method: "POST",
           headers,
           body: JSON.stringify(payload),
           signal: context.controller.signal,
         }),
-        context.timeoutPromise,
-      ]);
-      if (context.didTimeout()) throw timeoutError();
+        [{ phase: "request", duration: requestTimeouts.requestTimeoutMs }],
+      );
+      context.throwIfAborted();
 
-      const status = Number(response?.status);
+      status = Number(response?.status);
       if (status < 200 || status >= 300) {
-        const bodyText = String(await Promise.race([
+        const bodyText = String(await context.race(
           readResponseBody(response),
-          context.timeoutPromise,
-        ]) ?? "");
-        if (context.didTimeout()) throw timeoutError();
-        throw classifyHttpError(status, bodyText);
+          [{ phase: "request", duration: requestTimeouts.requestTimeoutMs }],
+        ) ?? "");
+        context.throwIfAborted();
+        throw classifyHttpError(status, bodyText, {
+          phase: "request",
+          elapsedMs: context.elapsedMs(),
+        });
       }
 
       const deltas = [];
       const onDelta = typeof req?.onDelta === "function"
         ? req.onDelta
         : (text) => deltas.push(text);
-      const assembler = createAnthropicStreamAssembler(onDelta);
-      await readSseBody(response, assembler, context.timeoutPromise);
+      const assembler = createAnthropicStreamAssembler({
+        onDelta,
+        onReasoningDelta: req?.onReasoningDelta,
+        onToolCall: req?.onToolCall,
+        onUsage: req?.onUsage,
+        onEvent: req?.onEvent,
+      });
+      streamPhase = "firstByte";
+      await readSseBody(response, assembler, context, requestTimeouts);
       return assembler.finish();
     } catch (err) {
+      if (context.didExternalAbort()) throw context.externalError();
+      if (context.didTimeout()) throw context.timeoutError();
       if (err instanceof KitError) throw err;
-      if (context.didTimeout()) throw timeoutError(err);
-      throw classifyFetchException(err);
+      throw classifyFetchException(err, {
+        phase: streamPhase,
+        elapsedMs: context.elapsedMs(),
+        ...(status === undefined ? {} : { status }),
+      });
     } finally {
       context.dispose();
     }

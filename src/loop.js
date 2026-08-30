@@ -62,9 +62,61 @@ function stallError(signature) {
   return error;
 }
 
-function defaultSleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function cloneState(value) {
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
 }
+
+function abortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const error = new Error(signal?.reason === undefined
+    ? "The operation was aborted"
+    : String(signal.reason));
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  if (typeof signal.throwIfAborted === "function") signal.throwIfAborted();
+  throw abortError(signal);
+}
+
+function defaultSleep(ms, signal) {
+  if (ms <= 0) {
+    throwIfAborted(signal);
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    let timer;
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+      reject(abortError(signal));
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve();
+    }, ms);
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
+
+/**
+ * @typedef {object} LoopEvent
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"round_end"} type
+ * @property {number} [round]
+ * @property {number} [attempt] 1-based provider attempt within the round.
+ * @property {number} [maxAttempts] Retry count plus the initial attempt.
+ * @property {object} [usage] Provider usage reported after a successful call.
+ * @property {object} [toolUse] Completed canonical tool_use block.
+ * @property {object} [toolResult] Canonical tool_result block.
+ * @property {string} [finalText] Text accumulated at round end.
+ * @property {string} [stopReason] Canonical provider stop reason.
+ */
 
 /**
  * Run the minimum tool-calling loop against an injected provider.
@@ -94,6 +146,10 @@ function defaultSleep(ms) {
  *   signal?: AbortSignal,
  *   stream?: boolean,
  *   onDelta?: (chunk:string) => void,
+ *   onReasoningDelta?: (chunk:string) => void,
+ *   onToolCall?: (fragment:object) => void,
+ *   onUsage?: (usage:object) => void,
+ *   onEvent?: (event:LoopEvent) => void,
  * }} options
  * @returns {Promise<{
  *   finalText:string,
@@ -129,6 +185,10 @@ export async function runToolLoop({
   signal,
   stream = false,
   onDelta,
+  onReasoningDelta,
+  onToolCall,
+  onUsage,
+  onEvent,
 }) {
   let messages = initialMessages !== undefined
     ? [...initialMessages]
@@ -181,6 +241,12 @@ export async function runToolLoop({
   let finalText = "";
   let hadToolUse = hasToolUseInMessages(messages);
   let noToolRounds = 0;
+  let roundStopReason;
+  let roundEventDeltas = [];
+
+  const emitEvent = (event) => {
+    onEvent?.(event);
+  };
 
   const addUsage = (response) => {
     if (Number.isFinite(response?.usage?.input_tokens)) {
@@ -191,12 +257,58 @@ export async function runToolLoop({
     }
   };
 
-  const callProvider = async ({ allowPendingToolUse = false } = {}) => {
+  const awaitWithAbort = async (promise) => {
+    if (!signal) return promise;
+    throwIfAborted(signal);
+    let removeAbortListener;
+    const aborted = new Promise((_, reject) => {
+      const onAbort = () => reject(abortError(signal));
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+    });
+    try {
+      return await Promise.race([promise, aborted]);
+    } finally {
+      removeAbortListener?.();
+    }
+  };
+
+  const waitForRetry = async (delay) => {
+    const sleeping = Promise.resolve().then(() => sleepImpl(delay, signal));
+    await awaitWithAbort(sleeping);
+    throwIfAborted(signal);
+  };
+
+  const callProvider = async ({ allowPendingToolUse = false, round } = {}) => {
     let retryIndex = 0;
+    let recovered = false;
     while (true) {
       normalizeMessages(messages);
       validateMessages(messages, { allowPendingToolUse });
-      const snapshotLen = messages.length;
+      const snapshot = {
+        messages: cloneState(messages),
+        eventDeltas: [...roundEventDeltas],
+        finalText,
+        usage: { ...usage },
+        stopReason: roundStopReason,
+      };
+      const attempt = retryIndex + 1;
+      const attemptEvents = [];
+      let attemptUsage;
+      emitEvent({
+        type: "attempt",
+        round,
+        attempt,
+        maxAttempts: retryAttempts + 1,
+      });
+
+      const queueEvent = (event, callback) => {
+        attemptEvents.push({ event, callback });
+      };
       try {
         const request = {
           system,
@@ -208,21 +320,72 @@ export async function runToolLoop({
         if (temperature !== undefined) request.temperature = temperature;
         if (topP !== undefined) request.topP = topP;
         if (stream && typeof provider.chatStream === "function") {
-          return await provider.chatStream({
+          let response = await awaitWithAbort(provider.chatStream({
             ...request,
-            onDelta: (chunk) => onDelta?.(chunk),
-          });
+            onDelta: (chunk) => queueEvent(
+              { type: "delta", delta: chunk },
+              () => onDelta?.(chunk),
+            ),
+            onReasoningDelta: (chunk, metadata) => queueEvent(
+              {
+                type: "reasoning_delta",
+                delta: chunk,
+                ...(metadata === undefined ? {} : { metadata }),
+              },
+              () => onReasoningDelta?.(chunk, metadata),
+            ),
+            onToolCall: (fragment) => queueEvent(
+              { type: "tool_call", ...fragment },
+              () => onToolCall?.(fragment),
+            ),
+            onUsage: (reportedUsage) => {
+              attemptUsage = reportedUsage;
+              queueEvent(
+                { type: "usage", usage: reportedUsage },
+                () => onUsage?.(reportedUsage),
+              );
+            },
+          }));
+          if (attemptUsage !== undefined && response?.usage === undefined) {
+            response = { ...response, usage: attemptUsage };
+          }
+          if (recovered) emitEvent({ type: "recovered", round, attempt });
+          for (const { event, callback } of attemptEvents) {
+            callback();
+            if (event.type === "usage") {
+              emitEvent({ type: "usage", round, usage: event.usage });
+            }
+            if (event.type !== "usage" || attemptUsage !== undefined) {
+              roundEventDeltas.push(event);
+            }
+          }
+          return { response, usageEmitted: attemptUsage !== undefined };
         }
-        return await provider.chat(request);
+        const response = await awaitWithAbort(provider.chat(request));
+        if (recovered) emitEvent({ type: "recovered", round, attempt });
+        return { response, usageEmitted: false };
       } catch (error) {
+        if (signal?.aborted) throwIfAborted(signal);
         if (retryOptions === null || error?.retryable !== true) {
           throw error;
         }
-        messages.length = snapshotLen;
+        messages = cloneState(snapshot.messages);
+        roundEventDeltas = [...snapshot.eventDeltas];
+        finalText = snapshot.finalText;
+        usage.input_tokens = snapshot.usage.input_tokens;
+        usage.output_tokens = snapshot.usage.output_tokens;
+        roundStopReason = snapshot.stopReason;
         if (retryIndex >= retryAttempts) throw error;
         const delay = Math.min(backoffBaseMs * (2 ** retryIndex), backoffMaxMs);
         retryIndex += 1;
-        await sleepImpl(delay);
+        recovered = true;
+        emitEvent({
+          type: "recovering",
+          round,
+          attempt: retryIndex + 1,
+          maxAttempts: retryAttempts + 1,
+        });
+        await waitForRetry(delay);
       }
     }
   };
@@ -267,19 +430,28 @@ export async function runToolLoop({
 
   while (rounds < maxRounds) {
     const round = rounds + 1;
+    roundEventDeltas = [];
+    roundStopReason = undefined;
+    emitEvent({ type: "round_start", round });
     const compaction = await compactBeforeRound();
     const roundStart = messages.length;
-    let response = await callProvider();
+    let providerResult = await callProvider({ round });
+    let response = providerResult.response;
     let content = blocksFor(response?.content);
 
     messages.push({ role: "assistant", content });
     addUsage(response);
+    if (!providerResult.usageEmitted && response?.usage !== undefined) {
+      emitEvent({ type: "usage", round, usage: response.usage });
+    }
+    roundStopReason = response?.stopReason;
 
     let tokenContinuationCount = 0;
     while (response?.stopReason === "max_tokens"
       && tokenContinuationCount < continuationLimit) {
       tokenContinuationCount += 1;
-      response = await callProvider({ allowPendingToolUse: true });
+      providerResult = await callProvider({ allowPendingToolUse: true, round });
+      response = providerResult.response;
       const continuation = blocksFor(response?.content);
       const assistant = messages.at(-1);
       if (assistant?.role === "assistant") {
@@ -290,6 +462,10 @@ export async function runToolLoop({
         messages.push({ role: "assistant", content });
       }
       addUsage(response);
+      if (!providerResult.usageEmitted && response?.usage !== undefined) {
+        emitEvent({ type: "usage", round, usage: response.usage });
+      }
+      roundStopReason = response?.stopReason;
     }
     finalText = textFromBlocks(content);
 
@@ -302,6 +478,7 @@ export async function runToolLoop({
       const toolResults = [];
       for (const block of content) {
         if (block?.type !== "tool_use") continue;
+        emitEvent({ type: "tool_use", round, toolUse: cloneState(block) });
 
         const signature = `${block.name}${JSON.stringify(block.input)}`;
         if (stallWindow > 0
@@ -333,6 +510,7 @@ export async function runToolLoop({
         };
         if (isError) toolResult.is_error = true;
         toolResults.push(toolResult);
+        emitEvent({ type: "tool_result", round, toolResult: cloneState(toolResult) });
       }
       if (toolResults.length > 0) {
         messages.push({ role: "user", content: toolResults });
@@ -382,6 +560,13 @@ export async function runToolLoop({
     if (onRound) await onRound(record);
 
     rounds = round;
+    emitEvent({
+      type: "round_end",
+      round,
+      finalText,
+      stopReason: roundStopReason,
+      usage: { ...usage },
+    });
     if (!shouldContinue) return finish(false);
   }
 
