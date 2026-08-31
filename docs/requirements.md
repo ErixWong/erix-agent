@@ -69,7 +69,7 @@
 | FR-3.1 | 预算 = contextWindowTokens − maxOutputTokens − max(2000, 10%窗口) | app_container llm-context-budget.md |
 | FR-3.2 | token 估算：中文 1.5 tok/字、其余 3.5 字/tok、+15% 余量（保守宁高勿低，系数可配） | 两边合并取保守 |
 | FR-3.3 | 整组折叠：轮 = assistant + 紧随的工具结果消息（两种协议各自的成对规则），头部 system+首个 user 永不折叠 | touwaka，扩展双协议 |
-| FR-3.4 | 策略谱系（详见 ADR-003）：`sliding-window` → `fold-statistical` → `fold-llm`（可选 summarizer）→ `psyche`（v2） | 本次升级核心 |
+| FR-3.4 | 策略谱系（详见 ADR-003/010）：`sliding-window` → `fold-statistical` → `fold-llm`（可选 summarizer）；psyche 已重新定义为对话场景的事前整形哲学（非谱系④级实现，见 ADR-010） | 本次升级核心 |
 | FR-3.5 | LLM 产出的摘要（fold-llm/psyche）必须过**确定性尺寸执法**：代码按字段优先级修剪到预算内，不信任 LLM 自律 | Psyche 借鉴 + app_container 不变量 |
 | FR-3.6 | 折叠水位线 `foldedUpTo`：被折叠轮次完整进 TranscriptStore，可经 recall 工具取回（近无损折叠） | app_container 水位线 + touwaka recall 融合 |
 
@@ -96,7 +96,7 @@
 | **v0.1** | providers 全量（+Anthropic +流式）+ messages + tokens + loop（FR-1/2 全量）+ sliding-window + fold-statistical + memory store + config（static / env） | app_container **完整迁移 runToolLoop**（只迁纯函数层不算完成），原有 `npm test` 全绿；24 轮开发场景不再静默丢历史；**行为指标**：折叠后模型"重做已完成工作"次数较硬滑窗基线可观测下降 |
 | **v0.2** | file store(JSONL) + recall 工具 + json-file config + fold-llm summarizer + tools 子路径（牢笼+文件工具+registry/ToolProvider） | 崩溃续跑演示；折叠后 recall 能取回原文 |
 | **v1.0** | touwaka 迁移（第一步只换 token-utils/history-compactor，AgentLoop 本体看收益再定）+ 文档完善 | touwaka 侧测试全绿、行为无回归 |
-| **v2 候选** | psyche 策略（对话场景）、每轮反思、Gemini native（触发 AI SDK 底座重估） | 另行立项 |
+| **v2 候选** | 冷循环蒸馏 + L3 facts 注入（psyche 哲学落于此，ADR-010）、Gemini native（触发 AI SDK 底座重估） | 另行立项 |
 
 ## 5. 非功能需求
 

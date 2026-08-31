@@ -5,6 +5,8 @@
   touwaka topics 是归档初步实现。外部调研见 docs/research/2026-08-29-memory-context-research.md
   （Letta sleep-time 双 agent、生产上下文工程三机制、A-MEM、Generative Agents）。
 - 关联：ADR-002（档案/视图分离）、ADR-003（压缩谱系）、ADR-004（反思缓行与冷循环形态）、ADR-005（recall 内置理由）。
+  **2026-08-31 修正（ADR-010）**：psyche 从"记忆机制"重新定义为"对话场景的事前上下文整形哲学"；
+  本 ADR 的冷循环 + L3 注入即 psyche 的正确工程形态，psyche 不再是独立待实现模块，详见 ADR-010。
 
 ## 决策一：五层记忆模型 + 五种驱动
 
@@ -109,7 +111,7 @@ episode = {
 | 2. 记忆评测夹具 v1（随 v0.2） | 植入已知事实的长对话 → 折叠 → 提问 → 断言命中率与**模型自发调用率** | 后续一切记忆工作的回归网 |
 | 3. app_container 迁移 | 24 轮真实场景 | 校准预算默认值、真实重做率 |
 | 4. v1.x | clear-results（ADR-003 ①a）+ episode 结构 + ArchiveStore 接口（内置 memory/file）+ 热归档 | 索引件抽取质量 |
-| 5. v2 | psyche + 冷循环（archive 槽）+ L3 facts 注入 + episode 建链 | 全管道召回率 |
+| 5. v2 | 冷循环（archive 槽）+ L3 facts 注入 + episode 建链（psyche 哲学落于此，见 ADR-010） | 全管道召回率 |
 
 纪律：**检索件先行、每步独立验收、后一步不许 degrade 前一步指标**（冷循环蒸馏若降低召回率即回滚）。
 记忆系统最大失败模式是"架构漂亮、召回稀烂"，评测夹具是唯一防线。
