@@ -315,7 +315,12 @@ export function createCliTools({ cwd = process.cwd() } = {}) {
 
     const visit = (currentPath) => {
       if (results.length >= resultLimit) return;
-      const stat = statSync(currentPath);
+      let stat;
+      try {
+        stat = statSync(currentPath);
+      } catch {
+        return; // 无法 stat 的路径（悬空 symlink、权限受限等）直接跳过
+      }
       if (stat.isFile()) {
         searchFile(currentPath, stat);
         return;
@@ -323,10 +328,16 @@ export function createCliTools({ cwd = process.cwd() } = {}) {
       if (!stat.isDirectory() || visitedDirectories.has(currentPath)) return;
       visitedDirectories.add(currentPath);
 
-      const entries = readdirSync(currentPath, { withFileTypes: true })
-        .sort((left, right) => left.name.localeCompare(right.name));
+      let entries;
+      try {
+        entries = readdirSync(currentPath, { withFileTypes: true })
+          .sort((left, right) => left.name.localeCompare(right.name));
+      } catch {
+        return; // 目录不可读时跳过
+      }
       for (const entry of entries) {
         if (results.length >= resultLimit) return;
+        if (entry.isSymbolicLink()) continue; // 跳过 symlink，避免跟随到特殊文件/死链
         visit(path.join(currentPath, entry.name));
       }
     };
@@ -346,16 +357,32 @@ export function createCliTools({ cwd = process.cwd() } = {}) {
 
     const visit = (currentPath, currentDepth) => {
       if (entries >= MAX_TREE_ENTRIES || currentDepth >= maxDepth) return;
-      if (!statSync(currentPath).isDirectory()) return;
+      let stat;
+      try {
+        stat = statSync(currentPath);
+      } catch {
+        return;
+      }
+      if (!stat.isDirectory()) return;
       if (visitedDirectories.has(currentPath)) return;
       visitedDirectories.add(currentPath);
 
-      const children = readdirSync(currentPath, { withFileTypes: true })
-        .sort((left, right) => left.name.localeCompare(right.name));
+      let children;
+      try {
+        children = readdirSync(currentPath, { withFileTypes: true })
+          .sort((left, right) => left.name.localeCompare(right.name));
+      } catch {
+        return;
+      }
       for (const child of children) {
         if (entries >= MAX_TREE_ENTRIES) return;
         const childPath = path.join(currentPath, child.name);
-        const childStat = statSync(childPath);
+        let childStat;
+        try {
+          childStat = statSync(childPath);
+        } catch {
+          continue; // 无法 stat 的条目（悬空 symlink 等）跳过
+        }
         lines.push(`${"  ".repeat(currentDepth + 1)}${child.name}${childStat.isDirectory() ? "/" : ""}`);
         entries += 1;
         if (childStat.isDirectory()) visit(childPath, currentDepth + 1);
