@@ -614,12 +614,16 @@ export async function runToolLoop({
     if (persisted) persistedTranscriptLength += messages.length;
   }
   const recentSignatures = [];
-  const stallWindow = stallDetection === false
+  const envStallMode = process.env.ERIX_STALL_MODE;
+  const resolvedStallDetection = envStallMode
+    ? { window: stallDetection?.window ?? 4, mode: envStallMode }
+    : stallDetection;
+  const stallWindow = resolvedStallDetection === false
     ? 0
-    : Number.isInteger(stallDetection?.window) && stallDetection.window > 0
-      ? stallDetection.window
+    : Number.isInteger(resolvedStallDetection?.window) && resolvedStallDetection.window > 0
+      ? resolvedStallDetection.window
       : 4;
-  const stallMode = stallDetection?.mode === "consecutive" ? "consecutive" : "appear";
+  const stallMode = resolvedStallDetection?.mode === "consecutive" ? "consecutive" : "appear";
   const usage = { input_tokens: 0, output_tokens: 0 };
   const retryOptions = retry && typeof retry === "object" ? retry : null;
   const retryAttempts = Number.isInteger(retryOptions?.attempts)
