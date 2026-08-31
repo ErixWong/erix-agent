@@ -481,6 +481,7 @@ export async function runToolLoop({
   let foldedThrough = 0;
   let resumeCheckpoint;
   let resumePendingTool;
+  let resumeTailMessages = [];
   let resumeTranscriptStart;
   const resumeExecutedToolIds = new Set();
   const resumeCheckpointResults = new Map();
@@ -504,14 +505,47 @@ export async function runToolLoop({
       if (typeof store.loadLatestCheckpoint === "function") {
         resumeCheckpoint = await store.loadLatestCheckpoint(runId);
         if (resumeCheckpoint?.round > rounds && Array.isArray(resumeCheckpoint.messages)) {
-          const recordedMessages = messages;
-          resumeTranscriptStart = recordedMessages.length;
+          const recordedEntries = [];
+          for (const record of records) {
+            for (const message of record.messages ?? []) {
+              recordedEntries.push({
+                message,
+                round: record.round ?? 0,
+              });
+            }
+          }
+          let searchFrom = 0;
+          let lastMatchedIndex = -1;
+          const checkpointMessageRounds = [];
+          for (const message of resumeCheckpoint.messages) {
+            const key = JSON.stringify(message);
+            let matchedIndex = -1;
+            for (let index = searchFrom; index < recordedEntries.length; index += 1) {
+              if (JSON.stringify(recordedEntries[index].message) === key) {
+                matchedIndex = index;
+                break;
+              }
+            }
+            if (matchedIndex === -1) {
+              checkpointMessageRounds.push(undefined);
+              continue;
+            }
+            searchFrom = matchedIndex + 1;
+            lastMatchedIndex = matchedIndex;
+            checkpointMessageRounds.push(recordedEntries[matchedIndex].round);
+          }
+          resumeTailMessages = recordedEntries
+            .slice(lastMatchedIndex + 1)
+            .map((entry) => ({
+              message: cloneState(entry.message),
+              round: entry.round,
+            }));
+          resumeTranscriptStart = messages.length;
           messages = cloneState(resumeCheckpoint.messages);
-          for (let index = 0; index < messages.length; index += 1) {
-            const recordedRound = messageRounds.get(recordedMessages[index]);
+          for (const [index, message] of messages.entries()) {
             messageRounds.set(
-              messages[index],
-              recordedRound ?? resumeCheckpoint.round,
+              message,
+              checkpointMessageRounds[index] ?? resumeCheckpoint.round,
             );
           }
           rounds = resumeCheckpoint.round;
@@ -997,6 +1031,15 @@ export async function runToolLoop({
     };
   };
 
+  const appendResumeTailMessages = () => {
+    for (const entry of resumeTailMessages) {
+      const message = cloneState(entry.message);
+      messages.push(message);
+      messageRounds.set(message, entry.round);
+    }
+    resumeTailMessages = [];
+  };
+
   try {
     if (resumePendingTool) {
       const resumedToolResults = [];
@@ -1010,6 +1053,7 @@ export async function runToolLoop({
       appendToolResultsToTranscript(resumedToolResults, rounds);
       resumePendingTool = undefined;
     }
+    appendResumeTailMessages();
     if (resumeCheckpoint && resumeTranscriptStart !== undefined) {
       await persist("appendRound", runId, {
         round: resumeCheckpoint.round,

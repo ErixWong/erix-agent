@@ -1,20 +1,24 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   createOpenAIProvider,
+  createFileTranscriptStore,
   runToolLoop,
 } from "../src/index.js";
+import { createRecallTool } from "../src/tools/index.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
 import {
   closeAllMcpServers,
   createMcpProxyTool,
   loadMcpConfig,
 } from "./mcp.js";
-import { runRepl } from "./repl.js";
+import { defaultSessionId, runRepl } from "./repl.js";
 import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import {
   CLI_TOOLS_SYSTEM_PROMPT,
@@ -28,14 +32,15 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--config <path>] [--skills-dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
 
   --stream              流式输出模型文本
-  --session <id>        REPL 会话 ID（默认按工作目录自动派生）
+  --session <id>        会话 ID（默认按工作目录自动派生）
+  --dir <path>          Transcript 存档目录（chat 默认：~/.erix/transcripts）
   --max-rounds <n>      工具循环最大轮数（默认：16）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
 
@@ -121,13 +126,17 @@ function createIdleTimeout(seconds) {
   };
 }
 
-function parseChatArgs(args) {
+export function parseChatArgs(args, cwd = process.cwd()) {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
     return { showHelp: true };
   }
 
   let prompt;
-  const options = { idleTimeout: DEFAULT_IDLE_TIMEOUT_SECONDS };
+  const options = {
+    idleTimeout: DEFAULT_IDLE_TIMEOUT_SECONDS,
+    session: defaultSessionId(cwd, { unique: true }),
+    dir: join(homedir(), ".erix", "transcripts"),
+  };
   const seenOptions = new Set();
 
   for (let index = 0; index < args.length; index += 1) {
@@ -143,6 +152,8 @@ function parseChatArgs(args) {
     if (
       argument === "--config"
       || argument === "--skills-dir"
+      || argument === "--session"
+      || argument === "--dir"
       || argument === "--compact-budget"
       || argument === "--max-rounds"
       || argument === "--idle-timeout"
@@ -154,7 +165,10 @@ function parseChatArgs(args) {
 
       const rawValue = args[index + 1];
       if (rawValue === undefined || (
-        (argument === "--config" || argument === "--skills-dir")
+        (argument === "--config"
+          || argument === "--skills-dir"
+          || argument === "--session"
+          || argument === "--dir")
         && rawValue.startsWith("--")
       )) {
         usageError(`${argument} 缺少数值`);
@@ -167,6 +181,12 @@ function parseChatArgs(args) {
       } else if (argument === "--skills-dir") {
         if (rawValue.trim() === "") usageError("--skills-dir 不能为空");
         options.skillsDir = rawValue;
+      } else if (argument === "--session") {
+        if (rawValue.trim() === "") usageError("--session 不能为空");
+        options.session = rawValue;
+      } else if (argument === "--dir") {
+        if (rawValue.trim() === "") usageError("--dir 不能为空");
+        options.dir = rawValue;
       } else if (argument === "--compact-budget") {
         options.compactBudget = parseIntegerOption(argument, rawValue, 0);
       } else if (argument === "--max-rounds") {
@@ -249,8 +269,11 @@ function parseMcpArgs(args) {
   return options;
 }
 
-function combineTools(cliTools, skillTools, mcpProxy) {
+function combineTools(cliTools, skillTools, mcpProxy, recallTool) {
   const tools = [...cliTools.tools];
+  if (recallTool !== undefined) {
+    tools.push(recallTool.schema);
+  }
   if (mcpProxy?.enabled) {
     tools.push(mcpProxy.schema);
   }
@@ -260,6 +283,9 @@ function combineTools(cliTools, skillTools, mcpProxy) {
     executeTool: async (name, input, context) => {
       if (name === "mcp" && mcpProxy?.enabled) {
         return mcpProxy.execute(input);
+      }
+      if (name === "recall" && recallTool !== undefined) {
+        return recallTool.execute(input);
       }
       if (skillToolNames.has(name)) {
         return skillTools.executeTool(name, input, context);
@@ -348,7 +374,7 @@ async function runMcp({ configPath }) {
   }
 }
 
-async function runChat({
+export async function runChat({
   prompt,
   configPath,
   skillsDir,
@@ -356,14 +382,22 @@ async function runChat({
   maxRounds,
   stream,
   idleTimeout = DEFAULT_IDLE_TIMEOUT_SECONDS,
+  session,
+  sessionExplicit,
+  dir = join(homedir(), ".erix", "transcripts"),
+  provider: providerOverride,
+  config: configOverride,
 }) {
-  const config = await loadCliConfig({ configPath });
+  const cwd = process.cwd();
+  const runId = session ?? defaultSessionId(cwd, { unique: true });
+  const explicitSession = sessionExplicit ?? session !== undefined;
+  const config = configOverride ?? await loadCliConfig({ configPath });
   const maxTokens = config.maxOutputTokens;
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new CliError("chat 需要提供 prompt，例如：erix chat \"你好\"");
   }
 
-  const provider = createOpenAIProvider({
+  const provider = providerOverride ?? createOpenAIProvider({
     ...config,
     endpoint: config.endpoint,
     apiKey: config.apiKey,
@@ -371,19 +405,39 @@ async function runChat({
     timeoutMs: config.timeout ?? 300_000,
     maxTokens,
   });
-  const cliTools = createCliTools({ cwd: process.cwd() });
+  const store = createFileTranscriptStore({ dir });
+  const existingRecords = await store.load(runId);
+  const resume = explicitSession && existingRecords.length > 0;
+  if (resume) {
+    const latestRound = Math.max(
+      0,
+      ...existingRecords.map((record) => (
+        Number.isSafeInteger(record?.round) ? record.round : 0
+      )),
+    );
+    const dedupKey = `${String(runId)}:input:${Date.now()}:${randomUUID()}`;
+    await store.appendRound(runId, {
+      round: latestRound,
+      roundKey: dedupKey,
+      dedupKey,
+      messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+      ts: new Date().toISOString(),
+    });
+  }
+  const recallTool = createRecallTool({ store, runId });
+  const cliTools = createCliTools({ cwd });
   const skillTools = await buildSkillTools({
-    cwd: process.cwd(),
+    cwd,
     skillsDir,
-    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
+    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp", "recall"],
   });
-  const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd: process.cwd() });
-  const tools = combineTools(cliTools, skillTools, mcpProxy);
+  const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
+  const tools = combineTools(cliTools, skillTools, mcpProxy, recallTool);
   const context = buildCompactionContext(config, compactBudget);
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool);
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${process.cwd()}。${CLI_TOOLS_SYSTEM_PROMPT}`;
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
   if (mcpProxy?.enabled) {
     systemPrompt += `
 
@@ -395,6 +449,9 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     provider,
     system: systemPrompt,
     initialUserMessage: prompt,
+    store,
+    runId,
+    resume,
     tools: tools.tools,
     executeTool: async (name, input, toolContext) => {
       const result = await executeTool(name, input, toolContext);
@@ -429,6 +486,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     console.log(
       `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} usage=${JSON.stringify(result.usage)} compacted=${compacted}`,
     );
+    return result;
   } catch (error) {
     if (idle?.timedOut()) throw new IdleTimeoutError(idleTimeout);
     throw error;
@@ -485,7 +543,10 @@ async function main(args) {
     printHelp();
     return;
   }
-  await runChat(chatArgs);
+  await runChat({
+    ...chatArgs,
+    sessionExplicit: args.slice(1).includes("--session"),
+  });
 }
 
 if (
