@@ -184,14 +184,14 @@ test("runRepl preserves new input when resuming an aborted tool", async () => {
   const output = new PassThrough();
 
   try {
-    const abortTimer = setTimeout(() => controller.abort(), 5);
     await assert.rejects(
       runToolLoop({
         provider: firstProvider,
         initialUserMessage: "user-one",
-        executeTool: ({ signal }) => new Promise((resolve, reject) => {
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-        }),
+        executeTool: () => {
+          controller.abort();
+          return "not reached";
+        },
         completion: false,
         store,
         runId: session,
@@ -199,7 +199,6 @@ test("runRepl preserves new input when resuming an aborted tool", async () => {
       }),
       /aborted|abort/i,
     );
-    clearTimeout(abortTimer);
 
     const run = runRepl(
       ["--session", session, "--dir", dir],
