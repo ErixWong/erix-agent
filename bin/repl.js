@@ -1,15 +1,18 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 import {
   createOpenAIProvider,
+  createFileTranscriptStore,
   runToolLoop,
 } from "../src/index.js";
+import { safeRunId } from "../src/store/file.js";
+import { createRecallTool } from "../src/tools/index.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
 import {
   closeAllMcpServers,
@@ -34,6 +37,7 @@ const NON_TTY_MESSAGE =
 const REPL_HELP_TEXT = `REPL 用法：
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]
   --session <id>        会话 ID（默认按工作目录自动派生）
+  --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
   --max-rounds <n>      工具循环最大轮数（默认：16）
   --idle-timeout <秒>   无进展自动中止（默认：0=不启用）
 
@@ -121,11 +125,12 @@ function createIdleTimeout(seconds) {
   };
 }
 
-export function defaultSessionId(cwd) {
+export function defaultSessionId(cwd, { unique = false } = {}) {
   const normalizedCwd = path.resolve(String(cwd));
   const baseName = path.basename(normalizedCwd) || "root";
   const hash8 = createHash("sha256").update(normalizedCwd).digest("hex").slice(0, 8);
-  return `${baseName}-${hash8}`;
+  const stableId = `${baseName}-${hash8}`;
+  return unique ? `${stableId}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}` : stableId;
 }
 
 export function parseReplArgs(argv, cwd = process.cwd()) {
@@ -136,7 +141,7 @@ export function parseReplArgs(argv, cwd = process.cwd()) {
 
   const options = {
     session: defaultSessionId(cwd),
-    dir: join(homedir(), ".erix"),
+    dir: join(homedir(), ".erix", "transcripts"),
     maxRounds: DEFAULT_MAX_ROUNDS,
     idleTimeout: DEFAULT_IDLE_TIMEOUT_SECONDS,
   };
@@ -254,6 +259,17 @@ async function deleteSession(dir, session) {
   }
 }
 
+async function deleteTranscript(dir, session) {
+  const base = join(String(dir), safeRunId(session));
+  for (const suffix of [".jsonl", ".checkpoint.json", ".state.json"]) {
+    try {
+      await unlink(`${base}${suffix}`);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+}
+
 function clearReadlineLine(rl) {
   rl.write(null, { ctrl: true, name: "a" });
   rl.write(null, { ctrl: true, name: "k" });
@@ -267,11 +283,14 @@ function clearScreen(output) {
   }
 }
 
-function buildExecuteTool(cliTools, skillTools, mcpProxy) {
+function buildExecuteTool(cliTools, skillTools, mcpProxy, recallTool) {
   const skillToolNames = new Set(skillTools.tools.map((tool) => tool.name));
   return async (name, input, context) => {
     if (name === "mcp" && mcpProxy?.enabled) {
       return mcpProxy.execute(input);
+    }
+    if (name === "recall" && recallTool !== undefined) {
+      return recallTool.execute(input);
     }
     if (skillToolNames.has(name)) {
       return skillTools.executeTool(name, input, context);
@@ -285,6 +304,7 @@ export async function runRepl(argv, io = {}) {
   const options = parseReplArgs(argv, cwd);
   const input = io.input ?? process.stdin;
   const output = io.output ?? process.stdout;
+  const sessionDir = io.sessionDir ?? join(homedir(), ".erix");
 
   if (options.showHelp) {
     writeLine(output, REPL_HELP_TEXT);
@@ -297,29 +317,37 @@ export async function runRepl(argv, io = {}) {
     return;
   }
 
-  const archivePath = sessionPath(options.dir, options.session);
+  const archivePath = sessionPath(sessionDir, options.session);
   writeLine(output, `会话：${options.session}（工作目录：${cwd}，存档 ${archivePath}）`);
-  const config = await loadCliConfig({ configPath: options.configPath });
+  const store = createFileTranscriptStore({ dir: options.dir });
+  const storedRecords = await store.load(options.session);
+  const config = io.config ?? await loadCliConfig({ configPath: options.configPath });
+  const providerFactory = io.providerFactory
+    ?? ((providerOptions) => createOpenAIProvider(providerOptions));
   const cliTools = createCliTools({ cwd });
+  const recallTool = createRecallTool({ store, runId: options.session });
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,
-    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
+    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp", "recall"],
   });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: options.configPath, cwd });
   const executeTool = wrapExecuteTool(
-    buildExecuteTool(cliTools, skillTools, mcpProxy),
+    buildExecuteTool(cliTools, skillTools, mcpProxy, recallTool),
     { output: (line) => writeLine(output, line) },
   );
-  let messages = await loadSession(options.dir, options.session);
+  let messages = storedRecords.length > 0
+    ? storedRecords.flatMap((record) => record.messages ?? [])
+    : await loadSession(sessionDir, options.session);
   let model = config.model;
   let usage = { input_tokens: 0, output_tokens: 0 };
+  let inputSequence = 0;
 
-  if (existsSync(archivePath)) {
+  if (storedRecords.length > 0 || existsSync(archivePath)) {
     writeLine(output, `已恢复会话 ${options.session}（${messages.length} 条消息）`);
   }
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${process.cwd()}。${CLI_TOOLS_SYSTEM_PROMPT}`;
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
   if (mcpProxy?.enabled) {
     systemPrompt += `
 
@@ -353,7 +381,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   };
 
   const saveAndFinish = async () => {
-    await saveSession(options.dir, options.session, messages);
+    await saveSession(sessionDir, options.session, messages);
     writeLine(output, `再见（会话已保存到 ${archivePath}）`);
     resolveRun();
   };
@@ -415,7 +443,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     }
     if (command.command === "reset") {
       messages = [];
-      await deleteSession(options.dir, options.session);
+      await deleteSession(sessionDir, options.session);
+      await deleteTranscript(options.dir, options.session);
       writeLine(output, "已清空上下文并删除会话存档");
       return;
     }
@@ -441,7 +470,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     if (line.startsWith("/")) {
       await handleCommand(parseCommand(line));
     } else if (line.length > 0) {
-      const provider = createOpenAIProvider({
+      const provider = await providerFactory({
         ...config,
         endpoint: config.endpoint,
         apiKey: config.apiKey,
@@ -453,8 +482,27 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         ...messages,
         { role: "user", content: [{ type: "text", text: line }] },
       ];
+      const existingRecords = await store.load(options.session);
+      const resume = existingRecords.length > 0;
+      if (resume) {
+        const latestRound = Math.max(
+          0,
+          ...existingRecords.map((record) => (
+            Number.isSafeInteger(record?.round) ? record.round : 0
+          )),
+        );
+        const dedupKey = `${String(options.session)}:input:${String(Date.now())}:${String(inputSequence)}`;
+        inputSequence += 1;
+        await store.appendRound(options.session, {
+          round: latestRound,
+          roundKey: dedupKey,
+          dedupKey,
+          messages: [roundMessages.at(-1)],
+          ts: new Date().toISOString(),
+        });
+      }
       const context = buildCompactionContext(config, options.compactBudget);
-      const tools = [...cliTools.tools, ...skillTools.tools];
+      const tools = [...cliTools.tools, recallTool.schema, ...skillTools.tools];
       if (mcpProxy?.enabled) {
         tools.push(mcpProxy.schema);
       }
@@ -468,13 +516,15 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         ...(context ? { context } : {}),
         provider,
         system: systemPrompt,
-        initialMessages: roundMessages,
-        initialUserMessage: line,
+        ...(resume ? {} : { initialMessages: roundMessages, initialUserMessage: line }),
         maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
         maxTokens: config.maxOutputTokens,
         completion: { maxNoToolRounds: 1 },
         tools,
         executeTool: executeToolForLoop,
+        store,
+        runId: options.session,
+        resume,
         signal: idle?.controller.signal,
         stream: true,
         onDelta: (chunk) => {
@@ -509,7 +559,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           output,
           `[rounds=${result.rounds} usage=${JSON.stringify(result.usage)} compacted=${compacted}]`,
         );
-        await saveSession(options.dir, options.session, messages);
+        await saveSession(sessionDir, options.session, messages);
       } catch (error) {
         if (idle?.timedOut()) throw new IdleTimeoutError(options.idleTimeout);
         throw error;

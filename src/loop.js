@@ -433,11 +433,13 @@ export async function runToolLoop({
     console.error("Transcript persistence error:", error);
   };
   const persist = async (method, ...args) => {
-    if (typeof store?.[method] !== "function") return;
+    if (typeof store?.[method] !== "function") return false;
     try {
       await store[method](...args);
+      return true;
     } catch (error) {
       reportPersistenceError(error);
+      return false;
     }
   };
   const markRunState = async (state) => {
@@ -481,7 +483,10 @@ export async function runToolLoop({
   let foldedThrough = 0;
   let resumeCheckpoint;
   let resumePendingTool;
+  let resumeTailMessages = [];
   let resumeTranscriptStart;
+  let resumeCheckpointMessages = [];
+  let persistedTranscriptLength = 0;
   const resumeExecutedToolIds = new Set();
   const resumeCheckpointResults = new Map();
   await markRunState("running");
@@ -490,6 +495,7 @@ export async function runToolLoop({
       const records = await store.load(runId);
       if (records.length === 0) throw new Error("resume: 无可恢复记录");
       messages = records.flatMap((record) => record.messages ?? []);
+      persistedTranscriptLength = messages.length;
       for (const record of records) {
         for (const message of record.messages ?? []) {
           messageRounds.set(message, record.round ?? 0);
@@ -504,14 +510,63 @@ export async function runToolLoop({
       if (typeof store.loadLatestCheckpoint === "function") {
         resumeCheckpoint = await store.loadLatestCheckpoint(runId);
         if (resumeCheckpoint?.round > rounds && Array.isArray(resumeCheckpoint.messages)) {
-          const recordedMessages = messages;
-          resumeTranscriptStart = recordedMessages.length;
+          const recordedEntries = [];
+          for (const record of records) {
+            for (const message of record.messages ?? []) {
+              recordedEntries.push({
+                message,
+                round: record.round ?? 0,
+              });
+            }
+          }
+          const checkpointAnchor = Number.isSafeInteger(
+            resumeCheckpoint.persistedTranscriptLength,
+          ) && resumeCheckpoint.persistedTranscriptLength >= 0
+            ? Math.min(resumeCheckpoint.persistedTranscriptLength, recordedEntries.length)
+            : undefined;
+          let searchFrom = 0;
+          let lastMatchedIndex = -1;
+          const checkpointMessageRounds = [];
+          const checkpointMessageIndices = [];
+          for (const message of resumeCheckpoint.messages) {
+            const key = JSON.stringify(message);
+            let matchedIndex = -1;
+            for (let index = searchFrom; index < recordedEntries.length; index += 1) {
+              if (JSON.stringify(recordedEntries[index].message) === key) {
+                matchedIndex = index;
+                break;
+              }
+            }
+            if (matchedIndex === -1) {
+              checkpointMessageRounds.push(undefined);
+              checkpointMessageIndices.push(-1);
+              continue;
+            }
+            searchFrom = matchedIndex + 1;
+            lastMatchedIndex = matchedIndex;
+            checkpointMessageRounds.push(recordedEntries[matchedIndex].round);
+            checkpointMessageIndices.push(matchedIndex);
+          }
+          resumeTailMessages = recordedEntries
+            .slice(checkpointAnchor ?? lastMatchedIndex + 1)
+            .map((entry) => ({
+              message: cloneState(entry.message),
+              round: entry.round,
+            }));
           messages = cloneState(resumeCheckpoint.messages);
-          for (let index = 0; index < messages.length; index += 1) {
-            const recordedRound = messageRounds.get(recordedMessages[index]);
+          resumeTranscriptStart = messages.length;
+          resumeCheckpointMessages = resumeCheckpoint.messages.filter((_message, index) => {
+            const matchedIndex = checkpointMessageIndices[index];
+            const isPersisted = matchedIndex >= 0
+              && (checkpointAnchor === undefined || matchedIndex < checkpointAnchor);
+            return !isPersisted && blocksFor(_message?.content).some((block) => (
+              block?.type === "tool_use" || block?.type === "tool_result"
+            ));
+          });
+          for (const [index, message] of messages.entries()) {
             messageRounds.set(
-              messages[index],
-              recordedRound ?? resumeCheckpoint.round,
+              message,
+              checkpointMessageRounds[index] ?? resumeCheckpoint.round,
             );
           }
           rounds = resumeCheckpoint.round;
@@ -550,12 +605,13 @@ export async function runToolLoop({
   } else if (store && runId !== undefined && messages.length > 0) {
     // 种子记录：初始消息（initialMessages/initialUserMessage）先入档，
     // 否则它们永不在 store 中——recall 在 fold 后找不到被折的初始历史（ADR-002 档案完整性）
-    await persist("appendRound", runId, {
+    const persisted = await persist("appendRound", runId, {
       round: 0,
       roundKey: `${String(runId)}:round:0`,
       messages: [...messages],
       ts: new Date().toISOString(),
     });
+    if (persisted) persistedTranscriptLength += messages.length;
   }
   const recentSignatures = [];
   const stallWindow = stallDetection === false
@@ -653,6 +709,7 @@ export async function runToolLoop({
       toolUse: cloneState(pendingToolUse),
       pendingToolUses: cloneState(pendingToolUses),
       messages: cloneState(messagesOverride ?? messages),
+      persistedTranscriptLength,
       executedToolIds: [...executedToolIds],
       toolResults: toolResults.map((toolResult) => ({
         toolUseId: toolResult.tool_use_id,
@@ -997,6 +1054,15 @@ export async function runToolLoop({
     };
   };
 
+  const appendResumeTailMessages = () => {
+    for (const entry of resumeTailMessages) {
+      const message = cloneState(entry.message);
+      messages.push(message);
+      messageRounds.set(message, entry.round);
+    }
+    resumeTailMessages = [];
+  };
+
   try {
     if (resumePendingTool) {
       const resumedToolResults = [];
@@ -1011,15 +1077,23 @@ export async function runToolLoop({
       resumePendingTool = undefined;
     }
     if (resumeCheckpoint && resumeTranscriptStart !== undefined) {
-      await persist("appendRound", runId, {
+      const resumeRecordMessages = messages.slice(resumeTranscriptStart);
+      const resumeMessagesToPersist = [
+        ...resumeCheckpointMessages,
+        ...resumeRecordMessages,
+      ];
+      const persisted = await persist("appendRound", runId, {
         round: resumeCheckpoint.round,
         roundKey: `${String(runId)}:round:${String(resumeCheckpoint.round)}`,
         dedupKey: `${String(runId)}:round:${String(resumeCheckpoint.round)}`,
-        messages: cloneState(messages.slice(resumeTranscriptStart)),
+        messages: cloneState(resumeMessagesToPersist),
         ts: new Date().toISOString(),
       });
+      if (persisted) persistedTranscriptLength += resumeMessagesToPersist.length;
       resumeTranscriptStart = undefined;
+      resumeCheckpointMessages = [];
     }
+    appendResumeTailMessages();
 
     while (rounds < maxRounds) {
     const round = rounds + 1;
@@ -1160,7 +1234,8 @@ export async function runToolLoop({
         record.foldedRoundRange = compaction.foldedRoundRange;
       }
     }
-    await persist("appendRound", runId, record);
+    const persisted = await persist("appendRound", runId, record);
+    if (persisted) persistedTranscriptLength += record.messages.length;
     if (onRound) await onRound(record);
 
     rounds = round;

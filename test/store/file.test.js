@@ -72,3 +72,24 @@ test("file: 崩溃安全——容忍末行写一半（残段丢弃）", async ()
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("file: appendRound 按 dedupKey 幂等，重复轮次不重复写入", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const record = {
+      round: 3,
+      dedupKey: "run:round:3",
+      messages: [{ role: "assistant", content: [{ type: "text", text: "once" }] }],
+    };
+    await store.appendRound("run", record);
+    await store.appendRound("run", {
+      ...record,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "duplicate" }] }],
+    });
+
+    assert.deepEqual(await store.load("run"), [record]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
