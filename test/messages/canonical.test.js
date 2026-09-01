@@ -50,7 +50,7 @@ test("serializes assistant text, tool calls, and mixed content", () => {
       { role: "assistant", content: "plain" },
       {
         role: "assistant",
-        content: null,
+        content: "",
         tool_calls: [
           {
             id: "call-1",
@@ -110,7 +110,7 @@ test("serializes canonical fixtures without collapsing tool result order", () =>
     [
       {
         role: "assistant",
-        content: null,
+        content: "",
         tool_calls: [
           {
             id: "call_status",
@@ -127,7 +127,7 @@ test("serializes canonical fixtures without collapsing tool result order", () =>
     [
       {
         role: "assistant",
-        content: null,
+        content: "",
         tool_calls: [
           {
             id: "call_tree",

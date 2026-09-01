@@ -1122,6 +1122,12 @@ export async function runToolLoop({
     let tokenContinuationCount = 0;
     while (response?.stopReason === "max_tokens"
       && tokenContinuationCount < continuationLimit) {
+      // reasoning 模型单次响应常因推理过长触发 max_tokens 截断；
+      // 若 messages 已超预算，先压缩再补全，避免截断循环耗尽预算（Issue #11）
+      if (budgetTokens !== undefined
+        && estimateMessageTokens(messages) > budgetTokens) {
+        await compactBeforeRound();
+      }
       tokenContinuationCount += 1;
       providerResult = await callProvider({ allowPendingToolUse: true, round });
       response = providerResult.response;
