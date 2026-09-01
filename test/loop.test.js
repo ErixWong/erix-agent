@@ -215,3 +215,36 @@ test("stall detection can be disabled", async () => {
   assert.equal(result.rounds, 3);
   assert.equal(result.truncated, true);
 });
+
+test("ERIX_STALL_MODE env overrides stall detection mode", async () => {
+  const previous = process.env.ERIX_STALL_MODE;
+  process.env.ERIX_STALL_MODE = "consecutive";
+  try {
+    // appear 模式下（默认），两个相同调用出现在窗口内即 stalled；
+    // consecutive 模式下，交替签名不会触发停滞。
+    const provider = createFakeProvider([
+      { content: [{ type: "tool_use", id: "a1", name: "write", input: { n: 1 } }], stopReason: "tool_use" },
+      { content: [{ type: "tool_use", id: "b1", name: "write", input: { n: 2 } }], stopReason: "tool_use" },
+      { content: [{ type: "tool_use", id: "a2", name: "write", input: { n: 1 } }], stopReason: "tool_use" },
+      { content: [{ type: "tool_use", id: "b2", name: "write", input: { n: 2 } }], stopReason: "tool_use" },
+      { content: [{ type: "tool_use", id: "a3", name: "write", input: { n: 1 } }], stopReason: "tool_use" },
+    ]);
+
+    const result = await runToolLoop({
+      provider,
+      initialUserMessage: "env-override",
+      maxRounds: 5,
+      executeTool: async () => "ok",
+      stallDetection: { window: 2 }, // 未指定 mode，应由 ERIX_STALL_MODE 接管
+    });
+    assert.equal(result.rounds, 5);
+    assert.equal(result.truncated, true);
+    assert.equal(provider.requests.length, 5);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ERIX_STALL_MODE;
+    } else {
+      process.env.ERIX_STALL_MODE = previous;
+    }
+  }
+});
