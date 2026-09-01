@@ -206,7 +206,7 @@ function assistantToOpenAI(message) {
 
   const serialized = {
     role: "assistant",
-    content: contentPartsToOpenAI(parts, { emptyValue: null }),
+    content: contentPartsToOpenAI(parts, { emptyValue: "" }),
   };
   if (toolCalls.length > 0) serialized.tool_calls = toolCalls;
   appendReasoning(serialized, reasoningParts);

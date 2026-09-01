@@ -39,7 +39,7 @@ test("OpenAI maps canonical reasoning and touwaka raw reasoning to reasoning_con
     }]),
     [{
       role: "assistant",
-      content: null,
+      content: "",
       reasoning_content: "native reasoning",
     }],
   );
