@@ -48,9 +48,10 @@ docs/         # 设计文档 + ADR（决策记录）
   npm login --auth-type=web          # 浏览器 OAuth + passkey
   npm publish                        # device flow：终端打印认证 URL
   ```
-- **publish 交互**：终端打印 `https://www.npmjs.com/auth/cli/<id>` → 手动复制到浏览器打开 → 手机相机扫 passkey 确认 → 命令行自动继续
-- ⚠️ 认证 URL 在非 TTY（脚本/管道）下会打码成 `***`——**必须用户在自己终端跑**
-- ⚠️ 服务器无浏览器时 `xdg-open` 失败没关系，手动开 URL 即可
+- **publish 交互（2026-09 实测）**：即使已 `npm login`，`npm publish` 仍会触发**一次独立的 device flow 认证**（EOTP，每次发布都要再认证一次，不是登录过就免）——终端打印 `https://www.npmjs.com/auth/cli/<id>` → 复制到浏览器打开 → 手机相机扫 passkey 确认 → 命令行自动继续
+- ⚠️ **prerelease 版本必须显式 `--tag`**（npm12 强制）：`npm publish --tag latest`，否则报 `You must specify a tag when publishing a prerelease version`
+- ⚠️ 认证 URL 在非 TTY（脚本/管道）下会打码成 `***`——**必须用户在自己终端跑**；agent 侧可用 python pty 方案捞真实 URL 转给用户（见踩坑速记 4）
+- ⚠️ **"Press ENTER to open in the browser..." 提示不要按**（2026-09 实测）：无浏览器时按 ENTER 触发 `xdg-open` 失败会直接杀掉 npm（`command failed` code 3）。不按 ENTER 时 npm 会持续轮询认证状态，正常完成
 
 ### 发布验证闭环
 ```bash
@@ -66,6 +67,7 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 1. 改 package.json 用 node 脚本；改完 `node -e "JSON.parse(...)"` 验证
 2. 发布前 unlink 本地 link（`@erix/llm-kit` 历史残留）
 3. npm 政策变化快（TOTP/bypass 2026 转型）——遇 403/EOTP 先查官方 changelog
+4. 无浏览器 + 非 TTY 环境的认证流程（2026-09 实测，本机无桌面）：用 python pty 包装 npm（`pty.fork()` + `select` 读输出），`setsid nohup` 完全脱离进程组防 bash 工具清理；脚本里正则提取 `https://www.npmjs.com/(login|auth/cli)/[0-9a-f-]+` 写文件，agent 读出 URL 转交用户浏览器操作；**不要自动按 ENTER**（见上）。登录成功写 token 进 `~/.npmrc`；发布成功标志为日志行 `+ erix-agent@<ver>`；参考实现 `/tmp/npm-pty-login5.py`
 
 ## 5. Git 与远程
 
