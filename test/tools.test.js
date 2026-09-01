@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -48,6 +48,27 @@ test("file tools operate on paths outside the working directory", async () => {
         /notes\.txt/,
       );
     });
+  });
+});
+
+test("rg and tree skip dangling symlinks without crashing", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "real.txt"), "needle in real file\n", "utf8");
+    // 悬空 symlink：指向不存在的目标，statSync 会抛 ENOENT（benchmark 中 /dev/fd 场景）
+    await mkdir(join(cwd, "sub"));
+    await symlink(join(cwd, "missing-target"), join(cwd, "sub", "dangling"));
+    const { executeTool } = createCliTools({ cwd });
+
+    assert.doesNotReject(
+      executeTool("rg", { pattern: "needle", path: cwd }),
+    );
+    assert.match(
+      await executeTool("rg", { pattern: "needle", path: cwd }),
+      /real\.txt:1:needle in real file/,
+    );
+    assert.doesNotReject(
+      executeTool("tree", { path: cwd, depth: 2 }),
+    );
   });
 });
 
