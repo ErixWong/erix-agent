@@ -185,3 +185,41 @@ test("chat reuses an explicitly selected session and keeps the new prompt", asyn
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("chat continues after text-only rounds (maxNoToolRounds default 3)", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-cli-notool-test-"));
+  try {
+    // 模型先用工具干活（exec 是 CLI 真实工具），然后输出文本（无工具调用）——
+    // 之前 maxNoToolRounds=1 会立即判定完成；默认 3 应追加"请继续"并保持循环。
+    const provider = createFakeProvider([
+      { content: [{ type: "tool_use", id: "act1", name: "exec", input: { command: "echo hi" } }], stopReason: "tool_use" },
+      { content: [{ type: "text", text: "已处理，接下来总结" }], stopReason: "end_turn" },
+      { content: [{ type: "tool_use", id: "act2", name: "exec", input: { command: "echo done" } }], stopReason: "tool_use" },
+      { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
+    ]);
+
+    await runChat({
+      prompt: "continue-after-text",
+      session: "notool-continue",
+      dir,
+      skillsDir: join(dir, "skills"),
+      provider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 4,
+      idleTimeout: 0,
+      toolOutput: () => {}, // 静默工具日志，避免污染 node --test 的 IPC
+    });
+
+    // 至少 3 次请求：工具轮 → 文本轮 → 追问后继续工具轮
+    assert.ok(provider.requests.length >= 3);
+    // 某个请求里应包含"请继续"追问（maxNoToolRounds>1 时文本轮后追加）
+    assert.ok(provider.requests.some((request) => (
+      request.messages.some((message) => (
+        message.role === "user"
+        && message.content?.some((block) => block.text === "（请继续完成任务）")
+      ))
+    )));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

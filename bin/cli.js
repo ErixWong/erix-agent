@@ -49,6 +49,7 @@ const HELP_TEXT = `用法：
   LLM_KIT_API_KEY    API 密钥（必填）
   LLM_KIT_MODEL      模型名称（默认：kimi-for-coding）
   ERIX_EXEC_TIMEOUT_MS exec 前台命令超时毫秒数（默认：120000）
+  ERIX_NO_TOOL_ROUNDS 模型连续无工具调用几轮后强制完成（默认：3，最小：1）
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
@@ -387,6 +388,7 @@ export async function runChat({
   dir = join(homedir(), ".erix", "transcripts"),
   provider: providerOverride,
   config: configOverride,
+  toolOutput = console.log,
 }) {
   const cwd = process.cwd();
   const runId = session ?? defaultSessionId(cwd, { unique: true });
@@ -435,7 +437,7 @@ export async function runChat({
   const tools = combineTools(cliTools, skillTools, mcpProxy, recallTool);
   const context = buildCompactionContext(config, compactBudget);
   const idle = createIdleTimeout(idleTimeout);
-  const executeTool = wrapExecuteTool(tools.executeTool);
+  const executeTool = wrapExecuteTool(tools.executeTool, { output: toolOutput });
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
   if (mcpProxy?.enabled) {
@@ -460,7 +462,16 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     },
     maxRounds: maxRounds ?? DEFAULT_MAX_ROUNDS,
     maxTokens,
-    completion: { maxNoToolRounds: 1 },
+    completion: {
+      // 模型连续 N 轮无工具调用才强制完成（默认 3）；
+      // 之前写死 1 导致模型思考一轮没动手就被判定完成（benchmark 实测 9 个任务过早放弃）
+      maxNoToolRounds: (() => {
+        const raw = process.env.ERIX_NO_TOOL_ROUNDS?.trim();
+        if (raw === undefined || raw === "") return 3;
+        const value = Number(raw);
+        return Number.isSafeInteger(value) && value > 0 ? value : 3;
+      })(),
+    },
     stream,
     signal: idle?.controller.signal,
     onDelta: stream
