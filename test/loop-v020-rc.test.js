@@ -202,6 +202,116 @@ test("enforces the budget after an oversized fold result", async () => {
   assert.ok(result.compactionStats[0].tokensAfter <= budgetTokens);
 });
 
+test("uses the latest API input usage instead of the cumulative total for compaction", async () => {
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "usage-1", name: "work", input: {} }],
+      stopReason: "tool_use",
+      usage: { input_tokens: 60, output_tokens: 1 },
+    },
+    {
+      content: [{ type: "text", text: "done" }],
+      stopReason: "end_turn",
+      usage: { input_tokens: 60, output_tokens: 1 },
+    },
+  ]);
+  let compactions = 0;
+  const strategy = {
+    shouldCompact() {
+      return false;
+    },
+    async compact() {
+      compactions += 1;
+      throw new Error("compaction should not be requested");
+    },
+  };
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "start",
+    executeTool: async () => "worked",
+    completion: false,
+    context: { strategy, budgetTokens: 100 },
+  });
+
+  assert.equal(compactions, 0);
+  assert.deepEqual(result.usage, { input_tokens: 120, output_tokens: 2 });
+});
+
+test("reduces keepRounds for severe API overage and resets the API snapshot", async () => {
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "keep-1", name: "work", input: {} }],
+      stopReason: "tool_use",
+      usage: { input_tokens: 50, output_tokens: 1 },
+    },
+    {
+      content: [{ type: "text", text: "done" }],
+      stopReason: "end_turn",
+      usage: { input_tokens: 5, output_tokens: 1 },
+    },
+  ]);
+  const keepRounds = [];
+  const strategy = {
+    shouldCompact() {
+      return true; // 走 configuredStrategy 路径，验证 keepRounds 动态收紧
+    },
+    async compact(_messages, options) {
+      keepRounds.push(options.keepRounds);
+      return { messages: [], compacted: true, foldedRounds: 1 };
+    },
+  };
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "start",
+    executeTool: async () => "worked",
+    completion: false,
+    context: { strategy, budgetTokens: 20, keepRounds: 6 },
+  });
+
+  assert.deepEqual(keepRounds, [6, 2]);
+  assert.deepEqual(provider.requests[1].messages, []);
+});
+
+test("uses API usage projection when local compaction appears within budget", async () => {
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "projection-1", name: "work", input: {} }],
+      stopReason: "tool_use",
+      usage: { input_tokens: 80, output_tokens: 1 },
+    },
+    {
+      content: [{ type: "text", text: "done" }],
+      stopReason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  ]);
+  const strategy = {
+    shouldCompact() {
+      return false;
+    },
+    async compact() {
+      return {
+        messages: [{ role: "user", content: "tiny" }],
+        compacted: true,
+        foldedRounds: 1,
+      };
+    },
+  };
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "start",
+    executeTool: async () => "worked",
+    completion: false,
+    context: { strategy, budgetTokens: 20 },
+  });
+
+  assert.deepEqual(provider.requests[1].messages, []);
+  assert.equal(result.compactionStats[0].tokensAfter, 0);
+});
+
 test("checkpoints before tools and resumes without replaying an executed tool", async () => {
   const store = createMemoryTranscriptStore();
   const events = [];
