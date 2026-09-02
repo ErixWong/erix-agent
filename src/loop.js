@@ -90,6 +90,24 @@ function validateBudget(budgetTokens) {
   return budgetTokens;
 }
 
+function isApiInputOverBudget(apiInputTokens, budgetTokens) {
+  return budgetTokens !== undefined
+    && Number.isFinite(apiInputTokens)
+    && apiInputTokens > budgetTokens;
+}
+
+function projectedApiInputTokens(apiInputTokens, estimatedBefore, estimatedAfter) {
+  if (
+    !Number.isFinite(apiInputTokens)
+    || apiInputTokens <= 0
+    || !Number.isFinite(estimatedBefore)
+    || estimatedBefore <= 0
+  ) {
+    return undefined;
+  }
+  return Math.ceil(apiInputTokens * estimatedAfter / estimatedBefore);
+}
+
 function modelMetadataFor({ modelConfig, modelMetadata, model, provider, context }) {
   const candidates = [modelConfig, modelMetadata, model, provider, context];
   return candidates.find((candidate) => (
@@ -625,6 +643,8 @@ export async function runToolLoop({
       : 4;
   const stallMode = resolvedStallDetection?.mode === "consecutive" ? "consecutive" : "appear";
   const usage = { input_tokens: 0, output_tokens: 0 };
+  let latestApiInputTokens;
+  let latestApiEstimatedTokens;
   const retryOptions = retry && typeof retry === "object" ? retry : null;
   const retryAttempts = Number.isInteger(retryOptions?.attempts)
     ? Math.max(0, retryOptions.attempts)
@@ -655,9 +675,14 @@ export async function runToolLoop({
     onEvent?.(event);
   };
 
-  const addUsage = (response) => {
-    if (Number.isFinite(response?.usage?.input_tokens)) {
-      usage.input_tokens += response.usage.input_tokens;
+  const addUsage = (response, estimatedTokens) => {
+    const inputTokens = response?.usage?.input_tokens;
+    if (Number.isFinite(inputTokens)) {
+      usage.input_tokens += inputTokens;
+      latestApiInputTokens = inputTokens > 0 ? inputTokens : undefined;
+      latestApiEstimatedTokens = Number.isFinite(estimatedTokens)
+        ? estimatedTokens
+        : undefined;
     }
     if (Number.isFinite(response?.usage?.output_tokens)) {
       usage.output_tokens += response.usage.output_tokens;
@@ -822,11 +847,14 @@ export async function runToolLoop({
     while (true) {
       normalizeMessages(messages);
       validateMessages(messages, { allowPendingToolUse });
+      const requestEstimatedTokens = estimateMessageTokens(messages);
       const snapshot = {
         messages: cloneState(messages),
         eventDeltas: [...roundEventDeltas],
         finalText,
         usage: { ...usage },
+        latestApiInputTokens,
+        latestApiEstimatedTokens,
         stopReason: roundStopReason,
       };
       const attempt = retryIndex + 1;
@@ -892,11 +920,19 @@ export async function runToolLoop({
               roundEventDeltas.push(event);
             }
           }
-          return { response, usageEmitted: attemptUsage !== undefined };
+          return {
+            response,
+            usageEmitted: attemptUsage !== undefined,
+            estimatedTokens: requestEstimatedTokens,
+          };
         }
         const response = await awaitWithAbort(provider.chat(request));
         if (recovered) emitEvent({ type: "recovered", round, attempt });
-        return { response, usageEmitted: false };
+        return {
+          response,
+          usageEmitted: false,
+          estimatedTokens: requestEstimatedTokens,
+        };
       } catch (error) {
         if (signal?.aborted) throwIfAborted(signal);
         if (retryOptions === null || error?.retryable !== true) {
@@ -907,6 +943,8 @@ export async function runToolLoop({
         finalText = snapshot.finalText;
         usage.input_tokens = snapshot.usage.input_tokens;
         usage.output_tokens = snapshot.usage.output_tokens;
+        latestApiInputTokens = snapshot.latestApiInputTokens;
+        latestApiEstimatedTokens = snapshot.latestApiEstimatedTokens;
         roundStopReason = snapshot.stopReason;
         if (retryIndex >= retryAttempts) throw error;
         const delay = Math.min(backoffBaseMs * (2 ** retryIndex), backoffMaxMs);
@@ -936,12 +974,11 @@ export async function runToolLoop({
   const compactBeforeRound = async () => {
     normalizeMessages(messages);
     const configuredStrategy = compactionContext?.strategy;
-    // reasoning 模型（如 deepseek-v4-flash）的推理 tokens 在 API 侧、不计入本地估算；
-    // 用 API 上报的累计 input_tokens 驱动压缩，避免长任务因估算低估永不压缩（Issue #11）
-    const apiInputTokens = usage.input_tokens;
+    // API input usage is per request; keep the aggregate separately for billing output.
+    const apiInputTokens = latestApiInputTokens;
     const estimatedTokens = estimateMessageTokens(messages);
     const overBudget = budgetTokens !== undefined
-      && (estimatedTokens > budgetTokens || apiInputTokens > budgetTokens);
+      && (estimatedTokens > budgetTokens || isApiInputOverBudget(apiInputTokens, budgetTokens));
     const strategyRequestsCompaction = configuredStrategy
       ? await configuredStrategy.shouldCompact(messages, budgetTokens)
       : false;
@@ -950,8 +987,13 @@ export async function runToolLoop({
         ? configuredStrategy
         : createSlidingWindowStrategy();
       const tokensBefore = estimateMessageTokens(messages);
+      const configuredKeepRounds = compactionContext.keepRounds ?? 6;
+      const keepRounds = isApiInputOverBudget(apiInputTokens, budgetTokens)
+        && apiInputTokens / budgetTokens > 2
+        ? Math.min(configuredKeepRounds, 2)
+        : configuredKeepRounds;
       const compactOptions = {
-        keepRounds: compactionContext.keepRounds ?? 6,
+        keepRounds,
         budgetTokens,
       };
       Object.defineProperty(compactOptions, "roundNumbers", {
@@ -982,7 +1024,16 @@ export async function runToolLoop({
         : 0;
       let compacted = result.compacted === true;
       let tokensAfter = estimateMessageTokens(compactedMessages);
-      if (tokensAfter > budgetTokens) {
+      const apiEstimateBefore = latestApiEstimatedTokens ?? tokensBefore;
+      let apiTokensAfter = projectedApiInputTokens(
+        apiInputTokens,
+        apiEstimateBefore,
+        tokensAfter,
+      );
+      if (
+        (budgetTokens !== undefined && tokensAfter > budgetTokens)
+        || isApiInputOverBudget(apiTokensAfter, budgetTokens)
+      ) {
         const fallback = await createSlidingWindowStrategy().compact(compactedMessages, {
           keepRounds: 0,
           budgetTokens,
@@ -997,17 +1048,33 @@ export async function runToolLoop({
         compacted = compacted || fallback.compacted === true;
         if (foldedRoundRange === undefined) foldedRoundRange = fallback.foldedRoundRange;
         tokensAfter = estimateMessageTokens(compactedMessages);
+        apiTokensAfter = projectedApiInputTokens(
+          apiInputTokens,
+          apiEstimateBefore,
+          tokensAfter,
+        );
       }
-      if (tokensAfter > budgetTokens) {
+      if (
+        (budgetTokens !== undefined && tokensAfter > budgetTokens)
+        || isApiInputOverBudget(apiTokensAfter, budgetTokens)
+      ) {
+        const apiAwareBudget = isApiInputOverBudget(apiTokensAfter, budgetTokens)
+          ? Math.max(
+            1,
+            Math.floor(budgetTokens * apiEstimateBefore / apiInputTokens),
+          )
+          : budgetTokens;
         const fallback = safeTruncateMessages(
           compactedMessages,
-          budgetTokens,
+          apiAwareBudget,
           compactionContext.protectedMessage,
         );
         compactedMessages = fallback.messages;
         tokensAfter = fallback.tokensAfter;
       }
       messages = compactedMessages;
+      latestApiInputTokens = undefined;
+      latestApiEstimatedTokens = undefined;
       hadToolUse = hadToolUse || hasToolUseInMessages(messages);
       if (foldedRoundRange?.to !== undefined) {
         foldedThrough = Math.max(foldedThrough, foldedRoundRange.to);
@@ -1117,7 +1184,7 @@ export async function runToolLoop({
     const assistantMessage = { role: "assistant", content };
     messages.push(assistantMessage);
     messageRounds.set(assistantMessage, round);
-    addUsage(response);
+    addUsage(response, providerResult.estimatedTokens);
     if (!providerResult.usageEmitted && response?.usage !== undefined) {
       emitEvent({ type: "usage", round, usage: response.usage });
     }
@@ -1129,7 +1196,10 @@ export async function runToolLoop({
       // reasoning 模型单次响应常因推理过长触发 max_tokens 截断；
       // 若 messages 已超预算，先压缩再补全，避免截断循环耗尽预算（Issue #11）
       if (budgetTokens !== undefined
-        && estimateMessageTokens(messages) > budgetTokens) {
+        && (
+          estimateMessageTokens(messages) > budgetTokens
+          || isApiInputOverBudget(latestApiInputTokens, budgetTokens)
+        )) {
         await compactBeforeRound();
       }
       tokenContinuationCount += 1;
@@ -1146,7 +1216,7 @@ export async function runToolLoop({
         messages.push(assistantMessage);
         messageRounds.set(assistantMessage, round);
       }
-      addUsage(response);
+      addUsage(response, providerResult.estimatedTokens);
       if (!providerResult.usageEmitted && response?.usage !== undefined) {
         emitEvent({ type: "usage", round, usage: response.usage });
       }

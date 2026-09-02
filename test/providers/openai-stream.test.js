@@ -115,6 +115,61 @@ test("parses text across chunks, emits ordered deltas, maps usage, and stops at 
   });
 });
 
+test("probes usage for reasoning streams that omit a usage event", async () => {
+  const fetchImpl = createMockFetch([
+    {
+      body: [
+        sse({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }),
+        "data: [DONE]\n\n",
+      ].join(""),
+    },
+    {
+      json: {
+        choices: [{ message: { content: "" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 37, completion_tokens: 1 },
+      },
+    },
+  ]);
+  const usage = [];
+
+  const response = await makeProvider(fetchImpl, {
+    model: "deepseek-v4-flash",
+  }).chatStream({
+    ...request,
+    onUsage: (reportedUsage) => usage.push(reportedUsage),
+  });
+
+  assert.deepEqual(response, {
+    content: [{ type: "text", text: "done" }],
+    stopReason: "end_turn",
+    usage: { input_tokens: 37, output_tokens: 1 },
+  });
+  assert.deepEqual(usage, [{ prompt_tokens: 37, completion_tokens: 1 }]);
+  assert.equal(fetchImpl.calls.length, 2);
+  assert.equal(fetchImpl.calls[1].body.stream, undefined);
+  assert.equal(fetchImpl.calls[1].body.max_tokens, 1);
+});
+
+test("does not add a usage probe to non-reasoning streams", async () => {
+  const fetchImpl = createMockFetch([{
+    body: [
+      sse({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }),
+      "data: [DONE]\n\n",
+    ].join(""),
+  }]);
+
+  const response = await makeProvider(fetchImpl).chatStream({
+    system: "",
+    messages: [{ role: "user", content: "hello" }],
+  });
+
+  assert.deepEqual(response, {
+    content: [{ type: "text", text: "done" }],
+    stopReason: "end_turn",
+  });
+  assert.equal(fetchImpl.calls.length, 1);
+});
+
 test("assembles a streamed tool call from three argument deltas", async () => {
   const fetchImpl = createMockFetch([
     {

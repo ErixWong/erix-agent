@@ -74,6 +74,38 @@ function buildPayload(req = {}, stream = false, model, defaults = {}) {
   return payload;
 }
 
+function canonicalUsageToOpenAI(usage) {
+  if (usage === null || typeof usage !== "object") return undefined;
+  const result = {};
+  if (usage.input_tokens !== undefined) result.prompt_tokens = usage.input_tokens;
+  if (usage.output_tokens !== undefined) result.completion_tokens = usage.output_tokens;
+  return Object.keys(result).length === 0 ? undefined : result;
+}
+
+function isReasoningProvider({
+  model,
+  model_type,
+  supports_reasoning,
+  thinking,
+  reasoning,
+  reasoning_effort,
+  enable_thinking,
+  thinking_format,
+}) {
+  const type = typeof model_type === "string" ? model_type.toLowerCase() : "";
+  const knownReasoningModel = typeof model === "string"
+    && /(?:^|[-_/])deepseek-(?:r1|reasoner|v4-flash)(?:[-_/:]|$)/i.test(model);
+  return supports_reasoning === true
+    || type === "reasoning"
+    || type === "reasoner"
+    || knownReasoningModel
+    || (thinking !== undefined && thinking !== false)
+    || (reasoning !== undefined && reasoning !== false)
+    || (typeof reasoning_effort === "string" && reasoning_effort.length > 0)
+    || enable_thinking === true
+    || thinking_format !== undefined;
+}
+
 function normalizeFinishReason(finishReason) {
   const stopMap = {
     stop: "end_turn",
@@ -152,6 +184,16 @@ export function createOpenAIProvider({
 } = {}) {
   const selectedModel = model ?? model_name;
   validateProviderConfig("OpenAI", { endpoint, apiKey, model: selectedModel });
+  const probeMissingStreamUsage = isReasoningProvider({
+    model: selectedModel,
+    model_type,
+    supports_reasoning,
+    thinking,
+    reasoning,
+    reasoning_effort,
+    enable_thinking,
+    thinking_format,
+  });
   const providerTimeoutOptions = {
     timeout,
     timeoutMs,
@@ -315,6 +357,11 @@ export function createOpenAIProvider({
       removeAbortListener?.();
       clearTimeout(timer);
     }
+  }
+
+  async function probeStreamUsage(req) {
+    const response = await chat({ ...req, maxTokens: 1 });
+    return canonicalUsageToOpenAI(response?.usage);
   }
 
   async function chatStream(req = {}) {
@@ -527,6 +574,14 @@ export function createOpenAIProvider({
           throw new KitError("server", upstreamErrorMessage(rawBody));
         }
         throw new KitError("server", truncateBody(rawBody));
+      }
+
+      if (lastUsage == null && (
+        probeMissingStreamUsage
+        || reasoning.length > 0
+        || isReasoningProvider({ ...req, model: selectedModel })
+      )) {
+        lastUsage = await probeStreamUsage(req);
       }
 
       const content = [];
