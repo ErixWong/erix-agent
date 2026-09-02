@@ -662,6 +662,7 @@ export async function runToolLoop({
     extensionCount: 0,
     nextReflectionRound: reflectionTriggerRound,
     noToolStreak: 0,
+    wrapUpNudged: false,
     errorSeen: new Map(),
     runningLog: [],
     l0Facts: [],
@@ -1608,6 +1609,7 @@ export async function runToolLoop({
       memoryLoss: memoryLossDetected,
       completionSignalDetected,
       continuationExhausted,
+      wrapUpNudged: governorState.wrapUpNudged,
       reflectionEnabled,
       nearLimit: rounds >= governorState.nextReflectionRound,
       extensionCount: governorState.extensionCount,
@@ -1685,6 +1687,7 @@ export async function runToolLoop({
       messages.push(continuationMessage);
       messageRounds.set(continuationMessage, round);
       if (action.resetNoToolStreak) governorState.noToolStreak = 0;
+      if (action.wrapUpNudged === true) governorState.wrapUpNudged = true;
       continue;
     }
     if (action.kind === "extend" || action.kind === "extend+redirect") {

@@ -5,6 +5,12 @@ function numberOr(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function estimatedRoundMs(signals = {}) {
+  const rounds = numberOr(signals.rounds, signals.round);
+  const elapsed = numberOr(signals.elapsedMs);
+  return rounds > 0 && elapsed > 0 ? elapsed / rounds : 30_000;
+}
+
 export function isStuckOnRepeatedError(signals = {}) {
   return numberOr(signals.errorRepeat) >= 3
     && signals.hasProgress === false
@@ -13,10 +19,14 @@ export function isStuckOnRepeatedError(signals = {}) {
 
 function timeGuarded(signals) {
   if (!Number.isFinite(signals?.remainingMs)) return false;
-  const rounds = numberOr(signals?.rounds, signals?.round);
-  const elapsed = numberOr(signals?.elapsedMs);
-  const estimate = rounds > 0 ? elapsed / rounds : 30_000;
-  return signals.remainingMs < estimate * 2;
+  return signals.remainingMs < estimatedRoundMs(signals) * 2;
+}
+
+export function shouldWrapUp(signals = {}) {
+  return Number.isFinite(signals.remainingMs)
+    && signals.remainingMs < estimatedRoundMs(signals) * 2
+    && !signals.wrapUpNudged
+    && numberOr(signals.errorRepeat) < 3;
 }
 
 function extensionAllowed(signals) {
@@ -60,6 +70,16 @@ export function decideRoundAction(signals = {}) {
       reason: "memoryLoss",
       text: MEMORY_LOSS_TEXT,
       resetNoToolStreak: true,
+      continue: true,
+    };
+  }
+  if (signals.hasToolUse !== false && shouldWrapUp(signals)) {
+    const remainingSeconds = Math.max(0, Math.ceil(signals.remainingMs / 1000));
+    return {
+      kind: "nudge",
+      reason: "wrapUp",
+      text: `外部时间预算将尽（剩余约 ${remainingSeconds} 秒）。请尽快收尾：确保当前产物可判定、运行验证命令并给出最终结论。不要开启新的长任务。`,
+      wrapUpNudged: true,
       continue: true,
     };
   }

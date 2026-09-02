@@ -43,7 +43,7 @@ const HELP_TEXT = `用法：
   --dir <path>          Transcript 存档目录（chat 默认：~/.erix/transcripts）
   --max-rounds <n>      工具循环最大轮数（默认：64，可用 ERIX_MAX_ROUNDS 覆盖）
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 32 时启用）
-  --timeout <毫秒>     整个工具任务的时间预算（默认：不启用）
+  --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
 
 环境变量：
