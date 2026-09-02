@@ -145,6 +145,41 @@ function stallError(signature) {
   return error;
 }
 
+const TRUNCATED_TERMINATION_REASONS = new Set([
+  "max_rounds_cap",
+  "continuation_exhausted",
+]);
+
+function makeTermination(reason, detail) {
+  return {
+    reason,
+    ...(detail === undefined ? {} : { detail: String(detail) }),
+  };
+}
+
+function terminationDetailForError(error) {
+  return error?.message === undefined ? String(error) : String(error.message);
+}
+
+function annotateTermination(error, termination) {
+  if (error && (typeof error === "object" || typeof error === "function")) {
+    error.termination = termination;
+    return error;
+  }
+  const wrapped = new Error(String(error));
+  wrapped.cause = error;
+  wrapped.termination = termination;
+  return wrapped;
+}
+
+function terminationReasonForAction(action, continuationExhausted) {
+  if (continuationExhausted) return "continuation_exhausted";
+  if (action?.value === "noTool") return "no_tool";
+  if (action?.value === "cap") return "max_rounds_cap";
+  if (action?.value === "reflection-stop") return "reflection_stop";
+  return "end_turn";
+}
+
 function cloneState(value) {
   if (typeof structuredClone === "function") return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
@@ -484,6 +519,7 @@ function defaultSleep(ms, signal) {
  *   transcript:object[],
  *   rounds:number,
  *   truncated:boolean,
+ *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"continuation_exhausted"|"aborted"|"failed", detail?:string},
  *   usage:{input_tokens:number, output_tokens:number},
  *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number}[]
  * }>}
@@ -549,6 +585,13 @@ export async function runToolLoop({
   };
   const markRunState = async (state) => {
     await persist("markRunState", runId, state);
+  };
+  const fail = async (error) => {
+    const reason = signal?.aborted ? "aborted" : "failed";
+    const termination = makeTermination(reason, terminationDetailForError(error));
+    const annotated = annotateTermination(error, termination);
+    await markRunState(reason);
+    throw annotated;
   };
   const metadata = modelMetadataFor({ modelConfig, modelMetadata, model, provider, context });
   let budgetTokens = context?.budgetTokens;
@@ -777,8 +820,7 @@ export async function runToolLoop({
         }
       }
     } catch (error) {
-      await markRunState(signal?.aborted ? "aborted" : "failed");
-      throw error;
+      await fail(error);
     }
   } else if (store && runId !== undefined && messages.length > 0) {
     // 种子记录：初始消息（initialMessages/initialUserMessage）先入档，
@@ -1320,17 +1362,23 @@ export async function runToolLoop({
     if (roundNumber !== undefined) messageRounds.set(message, roundNumber);
   };
 
-  const finish = async (truncated) => {
-    await markRunState("succeeded");
+  const makeResult = (reason, detail) => {
+    const termination = makeTermination(reason, detail);
     return {
       finalText,
       messages,
       transcript: [...messages],
       rounds,
-      truncated,
+      truncated: TRUNCATED_TERMINATION_REASONS.has(termination.reason),
+      termination,
       usage,
       compactionStats,
     };
+  };
+
+  const finish = async (reason, detail) => {
+    await markRunState("succeeded");
+    return makeResult(reason, detail);
   };
 
   const appendResumeTailMessages = () => {
@@ -1343,6 +1391,7 @@ export async function runToolLoop({
   };
 
   try {
+    throwIfAborted(signal);
     if (resumePendingTool) {
       const resumedToolResults = [];
       emitEvent({ type: "tool_use", round: rounds, toolUse: cloneState(resumePendingTool) });
@@ -1613,13 +1662,16 @@ export async function runToolLoop({
       messageRounds.set(continuationMessage, round);
       continue;
     }
-    if (action.kind === "stop") return finish(action.truncated === true);
+    if (action.kind === "stop") {
+      const reason = terminationReasonForAction(action, continuationExhausted);
+      const detail = reason === "reflection_stop" ? action.reason : undefined;
+      return finish(reason, detail);
+    }
     if (action.kind === "continue") continue;
     }
   } catch (error) {
-    await markRunState(signal?.aborted ? "aborted" : "failed");
-    throw error;
+    await fail(error);
   }
 
-  return finish(true);
+  return finish("max_rounds_cap");
 }
