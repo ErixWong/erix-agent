@@ -14,7 +14,9 @@ import { join } from "node:path";
  *   foldedRoundRange?:{from:number,to:number},
  *   response?:{content:object[], stopReason?:string, usage?:object},
  *   textPreview?:string,
- *   toolUses?:number
+ *   toolUses?:number,
+ *   summary?:{action:string,note:string}|"missing",
+ *   l0facts?:object
  * }} RoundRecord
  */
 

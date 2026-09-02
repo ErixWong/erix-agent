@@ -67,6 +67,10 @@ src/
 - `runToolLoop` completion is enabled by default with `{ signals: [], maxNoToolRounds: 3 }`;
   pass `completion: false` to retain immediate end-turn behavior. Provider retries remain opt-in:
   `retry: false` is the default.
+- `runToolLoop` supports opt-in reflection-driven budget extensions via
+  `reflection: { enabled, triggerRound, extensionStep, maxExtensions, maxRoundsCap }`.
+  A reflection call can inject a next-step plan or stop with `truncated: false`; the
+  reflection prompt itself is not added to the task transcript.
 - `executeTool` accepts either the existing positional `(name, input)` form or
   `({ id, name, input, context, signal })`. The structured form may return
   `{ success, data, duration, toolMessageId }`; the loop keeps string tool-result content and
@@ -86,6 +90,7 @@ src/
 `erix` 是构建在本库上、用于**验证与调试无头 agent** 的命令行入口（不是产品交付形态）：
 
 - **入口**：`erix` 直接进交互 TUI（`erix repl` 等价）；`erix chat "<prompt>" [--stream]` 单次对话
+  （`--reflection on|off` 控制自适应预算；`max-rounds >= 32` 时默认启用）
 - **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）——无内置安全层，见 ADR-009
 - **skill 系统**：`~/.erix/skills/<id>/skill.mjs` 自描述脚本，导出 `getSkillDefinition()` 自报工具（ADR-008）；`erix skills` 查看；todo skill（跨会话任务清单，长任务拆解/划掉/恢复）
 - **MCP 对接**：`~/.erix/mcp.json` 标准配置，单代理工具（list/search/call/status）访问任意 MCP server（stdio + HTTP；实测 unifuncs 联网搜索、filesystem 读文件）

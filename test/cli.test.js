@@ -36,6 +36,12 @@ test("parseChatArgs accepts session and transcript directory overrides", () => {
   );
 });
 
+test("parseChatArgs accepts the reflection switch", () => {
+  assert.equal(parseChatArgs(["hello", "--reflection", "on"]).reflection, true);
+  assert.equal(parseChatArgs(["hello", "--reflection", "off"]).reflection, false);
+  assert.equal(parseChatArgs(["hello", "--timeout", "1500"]).timeoutMs, 1500);
+});
+
 test("chat loop wires a file transcript store and recall tool", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-test-"));
   try {

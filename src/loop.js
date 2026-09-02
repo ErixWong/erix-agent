@@ -4,6 +4,8 @@ import { createSlidingWindowStrategy } from "./compact/sliding-window.js";
 import { enforceSize } from "./compact/enforce-size.js";
 import { estimateMessageTokens, estimateTokens } from "./tokens.js";
 import { groupIntoRounds, validateMessages } from "./messages/rounds.js";
+import { decideRoundAction, decideWithEvaluation } from "./reflection/governor.js";
+import { extractL0Facts, parseL1Summary } from "./reflection/l0.js";
 
 function blocksFor(content) {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -15,6 +17,74 @@ function textFromBlocks(blocks) {
     .filter((block) => block?.type === "text")
     .map((block) => String(block.text ?? ""))
     .join("");
+}
+
+function numberOr(value) {
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Parse the deliberately small reflection response without requiring a
+ * perfectly formatted provider response.
+ */
+export function parseReflectionDecision(text) {
+  const value = String(text ?? "");
+  const jsonMatch = value.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        progress: numberOr(parsed.progress),
+        stalled: parsed.stalled === true,
+        continueFlag: parsed.continue === true || parsed["continue"] === true,
+        stallPattern: String(parsed.stallPattern ?? ""),
+        reason: String(parsed.reason ?? ""),
+        plan: String(parsed.plan ?? ""),
+      };
+    } catch {
+      // Fall through to the text interpretation below.
+    }
+
+  }
+
+  return {
+    progress: undefined,
+    stalled: /打转|重复|无进展|stalled/i.test(value),
+    continueFlag: /继续|值得|continue/i.test(value)
+      && !/不值得|放弃|停止/i.test(value),
+    stallPattern: "",
+    reason: value.slice(0, 200),
+    plan: "",
+  };
+}
+
+function textFromUserMessage(message) {
+  return textFromBlocks(blocksFor(message?.content));
+}
+
+function taskBriefFromMessages(messages) {
+  const firstUserText = messages
+    .filter((message) => message?.role === "user")
+    .map(textFromUserMessage)
+    .find((text) => text.trim() !== "");
+  return Array.from(firstUserText ?? "").slice(0, 500).join("");
+}
+
+const SUMMARY_INSTRUCTION = `每轮执行结束时，在最终文本末尾输出一个增量总结标记：
+<erix-summary>{"action":"本轮动作","note":"相对此前日志的新进展或下一步"}</erix-summary>
+只填写 action 和 note，不重复历史；若没有增量也必须输出标记。`;
+
+function reflectionPrompt({ rounds, taskBrief, runningLog, l0Facts, errorText }) {
+  return `【进度反思】你是严格的独立评审者，不是执行者。请根据客观事实判断是否值得继续：
+
+任务原始目标：${taskBrief || "（未提供）"}
+已运行轮数：${rounds}
+L0 客观事实链：${JSON.stringify(l0Facts).slice(0, 4000)}
+L1 增量日志链：${JSON.stringify(runningLog).slice(0, 4000)}
+最近 distinct 错误摘录：${errorText || "无"}
+
+只输出 JSON（不要其他文字）：
+{"progress":0-100,"stalled":true/false,"continue":true/false,"stallPattern":"描述或空","reason":"一句话","plan":"下一步具体动作"}`;
 }
 
 // 失忆检测：模型输出欢迎语（误以为新会话/没任务）时，注入任务提醒拉回主线
@@ -377,6 +447,12 @@ function defaultSleep(ms, signal) {
  *   maxTokens?: number,
  *   temperature?: number,
  *   topP?: number,
+ *   timeoutMs?: number,
+ *   deadlineMs?: number,
+ *   reflection?: {enabled?:boolean, triggerRound?:number, extensionStep?:number,
+ *     maxExtensions?:number, maxRoundsCap?:number, format?:"json"|"text",
+ *     judge?:{provider?:object,evaluator?:object},
+ *     onReflection?:(info:{round:number, decision:object, extendedTo:number}) => void}|false,
  *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false,
  *   retry?: {attempts?:number, backoffBaseMs?:number, backoffMaxMs?:number,
  *     sleepImpl?:(ms:number)=>Promise<void>}|false,
@@ -423,6 +499,9 @@ export async function runToolLoop({
   maxTokens,
   temperature,
   topP,
+  timeoutMs,
+  deadlineMs,
+  reflection = false,
   stallDetection = { window: 4 },
   retry = false,
   completion = { signals: [], maxNoToolRounds: 3 },
@@ -498,6 +577,73 @@ export async function runToolLoop({
     requestId,
   });
   const toolSignal = signal ?? new AbortController().signal;
+  const effectiveReflection = reflection === true
+    ? {}
+    : reflection && typeof reflection === "object"
+      ? reflection
+      : undefined;
+  const reflectionEnabled = reflection === true
+    || (effectiveReflection !== undefined && effectiveReflection.enabled !== false);
+  const mainSystem = reflectionEnabled
+    ? `${system ?? ""}${system ? "\n\n" : ""}${SUMMARY_INSTRUCTION}`
+    : system;
+  const reflectionTriggerRound = Number.isSafeInteger(effectiveReflection?.triggerRound)
+    && effectiveReflection.triggerRound > 0
+    ? effectiveReflection.triggerRound
+    : Math.max(1, Math.floor(maxRounds * 0.8));
+  const reflectionExtensionStep = Number.isSafeInteger(effectiveReflection?.extensionStep)
+    && effectiveReflection.extensionStep > 0
+    ? effectiveReflection.extensionStep
+    : 32;
+  const reflectionMaxExtensions = Number.isSafeInteger(effectiveReflection?.maxExtensions)
+    && effectiveReflection.maxExtensions >= 0
+    ? effectiveReflection.maxExtensions
+    : 2;
+  const reflectionMaxRoundsCap = Math.max(
+    maxRounds,
+    Number.isSafeInteger(effectiveReflection?.maxRoundsCap)
+      && effectiveReflection.maxRoundsCap > 0
+      ? effectiveReflection.maxRoundsCap
+      : 256,
+  );
+  const governorState = {
+    effectiveMaxRounds: maxRounds,
+    extensionCount: 0,
+    nextReflectionRound: reflectionTriggerRound,
+    noToolStreak: 0,
+    runningLog: [],
+    l0Facts: [],
+  };
+  const startedAt = Date.now();
+  const configuredDeadline = Number.isFinite(deadlineMs) && deadlineMs > 0
+    ? deadlineMs
+    : Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? startedAt + timeoutMs
+      : undefined;
+  const elapsedMs = () => Date.now() - startedAt;
+  const remainingMs = () => configuredDeadline === undefined
+    ? undefined
+    : configuredDeadline > startedAt
+      ? configuredDeadline - Date.now()
+      : configuredDeadline - elapsedMs();
+  const trimGovernorHistory = () => {
+    while (governorState.runningLog.length > 1
+      && estimateTokens(JSON.stringify(governorState.runningLog))
+        + estimateTokens(JSON.stringify(governorState.l0Facts)) > 4000) {
+      governorState.runningLog.shift();
+      governorState.l0Facts.shift();
+    }
+  };
+  const addGovernorHistory = (round, summary, l0facts, ts) => {
+    governorState.runningLog.push({
+      round,
+      summary,
+      ...(summary && typeof summary === "object" ? summary : {}),
+      ts,
+    });
+    governorState.l0Facts.push({ round, ...l0facts });
+    trimGovernorHistory();
+  };
   let messages = initialMessages !== undefined
     ? [...initialMessages]
     : initialUserMessage !== undefined
@@ -525,6 +671,12 @@ export async function runToolLoop({
       for (const record of records) {
         for (const message of record.messages ?? []) {
           messageRounds.set(message, record.round ?? 0);
+        }
+        if ((record.round ?? 0) > 0) {
+          const summary = record.summary ?? "missing";
+          const l0facts = record.l0facts
+            ?? extractL0Facts(record.messages ?? []);
+          addGovernorHistory(record.round, summary, l0facts, record.ts);
         }
       }
       // 以最大 round 为续跑基数（含 round 0 种子记录时 records.length 会多算一轮）
@@ -635,6 +787,8 @@ export async function runToolLoop({
       round: 0,
       roundKey: `${String(runId)}:round:0`,
       messages: [...messages],
+      summary: "missing",
+      l0facts: extractL0Facts(messages),
       ts: new Date().toISOString(),
     });
     if (persisted) persistedTranscriptLength += messages.length;
@@ -675,7 +829,6 @@ export async function runToolLoop({
   const compactionStats = [];
   let finalText = "";
   let hadToolUse = hasToolUseInMessages(messages);
-  let noToolRounds = 0;
   let roundStopReason;
   let roundEventDeltas = [];
 
@@ -683,14 +836,16 @@ export async function runToolLoop({
     onEvent?.(event);
   };
 
-  const addUsage = (response, estimatedTokens) => {
+  const addUsage = (response, estimatedTokens, { trackLatest = true } = {}) => {
     const inputTokens = response?.usage?.input_tokens;
     if (Number.isFinite(inputTokens)) {
       usage.input_tokens += inputTokens;
-      latestApiInputTokens = inputTokens > 0 ? inputTokens : undefined;
-      latestApiEstimatedTokens = Number.isFinite(estimatedTokens)
-        ? estimatedTokens
-        : undefined;
+      if (trackLatest) {
+        latestApiInputTokens = inputTokens > 0 ? inputTokens : undefined;
+        latestApiEstimatedTokens = Number.isFinite(estimatedTokens)
+          ? estimatedTokens
+          : undefined;
+      }
     }
     if (Number.isFinite(response?.usage?.output_tokens)) {
       usage.output_tokens += response.usage.output_tokens;
@@ -865,6 +1020,7 @@ export async function runToolLoop({
         latestApiEstimatedTokens,
         stopReason: roundStopReason,
       };
+
       const attempt = retryIndex + 1;
       const attemptEvents = [];
       let attemptUsage;
@@ -880,7 +1036,7 @@ export async function runToolLoop({
       };
       try {
         const request = {
-          system,
+          system: mainSystem,
           messages,
           tools,
           signal,
@@ -967,6 +1123,44 @@ export async function runToolLoop({
         await waitForRetry(delay);
       }
     }
+  };
+
+  const callReflection = async (round, currentL0, currentSummary) => {
+    const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
+    const runningLog = [
+      ...governorState.runningLog,
+      { round, summary: currentSummary },
+    ];
+    const reflectionMessages = [{
+      role: "user",
+      content: [{
+        type: "text",
+        text: reflectionPrompt({
+          rounds: round,
+          taskBrief: taskBriefFromMessages(messages),
+          runningLog,
+          l0Facts,
+          errorText: l0Facts
+            .flatMap((fact) => fact.errorTexts ?? (fact.errorText ? [fact.errorText] : []))
+            .filter((text, index, values) => values.indexOf(text) === index)
+            .slice(-5)
+            .join("\n"),
+        }),
+      }],
+    }];
+    const judge = effectiveReflection?.judge;
+    const evaluator = judge?.provider ?? judge?.evaluator ?? provider;
+    const request = {
+      system: "你是严格的独立评审者，不是执行者。只评估任务价值与是否继续，不执行工具。",
+      messages: reflectionMessages,
+      signal,
+    };
+    if (maxTokens !== undefined) request.maxTokens = maxTokens;
+    if (temperature !== undefined) request.temperature = temperature;
+    if (topP !== undefined) request.topP = topP;
+    const response = await awaitWithAbort(evaluator.chat(request));
+    addUsage(response, undefined, { trackLatest: false });
+    return parseReflectionDecision(textFromBlocks(blocksFor(response?.content)));
   };
 
   const roundNumbersForMessages = (currentMessages) => {
@@ -1180,7 +1374,7 @@ export async function runToolLoop({
     }
     appendResumeTailMessages();
 
-    while (rounds < maxRounds) {
+    while (rounds < governorState.effectiveMaxRounds) {
     const round = rounds + 1;
     roundEventDeltas = [];
     roundStopReason = undefined;
@@ -1234,11 +1428,19 @@ export async function runToolLoop({
     }
     const continuationExhausted = response?.stopReason === "max_tokens"
       && tokenContinuationCount >= continuationLimit;
+    const parsedSummary = parseL1Summary(textFromBlocks(content));
+    content = content.map((block) => (
+      block?.type === "text"
+        ? { ...block, text: parseL1Summary(block.text).text }
+        : block
+    ));
+    const assistant = messages.at(-1);
+    if (assistant?.role === "assistant") assistant.content = content;
     finalText = textFromBlocks(content);
 
     if (hasToolUse(content)) {
       hadToolUse = true;
-      noToolRounds = 0;
+      governorState.noToolStreak = 0;
     }
 
     if (response?.stopReason === "tool_use") {
@@ -1282,45 +1484,68 @@ export async function runToolLoop({
     }
 
     let shouldContinue = response?.stopReason === "tool_use";
+    const completionSignalDetected = completionSignals.some(
+      (completionSignal) => typeof completionSignal === "string"
+        && finalText.includes(completionSignal),
+    );
     // 失忆兑底：超过 5 轮后模型若输出欢迎语（误以为新会话），注入任务提醒并继续
     // （上下文折叠可能让模型丢失任务感；此处把主线拉回，避免空转）
     const memoryLossDetected = rounds > 5
       && !hasToolUse(content)
       && isLikelyWelcomeResponse(finalText);
-    if (memoryLossDetected) {
-      const continuationMessage = {
-        role: "user",
-        content: [{
-          type: "text",
-          text: "你的任务仍在进行中。请回顾对话中的任务指令继续执行（必要时可用 recall 工具找回早期上下文）。",
-        }],
-      };
-      messages.push(continuationMessage);
-      messageRounds.set(continuationMessage, round);
-      noToolRounds = 0;
-      shouldContinue = true;
-    } else if (!hasToolUse(content) && completionEnabled) {
-      const hasSignal = completionSignals.some(
-        (completionSignal) => typeof completionSignal === "string"
-          && finalText.includes(completionSignal),
-      );
-      if (!hasSignal && hadToolUse) {
-        noToolRounds += 1;
-        if (noToolRounds < maxNoToolRounds) {
-          const continuationMessage = {
-            role: "user",
-            content: [{ type: "text", text: "（请继续完成任务）" }],
-          };
-          messages.push(continuationMessage);
-          messageRounds.set(continuationMessage, round);
-          shouldContinue = true;
-        } else {
-          shouldContinue = false;
-        }
-      } else {
-        shouldContinue = false;
+    const noToolRound = !hasToolUse(content)
+      && completionEnabled
+      && !completionSignalDetected
+      && hadToolUse;
+    if (hasToolUse(content)) {
+      governorState.noToolStreak = 0;
+    } else if (noToolRound) {
+      governorState.noToolStreak += 1;
+    }
+
+    rounds = round;
+    const currentL0 = extractL0Facts(messages.slice(roundStart));
+    const actionSignals = {
+      round,
+      rounds,
+      hasToolUse: hasToolUse(content),
+      shouldContinue,
+      noToolRound,
+      noToolStreak: governorState.noToolStreak,
+      maxNoToolRounds,
+      memoryLoss: memoryLossDetected,
+      completionSignalDetected,
+      continuationExhausted,
+      reflectionEnabled,
+      nearLimit: rounds >= governorState.nextReflectionRound,
+      extensionCount: governorState.extensionCount,
+      maxExtensions: reflectionMaxExtensions,
+      effectiveMaxRounds: governorState.effectiveMaxRounds,
+      maxRoundsCap: reflectionMaxRoundsCap,
+      extensionStep: reflectionExtensionStep,
+      elapsedMs: elapsedMs(),
+      remainingMs: remainingMs(),
+    };
+    let action = decideRoundAction(actionSignals);
+    let reflectionDecision;
+    if (action.kind === "reflect") {
+      // Phase two stays in the loop because only the loop owns the provider.
+      reflectionDecision = await callReflection(round, currentL0, parsedSummary.summary);
+      action = decideWithEvaluation(actionSignals, reflectionDecision);
+      if (typeof effectiveReflection?.onReflection === "function") {
+        await effectiveReflection.onReflection({
+          round,
+          decision: reflectionDecision,
+          extendedTo: action.kind === "extend" || action.kind === "extend+redirect"
+            ? Math.min(
+              governorState.effectiveMaxRounds + reflectionExtensionStep,
+              reflectionMaxRoundsCap,
+            )
+            : governorState.effectiveMaxRounds,
+        });
       }
     }
+    addGovernorHistory(round, parsedSummary.summary, currentL0, new Date().toISOString());
 
     const record = {
       round,
@@ -1335,6 +1560,8 @@ export async function runToolLoop({
       },
       textPreview: textFromBlocks(content),
       toolUses: content.filter((block) => block?.type === "tool_use").length,
+      summary: parsedSummary.summary,
+      l0facts: currentL0,
     };
     if (compaction.folded) {
       record.folded = true;
@@ -1349,7 +1576,6 @@ export async function runToolLoop({
     if (persisted) persistedTranscriptLength += record.messages.length;
     if (onRound) await onRound(record);
 
-    rounds = round;
     executedToolIds.clear();
     checkpointResults.clear();
     emitEvent({
@@ -1359,8 +1585,36 @@ export async function runToolLoop({
       stopReason: roundStopReason,
       usage: { ...usage },
     });
-    if (continuationExhausted) return finish(true);
-    if (!shouldContinue) return finish(false);
+    if (action.kind === "nudge") {
+      const continuationMessage = {
+        role: "user",
+        content: [{ type: "text", text: action.text }],
+      };
+      messages.push(continuationMessage);
+      messageRounds.set(continuationMessage, round);
+      if (action.resetNoToolStreak) governorState.noToolStreak = 0;
+      continue;
+    }
+    if (action.kind === "extend" || action.kind === "extend+redirect") {
+      governorState.effectiveMaxRounds = Math.min(
+        governorState.effectiveMaxRounds + reflectionExtensionStep,
+        reflectionMaxRoundsCap,
+      );
+      governorState.extensionCount += 1;
+      governorState.nextReflectionRound = Math.max(
+        rounds + 1,
+        Math.floor(governorState.effectiveMaxRounds * 0.8),
+      );
+      const continuationMessage = {
+        role: "user",
+        content: [{ type: "text", text: action.text }],
+      };
+      messages.push(continuationMessage);
+      messageRounds.set(continuationMessage, round);
+      continue;
+    }
+    if (action.kind === "stop") return finish(action.truncated === true);
+    if (action.kind === "continue") continue;
     }
   } catch (error) {
     await markRunState(signal?.aborted ? "aborted" : "failed");

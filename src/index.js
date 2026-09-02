@@ -32,4 +32,17 @@ export { createEnvModelConfigProvider } from "./config/env.js";
 export { createJsonFileModelConfigProvider } from "./config/json-file.js";
 export { resolveApiKey } from "./config/api-key.js";
 export { createFoldLlmStrategy, SUMMARIZER_PROMPT_GUIDE } from "./compact/fold-llm.js";
-export { runToolLoop } from "./loop.js";
+export { parseReflectionDecision, runToolLoop } from "./loop.js";
+export {
+  decide,
+  decideRoundAction,
+  decideWithEvaluation,
+} from "./reflection/governor.js";
+export {
+  extractL0Fact,
+  extractL0,
+  extractL0Facts,
+  parseL1Summary,
+  parseReflectionSummary,
+  parseSummary,
+} from "./reflection/l0.js";
