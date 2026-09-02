@@ -975,7 +975,8 @@ export async function runToolLoop({
     normalizeMessages(messages);
     const configuredStrategy = compactionContext?.strategy;
     // API input usage is per request; keep the aggregate separately for billing output.
-    const apiInputTokens = latestApiInputTokens;
+    const apiInputTokens = usage.input_tokens; // 累积 API 成本（reasoning 模型增量上报时累积更真实）
+    const latestApiInput = latestApiInputTokens;
     const estimatedTokens = estimateMessageTokens(messages);
     const overBudget = budgetTokens !== undefined
       && (estimatedTokens > budgetTokens || isApiInputOverBudget(apiInputTokens, budgetTokens));
