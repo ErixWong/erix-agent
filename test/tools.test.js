@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import {
   createCliTools,
+  getCommandTimeoutMs,
   getExecTimeoutMs,
   truncateResult,
   wrapExecuteTool,
@@ -131,6 +132,28 @@ test("exec timeout defaults to 120 seconds and accepts a valid environment overr
 
     process.env.ERIX_EXEC_TIMEOUT_MS = "not-a-number";
     assert.equal(getExecTimeoutMs(), 120_000);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
+  }
+});
+
+test("install/compile commands get extended timeout while regular commands keep default", () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  try {
+    delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    // 安装/编译/下载类命令：300s
+    assert.equal(getCommandTimeoutMs("apt-get install -y build-essential"), 300_000);
+    assert.equal(getCommandTimeoutMs("pip3 install numpy"), 300_000);
+    assert.equal(getCommandTimeoutMs("make -j4"), 300_000);
+    assert.equal(getCommandTimeoutMs("curl -sL https://example.com/x.tar.gz"), 300_000);
+    // 普通命令：120s
+    assert.equal(getCommandTimeoutMs("echo hello"), 120_000);
+    assert.equal(getCommandTimeoutMs("ls -la /app"), 120_000);
+    assert.equal(getCommandTimeoutMs("node /app/run.py"), 120_000);
+    // 显式设置全局超时则不放大
+    process.env.ERIX_EXEC_TIMEOUT_MS = "2500";
+    assert.equal(getCommandTimeoutMs("apt-get install -y gcc"), 2500);
   } finally {
     if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
     else process.env.ERIX_EXEC_TIMEOUT_MS = previous;

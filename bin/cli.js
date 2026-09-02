@@ -26,7 +26,7 @@ import {
   wrapExecuteTool,
 } from "./tools.js";
 
-const DEFAULT_MAX_ROUNDS = 32;
+const DEFAULT_MAX_ROUNDS = 64;
 const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 
 const HELP_TEXT = `用法：
@@ -41,7 +41,7 @@ const HELP_TEXT = `用法：
   --stream              流式输出模型文本
   --session <id>        会话 ID（默认按工作目录自动派生）
   --dir <path>          Transcript 存档目录（chat 默认：~/.erix/transcripts）
-  --max-rounds <n>      工具循环最大轮数（默认：16）
+  --max-rounds <n>      工具循环最大轮数（默认：64，可用 ERIX_MAX_ROUNDS 覆盖）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
 
 环境变量：
@@ -50,6 +50,7 @@ const HELP_TEXT = `用法：
   LLM_KIT_MODEL      模型名称（默认：kimi-for-coding）
   ERIX_EXEC_TIMEOUT_MS exec 前台命令超时毫秒数（默认：120000）
   ERIX_NO_TOOL_ROUNDS 模型连续无工具调用几轮后强制完成（默认：3，最小：1）
+  ERIX_MAX_ROUNDS     工具循环最大轮数（默认：64，最小：1）
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
@@ -460,7 +461,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       idle?.touch();
       return result;
     },
-    maxRounds: maxRounds ?? DEFAULT_MAX_ROUNDS,
+    maxRounds: maxRounds ?? (() => {
+      const raw = process.env.ERIX_MAX_ROUNDS?.trim();
+      if (raw === undefined || raw === "") return DEFAULT_MAX_ROUNDS;
+      const value = Number(raw);
+      return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_ROUNDS;
+    })(),
     maxTokens,
     completion: {
       // 模型连续 N 轮无工具调用才强制完成（默认 3）；
