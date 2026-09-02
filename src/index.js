@@ -38,6 +38,7 @@ export {
   decideRoundAction,
   decideWithEvaluation,
   isStuckOnRepeatedError,
+  shouldWrapUp,
 } from "./reflection/governor.js";
 export {
   extractL0Fact,
