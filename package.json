@@ -1,7 +1,7 @@
 {
   "name": "erix-agent",
   "version": "0.2.0-rc",
-  "description": "自研轻量编码 agent：零依赖 LLM 对话引擎 + 交互式 CLI + skill 自描述协议 + MCP 对接",
+  "description": "自研无头编码 agent（headless agent）：零依赖 LLM agent 运行时（双协议流式 + 工具循环 + 上下文压缩 + checkpoint），面向无人值守、宿主调度场景；CLI 为验证/调试器",
   "type": "module",
   "engines": {
     "node": ">=22"

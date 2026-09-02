@@ -1,21 +1,28 @@
 # erix-agent
 
-**自研轻量编码 agent**：零依赖的 LLM 对话循环引擎 + 交互式 CLI（erix）+ 可扩展生态（skill 自描述协议 / MCP 对接 / 任务管理）。
+**自研无头编码 agent（headless agent）**：零依赖的 LLM agent 运行时——双协议流式 + 工具循环 + 上下文压缩 + checkpoint，面向**无人值守、宿主调度**场景（app_container / touwaka 嵌入式底座）。CLI（erix）不是产品，是验证与调试器。
 
-**定位：这是一个完整的 agent，不是库。** 三件套：
+**定位：无头 agent。** 交付物 = 引擎 + 编程式任务入口（任务进 → 自主工具循环 → 事件出 → 可恢复），不带 UI、
+不面向终端前的人。与 pi 的关系：**pi 是交互 agent（人在环，TUI/subagent/MCP 生态），erix 是无头 agent
+（无人环，被平台调度）——互补，不竞争**（见「为什么是自研」）。
 
-1. **引擎**（src/，零执行零安全）：协议适配 + 工具调用循环 + 上下文预算压缩——
-   流式/压缩折叠/续写/死循环检测/信号中止，长任务不爆窗、抖动不重跑、协议可换。
-2. **CLI**（bin/，erix 命令）：交互式 TUI + 单次对话；工具面全面直通（readFile/writeFile/rg/tree/exec，
-   任意路径任意命令）；配置/会话/任务全量家目录管理（~/.erix/）。
-3. **生态**（可扩展）：skill 自描述协议（~/.erix/skills/*，脚本自报工具，ADR-008）+ **MCP 对接**
-   （单代理工具访问任意 MCP server，stdio + HTTP，复用标准 .mcp.json 配置）+ todo 任务管理。
+- **产品形态（无头运行时）**：`runToolLoop` 单任务生命周期——起、跑、停、恢复、事件流
+  （onRound/onDelta/onToolCall/onUsage/onEvent）；压缩不自爆（computeBudget 谱系）；失败可分类可重试（checkpoint/resume）。
+- **边界：止于单个 agent 任务的生命周期**。多角色编排、仲裁、重试调度、任务队列是**宿主职责**
+  （app_container 的 arbitrate/reaper/三角色），不吸入库——一旦承诺编排就滑向「无头 agent 平台」，
+  撞 OpenAI Agent SDK / LangGraph / pi RPC 赛道，零依赖小包优势尽失。
+- **CLI = 验证器，不是重点**：交互 TUI + 单次对话（`erix chat` 可作 bench 入口）；工具面全面直通
+  （readFile/writeFile/rg/tree/exec，任意路径任意命令）；配置/会话/任务家目录管理（~/.erix/）。
+  用途 = 开发期调试、冒烟、benchmark 入口。⚠️ 交互 repl 测的是**人机协作**，不是无头自主能力；
+  「验证 agent 能力」的主体是 **erix-bench 无头 harness**（容器内驱动 + 判分器，`--agent erix|pi` 对照）。
+- **生态**（可扩展，服务于无头场景）：skill 自描述协议（~/.erix/skills/*，脚本自报工具，ADR-008）+ **MCP 对接**
+  （stdio + HTTP，复用标准 .mcp.json 配置）+ todo 任务管理。
 
 > **安全边界由运行环境提供**（[ADR-009](docs/decisions/009-safety-layering.md)）：**谁用这个 agent 谁负责安全**——
 > 本地跑就是你的机器（信任域），嵌入容器/沙盒场景由宿主隔离。
 > CLI 不内置白名单/牢笼/确认弹窗，工具面全面直通（含写与执行）。
 
-消费方：`app_container`（PI Agent 审计/开发链路）、`touwaka`（AgentLoop / 对话链路）。
+消费方：`app_container`（PI Agent 审计/开发链路，迁移进行中：erix-agent 替换自研 pi/ 层）、`touwaka`（AgentLoop / 对话链路）。
 
 ## 为什么是自研而不是 Vercel AI SDK / LangChain
 
@@ -24,9 +31,13 @@
 - **Vercel AI SDK**（`ai` v7）：provider 适配 + tool loop 成熟，但**上下文压缩明确不做**（官方 cookbook 让用户用 `prepareStep` 自己写）。最有价值的一半仍需自研。
 - **oneringai**：全家桶 agent 平台（语音/图像/MCP/22 个重依赖），形态不对。
 - **LangChain.js / Mastra / LangGraph**：框架级抽象，两个消费项目都刻意不用框架。
-- **pi SDK**：完整 agent（session 格式/资源加载/自带工具执行），撞 app_container "LLM 无任何直接执行面"不变量。
+- **pi SDK / pi**：**交互 agent**（人在环：TUI / subagent / skills / MCP / extensions 生态；SDK 可嵌入但依赖树 ~134MB、
+  agent 形态自带执行、压缩为 LLM 摘要型）。**erix 与 pi 互补不竞争**：pi 面向终端前的人，erix 面向宿主调度的
+  无头长任务（零依赖、executeTool 宿主注入、统计折叠零成本保底、checkpoint 重放——pi SDK 均无对应一等抽象）。
 
-触发重估的条件（写死）：**需要接第三家非 OpenAI 兼容的原生协议（Gemini native / Bedrock / Azure）时**，迁到 AI SDK 为底座。
+触发重估的条件（写死）：
+1. **需要接第三家非 OpenAI 兼容的原生协议（Gemini native / Bedrock / Azure）时**，迁到 AI SDK 为底座。
+2. **季度检视（止损线）**：连续 6-12 个月消费方仍只有 `app_container` 一家、且无新增无头场景立项 → 收缩为 `app_container` 私有 package、停止公共 npm 维护（版本与 contract-tests 移交 app_container）。
 
 ## 模块地图
 
@@ -70,9 +81,9 @@ src/
   use canonical `_truncatedArguments`, with `_raw` retained as a compatibility alias. Unsafe file
   store run IDs map to `run-<first-24-sha256-hex>`; simple IDs are kept unchanged.
 
-## CLI：erix（agent 形态）
+## CLI：erix（无头 agent 的验证器 / 调试器）
 
-`erix` 是构建在本库上的交互式编码助手：
+`erix` 是构建在本库上、用于**验证与调试无头 agent** 的命令行入口（不是产品交付形态）：
 
 - **入口**：`erix` 直接进交互 TUI（`erix repl` 等价）；`erix chat "<prompt>" [--stream]` 单次对话
 - **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）——无内置安全层，见 ADR-009
@@ -99,4 +110,4 @@ src/
 CLI 交互 TUI、配置/会话持久化、skill 自描述生态（todo 任务管理）、内置工具面（读写执行）、
 流式打字机、MCP 对接（stdio + HTTP，联网搜索实测）、idle 超时。236 单测全绿（+4 条件跳过），
 真实 e2e 跑通多轮工具调用、压缩、流式与 MCP 联网调研。
-下一里程碑：npm 发布（erix-agent）→ app_container 迁移（以 erix-agent 引擎构建可控编码 agent，容器沙盒由 app_container 提供）→ 通用 sandbox 组件（独立于 agent，另立 ADR）。
+当前里程碑：app_container 迁移收尾（erix-agent 0.2.0-rc 已发布；阶段 1/2 完成：worker 替换 + idea 对话 SSE 真机通过；阶段 3 = 压缩预算 computeBudget / checkpoint / completion 按场景开）→ 无头能力 benchmark（erix-bench Terminal-Bench 对照 pi）→ 通用 sandbox 组件（独立于 agent，另立 ADR）。

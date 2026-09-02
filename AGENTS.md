@@ -4,9 +4,11 @@
 
 ## 1. 项目定位
 
-**自研轻量编码 agent**：零依赖 LLM 对话引擎 + 交互式 CLI（`erix`）+ 可扩展生态（skill 自描述协议 / MCP 对接 / 任务管理）。
+**自研无头编码 agent（headless agent）**：零依赖 LLM agent 运行时（双协议流式 + 工具循环 + 压缩 + checkpoint），面向**无人值守、宿主调度**场景（app_container / touwaka 嵌入式底座）。
 
-- 三层：**引擎**（src/，零执行零安全）· **CLI**（bin/，工具面全面直通）· **生态**（skill/MCP/todo）
+- 产品形态 = **无头 agent**：`runToolLoop` 单任务生命周期（起/跑/停/恢复/事件流），执行（executeTool）由宿主注入；**边界止于单个任务生命周期**，多角色编排/仲裁/重试调度是宿主职责，不吸入库
+- **CLI（bin/）是验证器/调试器，不是重点**：交互 TUI + `chat` 单次入口（可作 bench 入口）；能力验证走 erix-bench 无头 harness（容器内驱动 + 判分器，`--agent erix|pi` 对照），交互 repl 只测人机协作
+- 与 pi 的关系：**pi = 交互 agent（人在环）；erix = 无头 agent（无人环，宿主调度）——互补不竞争**
 - 安全分层（ADR-009）：agent 不内置安全，**谁用谁负责**（本地=信任域；嵌入容器由宿主隔离）
 - 红线：**零 npm 依赖**（只 import node: 内置 + 相对路径）、纯 ESM、Node 22+、不提交 key/token
 
@@ -14,7 +16,7 @@
 
 ```
 src/          # 引擎：providers(openai/anthropic 双协议) messages compact store config tools loop
-bin/          # CLI：cli.js(入口/chat) repl.js(TUI) tools.js(内置工具+提示词) skills.js mcp.js config.js
+bin/          # CLI（验证器/调试器）：cli.js(入口/chat) repl.js(TUI) tools.js(内置工具+提示词) skills.js mcp.js config.js
 test/         # 单测（node --test）
 fixtures/     # 测试夹具（mock MCP server）——⚠️ 不能放 test/ 下（node --test 会跑 test/ 所有文件导致卡死）
 examples/     # 示例（skills/ 入库示例）
