@@ -936,8 +936,12 @@ export async function runToolLoop({
   const compactBeforeRound = async () => {
     normalizeMessages(messages);
     const configuredStrategy = compactionContext?.strategy;
+    // reasoning 模型（如 deepseek-v4-flash）的推理 tokens 在 API 侧、不计入本地估算；
+    // 用 API 上报的累计 input_tokens 驱动压缩，避免长任务因估算低估永不压缩（Issue #11）
+    const apiInputTokens = usage.input_tokens;
+    const estimatedTokens = estimateMessageTokens(messages);
     const overBudget = budgetTokens !== undefined
-      && estimateMessageTokens(messages) > budgetTokens;
+      && (estimatedTokens > budgetTokens || apiInputTokens > budgetTokens);
     const strategyRequestsCompaction = configuredStrategy
       ? await configuredStrategy.shouldCompact(messages, budgetTokens)
       : false;
