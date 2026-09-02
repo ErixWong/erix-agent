@@ -13,7 +13,11 @@ const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
 const OUTPUT_LIMIT = 4096;
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
+const INSTALL_EXEC_TIMEOUT_MS = 300_000; // 安装/编译类命令（apt/pip/make 等）给更长时间
 const EXEC_MAX_BUFFER = 1024 * 1024;
+
+// 安装/编译/下载类命令前缀（benchmark 实测 apt-get install 频繁超时）
+const INSTALL_COMMAND_PATTERN = /^(?:sudo\s+)?(?:apt-get|apt|pip\d?|pip3|npm|yarn|pnpm|make|cmake|gcc|g\+\+|cc|configure|bash\s+.*\.sh|curl|wget)\b/;
 
 // ERIX_EXEC_TIMEOUT_MS overrides the default timeout for foreground commands.
 export function getExecTimeoutMs() {
@@ -21,6 +25,17 @@ export function getExecTimeoutMs() {
   return Number.isFinite(configured) && configured > 0
     ? configured
     : DEFAULT_EXEC_TIMEOUT_MS;
+}
+
+// 按命令类型选择超时：安装/编译/下载类命令超时更长（默认 300s），其余默认 120s。
+export function getCommandTimeoutMs(command) {
+  const base = getExecTimeoutMs();
+  if (!INSTALL_COMMAND_PATTERN.test(String(command ?? "").trim())) return base;
+  // 用户显式设置了全局超时则不放大（尊重显式配置）
+  const configured = Number(process.env.ERIX_EXEC_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : INSTALL_EXEC_TIMEOUT_MS;
 }
 
 function normalizeNonNegativeInteger(value, fallback) {
@@ -171,7 +186,7 @@ function executeExecCommand(input, cwd) {
     );
   }
 
-  const timeoutMs = getExecTimeoutMs();
+  const timeoutMs = getCommandTimeoutMs(command);
   return new Promise((resolve) => {
     execFile(
       "/bin/sh",
