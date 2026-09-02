@@ -5,6 +5,12 @@ function numberOr(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+export function isStuckOnRepeatedError(signals = {}) {
+  return numberOr(signals.errorRepeat) >= 3
+    && signals.hasProgress === false
+    && signals.shouldContinue === true;
+}
+
 function timeGuarded(signals) {
   if (!Number.isFinite(signals?.remainingMs)) return false;
   const rounds = numberOr(signals?.rounds, signals?.round);
@@ -54,6 +60,14 @@ export function decideRoundAction(signals = {}) {
       reason: "memoryLoss",
       text: MEMORY_LOSS_TEXT,
       resetNoToolStreak: true,
+      continue: true,
+    };
+  }
+  if (isStuckOnRepeatedError(signals)) {
+    return {
+      kind: "nudge",
+      reason: "repeatedError",
+      text: `检测到同一错误重复出现（第 ${numberOr(signals.errorRepeat)} 次）。请换思路：不要重复已失败的尝试。检查错误根因（可能是依赖缺失/路径/版本），或改用完全不同的方法。`,
       continue: true,
     };
   }

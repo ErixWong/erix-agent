@@ -37,6 +37,7 @@ export {
   decide,
   decideRoundAction,
   decideWithEvaluation,
+  isStuckOnRepeatedError,
 } from "./reflection/governor.js";
 export {
   extractL0Fact,

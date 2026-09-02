@@ -139,10 +139,53 @@ function hasToolUseInMessages(messages) {
   return messages.some((message) => hasToolUse(blocksFor(message?.content)));
 }
 
+function hasSuccessfulToolResult(messages) {
+  return messages.some((message) => blocksFor(message?.content).some((block) => (
+    block?.type === "tool_result"
+      && block?.is_error !== true
+      && block?.success !== false
+  )));
+}
+
 function stallError(signature) {
   const error = new Error(`Tool loop stalled on repeated call: ${signature}`);
   error.code = "llm_kit_stalled";
   return error;
+}
+
+const TRUNCATED_TERMINATION_REASONS = new Set([
+  "max_rounds_cap",
+  "continuation_exhausted",
+]);
+
+function makeTermination(reason, detail) {
+  return {
+    reason,
+    ...(detail === undefined ? {} : { detail: String(detail) }),
+  };
+}
+
+function terminationDetailForError(error) {
+  return error?.message === undefined ? String(error) : String(error.message);
+}
+
+function annotateTermination(error, termination) {
+  if (error && (typeof error === "object" || typeof error === "function")) {
+    error.termination = termination;
+    return error;
+  }
+  const wrapped = new Error(String(error));
+  wrapped.cause = error;
+  wrapped.termination = termination;
+  return wrapped;
+}
+
+function terminationReasonForAction(action, continuationExhausted) {
+  if (continuationExhausted) return "continuation_exhausted";
+  if (action?.value === "noTool") return "no_tool";
+  if (action?.value === "cap") return "max_rounds_cap";
+  if (action?.value === "reflection-stop") return "reflection_stop";
+  return "end_turn";
 }
 
 function cloneState(value) {
@@ -484,6 +527,7 @@ function defaultSleep(ms, signal) {
  *   transcript:object[],
  *   rounds:number,
  *   truncated:boolean,
+ *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"continuation_exhausted"|"aborted"|"failed", detail?:string},
  *   usage:{input_tokens:number, output_tokens:number},
  *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number}[]
  * }>}
@@ -550,6 +594,13 @@ export async function runToolLoop({
   const markRunState = async (state) => {
     await persist("markRunState", runId, state);
   };
+  const fail = async (error) => {
+    const reason = signal?.aborted ? "aborted" : "failed";
+    const termination = makeTermination(reason, terminationDetailForError(error));
+    const annotated = annotateTermination(error, termination);
+    await markRunState(reason);
+    throw annotated;
+  };
   const metadata = modelMetadataFor({ modelConfig, modelMetadata, model, provider, context });
   let budgetTokens = context?.budgetTokens;
   if (budgetTokens === undefined
@@ -611,6 +662,7 @@ export async function runToolLoop({
     extensionCount: 0,
     nextReflectionRound: reflectionTriggerRound,
     noToolStreak: 0,
+    errorSeen: new Map(),
     runningLog: [],
     l0Facts: [],
   };
@@ -644,6 +696,30 @@ export async function runToolLoop({
     governorState.l0Facts.push({ round, ...l0facts });
     trimGovernorHistory();
   };
+  const restoreErrorSeen = (l0facts) => {
+    // 优先 errorCounts（每轮持久化的累计 count，resume 精确重建）；
+    // 旧 schema fallback：errorHashes 每 hash +1（近似，同轮多次同错会少计）
+    const counts = l0facts?.errorCounts;
+    if (counts && typeof counts === "object") {
+      for (const [errorHash, count] of Object.entries(counts)) {
+        const current = governorState.errorSeen.get(errorHash)?.count ?? 0;
+        governorState.errorSeen.set(errorHash, {
+          count: Math.max(current, Number.isFinite(count) ? count : 0),
+        });
+      }
+      return;
+    }
+    const errorHashes = l0facts?.errorHashes
+      ?? (l0facts?.errorHash ? [l0facts.errorHash] : []);
+    for (const errorHash of errorHashes) {
+      const previous = governorState.errorSeen.get(errorHash);
+      const previousCount = Number.isSafeInteger(previous?.count) ? previous.count : 0;
+      governorState.errorSeen.set(errorHash, {
+        ...(previous ?? {}),
+        count: previousCount + 1,
+      });
+    }
+  };
   let messages = initialMessages !== undefined
     ? [...initialMessages]
     : initialUserMessage !== undefined
@@ -675,7 +751,12 @@ export async function runToolLoop({
         if ((record.round ?? 0) > 0) {
           const summary = record.summary ?? "missing";
           const l0facts = record.l0facts
-            ?? extractL0Facts(record.messages ?? []);
+            // 无 l0facts 的远古记录：用共享 errorSeen 重新提取（跨记录累计；
+            // 随后 restoreErrorSeen 的 Math.max 幂等，不会双计）
+            ?? extractL0Facts(record.messages ?? [], {
+              seenErrors: governorState.errorSeen,
+            });
+          restoreErrorSeen(l0facts);
           addGovernorHistory(record.round, summary, l0facts, record.ts);
         }
       }
@@ -777,8 +858,7 @@ export async function runToolLoop({
         }
       }
     } catch (error) {
-      await markRunState(signal?.aborted ? "aborted" : "failed");
-      throw error;
+      await fail(error);
     }
   } else if (store && runId !== undefined && messages.length > 0) {
     // 种子记录：初始消息（initialMessages/initialUserMessage）先入档，
@@ -1320,17 +1400,23 @@ export async function runToolLoop({
     if (roundNumber !== undefined) messageRounds.set(message, roundNumber);
   };
 
-  const finish = async (truncated) => {
-    await markRunState("succeeded");
+  const makeResult = (reason, detail) => {
+    const termination = makeTermination(reason, detail);
     return {
       finalText,
       messages,
       transcript: [...messages],
       rounds,
-      truncated,
+      truncated: TRUNCATED_TERMINATION_REASONS.has(termination.reason),
+      termination,
       usage,
       compactionStats,
     };
+  };
+
+  const finish = async (reason, detail) => {
+    await markRunState("succeeded");
+    return makeResult(reason, detail);
   };
 
   const appendResumeTailMessages = () => {
@@ -1343,6 +1429,7 @@ export async function runToolLoop({
   };
 
   try {
+    throwIfAborted(signal);
     if (resumePendingTool) {
       const resumedToolResults = [];
       emitEvent({ type: "tool_use", round: rounds, toolUse: cloneState(resumePendingTool) });
@@ -1504,7 +1591,10 @@ export async function runToolLoop({
     }
 
     rounds = round;
-    const currentL0 = extractL0Facts(messages.slice(roundStart));
+    const currentRoundMessages = messages.slice(roundStart);
+    const currentL0 = extractL0Facts(currentRoundMessages, {
+      seenErrors: governorState.errorSeen,
+    });
     const actionSignals = {
       round,
       rounds,
@@ -1513,6 +1603,8 @@ export async function runToolLoop({
       noToolRound,
       noToolStreak: governorState.noToolStreak,
       maxNoToolRounds,
+      errorRepeat: currentL0.errorRepeat,
+      hasProgress: hasSuccessfulToolResult(currentRoundMessages),
       memoryLoss: memoryLossDetected,
       completionSignalDetected,
       continuationExhausted,
@@ -1613,13 +1705,16 @@ export async function runToolLoop({
       messageRounds.set(continuationMessage, round);
       continue;
     }
-    if (action.kind === "stop") return finish(action.truncated === true);
+    if (action.kind === "stop") {
+      const reason = terminationReasonForAction(action, continuationExhausted);
+      const detail = reason === "reflection_stop" ? action.reason : undefined;
+      return finish(reason, detail);
+    }
     if (action.kind === "continue") continue;
     }
   } catch (error) {
-    await markRunState(signal?.aborted ? "aborted" : "failed");
-    throw error;
+    await fail(error);
   }
 
-  return finish(true);
+  return finish("max_rounds_cap");
 }
