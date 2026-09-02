@@ -19,6 +19,14 @@ export function isProtectedMessage(message, guard) {
   return false;
 }
 
+export function isRealUser(message) {
+  if (message?.role !== "user") return false;
+  const blocks = Array.isArray(message.content) ? message.content : [];
+  return typeof message.content === "string"
+    || blocks.length === 0
+    || blocks.some((block) => block?.type !== "tool_result");
+}
+
 export function selectFoldedRounds(rounds, keepRounds, protectedMessage) {
   const target = Math.max(0, rounds.length - keepRounds);
   const folded = [];

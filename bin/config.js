@@ -7,6 +7,7 @@ import {
   computeBudget,
   createFoldStatisticalStrategy,
 } from "../src/index.js";
+import { isRealUser } from "../src/compact/helpers.js";
 
 const DEFAULT_MODEL = "kimi-for-coding";
 const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
@@ -96,6 +97,7 @@ export function buildCompactionContext(config, explicitBudget) {
     return {
       strategy: createFoldStatisticalStrategy(),
       budgetTokens: explicitBudget,
+      protectedMessage: isRealUser,
     };
   }
   if (!config.contextWindowTokens) return undefined;
@@ -107,5 +109,6 @@ export function buildCompactionContext(config, explicitBudget) {
   return {
     strategy: createFoldStatisticalStrategy(),
     budgetTokens: budget,
+    protectedMessage: isRealUser,
   };
 }

@@ -7,6 +7,7 @@ import {
   roundRangeForIndexes,
   runFoldHook,
   selectFoldedRounds,
+  isRealUser,
 } from "./helpers.js";
 
 function normalizedKeepRounds(value) {
@@ -18,14 +19,6 @@ function normalizedKeepRounds(value) {
 function blocksFor(message) {
   if (!Array.isArray(message?.content)) return [];
   return message.content;
-}
-
-function isRealUser(message) {
-  if (message?.role !== "user") return false;
-  const blocks = blocksFor(message);
-  return typeof message.content === "string"
-    || blocks.length === 0
-    || blocks.some((block) => block?.type !== "tool_result");
 }
 
 function toolFootprint(rounds) {
@@ -47,6 +40,46 @@ function toolFootprint(rounds) {
     .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
     .map(([name, count]) => `${name}×${count}`)
     .join(", ");
+}
+
+function parseToolFootprint(value) {
+  const counts = new Map();
+  if (value === "无") return counts;
+  for (const match of String(value).matchAll(/([^,]+)×(\d+)/gu)) {
+    const name = match[1].trim();
+    const count = Number.parseInt(match[2], 10);
+    if (name && Number.isSafeInteger(count)) {
+      counts.set(name, (counts.get(name) ?? 0) + count);
+    }
+  }
+  return counts;
+}
+
+function parseFoldSummary(text) {
+  const match = String(text).match(
+    /^【上下文折叠】早期第 (\d+)–(\d+) 轮（共 (\d+) 轮）已折叠。工具足迹：(.*?)。可用 recall\(/u,
+  );
+  if (!match) return undefined;
+  return {
+    from: Number.parseInt(match[1], 10),
+    to: Number.parseInt(match[2], 10),
+    count: Number.parseInt(match[3], 10),
+    tools: parseToolFootprint(match[4]),
+  };
+}
+
+function formatFoldSummary({ from, to, count, tools }) {
+  const footprint = tools.size === 0
+    ? "无"
+    : [...tools.entries()]
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([name, count]) => `${name}×${count}`)
+      .join(", ");
+  return [
+    `【上下文折叠】早期第 ${from}–${to} 轮（共 ${count} 轮）已折叠。`,
+    `工具足迹：${footprint}。`,
+    `可用 recall(pattern: "关键词") 搜回细节，或 recall(fromRound: ${from}, toRound: ${to}) 取原文（大段可能截断，优先关键词）。`,
+  ].join("");
 }
 
 function prependSummary(head, summary, summaryRole = "user") {
@@ -75,10 +108,34 @@ function prependSummary(head, summary, summaryRole = "user") {
     : Array.isArray(user.content)
       ? user.content
       : [];
+  const summaries = originalContent
+    .filter((block) => block?.type === "text")
+    .map((block) => parseFoldSummary(block.text))
+    .filter((parsed) => parsed !== undefined);
+  const current = parseFoldSummary(summary);
+  const merged = [...summaries, current].filter((parsed) => parsed !== undefined);
+  const mergedSummary = merged.length === 0
+    ? summary
+    : formatFoldSummary({
+      from: Math.min(...merged.map((parsed) => parsed.from)),
+      to: Math.max(...merged.map((parsed) => parsed.to)),
+      count: merged.reduce((total, parsed) => total + parsed.count, 0),
+      tools: merged.reduce((counts, parsed) => {
+        for (const [name, count] of parsed.tools) {
+          counts.set(name, (counts.get(name) ?? 0) + count);
+        }
+        return counts;
+      }, new Map()),
+    });
+  const contentWithoutSummaries = originalContent.filter((block) => (
+    block?.type !== "text" || parseFoldSummary(block.text) === undefined
+  ));
   const updatedHead = head.slice();
   updatedHead[userIndex] = {
     ...user,
-    content: [{ type: "text", text: summary }, ...originalContent],
+    // 合并后的单段摘要放 content 最前：模型先看到折叠提示，任务原文紧跟其后；
+    // （safeTruncate 同消息字段按 index 截断，任务在后可避免被先截成 [已修剪]）
+    content: [{ type: "text", text: mergedSummary }, ...contentWithoutSummaries],
   };
   return updatedHead;
 }

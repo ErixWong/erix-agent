@@ -267,6 +267,11 @@ test("buildCompactionContext prioritizes an explicit budget", () => {
 
   assert.equal(context.budgetTokens, 8000);
   assert.equal(context.strategy.name, "fold-statistical");
+  assert.equal(context.protectedMessage({ role: "user", content: "task" }), true);
+  assert.equal(context.protectedMessage({
+    role: "user",
+    content: [{ type: "tool_result", content: "result" }],
+  }), false);
 });
 
 test("buildCompactionContext computes a budget from the context window", () => {

@@ -17,6 +17,14 @@ function textFromBlocks(blocks) {
     .join("");
 }
 
+// 失忆检测：模型输出欢迎语（误以为新会话/没任务）时，注入任务提醒拉回主线
+function isLikelyWelcomeResponse(text) {
+  const value = String(text ?? "").trim();
+  return /^(?:你好|嗨|hello)\s*[!！,，。.]?\s*(?:我是|i\s*(?:am|'m))[\s\S]*(?:助手|assistant)/iu.test(value)
+    || /(?:看起来|好像|似乎)[\s\S]{0,40}(?:没有|未)[\s\S]{0,20}(?:输入|收到)[\s\S]{0,20}(?:具体)?(?:任务|task)/iu.test(value)
+    || /请[\s\S]{0,10}(?:告诉|输入|描述)[\s\S]{0,10}(?:我)?[\s\S]{0,20}(?:做什么|任务|task)/iu.test(value);
+}
+
 function toolResultContent(result) {
   return typeof result === "string" ? result : String(result);
 }
@@ -974,9 +982,10 @@ export async function runToolLoop({
   const compactBeforeRound = async () => {
     normalizeMessages(messages);
     const configuredStrategy = compactionContext?.strategy;
-    // API input usage is per request; keep the aggregate separately for billing output.
-    const apiInputTokens = usage.input_tokens; // 累积 API 成本（reasoning 模型增量上报时累积更真实）
-    const latestApiInput = latestApiInputTokens;
+    // API input usage is per request; keep the aggregate for billing output.
+    // 压缩判断：主用本地估算（真实上下文大小），API usage 辅助取单轮完整输入
+    // （flash/kimi 型 API 报完整输入含历史；累积 usage.input_tokens 是计费总量、虚高会误触发折叠）
+    const apiInputTokens = latestApiInputTokens;
     const estimatedTokens = estimateMessageTokens(messages);
     const overBudget = budgetTokens !== undefined
       && (estimatedTokens > budgetTokens || isApiInputOverBudget(apiInputTokens, budgetTokens));
@@ -989,8 +998,8 @@ export async function runToolLoop({
         : createSlidingWindowStrategy();
       const tokensBefore = estimateMessageTokens(messages);
       const configuredKeepRounds = compactionContext.keepRounds ?? 6;
-      const keepRounds = isApiInputOverBudget(apiInputTokens, budgetTokens)
-        && apiInputTokens / budgetTokens > 2
+      // 上下文膨胀到预算 2 倍以上时收紧 keepRounds（防折叠后立刻再超预算的恶性循环）
+      const keepRounds = estimatedTokens / budgetTokens > 2
         ? Math.min(configuredKeepRounds, 2)
         : configuredKeepRounds;
       const compactOptions = {
@@ -1273,7 +1282,24 @@ export async function runToolLoop({
     }
 
     let shouldContinue = response?.stopReason === "tool_use";
-    if (!hasToolUse(content) && completionEnabled) {
+    // 失忆兑底：超过 5 轮后模型若输出欢迎语（误以为新会话），注入任务提醒并继续
+    // （上下文折叠可能让模型丢失任务感；此处把主线拉回，避免空转）
+    const memoryLossDetected = rounds > 5
+      && !hasToolUse(content)
+      && isLikelyWelcomeResponse(finalText);
+    if (memoryLossDetected) {
+      const continuationMessage = {
+        role: "user",
+        content: [{
+          type: "text",
+          text: "你的任务仍在进行中。请回顾对话中的任务指令继续执行（必要时可用 recall 工具找回早期上下文）。",
+        }],
+      };
+      messages.push(continuationMessage);
+      messageRounds.set(continuationMessage, round);
+      noToolRounds = 0;
+      shouldContinue = true;
+    } else if (!hasToolUse(content) && completionEnabled) {
       const hasSignal = completionSignals.some(
         (completionSignal) => typeof completionSignal === "string"
           && finalText.includes(completionSignal),

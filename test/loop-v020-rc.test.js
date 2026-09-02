@@ -202,7 +202,7 @@ test("enforces the budget after an oversized fold result", async () => {
   assert.ok(result.compactionStats[0].tokensAfter <= budgetTokens);
 });
 
-test("uses the latest API input usage instead of the cumulative total for compaction", async () => {
+test("does not compact from cumulative API usage when local context fits", async () => {
   const provider = createFakeProvider([
     {
       content: [{ type: "tool_use", id: "usage-1", name: "work", input: {} }],
@@ -238,7 +238,7 @@ test("uses the latest API input usage instead of the cumulative total for compac
   assert.deepEqual(result.usage, { input_tokens: 120, output_tokens: 2 });
 });
 
-test("reduces keepRounds for severe API overage and resets the API snapshot", async () => {
+test("keeps the configured keepRounds when only API usage is over budget", async () => {
   const provider = createFakeProvider([
     {
       content: [{ type: "tool_use", id: "keep-1", name: "work", input: {} }],
@@ -270,16 +270,16 @@ test("reduces keepRounds for severe API overage and resets the API snapshot", as
     context: { strategy, budgetTokens: 20, keepRounds: 6 },
   });
 
-  assert.deepEqual(keepRounds, [6, 2]);
+  assert.deepEqual(keepRounds, [6, 6]);
   assert.deepEqual(provider.requests[1].messages, []);
 });
 
-test("uses API usage projection when local compaction appears within budget", async () => {
+test("does not compact when per-request input fits budget and local context fits", async () => {
   const provider = createFakeProvider([
     {
       content: [{ type: "tool_use", id: "projection-1", name: "work", input: {} }],
       stopReason: "tool_use",
-      usage: { input_tokens: 80, output_tokens: 1 },
+      usage: { input_tokens: 8, output_tokens: 1 },
     },
     {
       content: [{ type: "text", text: "done" }],
@@ -308,8 +308,56 @@ test("uses API usage projection when local compaction appears within budget", as
     context: { strategy, budgetTokens: 20 },
   });
 
-  assert.deepEqual(provider.requests[1].messages, []);
-  assert.equal(result.compactionStats[0].tokensAfter, 0);
+  assert.equal(provider.requests.length, 2);
+  assert.equal(result.compactionStats.length, 0);
+  assert.equal(result.usage.input_tokens, 9);
+});
+
+test("compacts when the local context estimate exceeds the budget", async () => {
+  const provider = createFakeProvider([
+    toolResponse("local-budget-1"),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "start",
+    executeTool: async () => "worked",
+    completion: false,
+    context: { budgetTokens: 10 },
+  });
+
+  assert.ok(result.compactionStats.length >= 1);
+  assert.ok(result.compactionStats.some((stat) => stat.compacted));
+});
+
+test("injects a task reminder after a late welcome response", async () => {
+  const provider = createFakeProvider([
+    ...Array.from({ length: 6 }, (_value, index) => toolResponse(`memory-${index + 1}`)),
+    {
+      content: [{
+        type: "text",
+        text: "你好！我是 erix 编码助手。看起来你还没有输入具体任务，请告诉我你想做什么。",
+      }],
+      stopReason: "end_turn",
+    },
+    { content: [{ type: "text", text: "continued work" }], stopReason: "end_turn" },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "complete the task",
+    executeTool: async () => "worked",
+    maxRounds: 8,
+    completion: false,
+    stallDetection: false,
+  });
+
+  assert.equal(result.finalText, "continued work");
+  assert.equal(provider.requests.length, 8);
+  assert.ok(provider.requests[7].messages.some((message) => (
+    message.content?.some((block) => block.text?.includes("你的任务仍在进行中"))
+  )));
 });
 
 test("checkpoints before tools and resumes without replaying an executed tool", async () => {
