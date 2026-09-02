@@ -139,6 +139,14 @@ function hasToolUseInMessages(messages) {
   return messages.some((message) => hasToolUse(blocksFor(message?.content)));
 }
 
+function hasSuccessfulToolResult(messages) {
+  return messages.some((message) => blocksFor(message?.content).some((block) => (
+    block?.type === "tool_result"
+      && block?.is_error !== true
+      && block?.success !== false
+  )));
+}
+
 function stallError(signature) {
   const error = new Error(`Tool loop stalled on repeated call: ${signature}`);
   error.code = "llm_kit_stalled";
@@ -654,6 +662,7 @@ export async function runToolLoop({
     extensionCount: 0,
     nextReflectionRound: reflectionTriggerRound,
     noToolStreak: 0,
+    errorSeen: new Map(),
     runningLog: [],
     l0Facts: [],
   };
@@ -687,6 +696,30 @@ export async function runToolLoop({
     governorState.l0Facts.push({ round, ...l0facts });
     trimGovernorHistory();
   };
+  const restoreErrorSeen = (l0facts) => {
+    // 优先 errorCounts（每轮持久化的累计 count，resume 精确重建）；
+    // 旧 schema fallback：errorHashes 每 hash +1（近似，同轮多次同错会少计）
+    const counts = l0facts?.errorCounts;
+    if (counts && typeof counts === "object") {
+      for (const [errorHash, count] of Object.entries(counts)) {
+        const current = governorState.errorSeen.get(errorHash)?.count ?? 0;
+        governorState.errorSeen.set(errorHash, {
+          count: Math.max(current, Number.isFinite(count) ? count : 0),
+        });
+      }
+      return;
+    }
+    const errorHashes = l0facts?.errorHashes
+      ?? (l0facts?.errorHash ? [l0facts.errorHash] : []);
+    for (const errorHash of errorHashes) {
+      const previous = governorState.errorSeen.get(errorHash);
+      const previousCount = Number.isSafeInteger(previous?.count) ? previous.count : 0;
+      governorState.errorSeen.set(errorHash, {
+        ...(previous ?? {}),
+        count: previousCount + 1,
+      });
+    }
+  };
   let messages = initialMessages !== undefined
     ? [...initialMessages]
     : initialUserMessage !== undefined
@@ -718,7 +751,12 @@ export async function runToolLoop({
         if ((record.round ?? 0) > 0) {
           const summary = record.summary ?? "missing";
           const l0facts = record.l0facts
-            ?? extractL0Facts(record.messages ?? []);
+            // 无 l0facts 的远古记录：用共享 errorSeen 重新提取（跨记录累计；
+            // 随后 restoreErrorSeen 的 Math.max 幂等，不会双计）
+            ?? extractL0Facts(record.messages ?? [], {
+              seenErrors: governorState.errorSeen,
+            });
+          restoreErrorSeen(l0facts);
           addGovernorHistory(record.round, summary, l0facts, record.ts);
         }
       }
@@ -1553,7 +1591,10 @@ export async function runToolLoop({
     }
 
     rounds = round;
-    const currentL0 = extractL0Facts(messages.slice(roundStart));
+    const currentRoundMessages = messages.slice(roundStart);
+    const currentL0 = extractL0Facts(currentRoundMessages, {
+      seenErrors: governorState.errorSeen,
+    });
     const actionSignals = {
       round,
       rounds,
@@ -1562,6 +1603,8 @@ export async function runToolLoop({
       noToolRound,
       noToolStreak: governorState.noToolStreak,
       maxNoToolRounds,
+      errorRepeat: currentL0.errorRepeat,
+      hasProgress: hasSuccessfulToolResult(currentRoundMessages),
       memoryLoss: memoryLossDetected,
       completionSignalDetected,
       continuationExhausted,
