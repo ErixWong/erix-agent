@@ -422,6 +422,7 @@ export async function runChat({
   reflection,
   timeoutMs,
   stream,
+  completion,
   idleTimeout = DEFAULT_IDLE_TIMEOUT_SECONDS,
   session,
   sessionExplicit,
@@ -505,10 +506,23 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     reflection: resolveReflection(reflection, resolvedMaxRounds),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     maxTokens,
-    completion: {
+    completion: completion === false ? false : {
+      signals: [
+        "任务已完成",
+        "已完成",
+        "全部完成",
+        "无需继续",
+        "任务结束",
+        "没有更多步骤",
+        ...(Array.isArray(completion?.signals) ? completion.signals : []),
+      ],
       // 模型连续 N 轮无工具调用才强制完成（默认 3）；
       // 之前写死 1 导致模型思考一轮没动手就被判定完成（benchmark 实测 9 个任务过早放弃）
       maxNoToolRounds: (() => {
+        if (Number.isSafeInteger(completion?.maxNoToolRounds)
+          && completion.maxNoToolRounds > 0) {
+          return completion.maxNoToolRounds;
+        }
         const raw = process.env.ERIX_NO_TOOL_ROUNDS?.trim();
         if (raw === undefined || raw === "") return 3;
         const value = Number(raw);

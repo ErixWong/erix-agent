@@ -6,6 +6,7 @@ import { estimateMessageTokens, estimateTokens } from "./tokens.js";
 import { groupIntoRounds, validateMessages } from "./messages/rounds.js";
 import { decideRoundAction, decideWithEvaluation } from "./reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "./reflection/l0.js";
+import { tryParseWrapupJson, normalizeWrapupWithLlm } from "./reflection/wrapup.js";
 
 function blocksFor(content) {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -70,9 +71,10 @@ function taskBriefFromMessages(messages) {
   return Array.from(firstUserText ?? "").slice(0, 500).join("");
 }
 
-const SUMMARY_INSTRUCTION = `每轮执行结束时，在最终文本末尾输出一个增量总结标记：
-<erix-summary>{"action":"本轮动作","note":"相对此前日志的新进展或下一步"}</erix-summary>
-只填写 action 和 note，不重复历史；若没有增量也必须输出标记。`;
+const WRAPUP_INSTRUCTION = `任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：
+{"done":true,"summary":"任务总结","output":"给用户的结果"}
+若任务尚未完成但需要阶段性说明，可输出 {"done":false,"summary":"当前进展"}。
+继续工作时直接调用工具。`;
 
 function reflectionPrompt({ rounds, taskBrief, runningLog, l0Facts, errorText }) {
   return `【进度反思】你是严格的独立评审者，不是执行者。请根据客观事实判断是否值得继续：
@@ -635,9 +637,14 @@ export async function runToolLoop({
       : undefined;
   const reflectionEnabled = reflection === true
     || (effectiveReflection !== undefined && effectiveReflection.enabled !== false);
-  const mainSystem = reflectionEnabled
-    ? `${system ?? ""}${system ? "\n\n" : ""}${SUMMARY_INSTRUCTION}`
-    : system;
+  const mainSystem = `${system ?? ""}${system ? "\n\n" : ""}${WRAPUP_INSTRUCTION}`;
+  // 归一化 evaluator：复用 judge/provider 配置（无 judge 时主 provider），供 wrapup LLM 归一化用
+  const judgeConfig = effectiveReflection?.judge;
+  const wrapupEvaluator = judgeConfig?.provider ?? judgeConfig?.evaluator ?? provider;
+  // wrapup LLM 归一化（默认关闭：会额外消耗 provider 调用，改变既有纯文本轮行为）。
+  // 显式开启：ERIX_WRAPUP_NORMALIZE=1，或 effectiveReflection.wrapupNormalize===true。
+  let wrapupNormalizationEnabled = process.env.ERIX_WRAPUP_NORMALIZE?.trim() === "1"
+    || effectiveReflection?.wrapupNormalize === true;
   const reflectionTriggerRound = Number.isSafeInteger(effectiveReflection?.triggerRound)
     && effectiveReflection.triggerRound > 0
     ? effectiveReflection.triggerRound
@@ -687,11 +694,17 @@ export async function runToolLoop({
       governorState.l0Facts.shift();
     }
   };
-  const addGovernorHistory = (round, summary, l0facts, ts) => {
+  const addGovernorHistory = (round, summary, l0facts, ts, wrapup) => {
     governorState.runningLog.push({
       round,
       summary,
       ...(summary && typeof summary === "object" ? summary : {}),
+      ...(wrapup === undefined || wrapup === null ? {} : {
+        planned: "",
+        actual: wrapup.summary,
+        next: "",
+        source: wrapup.done ? "json-done" : "json",
+      }),
       ts,
     });
     governorState.l0Facts.push({ round, ...l0facts });
@@ -758,7 +771,7 @@ export async function runToolLoop({
               seenErrors: governorState.errorSeen,
             });
           restoreErrorSeen(l0facts);
-          addGovernorHistory(record.round, summary, l0facts, record.ts);
+          addGovernorHistory(record.round, summary, l0facts, record.ts, record.wrapup);
         }
       }
       // 以最大 round 为续跑基数（含 round 0 种子记录时 records.length 会多算一轮）
@@ -1516,7 +1529,13 @@ export async function runToolLoop({
     }
     const continuationExhausted = response?.stopReason === "max_tokens"
       && tokenContinuationCount >= continuationLimit;
-    const parsedSummary = parseL1Summary(textFromBlocks(content));
+    const responseText = textFromBlocks(content);
+    const isEndTurn = roundStopReason === "end_turn";
+    const wrapupJson = isEndTurn ? tryParseWrapupJson(responseText) : null;
+    const parsedSummary = parseL1Summary(responseText);
+    let roundSummary = wrapupJson === null
+      ? parsedSummary.summary
+      : wrapupJson.summary;
     content = content.map((block) => (
       block?.type === "text"
         ? { ...block, text: parseL1Summary(block.text).text }
@@ -1525,6 +1544,9 @@ export async function runToolLoop({
     const assistant = messages.at(-1);
     if (assistant?.role === "assistant") assistant.content = content;
     finalText = textFromBlocks(content);
+    if (wrapupJson !== null) {
+      finalText = wrapupJson.output || wrapupJson.summary;
+    }
 
     if (hasToolUse(content)) {
       hadToolUse = true;
@@ -1571,14 +1593,68 @@ export async function runToolLoop({
       }
     }
 
-    let shouldContinue = response?.stopReason === "tool_use";
-    const completionSignalDetected = completionSignals.some(
+    let shouldContinue = response?.stopReason === "tool_use"
+      || (wrapupJson !== null && wrapupJson.done === false);
+    let normalizedWrapup = null;
+    let completionSignalDetected = wrapupJson?.done === true
+      || (wrapupJson === null && completionSignals.some(
       (completionSignal) => typeof completionSignal === "string"
         && finalText.includes(completionSignal),
-    );
+      ));
+    // LLM 归一化兜底：end_turn + 非 JSON + signals 未命中时，若模型输出有实质文本
+    // （没说完成也没走协议），调 judge 归一化为 {done,summary,output}，避免误判空转。
+    // 低频：仅当文本不含完成信号、非空、且不是欢迎语时触发一次。
+    if (
+      wrapupJson === null
+      && response?.stopReason === "end_turn"
+      && !completionSignalDetected
+      && !hasToolUse(content)
+      && finalText.trim() !== ""
+      && !isLikelyWelcomeResponse(finalText)
+      && wrapupNormalizationEnabled
+    ) {
+      try {
+        const requestForJudge = {
+          system: "你是输出协议归一化器，只输出有效 JSON。",
+          messages: [{
+            role: "user",
+            content: [{ type: "text", text: finalText }],
+          }],
+          signal,
+        };
+        if (maxTokens !== undefined) requestForJudge.maxTokens = maxTokens;
+        if (temperature !== undefined) requestForJudge.temperature = temperature;
+        const judgeResponse = await awaitWithAbort(wrapupEvaluator.chat(requestForJudge));
+        addUsage(judgeResponse, undefined, { trackLatest: false });
+        const candidate = tryParseWrapupJson(
+          textFromBlocks(blocksFor(judgeResponse?.content)),
+        );
+        if (candidate !== null) {
+          normalizedWrapup = candidate;
+          if (candidate.summary !== "" || candidate.output !== "") {
+            roundSummary = candidate.summary || candidate.output || roundSummary;
+          }
+          if (candidate.done === true) {
+            shouldContinue = false;
+            completionSignalDetected = true;
+            if (candidate.output !== "" || candidate.summary !== "") {
+              finalText = candidate.output || candidate.summary || finalText;
+            }
+          } else {
+            shouldContinue = true;
+          }
+        } else {
+          // 归一化失败：关闭开关，避免每轮都烧 token
+          wrapupNormalizationEnabled = false;
+        }
+      } catch {
+        // 归一化失败降级：走现有 noToolStreak/completion 兑底，不崩 loop
+      }
+    }
     // 失忆兑底：超过 5 轮后模型若输出欢迎语（误以为新会话），注入任务提醒并继续
     // （上下文折叠可能让模型丢失任务感；此处把主线拉回，避免空转）
     const memoryLossDetected = rounds > 5
+      && wrapupJson === null
       && !hasToolUse(content)
       && isLikelyWelcomeResponse(finalText);
     const noToolRound = !hasToolUse(content)
@@ -1624,7 +1700,7 @@ export async function runToolLoop({
     let reflectionDecision;
     if (action.kind === "reflect") {
       // Phase two stays in the loop because only the loop owns the provider.
-      reflectionDecision = await callReflection(round, currentL0, parsedSummary.summary);
+      reflectionDecision = await callReflection(round, currentL0, roundSummary);
       action = decideWithEvaluation(actionSignals, reflectionDecision);
       if (typeof effectiveReflection?.onReflection === "function") {
         await effectiveReflection.onReflection({
@@ -1639,7 +1715,13 @@ export async function runToolLoop({
         });
       }
     }
-    addGovernorHistory(round, parsedSummary.summary, currentL0, new Date().toISOString());
+    addGovernorHistory(
+      round,
+      roundSummary,
+      currentL0,
+      new Date().toISOString(),
+      wrapupJson,
+    );
 
     const record = {
       round,
@@ -1654,8 +1736,9 @@ export async function runToolLoop({
       },
       textPreview: textFromBlocks(content),
       toolUses: content.filter((block) => block?.type === "tool_use").length,
-      summary: parsedSummary.summary,
+      summary: roundSummary,
       l0facts: currentL0,
+      ...(wrapupJson === null ? {} : { wrapup: wrapupJson }),
     };
     if (compaction.folded) {
       record.folded = true;
