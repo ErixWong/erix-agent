@@ -1654,6 +1654,7 @@ export async function runToolLoop({
     // 失忆兑底：超过 5 轮后模型若输出欢迎语（误以为新会话），注入任务提醒并继续
     // （上下文折叠可能让模型丢失任务感；此处把主线拉回，避免空转）
     const memoryLossDetected = rounds > 5
+      && wrapupJson === null
       && !hasToolUse(content)
       && isLikelyWelcomeResponse(finalText);
     const noToolRound = !hasToolUse(content)

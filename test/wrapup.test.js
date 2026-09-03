@@ -182,8 +182,15 @@ test("arbitrary JSON in prose is not mistaken for a wrapup marker (reviewer #1)"
 });
 
 test("legacy erix-summary marker is not parsed as wrapup (reviewer #10)", async () => {
+  // 真 legacy marker：action/note 键 → 不应被误判为 wrapup，finalText 不被 output/summary 覆盖
   const provider = createFakeProvider([
-    { content: [{ type: "text", text: "我做了些工作" }], stopReason: "end_turn" },
+    {
+      content: [{
+        type: "text",
+        text: '做了些工作<erix-summary>{"action":"debug","note":"修复 replica"}</erix-summary>',
+      }],
+      stopReason: "end_turn",
+    },
   ]);
   const result = await runToolLoop({
     provider,
@@ -191,8 +198,10 @@ test("legacy erix-summary marker is not parsed as wrapup (reviewer #10)", async 
     executeTool: async () => "ok",
     completion: false,
   });
-  // Legacy summary without wrapup keys: no finalText override, keeps raw text.
   assert.equal(result.rounds, 1);
+  // finalText 保持原文（无 output/summary 覆盖），仅剥 erix-summary 标记
+  assert.ok(result.finalText.includes("做了些工作"));
+  assert.ok(!result.finalText.includes("erix-summary"));
 });
 
 test("non-JSON end-turn without signals falls back to noToolStreak (reviewer #3)", async () => {
@@ -280,4 +289,23 @@ test("non-JSON end-turn triggers LLM normalization and done:true stops (loop wir
     if (prev === undefined) delete process.env.ERIX_WRAPUP_NORMALIZE;
     else process.env.ERIX_WRAPUP_NORMALIZE = prev;
   }
+});
+
+test("done:false with completion word in text keeps going (reviewer #6)", async () => {
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "text", text: '{"done":false,"summary":"还需确认一步"}' }],
+      stopReason: "end_turn",
+    },
+    { content: [{ type: "text", text: '{"done":true,"output":"完成"}' }], stopReason: "end_turn" },
+  ]);
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "工作",
+    executeTool: async () => "ok",
+    completion: { signals: ["已完成"], maxNoToolRounds: 3 },
+  });
+  // done:false 即使文本含完成词也继续（协议 done 优先）；下一轮 done:true 停
+  assert.equal(result.rounds, 2);
+  assert.equal(result.finalText, "完成");
 });
