@@ -33,6 +33,7 @@ export { createJsonFileModelConfigProvider } from "./config/json-file.js";
 export { resolveApiKey } from "./config/api-key.js";
 export { createFoldLlmStrategy, SUMMARIZER_PROMPT_GUIDE } from "./compact/fold-llm.js";
 export { parseReflectionDecision, runToolLoop } from "./loop.js";
+export { tryParseWrapupJson, normalizeWrapupWithLlm } from "./reflection/wrapup.js";
 export {
   decide,
   decideRoundAction,
