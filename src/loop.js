@@ -641,8 +641,9 @@ export async function runToolLoop({
   // 归一化 evaluator：复用 judge/provider 配置（无 judge 时主 provider），供 wrapup LLM 归一化用
   const judgeConfig = effectiveReflection?.judge;
   const wrapupEvaluator = judgeConfig?.provider ?? judgeConfig?.evaluator ?? provider;
-  // wrapup LLM 归一化（默认关闭：会额外消耗 provider 调用，改变既有纯文本轮行为）。
-  // 显式开启：ERIX_WRAPUP_NORMALIZE=1，或 effectiveReflection.wrapupNormalize===true。
+  // wrapup LLM 归一化（默认关闭：保持既有纯文本轮行为与旧测试兼容）。
+  // 开启：ERIX_WRAPUP_NORMALIZE=1 或 reflection.wrapupNormalize===true。
+  // benchmark/harness 场景应开启——找不到 JSON（含空文本）就该归一化。
   let wrapupNormalizationEnabled = process.env.ERIX_WRAPUP_NORMALIZE?.trim() === "1"
     || effectiveReflection?.wrapupNormalize === true;
   const reflectionTriggerRound = Number.isSafeInteger(effectiveReflection?.triggerRound)
@@ -1601,16 +1602,13 @@ export async function runToolLoop({
       (completionSignal) => typeof completionSignal === "string"
         && finalText.includes(completionSignal),
       ));
-    // LLM 归一化兜底：end_turn + 非 JSON + signals 未命中时，若模型输出有实质文本
-    // （没说完成也没走协议），调 judge 归一化为 {done,summary,output}，避免误判空转。
-    // 低频：仅当文本不含完成信号、非空、且不是欢迎语时触发一次。
+    // LLM 归一化兑底：end_turn + 无工具 + 没解析出 JSON（含空文本/自然语言/杂讯）→
+    // 调 judge 归一化为 {done,summary,output}，统一交给下游判定。
+    // 触发条件刻意宽松：找不到 JSON 就该归一化（覆盖空文本/难任务放弃场景）。
     if (
       wrapupJson === null
       && response?.stopReason === "end_turn"
-      && !completionSignalDetected
       && !hasToolUse(content)
-      && finalText.trim() !== ""
-      && !isLikelyWelcomeResponse(finalText)
       && wrapupNormalizationEnabled
     ) {
       try {
@@ -1618,7 +1616,12 @@ export async function runToolLoop({
           system: "你是输出协议归一化器，只输出有效 JSON。",
           messages: [{
             role: "user",
-            content: [{ type: "text", text: finalText }],
+            content: [{ type: "text", text: `【归一化】判断 agent 是否完成任务。
+任务目标：${taskBriefFromMessages(messages) || "（未提供）"}
+已运行轮数：${rounds}
+本轮 agent 最终输出（可能为空）：${JSON.stringify(responseText).slice(0, 2000)}
+若 agent 已给出明确结论/产物就绪则 done=true；若它在工作中途停下/放弃则判断产出是否可判定，可判定则 done=true 否则 done=false。
+只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果"}` }],
           }],
           signal,
         };

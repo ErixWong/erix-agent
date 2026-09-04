@@ -309,3 +309,28 @@ test("done:false with completion word in text keeps going (reviewer #6)", async 
   assert.equal(result.rounds, 2);
   assert.equal(result.finalText, "完成");
 });
+
+test("empty-text end_turn also triggers normalization (找不到 JSON 就该归一化)", async () => {
+  const prev = process.env.ERIX_WRAPUP_NORMALIZE;
+  process.env.ERIX_WRAPUP_NORMALIZE = "1";
+  try {
+    // 模型超难任务放弃：空文本 end_turn（无 tool_use、无 text）
+    const sequence = createFakeProvider([
+      { content: [{ type: "text", text: "" }], stopReason: "end_turn" },
+      { content: [{ type: "text", text: '{"done":true,"summary":"模型空输出","output":"无结论"}' }], stopReason: "end_turn" },
+    ]);
+    const result = await runToolLoop({
+      provider: sequence,
+      initialUserMessage: "做一件不可能的事",
+      executeTool: async () => "ok",
+      completion: { signals: [], maxNoToolRounds: 3 },
+    });
+    // 空文本触发归一化 → judge 判 done:true → 1 轮停（非拖 3 轮 noToolStreak）
+    assert.equal(result.rounds, 1);
+    assert.deepEqual(result.termination, { reason: "end_turn" });
+    assert.equal(result.finalText, "无结论");
+  } finally {
+    if (prev === undefined) delete process.env.ERIX_WRAPUP_NORMALIZE;
+    else process.env.ERIX_WRAPUP_NORMALIZE = prev;
+  }
+});
