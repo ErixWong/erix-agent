@@ -1602,7 +1602,10 @@ export async function runToolLoop({
     const continuationExhausted = response?.stopReason === "max_tokens"
       && tokenContinuationCount >= continuationLimit;
     const responseText = textFromBlocks(content);
-    const isEndTurn = roundStopReason === "end_turn";
+    // OpenAI 规范：finish_reason=stop 是模型自然停止的唯一标识。
+    // 但社区实测存在 stop 但 content 带 tool_calls 的边界（非标准）——双保险：stop && 无 tool_use
+    // 才算真正说完（tool_calls 轮即使报 stop 也是要调工具，不该 judge/wrapup）
+    const isEndTurn = roundStopReason === "end_turn" && !hasToolUse(content);
     const wrapupJson = isEndTurn ? tryParseWrapupJson(responseText) : null;
     const parsedSummary = parseL1Summary(responseText);
     let roundSummary = wrapupJson === null
