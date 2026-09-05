@@ -35,13 +35,6 @@ function summarizeArgument(name, input) {
   }
 }
 
-function commandFor(toolUse) {
-  if (toolUse?.name === "exec" && typeof toolUse.input?.command === "string") {
-    return toolUse.input.command;
-  }
-  return toolUse?.name ?? "";
-}
-
 function resultText(block) {
   return truncate(textFromContent(block?.content), MAX_OUTPUT_LENGTH);
 }
@@ -86,32 +79,39 @@ export function buildTimeline(messages, roundStart = 0) {
     ? messages.slice(Math.max(0, Number.isSafeInteger(roundStart) ? roundStart : 0))
     : [];
   const toolCalls = [];
-  const toolsById = new Map();
-  const results = [];
+  const outputById = new Map();
 
   for (const message of selected) {
     for (const block of blocksFor(message?.content)) {
       if (block?.type === "tool_use") {
-        const call = {
+        toolCalls.push({
           name: String(block.name ?? ""),
           arg: summarizeArgument(block.name, block.input),
-        };
-        toolCalls.push(call);
-        if (block.id !== undefined) toolsById.set(block.id, block);
-      } else if (block?.type === "tool_result") {
-        const toolUse = toolsById.get(block.tool_use_id);
-        results.push({
-          cmd: commandFor(toolUse),
-          output: resultText(block),
+          _toolUseId: block.id,
         });
+      } else if (block?.type === "tool_result") {
+        if (block.tool_use_id !== undefined) {
+          outputById.set(block.tool_use_id, resultText(block));
+        }
       }
     }
   }
 
+  // 按 tool_use_id 把输出内联到对应调用（多工具乱序/跨块不丢配对）
+  const paired = toolCalls.map((call) => {
+    const output = call._toolUseId !== undefined
+      ? outputById.get(call._toolUseId)
+      : undefined;
+    const clean = { name: call.name, arg: call.arg };
+    return output !== undefined
+      ? { ...clean, output }
+      : clean;
+  });
+
   const l0facts = extractL0Facts(selected);
   return {
-    toolCalls,
-    outputs: results,
+    toolCalls: paired,
+    outputs: [],
     exitOk: l0facts.exitOk,
     errors: l0facts.errorTexts ?? [],
     errorRepeat: l0facts.errorRepeat ?? 0,
@@ -124,16 +124,8 @@ function formatTimeline(timeline) {
   for (const entry of entries) {
     const round = entry?.round ?? "?";
     for (const call of entry?.toolCalls ?? []) {
-      const output = (entry.outputs ?? []).find((_value, index) => (
-        index === (entry.toolCalls ?? []).indexOf(call)
-      ));
-      const outputText = output?.output ? `; 输出: ${output.output}` : "";
+      const outputText = call?.output ? `; 输出: ${call.output}` : "";
       lines.push(`R${round}: ${call.name} ${call.arg}${outputText}`.trim());
-    }
-    if ((entry?.toolCalls ?? []).length === 0) {
-      for (const output of entry?.outputs ?? []) {
-        lines.push(`R${round}: 输出: ${output.output}`.trim());
-      }
     }
   }
   return lines.join("\n") || "（暂无工具足迹）";
@@ -179,10 +171,11 @@ export function buildJudgePrompt(
       ? [timeline]
       : [];
   const recent = entries.slice(-12).reverse();
+  // 验证输出已内联到 toolCalls（buildTimeline 按 tool_use_id 配对）
   const outputLines = recent
-    .flatMap((entry) => entry?.outputs ?? [])
-    .filter((output) => output?.output)
-    .map((output) => `${output.cmd || "tool"} → ${output.output}`)
+    .flatMap((entry) => entry?.toolCalls ?? [])
+    .filter((call) => call?.output)
+    .map((call) => `${call.arg || call.name || "tool"} → ${call.output}`)
     .slice(0, 5)
     .join("\n");
   return `【每轮 Judge】你是交付评审者，独立判断任务是否完成。不要执行工具，不要相信模型自报。

@@ -188,7 +188,7 @@ function annotateTermination(error, termination) {
 }
 
 function terminationReasonForAction(action, continuationExhausted) {
-  if (action?.value === "judge-done") return "judge-done";
+  if (action?.value === "judge_done") return "judge_done";
   if (continuationExhausted) return "continuation_exhausted";
   if (action?.value === "noTool") return "no_tool";
   if (action?.value === "cap") return "max_rounds_cap";
@@ -535,7 +535,7 @@ function defaultSleep(ms, signal) {
  *   transcript:object[],
  *   rounds:number,
  *   truncated:boolean,
- *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"judge-done"|"continuation_exhausted"|"aborted"|"failed", detail?:string},
+ *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"judge_done"|"continuation_exhausted"|"aborted"|"failed", detail?:string},
  *   usage:{input_tokens:number, output_tokens:number},
  *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number}[]
  * }>}
@@ -1799,7 +1799,7 @@ export async function runToolLoop({
     if (judgeDecision?.done === true && judgeDecision.confidence >= 0.7) {
       action = {
         kind: "stop",
-        value: "judge-done",
+        value: "judge_done",
         truncated: false,
       };
     } else if (judgeDecision?.done === false) {
@@ -1873,6 +1873,7 @@ export async function runToolLoop({
           done: judgeDecision.done,
           confidence: judgeDecision.confidence,
           reason: judgeDecision.reason,
+          evidence: judgeDecision.evidence,
         },
       }),
       ...(wrapupJson === null ? {} : { wrapup: wrapupJson }),
