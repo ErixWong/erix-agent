@@ -173,6 +173,7 @@ test("returns reflection_stop when the evaluator declines continuation", async (
     executeTool: async () => "worked",
     maxRounds: 1,
     reflection: {
+      roundJudge: false,
       triggerRound: 1,
       maxExtensions: 1,
     },

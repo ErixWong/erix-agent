@@ -35,6 +35,11 @@ export { createFoldLlmStrategy, SUMMARIZER_PROMPT_GUIDE } from "./compact/fold-l
 export { parseReflectionDecision, runToolLoop } from "./loop.js";
 export { tryParseWrapupJson, normalizeWrapupWithLlm } from "./reflection/wrapup.js";
 export {
+  buildTimeline,
+  buildJudgePrompt,
+  parseJudgeDecision,
+} from "./reflection/judge.js";
+export {
   decide,
   decideRoundAction,
   decideWithEvaluation,

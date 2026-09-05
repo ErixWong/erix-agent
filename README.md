@@ -68,7 +68,9 @@ src/
   pass `completion: false` to retain immediate end-turn behavior. Provider retries remain opt-in:
   `retry: false` is the default.
 - `runToolLoop` supports opt-in reflection-driven budget extensions via
-  `reflection: { enabled, triggerRound, extensionStep, maxExtensions, maxRoundsCap }`.
+  `reflection: { enabled, roundJudge, triggerRound, extensionStep, maxExtensions, maxRoundsCap }`.
+  When reflection is enabled, an independent round judge runs by default; set
+  `roundJudge: false` or `ERIX_NO_ROUND_JUDGE=1` to disable it.
   A reflection call can inject a next-step plan or stop with `truncated: false`; the
   reflection prompt itself is not added to the task transcript.
 - `executeTool` accepts either the existing positional `(name, input)` form or
