@@ -7,6 +7,11 @@ import { groupIntoRounds, validateMessages } from "./messages/rounds.js";
 import { decideRoundAction, decideWithEvaluation } from "./reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "./reflection/l0.js";
 import { tryParseWrapupJson, normalizeWrapupWithLlm } from "./reflection/wrapup.js";
+import {
+  buildJudgePrompt,
+  buildTimeline,
+  parseJudgeDecision,
+} from "./reflection/judge.js";
 
 function blocksFor(content) {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -183,6 +188,7 @@ function annotateTermination(error, termination) {
 }
 
 function terminationReasonForAction(action, continuationExhausted) {
+  if (action?.value === "judge-done") return "judge-done";
   if (continuationExhausted) return "continuation_exhausted";
   if (action?.value === "noTool") return "no_tool";
   if (action?.value === "cap") return "max_rounds_cap";
@@ -494,7 +500,7 @@ function defaultSleep(ms, signal) {
  *   topP?: number,
  *   timeoutMs?: number,
  *   deadlineMs?: number,
- *   reflection?: {enabled?:boolean, triggerRound?:number, extensionStep?:number,
+ *   reflection?: {enabled?:boolean, roundJudge?:boolean, triggerRound?:number, extensionStep?:number,
  *     maxExtensions?:number, maxRoundsCap?:number, format?:"json"|"text",
  *     judge?:{provider?:object,evaluator?:object},
  *     onReflection?:(info:{round:number, decision:object, extendedTo:number}) => void}|false,
@@ -529,7 +535,7 @@ function defaultSleep(ms, signal) {
  *   transcript:object[],
  *   rounds:number,
  *   truncated:boolean,
- *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"continuation_exhausted"|"aborted"|"failed", detail?:string},
+ *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"judge-done"|"continuation_exhausted"|"aborted"|"failed", detail?:string},
  *   usage:{input_tokens:number, output_tokens:number},
  *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number}[]
  * }>}
@@ -637,6 +643,14 @@ export async function runToolLoop({
       : undefined;
   const reflectionEnabled = reflection === true
     || (effectiveReflection !== undefined && effectiveReflection.enabled !== false);
+  let roundJudgeEnabled = reflectionEnabled
+    && effectiveReflection?.roundJudge !== false
+    && process.env.ERIX_NO_ROUND_JUDGE?.trim() !== "1";
+  const roundJudgeFailureLimit = Number.isSafeInteger(effectiveReflection?.judgeFailureLimit)
+    && effectiveReflection.judgeFailureLimit > 0
+    ? effectiveReflection.judgeFailureLimit
+    : 3;
+  let roundJudgeFailures = 0;
   const mainSystem = `${system ?? ""}${system ? "\n\n" : ""}${WRAPUP_INSTRUCTION}`;
   // 归一化 evaluator：复用 judge/provider 配置（无 judge 时主 provider），供 wrapup LLM 归一化用
   const judgeConfig = effectiveReflection?.judge;
@@ -674,6 +688,8 @@ export async function runToolLoop({
     errorSeen: new Map(),
     runningLog: [],
     l0Facts: [],
+    timeline: [],
+    filesWritten: [],
   };
   const startedAt = Date.now();
   const configuredDeadline = Number.isFinite(deadlineMs) && deadlineMs > 0
@@ -695,7 +711,7 @@ export async function runToolLoop({
       governorState.l0Facts.shift();
     }
   };
-  const addGovernorHistory = (round, summary, l0facts, ts, wrapup) => {
+  const addGovernorHistory = (round, summary, l0facts, ts, wrapup, judge) => {
     governorState.runningLog.push({
       round,
       summary,
@@ -706,6 +722,7 @@ export async function runToolLoop({
         next: "",
         source: wrapup.done ? "json-done" : "json",
       }),
+      ...(judge === undefined || judge === null ? {} : { judge }),
       ts,
     });
     governorState.l0Facts.push({ round, ...l0facts });
@@ -772,7 +789,24 @@ export async function runToolLoop({
               seenErrors: governorState.errorSeen,
             });
           restoreErrorSeen(l0facts);
-          addGovernorHistory(record.round, summary, l0facts, record.ts, record.wrapup);
+          addGovernorHistory(
+            record.round,
+            summary,
+            l0facts,
+            record.ts,
+            record.wrapup,
+            record.judge,
+          );
+          const recordedTimeline = buildTimeline(record.messages ?? [], 0);
+          if (recordedTimeline.toolCalls.length > 0 || recordedTimeline.outputs.length > 0) {
+            governorState.timeline.push({ round: record.round, ...recordedTimeline });
+            governorState.timeline = governorState.timeline.slice(-12);
+            for (const call of recordedTimeline.toolCalls) {
+              if (call.name === "writeFile" && call.arg) {
+                governorState.filesWritten.push({ path: call.arg, round: record.round });
+              }
+            }
+          }
         }
       }
       // 以最大 round 为续跑基数（含 round 0 种子记录时 records.length 会多算一轮）
@@ -1258,6 +1292,43 @@ export async function runToolLoop({
     return parseReflectionDecision(textFromBlocks(blocksFor(response?.content)));
   };
 
+  const callRoundJudge = async (round, currentL0) => {
+    const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
+    const recentErrors = l0Facts
+      .flatMap((fact) => fact.errorTexts ?? (fact.errorText ? [fact.errorText] : []))
+      .filter((text, index, values) => values.indexOf(text) === index)
+      .slice(-5);
+    const judge = effectiveReflection?.judge;
+    const evaluator = judge?.provider ?? judge?.evaluator ?? provider;
+    const request = {
+      system: "你是交付评审者，独立判断任务是否完成。只输出 JSON。",
+      messages: [{
+        role: "user",
+        content: [{
+          type: "text",
+          text: buildJudgePrompt(
+            taskBriefFromMessages(messages),
+            round,
+            governorState.timeline,
+            governorState.filesWritten,
+            recentErrors,
+          ),
+        }],
+      }],
+      maxTokens: 8000,
+      temperature: 0,
+      reasoning_effort: "none",
+    };
+    if (signal !== undefined) request.signal = signal;
+    const response = await awaitWithAbort(
+      typeof evaluator === "function"
+        ? evaluator(request)
+        : evaluator.chat(request),
+    );
+    addUsage(response, undefined, { trackLatest: false });
+    return parseJudgeDecision(textFromBlocks(blocksFor(response?.content)));
+  };
+
   const roundNumbersForMessages = (currentMessages) => {
     const grouped = groupIntoRounds(currentMessages).rounds;
     return grouped.map((group, index) => {
@@ -1675,6 +1746,14 @@ export async function runToolLoop({
     const currentL0 = extractL0Facts(currentRoundMessages, {
       seenErrors: governorState.errorSeen,
     });
+    const currentTimeline = buildTimeline(messages, roundStart);
+    governorState.timeline.push({ round, ...currentTimeline });
+    governorState.timeline = governorState.timeline.slice(-12);
+    for (const call of currentTimeline.toolCalls) {
+      if (call.name === "writeFile" && call.arg) {
+        governorState.filesWritten.push({ path: call.arg, round });
+      }
+    }
     const actionSignals = {
       round,
       rounds,
@@ -1699,23 +1778,70 @@ export async function runToolLoop({
       elapsedMs: elapsedMs(),
       remainingMs: remainingMs(),
     };
-    let action = decideRoundAction(actionSignals);
+    let judgeDecision;
+    if (roundJudgeEnabled) {
+      try {
+        judgeDecision = await callRoundJudge(round, currentL0);
+        if (judgeDecision === null) {
+          roundJudgeFailures += 1;
+          if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
+        } else {
+          roundJudgeFailures = 0;
+        }
+      } catch (error) {
+        if (signal?.aborted) throwIfAborted(signal);
+        roundJudgeFailures += 1;
+        if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
+      }
+    }
+
+    let action;
+    if (judgeDecision?.done === true && judgeDecision.confidence >= 0.7) {
+      action = {
+        kind: "stop",
+        value: "judge-done",
+        truncated: false,
+      };
+    } else if (judgeDecision?.done === false) {
+      const reason = judgeDecision.reason || "任务尚未完成";
+      const evidence = judgeDecision.evidence || "评审未提供更多证据";
+      action = {
+        kind: "nudge",
+        reason: "judge",
+        text: `【Judge 评审意见】${reason}\n证据：${evidence}\n请根据评审意见继续完成任务。`,
+        continue: true,
+      };
+    } else {
+      action = decideRoundAction(actionSignals);
+    }
     let reflectionDecision;
     if (action.kind === "reflect") {
       // Phase two stays in the loop because only the loop owns the provider.
-      reflectionDecision = await callReflection(round, currentL0, roundSummary);
-      action = decideWithEvaluation(actionSignals, reflectionDecision);
-      if (typeof effectiveReflection?.onReflection === "function") {
-        await effectiveReflection.onReflection({
-          round,
-          decision: reflectionDecision,
-          extendedTo: action.kind === "extend" || action.kind === "extend+redirect"
-            ? Math.min(
-              governorState.effectiveMaxRounds + reflectionExtensionStep,
-              reflectionMaxRoundsCap,
-            )
-            : governorState.effectiveMaxRounds,
+      try {
+        reflectionDecision = await callReflection(round, currentL0, roundSummary);
+      } catch (error) {
+        if (signal?.aborted) throwIfAborted(signal);
+        // judge 失败降级：不崩 loop，回到无评估的 actionSignals 决策
+        reflectionDecision = undefined;
+        action = decideRoundAction({
+          ...actionSignals,
+          reflectionEnabled: false,
         });
+      }
+      if (reflectionDecision !== undefined) {
+        action = decideWithEvaluation(actionSignals, reflectionDecision);
+        if (typeof effectiveReflection?.onReflection === "function") {
+          await effectiveReflection.onReflection({
+            round,
+            decision: reflectionDecision,
+            extendedTo: action.kind === "extend" || action.kind === "extend+redirect"
+              ? Math.min(
+                governorState.effectiveMaxRounds + reflectionExtensionStep,
+                reflectionMaxRoundsCap,
+              )
+              : governorState.effectiveMaxRounds,
+          });
+        }
       }
     }
     addGovernorHistory(
@@ -1724,6 +1850,7 @@ export async function runToolLoop({
       currentL0,
       new Date().toISOString(),
       wrapupJson,
+      judgeDecision,
     );
 
     const record = {
@@ -1741,6 +1868,13 @@ export async function runToolLoop({
       toolUses: content.filter((block) => block?.type === "tool_use").length,
       summary: roundSummary,
       l0facts: currentL0,
+      ...(judgeDecision === null || judgeDecision === undefined ? {} : {
+        judge: {
+          done: judgeDecision.done,
+          confidence: judgeDecision.confidence,
+          reason: judgeDecision.reason,
+        },
+      }),
       ...(wrapupJson === null ? {} : { wrapup: wrapupJson }),
     };
     if (compaction.folded) {
