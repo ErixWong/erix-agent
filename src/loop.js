@@ -1779,9 +1779,9 @@ export async function runToolLoop({
       remainingMs: remainingMs(),
     };
     let judgeDecision;
-    // judge 只在模型停止调用工具（end_turn/无工具轮）时评估——
-    // 模型输出 tool_use = 它明确表示还要继续干活，judge 此时判完成是抢停（实测 echo/fix-vuln 被截断）
-    if (roundJudgeEnabled && !hasToolUse(content)) {
+    // judge 只在模型推理正常结束（stopReason=end_turn）时评估——
+    // stopReason 是模型明确的结束标识：end_turn=说完想停（judge 验证）；tool_use=还要干（不 judge）
+    if (roundJudgeEnabled && isEndTurn) {
       try {
         judgeDecision = await callRoundJudge(round, currentL0);
         if (judgeDecision === null) {
