@@ -84,26 +84,26 @@ test("parseJudgeDecision accepts clean and noisy JSON and rejects invalid output
   assert.equal(parseJudgeDecision('{"done":"true","confidence":1}'), null);
 });
 
-test("round judge runs every enabled round with reasoning disabled", async () => {
+test("judge runs on non-tool rounds only, with reasoning disabled (tool rounds skipped)", async () => {
   const provider = createFakeProvider([
-    toolResponse("main-1", "work", { round: 1 }),
-    toolResponse("main-2", "work", { round: 2 }),
+    toolResponse("main-1", "work", { round: 1 }), // tool 轮：不调 judge
+    { content: [{ type: "text", text: "干完了" }], stopReason: "end_turn" }, // end_turn：调 judge
   ]);
   const judge = createFakeProvider([
-    judgeResponse({ done: false, confidence: 0.2, reason: "继续", evidence: "还缺验证" }),
-    judgeResponse({ done: false, confidence: 0.2, reason: "继续", evidence: "还缺验证" }),
+    judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "产物就绪" }),
   ]);
 
   await runToolLoop({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
-    maxRounds: 2,
+    maxRounds: 3,
     completion: false,
     reflection: { enabled: true, judge: { provider: judge } },
   });
 
-  assert.equal(judge.requests.length, 2);
+  // tool_use 轮不调 judge；仅 end_turn 轮调 1 次 → judge_done 停
+  assert.equal(judge.requests.length, 1);
   assert.equal(judge.requests[0].reasoning_effort, "none");
   assert.equal(judge.requests[0].maxTokens, 8000);
   assert.equal(judge.requests[0].temperature, 0);
@@ -161,27 +161,29 @@ test("tool-use round judge done does not preempt the model's own wind-down (real
 });
 
 test("not-done round judge evidence is injected into the next user request", async () => {
+  // round 1 tool 干活；round 2 end_turn（judge 判 done:false）→ evidence 注入 round 3 请求
   const provider = createFakeProvider([
     toolResponse("main-1", "work", { round: 1 }),
-    { content: [{ type: "text", text: "继续" }], stopReason: "end_turn" },
+    { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" }, // round 2: judge 打回
+    { content: [{ type: "tool_use", id: "w2", name: "work", input: { round: 3 } }], stopReason: "tool_use" }, // round 3: 收到 evidence 后继续干
   ]);
   const judge = createFakeProvider([
     judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "期望 377，实际 104" }),
-    judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已修正" }),
   ]);
   await runToolLoop({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
-    maxRounds: 2,
+    maxRounds: 3,
     completion: false,
     reflection: { enabled: true, judge: { provider: judge } },
   });
 
-  assert.match(
-    provider.requests[1].messages.at(-1).content[0].text,
-    /期望 377，实际 104/,
-  );
+  // round 3 请求（provider.requests[2]）的 user 消息含 judge evidence
+  const round3Request = provider.requests[2];
+  const lastText = round3Request.messages.at(-1).content
+    .filter((b) => b.type === "text").map((b) => b.text).join("");
+  assert.match(lastText, /期望 377，实际 104/);
 });
 
 test("round judge errors degrade to the existing loop path", async () => {

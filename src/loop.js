@@ -1779,7 +1779,9 @@ export async function runToolLoop({
       remainingMs: remainingMs(),
     };
     let judgeDecision;
-    if (roundJudgeEnabled) {
+    // judge 只在模型停止调用工具（end_turn/无工具轮）时评估——
+    // 模型输出 tool_use = 它明确表示还要继续干活，judge 此时判完成是抢停（实测 echo/fix-vuln 被截断）
+    if (roundJudgeEnabled && !hasToolUse(content)) {
       try {
         judgeDecision = await callRoundJudge(round, currentL0);
         if (judgeDecision === null) {
@@ -1796,12 +1798,8 @@ export async function runToolLoop({
     }
 
     let action;
-    // done:true 仅在模型停止调用工具（end_turn/无工具轮）时终止——
-    // tool_use 轮模型还要继续输出，judge 抢先判 done 会截断收尾（实测 echo 任务被抢停）
-    const canJudgeComplete = !hasToolUse(content);
     if (judgeDecision?.done === true
-      && judgeDecision.confidence >= 0.7
-      && canJudgeComplete) {
+      && judgeDecision.confidence >= 0.7) {
       action = {
         kind: "stop",
         value: "judge_done",
