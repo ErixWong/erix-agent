@@ -191,8 +191,9 @@ ${outputLines || "无"}
 ${formatErrors(recentErrors)}
 
 判断是否已经满足原始任务目标。若方向错误、关键产物缺失或验证输出不符合目标，done 必须为 false。
+额外判断方向（direction）：看时间线模型是否在合理推进（尝试新方法、接近验证、产物渐进），还是深陷单一实现细节反复调试。direction 只是提示，不影响 done。
 只输出 JSON，不要输出其他文字：
-{"done":true|false,"confidence":0-1,"reason":"一句话","evidence":"支撑事实"}`;
+{"done":true|false,"confidence":0-1,"reason":"一句话","evidence":"支撑事实","direction":"on_track|uncertain|off_track","directionReason":"路线判断一句话（可选）"}`;
 }
 
 /**
@@ -214,6 +215,14 @@ export function parseJudgeDecision(text) {
         confidence: parsed.confidence,
         reason: String(parsed.reason ?? ""),
         evidence: String(parsed.evidence ?? ""),
+        direction: parsed.direction === "on_track"
+          || parsed.direction === "uncertain"
+          || parsed.direction === "off_track"
+          ? parsed.direction
+          : undefined,
+        directionReason: typeof parsed.directionReason === "string"
+          ? parsed.directionReason
+          : "",
       };
     } catch {
       // Try the next balanced object in surrounding provider text.

@@ -106,6 +106,14 @@ function toolResultContent(result) {
   return typeof result === "string" ? result : String(result);
 }
 
+function directionHintText(direction, directionReason) {
+  if (direction !== "off_track") return "";
+  const reason = typeof directionReason === "string" && directionReason.trim()
+    ? directionReason.trim()
+    : "当前路线可能偏";
+  return `（附方向提示：${reason} —— 当前路线可能偏，可考虑换思路/方法）`;
+}
+
 function normalizeMessages(messages) {
   for (let index = 1; index < messages.length; index += 1) {
     const previous = messages[index - 1];
@@ -1450,6 +1458,8 @@ export async function runToolLoop({
           confidence: decision.confidence,
           reason: decision.reason,
           evidence: decision.evidence,
+          direction: decision.direction,
+          directionReason: decision.directionReason,
         },
         action: decision?.done === false ? "blocked" : "executed",
       });
@@ -1457,7 +1467,26 @@ export async function runToolLoop({
 
     if (decision?.done !== false) {
       try {
-        return await executeToolBlock(block, round, toolResults, pendingToolUses);
+        const toolResult = await executeToolBlock(block, round, toolResults, pendingToolUses);
+        const directionHint = directionHintText(
+          decision?.direction,
+          decision?.directionReason,
+        );
+        if (directionHint) {
+          toolResult.content = `${toolResult.content}\n\n${directionHint}`;
+          await persistCheckpoint({
+            round,
+            pendingToolUse: block,
+            pendingToolUses,
+            toolResults,
+            status: "executed",
+            messagesOverride: [
+              ...messages,
+              { role: "user", content: cloneState(toolResults) },
+            ],
+          });
+        }
+        return toolResult;
       } finally {
         judgeInterceptCount = 0;
       }
@@ -1465,10 +1494,14 @@ export async function runToolLoop({
 
     const reason = decision.reason || "任务方向可能偏离目标";
     const evidence = decision.evidence || "评审未提供更多证据";
+    const directionHint = directionHintText(
+      decision.direction,
+      decision.directionReason,
+    );
     const toolResult = {
       type: "tool_result",
       tool_use_id: block.id,
-      content: `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。`,
+      content: `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。${directionHint ? `\n\n${directionHint}` : ""}`,
     };
     if (block.id !== undefined) checkpointResults.set(block.id, toolResult);
     toolResults.push(toolResult);
@@ -1974,6 +2007,8 @@ export async function runToolLoop({
               confidence: judgeDecision.confidence,
               reason: judgeDecision.reason,
               evidence: judgeDecision.evidence,
+              direction: judgeDecision.direction,
+              directionReason: judgeDecision.directionReason,
             },
             action: judgeDecision.done === true && judgeDecision.confidence >= 0.7
               ? "judge_done"
@@ -1999,10 +2034,13 @@ export async function runToolLoop({
     } else if (judgeDecision?.done === false) {
       const reason = judgeDecision.reason || "任务尚未完成";
       const evidence = judgeDecision.evidence || "评审未提供更多证据";
+      const directionHint = judgeDecision.direction === "off_track"
+        ? `\n方向提示：${judgeDecision.directionReason || "当前路线可能偏，可考虑换思路/方法"}（仅提示，可考虑替代路线）`
+        : "";
       action = {
         kind: "nudge",
         reason: "judge",
-        text: `【Judge 评审意见】${reason}\n证据：${evidence}\n请根据评审意见继续完成任务。`,
+        text: `【Judge 评审意见】${reason}\n证据：${evidence}${directionHint}\n请根据评审意见继续完成任务。`,
         continue: true,
       };
     } else {
@@ -2068,6 +2106,8 @@ export async function runToolLoop({
           confidence: judgeDecision.confidence,
           reason: judgeDecision.reason,
           evidence: judgeDecision.evidence,
+          direction: judgeDecision.direction,
+          directionReason: judgeDecision.directionReason,
         },
       }),
       ...(wrapupJson === null ? {} : { wrapup: wrapupJson }),
