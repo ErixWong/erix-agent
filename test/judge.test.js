@@ -133,6 +133,60 @@ test("high-confidence judge completion on an end-turn round stops with judge_don
   assert.equal(provider.requests.length, 2);
 });
 
+test("round judge emits an onJudge decision event", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
+  ]);
+  const judgeDecision = {
+    done: true,
+    confidence: 0.9,
+    reason: "已完成",
+    evidence: "验证通过",
+  };
+  const judge = createFakeProvider([judgeResponse(judgeDecision)]);
+  const events = [];
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(events, [{
+    round: 1,
+    kind: "round",
+    decision: judgeDecision,
+    action: "judge_done",
+  }]);
+});
+
+test("onJudge callback errors do not abort the loop", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "通过" }),
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+    onJudge: () => {
+      throw new Error("observer failed");
+    },
+  });
+
+  assert.deepEqual(result.termination, { reason: "judge_done" });
+});
+
 test("tool-use round judge done does not preempt the model's own wind-down (real-run regression)", async () => {
   // 实测 bug：模型 exec echo hello 后 judge 判 done 抢停，模型没机会输出最终文本
   const provider = createFakeProvider([
@@ -449,6 +503,119 @@ test("transparent interception releases the exact cached tool call when approved
     { id: "first", name: "work", input: { step: 1 } },
     { id: "second", name: "writeFile", input: { path: "result.txt", content: "42" } },
   ]);
+});
+
+test("transparent interception emits an executed onJudge event when approved", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "writeFile", { path: "result.txt", content: "42" }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const decision = {
+    done: true,
+    confidence: 0.9,
+    reason: "方向正确",
+    evidence: "目标一致",
+  };
+  const judge = createFakeProvider([judgeResponse(decision)]);
+  const events = [];
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "ok",
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(events, [{
+    kind: "intercept",
+    tool: { id: "second", name: "writeFile", input: { path: "result.txt", content: "42" } },
+    decision,
+    action: "executed",
+  }]);
+});
+
+test("transparent interception emits a blocked onJudge event when denied", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "work", { step: 2 }),
+    { content: [{ type: "text", text: "改方向后收尾" }], stopReason: "end_turn" },
+  ]);
+  const decision = {
+    done: false,
+    confidence: 0.8,
+    reason: "方向偏了",
+    evidence: "需要重新确认目标",
+  };
+  const judge = createFakeProvider([judgeResponse(decision)]);
+  const events = [];
+  const executed = [];
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async ({ input }) => {
+      executed.push(input.step);
+      return "ok";
+    },
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(executed, [1]);
+  assert.deepEqual(events, [{
+    kind: "intercept",
+    tool: { id: "second", name: "work", input: { step: 2 } },
+    decision,
+    action: "blocked",
+  }]);
+});
+
+test("transparent interception emits degraded when the judge fails", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "work", { step: 2 }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([{ throw: new Error("judge unavailable") }]);
+  const events = [];
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "ok",
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(events, [{
+    kind: "intercept",
+    decision: null,
+    action: "degraded",
+    error: "error",
+  }]);
 });
 
 test("transparent interception degrades to direct execution when the judge fails", async () => {

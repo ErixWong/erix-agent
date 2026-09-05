@@ -480,6 +480,16 @@ function defaultSleep(ms, signal) {
  */
 
 /**
+ * @typedef {object} JudgeEvent
+ * @property {number} [round]
+ * @property {"round"|"intercept"} kind
+ * @property {{id?:string, name?:string, input?:object}} [tool]
+ * @property {{done:boolean, confidence:number, reason:string, evidence:string}|null} [decision]
+ * @property {"judge_done"|"nudge"|"continue"|"executed"|"blocked"|"degraded"} action
+ * @property {"timeout"|"error"} [error]
+ */
+
+/**
  * Run the minimum tool-calling loop against an injected provider.
  *
  * Stall detection defaults to `appear`, which detects a signature anywhere in
@@ -521,6 +531,7 @@ function defaultSleep(ms, signal) {
  *   runId?: string,
  *   resume?: boolean,
  *   onRound?: Function,
+ *   onJudge?:(info:JudgeEvent) => void,
  *   onToolResult?: Function,
  *   onPersistenceError?: (error:Error) => void,
  *   signal?: AbortSignal,
@@ -574,6 +585,7 @@ export async function runToolLoop({
   runId,
   resume = false,
   onRound,
+  onJudge,
   onToolResult,
   onPersistenceError,
   signal,
@@ -978,6 +990,15 @@ export async function runToolLoop({
 
   const emitEvent = (event) => {
     onEvent?.(event);
+  };
+
+  const emitJudge = (info) => {
+    if (typeof onJudge !== "function") return;
+    try {
+      onJudge(info);
+    } catch {
+      // Observer failures must not affect the tool loop.
+    }
   };
 
   const addUsage = (response, estimatedTokens, { trackLatest = true } = {}) => {
@@ -1399,6 +1420,7 @@ export async function runToolLoop({
       toolResults,
     });
     let decision;
+    let interceptError;
     try {
       decision = await callRoundJudge(round, undefined, {
         timeoutMs: judgeInterceptTimeoutMs,
@@ -1406,8 +1428,34 @@ export async function runToolLoop({
     } catch (error) {
       if (signal?.aborted) throwIfAborted(signal);
       decision = undefined;
+      interceptError = error?.code === "judge_intercept_timeout" ? "timeout" : "error";
     }
     judgeInterceptCount = 0;
+
+    if (decision === undefined) {
+      emitJudge({
+        kind: "intercept",
+        decision: null,
+        action: "degraded",
+        error: interceptError,
+      });
+    } else {
+      emitJudge({
+        kind: "intercept",
+        tool: {
+          id: block.id,
+          name: block.name,
+          input: cloneState(block.input),
+        },
+        decision: decision === null ? null : {
+          done: decision.done,
+          confidence: decision.confidence,
+          reason: decision.reason,
+          evidence: decision.evidence,
+        },
+        action: decision?.done === false ? "blocked" : "executed",
+      });
+    }
 
     if (decision?.done !== false) {
       try {
@@ -1902,6 +1950,19 @@ export async function runToolLoop({
           if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
         } else {
           roundJudgeFailures = 0;
+          emitJudge({
+            round,
+            kind: "round",
+            decision: {
+              done: judgeDecision.done,
+              confidence: judgeDecision.confidence,
+              reason: judgeDecision.reason,
+              evidence: judgeDecision.evidence,
+            },
+            action: judgeDecision.done === true && judgeDecision.confidence >= 0.7
+              ? "judge_done"
+              : (judgeDecision.done === false ? "nudge" : "continue"),
+          });
         }
       } catch (error) {
         if (signal?.aborted) throwIfAborted(signal);

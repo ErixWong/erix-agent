@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -32,7 +32,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
@@ -45,6 +45,7 @@ const HELP_TEXT = `用法：
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 32 时启用）
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
+  --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -54,6 +55,7 @@ const HELP_TEXT = `用法：
   ERIX_NO_TOOL_ROUNDS 模型连续无工具调用几轮后强制完成（默认：3，最小：1）
   ERIX_MAX_ROUNDS     工具循环最大轮数（默认：64，最小：1）
   ERIX_REFLECTION     反思开关（on/off；ERIX_NO_REFLECTION=1 强制关闭）
+  ERIX_JUDGE_LOG      judge 决策 JSONL 路径（可用 --judge-log 覆盖）
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
@@ -191,6 +193,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       || argument === "--reflection"
       || argument === "--timeout"
       || argument === "--idle-timeout"
+      || argument === "--judge-log"
     ) {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
@@ -203,7 +206,8 @@ export function parseChatArgs(args, cwd = process.cwd()) {
           || argument === "--skills-dir"
           || argument === "--session"
           || argument === "--dir"
-          || argument === "--reflection")
+          || argument === "--reflection"
+          || argument === "--judge-log")
         && rawValue.startsWith("--")
       )) {
         usageError(`${argument} 缺少数值`);
@@ -230,6 +234,9 @@ export function parseChatArgs(args, cwd = process.cwd()) {
         options.reflection = parseReflectionOption(rawValue);
       } else if (argument === "--timeout") {
         options.timeoutMs = parseIntegerOption(argument, rawValue, 1);
+      } else if (argument === "--judge-log") {
+        if (rawValue.trim() === "") usageError("--judge-log 不能为空");
+        options.judgeLog = rawValue;
       } else {
         options.idleTimeout = parseIntegerOption(argument, rawValue, 0);
       }
@@ -427,6 +434,7 @@ export async function runChat({
   session,
   sessionExplicit,
   dir = join(homedir(), ".erix", "transcripts"),
+  judgeLog,
   provider: providerOverride,
   config: configOverride,
   toolOutput = console.log,
@@ -480,6 +488,23 @@ export async function runChat({
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, { output: toolOutput });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
+  const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG;
+  let judgeLogWriteFailed = false;
+  const onJudge = judgeLogPath
+    ? (info) => {
+      if (judgeLogWriteFailed) return;
+      try {
+        appendFileSync(
+          judgeLogPath,
+          `${JSON.stringify({ ts: new Date().toISOString(), ...info })}\n`,
+          "utf8",
+        );
+      } catch (error) {
+        judgeLogWriteFailed = true;
+        console.error(`Judge log write failed: ${error?.message ?? String(error)}`);
+      }
+    }
+    : undefined;
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
   if (mcpProxy?.enabled) {
@@ -545,6 +570,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       idle?.touch();
       console.log(`[round ${info.round}]${info.folded ? "（含折叠）" : ""}`);
     },
+    onJudge,
   };
 
   try {
