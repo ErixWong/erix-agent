@@ -73,7 +73,9 @@ src/
   When reflection is enabled, an independent round judge runs by default; set
   `roundJudge: false` or `ERIX_NO_ROUND_JUDGE=1` to disable it.
   After every `judgeIntervalRound` real tool executions, the next tool call is
-  audited before execution; a failed or timed-out audit falls back to executing
+  audited before execution (transparent interception); `judgeIntercept: false`
+  disables the audit while keeping end-turn round judge (and vice versa with
+  `roundJudge: false`). A failed or timed-out audit falls back to executing
   the original call.
   A reflection call can inject a next-step plan or stop with `truncated: false`; the
   reflection prompt itself is not added to the task transcript.

@@ -520,8 +520,9 @@ test("transparent interception degrades to direct execution on timeout", async (
 
 test("transparent interception resets its counter after an audit", async () => {
   // 关闭 wrapup 归一化（它与 intercept 共用 judge provider，会干扰计数断言）
-  const prev = process.env.ERIX_NO_WRAPUP_NORMALIZE;
-  process.env.ERIX_NO_WRAPUP_NORMALIZE = "1";
+  // 确保 wrapup 归一化关闭（代码读 ERIX_WRAPUP_NORMALIZE，非 "1" 即关）——避免纯文本 end_turn 触发归一化消耗共享 judge provider
+  const prev = process.env.ERIX_WRAPUP_NORMALIZE;
+  process.env.ERIX_WRAPUP_NORMALIZE = "";
   try {
     const provider = createFakeProvider([
       toolResponse("first", "work", { step: 1 }),
@@ -554,7 +555,7 @@ test("transparent interception resets its counter after an audit", async () => {
     // judgeIntervalRound=1: 工具1 计数到 1，工具2 拦截审计（重置），工具3 不再拦截 → 仅 1 次 judge
     assert.equal(judge.requests.length, 1);
   } finally {
-    if (prev === undefined) delete process.env.ERIX_NO_WRAPUP_NORMALIZE;
-    else process.env.ERIX_NO_WRAPUP_NORMALIZE = prev;
+    if (prev === undefined) delete process.env.ERIX_WRAPUP_NORMALIZE;
+    else process.env.ERIX_WRAPUP_NORMALIZE = prev;
   }
 });
