@@ -6,6 +6,7 @@ import {
   decideWithEvaluation,
   isStuckOnRepeatedError,
   shouldWrapUp,
+  STALL_STREAK_LIMIT,
 } from "../src/reflection/governor.js";
 import {
   extractL0Facts,
@@ -58,6 +59,27 @@ test("governor detects a repeated error only without progress", () => {
       shouldContinue: true,
     }),
     false,
+  );
+});
+
+test("governor nudges suspected stalls before stopping at the streak limit", () => {
+  assert.equal(STALL_STREAK_LIMIT, 3);
+  const nudge = decideRoundAction({
+    stallSuspicion: true,
+    stallStreak: STALL_STREAK_LIMIT - 1,
+  });
+  assert.equal(nudge.kind, "nudge");
+  assert.equal(nudge.reason, "stall");
+  assert.equal(nudge.resetNoToolStreak, true);
+  assert.equal(nudge.continue, true);
+  assert.match(nudge.text, /疑似重复调用/);
+  assert.match(nudge.text, /推进新步骤/);
+  assert.deepEqual(
+    decideRoundAction({
+      stallSuspicion: true,
+      stallStreak: STALL_STREAK_LIMIT,
+    }),
+    { kind: "stop", value: "stall", truncated: true },
   );
 });
 

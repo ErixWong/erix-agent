@@ -154,15 +154,10 @@ function hasSuccessfulToolResult(messages) {
   )));
 }
 
-function stallError(signature) {
-  const error = new Error(`Tool loop stalled on repeated call: ${signature}`);
-  error.code = "llm_kit_stalled";
-  return error;
-}
-
 const TRUNCATED_TERMINATION_REASONS = new Set([
   "max_rounds_cap",
   "continuation_exhausted",
+  "stall",
 ]);
 
 function makeTermination(reason, detail) {
@@ -191,6 +186,7 @@ function terminationReasonForAction(action, continuationExhausted) {
   if (action?.value === "judge_done") return "judge_done";
   if (continuationExhausted) return "continuation_exhausted";
   if (action?.value === "noTool") return "no_tool";
+  if (action?.value === "stall") return "stall";
   if (action?.value === "cap") return "max_rounds_cap";
   if (action?.value === "reflection-stop") return "reflection_stop";
   return "end_turn";
@@ -718,6 +714,8 @@ export async function runToolLoop({
     timeline: [],
     filesWritten: [],
   };
+  let stallStreak = 0;
+  let lastStallSignature = null;
   const startedAt = Date.now();
   const configuredDeadline = Number.isFinite(deadlineMs) && deadlineMs > 0
     ? deadlineMs
@@ -1710,6 +1708,9 @@ export async function runToolLoop({
     const round = rounds + 1;
     roundEventDeltas = [];
     roundStopReason = undefined;
+    let stallSuspicion = false;
+    let stallSignature = null;
+    let lastSignatureThisRound = null;
     emitEvent({ type: "round_start", round });
     const compaction = await compactBeforeRound();
     const roundStart = messages.length;
@@ -1801,8 +1802,11 @@ export async function runToolLoop({
           : recentSignatures.length >= stallWindow
             && recentSignatures.includes(signature);
         if (stallWindow > 0 && stalled) {
-          throw stallError(signature);
+          stallSuspicion = true;
+          stallSignature = signature;
+          recentSignatures.length = 0;
         }
+        lastSignatureThisRound = signature;
         if (stallWindow > 0) {
           recentSignatures.push(signature);
           if (recentSignatures.length > stallWindow) recentSignatures.shift();
@@ -1825,6 +1829,16 @@ export async function runToolLoop({
         messages.push(toolResultMessage);
         messageRounds.set(toolResultMessage, round);
       }
+    }
+    // streak 只累积 stalled 命中；出现不同签名（模型转向）才清零
+    if (stallSuspicion) {
+      stallStreak += 1;
+      lastStallSignature = stallSignature;
+    } else if (lastStallSignature !== null && lastSignatureThisRound !== null
+      && lastSignatureThisRound !== lastStallSignature) {
+      // 本轮调用了与上次 stalled 不同的签名 → 模型转向，清零
+      stallStreak = 0;
+      lastStallSignature = null;
     }
 
     let shouldContinue = response?.stopReason === "tool_use"
@@ -1929,6 +1943,8 @@ export async function runToolLoop({
       memoryLoss: memoryLossDetected,
       completionSignalDetected,
       continuationExhausted,
+      stallSuspicion,
+      stallStreak,
       wrapUpNudged: governorState.wrapUpNudged,
       reflectionEnabled: roundJudgeEnabled ? false : reflectionEnabled,
       nearLimit: rounds >= governorState.nextReflectionRound,

@@ -88,7 +88,7 @@ const action = governor.decide({
 
 1. **确定性终止（最高优先，每轮）**：
    - `continuationExhausted` → finish(true)（保留现状，不进 governor action 表）
-   - stall 签名 → throw（执行期已抛，轮末不再见）
+   - stall 签名 → 标记疑似空转并清理签名窗口；由 governor nudge，连续超限才 stop
 2. **L2a 确定性分支（每轮，0 LLM 成本）**：
    - memoryLoss → 当轮注入拉回消息 + `noToolStreak=0` + continue
    - noToolStreak ≥ maxNoToolRounds → stop(noTool)
@@ -101,7 +101,6 @@ const action = governor.decide({
 **action → 副作用映射（主循环唯一 dispatch 点）**：
 ```js
 switch (action.kind) {
-  case "throw": throw stallError(...);                    // 实际执行期已抛
   case "nudge": pushUserMessage(action.text); continue;
   case "extend": case "extend+redirect":
     governorState.effectiveMaxRounds += step; pushUserMessage(action.text); continue;

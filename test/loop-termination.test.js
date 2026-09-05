@@ -128,30 +128,25 @@ test("annotates failed provider errors with a failed termination", async () => {
   );
 });
 
-test("annotates stall errors as failed with the repeated-call detail", async () => {
+test("returns a truncated stall termination after the repeated-call limit", async () => {
   const provider = createFakeProvider([
     {
-      times: 3,
+      times: 8,
       content: [{ type: "tool_use", id: "same", name: "same", input: { n: 1 } }],
       stopReason: "tool_use",
     },
   ]);
 
-  await assert.rejects(
-    runToolLoop({
-      provider,
-      initialUserMessage: "repeat",
-      executeTool: async () => "ok",
-      stallDetection: { window: 2 },
-    }),
-    (error) => {
-      assert.equal(error.code, "llm_kit_stalled");
-      assert.equal(error.termination.reason, "failed");
-      assert.match(error.termination.detail, /Tool loop stalled on repeated call/);
-      assert.match(error.termination.detail, /same/);
-      return true;
-    },
-  );
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "repeat",
+    executeTool: async () => "ok",
+    completion: false,
+    stallDetection: { window: 2 },
+  });
+  assert.equal(result.termination.reason, "stall");
+  assert.equal(result.truncated, true);
+  assert.equal(provider.requests.length, 7);
 });
 
 test("returns reflection_stop when the evaluator declines continuation", async () => {

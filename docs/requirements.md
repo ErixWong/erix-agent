@@ -57,7 +57,7 @@
 |---|---|---|
 | FR-2.1 | 调用方注入 `tools`（规范 JSON Schema）+ `executeTool(name, input)` 回调；库不执行 | 架构红线 |
 | FR-2.2 | 轮内快照重试：可重试错误就地恢复快照重试（默认 2 次，指数退避 1.5s→10s），仍失败才抛出 | touwaka R-系修复 |
-| FR-2.3 | 死循环检测：工具签名滑动窗口比对，重复即抛 `llm_kit_stalled` | app_container 已有 |
+| FR-2.3 | Stall 检测：工具签名滑动窗口比对，命中先 nudge，连续超限才以 `termination.reason="stall"` 正常停止 | app_container 已有 |
 | FR-2.4 | 完成信号 + 无工具轮策略：有工具历史且无完成信号时视为过渡文本继续（可配，默认连续 3 轮强制结束）；相邻 assistant 合并防 400 | touwaka R15/R16-3 |
 | FR-2.5 | max_tokens 截断续写 | app_container 已有 |
 | FR-2.6 | 每轮 LLM 调用前跑压缩检查（FR-3），压缩事件进返回的 stats | touwaka R19-1 |

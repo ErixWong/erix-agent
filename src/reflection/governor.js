@@ -1,5 +1,6 @@
 const MEMORY_LOSS_TEXT = "你的任务仍在进行中。请回顾对话中的任务指令继续执行（必要时可用 recall 工具找回早期上下文）。";
 const NO_TOOL_TEXT = "（请继续完成任务）";
+export const STALL_STREAK_LIMIT = 3;
 
 function numberOr(value, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
@@ -90,6 +91,20 @@ export function decideRoundAction(signals = {}) {
       text: `检测到同一错误重复出现（第 ${numberOr(signals.errorRepeat)} 次）。请换思路：不要重复已失败的尝试。检查错误根因（可能是依赖缺失/路径/版本），或改用完全不同的方法。`,
       continue: true,
     };
+  }
+  if (signals.stallSuspicion === true
+    && numberOr(signals.stallStreak) < STALL_STREAK_LIMIT) {
+    return {
+      kind: "nudge",
+      reason: "stall",
+      text: "检测到疑似重复调用（连续无进展）。若确有新目的（如重跑验证），请明确说明；否则请推进新步骤，不要重复相同动作。",
+      resetNoToolStreak: true,
+      continue: true,
+    };
+  }
+  if (numberOr(signals.stallStreak) >= STALL_STREAK_LIMIT
+    && signals.stallSuspicion === true) {
+    return { kind: "stop", value: "stall", truncated: true };
   }
   if (signals.completionSignalDetected === true && signals.shouldContinue === false) {
     return { kind: "stop", value: "completion", truncated: false };

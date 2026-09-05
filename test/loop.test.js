@@ -74,26 +74,55 @@ test("returns truncated after maxRounds", async () => {
   assert.equal(result.finalText, "");
 });
 
-test("throws llm_kit_stalled for repeated calls in a full signature window", async () => {
+test("nudges repeated calls before stopping after a consecutive stall streak", async () => {
   const provider = createFakeProvider([
     {
-      times: 5,
+      times: 8,
       content: [{ type: "tool_use", id: "call", name: "same", input: { n: 1 } }],
       stopReason: "tool_use",
     },
   ]);
 
-  await assert.rejects(
-    runToolLoop({
-      provider,
-      initialUserMessage: "repeat",
-      maxRounds: 8,
-      executeTool: async () => "ok",
-      stallDetection: { window: 2 },
-    }),
-    (error) => error?.code === "llm_kit_stalled",
-  );
-  assert.equal(provider.requests.length, 3);
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "repeat",
+    maxRounds: 8,
+    executeTool: async () => "ok",
+    completion: false,
+    stallDetection: { window: 2, mode: "consecutive" },
+  });
+  assert.equal(result.termination.reason, "stall");
+  assert.equal(result.truncated, true);
+  assert.equal(provider.requests.length, 7);
+  assert.ok(provider.requests.some((request) => (
+    request.messages.some((message) => (
+      Array.isArray(message.content)
+      && message.content.some((block) => /疑似重复调用/.test(block.text ?? ""))
+    ))
+  )));
+});
+
+test("clears the stall streak after a normal tool call", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "tool_use", id: "a1", name: "same", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "a2", name: "same", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "b1", name: "other", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "b2", name: "other", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "b3", name: "other", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "repeat",
+    maxRounds: 6,
+    executeTool: async () => "ok",
+    completion: false,
+    stallDetection: { window: 1, mode: "consecutive" },
+  });
+  assert.equal(result.termination.reason, "end_turn");
+  assert.equal(result.truncated, false);
+  assert.equal(provider.requests.length, 6);
 });
 
 test("feeds executeTool errors back as is_error and continues", async () => {
