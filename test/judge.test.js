@@ -109,12 +109,16 @@ test("round judge runs every enabled round with reasoning disabled", async () =>
   assert.equal(judge.requests[0].temperature, 0);
 });
 
-test("high-confidence round judge completion stops with judge_done", async () => {
+test("high-confidence judge completion on an end-turn round stops with judge_done", async () => {
+  // 模型先干活（tool_use），随后 end_turn 给结论 → judge 判 done 才终止
   const provider = createFakeProvider([
     toolResponse("main-1", "work", { round: 1 }),
-    toolResponse("main-2", "work", { round: 2 }),
+    { content: [{ type: "text", text: "结果 42" }], stopReason: "end_turn" },
   ]);
   const judge = createFakeProvider([
+    // tool_use 轮 judge（方向检查，done 不触发停止）
+    judgeResponse({ done: true, confidence: 0.9, reason: "已完成", evidence: "验证通过" }),
+    // end_turn 轮 judge（允许完成判定）
     judgeResponse({ done: true, confidence: 0.9, reason: "已完成", evidence: "验证通过" }),
   ]);
   const result = await runToolLoop({
@@ -127,8 +131,33 @@ test("high-confidence round judge completion stops with judge_done", async () =>
   });
 
   assert.deepEqual(result.termination, { reason: "judge_done" });
-  assert.equal(result.rounds, 1);
-  assert.equal(provider.requests.length, 1);
+  assert.equal(result.rounds, 2);
+  assert.equal(provider.requests.length, 2);
+});
+
+test("tool-use round judge done does not preempt the model's own wind-down (real-run regression)", async () => {
+  // 实测 bug：模型 exec echo hello 后 judge 判 done 抢停，模型没机会输出最终文本
+  const provider = createFakeProvider([
+    toolResponse("main-1", "work", { round: 1 }),
+    { content: [{ type: "text", text: "echo 输出 hello" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: true, confidence: 1.0, reason: "已运行", evidence: "有输出" }), // tool_use 轮: done 不触发停止
+    judgeResponse({ done: true, confidence: 1.0, reason: "已运行且模型收尾", evidence: "有输出" }), // end_turn 轮: 允许 judge_done
+  ]);
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "ok",
+    maxRounds: 5,
+    completion: { maxNoToolRounds: 3 },
+    reflection: { enabled: true, judge: { provider: judge } },
+  });
+  // tool_use 轮 judge done:true 未抢停（模型活到 end_turn 输出文本）→ end_turn 轮才 judge_done
+  assert.deepEqual(result.termination, { reason: "judge_done" });
+  assert.equal(result.rounds, 2);
+  // 关键断言：主模型第二次调用存在（end_turn 文本轮发生了，未被 tool_use 轮 judge 抢停）
+  assert.equal(provider.requests.length, 2);
 });
 
 test("not-done round judge evidence is injected into the next user request", async () => {

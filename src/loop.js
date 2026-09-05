@@ -1796,7 +1796,12 @@ export async function runToolLoop({
     }
 
     let action;
-    if (judgeDecision?.done === true && judgeDecision.confidence >= 0.7) {
+    // done:true 仅在模型停止调用工具（end_turn/无工具轮）时终止——
+    // tool_use 轮模型还要继续输出，judge 抢先判 done 会截断收尾（实测 echo 任务被抢停）
+    const canJudgeComplete = !hasToolUse(content);
+    if (judgeDecision?.done === true
+      && judgeDecision.confidence >= 0.7
+      && canJudgeComplete) {
       action = {
         kind: "stop",
         value: "judge_done",
