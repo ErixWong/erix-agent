@@ -651,6 +651,13 @@ export async function runToolLoop({
     ? effectiveReflection.judgeFailureLimit
     : 3;
   let roundJudgeFailures = 0;
+  // 方向检查频率：tool_calls 轮每 judgeIntervalRound 轮查一次方向（done:false→nudge 纠偏）；
+  // stop 轮（end_turn）总是完整评估（含 done 判定）。默认 5：跑偏最多 5 轮被发现。
+  const judgeIntervalRound = Number.isSafeInteger(effectiveReflection?.judgeIntervalRound)
+    && effectiveReflection.judgeIntervalRound > 0
+    ? effectiveReflection.judgeIntervalRound
+    : 5;
+  let lastJudgeRound = 0;
   const mainSystem = `${system ?? ""}${system ? "\n\n" : ""}${WRAPUP_INSTRUCTION}`;
   // 归一化 evaluator：复用 judge/provider 配置（无 judge 时主 provider），供 wrapup LLM 归一化用
   const judgeConfig = effectiveReflection?.judge;
@@ -1771,7 +1778,7 @@ export async function runToolLoop({
       completionSignalDetected,
       continuationExhausted,
       wrapUpNudged: governorState.wrapUpNudged,
-      reflectionEnabled,
+      reflectionEnabled: roundJudgeEnabled ? false : reflectionEnabled,
       nearLimit: rounds >= governorState.nextReflectionRound,
       extensionCount: governorState.extensionCount,
       maxExtensions: reflectionMaxExtensions,
@@ -1782,9 +1789,14 @@ export async function runToolLoop({
       remainingMs: remainingMs(),
     };
     let judgeDecision;
-    // judge 只在模型推理正常结束（stopReason=end_turn）时评估——
-    // stopReason 是模型明确的结束标识：end_turn=说完想停（judge 验证）；tool_use=还要干（不 judge）
-    if (roundJudgeEnabled && isEndTurn) {
+    // judge 两种触发：
+    // 1. stop 轮（end_turn）：完整评估——模型说完想停，判完成 + 方向
+    // 2. tool_calls 轮周期性（每 judgeIntervalRound）：只查方向——done:true 不生效（模型还要干），done:false→nudge 纠偏
+    const toolRoundDirectionCheck = !isEndTurn
+      && hasToolUse(content)
+      && round - lastJudgeRound >= judgeIntervalRound;
+    if (roundJudgeEnabled && (isEndTurn || toolRoundDirectionCheck)) {
+      lastJudgeRound = round;
       try {
         judgeDecision = await callRoundJudge(round, currentL0);
         if (judgeDecision === null) {
@@ -1801,8 +1813,11 @@ export async function runToolLoop({
     }
 
     let action;
+    // tool_calls 轮的方向检查：done:true 不生效（模型还在干活，抢停会截断收尾）
+    const directionCheckOnly = !isEndTurn;
     if (judgeDecision?.done === true
-      && judgeDecision.confidence >= 0.7) {
+      && judgeDecision.confidence >= 0.7
+      && !directionCheckOnly) {
       action = {
         kind: "stop",
         value: "judge_done",

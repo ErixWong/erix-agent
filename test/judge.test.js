@@ -348,3 +348,61 @@ test("buildTimeline pairs outputs by tool_use_id even when results arrive out of
   assert.equal(sim20000.output, "10000");
   assert.equal(write.output, "written");
 });
+
+test("tool-use rounds get periodic direction checks without preempting work", async () => {
+  // 模型连续 tool_use 干活（模拟跑偏），judge 每 5 轮查一次方向
+  const provider = createFakeProvider([
+    toolResponse("t1", "work", { round: 1 }),
+    toolResponse("t2", "work", { round: 2 }),
+    toolResponse("t3", "work", { round: 3 }),
+    toolResponse("t4", "work", { round: 4 }),
+    toolResponse("t5", "work", { round: 5 }),  // 第 5 轮 tool → 方向检查触发（done:false nudge，不抢停）
+    toolResponse("t6", "work", { round: 6 }),
+    { content: [{ type: "text", text: "任务完成" }], stopReason: "end_turn" }, // 模型自然收尾
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "在写 microsim 而非 gates.txt" }),
+    judgeResponse({ done: true, confidence: 0.9, reason: "确认完成", evidence: "修正了方向" }),
+  ]);
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "ok",
+    maxRounds: 30,
+    completion: false,
+    reflection: { enabled: true, judgeIntervalRound: 5, judge: { provider: judge } },
+  });
+  // 第 5 轮 tool 触发方向检查（done:false nudge，不抢停）；第 7 轮 end_turn judge 确认完成
+  assert.equal(judge.requests.length, 2);
+  assert.equal(result.rounds, 7);
+  assert.deepEqual(result.termination, { reason: "judge_done" });
+});
+
+test("tool-use direction check done:false injects correction evidence into next request", async () => {
+  const provider = createFakeProvider([
+    toolResponse("t1", "work", { round: 1 }),
+    toolResponse("t2", "work", { round: 2 }),
+    toolResponse("t3", "work", { round: 3 }),
+    toolResponse("t4", "work", { round: 4 }),
+    toolResponse("t5", "work", { round: 5 }),  // 方向检查触发
+    { content: [{ type: "text", text: "收到，改方向" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "写 microsim 而非 gates.txt" }),
+  ]);
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "ok",
+    maxRounds: 20,
+    completion: false,
+    reflection: { enabled: true, judgeIntervalRound: 5, judge: { provider: judge } },
+  });
+  // 第 5 轮 judge done:false → nudge 注入 → 第 6 轮请求含纠偏 evidence
+  const round6 = provider.requests.find((r) => r.messages.some((m) =>
+    m.content?.some((b) => b.type === "text" && String(b.text).includes("Judge 评审意见"))));
+  assert.ok(round6, "第 6 轮应收到 Judge 纠偏注入");
+  const text = round6.messages.flatMap((m) => m.content ?? [])
+    .filter((b) => b.type === "text").map((b) => b.text).join("");
+  assert.match(text, /写 microsim 而非 gates\.txt/);
+});
