@@ -500,7 +500,9 @@ function defaultSleep(ms, signal) {
  *   topP?: number,
  *   timeoutMs?: number,
  *   deadlineMs?: number,
- *   reflection?: {enabled?:boolean, roundJudge?:boolean, triggerRound?:number, extensionStep?:number,
+ *   reflection?: {enabled?:boolean, roundJudge?:boolean, judgeIntercept?:boolean,
+ *     judgeIntervalRound?:number, judgeInterceptTimeoutMs?:number, triggerRound?:number,
+ *     extensionStep?:number,
  *     maxExtensions?:number, maxRoundsCap?:number, format?:"json"|"text",
  *     judge?:{provider?:object,evaluator?:object},
  *     onReflection?:(info:{round:number, decision:object, extendedTo:number}) => void}|false,
@@ -651,13 +653,19 @@ export async function runToolLoop({
     ? effectiveReflection.judgeFailureLimit
     : 3;
   let roundJudgeFailures = 0;
-  // 方向检查频率：tool_calls 轮每 judgeIntervalRound 轮查一次方向（done:false→nudge 纠偏）；
-  // stop 轮（end_turn）总是完整评估（含 done 判定）。默认 5：跑偏最多 5 轮被发现。
+  // 透明拦截审计开关：与 roundJudge 正交（roundJudge:false 只关 end_turn 评估，审计可独立关）
+  const judgeInterceptEnabled = reflectionEnabled
+    && effectiveReflection?.judgeIntercept !== false;
+  // 工具透明审计频率：每 judgeIntervalRound 次真实工具执行后，审计下一次调用。
   const judgeIntervalRound = Number.isSafeInteger(effectiveReflection?.judgeIntervalRound)
     && effectiveReflection.judgeIntervalRound > 0
     ? effectiveReflection.judgeIntervalRound
     : 5;
-  let lastJudgeRound = 0;
+  const judgeInterceptTimeoutMs = Number.isFinite(effectiveReflection?.judgeInterceptTimeoutMs)
+    && effectiveReflection.judgeInterceptTimeoutMs > 0
+    ? effectiveReflection.judgeInterceptTimeoutMs
+    : 30_000;
+  let judgeInterceptCount = 0;
   const mainSystem = `${system ?? ""}${system ? "\n\n" : ""}${WRAPUP_INSTRUCTION}`;
   // 归一化 evaluator：复用 judge/provider 配置（无 judge 时主 provider），供 wrapup LLM 归一化用
   const judgeConfig = effectiveReflection?.judge;
@@ -1299,7 +1307,7 @@ export async function runToolLoop({
     return parseReflectionDecision(textFromBlocks(blocksFor(response?.content)));
   };
 
-  const callRoundJudge = async (round, currentL0) => {
+  const callRoundJudge = async (round, currentL0, { timeoutMs } = {}) => {
     const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
     const recentErrors = l0Facts
       .flatMap((fact) => fact.errorTexts ?? (fact.errorText ? [fact.errorText] : []))
@@ -1326,14 +1334,110 @@ export async function runToolLoop({
       temperature: 0,
       reasoning_effort: "none",
     };
-    if (signal !== undefined) request.signal = signal;
-    const response = await awaitWithAbort(
+    let timeoutController;
+    let timeoutId;
+    let removeParentAbort;
+    if (timeoutMs !== undefined) {
+      timeoutController = new AbortController();
+      request.signal = timeoutController.signal;
+      if (signal !== undefined) {
+        const onParentAbort = () => timeoutController.abort(signal.reason);
+        if (signal.aborted) onParentAbort();
+        else signal.addEventListener("abort", onParentAbort, { once: true });
+        removeParentAbort = () => signal.removeEventListener("abort", onParentAbort);
+      }
+    } else if (signal !== undefined) {
+      request.signal = signal;
+    }
+    const responsePromise = Promise.resolve().then(() => (
       typeof evaluator === "function"
         ? evaluator(request)
-        : evaluator.chat(request),
-    );
+        : evaluator.chat(request)
+    ));
+    let response;
+    try {
+      if (timeoutMs === undefined) {
+        response = await awaitWithAbort(responsePromise);
+      } else {
+        response = await Promise.race([
+          awaitWithAbort(responsePromise),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+              timeoutController.abort(new Error("Judge interception timed out"));
+              const error = new Error("Judge interception timed out");
+              error.code = "judge_intercept_timeout";
+              reject(error);
+            }, timeoutMs);
+          }),
+        ]);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      removeParentAbort?.();
+    }
     addUsage(response, undefined, { trackLatest: false });
     return parseJudgeDecision(textFromBlocks(blocksFor(response?.content)));
+  };
+
+  const executeToolWithIntercept = async (
+    block,
+    round,
+    toolResults,
+    pendingToolUses = [],
+  ) => {
+    const interceptEnabled = judgeInterceptEnabled
+      && judgeInterceptCount >= judgeIntervalRound;
+    if (!interceptEnabled) {
+      judgeInterceptCount += 1;
+      return executeToolBlock(block, round, toolResults, pendingToolUses);
+    }
+
+    await persistCheckpoint({
+      round,
+      pendingToolUse: block,
+      pendingToolUses,
+      toolResults,
+    });
+    let decision;
+    try {
+      decision = await callRoundJudge(round, undefined, {
+        timeoutMs: judgeInterceptTimeoutMs,
+      });
+    } catch (error) {
+      if (signal?.aborted) throwIfAborted(signal);
+      decision = undefined;
+    }
+    judgeInterceptCount = 0;
+
+    if (decision?.done !== false) {
+      try {
+        return await executeToolBlock(block, round, toolResults, pendingToolUses);
+      } finally {
+        judgeInterceptCount = 0;
+      }
+    }
+
+    const reason = decision.reason || "任务方向可能偏离目标";
+    const evidence = decision.evidence || "评审未提供更多证据";
+    const toolResult = {
+      type: "tool_result",
+      tool_use_id: block.id,
+      content: `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。`,
+    };
+    if (block.id !== undefined) checkpointResults.set(block.id, toolResult);
+    toolResults.push(toolResult);
+    await persistCheckpoint({
+      round,
+      pendingToolUse: block,
+      pendingToolUses,
+      toolResults,
+      status: "intercepted",
+      messagesOverride: [
+        ...messages,
+        { role: "user", content: cloneState(toolResults) },
+      ],
+    });
+    return toolResult;
   };
 
   const roundNumbersForMessages = (currentMessages) => {
@@ -1526,7 +1630,7 @@ export async function runToolLoop({
     if (resumePendingTool) {
       const resumedToolResults = [];
       emitEvent({ type: "tool_use", round: rounds, toolUse: cloneState(resumePendingTool) });
-      await executeToolBlock(
+      await executeToolWithIntercept(
         resumePendingTool,
         rounds,
         resumedToolResults,
@@ -1659,7 +1763,7 @@ export async function runToolLoop({
         const recordedToolResult = checkpointResults.get(block.id);
         const toolResult = executedToolIds.has(block.id) && recordedToolResult !== undefined
           ? cloneState(recordedToolResult)
-          : await executeToolBlock(
+          : await executeToolWithIntercept(
             block,
             round,
             toolResults,
@@ -1789,14 +1893,8 @@ export async function runToolLoop({
       remainingMs: remainingMs(),
     };
     let judgeDecision;
-    // judge 两种触发：
-    // 1. stop 轮（end_turn）：完整评估——模型说完想停，判完成 + 方向
-    // 2. tool_calls 轮周期性（每 judgeIntervalRound）：只查方向——done:true 不生效（模型还要干），done:false→nudge 纠偏
-    const toolRoundDirectionCheck = !isEndTurn
-      && hasToolUse(content)
-      && round - lastJudgeRound >= judgeIntervalRound;
-    if (roundJudgeEnabled && (isEndTurn || toolRoundDirectionCheck)) {
-      lastJudgeRound = round;
+    // end_turn 轮完整评估；工具中途审计已在工具执行前独立完成，不参与停机判定。
+    if (roundJudgeEnabled && isEndTurn) {
       try {
         judgeDecision = await callRoundJudge(round, currentL0);
         if (judgeDecision === null) {
@@ -1813,11 +1911,9 @@ export async function runToolLoop({
     }
 
     let action;
-    // tool_calls 轮的方向检查：done:true 不生效（模型还在干活，抢停会截断收尾）
-    const directionCheckOnly = !isEndTurn;
     if (judgeDecision?.done === true
       && judgeDecision.confidence >= 0.7
-      && !directionCheckOnly) {
+      && isEndTurn) {
       action = {
         kind: "stop",
         value: "judge_done",
