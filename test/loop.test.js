@@ -74,26 +74,55 @@ test("returns truncated after maxRounds", async () => {
   assert.equal(result.finalText, "");
 });
 
-test("throws llm_kit_stalled for repeated calls in a full signature window", async () => {
+test("nudges repeated calls before stopping after a consecutive stall streak", async () => {
   const provider = createFakeProvider([
     {
-      times: 5,
+      times: 8,
       content: [{ type: "tool_use", id: "call", name: "same", input: { n: 1 } }],
       stopReason: "tool_use",
     },
   ]);
 
-  await assert.rejects(
-    runToolLoop({
-      provider,
-      initialUserMessage: "repeat",
-      maxRounds: 8,
-      executeTool: async () => "ok",
-      stallDetection: { window: 2 },
-    }),
-    (error) => error?.code === "llm_kit_stalled",
-  );
-  assert.equal(provider.requests.length, 3);
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "repeat",
+    maxRounds: 8,
+    executeTool: async () => "ok",
+    completion: false,
+    stallDetection: { window: 2, mode: "consecutive" },
+  });
+  assert.equal(result.termination.reason, "stall");
+  assert.equal(result.truncated, true);
+  assert.equal(provider.requests.length, 7);
+  assert.ok(provider.requests.some((request) => (
+    request.messages.some((message) => (
+      Array.isArray(message.content)
+      && message.content.some((block) => /疑似重复调用/.test(block.text ?? ""))
+    ))
+  )));
+});
+
+test("clears the stall streak after a normal tool call", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "tool_use", id: "a1", name: "same", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "a2", name: "same", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "b1", name: "other", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "b2", name: "other", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "b3", name: "other", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "repeat",
+    maxRounds: 6,
+    executeTool: async () => "ok",
+    completion: false,
+    stallDetection: { window: 1, mode: "consecutive" },
+  });
+  assert.equal(result.termination.reason, "end_turn");
+  assert.equal(result.truncated, false);
+  assert.equal(provider.requests.length, 6);
 });
 
 test("feeds executeTool errors back as is_error and continues", async () => {
@@ -214,6 +243,42 @@ test("stall detection can be disabled", async () => {
 
   assert.equal(result.rounds, 3);
   assert.equal(result.truncated, true);
+});
+
+test("stallDetection:false overrides ERIX_STALL_MODE env", async () => {
+  const previous = process.env.ERIX_STALL_MODE;
+  process.env.ERIX_STALL_MODE = "consecutive";
+  try {
+    // 显式关闭 stall 检测优先于环境变量——env 不应重新打开（审计阻断项修复）
+    // 旧 bug：false 被 env 覆盖成 {window:4} → 第5轮 stalled → nudge 注入
+    // 新实现：false → window 0 → 完全不检测 → 无 nudge
+    const provider = createFakeProvider([{
+      times: 6,
+      content: [{ type: "tool_use", id: "call", name: "same", input: { n: 1 } }],
+      stopReason: "tool_use",
+    }]);
+    const result = await runToolLoop({
+      provider,
+      initialUserMessage: "env-ignored",
+      maxRounds: 6,
+      executeTool: async () => "ok",
+      completion: false,
+      stallDetection: false,
+    });
+    assert.equal(result.termination.reason, "max_rounds_cap");
+    assert.equal(result.truncated, true);
+    // 关键：无任何 stall nudge 注入（旧 bug 会注入）
+    const anyNudge = provider.requests.some((request) => (
+      request.messages.some((message) => (
+        Array.isArray(message.content)
+        && message.content.some((block) => /疑似重复调用/.test(block.text ?? ""))
+      ))
+    ));
+    assert.equal(anyNudge, false, "stallDetection:false 时不应有任何 stall nudge");
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_STALL_MODE;
+    else process.env.ERIX_STALL_MODE = previous;
+  }
 });
 
 test("ERIX_STALL_MODE env overrides stall detection mode", async () => {

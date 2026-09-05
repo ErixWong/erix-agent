@@ -106,6 +106,14 @@ function toolResultContent(result) {
   return typeof result === "string" ? result : String(result);
 }
 
+function directionHintText(direction, directionReason) {
+  if (direction !== "off_track") return "";
+  const reason = typeof directionReason === "string" && directionReason.trim()
+    ? directionReason.trim().slice(0, 200)
+    : "当前路线可能偏";
+  return `（附方向提示：${reason} —— 当前路线可能偏，可考虑换思路/方法）`;
+}
+
 function normalizeMessages(messages) {
   for (let index = 1; index < messages.length; index += 1) {
     const previous = messages[index - 1];
@@ -154,15 +162,10 @@ function hasSuccessfulToolResult(messages) {
   )));
 }
 
-function stallError(signature) {
-  const error = new Error(`Tool loop stalled on repeated call: ${signature}`);
-  error.code = "llm_kit_stalled";
-  return error;
-}
-
 const TRUNCATED_TERMINATION_REASONS = new Set([
   "max_rounds_cap",
   "continuation_exhausted",
+  "stall",
 ]);
 
 function makeTermination(reason, detail) {
@@ -191,6 +194,7 @@ function terminationReasonForAction(action, continuationExhausted) {
   if (action?.value === "judge_done") return "judge_done";
   if (continuationExhausted) return "continuation_exhausted";
   if (action?.value === "noTool") return "no_tool";
+  if (action?.value === "stall") return "stall";
   if (action?.value === "cap") return "max_rounds_cap";
   if (action?.value === "reflection-stop") return "reflection_stop";
   return "end_turn";
@@ -480,6 +484,16 @@ function defaultSleep(ms, signal) {
  */
 
 /**
+ * @typedef {object} JudgeEvent
+ * @property {number} [round]
+ * @property {"round"|"intercept"} kind
+ * @property {{id?:string, name?:string, input?:object}} [tool]
+ * @property {{done:boolean, confidence:number, reason:string, evidence:string}|null} [decision]
+ * @property {"judge_done"|"nudge"|"continue"|"executed"|"blocked"|"degraded"} action
+ * @property {"timeout"|"error"|"parse"} [error]
+ */
+
+/**
  * Run the minimum tool-calling loop against an injected provider.
  *
  * Stall detection defaults to `appear`, which detects a signature anywhere in
@@ -521,6 +535,7 @@ function defaultSleep(ms, signal) {
  *   runId?: string,
  *   resume?: boolean,
  *   onRound?: Function,
+ *   onJudge?:(info:JudgeEvent) => void,
  *   onToolResult?: Function,
  *   onPersistenceError?: (error:Error) => void,
  *   signal?: AbortSignal,
@@ -574,6 +589,7 @@ export async function runToolLoop({
   runId,
   resume = false,
   onRound,
+  onJudge,
   onToolResult,
   onPersistenceError,
   signal,
@@ -706,6 +722,8 @@ export async function runToolLoop({
     timeline: [],
     filesWritten: [],
   };
+  let stallStreak = 0;
+  let lastStallSignature = null;
   const startedAt = Date.now();
   const configuredDeadline = Number.isFinite(deadlineMs) && deadlineMs > 0
     ? deadlineMs
@@ -939,9 +957,12 @@ export async function runToolLoop({
   }
   const recentSignatures = [];
   const envStallMode = process.env.ERIX_STALL_MODE;
-  const resolvedStallDetection = envStallMode
-    ? { window: stallDetection?.window ?? 4, mode: envStallMode }
-    : stallDetection;
+  // stallDetection:false 显式关闭优先于环境变量（调用方显式关闭不应被 env 重新打开）
+  const resolvedStallDetection = stallDetection === false
+    ? false
+    : envStallMode
+      ? { window: stallDetection?.window ?? 4, mode: envStallMode }
+      : stallDetection;
   const stallWindow = resolvedStallDetection === false
     ? 0
     : Number.isInteger(resolvedStallDetection?.window) && resolvedStallDetection.window > 0
@@ -978,6 +999,15 @@ export async function runToolLoop({
 
   const emitEvent = (event) => {
     onEvent?.(event);
+  };
+
+  const emitJudge = (info) => {
+    if (typeof onJudge !== "function") return;
+    try {
+      onJudge(info);
+    } catch {
+      // Observer failures must not affect the tool loop.
+    }
   };
 
   const addUsage = (response, estimatedTokens, { trackLatest = true } = {}) => {
@@ -1379,6 +1409,8 @@ export async function runToolLoop({
     return parseJudgeDecision(textFromBlocks(blocksFor(response?.content)));
   };
 
+  // off_track 放行时收集方向提示（独立 user 消息注入，不污染 tool_result 事实链）
+  const pendingDirectionHints = [];
   const executeToolWithIntercept = async (
     block,
     round,
@@ -1399,6 +1431,7 @@ export async function runToolLoop({
       toolResults,
     });
     let decision;
+    let interceptError;
     try {
       decision = await callRoundJudge(round, undefined, {
         timeoutMs: judgeInterceptTimeoutMs,
@@ -1406,12 +1439,51 @@ export async function runToolLoop({
     } catch (error) {
       if (signal?.aborted) throwIfAborted(signal);
       decision = undefined;
+      interceptError = error?.code === "judge_intercept_timeout" ? "timeout" : "error";
     }
     judgeInterceptCount = 0;
 
+    if (decision === undefined || decision === null) {
+      emitJudge({
+        kind: "intercept",
+        tool: {
+          id: block.id,
+          name: block.name,
+          input: cloneState(block.input),
+        },
+        decision: null,
+        action: "degraded",
+        error: decision === undefined ? interceptError : "parse",
+      });
+    } else {
+      emitJudge({
+        kind: "intercept",
+        tool: {
+          id: block.id,
+          name: block.name,
+          input: cloneState(block.input),
+        },
+        decision: {
+          done: decision.done,
+          confidence: decision.confidence,
+          reason: decision.reason,
+          evidence: decision.evidence,
+          direction: decision.direction,
+          directionReason: decision.directionReason,
+        },
+        action: decision.done === false ? "blocked" : "executed",
+      });
+    }
+
     if (decision?.done !== false) {
       try {
-        return await executeToolBlock(block, round, toolResults, pendingToolUses);
+        const toolResult = await executeToolBlock(block, round, toolResults, pendingToolUses);
+        const directionHint = directionHintText(
+          decision?.direction,
+          decision?.directionReason,
+        );
+        if (directionHint) pendingDirectionHints.push(directionHint);
+        return toolResult;
       } finally {
         judgeInterceptCount = 0;
       }
@@ -1419,6 +1491,11 @@ export async function runToolLoop({
 
     const reason = decision.reason || "任务方向可能偏离目标";
     const evidence = decision.evidence || "评审未提供更多证据";
+    const directionHint = directionHintText(
+      decision.direction,
+      decision.directionReason,
+    );
+    if (directionHint) pendingDirectionHints.push(directionHint);
     const toolResult = {
       type: "tool_result",
       tool_use_id: block.id,
@@ -1426,16 +1503,23 @@ export async function runToolLoop({
     };
     if (block.id !== undefined) checkpointResults.set(block.id, toolResult);
     toolResults.push(toolResult);
+    const overriddenMessages = [
+      ...messages,
+      { role: "user", content: cloneState(toolResults) },
+    ];
+    if (pendingDirectionHints.length > 0) {
+      overriddenMessages.push({
+        role: "user",
+        content: pendingDirectionHints.map((text) => ({ type: "text", text })),
+      });
+    }
     await persistCheckpoint({
       round,
       pendingToolUse: block,
       pendingToolUses,
       toolResults,
       status: "intercepted",
-      messagesOverride: [
-        ...messages,
-        { role: "user", content: cloneState(toolResults) },
-      ],
+      messagesOverride: overriddenMessages,
     });
     return toolResult;
   };
@@ -1637,6 +1721,19 @@ export async function runToolLoop({
         [resumePendingTool],
       );
       appendToolResultsToTranscript(resumedToolResults, rounds);
+      // resume 路径也 flush 方向提示（与主循环一致，限 2 条；独立 user text 消息）
+      if (pendingDirectionHints.length > 0) {
+        const hints = pendingDirectionHints.length > 2
+          ? [...pendingDirectionHints.slice(0, 2), "（另有多次方向提示已合并）"]
+          : [...pendingDirectionHints];
+        const hintMessage = {
+          role: "user",
+          content: hints.map((text) => ({ type: "text", text })),
+        };
+        messages.push(hintMessage);
+        if (rounds !== undefined) messageRounds.set(hintMessage, rounds);
+        pendingDirectionHints.length = 0;
+      }
       resumePendingTool = undefined;
     }
     if (resumeCheckpoint && resumeTranscriptStart !== undefined) {
@@ -1662,6 +1759,9 @@ export async function runToolLoop({
     const round = rounds + 1;
     roundEventDeltas = [];
     roundStopReason = undefined;
+    let stallSuspicion = false;
+    let stallSignature = null;
+    let lastSignatureThisRound = null;
     emitEvent({ type: "round_start", round });
     const compaction = await compactBeforeRound();
     const roundStart = messages.length;
@@ -1753,8 +1853,11 @@ export async function runToolLoop({
           : recentSignatures.length >= stallWindow
             && recentSignatures.includes(signature);
         if (stallWindow > 0 && stalled) {
-          throw stallError(signature);
+          stallSuspicion = true;
+          stallSignature = signature;
+          recentSignatures.length = 0;
         }
+        lastSignatureThisRound = signature;
         if (stallWindow > 0) {
           recentSignatures.push(signature);
           if (recentSignatures.length > stallWindow) recentSignatures.shift();
@@ -1777,6 +1880,30 @@ export async function runToolLoop({
         messages.push(toolResultMessage);
         messageRounds.set(toolResultMessage, round);
       }
+      if (pendingDirectionHints.length > 0) {
+        // 方向提示独立 user text 消息（模型可见，但不混入 tool_result 事实链——避免污染后续 judge 输入）
+        // 限 2 条/轮防膨胀（同轮多个 off_track 合并）
+        const hints = pendingDirectionHints.length > 2
+          ? [...pendingDirectionHints.slice(0, 2), "（另有多次方向提示已合并）"]
+          : [...pendingDirectionHints];
+        const hintMessage = {
+          role: "user",
+          content: hints.map((text) => ({ type: "text", text })),
+        };
+        messages.push(hintMessage);
+        messageRounds.set(hintMessage, round);
+        pendingDirectionHints.length = 0;
+      }
+    }
+    // streak 只累积 stalled 命中；出现不同签名（模型转向）才清零
+    if (stallSuspicion) {
+      stallStreak += 1;
+      lastStallSignature = stallSignature;
+    } else if (lastStallSignature !== null && lastSignatureThisRound !== null
+      && lastSignatureThisRound !== lastStallSignature) {
+      // 本轮调用了与上次 stalled 不同的签名 → 模型转向，清零
+      stallStreak = 0;
+      lastStallSignature = null;
     }
 
     let shouldContinue = response?.stopReason === "tool_use"
@@ -1881,6 +2008,8 @@ export async function runToolLoop({
       memoryLoss: memoryLossDetected,
       completionSignalDetected,
       continuationExhausted,
+      stallSuspicion,
+      stallStreak,
       wrapUpNudged: governorState.wrapUpNudged,
       reflectionEnabled: roundJudgeEnabled ? false : reflectionEnabled,
       nearLimit: rounds >= governorState.nextReflectionRound,
@@ -1900,13 +2029,42 @@ export async function runToolLoop({
         if (judgeDecision === null) {
           roundJudgeFailures += 1;
           if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
+          emitJudge({
+            round,
+            kind: "round",
+            decision: null,
+            action: "degraded",
+            error: "parse",
+          });
         } else {
           roundJudgeFailures = 0;
+          emitJudge({
+            round,
+            kind: "round",
+            decision: {
+              done: judgeDecision.done,
+              confidence: judgeDecision.confidence,
+              reason: judgeDecision.reason,
+              evidence: judgeDecision.evidence,
+              direction: judgeDecision.direction,
+              directionReason: judgeDecision.directionReason,
+            },
+            action: judgeDecision.done === true && judgeDecision.confidence >= 0.7
+              ? "judge_done"
+              : (judgeDecision.done === false ? "nudge" : "continue"),
+          });
         }
       } catch (error) {
         if (signal?.aborted) throwIfAborted(signal);
         roundJudgeFailures += 1;
         if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
+        emitJudge({
+          round,
+          kind: "round",
+          decision: null,
+          action: "degraded",
+          error: error?.code === "judge_intercept_timeout" ? "timeout" : "error",
+        });
       }
     }
 
@@ -1922,10 +2080,13 @@ export async function runToolLoop({
     } else if (judgeDecision?.done === false) {
       const reason = judgeDecision.reason || "任务尚未完成";
       const evidence = judgeDecision.evidence || "评审未提供更多证据";
+      const directionHint = judgeDecision.direction === "off_track"
+        ? `\n方向提示：${judgeDecision.directionReason || "当前路线可能偏，可考虑换思路/方法"}（仅提示，可考虑替代路线）`
+        : "";
       action = {
         kind: "nudge",
         reason: "judge",
-        text: `【Judge 评审意见】${reason}\n证据：${evidence}\n请根据评审意见继续完成任务。`,
+        text: `【Judge 评审意见】${reason}\n证据：${evidence}${directionHint}\n请根据评审意见继续完成任务。`,
         continue: true,
       };
     } else {
@@ -1991,6 +2152,8 @@ export async function runToolLoop({
           confidence: judgeDecision.confidence,
           reason: judgeDecision.reason,
           evidence: judgeDecision.evidence,
+          direction: judgeDecision.direction,
+          directionReason: judgeDecision.directionReason,
         },
       }),
       ...(wrapupJson === null ? {} : { wrapup: wrapupJson }),

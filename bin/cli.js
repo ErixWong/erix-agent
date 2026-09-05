@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -32,7 +32,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
@@ -45,6 +45,7 @@ const HELP_TEXT = `用法：
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 32 时启用）
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
+  --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -54,6 +55,7 @@ const HELP_TEXT = `用法：
   ERIX_NO_TOOL_ROUNDS 模型连续无工具调用几轮后强制完成（默认：3，最小：1）
   ERIX_MAX_ROUNDS     工具循环最大轮数（默认：64，最小：1）
   ERIX_REFLECTION     反思开关（on/off；ERIX_NO_REFLECTION=1 强制关闭）
+  ERIX_JUDGE_LOG      judge 决策 JSONL 路径（可用 --judge-log 覆盖）
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
@@ -191,6 +193,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       || argument === "--reflection"
       || argument === "--timeout"
       || argument === "--idle-timeout"
+      || argument === "--judge-log"
     ) {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
@@ -203,7 +206,8 @@ export function parseChatArgs(args, cwd = process.cwd()) {
           || argument === "--skills-dir"
           || argument === "--session"
           || argument === "--dir"
-          || argument === "--reflection")
+          || argument === "--reflection"
+          || argument === "--judge-log")
         && rawValue.startsWith("--")
       )) {
         usageError(`${argument} 缺少数值`);
@@ -230,6 +234,9 @@ export function parseChatArgs(args, cwd = process.cwd()) {
         options.reflection = parseReflectionOption(rawValue);
       } else if (argument === "--timeout") {
         options.timeoutMs = parseIntegerOption(argument, rawValue, 1);
+      } else if (argument === "--judge-log") {
+        if (rawValue.trim() === "") usageError("--judge-log 不能为空");
+        options.judgeLog = rawValue;
       } else {
         options.idleTimeout = parseIntegerOption(argument, rawValue, 0);
       }
@@ -427,6 +434,7 @@ export async function runChat({
   session,
   sessionExplicit,
   dir = join(homedir(), ".erix", "transcripts"),
+  judgeLog,
   provider: providerOverride,
   config: configOverride,
   toolOutput = console.log,
@@ -480,6 +488,84 @@ export async function runChat({
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, { output: toolOutput });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
+  const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG;
+  let judgeLogWriteFailed = false;
+  // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 安全摘要
+  const SENSITIVE_KEY = /token|key|secret|password|passwd|authorization|auth|api[_-]?key|bearer|cookie|credential|session|jwt|private/i;
+  // 内容级凭据模式：值内嵌密钥/令牌时整体隐藏（judge reason/evidence 可能复述）
+  const CREDENTIAL_PATTERN = /(sk-[a-z0-9_-]{8,}|sk_live_[a-zA-Z0-9]{16,}|eyJ[a-zA-Z0-9_-]{10,}|Bearer\s+[a-zA-Z0-9._-]{8,}|ghp_|gho_|ghs_|ghu_|ghr_|github_pat_[a-zA-Z0-9_]{20,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|-----BEGIN\s+[A-Z ]+-----|xox[baprs]-[a-zA-Z0-9-]{10,}|npm_[a-zA-Z0-9]{30,}|pypi-[a-zA-Z0-9_-]{30,}|AIza[a-zA-Z0-9_-]{30,})/i;
+  const redactValue = (value) => {
+    if (typeof value === "string") {
+      if (value.length > 120) return `[${value.length}字符，已截断]`;
+      if (CREDENTIAL_PATTERN.test(value)) return "[含凭据内容，已隐藏]";
+      return value;
+    }
+    if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
+    if (Array.isArray(value)) return `[数组${value.length}项]`;
+    if (typeof value === "object") {
+      const output = {};
+      for (const [key, item] of Object.entries(value)) {
+        if (SENSITIVE_KEY.test(key)) output[key] = "[已隐藏]";
+        else output[key] = redactValue(item);
+      }
+      return output;
+    }
+    return String(value);
+  };
+  const redactJudgeInfo = (info) => {
+    const redacted = { ...info };
+    if (redacted.decision && typeof redacted.decision === "object") {
+      // judge reason/evidence 可能复述凭据——截断即可（judge 输出通常短）
+      for (const key of ["reason", "evidence", "directionReason"]) {
+        if (typeof redacted.decision[key] === "string") {
+          redacted.decision[key] = redactValue(redacted.decision[key]);
+        }
+      }
+    }
+    if (redacted.tool && typeof redacted.tool === "object") {
+      const { input, ...toolRest } = redacted.tool;
+      redacted.tool = toolRest;
+      if (input !== undefined) {
+        let summary = "";
+        try {
+          if (typeof input === "object" && input !== null) {
+            const command = input.command ?? input.url ?? "";
+            if (typeof command === "string" && command) {
+              // 命令类：含敏感键或凭据内容直接隐藏（token 常出现在命令中且无关键词）
+              if (SENSITIVE_KEY.test(command) || CREDENTIAL_PATTERN.test(command)) summary = "[命令含敏感信息，已隐藏]";
+              else summary = command.slice(0, 80);
+            } else if (input.path && typeof input.path === "string") {
+              summary = `path=${input.path.slice(0, 80)}`;
+            } else {
+              // 其他参数：递归脱敏（嵌套敏感键也覆盖）后截断
+              summary = JSON.stringify(redactValue(input)).slice(0, 80);
+            }
+          } else if (typeof input === "string") {
+            summary = SENSITIVE_KEY.test(input) ? "[含敏感信息，已隐藏]" : input.slice(0, 80);
+          } else {
+            summary = String(input).slice(0, 80);
+          }
+        } catch { summary = "[无法序列化]"; }
+        redacted.tool.inputSummary = summary;
+      }
+    }
+    return redacted;
+  };
+  const onJudge = judgeLogPath
+    ? (info) => {
+      if (judgeLogWriteFailed) return;
+      try {
+        appendFileSync(
+          judgeLogPath,
+          `${JSON.stringify({ ts: new Date().toISOString(), ...redactJudgeInfo(info) })}\n`,
+          "utf8",
+        );
+      } catch (error) {
+        judgeLogWriteFailed = true;
+        console.error(`Judge log write failed: ${error?.message ?? String(error)}`);
+      }
+    }
+    : undefined;
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
   if (mcpProxy?.enabled) {
@@ -545,6 +631,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       idle?.touch();
       console.log(`[round ${info.round}]${info.folded ? "（含折叠）" : ""}`);
     },
+    onJudge,
   };
 
   try {

@@ -249,24 +249,58 @@ test("includes the canonical response summary in onRound records", async () => {
   assert.equal(records[1].toolUses, 0);
 });
 
-test("stall detection consecutive mode fires only after identical calls", async (t) => {
-  await t.test("fires for identical consecutive signatures", async () => {
+test("stall detection consecutive mode softens repeats and stops only after a streak", async (t) => {
+  await t.test("nudges repeated identical calls, then the model turns and finishes", async () => {
+    // window:2 consecutive → 需连续 3 次相同才首次 stalled（第3次时窗口满2）
+    // 前 3 次 a1: 第3次 stalled → streak=1 → nudge 注入
+    // 模型转向 b1 → 正常完成
+    const provider = createFakeProvider([
+      { content: [{ type: "tool_use", id: "a1", name: "write", input: { n: 1 } }], stopReason: "tool_use" },
+      { content: [{ type: "tool_use", id: "a2", name: "write", input: { n: 1 } }], stopReason: "tool_use" },
+      { content: [{ type: "tool_use", id: "a3", name: "write", input: { n: 1 } }], stopReason: "tool_use" },
+      { content: [{ type: "tool_use", id: "b1", name: "write", input: { n: 2 } }], stopReason: "tool_use" },
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]);
+
+    const result = await runToolLoop({
+      provider,
+      initialUserMessage: "repeat",
+      executeTool: async () => "ok",
+      completion: false,
+      stallDetection: { window: 2, mode: "consecutive" },
+    });
+    assert.equal(result.termination.reason, "end_turn");
+    assert.equal(result.truncated, false);
+    // 第3次 a1 stalled → streak=1 → nudge 注入；第4次请求（b1 前）应含 nudge 文本
+    const nudgeInjected = provider.requests.some((request) => (
+      request.messages.some((message) => (
+        Array.isArray(message.content)
+        && message.content.some((block) => /疑似重复调用.*推进新步骤/.test(block.text ?? ""))
+      ))
+    ));
+    assert.equal(nudgeInjected, true);
+  });
+
+  await t.test("stops normally after the stall streak limit", async () => {
+    // window:2 consecutive：每 2 轮窗口满一次触发 stalled；streak 不清零（同签名继续）
+    // round3 stalled(1) → nudge → round5 stalled(2) → nudge → round7 stalled(3) → stop
     const provider = createFakeProvider([{
-      times: 4,
+      times: 9,
       content: [{ type: "tool_use", id: "call", name: "write", input: { n: 1 } }],
       stopReason: "tool_use",
     }]);
 
-    await assert.rejects(
-      runToolLoop({
-        provider,
-        initialUserMessage: "repeat",
-        executeTool: async () => "ok",
-        stallDetection: { window: 2, mode: "consecutive" },
-      }),
-      (error) => error?.code === "llm_kit_stalled",
-    );
-    assert.equal(provider.requests.length, 3);
+    const result = await runToolLoop({
+      provider,
+      initialUserMessage: "repeat",
+      maxRounds: 9,
+      executeTool: async () => "ok",
+      completion: false,
+      stallDetection: { window: 2, mode: "consecutive" },
+    });
+    assert.equal(result.termination.reason, "stall");
+    assert.equal(result.truncated, true);
+    assert.equal(provider.requests.length, 7);
   });
 
   await t.test("allows interleaved signatures", async () => {

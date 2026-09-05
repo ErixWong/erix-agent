@@ -6,6 +6,7 @@ import {
   decideWithEvaluation,
   isStuckOnRepeatedError,
   shouldWrapUp,
+  STALL_STREAK_LIMIT,
 } from "../src/reflection/governor.js";
 import {
   extractL0Facts,
@@ -59,6 +60,40 @@ test("governor detects a repeated error only without progress", () => {
     }),
     false,
   );
+});
+
+test("governor nudges suspected stalls before stopping at the streak limit", () => {
+  assert.equal(STALL_STREAK_LIMIT, 3);
+  const nudge = decideRoundAction({
+    stallSuspicion: true,
+    stallStreak: STALL_STREAK_LIMIT - 1,
+  });
+  assert.equal(nudge.kind, "nudge");
+  assert.equal(nudge.reason, "stall");
+  assert.equal(nudge.resetNoToolStreak, true);
+  assert.equal(nudge.continue, true);
+  assert.match(nudge.text, /疑似重复调用/);
+  assert.match(nudge.text, /推进新步骤/);
+  assert.deepEqual(
+    decideRoundAction({
+      stallSuspicion: true,
+      stallStreak: STALL_STREAK_LIMIT,
+    }),
+    { kind: "stop", value: "stall", truncated: true },
+  );
+  // 优先级：stall 超限 stop 优先于 repeatedError/wrapUp nudge（否则被无限阻塞退化 cap）
+  const prioritized = decideRoundAction({
+    stallSuspicion: true,
+    stallStreak: STALL_STREAK_LIMIT,
+    errorRepeat: 5,
+    hasProgress: false,
+    shouldContinue: true,
+    remainingMs: 5_000,
+    hasToolUse: true,
+    rounds: 10,
+    elapsedMs: 100_000,
+  });
+  assert.deepEqual(prioritized, { kind: "stop", value: "stall", truncated: true });
 });
 
 test("governor detects a short wrap-up window only once and when not spinning", () => {

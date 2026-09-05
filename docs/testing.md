@@ -32,13 +32,13 @@
 | `providers/openai` | 请求序列化（canonical→openai messages/tools）；响应解析（text / tool_calls→canonical 块）；FR-1.3 错误分类五类 + retryable 标记；FR-1.4 2xx+error-body 透传真实 message；timeoutMs 触发 abort → timeout |
 | `messages/canonical` | openai⇄canonical 双向转换无损；`raw` 逃生舱保留协议特有字段 |
 | `tokens` | 中文 1.5 tok/字、英文 3.5 字/tok、混合文本、+15% 余量、系数可配 |
-| `loop`（fake provider） | 多轮 tool_use→executeTool→tool_result 回喂→终稿；maxRounds 截断（truncated=true）；死循环检测：签名窗口重复抛 `llm_kit_stalled`；executeTool 抛错→回 tool_result is_error 不中断循环；usage 累计；memory store 每轮快照 |
+| `loop`（fake provider） | 多轮 tool_use→executeTool→tool_result 回喂→终稿；maxRounds 截断（truncated=true）；stall 检测：签名窗口重复先 nudge、连续超限返回 `termination.reason="stall"`；executeTool 抛错→回 tool_result is_error 不中断循环；usage 累计；memory store 每轮快照 |
 | `store/memory` | appendRound / load / recall（范围 + pattern） |
 
 ### e2e（真实 relay）
 
 `examples/exec-demo.test.mjs`：任务「查看当前目录并总结」，断言——
-轮数 ≥ 2、transcript 含 exec 的 tool_result、finalText 非空、无 llm_kit_stalled。
+轮数 ≥ 2、transcript 含 exec 的 tool_result、finalText 非空、termination.reason 不是 `"stall"`。
 **demo 里 exec 工具有白名单/超时**（demo 也要示范调用方安全职责，哪怕从简）。
 
 ### 工程保底
