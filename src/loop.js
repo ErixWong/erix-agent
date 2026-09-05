@@ -109,7 +109,7 @@ function toolResultContent(result) {
 function directionHintText(direction, directionReason) {
   if (direction !== "off_track") return "";
   const reason = typeof directionReason === "string" && directionReason.trim()
-    ? directionReason.trim()
+    ? directionReason.trim().slice(0, 200)
     : "当前路线可能偏";
   return `（附方向提示：${reason} —— 当前路线可能偏，可考虑换思路/方法）`;
 }
@@ -490,7 +490,7 @@ function defaultSleep(ms, signal) {
  * @property {{id?:string, name?:string, input?:object}} [tool]
  * @property {{done:boolean, confidence:number, reason:string, evidence:string}|null} [decision]
  * @property {"judge_done"|"nudge"|"continue"|"executed"|"blocked"|"degraded"} action
- * @property {"timeout"|"error"} [error]
+ * @property {"timeout"|"error"|"parse"} [error]
  */
 
 /**
@@ -1495,23 +1495,31 @@ export async function runToolLoop({
       decision.direction,
       decision.directionReason,
     );
+    if (directionHint) pendingDirectionHints.push(directionHint);
     const toolResult = {
       type: "tool_result",
       tool_use_id: block.id,
-      content: `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。${directionHint ? `\n\n${directionHint}` : ""}`,
+      content: `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。`,
     };
     if (block.id !== undefined) checkpointResults.set(block.id, toolResult);
     toolResults.push(toolResult);
+    const overriddenMessages = [
+      ...messages,
+      { role: "user", content: cloneState(toolResults) },
+    ];
+    if (pendingDirectionHints.length > 0) {
+      overriddenMessages.push({
+        role: "user",
+        content: pendingDirectionHints.map((text) => ({ type: "text", text })),
+      });
+    }
     await persistCheckpoint({
       round,
       pendingToolUse: block,
       pendingToolUses,
       toolResults,
       status: "intercepted",
-      messagesOverride: [
-        ...messages,
-        { role: "user", content: cloneState(toolResults) },
-      ],
+      messagesOverride: overriddenMessages,
     });
     return toolResult;
   };
@@ -1861,9 +1869,13 @@ export async function runToolLoop({
       }
       if (pendingDirectionHints.length > 0) {
         // 方向提示独立 user text 消息（模型可见，但不混入 tool_result 事实链——避免污染后续 judge 输入）
+        // 限 2 条/轮防膨胀（同轮多个 off_track 合并）
+        const hints = pendingDirectionHints.length > 2
+          ? [...pendingDirectionHints.slice(0, 2), "（另有多次方向提示已合并）"]
+          : [...pendingDirectionHints];
         const hintMessage = {
           role: "user",
-          content: pendingDirectionHints.map((text) => ({ type: "text", text })),
+          content: hints.map((text) => ({ type: "text", text })),
         };
         messages.push(hintMessage);
         messageRounds.set(hintMessage, round);

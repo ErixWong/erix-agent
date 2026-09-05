@@ -250,6 +250,8 @@ test("stallDetection:false overrides ERIX_STALL_MODE env", async () => {
   process.env.ERIX_STALL_MODE = "consecutive";
   try {
     // 显式关闭 stall 检测优先于环境变量——env 不应重新打开（审计阻断项修复）
+    // 旧 bug：false 被 env 覆盖成 {window:4} → 第5轮 stalled → nudge 注入
+    // 新实现：false → window 0 → 完全不检测 → 无 nudge
     const provider = createFakeProvider([{
       times: 6,
       content: [{ type: "tool_use", id: "call", name: "same", input: { n: 1 } }],
@@ -263,8 +265,16 @@ test("stallDetection:false overrides ERIX_STALL_MODE env", async () => {
       completion: false,
       stallDetection: false,
     });
-    assert.equal(result.termination.reason, "max_rounds_cap"); // 未被 stall 终止
+    assert.equal(result.termination.reason, "max_rounds_cap");
     assert.equal(result.truncated, true);
+    // 关键：无任何 stall nudge 注入（旧 bug 会注入）
+    const anyNudge = provider.requests.some((request) => (
+      request.messages.some((message) => (
+        Array.isArray(message.content)
+        && message.content.some((block) => /疑似重复调用/.test(block.text ?? ""))
+      ))
+    ));
+    assert.equal(anyNudge, false, "stallDetection:false 时不应有任何 stall nudge");
   } finally {
     if (previous === undefined) delete process.env.ERIX_STALL_MODE;
     else process.env.ERIX_STALL_MODE = previous;

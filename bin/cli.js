@@ -490,25 +490,58 @@ export async function runChat({
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG;
   let judgeLogWriteFailed = false;
-  // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 参数摘要
+  // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 安全摘要
+  const SENSITIVE_KEY = /token|key|secret|password|passwd|authorization|auth|api[_-]?key|bearer|cookie|credential|session|jwt|private/i;
+  const redactValue = (value) => {
+    if (typeof value === "string") {
+      if (value.length > 120) return `[${value.length}字符，已截断]`;
+      return value;
+    }
+    if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
+    if (Array.isArray(value)) return `[数组${value.length}项]`;
+    if (typeof value === "object") {
+      const output = {};
+      for (const [key, item] of Object.entries(value)) {
+        if (SENSITIVE_KEY.test(key)) output[key] = "[已隐藏]";
+        else output[key] = redactValue(item);
+      }
+      return output;
+    }
+    return String(value);
+  };
   const redactJudgeInfo = (info) => {
     const redacted = { ...info };
+    if (redacted.decision && typeof redacted.decision === "object") {
+      // judge reason/evidence 可能复述凭据——截断即可（judge 输出通常短）
+      for (const key of ["reason", "evidence", "directionReason"]) {
+        if (typeof redacted.decision[key] === "string") {
+          redacted.decision[key] = redactValue(redacted.decision[key]);
+        }
+      }
+    }
     if (redacted.tool && typeof redacted.tool === "object") {
       const { input, ...toolRest } = redacted.tool;
       redacted.tool = toolRest;
       if (input !== undefined) {
         let summary = "";
         try {
-          if (typeof input === "string") summary = String(input).slice(0, 80);
-          else if (typeof input === "object") {
-            const keys = Object.keys(input);
-            const sensitive = /token|key|secret|password|authorization|api[_-]?key|bearer/i;
-            if (keys.some((key) => sensitive.test(key))) summary = "[含敏感字段，已隐藏]";
-            else {
-              const command = input.command ?? input.path ?? input.url ?? "";
-              summary = typeof command === "string" ? command.slice(0, 80) : JSON.stringify(input).slice(0, 80);
+          if (typeof input === "object" && input !== null) {
+            const command = input.command ?? input.url ?? "";
+            if (typeof command === "string" && command) {
+              // 命令类：含敏感键直接隐藏；否则保留前 80 字符（token 常出现在长命令尾部）
+              if (SENSITIVE_KEY.test(command)) summary = "[命令含敏感信息，已隐藏]";
+              else summary = command.slice(0, 80);
+            } else if (input.path && typeof input.path === "string") {
+              summary = `path=${input.path.slice(0, 80)}`;
+            } else {
+              // 其他参数：递归脱敏（嵌套敏感键也覆盖）后截断
+              summary = JSON.stringify(redactValue(input)).slice(0, 80);
             }
-          } else summary = JSON.stringify(input).slice(0, 80);
+          } else if (typeof input === "string") {
+            summary = SENSITIVE_KEY.test(input) ? "[含敏感信息，已隐藏]" : input.slice(0, 80);
+          } else {
+            summary = String(input).slice(0, 80);
+          }
         } catch { summary = "[无法序列化]"; }
         redacted.tool.inputSummary = summary;
       }
