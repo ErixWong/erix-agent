@@ -81,6 +81,8 @@ const WRAPUP_INSTRUCTION = `任务完成或需要给出结论时（不再调用�
 若任务尚未完成但需要阶段性说明，可输出 {"done":false,"summary":"当前进展"}。
 继续工作时直接调用工具。`;
 
+const DEFAULT_REFLECTION_MIN_ROUNDS = 16;
+
 function reflectionPrompt({ rounds, taskBrief, runningLog, l0Facts, errorText }) {
   return `【进度反思】你是严格的独立评审者，不是执行者。请根据客观事实判断是否值得继续：
 
@@ -496,6 +498,9 @@ function defaultSleep(ms, signal) {
 /**
  * Run the minimum tool-calling loop against an injected provider.
  *
+ * When `reflection` is omitted, the basic judge is enabled automatically for
+ * runs with `maxRounds >= 16`; pass `reflection: false` to disable it.
+ *
  * Stall detection defaults to `appear`, which detects a signature anywhere in
  * the window; `consecutive` requires the entire window to match.
  *
@@ -570,7 +575,7 @@ export async function runToolLoop({
   topP,
   timeoutMs,
   deadlineMs,
-  reflection = false,
+  reflection,
   stallDetection = { window: 4 },
   retry = false,
   completion = { signals: [], maxNoToolRounds: 3 },
@@ -654,12 +659,18 @@ export async function runToolLoop({
     requestId,
   });
   const toolSignal = signal ?? new AbortController().signal;
-  const effectiveReflection = reflection === true
+  // reflection 未显式配置时，长任务（>=16 轮）默认开启基础 judge——无头宿主零配置获得保护
+  const resolvedReflectionOption = reflection === undefined
+    && maxRounds >= DEFAULT_REFLECTION_MIN_ROUNDS
+    && process.env.ERIX_NO_REFLECTION?.trim() !== "1"
+    ? { enabled: true }
+    : reflection;
+  const effectiveReflection = resolvedReflectionOption === true
     ? {}
-    : reflection && typeof reflection === "object"
-      ? reflection
+    : resolvedReflectionOption && typeof resolvedReflectionOption === "object"
+      ? resolvedReflectionOption
       : undefined;
-  const reflectionEnabled = reflection === true
+  const reflectionEnabled = resolvedReflectionOption === true
     || (effectiveReflection !== undefined && effectiveReflection.enabled !== false);
   let roundJudgeEnabled = reflectionEnabled
     && effectiveReflection?.roundJudge !== false
