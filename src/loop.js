@@ -957,9 +957,12 @@ export async function runToolLoop({
   }
   const recentSignatures = [];
   const envStallMode = process.env.ERIX_STALL_MODE;
-  const resolvedStallDetection = envStallMode
-    ? { window: stallDetection?.window ?? 4, mode: envStallMode }
-    : stallDetection;
+  // stallDetection:false 显式关闭优先于环境变量（调用方显式关闭不应被 env 重新打开）
+  const resolvedStallDetection = stallDetection === false
+    ? false
+    : envStallMode
+      ? { window: stallDetection?.window ?? 4, mode: envStallMode }
+      : stallDetection;
   const stallWindow = resolvedStallDetection === false
     ? 0
     : Number.isInteger(resolvedStallDetection?.window) && resolvedStallDetection.window > 0
@@ -1406,6 +1409,8 @@ export async function runToolLoop({
     return parseJudgeDecision(textFromBlocks(blocksFor(response?.content)));
   };
 
+  // off_track 放行时收集方向提示（独立 user 消息注入，不污染 tool_result 事实链）
+  const pendingDirectionHints = [];
   const executeToolWithIntercept = async (
     block,
     round,
@@ -1438,12 +1443,17 @@ export async function runToolLoop({
     }
     judgeInterceptCount = 0;
 
-    if (decision === undefined) {
+    if (decision === undefined || decision === null) {
       emitJudge({
         kind: "intercept",
+        tool: {
+          id: block.id,
+          name: block.name,
+          input: cloneState(block.input),
+        },
         decision: null,
         action: "degraded",
-        error: interceptError,
+        error: decision === undefined ? interceptError : "parse",
       });
     } else {
       emitJudge({
@@ -1453,7 +1463,7 @@ export async function runToolLoop({
           name: block.name,
           input: cloneState(block.input),
         },
-        decision: decision === null ? null : {
+        decision: {
           done: decision.done,
           confidence: decision.confidence,
           reason: decision.reason,
@@ -1461,7 +1471,7 @@ export async function runToolLoop({
           direction: decision.direction,
           directionReason: decision.directionReason,
         },
-        action: decision?.done === false ? "blocked" : "executed",
+        action: decision.done === false ? "blocked" : "executed",
       });
     }
 
@@ -1472,20 +1482,7 @@ export async function runToolLoop({
           decision?.direction,
           decision?.directionReason,
         );
-        if (directionHint) {
-          toolResult.content = `${toolResult.content}\n\n${directionHint}`;
-          await persistCheckpoint({
-            round,
-            pendingToolUse: block,
-            pendingToolUses,
-            toolResults,
-            status: "executed",
-            messagesOverride: [
-              ...messages,
-              { role: "user", content: cloneState(toolResults) },
-            ],
-          });
-        }
+        if (directionHint) pendingDirectionHints.push(directionHint);
         return toolResult;
       } finally {
         judgeInterceptCount = 0;
@@ -1862,6 +1859,16 @@ export async function runToolLoop({
         messages.push(toolResultMessage);
         messageRounds.set(toolResultMessage, round);
       }
+      if (pendingDirectionHints.length > 0) {
+        // 方向提示独立 user text 消息（模型可见，但不混入 tool_result 事实链——避免污染后续 judge 输入）
+        const hintMessage = {
+          role: "user",
+          content: pendingDirectionHints.map((text) => ({ type: "text", text })),
+        };
+        messages.push(hintMessage);
+        messageRounds.set(hintMessage, round);
+        pendingDirectionHints.length = 0;
+      }
     }
     // streak 只累积 stalled 命中；出现不同签名（模型转向）才清零
     if (stallSuspicion) {
@@ -1997,6 +2004,13 @@ export async function runToolLoop({
         if (judgeDecision === null) {
           roundJudgeFailures += 1;
           if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
+          emitJudge({
+            round,
+            kind: "round",
+            decision: null,
+            action: "degraded",
+            error: "parse",
+          });
         } else {
           roundJudgeFailures = 0;
           emitJudge({
@@ -2019,6 +2033,13 @@ export async function runToolLoop({
         if (signal?.aborted) throwIfAborted(signal);
         roundJudgeFailures += 1;
         if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
+        emitJudge({
+          round,
+          kind: "round",
+          decision: null,
+          action: "degraded",
+          error: error?.code === "judge_intercept_timeout" ? "timeout" : "error",
+        });
       }
     }
 

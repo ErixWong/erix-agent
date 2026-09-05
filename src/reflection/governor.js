@@ -65,6 +65,11 @@ export function decideRoundAction(signals = {}) {
   if (signals.continuationExhausted === true) {
     return { kind: "stop", value: "cap", truncated: true };
   }
+  // stall 超限 stop 优先于 wrapUp/repeatedError nudge（否则被低优先级 nudge 无限阻塞退化 max_rounds_cap）
+  if (numberOr(signals.stallStreak) >= STALL_STREAK_LIMIT
+    && signals.stallSuspicion === true) {
+    return { kind: "stop", value: "stall", truncated: true };
+  }
   if (signals.memoryLoss === true) {
     return {
       kind: "nudge",

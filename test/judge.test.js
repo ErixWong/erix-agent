@@ -304,6 +304,7 @@ test("round judge errors degrade to the existing loop path", async () => {
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
   const judge = createFakeProvider([{ throw: new Error("judge unavailable"), times: 20 }]);
+  const events = [];
   const result = await runToolLoop({
     provider,
     initialUserMessage: "task",
@@ -311,10 +312,16 @@ test("round judge errors degrade to the existing loop path", async () => {
     maxRounds: 2,
     completion: false,
     reflection: { enabled: true, judge: { provider: judge } },
+    onJudge: (info) => events.push(info),
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
   assert.equal(provider.requests.length, 2);
+  // round judge 抛错也应 emit degraded（审计完整性——阻断项修复）
+  const degraded = events.find((event) => event.action === "degraded" && event.kind === "round");
+  assert.ok(degraded, "round judge 抛错应 emit degraded 事件");
+  assert.equal(degraded.decision, null);
+  assert.equal(degraded.error, "error");
 });
 
 test("reflection false does not call the round judge", async () => {
@@ -613,10 +620,18 @@ test("transparent interception executes done tools marked off-track and appends 
   });
 
   assert.deepEqual(executed, [1, 2]);
-  const secondResult = result.transcript.flatMap((message) => message.content ?? [])
+  // 方向提示为独立 user text 消息（不污染 tool_result 事实链）
+  const toolResultBlock = result.transcript.flatMap((message) => message.content ?? [])
     .find((block) => block.tool_use_id === "second");
-  assert.match(secondResult.content, /附方向提示：连续反复调试同一实现细节/);
-  assert.doesNotMatch(secondResult.content, /审计拦截/);
+  assert.doesNotMatch(toolResultBlock.content, /附方向提示/);
+  assert.doesNotMatch(toolResultBlock.content, /审计拦截/);
+  const hintText = result.transcript
+    .filter((message) => message.role === "user")
+    .flatMap((message) => message.content ?? [])
+    .filter((block) => block?.type === "text")
+    .map((block) => block.text)
+    .find((text) => /附方向提示：连续反复调试同一实现细节/.test(text ?? ""));
+  assert.ok(hintText, "应存在独立的方向提示 user 消息");
 });
 
 test("transparent interception emits an executed onJudge event when approved", async () => {
@@ -730,6 +745,7 @@ test("transparent interception emits degraded when the judge fails", async () =>
 
   assert.deepEqual(events, [{
     kind: "intercept",
+    tool: { id: "second", name: "work", input: { step: 2 } },
     decision: null,
     action: "degraded",
     error: "error",

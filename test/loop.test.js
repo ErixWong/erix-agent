@@ -245,6 +245,32 @@ test("stall detection can be disabled", async () => {
   assert.equal(result.truncated, true);
 });
 
+test("stallDetection:false overrides ERIX_STALL_MODE env", async () => {
+  const previous = process.env.ERIX_STALL_MODE;
+  process.env.ERIX_STALL_MODE = "consecutive";
+  try {
+    // 显式关闭 stall 检测优先于环境变量——env 不应重新打开（审计阻断项修复）
+    const provider = createFakeProvider([{
+      times: 6,
+      content: [{ type: "tool_use", id: "call", name: "same", input: { n: 1 } }],
+      stopReason: "tool_use",
+    }]);
+    const result = await runToolLoop({
+      provider,
+      initialUserMessage: "env-ignored",
+      maxRounds: 6,
+      executeTool: async () => "ok",
+      completion: false,
+      stallDetection: false,
+    });
+    assert.equal(result.termination.reason, "max_rounds_cap"); // 未被 stall 终止
+    assert.equal(result.truncated, true);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_STALL_MODE;
+    else process.env.ERIX_STALL_MODE = previous;
+  }
+});
+
 test("ERIX_STALL_MODE env overrides stall detection mode", async () => {
   const previous = process.env.ERIX_STALL_MODE;
   process.env.ERIX_STALL_MODE = "consecutive";

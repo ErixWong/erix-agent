@@ -490,13 +490,38 @@ export async function runChat({
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG;
   let judgeLogWriteFailed = false;
+  // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 参数摘要
+  const redactJudgeInfo = (info) => {
+    const redacted = { ...info };
+    if (redacted.tool && typeof redacted.tool === "object") {
+      const { input, ...toolRest } = redacted.tool;
+      redacted.tool = toolRest;
+      if (input !== undefined) {
+        let summary = "";
+        try {
+          if (typeof input === "string") summary = String(input).slice(0, 80);
+          else if (typeof input === "object") {
+            const keys = Object.keys(input);
+            const sensitive = /token|key|secret|password|authorization|api[_-]?key|bearer/i;
+            if (keys.some((key) => sensitive.test(key))) summary = "[含敏感字段，已隐藏]";
+            else {
+              const command = input.command ?? input.path ?? input.url ?? "";
+              summary = typeof command === "string" ? command.slice(0, 80) : JSON.stringify(input).slice(0, 80);
+            }
+          } else summary = JSON.stringify(input).slice(0, 80);
+        } catch { summary = "[无法序列化]"; }
+        redacted.tool.inputSummary = summary;
+      }
+    }
+    return redacted;
+  };
   const onJudge = judgeLogPath
     ? (info) => {
       if (judgeLogWriteFailed) return;
       try {
         appendFileSync(
           judgeLogPath,
-          `${JSON.stringify({ ts: new Date().toISOString(), ...info })}\n`,
+          `${JSON.stringify({ ts: new Date().toISOString(), ...redactJudgeInfo(info) })}\n`,
           "utf8",
         );
       } catch (error) {

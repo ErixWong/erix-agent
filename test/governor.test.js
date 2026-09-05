@@ -81,6 +81,19 @@ test("governor nudges suspected stalls before stopping at the streak limit", () 
     }),
     { kind: "stop", value: "stall", truncated: true },
   );
+  // 优先级：stall 超限 stop 优先于 repeatedError/wrapUp nudge（否则被无限阻塞退化 cap）
+  const prioritized = decideRoundAction({
+    stallSuspicion: true,
+    stallStreak: STALL_STREAK_LIMIT,
+    errorRepeat: 5,
+    hasProgress: false,
+    shouldContinue: true,
+    remainingMs: 5_000,
+    hasToolUse: true,
+    rounds: 10,
+    elapsedMs: 100_000,
+  });
+  assert.deepEqual(prioritized, { kind: "stop", value: "stall", truncated: true });
 });
 
 test("governor detects a short wrap-up window only once and when not spinning", () => {
