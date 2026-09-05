@@ -285,3 +285,35 @@ test("ERIX_NO_ROUND_JUDGE env disables the round judge (reviewer P2#3)", async (
     else process.env.ERIX_NO_ROUND_JUDGE = prev;
   }
 });
+
+test("buildTimeline pairs outputs by tool_use_id even when results arrive out of order (reviewer)", () => {
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "task" }] },
+    {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "a", name: "exec", input: { command: "./sim 208" } },
+        { type: "tool_use", id: "b", name: "writeFile", input: { path: "g.txt", content: "x" } },
+        { type: "tool_use", id: "c", name: "exec", input: { command: "./sim 20000" } },
+      ],
+    },
+    {
+      role: "user",
+      content: [
+        // b 的结果先到，然后 a、c —— 乱序
+        { type: "tool_result", tool_use_id: "b", content: "written" },
+        { type: "tool_result", tool_use_id: "c", content: "10000" },
+        { type: "tool_result", tool_use_id: "a", content: "104" },
+      ],
+    },
+  ];
+
+  const result = buildTimeline(messages, 1);
+  // 输出按 tool_use_id 配对到正确调用，不因结果乱序错配
+  const sim208 = result.toolCalls.find((c) => c.arg === "./sim 208");
+  const sim20000 = result.toolCalls.find((c) => c.arg === "./sim 20000");
+  const write = result.toolCalls.find((c) => c.arg === "g.txt");
+  assert.equal(sim208.output, "104");
+  assert.equal(sim20000.output, "10000");
+  assert.equal(write.output, "written");
+});
