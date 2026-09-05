@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -225,6 +226,50 @@ test("chat continues after text-only rounds (maxNoToolRounds default 3)", async 
         && message.content?.some((block) => block.text === "（请继续完成任务）")
       ))
     )));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("judge-log redacts credentials from tool input and judge reason", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-judgelog-"));
+  const judgeLogPath = join(dir, "judge.log");
+  try {
+    const provider = createFakeProvider([
+      { content: [{ type: "tool_use", id: "t1", name: "exec", input: { command: "curl -H 'Authorization: Bearer sk-abcdef1234567890' http://x" } }], stopReason: "tool_use" },
+      // 被拦截后模型转向：发安全命令
+      { content: [{ type: "tool_use", id: "t2", name: "exec", input: { command: "ls" } }], stopReason: "tool_use" },
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]);
+    // judge: intercept 审计该 exec（含密钥命令），reason 复述凭据；judgeIntervalRound=1 每次工具都审计
+    const judge = createFakeProvider([
+      { content: [{ type: "text", text: JSON.stringify({ done: false, confidence: 0.9, reason: "命令含 Authorization: Bearer sk-abcdef1234567890 需检查", evidence: "输入含凭据", direction: "uncertain" }) }], stopReason: "end_turn" },
+      { content: [{ type: "text", text: JSON.stringify({ done: true, confidence: 0.9, reason: "ok", evidence: "安全", direction: "on_track" }) }], stopReason: "end_turn" },
+    ]);
+    await runChat({
+      prompt: "run command",
+      session: "judgelog-redact",
+      dir,
+      skillsDir: join(dir, "skills"),
+      provider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 3,
+      idleTimeout: 0,
+      judgeLog: judgeLogPath,
+      toolOutput: () => {},
+      reflection: {
+        enabled: true,
+        roundJudge: false,
+        judgeIntervalRound: 1,
+        judge: { provider: judge },
+      },
+    });
+
+    const content = readFileSync(judgeLogPath, "utf8");
+    assert.ok(content.length > 0, "judge.log 应生成");
+    assert.ok(!content.includes("sk-abcdef1234567890"), "工具输入中的密钥不应落盘");
+    assert.ok(!content.includes("Bearer sk-"), "reason 复述的凭据不应落盘");
+    assert.ok(content.includes("[含"), "应有脱敏标记");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

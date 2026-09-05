@@ -492,9 +492,12 @@ export async function runChat({
   let judgeLogWriteFailed = false;
   // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 安全摘要
   const SENSITIVE_KEY = /token|key|secret|password|passwd|authorization|auth|api[_-]?key|bearer|cookie|credential|session|jwt|private/i;
+  // 内容级凭据模式：值内嵌密钥/令牌时整体隐藏（judge reason/evidence 可能复述）
+  const CREDENTIAL_PATTERN = /(sk-[a-z0-9_-]{8,}|eyJ[a-zA-Z0-9_-]{10,}|Bearer\s+[a-zA-Z0-9._-]{8,}|ghp_[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN\s+[A-Z ]+-----|xox[baprs]-[a-zA-Z0-9-]{10,})/i;
   const redactValue = (value) => {
     if (typeof value === "string") {
       if (value.length > 120) return `[${value.length}字符，已截断]`;
+      if (CREDENTIAL_PATTERN.test(value)) return "[含凭据内容，已隐藏]";
       return value;
     }
     if (typeof value === "number" || typeof value === "boolean" || value === null) return value;

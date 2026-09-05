@@ -1721,6 +1721,19 @@ export async function runToolLoop({
         [resumePendingTool],
       );
       appendToolResultsToTranscript(resumedToolResults, rounds);
+      // resume 路径也 flush 方向提示（与主循环一致，限 2 条；独立 user text 消息）
+      if (pendingDirectionHints.length > 0) {
+        const hints = pendingDirectionHints.length > 2
+          ? [...pendingDirectionHints.slice(0, 2), "（另有多次方向提示已合并）"]
+          : [...pendingDirectionHints];
+        const hintMessage = {
+          role: "user",
+          content: hints.map((text) => ({ type: "text", text })),
+        };
+        messages.push(hintMessage);
+        if (rounds !== undefined) messageRounds.set(hintMessage, rounds);
+        pendingDirectionHints.length = 0;
+      }
       resumePendingTool = undefined;
     }
     if (resumeCheckpoint && resumeTranscriptStart !== undefined) {
