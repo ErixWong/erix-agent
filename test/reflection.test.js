@@ -81,7 +81,7 @@ test("reflection extends the budget and injects the plan into the next task requ
     completion: false,
     reflection: {
       enabled: true,
-      roundJudge: false,
+      roundJudge: false, judgeIntercept: false,
       triggerRound: 8,
       extensionStep: 2,
       maxExtensions: 1,
@@ -123,7 +123,7 @@ test("reflection can stop before the hard round limit without truncation", async
     executeTool: async () => "ok",
     maxRounds: 10,
     completion: false,
-    reflection: { enabled: true, roundJudge: false, triggerRound: 8 },
+    reflection: { enabled: true, roundJudge: false, judgeIntercept: false, triggerRound: 8 },
   });
 
   assert.equal(result.rounds, 8);
@@ -152,7 +152,7 @@ test("stalled reflection injects a change-of-approach instruction", async () => 
     completion: false,
     reflection: {
       enabled: true,
-      roundJudge: false,
+      roundJudge: false, judgeIntercept: false,
       triggerRound: 1,
       extensionStep: 1,
       maxExtensions: 1,
@@ -286,7 +286,7 @@ test("resume rebuilds L1 and L0 chains for the evaluator", async () => {
     completion: false,
     reflection: {
       enabled: true,
-      roundJudge: false,
+      roundJudge: false, judgeIntercept: false,
       triggerRound: 3,
       maxExtensions: 1,
       maxRoundsCap: 4,
@@ -313,7 +313,7 @@ test("continuation exhaustion stops before reflection can extend", async () => {
     completion: false,
     reflection: {
       enabled: true,
-      roundJudge: false,
+      roundJudge: false, judgeIntercept: false,
       triggerRound: 1,
       maxExtensions: 1,
     },

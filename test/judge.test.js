@@ -116,8 +116,6 @@ test("high-confidence judge completion on an end-turn round stops with judge_don
     { content: [{ type: "text", text: "结果 42" }], stopReason: "end_turn" },
   ]);
   const judge = createFakeProvider([
-    // tool_use 轮 judge（方向检查，done 不触发停止）
-    judgeResponse({ done: true, confidence: 0.9, reason: "已完成", evidence: "验证通过" }),
     // end_turn 轮 judge（允许完成判定）
     judgeResponse({ done: true, confidence: 0.9, reason: "已完成", evidence: "验证通过" }),
   ]);
@@ -142,7 +140,6 @@ test("tool-use round judge done does not preempt the model's own wind-down (real
     { content: [{ type: "text", text: "echo 输出 hello" }], stopReason: "end_turn" },
   ]);
   const judge = createFakeProvider([
-    judgeResponse({ done: true, confidence: 1.0, reason: "已运行", evidence: "有输出" }), // tool_use 轮: done 不触发停止
     judgeResponse({ done: true, confidence: 1.0, reason: "已运行且模型收尾", evidence: "有输出" }), // end_turn 轮: 允许 judge_done
   ]);
   const result = await runToolLoop({
@@ -153,10 +150,10 @@ test("tool-use round judge done does not preempt the model's own wind-down (real
     completion: { maxNoToolRounds: 3 },
     reflection: { enabled: true, judge: { provider: judge } },
   });
-  // tool_use 轮 judge done:true 未抢停（模型活到 end_turn 输出文本）→ end_turn 轮才 judge_done
+  // 工具调用未达到默认审计阈值，模型活到 end_turn 输出文本 → end_turn 轮才 judge_done
   assert.deepEqual(result.termination, { reason: "judge_done" });
   assert.equal(result.rounds, 2);
-  // 关键断言：主模型第二次调用存在（end_turn 文本轮发生了，未被 tool_use 轮 judge 抢停）
+  // 关键断言：主模型第二次调用存在（end_turn 文本轮发生了）
   assert.equal(provider.requests.length, 2);
 });
 
@@ -349,60 +346,215 @@ test("buildTimeline pairs outputs by tool_use_id even when results arrive out of
   assert.equal(write.output, "written");
 });
 
-test("tool-use rounds get periodic direction checks without preempting work", async () => {
-  // 模型连续 tool_use 干活（模拟跑偏），judge 每 5 轮查一次方向
+test("tool-use rounds get transparent interception without preempting prior work", async () => {
+  // 前 5 次工具调用照常执行，第 6 次先审计；拦截不影响模型自然收尾
   const provider = createFakeProvider([
     toolResponse("t1", "work", { round: 1 }),
     toolResponse("t2", "work", { round: 2 }),
     toolResponse("t3", "work", { round: 3 }),
     toolResponse("t4", "work", { round: 4 }),
-    toolResponse("t5", "work", { round: 5 }),  // 第 5 轮 tool → 方向检查触发（done:false nudge，不抢停）
-    toolResponse("t6", "work", { round: 6 }),
+    toolResponse("t5", "work", { round: 5 }),
+    toolResponse("t6", "work", { round: 6 }), // 第 6 次调用触发透明审计
     { content: [{ type: "text", text: "任务完成" }], stopReason: "end_turn" }, // 模型自然收尾
   ]);
   const judge = createFakeProvider([
     judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "在写 microsim 而非 gates.txt" }),
-    judgeResponse({ done: true, confidence: 0.9, reason: "确认完成", evidence: "修正了方向" }),
+    judgeResponse({ done: true, confidence: 0.9, reason: "确认完成", evidence: "允许收尾" }),
   ]);
+  const executed = [];
   const result = await runToolLoop({
     provider,
     initialUserMessage: "task",
-    executeTool: async () => "ok",
+    executeTool: async ({ input }) => {
+      executed.push(input.round);
+      return "ok";
+    },
     maxRounds: 30,
     completion: false,
     reflection: { enabled: true, judgeIntervalRound: 5, judge: { provider: judge } },
   });
-  // 第 5 轮 tool 触发方向检查（done:false nudge，不抢停）；第 7 轮 end_turn judge 确认完成
+  // 第 6 次调用被拦截；随后 end_turn judge 独立完成最终判定
   assert.equal(judge.requests.length, 2);
   assert.equal(result.rounds, 7);
+  assert.deepEqual(executed, [1, 2, 3, 4, 5]);
   assert.deepEqual(result.termination, { reason: "judge_done" });
 });
 
-test("tool-use direction check done:false injects correction evidence into next request", async () => {
+test("transparent interception returns correction evidence without executing the tool", async () => {
   const provider = createFakeProvider([
     toolResponse("t1", "work", { round: 1 }),
     toolResponse("t2", "work", { round: 2 }),
     toolResponse("t3", "work", { round: 3 }),
     toolResponse("t4", "work", { round: 4 }),
-    toolResponse("t5", "work", { round: 5 }),  // 方向检查触发
+    toolResponse("t5", "work", { round: 5 }),
+    toolResponse("t6", "work", { round: 6 }), // 第 6 次调用触发审计
     { content: [{ type: "text", text: "收到，改方向" }], stopReason: "end_turn" },
   ]);
   const judge = createFakeProvider([
     judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "写 microsim 而非 gates.txt" }),
   ]);
+  const executed = [];
   await runToolLoop({
     provider,
     initialUserMessage: "task",
-    executeTool: async () => "ok",
+    executeTool: async ({ input }) => {
+      executed.push(input.round);
+      return "ok";
+    },
     maxRounds: 20,
     completion: false,
-    reflection: { enabled: true, judgeIntervalRound: 5, judge: { provider: judge } },
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 5,
+      judge: { provider: judge },
+    },
   });
-  // 第 5 轮 judge done:false → nudge 注入 → 第 6 轮请求含纠偏 evidence
-  const round6 = provider.requests.find((r) => r.messages.some((m) =>
-    m.content?.some((b) => b.type === "text" && String(b.text).includes("Judge 评审意见"))));
-  assert.ok(round6, "第 6 轮应收到 Judge 纠偏注入");
-  const text = round6.messages.flatMap((m) => m.content ?? [])
-    .filter((b) => b.type === "text").map((b) => b.text).join("");
+  assert.deepEqual(executed, [1, 2, 3, 4, 5]);
+  const text = provider.requests.at(-1).messages.flatMap((m) => m.content ?? [])
+    .filter((b) => b.type === "tool_result").map((b) => b.content).join("");
+  assert.match(text, /【审计拦截】方向可能偏/);
   assert.match(text, /写 microsim 而非 gates\.txt/);
+});
+
+test("transparent interception releases the exact cached tool call when approved", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "writeFile", { path: "result.txt", content: "42" }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: true, confidence: 0.9, reason: "方向正确", evidence: "目标一致" }),
+  ]);
+  const calls = [];
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async (options) => {
+      calls.push(options);
+      return "ok";
+    },
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+  });
+
+  assert.equal(judge.requests.length, 1);
+  assert.deepEqual(calls.map(({ id, name, input }) => ({ id, name, input })), [
+    { id: "first", name: "work", input: { step: 1 } },
+    { id: "second", name: "writeFile", input: { path: "result.txt", content: "42" } },
+  ]);
+});
+
+test("transparent interception degrades to direct execution when the judge fails", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "work", { step: 2 }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([{ throw: new Error("judge unavailable") }]);
+  const executed = [];
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async ({ input }) => {
+      executed.push(input.step);
+      return "ok";
+    },
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+  });
+
+  assert.deepEqual(executed, [1, 2]);
+  assert.equal(judge.requests.length, 1);
+});
+
+test("transparent interception degrades to direct execution on timeout", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "work", { step: 2 }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const requests = [];
+  const judge = {
+    requests,
+    async chat(request) {
+      requests.push(request);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return judgeResponse({ done: false, confidence: 1, reason: "late", evidence: "late" });
+    },
+  };
+  const executed = [];
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async ({ input }) => {
+      executed.push(input.step);
+      return "ok";
+    },
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judgeInterceptTimeoutMs: 5,
+      judge: { provider: judge },
+    },
+  });
+
+  assert.deepEqual(executed, [1, 2]);
+  assert.equal(judge.requests.length, 1);
+});
+
+test("transparent interception resets its counter after an audit", async () => {
+  // 关闭 wrapup 归一化（它与 intercept 共用 judge provider，会干扰计数断言）
+  const prev = process.env.ERIX_NO_WRAPUP_NORMALIZE;
+  process.env.ERIX_NO_WRAPUP_NORMALIZE = "1";
+  try {
+    const provider = createFakeProvider([
+      toolResponse("first", "work", { step: 1 }),
+      toolResponse("second", "work", { step: 2 }),
+      toolResponse("third", "work", { step: 3 }),
+      { content: [{ type: "text", text: '{"done":true,"output":"收尾"}' }], stopReason: "end_turn" },
+    ]);
+    const judge = createFakeProvider([
+      judgeResponse({ done: true, confidence: 0.9, reason: "继续", evidence: "仍在目标方向" }),
+    ]);
+    const executed = [];
+    await runToolLoop({
+      provider,
+      initialUserMessage: "task",
+      executeTool: async ({ input }) => {
+        executed.push(input.step);
+        return "ok";
+      },
+      maxRounds: 5,
+      completion: false,
+      reflection: {
+        enabled: true,
+        roundJudge: false,
+        judgeIntervalRound: 1,
+        judge: { provider: judge },
+      },
+    });
+
+    assert.deepEqual(executed, [1, 2, 3]);
+    // judgeIntervalRound=1: 工具1 计数到 1，工具2 拦截审计（重置），工具3 不再拦截 → 仅 1 次 judge
+    assert.equal(judge.requests.length, 1);
+  } finally {
+    if (prev === undefined) delete process.env.ERIX_NO_WRAPUP_NORMALIZE;
+    else process.env.ERIX_NO_WRAPUP_NORMALIZE = prev;
+  }
 });
