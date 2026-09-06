@@ -72,6 +72,14 @@ export function validateMessages(messages, { allowPendingToolUse = false } = {})
     const uses = message?.role === "assistant" ? toolUses(message) : [];
 
     if (uses.length > 0) {
+      const ids = uses.map((block) => block.id);
+      if (ids.some((id) => typeof id !== "string" || id.length === 0)) {
+        throw messageError(index, "assistant tool_use ids must be non-empty strings");
+      }
+      if (ids.length !== new Set(ids).size) {
+        throw messageError(index, "assistant tool_use ids must be unique within a message");
+      }
+
       const next = messages[index + 1];
       const results = toolResults(next);
       if (next?.role !== "user" || results.length === 0) {

@@ -17,6 +17,10 @@ function toolResponse(id, name, input) {
   };
 }
 
+function writeFileResponse(round, path = `file-${round}.txt`) {
+  return toolResponse(`write-${round}`, "writeFile", { path, content: "x" });
+}
+
 function judgeResponse(value) {
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
 }
@@ -71,6 +75,67 @@ test("buildJudgePrompt includes the recent timeline, files, and errors", () => {
   assert.match(prompt, /"confidence":0-1/);
   assert.match(prompt, /"direction":"on_track\|uncertain\|off_track"/);
   assert.match(prompt, /direction 只是提示，不影响 done/);
+});
+
+test("loop keeps at most the latest 50 distinct written files for the judge", async () => {
+  const provider = createFakeProvider([
+    ...Array.from({ length: 100 }, (_value, index) => writeFileResponse(index + 1)),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: true, confidence: 1, reason: "done", evidence: "done" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "write files",
+    executeTool: async () => "written",
+    maxRounds: 101,
+    completion: false,
+    stallDetection: false,
+    reflection: {
+      enabled: true,
+      judgeIntercept: false,
+      maxExtensions: 0,
+      judge: { provider: judge },
+    },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  const writtenFiles = prompt.split("写过的文件：")[1].split("\n最近验证输出：")[0];
+  const entries = writtenFiles.split(", ").filter(Boolean);
+  assert.equal(entries.length, 50);
+  assert.match(writtenFiles, /file-100\.txt\(R100\)/);
+  assert.doesNotMatch(writtenFiles, /file-50\.txt\(R50\)/);
+});
+
+test("loop keeps only the latest entry when a file is written repeatedly", async () => {
+  const provider = createFakeProvider([
+    ...Array.from({ length: 100 }, (_value, index) => writeFileResponse(index + 1, "same.txt")),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: true, confidence: 1, reason: "done", evidence: "done" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "rewrite one file",
+    executeTool: async () => "written",
+    maxRounds: 101,
+    completion: false,
+    stallDetection: false,
+    reflection: {
+      enabled: true,
+      judgeIntercept: false,
+      maxExtensions: 0,
+      judge: { provider: judge },
+    },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  const writtenFiles = prompt.split("写过的文件：")[1].split("\n最近验证输出：")[0];
+  assert.equal(writtenFiles, "same.txt(R100)");
 });
 
 test("parseJudgeDecision accepts clean and noisy JSON and rejects invalid output", () => {

@@ -453,6 +453,59 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
   );
 });
 
+test("fails closed when a checkpoint cannot be persisted before a tool", async () => {
+  const provider = createFakeProvider([
+    toolResponse("checkpoint-failure", "work"),
+  ]);
+  let executions = 0;
+
+  await assert.rejects(
+    runToolLoop({
+      provider,
+      initialUserMessage: "checkpoint failure",
+      executeTool: async () => {
+        executions += 1;
+        return "must not run";
+      },
+      store: {
+        async saveCheckpoint() {
+          throw new Error("checkpoint disk full");
+        },
+      },
+      runId: "checkpoint-failure-run",
+      completion: false,
+      onPersistenceError: () => {},
+    }),
+    (error) => error instanceof KitError
+      && error.code === "checkpoint_failed"
+      && /checkpoint-failure-run/.test(error.message)
+      && /round=1/.test(error.message)
+      && error.termination?.reason === "failed",
+  );
+  assert.equal(executions, 0);
+});
+
+test("executes tools normally without a checkpoint store", async () => {
+  const provider = createFakeProvider([
+    toolResponse("no-checkpoint", "work"),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  let executions = 0;
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "no checkpoint",
+    executeTool: async () => {
+      executions += 1;
+      return "worked";
+    },
+    completion: false,
+  });
+
+  assert.equal(executions, 1);
+  assert.equal(result.finalText, "done");
+});
+
 test("reports persistence failures without stopping the loop", async () => {
   const errors = [];
   const provider = createFakeProvider([

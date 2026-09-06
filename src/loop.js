@@ -605,6 +605,10 @@ export async function runToolLoop({
   onUsage,
   onEvent,
 }) {
+  if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) {
+    throw new TypeError("maxRounds must be a finite positive integer");
+  }
+
   const reportPersistenceError = (error) => {
     if (typeof onPersistenceError === "function") {
       onPersistenceError(error);
@@ -733,6 +737,20 @@ export async function runToolLoop({
     timeline: [],
     filesWritten: [],
   };
+  const trimFilesWritten = () => {
+    const seen = new Set();
+    const kept = [];
+    for (let index = governorState.filesWritten.length - 1;
+      index >= 0 && kept.length < 50;
+      index -= 1) {
+      const file = governorState.filesWritten[index];
+      if (!seen.has(file.path)) {
+        seen.add(file.path);
+        kept.push(file);
+      }
+    }
+    governorState.filesWritten = kept.reverse();
+  };
   let stallStreak = 0;
   let lastStallSignature = null;
   const startedAt = Date.now();
@@ -848,6 +866,7 @@ export async function runToolLoop({
             for (const call of recordedTimeline.toolCalls) {
               if (call.name === "writeFile" && call.arg) {
                 governorState.filesWritten.push({ path: call.arg, round: record.round });
+                trimFilesWritten();
               }
             }
           }
@@ -1065,6 +1084,8 @@ export async function runToolLoop({
 
   const executedToolIds = new Set(resumeExecutedToolIds);
   const checkpointResults = new Map(resumeCheckpointResults);
+  const hasCheckpointStore = typeof store?.saveCheckpoint === "function"
+    || typeof store?.appendCheckpoint === "function";
   const persistCheckpoint = async ({
     round,
     pendingToolUse,
@@ -1078,8 +1099,8 @@ export async function runToolLoop({
       : typeof store?.appendCheckpoint === "function"
         ? "appendCheckpoint"
         : undefined;
-    if (method === undefined) return;
-    await persist(method, runId, {
+    if (method === undefined) return false;
+    return persist(method, runId, {
       round,
       status,
       pendingToolUse: cloneState(pendingToolUse),
@@ -1116,12 +1137,18 @@ export async function runToolLoop({
   };
 
   const executeToolBlock = async (block, round, toolResults, pendingToolUses = []) => {
-    await persistCheckpoint({
+    const checkpointPersisted = await persistCheckpoint({
       round,
       pendingToolUse: block,
       pendingToolUses,
       toolResults,
     });
+    if (!checkpointPersisted && hasCheckpointStore) {
+      throw new KitError(
+        "checkpoint_failed",
+        `Checkpoint persistence failed before tool execution (runId=${String(runId)}, round=${round})`,
+      );
+    }
     const startedAt = Date.now();
     let execution;
     let isError = false;
@@ -2004,6 +2031,7 @@ export async function runToolLoop({
     for (const call of currentTimeline.toolCalls) {
       if (call.name === "writeFile" && call.arg) {
         governorState.filesWritten.push({ path: call.arg, round });
+        trimFilesWritten();
       }
     }
     const actionSignals = {

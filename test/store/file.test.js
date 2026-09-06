@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readdir, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileTranscriptStore } from "../../src/store/file.js";
@@ -68,6 +68,39 @@ test("file: 崩溃安全——容忍末行写一半（残段丢弃）", async ()
     );
 
     assert.deepEqual(await store.load("run"), [complete]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: appendRound 修复并隔离无换行结尾的损坏残行", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const complete = {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "complete" }] }],
+    };
+    const appended = {
+      round: 2,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "appended" }] }],
+    };
+    await store.appendRound("run", complete);
+    await appendFile(join(root, "run.jsonl"), '{"round":2,"messages":[', "utf8");
+
+    await store.appendRound("run", appended);
+
+    assert.deepEqual(await store.load("run"), [complete, appended]);
+    const transcript = await readFile(join(root, "run.jsonl"), "utf8");
+    assert.doesNotMatch(transcript, /\{"round":2,"messages":\[$/);
+    assert.equal(transcript.endsWith("\n"), true);
+    const quarantined = (await readdir(root))
+      .filter((name) => name.startsWith("run.jsonl.corrupt."));
+    assert.equal(quarantined.length, 1);
+    assert.equal(
+      await readFile(join(root, quarantined[0]), "utf8"),
+      '{"round":2,"messages":[',
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -85,6 +85,36 @@ async function* readRecords(path) {
   }
 }
 
+async function repairTrailingFragment(path, handle) {
+  const { size } = await handle.stat();
+  if (size === 0) return;
+
+  const tail = Buffer.alloc(1);
+  const { bytesRead } = await handle.read(tail, 0, 1, size - 1);
+  if (bytesRead === 0 || tail[0] === 0x0a) return;
+
+  const contents = await handle.readFile();
+  const lastNewline = contents.lastIndexOf(0x0a);
+  const corrupt = contents.subarray(lastNewline + 1);
+  if (corrupt.length > 0) {
+    await writeFile(
+      `${path}.corrupt.${Date.now()}.${randomUUID()}`,
+      corrupt,
+    );
+  }
+  await handle.truncate(lastNewline + 1);
+}
+
+async function appendRecord(path, record) {
+  const handle = await open(path, "a+");
+  try {
+    await repairTrailingFragment(path, handle);
+    await handle.write(`${JSON.stringify(record)}\n`, null, "utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * Create a JSONL-backed transcript store.
  *
@@ -127,11 +157,7 @@ export function createFileTranscriptStore({ dir }) {
         if (records.some((existing) => recordKey(runId, existing) === recordKey(runId, record))) {
           return;
         }
-        await appendFile(
-          transcriptPath(dir, runId),
-          `${JSON.stringify(record)}\n`,
-          "utf8",
-        );
+        await appendRecord(transcriptPath(dir, runId), record);
       });
     },
 

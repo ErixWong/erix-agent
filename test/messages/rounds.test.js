@@ -84,6 +84,54 @@ test("rejects mismatched and orphan tool results with their index", () => {
   );
 });
 
+test("rejects duplicate tool_use ids within one assistant message", () => {
+  assert.throws(
+    () => validateMessages([
+      { role: "user", content: "start" },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "same", name: "first", input: {} },
+          { type: "tool_use", id: "same", name: "second", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "same", content: "one" },
+          { type: "tool_result", tool_use_id: "same", content: "two" },
+        ],
+      },
+    ]),
+    (error) => error instanceof KitError
+      && /tool_use ids must be unique within a message/.test(error.message),
+  );
+});
+
+test("rejects empty or non-string tool_use ids", () => {
+  for (const id of ["", undefined, 42]) {
+    assert.throws(
+      () => validateMessages([
+        { role: "user", content: "start" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id, name: "work", input: {} }],
+        },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: id, content: "done" }],
+        },
+      ]),
+      (error) => error instanceof KitError
+        && /tool_use ids must be non-empty strings/.test(error.message),
+    );
+  }
+});
+
+test("accepts unique non-empty tool_use ids", () => {
+  assert.doesNotThrow(() => validateMessages(multipleToolCallsRound));
+});
+
 test("rejects tool blocks in roles that cannot carry them", () => {
   assert.throws(
     () => validateMessages([{
