@@ -30,13 +30,15 @@ v0.3.x 在 `runToolLoop` 层新增/改变的宿主可见行为：
 - 调用点：`lib/agent/agent-loop.js:1074` → `buildErixRunOptions`（`lib/llm-kit-adapters/loop-bridge.js`）
 - `store`: createErixStore（MariaDB，`llm_kit_transcripts` + `llm_kit_run_state`，**saveCheckpoint/appendCheckpoint/loadLatestCheckpoint 齐全 = 成对**）
 - `stallDetection: false`（显式关，touwaka 有自己的重试/恢复体系）
-- `maxRounds`: expert 配置 `max_tool_rounds` 或系统设置，**兜底默认 20**
+- `maxRounds`: expert 配置 `max_tool_rounds` 或系统设置，**兜底默认 8**
 - `reflection`: **未传** → 走新默认
 - loop-bridge 有 `...passthrough`（透传未知参数）→ 宿主传 reflection 可透传给 runToolLoop
 
-### ⚠️ 关键：touwaka 升级 v0.3.x 后**默认启用 judge**（maxRounds 兜底 20 ≥ 16）
+### ⚠️ 关键：touwaka 升级 v0.3.x 后默认注入任务收尾协议
 
-**含义**：专家对话轮次达 16+ 时，每次 end_turn 会触发 round judge（一次额外 LLM 调用 + 延迟），每 5 次工具执行触发一次透明审计。**这是行为变化，需主动决策**。
+v0.3.x 默认注入 wrapup 任务收尾协议。对话型宿主必须显式传 `wrapup: false`，同时关闭协议注入、JSON 解析、`finalText` 替换与 LLM 归一化；`completion.signals` 仍保留，不要改成 `completion: false`。
+
+由于 touwaka 的 maxRounds 兜底为 8，默认不会触发 judge；专家配置或系统设置达到 16+ 轮时，每次 end_turn 会触发 round judge（一次额外 LLM 调用 + 延迟），每 5 次工具执行触发一次透明审计。**这是行为变化，需主动决策**。
 
 ### 应对清单
 
@@ -72,6 +74,7 @@ v0.3.x 在 `runToolLoop` 层新增/改变的宿主可见行为：
 - 调用点：`apps/worker/src/pi/runner.js:50` → `runToolLoop`
 - 参数：**无 reflection、无 store**；`maxRounds` 由调用方传（auditor 默认 **12**）；`completion: { signals: [], maxNoToolRounds: 3 }`；retry attempts:2
 - transcript 只落 `result.transcript` 到 `transcript.json`（messages 文本，无 judge/usage 分层持久化）
+- wrapup：宿主去 JSON 化并显式传 `wrapup: false`，作为双保险
 - 对应 issue #71（未启用 judge + 无 store）
 
 ### 影响评估
@@ -109,7 +112,7 @@ v0.3.x 在 `runToolLoop` 层新增/改变的宿主可见行为：
 | **审计/提示消息** | "【审计拦截】…"与"（附方向提示…）"是 loop 注入的 **user role 合成消息**——进 transcript/展示，宿主需容忍。 |
 | **termination reason 扩展** | 新增 `stall`（原 error）与可能的 `judge_done`（judge 确认完成提前停）。宿主 switch 需覆盖。 |
 | **onJudge 新 API** | 每次 judge 决策 emit `{kind: "round"|"intercept", action, decision, tool?}`——审计/复盘消费入口。 |
-| **env 开关** | `ERIX_NO_REFLECTION=1`（全关）/ `ERIX_NO_ROUND_JUDGE=1`（关 round judge）——运维兜底。 |
+| **env 开关** | `ERIX_NO_REFLECTION=1`（全关）/ `ERIX_NO_ROUND_JUDGE=1`（关 round judge）/ `ERIX_NO_WRAPUP_INSTRUCTION=1`（关整个 wrapup 协议）——运维兜底。 |
 | **版本锚点** | 本文档对应 erix-agent **0.3.0~0.3.2**。0.3.1 仅 README，0.3.2 加 MIT license（无功能差异）。 |
 
 ---

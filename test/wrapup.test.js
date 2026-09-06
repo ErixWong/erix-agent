@@ -24,14 +24,22 @@ test("tryParseWrapupJson returns null for non-JSON text", () => {
   assert.equal(tryParseWrapupJson("答案是 { not valid JSON"), null);
 });
 
-test("tryParseWrapupJson defaults omitted fields", () => {
-  assert.deepEqual(
-    tryParseWrapupJson('{"output":"只提供结果"}'),
-    { done: false, summary: "", output: "只提供结果" },
-  );
+test("tryParseWrapupJson requires done and defaults optional fields", () => {
+  assert.equal(tryParseWrapupJson('{"output":"只提供结果"}'), null);
   assert.deepEqual(
     tryParseWrapupJson('{"done":true}'),
     { done: true, summary: "", output: "" },
+  );
+});
+
+test("host result objects without done are not mistaken for wrapup markers", () => {
+  assert.equal(
+    tryParseWrapupJson('{"summary":"完成","files":["README.md"],"notes":"已检查"}'),
+    null,
+  );
+  assert.equal(
+    tryParseWrapupJson('{"summary":"完成","passed":true,"issues":[]}'),
+    null,
   );
 });
 
@@ -149,6 +157,89 @@ test("non-JSON end-turn text still completes through completion signals", async 
 
   assert.equal(result.rounds, 2);
   assert.deepEqual(result.termination, { reason: "end_turn" });
+});
+
+test("wrapup:false disables parsing, replacement, normalization, and injection", async () => {
+  const previousNormalization = process.env.ERIX_WRAPUP_NORMALIZE;
+  process.env.ERIX_WRAPUP_NORMALIZE = "1";
+  try {
+    const responseText = '{"done":true,"summary":"协议总结","output":"协议结果"}';
+    const provider = createFakeProvider([{
+      content: [{ type: "text", text: responseText }],
+      stopReason: "end_turn",
+    }]);
+    const result = await runToolLoop({
+      provider,
+      wrapup: false,
+      initialMessages: [
+        { role: "system", content: [{ type: "text", text: "宿主系统" }] },
+        { role: "user", content: [{ type: "text", text: "完成任务" }] },
+      ],
+      executeTool: async () => "unused",
+    });
+
+    assert.equal(result.finalText, responseText);
+    assert.equal(provider.requests.length, 1);
+    assert.equal(provider.requests[0].system, undefined);
+    assert.deepEqual(provider.requests[0].messages[0], {
+      role: "system",
+      content: [{ type: "text", text: "宿主系统" }],
+    });
+  } finally {
+    if (previousNormalization === undefined) delete process.env.ERIX_WRAPUP_NORMALIZE;
+    else process.env.ERIX_WRAPUP_NORMALIZE = previousNormalization;
+  }
+});
+
+test("wrapup:false keeps completion signals working on plain text", async () => {
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "work-1", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "任务已完成" }], stopReason: "end_turn" },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    wrapup: false,
+    initialUserMessage: "工作",
+    executeTool: async () => "ok",
+    completion: { signals: ["任务已完成"], maxNoToolRounds: 3 },
+  });
+
+  assert.equal(result.rounds, 2);
+  assert.deepEqual(result.termination, { reason: "end_turn" });
+  assert.equal(result.finalText, "任务已完成");
+});
+
+test("ERIX_NO_WRAPUP_INSTRUCTION disables the complete wrapup protocol", async () => {
+  const previousInstruction = process.env.ERIX_NO_WRAPUP_INSTRUCTION;
+  const previousNormalization = process.env.ERIX_WRAPUP_NORMALIZE;
+  process.env.ERIX_NO_WRAPUP_INSTRUCTION = "1";
+  process.env.ERIX_WRAPUP_NORMALIZE = "1";
+  try {
+    const responseText = '{"done":true,"output":"协议结果"}';
+    const provider = createFakeProvider([{
+      content: [{ type: "text", text: responseText }],
+      stopReason: "end_turn",
+    }]);
+    const result = await runToolLoop({
+      provider,
+      wrapup: true,
+      initialUserMessage: "完成任务",
+      executeTool: async () => "unused",
+    });
+
+    assert.equal(result.finalText, responseText);
+    assert.equal(provider.requests.length, 1);
+    assert.equal(provider.requests[0].system, undefined);
+  } finally {
+    if (previousInstruction === undefined) delete process.env.ERIX_NO_WRAPUP_INSTRUCTION;
+    else process.env.ERIX_NO_WRAPUP_INSTRUCTION = previousInstruction;
+    if (previousNormalization === undefined) delete process.env.ERIX_WRAPUP_NORMALIZE;
+    else process.env.ERIX_WRAPUP_NORMALIZE = previousNormalization;
+  }
 });
 
 test("normalizeWrapupWithLlm parses the evaluator response", async () => {

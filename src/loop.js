@@ -507,6 +507,7 @@ function defaultSleep(ms, signal) {
  * @param {{
  *   provider: {chat: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
  *   system?: string,
+ *   wrapup?: boolean, // Controls instruction injection, JSON parsing, finalText replacement, and LLM normalization.
  *   initialUserMessage?: string,
  *   initialMessages?: object[],
  *   tools?: object[],
@@ -565,6 +566,7 @@ function defaultSleep(ms, signal) {
 export async function runToolLoop({
   provider,
   system,
+  wrapup = true,
   initialUserMessage,
   initialMessages,
   tools = [],
@@ -697,15 +699,21 @@ export async function runToolLoop({
     ? effectiveReflection.judgeInterceptTimeoutMs
     : 30_000;
   let judgeInterceptCount = 0;
-  const mainSystem = `${system ?? ""}${system ? "\n\n" : ""}${WRAPUP_INSTRUCTION}`;
+  const wrapupEnabled = wrapup !== false
+    && process.env.ERIX_NO_WRAPUP_INSTRUCTION?.trim() !== "1";
+  const mainSystem = wrapupEnabled
+    ? `${system ?? ""}${system ? "\n\n" : ""}${WRAPUP_INSTRUCTION}`
+    : system;
   // 归一化 evaluator：复用 judge/provider 配置（无 judge 时主 provider），供 wrapup LLM 归一化用
   const judgeConfig = effectiveReflection?.judge;
   const wrapupEvaluator = judgeConfig?.provider ?? judgeConfig?.evaluator ?? provider;
   // wrapup LLM 归一化（默认关闭：保持既有纯文本轮行为与旧测试兼容）。
   // 开启：ERIX_WRAPUP_NORMALIZE=1 或 reflection.wrapupNormalize===true。
   // benchmark/harness 场景应开启——找不到 JSON（含空文本）就该归一化。
-  let wrapupNormalizationEnabled = process.env.ERIX_WRAPUP_NORMALIZE?.trim() === "1"
-    || effectiveReflection?.wrapupNormalize === true;
+  let wrapupNormalizationEnabled = wrapupEnabled && (
+    process.env.ERIX_WRAPUP_NORMALIZE?.trim() === "1"
+      || effectiveReflection?.wrapupNormalize === true
+  );
   const reflectionTriggerRound = Number.isSafeInteger(effectiveReflection?.triggerRound)
     && effectiveReflection.triggerRound > 0
     ? effectiveReflection.triggerRound
@@ -1857,7 +1865,9 @@ export async function runToolLoop({
     // 但社区实测存在 stop 但 content 带 tool_calls 的边界（非标准）——双保险：stop && 无 tool_use
     // 才算真正说完（tool_calls 轮即使报 stop 也是要调工具，不该 judge/wrapup）
     const isEndTurn = roundStopReason === "end_turn" && !hasToolUse(content);
-    const wrapupJson = isEndTurn ? tryParseWrapupJson(responseText) : null;
+    const wrapupJson = wrapupEnabled && isEndTurn
+      ? tryParseWrapupJson(responseText)
+      : null;
     const parsedSummary = parseL1Summary(responseText);
     let roundSummary = wrapupJson === null
       ? parsedSummary.summary
