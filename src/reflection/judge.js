@@ -180,7 +180,7 @@ export function buildJudgePrompt(
     .join("\n");
   return `【每轮 Judge】你是交付评审者，独立判断任务是否完成。不要执行工具，不要相信模型自报。
 
-任务目标：${String(taskBrief ?? "").slice(0, 500) || "（未提供）"}
+任务目标：${Array.from(String(taskBrief ?? "")).slice(0, 2000).join("") || "（未提供）"}
 已运行轮数：${Number.isFinite(rounds) ? rounds : 0}
 时间线（最新在前）：
 ${formatTimeline(recent)}

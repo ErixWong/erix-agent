@@ -579,6 +579,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     provider,
     system: systemPrompt,
     initialUserMessage: prompt,
+    task: prompt,
     store,
     runId,
     resume,
