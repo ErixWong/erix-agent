@@ -1,7 +1,7 @@
 # erix-agent v0.3.x 宿主升级应对指南（touwaka / app_container）
 
 > 本文档面向 erix-agent 的两个宿主（消费方）——**touwaka**（专家对话链路）与 **app_container**（PI Agent 审计/开发链路）。
-> 说明从 erix-agent ≤0.2.0 升级到 **v0.3.x**（0.3.0 起，npm latest = 0.3.2）后，宿主侧需要知道的行为变化与应对项。
+> 说明从 erix-agent ≤0.2.0 升级到 **v0.3.x**（0.3.0 起，npm latest = 0.3.4）后，宿主侧需要知道的行为变化与应对项。
 > 配套：erix README（能力总览）、[ADR-011](decisions/011-judge-direction.md)（judge 机制设计）、[ADR-010](decisions/)（压缩）。
 
 ---
@@ -57,7 +57,7 @@ v0.3.x 默认注入 wrapup 任务收尾协议。对话型宿主必须显式传 `
 3. **judge provider 决策**：默认 judge 用主 provider（与对话同模型同配额）。若要隔离成本/延迟，传独立 `judge.provider`（如轻量模型）。touwaka 的 modelConfig 体系需在 loop-bridge 增加 judge provider 构造。
 
 4. **checkpoint fail-closed 影响**：touwaka store 是**成对的**（save+load 齐全）→ **会触发 fail-closed**。MariaDB 写失败（瞬时 DB 错误）现在会导致任务失败而非继续。应对：
-   - 升级 erix 后观察 DB 稳定性；瞬时错误需宿主侧 retry 或 erix 侧 adapter 重试（erix 0.3.2 暂无 checkpoint 重试，宿主 adapter 可包一层）。
+   - 升级 erix 后观察 DB 稳定性；瞬时错误需宿主侧 retry 或 erix 侧 adapter 重试（erix ≤0.3.4 暂无 checkpoint 重试，宿主 adapter 可包一层）。
    - `checkpoint_failed` 错误码需宿主识别（不要当普通模型错误无限重试）。
 
 5. **transcript 表无 judge 列**（issue #1116）：judge 决策已随 `appendRound` 存进 transcript JSON（`record.judge`），但 MariaDB 表结构无独立列。若要按 judge 字段查询/复盘 → 需宿主加列或读 JSON 字段。
@@ -65,7 +65,7 @@ v0.3.x 默认注入 wrapup 任务收尾协议。对话型宿主必须显式传 `
 6. **方向提示/审计消息**：模型可能收到"【审计拦截】方向可能偏…"或"（附方向提示…）"消息——这些是**用户角色的合成消息**，会出现在 transcript。宿主展示层需容忍（或过滤标记）。
 
 ### 验证步骤
-- 升级 erix-agent 依赖到 0.3.2 → 跑一个长专家对话（≥16 轮）→ 观察：是否多出 judge 调用（usage 变化）、模型收到拦截/提示消息时行为、DB checkpoint 写路径正常。
+- 升级 erix-agent 依赖到 0.3.4 → 跑一个长专家对话（≥16 轮）→ 观察：是否多出 judge 调用（usage 变化）、模型收到拦截/提示消息时行为、DB checkpoint 写路径正常。
 - 短对话（<16 轮）确认**无行为变化**（judge 不触发）。
 
 ---
@@ -115,13 +115,13 @@ v0.3.x 默认注入 wrapup 任务收尾协议。对话型宿主必须显式传 `
 | **termination reason 扩展** | 新增 `stall`（原 error）与可能的 `judge_done`（judge 确认完成提前停）。宿主 switch 需覆盖。 |
 | **onJudge 新 API** | 每次 judge 决策 emit `{kind: "round"|"intercept", action, decision, tool?}`——审计/复盘消费入口。 |
 | **env 开关** | `ERIX_NO_REFLECTION=1`（全关）/ `ERIX_NO_ROUND_JUDGE=1`（关 round judge）/ `ERIX_NO_WRAPUP_INSTRUCTION=1`（关整个 wrapup 协议）——运维兜底。 |
-| **版本锚点** | 本文档对应 erix-agent **0.3.0~0.3.2**。0.3.1 仅 README，0.3.2 加 MIT license（无功能差异）。 |
+| **版本锚点** | 本文档对应 erix-agent **0.3.0~0.3.4**。0.3.1 仅 README，0.3.2 加 MIT license，0.3.3 wrapup 协议开关化，0.3.4 judge task 简报修复（#34）。 |
 
 ---
 
 ## 4. 升级 checklist（两宿主通用）
 
-- [ ] 确认 erix-agent 依赖版本（≥0.3.2）
+- [ ] 确认 erix-agent 依赖版本（≥0.3.4，含 #34 task 简报修复）
 - [ ] 决定 reflection/judge 策略（默认开 / 显式关 / 精细配置）并落实代码
 - [ ] 若启用 judge：确认 judge provider（主 provider 或独立）
 - [ ] store 宿主：确认 checkpoint 成对（save+load）→ 了解 fail-closed 语义；无 store 宿主：确认不需要恢复保护
