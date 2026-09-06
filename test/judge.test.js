@@ -363,6 +363,102 @@ test("off-track round judge nudge includes the direction hint", async () => {
   assert.match(continuation, /方向提示：持续反复调试同一实现细节/);
 });
 
+test("round judge fallback uses the latest non-empty user task from a multi-turn entry", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialMessages: [
+      { role: "user", content: "请用一句话介绍你自己" },
+      { role: "assistant", content: "我是助手" },
+      { role: "user", content: "哈罗" },
+      { role: "assistant", content: "你好" },
+      { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
+    ],
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    wrapup: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  assert.match(prompt, /任务目标：[\s\S]*俄罗斯方块/);
+  assert.doesNotMatch(prompt, /介绍你自己/);
+});
+
+test("explicit task overrides the multi-turn entry messages for the round judge", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialMessages: [
+      { role: "user", content: "请用一句话介绍你自己" },
+      { role: "assistant", content: "我是助手" },
+      { role: "user", content: "哈罗" },
+      { role: "assistant", content: "你好" },
+      { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
+    ],
+    task: "全新任务：写一个俄罗斯方块网页游戏",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    wrapup: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  const taskLine = prompt.match(/任务目标：([^\n]*)/)?.[1];
+  assert.equal(taskLine, "全新任务：写一个俄罗斯方块网页游戏");
+  assert.doesNotMatch(taskLine, /介绍你自己/);
+});
+
+test("round judge task brief stays on the entry snapshot after injecting direction hints", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" },
+    { content: [{ type: "text", text: "继续处理" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({
+      done: false,
+      confidence: 0.8,
+      reason: "还未完成",
+      evidence: "继续工作",
+      direction: "off_track",
+      directionReason: "持续反复调试",
+    }),
+    judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "unused",
+    maxRounds: 2,
+    completion: false,
+    wrapup: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+  });
+
+  assert.equal(judge.requests.length, 2);
+  for (const request of judge.requests) {
+    const prompt = request.messages[0].content[0].text;
+    const taskLine = prompt.match(/任务目标：([^\n]*)/)?.[1];
+    assert.equal(taskLine, "task");
+    assert.doesNotMatch(prompt, /附方向提示|持续反复调试/);
+  }
+});
+
 test("round judge errors degrade to the existing loop path", async () => {
   const provider = createFakeProvider([
     toolResponse("main-1", "work", { round: 1 }),

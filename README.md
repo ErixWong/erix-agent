@@ -71,7 +71,7 @@ src/
 - **自主质量内建（judge 体系，v0.3.0）**：
   - **默认开启**：`runToolLoop` 在 `maxRounds ≥ 16` 且未显式传 `reflection` 时自动启用基础 judge（无头宿主零配置获得保护）；传 `reflection: false` 或设 `ERIX_NO_REFLECTION=1` 关闭。
   - 显式配置：`reflection: { enabled, roundJudge, judgeIntervalRound, judgeInterceptTimeoutMs, triggerRound, extensionStep, maxExtensions, maxRoundsCap, judge: { provider } }`。
-  - **round judge**（end_turn 验证）：启用时每轮模型想停时独立评估，`done:true && confidence≥0.7` 才放行；`roundJudge: false` 或 `ERIX_NO_ROUND_JUDGE=1` 关闭。
+  - **round judge**（end_turn 验证）：启用时每轮模型想停时独立评估，`done:true && confidence≥0.7` 才放行；`roundJudge: false` 或 `ERIX_NO_ROUND_JUDGE=1` 关闭。审计任务基准为 `runToolLoop` 显式 `task` 参数（多轮会话宿主传当前指令），未提供时回退入口消息最后一条 user 文本（#34）。
   - **透明劫持审计**：每 `judgeIntervalRound`（默认 5）次真实工具执行后，下一次工具调用先审计再执行——方向错（`done:false`）则不执行原工具（副作用拦截）并返回审计意见；通过则无感放行。`judgeIntercept: false` 单独关闭审计（保留 round judge）。审计失败/超时（`judgeInterceptTimeoutMs` 默认 30s）降级为直接执行原工具。
   - **direction 软提示**：judge 输出 `direction: off_track` 时不拦截（执行原工具），但附加方向提示让模型考虑换路线。
   - **观测**：每次决策 emit `onJudge`；CLI 可用 `--judge-log <path>` / `ERIX_JUDGE_LOG` 落盘 JSONL（已脱敏）。

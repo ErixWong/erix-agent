@@ -68,12 +68,28 @@ function textFromUserMessage(message) {
   return textFromBlocks(blocksFor(message?.content));
 }
 
+function capTaskBrief(value) {
+  return Array.from(String(value ?? "")).slice(0, 500).join("");
+}
+
 function taskBriefFromMessages(messages) {
-  const firstUserText = messages
-    .filter((message) => message?.role === "user")
-    .map(textFromUserMessage)
-    .find((text) => text.trim() !== "");
-  return Array.from(firstUserText ?? "").slice(0, 500).join("");
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const text = messages[index]?.role === "user"
+      ? textFromUserMessage(messages[index])
+      : "";
+    if (text.trim() !== "") return capTaskBrief(text);
+  }
+  return "";
+}
+
+function resolveTaskBrief({ task, context, messages }) {
+  const explicitTask = typeof task === "string" && task.trim() !== ""
+    ? task.trim()
+    : undefined;
+  const contextTask = typeof context?.task === "string" && context.task.trim() !== ""
+    ? context.task.trim()
+    : undefined;
+  return capTaskBrief(explicitTask ?? contextTask ?? taskBriefFromMessages(messages));
 }
 
 const WRAPUP_INSTRUCTION = `任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：
@@ -537,7 +553,9 @@ function defaultSleep(ms, signal) {
  *   modelConfig?: {contextWindowTokens?:number, maxOutputTokens?:number},
  *   modelMetadata?: {contextWindowTokens?:number, maxOutputTokens?:number},
  *   model?: {contextWindowTokens?:number, maxOutputTokens?:number},
- *   expert?:any, user?:any, task?:any, session?:any, requestId?:string, toolContext?:object,
+ *   expert?:any, user?:any,
+ *   task?:any, // Also the judge/reflection/wrapup task brief; multi-turn hosts should pass the current/latest instruction as a string. Non-string or empty values fall back to the last user text in the entry transcript.
+ *   session?:any, requestId?:string, toolContext?:object,
  *   store?: {appendRound?: Function, saveCheckpoint?:Function, appendCheckpoint?:Function,
  *     markRunState?:Function, loadLatestCheckpoint?:Function},
  *   runId?: string,
@@ -995,6 +1013,7 @@ export async function runToolLoop({
     });
     if (persisted) persistedTranscriptLength += messages.length;
   }
+  const taskBrief = resolveTaskBrief({ task, context, messages });
   const recentSignatures = [];
   const envStallMode = process.env.ERIX_STALL_MODE;
   // stallDetection:false 显式关闭优先于环境变量（调用方显式关闭不应被 env 重新打开）
@@ -1361,7 +1380,7 @@ export async function runToolLoop({
         type: "text",
         text: reflectionPrompt({
           rounds: round,
-          taskBrief: taskBriefFromMessages(messages),
+          taskBrief,
           runningLog,
           l0Facts,
           errorText: l0Facts
@@ -1402,7 +1421,7 @@ export async function runToolLoop({
         content: [{
           type: "text",
           text: buildJudgePrompt(
-            taskBriefFromMessages(messages),
+            taskBrief,
             round,
             governorState.timeline,
             governorState.filesWritten,
@@ -1981,7 +2000,7 @@ export async function runToolLoop({
           messages: [{
             role: "user",
             content: [{ type: "text", text: `【归一化】判断 agent 是否完成任务。
-任务目标：${taskBriefFromMessages(messages) || "（未提供）"}
+任务目标：${taskBrief || "（未提供）"}
 已运行轮数：${rounds}
 本轮 agent 最终输出（可能为空）：${JSON.stringify(responseText).slice(0, 2000)}
 若 agent 已给出明确结论/产物就绪则 done=true；若它在工作中途停下/放弃则判断产出是否可判定，可判定则 done=true 否则 done=false。

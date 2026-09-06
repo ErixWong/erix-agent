@@ -52,15 +52,17 @@ v0.3.x 默认注入 wrapup 任务收尾协议。对话型宿主必须显式传 `
        : false
      ```
 
-2. **judge provider 决策**：默认 judge 用主 provider（与对话同模型同配额）。若要隔离成本/延迟，传独立 `judge.provider`（如轻量模型）。touwaka 的 modelConfig 体系需在 loop-bridge 增加 judge provider 构造。
+2. **任务简报传递（issue #34）**：多轮会话/续跑宿主应将当前指令作为字符串传给 `runToolLoop` 的 `task`；judge/reflection/wrapup 会优先以它为审计基准，未提供有效值时回退入口 transcript 最后一条 user 文本（此前为第一条）。
 
-3. **checkpoint fail-closed 影响**：touwaka store 是**成对的**（save+load 齐全）→ **会触发 fail-closed**。MariaDB 写失败（瞬时 DB 错误）现在会导致任务失败而非继续。应对：
+3. **judge provider 决策**：默认 judge 用主 provider（与对话同模型同配额）。若要隔离成本/延迟，传独立 `judge.provider`（如轻量模型）。touwaka 的 modelConfig 体系需在 loop-bridge 增加 judge provider 构造。
+
+4. **checkpoint fail-closed 影响**：touwaka store 是**成对的**（save+load 齐全）→ **会触发 fail-closed**。MariaDB 写失败（瞬时 DB 错误）现在会导致任务失败而非继续。应对：
    - 升级 erix 后观察 DB 稳定性；瞬时错误需宿主侧 retry 或 erix 侧 adapter 重试（erix 0.3.2 暂无 checkpoint 重试，宿主 adapter 可包一层）。
    - `checkpoint_failed` 错误码需宿主识别（不要当普通模型错误无限重试）。
 
-4. **transcript 表无 judge 列**（issue #1116）：judge 决策已随 `appendRound` 存进 transcript JSON（`record.judge`），但 MariaDB 表结构无独立列。若要按 judge 字段查询/复盘 → 需宿主加列或读 JSON 字段。
+5. **transcript 表无 judge 列**（issue #1116）：judge 决策已随 `appendRound` 存进 transcript JSON（`record.judge`），但 MariaDB 表结构无独立列。若要按 judge 字段查询/复盘 → 需宿主加列或读 JSON 字段。
 
-5. **方向提示/审计消息**：模型可能收到"【审计拦截】方向可能偏…"或"（附方向提示…）"消息——这些是**用户角色的合成消息**，会出现在 transcript。宿主展示层需容忍（或过滤标记）。
+6. **方向提示/审计消息**：模型可能收到"【审计拦截】方向可能偏…"或"（附方向提示…）"消息——这些是**用户角色的合成消息**，会出现在 transcript。宿主展示层需容忍（或过滤标记）。
 
 ### 验证步骤
 - 升级 erix-agent 依赖到 0.3.2 → 跑一个长专家对话（≥16 轮）→ 观察：是否多出 judge 调用（usage 变化）、模型收到拦截/提示消息时行为、DB checkpoint 写路径正常。
