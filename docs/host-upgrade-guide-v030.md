@@ -74,7 +74,7 @@ v0.3.x 默认注入 wrapup 任务收尾协议。对话型宿主必须显式传 `
 - 调用点：`apps/worker/src/pi/runner.js:50` → `runToolLoop`
 - 参数：**无 reflection、无 store**；`maxRounds` 由调用方传（auditor 默认 **12**）；`completion: { signals: [], maxNoToolRounds: 3 }`；retry attempts:2
 - transcript 只落 `result.transcript` 到 `transcript.json`（messages 文本，无 judge/usage 分层持久化）
-- wrapup：宿主去 JSON 化并显式传 `wrapup: false`，作为双保险
+- wrapup：宿主去 JSON 化并显式传 `wrapup: false`，作为双保险（宿主终稿 schema 若含**顶层 `done: boolean` 键**（如 `{"done":true,"summary":...}`）从 JSON 结构上无法与协议对象区分，`done` 必填键守卫只能挡住 summary-only——这是必须 `wrapup: false` 或去 JSON 化的根本原因）
 - 对应 issue #71（未启用 judge + 无 store）
 
 ### 影响评估

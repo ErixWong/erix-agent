@@ -67,6 +67,7 @@ src/
 核心入口 `runToolLoop({ provider, executeTool, ... })`——单任务生命周期，事件流驱动（onRound/onDelta/onJudge/onEvent）。
 
 - **完成信号**：默认启用 `completion: { signals: [], maxNoToolRounds: 3 }`（模型连续无工具轮达上限自动收尾）；传 `completion: false` 保留旧行为（end_turn 即停）。provider 重试默认关闭（`retry: false`，可选开启）。
+- **wrapup 收尾协议**（v0.3.3 可关）：end_turn 时模型输出 `{"done":true,"summary":"...","output":"..."}` 视为完成并展示 output/summary；解析要求 `done` 为自有 boolean 键。对自有终稿 JSON 契约的宿主（app_container 等）或自然语言对话宿主（touwaka），传 `wrapup: false` 同时关闭**指令注入 / JSON 解析 / finalText 替换 / LLM 归一化**；`ERIX_NO_WRAPUP_INSTRUCTION=1` env 运维兜底同语义（任一关即关整个协议）。不传保持默认开启，不影响既有调用方。
 - **自主质量内建（judge 体系，v0.3.0）**：
   - **默认开启**：`runToolLoop` 在 `maxRounds ≥ 16` 且未显式传 `reflection` 时自动启用基础 judge（无头宿主零配置获得保护）；传 `reflection: false` 或设 `ERIX_NO_REFLECTION=1` 关闭。
   - 显式配置：`reflection: { enabled, roundJudge, judgeIntervalRound, judgeInterceptTimeoutMs, triggerRound, extensionStep, maxExtensions, maxRoundsCap, judge: { provider } }`。

@@ -508,6 +508,8 @@ function defaultSleep(ms, signal) {
  *   provider: {chat: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
  *   system?: string,
  *   wrapup?: boolean, // Controls instruction injection, JSON parsing, finalText replacement, and LLM normalization.
+ *                   // Defaults to true (omit = enabled). ERIX_NO_WRAPUP_INSTRUCTION=1 env overrides even an
+ *                   // explicit wrapup:true — either off disables the whole protocol.
  *   initialUserMessage?: string,
  *   initialMessages?: object[],
  *   tools?: object[],

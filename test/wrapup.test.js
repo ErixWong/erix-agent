@@ -43,6 +43,24 @@ test("host result objects without done are not mistaken for wrapup markers", () 
   );
 });
 
+test("nested {done,...} inside host JSON is not a wrapup candidate (review follow-up)", () => {
+  // jsonCandidates must only scan top-level objects; an inner object shaped
+  // like a wrap-up marker must not bypass the mandatory-done guard.
+  assert.equal(
+    tryParseWrapupJson('{"summary":"host","metadata":{"done":true,"output":"nested"}}'),
+    null,
+  );
+  assert.equal(
+    tryParseWrapupJson('{"summary":"host","issues":[{"done":true,"severity":"error"}]}'),
+    null,
+  );
+  // Top-level protocol object with trailing nested object still parses.
+  assert.deepEqual(
+    tryParseWrapupJson('{"done":true,"summary":"s","meta":{"done":false}}'),
+    { done: true, summary: "s", output: "" },
+  );
+});
+
 test("tryParseWrapupJson rejects invalid protocol field types", () => {
   assert.equal(tryParseWrapupJson('{"done":"true","summary":"bad"}'), null);
   assert.equal(tryParseWrapupJson('{"done":true,"output":42}'), null);
