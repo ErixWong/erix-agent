@@ -57,7 +57,8 @@ function readConfig(prefix) {
   for (const [suffix, field] of BOOLEAN_FIELDS) {
     const value = process.env[`${prefix}${suffix}`];
     if (value !== undefined) {
-      config[field] = value === "true" ? true : value === "false" ? false : Boolean(value);
+      if (value === "true" || value === "1") config[field] = true;
+      else if (value === "false" || value === "0") config[field] = false;
     }
   }
   for (const [suffix, field] of JSON_FIELDS) {

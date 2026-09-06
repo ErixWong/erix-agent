@@ -56,3 +56,30 @@ test("env: exposes reasoning model and payload fields", async () => {
   assert.equal(config.enable_thinking, true);
   assert.equal(config.apiKey, "env-contract-secret");
 });
+
+test("env: boolean fields accept only true/false/1/0", async () => {
+  const prefix = `ERIX_ENV_BOOLEAN_${process.pid}_`;
+  const supportsReasoning = `${prefix}SUPPORTS_REASONING`;
+  const enableThinking = `${prefix}ENABLE_THINKING`;
+  try {
+    for (const [value, expected] of [
+      ["true", true],
+      ["false", false],
+      ["1", true],
+      ["0", false],
+    ]) {
+      process.env[supportsReasoning] = value;
+      const config = await createEnvModelConfigProvider(prefix).resolve();
+      assert.equal(config.supports_reasoning, expected);
+    }
+
+    process.env[supportsReasoning] = "yes";
+    process.env[enableThinking] = "enabled";
+    const config = await createEnvModelConfigProvider(prefix).resolve();
+    assert.equal(Object.hasOwn(config, "supports_reasoning"), false);
+    assert.equal(Object.hasOwn(config, "enable_thinking"), false);
+  } finally {
+    delete process.env[supportsReasoning];
+    delete process.env[enableThinking];
+  }
+});

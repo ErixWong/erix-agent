@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readdir, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileTranscriptStore } from "../../src/store/file.js";
@@ -73,6 +73,124 @@ test("file: 崩溃安全——容忍末行写一半（残段丢弃）", async ()
   }
 });
 
+test("file: appendRound 修复并隔离无换行结尾的损坏残行", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const complete = {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "complete" }] }],
+    };
+    const appended = {
+      round: 2,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "appended" }] }],
+    };
+    await store.appendRound("run", complete);
+    await appendFile(join(root, "run.jsonl"), '{"round":2,"messages":[', "utf8");
+
+    await store.appendRound("run", appended);
+
+    assert.deepEqual(await store.load("run"), [complete, appended]);
+    const transcript = await readFile(join(root, "run.jsonl"), "utf8");
+    assert.doesNotMatch(transcript, /\{"round":2,"messages":\[$/);
+    assert.equal(transcript.endsWith("\n"), true);
+    const quarantined = (await readdir(root))
+      .filter((name) => name.startsWith("run.jsonl.corrupt."));
+    assert.equal(quarantined.length, 1);
+    assert.equal(
+      await readFile(join(root, quarantined[0]), "utf8"),
+      '{"round":2,"messages":[',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: appendRound 补完整 JSON 缺末尾换行的尾部（不隔离不丢弃）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const complete = {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "complete" }] }],
+    };
+    const appended = {
+      round: 2,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "appended" }] }],
+    };
+    // 完整 JSON 记录但缺末尾 \n（syscall 截断在 LF 前）——应补 \n，不应当残段隔离
+    await writeFile(
+      join(root, "run.jsonl"),
+      `${JSON.stringify(complete)}\n${JSON.stringify({ round: 99, messages: [] })}`,
+    );
+
+    await store.appendRound("run", appended);
+
+    assert.deepEqual(await store.load("run"), [complete, { round: 99, messages: [] }, appended]);
+    const transcript = await readFile(join(root, "run.jsonl"), "utf8");
+    assert.equal(transcript.endsWith("\n"), true);
+    const quarantined = (await readdir(root))
+      .filter((name) => name.startsWith("run.jsonl.corrupt."));
+    assert.equal(quarantined.length, 0, "完整 JSON 尾部不应被隔离");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: appendRound 隔离非对象 JSON 尾部（null/数组/标量——resume 会崩）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const complete = {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "complete" }] }],
+    };
+    // 非对象 JSON 尾部（如 null）——不是合法 RoundRecord，resume 访问 record.messages 会崩 → 应隔离
+    await writeFile(
+      join(root, "run.jsonl"),
+      `${JSON.stringify(complete)}\nnull`,
+    );
+
+    const appended = {
+      round: 2,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "appended" }] }],
+    };
+    await store.appendRound("run", appended);
+
+    assert.deepEqual(await store.load("run"), [complete, appended]);
+    const quarantined = (await readdir(root))
+      .filter((name) => name.startsWith("run.jsonl.corrupt."));
+    assert.equal(quarantined.length, 1, "非对象尾部应被隔离");
+    assert.equal(await readFile(join(root, quarantined[0]), "utf8"), "null");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: appendRound 无 LF 尾部同 key 不重复写入（幂等）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const record = {
+      round: 5,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "payload" }] }],
+    };
+    // 文件尾部是完整同 key 记录但缺末尾 \n（上次崩溃残留）
+    await writeFile(join(root, "run.jsonl"), JSON.stringify(record));
+
+    await store.appendRound("run", record);
+
+    // 修复补 \n 后 dedup 应发现同 key → 不重复写入
+    const loaded = await store.load("run");
+    assert.equal(loaded.length, 1);
+    assert.equal(loaded[0].round, 5);
+    const transcript = await readFile(join(root, "run.jsonl"), "utf8");
+    assert.equal((transcript.match(/"round":5/g) ?? []).length, 1, "不应重复写入同 round");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("file: appendRound 按 dedupKey 幂等，重复轮次不重复写入", async () => {
   const root = await makeTempDir();
   try {
@@ -89,6 +207,36 @@ test("file: appendRound 按 dedupKey 幂等，重复轮次不重复写入", asyn
     });
 
     assert.deepEqual(await store.load("run"), [record]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: appendRound 遇中间损坏行抛错不追加（fail-closed）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const good = {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "good" }] }],
+    };
+    const appended = {
+      round: 2,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "appended" }] }],
+    };
+    // 中间行损坏（非尾部——尾部已 \n 结尾，repair 不处理中间行）
+    await writeFile(
+      join(root, "run.jsonl"),
+      `${JSON.stringify(good)}\n{"round":2,"messages":[broken\n`,
+    );
+
+    await assert.rejects(
+      store.appendRound("run", appended),
+      /malformed line/,
+    );
+    // 未追加——文件保持原样
+    const transcript = await readFile(join(root, "run.jsonl"), "utf8");
+    assert.equal(transcript.includes("appended"), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

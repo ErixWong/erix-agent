@@ -74,6 +74,21 @@ test("returns truncated after maxRounds", async () => {
   assert.equal(result.finalText, "");
 });
 
+test("rejects non-positive, non-finite, and non-integer maxRounds", async () => {
+  for (const maxRounds of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5]) {
+    await assert.rejects(
+      runToolLoop({
+        provider: createFakeProvider([]),
+        initialUserMessage: "invalid",
+        maxRounds,
+        executeTool: async () => "unused",
+      }),
+      (error) => error instanceof TypeError
+        && /maxRounds must be a finite positive integer/.test(error.message),
+    );
+  }
+});
+
 test("nudges repeated calls before stopping after a consecutive stall streak", async () => {
   const provider = createFakeProvider([
     {

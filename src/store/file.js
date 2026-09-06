@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -85,8 +85,73 @@ async function* readRecords(path) {
   }
 }
 
+async function repairTrailingFragment(path, handle) {
+  const { size } = await handle.stat();
+  if (size === 0) return;
+
+  const tail = Buffer.alloc(1);
+  const { bytesRead } = await handle.read(tail, 0, 1, size - 1);
+  if (bytesRead === 0 || tail[0] === 0x0a) return;
+
+  const contents = await handle.readFile();
+  const lastNewline = contents.lastIndexOf(0x0a);
+  const trailing = contents.subarray(lastNewline + 1);
+  if (trailing.length === 0) return;
+
+  // 完整 JSON 对象但缺末尾换行（syscall 截断在 LF 前）→ 补 \n，不隔离不丢弃
+  try {
+    const parsed = JSON.parse(trailing.toString("utf8"));
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      await handle.write("\n", null, "utf8");
+      return;
+    }
+  } catch {
+    // fall through: 半行残段或非法尾部
+  }
+  // 半行残段 / 非对象 JSON（null/数组/标量——resume 时会崩 record.messages）→ 隔离存档再截断
+  await writeFile(
+    `${path}.corrupt.${Date.now()}.${randomUUID()}`,
+    trailing,
+  );
+  await handle.truncate(lastNewline + 1);
+}
+
+async function appendRecord(path, runId, record) {
+  const handle = await open(path, "a+");
+  try {
+    await repairTrailingFragment(path, handle);
+    // 修复尾部后重新读全文做 dedup（防无 LF 尾部绕过幂等检查——审计发现）
+    // 注意：a+ 模式 handle 读位置在末尾，需用独立只读通道读全文
+    // malformed 行不吞（fail-closed，与原 loadRecords 一致）——吞错会污染损坏 transcript
+    const fileContents = await readFile(path, "utf8");
+    const records = [];
+    for (const line of fileContents.split("\n")) {
+      if (line.trim() === "") continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        throw new Error(`Transcript contains a malformed line: ${path}`);
+      }
+      if (parsed !== null) records.push(parsed);
+    }
+    if (records.some((existing) => recordKey(runId, existing) === recordKey(runId, record))) {
+      return false;
+    }
+    await handle.write(`${JSON.stringify(record)}\n`, null, "utf8");
+    return true;
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * Create a JSONL-backed transcript store.
+ *
+ * 并发模型：**单写者**（每 runId 单进程写入——宿主单实例/CLI 单跑）。appendRound 的
+ * 进程内锁防同实例交错；跨进程写同一 transcript 是设计外场景（需宿主自行加文件锁）。
+ * 崩溃恢复：appendRound 前 repairTrailingFragment 修复尾部（半行残段隔离 .corrupt.*，
+ * 完整 JSON 缺换行则补 \n）；checkpoint 支持 at-least-once 恢复（副作用工具需宿主幂等）。
  *
  * @param {{dir:string}} options
  * @returns {{
@@ -123,15 +188,8 @@ export function createFileTranscriptStore({ dir }) {
     async appendRound(runId, record) {
       await withAppendLock(runId, async () => {
         await mkdir(dir, { recursive: true });
-        const records = await loadRecords(runId);
-        if (records.some((existing) => recordKey(runId, existing) === recordKey(runId, record))) {
-          return;
-        }
-        await appendFile(
-          transcriptPath(dir, runId),
-          `${JSON.stringify(record)}\n`,
-          "utf8",
-        );
+        // dedup 在 appendRecord 内修复尾部后重读判断（防无 LF 尾部绕过幂等）
+        await appendRecord(transcriptPath(dir, runId), runId, record);
       });
     },
 
