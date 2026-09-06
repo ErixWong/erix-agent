@@ -28,30 +28,33 @@ function normalizedWrapup(value) {
 }
 
 function* jsonCandidates(text) {
+  // Single pass that only yields top-level balanced objects. Nested objects
+  // inside a host JSON (e.g. {"summary":...,"meta":{"done":true}}) must not
+  // be scanned as wrap-up candidates — an inner {done,...} would otherwise
+  // bypass the mandatory-done guard (issue #30 follow-up).
   const value = String(text ?? "");
-  for (let start = 0; start < value.length; start += 1) {
-    if (value[start] !== "{") continue;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let index = start; index < value.length; index += 1) {
-      const character = value[index];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (character === "\\") escaped = true;
-        else if (character === "\"") inString = false;
-        continue;
-      }
-      if (character === "\"") {
-        inString = true;
-      } else if (character === "{") {
-        depth += 1;
-      } else if (character === "}") {
-        depth -= 1;
-        if (depth === 0) {
-          yield value.slice(start, index + 1);
-          break;
-        }
+  let candidateStart = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === "\"") inString = false;
+      continue;
+    }
+    if (character === "\"") {
+      inString = true;
+    } else if (character === "{") {
+      if (depth === 0) candidateStart = index;
+      depth += 1;
+    } else if (character === "}") {
+      if (depth > 0) depth -= 1;
+      if (depth === 0 && candidateStart >= 0) {
+        yield value.slice(candidateStart, index + 1);
+        candidateStart = -1;
       }
     }
   }
