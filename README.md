@@ -132,11 +132,14 @@ CLI 交互 TUI、配置/会话持久化、skill 自描述生态（todo 任务管
 
 ### 通过任务清单（reward=1，按模型）
 
-**kimi-for-coding：34 通过**
+> 注：kimi-for-coding 跑数多（早期主力、含 33 个失败对照全量）；deepseek-v4-flash 跑数少但
+> 全部选难任务/翻盘任务（详见下方 judge 实证表）——通过数不可直接比模型强弱。
+
+**kimi-for-coding：34 通过**（覆盖任务面广）
 
 bn-fit-modify · break-filter-js-from-html · build-cython-ext · build-pmars · cancel-async-tasks · cobol-modernization · configure-git-webserver · constraints-scheduling · count-dataset-tokens · crack-7z-hash · custom-memory-heap-crash · extract-elf · financial-document-processor · fix-git · git-leak-recovery · git-multibranch · hf-model-inference · kv-store-grpc · log-summary-date-ranges · merge-diff-arc-agi-task · modernize-scientific-stack · mteb-retrieve · multi-source-data-merger · openssl-selfsigned-cert · polyglot-c-py · portfolio-optimization · prove-plus-comm · pypi-server · regex-log · reshard-c4-data · sam-cell-seg · sqlite-db-truncate · torch-tensor-parallelism · vulnerable-secret
 
-**deepseek-v4-flash：11 通过**（弱模型对照——能力下限参考）
+**deepseek-v4-flash：11 通过**（能力强、免费——近期验证主力）
 
 adaptive-rejection-sampler · break-filter-js-from-html · build-cython-ext · build-pov-ray · cancel-async-tasks · chess-best-move · code-from-image · configure-git-webserver · db-wal-recovery · fix-code-vulnerability · password-recovery
 
