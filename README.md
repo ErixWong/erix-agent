@@ -109,10 +109,18 @@ src/
 
 ## 状态
 
-- **v0.3.1（2026-09-06，npm 最新）**：judge 体系落地——透明劫持审计（工具中途拦截错误动作）、
+- **v0.3.4（2026-09-07，npm 最新）**：judge 任务简报修复（#34）——多轮会话延续宿主（touwaka 等传整段对话历史）不再拿过期任务当审计基准：
+  显式 `task`/`context.task` 成为 judge/reflection/wrapup 最高权威基准（预算 1500 码点，多轮宿主应传当前任务/最新指令）；
+  无显式 task 时 fallback 升级为**入口最后一条** user 文本（单任务首条=末条，行为不变）；入口快照防循环内注入（方向提示/nudge）污染；
+  resume 只扫 round-0 seed 消息、无可信 seed 时**空基准宁缺勿错**（防跨 run 复现误判）；截断统一为码点语义。三轮独立复核收敛，单测 429/0。
+- **v0.3.3（2026-09-06）**：wrapup 收尾协议开关化（#30/#32）——`wrapup: false` 同时关闭指令注入 / JSON 解析 / finalText 替换 / LLM 归一化；
+  解析键守卫：done 必填 + 仅顶层对象（嵌套 {done} 不得绕过）。对话型宿主（touwaka）应显式传 `wrapup: false`。
+- **v0.3.2（2026-09-06）**：MIT license + README 重构（无功能差异）。
+- **v0.3.1（2026-09-06）**：README 定位更新到 v0.3.0 现状（无功能差异）。
+- **v0.3.0（2026-09-06）**：judge 体系落地——透明劫持审计（工具中途拦截错误动作）、
   round judge（end_turn 验证）、direction 软提示（方向漂移引导）、stall 防空转软纠正（不再误杀长任务）；
   judge 决策可观测（onJudge / --judge-log 脱敏落盘）；`runToolLoop` reflection 默认开启（maxRounds≥16 无头零配置）；
-  静态审计硬化（store 崩溃恢复 / checkpoint fail-closed / 输入校验）；README 重构（v0.3.1 起）与 MIT 许可。单测 419/415/0。
+  静态审计硬化（store 崩溃恢复 / checkpoint fail-closed / 输入校验）。单测 419/415/0。
   benchmark 实证：Terminal-Bench archive 多任务 reward=1，历史失败任务翻盘（db-wal-recovery 721s→88s 等，见下）。
 - v0.2.0（2026-09-01）：双协议流式、FR-2 全量循环、压缩策略（自动预算折叠）、file store/recall/fold-llm、
   json-file config、CLI 交互 TUI、配置/会话持久化、skill 自描述生态（todo 任务管理）、内置工具面（读写执行）、
