@@ -471,6 +471,9 @@ test("fails closed when a checkpoint cannot be persisted before a tool", async (
         async saveCheckpoint() {
           throw new Error("checkpoint disk full");
         },
+        async loadLatestCheckpoint() {
+          return undefined;
+        },
       },
       runId: "checkpoint-failure-run",
       completion: false,
@@ -483,6 +486,39 @@ test("fails closed when a checkpoint cannot be persisted before a tool", async (
       && error.termination?.reason === "failed",
   );
   assert.equal(executions, 0);
+});
+
+test("save-only checkpoint store (no loader) does not fail closed", async () => {
+  // writer 无 loader 的 store 无法 resume——不应启用 fail-closed（否则宿主的 save-only
+  // 适配器会在 checkpoint 偶发失败时无谓地杀掉任务）
+  const provider = createFakeProvider([
+    toolResponse("save-only", "work"),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  let executions = 0;
+  let saveAttempts = 0;
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "save only",
+    executeTool: async () => {
+      executions += 1;
+      return "worked";
+    },
+    store: {
+      async saveCheckpoint() {
+        saveAttempts += 1;
+        throw new Error("save-only store write failure");
+      },
+    },
+    runId: "save-only-run",
+    completion: false,
+    onPersistenceError: () => {},
+  });
+
+  assert.equal(executions, 1, "save-only store 不应阻止工具执行");
+  assert.equal(result.finalText, "done");
+  assert.ok(saveAttempts > 0, "saveCheckpoint 仍被调用（尽力而为）");
 });
 
 test("executes tools normally without a checkpoint store", async () => {

@@ -95,13 +95,21 @@ async function repairTrailingFragment(path, handle) {
 
   const contents = await handle.readFile();
   const lastNewline = contents.lastIndexOf(0x0a);
-  const corrupt = contents.subarray(lastNewline + 1);
-  if (corrupt.length > 0) {
-    await writeFile(
-      `${path}.corrupt.${Date.now()}.${randomUUID()}`,
-      corrupt,
-    );
+  const trailing = contents.subarray(lastNewline + 1);
+  if (trailing.length === 0) return;
+
+  // 完整 JSON 但缺末尾换行（syscall 截断在 LF 前）→ 补 \n，不隔离不丢弃
+  try {
+    JSON.parse(trailing.toString("utf8"));
+    await handle.write("\n", null, "utf8");
+    return;
+  } catch {
+    // 半行残段（崩溃中断）→ 隔离到 .corrupt 存档再截断
   }
+  await writeFile(
+    `${path}.corrupt.${Date.now()}.${randomUUID()}`,
+    trailing,
+  );
   await handle.truncate(lastNewline + 1);
 }
 
@@ -117,6 +125,11 @@ async function appendRecord(path, record) {
 
 /**
  * Create a JSONL-backed transcript store.
+ *
+ * 并发模型：**单写者**（每 runId 单进程写入——宿主单实例/CLI 单跑）。appendRound 的
+ * 进程内锁防同实例交错；跨进程写同一 transcript 是设计外场景（需宿主自行加文件锁）。
+ * 崩溃恢复：appendRound 前 repairTrailingFragment 修复尾部（半行残段隔离 .corrupt.*，
+ * 完整 JSON 缺换行则补 \n）；checkpoint 支持 at-least-once 恢复（副作用工具需宿主幂等）。
  *
  * @param {{dir:string}} options
  * @returns {{

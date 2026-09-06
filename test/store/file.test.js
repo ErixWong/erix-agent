@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileTranscriptStore } from "../../src/store/file.js";
@@ -101,6 +101,37 @@ test("file: appendRound 修复并隔离无换行结尾的损坏残行", async ()
       await readFile(join(root, quarantined[0]), "utf8"),
       '{"round":2,"messages":[',
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: appendRound 补完整 JSON 缺末尾换行的尾部（不隔离不丢弃）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const complete = {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "complete" }] }],
+    };
+    const appended = {
+      round: 2,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "appended" }] }],
+    };
+    // 完整 JSON 记录但缺末尾 \n（syscall 截断在 LF 前）——应补 \n，不应当残段隔离
+    await writeFile(
+      join(root, "run.jsonl"),
+      `${JSON.stringify(complete)}\n${JSON.stringify({ round: 99, messages: [] })}`,
+    );
+
+    await store.appendRound("run", appended);
+
+    assert.deepEqual(await store.load("run"), [complete, { round: 99, messages: [] }, appended]);
+    const transcript = await readFile(join(root, "run.jsonl"), "utf8");
+    assert.equal(transcript.endsWith("\n"), true);
+    const quarantined = (await readdir(root))
+      .filter((name) => name.startsWith("run.jsonl.corrupt."));
+    assert.equal(quarantined.length, 0, "完整 JSON 尾部不应被隔离");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -1084,8 +1084,10 @@ export async function runToolLoop({
 
   const executedToolIds = new Set(resumeExecutedToolIds);
   const checkpointResults = new Map(resumeCheckpointResults);
-  const hasCheckpointStore = typeof store?.saveCheckpoint === "function"
-    || typeof store?.appendCheckpoint === "function";
+  // checkpoint store 必须成对（writer + loader）——save-only 无法 resume，不启用 fail-closed
+  const hasCheckpointStore = (typeof store?.saveCheckpoint === "function"
+    || typeof store?.appendCheckpoint === "function")
+    && typeof store?.loadLatestCheckpoint === "function";
   const persistCheckpoint = async ({
     round,
     pendingToolUse,
