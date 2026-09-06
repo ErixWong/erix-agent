@@ -52,7 +52,7 @@ v0.3.x 默认注入 wrapup 任务收尾协议。对话型宿主必须显式传 `
        : false
      ```
 
-2. **任务简报传递（issue #34）**：多轮会话/续跑宿主应将当前指令作为字符串传给 `runToolLoop` 的 `task`；judge/reflection/wrapup 会优先以它为审计基准，未提供有效值时回退入口 transcript 最后一条 user 文本（此前为第一条）。
+2. **任务简报传递（issue #34）**：多轮会话/续跑宿主应将当前指令作为字符串传给 `runToolLoop` 的 `task`；judge/reflection/wrapup 的优先级为 `task` > `context.task` > 入口 transcript 最后一条 user 文本。续跑时应重新传入 `task`；未传时 erix 的 fallback 只扫描原始 round 0 seed 消息，避免把续跑期间追加的方向提示/合成 nudges 当成任务目标。
 
 3. **judge provider 决策**：默认 judge 用主 provider（与对话同模型同配额）。若要隔离成本/延迟，传独立 `judge.provider`（如轻量模型）。touwaka 的 modelConfig 体系需在 loop-bridge 增加 judge provider 构造。
 

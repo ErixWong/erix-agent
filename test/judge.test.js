@@ -423,6 +423,190 @@ test("explicit task overrides the multi-turn entry messages for the round judge"
   assert.doesNotMatch(taskLine, /介绍你自己/);
 });
 
+test("context.task takes precedence over the multi-turn entry messages for the round judge", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialMessages: [
+      { role: "user", content: "请用一句话介绍你自己" },
+      { role: "assistant", content: "我是助手" },
+      { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
+    ],
+    context: { task: "CTX任务摘要" },
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    wrapup: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  assert.equal(prompt.match(/任务目标：([^\n]*)/)?.[1], "CTX任务摘要");
+});
+
+test("whitespace task falls back to the latest non-empty entry user text", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialMessages: [
+      { role: "user", content: "请用一句话介绍你自己" },
+      { role: "assistant", content: "我是助手" },
+      { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
+    ],
+    task: "   ",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    wrapup: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  const taskLine = prompt.match(/任务目标：([^\n]*)/)?.[1];
+  assert.equal(taskLine, "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。");
+  assert.doesNotMatch(taskLine, /介绍你自己/);
+});
+
+test("explicit task briefs keep content beyond the legacy 500-code-point cap", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
+  ]);
+  const task = `${"任务内容".repeat(220)}TAIL_MARKER_9F3C`;
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    task,
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    wrapup: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  assert.match(prompt, /TAIL_MARKER_9F3C/);
+  assert.ok(prompt.length < 2000);
+});
+
+test("resumed judge briefs scan only the original round-zero seed messages", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "task-brief-resume";
+  const firstProvider = createFakeProvider([
+    {
+      content: [
+        { type: "tool_use", id: "work-1", name: "work", input: { step: 1 } },
+        { type: "tool_use", id: "work-2", name: "work", input: { step: 2 } },
+      ],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" },
+  ]);
+  const firstJudge = createFakeProvider([
+    judgeResponse({
+      done: false,
+      confidence: 0.8,
+      reason: "偏离",
+      evidence: "需要继续",
+      direction: "off_track",
+      directionReason: "偏离",
+    }),
+    judgeResponse({
+      done: false,
+      confidence: 0.8,
+      reason: "偏离",
+      evidence: "需要继续",
+      direction: "off_track",
+      directionReason: "偏离",
+    }),
+  ]);
+
+  await runToolLoop({
+    provider: firstProvider,
+    initialMessages: [{ role: "user", content: "任务A：修登录bug" }],
+    executeTool: async () => "ok",
+    maxRounds: 2,
+    completion: false,
+    wrapup: false,
+    reflection: {
+      enabled: true,
+      judgeIntervalRound: 1,
+      judge: { provider: firstJudge },
+    },
+    store,
+    runId,
+  });
+
+  const records = await store.load(runId);
+  assert.ok(records.some((record) => (
+    (record.messages ?? []).some((message) => (
+      message.role === "user"
+      && JSON.stringify(message.content).includes("附方向提示")
+    ))
+  )), "run A should persist the synthetic direction hint");
+
+  const resumedProvider = createFakeProvider([
+    { content: [{ type: "text", text: "继续完成" }], stopReason: "end_turn" },
+  ]);
+  const resumedJudge = createFakeProvider([
+    judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已完成" }),
+  ]);
+
+  await runToolLoop({
+    provider: resumedProvider,
+    resume: true,
+    executeTool: async () => "unused",
+    maxRounds: 3,
+    completion: false,
+    wrapup: false,
+    reflection: { enabled: true, judge: { provider: resumedJudge } },
+    store,
+    runId,
+  });
+
+  const prompt = resumedJudge.requests[0].messages[0].content[0].text;
+  const taskLine = prompt.match(/任务目标：([^\n]*)/)?.[1];
+  assert.equal(taskLine, "任务A：修登录bug");
+  assert.doesNotMatch(taskLine, /附方向提示|偏离/);
+});
+
+test("single-task entry fallback remains the same for the round judge", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    wrapup: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  assert.equal(prompt.match(/任务目标：([^\n]*)/)?.[1], "task");
+});
+
 test("round judge task brief stays on the entry snapshot after injecting direction hints", async () => {
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" },

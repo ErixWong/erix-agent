@@ -68,8 +68,8 @@ function textFromUserMessage(message) {
   return textFromBlocks(blocksFor(message?.content));
 }
 
-function capTaskBrief(value) {
-  return Array.from(String(value ?? "")).slice(0, 500).join("");
+function capTaskBrief(value, limit = 500) {
+  return Array.from(String(value ?? "")).slice(0, limit).join("");
 }
 
 function taskBriefFromMessages(messages) {
@@ -77,7 +77,8 @@ function taskBriefFromMessages(messages) {
     const text = messages[index]?.role === "user"
       ? textFromUserMessage(messages[index])
       : "";
-    if (text.trim() !== "") return capTaskBrief(text);
+    // Raw chat fallback stays short to bound prompt size.
+    if (text.trim() !== "") return capTaskBrief(text, 500);
   }
   return "";
 }
@@ -89,7 +90,11 @@ function resolveTaskBrief({ task, context, messages }) {
   const contextTask = typeof context?.task === "string" && context.task.trim() !== ""
     ? context.task.trim()
     : undefined;
-  return capTaskBrief(explicitTask ?? contextTask ?? taskBriefFromMessages(messages));
+  // Hosts compose explicit briefs from a task directory, README digest, and latest
+  // instruction; preserve a larger trusted budget for that host-authored context.
+  if (explicitTask !== undefined) return capTaskBrief(explicitTask, 1500);
+  if (contextTask !== undefined) return capTaskBrief(contextTask, 1500);
+  return taskBriefFromMessages(messages);
 }
 
 const WRAPUP_INSTRUCTION = `任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：
@@ -549,12 +554,12 @@ function defaultSleep(ms, signal) {
  *     sleepImpl?:(ms:number)=>Promise<void>}|false,
  *   completion?: {signals?:string[], maxNoToolRounds?:number}|false,
  *   maxTokenContinuations?: number,
- *   context?: {strategy?: object, budgetTokens?:number, keepRounds?:number, toolContext?:object},
+ *   context?: {strategy?: object, budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
  *   modelConfig?: {contextWindowTokens?:number, maxOutputTokens?:number},
  *   modelMetadata?: {contextWindowTokens?:number, maxOutputTokens?:number},
  *   model?: {contextWindowTokens?:number, maxOutputTokens?:number},
  *   expert?:any, user?:any,
- *   task?:any, // Also the judge/reflection/wrapup task brief; multi-turn hosts should pass the current/latest instruction as a string. Non-string or empty values fall back to the last user text in the entry transcript.
+ *   task?:any, // Explicit judge/reflection/wrapup brief; non-empty values take precedence as task > context.task > entry transcript's last user text. Explicit values use a 1500-code-point budget; message fallback uses 500. Multi-turn hosts should pass the current/latest instruction as a string.
  *   session?:any, requestId?:string, toolContext?:object,
  *   store?: {appendRound?: Function, saveCheckpoint?:Function, appendCheckpoint?:Function,
  *     markRunState?:Function, loadLatestCheckpoint?:Function},
@@ -847,6 +852,7 @@ export async function runToolLoop({
     : initialUserMessage !== undefined
       ? [{ role: "user", content: [{ type: "text", text: initialUserMessage }] }]
       : [];
+  let taskBriefSource = messages;
   const messageRounds = new WeakMap();
   for (const message of messages) messageRounds.set(message, 0);
   let rounds = 0;
@@ -864,7 +870,13 @@ export async function runToolLoop({
     try {
       const records = await store.load(runId);
       if (records.length === 0) throw new Error("resume: 无可恢复记录");
-      messages = records.flatMap((record) => record.messages ?? []);
+      const restoredMessages = records.flatMap((record) => record.messages ?? []);
+      const seedMessages = records
+        .filter((record) => (record.round ?? 0) === 0)
+        .flatMap((record) => record.messages ?? []);
+      if (seedMessages.length > 0) taskBriefSource = seedMessages;
+      else taskBriefSource = restoredMessages;
+      messages = restoredMessages;
       persistedTranscriptLength = messages.length;
       for (const record of records) {
         for (const message of record.messages ?? []) {
@@ -1013,7 +1025,7 @@ export async function runToolLoop({
     });
     if (persisted) persistedTranscriptLength += messages.length;
   }
-  const taskBrief = resolveTaskBrief({ task, context, messages });
+  const taskBrief = resolveTaskBrief({ task, context, messages: taskBriefSource });
   const recentSignatures = [];
   const envStallMode = process.env.ERIX_STALL_MODE;
   // stallDetection:false 显式关闭优先于环境变量（调用方显式关闭不应被 env 重新打开）
