@@ -16,18 +16,12 @@ function normalizedWrapup(value) {
   }
   // Keep the legacy inline L1 summary object on its existing parsing path.
   if (value.action !== undefined || value.note !== undefined) return null;
-  // Require at least one protocol key — arbitrary JSON objects in prose must
-  // not be mistaken for a wrap-up marker (e.g. "配置应为 {"timeout":30}").
-  if (
-    value.done === undefined
-    && value.summary === undefined
-    && value.output === undefined
-  ) return null;
-  if (value.done !== undefined && typeof value.done !== "boolean") return null;
+  if (!Object.prototype.hasOwnProperty.call(value, "done")
+    || typeof value.done !== "boolean") return null;
   if (value.summary !== undefined && typeof value.summary !== "string") return null;
   if (value.output !== undefined && typeof value.output !== "string") return null;
   return {
-    done: value.done ?? false,
+    done: value.done,
     summary: value.summary ?? "",
     output: value.output ?? "",
   };
