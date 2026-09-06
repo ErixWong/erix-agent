@@ -122,14 +122,19 @@ async function appendRecord(path, runId, record) {
     await repairTrailingFragment(path, handle);
     // 修复尾部后重新读全文做 dedup（防无 LF 尾部绕过幂等检查——审计发现）
     // 注意：a+ 模式 handle 读位置在末尾，需用独立只读通道读全文
+    // malformed 行不吞（fail-closed，与原 loadRecords 一致）——吞错会污染损坏 transcript
     const fileContents = await readFile(path, "utf8");
-    const records = fileContents
-      .split("\n")
-      .filter((line) => line.trim() !== "")
-      .map((line) => {
-        try { return JSON.parse(line); } catch { return null; }
-      })
-      .filter((recordItem) => recordItem !== null);
+    const records = [];
+    for (const line of fileContents.split("\n")) {
+      if (line.trim() === "") continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        throw new Error(`Transcript contains a malformed line: ${path}`);
+      }
+      if (parsed !== null) records.push(parsed);
+    }
     if (records.some((existing) => recordKey(runId, existing) === recordKey(runId, record))) {
       return false;
     }

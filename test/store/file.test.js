@@ -211,3 +211,33 @@ test("file: appendRound 按 dedupKey 幂等，重复轮次不重复写入", asyn
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("file: appendRound 遇中间损坏行抛错不追加（fail-closed）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const good = {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "good" }] }],
+    };
+    const appended = {
+      round: 2,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "appended" }] }],
+    };
+    // 中间行损坏（非尾部——尾部已 \n 结尾，repair 不处理中间行）
+    await writeFile(
+      join(root, "run.jsonl"),
+      `${JSON.stringify(good)}\n{"round":2,"messages":[broken\n`,
+    );
+
+    await assert.rejects(
+      store.appendRound("run", appended),
+      /malformed line/,
+    );
+    // 未追加——文件保持原样
+    const transcript = await readFile(join(root, "run.jsonl"), "utf8");
+    assert.equal(transcript.includes("appended"), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
