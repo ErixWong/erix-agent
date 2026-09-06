@@ -124,3 +124,38 @@ CLI 交互 TUI、配置/会话持久化、skill 自描述生态（todo 任务管
 流式打字机、MCP 对接（stdio + HTTP，联网搜索实测）、idle 超时。236 单测全绿（+4 条件跳过），
 真实 e2e 跑通多轮工具调用、压缩、流式与 MCP 联网调研。
 当前里程碑：app_container 迁移收尾（erix-agent 0.2.0-rc 已发布；阶段 1/2 完成：worker 替换 + idea 对话 SSE 真机通过；阶段 3 = 压缩预算 computeBudget / checkpoint / completion 按场景开）→ 无头能力 benchmark（erix-bench Terminal-Bench 对照 pi）→ 通用 sandbox 组件（独立于 agent，另立 ADR）。
+
+## Benchmark 验证（erix-bench / Terminal-Bench archive）
+
+> 无头 harness（容器内驱动 + 官方判分器）跑 Terminal-Bench archive 任务；`--agent erix|pi` 对照。
+> 完整报告与逐 run 数据见配套 erix-bench 仓库的 REPORT.md（本 README 只列结论）。
+
+### 通过任务清单（reward=1，按模型）
+
+**kimi-for-coding：34 通过**
+
+bn-fit-modify · break-filter-js-from-html · build-cython-ext · build-pmars · cancel-async-tasks · cobol-modernization · configure-git-webserver · constraints-scheduling · count-dataset-tokens · crack-7z-hash · custom-memory-heap-crash · extract-elf · financial-document-processor · fix-git · git-leak-recovery · git-multibranch · hf-model-inference · kv-store-grpc · log-summary-date-ranges · merge-diff-arc-agi-task · modernize-scientific-stack · mteb-retrieve · multi-source-data-merger · openssl-selfsigned-cert · polyglot-c-py · portfolio-optimization · prove-plus-comm · pypi-server · regex-log · reshard-c4-data · sam-cell-seg · sqlite-db-truncate · torch-tensor-parallelism · vulnerable-secret
+
+**deepseek-v4-flash：11 通过**（弱模型对照——能力下限参考）
+
+adaptive-rejection-sampler · break-filter-js-from-html · build-cython-ext · build-pov-ray · cancel-async-tasks · chess-best-move · code-from-image · configure-git-webserver · db-wal-recovery · fix-code-vulnerability · password-recovery
+
+**pi（deepseek-v4-flash 对照）：4 通过**
+
+break-filter-js-from-html · build-cython-ext · build-pov-ray · distribution-search
+
+### 透明劫持 / judge 体系实证（2026-09，erix main + PR #28/#29）
+
+无头长任务在 judge 体系（透明劫持审计 + round judge + stall 软纠正 + direction 软提示）下的验证——
+历史失败任务翻盘或首次通过，每 run 的 judge 决策全落盘可审计（erix-state/judge.log）：
+
+| 任务 | 结果 | judge 价值证据 |
+|---|---|---|
+| db-wal-recovery | reward=1（88s，历史 721s 失败） | direction off_track 拦截：纯侦察阶段提示转向实际修复 |
+| adaptive-rejection-sampler | reward=1（12 轮，历史 901s 超时失败） | judge 早期拦截防环境空转 |
+| password-recovery | reward=1（187s，flash 首跑） | **5 次 blocked**：反复拦“未提取完整密码”的半成品提交 |
+| fix-code-vulnerability | reward=1（123s，判分 6/6） | round judge 验证通过才收尾（历史 23 轮空转 reward=0） |
+| cancel-async-tasks | reward=1（117s） | judge-log 观测 + 审计放行（方向对无感） |
+| circuit-fibsqrt | reward=0（64 轮完整跑） | 11 次真实审计拦截记录（模型能力不足，非机制失败） |
+
+> 单测 400/396/0（2026-09-06）。judge 机制设计决策见 [ADR-011](docs/decisions/011-judge-direction.md)。
