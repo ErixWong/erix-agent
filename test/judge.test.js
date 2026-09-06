@@ -579,10 +579,53 @@ test("resumed judge briefs scan only the original round-zero seed messages", asy
     runId,
   });
 
+  assert.ok(resumedJudge.requests.length >= 1, "resume run should trigger at least one judge call");
   const prompt = resumedJudge.requests[0].messages[0].content[0].text;
   const taskLine = prompt.match(/任务目标：([^\n]*)/)?.[1];
   assert.equal(taskLine, "任务A：修登录bug");
   assert.doesNotMatch(taskLine, /附方向提示|偏离/);
+});
+
+test("resume without a round-zero seed keeps the judge brief empty", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "task-brief-resume-without-seed";
+  await store.appendRound(runId, {
+    round: 1,
+    dedupKey: `${runId}:round:1`,
+    messages: [{
+      role: "user",
+      content: [{ type: "text", text: "（附方向提示：不要继续当前实现）" }],
+    }],
+  });
+
+  const resumedProvider = createFakeProvider([
+    { content: [{ type: "text", text: "继续完成" }], stopReason: "end_turn" },
+  ]);
+  const resumedJudge = createFakeProvider([
+    judgeResponse({
+      done: false,
+      confidence: 0.2,
+      reason: "无法判断",
+      evidence: "缺少任务目标",
+    }),
+  ]);
+
+  await runToolLoop({
+    provider: resumedProvider,
+    resume: true,
+    executeTool: async () => "unused",
+    maxRounds: 2,
+    completion: false,
+    wrapup: false,
+    reflection: { enabled: true, judge: { provider: resumedJudge } },
+    store,
+    runId,
+  });
+
+  assert.equal(resumedJudge.requests.length, 1);
+  const prompt = resumedJudge.requests[0].messages[0].content[0].text;
+  assert.match(prompt, /任务目标：\（未提供\）/);
+  assert.doesNotMatch(prompt, /附方向提示/);
 });
 
 test("single-task entry fallback remains the same for the round judge", async () => {

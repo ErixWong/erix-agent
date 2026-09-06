@@ -871,11 +871,9 @@ export async function runToolLoop({
       const records = await store.load(runId);
       if (records.length === 0) throw new Error("resume: 无可恢复记录");
       const restoredMessages = records.flatMap((record) => record.messages ?? []);
-      const seedMessages = records
-        .filter((record) => (record.round ?? 0) === 0)
-        .flatMap((record) => record.messages ?? []);
-      if (seedMessages.length > 0) taskBriefSource = seedMessages;
-      else taskBriefSource = restoredMessages;
+      const seedRecords = records.filter((record) => (record.round ?? 0) === 0);
+      const seedMessages = seedRecords.flatMap((record) => record.messages ?? []);
+      taskBriefSource = seedRecords.length > 0 ? seedMessages : [];
       messages = restoredMessages;
       persistedTranscriptLength = messages.length;
       for (const record of records) {
