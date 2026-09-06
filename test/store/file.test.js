@@ -137,6 +137,60 @@ test("file: appendRound 补完整 JSON 缺末尾换行的尾部（不隔离不�
   }
 });
 
+test("file: appendRound 隔离非对象 JSON 尾部（null/数组/标量——resume 会崩）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const complete = {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "complete" }] }],
+    };
+    // 非对象 JSON 尾部（如 null）——不是合法 RoundRecord，resume 访问 record.messages 会崩 → 应隔离
+    await writeFile(
+      join(root, "run.jsonl"),
+      `${JSON.stringify(complete)}\nnull`,
+    );
+
+    const appended = {
+      round: 2,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "appended" }] }],
+    };
+    await store.appendRound("run", appended);
+
+    assert.deepEqual(await store.load("run"), [complete, appended]);
+    const quarantined = (await readdir(root))
+      .filter((name) => name.startsWith("run.jsonl.corrupt."));
+    assert.equal(quarantined.length, 1, "非对象尾部应被隔离");
+    assert.equal(await readFile(join(root, quarantined[0]), "utf8"), "null");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: appendRound 无 LF 尾部同 key 不重复写入（幂等）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const record = {
+      round: 5,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "payload" }] }],
+    };
+    // 文件尾部是完整同 key 记录但缺末尾 \n（上次崩溃残留）
+    await writeFile(join(root, "run.jsonl"), JSON.stringify(record));
+
+    await store.appendRound("run", record);
+
+    // 修复补 \n 后 dedup 应发现同 key → 不重复写入
+    const loaded = await store.load("run");
+    assert.equal(loaded.length, 1);
+    assert.equal(loaded[0].round, 5);
+    const transcript = await readFile(join(root, "run.jsonl"), "utf8");
+    assert.equal((transcript.match(/"round":5/g) ?? []).length, 1, "不应重复写入同 round");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("file: appendRound 按 dedupKey 幂等，重复轮次不重复写入", async () => {
   const root = await makeTempDir();
   try {

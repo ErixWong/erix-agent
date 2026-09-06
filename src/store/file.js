@@ -98,14 +98,17 @@ async function repairTrailingFragment(path, handle) {
   const trailing = contents.subarray(lastNewline + 1);
   if (trailing.length === 0) return;
 
-  // 完整 JSON 但缺末尾换行（syscall 截断在 LF 前）→ 补 \n，不隔离不丢弃
+  // 完整 JSON 对象但缺末尾换行（syscall 截断在 LF 前）→ 补 \n，不隔离不丢弃
   try {
-    JSON.parse(trailing.toString("utf8"));
-    await handle.write("\n", null, "utf8");
-    return;
+    const parsed = JSON.parse(trailing.toString("utf8"));
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      await handle.write("\n", null, "utf8");
+      return;
+    }
   } catch {
-    // 半行残段（崩溃中断）→ 隔离到 .corrupt 存档再截断
+    // fall through: 半行残段或非法尾部
   }
+  // 半行残段 / 非对象 JSON（null/数组/标量——resume 时会崩 record.messages）→ 隔离存档再截断
   await writeFile(
     `${path}.corrupt.${Date.now()}.${randomUUID()}`,
     trailing,
@@ -113,11 +116,25 @@ async function repairTrailingFragment(path, handle) {
   await handle.truncate(lastNewline + 1);
 }
 
-async function appendRecord(path, record) {
+async function appendRecord(path, runId, record) {
   const handle = await open(path, "a+");
   try {
     await repairTrailingFragment(path, handle);
+    // 修复尾部后重新读全文做 dedup（防无 LF 尾部绕过幂等检查——审计发现）
+    // 注意：a+ 模式 handle 读位置在末尾，需用独立只读通道读全文
+    const fileContents = await readFile(path, "utf8");
+    const records = fileContents
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => {
+        try { return JSON.parse(line); } catch { return null; }
+      })
+      .filter((recordItem) => recordItem !== null);
+    if (records.some((existing) => recordKey(runId, existing) === recordKey(runId, record))) {
+      return false;
+    }
     await handle.write(`${JSON.stringify(record)}\n`, null, "utf8");
+    return true;
   } finally {
     await handle.close();
   }
@@ -166,11 +183,8 @@ export function createFileTranscriptStore({ dir }) {
     async appendRound(runId, record) {
       await withAppendLock(runId, async () => {
         await mkdir(dir, { recursive: true });
-        const records = await loadRecords(runId);
-        if (records.some((existing) => recordKey(runId, existing) === recordKey(runId, record))) {
-          return;
-        }
-        await appendRecord(transcriptPath(dir, runId), record);
+        // dedup 在 appendRecord 内修复尾部后重读判断（防无 LF 尾部绕过幂等）
+        await appendRecord(transcriptPath(dir, runId), runId, record);
       });
     },
 
