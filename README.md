@@ -28,20 +28,16 @@
 
 消费方：`app_container`（PI Agent 审计/开发链路，迁移进行中：erix-agent 替换自研 pi/ 层）、`touwaka`（AgentLoop / 对话链路）。
 
-## 为什么是自研而不是 Vercel AI SDK / LangChain
+## 为什么自研（vs 现成框架）
 
-调研结论（2026-08-29）：
+调研结论（2026-08-29，详见 docs/research/）：
 
-- **Vercel AI SDK**（`ai` v7）：provider 适配 + tool loop 成熟，但**上下文压缩明确不做**（官方 cookbook 让用户用 `prepareStep` 自己写）。最有价值的一半仍需自研。
-- **oneringai**：全家桶 agent 平台（语音/图像/MCP/22 个重依赖），形态不对。
-- **LangChain.js / Mastra / LangGraph**：框架级抽象，两个消费项目都刻意不用框架。
-- **pi SDK / pi**：**交互 agent**（人在环：TUI / subagent / skills / MCP / extensions 生态；SDK 可嵌入但依赖树 ~134MB、
-  agent 形态自带执行、压缩为 LLM 摘要型）。**erix 与 pi 互补不竞争**：pi 面向终端前的人，erix 面向宿主调度的
-  无头长任务（零依赖、executeTool 宿主注入、统计折叠零成本保底、checkpoint 重放——pi SDK 均无对应一等抽象）。
+- **Vercel AI SDK**（`ai` v7）：provider 适配 + tool loop 成熟，但**上下文压缩明确不做**（官方 cookbook 让用户用 `prepareStep` 自己写）——最有价值的一半仍需自研。
+- **LangChain.js / Mastra / LangGraph**：框架级抽象，两个消费项目（app_container / touwaka）都刻意不用框架。
+- **oneringai 等全家桶**：形态不对（重依赖、语音/图像等无关能力）。
+- **pi SDK**：交互 agent（人在环），形态与 erix 互补不竞争（详见上文定位）。
 
-触发重估的条件（写死）：
-1. **需要接第三家非 OpenAI 兼容的原生协议（Gemini native / Bedrock / Azure）时**，迁到 AI SDK 为底座。
-2. **季度检视（止损线）**：连续 6-12 个月消费方仍只有 `app_container` 一家、且无新增无头场景立项 → 收缩为 `app_container` 私有 package、停止公共 npm 维护（版本与 contract-tests 移交 app_container）。
+> 技术替代触发条件（接第三家非 OpenAI 兼容协议等）与项目止损线属内部决策，见 docs/。
 
 ## 模块地图
 
@@ -66,36 +62,24 @@ src/
 - 分发：公开 npm（`erix-agent`），代码托管在 GitHub（ErixWong/erix-agent）
 - 任何提交禁止 token/密钥明文
 
-## v0.2.0-rc API additions
+## API 说明（runToolLoop）
 
-- `runToolLoop` completion is enabled by default with `{ signals: [], maxNoToolRounds: 3 }`;
-  pass `completion: false` to retain immediate end-turn behavior. Provider retries remain opt-in:
-  `retry: false` is the default.
-- `runToolLoop` supports opt-in reflection-driven budget extensions via
-  `reflection: { enabled, roundJudge, judgeIntervalRound, judgeInterceptTimeoutMs,
-  triggerRound, extensionStep, maxExtensions, maxRoundsCap }`.
-  When reflection is enabled, an independent round judge runs by default; set
-  `roundJudge: false` or `ERIX_NO_ROUND_JUDGE=1` to disable it.
-  After every `judgeIntervalRound` real tool executions, the next tool call is
-  audited before execution (transparent interception); `judgeIntercept: false`
-  disables the audit while keeping end-turn round judge (and vice versa with
-  `roundJudge: false`). A failed or timed-out audit falls back to executing
-  the original call.
-  A reflection call can inject a next-step plan or stop with `truncated: false`; the
-  reflection prompt itself is not added to the task transcript.
-- `executeTool` accepts either the existing positional `(name, input)` form or
-  `({ id, name, input, context, signal })`. The structured form may return
-  `{ success, data, duration, toolMessageId }`; the loop keeps string tool-result content and
-  adds metadata such as measured `duration`.
-- Compaction budgets can be derived from model `contextWindowTokens` and `maxOutputTokens`.
-  Strategies also accept `summaryRole`, `protectedMessage`, `stripHistoricalImages`,
-  `onBeforeFold`, and `onAfterFold`.
-  `TranscriptStore.appendRound` is idempotent by run/round key; stores may also implement
-  `markRunState`, `saveCheckpoint`/`appendCheckpoint`, and `loadLatestCheckpoint`. The loop
-  checkpoints before tool execution and replays recorded results on resume.
-- Provider `transport` is forwarded to `fetch` as `dispatcher`. Malformed OpenAI tool arguments
-  use canonical `_truncatedArguments`, with `_raw` retained as a compatibility alias. Unsafe file
-  store run IDs map to `run-<first-24-sha256-hex>`; simple IDs are kept unchanged.
+核心入口 `runToolLoop({ provider, executeTool, ... })`——单任务生命周期，事件流驱动（onRound/onDelta/onJudge/onEvent）。
+
+- **完成信号**：默认启用 `completion: { signals: [], maxNoToolRounds: 3 }`（模型连续无工具轮达上限自动收尾）；传 `completion: false` 保留旧行为（end_turn 即停）。provider 重试默认关闭（`retry: false`，可选开启）。
+- **自主质量内建（judge 体系，v0.3.0）**：
+  - **默认开启**：`runToolLoop` 在 `maxRounds ≥ 16` 且未显式传 `reflection` 时自动启用基础 judge（无头宿主零配置获得保护）；传 `reflection: false` 或设 `ERIX_NO_REFLECTION=1` 关闭。
+  - 显式配置：`reflection: { enabled, roundJudge, judgeIntervalRound, judgeInterceptTimeoutMs, triggerRound, extensionStep, maxExtensions, maxRoundsCap, judge: { provider } }`。
+  - **round judge**（end_turn 验证）：启用时每轮模型想停时独立评估，`done:true && confidence≥0.7` 才放行；`roundJudge: false` 或 `ERIX_NO_ROUND_JUDGE=1` 关闭。
+  - **透明劫持审计**：每 `judgeIntervalRound`（默认 5）次真实工具执行后，下一次工具调用先审计再执行——方向错（`done:false`）则不执行原工具（副作用拦截）并返回审计意见；通过则无感放行。`judgeIntercept: false` 单独关闭审计（保留 round judge）。审计失败/超时（`judgeInterceptTimeoutMs` 默认 30s）降级为直接执行原工具。
+  - **direction 软提示**：judge 输出 `direction: off_track` 时不拦截（执行原工具），但附加方向提示让模型考虑换路线。
+  - **观测**：每次决策 emit `onJudge`；CLI 可用 `--judge-log <path>` / `ERIX_JUDGE_LOG` 落盘 JSONL（已脱敏）。
+- **executeTool 协议**：两种形式——位置参数 `(name, input)` 或结构化 `({ id, name, input, context, signal })`。结构化可返回 `{ success, data, duration, toolMessageId }`（loop 保留字符串结果并附加元数据）。
+- **压缩预算**：从模型 `contextWindowTokens`/`maxOutputTokens` 推导；策略支持 `summaryRole`/`protectedMessage`/`stripHistoricalImages`/`onBeforeFold`/`onAfterFold`。
+- **TranscriptStore**：`appendRound` 按 run/round key 幂等；store 可实现 `markRunState`、`saveCheckpoint`/`appendCheckpoint`、`loadLatestCheckpoint`。loop 在工具执行前 checkpoint，resume 时回放已记录结果（checkpoint 写失败且 store 成对提供读写时 fail-closed）。
+- **provider**：`transport` 透传给 fetch 的 `dispatcher`；非法 OpenAI 工具参数用 `_truncatedArguments`（`_raw` 兼容别名）；不安全 runId 映射为 `run-<sha256 前 24 位 hex>`。
+
+> 完整接口契约见 [docs/architecture.md](docs/architecture.md)；设计决策见 [docs/decisions/](docs/decisions/)（judge 机制 = ADR-011）。
 
 ## CLI：erix（无头 agent 的验证器 / 调试器）
 
@@ -116,16 +100,16 @@ src/
 
 - [docs/requirements.md](docs/requirements.md) — 需求与分期
 - [docs/architecture.md](docs/architecture.md) — 接口契约与数据流
-- [docs/decisions/](docs/decisions/) — 九个核心设计决策（配置/存取/压缩/反思/工具体系/工具定义分层/记忆架构/skill 系统/安全分层）
+- [docs/decisions/](docs/decisions/) — 设计决策（ADR-001~011：配置/存取/压缩/反思/工具体系/工具定义分层/记忆架构/skill 系统/安全分层/judge 方向评估）
 - [docs/testing.md](docs/testing.md) — 测试方案（分层/基建/各阶段测试清单/行为指标）
 - [docs/research/](docs/research/) — 调研报告（记忆系统与上下文压缩外部实践，2026-08-29，ADR-007 的输入）
 
 ## 状态
 
-- **v0.3.0（2026-09-06，npm 最新）**：judge 体系落地——透明劫持审计（工具中途拦截错误动作）、
+- **v0.3.1（2026-09-06，npm 最新）**：judge 体系落地——透明劫持审计（工具中途拦截错误动作）、
   round judge（end_turn 验证）、direction 软提示（方向漂移引导）、stall 防空转软纠正（不再误杀长任务）；
   judge 决策可观测（onJudge / --judge-log 脱敏落盘）；`runToolLoop` reflection 默认开启（maxRounds≥16 无头零配置）；
-  静态审计硬化（store 崩溃恢复 / checkpoint fail-closed / 输入校验）。单测 419/415/0。
+  静态审计硬化（store 崩溃恢复 / checkpoint fail-closed / 输入校验）；README 重构（v0.3.1 起）与 MIT 许可。单测 419/415/0。
   benchmark 实证：Terminal-Bench archive 多任务 reward=1，历史失败任务翻盘（db-wal-recovery 721s→88s 等，见下）。
 - v0.2.0（2026-09-01）：双协议流式、FR-2 全量循环、压缩策略（自动预算折叠）、file store/recall/fold-llm、
   json-file config、CLI 交互 TUI、配置/会话持久化、skill 自描述生态（todo 任务管理）、内置工具面（读写执行）、
@@ -149,7 +133,7 @@ src/
 
 bn-fit-modify · break-filter-js-from-html · build-cython-ext · build-pmars · cancel-async-tasks · cobol-modernization · configure-git-webserver · constraints-scheduling · count-dataset-tokens · crack-7z-hash · custom-memory-heap-crash · extract-elf · financial-document-processor · fix-git · git-leak-recovery · git-multibranch · hf-model-inference · kv-store-grpc · log-summary-date-ranges · merge-diff-arc-agi-task · modernize-scientific-stack · mteb-retrieve · multi-source-data-merger · openssl-selfsigned-cert · polyglot-c-py · portfolio-optimization · prove-plus-comm · pypi-server · regex-log · reshard-c4-data · sam-cell-seg · sqlite-db-truncate · torch-tensor-parallelism · vulnerable-secret
 
-**deepseek-v4-flash：11 通过**（能力强、免费——近期验证主力）
+**deepseek-v4-flash：11 通过**（低成本、能力强——近期验证主力）
 
 adaptive-rejection-sampler · break-filter-js-from-html · build-cython-ext · build-pov-ray · cancel-async-tasks · chess-best-move · code-from-image · configure-git-webserver · db-wal-recovery · fix-code-vulnerability · password-recovery
 
@@ -171,4 +155,8 @@ break-filter-js-from-html · build-cython-ext · build-pov-ray · distribution-s
 | cancel-async-tasks | reward=1（117s） | judge-log 观测 + 审计放行（方向对无感） |
 | circuit-fibsqrt | reward=0（64 轮完整跑） | 11 次真实审计拦截记录（模型能力不足，非机制失败） |
 
-> 单测 400/396/0（2026-09-06）。judge 机制设计决策见 [ADR-011](docs/decisions/011-judge-direction.md)。
+> 单测 419/415/0（2026-09-06）。judge 机制设计决策见 [ADR-011](docs/decisions/011-judge-direction.md)。
+
+## License
+
+MIT © 2026 ErixWong（见 [LICENSE](LICENSE)）。

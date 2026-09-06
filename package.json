@@ -13,7 +13,8 @@
     "src",
     "bin",
     "README.md",
-    "test/contract"
+    "test/contract",
+    "LICENSE"
   ],
   "repository": {
     "type": "git",
@@ -28,5 +29,5 @@
     "test": "node --test",
     "check": "node --check src/index.js"
   },
-  "license": "UNLICENSED"
+  "license": "MIT"
 }
