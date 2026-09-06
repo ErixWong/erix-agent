@@ -8,6 +8,10 @@
 
 - **产品形态（无头运行时）**：`runToolLoop` 单任务生命周期——起、跑、停、恢复、事件流
   （onRound/onDelta/onToolCall/onUsage/onEvent）；压缩不自爆（computeBudget 谱系）；失败可分类可重试（checkpoint/resume）。
+- **自主质量内建（v0.3.0 judge 体系）**：无人值守下不依赖模型自报完成——独立 judge LLM 在
+  工具循环中途透明审计（副作用前拦截错误动作）+ end_turn 验证 + direction 方向软提示 + stall 防空转软纠正；
+  每次 judge 决策可落盘审计（onJudge / --judge-log）。**`runToolLoop` 在 maxRounds≥16 且未显式配置时默认启用**
+  （无头宿主零配置获得保护，可 `reflection:false` 关闭）。benchmark 实证：历史失败任务翻盘（见下方 Benchmark 节）。
 - **边界：止于单个 agent 任务的生命周期**。多角色编排、仲裁、重试调度、任务队列是**宿主职责**
   （app_container 的 arbitrate/reaper/三角色），不吸入库——一旦承诺编排就滑向「无头 agent 平台」，
   撞 OpenAI Agent SDK / LangGraph / pi RPC 赛道，零依赖小包优势尽失。
@@ -118,12 +122,18 @@ src/
 
 ## 状态
 
-2026-08-30：改名 **erix-agent** 并推 GitHub（ErixWong/erix-agent）——
-双协议流式、FR-2 全量循环、压缩策略（自动预算折叠）、file store/recall/fold-llm、json-file config、
-CLI 交互 TUI、配置/会话持久化、skill 自描述生态（todo 任务管理）、内置工具面（读写执行）、
-流式打字机、MCP 对接（stdio + HTTP，联网搜索实测）、idle 超时。236 单测全绿（+4 条件跳过），
-真实 e2e 跑通多轮工具调用、压缩、流式与 MCP 联网调研。
-当前里程碑：app_container 迁移收尾（erix-agent 0.2.0-rc 已发布；阶段 1/2 完成：worker 替换 + idea 对话 SSE 真机通过；阶段 3 = 压缩预算 computeBudget / checkpoint / completion 按场景开）→ 无头能力 benchmark（erix-bench Terminal-Bench 对照 pi）→ 通用 sandbox 组件（独立于 agent，另立 ADR）。
+- **v0.3.0（2026-09-06，npm 最新）**：judge 体系落地——透明劫持审计（工具中途拦截错误动作）、
+  round judge（end_turn 验证）、direction 软提示（方向漂移引导）、stall 防空转软纠正（不再误杀长任务）；
+  judge 决策可观测（onJudge / --judge-log 脱敏落盘）；`runToolLoop` reflection 默认开启（maxRounds≥16 无头零配置）；
+  静态审计硬化（store 崩溃恢复 / checkpoint fail-closed / 输入校验）。单测 419/415/0。
+  benchmark 实证：Terminal-Bench archive 多任务 reward=1，历史失败任务翻盘（db-wal-recovery 721s→88s 等，见下）。
+- v0.2.0（2026-09-01）：双协议流式、FR-2 全量循环、压缩策略（自动预算折叠）、file store/recall/fold-llm、
+  json-file config、CLI 交互 TUI、配置/会话持久化、skill 自描述生态（todo 任务管理）、内置工具面（读写执行）、
+  流式打字机、MCP 对接（stdio + HTTP，联网搜索实测）、idle 超时。
+
+当前里程碑：app_container 迁移收尾（阶段 1/2 完成：worker 替换 + idea 对话 SSE 真机通过）→
+无头能力 benchmark（erix-bench Terminal-Bench 对照，进行中）→ 宿主持久化接线（touwaka #1116 / app_container #71）
+→ 通用 sandbox 组件（独立于 agent，另立 ADR）。
 
 ## Benchmark 验证（erix-bench / Terminal-Bench archive）
 
