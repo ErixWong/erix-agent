@@ -518,6 +518,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         system: systemPrompt,
         ...(resume ? {} : { initialMessages: roundMessages, initialUserMessage: line }),
         maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
+        // 交互 REPL 不需要 judge（人在环自己判断）；chat 单次任务的默认开启规则不适用
+        reflection: false,
         maxTokens: config.maxOutputTokens,
         completion: { maxNoToolRounds: 1 },
         tools,

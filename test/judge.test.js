@@ -341,6 +341,106 @@ test("reflection false does not call the round judge", async () => {
   assert.equal(provider.requests.length, 1);
 });
 
+test("long runs enable the round judge by default", async () => {
+  const previous = process.env.ERIX_NO_REFLECTION;
+  delete process.env.ERIX_NO_REFLECTION;
+  try {
+    const provider = createFakeProvider([
+      toolResponse("main-1", "work", { round: 1 }),
+      { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
+      judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已验证" }),
+    ]);
+
+    await runToolLoop({
+      provider,
+      initialUserMessage: "task",
+      executeTool: async () => "ok",
+      maxRounds: 16,
+      completion: false,
+    });
+
+    const judgeRequests = provider.requests.filter((request) => request.messages?.some((message) => (
+      message.content?.some((block) => block.type === "text" && block.text.includes("【每轮 Judge】"))
+    )));
+    assert.equal(judgeRequests.length, 1);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_NO_REFLECTION;
+    else process.env.ERIX_NO_REFLECTION = previous;
+  }
+});
+
+test("short runs do not enable the round judge by default", async () => {
+  const previous = process.env.ERIX_NO_REFLECTION;
+  delete process.env.ERIX_NO_REFLECTION;
+  try {
+    const provider = createFakeProvider([
+      toolResponse("main-1", "work", { round: 1 }),
+      { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
+    ]);
+
+    await runToolLoop({
+      provider,
+      initialUserMessage: "task",
+      executeTool: async () => "ok",
+      maxRounds: 15,
+      completion: false,
+    });
+
+    assert.equal(provider.requests.some((request) => request.messages?.some((message) => (
+      message.content?.some((block) => block.type === "text" && block.text.includes("【每轮 Judge】"))
+    ))), false);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_NO_REFLECTION;
+    else process.env.ERIX_NO_REFLECTION = previous;
+  }
+});
+
+test("explicit reflection false disables the default round judge", async () => {
+  const provider = createFakeProvider([
+    toolResponse("main-1", "work", { round: 1 }),
+    { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "ok",
+    maxRounds: 16,
+    completion: false,
+    reflection: false,
+  });
+
+  assert.equal(provider.requests.some((request) => request.messages?.some((message) => (
+    message.content?.some((block) => block.type === "text" && block.text.includes("【每轮 Judge】"))
+  ))), false);
+});
+
+test("ERIX_NO_REFLECTION disables automatic reflection", async () => {
+  const previous = process.env.ERIX_NO_REFLECTION;
+  process.env.ERIX_NO_REFLECTION = "1";
+  try {
+    const provider = createFakeProvider([
+      toolResponse("main-1", "work", { round: 1 }),
+      { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
+    ]);
+
+    await runToolLoop({
+      provider,
+      initialUserMessage: "task",
+      executeTool: async () => "ok",
+      maxRounds: 16,
+      completion: false,
+    });
+
+    assert.equal(provider.requests.some((request) => request.messages?.some((message) => (
+      message.content?.some((block) => block.type === "text" && block.text.includes("【每轮 Judge】"))
+    ))), false);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_NO_REFLECTION;
+    else process.env.ERIX_NO_REFLECTION = previous;
+  }
+});
+
 test("round judge decisions are persisted in round records", async () => {
   const store = createMemoryTranscriptStore();
   const judge = createFakeProvider([
