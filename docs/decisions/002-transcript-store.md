@@ -28,6 +28,12 @@ JSONL 记录格式：
 **崩溃续跑**：`runToolLoop({ store, runId, resume: true })` 启动时 `load()` 恢复消息与轮次，
 从断点继续。app_container 的 reaper 任务级重试由此从"从头重跑"升级为"断点续跑"。
 
+工具调用的 checkpoint 写入分为执行前和执行后两个边界：成对提供 writer + loader
+的 store 任一边界写失败都会抛 `checkpoint_failed`；执行后失败消息明确表示工具已经执行、
+但结果尚未持久化。此时 loop 不能承诺 exactly-once，宿主的 `executeTool` 必须按 tool id
+保持幂等。若一轮包含多个 tool_use，resume 会按原始顺序执行全部尚未在 checkpoint 中确认的工具，
+补齐同一条 tool_result 消息后才重新请求 provider。
+
 DB 适配器（app_container 落 `task_runs`、touwaka 落 payload 缓存）留在项目侧实现同一接口。
 
 ## 理由

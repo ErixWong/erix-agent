@@ -15,7 +15,7 @@ v0.3.x 在 `runToolLoop` 层新增/改变的宿主可见行为：
 | 1 | **reflection（judge 体系）默认开启**：`maxRounds ≥ 16` 且未显式传 `reflection` 时自动启用 | 长任务（≥16 轮）会多出 judge LLM 调用；短任务（<16 轮）不受影响 |
 | 2 | **透明劫持审计**：每 `judgeIntervalRound`(5) 次真实工具执行后，下一次工具调用先 judge 再执行；方向错则拦截（不执行） | 宿主注入的 executeTool 可能"被跳过"（收到审计消息而非执行）——副作用拦截语义 |
 | 3 | **round judge**：end_turn 时独立验证，`done && confidence≥0.7` 才放行 | 模型"想停"不再立即停——需 judge 确认；可提前 `judge_done` 终止 |
-| 4 | **checkpoint fail-closed**（有 store 时）：工具执行前 checkpoint 写失败 → 抛 `checkpoint_failed`，**不执行工具** | 宿主的 store 写失败会导致任务失败（此前是继续执行） |
+| 4 | **checkpoint fail-closed**（有 store 时）：工具执行前写失败 → 抛 `checkpoint_failed`、**不执行工具**；执行后写失败同样失败，并明确标记工具已执行但结果未持久化 | 宿主需识别 `checkpoint_failed`；执行后失败窗口无法由 loop 保证 exactly-once，`executeTool` 应按 tool id 幂等 |
 | 5 | **stall 软纠正**：重复调用不再硬杀任务——nudge 引导（≤2 次）+ 连续 3 次才 stop | 原 `llm_kit_stalled` 硬杀错误消失，变正常 stop |
 | 6 | **direction 软提示**：judge 判 off_track 时放行但附加提示 | 模型可能收到方向引导文本 |
 | 7 | **maxRounds 非法值校验**：NaN/0/负/Infinity 抛 TypeError | 宿主传参需合法 |
@@ -110,7 +110,7 @@ v0.3.x 默认注入 wrapup 任务收尾协议。对话型宿主必须显式传 `
 |---|---|
 | **成本** | judge 启用后：end_turn 每次 +1 LLM 调用（读足迹几百 token）；每 5 工具 +1 审计。长任务成本约 +10~30%。用独立 judge provider（轻模型）可降。 |
 | **judge provider 配额** | judge 默认用主 provider（同配额）——主 provider 配额耗尽会连带 judge 失败（降级为直接执行，不崩任务，但有损保护）。 |
-| **`checkpoint_failed`** | 只在"store 成对 + checkpoint 写失败 + 工具执行前"抛。宿主需识别该错误码（可重试/不可重试分类），勿当普通模型错误。 |
+| **`checkpoint_failed`** | 在"store 成对 + checkpoint 写失败"时抛；执行后失败消息含“工具已执行但结果未持久化”。宿主需识别该错误码（可重试/不可重试分类），勿当普通模型错误，并让 `executeTool` 按 tool id 幂等。 |
 | **审计/提示消息** | "【审计拦截】…"与"（附方向提示…）"是 loop 注入的 **user role 合成消息**——进 transcript/展示，宿主需容忍。 |
 | **termination reason 扩展** | 新增 `stall`（原 error）与可能的 `judge_done`（judge 确认完成提前停）。宿主 switch 需覆盖。 |
 | **onJudge 新 API** | 每次 judge 决策 emit `{kind: "round"|"intercept", action, decision, tool?}`——审计/复盘消费入口。 |
