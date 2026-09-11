@@ -858,7 +858,7 @@ export async function runToolLoop({
   let rounds = 0;
   let foldedThrough = 0;
   let resumeCheckpoint;
-  let resumePendingTool;
+  let resumePendingTools = [];
   let resumeTailMessages = [];
   let resumeTranscriptStart;
   let resumeCheckpointMessages = [];
@@ -964,7 +964,7 @@ export async function runToolLoop({
             }));
           messages = cloneState(resumeCheckpoint.messages);
           resumeTranscriptStart = messages.length;
-          resumeCheckpointMessages = resumeCheckpoint.messages.filter((_message, index) => {
+          resumeCheckpointMessages = messages.filter((_message, index) => {
             const matchedIndex = checkpointMessageIndices[index];
             const isPersisted = matchedIndex >= 0
               && (checkpointAnchor === undefined || matchedIndex < checkpointAnchor);
@@ -1001,7 +1001,7 @@ export async function runToolLoop({
           }
           const pendingTools = resumeCheckpoint.pendingToolUses
             ?? (resumeCheckpoint.pendingToolUse ? [resumeCheckpoint.pendingToolUse] : []);
-          resumePendingTool = pendingTools.find((pendingTool) => (
+          resumePendingTools = pendingTools.filter((pendingTool) => (
             !resumeCheckpoint.executedToolIds?.includes(pendingTool.id)
             && !resumeCheckpointResults.has(pendingTool.id)
           ));
@@ -1179,6 +1179,26 @@ export async function runToolLoop({
     };
   };
 
+  const messagesWithToolResults = (toolResults) => {
+    const snapshot = cloneState(messages);
+    if (toolResults.length === 0) return snapshot;
+    const previous = snapshot.at(-2);
+    const last = snapshot.at(-1);
+    const previousUses = blocksFor(previous?.content)
+      .filter((block) => block?.type === "tool_use");
+    const lastResults = blocksFor(last?.content)
+      .filter((block) => block?.type === "tool_result");
+    if (previous?.role === "assistant"
+      && last?.role === "user"
+      && previousUses.length > 0
+      && lastResults.length > 0) {
+      last.content = [...lastResults, ...cloneState(toolResults)];
+      return snapshot;
+    }
+    snapshot.push({ role: "user", content: cloneState(toolResults) });
+    return snapshot;
+  };
+
   const executeToolBlock = async (block, round, toolResults, pendingToolUses = []) => {
     const checkpointPersisted = await persistCheckpoint({
       round,
@@ -1245,17 +1265,20 @@ export async function runToolLoop({
     toolResults.push(toolResult);
     if (block.id !== undefined) executedToolIds.add(block.id);
     checkpointResults.set(block.id, toolResult);
-    await persistCheckpoint({
+    const postCheckpointPersisted = await persistCheckpoint({
       round,
       pendingToolUse: block,
       pendingToolUses,
       toolResults,
       status: "executed",
-      messagesOverride: [
-        ...messages,
-        { role: "user", content: cloneState(toolResults) },
-      ],
+      messagesOverride: messagesWithToolResults(toolResults),
     });
+    if (!postCheckpointPersisted && hasCheckpointStore) {
+      throw new KitError(
+        "checkpoint_failed",
+        `Checkpoint persistence failed after tool execution: tool already executed but result was not persisted (toolUseId=${String(block.id)}, runId=${String(runId)}, round=${round})`,
+      );
+    }
     return toolResult;
   };
 
@@ -1799,15 +1822,17 @@ export async function runToolLoop({
 
   try {
     throwIfAborted(signal);
-    if (resumePendingTool) {
+    if (resumePendingTools.length > 0) {
       const resumedToolResults = [];
-      emitEvent({ type: "tool_use", round: rounds, toolUse: cloneState(resumePendingTool) });
-      await executeToolWithIntercept(
-        resumePendingTool,
-        rounds,
-        resumedToolResults,
-        [resumePendingTool],
-      );
+      for (const [index, resumePendingTool] of resumePendingTools.entries()) {
+        emitEvent({ type: "tool_use", round: rounds, toolUse: cloneState(resumePendingTool) });
+        await executeToolWithIntercept(
+          resumePendingTool,
+          rounds,
+          resumedToolResults,
+          resumePendingTools.slice(index),
+        );
+      }
       appendToolResultsToTranscript(resumedToolResults, rounds);
       // resume 路径也 flush 方向提示（与主循环一致，限 2 条；独立 user text 消息）
       if (pendingDirectionHints.length > 0) {
@@ -1822,7 +1847,7 @@ export async function runToolLoop({
         if (rounds !== undefined) messageRounds.set(hintMessage, rounds);
         pendingDirectionHints.length = 0;
       }
-      resumePendingTool = undefined;
+      resumePendingTools = [];
     }
     if (resumeCheckpoint && resumeTranscriptStart !== undefined) {
       const resumeRecordMessages = messages.slice(resumeTranscriptStart);

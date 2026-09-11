@@ -69,6 +69,78 @@ test("resumes after three rounds without replaying paid provider calls", async (
   ]);
 });
 
+test("resumes every pending tool in order after a mid-turn crash", async () => {
+  const store = createMemoryTranscriptStore();
+  const controller = new AbortController();
+  const firstExecutions = [];
+  const firstProvider = createFakeProvider([{
+    content: [
+      { type: "tool_use", id: "a", name: "work", input: { step: "a" } },
+      { type: "tool_use", id: "b", name: "work", input: { step: "b" } },
+      { type: "tool_use", id: "c", name: "work", input: { step: "c" } },
+    ],
+    stopReason: "tool_use",
+  }]);
+
+  await assert.rejects(
+    runToolLoop({
+      provider: firstProvider,
+      initialUserMessage: "run three tools",
+      executeTool: async ({ id }) => {
+        firstExecutions.push(id);
+        if (id === "b") controller.abort();
+        return `done-${id}`;
+      },
+      maxRounds: 2,
+      completion: false,
+      store,
+      runId: "resume-pending-tools",
+      signal: controller.signal,
+    }),
+    /aborted|abort/i,
+  );
+  assert.deepEqual(firstExecutions, ["a", "b"]);
+
+  const resumedExecutions = [];
+  const resumedProvider = createFakeProvider([
+    { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
+  ]);
+  const result = await runToolLoop({
+    provider: resumedProvider,
+    resume: true,
+    completion: false,
+    store,
+    runId: "resume-pending-tools",
+    executeTool: async ({ id }) => {
+      resumedExecutions.push(id);
+      return `resumed-${id}`;
+    },
+  });
+
+  assert.deepEqual(resumedExecutions, ["b", "c"]);
+  assert.equal(resumedProvider.requests.length, 1);
+  const toolUseIds = result.messages
+    .flatMap((message) => message.content ?? [])
+    .filter((block) => block.type === "tool_use")
+    .map((block) => block.id);
+  const toolResultIds = result.messages
+    .flatMap((message) => message.content ?? [])
+    .filter((block) => block.type === "tool_result")
+    .map((block) => block.tool_use_id);
+  assert.deepEqual(toolUseIds, ["a", "b", "c"]);
+  assert.deepEqual(toolResultIds, ["a", "b", "c"]);
+  assert.deepEqual(
+    resumedProvider.requests[0].messages.at(-1).content.map((block) => block.tool_use_id),
+    ["a", "b", "c"],
+  );
+  const persistedToolResultIds = (await store.load("resume-pending-tools"))
+    .flatMap((record) => record.messages ?? [])
+    .flatMap((message) => message.content ?? [])
+    .filter((block) => block.type === "tool_result")
+    .map((block) => block.tool_use_id);
+  assert.deepEqual(persistedToolResultIds, ["a", "b", "c"]);
+});
+
 test("resume rejects an empty transcript", async () => {
   const store = createMemoryTranscriptStore();
   const provider = createFakeProvider([]);

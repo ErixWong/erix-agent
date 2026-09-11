@@ -488,6 +488,42 @@ test("fails closed when a checkpoint cannot be persisted before a tool", async (
   assert.equal(executions, 0);
 });
 
+test("fails closed after a tool when its executed checkpoint cannot be persisted", async () => {
+  const store = createMemoryTranscriptStore();
+  const originalSaveCheckpoint = store.saveCheckpoint;
+  let executions = 0;
+  store.saveCheckpoint = async (runId, checkpoint) => {
+    if (checkpoint.status === "executed") {
+      throw new Error("checkpoint disk full after execution");
+    }
+    return originalSaveCheckpoint.call(store, runId, checkpoint);
+  };
+
+  await assert.rejects(
+    runToolLoop({
+      provider: createFakeProvider([
+        toolResponse("post-checkpoint-failure", "work"),
+      ]),
+      initialUserMessage: "post checkpoint failure",
+      executeTool: async () => {
+        executions += 1;
+        return "side effect completed";
+      },
+      store,
+      runId: "post-checkpoint-failure-run",
+      completion: false,
+      onPersistenceError: () => {},
+    }),
+    (error) => error instanceof KitError
+      && error.code === "checkpoint_failed"
+      && /after tool execution/.test(error.message)
+      && /already executed but result was not persisted/.test(error.message)
+      && error.termination?.reason === "failed",
+  );
+  assert.equal(executions, 1);
+  assert.equal((await store.loadRunState("post-checkpoint-failure-run")).state, "failed");
+});
+
 test("save-only checkpoint store (no loader) does not fail closed", async () => {
   // writer 无 loader 的 store 无法 resume——不应启用 fail-closed（否则宿主的 save-only
   // 适配器会在 checkpoint 偶发失败时无谓地杀掉任务）
