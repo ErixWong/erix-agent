@@ -67,6 +67,84 @@ test("streams text deltas and keeps the batch loop result", async () => {
   assert.equal(streamProvider.streamCalls.length, 1);
 });
 
+test("passes deltas through before chatStream returns when retry is disabled", async () => {
+  const order = [];
+  const provider = {
+    async chatStream(request) {
+      order.push("chatStream:start");
+      for (const chunk of ["你", "好"]) {
+        request.onDelta?.(chunk);
+        order.push(`provider:delta:${chunk}`);
+      }
+      order.push("chatStream:return");
+      return {
+        content: [{ type: "text", text: "你好" }],
+        stopReason: "end_turn",
+      };
+    },
+  };
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "hello",
+    executeTool: async () => "unused",
+    stream: true,
+    onDelta: (chunk) => order.push(`onDelta:${chunk}`),
+  });
+
+  assert.deepEqual(order, [
+    "chatStream:start",
+    "onDelta:你",
+    "provider:delta:你",
+    "onDelta:好",
+    "provider:delta:好",
+    "chatStream:return",
+  ]);
+});
+
+test("holds deltas until the successful attempt when retry is enabled", async () => {
+  const order = [];
+  let calls = 0;
+  const provider = {
+    async chatStream(request) {
+      calls += 1;
+      order.push(`chatStream:start:${calls}`);
+      request.onDelta?.(calls === 1 ? "失败" : "成功");
+      order.push(`chatStream:return:${calls}`);
+      if (calls === 1) {
+        const error = new Error("connection reset");
+        error.retryable = true;
+        throw error;
+      }
+      return {
+        content: [{ type: "text", text: "成功" }],
+        stopReason: "end_turn",
+      };
+    },
+  };
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "hello",
+    executeTool: async () => "unused",
+    stream: true,
+    onDelta: (chunk) => order.push(`onDelta:${chunk}`),
+    retry: {
+      attempts: 1,
+      backoffBaseMs: 0,
+      sleepImpl: async () => {},
+    },
+  });
+
+  assert.deepEqual(order, [
+    "chatStream:start:1",
+    "chatStream:return:1",
+    "chatStream:start:2",
+    "chatStream:return:2",
+    "onDelta:成功",
+  ]);
+});
+
 test("streams tool-loop responses while executing tools normally", async () => {
   const streamedChunks = [];
   const executed = [];

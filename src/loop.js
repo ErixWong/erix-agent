@@ -1042,9 +1042,11 @@ export async function runToolLoop({
   let latestApiInputTokens;
   let latestApiEstimatedTokens;
   const retryOptions = retry && typeof retry === "object" ? retry : null;
-  const retryAttempts = Number.isInteger(retryOptions?.attempts)
-    ? Math.max(0, retryOptions.attempts)
-    : 2;
+  const retryAttempts = retryOptions === null
+    ? 0
+    : Number.isInteger(retryOptions.attempts)
+      ? Math.max(0, retryOptions.attempts)
+      : 2;
   const backoffBaseMs = Number.isFinite(retryOptions?.backoffBaseMs)
     ? Math.max(0, retryOptions.backoffBaseMs)
     : 1500;
@@ -1307,7 +1309,20 @@ export async function runToolLoop({
         maxAttempts: retryAttempts + 1,
       });
 
+      const dispatchAttemptEvent = (event, callback) => {
+        callback();
+        if (event.type === "usage") {
+          emitEvent({ type: "usage", round, usage: event.usage });
+        }
+        if (event.type !== "usage" || attemptUsage !== undefined) {
+          roundEventDeltas.push(event);
+        }
+      };
       const queueEvent = (event, callback) => {
+        if (retryAttempts === 0) {
+          dispatchAttemptEvent(event, callback);
+          return;
+        }
         attemptEvents.push({ event, callback });
       };
       try {
@@ -1352,13 +1367,7 @@ export async function runToolLoop({
           }
           if (recovered) emitEvent({ type: "recovered", round, attempt });
           for (const { event, callback } of attemptEvents) {
-            callback();
-            if (event.type === "usage") {
-              emitEvent({ type: "usage", round, usage: event.usage });
-            }
-            if (event.type !== "usage" || attemptUsage !== undefined) {
-              roundEventDeltas.push(event);
-            }
+            dispatchAttemptEvent(event, callback);
           }
           return {
             response,
