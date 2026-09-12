@@ -11,7 +11,6 @@ import {
   createFileTranscriptStore,
   runToolLoop,
 } from "../src/index.js";
-import { createRecallTool } from "../src/tools/index.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
 import {
   closeAllMcpServers,
@@ -315,11 +314,8 @@ function parseMcpArgs(args) {
   return options;
 }
 
-function combineTools(cliTools, skillTools, mcpProxy, recallTool) {
+function combineTools(cliTools, skillTools, mcpProxy) {
   const tools = [...cliTools.tools];
-  if (recallTool !== undefined) {
-    tools.push(recallTool.schema);
-  }
   if (mcpProxy?.enabled) {
     tools.push(mcpProxy.schema);
   }
@@ -329,9 +325,6 @@ function combineTools(cliTools, skillTools, mcpProxy, recallTool) {
     executeTool: async (name, input, context) => {
       if (name === "mcp" && mcpProxy?.enabled) {
         return mcpProxy.execute(input);
-      }
-      if (name === "recall" && recallTool !== undefined) {
-        return recallTool.execute(input);
       }
       if (skillToolNames.has(name)) {
         return skillTools.executeTool(name, input, context);
@@ -480,15 +473,14 @@ export async function runChat({
       ts: new Date().toISOString(),
     });
   }
-  const recallTool = createRecallTool({ store, runId });
   const cliTools = createCliTools({ cwd });
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir,
-    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp", "recall"],
+    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
-  const tools = combineTools(cliTools, skillTools, mcpProxy, recallTool);
+  const tools = combineTools(cliTools, skillTools, mcpProxy);
   const context = buildCompactionContext(config, compactBudget);
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, { output: toolOutput });

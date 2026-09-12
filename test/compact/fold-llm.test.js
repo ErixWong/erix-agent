@@ -42,16 +42,17 @@ test("folds old rounds through the injected summarizer and preserves the payload
   const result = await strategy.compact(messages, { keepRounds: 1 });
 
   assert.equal(strategy.name, "fold-llm");
-  assert.deepEqual(calls, [{
-    messages: messages.slice(1, 5),
-    roundRange: { from: 1, to: 4 },
-  }]);
+  assert.deepEqual(calls[0].messages, messages.slice(1, 5));
+  assert.deepEqual(calls[0].roundRange, { from: 1, to: 4 });
+  assert.doesNotMatch(calls[0].promptGuide, /recall/i);
+  assert.equal(calls[0].recoveryHint, "早期轮次已折叠；需要原文请重读文件或查看持久笔记；关键值应当已落盘");
   assert.deepEqual(result.foldedPayload, messages.slice(1, 5));
   assert.equal(result.foldedRounds, 4);
   assert.equal(result.compacted, true);
   assert.deepEqual(result.messages.at(-1), messages.at(-1));
   assert.equal(result.messages[0].content[0].type, "text");
-  assert.equal(result.messages[0].content[0].text, summary);
+  assert.match(result.messages[0].content[0].text, new RegExp(summary));
+  assert.match(result.messages[0].content[0].text, /早期轮次已折叠；需要原文请重读文件或查看持久笔记；关键值应当已落盘/);
   assert.equal(result.tokensBefore, estimateMessageTokens(messages));
   assert.equal(result.tokensAfter, estimateMessageTokens(result.messages));
 });
@@ -90,22 +91,33 @@ test("token truncates an unsectioned summary and marks the truncation", async ()
     maxSummaryTokens,
   }).compact(conversation(), { keepRounds: 1 });
 
-  assert.match(result.messages[0].content[0].text, /截断/);
+  assert.match(result.messages[0].content[0].text, /截断|修剪/);
   assert.ok(estimateTokens(result.messages[0].content[0].text) <= maxSummaryTokens);
 });
 
-test("publishes the recall trace and guidance requirements in the prompt guide", () => {
+test("publishes recovery guidance requirements without recall advertising", () => {
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 阶段/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 已改文件/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 已验证项/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 下一步/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /已完成项禁止重做/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 主题词面包屑/);
-  assert.match(SUMMARIZER_PROMPT_GUIDE, /已于第 X 轮 recall 过 '<pattern>'（结论：…）/);
-  assert.match(
-    SUMMARIZER_PROMPT_GUIDE,
-    /早期轮次已折叠，可用 recall\(pattern: "关键词"\) 搜回细节/,
-  );
+  assert.doesNotMatch(SUMMARIZER_PROMPT_GUIDE, /recall/i);
+  assert.match(SUMMARIZER_PROMPT_GUIDE, /早期轮次已折叠；需要原文请重读文件或查看持久笔记；关键值应当已落盘/);
+});
+
+test("includes an injected recovery hint in the LLM summary", async () => {
+  const hint = "恢复提示：请查看 durable-notes.md";
+  const result = await createFoldLlmStrategy({
+    recoveryHint: hint,
+    summarizer: async ({ promptGuide, recoveryHint }) => {
+      assert.match(promptGuide, new RegExp(hint));
+      assert.equal(recoveryHint, hint);
+      return "## 阶段\n完成工作。";
+    },
+  }).compact(conversation(), { keepRounds: 1 });
+
+  assert.match(result.messages[0].content[0].text, new RegExp(hint));
 });
 
 test("does not call the summarizer when every round is retained", async () => {

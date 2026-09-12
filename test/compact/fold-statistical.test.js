@@ -27,7 +27,7 @@ test("prepends a deterministic tool-footprint summary before the head user task"
   const strategy = createFoldStatisticalStrategy();
   const result = await strategy.compact(messages, { keepRounds: 1, budgetTokens: 0 });
   const summary =
-    "【上下文折叠·v1·erix-9f6e2c】早期第 1–2 轮（共 2 轮）已折叠。工具足迹：exec×1, writeFile×1。可用 recall(pattern: \"关键词\") 搜回细节，或 recall(fromRound: 1, toRound: 2) 取原文（大段可能截断，优先关键词）。";
+    "【上下文折叠·v1·erix-9f6e2c】早期第 1–2 轮（共 2 轮）已折叠。工具足迹：exec×1, writeFile×1。早期轮次已折叠；需要原文请重读文件或查看持久笔记；关键值应当已落盘";
 
   assert.equal(strategy.name, "fold-statistical");
   assert.deepEqual(result.messages, [
@@ -62,6 +62,22 @@ test("appends a summary to array user content without adding a message", async (
   assert.match(result.messages[0].content[0].text, /工具足迹：无/);
   assert.deepEqual(result.messages[0].content[1], messages[0].content[0]);
   assert.equal(result.messages[0].content.length, 2);
+});
+
+test("omits recall from the default summary and accepts an injected recovery hint", async () => {
+  const messages = [
+    { role: "user", content: "request" },
+    { role: "assistant", content: [{ type: "text", text: "old" }] },
+    { role: "user", content: "recent" },
+  ];
+  const defaultResult = await createFoldStatisticalStrategy().compact(messages, { keepRounds: 1 });
+  const defaultSummary = defaultResult.messages[0].content[0].text;
+  assert.doesNotMatch(defaultSummary, /recall/i);
+
+  const hint = "恢复提示：请查看 durable-notes.md";
+  const customResult = await createFoldStatisticalStrategy({ recoveryHint: hint })
+    .compact(messages, { keepRounds: 1 });
+  assert.match(customResult.messages[0].content[0].text, new RegExp(hint));
 });
 
 test("merges consecutive fold summaries into one block before the task", async () => {

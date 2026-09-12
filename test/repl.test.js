@@ -217,7 +217,7 @@ test("runRepl aborts the active loop on SIGINT and keeps readline open", async (
   }
 });
 
-test("runRepl resumes from the transcript store and exposes recall", async () => {
+test("runRepl resumes from the transcript store without a recall tool", async () => {
   const dir = await mkdtemp(join(tmpdir(), "erix-repl-store-test-"));
   const input = new PassThrough();
   input.isTTY = true;
@@ -241,7 +241,7 @@ test("runRepl resumes from the transcript store and exposes recall", async () =>
     await run;
 
     assert.equal(provider.requests.length, 2);
-    assert.ok(provider.requests[0].tools.some((tool) => tool.name === "recall"));
+    assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), false);
     assert.ok(provider.requests[1].messages.some((message) => (
       message.role === "user"
       && message.content?.some((block) => block.text === "second")

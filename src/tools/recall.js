@@ -237,10 +237,43 @@ function overview(records, budget) {
   return fitBodyWithSuffix(body, watermark, budget, "[概览截断]");
 }
 
+function patternSegmentsFromText(text, pattern) {
+  const lines = splitLines(text);
+  const matches = makeMatcher(pattern);
+  const hits = lines
+    .map((line, index) => (matches.test(line) ? index : -1))
+    .filter((index) => index >= 0);
+  const short = (line) => (line.length > 120 ? line.slice(0, 120) + "…" : line);
+  return [...new Set(hits)].map((hit) => {
+    const before = lines.slice(Math.max(0, hit - 2), hit).map((line) => `  ↑ ${short(line)}`);
+    const after = lines.slice(hit + 1, hit + 3).map((line) => `  ↓ ${short(line)}`);
+    return [
+      centerOnMatch(lines[hit], matches.firstIndex(lines[hit])),
+      ...before,
+      ...after,
+    ].join("\n");
+  });
+}
+
+async function recallText(store, runId, options) {
+  if (typeof store.recall !== "function") return undefined;
+  try {
+    const result = await store.recall(
+      runId,
+      options.fromRound,
+      options.toRound,
+      options.pattern,
+    );
+    return typeof result === "string" ? result : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Create a transcript recall tool with progressive, bounded output.
  *
- * @param {{store:{load:Function}, runId:string, limits?:object}} options
+ * @param {{store:{load:Function, recall?:Function}, runId:string, limits?:object}} options
  * @returns {{schema:object, execute:(input?:object)=>Promise<string>}}
  */
 export function createRecallTool({ store, runId, limits = {} }) {
@@ -261,16 +294,46 @@ export function createRecallTool({ store, runId, limits = {} }) {
   };
 
   const execute = async (input = {}) => {
-    const records = await store.load(runId);
     const options = input && typeof input === "object" ? input : {};
     const offset = nonNegativeInteger(options.offset, 0);
 
     if (options.pattern !== undefined) {
-      return cappedSegments(patternSegments(records, String(options.pattern)), offset, bounded)
-        || EMPTY_RESULT;
+      const pattern = String(options.pattern);
+      const recalled = await recallText(store, runId, {
+        fromRound: options.fromRound,
+        toRound: options.toRound,
+        pattern,
+      });
+      if (recalled !== undefined) {
+        let searchable = recalled;
+        if (searchable === "" && /[|\[\]()+*?\\^$]/.test(pattern)) {
+          searchable = await recallText(store, runId, {
+            fromRound: options.fromRound,
+            toRound: options.toRound,
+          }) ?? searchable;
+        }
+        return cappedSegments(patternSegmentsFromText(searchable, pattern), offset, bounded)
+          || EMPTY_RESULT;
+      }
+      const records = await store.load(runId);
+      return cappedSegments(patternSegments(records, pattern), offset, bounded) || EMPTY_RESULT;
     }
 
     if (options.fromRound !== undefined || options.toRound !== undefined) {
+      const recalled = await recallText(store, runId, {
+        fromRound: options.fromRound,
+        toRound: options.toRound,
+      });
+      if (recalled !== undefined) {
+        const rangeLimits = {
+          ...bounded,
+          maxSegments: bounded.rangeMaxSegments,
+          segmentTokens: bounded.rangeSegmentTokens,
+          totalTokens: bounded.rangeTotalTokens,
+        };
+        return cappedSegments(recalled ? [recalled] : [], offset, rangeLimits) || EMPTY_RESULT;
+      }
+      const records = await store.load(runId);
       const selected = records.filter((record) => (
         (options.fromRound === undefined || record.round >= options.fromRound)
         && (options.toRound === undefined || record.round <= options.toRound)
@@ -285,6 +348,7 @@ export function createRecallTool({ store, runId, limits = {} }) {
       return cappedSegments(segments, offset, rangeLimits) || EMPTY_RESULT;
     }
 
+    const records = await store.load(runId);
     return overview(records, bounded.overviewTokens);
   };
 
