@@ -1,11 +1,14 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createToolRegistry } from "../src/tools/registry.js";
 
 const DEFAULT_ENTRYPOINT = "skill.mjs";
+const BUNDLED_SKILLS_DIRECTORY = path.resolve(
+  fileURLToPath(new URL("../skills/", import.meta.url)),
+);
 
 function isDirectory(directory) {
   try {
@@ -149,6 +152,7 @@ export function skillDirectories({
     ? [
       path.join(normalizeRoot(home), ".erix", "skills"),
       path.join(normalizeRoot(cwd), ".erix", "skills"),
+      BUNDLED_SKILLS_DIRECTORY,
     ]
     : [path.resolve(normalizeRoot(cwd), String(skillsDir))];
 
@@ -164,6 +168,7 @@ export function discoverSkills({ home, cwd, skillsDir } = {}) {
   const errors = [];
   const candidates = skillsDir === undefined
     ? [
+      BUNDLED_SKILLS_DIRECTORY,
       path.join(normalizeRoot(home ?? homedir()), ".erix", "skills"),
       path.join(normalizeRoot(cwd ?? process.cwd()), ".erix", "skills"),
     ]
@@ -249,6 +254,8 @@ export async function buildSkillTools({
   const usedNames = new Set(builtinNameSet);
   const schemas = [];
   const executors = {};
+  let notesJanitor;
+  let notesCompleteRun;
 
   for (const skill of loaded.skills) {
     const conflictNames = skill.tools
@@ -273,6 +280,14 @@ export async function buildSkillTools({
         error: errorMessage(error),
       });
       continue;
+    }
+    if (skill.skillId === "notes") {
+      if (typeof skillModule.runNotesJanitor === "function") {
+        notesJanitor = skillModule.runNotesJanitor;
+      }
+      if (typeof skillModule.completeRun === "function") {
+        notesCompleteRun = skillModule.completeRun;
+      }
     }
 
     const missingExecutors = skill.tools
@@ -299,5 +314,7 @@ export async function buildSkillTools({
     tools: schemas,
     executeTool: registry.executeTool,
     errors,
+    notesJanitor,
+    notesCompleteRun,
   };
 }

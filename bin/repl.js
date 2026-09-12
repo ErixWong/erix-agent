@@ -140,6 +140,24 @@ export function defaultSessionId(cwd, { unique = false } = {}) {
   return unique ? `${stableId}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}` : stableId;
 }
 
+function setNotesEnvironment(runId) {
+  const previous = {
+    runId: process.env.ERIX_RUN_ID,
+    notesDir: process.env.ERIX_NOTES_DIR,
+  };
+  process.env.ERIX_RUN_ID = String(runId);
+  // --dir is transcript/archive storage; keep notes in ~/.erix/notes so their
+  // retention and permissions do not depend on the selected transcript path.
+  process.env.ERIX_NOTES_DIR = previous.notesDir
+    ?? join(homedir(), ".erix", "notes");
+  return () => {
+    if (previous.runId === undefined) delete process.env.ERIX_RUN_ID;
+    else process.env.ERIX_RUN_ID = previous.runId;
+    if (previous.notesDir === undefined) delete process.env.ERIX_NOTES_DIR;
+    else process.env.ERIX_NOTES_DIR = previous.notesDir;
+  };
+}
+
 export function parseReplArgs(argv, cwd = process.cwd()) {
   const args = Array.isArray(argv) ? argv : [];
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
@@ -356,6 +374,14 @@ export async function runRepl(argv, io = {}) {
     skillsDir: options.skillsDir,
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
+  {
+    const restoreNotesEnvironment = setNotesEnvironment(options.session);
+    try {
+      await skillTools.notesJanitor?.();
+    } finally {
+      restoreNotesEnvironment();
+    }
+  }
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: options.configPath, cwd });
   const executeTool = wrapExecuteTool(
     buildExecuteTool(cliTools, skillTools, mcpProxy),
@@ -412,9 +438,16 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   };
 
   const saveAndFinish = async () => {
-    await saveSession(sessionDir, options.session, messages);
-    writeLine(output, `再见（会话已保存到 ${archivePath}）`);
-    resolveRun();
+    const restoreNotesEnvironment = setNotesEnvironment(options.session);
+    try {
+      await saveSession(sessionDir, options.session, messages);
+      await skillTools.notesCompleteRun?.();
+      await skillTools.notesJanitor?.();
+      writeLine(output, `再见（会话已保存到 ${archivePath}）`);
+      resolveRun();
+    } finally {
+      restoreNotesEnvironment();
+    }
   };
 
   rl.on("close", () => {
@@ -587,6 +620,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         },
       };
 
+      const restoreNotesEnvironment = setNotesEnvironment(options.session);
       try {
         const result = await (io.loop ?? runToolLoop)(loopOptions);
         messages = result.messages;
@@ -609,6 +643,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       } finally {
         idle?.dispose();
         if (activeRunController === runController) activeRunController = undefined;
+        restoreNotesEnvironment();
       }
     }
 

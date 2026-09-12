@@ -12,6 +12,7 @@
   "files": [
     "src",
     "bin",
+    "skills",
     "README.md",
     "test/contract",
     "LICENSE"

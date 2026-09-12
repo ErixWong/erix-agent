@@ -421,7 +421,35 @@ async function runMcp({ configPath }) {
   }
 }
 
-export async function runChat({
+function setNotesEnvironment(runId) {
+  const previous = {
+    runId: process.env.ERIX_RUN_ID,
+    notesDir: process.env.ERIX_NOTES_DIR,
+  };
+  process.env.ERIX_RUN_ID = String(runId);
+  // Notes deliberately stay beside ~/.erix rather than under --dir: --dir is
+  // transcript/archive storage and must not change the notes retention boundary.
+  process.env.ERIX_NOTES_DIR = previous.notesDir
+    ?? path.join(homedir(), ".erix", "notes");
+  return () => {
+    if (previous.runId === undefined) delete process.env.ERIX_RUN_ID;
+    else process.env.ERIX_RUN_ID = previous.runId;
+    if (previous.notesDir === undefined) delete process.env.ERIX_NOTES_DIR;
+    else process.env.ERIX_NOTES_DIR = previous.notesDir;
+  };
+}
+
+export async function runChat(options = {}) {
+  const runId = options.session ?? defaultSessionId(process.cwd(), { unique: true });
+  const restoreNotesEnvironment = setNotesEnvironment(runId);
+  try {
+    return await runChatWithNotes({ ...options, _notesRunId: runId });
+  } finally {
+    restoreNotesEnvironment();
+  }
+}
+
+async function runChatWithNotes({
   prompt,
   configPath,
   skillsDir,
@@ -440,9 +468,10 @@ export async function runChat({
   config: configOverride,
   toolOutput = console.log,
   loop: loopOverride,
+  _notesRunId,
 }) {
   const cwd = process.cwd();
-  const runId = session ?? defaultSessionId(cwd, { unique: true });
+  const runId = _notesRunId ?? session ?? defaultSessionId(cwd, { unique: true });
   const explicitSession = sessionExplicit ?? session !== undefined;
   const config = configOverride ?? await loadCliConfig({ configPath });
   const maxTokens = config.maxOutputTokens;
@@ -488,6 +517,7 @@ export async function runChat({
     skillsDir,
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
+  await skillTools.notesJanitor?.();
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
   const tools = combineTools(cliTools, skillTools, mcpProxy);
   const recoveryHint = buildArchiveRecoveryHint(archiveDir);
@@ -656,7 +686,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     throw error;
   } finally {
     idle?.dispose();
-    await closeAllMcpServers();
+    try {
+      await skillTools.notesCompleteRun?.();
+      await skillTools.notesJanitor?.();
+    } finally {
+      await closeAllMcpServers();
+    }
   }
 }
 

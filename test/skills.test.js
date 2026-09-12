@@ -70,11 +70,18 @@ test("skillDirectories returns only existing global and project directories", as
       await mkdir(globalSkills, { recursive: true });
 
       await withEnvironment({ HOME: home }, () => {
-        assert.deepEqual(skillDirectories({ home, cwd }), [globalSkills]);
+        assert.deepEqual(skillDirectories({ home, cwd }), [
+          globalSkills,
+          join(process.cwd(), "skills"),
+        ]);
       });
 
       await mkdir(projectSkills, { recursive: true });
-      assert.deepEqual(skillDirectories({ home, cwd }), [globalSkills, projectSkills]);
+      assert.deepEqual(skillDirectories({ home, cwd }), [
+        globalSkills,
+        projectSkills,
+        join(process.cwd(), "skills"),
+      ]);
     });
   });
 });
@@ -90,14 +97,14 @@ test("discoverSkills gives the project directory priority for duplicate ids", as
       await writeSkill(projectSkills, "projectOnly", "");
 
       const discovered = discoverSkills({ home, cwd });
-      assert.equal(discovered.length, 3);
+      assert.equal(discovered.length, 4);
       assert.equal(
         discovered.find((skill) => skill.id === "shared").dir,
         join(projectSkills, "shared"),
       );
       assert.deepEqual(
         discovered.map((skill) => skill.id).sort(),
-        ["globalOnly", "projectOnly", "shared"],
+        ["globalOnly", "notes", "projectOnly", "shared"],
       );
     });
   });
@@ -251,7 +258,7 @@ test("loadAllSkills keeps valid skills when another skill fails", async () => {
     `);
 
     const result = await loadAllSkills({ home: cwd, cwd });
-    assert.deepEqual(result.skills.map((skill) => skill.skillId), ["valid"]);
+    assert.deepEqual(result.skills.map((skill) => skill.skillId), ["notes", "valid"]);
     assert.equal(result.errors.length, 1);
     assert.equal(result.errors[0].skillId, "invalid");
   });
@@ -264,6 +271,7 @@ test("buildSkillTools reports conflicts with built-in tools", async () => {
     const result = await buildSkillTools({
       home: cwd,
       cwd,
+      skillsDir: skillsDirectory,
       builtinNames: ["readFile", "rg", "tree"],
     });
     assert.deepEqual(result.tools, []);
