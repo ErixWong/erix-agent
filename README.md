@@ -110,7 +110,15 @@ src/
 
 ## 状态
 
-- **v0.3.4（2026-09-07，npm 最新）**：judge 任务简报修复（#34）——多轮会话延续宿主（touwaka 等传整段对话历史）不再拿过期任务当审计基准：
+- **v0.3.5（2026-09-12，npm 最新）**：全项目体检修复批次（#37~#45，PR #47~#56）——流式回调 retry=0 实时透传（`erix chat --stream` 与宿主 SSE 转发恢复实时增量）；
+  checkpoint 执行后写失败 fail-closed（防崩溃恢复重复执行工具副作用）；resume 补执行全部 pending 工具（原只补一个致协议断裂）；
+  双协议 SSE `data:` 无空格兼容、408 归 timeout 可重试、legacy `function_call` 转换、providerOptions 不再覆盖核心字段；
+  file store runId 哈希命名空间隔离 + load 尾行修复 + state 原子写；repl 会话路径安全/原子写/0600 权限/Ctrl-C 中止；
+  MCP 握手失败进程清理/池键隔离/HTTP id 校验；tokens 系数校验 + 工具字段计入等 8 项输入校验；round judge 降级语义文档化；新增 `onObserverError`。
+  **宿主迁移注意（行为变化）**：①流式 onDelta 时机从「响应完成后批量」变为实时（依赖旧批处理时序的宿主需评估）；②checkpoint 执行后写失败现在显式 fail（宿主 executeTool 须按 tool id 幂等）；
+  ③file store 不安全 runId 的映射文件名改为 `run-h-<hash>`（旧 `run-<hash>` 存档不再读取，合法 id 不受影响）；④token 估算系数非法值现在 fail-fast 抛 TypeError（原静默 NaN）；
+  ⑤l0 `exitOk` 空工具结果轮次从 true 改为 false；⑥observer 回调异常改走 `onObserverError`（不再触发 onPersistenceError）。单测 473/0。
+- **v0.3.4（2026-09-07）**：judge 任务简报修复（#34）——多轮会话延续宿主（touwaka 等传整段对话历史）不再拿过期任务当审计基准：
   显式 `task`/`context.task` 成为 judge/reflection/wrapup 最高权威基准（预算 1500 码点，多轮宿主应传当前任务/最新指令）；
   无显式 task 时 fallback 升级为**入口最后一条** user 文本（单任务首条=末条，行为不变）；入口快照防循环内注入（方向提示/nudge）污染；
   resume 只扫 round-0 seed 消息、无可信 seed 时**空基准宁缺勿错**（防跨 run 复现误判）；截断统一为码点语义。三轮独立复核收敛，单测 429/0。
