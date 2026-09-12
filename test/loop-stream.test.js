@@ -102,6 +102,93 @@ test("passes deltas through before chatStream returns when retry is disabled", a
   ]);
 });
 
+test("isolates streaming observer failures from a successful provider call", async () => {
+  const reported = [];
+  const events = [];
+  let calls = 0;
+  const provider = {
+    async chatStream(request) {
+      calls += 1;
+      request.onDelta?.("hello");
+      request.onUsage?.({ input_tokens: 2, output_tokens: 1 });
+      return {
+        content: [{ type: "text", text: "done" }],
+        stopReason: "end_turn",
+      };
+    },
+  };
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "unused",
+    stream: true,
+    onDelta: () => {
+      throw new Error("delta observer failed");
+    },
+    onUsage: () => {
+      throw new Error("usage observer failed");
+    },
+    onEvent: (event) => events.push(event),
+    onPersistenceError: (error) => reported.push(error.message),
+    retry: {
+      attempts: 1,
+      backoffBaseMs: 0,
+      sleepImpl: async () => {},
+    },
+  });
+
+  assert.equal(result.finalText, "done");
+  assert.equal(result.usage.input_tokens, 2);
+  assert.equal(calls, 1);
+  assert.deepEqual(reported, ["delta observer failed", "usage observer failed"]);
+  assert.deepEqual(events.filter((event) => event.type === "usage"), [{
+    type: "usage",
+    round: 1,
+    usage: { input_tokens: 2, output_tokens: 1 },
+  }]);
+});
+
+test("isolates streaming observer failures while flushing a retried attempt", async () => {
+  let calls = 0;
+  const reported = [];
+  const provider = {
+    async chatStream(request) {
+      calls += 1;
+      request.onDelta?.(calls === 1 ? "discarded" : "kept");
+      if (calls === 1) {
+        const error = new Error("temporary provider failure");
+        error.retryable = true;
+        throw error;
+      }
+      return {
+        content: [{ type: "text", text: "done" }],
+        stopReason: "end_turn",
+      };
+    },
+  };
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "unused",
+    stream: true,
+    onDelta: () => {
+      throw new Error("queued observer failed");
+    },
+    onPersistenceError: (error) => reported.push(error.message),
+    retry: {
+      attempts: 1,
+      backoffBaseMs: 0,
+      sleepImpl: async () => {},
+    },
+  });
+
+  assert.equal(result.finalText, "done");
+  assert.equal(calls, 2);
+  assert.deepEqual(reported, ["queued observer failed"]);
+});
+
 test("holds deltas until the successful attempt when retry is enabled", async () => {
   const order = [];
   let calls = 0;

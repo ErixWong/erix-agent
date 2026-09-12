@@ -141,6 +141,244 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
   assert.deepEqual(persistedToolResultIds, ["a", "b", "c"]);
 });
 
+test("resumes a partial tool-result message without dropping text or breaking pairing", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "resume-mixed-tool-result";
+  await store.appendRound(runId, {
+    round: 0,
+    messages: [{ role: "user", content: "task" }],
+  });
+  await store.saveCheckpoint(runId, {
+    round: 1,
+    pendingToolUses: [
+      { type: "tool_use", id: "a", name: "work", input: { step: "a" } },
+      { type: "tool_use", id: "b", name: "work", input: { step: "b" } },
+    ],
+    messages: [
+      { role: "user", content: "task" },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "a", name: "work", input: { step: "a" } },
+          { type: "tool_use", id: "b", name: "work", input: { step: "b" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "a", content: "done-a" },
+          { type: "text", text: "keep this text" },
+        ],
+      },
+    ],
+    executedToolIds: ["a"],
+    toolResults: [{
+      toolUseId: "a",
+      toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
+    }],
+  });
+
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
+  ]);
+  await runToolLoop({
+    provider,
+    resume: true,
+    completion: false,
+    store,
+    runId,
+    executeTool: async ({ id }) => `done-${id}`,
+  });
+
+  const toolResultMessage = provider.requests[0].messages[2];
+  assert.deepEqual(toolResultMessage.content, [
+    { type: "tool_result", tool_use_id: "a", content: "done-a" },
+    { type: "text", text: "keep this text" },
+    { type: "tool_result", tool_use_id: "b", content: "done-b" },
+  ]);
+});
+
+test("does not merge a tool result whose id belongs to another assistant call", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "resume-mismatched-tool-result";
+  await store.appendRound(runId, {
+    round: 0,
+    messages: [{ role: "user", content: "task" }],
+  });
+  await store.saveCheckpoint(runId, {
+    round: 1,
+    pendingToolUses: [
+      { type: "tool_use", id: "a", name: "work", input: {} },
+      { type: "tool_use", id: "b", name: "work", input: {} },
+    ],
+    messages: [
+      { role: "user", content: "task" },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "a", name: "work", input: {} },
+          { type: "tool_use", id: "b", name: "work", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "wrong", content: "wrong" }],
+      },
+    ],
+    executedToolIds: ["a"],
+    toolResults: [{
+      toolUseId: "a",
+      toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
+    }],
+  });
+
+  await assert.rejects(
+    runToolLoop({
+      provider: createFakeProvider([
+        { content: [{ type: "text", text: "unreachable" }], stopReason: "end_turn" },
+      ]),
+      resume: true,
+      completion: false,
+      store,
+      runId,
+      executeTool: async () => "done-b",
+    }),
+    (error) => error?.code === "invalid_messages",
+  );
+});
+
+test("resumes tool results before a later direction hint without moving the hint", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "resume-tool-result-before-hint";
+  await store.appendRound(runId, {
+    round: 0,
+    messages: [{ role: "user", content: "task" }],
+  });
+  await store.saveCheckpoint(runId, {
+    round: 1,
+    pendingToolUses: [
+      { type: "tool_use", id: "a", name: "work", input: {} },
+      { type: "tool_use", id: "b", name: "work", input: {} },
+    ],
+    messages: [
+      { role: "user", content: "task" },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "a", name: "work", input: {} },
+          { type: "tool_use", id: "b", name: "work", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }],
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "（附方向提示：换一种方法）" }],
+      },
+    ],
+    executedToolIds: ["a"],
+    toolResults: [{
+      toolUseId: "a",
+      toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
+    }],
+  });
+
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
+  ]);
+  await runToolLoop({
+    provider,
+    resume: true,
+    completion: false,
+    store,
+    runId,
+    executeTool: async ({ id }) => `done-${id}`,
+  });
+
+  assert.deepEqual(
+    provider.requests[0].messages.slice(-3).map((message) => message.role),
+    ["assistant", "user", "user"],
+  );
+  assert.deepEqual(
+    provider.requests[0].messages.at(-2).content.map((block) => block.tool_use_id),
+    ["a", "b"],
+  );
+  assert.match(provider.requests[0].messages.at(-1).content[0].text, /附方向提示/);
+});
+
+test("restores judge interception count from executed checkpoint tools", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "resume-judge-count";
+  await store.appendRound(runId, {
+    round: 0,
+    messages: [{ role: "user", content: "task" }],
+  });
+  await store.saveCheckpoint(runId, {
+    round: 1,
+    pendingToolUses: [
+      { type: "tool_use", id: "a", name: "work", input: { step: 1 } },
+      { type: "tool_use", id: "b", name: "work", input: { step: 2 } },
+    ],
+    messages: [
+      { role: "user", content: "task" },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "a", name: "work", input: { step: 1 } },
+          { type: "tool_use", id: "b", name: "work", input: { step: 2 } },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }],
+      },
+    ],
+    executedToolIds: ["a"],
+    toolResults: [{
+      toolUseId: "a",
+      toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
+    }],
+  });
+
+  const audited = [];
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          done: true,
+          confidence: 1,
+          reason: "continue",
+          evidence: "checkpoint restored",
+        }),
+      }],
+    },
+  ]);
+  await runToolLoop({
+    provider,
+    resume: true,
+    completion: false,
+    store,
+    runId,
+    executeTool: async ({ id }) => `done-${id}`,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => audited.push(info.tool?.id),
+  });
+
+  assert.deepEqual(audited, ["b"]);
+  assert.equal(judge.requests.length, 1);
+});
+
 test("resume rejects an empty transcript", async () => {
   const store = createMemoryTranscriptStore();
   const provider = createFakeProvider([]);
