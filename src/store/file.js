@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+const HASHED_RUN_ID_PREFIX = "run-h-";
+
 /**
  * @typedef {{
  *   round:number,
@@ -23,11 +25,15 @@ import { join } from "node:path";
 export function safeRunId(runId) {
   const value = String(runId);
   if (/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(value)
-    && value !== "." && value !== "..") {
+    && value !== "." && value !== ".."
+    && !value.startsWith(HASHED_RUN_ID_PREFIX)) {
+    // Keep existing safe-id filenames readable; the reserved prefix prevents
+    // a user id from colliding with the hashed namespace. Legacy unsafe
+    // run-<hash> names are intentionally not read because they are ambiguous.
     return value;
   }
   const digest = createHash("sha256").update(value).digest("hex").slice(0, 24);
-  return `run-${digest}`;
+  return `${HASHED_RUN_ID_PREFIX}${digest}`;
 }
 
 function transcriptPath(dir, runId) {
@@ -79,6 +85,17 @@ async function* readRecords(path) {
         newlineIndex = buffer.indexOf("\n");
       }
     }
+
+    // A crash can leave a complete JSON record after the final newline.
+    // Ignore an incomplete tail, matching repairTrailingFragment semantics.
+    if (buffer.length > 0) {
+      const jsonLine = buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer;
+      try {
+        yield JSON.parse(jsonLine);
+      } catch {
+        // An incomplete EOF fragment is not a readable record.
+      }
+    }
   } catch (error) {
     if (error?.code === "ENOENT") return;
     throw error;
@@ -102,7 +119,7 @@ async function repairTrailingFragment(path, handle) {
   try {
     const parsed = JSON.parse(trailing.toString("utf8"));
     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      await handle.write("\n", null, "utf8");
+      await handle.write("\n", size, "utf8");
       return;
     }
   } catch {
@@ -114,6 +131,18 @@ async function repairTrailingFragment(path, handle) {
     trailing,
   );
   await handle.truncate(lastNewline + 1);
+}
+
+async function repairTranscriptTail(path) {
+  let handle;
+  try {
+    handle = await open(path, "r+");
+    await repairTrailingFragment(path, handle);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  } finally {
+    await handle?.close();
+  }
 }
 
 async function appendRecord(path, runId, record) {
@@ -166,8 +195,10 @@ async function appendRecord(path, runId, record) {
 export function createFileTranscriptStore({ dir }) {
   const appendLocks = new Map();
   const loadRecords = async (runId) => {
+    const path = transcriptPath(dir, runId);
+    await repairTranscriptTail(path);
     const records = [];
-    for await (const record of readRecords(transcriptPath(dir, runId))) {
+    for await (const record of readRecords(path)) {
       records.push(record);
     }
     return records;
@@ -198,10 +229,12 @@ export function createFileTranscriptStore({ dir }) {
     },
 
     async recall(runId, fromRound, toRound, pattern) {
+      const path = transcriptPath(dir, runId);
+      await repairTranscriptTail(path);
       let result = "";
       let hasFragment = false;
 
-      for await (const record of readRecords(transcriptPath(dir, runId))) {
+      for await (const record of readRecords(path)) {
         if (fromRound !== undefined && record.round < fromRound) continue;
         if (toRound !== undefined && record.round > toRound) continue;
 
@@ -233,11 +266,14 @@ export function createFileTranscriptStore({ dir }) {
 
     async markRunState(runId, state) {
       await mkdir(dir, { recursive: true });
+      const target = statePath(dir, runId);
+      const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
       await writeFile(
-        statePath(dir, runId),
+        temporary,
         `${JSON.stringify({ runId, state, ts: new Date().toISOString() })}\n`,
         "utf8",
       );
+      await rename(temporary, target);
     },
 
     async saveCheckpoint(runId, checkpoint) {
