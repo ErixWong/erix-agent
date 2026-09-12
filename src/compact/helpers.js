@@ -3,7 +3,7 @@ function isRecord(value) {
 }
 
 export const DEFAULT_RECOVERY_HINT =
-  "早期轮次已折叠；需要原文请重读文件或查看持久笔记；关键值应当已落盘";
+  "需要原文请重读文件或查看持久笔记；关键值应当已落盘";
 
 export function resolveRecoveryHint(value) {
   return typeof value === "string" && value.trim() !== ""

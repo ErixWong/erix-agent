@@ -7,11 +7,22 @@ import { join } from "node:path";
 
 import { parseChatArgs, runChat } from "../bin/cli.js";
 import { getMcpPoolStatus } from "../bin/mcp.js";
+import { CLI_TOOLS_SYSTEM_PROMPT } from "../bin/tools.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { runToolLoop } from "../src/loop.js";
 import { createRecallTool } from "../src/tools/index.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+
+test("CLI prompt constrains provenance of one-shot values", () => {
+  assert.match(
+    CLI_TOOLS_SYSTEM_PROMPT,
+    /一次性生成的值（随机数、时间戳、临时 token、不可复现的命令输出）只能引用首次出现的工具返回/u,
+  );
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不得通过重跑命令“恢复”/u);
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /关键值应在产生时落盘（写文件\/持久笔记）/u);
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /原值已不在上下文且无持久记录时，明确说明不可恢复，不得给出替代值/u);
+});
 
 test("parseChatArgs accepts session and transcript directory overrides", () => {
   const options = parseChatArgs([

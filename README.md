@@ -77,7 +77,7 @@ src/
   - **观测**：每次决策 emit `onJudge`；CLI 可用 `--judge-log <path>` / `ERIX_JUDGE_LOG` 落盘 JSONL（已脱敏）。
   - **回调错误**：流式 `onDelta`/`onReasoningDelta`/`onToolCall`/`onUsage` 回调异常通过可选的 `onObserverError` 上报；未提供时记录 `console.error("Observer callback error:", error)`，不会走仅用于存储失败的 `onPersistenceError`。
 - **executeTool 协议**：两种形式——位置参数 `(name, input)` 或结构化 `({ id, name, input, context, signal })`。结构化可返回 `{ success, data, duration, toolMessageId }`（loop 保留字符串结果并附加元数据）。
-- **压缩预算**：从模型 `contextWindowTokens`/`maxOutputTokens` 推导；策略支持 `summaryRole`/`recoveryHint`/`protectedMessage`/`stripHistoricalImages`/`onBeforeFold`/`onAfterFold`。未提供 `recoveryHint` 时，折叠摘要使用“早期轮次已折叠；需要原文请重读文件或查看持久笔记；关键值应当已落盘”。
+- **压缩预算**：从模型 `contextWindowTokens`/`maxOutputTokens` 推导；策略支持 `summaryRole`/`recoveryHint`/`protectedMessage`/`stripHistoricalImages`/`onBeforeFold`/`onAfterFold`。未提供 `recoveryHint` 时，折叠摘要使用“需要原文请重读文件或查看持久笔记；关键值应当已落盘”。
 - **TranscriptStore**：`appendRound` 按 run/round key 幂等；`store.recall(runId, fromRound?, toRound?, pattern?)` 是面向宿主/人的取数契约，不是 `runToolLoop` 默认暴露给模型的工具；宿主可从 `erix-agent/tools` 按需接入参考实现。store 可实现 `markRunState`、`saveCheckpoint`/`appendCheckpoint`、`loadLatestCheckpoint`。loop 在工具执行前后 checkpoint；成对提供读写的 store 在任一 checkpoint 写失败时 fail-closed（执行后失败会明确报告“工具已执行但结果未持久化”），resume 按原顺序补齐全部未完成的多工具调用。宿主的 `executeTool` 仍需按 tool id 做幂等保护，无法由 loop 保证 exactly-once。
 - **provider**：`transport` 透传给 fetch 的 `dispatcher`；非法 OpenAI 工具参数用 `_truncatedArguments`（`_raw` 兼容别名）；不安全 runId 映射为 `run-<sha256 前 24 位 hex>`。
 
@@ -138,6 +138,16 @@ src/
 当前里程碑：app_container 迁移收尾（阶段 1/2 完成：worker 替换 + idea 对话 SSE 真机通过）→
 无头能力 benchmark（erix-bench Terminal-Bench 对照，进行中）→ 宿主持久化接线（touwaka #1116 / app_container #71）
 → 通用 sandbox 组件（独立于 agent，另立 ADR）。
+
+## 发布前验证
+
+发版前必须实跑：
+
+```bash
+LLM_KIT_E2E=1 node --test examples/*.test.mjs
+```
+
+该命令使用 relay 进行真实 E2E 验证；发布记录须注明实际模型。可用 `LLM_KIT_MODEL` 覆盖模型，默认使用 `kimi-for-coding`。
 
 ## Benchmark 验证（erix-bench / Terminal-Bench archive）
 

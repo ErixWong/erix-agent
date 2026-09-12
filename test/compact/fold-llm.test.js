@@ -45,14 +45,14 @@ test("folds old rounds through the injected summarizer and preserves the payload
   assert.deepEqual(calls[0].messages, messages.slice(1, 5));
   assert.deepEqual(calls[0].roundRange, { from: 1, to: 4 });
   assert.doesNotMatch(calls[0].promptGuide, /recall/i);
-  assert.equal(calls[0].recoveryHint, "早期轮次已折叠；需要原文请重读文件或查看持久笔记；关键值应当已落盘");
+  assert.equal(calls[0].recoveryHint, "需要原文请重读文件或查看持久笔记；关键值应当已落盘");
   assert.deepEqual(result.foldedPayload, messages.slice(1, 5));
   assert.equal(result.foldedRounds, 4);
   assert.equal(result.compacted, true);
   assert.deepEqual(result.messages.at(-1), messages.at(-1));
   assert.equal(result.messages[0].content[0].type, "text");
   assert.match(result.messages[0].content[0].text, new RegExp(summary));
-  assert.match(result.messages[0].content[0].text, /早期轮次已折叠；需要原文请重读文件或查看持久笔记；关键值应当已落盘/);
+  assert.match(result.messages[0].content[0].text, /需要原文请重读文件或查看持久笔记；关键值应当已落盘/);
   assert.equal(result.tokensBefore, estimateMessageTokens(messages));
   assert.equal(result.tokensAfter, estimateMessageTokens(result.messages));
 });
@@ -103,7 +103,7 @@ test("publishes recovery guidance requirements without recall advertising", () =
   assert.match(SUMMARIZER_PROMPT_GUIDE, /已完成项禁止重做/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 主题词面包屑/);
   assert.doesNotMatch(SUMMARIZER_PROMPT_GUIDE, /recall/i);
-  assert.match(SUMMARIZER_PROMPT_GUIDE, /早期轮次已折叠；需要原文请重读文件或查看持久笔记；关键值应当已落盘/);
+  assert.match(SUMMARIZER_PROMPT_GUIDE, /需要原文请重读文件或查看持久笔记；关键值应当已落盘/);
 });
 
 test("includes an injected recovery hint in the LLM summary", async () => {
