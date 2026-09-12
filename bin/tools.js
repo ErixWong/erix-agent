@@ -12,6 +12,8 @@ import path from "node:path";
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
 const OUTPUT_LIMIT = 4096;
+const ARCHIVE_THRESHOLD = 800;
+const MAX_ARCHIVE_BYTES = 1024 * 1024;
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const INSTALL_EXEC_TIMEOUT_MS = 300_000; // 安装/编译类命令（apt/pip/make 等）给更长时间
 const EXEC_MAX_BUFFER = 1024 * 1024;
@@ -136,20 +138,40 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 - **遇挫坚持：命令失败、依赖缺失、报错时，先诊断原因并重试或换方案（如 apt/pip 安装依赖、改用替代命令），不要因为一次失败就放弃或空手结束**；只有尝试多种方案后仍不可行才如实汇报
 - 每次操作后验证结果（读回文件、检查命令退出码），失败则诊断重试，不假装成功
 - 输出必须来自工具真实返回，不得编造文件内容或命令结果
+- **硬规则：回答中出现的具体数值/一次性输出，必须来自当前上下文中的工具返回或归档文件；不得凭记忆给出。**
 
 [来源与身份]
 - 一次性生成的值（随机数、时间戳、临时 token、不可复现的命令输出）只能引用首次出现的工具返回，不得通过重跑命令“恢复”
 - 关键值应在产生时落盘（写文件/持久笔记），后续从磁盘读取
 - 原值已不在上下文且无持久记录时，明确说明不可恢复，不得给出替代值
 
+[工具输出归档]
+- 工具输出较大或被截断时，返回末尾会给出完整输出的归档路径；归档目录路径会在系统提示中给出；需要原始内容时用 readFile/cat 读取该路径，不要重跑命令（重跑可能得到不同值）
+
 [边界]
 - 本 CLI 不提供安全边界，运行环境负责隔离；敏感操作（删除、覆盖、网络、安装）先说明要做什么
-- 不要主动读取密钥/凭据文件（如 ~/.erix、~/.pi、.env）
+- 不要主动读取密钥/凭据文件（如 ~/.erix、~/.pi、.env）；但工具返回中明确给出的归档路径（例如 ~/.erix/transcripts/outputs/...，仅指本次运行的工具输出）是例外，可以且应当读取，不等于读取其他 ~/.erix 内容
 
 [收尾]
 - 任务完成或已无需更多工具时，直接输出最终答复，不要空转
 - 默认用中文回答；复杂任务结构化汇报：做了什么、结果、遗留问题
 - 汇报关键状态声明（如"服务仍在运行"）前，先用工具验证（curl/检查进程），不要凭推断下结论`;
+
+export function buildArchiveSystemPrompt(archiveDir) {
+  if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
+  const absoluteDir = path.resolve(archiveDir);
+  return `
+
+[工具输出归档]
+本次运行的归档目录：${absoluteDir}
+早期工具输出被截断或已折叠出上下文时，用 tree/ls 列出该目录、再用 readFile 读取对应文件（命名形如 001-exec.txt）即可取回完整原文——不要重跑命令（重跑会得到不同的值），也不要凭记忆给值。`;
+}
+
+export function buildArchiveRecoveryHint(archiveDir) {
+  if (typeof archiveDir !== "string" || archiveDir.length === 0) return undefined;
+  const absoluteDir = path.resolve(archiveDir);
+  return `早期轮次的工具输出原文已归档到 ${absoluteDir}（形如 001-exec.txt，用 tree/ls 查看、readFile 读取）。若回答需要早期轮次的具体数值或输出，必须先读取归档再作答；不要重跑命令（重跑会得到不同的值），也不要凭记忆给出具体值。`;
+}
 
 function resolveToolPath(root, value) {
   return path.resolve(root, value);
@@ -209,7 +231,7 @@ function executeExecCommand(input, cwd) {
 
         const output = [stdout, stderr].filter(Boolean).join("");
         if (output) {
-          resolve(truncateResult(output));
+          resolve(output);
           return;
         }
         if (error) {
@@ -224,6 +246,7 @@ function executeExecCommand(input, cwd) {
 
 export function truncateResult(result) {
   const text = String(result ?? "");
+  if (/\n\[完整输出(?:已归档|归档失败)：[^\n]+\]$/u.test(text)) return text;
   if (text.length <= OUTPUT_LIMIT) return text;
   return `${text.slice(0, OUTPUT_LIMIT)}\n[已截断，共 ${text.length} 字符]`;
 }
@@ -290,8 +313,74 @@ export function wrapExecuteTool(executeTool, { output = console.log } = {}) {
   };
 }
 
-export function createCliTools({ cwd = process.cwd() } = {}) {
+function archiveGuidance(archivePath) {
+  return `[完整输出已归档：${archivePath}（需要原始内容请用 readFile/cat 读取该路径；不要重跑命令，重跑会得到不同的值）]`;
+}
+
+function archiveFailureGuidance(archivePath, error) {
+  const reason = String(error?.message ?? error ?? "未知错误")
+    .replaceAll(/\s+/gu, " ")
+    .slice(0, 160);
+  return `[完整输出归档失败：${archivePath}（${reason}）；请勿重跑命令。]`;
+}
+
+function archiveResult(archiveDir, name, result, sequence) {
+  const text = String(result ?? "");
+  if (!archiveDir || text.length <= ARCHIVE_THRESHOLD) return null;
+
+  const archivePath = path.join(
+    archiveDir,
+    `${String(sequence).padStart(3, "0")}-${name}.txt`,
+  );
+  try {
+    mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
+    const bytes = Buffer.from(text, "utf8");
+    let archived = text;
+    if (bytes.byteLength > MAX_ARCHIVE_BYTES) {
+      const marker = Buffer.from(
+        `\n[归档仅保留前 ${MAX_ARCHIVE_BYTES} 字节，原始输出共 ${bytes.byteLength} 字节]`,
+        "utf8",
+      );
+      archived = Buffer.concat([
+        bytes.subarray(0, MAX_ARCHIVE_BYTES - marker.byteLength),
+        marker,
+      ]);
+    }
+    writeFileSync(archivePath, archived, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    return {
+      text: `${truncateResult(text)}\n${archiveGuidance(archivePath)}`,
+      archivePath,
+    };
+  } catch (error) {
+    return {
+      text: `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error)}`,
+      archivePath: undefined,
+    };
+  }
+}
+
+function duplicateCommandGuidance({ count, archivePath }) {
+  const recovery = archivePath
+    ? `原始输出在 ${archivePath}，请读取该文件取回原值，不要把本次输出当作原值。`
+    : "原始输出未归档，无法取回；请明确说明不可恢复，不要把本次输出当作原值。";
+  return `[注意：该命令本次运行已执行过第 ${count} 次；若其输出是随机值/时间戳/一次性内容，本次结果不是原始值。${recovery}]`;
+}
+
+export function createCliTools({
+  cwd = process.cwd(),
+  archiveDir,
+} = {}) {
   const root = path.resolve(cwd);
+  if (archiveDir !== undefined && typeof archiveDir !== "string") {
+    throw new TypeError("archiveDir must be a string");
+  }
+  const archiveRoot = archiveDir === undefined ? undefined : path.resolve(archiveDir);
+  let archiveSequence = 0;
+  const duplicateCommands = archiveRoot ? new Map() : undefined;
 
   async function readFile({ path: filePath, offset = 0, limit = 200 }) {
     const text = readFileSync(resolveToolPath(root, filePath), "utf8");
@@ -439,7 +528,42 @@ export function createCliTools({ cwd = process.cwd() } = {}) {
     if (typeof executor !== "function") {
       throw new Error(`未知工具：${name}`);
     }
-    return executor(normalizeToolInput(input));
+    const normalizedInput = normalizeToolInput(input);
+    const command = normalizedInput?.command;
+    let commandState;
+    let isFirstCommandExecution = false;
+    if (
+      duplicateCommands
+      && name === "exec"
+      && typeof command === "string"
+    ) {
+      commandState = duplicateCommands.get(command);
+      if (commandState) {
+        commandState.count += 1;
+      } else {
+        commandState = { count: 1, archivePath: undefined };
+        duplicateCommands.set(command, commandState);
+        isFirstCommandExecution = true;
+      }
+    }
+
+    const result = await executor(normalizedInput);
+    let returnedResult = result;
+    if (archiveRoot && String(result ?? "").length > ARCHIVE_THRESHOLD) {
+      archiveSequence += 1;
+      const archived = archiveResult(archiveRoot, name, result, archiveSequence);
+      if (archived !== null) {
+        returnedResult = archived.text;
+        if (isFirstCommandExecution) {
+          commandState.archivePath = archived.archivePath;
+        }
+      }
+    }
+    const finalResult = name === "exec" ? truncateResult(returnedResult) : returnedResult;
+    if (commandState?.count > 1) {
+      return `${String(finalResult ?? "")}\n${duplicateCommandGuidance(commandState)}`;
+    }
+    return finalResult;
   }
 
   return {

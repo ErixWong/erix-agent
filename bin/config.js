@@ -92,23 +92,35 @@ export async function loadCliConfig({ configPath } = {}) {
   };
 }
 
-export function buildCompactionContext(config, explicitBudget) {
+function withRecoveryHint(context, recoveryHint) {
+  if (typeof recoveryHint !== "string" || recoveryHint.trim() === "") {
+    return context;
+  }
+  if (context === undefined) return { recoveryHint };
+  return {
+    ...context,
+    recoveryHint,
+    strategy: createFoldStatisticalStrategy({ recoveryHint }),
+  };
+}
+
+export function buildCompactionContext(config, explicitBudget, recoveryHint) {
   if (explicitBudget !== undefined) {
-    return {
+    return withRecoveryHint({
       strategy: createFoldStatisticalStrategy(),
       budgetTokens: explicitBudget,
       protectedMessage: isRealUser,
-    };
+    }, recoveryHint);
   }
-  if (!config.contextWindowTokens) return undefined;
+  if (!config.contextWindowTokens) return withRecoveryHint(undefined, recoveryHint);
 
   const budget = computeBudget({
     contextWindowTokens: config.contextWindowTokens,
     maxOutputTokens: config.maxOutputTokens ?? 65536,
   });
-  return {
+  return withRecoveryHint({
     strategy: createFoldStatisticalStrategy(),
     budgetTokens: budget,
     protectedMessage: isRealUser,
-  };
+  }, recoveryHint);
 }

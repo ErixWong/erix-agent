@@ -11,6 +11,7 @@ import {
   createFileTranscriptStore,
   runToolLoop,
 } from "../src/index.js";
+import { safeRunId } from "../src/store/file.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
 import {
   closeAllMcpServers,
@@ -20,6 +21,8 @@ import {
 import { defaultSessionId, runRepl } from "./repl.js";
 import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import {
+  buildArchiveSystemPrompt,
+  buildArchiveRecoveryHint,
   CLI_TOOLS_SYSTEM_PROMPT,
   createCliTools,
   wrapExecuteTool,
@@ -436,6 +439,7 @@ export async function runChat({
   provider: providerOverride,
   config: configOverride,
   toolOutput = console.log,
+  loop: loopOverride,
 }) {
   const cwd = process.cwd();
   const runId = session ?? defaultSessionId(cwd, { unique: true });
@@ -473,7 +477,12 @@ export async function runChat({
       ts: new Date().toISOString(),
     });
   }
-  const cliTools = createCliTools({ cwd });
+  const archiveDir = path.join(
+    path.resolve(dir),
+    "outputs",
+    safeRunId(runId),
+  );
+  const cliTools = createCliTools({ cwd, archiveDir });
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir,
@@ -481,7 +490,8 @@ export async function runChat({
   });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
   const tools = combineTools(cliTools, skillTools, mcpProxy);
-  const context = buildCompactionContext(config, compactBudget);
+  const recoveryHint = buildArchiveRecoveryHint(archiveDir);
+  const context = buildCompactionContext(config, compactBudget, recoveryHint);
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, { output: toolOutput });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
@@ -565,6 +575,7 @@ export async function runChat({
     : undefined;
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
+  systemPrompt += buildArchiveSystemPrompt(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `
 
@@ -633,7 +644,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   };
 
   try {
-    const result = await runToolLoop(loopOptions);
+    const result = await (loopOverride ?? runToolLoop)(loopOptions);
     const compacted = result.compactionStats.some((stat) => stat.compacted === true);
     console.log(`\n=== 终稿 ===\n${result.finalText}`);
     console.log(

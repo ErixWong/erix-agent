@@ -167,6 +167,111 @@ test("exec truncates output at 4096 characters", async () => {
   assert.match(result, /\n\[已截断，共 5000 字符\]$/);
 });
 
+test("archives large tool output and reads it back through readFile", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const { executeTool } = createCliTools({ cwd, archiveDir });
+    const result = await executeTool("exec", { command: "seq 1 500" });
+    const archivePath = join(archiveDir, "001-exec.txt");
+
+    assert.ok(result.includes(`[完整输出已归档：${archivePath}`));
+    assert.equal(
+      await readFile(archivePath, "utf8"),
+      `${Array.from({ length: 500 }, (_, index) => index + 1).join("\n")}\n`,
+    );
+
+    const reread = await executeTool("readFile", { path: archivePath, offset: 499, limit: 1 });
+    assert.match(reread, /^500: 500/m);
+  });
+});
+
+test("guards repeated commands with the first archived output path", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const { executeTool } = createCliTools({ cwd, archiveDir });
+    const command = "seq 1 500";
+
+    const first = await executeTool("exec", { command });
+    const second = await executeTool("exec", { command });
+    const archivePath = join(archiveDir, "001-exec.txt");
+
+    assert.doesNotMatch(first, /该命令本次运行已执行过/u);
+    assert.match(second, /该命令本次运行已执行过第 2 次/u);
+    assert.match(second, new RegExp(`原始输出在 ${archivePath}`));
+  });
+});
+
+test("increments the repeated command guard count on every execution", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const { executeTool } = createCliTools({ cwd, archiveDir });
+    const command = "seq 1 500";
+
+    await executeTool("exec", { command });
+    const second = await executeTool("exec", { command });
+    const third = await executeTool("exec", { command });
+
+    assert.match(second, /已执行过第 2 次/u);
+    assert.match(third, /已执行过第 3 次/u);
+    assert.doesNotMatch(third, /已执行过第 2 次/u);
+  });
+});
+
+test("reports unrecoverable original output when the first result was not archived", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const { executeTool } = createCliTools({ cwd, archiveDir });
+    const command = "printf small";
+
+    await executeTool("exec", { command });
+    const second = await executeTool("exec", { command });
+
+    assert.match(second, /原始输出未归档，无法取回；请明确说明不可恢复/u);
+    assert.doesNotMatch(second, /原始输出在 .*outputs/u);
+  });
+});
+
+test("does not add repeated command guards when archiving is disabled", async () => {
+  const { executeTool } = createCliTools();
+  const command = "seq 1 500";
+
+  await executeTool("exec", { command });
+  const second = await executeTool("exec", { command });
+
+  assert.doesNotMatch(second, /该命令本次运行已执行过/u);
+});
+
+test("does not trigger the guard for different commands", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const { executeTool } = createCliTools({ cwd, archiveDir });
+
+    await executeTool("exec", { command: "seq 1 500" });
+    const differentCommand = await executeTool("exec", { command: "seq 1 501" });
+
+    assert.doesNotMatch(differentCommand, /该命令本次运行已执行过/u);
+  });
+});
+
+test("continues returning tool output when the archive cannot be written", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveParent = join(cwd, "archive-file");
+    await writeFile(archiveParent, "not a directory", "utf8");
+    const { executeTool } = createCliTools({
+      cwd,
+      archiveDir: join(archiveParent, "outputs"),
+    });
+
+    const result = await executeTool("exec", { command: "seq 1 500" });
+    const repeated = await executeTool("exec", { command: "seq 1 500" });
+
+    assert.match(result, /1\n2\n3/);
+    assert.match(result, /完整输出归档失败/u);
+    assert.match(repeated, /原始输出未归档，无法取回；请明确说明不可恢复/u);
+    assert.doesNotMatch(repeated, /原始输出在 .*archive-file/u);
+  });
+});
+
 test("truncateResult caps oversized output and reports its original length", () => {
   const result = truncateResult("x".repeat(4097));
   assert.equal(result.slice(0, 4096), "x".repeat(4096));

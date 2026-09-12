@@ -80,6 +80,22 @@ test("omits recall from the default summary and accepts an injected recovery hin
   assert.match(customResult.messages[0].content[0].text, new RegExp(hint));
 });
 
+test("includes an archive path in a deterministic recovery hint", async () => {
+  const archiveDir = "/tmp/erix-archive-recovery";
+  const result = await createFoldStatisticalStrategy().compact([
+    { role: "user", content: "request" },
+    { role: "assistant", content: "old" },
+    { role: "user", content: "recent" },
+  ], {
+    keepRounds: 1,
+    recoveryHint: `早期轮次的工具输出原文已归档到 ${archiveDir}。必须先读取归档；不要重跑命令。`,
+  });
+
+  assert.match(result.messages[0].content[0].text, new RegExp(archiveDir));
+  assert.match(result.messages[0].content[0].text, /必须先读取归档/u);
+  assert.match(result.messages[0].content[0].text, /不要重跑命令/u);
+});
+
 test("merges consecutive fold summaries into one block before the task", async () => {
   const firstMessages = [
     { role: "user", content: "keep this task" },

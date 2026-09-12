@@ -25,6 +25,8 @@ import {
 } from "./mcp.js";
 import { buildSkillTools } from "./skills.js";
 import {
+  buildArchiveSystemPrompt,
+  buildArchiveRecoveryHint,
   CLI_TOOLS_SYSTEM_PROMPT,
   createCliTools,
   wrapExecuteTool,
@@ -343,7 +345,12 @@ export async function runRepl(argv, io = {}) {
   const config = io.config ?? await loadCliConfig({ configPath: options.configPath });
   const providerFactory = io.providerFactory
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
-  const cliTools = createCliTools({ cwd });
+  const archiveDir = path.join(
+    path.resolve(options.dir),
+    "outputs",
+    safeRunId(options.session),
+  );
+  const cliTools = createCliTools({ cwd, archiveDir });
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,
@@ -366,6 +373,7 @@ export async function runRepl(argv, io = {}) {
   }
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
+  systemPrompt += buildArchiveSystemPrompt(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `
 
@@ -528,7 +536,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           ts: new Date().toISOString(),
         });
       }
-      const context = buildCompactionContext(config, options.compactBudget);
+      const recoveryHint = buildArchiveRecoveryHint(archiveDir);
+      const context = buildCompactionContext(config, options.compactBudget, recoveryHint);
       const tools = [...cliTools.tools, ...skillTools.tools];
       if (mcpProxy?.enabled) {
         tools.push(mcpProxy.schema);
@@ -579,7 +588,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       };
 
       try {
-        const result = await runToolLoop(loopOptions);
+        const result = await (io.loop ?? runToolLoop)(loopOptions);
         messages = result.messages;
         usage.input_tokens += Number.isFinite(result.usage?.input_tokens)
           ? result.usage.input_tokens

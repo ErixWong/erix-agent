@@ -3,11 +3,15 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { parseChatArgs, runChat } from "../bin/cli.js";
 import { getMcpPoolStatus } from "../bin/mcp.js";
-import { CLI_TOOLS_SYSTEM_PROMPT } from "../bin/tools.js";
+import {
+  buildArchiveSystemPrompt,
+  buildArchiveRecoveryHint,
+  CLI_TOOLS_SYSTEM_PROMPT,
+} from "../bin/tools.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { runToolLoop } from "../src/loop.js";
@@ -22,6 +26,70 @@ test("CLI prompt constrains provenance of one-shot values", () => {
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不得通过重跑命令“恢复”/u);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /关键值应在产生时落盘（写文件\/持久笔记）/u);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /原值已不在上下文且无持久记录时，明确说明不可恢复，不得给出替代值/u);
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /具体数值\/一次性输出，必须来自当前上下文中的工具返回或归档文件；不得凭记忆给出/u);
+  assert.match(
+    CLI_TOOLS_SYSTEM_PROMPT,
+    /工具输出较大或被截断时，返回末尾会给出完整输出的归档路径/u,
+  );
+  assert.match(
+    CLI_TOOLS_SYSTEM_PROMPT,
+    /归档路径（例如 ~\/\.erix\/transcripts\/outputs\/\.\.\.，仅指本次运行的工具输出）是例外，可以且应当读取/u,
+  );
+});
+
+test("archive system prompt names the absolute directory only when enabled", () => {
+  const prompt = buildArchiveSystemPrompt("relative/archive");
+  assert.match(prompt, new RegExp(resolve("relative/archive").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+  assert.match(prompt, /不要重跑命令/u);
+  assert.equal(buildArchiveSystemPrompt(undefined), "");
+  assert.equal(buildArchiveSystemPrompt(""), "");
+});
+
+test("archive recovery hint is actionable and omitted without an archive directory", () => {
+  const hint = buildArchiveRecoveryHint("relative/archive");
+  assert.match(hint, new RegExp(resolve("relative/archive").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+  assert.match(hint, /必须先读取归档/u);
+  assert.match(hint, /不要重跑命令/u);
+  assert.equal(buildArchiveRecoveryHint(undefined), undefined);
+  assert.equal(buildArchiveRecoveryHint(""), undefined);
+});
+
+test("runChat passes the archive recovery hint through loop context", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-cli-recovery-hint-test-"));
+  let captured;
+  try {
+    await runChat({
+      prompt: "capture compaction context",
+      session: "chat-recovery",
+      dir,
+      skillsDir: join(dir, "skills"),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      compactBudget: 100,
+      provider: createFakeProvider([]),
+      loop: async (options) => {
+        captured = options;
+        return {
+          finalText: "done",
+          messages: [],
+          rounds: 1,
+          truncated: false,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          compactionStats: [],
+        };
+      },
+      toolOutput: () => {},
+    });
+
+    assert.ok(captured);
+    assert.match(
+      captured.context.recoveryHint,
+      new RegExp(`${resolve(join(dir, "outputs", "chat-recovery"))}`.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")),
+    );
+    assert.match(captured.context.recoveryHint, /必须先读取归档/u);
+    assert.match(captured.context.recoveryHint, /不要重跑命令/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("parseChatArgs accepts session and transcript directory overrides", () => {
@@ -72,6 +140,11 @@ test("chat loop wires a file transcript store without a recall tool", async () =
     });
 
     assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), false);
+    assert.match(
+      provider.requests[0].system,
+      new RegExp(`${dir}/outputs/chat-wiring`),
+    );
+    assert.match(provider.requests[0].system, /不要重跑命令/u);
     const records = await createFileTranscriptStore({ dir }).load("chat-wiring");
     assert.deepEqual(records.map((record) => record.round), [0, 1]);
   } finally {
