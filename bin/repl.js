@@ -385,7 +385,10 @@ export async function runRepl(argv, io = {}) {
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: options.configPath, cwd });
   const executeTool = wrapExecuteTool(
     buildExecuteTool(cliTools, skillTools, mcpProxy),
-    { output: (line) => writeLine(output, line) },
+    {
+      output: (line) => writeLine(output, line),
+      getToolMetadata: cliTools.getLastToolMetadata,
+    },
   );
   let messages = storedRecords.length > 0
     ? storedRecords.flatMap((record) => record.messages ?? [])
@@ -581,8 +584,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       const signal = idle === null
         ? runController.signal
         : AbortSignal.any([runController.signal, idle.controller.signal]);
-      const executeToolForLoop = async (name, input, toolContext) => {
-        const result = await executeTool(name, input, toolContext);
+      const executeToolForLoop = async (execution) => {
+        const result = await executeTool(execution);
         idle?.touch();
         return result;
       };

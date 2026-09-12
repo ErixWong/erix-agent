@@ -523,7 +523,10 @@ async function runChatWithNotes({
   const recoveryHint = buildArchiveRecoveryHint(archiveDir);
   const context = buildCompactionContext(config, compactBudget, recoveryHint);
   const idle = createIdleTimeout(idleTimeout);
-  const executeTool = wrapExecuteTool(tools.executeTool, { output: toolOutput });
+  const executeTool = wrapExecuteTool(tools.executeTool, {
+    output: toolOutput,
+    getToolMetadata: cliTools.getLastToolMetadata,
+  });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG;
   let judgeLogWriteFailed = false;
@@ -622,8 +625,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     runId,
     resume,
     tools: tools.tools,
-    executeTool: async (name, input, toolContext) => {
-      const result = await executeTool(name, input, toolContext);
+    executeTool: async (execution) => {
+      const result = await executeTool(execution);
       idle?.touch();
       return result;
     },

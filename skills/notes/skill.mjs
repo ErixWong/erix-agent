@@ -23,6 +23,7 @@ const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 const SAFE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 const MISSING_NEXT = "未记录、不可恢复；不得重跑命令、不得凭记忆给值";
+let clock = () => Date.now();
 
 function digest(value) {
   return createHash("sha256").update(String(value)).digest("hex").slice(0, 24);
@@ -55,7 +56,18 @@ function safeKey(value) {
 }
 
 function now() {
-  return new Date().toISOString();
+  return new Date(clock()).toISOString();
+}
+
+export function setNotesClock(nextClock) {
+  if (typeof nextClock !== "function") {
+    throw new TypeError("nextClock must be a function");
+  }
+  const previous = clock;
+  clock = nextClock;
+  return () => {
+    clock = previous;
+  };
 }
 
 function notesRoot() {
@@ -335,6 +347,12 @@ export async function note_take(input = {}) {
   if (input.pinned !== undefined && typeof input.pinned !== "boolean") {
     return invalid(key, "pinned 必须是布尔值");
   }
+  if (
+    input.provenance !== undefined
+    && (!input.provenance || typeof input.provenance !== "object" || Array.isArray(input.provenance))
+  ) {
+    return invalid(key, "provenance 必须是对象");
+  }
   let payload;
   try {
     payload = {
@@ -365,11 +383,22 @@ export async function note_take(input = {}) {
     ...(previous.artifactRef !== undefined ? { artifactRef: previous.artifactRef } : {}),
   }) === canonical(payload);
   const version = samePayload ? previous.version : (previous?.version ?? 0) + 1;
+  const suppliedProvenance = input.provenance ?? {};
+  const source = ["agent", "auto", "user"].includes(suppliedProvenance.source)
+    ? suppliedProvenance.source
+    : "agent";
   const provenance = {
-    source: "agent",
-    verified: contentProvided(input),
+    source,
+    verified: suppliedProvenance.verified ?? contentProvided(input),
     ...(input.relevance === undefined ? {} : { relevance: input.relevance }),
-    ts: timestamp,
+    ...(suppliedProvenance.toolUseId === undefined
+      ? {}
+      : { toolUseId: suppliedProvenance.toolUseId }),
+    ...(suppliedProvenance.round === undefined ? {} : { round: suppliedProvenance.round }),
+    ...(suppliedProvenance.supersededCandidate === true
+      ? { supersededCandidate: true }
+      : {}),
+    ts: suppliedProvenance.ts ?? timestamp,
   };
   const nextVersion = samePayload
     ? previous
@@ -440,8 +469,8 @@ export async function note_list(input = {}) {
   const files = await readJsonFiles(directory);
   const records = [];
   for (const file of files) {
-    const key = path.basename(file, ".json");
-    const loaded = await loadRecord(file, key);
+    const loaded = await loadRecord(file);
+    const key = loaded.record?.key ?? path.basename(file, ".json");
     if (loaded.corrupt) return corrupt(key, loaded.corrupt);
     if (loaded.missing) continue;
     if (input.tag !== undefined && !loaded.record.tags.includes(input.tag)) continue;
@@ -508,8 +537,8 @@ async function processRunDirectory(directory, currentTime) {
   let removed = 0;
   let corruptKey;
   for (const file of files) {
-    const key = path.basename(file, ".json");
-    const loaded = await loadRecord(file, key);
+    const loaded = await loadRecord(file);
+    const key = loaded.record?.key ?? path.basename(file, ".json");
     if (loaded.corrupt) {
       corruptKey = key;
       continue;
@@ -519,7 +548,14 @@ async function processRunDirectory(directory, currentTime) {
     const expires = Date.parse(record.expires_at ?? "");
     if (record.state === "completed") {
       if (Number.isFinite(expires) && expires <= currentTime) {
-        await unlink(file);
+        const revokedAt = new Date(currentTime).toISOString();
+        await saveRecord(directory, {
+          ...record,
+          state: "revoked",
+          revoked_at: revokedAt,
+          gc_at: revokedAt,
+          updated_at: revokedAt,
+        });
         removed += 1;
         continue;
       }
@@ -530,7 +566,14 @@ async function processRunDirectory(directory, currentTime) {
       });
       changed += 1;
     } else if (record.state === "grace" && Number.isFinite(expires) && expires <= currentTime) {
-      await unlink(file);
+      const revokedAt = new Date(currentTime).toISOString();
+      await saveRecord(directory, {
+        ...record,
+        state: "revoked",
+        revoked_at: revokedAt,
+        gc_at: revokedAt,
+        updated_at: revokedAt,
+      });
       removed += 1;
     }
   }
@@ -557,7 +600,7 @@ export async function runNotesJanitor() {
     const directory = path.join(run, entry.name);
     const stat = await lstat(directory);
     if (stat.isSymbolicLink()) throw new Error(`拒绝扫描符号链接目录：${directory}`);
-    const result = await processRunDirectory(directory, Date.now());
+    const result = await processRunDirectory(directory, clock());
     if (result.corruptKey !== undefined) {
       return {
         status: "corrupt",
@@ -578,15 +621,15 @@ export async function completeRun() {
   let completed = 0;
   const timestamp = now();
   for (const file of files) {
-    const key = path.basename(file, ".json");
-    const loaded = await loadRecord(file, key);
+    const loaded = await loadRecord(file);
+    const key = loaded.record?.key ?? path.basename(file, ".json");
     if (loaded.corrupt || loaded.missing) continue;
     const record = loaded.record;
-    if (record.state === "active" || record.state === "revoked") {
+    if (record.state === "active") {
       await saveRecord(directory, {
         ...record,
         state: "completed",
-        expires_at: new Date(Date.now() + graceMs()).toISOString(),
+        expires_at: new Date(clock() + graceMs()).toISOString(),
         updated_at: timestamp,
       });
       completed += 1;
@@ -609,6 +652,7 @@ const TOOL_DEFINITIONS = [
         tags: { type: "array", items: { type: "string" } },
         pinned: { type: "boolean" },
         relevance: { type: "number" },
+        provenance: { type: "object" },
       },
       required: ["key"],
       additionalProperties: false,

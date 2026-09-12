@@ -206,7 +206,13 @@ test("run lifecycle transitions active to completed to grace and then garbage co
     await notes.note_take({ key: "lifecycle", content: "value", pinned: true });
     await notes.completeRun();
     await notes.runNotesJanitor();
-    await assert.rejects(stat(path.join(directory, "run", "notes-test-run", "lifecycle.json")));
+    const tombstone = parsed(await readFile(
+      path.join(directory, "run", "notes-test-run", "lifecycle.json"),
+      "utf8",
+    ));
+    assert.equal(tombstone.state, "revoked");
+    assert.ok(tombstone.revoked_at);
+    assert.equal(parsed(await notes.note_read({ key: "lifecycle" })).status, "revoked");
     void options;
   }, { graceMs: 60_000 });
 });
