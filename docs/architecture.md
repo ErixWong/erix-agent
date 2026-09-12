@@ -70,7 +70,7 @@
  */
 
 createProvider({ protocol, endpoint, apiKey, model, fetchImpl?, timeoutMs? }): LlmProvider
-// 错误：KitError，code ∈ timeout|rate_limited|auth|network|server，retryable: boolean
+// 错误：KitError，code ∈ timeout|rate_limited|auth|network|server|unknown，retryable: boolean
 ```
 
 ### 3.2 runToolLoop（FR-2）

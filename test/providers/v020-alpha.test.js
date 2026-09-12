@@ -119,3 +119,62 @@ test("Anthropic forwards alpha payload fields and provider-specific options", as
     response_format: { type: "json_object" },
   });
 });
+
+test("providerOptions cannot override core payload fields", async () => {
+  const openAIFetch = createMockFetch([{
+    json: { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] },
+  }]);
+  const openAI = createOpenAIProvider({
+    endpoint: "https://api.example.test/v1",
+    apiKey: "test-key",
+    model: "test-model",
+    fetchImpl: openAIFetch,
+  });
+  await openAI.chat({
+    ...baseRequest,
+    maxTokens: 32,
+    providerOptions: {
+      openai: {
+        model: "wrong-model",
+        messages: [{ role: "user", content: "wrong" }],
+        max_tokens: 1,
+        stream: true,
+        temperature: 0,
+      },
+    },
+  });
+  assert.equal(openAIFetch.calls[0].body.model, "test-model");
+  assert.deepEqual(openAIFetch.calls[0].body.messages, [{ role: "user", content: "hello" }]);
+  assert.equal(openAIFetch.calls[0].body.max_tokens, 32);
+  assert.equal(openAIFetch.calls[0].body.stream, undefined);
+  assert.equal(openAIFetch.calls[0].body.temperature, undefined);
+
+  const anthropicFetch = createMockFetch([{
+    json: { content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" },
+  }]);
+  const anthropic = createAnthropicProvider({
+    endpoint: "https://api.example.test",
+    apiKey: "test-key",
+    model: "claude-test",
+    fetchImpl: anthropicFetch,
+  });
+  await anthropic.chat({
+    ...baseRequest,
+    maxTokens: 32,
+    providerOptions: {
+      anthropic: {
+        model: "wrong-model",
+        messages: [{ role: "user", content: [{ type: "text", text: "wrong" }] }],
+        max_tokens: 1,
+        stream: true,
+      },
+    },
+  });
+  assert.equal(anthropicFetch.calls[0].body.model, "claude-test");
+  assert.deepEqual(anthropicFetch.calls[0].body.messages, [{
+    role: "user",
+    content: [{ type: "text", text: "hello" }],
+  }]);
+  assert.equal(anthropicFetch.calls[0].body.max_tokens, 32);
+  assert.equal(anthropicFetch.calls[0].body.stream, undefined);
+});

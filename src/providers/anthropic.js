@@ -143,44 +143,64 @@ async function readSseBody(response, assembler, context, timeouts) {
       eventType = normalized.slice(6).trim();
     } else if (normalized.startsWith("data:")) {
       const data = normalized.slice(5);
-      dataLines.push(data.startsWith(" ") ? data.slice(1) : data);
+      dataLines.push(data.replace(/^ +/, ""));
     }
   };
 
   let firstByteSeen = false;
   context.beginStream();
-  while (true) {
-    const streamPhase = firstByteSeen ? "streamIdle" : "firstByte";
-    const entries = [{
-      phase: streamPhase,
-      duration: firstByteSeen
-        ? timeouts.streamIdleTimeoutMs
-        : timeouts.firstByteTimeoutMs,
-    }];
-    const totalRemaining = timeouts.streamTotalTimeoutMs === undefined
-      ? undefined
-      : timeouts.streamTotalTimeoutMs - context.streamElapsedMs();
-    if (totalRemaining !== undefined) {
-      entries.push({ phase: "streamTotal", duration: Math.max(0, totalRemaining) });
-    }
-    const result = await context.race(reader.read(), entries);
-    if (result.value && result.value.byteLength > 0) firstByteSeen = true;
-    const text = decoder.decode(result.value, { stream: !result.done });
-    buffer += text;
+  let completed = false;
+  let failure;
+  try {
+    while (true) {
+      const streamPhase = firstByteSeen ? "streamIdle" : "firstByte";
+      const entries = [{
+        phase: streamPhase,
+        duration: firstByteSeen
+          ? timeouts.streamIdleTimeoutMs
+          : timeouts.firstByteTimeoutMs,
+      }];
+      const totalRemaining = timeouts.streamTotalTimeoutMs === undefined
+        ? undefined
+        : timeouts.streamTotalTimeoutMs - context.streamElapsedMs();
+      if (totalRemaining !== undefined) {
+        entries.push({ phase: "streamTotal", duration: Math.max(0, totalRemaining) });
+      }
+      const result = await context.race(reader.read(), entries);
+      if (result.value && result.value.byteLength > 0) firstByteSeen = true;
+      const text = decoder.decode(result.value, { stream: !result.done });
+      buffer += text;
 
-    let lineEnd = buffer.indexOf("\n");
-    while (lineEnd !== -1) {
-      processLine(buffer.slice(0, lineEnd));
-      buffer = buffer.slice(lineEnd + 1);
-      lineEnd = buffer.indexOf("\n");
+      let lineEnd = buffer.indexOf("\n");
+      while (lineEnd !== -1) {
+        processLine(buffer.slice(0, lineEnd));
+        buffer = buffer.slice(lineEnd + 1);
+        lineEnd = buffer.indexOf("\n");
+      }
+
+      if (result.done) break;
     }
 
-    if (result.done) break;
+    buffer += decoder.decode();
+    if (buffer.length > 0) processLine(buffer);
+    if (dataLines.length > 0) dispatch();
+    completed = true;
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    try {
+      if (!completed) {
+        try {
+          await reader.cancel();
+        } catch (cancelError) {
+          if (failure === undefined) throw cancelError;
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
   }
-
-  buffer += decoder.decode();
-  if (buffer.length > 0) processLine(buffer);
-  if (dataLines.length > 0) dispatch();
 }
 
 function createRequestContext(timeoutMs, externalSignal) {

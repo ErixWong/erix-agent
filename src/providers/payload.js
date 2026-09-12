@@ -1,4 +1,18 @@
 const PROVIDER_NAMES = new Set(["openai", "anthropic"]);
+const CORE_PAYLOAD_KEYS = new Set([
+  "model",
+  "messages",
+  "system",
+  "tools",
+  "max_tokens",
+  "temperature",
+  "top_p",
+  "stream",
+  "stream_options",
+  "frequency_penalty",
+  "presence_penalty",
+  "response_format",
+]);
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -97,7 +111,11 @@ export function applyProviderPayloadOptions(
     requestValue(request, defaults, "providerOptions", ["provider_options"]),
     provider,
   ));
-  if (isRecord(extras)) Object.assign(payload, extras);
+  if (isRecord(extras)) {
+    for (const [key, value] of Object.entries(extras)) {
+      if (!CORE_PAYLOAD_KEYS.has(key)) payload[key] = value;
+    }
+  }
 
   for (const [key, aliases = []] of fields) {
     const value = requestValue(request, defaults, key, aliases);

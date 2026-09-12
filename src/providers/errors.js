@@ -85,7 +85,9 @@ export class KitError extends Error {
 
 export function classifyHttpError(status, bodyText, opts = {}) {
   let code = "unknown";
-  if (status === 429) {
+  if (status === 408) {
+    code = "timeout";
+  } else if (status === 429) {
     code = "rate_limited";
   } else if (status === 401 || status === 403) {
     code = "auth";

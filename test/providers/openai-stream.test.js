@@ -393,3 +393,43 @@ test("buffers an incomplete SSE data line across chunks", async () => {
   assert.deepEqual(response.content, [{ type: "text", text: "buffered" }]);
   assert.equal(response.stopReason, "end_turn");
 });
+
+test("accepts SSE data lines without a space after the colon", async () => {
+  const fetchImpl = makeChunkedFetch([
+    'data:{"choices":[{"delta":{"content":"compact"},"finish_reason":"stop"}]}\n\n',
+    "data:[DONE]\n\n",
+  ]);
+
+  const response = await makeProvider(fetchImpl).chatStream({
+    system: "",
+    messages: [],
+  });
+
+  assert.deepEqual(response.content, [{ type: "text", text: "compact" }]);
+  assert.equal(response.stopReason, "end_turn");
+});
+
+test("assembles legacy streamed function_call deltas as tool_use", async () => {
+  const fetchImpl = createMockFetch([{
+    body: [
+      'data: {"choices":[{"delta":{"function_call":{"name":"lookup","arguments":"{\\"city\\":"}},"finish_reason":null}]}\n\n',
+      'data:{"choices":[{"delta":{"function_call":{"arguments":"\\"Paris\\"}"}},"finish_reason":"function_call"}]}\n\n',
+      "data:[DONE]\n\n",
+    ].join(""),
+  }]);
+
+  const response = await makeProvider(fetchImpl).chatStream({
+    system: "",
+    messages: [],
+  });
+
+  assert.deepEqual(response, {
+    content: [{
+      type: "tool_use",
+      id: "call_legacy",
+      name: "lookup",
+      input: { city: "Paris" },
+    }],
+    stopReason: "tool_use",
+  });
+});
