@@ -67,8 +67,8 @@ async function candidateKey(label, reference, toolUseId) {
   return `auto:${String(toolUseId ?? "unknown")}:${reference.digest.slice(0, 8)}`;
 }
 
-async function keyForCandidate(key, reference) {
-  const existing = JSON.parse(await note_read({ key }));
+async function keyForCandidate(key, reference, notesScope) {
+  const existing = JSON.parse(await note_read({ key, __erix: notesScope }));
   if (
     (existing.status === "found" || existing.status === "unverified")
     && existing.artifactRef?.digest === reference.digest
@@ -92,6 +92,7 @@ export async function captureToolExecution({
   toolUseId,
   round,
   clock = () => Date.now(),
+  notesScope,
 } = {}) {
   try {
     if (name !== "exec" || metadata?.replayable !== false) return { status: "skipped" };
@@ -111,7 +112,7 @@ export async function captureToolExecution({
       if (looksLikeCredential(candidate.label, candidate.value)) continue;
 
       const baseKey = await candidateKey(candidate.label, reference, toolUseId);
-      const key = await keyForCandidate(baseKey, reference);
+      const key = await keyForCandidate(baseKey, reference, notesScope);
       if (key === null) continue;
       const provenance = {
         source: "auto",
@@ -127,6 +128,7 @@ export async function captureToolExecution({
         tags: ["value"],
         pinned: true,
         provenance,
+        __erix: notesScope,
       }));
       if (saved.status === "saved" || saved.status === "updated") captured += 1;
     }

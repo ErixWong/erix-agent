@@ -242,6 +242,10 @@ export async function buildSkillTools({
   home,
   cwd,
   skillsDir,
+  runId,
+  scopeRef,
+  notesDir,
+  excludeSkillIds = [],
   builtinNames = [],
 } = {}) {
   const loaded = await loadAllSkills({ home, cwd, skillsDir });
@@ -254,11 +258,13 @@ export async function buildSkillTools({
   const usedNames = new Set(builtinNameSet);
   const schemas = [];
   const executors = {};
+  const excludedSkills = new Set(excludeSkillIds);
   let notesJanitor;
   let notesCompleteRun;
   let notesLedger;
 
   for (const skill of loaded.skills) {
+    if (excludedSkills.has(skill.skillId)) continue;
     const conflictNames = skill.tools
       .map((tool) => tool.name)
       .filter((name) => usedNames.has(name));
@@ -309,7 +315,24 @@ export async function buildSkillTools({
     for (const tool of skill.tools) {
       usedNames.add(tool.name);
       schemas.push(tool);
-      executors[tool.name] = (input) => skillModule[tool.name](input);
+      executors[tool.name] = (input, context) => {
+        if (skill.skillId !== "notes" || !["note_take", "note_read", "note_list", "note_forget"].includes(tool.name)) {
+          return skillModule[tool.name](input, context);
+        }
+        const explicitScopeRef = scopeRef ?? runId ?? context?.session;
+        const explicitNotesDir = notesDir ?? context?.notesDir;
+        const injected = explicitScopeRef === undefined && explicitNotesDir === undefined
+          ? input
+          : {
+              ...(input && typeof input === "object" ? input : {}),
+              __erix: {
+                ...(input?.__erix && typeof input.__erix === "object" ? input.__erix : {}),
+                ...(explicitScopeRef === undefined ? {} : { runId: String(explicitScopeRef) }),
+                ...(explicitNotesDir === undefined ? {} : { notesDir: String(explicitNotesDir) }),
+              },
+            };
+        return skillModule[tool.name](injected, context);
+      };
     }
   }
 

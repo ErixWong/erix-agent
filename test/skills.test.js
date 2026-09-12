@@ -307,6 +307,66 @@ test("buildSkillTools executes an exported skill function", async () => {
   });
 });
 
+test("buildSkillTools injects an explicit run scope into notes tools", async () => {
+  await withDirectory(async (cwd) => {
+    const skillsDirectory = join(cwd, ".erix", "skills");
+    await writeSkill(skillsDirectory, "notes", `
+      export function getSkillDefinition() {
+        return {
+          schema_version: 1,
+          skill: { id: "notes", entrypoint: "skill.mjs" },
+          tools: [{ name: "note_take", inputSchema: { type: "object" } }]
+        };
+      }
+      export function note_take(input) { return JSON.stringify(input.__erix); }
+    `);
+    const result = await buildSkillTools({
+      cwd,
+      skillsDir: skillsDirectory,
+      runId: "host-run",
+    });
+
+    assert.equal(
+      await result.executeTool("note_take", { key: "x" }),
+      JSON.stringify({ runId: "host-run" }),
+    );
+  });
+});
+
+test("buildSkillTools excludes only notes when requested", async () => {
+  await withDirectory(async (cwd) => {
+    const skillsDirectory = join(cwd, ".erix", "skills");
+    await writeSkill(skillsDirectory, "notes", `
+      export function getSkillDefinition() {
+        return {
+          schema_version: 1,
+          skill: { id: "notes", entrypoint: "skill.mjs" },
+          tools: [{ name: "note_take", inputSchema: { type: "object" } }]
+        };
+      }
+      export function note_take() { return "notes"; }
+    `);
+    await writeSkill(skillsDirectory, "other", `
+      export function getSkillDefinition() {
+        return {
+          schema_version: 1,
+          skill: { id: "other", entrypoint: "skill.mjs" },
+          tools: [{ name: "other_tool", inputSchema: { type: "object" } }]
+        };
+      }
+      export function other_tool() { return "other"; }
+    `);
+    const result = await buildSkillTools({
+      cwd,
+      skillsDir: skillsDirectory,
+      excludeSkillIds: ["notes"],
+    });
+    assert.deepEqual(result.tools.map((tool) => tool.name), ["other_tool"]);
+    assert.equal(await result.executeTool("other_tool", {}), "other");
+    assert.equal(await result.executeTool("note_take", {}), "Unknown tool: note_take");
+  });
+});
+
 test("buildSkillTools returns a friendly result for an unknown tool", async () => {
   await withDirectory(async (cwd) => {
     const skillsDirectory = join(cwd, ".erix", "skills");

@@ -123,6 +123,10 @@ test("parseChatArgs accepts the reflection switch", () => {
   assert.equal(parseChatArgs(["hello", "--timeout", "1500"]).timeoutMs, 1500);
 });
 
+test("parseChatArgs supports disabling only the notes skill", () => {
+  assert.equal(parseChatArgs(["hello", "--no-notes"]).noNotes, true);
+});
+
 test("chat loop wires a file transcript store without a recall tool", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-test-"));
   try {

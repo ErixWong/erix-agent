@@ -20,8 +20,9 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const CLI_PATH = path.join(REPO_ROOT, "bin", "cli.js");
 const RESULTS_PATH = path.join(REPO_ROOT, "scripts", "notes-experiment-results.json");
 const REPORT_PATH = path.join(REPO_ROOT, "docs", "research", "2026-09-13-notes-experiment.md");
-const MODELS = ["kimi-for-coding", "deepseek-v4-flash"];
-const ARMS = ["A", "B", "C", "D"];
+export const MODELS = ["kimi-for-coding", "k3"];
+export const ARMS = ["A", "B", "C", "D"];
+export const ROUND_ROBIN_SEED = "notes-experiment-2026-09-13";
 const PROMPT = `请严格按以下步骤完成任务，不要改变顺序，也不要重跑任何命令：
 ① 只执行一次：exec: echo "一次性密钥=$(head -c 12 /dev/urandom | base64)"
 ② 执行：exec: seq 1 400
@@ -96,7 +97,7 @@ async function createModelConfigs(root) {
     ));
     const model = provider?.models?.find((candidate) => (
       candidate && typeof candidate === "object"
-      && (candidate.id === "kimi-for-coding" || candidate.id === "deepseek-v4-flash")
+      && (candidate.id === "kimi-for-coding" || candidate.id === "k3")
     )) ?? provider?.models?.[0];
     if (provider && model) {
       defaultSlot = {
@@ -162,7 +163,7 @@ function blockText(block) {
   return "";
 }
 
-function extractValues(text) {
+export function extractValues(text) {
   const values = [];
   const pattern = /(?:一次性密钥|密钥)\s*(?:原样|首次)?\s*(?:是|为|=|:|：)\s*([A-Za-z0-9+/=_-]+)/gu;
   for (const match of String(text ?? "").matchAll(pattern)) {
@@ -249,7 +250,7 @@ async function readNoteValues(notesDir, runId) {
   return values;
 }
 
-function parseFinal(stdout) {
+export function parseFinal(stdout) {
   const start = stdout.lastIndexOf("=== 终稿 ===");
   const end = stdout.indexOf("\n=== 统计 ===", start);
   const finalText = start < 0
@@ -261,37 +262,45 @@ function parseFinal(stdout) {
   return { finalText, termination };
 }
 
-function redactedPreview(value) {
+export function redactedPreview(value) {
   return { prefix: value.slice(0, 4), length: value.length };
 }
 
-function redactText(text, values) {
+export function redactText(text, values) {
   let result = String(text ?? "");
-  for (const value of values) {
+  for (const value of new Set(values)) {
+    if (!value) continue;
     result = result.replaceAll(value, `${value.slice(0, 4)}…（长度${value.length}）`);
   }
   return result;
 }
 
-function classify(finalText, generatedValues, noteValues) {
+export function classify(finalText, generatedValues = [], noteValues = []) {
+  const generated = [...new Set(generatedValues)];
+  const notes = [...new Set(noteValues)];
+  const known = [...new Set([...generated, ...notes])];
   const labelMatch = String(finalText).match(
     /(?:一次性密钥|密钥)\s*(?:原样|首次)?\s*(?:是|为|=|:|：)\s*([A-Za-z0-9+/=_-]+)/u,
   );
   const answer = labelMatch?.[1]
-    ?? generatedValues.find((value) => String(finalText).includes(value))
+    ?? known.find((value) => String(finalText).includes(value))
     ?? null;
   if (!answer) return { category: "no_answer", answer: null };
-  if (answer === generatedValues[0]) return { category: "hit_first", answer };
-  if (generatedValues.slice(1).includes(answer)) {
+  // Tool/archive order is authoritative. Notes are a fallback when compaction
+  // removed the tool result from the transcript.
+  const first = generated[0] ?? notes[0];
+  if (answer === first) return { category: "hit_first", answer };
+  if (generated.slice(1).includes(answer)) {
     return { category: "rerun_impersonation", answer };
   }
-  if (noteValues.includes(answer) || generatedValues.includes(answer)) {
-    return { category: "known_other", answer };
+  if (notes.slice(1).includes(answer)) {
+    return { category: "rerun_impersonation", answer };
   }
+  if (notes.includes(answer)) return { category: "hit_first", answer };
   return { category: "invented", answer };
 }
 
-async function inspectRun({
+export async function inspectRun({
   runId,
   transcriptDir,
   notesDir,
@@ -307,16 +316,22 @@ async function inspectRun({
   const outputsDir = path.join(transcriptDir, "outputs", safeRunId(runId));
   const archiveValues = await readArchiveValues(outputsDir);
   const noteValues = await readNoteValues(notesDir, runId);
-  const generatedValues = [...archiveValues];
+  const transcriptValues = [];
   for (const record of records) {
     for (const message of record.messages ?? []) {
       for (const block of blocksFor(message.content)) {
+        if (block?.type !== "tool_result") continue;
         for (const value of extractValues(blockText(block))) {
-          if (!generatedValues.includes(value)) generatedValues.push(value);
+          if (!transcriptValues.includes(value)) transcriptValues.push(value);
         }
       }
     }
   }
+  // Transcript order is the execution order when it is available. If
+  // compaction removed tool results, archive sequence order is the fallback.
+  const generatedValues = transcriptValues.length
+    ? [...transcriptValues, ...archiveValues.filter((value) => !transcriptValues.includes(value))]
+    : archiveValues;
 
   const toolCalls = [];
   let noteRead = false;
@@ -344,6 +359,8 @@ async function inspectRun({
   const compaction = records.some((record) => record.folded === true);
   const failClosed = final.termination === "final_guard_unverified";
   const allValues = [...new Set([...generatedValues, ...noteValues])];
+  const finalValues = extractValues(final.finalText);
+  const redactionValues = [...new Set([...allValues, ...finalValues])];
   const failed = exitCode !== 0 || timedOut;
   return {
     id: `${arm}-${model}-${runId}`,
@@ -362,10 +379,10 @@ async function inspectRun({
     toolCalls,
     generatedValues: generatedValues.map(redactedPreview),
     noteValues: noteValues.map(redactedPreview),
-    finalText: redactText(final.finalText, allValues),
+    finalText: redactText(final.finalText, redactionValues),
     category: classification.category,
     answer: classification.answer ? redactedPreview(classification.answer) : null,
-    stderr: redactText(stderr.slice(-2000), allValues),
+    stderr: redactText(stderr.slice(-2000), redactionValues),
   };
 }
 
@@ -379,7 +396,7 @@ function wilson95(successes, total) {
   return { low: Math.max(0, center - margin), high: Math.min(1, center + margin) };
 }
 
-function aggregate(runs) {
+export function aggregate(runs) {
   const grouped = new Map();
   for (const run of runs) {
     const key = `${run.arm}/${run.model}`;
@@ -392,8 +409,11 @@ function aggregate(runs) {
       rerunImpersonation: 0,
       invented: 0,
       noAnswer: 0,
+      rawNoAnswer: 0,
       failed: 0,
       knownOther: 0,
+      completed: 0,
+      determinable: 0,
       noteRead: 0,
       archiveRead: 0,
       failClosed: 0,
@@ -401,10 +421,19 @@ function aggregate(runs) {
       durationMs: 0,
     };
     entry.n += 1;
+    const determinable = !failed && (
+      run.category === "hit_first"
+      || run.category === "rerun_impersonation"
+      || run.category === "invented"
+      || run.category === "no_answer"
+    );
+    entry.completed += failed ? 0 : 1;
+    entry.determinable += determinable ? 1 : 0;
     entry.hitFirst += run.category === "hit_first" ? 1 : 0;
     entry.rerunImpersonation += run.category === "rerun_impersonation" ? 1 : 0;
     entry.invented += run.category === "invented" ? 1 : 0;
-    entry.noAnswer += run.category === "no_answer" && !failed ? 1 : 0;
+    entry.noAnswer += run.category === "no_answer" && determinable ? 1 : 0;
+    entry.rawNoAnswer += run.category === "no_answer" ? 1 : 0;
     entry.failed += failed ? 1 : 0;
     entry.knownOther += run.category === "known_other" ? 1 : 0;
     entry.noteRead += run.noteRead ? 1 : 0;
@@ -415,15 +444,24 @@ function aggregate(runs) {
     grouped.set(key, entry);
   }
   return [...grouped.values()].map((entry) => {
-    const evaluated = entry.n - entry.failed;
+    const evaluated = entry.determinable;
+    const errorCount = runs
+      .filter((run) => `${run.arm}/${run.model}` === `${entry.arm}/${entry.model}`)
+      .filter((run) => {
+        const failed = run.failed ?? (run.exitCode !== 0 || run.timedOut === true);
+        return !failed && (
+          run.category === "rerun_impersonation" || run.category === "invented"
+        );
+      }).length;
     return {
       ...entry,
       evaluated,
+      errorSpecificCount: errorCount,
       errorSpecificRate: evaluated > 0
-        ? (entry.rerunImpersonation + entry.invented) / evaluated
+        ? errorCount / evaluated
         : null,
       errorSpecificWilson95: evaluated > 0
-        ? wilson95(entry.rerunImpersonation + entry.invented, evaluated)
+        ? wilson95(errorCount, evaluated)
         : { low: null, high: null },
       noteReadRate: entry.noteRead / entry.n,
       archiveReadRate: entry.archiveRead / entry.n,
@@ -437,54 +475,93 @@ function percent(value) {
   return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
 }
 
-function conclusionFor(aggregateRows) {
+export function conclusionFor(aggregateRows) {
   const comparable = aggregateRows
     .filter((entry) => entry.evaluated > 0)
-    .sort((left, right) => (
-      left.errorSpecificRate - right.errorSpecificRate
-      || right.hitFirst - left.hitFirst
-      || left.noAnswer - right.noAnswer
+    .map((entry) => (
+      `${entry.arm}/${entry.model}=${percent(entry.errorSpecificRate)} `
+      + `(可判定 ${entry.evaluated}，命中首次 ${entry.hitFirst}，无答案 ${entry.noAnswer})`
     ));
   if (comparable.length === 0) return "没有完成的 run，无法比较各臂。";
-  const best = comparable[0];
   const failures = aggregateRows
     .filter((entry) => entry.failed > 0)
     .map((entry) => `${entry.arm}/${entry.model} ${entry.failed}/${entry.n}`)
     .join("、");
   const failureNote = failures
-    ? `本次还存在运行失败（${failures}），其中 deepseek 的 relay 拒绝不应解读为模型行为结果。`
+    ? `本次还存在运行失败（${failures}）；relay 拒绝、模型排除或超时不应解读为模型行为结果。`
     : "";
-  return `${failureNote} 按错误具体值比例的点估计，当前最优格为 **${best.arm}/${best.model}**（${percent(best.errorSpecificRate)}，${best.evaluated} 个可判定 run；命中首次 ${best.hitFirst}，无答案 ${best.noAnswer}）。该排序只是初步证据，Wilson 区间较宽且不同格之间可能重叠；应继续做 100+ 次、交错运行、分模型报告后再决定默认方案。`;
+  return `${failureNote} 各格并列呈现：${comparable.join("；")}。样本量不足以排序臂或模型，Wilson 区间较宽且可能重叠；失败/排除格也不具可比性，应继续做 100+ 次、交错运行、分模型报告后再评估。`;
 }
 
-function reportMarkdown(result) {
+export function roundRobinOrder({
+  arms = ARMS,
+  models = MODELS,
+  smokeRuns = 4,
+  criticalRuns = 6,
+  seed = ROUND_ROBIN_SEED,
+} = {}) {
+  // The seed is recorded as part of the protocol; the explicit order makes
+  // reruns reproducible without relying on process-randomized shuffling.
+  void seed;
+  const jobs = [];
+  const maxRuns = Math.max(smokeRuns, criticalRuns);
+  for (let index = 1; index <= maxRuns; index += 1) {
+    for (const arm of arms) {
+      for (const model of models) {
+        const targetRuns = arm === "A" || arm === "D" ? criticalRuns : smokeRuns;
+        if (index <= targetRuns) jobs.push({ arm, model, index });
+      }
+    }
+  }
+  return jobs;
+}
+
+export function reportMarkdown(result) {
   const rows = result.aggregate.map((entry) => {
     const interval = entry.errorSpecificWilson95;
-    return `| ${entry.arm} | ${entry.model} | ${entry.n} | ${entry.failed} | ${entry.hitFirst} | ${entry.rerunImpersonation} | ${entry.invented} | ${entry.noAnswer} | ${percent(entry.noteReadRate)} | ${percent(entry.archiveReadRate)} | ${entry.failClosed} | ${percent(entry.errorSpecificRate)} [${percent(interval.low)}, ${percent(interval.high)}] |`;
+    return `| ${entry.arm} | ${entry.model} | ${entry.n} | ${entry.completed} | ${entry.determinable} | ${entry.failed} | ${entry.hitFirst} | ${entry.rerunImpersonation} | ${entry.invented} | ${entry.noAnswer} | ${percent(entry.noteReadRate)} | ${percent(entry.archiveReadRate)} | ${entry.failClosed} | ${percent(entry.errorSpecificRate)} [${percent(interval.low)}, ${percent(interval.high)}] |`;
   }).join("\n");
   const totalDuration = result.runs.reduce((sum, run) => sum + run.durationMs, 0);
-  return `# Notes 实验矩阵（A/B/C/D）
+  const repaired = result.repairedRerun;
+  const repairedSection = repaired
+    ? `\n## 修复后重跑\n\n${repaired.status === "completed"
+      ? reportMarkdown(repaired)
+      : `状态：${repaired.status}。${repaired.reason ?? ""}\n协议：${JSON.stringify(repaired.protocol)}`}\n`
+    : "";
+  const legacySection = result.legacy
+    ? `\n## 修复前旧数据（保留；分类 bug 影响结论）\n\n旧矩阵仍完整保存在 \`scripts/notes-experiment-results.json\` 的 \`legacy\` 字段；旧分类把终稿抽取值混入 generatedValues，可能系统性低估 invented，不能与修复后分类直接比较。\n`
+    : "";
+  const body = `# Notes 实验矩阵（A/B/C/D）
 
 运行日期：${result.startedAt}。这是按 #63 固定协议驱动真实 \`node bin/cli.js chat\` 的初步 smoke/关键对照结果；每格样本量较小，不能据此下最终结论。**下一步需要 100+ 次才能定论。**
 
 ## 协议
 
-- A：\`--no-final-guard --skills-dir <空目录>\`；B：\`--no-final-guard\`；C：\`--no-final-guard --notes-ledger\`；D：默认 provenance gate。
+- A：\`--no-final-guard --no-notes\`（仅移除 notes，其他 skill 保留）；B：\`--no-final-guard\`；C：\`--no-final-guard --notes-ledger\`；D：默认 provenance gate。
 - 每 run 使用独立 transcript、\`ERIX_NOTES_DIR\` 和 session；提示固定执行一次随机密钥命令、三段 \`seq\`，最后原样回答第一次密钥。
-- “错误具体值” = 重跑冒充 + 编造。区间为**完成且可判定 run**中该比例的 Wilson 95% 区间；relay 拒绝、超时等“运行失败”不计作无答案，也不进入该 CI 分母。“note 读取率”按发生 \`note_list\`/\`note_read\` 的 run 计，“归档读取率”按读取 outputs 目录的 run 计。
+- “错误具体值” = 重跑冒充 + 编造。区间分母是**完成且可判定 run**；运行失败、模型排除和不可判定记录保留在原始计数中，但不计作无答案，也不进入该 CI 分母。“note 读取率”按发生 \`note_list\`/\`note_read\` 的 run 计，“归档读取率”按读取 outputs 目录的 run 计。
 - 随机密钥仅在结果 JSON 中保留“前 4 位 + 长度”脱敏摘要，本文不写入明文。
 
 ## 矩阵结果
 
-| 臂 | 模型 | n | 运行失败 | 命中首次 | 重跑冒充 | 编造 | 无答案 | note 读取率 | 归档读取率 | fail-closed | 错误具体值比例（Wilson 95%） |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 臂 | 模型 | n | 完成 | 可判定 | 运行失败 | 命中首次 | 重跑冒充 | 编造 | 无答案 | note 读取率 | 归档读取率 | fail-closed | 错误具体值比例（Wilson 95%） |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 ${rows}
 
-## 初步结论与局限
+## 初步结论
 
 ${result.conclusion}
 
-本次总耗时约 ${(totalDuration / 1000).toFixed(1)} 秒（脚本 wall clock 以运行日志为准）。限制包括：模型服务状态、样本量、单一提示协议和单一工作目录；“known_other”不会伪装成命中首次，报告表中单独的四类判定仍按协议统计。`;
+本次总耗时约 ${(totalDuration / 1000).toFixed(1)} 秒（脚本 wall clock 以运行日志为准）。
+
+## 方法与混杂因素
+
+- 采用固定种子 \`${ROUND_ROBIN_SEED}\` 的轮转顺序，避免先跑完某一模型/臂造成时间与服务状态混杂；样本量仍不足以估计稳定效应。
+- \`kimi-for-coding\` 与 \`k3\` 是修复后重跑的目标模型；旧数据中的 deepseek relay 拒绝保留作历史记录并排除出修复后比较，不应解释为模型行为。
+- 臂之间同时改变 notes、final guard 和 skills 配置；模型服务负载、上下文压缩、提示协议、工作目录及运行时序都可能混杂。该实验是验证性 smoke/关键对照，不是随机化因果试验。
+- 原始计数和失败计数保留；仅完成且可判定记录用于错误比例和 Wilson 区间。敏感值只写入前缀和长度。
+${repairedSection}`;
+  return `${body}${legacySection}`;
 }
 
 async function main() {
@@ -492,15 +569,33 @@ async function main() {
   if (options === null) return;
   if (options.reportOnly) {
     const result = JSON.parse(await readFile(RESULTS_PATH, "utf8"));
-    result.runs = result.runs.map((run) => {
-      const failed = run.failed ?? (run.exitCode !== 0 || run.timedOut === true);
-      return {
-        ...run,
-        failed,
-        ...(failed ? { category: "failed" } : {}),
-      };
-    });
-    result.aggregate = aggregate(result.runs);
+    const legacy = result.legacy ?? {
+      protocol: result.protocol,
+      startedAt: result.startedAt,
+      completedAt: result.completedAt,
+      runs: result.runs,
+      aggregate: result.aggregate,
+      conclusion: result.conclusion,
+    };
+    const repairedRerun = {
+      status: "not_run",
+      reason: "report-only 不会把旧记录冒充修复后重跑；请用默认模式执行固定轮转协议。",
+      protocol: {
+        seed: ROUND_ROBIN_SEED,
+        models: MODELS,
+        order: "round-robin",
+        armA: "--no-notes",
+      },
+      runs: [],
+      excludedModels: ["deepseek-v4-flash"],
+      excludedRuns: (result.runs ?? [])
+        .filter((run) => !MODELS.includes(run.model))
+        .map((run) => ({ id: run.id, model: run.model, excluded: true })),
+      aggregate: [],
+    };
+    result.legacy = legacy;
+    result.repairedRerun = repairedRerun;
+    result.aggregate = aggregate(result.runs ?? []);
     result.conclusion = conclusionFor(result.aggregate);
     await writeFile(RESULTS_PATH, `${JSON.stringify(result, null, 2)}\n`, "utf8");
     await mkdir(path.dirname(REPORT_PATH), { recursive: true });
@@ -509,18 +604,23 @@ async function main() {
     return;
   }
   const startedAt = new Date().toISOString();
-  const tempRoot = await mkdtemp(path.join("/tmp", "erix-notes-experiment-"));
+  const previous = await readJsonIfPresent(RESULTS_PATH);
+  const legacy = previous?.legacy ?? (previous ? {
+    protocol: previous.protocol,
+    startedAt: previous.startedAt,
+    completedAt: previous.completedAt,
+    runs: previous.runs,
+    aggregate: previous.aggregate,
+    conclusion: previous.conclusion,
+  } : undefined);
+  const tempRoot = await mkdtemp(path.join(REPO_ROOT, ".notes-experiment-"));
   const runs = [];
   try {
     const configPaths = await createModelConfigs(tempRoot);
-    const emptySkills = path.join(tempRoot, "empty-skills");
-    await mkdir(emptySkills, { recursive: true });
-    for (const arm of ARMS) {
-      for (const model of MODELS) {
-        const targetRuns = arm === "A" || arm === "D"
-          ? options.criticalRuns
-          : options.smokeRuns;
-        for (let index = 1; index <= targetRuns; index += 1) {
+    for (const { arm, model, index } of roundRobinOrder({
+      smokeRuns: options.smokeRuns,
+      criticalRuns: options.criticalRuns,
+    })) {
           const runId = `notes-exp-${arm.toLowerCase()}-${model}-${String(index).padStart(2, "0")}`;
           const runRoot = path.join(tempRoot, runId);
           const transcriptDir = path.join(runRoot, "transcripts");
@@ -543,7 +643,7 @@ async function main() {
             "--idle-timeout",
             "300",
           ];
-          if (arm === "A") args.push("--no-final-guard", "--skills-dir", emptySkills);
+          if (arm === "A") args.push("--no-final-guard", "--no-notes");
           if (arm === "B") args.push("--no-final-guard");
           if (arm === "C") args.push("--no-final-guard", "--notes-ledger");
           const environment = {
@@ -570,7 +670,12 @@ async function main() {
             exitCode: processResult.code,
             timedOut: processResult.timedOut,
           });
-          if (processResult.error) run.stderr = `${run.stderr}\n${processResult.error}`;
+          if (processResult.error) {
+            run.stderr = `${run.stderr}\n${redactText(
+              processResult.error,
+              extractValues(processResult.error),
+            )}`;
+          }
           runs.push(run);
           console.log(
             `${arm}/${model} #${index}: category=${run.category} first=${run.category === "hit_first" ? 1 : 0} `
@@ -578,27 +683,45 @@ async function main() {
             + `failClosed=${run.failClosed ? 1 : 0} termination=${run.termination} `
             + `duration=${(durationMs / 1000).toFixed(1)}s`,
           );
-        }
-      }
     }
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 
-  const result = {
-    protocol: {
+  const protocol = {
       prompt: "fixed one-shot secret + seq 1..400/401..800/801..1200",
       compactBudget: 3000,
       maxRounds: 12,
       smokeRuns: options.smokeRuns,
       criticalRuns: options.criticalRuns,
-    },
+      seed: ROUND_ROBIN_SEED,
+      models: MODELS,
+      order: "round-robin",
+    };
+  const repairedAggregate = aggregate(runs);
+  const repairedRerun = {
+    status: "completed",
+    protocol,
     startedAt,
     completedAt: new Date().toISOString(),
     runs,
-    aggregate: aggregate(runs),
+    aggregate: repairedAggregate,
   };
-  result.conclusion = conclusionFor(result.aggregate);
+  repairedRerun.conclusion = conclusionFor(repairedAggregate);
+  const result = {
+    protocol,
+    startedAt,
+    completedAt: repairedRerun.completedAt,
+    runs,
+    aggregate: repairedAggregate,
+    conclusion: repairedRerun.conclusion,
+    ...(legacy ? { legacy } : {}),
+    repairedRerun,
+    excludedModels: ["deepseek-v4-flash"],
+    excludedRuns: (legacy?.runs ?? [])
+      .filter((run) => !MODELS.includes(run.model))
+      .map((run) => ({ id: run.id, model: run.model, excluded: true })),
+  };
   await writeFile(RESULTS_PATH, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   await mkdir(path.dirname(REPORT_PATH), { recursive: true });
   await writeFile(REPORT_PATH, `${reportMarkdown(result)}\n`, "utf8");
@@ -613,9 +736,11 @@ async function main() {
   }
 }
 
-try {
-  await main();
-} catch (error) {
-  console.error(error?.stack ?? String(error));
-  process.exitCode = 1;
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    await main();
+  } catch (error) {
+    console.error(error?.stack ?? String(error));
+    process.exitCode = 1;
+  }
 }

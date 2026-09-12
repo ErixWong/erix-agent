@@ -35,7 +35,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--no-final-guard] [--notes-ledger] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--no-final-guard] [--no-notes] [--notes-ledger] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--no-final-guard]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
@@ -47,6 +47,7 @@ const HELP_TEXT = `用法：
   --max-rounds <n>      工具循环最大轮数（默认：64，可用 ERIX_MAX_ROUNDS 覆盖）
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 32 时启用）
   --no-final-guard      关闭终稿 provenance 核验
+  --no-notes            仅移除 notes 技能，保留其他 skill
   --notes-ledger        将本 run 的 pinned notes 小账本追加到 system prompt（默认关闭）
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
@@ -61,6 +62,7 @@ const HELP_TEXT = `用法：
   ERIX_MAX_ROUNDS     工具循环最大轮数（默认：64，最小：1）
   ERIX_REFLECTION     反思开关（on/off；ERIX_NO_REFLECTION=1 强制关闭）
   ERIX_NO_FINAL_GUARD=1 关闭终稿 provenance 核验
+  ERIX_NO_NOTES=1       仅移除 notes 技能，保留其他 skill
   ERIX_NOTES_LEDGER=1   开启 pinned notes 小账本注入（默认关闭）
   ERIX_JUDGE_LOG      judge 决策 JSONL 路径（可用 --judge-log 覆盖）
 
@@ -145,11 +147,11 @@ function resolveReflection(reflection, maxRounds) {
   return maxRounds >= 32 ? { enabled: true } : false;
 }
 
-function resolveFinalGuard(finalGuard, runId, archiveDir) {
+function resolveFinalGuard(finalGuard, runId, archiveDir, notesDir) {
   if (process.env.ERIX_NO_FINAL_GUARD?.trim() === "1") return undefined;
   if (finalGuard === false) return undefined;
   if (typeof finalGuard === "function") return finalGuard;
-  return createFinalGuard({ runId, archiveDir });
+  return createFinalGuard({ runId, archiveDir, notesDir });
 }
 
 function createIdleTimeout(seconds) {
@@ -203,6 +205,14 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       }
       seenOptions.add(argument);
       options.finalGuard = false;
+      continue;
+    }
+    if (argument === "--no-notes") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.noNotes = true;
       continue;
     }
     if (argument === "--notes-ledger") {
@@ -449,32 +459,18 @@ async function runMcp({ configPath }) {
   }
 }
 
-function setNotesEnvironment(runId) {
-  const previous = {
-    runId: process.env.ERIX_RUN_ID,
-    notesDir: process.env.ERIX_NOTES_DIR,
-  };
-  process.env.ERIX_RUN_ID = String(runId);
-  // Notes deliberately stay beside ~/.erix rather than under --dir: --dir is
-  // transcript/archive storage and must not change the notes retention boundary.
-  process.env.ERIX_NOTES_DIR = previous.notesDir
-    ?? path.join(homedir(), ".erix", "notes");
-  return () => {
-    if (previous.runId === undefined) delete process.env.ERIX_RUN_ID;
-    else process.env.ERIX_RUN_ID = previous.runId;
-    if (previous.notesDir === undefined) delete process.env.ERIX_NOTES_DIR;
-    else process.env.ERIX_NOTES_DIR = previous.notesDir;
-  };
-}
-
 export async function runChat(options = {}) {
   const runId = options.session ?? defaultSessionId(process.cwd(), { unique: true });
-  const restoreNotesEnvironment = setNotesEnvironment(runId);
-  try {
-    return await runChatWithNotes({ ...options, _notesRunId: runId });
-  } finally {
-    restoreNotesEnvironment();
-  }
+  const notesDir = options.notesDir
+    ?? process.env.ERIX_NOTES_DIR
+    ?? path.join(homedir(), ".erix", "notes");
+  // Notes scope is explicit throughout the CLI path; avoid mutating process
+  // globals so concurrent runChat calls cannot restore each other's env.
+  return runChatWithNotes({
+    ...options,
+    _notesRunId: runId,
+    _notesDir: notesDir,
+  });
 }
 
 async function runChatWithNotes({
@@ -495,11 +491,13 @@ async function runChatWithNotes({
   dir = join(homedir(), ".erix", "transcripts"),
   judgeLog,
   notesLedger = false,
+  noNotes = false,
   provider: providerOverride,
   config: configOverride,
   toolOutput = console.log,
   loop: loopOverride,
   _notesRunId,
+  _notesDir,
 }) {
   const cwd = process.cwd();
   const runId = _notesRunId ?? session ?? defaultSessionId(cwd, { unique: true });
@@ -543,19 +541,27 @@ async function runChatWithNotes({
     safeRunId(runId),
   );
   const cliTools = createCliTools({ cwd, archiveDir });
+  const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir,
+    runId,
+    notesDir: _notesDir,
+    excludeSkillIds: notesDisabled ? ["notes"] : [],
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
-  await skillTools.notesJanitor?.();
+  await skillTools.notesJanitor?.({ __erix: { runId, notesDir: _notesDir } });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
   const tools = combineTools(cliTools, skillTools, mcpProxy);
   const recoveryHint = buildArchiveRecoveryHint(archiveDir);
   const notesLedgerEnabled = notesLedger === true
     || process.env.ERIX_NOTES_LEDGER?.trim() === "1";
   const readNotesLedger = notesLedgerEnabled && typeof skillTools.notesLedger === "function"
-    ? () => skillTools.notesLedger({ maxEntries: 5, maxTokens: 200 })
+    ? () => skillTools.notesLedger({
+        maxEntries: 5,
+        maxTokens: 200,
+        __erix: { runId, notesDir: _notesDir },
+      })
     : undefined;
   const notesLedgerPrompt = async () => {
     if (!readNotesLedger) return "";
@@ -569,7 +575,7 @@ async function runChatWithNotes({
   if (readNotesLedger) {
     context.onAfterFold = async (result) => {
       const ledger = await readNotesLedger();
-      result.messages.push({
+      const message = {
         role: "user",
         content: [{
           type: "text",
@@ -577,16 +583,38 @@ async function runChatWithNotes({
             ledger || "（当前没有可注入的 pinned 记录）"
           }\n[notes ledger refresh 结束]`,
         }],
-      });
+      };
+      const existingIndex = result.messages.findLastIndex((item) => (
+        item?.content?.some?.((block) => (
+          typeof block?.text === "string"
+          && block.text.includes("[notes pinned ledger refresh]")
+        ))
+      ));
+      if (existingIndex >= 0) result.messages[existingIndex] = message;
+      else result.messages.push(message);
     };
   }
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, {
     output: toolOutput,
     getToolMetadata: cliTools.getLastToolMetadata,
+    notesScope: { runId, notesDir: _notesDir },
   });
+  const executeToolWithLedger = async (execution) => {
+    const result = await executeTool(execution);
+    if (
+      !readNotesLedger
+      || !["exec", "note_take", "note_forget"].includes(execution?.name)
+    ) {
+      return result;
+    }
+    const ledger = await readNotesLedger();
+    return `${String(result ?? "")}\n\n[notes pinned ledger refresh]\n${
+      ledger || "（当前没有可注入的 pinned 记录）"
+    }\n[notes ledger refresh 结束]`;
+  };
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
-  const resolvedFinalGuard = resolveFinalGuard(finalGuard, runId, archiveDir);
+  const resolvedFinalGuard = resolveFinalGuard(finalGuard, runId, archiveDir, _notesDir);
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG;
   let judgeLogWriteFailed = false;
   // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 安全摘要
@@ -686,7 +714,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     resume,
     tools: tools.tools,
     executeTool: async (execution) => {
-      const result = await executeTool(execution);
+      const result = await executeToolWithLedger(execution);
       idle?.touch();
       return result;
     },
@@ -764,8 +792,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   } finally {
     idle?.dispose();
     try {
-      await skillTools.notesCompleteRun?.();
-      await skillTools.notesJanitor?.();
+      await skillTools.notesCompleteRun?.({ __erix: { runId, notesDir: _notesDir } });
+      await skillTools.notesJanitor?.({ __erix: { runId, notesDir: _notesDir } });
     } finally {
       await closeAllMcpServers();
     }

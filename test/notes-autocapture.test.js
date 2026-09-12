@@ -282,6 +282,7 @@ test("runChat captures a non-replayable tool result before completing the run", 
       idleTimeout: 0,
       toolOutput: () => {},
     });
+
     const record = JSON.parse(await readFile(
       path.join(directory, "run", "integration-run", "result.json"),
       "utf8",
@@ -290,5 +291,95 @@ test("runChat captures a non-replayable tool result before completing the run", 
     assert.equal(record.state, "grace");
     assert.ok(record.versions[0].artifactRef.archivePath);
     assert.doesNotMatch(JSON.stringify(record), /result=integration/u);
+  });
+});
+
+test("auto-captured pinned notes refresh the ledger in the next tool result", async () => {
+  await withNotes(async (directory) => {
+    const transcriptDir = path.join(directory, "transcripts");
+    const provider = createFakeProvider([
+      {
+        content: [{
+          type: "tool_use",
+          id: "ledger-tool-1",
+          name: "exec",
+          input: { command: "printf 'result=ledger-refresh\\n'; : \"$RANDOM\"" },
+        }],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "done" }] },
+    ]);
+    await runChat({
+      prompt: "capture and refresh ledger",
+      session: "ledger-refresh-run",
+      dir: transcriptDir,
+      provider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      notesLedger: true,
+      maxRounds: 2,
+      idleTimeout: 0,
+      toolOutput: () => {},
+    });
+    assert.match(
+      JSON.stringify(provider.requests[1].messages),
+      /\[notes pinned ledger refresh\][\s\S]*result =/u,
+    );
+  });
+});
+
+test("concurrent runChat calls keep explicit note scopes isolated and restore env", async () => {
+  await withTempDirectory(async (directory) => {
+    const previous = {
+      runId: process.env.ERIX_RUN_ID,
+      notesDir: process.env.ERIX_NOTES_DIR,
+    };
+    process.env.ERIX_RUN_ID = "sentinel-run";
+    process.env.ERIX_NOTES_DIR = path.join(directory, "sentinel-notes");
+    try {
+      const run = (runId, value) => runChat({
+        prompt: `save ${value}`,
+        session: runId,
+        dir: path.join(directory, `${runId}-transcripts`),
+        notesDir: path.join(directory, `${runId}-notes`),
+        provider: createFakeProvider([
+          {
+            content: [{
+              type: "tool_use",
+              id: `${runId}-take`,
+              name: "note_take",
+              input: { key: "answer", content: value },
+            }],
+            stopReason: "tool_use",
+          },
+          { content: [{ type: "text", text: "done" }] },
+        ]),
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        finalGuard: false,
+        maxRounds: 2,
+        idleTimeout: 0,
+        toolOutput: () => {},
+      });
+      await Promise.all([
+        run("parallel-a", "value-a"),
+        run("parallel-b", "value-b"),
+      ]);
+      const first = JSON.parse(await readFile(
+        path.join(directory, "parallel-a-notes", "run", "parallel-a", "answer.json"),
+        "utf8",
+      ));
+      const second = JSON.parse(await readFile(
+        path.join(directory, "parallel-b-notes", "run", "parallel-b", "answer.json"),
+        "utf8",
+      ));
+      assert.equal(first.versions.at(-1).content, "value-a");
+      assert.equal(second.versions.at(-1).content, "value-b");
+      assert.equal(process.env.ERIX_RUN_ID, "sentinel-run");
+      assert.equal(process.env.ERIX_NOTES_DIR, path.join(directory, "sentinel-notes"));
+    } finally {
+      if (previous.runId === undefined) delete process.env.ERIX_RUN_ID;
+      else process.env.ERIX_RUN_ID = previous.runId;
+      if (previous.notesDir === undefined) delete process.env.ERIX_NOTES_DIR;
+      else process.env.ERIX_NOTES_DIR = previous.notesDir;
+    }
   });
 });

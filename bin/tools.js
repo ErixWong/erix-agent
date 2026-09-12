@@ -321,6 +321,7 @@ export function wrapExecuteTool(
     output = console.log,
     getToolMetadata,
     capture = captureToolExecution,
+    notesScope,
   } = {},
 ) {
   if (typeof executeTool !== "function") {
@@ -359,6 +360,7 @@ export function wrapExecuteTool(
         metadata,
         toolUseId: context?.toolUseId,
         round: context?.round,
+        notesScope,
       });
       output(`← ${name}: ${summarizeToolResult(name, result)}`);
       return result;
@@ -373,7 +375,10 @@ function archiveGuidance(archivePath) {
   return `[完整输出已归档：${archivePath}（需要原始内容请用 readFile/cat 读取该路径；不要重跑命令，重跑会得到不同的值）]`;
 }
 
-function archiveFailureGuidance(archivePath, error) {
+function archiveFailureGuidance(archivePath, error, replayable) {
+  if (!replayable) {
+    return "[完整输出归档失败：原始输出不可恢复；请勿重跑命令。]";
+  }
   const reason = String(error?.message ?? error ?? "未知错误")
     .replaceAll(/\s+/gu, " ")
     .slice(0, 160);
@@ -475,7 +480,9 @@ export function archiveResult(
       }
     }
     return {
-      text: `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error)}`,
+      text: replayable
+        ? `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error, replayable)}`
+        : archiveFailureGuidance(archivePath, error, replayable),
       archivePath: undefined,
       artifact: undefined,
     };

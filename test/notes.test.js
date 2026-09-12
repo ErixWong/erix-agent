@@ -7,19 +7,33 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as notes from "../skills/notes/skill.mjs";
 import { discoverSkills, skillDirectories } from "../bin/skills.js";
+import { estimateTokens } from "../src/tokens.js";
 
 const skillPath = fileURLToPath(new URL("../skills/notes/skill.mjs", import.meta.url));
 
 async function withNotes(callback, options = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "erix-notes-test-"));
   const previous = Object.fromEntries(
-    ["ERIX_NOTES_DIR", "ERIX_RUN_ID", "ERIX_NOTES_GRACE_MS"]
+    [
+      "ERIX_NOTES_DIR",
+      "ERIX_RUN_ID",
+      "ERIX_NOTES_GRACE_MS",
+      "ERIX_NOTES_HISTORY_LIMIT",
+      "ERIX_NOTES_LOCK_TIMEOUT_MS",
+      "ERIX_NOTES_LOCK_STALE_MS",
+    ]
       .map((name) => [name, process.env[name]]),
   );
   process.env.ERIX_NOTES_DIR = directory;
   process.env.ERIX_RUN_ID = options.runId ?? "notes-test-run";
   if (options.graceMs === undefined) delete process.env.ERIX_NOTES_GRACE_MS;
   else process.env.ERIX_NOTES_GRACE_MS = String(options.graceMs);
+  if (options.historyLimit === undefined) delete process.env.ERIX_NOTES_HISTORY_LIMIT;
+  else process.env.ERIX_NOTES_HISTORY_LIMIT = String(options.historyLimit);
+  if (options.lockTimeoutMs === undefined) delete process.env.ERIX_NOTES_LOCK_TIMEOUT_MS;
+  else process.env.ERIX_NOTES_LOCK_TIMEOUT_MS = String(options.lockTimeoutMs);
+  if (options.lockStaleMs === undefined) delete process.env.ERIX_NOTES_LOCK_STALE_MS;
+  else process.env.ERIX_NOTES_LOCK_STALE_MS = String(options.lockStaleMs);
   try {
     return await callback(directory);
   } finally {
@@ -88,6 +102,76 @@ test("take/read/list supports version history and deduplicates identical content
     assert.equal(record.versions.length, 2);
     assert.equal(record.versions[0].content, "first");
   });
+
+});
+
+test("per-key writes serialize and compact bounded version history", async () => {
+  await withNotes(async (directory) => {
+    await Promise.all(
+      Array.from({ length: 8 }, (_, index) => notes.note_take({
+        key: "concurrent",
+        content: `value-${index}`,
+      })),
+    );
+    const record = parsed(await readFile(
+      path.join(directory, "run", "notes-test-run", "concurrent.json"),
+      "utf8",
+    ));
+    assert.equal(record.versions.length, 3);
+    assert.ok(record.compactedHistory.length <= 3);
+    assert.equal(
+      parsed(await notes.note_read({
+        key: "concurrent",
+        version: record.compactedHistory[0].version,
+      })).status,
+      "compacted",
+    );
+    assert.equal(parsed(await notes.note_read({ key: "concurrent" })).version, 8);
+  }, { historyLimit: 3 });
+});
+
+test("concurrent keys and completion do not overwrite each other", async () => {
+  await withNotes(async (directory) => {
+    const results = await Promise.all([
+      notes.note_take({ key: "alpha", content: "a" }),
+      notes.note_take({ key: "beta", content: "b" }),
+    ]);
+    assert.deepEqual(results.map((value) => parsed(value).status), ["saved", "saved"]);
+
+    await notes.note_take({ key: "lifecycle", content: "before" });
+    await Promise.all([
+      notes.completeRun(),
+      notes.note_take({ key: "lifecycle", content: "after" }),
+    ]);
+    const record = parsed(await readFile(
+      path.join(directory, "run", "notes-test-run", "lifecycle.json"),
+      "utf8",
+    ));
+    assert.equal(record.state, "completed");
+    assert.equal(record.versions.length, 2);
+    assert.equal(record.versions.at(-1).content, "after");
+  });
+});
+
+test("explicit __erix scope overrides the environment scope", async () => {
+  await withNotes(async () => {
+    await notes.note_take({
+      key: "explicit",
+      content: "isolated",
+      __erix: { scope: { type: "run", ref: "explicit-run" } },
+    });
+    assert.equal(
+      parsed(await notes.note_read({ key: "explicit" })).status,
+      "missing",
+    );
+    assert.equal(
+      parsed(await notes.note_read({
+        key: "explicit",
+        __erix: { scopeRef: "explicit-run" },
+      })).value,
+      "isolated",
+    );
+  });
 });
 
 test("pinned ledger is scoped, provenance-labeled, and stays under its token budget", async () => {
@@ -99,6 +183,7 @@ test("pinned ledger is scoped, provenance-labeled, and stays under its token bud
     });
     const longLedger = await notes.buildPinnedLedger({ maxEntries: 1, maxTokens: 200 });
     assert.ok(Array.from(longLedger).length <= 160);
+    assert.ok(estimateTokens(longLedger) <= 200);
     await notes.note_forget({ key: "long-value" });
     await notes.note_take({
       key: "pinned-value",
@@ -110,6 +195,7 @@ test("pinned ledger is scoped, provenance-labeled, and stays under its token bud
 
     const ledger = await notes.buildPinnedLedger({ maxEntries: 5, maxTokens: 200 });
     assert.ok(Array.from(ledger).length <= 160);
+    assert.ok(estimateTokens(ledger) <= 200);
     assert.match(ledger, /pinned-value/);
     assert.match(ledger, /source=agent round=3 toolUse=tool-123/);
     assert.doesNotMatch(ledger, /not-pinned/);
@@ -290,6 +376,34 @@ test("run lifecycle transitions active to completed to grace and then garbage co
       restoreClock();
     }
   }, { graceMs: 60_000 });
+});
+
+test("janitor moves active notes from other sessions into grace and filters inactive notes", async () => {
+  const now = { value: Date.now() };
+  await withNotes(async (directory) => {
+    const restoreClock = notes.setNotesClock(() => now.value);
+    try {
+      await notes.note_take({ key: "orphan", content: "value" });
+      process.env.ERIX_RUN_ID = "current-run";
+      assert.equal(parsed(await notes.note_list({})).total, 0);
+      assert.equal((await notes.runNotesJanitor()).status, "ok");
+      let orphan = parsed(await readFile(
+        path.join(directory, "run", "notes-test-run", "orphan.json"),
+        "utf8",
+      ));
+      assert.equal(orphan.state, "active");
+      now.value += 1001;
+      await notes.runNotesJanitor();
+      orphan = parsed(await readFile(
+        path.join(directory, "run", "notes-test-run", "orphan.json"),
+        "utf8",
+      ));
+      assert.equal(orphan.state, "grace");
+      assert.equal(parsed(await notes.note_list({ includeInactive: true })).total, 0);
+    } finally {
+      restoreClock();
+    }
+  }, { graceMs: 1000 });
 });
 
 test("bundled notes skill is discoverable and user notes skill overrides it", async () => {

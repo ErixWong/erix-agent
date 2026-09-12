@@ -46,6 +46,8 @@ const REPL_HELP_TEXT = `REPL 用法：
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--no-final-guard]
   --session <id>        会话 ID（默认按工作目录自动派生）
   --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
+                        run 作用域笔记按 session 隔离；相同 --session 会共享笔记，
+                        --dir 只影响 transcript，不改变笔记作用域
   --max-rounds <n>      工具循环最大轮数（默认：16）
   --idle-timeout <秒>   无进展自动中止（默认：0=不启用）
   --no-final-guard      关闭终稿 provenance 核验
@@ -355,6 +357,7 @@ export async function runRepl(argv, io = {}) {
   const input = io.input ?? process.stdin;
   const output = io.output ?? process.stdout;
   const sessionDir = io.sessionDir ?? join(homedir(), ".erix");
+  const notesDir = process.env.ERIX_NOTES_DIR ?? join(homedir(), ".erix", "notes");
 
   if (options.showHelp) {
     writeLine(output, REPL_HELP_TEXT);
@@ -383,12 +386,16 @@ export async function runRepl(argv, io = {}) {
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,
+    runId: options.session,
+    notesDir,
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
   {
     const restoreNotesEnvironment = setNotesEnvironment(options.session);
     try {
-      await skillTools.notesJanitor?.();
+      await skillTools.notesJanitor?.({
+        __erix: { runId: options.session, notesDir },
+      });
     } finally {
       restoreNotesEnvironment();
     }
@@ -399,6 +406,7 @@ export async function runRepl(argv, io = {}) {
     {
       output: (line) => writeLine(output, line),
       getToolMetadata: cliTools.getLastToolMetadata,
+      notesScope: { runId: options.session, notesDir },
     },
   );
   let messages = storedRecords.length > 0
@@ -455,8 +463,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     const restoreNotesEnvironment = setNotesEnvironment(options.session);
     try {
       await saveSession(sessionDir, options.session, messages);
-      await skillTools.notesCompleteRun?.();
-      await skillTools.notesJanitor?.();
+      await skillTools.notesCompleteRun?.({
+        __erix: { runId: options.session, notesDir },
+      });
+      await skillTools.notesJanitor?.({
+        __erix: { runId: options.session, notesDir },
+      });
       writeLine(output, `再见（会话已保存到 ${archivePath}）`);
       resolveRun();
     } finally {
@@ -614,7 +626,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           || process.env.ERIX_NO_FINAL_GUARD?.trim() === "1"
           ? {}
           : {
-              finalGuard: createFinalGuard({ runId: options.session }),
+              finalGuard: createFinalGuard({
+                runId: options.session,
+                notesDir,
+              }),
               finalGuardMaxRetries: 2,
             }),
         tools,
