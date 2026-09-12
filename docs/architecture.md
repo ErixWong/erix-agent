@@ -129,7 +129,10 @@ uses `termination.reason = "final_guard_unverified"` and the store state is
 for availability the loop returns the final text, but stores `"guard_error"`
 rather than `"succeeded"`. Hosts must handle it explicitly because it is not
 `verified`.
-`skipped` means no guard was configured. Non-abort stop paths such as
+`skipped` means no guard was configured, or the guard could read trusted
+non-replayable artifacts but none contained an extractable candidate value;
+the latter records a warning and deliberately does not fail closed because
+there is no value to compare. Non-abort stop paths such as
 `max_rounds_cap`, `stall`, `continuation_exhausted`, and `reflection_stop`
 still invoke the guard; if they cannot continue, they fail closed without
 spending another model round. `abort` does not invoke the guard.

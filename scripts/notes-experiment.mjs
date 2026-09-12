@@ -37,6 +37,7 @@ function parseArgs(args) {
     criticalRuns: 6,
     timeoutMs: 20 * 60 * 1000,
     reportOnly: false,
+    dOnly: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -51,11 +52,15 @@ function parseArgs(args) {
       continue;
     }
     if (argument === "--help" || argument === "-h") {
-      console.log("用法：node scripts/notes-experiment.mjs [--smoke-runs 4] [--critical-runs 6] [--timeout-ms 1200000] [--report-only]");
+      console.log("用法：node scripts/notes-experiment.mjs [--smoke-runs 4] [--critical-runs 6] [--timeout-ms 1200000] [--d-only] [--report-only]");
       return null;
     }
     if (argument === "--report-only") {
       options.reportOnly = true;
+      continue;
+    }
+    if (argument === "--d-only") {
+      options.dOnly = true;
       continue;
     }
     throw new Error(`unknown option: ${argument}`);
@@ -251,23 +256,28 @@ async function readNoteValues(notesDir, runId) {
 }
 
 export function parseFinal(stdout) {
-  const headings = [...String(stdout).matchAll(
-    /=== 终稿(?:（(已核验|未核验，不可信|核验错误，不可信)）)? ===/gu,
+  const output = String(stdout);
+  const headings = [...output.matchAll(
+    /^=== 终稿(?:（([^）]*)）|\(([^)]*)\))? ===$/gmu,
   )];
   const heading = headings.at(-1);
   const start = heading?.index ?? -1;
   const contentStart = start < 0 ? -1 : start + heading[0].length;
-  const end = stdout.indexOf("\n=== 统计 ===", contentStart);
+  const end = output.indexOf("\n=== 统计 ===", contentStart);
   const finalText = contentStart < 0
     ? ""
-    : stdout.slice(contentStart, end < 0 ? undefined : end).trim();
-  const stats = end < 0 ? "" : stdout.slice(end);
-  const termination = stats.match(/\btermination=([a-z_]+)/u)?.[1]
-    ?? (stdout.includes("final_guard_unverified") ? "final_guard_unverified" : "unknown");
+    : output.slice(contentStart, end < 0 ? undefined : end).trim();
+  const stats = end < 0 ? "" : output.slice(end);
+  const title = heading?.[1] ?? heading?.[2] ?? "";
+  const titleRequiresRevision = /未核验|核验错误/u.test(title);
+  const termination = titleRequiresRevision
+    ? "final_guard_unverified"
+    : stats.match(/\btermination=([a-z_]+)/u)?.[1]
+      ?? (output.includes("final_guard_unverified") ? "final_guard_unverified" : "unknown");
   return {
     finalText,
     termination,
-    guarded: heading?.[1] !== undefined,
+    guarded: heading !== undefined && (heading[1] !== undefined || heading[2] !== undefined),
   };
 }
 
@@ -535,7 +545,7 @@ export function reportMarkdown(result) {
   const totalDuration = result.runs.reduce((sum, run) => sum + run.durationMs, 0);
   const repaired = result.repairedRerun;
   const repairedSection = repaired
-    ? `\n## 修复后重跑\n\n${repaired.status === "completed"
+    ? `\n## ${repaired.label ?? "修复后重跑"}\n\n${repaired.status === "completed"
       ? reportMarkdown(repaired)
       : `状态：${repaired.status}。${repaired.reason ?? ""}\n协议：${JSON.stringify(repaired.protocol)}`}\n`
     : "";
@@ -629,6 +639,7 @@ async function main() {
   try {
     const configPaths = await createModelConfigs(tempRoot);
     for (const { arm, model, index } of roundRobinOrder({
+      arms: options.dOnly ? ["D"] : ARMS,
       smokeRuns: options.smokeRuns,
       criticalRuns: options.criticalRuns,
     })) {
@@ -708,10 +719,12 @@ async function main() {
       seed: ROUND_ROBIN_SEED,
       models: MODELS,
       order: "round-robin",
+      ...(options.dOnly ? { scope: "D" } : {}),
     };
   const repairedAggregate = aggregate(runs);
   const repairedRerun = {
     status: "completed",
+    ...(options.dOnly ? { label: "批次4 重跑（D 臂）" } : {}),
     protocol,
     startedAt,
     completedAt: new Date().toISOString(),
@@ -720,12 +733,22 @@ async function main() {
   };
   repairedRerun.conclusion = conclusionFor(repairedAggregate);
   const result = {
-    protocol,
-    startedAt,
+    ...(options.dOnly && legacy
+      ? {
+          protocol: previous.protocol,
+          startedAt: previous.startedAt,
+          runs: previous.runs,
+          aggregate: previous.aggregate,
+          conclusion: previous.conclusion,
+        }
+      : {
+          protocol,
+          startedAt,
+          runs,
+          aggregate: repairedAggregate,
+          conclusion: repairedRerun.conclusion,
+        }),
     completedAt: repairedRerun.completedAt,
-    runs,
-    aggregate: repairedAggregate,
-    conclusion: repairedRerun.conclusion,
     ...(legacy ? { legacy } : {}),
     repairedRerun,
     excludedModels: ["deepseek-v4-flash"],
@@ -737,7 +760,7 @@ async function main() {
   await mkdir(path.dirname(REPORT_PATH), { recursive: true });
   await writeFile(REPORT_PATH, `${reportMarkdown(result)}\n`, "utf8");
   console.log("\n=== 聚合 ===");
-  for (const entry of result.aggregate) {
+  for (const entry of options.dOnly ? repairedAggregate : result.aggregate) {
     console.log(
       `${entry.arm}/${entry.model}: n=${entry.n} hit=${entry.hitFirst} rerun=${entry.rerunImpersonation} `
       + `invented=${entry.invented} noAnswer=${entry.noAnswer} failed=${entry.failed} note=${entry.noteRead} `

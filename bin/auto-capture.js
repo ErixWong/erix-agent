@@ -6,7 +6,7 @@ import {
   normalizedLabel,
 } from "../skills/notes/credential-patterns.mjs";
 
-const LABEL_PATTERN = /^\s*([^:=\s][^:=]{0,80}?)\s*[:=]\s*(.*?)\s*$/u;
+const LABEL_PATTERN = /^\s*([^:=\s][^:=\s]{0,80}?)\s*[:=]\s*(.*?)\s*$/u;
 export function candidateLines(output) {
   const labelled = [];
   const unlabelled = [];

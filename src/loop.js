@@ -557,7 +557,7 @@ function defaultSleep(ms, signal) {
  * @property {object} [toolResult] Canonical tool_result block.
  * @property {string} [finalText] Text accumulated at round end.
  * @property {string} [stopReason] Canonical provider stop reason.
- * @property {"accept"|"revise"|"degraded"|"error"} [action]
+ * @property {"accept"|"skip"|"revise"|"degraded"|"error"} [action]
  * @property {string} [reason]
  */
 
@@ -608,7 +608,7 @@ function defaultSleep(ms, signal) {
  *   retry?: {attempts?:number, backoffBaseMs?:number, backoffMaxMs?:number,
  *     sleepImpl?:(ms:number)=>Promise<void>}|false,
  *   completion?: {signals?:string[], maxNoToolRounds?:number}|false,
- *   finalGuard?:(payload:{finalText:string,messages:object[],round:number,rounds:number,signal:AbortSignal,termination:object}) => Promise<{action:"accept"}|{action:"revise",message:string}>,
+ *   finalGuard?:(payload:{finalText:string,messages:object[],round:number,rounds:number,signal:AbortSignal,termination:object}) => Promise<{action:"accept"}|{action:"skip",reason:string}|{action:"revise",message:string}>,
  *   finalGuardMaxRetries?: number,
  *   finalGuardTimeoutMs?: number, // Defaults to 30000; non-positive values use the default.
  *   maxTokenContinuations?: number,
@@ -1235,6 +1235,15 @@ export async function runToolLoop({
         verification = { status: "verified" };
         emitEvent({ type: "final_guard", round: rounds, action: "accept" });
         return { action: "accept" };
+      }
+      if (
+        decision?.action === "skip"
+        && typeof decision.reason === "string"
+        && decision.reason.length > 0
+      ) {
+        verification = { status: "skipped", reason: decision.reason };
+        emitEvent({ type: "final_guard", round: rounds, action: "skip", reason: decision.reason });
+        return { action: "skip", reason: decision.reason };
       }
       if (
         decision?.action === "revise"
@@ -2483,6 +2492,9 @@ export async function runToolLoop({
         if (guardDecision.action === "error") {
           return finish(reason, detail);
         }
+        if (guardDecision.action === "skip") {
+          return finish(reason, detail);
+        }
         if (FINAL_GUARD_NON_CONTINUABLE_REASONS.has(reason)) {
           verification = {
             status: "unverified",
@@ -2532,6 +2544,7 @@ export async function runToolLoop({
   if (typeof finalGuard !== "function") return finish("max_rounds_cap");
   const guardDecision = await callFinalGuard("max_rounds_cap");
   if (guardDecision.action === "error") return finish("max_rounds_cap");
+  if (guardDecision.action === "skip") return finish("max_rounds_cap");
   verification = {
     status: "unverified",
     reason: "non_continuable",

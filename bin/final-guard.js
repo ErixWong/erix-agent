@@ -13,7 +13,7 @@ import {
 const SOURCE_DECLARATION_PATTERN =
   /原值|首次|一次性|密钥|阈值|时间戳|token|key|value|secret|password/iu;
 const LABEL_VALUE_PATTERN =
-  /(?:^|[\s\u3000])([^:=\s][^:=]{0,80}?)\s*[:=]\s*([^\s,，。；;）)]+)/gu;
+  /(?:^|[\s\u3000])([^:=\s][^:=\s]{0,80}?)\s*[:=]\s*([^\s,，。；;）)]+)/gu;
 
 function warningMessage(message) {
   return `finalGuard warning: ${message}`;
@@ -46,13 +46,13 @@ function extractLabeledCandidates(text) {
   return candidates;
 }
 
-function extractShapedTokens(text, shapes) {
+function extractShapedTokens(text, shapes, excludedValues = new Set()) {
   const candidates = [];
   const seen = new Set();
   const tokenPattern = /[A-Za-z0-9][A-Za-z0-9+/_-]{7,}={0,2}/gu;
   for (const match of String(text ?? "").matchAll(tokenPattern)) {
     const value = match[0];
-    if (!/\d|[+/=]/u.test(value)) continue;
+    if (!/\d|[+/=]/u.test(value) || excludedValues.has(value)) continue;
     const shape = valueShape(value);
     if (!shape || !shapes.has(shape) || seen.has(value)) continue;
     seen.add(value);
@@ -175,13 +175,13 @@ async function inspectRun({ archiveDir }) {
   const references = loaded.manifests;
   const values = [];
   const warnings = [...loaded.warnings];
+  let readableArtifacts = 0;
   for (const { manifest: reference, manifestPath } of references) {
     if (!reference) continue;
     try {
       const output = await readArtifact(reference, archiveDir, manifestPath);
-      const candidates = candidateLines(output).filter((candidate) => (
-        !looksLikeCredential(candidate.label, candidate.value)
-      ));
+      readableArtifacts += 1;
+      const candidates = candidateLines(output);
       if (candidates.length === 0) {
         warnings.push(`${reference.archivePath}: 未抽取到可核验值`);
         continue;
@@ -197,7 +197,7 @@ async function inspectRun({ archiveDir }) {
       warnings.push(`${reference.archivePath ?? manifestPath}: ${error?.message ?? String(error)}`);
     }
   }
-  return { references, values, warnings };
+  return { references, values, warnings, readableArtifacts };
 }
 
 /**
@@ -227,6 +227,12 @@ export function createFinalGuard({
     if (inspected.references.length === 0) {
       return { action: "accept" };
     }
+    if (inspected.values.length === 0 && inspected.readableArtifacts > 0) {
+      return {
+        action: "skip",
+        reason: "no_extractable_candidates",
+      };
+    }
     if (inspected.values.length === 0) {
       return {
         action: "revise",
@@ -248,29 +254,28 @@ export function createFinalGuard({
       if (candidate.shape) knownShapes.add(candidate.shape);
     }
 
+    const lineCandidates = candidateLines(text);
     const labeled = [
-      ...candidateLines(text),
+      ...lineCandidates,
       ...extractLabeledCandidates(text),
     ];
     for (const candidate of labeled) {
       const label = normalizedLabel(candidate.label);
       const knownForLabel = knownLabels.get(label);
       if (!knownForLabel || knownForLabel.has(candidate.value)) continue;
-      const shape = valueShape(candidate.value);
-      if (
-        (shape && knownShapes.has(shape))
-        || (!shape && [...knownForLabel].some((value) => valueShape(value) === null))
-      ) {
-        const archivePath = inspected.values.find((item) => item.label === label)
-          ?.archivePath ?? inspected.values[0].archivePath;
-        return {
-          action: "revise",
-          message: `终稿中的值 ${safeDisplay(candidate.value)} 未经验证。请先 note_read 精确读取（或读取归档 ${archivePath}）核实原始值；不得重跑命令，不得凭记忆给出；若确认无法恢复，请明确说明不可恢复。`,
-        };
-      }
+      const archivePath = inspected.values.find((item) => item.label === label)
+        ?.archivePath ?? inspected.values[0].archivePath;
+      return {
+        action: "revise",
+        message: `终稿中的值 ${safeDisplay(candidate.value)} 未经验证。请先 note_read 精确读取（或读取归档 ${archivePath}）核实原始值；不得重跑命令，不得凭记忆给出；若确认无法恢复，请明确说明不可恢复。`,
+      };
     }
 
-    const shaped = extractShapedTokens(text, knownShapes);
+    const labeledValues = new Set(lineCandidates.map((candidate) => candidate.value));
+    const sourceArtifacts = new Set(inspected.values.map((candidate) => candidate.archivePath));
+    const shaped = sourceArtifacts.size === 1
+      ? extractShapedTokens(text, knownShapes, labeledValues)
+      : [];
     const unknown = shaped.find((candidate) => !knownValues.has(candidate.value));
     if (!unknown) return { action: "accept" };
     const sourceClaim = SOURCE_DECLARATION_PATTERN.test(text);

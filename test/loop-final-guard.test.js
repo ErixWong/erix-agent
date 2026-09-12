@@ -62,6 +62,26 @@ test("finalGuard revision is injected as a paired-safe user text message", async
   validateMessages(result.messages);
 });
 
+test("finalGuard can skip verification when no candidate is extractable", async () => {
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "plain prose" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "hello",
+    executeTool: async () => "unused",
+    finalGuard: async () => ({
+      action: "skip",
+      reason: "no_extractable_candidates",
+    }),
+  });
+
+  assert.deepEqual(result.termination, { reason: "end_turn" });
+  assert.deepEqual(result.verification, {
+    status: "skipped",
+    reason: "no_extractable_candidates",
+  });
+});
+
 test("finalGuard fail-closes after the retry limit without rewriting finalText", async () => {
   const events = [];
   const store = createMemoryTranscriptStore();

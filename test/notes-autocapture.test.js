@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { runChat } from "../bin/cli.js";
-import { captureToolExecution } from "../bin/auto-capture.js";
+import { candidateLines, captureToolExecution } from "../bin/auto-capture.js";
 import { archiveResult, createCliTools, wrapExecuteTool } from "../bin/tools.js";
 import { createFinalGuard } from "../bin/final-guard.js";
 import * as notes from "../skills/notes/skill.mjs";
@@ -61,6 +61,23 @@ function metadataFor(output, archivePath = "/tmp/artifact.txt") {
     },
   };
 }
+
+test("candidateLines extracts Chinese labels, ordinary labels, and bare tokens uniformly", () => {
+  assert.deepEqual(
+    candidateLines([
+      "一次性密钥=XXX",
+      "key=value",
+      "label: value",
+      "opaque-token-123",
+    ].join("\n")),
+    [
+      { label: "一次性密钥", value: "XXX" },
+      { label: "key", value: "value" },
+      { label: "label", value: "value" },
+      { label: "", value: "opaque-token-123" },
+    ],
+  );
+});
 
 test("short non-replayable output is archived with structured metadata", async () => {
   await withTempDirectory(async (cwd) => {

@@ -41,6 +41,10 @@ test("parseFinal recognizes verified and unverified guarded headings", () => {
     parseFinal("=== 终稿（未核验，不可信） ===\nbad\n=== 统计 === termination=final_guard_unverified\n"),
     { finalText: "bad", termination: "final_guard_unverified", guarded: true },
   );
+  assert.deepEqual(
+    parseFinal("=== 终稿（未核验） ===\nbad\n=== 统计 === termination=end_turn\n"),
+    { finalText: "bad", termination: "final_guard_unverified", guarded: true },
+  );
 });
 
 test("classify uses notes as provenance without treating known reruns as first", () => {
