@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -28,6 +28,33 @@ test("resolves direct, environment, and trimmed file keys in precedence order", 
   } finally {
     if (previous === undefined) delete process.env[envName];
     else process.env[envName] = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("apiKeyFile validates paths and warns without rejecting readable files", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "erix-llm-kit-api-key-validation-"));
+  const file = join(directory, "api-key");
+  const originalError = console.error;
+  const warnings = [];
+  try {
+    await writeFile(file, "file-secret\n", "utf8");
+    await chmod(file, 0o644);
+    console.error = (message) => warnings.push(String(message));
+    assert.equal(await resolveApiKey({ apiKeyFile: file }), "file-secret");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /group\/other/);
+
+    await assert.rejects(resolveApiKey({ apiKeyFile: "" }), {
+      name: "TypeError",
+    });
+    const directoryPath = join(directory, "not-a-file");
+    await mkdir(directoryPath);
+    await assert.rejects(resolveApiKey({ apiKeyFile: directoryPath }), {
+      name: "TypeError",
+    });
+  } finally {
+    console.error = originalError;
     await rm(directory, { recursive: true, force: true });
   }
 });

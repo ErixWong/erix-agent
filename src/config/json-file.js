@@ -23,7 +23,13 @@ export function createJsonFileModelConfigProvider({ path } = {}) {
       const requestedSlot = slot ?? "default";
       const parsed = JSON.parse(await readFile(path, "utf8"));
       const slots = parsed?.slots;
-      const config = isRecord(slots) ? slots[requestedSlot] ?? slots.default : undefined;
+      const config = isRecord(slots)
+        ? Object.hasOwn(slots, requestedSlot)
+          ? slots[requestedSlot]
+          : Object.hasOwn(slots, "default")
+            ? slots.default
+            : undefined
+        : undefined;
 
       if (!isRecord(config)) {
         throw new KitError("unknown", `配置槽位不存在: ${requestedSlot}`);

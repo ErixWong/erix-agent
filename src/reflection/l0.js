@@ -52,7 +52,7 @@ export function extractL0Facts(messages, state = { seenErrors: new Map() }) {
   }
 
   const fact = {
-    exitOk: results.every((result) => (
+    exitOk: results.length > 0 && results.every((result) => (
       result?.is_error !== true && result?.success !== false
     )),
   };

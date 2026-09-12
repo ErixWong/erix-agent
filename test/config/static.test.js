@@ -1,3 +1,6 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
 import { createStaticModelConfigProvider } from "../../src/config/static.js";
 import { modelConfigProviderContract } from "../contract/model-config-provider.js";
 
@@ -14,3 +17,11 @@ modelConfigProviderContract("static", async () => ({
   slot: "audit",
   expect: { defaultModel: "default-model", slotModel: "audit-model", materializedKey: "static-contract-secret" },
 }));
+
+test("static provider falls back for prototype properties", async () => {
+  const provider = createStaticModelConfigProvider({
+    slots: { default: { model: "default-model" } },
+  });
+  assert.equal((await provider.resolve("__proto__")).model, "default-model");
+  assert.equal((await provider.resolve("constructor")).model, "default-model");
+});

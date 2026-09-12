@@ -349,6 +349,7 @@ test("L0 deduplicates identical errors and truncates excerpts", () => {
     }] }]).exitOk,
     true,
   );
+  assert.equal(extractL0Facts([]).exitOk, false);
 });
 
 test("L1 parses embedded summaries and strips their markers", () => {

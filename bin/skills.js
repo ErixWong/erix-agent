@@ -41,7 +41,7 @@ function assertEntrypoint(root, entrypoint) {
   if (!existsSync(entrypointPath)) {
     throw new Error(`技能 entrypoint 不存在：${entrypoint}`);
   }
-  return entrypoint;
+  return normalized;
 }
 
 function validateTools(tools) {
@@ -100,31 +100,35 @@ function validateDefinition(definition, root) {
   return { skillId, entrypoint, tools };
 }
 
-async function importSkillModule(root) {
-  const modulePath = path.join(root, DEFAULT_ENTRYPOINT);
+async function importSkillModule(root, entrypoint = DEFAULT_ENTRYPOINT) {
+  const validatedEntrypoint = assertEntrypoint(root, entrypoint);
+  const modulePath = path.join(root, validatedEntrypoint);
   if (!existsSync(modulePath)) {
-    throw new Error(`技能入口文件不存在：${DEFAULT_ENTRYPOINT}`);
+    throw new Error(`技能入口文件不存在：${validatedEntrypoint}`);
   }
   return import(pathToFileURL(modulePath).href);
 }
 
 async function loadSkillWithModule(dir) {
   const root = normalizeRoot(dir);
-  const skillModule = await importSkillModule(root);
+  const descriptorModule = await importSkillModule(root);
 
-  if (typeof skillModule.getSkillDefinition === "function") {
-    const definition = await skillModule.getSkillDefinition();
+  if (typeof descriptorModule.getSkillDefinition === "function") {
+    const definition = await descriptorModule.getSkillDefinition();
     const loaded = validateDefinition(definition, root);
+    const skillModule = loaded.entrypoint === DEFAULT_ENTRYPOINT
+      ? descriptorModule
+      : await importSkillModule(root, loaded.entrypoint);
     return { ...loaded, module: skillModule };
   }
 
-  if (typeof skillModule.getTools === "function") {
-    const tools = validateTools(await skillModule.getTools());
+  if (typeof descriptorModule.getTools === "function") {
+    const tools = validateTools(await descriptorModule.getTools());
     return {
       skillId: path.basename(root),
       entrypoint: DEFAULT_ENTRYPOINT,
       tools,
-      module: skillModule,
+      module: descriptorModule,
     };
   }
 
@@ -157,8 +161,28 @@ export function skillDirectories({
  */
 export function discoverSkills({ home, cwd, skillsDir } = {}) {
   const discovered = new Map();
-  for (const directory of skillDirectories({ home, cwd, skillsDir })) {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+  const errors = [];
+  const candidates = skillsDir === undefined
+    ? [
+      path.join(normalizeRoot(home ?? homedir()), ".erix", "skills"),
+      path.join(normalizeRoot(cwd ?? process.cwd()), ".erix", "skills"),
+    ]
+    : [path.resolve(normalizeRoot(cwd ?? process.cwd()), String(skillsDir))];
+
+  for (const directory of [...new Set(candidates.map(normalizeRoot))]) {
+    let entries;
+    try {
+      if (!isDirectory(directory)) continue;
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch (error) {
+      errors.push({
+        skillId: path.basename(directory),
+        dir: directory,
+        error: errorMessage(error),
+      });
+      continue;
+    }
+    for (const entry of entries) {
       if (entry.isDirectory()) {
         discovered.set(entry.name, {
           dir: path.join(directory, entry.name),
@@ -167,7 +191,12 @@ export function discoverSkills({ home, cwd, skillsDir } = {}) {
       }
     }
   }
-  return [...discovered.values()];
+  const result = [...discovered.values()];
+  Object.defineProperty(result, "errors", {
+    value: errors,
+    enumerable: false,
+  });
+  return result;
 }
 
 export async function loadSkill(dir) {
@@ -182,11 +211,14 @@ export async function loadSkill(dir) {
 export async function loadAllSkills({ home, cwd, skillsDir } = {}) {
   const skills = [];
   const errors = [];
-  for (const candidate of discoverSkills({ home, cwd, skillsDir })) {
+  const discovered = discoverSkills({ home, cwd, skillsDir });
+  errors.push(...(discovered.errors ?? []));
+  for (const candidate of discovered) {
     try {
       const loaded = await loadSkill(candidate.dir);
       skills.push({
         skillId: loaded.skillId,
+        entrypoint: loaded.entrypoint,
         tools: loaded.tools,
         dir: candidate.dir,
       });
@@ -233,7 +265,7 @@ export async function buildSkillTools({
 
     let skillModule;
     try {
-      skillModule = await importSkillModule(skill.dir);
+      skillModule = await importSkillModule(skill.dir, skill.entrypoint);
     } catch (error) {
       errors.push({
         skillId: skill.skillId,
