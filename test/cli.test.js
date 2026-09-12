@@ -22,6 +22,14 @@ test("CLI prompt constrains provenance of one-shot values", () => {
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不得通过重跑命令“恢复”/u);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /关键值应在产生时落盘（写文件\/持久笔记）/u);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /原值已不在上下文且无持久记录时，明确说明不可恢复，不得给出替代值/u);
+  assert.match(
+    CLI_TOOLS_SYSTEM_PROMPT,
+    /工具输出较大或被截断时，返回末尾会给出完整输出的归档路径/u,
+  );
+  assert.match(
+    CLI_TOOLS_SYSTEM_PROMPT,
+    /归档路径（例如 ~\/\.erix\/transcripts\/outputs\/\.\.\.，仅指本次运行的工具输出）是例外，可以且应当读取/u,
+  );
 });
 
 test("parseChatArgs accepts session and transcript directory overrides", () => {

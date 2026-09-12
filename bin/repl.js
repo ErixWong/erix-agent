@@ -343,7 +343,12 @@ export async function runRepl(argv, io = {}) {
   const config = io.config ?? await loadCliConfig({ configPath: options.configPath });
   const providerFactory = io.providerFactory
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
-  const cliTools = createCliTools({ cwd });
+  const archiveDir = path.join(
+    path.resolve(options.dir),
+    "outputs",
+    safeRunId(options.session),
+  );
+  const cliTools = createCliTools({ cwd, archiveDir });
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,

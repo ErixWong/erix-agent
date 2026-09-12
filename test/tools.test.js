@@ -167,6 +167,40 @@ test("exec truncates output at 4096 characters", async () => {
   assert.match(result, /\n\[已截断，共 5000 字符\]$/);
 });
 
+test("archives large tool output and reads it back through readFile", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const { executeTool } = createCliTools({ cwd, archiveDir });
+    const result = await executeTool("exec", { command: "seq 1 500" });
+    const archivePath = join(archiveDir, "001-exec.txt");
+
+    assert.ok(result.includes(`[完整输出已归档：${archivePath}`));
+    assert.equal(
+      await readFile(archivePath, "utf8"),
+      `${Array.from({ length: 500 }, (_, index) => index + 1).join("\n")}\n`,
+    );
+
+    const reread = await executeTool("readFile", { path: archivePath, offset: 499, limit: 1 });
+    assert.match(reread, /^500: 500/m);
+  });
+});
+
+test("continues returning tool output when the archive cannot be written", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveParent = join(cwd, "archive-file");
+    await writeFile(archiveParent, "not a directory", "utf8");
+    const { executeTool } = createCliTools({
+      cwd,
+      archiveDir: join(archiveParent, "outputs"),
+    });
+
+    const result = await executeTool("exec", { command: "seq 1 500" });
+
+    assert.match(result, /1\n2\n3/);
+    assert.match(result, /完整输出归档失败/u);
+  });
+});
+
 test("truncateResult caps oversized output and reports its original length", () => {
   const result = truncateResult("x".repeat(4097));
   assert.equal(result.slice(0, 4096), "x".repeat(4096));

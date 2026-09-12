@@ -11,6 +11,7 @@ import {
   createFileTranscriptStore,
   runToolLoop,
 } from "../src/index.js";
+import { safeRunId } from "../src/store/file.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
 import {
   closeAllMcpServers,
@@ -473,7 +474,12 @@ export async function runChat({
       ts: new Date().toISOString(),
     });
   }
-  const cliTools = createCliTools({ cwd });
+  const archiveDir = path.join(
+    path.resolve(dir),
+    "outputs",
+    safeRunId(runId),
+  );
+  const cliTools = createCliTools({ cwd, archiveDir });
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir,

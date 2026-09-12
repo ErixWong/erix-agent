@@ -12,6 +12,8 @@ import path from "node:path";
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
 const OUTPUT_LIMIT = 4096;
+const ARCHIVE_THRESHOLD = 800;
+const MAX_ARCHIVE_BYTES = 1024 * 1024;
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const INSTALL_EXEC_TIMEOUT_MS = 300_000; // 安装/编译类命令（apt/pip/make 等）给更长时间
 const EXEC_MAX_BUFFER = 1024 * 1024;
@@ -142,9 +144,12 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 - 关键值应在产生时落盘（写文件/持久笔记），后续从磁盘读取
 - 原值已不在上下文且无持久记录时，明确说明不可恢复，不得给出替代值
 
+[工具输出归档]
+- 工具输出较大或被截断时，返回末尾会给出完整输出的归档路径；需要原始内容时用 readFile/cat 读取该路径，不要重跑命令（重跑可能得到不同值）
+
 [边界]
 - 本 CLI 不提供安全边界，运行环境负责隔离；敏感操作（删除、覆盖、网络、安装）先说明要做什么
-- 不要主动读取密钥/凭据文件（如 ~/.erix、~/.pi、.env）
+- 不要主动读取密钥/凭据文件（如 ~/.erix、~/.pi、.env）；但工具返回中明确给出的归档路径（例如 ~/.erix/transcripts/outputs/...，仅指本次运行的工具输出）是例外，可以且应当读取，不等于读取其他 ~/.erix 内容
 
 [收尾]
 - 任务完成或已无需更多工具时，直接输出最终答复，不要空转
@@ -209,7 +214,7 @@ function executeExecCommand(input, cwd) {
 
         const output = [stdout, stderr].filter(Boolean).join("");
         if (output) {
-          resolve(truncateResult(output));
+          resolve(output);
           return;
         }
         if (error) {
@@ -224,6 +229,7 @@ function executeExecCommand(input, cwd) {
 
 export function truncateResult(result) {
   const text = String(result ?? "");
+  if (/\n\[完整输出(?:已归档|归档失败)：[^\n]+\]$/u.test(text)) return text;
   if (text.length <= OUTPUT_LIMIT) return text;
   return `${text.slice(0, OUTPUT_LIMIT)}\n[已截断，共 ${text.length} 字符]`;
 }
@@ -290,8 +296,60 @@ export function wrapExecuteTool(executeTool, { output = console.log } = {}) {
   };
 }
 
-export function createCliTools({ cwd = process.cwd() } = {}) {
+function archiveGuidance(archivePath) {
+  return `[完整输出已归档：${archivePath}（需要原始内容请用 readFile/cat 读取该路径；不要重跑命令，重跑会得到不同的值）]`;
+}
+
+function archiveFailureGuidance(archivePath, error) {
+  const reason = String(error?.message ?? error ?? "未知错误")
+    .replaceAll(/\s+/gu, " ")
+    .slice(0, 160);
+  return `[完整输出归档失败：${archivePath}（${reason}）；请勿重跑命令。]`;
+}
+
+function archiveResult(archiveDir, name, result, sequence) {
+  const text = String(result ?? "");
+  if (!archiveDir || text.length <= ARCHIVE_THRESHOLD) return null;
+
+  const archivePath = path.join(
+    archiveDir,
+    `${String(sequence).padStart(3, "0")}-${name}.txt`,
+  );
+  try {
+    mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
+    const bytes = Buffer.from(text, "utf8");
+    let archived = text;
+    if (bytes.byteLength > MAX_ARCHIVE_BYTES) {
+      const marker = Buffer.from(
+        `\n[归档仅保留前 ${MAX_ARCHIVE_BYTES} 字节，原始输出共 ${bytes.byteLength} 字节]`,
+        "utf8",
+      );
+      archived = Buffer.concat([
+        bytes.subarray(0, MAX_ARCHIVE_BYTES - marker.byteLength),
+        marker,
+      ]);
+    }
+    writeFileSync(archivePath, archived, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    return `${truncateResult(text)}\n${archiveGuidance(archivePath)}`;
+  } catch (error) {
+    return `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error)}`;
+  }
+}
+
+export function createCliTools({
+  cwd = process.cwd(),
+  archiveDir,
+} = {}) {
   const root = path.resolve(cwd);
+  if (archiveDir !== undefined && typeof archiveDir !== "string") {
+    throw new TypeError("archiveDir must be a string");
+  }
+  const archiveRoot = archiveDir === undefined ? undefined : path.resolve(archiveDir);
+  let archiveSequence = 0;
 
   async function readFile({ path: filePath, offset = 0, limit = 200 }) {
     const text = readFileSync(resolveToolPath(root, filePath), "utf8");
@@ -439,7 +497,13 @@ export function createCliTools({ cwd = process.cwd() } = {}) {
     if (typeof executor !== "function") {
       throw new Error(`未知工具：${name}`);
     }
-    return executor(normalizeToolInput(input));
+    const result = await executor(normalizeToolInput(input));
+    if (archiveRoot && String(result ?? "").length > ARCHIVE_THRESHOLD) {
+      archiveSequence += 1;
+      const archived = archiveResult(archiveRoot, name, result, archiveSequence);
+      if (archived !== null) return archived;
+    }
+    return name === "exec" ? truncateResult(result) : result;
   }
 
   return {

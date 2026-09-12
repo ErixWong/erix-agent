@@ -25,6 +25,9 @@
 
 库内零 I/O 决策：文件/网络/DB 全部由注入的 provider/store/executeTool 完成。
 
+CLI 的 `bin/tools.js` 可在工具层将较大产出落盘到本次 transcript 的
+`outputs/<safeRunId>/` 并返回可读路径；这是库外机制，宿主可按同样模式自行采用，库本身不写文件。
+
 ## 2. 规范消息模型（canonical）
 
 内部统一为 Anthropic 风格块（app_container 现有格式，OpenAI 侧由适配层双向转换）：
