@@ -18,6 +18,41 @@ function blocksFor(content) {
   return Array.isArray(content) ? content : [];
 }
 
+function mergeToolResultsIntoMessages(messages, toolResults) {
+  if (!Array.isArray(toolResults) || toolResults.length === 0) return false;
+
+  let assistantIndex = -1;
+  let assistantUses;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const uses = blocksFor(message?.content)
+      .filter((block) => block?.type === "tool_use");
+    if (message?.role === "assistant" && uses.length > 0) {
+      assistantIndex = index;
+      assistantUses = uses;
+      break;
+    }
+  }
+  if (assistantIndex < 0) return false;
+
+  const target = messages[assistantIndex + 1];
+  const existingBlocks = blocksFor(target?.content);
+  const existingResults = existingBlocks
+    .filter((block) => block?.type === "tool_result");
+  if (target?.role !== "user" || existingResults.length === 0) return false;
+
+  const expectedIds = new Set(assistantUses.map((block) => block.id));
+  if (existingResults.some((block) => !expectedIds.has(block.tool_use_id))
+    || toolResults.some((block) => !expectedIds.has(block?.tool_use_id))) {
+    return false;
+  }
+
+  const existingIds = new Set(existingResults.map((block) => block.tool_use_id));
+  const additions = toolResults.filter((block) => !existingIds.has(block.tool_use_id));
+  target.content = [...existingBlocks, ...cloneState(additions)];
+  return target;
+}
+
 function textFromBlocks(blocks) {
   return blocks
     .filter((block) => block?.type === "text")
@@ -638,8 +673,12 @@ export async function runToolLoop({
 
   const reportPersistenceError = (error) => {
     if (typeof onPersistenceError === "function") {
-      onPersistenceError(error);
-      return;
+      try {
+        onPersistenceError(error);
+        return;
+      } catch (reportError) {
+        console.error("Persistence error reporter failed:", reportError);
+      }
     }
     console.error("Transcript persistence error:", error);
   };
@@ -982,6 +1021,7 @@ export async function runToolLoop({
           for (const id of resumeCheckpoint.executedToolIds ?? []) {
             resumeExecutedToolIds.add(id);
           }
+          judgeInterceptCount = resumeExecutedToolIds.size;
           for (const entry of resumeCheckpoint.toolResults ?? []) {
             if (entry?.toolUseId !== undefined && entry.toolResult !== undefined) {
               resumeCheckpointResults.set(entry.toolUseId, entry.toolResult);
@@ -1182,19 +1222,7 @@ export async function runToolLoop({
   const messagesWithToolResults = (toolResults) => {
     const snapshot = cloneState(messages);
     if (toolResults.length === 0) return snapshot;
-    const previous = snapshot.at(-2);
-    const last = snapshot.at(-1);
-    const previousUses = blocksFor(previous?.content)
-      .filter((block) => block?.type === "tool_use");
-    const lastResults = blocksFor(last?.content)
-      .filter((block) => block?.type === "tool_result");
-    if (previous?.role === "assistant"
-      && last?.role === "user"
-      && previousUses.length > 0
-      && lastResults.length > 0) {
-      last.content = [...lastResults, ...cloneState(toolResults)];
-      return snapshot;
-    }
+    if (mergeToolResultsIntoMessages(snapshot, toolResults) !== false) return snapshot;
     snapshot.push({ role: "user", content: cloneState(toolResults) });
     return snapshot;
   };
@@ -1310,12 +1338,16 @@ export async function runToolLoop({
       });
 
       const dispatchAttemptEvent = (event, callback) => {
-        callback();
         if (event.type === "usage") {
           emitEvent({ type: "usage", round, usage: event.usage });
         }
         if (event.type !== "usage" || attemptUsage !== undefined) {
           roundEventDeltas.push(event);
+        }
+        try {
+          callback();
+        } catch (error) {
+          reportPersistenceError(error);
         }
       };
       const queueEvent = (event, callback) => {
@@ -1773,18 +1805,11 @@ export async function runToolLoop({
 
   const appendToolResultsToTranscript = (toolResults, roundNumber) => {
     if (toolResults.length === 0) return;
-    const previous = messages.at(-2);
-    const last = messages.at(-1);
-    const previousUses = blocksFor(previous?.content)
-      .filter((block) => block?.type === "tool_use");
-    const lastResults = blocksFor(last?.content)
-      .filter((block) => block?.type === "tool_result");
-    if (previous?.role === "assistant"
-      && last?.role === "user"
-      && previousUses.length > 0
-      && lastResults.length > 0) {
-      last.content = [...lastResults, ...toolResults];
-      if (roundNumber !== undefined) messageRounds.set(last, roundNumber);
+    const target = mergeToolResultsIntoMessages(messages, toolResults);
+    if (target !== false) {
+      if (roundNumber !== undefined) {
+        messageRounds.set(target, roundNumber);
+      }
       return;
     }
     const message = { role: "user", content: toolResults };
