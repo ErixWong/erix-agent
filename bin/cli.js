@@ -575,23 +575,41 @@ async function runChatWithNotes({
   if (readNotesLedger) {
     context.onAfterFold = async (result) => {
       const ledger = await readNotesLedger();
-      const message = {
-        role: "user",
-        content: [{
-          type: "text",
-          text: `[notes pinned ledger refresh]\n${
-            ledger || "（当前没有可注入的 pinned 记录）"
-          }\n[notes ledger refresh 结束]`,
-        }],
-      };
-      const existingIndex = result.messages.findLastIndex((item) => (
-        item?.content?.some?.((block) => (
-          typeof block?.text === "string"
-          && block.text.includes("[notes pinned ledger refresh]")
-        ))
-      ));
-      if (existingIndex >= 0) result.messages[existingIndex] = message;
-      else result.messages.push(message);
+      const refresh = `[notes pinned ledger refresh]\n${
+        ledger || "（当前没有可注入的 pinned 记录）"
+      }\n[notes ledger refresh 结束]`;
+      let replaced = false;
+      for (const message of result.messages) {
+        const blocks = typeof message?.content === "string"
+          ? [{ type: "text", text: message.content }]
+          : Array.isArray(message?.content) ? message.content : [];
+        const filtered = blocks.filter((block) => {
+          if (
+            typeof block?.text !== "string"
+            || !block.text.includes("[notes pinned ledger refresh]")
+          ) {
+            return true;
+          }
+          if (!replaced) {
+            block.text = refresh;
+            replaced = true;
+            return true;
+          }
+          return false;
+        });
+        if (Array.isArray(message?.content) || typeof message?.content === "string") {
+          message.content = filtered;
+        }
+      }
+      if (!replaced) {
+        const target = result.messages.find((message) => message?.role === "user");
+        if (target) {
+          const content = typeof target.content === "string"
+            ? [{ type: "text", text: target.content }]
+            : Array.isArray(target.content) ? target.content : [];
+          target.content = [{ type: "text", text: refresh }, ...content];
+        }
+      }
     };
   }
   const idle = createIdleTimeout(idleTimeout);
@@ -776,8 +794,13 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     if (result.verification?.status === "unverified") {
       console.log(`\n=== 终稿（未核验，不可信） ===\n${result.finalText}`);
       console.log("⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。");
+    } else if (result.verification?.status === "error") {
+      console.log(`\n=== 终稿（核验错误，不可信） ===\n${result.finalText}`);
     } else {
-      console.log(`\n=== 终稿 ===\n${result.finalText}`);
+      const title = result.verification?.status === "verified"
+        ? "=== 终稿（已核验） ==="
+        : "=== 终稿 ===";
+      console.log(`\n${title}\n${result.finalText}`);
     }
     if (result.verification?.status === "error") {
       console.log(`⚠️ 终稿来源核验${result.verification.reason === "timeout" ? "超时" : "失败"}，不得将其当作已验证事实。`);
@@ -852,8 +875,15 @@ async function main(args) {
     ...chatArgs,
     sessionExplicit: args.slice(1).includes("--session"),
   });
-  if (result?.verification?.status === "unverified") process.exitCode = 2;
+  const verificationExitCode = exitCodeForVerification(result?.verification);
+  if (verificationExitCode !== 0) process.exitCode = verificationExitCode;
   return result;
+}
+
+export function exitCodeForVerification(verification) {
+  if (verification?.status === "unverified") return 2;
+  if (verification?.status === "error") return 3;
+  return 0;
 }
 
 if (

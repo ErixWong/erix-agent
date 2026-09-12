@@ -319,18 +319,23 @@ export async function buildSkillTools({
         if (skill.skillId !== "notes" || !["note_take", "note_read", "note_list", "note_forget"].includes(tool.name)) {
           return skillModule[tool.name](input, context);
         }
+        const allowed = new Set(Object.keys(tool.inputSchema?.properties ?? {}));
+        const filteredInput = input && typeof input === "object" && !Array.isArray(input)
+          ? Object.fromEntries(
+              Object.entries(input).filter(([key]) => key !== "__erix" && allowed.has(key)),
+            )
+          : {};
         const explicitScopeRef = scopeRef ?? runId ?? context?.session;
         const explicitNotesDir = notesDir ?? context?.notesDir;
-        const injected = explicitScopeRef === undefined && explicitNotesDir === undefined
-          ? input
-          : {
-              ...(input && typeof input === "object" ? input : {}),
-              __erix: {
-                ...(input?.__erix && typeof input.__erix === "object" ? input.__erix : {}),
-                ...(explicitScopeRef === undefined ? {} : { runId: String(explicitScopeRef) }),
-                ...(explicitNotesDir === undefined ? {} : { notesDir: String(explicitNotesDir) }),
-              },
-            };
+        const hostScope = explicitScopeRef !== undefined && explicitNotesDir !== undefined
+          ? {
+              runId: String(explicitScopeRef),
+              notesDir: String(explicitNotesDir),
+            }
+          : undefined;
+        const injected = hostScope === undefined
+          ? filteredInput
+          : { ...filteredInput, __erix: hostScope };
         return skillModule[tool.name](injected, context);
       };
     }

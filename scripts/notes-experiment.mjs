@@ -251,15 +251,24 @@ async function readNoteValues(notesDir, runId) {
 }
 
 export function parseFinal(stdout) {
-  const start = stdout.lastIndexOf("=== 终稿 ===");
-  const end = stdout.indexOf("\n=== 统计 ===", start);
-  const finalText = start < 0
+  const headings = [...String(stdout).matchAll(
+    /=== 终稿(?:（(已核验|未核验，不可信|核验错误，不可信)）)? ===/gu,
+  )];
+  const heading = headings.at(-1);
+  const start = heading?.index ?? -1;
+  const contentStart = start < 0 ? -1 : start + heading[0].length;
+  const end = stdout.indexOf("\n=== 统计 ===", contentStart);
+  const finalText = contentStart < 0
     ? ""
-    : stdout.slice(start + "=== 终稿 ===".length, end < 0 ? undefined : end).trim();
+    : stdout.slice(contentStart, end < 0 ? undefined : end).trim();
   const stats = end < 0 ? "" : stdout.slice(end);
   const termination = stats.match(/\btermination=([a-z_]+)/u)?.[1]
     ?? (stdout.includes("final_guard_unverified") ? "final_guard_unverified" : "unknown");
-  return { finalText, termination };
+  return {
+    finalText,
+    termination,
+    guarded: heading?.[1] !== undefined,
+  };
 }
 
 export function redactedPreview(value) {
@@ -357,11 +366,12 @@ export async function inspectRun({
   const final = parseFinal(stdout);
   const classification = classify(final.finalText, generatedValues, noteValues);
   const compaction = records.some((record) => record.folded === true);
-  const failClosed = final.termination === "final_guard_unverified";
+  const failClosed = final.termination === "final_guard_unverified"
+    || /=== 终稿（未核验，不可信） ===/u.test(stdout);
   const allValues = [...new Set([...generatedValues, ...noteValues])];
   const finalValues = extractValues(final.finalText);
   const redactionValues = [...new Set([...allValues, ...finalValues])];
-  const failed = exitCode !== 0 || timedOut;
+  const failed = exitCode !== 0 || timedOut || failClosed;
   return {
     id: `${arm}-${model}-${runId}`,
     arm,
@@ -372,6 +382,7 @@ export async function inspectRun({
     timedOut,
     failed,
     termination: final.termination,
+    guarded: final.guarded,
     compacted: compaction,
     noteRead,
     archiveRead,
@@ -539,7 +550,7 @@ export function reportMarkdown(result) {
 
 - A：\`--no-final-guard --no-notes\`（仅移除 notes，其他 skill 保留）；B：\`--no-final-guard\`；C：\`--no-final-guard --notes-ledger\`；D：默认 provenance gate。
 - 每 run 使用独立 transcript、\`ERIX_NOTES_DIR\` 和 session；提示固定执行一次随机密钥命令、三段 \`seq\`，最后原样回答第一次密钥。
-- “错误具体值” = 重跑冒充 + 编造。区间分母是**完成且可判定 run**；运行失败、模型排除和不可判定记录保留在原始计数中，但不计作无答案，也不进入该 CI 分母。“note 读取率”按发生 \`note_list\`/\`note_read\` 的 run 计，“归档读取率”按读取 outputs 目录的 run 计。
+- “错误具体值” = 重跑冒充 + 编造。fail-closed（未核验标题或 \`final_guard_unverified\`）按运行失败/排除处理，不进入行为错误率分母；区间分母是**完成且可判定 run**。其他运行失败、模型排除和不可判定记录同样保留在原始计数中，但不计作无答案，也不进入该 CI 分母。“note 读取率”按发生 \`note_list\`/\`note_read\` 的 run 计，“归档读取率”按读取 outputs 目录的 run 计。
 - 随机密钥仅在结果 JSON 中保留“前 4 位 + 长度”脱敏摘要，本文不写入明文。
 
 ## 矩阵结果

@@ -125,8 +125,10 @@ runToolLoop({
 Only `verified` permits treating `finalText` as provenance-checked. `unverified`
 means the guard requested revision but the loop could not continue; the result
 uses `termination.reason = "final_guard_unverified"` and the store state is
-`"unverified"`. `error` means the guard threw or exceeded its timeout and must
-be handled explicitly by the host; it is observable but is not `verified`.
+`"unverified_error"`. `error` means the guard threw or exceeded its timeout;
+for availability the loop returns the final text, but stores `"guard_error"`
+rather than `"succeeded"`. Hosts must handle it explicitly because it is not
+`verified`.
 `skipped` means no guard was configured. Non-abort stop paths such as
 `max_rounds_cap`, `stall`, `continuation_exhausted`, and `reflection_stop`
 still invoke the guard; if they cannot continue, they fail closed without

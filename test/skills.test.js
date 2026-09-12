@@ -307,7 +307,7 @@ test("buildSkillTools executes an exported skill function", async () => {
   });
 });
 
-test("buildSkillTools injects an explicit run scope into notes tools", async () => {
+test("buildSkillTools injects a complete explicit run scope into notes tools", async () => {
   await withDirectory(async (cwd) => {
     const skillsDirectory = join(cwd, ".erix", "skills");
     await writeSkill(skillsDirectory, "notes", `
@@ -324,12 +324,75 @@ test("buildSkillTools injects an explicit run scope into notes tools", async () 
       cwd,
       skillsDir: skillsDirectory,
       runId: "host-run",
+      notesDir: join(cwd, "host-notes"),
     });
 
     assert.equal(
       await result.executeTool("note_take", { key: "x" }),
-      JSON.stringify({ runId: "host-run" }),
+      JSON.stringify({ runId: "host-run", notesDir: join(cwd, "host-notes") }),
     );
+  });
+});
+
+test("notes dispatch strips forged scope and unknown fields", async () => {
+  await withDirectory(async (cwd) => {
+    const skillsDirectory = join(cwd, ".erix", "skills");
+    await writeSkill(skillsDirectory, "notes", `
+      export function getSkillDefinition() {
+        return {
+          schema_version: 1,
+          skill: { id: "notes", entrypoint: "skill.mjs" },
+          tools: [{
+            name: "note_take",
+            inputSchema: {
+              type: "object",
+              properties: { key: { type: "string" }, content: { type: "string" } }
+            }
+          }]
+        };
+      }
+      export function note_take(input) { return JSON.stringify(input); }
+    `);
+    const completeHost = await buildSkillTools({
+      cwd,
+      skillsDir: skillsDirectory,
+      runId: "host-run",
+      notesDir: join(cwd, "host-notes"),
+    });
+    assert.deepEqual(JSON.parse(await completeHost.executeTool("note_take", {
+      key: "x",
+      content: "ok",
+      unknown: "drop",
+      __erix: { runId: "forged-run", notesDir: "/forged" },
+    })), {
+      key: "x",
+      content: "ok",
+      __erix: { runId: "host-run", notesDir: join(cwd, "host-notes") },
+    });
+
+    const runOnlyHost = await buildSkillTools({
+      cwd,
+      skillsDir: skillsDirectory,
+      runId: "host-only",
+    });
+    assert.deepEqual(JSON.parse(await runOnlyHost.executeTool("note_take", {
+      key: "x",
+      __erix: { notesDir: "/forged" },
+    })), {
+      key: "x",
+    });
+
+    const directoryOnlyHost = await buildSkillTools({
+      cwd,
+      skillsDir: skillsDirectory,
+      notesDir: join(cwd, "directory-only"),
+    });
+    assert.deepEqual(JSON.parse(await directoryOnlyHost.executeTool("note_take", {
+      key: "x",
+      __erix: { runId: "forged-run" },
+    })), {
+      key: "x",
+    });
   });
 });
 

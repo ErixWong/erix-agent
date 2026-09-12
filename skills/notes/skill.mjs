@@ -3,8 +3,10 @@
 
 import {
   chmod,
+  link,
   lstat,
   mkdir,
+  open,
   readdir,
   readFile,
   rename,
@@ -30,7 +32,8 @@ const DEFAULT_LOCK_STALE_MS = 30_000;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 const SAFE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
-const MISSING_NEXT = "未记录、不可恢复；不得重跑命令、不得凭记忆给值";
+const MISSING_NEXT = "该 key/version 从未记录（never recorded）；未记录、不可恢复；不得重跑命令、不得凭记忆给值";
+const PRUNED_NEXT = "该旧版本已因有界历史上限被裁剪（pruned），仅保留摘要或版本水位；它不是 never recorded，请读取当前版本或可信归档";
 let clock = () => Date.now();
 
 class NotesLockTimeoutError extends Error {
@@ -285,46 +288,164 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function withKeyLock(directory, key, callback) {
+function parseLock(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed.ownerToken === "string" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function restoreQuarantinedLock(quarantine, target) {
+  try {
+    await link(quarantine, target);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  } finally {
+    try {
+      await unlink(quarantine);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+}
+
+async function compareAndDeleteLock(target, expected, { staleBefore } = {}) {
+  const quarantine = `${target}.${process.pid}.${randomUUID()}.reclaim`;
+  try {
+    await rename(target, quarantine);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+  try {
+    const [raw, stat] = await Promise.all([
+      readFile(quarantine, "utf8"),
+      lstat(quarantine),
+    ]);
+    const parsed = parseLock(raw);
+    const tokenMatches = (parsed?.ownerToken ?? null) === expected.ownerToken
+      && raw === expected.raw;
+    const stillStale = staleBefore === undefined || stat.mtimeMs <= staleBefore;
+    if (!tokenMatches || !stillStale) {
+      await restoreQuarantinedLock(quarantine, target);
+      return false;
+    }
+    await unlink(quarantine);
+    return true;
+  } catch (error) {
+    try {
+      await restoreQuarantinedLock(quarantine, target);
+    } catch (restoreError) {
+      error.cause = restoreError;
+    }
+    throw error;
+  }
+}
+
+async function renewLock(target, ownerToken, timestamp = clock()) {
+  let handle;
+  try {
+    handle = await open(target, "r+");
+    const raw = await handle.readFile({ encoding: "utf8" });
+    if (parseLock(raw)?.ownerToken !== ownerToken) return false;
+    const renewed = new Date(timestamp);
+    await handle.utimes(renewed, renewed);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+/**
+ * Internal lock primitive exported for deterministic concurrency tests. It is
+ * not exposed as a model tool.
+ */
+export async function withNotesKeyLock(directory, key, callback) {
   await ensureDirectory(directory);
   const target = lockPath(directory, key);
-  const started = Date.now();
+  const started = clock();
   const timeout = lockTimeoutMs();
   const stale = lockStaleMs();
+  const ownerToken = `${process.pid}:${randomUUID()}`;
+  const createdAt = new Date().toISOString();
+  const payload = JSON.stringify({ ownerToken, pid: process.pid, createdAt });
   let acquired = false;
   while (!acquired) {
     try {
-      await writeFile(target, JSON.stringify({
-        pid: process.pid,
-        created_at: new Date().toISOString(),
-      }), { encoding: "utf8", mode: 0o600, flag: "wx" });
+      await writeFile(target, payload, { encoding: "utf8", mode: 0o600, flag: "wx" });
       acquired = true;
       break;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       try {
-        const lockStat = await lstat(target);
-        if (Date.now() - lockStat.mtimeMs >= stale) {
-          await unlink(target);
+        const [raw, lockStat] = await Promise.all([
+          readFile(target, "utf8"),
+          lstat(target),
+        ]);
+        const observed = parseLock(raw);
+        const staleBefore = clock() - stale;
+        if (lockStat.mtimeMs <= staleBefore) {
+          await compareAndDeleteLock(
+            target,
+            { ownerToken: observed?.ownerToken ?? null, raw },
+            { staleBefore },
+          );
           continue;
         }
       } catch (statError) {
         if (statError?.code === "ENOENT") continue;
         throw statError;
       }
-      if (Date.now() - started >= timeout) throw new NotesLockTimeoutError(key);
+      if (clock() - started >= timeout) throw new NotesLockTimeoutError(key);
       await sleep(Math.min(25, Math.max(1, timeout)));
     }
   }
-  try {
-    return await callback();
-  } finally {
+  let renewing = false;
+  let renewalError;
+  const renewal = setInterval(async () => {
+    if (renewing || renewalError) return;
+    renewing = true;
     try {
-      await unlink(target);
+      await renewLock(target, ownerToken, clock());
+    } catch (error) {
+      renewalError = error;
+    } finally {
+      renewing = false;
+    }
+  }, Math.max(1, Math.floor(stale / 3)));
+  renewal.unref?.();
+  let result;
+  let callbackError;
+  try {
+    result = await callback();
+  } catch (error) {
+    callbackError = error;
+  }
+  clearInterval(renewal);
+  while (renewing) await sleep(1);
+  let releaseError;
+  try {
+    let raw;
+    try {
+      raw = await readFile(target, "utf8");
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
+    if (raw !== undefined) {
+      await compareAndDeleteLock(target, { ownerToken, raw: payload });
+    }
+  } catch (error) {
+    releaseError = error;
   }
+  if (callbackError) throw callbackError;
+  if (renewalError) throw renewalError;
+  if (releaseError) throw releaseError;
+  return result;
 }
 
 function compactedVersion(version) {
@@ -587,7 +708,7 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
 
   const directory = await scopeDirectory(true, input);
   try {
-    return await withKeyLock(directory, key, async () => {
+    return await withNotesKeyLock(directory, key, async () => {
       const loaded = await loadRecord(notePath(directory, key), key);
       if (loaded.corrupt) return corrupt(key, loaded.corrupt);
       const timestamp = now();
@@ -657,8 +778,10 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
 }
 
 /**
- * Internal CLI capture arm. It is intentionally not listed in the skill
- * definition, so model tool calls can only reach note_take (source=agent).
+ * CLI capture arm. It is intentionally not listed in the skill definition,
+ * so model tool calls can only reach note_take (source=agent). The exported
+ * helper is a convenience index writer; final-guard trust comes only from the
+ * CLI archive manifest, not from this notes metadata.
  */
 export async function recordAutoCapture(input = {}) {
   return writeNote(input, { source: "auto" });
@@ -690,12 +813,26 @@ export async function note_read(input = {}) {
     const compacted = compactedRecordVersion(record, input.version);
     if (compacted) {
       return json({
-        status: "compacted",
+        status: "pruned",
         key,
         version: compacted.version,
         preview: compacted.preview,
         provenance: compacted.provenance,
-        next: "该历史版本已压缩，仅保留摘要；请读取当前版本或归档获取完整值",
+        next: PRUNED_NEXT,
+      });
+    }
+    const requestedVersion = input.version;
+    const latestVersion = record.versions.at(-1)?.version ?? 0;
+    if (
+      Number.isSafeInteger(requestedVersion)
+      && requestedVersion >= 1
+      && requestedVersion < latestVersion
+    ) {
+      return json({
+        status: "pruned",
+        key,
+        version: requestedVersion,
+        next: PRUNED_NEXT,
       });
     }
     return missing(key);
@@ -717,7 +854,7 @@ export async function note_list(input = {}) {
       count: 0,
       total: 0,
       notes: [],
-      next: "暂无记录；需要具体值时不得重跑命令、不得凭记忆给值",
+      next: "当前 run 从未记录（never recorded）任何 note；需要具体值时不得重跑命令、不得凭记忆给值",
     });
   }
   const files = await readJsonFiles(directory);
@@ -757,7 +894,7 @@ export async function note_list(input = {}) {
     notes,
     next: notes.length < total
       ? `还有 ${total - cursor - notes.length} 条元数据，可用 cursor=${cursor + notes.length} 继续`
-      : "清单仅含元数据与短 preview；需要完整值时用 note_read 精确读取",
+      : "清单仅含当前有界版本元数据与短 preview；旧版本可能已 pruned（不同于 never recorded），需要完整值时用 note_read 精确读取",
   });
 }
 
@@ -770,7 +907,7 @@ export async function note_forget(input = {}) {
   const directory = await scopeDirectory(false, input);
   if (!directory) return json({ status: "missing", key, next: MISSING_NEXT });
   try {
-    return await withKeyLock(directory, key, async () => {
+    return await withNotesKeyLock(directory, key, async () => {
       const current = await loadRecord(notePath(directory, key), key);
       if (current.corrupt) return corrupt(key, current.corrupt);
       if (current.missing) return json({ status: "missing", key, next: MISSING_NEXT });
@@ -814,7 +951,7 @@ async function processRunDirectory(directory, currentTime, liveScopeRef = curren
     }
     if (loaded.missing) continue;
     const record = loaded.record;
-    await withKeyLock(directory, record.key, async () => {
+    await withNotesKeyLock(directory, record.key, async () => {
       // Re-read after acquiring the lock so a concurrent take/complete cannot
       // be overwritten by the janitor's stale snapshot.
       const current = await loadRecord(file, record.key);
@@ -896,7 +1033,20 @@ export async function runNotesJanitor(input = {}) {
     const directory = path.join(run, entry.name);
     const stat = await lstat(directory);
     if (stat.isSymbolicLink()) throw new Error(`拒绝扫描符号链接目录：${directory}`);
-    const result = await processRunDirectory(directory, clock(), liveScopeRef);
+    let result;
+    try {
+      result = await processRunDirectory(directory, clock(), liveScopeRef);
+    } catch (error) {
+      if (error?.code === "notes_lock_timeout") {
+        return {
+          status: "busy",
+          key: error.key,
+          reason: "lock-timeout",
+          next: "笔记正在被其他操作更新；稍后重试 janitor",
+        };
+      }
+      throw error;
+    }
     if (result.corruptKey !== undefined) {
       return {
         status: "corrupt",
@@ -920,17 +1070,30 @@ export async function completeRun(input = {}) {
     const loaded = await loadRecord(file);
     const key = loaded.record?.key ?? path.basename(file, ".json");
     if (loaded.corrupt || loaded.missing) continue;
-    await withKeyLock(directory, key, async () => {
-      const current = await loadRecord(file, key);
-      if (current.corrupt || current.missing || current.record.state !== "active") return;
-      await saveRecord(directory, {
-        ...current.record,
-        state: "completed",
-        expires_at: new Date(clock() + graceMs()).toISOString(),
-        updated_at: timestamp,
+    try {
+      await withNotesKeyLock(directory, key, async () => {
+        const current = await loadRecord(file, key);
+        if (current.corrupt || current.missing || current.record.state !== "active") return;
+        await saveRecord(directory, {
+          ...current.record,
+          state: "completed",
+          expires_at: new Date(clock() + graceMs()).toISOString(),
+          updated_at: timestamp,
+        });
+        completed += 1;
       });
-      completed += 1;
-    });
+    } catch (error) {
+      if (error?.code === "notes_lock_timeout") {
+        return {
+          status: "busy",
+          key,
+          completed,
+          reason: "lock-timeout",
+          next: "笔记正在被其他操作更新；稍后重试 completeRun",
+        };
+      }
+      throw error;
+    }
   }
   return { status: "ok", completed };
 }

@@ -1949,7 +1949,12 @@ export async function runToolLoop({
   };
 
   const finish = async (reason, detail) => {
-    await markRunState(verification.status === "unverified" ? "unverified" : "succeeded");
+    const state = verification.status === "unverified"
+      ? "unverified_error"
+      : verification.status === "error"
+        ? "guard_error"
+        : "succeeded";
+    await markRunState(state);
     return makeResult(reason, detail);
   };
 

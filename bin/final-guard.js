@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 
-import { safeRunId } from "../src/store/file.js";
 import {
   candidateLines,
 } from "./auto-capture.js";
@@ -71,52 +69,42 @@ function safeDisplay(value) {
   return text.length > 80 ? `${text.slice(0, 76)}…` : text;
 }
 
-function notesRoot(notesDir) {
-  return path.resolve(notesDir ?? process.env.ERIX_NOTES_DIR
-    ?? path.join(homedir(), ".erix", "notes"));
-}
-
-async function readNoteRecords(runDirectory) {
+async function readCaptureManifests(archiveDir) {
+  if (typeof archiveDir !== "string" || archiveDir.length === 0) {
+    return { manifests: [], warnings: [] };
+  }
+  const root = path.resolve(archiveDir);
   let entries;
   try {
-    entries = await readdir(runDirectory, { withFileTypes: true });
+    entries = await readdir(root, { withFileTypes: true });
   } catch (error) {
-    if (error?.code === "ENOENT") return { records: [], warnings: [] };
+    if (error?.code === "ENOENT") return { manifests: [], warnings: [] };
     throw error;
   }
-  const records = [];
+  const manifests = [];
   const warnings = [];
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-    const filePath = path.join(runDirectory, entry.name);
+    if (
+      (!entry.isFile() && !entry.isSymbolicLink())
+      || !entry.name.endsWith(".meta.json")
+    ) {
+      continue;
+    }
+    const manifestPath = path.join(root, entry.name);
     try {
-      records.push(JSON.parse(await readFile(filePath, "utf8")));
+      const stat = await lstat(manifestPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        throw new Error("capture manifest 不是普通文件或是符号链接");
+      }
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      if (manifest?.replayable === true) continue;
+      manifests.push({ manifest, manifestPath });
     } catch (error) {
-      warnings.push(`${filePath}: ${error?.message ?? String(error)}`);
+      warnings.push(`${manifestPath}: ${error?.message ?? String(error)}`);
+      manifests.push({ manifest: null, manifestPath });
     }
   }
-  return { records, warnings };
-}
-
-function artifactReferences(records) {
-  const references = [];
-  const seen = new Set();
-  for (const record of records) {
-    for (const version of record?.versions ?? []) {
-      const reference = version?.artifactRef;
-      if (!reference || typeof reference !== "object" || Array.isArray(reference)) continue;
-      const identity = `${reference.archivePath}\n${reference.digest ?? ""}\n${
-        JSON.stringify(reference.locator ?? {})
-      }\n${version?.provenance?.source ?? ""}`;
-      if (seen.has(identity)) continue;
-      seen.add(identity);
-      references.push({
-        ...reference,
-        __trustedAutoSource: version?.provenance?.source === "auto",
-      });
-    }
-  }
-  return references;
+  return { manifests, warnings };
 }
 
 function isWithin(root, target) {
@@ -127,14 +115,24 @@ function isWithin(root, target) {
     && !path.isAbsolute(relative);
 }
 
-async function readArtifact(reference, archiveDir) {
+async function readArtifact(reference, archiveDir, manifestPath) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) {
     throw new Error("缺少本 run 归档根目录");
   }
+  if (
+    reference?.kind !== "erix.tool-capture"
+    || reference?.schemaVersion !== 1
+  ) {
+    throw new Error("不是 CLI capture manifest");
+  }
   const resolvedRoot = path.resolve(archiveDir);
   const resolvedPath = path.resolve(reference.archivePath);
+  const expectedPath = manifestPath.slice(0, -".meta.json".length) + ".txt";
+  if (resolvedPath !== expectedPath) {
+    throw new Error("capture manifest 与同名归档不匹配");
+  }
   if (!isWithin(resolvedRoot, resolvedPath)) {
-    throw new Error("artifactRef 不在本 run 归档根目录内");
+    throw new Error("归档不在本 run 归档根目录内");
   }
   const rootRealPath = await realpath(resolvedRoot);
   const stat = await lstat(resolvedPath);
@@ -145,14 +143,14 @@ async function readArtifact(reference, archiveDir) {
   if (!isWithin(rootRealPath, artifactRealPath)) {
     throw new Error("归档路径经 realpath 后逃逸本 run 归档根目录");
   }
-  if (reference.truncated === true) {
+  if (reference.truncated !== false) {
     throw new Error("归档已截断，不可用于核验");
   }
-  if (reference.replayable === true) {
-    throw new Error("可重放 artifact 不可用于 provenance 核验");
+  if (reference.replayable !== false) {
+    throw new Error("可重放归档不可用于 provenance 核验");
   }
   if (typeof reference.digest !== "string" || !/^[a-f0-9]{64}$/iu.test(reference.digest)) {
-    throw new Error("artifactRef 缺少有效 digest");
+    throw new Error("capture manifest 缺少有效 digest");
   }
   if (
     !reference.locator
@@ -172,19 +170,15 @@ async function readArtifact(reference, archiveDir) {
     .join("\n");
 }
 
-async function inspectRun({ runId, notesDir, archiveDir }) {
-  const directory = path.join(notesRoot(notesDir), "run", safeRunId(runId));
-  const loaded = await readNoteRecords(directory);
-  const references = artifactReferences(loaded.records);
+async function inspectRun({ archiveDir }) {
+  const loaded = await readCaptureManifests(archiveDir);
+  const references = loaded.manifests;
   const values = [];
   const warnings = [...loaded.warnings];
-  for (const reference of references) {
-    if (reference.__trustedAutoSource !== true) {
-      warnings.push(`${reference.archivePath ?? "artifactRef"}: provenance.source 不是 capture 签发的 auto`);
-      continue;
-    }
+  for (const { manifest: reference, manifestPath } of references) {
+    if (!reference) continue;
     try {
-      const output = await readArtifact(reference, archiveDir);
+      const output = await readArtifact(reference, archiveDir, manifestPath);
       const candidates = candidateLines(output).filter((candidate) => (
         !looksLikeCredential(candidate.label, candidate.value)
       ));
@@ -200,7 +194,7 @@ async function inspectRun({ runId, notesDir, archiveDir }) {
         });
       }
     } catch (error) {
-      warnings.push(`${reference.archivePath}: ${error?.message ?? String(error)}`);
+      warnings.push(`${reference.archivePath ?? manifestPath}: ${error?.message ?? String(error)}`);
     }
   }
   return { references, values, warnings };
@@ -209,8 +203,11 @@ async function inspectRun({ runId, notesDir, archiveDir }) {
 /**
  * Build the deterministic CLI-side provenance gate for one run.
  *
- * The gate only reads notes and sidecar artifacts. It never invokes a model or
- * writes to the library transcript.
+ * The gate trusts only CLI capture manifests under archiveDir; model-authored
+ * notes are hints, never provenance. Per ADR-009 this protects the integrity
+ * boundary inside a host-isolated run, not against a process that can rewrite
+ * the archive directory itself. It never invokes a model or writes to the
+ * library transcript.
  */
 export function createFinalGuard({
   runId,
@@ -220,10 +217,10 @@ export function createFinalGuard({
 } = {}) {
   return async function finalGuard({ finalText } = {}) {
     const inspected = await inspectRun({
-      runId: runId ?? process.env.ERIX_RUN_ID ?? "",
-      notesDir,
       archiveDir,
     });
+    void runId;
+    void notesDir;
     if (inspected.warnings.length > 0) {
       for (const warning of inspected.warnings) onWarning(warning);
     }
@@ -233,7 +230,7 @@ export function createFinalGuard({
     if (inspected.values.length === 0) {
       return {
         action: "revise",
-        message: "本 run 的 artifactRef 未通过归档根目录、digest、截断或可重放性核验；请读取可信归档或明确说明不可恢复，不得把该值当作已核验事实。",
+        message: "本 run 的 capture manifest 未通过归档根目录、digest、截断或可重放性核验；请读取可信归档或明确说明不可恢复，不得把该值当作已核验事实。",
       };
     }
 

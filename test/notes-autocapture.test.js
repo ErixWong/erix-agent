@@ -320,6 +320,50 @@ test("auto-captured pinned notes refresh the ledger in the next tool result", as
       idleTimeout: 0,
       toolOutput: () => {},
     });
+
+    test("repeated fold ledger refresh replaces one block without growing messages", async () => {
+      await withNotes(async (directory) => {
+        const transcriptDir = path.join(directory, "transcripts");
+        let counts;
+        await runChat({
+          prompt: "fold ledger",
+          session: "ledger-fold-run",
+          dir: transcriptDir,
+          config: { model: "fake-model", maxOutputTokens: 1000 },
+          notesLedger: true,
+          finalGuard: false,
+          provider: createFakeProvider([]),
+          loop: async (options) => {
+            const folded = [{
+              role: "user",
+              content: [{ type: "text", text: "original task" }],
+            }];
+            const initialCount = folded.length;
+            await options.context.onAfterFold({ messages: folded });
+            const firstCount = folded.length;
+            await options.context.onAfterFold({ messages: folded });
+            counts = [initialCount, firstCount, folded.length];
+            const refreshes = folded[0].content.filter((block) => (
+              block.text?.includes("[notes pinned ledger refresh]")
+            ));
+            assert.equal(refreshes.length, 1);
+            return {
+              finalText: "done",
+              messages: folded,
+              rounds: 1,
+              truncated: false,
+              termination: { reason: "end_turn" },
+              verification: { status: "skipped" },
+              usage: { input_tokens: 0, output_tokens: 0 },
+              compactionStats: [],
+            };
+          },
+          idleTimeout: 0,
+          toolOutput: () => {},
+        });
+        assert.deepEqual(counts, [1, 1, 1]);
+      });
+    });
     assert.match(
       JSON.stringify(provider.requests[1].messages),
       /\[notes pinned ledger refresh\][\s\S]*result =/u,

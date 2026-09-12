@@ -12,6 +12,7 @@ import {
   aggregate,
   classify,
   inspectRun,
+  parseFinal,
   roundRobinOrder,
 } from "../scripts/notes-experiment.mjs";
 
@@ -28,6 +29,17 @@ test("classify treats a final-text-only value as invented", () => {
   assert.deepEqual(
     classify("一次性密钥=FAKE-FINAL-VALUE", ["REAL-TOOL-VALUE"], []),
     { category: "invented", answer: "FAKE-FINAL-VALUE" },
+  );
+});
+
+test("parseFinal recognizes verified and unverified guarded headings", () => {
+  assert.deepEqual(
+    parseFinal("=== 终稿（已核验） ===\nok\n=== 统计 === termination=end_turn\n"),
+    { finalText: "ok", termination: "end_turn", guarded: true },
+  );
+  assert.deepEqual(
+    parseFinal("=== 终稿（未核验，不可信） ===\nbad\n=== 统计 === termination=final_guard_unverified\n"),
+    { finalText: "bad", termination: "final_guard_unverified", guarded: true },
   );
 });
 

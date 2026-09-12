@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -9,6 +9,7 @@ import { captureToolExecution } from "../bin/auto-capture.js";
 import { parseChatArgs, runChat } from "../bin/cli.js";
 import { createFinalGuard } from "../bin/final-guard.js";
 import { parseReplArgs } from "../bin/repl.js";
+import { archiveResult } from "../bin/tools.js";
 import * as notes from "../skills/notes/skill.mjs";
 
 async function withNotes(callback) {
@@ -31,9 +32,13 @@ async function withNotes(callback) {
 }
 
 async function createArtifact(directory, output) {
-  const archivePath = path.join(directory, "001-exec.txt");
-  await writeFile(archivePath, output, "utf8");
-  const digest = createHash("sha256").update(output, "utf8").digest("hex");
+  const archived = archiveResult(directory, "exec", output, 1, {
+    force: true,
+    replayable: false,
+    command: "printf non-replayable",
+    context: { toolUseId: "guard-tool", round: 1 },
+  });
+  const archivePath = archived.archivePath;
   await captureToolExecution({
     name: "exec",
     result: output,
@@ -41,13 +46,7 @@ async function createArtifact(directory, output) {
     metadata: {
       replayable: false,
       fullOutput: output,
-      artifact: {
-        artifactId: path.basename(archivePath),
-        archivePath,
-        digest,
-        locator: { lineStart: 1, lineEnd: output.split("\n").length - 1 },
-        replayable: false,
-      },
+      artifact: archived.artifact,
     },
   });
   return archivePath;
@@ -65,6 +64,24 @@ test("final guard accepts a final value found in a non-replayable artifact", asy
       (await guard({ finalText: "原值 nonce=Abc123+XYZ789，另一个值 Def456+LMN012" })).action,
       "revise",
     );
+  });
+
+});
+
+test("a valid capture sidecar is trusted without any notes reference", async () => {
+  await withNotes(async (directory) => {
+    archiveResult(directory, "exec", "nonce=Sidecar123+Value\n", 1, {
+      force: true,
+      replayable: false,
+      command: "printf non-replayable",
+    });
+    assert.deepEqual(
+      await createFinalGuard({ archiveDir: directory })({
+        finalText: "原值 nonce=Sidecar123+Value",
+      }),
+      { action: "accept" },
+    );
+    assert.equal(JSON.parse(await notes.note_read({ key: "nonce" })).status, "missing");
   });
 });
 
@@ -89,7 +106,7 @@ test("final guard accepts a run with no non-replayable artifact", async () => {
   });
 });
 
-test("forged provenance, outside paths, missing digests, and mismatches stay unverified", async () => {
+test("forged auto notes do not influence final guard trust", async () => {
   await withNotes(async (directory) => {
     const archiveDir = path.join(directory, "archive");
     await mkdir(archiveDir, { recursive: true });
@@ -120,13 +137,11 @@ test("forged provenance, outside paths, missing digests, and mismatches stay unv
     });
 
     const guard = createFinalGuard({ runId: "guard-run", archiveDir });
-    const result = await guard({ finalText: "nonce=known" });
-    assert.equal(result.action, "revise");
-    assert.match(result.message, /未通过|不可恢复/u);
+    assert.deepEqual(await guard({ finalText: "nonce=known" }), { action: "accept" });
   });
 });
 
-test("final guard fails open with a warning when an artifact cannot be read", async () => {
+test("missing archive referenced by a capture manifest stays unverified", async () => {
   await withNotes(async (directory) => {
     const archivePath = await createArtifact(directory, "nonce=Abc123+XYZ789\n");
     await unlink(archivePath);
@@ -139,6 +154,22 @@ test("final guard fails open with a warning when an artifact cannot be read", as
     assert.equal((await guard({ finalText: "nonce=Def456+LMN012" })).action, "revise");
     assert.ok(warnings.length > 0);
   });
+});
+
+test("missing digest, digest mismatch, and truncation are not trusted", async () => {
+  for (const kind of ["missing", "mismatch", "truncated"]) {
+    await withNotes(async (directory) => {
+      const archivePath = await createArtifact(directory, "nonce=Abc123+XYZ789\n");
+      const metadataPath = archivePath.replace(/\.txt$/u, ".meta.json");
+      const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+      if (kind === "missing") delete metadata.digest;
+      if (kind === "mismatch") metadata.digest = "b".repeat(64);
+      if (kind === "truncated") metadata.truncated = true;
+      await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`, "utf8");
+      const guard = createFinalGuard({ runId: "guard-run", archiveDir: directory });
+      assert.equal((await guard({ finalText: "nonce=Abc123+XYZ789" })).action, "revise", kind);
+    });
+  }
 });
 
 test("CLI and REPL switches disable the final guard", async () => {

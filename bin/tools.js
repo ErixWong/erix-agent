@@ -445,6 +445,8 @@ export function archiveResult(
       originalBytes: bytes.byteLength,
     };
     const metadata = {
+      kind: "erix.tool-capture",
+      schemaVersion: 1,
       toolUseId: context?.toolUseId ?? null,
       round: context?.round ?? null,
       command: command ?? null,

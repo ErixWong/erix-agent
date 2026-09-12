@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { runToolLoop } from "../src/loop.js";
 import { validateMessages } from "../src/messages/rounds.js";
+import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 test("finalGuard accept preserves normal completion", async () => {
@@ -63,6 +64,7 @@ test("finalGuard revision is injected as a paired-safe user text message", async
 
 test("finalGuard fail-closes after the retry limit without rewriting finalText", async () => {
   const events = [];
+  const store = createMemoryTranscriptStore();
   const result = await runToolLoop({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "unsafe-1" }], stopReason: "end_turn" },
@@ -77,6 +79,8 @@ test("finalGuard fail-closes after the retry limit without rewriting finalText",
       action: "revise",
       message: "请读取归档核实",
     }),
+    store,
+    runId: "guard-unverified-state",
     onEvent: (event) => events.push(event),
   });
 
@@ -91,10 +95,15 @@ test("finalGuard fail-closes after the retry limit without rewriting finalText",
     action: "degraded",
     reason: "max_retries",
   });
+  assert.equal(
+    (await store.loadRunState("guard-unverified-state")).state,
+    "unverified_error",
+  );
 });
 
 test("finalGuard errors fail open and emit an error event", async () => {
   const events = [];
+  const store = createMemoryTranscriptStore();
   const result = await runToolLoop({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
@@ -104,6 +113,8 @@ test("finalGuard errors fail open and emit an error event", async () => {
     finalGuard: async () => {
       throw new Error("guard unavailable");
     },
+    store,
+    runId: "guard-error-state",
     onEvent: (event) => events.push(event),
   });
 
@@ -116,10 +127,12 @@ test("finalGuard errors fail open and emit an error event", async () => {
     action: "error",
     reason: "error",
   });
+  assert.equal((await store.loadRunState("guard-error-state")).state, "guard_error");
 });
 
 test("finalGuard timeout is observable and returns an error verification", async () => {
   const events = [];
+  const store = createMemoryTranscriptStore();
   const result = await runToolLoop({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
@@ -128,12 +141,15 @@ test("finalGuard timeout is observable and returns an error verification", async
     executeTool: async () => "unused",
     finalGuardTimeoutMs: 5,
     finalGuard: async () => new Promise(() => {}),
+    store,
+    runId: "guard-timeout-state",
     onEvent: (event) => events.push(event),
   });
 
   assert.equal(result.verification.status, "error");
   assert.equal(result.verification.reason, "timeout");
   assert.equal(events.at(-1).reason, "timeout");
+  assert.equal((await store.loadRunState("guard-timeout-state")).state, "guard_error");
 });
 
 test("finalGuard is called for non-continuable stop paths without another model round", async () => {

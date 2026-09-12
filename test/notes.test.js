@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -124,7 +133,15 @@ test("per-key writes serialize and compact bounded version history", async () =>
         key: "concurrent",
         version: record.compactedHistory[0].version,
       })).status,
-      "compacted",
+      "pruned",
+    );
+    const tooOld = parsed(await notes.note_read({ key: "concurrent", version: 1 }));
+    assert.equal(tooOld.status, "pruned");
+    assert.match(tooOld.next, /有界历史上限/u);
+    assert.match(tooOld.next, /不是 never recorded/u);
+    assert.equal(
+      parsed(await notes.note_read({ key: "concurrent", version: 99 })).status,
+      "missing",
     );
     assert.equal(parsed(await notes.note_read({ key: "concurrent" })).version, 8);
   }, { historyLimit: 3 });
@@ -404,6 +421,80 @@ test("janitor moves active notes from other sessions into grace and filters inac
       restoreClock();
     }
   }, { graceMs: 1000 });
+});
+
+test("lock lease prevents a second owner after the stale threshold", async () => {
+  await withNotes(async (directory) => {
+    const scope = path.join(directory, "run", "notes-test-run");
+    await mkdir(scope, { recursive: true });
+    let active = 0;
+    let overlap = false;
+    let firstEntered;
+    const entered = new Promise((resolve) => { firstEntered = resolve; });
+    const critical = async (delay) => {
+      active += 1;
+      overlap ||= active > 1;
+      firstEntered?.();
+      firstEntered = undefined;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      active -= 1;
+    };
+    const first = notes.withNotesKeyLock(scope, "lease", () => critical(120));
+    await entered;
+    const second = notes.withNotesKeyLock(scope, "lease", () => critical(1));
+    await Promise.all([first, second]);
+    assert.equal(overlap, false);
+  }, { lockStaleMs: 30, lockTimeoutMs: 500 });
+});
+
+test("lock release does not delete a replacement with another owner token", async () => {
+  await withNotes(async (directory) => {
+    const scope = path.join(directory, "run", "notes-test-run");
+    await mkdir(scope, { recursive: true });
+    const target = path.join(scope, "token-mismatch.lock");
+    const displaced = path.join(scope, "displaced.lock");
+    let release;
+    let entered;
+    const started = new Promise((resolve) => { entered = resolve; });
+    const hold = new Promise((resolve) => { release = resolve; });
+    const locked = notes.withNotesKeyLock(scope, "token-mismatch", async () => {
+      entered();
+      await hold;
+    });
+    await started;
+    await rename(target, displaced);
+    const replacement = JSON.stringify({
+      ownerToken: "other-owner",
+      pid: process.pid,
+      createdAt: new Date().toISOString(),
+    });
+    await writeFile(target, replacement, "utf8");
+    release();
+    await locked;
+    assert.equal(await readFile(target, "utf8"), replacement);
+    await rm(displaced, { force: true });
+  });
+});
+
+test("completeRun and janitor report busy on lock timeout", async () => {
+  await withNotes(async (directory) => {
+    await notes.note_take({ key: "busy", content: "value" });
+    const scope = path.join(directory, "run", "notes-test-run");
+    let release;
+    let entered;
+    const started = new Promise((resolve) => { entered = resolve; });
+    const hold = new Promise((resolve) => { release = resolve; });
+    const locked = notes.withNotesKeyLock(scope, "busy", async () => {
+      entered();
+      await hold;
+    });
+    await started;
+    assert.equal((await notes.completeRun()).status, "busy");
+    process.env.ERIX_RUN_ID = "another-run";
+    assert.equal((await notes.runNotesJanitor()).status, "busy");
+    release();
+    await locked;
+  }, { lockTimeoutMs: 10, lockStaleMs: 100 });
 });
 
 test("bundled notes skill is discoverable and user notes skill overrides it", async () => {
