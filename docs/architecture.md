@@ -150,6 +150,10 @@ runToolLoop({
  */
 ```
 
+`recall()` 是宿主/人的归档取数契约：宿主可以用数据库或文件索引实现它，也可以按需从
+`erix-agent/tools` 接入 `createRecallTool`。它不属于 `runToolLoop` 或 CLI 默认提供给模型的工具；
+CLI 仅保留 transcripts 归档、checkpoint/resume 和折叠机制。
+
 ### 3.6 ToolProvider / ToolRegistry（FR-5.3，详见 ADR-006）
 
 分层语义：**执行器注册表 = 能力宇宙（代码）；ToolProvider = 选择与配置（数据）**。
@@ -199,7 +203,7 @@ src/
 ├── tools/                # subpath export erix-agent/tools（v0.2）
 │   ├── jail.js           # 路径牢笼助手（root 内解析、writable 子树、maskedPaths 拒读）
 │   ├── file-tools.js     # readFile/rg/tree/writeFile 参考实现（建在 jail 上）
-│   ├── recall.js         # recall 工具（建在 TranscriptStore 上）
+│   ├── recall.js         # 可选 recall 工具（宿主按需接入，建在 TranscriptStore 上）
 │   ├── registry.js       # createToolRegistry：执行器宇宙 + schema 求交（ADR-006）
 │   └── providers.js      # ToolProvider：static / json-file / composite
 └── loop.js               # runToolLoop

@@ -50,7 +50,7 @@ src/
 ├── compact/       # 压缩策略  v0.1: sliding-window / fold-statistical · v0.2: fold-llm · v2: psyche
 ├── store/         # TranscriptStore：v0.0 memory · v0.2 file(JSONL) · DB 适配器在项目侧（MariaDB）
 ├── config/        # ModelConfigProvider：v0.1 static / env · v0.2 json-file · DB 适配器在项目侧
-├── tools/         # 【v0.2】可选工具库（subpath export）：路径牢笼/文件工具/recall/registry 参考实现
+├── tools/                # 【v0.2】可选工具库（subpath export）：路径牢笼/文件工具/recall/registry 参考实现（recall 由宿主按需接线）
 └── loop.js        # runToolLoop  v0.0: 最小版 · v0.1: 轮内快照重试/死循环检测/完成信号/每轮压缩检查 全量
 ```
 
@@ -77,8 +77,8 @@ src/
   - **观测**：每次决策 emit `onJudge`；CLI 可用 `--judge-log <path>` / `ERIX_JUDGE_LOG` 落盘 JSONL（已脱敏）。
   - **回调错误**：流式 `onDelta`/`onReasoningDelta`/`onToolCall`/`onUsage` 回调异常通过可选的 `onObserverError` 上报；未提供时记录 `console.error("Observer callback error:", error)`，不会走仅用于存储失败的 `onPersistenceError`。
 - **executeTool 协议**：两种形式——位置参数 `(name, input)` 或结构化 `({ id, name, input, context, signal })`。结构化可返回 `{ success, data, duration, toolMessageId }`（loop 保留字符串结果并附加元数据）。
-- **压缩预算**：从模型 `contextWindowTokens`/`maxOutputTokens` 推导；策略支持 `summaryRole`/`protectedMessage`/`stripHistoricalImages`/`onBeforeFold`/`onAfterFold`。
-- **TranscriptStore**：`appendRound` 按 run/round key 幂等；store 可实现 `markRunState`、`saveCheckpoint`/`appendCheckpoint`、`loadLatestCheckpoint`。loop 在工具执行前后 checkpoint；成对提供读写的 store 在任一 checkpoint 写失败时 fail-closed（执行后失败会明确报告“工具已执行但结果未持久化”），resume 按原顺序补齐全部未完成的多工具调用。宿主的 `executeTool` 仍需按 tool id 做幂等保护，无法由 loop 保证 exactly-once。
+- **压缩预算**：从模型 `contextWindowTokens`/`maxOutputTokens` 推导；策略支持 `summaryRole`/`recoveryHint`/`protectedMessage`/`stripHistoricalImages`/`onBeforeFold`/`onAfterFold`。未提供 `recoveryHint` 时，折叠摘要使用“早期轮次已折叠；需要原文请重读文件或查看持久笔记；关键值应当已落盘”。
+- **TranscriptStore**：`appendRound` 按 run/round key 幂等；`store.recall(runId, fromRound?, toRound?, pattern?)` 是面向宿主/人的取数契约，不是 `runToolLoop` 默认暴露给模型的工具；宿主可从 `erix-agent/tools` 按需接入参考实现。store 可实现 `markRunState`、`saveCheckpoint`/`appendCheckpoint`、`loadLatestCheckpoint`。loop 在工具执行前后 checkpoint；成对提供读写的 store 在任一 checkpoint 写失败时 fail-closed（执行后失败会明确报告“工具已执行但结果未持久化”），resume 按原顺序补齐全部未完成的多工具调用。宿主的 `executeTool` 仍需按 tool id 做幂等保护，无法由 loop 保证 exactly-once。
 - **provider**：`transport` 透传给 fetch 的 `dispatcher`；非法 OpenAI 工具参数用 `_truncatedArguments`（`_raw` 兼容别名）；不安全 runId 映射为 `run-<sha256 前 24 位 hex>`。
 
 > 完整接口契约见 [docs/architecture.md](docs/architecture.md)；设计决策见 [docs/decisions/](docs/decisions/)（judge 机制 = ADR-011）。
@@ -89,7 +89,7 @@ src/
 
 - **入口**：`erix` 直接进交互 TUI（`erix repl` 等价）；`erix chat "<prompt>" [--stream]` 单次对话
   （`--reflection on|off` 控制自适应预算；`max-rounds >= 32` 时默认启用）
-- **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）——无内置安全层，见 ADR-009
+- **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）；默认不提供 agent 级 recall 工具——`store.recall()` 是面向宿主的契约方法，需要时可从 `erix-agent/tools` 自行接线——无内置安全层，见 ADR-009
 - **skill 系统**：`~/.erix/skills/<id>/skill.mjs` 自描述脚本，导出 `getSkillDefinition()` 自报工具（ADR-008）；`erix skills` 查看；todo skill（跨会话任务清单，长任务拆解/划掉/恢复）
 - **MCP 对接**：`~/.erix/mcp.json` 标准配置，单代理工具（list/search/call/status）访问任意 MCP server（stdio + HTTP；实测 unifuncs 联网搜索、filesystem 读文件）
 - **配置**：`~/.erix/config.json`（或 `$XDG_CONFIG_HOME/erix/`），env 优先；会话存档 `~/.erix/<session>.json`；todo 清单 `~/.erix/todos/`

@@ -18,7 +18,6 @@ import {
   runToolLoop,
 } from "../src/index.js";
 import { safeRunId } from "../src/store/file.js";
-import { createRecallTool } from "../src/tools/index.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
 import {
   closeAllMcpServers,
@@ -306,14 +305,11 @@ function clearScreen(output) {
   }
 }
 
-function buildExecuteTool(cliTools, skillTools, mcpProxy, recallTool) {
+function buildExecuteTool(cliTools, skillTools, mcpProxy) {
   const skillToolNames = new Set(skillTools.tools.map((tool) => tool.name));
   return async (name, input, context) => {
     if (name === "mcp" && mcpProxy?.enabled) {
       return mcpProxy.execute(input);
-    }
-    if (name === "recall" && recallTool !== undefined) {
-      return recallTool.execute(input);
     }
     if (skillToolNames.has(name)) {
       return skillTools.executeTool(name, input, context);
@@ -348,15 +344,14 @@ export async function runRepl(argv, io = {}) {
   const providerFactory = io.providerFactory
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
   const cliTools = createCliTools({ cwd });
-  const recallTool = createRecallTool({ store, runId: options.session });
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,
-    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp", "recall"],
+    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: options.configPath, cwd });
   const executeTool = wrapExecuteTool(
-    buildExecuteTool(cliTools, skillTools, mcpProxy, recallTool),
+    buildExecuteTool(cliTools, skillTools, mcpProxy),
     { output: (line) => writeLine(output, line) },
   );
   let messages = storedRecords.length > 0
@@ -534,7 +529,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         });
       }
       const context = buildCompactionContext(config, options.compactBudget);
-      const tools = [...cliTools.tools, recallTool.schema, ...skillTools.tools];
+      const tools = [...cliTools.tools, ...skillTools.tools];
       if (mcpProxy?.enabled) {
         tools.push(mcpProxy.schema);
       }

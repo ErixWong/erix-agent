@@ -2,11 +2,13 @@ import { groupIntoRounds } from "../messages/rounds.js";
 import { estimateMessageTokens } from "../tokens.js";
 import {
   cloneFoldPayload,
+  DEFAULT_RECOVERY_HINT,
   foldOptions,
   optionValue,
   roundRangeForIndexes,
   runFoldHook,
   selectFoldedRounds,
+  resolveRecoveryHint,
   isRealUser,
 } from "./helpers.js";
 
@@ -61,12 +63,12 @@ function parseFoldSummary(text) {
   const value = String(text);
   const markedMatch = value.match(
     new RegExp(
-      `^${FOLD_SUMMARY_MARKER}早期第 (\\d+)–(\\d+) 轮（共 (\\d+) 轮）已折叠。工具足迹：(.*?)。可用 recall\\(`,
+      `^${FOLD_SUMMARY_MARKER}早期第 (\\d+)–(\\d+) 轮（共 (\\d+) 轮）已折叠。工具足迹：(.*?)。`,
       "u",
     ),
   );
   const legacyMatch = value.match(
-    /^【上下文折叠】早期第 (\d+)–(\d+) 轮（共 (\d+) 轮）已折叠。工具足迹：(.*?)。可用 recall\(/u,
+    /^【上下文折叠】早期第 (\d+)–(\d+) 轮（共 (\d+) 轮）已折叠。工具足迹：(.*?)。/u,
   );
   const match = markedMatch ?? legacyMatch;
   if (!match) return undefined;
@@ -79,7 +81,13 @@ function parseFoldSummary(text) {
   };
 }
 
-function formatFoldSummary({ from, to, count, tools }) {
+function formatFoldSummary({
+  from,
+  to,
+  count,
+  tools,
+  recoveryHint = DEFAULT_RECOVERY_HINT,
+}) {
   const footprint = tools.size === 0
     ? "无"
     : [...tools.entries()]
@@ -89,11 +97,16 @@ function formatFoldSummary({ from, to, count, tools }) {
   return [
     `${FOLD_SUMMARY_MARKER}早期第 ${from}–${to} 轮（共 ${count} 轮）已折叠。`,
     `工具足迹：${footprint}。`,
-    `可用 recall(pattern: "关键词") 搜回细节，或 recall(fromRound: ${from}, toRound: ${to}) 取原文（大段可能截断，优先关键词）。`,
+    recoveryHint,
   ].join("");
 }
 
-function prependSummary(head, summary, summaryRole = "user") {
+function prependSummary(
+  head,
+  summary,
+  summaryRole = "user",
+  recoveryHint = DEFAULT_RECOVERY_HINT,
+) {
   if (summaryRole === "system") {
     const systemIndex = head.findLastIndex((message) => message?.role === "system");
     if (systemIndex < 0) {
@@ -137,6 +150,7 @@ function prependSummary(head, summary, summaryRole = "user") {
         }
         return counts;
       }, new Map()),
+      recoveryHint: resolveRecoveryHint(recoveryHint),
     });
   const contentWithoutSummaries = originalContent.filter((block) => (
     // 旧格式仅兼容读取，保留原块，避免把用户恰好写出的摘要文本删掉。
@@ -206,9 +220,14 @@ export function createFoldStatisticalStrategy(options = {}) {
         const summary = [
           `${FOLD_SUMMARY_MARKER}早期第 ${range.from}–${range.to} 轮（共 ${folded.length} 轮）已折叠。`,
           `工具足迹：${toolFootprint(folded)}。`,
-          `可用 recall(pattern: "关键词") 搜回细节，或 recall(fromRound: ${range.from}, toRound: ${range.to}) 取原文（大段可能截断，优先关键词）。`,
+          resolveRecoveryHint(settings.recoveryHint),
         ].join("");
-        compactedHead = prependSummary(head, summary, settings.summaryRole);
+        compactedHead = prependSummary(
+          head,
+          summary,
+          settings.summaryRole,
+          settings.recoveryHint,
+        );
       }
 
       const compactedMessages = [

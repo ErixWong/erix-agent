@@ -44,7 +44,7 @@ test("parseChatArgs accepts the reflection switch", () => {
   assert.equal(parseChatArgs(["hello", "--timeout", "1500"]).timeoutMs, 1500);
 });
 
-test("chat loop wires a file transcript store and recall tool", async () => {
+test("chat loop wires a file transcript store without a recall tool", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-test-"));
   try {
     const provider = createFakeProvider([
@@ -60,7 +60,7 @@ test("chat loop wires a file transcript store and recall tool", async () => {
       maxRounds: 1,
     });
 
-    assert.ok(provider.requests[0].tools.some((tool) => tool.name === "recall"));
+    assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), false);
     const records = await createFileTranscriptStore({ dir }).load("chat-wiring");
     assert.deepEqual(records.map((record) => record.round), [0, 1]);
   } finally {

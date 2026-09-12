@@ -2,6 +2,15 @@ function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+export const DEFAULT_RECOVERY_HINT =
+  "早期轮次已折叠；需要原文请重读文件或查看持久笔记；关键值应当已落盘";
+
+export function resolveRecoveryHint(value) {
+  return typeof value === "string" && value.trim() !== ""
+    ? value
+    : DEFAULT_RECOVERY_HINT;
+}
+
 export function optionValue(callOptions, factoryOptions, key, fallback) {
   if (
     callOptions
@@ -90,6 +99,7 @@ export async function runFoldHook(hook, payload) {
 export function foldOptions(factoryOptions, callOptions = {}) {
   return {
     summaryRole: optionValue(callOptions, factoryOptions, "summaryRole", "user"),
+    recoveryHint: optionValue(callOptions, factoryOptions, "recoveryHint"),
     protectedMessage: optionValue(callOptions, factoryOptions, "protectedMessage"),
     stripHistoricalImages: optionValue(
       callOptions,

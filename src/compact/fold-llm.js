@@ -6,11 +6,14 @@ import {
   foldOptions,
   optionValue,
   roundRangeForIndexes,
+  resolveRecoveryHint,
   runFoldHook,
   selectFoldedRounds,
 } from "./helpers.js";
 
-export const SUMMARIZER_PROMPT_GUIDE = `请把被折叠轮次整理成可继续工作的日志，并严格使用以下分节：
+export function createSummarizerPromptGuide(recoveryHint) {
+  const hint = resolveRecoveryHint(recoveryHint);
+  return `请把被折叠轮次整理成可继续工作的日志，并严格使用以下分节：
 ## 阶段
 说明已发生的工作阶段与关键转折。
 ## 已改文件
@@ -22,8 +25,17 @@ export const SUMMARIZER_PROMPT_GUIDE = `请把被折叠轮次整理成可继续�
 ## 主题词面包屑
 列出后续检索原文所需的项目、文件、工具、错误和未结事项关键词。
 
-recall 留痕规则：如果被折轮次包含 recall 工具结果，记录"已于第 X 轮 recall 过 '<pattern>'（结论：…）"，其中 X、pattern 和结论必须来自原文。
-末尾 recall 指引：最后写"早期轮次已折叠，可用 recall(pattern: \"关键词\") 搜回细节，或 recall(fromRound: a, toRound: b) 取原文（大段可能截断，优先关键词）"，并将 a、b 替换为本次实际折叠范围。`;
+恢复提示：${hint}
+
+历史工具结果留痕规则：如果被折轮次包含恢复工具结果，记录工具名称、调用轮次、查询词和结论，且所有内容必须来自原文。`;
+}
+
+export const SUMMARIZER_PROMPT_GUIDE = createSummarizerPromptGuide();
+
+function withRecoveryHint(summary, recoveryHint) {
+  if (summary.includes(recoveryHint)) return summary;
+  return `${summary}\n## 恢复提示\n${recoveryHint}`;
+}
 
 function normalizedKeepRounds(value) {
   if (value === undefined) return 6;
@@ -86,6 +98,7 @@ function prependSummary(head, summary, summaryRole = "user") {
 
 function priorityForHeading(heading) {
   if (heading.includes("下一步")) return 0;
+  if (heading.includes("恢复提示")) return 0;
   if (heading.includes("已验证项")) return 1;
   if (heading.includes("已改文件")) return 2;
   if (heading.includes("主题词")) return 3;
@@ -185,6 +198,7 @@ function enforceSummarySize(summary, maxSummaryTokens) {
  *   summarizer: (input: {messages: object[], roundRange: {from:number, to:number}}) => Promise<string>|string,
  *   maxSummaryTokens?: number,
  *   summaryRole?: "user"|"system",
+ *   recoveryHint?: string,
  *   protectedMessage?: Function|string|string[],
  *   stripHistoricalImages?: boolean,
  *   onBeforeFold?: Function,
@@ -244,14 +258,20 @@ export function createFoldLlmStrategy({
 
       let compactedHead = head;
       if (folded.length > 0) {
+        const recoveryHint = resolveRecoveryHint(settings.recoveryHint);
         const summary = await summarizer({
           messages: foldedPayload,
           roundRange: roundRange ?? { from: 1, to: folded.length },
+          recoveryHint,
+          promptGuide: createSummarizerPromptGuide(recoveryHint),
         });
         if (typeof summary !== "string") {
           throw new TypeError("fold-llm summarizer must return a string");
         }
-        const compactedSummary = enforceSummarySize(summary, summaryBudget);
+        const compactedSummary = enforceSummarySize(
+          withRecoveryHint(summary, recoveryHint),
+          summaryBudget,
+        );
         compactedHead = prependSummary(head, compactedSummary, settings.summaryRole);
       }
 

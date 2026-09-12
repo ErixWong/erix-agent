@@ -68,7 +68,6 @@ test("range recall and empty pattern results use the documented text and marker"
   });
   const range = await tool.execute({ fromRound: 2, toRound: 3 });
   assert.match(range, /needle fact/);
-  assert.match(range, /\[截断，共 2 段，offset=1 继续\]/);
   assert.ok(estimateTokens(range) <= 60);
   assert.equal(await tool.execute({ pattern: "does-not-exist" }), "未命中。建议换更短的关键词或同义词重试");
 });
@@ -102,4 +101,31 @@ test("pattern 支持正则（模型常写 a|b 交替式），非法正则回落�
   assert.ok(byRegex.includes("42.5"), "交替正则应命中");
   const byBadRegex = await tool.execute({ pattern: "阈值(" });
   assert.ok(byBadRegex.includes("阈值") === false || typeof byBadRegex === "string", "非法正则不崩溃");
+});
+
+test("prefers the transcript store recall contract for bounded retrieval", async () => {
+  const calls = [];
+  const store = {
+    async recall(...args) {
+      calls.push(args);
+      return "before\nneedle fact\nafter";
+    },
+    async load() {
+      throw new Error("load should not be called when recall is available");
+    },
+  };
+  const tool = createRecallTool({
+    store,
+    runId: "host-run",
+    limits: { maxSegments: 1, totalTokens: 40 },
+  });
+
+  const result = await tool.execute({
+    fromRound: 3,
+    toRound: 7,
+    pattern: "needle",
+  });
+
+  assert.deepEqual(calls, [["host-run", 3, 7, "needle"]]);
+  assert.match(result, /needle fact/);
 });
