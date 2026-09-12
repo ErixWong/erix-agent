@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createFileTranscriptStore } from "../../src/store/file.js";
+import { createFileTranscriptStore, safeRunId } from "../../src/store/file.js";
 import { transcriptStoreContract } from "../contract/transcript-store.js";
 
 async function makeTempDir() {
@@ -52,6 +52,51 @@ test("file: runId 安全化为合法文件名", async () => {
   }
 });
 
+test("file: unsafe runId 与旧 hash 形态合法 id 隔离", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const unsafeRunId = "../constructed-collision";
+    const hashedRunId = safeRunId(unsafeRunId);
+    const legacyCollisionId = `run-${hashedRunId.slice("run-h-".length)}`;
+    const unsafeRecord = {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "unsafe" }] }],
+    };
+    const legalRecord = {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "legal" }] }],
+    };
+
+    await store.appendRound(unsafeRunId, unsafeRecord);
+    await store.appendRound(legacyCollisionId, legalRecord);
+
+    assert.notEqual(hashedRunId, legacyCollisionId);
+    assert.deepEqual(await store.load(unsafeRunId), [unsafeRecord]);
+    assert.deepEqual(await store.load(legacyCollisionId), [legalRecord]);
+    assert.equal((await readdir(root)).filter((name) => name.endsWith(".jsonl")).length, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: load 保留无尾换行的完整记录", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const record = {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "complete" }] }],
+    };
+    await writeFile(join(root, "run.jsonl"), JSON.stringify(record), "utf8");
+
+    assert.deepEqual(await store.load("run"), [record]);
+    assert.equal(await readFile(join(root, "run.jsonl"), "utf8"), `${JSON.stringify(record)}\n`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("file: 崩溃安全——容忍末行写一半（残段丢弃）", async () => {
   const root = await makeTempDir();
   try {
@@ -68,6 +113,20 @@ test("file: 崩溃安全——容忍末行写一半（残段丢弃）", async ()
     );
 
     assert.deepEqual(await store.load("run"), [complete]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: markRunState 使用临时文件原子替换", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    await store.markRunState("run", "running");
+    await store.markRunState("run", "succeeded");
+
+    assert.equal((await store.loadRunState("run")).state, "succeeded");
+    assert.deepEqual(await readdir(root), ["run.state.json"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
