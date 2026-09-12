@@ -224,6 +224,13 @@ const TRUNCATED_TERMINATION_REASONS = new Set([
   "max_rounds_cap",
   "continuation_exhausted",
   "stall",
+  "final_guard_unverified",
+]);
+
+const FINAL_GUARD_TERMINATION_REASONS = new Set([
+  "end_turn",
+  "no_tool",
+  "judge_done",
 ]);
 
 function makeTermination(reason, detail) {
@@ -530,7 +537,7 @@ function defaultSleep(ms, signal) {
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"round_end"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"round_end"|"final_guard"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -539,6 +546,8 @@ function defaultSleep(ms, signal) {
  * @property {object} [toolResult] Canonical tool_result block.
  * @property {string} [finalText] Text accumulated at round end.
  * @property {string} [stopReason] Canonical provider stop reason.
+ * @property {"accept"|"revise"|"degraded"|"error"} [action]
+ * @property {string} [reason]
  */
 
 /**
@@ -588,6 +597,8 @@ function defaultSleep(ms, signal) {
  *   retry?: {attempts?:number, backoffBaseMs?:number, backoffMaxMs?:number,
  *     sleepImpl?:(ms:number)=>Promise<void>}|false,
  *   completion?: {signals?:string[], maxNoToolRounds?:number}|false,
+ *   finalGuard?:(payload:{finalText:string,messages:object[],round:number,rounds:number,signal:AbortSignal,termination:object}) => Promise<{action:"accept"}|{action:"revise",message:string}>,
+ *   finalGuardMaxRetries?: number,
  *   maxTokenContinuations?: number,
  *   context?: {strategy?: object, budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
  *   modelConfig?: {contextWindowTokens?:number, maxOutputTokens?:number},
@@ -619,7 +630,7 @@ function defaultSleep(ms, signal) {
  *   transcript:object[],
  *   rounds:number,
  *   truncated:boolean,
- *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"judge_done"|"continuation_exhausted"|"aborted"|"failed", detail?:string},
+ *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"judge_done"|"continuation_exhausted"|"final_guard_unverified"|"aborted"|"failed", detail?:string},
  *   usage:{input_tokens:number, output_tokens:number},
  *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number}[]
  * }>}
@@ -642,6 +653,8 @@ export async function runToolLoop({
   stallDetection = { window: 4 },
   retry = false,
   completion = { signals: [], maxNoToolRounds: 3 },
+  finalGuard,
+  finalGuardMaxRetries = 2,
   maxTokenContinuations = 3,
   context,
   modelConfig,
@@ -1117,6 +1130,11 @@ export async function runToolLoop({
     : 3;
   const compactionStats = [];
   let finalText = "";
+  const finalGuardRetryLimit = Number.isSafeInteger(finalGuardMaxRetries)
+    && finalGuardMaxRetries >= 0
+    ? finalGuardMaxRetries
+    : 2;
+  let finalGuardRetries = 0;
   let hadToolUse = hasToolUseInMessages(messages);
   let roundStopReason;
   let roundEventDeltas = [];
@@ -1167,6 +1185,53 @@ export async function runToolLoop({
       return await Promise.race([promise, aborted]);
     } finally {
       removeAbortListener?.();
+    }
+  };
+
+  const callFinalGuard = async (reason, detail) => {
+    const payload = {
+      finalText,
+      messages: cloneState(messages),
+      round: rounds,
+      rounds,
+      signal: toolSignal,
+      termination: makeTermination(reason, detail),
+    };
+    try {
+      const decision = await awaitWithAbort(
+        Promise.resolve().then(() => finalGuard(payload)),
+      );
+      if (decision?.action === "accept") {
+        emitEvent({ type: "final_guard", round: rounds, action: "accept" });
+        return { action: "accept" };
+      }
+      if (
+        decision?.action === "revise"
+        && typeof decision.message === "string"
+        && decision.message.length > 0
+      ) {
+        emitEvent({
+          type: "final_guard",
+          round: rounds,
+          action: "revise",
+          reason: "unverified",
+        });
+        return { action: "revise", message: decision.message };
+      }
+      throw new TypeError("finalGuard returned an invalid decision");
+    } catch (error) {
+      if (signal?.aborted) throwIfAborted(signal);
+      const errorReason = error?.code === "timeout"
+        || error?.name === "TimeoutError"
+        ? "timeout"
+        : "error";
+      emitEvent({
+        type: "final_guard",
+        round: rounds,
+        action: "error",
+        reason: errorReason,
+      });
+      return { action: "accept" };
     }
   };
 
@@ -2366,6 +2431,31 @@ export async function runToolLoop({
     if (action.kind === "stop") {
       const reason = terminationReasonForAction(action, continuationExhausted);
       const detail = reason === "reflection_stop" ? action.reason : undefined;
+      if (
+        typeof finalGuard === "function"
+        && FINAL_GUARD_TERMINATION_REASONS.has(reason)
+      ) {
+        const guardDecision = await callFinalGuard(reason, detail);
+        if (guardDecision.action === "revise") {
+          if (finalGuardRetries >= finalGuardRetryLimit) {
+            emitEvent({
+              type: "final_guard",
+              round: rounds,
+              action: "degraded",
+              reason: "max_retries",
+            });
+            return finish("final_guard_unverified");
+          }
+          finalGuardRetries += 1;
+          const continuationMessage = {
+            role: "user",
+            content: [{ type: "text", text: guardDecision.message }],
+          };
+          messages.push(continuationMessage);
+          messageRounds.set(continuationMessage, round);
+          continue;
+        }
+      }
       return finish(reason, detail);
     }
     if (action.kind === "continue") continue;

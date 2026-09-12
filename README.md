@@ -67,6 +67,14 @@ src/
 核心入口 `runToolLoop({ provider, executeTool, ... })`——单任务生命周期，事件流驱动（onRound/onDelta/onJudge/onEvent）。
 
 - **完成信号**：默认启用 `completion: { signals: [], maxNoToolRounds: 3 }`（模型连续无工具轮达上限自动收尾）；传 `completion: false` 保留旧行为（end_turn 即停）。provider 重试默认关闭（`retry: false`，可选开启）。
+- **确定性终稿核验（可选 `finalGuard`）**：在 `end_turn`、completion 或 `judge_done` 真正停机前调用
+  `finalGuard({ finalText, messages, round, rounds, signal, termination })`。返回
+  `{ action: "accept" }` 正常停机；返回 `{ action: "revise", message }` 会以独立的 user 文本消息注入
+  `message` 并继续循环，最多由 `finalGuardMaxRetries`（默认 2）次。达到上限仍要求 revise 时，
+  loop 保留原始 `finalText`，以 `termination.reason === "final_guard_unverified"` 停机（fail-closed），
+  由宿主决定拒绝、人工复核或报告不可恢复。guard 抛错、返回非法结果或标记 timeout 时接受本次停机，
+  但发出 `onEvent({ type: "final_guard", round, action: "error", reason })`；accept/revise/上限降级同样
+  发出 `final_guard` 事件。guard 应使用 payload 的 `signal`，abort 不会被降级为 accept。
 - **wrapup 收尾协议**（v0.3.3 可关）：end_turn 时模型输出 `{"done":true,"summary":"...","output":"..."}` 视为完成并展示 output/summary；解析要求 `done` 为自有 boolean 键。对自有终稿 JSON 契约的宿主（app_container 等）或自然语言对话宿主（touwaka），传 `wrapup: false` 同时关闭**指令注入 / JSON 解析 / finalText 替换 / LLM 归一化**；`ERIX_NO_WRAPUP_INSTRUCTION=1` env 运维兜底同语义（任一关即关整个协议）。不传保持默认开启，不影响既有调用方。
 - **自主质量内建（judge 体系，v0.3.0）**：
   - **默认开启**：`runToolLoop` 在 `maxRounds ≥ 16` 且未显式传 `reflection` 时自动启用基础 judge（无头宿主零配置获得保护）；传 `reflection: false` 或设 `ERIX_NO_REFLECTION=1` 关闭。
@@ -88,11 +96,17 @@ src/
 `erix` 是构建在本库上、用于**验证与调试无头 agent** 的命令行入口（不是产品交付形态）：
 
 - **入口**：`erix` 直接进交互 TUI（`erix repl` 等价）；`erix chat "<prompt>" [--stream]` 单次对话
-  （`--reflection on|off` 控制自适应预算；`max-rounds >= 32` 时默认启用）
+  （`--reflection on|off` 控制自适应预算；`max-rounds >= 32` 时默认启用；终稿 provenance gate 默认开启，
+  可用 `--no-final-guard` 或 `ERIX_NO_FINAL_GUARD=1` 关闭）
 - **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）；较大的工具结果（阈值 800 字符）按本次 run 写入 `<transcriptDir>/outputs/<safeRunId>/<序号>-<toolName>.txt`（如 `001-exec.txt`），返回文本带绝对路径指引；归档目录也会写入 system prompt，便于折叠后寻回原文；折叠摘要会附带归档目录提示（recoveryHint），确保折叠后仍可寻回；需要原文时用 `readFile`/`cat` 读取归档，不要重跑命令。同一命令在本次运行内重复执行时，工具会在返回中提示原始输出归档位置或不可恢复，避免把重跑结果当作原值。归档单文件最多 1 MiB，写入失败时工具仍返回原结果并标注失败。默认不提供 agent 级 recall 工具——`store.recall()` 是面向宿主的契约方法，需要时可从 `erix-agent/tools` 自行接线——无内置安全层，见 ADR-009
 - **skill 系统**：`~/.erix/skills/<id>/skill.mjs` 自描述脚本，导出 `getSkillDefinition()` 自报工具（ADR-008）；`erix skills` 查看；todo skill（跨会话任务清单，长任务拆解/划掉/恢复）
 - **notes 技能（#63）**：用于记录任务中的关键事实、一次性值、决策与 artifact 引用，不是每轮日志。四个工具为 `note_take`、`note_read`、`note_list`、`note_forget`；当前只支持 `run` 作用域，记录按 key 单文件版本化并保留历史，显式 forget 写撤销墓碑。默认存储在 `~/.erix/notes/run/<safeRunId>/<safeKey>.json`（目录 `0700`、文件 `0600`），也可用 `ERIX_NOTES_DIR` 指定；run 结束后进入 `completed → grace → GC`，`pinned` 只在 run 存活期内免于淘汰，GC 后保留 `revoked` 墓碑。notes 遵循 pull-only 原则：system prompt 只提供用法指引，不注入笔记数据。
 - **auto_capture（引用式）**：CLI 在 `exec` 工具执行完成时、而不是折叠时，从完整返回输出中最多捕获 3 个带标签的单行候选；默认只写 `{artifactId/archivePath, digest, locator}` 引用、`pinned=true` 和 `provenance.source=auto`，不写原值。只有模型显式调用 `note_take` 才允许把原值写入 notes；同一 key 的后续不同 digest 使用候选 key，不会覆盖首次值，完全相同 digest 去重。非幂等命令即使输出很短也强制写 `<序号>-exec.txt` sidecar 和 `.meta.json`，元数据标明 `replayable=false`；识别包括 `/dev/urandom`、`$RANDOM`、`openssl rand`、`uuidgen`、`date +%s%N`、`mktemp`、`shuf` 及随机字节转 base64 管道。系统会 fail-closed 跳过 `token/key/secret/password/passwd/bearer/authorization/cookie/credential/private/api_key/access_key/refresh_token`、PEM/JWT/AWS/GitHub/npm token、带凭据 URL 和疑似高熵长 base64/hex，**不会把疑似凭据写入 notes**。
+- **provenance gate 判定**：收尾时 CLI 读取本 run 的 `provenance.source="auto"` 非可重放 artifact 引用及其 locator 行范围，
+  用与 auto_capture 相同的标签/白名单规则抽取归档值；无此类 artifact 时直接放行。终稿中的候选值若命中已知集合则放行，
+  同形态但不在集合中则要求 `note_read` 或读取归档核实，并明确禁止重跑；归档不可读、digest 不匹配或无法抽取时
+  fail-open 放行但打印 warning。终稿被 gate 标记为 `final_guard_unverified` 时 CLI 会明确打印
+  “终稿含未核验的一次性值，已按 fail-closed 标记”，宿主不应把该终稿当作已验证事实。
 - 需要恢复具体值时按 `note_read → #62 归档原文 → 声明不可恢复`，不得重跑命令或凭记忆补值；归档保存原文，notes 保存语义索引/引用，两者职责不同。
 - **MCP 对接**：`~/.erix/mcp.json` 标准配置，单代理工具（list/search/call/status）访问任意 MCP server（stdio + HTTP；实测 unifuncs 联网搜索、filesystem 读文件）
 - **配置**：`~/.erix/config.json`（或 `$XDG_CONFIG_HOME/erix/`），env 优先；会话存档 `~/.erix/<session>.json`；todo 清单 `~/.erix/todos/`

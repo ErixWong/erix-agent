@@ -30,7 +30,7 @@ function shannonEntropy(value) {
   return entropy;
 }
 
-function looksLikeCredential(label, value) {
+export function looksLikeCredential(label, value) {
   if (label && CREDENTIAL_LABEL_PATTERN.test(label)) return true;
   const text = `${label}\n${value}`;
   if (CREDENTIAL_VALUE_PATTERNS.some((pattern) => pattern.test(text))) return true;
@@ -44,7 +44,7 @@ function looksLikeCredential(label, value) {
   return false;
 }
 
-function normalizedLabel(label) {
+export function normalizedLabel(label) {
   return label
     .normalize("NFKC")
     .trim()
@@ -54,7 +54,7 @@ function normalizedLabel(label) {
     .slice(0, 128);
 }
 
-function candidateLines(output) {
+export function candidateLines(output) {
   const labelled = [];
   const unlabelled = [];
   const lines = output.replaceAll(/\r\n|\r/gu, "\n").split("\n");

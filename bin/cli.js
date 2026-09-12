@@ -19,6 +19,7 @@ import {
   loadMcpConfig,
 } from "./mcp.js";
 import { defaultSessionId, runRepl } from "./repl.js";
+import { createFinalGuard } from "./final-guard.js";
 import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import {
   buildArchiveSystemPrompt,
@@ -34,8 +35,8 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--no-final-guard] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--no-final-guard]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
@@ -45,6 +46,7 @@ const HELP_TEXT = `用法：
   --dir <path>          Transcript 存档目录（chat 默认：~/.erix/transcripts）
   --max-rounds <n>      工具循环最大轮数（默认：64，可用 ERIX_MAX_ROUNDS 覆盖）
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 32 时启用）
+  --no-final-guard      关闭终稿 provenance 核验
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
   --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL
@@ -57,6 +59,7 @@ const HELP_TEXT = `用法：
   ERIX_NO_TOOL_ROUNDS 模型连续无工具调用几轮后强制完成（默认：3，最小：1）
   ERIX_MAX_ROUNDS     工具循环最大轮数（默认：64，最小：1）
   ERIX_REFLECTION     反思开关（on/off；ERIX_NO_REFLECTION=1 强制关闭）
+  ERIX_NO_FINAL_GUARD=1 关闭终稿 provenance 核验
   ERIX_JUDGE_LOG      judge 决策 JSONL 路径（可用 --judge-log 覆盖）
 
 配置文件：
@@ -140,6 +143,13 @@ function resolveReflection(reflection, maxRounds) {
   return maxRounds >= 32 ? { enabled: true } : false;
 }
 
+function resolveFinalGuard(finalGuard, runId) {
+  if (process.env.ERIX_NO_FINAL_GUARD?.trim() === "1") return undefined;
+  if (finalGuard === false) return undefined;
+  if (typeof finalGuard === "function") return finalGuard;
+  return createFinalGuard({ runId });
+}
+
 function createIdleTimeout(seconds) {
   if (!Number.isInteger(seconds) || seconds <= 0) return null;
   const controller = new AbortController();
@@ -183,6 +193,14 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       }
       seenOptions.add(argument);
       options.stream = true;
+      continue;
+    }
+    if (argument === "--no-final-guard") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.finalGuard = false;
       continue;
     }
     if (
@@ -456,6 +474,8 @@ async function runChatWithNotes({
   compactBudget,
   maxRounds,
   reflection,
+  finalGuard,
+  finalGuardMaxRetries = 2,
   timeoutMs,
   stream,
   completion,
@@ -528,6 +548,7 @@ async function runChatWithNotes({
     getToolMetadata: cliTools.getLastToolMetadata,
   });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
+  const resolvedFinalGuard = resolveFinalGuard(finalGuard, runId);
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG;
   let judgeLogWriteFailed = false;
   // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 安全摘要
@@ -632,6 +653,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     },
     maxRounds: resolvedMaxRounds,
     reflection: resolveReflection(reflection, resolvedMaxRounds),
+    ...(resolvedFinalGuard === undefined
+      ? {}
+      : {
+          finalGuard: resolvedFinalGuard,
+          finalGuardMaxRetries,
+        }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     maxTokens,
     completion: completion === false ? false : {
@@ -680,6 +707,9 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     const result = await (loopOverride ?? runToolLoop)(loopOptions);
     const compacted = result.compactionStats.some((stat) => stat.compacted === true);
     console.log(`\n=== 终稿 ===\n${result.finalText}`);
+    if (result.termination?.reason === "final_guard_unverified") {
+      console.log("⚠️ 终稿含未核验的一次性值，已按 fail-closed 标记；请核实归档或明确说明不可恢复。");
+    }
     console.log(
       `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} usage=${JSON.stringify(result.usage)} compacted=${compacted}`,
     );
