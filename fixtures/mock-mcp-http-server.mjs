@@ -39,6 +39,7 @@ function respondSse(res, id, result, error) {
 
 function handleRequest(req, res) {
   const mode = req.url.startsWith("/sse") ? "sse" : "json";
+  const wrongId = req.url.startsWith("/wrong-id");
   const expectedAuth = process.env.MOCK_MCP_AUTH;
 
   if (req.method !== "POST") {
@@ -78,8 +79,8 @@ function handleRequest(req, res) {
         serverInfo: { name: "mock-http", version: "1.0.0" },
         capabilities: { tools: {} },
       };
-      if (mode === "sse") respondSse(res, id, result);
-      else respondJson(res, id, result);
+      if (mode === "sse") respondSse(res, wrongId ? 99999 : id, result);
+      else respondJson(res, wrongId ? 99999 : id, result);
       return;
     }
 
@@ -89,20 +90,20 @@ function handleRequest(req, res) {
     }
 
     if (method === "tools/list") {
-      if (mode === "sse") respondSse(res, id, { tools });
-      else respondJson(res, id, { tools });
+      if (mode === "sse") respondSse(res, wrongId ? 99999 : id, { tools });
+      else respondJson(res, wrongId ? 99999 : id, { tools });
       return;
     }
 
     if (method === "tools/call") {
       if (params?.name === "echo") {
         const text = String(params.arguments?.message ?? "");
-        if (mode === "sse") respondSse(res, id, { content: [{ type: "text", text }] });
-        else respondJson(res, id, { content: [{ type: "text", text }] });
+        if (mode === "sse") respondSse(res, wrongId ? 99999 : id, { content: [{ type: "text", text }] });
+        else respondJson(res, wrongId ? 99999 : id, { content: [{ type: "text", text }] });
       } else {
         const error = { content: [{ type: "text", text: `Unknown tool: ${params?.name}` }], isError: true };
-        if (mode === "sse") respondSse(res, id, error);
-        else respondJson(res, id, error);
+        if (mode === "sse") respondSse(res, wrongId ? 99999 : id, error);
+        else respondJson(res, wrongId ? 99999 : id, error);
       }
       return;
     }

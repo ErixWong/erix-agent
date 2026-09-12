@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { parseChatArgs, runChat } from "../bin/cli.js";
+import { getMcpPoolStatus } from "../bin/mcp.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { runToolLoop } from "../src/loop.js";
@@ -62,6 +63,47 @@ test("chat loop wires a file transcript store and recall tool", async () => {
     assert.ok(provider.requests[0].tools.some((tool) => tool.name === "recall"));
     const records = await createFileTranscriptStore({ dir }).load("chat-wiring");
     assert.deepEqual(records.map((record) => record.round), [0, 1]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runChat closes MCP connections when used as a module", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-cli-mcp-cleanup-test-"));
+  const mcpConfigPath = join(dir, "mcp.json");
+  try {
+    await writeFile(mcpConfigPath, JSON.stringify({
+      mcpServers: {
+        mock: {
+          command: "node",
+          args: [join(process.cwd(), "fixtures/mock-mcp-server.mjs")],
+        },
+      },
+    }), "utf8");
+    const provider = createFakeProvider([
+      {
+        content: [{
+          type: "tool_use",
+          id: "mcp-list",
+          name: "mcp",
+          input: { action: "list" },
+        }],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "done" }] },
+    ]);
+    await runChat({
+      prompt: "use mcp",
+      configPath: mcpConfigPath,
+      dir,
+      skillsDir: join(dir, "skills"),
+      provider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 2,
+      idleTimeout: 0,
+      toolOutput: () => {},
+    });
+    assert.deepEqual(getMcpPoolStatus(), {});
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

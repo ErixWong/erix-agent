@@ -409,8 +409,13 @@ async function runMcp({ configPath }) {
 
   console.log("MCP server 配置：");
   const proxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd: process.cwd() });
+  if (proxy.error) {
+    console.error(`错误：MCP 配置损坏：${proxy.error?.message ?? String(proxy.error)}`);
+    process.exitCode = 1;
+    return;
+  }
   if (!proxy.enabled) {
-    console.log("  配置文件无效或没有可用的 server");
+    console.log("  MCP 配置中没有可用的 server");
     return;
   }
   const status = proxy.status();
@@ -648,6 +653,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     throw error;
   } finally {
     idle?.dispose();
+    await closeAllMcpServers();
   }
 }
 
