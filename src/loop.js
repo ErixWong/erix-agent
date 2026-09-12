@@ -604,6 +604,7 @@ function defaultSleep(ms, signal) {
  *   onJudge?:(info:JudgeEvent) => void,
  *   onToolResult?: Function,
  *   onPersistenceError?: (error:Error) => void,
+ *   onObserverError?: (error:Error) => void,
  *   signal?: AbortSignal,
  *   stream?: boolean,
  *   onDelta?: (chunk:string) => void,
@@ -659,6 +660,7 @@ export async function runToolLoop({
   onJudge,
   onToolResult,
   onPersistenceError,
+  onObserverError,
   signal,
   stream = false,
   onDelta,
@@ -681,6 +683,17 @@ export async function runToolLoop({
       }
     }
     console.error("Transcript persistence error:", error);
+  };
+  const reportObserverError = (error) => {
+    if (typeof onObserverError === "function") {
+      try {
+        onObserverError(error);
+        return;
+      } catch (reportError) {
+        console.error("Observer error reporter failed:", reportError);
+      }
+    }
+    console.error("Observer callback error:", error);
   };
   const persist = async (method, ...args) => {
     if (typeof store?.[method] !== "function") return false;
@@ -1347,7 +1360,7 @@ export async function runToolLoop({
         try {
           callback();
         } catch (error) {
-          reportPersistenceError(error);
+          reportObserverError(error);
         }
       };
       const queueEvent = (event, callback) => {

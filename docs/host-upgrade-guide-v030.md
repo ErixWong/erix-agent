@@ -14,13 +14,21 @@ v0.3.x 在 `runToolLoop` 层新增/改变的宿主可见行为：
 |---|---|---|
 | 1 | **reflection（judge 体系）默认开启**：`maxRounds ≥ 16` 且未显式传 `reflection` 时自动启用 | 长任务（≥16 轮）会多出 judge LLM 调用；短任务（<16 轮）不受影响 |
 | 2 | **透明劫持审计**：每 `judgeIntervalRound`(5) 次真实工具执行后，下一次工具调用先 judge 再执行；方向错则拦截（不执行） | 宿主注入的 executeTool 可能"被跳过"（收到审计消息而非执行）——副作用拦截语义 |
-| 3 | **round judge**：end_turn 时独立验证，`done && confidence≥0.7` 才放行 | 模型"想停"不再立即停——需 judge 确认；可提前 `judge_done` 终止 |
+| 3 | **round judge**：end_turn 时独立验证，只有正常返回的 `done && confidence≥0.7` 才产生 `judge_done` | 模型"想停"通常先经过 judge；judge 降级时回落既有收尾逻辑，不承诺阻止模型自报完成 |
 | 4 | **checkpoint fail-closed**（有 store 时）：工具执行前写失败 → 抛 `checkpoint_failed`、**不执行工具**；执行后写失败同样失败，并明确标记工具已执行但结果未持久化 | 宿主需识别 `checkpoint_failed`；执行后失败窗口无法由 loop 保证 exactly-once，`executeTool` 应按 tool id 幂等 |
 | 5 | **stall 软纠正**：重复调用不再硬杀任务——nudge 引导（≤2 次）+ 连续 3 次才 stop | 原 `llm_kit_stalled` 硬杀错误消失，变正常 stop |
 | 6 | **direction 软提示**：judge 判 off_track 时放行但附加提示 | 模型可能收到方向引导文本 |
 | 7 | **maxRounds 非法值校验**：NaN/0/负/Infinity 抛 TypeError | 宿主传参需合法 |
 | 8 | **store JSONL 崩溃恢复**：损坏尾部修复/隔离 | file store 宿主（如有）resume 更稳 |
 | 9 | **onJudge 事件 + judge 决策落盘**（新 API） | 宿主可消费 judge 决策（审计/复盘） |
+
+### round judge 降级矩阵
+
+| judge 结果 | loop 行为 | 宿主可见语义 |
+|---|---|---|
+| 正常返回 `done:true` 且 `confidence≥0.7` | 产生 `judge_done` 并收尾 | 高置信 judge 确认完成 |
+| 正常返回 `done:false` | 注入 nudge，继续工作 | judge 明确要求继续 |
+| 解析失败、调用异常，或 `done:true` 且 `confidence<0.7` | 不产生 `judge_done`，回落既有 `completion`/`no-tool`/`end_turn` 决策 | 模型自报完成信号仍可能结束任务；连续失败达到上限后自动关闭 round judge |
 
 ---
 
