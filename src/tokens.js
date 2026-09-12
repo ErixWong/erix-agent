@@ -43,13 +43,14 @@ function isCjkUnifiedIdeograph(character) {
  * @returns {number}
  */
 export function estimateTokens(text, opts = {}) {
+  validateEstimateOptions(opts);
   if (Array.isArray(text)) {
     return text.reduce((total, block) => total + estimateBlockTokens(block, opts), 0);
   }
   const value = typeof text === "string" ? text : String(text ?? "");
-  const cjkTokensPerChar = opts.cjkTokensPerChar ?? 1.5;
-  const charsPerToken = opts.charsPerToken ?? 3.5;
-  const margin = opts.margin ?? 1.15;
+  const cjkTokensPerChar = optionNumber(opts, ["cjkTokensPerChar"], 1.5);
+  const charsPerToken = optionNumber(opts, ["charsPerToken"], 3.5);
+  const margin = optionNumber(opts, ["margin"], 1.15);
 
   let cjkCharacters = 0;
   let otherCharacters = 0;
@@ -62,11 +63,34 @@ export function estimateTokens(text, opts = {}) {
   return Math.ceil(rawTokens * margin);
 }
 
-function optionNumber(opts, names, fallback) {
+function optionNumber(opts, names, fallback, { allowZero = false } = {}) {
   for (const name of names) {
-    if (opts[name] !== undefined) return opts[name];
+    const value = opts?.[name];
+    if (value === undefined) continue;
+    // Invalid coefficients silently poison budget decisions, so fail fast.
+    if (
+      typeof value !== "number"
+      || !Number.isFinite(value)
+      || (allowZero ? value < 0 : value <= 0)
+    ) {
+      throw new TypeError(
+        `Token estimate option "${name}" must be a finite ${
+          allowZero ? "non-negative" : "positive"
+        } number`,
+      );
+    }
+    return value;
   }
   return fallback;
+}
+
+function validateEstimateOptions(opts) {
+  optionNumber(opts, ["cjkTokensPerChar"], 1.5);
+  optionNumber(opts, ["charsPerToken"], 3.5);
+  optionNumber(opts, ["margin"], 1.15);
+  optionNumber(opts, ["imageTokenCost", "imageTokens"], IMAGE_TOKEN_COST, { allowZero: true });
+  optionNumber(opts, ["reasoningBlockCost", "reasoningTokenCost"], 0, { allowZero: true });
+  optionNumber(opts, ["rawBlockCost", "rawTokenCost"], 0, { allowZero: true });
 }
 
 function serializedValue(value) {
@@ -76,7 +100,12 @@ function serializedValue(value) {
 
 function estimateBlockTokens(block, opts) {
   if (block?.type === "image" || block?.type === "image_url") {
-    return optionNumber(opts, ["imageTokenCost", "imageTokens"], IMAGE_TOKEN_COST);
+    return optionNumber(
+      opts,
+      ["imageTokenCost", "imageTokens"],
+      IMAGE_TOKEN_COST,
+      { allowZero: true },
+    );
   }
   if (block?.type === "text") return estimateTokens(block.text, opts);
   if (block?.type === "reasoning" || (
@@ -86,15 +115,25 @@ function estimateBlockTokens(block, opts) {
   )) {
     const text = block?.type === "reasoning" ? block.text : block.payload.text;
     return estimateTokens(text, opts)
-      + optionNumber(opts, ["reasoningBlockCost", "reasoningTokenCost"], 0);
+      + optionNumber(
+        opts,
+        ["reasoningBlockCost", "reasoningTokenCost"],
+        0,
+        { allowZero: true },
+      );
   }
   if (block?.type === "tool_use") {
-    return estimateTokens(serializedValue(block.input ?? {}), opts);
+    return estimateTokens(serializedValue(block.input ?? {}), opts)
+      + estimateTokens(block.id ?? "", opts)
+      + estimateTokens(block.name ?? "", opts);
   }
-  if (block?.type === "tool_result") return estimateTokens(block.content, opts);
+  if (block?.type === "tool_result") {
+    return estimateTokens(block.content, opts)
+      + estimateTokens(block.tool_use_id ?? "", opts);
+  }
   if (block?.type === "raw") {
     return estimateTokens(serializedValue(block.payload), opts)
-      + optionNumber(opts, ["rawBlockCost", "rawTokenCost"], 0);
+      + optionNumber(opts, ["rawBlockCost", "rawTokenCost"], 0, { allowZero: true });
   }
   return estimateTokens(serializedValue(block), opts);
 }
@@ -107,10 +146,12 @@ function estimateBlockTokens(block, opts) {
  * @returns {number}
  */
 export function estimateMessageTokens(messages, opts = {}) {
+  validateEstimateOptions(opts);
   const messageOverhead = optionNumber(
     opts,
     ["messageOverhead", "messageOverheadTokens", "overhead"],
     MESSAGE_OVERHEAD,
+    { allowZero: true },
   );
   let total = 0;
   for (const message of messages ?? []) {

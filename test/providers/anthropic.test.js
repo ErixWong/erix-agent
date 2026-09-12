@@ -168,6 +168,64 @@ test("assembles streaming text, tool JSON, and merged usage", async () => {
   assert.equal(fetchImpl.calls[0].body.stream, true);
 });
 
+test("accepts SSE data lines without a space after the colon", async () => {
+  const { provider } = makeProvider([{
+    body: [
+      'event:content_block_start\n',
+      'data:{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'event:content_block_delta\n',
+      'data:{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"compact"}}\n\n',
+      'event:message_delta\n',
+      'data:{"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+      'event:message_stop\n',
+      'data:{"type":"message_stop"}\n\n',
+    ].join(""),
+  }]);
+
+  assert.deepEqual((await provider.chatStream({
+    system: "",
+    messages: [{ role: "user", content: "hello" }],
+    maxTokens: 32,
+  })).content, [{ type: "text", text: "compact" }]);
+});
+
+test("cancels and releases an Anthropic reader after a stream failure", async () => {
+  let cancelled = false;
+  let released = false;
+  const streamError = new Error("stream disconnected");
+  const reader = {
+    async read() {
+      throw streamError;
+    },
+    async cancel() {
+      cancelled = true;
+    },
+    releaseLock() {
+      released = true;
+    },
+  };
+  const provider = createAnthropicProvider({
+    endpoint: "https://api.example.test",
+    apiKey: "test-key",
+    model: "claude-test",
+    fetchImpl: async () => ({
+      status: 200,
+      body: { getReader: () => reader },
+    }),
+  });
+
+  await assert.rejects(
+    provider.chatStream({
+      system: "",
+      messages: [{ role: "user", content: "hello" }],
+      maxTokens: 32,
+    }),
+    (err) => err instanceof KitError && err.code === "network",
+  );
+  assert.equal(cancelled, true);
+  assert.equal(released, true);
+});
+
 test("classifies timeout, rate limit, auth, server, and network errors", async (t) => {
   const abortError = new Error("aborted");
   abortError.name = "AbortError";

@@ -287,7 +287,10 @@ function parsedInput(partialJson) {
   try {
     return JSON.parse(partialJson);
   } catch {
-    return { _raw: partialJson };
+    return {
+      _truncatedArguments: partialJson,
+      _raw: partialJson,
+    };
   }
 }
 
@@ -415,7 +418,7 @@ export function createAnthropicStreamAssembler(callbacks) {
           ...(source.signature === undefined ? {} : { signature: source.signature }),
         };
       } else {
-        state.block = { ...source };
+        state.block = { type: "raw", protocol: "anthropic", payload: source };
       }
       state.type = type;
       return;

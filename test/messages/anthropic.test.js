@@ -174,6 +174,24 @@ test("keeps invalid streamed tool JSON as raw input", () => {
     type: "tool_use",
     id: "toolu_bad",
     name: "bad",
-    input: { _raw: '{"broken":' },
+    input: { _truncatedArguments: '{"broken":', _raw: '{"broken":' },
+  }]);
+});
+
+test("wraps unknown streamed blocks as Anthropic raw blocks", () => {
+  const assembler = createAnthropicStreamAssembler();
+  const payload = {
+    type: "server_tool_use",
+    id: "server_1",
+    name: "web_search",
+    input: { query: "weather" },
+  };
+
+  assembler.push("content_block_start", { index: 0, content_block: payload });
+
+  assert.deepEqual(assembler.finish().content, [{
+    type: "raw",
+    protocol: "anthropic",
+    payload,
   }]);
 });

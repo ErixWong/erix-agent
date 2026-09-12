@@ -71,3 +71,13 @@ test("json-file: 请求的槽位与 default 都不存在时抛 KitError", async 
     );
   });
 });
+
+test("json-file: prototype properties fall back to default", async () => {
+  await withConfig({
+    slots: { default: { model: "default-model" } },
+  }, async (path) => {
+    const provider = createJsonFileModelConfigProvider({ path });
+    assert.equal((await provider.resolve("__proto__")).model, "default-model");
+    assert.equal((await provider.resolve("constructor")).model, "default-model");
+  });
+});

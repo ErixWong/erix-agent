@@ -110,6 +110,7 @@ function normalizeFinishReason(finishReason) {
   const stopMap = {
     stop: "end_turn",
     tool_calls: "tool_use",
+    function_call: "tool_use",
     length: "max_tokens",
   };
   return finishReason == null ? "unknown" : stopMap[finishReason] ?? finishReason;
@@ -441,8 +442,8 @@ export function createOpenAIProvider({
         const dataLines = eventText
           .split("\n")
           .map((line) => line.endsWith("\r") ? line.slice(0, -1) : line)
-          .filter((line) => line.startsWith("data: "))
-          .map((line) => line.slice(6));
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).replace(/^ +/, ""));
         if (dataLines.length === 0) return;
 
         sawData = true;
@@ -483,6 +484,30 @@ export function createOpenAIProvider({
           reasoning += delta.reasoning_content;
           req.onReasoningDelta?.(delta.reasoning_content);
           emitEvent({ type: "reasoning_delta", delta: delta.reasoning_content });
+        }
+
+        if (delta.function_call && typeof delta.function_call === "object") {
+          const functionDelta = delta.function_call;
+          const slot = toolSlots[0] ?? {
+            id: "call_legacy",
+            name: undefined,
+            arguments: undefined,
+          };
+          toolSlots[0] = slot;
+          if (functionDelta.name !== undefined) slot.name = functionDelta.name;
+          if (functionDelta.arguments !== undefined) {
+            slot.arguments = `${slot.arguments ?? ""}${String(functionDelta.arguments)}`;
+          }
+          const fragment = {
+            index: 0,
+            id: slot.id,
+            ...(functionDelta.name === undefined ? {} : { name: String(functionDelta.name) }),
+            ...(functionDelta.arguments === undefined
+              ? {}
+              : { argumentsDelta: String(functionDelta.arguments) }),
+          };
+          req.onToolCall?.(fragment);
+          emitEvent({ type: "tool_call", ...fragment });
         }
 
         if (!Array.isArray(delta.tool_calls)) return;

@@ -103,6 +103,23 @@ test("discoverSkills gives the project directory priority for duplicate ids", as
   });
 });
 
+test("discoverSkills isolates a skill root scan error", async () => {
+  await withDirectory(async (cwd) => {
+    const unreadable = join(cwd, "unreadable-skills");
+    await mkdir(unreadable);
+    const { chmod } = await import("node:fs/promises");
+    await chmod(unreadable, 0o000);
+    try {
+      const discovered = discoverSkills({ cwd, skillsDir: unreadable });
+      assert.deepEqual([...discovered], []);
+      assert.equal(discovered.errors.length, 1);
+      assert.equal(discovered.errors[0].dir, unreadable);
+    } finally {
+      await chmod(unreadable, 0o700);
+    }
+  });
+});
+
 test("loadSkill loads a valid SkillDefinition v1", async () => {
   await withDirectory(async (skillsDirectory) => {
     const directory = await writeSkill(skillsDirectory, "clock", v1Definition("clock"));
@@ -115,6 +132,27 @@ test("loadSkill loads a valid SkillDefinition v1", async () => {
         inputSchema: { type: "object" },
       }],
     });
+  });
+});
+
+test("loadSkill and buildSkillTools use the declared custom entrypoint", async () => {
+  await withDirectory(async (skillsDirectory) => {
+    const directory = await writeSkill(skillsDirectory, "custom-entry", `
+      export function getSkillDefinition() {
+        return {
+          schema_version: 1,
+          skill: { id: "custom-entry", entrypoint: "custom.mjs" },
+          tools: [{ name: "echo", inputSchema: { type: "object" } }]
+        };
+      }
+    `);
+    await writeFile(join(directory, "custom.mjs"), `
+      export async function echo() { return "custom-entrypoint"; }
+    `, "utf8");
+
+    assert.equal((await loadSkill(directory)).entrypoint, "custom.mjs");
+    const result = await buildSkillTools({ cwd: skillsDirectory, skillsDir: "." });
+    assert.equal(await result.executeTool("echo", {}), "custom-entrypoint");
   });
 });
 

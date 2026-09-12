@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -15,7 +15,7 @@ import {
   sessionPath,
 } from "../bin/repl.js";
 import { runToolLoop } from "../src/loop.js";
-import { createFileTranscriptStore } from "../src/store/file.js";
+import { createFileTranscriptStore, safeRunId } from "../src/store/file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 test("parseReplArgs uses the default session and directory", () => {
@@ -102,7 +102,8 @@ test("parseCommand marks unknown commands", () => {
 });
 
 test("saveSession and loadSession round-trip messages", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-repl-test-"));
+  const parent = await mkdtemp(join(tmpdir(), "erix-repl-test-"));
+  const dir = join(parent, "sessions");
   try {
     const messages = [
       { role: "user", content: [{ type: "text", text: "你好" }] },
@@ -111,6 +112,44 @@ test("saveSession and loadSession round-trip messages", async () => {
     await saveSession(dir, "round-trip", messages);
     assert.equal(sessionPath(dir, "round-trip"), join(dir, "round-trip.json"));
     assert.deepEqual(await loadSession(dir, "round-trip"), messages);
+    assert.equal((await stat(dir)).mode & 0o777, 0o700);
+    assert.equal((await stat(sessionPath(dir, "round-trip"))).mode & 0o777, 0o600);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("session paths map traversal IDs inside the session directory", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "erix-repl-path-test-"));
+  const session = "../../erix-repl-path-target";
+  try {
+    assert.equal(sessionPath(dir, session), join(
+      dir,
+      `${safeRunId(session)}.json`,
+    ));
+    await saveSession(dir, session, [{ role: "user" }]);
+    assert.deepEqual(await loadSession(dir, session), [{ role: "user" }]);
+    assert.equal(sessionPath(dir, session).startsWith(`${dir}/`), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("saveSession replaces the archive atomically without leaving temporary files", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "erix-repl-atomic-test-"));
+  try {
+    await saveSession(dir, "atomic", [{ version: 1 }]);
+    const path = sessionPath(dir, "atomic");
+    const first = await stat(path);
+    await saveSession(dir, "atomic", [{ version: 2 }]);
+    const second = await stat(path);
+
+    assert.notEqual(first.ino, second.ino);
+    assert.deepEqual(await loadSession(dir, "atomic"), [{ version: 2 }]);
+    assert.deepEqual(
+      (await readdir(dir)).filter((name) => name.endsWith(".tmp")),
+      [],
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -121,6 +160,59 @@ test("loadSession returns an empty array for a missing file", async () => {
   try {
     assert.deepEqual(await loadSession(dir, "missing"), []);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runRepl aborts the active loop on SIGINT and keeps readline open", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "erix-repl-sigint-test-"));
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  let startedResolve;
+  const started = new Promise((resolve) => {
+    startedResolve = resolve;
+  });
+  let abortedResolve;
+  const aborted = new Promise((resolve) => {
+    abortedResolve = resolve;
+  });
+  const provider = {
+    protocol: "fake",
+    model: "fake-model",
+    async chatStream(request) {
+      startedResolve(request.signal);
+      return new Promise((_resolve, reject) => {
+        request.signal.addEventListener("abort", () => {
+          abortedResolve();
+          reject(new Error("provider aborted"));
+        }, { once: true });
+      });
+    },
+  };
+
+  try {
+    const run = runRepl(
+      ["--session", "repl-sigint", "--dir", dir],
+      {
+        input,
+        output,
+        sessionDir: dir,
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        providerFactory: () => provider,
+      },
+    );
+    input.write("long task\n");
+    const signal = await started;
+    assert.equal(signal.aborted, false);
+    process.emit("SIGINT");
+    await aborted;
+    assert.equal(signal.aborted, true);
+    input.end("/exit\n");
+    await run;
+  } finally {
+    input.destroy();
+    output.destroy();
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -297,7 +297,7 @@ test("compacts context before the second round and records its payload and stats
   assert.deepEqual(result.compactionStats, [{
     compacted: true,
     foldedRounds: 1,
-    tokensBefore: 17,
+    tokensBefore: 23,
     tokensAfter: 10,
   }]);
 });

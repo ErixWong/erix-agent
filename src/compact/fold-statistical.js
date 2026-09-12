@@ -10,6 +10,8 @@ import {
   isRealUser,
 } from "./helpers.js";
 
+const FOLD_SUMMARY_MARKER = "【上下文折叠·v1·erix-9f6e2c】";
+
 function normalizedKeepRounds(value) {
   if (value === undefined) return 6;
   if (!Number.isFinite(value)) return 6;
@@ -56,15 +58,24 @@ function parseToolFootprint(value) {
 }
 
 function parseFoldSummary(text) {
-  const match = String(text).match(
+  const value = String(text);
+  const markedMatch = value.match(
+    new RegExp(
+      `^${FOLD_SUMMARY_MARKER}早期第 (\\d+)–(\\d+) 轮（共 (\\d+) 轮）已折叠。工具足迹：(.*?)。可用 recall\\(`,
+      "u",
+    ),
+  );
+  const legacyMatch = value.match(
     /^【上下文折叠】早期第 (\d+)–(\d+) 轮（共 (\d+) 轮）已折叠。工具足迹：(.*?)。可用 recall\(/u,
   );
+  const match = markedMatch ?? legacyMatch;
   if (!match) return undefined;
   return {
     from: Number.parseInt(match[1], 10),
     to: Number.parseInt(match[2], 10),
     count: Number.parseInt(match[3], 10),
     tools: parseToolFootprint(match[4]),
+    legacy: markedMatch === null,
   };
 }
 
@@ -76,7 +87,7 @@ function formatFoldSummary({ from, to, count, tools }) {
       .map(([name, count]) => `${name}×${count}`)
       .join(", ");
   return [
-    `【上下文折叠】早期第 ${from}–${to} 轮（共 ${count} 轮）已折叠。`,
+    `${FOLD_SUMMARY_MARKER}早期第 ${from}–${to} 轮（共 ${count} 轮）已折叠。`,
     `工具足迹：${footprint}。`,
     `可用 recall(pattern: "关键词") 搜回细节，或 recall(fromRound: ${from}, toRound: ${to}) 取原文（大段可能截断，优先关键词）。`,
   ].join("");
@@ -128,7 +139,10 @@ function prependSummary(head, summary, summaryRole = "user") {
       }, new Map()),
     });
   const contentWithoutSummaries = originalContent.filter((block) => (
-    block?.type !== "text" || parseFoldSummary(block.text) === undefined
+    // 旧格式仅兼容读取，保留原块，避免把用户恰好写出的摘要文本删掉。
+    block?.type !== "text"
+      || parseFoldSummary(block.text)?.legacy === true
+      || parseFoldSummary(block.text) === undefined
   ));
   const updatedHead = head.slice();
   updatedHead[userIndex] = {
@@ -190,7 +204,7 @@ export function createFoldStatisticalStrategy(options = {}) {
       if (folded.length > 0) {
         const range = roundRange ?? { from: 1, to: folded.length };
         const summary = [
-          `【上下文折叠】早期第 ${range.from}–${range.to} 轮（共 ${folded.length} 轮）已折叠。`,
+          `${FOLD_SUMMARY_MARKER}早期第 ${range.from}–${range.to} 轮（共 ${folded.length} 轮）已折叠。`,
           `工具足迹：${toolFootprint(folded)}。`,
           `可用 recall(pattern: "关键词") 搜回细节，或 recall(fromRound: ${range.from}, toRound: ${range.to}) 取原文（大段可能截断，优先关键词）。`,
         ].join("");

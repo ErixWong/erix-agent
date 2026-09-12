@@ -305,7 +305,7 @@ test("does not compact when per-request input fits budget and local context fits
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    context: { strategy, budgetTokens: 20 },
+    context: { strategy, budgetTokens: 30 },
   });
 
   assert.equal(provider.requests.length, 2);

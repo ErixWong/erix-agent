@@ -3,10 +3,18 @@ function isRecord(value) {
 }
 
 export function optionValue(callOptions, factoryOptions, key, fallback) {
-  if (callOptions && Object.prototype.hasOwnProperty.call(callOptions, key)) {
+  if (
+    callOptions
+    && Object.prototype.hasOwnProperty.call(callOptions, key)
+    && callOptions[key] !== undefined
+  ) {
     return callOptions[key];
   }
-  if (factoryOptions && Object.prototype.hasOwnProperty.call(factoryOptions, key)) {
+  if (
+    factoryOptions
+    && Object.prototype.hasOwnProperty.call(factoryOptions, key)
+    && factoryOptions[key] !== undefined
+  ) {
     return factoryOptions[key];
   }
   return fallback;

@@ -83,3 +83,25 @@ test("env: boolean fields accept only true/false/1/0", async () => {
     delete process.env[enableThinking];
   }
 });
+
+test("env: invalid numeric values throw field-specific configuration errors", async () => {
+  const prefix = `ERIX_ENV_NUMERIC_${process.pid}_`;
+  for (const [suffix, value, field] of [
+    ["CONTEXT_WINDOW_TOKENS", "0", "contextWindowTokens"],
+    ["MAX_OUTPUT_TOKENS", "-1", "maxOutputTokens"],
+    ["TEMPERATURE", "NaN", "temperature"],
+    ["TOP_P", "Infinity", "topP"],
+    ["TIMEOUT", "-10", "timeout"],
+  ]) {
+    const name = `${prefix}${suffix}`;
+    process.env[name] = value;
+    try {
+      await assert.rejects(
+        createEnvModelConfigProvider(prefix).resolve(),
+        (error) => error instanceof Error && error.message.includes(field),
+      );
+    } finally {
+      delete process.env[name];
+    }
+  }
+});
