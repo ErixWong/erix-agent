@@ -130,7 +130,7 @@ test("isolates streaming observer failures from a successful provider call", asy
       throw new Error("usage observer failed");
     },
     onEvent: (event) => events.push(event),
-    onPersistenceError: (error) => reported.push(error.message),
+    onObserverError: (error) => reported.push(error.message),
     retry: {
       attempts: 1,
       backoffBaseMs: 0,
@@ -176,7 +176,7 @@ test("isolates streaming observer failures while flushing a retried attempt", as
     onDelta: () => {
       throw new Error("queued observer failed");
     },
-    onPersistenceError: (error) => reported.push(error.message),
+    onObserverError: (error) => reported.push(error.message),
     retry: {
       attempts: 1,
       backoffBaseMs: 0,
@@ -187,6 +187,38 @@ test("isolates streaming observer failures while flushing a retried attempt", as
   assert.equal(result.finalText, "done");
   assert.equal(calls, 2);
   assert.deepEqual(reported, ["queued observer failed"]);
+});
+
+test("keeps streaming functional when observer error reporting is not configured", async () => {
+  const originalError = console.error;
+  const logged = [];
+  console.error = (...args) => logged.push(args);
+  try {
+    const result = await runToolLoop({
+      provider: {
+        async chatStream(request) {
+          request.onDelta?.("done");
+          return {
+            content: [{ type: "text", text: "done" }],
+            stopReason: "end_turn",
+          };
+        },
+      },
+      initialUserMessage: "task",
+      executeTool: async () => "unused",
+      stream: true,
+      onDelta: () => {
+        throw new Error("unhandled observer failed");
+      },
+    });
+
+    assert.equal(result.finalText, "done");
+    assert.equal(logged.length, 1);
+    assert.equal(logged[0][0], "Observer callback error:");
+    assert.equal(logged[0][1].message, "unhandled observer failed");
+  } finally {
+    console.error = originalError;
+  }
 });
 
 test("holds deltas until the successful attempt when retry is enabled", async () => {

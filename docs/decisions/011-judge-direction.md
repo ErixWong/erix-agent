@@ -50,6 +50,13 @@
 - stallStreak 只在 stalled 累积、不同签名出现才清零（窗口清空不误清零）
 - stallDetection:false 优先于 ERIX_STALL_MODE（显式关闭不被 env 重开）
 
+## 决策 5：round judge degraded 后 fail-open 终止
+
+round judge 解析失败、调用异常或低置信完成时，不产生 `judge_done`，而是回落既有
+`completion`/`no-tool`/`end_turn` 决策；模型自报完成信号仍可能终止任务。连续失败达到上限后
+自动关闭 round judge。该 fail-open 是 availability-first 的有意选择，避免 judge provider
+故障把任务锁死；fail-closed 配置项留作后续评估（#45）。
+
 ## 实证（db-wal-recovery，direction 首验）
 
 **reward=1（88s, 11轮）** vs 历史 run1 reward=0（721s 卡 apt/网络空转）。

@@ -71,10 +71,11 @@ src/
 - **自主质量内建（judge 体系，v0.3.0）**：
   - **默认开启**：`runToolLoop` 在 `maxRounds ≥ 16` 且未显式传 `reflection` 时自动启用基础 judge（无头宿主零配置获得保护）；传 `reflection: false` 或设 `ERIX_NO_REFLECTION=1` 关闭。
   - 显式配置：`reflection: { enabled, roundJudge, judgeIntervalRound, judgeInterceptTimeoutMs, triggerRound, extensionStep, maxExtensions, maxRoundsCap, judge: { provider } }`。
-  - **round judge**（end_turn 验证）：启用时每轮模型想停时独立评估，`done:true && confidence≥0.7` 才放行；`roundJudge: false` 或 `ERIX_NO_ROUND_JUDGE=1` 关闭。审计任务基准优先级为 `runToolLoop` 的 `task` > `context.task` > 入口消息最后一条 user 文本；多轮会话宿主应传当前指令（#34）。
+  - **round judge**（end_turn 验证）：启用时每轮模型想停时独立评估，只有 judge 正常返回高置信完成（`done:true && confidence≥0.7`）才放行并产生 `judge_done`。解析失败、调用异常，或返回 `done:true` 但 `confidence<0.7` 时不产生 `judge_done`，回落既有 `completion`/`no-tool`/`end_turn` 决策，模型自报完成信号仍可能结束任务；连续失败达到上限会自动关闭 round judge。`roundJudge: false` 或 `ERIX_NO_ROUND_JUDGE=1` 关闭。审计任务基准优先级为 `runToolLoop` 的 `task` > `context.task` > 入口消息最后一条 user 文本；多轮会话宿主应传当前指令（#34）。
   - **透明劫持审计**：每 `judgeIntervalRound`（默认 5）次真实工具执行后，下一次工具调用先审计再执行——方向错（`done:false`）则不执行原工具（副作用拦截）并返回审计意见；通过则无感放行。`judgeIntercept: false` 单独关闭审计（保留 round judge）。审计失败/超时（`judgeInterceptTimeoutMs` 默认 30s）降级为直接执行原工具。
   - **direction 软提示**：judge 输出 `direction: off_track` 时不拦截（执行原工具），但附加方向提示让模型考虑换路线。
   - **观测**：每次决策 emit `onJudge`；CLI 可用 `--judge-log <path>` / `ERIX_JUDGE_LOG` 落盘 JSONL（已脱敏）。
+  - **回调错误**：流式 `onDelta`/`onReasoningDelta`/`onToolCall`/`onUsage` 回调异常通过可选的 `onObserverError` 上报；未提供时记录 `console.error("Observer callback error:", error)`，不会走仅用于存储失败的 `onPersistenceError`。
 - **executeTool 协议**：两种形式——位置参数 `(name, input)` 或结构化 `({ id, name, input, context, signal })`。结构化可返回 `{ success, data, duration, toolMessageId }`（loop 保留字符串结果并附加元数据）。
 - **压缩预算**：从模型 `contextWindowTokens`/`maxOutputTokens` 推导；策略支持 `summaryRole`/`protectedMessage`/`stripHistoricalImages`/`onBeforeFold`/`onAfterFold`。
 - **TranscriptStore**：`appendRound` 按 run/round key 幂等；store 可实现 `markRunState`、`saveCheckpoint`/`appendCheckpoint`、`loadLatestCheckpoint`。loop 在工具执行前后 checkpoint；成对提供读写的 store 在任一 checkpoint 写失败时 fail-closed（执行后失败会明确报告“工具已执行但结果未持久化”），resume 按原顺序补齐全部未完成的多工具调用。宿主的 `executeTool` 仍需按 tool id 做幂等保护，无法由 loop 保证 exactly-once。
