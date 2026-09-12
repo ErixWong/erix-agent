@@ -351,10 +351,23 @@ function archiveResult(archiveDir, name, result, sequence) {
       mode: 0o600,
       flag: "wx",
     });
-    return `${truncateResult(text)}\n${archiveGuidance(archivePath)}`;
+    return {
+      text: `${truncateResult(text)}\n${archiveGuidance(archivePath)}`,
+      archivePath,
+    };
   } catch (error) {
-    return `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error)}`;
+    return {
+      text: `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error)}`,
+      archivePath: undefined,
+    };
   }
+}
+
+function duplicateCommandGuidance({ count, archivePath }) {
+  const recovery = archivePath
+    ? `原始输出在 ${archivePath}，请读取该文件取回原值，不要把本次输出当作原值。`
+    : "原始输出未归档，无法取回；请明确说明不可恢复，不要把本次输出当作原值。";
+  return `[注意：该命令本次运行已执行过第 ${count} 次；若其输出是随机值/时间戳/一次性内容，本次结果不是原始值。${recovery}]`;
 }
 
 export function createCliTools({
@@ -367,6 +380,7 @@ export function createCliTools({
   }
   const archiveRoot = archiveDir === undefined ? undefined : path.resolve(archiveDir);
   let archiveSequence = 0;
+  const duplicateCommands = archiveRoot ? new Map() : undefined;
 
   async function readFile({ path: filePath, offset = 0, limit = 200 }) {
     const text = readFileSync(resolveToolPath(root, filePath), "utf8");
@@ -514,13 +528,42 @@ export function createCliTools({
     if (typeof executor !== "function") {
       throw new Error(`未知工具：${name}`);
     }
-    const result = await executor(normalizeToolInput(input));
+    const normalizedInput = normalizeToolInput(input);
+    const command = normalizedInput?.command;
+    let commandState;
+    let isFirstCommandExecution = false;
+    if (
+      duplicateCommands
+      && name === "exec"
+      && typeof command === "string"
+    ) {
+      commandState = duplicateCommands.get(command);
+      if (commandState) {
+        commandState.count += 1;
+      } else {
+        commandState = { count: 1, archivePath: undefined };
+        duplicateCommands.set(command, commandState);
+        isFirstCommandExecution = true;
+      }
+    }
+
+    const result = await executor(normalizedInput);
+    let returnedResult = result;
     if (archiveRoot && String(result ?? "").length > ARCHIVE_THRESHOLD) {
       archiveSequence += 1;
       const archived = archiveResult(archiveRoot, name, result, archiveSequence);
-      if (archived !== null) return archived;
+      if (archived !== null) {
+        returnedResult = archived.text;
+        if (isFirstCommandExecution) {
+          commandState.archivePath = archived.archivePath;
+        }
+      }
     }
-    return name === "exec" ? truncateResult(result) : result;
+    const finalResult = name === "exec" ? truncateResult(returnedResult) : returnedResult;
+    if (commandState?.count > 1) {
+      return `${String(finalResult ?? "")}\n${duplicateCommandGuidance(commandState)}`;
+    }
+    return finalResult;
   }
 
   return {
