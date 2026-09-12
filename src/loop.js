@@ -231,6 +231,17 @@ const FINAL_GUARD_TERMINATION_REASONS = new Set([
   "end_turn",
   "no_tool",
   "judge_done",
+  "max_rounds_cap",
+  "stall",
+  "continuation_exhausted",
+  "reflection_stop",
+]);
+
+const FINAL_GUARD_NON_CONTINUABLE_REASONS = new Set([
+  "max_rounds_cap",
+  "stall",
+  "continuation_exhausted",
+  "reflection_stop",
 ]);
 
 function makeTermination(reason, detail) {
@@ -599,6 +610,7 @@ function defaultSleep(ms, signal) {
  *   completion?: {signals?:string[], maxNoToolRounds?:number}|false,
  *   finalGuard?:(payload:{finalText:string,messages:object[],round:number,rounds:number,signal:AbortSignal,termination:object}) => Promise<{action:"accept"}|{action:"revise",message:string}>,
  *   finalGuardMaxRetries?: number,
+ *   finalGuardTimeoutMs?: number, // Defaults to 30000; non-positive values use the default.
  *   maxTokenContinuations?: number,
  *   context?: {strategy?: object, budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
  *   modelConfig?: {contextWindowTokens?:number, maxOutputTokens?:number},
@@ -631,6 +643,7 @@ function defaultSleep(ms, signal) {
  *   rounds:number,
  *   truncated:boolean,
  *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"judge_done"|"continuation_exhausted"|"final_guard_unverified"|"aborted"|"failed", detail?:string},
+ *   verification:{status:"verified"|"unverified"|"skipped"|"error", reason?:string, detail?:string},
  *   usage:{input_tokens:number, output_tokens:number},
  *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number}[]
  * }>}
@@ -655,6 +668,7 @@ export async function runToolLoop({
   completion = { signals: [], maxNoToolRounds: 3 },
   finalGuard,
   finalGuardMaxRetries = 2,
+  finalGuardTimeoutMs = 30_000,
   maxTokenContinuations = 3,
   context,
   modelConfig,
@@ -1134,7 +1148,13 @@ export async function runToolLoop({
     && finalGuardMaxRetries >= 0
     ? finalGuardMaxRetries
     : 2;
+  const finalGuardTimeout = Number.isFinite(finalGuardTimeoutMs) && finalGuardTimeoutMs > 0
+    ? finalGuardTimeoutMs
+    : 30_000;
   let finalGuardRetries = 0;
+  let verification = typeof finalGuard !== "function"
+    ? { status: "skipped", reason: "no_final_guard" }
+    : { status: "unverified", reason: "pending" };
   let hadToolUse = hasToolUseInMessages(messages);
   let roundStopReason;
   let roundEventDeltas = [];
@@ -1197,11 +1217,22 @@ export async function runToolLoop({
       signal: toolSignal,
       termination: makeTermination(reason, detail),
     };
+    let timeoutId;
     try {
-      const decision = await awaitWithAbort(
-        Promise.resolve().then(() => finalGuard(payload)),
-      );
+      const guardPromise = Promise.resolve().then(() => finalGuard(payload));
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          const error = new Error("Final guard timed out");
+          error.code = "timeout";
+          reject(error);
+        }, finalGuardTimeout);
+      });
+      const decision = await Promise.race([
+        awaitWithAbort(guardPromise),
+        timeoutPromise,
+      ]);
       if (decision?.action === "accept") {
+        verification = { status: "verified" };
         emitEvent({ type: "final_guard", round: rounds, action: "accept" });
         return { action: "accept" };
       }
@@ -1225,13 +1256,20 @@ export async function runToolLoop({
         || error?.name === "TimeoutError"
         ? "timeout"
         : "error";
+      verification = {
+        status: "error",
+        reason: errorReason,
+        detail: terminationDetailForError(error),
+      };
       emitEvent({
         type: "final_guard",
         round: rounds,
         action: "error",
         reason: errorReason,
       });
-      return { action: "accept" };
+      return { action: "error", reason: errorReason };
+    } finally {
+      clearTimeout(timeoutId);
     }
   };
 
@@ -1904,13 +1942,14 @@ export async function runToolLoop({
       rounds,
       truncated: TRUNCATED_TERMINATION_REASONS.has(termination.reason),
       termination,
+      verification: { ...verification },
       usage,
       compactionStats,
     };
   };
 
   const finish = async (reason, detail) => {
-    await markRunState("succeeded");
+    await markRunState(verification.status === "unverified" ? "unverified" : "succeeded");
     return makeResult(reason, detail);
   };
 
@@ -2436,8 +2475,29 @@ export async function runToolLoop({
         && FINAL_GUARD_TERMINATION_REASONS.has(reason)
       ) {
         const guardDecision = await callFinalGuard(reason, detail);
+        if (guardDecision.action === "error") {
+          return finish(reason, detail);
+        }
+        if (FINAL_GUARD_NON_CONTINUABLE_REASONS.has(reason)) {
+          verification = {
+            status: "unverified",
+            reason: "non_continuable",
+            detail: reason,
+          };
+          emitEvent({
+            type: "final_guard",
+            round: rounds,
+            action: "degraded",
+            reason: "non_continuable",
+          });
+          return finish("final_guard_unverified");
+        }
         if (guardDecision.action === "revise") {
           if (finalGuardRetries >= finalGuardRetryLimit) {
+            verification = {
+              status: "unverified",
+              reason: "max_retries",
+            };
             emitEvent({
               type: "final_guard",
               round: rounds,
@@ -2464,5 +2524,19 @@ export async function runToolLoop({
     await fail(error);
   }
 
-  return finish("max_rounds_cap");
+  if (typeof finalGuard !== "function") return finish("max_rounds_cap");
+  const guardDecision = await callFinalGuard("max_rounds_cap");
+  if (guardDecision.action === "error") return finish("max_rounds_cap");
+  verification = {
+    status: "unverified",
+    reason: "non_continuable",
+    detail: "max_rounds_cap",
+  };
+  emitEvent({
+    type: "final_guard",
+    round: rounds,
+    action: "degraded",
+    reason: "non_continuable",
+  });
+  return finish("final_guard_unverified");
 }

@@ -380,7 +380,7 @@ function archiveFailureGuidance(archivePath, error) {
   return `[完整输出归档失败：${archivePath}（${reason}）；请勿重跑命令。]`;
 }
 
-function archiveResult(
+export function archiveResult(
   archiveDir,
   name,
   result,
@@ -395,40 +395,62 @@ function archiveResult(
     `${String(sequence).padStart(3, "0")}-${name}.txt`,
   );
   const metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
-  const digest = createHash("sha256").update(text, "utf8").digest("hex");
-  const lineParts = text.split(/\r\n|\r|\n/u);
-  const lines = Math.max(1, lineParts.length - (text.endsWith("\n") || text.endsWith("\r") ? 1 : 0));
-  const artifact = {
-    artifactId: path.basename(archivePath),
-    archivePath,
-    digest,
-    locator: { lineStart: 1, lineEnd: lines },
-    replayable,
-  };
-  const metadata = {
-    toolUseId: context?.toolUseId ?? null,
-    round: context?.round ?? null,
-    command: command ?? null,
-    replayable,
-    digest,
-    archivePath,
-    locator: artifact.locator,
-  };
   try {
     mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
     const bytes = Buffer.from(text, "utf8");
-    let archived = text;
+    let archived = bytes;
+    let truncated = false;
     if (bytes.byteLength > MAX_ARCHIVE_BYTES) {
       const marker = Buffer.from(
         `\n[归档仅保留前 ${MAX_ARCHIVE_BYTES} 字节，原始输出共 ${bytes.byteLength} 字节]`,
         "utf8",
       );
+      const prefixBudget = Math.max(0, MAX_ARCHIVE_BYTES - marker.byteLength);
+      const characters = Array.from(text);
+      let low = 0;
+      let high = characters.length;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (Buffer.byteLength(characters.slice(0, middle).join(""), "utf8") <= prefixBudget) {
+          low = middle;
+        } else {
+          high = middle - 1;
+        }
+      }
       archived = Buffer.concat([
-        bytes.subarray(0, MAX_ARCHIVE_BYTES - marker.byteLength),
+        Buffer.from(characters.slice(0, low).join(""), "utf8"),
         marker,
       ]);
+      truncated = true;
     }
-    writeFileSync(archivePath, archived, {
+    const archivedText = archived.toString("utf8");
+    const digest = createHash("sha256").update(archivedText, "utf8").digest("hex");
+    const lineParts = archivedText.split(/\r\n|\r|\n/u);
+    const lines = Math.max(
+      1,
+      lineParts.length - (archivedText.endsWith("\n") || archivedText.endsWith("\r") ? 1 : 0),
+    );
+    const artifact = {
+      artifactId: path.basename(archivePath),
+      archivePath,
+      digest,
+      locator: { lineStart: 1, lineEnd: lines },
+      replayable,
+      truncated,
+      originalBytes: bytes.byteLength,
+    };
+    const metadata = {
+      toolUseId: context?.toolUseId ?? null,
+      round: context?.round ?? null,
+      command: command ?? null,
+      replayable,
+      digest,
+      archivePath,
+      locator: artifact.locator,
+      truncated,
+      originalBytes: bytes.byteLength,
+    };
+    writeFileSync(archivePath, archivedText, {
       encoding: "utf8",
       mode: 0o600,
       flag: "wx",
@@ -442,6 +464,7 @@ function archiveResult(
       text: `${truncateResult(text)}\n${archiveGuidance(archivePath)}`,
       archivePath,
       artifact,
+      archivedText,
     };
   } catch (error) {
     for (const target of [archivePath, metadataPath]) {
@@ -668,7 +691,7 @@ export function createCliTools({
         lastToolMetadata = {
           name,
           replayable,
-          fullOutput: String(result ?? ""),
+          fullOutput: archived.archivedText ?? String(result ?? ""),
           artifact: archived.artifact,
         };
       }

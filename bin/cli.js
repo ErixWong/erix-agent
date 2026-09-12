@@ -145,11 +145,11 @@ function resolveReflection(reflection, maxRounds) {
   return maxRounds >= 32 ? { enabled: true } : false;
 }
 
-function resolveFinalGuard(finalGuard, runId) {
+function resolveFinalGuard(finalGuard, runId, archiveDir) {
   if (process.env.ERIX_NO_FINAL_GUARD?.trim() === "1") return undefined;
   if (finalGuard === false) return undefined;
   if (typeof finalGuard === "function") return finalGuard;
-  return createFinalGuard({ runId });
+  return createFinalGuard({ runId, archiveDir });
 }
 
 function createIdleTimeout(seconds) {
@@ -586,7 +586,7 @@ async function runChatWithNotes({
     getToolMetadata: cliTools.getLastToolMetadata,
   });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
-  const resolvedFinalGuard = resolveFinalGuard(finalGuard, runId);
+  const resolvedFinalGuard = resolveFinalGuard(finalGuard, runId, archiveDir);
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG;
   let judgeLogWriteFailed = false;
   // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 安全摘要
@@ -745,9 +745,14 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   try {
     const result = await (loopOverride ?? runToolLoop)(loopOptions);
     const compacted = result.compactionStats.some((stat) => stat.compacted === true);
-    console.log(`\n=== 终稿 ===\n${result.finalText}`);
-    if (result.termination?.reason === "final_guard_unverified") {
-      console.log("⚠️ 终稿含未核验的一次性值，已按 fail-closed 标记；请核实归档或明确说明不可恢复。");
+    if (result.verification?.status === "unverified") {
+      console.log(`\n=== 终稿（未核验，不可信） ===\n${result.finalText}`);
+      console.log("⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。");
+    } else {
+      console.log(`\n=== 终稿 ===\n${result.finalText}`);
+    }
+    if (result.verification?.status === "error") {
+      console.log(`⚠️ 终稿来源核验${result.verification.reason === "timeout" ? "超时" : "失败"}，不得将其当作已验证事实。`);
     }
     console.log(
       `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} termination=${result.termination?.reason ?? "unknown"} usage=${JSON.stringify(result.usage)} compacted=${compacted}`,
@@ -815,10 +820,12 @@ async function main(args) {
     printHelp();
     return;
   }
-  await runChat({
+  const result = await runChat({
     ...chatArgs,
     sessionExplicit: args.slice(1).includes("--session"),
   });
+  if (result?.verification?.status === "unverified") process.exitCode = 2;
+  return result;
 }
 
 if (

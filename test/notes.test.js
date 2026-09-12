@@ -111,8 +111,37 @@ test("pinned ledger is scoped, provenance-labeled, and stays under its token bud
     const ledger = await notes.buildPinnedLedger({ maxEntries: 5, maxTokens: 200 });
     assert.ok(Array.from(ledger).length <= 160);
     assert.match(ledger, /pinned-value/);
-    assert.match(ledger, /source=auto round=3 toolUse=tool-123/);
+    assert.match(ledger, /source=agent round=3 toolUse=tool-123/);
     assert.doesNotMatch(ledger, /not-pinned/);
+  });
+});
+
+test("tool provenance cannot claim auto capture while the private capture arm can", async () => {
+  await withNotes(async () => {
+    const artifactRef = {
+      artifactId: "001-exec.txt",
+      archivePath: "/run/archive/001-exec.txt",
+      digest: "a".repeat(64),
+      locator: { lineStart: 1, lineEnd: 1 },
+      replayable: false,
+    };
+    await notes.note_take({
+      key: "tool-written",
+      artifactRef,
+      provenance: { source: "auto", verified: false },
+    });
+    assert.equal(
+      parsed(await notes.note_read({ key: "tool-written" })).provenance.source,
+      "agent",
+    );
+    await notes.recordAutoCapture({
+      key: "auto-written",
+      artifactRef,
+      provenance: { source: "auto", toolUseId: "tool-1" },
+    });
+    const captured = parsed(await notes.note_read({ key: "auto-written" }));
+    assert.equal(captured.provenance.source, "auto");
+    assert.equal(captured.provenance.toolUseId, "tool-1");
   });
 });
 
@@ -148,6 +177,13 @@ test("possible credentials are rejected without writing files", async () => {
       ["jwt-value", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.signature"],
       ["aws-value", "AKIAIOSFODNN7EXAMPLE"],
       ["github-value", "ghp_abcdefghijklmnopqrstuvwxyz123456"],
+      ["postgres-value", "postgres://u:p@h/db"],
+      ["aws-secret-value", "AWS_SECRET_ACCESS_KEY=example"],
+      ["database-url-value", "DATABASE_URL=postgres://u:p@h/db"],
+      ["chinese-secret-value", "访问令牌: example"],
+      ["private-body-value", "MIIEowIBAAKCAQEAabcdefghijklmnop"],
+      ["short-openai-value", "sk-abc"],
+      ["url-parameter-value", "https://example.test/?token=abc"],
     ];
     for (const [key, content] of samples) {
       const result = parsed(await notes.note_take({ key, content }));
@@ -211,35 +247,48 @@ test("project and user scopes are explicit unsupported stubs", async () => {
 
 test("run lifecycle transitions active to completed to grace and then garbage collects", async () => {
   await withNotes(async (directory, options) => {
-    await notes.note_take({ key: "lifecycle", content: "value", pinned: true });
-    assert.equal(parsed(await notes.note_list({})).notes[0].state, "active");
-    await notes.completeRun();
-    const completed = parsed(await readFile(
-      path.join(directory, "run", "notes-test-run", "lifecycle.json"),
-      "utf8",
-    ));
-    assert.equal(completed.state, "completed");
-    assert.ok(completed.expires_at);
+    const now = { value: Date.now() };
+    const restoreClock = notes.setNotesClock(() => now.value);
+    try {
+      await notes.note_take({ key: "lifecycle", content: "value", pinned: true });
+      assert.equal(parsed(await notes.note_list({})).notes[0].state, "active");
+      await notes.completeRun();
+      const completed = parsed(await readFile(
+        path.join(directory, "run", "notes-test-run", "lifecycle.json"),
+        "utf8",
+      ));
+      assert.equal(completed.state, "completed");
+      assert.ok(completed.expires_at);
 
-    await notes.runNotesJanitor();
-    const grace = parsed(await readFile(
-      path.join(directory, "run", "notes-test-run", "lifecycle.json"),
-      "utf8",
-    ));
-    assert.equal(grace.state, "grace");
+      await notes.runNotesJanitor();
+      const grace = parsed(await readFile(
+        path.join(directory, "run", "notes-test-run", "lifecycle.json"),
+        "utf8",
+      ));
+      assert.equal(grace.state, "grace");
 
-    process.env.ERIX_NOTES_GRACE_MS = "0";
-    await notes.note_take({ key: "lifecycle", content: "value", pinned: true });
-    await notes.completeRun();
-    await notes.runNotesJanitor();
-    const tombstone = parsed(await readFile(
-      path.join(directory, "run", "notes-test-run", "lifecycle.json"),
-      "utf8",
-    ));
-    assert.equal(tombstone.state, "revoked");
-    assert.ok(tombstone.revoked_at);
-    assert.equal(parsed(await notes.note_read({ key: "lifecycle" })).status, "revoked");
-    void options;
+      process.env.ERIX_NOTES_GRACE_MS = "0";
+      await notes.note_take({ key: "lifecycle", content: "value", pinned: true });
+      const retained = parsed(await readFile(
+        path.join(directory, "run", "notes-test-run", "lifecycle.json"),
+        "utf8",
+      ));
+      assert.equal(retained.state, "grace");
+      assert.equal(retained.expires_at, completed.expires_at);
+      now.value = Date.parse(completed.expires_at) + 1;
+      await notes.completeRun();
+      await notes.runNotesJanitor();
+      const tombstone = parsed(await readFile(
+        path.join(directory, "run", "notes-test-run", "lifecycle.json"),
+        "utf8",
+      ));
+      assert.equal(tombstone.state, "revoked");
+      assert.ok(tombstone.revoked_at);
+      assert.equal(parsed(await notes.note_read({ key: "lifecycle" })).status, "revoked");
+      void options;
+    } finally {
+      restoreClock();
+    }
   }, { graceMs: 60_000 });
 });
 

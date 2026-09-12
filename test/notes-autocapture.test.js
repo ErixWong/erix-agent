@@ -12,8 +12,10 @@ import path from "node:path";
 
 import { runChat } from "../bin/cli.js";
 import { captureToolExecution } from "../bin/auto-capture.js";
-import { createCliTools, wrapExecuteTool } from "../bin/tools.js";
+import { archiveResult, createCliTools, wrapExecuteTool } from "../bin/tools.js";
+import { createFinalGuard } from "../bin/final-guard.js";
 import * as notes from "../skills/notes/skill.mjs";
+import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 async function withTempDirectory(callback) {
@@ -86,6 +88,37 @@ test("short non-replayable output is archived with structured metadata", async (
   });
 });
 
+test("truncated archives hash the bytes on disk and cannot pass provenance guard", async () => {
+  await withNotes(async (directory) => {
+    const archiveDir = path.join(directory, "outputs");
+    const output = "x".repeat(1048577);
+    const archived = archiveResult(archiveDir, "exec", output, 1, {
+      replayable: false,
+      command: "synthetic-large-output",
+      context: { toolUseId: "large-tool", round: 1 },
+    });
+    const archivePath = archived.artifact.archivePath;
+    const archivedBytes = await readFile(archivePath);
+    const sidecar = JSON.parse(await readFile(
+      path.join(archiveDir, "001-exec.meta.json"),
+      "utf8",
+    ));
+    const digest = createHash("sha256").update(archivedBytes).digest("hex");
+    assert.equal(archived.artifact.digest, digest);
+    assert.equal(sidecar.digest, digest);
+    assert.equal(archived.artifact.truncated, true);
+    assert.equal(sidecar.truncated, true);
+    assert.equal(sidecar.originalBytes, 1048577);
+
+    await notes.recordAutoCapture({
+      key: "truncated",
+      artifactRef: archived.artifact,
+    });
+    const guard = createFinalGuard({ runId: "auto-run", archiveDir });
+    assert.equal((await guard({ finalText: "任意值" })).action, "revise");
+  });
+});
+
 test("auto_capture stores a reference, not the captured value", async () => {
   await withNotes(async (directory) => {
     const archiveDir = path.join(directory, "outputs");
@@ -134,6 +167,36 @@ test("auto_capture rejects credential-shaped candidates fail-closed", async () =
         toolUseId: `credential-${index}`,
         result: output,
         metadata: metadataFor(output, `/tmp/credential-${index}.txt`),
+      });
+    }
+    await assert.rejects(readdir(path.join(directory, "run", "auto-run")));
+  });
+});
+
+test("note_take and auto_capture share the expanded credential matcher", async () => {
+  await withNotes(async (directory) => {
+    const samples = [
+      "postgres://u:p@h/db",
+      "AWS_SECRET_ACCESS_KEY=example",
+      "DATABASE_URL=postgres://u:p@h/db",
+      "访问令牌: example",
+      "MIIEowIBAAKCAQEAabcdefghijklmnop",
+      "sk-abc",
+      "https://example.test/?token=abc",
+      Buffer.from("Bearer abc123456789").toString("base64"),
+    ];
+    for (const [index, output] of samples.entries()) {
+      assert.equal(looksLikeCredential("", output), true, output);
+      const note = JSON.parse(await notes.note_take({
+        key: `shared-${index}`,
+        content: output,
+      }));
+      assert.equal(note.status, "rejected", output);
+      await captureToolExecution({
+        name: "exec",
+        toolUseId: `shared-${index}`,
+        result: output,
+        metadata: metadataFor(output, `/tmp/shared-${index}.txt`),
       });
     }
     await assert.rejects(readdir(path.join(directory, "run", "auto-run")));

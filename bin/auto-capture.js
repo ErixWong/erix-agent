@@ -1,59 +1,12 @@
 import { createHash } from "node:crypto";
 
-import { note_read, note_take } from "../skills/notes/skill.mjs";
+import { note_read, recordAutoCapture } from "../skills/notes/skill.mjs";
+import {
+  looksLikeCredential,
+  normalizedLabel,
+} from "../skills/notes/credential-patterns.mjs";
 
 const LABEL_PATTERN = /^\s*([^:=\s][^:=]{0,80}?)\s*[:=]\s*(.*?)\s*$/u;
-const CREDENTIAL_LABEL_PATTERN =
-  /(?:token|key|secret|password|passwd|bearer|authorization|cookie|credential|private|api[_-]?key|access[_-]?key|refresh[_-]?token)/iu;
-const CREDENTIAL_VALUE_PATTERNS = [
-  /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/iu,
-  /-----BEGIN\s+[A-Z ]+(?:PRIVATE KEY|CERTIFICATE)-----/u,
-  /\b(?:eyJ[A-Za-z0-9_-]{8,}\.){2}[A-Za-z0-9_-]{8,}\b/u,
-  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/u,
-  /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}\b/iu,
-  /\bnpm_[A-Za-z0-9]{20,}\b/iu,
-  /https?:\/\/[^\s/]+(?::[^\s/@]+)?@[^\s]+/iu,
-  /https?:\/\/[^\s?#]+[?&](?:token|key|secret|password|access_token|api_key)=/iu,
-];
-const HIGH_ENTROPY_MIN_LENGTH = 32;
-
-function shannonEntropy(value) {
-  const counts = new Map();
-  for (const character of value) {
-    counts.set(character, (counts.get(character) ?? 0) + 1);
-  }
-  let entropy = 0;
-  for (const count of counts.values()) {
-    const probability = count / value.length;
-    entropy -= probability * Math.log2(probability);
-  }
-  return entropy;
-}
-
-export function looksLikeCredential(label, value) {
-  if (label && CREDENTIAL_LABEL_PATTERN.test(label)) return true;
-  const text = `${label}\n${value}`;
-  if (CREDENTIAL_VALUE_PATTERNS.some((pattern) => pattern.test(text))) return true;
-  if (
-    value.length >= HIGH_ENTROPY_MIN_LENGTH
-    && /^[A-Za-z0-9+/=_-]+$/u.test(value)
-    && shannonEntropy(value) >= 3.5
-  ) {
-    return true;
-  }
-  return false;
-}
-
-export function normalizedLabel(label) {
-  return label
-    .normalize("NFKC")
-    .trim()
-    .toLocaleLowerCase()
-    .replaceAll(/[\s-]+/gu, "_")
-    .replaceAll(/[^\p{L}\p{N}_]+/gu, "")
-    .slice(0, 128);
-}
-
 export function candidateLines(output) {
   const labelled = [];
   const unlabelled = [];
@@ -61,6 +14,13 @@ export function candidateLines(output) {
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (line.length === 0 || line.length > 256) continue;
+    const looksLikeUrl = /^[a-z][a-z0-9+.-]*:\/\//iu.test(line);
+    const looksLikeBase64 = line.length >= 24
+      && /^[A-Za-z0-9+/]+={0,2}$/u.test(line);
+    if (looksLikeUrl || looksLikeBase64) {
+      unlabelled.push({ label: "", value: line });
+      continue;
+    }
     const match = LABEL_PATTERN.exec(line);
     if (match) {
       const label = normalizedLabel(match[1]);
@@ -95,6 +55,10 @@ function artifactReference(artifact) {
     archivePath: artifact.archivePath,
     digest: artifact.digest,
     locator: artifact.locator,
+    ...(artifact.truncated === true ? { truncated: true } : { truncated: false }),
+    ...(Number.isSafeInteger(artifact.originalBytes)
+      ? { originalBytes: artifact.originalBytes }
+      : {}),
   };
 }
 
@@ -157,7 +121,7 @@ export async function captureToolExecution({
         verified: false,
         ...(key !== baseKey ? { supersededCandidate: true } : {}),
       };
-      const saved = JSON.parse(await note_take({
+      const saved = JSON.parse(await recordAutoCapture({
         key,
         artifactRef: reference,
         tags: ["value"],

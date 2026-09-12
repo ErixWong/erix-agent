@@ -1,14 +1,16 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
 import { safeRunId } from "../src/store/file.js";
 import {
   candidateLines,
+} from "./auto-capture.js";
+import {
   looksLikeCredential,
   normalizedLabel,
-} from "./auto-capture.js";
+} from "../skills/notes/credential-patterns.mjs";
 
 const SOURCE_DECLARATION_PATTERN =
   /原值|首次|一次性|密钥|阈值|时间戳|token|key|value|secret|password/iu;
@@ -102,24 +104,56 @@ function artifactReferences(records) {
   for (const record of records) {
     for (const version of record?.versions ?? []) {
       const reference = version?.artifactRef;
-      if (
-        version?.provenance?.source !== "auto"
-        || !reference
-        || typeof reference.archivePath !== "string"
-        || reference.replayable === true
-      ) continue;
+      if (!reference || typeof reference !== "object" || Array.isArray(reference)) continue;
       const identity = `${reference.archivePath}\n${reference.digest ?? ""}\n${
         JSON.stringify(reference.locator ?? {})
-      }`;
+      }\n${version?.provenance?.source ?? ""}`;
       if (seen.has(identity)) continue;
       seen.add(identity);
-      references.push(reference);
+      references.push({
+        ...reference,
+        __trustedAutoSource: version?.provenance?.source === "auto",
+      });
     }
   }
   return references;
 }
 
-async function readArtifact(reference) {
+function isWithin(root, target) {
+  const relative = path.relative(root, target);
+  return relative !== ""
+    && !relative.startsWith(`..${path.sep}`)
+    && relative !== ".."
+    && !path.isAbsolute(relative);
+}
+
+async function readArtifact(reference, archiveDir) {
+  if (typeof archiveDir !== "string" || archiveDir.length === 0) {
+    throw new Error("缺少本 run 归档根目录");
+  }
+  const resolvedRoot = path.resolve(archiveDir);
+  const resolvedPath = path.resolve(reference.archivePath);
+  if (!isWithin(resolvedRoot, resolvedPath)) {
+    throw new Error("artifactRef 不在本 run 归档根目录内");
+  }
+  const rootRealPath = await realpath(resolvedRoot);
+  const stat = await lstat(resolvedPath);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error("归档路径不是普通文件或是符号链接");
+  }
+  const artifactRealPath = await realpath(resolvedPath);
+  if (!isWithin(rootRealPath, artifactRealPath)) {
+    throw new Error("归档路径经 realpath 后逃逸本 run 归档根目录");
+  }
+  if (reference.truncated === true) {
+    throw new Error("归档已截断，不可用于核验");
+  }
+  if (reference.replayable === true) {
+    throw new Error("可重放 artifact 不可用于 provenance 核验");
+  }
+  if (typeof reference.digest !== "string" || !/^[a-f0-9]{64}$/iu.test(reference.digest)) {
+    throw new Error("artifactRef 缺少有效 digest");
+  }
   if (
     !reference.locator
     || !Number.isSafeInteger(reference.locator.lineStart)
@@ -129,26 +163,28 @@ async function readArtifact(reference) {
   ) {
     throw new Error("locator 行范围无效");
   }
-  const content = await readFile(reference.archivePath, "utf8");
-  if (typeof reference.digest === "string") {
-    const digest = createHash("sha256").update(content, "utf8").digest("hex");
-    if (digest !== reference.digest) throw new Error("归档 digest 不匹配");
-  }
+  const content = await readFile(artifactRealPath, "utf8");
+  const digest = createHash("sha256").update(content, "utf8").digest("hex");
+  if (digest !== reference.digest) throw new Error("归档 digest 不匹配");
   const lines = content.replaceAll(/\r\n|\r/gu, "\n").split("\n");
   return lines
     .slice(reference.locator.lineStart - 1, reference.locator.lineEnd)
     .join("\n");
 }
 
-async function inspectRun({ runId, notesDir }) {
+async function inspectRun({ runId, notesDir, archiveDir }) {
   const directory = path.join(notesRoot(notesDir), "run", safeRunId(runId));
   const loaded = await readNoteRecords(directory);
   const references = artifactReferences(loaded.records);
   const values = [];
   const warnings = [...loaded.warnings];
   for (const reference of references) {
+    if (reference.__trustedAutoSource !== true) {
+      warnings.push(`${reference.archivePath ?? "artifactRef"}: provenance.source 不是 capture 签发的 auto`);
+      continue;
+    }
     try {
-      const output = await readArtifact(reference);
+      const output = await readArtifact(reference, archiveDir);
       const candidates = candidateLines(output).filter((candidate) => (
         !looksLikeCredential(candidate.label, candidate.value)
       ));
@@ -179,12 +215,14 @@ async function inspectRun({ runId, notesDir }) {
 export function createFinalGuard({
   runId,
   notesDir,
+  archiveDir,
   onWarning = (message) => console.warn(warningMessage(message)),
 } = {}) {
   return async function finalGuard({ finalText } = {}) {
     const inspected = await inspectRun({
       runId: runId ?? process.env.ERIX_RUN_ID ?? "",
       notesDir,
+      archiveDir,
     });
     if (inspected.warnings.length > 0) {
       for (const warning of inspected.warnings) onWarning(warning);
@@ -193,7 +231,10 @@ export function createFinalGuard({
       return { action: "accept" };
     }
     if (inspected.values.length === 0) {
-      return { action: "accept" };
+      return {
+        action: "revise",
+        message: "本 run 的 artifactRef 未通过归档根目录、digest、截断或可重放性核验；请读取可信归档或明确说明不可恢复，不得把该值当作已核验事实。",
+      };
     }
 
     const text = String(finalText ?? "");

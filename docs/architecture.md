@@ -20,7 +20,7 @@
   │                                │    ④ tool_use → executeTool(回调)─▶ 调用方可信代码
   │                                │    ⑤ tool_result 回喂             │
   │                                │    ⑥ stall/完成信号判定           │
-  │◀──────── { finalText, messages, transcript, usage, stats } ───────│
+  │◀──────── { finalText, messages, transcript, usage, verification } ─│
 ```
 
 库内零 I/O 决策：文件/网络/DB 全部由注入的 provider/store/executeTool 完成。
@@ -96,18 +96,41 @@ runToolLoop({
   retry: { attempts = 2, backoffBaseMs = 1500, backoffMaxMs = 10000 },
   stallDetection: { window = 4 } | false,
   completion: { signals = [], maxNoToolRounds = 3 } | false,  // 无工具轮策略
+  finalGuard,               // 可选：收尾 provenance 核验
+  finalGuardMaxRetries = 2,
+  finalGuardTimeoutMs = 30000,
   store,                     // TranscriptStore（可选）：每轮快照落 store，支持崩溃续跑
   runId,                     // store 的键
   resume = false,            // true 时从 store 恢复上次进度（忽略 initialUserMessage/initialMessages，消息与轮次以 store 为准）
   onRound, onDelta, signal,
   onToolResult,              // 钩子：结果回喂前的截断/脱敏后处理（调用方政策点）
 }) => Promise<{
-  finalText, messages, transcript, rounds, truncated, usage,
+  finalText, messages, transcript, rounds, truncated, usage, verification,
   compactionStats: { compacted, foldedRounds, tokensBefore, tokensAfter }[],
 }>
 ```
 
 `retry` is opt-in: omitted or `false` means no provider retries.
+
+`verification` is the machine-readable handoff contract for hosts:
+
+```js
+{
+  status: "verified" | "unverified" | "skipped" | "error",
+  reason?: string,
+  detail?: string,
+}
+```
+
+Only `verified` permits treating `finalText` as provenance-checked. `unverified`
+means the guard requested revision but the loop could not continue; the result
+uses `termination.reason = "final_guard_unverified"` and the store state is
+`"unverified"`. `error` means the guard threw or exceeded its timeout and must
+be handled explicitly by the host; it is observable but is not `verified`.
+`skipped` means no guard was configured. Non-abort stop paths such as
+`max_rounds_cap`, `stall`, `continuation_exhausted`, and `reflection_stop`
+still invoke the guard; if they cannot continue, they fail closed without
+spending another model round. `abort` does not invoke the guard.
 
 ### 3.3 CompactionStrategy（FR-3，详见 ADR-003）
 

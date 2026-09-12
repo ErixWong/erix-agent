@@ -14,6 +14,10 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import {
+  looksLikeCredential,
+  normalizedLabel,
+} from "./credential-patterns.mjs";
 
 const HASHED_ID_PREFIX = "run-h-";
 const HASHED_KEY_PREFIX = "note-h-";
@@ -121,24 +125,6 @@ function invalid(key, message) {
     reason: message,
     next: "请修正输入后重试",
   });
-}
-
-function credentialPattern(value) {
-  const text = String(value);
-  return [
-    /(?:token|secret|password|passwd|api[_-]?key|access[_-]?key)\s*[:=]\s*\S+/iu,
-    /["']?(?:token|secret|password|passwd|api[_-]?key|access[_-]?key)["']?\s*[:=]\s*\S+/iu,
-    /\b(?:token|password|secret)\s+[A-Za-z0-9._-]{8,}\b/iu,
-    /\bBearer\s+[A-Za-z0-9._-]{8,}\b/iu,
-    /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/u,
-    /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/u,
-    /\b(?:gh[pousr]_|github_pat_|sk-[A-Za-z0-9]|xox[baprs]-|npm_|pypi-)[A-Za-z0-9_-]{8,}\b/iu,
-    /-----BEGIN\s+[A-Z ]+PRIVATE KEY-----/u,
-  ].some((pattern) => pattern.test(text));
-}
-
-function credentialKey(key) {
-  return /^(?:token|password|passwd|secret|api[_-]?key|access[_-]?key)(?:[-_]|$)/iu.test(key);
 }
 
 function stable(value) {
@@ -396,7 +382,7 @@ async function readJsonFiles(directory) {
   return files;
 }
 
-export async function note_take(input = {}) {
+async function writeNote(input = {}, { source = "agent" } = {}) {
   const scope = validateScope(input);
   const key = validateKey(input);
   if (!scope) return invalid(key, "scope 必须是 run、project 或 user");
@@ -432,7 +418,7 @@ export async function note_take(input = {}) {
   } catch {
     return invalid(key, "artifactRef 必须可序列化为 JSON");
   }
-  if (credentialKey(key) || credentialPattern(`${key}\n${canonical(payload)}`)) {
+  if (looksLikeCredential(key, canonical(payload))) {
     return json({
       status: "rejected",
       key,
@@ -453,9 +439,6 @@ export async function note_take(input = {}) {
   }) === canonical(payload);
   const version = samePayload ? previous.version : (previous?.version ?? 0) + 1;
   const suppliedProvenance = input.provenance ?? {};
-  const source = ["agent", "auto", "user"].includes(suppliedProvenance.source)
-    ? suppliedProvenance.source
-    : "agent";
   const provenance = {
     source,
     verified: suppliedProvenance.verified ?? contentProvided(input),
@@ -467,7 +450,7 @@ export async function note_take(input = {}) {
     ...(suppliedProvenance.supersededCandidate === true
       ? { supersededCandidate: true }
       : {}),
-    ts: suppliedProvenance.ts ?? timestamp,
+    ts: source === "auto" ? (suppliedProvenance.ts ?? timestamp) : timestamp,
   };
   const nextVersion = samePayload
     ? previous
@@ -479,12 +462,15 @@ export async function note_take(input = {}) {
     versions: samePayload ? old.versions : [...(old?.versions ?? []), nextVersion],
     pinned: input.pinned ?? old?.pinned ?? false,
     tags: input.tags === undefined ? (old?.tags ?? tags) : tags,
-    state: "active",
+    state: old?.state === "revoked" ? "active" : (old?.state ?? "active"),
     created_at: old?.created_at ?? timestamp,
     updated_at: timestamp,
-    ...(old?.expires_at === undefined ? {} : {}),
+    ...(old?.expires_at === undefined ? {} : { expires_at: old.expires_at }),
   };
-  if (old?.revoked_at !== undefined) delete record.revoked_at;
+  if (old?.state === "revoked" || old?.revoked_at !== undefined) {
+    delete record.revoked_at;
+    record.revived_at = timestamp;
+  }
   await saveRecord(directory, record);
   return json({
     status: old && samePayload ? "updated" : old ? "updated" : "saved",
@@ -494,6 +480,18 @@ export async function note_take(input = {}) {
     pinned: record.pinned,
     next: "已保存；后续需要该值时先用 note_read 精确读取",
   });
+}
+
+/**
+ * Internal CLI capture arm. It is intentionally not listed in the skill
+ * definition, so model tool calls can only reach note_take (source=agent).
+ */
+export async function recordAutoCapture(input = {}) {
+  return writeNote(input, { source: "auto" });
+}
+
+export async function note_take(input = {}) {
+  return writeNote(input, { source: "agent" });
 }
 
 export async function note_read(input = {}) {
