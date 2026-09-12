@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -158,6 +158,33 @@ test("runRepl resumes from the transcript store and exposes recall", async () =>
     const records = await createFileTranscriptStore({ dir }).load("repl-store");
     assert.deepEqual(records.map((record) => record.round), [0, 1, 1, 2]);
     assert.ok(records.some((record) => record.dedupKey?.includes(":input:")));
+  } finally {
+    input.destroy();
+    output.destroy();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runRepl reports a damaged MCP config instead of treating it as absent", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-repl-mcp-error-test-"));
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  const configPath = join(dir, "broken-mcp.json");
+  try {
+    await writeFile(configPath, "{ not json", "utf8");
+    const run = runRepl(
+      ["--config", configPath, "--session", "repl-mcp-error"],
+      {
+        input,
+        output,
+        sessionDir: dir,
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+      },
+    );
+    input.end("/mcp\n/exit\n");
+    await run;
+    assert.match(String(output.read()), /MCP 配置损坏/);
   } finally {
     input.destroy();
     output.destroy();

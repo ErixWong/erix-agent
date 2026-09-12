@@ -421,8 +421,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       return;
     }
     if (command.command === "mcp") {
+      if (mcpProxy?.error) {
+        writeLine(output, `MCP 配置损坏：${mcpProxy.error?.message ?? String(mcpProxy.error)}`);
+        return;
+      }
       if (!mcpProxy?.enabled) {
-        writeLine(output, "未找到 MCP 配置文件（~/.erix/mcp.json 或当前目录 .mcp.json）");
+        writeLine(output, "未配置 MCP（~/.erix/mcp.json 或当前目录 .mcp.json）");
         return;
       }
       const status = mcpProxy.status();

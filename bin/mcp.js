@@ -27,7 +27,7 @@ function readVersion() {
 }
 
 export function resolveMcpConfigPath(explicitPath, cwd = process.cwd(), home = homedir()) {
-  if (explicitPath) return path.resolve(explicitPath);
+  if (explicitPath) return path.resolve(cwd, explicitPath);
   const candidates = [path.join(cwd, ".mcp.json"), path.join(home, ".erix", "mcp.json")];
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
@@ -73,7 +73,7 @@ function expandHeaderValue(value, configDir) {
 }
 
 function resolveConfigDir(configPath, cwd) {
-  const resolved = configPath ? path.resolve(configPath) : resolveMcpConfigPath(undefined, cwd);
+  const resolved = configPath ? path.resolve(cwd, configPath) : resolveMcpConfigPath(undefined, cwd);
   return resolved ? path.dirname(resolved) : cwd;
 }
 
@@ -86,11 +86,12 @@ class McpConnectionError extends Error {
 }
 
 class McpClient {
-  constructor(serverName, serverConfig, cwd) {
+  constructor(serverName, serverConfig, cwd, configPath) {
     this.serverName = serverName;
     this.serverConfig = serverConfig;
     this.cwd = cwd;
-    this.configDir = resolveConfigDir(undefined, cwd);
+    this.configPath = configPath;
+    this.configDir = resolveConfigDir(configPath, cwd);
     this.nextId = 1;
     this.pending = new Map();
     this.tools = null;
@@ -120,102 +121,99 @@ class McpClient {
     }
   }
 
-  _doConnect() {
-    return new Promise((resolve, reject) => {
-      if (this.closed) {
-        reject(new McpConnectionError(this.serverName, "连接已关闭"));
-        return;
-      }
+  async _doConnect() {
+    if (this.closed) {
+      throw new McpConnectionError(this.serverName, "连接已关闭");
+    }
 
-      const { command, args = [], env = {}, url } = this.serverConfig;
+    const { command, args = [], env = {}, url } = this.serverConfig;
+    if (url) {
+      return this._doHttpConnect();
+    }
+    if (typeof command !== "string" || command.trim() === "") {
+      const error = new McpConnectionError(this.serverName, "缺少 command 或 url");
+      this.status = "error";
+      this.error = error;
+      throw error;
+    }
 
-      if (url) {
-        this._doHttpConnect(resolve, reject);
-        return;
-      }
-
-      if (typeof command !== "string" || command.trim() === "") {
-        this.status = "error";
-        this.error = new McpConnectionError(this.serverName, "缺少 command 或 url");
-        reject(this.error);
-        return;
-      }
-
-      this.status = "connecting";
-      const child = spawn(command, args, {
+    this.status = "connecting";
+    this.stderrBuffer = "";
+    let child;
+    try {
+      child = spawn(command, args, {
         cwd: this.cwd,
         env: { ...process.env, ...env },
         stdio: ["pipe", "pipe", "pipe"],
       });
-      this.proc = child;
+    } catch (error) {
+      const connectionError = new McpConnectionError(
+        this.serverName,
+        `启动失败：${error?.message ?? String(error)}`,
+      );
+      this.status = "error";
+      this.error = connectionError;
+      throw connectionError;
+    }
+    this.proc = child;
 
-      const onChildError = (error) => {
+    const failPending = (error) => {
+      if (this.proc === child) this._rejectPending(error);
+    };
+    child.on("error", (error) => {
+      failPending(new McpConnectionError(
+        this.serverName,
+        `启动失败：${error?.message ?? String(error)}`,
+      ));
+    });
+    child.on("exit", (code, signal) => {
+      if (this.proc !== child) return;
+      const hint = this.stderrBuffer ? `；stderr：${this.stderrBuffer.trim()}` : "";
+      const error = new McpConnectionError(
+        this.serverName,
+        `子进程在握手前退出（code=${code ?? "未知"}, signal=${signal ?? "未知"}）${hint}`,
+      );
+      failPending(error);
+      if (this.status === "connecting") {
         this.status = "error";
-        this.error = new McpConnectionError(
-          this.serverName,
-          `启动失败：${error?.message ?? String(error)}`,
-        );
-        reject(this.error);
-      };
+        this.error = error;
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      this.stderrBuffer += String(chunk ?? "");
+      if (this.stderrBuffer.length > 4096) {
+        this.stderrBuffer = this.stderrBuffer.slice(-4096);
+      }
+    });
 
-      const onChildExit = (code, signal) => {
-        this._rejectPending(
-          new McpConnectionError(
-            this.serverName,
-            `进程已退出（code=${code ?? "未知"}, signal=${signal ?? "未知"}）`,
-          ),
-        );
-        if (this.status === "connecting") {
-          const hint = this.stderrBuffer ? `；stderr：${this.stderrBuffer.trim()}` : "";
-          this.status = "error";
-          this.error = new McpConnectionError(
-            this.serverName,
-            `子进程在握手前退出${hint}`,
-          );
-          reject(this.error);
-        }
-      };
+    const reader = createInterface({ input: child.stdout });
+    this.reader = reader;
+    reader.on("line", (line) => this._handleLine(line));
+    reader.on("close", () => {
+      if (this.proc !== child || this.closed || this.status === "error") return;
+      const error = new McpConnectionError(this.serverName, "stdout 已关闭");
+      this._rejectPending(error);
+      this.status = "error";
+      this.error = error;
+    });
 
-      child.on("error", onChildError);
-      child.on("exit", onChildExit);
-      child.stderr.on("data", (chunk) => {
-        this.stderrBuffer += String(chunk ?? "");
-        if (this.stderrBuffer.length > 4096) {
-          this.stderrBuffer = this.stderrBuffer.slice(-4096);
-        }
-      });
-
-      this.reader = createInterface({ input: child.stdout });
-      this.reader.on("line", (line) => this._handleLine(line));
-      this.reader.on("close", () => {
-        if (!this.closed && this.status !== "error") {
-          this._rejectPending(
-            new McpConnectionError(this.serverName, "stdout 已关闭"),
-          );
-          this.status = "error";
-          this.error = this.error || new McpConnectionError(this.serverName, "stdout 已关闭");
-        }
-      });
-
-      this._request("initialize", {
+    try {
+      await this._request("initialize", {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
         clientInfo: { name: "erix", version: readVersion() },
-      })
-        .then(() => {
-          this._notify("notifications/initialized", {});
-          this.status = "connected";
-          resolve();
-        })
-        .catch((error) => {
-          this.status = "error";
-          this.error = error;
-          reject(error);
-        });
-    });
+      });
+      await this._notify("notifications/initialized", {});
+      this.status = "connected";
+    } catch (error) {
+      this.status = "error";
+      this.error = error;
+      await this._cleanupTransport(error);
+      throw error;
+    }
   }
 
-  async _doHttpConnect(resolve, reject) {
+  async _doHttpConnect() {
     this.status = "connecting";
     try {
       await this._request("initialize", {
@@ -225,11 +223,10 @@ class McpClient {
       });
       await this._notify("notifications/initialized", {});
       this.status = "connected";
-      resolve();
     } catch (error) {
       this.status = "error";
       this.error = error;
-      reject(error);
+      throw error;
     }
   }
 
@@ -276,7 +273,7 @@ class McpClient {
     if (this.url) {
       return this._httpRequest(method, params, true);
     }
-    return this._stdioRequest(method, params, true).catch(() => {});
+    return this._stdioRequest(method, params, true);
   }
 
   _stdioRequest(method, params, isNotification = false) {
@@ -307,16 +304,22 @@ class McpClient {
       const envelope = { jsonrpc: "2.0", method, params };
       if (id !== undefined) envelope.id = id;
       const message = JSON.stringify(envelope);
-      try {
-        this.proc.stdin.write(`${message}\n`);
-        if (id === undefined) {
-          clearTimeout(timer);
-          resolve();
-        }
-      } catch (error_) {
+      const fail = (error_) => {
         if (id !== undefined) this.pending.delete(id);
         clearTimeout(timer);
-        reject(new McpConnectionError(this.serverName, `写入失败：${error_.message}`));
+        reject(new McpConnectionError(this.serverName, `写入失败：${error_?.message ?? String(error_)}`));
+      };
+      try {
+        this.proc.stdin.write(`${message}\n`, (error_) => {
+          if (error_) {
+            fail(error_);
+          } else if (id === undefined) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+      } catch (error_) {
+        fail(error_);
       }
     });
   }
@@ -361,6 +364,18 @@ class McpClient {
       }
       if (contentType.includes("application/json")) {
         const data = await response.json();
+        if (!data || typeof data !== "object" || data.id !== id) {
+          throw new McpConnectionError(
+            this.serverName,
+            `JSON-RPC 响应 id 不匹配：期望 ${String(id)}，实际 ${String(data?.id)}`,
+          );
+        }
+        if (!Object.hasOwn(data, "result") && !Object.hasOwn(data, "error")) {
+          throw new McpConnectionError(
+            this.serverName,
+            "JSON-RPC 响应缺少 result 或 error",
+          );
+        }
         if (data.error) {
           throw new McpConnectionError(
             this.serverName,
@@ -496,37 +511,43 @@ class McpClient {
     return formatToolResult(result);
   }
 
-  close() {
-    this.closed = true;
-    this._rejectPending(
-      new McpConnectionError(this.serverName, "连接被关闭"),
-    );
-    if (this.reader) {
+  async _cleanupTransport(error = new McpConnectionError(this.serverName, "连接被关闭")) {
+    this._rejectPending(error);
+    const reader = this.reader;
+    this.reader = null;
+    if (reader) {
       try {
-        this.reader.close();
+        reader.close();
       } catch {
         // ignore
       }
-      this.reader = null;
     }
-    if (this.proc && !this.proc.killed) {
+    const proc = this.proc;
+    if (proc && proc.exitCode === null && proc.signalCode === null) {
       try {
         this.proc.kill();
       } catch {
         // ignore
       }
     }
+    await this._waitForProcessExit(proc);
+    if (this.proc === proc) this.proc = null;
+  }
+
+  async close() {
+    this.closed = true;
+    await this._cleanupTransport(
+      new McpConnectionError(this.serverName, "连接被关闭"),
+    );
     for (const controller of this.httpControllers) {
       controller.abort();
     }
     this.httpControllers.clear();
     this.status = "idle";
     this.error = null;
-    return this._waitForProcessExit();
   }
 
-  _waitForProcessExit() {
-    const proc = this.proc;
+  _waitForProcessExit(proc) {
     if (!proc || proc.exitCode !== null || proc.signalCode !== null) {
       return Promise.resolve();
     }
@@ -598,24 +619,48 @@ export function truncateResult(text, limit = RESULT_LIMIT) {
 
 const pool = new Map();
 
-function getClient(serverName, serverConfig, cwd) {
-  const key = serverName;
+function serializePoolValue(value) {
+  if (Array.isArray(value)) return value.map((item) => serializePoolValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, serializePoolValue(value[key])]),
+    );
+  }
+  return value;
+}
+
+function getClient(serverName, serverConfig, cwd, configPath) {
+  const resolvedConfigPath = configPath
+    ? path.resolve(cwd, configPath)
+    : resolveMcpConfigPath(undefined, cwd);
+  const key = JSON.stringify([
+    serverName,
+    path.resolve(cwd),
+    resolvedConfigPath,
+    serializePoolValue(serverConfig),
+  ]);
   if (!pool.has(key)) {
-    pool.set(key, new McpClient(serverName, serverConfig, cwd));
+    pool.set(key, new McpClient(serverName, serverConfig, cwd, resolvedConfigPath));
   }
   return pool.get(key);
 }
 
 export function getMcpPoolStatus() {
   const status = {};
-  for (const [name, client] of pool.entries()) {
-    status[name] = client.status;
+  const names = new Map();
+  for (const client of pool.values()) {
+    const baseName = client.serverName;
+    const count = (names.get(baseName) ?? 0) + 1;
+    names.set(baseName, count);
+    status[count === 1 ? baseName : `${baseName}#${count}`] = client.status;
   }
   return status;
 }
 
-export async function listMcpServerTools(serverName, serverConfig, cwd) {
-  const client = getClient(serverName, serverConfig, cwd);
+export async function listMcpServerTools(serverName, serverConfig, cwd, configPath) {
+  const client = getClient(serverName, serverConfig, cwd, configPath);
   try {
     return await client.listTools();
   } catch (error) {
@@ -625,8 +670,8 @@ export async function listMcpServerTools(serverName, serverConfig, cwd) {
   }
 }
 
-export async function callMcpServerTool(serverName, serverConfig, cwd, toolName, args) {
-  const client = getClient(serverName, serverConfig, cwd);
+export async function callMcpServerTool(serverName, serverConfig, cwd, toolName, args, configPath) {
+  const client = getClient(serverName, serverConfig, cwd, configPath);
   try {
     return await client.callTool(toolName, args);
   } catch (error) {
@@ -642,16 +687,24 @@ export async function closeAllMcpServers() {
   await Promise.all(closing);
 }
 
-function parseInternalToolId(toolId) {
-  const match = /^mcp_([^_]+)_(.+)$/.exec(toolId);
-  if (match) return { server: match[1], tool: match[2] };
+function parseInternalToolId(toolId, serverNames) {
+  if (typeof toolId !== "string" || !toolId.startsWith("mcp_")) return null;
+  const candidates = [...serverNames]
+    .sort((left, right) => right.length - left.length);
+  for (const serverName of candidates) {
+    const prefix = `mcp_${serverName}_`;
+    if (toolId.startsWith(prefix) && toolId.length > prefix.length) {
+      return { server: serverName, tool: toolId.slice(prefix.length) };
+    }
+  }
   return null;
 }
 
 export function createMcpProxyTool({ mcpConfigPath, cwd = process.cwd(), home = homedir() } = {}) {
+  const resolvedConfigPath = resolveMcpConfigPath(mcpConfigPath, cwd, home);
   let config;
   try {
-    config = loadMcpConfig(mcpConfigPath, cwd, home);
+    config = loadMcpConfig(resolvedConfigPath, cwd, home);
   } catch (error) {
     return { enabled: false, error };
   }
@@ -682,7 +735,7 @@ export function createMcpProxyTool({ mcpConfigPath, cwd = process.cwd(), home = 
         continue;
       }
       try {
-        const tools = await listMcpServerTools(serverName, cfg, cwd);
+        const tools = await listMcpServerTools(serverName, cfg, cwd, resolvedConfigPath);
         results.push({ server: serverName, tools });
       } catch (error) {
         results.push({ server: serverName, error: error?.message ?? String(error) });
@@ -695,7 +748,12 @@ export function createMcpProxyTool({ mcpConfigPath, cwd = process.cwd(), home = 
     if (action === "status") {
       const status = {};
       for (const serverName of serverNames) {
-        const client = getClient(serverName, serverConfig(serverName), cwd);
+        const client = getClient(
+          serverName,
+          serverConfig(serverName),
+          cwd,
+          resolvedConfigPath,
+        );
         status[serverName] = client.status === "error" ? `错误：${client.error?.message ?? "未知"}` : client.status;
       }
       return JSON.stringify(status, null, 2);
@@ -747,7 +805,7 @@ export function createMcpProxyTool({ mcpConfigPath, cwd = process.cwd(), home = 
       if (!tool) return "错误：call 需要提供 tool";
       let resolvedServer = server;
       let resolvedTool = tool;
-      const parsed = parseInternalToolId(tool);
+      const parsed = parseInternalToolId(tool, serverNames);
       if (parsed) {
         resolvedServer = parsed.server;
         resolvedTool = parsed.tool;
@@ -756,7 +814,14 @@ export function createMcpProxyTool({ mcpConfigPath, cwd = process.cwd(), home = 
       if (!serverNames.includes(resolvedServer)) return `错误：未配置 server "${resolvedServer}"`;
       const cfg = serverConfig(resolvedServer);
       if (!cfg) return `错误：server "${resolvedServer}" 配置无效`;
-      return callMcpServerTool(resolvedServer, cfg, cwd, resolvedTool, args);
+      return callMcpServerTool(
+        resolvedServer,
+        cfg,
+        cwd,
+        resolvedTool,
+        args,
+        resolvedConfigPath,
+      );
     }
 
     return `错误：未知 action "${action}"`;
@@ -794,7 +859,12 @@ export function createMcpProxyTool({ mcpConfigPath, cwd = process.cwd(), home = 
     status: () => {
       const status = {};
       for (const serverName of serverNames) {
-        const client = getClient(serverName, serverConfig(serverName), cwd);
+        const client = getClient(
+          serverName,
+          serverConfig(serverName),
+          cwd,
+          resolvedConfigPath,
+        );
         status[serverName] = client.status === "error" ? `错误：${client.error?.message ?? "未知"}` : client.status;
       }
       return status;

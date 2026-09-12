@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +46,20 @@ async function withMcpCleanup(callback) {
   } finally {
     await closeAllMcpServers();
   }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`进程 ${pid} 仍在运行`);
 }
 
 test("resolveMcpConfigPath resolves explicit path", () => {
@@ -175,6 +190,46 @@ test("listMcpServerTools caches tools after first call", async () => {
   });
 });
 
+test("connection pool isolates same server name across configurations", async () => {
+  await withTempDir(async (dir) => {
+    const firstPidPath = join(dir, "first.pid");
+    const secondPidPath = join(dir, "second.pid");
+    await withMcpCleanup(async () => {
+      const base = { command: "node", args: [mockServerPath] };
+      await listMcpServerTools("same", {
+        ...base,
+        env: { MOCK_MCP_PID_FILE: firstPidPath },
+      }, dir);
+      await listMcpServerTools("same", {
+        ...base,
+        env: { MOCK_MCP_PID_FILE: secondPidPath },
+      }, dir);
+      assert.ok(existsSync(firstPidPath));
+      assert.ok(existsSync(secondPidPath));
+      assert.notEqual(await readFile(firstPidPath, "utf8"), await readFile(secondPidPath, "utf8"));
+    });
+  });
+});
+
+test("failed stdio handshake terminates the child process", async () => {
+  await withTempDir(async (dir) => {
+    const pidPath = join(dir, "failed-handshake.pid");
+    await withMcpCleanup(async () => {
+      await assert.rejects(
+        listMcpServerTools("broken", {
+          command: "node",
+          args: [mockServerPath, "--fail-handshake"],
+          env: { MOCK_MCP_PID_FILE: pidPath },
+        }, dir),
+        /mock handshake failed/,
+      );
+      const pid = Number(await readFile(pidPath, "utf8"));
+      assert.ok(Number.isInteger(pid) && pid > 0);
+      await waitForProcessExit(pid);
+    });
+  });
+});
+
 test("execute search finds tools by keyword", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
@@ -229,6 +284,21 @@ test("execute call resolves mcp_<server>_<tool> id", async () => {
         args: { message: "via-id" },
       });
       assert.equal(result, "via-id");
+    });
+  });
+});
+
+test("execute call resolves an mcp tool id for a server name with underscores", async () => {
+  await withTempDir(async (dir) => {
+    await writeMcpConfig(dir, { my_server: { command: "node", args: [mockServerPath] } });
+    await withMcpCleanup(async () => {
+      const proxy = createMcpProxyTool({ cwd: dir });
+      const result = await proxy.execute({
+        action: "call",
+        tool: "mcp_my_server_echo",
+        args: { message: "underscore-id" },
+      });
+      assert.equal(result, "underscore-id");
     });
   });
 });
@@ -432,6 +502,60 @@ test("HTTP MCP server: headers expand !cat with relative path", async () => {
         const proxy = createMcpProxyTool({ cwd: dir });
         await proxy.execute({ action: "list" });
         assert.equal(seenAuth, "secret-token-value");
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
+test("HTTP MCP server: explicit config resolves !cat relative to config file", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = join(dir, "config");
+    const workDir = join(dir, "work");
+    await mkdir(configDir);
+    await mkdir(workDir);
+    await writeFile(join(configDir, "token.txt"), "config-token\n", "utf8");
+    const { server, port } = await startMockHttpServer();
+    let seenAuth = null;
+    const originalHandler = server.listeners("request")[0];
+    server.removeListener("request", originalHandler);
+    server.on("request", (req, res) => {
+      if (req.headers.authorization) seenAuth = req.headers.authorization;
+      originalHandler(req, res);
+    });
+    const configPath = join(configDir, "mcp.json");
+    try {
+      await writeFile(configPath, JSON.stringify({
+        mcpServers: {
+          httpMock: {
+            url: `http://127.0.0.1:${port}/json`,
+            headers: { Authorization: "!cat token.txt" },
+          },
+        },
+      }), "utf8");
+      await withMcpCleanup(async () => {
+        const proxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd: workDir });
+        await proxy.execute({ action: "list" });
+        assert.equal(seenAuth, "config-token");
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
+test("HTTP MCP server: JSON response id must match the request", async () => {
+  await withTempDir(async (dir) => {
+    const { server, port } = await startMockHttpServer();
+    try {
+      await writeMcpConfig(dir, {
+        httpMock: { url: `http://127.0.0.1:${port}/wrong-id` },
+      });
+      await withMcpCleanup(async () => {
+        const proxy = createMcpProxyTool({ cwd: dir });
+        const result = await proxy.execute({ action: "list" });
+        assert.match(result, /JSON-RPC 响应 id 不匹配/);
       });
     } finally {
       await new Promise((resolve) => server.close(resolve));

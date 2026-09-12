@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 
 import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
 
 const rl = createInterface({ input: process.stdin });
+if (process.env.MOCK_MCP_PID_FILE) {
+  writeFileSync(process.env.MOCK_MCP_PID_FILE, String(process.pid));
+}
 
 const tools = [
   {
@@ -93,6 +97,14 @@ rl.on("line", (line) => {
   const { id, method, params } = request;
 
   if (method === "initialize") {
+    if (process.argv.includes("--fail-handshake")) {
+      send({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32000, message: "mock handshake failed" },
+      });
+      return;
+    }
     send({
       jsonrpc: "2.0",
       id,
