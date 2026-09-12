@@ -138,6 +138,7 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 - **遇挫坚持：命令失败、依赖缺失、报错时，先诊断原因并重试或换方案（如 apt/pip 安装依赖、改用替代命令），不要因为一次失败就放弃或空手结束**；只有尝试多种方案后仍不可行才如实汇报
 - 每次操作后验证结果（读回文件、检查命令退出码），失败则诊断重试，不假装成功
 - 输出必须来自工具真实返回，不得编造文件内容或命令结果
+- **硬规则：回答中出现的具体数值/一次性输出，必须来自当前上下文中的工具返回或归档文件；不得凭记忆给出。**
 
 [来源与身份]
 - 一次性生成的值（随机数、时间戳、临时 token、不可复现的命令输出）只能引用首次出现的工具返回，不得通过重跑命令“恢复”
@@ -164,6 +165,12 @@ export function buildArchiveSystemPrompt(archiveDir) {
 [工具输出归档]
 本次运行的归档目录：${absoluteDir}
 早期工具输出被截断或已折叠出上下文时，用 tree/ls 列出该目录、再用 readFile 读取对应文件（命名形如 001-exec.txt）即可取回完整原文——不要重跑命令（重跑会得到不同的值），也不要凭记忆给值。`;
+}
+
+export function buildArchiveRecoveryHint(archiveDir) {
+  if (typeof archiveDir !== "string" || archiveDir.length === 0) return undefined;
+  const absoluteDir = path.resolve(archiveDir);
+  return `早期轮次的工具输出原文已归档到 ${absoluteDir}（形如 001-exec.txt，用 tree/ls 查看、readFile 读取）。若回答需要早期轮次的具体数值或输出，必须先读取归档再作答；不要重跑命令（重跑会得到不同的值），也不要凭记忆给出具体值。`;
 }
 
 function resolveToolPath(root, value) {

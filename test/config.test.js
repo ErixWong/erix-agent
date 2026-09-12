@@ -291,6 +291,20 @@ test("buildCompactionContext is disabled without a context window", () => {
   );
 });
 
+test("buildCompactionContext keeps recovery hints optional", () => {
+  const context = buildCompactionContext({
+    contextWindowTokens: 20000,
+    maxOutputTokens: 2000,
+  }, 8000, "archive hint");
+
+  assert.equal(context.recoveryHint, "archive hint");
+  assert.equal(context.strategy.name, "fold-statistical");
+  assert.equal(
+    buildCompactionContext({ maxOutputTokens: 2000 }, undefined),
+    undefined,
+  );
+});
+
 test("loadCliConfig preserves the existing missing endpoint and API key error", async () => {
   await withDirectory(async (directory) => {
     await withEnvironment({}, async () => {

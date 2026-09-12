@@ -262,6 +262,49 @@ test("runRepl resumes from the transcript store without a recall tool", async ()
   }
 });
 
+test("runRepl passes the archive recovery hint through loop context", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-repl-recovery-hint-test-"));
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  let captured;
+  try {
+    const run = runRepl(
+      ["--session", "repl-recovery", "--dir", dir, "--compact-budget", "100"],
+      {
+        input,
+        output,
+        sessionDir: dir,
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        providerFactory: () => ({}),
+        loop: async (options) => {
+          captured = options;
+          return {
+            finalText: "done",
+            messages: [],
+            rounds: 1,
+            usage: { input_tokens: 0, output_tokens: 0 },
+            compactionStats: [],
+          };
+        },
+      },
+    );
+    input.end("capture\n/exit\n");
+    await run;
+
+    assert.ok(captured);
+    assert.match(captured.context.recoveryHint, new RegExp(
+      `${dir}/outputs/repl-recovery`.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"),
+    ));
+    assert.match(captured.context.recoveryHint, /必须先读取归档/u);
+    assert.match(captured.context.recoveryHint, /不要重跑命令/u);
+  } finally {
+    input.destroy();
+    output.destroy();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runRepl reports a damaged MCP config instead of treating it as absent", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-repl-mcp-error-test-"));
   const input = new PassThrough();

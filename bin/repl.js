@@ -26,6 +26,7 @@ import {
 import { buildSkillTools } from "./skills.js";
 import {
   buildArchiveSystemPrompt,
+  buildArchiveRecoveryHint,
   CLI_TOOLS_SYSTEM_PROMPT,
   createCliTools,
   wrapExecuteTool,
@@ -535,7 +536,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           ts: new Date().toISOString(),
         });
       }
-      const context = buildCompactionContext(config, options.compactBudget);
+      const recoveryHint = buildArchiveRecoveryHint(archiveDir);
+      const context = buildCompactionContext(config, options.compactBudget, recoveryHint);
       const tools = [...cliTools.tools, ...skillTools.tools];
       if (mcpProxy?.enabled) {
         tools.push(mcpProxy.schema);
@@ -586,7 +588,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       };
 
       try {
-        const result = await runToolLoop(loopOptions);
+        const result = await (io.loop ?? runToolLoop)(loopOptions);
         messages = result.messages;
         usage.input_tokens += Number.isFinite(result.usage?.input_tokens)
           ? result.usage.input_tokens
