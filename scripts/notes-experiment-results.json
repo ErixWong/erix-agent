@@ -1,0 +1,2602 @@
+{
+  "protocol": {
+    "prompt": "fixed one-shot secret + seq 1..400/401..800/801..1200",
+    "compactBudget": 3000,
+    "maxRounds": 12,
+    "smokeRuns": 4,
+    "criticalRuns": 6
+  },
+  "startedAt": "2026-09-12T16:10:57.270Z",
+  "completedAt": "2026-09-12T16:27:52.651Z",
+  "runs": [
+    {
+      "id": "A-kimi-for-coding-notes-exp-a-kimi-for-coding-01",
+      "arm": "A",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-a-kimi-for-coding-01",
+      "exitCode": 0,
+      "durationMs": 20585,
+      "timedOut": false,
+      "termination": "end_turn",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "G9OF",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "G9OF",
+          "length": 16
+        }
+      ],
+      "finalText": "一次性密钥=G9OF…（长度16）（原样给出首次执行值，完整原文见归档 001-exec.txt）",
+      "category": "hit_first",
+      "answer": {
+        "prefix": "G9OF",
+        "length": 16
+      },
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "A-kimi-for-coding-notes-exp-a-kimi-for-coding-02",
+      "arm": "A",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-a-kimi-for-coding-02",
+      "exitCode": 0,
+      "durationMs": 52433,
+      "timedOut": false,
+      "termination": "max_rounds_cap",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 9,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 10,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 11,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 11,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 12,
+          "archiveRead": false
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "lfwk",
+          "length": 16
+        },
+        {
+          "prefix": "0yOT",
+          "length": 16
+        },
+        {
+          "prefix": "zTqX",
+          "length": 16
+        },
+        {
+          "prefix": "Zc9H",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "Zc9H",
+          "length": 16
+        },
+        {
+          "prefix": "zTqX",
+          "length": 16
+        },
+        {
+          "prefix": "lfwk",
+          "length": 16
+        },
+        {
+          "prefix": "0yOT",
+          "length": 16
+        }
+      ],
+      "finalText": "",
+      "category": "no_answer",
+      "answer": null,
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "A-kimi-for-coding-notes-exp-a-kimi-for-coding-03",
+      "arm": "A",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-a-kimi-for-coding-03",
+      "exitCode": 0,
+      "durationMs": 41643,
+      "timedOut": false,
+      "termination": "end_turn",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 9,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 10,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "tcz1",
+          "length": 16
+        },
+        {
+          "prefix": "63lm",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "63lm",
+          "length": 16
+        },
+        {
+          "prefix": "tcz1",
+          "length": 16
+        }
+      ],
+      "finalText": "步骤①首次执行的一次性密钥（原样）：一次性密钥=tcz1…（长度16）\n\n（从归档文件 001-exec.txt 读取，该值为 /dev/urandom 首次生成的原始值，未重跑恢复）",
+      "category": "hit_first",
+      "answer": {
+        "prefix": "tcz1",
+        "length": 16
+      },
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "A-kimi-for-coding-notes-exp-a-kimi-for-coding-04",
+      "arm": "A",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-a-kimi-for-coding-04",
+      "exitCode": 0,
+      "durationMs": 73378,
+      "timedOut": false,
+      "termination": "max_rounds_cap",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "writeFile",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 6,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 7,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 9,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 11,
+          "archiveRead": false
+        },
+        {
+          "name": "tree",
+          "round": 12,
+          "archiveRead": false
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "boP5",
+          "length": 16
+        },
+        {
+          "prefix": "xSc0",
+          "length": 16
+        },
+        {
+          "prefix": "s8Be",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "s8Be",
+          "length": 16
+        },
+        {
+          "prefix": "xSc0",
+          "length": 16
+        },
+        {
+          "prefix": "boP5",
+          "length": 16
+        }
+      ],
+      "finalText": "",
+      "category": "no_answer",
+      "answer": null,
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "A-kimi-for-coding-notes-exp-a-kimi-for-coding-05",
+      "arm": "A",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-a-kimi-for-coding-05",
+      "exitCode": 0,
+      "durationMs": 21143,
+      "timedOut": false,
+      "termination": "end_turn",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "p0E3",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "p0E3",
+          "length": 16
+        }
+      ],
+      "finalText": "① 一次性密钥（首次执行的原始值，未重跑）：p0E3…（长度16）\n\n② seq 1 400、③ seq 401 800、④ seq 801 1200 均已各执行一次，输出完整（分别为归档 002/003/004-exec.txt）。原始密钥输出归档于 001-exec.txt，可随时核验。",
+      "category": "hit_first",
+      "answer": {
+        "prefix": "p0E3",
+        "length": 16
+      },
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "A-kimi-for-coding-notes-exp-a-kimi-for-coding-06",
+      "arm": "A",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-a-kimi-for-coding-06",
+      "exitCode": 0,
+      "durationMs": 86255,
+      "timedOut": false,
+      "termination": "max_rounds_cap",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 5,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 6,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 9,
+          "archiveRead": true
+        },
+        {
+          "name": "tree",
+          "round": 9,
+          "archiveRead": false
+        },
+        {
+          "name": "rg",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 11,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 12,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "GFdD",
+          "length": 16
+        },
+        {
+          "prefix": "qBrJ",
+          "length": 16
+        },
+        {
+          "prefix": "WZSy",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "qBrJ",
+          "length": 16
+        },
+        {
+          "prefix": "WZSy",
+          "length": 16
+        },
+        {
+          "prefix": "GFdD",
+          "length": 16
+        }
+      ],
+      "finalText": "步骤①–④此前已执行过（归档存在 001–004，还有重复执行 005–008 与一次 rg 009），我直接从归档读取①的首次输出，不重跑命令。",
+      "category": "no_answer",
+      "answer": null,
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "A-deepseek-v4-flash-notes-exp-a-deepseek-v4-flash-01",
+      "arm": "A",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-a-deepseek-v4-flash-01",
+      "exitCode": 1,
+      "durationMs": 845,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913001553504822146uxHpklfb)\n",
+      "failed": true
+    },
+    {
+      "id": "A-deepseek-v4-flash-notes-exp-a-deepseek-v4-flash-02",
+      "arm": "A",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-a-deepseek-v4-flash-02",
+      "exitCode": 1,
+      "durationMs": 838,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 2026091300155434866858471VRbK77)\n",
+      "failed": true
+    },
+    {
+      "id": "A-deepseek-v4-flash-notes-exp-a-deepseek-v4-flash-03",
+      "arm": "A",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-a-deepseek-v4-flash-03",
+      "exitCode": 1,
+      "durationMs": 831,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913001555184622387lxWw44WI)\n",
+      "failed": true
+    },
+    {
+      "id": "A-deepseek-v4-flash-notes-exp-a-deepseek-v4-flash-04",
+      "arm": "A",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-a-deepseek-v4-flash-04",
+      "exitCode": 1,
+      "durationMs": 850,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 2026091300155626862903FybBupfw)\n",
+      "failed": true
+    },
+    {
+      "id": "A-deepseek-v4-flash-notes-exp-a-deepseek-v4-flash-05",
+      "arm": "A",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-a-deepseek-v4-flash-05",
+      "exitCode": 1,
+      "durationMs": 766,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913001556824073861LjKwDdrp)\n",
+      "failed": true
+    },
+    {
+      "id": "A-deepseek-v4-flash-notes-exp-a-deepseek-v4-flash-06",
+      "arm": "A",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-a-deepseek-v4-flash-06",
+      "exitCode": 1,
+      "durationMs": 810,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913001557614228457SdWx8YNV)\n",
+      "failed": true
+    },
+    {
+      "id": "B-kimi-for-coding-notes-exp-b-kimi-for-coding-01",
+      "arm": "B",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-b-kimi-for-coding-01",
+      "exitCode": 0,
+      "durationMs": 72464,
+      "timedOut": false,
+      "termination": "max_rounds_cap",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 6,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 9,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 9,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 11,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 12,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "oaVG",
+          "length": 16
+        },
+        {
+          "prefix": "7LbM",
+          "length": 16
+        },
+        {
+          "prefix": "KCQG",
+          "length": 16
+        },
+        {
+          "prefix": "e1tw",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "e1tw",
+          "length": 16
+        },
+        {
+          "prefix": "KCQG",
+          "length": 16
+        },
+        {
+          "prefix": "7LbM",
+          "length": 16
+        },
+        {
+          "prefix": "oaVG",
+          "length": 16
+        }
+      ],
+      "finalText": "",
+      "category": "no_answer",
+      "answer": null,
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "B-kimi-for-coding-notes-exp-b-kimi-for-coding-02",
+      "arm": "B",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-b-kimi-for-coding-02",
+      "exitCode": 0,
+      "durationMs": 75032,
+      "timedOut": false,
+      "termination": "max_rounds_cap",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 9,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 11,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 12,
+          "archiveRead": false
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "kDOk",
+          "length": 16
+        },
+        {
+          "prefix": "xe/w",
+          "length": 16
+        },
+        {
+          "prefix": "brqu",
+          "length": 16
+        },
+        {
+          "prefix": "V619",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "brqu",
+          "length": 16
+        },
+        {
+          "prefix": "xe/w",
+          "length": 16
+        },
+        {
+          "prefix": "kDOk",
+          "length": 16
+        },
+        {
+          "prefix": "V619",
+          "length": 16
+        }
+      ],
+      "finalText": "",
+      "category": "no_answer",
+      "answer": null,
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "B-kimi-for-coding-notes-exp-b-kimi-for-coding-03",
+      "arm": "B",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-b-kimi-for-coding-03",
+      "exitCode": 0,
+      "durationMs": 47191,
+      "timedOut": false,
+      "termination": "end_turn",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 7,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 7,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 7,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 7,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "/Xv3",
+          "length": 16
+        },
+        {
+          "prefix": "VXwI",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "VXwI",
+          "length": 16
+        },
+        {
+          "prefix": "/Xv3",
+          "length": 16
+        }
+      ],
+      "finalText": "① 的一次性密钥（首次执行的值，原样给出）：一次性密钥=/Xv3…（长度16）\n\n说明：步骤①的命令在本轮被调用了两次，第一次执行的原始输出已归档于 001-exec.txt（round 1），我从中读取了原值；第二次执行（005-exec.txt，round 5，值 VXwI…（长度16））是随机重跑，不代表原值，已忽略。②③④ 的 seq 1 400 / 401 800 / 801 1200 均已按要求各执行一次（归档于 002/003/004-exec.txt）。",
+      "category": "hit_first",
+      "answer": {
+        "prefix": "/Xv3",
+        "length": 16
+      },
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "B-kimi-for-coding-notes-exp-b-kimi-for-coding-04",
+      "arm": "B",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-b-kimi-for-coding-04",
+      "exitCode": 0,
+      "durationMs": 68153,
+      "timedOut": false,
+      "termination": "end_turn",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 6,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 9,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 9,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 9,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 9,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 11,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 11,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "bHDW",
+          "length": 16
+        },
+        {
+          "prefix": "JPxm",
+          "length": 16
+        },
+        {
+          "prefix": "+fdP",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "+fdP",
+          "length": 16
+        },
+        {
+          "prefix": "JPxm",
+          "length": 16
+        },
+        {
+          "prefix": "bHDW",
+          "length": 16
+        }
+      ],
+      "finalText": "一次性密钥=bHDW…（长度16）",
+      "category": "hit_first",
+      "answer": {
+        "prefix": "bHDW",
+        "length": 16
+      },
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "B-deepseek-v4-flash-notes-exp-b-deepseek-v4-flash-01",
+      "arm": "B",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-b-deepseek-v4-flash-01",
+      "exitCode": 1,
+      "durationMs": 839,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002021329663700WcvStQ75)\n",
+      "failed": true
+    },
+    {
+      "id": "B-deepseek-v4-flash-notes-exp-b-deepseek-v4-flash-02",
+      "arm": "B",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-b-deepseek-v4-flash-02",
+      "exitCode": 1,
+      "durationMs": 819,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002022154281056g73ZTJRi)\n",
+      "failed": true
+    },
+    {
+      "id": "B-deepseek-v4-flash-notes-exp-b-deepseek-v4-flash-03",
+      "arm": "B",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-b-deepseek-v4-flash-03",
+      "exitCode": 1,
+      "durationMs": 767,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002022950529461eNspsFYI)\n",
+      "failed": true
+    },
+    {
+      "id": "B-deepseek-v4-flash-notes-exp-b-deepseek-v4-flash-04",
+      "arm": "B",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-b-deepseek-v4-flash-04",
+      "exitCode": 1,
+      "durationMs": 756,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002023706381916ycC6HhWw)\n",
+      "failed": true
+    },
+    {
+      "id": "C-kimi-for-coding-notes-exp-c-kimi-for-coding-01",
+      "arm": "C",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-c-kimi-for-coding-01",
+      "exitCode": 0,
+      "durationMs": 64504,
+      "timedOut": false,
+      "termination": "end_turn",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "tree",
+          "round": 6,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 8,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "R6Nj",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "R6Nj",
+          "length": 16
+        }
+      ],
+      "finalText": "一次性密钥=R6Nj…（长度16）",
+      "category": "hit_first",
+      "answer": {
+        "prefix": "R6Nj",
+        "length": 16
+      },
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "C-kimi-for-coding-notes-exp-c-kimi-for-coding-02",
+      "arm": "C",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-c-kimi-for-coding-02",
+      "exitCode": 0,
+      "durationMs": 4299,
+      "timedOut": false,
+      "termination": "end_turn",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "先读取归档恢复①的密钥",
+      "category": "no_answer",
+      "answer": null,
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "C-kimi-for-coding-notes-exp-c-kimi-for-coding-03",
+      "arm": "C",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-c-kimi-for-coding-03",
+      "exitCode": 0,
+      "durationMs": 37517,
+      "timedOut": false,
+      "termination": "end_turn",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 5,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "IK+n",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "IK+n",
+          "length": 16
+        }
+      ],
+      "finalText": "一次性密钥=IK+n…（长度16）",
+      "category": "hit_first",
+      "answer": {
+        "prefix": "IK+n",
+        "length": 16
+      },
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "C-kimi-for-coding-notes-exp-c-kimi-for-coding-04",
+      "arm": "C",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-c-kimi-for-coding-04",
+      "exitCode": 0,
+      "durationMs": 35272,
+      "timedOut": false,
+      "termination": "end_turn",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "tree",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 6,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "2Jc+",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "2Jc+",
+          "length": 16
+        }
+      ],
+      "finalText": "一次性密钥=2Jc+…（长度16）",
+      "category": "hit_first",
+      "answer": {
+        "prefix": "2Jc+",
+        "length": 16
+      },
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "C-deepseek-v4-flash-notes-exp-c-deepseek-v4-flash-01",
+      "arm": "C",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-c-deepseek-v4-flash-01",
+      "exitCode": 1,
+      "durationMs": 826,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002246122041116gJ0WGeFh)\n",
+      "failed": true
+    },
+    {
+      "id": "C-deepseek-v4-flash-notes-exp-c-deepseek-v4-flash-02",
+      "arm": "C",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-c-deepseek-v4-flash-02",
+      "exitCode": 1,
+      "durationMs": 755,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002246903161712wWiDXvBn)\n",
+      "failed": true
+    },
+    {
+      "id": "C-deepseek-v4-flash-notes-exp-c-deepseek-v4-flash-03",
+      "arm": "C",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-c-deepseek-v4-flash-03",
+      "exitCode": 1,
+      "durationMs": 771,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002247677261640Zd23Dd3I)\n",
+      "failed": true
+    },
+    {
+      "id": "C-deepseek-v4-flash-notes-exp-c-deepseek-v4-flash-04",
+      "arm": "C",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-c-deepseek-v4-flash-04",
+      "exitCode": 1,
+      "durationMs": 826,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002248481272080I6FiY0vG)\n",
+      "failed": true
+    },
+    {
+      "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-01",
+      "arm": "D",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-d-kimi-for-coding-01",
+      "exitCode": 0,
+      "durationMs": 70510,
+      "timedOut": false,
+      "termination": "max_rounds_cap",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 6,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 8,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 9,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 11,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 12,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 12,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 12,
+          "archiveRead": false
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "hwNO",
+          "length": 16
+        },
+        {
+          "prefix": "llY/",
+          "length": 16
+        },
+        {
+          "prefix": "26P0",
+          "length": 16
+        },
+        {
+          "prefix": "WeMi",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "llY/",
+          "length": 16
+        },
+        {
+          "prefix": "WeMi",
+          "length": 16
+        },
+        {
+          "prefix": "hwNO",
+          "length": 16
+        },
+        {
+          "prefix": "26P0",
+          "length": 16
+        }
+      ],
+      "finalText": "已取回①的原始密钥。继续执行②③④（顺序不变）：",
+      "category": "no_answer",
+      "answer": null,
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-02",
+      "arm": "D",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-d-kimi-for-coding-02",
+      "exitCode": 0,
+      "durationMs": 42366,
+      "timedOut": false,
+      "termination": "max_rounds_cap",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 9,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 10,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 11,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 12,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "kWNU",
+          "length": 16
+        },
+        {
+          "prefix": "4ym0",
+          "length": 16
+        },
+        {
+          "prefix": "JTjs",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "4ym0",
+          "length": 16
+        },
+        {
+          "prefix": "JTjs",
+          "length": 16
+        },
+        {
+          "prefix": "kWNU",
+          "length": 16
+        }
+      ],
+      "finalText": "",
+      "category": "no_answer",
+      "answer": null,
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-03",
+      "arm": "D",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-d-kimi-for-coding-03",
+      "exitCode": 0,
+      "durationMs": 57108,
+      "timedOut": false,
+      "termination": "max_rounds_cap",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 9,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 11,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 12,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "evKZ",
+          "length": 16
+        },
+        {
+          "prefix": "UJPD",
+          "length": 16
+        },
+        {
+          "prefix": "LWz1",
+          "length": 16
+        },
+        {
+          "prefix": "kXI3",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "UJPD",
+          "length": 16
+        },
+        {
+          "prefix": "kXI3",
+          "length": 16
+        },
+        {
+          "prefix": "LWz1",
+          "length": 16
+        },
+        {
+          "prefix": "evKZ",
+          "length": 16
+        }
+      ],
+      "finalText": "注意到系统提示：该命令之前已执行过，原始首次输出已归档到 001-exec.txt。我按规则读取归档文件取回原值（不重跑命令）：",
+      "category": "no_answer",
+      "answer": null,
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-04",
+      "arm": "D",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-d-kimi-for-coding-04",
+      "exitCode": 0,
+      "durationMs": 59703,
+      "timedOut": false,
+      "termination": "max_rounds_cap",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 6,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 8,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
+          "round": 9,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "tree",
+          "round": 11,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 12,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "8l7X",
+          "length": 16
+        },
+        {
+          "prefix": "qQIY",
+          "length": 16
+        },
+        {
+          "prefix": "+9hd",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "+9hd",
+          "length": 16
+        },
+        {
+          "prefix": "8l7X",
+          "length": 16
+        },
+        {
+          "prefix": "qQIY",
+          "length": 16
+        }
+      ],
+      "finalText": "归档中有 11 个 exec 输出。先查看 meta 文件确认哪些是①—③，避免误读。",
+      "category": "no_answer",
+      "answer": null,
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-05",
+      "arm": "D",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-d-kimi-for-coding-05",
+      "exitCode": 0,
+      "durationMs": 51583,
+      "timedOut": false,
+      "termination": "end_turn",
+      "compacted": true,
+      "noteRead": false,
+      "archiveRead": true,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 3,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 6,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 7,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 7,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 7,
+          "archiveRead": true
+        },
+        {
+          "name": "readFile",
+          "round": 7,
+          "archiveRead": true
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "ZAwb",
+          "length": 16
+        },
+        {
+          "prefix": "3Uez",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "ZAwb",
+          "length": 16
+        },
+        {
+          "prefix": "3Uez",
+          "length": 16
+        }
+      ],
+      "finalText": "一次性密钥=ZAwb…（长度16）",
+      "category": "hit_first",
+      "answer": {
+        "prefix": "ZAwb",
+        "length": 16
+      },
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-06",
+      "arm": "D",
+      "model": "kimi-for-coding",
+      "runId": "notes-exp-d-kimi-for-coding-06",
+      "exitCode": 0,
+      "durationMs": 15834,
+      "timedOut": false,
+      "termination": "end_turn",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [
+        {
+          "name": "exec",
+          "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 2,
+          "archiveRead": false
+        }
+      ],
+      "generatedValues": [
+        {
+          "prefix": "qrbQ",
+          "length": 16
+        }
+      ],
+      "noteValues": [
+        {
+          "prefix": "qrbQ",
+          "length": 16
+        }
+      ],
+      "finalText": "① 一次性密钥（首次执行的原值）：qrbQ…（长度16）\n\n完整输出为：一次性密钥=qrbQ…（长度16）（已归档至 001-exec.txt）。seq 三段输出完整（1–1200 连续），分别归档于 002/003/004-exec.txt。",
+      "category": "hit_first",
+      "answer": {
+        "prefix": "qrbQ",
+        "length": 16
+      },
+      "stderr": "",
+      "failed": false
+    },
+    {
+      "id": "D-deepseek-v4-flash-notes-exp-d-deepseek-v4-flash-01",
+      "arm": "D",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-d-deepseek-v4-flash-01",
+      "exitCode": 1,
+      "durationMs": 830,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002746465497843qZhwtpsI)\n",
+      "failed": true
+    },
+    {
+      "id": "D-deepseek-v4-flash-notes-exp-d-deepseek-v4-flash-02",
+      "arm": "D",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-d-deepseek-v4-flash-02",
+      "exitCode": 1,
+      "durationMs": 807,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002747277146734DJ5pD4Ey)\n",
+      "failed": true
+    },
+    {
+      "id": "D-deepseek-v4-flash-notes-exp-d-deepseek-v4-flash-03",
+      "arm": "D",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-d-deepseek-v4-flash-03",
+      "exitCode": 1,
+      "durationMs": 2697,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002748445055980pqP0R1G)\n",
+      "failed": true
+    },
+    {
+      "id": "D-deepseek-v4-flash-notes-exp-d-deepseek-v4-flash-04",
+      "arm": "D",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-d-deepseek-v4-flash-04",
+      "exitCode": 1,
+      "durationMs": 831,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002750819039489SzAvssxJ)\n",
+      "failed": true
+    },
+    {
+      "id": "D-deepseek-v4-flash-notes-exp-d-deepseek-v4-flash-05",
+      "arm": "D",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-d-deepseek-v4-flash-05",
+      "exitCode": 1,
+      "durationMs": 813,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002751621313126Crwal3ft)\n",
+      "failed": true
+    },
+    {
+      "id": "D-deepseek-v4-flash-notes-exp-d-deepseek-v4-flash-06",
+      "arm": "D",
+      "model": "deepseek-v4-flash",
+      "runId": "notes-exp-d-deepseek-v4-flash-06",
+      "exitCode": 1,
+      "durationMs": 835,
+      "timedOut": false,
+      "termination": "unknown",
+      "compacted": false,
+      "noteRead": false,
+      "archiveRead": false,
+      "failClosed": false,
+      "toolCalls": [],
+      "generatedValues": [],
+      "noteValues": [],
+      "finalText": "",
+      "category": "failed",
+      "answer": null,
+      "stderr": "错误：Model deepseek-v4-flash is not supported for current token (request id: 20260913002752459283193ev0VqcA2)\n",
+      "failed": true
+    }
+  ],
+  "aggregate": [
+    {
+      "arm": "A",
+      "model": "kimi-for-coding",
+      "n": 6,
+      "hitFirst": 3,
+      "rerunImpersonation": 0,
+      "invented": 0,
+      "noAnswer": 3,
+      "failed": 0,
+      "knownOther": 0,
+      "noteRead": 0,
+      "archiveRead": 4,
+      "failClosed": 0,
+      "compacted": 4,
+      "durationMs": 295437,
+      "evaluated": 6,
+      "errorSpecificRate": 0,
+      "errorSpecificWilson95": {
+        "low": 0,
+        "high": 0.3903342916563735
+      },
+      "noteReadRate": 0,
+      "archiveReadRate": 0.6666666666666666,
+      "failClosedRate": 0,
+      "averageDurationMs": 49239.5
+    },
+    {
+      "arm": "A",
+      "model": "deepseek-v4-flash",
+      "n": 6,
+      "hitFirst": 0,
+      "rerunImpersonation": 0,
+      "invented": 0,
+      "noAnswer": 0,
+      "failed": 6,
+      "knownOther": 0,
+      "noteRead": 0,
+      "archiveRead": 0,
+      "failClosed": 0,
+      "compacted": 0,
+      "durationMs": 4940,
+      "evaluated": 0,
+      "errorSpecificRate": null,
+      "errorSpecificWilson95": {
+        "low": null,
+        "high": null
+      },
+      "noteReadRate": 0,
+      "archiveReadRate": 0,
+      "failClosedRate": 0,
+      "averageDurationMs": 823.3333333333334
+    },
+    {
+      "arm": "B",
+      "model": "kimi-for-coding",
+      "n": 4,
+      "hitFirst": 2,
+      "rerunImpersonation": 0,
+      "invented": 0,
+      "noAnswer": 2,
+      "failed": 0,
+      "knownOther": 0,
+      "noteRead": 0,
+      "archiveRead": 4,
+      "failClosed": 0,
+      "compacted": 4,
+      "durationMs": 262840,
+      "evaluated": 4,
+      "errorSpecificRate": 0,
+      "errorSpecificWilson95": {
+        "low": 0,
+        "high": 0.4898908403969213
+      },
+      "noteReadRate": 0,
+      "archiveReadRate": 1,
+      "failClosedRate": 0,
+      "averageDurationMs": 65710
+    },
+    {
+      "arm": "B",
+      "model": "deepseek-v4-flash",
+      "n": 4,
+      "hitFirst": 0,
+      "rerunImpersonation": 0,
+      "invented": 0,
+      "noAnswer": 0,
+      "failed": 4,
+      "knownOther": 0,
+      "noteRead": 0,
+      "archiveRead": 0,
+      "failClosed": 0,
+      "compacted": 0,
+      "durationMs": 3181,
+      "evaluated": 0,
+      "errorSpecificRate": null,
+      "errorSpecificWilson95": {
+        "low": null,
+        "high": null
+      },
+      "noteReadRate": 0,
+      "archiveReadRate": 0,
+      "failClosedRate": 0,
+      "averageDurationMs": 795.25
+    },
+    {
+      "arm": "C",
+      "model": "kimi-for-coding",
+      "n": 4,
+      "hitFirst": 3,
+      "rerunImpersonation": 0,
+      "invented": 0,
+      "noAnswer": 1,
+      "failed": 0,
+      "knownOther": 0,
+      "noteRead": 0,
+      "archiveRead": 3,
+      "failClosed": 0,
+      "compacted": 3,
+      "durationMs": 141592,
+      "evaluated": 4,
+      "errorSpecificRate": 0,
+      "errorSpecificWilson95": {
+        "low": 0,
+        "high": 0.4898908403969213
+      },
+      "noteReadRate": 0,
+      "archiveReadRate": 0.75,
+      "failClosedRate": 0,
+      "averageDurationMs": 35398
+    },
+    {
+      "arm": "C",
+      "model": "deepseek-v4-flash",
+      "n": 4,
+      "hitFirst": 0,
+      "rerunImpersonation": 0,
+      "invented": 0,
+      "noAnswer": 0,
+      "failed": 4,
+      "knownOther": 0,
+      "noteRead": 0,
+      "archiveRead": 0,
+      "failClosed": 0,
+      "compacted": 0,
+      "durationMs": 3178,
+      "evaluated": 0,
+      "errorSpecificRate": null,
+      "errorSpecificWilson95": {
+        "low": null,
+        "high": null
+      },
+      "noteReadRate": 0,
+      "archiveReadRate": 0,
+      "failClosedRate": 0,
+      "averageDurationMs": 794.5
+    },
+    {
+      "arm": "D",
+      "model": "kimi-for-coding",
+      "n": 6,
+      "hitFirst": 2,
+      "rerunImpersonation": 0,
+      "invented": 0,
+      "noAnswer": 4,
+      "failed": 0,
+      "knownOther": 0,
+      "noteRead": 0,
+      "archiveRead": 5,
+      "failClosed": 0,
+      "compacted": 5,
+      "durationMs": 297104,
+      "evaluated": 6,
+      "errorSpecificRate": 0,
+      "errorSpecificWilson95": {
+        "low": 0,
+        "high": 0.3903342916563735
+      },
+      "noteReadRate": 0,
+      "archiveReadRate": 0.8333333333333334,
+      "failClosedRate": 0,
+      "averageDurationMs": 49517.333333333336
+    },
+    {
+      "arm": "D",
+      "model": "deepseek-v4-flash",
+      "n": 6,
+      "hitFirst": 0,
+      "rerunImpersonation": 0,
+      "invented": 0,
+      "noAnswer": 0,
+      "failed": 6,
+      "knownOther": 0,
+      "noteRead": 0,
+      "archiveRead": 0,
+      "failClosed": 0,
+      "compacted": 0,
+      "durationMs": 6813,
+      "evaluated": 0,
+      "errorSpecificRate": null,
+      "errorSpecificWilson95": {
+        "low": null,
+        "high": null
+      },
+      "noteReadRate": 0,
+      "archiveReadRate": 0,
+      "failClosedRate": 0,
+      "averageDurationMs": 1135.5
+    }
+  ],
+  "conclusion": "本次还存在运行失败（A/deepseek-v4-flash 6/6、B/deepseek-v4-flash 4/4、C/deepseek-v4-flash 4/4、D/deepseek-v4-flash 6/6），其中 deepseek 的 relay 拒绝不应解读为模型行为结果。 按错误具体值比例的点估计，当前最优格为 **C/kimi-for-coding**（0.0%，4 个可判定 run；命中首次 3，无答案 1）。该排序只是初步证据，Wilson 区间较宽且不同格之间可能重叠；应继续做 100+ 次、交错运行、分模型报告后再决定默认方案。"
+}

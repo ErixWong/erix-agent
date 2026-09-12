@@ -311,6 +311,75 @@ function preview(version) {
   return "";
 }
 
+function ledgerReference(version) {
+  const artifact = version?.artifactRef;
+  if (!artifact || typeof artifact !== "object") return "";
+  const name = artifact.artifactId
+    ?? (typeof artifact.archivePath === "string" ? path.basename(artifact.archivePath) : "artifact");
+  const digest = typeof artifact.digest === "string"
+    ? ` digest=${artifact.digest.slice(0, 8)}`
+    : "";
+  return `引用 ${name}${digest}`;
+}
+
+function ledgerLine(record, version) {
+  const provenance = version?.provenance ?? {};
+  const source = String(provenance.source ?? "unknown");
+  const round = provenance.round === undefined ? "-" : String(provenance.round);
+  const toolUse = provenance.toolUseId === undefined
+    ? "-"
+    : String(provenance.toolUseId).slice(0, 32);
+  const value = typeof version?.content === "string"
+    ? version.content.length > 96
+      ? `${Array.from(version.content).slice(0, 72).join("")}…（摘要）`
+      : version.content
+    : ledgerReference(version);
+  return `${record.key} = ${value} source=${source} round=${round} toolUse=${toolUse} version=${version?.version ?? "-"}`;
+}
+
+/**
+ * Build the small, read-only pinned ledger used by the optional CLI push arm.
+ * The character budget is intentionally conservative because ledger values may
+ * contain CJK text where one character can be close to one token. Keep a
+ * margin below the nominal token budget for punctuation and field labels.
+ */
+export async function buildPinnedLedger({
+  maxEntries = 5,
+  maxTokens = 200,
+} = {}) {
+  const directory = await scopeDirectory(false);
+  if (!directory) return "";
+  const files = await readJsonFiles(directory);
+  const records = [];
+  for (const file of files) {
+    const loaded = await loadRecord(file);
+    if (loaded.corrupt) throw new Error(`笔记文件损坏，无法生成 ledger：${file}`);
+    if (loaded.missing) continue;
+    const record = loaded.record;
+    if (record.pinned !== true || record.state === "revoked") continue;
+    const version = record.versions.at(-1);
+    if (version) records.push({ record, version });
+  }
+  records.sort((left, right) => (
+    right.record.updated_at.localeCompare(left.record.updated_at)
+    || left.record.key.localeCompare(right.record.key)
+  ));
+
+  const maxCharacters = Math.max(1, Math.floor(maxTokens * 0.8));
+  const lines = [];
+  let used = 0;
+  for (const entry of records.slice(0, Math.max(0, maxEntries))) {
+    const fixed = ledgerLine(entry.record, entry.version);
+    const remaining = maxCharacters - used - (lines.length === 0 ? 0 : 1);
+    if (remaining < 1) break;
+    const line = Array.from(fixed).slice(0, remaining).join("");
+    if (line.length === 0) break;
+    lines.push(line);
+    used += line.length + (lines.length === 1 ? 0 : 1);
+  }
+  return lines.join("\n");
+}
+
 async function readJsonFiles(directory) {
   let entries;
   try {

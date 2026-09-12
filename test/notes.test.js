@@ -90,6 +90,32 @@ test("take/read/list supports version history and deduplicates identical content
   });
 });
 
+test("pinned ledger is scoped, provenance-labeled, and stays under its token budget", async () => {
+  await withNotes(async () => {
+    await notes.note_take({
+      key: "long-value",
+      content: "值".repeat(300),
+      pinned: true,
+    });
+    const longLedger = await notes.buildPinnedLedger({ maxEntries: 1, maxTokens: 200 });
+    assert.ok(Array.from(longLedger).length <= 160);
+    await notes.note_forget({ key: "long-value" });
+    await notes.note_take({
+      key: "pinned-value",
+      content: "short",
+      pinned: true,
+      provenance: { source: "auto", round: 3, toolUseId: "tool-123" },
+    });
+    await notes.note_take({ key: "not-pinned", content: "hidden" });
+
+    const ledger = await notes.buildPinnedLedger({ maxEntries: 5, maxTokens: 200 });
+    assert.ok(Array.from(ledger).length <= 160);
+    assert.match(ledger, /pinned-value/);
+    assert.match(ledger, /source=auto round=3 toolUse=tool-123/);
+    assert.doesNotMatch(ledger, /not-pinned/);
+  });
+});
+
 test("missing and revoked notes are explicit and retain a tombstone", async () => {
   await withNotes(async (directory) => {
     const missing = parsed(await notes.note_read({ key: "unknown" }));

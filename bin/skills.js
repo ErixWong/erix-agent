@@ -256,6 +256,7 @@ export async function buildSkillTools({
   const executors = {};
   let notesJanitor;
   let notesCompleteRun;
+  let notesLedger;
 
   for (const skill of loaded.skills) {
     const conflictNames = skill.tools
@@ -288,6 +289,9 @@ export async function buildSkillTools({
       if (typeof skillModule.completeRun === "function") {
         notesCompleteRun = skillModule.completeRun;
       }
+      if (typeof skillModule.buildPinnedLedger === "function") {
+        notesLedger = skillModule.buildPinnedLedger;
+      }
     }
 
     const missingExecutors = skill.tools
@@ -316,5 +320,6 @@ export async function buildSkillTools({
     errors,
     notesJanitor,
     notesCompleteRun,
+    notesLedger,
   };
 }
