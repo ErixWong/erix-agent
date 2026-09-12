@@ -48,7 +48,10 @@ test("sums string content and supported canonical blocks", () => {
     estimateTokens("hello") +
     estimateTokens("你好") +
     estimateTokens(JSON.stringify({ q: "中" })) +
+    estimateTokens("call-1") +
+    estimateTokens("lookup") +
     estimateTokens("结果") +
+    estimateTokens("call-1") +
     estimateTokens(JSON.stringify({ ignored: true }));
   assert.equal(estimateMessageTokens(messages), expected);
   assert.equal(estimateMessageTokens([]), 0);
@@ -89,4 +92,40 @@ test("accounts for configurable message, image, reasoning, and raw block costs",
     }]),
     4 + 1000,
   );
+});
+
+test("rejects invalid estimation coefficients before producing NaN", () => {
+  for (const [key, value] of [
+    ["cjkTokensPerChar", 0],
+    ["charsPerToken", Number.NaN],
+    ["margin", Number.POSITIVE_INFINITY],
+    ["imageTokenCost", -1],
+    ["reasoningBlockCost", -1],
+    ["rawBlockCost", -1],
+  ]) {
+    assert.throws(() => estimateTokens("text", { [key]: value }), {
+      name: "TypeError",
+    });
+  }
+  assert.throws(
+    () => estimateMessageTokens([], { messageOverhead: -1 }),
+    { name: "TypeError" },
+  );
+});
+
+test("counts tool structure identifiers in conservative estimates", () => {
+  const short = estimateMessageTokens([{
+    role: "assistant",
+    content: [{ type: "tool_use", id: "a", name: "x", input: {} }],
+  }]);
+  const long = estimateMessageTokens([{
+    role: "assistant",
+    content: [{
+      type: "tool_use",
+      id: "a".repeat(1000),
+      name: "x".repeat(1000),
+      input: {},
+    }],
+  }]);
+  assert.ok(long > short);
 });

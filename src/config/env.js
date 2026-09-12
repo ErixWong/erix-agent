@@ -13,13 +13,13 @@ const STRING_FIELDS = [
 ];
 
 const NUMBER_FIELDS = [
-  ["CONTEXT_WINDOW_TOKENS", "contextWindowTokens"],
-  ["MAX_OUTPUT_TOKENS", "maxOutputTokens"],
-  ["TEMPERATURE", "temperature"],
-  ["TOP_P", "topP"],
-  ["TIMEOUT", "timeout"],
-  ["FREQUENCY_PENALTY", "frequency_penalty"],
-  ["PRESENCE_PENALTY", "presence_penalty"],
+  ["CONTEXT_WINDOW_TOKENS", "contextWindowTokens", "positive"],
+  ["MAX_OUTPUT_TOKENS", "maxOutputTokens", "non-negative"],
+  ["TEMPERATURE", "temperature", "non-negative"],
+  ["TOP_P", "topP", "non-negative"],
+  ["TIMEOUT", "timeout", "positive"],
+  ["FREQUENCY_PENALTY", "frequency_penalty", "finite"],
+  ["PRESENCE_PENALTY", "presence_penalty", "finite"],
 ];
 
 const BOOLEAN_FIELDS = [
@@ -50,9 +50,26 @@ function readConfig(prefix) {
     const value = process.env[`${prefix}${suffix}`];
     if (value !== undefined) config[field] = value;
   }
-  for (const [suffix, field] of NUMBER_FIELDS) {
+  for (const [suffix, field, constraint] of NUMBER_FIELDS) {
     const value = process.env[`${prefix}${suffix}`];
-    if (value !== undefined) config[field] = Number(value);
+    if (value === undefined) continue;
+    const number = Number(value);
+    const valid = value.trim() !== ""
+      && Number.isFinite(number)
+      && (
+        constraint === "positive"
+          ? number > 0
+          : constraint === "non-negative" ? number >= 0 : true
+      );
+    if (!valid) {
+      const constraintLabel = constraint === "positive"
+        ? "正"
+        : constraint === "non-negative" ? "非负" : "有限";
+      throw new Error(
+        `环境变量 ${prefix}${suffix}（${field}）必须是${constraintLabel}数值：${value}`,
+      );
+    }
+    config[field] = number;
   }
   for (const [suffix, field] of BOOLEAN_FIELDS) {
     const value = process.env[`${prefix}${suffix}`];

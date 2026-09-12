@@ -27,7 +27,7 @@ test("prepends a deterministic tool-footprint summary before the head user task"
   const strategy = createFoldStatisticalStrategy();
   const result = await strategy.compact(messages, { keepRounds: 1, budgetTokens: 0 });
   const summary =
-    "【上下文折叠】早期第 1–2 轮（共 2 轮）已折叠。工具足迹：exec×1, writeFile×1。可用 recall(pattern: \"关键词\") 搜回细节，或 recall(fromRound: 1, toRound: 2) 取原文（大段可能截断，优先关键词）。";
+    "【上下文折叠·v1·erix-9f6e2c】早期第 1–2 轮（共 2 轮）已折叠。工具足迹：exec×1, writeFile×1。可用 recall(pattern: \"关键词\") 搜回细节，或 recall(fromRound: 1, toRound: 2) 取原文（大段可能截断，优先关键词）。";
 
   assert.equal(strategy.name, "fold-statistical");
   assert.deepEqual(result.messages, [
@@ -100,12 +100,31 @@ test("merges consecutive fold summaries into one block before the task", async (
 
   const task = second.messages[0];
   const summaries = task.content.filter((block) => (
-    block.type === "text" && block.text.startsWith("【上下文折叠】")
+    block.type === "text" && block.text.startsWith("【上下文折叠·v1·erix-9f6e2c】")
   ));
   assert.equal(summaries.length, 1);
-  assert.match(task.content[0].text, /【上下文折叠】/); // 摘要在 content 最前
+  assert.match(task.content[0].text, /【上下文折叠·v1·erix-9f6e2c】/); // 摘要在 content 最前
   assert.ok(task.content.some((block) => block.text === "keep this task")); // 任务原文仍保留
   assert.match(summaries[0].text, /早期第 1–3 轮（共 3 轮）已折叠/);
   assert.match(summaries[0].text, /exec×1, writeFile×1/);
   assert.equal(second.messages.length, 2);
+});
+
+test("call-level undefined does not clear factory options", async () => {
+  const result = await createFoldStatisticalStrategy({ summaryRole: "system" }).compact([
+    { role: "user", content: "task" },
+    { role: "assistant", content: "old" },
+    { role: "user", content: "recent" },
+  ], { keepRounds: 1, summaryRole: undefined });
+  assert.equal(result.messages[0].role, "system");
+});
+
+test("legacy fold summaries are read but never removed from user content", async () => {
+  const legacy = "【上下文折叠】早期第 1–1 轮（共 1 轮）已折叠。工具足迹：无。可用 recall(pattern: \"关键词\") 搜回细节，或 recall(fromRound: 1, toRound: 1) 取原文（大段可能截断，优先关键词）。";
+  const result = await createFoldStatisticalStrategy().compact([
+    { role: "user", content: legacy },
+    { role: "assistant", content: "old" },
+    { role: "user", content: "recent" },
+  ], { keepRounds: 1 });
+  assert.ok(result.messages[0].content.some((block) => block.text === legacy));
 });

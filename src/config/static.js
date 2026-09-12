@@ -24,7 +24,12 @@ export function createStaticModelConfigProvider(configOrSlots) {
 
   return {
     async resolve(slot = "default") {
-      const config = slots[slot] ?? slots.default;
+      const requestedSlot = slot ?? "default";
+      const config = Object.hasOwn(slots, requestedSlot)
+        ? slots[requestedSlot]
+        : Object.hasOwn(slots, "default")
+          ? slots.default
+          : undefined;
       if (config === undefined) {
         throw new Error(`No model config for slot "${slot}"`);
       }
