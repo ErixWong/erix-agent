@@ -1,5 +1,7 @@
 // 规范消息模型 + openai<->canonical 转换。
 
+import { KitError } from "../providers/errors.js";
+
 /**
  * A canonical content block.
  *
@@ -353,11 +355,19 @@ function responsePreview(response) {
  */
 export function openAIResponseToCanonical(json) {
   if (!Array.isArray(json?.choices) || json.choices.length === 0) {
-    throw new Error(`OpenAI response is missing choices: ${responsePreview(json)}`);
+    throw new KitError("server", `OpenAI response is missing choices: ${responsePreview(json)}`);
   }
 
   const choice = json.choices[0] ?? {};
-  const message = choice.message ?? {};
+  const message = choice.message;
+  const legacyFunctionCall = message?.function_call;
+  const hasContent = typeof message?.content === "string"
+    || Array.isArray(message?.content);
+  const hasToolCalls = Array.isArray(message?.tool_calls) && message.tool_calls.length > 0;
+  const hasFunctionCall = isRecord(legacyFunctionCall);
+  if (!isRecord(message) || (!hasContent && !hasToolCalls && !hasFunctionCall)) {
+    throw new KitError("server", `OpenAI choice is missing message content: ${responsePreview(json)}`);
+  }
   const content = [];
 
   if (typeof message.reasoning_content === "string") {
@@ -396,11 +406,35 @@ export function openAIResponseToCanonical(json) {
     });
   }
 
+  if (hasFunctionCall) {
+    const rawArguments = legacyFunctionCall.arguments;
+    let input;
+    try {
+      input = JSON.parse(rawArguments === undefined ? "{}" : rawArguments);
+    } catch {
+      input = {
+        _truncatedArguments: rawArguments,
+        _raw: rawArguments,
+      };
+    }
+    content.push({
+      type: "tool_use",
+      id: legacyFunctionCall.id ?? "call_legacy",
+      name: legacyFunctionCall.name,
+      input,
+    });
+  }
+
   if (Array.isArray(message.raw_blocks)) {
     content.push(...message.raw_blocks);
   }
 
-  const stopMap = { stop: "end_turn", tool_calls: "tool_use", length: "max_tokens" };
+  const stopMap = {
+    stop: "end_turn",
+    tool_calls: "tool_use",
+    function_call: "tool_use",
+    length: "max_tokens",
+  };
   const finishReason = choice.finish_reason;
   const stopReason = finishReason == null ? "unknown" : stopMap[finishReason] ?? finishReason;
   const response = { content, stopReason };

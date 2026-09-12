@@ -6,6 +6,7 @@ import {
   canonicalToolsToOpenAI,
   openAIResponseToCanonical,
 } from "../../src/messages/canonical.js";
+import { KitError } from "../../src/providers/errors.js";
 import {
   multipleToolCallsRound,
   pureTextConversation,
@@ -218,6 +219,33 @@ test("passes through unknown finish reasons and omits missing usage", () => {
     stopReason: "content_filter",
   });
   assert.equal("usage" in response, false);
+});
+
+test("maps legacy function_call and rejects empty choices", () => {
+  assert.deepEqual(
+    openAIResponseToCanonical({
+      choices: [{
+        message: {
+          function_call: { name: "lookup", arguments: '{"key":"value"}' },
+        },
+        finish_reason: "function_call",
+      }],
+    }),
+    {
+      content: [{
+        type: "tool_use",
+        id: "call_legacy",
+        name: "lookup",
+        input: { key: "value" },
+      }],
+      stopReason: "tool_use",
+    },
+  );
+
+  assert.throws(
+    () => openAIResponseToCanonical({ choices: [{}] }),
+    (error) => error instanceof KitError && error.code === "server",
+  );
 });
 
 test("throws a diagnostic error when choices are missing", () => {

@@ -186,6 +186,55 @@ test("parses a single tool call and normalizes tool_calls finish reason", async 
   assert.equal(response.usage, undefined);
 });
 
+test("maps legacy function_call responses to tool_use", async () => {
+  const { provider } = makeProvider([{
+    json: {
+      choices: [{
+        message: {
+          function_call: { name: "lookup", arguments: '{"city":"Paris"}' },
+        },
+        finish_reason: "function_call",
+      }],
+    },
+  }]);
+
+  assert.deepEqual(await provider.chat({
+    system: "",
+    messages: [{ role: "user", content: "Look it up." }],
+  }), {
+    content: [{
+      type: "tool_use",
+      id: "call_legacy",
+      name: "lookup",
+      input: { city: "Paris" },
+    }],
+    stopReason: "tool_use",
+  });
+});
+
+test("classifies HTTP 408 as a retryable timeout", async () => {
+  const { provider } = makeProvider([
+    { status: 408, json: { error: { message: "Request timeout" } } },
+  ]);
+
+  await assert.rejects(
+    provider.chat({ system: "", messages: [] }),
+    (err) => err instanceof KitError
+      && err.code === "timeout"
+      && err.retryable === true
+      && err.status === 408,
+  );
+});
+
+test("rejects a response whose first choice has no message content", async () => {
+  const { provider } = makeProvider([{ json: { choices: [{}] } }]);
+
+  await assert.rejects(
+    provider.chat({ system: "", messages: [] }),
+    (err) => err instanceof KitError && err.code === "server",
+  );
+});
+
 test("parses multiple tool calls and normalizes length finish reason", async () => {
   const { provider } = makeProvider([
     {
