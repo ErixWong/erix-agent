@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  archiveResult,
   createCliTools,
   getCommandTimeoutMs,
   getExecTimeoutMs,
@@ -265,10 +266,27 @@ test("continues returning tool output when the archive cannot be written", async
     const result = await executeTool("exec", { command: "seq 1 500" });
     const repeated = await executeTool("exec", { command: "seq 1 500" });
 
-    assert.match(result, /1\n2\n3/);
     assert.match(result, /完整输出归档失败/u);
+    assert.match(result, /1\n2\n3/u);
     assert.match(repeated, /原始输出未归档，无法取回；请明确说明不可恢复/u);
     assert.doesNotMatch(repeated, /原始输出在 .*archive-file/u);
+  });
+});
+
+test("failed non-replayable archives do not expose output or archive errors", () => {
+  return withDirectory(async (cwd) => {
+    const parent = join(cwd, "archive-file");
+    await writeFile(parent, "not a directory", "utf8");
+    const archived = archiveResult(
+      join(parent, "outputs"),
+      "exec",
+      "one-time-secret=do-not-leak\n",
+      1,
+      { force: true, replayable: false, command: "synthetic-random-command" },
+    );
+
+    assert.match(archived.text, /完整输出归档失败：原始输出不可恢复/u);
+    assert.doesNotMatch(archived.text, /do-not-leak|ENOTDIR|archive-file/u);
   });
 });
 

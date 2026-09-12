@@ -1,11 +1,14 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createToolRegistry } from "../src/tools/registry.js";
 
 const DEFAULT_ENTRYPOINT = "skill.mjs";
+const BUNDLED_SKILLS_DIRECTORY = path.resolve(
+  fileURLToPath(new URL("../skills/", import.meta.url)),
+);
 
 function isDirectory(directory) {
   try {
@@ -149,6 +152,7 @@ export function skillDirectories({
     ? [
       path.join(normalizeRoot(home), ".erix", "skills"),
       path.join(normalizeRoot(cwd), ".erix", "skills"),
+      BUNDLED_SKILLS_DIRECTORY,
     ]
     : [path.resolve(normalizeRoot(cwd), String(skillsDir))];
 
@@ -164,6 +168,7 @@ export function discoverSkills({ home, cwd, skillsDir } = {}) {
   const errors = [];
   const candidates = skillsDir === undefined
     ? [
+      BUNDLED_SKILLS_DIRECTORY,
       path.join(normalizeRoot(home ?? homedir()), ".erix", "skills"),
       path.join(normalizeRoot(cwd ?? process.cwd()), ".erix", "skills"),
     ]
@@ -237,6 +242,10 @@ export async function buildSkillTools({
   home,
   cwd,
   skillsDir,
+  runId,
+  scopeRef,
+  notesDir,
+  excludeSkillIds = [],
   builtinNames = [],
 } = {}) {
   const loaded = await loadAllSkills({ home, cwd, skillsDir });
@@ -249,8 +258,13 @@ export async function buildSkillTools({
   const usedNames = new Set(builtinNameSet);
   const schemas = [];
   const executors = {};
+  const excludedSkills = new Set(excludeSkillIds);
+  let notesJanitor;
+  let notesCompleteRun;
+  let notesLedger;
 
   for (const skill of loaded.skills) {
+    if (excludedSkills.has(skill.skillId)) continue;
     const conflictNames = skill.tools
       .map((tool) => tool.name)
       .filter((name) => usedNames.has(name));
@@ -274,6 +288,17 @@ export async function buildSkillTools({
       });
       continue;
     }
+    if (skill.skillId === "notes") {
+      if (typeof skillModule.runNotesJanitor === "function") {
+        notesJanitor = skillModule.runNotesJanitor;
+      }
+      if (typeof skillModule.completeRun === "function") {
+        notesCompleteRun = skillModule.completeRun;
+      }
+      if (typeof skillModule.buildPinnedLedger === "function") {
+        notesLedger = skillModule.buildPinnedLedger;
+      }
+    }
 
     const missingExecutors = skill.tools
       .map((tool) => tool.name)
@@ -290,7 +315,29 @@ export async function buildSkillTools({
     for (const tool of skill.tools) {
       usedNames.add(tool.name);
       schemas.push(tool);
-      executors[tool.name] = (input) => skillModule[tool.name](input);
+      executors[tool.name] = (input, context) => {
+        if (skill.skillId !== "notes" || !["note_take", "note_read", "note_list", "note_forget"].includes(tool.name)) {
+          return skillModule[tool.name](input, context);
+        }
+        const allowed = new Set(Object.keys(tool.inputSchema?.properties ?? {}));
+        const filteredInput = input && typeof input === "object" && !Array.isArray(input)
+          ? Object.fromEntries(
+              Object.entries(input).filter(([key]) => key !== "__erix" && allowed.has(key)),
+            )
+          : {};
+        const explicitScopeRef = scopeRef ?? runId ?? context?.session;
+        const explicitNotesDir = notesDir ?? context?.notesDir;
+        const hostScope = explicitScopeRef !== undefined && explicitNotesDir !== undefined
+          ? {
+              runId: String(explicitScopeRef),
+              notesDir: String(explicitNotesDir),
+            }
+          : undefined;
+        const injected = hostScope === undefined
+          ? filteredInput
+          : { ...filteredInput, __erix: hostScope };
+        return skillModule[tool.name](injected, context);
+      };
     }
   }
 
@@ -299,5 +346,8 @@ export async function buildSkillTools({
     tools: schemas,
     executeTool: registry.executeTool,
     errors,
+    notesJanitor,
+    notesCompleteRun,
+    notesLedger,
   };
 }

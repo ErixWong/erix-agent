@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { parseChatArgs, runChat } from "../bin/cli.js";
+import { exitCodeForVerification, parseChatArgs, runChat } from "../bin/cli.js";
 import { getMcpPoolStatus } from "../bin/mcp.js";
 import {
   buildArchiveSystemPrompt,
@@ -35,6 +35,12 @@ test("CLI prompt constrains provenance of one-shot values", () => {
     CLI_TOOLS_SYSTEM_PROMPT,
     /归档路径（例如 ~\/\.erix\/transcripts\/outputs\/\.\.\.，仅指本次运行的工具输出）是例外，可以且应当读取/u,
   );
+});
+
+test("CLI uses distinct nonzero exits for unverified and guard errors", () => {
+  assert.equal(exitCodeForVerification({ status: "verified" }), 0);
+  assert.equal(exitCodeForVerification({ status: "unverified" }), 2);
+  assert.equal(exitCodeForVerification({ status: "error" }), 3);
 });
 
 test("archive system prompt names the absolute directory only when enabled", () => {
@@ -121,6 +127,10 @@ test("parseChatArgs accepts the reflection switch", () => {
   assert.equal(parseChatArgs(["hello", "--reflection", "on"]).reflection, true);
   assert.equal(parseChatArgs(["hello", "--reflection", "off"]).reflection, false);
   assert.equal(parseChatArgs(["hello", "--timeout", "1500"]).timeoutMs, 1500);
+});
+
+test("parseChatArgs supports disabling only the notes skill", () => {
+  assert.equal(parseChatArgs(["hello", "--no-notes"]).noNotes, true);
 });
 
 test("chat loop wires a file transcript store without a recall tool", async () => {

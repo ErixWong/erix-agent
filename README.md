@@ -67,6 +67,16 @@ src/
 核心入口 `runToolLoop({ provider, executeTool, ... })`——单任务生命周期，事件流驱动（onRound/onDelta/onJudge/onEvent）。
 
 - **完成信号**：默认启用 `completion: { signals: [], maxNoToolRounds: 3 }`（模型连续无工具轮达上限自动收尾）；传 `completion: false` 保留旧行为（end_turn 即停）。provider 重试默认关闭（`retry: false`，可选开启）。
+- **确定性终稿核验（可选 `finalGuard`）**：在 `end_turn`、completion 或 `judge_done` 真正停机前调用
+  `finalGuard({ finalText, messages, round, rounds, signal, termination })`。返回
+  `{ action: "accept" }` 正常停机；返回 `{ action: "revise", message }` 会以独立的 user 文本消息注入
+  `message` 并继续循环，最多由 `finalGuardMaxRetries`（默认 2）次。达到上限仍要求 revise 时，
+  loop 保留原始 `finalText`，以 `termination.reason === "final_guard_unverified"` 停机（fail-closed），
+  由宿主决定拒绝、人工复核或报告不可恢复。guard 抛错、返回非法结果或 timeout 时为保证可用性
+  **fail-open 停机，但绝不视为 verified**，并发出
+  `onEvent({ type: "final_guard", round, action: "error", reason })`；accept/revise/上限降级同样发出
+  `final_guard` 事件。store 对未核验和 guard 异常分别记录 `unverified_error`、`guard_error`，不会写
+  `succeeded`。guard 应使用 payload 的 `signal`，abort 不会被降级为 accept。
 - **wrapup 收尾协议**（v0.3.3 可关）：end_turn 时模型输出 `{"done":true,"summary":"...","output":"..."}` 视为完成并展示 output/summary；解析要求 `done` 为自有 boolean 键。对自有终稿 JSON 契约的宿主（app_container 等）或自然语言对话宿主（touwaka），传 `wrapup: false` 同时关闭**指令注入 / JSON 解析 / finalText 替换 / LLM 归一化**；`ERIX_NO_WRAPUP_INSTRUCTION=1` env 运维兜底同语义（任一关即关整个协议）。不传保持默认开启，不影响既有调用方。
 - **自主质量内建（judge 体系，v0.3.0）**：
   - **默认开启**：`runToolLoop` 在 `maxRounds ≥ 16` 且未显式传 `reflection` 时自动启用基础 judge（无头宿主零配置获得保护）；传 `reflection: false` 或设 `ERIX_NO_REFLECTION=1` 关闭。
@@ -88,9 +98,15 @@ src/
 `erix` 是构建在本库上、用于**验证与调试无头 agent** 的命令行入口（不是产品交付形态）：
 
 - **入口**：`erix` 直接进交互 TUI（`erix repl` 等价）；`erix chat "<prompt>" [--stream]` 单次对话
-  （`--reflection on|off` 控制自适应预算；`max-rounds >= 32` 时默认启用）
+  （`--reflection on|off` 控制自适应预算；`max-rounds >= 32` 时默认启用；终稿 provenance gate 默认开启，
+  可用 `--no-final-guard` 或 `ERIX_NO_FINAL_GUARD=1` 关闭）
 - **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）；较大的工具结果（阈值 800 字符）按本次 run 写入 `<transcriptDir>/outputs/<safeRunId>/<序号>-<toolName>.txt`（如 `001-exec.txt`），返回文本带绝对路径指引；归档目录也会写入 system prompt，便于折叠后寻回原文；折叠摘要会附带归档目录提示（recoveryHint），确保折叠后仍可寻回；需要原文时用 `readFile`/`cat` 读取归档，不要重跑命令。同一命令在本次运行内重复执行时，工具会在返回中提示原始输出归档位置或不可恢复，避免把重跑结果当作原值。归档单文件最多 1 MiB，写入失败时工具仍返回原结果并标注失败。默认不提供 agent 级 recall 工具——`store.recall()` 是面向宿主的契约方法，需要时可从 `erix-agent/tools` 自行接线——无内置安全层，见 ADR-009
 - **skill 系统**：`~/.erix/skills/<id>/skill.mjs` 自描述脚本，导出 `getSkillDefinition()` 自报工具（ADR-008）；`erix skills` 查看；todo skill（跨会话任务清单，长任务拆解/划掉/恢复）
+- **notes 技能（#63）**：用于记录任务中的关键事实、一次性值、决策与 artifact 引用，不是每轮日志。四个工具为 `note_take`、`note_read`、`note_list`、`note_forget`；当前只支持 `run` 作用域，记录按 key 单文件版本化并保留有界历史，超出窗口的旧版本会返回 `status="pruned"`（可能仅留摘要/水位），与 `status="missing"` 的 **never recorded** 明确区分，显式 forget 写撤销墓碑。默认存储在 `~/.erix/notes/run/<safeRunId>/<safeKey>.json`（目录 `0700`、文件 `0600`），也可用 `ERIX_NOTES_DIR` 指定；run 结束后进入 `completed → grace → GC`，启动/退出 janitor 会把其他 session 的长期 orphan active 记录转入 grace，`note_list` 默认只列 active（`includeInactive=true` 可查看其余状态），`pinned` 只在 run 存活期内免于淘汰，GC 后保留 `revoked` 墓碑。REPL 的 run scope 使用 `--session`（默认按工作目录派生），**整个 REPL session 共用一个 run scope，跨轮可见，退出时才 complete**；`--dir` 仅影响 transcript。CLI 内部会丢弃模型输入中的 `__erix` 与未知字段，仅注入宿主提供的 run scope；`ERIX_RUN_ID`/`ERIX_NOTES_DIR` 仅作直接调用 skill 时的兼容回退。因此并发 `runChat()` 应传不同 `notesDir`，不要依赖进程级 env 实现隔离。notes 遵循 pull-only 原则：system prompt 只提供用法指引，不注入笔记数据。
+- **auto_capture（引用式）**：CLI 在 `exec` 工具执行完成时、而不是折叠时，从完整返回输出中最多捕获 3 个带标签的单行候选；默认只写 `{artifactId/archivePath, digest, locator}` 引用、`pinned=true` 和 `provenance.source=auto`，不写原值。模型调用 `note_take` 传入的 provenance 一律按 `source=agent` 记录；即使宿主直接调用导出的 capture helper 写入 `source=auto`，它也只是便利索引，最终核验不信任 notes。归档引用的 digest 始终对应磁盘实际内容；截断归档另记 `truncated=true`、`originalBytes`，不能作为核验依据。只有模型显式调用 `note_take` 才允许把原值写入 notes；同一 key 的后续不同 digest 使用候选 key，不会覆盖首次值，完全相同 digest 去重。非幂等命令即使输出很短也强制写 `<序号>-exec.txt` sidecar 和 `.meta.json`，元数据标明 `replayable=false`；识别包括 `/dev/urandom`、`$RANDOM`、`openssl rand`、`uuidgen`、`date +%s%N`、`mktemp`、`shuf` 及随机字节转 base64 管道。系统会 fail-closed 跳过 `token/key/secret/password/passwd/bearer/authorization/cookie/credential/private/api_key/access_key/refresh_token`、PEM/JWT/AWS/GitHub/npm token、带凭据 URL 和疑似高熵长 base64/hex，**不会把疑似凭据写入 notes**。
+- **provenance gate 判定**：收尾时 CLI 只读取本 run `archiveDir` 下由 capture 写出的同名 `*.meta.json` manifest；notes/artifactRef 只是检索线索，不参与信任判定。manifest 必须声明 `digest/replayable/truncated/locator`，归档必须位于 archive root 内、通过 `realpath` 防符号链接逃逸、SHA-256 与磁盘内容一致，且只有 `replayable === false`、`truncated === false` 的归档才进入已知值集合；`seq` 等可重放输出不会污染核验。归档候选与 auto-capture 共用 `candidateLines()`，支持中文或任意标签的 `label=value`、`label: value` 以及裸 token，不依赖标签白名单。终稿中的候选值若命中可信归档集合则放行；只有同一标签（或同一归档来源的无标签候选）出现不匹配值才要求读取归档核实，并明确禁止重跑，不会因为另一个标签的同形态值误杀。无 manifest 时直接放行；若可信的非幂等归档可读但全部抽不到候选值，guard 记录 warning 并返回 `verification.status="skipped"`，因为没有可比较的值，不能把“无法核验”错误升级为“值不可信”；部分归档可抽取时用可抽取部分核验、其余逐个 warning。按 ADR-009，这只保证宿主隔离的 run 内部 provenance：能改写 archiveDir 的进程已在信任域内，本 gate 不是恶意本机进程的安全边界。
+- **verification 消费契约**：宿主必须先检查 `runToolLoop` 返回的 `verification.status`，只有 `verified` 才能把 `finalText` 当作来源已核验的结果；`unverified` 表示 guard 要求修订但已无法继续，`termination.reason` 为 `final_guard_unverified`，不得标记或消费为成功；`error` 表示 guard 异常/超时（默认 30 秒），为可用性会 fail-open 返回文本，但文本仍未核验，需按宿主策略人工处理；`skipped` 表示未配置 guard，或可信非幂等归档没有可抽取候选值，此时只能说明“没有可核验值”，不能当作已核验事实。CLI 对 `unverified` 以退出码 2 结束，对 `error` 以不同的退出码 3 结束；`skipped` 正常退出但不会打印已核验标题。
+- 需要恢复具体值时按 `note_read → #62 归档原文 → 声明不可恢复`，不得重跑命令或凭记忆补值；归档保存原文，notes 保存语义索引/引用，两者职责不同。
 - **MCP 对接**：`~/.erix/mcp.json` 标准配置，单代理工具（list/search/call/status）访问任意 MCP server（stdio + HTTP；实测 unifuncs 联网搜索、filesystem 读文件）
 - **配置**：`~/.erix/config.json`（或 `$XDG_CONFIG_HOME/erix/`），env 优先；会话存档 `~/.erix/<session>.json`；todo 清单 `~/.erix/todos/`
 - **流式**：repl 默认打字机；`chat --stream` 逐字输出；`--idle-timeout` 无进展自动中止；自动压缩预算（按模型窗口折叠）

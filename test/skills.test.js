@@ -70,11 +70,18 @@ test("skillDirectories returns only existing global and project directories", as
       await mkdir(globalSkills, { recursive: true });
 
       await withEnvironment({ HOME: home }, () => {
-        assert.deepEqual(skillDirectories({ home, cwd }), [globalSkills]);
+        assert.deepEqual(skillDirectories({ home, cwd }), [
+          globalSkills,
+          join(process.cwd(), "skills"),
+        ]);
       });
 
       await mkdir(projectSkills, { recursive: true });
-      assert.deepEqual(skillDirectories({ home, cwd }), [globalSkills, projectSkills]);
+      assert.deepEqual(skillDirectories({ home, cwd }), [
+        globalSkills,
+        projectSkills,
+        join(process.cwd(), "skills"),
+      ]);
     });
   });
 });
@@ -90,14 +97,14 @@ test("discoverSkills gives the project directory priority for duplicate ids", as
       await writeSkill(projectSkills, "projectOnly", "");
 
       const discovered = discoverSkills({ home, cwd });
-      assert.equal(discovered.length, 3);
+      assert.equal(discovered.length, 4);
       assert.equal(
         discovered.find((skill) => skill.id === "shared").dir,
         join(projectSkills, "shared"),
       );
       assert.deepEqual(
         discovered.map((skill) => skill.id).sort(),
-        ["globalOnly", "projectOnly", "shared"],
+        ["globalOnly", "notes", "projectOnly", "shared"],
       );
     });
   });
@@ -251,7 +258,7 @@ test("loadAllSkills keeps valid skills when another skill fails", async () => {
     `);
 
     const result = await loadAllSkills({ home: cwd, cwd });
-    assert.deepEqual(result.skills.map((skill) => skill.skillId), ["valid"]);
+    assert.deepEqual(result.skills.map((skill) => skill.skillId), ["notes", "valid"]);
     assert.equal(result.errors.length, 1);
     assert.equal(result.errors[0].skillId, "invalid");
   });
@@ -264,6 +271,7 @@ test("buildSkillTools reports conflicts with built-in tools", async () => {
     const result = await buildSkillTools({
       home: cwd,
       cwd,
+      skillsDir: skillsDirectory,
       builtinNames: ["readFile", "rg", "tree"],
     });
     assert.deepEqual(result.tools, []);
@@ -296,6 +304,129 @@ test("buildSkillTools executes an exported skill function", async () => {
     assert.equal(result.errors.length, 0);
     assert.equal(await result.executeTool("echo", { value: "hello" }), "hello");
     assert.equal(directory.endsWith("echo-skill"), true);
+  });
+});
+
+test("buildSkillTools injects a complete explicit run scope into notes tools", async () => {
+  await withDirectory(async (cwd) => {
+    const skillsDirectory = join(cwd, ".erix", "skills");
+    await writeSkill(skillsDirectory, "notes", `
+      export function getSkillDefinition() {
+        return {
+          schema_version: 1,
+          skill: { id: "notes", entrypoint: "skill.mjs" },
+          tools: [{ name: "note_take", inputSchema: { type: "object" } }]
+        };
+      }
+      export function note_take(input) { return JSON.stringify(input.__erix); }
+    `);
+    const result = await buildSkillTools({
+      cwd,
+      skillsDir: skillsDirectory,
+      runId: "host-run",
+      notesDir: join(cwd, "host-notes"),
+    });
+
+    assert.equal(
+      await result.executeTool("note_take", { key: "x" }),
+      JSON.stringify({ runId: "host-run", notesDir: join(cwd, "host-notes") }),
+    );
+  });
+});
+
+test("notes dispatch strips forged scope and unknown fields", async () => {
+  await withDirectory(async (cwd) => {
+    const skillsDirectory = join(cwd, ".erix", "skills");
+    await writeSkill(skillsDirectory, "notes", `
+      export function getSkillDefinition() {
+        return {
+          schema_version: 1,
+          skill: { id: "notes", entrypoint: "skill.mjs" },
+          tools: [{
+            name: "note_take",
+            inputSchema: {
+              type: "object",
+              properties: { key: { type: "string" }, content: { type: "string" } }
+            }
+          }]
+        };
+      }
+      export function note_take(input) { return JSON.stringify(input); }
+    `);
+    const completeHost = await buildSkillTools({
+      cwd,
+      skillsDir: skillsDirectory,
+      runId: "host-run",
+      notesDir: join(cwd, "host-notes"),
+    });
+    assert.deepEqual(JSON.parse(await completeHost.executeTool("note_take", {
+      key: "x",
+      content: "ok",
+      unknown: "drop",
+      __erix: { runId: "forged-run", notesDir: "/forged" },
+    })), {
+      key: "x",
+      content: "ok",
+      __erix: { runId: "host-run", notesDir: join(cwd, "host-notes") },
+    });
+
+    const runOnlyHost = await buildSkillTools({
+      cwd,
+      skillsDir: skillsDirectory,
+      runId: "host-only",
+    });
+    assert.deepEqual(JSON.parse(await runOnlyHost.executeTool("note_take", {
+      key: "x",
+      __erix: { notesDir: "/forged" },
+    })), {
+      key: "x",
+    });
+
+    const directoryOnlyHost = await buildSkillTools({
+      cwd,
+      skillsDir: skillsDirectory,
+      notesDir: join(cwd, "directory-only"),
+    });
+    assert.deepEqual(JSON.parse(await directoryOnlyHost.executeTool("note_take", {
+      key: "x",
+      __erix: { runId: "forged-run" },
+    })), {
+      key: "x",
+    });
+  });
+});
+
+test("buildSkillTools excludes only notes when requested", async () => {
+  await withDirectory(async (cwd) => {
+    const skillsDirectory = join(cwd, ".erix", "skills");
+    await writeSkill(skillsDirectory, "notes", `
+      export function getSkillDefinition() {
+        return {
+          schema_version: 1,
+          skill: { id: "notes", entrypoint: "skill.mjs" },
+          tools: [{ name: "note_take", inputSchema: { type: "object" } }]
+        };
+      }
+      export function note_take() { return "notes"; }
+    `);
+    await writeSkill(skillsDirectory, "other", `
+      export function getSkillDefinition() {
+        return {
+          schema_version: 1,
+          skill: { id: "other", entrypoint: "skill.mjs" },
+          tools: [{ name: "other_tool", inputSchema: { type: "object" } }]
+        };
+      }
+      export function other_tool() { return "other"; }
+    `);
+    const result = await buildSkillTools({
+      cwd,
+      skillsDir: skillsDirectory,
+      excludeSkillIds: ["notes"],
+    });
+    assert.deepEqual(result.tools.map((tool) => tool.name), ["other_tool"]);
+    assert.equal(await result.executeTool("other_tool", {}), "other");
+    assert.equal(await result.executeTool("note_take", {}), "Unknown tool: note_take");
   });
 });
 

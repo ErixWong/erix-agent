@@ -1,13 +1,16 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   readdirSync,
   readFileSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { captureToolExecution } from "./auto-capture.js";
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
@@ -20,6 +23,24 @@ const EXEC_MAX_BUFFER = 1024 * 1024;
 
 // 安装/编译/下载类命令前缀（benchmark 实测 apt-get install 频繁超时）
 const INSTALL_COMMAND_PATTERN = /^(?:sudo\s+)?(?:apt-get|apt|pip\d?|pip3|npm|yarn|pnpm|make|cmake|gcc|g\+\+|cc|configure|bash\s+.*\.sh|curl|wget)\b/;
+
+// These commands can produce a different value on every execution. Keep this
+// list explicit so the archive policy can grow without changing capture logic.
+export const NON_REPLAYABLE_COMMAND_PATTERNS = Object.freeze([
+  /\/dev\/urandom\b/iu,
+  /\$RANDOM\b/iu,
+  /\bopenssl\s+rand\b/iu,
+  /\buuidgen\b/iu,
+  /\bdate\s+[^;&|]*\+%s%N\b/iu,
+  /\bmktemp\b/iu,
+  /\bshuf\b/iu,
+  /\bhead\s+-c\s+\S+\s+\/dev\/urandom\b/iu,
+]);
+
+export function isNonReplayableCommand(command) {
+  const text = String(command ?? "");
+  return NON_REPLAYABLE_COMMAND_PATTERNS.some((pattern) => pattern.test(text));
+}
 
 // ERIX_EXEC_TIMEOUT_MS overrides the default timeout for foreground commands.
 export function getExecTimeoutMs() {
@@ -133,6 +154,8 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 [工作方式]
 - 复杂任务先规划：用 tree/readFile 了解项目结构，拆步骤逐步执行
 - **长任务（多步、可能跨会话）先用 todo_add 拆解任务清单**（存 ~/.erix/todos/，按工作目录隔离）；每完成一步 todo_done 划掉；会话开始时先 todo_list 恢复进度
+- 任务中产生的关键事实、一次性值或决策，用 note_take 记录；需要早期轮次的具体值而当前上下文没有时，先用 note_list/note_read 查证
+- notes 是 pull-only 的事实/值索引，不是每轮日志工具；不得重跑命令“恢复”一次性值，也不得凭记忆给值。note_read missing 时按工具提示声明不可恢复
 - **读大文件用 readFile 的 offset/limit 分段读，一个文件只读一次**（不要重复读全文、不要用大 offset 反复拉全量），控制上下文累积
 - 按用户要求直接调用工具完成操作，不要只提供操作说明
 - **遇挫坚持：命令失败、依赖缺失、报错时，先诊断原因并重试或换方案（如 apt/pip 安装依赖、改用替代命令），不要因为一次失败就放弃或空手结束**；只有尝试多种方案后仍不可行才如实汇报
@@ -292,18 +315,53 @@ function summarizeToolResult(name, result) {
   return truncateDisplayText(text, limit);
 }
 
-export function wrapExecuteTool(executeTool, { output = console.log } = {}) {
+export function wrapExecuteTool(
+  executeTool,
+  {
+    output = console.log,
+    getToolMetadata,
+    capture = captureToolExecution,
+    notesScope,
+  } = {},
+) {
   if (typeof executeTool !== "function") {
     throw new TypeError("executeTool must be a function");
   }
   if (typeof output !== "function") {
     throw new TypeError("output must be a function");
   }
+  if (getToolMetadata !== undefined && typeof getToolMetadata !== "function") {
+    throw new TypeError("getToolMetadata must be a function");
+  }
+  if (typeof capture !== "function") {
+    throw new TypeError("capture must be a function");
+  }
 
-  return async (name, input, context) => {
+  // A one-argument wrapper makes runToolLoop pass its structured execution
+  // context (toolUseId/round) while remaining compatible with direct callers.
+  return async function wrappedExecuteTool(firstArg, positionalInput, positionalContext) {
+    const structured = firstArg
+      && typeof firstArg === "object"
+      && !Array.isArray(firstArg)
+      && typeof firstArg.name === "string";
+    const name = structured ? firstArg.name : firstArg;
+    const input = structured ? firstArg.input : positionalInput;
+    const context = structured
+      ? { ...(firstArg.context ?? {}), toolUseId: firstArg.id }
+      : positionalContext;
     output(`→ ${name}: ${summarizeToolInput(name, input)}`);
     try {
       const result = await executeTool(name, input, context);
+      const metadata = getToolMetadata?.();
+      await capture({
+        name,
+        input,
+        result,
+        metadata,
+        toolUseId: context?.toolUseId,
+        round: context?.round,
+        notesScope,
+      });
       output(`← ${name}: ${summarizeToolResult(name, result)}`);
       return result;
     } catch (error) {
@@ -317,36 +375,94 @@ function archiveGuidance(archivePath) {
   return `[完整输出已归档：${archivePath}（需要原始内容请用 readFile/cat 读取该路径；不要重跑命令，重跑会得到不同的值）]`;
 }
 
-function archiveFailureGuidance(archivePath, error) {
+function archiveFailureGuidance(archivePath, error, replayable) {
+  if (!replayable) {
+    return "[完整输出归档失败：原始输出不可恢复；请勿重跑命令。]";
+  }
   const reason = String(error?.message ?? error ?? "未知错误")
     .replaceAll(/\s+/gu, " ")
     .slice(0, 160);
   return `[完整输出归档失败：${archivePath}（${reason}）；请勿重跑命令。]`;
 }
 
-function archiveResult(archiveDir, name, result, sequence) {
+export function archiveResult(
+  archiveDir,
+  name,
+  result,
+  sequence,
+  { force = false, replayable = true, command, context } = {},
+) {
   const text = String(result ?? "");
-  if (!archiveDir || text.length <= ARCHIVE_THRESHOLD) return null;
+  if (!archiveDir || (!force && text.length <= ARCHIVE_THRESHOLD)) return null;
 
   const archivePath = path.join(
     archiveDir,
     `${String(sequence).padStart(3, "0")}-${name}.txt`,
   );
+  const metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
   try {
     mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
     const bytes = Buffer.from(text, "utf8");
-    let archived = text;
+    let archived = bytes;
+    let truncated = false;
     if (bytes.byteLength > MAX_ARCHIVE_BYTES) {
       const marker = Buffer.from(
         `\n[归档仅保留前 ${MAX_ARCHIVE_BYTES} 字节，原始输出共 ${bytes.byteLength} 字节]`,
         "utf8",
       );
+      const prefixBudget = Math.max(0, MAX_ARCHIVE_BYTES - marker.byteLength);
+      const characters = Array.from(text);
+      let low = 0;
+      let high = characters.length;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (Buffer.byteLength(characters.slice(0, middle).join(""), "utf8") <= prefixBudget) {
+          low = middle;
+        } else {
+          high = middle - 1;
+        }
+      }
       archived = Buffer.concat([
-        bytes.subarray(0, MAX_ARCHIVE_BYTES - marker.byteLength),
+        Buffer.from(characters.slice(0, low).join(""), "utf8"),
         marker,
       ]);
+      truncated = true;
     }
-    writeFileSync(archivePath, archived, {
+    const archivedText = archived.toString("utf8");
+    const digest = createHash("sha256").update(archivedText, "utf8").digest("hex");
+    const lineParts = archivedText.split(/\r\n|\r|\n/u);
+    const lines = Math.max(
+      1,
+      lineParts.length - (archivedText.endsWith("\n") || archivedText.endsWith("\r") ? 1 : 0),
+    );
+    const artifact = {
+      artifactId: path.basename(archivePath),
+      archivePath,
+      digest,
+      locator: { lineStart: 1, lineEnd: lines },
+      replayable,
+      truncated,
+      originalBytes: bytes.byteLength,
+    };
+    const metadata = {
+      kind: "erix.tool-capture",
+      schemaVersion: 1,
+      toolUseId: context?.toolUseId ?? null,
+      round: context?.round ?? null,
+      command: command ?? null,
+      replayable,
+      digest,
+      archivePath,
+      locator: artifact.locator,
+      truncated,
+      originalBytes: bytes.byteLength,
+    };
+    writeFileSync(archivePath, archivedText, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, {
       encoding: "utf8",
       mode: 0o600,
       flag: "wx",
@@ -354,11 +470,23 @@ function archiveResult(archiveDir, name, result, sequence) {
     return {
       text: `${truncateResult(text)}\n${archiveGuidance(archivePath)}`,
       archivePath,
+      artifact,
+      archivedText,
     };
   } catch (error) {
+    for (const target of [archivePath, metadataPath]) {
+      try {
+        unlinkSync(target);
+      } catch (cleanupError) {
+        if (cleanupError?.code !== "ENOENT") error.cause = cleanupError;
+      }
+    }
     return {
-      text: `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error)}`,
+      text: replayable
+        ? `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error, replayable)}`
+        : archiveFailureGuidance(archivePath, error, replayable),
       archivePath: undefined,
+      artifact: undefined,
     };
   }
 }
@@ -381,6 +509,7 @@ export function createCliTools({
   const archiveRoot = archiveDir === undefined ? undefined : path.resolve(archiveDir);
   let archiveSequence = 0;
   const duplicateCommands = archiveRoot ? new Map() : undefined;
+  let lastToolMetadata;
 
   async function readFile({ path: filePath, offset = 0, limit = 200 }) {
     const text = readFileSync(resolveToolPath(root, filePath), "utf8");
@@ -523,13 +652,15 @@ export function createCliTools({
     exec: (input) => executeExecCommand(input, root),
   };
 
-  async function executeTool(name, input) {
+  async function executeTool(name, input, context) {
     const executor = executors[name];
     if (typeof executor !== "function") {
       throw new Error(`未知工具：${name}`);
     }
     const normalizedInput = normalizeToolInput(input);
     const command = normalizedInput?.command;
+    const replayable = name !== "exec" || !isNonReplayableCommand(command);
+    lastToolMetadata = { name, replayable };
     let commandState;
     let isFirstCommandExecution = false;
     if (
@@ -549,14 +680,29 @@ export function createCliTools({
 
     const result = await executor(normalizedInput);
     let returnedResult = result;
-    if (archiveRoot && String(result ?? "").length > ARCHIVE_THRESHOLD) {
+    const shouldArchive = archiveRoot && (
+      String(result ?? "").length > ARCHIVE_THRESHOLD
+      || (name === "exec" && !replayable)
+    );
+    if (shouldArchive) {
       archiveSequence += 1;
-      const archived = archiveResult(archiveRoot, name, result, archiveSequence);
+      const archived = archiveResult(archiveRoot, name, result, archiveSequence, {
+        force: name === "exec" && !replayable,
+        replayable,
+        command,
+        context,
+      });
       if (archived !== null) {
         returnedResult = archived.text;
         if (isFirstCommandExecution) {
           commandState.archivePath = archived.archivePath;
         }
+        lastToolMetadata = {
+          name,
+          replayable,
+          fullOutput: archived.archivedText ?? String(result ?? ""),
+          artifact: archived.artifact,
+        };
       }
     }
     const finalResult = name === "exec" ? truncateResult(returnedResult) : returnedResult;
@@ -569,6 +715,7 @@ export function createCliTools({
   return {
     tools: schemas.map((schema) => structuredClone(schema)),
     executeTool,
+    getLastToolMetadata: () => lastToolMetadata,
     truncateResult,
   };
 }

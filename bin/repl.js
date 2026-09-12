@@ -19,6 +19,7 @@ import {
 } from "../src/index.js";
 import { safeRunId } from "../src/store/file.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
+import { createFinalGuard } from "./final-guard.js";
 import {
   closeAllMcpServers,
   createMcpProxyTool,
@@ -42,11 +43,14 @@ const NON_TTY_MESSAGE =
   'repl 需要交互式终端，单次对话请用：erix chat "<prompt>"';
 
 const REPL_HELP_TEXT = `REPL 用法：
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--no-final-guard]
   --session <id>        会话 ID（默认按工作目录自动派生）
   --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
+                        run 作用域笔记按 session 隔离；相同 --session 会共享笔记，
+                        --dir 只影响 transcript，不改变笔记作用域
   --max-rounds <n>      工具循环最大轮数（默认：16）
   --idle-timeout <秒>   无进展自动中止（默认：0=不启用）
+  --no-final-guard      关闭终稿 provenance 核验
 
 命令：
   /help                 显示此帮助
@@ -63,6 +67,7 @@ const REPL_HELP_TEXT = `REPL 用法：
   LLM_KIT_API_KEY       API 密钥（必填）
   LLM_KIT_MODEL         初始模型名称（默认：${DEFAULT_MODEL}）
   ERIX_EXEC_TIMEOUT_MS  exec 前台命令超时毫秒数（默认：120000）
+  ERIX_NO_FINAL_GUARD=1 关闭终稿 provenance 核验
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
@@ -140,6 +145,24 @@ export function defaultSessionId(cwd, { unique = false } = {}) {
   return unique ? `${stableId}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}` : stableId;
 }
 
+function setNotesEnvironment(runId) {
+  const previous = {
+    runId: process.env.ERIX_RUN_ID,
+    notesDir: process.env.ERIX_NOTES_DIR,
+  };
+  process.env.ERIX_RUN_ID = String(runId);
+  // --dir is transcript/archive storage; keep notes in ~/.erix/notes so their
+  // retention and permissions do not depend on the selected transcript path.
+  process.env.ERIX_NOTES_DIR = previous.notesDir
+    ?? join(homedir(), ".erix", "notes");
+  return () => {
+    if (previous.runId === undefined) delete process.env.ERIX_RUN_ID;
+    else process.env.ERIX_RUN_ID = previous.runId;
+    if (previous.notesDir === undefined) delete process.env.ERIX_NOTES_DIR;
+    else process.env.ERIX_NOTES_DIR = previous.notesDir;
+  };
+}
+
 export function parseReplArgs(argv, cwd = process.cwd()) {
   const args = Array.isArray(argv) ? argv : [];
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
@@ -191,6 +214,14 @@ export function parseReplArgs(argv, cwd = process.cwd()) {
       } else {
         options.idleTimeout = parseIntegerOption(argument, rawValue, 0);
       }
+      continue;
+    }
+    if (argument === "--no-final-guard") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.finalGuard = false;
       continue;
     }
 
@@ -326,6 +357,7 @@ export async function runRepl(argv, io = {}) {
   const input = io.input ?? process.stdin;
   const output = io.output ?? process.stdout;
   const sessionDir = io.sessionDir ?? join(homedir(), ".erix");
+  const notesDir = process.env.ERIX_NOTES_DIR ?? join(homedir(), ".erix", "notes");
 
   if (options.showHelp) {
     writeLine(output, REPL_HELP_TEXT);
@@ -354,12 +386,28 @@ export async function runRepl(argv, io = {}) {
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,
+    runId: options.session,
+    notesDir,
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
+  {
+    const restoreNotesEnvironment = setNotesEnvironment(options.session);
+    try {
+      await skillTools.notesJanitor?.({
+        __erix: { runId: options.session, notesDir },
+      });
+    } finally {
+      restoreNotesEnvironment();
+    }
+  }
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: options.configPath, cwd });
   const executeTool = wrapExecuteTool(
     buildExecuteTool(cliTools, skillTools, mcpProxy),
-    { output: (line) => writeLine(output, line) },
+    {
+      output: (line) => writeLine(output, line),
+      getToolMetadata: cliTools.getLastToolMetadata,
+      notesScope: { runId: options.session, notesDir },
+    },
   );
   let messages = storedRecords.length > 0
     ? storedRecords.flatMap((record) => record.messages ?? [])
@@ -412,9 +460,20 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   };
 
   const saveAndFinish = async () => {
-    await saveSession(sessionDir, options.session, messages);
-    writeLine(output, `再见（会话已保存到 ${archivePath}）`);
-    resolveRun();
+    const restoreNotesEnvironment = setNotesEnvironment(options.session);
+    try {
+      await saveSession(sessionDir, options.session, messages);
+      await skillTools.notesCompleteRun?.({
+        __erix: { runId: options.session, notesDir },
+      });
+      await skillTools.notesJanitor?.({
+        __erix: { runId: options.session, notesDir },
+      });
+      writeLine(output, `再见（会话已保存到 ${archivePath}）`);
+      resolveRun();
+    } finally {
+      restoreNotesEnvironment();
+    }
   };
 
   rl.on("close", () => {
@@ -548,8 +607,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       const signal = idle === null
         ? runController.signal
         : AbortSignal.any([runController.signal, idle.controller.signal]);
-      const executeToolForLoop = async (name, input, toolContext) => {
-        const result = await executeTool(name, input, toolContext);
+      const executeToolForLoop = async (execution) => {
+        const result = await executeTool(execution);
         idle?.touch();
         return result;
       };
@@ -563,6 +622,16 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         reflection: false,
         maxTokens: config.maxOutputTokens,
         completion: { maxNoToolRounds: 1 },
+        ...(options.finalGuard === false
+          || process.env.ERIX_NO_FINAL_GUARD?.trim() === "1"
+          ? {}
+          : {
+              finalGuard: createFinalGuard({
+                runId: options.session,
+                notesDir,
+              }),
+              finalGuardMaxRetries: 2,
+            }),
         tools,
         executeTool: executeToolForLoop,
         store,
@@ -587,6 +656,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         },
       };
 
+      const restoreNotesEnvironment = setNotesEnvironment(options.session);
       try {
         const result = await (io.loop ?? runToolLoop)(loopOptions);
         messages = result.messages;
@@ -602,6 +672,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           output,
           `[rounds=${result.rounds} usage=${JSON.stringify(result.usage)} compacted=${compacted}]`,
         );
+        if (result.termination?.reason === "final_guard_unverified") {
+          writeLine(
+            output,
+            "⚠️ 终稿含未核验的一次性值，已按 fail-closed 标记；请核实归档或明确说明不可恢复。",
+          );
+        }
         await saveSession(sessionDir, options.session, messages);
       } catch (error) {
         if (idle?.timedOut()) throw new IdleTimeoutError(options.idleTimeout);
@@ -609,6 +685,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       } finally {
         idle?.dispose();
         if (activeRunController === runController) activeRunController = undefined;
+        restoreNotesEnvironment();
       }
     }
 
