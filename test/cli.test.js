@@ -3,11 +3,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { parseChatArgs, runChat } from "../bin/cli.js";
 import { getMcpPoolStatus } from "../bin/mcp.js";
-import { CLI_TOOLS_SYSTEM_PROMPT } from "../bin/tools.js";
+import {
+  buildArchiveSystemPrompt,
+  CLI_TOOLS_SYSTEM_PROMPT,
+} from "../bin/tools.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { runToolLoop } from "../src/loop.js";
@@ -30,6 +33,14 @@ test("CLI prompt constrains provenance of one-shot values", () => {
     CLI_TOOLS_SYSTEM_PROMPT,
     /归档路径（例如 ~\/\.erix\/transcripts\/outputs\/\.\.\.，仅指本次运行的工具输出）是例外，可以且应当读取/u,
   );
+});
+
+test("archive system prompt names the absolute directory only when enabled", () => {
+  const prompt = buildArchiveSystemPrompt("relative/archive");
+  assert.match(prompt, new RegExp(resolve("relative/archive").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+  assert.match(prompt, /不要重跑命令/u);
+  assert.equal(buildArchiveSystemPrompt(undefined), "");
+  assert.equal(buildArchiveSystemPrompt(""), "");
 });
 
 test("parseChatArgs accepts session and transcript directory overrides", () => {
@@ -80,6 +91,11 @@ test("chat loop wires a file transcript store without a recall tool", async () =
     });
 
     assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), false);
+    assert.match(
+      provider.requests[0].system,
+      new RegExp(`${dir}/outputs/chat-wiring`),
+    );
+    assert.match(provider.requests[0].system, /不要重跑命令/u);
     const records = await createFileTranscriptStore({ dir }).load("chat-wiring");
     assert.deepEqual(records.map((record) => record.round), [0, 1]);
   } finally {

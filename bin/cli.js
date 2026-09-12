@@ -21,6 +21,7 @@ import {
 import { defaultSessionId, runRepl } from "./repl.js";
 import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import {
+  buildArchiveSystemPrompt,
   CLI_TOOLS_SYSTEM_PROMPT,
   createCliTools,
   wrapExecuteTool,
@@ -571,6 +572,7 @@ export async function runChat({
     : undefined;
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
+  systemPrompt += buildArchiveSystemPrompt(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `
 

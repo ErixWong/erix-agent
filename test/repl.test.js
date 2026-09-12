@@ -242,6 +242,11 @@ test("runRepl resumes from the transcript store without a recall tool", async ()
 
     assert.equal(provider.requests.length, 2);
     assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), false);
+    assert.match(
+      provider.requests[0].system,
+      new RegExp(`${dir}/outputs/repl-store`),
+    );
+    assert.match(provider.requests[0].system, /不要重跑命令/u);
     assert.ok(provider.requests[1].messages.some((message) => (
       message.role === "user"
       && message.content?.some((block) => block.text === "second")

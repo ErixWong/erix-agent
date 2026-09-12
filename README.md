@@ -89,7 +89,7 @@ src/
 
 - **入口**：`erix` 直接进交互 TUI（`erix repl` 等价）；`erix chat "<prompt>" [--stream]` 单次对话
   （`--reflection on|off` 控制自适应预算；`max-rounds >= 32` 时默认启用）
-- **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）；较大的工具结果（阈值 800 字符）按本次 run 写入 `<transcriptDir>/outputs/<safeRunId>/<序号>-<toolName>.txt`（如 `001-exec.txt`），返回文本带绝对路径指引；需要原文时用 `readFile`/`cat` 读取归档，不要重跑命令。归档单文件最多 1 MiB，写入失败时工具仍返回原结果并标注失败。默认不提供 agent 级 recall 工具——`store.recall()` 是面向宿主的契约方法，需要时可从 `erix-agent/tools` 自行接线——无内置安全层，见 ADR-009
+- **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）；较大的工具结果（阈值 800 字符）按本次 run 写入 `<transcriptDir>/outputs/<safeRunId>/<序号>-<toolName>.txt`（如 `001-exec.txt`），返回文本带绝对路径指引；归档目录也会写入 system prompt，便于折叠后寻回原文；需要原文时用 `readFile`/`cat` 读取归档，不要重跑命令。归档单文件最多 1 MiB，写入失败时工具仍返回原结果并标注失败。默认不提供 agent 级 recall 工具——`store.recall()` 是面向宿主的契约方法，需要时可从 `erix-agent/tools` 自行接线——无内置安全层，见 ADR-009
 - **skill 系统**：`~/.erix/skills/<id>/skill.mjs` 自描述脚本，导出 `getSkillDefinition()` 自报工具（ADR-008）；`erix skills` 查看；todo skill（跨会话任务清单，长任务拆解/划掉/恢复）
 - **MCP 对接**：`~/.erix/mcp.json` 标准配置，单代理工具（list/search/call/status）访问任意 MCP server（stdio + HTTP；实测 unifuncs 联网搜索、filesystem 读文件）
 - **配置**：`~/.erix/config.json`（或 `$XDG_CONFIG_HOME/erix/`），env 优先；会话存档 `~/.erix/<session>.json`；todo 清单 `~/.erix/todos/`

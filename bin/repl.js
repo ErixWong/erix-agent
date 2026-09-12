@@ -25,6 +25,7 @@ import {
 } from "./mcp.js";
 import { buildSkillTools } from "./skills.js";
 import {
+  buildArchiveSystemPrompt,
   CLI_TOOLS_SYSTEM_PROMPT,
   createCliTools,
   wrapExecuteTool,
@@ -371,6 +372,7 @@ export async function runRepl(argv, io = {}) {
   }
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
+  systemPrompt += buildArchiveSystemPrompt(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `
 

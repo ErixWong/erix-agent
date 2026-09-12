@@ -145,7 +145,7 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 - 原值已不在上下文且无持久记录时，明确说明不可恢复，不得给出替代值
 
 [工具输出归档]
-- 工具输出较大或被截断时，返回末尾会给出完整输出的归档路径；需要原始内容时用 readFile/cat 读取该路径，不要重跑命令（重跑可能得到不同值）
+- 工具输出较大或被截断时，返回末尾会给出完整输出的归档路径；归档目录路径会在系统提示中给出；需要原始内容时用 readFile/cat 读取该路径，不要重跑命令（重跑可能得到不同值）
 
 [边界]
 - 本 CLI 不提供安全边界，运行环境负责隔离；敏感操作（删除、覆盖、网络、安装）先说明要做什么
@@ -155,6 +155,16 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 - 任务完成或已无需更多工具时，直接输出最终答复，不要空转
 - 默认用中文回答；复杂任务结构化汇报：做了什么、结果、遗留问题
 - 汇报关键状态声明（如"服务仍在运行"）前，先用工具验证（curl/检查进程），不要凭推断下结论`;
+
+export function buildArchiveSystemPrompt(archiveDir) {
+  if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
+  const absoluteDir = path.resolve(archiveDir);
+  return `
+
+[工具输出归档]
+本次运行的归档目录：${absoluteDir}
+早期工具输出被截断或已折叠出上下文时，用 tree/ls 列出该目录、再用 readFile 读取对应文件（命名形如 001-exec.txt）即可取回完整原文——不要重跑命令（重跑会得到不同的值），也不要凭记忆给值。`;
+}
 
 function resolveToolPath(root, value) {
   return path.resolve(root, value);
