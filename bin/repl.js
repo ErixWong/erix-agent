@@ -1,5 +1,11 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -216,7 +222,9 @@ export function parseCommand(line) {
 }
 
 export function sessionPath(dir, session) {
-  return join(String(dir), `${String(session)}.json`);
+  // Map unsafe user-controlled IDs instead of rejecting them, preserving
+  // arbitrary session IDs without allowing path components to escape dir.
+  return join(String(dir), `${safeRunId(session)}.json`);
 }
 
 export async function loadSession(dir, session) {
@@ -239,8 +247,23 @@ export async function saveSession(dir, session, messages) {
     throw new TypeError("messages 必须是数组");
   }
   const path = sessionPath(dir, session);
-  await mkdir(dir, { recursive: true });
-  await writeFile(path, `${JSON.stringify(messages)}\n`, "utf8");
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  try {
+    await writeFile(
+      temporary,
+      `${JSON.stringify(messages)}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+    await rename(temporary, path);
+  } catch (error) {
+    try {
+      await unlink(temporary);
+    } catch (cleanupError) {
+      if (cleanupError?.code !== "ENOENT") error.cause = cleanupError;
+    }
+    throw error;
+  }
 }
 
 function writeLine(output, text = "") {
@@ -363,6 +386,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
 
   let processing = Promise.resolve();
   let closeHandled = false;
+  let activeRunController;
   let resolveRun;
   let rejectRun;
   const completed = new Promise((resolve, reject) => {
@@ -371,6 +395,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   });
 
   const handleSigint = () => {
+    if (activeRunController) {
+      activeRunController.abort();
+      return;
+    }
     if (rl.closed) return;
     if (rl.line.length > 0) {
       clearReadlineLine(rl);
@@ -507,6 +535,11 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         tools.push(mcpProxy.schema);
       }
       const idle = createIdleTimeout(options.idleTimeout);
+      const runController = new AbortController();
+      activeRunController = runController;
+      const signal = idle === null
+        ? runController.signal
+        : AbortSignal.any([runController.signal, idle.controller.signal]);
       const executeToolForLoop = async (name, input, toolContext) => {
         const result = await executeTool(name, input, toolContext);
         idle?.touch();
@@ -527,7 +560,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         store,
         runId: options.session,
         resume,
-        signal: idle?.controller.signal,
+        signal,
         stream: true,
         onDelta: (chunk) => {
           idle?.touch();
@@ -567,6 +600,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         throw error;
       } finally {
         idle?.dispose();
+        if (activeRunController === runController) activeRunController = undefined;
       }
     }
 
