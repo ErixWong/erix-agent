@@ -24,6 +24,7 @@ import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import {
   buildArchiveSystemPrompt,
   buildArchiveRecoveryHint,
+  buildValueNotesIndexPrompt,
   CLI_TOOLS_SYSTEM_PROMPT,
   createCliTools,
   wrapExecuteTool,
@@ -356,7 +357,7 @@ function parseMcpArgs(args) {
 }
 
 function combineTools(cliTools, skillTools, mcpProxy) {
-  const tools = [...cliTools.tools];
+  const tools = [...cliTools.tools, ...skillTools.tools];
   if (mcpProxy?.enabled) {
     tools.push(mcpProxy.schema);
   }
@@ -570,8 +571,17 @@ async function runChatWithNotes({
       ledger || "（当前没有可注入的 pinned 记录）"
     }\n[notes ledger 结束：值只可作为当前 run 的线索；需要完整值时先 note_read 或读取归档]`;
   };
+  const readNotesValueIndex = typeof skillTools.notesValueIndex === "function"
+    ? () => skillTools.notesValueIndex({
+        __erix: { runId, notesDir: _notesDir },
+      })
+    : undefined;
+  const notesValueIndexPrompt = async () => {
+    if (!readNotesValueIndex) return "";
+    return buildValueNotesIndexPrompt(await readNotesValueIndex());
+  };
   const context = buildCompactionContext(config, compactBudget, recoveryHint)
-    ?? (readNotesLedger ? {} : undefined);
+    ?? (readNotesLedger || readNotesValueIndex ? {} : undefined);
   if (readNotesLedger) {
     context.onAfterFold = async (result) => {
       const ledger = await readNotesLedger();
@@ -612,6 +622,23 @@ async function runChatWithNotes({
       }
     };
   }
+  if (readNotesValueIndex) {
+    const previousOnAfterFold = context.onAfterFold;
+    context.onAfterFold = async (result) => {
+      await previousOnAfterFold?.(result);
+      const index = (await notesValueIndexPrompt()).trim();
+      if (!index) return;
+      const target = result.messages.find((message) => message?.role === "user");
+      if (!target) return;
+      const content = typeof target.content === "string"
+        ? [{ type: "text", text: target.content }]
+        : Array.isArray(target.content) ? target.content : [];
+      target.content = [
+        { type: "text", text: `[notes value index refresh]\n${index}` },
+        ...content,
+      ];
+    };
+  }
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, {
     output: toolOutput,
@@ -620,16 +647,26 @@ async function runChatWithNotes({
   });
   const executeToolWithLedger = async (execution) => {
     const result = await executeTool(execution);
-    if (
-      !readNotesLedger
-      || !["exec", "note_take", "note_forget"].includes(execution?.name)
-    ) {
+    const refreshIndex = readNotesValueIndex && execution?.name === "exec";
+    const refreshLedger = readNotesLedger
+      && ["exec", "note_take", "note_forget"].includes(execution?.name);
+    if (!refreshIndex && !refreshLedger) {
       return result;
     }
-    const ledger = await readNotesLedger();
-    return `${String(result ?? "")}\n\n[notes pinned ledger refresh]\n${
-      ledger || "（当前没有可注入的 pinned 记录）"
-    }\n[notes ledger refresh 结束]`;
+    const refreshes = [];
+    if (refreshIndex) {
+      const index = (await notesValueIndexPrompt()).trim();
+      if (index) refreshes.push(`[notes value index refresh]\n${index}`);
+    }
+    if (refreshLedger) {
+      const ledger = await readNotesLedger();
+      refreshes.push(`[notes pinned ledger refresh]\n${
+        ledger || "（当前没有可注入的 pinned 记录）"
+      }\n[notes ledger refresh 结束]`);
+    }
+    return refreshes.length === 0
+      ? result
+      : `${String(result ?? "")}\n\n${refreshes.join("\n\n")}`;
   };
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
   const resolvedFinalGuard = resolveFinalGuard(finalGuard, runId, archiveDir, _notesDir);
@@ -714,6 +751,7 @@ async function runChatWithNotes({
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
   systemPrompt += buildArchiveSystemPrompt(archiveDir);
+  systemPrompt += await notesValueIndexPrompt();
   if (mcpProxy?.enabled) {
     systemPrompt += `
 

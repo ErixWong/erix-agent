@@ -296,7 +296,8 @@ test("runRepl passes the archive recovery hint through loop context", async () =
     assert.match(captured.context.recoveryHint, new RegExp(
       `${dir}/outputs/repl-recovery`.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"),
     ));
-    assert.match(captured.context.recoveryHint, /必须先读取归档/u);
+    assert.match(captured.context.recoveryHint, /优先直接调用 note_read key=<key>/u);
+    assert.match(captured.context.recoveryHint, /禁止遍历归档目录/u);
     assert.match(captured.context.recoveryHint, /不要重跑命令/u);
   } finally {
     input.destroy();

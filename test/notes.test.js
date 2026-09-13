@@ -71,6 +71,45 @@ test("notes declares four provider-safe tool names", () => {
   }
 });
 
+test("notes tool descriptions explain Chinese recovery usage", () => {
+  const tools = Object.fromEntries(
+    notes.getSkillDefinition().tools.map((tool) => [tool.name, tool.description]),
+  );
+  for (const description of Object.values(tools)) {
+    assert.match(description, /when-to-use/u);
+    assert.match(description, /上下文被折叠/u);
+    assert.match(description, /先 note_list，再 note_read key=/u);
+    assert.match(description, /不要重跑非幂等命令/u);
+    assert.match(description, /不要遍历归档目录/u);
+  }
+  assert.match(tools.note_list, /next 提示/u);
+  assert.match(tools.note_read, /value/u);
+  assert.match(tools.note_read, /archivePath\+locator/u);
+});
+
+test("value note index exposes keys and tags but never content", async () => {
+  await withNotes(async (directory) => {
+    await notes.note_take({
+      key: "captured-nonce",
+      content: "secret-value-must-not-leak",
+      tags: ["value", "auto"],
+    });
+    await notes.note_take({
+      key: "ordinary",
+      content: "ordinary-value",
+      tags: ["fact"],
+    });
+
+    const index = await notes.buildValueNotesIndex({
+      __erix: { runId: "notes-test-run", notesDir: directory },
+    });
+    assert.deepEqual(index, [
+      { key: "captured-nonce", tags: ["value", "auto"] },
+    ]);
+    assert.doesNotMatch(JSON.stringify(index), /secret-value-must-not-leak/u);
+  });
+});
+
 test("take/read/list supports version history and deduplicates identical content", async () => {
   await withNotes(async (directory) => {
     assert.equal(parsed(await notes.note_take({

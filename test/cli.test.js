@@ -10,8 +10,10 @@ import { getMcpPoolStatus } from "../bin/mcp.js";
 import {
   buildArchiveSystemPrompt,
   buildArchiveRecoveryHint,
+  buildValueNotesIndexPrompt,
   CLI_TOOLS_SYSTEM_PROMPT,
 } from "../bin/tools.js";
+import * as notes from "../skills/notes/skill.mjs";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { runToolLoop } from "../src/loop.js";
@@ -54,10 +56,72 @@ test("archive system prompt names the absolute directory only when enabled", () 
 test("archive recovery hint is actionable and omitted without an archive directory", () => {
   const hint = buildArchiveRecoveryHint("relative/archive");
   assert.match(hint, new RegExp(resolve("relative/archive").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
-  assert.match(hint, /必须先读取归档/u);
+  assert.match(hint, /优先直接调用 note_read key=<key>/u);
+  assert.match(hint, /archivePath \+ locator/u);
+  assert.match(hint, /禁止遍历归档目录/u);
   assert.match(hint, /不要重跑命令/u);
   assert.equal(buildArchiveRecoveryHint(undefined), undefined);
   assert.equal(buildArchiveRecoveryHint(""), undefined);
+});
+
+test("value note index prompt is absent when empty and never includes values", () => {
+  assert.equal(buildValueNotesIndexPrompt([]), "");
+  const prompt = buildValueNotesIndexPrompt([
+    { key: "nonce", tags: ["value", "auto"] },
+  ]);
+  assert.match(prompt, /本 run 自动捕获的值/u);
+  assert.match(prompt, /nonce（标签：value、auto）/u);
+  assert.match(prompt, /note_read key=<key> 一步取回/u);
+  assert.doesNotMatch(prompt, /secret-value/u);
+});
+
+test("runChat adds the value-note index to the system prompt without content", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-cli-value-index-test-"));
+  const notesDir = join(dir, "notes");
+  try {
+    await notes.note_take({
+      key: "captured-nonce",
+      content: "secret-value-must-not-leak",
+      tags: ["value", "auto"],
+      __erix: { runId: "value-index-run", notesDir },
+    });
+    const provider = createFakeProvider([{ content: [{ type: "text", text: "done" }] }]);
+    await runChat({
+      prompt: "answer",
+      session: "value-index-run",
+      dir: join(dir, "transcripts"),
+      notesDir,
+      provider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 1,
+      idleTimeout: 0,
+      toolOutput: () => {},
+    });
+    assert.match(provider.requests[0].system, /captured-nonce（标签：value、auto）/u);
+    assert.doesNotMatch(provider.requests[0].system, /secret-value-must-not-leak/u);
+    assert.deepEqual(
+      provider.requests[0].tools
+        .map((tool) => tool.name)
+        .filter((name) => name.startsWith("note_")),
+      ["note_take", "note_read", "note_list", "note_forget"],
+    );
+
+    const emptyProvider = createFakeProvider([{ content: [{ type: "text", text: "done" }] }]);
+    await runChat({
+      prompt: "answer",
+      session: "empty-value-index-run",
+      dir: join(dir, "empty-transcripts"),
+      notesDir: join(dir, "empty-notes"),
+      provider: emptyProvider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 1,
+      idleTimeout: 0,
+      toolOutput: () => {},
+    });
+    assert.doesNotMatch(emptyProvider.requests[0].system, /\[notes value index\]/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("runChat passes the archive recovery hint through loop context", async () => {
@@ -91,7 +155,8 @@ test("runChat passes the archive recovery hint through loop context", async () =
       captured.context.recoveryHint,
       new RegExp(`${resolve(join(dir, "outputs", "chat-recovery"))}`.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")),
     );
-    assert.match(captured.context.recoveryHint, /必须先读取归档/u);
+    assert.match(captured.context.recoveryHint, /优先直接调用 note_read key=<key>/u);
+    assert.match(captured.context.recoveryHint, /禁止遍历归档目录/u);
     assert.match(captured.context.recoveryHint, /不要重跑命令/u);
   } finally {
     await rm(dir, { recursive: true, force: true });

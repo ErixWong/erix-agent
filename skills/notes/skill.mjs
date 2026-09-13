@@ -653,6 +653,29 @@ export async function buildPinnedLedger({
   return lines.join("\n");
 }
 
+/**
+ * Return the current run's value-note metadata without exposing note content.
+ * The CLI uses this as a pull-only index so the model can discover exact keys.
+ */
+export async function buildValueNotesIndex({ __erix } = {}) {
+  const directory = await scopeDirectory(false, { __erix });
+  if (!directory) return [];
+  const files = await readJsonFiles(directory);
+  const entries = [];
+  for (const file of files) {
+    const loaded = await loadRecord(file);
+    if (loaded.corrupt) throw new Error(`笔记文件损坏，无法生成值索引：${file}`);
+    if (loaded.missing) continue;
+    const record = loaded.record;
+    if (record.state !== "active" || !record.tags.includes("value")) continue;
+    entries.push({
+      key: record.key,
+      tags: [...record.tags],
+    });
+  }
+  return entries.sort((left, right) => left.key.localeCompare(right.key));
+}
+
 async function readJsonFiles(directory) {
   let entries;
   try {
@@ -1114,7 +1137,7 @@ export async function completeRun(input = {}) {
 const TOOL_DEFINITIONS = [
   {
     name: "note_take",
-    description: "记录 run 作用域的事实、值或 artifact 引用；同 key 版本化保留历史",
+    description: "记录 run 作用域的事实、具体值或 artifact 引用，并按 key 保留版本历史。when-to-use：产生后续还要用的关键事实、一次性值或决策时调用；当上下文被折叠、需要早期执行产生的具体值时，先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
     inputSchema: {
       type: "object",
       properties: {
@@ -1133,7 +1156,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_read",
-    description: "按精确 key 读取笔记值或 artifact 引用；有 content 时直接返回 value 与 artifactRef，只有仅引用时才按 next 有界核对归档",
+    description: "按精确 key 读取笔记。when-to-use：当上下文被折叠、需要早期执行产生的具体值时，先 note_list，再 note_read key=...；值型笔记一步返回 value 与 artifactRef，仅引用型笔记返回 archivePath+locator 供有界核对；不要重跑非幂等命令，不要遍历归档目录",
     inputSchema: {
       type: "object",
       properties: {
@@ -1147,7 +1170,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_list",
-    description: "恢复具体值时优先调用；列出 run 作用域笔记的元数据、短 preview 和下一步提示，不返回完整内容",
+    description: "恢复具体值时优先调用，列出 run 作用域笔记的 key、标签、元数据、短 preview 和 next 提示，不返回完整内容。when-to-use：当上下文被折叠、需要早期执行产生的具体值时，先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
     inputSchema: {
       type: "object",
       properties: {
@@ -1162,7 +1185,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_forget",
-    description: "撤销一个 run 作用域笔记并保留墓碑与历史版本",
+    description: "撤销一个 run 作用域笔记并保留墓碑与历史版本。when-to-use：值已失效或必须明确撤销时调用；当上下文被折叠、需要早期执行产生的具体值时，先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
     inputSchema: {
       type: "object",
       properties: {
