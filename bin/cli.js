@@ -541,7 +541,11 @@ async function runChatWithNotes({
     "outputs",
     safeRunId(runId),
   );
-  const cliTools = createCliTools({ cwd, archiveDir });
+  const cliTools = createCliTools({
+    cwd,
+    archiveDir,
+    notesScope: { runId, notesDir: _notesDir },
+  });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
   const skillTools = await buildSkillTools({
     cwd,

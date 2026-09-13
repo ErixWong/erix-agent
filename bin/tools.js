@@ -10,7 +10,9 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { captureToolExecution } from "./auto-capture.js";
+import { captureToolExecution, candidateLines } from "./auto-capture.js";
+import { note_read } from "../skills/notes/skill.mjs";
+import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
@@ -512,9 +514,84 @@ function duplicateCommandGuidance({ count, archivePath }) {
   return `[注意：该命令本次运行已执行过第 ${count} 次；若其输出是随机值/时间戳/一次性内容，本次结果不是原始值。${recovery}]`;
 }
 
+function normalizeCommand(command) {
+  return String(command).replaceAll(/\r\n?/gu, "\n").trim();
+}
+
+function captureKeysForOutput(output, toolUseId, artifactDigest) {
+  const digestPrefix = artifactDigest.slice(0, 8);
+  const keys = [];
+  for (const candidate of candidateLines(output, { includeOversized: true })) {
+    if (looksLikeCredential(candidate.label, candidate.value)) continue;
+    const baseKey = candidate.label || `auto:${String(toolUseId ?? "unknown")}:${digestPrefix}`;
+    for (const key of [baseKey, `${baseKey}:candidate:${digestPrefix}`]) {
+      if (!keys.includes(key)) keys.push(key);
+    }
+    if (keys.length >= 6) break;
+  }
+  return keys;
+}
+
+async function readCapturedValues(commandState, notesScope) {
+  if (
+    !notesScope
+    || typeof notesScope !== "object"
+    || !commandState.archivePath
+    || typeof commandState.artifactDigest !== "string"
+  ) {
+    return [];
+  }
+
+  const values = [];
+  for (const key of commandState.captureKeys ?? []) {
+    const latest = JSON.parse(await note_read({ key, __erix: notesScope }));
+    const versions = [latest];
+    const latestVersion = Number.isSafeInteger(latest.version) ? latest.version : 1;
+    for (let version = 1; version < latestVersion; version += 1) {
+      versions.push(JSON.parse(await note_read({
+        key,
+        version,
+        __erix: notesScope,
+      })));
+    }
+    for (const parsed of versions) {
+      if (
+        parsed.status !== "found"
+        || typeof parsed.value !== "string"
+        || parsed.provenance?.source !== "auto"
+        || parsed.artifactRef?.digest !== commandState.artifactDigest
+      ) {
+        continue;
+      }
+      if (!values.some((item) => item.key === parsed.key)) {
+        values.push({ key: parsed.key ?? key, value: parsed.value });
+      }
+      break;
+    }
+  }
+  return values;
+}
+
+function interceptedNonReplayableResult(commandState, values) {
+  const lines = [
+    "[已拦截重复执行：该命令非幂等、不可重放；重跑会得到不同值。]",
+  ];
+  for (const item of values) {
+    lines.push(
+      `首次执行捕获到的值（来自首次执行（已捕获））：${item.value}`,
+      `note_read key=${item.key}`,
+    );
+  }
+  if (commandState.archivePath) {
+    lines.push(`首次执行归档：${commandState.archivePath}`);
+  }
+  return lines.join("\n");
+}
+
 export function createCliTools({
   cwd = process.cwd(),
   archiveDir,
+  notesScope,
 } = {}) {
   const root = path.resolve(cwd);
   if (archiveDir !== undefined && typeof archiveDir !== "string") {
@@ -682,13 +759,27 @@ export function createCliTools({
       && name === "exec"
       && typeof command === "string"
     ) {
-      commandState = duplicateCommands.get(command);
+      const normalizedCommand = normalizeCommand(command);
+      commandState = duplicateCommands.get(normalizedCommand);
       if (commandState) {
         commandState.count += 1;
       } else {
-        commandState = { count: 1, archivePath: undefined };
-        duplicateCommands.set(command, commandState);
+        commandState = {
+          count: 1,
+          archivePath: undefined,
+          artifactDigest: undefined,
+          captureKeys: [],
+        };
+        duplicateCommands.set(normalizedCommand, commandState);
         isFirstCommandExecution = true;
+      }
+    }
+
+    if (commandState?.count > 1 && !replayable) {
+      const capturedValues = await readCapturedValues(commandState, notesScope);
+      if (capturedValues.length > 0) {
+        lastToolMetadata = { name, replayable: true, intercepted: true };
+        return interceptedNonReplayableResult(commandState, capturedValues);
       }
     }
 
@@ -710,6 +801,12 @@ export function createCliTools({
         returnedResult = archived.text;
         if (isFirstCommandExecution) {
           commandState.archivePath = archived.archivePath;
+          commandState.artifactDigest = archived.artifact?.digest;
+          commandState.captureKeys = captureKeysForOutput(
+            archived.archivedText ?? String(result ?? ""),
+            context?.toolUseId,
+            archived.artifact?.digest ?? "",
+          );
         }
         lastToolMetadata = {
           name,

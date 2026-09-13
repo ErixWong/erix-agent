@@ -382,7 +382,11 @@ export async function runRepl(argv, io = {}) {
     "outputs",
     safeRunId(options.session),
   );
-  const cliTools = createCliTools({ cwd, archiveDir });
+  const cliTools = createCliTools({
+    cwd,
+    archiveDir,
+    notesScope: { runId: options.session, notesDir },
+  });
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,
