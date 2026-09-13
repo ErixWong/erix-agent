@@ -1,19 +1,28 @@
 import { createHash } from "node:crypto";
 
-import { note_read, recordAutoCapture } from "../skills/notes/skill.mjs";
+import {
+  MAX_CONTENT_LENGTH,
+  NOTE_VALUE_MAX_CHARS,
+  note_read,
+  recordAutoCapture,
+} from "../skills/notes/skill.mjs";
 import {
   looksLikeCredential,
   normalizedLabel,
 } from "../skills/notes/credential-patterns.mjs";
 
 const LABEL_PATTERN = /^\s*([^:=\s][^:=\s]{0,80}?)\s*[:=]\s*(.*?)\s*$/u;
-export function candidateLines(output) {
+export function candidateLines(output, { includeOversized = false } = {}) {
   const labelled = [];
   const unlabelled = [];
   const lines = output.replaceAll(/\r\n|\r/gu, "\n").split("\n");
   for (const rawLine of lines) {
     const line = rawLine.trim();
-    if (line.length === 0 || line.length > 256) continue;
+    if (
+      line.length === 0
+      || line.length > MAX_CONTENT_LENGTH
+      || (!includeOversized && line.length > NOTE_VALUE_MAX_CHARS)
+    ) continue;
     const looksLikeUrl = /^[a-z][a-z0-9+.-]*:\/\//iu.test(line);
     const looksLikeBase64 = line.length >= 24
       && /^[A-Za-z0-9+/]+={0,2}$/u.test(line);
@@ -106,7 +115,7 @@ export async function captureToolExecution({
 
     let captured = 0;
     const seen = new Set();
-    for (const candidate of candidateLines(output)) {
+    for (const candidate of candidateLines(output, { includeOversized: true })) {
       if (captured >= 3 || seen.has(`${candidate.label}\n${candidate.value}`)) continue;
       seen.add(`${candidate.label}\n${candidate.value}`);
       if (looksLikeCredential(candidate.label, candidate.value)) continue;
@@ -124,6 +133,7 @@ export async function captureToolExecution({
       };
       const saved = JSON.parse(await recordAutoCapture({
         key,
+        ...(candidate.value.length <= NOTE_VALUE_MAX_CHARS ? { content: candidate.value } : {}),
         artifactRef: reference,
         tags: ["value"],
         pinned: true,

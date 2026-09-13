@@ -154,7 +154,7 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 [工作方式]
 - 复杂任务先规划：用 tree/readFile 了解项目结构，拆步骤逐步执行
 - **长任务（多步、可能跨会话）先用 todo_add 拆解任务清单**（存 ~/.erix/todos/，按工作目录隔离）；每完成一步 todo_done 划掉；会话开始时先 todo_list 恢复进度
-- 任务中产生的关键事实、一次性值或决策，用 note_take 记录；需要早期轮次的具体值而当前上下文没有时，先用 note_list/note_read 查证
+- 任务中产生的关键事实、一次性值或决策，用 note_take 记录；需要早期轮次的具体值而当前上下文没有时，恢复顺序固定为 note_list → note_read，只有 note_read 明确返回仅引用时才按 artifactRef.archivePath 的 locator 有界读取
 - notes 是 pull-only 的事实/值索引，不是每轮日志工具；不得重跑命令“恢复”一次性值，也不得凭记忆给值。note_read missing 时按工具提示声明不可恢复
 - **读大文件用 readFile 的 offset/limit 分段读，一个文件只读一次**（不要重复读全文、不要用大 offset 反复拉全量），控制上下文累积
 - 按用户要求直接调用工具完成操作，不要只提供操作说明
@@ -187,13 +187,13 @@ export function buildArchiveSystemPrompt(archiveDir) {
 
 [工具输出归档]
 本次运行的归档目录：${absoluteDir}
-早期工具输出被截断或已折叠出上下文时，用 tree/ls 列出该目录、再用 readFile 读取对应文件（命名形如 001-exec.txt）即可取回完整原文——不要重跑命令（重跑会得到不同的值），也不要凭记忆给值。`;
+早期工具输出被截断或已折叠出上下文时，先按 note_list → note_read 查证具体值；只有 note_read 明确返回仅引用时，才用 readFile 读取 artifactRef.archivePath 的对应 locator。没有可用笔记且确实需要完整原文时，再读取对应文件（命名形如 001-exec.txt），不要遍历归档目录——不要重跑命令（重跑会得到不同的值），也不要凭记忆给值。`;
 }
 
 export function buildArchiveRecoveryHint(archiveDir) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return undefined;
   const absoluteDir = path.resolve(archiveDir);
-  return `早期轮次的工具输出原文已归档到 ${absoluteDir}（形如 001-exec.txt，用 tree/ls 查看、readFile 读取）。若回答需要早期轮次的具体数值或输出，必须先读取归档再作答；不要重跑命令（重跑会得到不同的值），也不要凭记忆给出具体值。`;
+  return `早期轮次的工具输出原文已归档到 ${absoluteDir}（形如 001-exec.txt）。若回答需要早期轮次的具体数值，先按 note_list → note_read 查证；只有 note_read 明确返回仅引用时，才用 readFile 读取 artifactRef.archivePath 的对应 locator。没有可用笔记且确实需要完整原文时，必须先读取归档再作答；不要遍历归档目录、重跑命令（重跑会得到不同的值），也不要凭记忆给出具体值。`;
 }
 
 function resolveToolPath(root, value) {
