@@ -187,13 +187,13 @@ export function buildArchiveSystemPrompt(archiveDir) {
 
 [工具输出归档]
 本次运行的归档目录：${absoluteDir}
-早期工具输出被截断或已折叠出上下文时，先按 note_list → note_read 查证具体值；只有 note_read 明确返回仅引用时，才用 readFile 读取 artifactRef.archivePath 的对应 locator。没有可用笔记且确实需要完整原文时，再读取对应文件（命名形如 001-exec.txt），不要遍历归档目录——不要重跑命令（重跑会得到不同的值），也不要凭记忆给值。`;
+早期工具输出被截断或已折叠出上下文时，先按 note_list → note_read 查证具体值；只有 note_read 明确返回仅引用时，才用 readFile 读取 artifactRef.archivePath 的对应 locator。没有可用笔记且确实需要完整原文时，再读取对应文件（命名形如 001-exec.txt），不要遍历归档目录；不要重跑命令（重跑会得到不同的值），也不要凭记忆给值。`;
 }
 
 export function buildArchiveRecoveryHint(archiveDir) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return undefined;
   const absoluteDir = path.resolve(archiveDir);
-  return `早期轮次的工具输出原文已归档到 ${absoluteDir}（形如 001-exec.txt）。若回答需要早期轮次的具体数值，先按 note_list → note_read 查证；只有 note_read 明确返回仅引用时，才用 readFile 读取 artifactRef.archivePath 的对应 locator。没有可用笔记且确实需要完整原文时，必须先读取归档再作答；不要遍历归档目录、重跑命令（重跑会得到不同的值），也不要凭记忆给出具体值。`;
+  return `早期轮次的工具输出原文已归档到 ${absoluteDir}（形如 001-exec.txt）。若回答需要早期轮次的具体数值，先按 note_list → note_read 查证；只有 note_read 明确返回仅引用时，才用 readFile 读取 artifactRef.archivePath 的对应 locator。没有可用笔记且确实需要完整原文时，必须先读取归档再作答；不要遍历归档目录；不要重跑命令（重跑会得到不同的值），也不要凭记忆给出具体值。`;
 }
 
 function resolveToolPath(root, value) {
