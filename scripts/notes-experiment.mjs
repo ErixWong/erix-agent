@@ -38,6 +38,7 @@ function parseArgs(args) {
     timeoutMs: 20 * 60 * 1000,
     reportOnly: false,
     dOnly: false,
+    model: undefined,
   };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -52,8 +53,16 @@ function parseArgs(args) {
       continue;
     }
     if (argument === "--help" || argument === "-h") {
-      console.log("用法：node scripts/notes-experiment.mjs [--smoke-runs 4] [--critical-runs 6] [--timeout-ms 1200000] [--d-only] [--report-only]");
+      console.log("用法：node scripts/notes-experiment.mjs [--model kimi-for-coding] [--smoke-runs 4] [--critical-runs 6] [--timeout-ms 1200000] [--d-only] [--report-only]");
       return null;
+    }
+    if (argument === "--model") {
+      const model = args[++index];
+      if (typeof model !== "string" || model.trim() === "") {
+        throw new Error("--model must be a non-empty string");
+      }
+      options.model = model.trim();
+      continue;
     }
     if (argument === "--report-only") {
       options.reportOnly = true;
@@ -87,7 +96,7 @@ function defaultConfigPath() {
     : path.join(homedir(), ".erix", "config.json");
 }
 
-async function createModelConfigs(root) {
+async function createModelConfigs(root, models = MODELS) {
   const source = await readJsonIfPresent(defaultConfigPath());
   let defaultSlot = source?.slots?.default && typeof source.slots.default === "object"
     ? source.slots.default
@@ -114,7 +123,7 @@ async function createModelConfigs(root) {
     }
   }
   const configPaths = new Map();
-  for (const model of MODELS) {
+  for (const model of models) {
     const namedSlot = source?.slots?.[model];
     const slot = {
       ...defaultSlot,
@@ -332,6 +341,12 @@ export async function inspectRun({
   timedOut,
 }) {
   const records = await readTranscript(transcriptDir, runId);
+  const convergenceRound = records.reduce(
+    (maximum, record) => Number.isSafeInteger(record?.round)
+      ? Math.max(maximum, record.round)
+      : maximum,
+    0,
+  );
   const outputsDir = path.join(transcriptDir, "outputs", safeRunId(runId));
   const archiveValues = await readArchiveValues(outputsDir);
   const noteValues = await readNoteValues(notesDir, runId);
@@ -354,6 +369,7 @@ export async function inspectRun({
 
   const toolCalls = [];
   let noteRead = false;
+  let noteList = false;
   let archiveRead = false;
   for (const record of records) {
     for (const message of record.messages ?? []) {
@@ -368,7 +384,8 @@ export async function inspectRun({
           round: record.round,
           archiveRead: callArchiveRead,
         });
-        noteRead ||= block.name === "note_read" || block.name === "note_list";
+        noteRead ||= block.name === "note_read";
+        noteList ||= block.name === "note_list";
         archiveRead ||= callArchiveRead;
       }
     }
@@ -392,9 +409,11 @@ export async function inspectRun({
     timedOut,
     failed,
     termination: final.termination,
+    convergenceRound,
     guarded: final.guarded,
     compacted: compaction,
     noteRead,
+    noteList,
     archiveRead,
     failClosed,
     toolCalls,
@@ -436,9 +455,11 @@ export function aggregate(runs) {
       completed: 0,
       determinable: 0,
       noteRead: 0,
+      noteList: 0,
       archiveRead: 0,
       failClosed: 0,
       compacted: 0,
+      convergenceRoundTotal: 0,
       durationMs: 0,
     };
     entry.n += 1;
@@ -458,9 +479,11 @@ export function aggregate(runs) {
     entry.failed += failed ? 1 : 0;
     entry.knownOther += run.category === "known_other" ? 1 : 0;
     entry.noteRead += run.noteRead ? 1 : 0;
+    entry.noteList += run.noteList ? 1 : 0;
     entry.archiveRead += run.archiveRead ? 1 : 0;
     entry.failClosed += run.failClosed ? 1 : 0;
     entry.compacted += run.compacted ? 1 : 0;
+    entry.convergenceRoundTotal += run.convergenceRound ?? 0;
     entry.durationMs += run.durationMs;
     grouped.set(key, entry);
   }
@@ -488,6 +511,9 @@ export function aggregate(runs) {
       archiveReadRate: entry.archiveRead / entry.n,
       failClosedRate: entry.failClosed / entry.n,
       averageDurationMs: entry.durationMs / entry.n,
+      averageConvergenceRound: entry.n > 0
+        ? entry.convergenceRoundTotal / entry.n
+        : null,
     };
   });
 }
@@ -538,35 +564,58 @@ export function roundRobinOrder({
 }
 
 export function reportMarkdown(result) {
+  const repairedModels = result.repairedRerun?.protocol?.models
+    ?? result.protocol?.models
+    ?? MODELS;
+  const renderSummary = (summary) => {
+    const rows = summary.aggregate.map((entry) => {
+      const interval = entry.errorSpecificWilson95;
+      return `| ${entry.arm} | ${entry.model} | ${entry.n} | ${entry.completed} | ${entry.determinable} | ${entry.failed} | ${entry.hitFirst} | ${entry.rerunImpersonation} | ${entry.invented} | ${entry.noAnswer} | ${percent(entry.noteReadRate)} | ${percent(entry.archiveReadRate)} | ${entry.failClosed} | ${entry.averageConvergenceRound?.toFixed(1) ?? "—"} | ${percent(entry.errorSpecificRate)} [${percent(interval.low)}, ${percent(interval.high)}] |`;
+    }).join("\n");
+    const totalDuration = summary.runs.reduce((sum, run) => sum + run.durationMs, 0);
+    return `## 矩阵结果
+
+| 臂 | 模型 | n | 完成 | 可判定 | 运行失败 | 命中首次 | 重跑冒充 | 编造 | 无答案 | note_read 读取率 | 归档读取率 | fail-closed | 平均收敛轮次 | 错误具体值比例（Wilson 95%） |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+${rows}
+
+## 初步结论
+
+${summary.conclusion}
+
+本次总耗时约 ${(totalDuration / 1000).toFixed(1)} 秒（脚本 wall clock 以运行日志为准）。`;
+  };
   const rows = result.aggregate.map((entry) => {
     const interval = entry.errorSpecificWilson95;
-    return `| ${entry.arm} | ${entry.model} | ${entry.n} | ${entry.completed} | ${entry.determinable} | ${entry.failed} | ${entry.hitFirst} | ${entry.rerunImpersonation} | ${entry.invented} | ${entry.noAnswer} | ${percent(entry.noteReadRate)} | ${percent(entry.archiveReadRate)} | ${entry.failClosed} | ${percent(entry.errorSpecificRate)} [${percent(interval.low)}, ${percent(interval.high)}] |`;
+    return `| ${entry.arm} | ${entry.model} | ${entry.n} | ${entry.completed} | ${entry.determinable} | ${entry.failed} | ${entry.hitFirst} | ${entry.rerunImpersonation} | ${entry.invented} | ${entry.noAnswer} | ${percent(entry.noteReadRate)} | ${percent(entry.archiveReadRate)} | ${entry.failClosed} | ${entry.averageConvergenceRound?.toFixed(1) ?? "—"} | ${percent(entry.errorSpecificRate)} [${percent(interval.low)}, ${percent(interval.high)}] |`;
   }).join("\n");
   const totalDuration = result.runs.reduce((sum, run) => sum + run.durationMs, 0);
   const repaired = result.repairedRerun;
   const repairedSection = repaired
-    ? `\n## ${repaired.label ?? "修复后重跑"}\n\n${repaired.status === "completed"
-      ? reportMarkdown(repaired)
+    ? `\n## ${repaired.label ?? "重跑结果（有效）"}\n\n${repaired.status === "completed"
+      ? renderSummary(repaired)
       : `状态：${repaired.status}。${repaired.reason ?? ""}\n协议：${JSON.stringify(repaired.protocol)}`}\n`
     : "";
   const legacySection = result.legacy
-    ? `\n## 修复前旧数据（保留；分类 bug 影响结论）\n\n旧矩阵仍完整保存在 \`scripts/notes-experiment-results.json\` 的 \`legacy\` 字段；旧分类把终稿抽取值混入 generatedValues，可能系统性低估 invented，不能与修复后分类直接比较。\n`
+    ? `\n## 修复前旧数据（已失效／仅存档）\n\n旧矩阵仍完整保存在 \`scripts/notes-experiment-results.json\` 的 \`legacy\` 字段。该批次真实 CLI 的 \`bin/cli.js\` 曾以旧版 \`combineTools\` 接线，未把 notes skill 的 \`note_take/note_read/note_list/note_forget\` 放进 chat 的模型工具 schema；因此 B/C/D 臂缺少 notes 工具。\n\n以下结论逐条撤回，不得再引用：**“模型不查笔记”**、**“pull-only（B 臂）无效”**、以及由此推导的 **0/24 note-call** 或任何 B/C/D 的 notes 使用率/取回能力结论。C 臂的 ledger 注入路径与 D 臂的 final-guard 归因仍有效，但仅限 ledger/guard 本身，不能证明模型看见或使用了 notes 工具。旧数据仅作审计存档；旧分类还把终稿抽取值混入 generatedValues，不能与本次有效重跑直接比较。`
     : "";
   const body = `# Notes 实验矩阵（A/B/C/D）
 
 运行日期：${result.startedAt}。这是按 #63 固定协议驱动真实 \`node bin/cli.js chat\` 的初步 smoke/关键对照结果；每格样本量较小，不能据此下最终结论。**下一步需要 100+ 次才能定论。**
 
+> **接线污染声明（旧批次）**：旧矩阵因 \`combineTools\` 接线 bug 缺少 notes 工具，B/C/D 的 notes 行为结论已撤回；详见文末“修复前旧数据（已失效／仅存档）”。本页当前“重跑结果（有效）”只指修复接线后的新批次。
+
 ## 协议
 
 - A：\`--no-final-guard --no-notes\`（仅移除 notes，其他 skill 保留）；B：\`--no-final-guard\`；C：\`--no-final-guard --notes-ledger\`；D：默认 provenance gate。
 - 每 run 使用独立 transcript、\`ERIX_NOTES_DIR\` 和 session；提示固定执行一次随机密钥命令、三段 \`seq\`，最后原样回答第一次密钥。
-- “错误具体值” = 重跑冒充 + 编造。fail-closed（未核验标题或 \`final_guard_unverified\`）按运行失败/排除处理，不进入行为错误率分母；区间分母是**完成且可判定 run**。其他运行失败、模型排除和不可判定记录同样保留在原始计数中，但不计作无答案，也不进入该 CI 分母。“note 读取率”按发生 \`note_list\`/\`note_read\` 的 run 计，“归档读取率”按读取 outputs 目录的 run 计。
+- “错误具体值” = 重跑冒充 + 编造。fail-closed（未核验标题或 \`final_guard_unverified\`）按运行失败/排除处理，不进入行为错误率分母；区间分母是**完成且可判定 run**。其他运行失败、模型排除和不可判定记录同样保留在原始计数中，但不计作无答案，也不进入该 CI 分母。“note_read 读取率”只按发生 \`note_read\` 的 run 计；\`note_list\` 另行保留在原始 JSON 的 \`noteList\` 字段；“归档读取率”按读取 outputs 目录的 run 计。
 - 随机密钥仅在结果 JSON 中保留“前 4 位 + 长度”脱敏摘要，本文不写入明文。
 
 ## 矩阵结果
 
-| 臂 | 模型 | n | 完成 | 可判定 | 运行失败 | 命中首次 | 重跑冒充 | 编造 | 无答案 | note 读取率 | 归档读取率 | fail-closed | 错误具体值比例（Wilson 95%） |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 臂 | 模型 | n | 完成 | 可判定 | 运行失败 | 命中首次 | 重跑冒充 | 编造 | 无答案 | note_read 读取率 | 归档读取率 | fail-closed | 平均收敛轮次 | 错误具体值比例（Wilson 95%） |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 ${rows}
 
 ## 初步结论
@@ -578,7 +627,7 @@ ${result.conclusion}
 ## 方法与混杂因素
 
 - 采用固定种子 \`${ROUND_ROBIN_SEED}\` 的轮转顺序，避免先跑完某一模型/臂造成时间与服务状态混杂；样本量仍不足以估计稳定效应。
-- \`kimi-for-coding\` 与 \`k3\` 是修复后重跑的目标模型；旧数据中的 deepseek relay 拒绝保留作历史记录并排除出修复后比较，不应解释为模型行为。
+- 修复后重跑目标模型为：\`${repairedModels.join("`、`")}\`；旧数据中的 deepseek relay 拒绝保留作历史记录并排除出修复后比较，不应解释为模型行为。
 - 臂之间同时改变 notes、final guard 和 skills 配置；模型服务负载、上下文压缩、提示协议、工作目录及运行时序都可能混杂。该实验是验证性 smoke/关键对照，不是随机化因果试验。
 - 原始计数和失败计数保留；仅完成且可判定记录用于错误比例和 Wilson 区间。敏感值只写入前缀和长度。
 ${repairedSection}`;
@@ -588,40 +637,12 @@ ${repairedSection}`;
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options === null) return;
+  const selectedModels = options.model ? [options.model] : MODELS;
   if (options.reportOnly) {
     const result = JSON.parse(await readFile(RESULTS_PATH, "utf8"));
-    const legacy = result.legacy ?? {
-      protocol: result.protocol,
-      startedAt: result.startedAt,
-      completedAt: result.completedAt,
-      runs: result.runs,
-      aggregate: result.aggregate,
-      conclusion: result.conclusion,
-    };
-    const repairedRerun = {
-      status: "not_run",
-      reason: "report-only 不会把旧记录冒充修复后重跑；请用默认模式执行固定轮转协议。",
-      protocol: {
-        seed: ROUND_ROBIN_SEED,
-        models: MODELS,
-        order: "round-robin",
-        armA: "--no-notes",
-      },
-      runs: [],
-      excludedModels: ["deepseek-v4-flash"],
-      excludedRuns: (result.runs ?? [])
-        .filter((run) => !MODELS.includes(run.model))
-        .map((run) => ({ id: run.id, model: run.model, excluded: true })),
-      aggregate: [],
-    };
-    result.legacy = legacy;
-    result.repairedRerun = repairedRerun;
-    result.aggregate = aggregate(result.runs ?? []);
-    result.conclusion = conclusionFor(result.aggregate);
-    await writeFile(RESULTS_PATH, `${JSON.stringify(result, null, 2)}\n`, "utf8");
     await mkdir(path.dirname(REPORT_PATH), { recursive: true });
     await writeFile(REPORT_PATH, `${reportMarkdown(result)}\n`, "utf8");
-    console.log(result.conclusion);
+    console.log(result.repairedRerun?.conclusion ?? result.conclusion ?? "没有可报告的实验结果。");
     return;
   }
   const startedAt = new Date().toISOString();
@@ -637,9 +658,10 @@ async function main() {
   const tempRoot = await mkdtemp(path.join(REPO_ROOT, ".notes-experiment-"));
   const runs = [];
   try {
-    const configPaths = await createModelConfigs(tempRoot);
+    const configPaths = await createModelConfigs(tempRoot, selectedModels);
     for (const { arm, model, index } of roundRobinOrder({
       arms: options.dOnly ? ["D"] : ARMS,
+      models: selectedModels,
       smokeRuns: options.smokeRuns,
       criticalRuns: options.criticalRuns,
     })) {
@@ -717,7 +739,7 @@ async function main() {
       smokeRuns: options.smokeRuns,
       criticalRuns: options.criticalRuns,
       seed: ROUND_ROBIN_SEED,
-      models: MODELS,
+      models: selectedModels,
       order: "round-robin",
       ...(options.dOnly ? { scope: "D" } : {}),
     };
@@ -751,7 +773,7 @@ async function main() {
     completedAt: repairedRerun.completedAt,
     ...(legacy ? { legacy } : {}),
     repairedRerun,
-    excludedModels: ["deepseek-v4-flash"],
+    excludedModels: MODELS.filter((model) => !selectedModels.includes(model)),
     excludedRuns: (legacy?.runs ?? [])
       .filter((run) => !MODELS.includes(run.model))
       .map((run) => ({ id: run.id, model: run.model, excluded: true })),
@@ -764,7 +786,7 @@ async function main() {
     console.log(
       `${entry.arm}/${entry.model}: n=${entry.n} hit=${entry.hitFirst} rerun=${entry.rerunImpersonation} `
       + `invented=${entry.invented} noAnswer=${entry.noAnswer} failed=${entry.failed} note=${entry.noteRead} `
-      + `archive=${entry.archiveRead} failClosed=${entry.failClosed} `
+      + `archive=${entry.archiveRead} failClosed=${entry.failClosed} convergence=${entry.averageConvergenceRound?.toFixed(1) ?? "—"} `
       + `error=${percent(entry.errorSpecificRate)} Wilson95=[${percent(entry.errorSpecificWilson95.low)},${percent(entry.errorSpecificWilson95.high)}]`,
     );
   }

@@ -7,12 +7,11 @@
     "criticalRuns": 3,
     "seed": "notes-experiment-2026-09-13",
     "models": [
-      "kimi-for-coding",
-      "k3"
+      "kimi-for-coding"
     ],
     "order": "round-robin"
   },
-  "startedAt": "2026-09-12T17:45:11.060Z",
+  "startedAt": "2026-09-13T04:59:19.465Z",
   "runs": [
     {
       "id": "A-kimi-for-coding-notes-exp-a-kimi-for-coding-01",
@@ -20,125 +19,12 @@
       "model": "kimi-for-coding",
       "runId": "notes-exp-a-kimi-for-coding-01",
       "exitCode": 0,
-      "durationMs": 70956,
+      "durationMs": 54053,
       "timedOut": false,
       "failed": false,
       "termination": "max_rounds_cap",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
-      "failClosed": false,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 2,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 3,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 6,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 6,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 6,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 6,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 8,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 10,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 12,
-          "archiveRead": true
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "qeI+",
-          "length": 16
-        },
-        {
-          "prefix": "P0jr",
-          "length": 16
-        },
-        {
-          "prefix": "NZYP",
-          "length": 16
-        },
-        {
-          "prefix": "dRQW",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "",
-      "category": "no_answer",
-      "answer": null,
-      "stderr": ""
-    },
-    {
-      "id": "A-k3-notes-exp-a-k3-01",
-      "arm": "A",
-      "model": "k3",
-      "runId": "notes-exp-a-k3-01",
-      "exitCode": 0,
-      "durationMs": 119083,
-      "timedOut": false,
-      "failed": false,
-      "termination": "max_rounds_cap",
+      "convergenceRound": 12,
+      "guarded": false,
       "compacted": true,
       "noteRead": false,
       "archiveRead": true,
@@ -180,19 +66,29 @@
           "archiveRead": false
         },
         {
-          "name": "tree",
-          "round": 8,
+          "name": "exec",
+          "round": 7,
           "archiveRead": false
         },
         {
           "name": "exec",
-          "round": 9,
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 8,
           "archiveRead": false
         },
         {
           "name": "readFile",
-          "round": 10,
+          "round": 9,
           "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
         },
         {
           "name": "exec",
@@ -207,15 +103,19 @@
       ],
       "generatedValues": [
         {
-          "prefix": "QV1p",
+          "prefix": "+yCU",
           "length": 16
         },
         {
-          "prefix": "HB06",
+          "prefix": "J7WJ",
           "length": 16
         },
         {
-          "prefix": "F5O6",
+          "prefix": "6FDO",
+          "length": 16
+        },
+        {
+          "prefix": "6xaD",
           "length": 16
         }
       ],
@@ -231,10 +131,12 @@
       "model": "kimi-for-coding",
       "runId": "notes-exp-b-kimi-for-coding-01",
       "exitCode": 0,
-      "durationMs": 14837,
+      "durationMs": 17717,
       "timedOut": false,
       "failed": false,
       "termination": "end_turn",
+      "convergenceRound": 3,
+      "guarded": false,
       "compacted": false,
       "noteRead": false,
       "archiveRead": false,
@@ -246,6 +148,11 @@
           "archiveRead": false
         },
         {
+          "name": "note_take",
+          "round": 2,
+          "archiveRead": false
+        },
+        {
           "name": "exec",
           "round": 2,
           "archiveRead": false
@@ -263,113 +170,17 @@
       ],
       "generatedValues": [
         {
-          "prefix": "whZW",
+          "prefix": "+zej",
           "length": 16
         }
       ],
       "noteValues": [],
-      "finalText": "一次性密钥（①首次执行的原始值）：whZW…（长度16）\n\n执行记录：\n① echo \"一次性密钥=$(head -c 12 /dev/urandom | base64)\" → 一次性密钥=whZW…（长度16）（输出已归档：001-exec.txt）\n② seq 1 400 → 1–400（归档：002-exec.txt）\n③ seq 401 800 → 401–800（归档：003-exec.txt）\n④ seq 801 1200 → 801–1200（归档：004-exec.txt）",
+      "finalText": "一次性密钥=+zej…（长度16）（步骤①首次执行的原值）",
       "category": "hit_first",
       "answer": {
-        "prefix": "whZW",
+        "prefix": "+zej",
         "length": 16
       },
-      "stderr": ""
-    },
-    {
-      "id": "B-k3-notes-exp-b-k3-01",
-      "arm": "B",
-      "model": "k3",
-      "runId": "notes-exp-b-k3-01",
-      "exitCode": 0,
-      "durationMs": 85187,
-      "timedOut": false,
-      "failed": false,
-      "termination": "max_rounds_cap",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
-      "failClosed": false,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
-          "archiveRead": false
-        },
-        {
-          "name": "writeFile",
-          "round": 2,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 3,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 6,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 7,
-          "archiveRead": true
-        },
-        {
-          "name": "writeFile",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 10,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 12,
-          "archiveRead": false
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "O+E9",
-          "length": 16
-        },
-        {
-          "prefix": "VTzp",
-          "length": 16
-        },
-        {
-          "prefix": "1FMN",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "",
-      "category": "no_answer",
-      "answer": null,
       "stderr": ""
     },
     {
@@ -377,11 +188,13 @@
       "arm": "C",
       "model": "kimi-for-coding",
       "runId": "notes-exp-c-kimi-for-coding-01",
-      "exitCode": 0,
-      "durationMs": 72917,
+      "exitCode": 1,
+      "durationMs": 67368,
       "timedOut": false,
-      "failed": false,
-      "termination": "max_rounds_cap",
+      "failed": true,
+      "termination": "unknown",
+      "convergenceRound": 9,
+      "guarded": false,
       "compacted": true,
       "noteRead": false,
       "archiveRead": true,
@@ -390,6 +203,11 @@
         {
           "name": "exec",
           "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "note_take",
+          "round": 2,
           "archiveRead": false
         },
         {
@@ -408,13 +226,8 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
           "name": "readFile",
-          "round": 6,
+          "round": 5,
           "archiveRead": true
         },
         {
@@ -424,122 +237,27 @@
         },
         {
           "name": "exec",
-          "round": 7,
+          "round": 6,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 6,
           "archiveRead": false
         },
         {
           "name": "exec",
           "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
           "archiveRead": false
         },
         {
           "name": "readFile",
+          "round": 8,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
           "round": 9,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 10,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 12,
-          "archiveRead": false
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "lFL+",
-          "length": 16
-        },
-        {
-          "prefix": "KQCt",
-          "length": 16
-        },
-        {
-          "prefix": "9jtm",
-          "length": 16
-        },
-        {
-          "prefix": "FR/b",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "",
-      "category": "no_answer",
-      "answer": null,
-      "stderr": ""
-    },
-    {
-      "id": "C-k3-notes-exp-c-k3-01",
-      "arm": "C",
-      "model": "k3",
-      "runId": "notes-exp-c-k3-01",
-      "exitCode": 0,
-      "durationMs": 126173,
-      "timedOut": false,
-      "failed": false,
-      "termination": "max_rounds_cap",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
-      "failClosed": false,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 2,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 3,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 6,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 6,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
           "archiveRead": false
         },
         {
@@ -549,35 +267,30 @@
         },
         {
           "name": "exec",
-          "round": 10,
+          "round": 9,
           "archiveRead": false
         },
         {
           "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "tree",
-          "round": 12,
+          "round": 9,
           "archiveRead": false
         }
       ],
       "generatedValues": [
         {
-          "prefix": "J3rc",
+          "prefix": "Rjd5",
           "length": 16
         },
         {
-          "prefix": "jsYa",
+          "prefix": "XgKf",
           "length": 16
         },
         {
-          "prefix": "506c",
+          "prefix": "Wt+q",
           "length": 16
         },
         {
-          "prefix": "Pzwj",
+          "prefix": "wdXO",
           "length": 16
         }
       ],
@@ -585,7 +298,7 @@
       "finalText": "",
       "category": "no_answer",
       "answer": null,
-      "stderr": ""
+      "stderr": "错误：Protected messages cannot fit within budgetTokens\n"
     },
     {
       "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-01",
@@ -593,10 +306,12 @@
       "model": "kimi-for-coding",
       "runId": "notes-exp-d-kimi-for-coding-01",
       "exitCode": 2,
-      "durationMs": 46525,
+      "durationMs": 108460,
       "timedOut": false,
       "failed": true,
       "termination": "final_guard_unverified",
+      "convergenceRound": 12,
+      "guarded": true,
       "compacted": true,
       "noteRead": false,
       "archiveRead": true,
@@ -608,118 +323,8 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "note_take",
           "round": 2,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 3,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 6,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 10,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 12,
-          "archiveRead": false
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "ITM/",
-          "length": 16
-        },
-        {
-          "prefix": "d8j2",
-          "length": 16
-        },
-        {
-          "prefix": "ZMIZ",
-          "length": 16
-        },
-        {
-          "prefix": "x6rb",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "",
-      "category": "no_answer",
-      "answer": null,
-      "stderr": ""
-    },
-    {
-      "id": "D-k3-notes-exp-d-k3-01",
-      "arm": "D",
-      "model": "k3",
-      "runId": "notes-exp-d-k3-01",
-      "exitCode": 2,
-      "durationMs": 106598,
-      "timedOut": false,
-      "failed": true,
-      "termination": "final_guard_unverified",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": false,
-      "failClosed": true,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
           "archiveRead": false
         },
         {
@@ -738,8 +343,18 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "readFile",
           "round": 5,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 6,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 6,
           "archiveRead": false
         },
         {
@@ -753,19 +368,19 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "readFile",
           "round": 8,
-          "archiveRead": false
+          "archiveRead": true
         },
         {
           "name": "exec",
           "round": 9,
-          "archiveRead": false
+          "archiveRead": true
         },
         {
           "name": "exec",
           "round": 10,
-          "archiveRead": false
+          "archiveRead": true
         },
         {
           "name": "exec",
@@ -773,31 +388,31 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "readFile",
           "round": 12,
-          "archiveRead": false
+          "archiveRead": true
         }
       ],
       "generatedValues": [
         {
-          "prefix": "L1QS",
+          "prefix": "wTko",
           "length": 16
         },
         {
-          "prefix": "oO0D",
+          "prefix": "2g3H",
           "length": 16
         },
         {
-          "prefix": "cJTN",
+          "prefix": "XsBB",
           "length": 16
         },
         {
-          "prefix": "thQn",
+          "prefix": "WcJY",
           "length": 16
         }
       ],
       "noteValues": [],
-      "finalText": "",
+      "finalText": "⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。",
       "category": "no_answer",
       "answer": null,
       "stderr": ""
@@ -808,10 +423,12 @@
       "model": "kimi-for-coding",
       "runId": "notes-exp-a-kimi-for-coding-02",
       "exitCode": 0,
-      "durationMs": 71572,
+      "durationMs": 64268,
       "timedOut": false,
       "failed": false,
       "termination": "max_rounds_cap",
+      "convergenceRound": 12,
+      "guarded": false,
       "compacted": true,
       "noteRead": false,
       "archiveRead": true,
@@ -863,32 +480,12 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
+          "name": "readFile",
           "round": 10,
           "archiveRead": true
         },
         {
-          "name": "readFile",
-          "round": 11,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
+          "name": "exec",
           "round": 11,
           "archiveRead": true
         },
@@ -900,120 +497,20 @@
       ],
       "generatedValues": [
         {
-          "prefix": "2rvd",
+          "prefix": "9SiV",
           "length": 16
         },
         {
-          "prefix": "JI28",
+          "prefix": "3xo9",
           "length": 16
         },
         {
-          "prefix": "/V9B",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "",
-      "category": "no_answer",
-      "answer": null,
-      "stderr": ""
-    },
-    {
-      "id": "A-k3-notes-exp-a-k3-02",
-      "arm": "A",
-      "model": "k3",
-      "runId": "notes-exp-a-k3-02",
-      "exitCode": 0,
-      "durationMs": 118846,
-      "timedOut": false,
-      "failed": false,
-      "termination": "max_rounds_cap",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
-      "failClosed": false,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 2,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 3,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 6,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 9,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 10,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 12,
-          "archiveRead": false
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "ikE5",
-          "length": 16
-        },
-        {
-          "prefix": "0G/X",
-          "length": 16
-        },
-        {
-          "prefix": "jTBa",
-          "length": 16
-        },
-        {
-          "prefix": "rHKn",
+          "prefix": "rJWm",
           "length": 16
         }
       ],
       "noteValues": [],
-      "finalText": "",
+      "finalText": "存在 8 个归档文件。我读取各 meta 文件确认哪些命令已执行过：",
       "category": "no_answer",
       "answer": null,
       "stderr": ""
@@ -1024,12 +521,14 @@
       "model": "kimi-for-coding",
       "runId": "notes-exp-b-kimi-for-coding-02",
       "exitCode": 0,
-      "durationMs": 46045,
+      "durationMs": 67928,
       "timedOut": false,
       "failed": false,
       "termination": "max_rounds_cap",
+      "convergenceRound": 12,
+      "guarded": false,
       "compacted": true,
-      "noteRead": false,
+      "noteRead": true,
       "archiveRead": true,
       "failClosed": false,
       "toolCalls": [
@@ -1039,7 +538,7 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "note_take",
           "round": 2,
           "archiveRead": false
         },
@@ -1065,111 +564,6 @@
         },
         {
           "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 9,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 10,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 12,
-          "archiveRead": false
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "Jvpo",
-          "length": 16
-        },
-        {
-          "prefix": "X0EO",
-          "length": 16
-        },
-        {
-          "prefix": "Zjjx",
-          "length": 16
-        },
-        {
-          "prefix": "mY5v",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "按顺序逐步执行。第一步：",
-      "category": "no_answer",
-      "answer": null,
-      "stderr": ""
-    },
-    {
-      "id": "B-k3-notes-exp-b-k3-02",
-      "arm": "B",
-      "model": "k3",
-      "runId": "notes-exp-b-k3-02",
-      "exitCode": 0,
-      "durationMs": 109039,
-      "timedOut": false,
-      "failed": false,
-      "termination": "max_rounds_cap",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
-      "failClosed": false,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 2,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 3,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
           "round": 6,
           "archiveRead": false
         },
@@ -1180,17 +574,32 @@
         },
         {
           "name": "exec",
+          "round": 7,
+          "archiveRead": false
+        },
+        {
+          "name": "todo_list",
           "round": 8,
           "archiveRead": false
         },
         {
-          "name": "readFile",
-          "round": 9,
-          "archiveRead": true
+          "name": "note_list",
+          "round": 8,
+          "archiveRead": false
         },
         {
           "name": "exec",
+          "round": 9,
+          "archiveRead": false
+        },
+        {
+          "name": "readFile",
           "round": 10,
+          "archiveRead": true
+        },
+        {
+          "name": "note_take",
+          "round": 11,
           "archiveRead": false
         },
         {
@@ -1206,19 +615,19 @@
       ],
       "generatedValues": [
         {
-          "prefix": "2Ksx",
+          "prefix": "LjHP",
           "length": 16
         },
         {
-          "prefix": "B572",
+          "prefix": "jn21",
           "length": 16
         },
         {
-          "prefix": "jdl2",
+          "prefix": "T3zL",
           "length": 16
         },
         {
-          "prefix": "+7yI",
+          "prefix": "RilF",
           "length": 16
         }
       ],
@@ -1234,12 +643,14 @@
       "model": "kimi-for-coding",
       "runId": "notes-exp-c-kimi-for-coding-02",
       "exitCode": 0,
-      "durationMs": 85190,
+      "durationMs": 53704,
       "timedOut": false,
       "failed": false,
       "termination": "max_rounds_cap",
+      "convergenceRound": 12,
+      "guarded": false,
       "compacted": true,
-      "noteRead": false,
+      "noteRead": true,
       "archiveRead": true,
       "failClosed": false,
       "toolCalls": [
@@ -1264,13 +675,8 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "readFile",
           "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 6,
           "archiveRead": true
         },
         {
@@ -1280,51 +686,16 @@
         },
         {
           "name": "exec",
-          "round": 6,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 6,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
           "round": 7,
           "archiveRead": false
         },
         {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
+          "name": "readFile",
           "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 9,
           "archiveRead": true
         },
         {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
+          "name": "note_take",
           "round": 9,
           "archiveRead": false
         },
@@ -1339,170 +710,32 @@
           "archiveRead": false
         },
         {
-          "name": "readFile",
+          "name": "note_list",
           "round": 11,
-          "archiveRead": true
+          "archiveRead": false
         },
         {
           "name": "exec",
           "round": 12,
-          "archiveRead": false
+          "archiveRead": true
         }
       ],
       "generatedValues": [
         {
-          "prefix": "5CUi",
+          "prefix": "WEnA",
           "length": 16
         },
         {
-          "prefix": "/Aqi",
+          "prefix": "FGKD",
           "length": 16
         },
         {
-          "prefix": "3fwN",
-          "length": 16
-        },
-        {
-          "prefix": "pc92",
-          "length": 16
-        },
-        {
-          "prefix": "q/GN",
+          "prefix": "SYGE",
           "length": 16
         }
       ],
       "noteValues": [],
       "finalText": "",
-      "category": "no_answer",
-      "answer": null,
-      "stderr": ""
-    },
-    {
-      "id": "C-k3-notes-exp-c-k3-02",
-      "arm": "C",
-      "model": "k3",
-      "runId": "notes-exp-c-k3-02",
-      "exitCode": 0,
-      "durationMs": 124257,
-      "timedOut": false,
-      "failed": false,
-      "termination": "max_rounds_cap",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
-      "failClosed": false,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
-          "archiveRead": false
-        },
-        {
-          "name": "writeFile",
-          "round": 2,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 3,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 6,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 10,
-          "archiveRead": true
-        },
-        {
-          "name": "tree",
-          "round": 10,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 11,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
-          "round": 11,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
-          "round": 11,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
-          "round": 11,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
-          "round": 11,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
-          "round": 11,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 12,
-          "archiveRead": false
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "VOm/",
-          "length": 16
-        },
-        {
-          "prefix": "mv4c",
-          "length": 16
-        },
-        {
-          "prefix": "NFLO",
-          "length": 16
-        },
-        {
-          "prefix": "GAMQ",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "执行步骤①：",
       "category": "no_answer",
       "answer": null,
       "stderr": ""
@@ -1513,10 +746,12 @@
       "model": "kimi-for-coding",
       "runId": "notes-exp-d-kimi-for-coding-02",
       "exitCode": 2,
-      "durationMs": 99062,
+      "durationMs": 65948,
       "timedOut": false,
       "failed": true,
       "termination": "final_guard_unverified",
+      "convergenceRound": 12,
+      "guarded": true,
       "compacted": true,
       "noteRead": false,
       "archiveRead": true,
@@ -1534,108 +769,7 @@
         },
         {
           "name": "exec",
-          "round": 3,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 6,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "tree",
-          "round": 10,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 11,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
-          "round": 11,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
-          "round": 12,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
-          "round": 12,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
-          "round": 12,
-          "archiveRead": true
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "9cdi",
-          "length": 16
-        },
-        {
-          "prefix": "k69+",
-          "length": 16
-        },
-        {
-          "prefix": "QqJu",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "",
-      "category": "no_answer",
-      "answer": null,
-      "stderr": ""
-    },
-    {
-      "id": "D-k3-notes-exp-d-k3-02",
-      "arm": "D",
-      "model": "k3",
-      "runId": "notes-exp-d-k3-02",
-      "exitCode": 2,
-      "durationMs": 83919,
-      "timedOut": false,
-      "failed": true,
-      "termination": "final_guard_unverified",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
-      "failClosed": true,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
+          "round": 2,
           "archiveRead": false
         },
         {
@@ -1644,7 +778,7 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "note_take",
           "round": 3,
           "archiveRead": false
         },
@@ -1654,14 +788,19 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "readFile",
           "round": 5,
+          "archiveRead": true
+        },
+        {
+          "name": "note_take",
+          "round": 6,
           "archiveRead": false
         },
         {
-          "name": "readFile",
+          "name": "exec",
           "round": 6,
-          "archiveRead": true
+          "archiveRead": false
         },
         {
           "name": "exec",
@@ -1674,19 +813,24 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "readFile",
           "round": 9,
+          "archiveRead": true
+        },
+        {
+          "name": "exec",
+          "round": 10,
           "archiveRead": false
         },
         {
           "name": "readFile",
-          "round": 10,
+          "round": 11,
           "archiveRead": true
         },
         {
-          "name": "writeFile",
+          "name": "readFile",
           "round": 11,
-          "archiveRead": false
+          "archiveRead": true
         },
         {
           "name": "exec",
@@ -1696,20 +840,24 @@
       ],
       "generatedValues": [
         {
-          "prefix": "0yme",
+          "prefix": "vtUd",
           "length": 16
         },
         {
-          "prefix": "PqIc",
+          "prefix": "gnxM",
           "length": 16
         },
         {
-          "prefix": "LvmN",
+          "prefix": "k//F",
+          "length": 16
+        },
+        {
+          "prefix": "VWNe",
           "length": 16
         }
       ],
       "noteValues": [],
-      "finalText": "",
+      "finalText": "⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。",
       "category": "no_answer",
       "answer": null,
       "stderr": ""
@@ -1720,100 +868,12 @@
       "model": "kimi-for-coding",
       "runId": "notes-exp-a-kimi-for-coding-03",
       "exitCode": 0,
-      "durationMs": 53703,
-      "timedOut": false,
-      "failed": false,
-      "termination": "end_turn",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
-      "failClosed": false,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 2,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 3,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 6,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
-          "round": 10,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 10,
-          "archiveRead": true
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "JQx/",
-          "length": 16
-        },
-        {
-          "prefix": "QkM8",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "一次性密钥=JQx/…（长度16）",
-      "category": "hit_first",
-      "answer": {
-        "prefix": "JQx/",
-        "length": 16
-      },
-      "stderr": ""
-    },
-    {
-      "id": "A-k3-notes-exp-a-k3-03",
-      "arm": "A",
-      "model": "k3",
-      "runId": "notes-exp-a-k3-03",
-      "exitCode": 0,
-      "durationMs": 103905,
+      "durationMs": 55351,
       "timedOut": false,
       "failed": false,
       "termination": "max_rounds_cap",
+      "convergenceRound": 12,
+      "guarded": false,
       "compacted": true,
       "noteRead": false,
       "archiveRead": true,
@@ -1825,7 +885,7 @@
           "archiveRead": false
         },
         {
-          "name": "writeFile",
+          "name": "exec",
           "round": 2,
           "archiveRead": false
         },
@@ -1840,9 +900,9 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "readFile",
           "round": 5,
-          "archiveRead": false
+          "archiveRead": true
         },
         {
           "name": "exec",
@@ -1860,17 +920,17 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
           "name": "readFile",
-          "round": 10,
+          "round": 9,
           "archiveRead": true
         },
         {
-          "name": "writeFile",
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
           "round": 11,
           "archiveRead": false
         },
@@ -1882,20 +942,24 @@
       ],
       "generatedValues": [
         {
-          "prefix": "4CT2",
+          "prefix": "S5F9",
           "length": 16
         },
         {
-          "prefix": "jL1N",
+          "prefix": "8Oy0",
           "length": 16
         },
         {
-          "prefix": "Ga4h",
+          "prefix": "T3J7",
+          "length": 16
+        },
+        {
+          "prefix": "T5nV",
           "length": 16
         }
       ],
       "noteValues": [],
-      "finalText": "",
+      "finalText": "我将按顺序执行：先执行①生成一次性密钥（仅此一次），随后执行②③④。",
       "category": "no_answer",
       "answer": null,
       "stderr": ""
@@ -1906,18 +970,25 @@
       "model": "kimi-for-coding",
       "runId": "notes-exp-b-kimi-for-coding-03",
       "exitCode": 0,
-      "durationMs": 56339,
+      "durationMs": 63289,
       "timedOut": false,
       "failed": false,
       "termination": "max_rounds_cap",
+      "convergenceRound": 12,
+      "guarded": false,
       "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
+      "noteRead": true,
+      "archiveRead": false,
       "failClosed": false,
       "toolCalls": [
         {
           "name": "exec",
           "round": 1,
+          "archiveRead": false
+        },
+        {
+          "name": "note_take",
+          "round": 2,
           "archiveRead": false
         },
         {
@@ -1937,13 +1008,33 @@
         },
         {
           "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 4,
+          "archiveRead": false
+        },
+        {
+          "name": "note_list",
           "round": 5,
           "archiveRead": false
         },
         {
-          "name": "readFile",
+          "name": "todo_list",
+          "round": 5,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
           "round": 6,
-          "archiveRead": true
+          "archiveRead": false
         },
         {
           "name": "exec",
@@ -1951,7 +1042,12 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "todo_list",
+          "round": 8,
+          "archiveRead": false
+        },
+        {
+          "name": "note_list",
           "round": 8,
           "archiveRead": false
         },
@@ -1961,143 +1057,43 @@
           "archiveRead": false
         },
         {
-          "name": "readFile",
-          "round": 10,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
           "name": "tree",
+          "round": 9,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
+          "round": 10,
+          "archiveRead": false
+        },
+        {
+          "name": "todo_list",
+          "round": 11,
+          "archiveRead": false
+        },
+        {
+          "name": "note_list",
+          "round": 11,
+          "archiveRead": false
+        },
+        {
+          "name": "exec",
           "round": 12,
           "archiveRead": false
         }
       ],
       "generatedValues": [
         {
-          "prefix": "oXXz",
+          "prefix": "RHM0",
           "length": 16
         },
         {
-          "prefix": "Uxn+",
-          "length": 16
-        },
-        {
-          "prefix": "ZdV3",
+          "prefix": "8CmE",
           "length": 16
         }
       ],
       "noteValues": [],
       "finalText": "",
-      "category": "no_answer",
-      "answer": null,
-      "stderr": ""
-    },
-    {
-      "id": "B-k3-notes-exp-b-k3-03",
-      "arm": "B",
-      "model": "k3",
-      "runId": "notes-exp-b-k3-03",
-      "exitCode": 0,
-      "durationMs": 114559,
-      "timedOut": false,
-      "failed": false,
-      "termination": "max_rounds_cap",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
-      "failClosed": false,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
-          "archiveRead": false
-        },
-        {
-          "name": "writeFile",
-          "round": 2,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 3,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 6,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 7,
-          "archiveRead": true
-        },
-        {
-          "name": "writeFile",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 10,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 12,
-          "archiveRead": true
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "nLY1",
-          "length": 16
-        },
-        {
-          "prefix": "MSu3",
-          "length": 16
-        },
-        {
-          "prefix": "DjAV",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "该命令在本次运行中已执行过，我需要从归档中读取首次执行的原值。",
       "category": "no_answer",
       "answer": null,
       "stderr": ""
@@ -2108,13 +1104,15 @@
       "model": "kimi-for-coding",
       "runId": "notes-exp-c-kimi-for-coding-03",
       "exitCode": 0,
-      "durationMs": 59000,
+      "durationMs": 17531,
       "timedOut": false,
       "failed": false,
-      "termination": "max_rounds_cap",
-      "compacted": true,
+      "termination": "end_turn",
+      "convergenceRound": 4,
+      "guarded": false,
+      "compacted": false,
       "noteRead": false,
-      "archiveRead": true,
+      "archiveRead": false,
       "failClosed": false,
       "toolCalls": [
         {
@@ -2123,7 +1121,7 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "note_take",
           "round": 2,
           "archiveRead": false
         },
@@ -2134,198 +1132,28 @@
         },
         {
           "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 6,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 9,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 10,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 10,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 12,
-          "archiveRead": true
-        },
-        {
-          "name": "readFile",
-          "round": 12,
-          "archiveRead": true
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "0e6x",
-          "length": 16
-        },
-        {
-          "prefix": "q/g6",
-          "length": 16
-        },
-        {
-          "prefix": "rvDA",
-          "length": 16
-        },
-        {
-          "prefix": "+4gx",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "",
-      "category": "no_answer",
-      "answer": null,
-      "stderr": ""
-    },
-    {
-      "id": "C-k3-notes-exp-c-k3-03",
-      "arm": "C",
-      "model": "k3",
-      "runId": "notes-exp-c-k3-03",
-      "exitCode": 0,
-      "durationMs": 168296,
-      "timedOut": false,
-      "failed": false,
-      "termination": "max_rounds_cap",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
-      "failClosed": false,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
-          "archiveRead": false
-        },
-        {
-          "name": "writeFile",
-          "round": 2,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 2,
+          "round": 3,
           "archiveRead": false
         },
         {
           "name": "exec",
           "round": 3,
           "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 6,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 10,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 12,
-          "archiveRead": false
         }
       ],
       "generatedValues": [
         {
-          "prefix": "1cZc",
-          "length": 16
-        },
-        {
-          "prefix": "Rkf1",
-          "length": 16
-        },
-        {
-          "prefix": "fm4V",
+          "prefix": "k6VD",
           "length": 16
         }
       ],
       "noteValues": [],
-      "finalText": "",
-      "category": "no_answer",
-      "answer": null,
+      "finalText": "一次性密钥=k6VD…（长度16）",
+      "category": "hit_first",
+      "answer": {
+        "prefix": "k6VD",
+        "length": 16
+      },
       "stderr": ""
     },
     {
@@ -2334,10 +1162,12 @@
       "model": "kimi-for-coding",
       "runId": "notes-exp-d-kimi-for-coding-03",
       "exitCode": 2,
-      "durationMs": 60293,
+      "durationMs": 68590,
       "timedOut": false,
       "failed": true,
       "termination": "final_guard_unverified",
+      "convergenceRound": 12,
+      "guarded": true,
       "compacted": true,
       "noteRead": false,
       "archiveRead": true,
@@ -2349,7 +1179,7 @@
           "archiveRead": false
         },
         {
-          "name": "exec",
+          "name": "note_take",
           "round": 2,
           "archiveRead": false
         },
@@ -2372,6 +1202,11 @@
           "name": "readFile",
           "round": 6,
           "archiveRead": true
+        },
+        {
+          "name": "note_take",
+          "round": 7,
+          "archiveRead": false
         },
         {
           "name": "exec",
@@ -2399,100 +1234,9 @@
           "archiveRead": false
         },
         {
-          "name": "tree",
+          "name": "readFile",
           "round": 12,
-          "archiveRead": false
-        }
-      ],
-      "generatedValues": [
-        {
-          "prefix": "VIlN",
-          "length": 16
-        },
-        {
-          "prefix": "PfzW",
-          "length": 16
-        },
-        {
-          "prefix": "GH7l",
-          "length": 16
-        }
-      ],
-      "noteValues": [],
-      "finalText": "",
-      "category": "no_answer",
-      "answer": null,
-      "stderr": ""
-    },
-    {
-      "id": "D-k3-notes-exp-d-k3-03",
-      "arm": "D",
-      "model": "k3",
-      "runId": "notes-exp-d-k3-03",
-      "exitCode": 2,
-      "durationMs": 103986,
-      "timedOut": false,
-      "failed": true,
-      "termination": "final_guard_unverified",
-      "compacted": true,
-      "noteRead": false,
-      "archiveRead": true,
-      "failClosed": true,
-      "toolCalls": [
-        {
-          "name": "exec",
-          "round": 1,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 2,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 3,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 4,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 5,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 6,
           "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 7,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 8,
-          "archiveRead": false
-        },
-        {
-          "name": "exec",
-          "round": 9,
-          "archiveRead": false
-        },
-        {
-          "name": "readFile",
-          "round": 10,
-          "archiveRead": true
-        },
-        {
-          "name": "exec",
-          "round": 11,
-          "archiveRead": false
         },
         {
           "name": "exec",
@@ -2502,20 +1246,24 @@
       ],
       "generatedValues": [
         {
-          "prefix": "chB9",
+          "prefix": "PT1h",
           "length": 16
         },
         {
-          "prefix": "2QJf",
+          "prefix": "DlHU",
           "length": 16
         },
         {
-          "prefix": "bjxa",
+          "prefix": "wO+Z",
+          "length": 16
+        },
+        {
+          "prefix": "UHak",
           "length": 16
         }
       ],
       "noteValues": [],
-      "finalText": "",
+      "finalText": "① 的输出警告显示该命令在本运行中已执行过，原始首次输出在归档文件 `001-exec.txt` 中。我需要读取归档取回原值，而不是重跑。同时继续推进 ②③④：\n⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。",
       "category": "no_answer",
       "answer": null,
       "stderr": ""
@@ -2526,36 +1274,6 @@
       "arm": "A",
       "model": "kimi-for-coding",
       "n": 3,
-      "hitFirst": 1,
-      "rerunImpersonation": 0,
-      "invented": 0,
-      "noAnswer": 2,
-      "rawNoAnswer": 2,
-      "failed": 0,
-      "knownOther": 0,
-      "completed": 3,
-      "determinable": 3,
-      "noteRead": 0,
-      "archiveRead": 3,
-      "failClosed": 0,
-      "compacted": 3,
-      "durationMs": 196231,
-      "evaluated": 3,
-      "errorSpecificCount": 0,
-      "errorSpecificRate": 0,
-      "errorSpecificWilson95": {
-        "low": 0,
-        "high": 0.5614970356393196
-      },
-      "noteReadRate": 0,
-      "archiveReadRate": 1,
-      "failClosedRate": 0,
-      "averageDurationMs": 65410.333333333336
-    },
-    {
-      "arm": "A",
-      "model": "k3",
-      "n": 3,
       "hitFirst": 0,
       "rerunImpersonation": 0,
       "invented": 0,
@@ -2566,10 +1284,12 @@
       "completed": 3,
       "determinable": 3,
       "noteRead": 0,
+      "noteList": 0,
       "archiveRead": 3,
       "failClosed": 0,
       "compacted": 3,
-      "durationMs": 341834,
+      "convergenceRoundTotal": 36,
+      "durationMs": 173672,
       "evaluated": 3,
       "errorSpecificCount": 0,
       "errorSpecificRate": 0,
@@ -2580,7 +1300,8 @@
       "noteReadRate": 0,
       "archiveReadRate": 1,
       "failClosedRate": 0,
-      "averageDurationMs": 113944.66666666667
+      "averageDurationMs": 57890.666666666664,
+      "averageConvergenceRound": 12
     },
     {
       "arm": "B",
@@ -2595,112 +1316,58 @@
       "knownOther": 0,
       "completed": 3,
       "determinable": 3,
-      "noteRead": 0,
+      "noteRead": 2,
+      "noteList": 0,
+      "archiveRead": 1,
+      "failClosed": 0,
+      "compacted": 2,
+      "convergenceRoundTotal": 27,
+      "durationMs": 148934,
+      "evaluated": 3,
+      "errorSpecificCount": 0,
+      "errorSpecificRate": 0,
+      "errorSpecificWilson95": {
+        "low": 0,
+        "high": 0.5614970356393196
+      },
+      "noteReadRate": 0.6666666666666666,
+      "archiveReadRate": 0.3333333333333333,
+      "failClosedRate": 0,
+      "averageDurationMs": 49644.666666666664,
+      "averageConvergenceRound": 9
+    },
+    {
+      "arm": "C",
+      "model": "kimi-for-coding",
+      "n": 3,
+      "hitFirst": 1,
+      "rerunImpersonation": 0,
+      "invented": 0,
+      "noAnswer": 1,
+      "rawNoAnswer": 2,
+      "failed": 1,
+      "knownOther": 0,
+      "completed": 2,
+      "determinable": 2,
+      "noteRead": 1,
+      "noteList": 0,
       "archiveRead": 2,
       "failClosed": 0,
       "compacted": 2,
-      "durationMs": 117221,
-      "evaluated": 3,
+      "convergenceRoundTotal": 25,
+      "durationMs": 138603,
+      "evaluated": 2,
       "errorSpecificCount": 0,
       "errorSpecificRate": 0,
       "errorSpecificWilson95": {
         "low": 0,
-        "high": 0.5614970356393196
+        "high": 0.6576197760453506
       },
-      "noteReadRate": 0,
+      "noteReadRate": 0.3333333333333333,
       "archiveReadRate": 0.6666666666666666,
       "failClosedRate": 0,
-      "averageDurationMs": 39073.666666666664
-    },
-    {
-      "arm": "B",
-      "model": "k3",
-      "n": 3,
-      "hitFirst": 0,
-      "rerunImpersonation": 0,
-      "invented": 0,
-      "noAnswer": 3,
-      "rawNoAnswer": 3,
-      "failed": 0,
-      "knownOther": 0,
-      "completed": 3,
-      "determinable": 3,
-      "noteRead": 0,
-      "archiveRead": 3,
-      "failClosed": 0,
-      "compacted": 3,
-      "durationMs": 308785,
-      "evaluated": 3,
-      "errorSpecificCount": 0,
-      "errorSpecificRate": 0,
-      "errorSpecificWilson95": {
-        "low": 0,
-        "high": 0.5614970356393196
-      },
-      "noteReadRate": 0,
-      "archiveReadRate": 1,
-      "failClosedRate": 0,
-      "averageDurationMs": 102928.33333333333
-    },
-    {
-      "arm": "C",
-      "model": "kimi-for-coding",
-      "n": 3,
-      "hitFirst": 0,
-      "rerunImpersonation": 0,
-      "invented": 0,
-      "noAnswer": 3,
-      "rawNoAnswer": 3,
-      "failed": 0,
-      "knownOther": 0,
-      "completed": 3,
-      "determinable": 3,
-      "noteRead": 0,
-      "archiveRead": 3,
-      "failClosed": 0,
-      "compacted": 3,
-      "durationMs": 217107,
-      "evaluated": 3,
-      "errorSpecificCount": 0,
-      "errorSpecificRate": 0,
-      "errorSpecificWilson95": {
-        "low": 0,
-        "high": 0.5614970356393196
-      },
-      "noteReadRate": 0,
-      "archiveReadRate": 1,
-      "failClosedRate": 0,
-      "averageDurationMs": 72369
-    },
-    {
-      "arm": "C",
-      "model": "k3",
-      "n": 3,
-      "hitFirst": 0,
-      "rerunImpersonation": 0,
-      "invented": 0,
-      "noAnswer": 3,
-      "rawNoAnswer": 3,
-      "failed": 0,
-      "knownOther": 0,
-      "completed": 3,
-      "determinable": 3,
-      "noteRead": 0,
-      "archiveRead": 3,
-      "failClosed": 0,
-      "compacted": 3,
-      "durationMs": 418726,
-      "evaluated": 3,
-      "errorSpecificCount": 0,
-      "errorSpecificRate": 0,
-      "errorSpecificWilson95": {
-        "low": 0,
-        "high": 0.5614970356393196
-      },
-      "noteReadRate": 0,
-      "archiveReadRate": 1,
-      "failClosedRate": 0,
-      "averageDurationMs": 139575.33333333334
+      "averageDurationMs": 46201,
+      "averageConvergenceRound": 8.333333333333334
     },
     {
       "arm": "D",
@@ -2716,10 +1383,12 @@
       "completed": 0,
       "determinable": 0,
       "noteRead": 0,
+      "noteList": 0,
       "archiveRead": 3,
       "failClosed": 3,
       "compacted": 3,
-      "durationMs": 205880,
+      "convergenceRoundTotal": 36,
+      "durationMs": 242998,
       "evaluated": 0,
       "errorSpecificCount": 0,
       "errorSpecificRate": null,
@@ -2730,41 +1399,12 @@
       "noteReadRate": 0,
       "archiveReadRate": 1,
       "failClosedRate": 1,
-      "averageDurationMs": 68626.66666666667
-    },
-    {
-      "arm": "D",
-      "model": "k3",
-      "n": 3,
-      "hitFirst": 0,
-      "rerunImpersonation": 0,
-      "invented": 0,
-      "noAnswer": 0,
-      "rawNoAnswer": 3,
-      "failed": 3,
-      "knownOther": 0,
-      "completed": 0,
-      "determinable": 0,
-      "noteRead": 0,
-      "archiveRead": 2,
-      "failClosed": 3,
-      "compacted": 3,
-      "durationMs": 294503,
-      "evaluated": 0,
-      "errorSpecificCount": 0,
-      "errorSpecificRate": null,
-      "errorSpecificWilson95": {
-        "low": null,
-        "high": null
-      },
-      "noteReadRate": 0,
-      "archiveReadRate": 0.6666666666666666,
-      "failClosedRate": 1,
-      "averageDurationMs": 98167.66666666667
+      "averageDurationMs": 80999.33333333333,
+      "averageConvergenceRound": 12
     }
   ],
-  "conclusion": "本次还存在运行失败（D/kimi-for-coding 3/3、D/k3 3/3）；relay 拒绝、模型排除或超时不应解读为模型行为结果。 各格并列呈现：A/kimi-for-coding=0.0% (可判定 3，命中首次 1，无答案 2)；A/k3=0.0% (可判定 3，命中首次 0，无答案 3)；B/kimi-for-coding=0.0% (可判定 3，命中首次 1，无答案 2)；B/k3=0.0% (可判定 3，命中首次 0，无答案 3)；C/kimi-for-coding=0.0% (可判定 3，命中首次 0，无答案 3)；C/k3=0.0% (可判定 3，命中首次 0，无答案 3)。样本量不足以排序臂或模型，Wilson 区间较宽且可能重叠；失败/排除格也不具可比性，应继续做 100+ 次、交错运行、分模型报告后再评估。",
-  "completedAt": "2026-09-12T19:01:03.649Z",
+  "conclusion": "本次还存在运行失败（C/kimi-for-coding 1/3、D/kimi-for-coding 3/3）；relay 拒绝、模型排除或超时不应解读为模型行为结果。 各格并列呈现：A/kimi-for-coding=0.0% (可判定 3，命中首次 0，无答案 3)；B/kimi-for-coding=0.0% (可判定 3，命中首次 1，无答案 2)；C/kimi-for-coding=0.0% (可判定 2，命中首次 1，无答案 1)。样本量不足以排序臂或模型，Wilson 区间较宽且可能重叠；失败/排除格也不具可比性，应继续做 100+ 次、交错运行、分模型报告后再评估。",
+  "completedAt": "2026-09-13T05:11:03.848Z",
   "legacy": {
     "protocol": {
       "prompt": "fixed one-shot secret + seq 1..400/401..800/801..1200",
@@ -5369,7 +4009,7 @@
   },
   "repairedRerun": {
     "status": "completed",
-    "label": "批次4 重跑（D 臂）",
+    "label": "重跑结果（有效）",
     "protocol": {
       "prompt": "fixed one-shot secret + seq 1..400/401..800/801..1200",
       "compactBudget": 3000,
@@ -5378,26 +4018,137 @@
       "criticalRuns": 3,
       "seed": "notes-experiment-2026-09-13",
       "models": [
-        "kimi-for-coding",
-        "k3"
+        "kimi-for-coding"
       ],
-      "order": "round-robin",
-      "scope": "D"
+      "order": "round-robin"
     },
-    "startedAt": "2026-09-12T18:51:40.385Z",
-    "completedAt": "2026-09-12T19:01:03.649Z",
+    "startedAt": "2026-09-13T04:59:19.465Z",
+    "completedAt": "2026-09-13T05:11:03.848Z",
     "runs": [
       {
-        "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-01",
-        "arm": "D",
+        "id": "A-kimi-for-coding-notes-exp-a-kimi-for-coding-01",
+        "arm": "A",
         "model": "kimi-for-coding",
-        "runId": "notes-exp-d-kimi-for-coding-01",
+        "runId": "notes-exp-a-kimi-for-coding-01",
         "exitCode": 0,
-        "durationMs": 19052,
+        "durationMs": 54053,
+        "timedOut": false,
+        "failed": false,
+        "termination": "max_rounds_cap",
+        "convergenceRound": 12,
+        "guarded": false,
+        "compacted": true,
+        "noteRead": false,
+        "archiveRead": true,
+        "failClosed": false,
+        "toolCalls": [
+          {
+            "name": "exec",
+            "round": 1,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 3,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 4,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 5,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 6,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 7,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 7,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 7,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 8,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 9,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 10,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 11,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 12,
+            "archiveRead": false
+          }
+        ],
+        "generatedValues": [
+          {
+            "prefix": "+yCU",
+            "length": 16
+          },
+          {
+            "prefix": "J7WJ",
+            "length": 16
+          },
+          {
+            "prefix": "6FDO",
+            "length": 16
+          },
+          {
+            "prefix": "6xaD",
+            "length": 16
+          }
+        ],
+        "noteValues": [],
+        "finalText": "",
+        "category": "no_answer",
+        "answer": null,
+        "stderr": ""
+      },
+      {
+        "id": "B-kimi-for-coding-notes-exp-b-kimi-for-coding-01",
+        "arm": "B",
+        "model": "kimi-for-coding",
+        "runId": "notes-exp-b-kimi-for-coding-01",
+        "exitCode": 0,
+        "durationMs": 17717,
         "timedOut": false,
         "failed": false,
         "termination": "end_turn",
-        "guarded": true,
+        "convergenceRound": 3,
+        "guarded": false,
         "compacted": false,
         "noteRead": false,
         "archiveRead": false,
@@ -5409,6 +4160,11 @@
             "archiveRead": false
           },
           {
+            "name": "note_take",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
             "name": "exec",
             "round": 2,
             "archiveRead": false
@@ -5426,38 +4182,44 @@
         ],
         "generatedValues": [
           {
-            "prefix": "wojS",
+            "prefix": "+zej",
             "length": 16
           }
         ],
         "noteValues": [],
-        "finalText": "① 首次执行的一次性密钥（原样给出）：wojS…（长度16）\n\n完整输出为：一次性密钥=wojS…（长度16）\n\n②③④ 的 seq 输出分别为 1–400、401–800、801–1200，完整且连续，无截断、无重跑。",
+        "finalText": "一次性密钥=+zej…（长度16）（步骤①首次执行的原值）",
         "category": "hit_first",
         "answer": {
-          "prefix": "wojS",
+          "prefix": "+zej",
           "length": 16
         },
         "stderr": ""
       },
       {
-        "id": "D-k3-notes-exp-d-k3-01",
-        "arm": "D",
-        "model": "k3",
-        "runId": "notes-exp-d-k3-01",
-        "exitCode": 2,
-        "durationMs": 141220,
+        "id": "C-kimi-for-coding-notes-exp-c-kimi-for-coding-01",
+        "arm": "C",
+        "model": "kimi-for-coding",
+        "runId": "notes-exp-c-kimi-for-coding-01",
+        "exitCode": 1,
+        "durationMs": 67368,
         "timedOut": false,
         "failed": true,
-        "termination": "final_guard_unverified",
-        "guarded": true,
+        "termination": "unknown",
+        "convergenceRound": 9,
+        "guarded": false,
         "compacted": true,
         "noteRead": false,
         "archiveRead": true,
-        "failClosed": true,
+        "failClosed": false,
         "toolCalls": [
           {
             "name": "exec",
             "round": 1,
+            "archiveRead": false
+          },
+          {
+            "name": "note_take",
+            "round": 2,
             "archiveRead": false
           },
           {
@@ -5476,14 +4238,24 @@
             "archiveRead": false
           },
           {
-            "name": "exec",
+            "name": "readFile",
             "round": 5,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 6,
             "archiveRead": false
           },
           {
-            "name": "readFile",
+            "name": "exec",
             "round": 6,
-            "archiveRead": true
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 6,
+            "archiveRead": false
           },
           {
             "name": "exec",
@@ -5491,8 +4263,13 @@
             "archiveRead": false
           },
           {
-            "name": "exec",
+            "name": "readFile",
             "round": 8,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 9,
             "archiveRead": false
           },
           {
@@ -5501,7 +4278,119 @@
             "archiveRead": false
           },
           {
+            "name": "exec",
+            "round": 9,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 9,
+            "archiveRead": false
+          }
+        ],
+        "generatedValues": [
+          {
+            "prefix": "Rjd5",
+            "length": 16
+          },
+          {
+            "prefix": "XgKf",
+            "length": 16
+          },
+          {
+            "prefix": "Wt+q",
+            "length": 16
+          },
+          {
+            "prefix": "wdXO",
+            "length": 16
+          }
+        ],
+        "noteValues": [],
+        "finalText": "",
+        "category": "no_answer",
+        "answer": null,
+        "stderr": "错误：Protected messages cannot fit within budgetTokens\n"
+      },
+      {
+        "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-01",
+        "arm": "D",
+        "model": "kimi-for-coding",
+        "runId": "notes-exp-d-kimi-for-coding-01",
+        "exitCode": 2,
+        "durationMs": 108460,
+        "timedOut": false,
+        "failed": true,
+        "termination": "final_guard_unverified",
+        "convergenceRound": 12,
+        "guarded": true,
+        "compacted": true,
+        "noteRead": false,
+        "archiveRead": true,
+        "failClosed": true,
+        "toolCalls": [
+          {
+            "name": "exec",
+            "round": 1,
+            "archiveRead": false
+          },
+          {
+            "name": "note_take",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 3,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 4,
+            "archiveRead": false
+          },
+          {
             "name": "readFile",
+            "round": 5,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 6,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 6,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 6,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 7,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 8,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 9,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
             "round": 10,
             "archiveRead": true
           },
@@ -5511,36 +4400,26 @@
             "archiveRead": false
           },
           {
-            "name": "exec",
-            "round": 11,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 11,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
+            "name": "readFile",
             "round": 12,
-            "archiveRead": false
+            "archiveRead": true
           }
         ],
         "generatedValues": [
           {
-            "prefix": "AUFa",
+            "prefix": "wTko",
             "length": 16
           },
           {
-            "prefix": "FLqb",
+            "prefix": "2g3H",
             "length": 16
           },
           {
-            "prefix": "0yQB",
+            "prefix": "XsBB",
             "length": 16
           },
           {
-            "prefix": "qY7W",
+            "prefix": "WcJY",
             "length": 16
           }
         ],
@@ -5551,228 +4430,17 @@
         "stderr": ""
       },
       {
-        "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-02",
-        "arm": "D",
+        "id": "A-kimi-for-coding-notes-exp-a-kimi-for-coding-02",
+        "arm": "A",
         "model": "kimi-for-coding",
-        "runId": "notes-exp-d-kimi-for-coding-02",
-        "exitCode": 2,
-        "durationMs": 53032,
-        "timedOut": false,
-        "failed": true,
-        "termination": "final_guard_unverified",
-        "guarded": true,
-        "compacted": true,
-        "noteRead": false,
-        "archiveRead": true,
-        "failClosed": true,
-        "toolCalls": [
-          {
-            "name": "exec",
-            "round": 1,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 2,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 3,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 4,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 5,
-            "archiveRead": false
-          },
-          {
-            "name": "readFile",
-            "round": 6,
-            "archiveRead": true
-          },
-          {
-            "name": "exec",
-            "round": 7,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 8,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 9,
-            "archiveRead": false
-          },
-          {
-            "name": "readFile",
-            "round": 10,
-            "archiveRead": true
-          },
-          {
-            "name": "exec",
-            "round": 10,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 11,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 12,
-            "archiveRead": false
-          }
-        ],
-        "generatedValues": [
-          {
-            "prefix": "0NV9",
-            "length": 16
-          },
-          {
-            "prefix": "fJVq",
-            "length": 16
-          },
-          {
-            "prefix": "5uU/",
-            "length": 16
-          },
-          {
-            "prefix": "aPd3",
-            "length": 16
-          }
-        ],
-        "noteValues": [],
-        "finalText": "⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。",
-        "category": "no_answer",
-        "answer": null,
-        "stderr": ""
-      },
-      {
-        "id": "D-k3-notes-exp-d-k3-02",
-        "arm": "D",
-        "model": "k3",
-        "runId": "notes-exp-d-k3-02",
-        "exitCode": 2,
-        "durationMs": 156288,
-        "timedOut": false,
-        "failed": true,
-        "termination": "final_guard_unverified",
-        "guarded": true,
-        "compacted": true,
-        "noteRead": false,
-        "archiveRead": true,
-        "failClosed": true,
-        "toolCalls": [
-          {
-            "name": "exec",
-            "round": 1,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 2,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 3,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 4,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 5,
-            "archiveRead": false
-          },
-          {
-            "name": "readFile",
-            "round": 6,
-            "archiveRead": true
-          },
-          {
-            "name": "exec",
-            "round": 7,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 8,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 9,
-            "archiveRead": false
-          },
-          {
-            "name": "readFile",
-            "round": 10,
-            "archiveRead": true
-          },
-          {
-            "name": "exec",
-            "round": 10,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 11,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
-            "round": 12,
-            "archiveRead": false
-          }
-        ],
-        "generatedValues": [
-          {
-            "prefix": "oSob",
-            "length": 16
-          },
-          {
-            "prefix": "bpKO",
-            "length": 16
-          },
-          {
-            "prefix": "NtR5",
-            "length": 16
-          },
-          {
-            "prefix": "b5BG",
-            "length": 16
-          }
-        ],
-        "noteValues": [],
-        "finalText": "按步骤执行，先做①（仅一次）：\n⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。",
-        "category": "no_answer",
-        "answer": null,
-        "stderr": ""
-      },
-      {
-        "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-03",
-        "arm": "D",
-        "model": "kimi-for-coding",
-        "runId": "notes-exp-d-kimi-for-coding-03",
+        "runId": "notes-exp-a-kimi-for-coding-02",
         "exitCode": 0,
-        "durationMs": 66033,
+        "durationMs": 64268,
         "timedOut": false,
         "failed": false,
-        "termination": "end_turn",
-        "guarded": true,
+        "termination": "max_rounds_cap",
+        "convergenceRound": 12,
+        "guarded": false,
         "compacted": true,
         "noteRead": false,
         "archiveRead": true,
@@ -5810,99 +4478,71 @@
           },
           {
             "name": "exec",
-            "round": 6,
-            "archiveRead": false
-          },
-          {
-            "name": "exec",
             "round": 7,
             "archiveRead": false
           },
           {
-            "name": "tree",
+            "name": "exec",
             "round": 8,
             "archiveRead": false
           },
           {
-            "name": "readFile",
-            "round": 9,
-            "archiveRead": true
-          },
-          {
-            "name": "readFile",
-            "round": 9,
-            "archiveRead": true
-          },
-          {
-            "name": "readFile",
-            "round": 9,
-            "archiveRead": true
-          },
-          {
-            "name": "readFile",
-            "round": 9,
-            "archiveRead": true
-          },
-          {
             "name": "exec",
+            "round": 9,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
             "round": 10,
             "archiveRead": true
           },
           {
-            "name": "readFile",
+            "name": "exec",
             "round": 11,
             "archiveRead": true
           },
           {
-            "name": "readFile",
-            "round": 11,
-            "archiveRead": true
-          },
-          {
-            "name": "readFile",
-            "round": 11,
-            "archiveRead": true
-          },
-          {
-            "name": "readFile",
-            "round": 11,
+            "name": "exec",
+            "round": 12,
             "archiveRead": true
           }
         ],
         "generatedValues": [
           {
-            "prefix": "UGBj",
+            "prefix": "9SiV",
             "length": 16
           },
           {
-            "prefix": "I4IP",
+            "prefix": "3xo9",
+            "length": 16
+          },
+          {
+            "prefix": "rJWm",
             "length": 16
           }
         ],
         "noteValues": [],
-        "finalText": "一次性密钥=UGBj…（长度16）",
-        "category": "hit_first",
-        "answer": {
-          "prefix": "UGBj",
-          "length": 16
-        },
+        "finalText": "存在 8 个归档文件。我读取各 meta 文件确认哪些命令已执行过：",
+        "category": "no_answer",
+        "answer": null,
         "stderr": ""
       },
       {
-        "id": "D-k3-notes-exp-d-k3-03",
-        "arm": "D",
-        "model": "k3",
-        "runId": "notes-exp-d-k3-03",
-        "exitCode": 2,
-        "durationMs": 127520,
+        "id": "B-kimi-for-coding-notes-exp-b-kimi-for-coding-02",
+        "arm": "B",
+        "model": "kimi-for-coding",
+        "runId": "notes-exp-b-kimi-for-coding-02",
+        "exitCode": 0,
+        "durationMs": 67928,
         "timedOut": false,
-        "failed": true,
-        "termination": "final_guard_unverified",
-        "guarded": true,
+        "failed": false,
+        "termination": "max_rounds_cap",
+        "convergenceRound": 12,
+        "guarded": false,
         "compacted": true,
-        "noteRead": false,
+        "noteRead": true,
         "archiveRead": true,
-        "failClosed": true,
+        "failClosed": false,
         "toolCalls": [
           {
             "name": "exec",
@@ -5910,7 +4550,7 @@
             "archiveRead": false
           },
           {
-            "name": "exec",
+            "name": "note_take",
             "round": 2,
             "archiveRead": false
           },
@@ -5936,6 +4576,246 @@
           },
           {
             "name": "exec",
+            "round": 6,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 7,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 7,
+            "archiveRead": false
+          },
+          {
+            "name": "todo_list",
+            "round": 8,
+            "archiveRead": false
+          },
+          {
+            "name": "note_list",
+            "round": 8,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 9,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 10,
+            "archiveRead": true
+          },
+          {
+            "name": "note_take",
+            "round": 11,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 11,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 12,
+            "archiveRead": false
+          }
+        ],
+        "generatedValues": [
+          {
+            "prefix": "LjHP",
+            "length": 16
+          },
+          {
+            "prefix": "jn21",
+            "length": 16
+          },
+          {
+            "prefix": "T3zL",
+            "length": 16
+          },
+          {
+            "prefix": "RilF",
+            "length": 16
+          }
+        ],
+        "noteValues": [],
+        "finalText": "",
+        "category": "no_answer",
+        "answer": null,
+        "stderr": ""
+      },
+      {
+        "id": "C-kimi-for-coding-notes-exp-c-kimi-for-coding-02",
+        "arm": "C",
+        "model": "kimi-for-coding",
+        "runId": "notes-exp-c-kimi-for-coding-02",
+        "exitCode": 0,
+        "durationMs": 53704,
+        "timedOut": false,
+        "failed": false,
+        "termination": "max_rounds_cap",
+        "convergenceRound": 12,
+        "guarded": false,
+        "compacted": true,
+        "noteRead": true,
+        "archiveRead": true,
+        "failClosed": false,
+        "toolCalls": [
+          {
+            "name": "exec",
+            "round": 1,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 3,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 4,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 5,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 6,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 7,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 8,
+            "archiveRead": true
+          },
+          {
+            "name": "note_take",
+            "round": 9,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 9,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 10,
+            "archiveRead": false
+          },
+          {
+            "name": "note_list",
+            "round": 11,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 12,
+            "archiveRead": true
+          }
+        ],
+        "generatedValues": [
+          {
+            "prefix": "WEnA",
+            "length": 16
+          },
+          {
+            "prefix": "FGKD",
+            "length": 16
+          },
+          {
+            "prefix": "SYGE",
+            "length": 16
+          }
+        ],
+        "noteValues": [],
+        "finalText": "",
+        "category": "no_answer",
+        "answer": null,
+        "stderr": ""
+      },
+      {
+        "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-02",
+        "arm": "D",
+        "model": "kimi-for-coding",
+        "runId": "notes-exp-d-kimi-for-coding-02",
+        "exitCode": 2,
+        "durationMs": 65948,
+        "timedOut": false,
+        "failed": true,
+        "termination": "final_guard_unverified",
+        "convergenceRound": 12,
+        "guarded": true,
+        "compacted": true,
+        "noteRead": false,
+        "archiveRead": true,
+        "failClosed": true,
+        "toolCalls": [
+          {
+            "name": "exec",
+            "round": 1,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "note_take",
+            "round": 3,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 4,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 5,
+            "archiveRead": true
+          },
+          {
+            "name": "note_take",
+            "round": 6,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 6,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
             "round": 7,
             "archiveRead": false
           },
@@ -5945,9 +4825,116 @@
             "archiveRead": false
           },
           {
-            "name": "exec",
+            "name": "readFile",
             "round": 9,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 10,
             "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 11,
+            "archiveRead": true
+          },
+          {
+            "name": "readFile",
+            "round": 11,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 12,
+            "archiveRead": false
+          }
+        ],
+        "generatedValues": [
+          {
+            "prefix": "vtUd",
+            "length": 16
+          },
+          {
+            "prefix": "gnxM",
+            "length": 16
+          },
+          {
+            "prefix": "k//F",
+            "length": 16
+          },
+          {
+            "prefix": "VWNe",
+            "length": 16
+          }
+        ],
+        "noteValues": [],
+        "finalText": "⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。",
+        "category": "no_answer",
+        "answer": null,
+        "stderr": ""
+      },
+      {
+        "id": "A-kimi-for-coding-notes-exp-a-kimi-for-coding-03",
+        "arm": "A",
+        "model": "kimi-for-coding",
+        "runId": "notes-exp-a-kimi-for-coding-03",
+        "exitCode": 0,
+        "durationMs": 55351,
+        "timedOut": false,
+        "failed": false,
+        "termination": "max_rounds_cap",
+        "convergenceRound": 12,
+        "guarded": false,
+        "compacted": true,
+        "noteRead": false,
+        "archiveRead": true,
+        "failClosed": false,
+        "toolCalls": [
+          {
+            "name": "exec",
+            "round": 1,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 3,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 4,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 5,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 6,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 7,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 8,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 9,
+            "archiveRead": true
           },
           {
             "name": "exec",
@@ -5967,24 +4954,328 @@
         ],
         "generatedValues": [
           {
-            "prefix": "J/iP",
+            "prefix": "S5F9",
             "length": 16
           },
           {
-            "prefix": "esIq",
+            "prefix": "8Oy0",
             "length": 16
           },
           {
-            "prefix": "xkRo",
+            "prefix": "T3J7",
             "length": 16
           },
           {
-            "prefix": "ZJyl",
+            "prefix": "T5nV",
             "length": 16
           }
         ],
         "noteValues": [],
-        "finalText": "⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。",
+        "finalText": "我将按顺序执行：先执行①生成一次性密钥（仅此一次），随后执行②③④。",
+        "category": "no_answer",
+        "answer": null,
+        "stderr": ""
+      },
+      {
+        "id": "B-kimi-for-coding-notes-exp-b-kimi-for-coding-03",
+        "arm": "B",
+        "model": "kimi-for-coding",
+        "runId": "notes-exp-b-kimi-for-coding-03",
+        "exitCode": 0,
+        "durationMs": 63289,
+        "timedOut": false,
+        "failed": false,
+        "termination": "max_rounds_cap",
+        "convergenceRound": 12,
+        "guarded": false,
+        "compacted": true,
+        "noteRead": true,
+        "archiveRead": false,
+        "failClosed": false,
+        "toolCalls": [
+          {
+            "name": "exec",
+            "round": 1,
+            "archiveRead": false
+          },
+          {
+            "name": "note_take",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 3,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 4,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 4,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 4,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 4,
+            "archiveRead": false
+          },
+          {
+            "name": "note_list",
+            "round": 5,
+            "archiveRead": false
+          },
+          {
+            "name": "todo_list",
+            "round": 5,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 6,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 7,
+            "archiveRead": false
+          },
+          {
+            "name": "todo_list",
+            "round": 8,
+            "archiveRead": false
+          },
+          {
+            "name": "note_list",
+            "round": 8,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 9,
+            "archiveRead": false
+          },
+          {
+            "name": "tree",
+            "round": 9,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 10,
+            "archiveRead": false
+          },
+          {
+            "name": "todo_list",
+            "round": 11,
+            "archiveRead": false
+          },
+          {
+            "name": "note_list",
+            "round": 11,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 12,
+            "archiveRead": false
+          }
+        ],
+        "generatedValues": [
+          {
+            "prefix": "RHM0",
+            "length": 16
+          },
+          {
+            "prefix": "8CmE",
+            "length": 16
+          }
+        ],
+        "noteValues": [],
+        "finalText": "",
+        "category": "no_answer",
+        "answer": null,
+        "stderr": ""
+      },
+      {
+        "id": "C-kimi-for-coding-notes-exp-c-kimi-for-coding-03",
+        "arm": "C",
+        "model": "kimi-for-coding",
+        "runId": "notes-exp-c-kimi-for-coding-03",
+        "exitCode": 0,
+        "durationMs": 17531,
+        "timedOut": false,
+        "failed": false,
+        "termination": "end_turn",
+        "convergenceRound": 4,
+        "guarded": false,
+        "compacted": false,
+        "noteRead": false,
+        "archiveRead": false,
+        "failClosed": false,
+        "toolCalls": [
+          {
+            "name": "exec",
+            "round": 1,
+            "archiveRead": false
+          },
+          {
+            "name": "note_take",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 3,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 3,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 3,
+            "archiveRead": false
+          }
+        ],
+        "generatedValues": [
+          {
+            "prefix": "k6VD",
+            "length": 16
+          }
+        ],
+        "noteValues": [],
+        "finalText": "一次性密钥=k6VD…（长度16）",
+        "category": "hit_first",
+        "answer": {
+          "prefix": "k6VD",
+          "length": 16
+        },
+        "stderr": ""
+      },
+      {
+        "id": "D-kimi-for-coding-notes-exp-d-kimi-for-coding-03",
+        "arm": "D",
+        "model": "kimi-for-coding",
+        "runId": "notes-exp-d-kimi-for-coding-03",
+        "exitCode": 2,
+        "durationMs": 68590,
+        "timedOut": false,
+        "failed": true,
+        "termination": "final_guard_unverified",
+        "convergenceRound": 12,
+        "guarded": true,
+        "compacted": true,
+        "noteRead": false,
+        "archiveRead": true,
+        "failClosed": true,
+        "toolCalls": [
+          {
+            "name": "exec",
+            "round": 1,
+            "archiveRead": false
+          },
+          {
+            "name": "note_take",
+            "round": 2,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 3,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 4,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 5,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 6,
+            "archiveRead": true
+          },
+          {
+            "name": "note_take",
+            "round": 7,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 7,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 8,
+            "archiveRead": false
+          },
+          {
+            "name": "exec",
+            "round": 9,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 10,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 11,
+            "archiveRead": false
+          },
+          {
+            "name": "readFile",
+            "round": 12,
+            "archiveRead": true
+          },
+          {
+            "name": "exec",
+            "round": 12,
+            "archiveRead": false
+          }
+        ],
+        "generatedValues": [
+          {
+            "prefix": "PT1h",
+            "length": 16
+          },
+          {
+            "prefix": "DlHU",
+            "length": 16
+          },
+          {
+            "prefix": "wO+Z",
+            "length": 16
+          },
+          {
+            "prefix": "UHak",
+            "length": 16
+          }
+        ],
+        "noteValues": [],
+        "finalText": "① 的输出警告显示该命令在本运行中已执行过，原始首次输出在归档文件 `001-exec.txt` 中。我需要读取归档取回原值，而不是重跑。同时继续推进 ②③④：\n⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。",
         "category": "no_answer",
         "answer": null,
         "stderr": ""
@@ -5992,23 +5283,91 @@
     ],
     "aggregate": [
       {
-        "arm": "D",
+        "arm": "A",
         "model": "kimi-for-coding",
         "n": 3,
-        "hitFirst": 2,
+        "hitFirst": 0,
         "rerunImpersonation": 0,
         "invented": 0,
-        "noAnswer": 0,
-        "rawNoAnswer": 1,
+        "noAnswer": 3,
+        "rawNoAnswer": 3,
+        "failed": 0,
+        "knownOther": 0,
+        "completed": 3,
+        "determinable": 3,
+        "noteRead": 0,
+        "noteList": 0,
+        "archiveRead": 3,
+        "failClosed": 0,
+        "compacted": 3,
+        "convergenceRoundTotal": 36,
+        "durationMs": 173672,
+        "evaluated": 3,
+        "errorSpecificCount": 0,
+        "errorSpecificRate": 0,
+        "errorSpecificWilson95": {
+          "low": 0,
+          "high": 0.5614970356393196
+        },
+        "noteReadRate": 0,
+        "archiveReadRate": 1,
+        "failClosedRate": 0,
+        "averageDurationMs": 57890.666666666664,
+        "averageConvergenceRound": 12
+      },
+      {
+        "arm": "B",
+        "model": "kimi-for-coding",
+        "n": 3,
+        "hitFirst": 1,
+        "rerunImpersonation": 0,
+        "invented": 0,
+        "noAnswer": 2,
+        "rawNoAnswer": 2,
+        "failed": 0,
+        "knownOther": 0,
+        "completed": 3,
+        "determinable": 3,
+        "noteRead": 2,
+        "noteList": 0,
+        "archiveRead": 1,
+        "failClosed": 0,
+        "compacted": 2,
+        "convergenceRoundTotal": 27,
+        "durationMs": 148934,
+        "evaluated": 3,
+        "errorSpecificCount": 0,
+        "errorSpecificRate": 0,
+        "errorSpecificWilson95": {
+          "low": 0,
+          "high": 0.5614970356393196
+        },
+        "noteReadRate": 0.6666666666666666,
+        "archiveReadRate": 0.3333333333333333,
+        "failClosedRate": 0,
+        "averageDurationMs": 49644.666666666664,
+        "averageConvergenceRound": 9
+      },
+      {
+        "arm": "C",
+        "model": "kimi-for-coding",
+        "n": 3,
+        "hitFirst": 1,
+        "rerunImpersonation": 0,
+        "invented": 0,
+        "noAnswer": 1,
+        "rawNoAnswer": 2,
         "failed": 1,
         "knownOther": 0,
         "completed": 2,
         "determinable": 2,
-        "noteRead": 0,
+        "noteRead": 1,
+        "noteList": 0,
         "archiveRead": 2,
-        "failClosed": 1,
+        "failClosed": 0,
         "compacted": 2,
-        "durationMs": 138117,
+        "convergenceRoundTotal": 25,
+        "durationMs": 138603,
         "evaluated": 2,
         "errorSpecificCount": 0,
         "errorSpecificRate": 0,
@@ -6016,14 +5375,15 @@
           "low": 0,
           "high": 0.6576197760453506
         },
-        "noteReadRate": 0,
+        "noteReadRate": 0.3333333333333333,
         "archiveReadRate": 0.6666666666666666,
-        "failClosedRate": 0.3333333333333333,
-        "averageDurationMs": 46039
+        "failClosedRate": 0,
+        "averageDurationMs": 46201,
+        "averageConvergenceRound": 8.333333333333334
       },
       {
         "arm": "D",
-        "model": "k3",
+        "model": "kimi-for-coding",
         "n": 3,
         "hitFirst": 0,
         "rerunImpersonation": 0,
@@ -6035,10 +5395,12 @@
         "completed": 0,
         "determinable": 0,
         "noteRead": 0,
+        "noteList": 0,
         "archiveRead": 3,
         "failClosed": 3,
         "compacted": 3,
-        "durationMs": 425028,
+        "convergenceRoundTotal": 36,
+        "durationMs": 242998,
         "evaluated": 0,
         "errorSpecificCount": 0,
         "errorSpecificRate": null,
@@ -6049,13 +5411,14 @@
         "noteReadRate": 0,
         "archiveReadRate": 1,
         "failClosedRate": 1,
-        "averageDurationMs": 141676
+        "averageDurationMs": 80999.33333333333,
+        "averageConvergenceRound": 12
       }
     ],
-    "conclusion": "本次还存在运行失败（D/kimi-for-coding 1/3、D/k3 3/3）；relay 拒绝、模型排除或超时不应解读为模型行为结果。 各格并列呈现：D/kimi-for-coding=0.0% (可判定 2，命中首次 2，无答案 0)。样本量不足以排序臂或模型，Wilson 区间较宽且可能重叠；失败/排除格也不具可比性，应继续做 100+ 次、交错运行、分模型报告后再评估。"
+    "conclusion": "本次还存在运行失败（C/kimi-for-coding 1/3、D/kimi-for-coding 3/3）；relay 拒绝、模型排除或超时不应解读为模型行为结果。 各格并列呈现：A/kimi-for-coding=0.0% (可判定 3，命中首次 0，无答案 3)；B/kimi-for-coding=0.0% (可判定 3，命中首次 1，无答案 2)；C/kimi-for-coding=0.0% (可判定 2，命中首次 1，无答案 1)。样本量不足以排序臂或模型，Wilson 区间较宽且可能重叠；失败/排除格也不具可比性，应继续做 100+ 次、交错运行、分模型报告后再评估。"
   },
   "excludedModels": [
-    "deepseek-v4-flash"
+    "k3"
   ],
   "excludedRuns": [
     {

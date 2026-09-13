@@ -12,6 +12,7 @@ import {
   truncateResult,
   wrapExecuteTool,
 } from "../bin/tools.js";
+import * as notes from "../skills/notes/skill.mjs";
 
 async function withDirectory(callback) {
   const directory = await mkdtemp(join(tmpdir(), "erix-cli-tools-test-"));
@@ -199,6 +200,118 @@ test("guards repeated commands with the first archived output path", async () =>
     assert.doesNotMatch(first, /该命令本次运行已执行过/u);
     assert.match(second, /该命令本次运行已执行过第 2 次/u);
     assert.match(second, new RegExp(`原始输出在 ${archivePath}`));
+  });
+});
+
+test("intercepts a captured non-replayable rerun with the first note value", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const notesDir = join(cwd, "notes");
+    const tools = createCliTools({
+      cwd,
+      archiveDir,
+      notesScope: { runId: "rerun-guard", notesDir },
+    });
+    const executeTool = wrapExecuteTool(tools.executeTool, {
+      output: () => {},
+      getToolMetadata: tools.getLastToolMetadata,
+      notesScope: { runId: "rerun-guard", notesDir },
+    });
+    const command = "printf 'nonce=%s\\n' \"$NON_IDEMPOTENT_VALUE\"; : \"$RANDOM\"";
+
+    process.env.NON_IDEMPOTENT_VALUE = "first-value";
+    try {
+      const first = await executeTool({
+        id: "first-exec",
+        name: "exec",
+        input: { command },
+        context: { round: 1 },
+      });
+      await notes.note_take({
+        key: "nonce",
+        content: "agent-overwrite",
+        __erix: { runId: "rerun-guard", notesDir },
+      });
+      process.env.NON_IDEMPOTENT_VALUE = "second-value";
+      const second = await executeTool({
+        id: "second-exec",
+        name: "exec",
+        input: { command: `  ${command}  ` },
+        context: { round: 2 },
+      });
+
+      assert.match(first, /nonce=first-value/u);
+      assert.match(second, /该命令非幂等、不可重放；重跑会得到不同值/u);
+      assert.match(second, /首次执行捕获到的值（来自首次执行（已捕获））：first-value/u);
+      assert.match(second, /note_read key=nonce/u);
+      assert.doesNotMatch(second, /second-value/u);
+      assert.doesNotMatch(second, /agent-overwrite/u);
+    } finally {
+      delete process.env.NON_IDEMPOTENT_VALUE;
+    }
+  });
+});
+
+test("allows a non-replayable rerun when the first execution was not captured", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const tools = createCliTools({ cwd, archiveDir });
+    const command = "printf 'nonce=%s\\n' \"$NON_IDEMPOTENT_VALUE\"; : \"$RANDOM\"";
+
+    process.env.NON_IDEMPOTENT_VALUE = "first-value";
+    try {
+      await tools.executeTool("exec", { command });
+      process.env.NON_IDEMPOTENT_VALUE = "second-value";
+      const second = await tools.executeTool("exec", { command });
+
+      assert.match(second, /nonce=second-value/u);
+      assert.match(second, /该命令本次运行已执行过第 2 次/u);
+      assert.doesNotMatch(second, /该命令非幂等、不可重放/u);
+    } finally {
+      delete process.env.NON_IDEMPOTENT_VALUE;
+    }
+  });
+});
+
+test("does not intercept a different non-replayable command", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const notesDir = join(cwd, "notes");
+    const tools = createCliTools({
+      cwd,
+      archiveDir,
+      notesScope: { runId: "different-rerun", notesDir },
+    });
+    const executeTool = wrapExecuteTool(tools.executeTool, {
+      output: () => {},
+      getToolMetadata: tools.getLastToolMetadata,
+      notesScope: { runId: "different-rerun", notesDir },
+    });
+
+    process.env.NON_IDEMPOTENT_VALUE = "first-value";
+    try {
+      await executeTool({
+        id: "first-different",
+        name: "exec",
+        input: {
+          command: "printf 'nonce=first-value\\n'; : \"$RANDOM\"",
+        },
+        context: { round: 1 },
+      });
+      const second = await executeTool({
+        id: "second-different",
+        name: "exec",
+        input: {
+          command: "printf 'nonce=other-value\\n'; : \"$RANDOM\"",
+        },
+        context: { round: 2 },
+      });
+
+      assert.match(second, /nonce=other-value/u);
+      assert.doesNotMatch(second, /该命令非幂等、不可重放/u);
+    } finally {
+      delete process.env.NON_IDEMPOTENT_VALUE;
+    }
   });
 });
 
