@@ -24,7 +24,8 @@ import { estimateTokens } from "../../src/tokens.js";
 
 const HASHED_ID_PREFIX = "run-h-";
 const HASHED_KEY_PREFIX = "note-h-";
-const MAX_CONTENT_LENGTH = 4000;
+export const MAX_CONTENT_LENGTH = 4000;
+export const NOTE_VALUE_MAX_CHARS = 256;
 const DEFAULT_GRACE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_HISTORY_LIMIT = 32;
 const DEFAULT_LOCK_TIMEOUT_MS = 5000;
@@ -553,14 +554,21 @@ function recordValue(result, record, version) {
   if (version.artifactRef !== undefined) response.artifactRef = version.artifactRef;
   if (version.content === undefined && version.provenance?.verified !== true) {
     response.status = "unverified";
-    response.next = "该记录只有未验证的 artifact 引用；先核对归档，无法核对时声明不可恢复";
+    const artifact = version.artifactRef;
+    const archivePath = typeof artifact?.archivePath === "string"
+      ? artifact.archivePath
+      : "<artifactRef.archivePath>";
+    const locator = artifact?.locator && typeof artifact.locator === "object"
+      ? `locator=${JSON.stringify(artifact.locator)}`
+      : "对应 locator";
+    response.next = `两步：1. 读取 artifactRef.archivePath=${archivePath} 的 ${locator}；2. 核对归档值后使用，无法核对时声明不可恢复`;
   }
   return response;
 }
 
-function preview(version) {
+function preview(version, key) {
   if (typeof version?.content === "string") return version.content.slice(0, 120);
-  if (version?.artifactRef !== undefined) return "[artifact reference]";
+  if (version?.artifactRef !== undefined) return `[引用] 调用 note_read key=${key ?? "<key>"} 取回`;
   return "";
 }
 
@@ -884,7 +892,12 @@ export async function note_list(input = {}) {
       version: latest.version,
       updated_at: record.updated_at,
       state: record.state,
-      preview: preview(latest),
+      preview: preview(latest, record.key),
+      next: typeof latest.content === "string"
+        ? "已有值可直接使用"
+        : latest.artifactRef !== undefined
+          ? `调用 note_read key=${record.key} 取回引用；仅引用时按返回的 archivePath 与 locator 有界核对`
+          : "调用 note_read 精确读取",
     };
   });
   return json({
@@ -1120,7 +1133,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_read",
-    description: "按精确 key 读取笔记值或 artifact 引用",
+    description: "按精确 key 读取笔记值或 artifact 引用；有 content 时直接返回 value 与 artifactRef，只有仅引用时才按 next 有界核对归档",
     inputSchema: {
       type: "object",
       properties: {
@@ -1134,7 +1147,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_list",
-    description: "列出 run 作用域笔记的元数据与短 preview，不返回完整内容",
+    description: "恢复具体值时优先调用；列出 run 作用域笔记的元数据、短 preview 和下一步提示，不返回完整内容",
     inputSchema: {
       type: "object",
       properties: {

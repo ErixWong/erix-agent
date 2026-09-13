@@ -15,6 +15,7 @@ import { candidateLines, captureToolExecution } from "../bin/auto-capture.js";
 import { archiveResult, createCliTools, wrapExecuteTool } from "../bin/tools.js";
 import { createFinalGuard } from "../bin/final-guard.js";
 import * as notes from "../skills/notes/skill.mjs";
+import { NOTE_VALUE_MAX_CHARS } from "../skills/notes/skill.mjs";
 import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -136,7 +137,7 @@ test("truncated archives hash the bytes on disk and cannot pass provenance guard
   });
 });
 
-test("auto_capture stores a reference, not the captured value", async () => {
+test("auto_capture stores short values with their artifact references", async () => {
   await withNotes(async (directory) => {
     const archiveDir = path.join(directory, "outputs");
     const tools = createCliTools({ cwd: directory, archiveDir });
@@ -161,10 +162,36 @@ test("auto_capture stores a reference, not the captured value", async () => {
     assert.equal(version.provenance.toolUseId, "tool-1");
     assert.equal(version.provenance.round, 4);
     assert.equal(version.provenance.verified, false);
+    assert.equal(version.content, "alpha");
     assert.ok(version.artifactRef.digest);
     assert.deepEqual(version.artifactRef.locator, { lineStart: 1, lineEnd: 1 });
-    assert.doesNotMatch(JSON.stringify(record), /alpha/u);
-    assert.equal(JSON.parse(await notes.note_read({ key: "result" })).status, "unverified");
+    const read = JSON.parse(await notes.note_read({ key: "result" }));
+    assert.equal(read.status, "found");
+    assert.equal(read.value, "alpha");
+    assert.deepEqual(read.artifactRef, version.artifactRef);
+  });
+});
+
+test("auto_capture keeps only the artifact reference for oversized values", async () => {
+  await withNotes(async (directory) => {
+    const output = `result=${"x".repeat(NOTE_VALUE_MAX_CHARS + 1)}\n`;
+    await captureToolExecution({
+      name: "exec",
+      toolUseId: "long-value",
+      result: output,
+      metadata: metadataFor(output, "/tmp/long-value.txt"),
+    });
+
+    const record = JSON.parse(await readFile(
+      path.join(directory, "run", "auto-run", "result.json"),
+      "utf8",
+    ));
+    const version = record.versions[0];
+    assert.equal("content" in version, false);
+    assert.ok(version.artifactRef);
+    const read = JSON.parse(await notes.note_read({ key: "result" }));
+    assert.equal(read.status, "unverified");
+    assert.match(read.next, /archivePath/u);
   });
 });
 
@@ -172,6 +199,9 @@ test("auto_capture rejects credential-shaped candidates fail-closed", async () =
   await withNotes(async (directory) => {
     const samples = [
       "token=abcdefghijklmnop",
+      "API_KEY=sk-abcdefghijklmnop",
+      ["Bearer", "abcdefghijklmnop"].join(" "),
+      ["password", "=secret-value"].join(""),
       "Bearer abcdefghijklmnop",
       "AKIAIOSFODNN7EXAMPLE",
       "-----BEGIN PRIVATE KEY-----",
@@ -237,11 +267,17 @@ test("auto_capture preserves the first value and deduplicates identical output",
     delete process.env.AUTO_CAPTURE_VALUE;
 
     const first = JSON.parse(await notes.note_read({ key: "result" }));
-    assert.equal(first.status, "unverified");
+    assert.equal(first.status, "found");
+    assert.equal(first.value, "first");
     assert.equal(first.artifactRef.digest, createHash("sha256").update("result=first\n").digest("hex"));
     const listed = JSON.parse(await notes.note_list({}));
     assert.equal(listed.total, 2);
-    assert.ok(listed.notes.some((note) => note.key.startsWith("result:candidate:")));
+    const valueNote = listed.notes.find((note) => note.key === "result");
+    const referenceNote = listed.notes.find((note) => note.key.startsWith("result:candidate:"));
+    assert.equal(valueNote.next, "已有值可直接使用");
+    assert.match(valueNote.preview, /first/u);
+    assert.equal(referenceNote.next, "已有值可直接使用");
+    assert.match(referenceNote.preview, /second/u);
     assert.doesNotMatch(JSON.stringify(first), /second/u);
   });
 });
@@ -307,7 +343,7 @@ test("runChat captures a non-replayable tool result before completing the run", 
     assert.equal(record.versions[0].provenance.source, "auto");
     assert.equal(record.state, "grace");
     assert.ok(record.versions[0].artifactRef.archivePath);
-    assert.doesNotMatch(JSON.stringify(record), /result=integration/u);
+    assert.equal(record.versions[0].content, "integration");
   });
 });
 

@@ -114,6 +114,36 @@ test("take/read/list supports version history and deduplicates identical content
 
 });
 
+test("list and read make value and reference notes distinguishable", async () => {
+  await withNotes(async () => {
+    await notes.note_take({ key: "value-note", content: "available" });
+    await notes.recordAutoCapture({
+      key: "reference-note",
+      artifactRef: {
+        archivePath: "/run/archive/001-exec.txt",
+        digest: "a".repeat(64),
+        locator: { lineStart: 2, lineEnd: 2 },
+      },
+      provenance: { verified: false },
+    });
+
+    const listed = parsed(await notes.note_list({}));
+    const valueNote = listed.notes.find((note) => note.key === "value-note");
+    const referenceNote = listed.notes.find((note) => note.key === "reference-note");
+    assert.equal(valueNote.next, "已有值可直接使用");
+    assert.equal(
+      referenceNote.next,
+      "调用 note_read key=reference-note 取回引用；仅引用时按返回的 archivePath 与 locator 有界核对",
+    );
+    assert.match(referenceNote.preview, /note_read key=reference-note/u);
+
+    const read = parsed(await notes.note_read({ key: "reference-note" }));
+    assert.equal(read.status, "unverified");
+    assert.match(read.next, /archivePath/u);
+    assert.match(read.next, /lineStart/u);
+  });
+});
+
 test("per-key writes serialize and compact bounded version history", async () => {
   await withNotes(async (directory) => {
     await Promise.all(
