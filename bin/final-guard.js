@@ -4,6 +4,7 @@ import path from "node:path";
 
 import {
   candidateLines,
+  isStructuredMetadataLabel,
 } from "./auto-capture.js";
 import {
   looksLikeCredential,
@@ -14,6 +15,10 @@ const SOURCE_DECLARATION_PATTERN =
   /原值|首次|一次性|密钥|阈值|时间戳|token|key|value|secret|password/iu;
 const LABEL_VALUE_PATTERN =
   /(?:^|[\s\u3000])([^:=\s][^:=\s]{0,80}?)\s*[:=]\s*([^\s,，。；;）)]+)/gu;
+const FILE_EXTENSION_PATTERN =
+  /\.(?:txt|json|jsonl|csv|log|md|ya?ml|xml|html?|js|mjs|cjs|ts|tsx|jsx|sh|py|sql|ndjson|bin|zip|gz|pdf|png|jpe?g|webp|lock)\b/iu;
+const ARCHIVE_BASENAME_PATTERN = /^\d+-[a-z]+$/iu;
+const PATH_SEPARATOR_PATTERN = /[/\\]/u;
 
 function warningMessage(message) {
   return `finalGuard warning: ${message}`;
@@ -21,17 +26,24 @@ function warningMessage(message) {
 
 function valueShape(value) {
   const text = String(value ?? "");
+  const lengthLevel = text.length <= 8
+    ? "short"
+    : text.length <= 16
+      ? "medium"
+      : text.length <= 32
+        ? "long"
+        : "very-long";
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(text)) {
-    return "uuid";
+    return `uuid:${lengthLevel}`;
   }
-  if (/^\d{8,17}$/u.test(text)) return "timestamp";
-  if (/^[0-9a-f]{8,}$/iu.test(text)) return "hex";
+  if (/^\d{8,17}$/u.test(text)) return `timestamp:${lengthLevel}`;
+  if (/^[0-9a-f]{8,}$/iu.test(text)) return `hex:${lengthLevel}`;
   if (
     text.length >= 8
     && /^[A-Za-z0-9+/=-]+$/u.test(text)
     && (/\d/u.test(text) || /[+/=-]/u.test(text))
   ) {
-    return "base64";
+    return `base64:${lengthLevel}`;
   }
   return null;
 }
@@ -41,9 +53,31 @@ function extractLabeledCandidates(text) {
   for (const match of String(text ?? "").matchAll(LABEL_VALUE_PATTERN)) {
     const label = normalizedLabel(match[1]);
     const value = match[2].trim();
-    if (label && value) candidates.push({ label, value });
+    if (label && value && !isStructuredMetadataLabel(label)) {
+      candidates.push({ label, value });
+    }
   }
   return candidates;
+}
+
+function hasMetadataLabelBefore(text, start) {
+  const prefix = String(text).slice(0, start);
+  const match = prefix.match(/(?:^|[\s\u3000([{'"，：:;；])([^:=\s][^:=\s]{0,80}?)\s*[:=]\s*$/u);
+  return match !== null && isStructuredMetadataLabel(match[1]);
+}
+
+function isPathOrArchiveToken(text, start, end, value) {
+  const before = String(text).slice(0, start);
+  const after = String(text).slice(end);
+  return PATH_SEPARATOR_PATTERN.test(value)
+    || /[/\\]\s*$/u.test(before)
+    || FILE_EXTENSION_PATTERN.test(after)
+    || ARCHIVE_BASENAME_PATTERN.test(value);
+}
+
+function isMetadataAssignmentToken(value) {
+  const match = String(value).match(/^([A-Za-z][A-Za-z0-9_-]*)=+$/u);
+  return match !== null && isStructuredMetadataLabel(match[1]);
 }
 
 function extractShapedTokens(text, shapes, excludedValues = new Set()) {
@@ -52,7 +86,15 @@ function extractShapedTokens(text, shapes, excludedValues = new Set()) {
   const tokenPattern = /[A-Za-z0-9][A-Za-z0-9+/_-]{7,}={0,2}/gu;
   for (const match of String(text ?? "").matchAll(tokenPattern)) {
     const value = match[0];
-    if (!/\d|[+/=]/u.test(value) || excludedValues.has(value)) continue;
+    const start = match.index ?? 0;
+    const end = start + value.length;
+    if (
+      !/\d|[+/=]/u.test(value)
+      || excludedValues.has(value)
+      || hasMetadataLabelBefore(text, start)
+      || isMetadataAssignmentToken(value)
+      || isPathOrArchiveToken(text, start, end, value)
+    ) continue;
     const shape = valueShape(value);
     if (!shape || !shapes.has(shape) || seen.has(value)) continue;
     seen.add(value);
@@ -225,7 +267,10 @@ export function createFinalGuard({
       for (const warning of inspected.warnings) onWarning(warning);
     }
     if (inspected.references.length === 0) {
-      return { action: "accept" };
+      return {
+        action: "skip",
+        reason: "no_capture_manifest",
+      };
     }
     if (inspected.values.length === 0 && inspected.readableArtifacts > 0) {
       return {

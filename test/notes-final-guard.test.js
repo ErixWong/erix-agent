@@ -69,6 +69,43 @@ test("final guard accepts a final value found in a non-replayable artifact", asy
 
 });
 
+test("final guard ignores archive paths and locator metadata around the verified value", async () => {
+  await withNotes(async (directory) => {
+    await createArtifact(directory, "nonce=NCSmGUqbmY48ukg5\n");
+    const guard = createFinalGuard({ runId: "replay", archiveDir: directory });
+    assert.deepEqual(
+      await guard({
+        finalText: "nonce 值已核实为 NCSmGUqbmY48ukg5。依据：(1) note_read key=nonce 返回 value=NCSmGUqbmY48ukg5；(2) 读取归档文件 001-exec.txt 第 1 行，内容为 nonce=NCSmGUqbmY48ukg5，与笔记值完全一致。（lineStart=1, lineEnd=1；来源已核验）",
+      }),
+      { action: "accept" },
+    );
+  });
+});
+
+test("final guard accepts a final text containing only the verified value", async () => {
+  await withNotes(async (directory) => {
+    await createArtifact(directory, "nonce=NCSmGUqbmY48ukg5\n");
+    assert.deepEqual(
+      await createFinalGuard({ archiveDir: directory })({
+        finalText: "nonce=NCSmGUqbmY48ukg5",
+      }),
+      { action: "accept" },
+    );
+  });
+});
+
+test("final guard accepts archive filenames when they are described as filenames", async () => {
+  await withNotes(async (directory) => {
+    await createArtifact(directory, "nonce=NCSmGUqbmY48ukg5\n");
+    assert.deepEqual(
+      await createFinalGuard({ archiveDir: directory })({
+        finalText: "归档文件名是 001-exec，不是一次性值。",
+      }),
+      { action: "accept" },
+    );
+  });
+});
+
 test("final guard extracts Chinese labels without applying the notes credential label filter", async () => {
   await withNotes(async (directory) => {
     await createArtifact(directory, "一次性密钥=t5Vum2Ucy/Y2gEOo\n");
@@ -231,7 +268,7 @@ test("a valid capture sidecar is trusted without any notes reference", async () 
   });
 });
 
-test("final guard revises a same-shaped value not found in the artifact", async () => {
+test("final guard revises a rerun-generated value not found in the artifact", async () => {
   await withNotes(async (directory) => {
     const archivePath = await createArtifact(directory, "nonce=Abc123+XYZ789\n");
     const guard = createFinalGuard({ runId: "guard-run", archiveDir: directory });
@@ -243,11 +280,12 @@ test("final guard revises a same-shaped value not found in the artifact", async 
   });
 });
 
-test("final guard accepts a run with no non-replayable artifact", async () => {
+test("final guard skips a run with no capture manifest", async () => {
   await withNotes(async () => {
     const guard = createFinalGuard({ runId: "guard-run" });
     assert.deepEqual(await guard({ finalText: "任意值 123456789" }), {
-      action: "accept",
+      action: "skip",
+      reason: "no_capture_manifest",
     });
   });
 });
@@ -283,7 +321,10 @@ test("forged auto notes do not influence final guard trust", async () => {
     });
 
     const guard = createFinalGuard({ runId: "guard-run", archiveDir });
-    assert.deepEqual(await guard({ finalText: "nonce=known" }), { action: "accept" });
+    assert.deepEqual(await guard({ finalText: "nonce=known" }), {
+      action: "skip",
+      reason: "no_capture_manifest",
+    });
   });
 });
 

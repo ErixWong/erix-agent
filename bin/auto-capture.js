@@ -12,6 +12,26 @@ import {
 } from "../skills/notes/credential-patterns.mjs";
 
 const LABEL_PATTERN = /^\s*([^:=\s][^:=\s]{0,80}?)\s*[:=]\s*(.*?)\s*$/u;
+const STRUCTURED_METADATA_LABELS = new Set([
+  "lineStart",
+  "lineEnd",
+  "digest",
+  "toolUseId",
+  "artifactId",
+  "archivePath",
+  "locator",
+  "round",
+  "originalBytes",
+  "truncated",
+  "replayable",
+  "schemaVersion",
+  "kind",
+].map((label) => normalizedLabel(label)));
+
+export function isStructuredMetadataLabel(label) {
+  return STRUCTURED_METADATA_LABELS.has(normalizedLabel(label));
+}
+
 export function candidateLines(output, { includeOversized = false } = {}) {
   const labelled = [];
   const unlabelled = [];
@@ -34,7 +54,9 @@ export function candidateLines(output, { includeOversized = false } = {}) {
     if (match) {
       const label = normalizedLabel(match[1]);
       const value = match[2].trim();
-      if (label && value) labelled.push({ label, value });
+      if (label && value && !isStructuredMetadataLabel(label)) {
+        labelled.push({ label, value });
+      }
       continue;
     }
     // Unlabelled values must be opaque single-line tokens; prose is uncertain

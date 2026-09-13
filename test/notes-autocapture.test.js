@@ -80,6 +80,19 @@ test("candidateLines extracts Chinese labels, ordinary labels, and bare tokens u
   );
 });
 
+test("candidateLines excludes capture metadata labels from value candidates", () => {
+  assert.deepEqual(
+    candidateLines([
+      "lineStart=1",
+      "lineEnd=1",
+      "digest=abcdef0123456789",
+      "toolUseId=tool-123456",
+      "nonce=NCSmGUqbmY48ukg5",
+    ].join("\n")),
+    [{ label: "nonce", value: "NCSmGUqbmY48ukg5" }],
+  );
+});
+
 test("short non-replayable output is archived with structured metadata", async () => {
   await withTempDirectory(async (cwd) => {
     const archiveDir = path.join(cwd, "outputs");
