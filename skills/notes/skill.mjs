@@ -171,6 +171,11 @@ function normalizeTags(tags) {
   return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
 }
 
+function normalizeRelevance(value, fallback = 0.5) {
+  if (value === undefined) return fallback;
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : null;
+}
+
 async function ensureDirectory(directory) {
   try {
     const stat = await lstat(directory);
@@ -324,6 +329,10 @@ function validateInput(input) {
   }
   const tags = normalizeTags(input.tags);
   if (tags === null) return { error: invalid(key, "tags 必须是字符串数组") };
+  const relevance = input.relevance === undefined
+    ? undefined
+    : normalizeRelevance(input.relevance);
+  if (relevance === null) return { error: invalid(key, "relevance 必须是 0 到 1 之间的数字") };
   if (input.pinned !== undefined && typeof input.pinned !== "boolean") {
     return { error: invalid(key, "pinned 必须是布尔值") };
   }
@@ -333,13 +342,13 @@ function validateInput(input) {
   ) {
     return { error: invalid(key, "provenance 必须是对象") };
   }
-  return { scope, key, tags };
+  return { scope, key, tags, relevance };
 }
 
 async function writeNote(input = {}, { source = "agent" } = {}) {
   const checked = validateInput(input);
   if (checked.error) return checked.error;
-  const { key, tags } = checked;
+  const { key, tags, relevance } = checked;
   let payload;
   try {
     payload = {
@@ -385,6 +394,7 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
     folded,
     pinned: input.pinned ?? old?.pinned ?? false,
     tags: input.tags === undefined ? (old?.tags ?? tags) : tags,
+    relevance: relevance ?? old?.relevance ?? (source === "auto" ? 0.8 : 0.5),
     state: "active",
     created_at: old?.created_at ?? timestamp,
     updated_at: timestamp,
@@ -481,6 +491,8 @@ function listEntry(record) {
     hasContent: typeof current.content === "string",
     hasArtifactRef: current.artifactRef !== undefined,
     updated_at: record.updated_at,
+    relevance: Number.isFinite(record.relevance) ? record.relevance : 0.5,
+    source: current?.provenance?.source === "auto" ? "auto" : "agent",
   };
 }
 
@@ -490,6 +502,17 @@ export async function note_list(input = {}) {
   if (scope !== "run") return unsupported(scope);
   if (input.tag !== undefined && typeof input.tag !== "string") {
     return invalid(undefined, "tag 必须是字符串");
+  }
+  if (input.source !== undefined && input.source !== "auto" && input.source !== "agent") {
+    return invalid(undefined, "source 必须是 auto 或 agent");
+  }
+  if (
+    input.minRelevance !== undefined
+    && (!Number.isFinite(input.minRelevance)
+      || input.minRelevance < 0
+      || input.minRelevance > 1)
+  ) {
+    return invalid(undefined, "minRelevance 必须是 0 到 1 之间的数字");
   }
   const directory = await scopeDirectory(false, input);
   if (!directory) return json({ status: "found", count: 0, total: 0, notes: [] });
@@ -502,9 +525,21 @@ export async function note_list(input = {}) {
     if (loaded.missing) continue;
     if (input.includeInactive !== true && loaded.record.state !== "active") continue;
     if (input.tag !== undefined && !loaded.record.tags.includes(input.tag)) continue;
+    const source = loaded.record.current?.provenance?.source === "auto" ? "auto" : "agent";
+    const relevance = Number.isFinite(loaded.record.relevance)
+      ? loaded.record.relevance
+      : 0.5;
+    if (input.source !== undefined && source !== input.source) continue;
+    if (input.minRelevance !== undefined && relevance < input.minRelevance) continue;
     records.push(loaded.record);
   }
-  records.sort((left, right) => left.updated_at.localeCompare(right.updated_at));
+  records.sort((left, right) => {
+    const relevanceDifference = (
+      (Number.isFinite(right.relevance) ? right.relevance : 0.5)
+      - (Number.isFinite(left.relevance) ? left.relevance : 0.5)
+    );
+    return relevanceDifference || right.updated_at.localeCompare(left.updated_at);
+  });
   const limit = input.limit === undefined ? 50 : Number(input.limit);
   const cursor = input.cursor === undefined ? 0 : Number(input.cursor);
   if (!Number.isSafeInteger(limit) || limit < 1 || !Number.isSafeInteger(cursor) || cursor < 0) {
@@ -639,6 +674,7 @@ const TOOL_DEFINITIONS = [
         artifactRef: {},
         scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
         tags: { type: "array", items: { type: "string" } },
+        relevance: { type: "number", minimum: 0, maximum: 1 },
         pinned: { type: "boolean" },
         provenance: { type: "object" },
       },
@@ -667,6 +703,8 @@ const TOOL_DEFINITIONS = [
       properties: {
         scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
         tag: { type: "string" },
+        minRelevance: { type: "number", minimum: 0, maximum: 1 },
+        source: { type: "string", enum: ["auto", "agent"] },
         limit: { type: "integer", minimum: 1 },
         cursor: { type: "integer", minimum: 0 },
         includeInactive: { type: "boolean", default: false },

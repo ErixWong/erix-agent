@@ -188,6 +188,7 @@ test("returns truncated when max-token continuations are exhausted", async () =>
     { content: [{ type: "text", text: "one" }], stopReason: "max_tokens" },
     { content: [{ type: "text", text: "two" }], stopReason: "max_tokens" },
     { content: [{ type: "text", text: "three" }], stopReason: "max_tokens" },
+    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
 
   const result = await runToolLoop({
@@ -197,10 +198,10 @@ test("returns truncated when max-token continuations are exhausted", async () =>
     maxTokenContinuations: 2,
   });
 
-  assert.equal(result.finalText, "onetwothree");
+  assert.equal(result.finalText, "cannot recover");
   assert.equal(result.rounds, 1);
   assert.equal(result.truncated, true);
-  assert.equal(provider.requests.length, 3);
+  assert.equal(provider.requests.length, 4);
 });
 
 test("includes the canonical response summary in onRound records", async () => {
@@ -300,7 +301,7 @@ test("stall detection consecutive mode softens repeats and stops only after a st
     });
     assert.equal(result.termination.reason, "stall");
     assert.equal(result.truncated, true);
-    assert.equal(provider.requests.length, 7);
+    assert.equal(provider.requests.length, 8);
   });
 
   await t.test("allows interleaved signatures", async () => {
@@ -310,6 +311,7 @@ test("stall detection consecutive mode softens repeats and stops only after a st
       { content: [{ type: "tool_use", id: "a2", name: "write", input: { n: 1 } }], stopReason: "tool_use" },
       { content: [{ type: "tool_use", id: "b2", name: "write", input: { n: 2 } }], stopReason: "tool_use" },
       { content: [{ type: "tool_use", id: "a3", name: "write", input: { n: 1 } }], stopReason: "tool_use" },
+      { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
     ]);
 
     const result = await runToolLoop({
@@ -321,6 +323,6 @@ test("stall detection consecutive mode softens repeats and stops only after a st
     });
     assert.equal(result.rounds, 5);
     assert.equal(result.truncated, true);
-    assert.equal(provider.requests.length, 5);
+    assert.equal(provider.requests.length, 6);
   });
 });

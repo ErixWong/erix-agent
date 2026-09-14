@@ -111,6 +111,7 @@ test("note list exposes keys and tags but never content", async () => {
       key: "captured-nonce",
       content: "secret-value-must-not-leak",
       tags: ["value", "auto"],
+      relevance: 0.9,
     });
     await scopedNotes.note_take({
       key: "ordinary",
@@ -125,6 +126,50 @@ test("note list exposes keys and tags but never content", async () => {
       { key: "ordinary", tags: ["fact"] },
     ]);
     assert.doesNotMatch(JSON.stringify(index), /secret-value-must-not-leak/u);
+  });
+});
+
+test("note list sorts by relevance and filters bounded metadata", async () => {
+  await withNotes(async () => {
+    await scopedNotes.note_take({
+      key: "low",
+      content: "low",
+      relevance: 0.2,
+      tags: ["old"],
+    });
+    await scopedNotes.note_take({
+      key: "high",
+      content: "high",
+      relevance: 0.9,
+      tags: ["important"],
+    });
+    await scopedNotes.recordAutoCapture({
+      key: "auto",
+      artifactRef: {
+        archivePath: "/run/archive/001-exec.txt",
+        digest: "a".repeat(64),
+        locator: { lineStart: 1, lineEnd: 1 },
+      },
+      provenance: { source: "auto" },
+    });
+
+    const listed = parsed(await scopedNotes.note_list({ limit: 2 }));
+    assert.equal(listed.count, 2);
+    assert.equal(listed.total, 3);
+    assert.deepEqual(listed.notes.map((note) => [note.key, note.relevance]), [
+      ["high", 0.9],
+      ["auto", 0.8],
+    ]);
+    assert.equal(listed.notes[1].source, "auto");
+    assert.deepEqual(
+      parsed(await scopedNotes.note_list({ minRelevance: 0.8 })).notes.map((note) => note.key),
+      ["high", "auto"],
+    );
+    assert.deepEqual(
+      parsed(await scopedNotes.note_list({ tag: "old", source: "agent" }))
+        .notes.map((note) => note.key),
+      ["low"],
+    );
   });
 });
 

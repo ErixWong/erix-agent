@@ -19,7 +19,11 @@ import {
 } from "../src/index.js";
 import { safeRunId } from "../src/store/file.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
-import { buildCaptureRecoveryHint, createFinalGuard } from "./final-guard.js";
+import {
+  buildCaptureRecoveryHint,
+  buildCaptureStub,
+  createFinalGuard,
+} from "./final-guard.js";
 import {
   closeAllMcpServers,
   createMcpProxyTool,
@@ -42,14 +46,15 @@ const NON_TTY_MESSAGE =
   'repl 需要交互式终端，单次对话请用：erix chat "<prompt>"';
 
 const REPL_HELP_TEXT = `REPL 用法：
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--no-final-guard]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]
   --session <id>        会话 ID（默认按工作目录自动派生）
   --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
                         run 作用域笔记按 session 隔离；相同 --session 会共享笔记，
                         --dir 只影响 transcript，不改变笔记作用域
   --max-rounds <n>      工具循环最大轮数（默认：16）
   --idle-timeout <秒>   无进展自动中止（默认：0=不启用）
-  --no-final-guard      关闭终稿 provenance 核验
+  --final-guard         开启终稿 provenance 核验（默认关闭）
+  --no-final-guard      兼容别名（默认已关闭，no-op）
 
 命令：
   /help                 显示此帮助
@@ -67,7 +72,7 @@ const REPL_HELP_TEXT = `REPL 用法：
   LLM_KIT_MODEL         初始模型名称（必填，除非配置文件或 ERIX_DEFAULT_MODEL 已提供）
   ERIX_DEFAULT_MODEL    无配置模型时使用的显式默认模型（可选）
   ERIX_EXEC_TIMEOUT_MS  exec 前台命令超时毫秒数（默认：120000）
-  ERIX_NO_FINAL_GUARD=1 关闭终稿 provenance 核验
+  ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
@@ -198,12 +203,12 @@ export function parseReplArgs(argv, cwd = process.cwd()) {
       }
       continue;
     }
-    if (argument === "--no-final-guard") {
+    if (argument === "--final-guard" || argument === "--no-final-guard") {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
       }
       seenOptions.add(argument);
-      options.finalGuard = false;
+      options.finalGuard = argument === "--final-guard";
       continue;
     }
 
@@ -388,6 +393,7 @@ export async function runRepl(argv, io = {}) {
       output: (line) => writeLine(output, line),
       getToolMetadata: cliTools.getLastToolMetadata,
       notesScope: { runId: options.session, notesDir },
+      returnMetadata: true,
     },
   );
   let messages = storedRecords.length > 0
@@ -577,6 +583,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         options.compactBudget !== undefined || config.contextWindowTokens
           ? ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload })
           : undefined,
+        ({ content }) => buildCaptureStub({ content }),
       );
       const tools = [...cliTools.tools, ...skillTools.tools];
       if (mcpProxy?.enabled) {
@@ -603,10 +610,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         reflection: false,
         maxTokens: config.maxOutputTokens,
         completion: { maxNoToolRounds: 1 },
-        ...(options.finalGuard === false
-          || process.env.ERIX_NO_FINAL_GUARD?.trim() === "1"
-          ? {}
-          : {
+        ...(
+          options.finalGuard === true
+          || process.env.ERIX_FINAL_GUARD?.trim() === "1"
+          ? {
               finalGuard: createFinalGuard({
                 runId: options.session,
                 notesDir,
@@ -614,7 +621,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
                 runState,
               }),
               finalGuardMaxRetries: 2,
-            }),
+            }
+          : {}),
         tools,
         executeTool: executeToolForLoop,
         store,

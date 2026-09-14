@@ -59,6 +59,7 @@ test("returns truncated after maxRounds", async () => {
       content: [{ type: "tool_use", id: "call", name: "step", input: { n: 1 } }],
       stopReason: "tool_use",
     },
+    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
 
   const result = await runToolLoop({
@@ -71,7 +72,7 @@ test("returns truncated after maxRounds", async () => {
 
   assert.equal(result.rounds, 2);
   assert.equal(result.truncated, true);
-  assert.equal(result.finalText, "");
+  assert.equal(result.finalText, "cannot recover");
 });
 
 test("rejects non-positive, non-finite, and non-integer maxRounds", async () => {
@@ -96,6 +97,7 @@ test("nudges repeated calls before stopping after a consecutive stall streak", a
       content: [{ type: "tool_use", id: "call", name: "same", input: { n: 1 } }],
       stopReason: "tool_use",
     },
+      { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
 
   const result = await runToolLoop({
@@ -108,7 +110,7 @@ test("nudges repeated calls before stopping after a consecutive stall streak", a
   });
   assert.equal(result.termination.reason, "stall");
   assert.equal(result.truncated, true);
-  assert.equal(provider.requests.length, 7);
+  assert.equal(provider.requests.length, 8);
   assert.ok(provider.requests.some((request) => (
     request.messages.some((message) => (
       Array.isArray(message.content)
@@ -246,6 +248,7 @@ test("stall detection can be disabled", async () => {
       content: [{ type: "tool_use", id: "same", name: "same", input: {} }],
       stopReason: "tool_use",
     },
+    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
 
   const result = await runToolLoop({
@@ -271,7 +274,7 @@ test("stallDetection:false overrides ERIX_STALL_MODE env", async () => {
       times: 6,
       content: [{ type: "tool_use", id: "call", name: "same", input: { n: 1 } }],
       stopReason: "tool_use",
-    }]);
+    }, { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" }]);
     const result = await runToolLoop({
       provider,
       initialUserMessage: "env-ignored",
@@ -308,6 +311,7 @@ test("ERIX_STALL_MODE env overrides stall detection mode", async () => {
       { content: [{ type: "tool_use", id: "a2", name: "write", input: { n: 1 } }], stopReason: "tool_use" },
       { content: [{ type: "tool_use", id: "b2", name: "write", input: { n: 2 } }], stopReason: "tool_use" },
       { content: [{ type: "tool_use", id: "a3", name: "write", input: { n: 1 } }], stopReason: "tool_use" },
+      { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
     ]);
 
     const result = await runToolLoop({
@@ -319,7 +323,7 @@ test("ERIX_STALL_MODE env overrides stall detection mode", async () => {
     });
     assert.equal(result.rounds, 5);
     assert.equal(result.truncated, true);
-    assert.equal(provider.requests.length, 5);
+    assert.equal(provider.requests.length, 6);
   } finally {
     if (previous === undefined) {
       delete process.env.ERIX_STALL_MODE;

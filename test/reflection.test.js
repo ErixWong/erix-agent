@@ -71,6 +71,7 @@ test("reflection extends the budget and injects the plan into the next task requ
       plan: "做X",
     }),
     ...Array.from({ length: 4 }, (_value, index) => toolResponse(index + 9)),
+    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
 
   const result = await runToolLoop({
@@ -142,6 +143,7 @@ test("stalled reflection injects a change-of-approach instruction", async () => 
       plan: "改用另一种方法",
     }),
     ...Array.from({ length: 3 }, (_value, index) => toolResponse(index + 2)),
+    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
 
   const result = await runToolLoop({
@@ -303,6 +305,7 @@ test("continuation exhaustion stops before reflection can extend", async () => {
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "partial" }], stopReason: "max_tokens" },
     { content: [{ type: "text", text: "{\"continue\":true,\"plan\":\"more\"}" }] },
+    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
   const result = await runToolLoop({
     provider,
@@ -319,5 +322,5 @@ test("continuation exhaustion stops before reflection can extend", async () => {
     },
   });
   assert.equal(result.truncated, true);
-  assert.equal(provider.requests.length, 1);
+  assert.equal(provider.requests.length, 2);
 });

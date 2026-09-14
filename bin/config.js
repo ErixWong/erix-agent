@@ -100,30 +100,38 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
   };
 }
 
-function withRecoveryHint(context, recoveryHint) {
+function withRecoveryHint(context, recoveryHint, stubFor) {
   if (
     (typeof recoveryHint !== "string" || recoveryHint.trim() === "")
     && typeof recoveryHint !== "function"
+    && typeof stubFor !== "function"
   ) {
     return context;
   }
-  if (context === undefined) return { recoveryHint };
+  if (context === undefined) return {
+    ...(recoveryHint === undefined ? {} : { recoveryHint }),
+    ...(stubFor === undefined ? {} : { stubFor }),
+  };
   return {
     ...context,
-    recoveryHint,
-    strategy: createFoldStatisticalStrategy({ recoveryHint }),
+    ...(recoveryHint === undefined ? {} : { recoveryHint }),
+    ...(stubFor === undefined ? {} : { stubFor }),
+    strategy: createFoldStatisticalStrategy({
+      ...(recoveryHint === undefined ? {} : { recoveryHint }),
+      ...(stubFor === undefined ? {} : { stubFor }),
+    }),
   };
 }
 
-export function buildCompactionContext(config, explicitBudget, recoveryHint) {
+export function buildCompactionContext(config, explicitBudget, recoveryHint, stubFor) {
   if (explicitBudget !== undefined) {
     return withRecoveryHint({
       strategy: createFoldStatisticalStrategy(),
       budgetTokens: explicitBudget,
       protectedMessage: isRealUser,
-    }, recoveryHint);
+    }, recoveryHint, stubFor);
   }
-  if (!config.contextWindowTokens) return withRecoveryHint(undefined, recoveryHint);
+  if (!config.contextWindowTokens) return withRecoveryHint(undefined, recoveryHint, stubFor);
 
   const budget = computeBudget({
     contextWindowTokens: config.contextWindowTokens,
@@ -133,5 +141,5 @@ export function buildCompactionContext(config, explicitBudget, recoveryHint) {
     strategy: createFoldStatisticalStrategy(),
     budgetTokens: budget,
     protectedMessage: isRealUser,
-  }, recoveryHint);
+  }, recoveryHint, stubFor);
 }

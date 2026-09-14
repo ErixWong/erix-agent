@@ -121,6 +121,7 @@ export async function captureToolExecution({
         : { content: output.slice(0, Math.min(AUTO_CAPTURE_MAX_CHARS, MAX_CONTENT_LENGTH)) }),
       artifactRef: reference,
       tags: ["value", "auto"],
+      relevance: 0.8,
       pinned: true,
       provenance,
       __erix: notesScope,

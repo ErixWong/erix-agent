@@ -391,19 +391,30 @@ function dropOldestUnprotectedRound(messages, protectedMessage) {
   const index = rounds.findIndex((round) => !round.messages.some((message) => (
     isProtectedMessage(message, protectedMessage)
   )));
-  if (index < 0) return false;
+  if (index < 0) return undefined;
   const start = head.length + rounds
     .slice(0, index)
     .reduce((total, round) => total + round.messages.length, 0);
   const count = rounds[index].messages.length;
-  messages.splice(start, count);
-  return true;
+  return messages.splice(start, count);
 }
 
-function safeTruncateMessages(messages, budgetTokens, protectedMessage) {
+async function safeTruncateMessages(messages, budgetTokens, protectedMessage, stubFor) {
   const result = cloneState(messages);
   const downgraded = new Set();
   const foldedPayload = [];
+  const foldedStubs = [];
+  const collectStubs = async (removed) => {
+    if (typeof stubFor !== "function") return;
+    for (const message of removed ?? []) {
+      if (!Array.isArray(message?.content) || !message.content.some((block) => (
+        block?.type === "tool_result" && block.replayable === false
+      ))) continue;
+      const stub = await stubFor(message);
+      if (typeof stub !== "string" || stub.trim() === "") continue;
+      foldedStubs.push(Array.from(stub).slice(0, 200).join(""));
+    }
+  };
   let protectedDowngraded = 0;
   const isCurrentlyProtected = (message) => (
     isProtectedMessage(message, protectedMessage) && !downgraded.has(message)
@@ -414,17 +425,23 @@ function safeTruncateMessages(messages, budgetTokens, protectedMessage) {
     protectedDowngraded += 1;
     return true;
   };
-  const removeMessages = (start, count) => {
+  const removeMessages = async (start, count) => {
+    const removed = result.slice(start, start + count);
     foldedPayload.push(
-      ...result
-        .slice(start, start + count)
+      ...removed
         .filter((message) => downgraded.has(message))
         .map((message) => cloneState(message)),
     );
+    await collectStubs(removed);
     result.splice(start, count);
   };
-  while (estimateMessageTokens(result) > budgetTokens
-    && dropOldestUnprotectedRound(result, (message) => isCurrentlyProtected(message))) {
+  while (estimateMessageTokens(result) > budgetTokens) {
+    const removed = dropOldestUnprotectedRound(
+      result,
+      (message) => isCurrentlyProtected(message),
+    );
+    if (removed === undefined) break;
+    await collectStubs(removed);
     // Remove complete rounds before reducing individual message content.
   }
 
@@ -540,16 +557,33 @@ function safeTruncateMessages(messages, budgetTokens, protectedMessage) {
         downgradeProtected(result[removableIndex + 1]);
         continue;
       }
-      removeMessages(removableIndex, 2);
+      await removeMessages(removableIndex, 2);
     } else if (results.length > 0 && removableIndex > 0
       && result[removableIndex - 1]?.role === "assistant") {
       if (isCurrentlyProtected(result[removableIndex - 1])) {
         downgradeProtected(result[removableIndex - 1]);
         continue;
       }
-      removeMessages(removableIndex - 1, 2);
+      await removeMessages(removableIndex - 1, 2);
     } else {
-      removeMessages(removableIndex, 1);
+      await removeMessages(removableIndex, 1);
+    }
+  }
+  const uniqueStubs = [...new Set(foldedStubs)];
+  if (uniqueStubs.length > 0) {
+    const firstUser = result.findIndex((message) => message?.role === "user");
+    if (firstUser >= 0) {
+      const user = result[firstUser];
+      const content = typeof user.content === "string"
+        ? [{ type: "text", text: user.content }]
+        : Array.isArray(user.content) ? user.content : [];
+      result[firstUser] = {
+        ...user,
+        content: [
+          ...content,
+          { type: "text", text: uniqueStubs.slice(0, 10).join("\n") },
+        ],
+      };
     }
   }
   return {
@@ -557,6 +591,7 @@ function safeTruncateMessages(messages, budgetTokens, protectedMessage) {
     tokensAfter: estimateMessageTokens(result),
     enforced,
     foldedPayload,
+    foldedStubs: uniqueStubs,
     protectedDowngraded,
   };
 }
@@ -1210,6 +1245,8 @@ export async function runToolLoop({
     : 3;
   const compactionStats = [];
   let finalText = "";
+  let forcedFinal = false;
+  let lastAssistantContent = [];
   const finalGuardRetryLimit = Number.isSafeInteger(finalGuardMaxRetries)
     && finalGuardMaxRetries >= 0
     ? finalGuardMaxRetries
@@ -1425,6 +1462,13 @@ export async function runToolLoop({
     };
   };
 
+  const budgetHintFor = (round) => {
+    const remaining = governorState.effectiveMaxRounds - round;
+    return remaining <= 2
+      ? `[预算] 本轮后仅剩 ${Math.max(0, remaining)} 轮；请立即给出结论，或明确声明不可恢复`
+      : "";
+  };
+
   const messagesWithToolResults = (toolResults) => {
     const snapshot = cloneState(messages);
     if (toolResults.length === 0) return snapshot;
@@ -1495,6 +1539,8 @@ export async function runToolLoop({
       content: execution.content,
       ...execution.metadata,
     };
+    const budgetHint = budgetHintFor(round);
+    if (budgetHint) toolResult.content = `${toolResult.content}\n${budgetHint}`;
     if (isError || execution.success === false) toolResult.is_error = true;
     toolResults.push(toolResult);
     if (block.id !== undefined) executedToolIds.add(block.id);
@@ -1646,6 +1692,58 @@ export async function runToolLoop({
         await waitForRetry(delay);
       }
     }
+  };
+
+  const hasFinalDraft = () => (
+    finalText.trim() !== ""
+    && roundStopReason === "end_turn"
+    && !hasToolUse(lastAssistantContent)
+  );
+
+  const forceFinalIfNeeded = async (reason) => {
+    if (
+      forcedFinal
+      || !["max_rounds_cap", "stall", "continuation_exhausted"].includes(reason)
+      || hasFinalDraft()
+      || process.env.ERIX_NO_FORCED_FINAL?.trim() === "1"
+    ) return;
+
+    const instruction = {
+      role: "user",
+      content: [{
+        type: "text",
+        text: `【强制收尾】循环因 ${reason} 结束。禁止调用任何工具；请立即给出最终结论，或明确声明不可恢复。`,
+      }],
+    };
+    messages.push(instruction);
+    messageRounds.set(instruction, rounds);
+    validateMessages(messages, { allowPendingToolUse: true });
+    const request = {
+      system: mainSystem,
+      messages,
+      tools: [],
+      signal,
+    };
+    if (maxTokens !== undefined) request.maxTokens = maxTokens;
+    if (temperature !== undefined) request.temperature = temperature;
+    if (topP !== undefined) request.topP = topP;
+    const response = await awaitWithAbort(provider.chat(request));
+    addUsage(response, estimateMessageTokens(messages));
+    const content = blocksFor(response?.content);
+    const assistant = { role: "assistant", content };
+    messages.push(assistant);
+    messageRounds.set(assistant, rounds);
+    lastAssistantContent = content;
+    roundStopReason = response?.stopReason;
+    const responseText = textFromBlocks(content);
+    const wrapup = wrapupEnabled && response?.stopReason === "end_turn"
+      ? tryParseWrapupJson(responseText)
+      : null;
+    finalText = wrapup === null
+      ? responseText
+      : wrapup.output || wrapup.summary;
+    forcedFinal = true;
+    emitEvent({ type: "forced_final", round: rounds, reason });
   };
 
   const callReflection = async (round, currentL0, currentSummary) => {
@@ -1850,6 +1948,8 @@ export async function runToolLoop({
       tool_use_id: block.id,
       content: `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。`,
     };
+    const budgetHint = budgetHintFor(round);
+    if (budgetHint) toolResult.content = `${toolResult.content}\n${budgetHint}`;
     if (block.id !== undefined) checkpointResults.set(block.id, toolResult);
     toolResults.push(toolResult);
     const overriddenMessages = [
@@ -1922,6 +2022,7 @@ export async function runToolLoop({
         "stripHistoricalImages",
         "onBeforeFold",
         "onAfterFold",
+        "stubFor",
       ]) {
         if (compactionContext[key] !== undefined) compactOptions[key] = compactionContext[key];
       }
@@ -1955,6 +2056,7 @@ export async function runToolLoop({
           budgetTokens,
           protectedMessage: compactionContext.protectedMessage,
           stripHistoricalImages: compactionContext.stripHistoricalImages,
+          stubFor: compactionContext.stubFor,
           roundOffset: foldedThrough,
           roundNumbers: roundNumbersForMessages(compactedMessages),
         });
@@ -1980,10 +2082,11 @@ export async function runToolLoop({
             Math.floor(budgetTokens * apiEstimateBefore / apiInputTokens),
           )
           : budgetTokens;
-        const fallback = safeTruncateMessages(
+        const fallback = await safeTruncateMessages(
           compactedMessages,
           apiAwareBudget,
           compactionContext.protectedMessage,
+          compactionContext.stubFor,
         );
         compactedMessages = fallback.messages;
         foldedPayload = [...foldedPayload, ...(fallback.foldedPayload ?? [])];
@@ -2033,7 +2136,10 @@ export async function runToolLoop({
   };
 
   const makeResult = (reason, detail) => {
-    const termination = makeTermination(reason, detail);
+    const termination = {
+      ...makeTermination(reason, detail),
+      ...(forcedFinal ? { forcedFinal: true } : {}),
+    };
     return {
       finalText,
       messages,
@@ -2171,6 +2277,7 @@ export async function runToolLoop({
     }
     const continuationExhausted = response?.stopReason === "max_tokens"
       && tokenContinuationCount >= continuationLimit;
+    lastAssistantContent = content;
     const responseText = textFromBlocks(content);
     // OpenAI 规范：finish_reason=stop 是模型自然停止的唯一标识。
     // 但社区实测存在 stop 但 content 带 tool_calls 的边界（非标准）——双保险：stop && 无 tool_use
@@ -2577,6 +2684,7 @@ export async function runToolLoop({
     if (action.kind === "stop") {
       const reason = terminationReasonForAction(action, continuationExhausted);
       const detail = reason === "reflection_stop" ? action.reason : undefined;
+      await forceFinalIfNeeded(reason);
       if (
         typeof finalGuard === "function"
         && FINAL_GUARD_TERMINATION_REASONS.has(reason)
@@ -2636,6 +2744,7 @@ export async function runToolLoop({
     await fail(error);
   }
 
+  await forceFinalIfNeeded("max_rounds_cap");
   if (typeof finalGuard !== "function") return finish("max_rounds_cap");
   const guardDecision = await callFinalGuard("max_rounds_cap");
   if (guardDecision.action === "error") return finish("max_rounds_cap");

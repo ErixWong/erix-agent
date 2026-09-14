@@ -20,6 +20,13 @@ function hashError(text) {
   return createHash("sha256").update(text).digest("hex");
 }
 
+function errorEvidenceText(content) {
+  return resultText(content).replace(
+    /\n\[预算\] 本轮后仅剩 \d+ 轮；请立即给出结论，或明确声明不可恢复$/u,
+    "",
+  );
+}
+
 /**
  * Extract objective facts from the tool results belonging to one round.
  * Tool output is deliberately treated as data; no model-produced fields are
@@ -38,7 +45,7 @@ export function extractL0Facts(messages, state = { seenErrors: new Map() }) {
   for (const result of results) {
     const isError = result?.is_error === true || result?.success === false;
     if (!isError) continue;
-    const fullText = resultText(result.content);
+    const fullText = errorEvidenceText(result.content);
     const text = fullText.slice(0, 500);
     const errorHash = hashError(fullText);
     const previous = seenErrors.get(errorHash);

@@ -1040,6 +1040,7 @@ async function main() {
     modelCount: 1,
     maxCalls: options.maxCalls,
     estimate,
+    confirmed: options.yes,
   }));
   if (!options.yes) return;
 

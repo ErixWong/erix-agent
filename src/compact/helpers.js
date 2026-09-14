@@ -103,6 +103,50 @@ export async function runFoldHook(hook, payload) {
   if (typeof hook === "function") await hook(payload);
 }
 
+function foldStubMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).filter((message) => (
+    Array.isArray(message?.content)
+    && message.content.some((block) => (
+      block?.type === "tool_result" && block.replayable === false
+    ))
+  ));
+}
+
+export async function resolveFoldStubs(messages, stubFor) {
+  if (typeof stubFor !== "function") return [];
+  const stubs = [];
+  for (const message of foldStubMessages(messages)) {
+    const value = await stubFor(message);
+    if (typeof value !== "string" || value.trim() === "") continue;
+    const bounded = Array.from(value).slice(0, 200).join("");
+    if (bounded !== "") stubs.push(bounded);
+  }
+  return [...new Set(stubs)];
+}
+
+export function appendFoldStubsToHead(head, stubs) {
+  if (!Array.isArray(stubs) || stubs.length === 0) return head;
+  const userIndex = head.findLastIndex(isRealUser);
+  if (userIndex < 0) return head;
+  const updatedHead = head.slice();
+  const user = updatedHead[userIndex];
+  const content = typeof user.content === "string"
+    ? [{ type: "text", text: user.content }]
+    : Array.isArray(user.content) ? user.content : [];
+  const existing = content
+    .filter((block) => block?.type === "text" && String(block.text ?? "").startsWith("[已折叠]"))
+    .flatMap((block) => String(block.text).split("\n"));
+  const merged = [...new Set([...existing, ...stubs])];
+  const withoutStubs = content.filter((block) => (
+    block?.type !== "text" || !String(block.text ?? "").startsWith("[已折叠]")
+  ));
+  updatedHead[userIndex] = {
+    ...user,
+    content: [...withoutStubs, { type: "text", text: merged.join("\n") }],
+  };
+  return updatedHead;
+}
+
 export function foldOptions(factoryOptions, callOptions = {}) {
   return {
     summaryRole: optionValue(callOptions, factoryOptions, "summaryRole", "user"),
@@ -126,6 +170,7 @@ export function foldOptions(factoryOptions, callOptions = {}) {
       "onAfterFold",
       optionValue(callOptions, factoryOptions, "afterFold"),
     ),
+    stubFor: optionValue(callOptions, factoryOptions, "stubFor"),
     roundOffset: Number.isFinite(callOptions.roundOffset)
       ? Math.max(0, Math.floor(callOptions.roundOffset))
       : Number.isFinite(factoryOptions?.roundOffset)

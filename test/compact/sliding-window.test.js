@@ -42,3 +42,30 @@ test("does not report compaction when all rounds are retained", async () => {
   assert.deepEqual(result.foldedPayload, []);
   assert.deepEqual(result.messages, messages);
 });
+
+test("keeps a non-replayable result stub in the retained head", async () => {
+  const messages = [
+    { role: "user", content: "task" },
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "capture", name: "exec", input: {} }],
+    },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "capture",
+        replayable: false,
+        content: "secret",
+      }],
+    },
+    { role: "assistant", content: "old" },
+    { role: "user", content: "keep" },
+  ];
+  const result = await createSlidingWindowStrategy().compact(messages, {
+    keepRounds: 1,
+    stubFor: () => "[已折叠] 本命令不可重放；值：nonce=abc123；原文：/tmp/001-exec.txt",
+  });
+  assert.match(JSON.stringify(result.messages), /nonce=abc123/u);
+  assert.doesNotMatch(JSON.stringify(result.messages), /secret/u);
+});

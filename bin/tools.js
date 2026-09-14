@@ -302,6 +302,7 @@ export function wrapExecuteTool(
     getToolMetadata,
     capture = captureToolExecution,
     notesScope,
+    returnMetadata = false,
   } = {},
 ) {
   if (typeof executeTool !== "function") {
@@ -343,6 +344,15 @@ export function wrapExecuteTool(
         notesScope,
       });
       output(`← ${name}: ${summarizeToolResult(name, result)}`);
+      if (returnMetadata && typeof getToolMetadata === "function") {
+        const metadata = getToolMetadata() ?? {};
+        return {
+          data: result,
+          ...(metadata.replayable === undefined ? {} : { replayable: metadata.replayable }),
+          ...(metadata.artifact === undefined ? {} : { artifact: metadata.artifact }),
+          ...(metadata.intercepted === undefined ? {} : { intercepted: metadata.intercepted }),
+        };
+      }
       return result;
     } catch (error) {
       output(`← ${name}: ${summarizeToolResult(name, `错误：${error?.message ?? String(error)}`)}`);

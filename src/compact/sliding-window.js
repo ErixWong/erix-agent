@@ -6,32 +6,15 @@ import {
   optionValue,
   roundRangeForIndexes,
   runFoldHook,
+  appendFoldStubsToHead,
   selectFoldedRounds,
+  resolveFoldStubs,
 } from "./helpers.js";
 
 function normalizedKeepRounds(value) {
   if (value === undefined) return 6;
   if (!Number.isFinite(value)) return 6;
   return Math.max(0, Math.floor(value));
-}
-
-function compactRounds(messages, keepRounds) {
-  const { head, rounds } = groupIntoRounds(messages);
-  const keep = normalizedKeepRounds(keepRounds);
-  const foldedCount = Math.max(0, rounds.length - keep);
-  const folded = rounds.slice(0, foldedCount);
-  const retained = rounds.slice(foldedCount);
-  const foldedPayload = folded.flatMap((round) => round.messages);
-  const compactedMessages = [
-    ...head,
-    ...retained.flatMap((round) => round.messages),
-  ];
-
-  return {
-    compactedMessages,
-    folded,
-    foldedPayload,
-  };
 }
 
 /**
@@ -79,8 +62,9 @@ export function createSlidingWindowStrategy(options = {}) {
         foldedPayload,
         roundRange,
       });
+      const foldedStubs = await resolveFoldStubs(foldedPayload, settings.stubFor);
       const compactedMessages = [
-        ...head,
+        ...appendFoldStubsToHead(head, foldedStubs),
         ...retained.flatMap((round) => round.messages),
       ];
       const tokensAfter = estimateMessageTokens(compactedMessages);

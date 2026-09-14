@@ -348,6 +348,7 @@ test("not-done round judge evidence is injected into the next user request", asy
     toolResponse("main-1", "work", { round: 1 }),
     { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" }, // round 2: judge 打回
     { content: [{ type: "tool_use", id: "w2", name: "work", input: { round: 3 } }], stopReason: "tool_use" }, // round 3: 收到 evidence 后继续干
+    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
   const judge = createFakeProvider([
     judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "期望 377，实际 104" }),

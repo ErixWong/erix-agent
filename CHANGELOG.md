@@ -2,6 +2,25 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [Unreleased]
+
+### Breaking
+
+- CLI 终稿 provenance guard 改为默认关闭；需要核验时显式使用 `--final-guard` 或
+  `ERIX_FINAL_GUARD=1`。`--no-final-guard` 保留为兼容 no-op，库 API 的 `finalGuard` 注入语义不变。
+
+### Added
+
+- 折叠时可由 CLI/宿主注入 `stubFor`，为不可重放工具结果保留有界、去凭据的最小事实 stub。
+- 折叠状态加入最多 10 条的归档目录视图，仅用于导航，不注入捕获值。
+- 工具结果在剩余轮次不超过 2 轮时追加预算提示；轮次上限、stall 或 continuation 耗尽且没有终稿时，loop 可追加一次禁用工具的强制收尾。
+- `note_list` 按 `relevance` 降序、`updated_at` 降序排序，并支持 `minRelevance`、`tag`、`source` 筛选；自动捕获默认 relevance 为 `0.8`，旧记录按 `0.5` 处理。
+
+### Fixed
+
+- 修复实验护栏在已传 `--yes` 时仍打印 dry-run 提示的问题。
+- 成本预估改用历史最大值（下限）而不是均值，避免系统性偏乐观。
+
 ## [0.4.0] - 2026-09-14
 
 ### Breaking
