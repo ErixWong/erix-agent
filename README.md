@@ -111,9 +111,9 @@ src/
 - **skill 系统**：`~/.erix/skills/<id>/skill.mjs` 自描述脚本，导出 `getSkillDefinition()` 自报工具（ADR-008）；`erix skills` 查看；todo skill（跨会话任务清单，长任务拆解/划掉/恢复）
 - **notes 技能（#63）**：用于记录任务中的关键事实、一次性值、决策与 artifact 引用，不是每轮日志。四个工具为 `note_take`、`note_read`、`note_list`、`note_forget`；当前只支持 `run` 作用域，记录按 key 保存当前值、最多 3 条已作废的 `superseded` 值和可见的 `folded` 遗忘计数。默认存储在 `~/.erix/notes/run/<safeRunId>/<safeKey>.json`（目录 `0700`、文件 `0600`），也可用 `ERIX_NOTES_DIR` 指定；run 完成后进入 `done`，到期由 janitor 转为 `revoked` 并保留墓碑。REPL 的 run scope 使用 `--session`（默认按工作目录派生），整个 REPL session 共用一个 run scope；宿主应显式传入 `__erix` scope。工具状态收敛为 `found`、`missing`、`revoked`、`invalid`、`unsupported`，模型需要早期细节时先 `note_list` 再 `note_read`。
 - **auto_capture（值 + 引用）**：CLI 在 `exec` 工具执行完成时，每次非幂等命令只捕获一条有界输出摘录（最多 1000 字符）和 artifact 引用；逐行解析显式 `label=value`，任一行疑似凭据时只保存 `artifactRef`，不保存输出内容。notes 只是便利索引，最终核验不信任 notes。非幂等命令强制写 `<序号>-exec.txt` sidecar 和 `.meta.json`，元数据标明 `replayable=false`；原子写、归档权限和凭据 fail-closed 规则保持不变。
-- **provenance gate 判定**：收尾时 CLI 只读取本 run `archiveDir` 下由 capture 写出的同名 `*.meta.json` manifest；notes/artifactRef 只是检索线索，不参与信任判定。manifest 必须声明 `digest/replayable/truncated/locator`，归档必须位于 archive root 内、通过 `realpath` 防符号链接逃逸、SHA-256 与磁盘内容一致，且只有 `replayable === false`、`truncated === false` 的归档才进入已知值集合。终稿只核验显式 `label=value`：命中同 label 的可信归档值即放行，不符则 revise，重试耗尽后 `unverified`；找不到可比对 label 则 `skipped` 并警告。verification 同时输出 `verified`、`skipped`、`revised`、`unverified`、`guard_error` 计数。
-- **verification 消费契约**：宿主必须先检查 `runToolLoop` 返回的 `verification.status`，只有 `verified` 才能把 `finalText` 当作来源已核验的结果；`unverified` 表示 guard 要求修订但已无法继续，`termination.reason` 为 `final_guard_unverified`，不得标记或消费为成功；`error` 表示 guard 异常/超时（默认 30 秒），为可用性会 fail-open 返回文本，但文本仍未核验，需按宿主策略人工处理；`skipped` 表示未配置 guard，或可信非幂等归档没有可抽取候选值，此时只能说明“没有可核验值”，不能当作已核验事实。CLI 对 `unverified` 以退出码 2 结束，对 `error` 以不同的退出码 3 结束；`skipped` 正常退出但不会打印已核验标题。
-- 需要恢复具体值时，已知 key 优先直接按 `note_read key=<key>`；不知道 key 才按 `note_list → note_read`。只有仅引用型笔记才按返回的 `artifactRef.archivePath` 与 `locator` 有界读取归档并声明核对结果，禁止遍历归档目录，不得重跑命令或凭记忆补值。归档保存原文，notes 保存短值与审计引用，两者职责不同。
+- **provenance gate 判定**：收尾时 CLI 只读取本 run `archiveDir` 下由 capture 写出的同名 `*.meta.json` manifest；notes/artifactRef 只是检索线索，不参与信任判定。manifest 必须声明 `digest/replayable/truncated/locator`，归档必须位于 archive root 内、通过 `realpath` 防符号链接逃逸、SHA-256 与磁盘内容一致，且只有 `replayable === false`、`truncated === false` 的归档才进入已知值集合。终稿按**来源契约**核验：由 manifest 建 `captures[{label,value,artifact,round,first}]`（每个 label 的**首次捕获为规范值**），终稿中锚定已知 label 的显式归属（`label=value`、`label：value`、`label 是 value`）按规则判定——等于首次捕获值直接放行；等于**后续重跑捕获值**时必须带来源（`来源=note_read:<key>` 或 `来源=归档:<文件名>`）且指向该 artifact（放行并记 `rerun_cited`），否则 revise；不对应任何捕获则 revise；找不到可比对项则 `skipped` 并警告。verification 同时输出 `verified`、`skipped`、`revised`、`rerun_cited`、`unverified`、`guard_error` 计数。
+- **verification 消费契约**：宿主必须先检查 `runToolLoop` 返回的 `verification.status`，只有 `verified` 才能把 `finalText` 当作来源已核验的结果；`unverified` 表示 guard 要求修订但已无法继续，`termination.reason` 为 `final_guard_unverified`，不得标记或消费为成功；`error` 表示 guard 异常/超时（默认 30 秒），为可用性会 fail-open 返回文本，但文本仍未核验，需按宿主策略人工处理；`skipped` 表示未配置 guard，或终稿中没有可与 capture manifest 比对的显式来源归属（此时只能说明“没有可核验项”，不能当作已核验事实）。CLI 对 `unverified` 以退出码 2 结束，对 `error` 以不同的退出码 3 结束；`skipped` 正常退出但不会打印已核验标题。
+- 需要恢复具体值时，已知 key 优先直接按 `note_read key=<key>`；不知道 key 才按 `note_list → note_read`。只有仅引用型笔记才按返回的 `artifactRef.archivePath` 与 `locator` 有界读取归档并声明核对结果，禁止遍历归档目录，不得重跑命令或凭记忆补值。归档保存原文，notes 保存短值与审计引用，两者职责不同。折叠发生时会在折叠点注入不含捕获值/key 的 `[本 run 状态]` 标记（已折叠条数 + 不可重放捕获条数），属于“模型处境”而非数据注入；改写后的非幂等命令会前置重跑警示并给出首次值指针（`note_read key=…` / 归档路径）。涉及本 run 捕获值的终稿应带来源（`来源=note_read:<key>` 或 `来源=归档:<文件名>`）。
 - **MCP 对接**：`~/.erix/mcp.json` 标准配置，单代理工具（list/search/call/status）访问任意 MCP server（stdio + HTTP；实测 unifuncs 联网搜索、filesystem 读文件）
 - **配置**：`~/.erix/config.json`（或 `$XDG_CONFIG_HOME/erix/`），env 优先；会话存档 `~/.erix/<session>.json`；todo 清单 `~/.erix/todos/`
 - **流式**：repl 默认打字机；`chat --stream` 逐字输出；`--idle-timeout` 无进展自动中止；自动压缩预算（按模型窗口折叠）
@@ -133,18 +133,21 @@ src/
 
 ## 状态
 
-- **v0.4.0（2026-09-14，准备发布）**：notes run scope 技能、工具产出归档与 provenance gate 完整落地。
-  notes 短值直接存入 `content`，同时保留 `artifactRef` 审计链；`note_take` / `note_read` /
-  `note_list` / `note_forget` 支持版本历史、有界历史、墓碑式撤销和 janitor/GC。超过 800 字符的工具结果归档到
-  `<transcriptDir>/outputs/<runId>/`，折叠摘要带 `recoveryHint`；非幂等命令写 sidecar 并拦截重跑。
-  终稿 provenance gate 只信任 capture manifest：`unverified` 记录 `unverified_error` 并由 CLI 退出码 2
-  表示，guard 异常/超时记录 `guard_error` 并由 CLI 退出码 3 表示。
+- **v0.4.0（2026-09-14，准备发布）**：notes run scope 技能、工具产出归档与 provenance gate 完整落地，并在本版本内完成**记忆层瘦身**与**静默错答的结构性修复**。
+  notes 记录为 `current` + 最多 3 条 `superseded` + 可见 `folded` 计数（#74 起**不再有版本链与有界历史压缩**），
+  短值直接存入 `content` 并保留 `artifactRef` 审计链；`note_take` / `note_read` /
+  `note_list` / `note_forget` 支持墓碑式撤销与 janitor/GC。超过 800 字符的工具结果归档到
+  `<transcriptDir>/outputs/<runId>/`；非幂等命令写 sidecar、拦截同一命令重跑，**改写后的非幂等重跑会前置警示并给出首次值指针**。
+  终稿 provenance gate 只信任 capture manifest，采用**来源契约**：首次捕获值直接放行；后续重跑捕获值必须带可核验来源（记 `rerun_cited`）；
+  无显式归属则 `skipped`。折叠点注入不含值/key 的 `[本 run 状态]` 标记。
+  `unverified` 记录 `unverified_error` 并由 CLI 退出码 2 表示，guard 异常/超时记录 `guard_error` 并由 CLI 退出码 3 表示。
   `runToolLoop` 的 `filesWritten` 可通过 `writeToolNames`（默认 `["writeFile"]`）和
   `writeToolPathKeys` 配置；protected 消息超预算会降级并记录 `compactionStats[].protectedDowngraded`。
-- **v0.4.0 宿主接入要点**：CLI 可用 `--no-notes`、`--no-final-guard` 控制 notes 和终稿核验；需要自然语言终稿的宿主传 `wrapup: false`，或设置
+- **v0.4.0 宿主接入要点**：CLI 可用 `--no-notes`、`--no-final-guard` 控制 notes 和终稿核验（`--notes-ledger` 与 `ERIX_NOTES_LEDGER` 已移除）；需要自然语言终稿的宿主传 `wrapup: false`，或设置
   `ERIX_NO_WRAPUP_INSTRUCTION=1`。消费 loop 结果时必须区分 `verification.status`：
-  `verified` 才是已核验终稿，`unverified`/`error` 分别对应退出码 2/3；`skipped` 仅表示没有可核验值。
-  notes 是 pull-only 便利索引，不会自动把值注入模型上下文；模型需先 `note_list` 再按 key 调用 `note_read`。
+  `verified` 才是已核验终稿，`unverified`/`error` 分别对应退出码 2/3；`skipped` 仅表示没有可核验项。
+  notes 是 pull-only 便利索引，不会自动把值注入模型上下文（折叠点的 `[本 run 状态]` 标记只含计数，不含值/key）；模型需先 `note_list` 再按 key 调用 `note_read`。
+  宿主写入 scope 请显式传 `__erix`（`ERIX_RUN_ID` 已移除，仅保留 `ERIX_NOTES_DIR` 作为存储位置配置）。
 - **v0.3.5（2026-09-12，npm 最新）**：全项目体检修复批次（#37~#45，PR #47~#56）——流式回调 retry=0 实时透传（`erix chat --stream` 与宿主 SSE 转发恢复实时增量）；
   checkpoint 执行后写失败 fail-closed（防崩溃恢复重复执行工具副作用）；resume 补执行全部 pending 工具（原只补一个致协议断裂）；
   双协议 SSE `data:` 无空格兼容、408 归 timeout 可重试、legacy `function_call` 转换、providerOptions 不再覆盖核心字段；
