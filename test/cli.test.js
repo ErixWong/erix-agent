@@ -5,7 +5,12 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { exitCodeForVerification, parseChatArgs, runChat } from "../bin/cli.js";
+import {
+  exitCodeForVerification,
+  parseChatArgs,
+  runChat,
+} from "../bin/cli.js";
+import { formatGuardMetrics } from "../bin/guard-metrics.js";
 import { getMcpPoolStatus } from "../bin/mcp.js";
 import {
   CLI_TOOLS_SYSTEM_PROMPT,
@@ -28,6 +33,27 @@ test("CLI uses distinct nonzero exits for unverified and guard errors", () => {
   assert.equal(exitCodeForVerification({ status: "verified" }), 0);
   assert.equal(exitCodeForVerification({ status: "unverified" }), 2);
   assert.equal(exitCodeForVerification({ status: "error" }), 3);
+});
+
+test("CLI formats guard metrics and shows disabled guards explicitly", () => {
+  assert.equal(
+    formatGuardMetrics({
+      status: "verified",
+      metrics: {
+        verified: 1,
+        skipped: 0,
+        revised: 1,
+        rerun_cited: 0,
+        unverified: 0,
+        guard_error: 0,
+      },
+    }),
+    "guard={verified:1,skipped:0,revised:1,rerun_cited:0,unverified:0,guard_error:0}",
+  );
+  assert.equal(
+    formatGuardMetrics({ status: "skipped", reason: "no_final_guard" }),
+    "guard=off",
+  );
 });
 
 test("archive guidance is present once in the system prompt", async () => {

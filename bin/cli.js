@@ -27,6 +27,7 @@ import {
   createCliTools,
   wrapExecuteTool,
 } from "./tools.js";
+import { formatGuardMetrics } from "./guard-metrics.js";
 
 const DEFAULT_MAX_ROUNDS = 64;
 const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
@@ -750,7 +751,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       console.log(`⚠️ 压缩预算不足：已降级 ${protectedDowngraded} 条最旧 protected 消息；如需保留原文，请提高 compact budget 或减少保护集。`);
     }
     console.log(
-      `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} termination=${result.termination?.reason ?? "unknown"} usage=${JSON.stringify(result.usage)} compacted=${compacted}`,
+      `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} termination=${result.termination?.reason ?? "unknown"} usage=${JSON.stringify(result.usage)} compacted=${compacted} ${formatGuardMetrics(result.verification)}`,
     );
     return result;
   } catch (error) {
