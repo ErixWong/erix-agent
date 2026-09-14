@@ -87,7 +87,7 @@ src/
   - **观测**：每次决策 emit `onJudge`；CLI 可用 `--judge-log <path>` / `ERIX_JUDGE_LOG` 落盘 JSONL（已脱敏）。
   - **回调错误**：流式 `onDelta`/`onReasoningDelta`/`onToolCall`/`onUsage` 回调异常通过可选的 `onObserverError` 上报；未提供时记录 `console.error("Observer callback error:", error)`，不会走仅用于存储失败的 `onPersistenceError`。
 - **executeTool 协议**：两种形式——位置参数 `(name, input)` 或结构化 `({ id, name, input, context, signal })`。结构化可返回 `{ success, data, duration, toolMessageId }`（loop 保留字符串结果并附加元数据）。
-- **压缩预算**：从模型 `contextWindowTokens`/`maxOutputTokens` 推导；策略支持 `summaryRole`/`recoveryHint`/`protectedMessage`/`stripHistoricalImages`/`onBeforeFold`/`onAfterFold`。未提供 `recoveryHint` 时，折叠摘要使用“需要原文请重读文件或查看持久笔记；关键值应当已落盘”。
+- **压缩预算**：从模型 `contextWindowTokens`/`maxOutputTokens` 推导；策略支持 `summaryRole`/`recoveryHint`/`protectedMessage`/`stripHistoricalImages`/`onBeforeFold`/`onAfterFold`/`stubFor`。宿主或 CLI 可注入 `stubFor(message)`，为被折叠的 `replayable: false` 工具结果保留不超过 200 字符、最多 3 个安全 `label=value` 的事实 stub；未注入时保持原有丢弃行为。凭据样值不会进入 stub。
   若保护集本身超预算，压缩会按消息顺序解除最旧 protected 消息的保护并折叠掉，保留较新的任务上下文；
   `compactionStats[].protectedDowngraded` 记录数量，CLI 会显示警告。单条 protected 消息自身超预算则以
   `invalid_budget` 明确失败，并提示提高预算或减少保护集。
@@ -105,15 +105,15 @@ src/
 `erix` 是构建在本库上、用于**验证与调试无头 agent** 的命令行入口（不是产品交付形态）：
 
 - **入口**：`erix` 直接进交互 TUI（`erix repl` 等价）；`erix chat "<prompt>" [--stream]` 单次对话
-  （`--reflection on|off` 控制自适应预算；`max-rounds >= 32` 时默认启用；终稿 provenance gate 默认开启，
-  可用 `--no-final-guard` 或 `ERIX_NO_FINAL_GUARD=1` 关闭）
+  （`--reflection on|off` 控制自适应预算；`max-rounds >= 32` 时默认启用；终稿 provenance gate 默认关闭，
+  用 `--final-guard` 或 `ERIX_FINAL_GUARD=1` 开启；`--no-final-guard` 仅为兼容 no-op 别名）
 - **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）；较大的工具结果（阈值 800 字符）按本次 run 写入 `<transcriptDir>/outputs/<safeRunId>/<序号>-<toolName>.txt`（如 `001-exec.txt`），返回文本带绝对路径指引；归档目录也会写入 system prompt，便于折叠后寻回原文；折叠摘要会附带归档目录提示（recoveryHint），确保折叠后仍可寻回；需要原文时用 `readFile`/`cat` 读取归档，不要重跑命令。同一命令在本次运行内重复执行时，工具会在返回中提示原始输出归档位置或不可恢复，避免把重跑结果当作原值。归档单文件最多 1 MiB，写入失败时工具仍返回原结果并标注失败。默认不提供 agent 级 recall 工具——`store.recall()` 是面向宿主的契约方法，需要时可从 `erix-agent/tools` 自行接线——无内置安全层，见 ADR-009
 - **skill 系统**：`~/.erix/skills/<id>/skill.mjs` 自描述脚本，导出 `getSkillDefinition()` 自报工具（ADR-008）；`erix skills` 查看；todo skill（跨会话任务清单，长任务拆解/划掉/恢复）
-- **notes 技能（#63）**：用于记录任务中的关键事实、一次性值、决策与 artifact 引用，不是每轮日志。四个工具为 `note_take`、`note_read`、`note_list`、`note_forget`；当前只支持 `run` 作用域，记录按 key 保存当前值、最多 3 条已作废的 `superseded` 值和可见的 `folded` 遗忘计数。默认存储在 `~/.erix/notes/run/<safeRunId>/<safeKey>.json`（目录 `0700`、文件 `0600`），也可用 `ERIX_NOTES_DIR` 指定；run 完成后进入 `done`，到期由 janitor 转为 `revoked` 并保留墓碑。REPL 的 run scope 使用 `--session`（默认按工作目录派生），整个 REPL session 共用一个 run scope；宿主应显式传入 `__erix` scope。工具状态收敛为 `found`、`missing`、`revoked`、`invalid`、`unsupported`，模型需要早期细节时先 `note_list` 再 `note_read`。
+- **notes 技能（#63）**：用于记录任务中的关键事实、一次性值、决策与 artifact 引用，不是每轮日志。四个工具为 `note_take`、`note_read`、`note_list`、`note_forget`；当前只支持 `run` 作用域，记录按 key 保存当前值、最多 3 条已作废的 `superseded` 值和可见的 `folded` 遗忘计数。`note_list` 按 `relevance` 降序、再按 `updated_at` 降序输出，并支持 `minRelevance`、`tag`、`source` 筛选；输出仍受 `limit` 限制，返回 `relevance`、`source`、`tags` 元数据。自动捕获默认 relevance 为 `0.8`，旧记录缺失该字段按 `0.5` 处理。默认存储在 `~/.erix/notes/run/<safeRunId>/<safeKey>.json`（目录 `0700`、文件 `0600`），也可用 `ERIX_NOTES_DIR` 指定；run 完成后进入 `done`，到期由 janitor 转为 `revoked` 并保留墓碑。REPL 的 run scope 使用 `--session`（默认按工作目录派生），整个 REPL session 共用一个 run scope；宿主应显式传入 `__erix` scope。工具状态收敛为 `found`、`missing`、`revoked`、`invalid`、`unsupported`，模型需要早期细节时先 `note_list` 再 `note_read`。
 - **auto_capture（值 + 引用）**：CLI 在 `exec` 工具执行完成时，每次非幂等命令只捕获一条有界输出摘录（最多 1000 字符）和 artifact 引用；逐行解析显式 `label=value`，任一行疑似凭据时只保存 `artifactRef`，不保存输出内容。notes 只是便利索引，最终核验不信任 notes。非幂等命令强制写 `<序号>-exec.txt` sidecar 和 `.meta.json`，元数据标明 `replayable=false`；原子写、归档权限和凭据 fail-closed 规则保持不变。
 - **provenance gate 判定**：收尾时 CLI 只读取本 run `archiveDir` 下由 capture 写出的同名 `*.meta.json` manifest；notes/artifactRef 只是检索线索，不参与信任判定。manifest 必须声明 `digest/replayable/truncated/locator`，归档必须位于 archive root 内、通过 `realpath` 防符号链接逃逸、SHA-256 与磁盘内容一致，且只有 `replayable === false`、`truncated === false` 的归档才进入已知值集合。终稿按**来源契约**核验：由 manifest 建 `captures[{label,value,artifact,round,first}]`（每个 label 的**首次捕获为规范值**），终稿中锚定已知 label 的显式归属（`label=value`、`label：value`、`label 是 value`）按规则判定——等于首次捕获值直接放行；等于**后续重跑捕获值**时必须带来源（`来源=note_read:<key>` 或 `来源=归档:<文件名>`）且指向该 artifact（放行并记 `rerun_cited`），否则 revise；不对应任何捕获则 revise；找不到可比对项则 `skipped` 并警告。verification 同时输出 `verified`、`skipped`、`revised`、`rerun_cited`、`unverified`、`guard_error` 计数。
 - **verification 消费契约**：宿主必须先检查 `runToolLoop` 返回的 `verification.status`，只有 `verified` 才能把 `finalText` 当作来源已核验的结果；`unverified` 表示 guard 要求修订但已无法继续，`termination.reason` 为 `final_guard_unverified`，不得标记或消费为成功；`error` 表示 guard 异常/超时（默认 30 秒），为可用性会 fail-open 返回文本，但文本仍未核验，需按宿主策略人工处理；`skipped` 表示未配置 guard，或终稿中没有可与 capture manifest 比对的显式来源归属（此时只能说明“没有可核验项”，不能当作已核验事实）。CLI 对 `unverified` 以退出码 2 结束，对 `error` 以不同的退出码 3 结束；`skipped` 正常退出但不会打印已核验标题。
-- 需要恢复具体值时，已知 key 优先直接按 `note_read key=<key>`；不知道 key 才按 `note_list → note_read`。只有仅引用型笔记才按返回的 `artifactRef.archivePath` 与 `locator` 有界读取归档并声明核对结果，禁止遍历归档目录，不得重跑命令或凭记忆补值。归档保存原文，notes 保存短值与审计引用，两者职责不同。折叠发生时会在折叠点注入不含捕获值/key 的 `[本 run 状态]` 标记（已折叠条数 + 不可重放捕获条数），属于“模型处境”而非数据注入；改写后的非幂等命令会前置重跑警示并给出首次值指针（`note_read key=…` / 归档路径）。涉及本 run 捕获值的终稿应带来源（`来源=note_read:<key>` 或 `来源=归档:<文件名>`）。
+- 需要恢复具体值时，已知 key 优先直接按 `note_read key=<key>`；不知道 key 才按 `note_list → note_read`。只有仅引用型笔记才按返回的 `artifactRef.archivePath` 与 `locator` 有界读取归档并声明核对结果，禁止遍历归档目录，不得重跑命令或凭记忆补值。归档保存原文，notes 保存短值与审计引用，两者职责不同。折叠发生时会在折叠点注入不含捕获值/key 的 `[本 run 状态]` 标记和最多 10 条的归档目录视图（文件名、命令摘要、是否不可重放；超出显示“另有 N 条”）；归档索引是导航，不是数据注入。对不可重放结果，CLI 注入的折叠 stub 仍只保留安全的最小事实。工具结果在剩余轮次不超过 2 时追加预算提示；因轮次上限、stall 或 continuation 耗尽且没有终稿时，loop 追加一次禁用工具的强制收尾（可用 `ERIX_NO_FORCED_FINAL=1` 关闭）。改写后的非幂等命令会前置重跑警示并给出首次值指针（`note_read key=…` / 归档路径）。涉及本 run 捕获值的终稿应带来源（`来源=note_read:<key>` 或 `来源=归档:<文件名>`）。
 - **MCP 对接**：`~/.erix/mcp.json` 标准配置，单代理工具（list/search/call/status）访问任意 MCP server（stdio + HTTP；实测 unifuncs 联网搜索、filesystem 读文件）
 - **配置**：`~/.erix/config.json`（或 `$XDG_CONFIG_HOME/erix/`），env 优先；会话存档 `~/.erix/<session>.json`；todo 清单 `~/.erix/todos/`
 - **流式**：repl 默认打字机；`chat --stream` 逐字输出；`--idle-timeout` 无进展自动中止；自动压缩预算（按模型窗口折叠）
@@ -125,7 +125,7 @@ src/
 
 - [docs/requirements.md](docs/requirements.md) — 需求与分期
 - [docs/architecture.md](docs/architecture.md) — 接口契约与数据流
-- [docs/decisions/](docs/decisions/) — 设计决策（ADR-001~011：配置/存取/压缩/反思/工具体系/工具定义分层/记忆架构/skill 系统/安全分层/judge 方向评估）
+- [docs/decisions/](docs/decisions/) — 设计决策（ADR-001~012：配置/存取/压缩/反思/工具体系/工具定义分层/记忆架构/skill 系统/安全分层/judge 方向评估/引擎-模型-宿主责任边界）
 - [docs/testing.md](docs/testing.md) — 测试方案（分层/基建/各阶段测试清单/行为指标）
 - [docs/host-upgrade-guide-v030.md](docs/host-upgrade-guide-v030.md) — **宿主升级指南（touwaka / app_container → v0.3.x）**：judge 默认开启等行为变化的应对
 - [docs/maintenance-policy.md](docs/maintenance-policy.md) — 维护策略（内部：技术替代触发条件/止损线）
@@ -139,11 +139,11 @@ src/
   `note_list` / `note_forget` 支持墓碑式撤销与 janitor/GC。超过 800 字符的工具结果归档到
   `<transcriptDir>/outputs/<runId>/`；非幂等命令写 sidecar、拦截同一命令重跑，**改写后的非幂等重跑会前置警示并给出首次值指针**。
   终稿 provenance gate 只信任 capture manifest，采用**来源契约**：首次捕获值直接放行；后续重跑捕获值必须带可核验来源（记 `rerun_cited`）；
-  无显式归属则 `skipped`。折叠点注入不含值/key 的 `[本 run 状态]` 标记。
+  无显式归属则 `skipped`。  折叠点注入不含值/key 的 `[本 run 状态]` 标记，并提供最多 10 条不含捕获值的归档目录视图；不可重放结果在 CLI 注入 stub 时保留最多 3 条安全 `label=value` 事实。
   `unverified` 记录 `unverified_error` 并由 CLI 退出码 2 表示，guard 异常/超时记录 `guard_error` 并由 CLI 退出码 3 表示。
   `runToolLoop` 的 `filesWritten` 可通过 `writeToolNames`（默认 `["writeFile"]`）和
   `writeToolPathKeys` 配置；protected 消息超预算会降级并记录 `compactionStats[].protectedDowngraded`。
-- **v0.4.0 宿主接入要点**：CLI 可用 `--no-notes`、`--no-final-guard` 控制 notes 和终稿核验（`--notes-ledger` 与 `ERIX_NOTES_LEDGER` 已移除）；需要自然语言终稿的宿主传 `wrapup: false`，或设置
+- **v0.4.0 宿主接入要点**：CLI 默认关闭终稿 provenance gate；用 `--final-guard` 或 `ERIX_FINAL_GUARD=1` 开启，`--no-final-guard` 为兼容 no-op。CLI 仍可用 `--no-notes` 控制 notes（`--notes-ledger` 与 `ERIX_NOTES_LEDGER` 已移除）；需要自然语言终稿的宿主传 `wrapup: false`，或设置
   `ERIX_NO_WRAPUP_INSTRUCTION=1`。消费 loop 结果时必须区分 `verification.status`：
   `verified` 才是已核验终稿，`unverified`/`error` 分别对应退出码 2/3；`skipped` 仅表示没有可核验项。
   notes 是 pull-only 便利索引，不会自动把值注入模型上下文（折叠点的 `[本 run 状态]` 标记只含计数，不含值/key）；模型需先 `note_list` 再按 key 调用 `note_read`。

@@ -19,7 +19,11 @@ import {
   loadMcpConfig,
 } from "./mcp.js";
 import { defaultSessionId, runRepl } from "./repl.js";
-import { buildCaptureRecoveryHint, createFinalGuard } from "./final-guard.js";
+import {
+  buildCaptureRecoveryHint,
+  buildCaptureStub,
+  createFinalGuard,
+} from "./final-guard.js";
 import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import {
   buildArchiveNotice,
@@ -35,8 +39,8 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--no-final-guard]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
@@ -46,7 +50,8 @@ const HELP_TEXT = `用法：
   --dir <path>          Transcript 存档目录（chat 默认：~/.erix/transcripts）
   --max-rounds <n>      工具循环最大轮数（默认：64，可用 ERIX_MAX_ROUNDS 覆盖）
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 32 时启用）
-  --no-final-guard      关闭终稿 provenance 核验
+  --final-guard         开启终稿 provenance 核验（默认关闭）
+  --no-final-guard      兼容别名（默认已关闭，no-op）
   --no-notes            仅移除 notes 技能，保留其他 skill
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
@@ -61,7 +66,7 @@ const HELP_TEXT = `用法：
   ERIX_NO_TOOL_ROUNDS 模型连续无工具调用几轮后强制完成（默认：3，最小：1）
   ERIX_MAX_ROUNDS     工具循环最大轮数（默认：64，最小：1）
   ERIX_REFLECTION     反思开关（on/off；ERIX_NO_REFLECTION=1 强制关闭）
-  ERIX_NO_FINAL_GUARD=1 关闭终稿 provenance 核验
+  ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
   ERIX_NO_NOTES=1       仅移除 notes 技能，保留其他 skill
   ERIX_JUDGE_LOG      judge 决策 JSONL 路径（可用 --judge-log 覆盖）
 
@@ -147,9 +152,11 @@ function resolveReflection(reflection, maxRounds) {
 }
 
 function resolveFinalGuard(finalGuard, runId, archiveDir, notesDir, runState) {
-  if (process.env.ERIX_NO_FINAL_GUARD?.trim() === "1") return undefined;
-  if (finalGuard === false) return undefined;
   if (typeof finalGuard === "function") return finalGuard;
+  if (
+    finalGuard !== true
+    && process.env.ERIX_FINAL_GUARD?.trim() !== "1"
+  ) return undefined;
   return createFinalGuard({ runId, archiveDir, notesDir, runState });
 }
 
@@ -198,12 +205,12 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       options.stream = true;
       continue;
     }
-    if (argument === "--no-final-guard") {
+    if (argument === "--final-guard" || argument === "--no-final-guard") {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
       }
       seenOptions.add(argument);
-      options.finalGuard = false;
+      options.finalGuard = argument === "--final-guard";
       continue;
     }
     if (argument === "--no-notes") {
@@ -555,12 +562,14 @@ async function runChatWithNotes({
     compactBudget !== undefined || config.contextWindowTokens
       ? ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload })
       : undefined,
+    ({ content }) => buildCaptureStub({ content }),
   );
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, {
     output: toolOutput,
     getToolMetadata: cliTools.getLastToolMetadata,
     notesScope: { runId, notesDir: _notesDir },
+    returnMetadata: true,
   });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
   const resolvedFinalGuard = resolveFinalGuard(

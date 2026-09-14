@@ -660,6 +660,7 @@ test("keeps fold recall round numbers global across loop compactions", async () 
     toolResponse("global-1"),
     toolResponse("global-2"),
     toolResponse("global-3"),
+    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
   const store = createMemoryTranscriptStore();
   const offsets = [];

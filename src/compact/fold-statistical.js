@@ -6,6 +6,7 @@ import {
   foldOptions,
   optionValue,
   roundRangeForIndexes,
+  resolveFoldStubs,
   runFoldHook,
   resolveFoldRecoveryHint,
   resolveRecoveryHint,
@@ -78,6 +79,8 @@ function parseFoldSummary(text) {
     to: Number.parseInt(match[2], 10),
     count: Number.parseInt(match[3], 10),
     tools: parseToolFootprint(match[4]),
+    stubs: [...String(value).matchAll(/^\[已折叠\][^\n]*/gmu)]
+      .map((stub) => stub[0]),
     legacy: markedMatch === null,
   };
 }
@@ -87,6 +90,7 @@ function formatFoldSummary({
   to,
   count,
   tools,
+  stubs = [],
   recoveryHint = DEFAULT_RECOVERY_HINT,
 }) {
   const footprint = tools.size === 0
@@ -95,11 +99,13 @@ function formatFoldSummary({
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([name, count]) => `${name}×${count}`)
       .join(", ");
-  return [
+  const lines = [
     `${FOLD_SUMMARY_MARKER}早期第 ${from}–${to} 轮（共 ${count} 轮）已折叠。`,
     `工具足迹：${footprint}。`,
-    recoveryHint,
-  ].join("");
+  ];
+  lines.push(...stubs.slice(0, 10));
+  lines.push(recoveryHint);
+  return lines.join(stubs.length > 0 ? "\n" : "");
 }
 
 function prependSummary(
@@ -139,6 +145,7 @@ function prependSummary(
     .filter((parsed) => parsed !== undefined);
   const current = parseFoldSummary(summary);
   const merged = [...summaries, current].filter((parsed) => parsed !== undefined);
+  const mergedStubs = [...new Set(merged.flatMap((parsed) => parsed.stubs ?? []))].slice(0, 10);
   const mergedSummary = merged.length === 0
     ? summary
     : formatFoldSummary({
@@ -151,6 +158,7 @@ function prependSummary(
         }
         return counts;
       }, new Map()),
+      stubs: mergedStubs,
       recoveryHint: resolveRecoveryHint(recoveryHint),
     });
   const contentWithoutSummaries = originalContent.filter((block) => (
@@ -213,6 +221,7 @@ export function createFoldStatisticalStrategy(options = {}) {
         retained,
         roundRange,
       });
+      const foldedStubs = await resolveFoldStubs(foldedPayload, settings.stubFor);
       await runFoldHook(settings.onBeforeFold, {
         messages,
         folded,
@@ -227,8 +236,9 @@ export function createFoldStatisticalStrategy(options = {}) {
         const summary = [
           `${FOLD_SUMMARY_MARKER}早期第 ${range.from}–${range.to} 轮（共 ${folded.length} 轮）已折叠。`,
           `工具足迹：${toolFootprint(folded)}。`,
+          ...foldedStubs.slice(0, 10),
           recoveryHint,
-        ].join("");
+        ].join(foldedStubs.length > 0 ? "\n" : "");
         compactedHead = prependSummary(
           head,
           summary,

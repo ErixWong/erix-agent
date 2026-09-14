@@ -47,11 +47,11 @@ export function validateCostPlan({
   return { dryRun: !confirmed };
 }
 
-function mean(values) {
+function historicalMaximum(values) {
   const usable = values.filter((value) => Number.isFinite(value) && value >= 0);
   return usable.length === 0
     ? undefined
-    : usable.reduce((sum, value) => sum + value, 0) / usable.length;
+    : Math.max(...usable);
 }
 
 function historicalRows(result) {
@@ -67,13 +67,13 @@ export function estimateHistoricalUsage(result, {
   concurrency = 1,
 } = {}) {
   const rows = historicalRows(result);
-  const inputPerCall = mean(rows.map((row) => (
+  const inputPerCall = historicalMaximum(rows.map((row) => (
     row?.averages?.inputTokens ?? row?.averageInputTokens
   )));
-  const outputPerCall = mean(rows.map((row) => (
+  const outputPerCall = historicalMaximum(rows.map((row) => (
     row?.averages?.outputTokens ?? row?.averageOutputTokens
   )));
-  const durationPerCall = mean(rows.map((row) => (
+  const durationPerCall = historicalMaximum(rows.map((row) => (
     row?.averages?.wallTimeMs
       ?? row?.averageDurationMs
       ?? row?.averageWallTimeMs
@@ -83,6 +83,7 @@ export function estimateHistoricalUsage(result, {
     inputPerCall,
     outputPerCall,
     durationPerCall,
+    basis: "历史最大值（下限）",
     inputTokens: inputPerCall === undefined ? undefined : inputPerCall * plannedCalls,
     outputTokens: outputPerCall === undefined ? undefined : outputPerCall * plannedCalls,
     durationMs: durationPerCall === undefined
@@ -111,15 +112,18 @@ export function formatCostPreview({
   modelCount,
   maxCalls,
   estimate,
+  confirmed = false,
 }) {
   return [
     "实验成本预览（尚未发起模型调用）",
     `模型：${model}（来源：${modelSource}）`,
     `计划调用数：${plannedCalls}（${armCount} 臂 × ${runs} 次 × ${modelCount} 个模型）`,
-    `基于历史均值的 token 预估：input ${formatNumber(estimate.inputTokens)} + output ${formatNumber(estimate.outputTokens)}`,
-    `预计时长：${formatDuration(estimate.durationMs)}`,
+    `基于${estimate.basis ?? "历史最大值（下限）"}的 token 预估：input ${formatNumber(estimate.inputTokens)} + output ${formatNumber(estimate.outputTokens)}`,
+    `预计时长（下限）：${formatDuration(estimate.durationMs)}`,
     `硬上限：${maxCalls} 次（可用 --max-calls 调高）`,
-    "未提供 --yes，仅 dry-run；如确认成本，请重新加 --yes 执行。",
+    ...(!confirmed
+      ? ["未提供 --yes，仅 dry-run；如确认成本，请重新加 --yes 执行。"]
+      : []),
   ].join("\n");
 }
 

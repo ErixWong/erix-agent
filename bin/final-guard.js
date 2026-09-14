@@ -3,6 +3,7 @@ import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { autoCaptureKey, candidateLines } from "./auto-capture.js";
+import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 
 const SOURCE_PATTERN =
   /来源\s*(?:=|:|：)\s*(note_read|归档)\s*[:：]\s*([^\s,，。；;）)\]}]+)/giu;
@@ -176,6 +177,79 @@ function countFoldedOutputs(foldedPayload) {
   }, 0);
 }
 
+function boundedCommandSummary(command) {
+  const text = String(command ?? "exec")
+    .replaceAll(/\r\n|\r|\n/gu, " ")
+    .replaceAll(
+      /(\b[\p{L}\p{N}_-]{1,80}\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s;&|]+)/gu,
+      "$1<值>",
+    )
+    .replaceAll(/\s+/gu, " ")
+    .trim();
+  return text.slice(0, 100);
+}
+
+function archiveIndex(manifests) {
+  const entries = manifests
+    .map(({ manifest }) => manifest)
+    .filter((manifest) => manifest?.replayable === false && typeof manifest.archivePath === "string")
+    .sort((left, right) => path.basename(left.archivePath).localeCompare(path.basename(right.archivePath)));
+  const visible = entries.slice(0, 10).map((manifest) => (
+    `${path.basename(manifest.archivePath)} ← ${boundedCommandSummary(manifest.command)} [不可重放]`
+  ));
+  const remaining = entries.length - visible.length;
+  if (remaining > 0) visible.push(`另有 ${remaining} 条归档`);
+  return visible.length === 0
+    ? ""
+    : `\n归档目录视图（最多 10 条）：\n${visible.join("\n")}`;
+}
+
+async function captureStubForResult(block) {
+  const reference = block?.artifact && typeof block.artifact === "object"
+    ? block.artifact
+    : block;
+  const archivePath = typeof reference?.archivePath === "string"
+    ? reference.archivePath
+    : undefined;
+  let output = "";
+  if (archivePath) {
+    const metadataPath = archivePath.endsWith(".txt")
+      ? `${archivePath.slice(0, -".txt".length)}.meta.json`
+      : `${archivePath}.meta.json`;
+    try {
+      const manifest = JSON.parse(await readFile(metadataPath, "utf8"));
+      if (manifest?.replayable === false && manifest.archivePath === archivePath) {
+        try {
+          output = await readFile(archivePath, "utf8");
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  const safeCandidates = candidateLines(output).filter(({ label, value }) => (
+    !looksLikeCredential(label, value)
+  ));
+  if (safeCandidates.length > 0 && archivePath) {
+    const lines = safeCandidates
+      .slice(0, 3)
+      .map(({ label, value }) => `${label}=${value}`);
+    const prefix = "[已折叠] 本命令不可重放；值：";
+    const suffix = `；原文：${archivePath}`;
+    let result = `${prefix}${lines.join("；")}${suffix}`;
+    if (Array.from(result).length > 200) {
+      const available = Math.max(0, 200 - Array.from(`${prefix}${suffix}`).length - 1);
+      const bounded = Array.from(lines.join("；")).slice(0, available).join("");
+      result = `${prefix}${bounded}${suffix}`;
+    }
+    return Array.from(result).slice(0, 200).join("");
+  }
+  return `[已折叠] 原文：${archivePath ?? "<archivePath>"}（不可重放）`
+    .slice(0, 200);
+}
+
 export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload } = {}) {
   const loaded = await readCaptureManifests(archiveDir);
   const nonReplayableCaptures = loaded.manifests.filter(({ manifest }) => (
@@ -184,7 +258,20 @@ export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload } = {
   const archiveReference = typeof archiveDir === "string" && archiveDir.length > 0
     ? `${path.resolve(archiveDir)}/<n>-exec.txt`
     : "明确的归档文件";
-  return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${nonReplayableCaptures} 条为不可重放捕获（重跑会得到不同值）。需要时用 note_list → note_read 取回，或读取归档 ${archiveReference}。`;
+  return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${nonReplayableCaptures} 条为不可重放捕获（重跑会得到不同值）。需要时用 note_list → note_read 取回，或读取归档 ${archiveReference}。${archiveIndex(loaded.manifests)}`;
+}
+
+export async function buildCaptureStub(message) {
+  const results = Array.isArray(message?.content)
+    ? message.content.filter((block) => (
+      block?.type === "tool_result" && block.replayable === false
+    ))
+    : [];
+  const stubs = [];
+  for (const result of results) {
+    stubs.push(await captureStubForResult(result));
+  }
+  return [...new Set(stubs)].join("\n");
 }
 
 function sourceMatchesCapture(source, capture) {

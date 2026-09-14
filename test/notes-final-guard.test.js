@@ -7,7 +7,11 @@ import path from "node:path";
 
 import { captureToolExecution } from "../bin/auto-capture.js";
 import { exitCodeForVerification, parseChatArgs, runChat } from "../bin/cli.js";
-import { buildCaptureRecoveryHint, createFinalGuard } from "../bin/final-guard.js";
+import {
+  buildCaptureRecoveryHint,
+  buildCaptureStub,
+  createFinalGuard,
+} from "../bin/final-guard.js";
 import { parseReplArgs } from "../bin/repl.js";
 import { archiveResult } from "../bin/tools.js";
 import * as notes from "../skills/notes/skill.mjs";
@@ -161,6 +165,50 @@ test("fold state marker counts captures without exposing values or keys and repl
       block.type === "text" && block.text.includes("[本 run 状态]")
     ));
     assert.equal(markers.length, 1);
+    assert.match(markers[0].text, /001-exec\.txt ←/u);
+    assert.doesNotMatch(markers[0].text, /marker-secret-value/u);
+    assert.equal((markers[0].text.match(/归档目录视图（最多 10 条）/gu) ?? []).length, 1);
+  });
+});
+
+test("archive recovery index is bounded, value-free, and replaced on each fold", async () => {
+  await withNotes(async (directory) => {
+    for (let sequence = 1; sequence <= 12; sequence += 1) {
+      archiveResult(directory, "exec", `nonce=value-${sequence}\n`, sequence, {
+        force: true,
+        replayable: false,
+        command: `printf nonce=$TOKEN-${sequence}`,
+      });
+    }
+    const hint = await buildCaptureRecoveryHint({
+      archiveDir: directory,
+      foldedPayload: [],
+    });
+    assert.equal((hint.match(/-exec\.txt ←/gu) ?? []).length, 10);
+    assert.match(hint, /另有 2 条归档/u);
+    assert.doesNotMatch(hint, /value-\d+/u);
+  });
+});
+
+test("capture stubs retain safe labels but never credential values", async () => {
+  await withNotes(async (directory) => {
+    const archived = archiveResult(
+      directory,
+      "exec",
+      "nonce=abc123\napi_key=sk-secret-value\npassword=hunter2\n",
+      1,
+      { force: true, replayable: false, command: "printf nonce=$TOKEN" },
+    );
+    const stub = await buildCaptureStub({
+      content: [{
+        type: "tool_result",
+        replayable: false,
+        artifact: archived.artifact,
+      }],
+    });
+    assert.match(stub, /nonce=abc123/u);
+    assert.doesNotMatch(stub, /sk-secret-value|hunter2/u);
+    assert.ok(Array.from(stub).length <= 200);
   });
 });
 
@@ -324,6 +372,7 @@ test("CLI guard verifies the correct answer and fail-closes a fabricated answer"
         skillsDir: path.join(directory, "skills"),
         provider,
         config: { model: "fake-model", maxOutputTokens: 1000 },
+        finalGuard: true,
         maxRounds: 8,
         idleTimeout: 0,
         toolOutput: () => {},
@@ -454,9 +503,11 @@ test("missing digest, digest mismatch, and truncation are not trusted", async ()
   }
 });
 
-test("CLI and REPL switches disable the final guard", async () => {
+test("CLI and REPL guard switches preserve opt-in behavior", async () => {
   assert.equal(parseChatArgs(["prompt", "--no-final-guard"]).finalGuard, false);
   assert.equal(parseReplArgs(["--no-final-guard"]).finalGuard, false);
+  assert.equal(parseChatArgs(["prompt", "--final-guard"]).finalGuard, true);
+  assert.equal(parseReplArgs(["--final-guard"]).finalGuard, true);
   await withNotes(async (directory) => {
     const previous = process.env.ERIX_NO_FINAL_GUARD;
     process.env.ERIX_NO_FINAL_GUARD = "1";
@@ -491,7 +542,7 @@ test("CLI and REPL switches disable the final guard", async () => {
   });
 });
 
-test("chat wires the final guard by default", async () => {
+test("chat leaves the final guard disabled by default", async () => {
   await withNotes(async (directory) => {
     let captured;
     await runChat({
@@ -500,6 +551,35 @@ test("chat wires the final guard by default", async () => {
       dir: directory,
       skillsDir: path.join(directory, "skills"),
       config: { model: "fake-model", maxOutputTokens: 1000 },
+      provider: { chat: async () => ({ content: [], stopReason: "end_turn" }) },
+      loop: async (options) => {
+        captured = options;
+        return {
+          finalText: "done",
+          messages: [],
+          rounds: 1,
+          truncated: false,
+          termination: { reason: "end_turn" },
+          usage: { input_tokens: 0, output_tokens: 0 },
+          compactionStats: [],
+        };
+      },
+      toolOutput: () => {},
+    });
+    assert.equal(captured.finalGuard, undefined);
+  });
+});
+
+test("chat enables the final guard explicitly", async () => {
+  await withNotes(async (directory) => {
+    let captured;
+    await runChat({
+      prompt: "explicit guard",
+      session: "guard-explicit",
+      dir: directory,
+      skillsDir: path.join(directory, "skills"),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      finalGuard: true,
       provider: { chat: async () => ({ content: [], stopReason: "end_turn" }) },
       loop: async (options) => {
         captured = options;

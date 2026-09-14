@@ -199,6 +199,7 @@ test("finalGuard is called for non-continuable stop paths without another model 
         maxRounds: 1,
         providerResponses: [
           { content: [{ type: "tool_use", id: "cap", name: "noop", input: {} }], stopReason: "tool_use" },
+          { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
         ],
       },
     },
@@ -208,6 +209,7 @@ test("finalGuard is called for non-continuable stop paths without another model 
         maxTokenContinuations: 0,
         providerResponses: [
           { content: [{ type: "text", text: "truncated" }], stopReason: "max_tokens" },
+          { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
         ],
       },
     },
@@ -218,7 +220,7 @@ test("finalGuard is called for non-continuable stop paths without another model 
         providerResponses: Array.from({ length: 15 }, (_, index) => ({
           content: [{ type: "tool_use", id: `stall-${index}`, name: "noop", input: {} }],
           stopReason: "tool_use",
-        })),
+        })).concat({ content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" }),
       },
     },
     {

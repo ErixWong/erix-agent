@@ -39,6 +39,30 @@ test("returns no_tool after the configured no-tool streak", async () => {
   assert.equal(result.rounds, 3);
 });
 
+test("adds the low-budget hint only when two rounds or fewer remain", async () => {
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "first", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    {
+      content: [{ type: "tool_use", id: "second", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  await runToolLoop({
+    provider,
+    initialUserMessage: "work",
+    maxRounds: 4,
+    executeTool: async () => "result",
+    completion: false,
+    stallDetection: false,
+  });
+  assert.doesNotMatch(JSON.stringify(provider.requests[0].messages), /预算/u);
+  assert.match(JSON.stringify(provider.requests[2].messages), /本轮后仅剩 2 轮/u);
+});
+
 test("returns max_rounds_cap when the effective round limit is reached", async () => {
   const result = await runToolLoop({
     provider: createFakeProvider([
@@ -47,6 +71,7 @@ test("returns max_rounds_cap when the effective round limit is reached", async (
         content: [{ type: "tool_use", id: "work", name: "work", input: {} }],
         stopReason: "tool_use",
       },
+      { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
     ]),
     initialUserMessage: "continue",
     maxRounds: 2,
@@ -55,7 +80,7 @@ test("returns max_rounds_cap when the effective round limit is reached", async (
     stallDetection: false,
   });
 
-  assert.deepEqual(result.termination, { reason: "max_rounds_cap" });
+  assert.deepEqual(result.termination, { reason: "max_rounds_cap", forcedFinal: true });
   assert.equal(result.truncated, true);
   assert.equal(result.rounds, 2);
 });
@@ -65,13 +90,14 @@ test("returns continuation_exhausted after max-token continuations run out", asy
     provider: createFakeProvider([
       { content: [{ type: "text", text: "part one" }], stopReason: "max_tokens" },
       { content: [{ type: "text", text: "part two" }], stopReason: "max_tokens" },
+      { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
     ]),
     initialUserMessage: "write",
     executeTool: async () => "unused",
     maxTokenContinuations: 1,
   });
 
-  assert.deepEqual(result.termination, { reason: "continuation_exhausted" });
+  assert.deepEqual(result.termination, { reason: "continuation_exhausted", forcedFinal: true });
   assert.equal(result.truncated, true);
 });
 
@@ -146,7 +172,33 @@ test("returns a truncated stall termination after the repeated-call limit", asyn
   });
   assert.equal(result.termination.reason, "stall");
   assert.equal(result.truncated, true);
-  assert.equal(provider.requests.length, 7);
+  assert.equal(provider.requests.length, 8);
+  assert.deepEqual(provider.requests.at(-1).tools, []);
+  assert.equal(result.termination.forcedFinal, true);
+});
+
+test("can disable the forced final call with the environment switch", async () => {
+  const previous = process.env.ERIX_NO_FORCED_FINAL;
+  process.env.ERIX_NO_FORCED_FINAL = "1";
+  try {
+    const provider = createFakeProvider([{
+      content: [{ type: "tool_use", id: "work", name: "work", input: {} }],
+      stopReason: "tool_use",
+    }]);
+    const result = await runToolLoop({
+      provider,
+      initialUserMessage: "work",
+      maxRounds: 1,
+      executeTool: async () => "worked",
+      completion: false,
+      stallDetection: false,
+    });
+    assert.deepEqual(result.termination, { reason: "max_rounds_cap" });
+    assert.equal(provider.requests.length, 1);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_NO_FORCED_FINAL;
+    else process.env.ERIX_NO_FORCED_FINAL = previous;
+  }
 });
 
 test("returns reflection_stop when the evaluator declines continuation", async () => {
