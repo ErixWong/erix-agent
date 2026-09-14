@@ -133,7 +133,8 @@ test("probes usage for reasoning streams that omit a usage event", async () => {
   const usage = [];
 
   const response = await makeProvider(fetchImpl, {
-    model: "deepseek-v4-flash",
+    model: "reasoning-test-model",
+    supports_reasoning: true,
   }).chatStream({
     ...request,
     onUsage: (reportedUsage) => usage.push(reportedUsage),

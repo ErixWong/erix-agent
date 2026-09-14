@@ -120,7 +120,7 @@ episode = {
 
 以 2026-08-29 erix-agent v0.1 开发（~40 轮工具调用）为完整示例：
 episode 含 phases（契约脚手架→四 worker 并行→集成排障→合入）、decisions（relay 拒 Qwen3.5 换
-kimi-for-coding；强制压缩 e2e 用 initialMessages 构造历史确定性触发）、artifacts（31 文件/commits 8cd7022/
+historical-model；强制压缩 e2e 用 initialMessages 构造历史确定性触发）、artifacts（31 文件/commits 8cd7022/
 92 测试绿）、openItems（app_container 迁移）；三天后 recall({pattern:"强制压缩"}) 命中摘录、
 access.count++；一周后冷循环蒸馏出 L3 fact"my-relay token 未开通 Qwen3.5"进初始上下文；
 后来开通则旧 fact 标 superseded 留档；三个月未再访问则摘要降档、40 轮原文不动。

@@ -15,6 +15,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { safeRunId } from "../src/store/file.js";
+import {
+  DEFAULT_MAX_CALLS,
+  estimateHistoricalUsage,
+  formatCostPreview,
+  formatUsageSummary,
+  plannedCallCount,
+  resolveExperimentModel,
+  runFailFast,
+  validateCostPlan,
+} from "./experiment-guardrails.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI_PATH = path.join(REPO_ROOT, "bin", "cli.js");
@@ -26,12 +36,7 @@ const REPORT_PATH = path.join(
   "2026-09-14-notes-matrix-n30.md",
 );
 
-export const MODELS = ["kimi-for-coding", "k3"];
 export const ARMS = ["A", "B", "C"];
-export const EXCLUDED_MODELS = [{
-  model: "deepseek-v4-flash",
-  reason: "relay 当前不支持该模型 token，本批次不运行",
-}];
 export const ROUND_ROBIN_SEED = "notes-matrix-2026-09-14";
 export const GUARD_KEYS = [
   "verified",
@@ -67,11 +72,13 @@ function parsePositiveInteger(name, value, { maximum = Infinity } = {}) {
 
 export function parseArgs(args) {
   const options = {
-    model: "kimi-for-coding",
+    model: undefined,
+    configPath: undefined,
     runs: undefined,
     concurrency: 2,
-    retries: 2,
     timeoutMs: 20 * 60 * 1000,
+    maxCalls: DEFAULT_MAX_CALLS,
+    yes: false,
     reportOnly: false,
   };
   for (let index = 0; index < args.length; index += 1) {
@@ -79,8 +86,8 @@ export function parseArgs(args) {
     if (argument === "--help" || argument === "-h") {
       console.log(
         "用法：node scripts/notes-experiment.mjs "
-        + "[--model kimi-for-coding|k3] [--runs n] [--concurrency 1..3] "
-        + "[--retries n] [--timeout-ms ms] [--report-only]",
+        + "[--model <id>] [--config <path>] [--runs n] [--concurrency 1..3] "
+        + "[--timeout-ms ms] [--max-calls n] [--yes] [--report-only]",
       );
       return null;
     }
@@ -89,11 +96,15 @@ export function parseArgs(args) {
       continue;
     }
     if (argument === "--model") {
-      const model = args[++index];
-      if (!MODELS.includes(model)) {
-        throw new Error(`--model must be one of: ${MODELS.join(", ")}`);
-      }
+      const model = args[++index]?.trim();
+      if (!model) throw new Error("--model 需要非空模型 id");
       options.model = model;
+      continue;
+    }
+    if (argument === "--config") {
+      const configPath = args[++index]?.trim();
+      if (!configPath) throw new Error("--config 需要非空路径");
+      options.configPath = configPath;
       continue;
     }
     if (argument === "--runs") {
@@ -104,12 +115,12 @@ export function parseArgs(args) {
       options.concurrency = parsePositiveInteger(argument, args[++index], { maximum: 3 });
       continue;
     }
-    if (argument === "--retries") {
-      const retries = Number(args[++index]);
-      if (!Number.isSafeInteger(retries) || retries < 0 || retries > 5) {
-        throw new Error("--retries must be an integer between 0 and 5");
-      }
-      options.retries = retries;
+    if (argument === "--max-calls") {
+      options.maxCalls = parsePositiveInteger(argument, args[++index]);
+      continue;
+    }
+    if (argument === "--yes") {
+      options.yes = true;
       continue;
     }
     if (argument === "--timeout-ms") {
@@ -118,7 +129,7 @@ export function parseArgs(args) {
     }
     throw new Error(`unknown option: ${argument}`);
   }
-  options.runs ??= options.model === "k3" ? 10 : 30;
+  options.runs ??= 30;
   return options;
 }
 
@@ -131,16 +142,16 @@ async function readJsonIfPresent(file) {
   }
 }
 
-function defaultConfigPath() {
+export function defaultConfigPath() {
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
   return xdg
     ? path.join(xdg, "erix", "config.json")
     : path.join(homedir(), ".erix", "config.json");
 }
 
-async function createModelConfig(root, model) {
-  const source = await readJsonIfPresent(defaultConfigPath());
-  const sourceSlot = source?.slots?.[model] ?? source?.slots?.default ?? {};
+async function createModelConfig(root, model, sourcePath) {
+  const source = await readJsonIfPresent(sourcePath);
+  const sourceSlot = source?.slots?.default ?? {};
   const slot = { ...sourceSlot, model };
   const configPath = path.join(root, `${model}.config.json`);
   await writeFile(
@@ -182,37 +193,20 @@ function runCli(args, environment, timeoutMs) {
   });
 }
 
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-export function isRetryableRelayFailure(result) {
-  if (result.timedOut) return true;
-  if (result.code === 0) return false;
-  return /(?:\b429\b|rate.?limit|too many requests|capacity|overloaded|temporar(?:y|ily)|\b50[234]\b|ECONNRESET|ETIMEDOUT|fetch failed)/iu
-    .test(`${result.stderr ?? ""}\n${result.stdout ?? ""}\n${result.error ?? ""}`);
-}
-
-async function runWithRetry(args, environment, options) {
-  const attempts = [];
-  for (let attempt = 1; attempt <= options.retries + 1; attempt += 1) {
-    await options.beforeAttempt?.(attempt);
-    const started = Date.now();
-    const result = await runCli(args, environment, options.timeoutMs);
-    attempts.push({
-      attempt,
+async function runOnce(args, environment, options) {
+  await options.beforeAttempt?.();
+  const started = Date.now();
+  const result = await runCli(args, environment, options.timeoutMs);
+  return {
+    ...result,
+    attempts: [{
+      attempt: 1,
       exitCode: result.code,
       timedOut: result.timedOut,
       durationMs: Date.now() - started,
-      retryable: isRetryableRelayFailure(result),
-    });
-    if (!attempts.at(-1).retryable || attempt > options.retries) {
-      return { ...result, attempts };
-    }
-    const backoffMs = 2_000 * (2 ** (attempt - 1)) + Math.floor(Math.random() * 1_000);
-    await sleep(backoffMs);
-  }
-  throw new Error("unreachable retry state");
+      retryable: false,
+    }],
+  };
 }
 
 function blocksFor(content) {
@@ -649,7 +643,7 @@ export function aggregate(runs) {
 
 export function roundRobinOrder({
   arms = ARMS,
-  models = ["kimi-for-coding"],
+  models = [],
   runs,
   smokeRuns,
   criticalRuns,
@@ -658,8 +652,8 @@ export function roundRobinOrder({
   const targets = Object.fromEntries(models.map((model) => [
     model,
     typeof runs === "object"
-      ? runs[model] ?? (model === "k3" ? 10 : fallbackRuns)
-      : runs ?? (model === "k3" ? 10 : fallbackRuns),
+      ? runs[model] ?? fallbackRuns
+      : runs ?? fallbackRuns,
   ]));
   const jobs = [];
   const maximum = Math.max(...Object.values(targets));
@@ -671,23 +665,6 @@ export function roundRobinOrder({
     }
   }
   return jobs;
-}
-
-async function mapConcurrent(items, concurrency, worker) {
-  const results = new Array(items.length);
-  let next = 0;
-  async function consume() {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await worker(items[index], index);
-    }
-  }
-  await Promise.all(Array.from(
-    { length: Math.min(concurrency, items.length) },
-    () => consume(),
-  ));
-  return results;
 }
 
 function percent(value) {
@@ -919,7 +896,7 @@ ${rawTable(latestRows)}
 |---|---|---|---|---|---|---|---|---|---|---|---|
 ${intervalTable(latestRows)}
 
-行为比率以“未失败且可判定”的 run 为分母；失败、fail-closed、调用发生率、compacted 和 guard 事件 run 比率以全部 n 为分母。JSON 的 \`rates\` 保存同样的 Wilson 区间。未运行 \`deepseek-v4-flash\`，因为 relay 当前不支持其 token。
+行为比率以“未失败且可判定”的 run 为分母；失败、fail-closed、调用发生率、compacted 和 guard 事件 run 比率以全部 n 为分母。JSON 的 \`rates\` 保存同样的 Wilson 区间。模型由本批次的显式参数、环境变量或用户配置决定，不在脚本中替换或排除。
 
 ## Guard 比率与 Wilson 95% 区间（按 run 至少发生一次）
 
@@ -939,7 +916,7 @@ ${decisionMarkdown(latestRows)}
 
 ## n=30 功效限制
 
-每臂 n=30（k3 快速方案默认 n=10）只能识别很大的差异；稀有错误的 Wilson 区间仍宽，零事件也不等于零风险。该矩阵适合发现方向性信号和接线问题，不足以证明臂间等效或建立稳定因果结论。模型、relay 状态、并发和压缩时点仍可能混杂。明确排除：\`${EXCLUDED_MODELS.map(({ model, reason }) => `${model}（${reason}）`).join("；")}\`。
+每臂目标 n 只能识别很大的差异；稀有错误的 Wilson 区间仍宽，零事件也不等于零风险。该矩阵适合发现方向性信号和接线问题，不足以证明臂间等效或建立稳定因果结论。模型、relay 状态、并发和压缩时点仍可能混杂。
 
 ## 批次历史
 
@@ -981,7 +958,7 @@ async function runJob(job, context) {
   delete environment.ERIX_NO_FINAL_GUARD;
   delete environment.LLM_KIT_MODEL;
   const started = Date.now();
-  const processResult = await runWithRetry(args, environment, {
+  const processResult = await runOnce(args, environment, {
     ...context.options,
     beforeAttempt: async () => {
       await rm(transcriptDir, { recursive: true, force: true });
@@ -1010,6 +987,10 @@ async function runJob(job, context) {
       extractValues(processResult.error),
     )}`.trim();
   }
+  if (run.failed) {
+    const rawError = `${processResult.stderr ?? ""}\n${processResult.stdout ?? ""}\n${processResult.error ?? ""}`.trim();
+    if (rawError) console.error(`模型调用失败（原始输出）：\n${rawError}`);
+  }
   console.log(
     `${job.arm}/${job.model} #${job.index}: ${run.category} failed=${Number(run.failed)} `
     + `calls(list/read/archive)=${run.noteListCalls}/${run.noteReadCalls}/${run.archiveReadCalls} `
@@ -1029,22 +1010,58 @@ async function main() {
     return;
   }
 
+  const sourceConfigPath = options.configPath ?? defaultConfigPath();
+  const sourceConfig = await readJsonIfPresent(sourceConfigPath) ?? {};
+  const selection = resolveExperimentModel({
+    explicitModel: options.model,
+    environment: process.env,
+    config: sourceConfig,
+  });
+  const plannedCalls = plannedCallCount({
+    armCount: ARMS.length,
+    runs: options.runs,
+    modelCount: 1,
+  });
+  validateCostPlan({
+    plannedCalls,
+    maxCalls: options.maxCalls,
+    confirmed: options.yes,
+  });
+  const estimate = estimateHistoricalUsage(previous, {
+    plannedCalls,
+    concurrency: options.concurrency,
+  });
+  console.log(formatCostPreview({
+    model: selection.model,
+    modelSource: selection.source,
+    plannedCalls,
+    armCount: ARMS.length,
+    runs: options.runs,
+    modelCount: 1,
+    maxCalls: options.maxCalls,
+    estimate,
+  }));
+  if (!options.yes) return;
+
   const startedAt = new Date().toISOString();
   const batchId = startedAt.replaceAll(/[:.]/gu, "-");
   const tempRoot = await mkdtemp(path.join(REPO_ROOT, ".notes-matrix-"));
-  let runs;
+  let runs = [];
+  let failure;
   try {
-    const configPath = await createModelConfig(tempRoot, options.model);
+    const configPath = await createModelConfig(tempRoot, selection.model, sourceConfigPath);
     const jobs = roundRobinOrder({
       arms: ARMS,
-      models: [options.model],
+      models: [selection.model],
       runs: options.runs,
     });
-    runs = await mapConcurrent(
+    const outcome = await runFailFast(
       jobs,
-      options.concurrency,
       (job) => runJob(job, { batchId, tempRoot, configPath, options }),
+      { concurrency: options.concurrency },
     );
+    runs = outcome.results;
+    failure = outcome.failure;
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -1055,17 +1072,19 @@ async function main() {
       batchId,
       startedAt,
       completedAt: new Date().toISOString(),
-      model: options.model,
+      model: selection.model,
+      modelSource: selection.source,
       runsPerArm: options.runs,
       concurrency: options.concurrency,
-      retries: options.retries,
       timeoutMs: options.timeoutMs,
       arms: ARMS,
       roundRobinSeed: ROUND_ROBIN_SEED,
       prompt: "one-shot random value + seq 1..400/401..800/801..1200 + recall",
       compactBudget: 3000,
       maxRounds: 12,
-      excludedModels: EXCLUDED_MODELS,
+      maxCalls: options.maxCalls,
+      plannedCalls,
+      stoppedEarly: failure !== undefined,
     },
     runs,
     aggregate: rows,
@@ -1075,7 +1094,12 @@ async function main() {
   await writeFile(RESULTS_PATH, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   await mkdir(path.dirname(REPORT_PATH), { recursive: true });
   await writeFile(REPORT_PATH, `${reportMarkdown(result)}\n`, "utf8");
+  console.log(`\n${formatUsageSummary(runs)}`);
   console.log(`\n${batch.conclusion}`);
+  if (failure) {
+    console.error(`实验已在首次失败后停止：${failure.message}`);
+    process.exitCode = 1;
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

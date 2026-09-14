@@ -91,6 +91,13 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 
 ## 7. 本机真实环境事实
 
-- relay：`api.ai.erix.vip/v1`，模型 `kimi-for-coding`（contextWindow 131072、maxOutputTokens 32768 → 自动压缩预算 ~85k）
+- relay：`api.ai.erix.vip/v1`；模型必须由用户配置（contextWindow 131072、maxOutputTokens 32768 → 自动压缩预算 ~85k）
 - 工具执行/验证：erix 干活用 `node bin/cli.js chat`（本仓库），监督者看 `/tmp/erix-*-log.txt` 逐步输出
 - erix 编码任务红线：每个文件只读一次（offset/limit 分段）、长任务先 todo_add 拆解、汇报前验证声明
+
+## 8. 模型与成本纪律
+
+- 禁止硬编码模型名；一律读取用户配置，或使用用户显式传入的模型参数。
+- 模型不可用时失败即停，绝不替换或回退到其他模型。
+- 任何批量实验开始前，必须报告模型、调用数和基于历史均值的成本/时长预估，并取得用户确认。
+- 尊重用户对厂商和额度的选择；用户换掉某模型通常是成本或额度原因，不得顺手使用回去。

@@ -185,7 +185,13 @@ src/
 LLM_KIT_E2E=1 node --test examples/*.test.mjs
 ```
 
-该命令使用 relay 进行真实 E2E 验证；发布记录须注明实际模型。可用 `LLM_KIT_MODEL` 覆盖模型，默认使用 `kimi-for-coding`。
+该命令使用 relay 进行真实 E2E 验证；发布记录须注明实际模型。模型必须来自配置文件
+`slots.default.model`、`LLM_KIT_MODEL` 或显式的 `ERIX_DEFAULT_MODEL`；未配置时直接报错。
+
+批量 notes 实验不会内置模型白名单：模型来源按 `--model`、`ERIX_EXPERIMENT_MODEL`、
+`--config`/`~/.erix/config.json` 的 `slots.default.model` 依次选择。运行前必须先查看成本
+预览；不带 `--yes` 只 dry-run。默认 `--max-calls 40`，超过上限必须显式调高；任一模型调用
+失败都会立即停止后续作业，不会切换或回退模型。
 
 ## Benchmark 验证（erix-bench / Terminal-Bench archive）
 
@@ -194,18 +200,18 @@ LLM_KIT_E2E=1 node --test examples/*.test.mjs
 
 ### 通过任务清单（reward=1，按模型）
 
-> 注：kimi-for-coding 跑数多（早期主力、含 33 个失败对照全量）；deepseek-v4-flash 跑数少但
+> 注：historical-model 跑数多（早期主力、含 33 个失败对照全量）；historical-model-2 跑数少但
 > 全部选难任务/翻盘任务（详见下方 judge 实证表）——通过数不可直接比模型强弱。
 
-**kimi-for-coding：34 通过**（覆盖任务面广）
+**historical-model：34 通过**（覆盖任务面广）
 
 bn-fit-modify · break-filter-js-from-html · build-cython-ext · build-pmars · cancel-async-tasks · cobol-modernization · configure-git-webserver · constraints-scheduling · count-dataset-tokens · crack-7z-hash · custom-memory-heap-crash · extract-elf · financial-document-processor · fix-git · git-leak-recovery · git-multibranch · hf-model-inference · kv-store-grpc · log-summary-date-ranges · merge-diff-arc-agi-task · modernize-scientific-stack · mteb-retrieve · multi-source-data-merger · openssl-selfsigned-cert · polyglot-c-py · portfolio-optimization · prove-plus-comm · pypi-server · regex-log · reshard-c4-data · sam-cell-seg · sqlite-db-truncate · torch-tensor-parallelism · vulnerable-secret
 
-**deepseek-v4-flash：11 通过**（低成本、能力强——近期验证主力）
+**historical-model-2：11 通过**（低成本、能力强——近期验证主力）
 
 adaptive-rejection-sampler · break-filter-js-from-html · build-cython-ext · build-pov-ray · cancel-async-tasks · chess-best-move · code-from-image · configure-git-webserver · db-wal-recovery · fix-code-vulnerability · password-recovery
 
-**pi（deepseek-v4-flash 对照）：4 通过**
+**pi（historical-model-2 对照）：4 通过**
 
 break-filter-js-from-html · build-cython-ext · build-pov-ray · distribution-search
 

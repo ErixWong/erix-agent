@@ -83,7 +83,6 @@ function canonicalUsageToOpenAI(usage) {
 }
 
 function isReasoningProvider({
-  model,
   model_type,
   supports_reasoning,
   thinking,
@@ -93,12 +92,9 @@ function isReasoningProvider({
   thinking_format,
 }) {
   const type = typeof model_type === "string" ? model_type.toLowerCase() : "";
-  const knownReasoningModel = typeof model === "string"
-    && /(?:^|[-_/])deepseek-(?:r1|reasoner|v4-flash)(?:[-_/:]|$)/i.test(model);
   return supports_reasoning === true
     || type === "reasoning"
     || type === "reasoner"
-    || knownReasoningModel
     || (thinking !== undefined && thinking !== false)
     || (reasoning !== undefined && reasoning !== false)
     || (typeof reasoning_effort === "string" && reasoning_effort.length > 0)

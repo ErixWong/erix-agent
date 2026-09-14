@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +15,16 @@ import {
   loadCliConfig,
 } from "../bin/config.js";
 import {
+  DEFAULT_MAX_CALLS,
+  estimateHistoricalUsage,
+  formatCostPreview,
+  formatUsageSummary,
+  plannedCallCount,
+  resolveExperimentModel,
+  runFailFast,
+  validateCostPlan,
+} from "./experiment-guardrails.mjs";
+import {
   buildArchiveRecoveryHint,
   buildArchiveSystemPrompt,
   CLI_TOOLS_SYSTEM_PROMPT,
@@ -24,7 +35,6 @@ import { buildSkillTools } from "../bin/skills.js";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RESULTS_PATH = path.join(REPO_ROOT, "scripts", "notes-why-results.json");
 const REPORT_PATH = path.join(REPO_ROOT, "docs", "research", "2026-09-13-notes-why.md");
-const MODELS = ["kimi-for-coding", "k3"];
 const VARIANTS = ["V0", "V1", "V2", "V3", "V4", "V5", "V6"];
 const RUNS_PER_MODEL = 5;
 const BUDGET_TOKENS = 3000;
@@ -313,7 +323,7 @@ ${rawAggregate}
 ## 局限
 
 - 每个变体/模型 n=5，Wilson 区间很宽，不能据此估计稳定的生产提升。
-- 只有 kimi-for-coding 与 k3；deepseek 当前 token 不可用，未纳入。
+- 模型由本批次的显式参数、环境变量或用户配置决定；脚本不会替换、回退或排除模型。
 - 单一随机值、三段 \`seq\` 和一次折叠形态，不能代表所有任务。
 - provider 负载、模型采样和服务端策略仍可能影响结果；变体按固定轮转顺序执行，不能替代更大规模随机化实验。
 - \`value_in_context_at_answer\` 是 harness 在最终无工具 provider request 上检查真值字面量的操作性指标，不等价于模型内部是否“记得”。
@@ -372,6 +382,7 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
       providerRequests.push({
         valueInContext: hasValue,
         messageCount: request.messages?.length ?? 0,
+        usage: response?.usage,
       });
       return response;
     },
@@ -464,6 +475,7 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
       store,
       runId,
       reflection: false,
+      retry: false,
       completion: { signals: [], maxNoToolRounds: 1 },
       signal: controller.signal,
       ...(finalGuard === undefined ? {} : {
@@ -473,6 +485,7 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
     });
   } catch (caught) {
     error = caught;
+    console.error(caught?.stack ?? String(caught));
   } finally {
     clearTimeout(timeoutId);
   }
@@ -532,6 +545,9 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
     })),
     compacted,
     rounds: result?.rounds ?? 0,
+    inputTokens: result?.usage?.input_tokens ?? 0,
+    outputTokens: result?.usage?.output_tokens ?? 0,
+    usage: result?.usage,
     providerRequests: providerRequests.map((request) => ({ ...request })),
   };
   return run;
@@ -609,10 +625,30 @@ function conclusionFor(aggregates, runs) {
   return `${summaries.join("; ")}。归因：${statements.join(" ")}`;
 }
 
-function parseArgs(args) {
-  const options = { runs: RUNS_PER_MODEL, timeout: 300_000, variants: VARIANTS };
+export function parseArgs(args) {
+  const options = {
+    model: undefined,
+    configPath: undefined,
+    runs: RUNS_PER_MODEL,
+    timeout: 300_000,
+    variants: VARIANTS,
+    maxCalls: DEFAULT_MAX_CALLS,
+    yes: false,
+  };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "--model") {
+      const model = args[++index]?.trim();
+      if (!model) throw new Error("--model 需要非空模型 id");
+      options.model = model;
+      continue;
+    }
+    if (arg === "--config") {
+      const configPath = args[++index]?.trim();
+      if (!configPath) throw new Error("--config 需要非空路径");
+      options.configPath = configPath;
+      continue;
+    }
     if (arg === "--runs" || arg === "--timeout-ms") {
       const value = Number(args[++index]);
       if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${arg} must be a positive integer`);
@@ -628,8 +664,20 @@ function parseArgs(args) {
       options.variants = values;
       continue;
     }
+    if (arg === "--max-calls") {
+      const value = Number(args[++index]);
+      if (!Number.isSafeInteger(value) || value < 1) {
+        throw new Error("--max-calls must be a positive integer");
+      }
+      options.maxCalls = value;
+      continue;
+    }
+    if (arg === "--yes") {
+      options.yes = true;
+      continue;
+    }
     if (arg === "--help" || arg === "-h") {
-      console.log("用法：node scripts/notes-why-experiment.mjs [--runs 5] [--timeout-ms 300000] [--variants V0,V1]");
+      console.log("用法：node scripts/notes-why-experiment.mjs [--model <id>] [--config <path>] [--runs 5] [--timeout-ms 300000] [--variants V0,V1] [--max-calls n] [--yes]");
       return null;
     }
     throw new Error(`unknown option: ${arg}`);
@@ -640,33 +688,83 @@ function parseArgs(args) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options === null) return;
+  const xdg = process.env.XDG_CONFIG_HOME?.trim();
+  const sourceConfigPath = options.configPath
+    ?? (xdg
+      ? path.join(xdg, "erix", "config.json")
+      : path.join(homedir(), ".erix", "config.json"));
+  let sourceConfig = {};
+  try {
+    sourceConfig = JSON.parse(readFileSync(sourceConfigPath, "utf8"));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const selection = resolveExperimentModel({
+    explicitModel: options.model,
+    environment: process.env,
+    config: sourceConfig,
+  });
+  const plannedCalls = plannedCallCount({
+    armCount: options.variants.length,
+    runs: options.runs,
+    modelCount: 1,
+  });
+  validateCostPlan({
+    plannedCalls,
+    maxCalls: options.maxCalls,
+    confirmed: options.yes,
+  });
+  let previous;
+  try {
+    previous = JSON.parse(readFileSync(RESULTS_PATH, "utf8"));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  console.log(formatCostPreview({
+    model: selection.model,
+    modelSource: selection.source,
+    plannedCalls,
+    armCount: options.variants.length,
+    runs: options.runs,
+    modelCount: 1,
+    maxCalls: options.maxCalls,
+    estimate: estimateHistoricalUsage(previous, { plannedCalls }),
+  }));
+  if (!options.yes) return;
+
   const startedAt = new Date().toISOString();
   const root = await mkdtemp(path.join(REPO_ROOT, ".notes-why-"));
   const runs = [];
+  let failure;
   try {
-    const source = await loadCliConfig();
-    const configPaths = new Map();
-    for (const model of MODELS) {
-      const configPath = path.join(root, `${model}.config.json`);
-      await createModelConfig(source, model, configPath);
-      configPaths.set(model, configPath);
-    }
-    for (const variant of options.variants) {
-      for (const model of MODELS) {
-        for (let index = 1; index <= options.runs; index += 1) {
-          const run = await runOne({
-            variant,
-            model,
-            index,
-            configPath: configPaths.get(model),
-            root,
-            timeoutMs: options.timeout,
-          });
-          runs.push(run);
-          console.log(`${variant}/${model} #${index}: category=${run.category} note=${run.noteCall ? 1 : 0} archive=${run.archiveRead ? 1 : 0} context=${run.valueInContextAtAnswer ? 1 : 0} rerun=${run.rerunCommand ? 1 : 0} duration=${(run.durationMs / 1000).toFixed(1)}s`);
-        }
-      }
-    }
+    const source = await loadCliConfig({
+      configPath: sourceConfigPath,
+      model: selection.model,
+    });
+    const configPath = path.join(root, "experiment.config.json");
+    await createModelConfig(source, selection.model, configPath);
+    const jobs = options.variants.flatMap((variant) => (
+      Array.from({ length: options.runs }, (_, offset) => ({
+        variant,
+        model: selection.model,
+        index: offset + 1,
+      }))
+    ));
+    const outcome = await runFailFast(
+      jobs,
+      async (job) => {
+        const run = await runOne({
+          ...job,
+          configPath,
+          root,
+          timeoutMs: options.timeout,
+        });
+        console.log(`${job.variant}/${job.model} #${job.index}: category=${run.category} note=${run.noteCall ? 1 : 0} archive=${run.archiveRead ? 1 : 0} context=${run.valueInContextAtAnswer ? 1 : 0} rerun=${run.rerunCommand ? 1 : 0} duration=${(run.durationMs / 1000).toFixed(1)}s`);
+        return run;
+      },
+    );
+    runs.push(...outcome.results);
+    failure = outcome.failure;
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -674,7 +772,7 @@ async function main() {
   const result = {
     protocol: {
       seed: SEED,
-      models: MODELS,
+      models: [selection.model],
       variants: options.variants,
       runsPerModel: options.runs,
       budgetTokens: BUDGET_TOKENS,
@@ -682,6 +780,10 @@ async function main() {
       maxRounds: MAX_ROUNDS,
       prompt: "one-time random value + seq 1..400/401..800/801..1200 + original value query",
       config: "temporary per-model config copied from the resolved local provider config; no user config writes",
+      modelSource: selection.source,
+      plannedCalls,
+      maxCalls: options.maxCalls,
+      stoppedEarly: failure !== undefined,
     },
     startedAt,
     completedAt: new Date().toISOString(),
@@ -695,7 +797,12 @@ async function main() {
   console.log("RAW_AGGREGATE_BEGIN");
   console.log(JSON.stringify(result.aggregate.map(aggregateRow), null, 2));
   console.log("RAW_AGGREGATE_END");
+  console.log(formatUsageSummary(runs));
   console.log(result.conclusion);
+  if (failure) {
+    console.error(`实验已在首次失败后停止：${failure.message}`);
+    process.exitCode = 1;
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
