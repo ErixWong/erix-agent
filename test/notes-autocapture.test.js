@@ -319,6 +319,31 @@ test("auto_capture keeps one command note when reruns are intercepted", async ()
   });
 });
 
+test("non-identical non-replayable reruns are allowed but carry a first-value warning", async () => {
+  await withNotes(async (directory) => {
+    const archiveDir = path.join(directory, "outputs");
+    const runState = { rerunDetected: false };
+    const tools = createCliTools({
+      cwd: directory,
+      archiveDir,
+      runState,
+      notesScope: { runId: "auto-run", notesDir: directory },
+    });
+    const first = await tools.executeTool("exec", {
+      command: "printf 'nonce=first\\n'; : \"$RANDOM\"",
+    });
+    const rerun = await tools.executeTool("exec", {
+      command: "bash -lc 'printf \"nonce=second\\n\"; : \"$RANDOM\"'",
+    });
+
+    assert.match(first, /完整输出已归档/u);
+    assert.match(rerun, /重跑警示/u);
+    assert.match(rerun, /note_read key=auto-/u);
+    assert.match(rerun, /001-exec\.txt/u);
+    assert.equal(runState.rerunDetected, true);
+  });
+});
+
 test("GC revokes expired pinned notes and keeps a tombstone with an injected clock", async () => {
   const now = { value: Date.now() };
   await withNotes(async (directory) => {

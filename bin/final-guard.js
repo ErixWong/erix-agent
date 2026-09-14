@@ -2,41 +2,40 @@ import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
-import { candidateLines } from "./auto-capture.js";
-import { normalizedLabel } from "../skills/notes/credential-patterns.mjs";
+import { autoCaptureKey, candidateLines } from "./auto-capture.js";
 
-const ASSIGNMENT_PATTERN =
-  /(?:^|[\s\u3000([{'"，。；;：:])([^:=\s][^:=\s]{0,80}?)\s*=\s*([^\s,，。；;）)\]}]+)/gu;
-const STRUCTURED_METADATA_LABELS = new Set([
-  "lineStart",
-  "lineEnd",
-  "digest",
-  "toolUseId",
-  "artifactId",
-  "archivePath",
-  "locator",
-  "round",
-  "originalBytes",
-  "truncated",
-  "replayable",
-  "schemaVersion",
-  "kind",
-].map((label) => normalizedLabel(label)));
+const SOURCE_PATTERN =
+  /来源\s*(?:=|:|：)\s*(note_read|归档)\s*[:：]\s*([^\s,，。；;）)\]}]+)/giu;
 
 function warningMessage(message) {
   return `finalGuard warning: ${message}`;
 }
 
-function explicitAssignments(text) {
-  const candidates = [];
-  for (const match of String(text ?? "").matchAll(ASSIGNMENT_PATTERN)) {
-    const label = normalizedLabel(match[1]);
-    const value = match[2].trim();
-    if (label && value && !STRUCTURED_METADATA_LABELS.has(label)) {
-      candidates.push({ label, value });
+function escapeRegex(value) {
+  return String(value).replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function explicitAttributions(text, knownLabels) {
+  const attributions = [];
+  for (const label of knownLabels) {
+    const pattern = new RegExp(
+      `(?:^|[^\\p{L}\\p{N}_])${escapeRegex(label)}(?![\\p{L}\\p{N}_])\\s*`
+        + `(?:(?:=|:|：)|(?:的\\s*)?(?:值\\s*(?:已[^是为]{0,20})?(?:是|为)|是|为))\\s*`
+        + `([^\\s,，。；;（）()\\]}]+)`,
+      "giu",
+    );
+    for (const match of String(text ?? "").matchAll(pattern)) {
+      attributions.push({ label, value: match[1].trim() });
     }
   }
-  return candidates;
+  return attributions;
+}
+
+function sourceReferences(text) {
+  return [...String(text ?? "").matchAll(SOURCE_PATTERN)].map((match) => ({
+    kind: match[1].toLowerCase(),
+    target: match[2],
+  }));
 }
 
 async function readCaptureManifests(archiveDir) {
@@ -53,7 +52,7 @@ async function readCaptureManifests(archiveDir) {
   }
   const manifests = [];
   const warnings = [];
-  for (const entry of entries) {
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (
       (!entry.isFile() && !entry.isSymbolicLink())
       || !entry.name.endsWith(".meta.json")
@@ -132,7 +131,7 @@ async function readArtifact(reference, archiveDir, manifestPath) {
 
 async function inspectRun({ archiveDir }) {
   const loaded = await readCaptureManifests(archiveDir);
-  const values = [];
+  const captures = [];
   const warnings = [...loaded.warnings];
   let readableArtifacts = 0;
   for (const { manifest: reference, manifestPath } of loaded.manifests) {
@@ -145,40 +144,88 @@ async function inspectRun({ archiveDir }) {
         warnings.push(`${reference.archivePath}: 未抽取到可核验值`);
         continue;
       }
-      values.push(...candidates.map((candidate) => ({
+      captures.push(...candidates.map((candidate) => ({
         ...candidate,
         archivePath: reference.archivePath,
+        artifact: reference,
+        round: reference.round ?? null,
+        key: autoCaptureKey(reference.command, reference),
       })));
     } catch (error) {
       warnings.push(`${reference.archivePath ?? manifestPath}: ${error?.message ?? String(error)}`);
     }
   }
+  const seenLabels = new Set();
+  for (const capture of captures) {
+    capture.first = !seenLabels.has(capture.label);
+    seenLabels.add(capture.label);
+  }
   return {
     references: loaded.manifests,
-    values,
+    captures,
     warnings,
     readableArtifacts,
   };
 }
 
+function countFoldedOutputs(foldedPayload) {
+  if (!Array.isArray(foldedPayload)) return 0;
+  return foldedPayload.reduce((total, message) => {
+    if (!Array.isArray(message?.content)) return total;
+    return total + message.content.filter((block) => block?.type === "tool_result").length;
+  }, 0);
+}
+
+export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload } = {}) {
+  const loaded = await readCaptureManifests(archiveDir);
+  const nonReplayableCaptures = loaded.manifests.filter(({ manifest }) => (
+    manifest?.replayable === false
+  )).length;
+  const archiveReference = typeof archiveDir === "string" && archiveDir.length > 0
+    ? `${path.resolve(archiveDir)}/<n>-exec.txt`
+    : "明确的归档文件";
+  return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${nonReplayableCaptures} 条为不可重放捕获（重跑会得到不同值）。需要时用 note_list → note_read 取回，或读取归档 ${archiveReference}。`;
+}
+
+function sourceMatchesCapture(source, capture) {
+  if (source.kind === "note_read") return source.target === capture.key;
+  if (source.kind !== "归档") return false;
+  const archivePath = String(capture.archivePath ?? "");
+  const target = String(source.target ?? "");
+  return target === archivePath
+    || target === path.basename(archivePath)
+    || archivePath.endsWith(`/${target}`);
+}
+
+function capturePointer(capture) {
+  const pointers = [];
+  if (capture?.key) pointers.push(`note_read key=${capture.key}`);
+  if (capture?.archivePath) pointers.push(`归档 ${capture.archivePath}`);
+  return pointers.join(" / ") || "可信归档";
+}
+
 /**
  * Build the deterministic CLI-side provenance gate for one run.
- * Only explicit label=value assignments are compared.
+ * Only explicit attributions to labels captured in this run are compared.
  */
 export function createFinalGuard({
   archiveDir,
   onWarning = (message) => console.warn(warningMessage(message)),
+  runState,
 } = {}) {
-  return async function finalGuard({ finalText } = {}) {
+  return async function finalGuard({
+    finalText,
+    rerunDetected = runState?.rerunDetected === true,
+  } = {}) {
     const inspected = await inspectRun({ archiveDir });
     for (const warning of inspected.warnings) onWarning(warning);
     if (inspected.references.length === 0) {
       return { action: "skip", reason: "no_capture_manifest" };
     }
-    if (inspected.values.length === 0 && inspected.readableArtifacts > 0) {
+    if (inspected.captures.length === 0 && inspected.readableArtifacts > 0) {
       return { action: "skip", reason: "no_extractable_candidates" };
     }
-    if (inspected.values.length === 0) {
+    if (inspected.captures.length === 0) {
       return {
         action: "revise",
         message: "本 run 的 capture manifest 未通过归档根目录、digest、截断或可重放性核验；请读取可信归档或明确说明不可恢复，不得把该值当作已核验事实。",
@@ -186,29 +233,61 @@ export function createFinalGuard({
     }
 
     const knownLabels = new Map();
-    for (const candidate of inspected.values) {
-      const values = knownLabels.get(candidate.label) ?? new Set();
-      values.add(candidate.value);
-      knownLabels.set(candidate.label, values);
+    for (const capture of inspected.captures) {
+      const captures = knownLabels.get(capture.label) ?? [];
+      captures.push(capture);
+      knownLabels.set(capture.label, captures);
     }
 
-    const finalCandidates = explicitAssignments(finalText);
-    const comparable = finalCandidates.filter((candidate) => knownLabels.has(candidate.label));
-    if (comparable.length === 0) {
-      onWarning("终稿没有与 capture manifest 同 label 的显式 label=value，跳过核验");
+    const attributions = explicitAttributions(finalText, knownLabels.keys());
+    const sources = sourceReferences(finalText);
+    const revise = (message) => ({ action: "revise", message });
+
+    for (const attribution of attributions) {
+      const captures = knownLabels.get(attribution.label) ?? [];
+      const matching = captures.filter((capture) => capture.value === attribution.value);
+      if (matching.length === 0) {
+        const pointer = captures[0] ? capturePointer(captures[0]) : "可信归档";
+        return revise(
+          `终稿中的 ${attribution.label}=${attribution.value} 未对应本 run 的任何捕获值。请读取 ${pointer} 核实原始值，不得重跑命令；若确认无法恢复，请明确说明不可恢复。`,
+        );
+      }
+      if (matching.some((capture) => capture.first)) continue;
+      const cited = matching.find((capture) => (
+        sources.some((source) => sourceMatchesCapture(source, capture))
+      ));
+      if (!cited) {
+        return revise(
+          `终稿中的 ${attribution.label}=${attribution.value} 是后续重跑捕获值，但没有来源指向对应 artifact。请补充来源=note_read:<key> 或来源=归档:<文件名>，或改用首次捕获值；不得把重跑值当作原值。`,
+        );
+      }
+    }
+
+    let rerunCited = false;
+    for (const capture of inspected.captures) {
+      if (capture.first || !String(finalText ?? "").includes(capture.value)) continue;
+      const cited = attributions.some((attribution) => (
+        attribution.label === capture.label
+        && attribution.value === capture.value
+        && sources.some((source) => sourceMatchesCapture(source, capture))
+      ));
+      if (!cited) {
+        return revise(
+          `终稿包含后续捕获值 ${capture.value} 但没有可验证来源（${capturePointer(capture)}）。请补充来源=note_read:<key> 或来源=归档:<文件名>，或改用首次捕获值；不得重跑命令。`,
+        );
+      }
+      rerunCited = true;
+    }
+
+    if (attributions.length === 0 && !rerunCited) {
+      onWarning(
+        rerunDetected
+          ? "终稿没有显式来源归属；本 run 检测到重跑，无法核对终稿中的值，跳过核验"
+          : "终稿没有与 capture manifest 同 label 的显式归属，跳过核验",
+      );
       return { action: "skip", reason: "no_comparable_label" };
     }
-    for (const candidate of comparable) {
-      const knownForLabel = knownLabels.get(candidate.label);
-      if (knownForLabel.has(candidate.value)) continue;
-      const archivePath = inspected.values.find((item) => item.label === candidate.label)
-        ?.archivePath ?? inspected.values[0].archivePath;
-      return {
-        action: "revise",
-        message: `终稿中的 ${candidate.label}=${candidate.value} 未经验证。请先 note_read 精确读取（或读取归档 ${archivePath}）核实原始值；不得重跑命令，不得凭记忆给出；若确认无法恢复，请明确说明不可恢复。`,
-      };
-    }
-    return { action: "accept" };
+    return rerunCited ? { action: "accept", rerunCited: true } : { action: "accept" };
   };
 }
 

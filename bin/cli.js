@@ -19,7 +19,7 @@ import {
   loadMcpConfig,
 } from "./mcp.js";
 import { defaultSessionId, runRepl } from "./repl.js";
-import { createFinalGuard } from "./final-guard.js";
+import { buildCaptureRecoveryHint, createFinalGuard } from "./final-guard.js";
 import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import {
   buildArchiveNotice,
@@ -144,11 +144,11 @@ function resolveReflection(reflection, maxRounds) {
   return maxRounds >= 32 ? { enabled: true } : false;
 }
 
-function resolveFinalGuard(finalGuard, runId, archiveDir, notesDir) {
+function resolveFinalGuard(finalGuard, runId, archiveDir, notesDir, runState) {
   if (process.env.ERIX_NO_FINAL_GUARD?.trim() === "1") return undefined;
   if (finalGuard === false) return undefined;
   if (typeof finalGuard === "function") return finalGuard;
-  return createFinalGuard({ runId, archiveDir, notesDir });
+  return createFinalGuard({ runId, archiveDir, notesDir, runState });
 }
 
 function createIdleTimeout(seconds) {
@@ -528,10 +528,12 @@ async function runChatWithNotes({
     "outputs",
     safeRunId(runId),
   );
+  const runState = { rerunDetected: false, captureCount: 0 };
   const cliTools = createCliTools({
     cwd,
     archiveDir,
     notesScope: { runId, notesDir: _notesDir },
+    runState,
   });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
   const skillTools = await buildSkillTools({
@@ -545,7 +547,13 @@ async function runChatWithNotes({
   await skillTools.notesJanitor?.({ __erix: { runId, notesDir: _notesDir } });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
   const tools = combineTools(cliTools, skillTools, mcpProxy);
-  const context = buildCompactionContext(config, compactBudget);
+  const context = buildCompactionContext(
+    config,
+    compactBudget,
+    compactBudget !== undefined || config.contextWindowTokens
+      ? ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload })
+      : undefined,
+  );
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, {
     output: toolOutput,
@@ -553,7 +561,13 @@ async function runChatWithNotes({
     notesScope: { runId, notesDir: _notesDir },
   });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
-  const resolvedFinalGuard = resolveFinalGuard(finalGuard, runId, archiveDir, _notesDir);
+  const resolvedFinalGuard = resolveFinalGuard(
+    finalGuard,
+    runId,
+    archiveDir,
+    _notesDir,
+    runState,
+  );
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG;
   let judgeLogWriteFailed = false;
   // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 安全摘要
@@ -649,6 +663,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     task: prompt,
     store,
     runId,
+    runState,
     resume,
     tools: tools.tools,
     executeTool: async (execution) => {

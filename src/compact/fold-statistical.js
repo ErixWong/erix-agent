@@ -7,8 +7,9 @@ import {
   optionValue,
   roundRangeForIndexes,
   runFoldHook,
-  selectFoldedRounds,
+  resolveFoldRecoveryHint,
   resolveRecoveryHint,
+  selectFoldedRounds,
   isRealUser,
 } from "./helpers.js";
 
@@ -206,6 +207,12 @@ export function createFoldStatisticalStrategy(options = {}) {
         settings.roundOffset,
         settings.roundNumbers,
       );
+      const recoveryHint = await resolveFoldRecoveryHint(settings.recoveryHint, {
+        foldedPayload,
+        folded,
+        retained,
+        roundRange,
+      });
       await runFoldHook(settings.onBeforeFold, {
         messages,
         folded,
@@ -220,13 +227,13 @@ export function createFoldStatisticalStrategy(options = {}) {
         const summary = [
           `${FOLD_SUMMARY_MARKER}早期第 ${range.from}–${range.to} 轮（共 ${folded.length} 轮）已折叠。`,
           `工具足迹：${toolFootprint(folded)}。`,
-          resolveRecoveryHint(settings.recoveryHint),
+          recoveryHint,
         ].join("");
         compactedHead = prependSummary(
           head,
           summary,
           settings.summaryRole,
-          settings.recoveryHint,
+          recoveryHint,
         );
       }
 

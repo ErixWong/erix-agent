@@ -93,7 +93,10 @@ export async function loadCliConfig({ configPath } = {}) {
 }
 
 function withRecoveryHint(context, recoveryHint) {
-  if (typeof recoveryHint !== "string" || recoveryHint.trim() === "") {
+  if (
+    (typeof recoveryHint !== "string" || recoveryHint.trim() === "")
+    && typeof recoveryHint !== "function"
+  ) {
     return context;
   }
   if (context === undefined) return { recoveryHint };

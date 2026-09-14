@@ -677,6 +677,7 @@ function defaultSleep(ms, signal) {
  *   store?: {appendRound?: Function, saveCheckpoint?:Function, appendCheckpoint?:Function,
  *     markRunState?:Function, loadLatestCheckpoint?:Function},
  *   runId?: string,
+ *   runState?:{rerunDetected?:boolean},
  *   resume?: boolean,
  *   onRound?: Function,
  *   onJudge?:(info:JudgeEvent) => void,
@@ -739,6 +740,7 @@ export async function runToolLoop({
   toolContext,
   store,
   runId,
+  runState,
   resume = false,
   onRound,
   onJudge,
@@ -1223,6 +1225,7 @@ export async function runToolLoop({
     verified: 0,
     skipped: 0,
     revised: 0,
+    rerun_cited: 0,
     unverified: 0,
     guard_error: 0,
   };
@@ -1287,6 +1290,7 @@ export async function runToolLoop({
       rounds,
       signal: toolSignal,
       termination: makeTermination(reason, detail),
+      rerunDetected: runState?.rerunDetected === true,
     };
     let timeoutId;
     try {
@@ -1304,6 +1308,7 @@ export async function runToolLoop({
       ]);
       if (decision?.action === "accept") {
         guardMetrics.verified += 1;
+        if (decision.rerunCited === true) guardMetrics.rerun_cited += 1;
         verification = { status: "verified" };
         emitEvent({ type: "final_guard", round: rounds, action: "accept" });
         return { action: "accept" };

@@ -262,7 +262,7 @@ test("runRepl resumes from the transcript store without a recall tool", async ()
   }
 });
 
-test("runRepl keeps archive guidance out of loop context", async () => {
+test("runRepl injects archive status at fold time instead of into loop context", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-repl-recovery-hint-test-"));
   const input = new PassThrough();
   input.isTTY = true;
@@ -293,7 +293,7 @@ test("runRepl keeps archive guidance out of loop context", async () => {
     await run;
 
     assert.ok(captured);
-    assert.equal(captured.context.recoveryHint, undefined);
+    assert.equal(typeof captured.context.recoveryHint, "function");
   } finally {
     input.destroy();
     output.destroy();
