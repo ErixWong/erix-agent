@@ -127,8 +127,6 @@ test("roundRobinOrder is fixed and interleaves model/arm jobs", () => {
       "1:A/k3",
       "1:B/kimi-for-coding",
       "1:B/k3",
-      "1:C/kimi-for-coding",
-      "1:C/k3",
       "1:D/kimi-for-coding",
       "1:D/k3",
       "2:A/kimi-for-coding",

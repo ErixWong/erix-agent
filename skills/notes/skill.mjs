@@ -1,12 +1,10 @@
-// Notes 技能：run 作用域的版本化事实/值存储。
-// 自包含实现，复制到 ~/.erix/skills/ 后仍可工作；safe id 规则与 src/store/file.js 保持一致。
+// Notes 技能：run 作用域的有界事实存储。
+// 自包含实现，复制到 ~/.erix/skills/ 后仍可工作。
 
 import {
   chmod,
-  link,
   lstat,
   mkdir,
-  open,
   readdir,
   readFile,
   rename,
@@ -16,35 +14,20 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import {
-  looksLikeCredential,
-  normalizedLabel,
-} from "./credential-patterns.mjs";
-import { estimateTokens } from "../../src/tokens.js";
+import { looksLikeCredential } from "./credential-patterns.mjs";
 
 const HASHED_ID_PREFIX = "run-h-";
 const HASHED_KEY_PREFIX = "note-h-";
 export const MAX_CONTENT_LENGTH = 4000;
 export const NOTE_VALUE_MAX_CHARS = 256;
+const MAX_SUPERSEDED = 3;
 const DEFAULT_GRACE_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_HISTORY_LIMIT = 32;
-const DEFAULT_LOCK_TIMEOUT_MS = 5000;
-const DEFAULT_LOCK_STALE_MS = 30_000;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 const SAFE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
-const MISSING_NEXT = "该 key/version 从未记录（never recorded）；未记录、不可恢复；不得重跑命令、不得凭记忆给值";
-const PRUNED_NEXT = "该旧版本已因有界历史上限被裁剪（pruned），仅保留摘要或版本水位；它不是 never recorded，请读取当前版本或可信归档";
+const STATES = new Set(["active", "done", "revoked"]);
+const MISSING_NEXT = "该 key 从未记录（never recorded）；未记录、不可恢复；不得重跑命令、不得凭记忆给值";
 let clock = () => Date.now();
-
-class NotesLockTimeoutError extends Error {
-  constructor(key) {
-    super(`笔记 key 锁定超时：${key}`);
-    this.name = "NotesLockTimeoutError";
-    this.code = "notes_lock_timeout";
-    this.key = key;
-  }
-}
 
 function digest(value) {
   return createHash("sha256").update(String(value)).digest("hex").slice(0, 24);
@@ -52,28 +35,18 @@ function digest(value) {
 
 function safeId(value) {
   const text = String(value);
-  if (
-    SAFE_ID_PATTERN.test(text)
-    && text !== "."
-    && text !== ".."
-    && !text.startsWith(HASHED_ID_PREFIX)
-  ) {
-    return text;
-  }
-  return `${HASHED_ID_PREFIX}${digest(text)}`;
+  return SAFE_ID_PATTERN.test(text)
+    && text !== "." && text !== ".." && !text.startsWith(HASHED_ID_PREFIX)
+    ? text
+    : `${HASHED_ID_PREFIX}${digest(text)}`;
 }
 
 function safeKey(value) {
   const text = String(value);
-  if (
-    SAFE_KEY_PATTERN.test(text)
-    && text !== "."
-    && text !== ".."
-    && !text.startsWith(HASHED_KEY_PREFIX)
-  ) {
-    return text;
-  }
-  return `${HASHED_KEY_PREFIX}${digest(text)}`;
+  return SAFE_KEY_PATTERN.test(text)
+    && text !== "." && text !== ".." && !text.startsWith(HASHED_KEY_PREFIX)
+    ? text
+    : `${HASHED_KEY_PREFIX}${digest(text)}`;
 }
 
 function now() {
@@ -81,9 +54,7 @@ function now() {
 }
 
 export function setNotesClock(nextClock) {
-  if (typeof nextClock !== "function") {
-    throw new TypeError("nextClock must be a function");
-  }
+  if (typeof nextClock !== "function") throw new TypeError("nextClock must be a function");
   const previous = clock;
   clock = nextClock;
   return () => {
@@ -92,10 +63,8 @@ export function setNotesClock(nextClock) {
 }
 
 function injectedNotesDir(input) {
-  const notesDir = input?.__erix?.notesDir;
-  return typeof notesDir === "string" && notesDir.trim() !== ""
-    ? notesDir
-    : undefined;
+  const value = input?.__erix?.notesDir;
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function notesRoot(input) {
@@ -110,50 +79,22 @@ function injectedScopeRef(input) {
   const erix = input?.__erix;
   if (typeof erix === "string" && erix.trim()) return erix.trim();
   if (!erix || typeof erix !== "object" || Array.isArray(erix)) return undefined;
-  const nestedScope = erix.scope && typeof erix.scope === "object"
-    ? erix.scope
-    : undefined;
-  const explicit = erix.runId ?? erix.scopeRef
+  const scope = erix.scope && typeof erix.scope === "object" ? erix.scope : undefined;
+  const value = erix.runId
+    ?? erix.scopeRef
     ?? (typeof erix.scope === "string" ? erix.scope : undefined)
-    ?? nestedScope?.runId
-    ?? nestedScope?.scopeRef
-    ?? nestedScope?.ref
-    ?? nestedScope?.id
-    ?? (typeof erix.run === "string" ? erix.run : erix.run?.id);
-  return typeof explicit === "string" && explicit.trim() ? explicit.trim() : undefined;
+    ?? scope?.runId
+    ?? scope?.scopeRef
+    ?? scope?.ref
+    ?? scope?.id;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function currentScopeRef(input) {
-  const runId = injectedScopeRef(input) ?? process.env.ERIX_RUN_ID?.trim();
-  if (runId) return safeId(runId);
+  const explicit = injectedScopeRef(input);
+  if (explicit) return safeId(explicit);
   const cwd = process.cwd();
-  const base = path.basename(cwd) || "root";
-  return safeId(`${base}-${digest(cwd).slice(0, 8)}`);
-}
-
-function historyLimit() {
-  const configured = Number(
-    process.env.ERIX_NOTES_HISTORY_LIMIT
-      ?? process.env.ERIX_NOTES_MAX_HISTORY
-      ?? process.env.ERIX_NOTES_MAX_VERSIONS,
-  );
-  return Number.isSafeInteger(configured) && configured >= 2
-    ? Math.min(configured, 200)
-    : DEFAULT_HISTORY_LIMIT;
-}
-
-function lockTimeoutMs() {
-  const configured = Number(process.env.ERIX_NOTES_LOCK_TIMEOUT_MS);
-  return Number.isSafeInteger(configured) && configured >= 0
-    ? configured
-    : DEFAULT_LOCK_TIMEOUT_MS;
-}
-
-function lockStaleMs() {
-  const configured = Number(process.env.ERIX_NOTES_LOCK_STALE_MS);
-  return Number.isSafeInteger(configured) && configured >= 1
-    ? configured
-    : DEFAULT_LOCK_STALE_MS;
+  return safeId(`${path.basename(cwd) || "root"}-${digest(cwd).slice(0, 8)}`);
 }
 
 function graceMs() {
@@ -180,20 +121,12 @@ function missing(key) {
   return json({ status: "missing", key, next: MISSING_NEXT });
 }
 
-function corrupt(key, error) {
-  return json({
-    status: "corrupt",
-    key,
-    next: `笔记文件损坏，无法安全读取；请检查存储后再处理（${error}）`,
-  });
-}
-
-function invalid(key, message) {
+function invalid(key, reason) {
   return json({
     status: "invalid",
     ...(key === undefined ? {} : { key }),
-    reason: message,
-    next: "请修正输入后重试",
+    reason,
+    next: "请修正输入或检查笔记存储后重试",
   });
 }
 
@@ -219,17 +152,17 @@ function validateScope(input) {
 }
 
 function validateKey(input) {
-  if (typeof input?.key !== "string" || input.key.length === 0) return null;
-  return input.key;
-}
-
-function artifactProvided(input) {
-  return input?.artifactRef !== undefined && input.artifactRef !== null
-    && !(typeof input.artifactRef === "string" && input.artifactRef.length === 0);
+  return typeof input?.key === "string" && input.key.length > 0 ? input.key : null;
 }
 
 function contentProvided(input) {
-  return input?.content !== undefined && input.content !== null;
+  return input?.content !== undefined && input?.content !== null;
+}
+
+function artifactProvided(input) {
+  return input?.artifactRef !== undefined
+    && input?.artifactRef !== null
+    && !(typeof input.artifactRef === "string" && input.artifactRef.length === 0);
 }
 
 function normalizeTags(tags) {
@@ -240,13 +173,9 @@ function normalizeTags(tags) {
 
 async function ensureDirectory(directory) {
   try {
-    const existing = await lstat(directory);
-    if (existing.isSymbolicLink()) {
-      throw new Error(`拒绝使用符号链接目录：${directory}`);
-    }
-    if (!existing.isDirectory()) {
-      throw new Error(`笔记路径不是目录：${directory}`);
-    }
+    const stat = await lstat(directory);
+    if (stat.isSymbolicLink()) throw new Error(`拒绝使用符号链接目录：${directory}`);
+    if (!stat.isDirectory()) throw new Error(`笔记路径不是目录：${directory}`);
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -254,7 +183,7 @@ async function ensureDirectory(directory) {
   await chmod(directory, 0o700);
 }
 
-async function scopeDirectory(create = false, input = undefined) {
+async function scopeDirectory(create, input) {
   const root = notesRoot(input);
   const run = path.join(root, "run");
   const scope = path.join(run, currentScopeRef(input));
@@ -262,16 +191,16 @@ async function scopeDirectory(create = false, input = undefined) {
     await ensureDirectory(root);
     await ensureDirectory(run);
     await ensureDirectory(scope);
-  } else {
-    for (const directory of [root, run, scope]) {
-      try {
-        const stat = await lstat(directory);
-        if (stat.isSymbolicLink()) throw new Error(`拒绝使用符号链接目录：${directory}`);
-        if (!stat.isDirectory()) throw new Error(`笔记路径不是目录：${directory}`);
-      } catch (error) {
-        if (error?.code === "ENOENT") return null;
-        throw error;
-      }
+    return scope;
+  }
+  for (const directory of [root, run, scope]) {
+    try {
+      const stat = await lstat(directory);
+      if (stat.isSymbolicLink()) throw new Error(`拒绝使用符号链接目录：${directory}`);
+      if (!stat.isDirectory()) throw new Error(`笔记路径不是目录：${directory}`);
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
     }
   }
   return scope;
@@ -281,220 +210,63 @@ function notePath(directory, key) {
   return path.join(directory, `${safeKey(key)}.json`);
 }
 
-function lockPath(directory, key) {
-  return path.join(directory, `${safeKey(key)}.lock`);
-}
-
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function parseLock(raw) {
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed.ownerToken === "string" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-async function restoreQuarantinedLock(quarantine, target) {
-  try {
-    await link(quarantine, target);
-  } catch (error) {
-    if (error?.code !== "EEXIST") throw error;
-  } finally {
-    try {
-      await unlink(quarantine);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-  }
-}
-
-async function compareAndDeleteLock(target, expected, { staleBefore } = {}) {
-  const quarantine = `${target}.${process.pid}.${randomUUID()}.reclaim`;
-  try {
-    await rename(target, quarantine);
-  } catch (error) {
-    if (error?.code === "ENOENT") return false;
-    throw error;
-  }
-  try {
-    const [raw, stat] = await Promise.all([
-      readFile(quarantine, "utf8"),
-      lstat(quarantine),
-    ]);
-    const parsed = parseLock(raw);
-    const tokenMatches = (parsed?.ownerToken ?? null) === expected.ownerToken
-      && raw === expected.raw;
-    const stillStale = staleBefore === undefined || stat.mtimeMs <= staleBefore;
-    if (!tokenMatches || !stillStale) {
-      await restoreQuarantinedLock(quarantine, target);
-      return false;
-    }
-    await unlink(quarantine);
-    return true;
-  } catch (error) {
-    try {
-      await restoreQuarantinedLock(quarantine, target);
-    } catch (restoreError) {
-      error.cause = restoreError;
-    }
-    throw error;
-  }
-}
-
-async function renewLock(target, ownerToken, timestamp = clock()) {
-  let handle;
-  try {
-    handle = await open(target, "r+");
-    const raw = await handle.readFile({ encoding: "utf8" });
-    if (parseLock(raw)?.ownerToken !== ownerToken) return false;
-    const renewed = new Date(timestamp);
-    await handle.utimes(renewed, renewed);
-    return true;
-  } catch (error) {
-    if (error?.code === "ENOENT") return false;
-    throw error;
-  } finally {
-    await handle?.close();
-  }
-}
-
-/**
- * Internal lock primitive exported for deterministic concurrency tests. It is
- * not exposed as a model tool.
- */
-export async function withNotesKeyLock(directory, key, callback) {
-  await ensureDirectory(directory);
-  const target = lockPath(directory, key);
-  const started = clock();
-  const timeout = lockTimeoutMs();
-  const stale = lockStaleMs();
-  const ownerToken = `${process.pid}:${randomUUID()}`;
-  const createdAt = new Date().toISOString();
-  const payload = JSON.stringify({ ownerToken, pid: process.pid, createdAt });
-  let acquired = false;
-  while (!acquired) {
-    try {
-      await writeFile(target, payload, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      acquired = true;
-      break;
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      try {
-        const [raw, lockStat] = await Promise.all([
-          readFile(target, "utf8"),
-          lstat(target),
-        ]);
-        const observed = parseLock(raw);
-        const staleBefore = clock() - stale;
-        if (lockStat.mtimeMs <= staleBefore) {
-          await compareAndDeleteLock(
-            target,
-            { ownerToken: observed?.ownerToken ?? null, raw },
-            { staleBefore },
-          );
-          continue;
-        }
-      } catch (statError) {
-        if (statError?.code === "ENOENT") continue;
-        throw statError;
-      }
-      if (clock() - started >= timeout) throw new NotesLockTimeoutError(key);
-      await sleep(Math.min(25, Math.max(1, timeout)));
-    }
-  }
-  let renewing = false;
-  let renewalError;
-  const renewal = setInterval(async () => {
-    if (renewing || renewalError) return;
-    renewing = true;
-    try {
-      await renewLock(target, ownerToken, clock());
-    } catch (error) {
-      renewalError = error;
-    } finally {
-      renewing = false;
-    }
-  }, Math.max(1, Math.floor(stale / 3)));
-  renewal.unref?.();
-  let result;
-  let callbackError;
-  try {
-    result = await callback();
-  } catch (error) {
-    callbackError = error;
-  }
-  clearInterval(renewal);
-  while (renewing) await sleep(1);
-  let releaseError;
-  try {
-    let raw;
-    try {
-      raw = await readFile(target, "utf8");
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    if (raw !== undefined) {
-      await compareAndDeleteLock(target, { ownerToken, raw: payload });
-    }
-  } catch (error) {
-    releaseError = error;
-  }
-  if (callbackError) throw callbackError;
-  if (renewalError) throw renewalError;
-  if (releaseError) throw releaseError;
-  return result;
-}
-
-function compactedVersion(version) {
+function payloadOf(entry) {
+  if (!entry || typeof entry !== "object") return {};
   return {
-    version: version.version,
-    ts: version.ts,
-    provenance: version.provenance,
-    preview: preview(version),
+    ...(entry.content !== undefined ? { content: entry.content } : {}),
+    ...(entry.artifactRef !== undefined ? { artifactRef: entry.artifactRef } : {}),
   };
 }
 
-function boundedVersions(record) {
-  const limit = historyLimit();
-  const versions = Array.isArray(record.versions) ? record.versions : [];
-  if (versions.length <= limit) return record;
-  const overflow = versions.slice(0, -limit).map(compactedVersion);
-  const previous = Array.isArray(record.compactedHistory)
-    ? record.compactedHistory
-    : [];
+function currentEntry(payload, provenance, timestamp) {
+  return { ...payload, provenance, ts: timestamp };
+}
+
+function publicEntry(entry, { invalid: markInvalid = false } = {}) {
+  if (!entry || typeof entry !== "object") return null;
   return {
-    ...record,
-    versions: versions.slice(-limit),
-    compactedHistory: [...previous, ...overflow].slice(-limit),
+    ...payloadOf(entry),
+    ...(entry.provenance === undefined ? {} : { provenance: entry.provenance }),
+    ...(entry.ts === undefined ? {} : { ts: entry.ts }),
+    ...(markInvalid || entry.invalid === true ? { invalid: true } : {}),
   };
 }
 
-async function loadRecord(file, originalKey = undefined) {
+function validateRecord(parsed, originalKey) {
+  if (
+    !parsed
+    || typeof parsed !== "object"
+    || (originalKey !== undefined && parsed.key !== originalKey)
+    || parsed.scope !== "run"
+    || typeof parsed.scopeRef !== "string"
+    || !parsed.current
+    || typeof parsed.current !== "object"
+    || Array.isArray(parsed.current)
+    || !Array.isArray(parsed.superseded)
+    || parsed.superseded.length > MAX_SUPERSEDED
+    || parsed.superseded.some((entry) => !entry || typeof entry !== "object" || entry.invalid !== true)
+    || !Number.isSafeInteger(parsed.folded)
+    || parsed.folded < 0
+    || !STATES.has(parsed.state)
+    || !Array.isArray(parsed.tags)
+    || parsed.tags.some((tag) => typeof tag !== "string")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function loadRecord(file, originalKey) {
   try {
     const stat = await lstat(file);
-    if (stat.isSymbolicLink()) return { corrupt: `拒绝读取符号链接文件：${file}` };
-    if (!stat.isFile()) return { corrupt: `笔记路径不是普通文件：${file}` };
+    if (stat.isSymbolicLink()) return { invalid: `拒绝读取符号链接文件：${file}` };
+    if (!stat.isFile()) return { invalid: `笔记路径不是普通文件：${file}` };
     const parsed = JSON.parse(await readFile(file, "utf8"));
-    if (
-      !parsed
-      || typeof parsed !== "object"
-      || (originalKey !== undefined && parsed.key !== originalKey)
-      || parsed.scope !== "run"
-      || typeof parsed.scopeRef !== "string"
-      || !Array.isArray(parsed.versions)
-      || parsed.versions.length === 0
-      || !["active", "completed", "grace", "revoked"].includes(parsed.state)
-    ) {
-      return { corrupt: "笔记记录字段无效" };
-    }
+    if (!validateRecord(parsed, originalKey)) return { invalid: "笔记记录字段无效" };
     return { record: parsed };
   } catch (error) {
     if (error?.code === "ENOENT") return { missing: true };
-    if (error instanceof SyntaxError) return { corrupt: "JSON 解析失败" };
+    if (error instanceof SyntaxError) return { invalid: "JSON 解析失败" };
     throw error;
   }
 }
@@ -522,160 +294,6 @@ async function saveRecord(directory, record) {
   }
 }
 
-async function readCurrentRecord(key, input) {
-  const directory = await scopeDirectory(false, input);
-  if (!directory) return { missing: true };
-  return loadRecord(notePath(directory, key), key);
-}
-
-function recordVersion(record, requestedVersion) {
-  if (requestedVersion === undefined) return record.versions.at(-1);
-  if (!Number.isSafeInteger(requestedVersion) || requestedVersion < 1) return null;
-  return record.versions.find((item) => item.version === requestedVersion) ?? null;
-}
-
-function compactedRecordVersion(record, requestedVersion) {
-  if (!Number.isSafeInteger(requestedVersion) || requestedVersion < 1) return null;
-  return (Array.isArray(record.compactedHistory) ? record.compactedHistory : [])
-    .find((item) => item.version === requestedVersion) ?? null;
-}
-
-function recordValue(result, record, version) {
-  const response = {
-    status: "found",
-    key: record.key,
-    version: version.version,
-    pinned: record.pinned,
-    tags: record.tags,
-    provenance: version.provenance,
-    next: "已找到记录；如需最新版本请再次 note_read，不要重跑命令",
-  };
-  if (version.content !== undefined) response.value = version.content;
-  if (version.artifactRef !== undefined) response.artifactRef = version.artifactRef;
-  if (version.content === undefined && version.provenance?.verified !== true) {
-    response.status = "unverified";
-    const artifact = version.artifactRef;
-    const archivePath = typeof artifact?.archivePath === "string"
-      ? artifact.archivePath
-      : "<artifactRef.archivePath>";
-    const locator = artifact?.locator && typeof artifact.locator === "object"
-      ? `locator=${JSON.stringify(artifact.locator)}`
-      : "对应 locator";
-    response.next = `两步：1. 读取 artifactRef.archivePath=${archivePath} 的 ${locator}；2. 核对归档值后使用，无法核对时声明不可恢复`;
-  }
-  return response;
-}
-
-function preview(version, key) {
-  if (typeof version?.content === "string") return version.content.slice(0, 120);
-  if (version?.artifactRef !== undefined) return `[引用] 调用 note_read key=${key ?? "<key>"} 取回`;
-  return "";
-}
-
-function ledgerReference(version) {
-  const artifact = version?.artifactRef;
-  if (!artifact || typeof artifact !== "object") return "";
-  const name = artifact.artifactId
-    ?? (typeof artifact.archivePath === "string" ? path.basename(artifact.archivePath) : "artifact");
-  const digest = typeof artifact.digest === "string"
-    ? ` digest=${artifact.digest.slice(0, 8)}`
-    : "";
-  return `引用 ${name}${digest}`;
-}
-
-function ledgerLine(record, version) {
-  const provenance = version?.provenance ?? {};
-  const source = String(provenance.source ?? "unknown");
-  const round = provenance.round === undefined ? "-" : String(provenance.round);
-  const toolUse = provenance.toolUseId === undefined
-    ? "-"
-    : String(provenance.toolUseId).slice(0, 32);
-  const value = typeof version?.content === "string"
-    ? version.content.length > 96
-      ? `${Array.from(version.content).slice(0, 72).join("")}…（摘要）`
-      : version.content
-    : ledgerReference(version);
-  return `${record.key} = ${value} source=${source} round=${round} toolUse=${toolUse} version=${version?.version ?? "-"}`;
-}
-
-/**
- * Build the small, read-only pinned ledger used by the optional CLI push arm.
- * The character budget is intentionally conservative because ledger values may
- * contain CJK text where one character can be close to one token. Keep a
- * margin below the nominal token budget for punctuation and field labels.
- */
-export async function buildPinnedLedger({
-  maxEntries = 5,
-  maxTokens = 200,
-  __erix,
-} = {}) {
-  const directory = await scopeDirectory(false, { __erix });
-  if (!directory) return "";
-  const files = await readJsonFiles(directory);
-  const records = [];
-  for (const file of files) {
-    const loaded = await loadRecord(file);
-    if (loaded.corrupt) throw new Error(`笔记文件损坏，无法生成 ledger：${file}`);
-    if (loaded.missing) continue;
-    const record = loaded.record;
-    if (record.pinned !== true || record.state !== "active") continue;
-    const version = record.versions.at(-1);
-    if (version) records.push({ record, version });
-  }
-  records.sort((left, right) => (
-    right.record.updated_at.localeCompare(left.record.updated_at)
-    || left.record.key.localeCompare(right.record.key)
-  ));
-
-  const budget = Number.isSafeInteger(maxTokens) && maxTokens > 0
-    ? maxTokens
-    : 1;
-  const lines = [];
-  for (const entry of records.slice(0, Math.max(0, maxEntries))) {
-    const fixed = ledgerLine(entry.record, entry.version);
-    const prefix = lines.length === 0 ? "" : `${lines.join("\n")}\n`;
-    if (estimateTokens(prefix + fixed) <= budget) {
-      lines.push(fixed);
-      continue;
-    }
-    const characters = Array.from(fixed);
-    let low = 0;
-    let high = characters.length;
-    while (low < high) {
-      const middle = Math.ceil((low + high) / 2);
-      const candidate = `${prefix}${characters.slice(0, middle).join("")}`;
-      if (estimateTokens(candidate) <= budget) low = middle;
-      else high = middle - 1;
-    }
-    if (low > 0) lines.push(characters.slice(0, low).join(""));
-    break;
-  }
-  return lines.join("\n");
-}
-
-/**
- * Return the current run's value-note metadata without exposing note content.
- * The CLI uses this as a pull-only index so the model can discover exact keys.
- */
-export async function buildValueNotesIndex({ __erix } = {}) {
-  const directory = await scopeDirectory(false, { __erix });
-  if (!directory) return [];
-  const files = await readJsonFiles(directory);
-  const entries = [];
-  for (const file of files) {
-    const loaded = await loadRecord(file);
-    if (loaded.corrupt) throw new Error(`笔记文件损坏，无法生成值索引：${file}`);
-    if (loaded.missing) continue;
-    const record = loaded.record;
-    if (record.state !== "active" || !record.tags.includes("value")) continue;
-    entries.push({
-      key: record.key,
-      tags: [...record.tags],
-    });
-  }
-  return entries.sort((left, right) => left.key.localeCompare(right.key));
-}
-
 async function readJsonFiles(directory) {
   let entries;
   try {
@@ -684,40 +302,44 @@ async function readJsonFiles(directory) {
     if (error?.code === "ENOENT") return [];
     throw error;
   }
-  const files = [];
-  for (const entry of entries) {
-    if ((!entry.isFile() && !entry.isSymbolicLink()) || !entry.name.endsWith(".json")) continue;
-    files.push(path.join(directory, entry.name));
-  }
-  return files;
+  return entries
+    .filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".json"))
+    .map((entry) => path.join(directory, entry.name));
 }
 
-async function writeNote(input = {}, { source = "agent" } = {}) {
+function validateInput(input) {
   const scope = validateScope(input);
   const key = validateKey(input);
-  if (!scope) return invalid(key, "scope 必须是 run、project 或 user");
-  if (scope !== "run") return unsupported(scope, key);
-  if (!key) return invalid(key, "key 必须是非空字符串");
+  if (!scope) return { error: invalid(key, "scope 必须是 run、project 或 user") };
+  if (scope !== "run") return { error: unsupported(scope, key) };
+  if (!key) return { error: invalid(key, "key 必须是非空字符串") };
   if (contentProvided(input) && typeof input.content !== "string") {
-    return invalid(key, "content 必须是字符串");
+    return { error: invalid(key, "content 必须是字符串") };
   }
   if (contentProvided(input) && input.content.length > MAX_CONTENT_LENGTH) {
-    return invalid(key, `content 不得超过 ${MAX_CONTENT_LENGTH} 个字符`);
+    return { error: invalid(key, `content 不得超过 ${MAX_CONTENT_LENGTH} 个字符`) };
   }
   if (!contentProvided(input) && !artifactProvided(input)) {
-    return invalid(key, "content 与 artifactRef 至少提供一个");
+    return { error: invalid(key, "content 与 artifactRef 至少提供一个") };
   }
   const tags = normalizeTags(input.tags);
-  if (tags === null) return invalid(key, "tags 必须是字符串数组");
+  if (tags === null) return { error: invalid(key, "tags 必须是字符串数组") };
   if (input.pinned !== undefined && typeof input.pinned !== "boolean") {
-    return invalid(key, "pinned 必须是布尔值");
+    return { error: invalid(key, "pinned 必须是布尔值") };
   }
   if (
     input.provenance !== undefined
     && (!input.provenance || typeof input.provenance !== "object" || Array.isArray(input.provenance))
   ) {
-    return invalid(key, "provenance 必须是对象");
+    return { error: invalid(key, "provenance 必须是对象") };
   }
+  return { scope, key, tags };
+}
+
+async function writeNote(input = {}, { source = "agent" } = {}) {
+  const checked = validateInput(input);
+  if (checked.error) return checked.error;
+  const { key, tags } = checked;
   let payload;
   try {
     payload = {
@@ -729,90 +351,63 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
     return invalid(key, "artifactRef 必须可序列化为 JSON");
   }
   if (looksLikeCredential(key, canonical(payload))) {
-    return json({
-      status: "rejected",
-      key,
-      reason: "possible-credential",
-      next: "疑似凭据未写入；请移除 token/password/Bearer/JWT/AWS key 等敏感值后再记录",
-    });
+    return invalid(key, "疑似凭据，不写入笔记");
   }
 
   const directory = await scopeDirectory(true, input);
-  try {
-    return await withNotesKeyLock(directory, key, async () => {
-      const loaded = await loadRecord(notePath(directory, key), key);
-      if (loaded.corrupt) return corrupt(key, loaded.corrupt);
-      const timestamp = now();
-      const old = loaded.record;
-      const previous = old?.versions.at(-1);
-      const samePayload = previous && canonical({
-        ...(previous.content !== undefined ? { content: previous.content } : {}),
-        ...(previous.artifactRef !== undefined ? { artifactRef: previous.artifactRef } : {}),
-      }) === canonical(payload);
-      const version = samePayload ? previous.version : (previous?.version ?? 0) + 1;
-      const suppliedProvenance = input.provenance ?? {};
-      const provenance = {
-        source,
-        verified: suppliedProvenance.verified ?? contentProvided(input),
-        ...(input.relevance === undefined ? {} : { relevance: input.relevance }),
-        ...(suppliedProvenance.toolUseId === undefined
-          ? {}
-          : { toolUseId: suppliedProvenance.toolUseId }),
-        ...(suppliedProvenance.round === undefined ? {} : { round: suppliedProvenance.round }),
-        ...(suppliedProvenance.supersededCandidate === true
-          ? { supersededCandidate: true }
-          : {}),
-        ts: source === "auto" ? (suppliedProvenance.ts ?? timestamp) : timestamp,
-      };
-      const nextVersion = samePayload
-        ? previous
-        : { ...payload, version, provenance, ts: timestamp };
-      let record = {
-        key,
-        scope: "run",
-        scopeRef: currentScopeRef(input),
-        versions: samePayload ? old.versions : [...(old?.versions ?? []), nextVersion],
-        ...(old?.compactedHistory ? { compactedHistory: old.compactedHistory } : {}),
-        pinned: input.pinned ?? old?.pinned ?? false,
-        tags: input.tags === undefined ? (old?.tags ?? tags) : tags,
-        state: old?.state === "revoked" ? "active" : (old?.state ?? "active"),
-        created_at: old?.created_at ?? timestamp,
-        updated_at: timestamp,
-        ...(old?.expires_at === undefined ? {} : { expires_at: old.expires_at }),
-      };
-      record = boundedVersions(record);
-      if (old?.state === "revoked" || old?.revoked_at !== undefined) {
-        delete record.revoked_at;
-        record.revived_at = timestamp;
-      }
-      await saveRecord(directory, record);
-      return json({
-        status: old && samePayload ? "updated" : old ? "updated" : "saved",
-        key,
-        version,
-        scope: "run",
-        pinned: record.pinned,
-        next: "已保存；后续需要该值时先用 note_read 精确读取",
-      });
-    });
-  } catch (error) {
-    if (error?.code === "notes_lock_timeout") {
-      return json({
-        status: "busy",
-        key,
-        reason: "lock-timeout",
-        next: "笔记正在被其他写入操作更新；稍后重试，不要覆盖并发写入",
-      });
-    }
-    throw error;
-  }
+  const file = notePath(directory, key);
+  const loaded = await loadRecord(file, key);
+  if (loaded.invalid) return invalid(key, loaded.invalid);
+  const old = loaded.record;
+  const timestamp = now();
+  const supplied = input.provenance ?? {};
+  const provenance = {
+    source,
+    verified: supplied.verified ?? contentProvided(input),
+    ...(supplied.toolUseId === undefined ? {} : { toolUseId: supplied.toolUseId }),
+    ...(supplied.round === undefined ? {} : { round: supplied.round }),
+    ts: source === "auto" ? (supplied.ts ?? timestamp) : timestamp,
+  };
+  const superseded = old
+    ? [
+        ...old.superseded.map((entry) => publicEntry(entry, { invalid: true })),
+        publicEntry(old.current, { invalid: true }),
+      ]
+    : [];
+  const retained = superseded.slice(-MAX_SUPERSEDED);
+  const folded = (old?.folded ?? 0) + Math.max(0, superseded.length - MAX_SUPERSEDED);
+  const record = {
+    key,
+    scope: "run",
+    scopeRef: currentScopeRef(input),
+    current: currentEntry(payload, provenance, timestamp),
+    superseded: retained,
+    folded,
+    pinned: input.pinned ?? old?.pinned ?? false,
+    tags: input.tags === undefined ? (old?.tags ?? tags) : tags,
+    state: "active",
+    created_at: old?.created_at ?? timestamp,
+    updated_at: timestamp,
+    ...(old?.state === "done" || old?.expires_at === undefined
+      ? {}
+      : { expires_at: old.expires_at }),
+    ...(old?.state === "revoked" ? { revived_at: timestamp } : {}),
+  };
+  await saveRecord(directory, record);
+  return json({
+    status: "found",
+    action: old ? "updated" : "saved",
+    key,
+    scope: "run",
+    folded,
+    superseded: retained.length,
+    pinned: record.pinned,
+    next: "已保存；后续需要该值时先用 note_read 精确读取",
+  });
 }
 
 /**
- * CLI capture arm. It is intentionally not listed in the skill definition,
- * so model tool calls can only reach note_take (source=agent). The exported
- * helper is a convenience index writer; final-guard trust comes only from the
- * CLI archive manifest, not from this notes metadata.
+ * CLI capture arm. It is intentionally not listed in the skill definition.
  */
 export async function recordAutoCapture(input = {}) {
   return writeNote(input, { source: "auto" });
@@ -822,6 +417,31 @@ export async function note_take(input = {}) {
   return writeNote(input, { source: "agent" });
 }
 
+function noteReadValue(record) {
+  const current = record.current;
+  const response = {
+    status: "found",
+    key: record.key,
+    state: record.state,
+    pinned: record.pinned,
+    tags: record.tags,
+    folded: record.folded,
+    current: publicEntry(current),
+    superseded: record.superseded.map((entry) => publicEntry(entry, { invalid: true })),
+    provenance: current.provenance,
+    next: "已找到当前记录；superseded 条目已作废，不得当作当前值使用",
+  };
+  if (current.content !== undefined) response.value = current.content;
+  if (current.artifactRef !== undefined) response.artifactRef = current.artifactRef;
+  if (current.content === undefined && current.artifactRef !== undefined) {
+    const archivePath = typeof current.artifactRef.archivePath === "string"
+      ? current.artifactRef.archivePath
+      : "<artifactRef.archivePath>";
+    response.next = `当前值是 artifactRef；读取 ${archivePath} 的 locator 后核对。superseded 条目已作废，不得当作当前值使用`;
+  }
+  return response;
+}
+
 export async function note_read(input = {}) {
   const scope = validateScope(input);
   const key = validateKey(input);
@@ -829,46 +449,39 @@ export async function note_read(input = {}) {
   if (scope !== "run") return unsupported(scope, key);
   if (!key) return invalid(key, "key 必须是非空字符串");
   const loaded = await readCurrentRecord(key, input);
-  if (loaded.corrupt) return corrupt(key, loaded.corrupt);
+  if (loaded.invalid) return invalid(key, loaded.invalid);
   if (loaded.missing) return missing(key);
-  const record = loaded.record;
-  if (record.state === "revoked" || record.revoked_at !== undefined) {
+  if (loaded.record.state === "revoked") {
     return json({
       status: "revoked",
       key,
-      next: "该记录已撤销；不得把它当作当前值，必要时显式 note_take 写入新版本",
+      folded: loaded.record.folded,
+      superseded: loaded.record.superseded.map((entry) => publicEntry(entry, { invalid: true })),
+      next: "该记录已撤销；不得把它当作当前值",
     });
   }
-  const version = recordVersion(record, input.version);
-  if (!version) {
-    const compacted = compactedRecordVersion(record, input.version);
-    if (compacted) {
-      return json({
-        status: "pruned",
-        key,
-        version: compacted.version,
-        preview: compacted.preview,
-        provenance: compacted.provenance,
-        next: PRUNED_NEXT,
-      });
-    }
-    const requestedVersion = input.version;
-    const latestVersion = record.versions.at(-1)?.version ?? 0;
-    if (
-      Number.isSafeInteger(requestedVersion)
-      && requestedVersion >= 1
-      && requestedVersion < latestVersion
-    ) {
-      return json({
-        status: "pruned",
-        key,
-        version: requestedVersion,
-        next: PRUNED_NEXT,
-      });
-    }
-    return missing(key);
-  }
-  return json(recordValue(null, record, version));
+  return json(noteReadValue(loaded.record));
+}
+
+async function readCurrentRecord(key, input) {
+  const directory = await scopeDirectory(false, input);
+  if (!directory) return { missing: true };
+  return loadRecord(notePath(directory, key), key);
+}
+
+function listEntry(record) {
+  const current = record.current;
+  return {
+    key: record.key,
+    tags: record.tags,
+    pinned: record.pinned,
+    state: record.state,
+    folded: record.folded,
+    superseded: record.superseded.length,
+    hasContent: typeof current.content === "string",
+    hasArtifactRef: current.artifactRef !== undefined,
+    updated_at: record.updated_at,
+  };
 }
 
 export async function note_list(input = {}) {
@@ -879,58 +492,33 @@ export async function note_list(input = {}) {
     return invalid(undefined, "tag 必须是字符串");
   }
   const directory = await scopeDirectory(false, input);
-  if (!directory) {
-    return json({
-      status: "ok",
-      count: 0,
-      total: 0,
-      notes: [],
-      next: "当前 run 从未记录（never recorded）任何 note；需要具体值时不得重跑命令、不得凭记忆给值",
-    });
-  }
+  if (!directory) return json({ status: "found", count: 0, total: 0, notes: [] });
   const files = await readJsonFiles(directory);
   const records = [];
   for (const file of files) {
     const loaded = await loadRecord(file);
     const key = loaded.record?.key ?? path.basename(file, ".json");
-    if (loaded.corrupt) return corrupt(key, loaded.corrupt);
+    if (loaded.invalid) return invalid(key, loaded.invalid);
     if (loaded.missing) continue;
     if (input.includeInactive !== true && loaded.record.state !== "active") continue;
     if (input.tag !== undefined && !loaded.record.tags.includes(input.tag)) continue;
     records.push(loaded.record);
   }
   records.sort((left, right) => left.updated_at.localeCompare(right.updated_at));
-  const total = records.length;
   const limit = input.limit === undefined ? 50 : Number(input.limit);
   const cursor = input.cursor === undefined ? 0 : Number(input.cursor);
   if (!Number.isSafeInteger(limit) || limit < 1 || !Number.isSafeInteger(cursor) || cursor < 0) {
     return invalid(undefined, "limit 必须为正整数，cursor 必须为非负整数");
   }
-  const notes = records.slice(cursor, cursor + Math.min(limit, 200)).map((record) => {
-    const latest = record.versions.at(-1);
-    return {
-      key: record.key,
-      tags: record.tags,
-      pinned: record.pinned,
-      version: latest.version,
-      updated_at: record.updated_at,
-      state: record.state,
-      preview: preview(latest, record.key),
-      next: typeof latest.content === "string"
-        ? "已有值可直接使用"
-        : latest.artifactRef !== undefined
-          ? `调用 note_read key=${record.key} 取回引用；仅引用时按返回的 archivePath 与 locator 有界核对`
-          : "调用 note_read 精确读取",
-    };
-  });
+  const notes = records.slice(cursor, cursor + Math.min(limit, 200)).map(listEntry);
   return json({
-    status: "ok",
+    status: "found",
     count: notes.length,
-    total,
+    total: records.length,
     notes,
-    next: notes.length < total
-      ? `还有 ${total - cursor - notes.length} 条元数据，可用 cursor=${cursor + notes.length} 继续`
-      : "清单仅含当前有界版本元数据与短 preview；旧版本可能已 pruned（不同于 never recorded），需要完整值时用 note_read 精确读取",
+    next: notes.length < records.length - cursor
+      ? `还有 ${records.length - cursor - notes.length} 条元数据，可用 cursor=${cursor + notes.length} 继续`
+      : "清单仅含当前记录元数据；需要具体值时用 note_read 精确读取",
   });
 }
 
@@ -941,203 +529,108 @@ export async function note_forget(input = {}) {
   if (scope !== "run") return unsupported(scope, key);
   if (!key) return invalid(key, "key 必须是非空字符串");
   const directory = await scopeDirectory(false, input);
-  if (!directory) return json({ status: "missing", key, next: MISSING_NEXT });
-  try {
-    return await withNotesKeyLock(directory, key, async () => {
-      const current = await loadRecord(notePath(directory, key), key);
-      if (current.corrupt) return corrupt(key, current.corrupt);
-      if (current.missing) return json({ status: "missing", key, next: MISSING_NEXT });
-      const record = current.record;
-      if (record.state === "revoked" || record.revoked_at !== undefined) {
-        return json({ status: "revoked", key, next: "该 key 已是撤销墓碑，未物理删除" });
-      }
-      const timestamp = now();
-      await saveRecord(directory, {
-        ...record,
-        state: "revoked",
-        revoked_at: timestamp,
-        updated_at: timestamp,
-      });
-      return json({ status: "revoked", key, next: "已写入撤销墓碑；历史版本仍保留但不可作为当前值" });
-    });
-  } catch (error) {
-    if (error?.code === "notes_lock_timeout") {
-      return json({
-        status: "busy",
-        key,
-        reason: "lock-timeout",
-        next: "笔记正在被其他写入操作更新；稍后重试",
-      });
-    }
-    throw error;
-  }
+  if (!directory) return missing(key);
+  const loaded = await loadRecord(notePath(directory, key), key);
+  if (loaded.invalid) return invalid(key, loaded.invalid);
+  if (loaded.missing) return missing(key);
+  if (loaded.record.state === "revoked") return json({ status: "revoked", key });
+  const timestamp = now();
+  await saveRecord(directory, {
+    ...loaded.record,
+    state: "revoked",
+    revoked_at: timestamp,
+    updated_at: timestamp,
+  });
+  return json({ status: "revoked", key, next: "已写入撤销墓碑；历史 current 与 superseded 均不可作为当前值" });
 }
 
-async function processRunDirectory(directory, currentTime, liveScopeRef = currentScopeRef()) {
-  const files = await readJsonFiles(directory);
-  let changed = 0;
-  let removed = 0;
-  let corruptKey;
-  for (const file of files) {
-    const loaded = await loadRecord(file);
-    const key = loaded.record?.key ?? path.basename(file, ".json");
-    if (loaded.corrupt) {
-      corruptKey = key;
-      continue;
-    }
-    if (loaded.missing) continue;
-    const record = loaded.record;
-    await withNotesKeyLock(directory, record.key, async () => {
-      // Re-read after acquiring the lock so a concurrent take/complete cannot
-      // be overwritten by the janitor's stale snapshot.
-      const current = await loadRecord(file, record.key);
-      if (current.corrupt || current.missing) return;
-      const latest = current.record;
-      const expires = Date.parse(latest.expires_at ?? "");
-      const updatedAt = Date.parse(latest.updated_at ?? latest.created_at ?? "");
-      const orphanActive = latest.state === "active"
-        && path.basename(directory) !== liveScopeRef
-        && Number.isFinite(updatedAt)
-        && currentTime - updatedAt >= graceMs();
-      if (latest.state === "completed") {
-        if (Number.isFinite(expires) && expires <= currentTime) {
-          const revokedAt = new Date(currentTime).toISOString();
-          await saveRecord(directory, {
-            ...latest,
-            state: "revoked",
-            revoked_at: revokedAt,
-            gc_at: revokedAt,
-            updated_at: revokedAt,
-          });
-          removed += 1;
-          return;
-        }
-        await saveRecord(directory, {
-          ...latest,
-          state: "grace",
-          updated_at: now(),
-        });
-        changed += 1;
-      } else if (orphanActive) {
-        const timestamp = now();
-        await saveRecord(directory, {
-          ...latest,
-          state: "grace",
-          expires_at: new Date(currentTime + graceMs()).toISOString(),
-          updated_at: timestamp,
-          orphaned_at: timestamp,
-        });
-        changed += 1;
-      } else if (
-        latest.state === "grace"
-        && Number.isFinite(expires)
-        && expires <= currentTime
-      ) {
-        const revokedAt = new Date(currentTime).toISOString();
-        await saveRecord(directory, {
-          ...latest,
-          state: "revoked",
-          revoked_at: revokedAt,
-          gc_at: revokedAt,
-          updated_at: revokedAt,
-        });
-        removed += 1;
-      }
-    });
-  }
-  return { changed, removed, corruptKey };
+async function revokeIfCurrent(directory, file, currentTime, predicate) {
+  const loaded = await loadRecord(file);
+  if (loaded.invalid || loaded.missing || !predicate(loaded.record)) return false;
+  const timestamp = new Date(currentTime).toISOString();
+  await saveRecord(directory, {
+    ...loaded.record,
+    state: "revoked",
+    revoked_at: timestamp,
+    gc_at: timestamp,
+    updated_at: timestamp,
+  });
+  return true;
 }
 
 export async function runNotesJanitor(input = {}) {
   const root = notesRoot(input);
   const run = path.join(root, "run");
-  const liveScopeRef = currentScopeRef(input);
+  let entries;
   try {
     const stat = await lstat(run);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new Error(`笔记 run 路径无效：${run}`);
-    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`笔记 run 路径无效：${run}`);
+    entries = await readdir(run, { withFileTypes: true });
   } catch (error) {
-    if (error?.code === "ENOENT") return { status: "ok", changed: 0, removed: 0 };
+    if (error?.code === "ENOENT") return { status: "found", changed: 0, revoked: 0 };
     throw error;
   }
-  const entries = await readdir(run, { withFileTypes: true });
+  const liveScope = currentScopeRef(input);
   let changed = 0;
-  let removed = 0;
+  let revoked = 0;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const directory = path.join(run, entry.name);
     const stat = await lstat(directory);
     if (stat.isSymbolicLink()) throw new Error(`拒绝扫描符号链接目录：${directory}`);
-    let result;
-    try {
-      result = await processRunDirectory(directory, clock(), liveScopeRef);
-    } catch (error) {
-      if (error?.code === "notes_lock_timeout") {
-        return {
-          status: "busy",
-          key: error.key,
-          reason: "lock-timeout",
-          next: "笔记正在被其他操作更新；稍后重试 janitor",
-        };
+    for (const file of await readJsonFiles(directory)) {
+      const loaded = await loadRecord(file);
+      if (loaded.invalid || loaded.missing) continue;
+      const record = loaded.record;
+      const expires = Date.parse(record.expires_at ?? "");
+      const updated = Date.parse(record.updated_at ?? record.created_at ?? "");
+      const expiredDone = record.state === "done"
+        && Number.isFinite(expires)
+        && expires <= clock();
+      const orphanActive = record.state === "active"
+        && entry.name !== liveScope
+        && Number.isFinite(updated)
+        && clock() - updated >= graceMs();
+      if (expiredDone || orphanActive) {
+        if (await revokeIfCurrent(directory, file, clock(), (current) => (
+          (expiredDone && current.state === "done")
+          || (orphanActive && current.state === "active")
+        ))) {
+          changed += 1;
+          revoked += 1;
+        }
       }
-      throw error;
     }
-    if (result.corruptKey !== undefined) {
-      return {
-        status: "corrupt",
-        key: result.corruptKey,
-        next: "笔记文件损坏，未执行静默清理；请检查存储后再处理",
-      };
-    }
-    changed += result.changed;
-    removed += result.removed;
   }
-  return { status: "ok", changed, removed };
+  return { status: "found", changed, revoked };
 }
 
 export async function completeRun(input = {}) {
   const directory = await scopeDirectory(false, input);
-  if (!directory) return { status: "ok", completed: 0 };
+  if (!directory) return { status: "found", completed: 0 };
   const files = await readJsonFiles(directory);
+  const expires = new Date(clock() + graceMs()).toISOString();
   let completed = 0;
-  const timestamp = now();
   for (const file of files) {
     const loaded = await loadRecord(file);
-    const key = loaded.record?.key ?? path.basename(file, ".json");
-    if (loaded.corrupt || loaded.missing) continue;
-    try {
-      await withNotesKeyLock(directory, key, async () => {
-        const current = await loadRecord(file, key);
-        if (current.corrupt || current.missing || current.record.state !== "active") return;
-        await saveRecord(directory, {
-          ...current.record,
-          state: "completed",
-          expires_at: new Date(clock() + graceMs()).toISOString(),
-          updated_at: timestamp,
-        });
-        completed += 1;
-      });
-    } catch (error) {
-      if (error?.code === "notes_lock_timeout") {
-        return {
-          status: "busy",
-          key,
-          completed,
-          reason: "lock-timeout",
-          next: "笔记正在被其他操作更新；稍后重试 completeRun",
-        };
-      }
-      throw error;
-    }
+    if (loaded.invalid || loaded.missing || loaded.record.state !== "active") continue;
+    const current = await loadRecord(file, loaded.record.key);
+    if (current.invalid || current.missing || current.record.state !== "active") continue;
+    await saveRecord(directory, {
+      ...current.record,
+      state: "done",
+      expires_at: expires,
+      updated_at: now(),
+    });
+    completed += 1;
   }
-  return { status: "ok", completed };
+  return { status: "found", completed };
 }
 
 const TOOL_DEFINITIONS = [
   {
     name: "note_take",
-    description: "记录 run 作用域的事实、具体值或 artifact 引用，并按 key 保留版本历史。when-to-use：产生后续还要用的关键事实、一次性值或决策时调用；当上下文被折叠、需要早期执行产生的具体值时，先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
+    description: "记录 run 作用域的事实、具体值或 artifact 引用；旧 current 会保留为已作废的 superseded。when-to-use：产生后续还要用的关键事实、一次性值或决策时调用；上下文被折叠时先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
     inputSchema: {
       type: "object",
       properties: {
@@ -1147,7 +640,6 @@ const TOOL_DEFINITIONS = [
         scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
         tags: { type: "array", items: { type: "string" } },
         pinned: { type: "boolean" },
-        relevance: { type: "number" },
         provenance: { type: "object" },
       },
       required: ["key"],
@@ -1156,13 +648,12 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_read",
-    description: "按精确 key 读取笔记。when-to-use：当上下文被折叠、需要早期执行产生的具体值时，先 note_list，再 note_read key=...；值型笔记一步返回 value 与 artifactRef，仅引用型笔记返回 archivePath+locator 供有界核对；不要重跑非幂等命令，不要遍历归档目录",
+    description: "按精确 key 读取 current，并返回已作废的 superseded 与 folded。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
     inputSchema: {
       type: "object",
       properties: {
         key: { type: "string" },
         scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
-        version: { type: "integer", minimum: 1 },
       },
       required: ["key"],
       additionalProperties: false,
@@ -1170,7 +661,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_list",
-    description: "恢复具体值时优先调用，列出 run 作用域笔记的 key、标签、元数据、短 preview 和 next 提示，不返回完整内容。when-to-use：当上下文被折叠、需要早期执行产生的具体值时，先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
+    description: "列出 run 作用域笔记的 key、标签和 current 元数据，不返回完整内容。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
     inputSchema: {
       type: "object",
       properties: {
@@ -1185,7 +676,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_forget",
-    description: "撤销一个 run 作用域笔记并保留墓碑与历史版本。when-to-use：值已失效或必须明确撤销时调用；当上下文被折叠、需要早期执行产生的具体值时，先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
+    description: "撤销一个 run 作用域笔记并保留墓碑。when-to-use：值已失效或必须明确撤销时调用；上下文被折叠时先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
     inputSchema: {
       type: "object",
       properties: {
@@ -1200,17 +691,11 @@ const TOOL_DEFINITIONS = [
 
 export function getSkillDefinition() {
   for (const tool of TOOL_DEFINITIONS) {
-    if (!TOOL_NAME_PATTERN.test(tool.name)) {
-      throw new Error(`非法 notes 工具名：${tool.name}`);
-    }
+    if (!TOOL_NAME_PATTERN.test(tool.name)) throw new Error(`非法 notes 工具名：${tool.name}`);
   }
   return {
     schema_version: 1,
-    skill: {
-      id: "notes",
-      runtime: "node",
-      entrypoint: "skill.mjs",
-    },
+    skill: { id: "notes", runtime: "node", entrypoint: "skill.mjs" },
     tools: TOOL_DEFINITIONS,
   };
 }

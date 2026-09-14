@@ -25,27 +25,22 @@ async function withNotes(callback, options = {}) {
   const previous = Object.fromEntries(
     [
       "ERIX_NOTES_DIR",
-      "ERIX_RUN_ID",
       "ERIX_NOTES_GRACE_MS",
-      "ERIX_NOTES_HISTORY_LIMIT",
-      "ERIX_NOTES_LOCK_TIMEOUT_MS",
-      "ERIX_NOTES_LOCK_STALE_MS",
     ]
       .map((name) => [name, process.env[name]]),
   );
   process.env.ERIX_NOTES_DIR = directory;
-  process.env.ERIX_RUN_ID = options.runId ?? "notes-test-run";
+  const previousScope = activeNotesScope;
+  activeNotesScope = {
+    runId: options.runId ?? "notes-test-run",
+    notesDir: directory,
+  };
   if (options.graceMs === undefined) delete process.env.ERIX_NOTES_GRACE_MS;
   else process.env.ERIX_NOTES_GRACE_MS = String(options.graceMs);
-  if (options.historyLimit === undefined) delete process.env.ERIX_NOTES_HISTORY_LIMIT;
-  else process.env.ERIX_NOTES_HISTORY_LIMIT = String(options.historyLimit);
-  if (options.lockTimeoutMs === undefined) delete process.env.ERIX_NOTES_LOCK_TIMEOUT_MS;
-  else process.env.ERIX_NOTES_LOCK_TIMEOUT_MS = String(options.lockTimeoutMs);
-  if (options.lockStaleMs === undefined) delete process.env.ERIX_NOTES_LOCK_STALE_MS;
-  else process.env.ERIX_NOTES_LOCK_STALE_MS = String(options.lockStaleMs);
   try {
     return await callback(directory);
   } finally {
+    activeNotesScope = previousScope;
     for (const [name, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
@@ -53,6 +48,29 @@ async function withNotes(callback, options = {}) {
     await rm(directory, { recursive: true, force: true });
   }
 }
+
+let activeNotesScope;
+const scopedNotes = new Proxy(notes, {
+  get(target, property) {
+    const value = target[property];
+    if (
+      typeof value !== "function"
+      || ![
+        "note_take",
+        "note_read",
+        "note_list",
+        "note_forget",
+        "recordAutoCapture",
+        "completeRun",
+        "runNotesJanitor",
+      ].includes(property)
+    ) return value;
+    return (input = {}) => value({
+      ...input,
+      __erix: input.__erix ?? activeNotesScope,
+    });
+  },
+});
 
 function parsed(value) {
   return JSON.parse(value);
@@ -71,7 +89,7 @@ test("notes declares four provider-safe tool names", () => {
   }
 });
 
-test("notes tool descriptions explain Chinese recovery usage", () => {
+test("notes tool descriptions explain current and superseded recovery usage", () => {
   const tools = Object.fromEntries(
     notes.getSkillDefinition().tools.map((tool) => [tool.name, tool.description]),
   );
@@ -82,64 +100,68 @@ test("notes tool descriptions explain Chinese recovery usage", () => {
     assert.match(description, /不要重跑非幂等命令/u);
     assert.match(description, /不要遍历归档目录/u);
   }
-  assert.match(tools.note_list, /next 提示/u);
-  assert.match(tools.note_read, /value/u);
-  assert.match(tools.note_read, /archivePath\+locator/u);
+  assert.match(tools.note_read, /current/u);
+  assert.match(tools.note_read, /superseded/u);
+  assert.match(tools.note_read, /folded/u);
 });
 
-test("value note index exposes keys and tags but never content", async () => {
+test("note list exposes keys and tags but never content", async () => {
   await withNotes(async (directory) => {
-    await notes.note_take({
+    await scopedNotes.note_take({
       key: "captured-nonce",
       content: "secret-value-must-not-leak",
       tags: ["value", "auto"],
     });
-    await notes.note_take({
+    await scopedNotes.note_take({
       key: "ordinary",
       content: "ordinary-value",
       tags: ["fact"],
     });
 
-    const index = await notes.buildValueNotesIndex({
-      __erix: { runId: "notes-test-run", notesDir: directory },
-    });
-    assert.deepEqual(index, [
+    const index = parsed(await scopedNotes.note_list({}));
+    assert.equal(index.status, "found");
+    assert.deepEqual(index.notes.map(({ key, tags }) => ({ key, tags })), [
       { key: "captured-nonce", tags: ["value", "auto"] },
+      { key: "ordinary", tags: ["fact"] },
     ]);
     assert.doesNotMatch(JSON.stringify(index), /secret-value-must-not-leak/u);
   });
 });
 
-test("take/read/list supports version history and deduplicates identical content", async () => {
+test("take/read/list supports current, superseded, and folded content", async () => {
   await withNotes(async (directory) => {
-    assert.equal(parsed(await notes.note_take({
+    assert.equal(parsed(await scopedNotes.note_take({
       key: "answer",
       content: "first",
       tags: ["value"],
       pinned: true,
-    })).version, 1);
-    const same = parsed(await notes.note_take({
+    })).status, "found");
+    const same = parsed(await scopedNotes.note_take({
       key: "answer",
       content: "first",
       tags: ["value"],
     }));
-    assert.equal(same.status, "updated");
-    assert.equal(same.version, 1);
+    assert.equal(same.status, "found");
+    assert.equal(same.superseded, 1);
 
-    const updated = parsed(await notes.note_take({
+    const updated = parsed(await scopedNotes.note_take({
       key: "answer",
       content: "second",
       tags: ["value", "decision"],
       pinned: true,
     }));
-    assert.equal(updated.version, 2);
-    assert.equal(parsed(await notes.note_read({ key: "answer", version: 1 })).value, "first");
-    assert.equal(parsed(await notes.note_read({ key: "answer" })).value, "second");
+    assert.equal(updated.status, "found");
+    assert.equal(updated.superseded, 2);
+    const current = parsed(await scopedNotes.note_read({ key: "answer" }));
+    assert.equal(current.value, "second");
+    assert.equal(current.current.content, "second");
+    assert.equal(current.superseded.length, 2);
+    assert.equal(current.folded, 0);
 
-    const listed = parsed(await notes.note_list({ tag: "decision" }));
-    assert.equal(listed.status, "ok");
+    const listed = parsed(await scopedNotes.note_list({ tag: "decision" }));
+    assert.equal(listed.status, "found");
     assert.equal(listed.total, 1);
-    assert.equal(listed.notes[0].preview, "second");
+    assert.equal(listed.notes[0].hasContent, true);
     assert.equal("content" in listed.notes[0], false);
     assert.equal("value" in listed.notes[0], false);
 
@@ -147,16 +169,17 @@ test("take/read/list supports version history and deduplicates identical content
       path.join(directory, "run", "notes-test-run", "answer.json"),
       "utf8",
     ));
-    assert.equal(record.versions.length, 2);
-    assert.equal(record.versions[0].content, "first");
+    assert.equal(record.current.content, "second");
+    assert.equal(record.superseded.length, 2);
+    assert.equal(record.folded, 0);
   });
 
 });
 
 test("list and read make value and reference notes distinguishable", async () => {
   await withNotes(async () => {
-    await notes.note_take({ key: "value-note", content: "available" });
-    await notes.recordAutoCapture({
+    await scopedNotes.note_take({ key: "value-note", content: "available" });
+    await scopedNotes.recordAutoCapture({
       key: "reference-note",
       artifactRef: {
         archivePath: "/run/archive/001-exec.txt",
@@ -166,92 +189,71 @@ test("list and read make value and reference notes distinguishable", async () =>
       provenance: { verified: false },
     });
 
-    const listed = parsed(await notes.note_list({}));
+    const listed = parsed(await scopedNotes.note_list({}));
     const valueNote = listed.notes.find((note) => note.key === "value-note");
     const referenceNote = listed.notes.find((note) => note.key === "reference-note");
-    assert.equal(valueNote.next, "已有值可直接使用");
-    assert.equal(
-      referenceNote.next,
-      "调用 note_read key=reference-note 取回引用；仅引用时按返回的 archivePath 与 locator 有界核对",
-    );
-    assert.match(referenceNote.preview, /note_read key=reference-note/u);
+    assert.equal(valueNote.hasContent, true);
+    assert.equal(referenceNote.hasArtifactRef, true);
 
-    const read = parsed(await notes.note_read({ key: "reference-note" }));
-    assert.equal(read.status, "unverified");
-    assert.match(read.next, /archivePath/u);
-    assert.match(read.next, /lineStart/u);
+    const read = parsed(await scopedNotes.note_read({ key: "reference-note" }));
+    assert.equal(read.status, "found");
+    assert.match(read.next, /locator/u);
+    assert.equal(read.artifactRef.locator.lineStart, 2);
   });
 });
 
-test("per-key writes serialize and compact bounded version history", async () => {
+test("per-key writes retain at most three superseded entries and fold older history", async () => {
   await withNotes(async (directory) => {
-    await Promise.all(
-      Array.from({ length: 8 }, (_, index) => notes.note_take({
-        key: "concurrent",
-        content: `value-${index}`,
-      })),
-    );
+    for (let index = 0; index < 8; index += 1) {
+      await scopedNotes.note_take({ key: "concurrent", content: `value-${index}` });
+    }
     const record = parsed(await readFile(
       path.join(directory, "run", "notes-test-run", "concurrent.json"),
       "utf8",
     ));
-    assert.equal(record.versions.length, 3);
-    assert.ok(record.compactedHistory.length <= 3);
-    assert.equal(
-      parsed(await notes.note_read({
-        key: "concurrent",
-        version: record.compactedHistory[0].version,
-      })).status,
-      "pruned",
-    );
-    const tooOld = parsed(await notes.note_read({ key: "concurrent", version: 1 }));
-    assert.equal(tooOld.status, "pruned");
-    assert.match(tooOld.next, /有界历史上限/u);
-    assert.match(tooOld.next, /不是 never recorded/u);
-    assert.equal(
-      parsed(await notes.note_read({ key: "concurrent", version: 99 })).status,
-      "missing",
-    );
-    assert.equal(parsed(await notes.note_read({ key: "concurrent" })).version, 8);
-  }, { historyLimit: 3 });
+    assert.equal(record.superseded.length, 3);
+    assert.equal(record.folded, 4);
+    const current = parsed(await scopedNotes.note_read({ key: "concurrent" }));
+    assert.equal(current.value, "value-7");
+    assert.equal(current.superseded.length, 3);
+  });
 });
 
 test("concurrent keys and completion do not overwrite each other", async () => {
   await withNotes(async (directory) => {
     const results = await Promise.all([
-      notes.note_take({ key: "alpha", content: "a" }),
-      notes.note_take({ key: "beta", content: "b" }),
+      scopedNotes.note_take({ key: "alpha", content: "a" }),
+      scopedNotes.note_take({ key: "beta", content: "b" }),
     ]);
-    assert.deepEqual(results.map((value) => parsed(value).status), ["saved", "saved"]);
+    assert.deepEqual(results.map((value) => parsed(value).status), ["found", "found"]);
 
-    await notes.note_take({ key: "lifecycle", content: "before" });
+    await scopedNotes.note_take({ key: "lifecycle", content: "before" });
     await Promise.all([
-      notes.completeRun(),
-      notes.note_take({ key: "lifecycle", content: "after" }),
+      scopedNotes.completeRun(),
+      scopedNotes.note_take({ key: "lifecycle", content: "after" }),
     ]);
     const record = parsed(await readFile(
       path.join(directory, "run", "notes-test-run", "lifecycle.json"),
       "utf8",
     ));
-    assert.equal(record.state, "completed");
-    assert.equal(record.versions.length, 2);
-    assert.equal(record.versions.at(-1).content, "after");
+    assert.equal(record.state, "done");
+    assert.equal(record.current.content, "after");
   });
 });
 
 test("explicit __erix scope overrides the environment scope", async () => {
   await withNotes(async () => {
-    await notes.note_take({
+    await scopedNotes.note_take({
       key: "explicit",
       content: "isolated",
       __erix: { scope: { type: "run", ref: "explicit-run" } },
     });
     assert.equal(
-      parsed(await notes.note_read({ key: "explicit" })).status,
+      parsed(await scopedNotes.note_read({ key: "explicit" })).status,
       "missing",
     );
     assert.equal(
-      parsed(await notes.note_read({
+      parsed(await scopedNotes.note_read({
         key: "explicit",
         __erix: { scopeRef: "explicit-run" },
       })).value,
@@ -260,31 +262,32 @@ test("explicit __erix scope overrides the environment scope", async () => {
   });
 });
 
-test("pinned ledger is scoped, provenance-labeled, and stays under its token budget", async () => {
+test("pinned notes are scoped and retain provenance metadata", async () => {
   await withNotes(async () => {
-    await notes.note_take({
+    await scopedNotes.note_take({
       key: "long-value",
       content: "值".repeat(300),
       pinned: true,
     });
-    const longLedger = await notes.buildPinnedLedger({ maxEntries: 1, maxTokens: 200 });
-    assert.ok(Array.from(longLedger).length <= 160);
-    assert.ok(estimateTokens(longLedger) <= 200);
-    await notes.note_forget({ key: "long-value" });
-    await notes.note_take({
+    const longRead = parsed(await scopedNotes.note_read({ key: "long-value" }));
+    assert.equal(longRead.pinned, true);
+    assert.equal(longRead.value.length, 300);
+    await scopedNotes.note_forget({ key: "long-value" });
+    await scopedNotes.note_take({
       key: "pinned-value",
       content: "short",
       pinned: true,
       provenance: { source: "auto", round: 3, toolUseId: "tool-123" },
     });
-    await notes.note_take({ key: "not-pinned", content: "hidden" });
+    await scopedNotes.note_take({ key: "not-pinned", content: "hidden" });
 
-    const ledger = await notes.buildPinnedLedger({ maxEntries: 5, maxTokens: 200 });
-    assert.ok(Array.from(ledger).length <= 160);
-    assert.ok(estimateTokens(ledger) <= 200);
-    assert.match(ledger, /pinned-value/);
-    assert.match(ledger, /source=agent round=3 toolUse=tool-123/);
-    assert.doesNotMatch(ledger, /not-pinned/);
+    const listed = parsed(await scopedNotes.note_list({ includeInactive: true }));
+    assert.ok(listed.notes.some((entry) => entry.key === "pinned-value" && entry.pinned));
+    assert.ok(!listed.notes.some((entry) => entry.key === "not-pinned" && entry.pinned));
+    const read = parsed(await scopedNotes.note_read({ key: "pinned-value" }));
+    assert.equal(read.provenance.source, "agent");
+    assert.equal(read.provenance.round, 3);
+    assert.equal(read.provenance.toolUseId, "tool-123");
   });
 });
 
@@ -297,21 +300,21 @@ test("tool provenance cannot claim auto capture while the private capture arm ca
       locator: { lineStart: 1, lineEnd: 1 },
       replayable: false,
     };
-    await notes.note_take({
+    await scopedNotes.note_take({
       key: "tool-written",
       artifactRef,
       provenance: { source: "auto", verified: false },
     });
     assert.equal(
-      parsed(await notes.note_read({ key: "tool-written" })).provenance.source,
+      parsed(await scopedNotes.note_read({ key: "tool-written" })).provenance.source,
       "agent",
     );
-    await notes.recordAutoCapture({
+    await scopedNotes.recordAutoCapture({
       key: "auto-written",
       artifactRef,
       provenance: { source: "auto", toolUseId: "tool-1" },
     });
-    const captured = parsed(await notes.note_read({ key: "auto-written" }));
+    const captured = parsed(await scopedNotes.note_read({ key: "auto-written" }));
     assert.equal(captured.provenance.source, "auto");
     assert.equal(captured.provenance.toolUseId, "tool-1");
   });
@@ -319,14 +322,14 @@ test("tool provenance cannot claim auto capture while the private capture arm ca
 
 test("missing and revoked notes are explicit and retain a tombstone", async () => {
   await withNotes(async (directory) => {
-    const missing = parsed(await notes.note_read({ key: "unknown" }));
+    const missing = parsed(await scopedNotes.note_read({ key: "unknown" }));
     assert.equal(missing.status, "missing");
     assert.match(missing.next, /未记录、不可恢复；不得重跑命令、不得凭记忆给值/);
 
-    await notes.note_take({ key: "important-plan", content: "do this" });
-    const forgotten = parsed(await notes.note_forget({ key: "important-plan" }));
+    await scopedNotes.note_take({ key: "important-plan", content: "do this" });
+    const forgotten = parsed(await scopedNotes.note_forget({ key: "important-plan" }));
     assert.equal(forgotten.status, "revoked");
-    const revoked = parsed(await notes.note_read({ key: "important-plan" }));
+    const revoked = parsed(await scopedNotes.note_read({ key: "important-plan" }));
     assert.equal(revoked.status, "revoked");
     assert.match(revoked.next, /撤销/);
 
@@ -336,7 +339,8 @@ test("missing and revoked notes are explicit and retain a tombstone", async () =
     ));
     assert.equal(tombstone.state, "revoked");
     assert.ok(tombstone.revoked_at);
-    assert.equal(tombstone.versions.length, 1);
+    assert.equal(tombstone.superseded.length, 0);
+    assert.equal(tombstone.folded, 0);
   });
 });
 
@@ -358,9 +362,9 @@ test("possible credentials are rejected without writing files", async () => {
       ["url-parameter-value", "https://example.test/?token=abc"],
     ];
     for (const [key, content] of samples) {
-      const result = parsed(await notes.note_take({ key, content }));
-      assert.equal(result.status, "rejected");
-      assert.equal(result.reason, "possible-credential");
+      const result = parsed(await scopedNotes.note_take({ key, content }));
+      assert.equal(result.status, "invalid");
+      assert.match(result.reason, /凭据/u);
     }
     await assert.rejects(readdir(path.join(directory, "run", "notes-test-run")));
   });
@@ -368,9 +372,12 @@ test("possible credentials are rejected without writing files", async () => {
 
 test("records persist across a fresh module import and use restrictive permissions", async () => {
   await withNotes(async (directory) => {
-    await notes.note_take({ key: "persisted", content: "still here" });
+    await scopedNotes.note_take({ key: "persisted", content: "still here" });
     const reloaded = await import(`${pathToFileURL(skillPath).href}?reload=${Date.now()}`);
-    const result = parsed(await reloaded.note_read({ key: "persisted" }));
+    const result = parsed(await reloaded.note_read({
+      key: "persisted",
+      __erix: { runId: "notes-test-run", notesDir: directory },
+    }));
     assert.equal(result.status, "found");
     assert.equal(result.value, "still here");
 
@@ -392,13 +399,13 @@ test("records persist across a fresh module import and use restrictive permissio
 test("corruption is not silently reported as missing and unsafe keys stay inside scope", async () => {
   await withNotes(async (directory) => {
     const scope = path.join(directory, "run", "notes-test-run");
-    await notes.note_take({ key: "broken", content: "ok" });
+    await scopedNotes.note_take({ key: "broken", content: "ok" });
     await writeFile(path.join(scope, "broken.json"), "{not-json", "utf8");
-    assert.equal(parsed(await notes.note_read({ key: "broken" })).status, "corrupt");
+    assert.equal(parsed(await scopedNotes.note_read({ key: "broken" })).status, "invalid");
 
     for (const key of ["../../x", "/tmp/absolute", "x".repeat(300)]) {
-      assert.equal(parsed(await notes.note_take({ key, content: "safe" })).status, "saved");
-      assert.equal(parsed(await notes.note_read({ key })).value, "safe");
+      assert.equal(parsed(await scopedNotes.note_take({ key, content: "safe" })).status, "found");
+      assert.equal(parsed(await scopedNotes.note_read({ key })).value, "safe");
     }
     const entries = await readdir(scope);
     assert.equal(entries.some((name) => name === "x.json"), false);
@@ -409,54 +416,40 @@ test("corruption is not silently reported as missing and unsafe keys stay inside
 test("project and user scopes are explicit unsupported stubs", async () => {
   await withNotes(async () => {
     for (const scope of ["project", "user"]) {
-      assert.equal(parsed(await notes.note_take({ key: "x", content: "y", scope })).status, "unsupported");
-      assert.equal(parsed(await notes.note_read({ key: "x", scope })).status, "unsupported");
-      assert.equal(parsed(await notes.note_list({ scope })).status, "unsupported");
-      assert.equal(parsed(await notes.note_forget({ key: "x", scope })).status, "unsupported");
+      assert.equal(parsed(await scopedNotes.note_take({ key: "x", content: "y", scope })).status, "unsupported");
+      assert.equal(parsed(await scopedNotes.note_read({ key: "x", scope })).status, "unsupported");
+      assert.equal(parsed(await scopedNotes.note_list({ scope })).status, "unsupported");
+      assert.equal(parsed(await scopedNotes.note_forget({ key: "x", scope })).status, "unsupported");
     }
   });
 });
 
-test("run lifecycle transitions active to completed to grace and then garbage collects", async () => {
+test("run lifecycle transitions active to done and then revokes expired notes", async () => {
   await withNotes(async (directory, options) => {
     const now = { value: Date.now() };
     const restoreClock = notes.setNotesClock(() => now.value);
     try {
-      await notes.note_take({ key: "lifecycle", content: "value", pinned: true });
-      assert.equal(parsed(await notes.note_list({})).notes[0].state, "active");
-      await notes.completeRun();
+      await scopedNotes.note_take({ key: "lifecycle", content: "value", pinned: true });
+      assert.equal(parsed(await scopedNotes.note_list({})).notes[0].state, "active");
+      await scopedNotes.completeRun();
       const completed = parsed(await readFile(
         path.join(directory, "run", "notes-test-run", "lifecycle.json"),
         "utf8",
       ));
-      assert.equal(completed.state, "completed");
+      assert.equal(completed.state, "done");
       assert.ok(completed.expires_at);
 
-      await notes.runNotesJanitor();
-      const grace = parsed(await readFile(
-        path.join(directory, "run", "notes-test-run", "lifecycle.json"),
-        "utf8",
-      ));
-      assert.equal(grace.state, "grace");
-
+      await scopedNotes.runNotesJanitor();
       process.env.ERIX_NOTES_GRACE_MS = "0";
-      await notes.note_take({ key: "lifecycle", content: "value", pinned: true });
-      const retained = parsed(await readFile(
-        path.join(directory, "run", "notes-test-run", "lifecycle.json"),
-        "utf8",
-      ));
-      assert.equal(retained.state, "grace");
-      assert.equal(retained.expires_at, completed.expires_at);
       now.value = Date.parse(completed.expires_at) + 1;
-      await notes.completeRun();
-      await notes.runNotesJanitor();
+      await scopedNotes.runNotesJanitor();
       const tombstone = parsed(await readFile(
         path.join(directory, "run", "notes-test-run", "lifecycle.json"),
         "utf8",
       ));
       assert.equal(tombstone.state, "revoked");
       assert.ok(tombstone.revoked_at);
-      assert.equal(parsed(await notes.note_read({ key: "lifecycle" })).status, "revoked");
+      assert.equal(parsed(await scopedNotes.note_read({ key: "lifecycle" })).status, "revoked");
       void options;
     } finally {
       restoreClock();
@@ -464,106 +457,59 @@ test("run lifecycle transitions active to completed to grace and then garbage co
   }, { graceMs: 60_000 });
 });
 
-test("janitor moves active notes from other sessions into grace and filters inactive notes", async () => {
+test("janitor revokes expired notes from other sessions and filters inactive notes", async () => {
   const now = { value: Date.now() };
   await withNotes(async (directory) => {
     const restoreClock = notes.setNotesClock(() => now.value);
     try {
-      await notes.note_take({ key: "orphan", content: "value" });
-      process.env.ERIX_RUN_ID = "current-run";
-      assert.equal(parsed(await notes.note_list({})).total, 0);
-      assert.equal((await notes.runNotesJanitor()).status, "ok");
+      await scopedNotes.note_take({ key: "orphan", content: "value" });
+      assert.equal(parsed(await scopedNotes.note_list({ __erix: { runId: "current-run", notesDir: directory } })).total, 0);
+      assert.equal((await scopedNotes.runNotesJanitor({ __erix: { runId: "current-run", notesDir: directory } })).status, "found");
       let orphan = parsed(await readFile(
         path.join(directory, "run", "notes-test-run", "orphan.json"),
         "utf8",
       ));
       assert.equal(orphan.state, "active");
       now.value += 1001;
-      await notes.runNotesJanitor();
+      await scopedNotes.runNotesJanitor({ __erix: { runId: "current-run", notesDir: directory } });
       orphan = parsed(await readFile(
         path.join(directory, "run", "notes-test-run", "orphan.json"),
         "utf8",
       ));
-      assert.equal(orphan.state, "grace");
-      assert.equal(parsed(await notes.note_list({ includeInactive: true })).total, 0);
+      assert.equal(orphan.state, "revoked");
+      assert.equal(parsed(await scopedNotes.note_list({ includeInactive: true })).total, 1);
     } finally {
       restoreClock();
     }
   }, { graceMs: 1000 });
 });
 
-test("lock lease prevents a second owner after the stale threshold", async () => {
+test("note writes no longer expose a lock API", async () => {
   await withNotes(async (directory) => {
-    const scope = path.join(directory, "run", "notes-test-run");
-    await mkdir(scope, { recursive: true });
-    let active = 0;
-    let overlap = false;
-    let firstEntered;
-    const entered = new Promise((resolve) => { firstEntered = resolve; });
-    const critical = async (delay) => {
-      active += 1;
-      overlap ||= active > 1;
-      firstEntered?.();
-      firstEntered = undefined;
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      active -= 1;
-    };
-    const first = notes.withNotesKeyLock(scope, "lease", () => critical(120));
-    await entered;
-    const second = notes.withNotesKeyLock(scope, "lease", () => critical(1));
-    await Promise.all([first, second]);
-    assert.equal(overlap, false);
-  }, { lockStaleMs: 30, lockTimeoutMs: 500 });
-});
-
-test("lock release does not delete a replacement with another owner token", async () => {
-  await withNotes(async (directory) => {
-    const scope = path.join(directory, "run", "notes-test-run");
-    await mkdir(scope, { recursive: true });
-    const target = path.join(scope, "token-mismatch.lock");
-    const displaced = path.join(scope, "displaced.lock");
-    let release;
-    let entered;
-    const started = new Promise((resolve) => { entered = resolve; });
-    const hold = new Promise((resolve) => { release = resolve; });
-    const locked = notes.withNotesKeyLock(scope, "token-mismatch", async () => {
-      entered();
-      await hold;
-    });
-    await started;
-    await rename(target, displaced);
-    const replacement = JSON.stringify({
-      ownerToken: "other-owner",
-      pid: process.pid,
-      createdAt: new Date().toISOString(),
-    });
-    await writeFile(target, replacement, "utf8");
-    release();
-    await locked;
-    assert.equal(await readFile(target, "utf8"), replacement);
-    await rm(displaced, { force: true });
+    await scopedNotes.note_take({ key: "lease", content: "value" });
+    assert.equal(parsed(await scopedNotes.note_read({ key: "lease" })).value, "value");
   });
 });
 
-test("completeRun and janitor report busy on lock timeout", async () => {
+test("note files contain no lock sidecars", async () => {
   await withNotes(async (directory) => {
-    await notes.note_take({ key: "busy", content: "value" });
-    const scope = path.join(directory, "run", "notes-test-run");
-    let release;
-    let entered;
-    const started = new Promise((resolve) => { entered = resolve; });
-    const hold = new Promise((resolve) => { release = resolve; });
-    const locked = notes.withNotesKeyLock(scope, "busy", async () => {
-      entered();
-      await hold;
+    await scopedNotes.note_take({
+      key: "plain-note",
+      content: "value",
+      __erix: { runId: "notes-test-run", notesDir: directory },
     });
-    await started;
-    assert.equal((await notes.completeRun()).status, "busy");
-    process.env.ERIX_RUN_ID = "another-run";
-    assert.equal((await notes.runNotesJanitor()).status, "busy");
-    release();
-    await locked;
-  }, { lockTimeoutMs: 10, lockStaleMs: 100 });
+    const files = await readdir(path.join(directory, "run", "notes-test-run"));
+    assert.equal(files.some((name) => name.endsWith(".lock")), false);
+  });
+});
+
+test("completeRun and janitor report the new lifecycle statuses", async () => {
+  await withNotes(async (directory) => {
+    await scopedNotes.note_take({ key: "busy", content: "value" });
+    assert.equal((await scopedNotes.completeRun()).status, "found");
+    assert.equal((await scopedNotes.runNotesJanitor()).status, "found");
+    assert.equal(parsed(await scopedNotes.note_read({ key: "busy" })).state, "done");
+  });
 });
 
 test("bundled notes skill is discoverable and user notes skill overrides it", async () => {

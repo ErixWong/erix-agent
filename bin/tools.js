@@ -10,9 +10,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { captureToolExecution, candidateLines } from "./auto-capture.js";
-import { note_read } from "../skills/notes/skill.mjs";
-import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
+import { autoCaptureKey, captureToolExecution } from "./auto-capture.js";
+import { note_read as notesRead } from "../skills/notes/skill.mjs";
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
@@ -153,64 +152,27 @@ const schemas = [
 export const CLI_TOOLS_SYSTEM_PROMPT =
   `可用工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出。
 
-[工作方式]
-- 复杂任务先规划：用 tree/readFile 了解项目结构，拆步骤逐步执行
-- **长任务（多步、可能跨会话）先用 todo_add 拆解任务清单**（存 ~/.erix/todos/，按工作目录隔离）；每完成一步 todo_done 划掉；会话开始时先 todo_list 恢复进度
-- 任务中产生的关键事实、一次性值或决策，用 note_take 记录；需要早期轮次的具体值而当前上下文没有时，已知 key 先 note_read key=<key>，未知 key 才 note_list → note_read，只有 note_read 明确返回仅引用时才按 artifactRef.archivePath + locator 有界读取
-- notes 是 pull-only 的事实/值索引，不是每轮日志工具；不得重跑命令“恢复”一次性值，也不得凭记忆给值。note_read missing 时按工具提示声明不可恢复
-- **读大文件用 readFile 的 offset/limit 分段读，一个文件只读一次**（不要重复读全文、不要用大 offset 反复拉全量），控制上下文累积
-- 按用户要求直接调用工具完成操作，不要只提供操作说明
-- **遇挫坚持：命令失败、依赖缺失、报错时，先诊断原因并重试或换方案（如 apt/pip 安装依赖、改用替代命令），不要因为一次失败就放弃或空手结束**；只有尝试多种方案后仍不可行才如实汇报
-- 每次操作后验证结果（读回文件、检查命令退出码），失败则诊断重试，不假装成功
-- 输出必须来自工具真实返回，不得编造文件内容或命令结果
-- **硬规则：回答中出现的具体数值/一次性输出，必须来自当前上下文中的工具返回或归档文件；不得凭记忆给出。**
+[你的处境]
+上下文会被折叠，早期细节你会真的忘记——不是记不清，是没有。
+拿到后面还要用的具体值/决定时，立刻 note_take；
+需要早期细节而想不起来时，先 note_list 再 note_read，不要猜。
+非幂等命令（/dev/urandom、$RANDOM…）重跑会得到不同的值，
+不得重跑"恢复"原值，不得凭记忆给值；确实不可恢复就明说不可恢复。
 
-[来源与身份]
-- 一次性生成的值（随机数、时间戳、临时 token、不可复现的命令输出）只能引用首次出现的工具返回，不得通过重跑命令“恢复”
-- 关键值应在产生时落盘（写文件/持久笔记），后续从磁盘读取
-- 原值已不在上下文且无持久记录时，明确说明不可恢复，不得给出替代值
+[工具纪律]
+- 复杂任务先规划并逐步执行；长任务用 todo 工具记录进度
+- 大文件用 readFile 的 offset/limit 分段读取，操作后验证结果
+- 具体数值必须来自当前工具返回或明确的归档文件，不得编造
+- 不要主动读取密钥、凭据或 .env 文件；只读取本次工具返回明确给出的归档路径
+- 任务完成后直接汇报结果，默认使用中文`;
 
-[工具输出归档]
-- 工具输出较大或被截断时，返回末尾会给出完整输出的归档路径；归档目录路径会在系统提示中给出；需要原始内容时用 readFile/cat 读取该路径，不要重跑命令（重跑可能得到不同值）
-
-[边界]
-- 本 CLI 不提供安全边界，运行环境负责隔离；敏感操作（删除、覆盖、网络、安装）先说明要做什么
-- 不要主动读取密钥/凭据文件（如 ~/.erix、~/.pi、.env）；但工具返回中明确给出的归档路径（例如 ~/.erix/transcripts/outputs/...，仅指本次运行的工具输出）是例外，可以且应当读取，不等于读取其他 ~/.erix 内容
-
-[收尾]
-- 任务完成或已无需更多工具时，直接输出最终答复，不要空转
-- 默认用中文回答；复杂任务结构化汇报：做了什么、结果、遗留问题
-- 汇报关键状态声明（如"服务仍在运行"）前，先用工具验证（curl/检查进程），不要凭推断下结论`;
-
-export function buildArchiveSystemPrompt(archiveDir) {
+export function buildArchiveNotice(archiveDir) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
-  const absoluteDir = path.resolve(archiveDir);
-  return `
-
-[工具输出归档]
-本次运行的归档目录：${absoluteDir}
-早期工具输出被截断或已折叠出上下文时，若已知 key，优先直接调用 note_read key=<key> 一步取回具体值；若不知道 key，先 note_list 再 note_read。只有 note_read 明确返回仅引用时，才按返回的 archivePath + locator 用 readFile 读取对应具体文件。没有可用笔记且确实需要完整原文时，才读取该具体归档文件；禁止遍历归档目录，不要重跑命令（重跑会得到不同的值），也不要凭记忆给值。`;
+  return `\n\n[工具输出归档]\n本次运行的归档目录：${path.resolve(archiveDir)}。需要早期原文时读取明确的归档文件或先用 note_list、note_read 恢复记录；禁止遍历归档目录、重跑非幂等命令或凭记忆补值。`;
 }
 
-export function buildArchiveRecoveryHint(archiveDir) {
-  if (typeof archiveDir !== "string" || archiveDir.length === 0) return undefined;
-  const absoluteDir = path.resolve(archiveDir);
-  return `早期轮次的工具输出原文已归档到 ${absoluteDir}（形如 001-exec.txt）。若回答需要早期轮次的具体数值，已知 key 时优先直接调用 note_read key=<key> 一步取回；未知 key 时先 note_list 再 note_read。只有 note_read 明确返回仅引用时，才按返回的 archivePath + locator 用 readFile 读取对应具体文件。没有可用笔记且确实需要完整原文时，才读取该具体归档文件；禁止遍历归档目录；不要重跑命令（重跑会得到不同的值），也不要凭记忆给出具体值。`;
-}
 
-export function buildValueNotesIndexPrompt(entries) {
-  if (!Array.isArray(entries) || entries.length === 0) return "";
-  const items = entries
-    .filter((entry) => (
-      entry
-      && typeof entry.key === "string"
-      && entry.key.length > 0
-      && Array.isArray(entry.tags)
-    ))
-    .map((entry) => `${entry.key}（标签：${entry.tags.join("、")}）`);
-  if (items.length === 0) return "";
-  return `\n\n[notes value index]\n本 run 自动捕获的值（用 note_read key=<key> 一步取回，优先于遍历归档；不要重跑命令）：${items.join("、")}\n索引只包含 key 和标签，不包含值；需要具体值时按 key 调用 note_read。`;
-}
+
 
 function resolveToolPath(root, value) {
   return path.resolve(root, value);
@@ -518,20 +480,6 @@ function normalizeCommand(command) {
   return String(command).replaceAll(/\r\n?/gu, "\n").trim();
 }
 
-function captureKeysForOutput(output, toolUseId, artifactDigest) {
-  const digestPrefix = artifactDigest.slice(0, 8);
-  const keys = [];
-  for (const candidate of candidateLines(output, { includeOversized: true })) {
-    if (looksLikeCredential(candidate.label, candidate.value)) continue;
-    const baseKey = candidate.label || `auto:${String(toolUseId ?? "unknown")}:${digestPrefix}`;
-    for (const key of [baseKey, `${baseKey}:candidate:${digestPrefix}`]) {
-      if (!keys.includes(key)) keys.push(key);
-    }
-    if (keys.length >= 6) break;
-  }
-  return keys;
-}
-
 async function readCapturedValues(commandState, notesScope) {
   if (
     !notesScope
@@ -542,34 +490,15 @@ async function readCapturedValues(commandState, notesScope) {
     return [];
   }
 
-  const values = [];
-  for (const key of commandState.captureKeys ?? []) {
-    const latest = JSON.parse(await note_read({ key, __erix: notesScope }));
-    const versions = [latest];
-    const latestVersion = Number.isSafeInteger(latest.version) ? latest.version : 1;
-    for (let version = 1; version < latestVersion; version += 1) {
-      versions.push(JSON.parse(await note_read({
-        key,
-        version,
-        __erix: notesScope,
-      })));
-    }
-    for (const parsed of versions) {
-      if (
-        parsed.status !== "found"
-        || typeof parsed.value !== "string"
-        || parsed.provenance?.source !== "auto"
-        || parsed.artifactRef?.digest !== commandState.artifactDigest
-      ) {
-        continue;
-      }
-      if (!values.some((item) => item.key === parsed.key)) {
-        values.push({ key: parsed.key ?? key, value: parsed.value });
-      }
-      break;
-    }
-  }
-  return values;
+  if (!commandState.captureKey) return [];
+  const key = commandState.captureKey;
+  const result = JSON.parse(await notesRead({ key, __erix: notesScope }));
+  if (result.status !== "found" || result.current?.provenance?.source !== "auto") return [];
+  if (result.artifactRef?.digest !== commandState.artifactDigest) return [];
+  return [{
+    key,
+    ...(typeof result.value === "string" ? { value: result.value } : {}),
+  }];
 }
 
 function interceptedNonReplayableResult(commandState, values) {
@@ -577,10 +506,13 @@ function interceptedNonReplayableResult(commandState, values) {
     "[已拦截重复执行：该命令非幂等、不可重放；重跑会得到不同值。]",
   ];
   for (const item of values) {
-    lines.push(
-      `首次执行捕获到的值（来自首次执行（已捕获））：${item.value}`,
-      `note_read key=${item.key}`,
-    );
+    if (typeof item.value === "string") {
+      const firstLine = item.value.split(/\r\n|\r|\n/u)[0];
+      const assignment = /^\s*[^:=\s][^:=]*=\s*(.*?)\s*$/u.exec(firstLine);
+      const displayValue = assignment?.[1] || item.value;
+      lines.push(`首次执行捕获到的值（来自首次执行（已捕获））：${displayValue}`);
+    }
+    lines.push(`note_read key=${item.key}`);
   }
   if (commandState.archivePath) {
     lines.push(`首次执行归档：${commandState.archivePath}`);
@@ -768,7 +700,7 @@ export function createCliTools({
           count: 1,
           archivePath: undefined,
           artifactDigest: undefined,
-          captureKeys: [],
+          captureKey: undefined,
         };
         duplicateCommands.set(normalizedCommand, commandState);
         isFirstCommandExecution = true;
@@ -802,11 +734,9 @@ export function createCliTools({
         if (isFirstCommandExecution) {
           commandState.archivePath = archived.archivePath;
           commandState.artifactDigest = archived.artifact?.digest;
-          commandState.captureKeys = captureKeysForOutput(
-            archived.archivedText ?? String(result ?? ""),
-            context?.toolUseId,
-            archived.artifact?.digest ?? "",
-          );
+          commandState.captureKey = archived.artifact
+            ? autoCaptureKey(command, archived.artifact)
+            : undefined;
         }
         lastToolMetadata = {
           name,

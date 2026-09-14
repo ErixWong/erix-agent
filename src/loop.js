@@ -1219,6 +1219,13 @@ export async function runToolLoop({
   let verification = typeof finalGuard !== "function"
     ? { status: "skipped", reason: "no_final_guard" }
     : { status: "unverified", reason: "pending" };
+  const guardMetrics = {
+    verified: 0,
+    skipped: 0,
+    revised: 0,
+    unverified: 0,
+    guard_error: 0,
+  };
   let hadToolUse = hasToolUseInMessages(messages);
   let roundStopReason;
   let roundEventDeltas = [];
@@ -1296,6 +1303,7 @@ export async function runToolLoop({
         timeoutPromise,
       ]);
       if (decision?.action === "accept") {
+        guardMetrics.verified += 1;
         verification = { status: "verified" };
         emitEvent({ type: "final_guard", round: rounds, action: "accept" });
         return { action: "accept" };
@@ -1305,6 +1313,7 @@ export async function runToolLoop({
         && typeof decision.reason === "string"
         && decision.reason.length > 0
       ) {
+        guardMetrics.skipped += 1;
         verification = { status: "skipped", reason: decision.reason };
         emitEvent({ type: "final_guard", round: rounds, action: "skip", reason: decision.reason });
         return { action: "skip", reason: decision.reason };
@@ -1314,6 +1323,7 @@ export async function runToolLoop({
         && typeof decision.message === "string"
         && decision.message.length > 0
       ) {
+        guardMetrics.revised += 1;
         emitEvent({
           type: "final_guard",
           round: rounds,
@@ -1329,11 +1339,13 @@ export async function runToolLoop({
         || error?.name === "TimeoutError"
         ? "timeout"
         : "error";
+      guardMetrics.unverified += 1;
       verification = {
         status: "error",
         reason: errorReason,
         detail: terminationDetailForError(error),
       };
+      guardMetrics.guard_error += 1;
       emitEvent({
         type: "final_guard",
         round: rounds,
@@ -2023,7 +2035,7 @@ export async function runToolLoop({
       rounds,
       truncated: TRUNCATED_TERMINATION_REASONS.has(termination.reason),
       termination,
-      verification: { ...verification },
+      verification: { ...verification, metrics: { ...guardMetrics } },
       usage,
       compactionStats,
     };
@@ -2571,6 +2583,7 @@ export async function runToolLoop({
           return finish(reason, detail);
         }
         if (FINAL_GUARD_NON_CONTINUABLE_REASONS.has(reason)) {
+          guardMetrics.unverified += 1;
           verification = {
             status: "unverified",
             reason: "non_continuable",
@@ -2586,6 +2599,7 @@ export async function runToolLoop({
         }
         if (guardDecision.action === "revise") {
           if (finalGuardRetries >= finalGuardRetryLimit) {
+            guardMetrics.unverified += 1;
             verification = {
               status: "unverified",
               reason: "max_retries",
@@ -2620,7 +2634,9 @@ export async function runToolLoop({
   const guardDecision = await callFinalGuard("max_rounds_cap");
   if (guardDecision.action === "error") return finish("max_rounds_cap");
   if (guardDecision.action === "skip") return finish("max_rounds_cap");
+  guardMetrics.unverified += 1;
   verification = {
+    ...verification,
     status: "unverified",
     reason: "non_continuable",
     detail: "max_rounds_cap",

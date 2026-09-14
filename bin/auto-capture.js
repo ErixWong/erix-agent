@@ -2,8 +2,6 @@ import { createHash } from "node:crypto";
 
 import {
   MAX_CONTENT_LENGTH,
-  NOTE_VALUE_MAX_CHARS,
-  note_read,
   recordAutoCapture,
 } from "../skills/notes/skill.mjs";
 import {
@@ -11,63 +9,23 @@ import {
   normalizedLabel,
 } from "../skills/notes/credential-patterns.mjs";
 
-const LABEL_PATTERN = /^\s*([^:=\s][^:=\s]{0,80}?)\s*[:=]\s*(.*?)\s*$/u;
-const STRUCTURED_METADATA_LABELS = new Set([
-  "lineStart",
-  "lineEnd",
-  "digest",
-  "toolUseId",
-  "artifactId",
-  "archivePath",
-  "locator",
-  "round",
-  "originalBytes",
-  "truncated",
-  "replayable",
-  "schemaVersion",
-  "kind",
-].map((label) => normalizedLabel(label)));
+const AUTO_CAPTURE_MAX_CHARS = 1000;
+const LABEL_PATTERN = /^\s*([^:=\s][^:=\s]{0,80}?)\s*=\s*(.*?)\s*$/u;
 
-export function isStructuredMetadataLabel(label) {
-  return STRUCTURED_METADATA_LABELS.has(normalizedLabel(label));
-}
-
-export function candidateLines(output, { includeOversized = false } = {}) {
-  const labelled = [];
-  const unlabelled = [];
-  const lines = output.replaceAll(/\r\n|\r/gu, "\n").split("\n");
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (
-      line.length === 0
-      || line.length > MAX_CONTENT_LENGTH
-      || (!includeOversized && line.length > NOTE_VALUE_MAX_CHARS)
-    ) continue;
-    const looksLikeUrl = /^[a-z][a-z0-9+.-]*:\/\//iu.test(line);
-    const looksLikeBase64 = line.length >= 24
-      && /^[A-Za-z0-9+/]+={0,2}$/u.test(line);
-    if (looksLikeUrl || looksLikeBase64) {
-      unlabelled.push({ label: "", value: line });
-      continue;
-    }
-    const match = LABEL_PATTERN.exec(line);
-    if (match) {
-      const label = normalizedLabel(match[1]);
-      const value = match[2].trim();
-      if (label && value && !isStructuredMetadataLabel(label)) {
-        labelled.push({ label, value });
-      }
-      continue;
-    }
-    // Unlabelled values must be opaque single-line tokens; prose is uncertain
-    // and is deliberately excluded rather than persisted.
-    if (!/\s/u.test(line)) unlabelled.push({ label: "", value: line });
+export function candidateLines(output) {
+  const candidates = [];
+  for (const rawLine of String(output ?? "").replaceAll(/\r\n|\r/gu, "\n").split("\n")) {
+    const match = LABEL_PATTERN.exec(rawLine);
+    if (!match) continue;
+    const label = normalizedLabel(match[1]);
+    const value = match[2].trim();
+    if (label && value) candidates.push({ label, value });
   }
-  return [...labelled, ...unlabelled];
+  return candidates;
 }
 
 function digest(value) {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+  return createHash("sha256").update(String(value), "utf8").digest("hex").slice(0, 24);
 }
 
 function artifactReference(artifact) {
@@ -90,34 +48,35 @@ function artifactReference(artifact) {
     ...(Number.isSafeInteger(artifact.originalBytes)
       ? { originalBytes: artifact.originalBytes }
       : {}),
+    replayable: false,
   };
 }
 
-async function candidateKey(label, reference, toolUseId) {
-  if (label) return label;
-  return `auto:${String(toolUseId ?? "unknown")}:${reference.digest.slice(0, 8)}`;
-}
-
-async function keyForCandidate(key, reference, notesScope) {
-  const existing = JSON.parse(await note_read({ key, __erix: notesScope }));
-  if (
-    (existing.status === "found" || existing.status === "unverified")
-    && existing.artifactRef?.digest === reference.digest
-  ) {
-    return null;
-  }
-  if (existing.status === "found" || existing.status === "unverified") {
-    return `${key}:candidate:${reference.digest.slice(0, 8)}`;
-  }
-  return key;
+export function autoCaptureKey(command, reference) {
+  const normalizedCommand = typeof command === "string"
+    ? command.replaceAll(/\r\n?/gu, "\n").trim()
+    : "";
+  return `auto-${digest(JSON.stringify({
+    command: normalizedCommand,
+    artifact: normalizedCommand
+      ? undefined
+      : {
+          archivePath: reference.archivePath,
+          digest: reference.digest,
+          locator: reference.locator,
+        },
+  }))}`;
 }
 
 /**
- * Capture only references to trusted sidecar artifacts. Any failure is
- * intentionally isolated from the tool loop.
+ * Capture exactly one bounded note for each non-replayable exec. The archive
+ * reference remains the source of truth; the optional content is only a
+ * bounded excerpt for discovery.
  */
 export async function captureToolExecution({
   name,
+  input,
+  command,
   result,
   metadata,
   toolUseId,
@@ -126,47 +85,53 @@ export async function captureToolExecution({
   notesScope,
 } = {}) {
   try {
-    if (name !== "exec" || metadata?.replayable !== false) return { status: "skipped" };
+    if (name !== "exec" || metadata?.replayable !== false) return { status: "found", count: 0 };
     const reference = artifactReference(metadata.artifact);
     const output = typeof metadata.fullOutput === "string"
       ? metadata.fullOutput
       : typeof result === "string" ? result : null;
-    if (!reference || output === null || digest(output) !== reference.digest) {
-      return { status: "skipped" };
-    }
+    if (!reference || output === null) return { status: "found", count: 0 };
+    const actualDigest = createHash("sha256").update(output, "utf8").digest("hex");
+    if (actualDigest !== reference.digest) return { status: "found", count: 0 };
 
-    let captured = 0;
-    const seen = new Set();
-    for (const candidate of candidateLines(output, { includeOversized: true })) {
-      if (captured >= 3 || seen.has(`${candidate.label}\n${candidate.value}`)) continue;
-      seen.add(`${candidate.label}\n${candidate.value}`);
-      if (looksLikeCredential(candidate.label, candidate.value)) continue;
-
-      const baseKey = await candidateKey(candidate.label, reference, toolUseId);
-      const key = await keyForCandidate(baseKey, reference, notesScope);
-      if (key === null) continue;
-      const provenance = {
-        source: "auto",
-        toolUseId: toolUseId ?? null,
-        round: round ?? null,
-        ts: new Date(clock()).toISOString(),
-        verified: false,
-        ...(key !== baseKey ? { supersededCandidate: true } : {}),
-      };
-      const saved = JSON.parse(await recordAutoCapture({
-        key,
-        ...(candidate.value.length <= NOTE_VALUE_MAX_CHARS ? { content: candidate.value } : {}),
-        artifactRef: reference,
-        tags: ["value"],
-        pinned: true,
-        provenance,
-        __erix: notesScope,
-      }));
-      if (saved.status === "saved" || saved.status === "updated") captured += 1;
-    }
-    return { status: "captured", count: captured };
+    const hasCredential = output
+      .replaceAll(/\r\n|\r/gu, "\n")
+      .split("\n")
+      .some((line) => {
+        const assignment = LABEL_PATTERN.exec(line);
+        if (assignment) {
+          const label = normalizedLabel(assignment[1]);
+          const value = assignment[2].trim();
+          if (looksLikeCredential(label, value)) return true;
+        }
+        return looksLikeCredential("", line);
+      });
+    const key = autoCaptureKey(command ?? input?.command ?? metadata?.command, reference);
+    const provenance = {
+      source: "auto",
+      toolUseId: toolUseId ?? null,
+      round: round ?? null,
+      ts: new Date(clock()).toISOString(),
+      verified: false,
+    };
+    const saved = JSON.parse(await recordAutoCapture({
+      key,
+      ...(hasCredential
+        ? {}
+        : { content: output.slice(0, Math.min(AUTO_CAPTURE_MAX_CHARS, MAX_CONTENT_LENGTH)) }),
+      artifactRef: reference,
+      tags: ["value", "auto"],
+      pinned: true,
+      provenance,
+      __erix: notesScope,
+    }));
+    return {
+      status: saved.status === "found" ? "found" : saved.status,
+      count: saved.status === "found" ? 1 : 0,
+      key,
+    };
   } catch (error) {
     console.error(`auto_capture failed: ${error?.message ?? String(error)}`);
-    return { status: "failed" };
+    return { status: "invalid", count: 0 };
   }
 }

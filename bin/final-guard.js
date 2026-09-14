@@ -2,113 +2,41 @@ import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
-import {
-  candidateLines,
-  isStructuredMetadataLabel,
-} from "./auto-capture.js";
-import {
-  looksLikeCredential,
-  normalizedLabel,
-} from "../skills/notes/credential-patterns.mjs";
+import { candidateLines } from "./auto-capture.js";
+import { normalizedLabel } from "../skills/notes/credential-patterns.mjs";
 
-const SOURCE_DECLARATION_PATTERN =
-  /原值|首次|一次性|密钥|阈值|时间戳|token|key|value|secret|password/iu;
-const LABEL_VALUE_PATTERN =
-  /(?:^|[\s\u3000])([^:=\s][^:=\s]{0,80}?)\s*[:=]\s*([^\s,，。；;）)]+)/gu;
-const FILE_EXTENSION_PATTERN =
-  /\.(?:txt|json|jsonl|csv|log|md|ya?ml|xml|html?|js|mjs|cjs|ts|tsx|jsx|sh|py|sql|ndjson|bin|zip|gz|pdf|png|jpe?g|webp|lock)\b/iu;
-const ARCHIVE_BASENAME_PATTERN = /^\d+-[a-z]+$/iu;
-const PATH_SEPARATOR_PATTERN = /[/\\]/u;
+const ASSIGNMENT_PATTERN =
+  /(?:^|[\s\u3000([{'"，。；;：:])([^:=\s][^:=\s]{0,80}?)\s*=\s*([^\s,，。；;）)\]}]+)/gu;
+const STRUCTURED_METADATA_LABELS = new Set([
+  "lineStart",
+  "lineEnd",
+  "digest",
+  "toolUseId",
+  "artifactId",
+  "archivePath",
+  "locator",
+  "round",
+  "originalBytes",
+  "truncated",
+  "replayable",
+  "schemaVersion",
+  "kind",
+].map((label) => normalizedLabel(label)));
 
 function warningMessage(message) {
   return `finalGuard warning: ${message}`;
 }
 
-function valueShape(value) {
-  const text = String(value ?? "");
-  const lengthLevel = text.length <= 8
-    ? "short"
-    : text.length <= 16
-      ? "medium"
-      : text.length <= 32
-        ? "long"
-        : "very-long";
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(text)) {
-    return `uuid:${lengthLevel}`;
-  }
-  if (/^\d{8,17}$/u.test(text)) return `timestamp:${lengthLevel}`;
-  if (/^[0-9a-f]{8,}$/iu.test(text)) return `hex:${lengthLevel}`;
-  if (
-    text.length >= 8
-    && /^[A-Za-z0-9+/=-]+$/u.test(text)
-    && (/\d/u.test(text) || /[+/=-]/u.test(text))
-  ) {
-    return `base64:${lengthLevel}`;
-  }
-  return null;
-}
-
-function extractLabeledCandidates(text) {
+function explicitAssignments(text) {
   const candidates = [];
-  for (const match of String(text ?? "").matchAll(LABEL_VALUE_PATTERN)) {
+  for (const match of String(text ?? "").matchAll(ASSIGNMENT_PATTERN)) {
     const label = normalizedLabel(match[1]);
     const value = match[2].trim();
-    if (label && value && !isStructuredMetadataLabel(label)) {
+    if (label && value && !STRUCTURED_METADATA_LABELS.has(label)) {
       candidates.push({ label, value });
     }
   }
   return candidates;
-}
-
-function hasMetadataLabelBefore(text, start) {
-  const prefix = String(text).slice(0, start);
-  const match = prefix.match(/(?:^|[\s\u3000([{'"，：:;；])([^:=\s][^:=\s]{0,80}?)\s*[:=]\s*$/u);
-  return match !== null && isStructuredMetadataLabel(match[1]);
-}
-
-function isPathOrArchiveToken(text, start, end, value) {
-  const before = String(text).slice(0, start);
-  const after = String(text).slice(end);
-  return PATH_SEPARATOR_PATTERN.test(value)
-    || /[/\\]\s*$/u.test(before)
-    || FILE_EXTENSION_PATTERN.test(after)
-    || ARCHIVE_BASENAME_PATTERN.test(value);
-}
-
-function isMetadataAssignmentToken(value) {
-  const match = String(value).match(/^([A-Za-z][A-Za-z0-9_-]*)=+$/u);
-  return match !== null && isStructuredMetadataLabel(match[1]);
-}
-
-function extractShapedTokens(text, shapes, excludedValues = new Set()) {
-  const candidates = [];
-  const seen = new Set();
-  const tokenPattern = /[A-Za-z0-9][A-Za-z0-9+/_-]{7,}={0,2}/gu;
-  for (const match of String(text ?? "").matchAll(tokenPattern)) {
-    const value = match[0];
-    const start = match.index ?? 0;
-    const end = start + value.length;
-    if (
-      !/\d|[+/=]/u.test(value)
-      || excludedValues.has(value)
-      || hasMetadataLabelBefore(text, start)
-      || isMetadataAssignmentToken(value)
-      || isPathOrArchiveToken(text, start, end, value)
-    ) continue;
-    const shape = valueShape(value);
-    if (!shape || !shapes.has(shape) || seen.has(value)) continue;
-    seen.add(value);
-    candidates.push({ label: "", value, shape });
-  }
-  return candidates;
-}
-
-function safeDisplay(value) {
-  const text = String(value);
-  if (looksLikeCredential("", text) || text.length >= 32) {
-    return `${text.slice(0, 4)}…（长度${text.length}）`;
-  }
-  return text.length > 80 ? `${text.slice(0, 76)}…` : text;
 }
 
 async function readCaptureManifests(archiveDir) {
@@ -129,9 +57,7 @@ async function readCaptureManifests(archiveDir) {
     if (
       (!entry.isFile() && !entry.isSymbolicLink())
       || !entry.name.endsWith(".meta.json")
-    ) {
-      continue;
-    }
+    ) continue;
     const manifestPath = path.join(root, entry.name);
     try {
       const stat = await lstat(manifestPath);
@@ -161,18 +87,13 @@ async function readArtifact(reference, archiveDir, manifestPath) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) {
     throw new Error("缺少本 run 归档根目录");
   }
-  if (
-    reference?.kind !== "erix.tool-capture"
-    || reference?.schemaVersion !== 1
-  ) {
+  if (reference?.kind !== "erix.tool-capture" || reference?.schemaVersion !== 1) {
     throw new Error("不是 CLI capture manifest");
   }
   const resolvedRoot = path.resolve(archiveDir);
   const resolvedPath = path.resolve(reference.archivePath);
   const expectedPath = manifestPath.slice(0, -".meta.json".length) + ".txt";
-  if (resolvedPath !== expectedPath) {
-    throw new Error("capture manifest 与同名归档不匹配");
-  }
+  if (resolvedPath !== expectedPath) throw new Error("capture manifest 与同名归档不匹配");
   if (!isWithin(resolvedRoot, resolvedPath)) {
     throw new Error("归档不在本 run 归档根目录内");
   }
@@ -185,12 +106,8 @@ async function readArtifact(reference, archiveDir, manifestPath) {
   if (!isWithin(rootRealPath, artifactRealPath)) {
     throw new Error("归档路径经 realpath 后逃逸本 run 归档根目录");
   }
-  if (reference.truncated !== false) {
-    throw new Error("归档已截断，不可用于核验");
-  }
-  if (reference.replayable !== false) {
-    throw new Error("可重放归档不可用于 provenance 核验");
-  }
+  if (reference.truncated !== false) throw new Error("归档已截断，不可用于核验");
+  if (reference.replayable !== false) throw new Error("可重放归档不可用于 provenance 核验");
   if (typeof reference.digest !== "string" || !/^[a-f0-9]{64}$/iu.test(reference.digest)) {
     throw new Error("capture manifest 缺少有效 digest");
   }
@@ -206,19 +123,19 @@ async function readArtifact(reference, archiveDir, manifestPath) {
   const content = await readFile(artifactRealPath, "utf8");
   const digest = createHash("sha256").update(content, "utf8").digest("hex");
   if (digest !== reference.digest) throw new Error("归档 digest 不匹配");
-  const lines = content.replaceAll(/\r\n|\r/gu, "\n").split("\n");
-  return lines
+  return content
+    .replaceAll(/\r\n|\r/gu, "\n")
+    .split("\n")
     .slice(reference.locator.lineStart - 1, reference.locator.lineEnd)
     .join("\n");
 }
 
 async function inspectRun({ archiveDir }) {
   const loaded = await readCaptureManifests(archiveDir);
-  const references = loaded.manifests;
   const values = [];
   const warnings = [...loaded.warnings];
   let readableArtifacts = 0;
-  for (const { manifest: reference, manifestPath } of references) {
+  for (const { manifest: reference, manifestPath } of loaded.manifests) {
     if (!reference) continue;
     try {
       const output = await readArtifact(reference, archiveDir, manifestPath);
@@ -228,55 +145,38 @@ async function inspectRun({ archiveDir }) {
         warnings.push(`${reference.archivePath}: 未抽取到可核验值`);
         continue;
       }
-      for (const candidate of candidates) {
-        values.push({
-          ...candidate,
-          shape: valueShape(candidate.value),
-          archivePath: reference.archivePath,
-        });
-      }
+      values.push(...candidates.map((candidate) => ({
+        ...candidate,
+        archivePath: reference.archivePath,
+      })));
     } catch (error) {
       warnings.push(`${reference.archivePath ?? manifestPath}: ${error?.message ?? String(error)}`);
     }
   }
-  return { references, values, warnings, readableArtifacts };
+  return {
+    references: loaded.manifests,
+    values,
+    warnings,
+    readableArtifacts,
+  };
 }
 
 /**
  * Build the deterministic CLI-side provenance gate for one run.
- *
- * The gate trusts only CLI capture manifests under archiveDir; model-authored
- * notes are hints, never provenance. Per ADR-009 this protects the integrity
- * boundary inside a host-isolated run, not against a process that can rewrite
- * the archive directory itself. It never invokes a model or writes to the
- * library transcript.
+ * Only explicit label=value assignments are compared.
  */
 export function createFinalGuard({
-  runId,
-  notesDir,
   archiveDir,
   onWarning = (message) => console.warn(warningMessage(message)),
 } = {}) {
   return async function finalGuard({ finalText } = {}) {
-    const inspected = await inspectRun({
-      archiveDir,
-    });
-    void runId;
-    void notesDir;
-    if (inspected.warnings.length > 0) {
-      for (const warning of inspected.warnings) onWarning(warning);
-    }
+    const inspected = await inspectRun({ archiveDir });
+    for (const warning of inspected.warnings) onWarning(warning);
     if (inspected.references.length === 0) {
-      return {
-        action: "skip",
-        reason: "no_capture_manifest",
-      };
+      return { action: "skip", reason: "no_capture_manifest" };
     }
     if (inspected.values.length === 0 && inspected.readableArtifacts > 0) {
-      return {
-        action: "skip",
-        reason: "no_extractable_candidates",
-      };
+      return { action: "skip", reason: "no_extractable_candidates" };
     }
     if (inspected.values.length === 0) {
       return {
@@ -285,50 +185,30 @@ export function createFinalGuard({
       };
     }
 
-    const text = String(finalText ?? "");
-    const knownValues = new Set(inspected.values.map((candidate) => candidate.value));
-
     const knownLabels = new Map();
-    const knownShapes = new Set();
     for (const candidate of inspected.values) {
-      if (candidate.label) {
-        const values = knownLabels.get(candidate.label) ?? new Set();
-        values.add(candidate.value);
-        knownLabels.set(candidate.label, values);
-      }
-      if (candidate.shape) knownShapes.add(candidate.shape);
+      const values = knownLabels.get(candidate.label) ?? new Set();
+      values.add(candidate.value);
+      knownLabels.set(candidate.label, values);
     }
 
-    const lineCandidates = candidateLines(text);
-    const labeled = [
-      ...lineCandidates,
-      ...extractLabeledCandidates(text),
-    ];
-    for (const candidate of labeled) {
-      const label = normalizedLabel(candidate.label);
-      const knownForLabel = knownLabels.get(label);
-      if (!knownForLabel || knownForLabel.has(candidate.value)) continue;
-      const archivePath = inspected.values.find((item) => item.label === label)
+    const finalCandidates = explicitAssignments(finalText);
+    const comparable = finalCandidates.filter((candidate) => knownLabels.has(candidate.label));
+    if (comparable.length === 0) {
+      onWarning("终稿没有与 capture manifest 同 label 的显式 label=value，跳过核验");
+      return { action: "skip", reason: "no_comparable_label" };
+    }
+    for (const candidate of comparable) {
+      const knownForLabel = knownLabels.get(candidate.label);
+      if (knownForLabel.has(candidate.value)) continue;
+      const archivePath = inspected.values.find((item) => item.label === candidate.label)
         ?.archivePath ?? inspected.values[0].archivePath;
       return {
         action: "revise",
-        message: `终稿中的值 ${safeDisplay(candidate.value)} 未经验证。请先 note_read 精确读取（或读取归档 ${archivePath}）核实原始值；不得重跑命令，不得凭记忆给出；若确认无法恢复，请明确说明不可恢复。`,
+        message: `终稿中的 ${candidate.label}=${candidate.value} 未经验证。请先 note_read 精确读取（或读取归档 ${archivePath}）核实原始值；不得重跑命令，不得凭记忆给出；若确认无法恢复，请明确说明不可恢复。`,
       };
     }
-
-    const labeledValues = new Set(lineCandidates.map((candidate) => candidate.value));
-    const sourceArtifacts = new Set(inspected.values.map((candidate) => candidate.archivePath));
-    const shaped = sourceArtifacts.size === 1
-      ? extractShapedTokens(text, knownShapes, labeledValues)
-      : [];
-    const unknown = shaped.find((candidate) => !knownValues.has(candidate.value));
-    if (!unknown) return { action: "accept" };
-    const sourceClaim = SOURCE_DECLARATION_PATTERN.test(text);
-    const archivePath = inspected.values[0].archivePath;
-    return {
-      action: "revise",
-      message: `终稿中的值 ${safeDisplay(unknown.value)}${sourceClaim ? "（来源声明未经核验）" : ""}未经验证。请先 note_read 精确读取（或读取归档 ${archivePath}）核实原始值；不得重跑命令，不得凭记忆给出；若确认无法恢复，请明确说明不可恢复。`,
-    };
+    return { action: "accept" };
   };
 }
 

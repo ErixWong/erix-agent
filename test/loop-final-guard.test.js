@@ -23,7 +23,8 @@ test("finalGuard accept preserves normal completion", async () => {
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
-  assert.deepEqual(result.verification, { status: "verified" });
+  assert.equal(result.verification.status, "verified");
+  assert.equal(result.verification.metrics.verified, 1);
   assert.equal(result.finalText, "done");
   assert.equal(payload.finalText, "done");
   assert.equal(payload.round, 1);
@@ -76,10 +77,9 @@ test("finalGuard can skip verification when no candidate is extractable", async 
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
-  assert.deepEqual(result.verification, {
-    status: "skipped",
-    reason: "no_extractable_candidates",
-  });
+  assert.equal(result.verification.status, "skipped");
+  assert.equal(result.verification.reason, "no_extractable_candidates");
+  assert.equal(result.verification.metrics.skipped, 1);
 });
 
 test("finalGuard fail-closes after the retry limit without rewriting finalText", async () => {

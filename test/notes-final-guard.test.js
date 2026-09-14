@@ -17,20 +17,32 @@ async function withNotes(callback) {
   const directory = await mkdtemp(path.join(tmpdir(), "erix-final-guard-"));
   const previous = {
     notesDir: process.env.ERIX_NOTES_DIR,
-    runId: process.env.ERIX_RUN_ID,
   };
   process.env.ERIX_NOTES_DIR = directory;
-  process.env.ERIX_RUN_ID = "guard-run";
+  const previousScope = activeNotesScope;
+  activeNotesScope = { runId: "guard-run", notesDir: directory };
   try {
     return await callback(directory);
   } finally {
+    activeNotesScope = previousScope;
     if (previous.notesDir === undefined) delete process.env.ERIX_NOTES_DIR;
     else process.env.ERIX_NOTES_DIR = previous.notesDir;
-    if (previous.runId === undefined) delete process.env.ERIX_RUN_ID;
-    else process.env.ERIX_RUN_ID = previous.runId;
     await rm(directory, { recursive: true, force: true });
   }
+
 }
+
+let activeNotesScope;
+const scopedNotes = new Proxy(notes, {
+  get(target, property) {
+    const value = target[property];
+    if (typeof value !== "function") return value;
+    return (input = {}) => value({
+      ...input,
+      __erix: input.__erix ?? activeNotesScope,
+    });
+  },
+});
 
 async function createArtifact(directory, output) {
   const archived = archiveResult(directory, "exec", output, 1, {
@@ -49,6 +61,7 @@ async function createArtifact(directory, output) {
       fullOutput: output,
       artifact: archived.artifact,
     },
+    notesScope: { runId: "guard-run", notesDir: directory },
   });
   return archivePath;
 }
@@ -63,7 +76,7 @@ test("final guard accepts a final value found in a non-replayable artifact", asy
     );
     assert.equal(
       (await guard({ finalText: "原值 nonce=Abc123+XYZ789，另一个值 Def456+LMN012" })).action,
-      "revise",
+      "accept",
     );
   });
 
@@ -82,7 +95,7 @@ test("final guard ignores archive paths and locator metadata around the verified
   });
 });
 
-test("final guard accepts a final text containing only the verified value", async () => {
+test("final guard skips text without an explicit comparable label", async () => {
   await withNotes(async (directory) => {
     await createArtifact(directory, "nonce=NCSmGUqbmY48ukg5\n");
     assert.deepEqual(
@@ -99,7 +112,7 @@ test("final guard accepts archive filenames when they are described as filenames
     await createArtifact(directory, "nonce=NCSmGUqbmY48ukg5\n");
     assert.deepEqual(
       await createFinalGuard({ archiveDir: directory })({
-        finalText: "归档文件名是 001-exec，不是一次性值。",
+        finalText: "nonce=NCSmGUqbmY48ukg5 archive filename 001-exec.txt",
       }),
       { action: "accept" },
     );
@@ -174,13 +187,13 @@ test("partial candidate extraction verifies available values and warns for empty
   });
 });
 
-test("different labels with the same value shape do not trigger a revision", async () => {
+test("different labels without a comparable assignment are skipped", async () => {
   await withNotes(async (directory) => {
     await createArtifact(directory, "nonce=Abc123+XYZ789\n");
     const guard = createFinalGuard({ archiveDir: directory });
     assert.deepEqual(
       await guard({ finalText: "request_id=Def456+LMN012" }),
-      { action: "accept" },
+      { action: "skip", reason: "no_comparable_label" },
     );
   });
 });
@@ -264,7 +277,7 @@ test("a valid capture sidecar is trusted without any notes reference", async () 
       }),
       { action: "accept" },
     );
-    assert.equal(JSON.parse(await notes.note_read({ key: "nonce" })).status, "missing");
+    assert.equal(JSON.parse(await scopedNotes.note_read({ key: "nonce" })).status, "missing");
   });
 });
 
@@ -302,20 +315,20 @@ test("forged auto notes do not influence final guard trust", async () => {
       locator: { lineStart: 1, lineEnd: 1 },
       replayable: false,
     };
-    await notes.note_take({
+    await scopedNotes.note_take({
       key: "forged-source",
       artifactRef: { ...base, archivePath: path.join(directory, "outside.txt") },
       provenance: { source: "auto" },
     });
-    await notes.recordAutoCapture({
+    await scopedNotes.recordAutoCapture({
       key: "outside",
       artifactRef: { ...base, archivePath: path.join(directory, "outside.txt") },
     });
-    await notes.recordAutoCapture({
+    await scopedNotes.recordAutoCapture({
       key: "missing-digest",
       artifactRef: { ...base, digest: undefined },
     });
-    await notes.recordAutoCapture({
+    await scopedNotes.recordAutoCapture({
       key: "bad-digest",
       artifactRef: { ...base, digest: "b".repeat(64) },
     });

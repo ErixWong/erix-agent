@@ -2,6 +2,19 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [Unreleased]
+
+### Breaking
+
+- 移除 `--notes-ledger`、`ERIX_NOTES_LEDGER` 及 notes 值索引/ledger 的所有 system prompt 注入通道。
+- `note_read` 移除 `version`；notes 改为 `current` + 最多 3 条 `superseded` + `folded`，状态收敛为 `active`、`done`、`revoked`，工具返回 status 收敛为 `found`、`missing`、`revoked`、`invalid`、`unsupported`。
+- 移除 `ERIX_RUN_ID`、`ERIX_NOTES_HISTORY_LIMIT`、`ERIX_NOTES_MAX_HISTORY`、`ERIX_NOTES_MAX_VERSIONS`、`ERIX_NOTES_LOCK_TIMEOUT_MS`、`ERIX_NOTES_LOCK_STALE_MS`；notes scope 改由宿主显式 `__erix` 或 cwd 派生。
+- 移除版本链、per-key 锁、形态 token 扫描和重复恢复指引；保留归档 manifest 作为 guard 唯一信任源。
+
+### Changed
+
+- 非幂等 exec 每次只自动捕获一条有界输出笔记；guard 只核验显式 `label=value`，并在 verification 中输出 `verified`、`skipped`、`revised`、`unverified`、`guard_error` 度量。
+
 ## [0.4.0] - 2026-09-14
 
 ### feat

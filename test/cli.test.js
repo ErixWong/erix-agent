@@ -8,9 +8,6 @@ import { join, resolve } from "node:path";
 import { exitCodeForVerification, parseChatArgs, runChat } from "../bin/cli.js";
 import { getMcpPoolStatus } from "../bin/mcp.js";
 import {
-  buildArchiveSystemPrompt,
-  buildArchiveRecoveryHint,
-  buildValueNotesIndexPrompt,
   CLI_TOOLS_SYSTEM_PROMPT,
 } from "../bin/tools.js";
 import * as notes from "../skills/notes/skill.mjs";
@@ -21,22 +18,10 @@ import { createRecallTool } from "../src/tools/index.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 test("CLI prompt constrains provenance of one-shot values", () => {
-  assert.match(
-    CLI_TOOLS_SYSTEM_PROMPT,
-    /一次性生成的值（随机数、时间戳、临时 token、不可复现的命令输出）只能引用首次出现的工具返回/u,
-  );
-  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不得通过重跑命令“恢复”/u);
-  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /关键值应在产生时落盘（写文件\/持久笔记）/u);
-  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /原值已不在上下文且无持久记录时，明确说明不可恢复，不得给出替代值/u);
-  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /具体数值\/一次性输出，必须来自当前上下文中的工具返回或归档文件；不得凭记忆给出/u);
-  assert.match(
-    CLI_TOOLS_SYSTEM_PROMPT,
-    /工具输出较大或被截断时，返回末尾会给出完整输出的归档路径/u,
-  );
-  assert.match(
-    CLI_TOOLS_SYSTEM_PROMPT,
-    /归档路径（例如 ~\/\.erix\/transcripts\/outputs\/\.\.\.，仅指本次运行的工具输出）是例外，可以且应当读取/u,
-  );
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /非幂等命令/u);
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不得重跑/u);
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /具体数值必须来自当前工具返回或明确的归档文件/u);
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不要主动读取密钥、凭据或 \.env/u);
 });
 
 test("CLI uses distinct nonzero exits for unverified and guard errors", () => {
@@ -45,37 +30,30 @@ test("CLI uses distinct nonzero exits for unverified and guard errors", () => {
   assert.equal(exitCodeForVerification({ status: "error" }), 3);
 });
 
-test("archive system prompt names the absolute directory only when enabled", () => {
-  const prompt = buildArchiveSystemPrompt("relative/archive");
-  assert.match(prompt, new RegExp(resolve("relative/archive").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
-  assert.match(prompt, /不要重跑命令/u);
-  assert.equal(buildArchiveSystemPrompt(undefined), "");
-  assert.equal(buildArchiveSystemPrompt(""), "");
+test("archive guidance is present once in the system prompt", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-cli-archive-guidance-test-"));
+  try {
+    const provider = createFakeProvider([{ content: [{ type: "text", text: "done" }] }]);
+    await runChat({
+      prompt: "answer",
+      session: "archive-guidance-run",
+      dir,
+      notesDir: join(dir, "notes"),
+      provider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 1,
+      idleTimeout: 0,
+      toolOutput: () => {},
+    });
+    const system = provider.requests[0].system;
+    assert.equal((system.match(/本次运行的归档目录：/gu) ?? []).length, 1);
+    assert.match(system, /禁止遍历归档目录、重跑非幂等命令/u);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
-test("archive recovery hint is actionable and omitted without an archive directory", () => {
-  const hint = buildArchiveRecoveryHint("relative/archive");
-  assert.match(hint, new RegExp(resolve("relative/archive").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
-  assert.match(hint, /优先直接调用 note_read key=<key>/u);
-  assert.match(hint, /archivePath \+ locator/u);
-  assert.match(hint, /禁止遍历归档目录/u);
-  assert.match(hint, /不要重跑命令/u);
-  assert.equal(buildArchiveRecoveryHint(undefined), undefined);
-  assert.equal(buildArchiveRecoveryHint(""), undefined);
-});
-
-test("value note index prompt is absent when empty and never includes values", () => {
-  assert.equal(buildValueNotesIndexPrompt([]), "");
-  const prompt = buildValueNotesIndexPrompt([
-    { key: "nonce", tags: ["value", "auto"] },
-  ]);
-  assert.match(prompt, /本 run 自动捕获的值/u);
-  assert.match(prompt, /nonce（标签：value、auto）/u);
-  assert.match(prompt, /note_read key=<key> 一步取回/u);
-  assert.doesNotMatch(prompt, /secret-value/u);
-});
-
-test("runChat adds the value-note index to the system prompt without content", async () => {
+test("runChat does not add a value-note index to the system prompt", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-value-index-test-"));
   const notesDir = join(dir, "notes");
   try {
@@ -97,7 +75,7 @@ test("runChat adds the value-note index to the system prompt without content", a
       idleTimeout: 0,
       toolOutput: () => {},
     });
-    assert.match(provider.requests[0].system, /captured-nonce（标签：value、auto）/u);
+    assert.doesNotMatch(provider.requests[0].system, /\[notes value index\]/u);
     assert.doesNotMatch(provider.requests[0].system, /secret-value-must-not-leak/u);
     assert.deepEqual(
       provider.requests[0].tools
@@ -124,7 +102,7 @@ test("runChat adds the value-note index to the system prompt without content", a
   }
 });
 
-test("runChat passes the archive recovery hint through loop context", async () => {
+test("runChat keeps archive guidance out of loop context", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-recovery-hint-test-"));
   let captured;
   try {
@@ -151,13 +129,7 @@ test("runChat passes the archive recovery hint through loop context", async () =
     });
 
     assert.ok(captured);
-    assert.match(
-      captured.context.recoveryHint,
-      new RegExp(`${resolve(join(dir, "outputs", "chat-recovery"))}`.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")),
-    );
-    assert.match(captured.context.recoveryHint, /优先直接调用 note_read key=<key>/u);
-    assert.match(captured.context.recoveryHint, /禁止遍历归档目录/u);
-    assert.match(captured.context.recoveryHint, /不要重跑命令/u);
+    assert.equal(captured.context.recoveryHint, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -219,7 +191,7 @@ test("chat loop wires a file transcript store without a recall tool", async () =
       provider.requests[0].system,
       new RegExp(`${dir}/outputs/chat-wiring`),
     );
-    assert.match(provider.requests[0].system, /不要重跑命令/u);
+    assert.match(provider.requests[0].system, /不得重跑/u);
     const records = await createFileTranscriptStore({ dir }).load("chat-wiring");
     assert.deepEqual(records.map((record) => record.round), [0, 1]);
   } finally {
