@@ -22,9 +22,7 @@ import { defaultSessionId, runRepl } from "./repl.js";
 import { createFinalGuard } from "./final-guard.js";
 import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import {
-  buildArchiveSystemPrompt,
-  buildArchiveRecoveryHint,
-  buildValueNotesIndexPrompt,
+  buildArchiveNotice,
   CLI_TOOLS_SYSTEM_PROMPT,
   createCliTools,
   wrapExecuteTool,
@@ -36,7 +34,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--no-final-guard] [--no-notes] [--notes-ledger] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--no-final-guard]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
@@ -49,7 +47,6 @@ const HELP_TEXT = `用法：
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 32 时启用）
   --no-final-guard      关闭终稿 provenance 核验
   --no-notes            仅移除 notes 技能，保留其他 skill
-  --notes-ledger        将本 run 的 pinned notes 小账本追加到 system prompt（默认关闭）
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
   --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL
@@ -64,7 +61,6 @@ const HELP_TEXT = `用法：
   ERIX_REFLECTION     反思开关（on/off；ERIX_NO_REFLECTION=1 强制关闭）
   ERIX_NO_FINAL_GUARD=1 关闭终稿 provenance 核验
   ERIX_NO_NOTES=1       仅移除 notes 技能，保留其他 skill
-  ERIX_NOTES_LEDGER=1   开启 pinned notes 小账本注入（默认关闭）
   ERIX_JUDGE_LOG      judge 决策 JSONL 路径（可用 --judge-log 覆盖）
 
 配置文件：
@@ -214,14 +210,6 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       }
       seenOptions.add(argument);
       options.noNotes = true;
-      continue;
-    }
-    if (argument === "--notes-ledger") {
-      if (seenOptions.has(argument)) {
-        usageError(`参数重复：${argument}`);
-      }
-      seenOptions.add(argument);
-      options.notesLedger = true;
       continue;
     }
     if (
@@ -491,7 +479,6 @@ async function runChatWithNotes({
   sessionExplicit,
   dir = join(homedir(), ".erix", "transcripts"),
   judgeLog,
-  notesLedger = false,
   noNotes = false,
   provider: providerOverride,
   config: configOverride,
@@ -558,120 +545,13 @@ async function runChatWithNotes({
   await skillTools.notesJanitor?.({ __erix: { runId, notesDir: _notesDir } });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
   const tools = combineTools(cliTools, skillTools, mcpProxy);
-  const recoveryHint = buildArchiveRecoveryHint(archiveDir);
-  const notesLedgerEnabled = notesLedger === true
-    || process.env.ERIX_NOTES_LEDGER?.trim() === "1";
-  const readNotesLedger = notesLedgerEnabled && typeof skillTools.notesLedger === "function"
-    ? () => skillTools.notesLedger({
-        maxEntries: 5,
-        maxTokens: 200,
-        __erix: { runId, notesDir: _notesDir },
-      })
-    : undefined;
-  const notesLedgerPrompt = async () => {
-    if (!readNotesLedger) return "";
-    const ledger = await readNotesLedger();
-    return `\n\n[notes pinned ledger]\n${
-      ledger || "（当前没有可注入的 pinned 记录）"
-    }\n[notes ledger 结束：值只可作为当前 run 的线索；需要完整值时先 note_read 或读取归档]`;
-  };
-  const readNotesValueIndex = typeof skillTools.notesValueIndex === "function"
-    ? () => skillTools.notesValueIndex({
-        __erix: { runId, notesDir: _notesDir },
-      })
-    : undefined;
-  const notesValueIndexPrompt = async () => {
-    if (!readNotesValueIndex) return "";
-    return buildValueNotesIndexPrompt(await readNotesValueIndex());
-  };
-  const context = buildCompactionContext(config, compactBudget, recoveryHint)
-    ?? (readNotesLedger || readNotesValueIndex ? {} : undefined);
-  if (readNotesLedger) {
-    context.onAfterFold = async (result) => {
-      const ledger = await readNotesLedger();
-      const refresh = `[notes pinned ledger refresh]\n${
-        ledger || "（当前没有可注入的 pinned 记录）"
-      }\n[notes ledger refresh 结束]`;
-      let replaced = false;
-      for (const message of result.messages) {
-        const blocks = typeof message?.content === "string"
-          ? [{ type: "text", text: message.content }]
-          : Array.isArray(message?.content) ? message.content : [];
-        const filtered = blocks.filter((block) => {
-          if (
-            typeof block?.text !== "string"
-            || !block.text.includes("[notes pinned ledger refresh]")
-          ) {
-            return true;
-          }
-          if (!replaced) {
-            block.text = refresh;
-            replaced = true;
-            return true;
-          }
-          return false;
-        });
-        if (Array.isArray(message?.content) || typeof message?.content === "string") {
-          message.content = filtered;
-        }
-      }
-      if (!replaced) {
-        const target = result.messages.find((message) => message?.role === "user");
-        if (target) {
-          const content = typeof target.content === "string"
-            ? [{ type: "text", text: target.content }]
-            : Array.isArray(target.content) ? target.content : [];
-          target.content = [{ type: "text", text: refresh }, ...content];
-        }
-      }
-    };
-  }
-  if (readNotesValueIndex) {
-    const previousOnAfterFold = context.onAfterFold;
-    context.onAfterFold = async (result) => {
-      await previousOnAfterFold?.(result);
-      const index = (await notesValueIndexPrompt()).trim();
-      if (!index) return;
-      const target = result.messages.find((message) => message?.role === "user");
-      if (!target) return;
-      const content = typeof target.content === "string"
-        ? [{ type: "text", text: target.content }]
-        : Array.isArray(target.content) ? target.content : [];
-      target.content = [
-        { type: "text", text: `[notes value index refresh]\n${index}` },
-        ...content,
-      ];
-    };
-  }
+  const context = buildCompactionContext(config, compactBudget);
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, {
     output: toolOutput,
     getToolMetadata: cliTools.getLastToolMetadata,
     notesScope: { runId, notesDir: _notesDir },
   });
-  const executeToolWithLedger = async (execution) => {
-    const result = await executeTool(execution);
-    const refreshIndex = readNotesValueIndex && execution?.name === "exec";
-    const refreshLedger = readNotesLedger
-      && ["exec", "note_take", "note_forget"].includes(execution?.name);
-    if (!refreshIndex && !refreshLedger) {
-      return result;
-    }
-    const refreshes = [];
-    if (refreshIndex) {
-      const index = (await notesValueIndexPrompt()).trim();
-      if (index) refreshes.push(`[notes value index refresh]\n${index}`);
-    }
-    if (refreshLedger) {
-      const ledger = await readNotesLedger();
-      refreshes.push(`[notes pinned ledger refresh]\n${
-        ledger || "（当前没有可注入的 pinned 记录）"
-      }\n[notes ledger refresh 结束]`);
-    }
-    return refreshes.length === 0
-      ? result
-      : `${String(result ?? "")}\n\n${refreshes.join("\n\n")}`;
-  };
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
   const resolvedFinalGuard = resolveFinalGuard(finalGuard, runId, archiveDir, _notesDir);
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG;
@@ -754,14 +634,12 @@ async function runChatWithNotes({
     : undefined;
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
-  systemPrompt += buildArchiveSystemPrompt(archiveDir);
-  systemPrompt += await notesValueIndexPrompt();
+  systemPrompt += buildArchiveNotice(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `
 
 MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=search query=关键词 查找工具；action=call server=... tool=... args=... 调用工具。`;
   }
-  if (readNotesLedger) systemPrompt += await notesLedgerPrompt();
 
   const loopOptions = {
     ...(context ? { context } : {}),
@@ -774,7 +652,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     resume,
     tools: tools.tools,
     executeTool: async (execution) => {
-      const result = await executeToolWithLedger(execution);
+      const result = await executeTool(execution);
       idle?.touch();
       return result;
     },

@@ -261,8 +261,6 @@ export async function buildSkillTools({
   const excludedSkills = new Set(excludeSkillIds);
   let notesJanitor;
   let notesCompleteRun;
-  let notesLedger;
-  let notesValueIndex;
 
   for (const skill of loaded.skills) {
     if (excludedSkills.has(skill.skillId)) continue;
@@ -295,12 +293,6 @@ export async function buildSkillTools({
       }
       if (typeof skillModule.completeRun === "function") {
         notesCompleteRun = skillModule.completeRun;
-      }
-      if (typeof skillModule.buildPinnedLedger === "function") {
-        notesLedger = skillModule.buildPinnedLedger;
-      }
-      if (typeof skillModule.buildValueNotesIndex === "function") {
-        notesValueIndex = skillModule.buildValueNotesIndex;
       }
     }
 
@@ -352,7 +344,5 @@ export async function buildSkillTools({
     errors,
     notesJanitor,
     notesCompleteRun,
-    notesLedger,
-    notesValueIndex,
   };
 }

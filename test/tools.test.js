@@ -243,12 +243,48 @@ test("intercepts a captured non-replayable rerun with the first note value", asy
       assert.match(first, /nonce=first-value/u);
       assert.match(second, /该命令非幂等、不可重放；重跑会得到不同值/u);
       assert.match(second, /首次执行捕获到的值（来自首次执行（已捕获））：first-value/u);
-      assert.match(second, /note_read key=nonce/u);
+      assert.match(second, /note_read key=auto-[a-f0-9]+/u);
       assert.doesNotMatch(second, /second-value/u);
       assert.doesNotMatch(second, /agent-overwrite/u);
     } finally {
       delete process.env.NON_IDEMPOTENT_VALUE;
     }
+  });
+});
+
+test("intercepts reruns when credential captures retain only an artifact reference", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const notesDir = join(cwd, "notes");
+    const tools = createCliTools({
+      cwd,
+      archiveDir,
+      notesScope: { runId: "credential-rerun", notesDir },
+    });
+    const executeTool = wrapExecuteTool(tools.executeTool, {
+      output: () => {},
+      getToolMetadata: tools.getLastToolMetadata,
+      notesScope: { runId: "credential-rerun", notesDir },
+    });
+    const command = "printf 'token: secret-value-%s\\n' \"$RANDOM\"";
+
+    const first = await executeTool({
+      id: "credential-first",
+      name: "exec",
+      input: { command },
+      context: { round: 1 },
+    });
+    const second = await executeTool({
+      id: "credential-second",
+      name: "exec",
+      input: { command: ` ${command} ` },
+      context: { round: 2 },
+    });
+
+    assert.match(first, /token: secret-value-/u);
+    assert.match(second, /该命令非幂等、不可重放；重跑会得到不同值/u);
+    assert.match(second, /note_read key=auto-[a-f0-9]+/u);
+    assert.doesNotMatch(second, /secret-value-/u);
   });
 });
 

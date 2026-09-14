@@ -246,7 +246,7 @@ test("runRepl resumes from the transcript store without a recall tool", async ()
       provider.requests[0].system,
       new RegExp(`${dir}/outputs/repl-store`),
     );
-    assert.match(provider.requests[0].system, /不要重跑命令/u);
+    assert.match(provider.requests[0].system, /不得重跑/u);
     assert.ok(provider.requests[1].messages.some((message) => (
       message.role === "user"
       && message.content?.some((block) => block.text === "second")
@@ -262,7 +262,7 @@ test("runRepl resumes from the transcript store without a recall tool", async ()
   }
 });
 
-test("runRepl passes the archive recovery hint through loop context", async () => {
+test("runRepl keeps archive guidance out of loop context", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-repl-recovery-hint-test-"));
   const input = new PassThrough();
   input.isTTY = true;
@@ -293,12 +293,7 @@ test("runRepl passes the archive recovery hint through loop context", async () =
     await run;
 
     assert.ok(captured);
-    assert.match(captured.context.recoveryHint, new RegExp(
-      `${dir}/outputs/repl-recovery`.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"),
-    ));
-    assert.match(captured.context.recoveryHint, /优先直接调用 note_read key=<key>/u);
-    assert.match(captured.context.recoveryHint, /禁止遍历归档目录/u);
-    assert.match(captured.context.recoveryHint, /不要重跑命令/u);
+    assert.equal(captured.context.recoveryHint, undefined);
   } finally {
     input.destroy();
     output.destroy();

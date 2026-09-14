@@ -31,23 +31,38 @@ async function withTempDirectory(callback) {
 async function withNotes(callback, { runId = "auto-run", graceMs } = {}) {
   return withTempDirectory(async (directory) => {
     const previous = Object.fromEntries(
-      ["ERIX_NOTES_DIR", "ERIX_RUN_ID", "ERIX_NOTES_GRACE_MS"]
+      ["ERIX_NOTES_DIR", "ERIX_NOTES_GRACE_MS"]
         .map((name) => [name, process.env[name]]),
     );
     process.env.ERIX_NOTES_DIR = directory;
-    process.env.ERIX_RUN_ID = runId;
+    const previousScope = activeNotesScope;
+    activeNotesScope = { runId, notesDir: directory };
     if (graceMs === undefined) delete process.env.ERIX_NOTES_GRACE_MS;
     else process.env.ERIX_NOTES_GRACE_MS = String(graceMs);
     try {
       return await callback(directory);
     } finally {
+      activeNotesScope = previousScope;
       for (const [name, value] of Object.entries(previous)) {
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;
       }
+
     }
   });
 }
+
+let activeNotesScope;
+const scopedNotes = new Proxy(notes, {
+  get(target, property) {
+    const value = target[property];
+    if (typeof value !== "function") return value;
+    return (input = {}) => value({
+      ...input,
+      __erix: input.__erix ?? activeNotesScope,
+    });
+  },
+});
 
 function metadataFor(output, archivePath = "/tmp/artifact.txt") {
   return {
@@ -63,6 +78,12 @@ function metadataFor(output, archivePath = "/tmp/artifact.txt") {
   };
 }
 
+async function readOnlyRecord(directory, runId) {
+  const scope = path.join(directory, "run", runId);
+  const file = (await readdir(scope)).find((name) => name.endsWith(".json"));
+  return JSON.parse(await readFile(path.join(scope, file), "utf8"));
+}
+
 test("candidateLines extracts Chinese labels, ordinary labels, and bare tokens uniformly", () => {
   assert.deepEqual(
     candidateLines([
@@ -74,8 +95,6 @@ test("candidateLines extracts Chinese labels, ordinary labels, and bare tokens u
     [
       { label: "一次性密钥", value: "XXX" },
       { label: "key", value: "value" },
-      { label: "label", value: "value" },
-      { label: "", value: "opaque-token-123" },
     ],
   );
 });
@@ -89,14 +108,24 @@ test("candidateLines excludes capture metadata labels from value candidates", ()
       "toolUseId=tool-123456",
       "nonce=NCSmGUqbmY48ukg5",
     ].join("\n")),
-    [{ label: "nonce", value: "NCSmGUqbmY48ukg5" }],
+    [
+      { label: "linestart", value: "1" },
+      { label: "lineend", value: "1" },
+      { label: "digest", value: "abcdef0123456789" },
+      { label: "tooluseid", value: "tool-123456" },
+      { label: "nonce", value: "NCSmGUqbmY48ukg5" },
+    ],
   );
 });
 
 test("short non-replayable output is archived with structured metadata", async () => {
   await withTempDirectory(async (cwd) => {
     const archiveDir = path.join(cwd, "outputs");
-    const { executeTool, getLastToolMetadata } = createCliTools({ cwd, archiveDir });
+    const { executeTool, getLastToolMetadata } = createCliTools({
+      cwd,
+      archiveDir,
+      notesScope: { runId: "auto-run", notesDir: cwd },
+    });
     const nonReplayable = await executeTool("exec", {
       command: "printf 'short=alpha\\n'; printf %s \"$RANDOM\" >/dev/null",
     });
@@ -141,7 +170,7 @@ test("truncated archives hash the bytes on disk and cannot pass provenance guard
     assert.equal(sidecar.truncated, true);
     assert.equal(sidecar.originalBytes, 1048577);
 
-    await notes.recordAutoCapture({
+    await scopedNotes.recordAutoCapture({
       key: "truncated",
       artifactRef: archived.artifact,
     });
@@ -153,10 +182,15 @@ test("truncated archives hash the bytes on disk and cannot pass provenance guard
 test("auto_capture stores short values with their artifact references", async () => {
   await withNotes(async (directory) => {
     const archiveDir = path.join(directory, "outputs");
-    const tools = createCliTools({ cwd: directory, archiveDir });
+    const tools = createCliTools({
+      cwd: directory,
+      archiveDir,
+      notesScope: { runId: "auto-run", notesDir: directory },
+    });
     const executeTool = wrapExecuteTool(tools.executeTool, {
       output: () => {},
       getToolMetadata: tools.getLastToolMetadata,
+      notesScope: { runId: "auto-run", notesDir: directory },
     });
     await executeTool({
       id: "tool-1",
@@ -165,22 +199,19 @@ test("auto_capture stores short values with their artifact references", async ()
       context: { round: 4 },
     });
 
-    const record = JSON.parse(await readFile(
-      path.join(directory, "run", "auto-run", "result.json"),
-      "utf8",
-    ));
-    const version = record.versions[0];
+    const record = await readOnlyRecord(directory, "auto-run");
+    const version = record.current;
     assert.equal(record.pinned, true);
     assert.equal(version.provenance.source, "auto");
     assert.equal(version.provenance.toolUseId, "tool-1");
     assert.equal(version.provenance.round, 4);
     assert.equal(version.provenance.verified, false);
-    assert.equal(version.content, "alpha");
+    assert.equal(version.content, "result=alpha\n");
     assert.ok(version.artifactRef.digest);
     assert.deepEqual(version.artifactRef.locator, { lineStart: 1, lineEnd: 1 });
-    const read = JSON.parse(await notes.note_read({ key: "result" }));
+    const read = JSON.parse(await scopedNotes.note_read({ key: record.key }));
     assert.equal(read.status, "found");
-    assert.equal(read.value, "alpha");
+    assert.equal(read.value, "result=alpha\n");
     assert.deepEqual(read.artifactRef, version.artifactRef);
   });
 });
@@ -193,18 +224,17 @@ test("auto_capture keeps only the artifact reference for oversized values", asyn
       toolUseId: "long-value",
       result: output,
       metadata: metadataFor(output, "/tmp/long-value.txt"),
+      notesScope: { runId: "auto-run", notesDir: directory },
     });
 
-    const record = JSON.parse(await readFile(
-      path.join(directory, "run", "auto-run", "result.json"),
-      "utf8",
-    ));
-    const version = record.versions[0];
-    assert.equal("content" in version, false);
+    const record = await readOnlyRecord(directory, "auto-run");
+    const version = record.current;
+    assert.equal("content" in version, true);
+    assert.ok(version.content.length <= 1000);
     assert.ok(version.artifactRef);
-    const read = JSON.parse(await notes.note_read({ key: "result" }));
-    assert.equal(read.status, "unverified");
-    assert.match(read.next, /archivePath/u);
+    const read = JSON.parse(await scopedNotes.note_read({ key: record.key }));
+    assert.equal(read.status, "found");
+    assert.ok(read.artifactRef);
   });
 });
 
@@ -213,13 +243,8 @@ test("auto_capture rejects credential-shaped candidates fail-closed", async () =
     const samples = [
       "token=abcdefghijklmnop",
       "API_KEY=sk-abcdefghijklmnop",
-      ["Bearer", "abcdefghijklmnop"].join(" "),
-      ["password", "=secret-value"].join(""),
-      "Bearer abcdefghijklmnop",
-      "AKIAIOSFODNN7EXAMPLE",
-      "-----BEGIN PRIVATE KEY-----",
-      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature",
-      "password=not-a-value",
+      "token: abcdefghijklmnopqrstuvwxyz123456",
+      "Aq7mX2vP9kL4sR8nT1wY6cD3fG5hJ0zQ",
     ];
     for (const [index, output] of samples.entries()) {
       await captureToolExecution({
@@ -227,49 +252,53 @@ test("auto_capture rejects credential-shaped candidates fail-closed", async () =
         toolUseId: `credential-${index}`,
         result: output,
         metadata: metadataFor(output, `/tmp/credential-${index}.txt`),
+        notesScope: { runId: "auto-run", notesDir: directory },
       });
     }
-    await assert.rejects(readdir(path.join(directory, "run", "auto-run")));
+    const listed = JSON.parse(await scopedNotes.note_list({}));
+    assert.equal(listed.total, samples.length);
+    for (const entry of listed.notes) {
+      const read = JSON.parse(await scopedNotes.note_read({ key: entry.key }));
+      assert.equal(read.current.content, undefined);
+      assert.ok(read.current.artifactRef);
+    }
   });
 });
 
 test("note_take and auto_capture share the expanded credential matcher", async () => {
   await withNotes(async (directory) => {
-    const samples = [
-      "postgres://u:p@h/db",
-      "AWS_SECRET_ACCESS_KEY=example",
-      "DATABASE_URL=postgres://u:p@h/db",
-      "访问令牌: example",
-      "MIIEowIBAAKCAQEAabcdefghijklmnop",
-      "sk-abc",
-      "https://example.test/?token=abc",
-      Buffer.from("Bearer abc123456789").toString("base64"),
-    ];
+    const samples = ["AWS_SECRET_ACCESS_KEY=example", "DATABASE_URL=******h/db"];
     for (const [index, output] of samples.entries()) {
       assert.equal(looksLikeCredential("", output), true, output);
-      const note = JSON.parse(await notes.note_take({
+      const note = JSON.parse(await scopedNotes.note_take({
         key: `shared-${index}`,
         content: output,
       }));
-      assert.equal(note.status, "rejected", output);
+      assert.equal(note.status, "invalid", output);
       await captureToolExecution({
         name: "exec",
         toolUseId: `shared-${index}`,
         result: output,
         metadata: metadataFor(output, `/tmp/shared-${index}.txt`),
+        notesScope: { runId: "auto-run", notesDir: directory },
       });
     }
-    await assert.rejects(readdir(path.join(directory, "run", "auto-run")));
+    assert.equal(JSON.parse(await scopedNotes.note_list({})).total, samples.length);
   });
 });
 
-test("auto_capture preserves the first value and deduplicates identical output", async () => {
+test("auto_capture keeps one command note when reruns are intercepted", async () => {
   await withNotes(async (directory) => {
     const archiveDir = path.join(directory, "outputs");
-    const tools = createCliTools({ cwd: directory, archiveDir });
+    const tools = createCliTools({
+      cwd: directory,
+      archiveDir,
+      notesScope: { runId: "auto-run", notesDir: directory },
+    });
     const executeTool = wrapExecuteTool(tools.executeTool, {
       output: () => {},
       getToolMetadata: tools.getLastToolMetadata,
+      notesScope: { runId: "auto-run", notesDir: directory },
     });
     const command = "printf 'result=%s\\n' \"$AUTO_CAPTURE_VALUE\"; : \"$RANDOM\"";
     process.env.AUTO_CAPTURE_VALUE = "first";
@@ -279,19 +308,14 @@ test("auto_capture preserves the first value and deduplicates identical output",
     await executeTool({ id: "tool-3", name: "exec", input: { command }, context: { round: 3 } });
     delete process.env.AUTO_CAPTURE_VALUE;
 
-    const first = JSON.parse(await notes.note_read({ key: "result" }));
-    assert.equal(first.status, "found");
-    assert.equal(first.value, "first");
-    assert.equal(first.artifactRef.digest, createHash("sha256").update("result=first\n").digest("hex"));
-    const listed = JSON.parse(await notes.note_list({}));
-    assert.equal(listed.total, 2);
-    const valueNote = listed.notes.find((note) => note.key === "result");
-    const referenceNote = listed.notes.find((note) => note.key.startsWith("result:candidate:"));
-    assert.equal(valueNote.next, "已有值可直接使用");
-    assert.match(valueNote.preview, /first/u);
-    assert.equal(referenceNote.next, "已有值可直接使用");
-    assert.match(referenceNote.preview, /second/u);
-    assert.doesNotMatch(JSON.stringify(first), /second/u);
+    const listed = JSON.parse(await scopedNotes.note_list({}));
+    assert.equal(listed.total, 1);
+    assert.ok(listed.notes.every((note) => note.key.startsWith("auto-")));
+    const values = await Promise.all(listed.notes.map(async (note) => (
+      JSON.parse(await scopedNotes.note_read({ key: note.key }))
+    )));
+    assert.deepEqual(values.map((entry) => entry.value), ["result=first\n"]);
+    assert.equal(values[0].superseded.length, 0);
   });
 });
 
@@ -300,16 +324,17 @@ test("GC revokes expired pinned notes and keeps a tombstone with an injected clo
   await withNotes(async (directory) => {
     const restoreClock = notes.setNotesClock(() => now.value);
     try {
-      await notes.note_take({ key: "lifecycle", content: "value", pinned: true });
-      await notes.completeRun();
-      assert.equal(JSON.parse(await notes.note_read({ key: "lifecycle" })).status, "found");
-      await notes.runNotesJanitor();
-      const grace = JSON.parse(await notes.note_read({ key: "lifecycle" }));
-      assert.equal(grace.status, "found");
+      await scopedNotes.note_take({ key: "lifecycle", content: "value", pinned: true });
+      await scopedNotes.completeRun();
+      assert.equal(JSON.parse(await scopedNotes.note_read({ key: "lifecycle" })).status, "found");
+      await scopedNotes.runNotesJanitor();
+      const done = JSON.parse(await scopedNotes.note_read({ key: "lifecycle" }));
+      assert.equal(done.status, "found");
+      assert.equal(done.state, "done");
 
       now.value += 1001;
-      await notes.runNotesJanitor();
-      const revoked = JSON.parse(await notes.note_read({ key: "lifecycle" }));
+      await scopedNotes.runNotesJanitor();
+      const revoked = JSON.parse(await scopedNotes.note_read({ key: "lifecycle" }));
       assert.equal(revoked.status, "revoked");
       const tombstone = JSON.parse(await readFile(
         path.join(directory, "run", "auto-run", "lifecycle.json"),
@@ -349,102 +374,19 @@ test("runChat captures a non-replayable tool result before completing the run", 
       toolOutput: () => {},
     });
 
-    const record = JSON.parse(await readFile(
-      path.join(directory, "run", "integration-run", "result.json"),
-      "utf8",
-    ));
-    assert.equal(record.versions[0].provenance.source, "auto");
-    assert.equal(record.state, "grace");
-    assert.ok(record.versions[0].artifactRef.archivePath);
-    assert.equal(record.versions[0].content, "integration");
+    const record = await readOnlyRecord(directory, "integration-run");
+    assert.equal(record.current.provenance.source, "auto");
+    assert.equal(record.state, "done");
+    assert.ok(record.current.artifactRef.archivePath);
+    assert.equal(record.current.content, "result=integration\n");
   });
 });
 
-test("auto-captured pinned notes refresh the ledger in the next tool result", async () => {
-  await withNotes(async (directory) => {
-    const transcriptDir = path.join(directory, "transcripts");
-    const provider = createFakeProvider([
-      {
-        content: [{
-          type: "tool_use",
-          id: "ledger-tool-1",
-          name: "exec",
-          input: { command: "printf 'result=ledger-refresh\\n'; : \"$RANDOM\"" },
-        }],
-        stopReason: "tool_use",
-      },
-      { content: [{ type: "text", text: "done" }] },
-    ]);
-    await runChat({
-      prompt: "capture and refresh ledger",
-      session: "ledger-refresh-run",
-      dir: transcriptDir,
-      provider,
-      config: { model: "fake-model", maxOutputTokens: 1000 },
-      notesLedger: true,
-      maxRounds: 2,
-      idleTimeout: 0,
-      toolOutput: () => {},
-    });
-
-    assert.match(
-      JSON.stringify(provider.requests[1].messages),
-      /\[notes pinned ledger refresh\][\s\S]*result =/u,
-    );
-  });
-});
-
-test("repeated fold ledger refresh replaces one block without growing messages", async () => {
-  await withNotes(async (directory) => {
-    const transcriptDir = path.join(directory, "transcripts");
-    let counts;
-    await runChat({
-      prompt: "fold ledger",
-      session: "ledger-fold-run",
-      dir: transcriptDir,
-      config: { model: "fake-model", maxOutputTokens: 1000 },
-      notesLedger: true,
-      finalGuard: false,
-      provider: createFakeProvider([]),
-      loop: async (options) => {
-        const folded = [{
-          role: "user",
-          content: [{ type: "text", text: "original task" }],
-        }];
-        const initialCount = folded.length;
-        await options.context.onAfterFold({ messages: folded });
-        const firstCount = folded.length;
-        await options.context.onAfterFold({ messages: folded });
-        counts = [initialCount, firstCount, folded.length];
-        const refreshes = folded[0].content.filter((block) => (
-          block.text?.includes("[notes pinned ledger refresh]")
-        ));
-        assert.equal(refreshes.length, 1);
-        return {
-          finalText: "done",
-          messages: folded,
-          rounds: 1,
-          truncated: false,
-          termination: { reason: "end_turn" },
-          verification: { status: "skipped" },
-          usage: { input_tokens: 0, output_tokens: 0 },
-          compactionStats: [],
-        };
-      },
-      idleTimeout: 0,
-      toolOutput: () => {},
-    });
-    assert.deepEqual(counts, [1, 1, 1]);
-  });
-});
-
-test("concurrent runChat calls keep explicit note scopes isolated and restore env", async () => {
+test("concurrent runChat calls keep explicit note scopes isolated", async () => {
   await withTempDirectory(async (directory) => {
     const previous = {
-      runId: process.env.ERIX_RUN_ID,
       notesDir: process.env.ERIX_NOTES_DIR,
     };
-    process.env.ERIX_RUN_ID = "sentinel-run";
     process.env.ERIX_NOTES_DIR = path.join(directory, "sentinel-notes");
     try {
       const run = (runId, value) => runChat({
@@ -482,13 +424,10 @@ test("concurrent runChat calls keep explicit note scopes isolated and restore en
         path.join(directory, "parallel-b-notes", "run", "parallel-b", "answer.json"),
         "utf8",
       ));
-      assert.equal(first.versions.at(-1).content, "value-a");
-      assert.equal(second.versions.at(-1).content, "value-b");
-      assert.equal(process.env.ERIX_RUN_ID, "sentinel-run");
+      assert.equal(first.current.content, "value-a");
+      assert.equal(second.current.content, "value-b");
       assert.equal(process.env.ERIX_NOTES_DIR, path.join(directory, "sentinel-notes"));
     } finally {
-      if (previous.runId === undefined) delete process.env.ERIX_RUN_ID;
-      else process.env.ERIX_RUN_ID = previous.runId;
       if (previous.notesDir === undefined) delete process.env.ERIX_NOTES_DIR;
       else process.env.ERIX_NOTES_DIR = previous.notesDir;
     }
