@@ -33,7 +33,6 @@ import {
 } from "./tools.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
 
-const DEFAULT_MODEL = "kimi-for-coding";
 const DEFAULT_MAX_ROUNDS = 32;
 const DEFAULT_IDLE_TIMEOUT_SECONDS = 0;
 const GREEN = "\x1b[32m";
@@ -65,7 +64,8 @@ const REPL_HELP_TEXT = `REPL 用法：
 环境变量：
   LLM_KIT_ENDPOINT      OpenAI 兼容 API 地址（必填）
   LLM_KIT_API_KEY       API 密钥（必填）
-  LLM_KIT_MODEL         初始模型名称（默认：${DEFAULT_MODEL}）
+  LLM_KIT_MODEL         初始模型名称（必填，除非配置文件或 ERIX_DEFAULT_MODEL 已提供）
+  ERIX_DEFAULT_MODEL    无配置模型时使用的显式默认模型（可选）
   ERIX_EXEC_TIMEOUT_MS  exec 前台命令超时毫秒数（默认：120000）
   ERIX_NO_FINAL_GUARD=1 关闭终稿 provenance 核验
 

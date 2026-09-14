@@ -16,6 +16,7 @@ const ENV_NAMES = [
   "LLM_KIT_ENDPOINT",
   "LLM_KIT_API_KEY",
   "LLM_KIT_MODEL",
+  "ERIX_DEFAULT_MODEL",
   "LLM_KIT_MAX_TOKENS",
 ];
 
@@ -70,13 +71,14 @@ test("defaultConfigPath falls back to HOME", async () => {
   });
 });
 
-test("loadCliConfig reads file values and applies the default model", async () => {
+test("loadCliConfig reads the configured model", async () => {
   await withDirectory(async (directory) => {
     const configPath = await writeConfig(directory, {
       slots: {
         default: {
           endpoint: "https://file.example.invalid",
           apiKey: "file-config-key",
+          model: "file-model",
           maxOutputTokens: 4096,
           contextWindowTokens: 32768,
         },
@@ -87,7 +89,7 @@ test("loadCliConfig reads file values and applies the default model", async () =
       assert.deepEqual(await loadCliConfig({ configPath }), {
         endpoint: "https://file.example.invalid",
         apiKey: "file-config-key",
-        model: "kimi-for-coding",
+        model: "file-model",
         maxOutputTokens: 4096,
         contextWindowTokens: 32768,
       });
@@ -113,6 +115,7 @@ test("loadCliConfig env overrides endpoint/apiKey/model but not maxOutputTokens"
       LLM_KIT_ENDPOINT: " https://env.example.invalid ",
       LLM_KIT_API_KEY: " env-key ",
       LLM_KIT_MODEL: " env-model ",
+      ERIX_DEFAULT_MODEL: "default-model",
       LLM_KIT_MAX_TOKENS: "2048",
     }, async () => {
       assert.deepEqual(await loadCliConfig({ configPath }), {
@@ -131,16 +134,38 @@ test("loadCliConfig treats a missing config file as an empty config", async () =
     await withEnvironment({
       LLM_KIT_ENDPOINT: "https://env.example.invalid",
       LLM_KIT_API_KEY: "env-key",
+      ERIX_DEFAULT_MODEL: "default-model",
     }, async () => {
       assert.deepEqual(await loadCliConfig({
         configPath: join(directory, "missing.json"),
       }), {
         endpoint: "https://env.example.invalid",
         apiKey: "env-key",
-        model: "kimi-for-coding",
+        model: "default-model",
         maxOutputTokens: 16384,
         contextWindowTokens: undefined,
       });
+
+    });
+  });
+});
+
+test("loadCliConfig rejects a missing model with an actionable hint", async () => {
+  await withDirectory(async (directory) => {
+    const configPath = await writeConfig(directory, {
+      slots: {
+        default: {
+          endpoint: "https://file.example.invalid",
+          apiKey: "file-config-key",
+        },
+      },
+    });
+
+    await withEnvironment({}, async () => {
+      await assert.rejects(
+        loadCliConfig({ configPath }),
+        /slots\.default\.model.*LLM_KIT_MODEL\/ERIX_DEFAULT_MODEL/u,
+      );
     });
   });
 });
@@ -203,6 +228,7 @@ test("loadCliConfig falls back to the default for invalid maxOutputTokens", asyn
           default: {
             endpoint: "https://invalid-max.example.invalid",
             apiKey: "file-config-key",
+            model: "file-model",
             maxOutputTokens: value,
           },
         },
@@ -224,6 +250,7 @@ test("loadCliConfig parses contextWindowTokens and ignores invalid values", asyn
         default: {
           endpoint: "https://context.example.invalid",
           apiKey: "file-config-key",
+          model: "file-model",
           contextWindowTokens: 20000,
         },
       },
@@ -244,6 +271,7 @@ test("loadCliConfig parses contextWindowTokens and ignores invalid values", asyn
           default: {
             endpoint: "https://invalid-context.example.invalid",
             apiKey: "file-config-key",
+            model: "file-model",
             contextWindowTokens: value,
           },
         },
@@ -311,7 +339,7 @@ test("loadCliConfig preserves the existing missing endpoint and API key error", 
       await assert.rejects(
         loadCliConfig({ configPath: join(directory, "missing.json") }),
         {
-          message: "缺少环境变量：LLM_KIT_ENDPOINT、LLM_KIT_API_KEY。\n请先设置，例如：\n  export LLM_KIT_ENDPOINT=\"https://你的 OpenAI 兼容 API 地址\"\n  export LLM_KIT_API_KEY=\"你的 API 密钥\"",
+          message: "缺少配置：LLM_KIT_ENDPOINT、LLM_KIT_API_KEY、LLM_KIT_MODEL or ERIX_DEFAULT_MODEL or slots.default.model。\n请在配置文件 slots.default.model 设置 model，或设置 LLM_KIT_MODEL/ERIX_DEFAULT_MODEL。",
         },
       );
     });

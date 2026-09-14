@@ -55,7 +55,8 @@ const HELP_TEXT = `用法：
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
   LLM_KIT_API_KEY    API 密钥（必填）
-  LLM_KIT_MODEL      模型名称（默认：kimi-for-coding）
+  LLM_KIT_MODEL      模型名称（必填，除非配置文件或 ERIX_DEFAULT_MODEL 已提供）
+  ERIX_DEFAULT_MODEL 无配置模型时使用的显式默认模型（可选）
   ERIX_EXEC_TIMEOUT_MS exec 前台命令超时毫秒数（默认：120000）
   ERIX_NO_TOOL_ROUNDS 模型连续无工具调用几轮后强制完成（默认：3，最小：1）
   ERIX_MAX_ROUNDS     工具循环最大轮数（默认：64，最小：1）

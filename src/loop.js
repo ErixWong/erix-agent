@@ -1888,7 +1888,8 @@ export async function runToolLoop({
     const configuredStrategy = compactionContext?.strategy;
     // API input usage is per request; keep the aggregate for billing output.
     // 压缩判断：主用本地估算（真实上下文大小），API usage 辅助取单轮完整输入
-    // （flash/kimi 型 API 报完整输入含历史；累积 usage.input_tokens 是计费总量、虚高会误触发折叠）
+    // Some APIs report full historical input; cumulative usage is billable input
+    // and can otherwise trigger compaction too early.
     const apiInputTokens = latestApiInputTokens;
     const estimatedTokens = estimateMessageTokens(messages);
     const overBudget = budgetTokens !== undefined

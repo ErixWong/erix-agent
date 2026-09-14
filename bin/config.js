@@ -9,7 +9,6 @@ import {
 } from "../src/index.js";
 import { isRealUser } from "../src/compact/helpers.js";
 
-const DEFAULT_MODEL = "kimi-for-coding";
 const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
 
 export function defaultConfigPath() {
@@ -39,18 +38,26 @@ function parsePositiveInteger(value) {
 }
 
 function missingConfigError(missing) {
+  if (missing.includes("LLM_KIT_MODEL or ERIX_DEFAULT_MODEL or slots.default.model")) {
+    return new Error(
+      `缺少配置：${missing.join("、")}。\n`
+      + "请在配置文件 slots.default.model 设置 model，"
+      + "或设置 LLM_KIT_MODEL/ERIX_DEFAULT_MODEL。",
+    );
+  }
   return new Error(
     `缺少环境变量：${missing.join("、")}。\n请先设置，例如：\n  export LLM_KIT_ENDPOINT="https://你的 OpenAI 兼容 API 地址"\n  export LLM_KIT_API_KEY="你的 API 密钥"`,
   );
 }
 
-export async function loadCliConfig({ configPath } = {}) {
+export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
   const fileConfig = await loadFileConfig(configPath ?? defaultConfigPath());
   const endpoint = readEnvironmentValue("LLM_KIT_ENDPOINT") ?? fileConfig.endpoint;
   const apiKey = readEnvironmentValue("LLM_KIT_API_KEY") ?? fileConfig.apiKey;
   const model = readEnvironmentValue("LLM_KIT_MODEL")
+    || (typeof modelOverride === "string" ? modelOverride.trim() : undefined)
     || fileConfig.model
-    || DEFAULT_MODEL;
+    || readEnvironmentValue("ERIX_DEFAULT_MODEL");
   const maxOutputTokens =
     parsePositiveInteger(fileConfig.maxOutputTokens)
     ?? DEFAULT_MAX_OUTPUT_TOKENS;
@@ -59,6 +66,7 @@ export async function loadCliConfig({ configPath } = {}) {
 
   if (!endpoint) missing.push("LLM_KIT_ENDPOINT");
   if (!apiKey) missing.push("LLM_KIT_API_KEY");
+  if (!model) missing.push("LLM_KIT_MODEL or ERIX_DEFAULT_MODEL or slots.default.model");
   if (missing.length > 0) throw missingConfigError(missing);
 
   const forwardedFields = [

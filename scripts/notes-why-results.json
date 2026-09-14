@@ -2,8 +2,8 @@
   "protocol": {
     "seed": "notes-why-2026-09-13",
     "models": [
-      "kimi-for-coding",
-      "k3"
+      "historical-model",
+      "configured-model"
     ],
     "variants": [
       "V0",
@@ -25,11 +25,11 @@
   "completedAt": "2026-09-13T03:43:23.251Z",
   "runs": [
     {
-      "id": "V0-kimi-for-coding-01",
+      "id": "V0-historical-model-01",
       "variant": "V0",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "index": 1,
-      "runId": "notes-why-v0-kimi-for-coding-01",
+      "runId": "notes-why-v0-historical-model-01",
       "durationMs": 138591,
       "failed": false,
       "error": null,
@@ -77,7 +77,7 @@
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-kimi-for-coding-01/transcripts/outputs/notes-why-v0-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-historical-model-01/transcripts/outputs/notes-why-v0-historical-model-01/001-exec.txt"
         },
         {
           "name": "exec",
@@ -111,7 +111,7 @@
         {
           "name": "exec",
           "round": 10,
-          "command": "ls /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-kimi-for-coding-01/transcripts/outputs/notes-why-v0-kimi-for-coding-01"
+          "command": "ls /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-historical-model-01/transcripts/outputs/notes-why-v0-historical-model-01"
         },
         {
           "name": "tree",
@@ -120,7 +120,7 @@
         {
           "name": "readFile",
           "round": 12,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-kimi-for-coding-01/transcripts/outputs/notes-why-v0-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-historical-model-01/transcripts/outputs/notes-why-v0-historical-model-01/001-exec.txt"
         }
       ],
       "compacted": true,
@@ -177,11 +177,11 @@
       ]
     },
     {
-      "id": "V0-k3-01",
+      "id": "V0-configured-model-01",
       "variant": "V0",
-      "model": "k3",
+      "model": "configured-model",
       "index": 1,
-      "runId": "notes-why-v0-k3-01",
+      "runId": "notes-why-v0-configured-model-01",
       "durationMs": 90190,
       "failed": false,
       "error": null,
@@ -236,32 +236,32 @@
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/001-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/002-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/002-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/002-exec.txt"
         },
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/003-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/003-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/003-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/003-exec.txt"
         },
         {
           "name": "exec",
@@ -275,37 +275,37 @@
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/002-exec.txt"
         },
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/003-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/003-exec.txt"
         },
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/004-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/004-exec.txt"
         },
         {
           "name": "readFile",
           "round": 9,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/002-exec.txt"
         },
         {
           "name": "readFile",
           "round": 9,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/003-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/003-exec.txt"
         },
         {
           "name": "readFile",
           "round": 9,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-k3-01/transcripts/outputs/notes-why-v0-k3-01/004-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v0-configured-model-01/transcripts/outputs/notes-why-v0-configured-model-01/004-exec.txt"
         }
       ],
       "compacted": true,
@@ -354,11 +354,11 @@
       ]
     },
     {
-      "id": "V1-kimi-for-coding-01",
+      "id": "V1-historical-model-01",
       "variant": "V1",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "index": 1,
-      "runId": "notes-why-v1-kimi-for-coding-01",
+      "runId": "notes-why-v1-historical-model-01",
       "durationMs": 117311,
       "failed": false,
       "error": null,
@@ -420,22 +420,22 @@
         {
           "name": "readFile",
           "round": 6,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-kimi-for-coding-01/transcripts/outputs/notes-why-v1-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-historical-model-01/transcripts/outputs/notes-why-v1-historical-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 6,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-kimi-for-coding-01/transcripts/outputs/notes-why-v1-kimi-for-coding-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-historical-model-01/transcripts/outputs/notes-why-v1-historical-model-01/002-exec.txt"
         },
         {
           "name": "readFile",
           "round": 6,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-kimi-for-coding-01/transcripts/outputs/notes-why-v1-kimi-for-coding-01/003-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-historical-model-01/transcripts/outputs/notes-why-v1-historical-model-01/003-exec.txt"
         },
         {
           "name": "readFile",
           "round": 6,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-kimi-for-coding-01/transcripts/outputs/notes-why-v1-kimi-for-coding-01/004-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-historical-model-01/transcripts/outputs/notes-why-v1-historical-model-01/004-exec.txt"
         },
         {
           "name": "tree",
@@ -444,27 +444,27 @@
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-kimi-for-coding-01/transcripts/outputs/notes-why-v1-kimi-for-coding-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-historical-model-01/transcripts/outputs/notes-why-v1-historical-model-01/001-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-kimi-for-coding-01/transcripts/outputs/notes-why-v1-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-historical-model-01/transcripts/outputs/notes-why-v1-historical-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-kimi-for-coding-01/transcripts/outputs/notes-why-v1-kimi-for-coding-01/002-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-historical-model-01/transcripts/outputs/notes-why-v1-historical-model-01/002-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-kimi-for-coding-01/transcripts/outputs/notes-why-v1-kimi-for-coding-01/003-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-historical-model-01/transcripts/outputs/notes-why-v1-historical-model-01/003-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-kimi-for-coding-01/transcripts/outputs/notes-why-v1-kimi-for-coding-01/004-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-historical-model-01/transcripts/outputs/notes-why-v1-historical-model-01/004-exec.meta.json"
         }
       ],
       "compacted": true,
@@ -509,11 +509,11 @@
       ]
     },
     {
-      "id": "V1-k3-01",
+      "id": "V1-configured-model-01",
       "variant": "V1",
-      "model": "k3",
+      "model": "configured-model",
       "index": 1,
-      "runId": "notes-why-v1-k3-01",
+      "runId": "notes-why-v1-configured-model-01",
       "durationMs": 133165,
       "failed": false,
       "error": null,
@@ -562,12 +562,12 @@
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-k3-01/transcripts/outputs/notes-why-v1-k3-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-configured-model-01/transcripts/outputs/notes-why-v1-configured-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-k3-01/transcripts/outputs/notes-why-v1-k3-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-configured-model-01/transcripts/outputs/notes-why-v1-configured-model-01/001-exec.meta.json"
         },
         {
           "name": "exec",
@@ -586,7 +586,7 @@
         {
           "name": "exec",
           "round": 9,
-          "command": "head -c 12 /dev/urandom | base64 > /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-k3-01/onetime_key.txt && echo written"
+          "command": "head -c 12 /dev/urandom | base64 > /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-configured-model-01/onetime_key.txt && echo written"
         },
         {
           "name": "exec",
@@ -596,7 +596,7 @@
         {
           "name": "readFile",
           "round": 11,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-k3-01/onetime_key.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-configured-model-01/onetime_key.txt"
         },
         {
           "name": "tree",
@@ -610,7 +610,7 @@
         {
           "name": "readFile",
           "round": 12,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-k3-01/transcripts/notes-why-v1-k3-01.jsonl"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v1-configured-model-01/transcripts/notes-why-v1-configured-model-01.jsonl"
         }
       ],
       "compacted": true,
@@ -667,11 +667,11 @@
       ]
     },
     {
-      "id": "V2-kimi-for-coding-01",
+      "id": "V2-historical-model-01",
       "variant": "V2",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "index": 1,
-      "runId": "notes-why-v2-kimi-for-coding-01",
+      "runId": "notes-why-v2-historical-model-01",
       "durationMs": 89854,
       "failed": false,
       "error": null,
@@ -718,27 +718,27 @@
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-kimi-for-coding-01/transcripts/notes-why-v2-kimi-for-coding-01.state.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-historical-model-01/transcripts/notes-why-v2-historical-model-01.state.json"
         },
         {
           "name": "readFile",
           "round": 6,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-kimi-for-coding-01/transcripts/outputs/notes-why-v2-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-historical-model-01/transcripts/outputs/notes-why-v2-historical-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 6,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-kimi-for-coding-01/transcripts/outputs/notes-why-v2-kimi-for-coding-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-historical-model-01/transcripts/outputs/notes-why-v2-historical-model-01/002-exec.txt"
         },
         {
           "name": "readFile",
           "round": 6,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-kimi-for-coding-01/transcripts/outputs/notes-why-v2-kimi-for-coding-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-historical-model-01/transcripts/outputs/notes-why-v2-historical-model-01/001-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 6,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-kimi-for-coding-01/transcripts/outputs/notes-why-v2-kimi-for-coding-01/002-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-historical-model-01/transcripts/outputs/notes-why-v2-historical-model-01/002-exec.meta.json"
         },
         {
           "name": "exec",
@@ -758,7 +758,7 @@
         {
           "name": "exec",
           "round": 8,
-          "command": "ls -la /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-kimi-for-coding-01/transcripts/outputs/notes-why-v2-kimi-for-coding-01/"
+          "command": "ls -la /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-historical-model-01/transcripts/outputs/notes-why-v2-historical-model-01/"
         },
         {
           "name": "tree",
@@ -767,12 +767,12 @@
         {
           "name": "readFile",
           "round": 10,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-kimi-for-coding-01/transcripts/outputs/notes-why-v2-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-historical-model-01/transcripts/outputs/notes-why-v2-historical-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 10,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-kimi-for-coding-01/transcripts/outputs/notes-why-v2-kimi-for-coding-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-historical-model-01/transcripts/outputs/notes-why-v2-historical-model-01/001-exec.meta.json"
         },
         {
           "name": "exec",
@@ -849,11 +849,11 @@
       ]
     },
     {
-      "id": "V2-k3-01",
+      "id": "V2-configured-model-01",
       "variant": "V2",
-      "model": "k3",
+      "model": "configured-model",
       "index": 1,
-      "runId": "notes-why-v2-k3-01",
+      "runId": "notes-why-v2-configured-model-01",
       "durationMs": 139487,
       "failed": false,
       "error": null,
@@ -905,22 +905,22 @@
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-k3-01/transcripts/outputs/notes-why-v2-k3-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-configured-model-01/transcripts/outputs/notes-why-v2-configured-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-k3-01/transcripts/outputs/notes-why-v2-k3-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-configured-model-01/transcripts/outputs/notes-why-v2-configured-model-01/001-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-k3-01/transcripts/outputs/notes-why-v2-k3-01/002-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-configured-model-01/transcripts/outputs/notes-why-v2-configured-model-01/002-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 5,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-k3-01/transcripts/outputs/notes-why-v2-k3-01/003-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-configured-model-01/transcripts/outputs/notes-why-v2-configured-model-01/003-exec.meta.json"
         },
         {
           "name": "exec",
@@ -939,7 +939,7 @@
         {
           "name": "exec",
           "round": 9,
-          "command": "bash /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-k3-01/gen_key.sh"
+          "command": "bash /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v2-configured-model-01/gen_key.sh"
         },
         {
           "name": "exec",
@@ -1014,11 +1014,11 @@
       ]
     },
     {
-      "id": "V3-kimi-for-coding-01",
+      "id": "V3-historical-model-01",
       "variant": "V3",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "index": 1,
-      "runId": "notes-why-v3-kimi-for-coding-01",
+      "runId": "notes-why-v3-historical-model-01",
       "durationMs": 91522,
       "failed": false,
       "error": null,
@@ -1055,7 +1055,7 @@
         {
           "name": "exec",
           "round": 2,
-          "command": "ls -la /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-kimi-for-coding-01/transcripts/outputs/notes-why-v3-kimi-for-coding-01/ 2>/dev/null || echo \"目录不存在\""
+          "command": "ls -la /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-historical-model-01/transcripts/outputs/notes-why-v3-historical-model-01/ 2>/dev/null || echo \"目录不存在\""
         },
         {
           "name": "tree",
@@ -1064,7 +1064,7 @@
         {
           "name": "readFile",
           "round": 4,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-kimi-for-coding-01/transcripts/outputs/notes-why-v3-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-historical-model-01/transcripts/outputs/notes-why-v3-historical-model-01/001-exec.txt"
         },
         {
           "name": "exec",
@@ -1078,7 +1078,7 @@
         {
           "name": "readFile",
           "round": 7,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-kimi-for-coding-01/transcripts/outputs/notes-why-v3-kimi-for-coding-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-historical-model-01/transcripts/outputs/notes-why-v3-historical-model-01/002-exec.txt"
         },
         {
           "name": "note_list",
@@ -1087,7 +1087,7 @@
         {
           "name": "exec",
           "round": 8,
-          "command": "ls /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-kimi-for-coding-01/transcripts/outputs/notes-why-v3-kimi-for-coding-01 2>/dev/null"
+          "command": "ls /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-historical-model-01/transcripts/outputs/notes-why-v3-historical-model-01 2>/dev/null"
         },
         {
           "name": "exec",
@@ -1106,17 +1106,17 @@
         {
           "name": "readFile",
           "round": 12,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-kimi-for-coding-01/transcripts/outputs/notes-why-v3-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-historical-model-01/transcripts/outputs/notes-why-v3-historical-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 12,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-kimi-for-coding-01/transcripts/outputs/notes-why-v3-kimi-for-coding-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-historical-model-01/transcripts/outputs/notes-why-v3-historical-model-01/002-exec.txt"
         },
         {
           "name": "readFile",
           "round": 12,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-kimi-for-coding-01/transcripts/outputs/notes-why-v3-kimi-for-coding-01/003-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-historical-model-01/transcripts/outputs/notes-why-v3-historical-model-01/003-exec.txt"
         }
       ],
       "compacted": true,
@@ -1173,11 +1173,11 @@
       ]
     },
     {
-      "id": "V3-k3-01",
+      "id": "V3-configured-model-01",
       "variant": "V3",
-      "model": "k3",
+      "model": "configured-model",
       "index": 1,
-      "runId": "notes-why-v3-k3-01",
+      "runId": "notes-why-v3-configured-model-01",
       "durationMs": 182140,
       "failed": false,
       "error": null,
@@ -1253,22 +1253,22 @@
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-k3-01/transcripts/outputs/notes-why-v3-k3-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-configured-model-01/transcripts/outputs/notes-why-v3-configured-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-k3-01/transcripts/outputs/notes-why-v3-k3-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-configured-model-01/transcripts/outputs/notes-why-v3-configured-model-01/001-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 9,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-k3-01/transcripts/outputs/notes-why-v3-k3-01/002-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-configured-model-01/transcripts/outputs/notes-why-v3-configured-model-01/002-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 9,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-k3-01/transcripts/outputs/notes-why-v3-k3-01/003-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-configured-model-01/transcripts/outputs/notes-why-v3-configured-model-01/003-exec.meta.json"
         },
         {
           "name": "note_list",
@@ -1281,17 +1281,17 @@
         {
           "name": "readFile",
           "round": 11,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-k3-01/transcripts/outputs/notes-why-v3-k3-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-configured-model-01/transcripts/outputs/notes-why-v3-configured-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 11,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-k3-01/transcripts/outputs/notes-why-v3-k3-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-configured-model-01/transcripts/outputs/notes-why-v3-configured-model-01/002-exec.txt"
         },
         {
           "name": "readFile",
           "round": 11,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-k3-01/transcripts/outputs/notes-why-v3-k3-01/003-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v3-configured-model-01/transcripts/outputs/notes-why-v3-configured-model-01/003-exec.txt"
         },
         {
           "name": "exec",
@@ -1363,11 +1363,11 @@
       ]
     },
     {
-      "id": "V4-kimi-for-coding-01",
+      "id": "V4-historical-model-01",
       "variant": "V4",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "index": 1,
-      "runId": "notes-why-v4-kimi-for-coding-01",
+      "runId": "notes-why-v4-historical-model-01",
       "durationMs": 112966,
       "failed": false,
       "error": null,
@@ -1452,7 +1452,7 @@
         {
           "name": "exec",
           "round": 7,
-          "command": "ls -la /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v4-kimi-for-coding-01/ 2>/dev/null; ls ~/.erix/transcripts/outputs/ 2>/dev/null | tail -20"
+          "command": "ls -la /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v4-historical-model-01/ 2>/dev/null; ls ~/.erix/transcripts/outputs/ 2>/dev/null | tail -20"
         },
         {
           "name": "exec",
@@ -1482,7 +1482,7 @@
         {
           "name": "exec",
           "round": 11,
-          "command": "ls -la /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v4-kimi-for-coding-01 2>/dev/null; ls -la ~/.erix/transcripts/outputs/ 2>/dev/null | tail -30"
+          "command": "ls -la /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v4-historical-model-01 2>/dev/null; ls -la ~/.erix/transcripts/outputs/ 2>/dev/null | tail -30"
         },
         {
           "name": "exec",
@@ -1549,11 +1549,11 @@
       ]
     },
     {
-      "id": "V4-k3-01",
+      "id": "V4-configured-model-01",
       "variant": "V4",
-      "model": "k3",
+      "model": "configured-model",
       "index": 1,
-      "runId": "notes-why-v4-k3-01",
+      "runId": "notes-why-v4-configured-model-01",
       "durationMs": 85484,
       "failed": false,
       "error": null,
@@ -1696,11 +1696,11 @@
       ]
     },
     {
-      "id": "V5-kimi-for-coding-01",
+      "id": "V5-historical-model-01",
       "variant": "V5",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "index": 1,
-      "runId": "notes-why-v5-kimi-for-coding-01",
+      "runId": "notes-why-v5-historical-model-01",
       "durationMs": 112793,
       "failed": false,
       "error": null,
@@ -1762,17 +1762,17 @@
         {
           "name": "readFile",
           "round": 7,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-kimi-for-coding-01/transcripts/outputs/notes-why-v5-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-historical-model-01/transcripts/outputs/notes-why-v5-historical-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 7,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-kimi-for-coding-01/transcripts/outputs/notes-why-v5-kimi-for-coding-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-historical-model-01/transcripts/outputs/notes-why-v5-historical-model-01/002-exec.txt"
         },
         {
           "name": "exec",
           "round": 8,
-          "command": "ls -la --time-style=full-iso /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-kimi-for-coding-01/transcripts/outputs/notes-why-v5-kimi-for-coding-01/ && wc -c /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-kimi-for-coding-01/transcripts/outputs/notes-why-v5-kimi-for-coding-01/*.txt"
+          "command": "ls -la --time-style=full-iso /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-historical-model-01/transcripts/outputs/notes-why-v5-historical-model-01/ && wc -c /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-historical-model-01/transcripts/outputs/notes-why-v5-historical-model-01/*.txt"
         },
         {
           "name": "tree",
@@ -1785,7 +1785,7 @@
         {
           "name": "exec",
           "round": 10,
-          "command": "ls /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-kimi-for-coding-01/transcripts/outputs/notes-why-v5-kimi-for-coding-01"
+          "command": "ls /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-historical-model-01/transcripts/outputs/notes-why-v5-historical-model-01"
         },
         {
           "name": "tree",
@@ -1794,22 +1794,22 @@
         {
           "name": "readFile",
           "round": 12,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-kimi-for-coding-01/transcripts/outputs/notes-why-v5-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-historical-model-01/transcripts/outputs/notes-why-v5-historical-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 12,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-kimi-for-coding-01/transcripts/outputs/notes-why-v5-kimi-for-coding-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-historical-model-01/transcripts/outputs/notes-why-v5-historical-model-01/001-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 12,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-kimi-for-coding-01/transcripts/outputs/notes-why-v5-kimi-for-coding-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-historical-model-01/transcripts/outputs/notes-why-v5-historical-model-01/002-exec.txt"
         },
         {
           "name": "readFile",
           "round": 12,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-kimi-for-coding-01/transcripts/outputs/notes-why-v5-kimi-for-coding-01/002-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-historical-model-01/transcripts/outputs/notes-why-v5-historical-model-01/002-exec.meta.json"
         }
       ],
       "compacted": true,
@@ -1866,11 +1866,11 @@
       ]
     },
     {
-      "id": "V5-k3-01",
+      "id": "V5-configured-model-01",
       "variant": "V5",
-      "model": "k3",
+      "model": "configured-model",
       "index": 1,
-      "runId": "notes-why-v5-k3-01",
+      "runId": "notes-why-v5-configured-model-01",
       "durationMs": 63148,
       "failed": false,
       "error": null,
@@ -1923,12 +1923,12 @@
         {
           "name": "readFile",
           "round": 4,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 4,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/001-exec.meta.json"
         },
         {
           "name": "note_take",
@@ -1946,7 +1946,7 @@
         {
           "name": "exec",
           "round": 6,
-          "command": "ls /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/ && head -2 /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/003-exec.txt && tail -1 /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/003-exec.txt"
+          "command": "ls /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/ && head -2 /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/003-exec.txt && tail -1 /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/003-exec.txt"
         },
         {
           "name": "tree",
@@ -1955,12 +1955,12 @@
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/003-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/003-exec.txt"
         },
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/003-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/003-exec.meta.json"
         },
         {
           "name": "exec",
@@ -1974,27 +1974,27 @@
         {
           "name": "readFile",
           "round": 11,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 11,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/002-exec.txt"
         },
         {
           "name": "readFile",
           "round": 11,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/002-exec.txt"
         },
         {
           "name": "readFile",
           "round": 11,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/004-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/004-exec.txt"
         },
         {
           "name": "readFile",
           "round": 11,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-k3-01/transcripts/outputs/notes-why-v5-k3-01/004-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v5-configured-model-01/transcripts/outputs/notes-why-v5-configured-model-01/004-exec.txt"
         },
         {
           "name": "note_list",
@@ -2059,11 +2059,11 @@
       ]
     },
     {
-      "id": "V6-kimi-for-coding-01",
+      "id": "V6-historical-model-01",
       "variant": "V6",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "index": 1,
-      "runId": "notes-why-v6-kimi-for-coding-01",
+      "runId": "notes-why-v6-historical-model-01",
       "durationMs": 101513,
       "failed": true,
       "error": null,
@@ -2112,7 +2112,7 @@
         {
           "name": "exec",
           "round": 6,
-          "command": "ls -la /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-kimi-for-coding-01/transcripts/outputs/notes-why-v6-kimi-for-coding-01/"
+          "command": "ls -la /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-historical-model-01/transcripts/outputs/notes-why-v6-historical-model-01/"
         },
         {
           "name": "tree",
@@ -2121,12 +2121,12 @@
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-kimi-for-coding-01/transcripts/outputs/notes-why-v6-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-historical-model-01/transcripts/outputs/notes-why-v6-historical-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 8,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-kimi-for-coding-01/transcripts/outputs/notes-why-v6-kimi-for-coding-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-historical-model-01/transcripts/outputs/notes-why-v6-historical-model-01/001-exec.meta.json"
         },
         {
           "name": "exec",
@@ -2140,22 +2140,22 @@
         {
           "name": "readFile",
           "round": 11,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-kimi-for-coding-01/transcripts/outputs/notes-why-v6-kimi-for-coding-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-historical-model-01/transcripts/outputs/notes-why-v6-historical-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 11,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-kimi-for-coding-01/transcripts/outputs/notes-why-v6-kimi-for-coding-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-historical-model-01/transcripts/outputs/notes-why-v6-historical-model-01/001-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 12,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-kimi-for-coding-01/transcripts/outputs/notes-why-v6-kimi-for-coding-01/002-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-historical-model-01/transcripts/outputs/notes-why-v6-historical-model-01/002-exec.meta.json"
         },
         {
           "name": "readFile",
           "round": 12,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-kimi-for-coding-01/transcripts/outputs/notes-why-v6-kimi-for-coding-01/003-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-historical-model-01/transcripts/outputs/notes-why-v6-historical-model-01/003-exec.meta.json"
         }
       ],
       "compacted": true,
@@ -2212,11 +2212,11 @@
       ]
     },
     {
-      "id": "V6-k3-01",
+      "id": "V6-configured-model-01",
       "variant": "V6",
-      "model": "k3",
+      "model": "configured-model",
       "index": 1,
-      "runId": "notes-why-v6-k3-01",
+      "runId": "notes-why-v6-configured-model-01",
       "durationMs": 162679,
       "failed": true,
       "error": null,
@@ -2249,12 +2249,12 @@
         {
           "name": "readFile",
           "round": 3,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-k3-01/transcripts/outputs/notes-why-v6-k3-01/001-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-configured-model-01/transcripts/outputs/notes-why-v6-configured-model-01/001-exec.txt"
         },
         {
           "name": "readFile",
           "round": 3,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-k3-01/transcripts/outputs/notes-why-v6-k3-01/001-exec.meta.json"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-configured-model-01/transcripts/outputs/notes-why-v6-configured-model-01/001-exec.meta.json"
         },
         {
           "name": "note_take",
@@ -2272,7 +2272,7 @@
         {
           "name": "readFile",
           "round": 7,
-          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-k3-01/transcripts/outputs/notes-why-v6-k3-01/002-exec.txt"
+          "path": "/home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-configured-model-01/transcripts/outputs/notes-why-v6-configured-model-01/002-exec.txt"
         },
         {
           "name": "exec",
@@ -2282,12 +2282,12 @@
         {
           "name": "exec",
           "round": 9,
-          "command": "cd /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-k3-01 && seq 401 800 > seq_401_800.txt && wc -l seq_401_800.txt && head -1 seq_401_800.txt && tail -1 seq_401_800.txt"
+          "command": "cd /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-configured-model-01 && seq 401 800 > seq_401_800.txt && wc -l seq_401_800.txt && head -1 seq_401_800.txt && tail -1 seq_401_800.txt"
         },
         {
           "name": "exec",
           "round": 10,
-          "command": "awk 'BEGIN{for(i=401;i<=800;i++)print i}' > /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-k3-01/seq_401_800.txt; echo \"exit=$?\"; wc -l < /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-k3-01/seq_401_800.txt"
+          "command": "awk 'BEGIN{for(i=401;i<=800;i++)print i}' > /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-configured-model-01/seq_401_800.txt; echo \"exit=$?\"; wc -l < /home/eric/projects/erix-llm-kit/.notes-why-nU5cUH/notes-why-v6-configured-model-01/seq_401_800.txt"
         },
         {
           "name": "exec",
@@ -2357,7 +2357,7 @@
   "aggregate": [
     {
       "variant": "V0",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -2449,7 +2449,7 @@
     },
     {
       "variant": "V0",
-      "model": "k3",
+      "model": "configured-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -2541,7 +2541,7 @@
     },
     {
       "variant": "V1",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -2633,7 +2633,7 @@
     },
     {
       "variant": "V1",
-      "model": "k3",
+      "model": "configured-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -2725,7 +2725,7 @@
     },
     {
       "variant": "V2",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -2817,7 +2817,7 @@
     },
     {
       "variant": "V2",
-      "model": "k3",
+      "model": "configured-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -2909,7 +2909,7 @@
     },
     {
       "variant": "V3",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -3001,7 +3001,7 @@
     },
     {
       "variant": "V3",
-      "model": "k3",
+      "model": "configured-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -3093,7 +3093,7 @@
     },
     {
       "variant": "V4",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -3185,7 +3185,7 @@
     },
     {
       "variant": "V4",
-      "model": "k3",
+      "model": "configured-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -3277,7 +3277,7 @@
     },
     {
       "variant": "V5",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -3369,7 +3369,7 @@
     },
     {
       "variant": "V5",
-      "model": "k3",
+      "model": "configured-model",
       "n": 1,
       "completed": 1,
       "failed": 0,
@@ -3461,7 +3461,7 @@
     },
     {
       "variant": "V6",
-      "model": "kimi-for-coding",
+      "model": "historical-model",
       "n": 1,
       "completed": 0,
       "failed": 1,
@@ -3553,7 +3553,7 @@
     },
     {
       "variant": "V6",
-      "model": "k3",
+      "model": "configured-model",
       "n": 1,
       "completed": 0,
       "failed": 1,

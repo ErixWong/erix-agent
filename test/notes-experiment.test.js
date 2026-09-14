@@ -20,6 +20,17 @@ import {
   reportMarkdown,
   roundRobinOrder,
 } from "../scripts/notes-experiment.mjs";
+import {
+  estimateHistoricalUsage,
+  formatCostPreview,
+  formatUsageSummary,
+  isQuotaOrAuthError,
+  resolveExperimentModel,
+  runFailFast,
+  summarizeUsage,
+  validateCostPlan,
+} from "../scripts/experiment-guardrails.mjs";
+import { createFakeProvider } from "./helpers/fake-provider.js";
 
 async function withProjectTemp(callback) {
   const directory = await mkdtemp(path.join(process.cwd(), ".test-notes-experiment-"));
@@ -30,13 +41,99 @@ async function withProjectTemp(callback) {
   }
 }
 
-test("matrix defaults to A/B/C, kimi n=30, and k3 n=10", () => {
+test("matrix defaults to A/B/C without assuming a model", () => {
   assert.deepEqual(ARMS, ["A", "B", "C"]);
-  assert.equal(parseArgs([]).model, "kimi-for-coding");
+  assert.equal(parseArgs([]).model, undefined);
   assert.equal(parseArgs([]).runs, 30);
-  assert.equal(parseArgs(["--model", "k3"]).runs, 10);
-  assert.equal(parseArgs(["--model", "k3", "--runs", "7"]).runs, 7);
+  assert.equal(parseArgs(["--model", "configured-model"]).runs, 30);
+  assert.equal(parseArgs(["--model", "configured-model", "--runs", "7"]).runs, 7);
+  assert.equal(parseArgs(["--max-calls", "9", "--yes"]).maxCalls, 9);
+  assert.equal(parseArgs(["--max-calls", "9", "--yes"]).yes, true);
   assert.throws(() => parseArgs(["--concurrency", "4"]), /maximum 3/u);
+});
+
+test("experiment model precedence is explicit model, environment, then config", () => {
+  const config = { slots: { default: { model: "config-model" } } };
+  assert.deepEqual(resolveExperimentModel({
+    explicitModel: "cli-model",
+    environment: { ERIX_EXPERIMENT_MODEL: "env-model" },
+    config,
+  }), { model: "cli-model", source: "--model" });
+  assert.deepEqual(resolveExperimentModel({
+    environment: { ERIX_EXPERIMENT_MODEL: "env-model" },
+    config,
+  }), { model: "env-model", source: "ERIX_EXPERIMENT_MODEL" });
+  assert.deepEqual(resolveExperimentModel({
+    environment: {},
+    config,
+  }), { model: "config-model", source: "slots.default.model" });
+  assert.throws(
+    () => resolveExperimentModel({ environment: {}, config: {} }),
+    /slots\.default\.model.*--model.*ERIX_EXPERIMENT_MODEL/u,
+  );
+});
+
+test("cost gate rejects over-budget plans and dry-runs without confirmation", () => {
+  assert.throws(
+    () => validateCostPlan({ plannedCalls: 41, maxCalls: 40, confirmed: true }),
+    /--max-calls 40/u,
+  );
+  assert.deepEqual(
+    validateCostPlan({ plannedCalls: 3, maxCalls: 40, confirmed: false }),
+    { dryRun: true },
+  );
+  assert.match(formatCostPreview({
+    model: "fake-model",
+    modelSource: "--model",
+    plannedCalls: 3,
+    armCount: 3,
+    runs: 1,
+    modelCount: 1,
+    maxCalls: 40,
+    estimate: estimateHistoricalUsage({
+      aggregate: [{
+        averages: { inputTokens: 10, outputTokens: 5, wallTimeMs: 1000 },
+      }],
+    }, { plannedCalls: 3 }),
+  }), /尚未发起模型调用.*计划调用数：3.*dry-run/us);
+});
+
+test("provider authentication failure stops the remaining jobs", async () => {
+  const provider = createFakeProvider([
+    { throw: new Error("401 not supported for current token") },
+    { content: [{ type: "text", text: "must not run" }] },
+  ]);
+  const outcome = await runFailFast(
+    [{ id: 1 }, { id: 2 }],
+    async () => {
+      try {
+        await provider.chat({ messages: [] });
+        return { failed: false };
+      } catch (error) {
+        return { failed: true, error: error.message };
+      }
+    },
+  );
+  assert.equal(provider.calls.length, 1);
+  assert.equal(outcome.results.length, 1);
+  assert.match(outcome.failure.message, /401 not supported/u);
+  assert.equal(isQuotaOrAuthError("403 quota exceeded"), true);
+});
+
+test("usage summary counts calls and token totals", () => {
+  assert.deepEqual(summarizeUsage([
+    { failed: false, inputTokens: 10, outputTokens: 2 },
+    { failed: true, usage: { input_tokens: 3, output_tokens: 1 } },
+  ]), {
+    totalCalls: 2,
+    successful: 1,
+    failed: 1,
+    inputTokens: 13,
+    outputTokens: 3,
+  });
+  assert.match(formatUsageSummary([
+    { failed: false, inputTokens: 10, outputTokens: 2 },
+  ]), /实际消耗汇总.*总调用数：1.*input tokens：10.*output tokens：2/us);
 });
 
 test("classify preserves legacy categories and treats final-only values as invented", () => {
@@ -55,7 +152,7 @@ test("parseFinal and parseStats read final guard metrics and usage", () => {
   const stdout = [
     "=== 终稿（已核验） ===",
     "ok",
-    "=== 统计 === model=kimi rounds=9 termination=end_turn "
+    "=== 统计 === model=fake-model rounds=9 termination=end_turn "
       + 'usage={"input_tokens":1234,"output_tokens":56} compacted=true '
       + "guard={verified:1,skipped:2,revised:3,rerun_cited:4,unverified:0,guard_error:0}",
   ].join("\n");
@@ -126,7 +223,7 @@ test("inspectRun counts note/archive calls and stores only redacted values", asy
       stdout,
       stderr: "",
       arm: "B",
-      model: "kimi-for-coding",
+      model: "configured-model",
       durationMs: 321,
       exitCode: 0,
       timedOut: false,
@@ -148,19 +245,19 @@ test("inspectRun counts note/archive calls and stores only redacted values", asy
 test("aggregate excludes failures from behavior denominator and exposes Wilson rates", () => {
   const [row] = aggregate([
     {
-      arm: "A", model: "k3", category: "hit_first", failed: false,
+      arm: "A", model: "fake-model", category: "hit_first", failed: false,
       durationMs: 100, rounds: 2, inputTokens: 10, outputTokens: 5,
       noteListCalls: 2, noteReadCalls: 1, archiveReadCalls: 0,
       guard: { verified: 1 },
     },
     {
-      arm: "A", model: "k3", category: "no_answer", failed: false,
+      arm: "A", model: "fake-model", category: "no_answer", failed: false,
       durationMs: 300, rounds: 4, inputTokens: 30, outputTokens: 15,
       noteListCalls: 0, noteReadCalls: 0, archiveReadCalls: 2,
       guard: { skipped: 1 },
     },
     {
-      arm: "A", model: "k3", category: "invented", failed: true,
+      arm: "A", model: "fake-model", category: "invented", failed: true,
       failClosed: true, durationMs: 500, guard: { unverified: 1 },
     },
   ]);
@@ -191,18 +288,22 @@ test("aggregate excludes failures from behavior denominator and exposes Wilson r
 
 test("roundRobinOrder interleaves A/B/C and keeps legacy arguments usable", () => {
   assert.deepEqual(
-    roundRobinOrder({ models: ["k3"], runs: 2 })
+    roundRobinOrder({ models: ["fake-model"], runs: 2 })
       .map(({ arm, model, index }) => `${index}:${arm}/${model}`),
     [
-      "1:A/k3",
-      "1:B/k3",
-      "1:C/k3",
-      "2:A/k3",
-      "2:B/k3",
-      "2:C/k3",
+      "1:A/fake-model",
+      "1:B/fake-model",
+      "1:C/fake-model",
+      "2:A/fake-model",
+      "2:B/fake-model",
+      "2:C/fake-model",
     ],
   );
-  assert.equal(roundRobinOrder({ smokeRuns: 1, criticalRuns: 2 }).length, 6);
+  assert.equal(roundRobinOrder({
+    models: ["fake-model"],
+    smokeRuns: 1,
+    criticalRuns: 2,
+  }).length, 6);
 });
 
 test("appendBatch preserves history and report states criteria and power limits", () => {
@@ -216,7 +317,7 @@ test("appendBatch preserves history and report states criteria and power limits"
     metadata: {
       batchId: "new",
       startedAt: "now",
-      model: "kimi-for-coding",
+      model: "configured-model",
       runsPerArm: 30,
     },
     runs: [],
