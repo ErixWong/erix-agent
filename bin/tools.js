@@ -158,6 +158,8 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 需要早期细节而想不起来时，先 note_list 再 note_read，不要猜。
 非幂等命令（/dev/urandom、$RANDOM…）重跑会得到不同的值，
 不得重跑"恢复"原值，不得凭记忆给值；确实不可恢复就明说不可恢复。
+涉及捕获值时，终稿必须显式写出 label=value（或“label 值是 value”）。
+首次捕获值可直接使用；后续重跑值必须附来源=note_read:<key> 或来源=归档:<文件名>。
 
 [工具纪律]
 - 复杂任务先规划并逐步执行；长任务用 todo 工具记录进度
@@ -476,6 +478,16 @@ function duplicateCommandGuidance({ count, archivePath }) {
   return `[注意：该命令本次运行已执行过第 ${count} 次；若其输出是随机值/时间戳/一次性内容，本次结果不是原始值。${recovery}]`;
 }
 
+function rerunGuidance(firstCapture) {
+  const pointers = [];
+  if (firstCapture?.captureKey) pointers.push(`note_read key=${firstCapture.captureKey}`);
+  if (firstCapture?.archivePath) pointers.push(`归档 ${firstCapture.archivePath}`);
+  const pointer = pointers.length > 0
+    ? pointers.join(" / ")
+    : "首次值不可恢复，请明确说明不可恢复";
+  return `[⚠️ 重跑警示：这是重跑结果，不保证等于本 run 首次执行的值；首次值见 ${pointer}。]`;
+}
+
 function normalizeCommand(command) {
   return String(command).replaceAll(/\r\n?/gu, "\n").trim();
 }
@@ -524,6 +536,7 @@ export function createCliTools({
   cwd = process.cwd(),
   archiveDir,
   notesScope,
+  runState: runStateOption,
 } = {}) {
   const root = path.resolve(cwd);
   if (archiveDir !== undefined && typeof archiveDir !== "string") {
@@ -533,6 +546,11 @@ export function createCliTools({
   let archiveSequence = 0;
   const duplicateCommands = archiveRoot ? new Map() : undefined;
   let lastToolMetadata;
+  const runState = runStateOption && typeof runStateOption === "object"
+    ? runStateOption
+    : {};
+  let firstCapture;
+  let captureCount = 0;
 
   async function readFile({ path: filePath, offset = 0, limit = 200 }) {
     const text = readFileSync(resolveToolPath(root, filePath), "utf8");
@@ -683,6 +701,7 @@ export function createCliTools({
     const normalizedInput = normalizeToolInput(input);
     const command = normalizedInput?.command;
     const replayable = name !== "exec" || !isNonReplayableCommand(command);
+    const hadCaptureBefore = captureCount > 0;
     lastToolMetadata = { name, replayable };
     let commandState;
     let isFirstCommandExecution = false;
@@ -744,7 +763,21 @@ export function createCliTools({
           fullOutput: archived.archivedText ?? String(result ?? ""),
           artifact: archived.artifact,
         };
+        if (name === "exec" && !replayable && archived.artifact) {
+          captureCount += 1;
+          runState.captureCount = captureCount;
+          if (firstCapture === undefined) {
+            firstCapture = {
+              archivePath: archived.archivePath,
+              captureKey: autoCaptureKey(command, archived.artifact),
+            };
+          }
+        }
       }
+    }
+    if (name === "exec" && !replayable && hadCaptureBefore) {
+      runState.rerunDetected = true;
+      returnedResult = `${rerunGuidance(firstCapture)}\n${String(returnedResult ?? "")}`;
     }
     const finalResult = name === "exec" ? truncateResult(returnedResult) : returnedResult;
     if (commandState?.count > 1) {
@@ -757,6 +790,11 @@ export function createCliTools({
     tools: schemas.map((schema) => structuredClone(schema)),
     executeTool,
     getLastToolMetadata: () => lastToolMetadata,
+    getRunState: () => ({
+      ...runState,
+      captureCount,
+      rerunDetected: runState.rerunDetected === true,
+    }),
     truncateResult,
   };
 }

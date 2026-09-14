@@ -33,6 +33,25 @@ test("finalGuard accept preserves normal completion", async () => {
   assert.equal(events.at(-1).action, "accept");
 });
 
+test("finalGuard records cited rerun provenance separately", async () => {
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "nonce=rerun" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "hello",
+    executeTool: async () => "unused",
+    runState: { rerunDetected: true },
+    finalGuard: async (payload) => {
+      assert.equal(payload.rerunDetected, true);
+      return { action: "accept", rerunCited: true };
+    },
+  });
+
+  assert.equal(result.verification.status, "verified");
+  assert.equal(result.verification.metrics.verified, 1);
+  assert.equal(result.verification.metrics.rerun_cited, 1);
+});
+
 test("finalGuard revision is injected as a paired-safe user text message", async () => {
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "unverified" }], stopReason: "end_turn" },

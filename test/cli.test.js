@@ -102,7 +102,7 @@ test("runChat does not add a value-note index to the system prompt", async () =>
   }
 });
 
-test("runChat keeps archive guidance out of loop context", async () => {
+test("runChat injects archive status at fold time instead of into loop context", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-recovery-hint-test-"));
   let captured;
   try {
@@ -129,7 +129,7 @@ test("runChat keeps archive guidance out of loop context", async () => {
     });
 
     assert.ok(captured);
-    assert.equal(captured.context.recoveryHint, undefined);
+    assert.equal(typeof captured.context.recoveryHint, "function");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

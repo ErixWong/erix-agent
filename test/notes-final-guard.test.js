@@ -7,10 +7,11 @@ import path from "node:path";
 
 import { captureToolExecution } from "../bin/auto-capture.js";
 import { exitCodeForVerification, parseChatArgs, runChat } from "../bin/cli.js";
-import { createFinalGuard } from "../bin/final-guard.js";
+import { buildCaptureRecoveryHint, createFinalGuard } from "../bin/final-guard.js";
 import { parseReplArgs } from "../bin/repl.js";
 import { archiveResult } from "../bin/tools.js";
 import * as notes from "../skills/notes/skill.mjs";
+import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 async function withNotes(callback) {
@@ -44,23 +45,24 @@ const scopedNotes = new Proxy(notes, {
   },
 });
 
-async function createArtifact(directory, output) {
-  const archived = archiveResult(directory, "exec", output, 1, {
+async function createArtifact(directory, output, sequence = 1) {
+  const archived = archiveResult(directory, "exec", output, sequence, {
     force: true,
     replayable: false,
     command: "printf non-replayable",
-    context: { toolUseId: "guard-tool", round: 1 },
+    context: { toolUseId: `guard-tool-${sequence}`, round: sequence },
   });
   const archivePath = archived.archivePath;
   await captureToolExecution({
     name: "exec",
     result: output,
-    toolUseId: "guard-tool",
+    toolUseId: `guard-tool-${sequence}`,
     metadata: {
       replayable: false,
       fullOutput: output,
       artifact: archived.artifact,
     },
+    round: sequence,
     notesScope: { runId: "guard-run", notesDir: directory },
   });
   return archivePath;
@@ -79,7 +81,87 @@ test("final guard accepts a final value found in a non-replayable artifact", asy
       "accept",
     );
   });
+});
 
+test("final guard enforces the nine-case provenance contract", async () => {
+  await withNotes(async (directory) => {
+    await createArtifact(directory, "nonce=first-value\n", 1);
+    await createArtifact(directory, "nonce=rerun-value\n", 2);
+    const guard = createFinalGuard({ archiveDir: directory });
+
+    assert.deepEqual(await guard({ finalText: "nonce=first-value" }), { action: "accept" });
+    assert.deepEqual(await guard({ finalText: "nonce 值是 first-value" }), { action: "accept" });
+    assert.equal((await guard({ finalText: "nonce=forged-value" })).action, "revise");
+    assert.deepEqual(await guard({ finalText: "编造的短 token abc123" }), {
+      action: "skip",
+      reason: "no_comparable_label",
+    });
+    assert.equal((await guard({ finalText: "nonce=rerun-value" })).action, "revise");
+    assert.deepEqual(
+      await guard({ finalText: "nonce=rerun-value 来源=归档:002-exec.txt" }),
+      { action: "accept", rerunCited: true },
+    );
+    assert.deepEqual(
+      await guard({ finalText: "nonce=first-value 来源=归档:001-exec.txt" }),
+      { action: "accept" },
+    );
+    assert.deepEqual(await guard({ finalText: "abc123" }), {
+      action: "skip",
+      reason: "no_comparable_label",
+    });
+    assert.deepEqual(await guard({ finalText: "没有可比对内容" }), {
+      action: "skip",
+      reason: "no_comparable_label",
+    });
+  });
+});
+
+test("fold state marker counts captures without exposing values or keys and replaces itself", async () => {
+  await withNotes(async (directory) => {
+    await createArtifact(directory, "nonce=marker-secret-value\n", 1);
+    const recoveryHint = (context) => buildCaptureRecoveryHint({
+      archiveDir: directory,
+      foldedPayload: context.foldedPayload,
+    });
+    const strategy = createFoldStatisticalStrategy({ recoveryHint });
+    const first = await strategy.compact([
+      { role: "user", content: "task" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "a", name: "exec", input: {} }],
+      },
+      {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: "a",
+          content: "nonce=marker-secret-value\n",
+        }],
+      },
+      { role: "assistant", content: "old" },
+      { role: "user", content: "keep" },
+    ], { keepRounds: 1, budgetTokens: 0 });
+    const firstMarker = first.messages[0].content[0].text;
+    assert.match(firstMarker, /\[本 run 状态\] 已折叠 \d+ 条早期输出；其中 1 条为不可重放捕获/u);
+    assert.doesNotMatch(firstMarker, /marker-secret-value|nonce|auto-[a-f0-9]+/u);
+
+    const second = await strategy.compact([
+      ...first.messages,
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "b", name: "exec", input: {} }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "b", content: "later" }],
+      },
+      { role: "assistant", content: "new" },
+    ], { keepRounds: 1, budgetTokens: 0 });
+    const markers = second.messages[0].content.filter((block) => (
+      block.type === "text" && block.text.includes("[本 run 状态]")
+    ));
+    assert.equal(markers.length, 1);
+  });
 });
 
 test("final guard ignores archive paths and locator metadata around the verified value", async () => {

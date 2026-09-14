@@ -19,7 +19,7 @@ import {
 } from "../src/index.js";
 import { safeRunId } from "../src/store/file.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
-import { createFinalGuard } from "./final-guard.js";
+import { buildCaptureRecoveryHint, createFinalGuard } from "./final-guard.js";
 import {
   closeAllMcpServers,
   createMcpProxyTool,
@@ -363,10 +363,12 @@ export async function runRepl(argv, io = {}) {
     "outputs",
     safeRunId(options.session),
   );
+  const runState = { rerunDetected: false, captureCount: 0 };
   const cliTools = createCliTools({
     cwd,
     archiveDir,
     notesScope: { runId: options.session, notesDir },
+    runState,
   });
   const skillTools = await buildSkillTools({
     cwd,
@@ -568,7 +570,13 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           ts: new Date().toISOString(),
         });
       }
-      const context = buildCompactionContext(config, options.compactBudget);
+      const context = buildCompactionContext(
+        config,
+        options.compactBudget,
+        options.compactBudget !== undefined || config.contextWindowTokens
+          ? ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload })
+          : undefined,
+      );
       const tools = [...cliTools.tools, ...skillTools.tools];
       if (mcpProxy?.enabled) {
         tools.push(mcpProxy.schema);
@@ -601,6 +609,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
               finalGuard: createFinalGuard({
                 runId: options.session,
                 notesDir,
+                archiveDir,
+                runState,
               }),
               finalGuardMaxRetries: 2,
             }),
@@ -608,6 +618,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         executeTool: executeToolForLoop,
         store,
         runId: options.session,
+        runState,
         resume,
         signal,
         stream: true,

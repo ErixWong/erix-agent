@@ -11,6 +11,13 @@ export function resolveRecoveryHint(value) {
     : DEFAULT_RECOVERY_HINT;
 }
 
+export async function resolveFoldRecoveryHint(value, context) {
+  const resolved = typeof value === "function"
+    ? await value(context)
+    : value;
+  return resolveRecoveryHint(resolved);
+}
+
 export function optionValue(callOptions, factoryOptions, key, fallback) {
   if (
     callOptions

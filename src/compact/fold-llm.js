@@ -6,6 +6,7 @@ import {
   foldOptions,
   optionValue,
   roundRangeForIndexes,
+  resolveFoldRecoveryHint,
   resolveRecoveryHint,
   runFoldHook,
   selectFoldedRounds,
@@ -248,6 +249,12 @@ export function createFoldLlmStrategy({
         settings.roundOffset,
         settings.roundNumbers,
       );
+      const recoveryHint = await resolveFoldRecoveryHint(settings.recoveryHint, {
+        foldedPayload,
+        folded,
+        retained,
+        roundRange,
+      });
       await runFoldHook(settings.onBeforeFold, {
         messages,
         folded,
@@ -258,7 +265,6 @@ export function createFoldLlmStrategy({
 
       let compactedHead = head;
       if (folded.length > 0) {
-        const recoveryHint = resolveRecoveryHint(settings.recoveryHint);
         const summary = await summarizer({
           messages: foldedPayload,
           roundRange: roundRange ?? { from: 1, to: folded.length },
