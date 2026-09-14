@@ -133,6 +133,19 @@ src/
 
 ## 状态
 
+- **v0.4.0（2026-09-14，准备发布）**：notes run scope 技能、工具产出归档与 provenance gate 完整落地。
+  notes 短值直接存入 `content`，同时保留 `artifactRef` 审计链；`note_take` / `note_read` /
+  `note_list` / `note_forget` 支持版本历史、有界历史、墓碑式撤销和 janitor/GC。超过 800 字符的工具结果归档到
+  `<transcriptDir>/outputs/<runId>/`，折叠摘要带 `recoveryHint`；非幂等命令写 sidecar 并拦截重跑。
+  终稿 provenance gate 只信任 capture manifest：`unverified` 记录 `unverified_error` 并由 CLI 退出码 2
+  表示，guard 异常/超时记录 `guard_error` 并由 CLI 退出码 3 表示。
+  `runToolLoop` 的 `filesWritten` 可通过 `writeToolNames`（默认 `["writeFile"]`）和
+  `writeToolPathKeys` 配置；protected 消息超预算会降级并记录 `compactionStats[].protectedDowngraded`。
+- **v0.4.0 宿主接入要点**：CLI 可用 `--no-notes`、`--notes-ledger`、`--no-final-guard` 控制 notes、
+  ledger 和终稿核验；需要自然语言终稿的宿主传 `wrapup: false`，或设置
+  `ERIX_NO_WRAPUP_INSTRUCTION=1`。消费 loop 结果时必须区分 `verification.status`：
+  `verified` 才是已核验终稿，`unverified`/`error` 分别对应退出码 2/3；`skipped` 仅表示没有可核验值。
+  notes 是 pull-only 索引，不会自动把值注入模型上下文；模型需按 key 调用 `note_read`。
 - **v0.3.5（2026-09-12，npm 最新）**：全项目体检修复批次（#37~#45，PR #47~#56）——流式回调 retry=0 实时透传（`erix chat --stream` 与宿主 SSE 转发恢复实时增量）；
   checkpoint 执行后写失败 fail-closed（防崩溃恢复重复执行工具副作用）；resume 补执行全部 pending 工具（原只补一个致协议断裂）；
   双协议 SSE `data:` 无空格兼容、408 归 timeout 可重试、legacy `function_call` 转换、providerOptions 不再覆盖核心字段；
