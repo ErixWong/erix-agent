@@ -31,6 +31,7 @@ import {
   createCliTools,
   wrapExecuteTool,
 } from "./tools.js";
+import { formatGuardMetrics } from "./guard-metrics.js";
 
 const DEFAULT_MODEL = "kimi-for-coding";
 const DEFAULT_MAX_ROUNDS = 32;
@@ -658,7 +659,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         writeLine(output);
         writeLine(
           output,
-          `[rounds=${result.rounds} usage=${JSON.stringify(result.usage)} compacted=${compacted}]`,
+          `[rounds=${result.rounds} usage=${JSON.stringify(result.usage)} compacted=${compacted} ${formatGuardMetrics(result.verification)}]`,
         );
         if (result.termination?.reason === "final_guard_unverified") {
           writeLine(
