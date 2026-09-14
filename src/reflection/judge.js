@@ -23,9 +23,15 @@ function truncate(value, length) {
   return Array.from(String(value ?? "")).slice(0, length).join("");
 }
 
-function summarizeArgument(name, input) {
+function summarizeArgument(name, input, { writeToolNames, writeToolPathKeys } = {}) {
   if (name === "exec") return truncate(input?.command, MAX_COMMAND_LENGTH);
-  if (name === "writeFile" || name === "readFile") return truncate(input?.path, MAX_COMMAND_LENGTH);
+  if (name === "readFile" || writeToolNames?.has(name)) {
+    const pathKey = writeToolPathKeys?.find((key) => (
+      typeof input?.[key] === "string" && input[key].trim() !== ""
+    ));
+    if (pathKey !== undefined) return truncate(input[pathKey], MAX_COMMAND_LENGTH);
+    return "";
+  }
   if (input === undefined || input === null) return "";
   if (typeof input === "string") return truncate(input, MAX_COMMAND_LENGTH);
   try {
@@ -74,10 +80,16 @@ function jsonCandidates(text) {
  * Tool results are paired with their tool_use ids so verification output keeps
  * the command that produced it.
  */
-export function buildTimeline(messages, roundStart = 0) {
+export function buildTimeline(messages, roundStart = 0, options = {}) {
   const selected = Array.isArray(messages)
     ? messages.slice(Math.max(0, Number.isSafeInteger(roundStart) ? roundStart : 0))
     : [];
+  const writeToolNames = options.writeToolNames instanceof Set
+    ? options.writeToolNames
+    : new Set(Array.isArray(options.writeToolNames) ? options.writeToolNames : ["writeFile"]);
+  const writeToolPathKeys = Array.isArray(options.writeToolPathKeys)
+    ? options.writeToolPathKeys
+    : ["path", "file_path"];
   const toolCalls = [];
   const outputById = new Map();
 
@@ -86,7 +98,10 @@ export function buildTimeline(messages, roundStart = 0) {
       if (block?.type === "tool_use") {
         toolCalls.push({
           name: String(block.name ?? ""),
-          arg: summarizeArgument(block.name, block.input),
+          arg: summarizeArgument(block.name, block.input, {
+            writeToolNames,
+            writeToolPathKeys,
+          }),
           _toolUseId: block.id,
         });
       } else if (block?.type === "tool_result") {

@@ -202,6 +202,59 @@ test("enforces the budget after an oversized fold result", async () => {
   assert.ok(result.compactionStats[0].tokensAfter <= budgetTokens);
 });
 
+test("downgrades the oldest protected message when the protected set exceeds the budget", async () => {
+  const first = { role: "user", content: [{ type: "text", text: "first protected" }] };
+  const second = { role: "user", content: [{ type: "text", text: "second protected" }] };
+  const budgetTokens = estimateMessageTokens([first]) + 1;
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    initialMessages: [
+      first,
+      { role: "assistant", content: [{ type: "text", text: "middle" }] },
+      second,
+    ],
+    executeTool: async () => "unused",
+    completion: false,
+    context: {
+      budgetTokens,
+      protectedMessage: (message) => message?.role === "user",
+    },
+  });
+
+  assert.equal(result.compactionStats[0].protectedDowngraded, 1);
+  assert.deepEqual(
+    provider.requests[0].messages.map((message) => message.content?.[0]?.text),
+    ["second protected"],
+  );
+});
+
+test("rejects a single protected message that cannot fit the budget", async () => {
+  const protectedMessage = {
+    role: "user",
+    content: [{ type: "text", text: "x".repeat(200) }],
+  };
+
+  await assert.rejects(
+    runToolLoop({
+      provider: createFakeProvider([]),
+      initialMessages: [protectedMessage],
+      executeTool: async () => "unused",
+      completion: false,
+      context: {
+        budgetTokens: 20,
+        protectedMessage: () => true,
+      },
+    }),
+    (error) => error instanceof KitError
+      && error.code === "invalid_budget"
+      && /increase budgetTokens|reduce the protectedMessage set/.test(error.message),
+  );
+});
+
 test("does not compact from cumulative API usage when local context fits", async () => {
   const provider = createFakeProvider([
     {

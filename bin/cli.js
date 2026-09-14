@@ -833,6 +833,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   try {
     const result = await (loopOverride ?? runToolLoop)(loopOptions);
     const compacted = result.compactionStats.some((stat) => stat.compacted === true);
+    const protectedDowngraded = result.compactionStats.reduce(
+      (total, stat) => total + (Number.isSafeInteger(stat.protectedDowngraded)
+        ? stat.protectedDowngraded
+        : 0),
+      0,
+    );
     if (result.verification?.status === "unverified") {
       console.log(`\n=== 终稿（未核验，不可信） ===\n${result.finalText}`);
       console.log("⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。");
@@ -846,6 +852,9 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     }
     if (result.verification?.status === "error") {
       console.log(`⚠️ 终稿来源核验${result.verification.reason === "timeout" ? "超时" : "失败"}，不得将其当作已验证事实。`);
+    }
+    if (protectedDowngraded > 0) {
+      console.log(`⚠️ 压缩预算不足：已降级 ${protectedDowngraded} 条最旧 protected 消息；如需保留原文，请提高 compact budget 或减少保护集。`);
     }
     console.log(
       `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} termination=${result.termination?.reason ?? "unknown"} usage=${JSON.stringify(result.usage)} compacted=${compacted}`,

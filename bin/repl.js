@@ -671,6 +671,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           ? result.usage.output_tokens
           : 0;
         const compacted = result.compactionStats.some((stat) => stat.compacted === true);
+        const protectedDowngraded = result.compactionStats.reduce(
+          (total, stat) => total + (Number.isSafeInteger(stat.protectedDowngraded)
+            ? stat.protectedDowngraded
+            : 0),
+          0,
+        );
         writeLine(output);
         writeLine(
           output,
@@ -680,6 +686,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           writeLine(
             output,
             "⚠️ 终稿含未核验的一次性值，已按 fail-closed 标记；请核实归档或明确说明不可恢复。",
+          );
+        }
+        if (protectedDowngraded > 0) {
+          writeLine(
+            output,
+            `⚠️ 压缩预算不足：已降级 ${protectedDowngraded} 条最旧 protected 消息；如需保留原文，请提高 compact budget 或减少保护集。`,
           );
         }
         await saveSession(sessionDir, options.session, messages);
