@@ -77,6 +77,40 @@ test("buildJudgePrompt includes the recent timeline, files, and errors", () => {
   assert.match(prompt, /direction 只是提示，不影响 done/);
 });
 
+test("counts configured write tools and extracts file_path for judge filesWritten", async () => {
+  const provider = createFakeProvider([
+    toolResponse("write-1", "fs_write", { file_path: "custom.txt", contents: "x" }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    { content: [{ type: "text", text: JSON.stringify({
+      done: true,
+      confidence: 1,
+      reason: "done",
+      evidence: "written",
+    }) }] },
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "write one file",
+    executeTool: async () => "written",
+    maxRounds: 2,
+    completion: false,
+    writeToolNames: ["fs_write"],
+    writeToolPathKeys: ["file_path"],
+    reflection: {
+      enabled: true,
+      judgeIntercept: false,
+      maxExtensions: 0,
+      judge: { provider: judge },
+    },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  assert.match(prompt, /custom\.txt\(R1\)/);
+});
+
 test("loop keeps at most the latest 50 distinct written files for the judge", async () => {
   const provider = createFakeProvider([
     ...Array.from({ length: 100 }, (_value, index) => writeFileResponse(index + 1)),

@@ -288,6 +288,13 @@ function isProtectedMessage(message, guard) {
   return false;
 }
 
+function normalizeToolNameSet(value, fallback) {
+  const names = Array.isArray(value) ? value : fallback;
+  return new Set(names.filter((name) => (
+    typeof name === "string" && name.trim() !== ""
+  )));
+}
+
 function validateBudget(budgetTokens) {
   if (!Number.isSafeInteger(budgetTokens) || budgetTokens <= 0) {
     throw new KitError(
@@ -395,20 +402,42 @@ function dropOldestUnprotectedRound(messages, protectedMessage) {
 
 function safeTruncateMessages(messages, budgetTokens, protectedMessage) {
   const result = cloneState(messages);
+  const downgraded = new Set();
+  const foldedPayload = [];
+  let protectedDowngraded = 0;
+  const isCurrentlyProtected = (message) => (
+    isProtectedMessage(message, protectedMessage) && !downgraded.has(message)
+  );
+  const downgradeProtected = (message) => {
+    if (!isCurrentlyProtected(message)) return false;
+    downgraded.add(message);
+    protectedDowngraded += 1;
+    return true;
+  };
+  const removeMessages = (start, count) => {
+    foldedPayload.push(
+      ...result
+        .slice(start, start + count)
+        .filter((message) => downgraded.has(message))
+        .map((message) => cloneState(message)),
+    );
+    result.splice(start, count);
+  };
   while (estimateMessageTokens(result) > budgetTokens
-    && dropOldestUnprotectedRound(result, protectedMessage)) {
+    && dropOldestUnprotectedRound(result, (message) => isCurrentlyProtected(message))) {
     // Remove complete rounds before reducing individual message content.
   }
 
   const fields = [];
   const references = [];
   result.forEach((message, messageIndex) => {
-    const protectedMessageValue = isProtectedMessage(message, protectedMessage);
+    const protectedMessageValue = isCurrentlyProtected(message);
     if (typeof message.content === "string") {
       fields.push({
         key: `message-${messageIndex}`,
         text: message.content,
-        priority: protectedMessageValue ? Number.MAX_SAFE_INTEGER : messageIndex,
+        priority: messageIndex,
+        protected: protectedMessageValue,
       });
       references.push({
         fieldIndex: fields.length - 1,
@@ -431,7 +460,8 @@ function safeTruncateMessages(messages, budgetTokens, protectedMessage) {
       fields.push({
         key: `message-${messageIndex}-block-${blockIndex}`,
         text: String(text),
-        priority: protectedMessageValue ? Number.MAX_SAFE_INTEGER : messageIndex,
+        priority: messageIndex,
+        protected: protectedMessageValue,
       });
       references.push({
         fieldIndex: fields.length - 1,
@@ -441,9 +471,17 @@ function safeTruncateMessages(messages, budgetTokens, protectedMessage) {
       });
     }
   });
-  const enforced = enforceSize(fields, budgetTokens);
+  const trimmableFields = fields
+    .map((field, fieldIndex) => ({ ...field, fieldIndex }))
+    .filter((field) => field.protected !== true);
+  const enforced = enforceSize(trimmableFields, budgetTokens);
+  const enforcedByIndex = new Map(
+    enforced.fields.map((field) => [field.fieldIndex, field]),
+  );
   for (const reference of references) {
-    const text = enforced.fields[reference.fieldIndex].text;
+    const enforcedField = enforcedByIndex.get(reference.fieldIndex);
+    if (enforcedField === undefined) continue;
+    const text = enforcedField.text;
     if (reference.blockIndex === undefined) {
       result[reference.messageIndex].content = truncateTextToBudget(
         text,
@@ -468,44 +506,59 @@ function safeTruncateMessages(messages, budgetTokens, protectedMessage) {
     });
   });
 
-  while (estimateMessageTokens(result) > budgetTokens) {
-    const removableIndex = result.findIndex((message) => (
-      !isProtectedMessage(message, protectedMessage)
-    ));
-    if (removableIndex < 0) {
+  for (const message of result) {
+    if (isCurrentlyProtected(message) && estimateMessageTokens([message]) > budgetTokens) {
       throw new KitError(
         "invalid_budget",
-        "Protected messages cannot fit within budgetTokens",
+        "A single protected message exceeds budgetTokens; increase budgetTokens or reduce the protectedMessage set.",
         { retryable: false },
       );
+    }
+  }
+
+  while (estimateMessageTokens(result) > budgetTokens) {
+    const removableIndex = result.findIndex((message) => (
+      !isCurrentlyProtected(message)
+    ));
+    if (removableIndex < 0) {
+      const oldestProtected = result.find((message) => isCurrentlyProtected(message));
+      if (oldestProtected === undefined) {
+        throw new KitError(
+          "invalid_budget",
+          "Messages cannot fit within budgetTokens; increase budgetTokens or reduce the protectedMessage set.",
+          { retryable: false },
+        );
+      }
+      downgradeProtected(oldestProtected);
+      continue;
     }
     const message = result[removableIndex];
     const uses = blocksFor(message.content).filter((block) => block?.type === "tool_use");
     const results = blocksFor(message.content).filter((block) => block?.type === "tool_result");
     if (uses.length > 0 && result[removableIndex + 1]?.role === "user") {
-      if (isProtectedMessage(result[removableIndex + 1], protectedMessage)) {
-        throw new KitError(
-          "invalid_budget",
-          "Protected messages cannot fit within budgetTokens",
-          { retryable: false },
-        );
+      if (isCurrentlyProtected(result[removableIndex + 1])) {
+        downgradeProtected(result[removableIndex + 1]);
+        continue;
       }
-      result.splice(removableIndex, 2);
+      removeMessages(removableIndex, 2);
     } else if (results.length > 0 && removableIndex > 0
       && result[removableIndex - 1]?.role === "assistant") {
-      if (isProtectedMessage(result[removableIndex - 1], protectedMessage)) {
-        throw new KitError(
-          "invalid_budget",
-          "Protected messages cannot fit within budgetTokens",
-          { retryable: false },
-        );
+      if (isCurrentlyProtected(result[removableIndex - 1])) {
+        downgradeProtected(result[removableIndex - 1]);
+        continue;
       }
-      result.splice(removableIndex - 1, 2);
+      removeMessages(removableIndex - 1, 2);
     } else {
-      result.splice(removableIndex, 1);
+      removeMessages(removableIndex, 1);
     }
   }
-  return { messages: result, tokensAfter: estimateMessageTokens(result), enforced };
+  return {
+    messages: result,
+    tokensAfter: estimateMessageTokens(result),
+    enforced,
+    foldedPayload,
+    protectedDowngraded,
+  };
 }
 
 function abortError(signal) {
@@ -589,6 +642,8 @@ function defaultSleep(ms, signal) {
  *   initialUserMessage?: string,
  *   initialMessages?: object[],
  *   tools?: object[],
+ *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to ["writeFile"].
+ *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
  *   executeTool: ((name:string, input:object) => Promise<string>)
  *     | ((options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
  *       => Promise<string|{success?:boolean, data:any, duration?:number, toolMessageId?:string}>),
@@ -655,6 +710,8 @@ export async function runToolLoop({
   initialUserMessage,
   initialMessages,
   tools = [],
+  writeToolNames = ["writeFile"],
+  writeToolPathKeys = ["path", "file_path"],
   executeTool,
   maxRounds = 8,
   maxTokens,
@@ -743,6 +800,10 @@ export async function runToolLoop({
     throw annotated;
   };
   const metadata = modelMetadataFor({ modelConfig, modelMetadata, model, provider, context });
+  const resolvedWriteToolNames = normalizeToolNameSet(writeToolNames, ["writeFile"]);
+  const resolvedWriteToolPathKeys = Array.isArray(writeToolPathKeys)
+    ? writeToolPathKeys.filter((key) => typeof key === "string" && key.trim() !== "")
+    : ["path", "file_path"];
   let budgetTokens = context?.budgetTokens;
   if (budgetTokens === undefined
     && metadata?.contextWindowTokens !== undefined
@@ -976,12 +1037,15 @@ export async function runToolLoop({
             record.wrapup,
             record.judge,
           );
-          const recordedTimeline = buildTimeline(record.messages ?? [], 0);
+          const recordedTimeline = buildTimeline(record.messages ?? [], 0, {
+            writeToolNames: resolvedWriteToolNames,
+            writeToolPathKeys: resolvedWriteToolPathKeys,
+          });
           if (recordedTimeline.toolCalls.length > 0 || recordedTimeline.outputs.length > 0) {
             governorState.timeline.push({ round: record.round, ...recordedTimeline });
             governorState.timeline = governorState.timeline.slice(-12);
             for (const call of recordedTimeline.toolCalls) {
-              if (call.name === "writeFile" && call.arg) {
+              if (resolvedWriteToolNames.has(call.name) && call.arg) {
                 governorState.filesWritten.push({ path: call.arg, round: record.round });
                 trimFilesWritten();
               }
@@ -1856,6 +1920,7 @@ export async function runToolLoop({
         ? result.foldedRounds
         : 0;
       let compacted = result.compacted === true;
+      let protectedDowngraded = 0;
       let tokensAfter = estimateMessageTokens(compactedMessages);
       const apiEstimateBefore = latestApiEstimatedTokens ?? tokensBefore;
       let apiTokensAfter = projectedApiInputTokens(
@@ -1903,7 +1968,10 @@ export async function runToolLoop({
           compactionContext.protectedMessage,
         );
         compactedMessages = fallback.messages;
+        foldedPayload = [...foldedPayload, ...(fallback.foldedPayload ?? [])];
+        compacted = compacted || fallback.protectedDowngraded > 0;
         tokensAfter = fallback.tokensAfter;
+        protectedDowngraded = fallback.protectedDowngraded;
       }
       messages = compactedMessages;
       latestApiInputTokens = undefined;
@@ -1912,12 +1980,16 @@ export async function runToolLoop({
       if (foldedRoundRange?.to !== undefined) {
         foldedThrough = Math.max(foldedThrough, foldedRoundRange.to);
       }
-      compactionStats.push({
+      const compactionStat = {
         compacted,
         foldedRounds,
         tokensBefore,
         tokensAfter,
-      });
+      };
+      if (protectedDowngraded > 0) {
+        compactionStat.protectedDowngraded = protectedDowngraded;
+      }
+      compactionStats.push(compactionStat);
       normalizeMessages(messages);
       return {
         folded: compacted,
@@ -2258,11 +2330,14 @@ export async function runToolLoop({
     const currentL0 = extractL0Facts(currentRoundMessages, {
       seenErrors: governorState.errorSeen,
     });
-    const currentTimeline = buildTimeline(messages, roundStart);
+    const currentTimeline = buildTimeline(messages, roundStart, {
+      writeToolNames: resolvedWriteToolNames,
+      writeToolPathKeys: resolvedWriteToolPathKeys,
+    });
     governorState.timeline.push({ round, ...currentTimeline });
     governorState.timeline = governorState.timeline.slice(-12);
     for (const call of currentTimeline.toolCalls) {
-      if (call.name === "writeFile" && call.arg) {
+      if (resolvedWriteToolNames.has(call.name) && call.arg) {
         governorState.filesWritten.push({ path: call.arg, round });
         trimFilesWritten();
       }

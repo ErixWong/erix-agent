@@ -86,6 +86,8 @@ runToolLoop({
   initialMessages,
   tools,                     // 规范 ToolSchema[]（适配层负责序列化成协议原生格式）
   executeTool,               // (name, input) => Promise<string>  ← 手在调用方
+  writeToolNames = ["writeFile"], // 显式配置 judge 的写文件工具集合
+  writeToolPathKeys = ["path", "file_path"], // 从写工具入参取路径的优先级
   maxRounds = 8,
   maxTokens, temperature, topP,
   context: {                 // 压缩（FR-3），缺省不压缩 = 现状行为
@@ -106,9 +108,12 @@ runToolLoop({
   onToolResult,              // 钩子：结果回喂前的截断/脱敏后处理（调用方政策点）
 }) => Promise<{
   finalText, messages, transcript, rounds, truncated, usage, verification,
-  compactionStats: { compacted, foldedRounds, tokensBefore, tokensAfter }[],
+  compactionStats: { compacted, foldedRounds, tokensBefore, tokensAfter, protectedDowngraded? }[],
 }>
 ```
+
+`writeToolNames` 不做正则或启发式识别；宿主必须显式列出自定义写工具。路径按
+`writeToolPathKeys` 顺序取第一个非空字符串，随后以 `filesWritten` 提供给 judge。
 
 `retry` is opt-in: omitted or `false` means no provider retries.
 

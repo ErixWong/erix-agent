@@ -88,6 +88,13 @@ src/
   - **回调错误**：流式 `onDelta`/`onReasoningDelta`/`onToolCall`/`onUsage` 回调异常通过可选的 `onObserverError` 上报；未提供时记录 `console.error("Observer callback error:", error)`，不会走仅用于存储失败的 `onPersistenceError`。
 - **executeTool 协议**：两种形式——位置参数 `(name, input)` 或结构化 `({ id, name, input, context, signal })`。结构化可返回 `{ success, data, duration, toolMessageId }`（loop 保留字符串结果并附加元数据）。
 - **压缩预算**：从模型 `contextWindowTokens`/`maxOutputTokens` 推导；策略支持 `summaryRole`/`recoveryHint`/`protectedMessage`/`stripHistoricalImages`/`onBeforeFold`/`onAfterFold`。未提供 `recoveryHint` 时，折叠摘要使用“需要原文请重读文件或查看持久笔记；关键值应当已落盘”。
+  若保护集本身超预算，压缩会按消息顺序解除最旧 protected 消息的保护并折叠掉，保留较新的任务上下文；
+  `compactionStats[].protectedDowngraded` 记录数量，CLI 会显示警告。单条 protected 消息自身超预算则以
+  `invalid_budget` 明确失败，并提示提高预算或减少保护集。
+- **Judge 写入足迹**：`runToolLoop` 默认只把 `writeFile` 计入 `filesWritten`；宿主使用自定义写工具时显式传
+  `writeToolNames: ["fs_write", "apply_patch"]`，不要依赖名称猜测。路径参数按
+  `writeToolPathKeys`（默认 `["path", "file_path"]`）从前到后取第一个非空字符串，便于接入不同工具协议。
+  Judge 的 `formatFiles` 会按配置后的路径显示最近写入文件。
 - **TranscriptStore**：`appendRound` 按 run/round key 幂等；`store.recall(runId, fromRound?, toRound?, pattern?)` 是面向宿主/人的取数契约，不是 `runToolLoop` 默认暴露给模型的工具；宿主可从 `erix-agent/tools` 按需接入参考实现。store 可实现 `markRunState`、`saveCheckpoint`/`appendCheckpoint`、`loadLatestCheckpoint`。loop 在工具执行前后 checkpoint；成对提供读写的 store 在任一 checkpoint 写失败时 fail-closed（执行后失败会明确报告“工具已执行但结果未持久化”），resume 按原顺序补齐全部未完成的多工具调用。宿主的 `executeTool` 仍需按 tool id 做幂等保护，无法由 loop 保证 exactly-once。
 - **provider**：`transport` 透传给 fetch 的 `dispatcher`；非法 OpenAI 工具参数用 `_truncatedArguments`（`_raw` 兼容别名）；不安全 runId 映射为 `run-<sha256 前 24 位 hex>`。
 
