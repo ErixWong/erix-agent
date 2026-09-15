@@ -3,7 +3,7 @@ import { computeBudget } from "./compact/budget.js";
 import { createSlidingWindowStrategy } from "./compact/sliding-window.js";
 import { mergeFoldNavigationRecords } from "./compact/fold-statistical.js";
 import { estimateMessageTokens, estimateTokens } from "./tokens.js";
-import { groupIntoRounds, validateMessages } from "./messages/rounds.js";
+import { groupIntoRounds } from "./messages/rounds.js";
 import { decideRoundAction, decideWithEvaluation } from "./reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "./reflection/l0.js";
 import { tryParseWrapupJson, normalizeWrapupWithLlm } from "./reflection/wrapup.js";
@@ -41,8 +41,8 @@ import {
 import {
   FINAL_GUARD_NON_CONTINUABLE_REASONS,
   FINAL_GUARD_TERMINATION_REASONS,
-  TRUNCATED_TERMINATION_REASONS,
   annotateTermination,
+  createTerminationManager,
   makeTermination,
   terminationDetailForError,
   terminationReasonForAction,
@@ -775,87 +775,6 @@ export async function runToolLoop({
     }
   };
 
-  const callFinalGuard = async (reason, detail) => {
-    const payload = {
-      finalText,
-      messages: cloneState(messages),
-      round: rounds,
-      rounds,
-      signal: toolSignal,
-      termination: makeTermination(reason, detail),
-      rerunDetected: runState?.rerunDetected === true,
-    };
-    let timeoutId;
-    try {
-      const guardPromise = Promise.resolve().then(() => finalGuard(payload));
-      const timeoutPromise = new Promise((_, reject) => {
-        timeoutId = setTimeout(() => {
-          const error = new Error("Final guard timed out");
-          error.code = "timeout";
-          reject(error);
-        }, finalGuardTimeout);
-      });
-      const decision = await Promise.race([
-        awaitWithAbort(guardPromise),
-        timeoutPromise,
-      ]);
-      if (decision?.action === "accept") {
-        guardMetrics.verified += 1;
-        if (decision.rerunCited === true) guardMetrics.rerun_cited += 1;
-        verification = { status: "verified" };
-        emitEvent({ type: "final_guard", round: rounds, action: "accept" });
-        return { action: "accept" };
-      }
-      if (
-        decision?.action === "skip"
-        && typeof decision.reason === "string"
-        && decision.reason.length > 0
-      ) {
-        guardMetrics.skipped += 1;
-        verification = { status: "skipped", reason: decision.reason };
-        emitEvent({ type: "final_guard", round: rounds, action: "skip", reason: decision.reason });
-        return { action: "skip", reason: decision.reason };
-      }
-      if (
-        decision?.action === "revise"
-        && typeof decision.message === "string"
-        && decision.message.length > 0
-      ) {
-        guardMetrics.revised += 1;
-        emitEvent({
-          type: "final_guard",
-          round: rounds,
-          action: "revise",
-          reason: "unverified",
-        });
-        return { action: "revise", message: decision.message };
-      }
-      throw new TypeError("finalGuard returned an invalid decision");
-    } catch (error) {
-      if (signal?.aborted) throwIfAborted(signal);
-      const errorReason = error?.code === "timeout"
-        || error?.name === "TimeoutError"
-        ? "timeout"
-        : "error";
-      guardMetrics.unverified += 1;
-      verification = {
-        status: "error",
-        reason: errorReason,
-        detail: terminationDetailForError(error),
-      };
-      guardMetrics.guard_error += 1;
-      emitEvent({
-        type: "final_guard",
-        round: rounds,
-        action: "error",
-        reason: errorReason,
-      });
-      return { action: "error", reason: errorReason };
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  };
-
   const waitForRetry = async (delay) => {
     const sleeping = Promise.resolve().then(() => sleepImpl(delay, signal));
     await awaitWithAbort(sleeping);
@@ -1031,57 +950,81 @@ export async function runToolLoop({
     return currentRunState;
   };
 
-  const hasFinalDraft = () => (
-    finalText.trim() !== ""
-    && roundStopReason === "end_turn"
-    && !hasToolUse(lastAssistantContent)
-  );
-
-  const forceFinalIfNeeded = async (reason) => {
-    if (
-      forcedFinal
-      || !["max_rounds_cap", "stall", "continuation_exhausted"].includes(reason)
-      || hasFinalDraft()
-      || process.env.ERIX_NO_FORCED_FINAL?.trim() === "1"
-    ) return;
-
-    const instruction = {
-      role: "user",
-      content: [{
-        type: "text",
-        text: `【强制收尾】循环因 ${reason} 结束。禁止调用任何工具；请立即给出最终结论，或明确声明不可恢复。`,
-      }],
-    };
-    messages.push(instruction);
-    messageRounds.set(instruction, rounds);
-    validateMessages(messages, { allowPendingToolUse: true });
-    const request = {
-      system: mainSystem,
-      messages,
-      tools: [],
-      signal,
-    };
-    if (maxTokens !== undefined) request.maxTokens = maxTokens;
-    if (temperature !== undefined) request.temperature = temperature;
-    if (topP !== undefined) request.topP = topP;
-    const response = await awaitWithAbort(provider.chat(request));
-    addUsage(response, estimateMessageTokens(messages));
-    const content = blocksFor(response?.content);
-    const assistant = { role: "assistant", content };
-    messages.push(assistant);
-    messageRounds.set(assistant, rounds);
-    lastAssistantContent = content;
-    roundStopReason = response?.stopReason;
-    const responseText = textFromBlocks(content);
-    const wrapup = wrapupEnabled && response?.stopReason === "end_turn"
-      ? tryParseWrapupJson(responseText)
-      : null;
-    finalText = wrapup === null
-      ? responseText
-      : wrapup.output || wrapup.summary;
-    forcedFinal = true;
-    emitEvent({ type: "forced_final", round: rounds, reason });
+  const terminationContext = {
+    finalGuard,
+    finalGuardTimeout,
+    toolSignal,
+    signal,
+    awaitWithAbort,
+    emitEvent,
+    guardMetrics,
+    addUsage,
+    estimateMessageTokens,
+    mainSystem,
+    maxTokens,
+    temperature,
+    topP,
+    provider,
+    wrapupEnabled,
+    throwIfAborted,
+    messageRounds,
+    runState,
+    usage,
+    compactionStats,
+    refreshRunState,
+    markRunState,
+    get messages() {
+      return messages;
+    },
+    get finalText() {
+      return finalText;
+    },
+    set finalText(value) {
+      finalText = value;
+    },
+    get rounds() {
+      return rounds;
+    },
+    get lastAssistantContent() {
+      return lastAssistantContent;
+    },
+    set lastAssistantContent(value) {
+      lastAssistantContent = value;
+    },
+    get roundStopReason() {
+      return roundStopReason;
+    },
+    set roundStopReason(value) {
+      roundStopReason = value;
+    },
+    get forcedFinal() {
+      return forcedFinal;
+    },
+    set forcedFinal(value) {
+      forcedFinal = value;
+    },
+    get verification() {
+      return verification;
+    },
+    set verification(value) {
+      verification = value;
+    },
+    get currentRunState() {
+      return currentRunState;
+    },
+    get currentTerminationReason() {
+      return currentTerminationReason;
+    },
+    set currentTerminationReason(value) {
+      currentTerminationReason = value;
+    },
   };
+  const terminationManager = createTerminationManager(terminationContext);
+  const {
+    callFinalGuard,
+    forceFinalIfNeeded,
+    finish,
+  } = terminationManager;
 
   const callReflection = async (round, currentL0, currentSummary) => {
     const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
@@ -1445,37 +1388,6 @@ export async function runToolLoop({
     const message = { role: "user", content: toolResults };
     messages.push(message);
     if (roundNumber !== undefined) messageRounds.set(message, roundNumber);
-  };
-
-  const makeResult = (reason, detail) => {
-    const termination = {
-      ...makeTermination(reason, detail),
-      ...(forcedFinal ? { forcedFinal: true } : {}),
-    };
-    return {
-      finalText,
-      messages,
-      transcript: [...messages],
-      rounds,
-      truncated: TRUNCATED_TERMINATION_REASONS.has(termination.reason),
-      termination,
-      verification: { ...verification, metrics: { ...guardMetrics } },
-      ...(currentRunState === undefined ? {} : { runState: cloneState(currentRunState) }),
-      usage,
-      compactionStats,
-    };
-  };
-
-  const finish = async (reason, detail) => {
-    currentTerminationReason = reason;
-    await refreshRunState();
-    const state = verification.status === "unverified"
-      ? "unverified_error"
-      : verification.status === "error"
-        ? "guard_error"
-        : "succeeded";
-    await markRunState(state);
-    return makeResult(reason, detail);
   };
 
   const appendResumeTailMessages = () => {
