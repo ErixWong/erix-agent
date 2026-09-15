@@ -2,3 +2,4 @@
 // 项目侧 DB 适配器（app_container PG / touwaka MariaDB）写完跑本套件全绿即接口兼容。
 export { transcriptStoreContract } from "./transcript-store.js";
 export { modelConfigProviderContract } from "./model-config-provider.js";
+export { executeToolContract } from "./execute-tool.js";

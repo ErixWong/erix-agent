@@ -57,7 +57,7 @@ function truncate(s) {
 }
 
 /** executeTool：库的唯一执行入口，实现在调用方 */
-async function executeTool(name, input) {
+async function executeTool({ name, input }) {
   if (name !== "exec") throw new Error(`未知工具: ${name}`);
   const command = String(input?.command ?? "");
   const bin = command.trim().split(/\s+/)[0];

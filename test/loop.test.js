@@ -36,7 +36,7 @@ test("feeds tool results back to the provider on the next round", async () => {
   const result = await runToolLoop({
     provider,
     initialUserMessage: "find x",
-    executeTool: async (name, input) => `${name}:${input.key}`,
+    executeTool: async ({ name, input }) => `${name}:${input.key}`,
     completion: false,
   });
 
@@ -88,6 +88,19 @@ test("rejects non-positive, non-finite, and non-integer maxRounds", async () => 
         && /maxRounds must be a finite positive integer/.test(error.message),
     );
   }
+});
+
+test("rejects unknown runToolLoop options with a close suggestion", async () => {
+  await assert.rejects(
+    runToolLoop({
+      provider: createFakeProvider([]),
+      initialUserMessage: "invalid option",
+      executeTool: async () => "unused",
+      maxRound: 1,
+    }),
+    (error) => error instanceof TypeError
+      && error.message === 'unknown runToolLoop option: "maxRound" (did you mean "maxRounds"?)',
+  );
 });
 
 test("nudges repeated calls before stopping after a consecutive stall streak", async () => {

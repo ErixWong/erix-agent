@@ -10,6 +10,35 @@ import { directionHintText } from "./reflection.js";
 
 export function createCheckpointExecutor(ctx) {
   const normalizeExecutionResult = (value, startedAt) => {
+    if (value instanceof Error) {
+      return {
+        content: toolResultContent(value.message ?? value),
+        metadata: {},
+        success: false,
+      };
+    }
+    if (
+      value
+      && typeof value === "object"
+      && !Array.isArray(value)
+      && Object.prototype.hasOwnProperty.call(value, "content")
+    ) {
+      const metadata = value.metadata
+        && typeof value.metadata === "object"
+        && !Array.isArray(value.metadata)
+        ? { ...value.metadata }
+        : {};
+      if (Object.prototype.hasOwnProperty.call(value, "success")) {
+        metadata.success = value.success;
+      }
+      const success = value.success ?? metadata.success ?? true;
+      metadata.duration = Date.now() - startedAt;
+      return {
+        content: toolResultContent(value.content),
+        metadata,
+        success: success !== false,
+      };
+    }
     const structured = toolResultData(value);
     if (structured === undefined) {
       return { content: toolResultContent(value), metadata: {}, success: true };
@@ -84,13 +113,9 @@ export function createCheckpointExecutor(ctx) {
       };
       const executeTool = ctx.executeTool;
       const awaitWithAbort = ctx.awaitWithAbort;
-      const result = executeTool.length <= 1
-        ? await awaitWithAbort(
-          Promise.resolve().then(() => executeTool(structuredOptions)),
-        )
-        : await awaitWithAbort(Promise.resolve().then(() => (
-          executeTool(block.name, block.input)
-        )));
+      const result = await awaitWithAbort(
+        Promise.resolve().then(() => executeTool(structuredOptions)),
+      );
       execution = normalizeExecutionResult(result, startedAt);
     } catch (error) {
       if (ctx.signal?.aborted) throwIfAborted(ctx.signal);

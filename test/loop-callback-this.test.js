@@ -24,7 +24,7 @@ test("invokes loop callbacks with undefined this", async () => {
     },
   };
 
-  function executeTool(name, input) {
+  function executeTool({ name, input }) {
     assert.equal(this, undefined);
     return `${name}:${input.key}`;
   }

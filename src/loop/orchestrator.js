@@ -78,6 +78,91 @@ const TRANSCRIPT_STORE_METHODS = [
   "markRunState",
 ];
 
+const RUN_TOOL_LOOP_OPTION_NAMES = [
+  "provider",
+  "system",
+  "wrapup",
+  "initialUserMessage",
+  "initialMessages",
+  "tools",
+  "writeToolNames",
+  "writeToolPathKeys",
+  "executeTool",
+  "maxRounds",
+  "maxTokens",
+  "temperature",
+  "topP",
+  "timeoutMs",
+  "deadlineMs",
+  "reflection",
+  "stallDetection",
+  "retry",
+  "completion",
+  "finalGuard",
+  "finalGuardMaxRetries",
+  "finalGuardTimeoutMs",
+  "maxTokenContinuations",
+  "context",
+  "todoStateProvider",
+  "semanticStateProvider",
+  "modelConfig",
+  "modelMetadata",
+  "model",
+  "expert",
+  "user",
+  "task",
+  "session",
+  "requestId",
+  "toolContext",
+  "store",
+  "persistence",
+  "runId",
+  "runState",
+  "resume",
+  "onRound",
+  "onJudge",
+  "onToolResult",
+  "onPersistenceError",
+  "diagnostics",
+  "onObserverError",
+  "signal",
+  "stream",
+  "onDelta",
+  "onReasoningDelta",
+  "onToolCall",
+  "onUsage",
+  "onEvent",
+];
+const RUN_TOOL_LOOP_OPTION_SET = new Set(RUN_TOOL_LOOP_OPTION_NAMES);
+
+function levenshteinDistance(left, right) {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
+    const current = [leftIndex + 1];
+    for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
+      current.push(Math.min(
+        current[rightIndex] + 1,
+        previous[rightIndex + 1] + 1,
+        previous[rightIndex] + (left[leftIndex] === right[rightIndex] ? 0 : 1),
+      ));
+    }
+    for (let index = 0; index < current.length; index += 1) previous[index] = current[index];
+  }
+  return previous[right.length];
+}
+
+function optionSuggestion(unknownName) {
+  let best;
+  for (const optionName of RUN_TOOL_LOOP_OPTION_NAMES) {
+    const distance = levenshteinDistance(unknownName, optionName);
+    if (best === undefined || distance < best.distance) {
+      best = { name: optionName, distance };
+    }
+  }
+  const threshold = Math.max(2, Math.floor(unknownName.length / 3));
+  return best?.distance <= threshold ? best.name : undefined;
+}
+
 function persistenceInfoFor(error) {
   if (!error || typeof error !== "object") return undefined;
   if (error.persistence && typeof error.persistence === "object") {
@@ -178,9 +263,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   tools?: object[],
  *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to ["writeFile"].
  *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
- *   executeTool: ((name:string, input:object) => Promise<string>)
- *     | ((options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
- *       => Promise<string|{success?:boolean, data:any, duration?:number, toolMessageId?:string}>),
+ *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
+ *     => Promise<string|{content:any, metadata?:object, success?:boolean}|Error>,
  *   maxRounds?: number,
  *   maxTokens?: number,
  *   temperature?: number,
@@ -243,61 +327,75 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number}[]
  * }>}
  */
-export async function runToolLoop({
-  provider,
-  system,
-  wrapup = true,
-  initialUserMessage,
-  initialMessages,
-  tools = [],
-  writeToolNames = ["writeFile"],
-  writeToolPathKeys = ["path", "file_path"],
-  executeTool,
-  maxRounds = 8,
-  maxTokens,
-  temperature,
-  topP,
-  timeoutMs,
-  deadlineMs,
-  reflection,
-  stallDetection = { window: 4 },
-  retry = false,
-  completion = { signals: [], maxNoToolRounds: 3 },
-  finalGuard,
-  finalGuardMaxRetries = 2,
-  finalGuardTimeoutMs = 30_000,
-  maxTokenContinuations = 3,
-  context,
-  todoStateProvider,
-  semanticStateProvider,
-  modelConfig,
-  modelMetadata,
-  model,
-  expert,
-  user,
-  task,
-  session,
-  requestId,
-  toolContext,
-  store,
-  persistence,
-  runId,
-  runState,
-  resume = false,
-  onRound,
-  onJudge,
-  onToolResult,
-  onPersistenceError,
-  diagnostics,
-  onObserverError,
-  signal,
-  stream = false,
-  onDelta,
-  onReasoningDelta,
-  onToolCall,
-  onUsage,
-  onEvent,
-}) {
+export async function runToolLoop(options) {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("runToolLoop options must be an object");
+  }
+  for (const optionName of Object.keys(options)) {
+    if (!RUN_TOOL_LOOP_OPTION_SET.has(optionName)) {
+      const suggestion = optionSuggestion(optionName);
+      throw new TypeError(
+        `unknown runToolLoop option: ${JSON.stringify(optionName)}`
+        + (suggestion ? ` (did you mean ${JSON.stringify(suggestion)}?)` : ""),
+      );
+    }
+  }
+
+  const {
+    provider,
+    system,
+    wrapup = true,
+    initialUserMessage,
+    initialMessages,
+    tools = [],
+    writeToolNames = ["writeFile"],
+    writeToolPathKeys = ["path", "file_path"],
+    executeTool,
+    maxRounds = 8,
+    maxTokens,
+    temperature,
+    topP,
+    timeoutMs,
+    deadlineMs,
+    reflection,
+    stallDetection = { window: 4 },
+    retry = false,
+    completion = { signals: [], maxNoToolRounds: 3 },
+    finalGuard,
+    finalGuardMaxRetries = 2,
+    finalGuardTimeoutMs = 30_000,
+    maxTokenContinuations = 3,
+    context,
+    todoStateProvider,
+    semanticStateProvider,
+    modelConfig,
+    modelMetadata,
+    model,
+    expert,
+    user,
+    task,
+    session,
+    requestId,
+    toolContext,
+    store,
+    persistence,
+    runId,
+    runState,
+    resume = false,
+    onRound,
+    onJudge,
+    onToolResult,
+    onPersistenceError,
+    diagnostics,
+    onObserverError,
+    signal,
+    stream = false,
+    onDelta,
+    onReasoningDelta,
+    onToolCall,
+    onUsage,
+    onEvent,
+  } = options;
   if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) {
     throw new TypeError("maxRounds must be a finite positive integer");
   }

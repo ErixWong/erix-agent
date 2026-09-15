@@ -27,7 +27,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
   const firstResult = await runToolLoop({
     provider: firstProvider,
     initialUserMessage: "start",
-    executeTool: async (_name, input) => `completed-${input.step}`,
+    executeTool: async ({ input }) => `completed-${input.step}`,
     maxRounds: 3,
     completion: false,
     store,
