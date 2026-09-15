@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -98,11 +98,12 @@ test("S2 keeps credentials out of a folded stub while retaining its archive poin
     },
   ]);
   const cliTools = createCliTools({ cwd: directory, archiveDir });
-  const executeTool = wrapExecuteTool(cliTools.executeTool, {
+  const wrappedExecuteTool = wrapExecuteTool(cliTools.executeTool, {
     output: () => {},
     getToolMetadata: cliTools.getLastToolMetadata,
     returnMetadata: true,
   });
+  const executeTool = (options) => wrappedExecuteTool(options);
   const context = buildCompactionContext(
     {},
     360,
@@ -134,6 +135,75 @@ test("S2 keeps credentials out of a folded stub while retaining its archive poin
     assert.match(foldedStub, /001-exec\.txt/u);
     assert.match(foldedStub, new RegExp(safeValue));
     assert.doesNotMatch(foldedStub, new RegExp(secret));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("S3 executes a repeated command and reports first-run provenance", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "erix-memento-s3-"));
+  const archiveDir = path.join(directory, "archive");
+  const command = `printf 'nonce=s3-deterministic\\n'; head -c 1 /dev/urandom >/dev/null`;
+  const provider = createFakeProvider([
+    {
+      content: [{
+        type: "tool_use",
+        id: "s3-first",
+        name: "exec",
+        input: { command },
+      }],
+      stopReason: "tool_use",
+    },
+    {
+      content: [{
+        type: "tool_use",
+        id: "s3-second",
+        name: "exec",
+        input: { command },
+      }],
+      stopReason: "tool_use",
+    },
+    {
+      content: [{ type: "text", text: "重复命令已执行" }],
+      stopReason: "end_turn",
+    },
+  ]);
+  const cliTools = createCliTools({ cwd: directory, archiveDir });
+  const wrappedExecuteTool = wrapExecuteTool(cliTools.executeTool, {
+    output: () => {},
+    getToolMetadata: cliTools.getLastToolMetadata,
+    returnMetadata: true,
+  });
+  const executeTool = (options) => wrappedExecuteTool(options);
+
+  try {
+    const result = await runToolLoop({
+      provider,
+      initialUserMessage: "执行命令两次并报告结果。",
+      tools: cliTools.tools,
+      executeTool,
+      maxRounds: 3,
+      completion: false,
+      wrapup: false,
+      reflection: false,
+      runId: "s3-run",
+    });
+
+    const toolResults = result.messages
+      .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+      .filter((block) => block?.type === "tool_result");
+    const secondResult = toolResults.find((block) => block.tool_use_id === "s3-second");
+    assert.ok(secondResult);
+    assert.match(secondResult.content, /这是第 2 次执行/u);
+    assert.equal(secondResult.rerunOf.artifactId, "001-exec.txt");
+    assert.equal(secondResult.rerunOf.round, 1);
+    assert.equal(typeof secondResult.rerunOf.digest, "string");
+    assert.equal(typeof secondResult.rerunOf.locator, "object");
+    assert.equal(secondResult.rerunOf.archivePath, path.join(archiveDir, "001-exec.txt"));
+    assert.deepEqual(
+      (await readdir(archiveDir)).filter((name) => name.endsWith(".txt")).sort(),
+      ["001-exec.txt", "002-exec.txt"],
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
