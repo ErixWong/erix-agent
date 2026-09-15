@@ -10,6 +10,7 @@ import {
   createOpenAIProvider,
   createFileTranscriptStore,
   createFileResourceStore,
+  createFileNotesStore,
   runToolLoop,
 } from "../src/index.js";
 import { safeRunId } from "../src/store/file.js";
@@ -153,13 +154,28 @@ function resolveReflection(reflection, maxRounds) {
   return maxRounds >= 32 ? { enabled: true } : false;
 }
 
-function resolveFinalGuard(finalGuard, runId, archiveDir, notesDir, runState, resourceStore) {
+function resolveFinalGuard(
+  finalGuard,
+  runId,
+  archiveDir,
+  notesDir,
+  notesStore,
+  runState,
+  resourceStore,
+) {
   if (typeof finalGuard === "function") return finalGuard;
   if (
     finalGuard !== true
     && process.env.ERIX_FINAL_GUARD?.trim() !== "1"
   ) return undefined;
-  return createFinalGuard({ runId, archiveDir, notesDir, runState, resourceStore });
+  return createFinalGuard({
+    runId,
+    archiveDir,
+    notesDir,
+    notesStore,
+    runState,
+    resourceStore,
+  });
 }
 
 function createIdleTimeout(seconds) {
@@ -469,12 +485,14 @@ export async function runChat(options = {}) {
   const notesDir = options.notesDir
     ?? process.env.ERIX_NOTES_DIR
     ?? path.join(homedir(), ".erix", "notes");
+  const notesStore = options.notesStore ?? createFileNotesStore({ dir: notesDir });
   // Notes scope is explicit throughout the CLI path; avoid mutating process
   // globals so concurrent runChat calls cannot restore each other's env.
   return runChatWithNotes({
     ...options,
     _notesRunId: runId,
     _notesDir: notesDir,
+    _notesStore: notesStore,
   });
 }
 
@@ -503,9 +521,13 @@ async function runChatWithNotes({
   loop: loopOverride,
   _notesRunId,
   _notesDir,
+  _notesStore,
 }) {
   const cwd = process.cwd();
   const runId = _notesRunId ?? session ?? defaultSessionId(cwd, { unique: true });
+  const notesStore = _notesStore ?? createFileNotesStore({
+    dir: _notesDir ?? path.join(homedir(), ".erix", "notes"),
+  });
   const explicitSession = sessionExplicit ?? session !== undefined;
   const config = configOverride ?? await loadCliConfig({ configPath });
   const maxTokens = config.maxOutputTokens;
@@ -552,7 +574,7 @@ async function runChatWithNotes({
     cwd,
     archiveDir,
     resourceStore,
-    notesScope: { runId, notesDir: _notesDir },
+    notesScope: { runId, notesDir: _notesDir, notesStore },
     runState,
   });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
@@ -561,10 +583,11 @@ async function runChatWithNotes({
     skillsDir,
     runId,
     notesDir: _notesDir,
+    notesStore,
     excludeSkillIds: notesDisabled ? ["notes"] : [],
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
-  await skillTools.notesJanitor?.({ __erix: { runId, notesDir: _notesDir } });
+  await skillTools.notesJanitor?.({ __erix: { runId, notesDir: _notesDir, notesStore } });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
   const tools = combineTools(cliTools, skillTools, mcpProxy);
   const baseContext = buildCompactionContext(
@@ -582,7 +605,7 @@ async function runChatWithNotes({
   const executeTool = wrapExecuteTool(tools.executeTool, {
     output: toolOutput,
     getToolMetadata: cliTools.getLastToolMetadata,
-    notesScope: { runId, notesDir: _notesDir },
+    notesScope: { runId, notesDir: _notesDir, notesStore },
     returnMetadata: true,
   });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
@@ -591,6 +614,7 @@ async function runChatWithNotes({
     runId,
     archiveDir,
     _notesDir,
+    notesStore,
     runState,
     resourceStore,
   );
@@ -805,8 +829,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   } finally {
     idle?.dispose();
     try {
-      await skillTools.notesCompleteRun?.({ __erix: { runId, notesDir: _notesDir } });
-      await skillTools.notesJanitor?.({ __erix: { runId, notesDir: _notesDir } });
+      await skillTools.notesCompleteRun?.({ __erix: { runId, notesDir: _notesDir, notesStore } });
+      await skillTools.notesJanitor?.({ __erix: { runId, notesDir: _notesDir, notesStore } });
     } finally {
       await closeAllMcpServers();
     }

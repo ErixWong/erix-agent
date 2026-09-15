@@ -192,6 +192,22 @@ whether the deliverable meets its requirements, and whether it may proceed
 automatically downstream remain decisions for the host, test system, or human
 review.
 
+### NotesStore scope and write contract
+
+The file-backed `NotesStore` canonicalizes each `scopeRef` exactly at the
+adapter boundary. Unsafe scope references such as `../escape`, absolute paths,
+and encoded separators are mapped to a stable `run-h-...` directory; the same
+canonical value is used for the directory and persisted `record.scopeRef`.
+Hosts and skills must pass the original logical scope reference to the adapter,
+not pre-canonicalize it. Existing directories whose scope reference is already
+in canonical hashed form remain readable and participate in list, complete, and
+janitor operations.
+
+The file adapter assumes one writer per scope/key. Concurrent read-modify-write
+updates can lose one update and its superseded history (last-write-wins).
+Hosts that need concurrent updates must serialize them at the host boundary;
+the adapter does not add a lock or another concurrency mechanism.
+
 ### CLI-side provenance guard
 
 The CLI guard in `bin/final-guard.js` is a deterministic provenance checker,

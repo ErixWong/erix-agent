@@ -44,6 +44,12 @@ export {
 export { createFileResourceStore } from "./store/resource-file.js";
 export { validateResourceStore } from "./store/resource.js";
 export {
+  NotesStoreError,
+  assertNotesStore,
+  createFileNotesStore,
+  isNoteRecord,
+} from "./store/notes.js";
+export {
   createDeterministicRunState,
   renderRunState,
   upsertRunStateInMessages,
