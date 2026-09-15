@@ -8,6 +8,12 @@ export {
   openAIResponseToCanonical,
 } from "./messages/canonical.js";
 export {
+  normalizeOpenAIUsage,
+  normalizeOpenAIStopReason,
+  parseOpenAIToolArguments,
+  createOpenAIStreamAccumulator,
+} from "./messages/openai-normalization.js";
+export {
   canonicalToAnthropicRequest,
   anthropicResponseToCanonical,
   createAnthropicStreamAssembler,

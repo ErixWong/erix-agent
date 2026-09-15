@@ -11,6 +11,11 @@ import {
   openAIResponseToCanonical,
 } from "../messages/canonical.js";
 import {
+  createOpenAIStreamAccumulator,
+  normalizeOpenAIStopReason,
+  normalizeOpenAIUsage,
+} from "../messages/openai-normalization.js";
+import {
   applyProviderPayloadOptions,
   resolveProviderTimeouts,
 } from "./payload.js";
@@ -100,16 +105,6 @@ function isReasoningProvider({
     || (typeof reasoning_effort === "string" && reasoning_effort.length > 0)
     || enable_thinking === true
     || thinking_format !== undefined;
-}
-
-function normalizeFinishReason(finishReason) {
-  const stopMap = {
-    stop: "end_turn",
-    tool_calls: "tool_use",
-    function_call: "tool_use",
-    length: "max_tokens",
-  };
-  return finishReason == null ? "unknown" : stopMap[finishReason] ?? finishReason;
 }
 
 function eventBoundary(text) {
@@ -425,7 +420,7 @@ export function createOpenAIProvider({
       let lastUsage;
       let sawData = false;
       let streamDone = false;
-      const toolSlots = [];
+      const streamAccumulator = createOpenAIStreamAccumulator();
       let firstByteSeen = false;
       context.beginStream();
       streamPhase = "firstByte";
@@ -483,64 +478,20 @@ export function createOpenAIProvider({
         }
 
         if (delta.function_call && typeof delta.function_call === "object") {
-          const functionDelta = delta.function_call;
-          const slot = toolSlots[0] ?? {
-            id: "call_legacy",
-            name: undefined,
-            arguments: undefined,
-          };
-          toolSlots[0] = slot;
-          if (functionDelta.name !== undefined) slot.name = functionDelta.name;
-          if (functionDelta.arguments !== undefined) {
-            slot.arguments = `${slot.arguments ?? ""}${String(functionDelta.arguments)}`;
+          const fragment = streamAccumulator.addFunctionCallDelta(delta.function_call);
+          if (fragment) {
+            req.onToolCall?.(fragment);
+            emitEvent({ type: "tool_call", ...fragment });
           }
-          const fragment = {
-            index: 0,
-            id: slot.id,
-            ...(functionDelta.name === undefined ? {} : { name: String(functionDelta.name) }),
-            ...(functionDelta.arguments === undefined
-              ? {}
-              : { argumentsDelta: String(functionDelta.arguments) }),
-          };
-          req.onToolCall?.(fragment);
-          emitEvent({ type: "tool_call", ...fragment });
         }
 
         if (!Array.isArray(delta.tool_calls)) return;
         for (const toolCall of delta.tool_calls) {
-          if (!toolCall || typeof toolCall !== "object") continue;
-          const requestedIndex = Number(toolCall.index);
-          const index = Number.isInteger(requestedIndex) && requestedIndex >= 0
-            ? requestedIndex
-            : toolSlots.length;
-          const slot = toolSlots[index] ?? {
-            id: undefined,
-            name: undefined,
-            arguments: undefined,
-          };
-          toolSlots[index] = slot;
-
-          if (toolCall.id !== undefined) slot.id = toolCall.id;
-          const functionDelta = toolCall.function;
-          if (functionDelta && typeof functionDelta === "object") {
-            if (functionDelta.name !== undefined) slot.name = functionDelta.name;
-            if (functionDelta.arguments !== undefined) {
-              slot.arguments = `${slot.arguments ?? ""}${String(functionDelta.arguments)}`;
-            }
+          const fragment = streamAccumulator.addToolCallDelta(toolCall);
+          if (fragment) {
+            req.onToolCall?.(fragment);
+            emitEvent({ type: "tool_call", ...fragment });
           }
-
-          const fragment = {
-            index,
-            ...(slot.id === undefined ? {} : { id: slot.id }),
-            ...(!functionDelta || functionDelta.name === undefined
-              ? {}
-              : { name: String(functionDelta.name) }),
-            ...(!functionDelta || functionDelta.arguments === undefined
-              ? {}
-              : { argumentsDelta: String(functionDelta.arguments) }),
-          };
-          req.onToolCall?.(fragment);
-          emitEvent({ type: "tool_call", ...fragment });
         }
       };
 
@@ -608,38 +559,15 @@ export function createOpenAIProvider({
       const content = [];
       if (reasoning.length > 0) content.push({ type: "reasoning", text: reasoning });
       if (text.length > 0) content.push({ type: "text", text });
-      for (const slot of toolSlots) {
-        if (!slot) continue;
-        const rawArguments = slot.arguments === undefined ? "{}" : slot.arguments;
-        let input;
-        try {
-          input = JSON.parse(rawArguments);
-        } catch {
-          input = {
-            _truncatedArguments: rawArguments,
-            _raw: rawArguments,
-          };
-        }
-        content.push({
-          type: "tool_use",
-          id: slot.id,
-          name: slot.name,
-          input,
-        });
-      }
+      content.push(...streamAccumulator.getToolUseBlocks());
 
       const chatResponse = {
         content,
-        stopReason: normalizeFinishReason(finishReason),
+        stopReason: normalizeOpenAIStopReason(finishReason),
       };
-      if (lastUsage != null) {
-        chatResponse.usage = {};
-        if (lastUsage.prompt_tokens !== undefined) {
-          chatResponse.usage.input_tokens = lastUsage.prompt_tokens;
-        }
-        if (lastUsage.completion_tokens !== undefined) {
-          chatResponse.usage.output_tokens = lastUsage.completion_tokens;
-        }
+      const usage = normalizeOpenAIUsage(lastUsage);
+      if (usage !== undefined) {
+        chatResponse.usage = usage;
         req.onUsage?.(lastUsage);
         emitEvent({ type: "usage", usage: lastUsage });
       }

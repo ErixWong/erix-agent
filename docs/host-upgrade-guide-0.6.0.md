@@ -75,3 +75,29 @@ const executeTool = async ({ id, name, input, context, signal }) => (
 ```
 
 Do not pass the legacy two-argument function directly.
+
+## 4. Reuse the library normalization primitives
+
+The OpenAI-compatible normalization code is now exported from the package
+root. In `touwaka/lib/llm-kit-adapters/provider-adapter.js`, the following
+local implementations can be considered during host migration:
+
+| Local implementation | Use this export | Migration status |
+|---|---|---|
+| `normalizeUsage` | `normalizeOpenAIUsage` | Can replace directly; parity-tested |
+| `normalizeStopReason` | `normalizeOpenAIStopReason` | Semantic difference — host decides whether to adopt |
+| `parseToolArguments` | `parseOpenAIToolArguments` | Semantic difference — host decides whether to adopt |
+| `toolCallParts` + `appendToolCallFragments` + `completedToolUseBlocks` | `createOpenAIStreamAccumulator` (`addToolCallDelta` / `getToolUseBlocks`) | Can replace directly; parity-tested |
+
+The adapter's `toChatResponse` and `streamResponse` remain host glue for
+Touwaka response shapes and callbacks, but should call the exported helpers
+instead of reimplementing token, stop-reason, or argument semantics.
+`buildCallOptions`, model resolution, abort bridging, and event forwarding
+remain host-specific and are not replaced by this change.
+
+The two non-drop-in cases are intentional. Touwaka's `normalizeStopReason`
+returns `"function_call"` unchanged, while the exported helper maps it to
+`"tool_use"`. Touwaka's `parseToolArguments` returns an object argument
+directly, while the exported helper treats it as a non-JSON value and returns
+its malformed-argument wrapper. Do not delete either local implementation
+without deciding which behavior the host requires.

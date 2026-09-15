@@ -120,6 +120,7 @@ src/
   messages/
     anthropic.js                   Anthropic protocol conversion and stream assembly
     canonical.js                   Canonical message/tool conversion
+    openai-normalization.js        OpenAI-compatible normalization primitives
     rounds.js                      Message validation and round grouping
   compact/
     budget.js                      Context-budget calculation
@@ -155,6 +156,25 @@ src/
 and compaction helpers, transcript stores, run-state helpers, configuration
 providers, `runToolLoop`, and reflection helpers. The optional
 `erix-agent/tools` subpath exports the tool helpers listed above.
+
+## Reusable normalization primitives
+
+The package root exports protocol normalization helpers for hosts that own
+their provider transport. They are pure functions with no network or model
+calls:
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | Maps `prompt_tokens`/`completion_tokens` (and canonical aliases) to `input_tokens`/`output_tokens`; empty or non-object input returns `undefined`. |
+| `normalizeOpenAIStopReason` | `(reason, fallback = "unknown") -> string` | Maps OpenAI finish reasons to canonical `end_turn`, `tool_use`, or `max_tokens`; unknown values pass through. |
+| `parseOpenAIToolArguments` | `(rawArguments) -> any` | Parses JSON, defaults missing arguments to `{}`, and preserves invalid input in `_truncatedArguments`/`_raw` instead of throwing. |
+| `createOpenAIStreamAccumulator` | `() -> accumulator` | Accumulates indexed OpenAI tool-call deltas; `getToolUseBlocks()` returns canonical tool-use blocks and malformed JSON follows `parseOpenAIToolArguments`. |
+
+The OpenAI provider and `openAIResponseToCanonical` use these same helpers,
+so host adapters do not need to maintain a second normalization
+implementation. The stream accumulator also accepts the callback form
+`{ index, id, name, argumentsDelta }`; its `addFunctionCallDelta` method
+handles legacy `function_call` streams.
 
 ## Engineering constraints
 
