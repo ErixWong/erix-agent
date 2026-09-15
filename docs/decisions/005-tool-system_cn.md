@@ -23,6 +23,7 @@
 不进主导出，显式 `import … from "erix-agent/tools"` 才可用。三件：
 
 1. **`createJail({ root, writable = [], maskedPaths = [] })`** —— 路径牢笼助手。
+   **已撤销（2026-09，见下方 ADR-009 修订）：** 此参考实现已不再随库发布。
    解析后必须仍在 root 内（越界抛错）、写仅限 writable 子树、maskedPaths 拒读。
    这是两个项目都需要的纯逻辑，与"执行什么"无关，值得共享。
 2. **文件工具参考实现**（readFile/rg/tree/writeFile）——建在 jail 上，

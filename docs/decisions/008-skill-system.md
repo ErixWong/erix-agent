@@ -50,8 +50,9 @@
 - Tool input validation goes through `createToolRegistry` (name dispatch + inputSchema validation + friendly return for unknown tools)
 - **The security boundary is not embedded in the agent** (ADR-009): skill tools, like built-in tools, are not wrapped
   in a jail and commands are not path-restricted—the runtime environment provides security (the user's machine = trust domain;
-  embedded container/sandbox scenarios are isolated by the host). The library's createJail/file-tools are retained as
-  reference implementations for callers that need to build their own sandbox
+  embedded container/sandbox scenarios are isolated by the host). The former
+  path-jail and filesystem reference implementations have been removed; callers
+  that need a sandbox must build it in the host/runtime
 - Result truncation continues to use onToolResult (OUTPUT_LIMIT)
 
 ## Command surface

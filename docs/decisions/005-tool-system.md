@@ -24,6 +24,8 @@
 It is not part of the main export; it is available only through an explicit `import … from "erix-agent/tools"`. Three parts:
 
 1. **`createJail({ root, writable = [], maskedPaths = [] })`**—path-jail helper.
+   **Withdrawn (2026-09; see the ADR-009 revision below):** this reference
+   implementation is no longer shipped.
    After resolution the path must still be inside root (an out-of-bounds path throws), writes are limited to writable subtrees, and maskedPaths cannot be read.
    This is pure logic needed by both projects and is worth sharing because it is unrelated to "what to execute".
 2. **Reference filesystem tools** (readFile/rg/tree/writeFile)—built on the jail,

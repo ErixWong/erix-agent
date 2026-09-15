@@ -26,7 +26,7 @@ function judgeResponse(value) {
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
 }
 
-test("buildTimeline extracts tool arguments and paired verification output", () => {
+test("buildTimeline extracts tool arguments and result statuses", () => {
   const messages = [
     { role: "user", content: [{ type: "text", text: "task" }] },
     {
@@ -47,8 +47,8 @@ test("buildTimeline extracts tool arguments and paired verification output", () 
 
   assert.deepEqual(buildTimeline(messages, 1), {
     toolCalls: [
-      { name: "exec", arg: "./sim 208", output: "104" },
-      { name: "writeFile", arg: "gates.txt", output: "exit 0（无输出）" },
+      { name: "exec", arg: "./sim 208", status: "ok" },
+      { name: "writeFile", arg: "gates.txt", status: "ok" },
     ],
     outputs: [],
     exitOk: true,
@@ -70,12 +70,52 @@ test("buildJudgePrompt includes the recent timeline, files, and errors", () => {
   );
 
   assert.match(prompt, /任务目标：generate gates/);
-  assert.match(prompt, /R3: exec \.\/sim 208; 输出: 104/);
+  assert.match(prompt, /R3: exec \.\/sim 208 \[pending\]/);
+  assert.doesNotMatch(prompt, /输出: 104/);
   assert.match(prompt, /gates\.txt\(R3\)/);
   assert.match(prompt, /expected 377, got 104/);
   assert.match(prompt, /"confidence":0-1/);
   assert.match(prompt, /"direction":"on_track\|uncertain\|off_track"/);
   assert.match(prompt, /direction 只是提示，不影响 done/);
+});
+
+test("buildTimeline labels errors, interceptions, pending calls, and repeated parameters", () => {
+  const messages = [
+    {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "a", name: "exec", input: { command: "npm test" } },
+        { type: "tool_use", id: "b", name: "exec", input: { command: "npm test" } },
+        { type: "tool_use", id: "c", name: "writeFile", input: { path: "out.txt", content: "x" } },
+        { type: "tool_use", id: "d", name: "readFile", input: { path: "missing.txt" } },
+      ],
+    },
+    {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "a", is_error: true, content: "failed" },
+        { type: "tool_result", tool_use_id: "b", is_error: true, content: "failed" },
+        {
+          type: "tool_result",
+          tool_use_id: "c",
+          executionStatus: "intercepted",
+          content: "【审计拦截】未执行",
+        },
+      ],
+    },
+  ];
+
+  assert.deepEqual(buildTimeline(messages).toolCalls, [
+    { name: "exec", arg: "npm test", status: "error" },
+    { name: "exec", arg: "npm test", status: "error" },
+    { name: "writeFile", arg: "out.txt", status: "intercepted" },
+    { name: "readFile", arg: "missing.txt", status: "pending" },
+  ]);
+  assert.equal(buildTimeline(messages).errorRepeat, 2);
+  assert.match(
+    buildJudgePrompt("task", 1, [{ round: 1, ...buildTimeline(messages) }]),
+    /R1: exec npm test \[error，重复第2次\]/,
+  );
 });
 
 test("counts configured write tools and extracts file_path for judge filesWritten", async () => {
@@ -1074,13 +1114,13 @@ test("buildTimeline pairs outputs by tool_use_id even when results arrive out of
   ];
 
   const result = buildTimeline(messages, 1);
-  // 输出按 tool_use_id 配对到正确调用，不因结果乱序错配
+  // 状态按 tool_use_id 配对到正确调用，不因结果乱序错配
   const sim208 = result.toolCalls.find((c) => c.arg === "./sim 208");
   const sim20000 = result.toolCalls.find((c) => c.arg === "./sim 20000");
   const write = result.toolCalls.find((c) => c.arg === "g.txt");
-  assert.equal(sim208.output, "104");
-  assert.equal(sim20000.output, "10000");
-  assert.equal(write.output, "written");
+  assert.equal(sim208.status, "ok");
+  assert.equal(sim20000.status, "ok");
+  assert.equal(write.status, "ok");
 });
 
 test("tool-use rounds get transparent interception without preempting prior work", async () => {

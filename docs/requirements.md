@@ -32,7 +32,7 @@ The library boundary ends at the lifecycle of one agent task: start, run, stop, 
 
 - ❌ Do not make tool execution mandatory or implicit in the core loop. The host supplies `tools` and `executeTool`; the optional `erix-agent/tools` subpath contains reference helpers and reference executors, but the host must explicitly wire and govern them.
 - ❌ Do not turn the library runtime into an agent-personality, skills, session-management, TUI, or MCP framework. Those are CLI or host concerns, not the `src/` runtime contract.
-- ❌ Do not provide a security policy or security boundary (allowlists, secret-redaction policy, artifact gates, or host isolation). `createJail` is an optional path helper, not a substitute for host security.
+- ❌ Do not provide a security policy or security boundary (allowlists, secret-redaction policy, artifact gates, or host isolation). Security remains the host/runtime's responsibility.
 - ❌ Do not choose a database engine or own a consumer project's database schema. Consumers implement the adapter contract on their side.
 - ❌ Do not become a “mini pi”. Consumers that need a complete interactive agent should use pi itself or its SDK rather than expanding this package into one.
 - ❌ Do not ship the planned `psyche` compaction strategy in the 0.5.1 runtime. Its context-shaping idea remains a future, conversation-oriented design candidate rather than a current implementation.
@@ -83,7 +83,7 @@ The library boundary ends at the lifecycle of one agent task: start, run, stop, 
 | # | Requirement | Status and implementation |
 |---|---|---|
 | FR-5.1 | Define a standard tool schema; let the adapter own protocol serialization; keep execution in the host | **Delivered.** `ToolSchema` uses `inputSchema`; `canonicalToolsToOpenAI` and `canonicalToAnthropicRequest` serialize it for each provider, while `executeTool` remains the loop's injected execution boundary. |
-| FR-5.2 | Provide an optional `erix-agent/tools` subpath with a path-jail helper, reference file tools, and recall | **Delivered.** `package.json` exports `./tools` to `src/tools/index.js`, which exports `createJail`, `createFileTools`, `createRecallTool`, the tool registry, and tool providers. These are opt-in and are not automatically installed as loop tools. |
+| FR-5.2 | Provide an optional `erix-agent/tools` subpath with recall, tool registration, and tool providers | **Delivered.** `package.json` exports `./tools` to `src/tools/index.js`, which exports `createRecallTool`, the tool registry, and tool providers. These are opt-in and are not automatically installed as loop tools; no path-jail or filesystem helper is included. |
 | FR-5.3 | Make tool definitions pluggable (`static` / `json-file` / `composite`, with DB in the consumer project); keep the executor registry in code and fail closed on mismatch | **Delivered.** `src/tools/providers.js` implements the three providers and `src/tools/registry.js` keeps executors in a code-owned map, validates inputs, merges provider schema overlays, and throws `tool_unknown_executor` when a provider names an unavailable executor. No DB provider is included. |
 
 ## 4. Phasing and implementation status

@@ -441,7 +441,7 @@ createCompositeToolProvider({ providers })
 
 执行器映射是由代码拥有的能力集合。`ToolProvider` 选择 schema，并可以覆盖描述和约束，但不能引入注册表中不存在的执行器。对于此类 schema，`resolveTools` 会以 `KitError("tool_unknown_executor", ...)` 失败。注册表执行会在调用执行器前校验 `required`、属性 `type` 和 `maxLength`；无效输入会变成错误字符串，不会到达执行器。不使用 `createToolRegistry` 的直接 `runToolLoop` 调用方须负责自己的输入校验。
 
-static 和 JSON-file 提供器选择 `sel.set` 或 `default`。composite 提供器按提供器顺序以名称合并 schema。`erix-agent/tools` 子路径还导出 `createJail`、`createFileTools` 和 `createRecallTool`。这些是参考实现，不是安装到 `runToolLoop` 中的隐式工具集。
+static 和 JSON-file 提供器选择 `sel.set` 或 `default`。composite 提供器按提供器顺序以名称合并 schema。`erix-agent/tools` 子路径还导出 `createRecallTool`、工具注册表和工具 provider。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集；库不包含路径牢笼和文件系统助手。
 
 ## 4. 源码布局
 
@@ -483,9 +483,7 @@ src/
 │   ├── l0.js                  # 客观工具结果事实与摘要解析
 │   └── wrapup.js              # 回合结束 JSON 解析与规范化
 └── tools/
-    ├── file-tools.js          # readFile、rg、tree 和 writeFile 参考工具
     ├── index.js               # erix-agent/tools 子路径导出
-    ├── jail.js                # root、可写和屏蔽路径牢笼
     ├── providers.js           # static、JSON-file 和 composite ToolProvider
     ├── recall.js              # 有界 transcript recall 工具适配器
     └── registry.js             # 由代码拥有的执行器/schema 注册表
