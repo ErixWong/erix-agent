@@ -228,6 +228,28 @@ function stripMarkedFoldSummaries(block) {
   return prefix === "" ? [] : [{ ...block, text: prefix }];
 }
 
+function rerunOfRecords(content) {
+  return content
+    .flatMap((block) => {
+      if (Array.isArray(block?.content)) return rerunOfRecords(block.content);
+      if (Array.isArray(block?.rerunOf)) return block.rerunOf;
+      return block?.rerunOf && typeof block.rerunOf === "object"
+        ? [block.rerunOf]
+        : [];
+    })
+    .filter((record) => record && typeof record === "object" && !Array.isArray(record));
+}
+
+function mergeRerunOfRecords(originalContent, rerunOf) {
+  const records = rerunOfRecords(originalContent);
+  if (Array.isArray(rerunOf)) records.push(...rerunOf);
+  const unique = new Map();
+  for (const record of records) {
+    unique.set(JSON.stringify(record), record);
+  }
+  return [...unique.values()];
+}
+
 function formatFoldSummary({
   from,
   to,
@@ -259,7 +281,7 @@ function formatFoldSummary({
     : `${prefix}${suffix}`;
 }
 
-function mergedFoldSummaryContent(originalContent, summary, recoveryHint) {
+function mergedFoldSummaryContent(originalContent, summary, recoveryHint, rerunOf) {
   const summaries = originalContent
     .filter((block) => block?.type === "text")
     .flatMap((block) => parseFoldSummaries(block.text));
@@ -297,7 +319,12 @@ function mergedFoldSummaryContent(originalContent, summary, recoveryHint) {
     }
     return stripMarkedFoldSummaries(block);
   });
-  return [{ type: "text", text: mergedSummary }, ...contentWithoutSummaries];
+  const mergedRerunOf = mergeRerunOfRecords(originalContent, rerunOf);
+  return [{
+    type: "text",
+    text: mergedSummary,
+    ...(mergedRerunOf.length > 0 ? { rerunOf: mergedRerunOf } : {}),
+  }, ...contentWithoutSummaries];
 }
 
 function prependSummary(
@@ -305,6 +332,7 @@ function prependSummary(
   summary,
   summaryRole = "user",
   recoveryHint = DEFAULT_RECOVERY_HINT,
+  rerunOf,
 ) {
   if (summaryRole === "system") {
     const systemIndex = head.findLastIndex((message) => message?.role === "system");
@@ -318,7 +346,7 @@ function prependSummary(
       : Array.isArray(system.content) ? system.content : [];
     updatedHead[systemIndex] = {
       ...system,
-      content: mergedFoldSummaryContent(content, summary, recoveryHint),
+      content: mergedFoldSummaryContent(content, summary, recoveryHint, rerunOf),
     };
     return updatedHead;
   }
@@ -336,7 +364,7 @@ function prependSummary(
     ...user,
     // 合并后的单段摘要放 content 最前：模型先看到折叠提示，任务原文紧跟其后；
     // （safeTruncate 同消息字段按 index 截断，任务在后可避免被先截成 [已修剪]）
-    content: mergedFoldSummaryContent(originalContent, summary, recoveryHint),
+    content: mergedFoldSummaryContent(originalContent, summary, recoveryHint, rerunOf),
   };
   return updatedHead;
 }
@@ -419,11 +447,13 @@ export function createFoldStatisticalStrategy(options = {}) {
           navigationRecord,
           recoveryHint,
         });
+        const rerunOf = rerunOfRecords(foldedPayload);
         compactedHead = prependSummary(
           head,
           summary,
           settings.summaryRole,
           recoveryHint,
+          rerunOf,
         );
       }
 

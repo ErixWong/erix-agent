@@ -291,7 +291,9 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
     const stubs = finalRequestText.match(/\[已折叠\][^"]*/gu) ?? [];
     assert.ok(stubs.length >= 1);
     assert.equal(new Set(stubs).size, stubs.length);
-    assert.match(JSON.stringify(provider.requests[1].messages), /"rerunOf"/u);
+    // exec① -> requests[1], exec② -> requests[2]; never move this back to requests[1].
+    assert.match(JSON.stringify(provider.requests[2].messages), /"rerunOf"/u);
+    assert.match(finalRequestText, /"rerunOf"/u);
     assert.deepEqual(
       (await readdir(archiveDir)).filter((name) => name.endsWith(".txt")).sort(),
       ["001-exec.txt", "002-exec.txt"],
