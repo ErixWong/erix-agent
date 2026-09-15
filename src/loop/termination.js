@@ -67,7 +67,8 @@ export function createTerminationManager(ctx) {
     };
     let timeoutId;
     try {
-      const guardPromise = Promise.resolve().then(() => ctx.finalGuard(payload));
+      const finalGuard = ctx.finalGuard;
+      const guardPromise = Promise.resolve().then(() => finalGuard(payload));
       const timeoutPromise = new Promise((_, reject) => {
         timeoutId = setTimeout(() => {
           const error = new Error("Final guard timed out");
@@ -75,15 +76,17 @@ export function createTerminationManager(ctx) {
           reject(error);
         }, ctx.finalGuardTimeout);
       });
+      const awaitWithAbort = ctx.awaitWithAbort;
       const decision = await Promise.race([
-        ctx.awaitWithAbort(guardPromise),
+        awaitWithAbort(guardPromise),
         timeoutPromise,
       ]);
       if (decision?.action === "accept") {
         ctx.guardMetrics.verified += 1;
         if (decision.rerunCited === true) ctx.guardMetrics.rerun_cited += 1;
         ctx.verification = { status: "verified" };
-        ctx.emitEvent({ type: "final_guard", round: ctx.rounds, action: "accept" });
+        const emitEvent = ctx.emitEvent;
+        emitEvent({ type: "final_guard", round: ctx.rounds, action: "accept" });
         return { action: "accept" };
       }
       if (
@@ -93,7 +96,8 @@ export function createTerminationManager(ctx) {
       ) {
         ctx.guardMetrics.skipped += 1;
         ctx.verification = { status: "skipped", reason: decision.reason };
-        ctx.emitEvent({
+        const emitEvent = ctx.emitEvent;
+        emitEvent({
           type: "final_guard",
           round: ctx.rounds,
           action: "skip",
@@ -107,7 +111,8 @@ export function createTerminationManager(ctx) {
         && decision.message.length > 0
       ) {
         ctx.guardMetrics.revised += 1;
-        ctx.emitEvent({
+        const emitEvent = ctx.emitEvent;
+        emitEvent({
           type: "final_guard",
           round: ctx.rounds,
           action: "revise",
@@ -117,7 +122,10 @@ export function createTerminationManager(ctx) {
       }
       throw new TypeError("finalGuard returned an invalid decision");
     } catch (error) {
-      if (ctx.signal?.aborted) ctx.throwIfAborted(ctx.signal);
+      if (ctx.signal?.aborted) {
+        const throwIfAborted = ctx.throwIfAborted;
+        throwIfAborted(ctx.signal);
+      }
       const errorReason = error?.code === "timeout"
         || error?.name === "TimeoutError"
         ? "timeout"
@@ -129,7 +137,8 @@ export function createTerminationManager(ctx) {
         detail: terminationDetailForError(error),
       };
       ctx.guardMetrics.guard_error += 1;
-      ctx.emitEvent({
+      const emitEvent = ctx.emitEvent;
+      emitEvent({
         type: "final_guard",
         round: ctx.rounds,
         action: "error",
@@ -174,8 +183,11 @@ export function createTerminationManager(ctx) {
     if (ctx.maxTokens !== undefined) request.maxTokens = ctx.maxTokens;
     if (ctx.temperature !== undefined) request.temperature = ctx.temperature;
     if (ctx.topP !== undefined) request.topP = ctx.topP;
-    const response = await ctx.awaitWithAbort(ctx.provider.chat(request));
-    ctx.addUsage(response, ctx.estimateMessageTokens(ctx.messages));
+    const awaitWithAbort = ctx.awaitWithAbort;
+    const response = await awaitWithAbort(ctx.provider.chat(request));
+    const addUsage = ctx.addUsage;
+    const estimateMessageTokens = ctx.estimateMessageTokens;
+    addUsage(response, estimateMessageTokens(ctx.messages));
     const content = blocksFor(response?.content);
     const assistant = { role: "assistant", content };
     ctx.messages.push(assistant);
@@ -190,7 +202,8 @@ export function createTerminationManager(ctx) {
       ? responseText
       : wrapup.output || wrapup.summary;
     ctx.forcedFinal = true;
-    ctx.emitEvent({ type: "forced_final", round: ctx.rounds, reason });
+    const emitEvent = ctx.emitEvent;
+    emitEvent({ type: "forced_final", round: ctx.rounds, reason });
   };
 
   const makeResult = (reason, detail) => {
@@ -216,13 +229,15 @@ export function createTerminationManager(ctx) {
 
   const finish = async (reason, detail) => {
     ctx.currentTerminationReason = reason;
-    await ctx.refreshRunState();
+    const refreshRunState = ctx.refreshRunState;
+    await refreshRunState();
     const state = ctx.verification.status === "unverified"
       ? "unverified_error"
       : ctx.verification.status === "error"
         ? "guard_error"
         : "succeeded";
-    await ctx.markRunState(state);
+    const markRunState = ctx.markRunState;
+    await markRunState(state);
     return makeResult(reason, detail);
   };
 

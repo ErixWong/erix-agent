@@ -9,7 +9,8 @@ export async function callProvider(ctx, { allowPendingToolUse = false, round } =
   while (true) {
     normalizeMessages(ctx.messages);
     validateMessages(ctx.messages, { allowPendingToolUse });
-    const requestEstimatedTokens = ctx.estimateMessageTokens(ctx.messages);
+    const estimateMessageTokens = ctx.estimateMessageTokens;
+    const requestEstimatedTokens = estimateMessageTokens(ctx.messages);
     const snapshot = {
       messages: cloneState(ctx.messages),
       eventDeltas: [...ctx.roundEventDeltas],
@@ -23,7 +24,8 @@ export async function callProvider(ctx, { allowPendingToolUse = false, round } =
     const attempt = retryIndex + 1;
     const attemptEvents = [];
     let attemptUsage;
-    ctx.emitEvent({
+    const emitEvent = ctx.emitEvent;
+    emitEvent({
       type: "attempt",
       round,
       attempt,
@@ -32,7 +34,8 @@ export async function callProvider(ctx, { allowPendingToolUse = false, round } =
 
     const dispatchAttemptEvent = (event, callback) => {
       if (event.type === "usage") {
-        ctx.emitEvent({ type: "usage", round, usage: event.usage });
+        const emitEvent = ctx.emitEvent;
+        emitEvent({ type: "usage", round, usage: event.usage });
       }
       if (event.type !== "usage" || attemptUsage !== undefined) {
         ctx.roundEventDeltas.push(event);
@@ -40,7 +43,8 @@ export async function callProvider(ctx, { allowPendingToolUse = false, round } =
       try {
         callback();
       } catch (error) {
-        ctx.reportObserverError(error);
+        const reportObserverError = ctx.reportObserverError;
+        reportObserverError(error);
       }
     };
     const queueEvent = (event, callback) => {
@@ -61,11 +65,15 @@ export async function callProvider(ctx, { allowPendingToolUse = false, round } =
       if (ctx.temperature !== undefined) request.temperature = ctx.temperature;
       if (ctx.topP !== undefined) request.topP = ctx.topP;
       if (ctx.stream && typeof ctx.provider.chatStream === "function") {
-        let response = await ctx.awaitWithAbort(ctx.provider.chatStream({
+        const awaitWithAbort = ctx.awaitWithAbort;
+        let response = await awaitWithAbort(ctx.provider.chatStream({
           ...request,
           onDelta: (chunk) => queueEvent(
             { type: "delta", delta: chunk },
-            () => ctx.onDelta?.(chunk),
+            () => {
+              const onDelta = ctx.onDelta;
+              onDelta?.(chunk);
+            },
           ),
           onReasoningDelta: (chunk, metadata) => queueEvent(
             {
@@ -73,24 +81,36 @@ export async function callProvider(ctx, { allowPendingToolUse = false, round } =
               delta: chunk,
               ...(metadata === undefined ? {} : { metadata }),
             },
-            () => ctx.onReasoningDelta?.(chunk, metadata),
+            () => {
+              const onReasoningDelta = ctx.onReasoningDelta;
+              onReasoningDelta?.(chunk, metadata);
+            },
           ),
           onToolCall: (fragment) => queueEvent(
             { type: "tool_call", ...fragment },
-            () => ctx.onToolCall?.(fragment),
+            () => {
+              const onToolCall = ctx.onToolCall;
+              onToolCall?.(fragment);
+            },
           ),
           onUsage: (reportedUsage) => {
             attemptUsage = reportedUsage;
             queueEvent(
               { type: "usage", usage: reportedUsage },
-              () => ctx.onUsage?.(reportedUsage),
+              () => {
+                const onUsage = ctx.onUsage;
+                onUsage?.(reportedUsage);
+              },
             );
           },
         }));
         if (attemptUsage !== undefined && response?.usage === undefined) {
           response = { ...response, usage: attemptUsage };
         }
-        if (recovered) ctx.emitEvent({ type: "recovered", round, attempt });
+        if (recovered) {
+          const emitEvent = ctx.emitEvent;
+          emitEvent({ type: "recovered", round, attempt });
+        }
         for (const { event, callback } of attemptEvents) {
           dispatchAttemptEvent(event, callback);
         }
@@ -100,8 +120,12 @@ export async function callProvider(ctx, { allowPendingToolUse = false, round } =
           estimatedTokens: requestEstimatedTokens,
         };
       }
-      const response = await ctx.awaitWithAbort(ctx.provider.chat(request));
-      if (recovered) ctx.emitEvent({ type: "recovered", round, attempt });
+      const awaitWithAbort = ctx.awaitWithAbort;
+      const response = await awaitWithAbort(ctx.provider.chat(request));
+      if (recovered) {
+        const emitEvent = ctx.emitEvent;
+        emitEvent({ type: "recovered", round, attempt });
+      }
       return {
         response,
         usageEmitted: false,
@@ -127,13 +151,15 @@ export async function callProvider(ctx, { allowPendingToolUse = false, round } =
       );
       retryIndex += 1;
       recovered = true;
-      ctx.emitEvent({
+      const emitEvent = ctx.emitEvent;
+      emitEvent({
         type: "recovering",
         round,
         attempt: retryIndex + 1,
         maxAttempts: ctx.retryAttempts + 1,
       });
-      await ctx.waitForRetry(delay);
+      const waitForRetry = ctx.waitForRetry;
+      await waitForRetry(delay);
     }
   }
 }
