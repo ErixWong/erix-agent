@@ -38,14 +38,20 @@ const page = await store.recall({
 
 `cursor` 是不透明游标，不得解析、拼接或跨 `runId`、范围、参数和 source version
 复用；它还绑定 `limit`、`maxBytes`、`pattern` 和 `artifactRef`，任一变化都必须
-重新寻址。`artifactRef` 只返回精确目标，目标缺失为 `unrecoverable`；`limit: 0`
+重新寻址。游标载荷带版本 `v` 和 `sig` 完整性校验（对规范化载荷做 SHA-256
+并截断），调用方不得依赖或修改编码、字段布局。完整性校验失败、字段缺失、
+版本未知、非 base64 或非 JSON 时返回 `status: "cursor_mismatch"`、空正文且
+不产生新的游标；不得静默从头开始或跳过内容。`artifactRef` 只返回精确目标，目标缺失为 `unrecoverable`；`limit: 0`
 或 `maxBytes: 0` 会被拒绝，不产生不可推进游标。`truncated` 必须使用返回的
 `nextCursor` 续取；不能把一次有界切片当作完整档案。文件 store 对超过源记录硬顶的
 单条 JSONL 记录返回 `truncated` + `error.code: "record_too_large"` 和可推进游标，
 明确该记录被跳过。
 `unrecoverable` 表示目标轮次或工件缺失、损坏或无法证明原值，不能降级为空字符串成功；
-`stale` 表示来源版本/游标已失效，必须重新寻址。bounded recall 是原文导航，不是语义搜索、
-完成证明或 provenance 验证。
+`stale` 表示来源版本/绑定参数已失效，必须重新寻址。`cursor_mismatch` 表示游标
+本身不可信，必须丢弃；它与 `stale` 都不能消费正文。校验和不使用进程内密钥，
+所以合法游标可跨进程 resume；它只检测意外损坏、错误复用和普通篡改，不是对抗
+有决心伪造者的安全边界。根据 ADR-009，本库不提供安全边界，宿主负责权限、
+租约以及对抗性认证。bounded recall 是原文导航，不是语义搜索、完成证明或 provenance 验证。
 
 ## replayableSource 与工件状态
 

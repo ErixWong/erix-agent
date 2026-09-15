@@ -38,13 +38,15 @@ await store.recall({
 artifact；目标不存在返回 `unrecoverable`，不能静默忽略筛选条件。`cursor` 由
 store 生成和解释，调用方不得解析或修改。游标绑定 `runId`、范围、pattern、
 `limit`、`maxBytes`、`artifactRef`、权限/租约和数据版本；参数变化时必须拒绝
-或返回显式的 `cursor_mismatch`，不能静默从错误位置继续。
+或返回显式的 `cursor_mismatch`，不能静默从错误位置继续。游标是不透明的、
+带版本 `v` 和完整性字段 `sig` 的载荷；`sig` 是对游标规范化序列化内容的
+SHA-256 截断值。调用方不得依赖其编码或字段布局。
 
 建议响应形状：
 
 ```js
 {
-  status: "ok" | "empty" | "truncated" | "unrecoverable" | "stale" | "error",
+  status: "ok" | "empty" | "truncated" | "unrecoverable" | "stale" | "cursor_mismatch" | "error",
   items: [{
     round,
     kind: "message" | "folded_payload" | "artifact",
@@ -76,7 +78,14 @@ store 生成和解释，调用方不得解析或修改。游标绑定 `runId`、
 | `truncated` | 受 `limit`/`maxBytes` 限制，仍有数据 | 保留并展示截断标记；只用 `nextCursor` 续取 |
 | `unrecoverable` | 请求的轮次、工件或必要归档已缺失/损坏 | 明确报告“不可恢复”；不得重跑工具或编造值 |
 | `stale` | 游标或 source version 对应的数据已变更、过期或不再授权 | 丢弃旧游标，重新请求并让宿主决定是否接受新版本 |
+| `cursor_mismatch` | 游标缺失字段、版本未知、编码/JSON 无效或完整性校验失败 | 丢弃游标并重新从明确地址请求；不得使用该响应正文（正文为空） |
 | `error` | I/O、权限、参数或后端故障 | 保留错误码和可审计日志；不得静默降级为空结果 |
+
+`cursor_mismatch` 与 `stale` 都是拒绝续取：前者表示游标本身不能可信地解释，
+后者表示完整游标与当前请求或 source version 不再匹配。完整性校验使用内容
+校验和而非进程内密钥，因此合法游标可以跨进程 resume；它用于检测意外损坏、
+错误复用和普通篡改，不是对抗有决心伪造者的安全边界。根据 ADR-009，本库不
+提供安全边界，权限、租约和对抗性认证由宿主负责。
 
 范围边界越过已知水位时，若 store 能证明缺失，返回 `unrecoverable`；
 不能证明是空范围时返回 `error` 或 `stale`，不要猜测。权限拒绝应保持
