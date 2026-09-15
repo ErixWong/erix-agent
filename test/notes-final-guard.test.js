@@ -535,12 +535,18 @@ test("CLI and REPL guard switches preserve opt-in behavior", async () => {
         },
         toolOutput: () => {},
       });
+
     } finally {
       if (previous === undefined) delete process.env.ERIX_NO_FINAL_GUARD;
       else process.env.ERIX_NO_FINAL_GUARD = previous;
     }
     assert.equal(captured.finalGuard, undefined);
   });
+});
+
+test("final guard stays within the ADR-013 size limit", async () => {
+  const source = await readFile(new URL("../bin/final-guard.js", import.meta.url), "utf8");
+  assert.ok(source.split("\n").length - 1 <= 300);
 });
 
 test("chat leaves the final guard disabled by default", async () => {

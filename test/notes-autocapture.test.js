@@ -144,6 +144,7 @@ test("short non-replayable output is archived with structured metadata", async (
       "utf8",
     ));
     assert.equal(metadata.replayable, false);
+    assert.equal(metadata.status, "ok");
     assert.equal(getLastToolMetadata().replayableSource, "unknown");
     assert.equal(metadata.command, "printf 'short=alpha\\n'; printf %s \"$RANDOM\" >/dev/null");
   });
@@ -168,7 +169,9 @@ test("truncated archives hash the bytes on disk and cannot pass provenance guard
     assert.equal(archived.artifact.digest, digest);
     assert.equal(sidecar.digest, digest);
     assert.equal(archived.artifact.truncated, true);
+    assert.equal(archived.artifact.status, "truncated");
     assert.equal(sidecar.truncated, true);
+    assert.equal(sidecar.status, "truncated");
     assert.equal(sidecar.originalBytes, 1048577);
 
     await scopedNotes.recordAutoCapture({
@@ -288,7 +291,7 @@ test("note_take and auto_capture share the expanded credential matcher", async (
   });
 });
 
-test("auto_capture keeps one command note when reruns are intercepted", async () => {
+test("auto_capture keeps the latest note while every rerun archive remains auditable", async () => {
   await withNotes(async (directory) => {
     const archiveDir = path.join(directory, "outputs");
     const tools = createCliTools({
@@ -315,12 +318,12 @@ test("auto_capture keeps one command note when reruns are intercepted", async ()
     const values = await Promise.all(listed.notes.map(async (note) => (
       JSON.parse(await scopedNotes.note_read({ key: note.key }))
     )));
-    assert.deepEqual(values.map((entry) => entry.value), ["result=first\n"]);
-    assert.equal(values[0].superseded.length, 0);
+    assert.deepEqual(values.map((entry) => entry.value), ["result=second\n"]);
+    assert.ok(values[0].superseded.length <= 3);
   });
 });
 
-test("non-identical non-replayable reruns are allowed but carry a first-value warning", async () => {
+test("non-identical non-replayable executions are allowed without a duplicate warning", async () => {
   await withNotes(async (directory) => {
     const archiveDir = path.join(directory, "outputs");
     const runState = { rerunDetected: false };
@@ -338,10 +341,9 @@ test("non-identical non-replayable reruns are allowed but carry a first-value wa
     });
 
     assert.match(first, /完整输出已归档/u);
-    assert.match(rerun, /重跑警示/u);
-    assert.match(rerun, /note_read key=auto-/u);
-    assert.match(rerun, /001-exec\.txt/u);
-    assert.equal(runState.rerunDetected, true);
+    assert.doesNotMatch(rerun, /重跑警示/u);
+    assert.doesNotMatch(rerun, /拦截/u);
+    assert.equal(runState.rerunDetected, false);
   });
 });
 

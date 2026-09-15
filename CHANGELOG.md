@@ -8,9 +8,16 @@
 
 - CLI 终稿 provenance guard 改为默认关闭；需要核验时显式使用 `--final-guard` 或
   `ERIX_FINAL_GUARD=1`。`--no-final-guard` 保留为兼容 no-op，库 API 的 `finalGuard` 注入语义不变。
+- **行为变更**：相同规范化命令再次执行不再拦截；执行照常完成后告知首次记录与工件状态，
+  两次结果均单独归档，可供审计。
 
 ### Added
 
+- `exec` 重复执行结果元数据附带首次 `rerunOf`（round/artifactId/archivePath/digest/locator）
+  与机械工件状态 `ok`/`truncated`/`missing`/`stale`/`unrecoverable`。
+- TranscriptStore 新增对象参数 bounded recall API（`limit`/`cursor`/`maxBytes`），
+  在 store 源头限流并提供可续取游标与 `unrecoverable`/`stale`/`truncated` 状态；
+  旧位置参数 `recall` 保持兼容，CLI 不新增 recall 工具。
 - 折叠时可由 CLI/宿主注入 `stubFor`，为不可重放工具结果保留有界、去凭据的最小事实 stub。
 - 折叠状态加入替换式、有界的 `navigationRecord`（最多 10 条 artifact、最多 400 字符），
   携带 `locator`/`digest`/`status` 供模型导航和归档对账，不注入捕获值。

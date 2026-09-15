@@ -81,6 +81,90 @@ export function transcriptStoreContract(label, createStore) {
     assert.equal(await store.recall("missing-run", undefined, undefined, "README"), "");
   });
 
+  test(`${label}: bounded recall 在源头限制并支持无重复续取`, async () => {
+    const store = await createStore();
+    for (let round = 1; round <= 24; round += 1) {
+      await store.appendRound("bounded-run", {
+        round,
+        messages: [{
+          role: "assistant",
+          content: [{ type: "text", text: `round-${round}-${"x".repeat(120)}` }],
+        }],
+      });
+    }
+
+    const chunks = [];
+    let page = await store.recall({
+      runId: "bounded-run",
+      fromRound: 1,
+      toRound: 24,
+      limit: 2,
+      maxBytes: 256,
+    });
+    assert.equal(page.status, "truncated");
+    assert.equal(page.truncated, true);
+    assert.ok(Buffer.byteLength(page.text, "utf8") <= 256);
+    chunks.push(page.text);
+    while (page.nextCursor) {
+      page = await store.recall({
+        runId: "bounded-run",
+        fromRound: 1,
+        toRound: 24,
+        limit: 2,
+        maxBytes: 256,
+        cursor: page.nextCursor,
+      });
+      assert.ok(Buffer.byteLength(page.text, "utf8") <= 256);
+      chunks.push(page.text);
+    }
+    const combined = chunks.join("");
+    assert.equal((combined.match(/round-/gu) ?? []).length, 24);
+    for (let round = 1; round <= 24; round += 1) {
+      assert.equal((combined.match(new RegExp(`round-${round}-`, "g")) ?? []).length, 1);
+    }
+  });
+
+  test(`${label}: bounded recall 显式报告缺失轮次与陈旧游标`, async () => {
+    const store = await createStore();
+    await store.appendRound("bounded-run", {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "one" }] }],
+    });
+    await store.appendRound("bounded-run", {
+      round: 2,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "two" }] }],
+    });
+
+    const first = await store.recall({
+      runId: "bounded-run",
+      fromRound: 1,
+      toRound: 2,
+      limit: 1,
+      maxBytes: 10,
+    });
+    assert.equal(first.status, "truncated");
+    await store.appendRound("bounded-run", {
+      round: 3,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "three" }] }],
+    });
+    const stale = await store.recall({
+      runId: "bounded-run",
+      fromRound: 1,
+      toRound: 2,
+      limit: 1,
+      maxBytes: 10,
+      cursor: first.nextCursor,
+    });
+    assert.equal(stale.status, "stale");
+
+    const missing = await store.recall({
+      runId: "bounded-run",
+      fromRound: 9,
+      toRound: 9,
+    });
+    assert.equal(missing.status, "unrecoverable");
+  });
+
   test(`${label}: recall 覆盖 foldedPayload（折叠原文同属档案）`, async () => {
     const store = await createStore();
     await store.appendRound("run-1", {

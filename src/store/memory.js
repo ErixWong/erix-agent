@@ -1,3 +1,5 @@
+import { boundedRecall } from "./bounded-recall.js";
+
 /**
  * @typedef {{
  *   round:number,
@@ -40,7 +42,7 @@ function blockText(block) {
  * @returns {{
  *   appendRound: (runId:string, record:RoundRecord) => Promise<void>,
  *   load: (runId:string) => Promise<RoundRecord[]>,
- *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string>,
+ *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string|object>,
  *   markRunState: (runId:string, state:string) => Promise<void>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
@@ -48,6 +50,7 @@ function blockText(block) {
  */
 export function createMemoryTranscriptStore() {
   const transcripts = new Map();
+  const revisions = new Map();
   const checkpoints = new Map();
   const runStates = new Map();
 
@@ -64,13 +67,32 @@ export function createMemoryTranscriptStore() {
       if (records.some((existing) => recordKey(runId, existing) === key)) return;
       records.push(copyRecord(record));
       transcripts.set(runId, records);
+      revisions.set(runId, (revisions.get(runId) ?? 0) + 1);
     },
 
     async load(runId) {
       return (transcripts.get(runId) ?? []).map(copyRecord);
     },
 
-    async recall(runId, fromRound, toRound, pattern) {
+    async recall(runIdOrOptions, fromRound, toRound, pattern) {
+      if (
+        runIdOrOptions
+        && typeof runIdOrOptions === "object"
+        && !Array.isArray(runIdOrOptions)
+      ) {
+        const options = runIdOrOptions;
+        const runId = options.runId;
+        return boundedRecall({
+          ...options,
+          runId,
+          sourceVersion: revisions.get(runId) ?? 0,
+          records: async function* records() {
+            for (const record of transcripts.get(runId) ?? []) yield record;
+          },
+        });
+      }
+
+      const runId = runIdOrOptions;
       const records = transcripts.get(runId) ?? [];
       const fragments = [];
 

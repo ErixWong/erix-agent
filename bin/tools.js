@@ -10,8 +10,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { autoCaptureKey, captureToolExecution } from "./auto-capture.js";
-import { note_read as notesRead } from "../skills/notes/skill.mjs";
+import { candidateLines, captureToolExecution } from "./auto-capture.js";
+import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
@@ -360,6 +360,18 @@ function summarizeToolResult(name, result) {
   return truncateDisplayText(text, limit);
 }
 
+function metadataWithPrivateOutput(metadata, fullOutput) {
+  const result = { ...metadata };
+  if (fullOutput !== undefined) {
+    Object.defineProperty(result, "fullOutput", {
+      value: fullOutput,
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  return result;
+}
+
 export function wrapExecuteTool(
   executeTool,
   {
@@ -418,7 +430,8 @@ export function wrapExecuteTool(
             ? {}
             : { replayableSource: metadata.replayableSource }),
           ...(metadata.artifact === undefined ? {} : { artifact: metadata.artifact }),
-          ...(metadata.intercepted === undefined ? {} : { intercepted: metadata.intercepted }),
+          ...(metadata.artifactStatus === undefined ? {} : { artifactStatus: metadata.artifactStatus }),
+          ...(metadata.rerunOf === undefined ? {} : { rerunOf: metadata.rerunOf }),
         };
       }
       return result;
@@ -504,9 +517,11 @@ export function archiveResult(
       archivePath,
       digest,
       locator: { lineStart: 1, lineEnd: lines },
+      round: context?.round ?? null,
       ...(replayable === undefined ? {} : { replayable }),
       ...(replayableSource === undefined ? {} : { replayableSource }),
       truncated,
+      status: truncated ? "truncated" : "ok",
       originalBytes: bytes.byteLength,
     };
     const metadata = {
@@ -517,10 +532,12 @@ export function archiveResult(
       command: command ?? null,
       ...(replayable === undefined ? {} : { replayable }),
       ...(replayableSource === undefined ? {} : { replayableSource }),
+      artifactId: artifact.artifactId,
       digest,
       archivePath,
       locator: artifact.locator,
       truncated,
+      status: artifact.status,
       originalBytes: bytes.byteLength,
     };
     writeFileSync(archivePath, archivedText, {
@@ -557,65 +574,44 @@ export function archiveResult(
   }
 }
 
-function duplicateCommandGuidance({ count, archivePath }) {
-  const recovery = archivePath
-    ? `原始输出在 ${archivePath}，请读取该文件取回原值，不要把本次输出当作原值。`
-    : "原始输出未归档，无法取回；请明确说明不可恢复，不要把本次输出当作原值。";
-  return `[注意：该命令本次运行已执行过第 ${count} 次；若其输出是随机值/时间戳/一次性内容，本次结果不是原始值。${recovery}]`;
+function artifactStatus(artifact) {
+  if (!artifact?.archivePath || typeof artifact.digest !== "string") return "unrecoverable";
+  try {
+    const contents = readFileSync(artifact.archivePath, "utf8");
+    const digest = createHash("sha256").update(contents, "utf8").digest("hex");
+    if (digest !== artifact.digest) return "stale";
+    return artifact.truncated === true ? "truncated" : "ok";
+  } catch (error) {
+    if (error?.code === "ENOENT") return "missing";
+    return "unrecoverable";
+  }
 }
 
-function rerunGuidance(firstCapture) {
-  const pointers = [];
-  if (firstCapture?.captureKey) pointers.push(`note_read key=${firstCapture.captureKey}`);
-  if (firstCapture?.archivePath) pointers.push(`归档 ${firstCapture.archivePath}`);
-  const pointer = pointers.length > 0
-    ? pointers.join(" / ")
-    : "首次值不可恢复，请明确说明不可恢复";
-  return `[⚠️ 重跑警示：这是重跑结果，不保证等于本 run 首次执行的值；首次值见 ${pointer}。]`;
+function rerunGuidance({ count, firstArtifact, firstValue, status }) {
+  const displayValue = typeof firstValue === "string" && firstValue.length > 0
+    ? firstValue
+    : status === "ok" || status === "truncated"
+      ? "见首次执行归档"
+      : "不可恢复";
+  const archivePath = firstArtifact?.archivePath ?? "无归档";
+  return `[⚠️ 这是第 ${count} 次执行，值与首次可能不同；首次执行记录：${displayValue}（${archivePath}）；工件状态：${status}]`;
 }
 
 function normalizeCommand(command) {
   return String(command).replaceAll(/\r\n?/gu, "\n").trim();
 }
 
-async function readCapturedValues(commandState, notesScope) {
-  if (
-    !notesScope
-    || typeof notesScope !== "object"
-    || !commandState.archivePath
-    || typeof commandState.artifactDigest !== "string"
-  ) {
-    return [];
+function firstSafeArtifactValue(artifact, status) {
+  if (!artifact?.archivePath || !["ok", "truncated"].includes(status)) return undefined;
+  try {
+    const output = readFileSync(artifact.archivePath, "utf8");
+    return candidateLines(output).find(({ label, value }) => (
+      !looksLikeCredential(label, value)
+    ))?.value;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    return undefined;
   }
-
-  if (!commandState.captureKey) return [];
-  const key = commandState.captureKey;
-  const result = JSON.parse(await notesRead({ key, __erix: notesScope }));
-  if (result.status !== "found" || result.current?.provenance?.source !== "auto") return [];
-  if (result.artifactRef?.digest !== commandState.artifactDigest) return [];
-  return [{
-    key,
-    ...(typeof result.value === "string" ? { value: result.value } : {}),
-  }];
-}
-
-function interceptedNonReplayableResult(commandState, values) {
-  const lines = [
-    "[已拦截重复执行：该命令非幂等、不可重放；重跑会得到不同值。]",
-  ];
-  for (const item of values) {
-    if (typeof item.value === "string") {
-      const firstLine = item.value.split(/\r\n|\r|\n/u)[0];
-      const assignment = /^\s*[^:=\s][^:=]*=\s*(.*?)\s*$/u.exec(firstLine);
-      const displayValue = assignment?.[1] || item.value;
-      lines.push(`首次执行捕获到的值（来自首次执行（已捕获））：${displayValue}`);
-    }
-    lines.push(`note_read key=${item.key}`);
-  }
-  if (commandState.archivePath) {
-    lines.push(`首次执行归档：${commandState.archivePath}`);
-  }
-  return lines.join("\n");
 }
 
 export function createCliTools({
@@ -644,7 +640,6 @@ export function createCliTools({
       .filter((schema) => typeof schema.replayable === "boolean")
       .map((schema) => [schema.name, schema.replayable]),
   );
-  let firstCapture;
   let captureCount = 0;
 
   async function readFile({ path: filePath, offset = 0, limit = 200 }) {
@@ -804,7 +799,6 @@ export function createCliTools({
     });
     const replayableValue = replayability.replayable;
     const replayableSource = replayability.replayableSource;
-    const hadCaptureBefore = captureCount > 0;
     lastToolMetadata = {
       name,
       replayable: replayableValue,
@@ -824,25 +818,10 @@ export function createCliTools({
       } else {
         commandState = {
           count: 1,
-          archivePath: undefined,
-          artifactDigest: undefined,
-          captureKey: undefined,
+          firstArtifact: undefined,
         };
         duplicateCommands.set(normalizedCommand, commandState);
         isFirstCommandExecution = true;
-      }
-    }
-
-    if (commandState?.count > 1 && replayableValue === false) {
-      const capturedValues = await readCapturedValues(commandState, notesScope);
-      if (capturedValues.length > 0) {
-        lastToolMetadata = {
-          name,
-          replayable: true,
-          replayableSource,
-          intercepted: true,
-        };
-        return interceptedNonReplayableResult(commandState, capturedValues);
       }
     }
 
@@ -850,18 +829,12 @@ export function createCliTools({
     let returnedResult = result;
     const shouldArchive = archiveRoot && (
       String(result ?? "").length > ARCHIVE_THRESHOLD
-      || (name === "exec" && (
-        replayableValue === false
-        || replayableSource === "unknown"
-      ))
+      || name === "exec"
     );
     if (shouldArchive) {
       archiveSequence += 1;
       const archived = archiveResult(archiveRoot, name, result, archiveSequence, {
-        force: name === "exec" && (
-          replayableValue === false
-          || replayableSource === "unknown"
-        ),
+        force: name === "exec",
         replayable: replayableValue,
         replayableSource,
         command,
@@ -869,40 +842,49 @@ export function createCliTools({
       });
       if (archived !== null) {
         returnedResult = archived.text;
-        if (isFirstCommandExecution) {
-          commandState.archivePath = archived.archivePath;
-          commandState.artifactDigest = archived.artifact?.digest;
-          commandState.captureKey = archived.artifact
-            ? autoCaptureKey(command, archived.artifact)
-            : undefined;
-        }
-        lastToolMetadata = {
+        lastToolMetadata = metadataWithPrivateOutput({
           name,
           replayable: replayableValue,
           replayableSource,
-          fullOutput: archived.archivedText ?? String(result ?? ""),
           artifact: archived.artifact,
-        };
+          artifactStatus: archived.artifact?.status ?? "unrecoverable",
+        }, archived.archivedText ?? String(result ?? ""));
+        if (isFirstCommandExecution) commandState.firstArtifact = archived.artifact;
         if (name === "exec" && replayableValue === false && archived.artifact) {
           captureCount += 1;
           runState.captureCount = captureCount;
-          if (firstCapture === undefined) {
-            firstCapture = {
-              archivePath: archived.archivePath,
-              captureKey: autoCaptureKey(command, archived.artifact),
-            };
-          }
         }
       }
     }
-    if (name === "exec" && replayableValue === false && hadCaptureBefore) {
+    if (commandState?.count > 1) {
+      const firstArtifact = commandState.firstArtifact;
+      const status = artifactStatus(firstArtifact);
+      const firstValue = firstSafeArtifactValue(firstArtifact, status)
+        ?.split(/\r\n|\r|\n/u)[0]
+        ?.replaceAll(/\s+/gu, " ")
+        ?.slice(0, 200);
+      const rerunOf = {
+        round: firstArtifact?.round ?? null,
+        artifactId: firstArtifact?.artifactId ?? null,
+        archivePath: firstArtifact?.archivePath ?? null,
+        digest: firstArtifact?.digest ?? null,
+        locator: firstArtifact?.locator ?? null,
+        status,
+      };
       runState.rerunDetected = true;
-      returnedResult = `${rerunGuidance(firstCapture)}\n${String(returnedResult ?? "")}`;
+      lastToolMetadata = metadataWithPrivateOutput({
+        ...lastToolMetadata,
+        rerunOf,
+        artifactStatus: lastToolMetadata?.artifactStatus ?? "unrecoverable",
+      }, lastToolMetadata?.fullOutput);
+      returnedResult = `${rerunGuidance({
+        count: commandState.count,
+        firstArtifact,
+        firstValue,
+        status,
+      })}\n${String(returnedResult ?? "")}`;
     }
     const finalResult = name === "exec" ? truncateResult(returnedResult) : returnedResult;
-    if (commandState?.count > 1) {
-      return `${String(finalResult ?? "")}\n${duplicateCommandGuidance(commandState)}`;
-    }
     return finalResult;
   }
 
