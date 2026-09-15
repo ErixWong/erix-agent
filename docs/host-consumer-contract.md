@@ -7,6 +7,42 @@ maintains auditable run facts; the host owns tool permissions, archive policy,
 retry/rerun policy, and the final consumption decision. See
 [ADR-012](decisions/012-engine-truth-model-efficiency-host-policy.md) and
 [ADR-013](decisions/013-guard-charter.md) for the responsibility boundary.
+The 0.6.0 migration steps are in
+[host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md).
+
+## `runToolLoop` options
+
+`runToolLoop` accepts only the following top-level option keys. An unknown key
+throws `TypeError` instead of being silently ignored. Host-private metadata
+must be placed in an explicit namespace such as `toolContext` or `context`.
+
+```text
+provider, system, wrapup, initialUserMessage, initialMessages, tools,
+writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
+temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
+completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
+maxTokenContinuations, context, todoStateProvider, semanticStateProvider,
+modelConfig, modelMetadata, model, expert, user, task, session, requestId,
+toolContext, store, persistence, runId, runState, resume, onRound, onJudge,
+onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
+```
+
+The `executeTool` boundary has one call shape and no arity negotiation:
+
+```js
+executeTool({ id, name, input, context, signal })
+```
+
+Canonical execution results have one of these three forms:
+
+- `string`
+- `{ content, metadata?, success? }`
+- `Error`
+
+The older `{ data, success, ... }` shape and other duck-typed shapes are
+normalized permissively for compatibility, but are deprecated and must not be
+depended on.
 
 ## Final-answer verification
 

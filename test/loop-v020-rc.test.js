@@ -60,7 +60,7 @@ test("structured executeTool receives context and returns tool metadata", async 
   assert.equal(typeof result.duration, "number");
 });
 
-test("positional executeTool remains supported", async () => {
+test("structured executeTool supports destructured tool fields", async () => {
   const provider = createFakeProvider([
     toolResponse("positional-1", "sum", { value: 3 }),
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
@@ -70,7 +70,7 @@ test("positional executeTool remains supported", async () => {
   await runToolLoop({
     provider,
     initialUserMessage: "sum",
-    executeTool: async (name, input) => {
+    executeTool: async ({ name, input }) => {
       calls.push([name, input]);
       return `${name}:${input.value}`;
     },

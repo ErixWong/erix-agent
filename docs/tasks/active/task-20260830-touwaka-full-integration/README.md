@@ -35,7 +35,7 @@
 | 3 | 流式 reasoning/tool-call/usage 事件 | `chatStream` 仅 onDelta；tool_calls 流结束才整体组装（openai.js:404-436）；Anthropic assembler 不处理 thinking_delta。touwaka 有四事件 onDelta/onReasoningDelta/onToolCall/onUsage（base-llm.js:527-560） |
 | 4 | 流式恢复重试 + round snapshot | retry 仅存 messages.length 截断回滚（src/loop.js:192-224），无法恢复 finalText/reasoning/usage/已发事件；touwaka 有完整 round snapshot + recovering/recovered 事件（agent-loop.js:186-297） |
 | 5 | 流式超时模型（首字/总时长/停滞） | 单一 timeoutMs 全程 race；touwaka 区分慢首字保护、首字节后 total、最后数据后 idle（base-llm.js:398-450） |
-| 6 | 结构化工具执行接口 | `executeTool(name, input) => string`；touwaka 需完整上下文（expert/user/task/session/request_id）+ 结果元数据（success/data/duration/toolMessageId/atomic_steps/图片） |
+| 6 | 结构化工具执行接口 | `executeTool({ id, name, input, context, signal }) => string`；touwaka 需完整上下文（expert/user/task/session/request_id）+ 结果元数据（content/metadata/success） |
 | 7 | completion/no-tool continuation 显式化 | completion 默认 false（关闭）；touwaka 依赖中文 COMPLETION_SIGNALS + 连续无工具轮，直接替换会致任务型专家提前收尾 |
 | 8 | 消息结构校验贯穿运行 | 仅 groupIntoRounds 校验 tool_use/tool_result 配对（且只在压缩时触发）；无压缩路径下可能把非法结构直接交给 provider |
 

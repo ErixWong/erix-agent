@@ -53,7 +53,7 @@
 
 | # | 需求 | 状态与实现 |
 |---|---|---|
-| FR-2.1 | 宿主注入带标准 JSON Schema 定义的 `tools`，以及 `executeTool(name, input)` 回调；库不拥有执行策略 | **已交付。** `runToolLoop` 将 schema 传给 provider，并接受位置参数回调或结构化的 `{ id, name, input, context, signal }` 形式。 |
+| FR-2.1 | 宿主注入带标准 JSON Schema 定义的 `tools`，以及结构化的 `executeTool({ id, name, input, context, signal })` 回调；库不拥有执行策略 | **已交付。** `runToolLoop` 将 schema 传给 provider，并严格以一个结构化对象调用回调。 |
 | FR-2.2 | 从轮内快照重试可重试的 provider 失败，默认重试两次，并以 1.5s 起步、上限 10s 的指数退避；重试耗尽后抛出 | **已交付，但为可选而非默认。** 使用 `retry: {}` 时，`runToolLoop` 默认重试两次、基础延迟为 1.5s、上限为 10s，恢复轮内快照，并仅重试标记为 `retryable` 的错误。默认值为 `retry: false`；工具执行本身不会自动重试。 |
 | FR-2.3 | 通过滑动窗口比较工具签名检测停滞，先 nudge，只有在重复超限后才以 `termination.reason="stall"` 正常停止 | **已交付。** `stallDetection` 默认为四签名窗口，支持 `appear` 和 `consecutive` 模式，早期命中时发送 nudge，并在停滞连续命中达到三次上限后停止。 |
 | FR-2.4 | 应用完成信号与无工具轮策略：有工具历史后，将没有完成信号的响应视为过渡文本并继续；默认连续三轮无工具后强制终止；合并相邻 assistant 消息以避免 400 | **已交付，并提供显式开关。** `completion` 默认为 `{ signals: [], maxNoToolRounds: 3 }`；收尾 JSON 协议支持 `done: false` 继续和 `done: true` 完成，`normalizeMessages` 会合并相邻 assistant 消息。`completion: false` 会为对话式宿主禁用无工具策略。 |

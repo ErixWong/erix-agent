@@ -293,7 +293,7 @@ test("streams tool-loop responses while executing tools normally", async () => {
   const result = await runToolLoop({
     provider,
     initialUserMessage: "find x",
-    executeTool: async (name, input) => {
+    executeTool: async ({ name, input }) => {
       executed.push({ name, input });
       return "found";
     },

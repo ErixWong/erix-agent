@@ -15,7 +15,9 @@
 
 - Specify `ToolSchema` (JSON Schema inputs); **protocol serialization is handled by the adapter**
   (OpenAI `tools[].function` ⇄ Anthropic `tools[].input_schema`; callers write it only once).
-- The `executeTool(name, input)` callback is the loop's only execution entry point; the implementation always belongs to the caller.
+- The `executeTool({ id, name, input, context, signal })` callback is the
+  loop's only execution entry point; the implementation always belongs to the
+  caller.
 - `onToolResult` hook: the post-processing point before results are fed back to the LLM (truncation/redaction/scanning);
   project policies (such as app_container's secret recheck) attach here; the library provides the mounting point, not the rules.
 

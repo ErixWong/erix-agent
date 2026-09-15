@@ -40,11 +40,12 @@ test("一次性值：终稿只能引用首次工具返回或明确声明不可�
       cwd: tempDir,
       archiveDir: join(tempDir, "outputs"),
     });
+    const invokeCliTool = cli.executeTool;
     const execTool = cli.tools.find((tool) => tool.name === "exec");
     const generatedValues = [];
     const toolOutputs = [];
-    const executeTool = async (name, input) => {
-      const output = await cli.executeTool(name, input);
+    const executeTool = async ({ name, input }) => {
+      const output = await invokeCliTool(name, input);
       toolOutputs.push(output);
       if (name === "exec" && String(input?.command ?? "").includes("/dev/urandom")) {
         const value = normalizeGeneratedValue(output);
