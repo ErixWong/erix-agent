@@ -70,18 +70,20 @@ export function executeToolContract(label, createExecutor) {
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].length, 1);
-    assert.deepEqual(Object.keys(calls[0][0]).sort(), [
+    const [execution] = calls[0];
+    assert.ok(execution && typeof execution === "object");
+    assert.deepEqual(Object.keys(execution).sort(), [
       "context",
       "id",
       "input",
       "name",
       "signal",
     ]);
-    assert.equal(calls[0][0].id, "contract-tool-1");
-    assert.equal(calls[0][0].name, "lookup");
-    assert.deepEqual(calls[0][0].input, { key: "value" });
-    assert.equal(typeof calls[0][0].context, "object");
-    assert.ok(calls[0][0].signal instanceof AbortSignal);
+    assert.equal(execution.id, "contract-tool-1");
+    assert.equal(execution.name, "lookup");
+    assert.deepEqual(execution.input, { key: "value" });
+    assert.equal(typeof execution.context, "object");
+    assert.ok(execution.signal instanceof AbortSignal);
     assert.equal(toolResultFrom(provider).type, "tool_result");
   });
 
@@ -106,6 +108,17 @@ export function executeToolContract(label, createExecutor) {
     assert.equal(toolResultFrom(provider).is_error, undefined);
   });
 
+  test(`${label}: legacy data result remains normalized`, async () => {
+    const { provider } = await runExecutor(async () => ({
+      data: "legacy result",
+      success: true,
+      toolMessageId: "legacy-message",
+    }));
+    assert.equal(toolResultFrom(provider).content, "legacy result");
+    assert.equal(toolResultFrom(provider).success, true);
+    assert.equal(toolResultFrom(provider).toolMessageId, "legacy-message");
+  });
+
   test(`${label}: returned Error becomes an error tool_result`, async () => {
     const { provider } = await runExecutor(async () => new Error("returned failure"));
     assert.equal(toolResultFrom(provider).content, "returned failure");
@@ -120,24 +133,23 @@ export function executeToolContract(label, createExecutor) {
     assert.equal(toolResultFrom(provider).is_error, true);
   });
 
-  test(`${label}: host wrappers and two-argument functions do not use positional dispatch`, async () => {
+  test(`${label}: a wrapper can migrate a positional implementation`, async () => {
     const positionalImplementation = async (name, input) => `${name}:${input.key}`;
     const touwakaStyleWrapper = async (execution) => (
       positionalImplementation(execution.name, execution.input)
     );
     const wrapped = await runExecutor(touwakaStyleWrapper);
     assert.equal(toolResultFrom(wrapped.provider).content, "lookup:value");
+  });
 
-    const calls = [];
-    const directTwoArgumentExecutor = async (name, input) => {
-      calls.push({ name, input });
-      return "direct result";
-    };
-    const direct = await runExecutor(directTwoArgumentExecutor);
-    assert.equal(toolResultFrom(direct.provider).content, "direct result");
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].input, undefined);
-    assert.equal(calls[0].name.name, "lookup");
-    assert.deepEqual(calls[0].name.input, { key: "value" });
+  test(`${label}: migration diagnostic exposes positional misuse`, async () => {
+    const legacyTwoArgumentExecutor = async (name, input) => (
+      `nameType=${typeof name}; nameIsObject=${name !== null && typeof name === "object"}; input=${String(input)}`
+    );
+    const { provider } = await runExecutor(legacyTwoArgumentExecutor);
+    assert.equal(
+      toolResultFrom(provider).content,
+      "nameType=object; nameIsObject=true; input=undefined",
+    );
   });
 }

@@ -319,10 +319,11 @@ decide whether to consume the result.
 
 ### Tools, context, stores, and compaction
 
-- `executeTool` supports positional `(name, input)` and structured
-  `({ id, name, input, context, signal })` forms. A structured executor can
-  return `{ success, data, duration, toolMessageId }`; the loop preserves
-  the returned metadata alongside the canonical `tool_result`.
+- `executeTool` receives one structured object
+  `({ id, name, input, context, signal })`. Canonical results are `string`,
+  `{ content, metadata?, success? }`, or `Error`. Legacy duck-typed results,
+  including `{ data, success, ... }`, are normalized for compatibility but
+  deprecated.
 - `context` is optional and defaults to `undefined`; when supplied, it
   accepts `strategy`, `budgetTokens`, `keepRounds`, `toolContext`, and
   `task`. When `budgetTokens` is absent, the loop derives it from

@@ -7,6 +7,8 @@ maintains auditable run facts; the host owns tool permissions, archive policy,
 retry/rerun policy, and the final consumption decision. See
 [ADR-012](decisions/012-engine-truth-model-efficiency-host-policy.md) and
 [ADR-013](decisions/013-guard-charter.md) for the responsibility boundary.
+The 0.6.0 migration steps are in
+[host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md).
 
 ## `runToolLoop` options
 
@@ -32,7 +34,15 @@ The `executeTool` boundary has one call shape and no arity negotiation:
 executeTool({ id, name, input, context, signal })
 ```
 
-It returns `string`, `{ content, metadata?, success? }`, or `Error`.
+Canonical execution results have one of these three forms:
+
+- `string`
+- `{ content, metadata?, success? }`
+- `Error`
+
+The older `{ data, success, ... }` shape and other duck-typed shapes are
+normalized permissively for compatibility, but are deprecated and must not be
+depended on.
 
 ## Final-answer verification
 

@@ -17,6 +17,7 @@
     "README_cn.md",
     "CHANGELOG.md",
     "docs/host-consumer-contract.md",
+    "docs/host-upgrade-guide-0.6.0.md",
     "test/contract",
     "LICENSE"
   ],

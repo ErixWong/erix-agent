@@ -7,6 +7,20 @@
 [ADR-012](decisions/012-engine-truth-model-efficiency-host-policy_cn.md) 和
 [ADR-013](decisions/013-guard-charter_cn.md)。
 
+## `runToolLoop` 选项与工具执行契约
+
+`runToolLoop` 只接受已登记的顶层选项；未知键会抛出 `TypeError`。宿主私有元数据应放在
+`toolContext`/`context` 中。`executeTool` 没有位置参数协商，循环始终以一个对象调用：
+
+```js
+executeTool({ id, name, input, context, signal })
+```
+
+三种规范返回形态是 `string`、`{ content, metadata?, success? }` 和 `Error`。旧的
+`{ data, success, ... }` 及其他 duck-typed 形状仍会为兼容性宽容归一化，但已弃用，不应依赖。
+0.6.0 的破坏性变更和迁移示例见
+[host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md)。
+
 ## 终答核验
 
 宿主消费 `runToolLoop` 结果前，必须检查 `verification.status`：

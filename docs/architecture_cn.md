@@ -233,7 +233,7 @@ runToolLoop({
 ```js
 (name, input) => Promise<string>
 ({ id, name, input, context, signal }) =>
-  Promise<string|{success?:boolean, data:any, duration?:number, toolMessageId?:string}>
+  Promise<string|{content:any, metadata?:object, success?:boolean}|Error>
 ```
 
 结构化形式会接收合并后的 `toolContext`，以及 `expert`、`user`、`task`、`session` 和 `requestId` 值。结构化结果使用 `data` 作为工具结果内容；循环会添加执行元数据，并将失败结果转换为带有 `is_error` 的规范 `tool_result` 块。

@@ -14,7 +14,7 @@
 
 - 规范 `ToolSchema`（JSON Schema 入参），**协议序列化由适配层负责**
   （OpenAI `tools[].function` ⇄ Anthropic `tools[].input_schema`，调用方只写一份）。
-- `executeTool(name, input)` 回调是循环的唯一执行入口，实现永远在调用方。
+- `executeTool({ id, name, input, context, signal })` 回调是循环的唯一执行入口，实现永远在调用方。
 - `onToolResult` 钩子：结果回喂 LLM 前的后处理点（截断/脱敏/扫描），
   项目政策（如 app_container 的 secret 复查）挂在这里，库提供挂载点不提供规则。
 

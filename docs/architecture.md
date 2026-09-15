@@ -261,18 +261,18 @@ runToolLoop({
 true`, the loop loads the transcript and checkpoint for `runId` and uses the
 persisted messages and round state instead of the initial messages.
 
-`executeTool` supports either of these forms:
+`executeTool` receives one structured execution object:
 
 ```js
-(name, input) => Promise<string>
 ({ id, name, input, context, signal }) =>
-  Promise<string|{success?:boolean, data:any, duration?:number, toolMessageId?:string}>
+  Promise<string|{content:any, metadata?:object, success?:boolean}|Error>
 ```
 
 The structured form receives the merged `toolContext` plus `expert`, `user`,
-`task`, `session`, and `requestId` values. A structured result uses `data` as
-the tool-result content; the loop adds execution metadata and converts failed
-results to canonical `tool_result` blocks with `is_error`.
+`task`, `session`, and `requestId` values. The loop adds execution metadata and
+converts failed results to canonical `tool_result` blocks with `is_error`.
+Legacy duck-typed results, including `{ data, success, ... }`, are normalized
+for compatibility but deprecated.
 
 `writeToolNames` is an explicit set used only for judge file-footprint
 reporting; it does not infer write tools. For each configured write tool,

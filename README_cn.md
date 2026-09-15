@@ -219,7 +219,7 @@ onReflection
 
 ### 工具、上下文、存储与压缩
 
-- `executeTool` 支持位置参数 `(name, input)` 和结构化 `({ id, name, input, context, signal })` 形式。结构化 executor 可以返回 `{ success, data, duration, toolMessageId }`；循环会将返回的 metadata 与规范的 `tool_result` 一起保留。
+- `executeTool` 只接收结构化对象 `({ id, name, input, context, signal })`。三种规范返回形态是 `string`、`{ content, metadata?, success? }` 和 `Error`；旧的 `{ data, success, ... }` 及其他 duck-typed 形状仍会宽容归一化，但已弃用，不应依赖。
 - `context` 可选，默认为 `undefined`；提供时接受 `strategy`、`budgetTokens`、`keepRounds`、`toolContext` 和 `task`。没有 `budgetTokens` 时，循环会从 `modelConfig`、`modelMetadata`、`model`、`provider` 或 `context` 中的 `contextWindowTokens` 和 `maxOutputTokens` 推导。策略启用时，压缩默认保留六轮。任务 brief 的优先级依次为：显式 `task`、`context.task`，然后是入口 transcript 中最后一条 user message。
 - 压缩支持 `summaryRole`、`recoveryHint`、`protectedMessage`、`stripHistoricalImages`、`onBeforeFold`、`onAfterFold` 和 `stubFor`。如果 protected set 本身无法放入预算，protected messages 可能降级；结果会记录 `compactionStats[].protectedDowngraded`。单个无法放入预算的 protected message 会产生 `invalid_budget`。
 - `stubFor(message)` hook 可以为折叠后的 `replayable: false` 工具结果保留有界、非秘密 stub。CLI 的 capture stub 限制为 200 个字符，最多包含三个安全的 `label=value` fact。折叠导航记录是形如 `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }` 的仅地址记录，最多 10 个 artifact、400 个字符。它们不是语义搜索，也不是 provenance 证明。
