@@ -18,6 +18,7 @@ import * as notes from "../skills/notes/skill.mjs";
 import { NOTE_VALUE_MAX_CHARS } from "../skills/notes/skill.mjs";
 import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { createFileResourceStore } from "../src/store/resource-file.js";
 
 async function withTempDirectory(callback) {
   const directory = await mkdtemp(path.join(tmpdir(), "erix-notes-autocapture-"));
@@ -126,6 +127,7 @@ test("short non-replayable output is archived with structured metadata", async (
       archiveDir,
       notesScope: { runId: "auto-run", notesDir: cwd },
     });
+
     const nonReplayable = await executeTool("exec", {
       command: "printf 'short=alpha\\n'; printf %s \"$RANDOM\" >/dev/null",
     });
@@ -147,6 +149,28 @@ test("short non-replayable output is archived with structured metadata", async (
     assert.equal(metadata.status, "ok");
     assert.equal(getLastToolMetadata().replayableSource, "unknown");
     assert.equal(metadata.command, "printf 'short=alpha\\n'; printf %s \"$RANDOM\" >/dev/null");
+  });
+});
+
+test("ResourceStore-backed CLI artifacts use opaque locators and remain guard-readable", async () => {
+  await withTempDirectory(async (cwd) => {
+    const archiveDir = path.join(cwd, "outputs");
+    const resourceStore = createFileResourceStore({ dir: archiveDir });
+    const archived = await archiveResult(archiveDir, "exec", "nonce=opaque-value\n", 1, {
+      force: true,
+      replayable: false,
+      command: "printf opaque",
+      resourceStore,
+    });
+
+    assert.equal(archived.archivePath, undefined);
+    assert.ok(archived.artifact.locator);
+    assert.match(archived.artifact.display, /resource-.*\.bin$/u);
+    const guard = createFinalGuard({ archiveDir, resourceStore });
+    assert.deepEqual(
+      await guard({ finalText: "nonce=opaque-value" }),
+      { action: "accept" },
+    );
   });
 });
 
@@ -405,7 +429,9 @@ test("runChat captures a non-replayable tool result before completing the run", 
     const record = await readOnlyRecord(directory, "integration-run");
     assert.equal(record.current.provenance.source, "auto");
     assert.equal(record.state, "done");
-    assert.ok(record.current.artifactRef.archivePath);
+    assert.equal(record.current.artifactRef.archivePath, undefined);
+    assert.ok(record.current.artifactRef.locator);
+    assert.match(record.current.artifactRef.display, /resource-.*\.bin$/u);
     assert.equal(record.current.content, "result=integration\n");
   });
 });

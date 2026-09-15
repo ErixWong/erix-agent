@@ -17,7 +17,7 @@ throws `TypeError` instead of being silently ignored. Host-private metadata
 must be placed in an explicit namespace such as `toolContext` or `context`.
 
 ```text
-provider, system, wrapup, initialUserMessage, initialMessages, tools,
+assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
 writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
@@ -43,6 +43,83 @@ Canonical execution results have one of these three forms:
 The older `{ data, success, ... }` shape and other duck-typed shapes are
 normalized permissively for compatibility, but are deprecated and must not be
 depended on.
+
+## AssemblyPort
+
+Hosts that assemble a complete run can provide one validated composition root
+instead of repeating the individual wiring:
+
+```js
+const assemblyPort = createAssemblyPort({
+  modelConfig, // ModelConfigProvider
+  provider,    // Provider
+  tools: { definitions, executeTool, getToolMetadata? },
+  store,       // complete TranscriptStore
+  session: { id, resume?, initialMessages? },
+  resourceStore?, // opaque archive adapter
+  policy?,     // explicit run options
+  emit?,       // (eventType, payload) => void
+});
+
+await runToolLoop({ assemblyPort });
+```
+
+`modelConfig`, `provider`, `tools`, `store`, `session`, `resourceStore`, and `policy` may also
+be synchronous zero-argument factories when passed to `createAssemblyPort`.
+The required methods are checked at assembly/startup: `modelConfig.resolve`,
+either `provider.chat` or `provider.chatStream`, `tools.definitions`,
+`tools.executeTool`, `session.id`, and
+all nine `TranscriptStore` methods. A missing method throws `TypeError`
+before the run starts. `policy` contains only named `runToolLoop` options;
+unknown policy keys are rejected.
+
+The existing fine-grained `runToolLoop` options remain supported. When both
+forms are present, the AssemblyPort is resolved first and explicitly supplied
+fine-grained options override the corresponding assembled values. This keeps
+the port at the composition boundary and does not wrap or change the loop
+injection contract. If `emit` is present, it is used as the default event
+sink; an explicit `onEvent` still wins. `assemblyPortContract` from
+`erix-agent/contract-tests` locks these startup and precedence rules.
+An assembly-shaped fine-grained entry performs the same provider, executor,
+model-config, session, and required-persistence fail-fast checks before the
+first provider call. `persistence: "none"` does not require a TranscriptStore.
+
+The library's `createAssemblyPort` is the reference assembly implementation;
+it performs no I/O. The CLI continues to use its existing file-backed
+provider, tool, and transcript adapters, so no host needs to adopt the port
+in one migration.
+
+## ResourceStore
+
+`ResourceStore` is the boundary for archived or otherwise external resources.
+Its locator is opaque to the library:
+
+```js
+resourceStore.put(bytesOrText)
+// -> Promise<{ locator, digest, display }>
+
+resourceStore.get(locator)
+// -> Promise<string|Uint8Array>
+```
+
+`put` must return the exact locator used by `get`, a stable digest of the
+stored bytes, and a non-empty host-facing `display` string. `get` returns the
+stored resource unchanged; an unknown locator must reject with an explicit
+not-found error, and adapter failures must propagate. The engine never parses
+locator fields or assumes paths, URI syntax, line numbers, or byte offsets.
+Fold navigation records carry the adapter's locator and display; display is
+the only string intended for a model-facing stub.
+
+`createFileResourceStore({ dir })` is the built-in filesystem adapter. Its
+locator is an opaque object and its display is the readable filesystem
+location; hosts may replace it with an object store, database, or service
+without changing folding or recall code. `resourceStoreContract` checks
+round-trip fidelity, stable/different digests, store isolation, unknown-locator
+behavior, return shapes, and failure propagation. CLI compression writes new
+capture artifacts through the run-local `createFileResourceStore`; manifests
+carry opaque locators and the final guard reads them through `store.get()`.
+Older manifests containing only `archivePath` and line locators remain readable
+through the legacy filesystem path and are marked legacy by the reader.
 
 ## Reusable normalization primitives
 
@@ -120,12 +197,14 @@ review.
 The CLI guard in `bin/final-guard.js` is a deterministic provenance checker,
 not a task-completion evaluator. It considers only capture manifests under
 `archiveDir` that can be verified as `kind: "erix.tool-capture"` with
-`schemaVersion: 1`, a matching archive path inside the run archive root, a
-regular non-symlink archive file, `replayable: false`, `truncated: false`, a
-64-character hexadecimal `digest`, a valid `locator`, and a digest matching
-the archive bytes. Replayable artifacts and artifacts with `unknown`
-replayability do not become trusted capture values. Missing, forged, escaped,
-truncated, or digest-mismatched captures cannot establish verification.
+`schemaVersion: 1`, `replayable: false`, `truncated: false`, a 64-character
+hexadecimal `digest`, and a valid `locator`. Legacy manifests with
+`archivePath` must also resolve to a matching regular non-symlink file inside
+the run archive root; new manifests without `archivePath` are read through the
+injected ResourceStore. In both cases the digest must match the recovered
+bytes. Replayable artifacts and artifacts with `unknown` replayability do not
+become trusted capture values. Missing, forged, escaped, truncated, or
+digest-mismatched captures cannot establish verification.
 
 No capture manifest returns `action: "skip"` with
 `reason: "no_capture_manifest"`. A readable artifact with no extractable

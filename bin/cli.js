@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import {
   createOpenAIProvider,
   createFileTranscriptStore,
+  createFileResourceStore,
   runToolLoop,
 } from "../src/index.js";
 import { safeRunId } from "../src/store/file.js";
@@ -152,13 +153,13 @@ function resolveReflection(reflection, maxRounds) {
   return maxRounds >= 32 ? { enabled: true } : false;
 }
 
-function resolveFinalGuard(finalGuard, runId, archiveDir, notesDir, runState) {
+function resolveFinalGuard(finalGuard, runId, archiveDir, notesDir, runState, resourceStore) {
   if (typeof finalGuard === "function") return finalGuard;
   if (
     finalGuard !== true
     && process.env.ERIX_FINAL_GUARD?.trim() !== "1"
   ) return undefined;
-  return createFinalGuard({ runId, archiveDir, notesDir, runState });
+  return createFinalGuard({ runId, archiveDir, notesDir, runState, resourceStore });
 }
 
 function createIdleTimeout(seconds) {
@@ -545,10 +546,12 @@ async function runChatWithNotes({
     safeRunId(runId),
   );
   mkdirSync(archiveDir, { recursive: true });
+  const resourceStore = createFileResourceStore({ dir: archiveDir });
   const runState = { rerunDetected: false, captureCount: 0 };
   const cliTools = createCliTools({
     cwd,
     archiveDir,
+    resourceStore,
     notesScope: { runId, notesDir: _notesDir },
     runState,
   });
@@ -564,14 +567,17 @@ async function runChatWithNotes({
   await skillTools.notesJanitor?.({ __erix: { runId, notesDir: _notesDir } });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
   const tools = combineTools(cliTools, skillTools, mcpProxy);
-  const context = buildCompactionContext(
+  const baseContext = buildCompactionContext(
     config,
     compactBudget,
     compactBudget !== undefined || config.contextWindowTokens
       ? ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload })
       : undefined,
-    ({ content }) => buildCaptureStub({ content }),
+    ({ content }) => buildCaptureStub({ content }, resourceStore),
   );
+  const context = baseContext === undefined
+    ? undefined
+    : { ...baseContext, resourceStore };
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, {
     output: toolOutput,
@@ -586,6 +592,7 @@ async function runChatWithNotes({
     archiveDir,
     _notesDir,
     runState,
+    resourceStore,
   );
   // judge 决策日志默认跟随 run 归档（与工具捕获同目录）；--judge-log / ERIX_JUDGE_LOG 可覆盖
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG ?? path.join(archiveDir, "judge.log");

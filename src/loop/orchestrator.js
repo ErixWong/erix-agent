@@ -63,6 +63,7 @@ import { abortError, defaultSleep, throwIfAborted } from "./abort.js";
 import { callProvider as runProvider } from "./provider-runner.js";
 import { createCheckpointExecutor } from "./checkpoint-executor.js";
 import { restoreResume } from "./resume-manager.js";
+import { assemblyPortOptions } from "../assembly.js";
 
 export { parseReflectionDecision };
 
@@ -79,6 +80,7 @@ const TRANSCRIPT_STORE_METHODS = [
 ];
 
 const RUN_TOOL_LOOP_OPTION_NAMES = [
+  "assemblyPort",
   "provider",
   "system",
   "wrapup",
@@ -253,7 +255,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * the window; `consecutive` requires the entire window to match.
  *
  * @param {{
- *   provider: {chat: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
+ *   assemblyPort?: import("../assembly.js").AssemblyPort,
+ *   provider: {chat?: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
  *   system?: string,
  *   wrapup?: boolean, // Controls instruction injection, JSON parsing, finalText replacement, and LLM normalization.
  *                   // Defaults to true (omit = enabled). ERIX_NO_WRAPUP_INSTRUCTION=1 env overrides even an
@@ -341,6 +344,20 @@ export async function runToolLoop(options) {
     }
   }
 
+  const { assemblyPort, ...explicitOptions } = options;
+  const assembledOptions = assemblyPort === undefined
+    ? {}
+    : await assemblyPortOptions(
+      assemblyPort,
+      explicitOptions.modelConfig === undefined
+        ? {}
+        : { modelConfig: explicitOptions.modelConfig },
+    );
+  const effectiveOptions = { ...assembledOptions };
+  for (const [key, value] of Object.entries(explicitOptions)) {
+    if (value !== undefined) effectiveOptions[key] = value;
+  }
+
   const {
     provider,
     system,
@@ -395,7 +412,39 @@ export async function runToolLoop(options) {
     onToolCall,
     onUsage,
     onEvent,
-  } = options;
+  } = effectiveOptions;
+  const fineGrainedPortShape = (
+    (assemblyPort === undefined
+      && session !== undefined && session !== null && typeof session === "object")
+    || typeof modelConfig?.resolve === "function"
+  );
+  const startupMissing = [];
+  if (!provider
+    || (typeof provider.chat !== "function"
+      && typeof provider.chatStream !== "function")) {
+    startupMissing.push("provider.chat or provider.chatStream");
+  }
+  if (typeof executeTool !== "function") startupMissing.push("executeTool");
+  if (fineGrainedPortShape) {
+    if (!modelConfig || typeof modelConfig.resolve !== "function") {
+      startupMissing.push("modelConfig.resolve");
+    }
+    if (!session || typeof session !== "object" || Array.isArray(session)
+      || typeof session.id !== "string" || session.id.length === 0) {
+      startupMissing.push("session.id");
+    }
+  } else if (assemblyPort !== undefined
+    && explicitOptions.modelConfig !== undefined
+    && (!modelConfig || typeof modelConfig.resolve !== "function")) {
+    startupMissing.push("modelConfig.resolve");
+  }
+  if (startupMissing.length > 0) {
+    throw new TypeError(`assembly port is missing methods: ${startupMissing.join(", ")}`);
+  }
+  let resolvedModelConfig = modelConfig;
+  if (typeof modelConfig?.resolve === "function") {
+    resolvedModelConfig = await modelConfig.resolve(session?.modelSlot);
+  }
   if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) {
     throw new TypeError("maxRounds must be a finite positive integer");
   }
@@ -549,7 +598,13 @@ export async function runToolLoop(options) {
     const annotated = annotateTermination(finalError, termination);
     throw annotated;
   };
-  const metadata = modelMetadataFor({ modelConfig, modelMetadata, model, provider, context });
+  const metadata = modelMetadataFor({
+    modelConfig: resolvedModelConfig,
+    modelMetadata,
+    model,
+    provider,
+    context,
+  });
   const resolvedWriteToolNames = normalizeToolNameSet(writeToolNames, ["writeFile"]);
   const resolvedWriteToolPathKeys = Array.isArray(writeToolPathKeys)
     ? writeToolPathKeys.filter((key) => typeof key === "string" && key.trim() !== "")
@@ -1546,6 +1601,7 @@ export async function runToolLoop(options) {
         "onBeforeFold",
         "onAfterFold",
         "stubFor",
+        "resourceStore",
       ]) {
         if (compactionContext[key] !== undefined) compactOptions[key] = compactionContext[key];
       }
@@ -1581,6 +1637,7 @@ export async function runToolLoop(options) {
           protectedMessage: compactionContext.protectedMessage,
           stripHistoricalImages: compactionContext.stripHistoricalImages,
           stubFor: compactionContext.stubFor,
+          resourceStore: compactionContext.resourceStore,
           roundOffset: foldedThrough,
           roundNumbers: roundNumbersForMessages(compactedMessages),
         });

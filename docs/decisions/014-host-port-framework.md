@@ -90,8 +90,8 @@ ADR-001/002 已建立端口范式并落地部分：
 | `Provider`（chat/chatStream/流式回调/abort） | 有实现、无声明 | ❌ 新增 `providerContract` | `openai` / `anthropic` |
 | `ToolExecutor`（executeTool） | 事实上存在、从未声明 | ❌ 新增 `executeToolContract` | `bin/tools.js`（CLI 工具集） |
 | `diagnostics.error`（#98） | ❌ 新增——headless 最低错误出口 | 随 #98 | CLI：stderr + error.log |
-| `AssemblyPort`（组合根） | ❌ 新增——createSession 收齐下列端口 | ❌ 新增 `assemblyPortContract` | CLI 文件型适配器 |
-| `ResourceStore`（归档产出物） | ❌ 新增 | ❌ | CLI：文件系统 |
+| `AssemblyPort`（组合根） | ✅ P2 已落地——`createAssemblyPort` 收齐下列端口 | ✅ `assemblyPortContract` | `createAssemblyPort`；CLI 适配器可渐进迁移 |
+| `ResourceStore`（归档产出物） | ✅ P2 已落地 | ✅ `resourceStoreContract` | `createFileResourceStore`（文件系统） |
 | `NotesStore` | ❌ 新增（P3）——**引擎核心技能**（跨 run 记忆，ADR-007 落地件；用户裁定 2026-09-15 晚） | ❌ | CLI：文件系统 |
 | ~~LogPort / MessagePort / MetricsPort~~ | **明确不做**：只写不读走 `emit(event)`；messages 就是 store 的数据 | — | — |
 
@@ -158,7 +158,7 @@ resourceStore.get(locator)     → bytesOrText
 **AssemblyPort**（组合根）：
 
 ```js
-createSession({
+createAssemblyPort({
   modelConfig, // () => ModelConfigProvider（ADR-001，已有）
   provider,    // () => Provider（宿主构造，库永远不见 apiKey）
   tools,       // () => { definitions, executeTool, getToolMetadata? }
@@ -199,8 +199,8 @@ createSession({
 | **P0** | #98：diagnostics + persistence 模式 + 启动校验 + 删静默跳过 | ② | #98 |
 | **P0** | ToolExecutor 唯一形态（两侧删 `.length` 猜测）+ run options 拒绝陌生键 | ② | #49 |
 | **P1** | 素材归库：导出归一化原语 + 库内改用 + 删宿主 ~200 行 | ① | #49 |
-| **P2** | 契约补齐（provider / store 9 方法 / round record / executeToolContract）+ AssemblyPort + `assemblyPortContract` | ② | #49 |
-| **P3** | ResourceStore + NotesStore 端口化（notes 形状从现有实现提取，见 2.7） | ② | #49 |
+| **P2** | 契约补齐（provider / store 9 方法 / round record / executeToolContract）+ AssemblyPort + ResourceStore + 对应契约 | ② | #49 |
+| **P3** | NotesStore 端口化（notes 形状从现有实现提取，见 2.7） | ② | #49 |
 
 ## 四、明确不做
 

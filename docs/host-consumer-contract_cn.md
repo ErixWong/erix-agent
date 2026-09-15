@@ -21,6 +21,54 @@ executeTool({ id, name, input, context, signal })
 0.6.0 的破坏性变更和迁移示例见
 [host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md)。
 
+## AssemblyPort
+
+宿主可以用一个已校验的组合根交出完整运行：
+
+```js
+const assemblyPort = createAssemblyPort({
+  modelConfig, // ModelConfigProvider
+  provider,    // Provider
+  tools: { definitions, executeTool, getToolMetadata? },
+  store,       // 完整 TranscriptStore
+  session: { id, resume?, initialMessages? },
+  resourceStore?, // 不透明归档适配器
+  policy?,     // 显式 runToolLoop 选项
+  emit?,       // (eventType, payload) => void
+});
+
+await runToolLoop({ assemblyPort });
+```
+
+`modelConfig`、`provider`、`tools`、`store`、`session`、`resourceStore` 和
+`policy` 也可以是同步工厂。启动时必须具备 `modelConfig.resolve`、`provider.chat`
+或 `provider.chatStream`、`tools.definitions`、`tools.executeTool`、`session.id`
+以及完整九方法 `TranscriptStore`；`persistence: "none"` 时 store 可省略。细粒度
+入口在第一次 provider 调用前执行同等 fail-fast 校验。两种形式同时存在时，显式
+细粒度选项覆盖 AssemblyPort；显式 `modelConfig` 会跳过端口 resolver。
+
+## ResourceStore
+
+ResourceStore 是归档资源边界，locator 对引擎不透明：
+
+```js
+resourceStore.put(bytesOrText)
+// -> Promise<{ locator, digest, display }>
+
+resourceStore.get(locator)
+// -> Promise<string|Uint8Array>
+```
+
+`put` 必须返回可供 `get` 使用的 locator、存储字节的稳定 SHA-256 digest 和非空
+`display`；未知 locator 必须以稳定的 not-found 错误失败，适配器错误必须上抛。
+引擎不解析路径、URI、行号或字节偏移。折叠导航记录保留 locator/display，面向模型
+的 stub 只使用 display。
+
+CLI 的新压缩归档通过 run-local `createFileResourceStore` 写入，manifest 保存 opaque
+locator，final guard 通过 `store.get()` 读取。旧 transcript 若只有 `archivePath` 和行
+locator，仍走 legacy 文件读取路径并标记 legacy；因此旧 artifact 可读，新 artifact 不
+再依赖路径解析。
+
 ## 终答核验
 
 宿主消费 `runToolLoop` 结果前，必须检查 `verification.status`：
@@ -65,10 +113,11 @@ guard 会收到 `finalText`、`messages`、`round`、`rounds`、`signal` 和 `te
 ### CLI 侧来源 guard
 
 `bin/final-guard.js` 中的 CLI guard 是确定性的来源检查器，而不是任务完成度评估器。
-它只考虑 `archiveDir` 下能够核验为 `kind: "erix.tool-capture"` 且具有
-`schemaVersion: 1`、位于运行归档根目录内的匹配归档路径、普通的非符号链接归档文件、
-`replayable: false`、`truncated: false`、64 字符十六进制 `digest`、有效 `locator`
-以及与归档字节匹配的 digest 的 capture manifest。可重放 artifact 以及可重放性未知的
+它只考虑 `archiveDir` 下能够核验为 `kind: "erix.tool-capture"`、`schemaVersion: 1`、
+`replayable: false`、`truncated: false`、64 字符十六进制 `digest` 和有效 `locator`
+的 capture manifest。旧 manifest 若含 `archivePath`，还必须解析到运行归档根目录内匹配
+的普通非符号链接文件；新 manifest 若没有 `archivePath`，则通过注入的 ResourceStore
+读取。两种路径都必须与恢复字节的 digest 匹配。可重放 artifact 以及可重放性未知的
 artifact 不会成为可信 capture 值。缺失、伪造、越界、截断或 digest 不匹配的 capture
 无法建立核验。
 
