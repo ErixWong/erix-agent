@@ -1,0 +1,1999 @@
+import { KitError } from "../providers/errors.js";
+import { computeBudget } from "../compact/budget.js";
+import { createSlidingWindowStrategy } from "../compact/sliding-window.js";
+import { mergeFoldNavigationRecords } from "../compact/fold-statistical.js";
+import { estimateMessageTokens, estimateTokens } from "../tokens.js";
+import { groupIntoRounds } from "../messages/rounds.js";
+import { decideRoundAction, decideWithEvaluation } from "../reflection/governor.js";
+import { extractL0Facts, parseL1Summary } from "../reflection/l0.js";
+import { tryParseWrapupJson, normalizeWrapupWithLlm } from "../reflection/wrapup.js";
+import {
+  buildJudgePrompt,
+  buildTimeline,
+  parseJudgeDecision,
+} from "../reflection/judge.js";
+import {
+  createDeterministicRunState,
+  renderRunState,
+  upsertRunStateInMessages,
+  withSemanticRunState,
+} from "../run-state.js";
+import {
+  appendAssistantContent,
+  blocksFor,
+  hasSuccessfulToolResult,
+  hasToolUse,
+  hasToolUseInMessages,
+  mergeToolResultsIntoMessages,
+  normalizeMessages,
+  textFromBlocks,
+} from "./messages.js";
+import {
+  DEFAULT_REFLECTION_MIN_ROUNDS,
+  WRAPUP_INSTRUCTION,
+  isLikelyWelcomeResponse,
+  parseReflectionDecision,
+  reflectionPrompt,
+} from "./reflection.js";
+import {
+  resolveTaskBrief,
+} from "./task-brief.js";
+import {
+  FINAL_GUARD_NON_CONTINUABLE_REASONS,
+  FINAL_GUARD_TERMINATION_REASONS,
+  annotateTermination,
+  createTerminationManager,
+  makeTermination,
+  terminationDetailForError,
+  terminationReasonForAction,
+} from "./termination.js";
+import {
+  cloneState,
+  isApiInputOverBudget,
+  modelMetadataFor,
+  normalizeToolNameSet,
+  projectedApiInputTokens,
+  safeTruncateMessages,
+  toolContextFor,
+  validateBudget,
+} from "./budget.js";
+import { abortError, defaultSleep, throwIfAborted } from "./abort.js";
+import { callProvider as runProvider } from "./provider-runner.js";
+import { createCheckpointExecutor } from "./checkpoint-executor.js";
+import { restoreResume } from "./resume-manager.js";
+
+export { parseReflectionDecision };
+
+/**
+ * @typedef {object} LoopEvent
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"round_end"|"final_guard"} type
+ * @property {number} [round]
+ * @property {number} [attempt] 1-based provider attempt within the round.
+ * @property {number} [maxAttempts] Retry count plus the initial attempt.
+ * @property {object} [usage] Provider usage reported after a successful call.
+ * @property {object} [toolUse] Completed canonical tool_use block.
+ * @property {object} [toolResult] Canonical tool_result block.
+ * @property {string} [finalText] Text accumulated at round end.
+ * @property {string} [stopReason] Canonical provider stop reason.
+ * @property {"accept"|"skip"|"revise"|"degraded"|"error"} [action]
+ * @property {string} [reason]
+ */
+
+/**
+ * @typedef {object} JudgeEvent
+ * @property {number} [round]
+ * @property {"round"|"intercept"} kind
+ * @property {{id?:string, name?:string, input?:object}} [tool]
+ * @property {{done:boolean, confidence:number, reason:string, evidence:string}|null} [decision]
+ * @property {"judge_done"|"nudge"|"continue"|"executed"|"blocked"|"degraded"} action
+ * @property {"timeout"|"error"|"parse"} [error]
+ */
+
+/**
+ * Run the minimum tool-calling loop against an injected provider.
+ *
+ * When `reflection` is omitted, the basic judge is enabled automatically for
+ * runs with `maxRounds >= 16`; pass `reflection: false` to disable it.
+ *
+ * Stall detection defaults to `appear`, which detects a signature anywhere in
+ * the window; `consecutive` requires the entire window to match.
+ *
+ * @param {{
+ *   provider: {chat: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
+ *   system?: string,
+ *   wrapup?: boolean, // Controls instruction injection, JSON parsing, finalText replacement, and LLM normalization.
+ *                   // Defaults to true (omit = enabled). ERIX_NO_WRAPUP_INSTRUCTION=1 env overrides even an
+ *                   // explicit wrapup:true — either off disables the whole protocol.
+ *   initialUserMessage?: string,
+ *   initialMessages?: object[],
+ *   tools?: object[],
+ *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to ["writeFile"].
+ *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
+ *   executeTool: ((name:string, input:object) => Promise<string>)
+ *     | ((options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
+ *       => Promise<string|{success?:boolean, data:any, duration?:number, toolMessageId?:string}>),
+ *   maxRounds?: number,
+ *   maxTokens?: number,
+ *   temperature?: number,
+ *   topP?: number,
+ *   timeoutMs?: number,
+ *   deadlineMs?: number,
+ *   reflection?: {enabled?:boolean, roundJudge?:boolean, judgeIntercept?:boolean,
+ *     judgeIntervalRound?:number, judgeInterceptTimeoutMs?:number, triggerRound?:number,
+ *     extensionStep?:number,
+ *     maxExtensions?:number, maxRoundsCap?:number, format?:"json"|"text",
+ *     judge?:{provider?:object,evaluator?:object},
+ *     onReflection?:(info:{round:number, decision:object, extendedTo:number}) => void}|false,
+ *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false,
+ *   retry?: {attempts?:number, backoffBaseMs?:number, backoffMaxMs?:number,
+ *     sleepImpl?:(ms:number)=>Promise<void>}|false,
+ *   completion?: {signals?:string[], maxNoToolRounds?:number}|false,
+ *   finalGuard?:(payload:{finalText:string,messages:object[],round:number,rounds:number,signal:AbortSignal,termination:object}) => Promise<{action:"accept"}|{action:"skip",reason:string}|{action:"revise",message:string}>,
+ *   finalGuardMaxRetries?: number,
+ *   finalGuardTimeoutMs?: number, // Defaults to 30000; non-positive values use the default.
+ *   maxTokenContinuations?: number,
+ *   context?: {strategy?: object, budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
+ *   todoStateProvider?:(payload:{runId?:string,rounds:number})=>object|Promise<object>,
+ *   semanticStateProvider?:(payload:{runId?:string,state:object,previous?:object})=>{text:string,version:number}|Promise<{text:string,version:number}>,
+ *   modelConfig?: {contextWindowTokens?:number, maxOutputTokens?:number},
+ *   modelMetadata?: {contextWindowTokens?:number, maxOutputTokens?:number},
+ *   model?: {contextWindowTokens?:number, maxOutputTokens?:number},
+ *   expert?:any, user?:any,
+ *   task?:any, // Explicit judge/reflection/wrapup brief; non-empty values take precedence as task > context.task > entry transcript's last user text. Explicit values use a 1500-code-point budget; message fallback uses 500. Multi-turn hosts should pass the current/latest instruction as a string.
+ *   session?:any, requestId?:string, toolContext?:object,
+ *   store?: {appendRound?: Function, saveCheckpoint?:Function, appendCheckpoint?:Function,
+ *     markRunState?:Function, saveRunState?:Function, loadRunState?:Function, loadLatestCheckpoint?:Function},
+ *   runId?: string,
+ *   runState?:{rerunDetected?:boolean},
+ *   resume?: boolean,
+ *   onRound?: Function,
+ *   onJudge?:(info:JudgeEvent) => void,
+ *   onToolResult?: Function,
+ *   onPersistenceError?: (error:Error) => void,
+ *   onObserverError?: (error:Error) => void,
+ *   signal?: AbortSignal,
+ *   stream?: boolean,
+ *   onDelta?: (chunk:string) => void,
+ *   onReasoningDelta?: (chunk:string) => void,
+ *   onToolCall?: (fragment:object) => void,
+ *   onUsage?: (usage:object) => void,
+ *   onEvent?: (event:LoopEvent) => void,
+ * }} options
+ * @returns {Promise<{
+ *   finalText:string,
+ *   messages:object[],
+ *   transcript:object[],
+ *   rounds:number,
+ *   truncated:boolean,
+ *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"judge_done"|"continuation_exhausted"|"final_guard_unverified"|"aborted"|"failed", detail?:string},
+ *   verification:{status:"verified"|"unverified"|"skipped"|"error", reason?:string, detail?:string},
+ *   runState?:object,
+ *   usage:{input_tokens:number, output_tokens:number},
+ *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number}[]
+ * }>}
+ */
+export async function runToolLoop({
+  provider,
+  system,
+  wrapup = true,
+  initialUserMessage,
+  initialMessages,
+  tools = [],
+  writeToolNames = ["writeFile"],
+  writeToolPathKeys = ["path", "file_path"],
+  executeTool,
+  maxRounds = 8,
+  maxTokens,
+  temperature,
+  topP,
+  timeoutMs,
+  deadlineMs,
+  reflection,
+  stallDetection = { window: 4 },
+  retry = false,
+  completion = { signals: [], maxNoToolRounds: 3 },
+  finalGuard,
+  finalGuardMaxRetries = 2,
+  finalGuardTimeoutMs = 30_000,
+  maxTokenContinuations = 3,
+  context,
+  todoStateProvider,
+  semanticStateProvider,
+  modelConfig,
+  modelMetadata,
+  model,
+  expert,
+  user,
+  task,
+  session,
+  requestId,
+  toolContext,
+  store,
+  runId,
+  runState,
+  resume = false,
+  onRound,
+  onJudge,
+  onToolResult,
+  onPersistenceError,
+  onObserverError,
+  signal,
+  stream = false,
+  onDelta,
+  onReasoningDelta,
+  onToolCall,
+  onUsage,
+  onEvent,
+}) {
+  if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) {
+    throw new TypeError("maxRounds must be a finite positive integer");
+  }
+
+  const reportPersistenceError = (error) => {
+    if (typeof onPersistenceError === "function") {
+      try {
+        onPersistenceError(error);
+        return;
+      } catch (reportError) {
+        console.error("Persistence error reporter failed:", reportError);
+      }
+    }
+    console.error("Transcript persistence error:", error);
+  };
+  const reportObserverError = (error) => {
+    if (typeof onObserverError === "function") {
+      try {
+        onObserverError(error);
+        return;
+      } catch (reportError) {
+        console.error("Observer error reporter failed:", reportError);
+      }
+    }
+    console.error("Observer callback error:", error);
+  };
+  const persist = async (method, ...args) => {
+    if (typeof store?.[method] !== "function") return false;
+    try {
+      await store[method](...args);
+      return true;
+    } catch (error) {
+      reportPersistenceError(error);
+      return false;
+    }
+  };
+  const markRunState = async (state) => {
+    await persist("markRunState", runId, state);
+  };
+  const fail = async (error) => {
+    const reason = signal?.aborted ? "aborted" : "failed";
+    const termination = makeTermination(reason, terminationDetailForError(error));
+    const annotated = annotateTermination(error, termination);
+    currentTerminationReason = reason;
+    if (currentRunState?.deterministic) {
+      currentRunState.deterministic.termination = { reason };
+      currentRunState.rendered = renderRunState(currentRunState);
+      await persist("saveRunState", runId, currentRunState);
+    }
+    await markRunState(reason);
+    throw annotated;
+  };
+  const metadata = modelMetadataFor({ modelConfig, modelMetadata, model, provider, context });
+  const resolvedWriteToolNames = normalizeToolNameSet(writeToolNames, ["writeFile"]);
+  const resolvedWriteToolPathKeys = Array.isArray(writeToolPathKeys)
+    ? writeToolPathKeys.filter((key) => typeof key === "string" && key.trim() !== "")
+    : ["path", "file_path"];
+  let budgetTokens = context?.budgetTokens;
+  if (budgetTokens === undefined
+    && metadata?.contextWindowTokens !== undefined
+    && metadata?.maxOutputTokens !== undefined) {
+    budgetTokens = computeBudget({
+      contextWindowTokens: metadata.contextWindowTokens,
+      maxOutputTokens: metadata.maxOutputTokens,
+    });
+  }
+  if (budgetTokens !== undefined) validateBudget(budgetTokens);
+  const compactionContext = context === undefined && budgetTokens === undefined
+    ? undefined
+    : {
+        ...(context ?? {}),
+        ...(budgetTokens === undefined ? {} : { budgetTokens }),
+      };
+  const baseToolContext = toolContextFor({
+    toolContext,
+    context,
+    expert,
+    user,
+    task,
+    session,
+    requestId,
+  });
+  const toolSignal = signal ?? new AbortController().signal;
+  // reflection 未显式配置时，长任务（>=16 轮）默认开启基础 judge——无头宿主零配置获得保护
+  const resolvedReflectionOption = reflection === undefined
+    && maxRounds >= DEFAULT_REFLECTION_MIN_ROUNDS
+    && process.env.ERIX_NO_REFLECTION?.trim() !== "1"
+    ? { enabled: true }
+    : reflection;
+  const effectiveReflection = resolvedReflectionOption === true
+    ? {}
+    : resolvedReflectionOption && typeof resolvedReflectionOption === "object"
+      ? resolvedReflectionOption
+      : undefined;
+  const reflectionEnabled = resolvedReflectionOption === true
+    || (effectiveReflection !== undefined && effectiveReflection.enabled !== false);
+  let roundJudgeEnabled = reflectionEnabled
+    && effectiveReflection?.roundJudge !== false
+    && process.env.ERIX_NO_ROUND_JUDGE?.trim() !== "1";
+  const roundJudgeFailureLimit = Number.isSafeInteger(effectiveReflection?.judgeFailureLimit)
+    && effectiveReflection.judgeFailureLimit > 0
+    ? effectiveReflection.judgeFailureLimit
+    : 3;
+  let roundJudgeFailures = 0;
+  // 透明拦截审计开关：与 roundJudge 正交（roundJudge:false 只关 end_turn 评估，审计可独立关）
+  const judgeInterceptEnabled = reflectionEnabled
+    && effectiveReflection?.judgeIntercept !== false;
+  // 工具透明审计频率：每 judgeIntervalRound 次真实工具执行后，审计下一次调用。
+  const judgeIntervalRound = Number.isSafeInteger(effectiveReflection?.judgeIntervalRound)
+    && effectiveReflection.judgeIntervalRound > 0
+    ? effectiveReflection.judgeIntervalRound
+    : 5;
+  const judgeInterceptTimeoutMs = Number.isFinite(effectiveReflection?.judgeInterceptTimeoutMs)
+    && effectiveReflection.judgeInterceptTimeoutMs > 0
+    ? effectiveReflection.judgeInterceptTimeoutMs
+    : 30_000;
+  let judgeInterceptCount = 0;
+  const wrapupEnabled = wrapup !== false
+    && process.env.ERIX_NO_WRAPUP_INSTRUCTION?.trim() !== "1";
+  const mainSystem = wrapupEnabled
+    ? `${system ?? ""}${system ? "\n\n" : ""}${WRAPUP_INSTRUCTION}`
+    : system;
+  // 归一化 evaluator：复用 judge/provider 配置（无 judge 时主 provider），供 wrapup LLM 归一化用
+  const judgeConfig = effectiveReflection?.judge;
+  const wrapupEvaluator = judgeConfig?.provider ?? judgeConfig?.evaluator ?? provider;
+  // wrapup LLM 归一化（默认关闭：保持既有纯文本轮行为与旧测试兼容）。
+  // 开启：ERIX_WRAPUP_NORMALIZE=1 或 reflection.wrapupNormalize===true。
+  // benchmark/harness 场景应开启——找不到 JSON（含空文本）就该归一化。
+  let wrapupNormalizationEnabled = wrapupEnabled && (
+    process.env.ERIX_WRAPUP_NORMALIZE?.trim() === "1"
+      || effectiveReflection?.wrapupNormalize === true
+  );
+  const reflectionTriggerRound = Number.isSafeInteger(effectiveReflection?.triggerRound)
+    && effectiveReflection.triggerRound > 0
+    ? effectiveReflection.triggerRound
+    : Math.max(1, Math.floor(maxRounds * 0.8));
+  const reflectionExtensionStep = Number.isSafeInteger(effectiveReflection?.extensionStep)
+    && effectiveReflection.extensionStep > 0
+    ? effectiveReflection.extensionStep
+    : 32;
+  const reflectionMaxExtensions = Number.isSafeInteger(effectiveReflection?.maxExtensions)
+    && effectiveReflection.maxExtensions >= 0
+    ? effectiveReflection.maxExtensions
+    : 2;
+  const reflectionMaxRoundsCap = Math.max(
+    maxRounds,
+    Number.isSafeInteger(effectiveReflection?.maxRoundsCap)
+      && effectiveReflection.maxRoundsCap > 0
+      ? effectiveReflection.maxRoundsCap
+      : 256,
+  );
+  const governorState = {
+    effectiveMaxRounds: maxRounds,
+    extensionCount: 0,
+    nextReflectionRound: reflectionTriggerRound,
+    noToolStreak: 0,
+    wrapUpNudged: false,
+    errorSeen: new Map(),
+    runningLog: [],
+    l0Facts: [],
+    timeline: [],
+    filesWritten: [],
+  };
+  const toolStats = new Map();
+  let lowBudgetPrompted = false;
+  let foldedRoundCount = 0;
+  let navigationRecordCount = 0;
+  let nonReplayableCaptureCount = 0;
+  let unrecoverableCaptureCount = 0;
+  let toolErrorCount = 0;
+  let checkpointFailureCount = 0;
+  let archiveFailureCount = 0;
+  let runStateVersion = 0;
+  let currentRunState;
+  let runStateAvailability = { status: "available" };
+  let currentTerminationReason = "running";
+  let todoState;
+  let semanticState;
+  const trimFilesWritten = () => {
+    const seen = new Set();
+    const kept = [];
+    for (let index = governorState.filesWritten.length - 1;
+      index >= 0 && kept.length < 50;
+      index -= 1) {
+      const file = governorState.filesWritten[index];
+      if (!seen.has(file.path)) {
+        seen.add(file.path);
+        kept.push(file);
+      }
+    }
+    governorState.filesWritten = kept.reverse();
+  };
+  let stallStreak = 0;
+  let lastStallSignature = null;
+  const startedAt = Date.now();
+  const configuredDeadline = Number.isFinite(deadlineMs) && deadlineMs > 0
+    ? deadlineMs
+    : Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? startedAt + timeoutMs
+      : undefined;
+  const elapsedMs = () => Date.now() - startedAt;
+  const remainingMs = () => configuredDeadline === undefined
+    ? undefined
+    : configuredDeadline > startedAt
+      ? configuredDeadline - Date.now()
+      : configuredDeadline - elapsedMs();
+  const trimGovernorHistory = () => {
+    while (governorState.runningLog.length > 1
+      && estimateTokens(JSON.stringify(governorState.runningLog))
+        + estimateTokens(JSON.stringify(governorState.l0Facts)) > 4000) {
+      governorState.runningLog.shift();
+      governorState.l0Facts.shift();
+    }
+  };
+  const addGovernorHistory = (round, summary, l0facts, ts, wrapup, judge) => {
+    governorState.runningLog.push({
+      round,
+      summary,
+      ...(summary && typeof summary === "object" ? summary : {}),
+      ...(wrapup === undefined || wrapup === null ? {} : {
+        planned: "",
+        actual: wrapup.summary,
+        next: "",
+        source: wrapup.done ? "json-done" : "json",
+      }),
+      ...(judge === undefined || judge === null ? {} : { judge }),
+      ts,
+    });
+    governorState.l0Facts.push({ round, ...l0facts });
+    trimGovernorHistory();
+  };
+  const restoreErrorSeen = (l0facts) => {
+    // 优先 errorCounts（每轮持久化的累计 count，resume 精确重建）；
+    // 旧 schema fallback：errorHashes 每 hash +1（近似，同轮多次同错会少计）
+    const counts = l0facts?.errorCounts;
+    if (counts && typeof counts === "object") {
+      for (const [errorHash, count] of Object.entries(counts)) {
+        const current = governorState.errorSeen.get(errorHash)?.count ?? 0;
+        governorState.errorSeen.set(errorHash, {
+          count: Math.max(current, Number.isFinite(count) ? count : 0),
+        });
+      }
+      return;
+    }
+    const errorHashes = l0facts?.errorHashes
+      ?? (l0facts?.errorHash ? [l0facts.errorHash] : []);
+    for (const errorHash of errorHashes) {
+      const previous = governorState.errorSeen.get(errorHash);
+      const previousCount = Number.isSafeInteger(previous?.count) ? previous.count : 0;
+      governorState.errorSeen.set(errorHash, {
+        ...(previous ?? {}),
+        count: previousCount + 1,
+      });
+    }
+  };
+  let messages = initialMessages !== undefined
+    ? [...initialMessages]
+    : initialUserMessage !== undefined
+      ? [{ role: "user", content: [{ type: "text", text: initialUserMessage }] }]
+      : [];
+  let taskBriefSource = messages;
+  const messageRounds = new WeakMap();
+  for (const message of messages) messageRounds.set(message, 0);
+  let rounds = 0;
+  let foldedThrough = 0;
+  let resumeCheckpoint;
+  let resumePendingTools = [];
+  let resumeTailMessages = [];
+  let resumeTranscriptStart;
+  let resumeCheckpointMessages = [];
+  let persistedTranscriptLength = 0;
+  const resumeExecutedToolIds = new Set();
+  const resumeCheckpointResults = new Map();
+  await restoreResume({
+    resume,
+    store,
+    runId,
+    get currentRunState() {
+      return currentRunState;
+    },
+    set currentRunState(value) {
+      currentRunState = value;
+    },
+    get runStateAvailability() {
+      return runStateAvailability;
+    },
+    set runStateAvailability(value) {
+      runStateAvailability = value;
+    },
+    get runStateVersion() {
+      return runStateVersion;
+    },
+    set runStateVersion(value) {
+      runStateVersion = value;
+    },
+    get messages() {
+      return messages;
+    },
+    set messages(value) {
+      messages = value;
+    },
+    get taskBriefSource() {
+      return taskBriefSource;
+    },
+    set taskBriefSource(value) {
+      taskBriefSource = value;
+    },
+    messageRounds,
+    get rounds() {
+      return rounds;
+    },
+    set rounds(value) {
+      rounds = value;
+    },
+    get foldedThrough() {
+      return foldedThrough;
+    },
+    set foldedThrough(value) {
+      foldedThrough = value;
+    },
+    get resumeCheckpoint() {
+      return resumeCheckpoint;
+    },
+    set resumeCheckpoint(value) {
+      resumeCheckpoint = value;
+    },
+    get resumePendingTools() {
+      return resumePendingTools;
+    },
+    set resumePendingTools(value) {
+      resumePendingTools = value;
+    },
+    get resumeTailMessages() {
+      return resumeTailMessages;
+    },
+    set resumeTailMessages(value) {
+      resumeTailMessages = value;
+    },
+    get resumeTranscriptStart() {
+      return resumeTranscriptStart;
+    },
+    set resumeTranscriptStart(value) {
+      resumeTranscriptStart = value;
+    },
+    get resumeCheckpointMessages() {
+      return resumeCheckpointMessages;
+    },
+    set resumeCheckpointMessages(value) {
+      resumeCheckpointMessages = value;
+    },
+    get persistedTranscriptLength() {
+      return persistedTranscriptLength;
+    },
+    set persistedTranscriptLength(value) {
+      persistedTranscriptLength = value;
+    },
+    resumeExecutedToolIds,
+    resumeCheckpointResults,
+    toolStats,
+    governorState,
+    resolvedWriteToolNames,
+    resolvedWriteToolPathKeys,
+    markRunState,
+    persist,
+    fail,
+    restoreErrorSeen,
+    addGovernorHistory,
+    trimFilesWritten,
+    get lowBudgetPrompted() {
+      return lowBudgetPrompted;
+    },
+    set lowBudgetPrompted(value) {
+      lowBudgetPrompted = value;
+    },
+    get foldedRoundCount() {
+      return foldedRoundCount;
+    },
+    set foldedRoundCount(value) {
+      foldedRoundCount = value;
+    },
+    get navigationRecordCount() {
+      return navigationRecordCount;
+    },
+    set navigationRecordCount(value) {
+      navigationRecordCount = value;
+    },
+    get nonReplayableCaptureCount() {
+      return nonReplayableCaptureCount;
+    },
+    set nonReplayableCaptureCount(value) {
+      nonReplayableCaptureCount = value;
+    },
+    get unrecoverableCaptureCount() {
+      return unrecoverableCaptureCount;
+    },
+    set unrecoverableCaptureCount(value) {
+      unrecoverableCaptureCount = value;
+    },
+    get toolErrorCount() {
+      return toolErrorCount;
+    },
+    set toolErrorCount(value) {
+      toolErrorCount = value;
+    },
+    get checkpointFailureCount() {
+      return checkpointFailureCount;
+    },
+    set checkpointFailureCount(value) {
+      checkpointFailureCount = value;
+    },
+    get archiveFailureCount() {
+      return archiveFailureCount;
+    },
+    set archiveFailureCount(value) {
+      archiveFailureCount = value;
+    },
+    get semanticState() {
+      return semanticState;
+    },
+    set semanticState(value) {
+      semanticState = value;
+    },
+    get todoState() {
+      return todoState;
+    },
+    set todoState(value) {
+      todoState = value;
+    },
+    get judgeInterceptCount() {
+      return judgeInterceptCount;
+    },
+    set judgeInterceptCount(value) {
+      judgeInterceptCount = value;
+    },
+  });
+  const taskBrief = resolveTaskBrief({ task, context, messages: taskBriefSource });
+  const recentSignatures = [];
+  const envStallMode = process.env.ERIX_STALL_MODE;
+  // stallDetection:false 显式关闭优先于环境变量（调用方显式关闭不应被 env 重新打开）
+  const resolvedStallDetection = stallDetection === false
+    ? false
+    : envStallMode
+      ? { window: stallDetection?.window ?? 4, mode: envStallMode }
+      : stallDetection;
+  const stallWindow = resolvedStallDetection === false
+    ? 0
+    : Number.isInteger(resolvedStallDetection?.window) && resolvedStallDetection.window > 0
+      ? resolvedStallDetection.window
+      : 4;
+  const stallMode = resolvedStallDetection?.mode === "consecutive" ? "consecutive" : "appear";
+  const usage = { input_tokens: 0, output_tokens: 0 };
+  let latestApiInputTokens;
+  let latestApiEstimatedTokens;
+  const retryOptions = retry && typeof retry === "object" ? retry : null;
+  const retryAttempts = retryOptions === null
+    ? 0
+    : Number.isInteger(retryOptions.attempts)
+      ? Math.max(0, retryOptions.attempts)
+      : 2;
+  const backoffBaseMs = Number.isFinite(retryOptions?.backoffBaseMs)
+    ? Math.max(0, retryOptions.backoffBaseMs)
+    : 1500;
+  const backoffMaxMs = Number.isFinite(retryOptions?.backoffMaxMs)
+    ? Math.max(0, retryOptions.backoffMaxMs)
+    : 10000;
+  const sleepImpl = retryOptions?.sleepImpl ?? defaultSleep;
+  const completionEnabled = completion !== false;
+  const completionSignals = Array.isArray(completion?.signals) ? completion.signals : [];
+  const maxNoToolRounds = Number.isInteger(completion?.maxNoToolRounds)
+    ? Math.max(0, completion.maxNoToolRounds)
+    : 3;
+  const continuationLimit = Number.isInteger(maxTokenContinuations)
+    ? Math.max(0, maxTokenContinuations)
+    : 3;
+  const compactionStats = [];
+  let finalText = "";
+  let forcedFinal = false;
+  let lastAssistantContent = [];
+  const finalGuardRetryLimit = Number.isSafeInteger(finalGuardMaxRetries)
+    && finalGuardMaxRetries >= 0
+    ? finalGuardMaxRetries
+    : 2;
+  const finalGuardTimeout = Number.isFinite(finalGuardTimeoutMs) && finalGuardTimeoutMs > 0
+    ? finalGuardTimeoutMs
+    : 30_000;
+  let finalGuardRetries = 0;
+  let verification = typeof finalGuard !== "function"
+    ? { status: "skipped", reason: "no_final_guard" }
+    : { status: "unverified", reason: "pending" };
+  const guardMetrics = {
+    verified: 0,
+    skipped: 0,
+    revised: 0,
+    rerun_cited: 0,
+    unverified: 0,
+    guard_error: 0,
+  };
+  let hadToolUse = hasToolUseInMessages(messages);
+  let roundStopReason;
+  let roundEventDeltas = [];
+
+  const emitEvent = (event) => {
+    onEvent?.(event);
+  };
+
+  const emitJudge = (info) => {
+    if (typeof onJudge !== "function") return;
+    try {
+      onJudge(info);
+    } catch {
+      // Observer failures must not affect the tool loop.
+    }
+  };
+
+  const addUsage = (response, estimatedTokens, { trackLatest = true } = {}) => {
+    const inputTokens = response?.usage?.input_tokens;
+    if (Number.isFinite(inputTokens)) {
+      usage.input_tokens += inputTokens;
+      if (trackLatest) {
+        latestApiInputTokens = inputTokens > 0 ? inputTokens : undefined;
+        latestApiEstimatedTokens = Number.isFinite(estimatedTokens)
+          ? estimatedTokens
+          : undefined;
+      }
+    }
+    if (Number.isFinite(response?.usage?.output_tokens)) {
+      usage.output_tokens += response.usage.output_tokens;
+    }
+  };
+
+  const awaitWithAbort = async (promise) => {
+    if (!signal) return promise;
+    throwIfAborted(signal);
+    let removeAbortListener;
+    const aborted = new Promise((_, reject) => {
+      const onAbort = () => reject(abortError(signal));
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+    });
+    try {
+      return await Promise.race([promise, aborted]);
+    } finally {
+      removeAbortListener?.();
+    }
+  };
+
+  const waitForRetry = async (delay) => {
+    const sleeping = Promise.resolve().then(() => sleepImpl(delay, signal));
+    await awaitWithAbort(sleeping);
+    throwIfAborted(signal);
+  };
+
+  const providerContext = {
+    provider,
+    mainSystem,
+    tools,
+    signal,
+    maxTokens,
+    temperature,
+    topP,
+    stream,
+    onDelta,
+    onReasoningDelta,
+    onToolCall,
+    onUsage,
+    retryOptions,
+    retryAttempts,
+    backoffBaseMs,
+    backoffMaxMs,
+    emitEvent,
+    reportObserverError,
+    awaitWithAbort,
+    waitForRetry,
+    estimateMessageTokens,
+    get messages() {
+      return messages;
+    },
+    set messages(value) {
+      messages = value;
+    },
+    get roundEventDeltas() {
+      return roundEventDeltas;
+    },
+    set roundEventDeltas(value) {
+      roundEventDeltas = value;
+    },
+    get finalText() {
+      return finalText;
+    },
+    set finalText(value) {
+      finalText = value;
+    },
+    get usage() {
+      return usage;
+    },
+    get latestApiInputTokens() {
+      return latestApiInputTokens;
+    },
+    set latestApiInputTokens(value) {
+      latestApiInputTokens = value;
+    },
+    get latestApiEstimatedTokens() {
+      return latestApiEstimatedTokens;
+    },
+    set latestApiEstimatedTokens(value) {
+      latestApiEstimatedTokens = value;
+    },
+    get roundStopReason() {
+      return roundStopReason;
+    },
+    set roundStopReason(value) {
+      roundStopReason = value;
+    },
+  };
+  const callProvider = (options) => runProvider(providerContext, options);
+
+  const executedToolIds = new Set(resumeExecutedToolIds);
+  const checkpointResults = new Map(resumeCheckpointResults);
+  // checkpoint store 必须成对（writer + loader）——save-only 无法 resume，不启用 fail-closed
+  const hasCheckpointStore = (typeof store?.saveCheckpoint === "function"
+    || typeof store?.appendCheckpoint === "function")
+    && typeof store?.loadLatestCheckpoint === "function";
+  const persistCheckpoint = async ({
+    round,
+    pendingToolUse,
+    pendingToolUses = [],
+    toolResults = [],
+    status = "pending",
+    messagesOverride,
+  }) => {
+    const method = typeof store?.saveCheckpoint === "function"
+      ? "saveCheckpoint"
+      : typeof store?.appendCheckpoint === "function"
+        ? "appendCheckpoint"
+        : undefined;
+    if (method === undefined) return false;
+    return persist(method, runId, {
+      round,
+      status,
+      pendingToolUse: cloneState(pendingToolUse),
+      toolUse: cloneState(pendingToolUse),
+      pendingToolUses: cloneState(pendingToolUses),
+      messages: cloneState(messagesOverride ?? messages),
+      persistedTranscriptLength,
+      executedToolIds: [...executedToolIds],
+      toolResults: toolResults.map((toolResult) => ({
+        toolUseId: toolResult.tool_use_id,
+        toolResult: cloneState(toolResult),
+      })),
+      ts: new Date().toISOString(),
+    });
+  };
+
+  const refreshRunState = async ({
+    semantic = false,
+    inject = false,
+  } = {}) => {
+    if (typeof todoStateProvider === "function") {
+      try {
+        todoState = await todoStateProvider({ runId, rounds });
+      } catch (error) {
+        todoState = {
+          status: "error",
+          detail: String(error?.message ?? error).slice(0, 80),
+        };
+      }
+    }
+    const deterministic = createDeterministicRunState({
+      runId,
+      stateVersion: runStateVersion,
+      rounds,
+      maxRounds: governorState.effectiveMaxRounds,
+      lowBudgetPrompted,
+      toolStats,
+      filesWritten: governorState.filesWritten,
+      todo: todoState,
+      foldedRounds: foldedRoundCount,
+      navigationRecords: navigationRecordCount,
+      nonReplayableCaptures: nonReplayableCaptureCount,
+      unrecoverableCaptures: unrecoverableCaptureCount,
+      terminationReason: currentTerminationReason,
+      toolErrorCount,
+      checkpointFailureCount,
+      archiveFailureCount,
+    });
+    if (semantic && typeof semanticStateProvider === "function") {
+      try {
+        const provided = await semanticStateProvider({
+          runId,
+          state: deterministic,
+          previous: semanticState,
+        });
+        if (provided !== undefined) semanticState = provided;
+      } catch (error) {
+        semanticState = {
+          status: "error",
+          text: "",
+          semanticStateVersion: runStateVersion,
+          detail: String(error?.message ?? error).slice(0, 80),
+        };
+      }
+    } else if (
+      semanticState
+      && semanticState.semanticStateVersion !== undefined
+      && semanticState.semanticStateVersion !== runStateVersion
+    ) {
+      semanticState = {
+        ...semanticState,
+        status: "stale",
+      };
+    }
+    currentRunState = withSemanticRunState({
+      ...deterministic,
+      stateAvailability: { ...runStateAvailability },
+    }, semanticState);
+    currentRunState.rendered = renderRunState(currentRunState);
+    if (inject) messages = upsertRunStateInMessages(messages, currentRunState.rendered);
+    await persist("saveRunState", runId, currentRunState);
+    return currentRunState;
+  };
+
+  const terminationContext = {
+    finalGuard,
+    finalGuardTimeout,
+    toolSignal,
+    signal,
+    awaitWithAbort,
+    emitEvent,
+    guardMetrics,
+    addUsage,
+    estimateMessageTokens,
+    mainSystem,
+    maxTokens,
+    temperature,
+    topP,
+    provider,
+    wrapupEnabled,
+    throwIfAborted,
+    messageRounds,
+    runState,
+    usage,
+    compactionStats,
+    refreshRunState,
+    markRunState,
+    get messages() {
+      return messages;
+    },
+    get finalText() {
+      return finalText;
+    },
+    set finalText(value) {
+      finalText = value;
+    },
+    get rounds() {
+      return rounds;
+    },
+    get lastAssistantContent() {
+      return lastAssistantContent;
+    },
+    set lastAssistantContent(value) {
+      lastAssistantContent = value;
+    },
+    get roundStopReason() {
+      return roundStopReason;
+    },
+    set roundStopReason(value) {
+      roundStopReason = value;
+    },
+    get forcedFinal() {
+      return forcedFinal;
+    },
+    set forcedFinal(value) {
+      forcedFinal = value;
+    },
+    get verification() {
+      return verification;
+    },
+    set verification(value) {
+      verification = value;
+    },
+    get currentRunState() {
+      return currentRunState;
+    },
+    get currentTerminationReason() {
+      return currentTerminationReason;
+    },
+    set currentTerminationReason(value) {
+      currentTerminationReason = value;
+    },
+  };
+  const terminationManager = createTerminationManager(terminationContext);
+  const {
+    callFinalGuard,
+    forceFinalIfNeeded,
+    finish,
+  } = terminationManager;
+
+  const callReflection = async (round, currentL0, currentSummary) => {
+    const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
+    const runningLog = [
+      ...governorState.runningLog,
+      { round, summary: currentSummary },
+    ];
+    const reflectionMessages = [{
+      role: "user",
+      content: [{
+        type: "text",
+        text: reflectionPrompt({
+          rounds: round,
+          taskBrief,
+          runningLog,
+          l0Facts,
+          errorText: l0Facts
+            .flatMap((fact) => fact.errorTexts ?? (fact.errorText ? [fact.errorText] : []))
+            .filter((text, index, values) => values.indexOf(text) === index)
+            .slice(-5)
+            .join("\n"),
+        }),
+      }],
+    }];
+    const judge = effectiveReflection?.judge;
+    const evaluator = judge?.provider ?? judge?.evaluator ?? provider;
+    const request = {
+      system: "你是严格的独立评审者，不是执行者。只评估任务价值与是否继续，不执行工具。",
+      messages: reflectionMessages,
+      signal,
+    };
+    if (maxTokens !== undefined) request.maxTokens = maxTokens;
+    if (temperature !== undefined) request.temperature = temperature;
+    if (topP !== undefined) request.topP = topP;
+    const response = await awaitWithAbort(evaluator.chat(request));
+    addUsage(response, undefined, { trackLatest: false });
+    return parseReflectionDecision(textFromBlocks(blocksFor(response?.content)));
+  };
+
+  const callRoundJudge = async (round, currentL0, { timeoutMs } = {}) => {
+    const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
+    const recentErrors = l0Facts
+      .flatMap((fact) => fact.errorTexts ?? (fact.errorText ? [fact.errorText] : []))
+      .filter((text, index, values) => values.indexOf(text) === index)
+      .slice(-5);
+    const judge = effectiveReflection?.judge;
+    const evaluator = judge?.provider ?? judge?.evaluator ?? provider;
+    const request = {
+      system: "你是交付评审者，独立判断任务是否完成。只输出 JSON。",
+      messages: [{
+        role: "user",
+        content: [{
+          type: "text",
+          text: buildJudgePrompt(
+            taskBrief,
+            round,
+            governorState.timeline,
+            governorState.filesWritten,
+            recentErrors,
+          ),
+        }],
+      }],
+      maxTokens: 8000,
+      temperature: 0,
+      reasoning_effort: "none",
+    };
+    let timeoutController;
+    let timeoutId;
+    let removeParentAbort;
+    if (timeoutMs !== undefined) {
+      timeoutController = new AbortController();
+      request.signal = timeoutController.signal;
+      if (signal !== undefined) {
+        const onParentAbort = () => timeoutController.abort(signal.reason);
+        if (signal.aborted) onParentAbort();
+        else signal.addEventListener("abort", onParentAbort, { once: true });
+        removeParentAbort = () => signal.removeEventListener("abort", onParentAbort);
+      }
+    } else if (signal !== undefined) {
+      request.signal = signal;
+    }
+    const responsePromise = Promise.resolve().then(() => (
+      typeof evaluator === "function"
+        ? evaluator(request)
+        : evaluator.chat(request)
+    ));
+    let response;
+    try {
+      if (timeoutMs === undefined) {
+        response = await awaitWithAbort(responsePromise);
+      } else {
+        response = await Promise.race([
+          awaitWithAbort(responsePromise),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+              timeoutController.abort(new Error("Judge interception timed out"));
+              const error = new Error("Judge interception timed out");
+              error.code = "judge_intercept_timeout";
+              reject(error);
+            }, timeoutMs);
+          }),
+        ]);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      removeParentAbort?.();
+    }
+    addUsage(response, undefined, { trackLatest: false });
+    return parseJudgeDecision(textFromBlocks(blocksFor(response?.content)));
+  };
+
+  const checkpointContext = {
+    runId,
+    executeTool,
+    baseToolContext,
+    toolSignal,
+    signal,
+    onToolResult,
+    persistCheckpoint,
+    hasCheckpointStore,
+    toolStats,
+    governorState,
+    awaitWithAbort,
+    emitJudge,
+    callRoundJudge,
+    judgeInterceptEnabled,
+    judgeIntervalRound,
+    judgeInterceptTimeoutMs,
+    get messages() {
+      return messages;
+    },
+    get lowBudgetPrompted() {
+      return lowBudgetPrompted;
+    },
+    set lowBudgetPrompted(value) {
+      lowBudgetPrompted = value;
+    },
+    get nonReplayableCaptureCount() {
+      return nonReplayableCaptureCount;
+    },
+    set nonReplayableCaptureCount(value) {
+      nonReplayableCaptureCount = value;
+    },
+    get archiveFailureCount() {
+      return archiveFailureCount;
+    },
+    set archiveFailureCount(value) {
+      archiveFailureCount = value;
+    },
+    get unrecoverableCaptureCount() {
+      return unrecoverableCaptureCount;
+    },
+    set unrecoverableCaptureCount(value) {
+      unrecoverableCaptureCount = value;
+    },
+    get toolErrorCount() {
+      return toolErrorCount;
+    },
+    set toolErrorCount(value) {
+      toolErrorCount = value;
+    },
+    get checkpointFailureCount() {
+      return checkpointFailureCount;
+    },
+    set checkpointFailureCount(value) {
+      checkpointFailureCount = value;
+    },
+    get judgeInterceptCount() {
+      return judgeInterceptCount;
+    },
+    set judgeInterceptCount(value) {
+      judgeInterceptCount = value;
+    },
+    executedToolIds,
+    checkpointResults,
+  };
+  const checkpointExecutor = createCheckpointExecutor(checkpointContext);
+  const {
+    executeToolWithIntercept,
+    pendingDirectionHints,
+  } = checkpointExecutor;
+
+  const roundNumbersForMessages = (currentMessages) => {
+    const grouped = groupIntoRounds(currentMessages).rounds;
+    return grouped.map((group, index) => {
+      const known = group.messages
+        .map((message) => messageRounds.get(message))
+        .find((roundNumber) => Number.isSafeInteger(roundNumber) && roundNumber > 0);
+      return known ?? foldedThrough + index + 1;
+    });
+  };
+
+  const compactBeforeRound = async () => {
+    normalizeMessages(messages);
+    const configuredStrategy = compactionContext?.strategy;
+    // API input usage is per request; keep the aggregate for billing output.
+    // 压缩判断：主用本地估算（真实上下文大小），API usage 辅助取单轮完整输入
+    // Some APIs report full historical input; cumulative usage is billable input
+    // and can otherwise trigger compaction too early.
+    const apiInputTokens = latestApiInputTokens;
+    const estimatedTokens = estimateMessageTokens(messages);
+    const overBudget = budgetTokens !== undefined
+      && (estimatedTokens > budgetTokens || isApiInputOverBudget(apiInputTokens, budgetTokens));
+    const strategyRequestsCompaction = configuredStrategy
+      ? await configuredStrategy.shouldCompact(messages, budgetTokens)
+      : false;
+    if (strategyRequestsCompaction || overBudget) {
+      const strategy = strategyRequestsCompaction
+        ? configuredStrategy
+        : createSlidingWindowStrategy();
+      const tokensBefore = estimateMessageTokens(messages);
+      const configuredKeepRounds = compactionContext.keepRounds ?? 6;
+      // 上下文膨胀到预算 2 倍以上时收紧 keepRounds（防折叠后立刻再超预算的恶性循环）
+      const keepRounds = estimatedTokens / budgetTokens > 2
+        ? Math.min(configuredKeepRounds, 2)
+        : configuredKeepRounds;
+      const compactOptions = {
+        keepRounds,
+        budgetTokens,
+      };
+      Object.defineProperty(compactOptions, "roundNumbers", {
+        value: roundNumbersForMessages(messages),
+        enumerable: false,
+      });
+      if (foldedThrough > 0) compactOptions.roundOffset = foldedThrough;
+      for (const key of [
+        "summaryRole",
+        "protectedMessage",
+        "stripHistoricalImages",
+        "onBeforeFold",
+        "onAfterFold",
+        "stubFor",
+      ]) {
+        if (compactionContext[key] !== undefined) compactOptions[key] = compactionContext[key];
+      }
+      const result = await strategy.compact(messages, compactOptions);
+      if (!Array.isArray(result?.messages)) {
+        throw new TypeError("Compaction strategy must return a messages array");
+      }
+      let compactedMessages = result.messages;
+      let foldedPayload = Array.isArray(result.foldedPayload)
+        ? result.foldedPayload
+        : [];
+      let foldedRoundRange = result.foldedRoundRange;
+      let navigationRecord = result.navigationRecord;
+      let foldedRounds = Number.isSafeInteger(result.foldedRounds)
+        ? result.foldedRounds
+        : 0;
+      let compacted = result.compacted === true;
+      let protectedDowngraded = 0;
+      let tokensAfter = estimateMessageTokens(compactedMessages);
+      const apiEstimateBefore = latestApiEstimatedTokens ?? tokensBefore;
+      let apiTokensAfter = projectedApiInputTokens(
+        apiInputTokens,
+        apiEstimateBefore,
+        tokensAfter,
+      );
+      if (
+        (budgetTokens !== undefined && tokensAfter > budgetTokens)
+        || isApiInputOverBudget(apiTokensAfter, budgetTokens)
+      ) {
+        const fallback = await createSlidingWindowStrategy().compact(compactedMessages, {
+          keepRounds: 0,
+          budgetTokens,
+          protectedMessage: compactionContext.protectedMessage,
+          stripHistoricalImages: compactionContext.stripHistoricalImages,
+          stubFor: compactionContext.stubFor,
+          roundOffset: foldedThrough,
+          roundNumbers: roundNumbersForMessages(compactedMessages),
+        });
+        compactedMessages = fallback.messages;
+        foldedPayload = [...foldedPayload, ...(fallback.foldedPayload ?? [])];
+        foldedRounds += fallback.foldedRounds ?? 0;
+        compacted = compacted || fallback.compacted === true;
+        if (foldedRoundRange === undefined) foldedRoundRange = fallback.foldedRoundRange;
+        if (fallback.navigationRecord !== undefined) {
+          navigationRecord = mergeFoldNavigationRecords(
+            [navigationRecord, fallback.navigationRecord],
+            foldedRoundRange,
+          );
+        }
+        tokensAfter = estimateMessageTokens(compactedMessages);
+        apiTokensAfter = projectedApiInputTokens(
+          apiInputTokens,
+          apiEstimateBefore,
+          tokensAfter,
+        );
+      }
+      if (
+        (budgetTokens !== undefined && tokensAfter > budgetTokens)
+        || isApiInputOverBudget(apiTokensAfter, budgetTokens)
+      ) {
+        const apiAwareBudget = isApiInputOverBudget(apiTokensAfter, budgetTokens)
+          ? Math.max(
+            1,
+            Math.floor(budgetTokens * apiEstimateBefore / apiInputTokens),
+          )
+          : budgetTokens;
+        const fallback = await safeTruncateMessages(
+          compactedMessages,
+          apiAwareBudget,
+          compactionContext.protectedMessage,
+          compactionContext.stubFor,
+        );
+        compactedMessages = fallback.messages;
+        foldedPayload = [...foldedPayload, ...(fallback.foldedPayload ?? [])];
+        compacted = compacted || fallback.protectedDowngraded > 0;
+        tokensAfter = fallback.tokensAfter;
+        protectedDowngraded = fallback.protectedDowngraded;
+      }
+      messages = compactedMessages;
+      latestApiInputTokens = undefined;
+      latestApiEstimatedTokens = undefined;
+      hadToolUse = hadToolUse || hasToolUseInMessages(messages);
+      if (foldedRoundRange?.to !== undefined) {
+        foldedThrough = Math.max(foldedThrough, foldedRoundRange.to);
+      }
+      const foldedStateChanged = foldedRounds > 0
+        || foldedRoundRange !== undefined
+        || navigationRecord !== undefined;
+      if (foldedStateChanged) {
+        foldedRoundCount += foldedRounds;
+        if (navigationRecord !== undefined) navigationRecordCount += 1;
+        runStateVersion += 1;
+      }
+      const compactionStat = {
+        compacted,
+        foldedRounds,
+        tokensBefore,
+        tokensAfter,
+      };
+      if (protectedDowngraded > 0) {
+        compactionStat.protectedDowngraded = protectedDowngraded;
+      }
+      compactionStats.push(compactionStat);
+      normalizeMessages(messages);
+      const runState = await refreshRunState({
+        semantic: foldedStateChanged,
+        inject: foldedStateChanged,
+      });
+      return {
+        folded: compacted,
+        foldedPayload: compacted ? foldedPayload : undefined,
+        foldedRoundRange,
+        navigationRecord,
+        runState,
+      };
+    }
+    return { folded: false, foldedPayload: undefined };
+  };
+
+  const appendToolResultsToTranscript = (toolResults, roundNumber) => {
+    if (toolResults.length === 0) return;
+    const target = mergeToolResultsIntoMessages(messages, toolResults);
+    if (target !== false) {
+      if (roundNumber !== undefined) {
+        messageRounds.set(target, roundNumber);
+      }
+      return;
+    }
+    const message = { role: "user", content: toolResults };
+    messages.push(message);
+    if (roundNumber !== undefined) messageRounds.set(message, roundNumber);
+  };
+
+  const appendResumeTailMessages = () => {
+    for (const entry of resumeTailMessages) {
+      const message = cloneState(entry.message);
+      messages.push(message);
+      messageRounds.set(message, entry.round);
+    }
+    resumeTailMessages = [];
+  };
+
+  try {
+    await refreshRunState();
+    throwIfAborted(signal);
+    if (resumePendingTools.length > 0) {
+      const resumedToolResults = [];
+      for (const [index, resumePendingTool] of resumePendingTools.entries()) {
+        emitEvent({ type: "tool_use", round: rounds, toolUse: cloneState(resumePendingTool) });
+        await executeToolWithIntercept(
+          resumePendingTool,
+          rounds,
+          resumedToolResults,
+          resumePendingTools.slice(index),
+        );
+      }
+      appendToolResultsToTranscript(resumedToolResults, rounds);
+      // resume 路径也 flush 方向提示（与主循环一致，限 2 条；独立 user text 消息）
+      if (pendingDirectionHints.length > 0) {
+        const hints = pendingDirectionHints.length > 2
+          ? [...pendingDirectionHints.slice(0, 2), "（另有多次方向提示已合并）"]
+          : [...pendingDirectionHints];
+        const hintMessage = {
+          role: "user",
+          content: hints.map((text) => ({ type: "text", text })),
+        };
+        messages.push(hintMessage);
+        if (rounds !== undefined) messageRounds.set(hintMessage, rounds);
+        pendingDirectionHints.length = 0;
+      }
+      resumePendingTools = [];
+    }
+    if (resumeCheckpoint && resumeTranscriptStart !== undefined) {
+      const resumeRecordMessages = messages.slice(resumeTranscriptStart);
+      const resumeMessagesToPersist = [
+        ...resumeCheckpointMessages,
+        ...resumeRecordMessages,
+      ];
+      const persisted = await persist("appendRound", runId, {
+        round: resumeCheckpoint.round,
+        roundKey: `${String(runId)}:round:${String(resumeCheckpoint.round)}`,
+        dedupKey: `${String(runId)}:round:${String(resumeCheckpoint.round)}`,
+        messages: cloneState(resumeMessagesToPersist),
+        ts: new Date().toISOString(),
+      });
+      if (persisted) persistedTranscriptLength += resumeMessagesToPersist.length;
+      resumeTranscriptStart = undefined;
+      resumeCheckpointMessages = [];
+    }
+    appendResumeTailMessages();
+
+    while (rounds < governorState.effectiveMaxRounds) {
+    const round = rounds + 1;
+    roundEventDeltas = [];
+    roundStopReason = undefined;
+    let stallSuspicion = false;
+    let stallSignature = null;
+    let lastSignatureThisRound = null;
+    emitEvent({ type: "round_start", round });
+    const compaction = await compactBeforeRound();
+    const roundStart = messages.length;
+    let providerResult = await callProvider({ round });
+    let response = providerResult.response;
+    let content = blocksFor(response?.content);
+
+    const assistantMessage = { role: "assistant", content };
+    messages.push(assistantMessage);
+    messageRounds.set(assistantMessage, round);
+    addUsage(response, providerResult.estimatedTokens);
+    if (!providerResult.usageEmitted && response?.usage !== undefined) {
+      emitEvent({ type: "usage", round, usage: response.usage });
+    }
+    roundStopReason = response?.stopReason;
+
+    let tokenContinuationCount = 0;
+    while (response?.stopReason === "max_tokens"
+      && tokenContinuationCount < continuationLimit) {
+      // reasoning 模型单次响应常因推理过长触发 max_tokens 截断；
+      // 若 messages 已超预算，先压缩再补全，避免截断循环耗尽预算（Issue #11）
+      if (budgetTokens !== undefined
+        && (
+          estimateMessageTokens(messages) > budgetTokens
+          || isApiInputOverBudget(latestApiInputTokens, budgetTokens)
+        )) {
+        await compactBeforeRound();
+      }
+      tokenContinuationCount += 1;
+      providerResult = await callProvider({ allowPendingToolUse: true, round });
+      response = providerResult.response;
+      const continuation = blocksFor(response?.content);
+      const assistant = messages.at(-1);
+      if (assistant?.role === "assistant") {
+        assistant.content = appendAssistantContent(assistant.content, continuation);
+        content = appendAssistantContent(content, continuation);
+      } else {
+        content = appendAssistantContent(content, continuation);
+        const assistantMessage = { role: "assistant", content };
+        messages.push(assistantMessage);
+        messageRounds.set(assistantMessage, round);
+      }
+      addUsage(response, providerResult.estimatedTokens);
+      if (!providerResult.usageEmitted && response?.usage !== undefined) {
+        emitEvent({ type: "usage", round, usage: response.usage });
+      }
+      roundStopReason = response?.stopReason;
+    }
+    const continuationExhausted = response?.stopReason === "max_tokens"
+      && tokenContinuationCount >= continuationLimit;
+    lastAssistantContent = content;
+    const responseText = textFromBlocks(content);
+    // OpenAI 规范：finish_reason=stop 是模型自然停止的唯一标识。
+    // 但社区实测存在 stop 但 content 带 tool_calls 的边界（非标准）——双保险：stop && 无 tool_use
+    // 才算真正说完（tool_calls 轮即使报 stop 也是要调工具，不该 judge/wrapup）
+    const isEndTurn = roundStopReason === "end_turn" && !hasToolUse(content);
+    const wrapupJson = wrapupEnabled && isEndTurn
+      ? tryParseWrapupJson(responseText)
+      : null;
+    const parsedSummary = parseL1Summary(responseText);
+    let roundSummary = wrapupJson === null
+      ? parsedSummary.summary
+      : wrapupJson.summary;
+    content = content.map((block) => (
+      block?.type === "text"
+        ? { ...block, text: parseL1Summary(block.text).text }
+        : block
+    ));
+    const assistant = messages.at(-1);
+    if (assistant?.role === "assistant") assistant.content = content;
+    finalText = textFromBlocks(content);
+    if (wrapupJson !== null) {
+      finalText = wrapupJson.output || wrapupJson.summary;
+    }
+
+    if (hasToolUse(content)) {
+      hadToolUse = true;
+      governorState.noToolStreak = 0;
+    }
+
+    if (response?.stopReason === "tool_use") {
+      const toolResults = [];
+      const pendingToolUses = content.filter((candidate) => candidate?.type === "tool_use");
+      for (const block of content) {
+        if (block?.type !== "tool_use") continue;
+        emitEvent({ type: "tool_use", round, toolUse: cloneState(block) });
+
+        const signature = `${block.name}${JSON.stringify(block.input)}`;
+        const stalled = stallMode === "consecutive"
+          ? recentSignatures.length >= stallWindow
+            && recentSignatures.slice(-stallWindow).every((recent) => recent === signature)
+          : recentSignatures.length >= stallWindow
+            && recentSignatures.includes(signature);
+        if (stallWindow > 0 && stalled) {
+          stallSuspicion = true;
+          stallSignature = signature;
+          recentSignatures.length = 0;
+        }
+        lastSignatureThisRound = signature;
+        if (stallWindow > 0) {
+          recentSignatures.push(signature);
+          if (recentSignatures.length > stallWindow) recentSignatures.shift();
+        }
+
+        const recordedToolResult = checkpointResults.get(block.id);
+        const toolResult = executedToolIds.has(block.id) && recordedToolResult !== undefined
+          ? cloneState(recordedToolResult)
+          : await executeToolWithIntercept(
+            block,
+            round,
+            toolResults,
+            pendingToolUses.slice(pendingToolUses.findIndex((candidate) => candidate === block)),
+          );
+        if (!toolResults.includes(toolResult)) toolResults.push(toolResult);
+        emitEvent({ type: "tool_result", round, toolResult: cloneState(toolResult) });
+      }
+      if (toolResults.length > 0) {
+        const toolResultMessage = { role: "user", content: toolResults };
+        messages.push(toolResultMessage);
+        messageRounds.set(toolResultMessage, round);
+      }
+      if (pendingDirectionHints.length > 0) {
+        // 方向提示独立 user text 消息（模型可见，但不混入 tool_result 事实链——避免污染后续 judge 输入）
+        // 限 2 条/轮防膨胀（同轮多个 off_track 合并）
+        const hints = pendingDirectionHints.length > 2
+          ? [...pendingDirectionHints.slice(0, 2), "（另有多次方向提示已合并）"]
+          : [...pendingDirectionHints];
+        const hintMessage = {
+          role: "user",
+          content: hints.map((text) => ({ type: "text", text })),
+        };
+        messages.push(hintMessage);
+        messageRounds.set(hintMessage, round);
+        pendingDirectionHints.length = 0;
+      }
+    }
+    // streak 只累积 stalled 命中；出现不同签名（模型转向）才清零
+    if (stallSuspicion) {
+      stallStreak += 1;
+      lastStallSignature = stallSignature;
+    } else if (lastStallSignature !== null && lastSignatureThisRound !== null
+      && lastSignatureThisRound !== lastStallSignature) {
+      // 本轮调用了与上次 stalled 不同的签名 → 模型转向，清零
+      stallStreak = 0;
+      lastStallSignature = null;
+    }
+
+    let shouldContinue = response?.stopReason === "tool_use"
+      || (wrapupJson !== null && wrapupJson.done === false);
+    let normalizedWrapup = null;
+    let completionSignalDetected = wrapupJson?.done === true
+      || (wrapupJson === null && completionSignals.some(
+      (completionSignal) => typeof completionSignal === "string"
+        && finalText.includes(completionSignal),
+      ));
+    // LLM 归一化兑底：end_turn + 无工具 + 没解析出 JSON（含空文本/自然语言/杂讯）→
+    // 调 judge 归一化为 {done,summary,output}，统一交给下游判定。
+    // 触发条件刻意宽松：找不到 JSON 就该归一化（覆盖空文本/难任务放弃场景）。
+    if (
+      wrapupJson === null
+      && response?.stopReason === "end_turn"
+      && !hasToolUse(content)
+      && wrapupNormalizationEnabled
+    ) {
+      try {
+        const requestForJudge = {
+          system: "你是输出协议归一化器，只输出有效 JSON。",
+          messages: [{
+            role: "user",
+            content: [{ type: "text", text: `【归一化】判断 agent 是否完成任务。
+任务目标：${taskBrief || "（未提供）"}
+已运行轮数：${rounds}
+本轮 agent 最终输出（可能为空）：${JSON.stringify(responseText).slice(0, 2000)}
+若 agent 已给出明确结论/产物就绪则 done=true；若它在工作中途停下/放弃则判断产出是否可判定，可判定则 done=true 否则 done=false。
+只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果"}` }],
+          }],
+          signal,
+        };
+        if (maxTokens !== undefined) requestForJudge.maxTokens = maxTokens;
+        if (temperature !== undefined) requestForJudge.temperature = temperature;
+        const judgeResponse = await awaitWithAbort(wrapupEvaluator.chat(requestForJudge));
+        addUsage(judgeResponse, undefined, { trackLatest: false });
+        const candidate = tryParseWrapupJson(
+          textFromBlocks(blocksFor(judgeResponse?.content)),
+        );
+        if (candidate !== null) {
+          normalizedWrapup = candidate;
+          if (candidate.summary !== "" || candidate.output !== "") {
+            roundSummary = candidate.summary || candidate.output || roundSummary;
+          }
+          if (candidate.done === true) {
+            shouldContinue = false;
+            completionSignalDetected = true;
+            if (candidate.output !== "" || candidate.summary !== "") {
+              finalText = candidate.output || candidate.summary || finalText;
+            }
+          } else {
+            shouldContinue = true;
+          }
+        } else {
+          // 归一化失败：关闭开关，避免每轮都烧 token
+          wrapupNormalizationEnabled = false;
+        }
+      } catch {
+        // 归一化失败降级：走现有 noToolStreak/completion 兑底，不崩 loop
+      }
+    }
+    // 失忆兑底：超过 5 轮后模型若输出欢迎语（误以为新会话），注入任务提醒并继续
+    // （上下文折叠可能让模型丢失任务感；此处把主线拉回，避免空转）
+    const memoryLossDetected = rounds > 5
+      && wrapupJson === null
+      && !hasToolUse(content)
+      && isLikelyWelcomeResponse(finalText);
+    const noToolRound = !hasToolUse(content)
+      && completionEnabled
+      && !completionSignalDetected
+      && hadToolUse;
+    if (hasToolUse(content)) {
+      governorState.noToolStreak = 0;
+    } else if (noToolRound) {
+      governorState.noToolStreak += 1;
+    }
+
+    rounds = round;
+    const currentRoundMessages = messages.slice(roundStart);
+    const currentL0 = extractL0Facts(currentRoundMessages, {
+      seenErrors: governorState.errorSeen,
+    });
+    const currentTimeline = buildTimeline(messages, roundStart, {
+      writeToolNames: resolvedWriteToolNames,
+      writeToolPathKeys: resolvedWriteToolPathKeys,
+    });
+    governorState.timeline.push({ round, ...currentTimeline });
+    governorState.timeline = governorState.timeline.slice(-12);
+    for (const call of currentTimeline.toolCalls) {
+      if (resolvedWriteToolNames.has(call.name) && call.arg) {
+        governorState.filesWritten.push({ path: call.arg, round });
+        trimFilesWritten();
+      }
+    }
+    const actionSignals = {
+      round,
+      rounds,
+      hasToolUse: hasToolUse(content),
+      shouldContinue,
+      noToolRound,
+      noToolStreak: governorState.noToolStreak,
+      maxNoToolRounds,
+      errorRepeat: currentL0.errorRepeat,
+      hasProgress: hasSuccessfulToolResult(currentRoundMessages),
+      memoryLoss: memoryLossDetected,
+      completionSignalDetected,
+      continuationExhausted,
+      stallSuspicion,
+      stallStreak,
+      wrapUpNudged: governorState.wrapUpNudged,
+      reflectionEnabled: roundJudgeEnabled ? false : reflectionEnabled,
+      nearLimit: rounds >= governorState.nextReflectionRound,
+      extensionCount: governorState.extensionCount,
+      maxExtensions: reflectionMaxExtensions,
+      effectiveMaxRounds: governorState.effectiveMaxRounds,
+      maxRoundsCap: reflectionMaxRoundsCap,
+      extensionStep: reflectionExtensionStep,
+      elapsedMs: elapsedMs(),
+      remainingMs: remainingMs(),
+    };
+    let judgeDecision;
+    // end_turn 轮完整评估；工具中途审计已在工具执行前独立完成，不参与停机判定。
+    if (roundJudgeEnabled && isEndTurn) {
+      try {
+        judgeDecision = await callRoundJudge(round, currentL0);
+        if (judgeDecision === null) {
+          roundJudgeFailures += 1;
+          if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
+          emitJudge({
+            round,
+            kind: "round",
+            decision: null,
+            action: "degraded",
+            error: "parse",
+          });
+        } else {
+          roundJudgeFailures = 0;
+          emitJudge({
+            round,
+            kind: "round",
+            decision: {
+              done: judgeDecision.done,
+              confidence: judgeDecision.confidence,
+              reason: judgeDecision.reason,
+              evidence: judgeDecision.evidence,
+              direction: judgeDecision.direction,
+              directionReason: judgeDecision.directionReason,
+            },
+            action: judgeDecision.done === true && judgeDecision.confidence >= 0.7
+              ? "judge_done"
+              : (judgeDecision.done === false ? "nudge" : "continue"),
+          });
+        }
+      } catch (error) {
+        if (signal?.aborted) throwIfAborted(signal);
+        roundJudgeFailures += 1;
+        if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
+        emitJudge({
+          round,
+          kind: "round",
+          decision: null,
+          action: "degraded",
+          error: error?.code === "judge_intercept_timeout" ? "timeout" : "error",
+        });
+      }
+    }
+
+    let action;
+    if (judgeDecision?.done === true
+      && judgeDecision.confidence >= 0.7
+      && isEndTurn) {
+      action = {
+        kind: "stop",
+        value: "judge_done",
+        truncated: false,
+      };
+    } else if (judgeDecision?.done === false) {
+      const reason = judgeDecision.reason || "任务尚未完成";
+      const evidence = judgeDecision.evidence || "评审未提供更多证据";
+      const directionHint = judgeDecision.direction === "off_track"
+        ? `\n方向提示：${judgeDecision.directionReason || "当前路线可能偏，可考虑换思路/方法"}（仅提示，可考虑替代路线）`
+        : "";
+      action = {
+        kind: "nudge",
+        reason: "judge",
+        text: `【Judge 评审意见】${reason}\n证据：${evidence}${directionHint}\n请根据评审意见继续完成任务。`,
+        continue: true,
+      };
+    } else {
+      action = decideRoundAction(actionSignals);
+    }
+    let reflectionDecision;
+    if (action.kind === "reflect") {
+      // Phase two stays in the loop because only the loop owns the provider.
+      try {
+        reflectionDecision = await callReflection(round, currentL0, roundSummary);
+      } catch (error) {
+        if (signal?.aborted) throwIfAborted(signal);
+        // judge 失败降级：不崩 loop，回到无评估的 actionSignals 决策
+        reflectionDecision = undefined;
+        action = decideRoundAction({
+          ...actionSignals,
+          reflectionEnabled: false,
+        });
+      }
+      if (reflectionDecision !== undefined) {
+        action = decideWithEvaluation(actionSignals, reflectionDecision);
+        if (typeof effectiveReflection?.onReflection === "function") {
+          await effectiveReflection.onReflection({
+            round,
+            decision: reflectionDecision,
+            extendedTo: action.kind === "extend" || action.kind === "extend+redirect"
+              ? Math.min(
+                governorState.effectiveMaxRounds + reflectionExtensionStep,
+                reflectionMaxRoundsCap,
+              )
+              : governorState.effectiveMaxRounds,
+          });
+        }
+      }
+    }
+    addGovernorHistory(
+      round,
+      roundSummary,
+      currentL0,
+      new Date().toISOString(),
+      wrapupJson,
+      judgeDecision,
+    );
+    const roundRunState = await refreshRunState();
+
+    const record = {
+      round,
+      roundKey: `${String(runId)}:round:${String(round)}`,
+      dedupKey: `${String(runId)}:round:${String(round)}`,
+      messages: messages.slice(roundStart),
+      ts: new Date().toISOString(),
+      response: {
+        content,
+        stopReason: response?.stopReason,
+        ...(response?.usage === undefined ? {} : { usage: response.usage }),
+      },
+      textPreview: textFromBlocks(content),
+      toolUses: content.filter((block) => block?.type === "tool_use").length,
+      summary: roundSummary,
+      l0facts: currentL0,
+      runState: cloneState(roundRunState),
+      ...(judgeDecision === null || judgeDecision === undefined ? {} : {
+        judge: {
+          done: judgeDecision.done,
+          confidence: judgeDecision.confidence,
+          reason: judgeDecision.reason,
+          evidence: judgeDecision.evidence,
+          direction: judgeDecision.direction,
+          directionReason: judgeDecision.directionReason,
+        },
+      }),
+      ...(wrapupJson === null ? {} : { wrapup: wrapupJson }),
+    };
+    if (compaction.folded) {
+      record.folded = true;
+      if (compaction.foldedPayload !== undefined) {
+        record.foldedPayload = compaction.foldedPayload;
+      }
+      if (compaction.foldedRoundRange !== undefined) {
+        record.foldedRoundRange = compaction.foldedRoundRange;
+      }
+      if (compaction.navigationRecord !== undefined) {
+        record.navigationRecord = compaction.navigationRecord;
+      }
+    }
+    const persisted = await persist("appendRound", runId, record);
+    if (persisted) persistedTranscriptLength += record.messages.length;
+    if (onRound) await onRound(record);
+
+    executedToolIds.clear();
+    checkpointResults.clear();
+    emitEvent({
+      type: "round_end",
+      round,
+      finalText,
+      stopReason: roundStopReason,
+      usage: { ...usage },
+    });
+    if (action.kind === "nudge") {
+      const continuationMessage = {
+        role: "user",
+        content: [{ type: "text", text: action.text }],
+      };
+      messages.push(continuationMessage);
+      messageRounds.set(continuationMessage, round);
+      if (action.resetNoToolStreak) governorState.noToolStreak = 0;
+      if (action.wrapUpNudged === true) governorState.wrapUpNudged = true;
+      continue;
+    }
+    if (action.kind === "extend" || action.kind === "extend+redirect") {
+      governorState.effectiveMaxRounds = Math.min(
+        governorState.effectiveMaxRounds + reflectionExtensionStep,
+        reflectionMaxRoundsCap,
+      );
+      governorState.extensionCount += 1;
+      governorState.nextReflectionRound = Math.max(
+        rounds + 1,
+        Math.floor(governorState.effectiveMaxRounds * 0.8),
+      );
+      const continuationMessage = {
+        role: "user",
+        content: [{ type: "text", text: action.text }],
+      };
+      messages.push(continuationMessage);
+      messageRounds.set(continuationMessage, round);
+      continue;
+    }
+    if (action.kind === "stop") {
+      const reason = terminationReasonForAction(action, continuationExhausted);
+      const detail = reason === "reflection_stop" ? action.reason : undefined;
+      await forceFinalIfNeeded(reason);
+      if (
+        typeof finalGuard === "function"
+        && FINAL_GUARD_TERMINATION_REASONS.has(reason)
+      ) {
+        const guardDecision = await callFinalGuard(reason, detail);
+        if (guardDecision.action === "error") {
+          return finish(reason, detail);
+        }
+        if (guardDecision.action === "skip") {
+          return finish(reason, detail);
+        }
+        if (FINAL_GUARD_NON_CONTINUABLE_REASONS.has(reason)) {
+          guardMetrics.unverified += 1;
+          verification = {
+            status: "unverified",
+            reason: "non_continuable",
+            detail: reason,
+          };
+          emitEvent({
+            type: "final_guard",
+            round: rounds,
+            action: "degraded",
+            reason: "non_continuable",
+          });
+          return finish("final_guard_unverified");
+        }
+        if (guardDecision.action === "revise") {
+          if (finalGuardRetries >= finalGuardRetryLimit) {
+            guardMetrics.unverified += 1;
+            verification = {
+              status: "unverified",
+              reason: "max_retries",
+            };
+            emitEvent({
+              type: "final_guard",
+              round: rounds,
+              action: "degraded",
+              reason: "max_retries",
+            });
+            return finish("final_guard_unverified");
+          }
+          finalGuardRetries += 1;
+          const continuationMessage = {
+            role: "user",
+            content: [{ type: "text", text: guardDecision.message }],
+          };
+          messages.push(continuationMessage);
+          messageRounds.set(continuationMessage, round);
+          continue;
+        }
+      }
+      return finish(reason, detail);
+    }
+    if (action.kind === "continue") continue;
+    }
+  } catch (error) {
+    await fail(error);
+  }
+
+  await forceFinalIfNeeded("max_rounds_cap");
+  if (typeof finalGuard !== "function") return finish("max_rounds_cap");
+  const guardDecision = await callFinalGuard("max_rounds_cap");
+  if (guardDecision.action === "error") return finish("max_rounds_cap");
+  if (guardDecision.action === "skip") return finish("max_rounds_cap");
+  guardMetrics.unverified += 1;
+  verification = {
+    ...verification,
+    status: "unverified",
+    reason: "non_continuable",
+    detail: "max_rounds_cap",
+  };
+  emitEvent({
+    type: "final_guard",
+    round: rounds,
+    action: "degraded",
+    reason: "non_continuable",
+  });
+  return finish("final_guard_unverified");
+}
