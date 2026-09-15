@@ -84,11 +84,13 @@ function missingAssemblyMethods(port) {
   if (!port.tools || typeof port.tools.executeTool !== "function") {
     missing.push("tools.executeTool");
   }
-  if (!port.store || typeof port.store !== "object" || Array.isArray(port.store)) {
-    missing.push("store");
-  } else {
-    for (const method of TRANSCRIPT_STORE_METHODS) {
-      if (typeof port.store[method] !== "function") missing.push(`store.${method}`);
+  if (port.store !== undefined) {
+    if (typeof port.store !== "object" || port.store === null || Array.isArray(port.store)) {
+      missing.push("store");
+    } else {
+      for (const method of TRANSCRIPT_STORE_METHODS) {
+        if (typeof port.store[method] !== "function") missing.push(`store.${method}`);
+      }
     }
   }
   if (!port.session || typeof port.session !== "object" || Array.isArray(port.session)) {
@@ -114,8 +116,8 @@ function missingAssemblyMethods(port) {
  *   Provider instance. The library never reads credentials from this boundary.
  * @property {{definitions:object[],executeTool:Function,getToolMetadata?:Function}} tools
  *   Tool definitions and the structured ToolExecutor.
- * @property {object} store
- *   A complete TranscriptStore implementation with all nine methods.
+ * @property {object} [store]
+ *   Optional complete TranscriptStore implementation with all nine methods.
  * @property {{id:string,modelSlot?:string,resume?:boolean,initialMessages?:object[]}} session
  *   Run identity and optional resume seed.
  * @property {{put:Function,get:Function}} [resourceStore]
@@ -187,7 +189,7 @@ export async function assemblyPortOptions(input, overrides = {}) {
     provider: port.provider,
     tools: port.tools.definitions,
     executeTool: port.tools.executeTool,
-    store: port.store,
+    ...(port.store === undefined ? {} : { store: port.store }),
     runId: port.session.id,
     ...(port.session.resume === undefined ? {} : { resume: port.session.resume }),
     ...(port.session.initialMessages === undefined

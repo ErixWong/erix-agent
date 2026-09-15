@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { createStaticModelConfigProvider } from "../../src/config/static.js";
+import { createAssemblyPort } from "../../src/assembly.js";
+import { runToolLoop } from "../../src/loop.js";
 import { assemblyPortContract } from "./assembly-port.js";
 
 function createProvider() {
@@ -78,5 +80,37 @@ test("fine-grained startup validation rejects incomplete assembly-shaped input",
       && /provider\.chat or provider\.chatStream/u.test(error.message)
       && /executeTool/u.test(error.message)
       && /modelConfig\.resolve/u.test(error.message),
+  );
+});
+
+test("assembly port without a store runs with no persistence", async () => {
+  const port = createAssemblyPort({
+    modelConfig: { resolve: async () => ({}) },
+    provider: createProvider(),
+    tools: { definitions: [], async executeTool() {} },
+    session: { id: `assembly-no-store-${process.pid}` },
+  });
+
+  const result = await runToolLoop({
+    assemblyPort: port,
+    completion: false,
+    wrapup: false,
+    maxRounds: 1,
+  });
+
+  assert.equal(result.finalText, "assembled");
+  assert.equal(result.termination.reason, "end_turn");
+});
+
+test("assembly port rejects a store missing one of the required methods", () => {
+  assert.throws(
+    () => createAssemblyPort({
+      modelConfig: { resolve: async () => ({}) },
+      provider: createProvider(),
+      tools: { definitions: [], async executeTool() {} },
+      store: { appendRound() {} },
+      session: { id: "assembly-incomplete-store" },
+    }),
+    (error) => error instanceof TypeError && /store\.load/u.test(error.message),
   );
 });
