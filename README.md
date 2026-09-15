@@ -348,7 +348,8 @@ decide whether to consume the result.
   The judge's `filesWritten` footprint does not infer arbitrary write tools
   from their names.
 - `TranscriptStore` implementations provide idempotent `appendRound` plus
-  optional checkpoint and run-state persistence. The object form of
+  required checkpoint and run-state persistence. Pass `persistence: "none"` to
+  explicitly disable all writes. The object form of
   `store.recall()` supports `fromRound`, `toRound`, `pattern`, `artifactRef`,
   `limit`, `cursor`, and `maxBytes`, returning `{ text, truncated,
   nextCursor?, status }`. It is bounded exact retrieval, not semantic

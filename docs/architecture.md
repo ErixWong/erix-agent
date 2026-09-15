@@ -519,12 +519,12 @@ configuration is passed to a provider factory by the host.
  * @property {(runId:string, record:object) => Promise<void>} appendRound
  * @property {(runId:string) => Promise<object[]>} load
  * @property {(runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string|object>} recall
- * @property {(runId:string, state:string) => Promise<void>} [markRunState]
- * @property {(runId:string, state:object) => Promise<void>} [saveRunState]
- * @property {(runId:string) => Promise<object|undefined>} [loadRunState]
- * @property {(runId:string, checkpoint:object) => Promise<void>} [saveCheckpoint]
- * @property {(runId:string, checkpoint:object) => Promise<void>} [appendCheckpoint]
- * @property {(runId:string) => Promise<object|undefined>} [loadLatestCheckpoint]
+ * @property {(runId:string, state:string) => Promise<void>} markRunState
+ * @property {(runId:string, state:object) => Promise<void>} saveRunState
+ * @property {(runId:string) => Promise<object|undefined>} loadRunState
+ * @property {(runId:string, checkpoint:object) => Promise<void>} saveCheckpoint
+ * @property {(runId:string, checkpoint:object) => Promise<void>} appendCheckpoint
+ * @property {(runId:string) => Promise<object|undefined>} loadLatestCheckpoint
  */
 ```
 
@@ -547,10 +547,15 @@ The store is designed for one writer per `runId` and process. It repairs a
 complete JSONL record missing its final newline and isolates an incomplete
 trailing fragment. Cross-process locking is outside the store contract.
 
-Checkpoint persistence is used before and after tool execution when the store
-provides both a writer and `loadLatestCheckpoint`. A write failure is treated
-as a checkpoint failure, including the case where a tool has already executed
-but its result could not be persisted. Resume replays pending tool calls in
+`runToolLoop` uses `persistence: "required"` by default when a store is
+provided and validates all nine methods before the provider is called.
+`persistence: "none"` is an explicit no-op mode. Required writes use the
+loop retry policy; an exhausted write emits a `persistence_error` through
+`diagnostics.error` and terminates with `reason: "persistence_failed"`.
+Checkpoint persistence is used before and after tool execution. A pre-tool
+failure reports `sideEffect: "not_started"` and prevents execution; a
+post-tool failure reports `sideEffect: "executed_uncommitted"` while retaining
+the `checkpoint_failed` error class. Resume replays pending tool calls in
 their original order; hosts must still make side-effecting `executeTool`
 implementations idempotent.
 

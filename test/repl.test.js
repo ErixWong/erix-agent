@@ -301,6 +301,52 @@ test("runRepl injects archive status at fold time instead of into loop context",
   }
 });
 
+test("runRepl wires persistence diagnostics to stderr", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-repl-diagnostics-test-"));
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  const errorOutput = new PassThrough();
+  let captured;
+  try {
+    const run = runRepl(
+      ["--session", "repl-diagnostics", "--dir", dir],
+      {
+        input,
+        output,
+        errorOutput,
+        sessionDir: dir,
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        providerFactory: () => ({}),
+        loop: async (options) => {
+          captured = options;
+          return {
+            finalText: "done",
+            messages: [],
+            rounds: 1,
+            usage: { input_tokens: 0, output_tokens: 0 },
+            compactionStats: [],
+          };
+        },
+      },
+    );
+    input.end("diagnostics\n/exit\n");
+    await run;
+
+    captured.diagnostics.error({
+      operation: "saveCheckpoint",
+      phase: "checkpoint_before_tool",
+      runId: "repl-diagnostics",
+    });
+    assert.match(String(errorOutput.read()), /Persistence error: saveCheckpoint during checkpoint_before_tool/);
+  } finally {
+    input.destroy();
+    output.destroy();
+    errorOutput.destroy();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runRepl reports a damaged MCP config instead of treating it as absent", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-repl-mcp-error-test-"));
   const input = new PassThrough();

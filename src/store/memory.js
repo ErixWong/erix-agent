@@ -46,7 +46,9 @@ function blockText(block) {
  *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string|object>,
  *   markRunState: (runId:string, state:string) => Promise<void>,
  *   saveRunState: (runId:string, state:object) => Promise<void>,
+ *   loadRunState: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
+ *   appendCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
  * }}
  */

@@ -343,6 +343,7 @@ export async function runRepl(argv, io = {}) {
   const options = parseReplArgs(argv, cwd);
   const input = io.input ?? process.stdin;
   const output = io.output ?? process.stdout;
+  const errorOutput = io.errorOutput ?? process.stderr;
   const sessionDir = io.sessionDir ?? join(homedir(), ".erix");
   const notesDir = process.env.ERIX_NOTES_DIR ?? join(homedir(), ".erix", "notes");
 
@@ -628,6 +629,13 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         store,
         runId: options.session,
         runState,
+        diagnostics: {
+          error: (event) => {
+            errorOutput.write(
+              `Persistence error: ${event.operation} during ${event.phase} (runId=${String(event.runId)})\n`,
+            );
+          },
+        },
         resume,
         signal,
         stream: true,

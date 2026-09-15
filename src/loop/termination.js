@@ -230,15 +230,19 @@ export function createTerminationManager(ctx) {
   const finish = async (reason, detail) => {
     ctx.currentTerminationReason = reason;
     const refreshRunState = ctx.refreshRunState;
-    await refreshRunState();
-    const state = ctx.verification.status === "unverified"
-      ? "unverified_error"
-      : ctx.verification.status === "error"
-        ? "guard_error"
-        : "succeeded";
-    const markRunState = ctx.markRunState;
-    await markRunState(state);
-    return makeResult(reason, detail);
+    try {
+      await refreshRunState();
+      const state = ctx.verification.status === "unverified"
+        ? "unverified_error"
+        : ctx.verification.status === "error"
+          ? "guard_error"
+          : "succeeded";
+      const markRunState = ctx.markRunState;
+      await markRunState(state);
+      return makeResult(reason, detail);
+    } catch (error) {
+      return ctx.fail(error);
+    }
   };
 
   return {

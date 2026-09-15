@@ -507,6 +507,10 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
 });
 
 test("fails closed when a checkpoint cannot be persisted before a tool", async () => {
+  const store = createMemoryTranscriptStore();
+  store.saveCheckpoint = async () => {
+    throw new Error("checkpoint disk full");
+  };
   const provider = createFakeProvider([
     toolResponse("checkpoint-failure", "work"),
   ]);
@@ -520,14 +524,7 @@ test("fails closed when a checkpoint cannot be persisted before a tool", async (
         executions += 1;
         return "must not run";
       },
-      store: {
-        async saveCheckpoint() {
-          throw new Error("checkpoint disk full");
-        },
-        async loadLatestCheckpoint() {
-          return undefined;
-        },
-      },
+      store,
       runId: "checkpoint-failure-run",
       completion: false,
       onPersistenceError: () => {},
@@ -536,7 +533,7 @@ test("fails closed when a checkpoint cannot be persisted before a tool", async (
       && error.code === "checkpoint_failed"
       && /checkpoint-failure-run/.test(error.message)
       && /round=1/.test(error.message)
-      && error.termination?.reason === "failed",
+      && error.termination?.reason === "persistence_failed",
   );
   assert.equal(executions, 0);
 });
@@ -571,15 +568,13 @@ test("fails closed after a tool when its executed checkpoint cannot be persisted
       && error.code === "checkpoint_failed"
       && /after tool execution/.test(error.message)
       && /already executed but result was not persisted/.test(error.message)
-      && error.termination?.reason === "failed",
+      && error.termination?.reason === "persistence_failed",
   );
   assert.equal(executions, 1);
   assert.equal((await store.loadRunState("post-checkpoint-failure-run")).state, "failed");
 });
 
-test("save-only checkpoint store (no loader) does not fail closed", async () => {
-  // writer 无 loader 的 store 无法 resume——不应启用 fail-closed（否则宿主的 save-only
-  // 适配器会在 checkpoint 偶发失败时无谓地杀掉任务）
+test("none persistence mode does not call a save-only checkpoint writer", async () => {
   const provider = createFakeProvider([
     toolResponse("save-only", "work"),
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
@@ -601,13 +596,14 @@ test("save-only checkpoint store (no loader) does not fail closed", async () => 
       },
     },
     runId: "save-only-run",
+    persistence: "none",
     completion: false,
     onPersistenceError: () => {},
   });
 
   assert.equal(executions, 1, "save-only store 不应阻止工具执行");
   assert.equal(result.finalText, "done");
-  assert.ok(saveAttempts > 0, "saveCheckpoint 仍被调用（尽力而为）");
+  assert.equal(saveAttempts, 0, "none 模式不应调用持久化 writer");
 });
 
 test("executes tools normally without a checkpoint store", async () => {
@@ -631,7 +627,7 @@ test("executes tools normally without a checkpoint store", async () => {
   assert.equal(result.finalText, "done");
 });
 
-test("reports persistence failures without stopping the loop", async () => {
+test("none persistence mode ignores an incomplete store without stopping the loop", async () => {
   const errors = [];
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
@@ -647,12 +643,12 @@ test("reports persistence failures without stopping the loop", async () => {
       },
     },
     runId: "persistence",
+    persistence: "none",
     onPersistenceError: (error) => errors.push(error),
   });
 
   assert.equal(result.finalText, "done");
-  assert.equal(errors.length, 2);
-  assert.ok(errors.every((error) => error.message === "disk full"));
+  assert.equal(errors.length, 0);
 });
 
 test("keeps fold recall round numbers global across loop compactions", async () => {
