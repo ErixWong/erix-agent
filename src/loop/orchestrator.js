@@ -414,7 +414,8 @@ export async function runToolLoop(options) {
     onEvent,
   } = effectiveOptions;
   const fineGrainedPortShape = (
-    (session !== undefined && session !== null && typeof session === "object")
+    (assemblyPort === undefined
+      && session !== undefined && session !== null && typeof session === "object")
     || typeof modelConfig?.resolve === "function"
   );
   const startupMissing = [];
@@ -432,6 +433,10 @@ export async function runToolLoop(options) {
       || typeof session.id !== "string" || session.id.length === 0) {
       startupMissing.push("session.id");
     }
+  } else if (assemblyPort !== undefined
+    && explicitOptions.modelConfig !== undefined
+    && (!modelConfig || typeof modelConfig.resolve !== "function")) {
+    startupMissing.push("modelConfig.resolve");
   }
   if (startupMissing.length > 0) {
     throw new TypeError(`assembly port is missing methods: ${startupMissing.join(", ")}`);

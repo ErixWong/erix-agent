@@ -42,9 +42,9 @@ assemblyPortContract("reference", () => ({
   session: { id: `assembly-contract-${process.pid}` },
 }));
 
-test("explicit fine-grained modelConfig skips the assembly resolver", async () => {
+test("assembly port supports default and explicit modelConfig paths", async () => {
   let resolveCount = 0;
-  const port = {
+  const port = createAssemblyPort({
     modelConfig: {
       async resolve() {
         resolveCount += 1;
@@ -55,15 +55,29 @@ test("explicit fine-grained modelConfig skips the assembly resolver", async () =
     tools: { definitions: [], async executeTool() {} },
     store: createMemoryTranscriptStore(),
     session: { id: `assembly-precedence-${process.pid}` },
-  };
+  });
 
-  await import("../../src/loop.js").then(({ runToolLoop }) => runToolLoop({
+  const defaultResult = await runToolLoop({
     assemblyPort: port,
-    modelConfig: { contextWindowTokens: 100000, maxOutputTokens: 1000 },
     completion: false,
     wrapup: false,
     maxRounds: 1,
-  }));
+  });
+  assert.equal(defaultResult.termination.reason, "end_turn");
+  resolveCount = 0;
+
+  const explicitResult = await runToolLoop({
+    assemblyPort: port,
+    modelConfig: {
+      async resolve() {
+        return { contextWindowTokens: 100000, maxOutputTokens: 1000 };
+      },
+    },
+    completion: false,
+    wrapup: false,
+    maxRounds: 1,
+  });
+  assert.equal(explicitResult.termination.reason, "end_turn");
   assert.equal(resolveCount, 0);
 });
 

@@ -191,6 +191,7 @@ export async function assemblyPortOptions(input, overrides = {}) {
     executeTool: port.tools.executeTool,
     ...(port.store === undefined ? {} : { store: port.store }),
     runId: port.session.id,
+    session: port.session,
     ...(port.session.resume === undefined ? {} : { resume: port.session.resume }),
     ...(port.session.initialMessages === undefined
       ? {}
