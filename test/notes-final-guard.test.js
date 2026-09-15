@@ -195,7 +195,7 @@ test("capture stubs retain safe labels but never credential values", async () =>
     const archived = archiveResult(
       directory,
       "exec",
-      "nonce=abc123\napi_key=sk-secret-value\npassword=hunter2\n",
+      `nonce=abc123\nsafe=${"x".repeat(1000)}\napi_key=sk-secret-value\npassword=hunter2\n`,
       1,
       { force: true, replayable: false, command: "printf nonce=$TOKEN" },
     );
@@ -208,6 +208,7 @@ test("capture stubs retain safe labels but never credential values", async () =>
     });
     assert.match(stub, /nonce=abc123/u);
     assert.doesNotMatch(stub, /sk-secret-value|hunter2/u);
+    assert.doesNotMatch(stub, /x{201,}/u);
     assert.ok(Array.from(stub).length <= 200);
   });
 });

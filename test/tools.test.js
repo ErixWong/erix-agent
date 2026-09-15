@@ -31,6 +31,63 @@ test("createCliTools exposes all five tools", () => {
   );
 });
 
+test("replayability records declared, policy, heuristic, and unknown sources", async () => {
+  await withDirectory(async (cwd) => {
+    const cases = [
+      {
+        name: "declared",
+        options: {
+          replayable: { exec: false },
+          nonReplayable: { patterns: ["declared"] },
+        },
+        command: "printf declared",
+        source: "declared",
+      },
+      {
+        name: "policy",
+        options: { nonReplayable: { patterns: ["policy"] } },
+        command: "printf policy",
+        source: "policy",
+      },
+      {
+        name: "heuristic",
+        options: {},
+        command: "printf heuristic; : \"$RANDOM\"",
+        source: "heuristic",
+      },
+      {
+        name: "unknown",
+        options: {},
+        command: "printf unknown",
+        source: "unknown",
+      },
+    ];
+
+    for (const [index, item] of cases.entries()) {
+      const archiveDir = join(cwd, `outputs-${index}`);
+      const tools = createCliTools({
+        cwd,
+        archiveDir,
+        ...item.options,
+      });
+      const result = await tools.executeTool("exec", { command: item.command });
+      const metadata = tools.getLastToolMetadata();
+      assert.equal(metadata.replayableSource, item.source, item.name);
+      assert.equal(metadata.replayable, item.source === "unknown" ? undefined : false);
+      assert.match(result, /完整输出已归档/u, item.name);
+    }
+
+    const unknownTools = createCliTools({
+      cwd,
+      archiveDir: join(cwd, "unknown-rerun"),
+    });
+    await unknownTools.executeTool("exec", { command: "printf rerun" });
+    const rerun = await unknownTools.executeTool("exec", { command: "printf rerun" });
+    assert.doesNotMatch(rerun, /已拦截重复执行/u);
+    assert.equal(unknownTools.getLastToolMetadata().replayableSource, "unknown");
+  });
+});
+
 test("file tools operate on paths outside the working directory", async () => {
   await withDirectory(async (cwd) => {
     await withDirectory(async (outside) => {
@@ -370,7 +427,11 @@ test("increments the repeated command guard count on every execution", async () 
 test("reports unrecoverable original output when the first result was not archived", async () => {
   await withDirectory(async (cwd) => {
     const archiveDir = join(cwd, "outputs");
-    const { executeTool } = createCliTools({ cwd, archiveDir });
+    const { executeTool } = createCliTools({
+      cwd,
+      archiveDir,
+      replayable: { exec: true },
+    });
     const command = "printf small";
 
     await executeTool("exec", { command });

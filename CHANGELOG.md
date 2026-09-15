@@ -12,7 +12,12 @@
 ### Added
 
 - 折叠时可由 CLI/宿主注入 `stubFor`，为不可重放工具结果保留有界、去凭据的最小事实 stub。
-- 折叠状态加入最多 10 条的归档目录视图，仅用于导航，不注入捕获值。
+- 折叠状态加入替换式、有界的 `navigationRecord`（最多 10 条 artifact、最多 400 字符），
+  携带 `locator`/`digest`/`status` 供模型导航和归档对账，不注入捕获值。
+- 工具和归档 metadata 增加 `replayableSource`（`declared`/`policy`/`heuristic`/`unknown`）；
+  `unknown` 继续归档但不宣称可重放、不触发重跑拦截。
+- 增加 store/无 store 折叠终止、折叠轮次范围、stub 脱敏与截断、归档失败、
+  replayability 来源优先级、unknown、resume 重入和导航记录边界的确定性契约测试。
 - 工具结果在剩余轮次不超过 2 轮时追加预算提示；轮次上限、stall 或 continuation 耗尽且没有终稿时，loop 可追加一次禁用工具的强制收尾。
 - `note_list` 按 `relevance` 降序、`updated_at` 降序排序，并支持 `minRelevance`、`tag`、`source` 筛选；自动捕获默认 relevance 为 `0.8`，旧记录按 `0.5` 处理。
 

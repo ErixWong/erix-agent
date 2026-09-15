@@ -212,3 +212,127 @@ test("does not change folding when no stub hook is injected", async () => {
   const result = await createFoldStatisticalStrategy().compact(messages, { keepRounds: 1 });
   assert.doesNotMatch(JSON.stringify(result.messages), /hidden/u);
 });
+
+test("records bounded navigation without values and preserves archive digests", async () => {
+  const messages = [{ role: "user", content: "task" }];
+  const artifacts = [];
+  for (let index = 1; index <= 12; index += 1) {
+    const digest = String(index.toString(16)).repeat(64).slice(0, 64);
+    const artifact = {
+      artifactId: `${String(index).padStart(3, "0")}-exec.txt`,
+      archivePath: `/tmp/archive/${index}-exec.txt`,
+      digest,
+      locator: { lineStart: 1, lineEnd: 2 },
+    };
+    artifacts.push(artifact);
+    messages.push(
+      {
+        role: "assistant",
+        content: [{
+          type: "tool_use",
+          id: `use-${index}`,
+          name: "exec",
+          input: {},
+        }],
+      },
+      {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: `use-${index}`,
+          replayable: false,
+          artifact,
+          content: `credential=must-not-enter-summary-${index}`,
+        }],
+      },
+    );
+  }
+  messages.push({ role: "user", content: "keep" });
+
+  const result = await createFoldStatisticalStrategy().compact(messages, {
+    keepRounds: 1,
+    roundNumbers: Array.from({ length: 25 }, (_, index) => index + 1),
+    stubFor: () => "[已折叠] 原文：/tmp/archive/001-exec.txt（不可重放）",
+  });
+
+  assert.deepEqual(result.foldedRoundRange, { from: 1, to: 12 });
+  assert.equal(result.navigationRecord.roundFrom, 1);
+  assert.equal(result.navigationRecord.roundTo, 12);
+  assert.ok(result.navigationRecord.artifacts.length <= 10);
+  assert.ok(result.navigationRecord.artifacts.length > 0);
+  assert.equal(result.navigationRecord.truncated, true);
+  assert.ok(JSON.stringify(result.navigationRecord).length <= 400);
+  assert.deepEqual(
+    result.navigationRecord.artifacts[0],
+    {
+      id: "001-exec.txt",
+      locator: { lineStart: 1, lineEnd: 2 },
+      digest: artifacts[0].digest,
+      status: "archived",
+    },
+  );
+  const summary = result.messages[0].content[0].text;
+  assert.match(summary, /导航记录：/u);
+  assert.doesNotMatch(summary, /must-not-enter-summary/u);
+  assert.match(summary, /\[已折叠\]/u);
+});
+
+test("replaces navigation and stubs on repeated folds instead of duplicating them", async () => {
+  const strategy = createFoldStatisticalStrategy();
+  const artifact = (id) => ({
+    artifactId: id,
+    digest: id.replace(/\D/gu, "a").repeat(64).slice(0, 64),
+    locator: { lineStart: 1, lineEnd: 1 },
+  });
+  const first = await strategy.compact([
+    { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "tool_use", id: "a", name: "exec", input: {} }] },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "a",
+        replayable: false,
+        artifact: artifact("001-exec.txt"),
+        content: "first-secret",
+      }],
+    },
+    { role: "assistant", content: "old" },
+    { role: "user", content: "keep" },
+  ], {
+    keepRounds: 1,
+    roundNumbers: [1, 2, 3, 4, 5],
+    stubFor: () => "[已折叠] first-pointer",
+  });
+  const second = await strategy.compact([
+    ...first.messages,
+    { role: "assistant", content: [{ type: "tool_use", id: "b", name: "exec", input: {} }] },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "b",
+        replayable: false,
+        artifact: artifact("002-exec.txt"),
+        content: "second-secret",
+      }],
+    },
+    { role: "user", content: "keep again" },
+  ], {
+    keepRounds: 1,
+    roundNumbers: [2, 3, 4, 5, 6],
+    stubFor: (message) => message.content[0].tool_use_id === "b"
+      ? "[已折叠] second-pointer"
+      : "[已折叠] first-pointer",
+  });
+
+  const text = second.messages[0].content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+  assert.equal((text.match(/导航记录：/gu) ?? []).length, 1);
+  assert.equal((text.match(/\[已折叠\]/gu) ?? []).length, 2);
+  assert.equal((text.match(/first-pointer/gu) ?? []).length, 1);
+  assert.equal((text.match(/second-pointer/gu) ?? []).length, 1);
+  assert.doesNotMatch(text, /first-secret|second-secret/u);
+});

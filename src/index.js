@@ -24,6 +24,10 @@ export {
 export { computeBudget } from "./compact/budget.js";
 export { createSlidingWindowStrategy } from "./compact/sliding-window.js";
 export { createFoldStatisticalStrategy } from "./compact/fold-statistical.js";
+export {
+  buildFoldNavigationRecord,
+  mergeFoldNavigationRecords,
+} from "./compact/fold-statistical.js";
 export { enforceSize } from "./compact/enforce-size.js";
 export { createMemoryTranscriptStore } from "./store/memory.js";
 export { createFileTranscriptStore } from "./store/file.js";

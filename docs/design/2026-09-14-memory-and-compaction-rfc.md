@@ -7,6 +7,13 @@
 - 关联：ADR-002（档案/视图分离）、ADR-003（压缩谱系）、ADR-005（recall 内置）、ADR-007（记忆五层）、**ADR-010（Memento 两个问题域）**、ADR-012（引擎真相/模型效率/宿主策略）
 - 本文与 ADR-010 的关系：**ADR-010 判断"erix 折叠系 = 问题域①的完整实现"——本 RFC 用实证指出该判断不成立（折叠缺少地址索引与契约），并给出修正设计。**
 
+> **评审结论摘要（PR [#81](https://github.com/ErixWong/erix-agent/pull/81)）**：评审确认
+> `foldedPayload`、轮次范围、CLI `stubFor` 接线和自动 capture 已存在；本 RFC 原先对 D5/D6
+> 的表述过时，D1/D3/D7/D8 也需要限定语。当前落地以
+> [评审全文](./2026-09-14-memory-and-compaction-rfc-review.md) 与
+> [Issue #82](https://github.com/ErixWong/erix-agent/issues/82) 为准：补齐确定性契约、
+> 调用级可重放性来源标注和窄版模型可见导航，不把未知状态宣称为可重放。
+
 ---
 
 ## 1. 目的与范围
@@ -61,7 +68,7 @@
 | 消息持久化 | `src/store/file.js` `appendRound(runId, record)` | 按轮落盘（transcript jsonl + checkpoint） |
 | 按范围取回 | `src/store/file.js` `recall(runId, fromRound, toRound, pattern)` | **服务端过滤后返回**（不是全量读回）✅ |
 | 折叠策略接口 | `src/compact/*` | sliding-window / fold-statistical / fold-llm / enforce-size |
-| 折叠地址 | `src/compact/fold-statistical.js:213` `roundRangeForIndexes` | 已算出被折轮次范围 `{from,to}`（**但没被用作索引**） |
+| 折叠地址 | `src/compact/fold-statistical.js` `roundRangeForIndexes` | 折叠结果持久化 `foldedRoundRange`，并可生成有界 `navigationRecord`（轮次、artifact locator、digest、status） |
 | 工具输出归档 | `bin/tools.js` | >800 字符落 `<transcriptDir>/outputs/<runId>/NNN-exec.txt` + `.meta.json` |
 | recall 工具（库） | `src/tools/recall.js`（`createRecallTool`） | 库里有、宿主可用；**CLI 不暴露**（PR #60 实测 28 会话 0 调用后移除） |
 | notes 技能 | `skills/notes/skill.mjs` | run scope、pull-only、`current + superseded[≤3] + folded`、墓碑 |
@@ -70,14 +77,14 @@
 
 | # | 缺陷 | 证据 |
 |---|---|---|
-| **D1** | **折叠会丢掉后续需要的真值**，且不留地址 | e2e：首次执行 `nonce=hzmk…`，折叠后模型无法取回；重跑得到 `O2D4…` 并当作原值回答（静默错答） |
+| **D1** | **在未配置 store、stub、host recall，或归档失败时，折叠可能丢掉后续需要的真值，且模型侧没有恢复路径** | e2e 口头实例：首次执行 `nonce=hzmk…`，折叠后模型无法取回；重跑得到 `O2D4…` 并当作原值回答（静默错答）。该绝对表述不适用于已有 `foldedPayload`/归档的路径 |
 | **D2** | **保护判据按角色，不按可恢复性** | `bin/config.js:131` `protectedMessage: isRealUser`；`selectFoldedRounds` 只跳过含真实用户发言的轮 → **agent 自己的决策/结论被折进有损摘要**；coding 场景下"用户发言"极少，保护几乎无收益 |
-| **D3** | **可重放性由引擎猜**（写死正则） | `bin/tools.js:38-44` `NON_REPLAYABLE_COMMAND_PATTERNS`（`/dev/urandom`、`$RANDOM`…）+ `:713` `replayable = name !== "exec" \|\| !isNonReplayableCommand(command)` |
+| **D3** | **CLI host 的可重放性仍有 heuristic 兜底**（不是 core 引擎规则） | `bin/tools.js:38-44` `NON_REPLAYABLE_COMMAND_PATTERNS`（`/dev/urandom`、`$RANDOM`…）；归因限定在 `bin/` 的 CLI 工具策略，`src/loop.js` 只消费宿主提供的 metadata |
 | **D4** | **重跑拦截按"完全相同的命令串"** → 可被改写绕过 | e2e 实测：模型把命令包成 `bash -lc 'set -euo pipefail …'` → 拦截未触发 → 拿到新值 |
-| **D5** | **索引/契约被删过头**：删"值索引注入"时把**唯一的导航索引**也删了 | 现在折叠后模型无目录；实测它去 `tree`/`readFile` 无界浏览（2–6 个归档/run），并调 `note_read` 6–21 次/run |
-| **D6** | **折叠产物与 guard 耦合** → guard 默认关后，"丢失可见"与归档索引**一并消失** | `bin/final-guard.js:261` 是 `[本 run 状态]` 的唯一生成处；`bin/cli.js` 未传 `stubFor` → 折叠 stub **死代码**（pilot 中 `[已折叠]` 出现 0 次） |
-| **D7** | **notes 作为折叠解由模型自写** → 依赖元认知（该记 + 该查） | 实测：接线修复后会被调用（3 次/run），但**不能承重**；而接线前 0/24 是接线 bug 的假象 |
-| **D8** | **模型失败的主因是"不收敛"而非"不查证"** | 矩阵：30/30 打满轮次、`noAnswer 100%`，但 `note_read` 仍被调用；修复后（轮次上限放宽 + stub/契约）pilot 3/3 正确、轮次 7/6/14 |
+| **D5** | **模型可见的逐工件导航记录不足**（不是“零地址”） | 当前已有折叠轮次、工具足迹、`foldedRoundRange`、归档索引与 host recall；缺的是统一、有界、带 digest 的逐工件导航记录，避免模型无界浏览 |
+| **D6** | **已由评审反证，作废：CLI 已接线** | `bin/cli.js:559-566` 明确传入 `buildCaptureRecoveryHint` 与 `buildCaptureStub`；guard 默认开关不决定折叠产物是否生成。仅当没有 compact context 或宿主不注入 hook 时，库不会自动产生这些 CLI 产物 |
+| **D7** | **notes 作为折叠解仍依赖模型自写，不能承重；但自动 capture 路径并存** | `note_take` 仍由模型调用；CLI 对不可重放 exec 另有 `bin/auto-capture.js`/`bin/tools.js` 自动 capture 路径。两者都只能作效率/审计辅助，正确性回到归档与 store |
+| **D8** | **有相关性证据支持“不收敛”解释，但不是因果结论** | 矩阵显示打满轮次且仍调用 `note_read`，支持“工具调用不等于收敛”；样本与混杂不足以证明“不收敛”是主因 |
 
 ### 3.3 方法论教训（影响本 RFC 的可验证性设计）
 
@@ -151,7 +158,11 @@ Tier 3  取回层：按【地址】取【有界切片】         —— 复用 s
 |---|---|---|
 | 工具级 | 工具生产者（宿主/skill 作者） | 工具 schema 增加 `replayable: true\|false`（或 `effect: "read"\|"write"\|"generate"`） |
 | exec 命令级 | 宿主 policy | `nonReplayable: { patterns?: RegExp[], classify?: (cmd) => boolean }`（命令串动态，只能由平台策略定） |
-| 兜底 | 引擎内置规则 | 保留现有正则列表作为 **fallback**，并标注来源：`replayableSource: "declared" \| "policy" \| "heuristic"` |
+| 兜底 | 引擎/CLI host | 按 `declared > policy > heuristic > unknown` 解析，并标注来源：`replayableSource: "declared" \| "policy" \| "heuristic" \| "unknown"` |
+
+`unknown` 不是“安全”或“可重放”的同义词：结果仍归档，但不宣称可重放，
+也不因 `unknown` 触发重跑拦截；元数据和日志必须可见该来源，宿主可据此自行决策。
+未声明时保持现有执行/返回行为，只把此前沉默的隐式判断显式标为 `unknown`。
 
 ### 4.6 引擎的机械保证（不需要模型配合）
 
@@ -224,9 +235,9 @@ Tier 3  取回层：按【地址】取【有界切片】         —— 复用 s
 | 事实 | 数据/来源 |
 |---|---|
 | 接线 bug：`chat` 路径未把 skill 工具放进模型 schema | `bin/cli.js` `combineTools` 旧实现 `[...cliTools.tools]`；修复后实测模型能列出 `note_*` 四工具 |
-| 矩阵（kimi，n=14/臂，额度污染） | hit A 21.4% / B 7.1% / C 7.1%；`skipped` 占 guard 事件 92.9%，`revised`=0 |
-| 矩阵（deepseek-flash，n=10/臂） | 30/30 `noAnswer`、全部打满 12 轮；`note_read` 3/run（说明**工具被调用了**） |
-| 修复后 pilot（deepseek-flash，n=3） | 3/3 正确；轮次 7/6/14；input 19,961/16,743/40,887（合计 77,591） |
+| 矩阵（kimi，n=14/臂，额度污染） | hit A 21.4% / B 7.1% / C 7.1%；`skipped` 占 guard 事件 92.9%，`revised`=0（聚合机器结果，实验上下文仍不完整） |
+| 矩阵（deepseek-flash，n=10/臂） | 30/30 `noAnswer`、全部打满 12 轮；`note_read` 3/run（说明**工具被调用了**；聚合结果见 tracked matrix） |
+| 修复后 pilot（deepseek-flash，n=3） | 3/3 正确；轮次 7/6/14；input 19,961/16,743/40,887（合计 77,591）。**仅现场观察，未留存原始记录** |
 | guard 探针（构造输入，零调用） | A/A′/E → accept；B → revise；D（重跑值无来源）→ revise；D′ → accept(`rerun_cited`)；G → skipped |
-| 静默错答实例 | 首次 `nonce=hzmkLUy6jsuClTPA`，终稿 `O2D4HuZOL/Dcrxzs`（来自第 17 轮重跑），guard 当时 `skipped` → 无警示交付 |
-| 成本教训 | 预估 341k input，实际 869,909 input（2.5×） |
+| 静默错答实例 | 首次 `nonce=hzmkLUy6jsuClTPA`，终稿 `O2D4HuZOL/Dcrxzs`（来自第 17 轮重跑），guard 当时 `skipped` → 无警示交付。**仅现场观察，未留存原始记录** |
+| 成本教训 | 预估 341k input，实际 869,909 input（2.5×）。**仅现场观察，未留存原始记录** |
