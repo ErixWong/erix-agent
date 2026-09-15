@@ -132,18 +132,19 @@ test("short non-replayable output is archived with structured metadata", async (
     const replayable = await executeTool("exec", { command: "printf 'short=beta\\n'" });
 
     assert.match(nonReplayable, /完整输出已归档/u);
-    assert.equal(replayable, "short=beta\n");
+    assert.match(replayable, /short=beta\n/u);
+    assert.match(replayable, /完整输出已归档/u);
     const files = await readdir(archiveDir);
     assert.deepEqual(
       files.filter((name) => name.endsWith(".txt")),
-      ["001-exec.txt"],
+      ["001-exec.txt", "002-exec.txt"],
     );
     const metadata = JSON.parse(await readFile(
       path.join(archiveDir, "001-exec.meta.json"),
       "utf8",
     ));
     assert.equal(metadata.replayable, false);
-    assert.equal(getLastToolMetadata().replayable, true);
+    assert.equal(getLastToolMetadata().replayableSource, "unknown");
     assert.equal(metadata.command, "printf 'short=alpha\\n'; printf %s \"$RANDOM\" >/dev/null");
   });
 });

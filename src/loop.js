@@ -1,6 +1,7 @@
 import { KitError } from "./providers/errors.js";
 import { computeBudget } from "./compact/budget.js";
 import { createSlidingWindowStrategy } from "./compact/sliding-window.js";
+import { mergeFoldNavigationRecords } from "./compact/fold-statistical.js";
 import { enforceSize } from "./compact/enforce-size.js";
 import { estimateMessageTokens, estimateTokens } from "./tokens.js";
 import { groupIntoRounds, validateMessages } from "./messages/rounds.js";
@@ -2035,6 +2036,7 @@ export async function runToolLoop({
         ? result.foldedPayload
         : [];
       let foldedRoundRange = result.foldedRoundRange;
+      let navigationRecord = result.navigationRecord;
       let foldedRounds = Number.isSafeInteger(result.foldedRounds)
         ? result.foldedRounds
         : 0;
@@ -2065,6 +2067,12 @@ export async function runToolLoop({
         foldedRounds += fallback.foldedRounds ?? 0;
         compacted = compacted || fallback.compacted === true;
         if (foldedRoundRange === undefined) foldedRoundRange = fallback.foldedRoundRange;
+        if (fallback.navigationRecord !== undefined) {
+          navigationRecord = mergeFoldNavigationRecords(
+            [navigationRecord, fallback.navigationRecord],
+            foldedRoundRange,
+          );
+        }
         tokensAfter = estimateMessageTokens(compactedMessages);
         apiTokensAfter = projectedApiInputTokens(
           apiInputTokens,
@@ -2116,6 +2124,7 @@ export async function runToolLoop({
         folded: compacted,
         foldedPayload: compacted ? foldedPayload : undefined,
         foldedRoundRange,
+        navigationRecord,
       };
     }
     return { folded: false, foldedPayload: undefined };
@@ -2637,6 +2646,9 @@ export async function runToolLoop({
       }
       if (compaction.foldedRoundRange !== undefined) {
         record.foldedRoundRange = compaction.foldedRoundRange;
+      }
+      if (compaction.navigationRecord !== undefined) {
+        record.navigationRecord = compaction.navigationRecord;
       }
     }
     const persisted = await persist("appendRound", runId, record);

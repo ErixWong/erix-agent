@@ -15,6 +15,8 @@ import {
 } from "./helpers.js";
 
 const FOLD_SUMMARY_MARKER = "【上下文折叠·v1·erix-9f6e2c】";
+const MAX_NAVIGATION_ARTIFACTS = 10;
+const MAX_NAVIGATION_CHARS = 400;
 
 function normalizedKeepRounds(value) {
   if (value === undefined) return 6;
@@ -61,6 +63,98 @@ function parseToolFootprint(value) {
   return counts;
 }
 
+function safeNavigationId(value) {
+  const basename = String(value ?? "").split(/[\\/]/u).at(-1) ?? "";
+  return basename.replaceAll(/[^\p{L}\p{N}._:-]/gu, "_").slice(0, 80);
+}
+
+function safeNavigationLocator(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const locator = {};
+  for (const key of ["lineStart", "lineEnd", "byteStart", "byteEnd"]) {
+    if (Number.isSafeInteger(value[key]) && value[key] >= 0) {
+      locator[key] = value[key];
+    }
+  }
+  return locator;
+}
+
+function boundedNavigationRecord(roundRange, artifacts) {
+  if (!roundRange || !Number.isSafeInteger(roundRange.from)
+    || !Number.isSafeInteger(roundRange.to) || artifacts.length === 0) {
+    return undefined;
+  }
+
+  const unique = [];
+  const seen = new Set();
+  for (const artifact of artifacts) {
+    if (!artifact || typeof artifact !== "object") continue;
+    const id = safeNavigationId(artifact.id);
+    const digest = String(artifact.digest ?? "").slice(0, 128);
+    if (!id || !digest) continue;
+    const key = `${id}\u0000${digest}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push({
+      id,
+      locator: safeNavigationLocator(artifact.locator),
+      digest,
+      status: artifact.status === "truncated" ? "truncated" : "archived",
+    });
+  }
+  if (unique.length === 0) return undefined;
+
+  let visible = unique.slice(0, MAX_NAVIGATION_ARTIFACTS);
+  let truncated = visible.length < unique.length;
+  const makeRecord = () => ({
+    roundFrom: roundRange.from,
+    roundTo: roundRange.to,
+    artifacts: visible,
+    ...(truncated ? { truncated: true } : {}),
+  });
+
+  while (JSON.stringify(makeRecord()).length > MAX_NAVIGATION_CHARS && visible.length > 1) {
+    visible = visible.slice(0, -1);
+    truncated = true;
+  }
+  if (JSON.stringify(makeRecord()).length > MAX_NAVIGATION_CHARS) {
+    visible = visible.map((artifact) => ({
+      ...artifact,
+      id: artifact.id.slice(0, 32),
+      locator: {},
+    }));
+  }
+  if (JSON.stringify(makeRecord()).length > MAX_NAVIGATION_CHARS) {
+    visible = [];
+    truncated = true;
+  }
+  return makeRecord();
+}
+
+export function buildFoldNavigationRecord(foldedPayload, roundRange) {
+  const artifacts = [];
+  for (const message of foldedPayload ?? []) {
+    for (const block of blocksFor(message)) {
+      if (block?.type !== "tool_result" || !block.artifact) continue;
+      const artifact = block.artifact;
+      artifacts.push({
+        id: artifact.artifactId ?? artifact.archivePath,
+        locator: artifact.locator,
+        digest: artifact.digest,
+        status: artifact.truncated === true ? "truncated" : "archived",
+      });
+    }
+  }
+  return boundedNavigationRecord(roundRange, artifacts);
+}
+
+export function mergeFoldNavigationRecords(records, roundRange) {
+  return boundedNavigationRecord(
+    roundRange,
+    records.flatMap((record) => record?.artifacts ?? []),
+  );
+}
+
 function parseFoldSummary(text) {
   const value = String(text);
   const markedMatch = value.match(
@@ -74,6 +168,18 @@ function parseFoldSummary(text) {
   );
   const match = markedMatch ?? legacyMatch;
   if (!match) return undefined;
+  let navigationRecord;
+  const navigationMatch = value.match(/^导航记录：(\{.*\})$/mu);
+  if (navigationMatch) {
+    try {
+      const parsed = JSON.parse(navigationMatch[1]);
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.artifacts)) {
+        navigationRecord = parsed;
+      }
+    } catch {
+      // Ignore malformed navigation from an older or manually edited summary.
+    }
+  }
   return {
     from: Number.parseInt(match[1], 10),
     to: Number.parseInt(match[2], 10),
@@ -81,6 +187,7 @@ function parseFoldSummary(text) {
     tools: parseToolFootprint(match[4]),
     stubs: [...String(value).matchAll(/^\[已折叠\][^\n]*/gmu)]
       .map((stub) => stub[0]),
+    navigationRecord,
     legacy: markedMatch === null,
   };
 }
@@ -91,6 +198,7 @@ function formatFoldSummary({
   count,
   tools,
   stubs = [],
+  navigationRecord,
   recoveryHint = DEFAULT_RECOVERY_HINT,
 }) {
   const footprint = tools.size === 0
@@ -103,9 +211,16 @@ function formatFoldSummary({
     `${FOLD_SUMMARY_MARKER}早期第 ${from}–${to} 轮（共 ${count} 轮）已折叠。`,
     `工具足迹：${footprint}。`,
   ];
+  if (navigationRecord) {
+    lines.push(`导航记录：${JSON.stringify(navigationRecord)}`);
+  }
   lines.push(...stubs.slice(0, 10));
   lines.push(recoveryHint);
-  return lines.join(stubs.length > 0 ? "\n" : "");
+  const prefix = lines.slice(0, 2).join("");
+  const suffix = lines.slice(2).join("\n");
+  return stubs.length > 0 || navigationRecord
+    ? `${prefix}\n${suffix}`
+    : `${prefix}${suffix}`;
 }
 
 function prependSummary(
@@ -146,11 +261,19 @@ function prependSummary(
   const current = parseFoldSummary(summary);
   const merged = [...summaries, current].filter((parsed) => parsed !== undefined);
   const mergedStubs = [...new Set(merged.flatMap((parsed) => parsed.stubs ?? []))].slice(0, 10);
+  const mergedRange = {
+    from: Math.min(...merged.map((parsed) => parsed.from)),
+    to: Math.max(...merged.map((parsed) => parsed.to)),
+  };
+  const mergedNavigation = mergeFoldNavigationRecords(
+    merged.map((parsed) => parsed.navigationRecord),
+    mergedRange,
+  );
   const mergedSummary = merged.length === 0
     ? summary
     : formatFoldSummary({
-      from: Math.min(...merged.map((parsed) => parsed.from)),
-      to: Math.max(...merged.map((parsed) => parsed.to)),
+      from: mergedRange.from,
+      to: mergedRange.to,
       count: merged.reduce((total, parsed) => total + parsed.count, 0),
       tools: merged.reduce((counts, parsed) => {
         for (const [name, count] of parsed.tools) {
@@ -159,6 +282,7 @@ function prependSummary(
         return counts;
       }, new Map()),
       stubs: mergedStubs,
+      navigationRecord: mergedNavigation,
       recoveryHint: resolveRecoveryHint(recoveryHint),
     });
   const contentWithoutSummaries = originalContent.filter((block) => (
@@ -222,6 +346,10 @@ export function createFoldStatisticalStrategy(options = {}) {
         roundRange,
       });
       const foldedStubs = await resolveFoldStubs(foldedPayload, settings.stubFor);
+      const navigationRecord = buildFoldNavigationRecord(
+        foldedPayload,
+        roundRange ?? (folded.length > 0 ? { from: 1, to: folded.length } : undefined),
+      );
       await runFoldHook(settings.onBeforeFold, {
         messages,
         folded,
@@ -233,12 +361,24 @@ export function createFoldStatisticalStrategy(options = {}) {
       let compactedHead = head;
       if (folded.length > 0) {
         const range = roundRange ?? { from: 1, to: folded.length };
-        const summary = [
-          `${FOLD_SUMMARY_MARKER}早期第 ${range.from}–${range.to} 轮（共 ${folded.length} 轮）已折叠。`,
-          `工具足迹：${toolFootprint(folded)}。`,
-          ...foldedStubs.slice(0, 10),
+        const summary = formatFoldSummary({
+          from: range.from,
+          to: range.to,
+          count: folded.length,
+          tools: folded.reduce((counts, round) => {
+            for (const message of round.messages) {
+              for (const block of blocksFor(message)) {
+                if (block?.type !== "tool_use") continue;
+                const name = String(block.name ?? "");
+                counts.set(name, (counts.get(name) ?? 0) + 1);
+              }
+            }
+            return counts;
+          }, new Map()),
+          stubs: foldedStubs,
+          navigationRecord,
           recoveryHint,
-        ].join(foldedStubs.length > 0 ? "\n" : "");
+        });
         compactedHead = prependSummary(
           head,
           summary,
@@ -261,6 +401,7 @@ export function createFoldStatisticalStrategy(options = {}) {
         tokensAfter,
         foldedPayload,
         ...(roundRange === undefined ? {} : { foldedRoundRange: roundRange }),
+        ...(navigationRecord === undefined ? {} : { navigationRecord }),
       };
       await runFoldHook(settings.onAfterFold, { ...result, roundRange });
       return result;

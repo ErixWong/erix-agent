@@ -43,6 +43,67 @@ export function isNonReplayableCommand(command) {
   return NON_REPLAYABLE_COMMAND_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+function declaredReplayability(name, input, declaration) {
+  const value = typeof declaration === "function"
+    ? declaration({ name, input })
+    : declaration && typeof declaration === "object" && !Array.isArray(declaration)
+      ? declaration[name]
+      : declaration;
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function policyMatches(nonReplayable, command) {
+  if (!nonReplayable || typeof nonReplayable !== "object") return false;
+  if (typeof nonReplayable.classify === "function"
+    && nonReplayable.classify(command) === true) {
+    return true;
+  }
+  return Array.isArray(nonReplayable.patterns)
+    && nonReplayable.patterns.some((pattern) => {
+      if (pattern instanceof RegExp) {
+        pattern.lastIndex = 0;
+        return pattern.test(String(command ?? ""));
+      }
+      return typeof pattern === "string" && String(command ?? "").includes(pattern);
+    });
+}
+
+/**
+ * Resolve call-level replayability without treating an unmatched command as
+ * an audited safe-to-replay operation.
+ */
+export function resolveReplayability(
+  name,
+  input,
+  { declared, nonReplayable } = {},
+) {
+  const declaredValue = declaredReplayability(name, input, declared);
+  if (declaredValue !== undefined) {
+    return {
+      replayable: declaredValue,
+      replayableSource: "declared",
+    };
+  }
+  const command = input?.command;
+  if (policyMatches(nonReplayable, command)) {
+    return {
+      replayable: false,
+      replayableSource: "policy",
+    };
+  }
+  if (name === "exec" && isNonReplayableCommand(command)) {
+    return {
+      replayable: false,
+      replayableSource: "heuristic",
+    };
+  }
+  return {
+    // Omit the boolean claim: unknown is neither safe nor unsafe by default.
+    replayable: undefined,
+    replayableSource: "unknown",
+  };
+}
+
 // ERIX_EXEC_TIMEOUT_MS overrides the default timeout for foreground commands.
 export function getExecTimeoutMs() {
   const configured = Number(process.env.ERIX_EXEC_TIMEOUT_MS);
@@ -87,6 +148,7 @@ const schemas = [
   {
     name: "readFile",
     description: "Read a text file by line range.",
+    replayable: true,
     inputSchema: {
       type: "object",
       properties: {
@@ -101,6 +163,7 @@ const schemas = [
   {
     name: "rg",
     description: "Recursively search text files with a regular expression.",
+    replayable: true,
     inputSchema: {
       type: "object",
       properties: {
@@ -115,6 +178,7 @@ const schemas = [
   {
     name: "tree",
     description: "List a directory tree.",
+    replayable: true,
     inputSchema: {
       type: "object",
       properties: {
@@ -127,6 +191,7 @@ const schemas = [
   {
     name: "writeFile",
     description: "Write UTF-8 text to any path.",
+    replayable: true,
     inputSchema: {
       type: "object",
       properties: {
@@ -349,6 +414,9 @@ export function wrapExecuteTool(
         return {
           data: result,
           ...(metadata.replayable === undefined ? {} : { replayable: metadata.replayable }),
+          ...(metadata.replayableSource === undefined
+            ? {}
+            : { replayableSource: metadata.replayableSource }),
           ...(metadata.artifact === undefined ? {} : { artifact: metadata.artifact }),
           ...(metadata.intercepted === undefined ? {} : { intercepted: metadata.intercepted }),
         };
@@ -366,7 +434,7 @@ function archiveGuidance(archivePath) {
 }
 
 function archiveFailureGuidance(archivePath, error, replayable) {
-  if (!replayable) {
+  if (replayable === false) {
     return "[完整输出归档失败：原始输出不可恢复；请勿重跑命令。]";
   }
   const reason = String(error?.message ?? error ?? "未知错误")
@@ -380,7 +448,13 @@ export function archiveResult(
   name,
   result,
   sequence,
-  { force = false, replayable = true, command, context } = {},
+  {
+    force = false,
+    replayable = true,
+    replayableSource,
+    command,
+    context,
+  } = {},
 ) {
   const text = String(result ?? "");
   if (!archiveDir || (!force && text.length <= ARCHIVE_THRESHOLD)) return null;
@@ -430,7 +504,8 @@ export function archiveResult(
       archivePath,
       digest,
       locator: { lineStart: 1, lineEnd: lines },
-      replayable,
+      ...(replayable === undefined ? {} : { replayable }),
+      ...(replayableSource === undefined ? {} : { replayableSource }),
       truncated,
       originalBytes: bytes.byteLength,
     };
@@ -440,7 +515,8 @@ export function archiveResult(
       toolUseId: context?.toolUseId ?? null,
       round: context?.round ?? null,
       command: command ?? null,
-      replayable,
+      ...(replayable === undefined ? {} : { replayable }),
+      ...(replayableSource === undefined ? {} : { replayableSource }),
       digest,
       archivePath,
       locator: artifact.locator,
@@ -472,7 +548,7 @@ export function archiveResult(
       }
     }
     return {
-      text: replayable
+      text: replayable !== false
         ? `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error, replayable)}`
         : archiveFailureGuidance(archivePath, error, replayable),
       archivePath: undefined,
@@ -547,6 +623,9 @@ export function createCliTools({
   archiveDir,
   notesScope,
   runState: runStateOption,
+  replayable,
+  toolReplayability,
+  nonReplayable,
 } = {}) {
   const root = path.resolve(cwd);
   if (archiveDir !== undefined && typeof archiveDir !== "string") {
@@ -559,6 +638,12 @@ export function createCliTools({
   const runState = runStateOption && typeof runStateOption === "object"
     ? runStateOption
     : {};
+  const declaredOption = toolReplayability ?? replayable;
+  const schemaReplayability = Object.fromEntries(
+    schemas
+      .filter((schema) => typeof schema.replayable === "boolean")
+      .map((schema) => [schema.name, schema.replayable]),
+  );
   let firstCapture;
   let captureCount = 0;
 
@@ -710,9 +795,21 @@ export function createCliTools({
     }
     const normalizedInput = normalizeToolInput(input);
     const command = normalizedInput?.command;
-    const replayable = name !== "exec" || !isNonReplayableCommand(command);
+    const replayability = resolveReplayability(name, normalizedInput, {
+      declared: ({ name: declaredName, input: declaredInput }) => (
+        declaredReplayability(declaredName, declaredInput, declaredOption)
+          ?? schemaReplayability[declaredName]
+      ),
+      nonReplayable,
+    });
+    const replayableValue = replayability.replayable;
+    const replayableSource = replayability.replayableSource;
     const hadCaptureBefore = captureCount > 0;
-    lastToolMetadata = { name, replayable };
+    lastToolMetadata = {
+      name,
+      replayable: replayableValue,
+      replayableSource,
+    };
     let commandState;
     let isFirstCommandExecution = false;
     if (
@@ -736,10 +833,15 @@ export function createCliTools({
       }
     }
 
-    if (commandState?.count > 1 && !replayable) {
+    if (commandState?.count > 1 && replayableValue === false) {
       const capturedValues = await readCapturedValues(commandState, notesScope);
       if (capturedValues.length > 0) {
-        lastToolMetadata = { name, replayable: true, intercepted: true };
+        lastToolMetadata = {
+          name,
+          replayable: true,
+          replayableSource,
+          intercepted: true,
+        };
         return interceptedNonReplayableResult(commandState, capturedValues);
       }
     }
@@ -748,13 +850,20 @@ export function createCliTools({
     let returnedResult = result;
     const shouldArchive = archiveRoot && (
       String(result ?? "").length > ARCHIVE_THRESHOLD
-      || (name === "exec" && !replayable)
+      || (name === "exec" && (
+        replayableValue === false
+        || replayableSource === "unknown"
+      ))
     );
     if (shouldArchive) {
       archiveSequence += 1;
       const archived = archiveResult(archiveRoot, name, result, archiveSequence, {
-        force: name === "exec" && !replayable,
-        replayable,
+        force: name === "exec" && (
+          replayableValue === false
+          || replayableSource === "unknown"
+        ),
+        replayable: replayableValue,
+        replayableSource,
         command,
         context,
       });
@@ -769,11 +878,12 @@ export function createCliTools({
         }
         lastToolMetadata = {
           name,
-          replayable,
+          replayable: replayableValue,
+          replayableSource,
           fullOutput: archived.archivedText ?? String(result ?? ""),
           artifact: archived.artifact,
         };
-        if (name === "exec" && !replayable && archived.artifact) {
+        if (name === "exec" && replayableValue === false && archived.artifact) {
           captureCount += 1;
           runState.captureCount = captureCount;
           if (firstCapture === undefined) {
@@ -785,7 +895,7 @@ export function createCliTools({
         }
       }
     }
-    if (name === "exec" && !replayable && hadCaptureBefore) {
+    if (name === "exec" && replayableValue === false && hadCaptureBefore) {
       runState.rerunDetected = true;
       returnedResult = `${rerunGuidance(firstCapture)}\n${String(returnedResult ?? "")}`;
     }

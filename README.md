@@ -91,11 +91,20 @@ src/
   若保护集本身超预算，压缩会按消息顺序解除最旧 protected 消息的保护并折叠掉，保留较新的任务上下文；
   `compactionStats[].protectedDowngraded` 记录数量，CLI 会显示警告。单条 protected 消息自身超预算则以
   `invalid_budget` 明确失败，并提示提高预算或减少保护集。
+- **折叠导航记录**：折叠摘要可包含替换式、有界的 `navigationRecord`，
+  形如 `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }`；
+  最多 10 个 artifact 且最多 400 个字符，超限显式标记截断。它只用于按地址导航，
+  不含工具值或凭据，也不是语义索引；`digest` 用于与归档对账。
+- **调用级可重放性来源**：工具 metadata 和归档 sidecar 暴露
+  `replayableSource: "declared" | "policy" | "heuristic" | "unknown"`，
+  优先级为 declared > policy > heuristic > unknown。`unknown` 仍归档，但不代表
+  已审计可重放，也不触发重跑拦截；`unknown` 不提供 `replayable` 布尔声明，
+  不能把缺失声明当作安全默认值。
 - **Judge 写入足迹**：`runToolLoop` 默认只把 `writeFile` 计入 `filesWritten`；宿主使用自定义写工具时显式传
   `writeToolNames: ["fs_write", "apply_patch"]`，不要依赖名称猜测。路径参数按
   `writeToolPathKeys`（默认 `["path", "file_path"]`）从前到后取第一个非空字符串，便于接入不同工具协议。
   Judge 的 `formatFiles` 会按配置后的路径显示最近写入文件。
-- **TranscriptStore**：`appendRound` 按 run/round key 幂等；`store.recall(runId, fromRound?, toRound?, pattern?)` 是面向宿主/人的取数契约，不是 `runToolLoop` 默认暴露给模型的工具；宿主可从 `erix-agent/tools` 按需接入参考实现。store 可实现 `markRunState`、`saveCheckpoint`/`appendCheckpoint`、`loadLatestCheckpoint`。loop 在工具执行前后 checkpoint；成对提供读写的 store 在任一 checkpoint 写失败时 fail-closed（执行后失败会明确报告“工具已执行但结果未持久化”），resume 按原顺序补齐全部未完成的多工具调用。宿主的 `executeTool` 仍需按 tool id 做幂等保护，无法由 loop 保证 exactly-once。
+- **TranscriptStore**：`appendRound` 按 run/round key 幂等；`store.recall(runId, fromRound?, toRound?, pattern?)` 是面向宿主/人的取数契约，不是 `runToolLoop` 默认暴露给模型的工具；宿主可从 `erix-agent/tools` 按需接入参考实现。面向 store 源头限流的对象参数 API（`limit`/`cursor`/`maxBytes`）仍是设计稿，见 [`bounded recall API`](docs/design/2026-09-14-bounded-recall-api.md)。store 可实现 `markRunState`、`saveCheckpoint`/`appendCheckpoint`、`loadLatestCheckpoint`。loop 在工具执行前后 checkpoint；成对提供读写的 store 在任一 checkpoint 写失败时 fail-closed（执行后失败会明确报告“工具已执行但结果未持久化”），resume 按原顺序补齐全部未完成的多工具调用。宿主的 `executeTool` 仍需按 tool id 做幂等保护，无法由 loop 保证 exactly-once。
 - **provider**：`transport` 透传给 fetch 的 `dispatcher`；非法 OpenAI 工具参数用 `_truncatedArguments`（`_raw` 兼容别名）；不安全 runId 映射为 `run-<sha256 前 24 位 hex>`。
 
 > 完整接口契约见 [docs/architecture.md](docs/architecture.md)；设计决策见 [docs/decisions/](docs/decisions/)（judge 机制 = ADR-011）。
@@ -110,7 +119,7 @@ src/
 - **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）；较大的工具结果（阈值 800 字符）按本次 run 写入 `<transcriptDir>/outputs/<safeRunId>/<序号>-<toolName>.txt`（如 `001-exec.txt`），返回文本带绝对路径指引；归档目录也会写入 system prompt，便于折叠后寻回原文；折叠摘要会附带归档目录提示（recoveryHint），确保折叠后仍可寻回；需要原文时用 `readFile`/`cat` 读取归档，不要重跑命令。同一命令在本次运行内重复执行时，工具会在返回中提示原始输出归档位置或不可恢复，避免把重跑结果当作原值。归档单文件最多 1 MiB，写入失败时工具仍返回原结果并标注失败。默认不提供 agent 级 recall 工具——`store.recall()` 是面向宿主的契约方法，需要时可从 `erix-agent/tools` 自行接线——无内置安全层，见 ADR-009
 - **skill 系统**：`~/.erix/skills/<id>/skill.mjs` 自描述脚本，导出 `getSkillDefinition()` 自报工具（ADR-008）；`erix skills` 查看；todo skill（跨会话任务清单，长任务拆解/划掉/恢复）
 - **notes 技能（#63）**：用于记录任务中的关键事实、一次性值、决策与 artifact 引用，不是每轮日志。四个工具为 `note_take`、`note_read`、`note_list`、`note_forget`；当前只支持 `run` 作用域，记录按 key 保存当前值、最多 3 条已作废的 `superseded` 值和可见的 `folded` 遗忘计数。`note_list` 按 `relevance` 降序、再按 `updated_at` 降序输出，并支持 `minRelevance`、`tag`、`source` 筛选；输出仍受 `limit` 限制，返回 `relevance`、`source`、`tags` 元数据。自动捕获默认 relevance 为 `0.8`，旧记录缺失该字段按 `0.5` 处理。默认存储在 `~/.erix/notes/run/<safeRunId>/<safeKey>.json`（目录 `0700`、文件 `0600`），也可用 `ERIX_NOTES_DIR` 指定；run 完成后进入 `done`，到期由 janitor 转为 `revoked` 并保留墓碑。REPL 的 run scope 使用 `--session`（默认按工作目录派生），整个 REPL session 共用一个 run scope；宿主应显式传入 `__erix` scope。工具状态收敛为 `found`、`missing`、`revoked`、`invalid`、`unsupported`，模型需要早期细节时先 `note_list` 再 `note_read`。
-- **auto_capture（值 + 引用）**：CLI 在 `exec` 工具执行完成时，每次非幂等命令只捕获一条有界输出摘录（最多 1000 字符）和 artifact 引用；逐行解析显式 `label=value`，任一行疑似凭据时只保存 `artifactRef`，不保存输出内容。notes 只是便利索引，最终核验不信任 notes。非幂等命令强制写 `<序号>-exec.txt` sidecar 和 `.meta.json`，元数据标明 `replayable=false`；原子写、归档权限和凭据 fail-closed 规则保持不变。
+- **auto_capture（值 + 引用）**：CLI 在 `exec` 工具执行完成时，每次非幂等命令只捕获一条有界输出摘录（最多 1000 字符）和 artifact 引用；逐行解析显式 `label=value`，任一行疑似凭据时只保存 `artifactRef`，不保存输出内容。notes 只是便利索引，最终核验不信任 notes。非幂等命令强制写 `<序号>-exec.txt` sidecar 和 `.meta.json`，元数据标明 `replayable=false` 及 `replayableSource`；未命中声明、policy 或 heuristic 的 `unknown` 仍归档但不宣称可重放，也不触发重跑拦截。原子写、归档权限和凭据 fail-closed 规则保持不变。
 - **provenance gate 判定**：收尾时 CLI 只读取本 run `archiveDir` 下由 capture 写出的同名 `*.meta.json` manifest；notes/artifactRef 只是检索线索，不参与信任判定。manifest 必须声明 `digest/replayable/truncated/locator`，归档必须位于 archive root 内、通过 `realpath` 防符号链接逃逸、SHA-256 与磁盘内容一致，且只有 `replayable === false`、`truncated === false` 的归档才进入已知值集合。终稿按**来源契约**核验：由 manifest 建 `captures[{label,value,artifact,round,first}]`（每个 label 的**首次捕获为规范值**），终稿中锚定已知 label 的显式归属（`label=value`、`label：value`、`label 是 value`）按规则判定——等于首次捕获值直接放行；等于**后续重跑捕获值**时必须带来源（`来源=note_read:<key>` 或 `来源=归档:<文件名>`）且指向该 artifact（放行并记 `rerun_cited`），否则 revise；不对应任何捕获则 revise；找不到可比对项则 `skipped` 并警告。verification 同时输出 `verified`、`skipped`、`revised`、`rerun_cited`、`unverified`、`guard_error` 计数。
 - **verification 消费契约**：宿主必须先检查 `runToolLoop` 返回的 `verification.status`，只有 `verified` 才能把 `finalText` 当作来源已核验的结果；`unverified` 表示 guard 要求修订但已无法继续，`termination.reason` 为 `final_guard_unverified`，不得标记或消费为成功；`error` 表示 guard 异常/超时（默认 30 秒），为可用性会 fail-open 返回文本，但文本仍未核验，需按宿主策略人工处理；`skipped` 表示未配置 guard，或终稿中没有可与 capture manifest 比对的显式来源归属（此时只能说明“没有可核验项”，不能当作已核验事实）。CLI 对 `unverified` 以退出码 2 结束，对 `error` 以不同的退出码 3 结束；`skipped` 正常退出但不会打印已核验标题。
 - 需要恢复具体值时，已知 key 优先直接按 `note_read key=<key>`；不知道 key 才按 `note_list → note_read`。只有仅引用型笔记才按返回的 `artifactRef.archivePath` 与 `locator` 有界读取归档并声明核对结果，禁止遍历归档目录，不得重跑命令或凭记忆补值。归档保存原文，notes 保存短值与审计引用，两者职责不同。折叠发生时会在折叠点注入不含捕获值/key 的 `[本 run 状态]` 标记和最多 10 条的归档目录视图（文件名、命令摘要、是否不可重放；超出显示“另有 N 条”）；归档索引是导航，不是数据注入。对不可重放结果，CLI 注入的折叠 stub 仍只保留安全的最小事实。工具结果在剩余轮次不超过 2 时追加预算提示；因轮次上限、stall 或 continuation 耗尽且没有终稿时，loop 追加一次禁用工具的强制收尾（可用 `ERIX_NO_FORCED_FINAL=1` 关闭）。改写后的非幂等命令会前置重跑警示并给出首次值指针（`note_read key=…` / 归档路径）。涉及本 run 捕获值的终稿应带来源（`来源=note_read:<key>` 或 `来源=归档:<文件名>`）。

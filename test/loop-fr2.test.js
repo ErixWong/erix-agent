@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop.js";
+import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
+import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 function retryableError(message = "temporary failure") {
@@ -300,4 +302,47 @@ test("compacts context before the second round and records its payload and stats
     tokensBefore: 23,
     tokensAfter: 10,
   }]);
+});
+
+test("folding remains terminating with and without a transcript store", async () => {
+  for (const store of [undefined, createMemoryTranscriptStore()]) {
+    const provider = createFakeProvider([
+      {
+        content: [{ type: "tool_use", id: "fold-tool", name: "work", input: {} }],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]);
+    const base = createFoldStatisticalStrategy();
+    let checks = 0;
+    const strategy = {
+      shouldCompact() {
+        checks += 1;
+        return checks === 2;
+      },
+      compact(messages, options) {
+        return base.compact(messages, { ...options, keepRounds: 0 });
+      },
+    };
+
+    const result = await runToolLoop({
+      provider,
+      initialUserMessage: "fold task",
+      executeTool: async () => "tool result",
+      completion: false,
+      context: { strategy, budgetTokens: 1000 },
+      ...(store === undefined ? {} : { store, runId: "fold-contract" }),
+    });
+
+    assert.equal(result.termination.reason, "end_turn");
+    assert.equal(result.finalText, "done");
+    assert.equal(provider.requests.length, 2);
+    assert.match(
+      JSON.stringify(provider.requests[1].messages),
+      /上下文折叠/u,
+    );
+    if (store !== undefined) {
+      assert.ok((await store.load("fold-contract")).some((record) => record.folded === true));
+    }
+  }
 });
