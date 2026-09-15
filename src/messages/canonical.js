@@ -1,6 +1,11 @@
 // 规范消息模型 + openai<->canonical 转换。
 
 import { KitError } from "../providers/errors.js";
+import {
+  normalizeOpenAIStopReason,
+  normalizeOpenAIUsage,
+  parseOpenAIToolArguments,
+} from "./openai-normalization.js";
 
 /**
  * A canonical content block.
@@ -381,20 +386,11 @@ export function openAIResponseToCanonical(json) {
 
   for (const toolCall of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
     const rawArguments = toolCall?.function?.arguments;
-    let input;
-    try {
-      input = JSON.parse(rawArguments === undefined ? "{}" : rawArguments);
-    } catch {
-      input = {
-        _truncatedArguments: rawArguments,
-        _raw: rawArguments,
-      };
-    }
     content.push({
       type: "tool_use",
       id: toolCall?.id,
       name: toolCall?.function?.name,
-      input,
+      input: parseOpenAIToolArguments(rawArguments),
       ...Object.fromEntries(
         Object.entries(toolCall ?? {}).filter(
           ([key]) => !["id", "type", "function"].includes(key),
@@ -408,20 +404,11 @@ export function openAIResponseToCanonical(json) {
 
   if (hasFunctionCall) {
     const rawArguments = legacyFunctionCall.arguments;
-    let input;
-    try {
-      input = JSON.parse(rawArguments === undefined ? "{}" : rawArguments);
-    } catch {
-      input = {
-        _truncatedArguments: rawArguments,
-        _raw: rawArguments,
-      };
-    }
     content.push({
       type: "tool_use",
       id: legacyFunctionCall.id ?? "call_legacy",
       name: legacyFunctionCall.name,
-      input,
+      input: parseOpenAIToolArguments(rawArguments),
     });
   }
 
@@ -429,25 +416,12 @@ export function openAIResponseToCanonical(json) {
     content.push(...message.raw_blocks);
   }
 
-  const stopMap = {
-    stop: "end_turn",
-    tool_calls: "tool_use",
-    function_call: "tool_use",
-    length: "max_tokens",
-  };
   const finishReason = choice.finish_reason;
-  const stopReason = finishReason == null ? "unknown" : stopMap[finishReason] ?? finishReason;
+  const stopReason = normalizeOpenAIStopReason(finishReason);
   const response = { content, stopReason };
 
-  if (json.usage != null) {
-    response.usage = {};
-    if (json.usage.prompt_tokens !== undefined) {
-      response.usage.input_tokens = json.usage.prompt_tokens;
-    }
-    if (json.usage.completion_tokens !== undefined) {
-      response.usage.output_tokens = json.usage.completion_tokens;
-    }
-  }
+  const usage = normalizeOpenAIUsage(json.usage);
+  if (usage !== undefined) response.usage = usage;
 
   return response;
 }

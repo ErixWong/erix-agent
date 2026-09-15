@@ -75,3 +75,22 @@ const executeTool = async ({ id, name, input, context, signal }) => (
 ```
 
 Do not pass the legacy two-argument function directly.
+
+## 4. Reuse the library normalization primitives
+
+The OpenAI-compatible normalization code is now exported from the package
+root. In `touwaka/lib/llm-kit-adapters/provider-adapter.js`, the following
+local implementations can be removed during host migration:
+
+| Local implementation | Use this export |
+|---|---|
+| `normalizeUsage` | `normalizeOpenAIUsage` |
+| `normalizeStopReason` | `normalizeOpenAIStopReason` |
+| `parseToolArguments` | `parseOpenAIToolArguments` |
+| `toolCallParts` + `appendToolCallFragments` + `completedToolUseBlocks` | `createOpenAIStreamAccumulator` (`addToolCallDelta` / `getToolUseBlocks`) |
+
+The adapter's `toChatResponse` and `streamResponse` remain host glue for
+Touwaka response shapes and callbacks, but should call the exported helpers
+instead of reimplementing token, stop-reason, or argument semantics.
+`buildCallOptions`, model resolution, abort bridging, and event forwarding
+remain host-specific and are not replaced by this change.

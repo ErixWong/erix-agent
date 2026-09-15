@@ -44,6 +44,24 @@ The older `{ data, success, ... }` shape and other duck-typed shapes are
 normalized permissively for compatibility, but are deprecated and must not be
 depended on.
 
+## Reusable normalization primitives
+
+Hosts that provide their own OpenAI-compatible transport can import these
+helpers from the package root. They perform no I/O or model calls:
+
+| Export | Signature | Semantics |
+|---|---|---|
+| `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | Maps OpenAI token fields and canonical aliases to `input_tokens`/`output_tokens`; empty or non-object input is omitted. |
+| `normalizeOpenAIStopReason` | `(reason, fallback = "unknown") -> string` | Maps `stop`, `tool_calls`/`function_call`, and `length` to canonical stop reasons; unknown values pass through. |
+| `parseOpenAIToolArguments` | `(rawArguments) -> any` | Parses JSON, uses `{}` when absent, and returns malformed values under `_truncatedArguments` and `_raw`. |
+| `createOpenAIStreamAccumulator` | `() -> accumulator` | Accumulates indexed or legacy streamed tool-call fragments; `getToolUseBlocks()` returns canonical tool-use blocks. |
+
+`createOpenAIStreamAccumulator().addToolCallDelta()` accepts an OpenAI delta
+or `{ index, id, name, argumentsDelta }`, while
+`addFunctionCallDelta()` accepts a legacy `function_call` delta. The malformed
+argument behavior is intentionally the same as the library's canonical
+response conversion.
+
 ## Final-answer verification
 
 Before consuming a `runToolLoop` result, the host must inspect
