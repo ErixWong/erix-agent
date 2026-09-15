@@ -23,6 +23,14 @@ const ROUND_2 = {
   messages: [{ role: "assistant", content: [{ type: "text", text: "summary" }] }],
 };
 
+function decodeCursorForTest(cursor) {
+  return JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+}
+
+function encodeCursorForTest(value) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
 /**
  * @param {string} label 实现名（测试标题前缀）
  * @param {() => object | Promise<object>} createStore 每次调用返回干净的新 store
@@ -121,6 +129,136 @@ export function transcriptStoreContract(label, createStore) {
     assert.equal((combined.match(/round-/gu) ?? []).length, 24);
     for (let round = 1; round <= 24; round += 1) {
       assert.equal((combined.match(new RegExp(`round-${round}-`, "g")) ?? []).length, 1);
+    }
+  });
+
+  test(`${label}: bounded recall 篡改游标字段即拒绝且不返回正文`, async () => {
+    const store = await createStore();
+    await store.appendRound("integrity-run", {
+      round: 1,
+      messages: [{
+        role: "assistant",
+        content: [{ type: "text", text: "needle-first-content" }],
+      }],
+    });
+    await store.appendRound("integrity-run", {
+      round: 2,
+      messages: [{
+        role: "assistant",
+        content: [{ type: "text", text: "needle-second-content" }],
+      }],
+    });
+
+    const first = await store.recall({
+      runId: "integrity-run",
+      fromRound: 1,
+      toRound: 2,
+      pattern: "needle",
+      limit: 2,
+      maxBytes: 7,
+    });
+    assert.equal(first.status, "truncated");
+    assert.ok(first.nextCursor);
+    const cursor = decodeCursorForTest(first.nextCursor);
+    const mutations = {
+      byteOffset: cursor.byteOffset + 1,
+      recordIndex: cursor.recordIndex + 1,
+      runId: "other-run",
+      fromRound: 0,
+      toRound: 1,
+      pattern: "other",
+      limit: 1,
+      maxBytes: 8,
+    };
+
+    for (const [field, value] of Object.entries(mutations)) {
+      const tampered = { ...cursor, [field]: value };
+      const result = await store.recall({
+        runId: "integrity-run",
+        fromRound: 1,
+        toRound: 2,
+        pattern: "needle",
+        limit: 2,
+        maxBytes: 7,
+        cursor: encodeCursorForTest(tampered),
+      });
+      assert.equal(result.status, "cursor_mismatch", field);
+      assert.equal(result.text, "", field);
+      assert.equal(result.error.code, "cursor_mismatch", field);
+    }
+  });
+
+  test(`${label}: bounded recall 合法游标可跨记录按 pattern 无重不漏续取`, async () => {
+    const store = await createStore();
+    for (let round = 1; round <= 3; round += 1) {
+      await store.appendRound("pattern-run", {
+        round,
+        messages: [{
+          role: "assistant",
+          content: [
+            { type: "text", text: `needle-${round}` },
+            { type: "text", text: `noise-${round}` },
+          ],
+        }],
+      });
+    }
+
+    const chunks = [];
+    let page = await store.recall({
+      runId: "pattern-run",
+      fromRound: 1,
+      toRound: 3,
+      pattern: "needle",
+      maxBytes: 8,
+    });
+    chunks.push(page.text);
+    while (page.nextCursor) {
+      page = await store.recall({
+        runId: "pattern-run",
+        fromRound: 1,
+        toRound: 3,
+        pattern: "needle",
+        maxBytes: 8,
+        cursor: page.nextCursor,
+      });
+      chunks.push(page.text);
+    }
+    const combined = chunks.join("");
+    assert.equal(combined, "needle-1needle-2needle-3");
+    for (let round = 1; round <= 3; round += 1) {
+      assert.equal((combined.match(new RegExp(`needle-${round}`, "g")) ?? []).length, 1);
+      assert.equal(combined.includes(`noise-${round}`), false);
+    }
+  });
+
+  test(`${label}: bounded recall 拒绝未知版本、非法 base64、非 JSON 与空游标`, async () => {
+    const store = await createStore();
+    await store.appendRound("invalid-cursor-run", {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "visible" }] }],
+    });
+    const first = await store.recall({
+      runId: "invalid-cursor-run",
+      maxBytes: 3,
+    });
+    assert.equal(first.status, "truncated");
+    const decoded = decodeCursorForTest(first.nextCursor);
+    const invalidCursors = [
+      "",
+      "not-base64!",
+      Buffer.from("not json", "utf8").toString("base64url"),
+      encodeCursorForTest({ ...decoded, v: 99 }),
+    ];
+
+    for (const cursor of invalidCursors) {
+      const result = await store.recall({
+        runId: "invalid-cursor-run",
+        maxBytes: 3,
+        cursor,
+      });
+      assert.equal(result.status, "cursor_mismatch");
+      assert.equal(result.text, "");
+      assert.equal(result.error.code, "cursor_mismatch");
     }
   });
 

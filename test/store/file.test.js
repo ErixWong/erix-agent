@@ -307,6 +307,44 @@ test("file: bounded recall skips an oversized JSONL record with a resumable curs
   }
 });
 
+test("file: 合法 bounded recall 游标可由新 store 实例续取", async () => {
+  const root = await makeTempDir();
+  try {
+    const firstStore = createFileTranscriptStore({ dir: root });
+    await firstStore.appendRound("resume", {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "first-page" }] }],
+    });
+    await firstStore.appendRound("resume", {
+      round: 2,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "second-page" }] }],
+    });
+
+    const first = await firstStore.recall({
+      runId: "resume",
+      fromRound: 1,
+      toRound: 2,
+      maxBytes: 5,
+    });
+    assert.equal(first.status, "truncated");
+    assert.equal(first.text, "first");
+
+    const secondStore = createFileTranscriptStore({ dir: root });
+    const resumed = await secondStore.recall({
+      runId: "resume",
+      fromRound: 1,
+      toRound: 2,
+      maxBytes: 5,
+      cursor: first.nextCursor,
+    });
+    assert.equal(resumed.status, "truncated");
+    assert.equal(resumed.text, "-page");
+    assert.ok(resumed.nextCursor);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("file: appendRound 按 dedupKey 幂等，重复轮次不重复写入", async () => {
   const root = await makeTempDir();
   try {

@@ -33,7 +33,7 @@
 - TranscriptStore 新增对象参数 bounded recall API（`limit`/`cursor`/`maxBytes`），
   在 store 源头限制返回切片并提供绑定全部参数的可续取游标与
   `unrecoverable`/`stale`/`truncated` 状态；`artifactRef` 精确过滤，零上限显式拒绝，
-  文件 store 对超大 JSONL 单条记录返回 `record_too_large` 并以游标推进而不整行物化；
+  游标增加跨进程可用的内容完整性校验，篡改即拒且不返回正文；文件 store 对超大 JSONL 单条记录返回 `record_too_large` 并以游标推进而不整行物化；
   旧位置参数 `recall` 保持兼容，CLI 不新增 recall 工具。
 - 折叠时可由 CLI/宿主注入 `stubFor`，为不可重放工具结果保留有界、去凭据的最小事实 stub。
 - 折叠状态加入替换式、有界的 `navigationRecord`（最多 10 条 artifact、最多 400 字符），

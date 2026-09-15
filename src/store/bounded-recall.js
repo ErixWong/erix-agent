@@ -1,6 +1,22 @@
 import { createHash } from "node:crypto";
 
 const CURSOR_VERSION = 1;
+const CURSOR_SIGNATURE_LENGTH = 16;
+const CURSOR_FIELDS = [
+  "v",
+  "runId",
+  "fromRound",
+  "toRound",
+  "pattern",
+  "limit",
+  "maxBytes",
+  "artifactRef",
+  "sourceVersion",
+  "fragmentIndex",
+  "byteOffset",
+  "recordIndex",
+  "sig",
+];
 
 function result(text = "", status = "empty", extra = {}) {
   return {
@@ -11,17 +27,50 @@ function result(text = "", status = "empty", extra = {}) {
   };
 }
 
+function normalizedJson(value) {
+  if (Array.isArray(value)) return `[${value.map(normalizedJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${normalizedJson(value[key])}`
+    )).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function cursorSignature(payload) {
+  return createHash("sha256")
+    .update(normalizedJson(payload), "utf8")
+    .digest("hex")
+    .slice(0, CURSOR_SIGNATURE_LENGTH);
+}
+
 function encodeCursor(value) {
-  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+  const payload = { ...value };
+  const signed = { ...payload, sig: cursorSignature(payload) };
+  return Buffer.from(normalizedJson(signed), "utf8").toString("base64url");
 }
 
 function decodeCursor(value) {
-  if (typeof value !== "string" || value.length === 0) return undefined;
+  if (typeof value !== "string" || value.length === 0) return null;
+  if (!/^[A-Za-z0-9_-]+$/u.test(value) || value.length % 4 === 1) return null;
   try {
-    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
-    return decoded && typeof decoded === "object" ? decoded : undefined;
+    const encoded = Buffer.from(value, "base64url");
+    if (encoded.toString("base64url") !== value) return null;
+    const decoded = JSON.parse(encoded.toString("utf8"));
+    if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return null;
+    if (
+      Object.keys(decoded).length !== CURSOR_FIELDS.length
+      || CURSOR_FIELDS.some((field) => !Object.hasOwn(decoded, field))
+      || typeof decoded.sig !== "string"
+      || !/^[0-9a-f]{16}$/u.test(decoded.sig)
+    ) {
+      return null;
+    }
+    const { sig, ...payload } = decoded;
+    if (decoded.v !== CURSOR_VERSION || cursorSignature(payload) !== sig) return null;
+    return decoded;
   } catch {
-    return undefined;
+    return null;
   }
 }
 
@@ -184,7 +233,7 @@ export async function boundedRecall({
     });
   }
   const cursorShape = {
-    version: CURSOR_VERSION,
+    v: CURSOR_VERSION,
     runId,
     fromRound: from ?? null,
     toRound: to ?? null,
@@ -195,7 +244,7 @@ export async function boundedRecall({
     sourceVersion: sourceDigest(sourceVersion),
   };
   if (decodedCursor && (
-    decodedCursor.version !== cursorShape.version
+    decodedCursor.v !== cursorShape.v
     || decodedCursor.runId !== cursorShape.runId
     || decodedCursor.fromRound !== cursorShape.fromRound
     || decodedCursor.toRound !== cursorShape.toRound
