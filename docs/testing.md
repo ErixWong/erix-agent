@@ -1,94 +1,177 @@
-# 测试方案 — erix-agent
+# Testing — erix-agent
 
-> 原则：零依赖（只用 `node:test` + `node:assert`）、协议层 mock fetch、循环层 fake provider、
-> 真实 LLM 只做少量 e2e 且可开关。本库无浏览器/UI，不需要 playwright/vision。
+> Chinese version: [testing_cn.md](testing_cn.md)
 
-## 0. 测试分层与基建
+The test suite is dependency-free: it uses `node:test` and `node:assert/strict`, mocks `fetch` at the protocol boundary, and uses a fake provider for loop orchestration. Real LLM calls are limited to optional example E2E tests. The project has no browser UI, so it does not require Playwright or vision tooling.
 
-### 分层
+## 0. Test layers and infrastructure
 
-| 层 | 命令 | 依赖 | 何时跑 |
+### Layers
+
+| Layer | Command | Scope | When to run |
 |---|---|---|---|
-| 单测 | `npm test`（`node --test`） | 无网络 | 每次提交前，必须全绿 |
-| e2e（真实 LLM） | `node examples/exec-demo.test.mjs` | 本机 relay 在线 | 里程碑验收手动跑；`LLM_KIT_E2E=1` 才执行，缺省 skip |
+| Unit and local integration tests | `npm test` (`node --test`) | The repository test tree; no external LLM or network service is required | Before every commit; the suite must be green |
+| Syntax check | `npm run check` (`node --check src/index.js`) | The command currently configured by the `check` script | As an engineering sanity check |
+| One test file | `node --test test/loop.test.js` | Replace the path with any individual test file when focusing on one area | During focused development |
+| Optional real-relay E2E | `LLM_KIT_E2E=1 node --test examples/*.test.mjs` | `examples/exec-demo.test.mjs`, `examples/memory-benchmark.test.mjs`, and `examples/provenance-repro.test.mjs`; these are skipped unless `LLM_KIT_E2E=1` is set | Manual milestone or release validation |
 
-### 三个测试基建（v0.0 第一天就建）
+The package defines the `./contract-tests` export as `./test/contract/index.js`. Contract tests are reusable `node:test` registrations for consumer-provided adapters; they are not a separate command in `package.json`. A consumer adapter test imports the public entry point and invokes the relevant contract:
 
-1. **mock fetch**（`test/helpers/mock-fetch.js`）：可编程的 fetchImpl——
-   捕获请求体（断言序列化结果）+ 按脚本返回响应（含错误码 / 2xx+error-body / 流式 SSE 字节流）。
-   协议适配层的全部测试都走它，不碰网络。
-2. **fake provider**（`test/helpers/fake-provider.js`）：内存版 LlmProvider，
-   按脚本依次吐出 content 块（text / tool_use），可注入"第 N 次调用抛可重试错误"。
-   循环层测试不走 HTTP，直接喂 fake provider——loop 的测试对象是编排逻辑，不是协议。
-3. **canonical fixtures**（`test/fixtures/`）：双协议典型消息序列样本
-   （纯文本轮 / 工具轮 / 连续工具轮 / 多轮混合），canonical 转换与压缩分组共用。
+```js
+import { transcriptStoreContract, modelConfigProviderContract } from "erix-agent/contract-tests";
+transcriptStoreContract("mariadb", () => createMariaTranscriptStore(...));
+modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }));
+```
 
-## 1. v0.0（MVP）——"链路通"
+### Test infrastructure
 
-### 单测
+1. **Mock fetch** (`test/helpers/mock-fetch.js`) provides a programmable `fetchImpl`. It records request URLs, methods, headers, and parsed bodies, then returns scripted JSON, text, byte, or streaming responses, or throws a scripted error. Protocol adapter tests use it instead of the network.
+2. **Fake provider** (`test/helpers/fake-provider.js`) is an in-memory `LlmProvider`-shaped provider. It records requests, returns scripted text and `tool_use` content, supports repeated script steps, and can throw a scripted error. Loop tests use it directly because they exercise orchestration rather than HTTP.
+3. **Canonical round fixtures** (`test/fixtures/rounds-fixtures.mjs`) provide representative text-only, single-tool, multiple-tool, and mixed multi-round conversations for message conversion and compaction tests.
+4. **Local MCP fixtures** live in the repository-root `fixtures/` directory: `fixtures/mock-mcp-server.mjs` and `fixtures/mock-mcp-http-server.mjs`. They are executable stdio and HTTP servers used by `test/mcp.test.js`. Keep these servers outside `test/`: `node --test` discovers files under the test tree, and executing a long-lived fixture server as a test file can hang the test run. The data fixture under `test/fixtures/` is imported by tests and is not a server entry point.
+5. **Contract helpers** (`test/contract/index.js`, `test/contract/transcript-store.js`, and `test/contract/model-config-provider.js`) define the shared transcript-store and model-config-provider assertions. The built-in memory/file stores and config providers register these contracts from their own tests.
 
-| 模块 | 测什么 |
-|---|---|
-| `providers/openai` | 请求序列化（canonical→openai messages/tools）；响应解析（text / tool_calls→canonical 块）；FR-1.3 错误分类五类 + retryable 标记；FR-1.4 2xx+error-body 透传真实 message；timeoutMs 触发 abort → timeout |
-| `messages/canonical` | openai⇄canonical 双向转换无损；`raw` 逃生舱保留协议特有字段 |
-| `tokens` | 中文 1.5 tok/字、英文 3.5 字/tok、混合文本、+15% 余量、系数可配 |
-| `loop`（fake provider） | 多轮 tool_use→executeTool→tool_result 回喂→终稿；maxRounds 截断（truncated=true）；stall 检测：签名窗口重复先 nudge、连续超限返回 `termination.reason="stall"`；executeTool 抛错→回 tool_result is_error 不中断循环；usage 累计；memory store 每轮快照 |
-| `store/memory` | appendRound / load / recall（范围 + pattern） |
+The complete tracked `test/` tree is:
 
-### e2e（真实 relay）
+```text
+test/
+├── app-container-p0.test.js
+├── cli.test.js
+├── codewrite.test.js
+├── config.test.js
+├── governor.test.js
+├── judge.test.js
+├── loop-final-guard.test.js
+├── loop-fr2.test.js
+├── loop-resume.test.js
+├── loop-stream.test.js
+├── loop-termination.test.js
+├── loop-v020-beta.test.js
+├── loop-v020-rc.test.js
+├── loop-v020.test.js
+├── loop.test.js
+├── mcp.test.js
+├── notes-autocapture.test.js
+├── notes-experiment.test.js
+├── notes-final-guard.test.js
+├── notes.test.js
+├── reflection.test.js
+├── repl.test.js
+├── run-state.test.js
+├── skills.test.js
+├── tokens.test.js
+├── tools.test.js
+├── wrapup.test.js
+├── compact/
+│   ├── budget.test.js
+│   ├── enforce-size.test.js
+│   ├── fold-llm.test.js
+│   ├── fold-statistical.test.js
+│   ├── sliding-window.test.js
+│   └── v020-rc.test.js
+├── config/
+│   ├── api-key.test.js
+│   ├── env.test.js
+│   ├── json-file.test.js
+│   └── static.test.js
+├── contract/
+│   ├── index.js
+│   ├── model-config-provider.js
+│   └── transcript-store.js
+├── fixtures/
+│   └── rounds-fixtures.mjs
+├── helpers/
+│   ├── fake-provider.js
+│   └── mock-fetch.js
+├── integration/
+│   └── memento-scenario.test.js
+├── messages/
+│   ├── anthropic.test.js
+│   ├── canonical.test.js
+│   ├── rounds.test.js
+│   └── v020-alpha.test.js
+├── providers/
+│   ├── anthropic.test.js
+│   ├── openai-stream.test.js
+│   ├── openai.test.js
+│   ├── v020-alpha.test.js
+│   ├── v020-beta.test.js
+│   └── v020-rc.test.js
+├── store/
+│   ├── file.test.js
+│   ├── memory.test.js
+│   └── v020-rc.test.js
+└── tools/
+    ├── file-tools.test.js
+    ├── jail.test.js
+    ├── providers.test.js
+    ├── recall.test.js
+    └── registry.test.js
+```
 
-`examples/exec-demo.test.mjs`：任务「查看当前目录并总结」，断言——
-轮数 ≥ 2、transcript 含 exec 的 tool_result、finalText 非空、termination.reason 不是 `"stall"`。
-**demo 里 exec 工具有白名单/超时**（demo 也要示范调用方安全职责，哪怕从简）。
+## 1. v0.0 (MVP) — the basic path works
 
-### 工程保底
+The original MVP coverage is still represented by these tests:
 
-每个文件 `node --check`；`npm test` 全绿才能提交（GLOBAL_AGENTS §3.2）。
+| Area | Files | Coverage |
+|---|---|---|
+| Providers and errors | `test/providers/openai.test.js`, `test/app-container-p0.test.js` | OpenAI request/response mapping, tool calls, endpoint normalization, configuration validation, error classification, abort behavior, and the basic Anthropic/loop path |
+| Canonical messages | `test/messages/canonical.test.js` | Canonical conversion, tool-result ordering, tool schemas, legacy function calls, invalid response diagnostics, and raw protocol fields |
+| Token estimates | `test/tokens.test.js` | CJK and non-CJK estimates, safety margins, configurable coefficients, message/block costs, and tool identifiers |
+| Tool loop | `test/loop.test.js` | Text completion, tool-result feedback, `maxRounds`, stall nudges and termination, tool errors, `onToolResult`, round snapshots, and usage accumulation |
+| Memory transcript store | `test/store/memory.test.js` | Memory-store behavior plus the reusable transcript-store contract |
 
-## 2. v0.1（FR-1/2 全量 + 压缩 ①②）——"行为对"
+The example E2E coverage is no longer a single `node examples/exec-demo.test.mjs` invocation. The current optional set is the `examples/*.test.mjs` command in the layer table above. `examples/exec-demo.test.mjs` still checks a real multi-round tool task and compaction behavior; the other two example files cover memory benchmarking and provenance reproducibility. The demo's `exec` tool remains allowlisted and time-limited to demonstrate the caller's security responsibility.
 
-| 模块 | 测什么 |
-|---|---|
-| `providers/anthropic` | mock fetch：请求/响应双向、**SSE 流式 content_block 事件解析**、错误分类 |
-| `providers/openai` | 补流式：SSE 解析、流式 tool_calls 增量拼装 |
-| `loop` 完整 FR-2 | 轮内快照重试：fake provider 第 1 次抛 retryable → 断言恢复快照重发、attempts 用尽才抛、退避时序（sleep 可注入，测试用立即返回）；完成信号 + 无工具轮策略（连续 3 轮强制结束）；相邻 assistant 合并防 400；max_tokens 截断续写；`onToolResult` 钩子在回喂前生效 |
-| `compact` | `computeBudget` 公式（窗口−输出−max(2000,10%)）；`groupIntoRounds` 双协议成对规则、**孤儿零容忍**（tool_result 无配对 tool_use → 抛错而非静默）；sliding-window 整组丢弃；fold-statistical 摘要**确定性快照**（同样输入逐字节相同）；头部保护（system + 首个 user 永不折叠，fixtures 覆盖多轮场景）；foldedPayload 与原文逐字节一致 |
-| `config` | static 直给；env 变量解析；apiKey 三级引用优先级；slot 缺失回落 default |
+## 2. v0.1 (full FR-1/FR-2 and first compaction strategies) — behavior is correct
 
-### 迁移验收（本阶段的真验收）
+| Area | Files | Coverage |
+|---|---|---|
+| Anthropic and OpenAI protocol paths | `test/providers/anthropic.test.js`, `test/providers/openai-stream.test.js`, `test/messages/anthropic.test.js`, `test/messages/rounds.test.js` | Non-streaming and SSE conversion, streamed text and tool-call assembly, usage, malformed streamed input, error classification, protected message heads, tool pairing, and validation errors |
+| Loop retries and completion | `test/loop-fr2.test.js`, `test/loop-stream.test.js`, `test/loop-termination.test.js` | Retryable versus non-retryable errors, original-message retries, capped backoff, completion signals, no-tool completion, `max_tokens` continuation, adjacent-assistant merging, streaming observers, streaming retries, fallback to `chat`, and termination reasons |
+| Budget and compaction | `test/compact/budget.test.js`, `test/compact/sliding-window.test.js`, `test/compact/fold-statistical.test.js`, `test/compact/enforce-size.test.js` | Budget calculation, whole-round sliding windows, deterministic statistical folding, bounded navigation and recovery stubs, protected heads, and deterministic field-priority size enforcement |
+| Model configuration | `test/config/static.test.js`, `test/config/env.test.js`, `test/config/api-key.test.js` | Static and environment-backed providers, numeric and boolean parsing, invalid configuration errors, and direct/environment/file API-key precedence |
 
-- app_container **完整迁移 runToolLoop** 后其 `npm test` 全绿；
-- 行为指标：24 轮开发场景对比硬滑窗基线——早期轮次不再静默丢失（transcript 完整），
-  折叠后"重做已完成工作"次数可观测下降（人工审 transcript，记录进 issue）。
+The migration acceptance criterion remains external to this repository: after `app_container` completes its `runToolLoop` migration, its own `npm test` must be green. The repository tests cover the library behavior; they do not claim to measure the separate 24-round application comparison.
 
-## 3. v0.2（file store + recall + fold-llm + tools 子路径）——"扛崩溃、可找回"
+## 3. v0.2 (persistence, resume, LLM folding, tools, and CLI surfaces) — survives interruption and remains recoverable
 
-| 模块 | 测什么 |
-|---|---|
-| `store/file` | JSONL 追加/流式读；**崩溃安全**：模拟写半行 kill → 重启 load 只读到完整行；recall 范围/grep |
-| 崩溃续跑 e2e | 脚本化演示：fake/真实 provider 跑到第 3 轮 kill 进程 → `resume: true` 从断点继续，断言断点后 LLM 调用次数 = 剩余轮数（不重跑已付 token） |
-| `compact/fold-llm` | summarizer 注入（fake summarizer）；**确定性尺寸执法**：summarizer 故意返回超预算摘要 → enforce-size 按字段优先级修剪到预算内（不信任 LLM 自律，FR-3.5） |
-| `tools/jail` | 路径解析越界抛错；写仅限 writable 子树；maskedPaths 拒读；符号链接逃逸 |
-| `tools/registry` | 求交 fail closed：provider 返回无执行器的 schema → 启动即抛 `tool_unknown_executor`；description/约束覆盖；**入参最小校验**（required/type/maxLength）失败回 tool_result 错误、执行器零调用（用计数执行器断言） |
-| `tools/recall` | 建在 memory 与 file store 上各测一遍；摘要指引文案与工具签名一致 |
+| Area | Files | Coverage |
+|---|---|---|
+| Versioned provider/message regressions | `test/providers/v020-alpha.test.js`, `test/providers/v020-beta.test.js`, `test/providers/v020-rc.test.js`, `test/messages/v020-alpha.test.js` | Optional provider payloads, reasoning and image blocks, provider options, streamed reasoning/tool events, timeout phases, retry classification, transport forwarding, and Anthropic system summaries |
+| Versioned loop regressions | `test/loop-v020.test.js`, `test/loop-v020-beta.test.js`, `test/loop-v020-rc.test.js` | Message revalidation, continuation compaction, snapshot retry, structured and positional tool execution, completion defaults, compaction budgets, checkpoint behavior, and persistence failure handling |
+| Resume and run state | `test/loop-resume.test.js`, `test/run-state.test.js` | Resuming without replaying paid provider calls or executed tools, partial tool results, folded checkpoints, bounded/redacted run state, schema availability, idempotent replacement, and persisted tool facts |
+| Stores and compaction | `test/store/file.test.js`, `test/store/v020-rc.test.js`, `test/compact/fold-llm.test.js`, `test/compact/v020-rc.test.js` | JSONL append/load, malformed-tail and crash-safe handling, atomic state writes, deduplication, bounded recall cursors, injected LLM summarizers, size enforcement, protected rounds, global round offsets, and image cleanup |
+| Configuration | `test/config/json-file.test.js`, `test/config.test.js` | JSON-file slots, API-key materialization, default-slot fallback, CLI config paths, environment overrides, context-window parsing, and compaction-context construction |
+| Tools | `test/tools/file-tools.test.js`, `test/tools/jail.test.js`, `test/tools/providers.test.js`, `test/tools/recall.test.js`, `test/tools/registry.test.js`, `test/tools.test.js` | Jail boundaries and symlink handling, file operations, tool-provider composition, recall and folded payloads, schema intersection and input validation, CLI tool execution, archiving, replayability, redaction, and output limits |
+| CLI, REPL, MCP, and skills | `test/cli.test.js`, `test/repl.test.js`, `test/mcp.test.js`, `test/skills.test.js`, `test/codewrite.test.js` | CLI/repl argument and session handling, MCP stdio and HTTP fixtures, tool discovery/calls/errors, skill discovery/loading/conflicts, and the CLI code-writing tools |
 
-## 4. v1.0（touwaka 迁移）——"无回归"
+The repository also has a scenario-level test in `test/integration/memento-scenario.test.js`. It exercises folding, non-replayable values, credential exclusion, archive pointers, repeated folds, and byte-for-byte bounded recall across the loop, tools, compaction, and memory store.
 
-- touwaka 侧先迁纯函数层（token-utils / history-compactor），其测试全绿；
-- **行为对比**：迁移前后相同对话 fixture 的压缩水位线/摘要输出一致（快照对比）；
-- MariaDB 适配器（touwaka 项目侧交付物）：接口契约测试复用本库 **`test/contract/` 套件**
-  （已落地，`erix-agent/contract-tests` 子路径导出）——同一组 fixtures，memory/file/mariadb
-  三实现跑同一套断言：
-  ```js
-  import { transcriptStoreContract, modelConfigProviderContract } from "erix-agent/contract-tests";
-  transcriptStoreContract("mariadb", () => createMariaTranscriptStore(...));
-  modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }));
-  ```
-  实现特有行为（连接管理/清理/崩溃恢复）由实现方自行补测，不进契约。
+## 4. v0.3 and current behavior — no regressions in judging, reflection, notes, and recovery
 
-## 5. 横切约定
+The later/current suite is represented by:
 
-- **禁止打网络的单测**：一切协议测试走 mock fetch；发现单测访问网络即视为 bug。
-- **快照断言用于确定性输出**（统计摘要、enforce-size 修剪结果），禁止对 LLM 输出做快照。
-- **错误路径优先**：本库的价值一半是"抖动不重跑、错误可分类"，每个模块的测试清单里错误用例不少于正常用例。
-- e2e 脚本同时是文档：`examples/` 代码即"调用方接入指南"，保持可读性优先于花哨。
+| Area | Files | Coverage |
+|---|---|---|
+| Judge and governor | `test/judge.test.js`, `test/governor.test.js` | Round and tool-use judging, transparent interception, direction hints, degraded judge behavior, progress/error governance, reflection requests, wrap-up nudges, and observable judge decisions |
+| Reflection and final verification | `test/reflection.test.js`, `test/wrapup.test.js`, `test/loop-final-guard.test.js` | Reflection decisions, wrap-up parsing and loop behavior, final-guard acceptance/revision, provenance, retry limits, timeout/error reporting, and fail-closed verification |
+| Notes and capture | `test/notes.test.js`, `test/notes-autocapture.test.js`, `test/notes-final-guard.test.js`, `test/notes-experiment.test.js` | Note lifecycle and scoping, provenance, credential filtering, automatic capture and archival, final-guard integration, experiment planning/cost gates, usage summaries, and reproducibility reporting |
+
+These files are current product-surface tests rather than a new replacement for the version-tagged regression files above; `npm test` runs them together.
+
+## 5. v1.0 (consumer migration and compatibility)
+
+The consumer-side migration of pure functions and application behavior remains an external acceptance activity. `app_container` and `touwaka` should run their own migrated tests and compare compaction boundaries and summary output for shared conversation fixtures; those consumer-project tests are not part of this repository's `test/` tree.
+
+The reusable repository-side compatibility layer is the contract suite in `test/contract/`. It is exported through `./contract-tests` as `./test/contract/index.js`, so a MariaDB, PostgreSQL, or other adapter can register the same transcript-store and model-config-provider assertions. The built-in memory/file stores and config providers use the same helpers in their tests. Adapter-specific connection management, cleanup, and crash recovery remain adapter tests rather than contract assertions. See §0 for the import and registration example.
+
+## 6. Cross-cutting conventions
+
+- **Unit tests do not call external services.** Protocol tests use `test/helpers/mock-fetch.js`; loop tests use `test/helpers/fake-provider.js`. MCP coverage uses the local servers in the repository-root `fixtures/` directory.
+- **Use deterministic assertions for deterministic behavior.** Budget calculations, statistical folding, `enforce-size`, run-state rendering, bounded recall, and provenance/redaction behavior are asserted exactly. Do not snapshot inherently variable LLM output.
+- **Exercise failure paths deliberately.** Error classification, retryability, aborts, malformed data, persistence failures, stale or tampered cursors, invalid tool input, and fail-closed behavior are part of the suite rather than afterthoughts.
+- **Keep test state isolated.** Tests that touch `~/.erix`, `~/.pi`, environment variables, sessions, or MCP configuration inject `home`, `cwd`, temporary directories, or restore the environment so they do not use a real user's configuration.
+- **Examples are integration documentation.** The `examples/` programs show caller integration and optional real-relay behavior; keep them readable and run them explicitly with `LLM_KIT_E2E=1`.
+- **Node-version scope.** `package.json` declares Node `>=22`. The repository README separately notes that the `app_container` consumer side needs Node 24 for `await using`; the library's own test target remains Node 22+.
+- **The library does not provide a browser test layer.** The terminal REPL has direct coverage in `test/repl.test.js`, but browser automation and vision tests are outside the project.

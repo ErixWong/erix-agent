@@ -1,85 +1,88 @@
-# ADR-010：上下文整形哲学——Memento 两个问题域与 psyche 的正确形态
+# ADR-010: Context-Shaping Philosophy—Memento's Two Problem Domains and the Correct Form of psyche
 
-- 状态：已决策（2026-08-31）
-- 背景：psyche 设计最初灵感来自电影《Memento》（记忆碎片）：主人公失忆，靠纹身提醒自己关键信息。
-  深入讨论后确认：这个类比指向的是**两个独立的问题域**，psyche 常被按"记忆系统"评估，而它的本质
-  是**上下文整形（context shaping）**。本文把讨论提炼为设计哲学，修正 psyche 的问题域定义与工程形态。
-- 关联：ADR-003（压缩谱系，psyche 为④级）、ADR-007（记忆架构，L3 facts/冷循环）、ADR-004（反思缓行）。
-  **本文是对 003 ④psyche 与 007 中 psyche 定位的修正与补充。**
+> Chinese version: [010-context-shaping-philosophy_cn.md](010-context-shaping-philosophy_cn.md)
 
-## 问题域拆解（Memento 类比）
+- Status: Decided (2026-08-31)
+- Background: The original inspiration for the psyche design came from the film Memento: the protagonist has amnesia and relies on tattoos to remind himself of key information.
+  Deeper discussion confirmed that this analogy points to **two independent problem domains**. psyche is often evaluated as a "memory system", while its essence
+  is **context shaping**. This document distills the discussion into a design philosophy and corrects psyche's problem-domain definition and engineering form.
+- Related: ADR-003 (compaction lineage, psyche as level ④), ADR-007 (memory architecture, L3 facts/cold loop), ADR-004 (deferred reflection).
+  **This document is a correction and supplement to the positioning of psyche in 003 level ④ and 007.**
 
-| 问题域 | Memento 对应 | 机制 | 驱动者 | 信息语义 |
+## Problem-domain decomposition (Memento analogy)
+
+| Problem domain | Memento counterpart | Mechanism | Driver | Information semantics |
 |---|---|---|---|---|
-| ① 失忆后重建上下文 | 纹身/纸条/照片，需要时去查 | **recall**（erix 已落地） | 模型主动 | 信息在仓库，等模型来取 |
-| ② 进门之前把废话藏起来 | 不让你看到废话，只留"聊到哪了" | **psyche**（本质在此） | 系统主动 | 进上下文前就被整形过 |
+| ① Rebuilding context after amnesia | Tattoos/notes/photos, looked up when needed | **recall** (already implemented in erix) | Model-initiated | Information is in the repository, waiting for the model to retrieve it |
+| ② Hiding the fluff before entering the room | Do not let you see the fluff; keep only "where we left off" | **psyche** (this is its essence) | System-initiated | Shaped before entering context |
 
-**recall 是检索问题（信息在仓库，模型按需取）；psyche 是上下文预算的主动分配问题（信息在进门前被整形）。**
-erix 折叠系 = 问题域①的完整实现（近无损归档 + 按需取回）；psyche 属于问题域②，与 ① 正交。
+**recall is a retrieval problem (information is in the repository and the model retrieves it as needed); psyche is an active allocation problem for the context budget (information is shaped before entering).**
+The erix compaction system = the complete implementation of problem domain ① (near-lossless archiving + on-demand retrieval); psyche belongs to problem domain ② and is orthogonal to ①.
 
-## 核心决策
+## Core decisions
 
-### 决策一：psyche 的本质是上下文整形，不是记忆系统
+### Decision one: psyche is context shaping, not a memory system
 
-- 评估 psyche 不能用"信息保真/可召回性"标尺——它的价值主张是**常态聚焦 + 去噪**：
-  - 保真是**定向保真**（保关键、弃废话），不是全量保真；对话场景下"全量保真"本来就不是目标。
-  - "隐藏废话"有真实推理收益：JetBrains 实证（observation masking，SWE-bench Verified）——
-    只留最近 N 个完整工具结果 → 成本降 52%、**解决率反升 2.6%**。低价值信息移出上下文，
-    模型注意力更聚焦，质量可能反而上升。这不是省钱技巧，是推理质量手段。
-- 成本账要算反方：psyche 每轮花小钱（反思可用独立 mini 模型、2000 tok 输出），
-  省的是对话模型每轮多塞 N 轮原文的大钱（上下文随轮次线性增长 + 长上下文注意力稀释）。
-  touwaka 配置 reflectiveModel 独立于表达模型，正是这个算盘。
+- psyche cannot be evaluated with an "information fidelity/recallability" yardstick—its value proposition is **steady focus + denoising**:
+  - Fidelity is **targeted fidelity** (keep the important, discard the fluff), not full fidelity; in conversation, "full fidelity" was never the goal.
+  - "Hiding the fluff" has real reasoning benefits: JetBrains evidence (observation masking, SWE-bench Verified)—
+    keeping only the most recent N complete tool results → cost down 52%, **solve rate up 2.6%**. Moving low-value information out of context
+    focuses the model's attention, and quality may actually increase. This is not a money-saving trick, but a means of improving reasoning quality.
+- The cost accounting must include the opposing side: psyche spends a small amount each round (reflection can use an independent mini model, 2000 tok output),
+  while it saves the large cost of stuffing N rounds of raw text into the conversation model each round (context grows linearly with rounds + long-context attention dilution).
+  touwaka's reflectiveModel configured independently of the expression model is precisely this tradeoff.
 
-### 决策二：三个机制正交，不互相替代
+### Decision two: the three mechanisms are orthogonal and do not replace one another
 
-| 机制 | 时机 | 触发 | 粒度 | 独有能力 |
+| Mechanism | Timing | Trigger | Granularity | Unique capability |
 |---|---|---|---|---|
-| fold（③级） | 事后 | 被动（超预算） | 粗（整轮） | 保底泄洪，近无损可对账 |
-| recall | 按需 | 模型驱动 | — | 失忆重建，原文取回 |
-| psyche | 事前 | 主动（每轮） | 细（每轮提炼） | **query-aware 潜力**：拿到当前问题后针对性提炼（纹身针对当下任务定制） |
+| fold (level ③) | After the fact | Passive (over budget) | Coarse (whole round) | Safety-valve overflow handling, near-lossless and auditable |
+| recall | On demand | Model-driven | — | Rebuild after amnesia, retrieve the original text |
+| psyche | Before the fact | Active (every round) | Fine (distillation per round) | **query-aware potential**: distill selectively after receiving the current question (tattoo customized for the task at hand) |
 
-psyche 真正物理上做不到的（fold/recall 皆无）：**事前整形 + query-aware 按需提炼**。
-touwaka 未实现 query-aware（反思输入不含 currentMessage），但这是 psyche 概念里独有、
-fold/recall 都不具备的能力，是对话场景的可选增量空白。
+What psyche can do physically that fold/recall cannot: **pre-shaping + query-aware on-demand distillation**.
+touwaka does not implement query-aware behavior (the reflection input does not include currentMessage), but this is a capability unique to the psyche concept,
+which neither fold nor recall has, and an optional incremental gap in conversational scenarios.
 
-### 决策三：touwaka 的 psyche 实现是错误形态，不移植原版
+### Decision three: touwaka's psyche implementation is the wrong form; do not port the original
 
-touwaka 把"整形"做成了"每轮全量重写状态"：每轮一次 LLM 调用，重发 session_meta/methodology
-全量标量（标量覆盖），列表虽为增量合并（key_decisions 去重追加、key_exchanges 追加、notes_refs upsert），
-但**标量全量重发 + 列表源头即删**（addKeyExchange cap 10、addTopicContext cap 5）使状态容量仍被
-输出预算（2000 tok）与源头上限双重钳制；且没做 query-aware（不看当前问题），引入迭代漂移
-（lookback=4 的局部视野被要求重建全局状态）、pending_questions 只增不减（removePendingQuestion
-在反思路径从未被调用）、压缩真删无指针（filter/slice 无衰减留档）等缺陷
-（reviewer 评估 2026-08-31 修正：updateFromReflection 实为标量覆盖 + 列表增量合并，非全量覆盖重写）。
-另：psycheStore 默认 TTL 3600s，psyche 的"跨 session 连续性"实际限 1 小时，长期连续性
-touwaka 靠 topics 归档 + recall 实现，psyche 本身只是会话内工作台——它从来不是长期记忆。
+touwaka turns "shaping" into "rewriting the entire state every round": one LLM call per round, resending all session_meta/methodology
+scalar fields (scalar overwrite); lists are incrementally merged (key_decisions deduplicated and appended, key_exchanges appended, notes_refs upsert),
+but **scalar full resend + deletion at the source for lists** (addKeyExchange cap 10, addTopicContext cap 5) means state capacity is still constrained by both
+the output budget (2000 tok) and source-side limits. It also lacks query-aware behavior (does not inspect the current question), introduces iterative drift
+(a local view with lookback=4 is asked to rebuild global state), pending_questions only grows and never shrinks (removePendingQuestion is never called
+on the reflection path), and compaction deletes without pointers (filter/slice with no decaying archive), among other defects
+(reviewer correction on 2026-08-31: updateFromReflection is actually scalar overwrite + list incremental merge, not full overwrite rewriting).
+Additionally: psycheStore's default TTL is 3600s, so psyche's "cross-session continuity" is actually limited to 1 hour. touwaka achieves long-term continuity
+through topics archiving + recall; psyche itself is only a within-session workbench—it was never long-term memory.
 
-**ADR-003"优先移植 touwaka lib/psyche 已验证代码"的决策作废**；"有现成代码"是降低成本的因素，
-不是做的理由。
+**The ADR-003 decision to "prioritize porting touwaka lib/psyche's validated code" is void**; "existing code is available" is a cost-reduction factor,
+not a reason to build it.
 
-### 决策四：psyche 的正确工程形态 = 冷循环蒸馏 + L3 注入（ADR-007）
+### Decision four: psyche's correct engineering form = cold-loop distillation + L3 injection (ADR-007)
 
-ADR-007 的冷循环不是 psyche 的"替代品"——它就是 psyche 的正确工程形态：
-- 保留"关键信息常驻、废话隐藏"的好处（事前整形的洞察没死）；
-- 去掉"每轮付费、请求路径同步延迟"的坏处（每轮全量反思是错误形态）；
-- 形态 = 低频/异步蒸馏（冷循环 archive 槽）+ 会话开始注入（L3 facts）；
-- 可选增量：query-aware 按需整形（拿到问题后一次性提炼"回答这个问题所需的关键信息"）。
+ADR-007's cold loop is not a "replacement" for psyche—it is psyche's correct engineering form:
+- Retain the benefit of "key information stays resident, fluff stays hidden" (the insight of pre-shaping is not discarded);
+- Remove the drawbacks of "paying every round and synchronous latency on the request path" (full reflection every round is the wrong form);
+- Form = low-frequency/asynchronous distillation (cold-loop archive slot) + injection at session start (L3 facts);
+- Optional increment: query-aware on-demand shaping (after receiving the question, distill once the "key information needed to answer this question").
 
-## 按场景的结论
+## Scenario-specific conclusions
 
-- **编码场景（erix 当前定位）**：psyche 事前整形红利小——编码原文信息密度高
-  （工具调用/报错/diff 都有用）、状态在磁盘可重读（工件证据）、"废话"占比低。
-  折叠系 + recall 已是最优形态，**不移植 psyche，不因此改动折叠系**。
-- **对话场景（将来若承载 companion）**：保留"事前整形"想法，形态按决策四，
-  触发重估条件：① companion 对话链路确定迁入 erix；② 记忆评测夹具实测
-  fold-llm+recall 在对话式任务召回率不达标、升级对话模板后仍不达标（ADR-004 不跳级纪律）。
+- **Coding scenarios (erix's current positioning)**: the benefit of psyche pre-shaping is small—coding source text has high information density
+  (tool calls/errors/diffs are all useful), state can be reread from disk (artifact evidence), and the proportion of "fluff" is low.
+  The compaction system + recall is already the optimal form, **so do not port psyche or change the compaction system because of it**.
+- **Conversational scenarios (if a companion is hosted in the future)**: retain the idea of "pre-shaping", using the form in decision four.
+  Re-evaluate when: ① the companion conversation path is confirmed to migrate into erix; ② memory evaluation fixtures show
+  fold-llm+recall's recall rate is inadequate on conversational tasks and remains inadequate after upgrading the conversation template
+  (ADR-004's discipline of not skipping levels).
 
-## 后果
+## Consequences
 
-- psyche 从"压缩谱系④级（待实现）"重新定义为"对话场景的事前整形哲学，工程形态=冷循环+L3"；
-  003 谱系表中④级标注与 007 分期路线中 psyche 条目按本文口径执行。
-- 评估记忆/上下文机制的统一标尺确立：**按问题域选标尺**——保真度标尺用于 fold/recall
-  （近无损/可对账），聚焦与去噪标尺用于整形类机制（psyche/L3）；混用标尺会得出错误结论
-  （本次讨论即教训：用保真度评 psyche 得出"有损差评"，用聚焦标尺则看到真实价值）。
-- 后续设计对话场景时，不允许再把 psyche 实现成 touwaka 式"每轮全量反思"；
-  也不因"touwaka 实现有缺陷"而丢弃"事前整形"这个正确想法。
+- psyche is redefined from "compaction lineage level ④ (to be implemented)" to "the pre-shaping philosophy for conversational scenarios, with engineering form = cold loop + L3";
+  the level ④ annotation in the 003 lineage table and the psyche entry in the 007 phased roadmap follow this document's interpretation.
+- A unified yardstick for evaluating memory/context mechanisms is established: **choose the yardstick by problem domain**—use the fidelity yardstick for fold/recall
+  (near-lossless/auditable), and the focus and denoising yardstick for shaping mechanisms (psyche/L3); mixing yardsticks leads to wrong conclusions
+  (this discussion is the lesson: evaluating psyche by fidelity produced "lossy, poor" results, while the focus yardstick revealed its actual value).
+- In future conversational-scenario design, psyche must not be implemented as touwaka-style "full reflection every round";
+  nor should the correct idea of "pre-shaping" be discarded because "the touwaka implementation has defects".

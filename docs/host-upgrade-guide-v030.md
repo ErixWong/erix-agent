@@ -1,139 +1,153 @@
-# erix-agent v0.3.x 宿主升级应对指南（touwaka / app_container）
+# erix-agent v0.3.x Host Upgrade Guide (touwaka / app_container)
 
-> 本文档面向 erix-agent 的两个宿主（消费方）——**touwaka**（专家对话链路）与 **app_container**（PI Agent 审计/开发链路）。
-> 说明从 erix-agent ≤0.2.0 升级到 **v0.3.x**（0.3.0 起，npm latest = 0.3.4）后，宿主侧需要知道的行为变化与应对项。
-> 配套：erix README（能力总览）、[ADR-011](decisions/011-judge-direction.md)（judge 机制设计）、[ADR-010](decisions/)（压缩）。
+> Chinese version: [host-upgrade-guide-v030_cn.md](host-upgrade-guide-v030_cn.md)
 
----
+> This guide is for erix-agent's two host consumers: **touwaka** (the expert conversation path) and **app_container** (the PI Agent audit/development path).
+> It describes the host-visible changes when upgrading from erix-agent <=0.2.0 to **v0.3.x** (0.3.0 onward; the v0.3.x reference point is npm 0.3.4).
+> Related reading: the erix README, [ADR-011](decisions/011-judge-direction.md) (judge design), and [ADR-010](decisions/) (compaction).
 
-## 0. 升级内容速览（宿主视角）
-
-v0.3.x 在 `runToolLoop` 层新增/改变的宿主可见行为：
-
-| # | 变化 | 宿主影响 |
-|---|---|---|
-| 1 | **reflection（judge 体系）默认开启**：`maxRounds ≥ 16` 且未显式传 `reflection` 时自动启用 | 长任务（≥16 轮）会多出 judge LLM 调用；短任务（<16 轮）不受影响 |
-| 2 | **透明劫持审计**：每 `judgeIntervalRound`(5) 次真实工具执行后，下一次工具调用先 judge 再执行；方向错则拦截（不执行） | 宿主注入的 executeTool 可能"被跳过"（收到审计消息而非执行）——副作用拦截语义 |
-| 3 | **round judge**：end_turn 时独立验证，只有正常返回的 `done && confidence≥0.7` 才产生 `judge_done` | 模型"想停"通常先经过 judge；judge 降级时回落既有收尾逻辑，不承诺阻止模型自报完成 |
-| 4 | **checkpoint fail-closed**（有 store 时）：工具执行前写失败 → 抛 `checkpoint_failed`、**不执行工具**；执行后写失败同样失败，并明确标记工具已执行但结果未持久化 | 宿主需识别 `checkpoint_failed`；执行后失败窗口无法由 loop 保证 exactly-once，`executeTool` 应按 tool id 幂等 |
-| 5 | **stall 软纠正**：重复调用不再硬杀任务——nudge 引导（≤2 次）+ 连续 3 次才 stop | 原 `llm_kit_stalled` 硬杀错误消失，变正常 stop |
-| 6 | **direction 软提示**：judge 判 off_track 时放行但附加提示 | 模型可能收到方向引导文本 |
-| 7 | **maxRounds 非法值校验**：NaN/0/负/Infinity 抛 TypeError | 宿主传参需合法 |
-| 8 | **store JSONL 崩溃恢复**：损坏尾部修复/隔离 | file store 宿主（如有）resume 更稳 |
-| 9 | **onJudge 事件 + judge 决策落盘**（新 API） | 宿主可消费 judge 决策（审计/复盘） |
-
-### round judge 降级矩阵
-
-| judge 结果 | loop 行为 | 宿主可见语义 |
-|---|---|---|
-| 正常返回 `done:true` 且 `confidence≥0.7` | 产生 `judge_done` 并收尾 | 高置信 judge 确认完成 |
-| 正常返回 `done:false` | 注入 nudge，继续工作 | judge 明确要求继续 |
-| 解析失败、调用异常，或 `done:true` 且 `confidence<0.7` | 不产生 `judge_done`，回落既有 `completion`/`no-tool`/`end_turn` 决策 | 模型自报完成信号仍可能结束任务；连续失败达到上限后自动关闭 round judge |
+> **Scope note:** This is a v0.3.x upgrade guide, not current release notes. For host-visible changes after v0.3.x, see [host-consumer-contract.md](host-consumer-contract.md).
 
 ---
 
-## 1. touwaka（专家对话链路）
+## 0. Upgrade summary from the host's point of view
 
-**现状**（核实于 2026-09-06）：
-- 调用点：`lib/agent/agent-loop.js:1074` → `buildErixRunOptions`（`lib/llm-kit-adapters/loop-bridge.js`）
-- `store`: createErixStore（MariaDB，`llm_kit_transcripts` + `llm_kit_run_state`，**saveCheckpoint/appendCheckpoint/loadLatestCheckpoint 齐全 = 成对**）
-- `stallDetection: false`（显式关，touwaka 有自己的重试/恢复体系）
-- `maxRounds`: expert 配置 `max_tool_rounds` 或系统设置，**兜底默认 8**
-- `reflection`: **未传** → 走新默认
-- loop-bridge 有 `...passthrough`（透传未知参数）→ 宿主传 reflection 可透传给 runToolLoop
+The following `runToolLoop` behaviors are new or changed for hosts:
 
-### ⚠️ 关键：touwaka 升级 v0.3.x 后默认注入任务收尾协议
+| # | Change | Host impact |
+|---|---|---|
+| 1 | **Reflection (the judge system) is enabled automatically** when `maxRounds >= 16`, `reflection` is omitted, and `ERIX_NO_REFLECTION` is not `1` | Long runs can make additional judge calls. Runs below 16 rounds are not automatically enabled. |
+| 2 | **Transparent tool-call auditing:** after every `judgeIntervalRound` real tool executions (default `5`), the next tool call is judged before execution | `executeTool` can be skipped when the judge returns `done:false`; an audit or degraded result is returned instead. Judge errors and timeouts fall back to executing the original tool. |
+| 3 | **Round judge:** an `end_turn` response without tool use is independently evaluated; only a valid `done:true` with `confidence >= 0.7` yields `judge_done` | A model's attempt to stop can cause another judge call and delay. A judge failure falls back to the normal completion/no-tool/end-turn governor. |
+| 4 | **Fail-closed checkpoints** when the store supplies both a checkpoint writer (`saveCheckpoint` or `appendCheckpoint`) and `loadLatestCheckpoint` | A failed checkpoint before an actual tool execution raises `checkpoint_failed` and the tool is not executed. A failed checkpoint afterward reports that the tool already ran but its result was not persisted. `executeTool` should be idempotent by tool id. |
+| 5 | **Soft stall correction:** repeated tool signatures are nudged before the third stall hit, then stop with `termination.reason: "stall"` | The old `llm_kit_stalled` hard error is no longer the normal path. Hosts must handle a normal result whose termination reason is `stall` (and whose `truncated` value is `true`). |
+| 6 | **Direction hints are soft guidance** | `direction: "off_track"` alone does not block a tool. It adds a direction hint; an intercept is blocked only when the judge returns `done:false`. |
+| 7 | **Strict `maxRounds` validation** | `maxRounds` must be a positive safe integer. Invalid values such as `NaN`, `0`, negative values, `Infinity`, and non-integers throw `TypeError`. |
+| 8 | **JSONL crash recovery in the file store** | A complete final JSON record without a newline is repaired; an incomplete or invalid trailing fragment is isolated as `.corrupt.*` and removed from the active file. |
+| 9 | **Judge observability and round-record persistence** | `onJudge` receives round and interception decisions, including degraded decisions. Round judge data is included as `record.judge` when a host persists round records; interception decisions are not automatically added to that record. |
+| 10 | **Optional final-guard verification** | A host-supplied `finalGuard` can accept, skip, or request a revision of a final result. Hosts must consume `verification.status` rather than treating every returned `finalText` as verified. |
 
-v0.3.x 默认注入 wrapup 任务收尾协议。对话型宿主必须显式传 `wrapup: false`，同时关闭协议注入、JSON 解析、`finalText` 替换与 LLM 归一化；`completion.signals` 仍保留，不要改成 `completion: false`。
+### Round-judge degradation matrix
 
-由于 touwaka 的 maxRounds 兜底为 8，默认不会触发 judge；专家配置或系统设置达到 16+ 轮时，每次 end_turn 会触发 round judge（一次额外 LLM 调用 + 延迟），每 5 次工具执行触发一次透明审计。**这是行为变化，需主动决策**。
+| Judge result | Loop behavior | Host-visible meaning |
+|---|---|---|
+| Valid `done:true` and `confidence >= 0.7` | Produces `judge_done` and finishes | The judge accepted completion with high confidence. |
+| Valid `done:false` | Injects a judge nudge and continues | The judge explicitly says that more work is required. |
+| Valid `done:true` with `confidence < 0.7` | Does not produce `judge_done`; normal `completion`, `no-tool`, or `end_turn` logic decides | The model's completion signal can still stop the run. |
+| Parse failure or evaluator exception | Emits a degraded `onJudge` decision and uses the normal governor | After three consecutive failures by default, round judge is disabled for the rest of the run. |
 
-### 应对清单
+`direction` is an advisory field in the judge response. The judge prompt explicitly says it does not affect `done`. For an intercept, only `done:false` blocks the original side effect; an `off_track` direction may instead add a hint to the next model context.
 
-1. **决定 judge 策略**（三选一）：
-   - **A. 接受默认开启**（推荐用于长任务/审计型专家）：无需改动代码，自动获得方向把关 + 防假完成。需评估成本（judge 调用 = 主 provider 同配额）。
-   - **B. 显式关闭**（保守，对话型专家不想多一次调用/延迟）：`buildErixRunOptions` 调用处传 `reflection: false`。
-   - **C. 精细化配置**：按 expert 类型区分——如审计型开 judge、对话型关：
+## 1. touwaka (expert conversation path)
+
+**Baseline configuration** (from the original host integration guide; verify against the touwaka repository before rollout):
+
+- Call site: `lib/agent/agent-loop.js:1074` -> `buildErixRunOptions` in `lib/llm-kit-adapters/loop-bridge.js`.
+- `store`: `createErixStore` backed by MariaDB, using `llm_kit_transcripts` and `llm_kit_run_state`; `saveCheckpoint`/`appendCheckpoint` and `loadLatestCheckpoint` are all present, so the store is a paired checkpoint store.
+- `stallDetection: false` is explicit; touwaka has its own retry and recovery system.
+- `maxRounds` comes from the expert configuration `max_tool_rounds` or system settings, with a host fallback of **8**.
+- `reflection` is omitted, so the core automatic-enable rule applies when the effective `maxRounds` is at least 16 and `ERIX_NO_REFLECTION` is not `1`.
+- `loop-bridge` has `...passthrough`, so host-supplied `reflection` options can reach `runToolLoop`.
+
+### Important: disable the wrap-up protocol for touwaka
+
+The v0.3.x wrap-up protocol is enabled by default. A conversational host should pass `wrapup: false`. This disables instruction injection, wrap-up JSON parsing, `finalText` replacement, and wrap-up LLM normalization together. `completion.signals` remains independent; do not replace it with `completion: false`.
+
+With touwaka's fallback of 8 rounds, the automatic judge is normally off. If an expert or system setting reaches `maxRounds >= 16`, an `end_turn` without tool use can invoke the round judge, and every fifth real tool execution schedules an intercept audit. Decide this explicitly because it changes latency, provider usage, and tool-side-effect handling.
+
+### Response checklist
+
+1. **Choose a judge policy:**
+   - **A. Accept automatic enablement** (recommended for long-running or audit-oriented experts): no code change is required when `maxRounds >= 16` and `reflection` is omitted. This adds direction checks and completion review; budget for calls through the main provider unless a separate judge provider is configured.
+   - **B. Disable it explicitly** for conversational experts that should not pay the extra latency: pass `reflection: false` at the `buildErixRunOptions` call site.
+   - **C. Configure it by expert type**, for example:
      ```js
      reflection: expertConfig?.judge === true
        ? { enabled: true, roundJudge: true, judgeIntervalRound: 5, judge: { provider: judgeProvider } }
        : false
      ```
+     `judgeIntercept: false` can disable only interception while retaining the round judge. `roundJudge: false` can disable only the end-turn judge.
 
-2. **任务简报传递（issue #34）**：多轮会话/续跑宿主应将当前指令作为字符串传给 `runToolLoop` 的 `task`；judge/reflection/wrapup 的优先级为 `task` > `context.task` > 入口 transcript 最后一条 user 文本。续跑时应重新传入 `task`；未传时 erix 的 fallback 只扫描原始 round 0 seed 消息，避免把续跑期间追加的方向提示/合成 nudges 当成任务目标。
+2. **Pass the task brief (issue #34):** for multi-turn and resumed runs, pass the current instruction as a string in `runToolLoop`'s `task`. The precedence is `task` > `context.task` > the last user message in the entry transcript. Explicit `task` and `context.task` values are bounded to 1500 code points; the message fallback is bounded to 500. Pass `task` again when resuming. For a resume, the fallback source is the original round-0 seed messages, not later injected direction hints or nudges.
 
-3. **judge provider 决策**：默认 judge 用主 provider（与对话同模型同配额）。若要隔离成本/延迟，传独立 `judge.provider`（如轻量模型）。touwaka 的 modelConfig 体系需在 loop-bridge 增加 judge provider 构造。
+3. **Choose the judge provider:** by default, judge calls use the main provider. To isolate cost or latency, pass a separate `reflection.judge.provider` (or `reflection.judge.evaluator`), such as a lightweight model. Extend touwaka's model configuration and `loop-bridge` if it needs to construct that provider.
 
-4. **checkpoint fail-closed 影响**：touwaka store 是**成对的**（save+load 齐全）→ **会触发 fail-closed**。MariaDB 写失败（瞬时 DB 错误）现在会导致任务失败而非继续。应对：
-   - 升级 erix 后观察 DB 稳定性；瞬时错误需宿主侧 retry 或 erix 侧 adapter 重试（erix ≤0.3.4 暂无 checkpoint 重试，宿主 adapter 可包一层）。
-   - `checkpoint_failed` 错误码需宿主识别（不要当普通模型错误无限重试）。
+4. **Handle paired-store checkpoint failures:** because the touwaka store is paired, a checkpoint write failure is fail-closed. A transient MariaDB failure now fails the run instead of allowing the tool call to proceed. Observe database stability after the upgrade; add host-side retry or an adapter retry layer if appropriate. Recognize the `checkpoint_failed` error code and do not treat it as an ordinary model error for unlimited retries. The post-execution failure window cannot provide exactly-once execution, so `executeTool` must be idempotent by tool id.
 
-5. **transcript 表无 judge 列**（issue #1116）：judge 决策已随 `appendRound` 存进 transcript JSON（`record.judge`），但 MariaDB 表结构无独立列。若要按 judge 字段查询/复盘 → 需宿主加列或读 JSON 字段。
+5. **Account for judge persistence:** the core stores round judge data in the round JSON as `record.judge`, but a MariaDB transcript table need not have a separate judge column. If touwaka needs field-level queries or replay, add a column/index or query the stored JSON in the host adapter. Interception decisions should be captured from `onJudge` or the host's judge log.
 
-6. **方向提示/审计消息**：模型可能收到"【审计拦截】方向可能偏…"或"（附方向提示…）"消息——这些是**用户角色的合成消息**，会出现在 transcript。宿主展示层需容忍（或过滤标记）。
+6. **Tolerate injected audit messages:** the model may receive the runtime's `【审计拦截】方向可能偏...` and `（附方向提示...）` messages. They are synthetic `user`-role messages and can appear in the transcript. The presentation layer should tolerate them or label/filter them.
 
-### 验证步骤
-- 升级 erix-agent 依赖到 0.3.4 → 跑一个长专家对话（≥16 轮）→ 观察：是否多出 judge 调用（usage 变化）、模型收到拦截/提示消息时行为、DB checkpoint 写路径正常。
-- 短对话（<16 轮）确认**无行为变化**（judge 不触发）。
+### Verification
 
----
+- Upgrade the erix-agent dependency to 0.3.4 and run a long expert conversation (`maxRounds >= 16`). Observe the additional judge usage, the model's behavior after audit/interception hints, and the MariaDB checkpoint paths.
+- Run a short conversation (`maxRounds < 16`) with no explicit `reflection` and confirm that the automatic judge does not start.
+- Verify that a conversational response remains natural-language after `wrapup: false`, while `completion.signals` still works.
 
-## 2. app_container（PI Agent 审计/开发链路）
+## 2. app_container (PI Agent audit/development path)
 
-**现状**（核实于 2026-09-06）：
-- 调用点：`apps/worker/src/pi/runner.js:50` → `runToolLoop`
-- 参数：**无 reflection、无 store**；`maxRounds` 由调用方传（auditor 默认 **12**）；`completion: { signals: [], maxNoToolRounds: 3 }`；retry attempts:2
-- transcript 只落 `result.transcript` 到 `transcript.json`（messages 文本，无 judge/usage 分层持久化）
-- wrapup：宿主去 JSON 化并显式传 `wrapup: false`，作为双保险（宿主终稿 schema 若含**顶层 `done: boolean` 键**（如 `{"done":true,"summary":...}`）从 JSON 结构上无法与协议对象区分，`done` 必填键守卫只能挡住 summary-only——这是必须 `wrapup: false` 或去 JSON 化的根本原因）
-- 对应 issue #71（未启用 judge + 无 store）
+**Baseline configuration** (from the original host integration guide; verify against the app_container repository before rollout):
 
-### 影响评估
-- **maxRounds 默认 12 < 16** → **不触发 reflection 默认开启**。现状行为基本不变（judge 不开）。
-- 若某任务配置 maxRounds ≥ 16（长审计/开发任务）→ 会触发默认 judge。
+- Call site: `apps/worker/src/pi/runner.js:50` -> `runToolLoop`.
+- The host passes no `reflection` and no `store`; `maxRounds` is supplied by the caller, with the auditor fallback at **12**.
+- `completion: { signals: [], maxNoToolRounds: 3 }` and retry attempts: 2.
+- The transcript writes only `result.transcript` to `transcript.json` (messages, without judge or usage layers).
+- The host removes JSON wrapping and passes `wrapup: false` as a second line of defense. If the host's final schema contains a top-level `done: boolean` key, such as `{"done":true,"summary":...}`, its JSON shape cannot be distinguished from the wrap-up protocol. The required own `done` key guard can reject summary-only output but cannot solve that collision; this is why `wrapup: false` or JSON de-serialization is required.
+- This corresponds to issue #71 (judge not enabled and no store).
 
-### 应对清单
+### Impact assessment
 
-1. **决定是否启用 judge**（现状 = 不启用，因 maxRounds 12）：
-   - 若审计/开发任务需要方向把关 → 提 maxRounds 到 ≥16（或显式传 `reflection: { enabled: true }`）。
-   - 保持现状 → 无需改动（短任务不受影响）。
-   - **明确传 `reflection: false`** 可防未来 maxRounds 调高时意外启用（显式优于隐式）。
+- With the auditor fallback `maxRounds = 12`, the core automatic reflection rule does not apply, so the current path does not start the judge.
+- If a task uses `maxRounds >= 16`, `reflection` is omitted, and `ERIX_NO_REFLECTION` is not `1`, the core automatic judge starts.
+- Explicit `reflection` configuration or an explicit `reflection: false` always takes precedence over the automatic rule.
 
-2. **store 决策**：app_container 目前**无 store** → 无 checkpoint、无 fail-closed（不受 #4 影响）、resume 不可用。若要恢复保护（无人值守长任务 crash 恢复）→ 建议接入 file/DB store（见 erix TranscriptStore 契约）。不接 → checkpoint 相关能力（含 fail-closed）自动关闭，行为同旧版。
+### Response checklist
 
-3. **judge 决策落盘**（如启用）：result.transcript 只有 messages——judge 决策（record.judge/onJudge）未持久化。若需审计链 → 用 `onJudge` 回调自行落盘，或接 store（issue #71 关联）。
+1. **Decide whether to enable the judge:**
+   - If an audit or development task needs direction and completion checks, raise `maxRounds` to at least 16 or pass `reflection: { enabled: true }`.
+   - To preserve current behavior, leave the configuration unchanged.
+   - Pass `reflection: false` explicitly to prevent accidental future enablement if the host later raises `maxRounds`.
 
-4. **stall 软纠正**（#5）：app_container 之前可能遇到 `llm_kit_stalled` 硬杀——升级后变 nudge + 正常 stop。**行为改善**（长任务不再被一次重复误杀），无需改动，但任务终止 reason 从 error 变正常 stop（宿主状态机需识别 `termination.reason: "stall"`）。
+2. **Decide on a store:** app_container currently has no store, so it has no checkpoints or fail-closed checkpoint behavior, and resume is unavailable. For crash recovery in unattended long tasks, integrate a file or database store that implements the `TranscriptStore` contract. If no store is added, checkpoint-related behavior remains disabled.
 
-5. **maxRounds 校验**（#7）：宿主传的 maxRounds 需合法（正整数）；默认 12 合法。
+3. **Persist judge decisions if the judge is enabled:** `result.transcript` contains messages only. Use `onJudge` to write an audit trail, or add a store so round records can carry `record.judge`; do not assume that the in-memory result transcript contains judge decisions.
 
-### 验证步骤
-- 升级依赖 → 跑审计任务（maxRounds 12）确认无行为变化 → 若启用 judge 则跑长任务观察。
-- 确认 terminate reason 语义（原 stall error → 现 normal stop）被调用方处理。
+4. **Handle soft stall correction:** app_container may previously have seen `llm_kit_stalled` as a hard failure. The current loop nudges suspected repeated calls and stops after a stall streak of 3 with `termination.reason: "stall"` and `truncated: true`. Without a final guard this is a normal return; with a final guard, a non-continuable stall can instead end as `final_guard_unverified`.
 
----
+5. **Validate `maxRounds`:** the value supplied to `runToolLoop` must be a positive safe integer. The auditor fallback of 12 is valid.
 
-## 3. 共同注意点
+### Verification
 
-| 主题 | 说明 |
+- Upgrade the dependency and run an audit task with `maxRounds = 12`; confirm that no judge call is made and the existing path remains unchanged.
+- If the judge is enabled, run a long task and observe the round judge, the every-fifth-tool intercept, `onJudge` records, and any synthetic audit messages.
+- Confirm that the caller handles the changed termination semantics, especially the old stall error versus `termination.reason: "stall"`.
+- Confirm that the host's `wrapup: false` path still returns its own final JSON/text schema without protocol parsing or `finalText` replacement.
+
+## 3. Shared caveats
+
+| Topic | Guidance |
 |---|---|
-| **成本** | judge 启用后：end_turn 每次 +1 LLM 调用（读足迹几百 token）；每 5 工具 +1 审计。长任务成本约 +10~30%。用独立 judge provider（轻模型）可降。 |
-| **judge provider 配额** | judge 默认用主 provider（同配额）——主 provider 配额耗尽会连带 judge 失败（降级为直接执行，不崩任务，但有损保护）。 |
-| **`checkpoint_failed`** | 在"store 成对 + checkpoint 写失败"时抛；执行后失败消息含“工具已执行但结果未持久化”。宿主需识别该错误码（可重试/不可重试分类），勿当普通模型错误，并让 `executeTool` 按 tool id 幂等。 |
-| **审计/提示消息** | "【审计拦截】…"与"（附方向提示…）"是 loop 注入的 **user role 合成消息**——进 transcript/展示，宿主需容忍。 |
-| **termination reason 扩展** | 新增 `stall`（原 error）与可能的 `judge_done`（judge 确认完成提前停）。宿主 switch 需覆盖。 |
-| **onJudge 新 API** | 每次 judge 决策 emit `{kind: "round"|"intercept", action, decision, tool?}`——审计/复盘消费入口。 |
-| **env 开关** | `ERIX_NO_REFLECTION=1`（全关）/ `ERIX_NO_ROUND_JUDGE=1`（关 round judge）/ `ERIX_NO_WRAPUP_INSTRUCTION=1`（关整个 wrapup 协议）——运维兜底。 |
-| **版本锚点** | 本文档对应 erix-agent **0.3.0~0.3.4**。0.3.1 仅 README，0.3.2 加 MIT license，0.3.3 wrapup 协议开关化，0.3.4 judge task 简报修复（#34）。 |
+| **Cost** | An enabled judge adds one round-judge call for eligible `end_turn` responses and one intercept audit after each five real tool executions by default. The total increase depends on the run; measure provider usage rather than relying on a fixed percentage. A separate `reflection.judge.provider` can isolate cost. |
+| **Judge-provider quota** | The default judge uses the main provider. A main-provider quota failure can therefore affect judge protection. Round-judge failures degrade to normal governor behavior; intercept failures and timeouts degrade to direct tool execution. |
+| **`checkpoint_failed`** | It is raised when a paired store cannot persist the checkpoint before or after an actual tool execution. The post-execution message explicitly says that the tool ran but the result was not persisted. Classify this error separately and make `executeTool` idempotent by tool id. |
+| **Synthetic audit messages** | `【审计拦截】方向可能偏...` and `（附方向提示...）` are injected `user`-role messages. They can appear in transcripts and UI output. |
+| **Termination reasons** | The normal result can use `end_turn`, `no_tool`, `stall`, `max_rounds_cap`, `reflection_stop`, `judge_done`, or `continuation_exhausted`; aborts and uncaught failures use `aborted` and `failed`. If a final guard cannot verify a non-continuable result, the reason becomes `final_guard_unverified`. Host state machines should cover these values rather than treating every non-error return as successful completion. |
+| **`onJudge`** | Each round or intercept decision is delivered as `{kind: "round"|"intercept", action, decision, tool?}`; degraded decisions also include `error` as `timeout`, `error`, or `parse`. Round decisions are persisted as `record.judge` when round records are stored; intercept decisions require the callback or a log. |
+| **`finalGuard`** | The core API guard is opt-in. Its default `finalGuardMaxRetries` is `2`; its default `finalGuardTimeoutMs` is `30000` and non-positive/non-finite values use that default. `{ action: "accept" }` yields `verification.status: "verified"`, `{ action: "skip", reason }` yields `"skipped"`, and `{ action: "revise", message }` continues when possible. Exhausted or non-continuable revisions yield `"unverified"` and `final_guard_unverified`; guard errors/timeouts return `"error"` without treating the text as verified. No guard yields `"skipped"` with reason `"no_final_guard"`. |
+| **`wrapup` and `completion`** | `wrapup` defaults to `true`; `wrapup: false` or `ERIX_NO_WRAPUP_INSTRUCTION=1` disables instruction injection, JSON parsing, `finalText` replacement, and wrap-up normalization. Optional normalization is off by default and is enabled by `ERIX_WRAPUP_NORMALIZE=1` or `reflection.wrapupNormalize === true`. `completion` defaults to `{ signals: [], maxNoToolRounds: 3 }`; `completion: false` disables the completion/no-tool policy, not the wrap-up protocol. |
+| **Stall detection** | `stallDetection` defaults to `{ window: 4 }` with mode `"appear"`; `"consecutive"` requires the entire window to match. `stallDetection: false` disables it. `ERIX_STALL_MODE` can provide the mode, but an explicit `stallDetection: false` wins. |
+| **Environment controls** | `ERIX_NO_REFLECTION=1` disables automatic reflection; `ERIX_NO_ROUND_JUDGE=1` disables only the end-turn judge; `ERIX_NO_WRAPUP_INSTRUCTION=1` disables the whole wrap-up protocol; `ERIX_WRAPUP_NORMALIZE=1` enables optional wrap-up normalization. These are runtime controls that exist in `src/loop.js`. |
+| **CLI controls** | In `bin/cli.js`, `erix chat` uses `--max-rounds <n>` with a default of `64`; `ERIX_MAX_ROUNDS` is the positive-integer fallback. CLI reflection defaults to enabled when `maxRounds >= 32` (not 16) if no explicit option or env setting is supplied; `--reflection <on|off>` and `ERIX_REFLECTION` control it, while `ERIX_NO_REFLECTION=1` wins. `--final-guard` and `ERIX_FINAL_GUARD=1` enable the CLI guard; `--no-final-guard` is a compatibility no-op. `--judge-log <path>` writes redacted round/intercept JSONL and overrides `ERIX_JUDGE_LOG`. `ERIX_NO_TOOL_ROUNDS` controls the CLI's positive `maxNoToolRounds` fallback, whose default is `3`. |
+| **Version anchor** | This guide describes the v0.3.0-v0.3.4 upgrade boundary: 0.3.1 was README-only, 0.3.2 added the MIT license, 0.3.3 made the wrap-up protocol switchable, and 0.3.4 fixed the judge task brief (#34). Later host-visible behavior belongs in [host-consumer-contract.md](host-consumer-contract.md). |
 
----
+## 4. Upgrade checklist (both hosts)
 
-## 4. 升级 checklist（两宿主通用）
-
-- [ ] 确认 erix-agent 依赖版本（≥0.3.4，含 #34 task 简报修复）
-- [ ] 决定 reflection/judge 策略（默认开 / 显式关 / 精细配置）并落实代码
-- [ ] 若启用 judge：确认 judge provider（主 provider 或独立）
-- [ ] store 宿主：确认 checkpoint 成对（save+load）→ 了解 fail-closed 语义；无 store 宿主：确认不需要恢复保护
-- [ ] 覆盖新 termination reason（`stall`、`judge_done`）
-- [ ] 处理合成审计消息（过滤/展示）
-- [ ] 评估 judge 成本（长任务 +10~30%）
-- [ ] 跑真机验证（短任务无变化 + 长任务 judge 生效）
+- [ ] Confirm the erix-agent dependency version (at least 0.3.4, including the #34 task-brief fix).
+- [ ] Choose and implement a reflection/judge policy (automatic enablement, explicit disablement, or per-expert configuration).
+- [ ] If the judge is enabled, choose the judge provider (the main provider or a separate one).
+- [ ] For a store host, confirm that checkpoint write and load methods are paired and understand fail-closed behavior. For a host without a store, confirm that resume protection is not required.
+- [ ] Handle the termination reasons `stall`, `judge_done`, `reflection_stop`, `final_guard_unverified`, and the other values listed above.
+- [ ] Tolerate or label synthetic audit messages.
+- [ ] Decide how `verification.status` is consumed when a final guard is enabled; do not treat `skipped`, `unverified`, or `error` as `verified`.
+- [ ] Measure the additional judge usage for long tasks.
+- [ ] Run real-host verification: a short task with no automatic judge and a long task where the configured judge behavior is observable.

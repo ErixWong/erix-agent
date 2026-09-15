@@ -1,54 +1,57 @@
-# ADR-009：安全分层——agent 不内置安全，牢笼由沙盒提供
+# ADR-009: Safety Layering—The Agent Does Not Embed Security; the Sandbox Provides the Jail
 
-- 状态：已决策（2026-08-30）
-- 背景：erix CLI 曾内置完整安全层（createJail 路径牢笼、exec 白名单、语法拦截、
-  高危操作确认机制、maskedPaths 脱敏）。用户决策：**彻底删除，裸奔**。
-  理由：安全不应该由 agent 本身提供——pi agent 也没有这些花样，它靠运行环境
-  （用户自己的容器/机器）隔离。谁用这个 agent 谁负责安全。
+> Chinese version: [009-safety-layering_cn.md](009-safety-layering_cn.md)
 
-## 决策
+- Status: Decided (2026-08-30)
+- Background: The erix CLI once had a complete built-in security layer (createJail path jail, exec allowlist, syntax interception,
+  confirmation mechanism for high-risk operations, maskedPaths redaction). The user decision: **remove it entirely and run bare**.
+  Reason: security should not be provided by the agent itself—pi agent has none of these flourishes either; it relies on the runtime
+  environment (the user's own container/machine) for isolation. Whoever uses this agent is responsible for security.
 
-### 1. agent（库 + CLI）不内置安全策略
+## Decision
 
-- 库（erix-agent）零执行零安全规则（ADR-005 已定，不变）。
-- CLI（erix）工具面**全面直通**：readFile/writeFile/rg/tree/exec 任意路径、
-  任意 shell 命令、git 不限子命令。删除 createJail/白名单/语法拦截/确认机制/maskedPaths。
+### 1. The agent (library + CLI) does not embed security policies
 
-### 2. 牢笼由沙盒/运行环境提供
+- The library (erix-agent) has zero execution and zero security rules (ADR-005 decided this; unchanged).
+- The CLI (erix) tool surface is **fully direct**: readFile/writeFile/rg/tree/exec accept any path,
+  any shell command, and git has no subcommand restrictions. Remove createJail/allowlists/syntax interception/
+  confirmation mechanisms/maskedPaths.
 
-| 运行场景 | 安全层 |
+### 2. The sandbox/runtime environment provides the jail
+
+| Runtime scenario | Security layer |
 |---|---|
-| 本地 CLI（用户自己的机器） | 信任域 = 用户本人，无额外隔离 |
-| app_container worker | 容器沙盒（它的责任，agent 不掺和） |
-| touwaka | firejail-executor（touwaka 自建） |
+| Local CLI (the user's own machine) | Trust domain = the user; no additional isolation |
+| app_container worker | Container sandbox (its responsibility; the agent does not interfere) |
+| touwaka | firejail-executor (built by touwaka) |
 
-### 3. 谁用谁负责安全
+### 3. Whoever uses it is responsible for security
 
-- CLI 帮助文本与 system 提示词写明："erix 不提供安全边界，运行环境负责隔离。
-  别在不可信环境裸跑；嵌入容器/沙盒场景由宿主提供隔离。"
-- 文档责任转移：安全问题找运行环境，不找 agent。
+- CLI help text and the system prompt state: "erix provides no security boundary; the runtime environment is responsible for isolation.
+  Do not run it bare in an untrusted environment; embedded container/sandbox scenarios are isolated by the host."
+- Responsibility for security issues is transferred: take them to the runtime environment, not the agent.
 
-### 4. 工程护栏 ≠ 安全策略（保留）
+### 4. Engineering guardrails ≠ security policies (retain)
 
-- exec 10s 超时（防挂起）、输出 4096 截断（防爆上下文）、非 TTY 降级、
-  会话存档——这些是工程行为，不是安全边界，保留。
+- exec 10s timeout (prevents hangs), output 4096 truncation (prevents context explosions), non-TTY fallback,
+  and session archival—these are engineering behaviors, not security boundaries, and are retained.
 
-### 5. 通用 sandbox 是独立组件
+### 5. A general-purpose sandbox is an independent component
 
-- 若未来需要通用沙盒解决方案（容器模板、文件系统隔离），**作为独立组件提供**，
-  与 agent 解耦——"沙盒"和"agent"本质是两码事，不混入 agent 代码。
+- If a general-purpose sandbox solution is needed in the future (container templates, filesystem isolation), **provide it as an
+  independent component**, decoupled from the agent—"sandbox" and "agent" are fundamentally two different things and must not be mixed into agent code.
 
-## 理由
+## Rationale
 
-- agent 的职责是对话/工具编排/上下文管理，安全边界是运行环境的职责；
-  混在一起既膨胀 agent，又让"安全承诺"成为虚假保证（内嵌白名单 ≠ 真隔离）。
-- 分层后：库 = 纯引擎；CLI = 薄壳；沙盒 = 环境。三个组件各自可独立演进、
-  独立测试、独立替换（app_container 换沙盒方案不影响 agent 层）。
+- The agent's responsibility is conversation/tool orchestration/context management; the runtime environment is responsible for the
+  security boundary. Mixing them both bloats the agent and makes the "security promise" a false guarantee (an embedded allowlist ≠ true isolation).
+- After layering: library = pure engine; CLI = thin shell; sandbox = environment. Each of the three components can evolve,
+  be tested, and be replaced independently (app_container can change its sandbox approach without affecting the agent layer).
 
-## 后果
+## Consequences
 
-- 工具执行面全开：模型能删文件、能 push、能写任意路径——**在不可信环境跑
-  erix 等于裸奔**，文档必须醒目声明。
-- 库的 tools 子路径（createJail/file-tools）保留为**参考实现**，供需要自建
-  沙盒/护栏的调用方取用；CLI 不依赖它们。
-- 后续若提供通用 sandbox 组件，另立 ADR，不并入 agent。
+- The tool execution surface is fully open: the model can delete files, push, and write to any path—**running erix in an
+  untrusted environment is equivalent to running bare**, and the documentation must state this prominently.
+- The library's tools subpath (createJail/file-tools) is retained as a **reference implementation** for callers that need
+  to build their own sandbox/guardrails; the CLI does not depend on them.
+- If a general-purpose sandbox component is provided later, create a separate ADR rather than merging it into the agent.

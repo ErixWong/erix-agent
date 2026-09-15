@@ -1,119 +1,121 @@
-# 需求文档 — erix-agent
+# Requirements — erix-agent
 
-> 2026-08-29 初版。背景：app_container 与 touwaka 各自实现了 LLM 工具循环与上下文管理，
-> 逻辑重复（两份 token 估算、两份压缩、两份协议适配），且各自缺对方已验证的能力。
-> 本库把共有层抽出，各自只保留项目特有的执行/存储/安全层。
+> Chinese version: [requirements_cn.md](requirements_cn.md)
 
-## 1. 两个消费方的现状与痛点
+This document was first drafted on 2026-08-29 and has been reconciled with the implementation shipped in version 0.5.1. It describes the library's actual scope and APIs, not an unqualified list of future plans.
 
-### app_container（`apps/worker/src/pi/` + `packages/context`）
+## 1. Consumer context and pain points
 
-- 已有：双协议归一（OpenAI/Anthropic → 统一 tool_use/tool_result 块）、死循环检测（签名窗口比对）、
-  固定 10 轮硬滑窗、max_tokens 续写、骨架折叠（idea 对话，`chat_summary_json` + `foldedUpTo` 水位线）
-- 痛点：① 硬滑窗**静默丢弃**早期轮次，24 轮开发任务丢一半历史，模型"换种方式重做"打转；
-  ② provider 抛错 → 整个 task 失败 → reaper 从头重跑（已跑的 LLM 调用费全浪费）；
-  ③ `pi_models.context_window_tokens` 已入库但**没接到循环**（llm-context-budget.md §7 "本期不动"）；
-  ④ 骨架折叠结果无确定性尺寸执法（信任 LLM 自律，违反"终稿归代码"不变量）。
+### app_container (`apps/worker/src/pi/` + `packages/context`)
 
-### touwaka（`lib/agent/` + `lib/context-organizer/`）
+- Existing capabilities: dual-protocol normalization (OpenAI/Anthropic to common `tool_use`/`tool_result` blocks), stall detection based on signature-window comparison, a fixed ten-round hard window, `max_tokens` continuation, and skeleton folding for idea conversations (`chat_summary_json` plus the `foldedUpTo` watermark).
+- Pain points: (1) the hard window silently discards early rounds, so a 24-round development task can lose half its history and the model may redo completed work; (2) a provider error fails the whole task and causes the reaper to start over, wasting the LLM calls already paid for; (3) `pi_models.context_window_tokens` is stored but was not wired into the loop (`llm-context-budget.md` §7, “not changed this cycle”); and (4) skeleton-folding output had no deterministic size enforcement, relying on the LLM to obey the budget instead of keeping the final size a code invariant.
 
-- 已有：预算驱动整组折叠 + 统计摘要（history-compactor，R19-1）、轮内快照重试（round-state-snapshot）、
-  完成信号判定（R15）、相邻 assistant 合并（R16-3）、孤儿消息防护、Psyche 反思体系（对话场景）
-- 痛点：与 app_container 逻辑重复但各自演化；压缩/重试经验没有回流通道。
+### touwaka (`lib/agent/` + `lib/context-organizer/`)
 
-## 2. 目标 / 非目标
+- Existing capabilities: budget-driven whole-group folding with statistical summaries (`history-compactor`, R19-1), in-round snapshot retry (`round-state-snapshot`), completion-signal detection (R15), adjacent-assistant merging (R16-3), orphan-message protection, and the Psyche reflection system for conversation workloads.
+- Pain point: the two implementations duplicate one another while evolving separately, and the lessons from compaction and retry do not flow back into a shared runtime.
 
-### 目标
+## 2. Goals and non-goals
 
-1. 双协议适配（OpenAI 兼容 + Anthropic），流式/非流式，统一内部块格式，统一错误分类
-2. 工具调用循环：maxRounds、轮内快照重试、死循环检测、完成信号/无工具轮策略、max_tokens 续写
-3. 上下文预算压缩：策略可插拔（见 ADR-003），折叠可回溯（配合 recall，见 ADR-005）
-4. 配置与存取走适配器（见 ADR-001 / ADR-002），库内置文件系实现，DB 实现留在项目侧
-5. 零运行时依赖、纯 ESM、Node 22+、`node --test`
+### Goals
 
-### 非目标（永远不做）
+1. Provide OpenAI-compatible (`chat/completions`) and Anthropic (`messages`) adapters with streaming and non-streaming calls, one canonical internal block format, and common error classification.
+2. Provide the `runToolLoop` single-task lifecycle: injected tools and execution, `maxRounds`, optional in-round provider retry, stall detection, completion and no-tool policies, `max_tokens` continuation, checkpoint/resume, optional reflection/judge governance, and observable events.
+3. Provide pluggable context-budget compaction: `sliding-window`, `fold-statistical`, and `fold-llm`, with archived folded payloads and bounded recall.
+4. Keep configuration and persistence behind adapter contracts. The package includes static, environment, JSON-file, memory, and JSONL-file implementations; database adapters remain in consumer projects.
+5. Remain zero-runtime-dependency, pure ESM, compatible with Node 22+, and testable with `node --test`.
 
-- ❌ 内置会执行的工具（read/bash/write 的**执行**在调用方；库只提供参考实现与牢笼助手，见 ADR-005）
-- ❌ agent 人格/skills/会话管理/TUI/MCP
-- ❌ 安全策略（白名单校验、密钥脱敏规则、产物海关）——调用方职责
-- ❌ 存储引擎选型（DB schema 在项目侧，库只定义接口）
-- ❌ 成为"迷你 pi"。需要完整 agent 时直接用 pi 本体/SDK，不把本库养成 agent
+The library boundary ends at the lifecycle of one agent task: start, run, stop, resume, and emit events for that task. Multi-agent orchestration, arbitration, task queues, and retry scheduling across tasks are the host's responsibility and are deliberately outside this package.
 
-## 3. 功能需求
+### Non-goals (never do)
 
-### FR-1 Provider 适配
+- ❌ Do not make tool execution mandatory or implicit in the core loop. The host supplies `tools` and `executeTool`; the optional `erix-agent/tools` subpath contains reference helpers and reference executors, but the host must explicitly wire and govern them.
+- ❌ Do not turn the library runtime into an agent-personality, skills, session-management, TUI, or MCP framework. Those are CLI or host concerns, not the `src/` runtime contract.
+- ❌ Do not provide a security policy or security boundary (allowlists, secret-redaction policy, artifact gates, or host isolation). `createJail` is an optional path helper, not a substitute for host security.
+- ❌ Do not choose a database engine or own a consumer project's database schema. Consumers implement the adapter contract on their side.
+- ❌ Do not become a “mini pi”. Consumers that need a complete interactive agent should use pi itself or its SDK rather than expanding this package into one.
+- ❌ Do not ship the planned `psyche` compaction strategy in the 0.5.1 runtime. Its context-shaping idea remains a future, conversation-oriented design candidate rather than a current implementation.
 
-| # | 需求 | 来源 |
+## 3. Functional requirements
+
+### FR-1 Provider adapters
+
+| # | Requirement | Status and implementation |
 |---|---|---|
-| FR-1.1 | OpenAI 兼容（chat/completions）+ Anthropic（messages）双协议，流式+非流式 | app_container 已实现，抽出 |
-| FR-1.2 | 两协议归一到同一内部块格式（text / tool_use / tool_result） | app_container 已实现 |
-| FR-1.3 | 统一错误分类：timeout / rate_limited / auth / network / server，可重试性标记 | 两边各有，合并 |
-| FR-1.4 | HTTP 2xx + error-body 透传真实上游 message（不误报 no choices） | app_container 已有 |
-| FR-1.5 | 模型元信息（contextWindowTokens / maxOutputTokens）随配置传入循环，驱动压缩预算 | app_container 缺口 |
+| FR-1.1 | OpenAI-compatible (`chat/completions`) and Anthropic (`messages`) protocols, both streaming and non-streaming | **Delivered.** `createOpenAIProvider` and `createAnthropicProvider` expose `chat` and `chatStream`. |
+| FR-1.2 | Normalize both protocols into one internal block format (`text` / `tool_use` / `tool_result`) | **Delivered.** `src/messages/canonical.js` and `src/messages/anthropic.js` also preserve `raw`, image, and reasoning blocks where needed. |
+| FR-1.3 | Common error classes: `timeout` / `rate_limited` / `auth` / `network` / `server`, with a retryability marker | **Delivered.** `src/providers/errors.js` provides `KitError`, HTTP classification, fetch-exception classification, and `retryable`; it also exposes explicit `aborted`, `provider_config`, `invalid_messages`, and related non-retryable errors. |
+| FR-1.4 | For HTTP 2xx responses containing an error body, preserve the real upstream message instead of reporting a misleading missing-choice error | **Delivered.** Both providers inspect successful response bodies for provider errors and preserve the upstream message; OpenAI responses missing `choices` include a bounded response preview. |
+| FR-1.5 | Pass model metadata (`contextWindowTokens` / `maxOutputTokens`) into the loop so it can derive a compaction budget | **Delivered, with an explicit input contract.** Provider factories return these metadata fields, and `runToolLoop` accepts them from `modelConfig`, `modelMetadata`, `model`, `provider`, or `context` and calls `computeBudget` when both values are available. A budget is not inferred when either value is absent. |
 
-### FR-2 工具循环（runToolLoop）
+### FR-2 Tool loop (`runToolLoop`)
 
-| # | 需求 | 来源 |
+| # | Requirement | Status and implementation |
 |---|---|---|
-| FR-2.1 | 调用方注入 `tools`（规范 JSON Schema）+ `executeTool(name, input)` 回调；库不执行 | 架构红线 |
-| FR-2.2 | 轮内快照重试：可重试错误就地恢复快照重试（默认 2 次，指数退避 1.5s→10s），仍失败才抛出 | touwaka R-系修复 |
-| FR-2.3 | Stall 检测：工具签名滑动窗口比对，命中先 nudge，连续超限才以 `termination.reason="stall"` 正常停止 | app_container 已有 |
-| FR-2.4 | 完成信号 + 无工具轮策略：有工具历史且无完成信号时视为过渡文本继续（可配，默认连续 3 轮强制结束）；相邻 assistant 合并防 400 | touwaka R15/R16-3 |
-| FR-2.5 | max_tokens 截断续写 | app_container 已有 |
-| FR-2.6 | 每轮 LLM 调用前跑压缩检查（FR-3），压缩事件进返回的 stats | touwaka R19-1 |
+| FR-2.1 | The host injects `tools` with standard JSON Schema definitions and an `executeTool(name, input)` callback; the library does not own the execution policy | **Delivered.** `runToolLoop` passes the schemas to the provider and accepts either the positional callback or the structured `{ id, name, input, context, signal }` form. |
+| FR-2.2 | Retry a retryable provider failure from an in-round snapshot, with a default of two retries and exponential backoff from 1.5s to a 10s cap; throw after the retries are exhausted | **Delivered as opt-in, not as a default.** With `retry: {}`, `runToolLoop` defaults to two retries, a 1.5s base delay, and a 10s cap, restores the round snapshot, and retries only errors marked `retryable`. The default is `retry: false`; tool execution itself is not automatically retried. |
+| FR-2.3 | Detect stalls by comparing tool signatures in a sliding window, nudge first, and stop normally with `termination.reason="stall"` only after repeated excess | **Delivered.** `stallDetection` defaults to a four-signature window, supports `appear` and `consecutive` modes, nudges on early hits, and stops after the three-hit stall streak limit. |
+| FR-2.4 | Apply a completion signal and no-tool-round policy: after tool history, treat a response without a completion signal as transitional text and continue; by default force termination after three consecutive no-tool rounds; merge adjacent assistant messages to avoid a 400 | **Delivered with explicit switches.** `completion` defaults to `{ signals: [], maxNoToolRounds: 3 }`; the wrap-up JSON protocol supports `done: false` continuation and `done: true` completion, and `normalizeMessages` merges adjacent assistant messages. `completion: false` disables the no-tool policy for conversation-style hosts. |
+| FR-2.5 | Continue a response truncated by `max_tokens` | **Delivered with a bound.** The loop continues up to `maxTokenContinuations` (default `3`) and then reports `termination.reason="continuation_exhausted"` when the cap is reached. |
+| FR-2.6 | Run the compaction check before each LLM call and include compaction events in returned statistics | **Delivered when a budget or strategy is configured.** The loop checks before each round request and rechecks before a continuation when the request is over budget; returned `compactionStats` contains the compaction result and token counts. |
 
-### FR-3 上下文压缩
+### FR-3 Context compaction
 
-| # | 需求 | 来源 |
+| # | Requirement | Status and implementation |
 |---|---|---|
-| FR-3.1 | 预算 = contextWindowTokens − maxOutputTokens − max(2000, 10%窗口) | app_container llm-context-budget.md |
-| FR-3.2 | token 估算：中文 1.5 tok/字、其余 3.5 字/tok、+15% 余量（保守宁高勿低，系数可配） | 两边合并取保守 |
-| FR-3.3 | 整组折叠：轮 = assistant + 紧随的工具结果消息（两种协议各自的成对规则），头部 system+首个 user 永不折叠 | touwaka，扩展双协议 |
-| FR-3.4 | 策略谱系（详见 ADR-003/010）：`sliding-window` → `fold-statistical` → `fold-llm`（可选 summarizer）；psyche 已重新定义为对话场景的事前整形哲学（非谱系④级实现，见 ADR-010） | 本次升级核心 |
-| FR-3.5 | LLM 产出的摘要（fold-llm/psyche）必须过**确定性尺寸执法**：代码按字段优先级修剪到预算内，不信任 LLM 自律 | Psyche 借鉴 + app_container 不变量 |
-| FR-3.6 | 折叠水位线 `foldedUpTo`：被折叠轮次完整进 TranscriptStore，可经 recall 工具取回（近无损折叠） | app_container 水位线 + touwaka recall 融合 |
+| FR-3.1 | `budget = contextWindowTokens − maxOutputTokens − max(2000, 10% of the window)` | **Delivered.** `computeBudget` implements this formula and rejects invalid or non-positive budgets. |
+| FR-3.2 | Estimate tokens as 1.5 tokens per CJK character, 3.5 characters per non-CJK token, plus a 15% margin; remain conservative and make coefficients configurable | **Delivered with additional accounting.** `estimateTokens` uses those defaults and configurable coefficients, and message estimation adds per-message overhead plus image, reasoning, raw-block, tool-name, and tool-input costs where applicable. |
+| FR-3.3 | Fold whole groups: a round is an assistant message plus its immediately following tool-result message, using each protocol's pairing rules; never fold the system header or first user message | **Delivered by the compaction strategies.** `validateMessages` and `groupIntoRounds` enforce adjacent tool pairs, and the strategies retain the head through the first real user message. `protectedMessage` can add guards. If a last-resort safe truncation is required to meet the budget, protected messages may be downgraded or a single over-budget protected message may fail with `invalid_budget`; this is not an unconditional promise that every fallback view can retain the head. |
+| FR-3.4 | Provide the strategy progression `sliding-window` → `fold-statistical` → `fold-llm` (optional summarizer); define Psyche as a separate conversation-oriented context-shaping idea rather than a fourth shipped strategy | **Partly delivered and explicitly split.** `createSlidingWindowStrategy`, `createFoldStatisticalStrategy`, and `createFoldLlmStrategy` are shipped. No `psyche` strategy exists in `src/`; `src/reflection/` is a separate judge/governor/wrap-up/L0 governance layer, not a compaction strategy. |
+| FR-3.5 | Enforce a deterministic size limit on LLM-produced summaries by pruning fields in code rather than trusting the LLM | **Delivered for `fold-llm`; not applicable to an unshipped Psyche strategy.** `src/compact/enforce-size.js` applies field priorities and `src/compact/fold-llm.js` enforces `maxSummaryTokens` with deterministic fallback truncation. `fold-statistical` is deterministic and does not rely on an LLM summary. |
+| FR-3.6 | Track a `foldedUpTo` watermark; persist folded rounds in `TranscriptStore`; allow recall to retrieve them for near-lossless folding | **Delivered under a different API; the old field name is not shipped.** `runToolLoop` tracks an internal `foldedThrough` value, while records expose `foldedRoundRange` and `foldedPayload`. The memory and file stores persist folded payloads, and their legacy recall plus bounded object recall can read both current messages and folded payloads. |
 
-### FR-4 配置与存取适配器
+### FR-4 Configuration and persistence adapters
 
-| # | 需求 | 详见 |
+| # | Requirement | Status and implementation |
 |---|---|---|
-| FR-4.1 | ModelConfigProvider 接口 + static/env/json-file 内置实现；apiKey 支持 env/文件间接引用 | ADR-001 |
-| FR-4.2 | TranscriptStore 接口 + memory/file(JSONL) 内置实现；支持崩溃续跑 | ADR-002 |
+| FR-4.1 | A `ModelConfigProvider` contract with static, environment, and JSON-file implementations; `apiKey` may refer indirectly to an environment variable or file | **Delivered as a duck-typed `resolve(slot)` contract rather than a class or formal interface.** `createStaticModelConfigProvider`, `createEnvModelConfigProvider`, and `createJsonFileModelConfigProvider` are implemented; `resolveApiKey` supports direct values, `apiKeyEnv`, and `apiKeyFile`. |
+| FR-4.2 | A `TranscriptStore` contract with memory and JSONL-file implementations, including crash resume | **Delivered.** `createMemoryTranscriptStore` and `createFileTranscriptStore` implement append/load/recall plus run-state and checkpoint methods. The file store repairs or isolates a damaged trailing JSONL fragment, and `runToolLoop({ store, runId, resume: true })` restores transcript and pending checkpoint work. Exactly-once side effects remain the host's responsibility. |
 
-### FR-5 工具体系
+### FR-5 Tool system
 
-| # | 需求 | 详见 |
+| # | Requirement | Status and implementation |
 |---|---|---|
-| FR-5.1 | 规范工具 schema + 协议序列化由适配层负责；执行永远在调用方 | ADR-005 |
-| FR-5.2 | 可选子路径导出 `erix-agent/tools`：路径牢笼助手 + 文件工具参考实现 + recall | ADR-005 |
-| FR-5.3 | ToolProvider 分层：定义可插拔（static/json-file/composite，DB 在项目侧），执行器注册表永远在代码，求交 fail closed | ADR-006 |
+| FR-5.1 | Define a standard tool schema; let the adapter own protocol serialization; keep execution in the host | **Delivered.** `ToolSchema` uses `inputSchema`; `canonicalToolsToOpenAI` and `canonicalToAnthropicRequest` serialize it for each provider, while `executeTool` remains the loop's injected execution boundary. |
+| FR-5.2 | Provide an optional `erix-agent/tools` subpath with a path-jail helper, reference file tools, and recall | **Delivered.** `package.json` exports `./tools` to `src/tools/index.js`, which exports `createJail`, `createFileTools`, `createRecallTool`, the tool registry, and tool providers. These are opt-in and are not automatically installed as loop tools. |
+| FR-5.3 | Make tool definitions pluggable (`static` / `json-file` / `composite`, with DB in the consumer project); keep the executor registry in code and fail closed on mismatch | **Delivered.** `src/tools/providers.js` implements the three providers and `src/tools/registry.js` keeps executors in a code-owned map, validates inputs, merges provider schema overlays, and throws `tool_unknown_executor` when a provider names an unavailable executor. No DB provider is included. |
 
-## 4. 分期
+## 4. Phasing and implementation status
 
-| 版本 | 内容 | 验收 |
+The original phase plan is reconciled below with what exists in package version 0.5.1. “Delivered” describes repository code; consumer migrations and real-provider benchmark runs remain external acceptance work.
+
+| Version | Scope | Acceptance/status |
 |---|---|---|
-| **v0.0** | **MVP 垂直切片**（issue #1）：openai provider（非流式）+ canonical + tokens + runToolLoop 最小版（maxRounds / executeTool / 死循环检测）+ memory store + `examples/exec-demo`（exec 工具在 demo 侧，实证"库不执行"红线） | `node --test` 全绿（mock fetch）；exec demo 对真实 LLM（本机 relay）跑通多轮工具调用，transcript 完整 |
-| **v0.1** | providers 全量（+Anthropic +流式）+ messages + tokens + loop（FR-1/2 全量）+ sliding-window + fold-statistical + memory store + config（static / env） | app_container **完整迁移 runToolLoop**（只迁纯函数层不算完成），原有 `npm test` 全绿；24 轮开发场景不再静默丢历史；**行为指标**：折叠后模型"重做已完成工作"次数较硬滑窗基线可观测下降 |
-| **v0.2** | file store(JSONL) + recall 工具 + json-file config + fold-llm summarizer + tools 子路径（牢笼+文件工具+registry/ToolProvider） | 崩溃续跑演示；折叠后 recall 能取回原文 |
-| **v1.0** | touwaka 迁移（第一步只换 token-utils/history-compactor，AgentLoop 本体看收益再定）+ 文档完善 | touwaka 侧测试全绿、行为无回归 |
-| **v2 候选** | 冷循环蒸馏 + L3 facts 注入（psyche 哲学落于此，ADR-010）、Gemini native（触发 AI SDK 底座重估） | 另行立项 |
+| **v0.0 — delivered** | MVP vertical slice: OpenAI non-streaming provider, canonical messages, token estimation, the minimal `runToolLoop` (`maxRounds`, `executeTool`, stall detection), memory store, and `examples/exec-demo.js` with execution owned by the demo | The repository contains the mock-fetch test suite and the exec demo. A real LLM run against a local relay is an external check and is not asserted by this document. |
+| **v0.1 — delivered** | Full provider layer (Anthropic plus streaming), `src/messages/`, tokens, the loop features represented by FR-1/2, `sliding-window`, `fold-statistical`, memory store, and static/environment config | The library surfaces are present and covered by repository tests. Complete `app_container` migration and the 24-round behavioral comparison are consumer-side acceptance criteria, not shipped facts verified here. |
+| **v0.2 — delivered** | JSONL file store, recall, JSON-file config, `fold-llm` with an injected summarizer, and the optional `erix-agent/tools` export: jail, reference file tools, recall, registry, and tool providers | Crash repair/resume and folded-payload recall are implemented in the stores and loop. The host still chooses whether to use the reference tools. |
+| **v0.3.x–v0.4.x — delivered** | Checkpoint/resume hardening and the optional reflection layer in `src/reflection/`: governor decisions, L0 facts, wrap-up parsing/normalization, round judge, transparent tool interception, direction hints, and `finalGuard`/verification hooks | The loop exposes these behaviors through `reflection`, `onJudge`, `finalGuard`, and returned termination/verification data. Reflection is automatically enabled for `maxRounds >= 16` unless explicitly disabled. |
+| **v0.5.0–v0.5.1 — current** | Bounded recall in `src/store/bounded-recall.js` with `limit` / `cursor` / `maxBytes` / `artifactRef`; deterministic bounded run state in `src/run-state.js`; fold navigation records and stubs; resume-safe state persistence; and the `./tools` package export | `package.json` reports version `0.5.1` and exports `.`, `./tools`, and `./contract-tests`. Run-state persistence is bounded and explicit about unavailable or stale state; bounded recall is source-limited and cursor-bound. |
+| **v1.0 candidate — not shipped** | A touwaka migration, initially limited to token utilities and the history compactor, with the full `AgentLoop` migration left as a separate decision | No touwaka migration is part of this repository's 0.5.1 implementation. Consumer-side regression and behavior checks must be run by the host project. |
+| **v2 candidate — deferred** | Cold-loop distillation plus L3 fact injection for the context-shaping idea, and native Gemini support if a future provider-layer reassessment justifies it | No `psyche` or Gemini-native provider is present in `src/` at 0.5.1. This remains separately scoped work. |
 
-## 5. 非功能需求
+## 5. Non-functional requirements
 
-- `examples/` 是一等公民：每个里程碑附可运行 demo（exec / 对话 / 审计），新消费方按 demo 接入；demo 同时承担"调用方角色"的实证职责（执行体全在 demo 侧）
-- 存储策略：库内置 memory → file(JSONL) 先行，文件系统即可跑通全链路；DB 适配器用本机 MariaDB，但永远在**消费方项目侧**实现 TranscriptStore / ModelConfigProvider 接口，不进库（ADR-001/002）
-- 零运行时依赖；devDependencies 也不引入（node --test 够用）
-- 库内任何文件不含密钥；配置适配器的 apiKey 间接引用机制是第一公民（ADR-001）
-- 所有压缩/重试行为有 `node --test` 单测锁定；协议适配层用 mock fetch 测
-- 发布走公开 npm（`erix-agent`）
+- `examples/` is a first-class integration surface. The repository currently includes an `exec` demo, a memory benchmark, and provenance reproduction coverage; a future consumer should be able to follow a runnable example, while a missing per-milestone dialogue or audit demo must not be treated as an implemented capability. Reference demos keep execution on the consumer side.
+- Storage progression is memory first, then JSONL file so the full lifecycle can run with only a filesystem. A MariaDB or other database adapter is not shipped; consumer projects implement `TranscriptStore` and `ModelConfigProvider` against their own schema and infrastructure.
+- There are no runtime dependencies, no build step, and no development dependency requirement beyond the built-in `node --test` runner.
+- Repository files must not contain keys or tokens. The configuration adapters treat `apiKeyEnv` and `apiKeyFile` indirection as a first-class mechanism; direct `apiKey` values are accepted as configuration input but must not be committed.
+- Compaction, retry, protocol adaptation, checkpoint/resume, reflection, and bounded-recall behavior are locked down by `node --test` tests, with provider tests using mock `fetch`. External consumer migrations and real-relay behavior require their own tests.
+- Distribution is through the public npm package `erix-agent`.
 
-## 6. 风险
+## 6. Risks
 
-| 风险 | 缓解 |
+| Risk | Mitigation |
 |---|---|
-| 抽象泄漏：双协议归一后某协议特性丢失 | v0.1 验收以 app_container 全量测试通过为准；canonical 格式保留 `raw` 逃生舱 |
-| touwaka 迁移回归（AgentLoop 有 R15/R16/R19 一串实战修复） | v1.0 只迁纯函数层；AgentLoop 本体迁移单列决策 |
-| 单维护者项目的发布摩擦 | 版本语义化 + CHANGELOG；消费方锁版本升级 |
-| 迁移搁置：库做好了消费方不迁（迁移有成本无即时收益，单维护者尤其容易搁置） | v0.1 验收绑死 app_container 完整迁移 runToolLoop；库退化为"纯 utils 包"即视为失败 |
-| 上游 API 侵蚀：商业 API 内建 context editing / 服务端循环能力 | 价值锚点绑定自托管 relay + 开源模型场景（服务端能力不可用，自研是唯一解）；触发重估条件不变（README） |
-| 压缩谱系造了四级只用第一级 | v0.1 验收含行为指标；谱系升级必须实证驱动（ADR-004 的升级阶梯，不跳级） |
+| Abstraction leakage: canonicalization hides a protocol-specific feature | Provider and message adapters preserve `raw` escape-hatch blocks; provider-specific payload options remain available through the adapter layer. |
+| Touwaka migration regression: its `AgentLoop` contains the R15/R16/R19 production fixes | Keep the touwaka migration outside the 0.5.1 claim; migrate the pure utility layer first and make the full loop a separate decision with host-side regression tests. |
+| Release friction for a single-maintainer project | Use semantic versioning and a changelog; consumers pin and deliberately upgrade versions. |
+| Consumers defer migration because the immediate benefit does not offset integration cost | Treat consumer migration as an explicit host-project milestone. The 0.5.1 library is more than a utility package, but it cannot claim a migration that is not present in this repository. |
+| Upstream APIs absorb context editing or server-side loop capabilities | Keep the value proposition anchored to self-hosted relays and open models where those services are unavailable; reassess the project boundary if that premise changes. |
+| The compaction progression becomes a four-level promise while only the first level is used | Do not describe `psyche` as shipped. Move from `fold-statistical` to `fold-llm` only when behavior justifies it; evaluate the deferred context-shaping design separately and do not skip empirical gates. |

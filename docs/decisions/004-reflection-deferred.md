@@ -1,36 +1,31 @@
-# ADR-004：反思（reflection）不进第一期，作为可选 summarizer 钩子预留
+# ADR-004: Reflection Deferred from the First Release, Reserved as an Optional summarizer Hook
 
-- 状态：已决策（2026-08-29）
-- 背景：Psyche 的核心是"每轮对话后一次反思 LLM 调用，更新结构化状态"。
-  用户判断：**对开发帮助不大，第一期不做；和人对话时价值更高。**
-  **2026-08-31 修正（ADR-010）**："每轮反思"本身被判定为 psyche 的错误工程形态（touwaka 实现即如此）；
-  psyche 的正确形态是冷循环 + L3 注入，本 ADR "不实现每轮反思"的结论与 ADR-010 一致并为其承接。
+> Chinese version: [004-reflection-deferred_cn.md](004-reflection-deferred_cn.md)
 
-## 决策
+- Status: Decided (2026-08-29)
+- Background: Psyche's core is "one reflective LLM call after every conversational round, updating structured state".
+  The user's judgment: **not very helpful for development, so do not build it in the first release; it has higher value in conversations with humans.**
+  **2026-08-31 correction (ADR-010)**: "reflection every round" itself was judged to be Psyche's wrong engineering form (the touwaka implementation is exactly this);
+  Psyche's correct form is cold loop + L3 injection, so this ADR's conclusion "do not implement reflection every round" is consistent with and carries forward into ADR-010.
 
-第一期（v0.1/v0.2）**不实现每轮反思**。保留两个钩子：
+## Decision
 
-1. `fold-llm` 策略的 `summarizer` 注入点（ADR-003 ③）——折叠点才调 LLM，不是每轮；
-2. `psyche` 策略的接口位（v2）——届时限定为对话场景专用。
+The first release (v0.1/v0.2) **does not implement reflection after every round**. Reserve two hooks:
 
-## 理由（用户判断的理论化）
+1. The `summarizer` injection point for the `fold-llm` strategy (ADR-003 ③)—call the LLM only at the fold point, not every round;
+2. The interface slot for the `psyche` strategy (v2)—limited to conversation scenarios at that time.
 
-- **状态所在地原则**（ADR-003 已述）：开发任务状态在磁盘，工具可重读，
-  统计足迹 + recall 足够恢复工作上下文；反思提炼的"意图/决策"在开发场景里
-  大部分能从 git diff / 文件状态重新推出，边际价值低。
-- **成本不对等**：每轮反思 = 每轮多一次 LLM 调用，工具循环轮次多（开发 24+ 轮），
-  成本翻倍换不来等比收益；对话场景一轮一次反思的占比可接受，且换到的是
-  跨 session 的意图连续性——那才是反思的甜点区。
-- **touwaka 实证**：它的工具型 agent（锚点清洗）靠统计折叠（R19-1）就解决了爆窗，
-  Psyche 是为 companion 对话做的。两条链路各自验证了用户这个判断。
-- 风险侧：反思输出进上下文属于"LLM 草稿影响后续决策"，对话场景可接受，
-  审计/开发链路则会稀释 app_container 的证据硬约束（结论必须有真实文件证据）。
+## Rationale (theoretical formulation of the user's judgment)
 
-## 后果
+- **State location principle** (already stated in ADR-003): the state of a development task is on disk and tools can reread it, so statistical traces + recall are enough to restore working context; the "intent/decisions" extracted by reflection in development scenarios can mostly be reconstructed from the git diff / file state, so the marginal value is low.
+- **Unequal cost**: reflection every round = one additional LLM call per round. Tool loops have many rounds (24+ for development), so the cost doubles without a proportional gain; in a conversation, one reflection per round is an acceptable share, and what it buys is intent continuity across sessions—that is the sweet spot for reflection.
+- **touwaka evidence**: its tool-oriented agent (anchor cleaning) solves context overflow through statistical folding (R19-1); Psyche is for companion conversations. The two paths each validate the user's judgment.
+- Risk side: putting reflective output into context means "an LLM draft influences later decisions", which is acceptable in conversation scenarios, but dilutes app_container's hard evidence constraint in audit/development paths (conclusions must have real file evidence).
 
-- v2 做 psyche 时验收场景是 touwaka 对话链路，不是工具循环。
-- 若未来开发任务出现"统计摘要确实不够"的实证（折叠后模型反复迷失），
-  先升级到 fold-llm（③），仍不够再议每轮反思——有明确的升级阶梯，不跳级。
-- **调研补记（2026-08-29）**：闲时整理的正确形态已被外部验证为**双 agent 架构**（Letta sleep-time compute）：
-  冷循环独立运行、可配更强模型（用 ADR-001 slot 扩展 "archive" 槽即可）、anytime 更新不阻塞主循环；
-  主循环**故意不挂**记忆管理工具（又慢又不可靠）。v2 设计照此形态，详见 docs/research/2026-08-29-memory-context-research.md §3.4。
+## Consequences
+
+- The acceptance scenario for Psyche in v2 is touwaka's conversation path, not a tool loop.
+- If future development tasks produce evidence that "statistical summaries are indeed insufficient" (the model repeatedly loses its way after folding), first upgrade to fold-llm (③); only if that is still insufficient should reflection every round be reconsidered—there is a clear upgrade ladder, with no jumping levels.
+- **Research addendum (2026-08-29)**: the correct form for organizing during idle time has been externally validated as a **dual-agent architecture** (Letta sleep-time compute):
+  the cold loop runs independently and can use a stronger model (extend the ADR-001 slot with an "archive" slot); it updates anytime without blocking the main loop;
+  the main loop **deliberately does not attach** memory-management tools (too slow and unreliable). Design v2 in this form; see docs/research/2026-08-29-memory-context-research.md §3.4.

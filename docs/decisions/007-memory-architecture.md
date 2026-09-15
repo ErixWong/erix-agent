@@ -1,127 +1,129 @@
-# ADR-007：记忆系统架构——五层记忆 / episode / recall 三态 / 热冷双循环
+# ADR-007: Memory System Architecture—five memory layers / episode / three-state recall / hot-cold dual loop
 
-- 状态：已决策（方向性架构，v1.x/v2 设计输入；v0.2 按"后果"节对齐）2026-08-29
-- 背景：psyche 设计本意是"极小初始上下文 + 合适的回忆工具 = 无限扩展"，需 LLM 闲时整理归档；
-  touwaka topics 是归档初步实现。外部调研见 docs/research/2026-08-29-memory-context-research.md
-  （Letta sleep-time 双 agent、生产上下文工程三机制、A-MEM、Generative Agents）。
-- 关联：ADR-002（档案/视图分离）、ADR-003（压缩谱系）、ADR-004（反思缓行与冷循环形态）、ADR-005（recall 内置理由）。
-  **2026-08-31 修正（ADR-010）**：psyche 从"记忆机制"重新定义为"对话场景的事前上下文整形哲学"；
-  本 ADR 的冷循环 + L3 注入即 psyche 的正确工程形态，psyche 不再是独立待实现模块，详见 ADR-010。
+> Chinese version: [007-memory-architecture_cn.md](007-memory-architecture_cn.md)
 
-## 决策一：五层记忆模型 + 五种驱动
+- Status: Decided (directional architecture, v1.x/v2 design input; aligned with the "Consequences" section in v0.2) 2026-08-29
+- Background: The original intent of psyche was "a tiny initial context + the right recall tool = infinite expansion", with LLMs organizing archives during idle time;
+  touwaka topics are an initial implementation of archiving. See external research in docs/research/2026-08-29-memory-context-research.md
+  (Letta sleep-time dual agent, three production context-engineering mechanisms, A-MEM, Generative Agents).
+- Related: ADR-002 (archive/view separation), ADR-003 (compaction lineage), ADR-004 (reflection deferred and cold-loop form), ADR-005 (reason for built-in recall).
+  **2026-08-31 correction (ADR-010)**: psyche was redefined from a "memory mechanism" to an a priori context-shaping philosophy for conversation scenarios;
+  the cold loop + L3 injection in this ADR is psyche's correct engineering form, and psyche is no longer an independent module awaiting implementation; see ADR-010.
+
+## Decision One: Five-layer memory model + five drivers
 
 ```
-上下文内 │ L3 facts + 记忆地图（极小硬预算）  ▲ ⑤注入：session 开始
-         │ L1 fold 摘要（替代被折轮次）        ▲ ②预算驱动：每轮检查
-         │ L0 工作记忆（最近 N 轮原始消息）    ▲ ①循环驱动：每轮
-─────────┼──────────────────────────────────
-上下文外 │ L2 episode（摘要+索引+指针）        ▲ ③事件驱动（热归档）④闲时驱动（冷循环）
-         │ 地基：TranscriptStore 完整原文      ▲ ①循环驱动（每轮快照）
-                 ◀── recall 三态（⑤模型按需）──
+In context │ L3 facts + memory map (tiny hard budget)  ▲ ⑤ injection: session start
+           │ L1 fold summary (replacing folded rounds)  ▲ ② budget-driven: check each round
+           │ L0 working memory (raw messages from the latest N rounds)  ▲ ① loop-driven: each round
+───────────┼──────────────────────────────────────────
+Out of context │ L2 episode (summary + index + pointer)  ▲ ③ event-driven (hot archive) ④ idle-driven (cold loop)
+               │ Foundation: TranscriptStore complete original text  ▲ ① loop-driven (snapshot every round)
+                       ◀── three-state recall (⑤ on demand by the model)──
 ```
 
-| # | 驱动 | 执行者 | LLM 成本 | 作用于 |
+| # | Driver | Executor | LLM cost | Applies to |
 |---|---|---|---|---|
-| ① | 循环驱动（每轮自动） | runToolLoop | 0 | 地基、L0 |
-| ② | 预算驱动（超阈值触发） | CompactionStrategy | 0 或 1 次/折叠 | L1 |
-| ③ | 事件驱动（run/session 结束） | 热归档（调用方任务） | 1 次/episode | L2 诞生 |
-| ④ | 闲时驱动（idle 定期） | 冷循环 agent（archive 槽） | 按频率配 | L2 整理、L3 蒸馏 |
-| ⑤ | 按需驱动（模型/注入） | recall 工具 + session 注入 | 检索零 LLM 成本 | L2/L3 → 上下文 |
+| ① | Loop-driven (automatic every round) | runToolLoop | 0 | Foundation, L0 |
+| ② | Budget-driven (triggered over threshold) | CompactionStrategy | 0 or 1 per fold | L1 |
+| ③ | Event-driven (run/session ends) | Hot archive (caller's task) | 1 per episode | L2 creation |
+| ④ | Idle-driven (periodic idle) | Cold-loop agent (archive slot) | Configured by frequency | L2 organization, L3 distillation |
+| ⑤ | On-demand (model/injection) | recall tool + session injection | No LLM cost for retrieval | L2/L3 → context |
 
-成本结构原则：**主循环（①②⑤）几乎不花 LLM 钱，理解性工作（③④）移出用户等待路径**（sleep-time compute 的 Pareto 改进）。
+Cost-structure principle: **the main loop (①②⑤) spends almost no LLM money; comprehension work (③④) moves out of the user's waiting path** (the Pareto improvement of sleep-time compute).
 
-## 决策二：episode 定义——血缘，不是对应
+## Decision Two: episode definition—lineage, not correspondence
 
-episode = **一段完整"经历"的归档件**（借自认知科学情节记忆，与 L3 语义记忆对仗）。
-边界 = **目标边界（run/task），不是轮数、不是消息下标、不是话题段**。
-30 轮是一个 episode；30 轮 + 审计失败 + 再来 30 轮仍是一个 episode——审计失败是内部转折点，
-不是边界。touwaka topics"时间连续段强对应消息"的切法已证伪（话题检测切错则语义碎）。
+episode = **an archive item for a complete "experience"** (borrowed from episodic memory in cognitive science, paired with L3 semantic memory).
+The boundary = **the goal boundary (run/task), not the number of rounds, message indices, or topic segments**.
+Thirty rounds are one episode; 30 rounds + an audit failure + another 30 rounds are still one episode—the audit failure is an internal turning point,
+not a boundary. touwaka topics' segmentation into "time-contiguous segments strongly corresponding to messages" has been disproved (incorrect topic detection fragments the semantics).
 
 ```js
 episode = {
-  id, summary,                    // 叙事重建；观测事实与推断意图分档标注（推断不进审计证据链）
-  phases: [{ name, rounds, outcome }],       // 内部阶段/尝试结构
+  id, summary,                    // narrative reconstruction; observed facts and inferred intent are labeled separately (inferences do not enter the audit evidence chain)
+  phases: [{ name, rounds, outcome }],       // internal phases/attempt structure
   index: { keywords, entities,
            decisions: [{ what, why }],
-           openItems, importance /* 1-10，归档时 LLM 打 */,
-           artifacts: { filesChanged, commits, verifiedBy } },  // 编码场景一等索引件
-  sourceRef: [{ runId, fromRound, toRound }, ...],  // 指针数组：新建一段、合并追加、可跨 run
-  access: { count, lastAt },      // recall 命中即 touch，喂养遗忘
+           openItems, importance /* 1-10, assigned by the LLM during archiving */,
+           artifacts: { filesChanged, commits, verifiedBy } },  // first-class index fields for coding scenarios
+  sourceRef: [{ runId, fromRound, toRound }, ...],  // pointer array: create a segment, merge and append, may span runs
+  access: { count, lastAt },      // touch on recall hit, feeding forgetting
 }
 ```
 
-指针语义三条：① **血缘非同一性**——回答"摘要从哪些原文来"，episode 是派生物，可合并/拆分/跨 session；
-② **弱引用**——store 生命周期在调用方（ADR-002），指针可悬空，recall 取原文时优雅降级
-（"原文已归档清理，仅存摘要"+ 可信度分档：原文可核对 > 仅有摘要 > 降级旧摘要）；
-③ **不存原文副本**——单一数据源在 TranscriptStore，episode 保持轻量（衰减降级的对象）。
+Three pointer semantics: ① **lineage, not identity**—answer "which original text produced this summary"; an episode is a derived object and can be merged/split across sessions;
+② **weak reference**—the store lifecycle belongs to the caller (ADR-002), so a pointer may dangle; when recall retrieves original text, degrade gracefully
+("the original text has been archived and cleaned up; only the summary remains" + confidence tiers: original text verifiable > summary only > degraded old summary);
+③ **do not store an original-text copy**—the single source of truth is TranscriptStore, while episodes remain lightweight (objects subject to degradation through decay).
 
-## 决策三：热冷双循环
+## Decision Three: Hot-cold dual loop
 
-- **热归档（③）**：run/session 结束触发；从**档案**（非上下文，fold 不影响档案，不变量 5）读全貌，
-  **一次 LLM 调用同时产出 summary + index + phases**（索引与摘要同源，防漂移）。
-  归档者看后见之明，能从工具序列/工件/审计结论反推真实因果链（learned context > raw context）。
-- **冷循环（④）**：**独立 agent**（ADR-001 slot 扩展 "archive" 槽，可配更强模型），anytime 更新不阻塞主循环。三职责，可独立开关：
-  ① 蒸馏 L3 facts（跨 episode 提炼，分区组织：偏好/项目事实/决策/未结）；
-  ② 合并高重叠 episode / 拆分过粗的（sourceRef 追加，不重编号）；
-  ③ 衰减：`access.count` 长期为零的摘要降档再折叠（**不删原文**）；
-  冲突事实不覆盖，标 `supersededBy + 时间戳`（bi-temporal：事实会过期，旧值留档供审计）。
-- **主循环零写工具**（sleep-time 核心教训：主 agent 挂记忆编辑工具又慢又不可靠）。
-  模型说"记住这个" → 记在 transcript，冷循环自然提炼。例外：`note` 工具（显式偏好记忆）
-  带项目政策，放调用方侧（touwaka INotesStore 是现成实现），不进库。
+- **Hot archive (③)**: triggered when a run/session ends; read the full picture from the **archive** (not context; folding does not affect the archive, invariant 5),
+  and use **one LLM call to produce summary + index + phases simultaneously** (index and summary share a source, preventing drift).
+  The archivist has the benefit of hindsight and can infer the true causal chain from tool sequences/artifacts/audit conclusions (learned context > raw context).
+- **Cold loop (④)**: an **independent agent** (extend the ADR-001 slot with an "archive" slot; a stronger model may be configured), updating anytime without blocking the main loop. Three responsibilities, independently switchable:
+  ① Distill L3 facts (extract across episodes, organized by partition: preferences/project facts/decisions/open items);
+  ② Merge highly overlapping episodes / split overly coarse ones (append to sourceRef, do not renumber);
+  ③ Decay: downgrade and then refold summaries whose `access.count` remains zero for a long time (**do not delete original text**);
+  conflicting facts are not overwritten; mark them with `supersededBy + timestamp` (bi-temporal: facts expire, while old values remain archived for auditing).
+- **The main loop has zero write tools** (the core sleep-time lesson: attaching memory-editing tools to the main agent is slow and unreliable).
+  When the model says "remember this", record it in the transcript and let the cold loop distill it naturally. Exception: the `note` tool (explicit preference memory)
+  carries project policy and belongs on the caller side (touwaka INotesStore is an existing implementation), not in the library.
 
-## 决策四：recall——单工具三态渐进（主循环唯一记忆工具）
+## Decision Four: recall—one tool, three progressive states (the only memory tool in the main loop)
 
-工具预算纪律（外部实证 19 个精工具优于 46 个）：L3 facts/记忆地图走**注入**不走工具；
-主循环只给一个工具，按参数渐进展开：
+Tool-budget discipline (external evidence: 19 precise tools outperform 46): L3 facts/memory map enter through **injection**, not a tool;
+the main loop gets only one tool and expands progressively by parameter:
 
-| 调用 | 行为 | 硬顶（默认可配） |
+| Call | Behavior | Hard cap (configurable by default) |
 |---|---|---|
-| `recall()` | 记忆地图：episode 一行一条（id/标题/重要性/时间/未结）+ 折叠水位线 | 500 tok，按 importance 截尾 |
-| `recall({pattern})` | **优先用法**：搜索引件+已折轮次，grep -C 摘录 + 续查指针 | 单段 300 / 最多 5 段 / 总 1500 tok |
-| `recall({episodeId}` 或轮次范围） | 回档案取原文（可对账）；悬空按决策二降级 | 单 result 500 / 总 2000 tok |
+| `recall()` | Memory map: one line per episode (id/title/importance/time/open items) + fold watermark | 500 tok, truncated by importance |
+| `recall({pattern})` | **Preferred use**: search index fields + folded rounds, grep -C excerpts + follow-up pointers | 300 per segment / up to 5 segments / 1500 tok total |
+| `recall({episodeId}` or round range) | Return original text from the archive (for reconciliation); degrade according to Decision Two if dangling | 500 per result / 2000 tok total |
 
-**四层防撑爆**：① 三态渐进（先小钱后大钱）；② 各档硬顶 + 截断路标（"[截断，共 12k，offset=5 继续]"，
-不静默砍）；③ 回喂前过 `onToolResult` 海关（库提供 truncateToTokens 助手）；④ 系统自稳
-（超预算下轮压缩泄洪）+ 防乒乓（stallDetection 抓重复签名；**fold 摘要须留痕**"已于第 X 轮 recall 过
-'JWT'（结论：…）"，已回忆事实进摘要防重复回忆）。
+**Four layers against overflow**: ① three progressive states (small cost first, large cost later); ② hard caps at every level + a truncation marker ("[truncated, 12k total, offset=5 to continue]",
+never silently cut); ③ pass through the `onToolResult` gateway before feeding back (the library provides the truncateToTokens helper); ④ system self-stabilization
+(compress on the next round when over budget) + anti-ping-pong (stallDetection catches repeated signatures; **fold summaries must leave a trace**: "recalled
+'JWT' at round X (conclusion: …)" so recalled facts enter the summary and are not recalled repeatedly).
 
-**五层引导**（模型不会自觉 recall，引导是设计出来的）：
-① 摘要面包屑——fold 摘要带主题词/未结事项/可操作 recall 示例（摘要是检索索引的上下文投影）；
-② 低摩擦接口——**pattern 优先，round 范围辅助**（对 v0.2 recall 规格的直接修正），空结果给替代建议；
-③ description 写触发时机；④ **循环主动提示**——检测到迷失信号（重复劳动/stall 前兆）注入
-"早期轮次已折叠，可 recall 找回"（runToolLoop 钩子，框架级产品需硬编码，我们是库给挂载点）；
-⑤ 记忆地图注入初始上下文。
+**Five-layer guidance** (the model does not recall spontaneously; guidance is designed):
+① Summary breadcrumbs—fold summaries carry topic words/open items/actionable recall examples (the summary is the context projection of the retrieval index);
+② Low-friction interface—**pattern first, round range second** (a direct correction to the v0.2 recall specification); empty results provide alternatives;
+③ put the trigger timing in the description; ④ **proactive loop hint**—when signs of being lost are detected (repeated work/stall precursor), inject
+"early rounds have been folded; use recall to find them" (a runToolLoop hook; a framework-level product would hard-code it, while we provide a mounting point as a library);
+⑤ inject the memory map into the initial context.
 
-## 决策五：编码场景特化
+## Decision Five: Coding-scenario specialization
 
-编码的记忆原料是**动作不是言语**：`记忆 = 工件证据（硬） + 工具序列（足迹） + 归档推断叙事（软，标注） + 少量决策便签`。
+The raw material of coding memory is **actions rather than words**: `memory = artifact evidence (hard) + tool sequence (trace) + archived inferred narrative (soft, labeled) + a small number of decision notes`.
 
-- `index.artifacts`（filesChanged/commits/verifiedBy）是一等索引件——"当时为什么这么改"最佳证据是
-  diff/文件现状/测试结果，recall 时可重读重跑（状态所在地原则第三次应用）。
-- 思考缺口（想了很多没说）解法 = 归档重建 + 工件核对 + 推断标注，**不是逐轮记录**；
-  决策便签走调用方 prompt 政策（"方向性决策用一句话说明理由"）；
-  thinking 块若上游回传则存 store 不进上下文（raw 逃生舱，v1.x 再议，加分项非主防线）。
-- 此节再次印证 ADR-004：编码场景"为什么"能在归档时从工件重建，每轮反思是成本翻倍买寂寞。
+- `index.artifacts` (filesChanged/commits/verifiedBy) is a first-class index field—"why was this changed at the time" is best evidenced by
+  the diff/file state/test results, which can be reread and rerun during recall (the state-location principle applied for the third time).
+- Solution to the missing-thought gap (a lot was considered but not said) = archive reconstruction + artifact checking + inference labels, **not round-by-round recording**;
+  decision notes follow the caller's prompt policy ("state the reason in one sentence for directional decisions");
+  if the upstream returns a thinking block, store it in the store but not in context (raw escape hatch, reconsider in v1.x, an enhancement rather than the primary defense).
+- This section reaffirms ADR-004: in coding scenarios, "why" can be reconstructed from artifacts during archiving; reflection every round doubles the cost to buy nothing.
 
-## 决策六：分期路线与评测纪律
+## Decision Six: Phased roadmap and evaluation discipline
 
-| 步 | 内容 | 独立验收 |
+| Step | Content | Independent acceptance |
 |---|---|---|
-| 1. v0.2 | file store + recall（pattern 优先）+ fold-llm（摘要模板含"禁止重做"+主题词面包屑+留痕）+ tools 子路径 | recall 好用吗 |
-| 2. 记忆评测夹具 v1（随 v0.2） | 植入已知事实的长对话 → 折叠 → 提问 → 断言命中率与**模型自发调用率** | 后续一切记忆工作的回归网 |
-| 3. app_container 迁移 | 24 轮真实场景 | 校准预算默认值、真实重做率 |
-| 4. v1.x | clear-results（ADR-003 ①a）+ episode 结构 + ArchiveStore 接口（内置 memory/file）+ 热归档 | 索引件抽取质量 |
-| 5. v2 | 冷循环（archive 槽）+ L3 facts 注入 + episode 建链（psyche 哲学落于此，见 ADR-010） | 全管道召回率 |
+| 1. v0.2 | file store + recall (pattern first) + fold-llm (summary template includes "completed items must not be redone" + topic-word breadcrumbs + trace) + tools subpath | Is recall useful? |
+| 2. Memory evaluation fixture v1 (with v0.2) | Plant known facts in a long conversation → fold → ask a question → assert hit rate and **spontaneous model call rate** | Regression net for all later memory work |
+| 3. app_container migration | 24-round real scenario | Calibrate default budget values and the real redo rate |
+| 4. v1.x | clear-results (ADR-003 ①a) + episode structure + ArchiveStore interface (built-in memory/file) + hot archive | Index-field extraction quality |
+| 5. v2 | Cold loop (archive slot) + L3 facts injection + episode linkage (the Psyche philosophy lands here; see ADR-010) | Recall rate across the full pipeline |
 
-纪律：**检索件先行、每步独立验收、后一步不许 degrade 前一步指标**（冷循环蒸馏若降低召回率即回滚）。
-记忆系统最大失败模式是"架构漂亮、召回稀烂"，评测夹具是唯一防线。
+Discipline: **retrieval fields first, independent acceptance at every step, and later steps must not degrade earlier-step metrics** (roll back cold-loop distillation if it lowers recall).
+The greatest failure mode of a memory system is "beautiful architecture, terrible recall"; the evaluation fixture is the only safeguard.
 
-## 附录：示例场景（真实案例锚定）
+## Appendix: Example scenario (anchored in a real case)
 
-以 2026-08-29 erix-agent v0.1 开发（~40 轮工具调用）为完整示例：
-episode 含 phases（契约脚手架→四 worker 并行→集成排障→合入）、decisions（relay 拒 Qwen3.5 换
-historical-model；强制压缩 e2e 用 initialMessages 构造历史确定性触发）、artifacts（31 文件/commits 8cd7022/
-92 测试绿）、openItems（app_container 迁移）；三天后 recall({pattern:"强制压缩"}) 命中摘录、
-access.count++；一周后冷循环蒸馏出 L3 fact"my-relay token 未开通 Qwen3.5"进初始上下文；
-后来开通则旧 fact 标 superseded 留档；三个月未再访问则摘要降档、40 轮原文不动。
-（该示例同时是 v0.2 记忆评测夹具的设计参考。）
+Using 2026-08-29 erix-agent v0.1 development (~40 rounds of tool calls) as a complete example:
+the episode contains phases (contract scaffolding → four workers in parallel → integration troubleshooting → merge), decisions (relay rejected Qwen3.5, so switched to
+historical-model; forced-compression e2e constructed history with initialMessages to trigger deterministically), artifacts (31 files/commits 8cd7022/
+92 tests green), and openItems (app_container migration); three days later `recall({pattern:"强制压缩"})` `// "forced compaction"` finds an excerpt,
+`access.count++`; one week later the cold loop distills the L3 fact "my-relay token is not enabled for Qwen3.5" into the initial context;
+once it is enabled later, the old fact is marked superseded and retained for auditing; after three months without access, the summary is downgraded while the 40 rounds of original text remain untouched.
+(This example is also the design reference for the v0.2 memory evaluation fixture.)
