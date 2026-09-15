@@ -53,6 +53,32 @@ The project is intended for integrations including `app_container` (PI Agent
 audit/development paths) and `touwaka` (AgentLoop/conversation paths). Those
 host integrations are outside this package's lifecycle boundary.
 
+## Why a unified headless agent?
+
+Several in-house projects and vibe-coded prototypes need LLM capability, and
+their authors are not necessarily fluent in prompting, context engineering,
+tool calling, structured output, retries or cost control. Wiring each one
+straight to a provider reproduces the same defects everywhere: inconsistent
+call conventions, poorly shaped context, wasted tokens, flaky tool calls,
+thin error handling, unpredictable agent behaviour. A shared headless runtime
+exists so that application code depends on one stable programmatic interface
+instead of re-solving the engineering underneath it.
+
+| Requirement | Provided by this runtime | Owned by the host |
+|---|---|---|
+| Lower the barrier to LLM use | `runToolLoop` as the single entry point; dual-protocol providers; canonical message model; compaction; checkpoint/resume; classified errors | product-level prompt and workflow design |
+| Centralised model configuration and run policy | duck-typed `ModelConfigProvider.resolve(slot)` with `static` / `env` / `json-file` adapters, per-slot models, `apiKey`/`apiKeyEnv`/`apiKeyFile` indirection, budget derivation | the configuration store itself (database or config centre), project and tenant quotas, fallback policy, prompt and agent versions |
+| Traceable calls, cost analysis and audit | event stream (`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`), token accounting, `TranscriptStore` persistence, stable run ids, checkpoints and bounded recall for replay | log and cost storage, dashboards, retention, audit process |
+| One tool, permission and safety boundary | a single execution entry (`executeTool`), an executor registry that data cannot extend, schema intersection, optional jail/file/recall helpers under `erix-agent/tools` | the policy itself: which project may run which agent, which tools, which operations need confirmation, network and write access, rate and time limits |
+| Contain third-party framework churn | zero runtime dependencies and an owned implementation, a stable exported surface plus `erix-agent/contract-tests` for consumers | — |
+| Accumulate reusable agent engineering | canonical message and tool formats, ADR-tracked decisions, contract tests, benchmark harness | — |
+
+Two boundaries keep this honest. The runtime **executes no policy** — it
+exposes the hooks and the host decides
+([ADR-009](docs/decisions/009-safety-layering.md)). And it **owns exactly one
+task lifecycle** — queues, arbitration and retry scheduling stay with the host
+([ADR-012](docs/decisions/012-engine-truth-model-efficiency-host-policy.md)).
+
 ## Why build our own?
 
 The project research conclusion (2026-08-29; see the research index below)

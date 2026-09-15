@@ -25,6 +25,28 @@ CLI（`erix`）是验证器和调试器，不是产品：
 
 项目面向包括 `app_container`（PI Agent 审计/开发路径）和 `touwaka`（AgentLoop/对话路径）在内的集成。这些宿主集成不属于本包的生命周期边界。
 
+## 为什么需要统一的 Headless Agent？
+
+多个自研项目与 vibe coding 项目需要接入 LLM，但开发者未必熟悉 Prompt、上下文工程、
+Tool Calling、结构化输出、重试与成本控制。每个项目各自接入，会把同一批问题重复一遍：
+调用方式不统一、上下文组织不合理、Token 消耗过高、工具调用不稳定、错误处理不完善、
+Agent 行为难以预测。统一 Headless Agent 的价值，就是让业务代码依赖**一套稳定的编程接口**，
+而不必重复解决底层的工程问题。
+
+| 需求 | 本运行时提供 | 由宿主负责 |
+|---|---|---|
+| 降低使用 LLM 的门槛 | `runToolLoop` 单一入口；双协议 provider；规范消息模型；上下文压缩；checkpoint/resume；错误分类 | 产品级的 Prompt 与流程设计 |
+| 统一管理模型配置与运行策略 | 鸭子类型的 `ModelConfigProvider.resolve(slot)`，内置 `static` / `env` / `json-file` 适配器；按 slot 选模型；`apiKey`/`apiKeyEnv`/`apiKeyFile` 间接引用；预算推导 | 配置来源本身（数据库/配置中心）、项目与租户额度、fallback 策略、Prompt 与 Agent 版本 |
+| 统一记录调用、支撑成本分析与事后审计 | 事件流（`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`）、token 计量、`TranscriptStore` 落盘、稳定 run id、checkpoint 与有界 recall（支持回放） | 日志与成本存储、监控看板、保留策略、审计流程 |
+| 统一安全、权限与工具调用边界 | 唯一执行入口（`executeTool`）；数据无法扩张的执行器注册表；schema 求交；`erix-agent/tools` 下可选的 jail / 文件 / recall 助手 | 策略本身：哪个项目能用哪些 Agent、可调哪些工具、哪些操作需人工确认、是否允许联网与写操作、调用次数与时长限制 |
+| 降低第三方框架升级的影响 | 零运行时依赖、自有实现；稳定导出面 + 面向消费方的 `erix-agent/contract-tests` | — |
+| 沉淀统一的 Agent 能力与工程规范 | 规范消息与工具格式、ADR 决策记录、契约测试、基准 harness | — |
+
+两条边界让这张表站得住：运行时**不执行任何策略**——只提供钩子，由宿主决定
+（[ADR-009](docs/decisions/009-safety-layering_cn.md)）；运行时**只负责单个任务生命周期**——
+队列、仲裁与重试调度留在宿主
+（[ADR-012](docs/decisions/012-engine-truth-model-efficiency-host-policy_cn.md)）。
+
 ## 为什么构建自有实现？
 
 项目调研结论（2026-08-29；见下方调研索引）是：关键缺口不是再增加一个 provider adapter：
