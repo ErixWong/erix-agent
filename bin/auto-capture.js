@@ -44,6 +44,8 @@ function artifactReference(artifact) {
     archivePath: artifact.archivePath,
     digest: artifact.digest,
     locator: artifact.locator,
+    round: artifact.round ?? null,
+    status: artifact.status ?? (artifact.truncated === true ? "truncated" : "ok"),
     ...(artifact.truncated === true ? { truncated: true } : { truncated: false }),
     ...(Number.isSafeInteger(artifact.originalBytes)
       ? { originalBytes: artifact.originalBytes }

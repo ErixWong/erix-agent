@@ -33,6 +33,20 @@ test("finalGuard accept preserves normal completion", async () => {
   assert.equal(events.at(-1).action, "accept");
 });
 
+test("disabled finalGuard returns skipped and is never treated as verified", async () => {
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "hello",
+    executeTool: async () => "unused",
+  });
+
+  assert.equal(result.verification.status, "skipped");
+  assert.notEqual(result.verification.status, "verified");
+  assert.equal(result.verification.reason, "no_final_guard");
+});
+
 test("finalGuard records cited rerun provenance separately", async () => {
   const result = await runToolLoop({
     provider: createFakeProvider([

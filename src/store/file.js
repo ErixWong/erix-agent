@@ -1,7 +1,9 @@
 import { createReadStream } from "node:fs";
+import { statSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { boundedRecall } from "./bounded-recall.js";
 
 const HASHED_RUN_ID_PREFIX = "run-h-";
 
@@ -186,7 +188,7 @@ async function appendRecord(path, runId, record) {
  * @returns {{
  *   appendRound: (runId:string, record:RoundRecord) => Promise<void>,
  *   load: (runId:string) => Promise<RoundRecord[]>,
- *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string>,
+ *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string|object>,
  *   markRunState: (runId:string, state:string) => Promise<void>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
@@ -202,6 +204,15 @@ export function createFileTranscriptStore({ dir }) {
       records.push(record);
     }
     return records;
+  };
+  const sourceVersion = (runId) => {
+    try {
+      const stat = statSync(transcriptPath(dir, runId));
+      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+    } catch (error) {
+      if (error?.code === "ENOENT") return "missing";
+      throw error;
+    }
   };
   const withAppendLock = async (runId, operation) => {
     const key = safeRunId(runId);
@@ -228,9 +239,23 @@ export function createFileTranscriptStore({ dir }) {
       return loadRecords(runId);
     },
 
-    async recall(runId, fromRound, toRound, pattern) {
+    async recall(runIdOrOptions, fromRound, toRound, pattern) {
+      const objectOptions = runIdOrOptions
+        && typeof runIdOrOptions === "object"
+        && !Array.isArray(runIdOrOptions)
+        ? runIdOrOptions
+        : undefined;
+      const runId = objectOptions?.runId ?? runIdOrOptions;
       const path = transcriptPath(dir, runId);
       await repairTranscriptTail(path);
+      if (objectOptions) {
+        return boundedRecall({
+          ...objectOptions,
+          runId,
+          sourceVersion: sourceVersion(runId),
+          records: () => readRecords(path),
+        });
+      }
       let result = "";
       let hasFragment = false;
 
