@@ -143,8 +143,8 @@ src/
 
 ## 状态
 
-- **v0.5.0（2026-09-15，准备发布）**：在 0.4.0 的宿主可见行为变更基础上，加入有界确定性 run state、
-  对象式 bounded recall、重复执行结构化告知和 opt-in guard 契约；这是 minor 版本，升级前请阅读
+- **v0.5.1（2026-09-15，准备发布）**：在 0.4.0 的宿主可见行为变更基础上，加入有界确定性 run state、
+  对象式 bounded recall、重复执行结构化告知和 opt-in guard 契约；这是修复版本，升级前请阅读
   [宿主消费者契约](docs/host-consumer-contract.md)。
   **v0.4.0（2026-09-14）**：notes run scope 技能、工具产出归档与 provenance gate 完整落地，并在本版本内完成**记忆层瘦身**与**静默错答的结构性修复**。
   notes 记录为 `current` + 最多 3 条 `superseded` + 可见 `folded` 计数（#74 起**不再有版本链与有界历史压缩**），
@@ -161,7 +161,7 @@ src/
   `verified` 才是已核验终稿，`unverified`/`error` 分别对应退出码 2/3；`skipped` 仅表示没有可核验项。
   notes 是 pull-only 便利索引，不会自动把值注入模型上下文（折叠点的 `[本 run 状态]` 标记只含计数，不含值/key）；模型需先 `note_list` 再按 key 调用 `note_read`。
   宿主写入 scope 请显式传 `__erix`（`ERIX_RUN_ID` 已移除，仅保留 `ERIX_NOTES_DIR` 作为存储位置配置）。
-- **v0.5.0 run state**：折叠时确定性 run state 以单个 marker 替换注入，不逐轮追加；store 支持
+- **v0.5.1 run state**：折叠时确定性 run state 以单个 marker 替换注入，不逐轮追加；store 支持
   `saveRunState/loadRunState` 的当前版本 upsert。持久对象有 64 KiB 总硬顶、工具/文件/todo
   条目与字段上限，裁剪通过 `bounds.truncated` 和省略计数可见；未知、缺字段或损坏 schema
   resume 时返回 `stateAvailability.status = "state_unavailable"`，不静默恢复默认。宿主可注入
