@@ -75,3 +75,66 @@ test("S1 folds a non-replayable value into the provider request", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("S2 keeps credentials out of a folded stub while retaining its archive pointer", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "erix-memento-s2-"));
+  const archiveDir = path.join(directory, "archive");
+  const secret = "sk-deterministic-secret";
+  const safeValue = "safe-deterministic-value";
+  const command = `printf 'API_KEY=${secret}\\nnonce=${safeValue}\\n'; head -c 1 /dev/urandom >/dev/null; : "${"x".repeat(800)}"`;
+  const provider = createFakeProvider([
+    {
+      content: [{
+        type: "tool_use",
+        id: "s2-exec",
+        name: "exec",
+        input: { command },
+      }],
+      stopReason: "tool_use",
+    },
+    {
+      content: [{ type: "text", text: "继续处理" }],
+      stopReason: "end_turn",
+    },
+  ]);
+  const cliTools = createCliTools({ cwd: directory, archiveDir });
+  const executeTool = wrapExecuteTool(cliTools.executeTool, {
+    output: () => {},
+    getToolMetadata: cliTools.getLastToolMetadata,
+    returnMetadata: true,
+  });
+  const context = buildCompactionContext(
+    {},
+    360,
+    ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
+    (message) => buildCaptureStub(message),
+  );
+  context.keepRounds = 0;
+
+  try {
+    await runToolLoop({
+      provider,
+      initialUserMessage: "执行命令并保留安全值。",
+      tools: cliTools.tools,
+      executeTool,
+      maxRounds: 2,
+      completion: false,
+      wrapup: false,
+      reflection: false,
+      context,
+      runId: "s2-run",
+    });
+
+    const requestMessages = provider.requests[1]?.messages ?? [];
+    const foldedStub = requestMessages
+      .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+      .map((block) => block?.text)
+      .find((text) => typeof text === "string" && text.includes("[已折叠]"));
+    assert.equal(typeof foldedStub, "string");
+    assert.match(foldedStub, /001-exec\.txt/u);
+    assert.match(foldedStub, new RegExp(safeValue));
+    assert.doesNotMatch(foldedStub, new RegExp(secret));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
