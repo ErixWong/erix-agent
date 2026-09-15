@@ -100,9 +100,15 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 ├── config.json        # LLM 配置（endpoint/model/apiKey/maxOutputTokens/contextWindowTokens）
 ├── mcp.json           # MCP server 注册（标准格式，可复用 ~/.config/mcp/mcp.json）
 ├── <session>.json     # 会话历史（id 按 cwd 派生）
+├── transcripts/
+│   ├── <runId>.jsonl          # 逐轮记录（含 judge 决策字段）
+│   └── outputs/<runId>/       # 该 run 的全部产物归档：工具捕获、报告、judge.log
+│       └── judge.log          # judge 决策 JSONL（默认写这里；--judge-log / ERIX_JUDGE_LOG 可覆盖）
 ├── skills/            # 用户级 skill（自描述协议）
 └── todos/             # 任务清单（按 cwd 隔离）
 ```
+
+- **judge 日志有固定归属**：`transcripts/outputs/<runId>/judge.log`，与 transcript/工具捕获同目录同生命周期；监督者排查 judge 行为直接看这里，不再依赖 `/tmp` 重定向。
 
 ## 7. 本地运行环境事实
 

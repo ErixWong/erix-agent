@@ -5,6 +5,7 @@ import {
   buildJudgePrompt,
   buildTimeline,
   parseJudgeDecision,
+  renderConversation,
 } from "../src/reflection/judge.js";
 import { runToolLoop } from "../src/loop.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
@@ -398,6 +399,89 @@ test("off-track round judge nudge includes the direction hint", async () => {
   assert.match(continuation, /方向提示：持续反复调试同一实现细节/);
 });
 
+test("renderConversation keeps the task and the latest answer, and labels pending/intercepted calls", () => {
+  const text = renderConversation([
+    { role: "user", content: [{ type: "text", text: "任务：只读分析，输出问题清单" }] },
+    { role: "assistant", content: [
+      { type: "tool_use", id: "t1", name: "readFile", input: { path: "AGENTS.md" } },
+      { type: "tool_use", id: "t2", name: "exec", input: { command: "ls" } },
+      { type: "tool_use", id: "t3", name: "tree", input: { path: "." } },
+    ] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "文件内容" }] },
+    { role: "user", content: [{
+      type: "tool_result",
+      tool_use_id: "t2",
+      executionStatus: "intercepted",
+      content: "【审计拦截】方向可能偏: x/y。原工具调用未执行。",
+    }] },
+    { role: "assistant", content: [{ type: "text", text: "问题清单：1. 回滚资产失效" }] },
+  ]);
+  assert.match(text, /任务：只读分析/);
+  assert.match(text, /问题清单：1\. 回滚资产失效/);
+  assert.match(text, /工具结果\n文件内容/);
+  assert.match(text, /控制事件（该工具调用未执行）/);
+  // 未执行的调用不能被当成已执行
+  assert.match(text, /tree（本轮尚未执行，等待结果）/);
+});
+
+test("renderConversation excludes judge-control messages", () => {
+  const text = renderConversation([
+    { role: "user", content: [{ type: "text", text: "真实任务" }] },
+    { role: "user", meta: { source: "judge-control" }, content: [{ type: "text", text: "【Judge 评审意见】继续" }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "工具输出原文" }] },
+    { role: "assistant", content: [{ type: "text", text: "最新答复" }] },
+  ]);
+  assert.doesNotMatch(text, /Judge 评审意见/);
+  assert.match(text, /工具输出原文/);
+});
+
+test("renderConversation always keeps the task and latest answer under a tiny budget", () => {
+  const filler = Array.from({ length: 40 }, (_, index) => ({
+    role: "assistant",
+    content: [{ type: "text", text: `中间内容 ${index} ${"x".repeat(200)}` }],
+  }));
+  const text = renderConversation([
+    { role: "user", content: [{ type: "text", text: "任务原文：只读分析" }] },
+    ...filler,
+    { role: "assistant", content: [{ type: "text", text: "最终交付：问题清单已完成" }] },
+  ], { maxTokens: 60 });
+  assert.match(text, /任务原文：只读分析/);
+  assert.match(text, /最终交付：问题清单已完成/);
+  assert.match(text, /省略/);
+});
+
+test("buildJudgePrompt appends the untrusted conversation section only when provided", () => {
+  const without = buildJudgePrompt("task", 1, [], [], []);
+  assert.doesNotMatch(without, /完整对话记录/);
+  assert.match(without, /若方向错误、关键产物缺失或验证输出不符合目标/);
+  const withConversation = buildJudgePrompt("task", 1, [], [], [], "### user\n只读分析");
+  assert.match(withConversation, /完整对话记录（原始材料/);
+  assert.match(withConversation, /### user\n只读分析/);
+});
+
+test("round judge sees the inline deliverable in the full conversation", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "问题清单：1. 回滚资产失效 2. 端口暴露" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: true, confidence: 0.9, reason: "已交付清单", evidence: "对话中已给出清单" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "只做只读分析，输出问题清单，不要修改任何文件",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    wrapup: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  assert.match(prompt, /问题清单：1\. 回滚资产失效 2\. 端口暴露/);
+  assert.match(prompt, /不能因为“没有写过文件”判 done=false/);
+});
+
 test("round judge fallback uses the latest non-empty user task from a multi-turn entry", async () => {
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "我认为完成了" }], stopReason: "end_turn" },
@@ -423,8 +507,11 @@ test("round judge fallback uses the latest non-empty user task from a multi-turn
   });
 
   const prompt = judge.requests[0].messages[0].content[0].text;
-  assert.match(prompt, /任务目标：[\s\S]*俄罗斯方块/);
-  assert.doesNotMatch(prompt, /介绍你自己/);
+  const taskLine = prompt.match(/任务目标：([^\n]*)/)?.[1] ?? "";
+  assert.match(taskLine, /俄罗斯方块/);
+  assert.doesNotMatch(taskLine, /介绍你自己/);
+  // 早期对话按设计进入完整记录
+  assert.match(prompt, /完整对话记录（原始材料/);
 });
 
 test("explicit task overrides the multi-turn entry messages for the round judge", async () => {
@@ -659,8 +746,9 @@ test("resume without a round-zero seed keeps the judge brief empty", async () =>
 
   assert.equal(resumedJudge.requests.length, 1);
   const prompt = resumedJudge.requests[0].messages[0].content[0].text;
+  // 任务目标行仍取最新快照，不受历史/方向提示污染
   assert.match(prompt, /任务目标：\（未提供\）/);
-  assert.doesNotMatch(prompt, /附方向提示/);
+  assert.doesNotMatch(prompt.split("完整对话记录")[0], /附方向提示/);
 });
 
 test("single-task entry fallback remains the same for the round judge", async () => {
@@ -717,7 +805,9 @@ test("round judge task brief stays on the entry snapshot after injecting directi
     const prompt = request.messages[0].content[0].text;
     const taskLine = prompt.match(/任务目标：([^\n]*)/)?.[1];
     assert.equal(taskLine, "task");
-    assert.doesNotMatch(prompt, /附方向提示|持续反复调试/);
+    // task 行不受污染；且 judge 自己的方向提示/评审意见带 meta，不进完整对话（避免自证循环）
+    assert.doesNotMatch(prompt.split("完整对话记录")[0], /附方向提示|持续反复调试/);
+    assert.doesNotMatch(prompt, /【Judge 评审意见】|附方向提示/);
   }
 });
 

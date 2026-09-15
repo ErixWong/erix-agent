@@ -139,6 +139,7 @@ test("continues after transition text when tools were used", async () => {
   assert.deepEqual(provider.requests[2].messages.at(-1), {
     role: "user",
     content: [{ type: "text", text: "（请继续完成任务）" }],
+    meta: { source: "judge-control" },
   });
 });
 
