@@ -49,7 +49,8 @@ export function createCheckpointExecutor(ctx) {
     const toolStat = ctx.toolStats.get(toolName) ?? { calls: 0, failures: 0 };
     toolStat.calls += 1;
     ctx.toolStats.set(toolName, toolStat);
-    const checkpointPersisted = await ctx.persistCheckpoint({
+    const persistCheckpoint = ctx.persistCheckpoint;
+    const checkpointPersisted = await persistCheckpoint({
       round,
       pendingToolUse: block,
       pendingToolUses,
@@ -73,12 +74,14 @@ export function createCheckpointExecutor(ctx) {
         context: { ...ctx.baseToolContext, round },
         signal: ctx.toolSignal,
       };
-      const result = ctx.executeTool.length <= 1
-        ? await ctx.awaitWithAbort(
-          Promise.resolve().then(() => ctx.executeTool(structuredOptions)),
+      const executeTool = ctx.executeTool;
+      const awaitWithAbort = ctx.awaitWithAbort;
+      const result = executeTool.length <= 1
+        ? await awaitWithAbort(
+          Promise.resolve().then(() => executeTool(structuredOptions)),
         )
-        : await ctx.awaitWithAbort(Promise.resolve().then(() => (
-          ctx.executeTool(block.name, block.input)
+        : await awaitWithAbort(Promise.resolve().then(() => (
+          executeTool(block.name, block.input)
         )));
       execution = normalizeExecutionResult(result, startedAt);
     } catch (error) {
@@ -92,7 +95,8 @@ export function createCheckpointExecutor(ctx) {
     }
 
     if (ctx.onToolResult) {
-      const rewritten = await ctx.onToolResult(
+      const onToolResult = ctx.onToolResult;
+      const rewritten = await onToolResult(
         block.name,
         execution.content,
         execution.metadata,
@@ -131,7 +135,8 @@ export function createCheckpointExecutor(ctx) {
     toolResults.push(toolResult);
     if (block.id !== undefined) ctx.executedToolIds.add(block.id);
     ctx.checkpointResults.set(block.id, toolResult);
-    const postCheckpointPersisted = await ctx.persistCheckpoint({
+    const persistCheckpointAfter = ctx.persistCheckpoint;
+    const postCheckpointPersisted = await persistCheckpointAfter({
       round,
       pendingToolUse: block,
       pendingToolUses,
@@ -163,7 +168,8 @@ export function createCheckpointExecutor(ctx) {
       return executeToolBlock(block, round, toolResults, pendingToolUses);
     }
 
-    await ctx.persistCheckpoint({
+    const persistCheckpointAfterIntercept = ctx.persistCheckpoint;
+    await persistCheckpointAfterIntercept({
       round,
       pendingToolUse: block,
       pendingToolUses,
@@ -172,7 +178,8 @@ export function createCheckpointExecutor(ctx) {
     let decision;
     let interceptError;
     try {
-      decision = await ctx.callRoundJudge(round, undefined, {
+      const callRoundJudge = ctx.callRoundJudge;
+      decision = await callRoundJudge(round, undefined, {
         timeoutMs: ctx.judgeInterceptTimeoutMs,
       });
     } catch (error) {
@@ -183,7 +190,8 @@ export function createCheckpointExecutor(ctx) {
     ctx.judgeInterceptCount = 0;
 
     if (decision === undefined || decision === null) {
-      ctx.emitJudge({
+      const emitJudge = ctx.emitJudge;
+      emitJudge({
         kind: "intercept",
         tool: {
           id: block.id,
@@ -195,7 +203,8 @@ export function createCheckpointExecutor(ctx) {
         error: decision === undefined ? interceptError : "parse",
       });
     } else {
-      ctx.emitJudge({
+      const emitJudge = ctx.emitJudge;
+      emitJudge({
         kind: "intercept",
         tool: {
           id: block.id,
@@ -254,7 +263,8 @@ export function createCheckpointExecutor(ctx) {
         content: pendingDirectionHints.map((text) => ({ type: "text", text })),
       });
     }
-    await ctx.persistCheckpoint({
+    const persistCheckpointForInterceptResult = ctx.persistCheckpoint;
+    await persistCheckpointForInterceptResult({
       round,
       pendingToolUse: block,
       pendingToolUses,

@@ -58,7 +58,8 @@ export async function restoreResume(ctx) {
     restoreRunState(restored);
   };
 
-  await ctx.markRunState("running");
+  const markRunState = ctx.markRunState;
+  await markRunState("running");
   await restorePersistedRunState();
   if (ctx.resume && ctx.store && ctx.runId !== undefined) {
     try {
@@ -90,8 +91,10 @@ export async function restoreResume(ctx) {
             ?? extractL0Facts(record.messages ?? [], {
               seenErrors: ctx.governorState.errorSeen,
             });
-          ctx.restoreErrorSeen(l0facts);
-          ctx.addGovernorHistory(
+          const restoreErrorSeen = ctx.restoreErrorSeen;
+          restoreErrorSeen(l0facts);
+          const addGovernorHistory = ctx.addGovernorHistory;
+          addGovernorHistory(
             record.round,
             summary,
             l0facts,
@@ -109,7 +112,8 @@ export async function restoreResume(ctx) {
             for (const call of recordedTimeline.toolCalls) {
               if (ctx.resolvedWriteToolNames.has(call.name) && call.arg) {
                 ctx.governorState.filesWritten.push({ path: call.arg, round: record.round });
-                ctx.trimFilesWritten();
+                const trimFilesWritten = ctx.trimFilesWritten;
+                trimFilesWritten();
               }
             }
           }
@@ -217,12 +221,14 @@ export async function restoreResume(ctx) {
         }
       }
     } catch (error) {
-      await ctx.fail(error);
+      const fail = ctx.fail;
+      await fail(error);
     }
   } else if (ctx.store && ctx.runId !== undefined && ctx.messages.length > 0) {
     // 种子记录：初始消息（initialMessages/initialUserMessage）先入档，
     // 否则它们永不在 store 中——recall 在 fold 后找不到被折的初始历史（ADR-002 档案完整性）
-    const persisted = await ctx.persist("appendRound", ctx.runId, {
+    const persist = ctx.persist;
+    const persisted = await persist("appendRound", ctx.runId, {
       round: 0,
       roundKey: `${String(ctx.runId)}:round:0`,
       messages: [...ctx.messages],
