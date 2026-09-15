@@ -44,6 +44,7 @@ function blockText(block) {
  *   load: (runId:string) => Promise<RoundRecord[]>,
  *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string|object>,
  *   markRunState: (runId:string, state:string) => Promise<void>,
+ *   saveRunState: (runId:string, state:object) => Promise<void>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
  * }}
@@ -123,8 +124,18 @@ export function createMemoryTranscriptStore() {
 
     async markRunState(runId, state) {
       runStates.set(runId, {
+        ...(runStates.get(runId) ?? {}),
         runId,
         state,
+        ts: new Date().toISOString(),
+      });
+    },
+
+    async saveRunState(runId, state) {
+      runStates.set(runId, {
+        ...(runStates.get(runId) ?? {}),
+        ...copyRecord(state),
+        runId,
         ts: new Date().toISOString(),
       });
     },

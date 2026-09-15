@@ -31,6 +31,13 @@ export {
 export { enforceSize } from "./compact/enforce-size.js";
 export { createMemoryTranscriptStore } from "./store/memory.js";
 export { createFileTranscriptStore } from "./store/file.js";
+export {
+  createDeterministicRunState,
+  renderRunState,
+  upsertRunStateInMessages,
+  withSemanticRunState,
+  RUN_STATE_MAX_CHARS,
+} from "./run-state.js";
 export { createStaticModelConfigProvider } from "./config/static.js";
 export { createEnvModelConfigProvider } from "./config/env.js";
 export { createJsonFileModelConfigProvider } from "./config/json-file.js";
