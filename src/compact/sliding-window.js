@@ -10,6 +10,7 @@ import {
   selectFoldedRounds,
   resolveFoldStubs,
 } from "./helpers.js";
+import { buildFoldNavigationRecord } from "./fold-statistical.js";
 
 function normalizedKeepRounds(value) {
   if (value === undefined) return 6;
@@ -55,6 +56,10 @@ export function createSlidingWindowStrategy(options = {}) {
         settings.roundOffset,
         settings.roundNumbers,
       );
+      const navigationRecord = buildFoldNavigationRecord(
+        foldedPayload,
+        roundRange ?? (folded.length > 0 ? { from: 1, to: folded.length } : undefined),
+      );
       await runFoldHook(settings.onBeforeFold, {
         messages,
         folded,
@@ -76,6 +81,7 @@ export function createSlidingWindowStrategy(options = {}) {
         tokensAfter,
         foldedPayload,
         ...(roundRange === undefined ? {} : { foldedRoundRange: roundRange }),
+        ...(navigationRecord === undefined ? {} : { navigationRecord }),
       };
       await runFoldHook(settings.onAfterFold, { ...result, roundRange });
 

@@ -69,3 +69,42 @@ test("keeps a non-replayable result stub in the retained head", async () => {
   assert.match(JSON.stringify(result.messages), /nonce=abc123/u);
   assert.doesNotMatch(JSON.stringify(result.messages), /secret/u);
 });
+
+test("emits the same bounded navigation contract as statistical folding", async () => {
+  const messages = [
+    { role: "user", content: "task" },
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "archive", name: "exec", input: {} }],
+    },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "archive",
+        replayable: false,
+        artifact: {
+          artifactId: "001-exec.txt",
+          digest: "a".repeat(64),
+          locator: { lineStart: 1, lineEnd: 3 },
+        },
+        content: "secret",
+      }],
+    },
+    { role: "assistant", content: "old" },
+    { role: "user", content: "keep" },
+  ];
+
+  const result = await createSlidingWindowStrategy().compact(messages, {
+    keepRounds: 1,
+    roundNumbers: [1, 2, 3, 4, 5],
+  });
+
+  assert.deepEqual(result.navigationRecord.artifacts, [{
+    id: "001-exec.txt",
+    locator: { lineStart: 1, lineEnd: 3 },
+    digest: "a".repeat(64),
+    status: "archived",
+  }]);
+  assert.doesNotMatch(JSON.stringify(result.navigationRecord), /secret/u);
+});
