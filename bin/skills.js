@@ -245,6 +245,7 @@ export async function buildSkillTools({
   runId,
   scopeRef,
   notesDir,
+  notesStore,
   excludeSkillIds = [],
   builtinNames = [],
 } = {}) {
@@ -327,6 +328,7 @@ export async function buildSkillTools({
           ? {
               runId: String(explicitScopeRef),
               notesDir: String(explicitNotesDir),
+              ...(notesStore === undefined ? {} : { notesStore }),
             }
           : undefined;
         const injected = hostScope === undefined

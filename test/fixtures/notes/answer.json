@@ -1,0 +1,54 @@
+{
+  "key": "answer",
+  "scope": "run",
+  "scopeRef": "fixture-run",
+  "current": {
+    "content": "fixture-current",
+    "artifactRef": {
+      "artifactId": "001-exec.txt",
+      "archivePath": "/tmp/fixture/001-exec.txt",
+      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "locator": {
+        "lineStart": 1,
+        "lineEnd": 1
+      },
+      "replayable": false
+    },
+    "provenance": {
+      "source": "auto",
+      "verified": false,
+      "toolUseId": "fixture-tool",
+      "round": 4,
+      "ts": "2026-09-15T00:00:00.000Z"
+    },
+    "ts": "2026-09-15T00:00:00.000Z"
+  },
+  "superseded": [
+    {
+      "content": "fixture-old",
+      "provenance": {
+        "source": "agent",
+        "verified": true,
+        "ts": "2026-09-14T00:00:00.000Z"
+      },
+      "ts": "2026-09-14T00:00:00.000Z",
+      "invalid": true
+    }
+  ],
+  "folded": 2,
+  "pinned": true,
+  "tags": [
+    "value",
+    "auto"
+  ],
+  "relevance": 0.8,
+  "state": "active",
+  "created_at": "2026-09-14T00:00:00.000Z",
+  "updated_at": "2026-09-15T00:00:00.000Z",
+  "extension": {
+    "preserved": true,
+    "nested": {
+      "answer": 42
+    }
+  }
+}

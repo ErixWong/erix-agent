@@ -15,6 +15,7 @@ import { createInterface } from "node:readline";
 import {
   createOpenAIProvider,
   createFileTranscriptStore,
+  createFileNotesStore,
   runToolLoop,
 } from "../src/index.js";
 import { safeRunId } from "../src/store/file.js";
@@ -346,6 +347,7 @@ export async function runRepl(argv, io = {}) {
   const errorOutput = io.errorOutput ?? process.stderr;
   const sessionDir = io.sessionDir ?? join(homedir(), ".erix");
   const notesDir = process.env.ERIX_NOTES_DIR ?? join(homedir(), ".erix", "notes");
+  const notesStore = io.notesStore ?? createFileNotesStore({ dir: notesDir });
 
   if (options.showHelp) {
     writeLine(output, REPL_HELP_TEXT);
@@ -374,7 +376,7 @@ export async function runRepl(argv, io = {}) {
   const cliTools = createCliTools({
     cwd,
     archiveDir,
-    notesScope: { runId: options.session, notesDir },
+    notesScope: { runId: options.session, notesDir, notesStore },
     runState,
   });
   const skillTools = await buildSkillTools({
@@ -382,10 +384,11 @@ export async function runRepl(argv, io = {}) {
     skillsDir: options.skillsDir,
     runId: options.session,
     notesDir,
+    notesStore,
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
   await skillTools.notesJanitor?.({
-    __erix: { runId: options.session, notesDir },
+    __erix: { runId: options.session, notesDir, notesStore },
   });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: options.configPath, cwd });
   const executeTool = wrapExecuteTool(
@@ -393,7 +396,7 @@ export async function runRepl(argv, io = {}) {
     {
       output: (line) => writeLine(output, line),
       getToolMetadata: cliTools.getLastToolMetadata,
-      notesScope: { runId: options.session, notesDir },
+      notesScope: { runId: options.session, notesDir, notesStore },
       returnMetadata: true,
     },
   );
@@ -450,10 +453,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   const saveAndFinish = async () => {
     await saveSession(sessionDir, options.session, messages);
     await skillTools.notesCompleteRun?.({
-      __erix: { runId: options.session, notesDir },
+      __erix: { runId: options.session, notesDir, notesStore },
     });
     await skillTools.notesJanitor?.({
-      __erix: { runId: options.session, notesDir },
+      __erix: { runId: options.session, notesDir, notesStore },
     });
     writeLine(output, `再见（会话已保存到 ${archivePath}）`);
     resolveRun();
@@ -618,6 +621,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
               finalGuard: createFinalGuard({
                 runId: options.session,
                 notesDir,
+                notesStore,
                 archiveDir,
                 runState,
               }),

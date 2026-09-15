@@ -75,6 +75,32 @@ function notesRoot(input) {
   );
 }
 
+function injectedNotesStore(input) {
+  const store = input?.__erix?.notesStore;
+  return store
+    && typeof store.write === "function"
+    && typeof store.read === "function"
+    && typeof store.list === "function"
+    && typeof store.complete === "function"
+    && typeof store.janitor === "function"
+    ? store
+    : undefined;
+}
+
+function notesStoreFor(input) {
+  const store = injectedNotesStore(input);
+  if (!store) throw new Error("NotesStore is not injected");
+  return store;
+}
+
+function storeRequest(input, key) {
+  return {
+    scope: "run",
+    scopeRef: currentScopeRef(input),
+    ...(key === undefined ? {} : { key }),
+  };
+}
+
 function injectedScopeRef(input) {
   const erix = input?.__erix;
   if (typeof erix === "string" && erix.trim()) return erix.trim();
@@ -363,11 +389,21 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
     return invalid(key, "疑似凭据，不写入笔记");
   }
 
-  const directory = await scopeDirectory(true, input);
-  const file = notePath(directory, key);
-  const loaded = await loadRecord(file, key);
-  if (loaded.invalid) return invalid(key, loaded.invalid);
-  const old = loaded.record;
+  const store = injectedNotesStore(input);
+  let old;
+  if (injectedNotesStore(input)) {
+    try {
+      old = await store.read(storeRequest(input, key));
+    } catch (error) {
+      return invalid(key, error?.message ?? String(error));
+    }
+  } else {
+    const directory = await scopeDirectory(true, input);
+    const file = notePath(directory, key);
+    const loaded = await loadRecord(file, key);
+    if (loaded.invalid) return invalid(key, loaded.invalid);
+    old = loaded.record;
+  }
   const timestamp = now();
   const supplied = input.provenance ?? {};
   const provenance = {
@@ -403,7 +439,19 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
       : { expires_at: old.expires_at }),
     ...(old?.state === "revoked" ? { revived_at: timestamp } : {}),
   };
-  await saveRecord(directory, record);
+  try {
+    if (injectedNotesStore(input)) {
+      await store.write({
+        ...storeRequest(input, key),
+        record,
+      });
+    } else {
+      const directory = await scopeDirectory(true, input);
+      await saveRecord(directory, record);
+    }
+  } catch (error) {
+    return invalid(key, error?.message ?? String(error));
+  }
   return json({
     status: "found",
     action: old ? "updated" : "saved",
@@ -458,19 +506,29 @@ export async function note_read(input = {}) {
   if (!scope) return invalid(key, "scope 必须是 run、project 或 user");
   if (scope !== "run") return unsupported(scope, key);
   if (!key) return invalid(key, "key 必须是非空字符串");
-  const loaded = await readCurrentRecord(key, input);
-  if (loaded.invalid) return invalid(key, loaded.invalid);
-  if (loaded.missing) return missing(key);
-  if (loaded.record.state === "revoked") {
+  let record;
+  if (injectedNotesStore(input)) {
+    try {
+      record = await notesStoreFor(input).read(storeRequest(input, key));
+    } catch (error) {
+      return invalid(key, error?.message ?? String(error));
+    }
+  } else {
+    const loaded = await readCurrentRecord(key, input);
+    if (loaded.invalid) return invalid(key, loaded.invalid);
+    record = loaded.record;
+  }
+  if (!record) return missing(key);
+  if (record.state === "revoked") {
     return json({
       status: "revoked",
       key,
-      folded: loaded.record.folded,
-      superseded: loaded.record.superseded.map((entry) => publicEntry(entry, { invalid: true })),
+      folded: record.folded,
+      superseded: record.superseded.map((entry) => publicEntry(entry, { invalid: true })),
       next: "该记录已撤销；不得把它当作当前值",
     });
   }
-  return json(noteReadValue(loaded.record));
+  return json(noteReadValue(record));
 }
 
 async function readCurrentRecord(key, input) {
@@ -514,25 +572,35 @@ export async function note_list(input = {}) {
   ) {
     return invalid(undefined, "minRelevance 必须是 0 到 1 之间的数字");
   }
-  const directory = await scopeDirectory(false, input);
-  if (!directory) return json({ status: "found", count: 0, total: 0, notes: [] });
-  const files = await readJsonFiles(directory);
-  const records = [];
-  for (const file of files) {
-    const loaded = await loadRecord(file);
-    const key = loaded.record?.key ?? path.basename(file, ".json");
-    if (loaded.invalid) return invalid(key, loaded.invalid);
-    if (loaded.missing) continue;
-    if (input.includeInactive !== true && loaded.record.state !== "active") continue;
-    if (input.tag !== undefined && !loaded.record.tags.includes(input.tag)) continue;
-    const source = loaded.record.current?.provenance?.source === "auto" ? "auto" : "agent";
-    const relevance = Number.isFinite(loaded.record.relevance)
-      ? loaded.record.relevance
-      : 0.5;
-    if (input.source !== undefined && source !== input.source) continue;
-    if (input.minRelevance !== undefined && relevance < input.minRelevance) continue;
-    records.push(loaded.record);
+  let records;
+  if (injectedNotesStore(input)) {
+    try {
+      records = await notesStoreFor(input).list(storeRequest(input));
+    } catch (error) {
+      return invalid(undefined, error?.message ?? String(error));
+    }
+  } else {
+    const directory = await scopeDirectory(false, input);
+    if (!directory) return json({ status: "found", count: 0, total: 0, notes: [] });
+    const files = await readJsonFiles(directory);
+    records = [];
+    for (const file of files) {
+      const loaded = await loadRecord(file);
+      const key = loaded.record?.key ?? path.basename(file, ".json");
+      if (loaded.invalid) return invalid(key, loaded.invalid);
+      if (loaded.missing) continue;
+      records.push(loaded.record);
+    }
   }
+  records = records.filter((record) => {
+    if (input.includeInactive !== true && record.state !== "active") return false;
+    if (input.tag !== undefined && !record.tags.includes(input.tag)) return false;
+    const source = record.current?.provenance?.source === "auto" ? "auto" : "agent";
+    const relevance = Number.isFinite(record.relevance) ? record.relevance : 0.5;
+    if (input.source !== undefined && source !== input.source) return false;
+    if (input.minRelevance !== undefined && relevance < input.minRelevance) return false;
+    return true;
+  });
   records.sort((left, right) => {
     const relevanceDifference = (
       (Number.isFinite(right.relevance) ? right.relevance : 0.5)
@@ -563,19 +631,43 @@ export async function note_forget(input = {}) {
   if (!scope) return invalid(key, "scope 必须是 run、project 或 user");
   if (scope !== "run") return unsupported(scope, key);
   if (!key) return invalid(key, "key 必须是非空字符串");
-  const directory = await scopeDirectory(false, input);
-  if (!directory) return missing(key);
-  const loaded = await loadRecord(notePath(directory, key), key);
-  if (loaded.invalid) return invalid(key, loaded.invalid);
-  if (loaded.missing) return missing(key);
-  if (loaded.record.state === "revoked") return json({ status: "revoked", key });
+  const store = injectedNotesStore(input);
+  let record;
+  if (injectedNotesStore(input)) {
+    try {
+      record = await store.read(storeRequest(input, key));
+    } catch (error) {
+      return invalid(key, error?.message ?? String(error));
+    }
+  } else {
+    const directory = await scopeDirectory(false, input);
+    if (!directory) return missing(key);
+    const loaded = await loadRecord(notePath(directory, key), key);
+    if (loaded.invalid) return invalid(key, loaded.invalid);
+    record = loaded.record;
+  }
+  if (!record) return missing(key);
+  if (record.state === "revoked") return json({ status: "revoked", key });
   const timestamp = now();
-  await saveRecord(directory, {
-    ...loaded.record,
-    state: "revoked",
-    revoked_at: timestamp,
-    updated_at: timestamp,
-  });
+  try {
+    const revoked = {
+      ...record,
+      state: "revoked",
+      revoked_at: timestamp,
+      updated_at: timestamp,
+    };
+    if (injectedNotesStore(input)) {
+      await store.write({
+        ...storeRequest(input, key),
+        record: revoked,
+      });
+    } else {
+      const directory = await scopeDirectory(false, input);
+      await saveRecord(directory, revoked);
+    }
+  } catch (error) {
+    return invalid(key, error?.message ?? String(error));
+  }
   return json({ status: "revoked", key, next: "已写入撤销墓碑；历史 current 与 superseded 均不可作为当前值" });
 }
 
@@ -594,6 +686,9 @@ async function revokeIfCurrent(directory, file, currentTime, predicate) {
 }
 
 export async function runNotesJanitor(input = {}) {
+  if (injectedNotesStore(input)) {
+    return notesStoreFor(input).janitor(storeRequest(input));
+  }
   const root = notesRoot(input);
   const run = path.join(root, "run");
   let entries;
@@ -641,6 +736,9 @@ export async function runNotesJanitor(input = {}) {
 }
 
 export async function completeRun(input = {}) {
+  if (injectedNotesStore(input)) {
+    return notesStoreFor(input).complete(storeRequest(input));
+  }
   const directory = await scopeDirectory(false, input);
   if (!directory) return { status: "found", completed: 0 };
   const files = await readJsonFiles(directory);

@@ -159,8 +159,30 @@ export async function buildCaptureStub(message, resourceStore) {
   return [...new Set(stubs)].join("\n");
 }
 
-function sourceMatchesCapture(source, capture) {
-  if (source.kind === "note_read") return source.target === capture.key;
+function sameArtifact(left, right) {
+  return Boolean(
+    left
+      && right
+      && left.replayable === false
+      && right.replayable === false
+      && left.archivePath === right.archivePath
+      && left.digest === right.digest
+      && left.locator?.lineStart === right.locator?.lineStart
+      && left.locator?.lineEnd === right.locator?.lineEnd,
+  );
+}
+
+async function sourceMatchesCapture(source, capture, { notesStore, runId } = {}) {
+  if (source.kind === "note_read") {
+    if (source.target !== capture.key || !notesStore) return source.target === capture.key;
+    const record = await notesStore.read({
+      scope: "run",
+      scopeRef: runId,
+      key: source.target,
+    });
+    return record?.state !== "revoked"
+      && sameArtifact(record?.current?.artifactRef, capture.artifact);
+  }
   if (source.kind !== "归档") return false;
   const archivePath = String(capture.archivePath ?? "");
   const display = String(capture.display ?? "");
@@ -190,6 +212,8 @@ export function createFinalGuard({
   onWarning = (message) => console.warn(warningMessage(message)),
   runState,
   resourceStore,
+  notesStore,
+  runId,
 } = {}) {
   return async function finalGuard({
     finalText,
@@ -231,9 +255,16 @@ export function createFinalGuard({
         );
       }
       if (matching.some((capture) => capture.first)) continue;
-      const cited = matching.find((capture) => (
-        sources.some((source) => sourceMatchesCapture(source, capture))
-      ));
+      let cited;
+      for (const capture of matching) {
+        for (const source of sources) {
+          if (await sourceMatchesCapture(source, capture, { notesStore, runId })) {
+            cited = capture;
+            break;
+          }
+        }
+        if (cited) break;
+      }
       if (!cited) {
         return revise(
           `终稿中的 ${attribution.label}=${attribution.value} 是后续重跑捕获值，但没有来源指向对应 artifact。请补充来源=note_read:<key> 或来源=归档:<文件名>，或改用首次捕获值；不得把重跑值当作原值。`,
@@ -244,11 +275,17 @@ export function createFinalGuard({
     let rerunCited = false;
     for (const capture of inspected.captures) {
       if (capture.first || !String(finalText ?? "").includes(capture.value)) continue;
-      const cited = attributions.some((attribution) => (
-        attribution.label === capture.label
-        && attribution.value === capture.value
-        && sources.some((source) => sourceMatchesCapture(source, capture))
-      ));
+      let cited = false;
+      for (const attribution of attributions) {
+        if (attribution.label !== capture.label || attribution.value !== capture.value) continue;
+        for (const source of sources) {
+          if (await sourceMatchesCapture(source, capture, { notesStore, runId })) {
+            cited = true;
+            break;
+          }
+        }
+        if (cited) break;
+      }
       if (!cited) {
         return revise(
           `终稿包含后续捕获值 ${capture.value} 但没有可验证来源（${capturePointer(capture)}）。请补充来源=note_read:<key> 或来源=归档:<文件名>，或改用首次捕获值；不得重跑命令。`,

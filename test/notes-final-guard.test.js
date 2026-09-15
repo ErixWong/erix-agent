@@ -16,6 +16,7 @@ import { parseReplArgs } from "../bin/repl.js";
 import { archiveResult } from "../bin/tools.js";
 import * as notes from "../skills/notes/skill.mjs";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
+import { createFileNotesStore } from "../src/store/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 async function withNotes(callback) {
@@ -59,6 +60,7 @@ async function createArtifact(directory, output, sequence = 1) {
   const archivePath = archived.archivePath;
   await captureToolExecution({
     name: "exec",
+    input: { command: "printf non-replayable" },
     result: output,
     toolUseId: `guard-tool-${sequence}`,
     metadata: {
@@ -100,6 +102,7 @@ test("final guard enforces the nine-case provenance contract", async () => {
       action: "skip",
       reason: "no_comparable_label",
     });
+
     assert.equal((await guard({ finalText: "nonce=rerun-value" })).action, "revise");
     assert.deepEqual(
       await guard({ finalText: "nonce=rerun-value 来源=归档:002-exec.txt" }),
@@ -117,6 +120,53 @@ test("final guard enforces the nine-case provenance contract", async () => {
       action: "skip",
       reason: "no_comparable_label",
     });
+  });
+});
+
+test("final guard validates note_read provenance through NotesStore", async () => {
+  await withNotes(async (directory) => {
+    await createArtifact(directory, "nonce=first-value\n", 1);
+    await createArtifact(directory, "nonce=rerun-value\n", 2);
+    const backing = createFileNotesStore({ dir: directory });
+    let reads = 0;
+    const notesStore = {
+      ...backing,
+      read: async (request) => {
+        reads += 1;
+        return backing.read(request);
+      },
+    };
+    const records = await backing.list({ scope: "run", scopeRef: "guard-run" });
+    const rerun = records.find((record) => (
+      record.current.artifactRef.archivePath.endsWith("002-exec.txt")
+    ));
+    const guard = createFinalGuard({
+      runId: "guard-run",
+      archiveDir: directory,
+      notesStore,
+    });
+    assert.deepEqual(
+      await guard({
+        finalText: `nonce=rerun-value 来源=note_read:${rerun.key}`,
+      }),
+      { action: "accept", rerunCited: true },
+    );
+    assert.ok(reads > 0);
+
+    const rejectingGuard = createFinalGuard({
+      runId: "guard-run",
+      archiveDir: directory,
+      notesStore: {
+        ...backing,
+        read: async () => undefined,
+      },
+    });
+    assert.equal(
+      (await rejectingGuard({
+        finalText: `nonce=rerun-value 来源=note_read:${rerun.key}`,
+      })).action,
+      "revise",
+    );
   });
 });
 
