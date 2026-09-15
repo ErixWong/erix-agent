@@ -307,6 +307,43 @@ test("explicit __erix scope overrides the environment scope", async () => {
   });
 });
 
+test("unsafe explicit scope round-trips through the skill lifecycle", async () => {
+  await withNotes(async (directory) => {
+    const scope = { runId: "../escape", notesDir: directory };
+    assert.equal(parsed(await scopedNotes.note_take({
+      key: "unsafe-scope",
+      content: "safe",
+      __erix: scope,
+    })).status, "found");
+    assert.equal(
+      parsed(await scopedNotes.note_read({ key: "unsafe-scope", __erix: scope })).value,
+      "safe",
+    );
+    assert.equal(
+      parsed(await scopedNotes.note_list({ __erix: scope })).total,
+      1,
+    );
+    assert.deepEqual(await scopedNotes.completeRun({ __erix: scope }), {
+      status: "found",
+      completed: 1,
+    });
+    assert.deepEqual(await scopedNotes.runNotesJanitor({ __erix: scope }), {
+      status: "found",
+      changed: 0,
+      revoked: 0,
+    });
+    const runEntries = await readdir(path.join(directory, "run"));
+    assert.equal(runEntries.length, 1);
+    assert.match(runEntries[0], /^run-h-[0-9a-f]{24}$/u);
+    const stored = JSON.parse(await readFile(
+      path.join(directory, "run", runEntries[0], "unsafe-scope.json"),
+      "utf8",
+    ));
+    assert.equal(stored.scopeRef, runEntries[0]);
+    assert.equal(stored.state, "done");
+  });
+});
+
 test("pinned notes are scoped and retain provenance metadata", async () => {
   await withNotes(async () => {
     await scopedNotes.note_take({

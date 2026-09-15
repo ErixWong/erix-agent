@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import {
   cp,
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -92,6 +94,48 @@ test("notes skill consumes an injected NotesStore instead of its file path", asy
       path.join(root, "run", "port-run", "port-value.json"),
       "utf8",
     ).then((value) => JSON.parse(value).current.content), "through-port");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("notes skill passes unsafe scope references to the adapter without pre-canonicalizing", async () => {
+  const root = await makeTempDirectory();
+  try {
+    const backing = createFileNotesStore({ dir: root });
+    const scopeRef = "../escape";
+    const canonicalScopeRef = `run-h-${createHash("sha256").update(scopeRef).digest("hex").slice(0, 24)}`;
+    const seenScopes = [];
+    const notesStore = Object.fromEntries(
+      ["write", "read", "list", "complete", "janitor"].map((method) => [
+        method,
+        async (request) => {
+          seenScopes.push(request.scopeRef);
+          return backing[method](request);
+        },
+      ]),
+    );
+    const scope = { runId: scopeRef, notesStore, notesDir: path.join(root, "unused") };
+
+    assert.equal(JSON.parse(await notes.note_take({
+      key: "unsafe",
+      content: "through-port",
+      __erix: scope,
+    })).status, "found");
+    assert.equal(JSON.parse(await notes.note_read({ key: "unsafe", __erix: scope })).value, "through-port");
+    assert.equal(JSON.parse(await notes.note_list({ __erix: scope })).total, 1);
+    assert.deepEqual(await notes.completeRun({ __erix: scope }), { status: "found", completed: 1 });
+    assert.deepEqual(await notes.runNotesJanitor({ __erix: scope }), {
+      status: "found",
+      changed: 0,
+      revoked: 0,
+    });
+    assert.ok(seenScopes.length > 0);
+    assert.ok(seenScopes.every((value) => value === scopeRef));
+    assert.equal(
+      (await readdir(path.join(root, "run")))[0],
+      canonicalScopeRef,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

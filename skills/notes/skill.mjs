@@ -18,6 +18,7 @@ import { looksLikeCredential } from "./credential-patterns.mjs";
 
 const HASHED_ID_PREFIX = "run-h-";
 const HASHED_KEY_PREFIX = "note-h-";
+const HASHED_ID_PATTERN = /^run-h-[0-9a-f]{24}$/u;
 export const MAX_CONTENT_LENGTH = 4000;
 export const NOTE_VALUE_MAX_CHARS = 256;
 const MAX_SUPERSEDED = 3;
@@ -35,6 +36,7 @@ function digest(value) {
 
 function safeId(value) {
   const text = String(value);
+  if (HASHED_ID_PATTERN.test(text)) return text;
   return SAFE_ID_PATTERN.test(text)
     && text !== "." && text !== ".." && !text.startsWith(HASHED_ID_PREFIX)
     ? text
@@ -118,9 +120,9 @@ function injectedScopeRef(input) {
 
 function currentScopeRef(input) {
   const explicit = injectedScopeRef(input);
-  if (explicit) return safeId(explicit);
+  if (explicit) return explicit;
   const cwd = process.cwd();
-  return safeId(`${path.basename(cwd) || "root"}-${digest(cwd).slice(0, 8)}`);
+  return `${path.basename(cwd) || "root"}-${digest(cwd).slice(0, 8)}`;
 }
 
 function graceMs() {
@@ -217,7 +219,7 @@ async function ensureDirectory(directory) {
 async function scopeDirectory(create, input) {
   const root = notesRoot(input);
   const run = path.join(root, "run");
-  const scope = path.join(run, currentScopeRef(input));
+  const scope = path.join(run, safeId(currentScopeRef(input)));
   if (create) {
     await ensureDirectory(root);
     await ensureDirectory(run);
@@ -447,7 +449,10 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
       });
     } else {
       const directory = await scopeDirectory(true, input);
-      await saveRecord(directory, record);
+      await saveRecord(directory, {
+        ...record,
+        scopeRef: safeId(record.scopeRef),
+      });
     }
   } catch (error) {
     return invalid(key, error?.message ?? String(error));
@@ -700,7 +705,7 @@ export async function runNotesJanitor(input = {}) {
     if (error?.code === "ENOENT") return { status: "found", changed: 0, revoked: 0 };
     throw error;
   }
-  const liveScope = currentScopeRef(input);
+  const liveScope = safeId(currentScopeRef(input));
   let changed = 0;
   let revoked = 0;
   for (const entry of entries) {

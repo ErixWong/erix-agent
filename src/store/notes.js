@@ -13,6 +13,7 @@ import path from "node:path";
 
 const HASHED_ID_PREFIX = "run-h-";
 const HASHED_KEY_PREFIX = "note-h-";
+const HASHED_ID_PATTERN = /^run-h-[0-9a-f]{24}$/u;
 const DEFAULT_GRACE_MS = 24 * 60 * 60 * 1000;
 const MAX_SUPERSEDED = 3;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
@@ -47,6 +48,10 @@ const STATES = new Set(["active", "done", "revoked"]);
  * `scopeRef` is the logical run identity; file adapters canonicalize unsafe
  * identities without changing the record's public key.
  *
+ * The built-in file adapter assumes one writer per scope/key. Concurrent
+ * read-modify-write updates may lose one update and its superseded history
+ * (last-write-wins); hosts that need concurrency must serialize writes.
+ *
  * @typedef {{
  *   write: (request: {scope?: "run", scopeRef: string, key: string, record: NoteRecord}) => Promise<void>,
  *   read: (request: {scope?: "run", scopeRef: string, key: string}) => Promise<NoteRecord|undefined>,
@@ -70,6 +75,7 @@ function digest(value) {
 
 function safeId(value) {
   const text = String(value);
+  if (HASHED_ID_PATTERN.test(text)) return text;
   return SAFE_ID_PATTERN.test(text)
     && text !== "." && text !== ".." && !text.startsWith(HASHED_ID_PREFIX)
     ? text
@@ -103,7 +109,7 @@ function assertRequest(request, { keyRequired = false } = {}) {
  * Validate a persisted record before an adapter accepts it.
  *
  * @param {unknown} record
- * @param {{key?: string, scopeRef?: string}} [expected]
+ * @param {{key?: string, scopeRef?: string}} [expected] expected scopeRef is canonical
  * @returns {record is NoteRecord}
  */
 export function isNoteRecord(record, expected = {}) {
@@ -115,7 +121,7 @@ export function isNoteRecord(record, expected = {}) {
       && (expected.key === undefined || record.key === expected.key)
       && record.scope === "run"
       && typeof record.scopeRef === "string"
-      && (expected.scopeRef === undefined || record.scopeRef === safeId(expected.scopeRef))
+      && (expected.scopeRef === undefined || record.scopeRef === expected.scopeRef)
       && record.current
       && typeof record.current === "object"
       && !Array.isArray(record.current)
@@ -149,7 +155,7 @@ function notesRootDirectory(dir) {
 }
 
 function scopeDirectory(root, scopeRef) {
-  return path.join(root, "run", safeId(scopeRef));
+  return path.join(root, "run", scopeRef);
 }
 
 function notePath(directory, key) {
@@ -270,20 +276,27 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
   const store = {
     async write(request) {
       assertRequest(request, { keyRequired: true });
-      if (!isNoteRecord(request.record, {
+      const scopeRef = requestScope(request);
+      const record = request.record
+        && typeof request.record === "object"
+        && !Array.isArray(request.record)
+        ? { ...request.record, scopeRef }
+        : request.record;
+      if (!isNoteRecord(record, {
         key: request.key,
-        scopeRef: request.scopeRef,
+        scopeRef,
       })) {
         throw new TypeError("NotesStore write requires a valid NoteRecord");
       }
-      await writeRecord(root, request.scopeRef, request.record);
+      await writeRecord(root, scopeRef, record);
     },
 
     async read(request) {
       assertRequest(request, { keyRequired: true });
-      const directory = await existingScopeDirectory(root, request.scopeRef);
+      const scopeRef = requestScope(request);
+      const directory = await existingScopeDirectory(root, scopeRef);
       if (!directory) return undefined;
-      return readRecord(notePath(directory, request.key), request.key, request.scopeRef);
+      return readRecord(notePath(directory, request.key), request.key, scopeRef);
     },
 
     async list(request) {
@@ -348,10 +361,12 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
         if (stat.isSymbolicLink()) {
           throw new NotesStoreError(`拒绝扫描符号链接目录：${directory}`, "unsafe_path");
         }
+        const scopeRef = safeId(entry.name);
+        if (scopeRef !== entry.name) continue;
         for (const file of await listFiles(directory)) {
           let record;
           try {
-            record = await readRecord(file, undefined, entry.name);
+            record = await readRecord(file, undefined, scopeRef);
           } catch (error) {
             if (error?.code === "invalid_record" || error?.code === "unsafe_path") continue;
             throw error;
@@ -363,12 +378,12 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
             && Number.isFinite(expires)
             && expires <= clock();
           const orphanActive = record.state === "active"
-            && entry.name !== liveScope
+            && scopeRef !== liveScope
             && Number.isFinite(updated)
             && clock() - updated >= graceMs();
           if (!expiredDone && !orphanActive) continue;
 
-          const current = await readRecord(file, record.key, entry.name);
+          const current = await readRecord(file, record.key, scopeRef);
           if (!current) continue;
           const stillEligible = (
             (expiredDone && current.state === "done")
@@ -378,7 +393,7 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
           const timestamp = new Date(clock()).toISOString();
           await store.write({
             scope: "run",
-            scopeRef: entry.name,
+            scopeRef,
             key: current.key,
             record: {
               ...current,
