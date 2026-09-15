@@ -133,13 +133,17 @@ export function appendFoldStubsToHead(head, stubs) {
   const content = typeof user.content === "string"
     ? [{ type: "text", text: user.content }]
     : Array.isArray(user.content) ? user.content : [];
+  const stubPattern = /^\[已折叠\][^\n]*/gmu;
   const existing = content
-    .filter((block) => block?.type === "text" && String(block.text ?? "").startsWith("[已折叠]"))
-    .flatMap((block) => String(block.text).split("\n"));
+    .filter((block) => block?.type === "text")
+    .flatMap((block) => [...String(block.text ?? "").matchAll(stubPattern)]
+      .map((match) => match[0]));
   const merged = [...new Set([...existing, ...stubs])];
-  const withoutStubs = content.filter((block) => (
-    block?.type !== "text" || !String(block.text ?? "").startsWith("[已折叠]")
-  ));
+  const withoutStubs = content.flatMap((block) => {
+    if (block?.type !== "text") return [block];
+    const text = String(block.text ?? "").replace(stubPattern, "").trim();
+    return text === "" ? [] : [{ ...block, text }];
+  });
   updatedHead[userIndex] = {
     ...user,
     content: [...withoutStubs, { type: "text", text: merged.join("\n") }],

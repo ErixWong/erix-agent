@@ -14,7 +14,7 @@ import {
   isRealUser,
 } from "./helpers.js";
 
-const FOLD_SUMMARY_MARKER = "【上下文折叠·v1·erix-9f6e2c】";
+export const FOLD_SUMMARY_MARKER = "【上下文折叠·v1·erix-9f6e2c】";
 const MAX_NAVIGATION_ARTIFACTS = 10;
 const MAX_NAVIGATION_CHARS = 400;
 
@@ -155,18 +155,23 @@ export function mergeFoldNavigationRecords(records, roundRange) {
   );
 }
 
-function parseFoldSummary(text) {
+function escapeRegex(value) {
+  return String(value).replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function parseMarkedFoldSummary(text) {
   const value = String(text);
   const markedMatch = value.match(
     new RegExp(
-      `^${FOLD_SUMMARY_MARKER}早期第 (\\d+)–(\\d+) 轮（共 (\\d+) 轮）已折叠。工具足迹：(.*?)。`,
+      `${escapeRegex(FOLD_SUMMARY_MARKER)}早期第 (\\d+)–(\\d+) 轮（共 (\\d+) 轮）已折叠。工具足迹：(.*?)。`,
       "u",
     ),
   );
-  const legacyMatch = value.match(
-    /^【上下文折叠】早期第 (\d+)–(\d+) 轮（共 (\d+) 轮）已折叠。工具足迹：(.*?)。/u,
-  );
-  const match = markedMatch ?? legacyMatch;
+  if (!markedMatch) return undefined;
+  return parseFoldSummaryMatch(value, markedMatch, false);
+}
+
+function parseFoldSummaryMatch(value, match, legacy) {
   if (!match) return undefined;
   let navigationRecord;
   const navigationMatch = value.match(/^导航记录：(\{.*\})$/mu);
@@ -188,8 +193,39 @@ function parseFoldSummary(text) {
     stubs: [...String(value).matchAll(/^\[已折叠\][^\n]*/gmu)]
       .map((stub) => stub[0]),
     navigationRecord,
-    legacy: markedMatch === null,
+    legacy,
   };
+}
+
+function parseFoldSummaries(text) {
+  const value = String(text);
+  const marker = escapeRegex(FOLD_SUMMARY_MARKER);
+  const starts = [...value.matchAll(new RegExp(marker, "gu"))]
+    .map((match) => match.index);
+  if (starts.length > 0) {
+    return starts
+      .map((start, index) => parseMarkedFoldSummary(
+        value.slice(start, starts[index + 1] ?? value.length),
+      ))
+      .filter((parsed) => parsed !== undefined);
+  }
+  const legacy = value.match(
+    /^【上下文折叠】早期第 (\d+)–(\d+) 轮（共 (\d+) 轮）已折叠。工具足迹：(.*?)。/u,
+  );
+  return legacy ? [parseFoldSummaryMatch(value, legacy, true)] : [];
+}
+
+function parseFoldSummary(text) {
+  return parseFoldSummaries(text)[0];
+}
+
+function stripMarkedFoldSummaries(block) {
+  if (block?.type !== "text") return [block];
+  const text = String(block.text ?? "");
+  const markerIndex = text.indexOf(FOLD_SUMMARY_MARKER);
+  if (markerIndex < 0) return [block];
+  const prefix = text.slice(0, markerIndex).trim();
+  return prefix === "" ? [] : [{ ...block, text: prefix }];
 }
 
 function formatFoldSummary({
@@ -223,41 +259,10 @@ function formatFoldSummary({
     : `${prefix}${suffix}`;
 }
 
-function prependSummary(
-  head,
-  summary,
-  summaryRole = "user",
-  recoveryHint = DEFAULT_RECOVERY_HINT,
-) {
-  if (summaryRole === "system") {
-    const systemIndex = head.findLastIndex((message) => message?.role === "system");
-    if (systemIndex < 0) {
-      return [{ role: "system", content: [{ type: "text", text: summary }] }, ...head];
-    }
-    const updatedHead = head.slice();
-    const system = updatedHead[systemIndex];
-    const content = typeof system.content === "string"
-      ? [{ type: "text", text: system.content }]
-      : Array.isArray(system.content) ? system.content : [];
-    updatedHead[systemIndex] = {
-      ...system,
-      content: [{ type: "text", text: summary }, ...content],
-    };
-    return updatedHead;
-  }
-  const userIndex = head.findLastIndex(isRealUser);
-  if (userIndex < 0) return head;
-
-  const user = head[userIndex];
-  const originalContent = typeof user.content === "string"
-    ? [{ type: "text", text: user.content }]
-    : Array.isArray(user.content)
-      ? user.content
-      : [];
+function mergedFoldSummaryContent(originalContent, summary, recoveryHint) {
   const summaries = originalContent
     .filter((block) => block?.type === "text")
-    .map((block) => parseFoldSummary(block.text))
-    .filter((parsed) => parsed !== undefined);
+    .flatMap((block) => parseFoldSummaries(block.text));
   const current = parseFoldSummary(summary);
   const merged = [...summaries, current].filter((parsed) => parsed !== undefined);
   const mergedStubs = [...new Set(merged.flatMap((parsed) => parsed.stubs ?? []))].slice(0, 10);
@@ -285,18 +290,53 @@ function prependSummary(
       navigationRecord: mergedNavigation,
       recoveryHint: resolveRecoveryHint(recoveryHint),
     });
-  const contentWithoutSummaries = originalContent.filter((block) => (
-    // 旧格式仅兼容读取，保留原块，避免把用户恰好写出的摘要文本删掉。
-    block?.type !== "text"
-      || parseFoldSummary(block.text)?.legacy === true
-      || parseFoldSummary(block.text) === undefined
-  ));
+  const contentWithoutSummaries = originalContent.flatMap((block) => {
+    // 旧格式仅兼容读取，保留原块；v1 marker 是专用的可替换区段。
+    if (block?.type !== "text" || parseFoldSummary(block.text)?.legacy === true) {
+      return [block];
+    }
+    return stripMarkedFoldSummaries(block);
+  });
+  return [{ type: "text", text: mergedSummary }, ...contentWithoutSummaries];
+}
+
+function prependSummary(
+  head,
+  summary,
+  summaryRole = "user",
+  recoveryHint = DEFAULT_RECOVERY_HINT,
+) {
+  if (summaryRole === "system") {
+    const systemIndex = head.findLastIndex((message) => message?.role === "system");
+    if (systemIndex < 0) {
+      return [{ role: "system", content: [{ type: "text", text: summary }] }, ...head];
+    }
+    const updatedHead = head.slice();
+    const system = updatedHead[systemIndex];
+    const content = typeof system.content === "string"
+      ? [{ type: "text", text: system.content }]
+      : Array.isArray(system.content) ? system.content : [];
+    updatedHead[systemIndex] = {
+      ...system,
+      content: mergedFoldSummaryContent(content, summary, recoveryHint),
+    };
+    return updatedHead;
+  }
+  const userIndex = head.findLastIndex(isRealUser);
+  if (userIndex < 0) return head;
+
+  const user = head[userIndex];
+  const originalContent = typeof user.content === "string"
+    ? [{ type: "text", text: user.content }]
+    : Array.isArray(user.content)
+      ? user.content
+      : [];
   const updatedHead = head.slice();
   updatedHead[userIndex] = {
     ...user,
     // 合并后的单段摘要放 content 最前：模型先看到折叠提示，任务原文紧跟其后；
     // （safeTruncate 同消息字段按 index 截断，任务在后可避免被先截成 [已修剪]）
-    content: [{ type: "text", text: mergedSummary }, ...contentWithoutSummaries],
+    content: mergedFoldSummaryContent(originalContent, summary, recoveryHint),
   };
   return updatedHead;
 }
