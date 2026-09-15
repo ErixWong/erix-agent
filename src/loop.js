@@ -16,7 +16,6 @@ import {
   createDeterministicRunState,
   renderRunState,
   upsertRunStateInMessages,
-  validateRunState,
   withSemanticRunState,
 } from "./run-state.js";
 import {
@@ -61,6 +60,7 @@ import {
 import { abortError, defaultSleep, throwIfAborted } from "./loop/abort.js";
 import { callProvider as runProvider } from "./loop/provider-runner.js";
 import { createCheckpointExecutor } from "./loop/checkpoint-executor.js";
+import { restoreResume } from "./loop/resume-manager.js";
 
 export { parseReflectionDecision };
 
@@ -498,226 +498,168 @@ export async function runToolLoop({
   let persistedTranscriptLength = 0;
   const resumeExecutedToolIds = new Set();
   const resumeCheckpointResults = new Map();
-  const restoreRunState = (restored) => {
-    const validation = validateRunState(restored);
-    if (!validation.ok) {
-      runStateAvailability = {
-        status: validation.status,
-        reason: validation.reason,
-      };
-      return false;
-    }
-    applyRestoredRunState(validation.state);
-    return true;
-  };
-  const applyRestoredRunState = (restored) => {
-    if (!restored || typeof restored !== "object") return;
-    currentRunState = cloneState(restored);
-    runStateVersion = Number.isSafeInteger(restored.stateVersion)
-      ? restored.stateVersion
-      : 0;
-    const deterministic = restored.deterministic ?? {};
-    for (const tool of deterministic.tools ?? []) {
-      if (typeof tool?.name !== "string") continue;
-      toolStats.set(tool.name, {
-        calls: Number.isSafeInteger(tool.calls) ? tool.calls : 0,
-        failures: Number.isSafeInteger(tool.failures) ? tool.failures : 0,
-      });
-    }
-    lowBudgetPrompted = deterministic.budget?.lowBudgetPrompted === true;
-    foldedRoundCount = deterministic.fold?.foldedRounds ?? 0;
-    navigationRecordCount = deterministic.fold?.navigationRecords ?? 0;
-    nonReplayableCaptureCount = deterministic.fold?.nonReplayableCaptures ?? 0;
-    unrecoverableCaptureCount = deterministic.fold?.unrecoverableCaptures ?? 0;
-    toolErrorCount = deterministic.errors?.tool ?? 0;
-    checkpointFailureCount = deterministic.errors?.checkpoint ?? 0;
-    archiveFailureCount = deterministic.errors?.archive ?? 0;
-    governorState.filesWritten = Array.isArray(deterministic.filesWritten)
-      ? deterministic.filesWritten.map((path) => ({ path }))
-      : [];
-    todoState = deterministic.todo;
-    semanticState = restored.semantic;
-  };
-  const restorePersistedRunState = async () => {
-    if (!resume || typeof store?.loadRunState !== "function" || runId === undefined) return;
-    const stored = await store.loadRunState(runId);
-    if (stored === undefined) return;
-    const restored = stored?.runState && typeof stored.runState === "object"
-      ? stored.runState
-      : stored;
-    restoreRunState(restored);
-  };
-  await markRunState("running");
-  await restorePersistedRunState();
-  if (resume && store && runId !== undefined) {
-    try {
-      const records = await store.load(runId);
-      if (records.length === 0) throw new Error("resume: 无可恢复记录");
-      if (currentRunState === undefined) {
-        const latestStateRecord = [...records].reverse().find((record) => (
-          record?.runState && typeof record.runState === "object"
-        ));
-        if (latestStateRecord?.runState !== undefined) {
-          restoreRunState(latestStateRecord.runState);
-        }
-      }
-      const restoredMessages = records.flatMap((record) => record.messages ?? []);
-      const seedRecords = records.filter((record) => (record.round ?? 0) === 0);
-      const seedMessages = seedRecords.flatMap((record) => record.messages ?? []);
-      taskBriefSource = seedRecords.length > 0 ? seedMessages : [];
-      messages = restoredMessages;
-      persistedTranscriptLength = messages.length;
-      for (const record of records) {
-        for (const message of record.messages ?? []) {
-          messageRounds.set(message, record.round ?? 0);
-        }
-        if ((record.round ?? 0) > 0) {
-          const summary = record.summary ?? "missing";
-          const l0facts = record.l0facts
-            // 无 l0facts 的远古记录：用共享 errorSeen 重新提取（跨记录累计；
-            // 随后 restoreErrorSeen 的 Math.max 幂等，不会双计）
-            ?? extractL0Facts(record.messages ?? [], {
-              seenErrors: governorState.errorSeen,
-            });
-          restoreErrorSeen(l0facts);
-          addGovernorHistory(
-            record.round,
-            summary,
-            l0facts,
-            record.ts,
-            record.wrapup,
-            record.judge,
-          );
-          const recordedTimeline = buildTimeline(record.messages ?? [], 0, {
-            writeToolNames: resolvedWriteToolNames,
-            writeToolPathKeys: resolvedWriteToolPathKeys,
-          });
-          if (recordedTimeline.toolCalls.length > 0 || recordedTimeline.outputs.length > 0) {
-            governorState.timeline.push({ round: record.round, ...recordedTimeline });
-            governorState.timeline = governorState.timeline.slice(-12);
-            for (const call of recordedTimeline.toolCalls) {
-              if (resolvedWriteToolNames.has(call.name) && call.arg) {
-                governorState.filesWritten.push({ path: call.arg, round: record.round });
-                trimFilesWritten();
-              }
-            }
-          }
-        }
-      }
-      // 以最大 round 为续跑基数（含 round 0 种子记录时 records.length 会多算一轮）
-      rounds = Math.max(...records.map((record) => record.round ?? 0));
-      foldedThrough = Math.max(
-        0,
-        ...records.map((record) => record.foldedRoundRange?.to ?? 0),
-      );
-      if (typeof store.loadLatestCheckpoint === "function") {
-        resumeCheckpoint = await store.loadLatestCheckpoint(runId);
-        if (resumeCheckpoint?.round > rounds && Array.isArray(resumeCheckpoint.messages)) {
-          const recordedEntries = [];
-          for (const record of records) {
-            for (const message of record.messages ?? []) {
-              recordedEntries.push({
-                message,
-                round: record.round ?? 0,
-              });
-            }
-          }
-          const checkpointAnchor = Number.isSafeInteger(
-            resumeCheckpoint.persistedTranscriptLength,
-          ) && resumeCheckpoint.persistedTranscriptLength >= 0
-            ? Math.min(resumeCheckpoint.persistedTranscriptLength, recordedEntries.length)
-            : undefined;
-          let searchFrom = 0;
-          let lastMatchedIndex = -1;
-          const checkpointMessageRounds = [];
-          const checkpointMessageIndices = [];
-          for (const message of resumeCheckpoint.messages) {
-            const key = JSON.stringify(message);
-            let matchedIndex = -1;
-            for (let index = searchFrom; index < recordedEntries.length; index += 1) {
-              if (JSON.stringify(recordedEntries[index].message) === key) {
-                matchedIndex = index;
-                break;
-              }
-            }
-            if (matchedIndex === -1) {
-              checkpointMessageRounds.push(undefined);
-              checkpointMessageIndices.push(-1);
-              continue;
-            }
-            searchFrom = matchedIndex + 1;
-            lastMatchedIndex = matchedIndex;
-            checkpointMessageRounds.push(recordedEntries[matchedIndex].round);
-            checkpointMessageIndices.push(matchedIndex);
-          }
-          resumeTailMessages = recordedEntries
-            .slice(checkpointAnchor ?? lastMatchedIndex + 1)
-            .map((entry) => ({
-              message: cloneState(entry.message),
-              round: entry.round,
-            }));
-          messages = cloneState(resumeCheckpoint.messages);
-          resumeTranscriptStart = messages.length;
-          resumeCheckpointMessages = messages.filter((_message, index) => {
-            const matchedIndex = checkpointMessageIndices[index];
-            const isPersisted = matchedIndex >= 0
-              && (checkpointAnchor === undefined || matchedIndex < checkpointAnchor);
-            return !isPersisted && blocksFor(_message?.content).some((block) => (
-              block?.type === "tool_use" || block?.type === "tool_result"
-            ));
-          });
-          for (const [index, message] of messages.entries()) {
-            messageRounds.set(
-              message,
-              checkpointMessageRounds[index] ?? resumeCheckpoint.round,
-            );
-          }
-          rounds = resumeCheckpoint.round;
-          for (const id of resumeCheckpoint.executedToolIds ?? []) {
-            resumeExecutedToolIds.add(id);
-          }
-          judgeInterceptCount = resumeExecutedToolIds.size;
-          for (const entry of resumeCheckpoint.toolResults ?? []) {
-            if (entry?.toolUseId !== undefined && entry.toolResult !== undefined) {
-              resumeCheckpointResults.set(entry.toolUseId, entry.toolResult);
-            }
-          }
-          const recordedIds = new Set(
-            messages.flatMap((message) => blocksFor(message?.content))
-              .filter((block) => block?.type === "tool_result")
-              .map((block) => block.tool_use_id),
-          );
-          const replayResults = [...resumeCheckpointResults.values()]
-            .filter((toolResult) => !recordedIds.has(toolResult.tool_use_id));
-          if (replayResults.length > 0) {
-            const replayMessage = { role: "user", content: replayResults };
-            messages.push(replayMessage);
-            messageRounds.set(replayMessage, resumeCheckpoint.round);
-          }
-          const pendingTools = resumeCheckpoint.pendingToolUses
-            ?? (resumeCheckpoint.pendingToolUse ? [resumeCheckpoint.pendingToolUse] : []);
-          resumePendingTools = pendingTools.filter((pendingTool) => (
-            !resumeCheckpoint.executedToolIds?.includes(pendingTool.id)
-            && !resumeCheckpointResults.has(pendingTool.id)
-          ));
-        }
-      }
-    } catch (error) {
-      await fail(error);
-    }
-  } else if (store && runId !== undefined && messages.length > 0) {
-    // 种子记录：初始消息（initialMessages/initialUserMessage）先入档，
-    // 否则它们永不在 store 中——recall 在 fold 后找不到被折的初始历史（ADR-002 档案完整性）
-    const persisted = await persist("appendRound", runId, {
-      round: 0,
-      roundKey: `${String(runId)}:round:0`,
-      messages: [...messages],
-      summary: "missing",
-      l0facts: extractL0Facts(messages),
-      ts: new Date().toISOString(),
-    });
-    if (persisted) persistedTranscriptLength += messages.length;
-  }
+  await restoreResume({
+    resume,
+    store,
+    runId,
+    get currentRunState() {
+      return currentRunState;
+    },
+    set currentRunState(value) {
+      currentRunState = value;
+    },
+    get runStateAvailability() {
+      return runStateAvailability;
+    },
+    set runStateAvailability(value) {
+      runStateAvailability = value;
+    },
+    get runStateVersion() {
+      return runStateVersion;
+    },
+    set runStateVersion(value) {
+      runStateVersion = value;
+    },
+    get messages() {
+      return messages;
+    },
+    set messages(value) {
+      messages = value;
+    },
+    get taskBriefSource() {
+      return taskBriefSource;
+    },
+    set taskBriefSource(value) {
+      taskBriefSource = value;
+    },
+    messageRounds,
+    get rounds() {
+      return rounds;
+    },
+    set rounds(value) {
+      rounds = value;
+    },
+    get foldedThrough() {
+      return foldedThrough;
+    },
+    set foldedThrough(value) {
+      foldedThrough = value;
+    },
+    get resumeCheckpoint() {
+      return resumeCheckpoint;
+    },
+    set resumeCheckpoint(value) {
+      resumeCheckpoint = value;
+    },
+    get resumePendingTools() {
+      return resumePendingTools;
+    },
+    set resumePendingTools(value) {
+      resumePendingTools = value;
+    },
+    get resumeTailMessages() {
+      return resumeTailMessages;
+    },
+    set resumeTailMessages(value) {
+      resumeTailMessages = value;
+    },
+    get resumeTranscriptStart() {
+      return resumeTranscriptStart;
+    },
+    set resumeTranscriptStart(value) {
+      resumeTranscriptStart = value;
+    },
+    get resumeCheckpointMessages() {
+      return resumeCheckpointMessages;
+    },
+    set resumeCheckpointMessages(value) {
+      resumeCheckpointMessages = value;
+    },
+    get persistedTranscriptLength() {
+      return persistedTranscriptLength;
+    },
+    set persistedTranscriptLength(value) {
+      persistedTranscriptLength = value;
+    },
+    resumeExecutedToolIds,
+    resumeCheckpointResults,
+    toolStats,
+    governorState,
+    resolvedWriteToolNames,
+    resolvedWriteToolPathKeys,
+    markRunState,
+    persist,
+    fail,
+    restoreErrorSeen,
+    addGovernorHistory,
+    trimFilesWritten,
+    get lowBudgetPrompted() {
+      return lowBudgetPrompted;
+    },
+    set lowBudgetPrompted(value) {
+      lowBudgetPrompted = value;
+    },
+    get foldedRoundCount() {
+      return foldedRoundCount;
+    },
+    set foldedRoundCount(value) {
+      foldedRoundCount = value;
+    },
+    get navigationRecordCount() {
+      return navigationRecordCount;
+    },
+    set navigationRecordCount(value) {
+      navigationRecordCount = value;
+    },
+    get nonReplayableCaptureCount() {
+      return nonReplayableCaptureCount;
+    },
+    set nonReplayableCaptureCount(value) {
+      nonReplayableCaptureCount = value;
+    },
+    get unrecoverableCaptureCount() {
+      return unrecoverableCaptureCount;
+    },
+    set unrecoverableCaptureCount(value) {
+      unrecoverableCaptureCount = value;
+    },
+    get toolErrorCount() {
+      return toolErrorCount;
+    },
+    set toolErrorCount(value) {
+      toolErrorCount = value;
+    },
+    get checkpointFailureCount() {
+      return checkpointFailureCount;
+    },
+    set checkpointFailureCount(value) {
+      checkpointFailureCount = value;
+    },
+    get archiveFailureCount() {
+      return archiveFailureCount;
+    },
+    set archiveFailureCount(value) {
+      archiveFailureCount = value;
+    },
+    get semanticState() {
+      return semanticState;
+    },
+    set semanticState(value) {
+      semanticState = value;
+    },
+    get todoState() {
+      return todoState;
+    },
+    set todoState(value) {
+      todoState = value;
+    },
+    get judgeInterceptCount() {
+      return judgeInterceptCount;
+    },
+    set judgeInterceptCount(value) {
+      judgeInterceptCount = value;
+    },
+  });
   const taskBrief = resolveTaskBrief({ task, context, messages: taskBriefSource });
   const recentSignatures = [];
   const envStallMode = process.env.ERIX_STALL_MODE;
