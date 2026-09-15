@@ -90,7 +90,7 @@ ADR-001/002 已建立端口范式并落地部分：
 | `Provider`（chat/chatStream/流式回调/abort） | 有实现、无声明 | ❌ 新增 `providerContract` | `openai` / `anthropic` |
 | `ToolExecutor`（executeTool） | 事实上存在、从未声明 | ❌ 新增 `executeToolContract` | `bin/tools.js`（CLI 工具集） |
 | `diagnostics.error`（#98） | ❌ 新增——headless 最低错误出口 | 随 #98 | CLI：stderr + error.log |
-| `AssemblyPort`（组合根） | ❌ 新增——createSession 收齐下列端口 | ❌ 新增 `assemblyPortContract` | CLI 文件型适配器 |
+| `AssemblyPort`（组合根） | ✅ P2 已落地——`createAssemblyPort` 收齐下列端口 | ✅ `assemblyPortContract` | `createAssemblyPort`；CLI 适配器可渐进迁移 |
 | `ResourceStore`（归档产出物） | ✅ P2 已落地 | ✅ `resourceStoreContract` | `createFileResourceStore`（文件系统） |
 | `NotesStore` | ❌ 新增（P3）——**引擎核心技能**（跨 run 记忆，ADR-007 落地件；用户裁定 2026-09-15 晚） | ❌ | CLI：文件系统 |
 | ~~LogPort / MessagePort / MetricsPort~~ | **明确不做**：只写不读走 `emit(event)`；messages 就是 store 的数据 | — | — |
