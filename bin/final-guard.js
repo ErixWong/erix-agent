@@ -4,18 +4,14 @@ import path from "node:path";
 import { candidateLines } from "./auto-capture.js";
 import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 import { inspectRun, readCaptureManifests } from "./final-guard-support.js";
-
 const SOURCE_PATTERN =
   /来源\s*(?:=|:|：)\s*(note_read|归档)\s*[:：]\s*([^\s,，。；;）)\]}]+)/giu;
-
 function warningMessage(message) {
   return `finalGuard warning: ${message}`;
 }
-
 function escapeRegex(value) {
   return String(value).replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
-
 function explicitAttributions(text, knownLabels) {
   const attributions = [];
   for (const label of knownLabels) {
@@ -31,14 +27,12 @@ function explicitAttributions(text, knownLabels) {
   }
   return attributions;
 }
-
 function sourceReferences(text) {
   return [...String(text ?? "").matchAll(SOURCE_PATTERN)].map((match) => ({
     kind: match[1].toLowerCase(),
     target: match[2],
   }));
 }
-
 function countFoldedOutputs(foldedPayload) {
   if (!Array.isArray(foldedPayload)) return 0;
   return foldedPayload.reduce((total, message) => {
@@ -46,7 +40,6 @@ function countFoldedOutputs(foldedPayload) {
     return total + message.content.filter((block) => block?.type === "tool_result").length;
   }, 0);
 }
-
 function boundedCommandSummary(command) {
   const text = String(command ?? "exec")
     .replaceAll(/\r\n|\r|\n/gu, " ")
@@ -58,7 +51,6 @@ function boundedCommandSummary(command) {
     .trim();
   return text.slice(0, 100);
 }
-
 function archiveDisplay(manifest) {
   if (typeof manifest?.display === "string" && manifest.display.length > 0) {
     return manifest.display;
@@ -66,7 +58,6 @@ function archiveDisplay(manifest) {
   if (typeof manifest?.archivePath === "string") return path.basename(manifest.archivePath);
   return manifest?.artifactId;
 }
-
 function archiveIndex(manifests) {
   const entries = manifests
     .map(({ manifest }) => manifest)
@@ -84,7 +75,6 @@ function archiveIndex(manifests) {
     ? ""
     : `\n归档目录视图（最多 10 条）：\n${visible.join("\n")}`;
 }
-
 async function captureStubForResult(block, resourceStore) {
   const reference = block?.artifact && typeof block.artifact === "object"
     ? block.artifact
@@ -134,7 +124,6 @@ async function captureStubForResult(block, resourceStore) {
   return `[已折叠] 原文：${display}（不可重放）`
     .slice(0, 200);
 }
-
 export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload } = {}) {
   const loaded = await readCaptureManifests(archiveDir);
   const nonReplayableCaptures = loaded.manifests.filter(({ manifest }) => (
@@ -145,7 +134,6 @@ export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload } = {
     : "明确的归档文件";
   return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${nonReplayableCaptures} 条为不可重放捕获（重跑会得到不同值）。需要时用 note_list → note_read 取回，或读取归档 ${archiveReference}。${archiveIndex(loaded.manifests)}`;
 }
-
 export async function buildCaptureStub(message, resourceStore) {
   const results = Array.isArray(message?.content)
     ? message.content.filter((block) => (
