@@ -2,6 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createFoldStatisticalStrategy } from "../../src/compact/fold-statistical.js";
+import {
+  createDeterministicRunState,
+  renderRunState,
+  upsertRunStateInMessages,
+} from "../../src/run-state.js";
 
 test("prepends a deterministic tool-footprint summary before the head user task", async () => {
   const messages = [
@@ -277,7 +282,7 @@ test("records bounded navigation without values and preserves archive digests", 
   assert.match(summary, /\[已折叠\]/u);
 });
 
-test("replaces navigation and stubs on repeated folds instead of duplicating them", async () => {
+test("replaces summaries, navigation, and stubs across two and three folds", async () => {
   const strategy = createFoldStatisticalStrategy();
   const artifact = (id) => ({
     artifactId: id,
@@ -304,8 +309,17 @@ test("replaces navigation and stubs on repeated folds instead of duplicating the
     roundNumbers: [1, 2, 3, 4, 5],
     stubFor: () => "[已折叠] first-pointer",
   });
+  const firstWithState = upsertRunStateInMessages(
+    first.messages,
+    renderRunState(createDeterministicRunState({
+      runId: "fold-regression",
+      stateVersion: 1,
+      rounds: 1,
+      maxRounds: 3,
+    })),
+  );
   const second = await strategy.compact([
-    ...first.messages,
+    ...firstWithState,
     { role: "assistant", content: [{ type: "tool_use", id: "b", name: "exec", input: {} }] },
     {
       role: "user",
@@ -326,13 +340,64 @@ test("replaces navigation and stubs on repeated folds instead of duplicating the
       : "[已折叠] first-pointer",
   });
 
-  const text = second.messages[0].content
+  const secondWithState = upsertRunStateInMessages(
+    second.messages,
+    renderRunState(createDeterministicRunState({
+      runId: "fold-regression",
+      stateVersion: 2,
+      rounds: 2,
+      maxRounds: 3,
+    })),
+  );
+  const secondText = secondWithState[0].content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+  assert.equal((secondText.match(/上下文折叠/gu) ?? []).length, 1);
+  assert.equal((secondText.match(/导航记录：/gu) ?? []).length, 1);
+  assert.equal((secondText.match(/\[已折叠\]/gu) ?? []).length, 2);
+  assert.equal((secondText.match(/\[run state deterministic v1\]/gu) ?? []).length, 1);
+  const third = await strategy.compact([
+    ...secondWithState,
+    { role: "assistant", content: [{ type: "tool_use", id: "c", name: "exec", input: {} }] },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "c",
+        replayable: false,
+        artifact: artifact("003-exec.txt"),
+        content: "third-secret",
+      }],
+    },
+    { role: "user", content: "keep final" },
+  ], {
+    keepRounds: 1,
+    roundNumbers: [3, 4, 5, 6, 7],
+    stubFor: (message) => {
+      const id = message.content[0].tool_use_id;
+      return `[已折叠] ${id === "c" ? "third" : id === "b" ? "second" : "first"}-pointer`;
+    },
+  });
+  const thirdWithState = upsertRunStateInMessages(
+    third.messages,
+    renderRunState(createDeterministicRunState({
+      runId: "fold-regression",
+      stateVersion: 3,
+      rounds: 3,
+      maxRounds: 3,
+    })),
+  );
+  const text = thirdWithState[0].content
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
   assert.equal((text.match(/导航记录：/gu) ?? []).length, 1);
-  assert.equal((text.match(/\[已折叠\]/gu) ?? []).length, 2);
+  assert.equal((text.match(new RegExp("上下文折叠", "gu")) ?? []).length, 1);
+  assert.equal((text.match(/\[已折叠\]/gu) ?? []).length, 3);
   assert.equal((text.match(/first-pointer/gu) ?? []).length, 1);
   assert.equal((text.match(/second-pointer/gu) ?? []).length, 1);
-  assert.doesNotMatch(text, /first-secret|second-secret/u);
+  assert.equal((text.match(/third-pointer/gu) ?? []).length, 1);
+  assert.equal((text.match(/\[run state deterministic v1\]/gu) ?? []).length, 1);
+  assert.doesNotMatch(text, /first-secret|second-secret|third-secret/u);
 });
