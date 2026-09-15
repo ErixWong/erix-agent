@@ -1,4 +1,5 @@
 import { extractL0Facts } from "./l0.js";
+import { estimateTokens } from "../tokens.js";
 
 const MAX_COMMAND_LENGTH = 60;
 const MAX_OUTPUT_LENGTH = 200;
@@ -170,8 +171,139 @@ function formatErrors(recentErrors) {
   return String(recentErrors ?? "无");
 }
 
+// 完整对话的 token 预算：round judge 给全量，intercept 只取最新的一段（成本/延迟更省）。
+const JUDGE_CONVERSATION_TOKENS = 100_000;
+export const INTERCEPT_CONVERSATION_TOKENS = 40_000;
+
+function jsonish(value) {
+  if (value === undefined || value === null) return "（无）";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function blocksOf(message) {
+  if (Array.isArray(message?.content)) return message.content;
+  if (message?.content === undefined || message?.content === null) return [];
+  return [{ type: "text", text: String(message.content) }];
+}
+
+function resultContentText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => {
+        if (typeof block === "string") return block;
+        if (block?.type === "text") return String(block.text ?? "");
+        if (block?.type === "image") return "[图片内容未内联]";
+        return jsonish(block);
+      })
+      .filter((part) => part !== "")
+      .join("\n");
+  }
+  return jsonish(content);
+}
+
 /**
- * Build the independent judge's prompt from objective round footprints.
+ * Render the conversation as plain text for the judge, without the 60/200-char
+ * projection used for the timeline. Notes:
+ * - messages marked `meta.source === "judge-control"` (direction hints) are excluded
+ *   so the judge's own earlier advice cannot feed back as evidence;
+ * - tool_use without a matching tool_result is labelled as not-yet-executed;
+ * - intercepted results are labelled as control events, not as tool output;
+ * - the first user text (task) and the latest assistant text (deliverable) are always
+ *   kept; the rest is filled from newest to oldest within the token budget.
+ */
+export function renderConversation(messages, { maxTokens = JUDGE_CONVERSATION_TOKENS } = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const visible = list.filter((message) => message?.meta?.source !== "judge-control");
+  const resolvedToolUseIds = new Set();
+  for (const message of visible) {
+    for (const block of blocksOf(message)) {
+      if (block?.type === "tool_result" && block.tool_use_id !== undefined) {
+        resolvedToolUseIds.add(block.tool_use_id);
+      }
+    }
+  }
+
+  const sections = [];
+  let firstUserText = -1;
+  let latestAssistantText = -1;
+  for (const message of visible) {
+    const role = String(message?.role ?? "?");
+    for (const block of blocksOf(message)) {
+      const type = block?.type;
+      let text = "";
+      if (type === "text") {
+        const body = String(block?.text ?? "").trim();
+        if (body === "") continue;
+        text = `### ${role}\n${body}`;
+        if (role === "user" && firstUserText < 0) firstUserText = sections.length;
+        else if (role === "assistant") latestAssistantText = sections.length;
+      } else if (type === "reasoning") {
+        const body = String(block?.text ?? block?.content ?? "").trim();
+        if (body === "") continue;
+        text = `### ${role}（内部自述，不可作为事实依据）\n${body}`;
+      } else if (type === "tool_use") {
+        const pending = block?.id !== undefined && !resolvedToolUseIds.has(block.id);
+        const status = pending ? "（本轮尚未执行，等待结果）" : "";
+        text = `### ${role} 计划调用工具 ${String(block?.name ?? "")}${status}\n入参：${jsonish(block?.input)}`;
+      } else if (type === "tool_result") {
+        const body = resultContentText(block?.content);
+        const intercepted = block?.executionStatus === "intercepted"
+          || body.startsWith("【审计拦截】");
+        const label = intercepted
+          ? "控制事件（该工具调用未执行）"
+          : block?.is_error === true ? "工具结果（错误）" : "工具结果";
+        text = `### ${label}\n${body}`;
+      } else if (type === "image") {
+        text = `### ${role} 图片（内容未内联，类型=${String(block?.mediaType ?? "unknown")}）`;
+      } else if (type === "raw") {
+        text = `### ${role} 原始块（协议=${String(block?.protocol ?? "unknown")}，内容未展开）`;
+      } else if (type !== undefined) {
+        text = `### ${role} 未知块类型 ${String(type)}`;
+      }
+      if (text.trim() === "") continue;
+      sections.push({ text, tokens: estimateTokens(text) });
+    }
+  }
+
+  const mandatory = new Set();
+  if (firstUserText >= 0) mandatory.add(firstUserText);
+  if (latestAssistantText >= 0) mandatory.add(latestAssistantText);
+  let budget = Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : Number.POSITIVE_INFINITY;
+  for (const index of mandatory) budget -= sections[index].tokens;
+  const keep = new Set(mandatory);
+  for (let index = sections.length - 1; index >= 0; index -= 1) {
+    if (keep.has(index)) continue;
+    if (sections[index].tokens > budget) continue;
+    keep.add(index);
+    budget -= sections[index].tokens;
+  }
+
+  const out = [];
+  let omitted = 0;
+  for (let index = 0; index < sections.length; index += 1) {
+    if (!keep.has(index)) {
+      omitted += 1;
+      continue;
+    }
+    if (omitted > 0) {
+      out.push(`…（此处省略 ${omitted} 段较早内容）…`);
+      omitted = 0;
+    }
+    out.push(sections[index].text);
+  }
+  if (omitted > 0) out.push(`…（末尾省略 ${omitted} 段）…`);
+  return out.join("\n\n");
+}
+
+/**
+ * Build the independent judge's prompt from objective round footprints plus the
+ * full conversation when the caller supplies it.
  */
 export function buildJudgePrompt(
   taskBrief,
@@ -179,6 +311,7 @@ export function buildJudgePrompt(
   timeline = [],
   filesWritten = [],
   recentErrors = [],
+  conversationText = "",
 ) {
   const entries = Array.isArray(timeline)
     ? timeline
@@ -204,8 +337,16 @@ ${formatTimeline(recent)}
 ${outputLines || "无"}
 最近错误：
 ${formatErrors(recentErrors)}
+${
+    conversationText
+      ? `完整对话记录（原始材料；模型自己写的文字是它的自述与计划，不是已核实的事实）：
 
-判断是否已经满足原始任务目标。若方向错误、关键产物缺失或验证输出不符合目标，done 必须为 false。
+${conversationText}
+
+判断是否已经满足原始任务目标。上面的时间线只是索引，完整对话记录才是原始依据；如果任务只在对话文本里交付（没有写文件），这属于正常交付，不能因为“没有写过文件”判 done=false；请依据对话中的实际交付内容判断。若方向错误、关键产物缺失或验证输出不符合目标，done 必须为 false。
+`
+      : "判断是否已经满足原始任务目标。若方向错误、关键产物缺失或验证输出不符合目标，done 必须为 false。\n"
+  }
 额外判断方向（direction）：看时间线模型是否在合理推进（尝试新方法、接近验证、产物渐进），还是深陷单一实现细节反复调试。direction 只是提示，不影响 done。
 只输出 JSON，不要输出其他文字：
 {"done":true|false,"confidence":0-1,"reason":"一句话","evidence":"支撑事实","direction":"on_track|uncertain|off_track","directionReason":"路线判断一句话（可选）"}`;

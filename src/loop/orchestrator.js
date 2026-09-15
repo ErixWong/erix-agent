@@ -10,7 +10,9 @@ import { tryParseWrapupJson, normalizeWrapupWithLlm } from "../reflection/wrapup
 import {
   buildJudgePrompt,
   buildTimeline,
+  INTERCEPT_CONVERSATION_TOKENS,
   parseJudgeDecision,
+  renderConversation,
 } from "../reflection/judge.js";
 import {
   createDeterministicRunState,
@@ -341,6 +343,7 @@ export async function runToolLoop({
     && effectiveReflection.judgeInterceptTimeoutMs > 0
     ? effectiveReflection.judgeInterceptTimeoutMs
     : 30_000;
+  const judgeInterceptConversationTokens = INTERCEPT_CONVERSATION_TOKENS;
   let judgeInterceptCount = 0;
   const wrapupEnabled = wrapup !== false
     && process.env.ERIX_NO_WRAPUP_INSTRUCTION?.trim() !== "1";
@@ -1064,7 +1067,7 @@ export async function runToolLoop({
     return parseReflectionDecision(textFromBlocks(blocksFor(response?.content)));
   };
 
-  const callRoundJudge = async (round, currentL0, { timeoutMs } = {}) => {
+  const callRoundJudge = async (round, currentL0, { timeoutMs, conversationBudgetTokens } = {}) => {
     const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
     const recentErrors = l0Facts
       .flatMap((fact) => fact.errorTexts ?? (fact.errorText ? [fact.errorText] : []))
@@ -1084,6 +1087,11 @@ export async function runToolLoop({
             governorState.timeline,
             governorState.filesWritten,
             recentErrors,
+            renderConversation(messages, {
+              maxTokens: Number.isFinite(conversationBudgetTokens)
+                ? conversationBudgetTokens
+                : undefined,
+            }),
           ),
         }],
       }],
@@ -1153,6 +1161,7 @@ export async function runToolLoop({
     judgeInterceptEnabled,
     judgeIntervalRound,
     judgeInterceptTimeoutMs,
+    judgeInterceptConversationTokens,
     get messages() {
       return messages;
     },
@@ -1421,6 +1430,7 @@ export async function runToolLoop({
           : [...pendingDirectionHints];
         const hintMessage = {
           role: "user",
+          meta: { source: "judge-control" },
           content: hints.map((text) => ({ type: "text", text })),
         };
         messages.push(hintMessage);
@@ -1584,6 +1594,7 @@ export async function runToolLoop({
           : [...pendingDirectionHints];
         const hintMessage = {
           role: "user",
+          meta: { source: "judge-control" },
           content: hints.map((text) => ({ type: "text", text })),
         };
         messages.push(hintMessage);
@@ -1888,6 +1899,7 @@ export async function runToolLoop({
     if (action.kind === "nudge") {
       const continuationMessage = {
         role: "user",
+        meta: { source: "judge-control" },
         content: [{ type: "text", text: action.text }],
       };
       messages.push(continuationMessage);

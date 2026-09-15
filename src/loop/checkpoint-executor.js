@@ -181,6 +181,7 @@ export function createCheckpointExecutor(ctx) {
       const callRoundJudge = ctx.callRoundJudge;
       decision = await callRoundJudge(round, undefined, {
         timeoutMs: ctx.judgeInterceptTimeoutMs,
+        conversationBudgetTokens: ctx.judgeInterceptConversationTokens,
       });
     } catch (error) {
       if (ctx.signal?.aborted) throwIfAborted(ctx.signal);
@@ -247,6 +248,7 @@ export function createCheckpointExecutor(ctx) {
     const toolResult = {
       type: "tool_result",
       tool_use_id: block.id,
+      executionStatus: "intercepted",
       content: `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。`,
     };
     const budgetHint = budgetHintFor(round);

@@ -430,6 +430,40 @@ test("chat continues after text-only rounds (maxNoToolRounds default 3)", async 
   }
 });
 
+test("judge log defaults into the run archive directory", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-judgelog-default-"));
+  try {
+    const provider = createFakeProvider([
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]);
+    const judge = createFakeProvider([
+      { content: [{ type: "text", text: JSON.stringify({ done: true, confidence: 0.9, reason: "ok", evidence: "done", direction: "on_track" }) }], stopReason: "end_turn" },
+    ]);
+    await runChat({
+      prompt: "finish",
+      session: "judgelog-default",
+      dir,
+      skillsDir: join(dir, "skills"),
+      provider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 1,
+      idleTimeout: 0,
+      toolOutput: () => {},
+      reflection: {
+        enabled: true,
+        roundJudge: true,
+        judge: { provider: judge },
+      },
+    });
+
+    const defaultLog = join(dir, "outputs", "judgelog-default", "judge.log");
+    const content = readFileSync(defaultLog, "utf8");
+    assert.ok(content.includes('"round"'), "默认 judge.log 应存在且含 round 记录");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("judge-log redacts credentials from tool input and judge reason", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-judgelog-"));
   const judgeLogPath = join(dir, "judge.log");

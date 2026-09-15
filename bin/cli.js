@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { appendFileSync, existsSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -55,7 +55,7 @@ const HELP_TEXT = `用法：
   --no-notes            仅移除 notes 技能，保留其他 skill
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
-  --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL
+  --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL（默认：<归档目录>/judge.log）
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -68,7 +68,7 @@ const HELP_TEXT = `用法：
   ERIX_REFLECTION     反思开关（on/off；ERIX_NO_REFLECTION=1 强制关闭）
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
   ERIX_NO_NOTES=1       仅移除 notes 技能，保留其他 skill
-  ERIX_JUDGE_LOG      judge 决策 JSONL 路径（可用 --judge-log 覆盖）
+  ERIX_JUDGE_LOG      judge 决策 JSONL 路径（默认已写入 run 归档目录，无需设置）
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
@@ -537,6 +537,7 @@ async function runChatWithNotes({
     "outputs",
     safeRunId(runId),
   );
+  mkdirSync(archiveDir, { recursive: true });
   const runState = { rerunDetected: false, captureCount: 0 };
   const cliTools = createCliTools({
     cwd,
@@ -579,7 +580,8 @@ async function runChatWithNotes({
     _notesDir,
     runState,
   );
-  const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG;
+  // judge 决策日志默认跟随 run 归档（与工具捕获同目录）；--judge-log / ERIX_JUDGE_LOG 可覆盖
+  const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG ?? path.join(archiveDir, "judge.log");
   let judgeLogWriteFailed = false;
   // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 安全摘要
   const SENSITIVE_KEY = /token|key|secret|password|passwd|authorization|auth|api[_-]?key|bearer|cookie|credential|session|jwt|private/i;

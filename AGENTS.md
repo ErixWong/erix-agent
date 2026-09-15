@@ -97,12 +97,18 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 
 ```
 ~/.erix/
-├── config.json        # LLM 配置（endpoint/model/apiKey/maxOutputTokens/contextWindowTokens）
-├── mcp.json           # MCP server 注册（标准格式，可复用 ~/.config/mcp/mcp.json）
-├── <session>.json     # 会话历史（id 按 cwd 派生）
-├── skills/            # 用户级 skill（自描述协议）
-└── todos/             # 任务清单（按 cwd 隔离）
+├── config.json        # LLM config (endpoint/model/apiKey/maxOutputTokens/contextWindowTokens)
+├── mcp.json           # MCP server registry (standard format; can reuse ~/.config/mcp/mcp.json)
+├── <session>.json     # session history (id derived from cwd)
+├── transcripts/
+│   ├── <runId>.jsonl          # per-round records (includes judge decision fields)
+│   └── outputs/<runId>/       # everything archived for this run: tool captures, reports, judge.log
+│       └── judge.log          # judge decision JSONL (written here by default; override with --judge-log / ERIX_JUDGE_LOG)
+├── skills/            # user-level skills (self-describing protocol)
+└── todos/             # task lists (isolated per cwd)
 ```
+
+- **Judge logs have a fixed home**: `transcripts/outputs/<runId>/judge.log`, same directory and lifecycle as the transcript/tool captures; supervisors should inspect judge behavior here instead of relying on `/tmp` redirection.
 
 ## 7. Local environment facts
 
