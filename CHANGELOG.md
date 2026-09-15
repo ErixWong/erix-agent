@@ -2,6 +2,20 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [0.5.1] - 2026-09-15
+
+### fix
+
+- 修复折叠摘要、导航记录、stub、`[本 run 状态]` 和 run state 重复累积的问题。根因是 run-state
+  前置使旧摘要无法被识别；现按 `FOLD_SUMMARY_MARKER` 识别并替换，保留去重后的历史 stub 与导航信息。
+- 0.5.0 用户应升级；该缺陷会导致长会话上下文膨胀。
+
+### test
+
+- 新增端到端 Memento 场景集成测试（`test/integration/memento-scenario.test.js`），覆盖 S1 折叠后真值仍在请求负载、
+  S2 凭据不进 stub、S3 重跑告知与双份归档、S4 两次折叠替换语义、S5 bounded recall 逐字节拼回与游标拒绝；
+  断言面向 provider 侧请求，补上“接线类 bug 无法被内部结构断言发现”的盲区。
+
 ## [0.5.0] - 2026-09-15
 
 ### Breaking
