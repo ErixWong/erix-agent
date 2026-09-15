@@ -62,6 +62,7 @@ import {
   validateBudget,
 } from "./loop/budget.js";
 import { abortError, defaultSleep, throwIfAborted } from "./loop/abort.js";
+import { callProvider as runProvider } from "./loop/provider-runner.js";
 
 export { parseReflectionDecision };
 
@@ -921,6 +922,70 @@ export async function runToolLoop({
     throwIfAborted(signal);
   };
 
+  const providerContext = {
+    provider,
+    mainSystem,
+    tools,
+    signal,
+    maxTokens,
+    temperature,
+    topP,
+    stream,
+    onDelta,
+    onReasoningDelta,
+    onToolCall,
+    onUsage,
+    retryOptions,
+    retryAttempts,
+    backoffBaseMs,
+    backoffMaxMs,
+    emitEvent,
+    reportObserverError,
+    awaitWithAbort,
+    waitForRetry,
+    estimateMessageTokens,
+    get messages() {
+      return messages;
+    },
+    set messages(value) {
+      messages = value;
+    },
+    get roundEventDeltas() {
+      return roundEventDeltas;
+    },
+    set roundEventDeltas(value) {
+      roundEventDeltas = value;
+    },
+    get finalText() {
+      return finalText;
+    },
+    set finalText(value) {
+      finalText = value;
+    },
+    get usage() {
+      return usage;
+    },
+    get latestApiInputTokens() {
+      return latestApiInputTokens;
+    },
+    set latestApiInputTokens(value) {
+      latestApiInputTokens = value;
+    },
+    get latestApiEstimatedTokens() {
+      return latestApiEstimatedTokens;
+    },
+    set latestApiEstimatedTokens(value) {
+      latestApiEstimatedTokens = value;
+    },
+    get roundStopReason() {
+      return roundStopReason;
+    },
+    set roundStopReason(value) {
+      roundStopReason = value;
+    },
+  };
+  const callProvider = (options) => runProvider(providerContext, options);
+
   const executedToolIds = new Set(resumeExecutedToolIds);
   const checkpointResults = new Map(resumeCheckpointResults);
   // checkpoint store 必须成对（writer + loader）——save-only 无法 resume，不启用 fail-closed
@@ -1162,138 +1227,6 @@ export async function runToolLoop({
       );
     }
     return toolResult;
-  };
-
-  const callProvider = async ({ allowPendingToolUse = false, round } = {}) => {
-    let retryIndex = 0;
-    let recovered = false;
-    while (true) {
-      normalizeMessages(messages);
-      validateMessages(messages, { allowPendingToolUse });
-      const requestEstimatedTokens = estimateMessageTokens(messages);
-      const snapshot = {
-        messages: cloneState(messages),
-        eventDeltas: [...roundEventDeltas],
-        finalText,
-        usage: { ...usage },
-        latestApiInputTokens,
-        latestApiEstimatedTokens,
-        stopReason: roundStopReason,
-      };
-
-      const attempt = retryIndex + 1;
-      const attemptEvents = [];
-      let attemptUsage;
-      emitEvent({
-        type: "attempt",
-        round,
-        attempt,
-        maxAttempts: retryAttempts + 1,
-      });
-
-      const dispatchAttemptEvent = (event, callback) => {
-        if (event.type === "usage") {
-          emitEvent({ type: "usage", round, usage: event.usage });
-        }
-        if (event.type !== "usage" || attemptUsage !== undefined) {
-          roundEventDeltas.push(event);
-        }
-        try {
-          callback();
-        } catch (error) {
-          reportObserverError(error);
-        }
-      };
-      const queueEvent = (event, callback) => {
-        if (retryAttempts === 0) {
-          dispatchAttemptEvent(event, callback);
-          return;
-        }
-        attemptEvents.push({ event, callback });
-      };
-      try {
-        const request = {
-          system: mainSystem,
-          messages,
-          tools,
-          signal,
-        };
-        if (maxTokens !== undefined) request.maxTokens = maxTokens;
-        if (temperature !== undefined) request.temperature = temperature;
-        if (topP !== undefined) request.topP = topP;
-        if (stream && typeof provider.chatStream === "function") {
-          let response = await awaitWithAbort(provider.chatStream({
-            ...request,
-            onDelta: (chunk) => queueEvent(
-              { type: "delta", delta: chunk },
-              () => onDelta?.(chunk),
-            ),
-            onReasoningDelta: (chunk, metadata) => queueEvent(
-              {
-                type: "reasoning_delta",
-                delta: chunk,
-                ...(metadata === undefined ? {} : { metadata }),
-              },
-              () => onReasoningDelta?.(chunk, metadata),
-            ),
-            onToolCall: (fragment) => queueEvent(
-              { type: "tool_call", ...fragment },
-              () => onToolCall?.(fragment),
-            ),
-            onUsage: (reportedUsage) => {
-              attemptUsage = reportedUsage;
-              queueEvent(
-                { type: "usage", usage: reportedUsage },
-                () => onUsage?.(reportedUsage),
-              );
-            },
-          }));
-          if (attemptUsage !== undefined && response?.usage === undefined) {
-            response = { ...response, usage: attemptUsage };
-          }
-          if (recovered) emitEvent({ type: "recovered", round, attempt });
-          for (const { event, callback } of attemptEvents) {
-            dispatchAttemptEvent(event, callback);
-          }
-          return {
-            response,
-            usageEmitted: attemptUsage !== undefined,
-            estimatedTokens: requestEstimatedTokens,
-          };
-        }
-        const response = await awaitWithAbort(provider.chat(request));
-        if (recovered) emitEvent({ type: "recovered", round, attempt });
-        return {
-          response,
-          usageEmitted: false,
-          estimatedTokens: requestEstimatedTokens,
-        };
-      } catch (error) {
-        if (signal?.aborted) throwIfAborted(signal);
-        if (retryOptions === null || error?.retryable !== true) {
-          throw error;
-        }
-        messages = cloneState(snapshot.messages);
-        roundEventDeltas = [...snapshot.eventDeltas];
-        finalText = snapshot.finalText;
-        usage.input_tokens = snapshot.usage.input_tokens;
-        usage.output_tokens = snapshot.usage.output_tokens;
-        latestApiInputTokens = snapshot.latestApiInputTokens;
-        latestApiEstimatedTokens = snapshot.latestApiEstimatedTokens;
-        roundStopReason = snapshot.stopReason;
-        if (retryIndex >= retryAttempts) throw error;
-        const delay = Math.min(backoffBaseMs * (2 ** retryIndex), backoffMaxMs);
-        retryIndex += 1;
-        recovered = true;
-        emitEvent({
-          type: "recovering",
-          round,
-          attempt: retryIndex + 1,
-          maxAttempts: retryAttempts + 1,
-        });
-        await waitForRetry(delay);
-      }
-    }
   };
 
   const hasFinalDraft = () => (
