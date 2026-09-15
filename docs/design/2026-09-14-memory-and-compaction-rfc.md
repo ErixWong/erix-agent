@@ -2,7 +2,8 @@
 
 - 状态：**RFC / 待评审**（2026-09-14）
 - 作者：与用户逐轮讨论整理
-- 评审：待（copilot 独立评审 + 用户裁决）
+- 评审：[独立对抗性评审](./2026-09-14-memory-and-compaction-rfc-review.md)（PR [#81](https://github.com/ErixWong/erix-agent/pull/81)）
+- 后续重构：[Issue #82](https://github.com/ErixWong/erix-agent/issues/82)
 - 关联：ADR-002（档案/视图分离）、ADR-003（压缩谱系）、ADR-005（recall 内置）、ADR-007（记忆五层）、**ADR-010（Memento 两个问题域）**、ADR-012（引擎真相/模型效率/宿主策略）
 - 本文与 ADR-010 的关系：**ADR-010 判断"erix 折叠系 = 问题域①的完整实现"——本 RFC 用实证指出该判断不成立（折叠缺少地址索引与契约），并给出修正设计。**
 
