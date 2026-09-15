@@ -282,6 +282,79 @@ test("records bounded navigation without values and preserves archive digests", 
   assert.match(summary, /\[已折叠\]/u);
 });
 
+test("keeps opaque resource locators and host display strings unchanged", async () => {
+  const locator = { bucket: "archives", key: "opaque/001" };
+  const result = await createFoldStatisticalStrategy().compact([
+    { role: "user", content: "task" },
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "opaque", name: "exec", input: {} }],
+    },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "opaque",
+        replayable: false,
+        artifact: {
+          locator,
+          display: "db://archives/opaque/001",
+          digest: "b".repeat(64),
+        },
+        content: "opaque content",
+      }],
+    },
+    { role: "user", content: "keep" },
+  ], { keepRounds: 1 });
+
+  assert.deepEqual(result.navigationRecord.artifacts[0].locator, locator);
+  assert.equal(result.navigationRecord.artifacts[0].display, "db://archives/opaque/001");
+  assert.equal(result.navigationRecord.artifacts[0].id, "db:__archives_opaque_001");
+});
+
+test("materializes fold resources through ResourceStore before rendering stubs", async () => {
+  const calls = [];
+  const result = await createFoldStatisticalStrategy({
+    resourceStore: {
+      async put(resource) {
+        calls.push(resource);
+        return {
+          locator: { token: "opaque-token" },
+          digest: "c".repeat(64),
+          display: "object://bucket/resource-1",
+        };
+      },
+      async get() {
+        return "resource";
+      },
+    },
+  }).compact([
+    { role: "user", content: "task" },
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "resource", name: "exec", input: {} }],
+    },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "resource",
+        replayable: false,
+        artifact: { resource: "archive bytes" },
+        content: "archive bytes",
+      }],
+    },
+    { role: "user", content: "keep" },
+  ], {
+    keepRounds: 1,
+    stubFor: (message) => `display=${message.content[0].artifact.display}`,
+  });
+
+  assert.deepEqual(calls, ["archive bytes"]);
+  assert.match(result.messages[0].content[0].text, /object:\/\/bucket\/resource-1/u);
+  assert.deepEqual(result.navigationRecord.artifacts[0].locator, { token: "opaque-token" });
+});
+
 test("replaces summaries, navigation, and stubs across two and three folds", async () => {
   const strategy = createFoldStatisticalStrategy();
   const artifact = (id) => ({

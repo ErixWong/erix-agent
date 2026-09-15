@@ -44,6 +44,76 @@ The older `{ data, success, ... }` shape and other duck-typed shapes are
 normalized permissively for compatibility, but are deprecated and must not be
 depended on.
 
+## AssemblyPort
+
+Hosts that assemble a complete run can provide one validated composition root
+instead of repeating the individual wiring:
+
+```js
+const assemblyPort = createAssemblyPort({
+  modelConfig, // ModelConfigProvider
+  provider,    // Provider
+  tools: { definitions, executeTool, getToolMetadata? },
+  store,       // complete TranscriptStore
+  session: { id, resume?, initialMessages? },
+  resourceStore?, // opaque archive adapter
+  policy?,     // explicit run options
+  emit?,       // (eventType, payload) => void
+});
+
+await runToolLoop({ assemblyPort });
+```
+
+`modelConfig`, `provider`, `tools`, `store`, `session`, `resourceStore`, and `policy` may also
+be synchronous zero-argument factories when passed to `createAssemblyPort`.
+The required methods are checked at assembly/startup: `modelConfig.resolve`,
+`provider.chat`, `tools.definitions`, `tools.executeTool`, `session.id`, and
+all nine `TranscriptStore` methods. A missing method throws `TypeError`
+before the run starts. `policy` contains only named `runToolLoop` options;
+unknown policy keys are rejected.
+
+The existing fine-grained `runToolLoop` options remain supported. When both
+forms are present, the AssemblyPort is resolved first and explicitly supplied
+fine-grained options override the corresponding assembled values. This keeps
+the port at the composition boundary and does not wrap or change the loop
+injection contract. If `emit` is present, it is used as the default event
+sink; an explicit `onEvent` still wins. `assemblyPortContract` from
+`erix-agent/contract-tests` locks these startup and precedence rules.
+
+The library's `createAssemblyPort` is the reference assembly implementation;
+it performs no I/O. The CLI continues to use its existing file-backed
+provider, tool, and transcript adapters, so no host needs to adopt the port
+in one migration.
+
+## ResourceStore
+
+`ResourceStore` is the boundary for archived or otherwise external resources.
+Its locator is opaque to the library:
+
+```js
+resourceStore.put(bytesOrText)
+// -> Promise<{ locator, digest, display }>
+
+resourceStore.get(locator)
+// -> Promise<bytesOrText>
+```
+
+`put` must return the exact locator used by `get`, a stable digest of the
+stored bytes, and a non-empty host-facing `display` string. `get` returns the
+stored resource unchanged; an unknown locator must reject with an explicit
+not-found error, and adapter failures must propagate. The engine never parses
+locator fields or assumes paths, URI syntax, line numbers, or byte offsets.
+Fold navigation records carry the adapter's locator and display; display is
+the only string intended for a model-facing stub.
+
+`createFileResourceStore({ dir })` is the built-in filesystem adapter. Its
+locator is an opaque object and its display is the readable filesystem
+location; hosts may replace it with an object store, database, or service
+without changing folding or recall code. `resourceStoreContract` checks
+round-trip fidelity, store isolation, unknown-locator behavior, and failure
+propagation. Existing CLI archive artifacts remain readable through the
+file-backed adapter and retain their current archive behavior.
+
 ## Reusable normalization primitives
 
 Hosts that provide their own OpenAI-compatible transport can import these

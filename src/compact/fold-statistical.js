@@ -13,6 +13,7 @@ import {
   selectFoldedRounds,
   isRealUser,
 } from "./helpers.js";
+import { validateResourceStore } from "../store/resource.js";
 
 export const FOLD_SUMMARY_MARKER = "【上下文折叠·v1·erix-9f6e2c】";
 const MAX_NAVIGATION_ARTIFACTS = 10;
@@ -63,20 +64,30 @@ function parseToolFootprint(value) {
   return counts;
 }
 
-function safeNavigationId(value) {
-  const basename = String(value ?? "").split(/[\\/]/u).at(-1) ?? "";
-  return basename.replaceAll(/[^\p{L}\p{N}._:-]/gu, "_").slice(0, 80);
+async function materializeFoldResources(messages, resourceStore) {
+  if (resourceStore === undefined) return messages;
+  const store = validateResourceStore(resourceStore);
+  return Promise.all(messages.map(async (message) => {
+    if (!Array.isArray(message?.content)) return message;
+    let changed = false;
+    const content = await Promise.all(message.content.map(async (block) => {
+      if (!block?.artifact || typeof block.artifact !== "object"
+        || block.artifact.resource === undefined) {
+        return block;
+      }
+      const reference = await store.put(block.artifact.resource);
+      const { resource: _resource, ...artifact } = block.artifact;
+      changed = true;
+      return { ...block, artifact: { ...artifact, ...reference } };
+    }));
+    return changed ? { ...message, content } : message;
+  }));
 }
 
-function safeNavigationLocator(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const locator = {};
-  for (const key of ["lineStart", "lineEnd", "byteStart", "byteEnd"]) {
-    if (Number.isSafeInteger(value[key]) && value[key] >= 0) {
-      locator[key] = value[key];
-    }
-  }
-  return locator;
+function safeNavigationId(value) {
+  return String(value ?? "")
+    .replaceAll(/[^\p{L}\p{N}._:-]/gu, "_")
+    .slice(0, 80);
 }
 
 function boundedNavigationRecord(roundRange, artifacts) {
@@ -89,7 +100,11 @@ function boundedNavigationRecord(roundRange, artifacts) {
   const seen = new Set();
   for (const artifact of artifacts) {
     if (!artifact || typeof artifact !== "object") continue;
-    const id = safeNavigationId(artifact.id);
+    if (artifact.locator === undefined) continue;
+    const display = typeof artifact.display === "string" && artifact.display.length > 0
+      ? artifact.display
+      : artifact.id;
+    const id = safeNavigationId(display);
     const digest = String(artifact.digest ?? "").slice(0, 128);
     if (!id || !digest) continue;
     const key = `${id}\u0000${digest}`;
@@ -97,9 +112,12 @@ function boundedNavigationRecord(roundRange, artifacts) {
     seen.add(key);
     unique.push({
       id,
-      locator: safeNavigationLocator(artifact.locator),
+      ...(typeof artifact.display === "string" ? { display: artifact.display } : {}),
+      locator: artifact.locator,
       digest,
-      status: artifact.status === "truncated" ? "truncated" : "archived",
+      status: ["truncated", "external", "expired"].includes(artifact.status)
+        ? artifact.status
+        : "archived",
     });
   }
   if (unique.length === 0) return undefined;
@@ -121,7 +139,10 @@ function boundedNavigationRecord(roundRange, artifacts) {
     visible = visible.map((artifact) => ({
       ...artifact,
       id: artifact.id.slice(0, 32),
-      locator: {},
+      ...(Object.hasOwn(artifact, "display")
+        ? { display: artifact.display.slice(0, 32) }
+        : {}),
+      locator: undefined,
     }));
   }
   if (JSON.stringify(makeRecord()).length > MAX_NAVIGATION_CHARS) {
@@ -138,7 +159,8 @@ export function buildFoldNavigationRecord(foldedPayload, roundRange) {
       if (block?.type !== "tool_result" || !block.artifact) continue;
       const artifact = block.artifact;
       artifacts.push({
-        id: artifact.artifactId ?? artifact.archivePath,
+        id: artifact.artifactId,
+        ...(typeof artifact.display === "string" ? { display: artifact.display } : {}),
         locator: artifact.locator,
         digest: artifact.digest,
         status: artifact.truncated === true ? "truncated" : "archived",
@@ -398,10 +420,11 @@ export function createFoldStatisticalStrategy(options = {}) {
         keep,
         settings.protectedMessage,
       );
-      const foldedPayload = cloneFoldPayload(
+      let foldedPayload = cloneFoldPayload(
         folded.flatMap((round) => round.messages),
         settings.stripHistoricalImages,
       );
+      foldedPayload = await materializeFoldResources(foldedPayload, settings.resourceStore);
       const roundRange = roundRangeForIndexes(
         foldedIndexes,
         settings.roundOffset,

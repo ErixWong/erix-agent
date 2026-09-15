@@ -63,6 +63,7 @@ import { abortError, defaultSleep, throwIfAborted } from "./abort.js";
 import { callProvider as runProvider } from "./provider-runner.js";
 import { createCheckpointExecutor } from "./checkpoint-executor.js";
 import { restoreResume } from "./resume-manager.js";
+import { assemblyPortOptions } from "../assembly.js";
 
 export { parseReflectionDecision };
 
@@ -79,6 +80,7 @@ const TRANSCRIPT_STORE_METHODS = [
 ];
 
 const RUN_TOOL_LOOP_OPTION_NAMES = [
+  "assemblyPort",
   "provider",
   "system",
   "wrapup",
@@ -253,6 +255,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * the window; `consecutive` requires the entire window to match.
  *
  * @param {{
+ *   assemblyPort?: import("../assembly.js").AssemblyPort,
  *   provider: {chat: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
  *   system?: string,
  *   wrapup?: boolean, // Controls instruction injection, JSON parsing, finalText replacement, and LLM normalization.
@@ -341,6 +344,15 @@ export async function runToolLoop(options) {
     }
   }
 
+  const { assemblyPort, ...explicitOptions } = options;
+  const assembledOptions = assemblyPort === undefined
+    ? {}
+    : await assemblyPortOptions(assemblyPort);
+  const effectiveOptions = { ...assembledOptions };
+  for (const [key, value] of Object.entries(explicitOptions)) {
+    if (value !== undefined) effectiveOptions[key] = value;
+  }
+
   const {
     provider,
     system,
@@ -395,7 +407,7 @@ export async function runToolLoop(options) {
     onToolCall,
     onUsage,
     onEvent,
-  } = options;
+  } = effectiveOptions;
   if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) {
     throw new TypeError("maxRounds must be a finite positive integer");
   }
@@ -1546,6 +1558,7 @@ export async function runToolLoop(options) {
         "onBeforeFold",
         "onAfterFold",
         "stubFor",
+        "resourceStore",
       ]) {
         if (compactionContext[key] !== undefined) compactOptions[key] = compactionContext[key];
       }
@@ -1581,6 +1594,7 @@ export async function runToolLoop(options) {
           protectedMessage: compactionContext.protectedMessage,
           stripHistoricalImages: compactionContext.stripHistoricalImages,
           stubFor: compactionContext.stubFor,
+          resourceStore: compactionContext.resourceStore,
           roundOffset: foldedThrough,
           roundNumbers: roundNumbersForMessages(compactedMessages),
         });

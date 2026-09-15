@@ -38,6 +38,12 @@ export { enforceSize } from "./compact/enforce-size.js";
 export { createMemoryTranscriptStore } from "./store/memory.js";
 export { createFileTranscriptStore } from "./store/file.js";
 export {
+  createAssemblyPort,
+  assemblyPortOptions,
+} from "./assembly.js";
+export { createFileResourceStore } from "./store/resource-file.js";
+export { validateResourceStore } from "./store/resource.js";
+export {
   createDeterministicRunState,
   renderRunState,
   upsertRunStateInMessages,
