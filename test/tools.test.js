@@ -261,6 +261,79 @@ test("reruns execute and report the first archived output path", async () => {
   });
 });
 
+test("cross-instance archive resume scans existing sequence and rerun provenance", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const seeded = archiveResult(archiveDir, "exec", "nonce=seed\n", 1, {
+      force: true,
+      replayable: false,
+      replayableSource: "declared",
+      command: "printf nonce",
+      context: { round: 7 },
+    });
+    assert.ok(seeded?.artifact);
+
+    const firstInstance = createCliTools({
+      cwd,
+      archiveDir,
+      replayable: { exec: false },
+    });
+    const firstExecute = wrapExecuteTool(firstInstance.executeTool, {
+      output: () => {},
+      getToolMetadata: firstInstance.getLastToolMetadata,
+      returnMetadata: true,
+    });
+    const second = await firstExecute({
+      id: "cross-process-2",
+      name: "exec",
+      input: { command: "printf nonce" },
+      context: { round: 8 },
+    });
+    assert.equal(second.rerunOf.artifactId, "001-exec.txt");
+    assert.equal(second.rerunOf.round, 7);
+    assert.equal(second.rerunOf.status, "ok");
+    assert.equal(second.artifact.artifactId, "002-exec.txt");
+
+    const resumedInstance = createCliTools({
+      cwd,
+      archiveDir,
+      replayable: { exec: false },
+    });
+    const resumedExecute = wrapExecuteTool(resumedInstance.executeTool, {
+      output: () => {},
+      getToolMetadata: resumedInstance.getLastToolMetadata,
+      returnMetadata: true,
+    });
+    const third = await resumedExecute({
+      id: "cross-process-3",
+      name: "exec",
+      input: { command: "printf nonce" },
+      context: { round: 9 },
+    });
+    assert.equal(third.rerunOf.artifactId, "001-exec.txt");
+    assert.equal(third.artifact.artifactId, "003-exec.txt");
+    assert.deepEqual(
+      (await readdir(archiveDir)).filter((name) => name.endsWith(".txt")).sort(),
+      ["001-exec.txt", "002-exec.txt", "003-exec.txt"],
+    );
+  });
+});
+
+test("archive sequence collision retries without losing either artifact", async () => {
+  await withDirectory(async (cwd) => {
+    const archiveDir = join(cwd, "outputs");
+    const results = await Promise.all([
+      archiveResult(archiveDir, "exec", "first\n", 1, { force: true }),
+      archiveResult(archiveDir, "exec", "second\n", 1, { force: true }),
+    ]);
+    assert.equal(results.filter(Boolean).length, 2);
+    assert.deepEqual(
+      (await readdir(archiveDir)).filter((name) => name.endsWith(".txt")).sort(),
+      ["001-exec.txt", "002-exec.txt"],
+    );
+  });
+});
+
 test("executes a captured non-replayable rerun with first provenance metadata", async () => {
   await withDirectory(async (cwd) => {
     const archiveDir = join(cwd, "outputs");

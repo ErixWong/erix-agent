@@ -4,8 +4,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { boundedRecall } from "./bounded-recall.js";
+import { boundRunState } from "../run-state.js";
 
 const HASHED_RUN_ID_PREFIX = "run-h-";
+const MAX_BOUNDED_RECALL_RECORD_BYTES = 64 * 1024;
 
 /**
  * @typedef {{
@@ -71,10 +73,27 @@ function blockText(block) {
   return null;
 }
 
-async function* readRecords(path) {
+function boundedRecordBytes(maxBytes) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    return MAX_BOUNDED_RECALL_RECORD_BYTES;
+  }
+  return Math.min(
+    MAX_BOUNDED_RECALL_RECORD_BYTES,
+    Math.max(4096, maxBytes + 4096),
+  );
+}
+
+function recordRoundPrefix(value) {
+  const match = String(value).match(/^\s*\{\s*"round"\s*:\s*(\d+)/u);
+  return match ? Number.parseInt(match[1], 10) : undefined;
+}
+
+async function* readRecords(path, { maxRecordBytes = Number.POSITIVE_INFINITY } = {}) {
   try {
     const stream = createReadStream(path, { encoding: "utf8" });
     let buffer = "";
+    let oversized = false;
+    let oversizedRound;
 
     for await (const chunk of stream) {
       buffer += chunk;
@@ -83,19 +102,54 @@ async function* readRecords(path) {
         const line = buffer.slice(0, newlineIndex);
         buffer = buffer.slice(newlineIndex + 1);
         const jsonLine = line.endsWith("\r") ? line.slice(0, -1) : line;
-        yield JSON.parse(jsonLine);
+        if (oversized || Buffer.byteLength(jsonLine, "utf8") > maxRecordBytes) {
+          yield {
+            __boundedRecallSkipped: true,
+            reason: "record_too_large",
+            ...(oversizedRound === undefined
+              ? { round: recordRoundPrefix(jsonLine) }
+              : { round: oversizedRound }),
+          };
+          oversized = false;
+          oversizedRound = undefined;
+        } else {
+          yield JSON.parse(jsonLine);
+        }
         newlineIndex = buffer.indexOf("\n");
+      }
+      if (!oversized && Buffer.byteLength(buffer, "utf8") > maxRecordBytes) {
+        oversized = true;
+        oversizedRound = recordRoundPrefix(buffer);
+        buffer = "";
+      } else if (oversized) {
+        buffer = "";
       }
     }
 
     // A crash can leave a complete JSON record after the final newline.
     // Ignore an incomplete tail, matching repairTrailingFragment semantics.
-    if (buffer.length > 0) {
+    if (oversized) {
+      yield {
+        __boundedRecallSkipped: true,
+        reason: "record_too_large",
+        ...(oversizedRound === undefined ? {} : { round: oversizedRound }),
+      };
+    } else if (buffer.length > 0) {
       const jsonLine = buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer;
-      try {
-        yield JSON.parse(jsonLine);
-      } catch {
-        // An incomplete EOF fragment is not a readable record.
+      if (Buffer.byteLength(jsonLine, "utf8") > maxRecordBytes) {
+        yield {
+          __boundedRecallSkipped: true,
+          reason: "record_too_large",
+          ...(recordRoundPrefix(jsonLine) === undefined
+            ? {}
+            : { round: recordRoundPrefix(jsonLine) }),
+        };
+      } else {
+        try {
+          yield JSON.parse(jsonLine);
+        } catch {
+          // An incomplete EOF fragment is not a readable record.
+        }
       }
     }
   } catch (error) {
@@ -254,7 +308,9 @@ export function createFileTranscriptStore({ dir }) {
           ...objectOptions,
           runId,
           sourceVersion: sourceVersion(runId),
-          records: () => readRecords(path),
+          records: () => readRecords(path, {
+            maxRecordBytes: boundedRecordBytes(objectOptions.maxBytes),
+          }),
         });
       }
       let result = "";
@@ -323,16 +379,13 @@ export function createFileTranscriptStore({ dir }) {
       } catch (error) {
         if (error?.code !== "ENOENT") throw error;
       }
-      await writeFile(
-        temporary,
-        `${JSON.stringify({
-          ...previous,
-          ...state,
-          runId,
-          ts: new Date().toISOString(),
-        })}\n`,
-        "utf8",
-      );
+      const persisted = boundRunState({
+        ...previous,
+        ...state,
+        runId,
+        ts: new Date().toISOString(),
+      });
+      await writeFile(temporary, `${JSON.stringify(persisted)}\n`, "utf8");
       await rename(temporary, target);
     },
 
@@ -362,6 +415,13 @@ export function createFileTranscriptStore({ dir }) {
         return JSON.parse(await readFile(statePath(dir, runId), "utf8"));
       } catch (error) {
         if (error?.code === "ENOENT") return undefined;
+        if (error instanceof SyntaxError) {
+          return {
+            runId,
+            stateStatus: "state_unavailable",
+            stateError: "corrupt",
+          };
+        }
         throw error;
       }
     },

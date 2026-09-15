@@ -165,6 +165,79 @@ export function transcriptStoreContract(label, createStore) {
     assert.equal(missing.status, "unrecoverable");
   });
 
+  test(`${label}: bounded recall 绑定 limit/maxBytes/artifactRef 并拒绝零上限`, async () => {
+    const store = await createStore();
+    await store.appendRound("artifact-run", {
+      round: 1,
+      messages: [{
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            content: "first-artifact",
+            artifact: { artifactId: "first.txt", digest: "digest-first" },
+          },
+          {
+            type: "tool_result",
+            content: "second-artifact",
+            artifact: { artifactId: "second.txt", digest: "digest-second" },
+          },
+        ],
+      }],
+    });
+
+    const first = await store.recall({
+      runId: "artifact-run",
+      artifactRef: "first.txt",
+      limit: 1,
+      maxBytes: 5,
+    });
+    assert.equal(first.status, "truncated");
+    assert.equal(first.text, "first");
+    const mismatch = await store.recall({
+      runId: "artifact-run",
+      artifactRef: "first.txt",
+      limit: 2,
+      maxBytes: 5,
+      cursor: first.nextCursor,
+    });
+    assert.equal(mismatch.status, "stale");
+
+    const zeroBytes = await store.recall({
+      runId: "artifact-run",
+      limit: 1,
+      maxBytes: 0,
+    });
+    assert.equal(zeroBytes.status, "error");
+    assert.equal(zeroBytes.nextCursor, undefined);
+    const zeroItems = await store.recall({
+      runId: "artifact-run",
+      limit: 0,
+      maxBytes: 64,
+    });
+    assert.equal(zeroItems.status, "error");
+    assert.equal(zeroItems.nextCursor, undefined);
+  });
+
+  test(`${label}: bounded recall detects large internal range gaps`, async () => {
+    const store = await createStore();
+    await store.appendRound("gap-run", {
+      round: 1,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "one" }] }],
+    });
+    await store.appendRound("gap-run", {
+      round: 100001,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "last" }] }],
+    });
+    const result = await store.recall({
+      runId: "gap-run",
+      fromRound: 1,
+      toRound: 100001,
+      maxBytes: 64,
+    });
+    assert.equal(result.status, "unrecoverable");
+  });
+
   test(`${label}: recall 覆盖 foldedPayload（折叠原文同属档案）`, async () => {
     const store = await createStore();
     await store.appendRound("run-1", {

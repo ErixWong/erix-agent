@@ -17,6 +17,7 @@ import {
   createDeterministicRunState,
   renderRunState,
   upsertRunStateInMessages,
+  validateRunState,
   withSemanticRunState,
 } from "./run-state.js";
 
@@ -976,6 +977,7 @@ export async function runToolLoop({
   let archiveFailureCount = 0;
   let runStateVersion = 0;
   let currentRunState;
+  let runStateAvailability = { status: "available" };
   let currentTerminationReason = "running";
   let todoState;
   let semanticState;
@@ -1074,6 +1076,18 @@ export async function runToolLoop({
   let persistedTranscriptLength = 0;
   const resumeExecutedToolIds = new Set();
   const resumeCheckpointResults = new Map();
+  const restoreRunState = (restored) => {
+    const validation = validateRunState(restored);
+    if (!validation.ok) {
+      runStateAvailability = {
+        status: validation.status,
+        reason: validation.reason,
+      };
+      return false;
+    }
+    applyRestoredRunState(validation.state);
+    return true;
+  };
   const applyRestoredRunState = (restored) => {
     if (!restored || typeof restored !== "object") return;
     currentRunState = cloneState(restored);
@@ -1105,10 +1119,11 @@ export async function runToolLoop({
   const restorePersistedRunState = async () => {
     if (!resume || typeof store?.loadRunState !== "function" || runId === undefined) return;
     const stored = await store.loadRunState(runId);
+    if (stored === undefined) return;
     const restored = stored?.runState && typeof stored.runState === "object"
       ? stored.runState
-      : stored?.schemaVersion === 1 ? stored : undefined;
-    applyRestoredRunState(restored);
+      : stored;
+    restoreRunState(restored);
   };
   await markRunState("running");
   await restorePersistedRunState();
@@ -1120,7 +1135,9 @@ export async function runToolLoop({
         const latestStateRecord = [...records].reverse().find((record) => (
           record?.runState && typeof record.runState === "object"
         ));
-        applyRestoredRunState(latestStateRecord?.runState);
+        if (latestStateRecord?.runState !== undefined) {
+          restoreRunState(latestStateRecord.runState);
+        }
       }
       const restoredMessages = records.flatMap((record) => record.messages ?? []);
       const seedRecords = records.filter((record) => (record.round ?? 0) === 0);
@@ -1603,7 +1620,10 @@ export async function runToolLoop({
         status: "stale",
       };
     }
-    currentRunState = withSemanticRunState(deterministic, semanticState);
+    currentRunState = withSemanticRunState({
+      ...deterministic,
+      stateAvailability: { ...runStateAvailability },
+    }, semanticState);
     currentRunState.rendered = renderRunState(currentRunState);
     if (inject) messages = upsertRunStateInMessages(messages, currentRunState.rendered);
     await persist("saveRunState", runId, currentRunState);

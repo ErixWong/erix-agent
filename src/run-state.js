@@ -1,9 +1,15 @@
+import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
+
 const MAX_RENDERED_CHARS = 400;
+export const RUN_STATE_SCHEMA_VERSION = 1;
+export const RUN_STATE_MAX_SERIALIZED_BYTES = 64 * 1024;
+export const RUN_STATE_MAX_TOOL_ENTRIES = 128;
+export const RUN_STATE_MAX_FILE_ENTRIES = 128;
+export const RUN_STATE_MAX_TODO_ENTRIES = 64;
+export const RUN_STATE_MAX_FIELD_CHARS = 120;
 const DETERMINISTIC_MARKER = "[run state deterministic v1]";
 const SEMANTIC_MARKER = "[run state semantic derived]";
 const END_MARKER = "[/run state]";
-
-const CREDENTIAL_PATTERN = /(?:sk-[a-z0-9_-]{8,}|sk_live_[a-z0-9]{16,}|(?:ghp|gho|ghs|ghu|ghr)_[a-z0-9_]{20,}|github_pat_[a-z0-9_]{20,}|Bearer\s+[a-z0-9._-]{8,}|AKIA[0-9A-Z]{16}|-----BEGIN\s+[A-Z ]+-----)/iu;
 
 function boundedText(value, maxChars) {
   const text = String(value ?? "").replaceAll(/\s+/gu, " ").trim();
@@ -12,7 +18,7 @@ function boundedText(value, maxChars) {
 
 function safeText(value, maxChars = 120) {
   const text = boundedText(value, maxChars);
-  return CREDENTIAL_PATTERN.test(text) ? "[redacted]" : text;
+  return looksLikeCredential("", text) ? "[redacted]" : text;
 }
 
 function safeInteger(value, fallback = 0) {
@@ -23,11 +29,11 @@ function normalizeCountMap(values, keyNames = {}) {
   const entries = values instanceof Map
     ? [...values.entries()]
     : Object.entries(values ?? {});
-  return entries
+  const normalized = entries
     .map(([name, value]) => {
       const item = value && typeof value === "object" ? value : { calls: value };
       return {
-        name: safeText(name, 60),
+        name: safeText(name, RUN_STATE_MAX_FIELD_CHARS),
         calls: safeInteger(item.calls),
         failures: safeInteger(item.failures),
       };
@@ -39,14 +45,21 @@ function normalizeCountMap(values, keyNames = {}) {
       calls: item.calls,
       failures: item.failures,
     }));
+  return {
+    items: normalized.slice(0, RUN_STATE_MAX_TOOL_ENTRIES),
+    omitted: Math.max(0, normalized.length - RUN_STATE_MAX_TOOL_ENTRIES),
+  };
 }
 
 function normalizeFiles(files) {
-  return [...new Set((files ?? [])
+  const normalized = [...new Set((files ?? [])
     .map((file) => typeof file === "object" ? file?.path : file)
     .filter((file) => typeof file === "string" && file.trim() !== "")
-    .map((file) => safeText(file, 120)))]
-    .slice(-50);
+    .map((file) => safeText(file, RUN_STATE_MAX_FIELD_CHARS)))];
+  return {
+    items: normalized.slice(-RUN_STATE_MAX_FILE_ENTRIES),
+    omitted: Math.max(0, normalized.length - RUN_STATE_MAX_FILE_ENTRIES),
+  };
 }
 
 function normalizeTodo(todo) {
@@ -64,13 +77,18 @@ function normalizeTodo(todo) {
         status: safeText(item.status ?? "unknown", 24),
       }))
       .filter((item) => item.id !== "")
-      .slice(0, 20),
+      .slice(0, RUN_STATE_MAX_TODO_ENTRIES),
+    ...(items.length > RUN_STATE_MAX_TODO_ENTRIES
+      ? { truncated: true, omitted: items.length - RUN_STATE_MAX_TODO_ENTRIES }
+      : {}),
   };
 }
 
 function normalizeSemantic(semantic, expectedVersion) {
   if (!semantic) return { status: "absent" };
-  const text = safeText(semantic.text, 220);
+  const sourceText = boundedText(semantic.text, 220);
+  const redacted = looksLikeCredential("", sourceText);
+  const text = redacted ? "[redacted]" : sourceText;
   const version = semantic.version ?? semantic.semanticStateVersion;
   const versionMatches = Number.isSafeInteger(version)
     && version === expectedVersion;
@@ -83,7 +101,117 @@ function normalizeSemantic(semantic, expectedVersion) {
     status,
     text,
     semanticStateVersion: Number.isSafeInteger(version) ? version : null,
+    ...(redacted ? { redacted: true } : {}),
+    ...(Array.from(String(semantic.text ?? "")).length > 220 ? { truncated: true } : {}),
   };
+}
+
+function serializedBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function compactStateForSize(state) {
+  const compact = structuredClone(state);
+  const deterministic = compact.deterministic ?? {};
+  deterministic.tools = (deterministic.tools ?? []).slice(0, 16);
+  deterministic.filesWritten = (deterministic.filesWritten ?? []).slice(-16);
+  if (deterministic.todo?.items) {
+    deterministic.todo = {
+      ...deterministic.todo,
+      items: deterministic.todo.items.slice(0, 8),
+      truncated: true,
+    };
+  }
+  if (compact.semantic?.text) {
+    compact.semantic = {
+      ...compact.semantic,
+      text: `${Array.from(compact.semantic.text).slice(0, 64).join("")}[truncated]`,
+      truncated: true,
+    };
+  }
+  compact.deterministic = deterministic;
+  compact.bounds = {
+    ...(compact.bounds ?? {}),
+    maxSerializedBytes: RUN_STATE_MAX_SERIALIZED_BYTES,
+    truncated: true,
+    reason: "serialized_size",
+  };
+  return compact;
+}
+
+/**
+ * Bound the object written to a TranscriptStore. The rendered 400-character
+ * block is not a substitute for bounding the persisted state itself.
+ */
+export function boundRunState(state) {
+  if (!state || typeof state !== "object" || Array.isArray(state)) {
+    throw new TypeError("run state must be an object");
+  }
+  let bounded = structuredClone(state);
+  if (serializedBytes(bounded) > RUN_STATE_MAX_SERIALIZED_BYTES) {
+    bounded = compactStateForSize(bounded);
+  }
+  if (serializedBytes(bounded) <= RUN_STATE_MAX_SERIALIZED_BYTES) return bounded;
+
+  const deterministic = bounded.deterministic ?? {};
+  return {
+    schemaVersion: RUN_STATE_SCHEMA_VERSION,
+    runId: safeText(bounded.runId, RUN_STATE_MAX_FIELD_CHARS),
+    stateVersion: safeInteger(bounded.stateVersion),
+    asOfRound: safeInteger(bounded.asOfRound),
+    stateStatus: "available",
+    deterministic: {
+      budget: deterministic.budget ?? {},
+      tools: [],
+      filesWritten: [],
+      fold: deterministic.fold ?? {},
+      termination: deterministic.termination ?? { reason: "running" },
+      errors: deterministic.errors ?? {},
+    },
+    bounds: {
+      maxSerializedBytes: RUN_STATE_MAX_SERIALIZED_BYTES,
+      truncated: true,
+      reason: "serialized_size",
+    },
+  };
+}
+
+export function validateRunState(state) {
+  if (!state || typeof state !== "object" || Array.isArray(state)) {
+    return { ok: false, status: "state_unavailable", reason: "missing" };
+  }
+  if (state.stateStatus && state.stateStatus !== "available") {
+    return {
+      ok: false,
+      status: "state_unavailable",
+      reason: String(state.stateStatus),
+    };
+  }
+  if (state.stateAvailability?.status
+    && state.stateAvailability.status !== "available") {
+    return {
+      ok: false,
+      status: "state_unavailable",
+      reason: String(state.stateAvailability.reason ?? state.stateAvailability.status),
+    };
+  }
+  if (state.schemaVersion !== RUN_STATE_SCHEMA_VERSION) {
+    return { ok: false, status: "state_unavailable", reason: "unknown_schema" };
+  }
+  if (typeof state.runId !== "string"
+    || !Number.isSafeInteger(state.stateVersion)
+    || !Number.isSafeInteger(state.asOfRound)
+    || !state.deterministic
+    || typeof state.deterministic !== "object"
+    || !state.deterministic.budget
+    || !Array.isArray(state.deterministic.tools)
+    || !Array.isArray(state.deterministic.filesWritten)
+    || !state.deterministic.fold
+    || !state.deterministic.termination
+    || !state.deterministic.errors) {
+    return { ok: false, status: "state_unavailable", reason: "missing_fields" };
+  }
+  return { ok: true, status: "available", state };
 }
 
 function renderLines(lines) {
@@ -135,11 +263,15 @@ export function createDeterministicRunState({
 } = {}) {
   const safeRounds = safeInteger(rounds);
   const safeMaxRounds = safeInteger(maxRounds);
-  return {
-    schemaVersion: 1,
+  const tools = normalizeCountMap(toolStats);
+  const files = normalizeFiles(filesWritten);
+  const normalizedTodo = normalizeTodo(todo);
+  const state = {
+    schemaVersion: RUN_STATE_SCHEMA_VERSION,
     runId: safeText(runId, 120),
     stateVersion: safeInteger(stateVersion),
     asOfRound: safeRounds,
+    stateStatus: "available",
     deterministic: {
       budget: {
         rounds: safeRounds,
@@ -147,9 +279,9 @@ export function createDeterministicRunState({
         remainingRounds: Math.max(0, safeMaxRounds - safeRounds),
         lowBudgetPrompted: lowBudgetPrompted === true,
       },
-      tools: normalizeCountMap(toolStats),
-      filesWritten: normalizeFiles(filesWritten),
-      ...(normalizeTodo(todo) === undefined ? {} : { todo: normalizeTodo(todo) }),
+      tools: tools.items,
+      filesWritten: files.items,
+      ...(normalizedTodo === undefined ? {} : { todo: normalizedTodo }),
       fold: {
         foldedRounds: safeInteger(foldedRounds),
         navigationRecords: safeInteger(navigationRecords),
@@ -163,12 +295,22 @@ export function createDeterministicRunState({
         archive: safeInteger(archiveFailureCount),
       },
     },
+    bounds: {
+      maxSerializedBytes: RUN_STATE_MAX_SERIALIZED_BYTES,
+      truncated: tools.omitted > 0
+        || files.omitted > 0
+        || normalizedTodo?.truncated === true,
+      ...(tools.omitted > 0 ? { omittedTools: tools.omitted } : {}),
+      ...(files.omitted > 0 ? { omittedFiles: files.omitted } : {}),
+      ...(normalizedTodo?.omitted > 0 ? { omittedTodoItems: normalizedTodo.omitted } : {}),
+    },
   };
+  return boundRunState(state);
 }
 
 export function withSemanticRunState(state, semantic) {
   const normalized = normalizeSemantic(semantic, state?.stateVersion ?? 0);
-  return { ...state, semantic: normalized };
+  return boundRunState({ ...state, semantic: normalized });
 }
 
 export function renderRunState(state) {

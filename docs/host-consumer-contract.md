@@ -37,7 +37,12 @@ const page = await store.recall({
 ```
 
 `cursor` 是不透明游标，不得解析、拼接或跨 `runId`、范围、参数和 source version
-复用。`truncated` 必须使用返回的 `nextCursor` 续取；不能把一次有界切片当作完整档案。
+复用；它还绑定 `limit`、`maxBytes`、`pattern` 和 `artifactRef`，任一变化都必须
+重新寻址。`artifactRef` 只返回精确目标，目标缺失为 `unrecoverable`；`limit: 0`
+或 `maxBytes: 0` 会被拒绝，不产生不可推进游标。`truncated` 必须使用返回的
+`nextCursor` 续取；不能把一次有界切片当作完整档案。文件 store 对超过源记录硬顶的
+单条 JSONL 记录返回 `truncated` + `error.code: "record_too_large"` 和可推进游标，
+明确该记录被跳过。
 `unrecoverable` 表示目标轮次或工件缺失、损坏或无法证明原值，不能降级为空字符串成功；
 `stale` 表示来源版本/游标已失效，必须重新寻址。bounded recall 是原文导航，不是语义搜索、
 完成证明或 provenance 验证。
@@ -68,5 +73,8 @@ round、artifact、digest、locator 和状态；每次执行仍独立归档。�
 引擎可在折叠点注入有界的确定性 run state，并在 TranscriptStore 中以当前版本 upsert。
 它只包含引擎已知事实：预算、工具足迹、写文件路径、注入的 todo 状态、折叠/导航计数、
 终止与错误计数。`todoStateProvider` 和 `semanticStateProvider` 均由宿主注入；后者返回
-有界文本与版本，版本不匹配会标为 `stale`。引擎不自行调用模型，语义文本也不能覆盖
-确定性事实。
+有界文本与版本，版本不匹配会标为 `stale`。持久对象有 64 KiB 总序列化硬顶，
+工具名/文件/todo 条目和字段长度也有上限；裁剪会在 `bounds.truncated` 及省略计数中
+显式标记。未知、缺失或损坏 schema 不会静默恢复默认值，resume 会返回
+`runState.stateAvailability.status = "state_unavailable"`（文件 JSON 损坏也如此）。
+引擎不自行调用模型，语义文本也不能覆盖确定性事实。
