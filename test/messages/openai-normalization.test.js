@@ -7,7 +7,7 @@ import {
   parseOpenAIToolArguments,
 } from "../../src/index.js";
 
-test("normalizes OpenAI usage aliases and preserves explicit values", () => {
+test("normalizes OpenAI usage aliases and ignores unknown fields", () => {
   assert.deepEqual(
     normalizeOpenAIUsage({
       prompt_tokens: 12,
@@ -21,20 +21,24 @@ test("normalizes OpenAI usage aliases and preserves explicit values", () => {
       output_tokens: 9999999999,
       prompt_tokens: 4,
     }),
-    { input_tokens: 0, output_tokens: 9999999999 },
+    { input_tokens: 4 },
   );
   assert.deepEqual(
     normalizeOpenAIUsage({ input_tokens: null }),
-    { input_tokens: null },
+    {},
   );
 });
 
-test("normalizes usage boundaries and wrong types to undefined", () => {
+test("preserves legacy usage presence and field filtering", () => {
   assert.equal(normalizeOpenAIUsage(undefined), undefined);
   assert.equal(normalizeOpenAIUsage(null), undefined);
-  assert.equal(normalizeOpenAIUsage({}), undefined);
-  assert.equal(normalizeOpenAIUsage([]), undefined);
-  assert.equal(normalizeOpenAIUsage("prompt_tokens"), undefined);
+  assert.deepEqual(normalizeOpenAIUsage({}), {});
+  assert.deepEqual(normalizeOpenAIUsage([]), {});
+  assert.deepEqual(normalizeOpenAIUsage("prompt_tokens"), {});
+  assert.deepEqual(
+    normalizeOpenAIUsage({ input_tokens: 3, output_tokens: 4 }),
+    {},
+  );
 });
 
 test("maps OpenAI stop reasons with fallback and passthrough behavior", () => {
@@ -135,4 +139,36 @@ test("accumulator handles empty, malformed, missing-index, and long deltas", () 
   assert.deepEqual(fragments.map(({ index }) => index), [0, 0, 1]);
   assert.equal(accumulator.getToolUseBlocks()[0].input.value.length, 10000);
   assert.deepEqual(accumulator.getToolUseBlocks()[1].input, {});
+});
+
+test("preserves legacy coercion for object arguments and numeric names", () => {
+  const accumulator = createOpenAIStreamAccumulator();
+  assert.deepEqual(
+    accumulator.addToolCallDelta({
+      index: 0,
+      id: "call_object",
+      function: { name: 42, arguments: { a: 1 } },
+    }),
+    {
+      index: 0,
+      id: "call_object",
+      name: "42",
+      argumentsDelta: "[object Object]",
+    },
+  );
+  assert.deepEqual(accumulator.getToolCalls(), [{
+    index: 0,
+    id: "call_object",
+    name: 42,
+    arguments: "[object Object]",
+  }]);
+  assert.deepEqual(accumulator.getToolUseBlocks(), [{
+    type: "tool_use",
+    id: "call_object",
+    name: 42,
+    input: {
+      _truncatedArguments: "[object Object]",
+      _raw: "[object Object]",
+    },
+  }]);
 });

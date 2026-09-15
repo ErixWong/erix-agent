@@ -15,18 +15,16 @@ function hasOwn(value, key) {
  * @returns {{input_tokens?:number, output_tokens?:number}|undefined}
  */
 export function normalizeOpenAIUsage(usage) {
-  if (!isRecord(usage)) return undefined;
+  if (usage == null) return undefined;
 
   const normalized = {};
-  const inputTokens = usage.input_tokens !== undefined
-    ? usage.input_tokens
-    : usage.prompt_tokens;
-  const outputTokens = usage.output_tokens !== undefined
-    ? usage.output_tokens
-    : usage.completion_tokens;
-  if (inputTokens !== undefined) normalized.input_tokens = inputTokens;
-  if (outputTokens !== undefined) normalized.output_tokens = outputTokens;
-  return Object.keys(normalized).length === 0 ? undefined : normalized;
+  if (usage.prompt_tokens !== undefined) {
+    normalized.input_tokens = usage.prompt_tokens;
+  }
+  if (usage.completion_tokens !== undefined) {
+    normalized.output_tokens = usage.completion_tokens;
+  }
+  return normalized;
 }
 
 /**
@@ -66,9 +64,7 @@ export function parseOpenAIToolArguments(rawArguments) {
 }
 
 function argumentFragment(value) {
-  return value !== null && typeof value === "object"
-    ? JSON.stringify(value)
-    : String(value);
+  return String(value);
 }
 
 function toolCallParts(value) {
@@ -135,7 +131,7 @@ export function createOpenAIStreamAccumulator() {
     slots[index] = slot;
 
     if (parts.id !== undefined) slot.id = parts.id;
-    if (parts.name !== undefined) slot.name = String(parts.name);
+    if (parts.name !== undefined) slot.name = parts.name;
     if (parts.hasArguments) {
       slot.arguments = `${slot.arguments ?? ""}${argumentFragment(parts.argumentsValue)}`;
     }
