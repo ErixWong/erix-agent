@@ -402,12 +402,12 @@ resolveApiKey(config = {})
  * @property {(runId:string, record:object) => Promise<void>} appendRound
  * @property {(runId:string) => Promise<object[]>} load
  * @property {(runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string|object>} recall
- * @property {(runId:string, state:string) => Promise<void>} [markRunState]
- * @property {(runId:string, state:object) => Promise<void>} [saveRunState]
- * @property {(runId:string) => Promise<object|undefined>} [loadRunState]
- * @property {(runId:string, checkpoint:object) => Promise<void>} [saveCheckpoint]
- * @property {(runId:string, checkpoint:object) => Promise<void>} [appendCheckpoint]
- * @property {(runId:string) => Promise<object|undefined>} [loadLatestCheckpoint]
+ * @property {(runId:string, state:string) => Promise<void>} markRunState
+ * @property {(runId:string, state:object) => Promise<void>} saveRunState
+ * @property {(runId:string) => Promise<object|undefined>} loadRunState
+ * @property {(runId:string, checkpoint:object) => Promise<void>} saveCheckpoint
+ * @property {(runId:string, checkpoint:object) => Promise<void>} appendCheckpoint
+ * @property {(runId:string) => Promise<object|undefined>} loadLatestCheckpoint
  */
 ```
 
@@ -417,7 +417,7 @@ resolveApiKey(config = {})
 
 该存储器设计为每个 `runId` 和每个进程一个写入方。它会修复缺少末尾换行符的完整 JSONL 记录，并隔离不完整的尾部片段。跨进程锁定不属于存储器契约。
 
-当存储器同时提供 writer 和 `loadLatestCheckpoint` 时，工具执行前后都会使用 checkpoint 持久化。写入失败被视为 checkpoint 失败，包括工具已经执行但其结果无法持久化的情况。恢复会按原始顺序重放待处理的工具调用；宿主仍必须使有副作用的 `executeTool` 实现具备幂等性。
+`runToolLoop` 在提供 store 时默认使用 `persistence: "required"`，并在 provider 调用前校验全部九个方法；`persistence: "none"` 是显式的完全 no-op 模式。required 写入复用 loop retry 策略，重试耗尽后通过 `diagnostics.error` 发出 `persistence_error`，并以 `persistence_failed` 终止。checkpoint 在工具前后都执行：前置失败报告 `sideEffect: "not_started"` 且阻止工具执行；后置失败报告 `sideEffect: "executed_uncommitted"`，同时保留 `checkpoint_failed` 错误类。恢复会按原始顺序重放待处理的工具调用；宿主仍必须使有副作用的 `executeTool` 实现具备幂等性。
 
 安全文件名命名空间会让匹配 `[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*` 的简单 ID 保持可读，但 `"."`、`".."` 和保留的 `run-h-` 前缀除外。其他 ID 会变成 `run-h-` 加其 SHA-256 摘要的前 24 个十六进制字符。
 

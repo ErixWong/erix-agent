@@ -58,10 +58,18 @@ export function createCheckpointExecutor(ctx) {
     });
     if (!checkpointPersisted && ctx.hasCheckpointStore) {
       ctx.checkpointFailureCount += 1;
-      throw new KitError(
+      const failure = new KitError(
         "checkpoint_failed",
         `Checkpoint persistence failed before tool execution (runId=${String(ctx.runId)}, round=${round})`,
       );
+      if (ctx.lastPersistenceFailure) {
+        failure.operation = ctx.lastPersistenceFailure.operation;
+        failure.phase = "checkpoint_before_tool";
+        failure.sideEffect = "not_started";
+        failure.persistence = ctx.lastPersistenceFailure.persistence;
+        failure.persistenceError = ctx.lastPersistenceFailure.persistenceError;
+      }
+      throw failure;
     }
     const startedAt = Date.now();
     let execution;
@@ -146,10 +154,18 @@ export function createCheckpointExecutor(ctx) {
     });
     if (!postCheckpointPersisted && ctx.hasCheckpointStore) {
       ctx.checkpointFailureCount += 1;
-      throw new KitError(
+      const failure = new KitError(
         "checkpoint_failed",
         `Checkpoint persistence failed after tool execution: tool already executed but result was not persisted (toolUseId=${String(block.id)}, runId=${String(ctx.runId)}, round=${round})`,
       );
+      if (ctx.lastPersistenceFailure) {
+        failure.operation = ctx.lastPersistenceFailure.operation;
+        failure.phase = "checkpoint_after_tool";
+        failure.sideEffect = "executed_uncommitted";
+        failure.persistence = ctx.lastPersistenceFailure.persistence;
+        failure.persistenceError = ctx.lastPersistenceFailure.persistenceError;
+      }
+      throw failure;
     }
     return toolResult;
   };

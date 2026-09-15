@@ -89,6 +89,54 @@ export function transcriptStoreContract(label, createStore) {
     assert.equal(await store.recall("missing-run", undefined, undefined, "README"), "");
   });
 
+  test(`${label}: checkpoint 三件套往返保真与追加语义`, async () => {
+    const store = await createStore();
+    const first = {
+      round: 1,
+      status: "pending",
+      pendingToolUse: { id: "tool-1", name: "inspect", input: { path: "." } },
+      messages: [{ role: "assistant", content: "before" }],
+    };
+    const latest = {
+      round: 2,
+      status: "executed",
+      pendingToolUse: { id: "tool-2", name: "write", input: { path: "out" } },
+      toolResults: [{ toolUseId: "tool-2", toolResult: { content: "ok" } }],
+    };
+
+    await store.saveCheckpoint("checkpoint-run", first);
+    await store.appendCheckpoint("checkpoint-run", latest);
+
+    assert.deepEqual(await store.loadLatestCheckpoint("checkpoint-run"), latest);
+  });
+
+  test(`${label}: checkpoint 未知 runId 返回 undefined`, async () => {
+    const store = await createStore();
+    assert.equal(await store.loadLatestCheckpoint("missing-checkpoint-run"), undefined);
+  });
+
+  test(`${label}: run-state 三件套往返保真与 mark 合并语义`, async () => {
+    const store = await createStore();
+    await store.saveRunState("state-run", {
+      stateVersion: 3,
+      deterministic: { rounds: 2 },
+      semantic: { text: "summary", version: 1 },
+    });
+    await store.markRunState("state-run", "succeeded");
+
+    const state = await store.loadRunState("state-run");
+    assert.equal(state.runId, "state-run");
+    assert.equal(state.state, "succeeded");
+    assert.equal(state.stateVersion, 3);
+    assert.deepEqual(state.deterministic, { rounds: 2 });
+    assert.deepEqual(state.semantic, { text: "summary", version: 1 });
+  });
+
+  test(`${label}: run-state 未知 runId 返回 undefined`, async () => {
+    const store = await createStore();
+    assert.equal(await store.loadRunState("missing-state-run"), undefined);
+  });
+
   test(`${label}: bounded recall 在源头限制并支持无重复续取`, async () => {
     const store = await createStore();
     for (let round = 1; round <= 24; round += 1) {

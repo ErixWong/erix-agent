@@ -186,6 +186,13 @@ test("parseChatArgs accepts session and transcript directory overrides", () => {
   );
 });
 
+test("parseChatArgs accepts the persistence error log override", () => {
+  assert.equal(
+    parseChatArgs(["hello", "--error-log", "/tmp/erix-error.log"]).errorLog,
+    "/tmp/erix-error.log",
+  );
+});
+
 test("parseChatArgs accepts the reflection switch", () => {
   assert.equal(parseChatArgs(["hello", "--reflection", "on"]).reflection, true);
   assert.equal(parseChatArgs(["hello", "--reflection", "off"]).reflection, false);

@@ -39,7 +39,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
@@ -56,6 +56,7 @@ const HELP_TEXT = `用法：
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
   --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL（默认：<归档目录>/judge.log）
+  --error-log <path>   将持久化错误事件追加写入 JSONL（默认仅 stderr；也可用 ERIX_ERROR_LOG）
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -232,6 +233,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       || argument === "--timeout"
       || argument === "--idle-timeout"
       || argument === "--judge-log"
+      || argument === "--error-log"
     ) {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
@@ -245,7 +247,8 @@ export function parseChatArgs(args, cwd = process.cwd()) {
           || argument === "--session"
           || argument === "--dir"
           || argument === "--reflection"
-          || argument === "--judge-log")
+          || argument === "--judge-log"
+          || argument === "--error-log")
         && rawValue.startsWith("--")
       )) {
         usageError(`${argument} 缺少数值`);
@@ -275,6 +278,9 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       } else if (argument === "--judge-log") {
         if (rawValue.trim() === "") usageError("--judge-log 不能为空");
         options.judgeLog = rawValue;
+      } else if (argument === "--error-log") {
+        if (rawValue.trim() === "") usageError("--error-log 不能为空");
+        options.errorLog = rawValue;
       } else {
         options.idleTimeout = parseIntegerOption(argument, rawValue, 0);
       }
@@ -488,6 +494,7 @@ async function runChatWithNotes({
   sessionExplicit,
   dir = join(homedir(), ".erix", "transcripts"),
   judgeLog,
+  errorLog,
   noNotes = false,
   provider: providerOverride,
   config: configOverride,
@@ -582,6 +589,7 @@ async function runChatWithNotes({
   );
   // judge 决策日志默认跟随 run 归档（与工具捕获同目录）；--judge-log / ERIX_JUDGE_LOG 可覆盖
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG ?? path.join(archiveDir, "judge.log");
+  const persistenceErrorLog = errorLog ?? process.env.ERIX_ERROR_LOG;
   let judgeLogWriteFailed = false;
   // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 安全摘要
   const SENSITIVE_KEY = /token|key|secret|password|passwd|authorization|auth|api[_-]?key|bearer|cookie|credential|session|jwt|private/i;
@@ -675,6 +683,24 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     initialUserMessage: prompt,
     task: prompt,
     store,
+    diagnostics: {
+      error: (event) => {
+        console.error(
+          `Persistence error: ${event.operation} during ${event.phase} (runId=${String(event.runId)})`,
+        );
+        if (persistenceErrorLog) {
+          try {
+            appendFileSync(
+              persistenceErrorLog,
+              `${JSON.stringify(event)}\n`,
+              "utf8",
+            );
+          } catch (error) {
+            console.error(`Persistence error log write failed: ${error?.message ?? String(error)}`);
+          }
+        }
+      },
+    },
     runId,
     runState,
     resume,

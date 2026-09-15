@@ -66,6 +66,73 @@ import { restoreResume } from "./resume-manager.js";
 
 export { parseReflectionDecision };
 
+const TRANSCRIPT_STORE_METHODS = [
+  "appendRound",
+  "load",
+  "recall",
+  "saveCheckpoint",
+  "appendCheckpoint",
+  "loadLatestCheckpoint",
+  "saveRunState",
+  "loadRunState",
+  "markRunState",
+];
+
+function persistenceInfoFor(error) {
+  if (!error || typeof error !== "object") return undefined;
+  if (error.persistence && typeof error.persistence === "object") {
+    return error.persistence;
+  }
+  if (
+    typeof error.operation === "string"
+    && typeof error.phase === "string"
+    && typeof error.sideEffect === "string"
+  ) {
+    return {
+      operation: error.operation,
+      phase: error.phase,
+      sideEffect: error.sideEffect,
+    };
+  }
+  return undefined;
+}
+
+function persistenceErrorEvent({ operation, phase, runId, sideEffect, error }) {
+  return {
+    type: "persistence_error",
+    phase,
+    operation,
+    runId,
+    fatal: true,
+    sideEffect,
+    error: {
+      name: String(error?.name ?? "Error"),
+      message: String(error?.message ?? error),
+      stack: String(error?.stack ?? ""),
+    },
+    ts: new Date().toISOString(),
+  };
+}
+
+function makePersistenceFailure({ operation, phase, sideEffect, runId, error, event }) {
+  const failure = new KitError(
+    "persistence_failed",
+    `Persistence operation ${operation} failed during ${phase} (runId=${String(runId)}): ${String(error?.message ?? error)}`,
+    { retryable: false, cause: error },
+  );
+  failure.operation = operation;
+  failure.phase = phase;
+  failure.sideEffect = sideEffect;
+  failure.persistence = {
+    operation,
+    phase,
+    sideEffect,
+    event,
+  };
+  failure.persistenceError = event;
+  return failure;
+}
+
 /**
  * @typedef {object} LoopEvent
  * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"round_end"|"final_guard"} type
@@ -145,6 +212,8 @@ export { parseReflectionDecision };
  *   session?:any, requestId?:string, toolContext?:object,
  *   store?: {appendRound?: Function, saveCheckpoint?:Function, appendCheckpoint?:Function,
  *     markRunState?:Function, saveRunState?:Function, loadRunState?:Function, loadLatestCheckpoint?:Function},
+ *   persistence?:"none"|"required", // Defaults to required with a store and none without one.
+ *   diagnostics?: {error:(event:object)=>void|Promise<void>},
  *   runId?: string,
  *   runState?:{rerunDetected?:boolean},
  *   resume?: boolean,
@@ -211,6 +280,7 @@ export async function runToolLoop({
   requestId,
   toolContext,
   store,
+  persistence,
   runId,
   runState,
   resume = false,
@@ -218,6 +288,7 @@ export async function runToolLoop({
   onJudge,
   onToolResult,
   onPersistenceError,
+  diagnostics,
   onObserverError,
   signal,
   stream = false,
@@ -231,16 +302,51 @@ export async function runToolLoop({
     throw new TypeError("maxRounds must be a finite positive integer");
   }
 
-  const reportPersistenceError = (error) => {
+  const persistenceMode = persistence ?? (store === undefined ? "none" : "required");
+  if (persistenceMode !== "none" && persistenceMode !== "required") {
+    throw new TypeError('persistence must be "none" or "required"');
+  }
+  const persistenceRequired = persistenceMode === "required";
+  if (persistenceRequired) {
+    const missingMethods = TRANSCRIPT_STORE_METHODS.filter((method) => (
+      typeof store?.[method] !== "function"
+    ));
+    if (missingMethods.length > 0) {
+      throw new TypeError(
+        `required persistence store is missing methods: ${missingMethods.join(", ")}`,
+      );
+    }
+  }
+
+  const retryOptions = retry && typeof retry === "object" ? retry : null;
+  const retryAttempts = retryOptions === null
+    ? 0
+    : Number.isInteger(retryOptions.attempts)
+      ? Math.max(0, retryOptions.attempts)
+      : 2;
+  const backoffBaseMs = Number.isFinite(retryOptions?.backoffBaseMs)
+    ? Math.max(0, retryOptions.backoffBaseMs)
+    : 1500;
+  const backoffMaxMs = Number.isFinite(retryOptions?.backoffMaxMs)
+    ? Math.max(0, retryOptions.backoffMaxMs)
+    : 10000;
+  const sleepImpl = retryOptions?.sleepImpl ?? defaultSleep;
+
+  const reportPersistenceError = async (error, event) => {
     if (typeof onPersistenceError === "function") {
       try {
-        onPersistenceError(error);
-        return;
-      } catch (reportError) {
-        console.error("Persistence error reporter failed:", reportError);
+        await onPersistenceError(error);
+      } catch {
+        // A legacy observer must not replace the persistence failure.
       }
     }
-    console.error("Transcript persistence error:", error);
+    if (typeof diagnostics?.error === "function") {
+      try {
+        await diagnostics.error(event);
+      } catch {
+        // Diagnostics delivery is best effort; the structured failure remains authoritative.
+      }
+    }
   };
   const reportObserverError = (error) => {
     if (typeof onObserverError === "function") {
@@ -254,29 +360,92 @@ export async function runToolLoop({
     console.error("Observer callback error:", error);
   };
   const persist = async (method, ...args) => {
-    if (typeof store?.[method] !== "function") return false;
-    try {
-      await store[method](...args);
-      return true;
-    } catch (error) {
-      reportPersistenceError(error);
-      return false;
+    if (!persistenceRequired) return false;
+    const phase = method === "appendRound"
+      ? "transcript"
+      : method === "saveRunState" || method === "markRunState"
+        ? "run_state"
+        : args.at(-1)?.status === "executed"
+          ? "checkpoint_after_tool"
+          : "checkpoint_before_tool";
+    const sideEffect = phase === "checkpoint_after_tool"
+      ? "executed_uncommitted"
+      : "not_started";
+    let lastError;
+    for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
+      throwIfAborted(signal);
+      try {
+        await store[method](...args);
+        return true;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= retryAttempts) break;
+        const delay = Math.min(
+          backoffMaxMs,
+          backoffBaseMs * (2 ** attempt),
+        );
+        await sleepImpl(delay, signal);
+        throwIfAborted(signal);
+      }
     }
+    const event = persistenceErrorEvent({
+      operation: method,
+      phase,
+      runId,
+      sideEffect,
+      error: lastError,
+    });
+    await reportPersistenceError(lastError, event);
+    throw makePersistenceFailure({
+      operation: method,
+      phase,
+      sideEffect,
+      runId,
+      error: lastError,
+      event,
+    });
   };
   const markRunState = async (state) => {
     await persist("markRunState", runId, state);
   };
   const fail = async (error) => {
-    const reason = signal?.aborted ? "aborted" : "failed";
-    const termination = makeTermination(reason, terminationDetailForError(error));
-    const annotated = annotateTermination(error, termination);
-    currentTerminationReason = reason;
-    if (currentRunState?.deterministic) {
-      currentRunState.deterministic.termination = { reason };
+    let finalError = error;
+    const originalPersistence = persistenceInfoFor(error);
+    const initialReason = signal?.aborted ? "aborted" : "failed";
+    currentTerminationReason = initialReason;
+    if (!originalPersistence && currentRunState?.deterministic) {
+      currentRunState.deterministic.termination = { reason: initialReason };
       currentRunState.rendered = renderRunState(currentRunState);
-      await persist("saveRunState", runId, currentRunState);
+      try {
+        await persist("saveRunState", runId, currentRunState);
+      } catch (persistenceError) {
+        finalError = persistenceError;
+      }
     }
-    await markRunState(reason);
+    const finalPersistence = persistenceInfoFor(finalError);
+    if (finalPersistence?.operation !== "markRunState") {
+      try {
+        await markRunState(signal?.aborted ? "aborted" : "failed");
+      } catch (persistenceError) {
+        if (!persistenceInfoFor(finalError)) finalError = persistenceError;
+      }
+    }
+    const persistenceFailure = persistenceInfoFor(finalError);
+    const reason = signal?.aborted
+      ? "aborted"
+      : persistenceFailure === undefined
+        ? "failed"
+        : "persistence_failed";
+    currentTerminationReason = reason;
+    const termination = makeTermination(reason, terminationDetailForError(finalError));
+    if (persistenceFailure !== undefined) {
+      Object.assign(termination, {
+        operation: persistenceFailure.operation,
+        phase: persistenceFailure.phase,
+        sideEffect: persistenceFailure.sideEffect,
+      });
+    }
+    const annotated = annotateTermination(finalError, termination);
     throw annotated;
   };
   const metadata = modelMetadataFor({ modelConfig, modelMetadata, model, provider, context });
@@ -501,9 +670,12 @@ export async function runToolLoop({
   let persistedTranscriptLength = 0;
   const resumeExecutedToolIds = new Set();
   const resumeCheckpointResults = new Map();
-  await restoreResume({
+  let lastPersistenceFailure;
+  try {
+    await restoreResume({
     resume,
     store,
+    persistenceRequired,
     runId,
     get currentRunState() {
       return currentRunState;
@@ -662,7 +834,10 @@ export async function runToolLoop({
     set judgeInterceptCount(value) {
       judgeInterceptCount = value;
     },
-  });
+    });
+  } catch (error) {
+    await fail(error);
+  }
   const taskBrief = resolveTaskBrief({ task, context, messages: taskBriefSource });
   const recentSignatures = [];
   const envStallMode = process.env.ERIX_STALL_MODE;
@@ -681,19 +856,6 @@ export async function runToolLoop({
   const usage = { input_tokens: 0, output_tokens: 0 };
   let latestApiInputTokens;
   let latestApiEstimatedTokens;
-  const retryOptions = retry && typeof retry === "object" ? retry : null;
-  const retryAttempts = retryOptions === null
-    ? 0
-    : Number.isInteger(retryOptions.attempts)
-      ? Math.max(0, retryOptions.attempts)
-      : 2;
-  const backoffBaseMs = Number.isFinite(retryOptions?.backoffBaseMs)
-    ? Math.max(0, retryOptions.backoffBaseMs)
-    : 1500;
-  const backoffMaxMs = Number.isFinite(retryOptions?.backoffMaxMs)
-    ? Math.max(0, retryOptions.backoffMaxMs)
-    : 10000;
-  const sleepImpl = retryOptions?.sleepImpl ?? defaultSleep;
   const completionEnabled = completion !== false;
   const completionSignals = Array.isArray(completion?.signals) ? completion.signals : [];
   const maxNoToolRounds = Number.isInteger(completion?.maxNoToolRounds)
@@ -850,10 +1012,8 @@ export async function runToolLoop({
 
   const executedToolIds = new Set(resumeExecutedToolIds);
   const checkpointResults = new Map(resumeCheckpointResults);
-  // checkpoint store 必须成对（writer + loader）——save-only 无法 resume，不启用 fail-closed
-  const hasCheckpointStore = (typeof store?.saveCheckpoint === "function"
-    || typeof store?.appendCheckpoint === "function")
-    && typeof store?.loadLatestCheckpoint === "function";
+  // required mode validates the complete checkpoint writer/loader contract above.
+  const hasCheckpointStore = persistenceRequired;
   const persistCheckpoint = async ({
     round,
     pendingToolUse,
@@ -862,27 +1022,36 @@ export async function runToolLoop({
     status = "pending",
     messagesOverride,
   }) => {
+    lastPersistenceFailure = undefined;
     const method = typeof store?.saveCheckpoint === "function"
       ? "saveCheckpoint"
       : typeof store?.appendCheckpoint === "function"
         ? "appendCheckpoint"
         : undefined;
     if (method === undefined) return false;
-    return persist(method, runId, {
-      round,
-      status,
-      pendingToolUse: cloneState(pendingToolUse),
-      toolUse: cloneState(pendingToolUse),
-      pendingToolUses: cloneState(pendingToolUses),
-      messages: cloneState(messagesOverride ?? messages),
-      persistedTranscriptLength,
-      executedToolIds: [...executedToolIds],
-      toolResults: toolResults.map((toolResult) => ({
-        toolUseId: toolResult.tool_use_id,
-        toolResult: cloneState(toolResult),
-      })),
-      ts: new Date().toISOString(),
-    });
+    try {
+      return await persist(method, runId, {
+        round,
+        status,
+        pendingToolUse: cloneState(pendingToolUse),
+        toolUse: cloneState(pendingToolUse),
+        pendingToolUses: cloneState(pendingToolUses),
+        messages: cloneState(messagesOverride ?? messages),
+        persistedTranscriptLength,
+        executedToolIds: [...executedToolIds],
+        toolResults: toolResults.map((toolResult) => ({
+          toolUseId: toolResult.tool_use_id,
+          toolResult: cloneState(toolResult),
+        })),
+        ts: new Date().toISOString(),
+      });
+    } catch (error) {
+      if (persistenceInfoFor(error) !== undefined) {
+        lastPersistenceFailure = error;
+        return false;
+      }
+      throw error;
+    }
   };
 
   const refreshRunState = async ({
@@ -976,6 +1145,7 @@ export async function runToolLoop({
     compactionStats,
     refreshRunState,
     markRunState,
+    fail,
     get messages() {
       return messages;
     },
@@ -1200,6 +1370,12 @@ export async function runToolLoop({
     },
     set checkpointFailureCount(value) {
       checkpointFailureCount = value;
+    },
+    get lastPersistenceFailure() {
+      return lastPersistenceFailure;
+    },
+    set lastPersistenceFailure(value) {
+      lastPersistenceFailure = value;
     },
     get judgeInterceptCount() {
       return judgeInterceptCount;

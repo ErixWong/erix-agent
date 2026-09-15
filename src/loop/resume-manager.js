@@ -5,6 +5,8 @@ import { buildTimeline } from "../reflection/judge.js";
 import { validateRunState } from "../run-state.js";
 
 export async function restoreResume(ctx) {
+  if (!ctx.persistenceRequired) return;
+
   const restoreRunState = (restored) => {
     const validation = validateRunState(restored);
     if (!validation.ok) {

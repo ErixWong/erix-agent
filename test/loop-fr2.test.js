@@ -284,11 +284,15 @@ test("compacts context before the second round and records its payload and stats
     executeTool: async () => "worked",
     completion: false,
     context: { strategy, budgetTokens: 99, keepRounds: 4 },
-    store: {
-      async appendRound(_runId, record) {
+    store: (() => {
+      const store = createMemoryTranscriptStore();
+      const appendRound = store.appendRound.bind(store);
+      store.appendRound = async (runId, record) => {
         records.push(structuredClone(record));
-      },
-    },
+        return appendRound(runId, record);
+      };
+      return store;
+    })(),
     runId: "fr2",
   });
 
