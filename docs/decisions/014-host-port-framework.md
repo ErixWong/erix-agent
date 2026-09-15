@@ -92,7 +92,7 @@ ADR-001/002 已建立端口范式并落地部分：
 | `diagnostics.error`（#98） | ❌ 新增——headless 最低错误出口 | 随 #98 | CLI：stderr + error.log |
 | `AssemblyPort`（组合根） | ❌ 新增——createSession 收齐下列端口 | ❌ 新增 `assemblyPortContract` | CLI 文件型适配器 |
 | `ResourceStore`（归档产出物） | ❌ 新增 | ❌ | CLI：文件系统 |
-| `NotesStore` | **缓议**（见 2.7：触发条件） | — | — |
+| `NotesStore` | ❌ 新增（P3）——**引擎核心技能**（跨 run 记忆，ADR-007 落地件；用户裁定 2026-09-15 晚） | ❌ | CLI：文件系统 |
 | ~~LogPort / MessagePort / MetricsPort~~ | **明确不做**：只写不读走 `emit(event)`；messages 就是 store 的数据 | — | — |
 
 ### 2.4 各端口的关键约定
@@ -146,9 +146,11 @@ resourceStore.get(locator)     → bytesOrText
 
 ### 2.7 缓议与明确拒绝
 
-- **NotesStore 缓议**：`src/` 对 notes 零引用（实测），消费它的只有 CLI 的 notes skill 与 guard——
-  都在适配器侧。无第二宿主需求，不预设计。**触发条件**：第二个宿主要 notes 时，
-  按其真实需求定义端口形状。
+- **~~NotesStore 缓议~~（已撤销，用户裁定）**：notes 是**引擎核心技能**而非宿主领域功能——跨 run 记忆
+  与读写文件同级通用（ADR-007 记忆三层模型的落地件，npm 包已随包携带）。判据修正：
+  **回读判据之外加通用性判据**——引擎本职的通用能力（记忆/文件/shell）→ 核心技能，
+  库内置默认实现 + 端口化；宿主领域能力 → 宿主实现。形状从现有实现提取
+  （`key → {current, superseded[≤3], folded, state}`，墓碑可见、provenance），不新设计。
 - **拒绝 best_effort 持久化模式**：best_effort = “写失败继续跑”，即 #98 正在清除的
   静默降级换个名字。库失去承诺能力（内存态与持久态分叉，resume/recall 语义即坏）。
   瞬时抖动由 `required` 的有界重试吸收；真有宿主提出明确场景再按数据决定。
@@ -198,7 +200,7 @@ createSession({
 | **P0** | ToolExecutor 唯一形态（两侧删 `.length` 猜测）+ run options 拒绝陌生键 | ② | #49 |
 | **P1** | 素材归库：导出归一化原语 + 库内改用 + 删宿主 ~200 行 | ① | #49 |
 | **P2** | 契约补齐（provider / store 9 方法 / round record / executeToolContract）+ AssemblyPort + `assemblyPortContract` | ② | #49 |
-| **P3** | ResourceStore 端口化（NotesStore 缓议，见 2.7） | ② | #49 |
+| **P3** | ResourceStore + NotesStore 端口化（notes 形状从现有实现提取，见 2.7） | ② | #49 |
 
 ## 四、明确不做
 
