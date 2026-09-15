@@ -1,54 +1,58 @@
-# ADR-002：消息存取走 TranscriptStore 适配器，内置 memory + file(JSONL)
+# ADR-002: Message Storage Through the TranscriptStore Adapter, with Built-in memory + file(JSONL)
 
-- 状态：已决策（2026-08-29）
-- 背景：循环本身只需要内存数组。持久化的价值在三点：
-  ① **崩溃续跑**——app_container 现状是 task 失败从头重跑，24 轮开发烧掉全部已付 token；
-  ② **审计**——每轮 transcript 可追溯（两项目都有此诉求）；
-  ③ **recall 的数据源**——折叠的原文要有处可查（ADR-005）。
+> Chinese version: [002-transcript-store_cn.md](002-transcript-store_cn.md)
 
-## 决策
+- Status: Decided (2026-08-29)
+- Background: The loop itself only needs an in-memory array. Persistence has value in three respects:
+  ① **Crash recovery**—the current app_container behavior reruns a failed task from the beginning, burning all tokens paid for 24 development rounds;
+  ② **Auditing**—every round's transcript must be traceable (both projects need this);
+  ③ **recall data source**—the original text of folded content must remain available somewhere (ADR-005).
 
-定义 `TranscriptStore` 接口（appendRound / load / recall），内置两个实现：
+## Decision
 
-| 适配器 | 形态 | 用途 |
+Define the `TranscriptStore` interface (appendRound / load / recall), with two built-in implementations:
+
+| Adapter | Form | Purpose |
 |---|---|---|
-| `memory` | 进程内 Map | 默认；一次性任务、测试 |
-| `file` | `dir/<runId>.jsonl`，**每轮一行**追加 | 崩溃续跑 + 审计 + recall 后端 |
+| `memory` | In-process Map | Default; one-off tasks and tests |
+| `file` | `dir/<runId>.jsonl`, **one appended line per round** | Crash recovery + auditing + recall backend |
 
-JSONL 记录格式：
+JSONL record format:
 
 ```json
-{"round": 7, "folded": false, "ts": "…", "messages": [ /* 本轮新增的 canonical 消息 */ ]}
-{"round": 8, "folded": true,  "ts": "…", "messages": […], "foldedPayload": [ /* 被折叠轮次原文 */ ]}
+{"round": 7, "folded": false, "ts": "…", "messages": [ /* canonical messages added in this round */ ]}
+{"round": 8, "folded": true,  "ts": "…", "messages": […], "foldedPayload": [ /* original text from folded rounds */ ]}
 ```
 
-**关键语义：fold 只影响上下文，不影响档案。** 被折叠的轮次完整留在 store，
-`load()` 可重建完整历史；`recall(fromRound, toRound, pattern)` 对原文做范围读取/grep。
+**Key semantics: folding affects context, not the archive.** Folded rounds remain complete in the store,
+`load()` can reconstruct the complete history; `recall(fromRound, toRound, pattern)` reads/greps the
+original text within a range.
 
-**崩溃续跑**：`runToolLoop({ store, runId, resume: true })` 启动时 `load()` 恢复消息与轮次，
-从断点继续。app_container 的 reaper 任务级重试由此从"从头重跑"升级为"断点续跑"。
+**Crash recovery**: `runToolLoop({ store, runId, resume: true })` calls `load()` at startup to restore
+messages and the round number, then continues from the checkpoint. The app_container reaper's
+task-level retry thereby upgrades from "rerun from the beginning" to "resume from the checkpoint".
 
-工具调用的 checkpoint 写入分为执行前和执行后两个边界：成对提供 writer + loader
-的 store 任一边界写失败都会抛 `checkpoint_failed`；执行后失败消息明确表示工具已经执行、
-但结果尚未持久化。此时 loop 不能承诺 exactly-once，宿主的 `executeTool` 必须按 tool id
-保持幂等。若一轮包含多个 tool_use，resume 会按原始顺序执行全部尚未在 checkpoint 中确认的工具，
-补齐同一条 tool_result 消息后才重新请求 provider。
+Checkpoint writes for tool calls have two boundaries, before and after execution: for a store that
+provides both a writer and a loader, a write failure at either boundary throws `checkpoint_failed`;
+after-execution failure explicitly says that the tool has already run but its result has not yet been
+persisted. The loop cannot promise exactly-once in this case, so the host's `executeTool` must be
+idempotent by tool id. If a round contains multiple tool_use blocks, resume executes all tools not yet
+confirmed in the checkpoint in their original order, and only requests the provider again after filling
+in the corresponding tool_result messages.
 
-DB 适配器（app_container 落 `task_runs`、touwaka 落 payload 缓存）留在项目侧实现同一接口。
+DB adapters (app_container writes to `task_runs`; touwaka uses a payload cache) remain project-side
+implementations of the same interface.
 
-## 理由
+## Rationale
 
-- JSONL 追加写天然崩溃安全（不会像整块 JSON 写一半损坏），按行流式读天然支持 recall grep。
-- 文件是零基础设施的最低公分母，与 ADR-001 同一哲学。
-- "上下文视图"与"完整档案"分离是这个库的核心心智：压缩是对**视图**的操作，档案永远完整。
+- JSONL append-only writes are naturally crash-safe (unlike a whole JSON file that can be corrupted by a partial write), and streaming line-by-line reads naturally support recall grep.
+- A file is the lowest common denominator with zero infrastructure, following the same philosophy as ADR-001.
+- Separating the "context view" from the "complete archive" is this library's core mental model: compaction operates on the **view**, while the archive is always complete.
 
-## 后果
+## Consequences
 
-- file store 目录需要调用方管理生命周期（任务结束清理/归档），库只提供 `load/recall`，不做 GC。
-- runId 唯一性由调用方保证（建议 = 任务/run 主键）。
-- **档案完整性补记（2026-08-29，v0.2 记忆基准实测发现）**：
-  ① 初始消息（initialMessages/initialUserMessage）不进每轮增量记录——runToolLoop 启动时先写
-  **round 0 种子记录**，否则初始历史永不在档案中，fold 后 recall 找不到；resume 续跑基数改取
-  max(record.round)（兼容种子记录）。
-  ② `recall` 检索语料必须**同时覆盖 record.messages 与 record.foldedPayload**（被折轮次的原文在
-  foldedPayload 里）——memory/file 两实现及 tools/recall 均已修正并加回归测试。
+- The caller must manage the file store directory lifecycle (clean up/archive it when the task ends); the library only provides `load/recall` and does not perform GC.
+- The caller guarantees runId uniqueness (recommended = the task/run primary key).
+- **Archive integrity addendum (2026-08-29, discovered through v0.2 memory benchmark testing)**:
+  ① Initial messages (initialMessages/initialUserMessage) are not included in per-round incremental records—the runToolLoop startup first writes a **round 0 seed record**; otherwise the initial history never enters the archive, and recall cannot find it after folding; the resume base is changed to `max(record.round)` (compatible with seed records).
+  ② The `recall` search corpus must cover both `record.messages` and `record.foldedPayload` at the same time (the original text from folded rounds is in foldedPayload)—both memory/file implementations and tools/recall have been corrected and regression-tested.

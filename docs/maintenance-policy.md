@@ -1,10 +1,12 @@
-# 维护策略（内部决策，不对外）
+# Maintenance Policy (Internal Decision, Not for Public Distribution)
 
-## 技术替代触发条件
+> Chinese version: [maintenance-policy_cn.md](maintenance-policy_cn.md)
 
-1. **需要接第三家非 OpenAI 兼容的原生协议（Gemini native / Bedrock / Azure）时**，迁到 AI SDK 为底座。
+## Technical Replacement Trigger Conditions
 
-## 季度检视（止损线）
+1. **When a third non-OpenAI-compatible native protocol (Gemini native / Bedrock / Azure) needs to be integrated**, migrate to AI SDK as the foundation.
 
-连续 6-12 个月消费方仍只有 `app_container` 一家、且无新增无头场景立项
-→ 收缩为 `app_container` 私有 package、停止公共 npm 维护（版本与 contract-tests 移交 app_container）。
+## Quarterly Review (Stop-Loss Threshold)
+
+If, for 6-12 consecutive months, `app_container` remains the only consumer and no new headless use case is initiated
+→ consolidate into an `app_container`-private package and stop maintaining the public npm package (transfer versioning and contract-tests to app_container).

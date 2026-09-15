@@ -1,56 +1,59 @@
-# ADR-005：工具体系三层——契约在库、执行在调用方、参考实现走子路径
+# ADR-005: Three Layers of the Tool System—Contract in the Library, Execution in the Caller, Reference Implementations via a Subpath
 
-- 状态：已决策（2026-08-29）
-- 背景：最纠结的问题。两个约束拉扯：
-  - app_container 红线："LLM 只发工具调用请求，执行由可信代码校验白名单后转发，
-    LLM 无任何直接执行面"——**库绝不能自带会执行的工具**。
-  - 但零内置意味着每个项目重写 readFile/rg/tree 和路径牢笼——而这些**逻辑本身**是通用的。
+> Chinese version: [005-tool-system_cn.md](005-tool-system_cn.md)
 
-## 决策：三层分离
+- Status: Decided (2026-08-29)
+- Background: The most difficult issue. Two constraints pull in opposite directions:
+  - app_container's red line: "The LLM only sends tool-call requests; trusted code validates the whitelist and forwards them,
+    and the LLM has no direct execution surface"—**the library must never include tools that execute things**.
+  - But having no built-ins means every project rewrites readFile/rg/tree and the path jail—and this
+    **logic itself** is generic.
 
-### 第一层：工具契约（核心包，零工具）
+## Decision: Three-layer separation
 
-- 规范 `ToolSchema`（JSON Schema 入参），**协议序列化由适配层负责**
-  （OpenAI `tools[].function` ⇄ Anthropic `tools[].input_schema`，调用方只写一份）。
-- `executeTool(name, input)` 回调是循环的唯一执行入口，实现永远在调用方。
-- `onToolResult` 钩子：结果回喂 LLM 前的后处理点（截断/脱敏/扫描），
-  项目政策（如 app_container 的 secret 复查）挂在这里，库提供挂载点不提供规则。
+### Layer One: Tool contract (core package, zero tools)
 
-### 第二层：可选工具库（`erix-agent/tools` 子路径导出，v0.2）
+- Specify `ToolSchema` (JSON Schema inputs); **protocol serialization is handled by the adapter**
+  (OpenAI `tools[].function` ⇄ Anthropic `tools[].input_schema`; callers write it only once).
+- The `executeTool(name, input)` callback is the loop's only execution entry point; the implementation always belongs to the caller.
+- `onToolResult` hook: the post-processing point before results are fed back to the LLM (truncation/redaction/scanning);
+  project policies (such as app_container's secret recheck) attach here; the library provides the mounting point, not the rules.
 
-不进主导出，显式 `import … from "erix-agent/tools"` 才可用。三件：
+### Layer Two: Optional tool library (`erix-agent/tools` subpath export, v0.2)
 
-1. **`createJail({ root, writable = [], maskedPaths = [] })`** —— 路径牢笼助手。
-   解析后必须仍在 root 内（越界抛错）、写仅限 writable 子树、maskedPaths 拒读。
-   这是两个项目都需要的纯逻辑，与"执行什么"无关，值得共享。
-2. **文件工具参考实现**（readFile/rg/tree/writeFile）——建在 jail 上，
-   适合脚本/原型/低风险场景直接用；生产场景项目可抄可换。
-3. **`recall` 工具**（用户点名内置）——建在 TranscriptStore 上：
+It is not part of the main export; it is available only through an explicit `import … from "erix-agent/tools"`. Three parts:
+
+1. **`createJail({ root, writable = [], maskedPaths = [] })`**—path-jail helper.
+   After resolution the path must still be inside root (an out-of-bounds path throws), writes are limited to writable subtrees, and maskedPaths cannot be read.
+   This is pure logic needed by both projects and is worth sharing because it is unrelated to "what to execute".
+2. **Reference filesystem tools** (readFile/rg/tree/writeFile)—built on the jail,
+   suitable for direct use in scripts/prototypes/low-risk scenarios; production scenarios may copy or replace them.
+3. **`recall` tool** (explicitly requested as built-in)—built on TranscriptStore:
 
 ```
-recall({ fromRound?, toRound?, pattern? }) → 被折叠轮次的原文摘录
+recall({ fromRound?, toRound?, pattern? }) → excerpts of original text from folded rounds
 ```
 
-摘要里统一写"早期 N 轮已折叠，可 recall(fromRound: X, toRound: Y) 取回"。
-**折叠由此从有损变近无损**——这是本库相对两个前身的核心增量，
-也是 recall 必须内置的理由：它和压缩策略是同一枚硬币的两面，分家就断了。
+Summaries uniformly say "the early N rounds have been folded; use recall(fromRound: X, toRound: Y) to retrieve them".
+**Folding thereby changes from lossy to nearly lossless**—this is the library's core increment over the two predecessors,
+and also why recall must be built in: it and the compaction strategy are two sides of the same coin; separating them breaks the link.
 
-### 第三层：永不进库
+### Layer Three: Never part of the library
 
-白名单校验策略、容器 exec、网络类工具、业务工具（文档检索/notes/embedding…）。
-这些携带项目安全模型与业务语义，共享即泄漏抽象。
+Whitelist validation policy, container exec, network tools, and business tools (document retrieval/notes/embedding…).
+These carry the project's security model and business semantics; sharing them would leak the abstraction.
 
-## 理由
+## Rationale
 
-- "契约共享、执行私有"同时满足安全红线和去重诉求：
-  touwaka 的 toolManager、app_container 的 tools.js 都只需把 schema 换成规范格式，
-  执行体一行不动。
-- 子路径导出让"用参考实现"成为显式选择而非默认行为，误用成本高。
-- recall 依赖 store 接口而非具体实现：memory store 也能 recall（进程内任务），
-  file store 天然持久。
+- "Shared contract, private execution" satisfies both the security red line and the deduplication request:
+  touwaka's toolManager and app_container's tools.js only need to convert their schema to the standard format;
+  the execution body does not change at all.
+- A subpath export makes "use the reference implementation" an explicit choice rather than the default, increasing the cost of misuse.
+- recall depends on the store interface rather than a concrete implementation: a memory store can also recall (for an in-process task),
+  while a file store is naturally persistent.
 
-## 后果
+## Consequences
 
-- 项目侧迁移工作量 = schema 格式转换 +（可选）换用 createJail。
-- 参考实现的质量边界要在文档写明："参考级，生产慎用，严肃场景请自建执行层"。
-- 未来若出现第三个消费方需要新协议（Gemini），只动第一层适配，二三层不受影响。
+- Project-side migration work = schema format conversion + (optionally) switching to `createJail`.
+- The reference implementation's quality boundary must be stated in the documentation: "reference-grade, use with caution in production; build your own execution layer for serious scenarios".
+- If a third consumer later needs a new protocol (Gemini), only the first-layer adapter changes; layers two and three are unaffected.

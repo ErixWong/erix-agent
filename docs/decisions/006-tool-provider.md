@@ -1,79 +1,81 @@
-# ADR-006：ToolProvider 分层——定义可插拔（json/db），执行器永远在代码
+# ADR-006: ToolProvider Layering—Pluggable Definitions (json/db), with Executors Always in Code
 
-- 状态：已决策（2026-08-29）
-- 背景：用户提出工具定义也走 provider——json 层从磁盘加载、db 层从数据库加载，
-  通过配置决定来源。诉求成立：app_container 的审计/开发 agent 工具面不同
-  （现在是代码里两个 frozen 数组），touwaka 的 expert 各有工具配置（本就在 DB），
-  "改工具面不改代码"是真实需求。**但有一个必须先堵住的洞**。
+> Chinese version: [006-tool-provider_cn.md](006-tool-provider_cn.md)
 
-## 关键修正：schema 是数据，执行器是代码
+- Status: Decided (2026-08-29)
+- Background: The user proposed that tool definitions should also use a provider—load the json layer from disk and the db layer from a database,
+  with configuration deciding the source. The request is valid: app_container's audit/development agents expose different tool surfaces
+  (currently two frozen arrays in code), and touwaka's experts each have their own tool configuration (already in the DB);
+  "change the tool surface without changing code" is a real need. **But one hole must be closed first.**
 
-工具 = 定义（name/description/input_schema）+ 执行体（函数）。定义可以来自任何地方，
-**执行体只能是进程内注册的函数**——否则"往 DB 插一条记录就获得新执行能力"，
-等于把 app_container 的白名单安全边界改成数据可写，红线直接破。
+## Key correction: schema is data, executor is code
 
-因此分层语义是：
+A tool = definition (name/description/input_schema) + executor (function). Definitions may come from anywhere,
+**but executors can only be functions registered in the process**—otherwise "adding one record to the DB gives you new execution capability",
+which turns app_container's whitelist security boundary into writable data and crosses the red line directly.
 
-> **执行器注册表定义"能力宇宙"（代码，code review 过）；
-> ToolProvider 只做"选择与配置"（数据）——决定暴露哪些、描述/参数覆盖。**
+Therefore the layered semantics are:
 
-DB 里没有对应执行器的工具名 → 启动即报错（fail closed），不是运行时才发现。
+> **The executor registry defines the "capability universe" (code, reviewed by code review);
+> ToolProvider only performs "selection and configuration" (data)—deciding what to expose and overriding descriptions/parameters.**
 
-## 决策
+If the DB contains a tool name without a corresponding executor, startup reports an error (fail closed), rather than discovering it only at runtime.
 
-### 接口
+## Decision
+
+### Interface
 
 ```js
 /**
  * @typedef {Object} ToolProvider
  * @property {(sel?: { set?: string }) => Promise<ToolSchema[]>} listTools
- * // set：工具集名称（如 app_container 的 "audit" / "dev"），缺省返回默认集
+ * // set: tool set name (such as app_container's "audit" / "dev"); defaults to the default set
  */
 
-// 执行器注册表（代码侧，能力宇宙）
+// Executor registry (code side, capability universe)
 createToolRegistry({
   executors: { [name]: (input, ctx) => Promise<string> },
-  schemas: ToolSchema[],            // 代码内基准定义（description 的权威版本）
+  schemas: ToolSchema[],            // baseline definitions in code (authoritative version of description)
 }) => {
-  executeTool,                      // 直接喂给 runToolLoop
-  resolveTools: (provider, sel) => Promise<ToolSchema[]>,  // 与 provider 求交+覆盖
+  executeTool,                      // feed directly to runToolLoop
+  resolveTools: (provider, sel) => Promise<ToolSchema[]>,  // intersect with provider + apply overrides
 }
 ```
 
-`resolveTools` 语义：provider 返回的每个 schema **必须**命中注册表里的执行器，
-否则抛 `tool_unknown_executor`（fail closed）；provider 可覆盖 description 与
-input_schema 的参数约束（如调小 maxLength），但不能改名换义。
+`resolveTools` semantics: every schema returned by the provider **must** match an executor in the
+registry, otherwise throw `tool_unknown_executor` (fail closed); the provider may override description
+and input_schema parameter constraints (such as reducing maxLength), but may not change the name or meaning.
 
-### 内置 ToolProvider
+### Built-in ToolProviders
 
-| 适配器 | 形态 | 用途 |
+| Adapter | Form | Purpose |
 |---|---|---|
-| `static` | 代码数组（= 两项目现状） | 默认；schema 变更走 code review |
-| `json-file` | `dir/tools.json` 或 `dir/*.json`，含工具集定义 | 磁盘可调工具面，文件可入库走评审 |
-| `composite` | 多 provider 按优先级合并 | 代码基准 + DB 覆盖层 |
+| `static` | Code array (= the current state of both projects) | Default; schema changes go through code review |
+| `json-file` | `dir/tools.json` or `dir/*.json`, containing tool-set definitions | Tool surface configurable on disk; files can enter the repository through review |
+| `composite` | Multiple providers merged by priority | Code baseline + DB overlay |
 
-DB 适配器在项目侧（touwaka 的 expert 工具配置、app_container 未来的设置页工具管理），
-实现同一接口。
+The DB adapter remains project-side (touwaka's expert tool configuration and app_container's future
+settings-page tool management), implementing the same interface.
 
-### 与 loop 的衔接
+### Integration with the loop
 
-`runToolLoop` 接受 `tools` + `executeTool` 的现状不变；新增便利入口：
-传 `registry` + `toolProvider` + `set` 时内部先 `resolveTools` 再进循环。
-循环在调用执行器**前**按 schema 校验入参（required/type/maxLength 的零依赖最小校验），
-校验失败直接回 tool_result 错误，不碰执行器（app_container 现有行为的下沉）。
+`runToolLoop` continues to accept the existing `tools` + `executeTool`; add a convenience entry:
+when `registry` + `toolProvider` + `set` are passed, first call `resolveTools` internally and then enter the loop.
+Before calling an executor, the loop validates inputs against the schema (required/type/maxLength, with a minimal zero-dependency validator);
+validation failure goes directly to tool_result as an error without touching the executor (lowering app_container's existing behavior into the library).
 
-## 理由
+## Rationale
 
-- "宇宙在代码、选择在数据"同时满足：工具面可运营化配置（不用发版调 description/开关）
-  与安全红线（能力不可经数据新增）。
-- json-file 放仓库 = 工具定义变更可评审；DB 层留给真正的运营诉求（按 expert/任务类型开关），
-  两层职责天然分开，composite 支持叠加。
-- fail closed 的求交语义让配置错误在启动时爆炸，而不是 LLM 调到一半才发现。
+- "The universe is in code, selection is in data" simultaneously enables operational configuration of the tool surface (change descriptions/toggles without a release)
+  and preserves the security red line (data cannot add capabilities).
+- Putting json-file in the repository makes tool-definition changes reviewable; the DB layer is reserved for genuine operational needs (toggle by expert/task type),
+  with the two responsibilities naturally separated and composite supporting overlays.
+- Fail-closed intersection semantics make configuration errors explode at startup rather than being discovered halfway through an LLM call.
 
-## 后果
+## Consequences
 
-- v0.2 随 tools 子路径一起落地（registry 是 executeTool 的生产者，与 ADR-005 第二层同包）。
-- 项目侧迁移：app_container 把 `PI_TOOL_SCHEMAS`/`PI_DEV_TOOL_SCHEMAS` 变成 static provider +
-  registry 注册；touwaka 的 toolManager 包一层 DB ToolProvider。
-- 文档需写明：**永远不要实现"从数据注册执行器"的 adapter**（如 DB 存 JS 代码 eval）——
-  那是 RCE 即服务。
+- v0.2 lands together with the tools subpath (the registry produces executeTool and lives in the same package as ADR-005's Layer Two).
+- Project-side migration: app_container turns `PI_TOOL_SCHEMAS`/`PI_DEV_TOOL_SCHEMAS` into a static provider + registry registration;
+  touwaka wraps its toolManager in a DB ToolProvider.
+- The documentation must state: **never implement an adapter that "registers executors from data"** (for example, storing JS code in a DB and evaling it)—
+  that is RCE as a service.

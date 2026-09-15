@@ -1,256 +1,667 @@
-# 架构与接口契约 — erix-agent
+# Architecture and Interface Contract - erix-agent
 
-> 接口以 JSDoc typedef 表达（消费双方都是纯 JS ESM，库不引 TypeScript 工具链）。
+> Chinese version: [architecture_cn.md](architecture_cn.md)
 
-## 1. 数据流总览
+## 1. Data flow overview
 
-```
-调用方                          llm-kit                              LLM API
-  │                                │                                   │
-  │  system / tools / executeTool  │                                   │
-  │  ModelConfigProvider           │                                   │
-  │  TranscriptStore (可选)         │                                   │
-  │───────── runToolLoop ─────────▶│                                   │
-  │                                │── config.resolve(slot)           │
-  │                                │── 组装 messages                   │
-  │                                │── 每轮:                           │
-  │                                │    ① compact.check(预算)          │
-  │                                │    ② 快照 → store.append          │
-  │                                │    ③ provider.chat ──────────────▶│
-  │                                │    ④ tool_use → executeTool(回调)─▶ 调用方可信代码
-  │                                │    ⑤ tool_result 回喂             │
-  │                                │    ⑥ stall/完成信号判定           │
-  │◀──────── { finalText, messages, transcript, usage, verification } ─│
+```text
+Caller                         erix-agent                         LLM API
+  |                               |                                  |
+  |  system / initial messages    |                                  |
+  |  tools / executeTool          |                                  |
+  |  provider / TranscriptStore   |                                  |
+  |-------------- runToolLoop --->|                                  |
+  |                               |-- compact before a round        |
+  |                               |-- provider.chat or chatStream -->|
+  |                               |<-- canonical response ----------|
+  |                               |-- tool_use -> executeTool ------>| Caller-owned code
+  |                               |<-- tool_result ------------------|
+  |                               |-- completion / stall / judge     |
+  |                               |-- checkpoint and round archive  |
+  |<------------- result ---------|                                  |
 ```
 
-库内零 I/O 决策：文件/网络/DB 全部由注入的 provider/store/executeTool 完成。
+The runtime owns one task lifecycle: start, execute, stop, resume, and emit
+events. Tool implementations, persistence, and model transport remain explicit
+injection points. `provider` performs model I/O, `store` performs persistence
+when supplied, and `executeTool` is the host's tool boundary; the loop does not
+discover or implement tools by itself.
 
-CLI 的 `bin/tools.js` 可在工具层将较大产出落盘到本次 transcript 的
-`outputs/<safeRunId>/` 并返回可读路径；这是库外机制，宿主可按同样模式自行采用，库本身不写文件。
+The CLI may add its own output-archive behavior around tool execution. That is
+outside the library contract and is not performed by `runToolLoop`.
 
-## 2. 规范消息模型（canonical）
+## 2. Canonical message model
 
-内部统一为 Anthropic 风格块（app_container 现有格式，OpenAI 侧由适配层双向转换）：
+The runtime uses one internal block format. The OpenAI and Anthropic adapters
+convert to and from their protocol-native representations.
 
 ```js
-// CanonicalMessage
-{ role: "system" | "user" | "assistant", content: string | Block[] }
-// Block =
-//   { type: "text", text }
-//   { type: "tool_use", id, name, input }
-//   { type: "tool_result", tool_use_id, content, is_error? }
-//   { type: "raw", protocol, payload }   // 逃生舱：协议特有特性不丢
+/**
+ * @typedef {(
+ *   {type:"text", text:string} |
+ *   {type:"image", url?:string, base64?:string, mediaType?:string, [key:string]:any} |
+ *   {type:"reasoning", text:string, [key:string]:any} |
+ *   {type:"tool_use", id:string, name:string, input:object, [key:string]:any} |
+ *   {type:"tool_result", tool_use_id:string, content:string, is_error?:boolean, [key:string]:any} |
+ *   {type:"raw", protocol:string, payload:any}
+ * )} Block
+ *
+ * @typedef {Object} CanonicalMessage
+ * @property {"system"|"user"|"assistant"} role
+ * @property {string|Block[]} content
+ *
+ * @typedef {Object} ToolSchema
+ * @property {string} name
+ * @property {string} [description]
+ * @property {object} inputSchema
+ *
+ * @typedef {Object} ChatResponse
+ * @property {Block[]} content
+ * @property {string} stopReason
+ * @property {{input_tokens?:number, output_tokens?:number}} [usage]
+ */
 ```
 
-**轮次分组规则**（压缩的不可分割单位）：
-- Anthropic 线：一轮 = `assistant`（含 tool_use 块）+ 紧随的 `user`（tool_result 块）
-- OpenAI 线：一轮 = `assistant`（含 tool_calls）+ 紧随的连续 `tool` 消息
-- 纯文本 assistant（无工具调用）独立成一轮
-- 头部 = system + **首个**真实 user 消息，永不折叠（与 FR-3.3 / 不变量 3 一致；后续真实 user 消息可参与折叠）
+`validateMessages` enforces the canonical message rules:
 
-## 3. 核心接口
+- Roles are limited to `system`, `user`, and `assistant`; system messages must
+  precede conversation messages.
+- `tool_use` blocks are legal only in `assistant` messages, and `tool_result`
+  blocks are legal only in `user` messages.
+- An assistant message containing tool calls must be followed immediately by a
+  user message containing the matching tool results. Tool-use IDs must be
+  non-empty, unique within the assistant message, and match the result IDs.
 
-### 3.1 Provider（FR-1）
+`groupIntoRounds` treats the system messages and the first real user message as
+the immutable head. A round containing tool calls is the assistant message and
+its immediately following user tool-result message; every other message is a
+single-message round. This grouping is applied to canonical messages before
+protocol-specific serialization.
+
+## 3. Core interfaces
+
+### 3.1 Providers
+
+The package exports separate provider factories. There is no
+`src/providers/index.js` and no exported generic `createProvider` factory.
 
 ```js
 /**
  * @typedef {Object} LlmProvider
- * @property {(req: ChatRequest) => Promise<ChatResponse>} chat
- * @property {(req: ChatRequest & {onDelta?: (s:string)=>void, signal?: AbortSignal}) => Promise<ChatResponse>} chatStream
+ * @property {(req: object) => Promise<ChatResponse>} chat
+ * @property {(req: object) => Promise<ChatResponse>} chatStream
  * @property {string} model
- * @property {string} protocol   // "openai" | "anthropic"
- *
- * @typedef {Object} ChatRequest
- * @property {string} system
- * @property {CanonicalMessage[]} messages
- * @property {ToolSchema[]} [tools]
- * @property {number} [maxTokens] @property {number} [temperature] @property {number} [topP]
- *
- * @typedef {Object} ChatResponse
- * @property {Block[]} content
- * @property {string} stopReason   // "end_turn" | "tool_use" | "max_tokens" | ...
- * @property {{input_tokens?:number, output_tokens?:number}} [usage]
+ * @property {"openai"|"anthropic"} protocol
  */
 
-createProvider({ protocol, endpoint, apiKey, model, fetchImpl?, timeoutMs? }): LlmProvider
-// 错误：KitError，code ∈ timeout|rate_limited|auth|network|server|unknown，retryable: boolean
+createOpenAIProvider({
+  endpoint,
+  apiKey,
+  model,
+  model_name,
+  fetchImpl = fetch,
+  transport,
+  protocol = "openai",
+  timeoutMs,
+  timeout,
+  requestTimeoutMs,
+  firstByteTimeoutMs,
+  streamIdleTimeoutMs,
+  streamTotalTimeoutMs,
+  timeouts,
+  clock,
+  maxTokens,
+  maxOutputTokens,
+  temperature,
+  topP,
+  thinking,
+  reasoning,
+  reasoning_effort,
+  enable_thinking,
+  chat_template_kwargs,
+  providerOptions,
+  frequency_penalty,
+  presence_penalty,
+  response_format,
+  model_type,
+  supports_reasoning,
+  thinking_format
+}) => LlmProvider
+
+createAnthropicProvider({
+  endpoint,
+  apiKey,
+  model,
+  model_name,
+  fetchImpl = fetch,
+  transport,
+  protocol = "anthropic",
+  timeoutMs,
+  timeout,
+  requestTimeoutMs,
+  firstByteTimeoutMs,
+  streamIdleTimeoutMs,
+  streamTotalTimeoutMs,
+  timeouts,
+  clock,
+  maxTokens,
+  maxOutputTokens,
+  temperature,
+  topP,
+  thinking,
+  reasoning,
+  reasoning_effort,
+  enable_thinking,
+  chat_template_kwargs,
+  providerOptions,
+  frequency_penalty,
+  presence_penalty,
+  response_format,
+  model_type,
+  supports_reasoning,
+  thinking_format
+}) => LlmProvider
 ```
 
-### 3.2 runToolLoop（FR-2）
+The actual factories also accept the snake-case timeout aliases and the
+provider-specific reasoning/payload fields implemented in
+`src/providers/openai.js` and `src/providers/anthropic.js`. `model_name` is an
+alias for `model`; `protocol` defaults to `"openai"` or `"anthropic"`
+respectively. `endpoint`, `apiKey`, and the selected model must be non-empty
+strings. The default request timeout is `120000` ms. Without explicit
+phase-specific settings, streaming uses a `120000` ms first-byte timeout,
+`120000` ms idle timeout, and `300000` ms total timeout. The legacy
+`timeout`/`timeoutMs` setting remains one request-wide deadline.
+
+`chatStream` emits optional `onDelta`, `onReasoningDelta`, `onToolCall`,
+`onUsage`, and `onEvent` callbacks supplied on the request. The OpenAI adapter
+uses chat/completions serialization and SSE parsing; the Anthropic adapter uses
+Messages serialization and content-block SSE parsing. Both return
+`ChatResponse` in canonical form.
+
+Provider failures are represented by `KitError`. HTTP status classification
+maps 408 to `timeout`, 429 to `rate_limited`, 401/403 to `auth`, 5xx to
+`server`, and other statuses to `unknown`. Fetch and abort failures are
+classified separately, and the error carries `retryable` plus available
+status, phase, and elapsed-time metadata.
+
+### 3.2 `runToolLoop`
+
+`runToolLoop` is the single-task lifecycle entry point. Its current option
+surface is:
 
 ```js
 runToolLoop({
   provider,
   system,
-  initialUserMessage,        // 或 initialMessages（完整初始上下文，优先）
+  wrapup = true,
+  initialUserMessage,
   initialMessages,
-  tools,                     // 规范 ToolSchema[]（适配层负责序列化成协议原生格式）
-  executeTool,               // (name, input) => Promise<string>  ← 手在调用方
-  writeToolNames = ["writeFile"], // 显式配置 judge 的写文件工具集合
-  writeToolPathKeys = ["path", "file_path"], // 从写工具入参取路径的优先级
+  tools = [],
+  writeToolNames = ["writeFile"],
+  writeToolPathKeys = ["path", "file_path"],
+  executeTool,
   maxRounds = 8,
-  maxTokens, temperature, topP,
-  context: {                 // 压缩（FR-3），缺省不压缩 = 现状行为
-    strategy,                // CompactionStrategy 实例
-    budgetTokens,
-    keepRounds = 6,          // 库默认值；app_container 现状硬滑窗为 10 轮，迁移时显式传 10 保持行为
-  },
-  retry: { attempts = 2, backoffBaseMs = 1500, backoffMaxMs = 10000 },
-  stallDetection: { window = 4 } | false,
-  completion: { signals = [], maxNoToolRounds = 3 } | false,  // 无工具轮策略
-  finalGuard,               // 可选：收尾 provenance 核验
+  maxTokens,
+  temperature,
+  topP,
+  timeoutMs,
+  deadlineMs,
+  reflection,
+  stallDetection = { window: 4 },
+  retry = false,
+  completion = { signals: [], maxNoToolRounds: 3 },
+  finalGuard,
   finalGuardMaxRetries = 2,
   finalGuardTimeoutMs = 30000,
-  store,                     // TranscriptStore（可选）：每轮快照落 store，支持崩溃续跑
-  runId,                     // store 的键
-  resume = false,            // true 时从 store 恢复上次进度（忽略 initialUserMessage/initialMessages，消息与轮次以 store 为准）
-  onRound, onDelta, signal,
-  onToolResult,              // 钩子：结果回喂前的截断/脱敏后处理（调用方政策点）
+  maxTokenContinuations = 3,
+  context,
+  todoStateProvider,
+  semanticStateProvider,
+  modelConfig,
+  modelMetadata,
+  model,
+  expert,
+  user,
+  task,
+  session,
+  requestId,
+  toolContext,
+  store,
+  runId,
+  runState,
+  resume = false,
+  onRound,
+  onJudge,
+  onToolResult,
+  onPersistenceError,
+  onObserverError,
+  signal,
+  stream = false,
+  onDelta,
+  onReasoningDelta,
+  onToolCall,
+  onUsage,
+  onEvent,
 }) => Promise<{
-  finalText, messages, transcript, rounds, truncated, usage, verification,
-  compactionStats: { compacted, foldedRounds, tokensBefore, tokensAfter, protectedDowngraded? }[],
+  finalText,
+  messages,
+  transcript,
+  rounds,
+  truncated,
+  termination,
+  verification,
+  runState?,
+  usage,
+  compactionStats,
 }>
 ```
 
-`writeToolNames` 不做正则或启发式识别；宿主必须显式列出自定义写工具。路径按
-`writeToolPathKeys` 顺序取第一个非空字符串，随后以 `filesWritten` 提供给 judge。
+`initialMessages` takes precedence over `initialUserMessage`. With `resume:
+true`, the loop loads the transcript and checkpoint for `runId` and uses the
+persisted messages and round state instead of the initial messages.
 
-`retry` is opt-in: omitted or `false` means no provider retries.
+`executeTool` supports either of these forms:
 
-`verification` is the machine-readable handoff contract for hosts:
+```js
+(name, input) => Promise<string>
+({ id, name, input, context, signal }) =>
+  Promise<string|{success?:boolean, data:any, duration?:number, toolMessageId?:string}>
+```
+
+The structured form receives the merged `toolContext` plus `expert`, `user`,
+`task`, `session`, and `requestId` values. A structured result uses `data` as
+the tool-result content; the loop adds execution metadata and converts failed
+results to canonical `tool_result` blocks with `is_error`.
+
+`writeToolNames` is an explicit set used only for judge file-footprint
+reporting; it does not infer write tools. For each configured write tool,
+`writeToolPathKeys` supplies the priority order for extracting a path.
+
+#### Completion, retries, and termination
+
+- `retry` is opt-in. `false` or omission performs no provider retry. With an
+  object, `attempts` defaults to `2` retries after the initial call,
+  `backoffBaseMs` defaults to `1500`, `backoffMaxMs` defaults to `10000`, and
+  `sleepImpl` defaults to the loop's abort-aware sleeper. Only errors marked
+  `retryable` are retried.
+- `completion` defaults to `{ signals: [], maxNoToolRounds: 3 }`. A completion
+  signal can stop a no-tool response, and after tool use the no-tool streak
+  stops at `maxNoToolRounds`. `completion: false` disables this policy.
+- `stallDetection` defaults to `{ window: 4 }` with mode `"appear"`. Mode
+  `"consecutive"` requires the same tool signature throughout the window;
+  `false` disables detection. `ERIX_STALL_MODE` can provide the mode unless
+  the option is explicitly `false`.
+- `maxTokenContinuations` defaults to `3`. A response ending with
+  `stopReason === "max_tokens"` can therefore receive up to three continuation
+  calls in the same round.
+- `maxRounds` defaults to `8` and must be a positive safe integer. Normal
+  termination reasons are `end_turn`, `no_tool`, `stall`, `max_rounds_cap`,
+  `reflection_stop`, `judge_done`, and `continuation_exhausted`; aborts and
+  uncaught failures use `aborted` and `failed`.
+
+When enabled, `wrapup` appends the end-of-turn instruction requiring this JSON
+shape:
+
+```json
+{"done":true,"summary":"Task summary","output":"Final result for the user"}
+```
+
+The parser requires `done` to be an own boolean property. `done: true` makes
+the response complete and replaces `finalText` with `output` or `summary`;
+`done: false` continues the loop. `wrapup: false`, or
+`ERIX_NO_WRAPUP_INSTRUCTION=1`, disables instruction injection, JSON parsing,
+`finalText` replacement, and wrap-up normalization together. Optional
+normalization is enabled by `ERIX_WRAPUP_NORMALIZE=1` or
+`reflection.wrapupNormalize === true`.
+
+`finalGuard` is an optional host-supplied provenance or completion check:
+
+```js
+finalGuard({
+  finalText,
+  messages,
+  round,
+  rounds,
+  signal,
+  termination,
+  rerunDetected,
+}) => Promise<
+  {action:"accept", rerunCited?:boolean} |
+  {action:"skip", reason:string} |
+  {action:"revise", message:string}
+>
+```
+
+The default `finalGuardMaxRetries` is `2`. A positive
+`finalGuardTimeoutMs` is used as-is; a non-positive or non-finite value uses
+the default `30000` ms. The guard runs for non-abort stop paths including
+`end_turn`, `no_tool`, `judge_done`, `max_rounds_cap`, `stall`,
+`continuation_exhausted`, and `reflection_stop`. `accept` produces
+`verification.status === "verified"`. `skip` produces `"skipped"`.
+`revise` injects the returned message as a user message when the loop can
+continue. If a non-continuable stop path cannot be revised, or the retry
+limit is reached, the result is `"unverified"` with
+`termination.reason === "final_guard_unverified"`. A guard error or timeout
+returns the final text with `"error"` status; it is not treated as verified.
+No configured guard produces `"skipped"` with reason `"no_final_guard"`.
+
+The result shape is:
 
 ```js
 {
-  status: "verified" | "unverified" | "skipped" | "error",
-  reason?: string,
-  detail?: string,
+  finalText,
+  messages,
+  transcript,
+  rounds,
+  truncated,
+  termination: { reason, detail?, forcedFinal? },
+  verification: {
+    status: "verified" | "unverified" | "skipped" | "error",
+    reason?,
+    detail?,
+    metrics: {
+      verified, skipped, revised, rerun_cited, unverified, guard_error
+    }
+  },
+  runState?,
+  usage: { input_tokens, output_tokens },
+  compactionStats: [{
+    compacted,
+    foldedRounds,
+    tokensBefore,
+    tokensAfter,
+    protectedDowngraded?
+  }]
 }
 ```
 
-Only `verified` permits treating `finalText` as provenance-checked. `unverified`
-means the guard requested revision but the loop could not continue; the result
-uses `termination.reason = "final_guard_unverified"` and the store state is
-`"unverified_error"`. `error` means the guard threw or exceeded its timeout;
-for availability the loop returns the final text, but stores `"guard_error"`
-rather than `"succeeded"`. Hosts must handle it explicitly because it is not
-`verified`.
-`skipped` means no guard was configured, or the guard could read trusted
-non-replayable artifacts but none contained an extractable candidate value;
-the latter records a warning and deliberately does not fail closed because
-there is no value to compare. Non-abort stop paths such as
-`max_rounds_cap`, `stall`, `continuation_exhausted`, and `reflection_stop`
-still invoke the guard; if they cannot continue, they fail closed without
-spending another model round. `abort` does not invoke the guard.
+`transcript` is the current in-memory message snapshot. The configured
+`TranscriptStore` is the persistence/archive interface and is separate from
+that return value.
 
-### 3.3 CompactionStrategy（FR-3，详见 ADR-003）
+#### Reflection and judge governance
+
+If `reflection` is omitted, `maxRounds >= 16`, and
+`ERIX_NO_REFLECTION` is not `1`, the loop enables `{ enabled: true }`
+automatically. `reflection: false` disables it; `reflection: true` enables it
+with the defaults below. An object can configure:
+
+```js
+reflection: {
+  enabled,
+  roundJudge = true,
+  judgeIntercept = true,
+  judgeIntervalRound = 5,
+  judgeInterceptTimeoutMs = 30000,
+  judgeFailureLimit = 3,
+  triggerRound = Math.max(1, Math.floor(maxRounds * 0.8)),
+  extensionStep = 32,
+  maxExtensions = 2,
+  maxRoundsCap = Math.max(maxRounds, 256),
+  wrapupNormalize,
+  judge: { provider, evaluator },
+  onReflection,
+}
+```
+
+`ERIX_NO_ROUND_JUDGE=1` disables the end-turn judge independently of tool
+interception. The round judge evaluates an `end_turn` response with a separate
+or shared provider. Only `done: true` with `confidence >= 0.7` yields
+`judge_done`; `done: false` injects a corrective continuation message. Parse
+failures and evaluator errors degrade to the normal governor, and the round
+judge is disabled after `judgeFailureLimit` consecutive failures.
+
+After `judgeIntervalRound` tool executions, the next tool call is transparently
+audited. A `done: false` audit blocks the original execution and returns an
+audit result to the model. Audit errors and timeouts degrade to direct
+execution. A judge result with `direction: "off_track"` does not block the
+tool; it adds a direction hint to the next model context. `onJudge` receives
+round and interception decisions, including degraded decisions.
+
+The governor is deterministic and side-effect free. It handles repeated
+errors, memory-loss responses, no-tool streaks, stall streaks, time
+deadlines, reflection extensions, and completion. Reflection extensions add
+`extensionStep` rounds up to `maxRoundsCap`, at most `maxExtensions` times.
+The task brief used by judge and reflection is selected in this order:
+`task`, `context.task`, then the latest user text in the entry transcript.
+
+### 3.3 Compaction
 
 ```js
 /**
  * @typedef {Object} CompactionStrategy
  * @property {string} name
  * @property {(messages: CanonicalMessage[], budgetTokens: number) => boolean} shouldCompact
- * @property {(messages: CanonicalMessage[], opts: CompactOpts) => Promise<CompactResult>} compact
- * CompactResult = { messages, compacted, foldedRounds, tokensBefore, tokensAfter, foldedPayload? }
- * // foldedPayload：被折叠轮次的完整原文（调用方/store 留存，recall 的数据源）
+ * @property {(messages: CanonicalMessage[], options?: object) => Promise<CompactResult>} compact
+ *
+ * @typedef {Object} CompactResult
+ * @property {CanonicalMessage[]} messages
+ * @property {boolean} compacted
+ * @property {number} foldedRounds
+ * @property {number} tokensBefore
+ * @property {number} tokensAfter
+ * @property {CanonicalMessage[]} [foldedPayload]
+ * @property {{from:number,to:number}} [foldedRoundRange]
+ * @property {object} [navigationRecord]
  */
 ```
 
-### 3.4 ModelConfigProvider（FR-4.1，详见 ADR-001）
+The `context` option accepts `strategy`, `budgetTokens`, `keepRounds`,
+`toolContext`, and `task`. Strategy options forwarded by the loop include
+`summaryRole` (default `"user"`), `recoveryHint`, `protectedMessage`,
+`stripHistoricalImages` (default `false`), `onBeforeFold`, `onAfterFold`, and
+`stubFor`. `keepRounds` defaults to `6`. If no `context` or budget is
+configured, the loop does not compact. If a budget is configured without a
+strategy, the loop uses the sliding-window fallback when the budget is
+exceeded.
 
 ```js
-/**
- * @typedef {Object} ModelConfig
- * @property {"openai"|"anthropic"} protocol
- * @property {string} endpoint @property {string} model
- * @property {string} [apiKey]            // 直给（不推荐入库/入仓）
- * @property {string} [apiKeyEnv]         // 环境变量名间接引用
- * @property {string} [apiKeyFile]        // 600 凭据文件路径（对齐 ~/.config/mcp/creds 约定）
- * @property {number} [contextWindowTokens] @property {number} [maxOutputTokens]
- * @property {number} [temperature] @property {number} [topP]
- *
- * @typedef {Object} ModelConfigProvider
- * @property {(slot?: string) => Promise<ModelConfig>} resolve
- * // slot：按任务的可选模型槽位（"default" / "audit" / "fold" …），
- * // 对应 app_container pi-agent-runtime.md §8.7 预留的轻量扩展
- */
+computeBudget({ contextWindowTokens, maxOutputTokens }) => number
 ```
 
-### 3.5 TranscriptStore（FR-4.2，详见 ADR-002）
+`computeBudget` subtracts `maxOutputTokens` and safety headroom from
+`contextWindowTokens`; headroom is the greater of `2000` tokens and 10% of
+the context window, rounded up. Both inputs must be safe integer token counts,
+and the resulting budget must be positive.
+
+The built-in strategies are:
+
+```js
+createSlidingWindowStrategy(options = {})
+createFoldStatisticalStrategy(options = {})
+createFoldLlmStrategy({
+  summarizer,
+  maxSummaryTokens = 800,
+  ...options
+})
+```
+
+All three group and remove complete rounds. `fold-statistical` records a
+deterministic tool footprint, folded stubs, and bounded artifact navigation
+records. `fold-llm` calls the injected `summarizer` with the folded payload and
+enforces the summary size deterministically with `enforceSize`. Both folding
+strategies retain `foldedPayload` for archival recovery.
+
+When a configured strategy still leaves the request over budget, the loop first
+falls back to a zero-keep sliding window and then uses deterministic safe
+truncation. That final fallback can trim unprotected fields, remove images,
+clear tool inputs, and downgrade protected messages as needed;
+`compactionStats[].protectedDowngraded` records such downgrades. A single
+protected message that cannot fit produces `KitError("invalid_budget", ...)`.
+
+### 3.4 Model configuration providers
+
+```js
+createStaticModelConfigProvider(configOrSlots)
+createEnvModelConfigProvider(prefix = "LLM_KIT_")
+createJsonFileModelConfigProvider({ path })
+resolveApiKey(config = {})
+```
+
+`createStaticModelConfigProvider` accepts one config object or
+`{ slots: { default, ... } }`. Its `resolve(slot = "default")` selects the
+requested slot, falling back to `default`. The JSON-file provider requires a
+JSON object with a `slots` object and uses the same slot fallback. The
+environment provider reads one config from the supplied prefix and ignores the
+slot argument.
+
+`resolveApiKey` checks `apiKey`, then the environment variable named by
+`apiKeyEnv`, then the file named by `apiKeyFile`. A readable credential file is
+warned about when group/other-readable, but is not rejected. The resolved
+configuration is passed to a provider factory by the host.
+
+### 3.5 `TranscriptStore`
+
 ```js
 /**
  * @typedef {Object} TranscriptStore
- * @property {(runId: string, record: RoundRecord) => Promise<void>} appendRound
- * @property {(runId: string) => Promise<RoundRecord[]>} load
- * @property {(runId: string, fromRound?: number, toRound?: number, pattern?: string) => Promise<string>} recall
- * RoundRecord = { round, messages: CanonicalMessage[], folded: boolean, ts }
+ * @property {(runId:string, record:object) => Promise<void>} appendRound
+ * @property {(runId:string) => Promise<object[]>} load
+ * @property {(runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string|object>} recall
+ * @property {(runId:string, state:string) => Promise<void>} [markRunState]
+ * @property {(runId:string, state:object) => Promise<void>} [saveRunState]
+ * @property {(runId:string) => Promise<object|undefined>} [loadRunState]
+ * @property {(runId:string, checkpoint:object) => Promise<void>} [saveCheckpoint]
+ * @property {(runId:string, checkpoint:object) => Promise<void>} [appendCheckpoint]
+ * @property {(runId:string) => Promise<object|undefined>} [loadLatestCheckpoint]
  */
 ```
 
-`recall()` 是宿主/人的归档取数契约：宿主可以用数据库或文件索引实现它，也可以按需从
-`erix-agent/tools` 接入 `createRecallTool`。它不属于 `runToolLoop` 或 CLI 默认提供给模型的工具；
-CLI 仅保留 transcripts 归档、checkpoint/resume 和折叠机制。
+The memory implementation is a cloned in-process `Map`. The file
+implementation stores one JSON object per line in
+`<safeRunId(runId)>.jsonl`, plus current run state in
+`<safeRunId(runId)>.state.json` and the latest checkpoint in
+`<safeRunId(runId)>.checkpoint.json`. `appendRound` is idempotent by
+`dedupKey`, `roundKey`, or the run/round key generated by the store.
 
-### 3.6 ToolProvider / ToolRegistry（FR-5.3，详见 ADR-006）
+The legacy positional `recall(runId, fromRound?, toRound?, pattern?)` form
+returns a string. The object form supports bounded recall options including
+`artifactRef`, `limit`, `cursor`, and `maxBytes`, and returns
+`{ text, truncated, status, nextCursor?, error? }`. Cursors are bound to the
+run, range, pattern, limits, artifact reference, and source version. Missing
+records or ranges can be reported as `unrecoverable`; changed source or
+parameters report `stale`; oversized JSONL records report `record_too_large`.
 
-分层语义：**执行器注册表 = 能力宇宙（代码）；ToolProvider = 选择与配置（数据）**。
+The store is designed for one writer per `runId` and process. It repairs a
+complete JSONL record missing its final newline and isolates an incomplete
+trailing fragment. Cross-process locking is outside the store contract.
+
+Checkpoint persistence is used before and after tool execution when the store
+provides both a writer and `loadLatestCheckpoint`. A write failure is treated
+as a checkpoint failure, including the case where a tool has already executed
+but its result could not be persisted. Resume replays pending tool calls in
+their original order; hosts must still make side-effecting `executeTool`
+implementations idempotent.
+
+The safe file-name namespace keeps simple IDs matching
+`[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*` readable, except `"."`, `".."`, and
+the reserved `run-h-` prefix. Other IDs become `run-h-` followed by the first
+24 hexadecimal characters of their SHA-256 digest.
+
+### 3.6 Tool providers and `ToolRegistry`
 
 ```js
 /**
  * @typedef {Object} ToolProvider
- * @property {(sel?: { set?: string }) => Promise<ToolSchema[]>} listTools
+ * @property {(sel?:{set?:string}) => Promise<ToolSchema[]>} listTools
  */
 
 createToolRegistry({ executors, schemas }) => {
-  executeTool,                     // 喂给 runToolLoop
-  resolveTools(provider, sel),     // 求交+覆盖；schema 无执行器 → fail closed
+  executeTool,
+  resolveTools(provider, sel)
 }
+
+createStaticToolProvider({ sets })
+createJsonFileToolProvider({ path })
+createCompositeToolProvider({ providers })
 ```
 
-内置 provider：`static`（默认）/ `json-file` / `composite`；DB 适配器在项目侧。
-`runToolLoop` 在调用执行器前按 schema 做入参最小校验（required/type/maxLength），
-校验失败回 tool_result 错误，不碰执行器。
+The executor map is the code-owned capability set. A `ToolProvider` selects
+schemas and can overlay descriptions and constraints, but cannot introduce an
+executor that is absent from the registry. `resolveTools` fails with
+`KitError("tool_unknown_executor", ...)` for such a schema. Registry execution
+validates `required`, property `type`, and `maxLength` before calling the
+executor; invalid input becomes an error string and does not reach the
+executor. Direct `runToolLoop` callers that do not use `createToolRegistry`
+are responsible for their own input validation.
 
-## 4. 源码结构
+The static and JSON-file providers select `sel.set` or `default`. The
+composite provider merges schemas by name in provider order. The
+`erix-agent/tools` subpath also exports `createJail`, `createFileTools`, and
+`createRecallTool`. These are reference implementations, not an implicit
+tool set installed into `runToolLoop`.
 
-```
+## 4. Source layout
+
+```text
 src/
-├── index.js              # 公共导出（不含 tools，tools 走 subpath）
+├── index.js                  # Public root exports
+├── loop.js                   # runToolLoop and reflection decision parsing
+├── run-state.js              # Bounded deterministic and semantic run state
+├── tokens.js                 # Dependency-free token estimates
 ├── providers/
-│   ├── index.js          # createProvider 工厂 + 协议分派
-│   ├── openai.js         # chat/completions（流式 SSE 解析、2xx+error-body 透传）
-│   ├── anthropic.js      # messages（流式 content_block 解析）
-│   └── errors.js         # KitError + 错误分类 + retryable
+│   ├── anthropic.js          # Anthropic Messages requests and streaming
+│   ├── errors.js             # KitError and provider error classification
+│   ├── openai.js             # OpenAI chat/completions requests and streaming
+│   ├── payload.js            # Provider payload options and timeout resolution
+│   └── timeout.js            # Request and stream timeout coordination
 ├── messages/
-│   ├── canonical.js      # 块格式 typedef + openai⇄canonical 双向转换
-│   └── rounds.js         # groupIntoRounds（双协议成对规则）
-├── tokens.js             # estimateTokens / estimateMessageTokens（系数可配）
+│   ├── anthropic.js          # Canonical <-> Anthropic conversion and SSE assembly
+│   ├── canonical.js          # Canonical blocks and OpenAI conversion
+│   └── rounds.js             # Message validation and round grouping
 ├── compact/
-│   ├── budget.js         # computeBudget(contextWindow, maxOutput)
-│   ├── sliding-window.js # 策略①：整组丢弃（=app_container 现状行为）
-│   ├── fold-statistical.js # 策略②：整组折叠 + 确定性统计摘要
-│   ├── fold-llm.js       # 策略③：折叠点 LLM 工作日志（summarizer 注入；含确定性尺寸执法）
-│   └── enforce-size.js   # LLM 摘要的优先级确定性修剪（FR-3.5）
+│   ├── budget.js             # computeBudget
+│   ├── enforce-size.js       # Deterministic field pruning
+│   ├── fold-llm.js           # LLM-backed whole-round folding
+│   ├── fold-statistical.js   # Deterministic whole-round folding
+│   ├── helpers.js             # Shared folding selection and hook helpers
+│   └── sliding-window.js     # Whole-round sliding-window folding
 ├── store/
-│   ├── memory.js         # 默认：进程内 Map
-│   └── file.js           # JSONL：dir/<runId>.jsonl，每轮一行（v0.2）
+│   ├── bounded-recall.js     # Bounded, cursor-based recall implementation
+│   ├── file.js               # JSONL transcript, state, and checkpoint store
+│   └── memory.js             # In-process transcript, state, and checkpoint store
 ├── config/
-│   ├── static.js env.js  # v0.1
-│   └── json-file.js      # v0.2：含 slot 与 apiKey 间接引用解析
-├── tools/                # subpath export erix-agent/tools（v0.2）
-│   ├── jail.js           # 路径牢笼助手（root 内解析、writable 子树、maskedPaths 拒读）
-│   ├── file-tools.js     # readFile/rg/tree/writeFile 参考实现（建在 jail 上）
-│   ├── recall.js         # 可选 recall 工具（宿主按需接入，建在 TranscriptStore 上）
-│   ├── registry.js       # createToolRegistry：执行器宇宙 + schema 求交（ADR-006）
-│   └── providers.js      # ToolProvider：static / json-file / composite
-└── loop.js               # runToolLoop
+│   ├── api-key.js            # Direct, environment, and file key resolution
+│   ├── env.js                # Environment-backed model configuration
+│   ├── json-file.js          # JSON-file-backed model configuration
+│   └── static.js              # Static model configuration
+├── reflection/
+│   ├── governor.js            # Deterministic continuation and stop decisions
+│   ├── judge.js               # Objective timeline and judge parsing
+│   ├── l0.js                  # Objective tool-result facts and summary parsing
+│   └── wrapup.js              # End-of-turn JSON parsing and normalization
+└── tools/
+    ├── file-tools.js          # Reference readFile, rg, tree, and writeFile tools
+    ├── index.js               # erix-agent/tools subpath exports
+    ├── jail.js                # Root, writable, and masked-path jail
+    ├── providers.js           # Static, JSON-file, and composite ToolProvider
+    ├── recall.js              # Bounded transcript recall tool adapter
+    └── registry.js             # Code-owned executor/schema registry
 ```
 
-## 5. 不变量
+The root export is `src/index.js`; the optional reference tools are exported
+through the `erix-agent/tools` subpath. The current tree intentionally has no
+`src/providers/index.js`.
 
-1. 库不执行工具；`executeTool` 是唯一执行入口，在调用方。
-2. 折叠按轮整组，绝不产生孤儿 tool/tool_result 消息。
-3. 头部（system + 首个真实 user）永不折叠。
-4. LLM 产出的摘要必过确定性尺寸执法。
-5. 被折叠的轮次在 store 中有完整原文（fold 只影响上下文，不影响档案）。
-6. 库代码零密钥；apiKey 间接引用是一等公民。
-7. 执行器只能来自代码注册表；数据（json/DB）只能选择在哪些暴露，不能新增能力。
+## 5. Invariants
+
+1. Tool implementations belong to the host. `executeTool` is the only
+   execution boundary used by the loop.
+2. Canonical tool-call rounds are folded as complete assistant/tool-result
+   groups, so normal compaction does not create orphan tool messages.
+3. Whole-round strategies keep system messages and the first real user message
+   in the head. The emergency safe-truncation fallback may reduce or remove
+   unprotected content if the request still exceeds its budget.
+4. LLM-generated fold summaries pass deterministic size enforcement before they
+   are inserted into the context.
+5. Folded content is returned as `foldedPayload` and is included in persisted
+   round records when a `TranscriptStore` is configured; folding changes the
+   model view, not the archive source.
+6. No secret is embedded in the library source. API keys can be supplied
+   directly or resolved indirectly through `apiKeyEnv` and `apiKeyFile`.
+7. The executor registry is code-owned. JSON or other provider data can select
+   and constrain exposed schemas, but cannot add executable capabilities.
+8. `verification.status === "verified"` is the only result state that permits
+   a host to treat `finalText` as final-guard verified. `skipped`,
+   `unverified`, and `error` require host-specific handling.

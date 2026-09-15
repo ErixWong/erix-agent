@@ -1,52 +1,53 @@
-# ADR-003：压缩策略谱系——sliding-window 到 fold-llm 三级 + 谱系外 psyche（后按 ADR-010 修正），可插拔
+# ADR-003: Compaction Strategy Lineage—from sliding-window to three levels of fold-llm + psyche outside the lineage (later corrected by ADR-010), pluggable
 
-- 状态：已决策（2026-08-29；2026-08-31 按 ADR-010 修正 psyche 条目）
-- 背景：两边现有实现各代表一级：app_container 的固定 10 轮硬滑窗（静默丢弃）、
-  touwaka 的预算折叠 + 统计摘要（R19-1）、touwaka 的 Psyche（持续反思状态）。
-  用户指定谱系两端：**psyche 最激进，外加滑动窗口兜底**。
-  （2026-08-31：psyche 已按 ADR-010 移出本谱系，重新定义为对话场景的事前整形哲学，见表格④行。）
+> Chinese version: [003-compaction-strategies_cn.md](003-compaction-strategies_cn.md)
 
-## 决策
+- Status: Decided (2026-08-29; the psyche entry corrected according to ADR-010 on 2026-08-31)
+- Background: The two existing implementations each represent one level: app_container's fixed 10-round hard sliding window (silently discarded),
+  touwaka's budget folding + statistical summary (R19-1), and touwaka's Psyche (persistent reflective state).
+  The user specified both ends of the lineage: **psyche is the most aggressive, with a sliding window as fallback**.
+  (2026-08-31: psyche was removed from this lineage according to ADR-010 and redefined as an a priori shaping philosophy for conversation scenarios; see table row ④.)
 
-统一策略接口（`shouldCompact(messages, budget)` / `compact(messages, opts)`），按激进程度排列：
-（④psyche 原属本谱系，2026-08-31 按 ADR-010 移出，表格中保留划线原貌以示历史）
+## Decision
 
-| 级 | 策略 | 机制 | 信息保留 | LLM 成本 | 适用 |
+Unify the strategy interface (`shouldCompact(messages, budget)` / `compact(messages, opts)`), ordered by aggressiveness:
+(④psyche originally belonged to this lineage; it was removed according to ADR-010 on 2026-08-31, and the table retains the strikethrough form to show the history)
+
+| Level | Strategy | Mechanism | Information retained | LLM cost | Use |
 |---|---|---|---|---|---|
-| ①a | `clear-results`（调研补记，v1.x） | 旧 tool_result 换占位符，**保留 tool_use 足迹与最近 N 个完整结果**；protect 名单可配 | 工具足迹 + 近期结果 | 0 | 结果可重获取的工具循环（实证：成本降 52% 解决率反升，见 docs/research §3.1） |
-| ① | `sliding-window` | 超预算整组丢弃早期轮 | 无（可配 recall 兜底） | 0 | 短任务兜底、预算极紧 |
-| ② | `fold-statistical` | 整组折叠为**确定性统计摘要**（"共14轮 writeProjectFile×12, exec×5，可 recall 取回"） | 工具调用足迹 | 0 | **工具循环默认**（v0.1） |
-| ③ | `fold-llm` | 折叠点注入一次 LLM 调用，把被折叠轮次合并成**工作日志**（阶段/已改文件/已验证项/下一步），结果必过确定性尺寸执法 | 叙事级 | 每次折叠 1 次 | 长开发任务二次折叠后升级（v0.2） |
-| ④ | ~~`psyche`~~（**2026-08-31 按 ADR-010 移出谱系**） | ~~持续维护结构化状态对象替代原始消息进上下文~~ → 重新定义为**对话场景的事前整形哲学**，工程形态 = 冷循环蒸馏 + L3 注入（ADR-007 决策三/四），非本接口实现 | ~~状态级~~ | ~~每轮 1 次~~（正确形态为低频/异步，不碰请求路径） | ~~长期对话场景（v2）~~ → 触发重估条件见 ADR-010 |
+| ①a | `clear-results` (research addendum, v1.x) | Replace old tool_result blocks with placeholders, **retaining tool_use traces and the latest N complete results**; the protect list is configurable | Tool traces + recent results | 0 | Tool loops whose results can be reacquired (empirical: cost down 52% while resolution rate increased; see docs/research §3.1) |
+| ① | `sliding-window` | Discard complete early rounds when over budget | None (recall fallback can be configured) | 0 | Short-task fallback, extremely tight budgets |
+| ② | `fold-statistical` | Fold complete rounds into a **deterministic statistical summary** ("14 rounds total: writeProjectFile×12, exec×5; use recall to retrieve them") | Tool-call traces | 0 | **Default for tool loops** (v0.1) |
+| ③ | `fold-llm` | Inject one LLM call at the fold point to merge folded rounds into a **work log** (phases/files changed/items verified/next steps); the result must pass deterministic size enforcement | Narrative-level | 1 call per fold | Upgrade after a second fold in a long development task (v0.2) |
+| ④ | ~~`psyche`~~ (**removed from the lineage according to ADR-010 on 2026-08-31**) | ~~Continuously maintain a structured state object in place of raw messages in context~~ → redefined as an **a priori shaping philosophy for conversation scenarios**; the engineering form = cold-loop distillation + L3 injection (ADR-007 Decisions Three/Four), not an implementation of this interface | ~~State-level~~ | ~~1 call per round~~ (the correct form is low-frequency/asynchronous and does not touch the request path) | ~~Long-running conversation scenarios (v2)~~ → trigger for reevaluation in ADR-010 |
 
-公共件：`computeBudget`（窗口 − 输出 − max(2000, 10%) 余量）、`estimateTokens`
-（中文 1.5 tok/字、其余 3.5 字/tok、+15%，系数可配——取两边实现中保守的那个）、
-`groupIntoRounds`（双协议整组规则，孤儿消息零容忍）。
+Common components: `computeBudget` (window − output − max(2000, 10%) headroom), `estimateTokens`
+(Chinese 1.5 tok/character, other text 3.5 characters/tok, +15%; coefficients configurable—take
+the more conservative one from the two implementations), and `groupIntoRounds` (whole-round rules
+for both protocols, with zero tolerance for orphan messages).
 
-**折叠 + recall 融合**（本库相对两个前身的增量）：②③④折叠时把原文经 `foldedPayload`
-进 TranscriptStore（ADR-002），摘要文本统一带"可 recall(round X–Y) 取回原文"指引。
-折叠从有损变近无损。
+**Folding + recall integration** (the increment over the two predecessors): when ②③④ fold, they
+write the original text to the TranscriptStore through `foldedPayload` (ADR-002), and summary text
+uniformly carries the instruction "use recall(round X–Y) to retrieve the original text".
+Folding changes from lossy to nearly lossless.
 
-> 时序说明：recall 工具 v0.2 才落地。v0.1 期间摘要先写"早期 N 轮已折叠，原文留存 transcript store"，
- v0.2 recall 可用后统一换为带指引文案。
+> Timeline note: the recall tool only landed in v0.2. During v0.1, summaries first said "the early N rounds have been folded; the original text remains in the transcript store"; after recall became available in v0.2, the wording was uniformly replaced with the instruction.
 
-## 理由
+## Rationale
 
-- **状态所在地决定摘要方式**：开发任务的真实状态在**磁盘工作副本**（代码可经工具重读），
-  统计摘要 + recall 足够；人类对话的意图/决策只存在于**对话本身**，丢了不可重推导，
-  才需要 LLM 反思。这解释了为什么 touwaka 的工具循环用统计折叠就够，而 companion 对话需要 Psyche。
-- 四级共用同一接口与同一预算/分组原语，调用方按场景选级，升级路径是换策略对象而非重写。
-- ② 零 LLM 成本是默认的理由：工具循环每轮都烧钱，压缩不该再常态加钱。
+- **The location of state determines the summary method**: the real state of a development task is on the **working copy on disk** (code can be reread through tools), so a statistical summary + recall is sufficient; the intent/decisions of a human conversation exist only in the **conversation itself** and cannot be reconstructed after loss, so they require LLM reflection. This explains why touwaka's tool loop only needs statistical folding, while companion conversations need Psyche.
+- All four levels share the same interface and the same budget/grouping primitives. Callers choose the level for the scenario, and the upgrade path is changing a strategy object rather than rewriting the system.
+- The zero LLM cost of ② is the reason it is the default: tool loops already spend money every round, so compaction should not add a recurring cost.
 
-## 后果
+## Consequences
 
-- v0.1 只实现 ①②；③ 随 v0.2（依赖 json-file config 的 fold 槽位）；④ 明确 v2 且限对话场景。
-- ~~psyche 实现时优先移植 touwaka `lib/psyche/` 已验证代码，不重新发明。~~
-  **已作废（2026-08-31，ADR-010）**：touwaka 实现（每轮全量反思）是错误形态，不移植原版；
-  psyche 重新定义为"对话场景的事前整形哲学"，正确工程形态 = 冷循环蒸馏 + L3 注入（ADR-007 决策三/四），
-  详见 ADR-010。
-- **调研补记（2026-08-29，docs/research/2026-08-29-memory-context-research.md）**：
-  ①a clear-results 级来自外部最佳实践（先清结果再谈摘要）；与 recall 配合后超越 Anthropic clearing（清了的原文可经 store 取回）。
-  触发阈值：外部建议有效窗口 ~70% 即压缩（context rot）；本库公式余量 max(2000,10%) ≈ 90% 触发，
-  但 token 估算宁高勿低 +15% 等效提前，默认暂不改，待 app_container 实测校准。
-  fold-llm 摘要模板必须含"已完成项禁止重做"（外部实证：摘要掩盖停止信号 → 轨迹延长 13–15%）。
+- v0.1 implements only ①②; ③ arrives with v0.2 (dependent on a fold slot in the json-file config); ④ is explicitly v2 and limited to conversation scenarios.
+- ~~When psyche is implemented, first port the validated code from touwaka `lib/psyche/` rather than reinventing it.~~
+  **Voided (2026-08-31, ADR-010)**: touwaka's implementation (full reflection every round) is the wrong form and the original implementation will not be ported;
+  psyche is redefined as an "a priori shaping philosophy for conversation scenarios", whose correct engineering form = cold-loop distillation + L3 injection (ADR-007 Decisions Three/Four);
+  see ADR-010 for details.
+- **Research addendum (2026-08-29, docs/research/2026-08-29-memory-context-research.md)**:
+  ①a The clear-results level comes from external best practices (clear results before discussing summaries); combined with recall it surpasses Anthropic clearing (cleared original text can be retrieved from the store).
+  Trigger threshold: external guidance recommends compaction at an effective window of about 70% (context rot); this library's headroom formula max(2000,10%) triggers at approximately 90%,
+  but conservative token estimation plus +15% is equivalent to triggering earlier. The default is not changed for now, pending app_container calibration with real measurements.
+  The fold-llm summary template must contain "completed items must not be redone" (external evidence: when a summary hides the stop signal, the trajectory lengthens by 13–15%).

@@ -1,43 +1,56 @@
-# ADR-013：guard 章程——机械核对器，不得扩张
+# ADR-013: Guard Charter—A Mechanical Checker That Must Not Expand
 
-- 状态：已决策（2026-09-15）
-- 背景：终稿 provenance gate（guard）在 2026-09-12~14 期间经历多轮"想让它更聪明"的尝试，均被实证否定：
-  - **形态 token 扫描**（从终稿散文中猜"哪个字符串是值"）：既**误杀正确答案**（终稿含归档路径 `001-exec.txt` 时把 `001-exec` 当未知值 → 判 `unverified`），又**抓不住真编造**（无 label 的凭空 token → `accept`）。
-  - 开启 guard 的有效样本中：`skipped ≈ 93%`、`revised = 0`、`rerun_cited = 0`（几乎空转）。
-  - 根因：**从结果（自然语言）反推来源**这一做法本身不可靠——它不是实现缺陷，而是路线错误。
-  - 现默认已改为 opt-in（`--final-guard`）。
-- 风险：后人（或 agent）会继续给它"加智能"，因为它看起来像"安全机制"，而每次扩张都会重新引入误杀/漏检与复杂度。
-- 关联：**ADR-012**（引擎真相 / 模型效率 / 宿主策略）、ADR-010（上下文整形与两个问题域）、`docs/design/2026-09-14-memory-and-compaction-rfc.md` 与两份评审/评估文档。
+> Chinese version: [013-guard-charter_cn.md](013-guard-charter_cn.md)
 
-## 决策（五条章程，适用于所有 guard 类机制）
+- Status: Decided (2026-09-15)
+- Background: The final-draft provenance gate (guard) went through multiple attempts to "make it smarter" during 2026-09-12~14, all disproved by evidence:
+  - **Form-based token scanning** (guessing "which string is the value" from final-draft prose): it both **wrongly killed correct answers**
+    (when the final draft contained the archive path `001-exec.txt`, it treated `001-exec` as an unknown value → marked `unverified`)
+    and **failed to catch genuine fabrication** (a free-floating token without a label → `accept`).
+  - Among effective samples with guard enabled: `skipped ≈ 93%`, `revised = 0`, `rerun_cited = 0` (almost entirely spinning).
+  - Root cause: **inferring provenance from the result (natural language)** is inherently unreliable—it is not an implementation defect, but the wrong direction.
+  - The default has now been changed to opt-in (`--final-guard`).
+- Risk: later people (or agents) will continue to "add intelligence" to it because it looks like a "security mechanism", and every expansion will reintroduce false kills/misses and complexity.
+- Related: **ADR-012** (engine truth / model efficiency / host policy), ADR-010 (context shaping and the two problem domains),
+  `docs/design/2026-09-14-memory-and-compaction-rfc.md` and two review/evaluation documents.
 
-### 1. 只做精确比对
-guard 的输入**限于引擎自己记录的数据**（capture manifest、工件 digest/locator/状态、工具调用元数据），比对必须是**字符串/集合精确相等**（或等价的机械判定）。不得引入任何"近似""相似度""语义"判定。
+## Decision (five charter rules, applicable to all guard-like mechanisms)
 
-### 2. 禁止解析模型自然语言
-**不得**对终稿做形态匹配、长度/charset 猜测、关键词/正则启发式、意图推断。终稿中只有**显式、格式化、锚定在已知 label/source 上**的声明才可参与比对；其余一律 `skipped`。
+### 1. Perform exact comparison only
+The guard's inputs are **limited to data recorded by the engine itself** (capture manifest, artifact digest/locator/status, tool-call metadata),
+and comparisons must be **exact string/set equality** (or an equivalent mechanical judgment). No "approximate", "similarity", or "semantic" judgment may be introduced.
 
-### 3. 新增规则前必须先回答"能否在源头消除"
-任何"想给 guard 加一条规则"的提案，必须先证明该失败模式**无法**通过源头机制解决：
-`折叠 stub（值留在上下文）` / `结构化告知（rerunOf、工件状态）` / `生产者声明（replayable/effect）` / `有界取货（按地址精确返回）`。
-**能 → 走源头；不能 → 才考虑加规则，且必须在 ADR 记录为何源头不可行。**
+### 2. Do not parse model natural language
+**Do not** apply form matching, length/charset guessing, keyword/regular-expression heuristics, or intent inference to the final draft.
+Only declarations that are **explicit, formatted, and anchored to a known label/source** in the final draft may participate in comparison; everything else is `skipped`.
 
-### 4. 新增状态必须有明确消费者
-guard 的输出是**状态**（`verified` / `suspect` / `mismatch` / `skipped` / `unverified` / `error` / `rerun_cited`），**不是评价**。
-- 禁止输出"质量/合规/是否满足需求"类判断（那属于宿主、测试或人）。
-- 每个新增状态必须**在代码或宿主契约中被读取**，否则不得加入。
+### 3. Before adding a rule, first answer "can it be eliminated at the source?"
+Any proposal to "add a rule to the guard" must first prove that the failure mode **cannot** be solved through a source mechanism:
+`compaction stub (value remains in context)` / `structured notice (rerunOf, artifact status)` / `producer declaration (replayable/effect)` / `bounded retrieval (return exactly by address)`.
+**If it can → fix the source; if it cannot → only then consider adding a rule, and the ADR must record why the source is infeasible.**
 
-### 5. 保持 opt-in，且有代码规模上限
-- guard 默认关闭，由宿主显式开启（`--final-guard` / `ERIX_FINAL_GUARD=1` / 库参数）。
-- `bin/final-guard.js` **上限 300 行**（2026-09-14 基线 ≈215 行）。超过上限必须先按第 3 条审查并更新本 ADR。
+### 4. Every new state must have a clear consumer
+The guard's output is a **state** (`verified` / `suspect` / `mismatch` / `skipped` / `unverified` / `error` / `rerun_cited`), **not an evaluation**.
+- Do not output judgments such as "quality/compliance/whether requirements are met" (those belong to the host, tests, or people).
+- Every new state must be **read in code or the host contract**; otherwise it must not be added.
 
-## 已知边界（明示，不得回避）
+### 5. Keep it opt-in, with a code-size limit
+- The guard is disabled by default and explicitly enabled by the host (`--final-guard` / `ERIX_FINAL_GUARD=1` / library parameter).
+- `bin/final-guard.js` **must not exceed 300 lines** (2026-09-14 baseline ≈215 lines). Exceeding the limit first requires review under rule 3 and an update to this ADR.
 
-- **无 label 的凭空值不可检测**：终稿若编造一个不对应任何已知 label 的值，guard 只能 `skipped`。这不修复也不掩盖——**该风险由宿主/消费者通过归档审计、测试或人工核验承担**（ADR-009 安全分层：本库不提供安全边界）。
-- **`skipped` 不等于"没问题"**：它只表示"没有可比对项"。宿主消费契约必须写明：只有 `verified` 才可视为来源已核验（见 README 的 verification 消费契约）。
+## Known boundaries (explicit and not to be evaded)
 
-## 后果
+- **A free-floating value without a label cannot be detected**: if the final draft fabricates a value that does not correspond to any known label, the guard can only return `skipped`.
+  This is neither fixed nor concealed—**the host/consumer bears this risk through archive audits, tests, or manual verification**
+  (ADR-009 safety layering: this library does not provide a security boundary).
+- **`skipped` does not mean "no problem"**: it only means "there was nothing comparable". The host consumption contract must state:
+  only `verified` may be considered source-verified (see the verification consumption contract in README).
 
-- **正面**：guard 复杂度受控、误杀风险低、责任边界清晰；失败模式被迫在**源头**解决（stub/告知/声明/有界取货），而不是靠事后检测。
-- **负面**：牺牲了"看起来更全面"的检测能力，换取可靠性与可维护性；已知的检测缺口（凭空值）必须由上层承担，并以文档明示。
-- **约束**：后续任何 guard 相关 PR，评审时**必须对照本章程**；违反第 1/2 条者直接拒绝，违反第 3/4/5 条者需在本 ADR 追加记录。
+## Consequences
+
+- **Positive**: guard complexity remains controlled, false-kill risk is low, and responsibility boundaries are clear; failure modes are forced to be solved
+  at the **source** (stub/notice/declaration/bounded retrieval), rather than through after-the-fact detection.
+- **Negative**: sacrifice detection capability that "looks more comprehensive" in exchange for reliability and maintainability; known detection gaps
+  (free-floating values) must be handled by the upper layer and explicitly documented.
+- **Constraint**: every subsequent guard-related PR **must be reviewed against this charter**; violations of rules 1/2 are rejected directly,
+  while violations of rules 3/4/5 require an additional record in this ADR.

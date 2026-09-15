@@ -1,15 +1,17 @@
-# MCP 对接设计（erix CLI）
+# MCP Integration Design (erix CLI)
 
-目标：让 erix 能使用 MCP（Model Context Protocol）服务器提供的工具。基于第一性结论：**MCP client 内嵌（无独立常驻代理进程）、server 懒启动 + 会话内 keep-alive、跨会话不保留**（CLI 会话式架构；touwaka 的常驻代理是服务端架构的产物，不适用）。
+> Chinese version: [mcp-design_cn.md](mcp-design_cn.md)
 
-## 设计原则
+The goal is to let erix use tools provided by MCP (Model Context Protocol) servers. The client is embedded in the CLI rather than running as a separate long-lived proxy process. Servers start lazily, connections stay alive for the lifetime of the CLI process, and no MCP connection state is persisted across processes.
 
-1. **单代理工具（proxy tool）模式**（pi-mcp-adapter 同款）：只注册 1 个 `mcp` 工具（~200 tokens），不把几百个 MCP 工具全量合并进工具集（会烧爆上下文窗口——erix 预算 ~52k）
-2. **零依赖**：手写 stdio MCP client（newline-delimited JSON-RPC），不引官方 SDK（项目红线：dependencies 保持为空）
-3. **懒启动 + keep-alive**：首次用到某 server 才 spawn + initialize；会话内保持连接；CLI 退出清理子进程
-4. **配置复用标准格式**：`~/.erix/mcp.json`（或项目 `.mcp.json`）——与 pi/Claude Code 同构，可直接复用现有配置
+## Design principles
 
-## 配置（~/.erix/mcp.json）
+1. **Single proxy tool**: register exactly one `mcp` tool with the model instead of merging every MCP tool into the model's tool set. Tool metadata is discovered only when the proxy needs it.
+2. **Zero dependencies**: `bin/mcp.js` contains a hand-written MCP client using Node built-ins. Stdio uses newline-delimited JSON-RPC; streamable HTTP uses the built-in `fetch`.
+3. **Lazy startup and keep-alive**: the first operation that needs a server starts it and performs the MCP handshake. The connection is then reused for later operations in the same CLI process.
+4. **Standard configuration shape**: the client reads the `mcpServers` format used by common MCP clients, while applying erix's explicit configuration lookup rules.
+
+## Configuration (`.mcp.json` or `~/.erix/mcp.json`)
 
 ```json
 {
@@ -27,78 +29,89 @@
 }
 ```
 
-- 本阶段支持 **stdio 传输**（command/args/env）；HTTP 传输（url/headers）列为 TODO
-- 配置文件不存在 → MCP 功能不可用（`erix mcp` 提示）
+Each entry in `mcpServers` uses one of the supported transports:
 
-## 客户端（bin/mcp.js，零依赖手写）
+- **stdio**: `command` is required, with optional `args` and `env`. The child process is spawned with the CLI's current working directory and an environment formed by overlaying `env` on `process.env`.
+- **Streamable HTTP**: `url` is required, with optional `headers`. Requests are sent as JSON-RPC `POST` requests and responses may be `application/json` or `text/event-stream`. A returned `Mcp-Session-Id` is cached and sent on subsequent requests.
 
-- `spawnServer(serverConfig, cwd)`：spawn 子进程（cwd = erix 启动目录），newline-delimited JSON-RPC over stdio
-- `connect(serverName)`：懒启动——spawn + `initialize` 握手（协议版本 2025-06-18，capabilities）+ `notifications/initialized`；失败缓存错误（不阻塞其他 server）
-- `listTools(serverName)`：`tools/list` → 工具元数据（name/description/inputSchema），缓存
-- `callTool(serverName, toolName, args)`：`tools/call` → 结果 content blocks → 文本提取 + 截断
-- **连接池**：Map<serverName, { proc, client, tools, status }>——会话内保持，`closeAll()` 在 CLI 退出时杀子进程
-- **结果处理**：content blocks 文本拼接，截断 4096；base64/data-url 省略（`[data-url omitted]`）；超时 120s
-- **工具 id 规范**：`mcp_<server>_<tool>`（搜索/调用的内部标识）
+When no explicit path is supplied, the lookup order is:
 
-## 代理工具（注册 1 个 `mcp`，ToolSchema）
+1. `.mcp.json` in the current working directory
+2. `~/.erix/mcp.json`
 
-```js
-{
-  name: "mcp",
-  description: "访问 MCP 服务器工具。action：list（列全部 server 工具）/ search（按关键词搜工具）/ call（调用工具）/ status（连接状态）；call 需 server/tool/args，search 需 query，其余 action 可选 server 过滤",
-  inputSchema: {
-    type: "object",
-    properties: {
-      action: { type: "string", enum: ["list", "search", "call", "status"] },
-      server: { type: "string" },
-      tool: { type: "string" },
-      args: { type: "object" },
-      query: { type: "string", maxLength: 100 }
-    },
-    required: ["action"]
-  }
-}
-```
+The first existing file wins; the files are not merged. An explicit path is resolved relative to the current working directory and disables fallback lookup. The same `--config <path>` option is accepted by the CLI commands that use MCP. There is no separate `--mcp` flag.
 
-行为：
-- `list`：遍历配置的 server（懒启动逐个连接），返回 `server: 工具数` + 工具清单摘要（名字 + 一句话 description）
-- `search { query }`：在所有元数据里匹配（server/tool/description 包含），返回匹配工具 + 完整 schema（供调用参考）
-- `call { server, tool, args }`：内部 id 可用 `mcp_<server>_<tool>` 或分开传；调 callTool，返回文本结果
-- `status`：各 server 连接状态（未连接/已连接/错误）
+HTTP header values support `!cat <path>`. `~` is expanded to the home directory, and a relative path is resolved relative to the MCP configuration file. The file contents are trimmed before being used as the header value.
 
-## 集成（bin/cli.js + bin/repl.js）
+If no configuration file is found, MCP is disabled and the `mcp` tool is not registered. Invalid JSON or a configuration without `mcpServers` makes `loadMcpConfig()` fail; `erix mcp` and `/mcp` display that error, while chat and the REPL do not register the proxy. An empty `mcpServers` object also leaves MCP disabled.
 
-- 启动时读 mcp.json（不存在则 mcp 工具不注册）
-- 工具集追加 `mcp` 代理工具；executeTool 路由：name === "mcp" → mcp 处理器
-- 退出时 closeAll（SIGINT/SIGTERM/正常退出）
-- 新子命令 `erix mcp`：打印 mcp.json 找到的 server + 连接状态
-- repl 加 `/mcp`：同 `erix mcp` 输出
+## Hand-written client (`bin/mcp.js`)
 
-## 测试
+`bin/mcp.js` creates an internal `McpClient` for each configured server and does not depend on an MCP SDK.
 
-- **mock MCP server**（test/fixtures/mock-mcp-server.mjs）：零依赖手写一个假 stdio MCP server——initialize/tools/list（2 个假工具 echo/uppercase）/tools/call 响应；供单测连接/列表/调用/错误路径
-- 单测（test/mcp.test.js）：
-  - 配置解析（存在/缺失/非法）
-  - 连接 + 握手 + tools/list 缓存
-  - callTool 调用 + 结果文本提取/截断/base64 省略
-  - 懒启动（未用不 spawn）、错误缓存（坏 server 不阻塞）
-  - 工具 id 规范 mcp_<server>_<tool>
-- e2e：真实 server（npx @modelcontextprotocol/server-filesystem 或本机已有的 MCP 配置）→ `erix chat "用 mcp 调用 xxx"` 验证搜索 + 调用链路
-- 现有 201 测试全绿 + 新增，不允许 skip
+- **Connection**: `connect()` coalesces concurrent connection attempts, reuses an already connected client, and otherwise starts a new transport. The handshake sends `initialize` with protocol version `2025-06-18`, empty client capabilities, and the erix client version, followed by `notifications/initialized`.
+- **stdio transport**: the client spawns the configured command, reads newline-delimited JSON-RPC responses, and captures up to 4096 characters of stderr for connection errors. A stdio request times out after 120 seconds.
+- **Streamable HTTP transport**: requests use `POST` with `Accept: application/json, text/event-stream`. JSON-RPC response IDs must match the request. SSE responses are read until the matching response ID arrives. HTTP requests and SSE reads time out after 300 seconds.
+- **Reconnect behavior**: a failed connection is marked `error` and its failure is retained for status reporting. A later `connect()` call may try the transport again. A failed stdio handshake cleans up the child process. `close()` marks that client closed; `closeAllMcpServers()` closes every pooled client and clears the pool.
+- **Tool metadata**: `listTools()` sends `tools/list` after connecting and caches the returned array after the first successful request.
+- **Tool calls**: `callTool()` sends `tools/call` with the raw tool name and `args`, defaulting arguments to `{}` when omitted.
+- **Connection pool**: clients are pooled by server name, working directory, resolved configuration path, and normalized server configuration. This prevents two configurations that happen to use the same server name from sharing a connection.
+- **Result formatting**: text content blocks are joined with newlines. `image` and `resource` blocks, as well as base64 data URLs in text blocks, become `[data-url omitted]`. Results are limited to 4096 characters; oversized results include a truncation notice with the original character count.
 
-## 红线
+Transport and JSON-RPC failures are surfaced as MCP connection errors. When the proxy lists multiple servers, an error for one server is recorded in that server's result and does not prevent the remaining servers from being listed.
 
-1. dependencies 保持为空（只 import node: 内置 + ../src/ 相对路径）
-2. 不把 MCP 工具全量合并进 LLM 工具集（只有 1 个 mcp 代理工具）
-3. 懒启动：配置了但没用到的 server 不 spawn
-4. 不提交 key 明文；测试用临时目录/mock server
-5. 不改 src/ 现有代码（loop/provider 不动）
-6. CLI 退出必须清理子进程（不泄漏）
+## Proxy tool
 
-## 验收
+When `mcpServers` contains at least one entry, the model receives exactly one tool named `mcp`. Its input schema requires `action` and declares the following properties:
 
-- node --check bin/mcp.js bin/cli.js bin/repl.js
-- npm test 全绿（201 + 新增）
-- `erix mcp` 输出配置 server 列表
-- e2e：真实 MCP server（npx filesystem 或本机 mcp.json 复用）——`erix chat "用 mcp 工具列出 /tmp 下的文件"`（filesystem server）能走通 search → call；结果正确返回
-- git status 确认只改 bin/ + test/ + docs/mcp-design.md
+- `action`: one of `"list"`, `"search"`, `"call"`, or `"status"`.
+- `server`: an optional server name.
+- `tool`: an optional tool name or internal ID.
+- `args`: an optional object passed to the MCP server.
+- `query`: an optional string declared with `maxLength: 100`.
+
+The action behavior is:
+
+- **`list`**: connects to every configured server, obtains each server's tool list, and returns a text summary containing each server's tool count, name, and first description line. A server failure is shown as an error while other servers continue.
+- **`search`**: requires a non-empty `query`, connects to every configured server, and matches the lower-cased query against the server name, tool name, and description. Matches include the server, raw tool name, description, and complete input schema. This is metadata search, not internet search.
+- **`call`**: requires `tool` and either `server` or an internal ID in the form `mcp_<server>_<tool>`. The parser prefers the longest configured server name, so server names containing underscores are supported. The call returns the formatted textual result.
+- **`status`**: reports each configured server's current state, such as `idle`, `connecting`, `connected`, or an error string. Status inspection does not initiate a connection.
+
+The proxy does not register individual MCP tools with the model, does not validate a tool's arguments locally, and does not offer a server filter for `list` or `search`.
+
+## CLI and REPL integration (`bin/cli.js` and `bin/repl.js`)
+
+- `erix chat` and `erix repl` accept `--config <path>`. The selected path is passed to both the normal CLI configuration loader and MCP configuration lookup. Without it, MCP uses the current-directory or home-directory search order described above.
+- If MCP is enabled, the CLI and REPL append the single `mcp` schema to their existing tool list and route executions whose name is `mcp` to the proxy.
+- `erix mcp [--config <path>]` loads the MCP configuration and prints each configured server with its current connection state. It does not connect to servers merely to display the status.
+- The interactive REPL provides `/mcp`, which reports the same configured servers and states. It also reports a malformed MCP configuration instead of silently hiding it.
+- Normal chat completion, the CLI entry point's finalization, and REPL shutdown call `closeAllMcpServers()`. In the REPL, `SIGINT` either aborts the active run or closes the interface, which then follows the normal cleanup path. There is no separate `SIGTERM` handler in the CLI integration.
+
+## Tests
+
+The MCP unit tests are in `test/mcp.test.js`. Their fixtures are in the repository-root `fixtures/` directory, not under `test/`:
+
+- `fixtures/mock-mcp-server.mjs` is a zero-dependency stdio server. It implements the `initialize` handshake, `tools/list`, and `tools/call` for four tools: `echo`, `uppercase`, `image`, and `binary`. It can also simulate a failed handshake and write its PID for lifecycle assertions.
+- `fixtures/mock-mcp-http-server.mjs` exercises streamable HTTP with JSON responses and SSE responses, session IDs, authorization headers, and deliberately mismatched response IDs.
+- Configuration tests cover explicit paths, `.mcp.json` lookup, missing files, valid configuration, invalid JSON, and missing `mcpServers`.
+- Proxy tests cover disabled and enabled states, configured server discovery, lazy startup, connection pooling, handshake cleanup, tool-list caching, healthy and broken servers, status reporting, search, calls, `mcp_<server>_<tool>` resolution, server names containing underscores, omitted data content, and result truncation.
+- The end-to-end test creates a temporary MCP server and file, then verifies the search-to-call path without requiring an external package or a real `npx` server.
+- HTTP tests verify JSON and SSE list/call flows, `!cat` header expansion relative to both the working directory configuration and an explicit configuration file, session reuse, and response-ID validation.
+
+## Red lines
+
+1. Keep `dependencies` empty. MCP code may use Node built-ins and local relative modules only.
+2. Do not merge the complete MCP tool catalog into the model tool set; expose only the `mcp` proxy tool.
+3. Keep server startup lazy. A configured but unused server must not be spawned.
+4. Never commit plaintext keys or tokens. Tests use temporary directories, generated configurations, and mock servers.
+5. Keep MCP integration in `bin/`; do not alter the existing `src/` loop or provider implementation for this feature.
+6. Always clean up MCP transports when the CLI or REPL exits; no child process or active HTTP request may leak.
+
+## Acceptance
+
+- `node --check bin/mcp.js bin/cli.js bin/repl.js`
+- `npm test` passes without skipped MCP coverage.
+- `erix mcp [--config <path>]` reports the configured server list and current states.
+- `erix chat` and `erix repl` expose one `mcp` tool when a valid MCP configuration is present, and the proxy can complete the `list`, `search`, `call`, and `status` flows.
+- Stdio and streamable HTTP fixtures cover handshake, listing, calling, errors, session reuse, and cleanup.
+- A manual integration run with a configured filesystem server can exercise the existing command line `erix chat "用 mcp 工具列出 /tmp 下的文件"` and verify the search-to-call path and returned result.

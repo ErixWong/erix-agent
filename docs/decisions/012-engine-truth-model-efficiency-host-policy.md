@@ -1,64 +1,65 @@
-# ADR-012：引擎、模型与宿主的责任边界
+# ADR-012: Responsibility Boundaries Between the Engine, Model, and Host
 
-- 状态：已决策（2026-09-14）
-- 相关：ADR-007（记忆架构）、ADR-009（安全分层）、ADR-010（上下文整形哲学）、ADR-011（judge 方向评估）
+> Chinese version: [012-engine-truth-model-efficiency-host-policy_cn.md](012-engine-truth-model-efficiency-host-policy_cn.md)
 
-## 背景
+- Status: Decided (2026-09-14)
+- Related: ADR-007 (memory architecture), ADR-009 (safety layering), ADR-010 (context-shaping philosophy), ADR-011 (judge direction evaluation)
 
-长任务失败的主要问题不是模型“不查证”，而是上下文折叠丢失了后续需要的真值，
-随后模型在有限轮次内无法收敛。捷径（notes）可以提高效率，但不能成为正确性的唯一
-依赖。系统需要把真值、行为效率和运行策略分到不同责任域，避免用提示词掩盖引擎侧
-的事实丢失。
+## Background
 
-## 决策
+The main problem in long-task failures is not that the model "does not verify", but that context compaction loses the truth needed later,
+after which the model cannot converge within a limited number of rounds. Shortcuts (notes) can improve efficiency, but cannot become the sole
+dependency for correctness. The system needs to assign truth, behavioral efficiency, and runtime policy to different responsibility domains,
+avoiding the use of prompts to conceal fact loss on the engine side.
 
-> **guard 章程（不可扩张）**：见 **ADR-013**——guard 只做精确比对、禁止解析模型自然语言（无形态/关键词启发式）、新增规则前必须先证明无法在源头（stub / 告知 / 生产者声明 / 有界取货）消除；保持 opt-in，且 `bin/final-guard.js` 有 300 行上限。所有 guard 类机制的 PR 评审必须对照该章程。
+## Decision
 
-### 三方责任
+> **Guard charter (non-expansible)**: see **ADR-013**—guard performs only exact comparison, must not parse model natural language (no form/keyword heuristics),
+> and before adding a rule, first prove that it cannot be eliminated at the source (stub / notice / producer declaration / bounded retrieval);
+> keep it opt-in, and `bin/final-guard.js` has a 300-line limit. PR reviews for all guard-like mechanisms must be conducted against this charter.
 
-1. **引擎负责真相与机制**：保留工具结果和 provenance 所需的最小事实，维护折叠、
-   归档、终止、预算和 checkpoint 等协议不变量；引擎不得把正确性外包给模型是否
-   遵守提示。
-2. **模型负责效率**：决定何时使用 notes、如何规划和验证，以及如何在预算内给出
-   结论。模型可以减少搜索和重复读取，但模型行为不是事实来源。
-3. **宿主负责策略与 LTM**：注入工具执行、归档读取、`stubFor`、`finalGuard` 和
-   TranscriptStore 等策略；长期记忆（LTM）属于宿主侧，不进入本库的核心引擎。
+### Three-party responsibilities
 
-### 默认值判据
+1. **The engine is responsible for truth and mechanisms**: retain the minimum facts needed for tool results and provenance, maintain the protocol
+   invariants for compaction, archiving, termination, budgets, and checkpoints; the engine must not outsource correctness to whether the model follows prompts.
+2. **The model is responsible for efficiency**: decide when to use notes, how to plan and verify, and how to provide a conclusion within the budget.
+   The model may reduce searching and repeated reads, but model behavior is not the source of truth.
+3. **The host is responsible for policy and LTM**: inject tool execution, archive retrieval, `stubFor`, `finalGuard`, and TranscriptStore policies;
+   long-term memory (LTM) belongs on the host side and does not enter the core engine of this library.
 
-- **阻止环境撒谎的机制默认开启**：例如不可重放事实的安全保留、归档 digest/
-  provenance 约束和确定性终止信号。
-- **改变模型行为的特性默认关闭**：例如 CLI final provenance guard，必须通过
-  `--final-guard` 或 `ERIX_FINAL_GUARD=1` 显式启用。库 API 继续接受宿主显式注入
-  `finalGuard`，不改变其兼容语义。
+### Default-value criteria
 
-### 正确性不得依赖模型行为
+- **Mechanisms that prevent the environment from lying are enabled by default**: for example, safe retention of facts that cannot be replayed,
+  archive digest/provenance constraints, and deterministic termination signals.
+- **Features that change model behavior are disabled by default**: for example, the CLI final provenance guard must be explicitly enabled
+  through `--final-guard` or `ERIX_FINAL_GUARD=1`. The library API continues to accept an explicitly injected host
+  `finalGuard` without changing its compatibility semantics.
 
-判定法：把所有提示词、工具描述和恢复建议删掉后，系统仍不能因为折叠或重放而
-静默交付错误事实；若删除提示词会产生静默错答，则该正确性机制必须下沉到引擎或
-宿主的确定性协议中。提示词只能改善效率和可解释性，不能替代真值保存、来源核对
-或 fail-closed 的状态表达。
+### Correctness must not depend on model behavior
 
-### 探针与实验
+The test: delete all prompts, tool descriptions, and recovery suggestions; the system must still not silently deliver incorrect facts because of
+compaction or replay. If deleting prompts produces a silent wrong answer, that correctness mechanism must be lowered into a deterministic protocol
+of the engine or host. Prompts may improve efficiency and explainability, but cannot replace truth preservation, source verification, or fail-closed state expression.
 
-探针不作为常规运行手段。扩大实验前先做 **3–5 次 pilot**，确认探针能区分目标
-假设与噪声后再放大；所有实验须使用显式预算、成本下限和可复现实验记录。
+### Probes and experiments
 
-## 后果
+Probes are not a routine operating method. Before expanding an experiment, first conduct **3–5 pilot runs** and confirm that the probe can distinguish
+the target hypothesis from noise; all experiments must use an explicit budget, cost floor, and reproducible experiment record.
 
-- 折叠 stub 和有界归档索引属于引擎/CLI 的机制与导航，不把完整归档值注入上下文。
-- notes 是捷径和 pull-only 索引；LTM、跨 run 整理和策略编排由宿主决定。
-- 强制收尾和低预算提示帮助模型收敛，但即使模型忽略它们，终止原因和 `forcedFinal`
-  标记仍由引擎确定性维护。
-- CLI guard 默认关闭是有意的行为变更：它改变模型/宿主交互路径，而不是防止环境
-  撒谎的底层机制。
+## Consequences
 
-## 与既有 ADR 的关系
+- Compaction stubs and bounded archive indexes belong to engine/CLI mechanisms and navigation; do not inject complete archive values into context.
+- notes are shortcuts and pull-only indexes; LTM, cross-run organization, and policy orchestration are determined by the host.
+- Forced wrap-up and low-budget hints help the model converge, but even if the model ignores them, the termination reason and `forcedFinal`
+  marker are maintained deterministically by the engine.
+- The CLI guard being disabled by default is an intentional behavior change: it changes the model/host interaction path, rather than
+  being a low-level mechanism that prevents the environment from lying.
 
-- **ADR-007** 定义记忆分层与召回方向；本 ADR 明确 LTM 不进核心库，notes/归档
-  仍是宿主接入的短期恢复手段。
-- **ADR-009** 将安全边界交给沙盒/宿主；本 ADR 延续该分层，但要求引擎仍对自身
-  的事实链、归档完整性和终止协议负责。
-- **ADR-010** 的上下文整形只能优化可用上下文，不能移除引擎必须保留的真值。
-- **ADR-011** 的 judge/direction 继续服务效率与方向纠偏，不改变“模型不是事实
-  来源”的原则。
+## Relationship to existing ADRs
+
+- **ADR-007** defines memory layering and the direction of recall; this ADR makes clear that LTM does not enter the core library, while notes/archive
+  remain short-term recovery mechanisms integrated by the host.
+- **ADR-009** delegates the security boundary to the sandbox/host; this ADR continues that layering, while requiring the engine to remain responsible
+  for its own fact chain, archive integrity, and termination protocol.
+- **ADR-010** context shaping may optimize usable context, but cannot remove truth the engine must retain.
+- **ADR-011** judge/direction continues to serve efficiency and direction correction without changing the principle that "the model is not the source of truth".

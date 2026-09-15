@@ -1,254 +1,714 @@
 # erix-agent
 
-**自研无头编码 agent（headless agent）**：零依赖的 LLM agent 运行时——双协议流式 + 工具循环 + 上下文压缩 + checkpoint，面向**无人值守、宿主调度**场景（app_container / touwaka 嵌入式底座）。CLI（erix）不是产品，是验证与调试器。
+> Chinese version: [README_cn.md](README_cn.md)
 
-**定位：无头 agent。** 交付物 = 引擎 + 编程式任务入口（任务进 → 自主工具循环 → 事件出 → 可恢复），不带 UI、
-不面向终端前的人。与 pi 的关系：**pi 是交互 agent（人在环，TUI/subagent/MCP 生态），erix 是无头 agent
-（无人环，被平台调度）——互补，不竞争**（见「为什么是自研」）。
+**erix-agent** is a zero-dependency, pure ESM LLM runtime for headless coding
+agents. It provides dual-protocol streaming providers, a tool-calling loop,
+context compaction, checkpointing, resume, bounded recall, and an optional
+reflection/judge layer for unattended work.
 
-- **产品形态（无头运行时）**：`runToolLoop` 单任务生命周期——起、跑、停、恢复、事件流
-  （onRound/onDelta/onToolCall/onUsage/onEvent）；压缩不自爆（computeBudget 谱系）；失败可分类可重试（checkpoint/resume）。
-- **自主质量内建（v0.3.0 judge 体系）**：无人值守下不依赖模型自报完成——独立 judge LLM 在
-  工具循环中途透明审计（副作用前拦截错误动作）+ end_turn 验证 + direction 方向软提示 + stall 防空转软纠正；
-  每次 judge 决策可落盘审计（onJudge / --judge-log）。**`runToolLoop` 在 maxRounds≥16 且未显式配置时默认启用**
-  （无头宿主零配置获得保护，可 `reflection:false` 关闭）。benchmark 实证：历史失败任务翻盘（见下方 Benchmark 节）。
-- **边界：止于单个 agent 任务的生命周期**。多角色编排、仲裁、重试调度、任务队列是**宿主职责**
-  （app_container 的 arbitrate/reaper/三角色），不吸入库——一旦承诺编排就滑向「无头 agent 平台」，
-  撞 OpenAI Agent SDK / LangGraph / pi RPC 赛道，零依赖小包优势尽失。
-- **CLI = 验证器，不是重点**：交互 TUI + 单次对话（`erix chat` 可作 bench 入口）；工具面全面直通
-  （readFile/writeFile/rg/tree/exec，任意路径任意命令）；配置/会话/任务家目录管理（~/.erix/）。
-  用途 = 开发期调试、冒烟、benchmark 入口。⚠️ 交互 repl 测的是**人机协作**，不是无头自主能力；
-  「验证 agent 能力」的主体是 **erix-bench 无头 harness**（容器内驱动 + 判分器，`--agent erix|pi` 对照）。
-- **生态**（可扩展，服务于无头场景）：skill 自描述协议（~/.erix/skills/*，脚本自报工具，ADR-008）+ **MCP 对接**
-  （stdio + HTTP，复用标准 .mcp.json 配置）+ todo 任务管理。
+**Positioning: headless agent.** The product is an engine plus a
+programmatic task entry point: a task enters, the agent runs its tool loop,
+events leave the process, and the run can be resumed. It is not a UI and is
+not designed for a person sitting in front of a terminal. `runToolLoop`
+owns one agent task lifecycle: start, run, stop, resume, and stream events
+through `onRound`, `onDelta`, `onToolCall`, `onUsage`, and `onEvent`.
 
-> **安全边界由运行环境提供**（[ADR-009](docs/decisions/009-safety-layering.md)）：**谁用这个 agent 谁负责安全**——
-> 本地跑就是你的机器（信任域），嵌入容器/沙盒场景由宿主隔离。
-> CLI 不内置白名单/牢笼/确认弹窗，工具面全面直通（含写与执行）。
+The relationship with pi is complementary:
 
-消费方：`app_container`（PI Agent 审计/开发链路，迁移进行中：erix-agent 替换自研 pi/ 层）、`touwaka`（AgentLoop / 对话链路）。
+- **pi is an interactive agent**: human-in-the-loop, with TUI/subagent/MCP
+  workflows.
+- **erix is a headless agent**: unattended and scheduled by a host.
 
-## 为什么自研（vs 现成框架）
+The boundary ends at one agent task lifecycle. Multi-role orchestration,
+arbitration, retry scheduling, reapers, and task queues belong to the host
+(`app_container` / `touwaka`), not to this library. Keeping that boundary
+avoids turning a small runtime into a headless-agent platform and preserves
+the zero-dependency design.
 
-调研结论（2026-08-29，详见 docs/research/）：
+The CLI (`erix`) is a verifier and debugger, not the product:
 
-- **Vercel AI SDK**（`ai` v7）：provider 适配 + tool loop 成熟，但**上下文压缩明确不做**（官方 cookbook 让用户用 `prepareStep` 自己写）——最有价值的一半仍需自研。
-- **LangChain.js / Mastra / LangGraph**：框架级抽象，两个消费项目（app_container / touwaka）都刻意不用框架。
-- **oneringai 等全家桶**：形态不对（重依赖、语音/图像等无关能力）。
-- **pi SDK**：交互 agent（人在环），形态与 erix 互补不竞争（详见上文定位）。
+- `erix chat` is a single-task entry point and can be used by a benchmark
+  harness.
+- `erix repl` is an interactive TUI and measures human-agent collaboration,
+  not unattended autonomy.
+- The intended unattended evaluation surface is the external
+  **erix-bench** harness, which drives tasks in a container and compares
+  `--agent erix|pi`.
 
-> 技术替代触发条件（接第三家非 OpenAI 兼容协议等）与项目止损线属内部决策，见 docs/。
+The runtime also exposes extension surfaces for self-describing skills,
+MCP integration, transcript stores, and host-provided task state. The
+repository bundles the `notes` skill; the todo skill is an example under
+`examples/skills/todo/`, not a built-in `runToolLoop` capability.
 
-## 模块地图
+> **Security boundary:** the runtime does not enforce a security policy.
+> The caller is responsible for safety. Running locally means giving the
+> agent access to your local trust domain; embedded or sandboxed deployments
+> must be isolated by the host. The CLI tools intentionally allow arbitrary
+> file paths and shell commands and do not add an allowlist or confirmation
+> prompt. The optional `erix-agent/tools` export includes a jail helper for
+> callers that want to build a restricted tool surface.
 
-```
+The project is intended for integrations including `app_container` (PI Agent
+audit/development paths) and `touwaka` (AgentLoop/conversation paths). Those
+host integrations are outside this package's lifecycle boundary.
+
+## Why a unified headless agent?
+
+Several in-house projects and vibe-coded prototypes need LLM capability, and
+their authors are not necessarily fluent in prompting, context engineering,
+tool calling, structured output, retries or cost control. Wiring each one
+straight to a provider reproduces the same defects everywhere: inconsistent
+call conventions, poorly shaped context, wasted tokens, flaky tool calls,
+thin error handling, unpredictable agent behaviour. A shared headless runtime
+exists so that application code depends on one stable programmatic interface
+instead of re-solving the engineering underneath it.
+
+| Requirement | Provided by this runtime | Owned by the host |
+|---|---|---|
+| Lower the barrier to LLM use | `runToolLoop` as the single entry point; dual-protocol providers; canonical message model; compaction; checkpoint/resume; classified errors | product-level prompt and workflow design |
+| Centralised model configuration and run policy | duck-typed `ModelConfigProvider.resolve(slot)` with `static` / `env` / `json-file` adapters, per-slot models, `apiKey`/`apiKeyEnv`/`apiKeyFile` indirection, budget derivation | the configuration store itself (database or config centre), project and tenant quotas, fallback policy, prompt and agent versions |
+| Traceable calls, cost analysis and audit | event stream (`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`), token accounting, `TranscriptStore` persistence, stable run ids, checkpoints and bounded recall for replay | log and cost storage, dashboards, retention, audit process |
+| One tool, permission and safety boundary | a single execution entry (`executeTool`), an executor registry that data cannot extend, schema intersection, optional jail/file/recall helpers under `erix-agent/tools` | the policy itself: which project may run which agent, which tools, which operations need confirmation, network and write access, rate and time limits |
+| Contain third-party framework churn | zero runtime dependencies and an owned implementation, a stable exported surface plus `erix-agent/contract-tests` for consumers | — |
+| Accumulate reusable agent engineering | canonical message and tool formats, ADR-tracked decisions, contract tests, benchmark harness | — |
+
+Two boundaries keep this honest. The runtime **executes no policy** — it
+exposes the hooks and the host decides
+([ADR-009](docs/decisions/009-safety-layering.md)). And it **owns exactly one
+task lifecycle** — queues, arbitration and retry scheduling stay with the host
+([ADR-012](docs/decisions/012-engine-truth-model-efficiency-host-policy.md)).
+
+## Why build our own?
+
+The project research conclusion (2026-08-29; see the research index below)
+is that the important gap is not another provider adapter:
+
+- **Vercel AI SDK** (`ai` v7) has mature provider and tool-loop support, but
+  context compaction is explicitly left to the application (the official
+  cookbook uses `prepareStep` for application code). The most valuable part
+  of this runtime would still need to be built.
+- **LangChain.js / Mastra / LangGraph** provide framework-level abstractions,
+  while both named host projects intentionally avoid taking a framework
+  dependency.
+- **oneringai and similar full stacks** have the wrong shape: heavy
+  dependencies and unrelated audio/image capabilities.
+- **pi SDK** is an interactive agent. Its human-in-the-loop shape is
+  complementary to erix's headless lifecycle rather than a replacement for
+  it.
+
+The trigger for replacing this implementation (for example, adding a third
+non-OpenAI-compatible protocol) and the project's stop-loss line are internal
+decisions; they are not runtime capabilities.
+
+## Module map
+
+The public entry point is `src/index.js`; the complete current source tree is:
+
+```text
 src/
-├── providers/     # OpenAI 兼容 + Anthropic 双协议 → 统一内部块格式（流式/非流式）
-│                  #   v0.0: openai 非流式 · v0.1: +anthropic +流式
-├── messages/      # 规范消息模型 + 轮次分组（两种协议的成对规则）  v0.0
-├── tokens.js      # 中英混合保守 token 估算  v0.0
-├── compact/       # 压缩策略  v0.1: sliding-window / fold-statistical · v0.2: fold-llm · v2: psyche
-├── store/         # TranscriptStore：v0.0 memory · v0.2 file(JSONL) · DB 适配器在项目侧（MariaDB）
-├── config/        # ModelConfigProvider：v0.1 static / env · v0.2 json-file · DB 适配器在项目侧
-├── tools/                # 【v0.2】可选工具库（subpath export）：路径牢笼/文件工具/recall/registry 参考实现（recall 由宿主按需接线）
-└── loop.js        # runToolLoop  v0.0: 最小版 · v0.1: 轮内快照重试/死循环检测/完成信号/每轮压缩检查 全量
+  index.js                         Public exports
+  loop.js                          runToolLoop and reflection parsing
+  run-state.js                     Bounded deterministic and semantic run state
+  tokens.js                        Conservative token estimation
+  providers/
+    anthropic.js                   Anthropic provider and streaming
+    errors.js                      Provider errors and classification
+    openai.js                      OpenAI-compatible provider and streaming
+    payload.js                     Provider payload and timeout options
+    timeout.js                     Provider timeout handling
+  messages/
+    anthropic.js                   Anthropic protocol conversion and stream assembly
+    canonical.js                   Canonical message/tool conversion
+    rounds.js                      Message validation and round grouping
+  compact/
+    budget.js                      Context-budget calculation
+    enforce-size.js                Field-size enforcement
+    fold-llm.js                    LLM-assisted folding strategy
+    fold-statistical.js            Statistical folding and navigation records
+    helpers.js                     Shared folding, protection, stub, and hook helpers
+    sliding-window.js              Sliding-window folding strategy
+  store/
+    bounded-recall.js              Bounded, cursor-based recall implementation
+    file.js                        JSONL transcript, checkpoint, and state store
+    memory.js                      In-process transcript, checkpoint, and state store
+  config/
+    api-key.js                     API-key materialization
+    env.js                         Environment-backed model configuration
+    json-file.js                   JSON-file model configuration
+    static.js                      Static model configuration
+  reflection/
+    governor.js                    Deterministic round governance
+    judge.js                       Objective timeline and judge prompt/response parsing
+    l0.js                          Objective facts and summary parsing
+    wrapup.js                      Wrap-up protocol parsing and normalization
+  tools/
+    file-tools.js                  File tool implementations
+    index.js                       Optional tools subpath exports
+    jail.js                        Optional path-jail helper
+    providers.js                   Tool-provider adapters
+    recall.js                      Optional recall tool adapter
+    registry.js                    Tool schemas and executor registry
 ```
 
-## 工程约束
+`src/index.js` exports the providers, canonical message conversions, token
+and compaction helpers, transcript stores, run-state helpers, configuration
+providers, `runToolLoop`, and reflection helpers. The optional
+`erix-agent/tools` subpath exports the tool helpers listed above.
 
-- **零运行时依赖**、纯 ESM、Node 22+、无构建步骤
-- 测试：`node --test`（app_container 侧需 Node 24 跑 `await using`，库本身 22 可测）
-- 类型：JSDoc typedef（两个消费项目都是纯 JS）
-- 分发：公开 npm（`erix-agent`），代码托管在 GitHub（ErixWong/erix-agent）
-- 任何提交禁止 token/密钥明文
+## Engineering constraints
 
-## API 说明（runToolLoop）
+- Zero runtime npm dependencies, pure ESM, Node 22+, and no build step.
+- Tests use `node --test`; type information is expressed with JSDoc typedefs.
+- The package is published as `erix-agent` on npm and hosted at
+  `ErixWong/erix-agent` on GitHub.
+- Never commit tokens, API keys, or other credentials.
 
-核心入口 `runToolLoop({ provider, executeTool, ... })`——单任务生命周期，事件流驱动（onRound/onDelta/onJudge/onEvent）。
+The published package currently has version `0.5.1` in `package.json`. Its
+declared `files` are:
 
-- **完成信号**：默认启用 `completion: { signals: [], maxNoToolRounds: 3 }`（模型连续无工具轮达上限自动收尾）；传 `completion: false` 保留旧行为（end_turn 即停）。provider 重试默认关闭（`retry: false`，可选开启）。
-- **确定性终稿核验（可选 `finalGuard`）**：在 `end_turn`、completion 或 `judge_done` 真正停机前调用
-  `finalGuard({ finalText, messages, round, rounds, signal, termination })`。返回
-  `{ action: "accept" }` 正常停机；返回 `{ action: "revise", message }` 会以独立的 user 文本消息注入
-  `message` 并继续循环，最多由 `finalGuardMaxRetries`（默认 2）次。达到上限仍要求 revise 时，
-  loop 保留原始 `finalText`，以 `termination.reason === "final_guard_unverified"` 停机（fail-closed），
-  由宿主决定拒绝、人工复核或报告不可恢复。guard 抛错、返回非法结果或 timeout 时为保证可用性
-  **fail-open 停机，但绝不视为 verified**，并发出
-  `onEvent({ type: "final_guard", round, action: "error", reason })`；accept/revise/上限降级同样发出
-  `final_guard` 事件。store 对未核验和 guard 异常分别记录 `unverified_error`、`guard_error`，不会写
-  `succeeded`。guard 应使用 payload 的 `signal`，abort 不会被降级为 accept。
-- **wrapup 收尾协议**（v0.3.3 可关）：end_turn 时模型输出 `{"done":true,"summary":"...","output":"..."}` 视为完成并展示 output/summary；解析要求 `done` 为自有 boolean 键。对自有终稿 JSON 契约的宿主（app_container 等）或自然语言对话宿主（touwaka），传 `wrapup: false` 同时关闭**指令注入 / JSON 解析 / finalText 替换 / LLM 归一化**；`ERIX_NO_WRAPUP_INSTRUCTION=1` env 运维兜底同语义（任一关即关整个协议）。不传保持默认开启，不影响既有调用方。
-- **自主质量内建（judge 体系，v0.3.0）**：
-  - **默认开启**：`runToolLoop` 在 `maxRounds ≥ 16` 且未显式传 `reflection` 时自动启用基础 judge（无头宿主零配置获得保护）；传 `reflection: false` 或设 `ERIX_NO_REFLECTION=1` 关闭。
-  - 显式配置：`reflection: { enabled, roundJudge, judgeIntervalRound, judgeInterceptTimeoutMs, triggerRound, extensionStep, maxExtensions, maxRoundsCap, judge: { provider } }`。
-  - **round judge**（end_turn 验证）：启用时每轮模型想停时独立评估，只有 judge 正常返回高置信完成（`done:true && confidence≥0.7`）才放行并产生 `judge_done`。解析失败、调用异常，或返回 `done:true` 但 `confidence<0.7` 时不产生 `judge_done`，回落既有 `completion`/`no-tool`/`end_turn` 决策，模型自报完成信号仍可能结束任务；连续失败达到上限会自动关闭 round judge。`roundJudge: false` 或 `ERIX_NO_ROUND_JUDGE=1` 关闭。审计任务基准优先级为 `runToolLoop` 的 `task` > `context.task` > 入口消息最后一条 user 文本；多轮会话宿主应传当前指令（#34）。
-  - **透明劫持审计**：每 `judgeIntervalRound`（默认 5）次真实工具执行后，下一次工具调用先审计再执行——方向错（`done:false`）则不执行原工具（副作用拦截）并返回审计意见；通过则无感放行。`judgeIntercept: false` 单独关闭审计（保留 round judge）。审计失败/超时（`judgeInterceptTimeoutMs` 默认 30s）降级为直接执行原工具。
-  - **direction 软提示**：judge 输出 `direction: off_track` 时不拦截（执行原工具），但附加方向提示让模型考虑换路线。
-  - **观测**：每次决策 emit `onJudge`；CLI 可用 `--judge-log <path>` / `ERIX_JUDGE_LOG` 落盘 JSONL（已脱敏）。
-  - **回调错误**：流式 `onDelta`/`onReasoningDelta`/`onToolCall`/`onUsage` 回调异常通过可选的 `onObserverError` 上报；未提供时记录 `console.error("Observer callback error:", error)`，不会走仅用于存储失败的 `onPersistenceError`。
-- **executeTool 协议**：两种形式——位置参数 `(name, input)` 或结构化 `({ id, name, input, context, signal })`。结构化可返回 `{ success, data, duration, toolMessageId }`（loop 保留字符串结果并附加元数据）。
-- **压缩预算**：从模型 `contextWindowTokens`/`maxOutputTokens` 推导；策略支持 `summaryRole`/`recoveryHint`/`protectedMessage`/`stripHistoricalImages`/`onBeforeFold`/`onAfterFold`/`stubFor`。宿主或 CLI 可注入 `stubFor(message)`，为被折叠的 `replayable: false` 工具结果保留不超过 200 字符、最多 3 个安全 `label=value` 的事实 stub；未注入时保持原有丢弃行为。凭据样值不会进入 stub。
-  若保护集本身超预算，压缩会按消息顺序解除最旧 protected 消息的保护并折叠掉，保留较新的任务上下文；
-  `compactionStats[].protectedDowngraded` 记录数量，CLI 会显示警告。单条 protected 消息自身超预算则以
-  `invalid_budget` 明确失败，并提示提高预算或减少保护集。
-- **折叠导航记录**：折叠摘要可包含替换式、有界的 `navigationRecord`，
-  形如 `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }`；
-  最多 10 个 artifact 且最多 400 个字符，超限显式标记截断。它只用于按地址导航，
-  不含工具值或凭据，也不是语义索引；`digest` 用于与归档对账。
-- **调用级可重放性来源**：工具 metadata 和归档 sidecar 暴露
-  `replayableSource: "declared" | "policy" | "heuristic" | "unknown"`，
-  优先级为 declared > policy > heuristic > unknown。`unknown` 仍归档，但不代表
-  已审计可重放，也不参与任何重跑阻断；`unknown` 不提供 `replayable` 布尔声明，
-  不能把缺失声明当作安全默认值。
-- **Judge 写入足迹**：`runToolLoop` 默认只把 `writeFile` 计入 `filesWritten`；宿主使用自定义写工具时显式传
-  `writeToolNames: ["fs_write", "apply_patch"]`，不要依赖名称猜测。路径参数按
-  `writeToolPathKeys`（默认 `["path", "file_path"]`）从前到后取第一个非空字符串，便于接入不同工具协议。
-  Judge 的 `formatFiles` 会按配置后的路径显示最近写入文件。
-- **TranscriptStore**：`appendRound` 按 run/round key 幂等；`store.recall(runId, fromRound?, toRound?, pattern?)` 是面向宿主/人的取数契约，不是 `runToolLoop` 默认暴露给模型的工具；宿主可从 `erix-agent/tools` 按需接入参考实现。精确取货也支持 `store.recall({ runId, fromRound, toRound, pattern, artifactRef, limit, cursor, maxBytes })`：返回 `{ text, truncated, nextCursor?, status }`，`artifactRef` 精确过滤，游标绑定范围、筛选和上限，零上限显式拒绝；文件 store 对超大 JSONL 单条记录返回 `record_too_large` 并以游标推进，不整行物化。范围缺失/越界为 `unrecoverable`，数据版本变化或游标参数变化为 `stale`。旧位置参数继续返回字符串兼容结果。该 API 不做语义搜索，也不重新暴露 CLI recall 工具，详见 [`bounded recall API`](docs/design/2026-09-14-bounded-recall-api.md)。store 可实现 `markRunState`、`saveRunState/loadRunState`、`saveCheckpoint`/`appendCheckpoint`、`loadLatestCheckpoint`；run state 只保留当前版本，resume 不重复注入。loop 在工具执行前后 checkpoint；成对提供读写的 store 在任一 checkpoint 写失败时 fail-closed（执行后失败会明确报告“工具已执行但结果未持久化”），resume 按原顺序补齐全部未完成的多工具调用。宿主的 `executeTool` 仍需按 tool id 做幂等保护，无法由 loop 保证 exactly-once。
-- **provider**：`transport` 透传给 fetch 的 `dispatcher`；非法 OpenAI 工具参数用 `_truncatedArguments`（`_raw` 兼容别名）；不安全 runId 映射为 `run-<sha256 前 24 位 hex>`。
+```json
+["src", "bin", "skills", "README.md", "CHANGELOG.md",
+ "docs/host-consumer-contract.md", "test/contract", "LICENSE"]
+```
 
-> 完整接口契约见 [docs/architecture.md](docs/architecture.md)；设计决策见 [docs/decisions/](docs/decisions/)（judge 机制 = ADR-011）。
+Its public `exports` are:
 
-## CLI：erix（无头 agent 的验证器 / 调试器）
+```json
+{
+  ".": "./src/index.js",
+  "./tools": "./src/tools/index.js",
+  "./contract-tests": "./test/contract/index.js"
+}
+```
 
-`erix` 是构建在本库上、用于**验证与调试无头 agent** 的命令行入口（不是产品交付形态）：
+## `runToolLoop` API
 
-- **入口**：`erix` 直接进交互 TUI（`erix repl` 等价）；`erix chat "<prompt>" [--stream]` 单次对话
-  （`--reflection on|off` 控制自适应预算；`max-rounds >= 32` 时默认启用；终稿 provenance gate 默认关闭，
-  用 `--final-guard` 或 `ERIX_FINAL_GUARD=1` 开启；`--no-final-guard` 仅为兼容 no-op 别名）
-- **工具面**：readFile / rg / tree / writeFile / exec（任意路径、任意命令、git 不限）；配置归档目录后，较大的工具结果以及每次 `exec` 调用都会按本次 run 写入 `<transcriptDir>/outputs/<safeRunId>/<序号>-<toolName>.txt`（如 `001-exec.txt`），并写入带 `digest`、`locator`、`status`（`ok`/`truncated`）的 `.meta.json`；启动时扫描既有序号，跨进程并发碰撞时安全递增，保持归档与 sidecar 成对。返回文本带绝对路径指引。归档目录也会写入 system prompt，便于折叠后寻回原文；折叠摘要会附带归档目录提示（recoveryHint），确保折叠后仍可寻回；需要原文时用 `readFile`/`cat` 读取归档，不要重跑命令。同一规范化命令在 resume/新实例中照常执行，每次结果各自归档，并在结构化结果 metadata 中附 `rerunOf`（首次 round、artifactId、archivePath、digest、locator 与 `ok`/`truncated`/`missing`/`stale`/`unrecoverable` 状态）及告知文案；这不是拦截或正确性保证，也不撤销付款、删除、发布、写入或外部 API 副作用。归档单文件最多 1 MiB，写入失败时工具仍返回原结果并标注失败。默认不提供 agent 级 recall 工具——`store.recall()` 是面向宿主的契约方法，需要时可从 `erix-agent/tools` 自行接线——无内置安全层，见 ADR-009
-- **skill 系统**：`~/.erix/skills/<id>/skill.mjs` 自描述脚本，导出 `getSkillDefinition()` 自报工具（ADR-008）；`erix skills` 查看；todo skill（跨会话任务清单，长任务拆解/划掉/恢复）
-- **notes 技能（#63）**：用于记录任务中的关键事实、一次性值、决策与 artifact 引用，不是每轮日志。四个工具为 `note_take`、`note_read`、`note_list`、`note_forget`；当前只支持 `run` 作用域，记录按 key 保存当前值、最多 3 条已作废的 `superseded` 值和可见的 `folded` 遗忘计数。`note_list` 按 `relevance` 降序、再按 `updated_at` 降序输出，并支持 `minRelevance`、`tag`、`source` 筛选；输出仍受 `limit` 限制，返回 `relevance`、`source`、`tags` 元数据。自动捕获默认 relevance 为 `0.8`，旧记录缺失该字段按 `0.5` 处理。默认存储在 `~/.erix/notes/run/<safeRunId>/<safeKey>.json`（目录 `0700`、文件 `0600`），也可用 `ERIX_NOTES_DIR` 指定；run 完成后进入 `done`，到期由 janitor 转为 `revoked` 并保留墓碑。REPL 的 run scope 使用 `--session`（默认按工作目录派生），整个 REPL session 共用一个 run scope；宿主应显式传入 `__erix` scope。工具状态收敛为 `found`、`missing`、`revoked`、`invalid`、`unsupported`，模型需要早期细节时先 `note_list` 再 `note_read`。
-- **auto_capture（值 + 引用）**：CLI 在 `exec` 工具执行完成时，每次非幂等命令只捕获一条有界输出摘录（最多 1000 字符）和 artifact 引用；逐行解析显式 `label=value`，任一行疑似凭据时只保存 `artifactRef`，不保存输出内容。notes 只是便利索引，最终核验不信任 notes。非幂等命令强制写 `<序号>-exec.txt` sidecar 和 `.meta.json`，元数据标明 `replayable=false` 及 `replayableSource`；未命中声明、policy 或 heuristic 的 `unknown` 仍归档但不宣称可重放，也不参与任何重跑阻断。原子写、归档权限和凭据 fail-closed 规则保持不变。
-- **provenance gate 判定**：收尾时 CLI 只读取本 run `archiveDir` 下由 capture 写出的同名 `*.meta.json` manifest；notes/artifactRef 只是检索线索，不参与信任判定。manifest 必须声明 `digest/replayable/truncated/locator`，归档必须位于 archive root 内、通过 `realpath` 防符号链接逃逸、SHA-256 与磁盘内容一致，且只有 `replayable === false`、`truncated === false` 的归档才进入已知值集合。终稿按**来源契约**核验：由 manifest 建 `captures[{label,value,artifact,round,first}]`（每个 label 的**首次捕获为规范值**），终稿中锚定已知 label 的显式归属（`label=value`、`label：value`、`label 是 value`）按规则判定——等于首次捕获值直接放行；等于**后续重跑捕获值**时必须带来源（`来源=note_read:<key>` 或 `来源=归档:<文件名>`）且指向该 artifact（放行并记 `rerun_cited`），否则 revise；不对应任何捕获则 revise；找不到可比对项则 `skipped` 并警告。verification 同时输出 `verified`、`skipped`、`revised`、`rerun_cited`、`unverified`、`guard_error` 计数。
-- **verification 消费契约**：宿主必须先检查 `runToolLoop` 返回的 `verification.status`，只有 `verified` 才能把 `finalText` 当作来源已核验的结果；guard 关闭时状态为 `skipped`，`skipped` **不得当作 verified**，也不得据此宣称“没有问题”。`unverified` 表示 guard 要求修订但已无法继续，`termination.reason` 为 `final_guard_unverified`，不得标记或消费为成功；`error` 表示 guard 异常/超时（默认 30 秒），为可用性会 fail-open 返回文本，但文本仍未核验，需按宿主策略人工处理；`skipped` 也用于终稿中没有可与 capture manifest 比对的显式来源归属（此时只能说明“没有可核验项”）。CLI 对 `unverified` 以退出码 2 结束，对 `error` 以不同的退出码 3 结束；`skipped` 正常退出且因此可能是退出码 0，但退出码 0 不代表已核验，只有 `verification.status === "verified"` 才可作此判断。
-- 需要恢复具体值时，已知 key 优先直接按 `note_read key=<key>`；不知道 key 才按 `note_list → note_read`。只有仅引用型笔记才按返回的 `artifactRef.archivePath` 与 `locator` 有界读取归档并声明核对结果，禁止遍历归档目录，不得重跑命令或凭记忆补值。归档保存原文，notes 保存短值与审计引用，两者职责不同。折叠发生时会在折叠点注入不含捕获值/key 的 `[本 run 状态]` 标记和最多 10 条的归档目录视图（文件名、命令摘要、是否不可重放；超出显示“另有 N 条”）；归档索引是导航，不是数据注入。对不可重放结果，CLI 注入的折叠 stub 仍只保留安全的最小事实。工具结果在剩余轮次不超过 2 时追加预算提示；因轮次上限、stall 或 continuation 耗尽且没有终稿时，loop 追加一次禁用工具的强制收尾（可用 `ERIX_NO_FORCED_FINAL=1` 关闭）。规范化命令再次执行时会前置告知首次安全记录与工件状态，但不会阻止本次执行；涉及本 run 捕获值的终稿应带来源（`来源=note_read:<key>` 或 `来源=归档:<文件名>`）。
-- **MCP 对接**：`~/.erix/mcp.json` 标准配置，单代理工具（list/search/call/status）访问任意 MCP server（stdio + HTTP；实测 unifuncs 联网搜索、filesystem 读文件）
-- **配置**：`~/.erix/config.json`（或 `$XDG_CONFIG_HOME/erix/`），env 优先；会话存档 `~/.erix/<session>.json`；todo 清单 `~/.erix/todos/`
-- **流式**：repl 默认打字机；`chat --stream` 逐字输出；`--idle-timeout` 无进展自动中止；自动压缩预算（按模型窗口折叠）
+The core entry point is:
 
-> ⚠️ 安全声明：erix **不提供安全边界**。模型能读写任意文件、执行任意命令——
-> 只在你自己信任的机器/沙盒里运行，别在不可信环境裸跑。
+```js
+runToolLoop({ provider, executeTool, ...options })
+```
 
-## 文档
+It owns one task lifecycle and returns `finalText`, the current `messages`
+and `transcript`, `rounds`, `truncated`, `termination`, `verification`,
+optional `runState`, aggregate `usage`, and `compactionStats`.
 
-- [docs/requirements.md](docs/requirements.md) — 需求与分期
-- [docs/architecture.md](docs/architecture.md) — 接口契约与数据流
-- [docs/decisions/](docs/decisions/) — 设计决策（ADR-001~013：配置/存取/压缩/反思/工具体系/工具定义分层/记忆架构/skill 系统/安全分层/judge 方向评估/引擎-模型-宿主责任边界/guard 章程）
-- [docs/testing.md](docs/testing.md) — 测试方案（分层/基建/各阶段测试清单/行为指标）
-- [docs/host-consumer-contract.md](docs/host-consumer-contract.md) — **宿主消费者契约**（verification、bounded recall、provenance 与重跑责任边界）
-- [docs/host-upgrade-guide-v030.md](docs/host-upgrade-guide-v030.md) — **宿主升级指南（touwaka / app_container → v0.3.x）**：judge 默认开启等行为变化的应对
-- [docs/maintenance-policy.md](docs/maintenance-policy.md) — 维护策略（内部：技术替代触发条件/止损线）
-- [docs/research/](docs/research/) — 调研报告（记忆系统与上下文压缩外部实践，2026-08-29，ADR-007 的输入）
+### Completion, retries, and termination
 
-## 状态
+- `completion` defaults to `{ signals: [], maxNoToolRounds: 3 }`. When
+  enabled, completion signals and consecutive no-tool rounds can stop a
+  task. `completion: false` disables that completion layer.
+- `retry` defaults to `false`. An object enables retries for provider errors
+  classified as retryable; with `retry: {}` the default is two retries after
+  the initial attempt. `backoffBaseMs` defaults to `1500` and
+  `backoffMaxMs` to `10000`.
+- `maxRounds` defaults to `8` in the library. The CLI supplies its own
+  command-specific defaults.
+- `maxTokenContinuations` defaults to `3`. A response ending in
+  `max_tokens` can be continued up to that many times; exhaustion produces
+  `termination.reason === "continuation_exhausted"`.
+- `stallDetection` defaults to `{ window: 4 }`. The default mode is
+  `appear`, which detects a repeated tool signature anywhere in the window;
+  `mode: "consecutive"` requires the whole window to match. Pass
+  `stallDetection: false` to disable it.
+- `resume` defaults to `false`. With a `store` and `runId`, `resume: true`
+  restores the transcript, run state, latest checkpoint, and all pending
+  tool calls that still need execution. Checkpoint stores with both a writer
+  (`saveCheckpoint` or `appendCheckpoint`) and `loadLatestCheckpoint` fail
+  closed when a pre-execution or post-execution checkpoint cannot be
+  persisted. The host's `executeTool` must still be idempotent by tool id;
+  the loop cannot guarantee exactly-once external side effects.
 
-- **v0.5.1（2026-09-15，准备发布）**：在 0.4.0 的宿主可见行为变更基础上，加入有界确定性 run state、
-  对象式 bounded recall、重复执行结构化告知和 opt-in guard 契约；这是修复版本，升级前请阅读
-  [宿主消费者契约](docs/host-consumer-contract.md)。
-  **v0.4.0（2026-09-14）**：notes run scope 技能、工具产出归档与 provenance gate 完整落地，并在本版本内完成**记忆层瘦身**与**静默错答的结构性修复**。
-  notes 记录为 `current` + 最多 3 条 `superseded` + 可见 `folded` 计数（#74 起**不再有版本链与有界历史压缩**），
-  短值直接存入 `content` 并保留 `artifactRef` 审计链；`note_take` / `note_read` /
-  `note_list` / `note_forget` 支持墓碑式撤销与 janitor/GC。工具归档写入
-  `<transcriptDir>/outputs/<runId>/`；非幂等命令写 sidecar，同一规范化命令重跑照常执行并**前置告知首次安全记录与工件状态**，不承担拦截或正确性保证。
-  终稿 provenance gate 只信任 capture manifest，采用**来源契约**：首次捕获值直接放行；后续重跑捕获值必须带可核验来源（记 `rerun_cited`）；
-  无显式归属则 `skipped`。  折叠点注入不含值/key 的 `[本 run 状态]` 标记，并提供最多 10 条不含捕获值的归档目录视图；不可重放结果在 CLI 注入 stub 时保留最多 3 条安全 `label=value` 事实。
-  `unverified` 记录 `unverified_error` 并由 CLI 退出码 2 表示，guard 异常/超时记录 `guard_error` 并由 CLI 退出码 3 表示。
-  `runToolLoop` 的 `filesWritten` 可通过 `writeToolNames`（默认 `["writeFile"]`）和
-  `writeToolPathKeys` 配置；protected 消息超预算会降级并记录 `compactionStats[].protectedDowngraded`。
-- **v0.4.0 宿主接入要点**：CLI 默认关闭终稿 provenance gate；用 `--final-guard` 或 `ERIX_FINAL_GUARD=1` 开启，`--no-final-guard` 为兼容 no-op。CLI 仍可用 `--no-notes` 控制 notes（`--notes-ledger` 与 `ERIX_NOTES_LEDGER` 已移除）；需要自然语言终稿的宿主传 `wrapup: false`，或设置
-  `ERIX_NO_WRAPUP_INSTRUCTION=1`。消费 loop 结果时必须区分 `verification.status`：
-  `verified` 才是已核验终稿，`unverified`/`error` 分别对应退出码 2/3；`skipped` 仅表示没有可核验项。
-  notes 是 pull-only 便利索引，不会自动把值注入模型上下文（折叠点的 `[本 run 状态]` 标记只含计数，不含值/key）；模型需先 `note_list` 再按 key 调用 `note_read`。
-  宿主写入 scope 请显式传 `__erix`（`ERIX_RUN_ID` 已移除，仅保留 `ERIX_NOTES_DIR` 作为存储位置配置）。
-- **v0.5.1 run state**：折叠时确定性 run state 以单个 marker 替换注入，不逐轮追加；store 支持
-  `saveRunState/loadRunState` 的当前版本 upsert。持久对象有 64 KiB 总硬顶、工具/文件/todo
-  条目与字段上限，裁剪通过 `bounds.truncated` 和省略计数可见；未知、缺字段或损坏 schema
-  resume 时返回 `stateAvailability.status = "state_unavailable"`，不静默恢复默认。宿主可注入
-  `todoStateProvider` 与 `semanticStateProvider`，后者只提供有界、带版本的 derived 文本，过期版本显示为 `stale`。
-- **v0.3.5（2026-09-12，npm 最新）**：全项目体检修复批次（#37~#45，PR #47~#56）——流式回调 retry=0 实时透传（`erix chat --stream` 与宿主 SSE 转发恢复实时增量）；
-  checkpoint 执行后写失败 fail-closed（防崩溃恢复重复执行工具副作用）；resume 补执行全部 pending 工具（原只补一个致协议断裂）；
-  双协议 SSE `data:` 无空格兼容、408 归 timeout 可重试、legacy `function_call` 转换、providerOptions 不再覆盖核心字段；
-  file store runId 哈希命名空间隔离 + load 尾行修复 + state 原子写；repl 会话路径安全/原子写/0600 权限/Ctrl-C 中止；
-  MCP 握手失败进程清理/池键隔离/HTTP id 校验；tokens 系数校验 + 工具字段计入等 8 项输入校验；round judge 降级语义文档化；新增 `onObserverError`。
-  **宿主迁移注意（行为变化）**：①流式 onDelta 时机从「响应完成后批量」变为实时（依赖旧批处理时序的宿主需评估）；②checkpoint 执行后写失败现在显式 fail（宿主 executeTool 须按 tool id 幂等）；
-  ③file store 不安全 runId 的映射文件名改为 `run-h-<hash>`（旧 `run-<hash>` 存档不再读取，合法 id 不受影响）；④token 估算系数非法值现在 fail-fast 抛 TypeError（原静默 NaN）；
-  ⑤l0 `exitOk` 空工具结果轮次从 true 改为 false；⑥observer 回调异常改走 `onObserverError`（不再触发 onPersistenceError）。单测 473/0。
-- **v0.3.4（2026-09-07）**：judge 任务简报修复（#34）——多轮会话延续宿主（touwaka 等传整段对话历史）不再拿过期任务当审计基准：
-  显式 `task`/`context.task` 成为 judge/reflection/wrapup 最高权威基准（预算 1500 码点，多轮宿主应传当前任务/最新指令）；
-  无显式 task 时 fallback 升级为**入口最后一条** user 文本（单任务首条=末条，行为不变）；入口快照防循环内注入（方向提示/nudge）污染；
-  resume 只扫 round-0 seed 消息、无可信 seed 时**空基准宁缺勿错**（防跨 run 复现误判）；截断统一为码点语义。三轮独立复核收敛，单测 429/0。
-- **v0.3.3（2026-09-06）**：wrapup 收尾协议开关化（#30/#32）——`wrapup: false` 同时关闭指令注入 / JSON 解析 / finalText 替换 / LLM 归一化；
-  解析键守卫：done 必填 + 仅顶层对象（嵌套 {done} 不得绕过）。对话型宿主（touwaka）应显式传 `wrapup: false`。
-- **v0.3.2（2026-09-06）**：MIT license + README 重构（无功能差异）。
-- **v0.3.1（2026-09-06）**：README 定位更新到 v0.3.0 现状（无功能差异）。
-- **v0.3.0（2026-09-06）**：judge 体系落地——透明劫持审计（工具中途拦截错误动作）、
-  round judge（end_turn 验证）、direction 软提示（方向漂移引导）、stall 防空转软纠正（不再误杀长任务）；
-  judge 决策可观测（onJudge / --judge-log 脱敏落盘）；`runToolLoop` reflection 默认开启（maxRounds≥16 无头零配置）；
-  静态审计硬化（store 崩溃恢复 / checkpoint fail-closed / 输入校验）。单测 419/415/0。
-  benchmark 实证：Terminal-Bench archive 多任务 reward=1，历史失败任务翻盘（db-wal-recovery 721s→88s 等，见下）。
-- v0.2.0（2026-09-01）：双协议流式、FR-2 全量循环、压缩策略（自动预算折叠）、file store/recall/fold-llm、
-  json-file config、CLI 交互 TUI、配置/会话持久化、skill 自描述生态（todo 任务管理）、内置工具面（读写执行）、
-  流式打字机、MCP 对接（stdio + HTTP，联网搜索实测）、idle 超时。
+The normal termination vocabulary is:
 
-当前里程碑：app_container 迁移收尾（阶段 1/2 完成：worker 替换 + idea 对话 SSE 真机通过）→
-无头能力 benchmark（erix-bench Terminal-Bench 对照，进行中）→ 宿主持久化接线（touwaka #1116 / app_container #71）
-→ 通用 sandbox 组件（独立于 agent，另立 ADR）。
+```text
+end_turn
+no_tool
+stall
+max_rounds_cap
+reflection_stop
+judge_done
+continuation_exhausted
+final_guard_unverified
+aborted
+failed
+```
 
-## 发布前验证
+`aborted` and `failed` are also attached to thrown errors when the loop
+cannot return a normal result.
 
-发版前必须实跑：
+### Final guard and wrap-up
+
+- `finalGuard` is optional. Before a normal stop (`end_turn`, `no_tool`,
+  `judge_done`, completion, or a non-continuable cap), it receives
+  `{ finalText, messages, round, rounds, signal, termination }`.
+  It can return `{ action: "accept" }`, `{ action: "skip", reason }`, or
+  `{ action: "revise", message }`.
+- `finalGuardMaxRetries` defaults to `2`; `finalGuardTimeoutMs` defaults to
+  `30000`. A revise decision injects the returned `message` as a user
+  message and continues while retries remain. A revise decision on a
+  non-continuable stop, or after retries are exhausted, returns
+  `termination.reason === "final_guard_unverified"` with
+  `verification.status === "unverified"`. A guard error or an explicit skip
+  keeps the original termination reason.
+  Guard errors and timeouts are reported as `verification.status ===
+  "error"` and fail open for availability, but the text is not verified.
+  Without a guard, verification is `skipped` with reason `no_final_guard`.
+- `wrapup` defaults to `true`. With it enabled, the loop can interpret the
+  top-level JSON protocol
+  `{"done":true,"summary":"...","output":"..."}` at `end_turn`. Passing
+  `wrapup: false`, or setting `ERIX_NO_WRAPUP_INSTRUCTION=1`, disables the
+  instruction, JSON parsing, `finalText` replacement, and LLM
+  normalization together.
+
+Only `verification.status === "verified"` means that a final text passed a
+guard. `skipped` means that no verification was performed or no comparable
+capture existed; it is not a positive correctness result.
+
+### Reflection and judge governance
+
+When `reflection` is omitted, the library enables the basic judge
+automatically for `maxRounds >= 16`, unless `ERIX_NO_REFLECTION=1` is set.
+Pass `reflection: false` to disable it. The CLI has separate defaults:
+`chat` enables reflection at `max-rounds >= 32`, while `repl` explicitly
+passes `reflection: false`. `ERIX_NO_ROUND_JUDGE=1` disables round judging
+without disabling transparent interception.
+
+The object form accepts:
+
+```text
+enabled
+roundJudge
+judgeIntercept
+judgeIntervalRound
+judgeInterceptTimeoutMs
+judgeFailureLimit
+triggerRound
+extensionStep
+maxExtensions
+maxRoundsCap
+format
+wrapupNormalize
+judge: { provider, evaluator }
+onReflection
+```
+
+The defaults used by the loop are:
+
+- `roundJudge` and `judgeIntercept` are enabled when reflection is enabled.
+- `judgeFailureLimit` defaults to `3`; repeated round-judge failures then
+  disable round judging for the remainder of the run.
+- `judgeIntervalRound` is `5`; after that many real tool executions, the
+  next tool call is independently audited before execution.
+- `judgeInterceptTimeoutMs` is `30000`; an interception timeout or judge
+  failure degrades to executing the original tool.
+- `triggerRound` defaults to 80% of the initial `maxRounds`.
+- `extensionStep` defaults to `32`, `maxExtensions` to `2`, and
+  `maxRoundsCap` to at least the initial `maxRounds` and otherwise `256`.
+- A round judge can stop only with `done: true` and `confidence >= 0.7`.
+  A `done: false` decision injects a continuation/nudge; `direction:
+  "off_track"` is a soft direction hint and does not itself block a tool.
+- Wrap-up LLM normalization is off by default; enable
+  `wrapupNormalize: true` or `ERIX_WRAPUP_NORMALIZE=1`.
+
+`onJudge` receives round and interception decisions, including `judge_done`,
+`nudge`, `continue`, `executed`, `blocked`, and `degraded` actions. The loop
+does not treat a judge as a host-level completion certificate; hosts still
+decide whether to consume the result.
+
+### Tools, context, stores, and compaction
+
+- `executeTool` supports positional `(name, input)` and structured
+  `({ id, name, input, context, signal })` forms. A structured executor can
+  return `{ success, data, duration, toolMessageId }`; the loop preserves
+  the returned metadata alongside the canonical `tool_result`.
+- `context` is optional and defaults to `undefined`; when supplied, it
+  accepts `strategy`, `budgetTokens`, `keepRounds`, `toolContext`, and
+  `task`. When `budgetTokens` is absent, the loop derives it from
+  `contextWindowTokens` and `maxOutputTokens` found in `modelConfig`,
+  `modelMetadata`, `model`, `provider`, or `context`. Compaction keeps six
+  rounds by default when a strategy is active. A task brief takes precedence
+  in this order: explicit `task`, `context.task`, then the last user message
+  in the entry transcript.
+- Compaction supports `summaryRole`, `recoveryHint`, `protectedMessage`,
+  `stripHistoricalImages`, `onBeforeFold`, `onAfterFold`, and `stubFor`.
+  Protected messages can be downgraded if the protected set itself cannot
+  fit the budget; the result records `compactionStats[].protectedDowngraded`.
+  A single protected message that cannot fit produces `invalid_budget`.
+- A `stubFor(message)` hook can retain a bounded, non-secret stub for folded
+  `replayable: false` tool results. The CLI's capture stub is limited to
+  200 characters and at most three safe `label=value` facts. Fold navigation
+  records are address-only records of the form
+  `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }`,
+  bounded to at most 10 artifacts and 400 characters. They are not semantic
+  search or provenance proof.
+- `writeToolNames` defaults to `["writeFile"]`; custom write tools must be
+  named explicitly. `writeToolPathKeys` defaults to `["path", "file_path"]`.
+  The judge's `filesWritten` footprint does not infer arbitrary write tools
+  from their names.
+- `TranscriptStore` implementations provide idempotent `appendRound` plus
+  optional checkpoint and run-state persistence. The object form of
+  `store.recall()` supports `fromRound`, `toRound`, `pattern`, `artifactRef`,
+  `limit`, `cursor`, and `maxBytes`, returning `{ text, truncated,
+  nextCursor?, status }`. It is bounded exact retrieval, not semantic
+  search, completion proof, or provenance verification. `cursor` is bound
+  to its run, range, filter, limits, and source version; mismatch is
+  rejected rather than silently restarting. `limit: 0` and `maxBytes: 0`
+  are rejected. File stores report an oversized source record as
+  `status: "truncated"` with `error.code === "record_too_large"`.
+  Legacy positional recall remains available and returns a string.
+- `runState` is deterministic, bounded, and replace-injected at compaction
+  points. Stores can implement `markRunState`,
+  `saveRunState`/`loadRunState`, `saveCheckpoint`/`appendCheckpoint`, and
+  `loadLatestCheckpoint`. Persisted run state has a 64 KiB serialized hard
+  limit plus entry and field limits; truncation is visible through
+  `bounds.truncated`. `todoStateProvider` and `semanticStateProvider` are
+  host-injected; semantic state is bounded and versioned, and stale versions
+  are marked `stale`. Invalid or corrupted state is reported as
+  `state_unavailable` on resume rather than silently treated as a fresh
+  state.
+- Provider-specific details remain explicit: `transport` is passed through to
+  fetch as a `dispatcher` (or can enhance fetch options), malformed OpenAI
+  tool arguments are exposed as `_truncatedArguments` with `_raw` as a
+  compatibility alias, and unsafe run IDs map to
+  `run-h-<sha256 first 24 hex characters>`.
+
+### Callbacks and events
+
+The loop callbacks are:
+
+```text
+onRound
+onJudge
+onToolResult
+onPersistenceError
+onObserverError
+onDelta
+onReasoningDelta
+onToolCall
+onUsage
+onEvent
+```
+
+Streaming observers (`onDelta`, `onReasoningDelta`, `onToolCall`, and
+`onUsage`) report through `onObserverError` when an observer throws.
+Persistence failures use `onPersistenceError`. `onEvent` receives structured
+events including `round_start`, `round_end`, `tool_use`, `tool_result`,
+`attempt`, `recovering`, `recovered`, `delta`, `reasoning_delta`, `tool_call`,
+`usage`, `forced_final`, and `final_guard`.
+
+## CLI: `erix`
+
+`erix` is the repository's validation/debugging front end. It is not the
+headless runtime's product interface.
+
+### Commands and flags
+
+```text
+erix --version, -v
+erix --help, -h
+erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
+erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]
+erix skills [--skills-dir <path>]
+erix mcp [--config <path>]
+```
+
+Running `erix` with no arguments enters `repl`. The `chat` flags are
+implemented by `bin/cli.js`; the `repl` flags above are implemented by
+`bin/repl.js`. In particular, `repl` does not implement `--stream`,
+`--reflection`, `--timeout`, `--no-notes`, or `--judge-log`.
+
+`chat` defaults to 64 rounds, a 300-second idle timeout, reflection enabled
+when `max-rounds >= 32`, and the final guard disabled. `repl` defaults to
+32 rounds, no idle timeout, `reflection: false`, and completion after one
+no-tool round. The CLI help text in `bin/repl.js` still labels its default as
+16; the executable constant and `runToolLoop` call use 32.
+
+The shared CLI flags are:
+
+- `--stream` streams model text in `chat`.
+- `--session <id>` selects the session; without an explicit chat session,
+  `chat` creates a unique ID derived from the working directory.
+- `--dir <path>` selects the transcript directory; the `chat` default is
+  `~/.erix/transcripts`.
+- `--max-rounds <n>` sets the tool-loop round limit.
+- `--reflection <on|off>` selects chat reflection behavior.
+- `--final-guard` enables the CLI provenance guard;
+  `--no-final-guard` is a compatibility no-op because the default is already
+  off.
+- `--no-notes` removes only the `notes` skill and leaves other skills loaded.
+- `--timeout <ms>` supplies a soft task deadline to `chat`; it nudges the
+  loop toward wrap-up rather than hard-killing the process.
+- `--idle-timeout <seconds>` aborts after no progress; it defaults to 300
+  for `chat` and 0 (disabled) for `repl`.
+- `--compact-budget <tokens>` overrides the automatic compaction budget.
+- `--judge-log <path>` appends redacted round/interception judge decisions
+  as JSONL in `chat`.
+
+The built-in CLI tools are `readFile`, `rg`, `tree`, `writeFile`, and `exec`.
+They operate on arbitrary paths and commands. When an archive directory is
+configured, outputs longer than 800 characters and every `exec` result are
+written to:
+
+```text
+<transcriptDir>/outputs/<safeRunId>/<sequence>-<toolName>.txt
+```
+
+Each archive has a `.meta.json` sidecar with `digest`, `locator`, replayability
+metadata, and `status` (`ok` or `truncated`). A single archive is capped at
+1 MiB. Existing sequence numbers are scanned and concurrent collisions are
+advanced safely. The tool result points to the absolute archive path; read
+that archive with `readFile` or `cat` instead of rerunning a command.
+
+For a normalized repeated `exec` command, the CLI still executes the command.
+It adds `rerunOf` metadata pointing to the first round, artifact, digest,
+locator, and artifact status (`ok`, `truncated`, `missing`, `stale`, or
+`unrecoverable`). This is an audit notice, not an effect rollback,
+correctness guarantee, or protection against payment, deletion, publication,
+write, or external API side effects.
+
+The bundled self-describing `notes` skill provides `note_take`, `note_read`,
+`note_list`, and `note_forget`. It is a run-scoped, pull-only convenience
+index for facts, one-time values, decisions, and artifact references; it is
+not a per-round log and it does not replace the capture manifest used by the
+provenance guard. The bundled skill is loaded from `skills/notes/`; user and
+project skills can be supplied from `~/.erix/skills/`, the project
+`.erix/skills/`, or `--skills-dir <path>`. `erix skills` lists discovered
+skills.
+
+MCP uses standard `.mcp.json` configuration and supports both stdio and HTTP
+servers. The `mcp` proxy exposes `list`, `search`, `call`, and `status`
+actions. `erix mcp` lists configured servers and their connection status.
+
+### Configuration and local state
+
+The CLI reads model configuration from
+`$XDG_CONFIG_HOME/erix/config.json` or `~/.erix/config.json`; `--config
+<path>` overrides that location, and environment variables take precedence.
+The required model inputs are `LLM_KIT_ENDPOINT`, `LLM_KIT_API_KEY`, and a
+model from `LLM_KIT_MODEL`, `ERIX_DEFAULT_MODEL`, or
+`slots.default.model`. `slots.default.maxOutputTokens` defaults to `16384`;
+`slots.default.contextWindowTokens` enables automatic compaction, and
+`--compact-budget` overrides its computed budget.
+
+MCP configuration is read from the current directory's `.mcp.json` or
+`~/.erix/mcp.json`. The main local layout is:
+
+```text
+~/.erix/
+  config.json
+  mcp.json
+  transcripts/
+    <safeRunId>.jsonl
+    <safeRunId>.checkpoint.json
+    <safeRunId>.state.json
+  <session>.json                 REPL session snapshot
+  notes/run/<safeRunId>/         notes skill data
+  skills/                        user skills
+  todos/                         used by the example todo skill
+```
+
+`ERIX_NOTES_DIR` changes the notes root. Both CLI modes honor
+`ERIX_EXEC_TIMEOUT_MS` and `ERIX_FINAL_GUARD`; `chat` additionally honors
+`ERIX_NO_TOOL_ROUNDS`, `ERIX_MAX_ROUNDS`, `ERIX_REFLECTION`,
+`ERIX_NO_REFLECTION`, `ERIX_NO_NOTES`, and `ERIX_JUDGE_LOG`. The
+library-level controls
+`ERIX_NO_WRAPUP_INSTRUCTION`, `ERIX_NO_FORCED_FINAL`, and
+`ERIX_STALL_MODE` are also honored by the relevant loop behavior;
+`ERIX_WRAPUP_NORMALIZE=1` enables wrap-up LLM normalization.
+
+## Documentation
+
+- [docs/requirements.md](docs/requirements.md) - requirements and stages
+- [docs/architecture.md](docs/architecture.md) - API contracts and data flow
+- [docs/decisions/](docs/decisions/) - design decisions, including
+  configuration, storage, compaction, reflection, tools, skills, safety,
+  judge direction, engine/model/host boundaries, and guard policy
+- [docs/testing.md](docs/testing.md) - test strategy and behavior metrics
+- [docs/host-consumer-contract.md](docs/host-consumer-contract.md) - host
+  consumer contract for verification, bounded recall, provenance, and reruns
+- [docs/host-upgrade-guide-v030.md](docs/host-upgrade-guide-v030.md) - host
+  upgrade guidance for `touwaka` / `app_container` and v0.3.x behavior
+- [docs/maintenance-policy.md](docs/maintenance-policy.md) - maintenance
+  policy and internal replacement/stop-loss criteria
+- [docs/research/](docs/research/) - research reports (Chinese only)
+- [docs/design/](docs/design/) - design and RFC material (Chinese only)
+- [docs/tasks/](docs/tasks/) - active task documents (Chinese only)
+
+The bounded recall design note is
+[docs/design/2026-09-14-bounded-recall-api.md](docs/design/2026-09-14-bounded-recall-api.md)
+(Chinese only).
+
+## Status and version history
+
+The current package version is **v0.5.1**, dated 2026-09-15 according to
+`package.json` and `CHANGELOG.md`.
+
+- **v0.5.1 (2026-09-15)**: fixes repeated accumulation of fold summaries,
+  navigation records, stubs, `[本 run 状态]`, and run state by recognizing
+  and replacing the fold marker; adds end-to-end Memento scenario coverage
+  for folded truth, credential-safe stubs, reruns, repeated folding, and
+  bounded recall.
+- **v0.5.0 (2026-09-15)**: makes the CLI provenance guard opt-in;
+  normalized reruns execute and report `rerunOf` instead of being blocked;
+  adds object-form bounded recall, cursor and source binding, replayability
+  provenance, bounded fold navigation and stubs, deterministic run state,
+  host-injected `todoStateProvider`/`semanticStateProvider`, and forced-final
+  handling.
+- **v0.4.0 (2026-09-14)**: adds the run-scoped notes skill, tool-output
+  archives and provenance capture. Notes use `current` plus at most three
+  `superseded` values and visible `folded` counts; the old notes ledger,
+  version chain, and related environment variables were removed. The
+  provenance guard compares capture manifests rather than trusting notes.
+- **v0.3.5 (2026-09-12)**: the broad compatibility and persistence repair
+  batch, including real-time streaming callbacks, fail-closed post-tool
+  checkpoint persistence, complete pending-tool resume, provider SSE and
+  legacy `function_call` compatibility, safer file-store IDs, REPL
+  persistence, MCP cleanup, input validation, and `onObserverError`.
+- **v0.3.4 (2026-09-07)**: task-brief selection for multi-turn hosts was
+  corrected. Explicit `task` and `context.task` take precedence, followed
+  by the last entry user message; resume does not use untrusted historical
+  task seeds.
+- **v0.3.3 (2026-09-06)**: `wrapup: false` disables the whole wrap-up
+  instruction/parsing/replacement/normalization protocol, with stricter
+  top-level `done` validation.
+- **v0.3.2 (2026-09-06)**: MIT licensing and README restructuring; no
+  runtime feature change.
+- **v0.3.0 (2026-09-06)**: judge governance became available: transparent
+  tool interception, round judge, direction hints, stall correction, and
+  `onJudge` / `--judge-log` observability. Reflection defaults to enabled in
+  the library for `maxRounds >= 16` when omitted.
+- **v0.2.0 (2026-09-01)**: dual-protocol streaming, full tool loops,
+  automatic budget-driven folding, file stores and recall, JSON-file
+  configuration, the interactive CLI, persistence, self-describing skills,
+  built-in CLI tools, streaming output, MCP stdio/HTTP integration, and
+  idle timeouts.
+
+The host migration and benchmark work described by the project is ongoing
+integration work, not a promise that a future host or sandbox component is
+already released in this package.
+
+## Release validation
+
+The repository's release process uses real relay E2E tests when
+`LLM_KIT_E2E=1`:
 
 ```bash
 LLM_KIT_E2E=1 node --test examples/*.test.mjs
 ```
 
-该命令使用 relay 进行真实 E2E 验证；发布记录须注明实际模型。模型必须来自配置文件
-`slots.default.model`、`LLM_KIT_MODEL` 或显式的 `ERIX_DEFAULT_MODEL`；未配置时直接报错。
+The tests require a configured model. The model is resolved from
+`slots.default.model`, `LLM_KIT_MODEL`, or `ERIX_DEFAULT_MODEL`; an absent
+configuration fails instead of silently selecting another model. The release
+record should identify the actual model used.
 
-批量 notes 实验不会内置模型白名单：模型来源按 `--model`、`ERIX_EXPERIMENT_MODEL`、
-`--config`/`~/.erix/config.json` 的 `slots.default.model` 依次选择。运行前必须先查看成本
-预览；不带 `--yes` 只 dry-run。默认 `--max-calls 40`，超过上限必须显式调高；任一模型调用
-失败都会立即停止后续作业，不会切换或回退模型。
+The notes experiment scripts likewise take the model from `--model`,
+`ERIX_EXPERIMENT_MODEL`, or `--config`/`~/.erix/config.json` in that order.
+They provide a cost preview, default to dry-run without `--yes`, default to
+`--max-calls 40`, and stop immediately on a failed model call rather than
+switching models.
 
-## Benchmark 验证（erix-bench / Terminal-Bench archive）
+## Benchmark validation (erix-bench / Terminal-Bench archive)
 
-> 无头 harness（容器内驱动 + 官方判分器）跑 Terminal-Bench archive 任务；`--agent erix|pi` 对照。
-> 完整报告与逐 run 数据见配套 erix-bench 仓库的 REPORT.md（本 README 只列结论）。
+The project reports headless harness results for Terminal-Bench archive tasks
+using a container driver and the official grader, with `--agent erix|pi`
+comparisons. The full per-run report is maintained in the companion
+erix-bench repository; the figures below are the README's recorded results,
+not a claim that this repository runs those tasks automatically.
 
-### 通过任务清单（reward=1，按模型）
+### Passing tasks (reward=1, by model)
 
-> 注：historical-model 跑数多（早期主力、含 33 个失败对照全量）；historical-model-2 跑数少但
-> 全部选难任务/翻盘任务（详见下方 judge 实证表）——通过数不可直接比模型强弱。
+`historical-model` has **34 passing tasks** across a broad task set:
 
-**historical-model：34 通过**（覆盖任务面广）
+```text
+bn-fit-modify
+break-filter-js-from-html
+build-cython-ext
+build-pmars
+cancel-async-tasks
+cobol-modernization
+configure-git-webserver
+constraints-scheduling
+count-dataset-tokens
+crack-7z-hash
+custom-memory-heap-crash
+extract-elf
+financial-document-processor
+fix-git
+git-leak-recovery
+git-multibranch
+hf-model-inference
+kv-store-grpc
+log-summary-date-ranges
+merge-diff-arc-agi-task
+modernize-scientific-stack
+mteb-retrieve
+multi-source-data-merger
+openssl-selfsigned-cert
+polyglot-c-py
+portfolio-optimization
+prove-plus-comm
+pypi-server
+regex-log
+reshard-c4-data
+sam-cell-seg
+sqlite-db-truncate
+torch-tensor-parallelism
+vulnerable-secret
+```
 
-bn-fit-modify · break-filter-js-from-html · build-cython-ext · build-pmars · cancel-async-tasks · cobol-modernization · configure-git-webserver · constraints-scheduling · count-dataset-tokens · crack-7z-hash · custom-memory-heap-crash · extract-elf · financial-document-processor · fix-git · git-leak-recovery · git-multibranch · hf-model-inference · kv-store-grpc · log-summary-date-ranges · merge-diff-arc-agi-task · modernize-scientific-stack · mteb-retrieve · multi-source-data-merger · openssl-selfsigned-cert · polyglot-c-py · portfolio-optimization · prove-plus-comm · pypi-server · regex-log · reshard-c4-data · sam-cell-seg · sqlite-db-truncate · torch-tensor-parallelism · vulnerable-secret
+`historical-model-2` has **11 passing tasks** in the more recent difficult-task
+sample:
 
-**historical-model-2：11 通过**（低成本、能力强——近期验证主力）
+```text
+adaptive-rejection-sampler
+break-filter-js-from-html
+build-cython-ext
+build-pov-ray
+cancel-async-tasks
+chess-best-move
+code-from-image
+configure-git-webserver
+db-wal-recovery
+fix-code-vulnerability
+password-recovery
+```
 
-adaptive-rejection-sampler · break-filter-js-from-html · build-cython-ext · build-pov-ray · cancel-async-tasks · chess-best-move · code-from-image · configure-git-webserver · db-wal-recovery · fix-code-vulnerability · password-recovery
+The `pi` comparison on the `historical-model-2` sample has **4 passing
+tasks**:
 
-**pi（historical-model-2 对照）：4 通过**
+```text
+break-filter-js-from-html
+build-cython-ext
+build-pov-ray
+distribution-search
+```
 
-break-filter-js-from-html · build-cython-ext · build-pov-ray · distribution-search
+The two `historical-model` totals are not directly comparable: the first has
+more runs and a broader task mix, while the second emphasizes difficult and
+recovery tasks.
 
-### 透明劫持 / judge 体系实证（2026-09，erix main + PR #28/#29）
+### Transparent interception and judge evidence
 
-无头长任务在 judge 体系（透明劫持审计 + round judge + stall 软纠正 + direction 软提示）下的验证——
-历史失败任务翻盘或首次通过，每 run 的 judge 决策全落盘可审计（erix-state/judge.log）：
+The recorded 2026-09 evidence for `erix main + PR #28/#29` describes
+long-running headless tasks under transparent interception, round judge,
+stall correction, and direction hints. Judge decisions were written to
+`erix-state/judge.log` for audit:
 
-| 任务 | 结果 | judge 价值证据 |
+| Task | Result | Reported judge evidence |
 |---|---|---|
-| db-wal-recovery | reward=1（88s，历史 721s 失败） | direction off_track 拦截：纯侦察阶段提示转向实际修复 |
-| adaptive-rejection-sampler | reward=1（12 轮，历史 901s 超时失败） | judge 早期拦截防环境空转 |
-| password-recovery | reward=1（187s，flash 首跑） | **5 次 blocked**：反复拦“未提取完整密码”的半成品提交 |
-| fix-code-vulnerability | reward=1（123s，判分 6/6） | round judge 验证通过才收尾（历史 23 轮空转 reward=0） |
-| cancel-async-tasks | reward=1（117s） | judge-log 观测 + 审计放行（方向对无感） |
-| circuit-fibsqrt | reward=0（64 轮完整跑） | 11 次真实审计拦截记录（模型能力不足，非机制失败） |
+| db-wal-recovery | reward=1 (88s; historical 721s failure) | `direction: off_track` interception redirected a reconnaissance-only route toward repair |
+| adaptive-rejection-sampler | reward=1 (12 rounds; historical 901s timeout) | Early judge interception prevented environment spinning |
+| password-recovery | reward=1 (187s, flash first run) | **5 blocked** decisions stopped repeated partial submissions without the complete password |
+| fix-code-vulnerability | reward=1 (123s, grader 6/6) | Round judge allowed wrap-up only after a positive completion assessment |
+| cancel-async-tasks | reward=1 (117s) | Judge logging and transparent approval observed an on-track route |
+| circuit-fibsqrt | reward=0 (64 complete rounds) | 11 real interception records; the report attributes the failure to model capability rather than the mechanism |
 
-> 单测 419/415/0（2026-09-06）。judge 机制设计决策见 [ADR-011](docs/decisions/011-judge-direction.md)。
+These benchmark figures are historical project evidence and are not an API
+guarantee. The judge design decision is documented in
+[ADR-011](docs/decisions/011-judge-direction.md).
 
 ## License
 
-MIT © 2026 ErixWong（见 [LICENSE](LICENSE)）。
+MIT © 2026 ErixWong (see [LICENSE](LICENSE)).
