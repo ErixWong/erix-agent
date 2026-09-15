@@ -64,7 +64,11 @@ export async function callProvider(ctx, { allowPendingToolUse = false, round } =
       if (ctx.maxTokens !== undefined) request.maxTokens = ctx.maxTokens;
       if (ctx.temperature !== undefined) request.temperature = ctx.temperature;
       if (ctx.topP !== undefined) request.topP = ctx.topP;
-      if (ctx.stream && typeof ctx.provider.chatStream === "function") {
+      if (
+        typeof ctx.provider.chat === "function"
+          ? ctx.stream && typeof ctx.provider.chatStream === "function"
+          : typeof ctx.provider.chatStream === "function"
+      ) {
         const awaitWithAbort = ctx.awaitWithAbort;
         let response = await awaitWithAbort(ctx.provider.chatStream({
           ...request,

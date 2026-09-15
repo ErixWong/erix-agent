@@ -442,8 +442,11 @@ export function wrapExecuteTool(
   };
 }
 
-function archiveGuidance(archivePath) {
-  return `[完整输出已归档：${archivePath}（需要原始内容请用 readFile/cat 读取该路径；不要重跑命令，重跑会得到不同的值）]`;
+function archiveGuidance(display, resourceStore) {
+  const reader = resourceStore === undefined
+    ? "需要原始内容请用 readFile/cat 读取该路径"
+    : "需要原始内容请用 ResourceStore 读取";
+  return `[完整输出已归档：${display}（${reader}；不要重跑命令，重跑会得到不同的值）]`;
 }
 
 function archiveFailureGuidance(archivePath, error, replayable) {
@@ -467,6 +470,7 @@ export function archiveResult(
     replayableSource,
     command,
     context,
+    resourceStore,
   } = {},
 ) {
   const text = String(result ?? "");
@@ -477,6 +481,13 @@ export function archiveResult(
     `${String(sequence).padStart(3, "0")}-${name}.txt`,
   );
   let metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
+  const failedArchive = (error) => ({
+    text: replayable !== false
+      ? `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error, replayable)}`
+      : archiveFailureGuidance(archivePath, error, replayable),
+    archivePath: undefined,
+    artifact: undefined,
+  });
   try {
     mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
     const bytes = Buffer.from(text, "utf8");
@@ -512,48 +523,51 @@ export function archiveResult(
       1,
       lineParts.length - (archivedText.endsWith("\n") || archivedText.endsWith("\r") ? 1 : 0),
     );
-    for (let attempt = 0; attempt < Number.MAX_SAFE_INTEGER; attempt += 1) {
+    const saveArtifact = (reference, sequenceNumber) => {
+      archivePath = path.join(
+        archiveDir,
+        `${String(sequenceNumber).padStart(3, "0")}-${name}.txt`,
+      );
+      metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
+      const artifact = {
+        artifactId: path.basename(archivePath),
+        ...(resourceStore === undefined ? { archivePath } : {}),
+        digest: reference?.digest ?? digest,
+        ...(reference ?? { locator: { lineStart: 1, lineEnd: lines } }),
+        round: context?.round ?? null,
+        ...(replayable === undefined ? {} : { replayable }),
+        ...(replayableSource === undefined ? {} : { replayableSource }),
+        truncated,
+        status: truncated ? "truncated" : "ok",
+        originalBytes: bytes.byteLength,
+      };
+      const metadata = {
+        kind: "erix.tool-capture",
+        schemaVersion: 1,
+        toolUseId: context?.toolUseId ?? null,
+        round: context?.round ?? null,
+        command: command ?? null,
+        ...(replayable === undefined ? {} : { replayable }),
+        ...(replayableSource === undefined ? {} : { replayableSource }),
+        artifactId: artifact.artifactId,
+        digest: artifact.digest,
+        ...(artifact.archivePath === undefined ? {} : { archivePath: artifact.archivePath }),
+        locator: artifact.locator,
+        ...(artifact.display === undefined ? {} : { display: artifact.display }),
+        truncated,
+        status: artifact.status,
+        originalBytes: bytes.byteLength,
+      };
       const created = [];
       try {
-        archivePath = path.join(
-          archiveDir,
-          `${String(sequence + attempt).padStart(3, "0")}-${name}.txt`,
-        );
-        metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
-        const artifact = {
-          artifactId: path.basename(archivePath),
-          archivePath,
-          digest,
-          locator: { lineStart: 1, lineEnd: lines },
-          round: context?.round ?? null,
-          ...(replayable === undefined ? {} : { replayable }),
-          ...(replayableSource === undefined ? {} : { replayableSource }),
-          truncated,
-          status: truncated ? "truncated" : "ok",
-          originalBytes: bytes.byteLength,
-        };
-        const metadata = {
-          kind: "erix.tool-capture",
-          schemaVersion: 1,
-          toolUseId: context?.toolUseId ?? null,
-          round: context?.round ?? null,
-          command: command ?? null,
-          ...(replayable === undefined ? {} : { replayable }),
-          ...(replayableSource === undefined ? {} : { replayableSource }),
-          artifactId: artifact.artifactId,
-          digest,
-          archivePath,
-          locator: artifact.locator,
-          truncated,
-          status: artifact.status,
-          originalBytes: bytes.byteLength,
-        };
-        writeFileSync(archivePath, archivedText, {
-          encoding: "utf8",
-          mode: 0o600,
-          flag: "wx",
-        });
-        created.push(archivePath);
+        if (resourceStore === undefined) {
+          writeFileSync(archivePath, archivedText, {
+            encoding: "utf8",
+            mode: 0o600,
+            flag: "wx",
+          });
+          created.push(archivePath);
+        }
         writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, {
           encoding: "utf8",
           mode: 0o600,
@@ -561,11 +575,14 @@ export function archiveResult(
         });
         created.push(metadataPath);
         return {
-          text: `${truncateResult(text)}\n${archiveGuidance(archivePath)}`,
-          archivePath,
+          text: `${truncateResult(text)}\n${archiveGuidance(
+            artifact.display ?? artifact.archivePath,
+            resourceStore,
+          )}`,
+          ...(artifact.archivePath === undefined ? {} : { archivePath: artifact.archivePath }),
           artifact,
           archivedText,
-          sequence: sequence + attempt,
+          sequence: sequenceNumber,
         };
       } catch (error) {
         for (const target of created) {
@@ -575,24 +592,38 @@ export function archiveResult(
             if (cleanupError?.code !== "ENOENT") error.cause = cleanupError;
           }
         }
-        if (error?.code === "EEXIST") continue;
+        if (error?.code === "EEXIST") return undefined;
         throw error;
       }
+    };
+    for (let attempt = 0; attempt < Number.MAX_SAFE_INTEGER; attempt += 1) {
+      const sequenceNumber = sequence + attempt;
+      if (resourceStore === undefined) {
+        const saved = saveArtifact(undefined, sequenceNumber);
+        if (saved !== undefined) return saved;
+        continue;
+      }
+      return resourceStore.put(archivedText)
+        .then((reference) => {
+          const saved = saveArtifact(reference, sequenceNumber);
+          if (saved !== undefined) return saved;
+          return resourceStore.put(archivedText).then((nextReference) => (
+            saveArtifact(nextReference, sequenceNumber + 1)
+          ));
+        })
+        .catch((error) => failedArchive(error));
     }
     throw new Error("archive sequence exhausted");
   } catch (error) {
-    return {
-      text: replayable !== false
-        ? `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error, replayable)}`
-        : archiveFailureGuidance(archivePath, error, replayable),
-      archivePath: undefined,
-      artifact: undefined,
-    };
+    return failedArchive(error);
   }
 }
 
 function artifactStatus(artifact) {
-  if (!artifact?.archivePath || typeof artifact.digest !== "string") return "unrecoverable";
+  if (!artifact || typeof artifact.digest !== "string") return "unrecoverable";
+  if (!artifact.archivePath) {
+    return artifact.status === "truncated" ? "truncated" : "ok";
+  }
   try {
     const contents = readFileSync(artifact.archivePath, "utf8");
     const digest = createHash("sha256").update(contents, "utf8").digest("hex");
@@ -610,8 +641,8 @@ function rerunGuidance({ count, firstArtifact, firstValue, status }) {
     : status === "ok" || status === "truncated"
       ? "见首次执行归档"
       : "不可恢复";
-  const archivePath = firstArtifact?.archivePath ?? "无归档";
-  return `[⚠️ 这是第 ${count} 次执行，值与首次可能不同；首次执行记录：${displayValue}（${archivePath}）；工件状态：${status}]`;
+  const display = firstArtifact?.display ?? firstArtifact?.archivePath ?? "无归档";
+  return `[⚠️ 这是第 ${count} 次执行，值与首次可能不同；首次执行记录：${displayValue}（${display}）；工件状态：${status}]`;
 }
 
 function normalizeCommand(command) {
@@ -649,9 +680,12 @@ function artifactFromMetadata(archiveDir, metadata) {
   }
   return {
     artifactId: metadata.artifactId,
-    archivePath: path.join(archiveDir, metadata.artifactId),
+    ...(typeof metadata.archivePath === "string"
+      ? { archivePath: metadata.archivePath }
+      : {}),
     digest: metadata.digest,
     locator: metadata.locator,
+    ...(typeof metadata.display === "string" ? { display: metadata.display } : {}),
     round: metadata.round ?? null,
     ...(metadata.replayable === undefined ? {} : { replayable: metadata.replayable }),
     ...(metadata.replayableSource === undefined
@@ -719,6 +753,7 @@ function firstSafeArtifactValue(artifact, status) {
 export function createCliTools({
   cwd = process.cwd(),
   archiveDir,
+  resourceStore,
   notesScope,
   runState: runStateOption,
   replayable,
@@ -728,6 +763,11 @@ export function createCliTools({
   const root = path.resolve(cwd);
   if (archiveDir !== undefined && typeof archiveDir !== "string") {
     throw new TypeError("archiveDir must be a string");
+  }
+  if (resourceStore !== undefined
+    && (!resourceStore || typeof resourceStore.put !== "function"
+      || typeof resourceStore.get !== "function")) {
+    throw new TypeError("resourceStore must provide put and get methods");
   }
   const archiveRoot = archiveDir === undefined ? undefined : path.resolve(archiveDir);
   let archiveSequence = archiveRoot === undefined ? 0 : initialArchiveSequence(archiveRoot);
@@ -938,12 +978,13 @@ export function createCliTools({
     );
     if (shouldArchive) {
       archiveSequence += 1;
-      const archived = archiveResult(archiveRoot, name, result, archiveSequence, {
+      const archived = await archiveResult(archiveRoot, name, result, archiveSequence, {
         force: name === "exec",
         replayable: replayableValue,
         replayableSource,
         command,
         context,
+        resourceStore,
       });
       if (archived !== null) {
         archiveSequence = Math.max(archiveSequence, archived.sequence ?? archiveSequence);

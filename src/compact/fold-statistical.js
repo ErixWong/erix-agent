@@ -18,6 +18,7 @@ import { validateResourceStore } from "../store/resource.js";
 export const FOLD_SUMMARY_MARKER = "【上下文折叠·v1·erix-9f6e2c】";
 const MAX_NAVIGATION_ARTIFACTS = 10;
 const MAX_NAVIGATION_CHARS = 400;
+const NAVIGATION_STATUSES = new Set(["archived", "truncated", "external", "expired"]);
 
 function normalizedKeepRounds(value) {
   if (value === undefined) return 6;
@@ -104,9 +105,14 @@ function boundedNavigationRecord(roundRange, artifacts) {
     const display = typeof artifact.display === "string" && artifact.display.length > 0
       ? artifact.display
       : artifact.id;
-    const id = safeNavigationId(display);
+    const id = safeNavigationId(artifact.id ?? artifact.archivePath);
     const digest = String(artifact.digest ?? "").slice(0, 128);
     if (!id || !digest) continue;
+    const status = artifact.status !== undefined
+      ? artifact.status
+      : artifact.truncated === true
+        ? "truncated"
+        : "archived";
     const key = `${id}\u0000${digest}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -115,9 +121,7 @@ function boundedNavigationRecord(roundRange, artifacts) {
       ...(typeof artifact.display === "string" ? { display: artifact.display } : {}),
       locator: artifact.locator,
       digest,
-      status: ["truncated", "external", "expired"].includes(artifact.status)
-        ? artifact.status
-        : "archived",
+      status: NAVIGATION_STATUSES.has(status) ? status : "archived",
     });
   }
   if (unique.length === 0) return undefined;
@@ -159,11 +163,13 @@ export function buildFoldNavigationRecord(foldedPayload, roundRange) {
       if (block?.type !== "tool_result" || !block.artifact) continue;
       const artifact = block.artifact;
       artifacts.push({
-        id: artifact.artifactId,
+        id: artifact.artifactId ?? artifact.archivePath ?? artifact.display,
         ...(typeof artifact.display === "string" ? { display: artifact.display } : {}),
         locator: artifact.locator,
         digest: artifact.digest,
-        status: artifact.truncated === true ? "truncated" : "archived",
+        ...(artifact.status === undefined
+          ? { status: artifact.truncated === true ? "truncated" : "archived" }
+          : { status: artifact.status }),
       });
     }
   }

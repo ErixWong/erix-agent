@@ -312,6 +312,71 @@ test("keeps opaque resource locators and host display strings unchanged", async 
   assert.equal(result.navigationRecord.artifacts[0].id, "db:__archives_opaque_001");
 });
 
+test("preserves legacy archive identifiers and explicit navigation statuses", async () => {
+  for (const status of ["archived", "external", "expired"]) {
+    const artifact = {
+      archivePath: `/tmp/archive/${status}.txt`,
+      locator: { lineStart: 1, lineEnd: 1 },
+      digest: "e".repeat(64),
+      status,
+    };
+    const result = await createFoldStatisticalStrategy().compact([
+      { role: "user", content: "task" },
+      { role: "assistant", content: [{ type: "tool_use", id: status, name: "exec", input: {} }] },
+      {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: status,
+          replayable: false,
+          artifact,
+          content: "hidden",
+        }],
+      },
+      { role: "user", content: "keep" },
+    ], { keepRounds: 1 });
+    assert.equal(
+      result.navigationRecord.artifacts[0].id,
+      artifact.archivePath.replaceAll(/[^\p{L}\p{N}._:-]/gu, "_").slice(0, 80),
+    );
+    assert.equal(result.navigationRecord.artifacts[0].status, status);
+  }
+});
+
+test("no-artifact-id keeps the legacy navigation record byte-identical", async () => {
+  const baseArtifact = {
+    archivePath: "/tmp/archive/no-id.txt",
+    locator: { lineStart: 1, lineEnd: 1 },
+    digest: "f".repeat(64),
+  };
+  const messages = (artifact) => [
+    { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "tool_use", id: "no-id", name: "exec", input: {} }] },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "no-id",
+        replayable: false,
+        artifact,
+        content: "hidden",
+      }],
+    },
+    { role: "user", content: "keep" },
+  ];
+  const withoutId = await createFoldStatisticalStrategy().compact(messages(baseArtifact), {
+    keepRounds: 1,
+  });
+  const withFallbackId = await createFoldStatisticalStrategy().compact(
+    messages({ artifactId: baseArtifact.archivePath, ...baseArtifact }),
+    { keepRounds: 1 },
+  );
+  assert.equal(
+    JSON.stringify(withoutId.navigationRecord),
+    JSON.stringify(withFallbackId.navigationRecord),
+  );
+});
+
 test("materializes fold resources through ResourceStore before rendering stubs", async () => {
   const calls = [];
   const result = await createFoldStatisticalStrategy({

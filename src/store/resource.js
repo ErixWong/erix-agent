@@ -24,7 +24,8 @@ export function validateResourceStore(store) {
       const reference = await store.put(resource);
       if (!reference || typeof reference !== "object"
         || reference.locator === undefined || reference.locator === null
-        || typeof reference.digest !== "string" || reference.digest.length === 0
+        || typeof reference.digest !== "string"
+        || !/^[a-f0-9]{64}$/u.test(reference.digest)
         || typeof reference.display !== "string" || reference.display.length === 0) {
         throw new TypeError(
           "resource store put must return { locator, digest, display }",
@@ -32,8 +33,12 @@ export function validateResourceStore(store) {
       }
       return reference;
     },
-    get(locator) {
-      return store.get(locator);
+    async get(locator) {
+      const resource = await store.get(locator);
+      if (typeof resource !== "string" && !(resource instanceof Uint8Array)) {
+        throw new TypeError("resource store get must return a string or Uint8Array");
+      }
+      return resource;
     },
   };
 }

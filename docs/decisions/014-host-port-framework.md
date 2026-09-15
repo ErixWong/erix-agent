@@ -158,7 +158,7 @@ resourceStore.get(locator)     → bytesOrText
 **AssemblyPort**（组合根）：
 
 ```js
-createSession({
+createAssemblyPort({
   modelConfig, // () => ModelConfigProvider（ADR-001，已有）
   provider,    // () => Provider（宿主构造，库永远不见 apiKey）
   tools,       // () => { definitions, executeTool, getToolMetadata? }

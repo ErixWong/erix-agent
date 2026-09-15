@@ -59,13 +59,24 @@ function boundedCommandSummary(command) {
   return text.slice(0, 100);
 }
 
+function archiveDisplay(manifest) {
+  if (typeof manifest?.display === "string" && manifest.display.length > 0) {
+    return manifest.display;
+  }
+  if (typeof manifest?.archivePath === "string") return path.basename(manifest.archivePath);
+  return manifest?.artifactId;
+}
+
 function archiveIndex(manifests) {
   const entries = manifests
     .map(({ manifest }) => manifest)
-    .filter((manifest) => manifest?.replayable === false && typeof manifest.archivePath === "string")
-    .sort((left, right) => path.basename(left.archivePath).localeCompare(path.basename(right.archivePath)));
+    .filter((manifest) => manifest?.replayable === false)
+    .sort((left, right) => (
+      String(archiveDisplay(left))
+        .localeCompare(String(archiveDisplay(right)))
+    ));
   const visible = entries.slice(0, 10).map((manifest) => (
-    `${path.basename(manifest.archivePath)} ← ${boundedCommandSummary(manifest.command)} [不可重放]`
+    `${archiveDisplay(manifest)} ← ${boundedCommandSummary(manifest.command)} [不可重放]`
   ));
   const remaining = entries.length - visible.length;
   if (remaining > 0) visible.push(`另有 ${remaining} 条归档`);
@@ -74,13 +85,14 @@ function archiveIndex(manifests) {
     : `\n归档目录视图（最多 10 条）：\n${visible.join("\n")}`;
 }
 
-async function captureStubForResult(block) {
+async function captureStubForResult(block, resourceStore) {
   const reference = block?.artifact && typeof block.artifact === "object"
     ? block.artifact
     : block;
   const archivePath = typeof reference?.archivePath === "string"
     ? reference.archivePath
     : undefined;
+  const display = reference?.display ?? archivePath ?? reference?.artifactId ?? "<resource>";
   let output = "";
   if (archivePath) {
     const metadataPath = archivePath.endsWith(".txt")
@@ -94,6 +106,9 @@ async function captureStubForResult(block) {
         } catch (error) {
           if (error?.code !== "ENOENT") throw error;
         }
+      } else if (reference?.locator !== undefined && resourceStore !== undefined) {
+        const stored = await resourceStore.get(reference.locator);
+        output = typeof stored === "string" ? stored : Buffer.from(stored).toString("utf8");
       }
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
@@ -102,12 +117,12 @@ async function captureStubForResult(block) {
   const safeCandidates = candidateLines(output).filter(({ label, value }) => (
     !looksLikeCredential(label, value)
   ));
-  if (safeCandidates.length > 0 && archivePath) {
+  if (safeCandidates.length > 0 && display) {
     const lines = safeCandidates
       .slice(0, 3)
       .map(({ label, value }) => `${label}=${value}`);
     const prefix = "[已折叠] 本命令不可重放；值：";
-    const suffix = `；原文：${archivePath}`;
+    const suffix = `；原文：${display}`;
     let result = `${prefix}${lines.join("；")}${suffix}`;
     if (Array.from(result).length > 200) {
       const available = Math.max(0, 200 - Array.from(`${prefix}${suffix}`).length - 1);
@@ -116,7 +131,7 @@ async function captureStubForResult(block) {
     }
     return Array.from(result).slice(0, 200).join("");
   }
-  return `[已折叠] 原文：${archivePath ?? "<archivePath>"}（不可重放）`
+  return `[已折叠] 原文：${display}（不可重放）`
     .slice(0, 200);
 }
 
@@ -131,7 +146,7 @@ export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload } = {
   return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${nonReplayableCaptures} 条为不可重放捕获（重跑会得到不同值）。需要时用 note_list → note_read 取回，或读取归档 ${archiveReference}。${archiveIndex(loaded.manifests)}`;
 }
 
-export async function buildCaptureStub(message) {
+export async function buildCaptureStub(message, resourceStore) {
   const results = Array.isArray(message?.content)
     ? message.content.filter((block) => (
       block?.type === "tool_result" && block.replayable === false
@@ -139,7 +154,7 @@ export async function buildCaptureStub(message) {
     : [];
   const stubs = [];
   for (const result of results) {
-    stubs.push(await captureStubForResult(result));
+    stubs.push(await captureStubForResult(result, resourceStore));
   }
   return [...new Set(stubs)].join("\n");
 }
@@ -148,8 +163,12 @@ function sourceMatchesCapture(source, capture) {
   if (source.kind === "note_read") return source.target === capture.key;
   if (source.kind !== "归档") return false;
   const archivePath = String(capture.archivePath ?? "");
+  const display = String(capture.display ?? "");
+  const artifactId = String(capture.artifact?.artifactId ?? "");
   const target = String(source.target ?? "");
   return target === archivePath
+    || target === display
+    || target === artifactId
     || target === path.basename(archivePath)
     || archivePath.endsWith(`/${target}`);
 }
@@ -157,7 +176,8 @@ function sourceMatchesCapture(source, capture) {
 function capturePointer(capture) {
   const pointers = [];
   if (capture?.key) pointers.push(`note_read key=${capture.key}`);
-  if (capture?.archivePath) pointers.push(`归档 ${capture.archivePath}`);
+  if (capture?.display) pointers.push(`归档 ${capture.display}`);
+  else if (capture?.archivePath) pointers.push(`归档 ${capture.archivePath}`);
   return pointers.join(" / ") || "可信归档";
 }
 
@@ -169,12 +189,13 @@ export function createFinalGuard({
   archiveDir,
   onWarning = (message) => console.warn(warningMessage(message)),
   runState,
+  resourceStore,
 } = {}) {
   return async function finalGuard({
     finalText,
     rerunDetected = runState?.rerunDetected === true,
   } = {}) {
-    const inspected = await inspectRun({ archiveDir });
+    const inspected = await inspectRun({ archiveDir, resourceStore });
     for (const warning of inspected.warnings) onWarning(warning);
     if (inspected.references.length === 0) {
       return { action: "skip", reason: "no_capture_manifest" };

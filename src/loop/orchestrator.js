@@ -256,7 +256,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *
  * @param {{
  *   assemblyPort?: import("../assembly.js").AssemblyPort,
- *   provider: {chat: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
+ *   provider: {chat?: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
  *   system?: string,
  *   wrapup?: boolean, // Controls instruction injection, JSON parsing, finalText replacement, and LLM normalization.
  *                   // Defaults to true (omit = enabled). ERIX_NO_WRAPUP_INSTRUCTION=1 env overrides even an
@@ -347,7 +347,12 @@ export async function runToolLoop(options) {
   const { assemblyPort, ...explicitOptions } = options;
   const assembledOptions = assemblyPort === undefined
     ? {}
-    : await assemblyPortOptions(assemblyPort);
+    : await assemblyPortOptions(
+      assemblyPort,
+      explicitOptions.modelConfig === undefined
+        ? {}
+        : { modelConfig: explicitOptions.modelConfig },
+    );
   const effectiveOptions = { ...assembledOptions };
   for (const [key, value] of Object.entries(explicitOptions)) {
     if (value !== undefined) effectiveOptions[key] = value;
@@ -408,6 +413,33 @@ export async function runToolLoop(options) {
     onUsage,
     onEvent,
   } = effectiveOptions;
+  const fineGrainedPortShape = (
+    (session !== undefined && session !== null && typeof session === "object")
+    || typeof modelConfig?.resolve === "function"
+  );
+  const startupMissing = [];
+  if (!provider
+    || (typeof provider.chat !== "function"
+      && typeof provider.chatStream !== "function")) {
+    startupMissing.push("provider.chat or provider.chatStream");
+  }
+  if (typeof executeTool !== "function") startupMissing.push("executeTool");
+  if (fineGrainedPortShape) {
+    if (!modelConfig || typeof modelConfig.resolve !== "function") {
+      startupMissing.push("modelConfig.resolve");
+    }
+    if (!session || typeof session !== "object" || Array.isArray(session)
+      || typeof session.id !== "string" || session.id.length === 0) {
+      startupMissing.push("session.id");
+    }
+  }
+  if (startupMissing.length > 0) {
+    throw new TypeError(`assembly port is missing methods: ${startupMissing.join(", ")}`);
+  }
+  let resolvedModelConfig = modelConfig;
+  if (typeof modelConfig?.resolve === "function") {
+    resolvedModelConfig = await modelConfig.resolve(session?.modelSlot);
+  }
   if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) {
     throw new TypeError("maxRounds must be a finite positive integer");
   }
@@ -561,7 +593,13 @@ export async function runToolLoop(options) {
     const annotated = annotateTermination(finalError, termination);
     throw annotated;
   };
-  const metadata = modelMetadataFor({ modelConfig, modelMetadata, model, provider, context });
+  const metadata = modelMetadataFor({
+    modelConfig: resolvedModelConfig,
+    modelMetadata,
+    model,
+    provider,
+    context,
+  });
   const resolvedWriteToolNames = normalizeToolNameSet(writeToolNames, ["writeFile"]);
   const resolvedWriteToolPathKeys = Array.isArray(writeToolPathKeys)
     ? writeToolPathKeys.filter((key) => typeof key === "string" && key.trim() !== "")

@@ -73,8 +73,10 @@ function missingAssemblyMethods(port) {
   if (!port.modelConfig || typeof port.modelConfig.resolve !== "function") {
     missing.push("modelConfig.resolve");
   }
-  if (!port.provider || typeof port.provider.chat !== "function") {
-    missing.push("provider.chat");
+  if (!port.provider
+    || (typeof port.provider.chat !== "function"
+      && typeof port.provider.chatStream !== "function")) {
+    missing.push("provider.chat or provider.chatStream");
   }
   if (!port.tools || !Array.isArray(port.tools.definitions)) {
     missing.push("tools.definitions");
@@ -172,13 +174,16 @@ export function createAssemblyPort(input = {}) {
  * Explicit options are merged by runToolLoop after this conversion and win.
  *
  * @param {AssemblyPort} input
+ * @param {{modelConfig?:object}} [overrides]
  * @returns {Promise<object>}
  */
-export async function assemblyPortOptions(input) {
+export async function assemblyPortOptions(input, overrides = {}) {
   const port = createAssemblyPort(input);
   const options = {
     ...port.policy,
-    modelConfig: await port.modelConfig.resolve(port.session.modelSlot),
+    modelConfig: overrides.modelConfig === undefined
+      ? await port.modelConfig.resolve(port.session.modelSlot)
+      : overrides.modelConfig,
     provider: port.provider,
     tools: port.tools.definitions,
     executeTool: port.tools.executeTool,

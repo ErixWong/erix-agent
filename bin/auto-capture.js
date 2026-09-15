@@ -32,7 +32,8 @@ function artifactReference(artifact) {
   if (
     !artifact
     || artifact.replayable !== false
-    || typeof artifact.archivePath !== "string"
+    || (typeof artifact.archivePath !== "string"
+      && (artifact.locator === undefined || artifact.locator === null))
     || typeof artifact.digest !== "string"
     || !artifact.locator
     || typeof artifact.locator !== "object"
@@ -41,7 +42,8 @@ function artifactReference(artifact) {
   }
   return {
     artifactId: artifact.artifactId ?? artifact.archivePath,
-    archivePath: artifact.archivePath,
+    ...(typeof artifact.archivePath === "string" ? { archivePath: artifact.archivePath } : {}),
+    ...(typeof artifact.display === "string" ? { display: artifact.display } : {}),
     digest: artifact.digest,
     locator: artifact.locator,
     round: artifact.round ?? null,
@@ -64,6 +66,7 @@ export function autoCaptureKey(command, reference) {
       ? undefined
       : {
           archivePath: reference.archivePath,
+          display: reference.display,
           digest: reference.digest,
           locator: reference.locator,
         },
