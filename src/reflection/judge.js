@@ -1,8 +1,7 @@
 import { extractL0Facts } from "./l0.js";
 import { estimateTokens } from "../tokens.js";
 
-const MAX_COMMAND_LENGTH = 60;
-const MAX_OUTPUT_LENGTH = 200;
+const MAX_COMMAND_LENGTH = 40;
 
 function blocksFor(content) {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -42,10 +41,6 @@ function summarizeArgument(name, input, { writeToolNames, writeToolPathKeys } = 
   }
 }
 
-function resultText(block) {
-  return truncate(textFromContent(block?.content), MAX_OUTPUT_LENGTH);
-}
-
 function jsonCandidates(text) {
   const value = String(text ?? "");
   const candidates = [];
@@ -77,9 +72,9 @@ function jsonCandidates(text) {
 }
 
 /**
- * Extract an objective, compact footprint from the messages added in a round.
- * Tool results are paired with their tool_use ids so verification output keeps
- * the command that produced it.
+ * Extract a compact index from the messages added in a round.
+ * Tool output is deliberately omitted because the full conversation is the
+ * authoritative source; the timeline only helps the judge locate tool work.
  */
 export function buildTimeline(messages, roundStart = 0, options = {}) {
   const selected = Array.isArray(messages)
@@ -92,7 +87,7 @@ export function buildTimeline(messages, roundStart = 0, options = {}) {
     ? options.writeToolPathKeys
     : ["path", "file_path"];
   const toolCalls = [];
-  const outputById = new Map();
+  const statusById = new Map();
 
   for (const message of selected) {
     for (const block of blocksFor(message?.content)) {
@@ -103,25 +98,54 @@ export function buildTimeline(messages, roundStart = 0, options = {}) {
             writeToolNames,
             writeToolPathKeys,
           }),
+          repeatKey: (() => {
+            try {
+              return JSON.stringify([block.name, block.input]);
+            } catch {
+              return `${String(block.name ?? "")}\u0000${summarizeArgument(block.name, block.input, {
+                writeToolNames,
+                writeToolPathKeys,
+              })}`;
+            }
+          })(),
           _toolUseId: block.id,
         });
       } else if (block?.type === "tool_result") {
         if (block.tool_use_id !== undefined) {
-          outputById.set(block.tool_use_id, resultText(block));
+          const result = textFromContent(block.content);
+          const intercepted = block.executionStatus === "intercepted"
+            || result.startsWith("【审计拦截】");
+          statusById.set(
+            block.tool_use_id,
+            intercepted
+              ? "intercepted"
+              : block.is_error === true || block.success === false
+                ? "error"
+                : "ok",
+          );
         }
       }
     }
   }
 
-  // 按 tool_use_id 把输出内联到对应调用（多工具乱序/跨块不丢配对）
+  const errorCounts = new Map();
+  let errorRepeat = 0;
   const paired = toolCalls.map((call) => {
-    const output = call._toolUseId !== undefined
-      ? outputById.get(call._toolUseId)
-      : undefined;
-    const clean = { name: call.name, arg: call.arg };
-    return output !== undefined
-      ? { ...clean, output }
-      : clean;
+    const status = call._toolUseId !== undefined
+      ? statusById.get(call._toolUseId) ?? "pending"
+      : "pending";
+    let repeat = 0;
+    if (status === "error") {
+      repeat = (errorCounts.get(call.repeatKey) ?? 0) + 1;
+      errorCounts.set(call.repeatKey, repeat);
+      errorRepeat = Math.max(errorRepeat, repeat);
+    }
+    const clean = {
+      name: call.name,
+      arg: call.arg,
+      status,
+    };
+    return clean;
   });
 
   const l0facts = extractL0Facts(selected);
@@ -130,19 +154,49 @@ export function buildTimeline(messages, roundStart = 0, options = {}) {
     outputs: [],
     exitOk: l0facts.exitOk,
     errors: l0facts.errorTexts ?? [],
-    errorRepeat: l0facts.errorRepeat ?? 0,
+    errorRepeat,
   };
 }
 
 function formatTimeline(timeline) {
   const entries = Array.isArray(timeline) ? timeline : [];
-  const lines = [];
-  for (const entry of entries) {
-    const round = entry?.round ?? "?";
+  const indexed = [];
+  for (const entry of [...entries].reverse()) {
     for (const call of entry?.toolCalls ?? []) {
-      const outputText = call?.output ? `; 输出: ${call.output}` : "";
-      lines.push(`R${round}: ${call.name} ${call.arg}${outputText}`.trim());
+      indexed.push({ entry, call });
     }
+  }
+
+  const errorCounts = new Map();
+  for (const item of indexed) {
+    if (item.call?.status !== "error") continue;
+    const key = `${item.call.name}\u0000${item.call.arg}`;
+    const repeat = (errorCounts.get(key) ?? 0) + 1;
+    errorCounts.set(key, repeat);
+    item.repeat = repeat;
+  }
+
+  const lines = [];
+  for (const item of indexed.reverse()) {
+    const entry = item.entry;
+    const call = item.call;
+    const round = entry?.round ?? "?";
+    const status = ["ok", "error", "intercepted", "pending"].includes(call?.status)
+      ? call.status
+      : "pending";
+    const entryErrorCount = (entry?.toolCalls ?? [])
+      .filter((entryCall) => entryCall?.status === "error")
+      .length;
+    const entryRepeat = Number.isSafeInteger(entry?.errorRepeat)
+      ? entry.errorRepeat
+      : 0;
+    const repeat = status === "error"
+      ? entryErrorCount === 1
+        ? Math.max(item.repeat ?? 0, entryRepeat)
+        : item.repeat
+      : undefined;
+    const repeatText = repeat >= 2 ? `，重复第${repeat}次` : "";
+    lines.push(`R${round}: ${call?.name ?? ""} ${call?.arg ?? ""} [${status}${repeatText}]`.trim());
   }
   return lines.join("\n") || "（暂无工具足迹）";
 }
@@ -319,13 +373,7 @@ export function buildJudgePrompt(
       ? [timeline]
       : [];
   const recent = entries.slice(-12).reverse();
-  // 验证输出已内联到 toolCalls（buildTimeline 按 tool_use_id 配对）
-  const outputLines = recent
-    .flatMap((entry) => entry?.toolCalls ?? [])
-    .filter((call) => call?.output)
-    .map((call) => `${call.arg || call.name || "tool"} → ${call.output}`)
-    .slice(0, 5)
-    .join("\n");
+  const outputLines = conversationText ? "（详见完整对话记录）" : "无";
   return `【每轮 Judge】你是交付评审者，独立判断任务是否完成。不要执行工具，不要相信模型自报。
 
 任务目标：${Array.from(String(taskBrief ?? "")).slice(0, 2000).join("") || "（未提供）"}

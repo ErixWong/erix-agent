@@ -55,3 +55,12 @@
 - The library's tools subpath (createJail/file-tools) is retained as a **reference implementation** for callers that need
   to build their own sandbox/guardrails; the CLI does not depend on them.
 - If a general-purpose sandbox component is provided later, create a separate ADR rather than merging it into the agent.
+
+## Revision (2026-09)
+
+The earlier decision to retain the path-jail and filesystem helpers as reference
+implementations is withdrawn. `createJail` and `createFileTools` have been
+removed from the library because no consumer used them, and their names
+misleadingly suggested that the library supplied a sandbox. This conflicts with
+the principle above that the library provides no security boundary; sandboxing
+belongs to the host/runtime.

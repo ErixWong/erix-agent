@@ -32,7 +32,7 @@
 
 - ❌ 不要让工具执行在核心循环中成为强制或隐式行为。宿主提供 `tools` 和 `executeTool`；可选的 `erix-agent/tools` 子路径包含参考助手和参考执行器，但宿主必须显式接入并治理它们。
 - ❌ 不要把库运行时变成 agent 人格、skills、会话管理、TUI 或 MCP 框架。这些属于 CLI 或宿主职责，不属于 `src/` 运行时契约。
-- ❌ 不要提供安全策略或安全边界（白名单、密钥脱敏策略、产物闸门或宿主隔离）。`createJail` 是可选的路径助手，不能替代宿主安全措施。
+- ❌ 不要提供安全策略或安全边界（白名单、密钥脱敏策略、产物闸门或宿主隔离）。安全仍由宿主/运行环境负责。
 - ❌ 不要选择数据库引擎，也不要拥有消费方项目的数据库 schema。消费方在自己的侧实现适配器契约。
 - ❌ 不要成为“mini pi”。需要完整交互式 agent 的消费方应直接使用 pi 本身或其 SDK，而不是把本包继续扩展成一个完整 agent。
 - ❌ 不要在 0.5.1 运行时交付计划中的 `psyche` 压缩策略。它的上下文塑形理念仍是面向对话、属于未来的设计候选，不是当前实现。
@@ -83,7 +83,7 @@
 | # | 需求 | 状态与实现 |
 |---|---|---|
 | FR-5.1 | 定义标准工具 schema；由适配器负责协议序列化；执行保留在宿主 | **已交付。** `ToolSchema` 使用 `inputSchema`；`canonicalToolsToOpenAI` 和 `canonicalToAnthropicRequest` 分别为各 provider 序列化它，而 `executeTool` 仍是循环注入的执行边界。 |
-| FR-5.2 | 提供可选的 `erix-agent/tools` 子路径，其中包含路径牢笼助手、参考文件工具和 recall | **已交付。** `package.json` 将 `./tools` 导出到 `src/tools/index.js`，后者导出 `createJail`、`createFileTools`、`createRecallTool`、工具注册表和工具 provider。这些功能均为可选，不会自动安装为循环工具。 |
+| FR-5.2 | 提供可选的 `erix-agent/tools` 子路径，其中包含 recall、工具注册表和工具 provider | **已交付。** `package.json` 将 `./tools` 导出到 `src/tools/index.js`，后者导出 `createRecallTool`、工具注册表和工具 provider。这些功能均为可选，不会自动安装为循环工具；不再包含路径牢笼或文件工具助手。 |
 | FR-5.3 | 让工具定义可插拔（`static` / `json-file` / `composite`，DB 在消费方项目中）；让执行器注册表归代码所有，并在不匹配时 fail closed | **已交付。** `src/tools/providers.js` 实现三个 provider，`src/tools/registry.js` 将执行器保存在代码所有的 map 中，校验输入，合并 provider schema 覆盖项，并在 provider 指定不可用执行器时抛出 `tool_unknown_executor`。未包含 DB provider。 |
 
 ## 4. 分期与实现状态

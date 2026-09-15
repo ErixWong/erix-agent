@@ -588,9 +588,10 @@ are responsible for their own input validation.
 
 The static and JSON-file providers select `sel.set` or `default`. The
 composite provider merges schemas by name in provider order. The
-`erix-agent/tools` subpath also exports `createJail`, `createFileTools`, and
-`createRecallTool`. These are reference implementations, not an implicit
-tool set installed into `runToolLoop`.
+The `erix-agent/tools` subpath also exports `createRecallTool`, the tool
+registry, and tool providers. These are opt-in helpers, not an implicit tool
+set installed into `runToolLoop`; path-jail and filesystem helpers are not
+part of the library.
 
 ## 4. Source layout
 
@@ -632,9 +633,7 @@ src/
 │   ├── l0.js                  # Objective tool-result facts and summary parsing
 │   └── wrapup.js              # End-of-turn JSON parsing and normalization
 └── tools/
-    ├── file-tools.js          # Reference readFile, rg, tree, and writeFile tools
     ├── index.js               # erix-agent/tools subpath exports
-    ├── jail.js                # Root, writable, and masked-path jail
     ├── providers.js           # Static, JSON-file, and composite ToolProvider
     ├── recall.js              # Bounded transcript recall tool adapter
     └── registry.js             # Code-owned executor/schema registry
