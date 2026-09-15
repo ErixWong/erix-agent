@@ -472,11 +472,11 @@ export function archiveResult(
   const text = String(result ?? "");
   if (!archiveDir || (!force && text.length <= ARCHIVE_THRESHOLD)) return null;
 
-  const archivePath = path.join(
+  let archivePath = path.join(
     archiveDir,
     `${String(sequence).padStart(3, "0")}-${name}.txt`,
   );
-  const metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
+  let metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
   try {
     mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
     const bytes = Buffer.from(text, "utf8");
@@ -512,58 +512,75 @@ export function archiveResult(
       1,
       lineParts.length - (archivedText.endsWith("\n") || archivedText.endsWith("\r") ? 1 : 0),
     );
-    const artifact = {
-      artifactId: path.basename(archivePath),
-      archivePath,
-      digest,
-      locator: { lineStart: 1, lineEnd: lines },
-      round: context?.round ?? null,
-      ...(replayable === undefined ? {} : { replayable }),
-      ...(replayableSource === undefined ? {} : { replayableSource }),
-      truncated,
-      status: truncated ? "truncated" : "ok",
-      originalBytes: bytes.byteLength,
-    };
-    const metadata = {
-      kind: "erix.tool-capture",
-      schemaVersion: 1,
-      toolUseId: context?.toolUseId ?? null,
-      round: context?.round ?? null,
-      command: command ?? null,
-      ...(replayable === undefined ? {} : { replayable }),
-      ...(replayableSource === undefined ? {} : { replayableSource }),
-      artifactId: artifact.artifactId,
-      digest,
-      archivePath,
-      locator: artifact.locator,
-      truncated,
-      status: artifact.status,
-      originalBytes: bytes.byteLength,
-    };
-    writeFileSync(archivePath, archivedText, {
-      encoding: "utf8",
-      mode: 0o600,
-      flag: "wx",
-    });
-    writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-      flag: "wx",
-    });
-    return {
-      text: `${truncateResult(text)}\n${archiveGuidance(archivePath)}`,
-      archivePath,
-      artifact,
-      archivedText,
-    };
-  } catch (error) {
-    for (const target of [archivePath, metadataPath]) {
+    for (let attempt = 0; attempt < Number.MAX_SAFE_INTEGER; attempt += 1) {
+      const created = [];
       try {
-        unlinkSync(target);
-      } catch (cleanupError) {
-        if (cleanupError?.code !== "ENOENT") error.cause = cleanupError;
+        archivePath = path.join(
+          archiveDir,
+          `${String(sequence + attempt).padStart(3, "0")}-${name}.txt`,
+        );
+        metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
+        const artifact = {
+          artifactId: path.basename(archivePath),
+          archivePath,
+          digest,
+          locator: { lineStart: 1, lineEnd: lines },
+          round: context?.round ?? null,
+          ...(replayable === undefined ? {} : { replayable }),
+          ...(replayableSource === undefined ? {} : { replayableSource }),
+          truncated,
+          status: truncated ? "truncated" : "ok",
+          originalBytes: bytes.byteLength,
+        };
+        const metadata = {
+          kind: "erix.tool-capture",
+          schemaVersion: 1,
+          toolUseId: context?.toolUseId ?? null,
+          round: context?.round ?? null,
+          command: command ?? null,
+          ...(replayable === undefined ? {} : { replayable }),
+          ...(replayableSource === undefined ? {} : { replayableSource }),
+          artifactId: artifact.artifactId,
+          digest,
+          archivePath,
+          locator: artifact.locator,
+          truncated,
+          status: artifact.status,
+          originalBytes: bytes.byteLength,
+        };
+        writeFileSync(archivePath, archivedText, {
+          encoding: "utf8",
+          mode: 0o600,
+          flag: "wx",
+        });
+        created.push(archivePath);
+        writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+          flag: "wx",
+        });
+        created.push(metadataPath);
+        return {
+          text: `${truncateResult(text)}\n${archiveGuidance(archivePath)}`,
+          archivePath,
+          artifact,
+          archivedText,
+          sequence: sequence + attempt,
+        };
+      } catch (error) {
+        for (const target of created) {
+          try {
+            unlinkSync(target);
+          } catch (cleanupError) {
+            if (cleanupError?.code !== "ENOENT") error.cause = cleanupError;
+          }
+        }
+        if (error?.code === "EEXIST") continue;
+        throw error;
       }
     }
+    throw new Error("archive sequence exhausted");
+  } catch (error) {
     return {
       text: replayable !== false
         ? `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error, replayable)}`
@@ -601,6 +618,91 @@ function normalizeCommand(command) {
   return String(command).replaceAll(/\r\n?/gu, "\n").trim();
 }
 
+function archiveSequenceFromName(name) {
+  const match = String(name).match(/^(\d+)-.+\.(?:txt|meta\.json)$/u);
+  if (!match) return undefined;
+  const sequence = Number.parseInt(match[1], 10);
+  return Number.isSafeInteger(sequence) ? sequence : undefined;
+}
+
+function existingArchiveEntries(archiveDir) {
+  try {
+    return readdirSync(archiveDir)
+      .map((name) => ({ name, sequence: archiveSequenceFromName(name) }))
+      .filter((entry) => entry.sequence !== undefined);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [];
+    throw error;
+  }
+}
+
+function initialArchiveSequence(archiveDir) {
+  return existingArchiveEntries(archiveDir)
+    .reduce((maximum, entry) => Math.max(maximum, entry.sequence), 0);
+}
+
+function artifactFromMetadata(archiveDir, metadata) {
+  if (!metadata || typeof metadata !== "object"
+    || typeof metadata.artifactId !== "string"
+    || typeof metadata.digest !== "string") {
+    return undefined;
+  }
+  return {
+    artifactId: metadata.artifactId,
+    archivePath: path.join(archiveDir, metadata.artifactId),
+    digest: metadata.digest,
+    locator: metadata.locator,
+    round: metadata.round ?? null,
+    ...(metadata.replayable === undefined ? {} : { replayable: metadata.replayable }),
+    ...(metadata.replayableSource === undefined
+      ? {}
+      : { replayableSource: metadata.replayableSource }),
+    truncated: metadata.truncated === true,
+    status: metadata.status ?? (metadata.truncated === true ? "truncated" : "ok"),
+    ...(Number.isSafeInteger(metadata.originalBytes)
+      ? { originalBytes: metadata.originalBytes }
+      : {}),
+  };
+}
+
+function hydrateArchiveIndex(archiveDir, duplicateCommands, knownArtifacts) {
+  for (const entry of existingArchiveEntries(archiveDir)) {
+    if (!entry.name.endsWith(".meta.json")) continue;
+    const artifactId = entry.name.slice(0, -".meta.json".length) + ".txt";
+    if (knownArtifacts.has(artifactId)) continue;
+    let metadata;
+    try {
+      metadata = JSON.parse(readFileSync(path.join(archiveDir, entry.name), "utf8"));
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      if (error instanceof SyntaxError) continue;
+      throw error;
+    }
+    if (typeof metadata.command !== "string") {
+      knownArtifacts.add(artifactId);
+      continue;
+    }
+    const artifact = artifactFromMetadata(archiveDir, {
+      ...metadata,
+      artifactId,
+    });
+    if (!artifact) {
+      knownArtifacts.add(artifactId);
+      continue;
+    }
+    const command = normalizeCommand(metadata.command);
+    const state = duplicateCommands.get(command);
+    if (state) {
+      state.count += 1;
+      const currentSequence = archiveSequenceFromName(state.firstArtifact?.artifactId) ?? Number.MAX_SAFE_INTEGER;
+      if (entry.sequence < currentSequence) state.firstArtifact = artifact;
+    } else {
+      duplicateCommands.set(command, { count: 1, firstArtifact: artifact });
+    }
+    knownArtifacts.add(artifactId);
+  }
+}
+
 function firstSafeArtifactValue(artifact, status) {
   if (!artifact?.archivePath || !["ok", "truncated"].includes(status)) return undefined;
   try {
@@ -628,8 +730,10 @@ export function createCliTools({
     throw new TypeError("archiveDir must be a string");
   }
   const archiveRoot = archiveDir === undefined ? undefined : path.resolve(archiveDir);
-  let archiveSequence = 0;
+  let archiveSequence = archiveRoot === undefined ? 0 : initialArchiveSequence(archiveRoot);
   const duplicateCommands = archiveRoot ? new Map() : undefined;
+  const knownArchiveArtifacts = new Set();
+  if (archiveRoot) hydrateArchiveIndex(archiveRoot, duplicateCommands, knownArchiveArtifacts);
   let lastToolMetadata;
   const runState = runStateOption && typeof runStateOption === "object"
     ? runStateOption
@@ -811,6 +915,7 @@ export function createCliTools({
       && name === "exec"
       && typeof command === "string"
     ) {
+      hydrateArchiveIndex(archiveRoot, duplicateCommands, knownArchiveArtifacts);
       const normalizedCommand = normalizeCommand(command);
       commandState = duplicateCommands.get(normalizedCommand);
       if (commandState) {
@@ -841,6 +946,7 @@ export function createCliTools({
         context,
       });
       if (archived !== null) {
+        archiveSequence = Math.max(archiveSequence, archived.sequence ?? archiveSequence);
         returnedResult = archived.text;
         lastToolMetadata = metadataWithPrivateOutput({
           name,
@@ -850,6 +956,9 @@ export function createCliTools({
           artifactStatus: archived.artifact?.status ?? "unrecoverable",
         }, archived.archivedText ?? String(result ?? ""));
         if (isFirstCommandExecution) commandState.firstArtifact = archived.artifact;
+        if (archived.artifact?.artifactId) {
+          knownArchiveArtifacts.add(archived.artifact.artifactId);
+        }
         if (name === "exec" && replayableValue === false && archived.artifact) {
           captureCount += 1;
           runState.captureCount = captureCount;

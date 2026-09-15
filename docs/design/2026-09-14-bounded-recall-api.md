@@ -1,6 +1,6 @@
 # Bounded recall API 设计
 
-- 状态：设计稿（不实现）
+- 状态：已实现（TranscriptStore memory/file 参考实现）
 - 日期：2026-09-14
 - 关联：[memory and compaction RFC](./2026-09-14-memory-and-compaction-rfc.md)、[评审](./2026-09-14-memory-and-compaction-rfc-review.md)、Issue [#82](https://github.com/ErixWong/erix-agent/issues/82)
 
@@ -25,6 +25,7 @@ await store.recall({
   runId,
   fromRound, // 可选，包含
   toRound,   // 可选，包含
+  artifactRef, // 可选，精确 artifactId/archivePath/digest
   limit,     // 可选，返回的记录/片段数上限
   cursor,    // 可选，上一次响应返回的不透明续取游标
   maxBytes,  // 可选，响应 payload 的字节上限
@@ -32,10 +33,12 @@ await store.recall({
 ```
 
 `runId` 必填；`fromRound`、`toRound` 必须是非负整数且范围有效。
-`limit` 和 `maxBytes` 是硬上限，store 不得为了计算总数或生成摘要而读取并
-缓存范围内的完整结果。`cursor` 由 store 生成和解释，调用方不得解析或修改。
-游标应绑定 `runId`、范围、权限/租约和数据版本；参数变化时必须拒绝或返回
-显式的 `cursor_mismatch`，不能静默从错误位置继续。
+`limit` 和 `maxBytes` 是硬上限，`0` 会被拒绝且不会产生游标。store 不得为了
+计算总数或生成摘要而读取并缓存范围内的完整结果。`artifactRef` 只匹配目标
+artifact；目标不存在返回 `unrecoverable`，不能静默忽略筛选条件。`cursor` 由
+store 生成和解释，调用方不得解析或修改。游标绑定 `runId`、范围、pattern、
+`limit`、`maxBytes`、`artifactRef`、权限/租约和数据版本；参数变化时必须拒绝
+或返回显式的 `cursor_mismatch`，不能静默从错误位置继续。
 
 建议响应形状：
 
@@ -57,10 +60,12 @@ await store.recall({
 ```
 
 `items` 本身也必须是有界的；响应 JSON、编码和 envelope 计入
-`maxBytes`。单个 item 大于剩余预算时，store 应返回可识别的
-`item_too_large`/`truncated` 状态和续取信息，而不是构造一个无界 item。
-实现可以使用流式 JSONL、数据库游标或文件逐行扫描，但不得把全量内容先
-合并成字符串再截断。
+`maxBytes`。单个 item 大于剩余预算时，store 返回 `truncated` 和续取信息。文件 JSONL
+参考实现对超过 64 KiB 的单条源记录不做整行 `JSON.parse`，而是返回
+`error.code = "record_too_large"`、`truncated: true` 和可推进游标，明确该
+记录被跳过；这是一项有界性取舍，调用方不得把该页当作完整恢复。实现可以
+使用流式 JSONL、数据库游标或文件逐行扫描，但不得把全量内容先合并成字符串
+再截断。
 
 ## 错误、缺失与陈旧语义
 

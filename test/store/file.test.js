@@ -132,6 +132,19 @@ test("file: markRunState 使用临时文件原子替换", async () => {
   }
 });
 
+test("file: 损坏 run state 返回显式 state_unavailable", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    await writeFile(join(root, "run.state.json"), "{not-json", "utf8");
+    const state = await store.loadRunState("run");
+    assert.equal(state.stateStatus, "state_unavailable");
+    assert.equal(state.stateError, "corrupt");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("file: appendRound 修复并隔离无换行结尾的损坏残行", async () => {
   const root = await makeTempDir();
   try {
@@ -245,6 +258,50 @@ test("file: appendRound 无 LF 尾部同 key 不重复写入（幂等）", async
     assert.equal(loaded[0].round, 5);
     const transcript = await readFile(join(root, "run.jsonl"), "utf8");
     assert.equal((transcript.match(/"round":5/g) ?? []).length, 1, "不应重复写入同 round");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: bounded recall skips an oversized JSONL record with a resumable cursor", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    await writeFile(
+      join(root, "huge.jsonl"),
+      `${JSON.stringify({
+        round: 1,
+        messages: [{
+          role: "assistant",
+          content: [{ type: "text", text: "x".repeat(5 * 1024 * 1024) }],
+        }],
+      })}\n`,
+      "utf8",
+    );
+
+    const first = await store.recall({
+      runId: "huge",
+      fromRound: 1,
+      toRound: 1,
+      limit: 1,
+      maxBytes: 64,
+    });
+    assert.equal(first.status, "truncated");
+    assert.equal(first.truncated, true);
+    assert.ok(Buffer.byteLength(first.text, "utf8") <= 64);
+    assert.match(first.error.code, /record_too_large/u);
+    assert.ok(first.nextCursor);
+
+    const resumed = await store.recall({
+      runId: "huge",
+      fromRound: 1,
+      toRound: 1,
+      limit: 1,
+      maxBytes: 64,
+      cursor: first.nextCursor,
+    });
+    assert.notEqual(resumed.status, "error");
+    assert.equal(resumed.nextCursor, undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

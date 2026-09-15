@@ -1,4 +1,5 @@
 import { boundedRecall } from "./bounded-recall.js";
+import { boundRunState } from "../run-state.js";
 
 /**
  * @typedef {{
@@ -134,7 +135,7 @@ export function createMemoryTranscriptStore() {
     async saveRunState(runId, state) {
       runStates.set(runId, {
         ...(runStates.get(runId) ?? {}),
-        ...copyRecord(state),
+        ...boundRunState({ ...copyRecord(state), runId }),
         runId,
         ts: new Date().toISOString(),
       });

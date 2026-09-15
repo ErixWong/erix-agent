@@ -9,7 +9,9 @@
 - CLI 终稿 provenance guard 改为默认关闭；需要核验时显式使用 `--final-guard` 或
   `ERIX_FINAL_GUARD=1`。`--no-final-guard` 保留为兼容 no-op，库 API 的 `finalGuard` 注入语义不变。
 - **行为变更**：相同规范化命令再次执行不再拦截；执行照常完成后告知首次记录与工件状态，
-  两次结果均单独归档，可供审计。
+  成功归档时 metadata 返回 `rerunOf`（首次 round/artifactId/digest/locator/status），
+  归档序号会从既有目录恢复并在跨进程冲突时安全递增。该告知不撤销付款、删除、发布、
+  写入或外部 API 副作用，也不是正确性保证。
 - 本版本包含宿主可见的默认行为变化与新的 `runToolLoop`/TranscriptStore API，按语义化版本规则从
   0.4.0 升为 minor 版本 0.5.0；宿主必须阅读消费者契约后再升级。
 
@@ -29,7 +31,9 @@
 - `exec` 重复执行结果元数据附带首次 `rerunOf`（round/artifactId/archivePath/digest/locator）
   与机械工件状态 `ok`/`truncated`/`missing`/`stale`/`unrecoverable`。
 - TranscriptStore 新增对象参数 bounded recall API（`limit`/`cursor`/`maxBytes`），
-  在 store 源头限流并提供可续取游标与 `unrecoverable`/`stale`/`truncated` 状态；
+  在 store 源头限制返回切片并提供绑定全部参数的可续取游标与
+  `unrecoverable`/`stale`/`truncated` 状态；`artifactRef` 精确过滤，零上限显式拒绝，
+  文件 store 对超大 JSONL 单条记录返回 `record_too_large` 并以游标推进而不整行物化；
   旧位置参数 `recall` 保持兼容，CLI 不新增 recall 工具。
 - 折叠时可由 CLI/宿主注入 `stubFor`，为不可重放工具结果保留有界、去凭据的最小事实 stub。
 - 折叠状态加入替换式、有界的 `navigationRecord`（最多 10 条 artifact、最多 400 字符），
@@ -39,8 +43,9 @@
 - 增加 store/无 store 折叠终止、折叠轮次范围、stub 脱敏与截断、归档失败、
   replayability 来源优先级、unknown、resume 重入和导航记录边界的确定性契约测试。
 - 新增确定性 run state：预算/低预算提示、工具调用与失败、`filesWritten`、注入式 todo 状态、
-  折叠与导航计数、不可重放/不可恢复捕获、终止及工具/checkpoint/归档错误计数；state 有界、替换式注入，
-  通过 TranscriptStore upsert 并支持 resume 幂等。
+  折叠与导航计数、不可重放/不可恢复捕获、终止及工具/checkpoint/归档错误计数；持久对象
+  具备 64 KiB 总硬顶与条目/字段上限，裁剪带 `bounds.truncated` 标记，替换式注入并支持
+  resume 幂等；未知、缺字段或损坏 schema 显式返回 `state_unavailable`，不静默恢复默认。
 - 新增宿主注入的 `todoStateProvider`/`semanticStateProvider` 接口；语义半只接受有界文本与版本，
   版本不匹配明确标为 `stale`，引擎不调用模型。
 - 工具结果在剩余轮次不超过 2 轮时追加预算提示；轮次上限、stall 或 continuation 耗尽且没有终稿时，loop 可追加一次禁用工具的强制收尾。
@@ -58,6 +63,8 @@
 - 新增 ADR-013 guard 章程：guard 只做精确比对，禁止从模型自然语言推断，保持 opt-in；
   同步补充 ADR-012 与范围修订评估中的确定性 run state 决策。
 - README 增加消费者契约入口、run state 说明，并同步 0.5.0 发版与宿主迁移要点。
+- 明确 `verification.status === "skipped"` 时 CLI 仍可退出 0；只有 `verified` 才表示来源已核验，
+  并收窄跨进程重跑、bounded recall 源头限流和 run state 有界性的措辞。
 
 ## [0.4.0] - 2026-09-14
 

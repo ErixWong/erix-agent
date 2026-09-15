@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   createDeterministicRunState,
   renderRunState,
+  RUN_STATE_MAX_SERIALIZED_BYTES,
   upsertRunStateInMessages,
+  validateRunState,
   withSemanticRunState,
 } from "../src/run-state.js";
 import { runToolLoop } from "../src/loop.js";
@@ -34,6 +36,73 @@ test("run state is bounded, marked when truncated, and does not expose credentia
   assert.ok(rendered.length <= 400);
   assert.match(rendered, /\[run state truncated\]/u);
   assert.doesNotMatch(rendered, /sk-secret|Bearer/u);
+});
+
+test("persisted run state is bounded, marked, and redacts semantic credentials", () => {
+  const state = withSemanticRunState(createDeterministicRunState({
+    runId: "persisted-bounds",
+    toolStats: new Map(
+      Array.from({ length: 100_000 }, (_unused, index) => [
+        `tool-${index}-${"x".repeat(200)}`,
+        { calls: 1, failures: 0 },
+      ]),
+    ),
+    filesWritten: Array.from({ length: 1_000 }, (_unused, index) => `/tmp/file-${index}`),
+    todo: {
+      status: "working",
+      items: Array.from({ length: 1_000 }, (_unused, index) => ({
+        id: `todo-${index}-${"x".repeat(100)}`,
+        status: "pending",
+      })),
+    },
+  }), {
+    text: "token=secret-value-should-not-persist",
+    version: 0,
+  });
+
+  assert.ok(Buffer.byteLength(JSON.stringify(state), "utf8") <= RUN_STATE_MAX_SERIALIZED_BYTES);
+  assert.equal(state.bounds.truncated, true);
+  assert.ok(state.bounds.omittedTools > 0);
+  assert.doesNotMatch(JSON.stringify(state), /secret-value-should-not-persist/u);
+  assert.equal(validateRunState(state).ok, true);
+});
+
+test("unknown and incomplete run state are explicitly unavailable", () => {
+  assert.deepEqual(validateRunState({ schemaVersion: 99 }), {
+    ok: false,
+    status: "state_unavailable",
+    reason: "unknown_schema",
+  });
+  assert.deepEqual(validateRunState({ schemaVersion: 1, runId: "missing" }), {
+    ok: false,
+    status: "state_unavailable",
+    reason: "missing_fields",
+  });
+});
+
+test("resume exposes unknown persisted schema instead of silently resetting it", async () => {
+  const store = createMemoryTranscriptStore();
+  await store.appendRound("unknown-schema", {
+    round: 0,
+    messages: [{ role: "user", content: [{ type: "text", text: "resume" }] }],
+  });
+  store.loadRunState = async () => ({ schemaVersion: 99, deterministic: {} });
+
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "ignored on resume",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    store,
+    runId: "unknown-schema",
+    resume: true,
+  });
+
+  assert.equal(result.runState.stateAvailability.status, "state_unavailable");
+  assert.equal(result.runState.stateAvailability.reason, "unknown_schema");
 });
 
 test("run state replacement is idempotent across repeated folds", () => {
