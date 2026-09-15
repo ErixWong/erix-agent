@@ -115,6 +115,52 @@ export function transcriptStoreContract(label, createStore) {
     assert.equal(await store.loadLatestCheckpoint("missing-checkpoint-run"), undefined);
   });
 
+  test(`${label}: checkpoint/run-state 多 runId 隔离`, async () => {
+    const store = await createStore();
+    await store.saveCheckpoint("run-a", {
+      round: 1,
+      status: "pending",
+      pendingToolUse: { id: "a" },
+    });
+    await store.appendCheckpoint("run-b", {
+      round: 2,
+      status: "executed",
+      pendingToolUse: { id: "b" },
+    });
+    await store.saveRunState("run-a", { stateVersion: 1, deterministic: { rounds: 1 } });
+    await store.saveRunState("run-b", { stateVersion: 2, deterministic: { rounds: 2 } });
+    await store.markRunState("run-a", "failed");
+    await store.markRunState("run-b", "succeeded");
+
+    assert.equal((await store.loadLatestCheckpoint("run-a")).pendingToolUse.id, "a");
+    assert.equal((await store.loadLatestCheckpoint("run-b")).pendingToolUse.id, "b");
+    assert.equal((await store.loadRunState("run-a")).state, "failed");
+    assert.equal((await store.loadRunState("run-b")).state, "succeeded");
+    assert.equal((await store.loadRunState("run-a")).stateVersion, 1);
+    assert.equal((await store.loadRunState("run-b")).stateVersion, 2);
+  });
+
+  test(`${label}: checkpoint/run-state 写失败向上抛出`, async () => {
+    const store = await createStore();
+    const methods = [
+      ["saveCheckpoint", ["failed-run", { round: 1 }]],
+      ["appendCheckpoint", ["failed-run", { round: 1 }]],
+      ["saveRunState", ["failed-run", { stateVersion: 1 }]],
+      ["markRunState", ["failed-run", "failed"]],
+    ];
+
+    for (const [method, args] of methods) {
+      const expected = new Error(`${method} unavailable`);
+      store[method] = async () => {
+        throw expected;
+      };
+      await assert.rejects(
+        store[method](...args),
+        (error) => error === expected,
+      );
+    }
+  });
+
   test(`${label}: run-state 三件套往返保真与 mark 合并语义`, async () => {
     const store = await createStore();
     await store.saveRunState("state-run", {

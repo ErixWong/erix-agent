@@ -331,6 +331,7 @@ export async function runToolLoop({
     ? Math.max(0, retryOptions.backoffMaxMs)
     : 10000;
   const sleepImpl = retryOptions?.sleepImpl ?? defaultSleep;
+  let toolExecutedThisRound = false;
 
   const reportPersistenceError = async (error, event) => {
     if (typeof onPersistenceError === "function") {
@@ -368,9 +369,11 @@ export async function runToolLoop({
         : args.at(-1)?.status === "executed"
           ? "checkpoint_after_tool"
           : "checkpoint_before_tool";
-    const sideEffect = phase === "checkpoint_after_tool"
-      ? "executed_uncommitted"
-      : "not_started";
+    const sideEffect = method === "appendRound"
+      ? (toolExecutedThisRound ? "executed_uncommitted" : "not_started")
+      : phase === "checkpoint_after_tool"
+        ? "executed_uncommitted"
+        : "not_started";
     let lastError;
     for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
       throwIfAborted(signal);
@@ -1335,6 +1338,9 @@ export async function runToolLoop({
     get messages() {
       return messages;
     },
+    markToolExecuted() {
+      toolExecutedThisRound = true;
+    },
     get lowBudgetPrompted() {
       return lowBudgetPrompted;
     },
@@ -1636,6 +1642,7 @@ export async function runToolLoop({
 
     while (rounds < governorState.effectiveMaxRounds) {
     const round = rounds + 1;
+    toolExecutedThisRound = false;
     roundEventDeltas = [];
     roundStopReason = undefined;
     let stallSuspicion = false;
@@ -2065,6 +2072,7 @@ export async function runToolLoop({
 
     executedToolIds.clear();
     checkpointResults.clear();
+    toolExecutedThisRound = false;
     emitEvent({
       type: "round_end",
       round,

@@ -181,6 +181,151 @@ test("checkpoint failure after a tool reports executed_uncommitted and terminate
   assert.equal(events[0].sideEffect, "executed_uncommitted");
 });
 
+test("intercept pre-tool checkpoint failure fails closed before judging or executing", async () => {
+  const store = fullStore();
+  const originalSaveCheckpoint = store.saveCheckpoint.bind(store);
+  let checkpointCalls = 0;
+  store.saveCheckpoint = async (runId, checkpoint) => {
+    checkpointCalls += 1;
+    if (checkpointCalls === 3) throw new Error("intercept checkpoint unavailable");
+    return originalSaveCheckpoint(runId, checkpoint);
+  };
+  const judge = textProvider(JSON.stringify({
+    done: true,
+    confidence: 0.9,
+    reason: "allow",
+    evidence: "safe",
+  }));
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "first", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    {
+      content: [{ type: "tool_use", id: "intercepted", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "must not be returned" }], stopReason: "end_turn" },
+  ]);
+  let executions = 0;
+
+  await assert.rejects(
+    runToolLoop({
+      provider,
+      store,
+      runId: "intercept-before-failure",
+      initialUserMessage: "work",
+      executeTool: async () => {
+        executions += 1;
+        return "executed";
+      },
+      completion: false,
+      reflection: {
+        enabled: true,
+        roundJudge: false,
+        judgeIntervalRound: 1,
+        judge: { provider: judge },
+      },
+    }),
+    (error) => error.code === "checkpoint_failed"
+      && error.termination?.reason === "persistence_failed"
+      && error.sideEffect === "not_started",
+  );
+  assert.equal(checkpointCalls, 3);
+  assert.equal(executions, 1);
+  assert.equal(provider.requests.length, 2);
+  assert.equal(judge.requests.length, 0);
+});
+
+test("intercept result checkpoint failure terminates without running the blocked tool", async () => {
+  const store = fullStore();
+  const originalSaveCheckpoint = store.saveCheckpoint.bind(store);
+  let checkpointCalls = 0;
+  store.saveCheckpoint = async (runId, checkpoint) => {
+    checkpointCalls += 1;
+    if (checkpointCalls === 4) throw new Error("intercept result unavailable");
+    return originalSaveCheckpoint(runId, checkpoint);
+  };
+  const judge = textProvider(JSON.stringify({
+    done: false,
+    confidence: 0.9,
+    reason: "方向偏离",
+    evidence: "需要重新评估",
+  }));
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "first", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    {
+      content: [{ type: "tool_use", id: "blocked", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "must not be returned" }], stopReason: "end_turn" },
+  ]);
+  let executions = 0;
+
+  await assert.rejects(
+    runToolLoop({
+      provider,
+      store,
+      runId: "intercept-result-failure",
+      initialUserMessage: "work",
+      executeTool: async () => {
+        executions += 1;
+        return "executed";
+      },
+      completion: false,
+      reflection: {
+        enabled: true,
+        roundJudge: false,
+        judgeIntervalRound: 1,
+        judge: { provider: judge },
+      },
+    }),
+    (error) => error.code === "checkpoint_failed"
+      && error.termination?.reason === "persistence_failed"
+      && error.sideEffect === "not_started",
+  );
+  assert.equal(checkpointCalls, 4);
+  assert.equal(executions, 1);
+  assert.equal(provider.requests.length, 2);
+  assert.equal(judge.requests.length, 1);
+});
+
+test("appendRound failure after a tool reports executed_uncommitted", async () => {
+  const store = fullStore();
+  const originalAppendRound = store.appendRound.bind(store);
+  store.appendRound = async (runId, record) => {
+    if (record.round === 1) throw new Error("transcript unavailable after tool");
+    return originalAppendRound(runId, record);
+  };
+  const events = [];
+  let executions = 0;
+
+  await assert.rejects(
+    runToolLoop({
+      provider: toolProvider("append-after-tool"),
+      store,
+      runId: "append-after-tool",
+      initialUserMessage: "work",
+      executeTool: async () => {
+        executions += 1;
+        return "executed";
+      },
+      completion: false,
+      diagnostics: { error: (event) => events.push(event) },
+    }),
+    (error) => error.termination?.reason === "persistence_failed"
+      && error.operation === "appendRound"
+      && error.phase === "transcript"
+      && error.sideEffect === "executed_uncommitted",
+  );
+  assert.equal(executions, 1);
+  assert.equal(events.at(-1).operation, "appendRound");
+  assert.equal(events.at(-1).sideEffect, "executed_uncommitted");
+});
+
 test("none persistence mode is a no-op even with an incomplete failing store", async () => {
   let calls = 0;
   const result = await runToolLoop({

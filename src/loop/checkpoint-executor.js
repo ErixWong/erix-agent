@@ -101,6 +101,7 @@ export function createCheckpointExecutor(ctx) {
         success: false,
       };
     }
+    ctx.markToolExecuted?.();
 
     if (ctx.onToolResult) {
       const onToolResult = ctx.onToolResult;
@@ -185,12 +186,27 @@ export function createCheckpointExecutor(ctx) {
     }
 
     const persistCheckpointAfterIntercept = ctx.persistCheckpoint;
-    await persistCheckpointAfterIntercept({
+    const checkpointPersisted = await persistCheckpointAfterIntercept({
       round,
       pendingToolUse: block,
       pendingToolUses,
       toolResults,
     });
+    if (!checkpointPersisted && ctx.hasCheckpointStore) {
+      ctx.checkpointFailureCount += 1;
+      const failure = new KitError(
+        "checkpoint_failed",
+        `Checkpoint persistence failed before intercepted tool execution (runId=${String(ctx.runId)}, round=${round})`,
+      );
+      if (ctx.lastPersistenceFailure) {
+        failure.operation = ctx.lastPersistenceFailure.operation;
+        failure.phase = "checkpoint_before_tool";
+        failure.sideEffect = "not_started";
+        failure.persistence = ctx.lastPersistenceFailure.persistence;
+        failure.persistenceError = ctx.lastPersistenceFailure.persistenceError;
+      }
+      throw failure;
+    }
     let decision;
     let interceptError;
     try {
@@ -282,7 +298,7 @@ export function createCheckpointExecutor(ctx) {
       });
     }
     const persistCheckpointForInterceptResult = ctx.persistCheckpoint;
-    await persistCheckpointForInterceptResult({
+    const resultCheckpointPersisted = await persistCheckpointForInterceptResult({
       round,
       pendingToolUse: block,
       pendingToolUses,
@@ -290,6 +306,22 @@ export function createCheckpointExecutor(ctx) {
       status: "intercepted",
       messagesOverride: overriddenMessages,
     });
+    if (!resultCheckpointPersisted && ctx.hasCheckpointStore) {
+      ctx.checkpointFailureCount += 1;
+      const failure = new KitError(
+        "checkpoint_failed",
+        `Checkpoint persistence failed after intercept result (runId=${String(ctx.runId)}, round=${round})`,
+      );
+      if (ctx.lastPersistenceFailure) {
+        // The intercepted tool never ran, so losing its decision/result has no external side effect.
+        failure.operation = ctx.lastPersistenceFailure.operation;
+        failure.phase = "checkpoint_before_tool";
+        failure.sideEffect = "not_started";
+        failure.persistence = ctx.lastPersistenceFailure.persistence;
+        failure.persistenceError = ctx.lastPersistenceFailure.persistenceError;
+      }
+      throw failure;
+    }
     return toolResult;
   };
 
