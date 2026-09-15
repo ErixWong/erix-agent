@@ -92,7 +92,7 @@ ADR-001/002 已建立端口范式并落地部分：
 | `diagnostics.error`（#98） | ❌ 新增——headless 最低错误出口 | 随 #98 | CLI：stderr + error.log |
 | `AssemblyPort`（组合根） | ❌ 新增——createSession 收齐下列端口 | ❌ 新增 `assemblyPortContract` | CLI 文件型适配器 |
 | `ResourceStore`（归档产出物） | ❌ 新增 | ❌ | CLI：文件系统 |
-| `NotesStore` | ❌ 新增（或 ResourceStore 命名空间） | ❌ | CLI：文件系统 |
+| `NotesStore` | **缓议**（见 2.7：触发条件） | — | — |
 | ~~LogPort / MessagePort / MetricsPort~~ | **明确不做**：只写不读走 `emit(event)`；messages 就是 store 的数据 | — | — |
 
 ### 2.4 各端口的关键约定
@@ -100,12 +100,14 @@ ADR-001/002 已建立端口范式并落地部分：
 **ToolExecutor**（终结 arity 猜测）：
 
 ```js
-// 唯一形态：结构化对象（signal 只有这条路传得进来）
+// 唯一形态：结构化对象——这是唯一签名，不保留位置形态
 executeTool({ id, name, input, context, signal })
-// 返回：string | { content, metadata? } | Error | 结构化结果
+// 返回一并冻结：string | { content, metadata? } | Error
 ```
 
-- 两侧删除 `function.length` 猜测；契约测试断言调用形态；
+- 位置形态 `(name, input)` 不只是风格问题，是**语义缺陷**：`signal`（abort）与 `context`
+  只有对象形态传得进来——留它等于宣布“工具不支持中断”；
+- 两侧删除 `function.length` 猜测；契约测试断言调用形态与返回形态；
 - 历史教训同族：#96 的 `this` 绑定、#98 的静默跳过——**隐式契约靠运气，冻结靠合同**。
 
 **run options**（终结透传）：
@@ -136,9 +138,20 @@ resourceStore.get(locator)     → bytesOrText
 **diagnostics.error**（#98，headless 最低要求）：
 
 - 结构化错误交付（事件含 `phase`/`operation`/`runId`/`sideEffect`/`error`），**不是日志端口**；
-- `persistence: "none" | "required"` 显式声明；`required` 启动即校验全部方法，缺失列表直接失败；
+- `persistence: "none" | "required"` **两档，拒绝 best_effort**（理由见 2.7）；`required` 启动即校验
+  全部方法，缺失列表直接失败；`required` 内建**有界重试**（复用 retry 的 attempts/backoff）
+  吸收瞬时抖动，持续失败 → `persistence_error` + 终止 run；
 - 写失败 → `persistence_error` 事件 + 终止 run（`termination.reason = "persistence_failed"`）；
 - 删除 `persist()` 对缺方法的静默 `return false`；`console.error` 只是 CLI 适配器的兜底展示。
+
+### 2.7 缓议与明确拒绝
+
+- **NotesStore 缓议**：`src/` 对 notes 零引用（实测），消费它的只有 CLI 的 notes skill 与 guard——
+  都在适配器侧。无第二宿主需求，不预设计。**触发条件**：第二个宿主要 notes 时，
+  按其真实需求定义端口形状。
+- **拒绝 best_effort 持久化模式**：best_effort = “写失败继续跑”，即 #98 正在清除的
+  静默降级换个名字。库失去承诺能力（内存态与持久态分叉，resume/recall 语义即坏）。
+  瞬时抖动由 `required` 的有界重试吸收；真有宿主提出明确场景再按数据决定。
 
 **AssemblyPort**（组合根）：
 
@@ -185,7 +198,7 @@ createSession({
 | **P0** | ToolExecutor 唯一形态（两侧删 `.length` 猜测）+ run options 拒绝陌生键 | ② | #49 |
 | **P1** | 素材归库：导出归一化原语 + 库内改用 + 删宿主 ~200 行 | ① | #49 |
 | **P2** | 契约补齐（provider / store 9 方法 / round record / executeToolContract）+ AssemblyPort + `assemblyPortContract` | ② | #49 |
-| **P3** | ResourceStore / NotesStore 端口化 | ② | #49 |
+| **P3** | ResourceStore 端口化（NotesStore 缓议，见 2.7） | ② | #49 |
 
 ## 四、明确不做
 
