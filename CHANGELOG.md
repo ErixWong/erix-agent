@@ -2,7 +2,7 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
-## [Unreleased]
+## [0.5.0] - 2026-09-15
 
 ### Breaking
 
@@ -10,8 +10,21 @@
   `ERIX_FINAL_GUARD=1`。`--no-final-guard` 保留为兼容 no-op，库 API 的 `finalGuard` 注入语义不变。
 - **行为变更**：相同规范化命令再次执行不再拦截；执行照常完成后告知首次记录与工件状态，
   两次结果均单独归档，可供审计。
+- 本版本包含宿主可见的默认行为变化与新的 `runToolLoop`/TranscriptStore API，按语义化版本规则从
+  0.4.0 升为 minor 版本 0.5.0；宿主必须阅读消费者契约后再升级。
 
-### Added
+### Changed
+
+- 重跑告知现在以 `rerunOf` 和工件状态 `ok`/`truncated`/`missing`/`stale`/`unrecoverable`
+  表达事实；副作用与重跑风险不由引擎替宿主裁决。
+- `replayableSource` 的优先级固定为 `declared > policy > heuristic > unknown`；`unknown`
+  不再提供布尔安全断言。
+- 折叠导航记录保持有界并仅用于地址导航；折叠 stub 保留非重放结果的安全最小事实，不把值
+  伪装成语义决定或 provenance 证明。
+- 工具剩余轮次不超过 2 轮时继续发出低预算提示；达到上限、stall 或 continuation 耗尽时默认追加
+  `forcedFinal` 收尾，`ERIX_NO_FORCED_FINAL=1` 可显式关闭。
+
+### feat
 
 - `exec` 重复执行结果元数据附带首次 `rerunOf`（round/artifactId/archivePath/digest/locator）
   与机械工件状态 `ok`/`truncated`/`missing`/`stale`/`unrecoverable`。
@@ -25,13 +38,26 @@
   `unknown` 继续归档但不宣称可重放、不触发重跑拦截。
 - 增加 store/无 store 折叠终止、折叠轮次范围、stub 脱敏与截断、归档失败、
   replayability 来源优先级、unknown、resume 重入和导航记录边界的确定性契约测试。
+- 新增确定性 run state：预算/低预算提示、工具调用与失败、`filesWritten`、注入式 todo 状态、
+  折叠与导航计数、不可重放/不可恢复捕获、终止及工具/checkpoint/归档错误计数；state 有界、替换式注入，
+  通过 TranscriptStore upsert 并支持 resume 幂等。
+- 新增宿主注入的 `todoStateProvider`/`semanticStateProvider` 接口；语义半只接受有界文本与版本，
+  版本不匹配明确标为 `stale`，引擎不调用模型。
 - 工具结果在剩余轮次不超过 2 轮时追加预算提示；轮次上限、stall 或 continuation 耗尽且没有终稿时，loop 可追加一次禁用工具的强制收尾。
 - `note_list` 按 `relevance` 降序、`updated_at` 降序排序，并支持 `minRelevance`、`tag`、`source` 筛选；自动捕获默认 relevance 为 `0.8`，旧记录按 `0.5` 处理。
 
-### Fixed
+### fix
 
 - 修复实验护栏在已传 `--yes` 时仍打印 dry-run 提示的问题。
 - 成本预估改用历史最大值（下限）而不是均值，避免系统性偏乐观。
+
+### docs
+
+- 新增 `docs/host-consumer-contract.md`，明确 verification、bounded recall、replayableSource、
+  重跑告知以及 ADR-012/013 的宿主责任边界。
+- 新增 ADR-013 guard 章程：guard 只做精确比对，禁止从模型自然语言推断，保持 opt-in；
+  同步补充 ADR-012 与范围修订评估中的确定性 run state 决策。
+- README 增加消费者契约入口、run state 说明，并同步 0.5.0 发版与宿主迁移要点。
 
 ## [0.4.0] - 2026-09-14
 
@@ -109,4 +135,5 @@
 - notes 是 pull-only：system prompt 只提供值型笔记的 key/标签索引，不注入笔记值；模型需要时调用
   `note_read`（未知 key 才先 `note_list`），归档引用只用于审计和有界恢复。
 
+[0.5.0]: https://github.com/ErixWong/erix-agent/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ErixWong/erix-agent/compare/v0.3.5...v0.4.0

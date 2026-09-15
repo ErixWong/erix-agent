@@ -13,6 +13,12 @@ import {
   buildTimeline,
   parseJudgeDecision,
 } from "./reflection/judge.js";
+import {
+  createDeterministicRunState,
+  renderRunState,
+  upsertRunStateInMessages,
+  withSemanticRunState,
+} from "./run-state.js";
 
 function blocksFor(content) {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -704,6 +710,8 @@ function defaultSleep(ms, signal) {
  *   finalGuardTimeoutMs?: number, // Defaults to 30000; non-positive values use the default.
  *   maxTokenContinuations?: number,
  *   context?: {strategy?: object, budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
+ *   todoStateProvider?:(payload:{runId?:string,rounds:number})=>object|Promise<object>,
+ *   semanticStateProvider?:(payload:{runId?:string,state:object,previous?:object})=>{text:string,version:number}|Promise<{text:string,version:number}>,
  *   modelConfig?: {contextWindowTokens?:number, maxOutputTokens?:number},
  *   modelMetadata?: {contextWindowTokens?:number, maxOutputTokens?:number},
  *   model?: {contextWindowTokens?:number, maxOutputTokens?:number},
@@ -711,7 +719,7 @@ function defaultSleep(ms, signal) {
  *   task?:any, // Explicit judge/reflection/wrapup brief; non-empty values take precedence as task > context.task > entry transcript's last user text. Explicit values use a 1500-code-point budget; message fallback uses 500. Multi-turn hosts should pass the current/latest instruction as a string.
  *   session?:any, requestId?:string, toolContext?:object,
  *   store?: {appendRound?: Function, saveCheckpoint?:Function, appendCheckpoint?:Function,
- *     markRunState?:Function, loadLatestCheckpoint?:Function},
+ *     markRunState?:Function, saveRunState?:Function, loadRunState?:Function, loadLatestCheckpoint?:Function},
  *   runId?: string,
  *   runState?:{rerunDetected?:boolean},
  *   resume?: boolean,
@@ -736,6 +744,7 @@ function defaultSleep(ms, signal) {
  *   truncated:boolean,
  *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"judge_done"|"continuation_exhausted"|"final_guard_unverified"|"aborted"|"failed", detail?:string},
  *   verification:{status:"verified"|"unverified"|"skipped"|"error", reason?:string, detail?:string},
+ *   runState?:object,
  *   usage:{input_tokens:number, output_tokens:number},
  *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number}[]
  * }>}
@@ -765,6 +774,8 @@ export async function runToolLoop({
   finalGuardTimeoutMs = 30_000,
   maxTokenContinuations = 3,
   context,
+  todoStateProvider,
+  semanticStateProvider,
   modelConfig,
   modelMetadata,
   model,
@@ -834,6 +845,12 @@ export async function runToolLoop({
     const reason = signal?.aborted ? "aborted" : "failed";
     const termination = makeTermination(reason, terminationDetailForError(error));
     const annotated = annotateTermination(error, termination);
+    currentTerminationReason = reason;
+    if (currentRunState?.deterministic) {
+      currentRunState.deterministic.termination = { reason };
+      currentRunState.rendered = renderRunState(currentRunState);
+      await persist("saveRunState", runId, currentRunState);
+    }
     await markRunState(reason);
     throw annotated;
   };
@@ -948,6 +965,20 @@ export async function runToolLoop({
     timeline: [],
     filesWritten: [],
   };
+  const toolStats = new Map();
+  let lowBudgetPrompted = false;
+  let foldedRoundCount = 0;
+  let navigationRecordCount = 0;
+  let nonReplayableCaptureCount = 0;
+  let unrecoverableCaptureCount = 0;
+  let toolErrorCount = 0;
+  let checkpointFailureCount = 0;
+  let archiveFailureCount = 0;
+  let runStateVersion = 0;
+  let currentRunState;
+  let currentTerminationReason = "running";
+  let todoState;
+  let semanticState;
   const trimFilesWritten = () => {
     const seen = new Set();
     const kept = [];
@@ -1043,11 +1074,54 @@ export async function runToolLoop({
   let persistedTranscriptLength = 0;
   const resumeExecutedToolIds = new Set();
   const resumeCheckpointResults = new Map();
+  const applyRestoredRunState = (restored) => {
+    if (!restored || typeof restored !== "object") return;
+    currentRunState = cloneState(restored);
+    runStateVersion = Number.isSafeInteger(restored.stateVersion)
+      ? restored.stateVersion
+      : 0;
+    const deterministic = restored.deterministic ?? {};
+    for (const tool of deterministic.tools ?? []) {
+      if (typeof tool?.name !== "string") continue;
+      toolStats.set(tool.name, {
+        calls: Number.isSafeInteger(tool.calls) ? tool.calls : 0,
+        failures: Number.isSafeInteger(tool.failures) ? tool.failures : 0,
+      });
+    }
+    lowBudgetPrompted = deterministic.budget?.lowBudgetPrompted === true;
+    foldedRoundCount = deterministic.fold?.foldedRounds ?? 0;
+    navigationRecordCount = deterministic.fold?.navigationRecords ?? 0;
+    nonReplayableCaptureCount = deterministic.fold?.nonReplayableCaptures ?? 0;
+    unrecoverableCaptureCount = deterministic.fold?.unrecoverableCaptures ?? 0;
+    toolErrorCount = deterministic.errors?.tool ?? 0;
+    checkpointFailureCount = deterministic.errors?.checkpoint ?? 0;
+    archiveFailureCount = deterministic.errors?.archive ?? 0;
+    governorState.filesWritten = Array.isArray(deterministic.filesWritten)
+      ? deterministic.filesWritten.map((path) => ({ path }))
+      : [];
+    todoState = deterministic.todo;
+    semanticState = restored.semantic;
+  };
+  const restorePersistedRunState = async () => {
+    if (!resume || typeof store?.loadRunState !== "function" || runId === undefined) return;
+    const stored = await store.loadRunState(runId);
+    const restored = stored?.runState && typeof stored.runState === "object"
+      ? stored.runState
+      : stored?.schemaVersion === 1 ? stored : undefined;
+    applyRestoredRunState(restored);
+  };
   await markRunState("running");
+  await restorePersistedRunState();
   if (resume && store && runId !== undefined) {
     try {
       const records = await store.load(runId);
       if (records.length === 0) throw new Error("resume: 无可恢复记录");
+      if (currentRunState === undefined) {
+        const latestStateRecord = [...records].reverse().find((record) => (
+          record?.runState && typeof record.runState === "object"
+        ));
+        applyRestoredRunState(latestStateRecord?.runState);
+      }
       const restoredMessages = records.flatMap((record) => record.messages ?? []);
       const seedRecords = records.filter((record) => (record.round ?? 0) === 0);
       const seedMessages = seedRecords.flatMap((record) => record.messages ?? []);
@@ -1465,9 +1539,75 @@ export async function runToolLoop({
 
   const budgetHintFor = (round) => {
     const remaining = governorState.effectiveMaxRounds - round;
+    if (remaining <= 2) lowBudgetPrompted = true;
     return remaining <= 2
       ? `[预算] 本轮后仅剩 ${Math.max(0, remaining)} 轮；请立即给出结论，或明确声明不可恢复`
       : "";
+  };
+
+  const refreshRunState = async ({
+    semantic = false,
+    inject = false,
+  } = {}) => {
+    if (typeof todoStateProvider === "function") {
+      try {
+        todoState = await todoStateProvider({ runId, rounds });
+      } catch (error) {
+        todoState = {
+          status: "error",
+          detail: String(error?.message ?? error).slice(0, 80),
+        };
+      }
+    }
+    const deterministic = createDeterministicRunState({
+      runId,
+      stateVersion: runStateVersion,
+      rounds,
+      maxRounds: governorState.effectiveMaxRounds,
+      lowBudgetPrompted,
+      toolStats,
+      filesWritten: governorState.filesWritten,
+      todo: todoState,
+      foldedRounds: foldedRoundCount,
+      navigationRecords: navigationRecordCount,
+      nonReplayableCaptures: nonReplayableCaptureCount,
+      unrecoverableCaptures: unrecoverableCaptureCount,
+      terminationReason: currentTerminationReason,
+      toolErrorCount,
+      checkpointFailureCount,
+      archiveFailureCount,
+    });
+    if (semantic && typeof semanticStateProvider === "function") {
+      try {
+        const provided = await semanticStateProvider({
+          runId,
+          state: deterministic,
+          previous: semanticState,
+        });
+        if (provided !== undefined) semanticState = provided;
+      } catch (error) {
+        semanticState = {
+          status: "error",
+          text: "",
+          semanticStateVersion: runStateVersion,
+          detail: String(error?.message ?? error).slice(0, 80),
+        };
+      }
+    } else if (
+      semanticState
+      && semanticState.semanticStateVersion !== undefined
+      && semanticState.semanticStateVersion !== runStateVersion
+    ) {
+      semanticState = {
+        ...semanticState,
+        status: "stale",
+      };
+    }
+    currentRunState = withSemanticRunState(deterministic, semanticState);
+    currentRunState.rendered = renderRunState(currentRunState);
+    if (inject) messages = upsertRunStateInMessages(messages, currentRunState.rendered);
+    await persist("saveRunState", runId, currentRunState);
+    return currentRunState;
   };
 
   const messagesWithToolResults = (toolResults) => {
@@ -1479,6 +1619,10 @@ export async function runToolLoop({
   };
 
   const executeToolBlock = async (block, round, toolResults, pendingToolUses = []) => {
+    const toolName = String(block.name ?? "");
+    const toolStat = toolStats.get(toolName) ?? { calls: 0, failures: 0 };
+    toolStat.calls += 1;
+    toolStats.set(toolName, toolStat);
     const checkpointPersisted = await persistCheckpoint({
       round,
       pendingToolUse: block,
@@ -1486,6 +1630,7 @@ export async function runToolLoop({
       toolResults,
     });
     if (!checkpointPersisted && hasCheckpointStore) {
+      checkpointFailureCount += 1;
       throw new KitError(
         "checkpoint_failed",
         `Checkpoint persistence failed before tool execution (runId=${String(runId)}, round=${round})`,
@@ -1540,6 +1685,18 @@ export async function runToolLoop({
       content: execution.content,
       ...execution.metadata,
     };
+    const artifactStatus = execution.metadata.artifactStatus
+      ?? execution.metadata.artifact?.status
+      ?? execution.metadata.rerunOf?.status;
+    if (execution.metadata.replayable === false) nonReplayableCaptureCount += 1;
+    if (["missing", "stale", "unrecoverable", "error"].includes(artifactStatus)) {
+      archiveFailureCount += 1;
+    }
+    if (artifactStatus === "unrecoverable") unrecoverableCaptureCount += 1;
+    if (isError || execution.success === false) {
+      toolStat.failures += 1;
+      toolErrorCount += 1;
+    }
     const budgetHint = budgetHintFor(round);
     if (budgetHint) toolResult.content = `${toolResult.content}\n${budgetHint}`;
     if (isError || execution.success === false) toolResult.is_error = true;
@@ -1555,6 +1712,7 @@ export async function runToolLoop({
       messagesOverride: messagesWithToolResults(toolResults),
     });
     if (!postCheckpointPersisted && hasCheckpointStore) {
+      checkpointFailureCount += 1;
       throw new KitError(
         "checkpoint_failed",
         `Checkpoint persistence failed after tool execution: tool already executed but result was not persisted (toolUseId=${String(block.id)}, runId=${String(runId)}, round=${round})`,
@@ -2109,6 +2267,14 @@ export async function runToolLoop({
       if (foldedRoundRange?.to !== undefined) {
         foldedThrough = Math.max(foldedThrough, foldedRoundRange.to);
       }
+      const foldedStateChanged = foldedRounds > 0
+        || foldedRoundRange !== undefined
+        || navigationRecord !== undefined;
+      if (foldedStateChanged) {
+        foldedRoundCount += foldedRounds;
+        if (navigationRecord !== undefined) navigationRecordCount += 1;
+        runStateVersion += 1;
+      }
       const compactionStat = {
         compacted,
         foldedRounds,
@@ -2120,11 +2286,16 @@ export async function runToolLoop({
       }
       compactionStats.push(compactionStat);
       normalizeMessages(messages);
+      const runState = await refreshRunState({
+        semantic: foldedStateChanged,
+        inject: foldedStateChanged,
+      });
       return {
         folded: compacted,
         foldedPayload: compacted ? foldedPayload : undefined,
         foldedRoundRange,
         navigationRecord,
+        runState,
       };
     }
     return { folded: false, foldedPayload: undefined };
@@ -2157,12 +2328,15 @@ export async function runToolLoop({
       truncated: TRUNCATED_TERMINATION_REASONS.has(termination.reason),
       termination,
       verification: { ...verification, metrics: { ...guardMetrics } },
+      ...(currentRunState === undefined ? {} : { runState: cloneState(currentRunState) }),
       usage,
       compactionStats,
     };
   };
 
   const finish = async (reason, detail) => {
+    currentTerminationReason = reason;
+    await refreshRunState();
     const state = verification.status === "unverified"
       ? "unverified_error"
       : verification.status === "error"
@@ -2182,6 +2356,7 @@ export async function runToolLoop({
   };
 
   try {
+    await refreshRunState();
     throwIfAborted(signal);
     if (resumePendingTools.length > 0) {
       const resumedToolResults = [];
@@ -2611,6 +2786,7 @@ export async function runToolLoop({
       wrapupJson,
       judgeDecision,
     );
+    const roundRunState = await refreshRunState();
 
     const record = {
       round,
@@ -2627,6 +2803,7 @@ export async function runToolLoop({
       toolUses: content.filter((block) => block?.type === "tool_use").length,
       summary: roundSummary,
       l0facts: currentL0,
+      runState: cloneState(roundRunState),
       ...(judgeDecision === null || judgeDecision === undefined ? {} : {
         judge: {
           done: judgeDecision.done,

@@ -190,6 +190,7 @@ async function appendRecord(path, runId, record) {
  *   load: (runId:string) => Promise<RoundRecord[]>,
  *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string|object>,
  *   markRunState: (runId:string, state:string) => Promise<void>,
+ *   saveRunState: (runId:string, state:object) => Promise<void>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
  * }}
@@ -293,9 +294,43 @@ export function createFileTranscriptStore({ dir }) {
       await mkdir(dir, { recursive: true });
       const target = statePath(dir, runId);
       const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+      let previous = {};
+      try {
+        previous = JSON.parse(await readFile(target, "utf8"));
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
       await writeFile(
         temporary,
-        `${JSON.stringify({ runId, state, ts: new Date().toISOString() })}\n`,
+        `${JSON.stringify({
+          ...previous,
+          runId,
+          state,
+          ts: new Date().toISOString(),
+        })}\n`,
+        "utf8",
+      );
+      await rename(temporary, target);
+    },
+
+    async saveRunState(runId, state) {
+      await mkdir(dir, { recursive: true });
+      const target = statePath(dir, runId);
+      const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+      let previous = {};
+      try {
+        previous = JSON.parse(await readFile(target, "utf8"));
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      await writeFile(
+        temporary,
+        `${JSON.stringify({
+          ...previous,
+          ...state,
+          runId,
+          ts: new Date().toISOString(),
+        })}\n`,
         "utf8",
       );
       await rename(temporary, target);

@@ -104,7 +104,7 @@ src/
   `writeToolNames: ["fs_write", "apply_patch"]`，不要依赖名称猜测。路径参数按
   `writeToolPathKeys`（默认 `["path", "file_path"]`）从前到后取第一个非空字符串，便于接入不同工具协议。
   Judge 的 `formatFiles` 会按配置后的路径显示最近写入文件。
-- **TranscriptStore**：`appendRound` 按 run/round key 幂等；`store.recall(runId, fromRound?, toRound?, pattern?)` 是面向宿主/人的取数契约，不是 `runToolLoop` 默认暴露给模型的工具；宿主可从 `erix-agent/tools` 按需接入参考实现。精确取货也支持 `store.recall({ runId, fromRound, toRound, pattern, limit, cursor, maxBytes })`：在 store 读流源头按 `limit`/`maxBytes` 限制，返回 `{ text, truncated, nextCursor?, status }`，游标续取不重复；范围缺失/越界为 `unrecoverable`，数据版本变化为 `stale`。旧位置参数继续返回字符串兼容结果。该 API 不做语义搜索，也不重新暴露 CLI recall 工具，详见 [`bounded recall API`](docs/design/2026-09-14-bounded-recall-api.md)。store 可实现 `markRunState`、`saveCheckpoint`/`appendCheckpoint`、`loadLatestCheckpoint`。loop 在工具执行前后 checkpoint；成对提供读写的 store 在任一 checkpoint 写失败时 fail-closed（执行后失败会明确报告“工具已执行但结果未持久化”），resume 按原顺序补齐全部未完成的多工具调用。宿主的 `executeTool` 仍需按 tool id 做幂等保护，无法由 loop 保证 exactly-once。
+- **TranscriptStore**：`appendRound` 按 run/round key 幂等；`store.recall(runId, fromRound?, toRound?, pattern?)` 是面向宿主/人的取数契约，不是 `runToolLoop` 默认暴露给模型的工具；宿主可从 `erix-agent/tools` 按需接入参考实现。精确取货也支持 `store.recall({ runId, fromRound, toRound, pattern, limit, cursor, maxBytes })`：在 store 读流源头按 `limit`/`maxBytes` 限制，返回 `{ text, truncated, nextCursor?, status }`，游标续取不重复；范围缺失/越界为 `unrecoverable`，数据版本变化为 `stale`。旧位置参数继续返回字符串兼容结果。该 API 不做语义搜索，也不重新暴露 CLI recall 工具，详见 [`bounded recall API`](docs/design/2026-09-14-bounded-recall-api.md)。store 可实现 `markRunState`、`saveRunState/loadRunState`、`saveCheckpoint`/`appendCheckpoint`、`loadLatestCheckpoint`；run state 只保留当前版本，resume 不重复注入。loop 在工具执行前后 checkpoint；成对提供读写的 store 在任一 checkpoint 写失败时 fail-closed（执行后失败会明确报告“工具已执行但结果未持久化”），resume 按原顺序补齐全部未完成的多工具调用。宿主的 `executeTool` 仍需按 tool id 做幂等保护，无法由 loop 保证 exactly-once。
 - **provider**：`transport` 透传给 fetch 的 `dispatcher`；非法 OpenAI 工具参数用 `_truncatedArguments`（`_raw` 兼容别名）；不安全 runId 映射为 `run-<sha256 前 24 位 hex>`。
 
 > 完整接口契约见 [docs/architecture.md](docs/architecture.md)；设计决策见 [docs/decisions/](docs/decisions/)（judge 机制 = ADR-011）。
@@ -134,15 +134,19 @@ src/
 
 - [docs/requirements.md](docs/requirements.md) — 需求与分期
 - [docs/architecture.md](docs/architecture.md) — 接口契约与数据流
-- [docs/decisions/](docs/decisions/) — 设计决策（ADR-001~012：配置/存取/压缩/反思/工具体系/工具定义分层/记忆架构/skill 系统/安全分层/judge 方向评估/引擎-模型-宿主责任边界）
+- [docs/decisions/](docs/decisions/) — 设计决策（ADR-001~013：配置/存取/压缩/反思/工具体系/工具定义分层/记忆架构/skill 系统/安全分层/judge 方向评估/引擎-模型-宿主责任边界/guard 章程）
 - [docs/testing.md](docs/testing.md) — 测试方案（分层/基建/各阶段测试清单/行为指标）
+- [docs/host-consumer-contract.md](docs/host-consumer-contract.md) — **宿主消费者契约**（verification、bounded recall、provenance 与重跑责任边界）
 - [docs/host-upgrade-guide-v030.md](docs/host-upgrade-guide-v030.md) — **宿主升级指南（touwaka / app_container → v0.3.x）**：judge 默认开启等行为变化的应对
 - [docs/maintenance-policy.md](docs/maintenance-policy.md) — 维护策略（内部：技术替代触发条件/止损线）
 - [docs/research/](docs/research/) — 调研报告（记忆系统与上下文压缩外部实践，2026-08-29，ADR-007 的输入）
 
 ## 状态
 
-- **v0.4.0（2026-09-14，准备发布）**：notes run scope 技能、工具产出归档与 provenance gate 完整落地，并在本版本内完成**记忆层瘦身**与**静默错答的结构性修复**。
+- **v0.5.0（2026-09-15，准备发布）**：在 0.4.0 的宿主可见行为变更基础上，加入有界确定性 run state、
+  对象式 bounded recall、重复执行结构化告知和 opt-in guard 契约；这是 minor 版本，升级前请阅读
+  [宿主消费者契约](docs/host-consumer-contract.md)。
+  **v0.4.0（2026-09-14）**：notes run scope 技能、工具产出归档与 provenance gate 完整落地，并在本版本内完成**记忆层瘦身**与**静默错答的结构性修复**。
   notes 记录为 `current` + 最多 3 条 `superseded` + 可见 `folded` 计数（#74 起**不再有版本链与有界历史压缩**），
   短值直接存入 `content` 并保留 `artifactRef` 审计链；`note_take` / `note_read` /
   `note_list` / `note_forget` 支持墓碑式撤销与 janitor/GC。工具归档写入
@@ -157,6 +161,9 @@ src/
   `verified` 才是已核验终稿，`unverified`/`error` 分别对应退出码 2/3；`skipped` 仅表示没有可核验项。
   notes 是 pull-only 便利索引，不会自动把值注入模型上下文（折叠点的 `[本 run 状态]` 标记只含计数，不含值/key）；模型需先 `note_list` 再按 key 调用 `note_read`。
   宿主写入 scope 请显式传 `__erix`（`ERIX_RUN_ID` 已移除，仅保留 `ERIX_NOTES_DIR` 作为存储位置配置）。
+- **v0.5.0 run state**：折叠时确定性 run state 以单个 marker 替换注入，不逐轮追加；store 支持
+  `saveRunState/loadRunState` 的当前版本 upsert。宿主可注入 `todoStateProvider` 与
+  `semanticStateProvider`，后者只提供有界、带版本的 derived 文本，过期版本显示为 `stale`。
 - **v0.3.5（2026-09-12，npm 最新）**：全项目体检修复批次（#37~#45，PR #47~#56）——流式回调 retry=0 实时透传（`erix chat --stream` 与宿主 SSE 转发恢复实时增量）；
   checkpoint 执行后写失败 fail-closed（防崩溃恢复重复执行工具副作用）；resume 补执行全部 pending 工具（原只补一个致协议断裂）；
   双协议 SSE `data:` 无空格兼容、408 归 timeout 可重试、legacy `function_call` 转换、providerOptions 不再覆盖核心字段；
