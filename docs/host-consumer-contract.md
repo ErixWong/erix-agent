@@ -383,11 +383,13 @@ An `Entry` is one of:
 
 - `persistence_error`: `{ kind, port, operation, phase?, fatal, error: {name, message}, ts }`
   where `port` is `"transcript"` (today; `"resource"`/`"notes"` arrive with
-  their integration steps). `error.message` is truncated at 500 chars and
-  never carries a stack trace.
+  their integration steps). `error` is normalized to `{name, message}` with
+  the message capped at 500 chars (bounds the result payload; stack traces
+  are dropped).
 - `delivery_failure`: a `diagnostics.error` (or `onPersistenceError`) sink
   itself threw — the error happened but the structured event was not
-  delivered. Carries `failedEvent: { type, operation, phase }` for identity.
+  delivered. `port` is always `"diagnostics"` (the failed channel); the
+  origin port rides in `failedEvent.port`.
 - `ledger_overflow`: synthetic entry reported when the ledger cap
   (`100` entries) dropped records; carries `dropped: number`.
 

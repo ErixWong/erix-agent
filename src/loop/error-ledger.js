@@ -1,70 +1,30 @@
-// 统一错误账本（issue #109 第 1 步：账本与事件协议）。
+// 错误清单（issue #109 第 1 步）：把 run 期间"没存上"的事实列成清单，
+// 挂在 result.unpersisted 上——持久化失败不再静默。
 //
-// 职责：
-// - 收集 run 期间所有持久化相关失败（含 diagnostics sink 自身失败）为结构化账目
-// - 提供 result.unpersisted 的确定性序列化（排序、去重、上限、脱敏）
-// - 不做 I/O；可靠性由消费方保证（run-state 持久化在后续步骤接入）
-//
-// 语义边界（评审裁定，勿回退）：
-// - 账单与 diagnostics 事件是**可靠交付通道**；模型可见提示只是 advisory
-// - 账单失败条目 ≠ best_effort：条目保证进入 result（run 正常返回时）或挂载在
-//   终止异常上（run 异常终止时由后续步骤接线）
+// 刻意保持简单：一个数组包装器 + 错误消息 500 字符上限（防 result 被超长
+// 异常消息撑爆，与 run-state 64KB 上限同类）+ 上限溢出申报。不做脱敏仪式、
+// 不做防篡改——清单与 result 同属宿主信任域（ADR-009）。
 
 const MAX_ERROR_MESSAGE_LENGTH = 500;
 const MAX_LEDGER_ENTRIES = 100;
 
 export const LEDGER_LIMITS = Object.freeze({
   errorMessageLength: MAX_ERROR_MESSAGE_LENGTH,
+  // 真实条目上限；toUnpersisted 输出最多 maxEntries + 1（末尾为 overflow 申报）。
   maxEntries: MAX_LEDGER_ENTRIES,
 });
 
-const KINDS = new Set(["persistence_error", "delivery_failure", "ledger_overflow"]);
-const PORTS = new Set(["transcript", "resource", "notes", "diagnostics", "resume"]);
-
-export function sanitizeErrorMessage(error) {
+export function capErrorMessage(error) {
   const raw = String(error?.message ?? error ?? "");
   if (raw.length <= MAX_ERROR_MESSAGE_LENGTH) return raw;
   return `${raw.slice(0, MAX_ERROR_MESSAGE_LENGTH)}… [truncated ${raw.length - MAX_ERROR_MESSAGE_LENGTH} chars]`;
 }
 
-function sanitizeError(error) {
+// 错误统一收成 {name, message}：截断 + 去掉 stack（堆栈含本机路径且可能很长）。
+function capError(error) {
   return {
     name: String(error?.name ?? "Error"),
-    message: sanitizeErrorMessage(error),
-  };
-}
-
-// Error 实例必须脱敏（去掉 stack、截断消息）；已是脱敏形状的普通对象原样保留。
-function sanitizeErrorInput(error) {
-  if (error instanceof Error || typeof error === "string" || error === undefined) {
-    return sanitizeError(error);
-  }
-  if (isPlainObject(error) && typeof error.name === "string" && typeof error.message === "string") {
-    return error;
-  }
-  return sanitizeError(error);
-}
-
-function isPlainObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-// 账目归一化：未知 kind/port 视为编程错误，直接抛出（账本自身不能静默降级）。
-function normalizeEntry(input) {
-  if (!isPlainObject(input)) {
-    throw new TypeError("error ledger entry must be an object");
-  }
-  const { kind = "persistence_error", port, ...rest } = input;
-  if (!KINDS.has(kind)) {
-    throw new TypeError(`unknown error ledger entry kind: ${JSON.stringify(kind)}`);
-  }
-  if (!PORTS.has(port)) {
-    throw new TypeError(`unknown error ledger port: ${JSON.stringify(port)}`);
-  }
-  return {
-    kind,
-    port,
-    ...rest,
+    message: capErrorMessage(error),
   };
 }
 
@@ -73,54 +33,51 @@ export function createErrorLedger() {
   let dropped = 0;
 
   return {
-    /** 记一条持久化失败。error 会被脱敏（消息截断、不携带 stack）。 */
-    record(input) {
-      if (!isPlainObject(input)) {
-        throw new TypeError("error ledger entry must be an object");
-      }
-      const entry = normalizeEntry({
-        ...input,
-        error: sanitizeErrorInput(input?.error),
-      });
+    /** 记一条"没存上"。错误统一截断；其余字段原样保留（调用方自己的数据）。 */
+    record(entry = {}) {
       if (entries.length >= MAX_LEDGER_ENTRIES) {
         dropped += 1;
         return false;
       }
-      const { error, ...rest } = entry;
       entries.push({
-        ts: new Date().toISOString(),
-        ...rest,
-        ...(error !== undefined ? { error } : {}),
+        ts: entry.ts ?? new Date().toISOString(),
+        kind: entry.kind ?? "persistence_error",
+        ...entry,
+        error: capError(entry.error),
       });
       return true;
     },
 
     /**
-     * diagnostics sink 自身失败：错误发生了但结构化事件没送出去。
-     * 这是账本存在的核心理由——错误报告通道自己的降级也必须留痕。
+     * 报告通道自身失败（diagnostics.error / onPersistenceError 抛错）：
+     * 错误发生了但事件没送出去——这条也必须留痕。
+     * port 恒为 "diagnostics"（坏掉的是交付通道）；出事的端口在 failedEvent.port。
      */
-    recordDeliveryFailure({ event, error, port }) {
+    recordDeliveryFailure({ event, error } = {}) {
       return this.record({
         kind: "delivery_failure",
-        port: port ?? event?.port ?? "diagnostics",
+        port: "diagnostics",
         operation: "diagnostics.error",
         fatal: event?.fatal ?? false,
         error,
-        ...(event?.operation !== undefined ? { failedEvent: { type: event.type, operation: event.operation, phase: event.phase } } : {}),
+        ...(event !== undefined
+          ? {
+              failedEvent: {
+                ...(event.type !== undefined ? { type: event.type } : {}),
+                ...(event.port !== undefined ? { port: event.port } : {}),
+                ...(event.operation !== undefined ? { operation: event.operation } : {}),
+                ...(event.phase !== undefined ? { phase: event.phase } : {}),
+              },
+            }
+          : {}),
       });
     },
 
-    /** 序列化为 result.unpersisted；超出上限时以合成条目申报丢弃数量。 */
+    /** 序列化为 result.unpersisted；溢出时末尾追加申报条目。 */
     toUnpersisted() {
-      if (entries.length === 0) return [];
-      const out = entries.map((entry) => ({ ...entry }));
+      const out = [...entries];
       if (dropped > 0) {
-        out.push({
-          kind: "ledger_overflow",
-          port: "diagnostics",
-          dropped,
-          fatal: false,
-        });
+        out.push({ ts: new Date().toISOString(), kind: "ledger_overflow", port: "diagnostics", dropped, fatal: false });
       }
       return out;
     },

@@ -423,7 +423,8 @@ test("diagnostics sink failure is recorded in result.unpersisted as a delivery f
   const ledgerEntries = result2?.unpersisted ?? [];
   assert.ok(ledgerEntries.length > 0, "terminated run must carry the ledger on the exception");
   const delivery = ledgerEntries.find((entry) => entry.kind === "delivery_failure");
-  assert.equal(delivery?.port, "transcript");
+  assert.equal(delivery?.port, "diagnostics");
+  assert.equal(delivery?.failedEvent?.port, "transcript");
   assert.equal(delivery?.error?.message, "sink exploded too");
   assert.equal(delivery?.failedEvent?.operation, "appendRound");
   const persisted = ledgerEntries.find((entry) => entry.kind === "persistence_error");

@@ -499,7 +499,7 @@ export async function runToolLoop(options) {
       try {
         await onPersistenceError(error);
       } catch (observerFailure) {
-        errorLedger.recordDeliveryFailure({ event, error: observerFailure, port: "diagnostics" });
+        errorLedger.recordDeliveryFailure({ event, error: observerFailure });
       }
     }
     if (typeof diagnostics?.error === "function") {
@@ -507,7 +507,7 @@ export async function runToolLoop(options) {
         await diagnostics.error(event);
       } catch (sinkError) {
         // 事件通道自身降级必须留痕：sink 抛错 → 账本记 delivery_failure（评审修正 1/遗漏面）。
-        errorLedger.recordDeliveryFailure({ event, error: sinkError, port: event.port });
+        errorLedger.recordDeliveryFailure({ event, error: sinkError });
       }
     }
   };
