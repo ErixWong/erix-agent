@@ -18,6 +18,8 @@ import {
 import * as notes from "../skills/notes/skill.mjs";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
+import { createFileNotesStore } from "../src/store/notes.js";
+import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { runToolLoop } from "../src/loop.js";
 import { createRecallTool } from "../src/tools/index.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -27,6 +29,45 @@ test("CLI prompt constrains provenance of one-shot values", () => {
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不得重跑/u);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /具体数值必须来自当前工具返回或明确的归档文件/u);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不要主动读取密钥、凭据或 \.env/u);
+});
+
+test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stable", async () => {
+  const fixture = JSON.parse(readFileSync(
+    new URL("./fixtures/cli-golden.json", import.meta.url),
+    "utf8",
+  ));
+  await rm(fixture.input.dir, { recursive: true, force: true });
+  const notesDir = join(fixture.input.dir, "notes");
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: fixture.modelVisible.output }], stopReason: "end_turn" },
+  ]);
+  const root = {
+    archiveDir: join(fixture.input.dir, "outputs", "golden"),
+    diagnostics: { error() {} },
+    notesDir,
+    notesStore: createFileNotesStore({ dir: notesDir }),
+    resourceStore: undefined,
+    runState: { rerunDetected: false, captureCount: 0 },
+    store: createMemoryTranscriptStore(),
+  };
+  try {
+    const result = await runChat({
+      ...fixture.input,
+      provider,
+      idleTimeout: 0,
+      toolOutput: () => {},
+      _assemblyRoot: root,
+    });
+    assert.deepEqual({
+      system: provider.requests[0].system,
+      messages: provider.requests[0].messages,
+      output: result.finalText,
+    }, fixture.modelVisible);
+    assert.match(fixture.modelVisible.system, /\[工具输出归档\]/u);
+    assert.match(fixture.modelVisible.output, /^stub=/u);
+  } finally {
+    await rm(fixture.input.dir, { recursive: true, force: true });
+  }
 });
 
 test("CLI uses distinct nonzero exits for unverified and guard errors", () => {
@@ -74,6 +115,8 @@ test("archive guidance is present once in the system prompt", async () => {
     const system = provider.requests[0].system;
     assert.equal((system.match(/本次运行的完整输出由 ResourceStore 保存/u) ?? []).length, 1);
     assert.doesNotMatch(system, new RegExp(`${dir}/outputs/archive-guidance-run`));
+    assert.doesNotMatch(system, /明确的归档文件|明确给出的归档路径|来源=归档:<文件名>/u);
+    assert.match(system, /ResourceStore 中的 opaque 工件/u);
     assert.match(system, /禁止遍历归档目录、重跑非幂等命令/u);
   } finally {
     await rm(dir, { recursive: true, force: true });

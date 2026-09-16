@@ -170,6 +170,7 @@ test("ResourceStore-backed CLI artifacts use opaque locators and remain guard-re
 
     assert.equal(archived.archivePath, undefined);
     assert.ok(archived.artifact.locator);
+    assert.doesNotMatch(archived.artifact.artifactId, /-exec\.txt$/u);
     assert.doesNotMatch(archived.artifact.display, /^\//u);
     assert.doesNotMatch(archived.artifact.display, /-exec\.txt$/u);
     assert.doesNotMatch(

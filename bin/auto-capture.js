@@ -41,7 +41,10 @@ function artifactReference(artifact) {
     return null;
   }
   return {
-    artifactId: artifact.artifactId ?? artifact.archivePath,
+    artifactId: artifact.artifactId
+      ?? (artifact.archivePath === undefined && typeof artifact.digest === "string"
+        ? `resource:${artifact.digest}`
+        : artifact.archivePath),
     ...(typeof artifact.archivePath === "string" ? { archivePath: artifact.archivePath } : {}),
     ...(typeof artifact.display === "string" ? { display: artifact.display } : {}),
     digest: artifact.digest,

@@ -7,6 +7,7 @@ import { KitError } from "../src/providers/errors.js";
 import { computeBudget } from "../src/compact/budget.js";
 import { estimateMessageTokens } from "../src/tokens.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
+import { createModelConfigResolver } from "../src/config/static.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 function toolResponse(id = "tool-1", name = "work", input = {}) {
@@ -142,7 +143,11 @@ test("derives the compaction budget from model metadata", async () => {
     provider,
     initialUserMessage: "budget",
     executeTool: async () => "unused",
-    modelConfig: { contextWindowTokens: 10_000, maxOutputTokens: 1_000 },
+    modelConfig: createModelConfigResolver({
+      contextWindowTokens: 10_000,
+      maxOutputTokens: 1_000,
+    }),
+    session: { id: "budget-model-config" },
     context: { strategy },
   });
 
@@ -150,6 +155,23 @@ test("derives the compaction budget from model metadata", async () => {
     contextWindowTokens: 10_000,
     maxOutputTokens: 1_000,
   })]);
+});
+
+test("rejects plain modelConfig at the fine-grained entry point", async () => {
+  await assert.rejects(
+    runToolLoop({
+      provider: createFakeProvider([
+        { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+      ]),
+      initialUserMessage: "plain config",
+      executeTool: async () => "unused",
+      modelConfig: { model: "plain" },
+      completion: false,
+    }),
+    (error) => error instanceof TypeError
+      && /modelConfig\.resolve/u.test(error.message)
+      && /wrap plain config with createModelConfigResolver/u.test(error.message),
+  );
 });
 
 test("rejects invalid explicit compaction budgets", async () => {

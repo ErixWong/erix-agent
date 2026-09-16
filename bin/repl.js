@@ -31,7 +31,7 @@ import {
 import { buildSkillTools } from "./skills.js";
 import {
   buildArchiveNotice,
-  CLI_TOOLS_SYSTEM_PROMPT,
+  buildCliToolsSystemPrompt,
   createCliTools,
   wrapExecuteTool,
 } from "./tools.js";
@@ -421,7 +421,7 @@ export async function runRepl(argv, io = {}) {
     writeLine(output, `已恢复会话 ${options.session}（${messages.length} 条消息）`);
   }
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt(resourceStore)}`;
   systemPrompt += buildArchiveNotice(archiveDir, resourceStore);
   if (mcpProxy?.enabled) {
     systemPrompt += `
@@ -601,7 +601,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
             resourceStore,
           })
           : undefined,
-        ({ content }) => buildCaptureStub({ content }, resourceStore),
+        ({ content }) => buildCaptureStub({ content }, resourceStore, diagnostics),
       );
       const tools = [...cliTools.tools, ...skillTools.tools];
       if (mcpProxy?.enabled) {

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { createStaticModelConfigProvider } from "../../src/config/static.js";
-import { createAssemblyPort } from "../../src/assembly.js";
+import { assemblyPortOptions, createAssemblyPort } from "../../src/assembly.js";
 import { runToolLoop } from "../../src/loop.js";
 import { createFoldStatisticalStrategy } from "../../src/compact/fold-statistical.js";
 import { assemblyPortContract } from "./assembly-port.js";
@@ -56,6 +56,39 @@ test("assembly port supports default and explicit modelConfig paths", async () =
     tools: { definitions: [], async executeTool() {} },
     store: createMemoryTranscriptStore(),
     session: { id: `assembly-precedence-${process.pid}` },
+  });
+
+  test("assemblyPortOptions applies explicit fine-grained overrides", async () => {
+    const assemblyResourceStore = {
+      async put() {},
+      async get() {},
+    };
+    const explicitResourceStore = {
+      async put() {},
+      async get() {},
+    };
+    const explicitModelConfig = { resolve: async () => ({ model: "explicit" }) };
+    const port = createAssemblyPort({
+      modelConfig: { resolve: async () => ({ model: "assembly" }) },
+      provider: createProvider(),
+      tools: { definitions: [], async executeTool() {} },
+      store: createMemoryTranscriptStore(),
+      resourceStore: assemblyResourceStore,
+      session: { id: `assembly-helper-overrides-${process.pid}` },
+    });
+
+    const options = await assemblyPortOptions(port, {
+      resourceStore: explicitResourceStore,
+      modelConfig: explicitModelConfig,
+    });
+    assert.equal(options.resourceStore, explicitResourceStore);
+    assert.equal(options.modelConfig, explicitModelConfig);
+    await assert.rejects(
+      assemblyPortOptions(port, { modelConfig: { model: "plain" } }),
+      (error) => error instanceof TypeError
+        && /modelConfig\.resolve/u.test(error.message)
+        && /wrap plain config with createModelConfigResolver/u.test(error.message),
+    );
   });
 
   const defaultResult = await runToolLoop({

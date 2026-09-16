@@ -418,9 +418,9 @@ export async function runToolLoop(options) {
     onUsage,
     onEvent,
   } = effectiveOptions;
-  const fineGrainedPortShape = (
-    (assemblyPort === undefined
-      && session !== undefined && session !== null && typeof session === "object")
+  const fineGrainedPortShape = assemblyPort === undefined && (
+    (session !== undefined && session !== null && typeof session === "object")
+    || Object.hasOwn(explicitOptions, "modelConfig")
     || typeof modelConfig?.resolve === "function"
   );
   const startupMissing = [];
@@ -432,10 +432,11 @@ export async function runToolLoop(options) {
   if (typeof executeTool !== "function") startupMissing.push("executeTool");
   if (fineGrainedPortShape) {
     if (!modelConfig || typeof modelConfig.resolve !== "function") {
-      startupMissing.push("modelConfig.resolve");
+      startupMissing.push(`modelConfig.resolve (${MODEL_CONFIG_RESOLVER_HINT})`);
     }
-    if (!session || typeof session !== "object" || Array.isArray(session)
-      || typeof session.id !== "string" || session.id.length === 0) {
+    if (session !== undefined && (!session || typeof session !== "object"
+      || Array.isArray(session)
+      || typeof session.id !== "string" || session.id.length === 0)) {
       startupMissing.push("session.id");
     }
   } else if (assemblyPort !== undefined

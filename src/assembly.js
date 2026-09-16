@@ -176,14 +176,18 @@ export function createAssemblyPort(input = {}) {
 
 /**
  * Convert a validated AssemblyPort to the existing fine-grained loop options.
- * Explicit options are merged by runToolLoop after this conversion and win.
+ * Explicit options are merged after this conversion and win.
  *
  * @param {AssemblyPort} input
- * @param {{modelConfig?:object}} [overrides]
+ * @param {object} [overrides]
  * @returns {Promise<object>}
  */
 export async function assemblyPortOptions(input, overrides = {}) {
   const port = createAssemblyPort(input);
+  if (overrides.modelConfig !== undefined
+    && (!overrides.modelConfig || typeof overrides.modelConfig.resolve !== "function")) {
+    throw new TypeError(`assembly port is missing methods: modelConfig.resolve (${MODEL_CONFIG_RESOLVER_HINT})`);
+  }
   const options = {
     ...port.policy,
     modelConfig: overrides.modelConfig === undefined
@@ -203,6 +207,9 @@ export async function assemblyPortOptions(input, overrides = {}) {
   };
   if (port.emit !== undefined && options.onEvent === undefined) {
     options.onEvent = (event) => port.emit(event.type, event);
+  }
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value !== undefined) options[key] = value;
   }
   return options;
 }

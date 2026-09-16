@@ -26,7 +26,7 @@ import {
 import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
 import {
   buildArchiveNotice,
-  CLI_TOOLS_SYSTEM_PROMPT,
+  buildCliToolsSystemPrompt,
   createCliTools,
   wrapExecuteTool,
 } from "./tools.js";
@@ -601,7 +601,7 @@ async function runChatWithNotes({
         resourceStore,
       })
       : undefined,
-    ({ content }) => buildCaptureStub({ content }, resourceStore),
+    ({ content }) => buildCaptureStub({ content }, resourceStore, diagnostics),
   );
   const context = baseContext;
   const idle = createIdleTimeout(idleTimeout);
@@ -701,7 +701,7 @@ async function runChatWithNotes({
     }
     : undefined;
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt(resourceStore)}`;
   systemPrompt += buildArchiveNotice(archiveDir, resourceStore);
   if (mcpProxy?.enabled) {
     systemPrompt += `

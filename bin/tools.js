@@ -233,6 +233,17 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 - 不要主动读取密钥、凭据或 .env 文件；只读取本次工具返回明确给出的归档路径
 - 任务完成后直接汇报结果，默认使用中文`;
 
+export function buildCliToolsSystemPrompt(resourceStore) {
+  if (resourceStore === undefined) return CLI_TOOLS_SYSTEM_PROMPT;
+  return CLI_TOOLS_SYSTEM_PROMPT
+    .replaceAll("或来源=归档:<文件名>", "或来源=归档:resource:<display>")
+    .replaceAll("或明确的归档文件", "或 ResourceStore 中的 opaque 工件")
+    .replaceAll(
+      "只读取本次工具返回明确给出的归档路径",
+      "只使用本次工具返回明确给出的 opaque 工件",
+    );
+}
+
 export function buildArchiveNotice(archiveDir, resourceStore) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
   if (resourceStore !== undefined) {
@@ -542,10 +553,12 @@ export function archiveResult(
       );
       metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
       const artifact = {
-        artifactId: path.basename(archivePath),
         ...(resourceStore === undefined ? { archivePath } : {}),
         digest: reference?.digest ?? digest,
         ...(reference ?? { locator: { lineStart: 1, lineEnd: lines } }),
+        artifactId: resourceStore === undefined
+          ? path.basename(archivePath)
+          : `resource:${reference?.digest ?? digest}`,
         round: context?.round ?? null,
         ...(replayable === undefined ? {} : { replayable }),
         ...(replayableSource === undefined ? {} : { replayableSource }),

@@ -17,6 +17,7 @@ import { archiveResult } from "../bin/tools.js";
 import * as notes from "../skills/notes/skill.mjs";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createFileNotesStore } from "../src/store/notes.js";
+import { createFileResourceStore } from "../src/store/resource-file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 async function withNotes(callback) {
@@ -286,6 +287,91 @@ test("capture stubs retain safe labels but never credential values", async () =>
     assert.doesNotMatch(stub, /sk-secret-value|hunter2/u);
     assert.doesNotMatch(stub, /x{201,}/u);
     assert.ok(Array.from(stub).length <= 200);
+  });
+});
+
+test("ResourceStore capture stubs reread safe values", async () => {
+  let gets = 0;
+  const resourceStore = {
+    async get() {
+      gets += 1;
+      return "nonce=secret-value\napi_key=sk-secret-value\n";
+    },
+  };
+  const stub = await buildCaptureStub({
+    content: [{
+      type: "tool_result",
+      replayable: false,
+      artifact: {
+        locator: { id: "resource-1" },
+        display: "resource:resource-1",
+      },
+    }],
+  }, resourceStore);
+
+  assert.equal(gets, 1);
+  assert.match(stub, /nonce=secret-value/u);
+  assert.doesNotMatch(stub, /sk-secret-value/u);
+  assert.doesNotMatch(stub, /001-exec\.txt|(?:^|[\s；：])\//u);
+});
+
+test("ResourceStore stub read failures fall back and emit diagnostics", async () => {
+  const events = [];
+  const stub = await buildCaptureStub({
+    content: [{
+      type: "tool_result",
+      replayable: false,
+      artifact: {
+        locator: { id: "missing-resource" },
+        display: "resource:missing-resource",
+      },
+    }],
+  }, {
+    async get() {
+      throw new Error("missing resource");
+    },
+  }, {
+    error(event) {
+      events.push(event);
+    },
+  });
+
+  assert.equal(stub, "[已折叠] 原文：resource:missing-resource（不可重放）");
+  assert.deepEqual(events, [{
+    type: "resource_store_error",
+    operation: "get",
+    phase: "capture_stub",
+    fatal: false,
+    locator: { id: "missing-resource" },
+    error: { name: "Error", message: "missing resource" },
+  }]);
+});
+
+test("ResourceStore provenance accepts opaque display references for reruns", async () => {
+  await withNotes(async (directory) => {
+    const archiveDir = path.join(directory, "outputs");
+    const resourceStore = createFileResourceStore({ dir: archiveDir });
+    const first = await archiveResult(archiveDir, "exec", "nonce=first-value\n", 1, {
+      force: true,
+      replayable: false,
+      command: "printf first",
+      resourceStore,
+    });
+    const second = await archiveResult(archiveDir, "exec", "nonce=second-value\n", 2, {
+      force: true,
+      replayable: false,
+      command: "printf second",
+      resourceStore,
+    });
+
+    assert.notEqual(first.artifact.display, second.artifact.display);
+    const guard = createFinalGuard({ archiveDir, resourceStore });
+    assert.deepEqual(
+      await guard({
+        finalText: `nonce=second-value 来源=归档:resource:${second.artifact.display}`,
+      }),
+      { action: "accept", rerunCited: true },
+    );
   });
 });
 
