@@ -68,10 +68,10 @@ test("ledger caps entries and reports the overflow explicitly", () => {
   assert.equal(overflow.dropped, 5);
 });
 
-test("toUnpersisted returns a fresh array by default", () => {
+test("toUnpersisted returns an empty array by default and never hands out the internal array", () => {
   const ledger = createErrorLedger();
   const empty = ledger.toUnpersisted();
   assert.deepEqual(empty, []);
-  empty.push({ tampered: true });
+  empty.push({ junk: true }); // 基本封装：外部拿到的不是内部数组本身
   assert.deepEqual(ledger.toUnpersisted(), []);
 });
