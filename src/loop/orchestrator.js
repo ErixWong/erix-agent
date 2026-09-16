@@ -49,6 +49,7 @@ import {
   terminationDetailForError,
   terminationReasonForAction,
 } from "./termination.js";
+import { createErrorLedger } from "./error-ledger.js";
 import {
   cloneState,
   isApiInputOverBudget,
@@ -184,9 +185,10 @@ function persistenceInfoFor(error) {
   return undefined;
 }
 
-function persistenceErrorEvent({ operation, phase, runId, sideEffect, error }) {
+function persistenceErrorEvent({ port = "transcript", operation, phase, runId, sideEffect, error }) {
   return {
     type: "persistence_error",
+    port,
     phase,
     operation,
     runId,
@@ -201,7 +203,7 @@ function persistenceErrorEvent({ operation, phase, runId, sideEffect, error }) {
   };
 }
 
-function makePersistenceFailure({ operation, phase, sideEffect, runId, error, event }) {
+function makePersistenceFailure({ operation, phase, sideEffect, runId, error, event, errorLedger }) {
   const failure = new KitError(
     "persistence_failed",
     `Persistence operation ${operation} failed during ${phase} (runId=${String(runId)}): ${String(error?.message ?? error)}`,
@@ -217,6 +219,9 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
     event,
   };
   failure.persistenceError = event;
+  // 账单可靠性（issue #109）：异常终止时 run 不会返回 result，账单必须随异常走，
+  // 否则 sink 失败留痕与未持久化事实一起丢失。
+  failure.unpersisted = errorLedger?.toUnpersisted?.() ?? [];
   return failure;
 }
 
@@ -479,20 +484,30 @@ export async function runToolLoop(options) {
     : 10000;
   const sleepImpl = retryOptions?.sleepImpl ?? defaultSleep;
   let toolExecutedThisRound = false;
+  const errorLedger = createErrorLedger();
 
   const reportPersistenceError = async (error, event) => {
+    // 账本 = 权威记录：失败无条件入账，不依赖 sink 是否送达。
+    errorLedger.record({
+      port: event.port,
+      operation: event.operation,
+      phase: event.phase,
+      fatal: event.fatal,
+      error,
+    });
     if (typeof onPersistenceError === "function") {
       try {
         await onPersistenceError(error);
-      } catch {
-        // A legacy observer must not replace the persistence failure.
+      } catch (observerFailure) {
+        errorLedger.recordDeliveryFailure({ event, error: observerFailure, port: "diagnostics" });
       }
     }
     if (typeof diagnostics?.error === "function") {
       try {
         await diagnostics.error(event);
-      } catch {
-        // Diagnostics delivery is best effort; the structured failure remains authoritative.
+      } catch (sinkError) {
+        // 事件通道自身降级必须留痕：sink 抛错 → 账本记 delivery_failure（评审修正 1/遗漏面）。
+        errorLedger.recordDeliveryFailure({ event, error: sinkError, port: event.port });
       }
     }
   };
@@ -553,6 +568,7 @@ export async function runToolLoop(options) {
       runId,
       error: lastError,
       event,
+      errorLedger,
     });
   };
   const markRunState = async (state) => {
@@ -1302,6 +1318,7 @@ export async function runToolLoop(options) {
     refreshRunState,
     markRunState,
     fail,
+    errorLedger,
     get messages() {
       return messages;
     },

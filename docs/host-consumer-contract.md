@@ -370,6 +370,35 @@ natural-language inference, keyword guessing, or similarity rules to it.
 Prefer source-level mechanisms such as folded stubs, structured notices,
 producer declarations, and bounded retrieval.
 
+## Error ledger (issue #109 step 1)
+
+`runToolLoop` results carry two always-present ledger fields:
+
+- `result.unpersisted: Entry[]` — the authoritative record of persistence
+  failures during the run. Default: `[]`.
+- `result.completionErrors: []` — reserved for completion-phase failures
+  (wired in a later step); default `[]`.
+
+An `Entry` is one of:
+
+- `persistence_error`: `{ kind, port, operation, phase?, fatal, error: {name, message}, ts }`
+  where `port` is `"transcript"` (today; `"resource"`/`"notes"` arrive with
+  their integration steps). `error.message` is truncated at 500 chars and
+  never carries a stack trace.
+- `delivery_failure`: a `diagnostics.error` (or `onPersistenceError`) sink
+  itself threw — the error happened but the structured event was not
+  delivered. Carries `failedEvent: { type, operation, phase }` for identity.
+- `ledger_overflow`: synthetic entry reported when the ledger cap
+  (`100` entries) dropped records; carries `dropped: number`.
+
+Delivery guarantees: the ledger and the `diagnostics.error` event are the two
+reliable channels; model-visible warnings are advisory only and never count
+as delivery. On an exception-terminated run the ledger is attached to the
+thrown persistence failure as `error.unpersisted`.
+
+`persistence_error` diagnostic events now include `port: "transcript"`;
+the field is additive and existing consumers are unaffected.
+
 ## Run state
 
 The engine builds a deterministic run state and can inject its bounded

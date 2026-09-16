@@ -224,6 +224,10 @@ export function createTerminationManager(ctx) {
         : { runState: cloneState(ctx.currentRunState) }),
       usage: ctx.usage,
       compactionStats: ctx.compactionStats,
+      // 错误账单（issue #109 第 1 步）：可靠交付通道之二；默认空数组（schema 冻结）。
+      // completionErrors 由第 4 步接线（收尾失败不覆盖主结果）。
+      unpersisted: ctx.errorLedger.toUnpersisted(),
+      completionErrors: [],
     };
   };
 
