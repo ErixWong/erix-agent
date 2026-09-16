@@ -72,7 +72,8 @@ test("archive guidance is present once in the system prompt", async () => {
       toolOutput: () => {},
     });
     const system = provider.requests[0].system;
-    assert.equal((system.match(/本次运行的归档目录：/gu) ?? []).length, 1);
+    assert.equal((system.match(/本次运行的完整输出由 ResourceStore 保存/u) ?? []).length, 1);
+    assert.doesNotMatch(system, new RegExp(`${dir}/outputs/archive-guidance-run`));
     assert.match(system, /禁止遍历归档目录、重跑非幂等命令/u);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -220,10 +221,8 @@ test("chat loop wires a file transcript store without a recall tool", async () =
     });
 
     assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), false);
-    assert.match(
-      provider.requests[0].system,
-      new RegExp(`${dir}/outputs/chat-wiring`),
-    );
+    assert.match(provider.requests[0].system, /ResourceStore 保存/u);
+    assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/chat-wiring`));
     assert.match(provider.requests[0].system, /不得重跑/u);
     const records = await createFileTranscriptStore({ dir }).load("chat-wiring");
     assert.deepEqual(records.map((record) => record.round), [0, 1]);

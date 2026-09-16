@@ -221,6 +221,32 @@ test("fold state marker counts captures without exposing values or keys and repl
   });
 });
 
+test("ResourceStore recovery hints never expose filesystem paths", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "erix-opaque-hint-"));
+  try {
+    const hint = await buildCaptureRecoveryHint({
+      archiveDir: directory,
+      foldedPayload: [],
+      resourceStore: {
+        async put() {
+          return {
+            locator: { id: "resource-1" },
+            digest: "a".repeat(64),
+            display: "opaque-resource-1",
+          };
+        },
+        async get() {
+          return "resource";
+        },
+      },
+    });
+    assert.doesNotMatch(hint, new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+    assert.doesNotMatch(hint, /-exec\.txt/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("archive recovery index is bounded, value-free, and replaced on each fold", async () => {
   await withNotes(async (directory) => {
     for (let sequence = 1; sequence <= 12; sequence += 1) {

@@ -63,7 +63,10 @@ import { abortError, defaultSleep, throwIfAborted } from "./abort.js";
 import { callProvider as runProvider } from "./provider-runner.js";
 import { createCheckpointExecutor } from "./checkpoint-executor.js";
 import { restoreResume } from "./resume-manager.js";
-import { assemblyPortOptions } from "../assembly.js";
+import {
+  assemblyPortOptions,
+  MODEL_CONFIG_RESOLVER_HINT,
+} from "../assembly.js";
 
 export { parseReflectionDecision };
 
@@ -105,6 +108,7 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "finalGuardTimeoutMs",
   "maxTokenContinuations",
   "context",
+  "resourceStore",
   "todoStateProvider",
   "semanticStateProvider",
   "modelConfig",
@@ -383,6 +387,7 @@ export async function runToolLoop(options) {
     finalGuardTimeoutMs = 30_000,
     maxTokenContinuations = 3,
     context,
+    resourceStore,
     todoStateProvider,
     semanticStateProvider,
     modelConfig,
@@ -436,7 +441,7 @@ export async function runToolLoop(options) {
   } else if (assemblyPort !== undefined
     && explicitOptions.modelConfig !== undefined
     && (!modelConfig || typeof modelConfig.resolve !== "function")) {
-    startupMissing.push("modelConfig.resolve");
+    startupMissing.push(`modelConfig.resolve (${MODEL_CONFIG_RESOLVER_HINT})`);
   }
   if (startupMissing.length > 0) {
     throw new TypeError(`assembly port is missing methods: ${startupMissing.join(", ")}`);
@@ -619,11 +624,14 @@ export async function runToolLoop(options) {
     });
   }
   if (budgetTokens !== undefined) validateBudget(budgetTokens);
-  const compactionContext = context === undefined && budgetTokens === undefined
+  const compactionContext = context === undefined
+    && budgetTokens === undefined
+    && resourceStore === undefined
     ? undefined
     : {
         ...(context ?? {}),
         ...(budgetTokens === undefined ? {} : { budgetTokens }),
+        ...(resourceStore === undefined ? {} : { resourceStore }),
       };
   const baseToolContext = toolContextFor({
     toolContext,

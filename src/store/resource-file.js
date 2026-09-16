@@ -68,7 +68,7 @@ export function createFileResourceStore({ dir } = {}) {
       return {
         locator: { id },
         digest,
-        display: data,
+        display: `resource:${id}`,
       };
     },
 

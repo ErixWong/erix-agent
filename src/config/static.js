@@ -39,3 +39,13 @@ export function createStaticModelConfigProvider(configOrSlots) {
     },
   };
 }
+
+/**
+ * Wrap one plain model config in the resolver-shaped host contract.
+ *
+ * @param {object} config
+ * @returns {{resolve:(slot?:string)=>Promise<object>}}
+ */
+export function createModelConfigResolver(config) {
+  return createStaticModelConfigProvider(config);
+}

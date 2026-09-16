@@ -56,7 +56,10 @@ export {
   withSemanticRunState,
   RUN_STATE_MAX_CHARS,
 } from "./run-state.js";
-export { createStaticModelConfigProvider } from "./config/static.js";
+export {
+  createStaticModelConfigProvider,
+  createModelConfigResolver,
+} from "./config/static.js";
 export { createEnvModelConfigProvider } from "./config/env.js";
 export { createJsonFileModelConfigProvider } from "./config/json-file.js";
 export { resolveApiKey } from "./config/api-key.js";

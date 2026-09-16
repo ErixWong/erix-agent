@@ -21,7 +21,7 @@ assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, too
 writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
-maxTokenContinuations, context, todoStateProvider, semanticStateProvider,
+maxTokenContinuations, context, resourceStore, todoStateProvider, semanticStateProvider,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, runState, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
@@ -73,6 +73,12 @@ all nine `TranscriptStore` methods. A missing method throws `TypeError`
 before the run starts. `policy` contains only named `runToolLoop` options;
 unknown policy keys are rejected.
 
+`modelConfig` is always the resolver-shaped `ModelConfigProvider`, including an
+explicit override supplied alongside `assemblyPort`. A plain config object is
+rejected with a migration hint; wrap it with
+`createModelConfigResolver(config)` (or use
+`createStaticModelConfigProvider(config)`).
+
 The existing fine-grained `runToolLoop` options remain supported. When both
 forms are present, the AssemblyPort is resolved first and explicitly supplied
 fine-grained options override the corresponding assembled values. This keeps
@@ -80,6 +86,9 @@ the port at the composition boundary and does not wrap or change the loop
 injection contract. If `emit` is present, it is used as the default event
 sink; an explicit `onEvent` still wins. `assemblyPortContract` from
 `erix-agent/contract-tests` locks these startup and precedence rules.
+`resourceStore` is a top-level loop option rather than a field tunneled through
+`context`; an explicit `context` therefore cannot discard the assembled archive
+adapter.
 An assembly-shaped fine-grained entry performs the same provider, executor,
 model-config, session, and required-persistence fail-fast checks before the
 first provider call. `persistence: "none"` does not require a TranscriptStore.
@@ -111,8 +120,8 @@ Fold navigation records carry the adapter's locator and display; display is
 the only string intended for a model-facing stub.
 
 `createFileResourceStore({ dir })` is the built-in filesystem adapter. Its
-locator is an opaque object and its display is the readable filesystem
-location; hosts may replace it with an object store, database, or service
+locator is an opaque object and its display is an opaque model-facing reference;
+hosts may replace it with an object store, database, or service
 without changing folding or recall code. `resourceStoreContract` checks
 round-trip fidelity, stable/different digests, store isolation, unknown-locator
 behavior, return shapes, and failure propagation. CLI compression writes new

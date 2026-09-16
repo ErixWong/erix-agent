@@ -8,12 +8,9 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   createOpenAIProvider,
-  createFileTranscriptStore,
-  createFileResourceStore,
-  createFileNotesStore,
   runToolLoop,
 } from "../src/index.js";
-import { safeRunId } from "../src/store/file.js";
+import { createCliAssemblyRoot } from "./assembly-root.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
 import {
   closeAllMcpServers,
@@ -485,14 +482,13 @@ export async function runChat(options = {}) {
   const notesDir = options.notesDir
     ?? process.env.ERIX_NOTES_DIR
     ?? path.join(homedir(), ".erix", "notes");
-  const notesStore = options.notesStore ?? createFileNotesStore({ dir: notesDir });
   // Notes scope is explicit throughout the CLI path; avoid mutating process
   // globals so concurrent runChat calls cannot restore each other's env.
   return runChatWithNotes({
     ...options,
     _notesRunId: runId,
     _notesDir: notesDir,
-    _notesStore: notesStore,
+    _notesStore: options.notesStore,
   });
 }
 
@@ -522,12 +518,10 @@ async function runChatWithNotes({
   _notesRunId,
   _notesDir,
   _notesStore,
+  _assemblyRoot,
 }) {
   const cwd = process.cwd();
   const runId = _notesRunId ?? session ?? defaultSessionId(cwd, { unique: true });
-  const notesStore = _notesStore ?? createFileNotesStore({
-    dir: _notesDir ?? path.join(homedir(), ".erix", "notes"),
-  });
   const explicitSession = sessionExplicit ?? session !== undefined;
   const config = configOverride ?? await loadCliConfig({ configPath });
   const maxTokens = config.maxOutputTokens;
@@ -543,7 +537,22 @@ async function runChatWithNotes({
     timeoutMs: config.timeout ?? 300_000,
     maxTokens,
   });
-  const store = createFileTranscriptStore({ dir });
+  const assemblyRoot = _assemblyRoot ?? createCliAssemblyRoot({
+    dir,
+    runId,
+    notesDir: _notesDir,
+    notesStore: _notesStore,
+    errorLog: errorLog ?? process.env.ERIX_ERROR_LOG,
+  });
+  const {
+    archiveDir,
+    diagnostics,
+    notesDir,
+    notesStore,
+    resourceStore,
+    runState,
+    store,
+  } = assemblyRoot;
   const existingRecords = await store.load(runId);
   const resume = explicitSession && existingRecords.length > 0;
   if (resume) {
@@ -562,19 +571,11 @@ async function runChatWithNotes({
       ts: new Date().toISOString(),
     });
   }
-  const archiveDir = path.join(
-    path.resolve(dir),
-    "outputs",
-    safeRunId(runId),
-  );
-  mkdirSync(archiveDir, { recursive: true });
-  const resourceStore = createFileResourceStore({ dir: archiveDir });
-  const runState = { rerunDetected: false, captureCount: 0 };
   const cliTools = createCliTools({
     cwd,
     archiveDir,
     resourceStore,
-    notesScope: { runId, notesDir: _notesDir, notesStore },
+    notesScope: { runId, notesDir, notesStore },
     runState,
   });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
@@ -582,30 +583,32 @@ async function runChatWithNotes({
     cwd,
     skillsDir,
     runId,
-    notesDir: _notesDir,
+    notesDir,
     notesStore,
     excludeSkillIds: notesDisabled ? ["notes"] : [],
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
   });
-  await skillTools.notesJanitor?.({ __erix: { runId, notesDir: _notesDir, notesStore } });
+  await skillTools.notesJanitor?.({ __erix: { runId, notesDir, notesStore } });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
   const tools = combineTools(cliTools, skillTools, mcpProxy);
   const baseContext = buildCompactionContext(
     config,
     compactBudget,
     compactBudget !== undefined || config.contextWindowTokens
-      ? ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload })
+      ? ({ foldedPayload }) => buildCaptureRecoveryHint({
+        archiveDir,
+        foldedPayload,
+        resourceStore,
+      })
       : undefined,
     ({ content }) => buildCaptureStub({ content }, resourceStore),
   );
-  const context = baseContext === undefined
-    ? undefined
-    : { ...baseContext, resourceStore };
+  const context = baseContext;
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, {
     output: toolOutput,
     getToolMetadata: cliTools.getLastToolMetadata,
-    notesScope: { runId, notesDir: _notesDir, notesStore },
+    notesScope: { runId, notesDir, notesStore },
     returnMetadata: true,
   });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
@@ -613,14 +616,13 @@ async function runChatWithNotes({
     finalGuard,
     runId,
     archiveDir,
-    _notesDir,
+    notesDir,
     notesStore,
     runState,
     resourceStore,
   );
   // judge 决策日志默认跟随 run 归档（与工具捕获同目录）；--judge-log / ERIX_JUDGE_LOG 可覆盖
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG ?? path.join(archiveDir, "judge.log");
-  const persistenceErrorLog = errorLog ?? process.env.ERIX_ERROR_LOG;
   let judgeLogWriteFailed = false;
   // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 安全摘要
   const SENSITIVE_KEY = /token|key|secret|password|passwd|authorization|auth|api[_-]?key|bearer|cookie|credential|session|jwt|private/i;
@@ -700,7 +702,7 @@ async function runChatWithNotes({
     : undefined;
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
-  systemPrompt += buildArchiveNotice(archiveDir);
+  systemPrompt += buildArchiveNotice(archiveDir, resourceStore);
   if (mcpProxy?.enabled) {
     systemPrompt += `
 
@@ -709,29 +711,13 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
 
   const loopOptions = {
     ...(context ? { context } : {}),
+    resourceStore,
     provider,
     system: systemPrompt,
     initialUserMessage: prompt,
     task: prompt,
     store,
-    diagnostics: {
-      error: (event) => {
-        console.error(
-          `Persistence error: ${event.operation} during ${event.phase} (runId=${String(event.runId)})`,
-        );
-        if (persistenceErrorLog) {
-          try {
-            appendFileSync(
-              persistenceErrorLog,
-              `${JSON.stringify(event)}\n`,
-              "utf8",
-            );
-          } catch (error) {
-            console.error(`Persistence error log write failed: ${error?.message ?? String(error)}`);
-          }
-        }
-      },
-    },
+    diagnostics,
     runId,
     runState,
     resume,
@@ -829,8 +815,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   } finally {
     idle?.dispose();
     try {
-      await skillTools.notesCompleteRun?.({ __erix: { runId, notesDir: _notesDir, notesStore } });
-      await skillTools.notesJanitor?.({ __erix: { runId, notesDir: _notesDir, notesStore } });
+      await skillTools.notesCompleteRun?.({ __erix: { runId, notesDir, notesStore } });
+      await skillTools.notesJanitor?.({ __erix: { runId, notesDir, notesStore } });
     } finally {
       await closeAllMcpServers();
     }

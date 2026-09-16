@@ -233,8 +233,11 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 - 不要主动读取密钥、凭据或 .env 文件；只读取本次工具返回明确给出的归档路径
 - 任务完成后直接汇报结果，默认使用中文`;
 
-export function buildArchiveNotice(archiveDir) {
+export function buildArchiveNotice(archiveDir, resourceStore) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
+  if (resourceStore !== undefined) {
+    return "\n\n[工具输出归档]\n本次运行的完整输出由 ResourceStore 保存。需要早期原文时先用 note_list、note_read 或 final guard 恢复对应记录；禁止遍历归档目录、重跑非幂等命令或凭记忆补值。";
+  }
   return `\n\n[工具输出归档]\n本次运行的归档目录：${path.resolve(archiveDir)}。需要早期原文时读取明确的归档文件或先用 note_list、note_read 恢复记录；禁止遍历归档目录、重跑非幂等命令或凭记忆补值。`;
 }
 
@@ -446,17 +449,21 @@ function archiveGuidance(display, resourceStore) {
   const reader = resourceStore === undefined
     ? "需要原始内容请用 readFile/cat 读取该路径"
     : "需要原始内容请用 ResourceStore 读取";
-  return `[完整输出已归档：${display}（${reader}；不要重跑命令，重跑会得到不同的值）]`;
+  const visibleDisplay = resourceStore === undefined
+    ? display
+    : "ResourceStore 中的 opaque locator";
+  return `[完整输出已归档：${visibleDisplay}（${reader}；不要重跑命令，重跑会得到不同的值）]`;
 }
 
-function archiveFailureGuidance(archivePath, error, replayable) {
+function archiveFailureGuidance(archivePath, error, replayable, resourceStore) {
   if (replayable === false) {
     return "[完整输出归档失败：原始输出不可恢复；请勿重跑命令。]";
   }
   const reason = String(error?.message ?? error ?? "未知错误")
     .replaceAll(/\s+/gu, " ")
     .slice(0, 160);
-  return `[完整输出归档失败：${archivePath}（${reason}）；请勿重跑命令。]`;
+  const visibleDisplay = resourceStore === undefined ? archivePath : "ResourceStore";
+  return `[完整输出归档失败：${visibleDisplay}（${reason}）；请勿重跑命令。]`;
 }
 
 export function archiveResult(
@@ -483,8 +490,13 @@ export function archiveResult(
   let metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
   const failedArchive = (error) => ({
     text: replayable !== false
-      ? `${truncateResult(text)}\n${archiveFailureGuidance(archivePath, error, replayable)}`
-      : archiveFailureGuidance(archivePath, error, replayable),
+      ? `${truncateResult(text)}\n${archiveFailureGuidance(
+        archivePath,
+        error,
+        replayable,
+        resourceStore,
+      )}`
+      : archiveFailureGuidance(archivePath, error, replayable, resourceStore),
     archivePath: undefined,
     artifact: undefined,
   });
@@ -635,13 +647,15 @@ function artifactStatus(artifact) {
   }
 }
 
-function rerunGuidance({ count, firstArtifact, firstValue, status }) {
+function rerunGuidance({ count, firstArtifact, firstValue, status, resourceStore }) {
   const displayValue = typeof firstValue === "string" && firstValue.length > 0
     ? firstValue
     : status === "ok" || status === "truncated"
       ? "见首次执行归档"
       : "不可恢复";
-  const display = firstArtifact?.display ?? firstArtifact?.archivePath ?? "无归档";
+  const display = resourceStore === undefined
+    ? firstArtifact?.display ?? firstArtifact?.archivePath ?? "无归档"
+    : "ResourceStore 中的 opaque locator";
   return `[⚠️ 这是第 ${count} 次执行，值与首次可能不同；首次执行记录：${displayValue}（${display}）；工件状态：${status}]`;
 }
 
@@ -1032,6 +1046,7 @@ export function createCliTools({
         firstArtifact,
         firstValue,
         status,
+        resourceStore,
       })}\n${String(returnedResult ?? "")}`;
     }
     const finalResult = name === "exec" ? truncateResult(returnedResult) : returnedResult;

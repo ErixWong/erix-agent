@@ -1,5 +1,8 @@
 import { validateResourceStore } from "./store/resource.js";
 
+export const MODEL_CONFIG_RESOLVER_HINT =
+  "modelConfig must expose resolve(slot); wrap plain config with createModelConfigResolver(...)";
+
 const TRANSCRIPT_STORE_METHODS = [
   "appendRound",
   "load",
@@ -71,7 +74,7 @@ function missingAssemblyMethods(port) {
     return ["assemblyPort"];
   }
   if (!port.modelConfig || typeof port.modelConfig.resolve !== "function") {
-    missing.push("modelConfig.resolve");
+    missing.push(`modelConfig.resolve (${MODEL_CONFIG_RESOLVER_HINT})`);
   }
   if (!port.provider
     || (typeof port.provider.chat !== "function"
@@ -190,6 +193,7 @@ export async function assemblyPortOptions(input, overrides = {}) {
     tools: port.tools.definitions,
     executeTool: port.tools.executeTool,
     ...(port.store === undefined ? {} : { store: port.store }),
+    ...(port.resourceStore === undefined ? {} : { resourceStore: port.resourceStore }),
     runId: port.session.id,
     session: port.session,
     ...(port.session.resume === undefined ? {} : { resume: port.session.resume }),
@@ -197,12 +201,6 @@ export async function assemblyPortOptions(input, overrides = {}) {
       ? {}
       : { initialMessages: port.session.initialMessages }),
   };
-  if (port.resourceStore !== undefined) {
-    options.context = {
-      ...(port.policy?.context ?? {}),
-      resourceStore: port.resourceStore,
-    };
-  }
   if (port.emit !== undefined && options.onEvent === undefined) {
     options.onEvent = (event) => port.emit(event.type, event);
   }
