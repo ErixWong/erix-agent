@@ -24,6 +24,26 @@ import { runToolLoop } from "../src/loop.js";
 import { createRecallTool } from "../src/tools/index.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
+function normalizeGoldenEnvironment(value, cwd, fixtureCwd) {
+  if (typeof value === "string") {
+    return value
+      .split(fixtureCwd).join("<cwd>")
+      .split(cwd).join("<cwd>");
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeGoldenEnvironment(entry, cwd, fixtureCwd));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        normalizeGoldenEnvironment(entry, cwd, fixtureCwd),
+      ]),
+    );
+  }
+  return value;
+}
+
 test("CLI prompt constrains provenance of one-shot values", () => {
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /非幂等命令/u);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不得重跑/u);
@@ -58,11 +78,17 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
       toolOutput: () => {},
       _assemblyRoot: root,
     });
-    assert.deepEqual({
+    const fixtureCwd = fixture.modelVisible.system.match(/工作目录 (.+?)。/u)?.[1];
+    assert.ok(fixtureCwd, "golden fixture must contain its recorded cwd");
+    const actualModelVisible = {
       system: provider.requests[0].system,
       messages: provider.requests[0].messages,
       output: result.finalText,
-    }, fixture.modelVisible);
+    };
+    assert.deepEqual(
+      normalizeGoldenEnvironment(actualModelVisible, resolve(process.cwd()), fixtureCwd),
+      normalizeGoldenEnvironment(fixture.modelVisible, resolve(process.cwd()), fixtureCwd),
+    );
     assert.match(fixture.modelVisible.system, /\[工具输出归档\]/u);
     assert.match(fixture.modelVisible.output, /^stub=/u);
   } finally {
