@@ -20,6 +20,7 @@ import {
   upsertRunStateInMessages,
   withSemanticRunState,
 } from "../run-state.js";
+import { createRecallTool } from "../tools/recall.js";
 import {
   appendAssistantContent,
   blocksFor,
@@ -91,6 +92,7 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "initialUserMessage",
   "initialMessages",
   "tools",
+  "recall",
   "writeToolNames",
   "writeToolPathKeys",
   "executeTool",
@@ -273,6 +275,10 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   initialUserMessage?: string,
  *   initialMessages?: object[],
  *   tools?: object[],
+ *   recall?: boolean, // Engine-standard transcript recall tool (ADR-015). Defaults to enabled when a store
+ *                     // with load() and a runId are present; pass false to opt out. Calls to a tool named
+ *                     // "recall" are served by the engine (never reach host executeTool). A host-provided
+ *                     // "recall" tool definition always wins (no duplicate registration).
  *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to ["writeFile"].
  *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
@@ -374,6 +380,7 @@ export async function runToolLoop(options) {
     initialUserMessage,
     initialMessages,
     tools = [],
+    recall,
     writeToolNames = ["writeFile"],
     writeToolPathKeys = ["path", "file_path"],
     executeTool,
@@ -464,6 +471,18 @@ export async function runToolLoop(options) {
   if (persistenceMode !== "none" && persistenceMode !== "required") {
     throw new TypeError('persistence must be "none" or "required"');
   }
+  // ADR-015：引擎标配 recall 工具（转录即档案、recall 即通道）。显式 true 但能力缺失 = 撕票，报错；
+  // 默认（未传）时能力具备才注册，不做静默承诺。宿主自带 recall 工具定义时宿主优先。
+  if (recall !== undefined && typeof recall !== "boolean") {
+    throw new TypeError("recall must be a boolean");
+  }
+  const recallCapable = store !== undefined
+    && typeof store.load === "function"
+    && typeof runId === "string"
+    && runId.length > 0;
+  if (recall === true && !recallCapable) {
+    throw new TypeError("recall: true requires a store with load() and a non-empty runId");
+  }
   const persistenceRequired = persistenceMode === "required";
   if (persistenceRequired) {
     const missingMethods = TRANSCRIPT_STORE_METHODS.filter((method) => (
@@ -475,6 +494,23 @@ export async function runToolLoop(options) {
       );
     }
   }
+  // 引擎标配 recall（ADR-015）：宿主工具面已有同名 "recall" 定义时宿主优先，不重复注册/拦截。
+  const recallEnabled = recallCapable && recall !== false;
+  const engineRecallTool = recallEnabled
+    && !tools.some((tool) => tool?.name === "recall")
+    ? createRecallTool({ store, runId })
+    : undefined;
+  const providerTools = engineRecallTool === undefined
+    ? tools
+    : [...tools, engineRecallTool.schema];
+  const executeToolWithRecall = engineRecallTool === undefined
+    ? executeTool
+    : async (structuredOptions) => {
+      if (structuredOptions?.name === "recall") {
+        return engineRecallTool.execute(structuredOptions.input);
+      }
+      return executeTool(structuredOptions);
+    };
 
   const retryOptions = retry && typeof retry === "object" ? retry : null;
   const retryAttempts = retryOptions === null
@@ -1130,7 +1166,7 @@ export async function runToolLoop(options) {
   const providerContext = {
     provider,
     mainSystem,
-    tools,
+    tools: providerTools,
     signal,
     maxTokens,
     temperature,
@@ -1498,7 +1534,7 @@ export async function runToolLoop(options) {
 
   const checkpointContext = {
     runId,
-    executeTool,
+    executeTool: executeToolWithRecall,
     baseToolContext,
     toolSignal,
     signal,

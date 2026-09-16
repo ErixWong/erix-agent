@@ -273,7 +273,7 @@ test("parseChatArgs supports disabling only the notes skill", () => {
   assert.equal(parseChatArgs(["hello", "--no-notes"]).noNotes, true);
 });
 
-test("chat loop wires a file transcript store without a recall tool", async () => {
+test("chat loop wires a file transcript store with the engine-standard recall tool (ADR-015)", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-test-"));
   try {
     const provider = createFakeProvider([
@@ -289,7 +289,7 @@ test("chat loop wires a file transcript store without a recall tool", async () =
       maxRounds: 1,
     });
 
-    assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), false);
+    assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), true);
     assert.match(provider.requests[0].system, /ResourceStore 保存/u);
     assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/chat-wiring`));
     assert.match(provider.requests[0].system, /不得重跑/u);
