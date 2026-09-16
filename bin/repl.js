@@ -14,10 +14,9 @@ import { createInterface } from "node:readline";
 
 import {
   createOpenAIProvider,
-  createFileTranscriptStore,
-  createFileNotesStore,
   runToolLoop,
 } from "../src/index.js";
+import { createCliAssemblyRoot } from "./assembly-root.js";
 import { safeRunId } from "../src/store/file.js";
 import { buildCompactionContext, loadCliConfig } from "./config.js";
 import {
@@ -32,7 +31,7 @@ import {
 import { buildSkillTools } from "./skills.js";
 import {
   buildArchiveNotice,
-  CLI_TOOLS_SYSTEM_PROMPT,
+  buildCliToolsSystemPrompt,
   createCliTools,
   wrapExecuteTool,
 } from "./tools.js";
@@ -346,8 +345,9 @@ export async function runRepl(argv, io = {}) {
   const output = io.output ?? process.stdout;
   const errorOutput = io.errorOutput ?? process.stderr;
   const sessionDir = io.sessionDir ?? join(homedir(), ".erix");
-  const notesDir = process.env.ERIX_NOTES_DIR ?? join(homedir(), ".erix", "notes");
-  const notesStore = io.notesStore ?? createFileNotesStore({ dir: notesDir });
+  const notesDir = io.notesDir
+    ?? process.env.ERIX_NOTES_DIR
+    ?? join(homedir(), ".erix", "notes");
 
   if (options.showHelp) {
     writeLine(output, REPL_HELP_TEXT);
@@ -362,20 +362,30 @@ export async function runRepl(argv, io = {}) {
 
   const archivePath = sessionPath(sessionDir, options.session);
   writeLine(output, `会话：${options.session}（工作目录：${cwd}，存档 ${archivePath}）`);
-  const store = createFileTranscriptStore({ dir: options.dir });
+  const assemblyRoot = io.assemblyRoot ?? createCliAssemblyRoot({
+    dir: options.dir,
+    runId: options.session,
+    cwd,
+    notesDir,
+    notesStore: io.notesStore,
+    errorOutput,
+  });
+  const {
+    archiveDir,
+    diagnostics,
+    notesStore,
+    resourceStore,
+    runState,
+    store,
+  } = assemblyRoot;
   const storedRecords = await store.load(options.session);
   const config = io.config ?? await loadCliConfig({ configPath: options.configPath });
   const providerFactory = io.providerFactory
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
-  const archiveDir = path.join(
-    path.resolve(options.dir),
-    "outputs",
-    safeRunId(options.session),
-  );
-  const runState = { rerunDetected: false, captureCount: 0 };
   const cliTools = createCliTools({
     cwd,
     archiveDir,
+    resourceStore,
     notesScope: { runId: options.session, notesDir, notesStore },
     runState,
   });
@@ -411,8 +421,8 @@ export async function runRepl(argv, io = {}) {
     writeLine(output, `已恢复会话 ${options.session}（${messages.length} 条消息）`);
   }
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${CLI_TOOLS_SYSTEM_PROMPT}`;
-  systemPrompt += buildArchiveNotice(archiveDir);
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt(resourceStore)}`;
+  systemPrompt += buildArchiveNotice(archiveDir, resourceStore);
   if (mcpProxy?.enabled) {
     systemPrompt += `
 
@@ -585,9 +595,13 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         config,
         options.compactBudget,
         options.compactBudget !== undefined || config.contextWindowTokens
-          ? ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload })
+          ? ({ foldedPayload }) => buildCaptureRecoveryHint({
+            archiveDir,
+            foldedPayload,
+            resourceStore,
+          })
           : undefined,
-        ({ content }) => buildCaptureStub({ content }),
+        ({ content }) => buildCaptureStub({ content }, resourceStore, diagnostics),
       );
       const tools = [...cliTools.tools, ...skillTools.tools];
       if (mcpProxy?.enabled) {
@@ -606,6 +620,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       };
       const loopOptions = {
         ...(context ? { context } : {}),
+        resourceStore,
         provider,
         system: systemPrompt,
         ...(resume ? {} : { initialMessages: roundMessages, initialUserMessage: line }),
@@ -624,6 +639,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
                 notesStore,
                 archiveDir,
                 runState,
+                resourceStore,
               }),
               finalGuardMaxRetries: 2,
             }
@@ -633,13 +649,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         store,
         runId: options.session,
         runState,
-        diagnostics: {
-          error: (event) => {
-            errorOutput.write(
-              `Persistence error: ${event.operation} during ${event.phase} (runId=${String(event.runId)})\n`,
-            );
-          },
-        },
+        diagnostics,
         resume,
         signal,
         stream: true,

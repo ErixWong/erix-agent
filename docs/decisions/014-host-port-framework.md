@@ -174,6 +174,16 @@ createAssemblyPort({
 - 必填 = 循环跑不起来的（provider/tools/store/session）；其余可选 + 库默认值；
 - **端口只在装配层**：`runToolLoop` 现有细粒度注入保持不动，不再包一层。
 
+**Issue #108 裁定**：
+
+- `resourceStore` 是独立的顶层 loop 选项，不放入 `context`。AssemblyPort 的归档适配器
+  因而不会被宿主显式提供的 `context` 整体替换吞掉；显式顶层 `resourceStore` 仍按普通
+  选项覆盖装配值。
+- `modelConfig`（包括 AssemblyPort 外的显式覆盖）统一要求 `resolve(slot?)`。plain
+  配置须先用 `createModelConfigResolver(config)` 或
+  `createStaticModelConfigProvider(config)` 包装；启动错误会给出迁移提示。统一 resolver
+  形态比同时支持两套调用约定更容易被契约测试和宿主适配器复用。
+
 ### 2.5 素材层（P1，先于契约冻结）
 
 库导出协议归一化原语，**并让库内 `src/providers/openai.js` 也改用**（否则两份真相进库）：

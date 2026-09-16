@@ -1,5 +1,8 @@
 import { validateResourceStore } from "./store/resource.js";
 
+export const MODEL_CONFIG_RESOLVER_HINT =
+  "modelConfig must expose resolve(slot); wrap plain config with createModelConfigResolver(...)";
+
 const TRANSCRIPT_STORE_METHODS = [
   "appendRound",
   "load",
@@ -71,7 +74,7 @@ function missingAssemblyMethods(port) {
     return ["assemblyPort"];
   }
   if (!port.modelConfig || typeof port.modelConfig.resolve !== "function") {
-    missing.push("modelConfig.resolve");
+    missing.push(`modelConfig.resolve (${MODEL_CONFIG_RESOLVER_HINT})`);
   }
   if (!port.provider
     || (typeof port.provider.chat !== "function"
@@ -173,14 +176,18 @@ export function createAssemblyPort(input = {}) {
 
 /**
  * Convert a validated AssemblyPort to the existing fine-grained loop options.
- * Explicit options are merged by runToolLoop after this conversion and win.
+ * Explicit options are merged after this conversion and win.
  *
  * @param {AssemblyPort} input
- * @param {{modelConfig?:object}} [overrides]
+ * @param {object} [overrides]
  * @returns {Promise<object>}
  */
 export async function assemblyPortOptions(input, overrides = {}) {
   const port = createAssemblyPort(input);
+  if (overrides.modelConfig !== undefined
+    && (!overrides.modelConfig || typeof overrides.modelConfig.resolve !== "function")) {
+    throw new TypeError(`assembly port is missing methods: modelConfig.resolve (${MODEL_CONFIG_RESOLVER_HINT})`);
+  }
   const options = {
     ...port.policy,
     modelConfig: overrides.modelConfig === undefined
@@ -190,6 +197,7 @@ export async function assemblyPortOptions(input, overrides = {}) {
     tools: port.tools.definitions,
     executeTool: port.tools.executeTool,
     ...(port.store === undefined ? {} : { store: port.store }),
+    ...(port.resourceStore === undefined ? {} : { resourceStore: port.resourceStore }),
     runId: port.session.id,
     session: port.session,
     ...(port.session.resume === undefined ? {} : { resume: port.session.resume }),
@@ -197,14 +205,11 @@ export async function assemblyPortOptions(input, overrides = {}) {
       ? {}
       : { initialMessages: port.session.initialMessages }),
   };
-  if (port.resourceStore !== undefined) {
-    options.context = {
-      ...(port.policy?.context ?? {}),
-      resourceStore: port.resourceStore,
-    };
-  }
   if (port.emit !== undefined && options.onEvent === undefined) {
     options.onEvent = (event) => port.emit(event.type, event);
+  }
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value !== undefined) options[key] = value;
   }
   return options;
 }

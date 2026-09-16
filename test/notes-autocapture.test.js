@@ -12,7 +12,12 @@ import path from "node:path";
 
 import { runChat } from "../bin/cli.js";
 import { candidateLines, captureToolExecution } from "../bin/auto-capture.js";
-import { archiveResult, createCliTools, wrapExecuteTool } from "../bin/tools.js";
+import {
+  archiveResult,
+  buildArchiveNotice,
+  createCliTools,
+  wrapExecuteTool,
+} from "../bin/tools.js";
 import { createFinalGuard } from "../bin/final-guard.js";
 import * as notes from "../skills/notes/skill.mjs";
 import { NOTE_VALUE_MAX_CHARS } from "../skills/notes/skill.mjs";
@@ -165,7 +170,13 @@ test("ResourceStore-backed CLI artifacts use opaque locators and remain guard-re
 
     assert.equal(archived.archivePath, undefined);
     assert.ok(archived.artifact.locator);
-    assert.match(archived.artifact.display, /resource-.*\.bin$/u);
+    assert.doesNotMatch(archived.artifact.artifactId, /-exec\.txt$/u);
+    assert.doesNotMatch(archived.artifact.display, /^\//u);
+    assert.doesNotMatch(archived.artifact.display, /-exec\.txt$/u);
+    assert.doesNotMatch(
+      buildArchiveNotice(archiveDir, resourceStore),
+      /(?:^|\s)\/(?:[^/\s]+\/)+/u,
+    );
     const guard = createFinalGuard({ archiveDir, resourceStore });
     assert.deepEqual(
       await guard({ finalText: "nonce=opaque-value" }),
@@ -431,7 +442,7 @@ test("runChat captures a non-replayable tool result before completing the run", 
     assert.equal(record.state, "done");
     assert.equal(record.current.artifactRef.archivePath, undefined);
     assert.ok(record.current.artifactRef.locator);
-    assert.match(record.current.artifactRef.display, /resource-.*\.bin$/u);
+    assert.match(record.current.artifactRef.display, /^resource:resource-[0-9a-f-]+$/u);
     assert.equal(record.current.content, "result=integration\n");
   });
 });

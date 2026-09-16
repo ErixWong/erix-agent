@@ -45,7 +45,10 @@ await runToolLoop({ assemblyPort });
 或 `provider.chatStream`、`tools.definitions`、`tools.executeTool`、`session.id`
 以及完整九方法 `TranscriptStore`；`persistence: "none"` 时 store 可省略。细粒度
 入口在第一次 provider 调用前执行同等 fail-fast 校验。两种形式同时存在时，显式
-细粒度选项覆盖 AssemblyPort；显式 `modelConfig` 会跳过端口 resolver。
+细粒度选项覆盖 AssemblyPort；但 `modelConfig` 始终必须是 resolver 形态。plain 配置对象
+会在启动时拒绝，并提示使用 `createModelConfigResolver(config)`（或
+`createStaticModelConfigProvider(config)`）包装。`resourceStore` 是独立的顶层 loop
+选项，不再借道 `context`，因此显式 `context` 不会吞掉装配根提供的归档适配器。
 
 ## ResourceStore
 

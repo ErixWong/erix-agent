@@ -14,6 +14,8 @@ import {
   saveSession,
   sessionPath,
 } from "../bin/repl.js";
+import { createCliAssemblyRoot } from "../bin/assembly-root.js";
+import { runChat } from "../bin/cli.js";
 import { runToolLoop } from "../src/loop.js";
 import { createFileTranscriptStore, safeRunId } from "../src/store/file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -242,10 +244,8 @@ test("runRepl resumes from the transcript store without a recall tool", async ()
 
     assert.equal(provider.requests.length, 2);
     assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), false);
-    assert.match(
-      provider.requests[0].system,
-      new RegExp(`${dir}/outputs/repl-store`),
-    );
+    assert.match(provider.requests[0].system, /ResourceStore 保存/u);
+    assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/repl-store`));
     assert.match(provider.requests[0].system, /不得重跑/u);
     assert.ok(provider.requests[1].messages.some((message) => (
       message.role === "user"
@@ -294,9 +294,30 @@ test("runRepl injects archive status at fold time instead of into loop context",
 
     assert.ok(captured);
     assert.equal(typeof captured.context.recoveryHint, "function");
+    assert.ok(captured.resourceStore);
+    assert.equal(typeof captured.resourceStore.put, "function");
+    assert.equal(typeof captured.resourceStore.get, "function");
   } finally {
     input.destroy();
     output.destroy();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI assembly root provides transcript, resource, and notes stores", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "erix-assembly-root-test-"));
+  try {
+    const root = createCliAssemblyRoot({
+      dir,
+      runId: "assembly-root",
+      notesDir: join(dir, "notes"),
+    });
+    assert.equal(typeof root.store.appendRound, "function");
+    assert.equal(typeof root.resourceStore.put, "function");
+    assert.equal(typeof root.notesStore.read, "function");
+    assert.equal(typeof root.diagnostics.error, "function");
+    assert.equal(root.archiveDir, join(dir, "outputs", "assembly-root"));
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -430,6 +451,70 @@ test("runRepl preserves new input when resuming an aborted tool", async () => {
       (await store.load(session)).map((record) => record.round),
       [0, 0, 1, 2],
     );
+  } finally {
+    input.destroy();
+    output.destroy();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("chat artifacts resume in REPL and pass the final guard", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "erix-assembly-e2e-test-"));
+  const notesDir = join(dir, "notes");
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  const chatProvider = createFakeProvider([
+    {
+      content: [{
+        type: "tool_use",
+        id: "e2e-capture",
+        name: "exec",
+        input: { command: "printf 'nonce=e2e-value\\n'; : \"$RANDOM\"" },
+      }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "nonce=e2e-value" }] },
+  ]);
+  const replProvider = createFakeProvider([
+    { content: [{ type: "text", text: "nonce=e2e-value" }] },
+  ]);
+  try {
+    const chatResult = await runChat({
+      prompt: "capture a value",
+      session: "assembly-e2e",
+      dir,
+      notesDir,
+      provider: chatProvider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 2,
+      finalGuard: false,
+      idleTimeout: 0,
+      toolOutput: () => {},
+    });
+    assert.equal(chatResult.verification.status, "skipped");
+
+    const run = runRepl(
+      ["--session", "assembly-e2e", "--dir", dir, "--final-guard"],
+      {
+        input,
+        output,
+        sessionDir: dir,
+        notesDir,
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        maxRounds: 3,
+        providerFactory: () => replProvider,
+      },
+    );
+    input.end("resume\n/exit\n");
+    await run;
+
+    const outputText = String(output.read());
+    assert.match(outputText, /guard=\{verified:1/u);
+    assert.ok(replProvider.requests[0].messages.some((message) => (
+      JSON.stringify(message).includes("nonce=e2e-value")
+    )));
+    assert.doesNotMatch(replProvider.requests[0].system, new RegExp(`${dir}/outputs/assembly-e2e`));
   } finally {
     input.destroy();
     output.destroy();
