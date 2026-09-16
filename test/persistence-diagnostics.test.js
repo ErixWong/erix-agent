@@ -345,3 +345,102 @@ test("none persistence mode is a no-op even with an incomplete failing store", a
   assert.equal(result.finalText, "no persistence needed");
   assert.equal(calls, 0);
 });
+
+test("persistence_error events carry the port field", async () => {
+  const store = fullStore();
+  store.appendRound = async () => {
+    throw new Error("append down");
+  };
+  const events = [];
+  await assert.rejects(
+    runToolLoop({
+      provider: textProvider(),
+      store,
+      runId: "port-field",
+      initialUserMessage: "work",
+      executeTool: async () => "unused",
+      diagnostics: { error: (event) => events.push(event) },
+    }),
+    (error) => error.termination?.reason === "persistence_failed",
+  );
+  const event = events.at(-1);
+  assert.equal(event.type, "persistence_error");
+  assert.equal(event.port, "transcript");
+});
+
+test("diagnostics sink failure is recorded in result.unpersisted as a delivery failure", async () => {
+  const store = fullStore();
+  let sinkCalls = 0;
+  const sinkErrors = [];
+  const result = await runToolLoop({
+    provider: textProvider("sink broken"),
+    store,
+    runId: "sink-failure",
+    initialUserMessage: "work",
+    executeTool: async () => "unused",
+    diagnostics: {
+      error: () => {
+        sinkCalls += 1;
+        throw new Error("sink exploded");
+      },
+    },
+    // 观察者通道仍正常：保证 loop 不会因缺 diagnostics 语义而改变终止行为。
+    onPersistenceError: (error) => {
+      sinkErrors.push(error);
+    },
+  });
+
+  // run 本身正常完成（sink 失败不改变主流程语义）
+  assert.equal(result.finalText, "sink broken");
+  assert.equal(sinkCalls, 0); // 本场景无持久化失败，sink 不该被调
+  assert.deepEqual(result.unpersisted, []);
+  assert.deepEqual(result.completionErrors, []);
+
+  // 真正的 teeth：持久化失败 + sink 抛错 → delivery_failure 必须进账单
+  const failingStore = fullStore();
+  failingStore.appendRound = async () => {
+    throw new Error("append down");
+  };
+  const events = [];
+  const result2 = await runToolLoop({
+    provider: textProvider(),
+    store: failingStore,
+    runId: "sink-failure-real",
+    initialUserMessage: "work",
+    executeTool: async () => "unused",
+    completion: false,
+    diagnostics: {
+      error: (event) => {
+        events.push(event);
+        throw new Error("sink exploded too");
+      },
+    },
+  }).catch((error) => error);
+
+  assert.equal(result2?.termination?.reason ?? result2?.code, "persistence_failed");
+  assert.equal(events.length, 1);
+  // 异常终止时账单必须挂在异常上（run 不会返回 result）
+  const ledgerEntries = result2?.unpersisted ?? [];
+  assert.ok(ledgerEntries.length > 0, "terminated run must carry the ledger on the exception");
+  const delivery = ledgerEntries.find((entry) => entry.kind === "delivery_failure");
+  assert.equal(delivery?.port, "diagnostics");
+  assert.equal(delivery?.failedEvent?.port, "transcript");
+  assert.equal(delivery?.error?.message, "sink exploded too");
+  assert.equal(delivery?.failedEvent?.operation, "appendRound");
+  const persisted = ledgerEntries.find((entry) => entry.kind === "persistence_error");
+  assert.equal(persisted?.port, "transcript");
+  assert.equal(persisted?.operation, "appendRound");
+});
+
+test("happy-path result always exposes unpersisted and completionErrors", async () => {
+  const result = await runToolLoop({
+    provider: textProvider("clean run"),
+    store: fullStore(),
+    runId: "ledger-schema",
+    initialUserMessage: "work",
+    executeTool: async () => "unused",
+  });
+  assert.deepEqual(result.unpersisted, []);
+  assert.deepEqual(result.completionErrors, []);
+  assert.ok(Object.isFrozen(Object.getPrototypeOf(result)) || Array.isArray(result.unpersisted));
+});
