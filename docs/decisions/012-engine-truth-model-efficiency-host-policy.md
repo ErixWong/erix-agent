@@ -3,6 +3,9 @@
 > Chinese version: [012-engine-truth-model-efficiency-host-policy_cn.md](012-engine-truth-model-efficiency-host-policy_cn.md)
 
 - Status: Decided (2026-09-14)
+- **Amended by ADR-016 (2026-09-17)**: replayability is not machine-decidable; the
+  classification, rerun notices, and auto-capture built on it are retired. Rerun risk
+  is carried by prompt discipline.
 - Related: ADR-007 (memory architecture), ADR-009 (safety layering), ADR-010 (context-shaping philosophy), ADR-011 (judge direction evaluation)
 
 ## Background

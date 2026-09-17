@@ -2,7 +2,6 @@ const GUARD_METRIC_KEYS = [
   "verified",
   "skipped",
   "revised",
-  "rerun_cited",
   "unverified",
   "guard_error",
 ];

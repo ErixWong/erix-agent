@@ -3,6 +3,8 @@
 > English version: [012-engine-truth-model-efficiency-host-policy.md](012-engine-truth-model-efficiency-host-policy.md)
 
 - 状态：已决策（2026-09-14）
+- **经 ADR-016 修订（2026-09-17）**：命令幂等性不可机器判定，建立其上的分类学、重跑告知与
+  auto-capture 退役；重跑风险由提示语纪律承担。
 - 相关：ADR-007（记忆架构）、ADR-009（安全分层）、ADR-010（上下文整形哲学）、ADR-011（judge 方向评估）
 
 ## 背景

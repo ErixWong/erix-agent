@@ -29,7 +29,7 @@ src/
 ├── reflection/    # governor, judge, l0, wrapup
 ├── store/         # bounded-recall, file, memory
 └── tools/         # file-tools, jail, providers, recall, registry
-bin/              # CLI (validator/debugger): cli.js (entry/chat), repl.js (TUI), tools.js (built-in tools + prompts), skills.js, mcp.js, config.js, auto-capture.js, final-guard-support.js, final-guard.js, guard-metrics.js
+bin/              # CLI (validator/debugger): cli.js (entry/chat), repl.js (TUI), tools.js (built-in tools + prompts), skills.js, mcp.js, config.js, final-guard-support.js, final-guard.js, guard-metrics.js
 test/             # unit tests (node --test), with compact/, providers/, tools/, config/, messages/, contract/, helpers/, fixtures/, integration/, and top-level test files
 fixtures/         # test fixtures (mock MCP servers) — ⚠️ mock MCP servers must not be put under test/ (node --test runs all files under test and can hang)
 examples/         # examples (skills/ examples, demos, and benchmarks)

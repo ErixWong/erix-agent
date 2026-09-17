@@ -361,7 +361,7 @@ The result shape is:
     reason?,
     detail?,
     metrics: {
-      verified, skipped, revised, rerun_cited, unverified, guard_error
+      verified, skipped, revised, unverified, guard_error
     }
   },
   runState?,

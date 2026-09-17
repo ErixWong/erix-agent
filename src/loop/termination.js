@@ -63,7 +63,6 @@ export function createTerminationManager(ctx) {
       rounds: ctx.rounds,
       signal: ctx.toolSignal,
       termination: makeTermination(reason, detail),
-      rerunDetected: ctx.runState?.rerunDetected === true,
     };
     let timeoutId;
     try {
@@ -83,7 +82,6 @@ export function createTerminationManager(ctx) {
       ]);
       if (decision?.action === "accept") {
         ctx.guardMetrics.verified += 1;
-        if (decision.rerunCited === true) ctx.guardMetrics.rerun_cited += 1;
         ctx.verification = { status: "verified" };
         const emitEvent = ctx.emitEvent;
         emitEvent({ type: "final_guard", round: ctx.rounds, action: "accept" });

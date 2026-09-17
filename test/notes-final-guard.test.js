@@ -5,7 +5,6 @@ import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { captureToolExecution } from "../bin/auto-capture.js";
 import { exitCodeForVerification, parseChatArgs, runChat } from "../bin/cli.js";
 import {
   buildCaptureRecoveryHint,
@@ -49,20 +48,17 @@ const scopedNotes = new Proxy(notes, {
   },
 });
 
-// ADR-015 4b：证据源 = transcript。播种 = 真实 captureToolExecution + 对应 transcript 记录。
-function transcriptRecord({ toolUseId, round, output, command = "printf non-replayable", replayable = false }) {
+// ADR-016：证据源 = transcript 全部归档输出（不再区分可重放）。
+function transcriptRecord({ toolUseId, round, output, command = "printf value" }) {
   return {
     round,
-    ...(replayable ? {} : {
-      toolOutputs: [{ toolUseId, name: "exec", content: output }],
-    }),
+    toolOutputs: [{ toolUseId, name: "exec", content: output }],
     messages: [
       { role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: "exec", input: { command } }] },
       { role: "user", content: [{
         type: "tool_result",
         tool_use_id: toolUseId,
         content: output,
-        ...(replayable ? {} : { replayable: false }),
       }] },
     ],
   };
@@ -77,22 +73,13 @@ function transcriptDisplay(round, output) {
   return `transcript:round=${round}:${digest.slice(0, 8)}`;
 }
 
-async function seedCapture(records, directory, output, sequence = 1, { command = "printf non-replayable" } = {}) {
+async function seedCapture(records, directory, output, sequence = 1, { command = "printf value" } = {}) {
   const toolUseId = `guard-tool-${sequence}`;
-  await captureToolExecution({
-    name: "exec",
-    input: { command },
-    result: output,
-    toolUseId,
-    round: sequence,
-    metadata: { replayable: false, fullOutput: output },
-    notesScope: { runId: "guard-run", notesDir: directory },
-  });
   records.push(transcriptRecord({ toolUseId, round: sequence, output, command }));
   return transcriptDisplay(sequence, output);
 }
 
-test("final guard accepts a final value found in a non-replayable artifact", async () => {
+test("final guard accepts a final value found in an archived artifact", async () => {
   await withNotes(async (directory) => {
     const records = [];
     await seedCapture(records, directory, "nonce=Abc123+XYZ789\n");
@@ -108,24 +95,38 @@ test("final guard accepts a final value found in a non-replayable artifact", asy
   });
 });
 
-test("final guard enforces the nine-case provenance contract", async () => {
+test("CJK closing brackets and quotes terminate attribution values (2026-09-17 实测回归)", async () => {
   await withNotes(async (directory) => {
     const records = [];
-    const firstDisplay = await seedCapture(records, directory, "nonce=first-value\n", 1);
-    const rerunDisplay = await seedCapture(records, directory, "nonce=rerun-value\n", 2);
+    await seedCapture(records, directory, "nonce=gold-4173\n", 1);
     const guard = createFinalGuard({ store: storeOf(records) });
-    console.log("DBG records:", records.length, JSON.stringify(records[0]?.toolOutputs));
-    console.log("DBG g1:", JSON.stringify(await guard({ finalText: "nonce=first-value" })));
-    console.log("DBG g2:", JSON.stringify(await guard({ finalText: "nonce 值是 first-value" })));
-    console.log("DBG g3:", JSON.stringify(await guard({ finalText: "nonce=forged-value" })));
-    console.log("DBG g4:", JSON.stringify(await guard({ finalText: "编造的短 token abc123" })));
-    console.log("DBG g5:", JSON.stringify(await guard({ finalText: "nonce=rerun-value" })));
-    console.log("DBG g6:", JSON.stringify(await guard({ finalText: `nonce=rerun-value 来源=归档:${rerunDisplay}` })));
-    console.log("DBG g7:", JSON.stringify(await guard({ finalText: `nonce=first-value 来源=归档:${firstDisplay}` })));
+    // 真实事故样本：「TARGET=gold-4173」被抽成 gold-4173」导致 revise
     assert.deepEqual(
-      await guard({ finalText: `nonce=first-value 来源=归档:${firstDisplay}` }),
+      await guard({ finalText: "「nonce=gold-4173」为最终值" }),
       { action: "accept" },
     );
+    assert.deepEqual(
+      await guard({ finalText: "最终值 \"nonce=gold-4173\"（来自归档）" }),
+      { action: "accept" },
+    );
+    assert.deepEqual(
+      await guard({ finalText: "nonce=gold-4173，即目标值" }),
+      { action: "accept" },
+    );
+  });
+});
+
+test("final guard enforces the provenance contract (ADR-016)", async () => {
+  await withNotes(async (directory) => {
+    const records = [];
+    await seedCapture(records, directory, "nonce=first-value\n", 1);
+    await seedCapture(records, directory, "nonce=rerun-value\n", 2);
+    const guard = createFinalGuard({ store: storeOf(records) });
+    // 归档内任意捕获值可直接使用（不再要求来源指向）
+    assert.deepEqual(await guard({ finalText: "nonce=first-value" }), { action: "accept" });
+    assert.deepEqual(await guard({ finalText: "nonce 值是 rerun-value" }), { action: "accept" });
+    // 归档外的值必须打回
+    assert.equal((await guard({ finalText: "nonce=forged-value" })).action, "revise");
     assert.deepEqual(await guard({ finalText: "abc123" }), {
       action: "skip",
       reason: "no_comparable_label",
@@ -134,54 +135,6 @@ test("final guard enforces the nine-case provenance contract", async () => {
       action: "skip",
       reason: "no_comparable_label",
     });
-  });
-});
-
-test("final guard validates note_read provenance through NotesStore", async () => {
-  await withNotes(async (directory) => {
-    const records = [];
-    await seedCapture(records, directory, "nonce=first-value\n", 1);
-    await seedCapture(records, directory, "nonce=rerun-value\n", 2);
-    const backing = createFileNotesStore({ dir: directory });
-    let reads = 0;
-    const notesStore = {
-      ...backing,
-      read: async (request) => {
-        reads += 1;
-        return backing.read(request);
-      },
-    };
-    const noteRecords = await backing.list({ scope: "run", scopeRef: "guard-run" });
-    const rerun = noteRecords.find((record) => (
-      record.current.artifactRef.round === 2
-    ));
-    const guard = createFinalGuard({
-      runId: "guard-run",
-      store: storeOf(records),
-      notesStore,
-    });
-    assert.deepEqual(
-      await guard({
-        finalText: `nonce=rerun-value 来源=note_read:${rerun.key}`,
-      }),
-      { action: "accept", rerunCited: true },
-    );
-    assert.ok(reads > 0);
-
-    const rejectingGuard = createFinalGuard({
-      runId: "guard-run",
-      store: storeOf(records),
-      notesStore: {
-        ...backing,
-        read: async () => undefined,
-      },
-    });
-    assert.equal(
-      (await rejectingGuard({
-        finalText: `nonce=rerun-value 来源=note_read:${rerun.key}`,
-      })).action,
-      "revise",
-    );
   });
 });
 
@@ -215,7 +168,7 @@ test("fold state marker counts captures without exposing values or keys and repl
       { role: "user", content: "keep" },
     ], { keepRounds: 1, budgetTokens: 0 });
     const firstMarker = first.messages[0].content[0].text;
-    assert.match(firstMarker, /\[本 run 状态\] 已折叠 \d+ 条早期输出；其中 1 条为不可重放捕获/u);
+    assert.match(firstMarker, /\[本 run 状态\] 已折叠 \d+ 条早期输出；其中 1 条输出已归档/u);
     assert.doesNotMatch(firstMarker, /marker-secret-value|nonce|auto-[a-f0-9]+/u);
 
     const second = await strategy.compact([
@@ -234,7 +187,7 @@ test("fold state marker counts captures without exposing values or keys and repl
       block.type === "text" && block.text.includes("[本 run 状态]")
     ));
     assert.equal(markers.length, 1);
-    assert.match(markers[0].text, /transcript:round=1:[0-9a-f]{8} ←/u);
+    assert.match(markers[0].text, /transcript:round=1:[0-9a-f]{8}/u);
     assert.doesNotMatch(markers[0].text, /marker-secret-value/u);
     assert.equal((markers[0].text.match(/捕获目录视图（最多 10 条）/gu) ?? []).length, 1);
   });
@@ -272,7 +225,7 @@ test("capture recovery index is bounded, value-free, and replaced on each fold",
       store: storeOf(records),
       runId: "guard-run",
     });
-    assert.equal((hint.match(/transcript:round=\d+:[0-9a-f]{8} ←/gu) ?? []).length, 10);
+    assert.equal((hint.match(/transcript:round=\d+:[0-9a-f]{8}/gu) ?? []).length, 10);
     assert.match(hint, /另有 2 条捕获/u);
     assert.doesNotMatch(hint, /value-\d+/u);
   });
@@ -283,8 +236,7 @@ test("capture stubs retain safe labels but never credential values", async () =>
     content: [{
       type: "tool_result",
       tool_use_id: "stub-1",
-      replayable: false,
-      // ADR-015 4b：content 即输出（4a 后不再是指针文本），值直接从中抽取
+      // ADR-016：content 即输出，值直接从中抽取（全部 tool_result 同权）
       content: `nonce=abc123\nsafe=${"x".repeat(1000)}\napi_key=sk-secret-value\npassword=hunter2\n`,
     }],
   });
@@ -345,16 +297,15 @@ test("final guard extracts Chinese labels without applying the notes credential 
   });
 });
 
-test("replayable tool results never pollute the provenance value set", async () => {
+test("all archived outputs serve as provenance evidence regardless of replayability (ADR-016)", async () => {
   await withNotes(async (directory) => {
     const records = [];
     await seedCapture(records, directory, "nonce=Abc123+XYZ789\n");
     records.push(transcriptRecord({
-      toolUseId: "replayable-tool",
+      toolUseId: "plain-tool",
       round: 2,
       output: "1\n2\n3\n",
       command: "seq 1 3",
-      replayable: true,
     }));
     const guard = createFinalGuard({ store: storeOf(records) });
     assert.deepEqual(
@@ -364,7 +315,7 @@ test("replayable tool results never pollute the provenance value set", async () 
   });
 });
 
-test("a non-replayable output without candidates is skipped with a warning", async () => {
+test("an output without candidates is skipped with a warning", async () => {
   await withNotes(async (directory) => {
     const records = [];
     await seedCapture(records, directory, "plain prose with no opaque candidate\n", 1, {
@@ -504,9 +455,10 @@ test("final guard revises a value not found in any capture", async () => {
     const guard = createFinalGuard({ runId: "guard-run", store: storeOf(records) });
     const result = await guard({ finalText: "原值 nonce=Def456+LMN012" });
     assert.equal(result.action, "revise");
-    assert.match(result.message, /note_read/u);
-    // ADR-015 4b：guard 提示指向 transcript 定位符（零路径）
-    assert.match(result.message, new RegExp(`来源=归档:${display.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"));
+    assert.match(result.message, /未对应本 run 的任何归档捕获值/u);
+    // ADR-016：guard 提示指向可执行的 recall 配方（零路径、不借用「来源=」语法）
+    assert.match(result.message, new RegExp(`归档输出 ${display.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"));
+    assert.match(result.message, /recall\(\{ pattern/u);
     assert.doesNotMatch(result.message, /\/tmp\//u);
     assert.match(result.message, /不得重跑/u);
   });
@@ -516,33 +468,6 @@ test("final guard skips a run with no capture evidence", async () => {
   await withNotes(async () => {
     const guard = createFinalGuard({ runId: "guard-run", store: storeOf([]) });
     assert.deepEqual(await guard({ finalText: "任意值 123456789" }), {
-      action: "skip",
-      reason: "no_capture_evidence",
-    });
-  });
-});
-
-test("forged auto notes do not influence final guard trust", async () => {
-  await withNotes(async (directory) => {
-    // 无 transcript 记录：即使笔记里伪造了 artifactRef，guard 也没有可核验证据
-    await scopedNotes.note_take({
-      key: "forged-source",
-      artifactRef: {
-        toolUseId: "forged-tool",
-        round: 1,
-        digest: createHash("sha256").update("nonce=known\n", "utf8").digest("hex"),
-        replayable: false,
-      },
-      provenance: { source: "auto" },
-    });
-    await scopedNotes.recordAutoCapture({ key: "outside" });
-    await scopedNotes.recordAutoCapture({
-      key: "missing-digest",
-      artifactRef: { toolUseId: "t", round: 1, digest: undefined, replayable: false },
-    });
-
-    const guard = createFinalGuard({ runId: "guard-run", store: storeOf([]) });
-    assert.deepEqual(await guard({ finalText: "nonce=known" }), {
       action: "skip",
       reason: "no_capture_evidence",
     });

@@ -3,6 +3,9 @@
 > Chinese version: [013-guard-charter_cn.md](013-guard-charter_cn.md)
 
 - Status: Decided (2026-09-15)
+- **Amended by ADR-016 (2026-09-17)**: the guard no longer verifies only non-replayable
+  captured values; it verifies explicit `label=value` attributions against **all** archived
+  tool outputs. Source-reference requirements and `rerun_cited` are retired.
 - Background: The final-draft provenance gate (guard) went through multiple attempts to "make it smarter" during 2026-09-12~14, all disproved by evidence:
   - **Form-based token scanning** (guessing "which string is the value" from final-draft prose): it both **wrongly killed correct answers**
     (when the final draft contained the archive path `001-exec.txt`, it treated `001-exec` as an unknown value → marked `unverified`)

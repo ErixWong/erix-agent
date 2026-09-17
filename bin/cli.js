@@ -157,7 +157,6 @@ function resolveFinalGuard(
   archiveDir,
   notesDir,
   notesStore,
-  runState,
   store,
 ) {
   if (typeof finalGuard === "function") return finalGuard;
@@ -170,7 +169,6 @@ function resolveFinalGuard(
     archiveDir,
     notesDir,
     notesStore,
-    runState,
     store,
   });
 }
@@ -549,7 +547,6 @@ async function runChatWithNotes({
     diagnostics,
     notesDir,
     notesStore,
-    runState,
     store,
   } = assemblyRoot;
   const existingRecords = await store.load(runId);
@@ -570,12 +567,7 @@ async function runChatWithNotes({
       ts: new Date().toISOString(),
     });
   }
-  const cliTools = createCliTools({
-    cwd,
-    existingRecords,
-    notesScope: { runId, notesDir, notesStore },
-    runState,
-  });
+  const cliTools = createCliTools({ cwd });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
   const skillTools = await buildSkillTools({
     cwd,
@@ -607,7 +599,6 @@ async function runChatWithNotes({
   const executeTool = wrapExecuteTool(tools.executeTool, {
     output: toolOutput,
     getToolMetadata: cliTools.getLastToolMetadata,
-    notesScope: { runId, notesDir, notesStore },
     returnMetadata: true,
   });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
@@ -617,7 +608,6 @@ async function runChatWithNotes({
     archiveDir,
     notesDir,
     notesStore,
-    runState,
     store,
   );
   // judge 决策日志默认跟随 run 归档（与工具捕获同目录）；--judge-log / ERIX_JUDGE_LOG 可覆盖
@@ -717,7 +707,6 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     store,
     diagnostics,
     runId,
-    runState,
     resume,
     // ADR-015：notes 小抄目录经 semantic 槽位注入 run-state 块（折叠时注入，正好对准失忆点）
     ...(notesDisabled || !notesStore ? {} : {

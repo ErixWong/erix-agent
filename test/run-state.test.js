@@ -25,7 +25,6 @@ test("run state is bounded, marked when truncated, and does not expose credentia
     filesWritten: Array.from({ length: 20 }, (_unused, index) => `/tmp/file-${index}.js`),
     foldedRounds: 8,
     navigationRecords: 3,
-    unrecoverableCaptures: 1,
   });
   const withSemantic = withSemanticRunState(state, {
     text: "Bearer sk-secret-value-123456789",
@@ -144,7 +143,7 @@ test("run state records tool facts, files, budget prompts, todo status, and pers
   const result = await runToolLoop({
     provider,
     initialUserMessage: "write a file",
-    executeTool: async () => ({ success: true, data: "written", replayable: false }),
+    executeTool: async () => ({ success: true, data: "written" }),
     maxRounds: 2,
     completion: false,
     store,
@@ -164,7 +163,6 @@ test("run state records tool facts, files, budget prompts, todo status, and pers
     failures: 0,
   }]);
   assert.deepEqual(state.deterministic.filesWritten, ["src/new.js"]);
-  assert.equal(state.deterministic.fold.nonReplayableCaptures, 1);
   assert.deepEqual(state.deterministic.todo.items, [{ id: "task-1", status: "done" }]);
   assert.equal((await store.loadRunState("facts")).stateVersion, state.stateVersion);
 });

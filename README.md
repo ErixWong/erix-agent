@@ -358,9 +358,9 @@ decide whether to consume the result.
   fit the budget; the result records `compactionStats[].protectedDowngraded`.
   A single protected message that cannot fit produces `invalid_budget`.
 - A `stubFor(message)` hook can retain a bounded, non-secret stub for folded
-  `replayable: false` tool results. The CLI's capture stub is limited to
-  200 characters and at most three safe `label=value` facts. Fold navigation
-  records are address-only records of the form
+  tool results (all of them, not a marked subset — ADR-016). The CLI's stub is
+  limited to 200 characters and at most three safe `label=value` facts. Fold
+  navigation records are address-only records of the form
   `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }`,
   bounded to at most 10 artifacts and 400 characters. They are not semantic
   search or provenance proof.
@@ -469,32 +469,19 @@ The shared CLI flags are:
   as JSONL in `chat`.
 
 The built-in CLI tools are `readFile`, `rg`, `tree`, `writeFile`, and `exec`.
-They operate on arbitrary paths and commands. When an archive directory is
-configured, outputs longer than 800 characters and every `exec` result are
-written to:
-
-```text
-<transcriptDir>/outputs/<safeRunId>/<sequence>-<toolName>.txt
-```
-
-Each archive has a `.meta.json` sidecar with `digest`, `locator`, replayability
-metadata, and `status` (`ok` or `truncated`). A single archive is capped at
-1 MiB. Existing sequence numbers are scanned and concurrent collisions are
-advanced safely. The tool result points to the absolute archive path; read
-that archive with `readFile` or `cat` instead of rerunning a command.
-
-For a normalized repeated `exec` command, the CLI still executes the command.
-It adds `rerunOf` metadata pointing to the first round, artifact, digest,
-locator, and artifact status (`ok`, `truncated`, `missing`, `stale`, or
-`unrecoverable`). This is an audit notice, not an effect rollback,
-correctness guarantee, or protection against payment, deletion, publication,
-write, or external API side effects.
+They operate on arbitrary paths and commands. Tool outputs are archived by the
+engine into the transcript (`toolOutputs`, byte-faithful) and are retrievable
+with bounded recall; folded outputs expose value-anchor stubs. There is no
+replayability classification, rerun detection, or rerun notice: a repeated
+command executes normally and returns its fresh output (ADR-016). The
+rerun-value-mismatch risk is carried by one system-prompt line: re-running
+the same command may produce a different value; when an earlier exact value
+is needed, retrieve it with recall instead of relying on memory.
 
 The bundled self-describing `notes` skill provides `note_take`, `note_read`,
 `note_list`, and `note_forget`. It is a run-scoped, pull-only convenience
 index for facts, one-time values, decisions, and artifact references; it is
-not a per-round log and it does not replace the capture manifest used by the
-provenance guard. The bundled skill is loaded from `skills/notes/`; user and
+not a per-round log. The bundled skill is loaded from `skills/notes/`; user and
 project skills can be supplied from `~/.erix/skills/`, the project
 `.erix/skills/`, or `--skills-dir <path>`. `erix skills` lists discovered
 skills.
@@ -572,6 +559,9 @@ The current package version is **v0.5.1**, dated 2026-09-15 according to
   and replacing the fold marker; adds end-to-end Memento scenario coverage
   for folded truth, credential-safe stubs, reruns, repeated folding, and
   bounded recall.
+- **Unreleased (0.6.0 window, ADR-016)**: retires the replayability concept —
+  classification, `rerunOf` notices, rerun detection, and auto-capture are
+  removed; the guard verifies the final text against **all** archived outputs.
 - **v0.5.0 (2026-09-15)**: makes the CLI provenance guard opt-in;
   normalized reruns execute and report `rerunOf` instead of being blocked;
   adds object-form bounded recall, cursor and source binding, replayability
