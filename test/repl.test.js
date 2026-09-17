@@ -478,7 +478,17 @@ test("chat artifacts resume in REPL and pass the final guard", async () => {
     { content: [{ type: "text", text: "nonce=e2e-value" }] },
   ]);
   const replProvider = createFakeProvider([
-    { content: [{ type: "text", text: "nonce=e2e-value" }] },
+    {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          done: true,
+          summary: "done",
+          output: "nonce=e2e-value",
+          findings: { nonce: "e2e-value" },
+        }),
+      }],
+    },
   ]);
   try {
     const chatResult = await runChat({

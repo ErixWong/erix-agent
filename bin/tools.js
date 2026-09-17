@@ -134,7 +134,7 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 拿到后面还要用的具体值/决定时，立刻 note_take；
 需要早期细节而想不起来时，先 note_list 再 note_read，不要猜。
 重跑同一命令可能得到不同的值；需要早期精确值时用 recall 取回，不要凭记忆。
-涉及具体值时，终稿必须显式写出 label=value（或“label 值是 value”）。
+终稿的结束协议 JSON 必须带 findings 字段，只把归档输出中出现过的字面值声明为 label→精确值（如 "findings":{"nonce":"abc123"}）；不要声明计数/次数/引用等派生结论；没有关键值时省略该字段。
 
 [工具纪律]
 - 复杂任务先规划并逐步执行；长任务用 todo 工具记录进度

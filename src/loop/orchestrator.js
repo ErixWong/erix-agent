@@ -1109,6 +1109,7 @@ export async function runToolLoop(options) {
     : 3;
   const compactionStats = [];
   let finalText = "";
+  let declaredFindings;
   let forcedFinal = false;
   let lastAssistantContent = [];
   const finalGuardRetryLimit = Number.isSafeInteger(finalGuardMaxRetries)
@@ -1227,6 +1228,12 @@ export async function runToolLoop(options) {
     },
     set finalText(value) {
       finalText = value;
+    },
+    get declaredFindings() {
+      return declaredFindings;
+    },
+    set declaredFindings(value) {
+      declaredFindings = value;
     },
     get usage() {
       return usage;
@@ -1395,6 +1402,12 @@ export async function runToolLoop(options) {
     },
     set finalText(value) {
       finalText = value;
+    },
+    get declaredFindings() {
+      return declaredFindings;
+    },
+    set declaredFindings(value) {
+      declaredFindings = value;
     },
     get rounds() {
       return rounds;
@@ -1940,6 +1953,7 @@ export async function runToolLoop(options) {
       ? tryParseWrapupJson(responseText)
       : null;
     const parsedSummary = parseL1Summary(responseText);
+    declaredFindings = wrapupJson?.findings;
     let roundSummary = wrapupJson === null
       ? parsedSummary.summary
       : wrapupJson.summary;
@@ -2055,7 +2069,7 @@ export async function runToolLoop(options) {
 已运行轮数：${rounds}
 本轮 agent 最终输出（可能为空）：${JSON.stringify(responseText).slice(0, 2000)}
 若 agent 已给出明确结论/产物就绪则 done=true；若它在工作中途停下/放弃则判断产出是否可判定，可判定则 done=true 否则 done=false。
-只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果"}` }],
+只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果","findings":{"label":"value"}}。findings 声明结论中的关键值（label→精确值），没有关键值可省略。` }],
           }],
           signal,
         };

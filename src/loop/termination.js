@@ -58,6 +58,7 @@ export function createTerminationManager(ctx) {
   const callFinalGuard = async (reason, detail) => {
     const payload = {
       finalText: ctx.finalText,
+      findings: ctx.declaredFindings,
       messages: cloneState(ctx.messages),
       round: ctx.rounds,
       rounds: ctx.rounds,
@@ -199,6 +200,7 @@ export function createTerminationManager(ctx) {
     ctx.finalText = wrapup === null
       ? responseText
       : wrapup.output || wrapup.summary;
+    ctx.declaredFindings = wrapup?.findings;
     ctx.forcedFinal = true;
     const emitEvent = ctx.emitEvent;
     emitEvent({ type: "forced_final", round: ctx.rounds, reason });

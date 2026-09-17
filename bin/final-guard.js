@@ -6,32 +6,11 @@ import {
   inspectRun,
   readCaptureManifests,
 } from "./final-guard-support.js";
+import { normalizedLabel } from "../skills/notes/credential-patterns.mjs";
 
 export { buildCaptureStub };
-const SOURCE_PATTERN =
-  /来源\s*(?:=|:|：)\s*(note_read|归档)\s*[:：]\s*([^\s,，。；;）)\]}]+)/giu;
 function warningMessage(message) {
   return `finalGuard warning: ${message}`;
-}
-function escapeRegex(value) {
-  return String(value).replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-function explicitAttributions(text, knownLabels) {
-  // 值终止符：空白/常见括号外，还含 CJK 右引号、右书名号、顿号——
-  // 实测「TARGET=gold-4173」被抽成 gold-4173」导致诚实终稿被误杀（guard 误报）。
-  const attributions = [];
-  for (const label of knownLabels) {
-    const pattern = new RegExp(
-      `(?:^|[^\\p{L}\\p{N}_])${escapeRegex(label)}(?![\\p{L}\\p{N}_])\\s*`
-        + `(?:(?:=|:|：)|(?:的\\s*)?(?:值\\s*(?:已[^是为]{0,20})?(?:是|为)|是|为))\\s*`
-        + `([^\\s,，。；;（）()\\]}"'」』】〉》、]+)`,
-      "giu",
-    );
-    for (const match of String(text ?? "").matchAll(pattern)) {
-      attributions.push({ label, value: match[1].trim() });
-    }
-  }
-  return attributions;
 }
 export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload, store, runId } = {}) {
   let records = [];
@@ -86,7 +65,11 @@ function capturePointer(capture) {
 }
 /**
  * Build the deterministic CLI-side provenance gate for one run.
- * Only explicit attributions to labels captured in this run are compared.
+ *
+ * 2026-09-17 裁定（用户）：终稿关键值声明的唯一权威载体 = 结束协议信封的
+ * `findings` 字段（label→精确值）。guard 只做 findings ↔ 归档捕获值的字符串
+ * 相等比对，**不解析终稿散文**——正则从自由文本里猜值边界已被实证不可靠
+ * （「TARGET=gold-4173」被抽成 gold-4173」导致诚实终稿被误杀）。
  */
 export function createFinalGuard({
   archiveDir,
@@ -95,7 +78,7 @@ export function createFinalGuard({
   store,
 } = {}) {
   return async function finalGuard({
-    finalText,
+    findings,
   } = {}) {
     const inspected = await inspectRun({ archiveDir, store, runId });
     for (const warning of inspected.warnings) onWarning(warning);
@@ -106,6 +89,12 @@ export function createFinalGuard({
       return { action: "skip", reason: "no_extractable_candidates" };
     }
 
+    const declarations = normalizeDeclarations(findings);
+    if (declarations.length === 0) {
+      onWarning("终稿信封未声明 findings 关键值，跳过核验");
+      return { action: "skip", reason: "no_declared_findings" };
+    }
+
     const knownLabels = new Map();
     for (const capture of inspected.captures) {
       const captures = knownLabels.get(capture.label) ?? [];
@@ -113,26 +102,42 @@ export function createFinalGuard({
       knownLabels.set(capture.label, captures);
     }
 
-    const attributions = explicitAttributions(finalText, knownLabels.keys());
     const revise = (message) => ({ action: "revise", message });
-
-    for (const attribution of attributions) {
-      const captures = knownLabels.get(attribution.label) ?? [];
-      const matching = captures.filter((capture) => capture.value === attribution.value);
-      if (matching.length === 0) {
-        const pointer = captures[0] ? capturePointer(captures[0]) : "可信归档";
+    for (const { label, value } of declarations) {
+      const captures = knownLabels.get(label) ?? [];
+      if (captures.length === 0) {
+        // 未知 label ≠ 伪造：归档里从未出现该 label，无法核验也无法证伪
+        //（实测：模型把"重跑次数=0"这类派生结论塞进 findings 会被误打回，引发绕路风暴）。
+        // 警告并忽略该条，继续核验其余声明。
+        onWarning(`终稿 findings 声明了归档中不存在的 label「${label}」（无法核验，已跳过该条）`);
+        continue;
+      }
+      const matched = captures.filter((capture) => capture.value === value);
+      if (matched.length === 0) {
+        const observed = [...new Set(captures.map((capture) => capture.value))].slice(0, 5);
         return revise(
-          `终稿中的 ${attribution.label}=${attribution.value} 未对应本 run 的任何归档捕获值。${pointer}；不得重跑命令；若确认无法恢复，请明确说明不可恢复。`,
+          `终稿 findings 声明的 ${label}=${value} 与归档捕获值不符（捕获值：${observed.join(" | ")}）。${capturePointer(captures[0])}；不得重跑命令；若确认无法恢复，请明确说明不可恢复。`,
         );
       }
     }
-
-    if (attributions.length === 0) {
-      onWarning("终稿没有与归档输出同 label 的显式归属，跳过核验");
-      return { action: "skip", reason: "no_comparable_label" };
-    }
     return { action: "accept" };
   };
+}
+
+function normalizeDeclarations(findings) {
+  if (findings === undefined || findings === null
+    || typeof findings !== "object" || Array.isArray(findings)) {
+    return [];
+  }
+  const declarations = [];
+  for (const [key, item] of Object.entries(findings)) {
+    if (typeof key !== "string" || key.length === 0) continue;
+    if (!["string", "number", "boolean"].includes(typeof item)) continue;
+    const label = normalizedLabel(key);
+    if (label.length === 0) continue;
+    declarations.push({ label, value: String(item) });
+  }
+  return declarations;
 }
 
 export const finalGuard = createFinalGuard;
