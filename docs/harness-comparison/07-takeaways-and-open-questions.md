@@ -76,6 +76,12 @@
 3. **多次折叠的稳定性**：连续触发 ≥5 次折叠，断言摘要块不堆叠、`foldedThrough` 单调、`recall` 水位线描述准确。
 4. **`--agent erix|pi` 横向对照**（erix-bench 已有能力）：同一任务、同一模型，比较 `judge.log` 里的折叠次数、recall 调用次数与最终完成度。
 
+## 4.1 落地成实施方案
+
+> 本节的 P0/P1/P2 清单已转成可执行方案：**[`docs/design/2026-09-17-context-memory-improvement-plan.md`](../design/2026-09-17-context-memory-improvement-plan.md)**
+> （Phase A = 0.6.0：单轮聚合输出预算 / 精确锚点索引 / 折叠模板防退化规则；Phase B = 0.7.0：缓存友好折叠等 opt-in；长期记忆另立 ADR）。
+> 对应关系逐条列在该方案文末附录。
+
 ## 5. 开放问题 / 未验证项
 
 | 问题 | 状态 |
