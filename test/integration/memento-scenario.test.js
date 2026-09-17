@@ -12,7 +12,7 @@ import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { estimateMessageTokens } from "../../src/tokens.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 
-test("S1 folds a non-replayable value into the provider request", async () => {
+test("S1 folds an early value into the provider request", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "erix-memento-s1-"));
   const archiveDir = path.join(directory, "archive");
   const value = "deterministic-abc123";
@@ -32,13 +32,11 @@ test("S1 folds a non-replayable value into the provider request", async () => {
       stopReason: "end_turn",
     },
   ]);
-  const runState = { rerunDetected: false, captureCount: 0 };
-  const cliTools = createCliTools({ cwd: directory, runState });
+  const cliTools = createCliTools({ cwd: directory });
   const executeTool = wrapExecuteTool(cliTools.executeTool, {
     output: () => {},
     getToolMetadata: cliTools.getLastToolMetadata,
     returnMetadata: true,
-    notesScope: { runId: "s1-run", notesDir: path.join(directory, "notes") },
   });
   const context = buildCompactionContext(
     {},
@@ -60,7 +58,6 @@ test("S1 folds a non-replayable value into the provider request", async () => {
       reflection: false,
       context,
       runId: "s1-run",
-      runState,
     });
 
     const secondRequestMessages = provider.requests[1]?.messages ?? [];
@@ -142,10 +139,9 @@ test("S2 keeps credentials out of a folded stub while retaining its archive poin
   }
 });
 
-test("S3 executes a repeated command and reports first-run provenance", async () => {
+test("S3 executes a repeated command and returns fresh output (ADR-016)", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "erix-memento-s3-"));
-  const archiveDir = path.join(directory, "archive");
-  const command = `printf 'nonce=s3-deterministic\\n'; head -c 1 /dev/urandom >/dev/null`;
+  const command = `printf 'nonce=s3-deterministic\n'; head -c 1 /dev/urandom >/dev/null`;
   const provider = createFakeProvider([
     {
       content: [{
@@ -196,13 +192,9 @@ test("S3 executes a repeated command and reports first-run provenance", async ()
       .filter((block) => block?.type === "tool_result");
     const secondResult = toolResults.find((block) => block.tool_use_id === "s3-second");
     assert.ok(secondResult);
-    assert.match(secondResult.content, /这是第 2 次执行/u);
-    // ADR-015 4b：rerunOf = {round, digest}（transcript 定位符，零路径零 artifactId）
-    assert.equal(secondResult.rerunOf.round, 1);
-    assert.equal(typeof secondResult.rerunOf.digest, "string");
-    assert.equal(secondResult.rerunOf.artifactId, undefined);
-    assert.equal(secondResult.rerunOf.archivePath, undefined);
-    assert.equal(secondResult.rerunOf.locator, undefined);
+    assert.match(secondResult.content, /nonce=s3-deterministic/u);
+    assert.doesNotMatch(secondResult.content, /这是第/u);
+    assert.equal(secondResult.rerunOf, undefined);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -245,8 +237,7 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
       stopReason: "end_turn",
     },
   ]);
-  const runState = { rerunDetected: false, captureCount: 0 };
-  const cliTools = createCliTools({ cwd: directory, runState });
+  const cliTools = createCliTools({ cwd: directory });
   const wrappedExecuteTool = wrapExecuteTool(cliTools.executeTool, {
     output: () => {},
     getToolMetadata: cliTools.getLastToolMetadata,
@@ -273,7 +264,6 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
       reflection: false,
       context,
       runId: "s4-run",
-      runState,
     });
 
     const requestsWithRunState = provider.requests.filter((request) => (
@@ -289,9 +279,8 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
     const stubs = finalRequestText.match(/\[已折叠\][^"]*/gu) ?? [];
     assert.ok(stubs.length >= 1);
     assert.equal(new Set(stubs).size, stubs.length);
-    // exec① -> requests[1], exec② -> requests[2]; never move this back to requests[1].
-    assert.match(JSON.stringify(provider.requests[2].messages), /"rerunOf"/u);
-    assert.match(finalRequestText, /"rerunOf"/u);
+    // ADR-016：重跑原样返回（无 rerunOf 标记）；折叠 unique stub 语义不变
+    assert.doesNotMatch(finalRequestText, /"rerunOf"/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

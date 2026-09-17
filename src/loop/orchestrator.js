@@ -127,7 +127,6 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "store",
   "persistence",
   "runId",
-  "runState",
   "resume",
   "onRound",
   "onJudge",
@@ -323,7 +322,6 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   persistence?:"none"|"required", // Defaults to required with a store and none without one.
  *   diagnostics?: {error:(event:object)=>void|Promise<void>},
  *   runId?: string,
- *   runState?:{rerunDetected?:boolean},
  *   resume?: boolean,
  *   onRound?: Function,
  *   onJudge?:(info:JudgeEvent) => void,
@@ -421,7 +419,6 @@ export async function runToolLoop(options) {
     store,
     persistence,
     runId,
-    runState,
     resume = false,
     onRound,
     onJudge,
@@ -830,11 +827,8 @@ export async function runToolLoop(options) {
   let lowBudgetPrompted = false;
   let foldedRoundCount = 0;
   let navigationRecordCount = 0;
-  let nonReplayableCaptureCount = 0;
-  let unrecoverableCaptureCount = 0;
   let toolErrorCount = 0;
   let checkpointFailureCount = 0;
-  let archiveFailureCount = 0;
   let runStateVersion = 0;
   let currentRunState;
   let runStateAvailability = { status: "available" };
@@ -1053,18 +1047,6 @@ export async function runToolLoop(options) {
     set navigationRecordCount(value) {
       navigationRecordCount = value;
     },
-    get nonReplayableCaptureCount() {
-      return nonReplayableCaptureCount;
-    },
-    set nonReplayableCaptureCount(value) {
-      nonReplayableCaptureCount = value;
-    },
-    get unrecoverableCaptureCount() {
-      return unrecoverableCaptureCount;
-    },
-    set unrecoverableCaptureCount(value) {
-      unrecoverableCaptureCount = value;
-    },
     get toolErrorCount() {
       return toolErrorCount;
     },
@@ -1076,12 +1058,6 @@ export async function runToolLoop(options) {
     },
     set checkpointFailureCount(value) {
       checkpointFailureCount = value;
-    },
-    get archiveFailureCount() {
-      return archiveFailureCount;
-    },
-    set archiveFailureCount(value) {
-      archiveFailureCount = value;
     },
     get semanticState() {
       return semanticState;
@@ -1150,7 +1126,6 @@ export async function runToolLoop(options) {
     verified: 0,
     skipped: 0,
     revised: 0,
-    rerun_cited: 0,
     unverified: 0,
     guard_error: 0,
   };
@@ -1348,12 +1323,9 @@ export async function runToolLoop(options) {
       todo: todoState,
       foldedRounds: foldedRoundCount,
       navigationRecords: navigationRecordCount,
-      nonReplayableCaptures: nonReplayableCaptureCount,
-      unrecoverableCaptures: unrecoverableCaptureCount,
       terminationReason: currentTerminationReason,
       toolErrorCount,
       checkpointFailureCount,
-      archiveFailureCount,
     });
     if (semantic && typeof semanticStateProvider === "function") {
       try {
@@ -1409,7 +1381,6 @@ export async function runToolLoop(options) {
     wrapupEnabled,
     throwIfAborted,
     messageRounds,
-    runState,
     usage,
     compactionStats,
     refreshRunState,
@@ -1616,24 +1587,6 @@ export async function runToolLoop(options) {
     },
     set lowBudgetPrompted(value) {
       lowBudgetPrompted = value;
-    },
-    get nonReplayableCaptureCount() {
-      return nonReplayableCaptureCount;
-    },
-    set nonReplayableCaptureCount(value) {
-      nonReplayableCaptureCount = value;
-    },
-    get archiveFailureCount() {
-      return archiveFailureCount;
-    },
-    set archiveFailureCount(value) {
-      archiveFailureCount = value;
-    },
-    get unrecoverableCaptureCount() {
-      return unrecoverableCaptureCount;
-    },
-    set unrecoverableCaptureCount(value) {
-      unrecoverableCaptureCount = value;
     },
     get toolErrorCount() {
       return toolErrorCount;

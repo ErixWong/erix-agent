@@ -29,7 +29,7 @@ function writeDiagnosticError(errorOutput, message) {
  *   errorOutput?:{write:Function},
  *   errorLog?:string
  * }} options
- * @returns {{store:object,notesStore:object,archiveDir:string,runState:object,diagnostics:object}}
+ * @returns {{store:object,notesStore:object,archiveDir:string,diagnostics:object}}
  */
 export function createCliAssemblyRoot({
   dir,
@@ -76,7 +76,6 @@ export function createCliAssemblyRoot({
     store: store ?? createFileTranscriptStore({ dir }),
     notesDir: resolvedNotesDir,
     notesStore: resolvedNotesStore,
-    runState: { rerunDetected: false, captureCount: 0 },
     diagnostics,
   };
 }

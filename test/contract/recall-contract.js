@@ -38,7 +38,6 @@ function execRecord(round, output, { toolUseId = `tool-${round}` } = {}) {
           type: "tool_result",
           tool_use_id: toolUseId,
           content: output.length > 40 ? output.slice(0, 40) : output,
-          replayable: false,
         }],
       },
     ],

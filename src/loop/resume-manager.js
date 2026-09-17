@@ -37,11 +37,8 @@ export async function restoreResume(ctx) {
     ctx.lowBudgetPrompted = deterministic.budget?.lowBudgetPrompted === true;
     ctx.foldedRoundCount = deterministic.fold?.foldedRounds ?? 0;
     ctx.navigationRecordCount = deterministic.fold?.navigationRecords ?? 0;
-    ctx.nonReplayableCaptureCount = deterministic.fold?.nonReplayableCaptures ?? 0;
-    ctx.unrecoverableCaptureCount = deterministic.fold?.unrecoverableCaptures ?? 0;
     ctx.toolErrorCount = deterministic.errors?.tool ?? 0;
     ctx.checkpointFailureCount = deterministic.errors?.checkpoint ?? 0;
-    ctx.archiveFailureCount = deterministic.errors?.archive ?? 0;
     ctx.governorState.filesWritten = Array.isArray(deterministic.filesWritten)
       ? deterministic.filesWritten.map((path) => ({ path }))
       : [];

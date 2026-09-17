@@ -107,7 +107,7 @@ function foldStubMessages(messages) {
   return (Array.isArray(messages) ? messages : []).filter((message) => (
     Array.isArray(message?.content)
     && message.content.some((block) => (
-      block?.type === "tool_result" && block.replayable === false
+      block?.type === "tool_result"
     ))
   ));
 }

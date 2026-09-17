@@ -248,7 +248,7 @@ test("runRepl resumes from the transcript store with the engine-standard recall 
     assert.match(provider.requests[0].system, /大输出已由引擎全量归档/u);
     assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/repl-store`));
     assert.doesNotMatch(provider.requests[0].system, /ResourceStore/u);
-    assert.match(provider.requests[0].system, /禁止重跑非幂等命令/u);
+    assert.doesNotMatch(provider.requests[0].system, /幂等/u);
     assert.ok(provider.requests[1].messages.some((message) => (
       message.role === "user"
       && message.content?.some((block) => block.text === "second")

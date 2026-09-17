@@ -374,19 +374,13 @@ export async function runRepl(argv, io = {}) {
     archiveDir,
     diagnostics,
     notesStore,
-    runState,
     store,
   } = assemblyRoot;
   const storedRecords = await store.load(options.session);
   const config = io.config ?? await loadCliConfig({ configPath: options.configPath });
   const providerFactory = io.providerFactory
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
-  const cliTools = createCliTools({
-    cwd,
-    existingRecords: storedRecords,
-    notesScope: { runId: options.session, notesDir, notesStore },
-    runState,
-  });
+  const cliTools = createCliTools({ cwd });
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,
@@ -404,7 +398,6 @@ export async function runRepl(argv, io = {}) {
     {
       output: (line) => writeLine(output, line),
       getToolMetadata: cliTools.getLastToolMetadata,
-      notesScope: { runId: options.session, notesDir, notesStore },
       returnMetadata: true,
     },
   );
@@ -636,7 +629,6 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
                 notesDir,
                 notesStore,
                 archiveDir,
-                runState,
                 store,
               }),
               finalGuardMaxRetries: 2,
@@ -646,7 +638,6 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         executeTool: executeToolForLoop,
         store,
         runId: options.session,
-        runState,
         diagnostics,
         resume,
         signal,

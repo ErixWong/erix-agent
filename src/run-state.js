@@ -260,12 +260,9 @@ export function createDeterministicRunState({
   todo,
   foldedRounds = 0,
   navigationRecords = 0,
-  nonReplayableCaptures = 0,
-  unrecoverableCaptures = 0,
   terminationReason = "running",
   toolErrorCount = 0,
   checkpointFailureCount = 0,
-  archiveFailureCount = 0,
 } = {}) {
   const safeRounds = safeInteger(rounds);
   const safeMaxRounds = safeInteger(maxRounds);
@@ -291,14 +288,11 @@ export function createDeterministicRunState({
       fold: {
         foldedRounds: safeInteger(foldedRounds),
         navigationRecords: safeInteger(navigationRecords),
-        nonReplayableCaptures: safeInteger(nonReplayableCaptures),
-        unrecoverableCaptures: safeInteger(unrecoverableCaptures),
       },
       termination: { reason: safeText(terminationReason, 48) || "running" },
       errors: {
         tool: safeInteger(toolErrorCount),
         checkpoint: safeInteger(checkpointFailureCount),
-        archive: safeInteger(archiveFailureCount),
       },
     },
     bounds: {
@@ -341,7 +335,7 @@ export function renderRunState(state) {
     DETERMINISTIC_MARKER,
     `run=${safeText(state.runId, 48)} v=${safeInteger(state.stateVersion)} r=${safeInteger(budget.rounds)}/${safeInteger(budget.maxRounds)} left=${safeInteger(budget.remainingRounds)} low=${budget.lowBudgetPrompted === true ? 1 : 0}`,
     `tools=${tools || "-"} files=${files || "-"}`,
-    `todo=${todo || safeText(deterministic.todo?.status, 16) || "-"} fold=${safeInteger(fold.foldedRounds)}/${safeInteger(fold.navigationRecords)} nonreplay=${safeInteger(fold.nonReplayableCaptures)}`,
+    `todo=${todo || safeText(deterministic.todo?.status, 16) || "-"} fold=${safeInteger(fold.foldedRounds)}/${safeInteger(fold.navigationRecords)}`,
     `termination=${safeText(deterministic.termination?.reason, 32) || "running"} errors=${safeInteger(errors.tool)}/${safeInteger(errors.checkpoint)}/${safeInteger(errors.archive)}`,
     SEMANTIC_MARKER,
     `status=${safeText(semantic.status, 16)} version=${semantic.semanticStateVersion ?? "-"}`,

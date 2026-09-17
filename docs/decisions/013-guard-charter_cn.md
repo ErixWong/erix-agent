@@ -3,6 +3,8 @@
 > English version: [013-guard-charter.md](013-guard-charter.md)
 
 - 状态：已决策（2026-09-15）
+- **经 ADR-016 修订（2026-09-17）**：guard 不再只核验非重放捕获值，改为对**全部归档工具输出**
+  核对终稿显式 `label=value`；来源指向要求与 `rerun_cited` 退役。
 - 背景：终稿 provenance gate（guard）在 2026-09-12~14 期间经历多轮"想让它更聪明"的尝试，均被实证否定：
   - **形态 token 扫描**（从终稿散文中猜"哪个字符串是值"）：既**误杀正确答案**（终稿含归档路径 `001-exec.txt` 时把 `001-exec` 当未知值 → 判 `unverified`），又**抓不住真编造**（无 label 的凭空 token → `accept`）。
   - 开启 guard 的有效样本中：`skipped ≈ 93%`、`revised = 0`、`rerun_cited = 0`（几乎空转）。

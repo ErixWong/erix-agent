@@ -43,7 +43,7 @@ test("does not report compaction when all rounds are retained", async () => {
   assert.deepEqual(result.messages, messages);
 });
 
-test("keeps a non-replayable result stub in the retained head", async () => {
+test("keeps a folded result stub in the retained head", async () => {
   const messages = [
     { role: "user", content: "task" },
     {
@@ -55,7 +55,6 @@ test("keeps a non-replayable result stub in the retained head", async () => {
       content: [{
         type: "tool_result",
         tool_use_id: "capture",
-        replayable: false,
         content: "secret",
       }],
     },
@@ -82,7 +81,6 @@ test("emits the same bounded navigation contract as statistical folding", async 
       content: [{
         type: "tool_result",
         tool_use_id: "archive",
-        replayable: false,
         artifact: {
           artifactId: "001-exec.txt",
           digest: "a".repeat(64),
@@ -122,7 +120,6 @@ test("materializes fallback resources before rendering stubs", async () => {
       content: [{
         type: "tool_result",
         tool_use_id: "resource",
-        replayable: false,
         artifact: { resource: "fallback bytes" },
         content: "fallback bytes",
       }],

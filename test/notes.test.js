@@ -97,7 +97,6 @@ test("notes tool descriptions explain current and superseded recovery usage", ()
     assert.match(description, /when-to-use/u);
     assert.match(description, /上下文被折叠/u);
     assert.match(description, /先 note_list，再 note_read key=/u);
-    assert.match(description, /不要重跑非幂等命令/u);
     assert.match(description, /不要遍历归档目录/u);
   }
   assert.match(tools.note_read, /current/u);
@@ -380,7 +379,6 @@ test("tool provenance cannot claim auto capture while the private capture arm ca
       archivePath: "/run/archive/001-exec.txt",
       digest: "a".repeat(64),
       locator: { lineStart: 1, lineEnd: 1 },
-      replayable: false,
     };
     await scopedNotes.note_take({
       key: "tool-written",

@@ -1,5 +1,4 @@
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   mkdirSync,
   readdirSync,
@@ -10,8 +9,6 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { candidateLines, captureToolExecution } from "./auto-capture.js";
-import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
@@ -22,85 +19,6 @@ const EXEC_MAX_BUFFER = 1024 * 1024;
 
 // 安装/编译/下载类命令前缀（benchmark 实测 apt-get install 频繁超时）
 const INSTALL_COMMAND_PATTERN = /^(?:sudo\s+)?(?:apt-get|apt|pip\d?|pip3|npm|yarn|pnpm|make|cmake|gcc|g\+\+|cc|configure|bash\s+.*\.sh|curl|wget)\b/;
-
-// These commands can produce a different value on every execution. Keep this
-// list explicit so the archive policy can grow without changing capture logic.
-export const NON_REPLAYABLE_COMMAND_PATTERNS = Object.freeze([
-  /\/dev\/urandom\b/iu,
-  /\$RANDOM\b/iu,
-  /\bopenssl\s+rand\b/iu,
-  /\buuidgen\b/iu,
-  /\bdate\s+[^;&|]*\+%s%N\b/iu,
-  /\bmktemp\b/iu,
-  /\bshuf\b/iu,
-  /\bhead\s+-c\s+\S+\s+\/dev\/urandom\b/iu,
-]);
-
-export function isNonReplayableCommand(command) {
-  const text = String(command ?? "");
-  return NON_REPLAYABLE_COMMAND_PATTERNS.some((pattern) => pattern.test(text));
-}
-
-function declaredReplayability(name, input, declaration) {
-  const value = typeof declaration === "function"
-    ? declaration({ name, input })
-    : declaration && typeof declaration === "object" && !Array.isArray(declaration)
-      ? declaration[name]
-      : declaration;
-  return typeof value === "boolean" ? value : undefined;
-}
-
-function policyMatches(nonReplayable, command) {
-  if (!nonReplayable || typeof nonReplayable !== "object") return false;
-  if (typeof nonReplayable.classify === "function"
-    && nonReplayable.classify(command) === true) {
-    return true;
-  }
-  return Array.isArray(nonReplayable.patterns)
-    && nonReplayable.patterns.some((pattern) => {
-      if (pattern instanceof RegExp) {
-        pattern.lastIndex = 0;
-        return pattern.test(String(command ?? ""));
-      }
-      return typeof pattern === "string" && String(command ?? "").includes(pattern);
-    });
-}
-
-/**
- * Resolve call-level replayability without treating an unmatched command as
- * an audited safe-to-replay operation.
- */
-export function resolveReplayability(
-  name,
-  input,
-  { declared, nonReplayable } = {},
-) {
-  const declaredValue = declaredReplayability(name, input, declared);
-  if (declaredValue !== undefined) {
-    return {
-      replayable: declaredValue,
-      replayableSource: "declared",
-    };
-  }
-  const command = input?.command;
-  if (policyMatches(nonReplayable, command)) {
-    return {
-      replayable: false,
-      replayableSource: "policy",
-    };
-  }
-  if (name === "exec" && isNonReplayableCommand(command)) {
-    return {
-      replayable: false,
-      replayableSource: "heuristic",
-    };
-  }
-  return {
-    // Omit the boolean claim: unknown is neither safe nor unsafe by default.
-    replayable: undefined,
-    replayableSource: "unknown",
-  };
-}
 
 // ERIX_EXEC_TIMEOUT_MS overrides the default timeout for foreground commands.
 export function getExecTimeoutMs() {
@@ -146,7 +64,6 @@ const schemas = [
   {
     name: "readFile",
     description: "Read a text file by line range.",
-    replayable: true,
     inputSchema: {
       type: "object",
       properties: {
@@ -161,7 +78,6 @@ const schemas = [
   {
     name: "rg",
     description: "Recursively search text files with a regular expression.",
-    replayable: true,
     inputSchema: {
       type: "object",
       properties: {
@@ -176,7 +92,6 @@ const schemas = [
   {
     name: "tree",
     description: "List a directory tree.",
-    replayable: true,
     inputSchema: {
       type: "object",
       properties: {
@@ -189,7 +104,6 @@ const schemas = [
   {
     name: "writeFile",
     description: "Write UTF-8 text to any path.",
-    replayable: true,
     inputSchema: {
       type: "object",
       properties: {
@@ -219,15 +133,13 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 上下文会被折叠，早期细节你会真的忘记——不是记不清，是没有。
 拿到后面还要用的具体值/决定时，立刻 note_take；
 需要早期细节而想不起来时，先 note_list 再 note_read，不要猜。
-非幂等命令（/dev/urandom、$RANDOM…）重跑会得到不同的值，
-不得重跑"恢复"原值，不得凭记忆给值；确实不可恢复就明说不可恢复。
-涉及捕获值时，终稿必须显式写出 label=value（或“label 值是 value”）。
-首次捕获值可直接使用；后续重跑值必须附来源=note_read:<key> 或来源=归档:<文件名>。
+重跑同一命令可能得到不同的值；需要早期精确值时用 recall 取回，不要凭记忆。
+涉及具体值时，终稿必须显式写出 label=value（或“label 值是 value”）。
 
 [工具纪律]
 - 复杂任务先规划并逐步执行；长任务用 todo 工具记录进度
 - 大文件用 readFile 的 offset/limit 分段读取，操作后验证结果
-- 具体数值必须来自当前工具返回、note_read 或捕获记录，不得编造
+- 具体数值必须来自当前工具返回或 note_read，不得编造
 - 不要主动读取密钥、凭据或 .env 文件；只用本次工具返回明确给出的来源
 - 任务完成后直接汇报结果，默认使用中文`;
 
@@ -238,7 +150,7 @@ export function buildCliToolsSystemPrompt() {
 
 export function buildArchiveNotice(archiveDir) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
-  return "\n\n[工具输出归档]\n大输出已由引擎全量归档。需要早期原文时用 recall({ pattern: \"关键词\" }) 取回，捕获值用 note_list/note_read 读取；禁止重跑非幂等命令或凭记忆补值。";
+  return "\n\n[工具输出归档]\n大输出已由引擎全量归档。需要早期原文时用 recall({ pattern: \"关键词\" }) 取回，需要精确值时用 note_list/note_read 读取；不要凭记忆补值。";
 }
 
 
@@ -363,25 +275,11 @@ function summarizeToolResult(name, result) {
   return truncateDisplayText(text, limit);
 }
 
-function metadataWithPrivateOutput(metadata, fullOutput) {
-  const result = { ...metadata };
-  if (fullOutput !== undefined) {
-    Object.defineProperty(result, "fullOutput", {
-      value: fullOutput,
-      enumerable: false,
-      configurable: true,
-    });
-  }
-  return result;
-}
-
 export function wrapExecuteTool(
   executeTool,
   {
     output = console.log,
     getToolMetadata,
-    capture = captureToolExecution,
-    notesScope,
     returnMetadata = false,
   } = {},
 ) {
@@ -393,9 +291,6 @@ export function wrapExecuteTool(
   }
   if (getToolMetadata !== undefined && typeof getToolMetadata !== "function") {
     throw new TypeError("getToolMetadata must be a function");
-  }
-  if (typeof capture !== "function") {
-    throw new TypeError("capture must be a function");
   }
 
   // A one-argument wrapper makes runToolLoop pass its structured execution
@@ -413,40 +308,10 @@ export function wrapExecuteTool(
     output(`→ ${name}: ${summarizeToolInput(name, input)}`);
     try {
       const result = await executeTool(name, input, context);
-      const metadata = getToolMetadata?.();
-      // #109 第2步：捕获返回值不再丢弃——存储故障经通用报告桥入账（事件 + 账单），
-      // 引擎无桥时（直接调用/测试）退回 console.error，但不伪装成功。
-      const captureResult = await capture({
-        name,
-        input,
-        result,
-        metadata,
-        toolUseId: context?.toolUseId,
-        round: context?.round,
-        notesScope,
-      });
-      if (captureResult?.status === "error") {
-        const failure = {
-          port: "notes",
-          operation: "auto_capture",
-          phase: "write",
-          error: captureResult.error,
-        };
-        if (typeof context?.reportPersistenceFailure === "function") {
-          await context.reportPersistenceFailure(failure);
-        }
-      }
       output(`← ${name}: ${summarizeToolResult(name, result)}`);
+      // ADR-016：replayable/rerunOf 元数据随可重放概念退役
       if (returnMetadata && typeof getToolMetadata === "function") {
-        const metadata = getToolMetadata() ?? {};
-        return {
-          data: result,
-          ...(metadata.replayable === undefined ? {} : { replayable: metadata.replayable }),
-          ...(metadata.replayableSource === undefined
-            ? {}
-            : { replayableSource: metadata.replayableSource }),
-          ...(metadata.rerunOf === undefined ? {} : { rerunOf: metadata.rerunOf }),
-        };
+        return { data: result };
       }
       return result;
     } catch (error) {
@@ -456,108 +321,18 @@ export function wrapExecuteTool(
   };
 }
 
-function rerunGuidance({ count, firstValue }) {
-  const displayValue = typeof firstValue === "string" && firstValue.length > 0
-    ? firstValue
-    : "见首次输出（recall 可取回）";
-  return `[⚠️ 这是第 ${count} 次执行同一命令，值与首次可能不同；首次执行记录：${displayValue}；早期原文可 recall({ pattern: "关键词" }) 取回；不得把重跑值当作原值。]`;
-}
-
 function normalizeCommand(command) {
   return String(command).replaceAll(/\r\n?/gu, "\n").trim();
 }
 
 
-/**
- * ADR-015 4b：跨进程重跑检测从 transcript 记录重建（不再读归档 manifest）。
- * 逐条记录找 exec tool_use + 对应 replayable:false tool_result，全文取
- * record.toolOutputs[toolUseId]（字节保真），首现命令记 {round, digest, value}。
- */
-function hydrateTranscriptCaptures(records) {
-  const duplicateCommands = new Map();
-  for (const record of Array.isArray(records) ? records : []) {
-    const outputs = new Map(
-      (Array.isArray(record?.toolOutputs) ? record.toolOutputs : [])
-        .filter((entry) => typeof entry?.toolUseId === "string" && typeof entry?.content === "string")
-        .map((entry) => [entry.toolUseId, entry.content]),
-    );
-    const commandsByUseId = new Map();
-    for (const message of Array.isArray(record?.messages) ? record.messages : []) {
-      for (const block of Array.isArray(message?.content) ? message.content : []) {
-        if (block?.type === "tool_use" && block.name === "exec") {
-          const command = typeof block.input?.command === "string" ? normalizeCommand(block.input.command) : undefined;
-          if (command) commandsByUseId.set(block.id, command);
-        }
-      }
-    }
-    if (commandsByUseId.size === 0) continue;
-    for (const message of Array.isArray(record?.messages) ? record.messages : []) {
-      for (const block of Array.isArray(message?.content) ? message.content : []) {
-        if (block?.type !== "tool_result" || block.replayable !== false) continue;
-        const command = commandsByUseId.get(block.tool_use_id);
-        if (!command || duplicateCommands.has(command)) continue;
-        const fullText = outputs.get(block.tool_use_id) ?? blockText(block.content);
-        if (fullText === undefined) continue;
-        const firstCandidate = candidateLines(fullText).find(({ label, value }) => (
-          !looksLikeCredential(label, value)
-        ));
-        duplicateCommands.set(command, {
-          count: 1,
-          first: {
-            round: Number.isSafeInteger(record.round) ? record.round : null,
-            digest: createHash("sha256").update(fullText, "utf8").digest("hex"),
-            value: firstCandidate
-              ? `${firstCandidate.label}=${firstCandidate.value}`
-                .split(/\r\n|\r|\n/u)[0]
-                .replaceAll(/\s+/gu, " ")
-                .slice(0, 200)
-              : undefined,
-          },
-        });
-      }
-    }
-  }
-  return duplicateCommands;
-}
-
-function blockText(content) {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((part) => typeof part?.text === "string")
-      .map((part) => part.text)
-      .join("");
-  }
-  return undefined;
-}
-
 export function createCliTools({
   cwd = process.cwd(),
-  existingRecords = [],
-  notesScope,
-  runState: runStateOption,
-  replayable,
-  toolReplayability,
-  nonReplayable,
 } = {}) {
   const root = path.resolve(cwd);
-  if (!Array.isArray(existingRecords)) {
-    throw new TypeError("existingRecords must be an array");
-  }
-  // ADR-015 4b：capture 证据源 = transcript（toolOutputs 字节保真）；
-  // 跨进程重跑检测从既有 transcript 记录重建，不再读归档 manifest。
-  const duplicateCommands = hydrateTranscriptCaptures(existingRecords);
+  // ADR-016：replayable 分类、重跑检测、auto-capture 全部退役；
+  // lastToolMetadata 仅存工具名（元数据通道收窄）。
   let lastToolMetadata;
-  const runState = runStateOption && typeof runStateOption === "object"
-    ? runStateOption
-    : {};
-  const declaredOption = toolReplayability ?? replayable;
-  const schemaReplayability = Object.fromEntries(
-    schemas
-      .filter((schema) => typeof schema.replayable === "boolean")
-      .map((schema) => [schema.name, schema.replayable]),
-  );
-  let captureCount = 0;
 
   async function readFile({ path: filePath, offset = 0, limit = 200 }) {
     const text = readFileSync(resolveToolPath(root, filePath), "utf8");
@@ -706,92 +481,17 @@ export function createCliTools({
       throw new Error(`未知工具：${name}`);
     }
     const normalizedInput = normalizeToolInput(input);
-    const command = normalizedInput?.command;
-    const replayability = resolveReplayability(name, normalizedInput, {
-      declared: ({ name: declaredName, input: declaredInput }) => (
-        declaredReplayability(declaredName, declaredInput, declaredOption)
-          ?? schemaReplayability[declaredName]
-      ),
-      nonReplayable,
-    });
-    const replayableValue = replayability.replayable;
-    const replayableSource = replayability.replayableSource;
-    lastToolMetadata = {
-      name,
-      replayable: replayableValue,
-      replayableSource,
-    };
-    let commandState;
-    let isFirstCommandExecution = false;
-    if (name === "exec" && typeof command === "string") {
-      const normalizedCommand = normalizeCommand(command);
-      commandState = duplicateCommands.get(normalizedCommand);
-      if (commandState) {
-        commandState.count += 1;
-      } else {
-        commandState = {
-          count: 1,
-          first: undefined,
-        };
-        duplicateCommands.set(normalizedCommand, commandState);
-        isFirstCommandExecution = true;
-      }
-    }
-
+    lastToolMetadata = { name };
+    // ADR-016：重跑值错配风险由提示语一行承担（"重跑可能得到不同的值，需要早期
+    // 精确值用 recall 取回"），引擎不再做幂等分类/重跑检测/捕值。
     const result = await executor(normalizedInput);
-    let returnedResult = result;
-    // ADR-015 4b：输出档案与 capture 证据源都已统一到 transcript（toolOutputs 字节保真）。
-    // CLI 侧只剩两件事：① 把全量原文交给引擎元数据（capture 用）；② 非重放 exec 记录首次值供重跑提示。
-    if (name === "exec") {
-      const fullText = String(result ?? "");
-      if (replayableValue === false && isFirstCommandExecution) {
-        const firstCandidate = candidateLines(fullText).find(({ label, value }) => (
-          !looksLikeCredential(label, value)
-        ));
-        commandState.first = {
-          round: context?.round ?? null,
-          digest: createHash("sha256").update(fullText, "utf8").digest("hex"),
-          value: firstCandidate
-            ? `${firstCandidate.label}=${firstCandidate.value}`
-              .split(/\r\n|\r|\n/u)[0]
-              .replaceAll(/\s+/gu, " ")
-              .slice(0, 200)
-            : undefined,
-        };
-      }
-      lastToolMetadata = metadataWithPrivateOutput(lastToolMetadata, fullText);
-      if (replayableValue === false) {
-        captureCount += 1;
-        runState.captureCount = captureCount;
-      }
-    }
-    if (commandState?.count > 1) {
-      const first = commandState.first;
-      runState.rerunDetected = true;
-      lastToolMetadata = metadataWithPrivateOutput({
-        ...lastToolMetadata,
-        rerunOf: {
-          round: first?.round ?? null,
-          digest: first?.digest ?? null,
-        },
-      }, lastToolMetadata?.fullOutput);
-      returnedResult = `${rerunGuidance({
-        count: commandState.count,
-        firstValue: first?.value,
-      })}\n${String(returnedResult ?? "")}`;
-    }
-    return returnedResult;
+    return result;
   }
 
   return {
     tools: schemas.map((schema) => structuredClone(schema)),
     executeTool,
     getLastToolMetadata: () => lastToolMetadata,
-    getRunState: () => ({
-      ...runState,
-      captureCount,
-      rerunDetected: runState.rerunDetected === true,
-    }),
     truncateResult,
   };
 }
