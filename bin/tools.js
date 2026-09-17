@@ -16,8 +16,6 @@ import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
 const OUTPUT_LIMIT = 4096;
-const ARCHIVE_THRESHOLD = 800;
-const MAX_ARCHIVE_BYTES = 1024 * 1024;
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const INSTALL_EXEC_TIMEOUT_MS = 300_000; // 安装/编译类命令（apt/pip/make 等）给更长时间
 const EXEC_MAX_BUFFER = 1024 * 1024;
@@ -233,14 +231,12 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 - 不要主动读取密钥、凭据或 .env 文件；只用本次工具返回明确给出的来源
 - 任务完成后直接汇报结果，默认使用中文`;
 
-export function buildCliToolsSystemPrompt(resourceStore) {
+export function buildCliToolsSystemPrompt() {
   // ADR-015：ResourceStore 退出模型视野——所有宿主形态同一份提示词，不提 opaque 工件/路径。
-  void resourceStore;
   return CLI_TOOLS_SYSTEM_PROMPT;
 }
 
-export function buildArchiveNotice(archiveDir, resourceStore) {
-  void resourceStore;
+export function buildArchiveNotice(archiveDir) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
   return "\n\n[工具输出归档]\n大输出已由引擎全量归档。需要早期原文时用 recall({ pattern: \"关键词\" }) 取回，捕获值用 note_list/note_read 读取；禁止重跑非幂等命令或凭记忆补值。";
 }
@@ -418,7 +414,9 @@ export function wrapExecuteTool(
     try {
       const result = await executeTool(name, input, context);
       const metadata = getToolMetadata?.();
-      await capture({
+      // #109 第2步：捕获返回值不再丢弃——存储故障经通用报告桥入账（事件 + 账单），
+      // 引擎无桥时（直接调用/测试）退回 console.error，但不伪装成功。
+      const captureResult = await capture({
         name,
         input,
         result,
@@ -427,6 +425,17 @@ export function wrapExecuteTool(
         round: context?.round,
         notesScope,
       });
+      if (captureResult?.status === "error") {
+        const failure = {
+          port: "notes",
+          operation: "auto_capture",
+          phase: "write",
+          error: captureResult.error,
+        };
+        if (typeof context?.reportPersistenceFailure === "function") {
+          await context.reportPersistenceFailure(failure);
+        }
+      }
       output(`← ${name}: ${summarizeToolResult(name, result)}`);
       if (returnMetadata && typeof getToolMetadata === "function") {
         const metadata = getToolMetadata() ?? {};
@@ -436,8 +445,6 @@ export function wrapExecuteTool(
           ...(metadata.replayableSource === undefined
             ? {}
             : { replayableSource: metadata.replayableSource }),
-          ...(metadata.artifact === undefined ? {} : { artifact: metadata.artifact }),
-          ...(metadata.artifactStatus === undefined ? {} : { artifactStatus: metadata.artifactStatus }),
           ...(metadata.rerunOf === undefined ? {} : { rerunOf: metadata.rerunOf }),
         };
       }
@@ -449,216 +456,10 @@ export function wrapExecuteTool(
   };
 }
 
-function archiveGuidance(display, resourceStore) {
-  const reader = resourceStore === undefined
-    ? "需要原始内容请用 readFile/cat 读取该路径"
-    : "需要原始内容请用 ResourceStore 读取";
-  const visibleDisplay = resourceStore === undefined
-    ? display
-    : "ResourceStore 中的 opaque locator";
-  return `[完整输出已归档：${visibleDisplay}（${reader}；不要重跑命令，重跑会得到不同的值）]`;
-}
-
-function archiveFailureGuidance(archivePath, error, replayable, resourceStore) {
-  if (replayable === false) {
-    return "[完整输出归档失败：原始输出不可恢复；请勿重跑命令。]";
-  }
-  const reason = String(error?.message ?? error ?? "未知错误")
-    .replaceAll(/\s+/gu, " ")
-    .slice(0, 160);
-  const visibleDisplay = resourceStore === undefined ? archivePath : "ResourceStore";
-  return `[完整输出归档失败：${visibleDisplay}（${reason}）；请勿重跑命令。]`;
-}
-
-export function archiveResult(
-  archiveDir,
-  name,
-  result,
-  sequence,
-  {
-    force = false,
-    replayable = true,
-    replayableSource,
-    command,
-    context,
-    resourceStore,
-  } = {},
-) {
-  const text = String(result ?? "");
-  if (!archiveDir || (!force && text.length <= ARCHIVE_THRESHOLD)) return null;
-
-  let archivePath = path.join(
-    archiveDir,
-    `${String(sequence).padStart(3, "0")}-${name}.txt`,
-  );
-  let metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
-  const failedArchive = (error) => ({
-    text: replayable !== false
-      ? `${truncateResult(text)}\n${archiveFailureGuidance(
-        archivePath,
-        error,
-        replayable,
-        resourceStore,
-      )}`
-      : archiveFailureGuidance(archivePath, error, replayable, resourceStore),
-    archivePath: undefined,
-    artifact: undefined,
-  });
-  try {
-    mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
-    const bytes = Buffer.from(text, "utf8");
-    let archived = bytes;
-    let truncated = false;
-    if (bytes.byteLength > MAX_ARCHIVE_BYTES) {
-      const marker = Buffer.from(
-        `\n[归档仅保留前 ${MAX_ARCHIVE_BYTES} 字节，原始输出共 ${bytes.byteLength} 字节]`,
-        "utf8",
-      );
-      const prefixBudget = Math.max(0, MAX_ARCHIVE_BYTES - marker.byteLength);
-      const characters = Array.from(text);
-      let low = 0;
-      let high = characters.length;
-      while (low < high) {
-        const middle = Math.ceil((low + high) / 2);
-        if (Buffer.byteLength(characters.slice(0, middle).join(""), "utf8") <= prefixBudget) {
-          low = middle;
-        } else {
-          high = middle - 1;
-        }
-      }
-      archived = Buffer.concat([
-        Buffer.from(characters.slice(0, low).join(""), "utf8"),
-        marker,
-      ]);
-      truncated = true;
-    }
-    const archivedText = archived.toString("utf8");
-    const digest = createHash("sha256").update(archivedText, "utf8").digest("hex");
-    const lineParts = archivedText.split(/\r\n|\r|\n/u);
-    const lines = Math.max(
-      1,
-      lineParts.length - (archivedText.endsWith("\n") || archivedText.endsWith("\r") ? 1 : 0),
-    );
-    const saveArtifact = (reference, sequenceNumber) => {
-      archivePath = path.join(
-        archiveDir,
-        `${String(sequenceNumber).padStart(3, "0")}-${name}.txt`,
-      );
-      metadataPath = `${archivePath.slice(0, -".txt".length)}.meta.json`;
-      const artifact = {
-        ...(resourceStore === undefined ? { archivePath } : {}),
-        digest: reference?.digest ?? digest,
-        ...(reference ?? { locator: { lineStart: 1, lineEnd: lines } }),
-        artifactId: resourceStore === undefined
-          ? path.basename(archivePath)
-          : `resource:${reference?.digest ?? digest}`,
-        round: context?.round ?? null,
-        ...(replayable === undefined ? {} : { replayable }),
-        ...(replayableSource === undefined ? {} : { replayableSource }),
-        truncated,
-        status: truncated ? "truncated" : "ok",
-        originalBytes: bytes.byteLength,
-      };
-      const metadata = {
-        kind: "erix.tool-capture",
-        schemaVersion: 1,
-        toolUseId: context?.toolUseId ?? null,
-        round: context?.round ?? null,
-        command: command ?? null,
-        ...(replayable === undefined ? {} : { replayable }),
-        ...(replayableSource === undefined ? {} : { replayableSource }),
-        artifactId: artifact.artifactId,
-        digest: artifact.digest,
-        ...(artifact.archivePath === undefined ? {} : { archivePath: artifact.archivePath }),
-        locator: artifact.locator,
-        ...(artifact.display === undefined ? {} : { display: artifact.display }),
-        truncated,
-        status: artifact.status,
-        originalBytes: bytes.byteLength,
-      };
-      const created = [];
-      try {
-        if (resourceStore === undefined) {
-          writeFileSync(archivePath, archivedText, {
-            encoding: "utf8",
-            mode: 0o600,
-            flag: "wx",
-          });
-          created.push(archivePath);
-        }
-        writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, {
-          encoding: "utf8",
-          mode: 0o600,
-          flag: "wx",
-        });
-        created.push(metadataPath);
-        return {
-          text: `${truncateResult(text)}\n${archiveGuidance(
-            artifact.display ?? artifact.archivePath,
-            resourceStore,
-          )}`,
-          ...(artifact.archivePath === undefined ? {} : { archivePath: artifact.archivePath }),
-          artifact,
-          archivedText,
-          sequence: sequenceNumber,
-        };
-      } catch (error) {
-        for (const target of created) {
-          try {
-            unlinkSync(target);
-          } catch (cleanupError) {
-            if (cleanupError?.code !== "ENOENT") error.cause = cleanupError;
-          }
-        }
-        if (error?.code === "EEXIST") return undefined;
-        throw error;
-      }
-    };
-    for (let attempt = 0; attempt < Number.MAX_SAFE_INTEGER; attempt += 1) {
-      const sequenceNumber = sequence + attempt;
-      if (resourceStore === undefined) {
-        const saved = saveArtifact(undefined, sequenceNumber);
-        if (saved !== undefined) return saved;
-        continue;
-      }
-      return resourceStore.put(archivedText)
-        .then((reference) => {
-          const saved = saveArtifact(reference, sequenceNumber);
-          if (saved !== undefined) return saved;
-          return resourceStore.put(archivedText).then((nextReference) => (
-            saveArtifact(nextReference, sequenceNumber + 1)
-          ));
-        })
-        .catch((error) => failedArchive(error));
-    }
-    throw new Error("archive sequence exhausted");
-  } catch (error) {
-    return failedArchive(error);
-  }
-}
-
-function artifactStatus(artifact) {
-  if (!artifact || typeof artifact.digest !== "string") return "unrecoverable";
-  if (!artifact.archivePath) {
-    return artifact.status === "truncated" ? "truncated" : "ok";
-  }
-  try {
-    const contents = readFileSync(artifact.archivePath, "utf8");
-    const digest = createHash("sha256").update(contents, "utf8").digest("hex");
-    if (digest !== artifact.digest) return "stale";
-    return artifact.truncated === true ? "truncated" : "ok";
-  } catch (error) {
-    if (error?.code === "ENOENT") return "missing";
-    return "unrecoverable";
-  }
-}
-
-function rerunGuidance({ count, firstValue, status }) {
+function rerunGuidance({ count, firstValue }) {
   const displayValue = typeof firstValue === "string" && firstValue.length > 0
     ? firstValue
-    : status === "ok" || status === "truncated"
-      ? "见首次输出"
-      : "不可恢复";
+    : "见首次输出（recall 可取回）";
   return `[⚠️ 这是第 ${count} 次执行同一命令，值与首次可能不同；首次执行记录：${displayValue}；早期原文可 recall({ pattern: "关键词" }) 取回；不得把重跑值当作原值。]`;
 }
 
@@ -666,111 +467,73 @@ function normalizeCommand(command) {
   return String(command).replaceAll(/\r\n?/gu, "\n").trim();
 }
 
-function archiveSequenceFromName(name) {
-  const match = String(name).match(/^(\d+)-.+\.(?:txt|meta\.json)$/u);
-  if (!match) return undefined;
-  const sequence = Number.parseInt(match[1], 10);
-  return Number.isSafeInteger(sequence) ? sequence : undefined;
-}
 
-function existingArchiveEntries(archiveDir) {
-  try {
-    return readdirSync(archiveDir)
-      .map((name) => ({ name, sequence: archiveSequenceFromName(name) }))
-      .filter((entry) => entry.sequence !== undefined);
-  } catch (error) {
-    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [];
-    throw error;
-  }
-}
-
-function initialArchiveSequence(archiveDir) {
-  return existingArchiveEntries(archiveDir)
-    .reduce((maximum, entry) => Math.max(maximum, entry.sequence), 0);
-}
-
-function artifactFromMetadata(archiveDir, metadata) {
-  if (!metadata || typeof metadata !== "object"
-    || typeof metadata.artifactId !== "string"
-    || typeof metadata.digest !== "string") {
-    return undefined;
-  }
-  return {
-    artifactId: metadata.artifactId,
-    ...(typeof metadata.archivePath === "string"
-      ? { archivePath: metadata.archivePath }
-      : {}),
-    digest: metadata.digest,
-    locator: metadata.locator,
-    ...(typeof metadata.display === "string" ? { display: metadata.display } : {}),
-    round: metadata.round ?? null,
-    ...(metadata.replayable === undefined ? {} : { replayable: metadata.replayable }),
-    ...(metadata.replayableSource === undefined
-      ? {}
-      : { replayableSource: metadata.replayableSource }),
-    truncated: metadata.truncated === true,
-    status: metadata.status ?? (metadata.truncated === true ? "truncated" : "ok"),
-    ...(Number.isSafeInteger(metadata.originalBytes)
-      ? { originalBytes: metadata.originalBytes }
-      : {}),
-  };
-}
-
-function hydrateArchiveIndex(archiveDir, duplicateCommands, knownArtifacts) {
-  for (const entry of existingArchiveEntries(archiveDir)) {
-    if (!entry.name.endsWith(".meta.json")) continue;
-    const artifactId = entry.name.slice(0, -".meta.json".length) + ".txt";
-    if (knownArtifacts.has(artifactId)) continue;
-    let metadata;
-    try {
-      metadata = JSON.parse(readFileSync(path.join(archiveDir, entry.name), "utf8"));
-    } catch (error) {
-      if (error?.code === "ENOENT") continue;
-      if (error instanceof SyntaxError) continue;
-      throw error;
+/**
+ * ADR-015 4b：跨进程重跑检测从 transcript 记录重建（不再读归档 manifest）。
+ * 逐条记录找 exec tool_use + 对应 replayable:false tool_result，全文取
+ * record.toolOutputs[toolUseId]（字节保真），首现命令记 {round, digest, value}。
+ */
+function hydrateTranscriptCaptures(records) {
+  const duplicateCommands = new Map();
+  for (const record of Array.isArray(records) ? records : []) {
+    const outputs = new Map(
+      (Array.isArray(record?.toolOutputs) ? record.toolOutputs : [])
+        .filter((entry) => typeof entry?.toolUseId === "string" && typeof entry?.content === "string")
+        .map((entry) => [entry.toolUseId, entry.content]),
+    );
+    const commandsByUseId = new Map();
+    for (const message of Array.isArray(record?.messages) ? record.messages : []) {
+      for (const block of Array.isArray(message?.content) ? message.content : []) {
+        if (block?.type === "tool_use" && block.name === "exec") {
+          const command = typeof block.input?.command === "string" ? normalizeCommand(block.input.command) : undefined;
+          if (command) commandsByUseId.set(block.id, command);
+        }
+      }
     }
-    if (typeof metadata.command !== "string") {
-      knownArtifacts.add(artifactId);
-      continue;
+    if (commandsByUseId.size === 0) continue;
+    for (const message of Array.isArray(record?.messages) ? record.messages : []) {
+      for (const block of Array.isArray(message?.content) ? message.content : []) {
+        if (block?.type !== "tool_result" || block.replayable !== false) continue;
+        const command = commandsByUseId.get(block.tool_use_id);
+        if (!command || duplicateCommands.has(command)) continue;
+        const fullText = outputs.get(block.tool_use_id) ?? blockText(block.content);
+        if (fullText === undefined) continue;
+        const firstCandidate = candidateLines(fullText).find(({ label, value }) => (
+          !looksLikeCredential(label, value)
+        ));
+        duplicateCommands.set(command, {
+          count: 1,
+          first: {
+            round: Number.isSafeInteger(record.round) ? record.round : null,
+            digest: createHash("sha256").update(fullText, "utf8").digest("hex"),
+            value: firstCandidate
+              ? `${firstCandidate.label}=${firstCandidate.value}`
+                .split(/\r\n|\r|\n/u)[0]
+                .replaceAll(/\s+/gu, " ")
+                .slice(0, 200)
+              : undefined,
+          },
+        });
+      }
     }
-    const artifact = artifactFromMetadata(archiveDir, {
-      ...metadata,
-      artifactId,
-    });
-    if (!artifact) {
-      knownArtifacts.add(artifactId);
-      continue;
-    }
-    const command = normalizeCommand(metadata.command);
-    const state = duplicateCommands.get(command);
-    if (state) {
-      state.count += 1;
-      const currentSequence = archiveSequenceFromName(state.firstArtifact?.artifactId) ?? Number.MAX_SAFE_INTEGER;
-      if (entry.sequence < currentSequence) state.firstArtifact = artifact;
-    } else {
-      duplicateCommands.set(command, { count: 1, firstArtifact: artifact });
-    }
-    knownArtifacts.add(artifactId);
   }
+  return duplicateCommands;
 }
 
-function firstSafeArtifactValue(artifact, status) {
-  if (!artifact?.archivePath || !["ok", "truncated"].includes(status)) return undefined;
-  try {
-    const output = readFileSync(artifact.archivePath, "utf8");
-    return candidateLines(output).find(({ label, value }) => (
-      !looksLikeCredential(label, value)
-    ))?.value;
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-    return undefined;
+function blockText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((part) => typeof part?.text === "string")
+      .map((part) => part.text)
+      .join("");
   }
+  return undefined;
 }
 
 export function createCliTools({
   cwd = process.cwd(),
-  archiveDir,
-  resourceStore,
+  existingRecords = [],
   notesScope,
   runState: runStateOption,
   replayable,
@@ -778,19 +541,12 @@ export function createCliTools({
   nonReplayable,
 } = {}) {
   const root = path.resolve(cwd);
-  if (archiveDir !== undefined && typeof archiveDir !== "string") {
-    throw new TypeError("archiveDir must be a string");
+  if (!Array.isArray(existingRecords)) {
+    throw new TypeError("existingRecords must be an array");
   }
-  if (resourceStore !== undefined
-    && (!resourceStore || typeof resourceStore.put !== "function"
-      || typeof resourceStore.get !== "function")) {
-    throw new TypeError("resourceStore must provide put and get methods");
-  }
-  const archiveRoot = archiveDir === undefined ? undefined : path.resolve(archiveDir);
-  let archiveSequence = archiveRoot === undefined ? 0 : initialArchiveSequence(archiveRoot);
-  const duplicateCommands = archiveRoot ? new Map() : undefined;
-  const knownArchiveArtifacts = new Set();
-  if (archiveRoot) hydrateArchiveIndex(archiveRoot, duplicateCommands, knownArchiveArtifacts);
+  // ADR-015 4b：capture 证据源 = transcript（toolOutputs 字节保真）；
+  // 跨进程重跑检测从既有 transcript 记录重建，不再读归档 manifest。
+  const duplicateCommands = hydrateTranscriptCaptures(existingRecords);
   let lastToolMetadata;
   const runState = runStateOption && typeof runStateOption === "object"
     ? runStateOption
@@ -967,12 +723,7 @@ export function createCliTools({
     };
     let commandState;
     let isFirstCommandExecution = false;
-    if (
-      duplicateCommands
-      && name === "exec"
-      && typeof command === "string"
-    ) {
-      hydrateArchiveIndex(archiveRoot, duplicateCommands, knownArchiveArtifacts);
+    if (name === "exec" && typeof command === "string") {
       const normalizedCommand = normalizeCommand(command);
       commandState = duplicateCommands.get(normalizedCommand);
       if (commandState) {
@@ -980,7 +731,7 @@ export function createCliTools({
       } else {
         commandState = {
           count: 1,
-          firstArtifact: undefined,
+          first: undefined,
         };
         duplicateCommands.set(normalizedCommand, commandState);
         isFirstCommandExecution = true;
@@ -989,62 +740,44 @@ export function createCliTools({
 
     const result = await executor(normalizedInput);
     let returnedResult = result;
-    // ADR-015 4a：输出档案角色整体退役给引擎（transcript toolOutputs + recall）。
-    // ResourceStore 只保留 capture 证据角色：非重放 exec 才落 capture manifest（guard 核验专用）。
-    const shouldArchive = archiveRoot !== undefined
-      && name === "exec"
-      && replayableValue === false;
-    if (shouldArchive) {
-      archiveSequence += 1;
-      const archived = await archiveResult(archiveRoot, name, result, archiveSequence, {
-        force: true,
-        replayable: replayableValue,
-        replayableSource,
-        command,
-        context,
-        resourceStore,
-      });
-      if (archived !== null) {
-        archiveSequence = Math.max(archiveSequence, archived.sequence ?? archiveSequence);
-        lastToolMetadata = metadataWithPrivateOutput({
-          name,
-          replayable: replayableValue,
-          replayableSource,
-          artifact: archived.artifact,
-          artifactStatus: archived.artifact?.status ?? "unrecoverable",
-        }, archived.archivedText ?? String(result ?? ""));
-        if (isFirstCommandExecution) commandState.firstArtifact = archived.artifact;
-        if (archived.artifact?.artifactId) {
-          knownArchiveArtifacts.add(archived.artifact.artifactId);
-        }
-        if (replayableValue === false && archived.artifact) {
-          captureCount += 1;
-          runState.captureCount = captureCount;
-        }
+    // ADR-015 4b：输出档案与 capture 证据源都已统一到 transcript（toolOutputs 字节保真）。
+    // CLI 侧只剩两件事：① 把全量原文交给引擎元数据（capture 用）；② 非重放 exec 记录首次值供重跑提示。
+    if (name === "exec") {
+      const fullText = String(result ?? "");
+      if (replayableValue === false && isFirstCommandExecution) {
+        const firstCandidate = candidateLines(fullText).find(({ label, value }) => (
+          !looksLikeCredential(label, value)
+        ));
+        commandState.first = {
+          round: context?.round ?? null,
+          digest: createHash("sha256").update(fullText, "utf8").digest("hex"),
+          value: firstCandidate
+            ? `${firstCandidate.label}=${firstCandidate.value}`
+              .split(/\r\n|\r|\n/u)[0]
+              .replaceAll(/\s+/gu, " ")
+              .slice(0, 200)
+            : undefined,
+        };
+      }
+      lastToolMetadata = metadataWithPrivateOutput(lastToolMetadata, fullText);
+      if (replayableValue === false) {
+        captureCount += 1;
+        runState.captureCount = captureCount;
       }
     }
     if (commandState?.count > 1) {
-      const firstArtifact = commandState.firstArtifact;
-      const status = artifactStatus(firstArtifact);
-      const firstValue = firstSafeArtifactValue(firstArtifact, status)
-        ?.split(/\r\n|\r|\n/u)[0]
-        ?.replaceAll(/\s+/gu, " ")
-        ?.slice(0, 200);
+      const first = commandState.first;
       runState.rerunDetected = true;
       lastToolMetadata = metadataWithPrivateOutput({
         ...lastToolMetadata,
         rerunOf: {
-          round: firstArtifact?.round ?? null,
-          artifactId: firstArtifact?.artifactId ?? null,
-          digest: firstArtifact?.digest ?? null,
-          status,
+          round: first?.round ?? null,
+          digest: first?.digest ?? null,
         },
-        ...(firstArtifact ? { artifactStatus: lastToolMetadata?.artifactStatus ?? status } : {}),
       }, lastToolMetadata?.fullOutput);
       returnedResult = `${rerunGuidance({
         count: commandState.count,
-        firstValue,
-        status,
+        firstValue: first?.value,
       })}\n${String(returnedResult ?? "")}`;
     }
     return returnedResult;

@@ -13,7 +13,6 @@ import path from "node:path";
 import { runChat } from "../bin/cli.js";
 import { candidateLines, captureToolExecution } from "../bin/auto-capture.js";
 import {
-  archiveResult,
   buildArchiveNotice,
   createCliTools,
   wrapExecuteTool,
@@ -23,7 +22,6 @@ import * as notes from "../skills/notes/skill.mjs";
 import { NOTE_VALUE_MAX_CHARS } from "../skills/notes/skill.mjs";
 import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 import { createFakeProvider } from "./helpers/fake-provider.js";
-import { createFileResourceStore } from "../src/store/resource-file.js";
 
 async function withTempDirectory(callback) {
   const directory = await mkdtemp(path.join(tmpdir(), "erix-notes-autocapture-"));
@@ -70,17 +68,11 @@ const scopedNotes = new Proxy(notes, {
   },
 });
 
-function metadataFor(output, archivePath = "/tmp/artifact.txt") {
+function metadataFor(output, toolUseId = "metadata-tool") {
+  // ADR-015 4b：capture 只需 fullOutput + toolUseId/round，引用在 capture 内部构造
   return {
     replayable: false,
     fullOutput: output,
-    artifact: {
-      artifactId: path.basename(archivePath),
-      archivePath,
-      digest: createHash("sha256").update(output, "utf8").digest("hex"),
-      locator: { lineStart: 1, lineEnd: output.split("\n").length },
-      replayable: false,
-    },
   };
 }
 
@@ -124,12 +116,10 @@ test("candidateLines excludes capture metadata labels from value candidates", ()
   );
 });
 
-test("short non-replayable output is archived with structured metadata", async () => {
+test("non-replayable exec keeps full output in metadata; nothing lands on disk", async () => {
   await withTempDirectory(async (cwd) => {
-    const archiveDir = path.join(cwd, "outputs");
     const { executeTool, getLastToolMetadata } = createCliTools({
       cwd,
-      archiveDir,
       notesScope: { runId: "auto-run", notesDir: cwd },
     });
 
@@ -138,86 +128,13 @@ test("short non-replayable output is archived with structured metadata", async (
     });
     const replayable = await executeTool("exec", { command: "printf 'short=beta\\n'" });
 
-    // ADR-015 4a：非重放 exec 落 capture manifest（guard 证据），但模型文本不再带归档 stub；
-    // 可重放输出完全不归档（档案角色退役给引擎）
+    // ADR-015 4b：输出档案与 capture 证据都在 transcript（引擎 toolOutputs），CLI 零落盘
     assert.doesNotMatch(nonReplayable, /完整输出已归档/u);
     assert.match(nonReplayable, /short=alpha\n/u);
     assert.match(replayable, /short=beta\n/u);
     assert.doesNotMatch(replayable, /完整输出已归档/u);
-    const files = await readdir(archiveDir);
-    assert.deepEqual(
-      files.filter((name) => name.endsWith(".txt")),
-      ["001-exec.txt"],
-    );
-    const metadata = JSON.parse(await readFile(
-      path.join(archiveDir, "001-exec.meta.json"),
-      "utf8",
-    ));
-    assert.equal(metadata.replayable, false);
-    assert.equal(metadata.status, "ok");
     assert.equal(getLastToolMetadata().replayableSource, "unknown");
-    assert.equal(metadata.command, "printf 'short=alpha\\n'; printf %s \"$RANDOM\" >/dev/null");
-  });
-});
-
-test("ResourceStore-backed CLI artifacts use opaque locators and remain guard-readable", async () => {
-  await withTempDirectory(async (cwd) => {
-    const archiveDir = path.join(cwd, "outputs");
-    const resourceStore = createFileResourceStore({ dir: archiveDir });
-    const archived = await archiveResult(archiveDir, "exec", "nonce=opaque-value\n", 1, {
-      force: true,
-      replayable: false,
-      command: "printf opaque",
-      resourceStore,
-    });
-
-    assert.equal(archived.archivePath, undefined);
-    assert.ok(archived.artifact.locator);
-    assert.doesNotMatch(archived.artifact.artifactId, /-exec\.txt$/u);
-    assert.doesNotMatch(archived.artifact.display, /^\//u);
-    assert.doesNotMatch(archived.artifact.display, /-exec\.txt$/u);
-    assert.doesNotMatch(
-      buildArchiveNotice(archiveDir, resourceStore),
-      /(?:^|\s)\/(?:[^/\s]+\/)+/u,
-    );
-    const guard = createFinalGuard({ archiveDir, resourceStore });
-    assert.deepEqual(
-      await guard({ finalText: "nonce=opaque-value" }),
-      { action: "accept" },
-    );
-  });
-});
-
-test("truncated archives hash the bytes on disk and cannot pass provenance guard", async () => {
-  await withNotes(async (directory) => {
-    const archiveDir = path.join(directory, "outputs");
-    const output = "x".repeat(1048577);
-    const archived = archiveResult(archiveDir, "exec", output, 1, {
-      replayable: false,
-      command: "synthetic-large-output",
-      context: { toolUseId: "large-tool", round: 1 },
-    });
-    const archivePath = archived.artifact.archivePath;
-    const archivedBytes = await readFile(archivePath);
-    const sidecar = JSON.parse(await readFile(
-      path.join(archiveDir, "001-exec.meta.json"),
-      "utf8",
-    ));
-    const digest = createHash("sha256").update(archivedBytes).digest("hex");
-    assert.equal(archived.artifact.digest, digest);
-    assert.equal(sidecar.digest, digest);
-    assert.equal(archived.artifact.truncated, true);
-    assert.equal(archived.artifact.status, "truncated");
-    assert.equal(sidecar.truncated, true);
-    assert.equal(sidecar.status, "truncated");
-    assert.equal(sidecar.originalBytes, 1048577);
-
-    await scopedNotes.recordAutoCapture({
-      key: "truncated",
-      artifactRef: archived.artifact,
-    });
-    const guard = createFinalGuard({ runId: "auto-run", archiveDir });
-    assert.equal((await guard({ finalText: "任意值" })).action, "revise");
+    assert.equal(getLastToolMetadata().artifact, undefined);
   });
 });
 
@@ -249,8 +166,12 @@ test("auto_capture stores short values with their artifact references", async ()
     assert.equal(version.provenance.round, 4);
     assert.equal(version.provenance.verified, false);
     assert.equal(version.content, "result=alpha\n");
+    // ADR-015 4b：引用 = transcript 定位符（toolUseId/round/digest），零路径零 locator
+    assert.equal(version.artifactRef.toolUseId, "tool-1");
+    assert.equal(version.artifactRef.round, 4);
+    assert.equal(version.artifactRef.archivePath, undefined);
+    assert.equal(version.artifactRef.locator, undefined);
     assert.ok(version.artifactRef.digest);
-    assert.deepEqual(version.artifactRef.locator, { lineStart: 1, lineEnd: 1 });
     const read = JSON.parse(await scopedNotes.note_read({ key: record.key }));
     assert.equal(read.status, "found");
     assert.equal(read.value, "result=alpha\n");
@@ -443,9 +364,10 @@ test("runChat captures a non-replayable tool result before completing the run", 
     const record = await readOnlyRecord(directory, "integration-run");
     assert.equal(record.current.provenance.source, "auto");
     assert.equal(record.state, "done");
+    // ADR-015 4b：引用 = transcript 定位符（零路径零 locator）
     assert.equal(record.current.artifactRef.archivePath, undefined);
-    assert.ok(record.current.artifactRef.locator);
-    assert.match(record.current.artifactRef.display, /^resource:resource-[0-9a-f-]+$/u);
+    assert.equal(record.current.artifactRef.locator, undefined);
+    assert.ok(record.current.artifactRef.toolUseId);
     assert.equal(record.current.content, "result=integration\n");
   });
 });

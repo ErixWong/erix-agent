@@ -5,12 +5,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileTranscriptStore, safeRunId } from "../../src/store/file.js";
 import { transcriptStoreContract } from "../contract/transcript-store.js";
+import { recallContract } from "../contract/recall-contract.js";
 
 async function makeTempDir() {
   return mkdtemp(join(tmpdir(), "erix-llm-kit-file-store-"));
 }
 
 // 通用行为：契约套件（每次给干净目录 = 干净 store）
+recallContract("file", async () => {
+  // 同一工厂：契约内用完即弃
+  return createFileTranscriptStore({ dir: await mkdtemp(join(tmpdir(), "erix-file-recall-contract-")) });
+});
 transcriptStoreContract("file", async () => {
   const dir = await makeTempDir();
   return createFileTranscriptStore({ dir });
