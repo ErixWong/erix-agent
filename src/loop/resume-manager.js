@@ -200,6 +200,17 @@ export async function restoreResume(ctx) {
               ctx.resumeCheckpointResults.set(entry.toolUseId, entry.toolResult);
             }
           }
+          // ADR-015：崩溃前已归档的全量输出回填引擎缓冲（byte fidelity：recall 仍可取回）
+          for (const output of ctx.resumeCheckpoint.toolOutputs ?? []) {
+            if (typeof output?.content === "string" && output.content.length > 0) {
+              ctx.archivedOutputs.push({
+                toolUseId: output.toolUseId,
+                name: output.name,
+                round: ctx.resumeCheckpoint.round,
+                content: output.content,
+              });
+            }
+          }
           const recordedIds = new Set(
             ctx.messages.flatMap((message) => blocksFor(message?.content))
               .filter((block) => block?.type === "tool_result")

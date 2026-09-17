@@ -38,6 +38,12 @@ function recordFragments(record) {
       }
     }
   }
+  // ADR-015：全量归档输出也进语料（输出卫生的取回通道）
+  for (const output of record?.toolOutputs ?? []) {
+    if (typeof output?.content !== "string" || output.content.length === 0) continue;
+    fragments.push(`[第 ${record.round ?? "?"} 轮归档输出·${output.name ?? "tool"}]`);
+    fragments.push(output.content);
+  }
   return fragments;
 }
 

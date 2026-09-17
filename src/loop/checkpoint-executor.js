@@ -145,6 +145,23 @@ export function createCheckpointExecutor(ctx) {
       }
     }
 
+    // ADR-015 输出卫生：超限结果全量入档（round record 的 toolOutputs），上下文视图留 stub + recall 配方。
+    // 在 onToolResult 重写之后执行：宿主的改写/脱敏先行，引擎归档的是宿主最终交出的内容。
+    if (ctx.outputHygieneEnabled && execution.content.length > ctx.outputHygieneLimit) {
+      const fullText = execution.content;
+      ctx.archivedOutputs.push({
+        toolUseId: block.id,
+        name: toolName,
+        round,
+        content: fullText,
+      });
+      execution = {
+        ...execution,
+        content: `${fullText.slice(0, ctx.outputHygieneLimit)}`
+          + `\n[完整输出已由引擎归档（第 ${round} 轮，共 ${fullText.length} 字符）。`
+          + `需要原文：recall({ round: ${round}, pattern: "关键词" })]`,
+      };
+    }
     const toolResult = {
       type: "tool_result",
       tool_use_id: block.id,

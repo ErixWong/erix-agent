@@ -149,6 +149,12 @@ function* recordFragments(record, artifactRef) {
       if (text !== null) yield text;
     }
   }
+  // ADR-015：全量归档输出同属档案（输出卫生的取回通道）
+  for (const output of Array.isArray(record?.toolOutputs) ? record.toolOutputs : []) {
+    if (typeof output?.content === "string" && output.content.length > 0) {
+      yield output.content;
+    }
+  }
 }
 
 function sourceDigest(sourceVersion) {

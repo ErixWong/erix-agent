@@ -343,6 +343,15 @@ export function createFileTranscriptStore({ dir }) {
             hasFragment = true;
           }
         }
+        // ADR-015：全量归档输出同属档案（输出卫生的取回通道）
+        for (const output of record.toolOutputs ?? []) {
+          const text = typeof output?.content === "string" ? output.content : "";
+          if (text.length === 0) continue;
+          if (pattern !== undefined && !text.includes(pattern)) continue;
+          if (hasFragment) result += "\n";
+          result += text;
+          hasFragment = true;
+        }
       }
 
       return result;
