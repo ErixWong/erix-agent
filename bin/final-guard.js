@@ -129,20 +129,15 @@ async function sourceMatchesCapture(source, capture, { notesStore, runId } = {})
     || archivePath.endsWith(`/${target}`);
 }
 
-function capturePointer(capture, resourceStore) {
+function capturePointer(capture) {
   const pointers = [];
   if (capture?.key) pointers.push(`note_read key=${capture.key}`);
-  if (resourceStore !== undefined) {
-    pointers.push(`来源=归档:${archiveSourceTarget(capture)}`);
-  }
-  else if (capture?.display) pointers.push(`归档 ${capture.display}`);
-  else if (capture?.archivePath) pointers.push(`归档 ${capture.archivePath}`);
+  if (capture?.display) pointers.push(`来源=归档:${archiveSourceTarget(capture)}`);
+  else if (capture?.archivePath) pointers.push(`来源=归档:${path.basename(String(capture.archivePath))}`);
   return pointers.join(" / ") || "可信归档";
 }
-function archiveSourceHint(resourceStore) {
-  return resourceStore === undefined
-    ? "来源=归档:<文件名>"
-    : "来源=归档:resource:<display>";
+function archiveSourceHint() {
+  return "来源=归档:<文件名> 或 note_read:<key>";
 }
 
 /**
@@ -191,7 +186,7 @@ export function createFinalGuard({
       const captures = knownLabels.get(attribution.label) ?? [];
       const matching = captures.filter((capture) => capture.value === attribution.value);
       if (matching.length === 0) {
-        const pointer = captures[0] ? capturePointer(captures[0], resourceStore) : "可信归档";
+        const pointer = captures[0] ? capturePointer(captures[0]) : "可信归档";
         return revise(
           `终稿中的 ${attribution.label}=${attribution.value} 未对应本 run 的任何捕获值。请读取 ${pointer} 核实原始值，不得重跑命令；若确认无法恢复，请明确说明不可恢复。`,
         );
@@ -209,7 +204,7 @@ export function createFinalGuard({
       }
       if (!cited) {
         return revise(
-          `终稿中的 ${attribution.label}=${attribution.value} 是后续重跑捕获值，但没有来源指向对应 artifact。请补充来源=note_read:<key> 或 ${archiveSourceHint(resourceStore)}，或改用首次捕获值；不得把重跑值当作原值。`,
+          `终稿中的 ${attribution.label}=${attribution.value} 是后续重跑捕获值，但没有来源指向对应 artifact。请补充来源=note_read:<key> 或 ${archiveSourceHint()}，或改用首次捕获值；不得把重跑值当作原值。`,
         );
       }
     }
@@ -230,7 +225,7 @@ export function createFinalGuard({
       }
       if (!cited) {
         return revise(
-          `终稿包含后续捕获值 ${capture.value} 但没有可验证来源（${capturePointer(capture, resourceStore)}）。请补充来源=note_read:<key> 或 ${archiveSourceHint(resourceStore)}，或改用首次捕获值；不得重跑命令。`,
+          `终稿包含后续捕获值 ${capture.value} 但没有可验证来源（${capturePointer(capture)}）。请补充来源=note_read:<key> 或 ${archiveSourceHint()}，或改用首次捕获值；不得重跑命令。`,
         );
       }
       rerunCited = true;

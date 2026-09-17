@@ -774,7 +774,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       : undefined,
     onToolResult: (_name, result) => {
       idle?.touch();
-      return cliTools.truncateResult(result);
+      // ADR-015 4a：截断/归档退役给引擎（outputHygiene），CLI 不再二次截断
+      return result;
     },
     onRound: (info) => {
       idle?.touch();

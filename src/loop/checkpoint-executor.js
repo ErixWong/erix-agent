@@ -159,7 +159,7 @@ export function createCheckpointExecutor(ctx) {
         ...execution,
         content: `${fullText.slice(0, ctx.outputHygieneLimit)}`
           + `\n[完整输出已由引擎归档（第 ${round} 轮，共 ${fullText.length} 字符）。`
-          + `需要原文：recall({ round: ${round}, pattern: "关键词" })]`,
+          + `需要原文：recall({ round: ${round}, pattern: "关键词" })；不要重跑有副作用的命令]`,
       };
     }
     const toolResult = {

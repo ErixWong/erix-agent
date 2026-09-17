@@ -229,27 +229,20 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 [工具纪律]
 - 复杂任务先规划并逐步执行；长任务用 todo 工具记录进度
 - 大文件用 readFile 的 offset/limit 分段读取，操作后验证结果
-- 具体数值必须来自当前工具返回或明确的归档文件，不得编造
-- 不要主动读取密钥、凭据或 .env 文件；只读取本次工具返回明确给出的归档路径
+- 具体数值必须来自当前工具返回、note_read 或捕获记录，不得编造
+- 不要主动读取密钥、凭据或 .env 文件；只用本次工具返回明确给出的来源
 - 任务完成后直接汇报结果，默认使用中文`;
 
 export function buildCliToolsSystemPrompt(resourceStore) {
-  if (resourceStore === undefined) return CLI_TOOLS_SYSTEM_PROMPT;
-  return CLI_TOOLS_SYSTEM_PROMPT
-    .replaceAll("或来源=归档:<文件名>", "或来源=归档:resource:<display>")
-    .replaceAll("或明确的归档文件", "或 ResourceStore 中的 opaque 工件")
-    .replaceAll(
-      "只读取本次工具返回明确给出的归档路径",
-      "只使用本次工具返回明确给出的 opaque 工件",
-    );
+  // ADR-015：ResourceStore 退出模型视野——所有宿主形态同一份提示词，不提 opaque 工件/路径。
+  void resourceStore;
+  return CLI_TOOLS_SYSTEM_PROMPT;
 }
 
 export function buildArchiveNotice(archiveDir, resourceStore) {
+  void resourceStore;
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
-  if (resourceStore !== undefined) {
-    return "\n\n[工具输出归档]\n本次运行的完整输出由 ResourceStore 保存。需要早期原文时先用 note_list、note_read 或 final guard 恢复对应记录；禁止遍历归档目录、重跑非幂等命令或凭记忆补值。";
-  }
-  return `\n\n[工具输出归档]\n本次运行的归档目录：${path.resolve(archiveDir)}。需要早期原文时读取明确的归档文件或先用 note_list、note_read 恢复记录；禁止遍历归档目录、重跑非幂等命令或凭记忆补值。`;
+  return "\n\n[工具输出归档]\n大输出已由引擎全量归档。需要早期原文时用 recall({ pattern: \"关键词\" }) 取回，捕获值用 note_list/note_read 读取；禁止重跑非幂等命令或凭记忆补值。";
 }
 
 
@@ -660,16 +653,13 @@ function artifactStatus(artifact) {
   }
 }
 
-function rerunGuidance({ count, firstArtifact, firstValue, status, resourceStore }) {
+function rerunGuidance({ count, firstValue, status }) {
   const displayValue = typeof firstValue === "string" && firstValue.length > 0
     ? firstValue
     : status === "ok" || status === "truncated"
-      ? "见首次执行归档"
+      ? "见首次输出"
       : "不可恢复";
-  const display = resourceStore === undefined
-    ? firstArtifact?.display ?? firstArtifact?.archivePath ?? "无归档"
-    : "ResourceStore 中的 opaque locator";
-  return `[⚠️ 这是第 ${count} 次执行，值与首次可能不同；首次执行记录：${displayValue}（${display}）；工件状态：${status}]`;
+  return `[⚠️ 这是第 ${count} 次执行同一命令，值与首次可能不同；首次执行记录：${displayValue}；早期原文可 recall({ pattern: "关键词" }) 取回；不得把重跑值当作原值。]`;
 }
 
 function normalizeCommand(command) {
@@ -999,14 +989,15 @@ export function createCliTools({
 
     const result = await executor(normalizedInput);
     let returnedResult = result;
-    const shouldArchive = archiveRoot && (
-      String(result ?? "").length > ARCHIVE_THRESHOLD
-      || name === "exec"
-    );
+    // ADR-015 4a：输出档案角色整体退役给引擎（transcript toolOutputs + recall）。
+    // ResourceStore 只保留 capture 证据角色：非重放 exec 才落 capture manifest（guard 核验专用）。
+    const shouldArchive = archiveRoot !== undefined
+      && name === "exec"
+      && replayableValue === false;
     if (shouldArchive) {
       archiveSequence += 1;
       const archived = await archiveResult(archiveRoot, name, result, archiveSequence, {
-        force: name === "exec",
+        force: true,
         replayable: replayableValue,
         replayableSource,
         command,
@@ -1015,7 +1006,6 @@ export function createCliTools({
       });
       if (archived !== null) {
         archiveSequence = Math.max(archiveSequence, archived.sequence ?? archiveSequence);
-        returnedResult = archived.text;
         lastToolMetadata = metadataWithPrivateOutput({
           name,
           replayable: replayableValue,
@@ -1027,7 +1017,7 @@ export function createCliTools({
         if (archived.artifact?.artifactId) {
           knownArchiveArtifacts.add(archived.artifact.artifactId);
         }
-        if (name === "exec" && replayableValue === false && archived.artifact) {
+        if (replayableValue === false && archived.artifact) {
           captureCount += 1;
           runState.captureCount = captureCount;
         }
@@ -1040,30 +1030,24 @@ export function createCliTools({
         ?.split(/\r\n|\r|\n/u)[0]
         ?.replaceAll(/\s+/gu, " ")
         ?.slice(0, 200);
-      const rerunOf = {
-        round: firstArtifact?.round ?? null,
-        artifactId: firstArtifact?.artifactId ?? null,
-        archivePath: firstArtifact?.archivePath ?? null,
-        digest: firstArtifact?.digest ?? null,
-        locator: firstArtifact?.locator ?? null,
-        status,
-      };
       runState.rerunDetected = true;
       lastToolMetadata = metadataWithPrivateOutput({
         ...lastToolMetadata,
-        rerunOf,
-        artifactStatus: lastToolMetadata?.artifactStatus ?? "unrecoverable",
+        rerunOf: {
+          round: firstArtifact?.round ?? null,
+          artifactId: firstArtifact?.artifactId ?? null,
+          digest: firstArtifact?.digest ?? null,
+          status,
+        },
+        ...(firstArtifact ? { artifactStatus: lastToolMetadata?.artifactStatus ?? status } : {}),
       }, lastToolMetadata?.fullOutput);
       returnedResult = `${rerunGuidance({
         count: commandState.count,
-        firstArtifact,
         firstValue,
         status,
-        resourceStore,
       })}\n${String(returnedResult ?? "")}`;
     }
-    const finalResult = name === "exec" ? truncateResult(returnedResult) : returnedResult;
-    return finalResult;
+    return returnedResult;
   }
 
   return {
