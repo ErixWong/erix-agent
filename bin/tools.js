@@ -418,7 +418,9 @@ export function wrapExecuteTool(
     try {
       const result = await executeTool(name, input, context);
       const metadata = getToolMetadata?.();
-      await capture({
+      // #109 第2步：捕获返回值不再丢弃——存储故障经通用报告桥入账（事件 + 账单），
+      // 引擎无桥时（直接调用/测试）退回 console.error，但不伪装成功。
+      const captureResult = await capture({
         name,
         input,
         result,
@@ -427,6 +429,17 @@ export function wrapExecuteTool(
         round: context?.round,
         notesScope,
       });
+      if (captureResult?.status === "error") {
+        const failure = {
+          port: "notes",
+          operation: "auto_capture",
+          phase: "write",
+          error: captureResult.error,
+        };
+        if (typeof context?.reportPersistenceFailure === "function") {
+          await context.reportPersistenceFailure(failure);
+        }
+      }
       output(`← ${name}: ${summarizeToolResult(name, result)}`);
       if (returnMetadata && typeof getToolMetadata === "function") {
         const metadata = getToolMetadata() ?? {};

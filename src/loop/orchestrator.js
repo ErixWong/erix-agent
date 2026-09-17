@@ -192,14 +192,14 @@ function persistenceInfoFor(error) {
   return undefined;
 }
 
-function persistenceErrorEvent({ port = "transcript", operation, phase, runId, sideEffect, error }) {
+function persistenceErrorEvent({ port = "transcript", operation, phase, runId, sideEffect, error, fatal = true }) {
   return {
     type: "persistence_error",
     port,
     phase,
     operation,
     runId,
-    fatal: true,
+    fatal,
     sideEffect,
     error: {
       name: String(error?.name ?? "Error"),
@@ -581,6 +581,23 @@ export async function runToolLoop(options) {
       }
     }
   };
+  // #109 第2步：通用持久化失败报告桥——宿主端口（notes 等）写失败的唯一入账通道。
+  // 引擎不认识 notes：宿主只报 port/operation/phase/error；非致命（继续 + 事件 + 账单）。
+  // 经 executeTool context 注入，宿主调它即可获得与 transcript 同构的事件/账单/observer 链路。
+  const reportHostPersistenceFailure = async (info = {}) => {
+    const event = persistenceErrorEvent({
+      port: typeof info.port === "string" && info.port !== "" ? info.port : "host",
+      operation: typeof info.operation === "string" && info.operation !== ""
+        ? info.operation
+        : "unknown",
+      phase: typeof info.phase === "string" && info.phase !== "" ? info.phase : "write",
+      runId,
+      sideEffect: info.sideEffect,
+      error: info.error,
+      fatal: false,
+    });
+    await reportPersistenceError(info.error, event);
+  };
   const reportObserverError = (error) => {
     if (typeof onObserverError === "function") {
       try {
@@ -714,15 +731,19 @@ export async function runToolLoop(options) {
         ...(budgetTokens === undefined ? {} : { budgetTokens }),
         ...(resourceStore === undefined ? {} : { resourceStore }),
       };
-  const baseToolContext = toolContextFor({
-    toolContext,
-    context,
-    expert,
-    user,
-    task,
-    session,
-    requestId,
-  });
+  const baseToolContext = {
+    ...toolContextFor({
+      toolContext,
+      context,
+      expert,
+      user,
+      task,
+      session,
+      requestId,
+    }),
+    // #109 第2步：宿主侧端口（notes 等）持久化失败的通用报告桥
+    reportPersistenceFailure: reportHostPersistenceFailure,
+  };
   const toolSignal = signal ?? new AbortController().signal;
   // reflection 未显式配置时，长任务（>=16 轮）默认开启基础 judge——无头宿主零配置获得保护
   const resolvedReflectionOption = reflection === undefined

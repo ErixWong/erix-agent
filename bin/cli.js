@@ -784,8 +784,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     onJudge,
   };
 
+  let loopResult;
   try {
     const result = await (loopOverride ?? runToolLoop)(loopOptions);
+    loopResult = result;
     const compacted = result.compactionStats.some((stat) => stat.compacted === true);
     const protectedDowngraded = result.compactionStats.reduce(
       (total, stat) => total + (Number.isSafeInteger(stat.protectedDowngraded)
@@ -819,11 +821,41 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     throw error;
   } finally {
     idle?.dispose();
+    // #109 第2步/修正4：收尾失败进 completionErrors[]，不互覆盖、不掩盖主结果；
+    // 主结果已异常时原异常仍为主，收尾错误仅 console 留痕（宿主可见）。
+    const completionErrors = [];
     try {
       await skillTools.notesCompleteRun?.({ __erix: { runId, notesDir, notesStore } });
+    } catch (error) {
+      completionErrors.push({ operation: "notes_complete_run", error });
+    }
+    try {
       await skillTools.notesJanitor?.({ __erix: { runId, notesDir, notesStore } });
-    } finally {
+    } catch (error) {
+      completionErrors.push({ operation: "notes_janitor", error });
+    }
+    try {
       await closeAllMcpServers();
+    } catch (error) {
+      completionErrors.push({ operation: "mcp_close", error });
+    }
+    if (completionErrors.length > 0) {
+      for (const failure of completionErrors) {
+        console.error(`completion error (${failure.operation}): ${failure.error?.message ?? String(failure.error)}`);
+      }
+      if (loopResult && typeof loopResult === "object") {
+        loopResult.completionErrors = [
+          ...(Array.isArray(loopResult.completionErrors) ? loopResult.completionErrors : []),
+          ...completionErrors.map((failure) => ({
+            phase: "cli_completion",
+            operation: failure.operation,
+            error: {
+              name: String(failure.error?.name ?? "Error"),
+              message: String(failure.error?.message ?? failure.error).slice(0, 500),
+            },
+          })),
+        ];
+      }
     }
   }
 }

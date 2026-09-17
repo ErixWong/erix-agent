@@ -455,7 +455,10 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
       });
     }
   } catch (error) {
-    return invalid(key, error?.message ?? String(error));
+    // #109 第2步：主动拒绝（输入/记录校验，NotesStoreError）保持 invalid 返回；
+    // 存储故障（IO 等）原样上抛，不得伪装成输入拒绝（吞错修复）。
+    if (error?.name === "NotesStoreError") return invalid(key, error?.message ?? String(error));
+    throw error;
   }
   return json({
     status: "found",

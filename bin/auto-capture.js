@@ -140,7 +140,9 @@ export async function captureToolExecution({
       key,
     };
   } catch (error) {
+    // #109 第2步：存储故障如实上报 status:"error"（不再是伪装的 invalid）；
+    // 主动拒绝（输入校验）已在 writeNote 内部以 status:"invalid" 返回，不走这里。
     console.error(`auto_capture failed: ${error?.message ?? String(error)}`);
-    return { status: "invalid", count: 0 };
+    return { status: "error", count: 0, error };
   }
 }
