@@ -721,6 +721,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     runId,
     runState,
     resume,
+    // ADR-015：notes 小抄目录经 semantic 槽位注入 run-state 块（折叠时注入，正好对准失忆点）
+    ...(notesDisabled || !notesStore ? {} : {
+      semanticStateProvider: createNotesDirectoryProvider({ notesStore, runId }),
+    }),
     tools: tools.tools,
     executeTool: async (execution) => {
       const result = await executeTool(execution);
@@ -770,7 +774,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       : undefined,
     onToolResult: (_name, result) => {
       idle?.touch();
-      return cliTools.truncateResult(result);
+      // ADR-015 4a：截断/归档退役给引擎（outputHygiene），CLI 不再二次截断
+      return result;
     },
     onRound: (info) => {
       idle?.touch();
@@ -884,6 +889,51 @@ export function exitCodeForVerification(verification) {
   if (verification?.status === "unverified") return 2;
   if (verification?.status === "error") return 3;
   return 0;
+}
+
+// ADR-015：notes 小抄目录 → semantic 槽位（引擎在折叠时注入 run-state 块，对准失忆点）。
+// 只在折叠发生时被引擎调用；空目录返回 undefined（无语义文本，不装懂）；list 失败同侀。
+export function createNotesDirectoryProvider({ notesStore, runId }) {
+  return async ({ state }) => {
+    let records;
+    try {
+      records = await notesStore.list({ scopeRef: runId });
+    } catch {
+      return undefined;
+    }
+    if (!Array.isArray(records)) return undefined;
+    const entries = records
+      .filter((record) => record?.state === "active"
+        && typeof record?.key === "string" && record.key !== "")
+      .sort((a, b) => (
+        (b?.pinned === true ? 1 : 0) - (a?.pinned === true ? 1 : 0)
+        || String(b?.updated_at ?? "").localeCompare(String(a?.updated_at ?? ""))
+      ))
+      .slice(0, 20);
+    if (entries.length === 0) return undefined;
+    const summaryOf = (record) => {
+      const current = record.current;
+      const raw = typeof current === "string"
+        ? current
+        : String(current?.summary ?? current?.content ?? "");
+      const firstLine = raw.split("\n")[0]?.trim() ?? "";
+      return firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
+    };
+    const lines = entries.map((record) => {
+      const flags = [
+        record.pinned === true ? "★" : null,
+        typeof record.source === "string" && record.source !== ""
+          ? `@${record.source}`
+          : null,
+      ].filter(Boolean).join(" ");
+      return `- ${record.key}${flags ? ` (${flags})` : ""}: ${summaryOf(record)}`;
+    });
+    return {
+      text: ["[notes 小抄目录]（note_read key=... 取全文）", ...lines].join("\n"),
+      version: state?.stateVersion,
+      status: "ok",
+    };
+  };
 }
 
 if (

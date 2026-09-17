@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -74,7 +75,13 @@ test("replayability records declared, policy, heuristic, and unknown sources", a
       const metadata = tools.getLastToolMetadata();
       assert.equal(metadata.replayableSource, item.source, item.name);
       assert.equal(metadata.replayable, item.source === "unknown" ? undefined : false);
-      assert.match(result, /完整输出已归档/u, item.name);
+      // ADR-015 4a：非重放 exec 落 capture manifest（guard 专用），模型文本不再带归档 stub
+      assert.doesNotMatch(result, /完整输出已归档/u, item.name);
+      assert.equal(
+        metadata.artifactStatus === undefined,
+        item.source === "unknown",
+        item.name,
+      );
     }
 
     const unknownTools = createCliTools({
@@ -219,32 +226,28 @@ test("install/compile commands get extended timeout while regular commands keep 
   }
 });
 
-test("exec truncates output at 4096 characters", async () => {
+test("exec returns full output (truncation retired to engine outputHygiene, ADR-015)", async () => {
   const { executeTool } = createCliTools();
   const result = await executeTool("exec", { command: "head -c 5000 /dev/zero" });
-  assert.equal(result.slice(0, 4096), "\0".repeat(4096));
-  assert.match(result, /\n\[已截断，共 5000 字符\]$/);
+  assert.equal(result.length, 5000);
+  assert.doesNotMatch(result, /已截断/);
 });
 
-test("archives large tool output and reads it back through readFile", async () => {
+test("replayable large output is returned in full; ResourceStore no longer archives it (ADR-015)", async () => {
   await withDirectory(async (cwd) => {
     const archiveDir = join(cwd, "outputs");
     const { executeTool } = createCliTools({ cwd, archiveDir });
     const result = await executeTool("exec", { command: "seq 1 500" });
-    const archivePath = join(archiveDir, "001-exec.txt");
-
-    assert.ok(result.includes(`[完整输出已归档：${archivePath}`));
+    assert.ok(result.includes("500"));
+    assert.doesNotMatch(result, /完整输出已归档/);
     assert.equal(
-      await readFile(archivePath, "utf8"),
-      `${Array.from({ length: 500 }, (_, index) => index + 1).join("\n")}\n`,
+      existsSync(archiveDir) ? readdirSync(archiveDir).filter((name) => name.endsWith(".txt")).length : 0,
+      0,
     );
-
-    const reread = await executeTool("readFile", { path: archivePath, offset: 499, limit: 1 });
-    assert.match(reread, /^500: 500/m);
   });
 });
 
-test("reruns execute and report the first archived output path", async () => {
+test("reruns get recall-style guidance without paths (ADR-015)", async () => {
   await withDirectory(async (cwd) => {
     const archiveDir = join(cwd, "outputs");
     const { executeTool } = createCliTools({ cwd, archiveDir });
@@ -252,12 +255,15 @@ test("reruns execute and report the first archived output path", async () => {
 
     const first = await executeTool("exec", { command });
     const second = await executeTool("exec", { command });
-    const archivePath = join(archiveDir, "001-exec.txt");
 
     assert.doesNotMatch(first, /这是第 2 次执行/u);
     assert.match(second, /这是第 2 次执行/u);
-    assert.match(second, new RegExp(`首次执行记录：见首次执行归档（${archivePath}`));
-    assert.equal((await readdir(archiveDir)).filter((name) => name.endsWith(".txt")).length, 2);
+    assert.match(second, /recall\(\{ pattern/u);
+    assert.doesNotMatch(second, new RegExp(archiveDir.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+    assert.equal(
+      existsSync(archiveDir) ? readdirSync(archiveDir).filter((name) => name.endsWith(".txt")).length : 0,
+      0,
+    );
   });
 });
 
@@ -432,7 +438,7 @@ test("reports missing and stale first artifacts without blocking the rerun", asy
     await rm(join(archiveDir, "001-exec.txt"));
     const missing = await missingTools.executeTool("exec", { command: "printf missing" });
     assert.match(missing, /这是第 2 次执行/u);
-    assert.match(missing, /工件状态：missing/u);
+    assert.equal(missingTools.getLastToolMetadata().rerunOf.status, "missing");
 
     const staleTools = createCliTools({
       cwd,
@@ -443,7 +449,7 @@ test("reports missing and stale first artifacts without blocking the rerun", asy
     await writeFile(join(cwd, "stale-outputs", "001-exec.txt"), "changed", "utf8");
     const stale = await staleTools.executeTool("exec", { command: "printf stale" });
     assert.match(stale, /这是第 2 次执行/u);
-    assert.match(stale, /工件状态：stale/u);
+    assert.equal(staleTools.getLastToolMetadata().rerunOf.status, "stale");
   });
 });
 
@@ -557,7 +563,8 @@ test("archives replayable reruns independently instead of blocking them", async 
     const second = await executeTool("exec", { command });
 
     assert.match(second, /这是第 2 次执行/u);
-    assert.match(second, /首次执行记录：见首次执行归档/u);
+    assert.match(second, /recall\(\{ pattern/u);
+    assert.doesNotMatch(second, /归档/u);
   });
 });
 
@@ -595,10 +602,10 @@ test("continues returning tool output when the archive cannot be written", async
     const result = await executeTool("exec", { command: "seq 1 500" });
     const repeated = await executeTool("exec", { command: "seq 1 500" });
 
-    assert.match(result, /完整输出归档失败/u);
+    // ADR-015 4a：可重放输出不再归档，全文直返（写失败也无所谓）
+    assert.doesNotMatch(result, /完整输出归档失败/u);
     assert.match(result, /1\n2\n3/u);
     assert.match(repeated, /这是第 2 次执行/u);
-    assert.match(repeated, /工件状态：unrecoverable/u);
     assert.match(repeated, /1\n2\n3/u);
     assert.doesNotMatch(repeated, /原始输出在 .*archive-file/u);
   });

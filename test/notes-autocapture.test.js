@@ -138,13 +138,16 @@ test("short non-replayable output is archived with structured metadata", async (
     });
     const replayable = await executeTool("exec", { command: "printf 'short=beta\\n'" });
 
-    assert.match(nonReplayable, /完整输出已归档/u);
+    // ADR-015 4a：非重放 exec 落 capture manifest（guard 证据），但模型文本不再带归档 stub；
+    // 可重放输出完全不归档（档案角色退役给引擎）
+    assert.doesNotMatch(nonReplayable, /完整输出已归档/u);
+    assert.match(nonReplayable, /short=alpha\n/u);
     assert.match(replayable, /short=beta\n/u);
-    assert.match(replayable, /完整输出已归档/u);
+    assert.doesNotMatch(replayable, /完整输出已归档/u);
     const files = await readdir(archiveDir);
     assert.deepEqual(
       files.filter((name) => name.endsWith(".txt")),
-      ["001-exec.txt", "002-exec.txt"],
+      ["001-exec.txt"],
     );
     const metadata = JSON.parse(await readFile(
       path.join(archiveDir, "001-exec.meta.json"),
@@ -375,7 +378,7 @@ test("non-identical non-replayable executions are allowed without a duplicate wa
       command: "bash -lc 'printf \"nonce=second\\n\"; : \"$RANDOM\"'",
     });
 
-    assert.match(first, /完整输出已归档/u);
+    assert.doesNotMatch(first, /完整输出已归档/u);
     assert.doesNotMatch(rerun, /重跑警示/u);
     assert.doesNotMatch(rerun, /拦截/u);
     assert.equal(runState.rerunDetected, false);

@@ -199,8 +199,9 @@ test("S3 executes a repeated command and reports first-run provenance", async ()
     assert.equal(secondResult.rerunOf.artifactId, "001-exec.txt");
     assert.equal(secondResult.rerunOf.round, 1);
     assert.equal(typeof secondResult.rerunOf.digest, "string");
-    assert.equal(typeof secondResult.rerunOf.locator, "object");
-    assert.equal(secondResult.rerunOf.archivePath, path.join(archiveDir, "001-exec.txt"));
+    // ADR-015 4a：rerunOf 不再携带路径/locator（模型可见文本零路径）
+    assert.equal(secondResult.rerunOf.archivePath, undefined);
+    assert.equal(secondResult.rerunOf.locator, undefined);
     assert.deepEqual(
       (await readdir(archiveDir)).filter((name) => name.endsWith(".txt")).sort(),
       ["001-exec.txt", "002-exec.txt"],

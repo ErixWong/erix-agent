@@ -219,7 +219,7 @@ test("runRepl aborts the active loop on SIGINT and keeps readline open", async (
   }
 });
 
-test("runRepl resumes from the transcript store without a recall tool", async () => {
+test("runRepl resumes from the transcript store with the engine-standard recall tool (ADR-015)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "erix-repl-store-test-"));
   const input = new PassThrough();
   input.isTTY = true;
@@ -243,10 +243,12 @@ test("runRepl resumes from the transcript store without a recall tool", async ()
     await run;
 
     assert.equal(provider.requests.length, 2);
-    assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), false);
-    assert.match(provider.requests[0].system, /ResourceStore 保存/u);
+    assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), true);
+    // ADR-015 4a：归档提示零路径、不提 ResourceStore
+    assert.match(provider.requests[0].system, /大输出已由引擎全量归档/u);
     assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/repl-store`));
-    assert.match(provider.requests[0].system, /不得重跑/u);
+    assert.doesNotMatch(provider.requests[0].system, /ResourceStore/u);
+    assert.match(provider.requests[0].system, /禁止重跑非幂等命令/u);
     assert.ok(provider.requests[1].messages.some((message) => (
       message.role === "user"
       && message.content?.some((block) => block.text === "second")

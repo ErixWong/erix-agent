@@ -582,7 +582,9 @@ test("final guard revises a rerun-generated value not found in the artifact", as
     const result = await guard({ finalText: "原值 nonce=Def456+LMN012" });
     assert.equal(result.action, "revise");
     assert.match(result.message, /note_read/u);
-    assert.match(result.message, new RegExp(archivePath.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+    // ADR-015 4a：guard 提示不再给绝对路径，改指 capture 记录名
+    assert.match(result.message, /来源=归档:001-exec\.txt/u);
+    assert.doesNotMatch(result.message, new RegExp(archivePath.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
     assert.match(result.message, /不得重跑/u);
   });
 });
