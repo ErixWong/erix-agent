@@ -45,9 +45,10 @@ function normalizeGoldenEnvironment(value, cwd, fixtureCwd) {
 }
 
 test("CLI prompt constrains provenance of one-shot values", () => {
-  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /非幂等命令/u);
-  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不得重跑/u);
-  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /具体数值必须来自当前工具返回、note_read 或捕获记录/u);
+  // ADR-016：重跑风险降为提示语一行（不再提幂等分类）
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /重跑同一命令可能得到不同的值/u);
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /需要早期精确值时用 recall 取回/u);
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /具体数值必须来自当前工具返回或 note_read/u);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不要主动读取密钥、凭据或 \.env/u);
 });
 
@@ -67,7 +68,6 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
     notesDir,
     notesStore: createFileNotesStore({ dir: notesDir }),
     resourceStore: undefined,
-    runState: { rerunDetected: false, captureCount: 0 },
     store: createMemoryTranscriptStore(),
   };
   try {
@@ -110,12 +110,11 @@ test("CLI formats guard metrics and shows disabled guards explicitly", () => {
         verified: 1,
         skipped: 0,
         revised: 1,
-        rerun_cited: 0,
         unverified: 0,
         guard_error: 0,
       },
     }),
-    "guard={verified:1,skipped:0,revised:1,rerun_cited:0,unverified:0,guard_error:0}",
+    "guard={verified:1,skipped:0,revised:1,unverified:0,guard_error:0}",
   );
   assert.equal(
     formatGuardMetrics({ status: "skipped", reason: "no_final_guard" }),
@@ -145,7 +144,7 @@ test("archive guidance is present once in the system prompt", async () => {
     assert.match(system, /recall\(\{ pattern/u);
     assert.doesNotMatch(system, new RegExp(`${dir}/outputs/archive-guidance-run`));
     assert.doesNotMatch(system, /ResourceStore|opaque 工件|明确的归档文件|归档目录：/u);
-    assert.match(system, /禁止重跑非幂等命令/u);
+    assert.doesNotMatch(system, /幂等/u);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -295,7 +294,7 @@ test("chat loop wires a file transcript store with the engine-standard recall to
     assert.match(provider.requests[0].system, /大输出已由引擎全量归档/u);
     assert.doesNotMatch(provider.requests[0].system, /ResourceStore/u);
     assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/chat-wiring`));
-    assert.match(provider.requests[0].system, /禁止重跑非幂等命令/u);
+    assert.doesNotMatch(provider.requests[0].system, /幂等/u);
     const records = await createFileTranscriptStore({ dir }).load("chat-wiring");
     assert.deepEqual(records.map((record) => record.round), [0, 1]);
   } finally {

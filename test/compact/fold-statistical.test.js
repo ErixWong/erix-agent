@@ -166,7 +166,7 @@ test("legacy fold summaries are read but never removed from user content", async
   assert.ok(result.messages[0].content.some((block) => block.text === legacy));
 });
 
-test("retains an injected stub for a folded non-replayable tool result", async () => {
+test("retains an injected stub for a folded tool result", async () => {
   const messages = [
     { role: "user", content: "task" },
     {
@@ -178,7 +178,6 @@ test("retains an injected stub for a folded non-replayable tool result", async (
       content: [{
         type: "tool_result",
         tool_use_id: "capture",
-        replayable: false,
         artifact: { archivePath: "/tmp/001-exec.txt" },
         content: "nonce=hidden",
       }],
@@ -188,7 +187,7 @@ test("retains an injected stub for a folded non-replayable tool result", async (
   ];
   const result = await createFoldStatisticalStrategy().compact(messages, {
     keepRounds: 1,
-    stubFor: () => "[已折叠] 本命令不可重放；值：nonce=abc123；原文：/tmp/001-exec.txt",
+    stubFor: () => "[已折叠] 值：nonce=abc123；原文：/tmp/001-exec.txt",
   });
   const summary = result.messages[0].content[0].text;
   assert.match(summary, /nonce=abc123/u);
@@ -207,7 +206,6 @@ test("does not change folding when no stub hook is injected", async () => {
       content: [{
         type: "tool_result",
         tool_use_id: "capture",
-        replayable: false,
         content: "hidden",
       }],
     },
@@ -245,8 +243,7 @@ test("records bounded navigation without values and preserves archive digests", 
         content: [{
           type: "tool_result",
           tool_use_id: `use-${index}`,
-          replayable: false,
-          artifact,
+            artifact,
           content: `credential=must-not-enter-summary-${index}`,
         }],
       },
@@ -257,7 +254,7 @@ test("records bounded navigation without values and preserves archive digests", 
   const result = await createFoldStatisticalStrategy().compact(messages, {
     keepRounds: 1,
     roundNumbers: Array.from({ length: 25 }, (_, index) => index + 1),
-    stubFor: () => "[已折叠] 原文：/tmp/archive/001-exec.txt（不可重放）",
+    stubFor: () => "[已折叠] 原文：/tmp/archive/001-exec.txt",
   });
 
   assert.deepEqual(result.foldedRoundRange, { from: 1, to: 12 });
@@ -295,7 +292,6 @@ test("keeps opaque resource locators and host display strings unchanged", async 
       content: [{
         type: "tool_result",
         tool_use_id: "opaque",
-        replayable: false,
         artifact: {
           locator,
           display: "db://archives/opaque/001",
@@ -328,8 +324,7 @@ test("preserves legacy archive identifiers and explicit navigation statuses", as
         content: [{
           type: "tool_result",
           tool_use_id: status,
-          replayable: false,
-          artifact,
+            artifact,
           content: "hidden",
         }],
       },
@@ -357,7 +352,6 @@ test("no-artifact-id keeps the legacy navigation record byte-identical", async (
       content: [{
         type: "tool_result",
         tool_use_id: "no-id",
-        replayable: false,
         artifact,
         content: "hidden",
       }],
@@ -404,7 +398,6 @@ test("materializes fold resources through ResourceStore before rendering stubs",
       content: [{
         type: "tool_result",
         tool_use_id: "resource",
-        replayable: false,
         artifact: { resource: "archive bytes" },
         content: "archive bytes",
       }],
@@ -435,7 +428,6 @@ test("replaces summaries, navigation, and stubs across two and three folds", asy
       content: [{
         type: "tool_result",
         tool_use_id: "a",
-        replayable: false,
         artifact: artifact("001-exec.txt"),
         content: "first-secret",
       }],
@@ -464,7 +456,6 @@ test("replaces summaries, navigation, and stubs across two and three folds", asy
       content: [{
         type: "tool_result",
         tool_use_id: "b",
-        replayable: false,
         artifact: artifact("002-exec.txt"),
         content: "second-secret",
       }],
@@ -503,7 +494,6 @@ test("replaces summaries, navigation, and stubs across two and three folds", asy
       content: [{
         type: "tool_result",
         tool_use_id: "c",
-        replayable: false,
         artifact: artifact("003-exec.txt"),
         content: "third-secret",
       }],

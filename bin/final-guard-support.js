@@ -2,7 +2,21 @@ import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
-import { autoCaptureKey, candidateLines } from "./auto-capture.js";
+import { normalizedLabel } from "../skills/notes/credential-patterns.mjs";
+
+const LABEL_PATTERN = /^\s*([^:=\s][^:=\s]{0,80}?)\s*=\s*(.*?)\s*$/u;
+
+export function candidateLines(output) {
+  const candidates = [];
+  for (const rawLine of String(output ?? "").replaceAll(/\r\n|\r/gu, "\n").split("\n")) {
+    const match = LABEL_PATTERN.exec(rawLine);
+    if (!match) continue;
+    const label = normalizedLabel(match[1]);
+    const value = match[2].trim();
+    if (label && value) candidates.push({ label, value });
+  }
+  return candidates;
+}
 import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 
 
@@ -35,7 +49,7 @@ async function captureStubForResult(block) {
     const lines = safeCandidates
       .slice(0, 3)
       .map(({ label, value }) => `${label}=${value}`);
-    const prefix = "[已折叠] 本命令不可重放；值：";
+    const prefix = "[已折叠] 值：";
     const suffix = "；原文可 recall({ pattern: \"关键词\" }) 取回";
     let result = `${prefix}${lines.join("；")}${suffix}`;
     if (Array.from(result).length > 200) {
@@ -45,14 +59,13 @@ async function captureStubForResult(block) {
     }
     return Array.from(result).slice(0, 200).join("");
   }
-  return "[已折叠] 本命令不可重放；原文可 recall({ pattern: \"关键词\" }) 取回".slice(0, 200);
+  return "[已折叠] 原文可 recall({ pattern: \"关键词\" }) 取回".slice(0, 200);
 }
 
 export async function buildCaptureStub(message) {
+  // ADR-016：折叠值锚点对全部 tool_result 生效（不再区分可重放）
   const results = Array.isArray(message?.content)
-    ? message.content.filter((block) => (
-      block?.type === "tool_result" && block.replayable === false
-    ))
+    ? message.content.filter((block) => block?.type === "tool_result")
     : [];
   const stubs = [];
   for (const result of results) {
@@ -95,7 +108,6 @@ export async function readCaptureManifests(archiveDir) {
         throw new Error("capture manifest 不是普通文件或是符号链接");
       }
       const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-      if (manifest?.replayable === true) continue;
       manifests.push({ manifest, manifestPath });
     } catch (error) {
       warnings.push(`${manifestPath}: ${error?.message ?? String(error)}`);
@@ -121,7 +133,6 @@ async function readArtifact(reference, archiveDir, manifestPath) {
     throw new Error("不是 CLI capture manifest");
   }
   if (reference.truncated !== false) throw new Error("归档已截断，不可用于核验");
-  if (reference.replayable !== false) throw new Error("可重放归档不可用于 provenance 核验");
   if (typeof reference.digest !== "string" || !/^[a-f0-9]{64}$/iu.test(reference.digest)) {
     throw new Error("capture manifest 缺少有效 digest");
   }
@@ -191,23 +202,10 @@ export function collectTranscriptCaptures(records) {
         .filter((entry) => typeof entry?.toolUseId === "string" && typeof entry?.content === "string")
         .map((entry) => [entry.toolUseId, entry.content]),
     );
-    const commandsByUseId = new Map();
     for (const message of Array.isArray(record?.messages) ? record.messages : []) {
       for (const block of Array.isArray(message?.content) ? message.content : []) {
-        if (block?.type === "tool_use" && block.name === "exec") {
-          const command = typeof block.input?.command === "string"
-            ? block.input.command
-            : undefined;
-          if (typeof command === "string") commandsByUseId.set(block.id, command);
-        }
-      }
-    }
-    if (commandsByUseId.size === 0) continue;
-    for (const message of Array.isArray(record?.messages) ? record.messages : []) {
-      for (const block of Array.isArray(message?.content) ? message.content : []) {
-        if (block?.type !== "tool_result" || block.replayable !== false) continue;
-        const command = commandsByUseId.get(block.tool_use_id);
-        if (command === undefined) continue;
+        // ADR-016：全部 tool_result 都进核验证据面（不再区分可重放/不可重放）
+        if (block?.type !== "tool_result") continue;
         const output = outputs.get(block.tool_use_id) ?? blockContentText(block.content);
         readable += 1;
         const candidates = candidateLines(output);
@@ -220,7 +218,6 @@ export function collectTranscriptCaptures(records) {
           toolUseId: block.tool_use_id,
           round,
           digest: createHash("sha256").update(output, "utf8").digest("hex"),
-          replayable: false,
         };
         const display = `transcript:round=${round ?? "?"}:${reference.digest.slice(0, 8)}`;
         captures.push(...candidates.map((candidate) => ({
@@ -229,7 +226,6 @@ export function collectTranscriptCaptures(records) {
           transcript: true,
           artifact: reference,
           round,
-          key: autoCaptureKey(command, reference),
         })));
       }
     }
@@ -243,7 +239,6 @@ export async function inspectRun({ archiveDir, resourceStore, store, runId }) {
   const warnings = [];
   let readableArtifacts = 0;
   const seenEvidence = new Set();
-  const seenLabels = new Set();
 
   // 主证据源：transcript（toolOutputs 字节保真）
   let records = [];
@@ -258,7 +253,7 @@ export async function inspectRun({ archiveDir, resourceStore, store, runId }) {
   warnings.push(...collected.warnings);
   readableArtifacts += collected.readable;
   for (const capture of collected.captures) {
-    // 证据去重：同一输出（digest+label+value）只入一次（legacy manifest 与 transcript 并存时去重）
+    // 证据去重：同一输出（digest+label+value）只入一次
     const evidenceKey = `${capture.artifact?.digest ?? ""}|${capture.label}|${capture.value}`;
     if (seenEvidence.has(evidenceKey)) continue;
     seenEvidence.add(evidenceKey);
@@ -279,7 +274,6 @@ export async function inspectRun({ archiveDir, resourceStore, store, runId }) {
         continue;
       }
       for (const candidate of candidates) {
-        const key = autoCaptureKey(reference.command, reference);
         const evidenceKey = `${reference.digest}|${candidate.label}|${candidate.value}`;
         if (seenEvidence.has(evidenceKey)) continue;
         seenEvidence.add(evidenceKey);
@@ -290,7 +284,6 @@ export async function inspectRun({ archiveDir, resourceStore, store, runId }) {
           legacy: true,
           artifact: reference,
           round: reference.round ?? null,
-          key,
         });
       }
     } catch (error) {
@@ -298,10 +291,6 @@ export async function inspectRun({ archiveDir, resourceStore, store, runId }) {
         `${reference.archivePath ?? reference.display ?? manifestPath}: ${error?.message ?? String(error)}`,
       );
     }
-  }
-  for (const capture of captures) {
-    capture.first = !seenLabels.has(capture.label);
-    seenLabels.add(capture.label);
   }
   return {
     references: loaded.manifests,

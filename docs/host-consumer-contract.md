@@ -171,8 +171,7 @@ provider, tool, or loop failures follow the normal failure path.
 The loop calls a configured guard before stopping for
 `end_turn`, `no_tool`, `judge_done`, `max_rounds_cap`, `stall`,
 `continuation_exhausted`, or `reflection_stop`. The guard receives
-`finalText`, `messages`, `round`, `rounds`, `signal`, and `termination`, plus
-the current `rerunDetected` value. `{ action: "accept" }` permits normal
+`finalText`, `messages`, `round`, `rounds`, `signal`, and `termination`. `{ action: "accept" }` permits normal
 termination. `{ action: "skip", reason }` terminates with `skipped`. A
 `{ action: "revise", message }` decision is injected as a separate user text
 message and the loop continues, up to `finalGuardMaxRetries` revision retries
@@ -188,9 +187,7 @@ fail-open with respect to loop availability: the original termination reason is
 preserved, but `verification.status` is `error` and the result is never
 `verified`. Each guard outcome emits an `onEvent` event with
 `type: "final_guard"` and an `action` of `accept`, `skip`, `revise`,
-`degraded`, or `error`. An accepted decision with `rerunCited: true` is still
-`verified`, but is counted separately in `verification.metrics.rerun_cited`.
-When a store provides `markRunState`, the terminal state is
+`degraded`, or `error`. When a store provides `markRunState`, the terminal state is
 `unverified_error` for an unverified result, `guard_error` for a guard error,
 and `succeeded` otherwise.
 
@@ -220,27 +217,19 @@ the adapter does not add a lock or another concurrency mechanism.
 ### CLI-side provenance guard
 
 The CLI guard in `bin/final-guard.js` is a deterministic provenance checker,
-not a task-completion evaluator. It considers only capture manifests under
-`archiveDir` that can be verified as `kind: "erix.tool-capture"` with
-`schemaVersion: 1`, `replayable: false`, `truncated: false`, a 64-character
-hexadecimal `digest`, and a valid `locator`. Legacy manifests with
-`archivePath` must also resolve to a matching regular non-symlink file inside
-the run archive root; new manifests without `archivePath` are read through the
-injected ResourceStore. In both cases the digest must match the recovered
-bytes. Replayable artifacts and artifacts with `unknown` replayability do not
-become trusted capture values. Missing, forged, escaped, truncated, or
-digest-mismatched captures cannot establish verification.
+not a task-completion evaluator (ADR-016). Evidence is the run transcript's
+archived tool outputs (`toolOutputs`, byte-faithful) plus legacy capture
+manifests; there is no replayability filter — every archived output is
+evidence. An explicit `label=value` in the final text must match an archived
+value, otherwise the guard returns `revise`. Missing, forged, escaped, or
+truncated evidence cannot establish verification.
 
-No capture manifest returns `action: "skip"` with
-`reason: "no_capture_manifest"`. A readable artifact with no extractable
-candidates returns `action: "skip"` with
+A run with no archived outputs returns `action: "skip"` with
+`reason: "no_capture_evidence"`. Archived outputs with no extractable
+candidates return `action: "skip"` with
 `reason: "no_extractable_candidates"`. A final answer with no comparable
 explicit label returns `action: "skip"` with
-`reason: "no_comparable_label"`. Explicit attributions are compared with
-captured values. A value from the first capture may be accepted directly; a
-value from a later rerun requires an explicit source reference such as
-`来源=note_read:<key>` or `来源=归档:<file>`, and is returned as
-`{ action: "accept", rerunCited: true }`. The guard does not add natural
+`reason: "no_comparable_label"`. The guard does not add natural
 language inference, keyword guessing, or similarity rules. A skipped check
 is still not `verified`.
 
@@ -312,27 +301,6 @@ proof, or provenance verification. This library does not provide a security
 boundary; under ADR-009, the host remains responsible for permissions,
 leases, and adversarial authentication.
 
-## `replayableSource` and artifact state
-
-The trust order for `replayableSource` is:
-
-`declared > policy > heuristic > unknown`.
-
-An explicit declaration wins first, then the configured non-replayable
-policy, then the built-in `exec` heuristic. `unknown` means that there is
-not enough declaration to make a replayability claim: it must not be treated
-as safe, replayable, or verified, and it must not be converted into a
-boolean safety assertion. In the `unknown` case, `replayable` is omitted
-rather than defaulted.
-
-Archive and artifact facts use `ok`, `truncated`, `missing`, `stale`, and
-`unrecoverable`. An artifact carries an `artifactId`, `archivePath`, `digest`,
-`locator`, and status metadata; consumers must return to that exact
-`artifact`/`locator` and verify the `digest` instead of trusting a display
-string. Archives larger than 1 MiB are stored with `truncated: true` and a
-digest of the bytes actually on disk; such an artifact cannot pass the CLI
-provenance guard.
-
 `createMemoryTranscriptStore` and `createFileTranscriptStore` isolate
 transcript records by `runId`. `appendRound` deduplicates by
 `dedupKey`, then `roundKey`, then `${runId}:round:${round}`. This is
@@ -340,45 +308,20 @@ persistence idempotence only; it does not deduplicate or suppress tool
 execution. The file store is designed for one writer per `runId`; concurrent
 cross-process writes require a host-provided file lock.
 
-## Repeated commands and side effects
+## Repeated commands and side effects (ADR-016)
 
-With a CLI `archiveDir`, the same normalized `exec` command is **executed and
-reported**, not blocked. Normalization trims outer whitespace and normalizes
-line endings. Duplicate tracking is scoped to the archive directory and
-hydrates existing capture metadata, so it can identify a prior execution in a
-new CLI tool instance. Each execution attempts its own archive; an archive
-failure leaves no recoverable artifact.
-
-The structured tool-result metadata reports the first execution through
-`rerunOf`:
-
-```js
-{
-  round,
-  artifactId,
-  archivePath,
-  digest,
-  locator,
-  status,
-}
-```
-
-The model-facing notice is only a bounded display of the safe first value,
-archive path, and artifact status. Hosts that need `round`, `digest`,
-`locator`, or the complete provenance record must read the structured
-metadata, not parse the notice. Repeated execution also sets
-`runState.rerunDetected`; it does not prove that the model will use the first
-source correctly. `rerunOf` and its notice cannot undo a payment, deletion,
-publication, write, or external API side effect that has already occurred.
+The engine performs no replayability classification, rerun detection, or
+rerun notices. A repeated command is executed normally and returns its fresh
+output. The rerun-value-mismatch risk is carried by one line in the system
+prompt: "Re-running the same command may produce a different value; when an
+earlier exact value is needed, retrieve it with recall instead of relying on
+memory."
 
 The host must therefore carry side-effect and rerun risk in its tool
 capabilities, permissions, sandbox, or idempotence layer, and decide whether
-`unrecoverable`, `stale`, or `unverified` should trigger human review, a
-retry, or failure. The guard remains an opt-in mechanical checker; do not add
-natural-language inference, keyword guessing, or similarity rules to it.
-Prefer source-level mechanisms such as folded stubs, structured notices,
-producer declarations, and bounded retrieval.
-
+unverified results should trigger human review, a retry, or failure. The
+guard remains an opt-in mechanical checker; do not add natural-language
+inference, keyword guessing, or similarity rules to it.
 ## Error ledger (issue #109 step 1)
 
 `runToolLoop` results carry two always-present ledger fields:

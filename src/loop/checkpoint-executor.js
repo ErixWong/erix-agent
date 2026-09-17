@@ -168,14 +168,6 @@ export function createCheckpointExecutor(ctx) {
       content: execution.content,
       ...execution.metadata,
     };
-    const artifactStatus = execution.metadata.artifactStatus
-      ?? execution.metadata.artifact?.status
-      ?? execution.metadata.rerunOf?.status;
-    if (execution.metadata.replayable === false) ctx.nonReplayableCaptureCount += 1;
-    if (["missing", "stale", "unrecoverable", "error"].includes(artifactStatus)) {
-      ctx.archiveFailureCount += 1;
-    }
-    if (artifactStatus === "unrecoverable") ctx.unrecoverableCaptureCount += 1;
     if (isError || execution.success === false) {
       toolStat.failures += 1;
       ctx.toolErrorCount += 1;

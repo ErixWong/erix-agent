@@ -131,7 +131,7 @@ export async function safeTruncateMessages(messages, budgetTokens, protectedMess
     if (typeof stubFor !== "function") return;
     for (const message of removed ?? []) {
       if (!Array.isArray(message?.content) || !message.content.some((block) => (
-        block?.type === "tool_result" && block.replayable === false
+        block?.type === "tool_result"
       ))) continue;
       const stub = await stubFor(message);
       if (typeof stub !== "string" || stub.trim() === "") continue;

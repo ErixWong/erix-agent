@@ -154,7 +154,7 @@ test("parseFinal and parseStats read final guard metrics and usage", () => {
     "ok",
     "=== 统计 === model=fake-model rounds=9 termination=end_turn "
       + 'usage={"input_tokens":1234,"output_tokens":56} compacted=true '
-      + "guard={verified:1,skipped:2,revised:3,rerun_cited:4,unverified:0,guard_error:0}",
+      + "guard={verified:1,skipped:2,revised:3,unverified:0,guard_error:0}",
   ].join("\n");
   assert.deepEqual(parseFinal(stdout), {
     finalText: "ok",
@@ -171,7 +171,6 @@ test("parseFinal and parseStats read final guard metrics and usage", () => {
       verified: 1,
       skipped: 2,
       revised: 3,
-      rerun_cited: 4,
       unverified: 0,
       guard_error: 0,
     },
@@ -214,7 +213,7 @@ test("inspectRun counts note/archive calls and stores only redacted values", asy
       "一次性密钥=REAL-TOOL-VALUE",
       "=== 统计 === rounds=8 termination=end_turn "
         + 'usage={"input_tokens":100,"output_tokens":20} '
-        + "guard={verified:1,skipped:0,revised:0,rerun_cited:0,unverified:0,guard_error:0}",
+        + "guard={verified:1,skipped:0,revised:0,unverified:0,guard_error:0}",
     ].join("\n");
     const inspected = await inspectRun({
       runId: "inspect-run",

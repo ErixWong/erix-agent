@@ -2,6 +2,39 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [Unreleased]（0.6.0 破坏窗口累积，见 ADR-016 / issue #119）
+
+### Breaking（ADR-016：可重放概念退役）
+
+- **replayable 分类学整体删除**：`resolveReplayability` / `isNonReplayableCommand` /
+  `NON_REPLAYABLE_COMMAND_PATTERNS` / `replayableSource` 四源分类、工具 schema 的
+  `replayable` 字段、宿主选项 `replayable` / `toolReplayability` / `nonReplayable`、
+  tool_result 块上的 `replayable` 标记全部移除。"命令是否幂等"不可机器判定，
+  分类学是对不可判定问题建的架子（依据：五家 harness 对照无一做幂等分类；
+  43 轮野外实测 auto-capture 0 触发；codex Goals 模式"机器可数才机器强制"原则）。
+- **重跑检测与重跑告知退役**：`duplicateCommands` / `rerunOf` / 重跑警示文案、
+  跨进程 `hydrateTranscriptCaptures`、run-state 的 `nonReplayableCaptures` /
+  `unrecoverableCaptures` / `errors.archive` 字段、guard metrics 的 `rerun_cited`
+  全部删除。重跑值错配风险降为系统提示一行："重跑同一命令可能得到不同的值；
+  需要早期精确值时用 recall 取回，不要凭记忆"。
+- **auto-capture 退役**：`bin/auto-capture.js` 删除；exec 不再自动写捕获笔记
+  （`candidateLines` 迁入 final-guard-support 供 guard 抽值）。显式 notes
+  （note_take/note_read/note_list）不受影响。
+- **guard 解耦并扩大核验面**：终稿核验不再只针对"非重放捕获值"，改为对 transcript
+  **全部归档输出**比对——终稿显式 `label=value` 必须能在归档输出中找到。来源指向
+  要求（`来源=note_read:<key>` / `来源=归档:...`）与 first/rerun 之辨删除；
+  guard 贡献面更大、代码更少（300 行上限内从 ~250 行降至 ~130 行）。
+- `runToolLoop` 选项 `runState`（唯一用途是共享 rerunDetected 标记）删除；
+  `wrapExecuteTool` 选项 `capture` / `notesScope` 删除；`createCliTools` 选项
+  收窄为 `cwd`。
+- 老 transcript 中带 `replayable` 标记的块：新代码忽略该标记，向后兼容读。
+
+### 保留（与可重放无关，勿误伤）
+
+- 输出卫生（4096 截断 + `toolOutputs` 字节保真 + bounded recall）与 recall 契约；
+- 折叠值锚点 stub 泛化为全部 tool_result（不再限于非重放块）；
+- 显式 notes、持久化失败诚实上报（#109 第 2 步）、guard 防伪造职责。
+
 ## [0.5.1] - 2026-09-15
 
 ### fix

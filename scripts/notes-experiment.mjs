@@ -42,7 +42,6 @@ export const GUARD_KEYS = [
   "verified",
   "skipped",
   "revised",
-  "rerun_cited",
   "unverified",
   "guard_error",
 ];
@@ -789,7 +788,6 @@ function decisionMarkdown(rows) {
       const guardEvents = baseline.guard.skipped + notes.guard.skipped
         + baseline.guard.revised + notes.guard.revised
         + baseline.guard.verified + notes.guard.verified
-        + baseline.guard.rerun_cited + notes.guard.rerun_cited
         + baseline.guard.unverified + notes.guard.unverified
         + baseline.guard.guard_error + notes.guard.guard_error;
       const skipped = baseline.guard.skipped + notes.guard.skipped;
@@ -900,7 +898,7 @@ ${intervalTable(latestRows)}
 
 ## Guard 比率与 Wilson 95% 区间（按 run 至少发生一次）
 
-| 臂 | 模型 | verified | skipped | revised | rerun_cited | unverified | guard_error |
+| 臂 | 模型 | verified | skipped | revised | unverified | guard_error |
 |---|---|---|---|---|---|---|---|
 ${guardIntervalTable(latestRows)}
 

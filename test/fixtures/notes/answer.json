@@ -11,8 +11,7 @@
       "locator": {
         "lineStart": 1,
         "lineEnd": 1
-      },
-      "replayable": false
+      }
     },
     "provenance": {
       "source": "auto",
