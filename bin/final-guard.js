@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   archiveSourceTarget,
   buildCaptureStub,
+  collectTranscriptCaptures,
   inspectRun,
   readCaptureManifests,
 } from "./final-guard-support.js";
@@ -56,54 +57,54 @@ function boundedCommandSummary(command) {
   return text.slice(0, 100);
 }
 
-function archiveDisplay(manifest, resourceStore) {
-  if (resourceStore !== undefined) {
-    return manifest?.display ?? manifest?.artifactId ?? "ResourceStore 中的归档资源";
+function captureDisplayName(capture) {
+  if (typeof capture?.display === "string" && capture.display.length > 0) {
+    return capture.display;
   }
-  if (typeof manifest?.display === "string" && manifest.display.length > 0) {
-    return manifest.display;
-  }
-  if (typeof manifest?.archivePath === "string") return path.basename(manifest.archivePath);
-  return manifest?.artifactId;
+  if (typeof capture?.archivePath === "string") return path.basename(capture.archivePath);
+  return capture?.artifact?.artifactId;
 }
-function archiveIndex(manifests, resourceStore) {
-  const entries = manifests
-    .map(({ manifest }) => manifest)
-    .filter((manifest) => manifest?.replayable === false)
-    .sort((left, right) => (
-      String(archiveDisplay(left, resourceStore))
-      .localeCompare(String(archiveDisplay(right, resourceStore)))
-    ));
-  const visible = entries.slice(0, 10).map((manifest) => (
-    `${archiveDisplay(manifest, resourceStore)} ← ${boundedCommandSummary(manifest.command)} [不可重放]`
+function captureIndex(captures) {
+  const entries = [...captures].sort((left, right) => (
+    String(captureDisplayName(left)).localeCompare(String(captureDisplayName(right)))
+  ));
+  const visible = entries.slice(0, 10).map((capture) => (
+    `${captureDisplayName(capture)} ← ${boundedCommandSummary(capture.command)} [不可重放]`
   ));
   const remaining = entries.length - visible.length;
-  if (remaining > 0) visible.push(`另有 ${remaining} 条归档`);
+  if (remaining > 0) visible.push(`另有 ${remaining} 条捕获`);
   return visible.length === 0
     ? ""
-    : `\n归档目录视图（最多 10 条）：\n${visible.join("\n")}`;
+    : `\n捕获目录视图（最多 10 条）：\n${visible.join("\n")}`;
 }
-export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload, resourceStore } = {}) {
+export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload, store, runId } = {}) {
+  let records = [];
+  if (store && typeof store.load === "function") {
+    try {
+      records = await store.load(runId);
+    } catch {
+      records = [];
+    }
+  }
+  const { captures: transcriptCaptures } = collectTranscriptCaptures(records);
   const loaded = await readCaptureManifests(archiveDir);
-  const nonReplayableCaptures = loaded.manifests.filter(({ manifest }) => (
-    manifest?.replayable === false
-  )).length;
-  const archiveReference = resourceStore === undefined
-    ? typeof archiveDir === "string" && archiveDir.length > 0 ? `${path.resolve(archiveDir)}/<n>-exec.txt` : "明确的归档文件"
-    : "ResourceStore 中的 opaque locator";
-  return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${nonReplayableCaptures} 条为不可重放捕获（重跑会得到不同值）。需要时用 note_list → note_read 取回，或读取归档 ${archiveReference}。${archiveIndex(loaded.manifests, resourceStore)}`;
+  const legacyManifests = loaded.manifests
+    .map(({ manifest }) => manifest)
+    .filter((manifest) => manifest?.replayable === false);
+  const nonReplayableCaptures = transcriptCaptures.length > 0
+    ? new Set(transcriptCaptures.map((capture) => capture.key)).size
+    : legacyManifests.length;
+  return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${nonReplayableCaptures} 条为不可重放捕获（重跑会得到不同值）。需要时用 note_list → note_read 取回，或 recall({ pattern: "关键词" }) 取回原文。${captureIndex(transcriptCaptures.length > 0 ? transcriptCaptures : legacyManifests.map((manifest) => ({ display: manifest.display ?? manifest.archivePath, command: manifest.command })))}`;
 }
 function sameArtifact(left, right) {
-  return Boolean(
-    left
-      && right
-      && left.replayable === false
-      && right.replayable === false
-      && left.archivePath === right.archivePath
-      && left.digest === right.digest
-      && left.locator?.lineStart === right.locator?.lineStart
-      && left.locator?.lineEnd === right.locator?.lineEnd,
-  );
+  if (!left || !right || left.replayable !== false || right.replayable !== false) return false;
+  if (left.digest !== right.digest) return false;
+  // transcript 引用（ADR-015 4b）：toolUseId 一致即可确认同源
+  if (left.toolUseId !== undefined) return left.toolUseId === right.toolUseId;
+  // legacy 引用：归档路径 + locator 行范围
+  return left.archivePath === right.archivePath
+    && left.locator?.lineStart === right.locator?.lineStart
+    && left.locator?.lineEnd === right.locator?.lineEnd;
 }
 async function sourceMatchesCapture(source, capture, { notesStore, runId } = {}) {
   if (source.kind === "note_read") {
@@ -120,13 +121,14 @@ async function sourceMatchesCapture(source, capture, { notesStore, runId } = {})
   const archivePath = String(capture.archivePath ?? "");
   const display = String(capture.display ?? "");
   const artifactId = String(capture.artifact?.artifactId ?? "");
+  const digest = String(capture.artifact?.digest ?? "");
   const target = String(source.target ?? "");
   return target === archiveSourceTarget(capture)
     || target === archivePath
     || target === display
     || target === artifactId
-    || target === path.basename(archivePath)
-    || archivePath.endsWith(`/${target}`);
+    || (digest.length > 0 && (target === digest || (digest.length > 12 && digest.startsWith(target) && target.length >= 8)))
+    || (archivePath.length > 0 && (target === path.basename(archivePath) || archivePath.endsWith(`/${target}`)));
 }
 
 function capturePointer(capture) {
@@ -134,10 +136,10 @@ function capturePointer(capture) {
   if (capture?.key) pointers.push(`note_read key=${capture.key}`);
   if (capture?.display) pointers.push(`来源=归档:${archiveSourceTarget(capture)}`);
   else if (capture?.archivePath) pointers.push(`来源=归档:${path.basename(String(capture.archivePath))}`);
-  return pointers.join(" / ") || "可信归档";
+  return pointers.join(" / ") || "可信捕获";
 }
 function archiveSourceHint() {
-  return "来源=归档:<文件名> 或 note_read:<key>";
+  return "来源=归档:transcript:round=<N>:<digest前缀> 或 note_read:<key>";
 }
 
 /**
@@ -148,27 +150,21 @@ export function createFinalGuard({
   archiveDir,
   onWarning = (message) => console.warn(warningMessage(message)),
   runState,
-  resourceStore,
   notesStore,
   runId,
+  store,
 } = {}) {
   return async function finalGuard({
     finalText,
     rerunDetected = runState?.rerunDetected === true,
   } = {}) {
-    const inspected = await inspectRun({ archiveDir, resourceStore });
+    const inspected = await inspectRun({ archiveDir, store, runId });
     for (const warning of inspected.warnings) onWarning(warning);
-    if (inspected.references.length === 0) {
-      return { action: "skip", reason: "no_capture_manifest" };
-    }
-    if (inspected.captures.length === 0 && inspected.readableArtifacts > 0) {
-      return { action: "skip", reason: "no_extractable_candidates" };
+    if (inspected.readableArtifacts === 0) {
+      return { action: "skip", reason: "no_capture_evidence" };
     }
     if (inspected.captures.length === 0) {
-      return {
-        action: "revise",
-        message: "本 run 的 capture manifest 未通过归档根目录、digest、截断或可重放性核验；请读取可信归档或明确说明不可恢复，不得把该值当作已核验事实。",
-      };
+      return { action: "skip", reason: "no_extractable_candidates" };
     }
 
     const knownLabels = new Map();

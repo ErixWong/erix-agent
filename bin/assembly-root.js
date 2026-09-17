@@ -4,7 +4,6 @@ import path from "node:path";
 
 import {
   createFileNotesStore,
-  createFileResourceStore,
   createFileTranscriptStore,
 } from "../src/index.js";
 import { safeRunId } from "../src/store/file.js";
@@ -27,11 +26,10 @@ function writeDiagnosticError(errorOutput, message) {
  *   notesDir?:string,
  *   notesStore?:object,
  *   store?:object,
- *   resourceStore?:object,
  *   errorOutput?:{write:Function},
  *   errorLog?:string
  * }} options
- * @returns {{store:object,resourceStore:object,notesStore:object,archiveDir:string,runState:object,diagnostics:object}}
+ * @returns {{store:object,notesStore:object,archiveDir:string,runState:object,diagnostics:object}}
  */
 export function createCliAssemblyRoot({
   dir,
@@ -39,7 +37,6 @@ export function createCliAssemblyRoot({
   notesDir,
   notesStore,
   store,
-  resourceStore,
   cwd = process.cwd(),
   errorOutput = process.stderr,
   errorLog,
@@ -77,7 +74,6 @@ export function createCliAssemblyRoot({
     dir,
     archiveDir,
     store: store ?? createFileTranscriptStore({ dir }),
-    resourceStore: resourceStore ?? createFileResourceStore({ dir: archiveDir }),
     notesDir: resolvedNotesDir,
     notesStore: resolvedNotesStore,
     runState: { rerunDetected: false, captureCount: 0 },

@@ -33,7 +33,7 @@ test("S1 folds a non-replayable value into the provider request", async () => {
     },
   ]);
   const runState = { rerunDetected: false, captureCount: 0 };
-  const cliTools = createCliTools({ cwd: directory, archiveDir, runState });
+  const cliTools = createCliTools({ cwd: directory, runState });
   const executeTool = wrapExecuteTool(cliTools.executeTool, {
     output: () => {},
     getToolMetadata: cliTools.getLastToolMetadata,
@@ -98,7 +98,7 @@ test("S2 keeps credentials out of a folded stub while retaining its archive poin
       stopReason: "end_turn",
     },
   ]);
-  const cliTools = createCliTools({ cwd: directory, archiveDir });
+  const cliTools = createCliTools({ cwd: directory });
   const wrappedExecuteTool = wrapExecuteTool(cliTools.executeTool, {
     output: () => {},
     getToolMetadata: cliTools.getLastToolMetadata,
@@ -133,7 +133,8 @@ test("S2 keeps credentials out of a folded stub while retaining its archive poin
       .map((block) => block?.text)
       .find((text) => typeof text === "string" && text.includes("[已折叠]"));
     assert.equal(typeof foldedStub, "string");
-    assert.match(foldedStub, /001-exec\.txt/u);
+    // ADR-015 4b：stub 值直接取自 tool_result 内容，原文指针 = recall 配方（零路径）
+    assert.match(foldedStub, /recall/u);
     assert.match(foldedStub, new RegExp(safeValue));
     assert.doesNotMatch(foldedStub, new RegExp(secret));
   } finally {
@@ -169,7 +170,7 @@ test("S3 executes a repeated command and reports first-run provenance", async ()
       stopReason: "end_turn",
     },
   ]);
-  const cliTools = createCliTools({ cwd: directory, archiveDir });
+  const cliTools = createCliTools({ cwd: directory });
   const wrappedExecuteTool = wrapExecuteTool(cliTools.executeTool, {
     output: () => {},
     getToolMetadata: cliTools.getLastToolMetadata,
@@ -196,16 +197,12 @@ test("S3 executes a repeated command and reports first-run provenance", async ()
     const secondResult = toolResults.find((block) => block.tool_use_id === "s3-second");
     assert.ok(secondResult);
     assert.match(secondResult.content, /这是第 2 次执行/u);
-    assert.equal(secondResult.rerunOf.artifactId, "001-exec.txt");
+    // ADR-015 4b：rerunOf = {round, digest}（transcript 定位符，零路径零 artifactId）
     assert.equal(secondResult.rerunOf.round, 1);
     assert.equal(typeof secondResult.rerunOf.digest, "string");
-    // ADR-015 4a：rerunOf 不再携带路径/locator（模型可见文本零路径）
+    assert.equal(secondResult.rerunOf.artifactId, undefined);
     assert.equal(secondResult.rerunOf.archivePath, undefined);
     assert.equal(secondResult.rerunOf.locator, undefined);
-    assert.deepEqual(
-      (await readdir(archiveDir)).filter((name) => name.endsWith(".txt")).sort(),
-      ["001-exec.txt", "002-exec.txt"],
-    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -249,7 +246,7 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
     },
   ]);
   const runState = { rerunDetected: false, captureCount: 0 };
-  const cliTools = createCliTools({ cwd: directory, archiveDir, runState });
+  const cliTools = createCliTools({ cwd: directory, runState });
   const wrappedExecuteTool = wrapExecuteTool(cliTools.executeTool, {
     output: () => {},
     getToolMetadata: cliTools.getLastToolMetadata,
@@ -295,10 +292,6 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
     // exec① -> requests[1], exec② -> requests[2]; never move this back to requests[1].
     assert.match(JSON.stringify(provider.requests[2].messages), /"rerunOf"/u);
     assert.match(finalRequestText, /"rerunOf"/u);
-    assert.deepEqual(
-      (await readdir(archiveDir)).filter((name) => name.endsWith(".txt")).sort(),
-      ["001-exec.txt", "002-exec.txt"],
-    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

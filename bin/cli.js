@@ -158,7 +158,7 @@ function resolveFinalGuard(
   notesDir,
   notesStore,
   runState,
-  resourceStore,
+  store,
 ) {
   if (typeof finalGuard === "function") return finalGuard;
   if (
@@ -171,7 +171,7 @@ function resolveFinalGuard(
     notesDir,
     notesStore,
     runState,
-    resourceStore,
+    store,
   });
 }
 
@@ -549,7 +549,6 @@ async function runChatWithNotes({
     diagnostics,
     notesDir,
     notesStore,
-    resourceStore,
     runState,
     store,
   } = assemblyRoot;
@@ -573,8 +572,7 @@ async function runChatWithNotes({
   }
   const cliTools = createCliTools({
     cwd,
-    archiveDir,
-    resourceStore,
+    existingRecords,
     notesScope: { runId, notesDir, notesStore },
     runState,
   });
@@ -598,10 +596,11 @@ async function runChatWithNotes({
       ? ({ foldedPayload }) => buildCaptureRecoveryHint({
         archiveDir,
         foldedPayload,
-        resourceStore,
+        store,
+        runId,
       })
       : undefined,
-    ({ content }) => buildCaptureStub({ content }, resourceStore, diagnostics),
+    ({ content }) => buildCaptureStub({ content }),
   );
   const context = baseContext;
   const idle = createIdleTimeout(idleTimeout);
@@ -619,7 +618,7 @@ async function runChatWithNotes({
     notesDir,
     notesStore,
     runState,
-    resourceStore,
+    store,
   );
   // judge 决策日志默认跟随 run 归档（与工具捕获同目录）；--judge-log / ERIX_JUDGE_LOG 可覆盖
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG ?? path.join(archiveDir, "judge.log");
@@ -701,8 +700,8 @@ async function runChatWithNotes({
     }
     : undefined;
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt(resourceStore)}`;
-  systemPrompt += buildArchiveNotice(archiveDir, resourceStore);
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt()}`;
+  systemPrompt += buildArchiveNotice(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `
 
@@ -711,7 +710,6 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
 
   const loopOptions = {
     ...(context ? { context } : {}),
-    resourceStore,
     provider,
     system: systemPrompt,
     initialUserMessage: prompt,

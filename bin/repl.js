@@ -374,7 +374,6 @@ export async function runRepl(argv, io = {}) {
     archiveDir,
     diagnostics,
     notesStore,
-    resourceStore,
     runState,
     store,
   } = assemblyRoot;
@@ -384,8 +383,7 @@ export async function runRepl(argv, io = {}) {
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
   const cliTools = createCliTools({
     cwd,
-    archiveDir,
-    resourceStore,
+    existingRecords: storedRecords,
     notesScope: { runId: options.session, notesDir, notesStore },
     runState,
   });
@@ -421,8 +419,8 @@ export async function runRepl(argv, io = {}) {
     writeLine(output, `已恢复会话 ${options.session}（${messages.length} 条消息）`);
   }
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt(resourceStore)}`;
-  systemPrompt += buildArchiveNotice(archiveDir, resourceStore);
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt()}`;
+  systemPrompt += buildArchiveNotice(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `
 
@@ -598,10 +596,11 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           ? ({ foldedPayload }) => buildCaptureRecoveryHint({
             archiveDir,
             foldedPayload,
-            resourceStore,
+            store,
+            runId: options.session,
           })
           : undefined,
-        ({ content }) => buildCaptureStub({ content }, resourceStore, diagnostics),
+        ({ content }) => buildCaptureStub({ content }),
       );
       const tools = [...cliTools.tools, ...skillTools.tools];
       if (mcpProxy?.enabled) {
@@ -620,7 +619,6 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       };
       const loopOptions = {
         ...(context ? { context } : {}),
-        resourceStore,
         provider,
         system: systemPrompt,
         ...(resume ? {} : { initialMessages: roundMessages, initialUserMessage: line }),
@@ -639,7 +637,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
                 notesStore,
                 archiveDir,
                 runState,
-                resourceStore,
+                store,
               }),
               finalGuardMaxRetries: 2,
             }
