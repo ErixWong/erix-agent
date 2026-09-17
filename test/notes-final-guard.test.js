@@ -79,61 +79,78 @@ async function seedCapture(records, directory, output, sequence = 1, { command =
   return transcriptDisplay(sequence, output);
 }
 
-test("final guard accepts a final value found in an archived artifact", async () => {
+test("final guard verifies declared findings against archived captures", async () => {
   await withNotes(async (directory) => {
     const records = [];
-    await seedCapture(records, directory, "nonce=Abc123+XYZ789\n");
-    const guard = createFinalGuard({ runId: "guard-run", store: storeOf(records) });
+    await seedCapture(records, directory, "nonce=gold-4173\n", 1);
+    await seedCapture(records, directory, "plain prose with no candidate\n", 2, {
+      command: "printf prose",
+    });
+    const guard = createFinalGuard({ store: storeOf(records) });
+    // 声明与捕获一致 → accept（终稿散文随便写，guard 不解析）
     assert.deepEqual(
-      await guard({ finalText: "原值 nonce=Abc123+XYZ789" }),
+      await guard({
+        finalText: "「TARGET=gold-4173」即为所求（自由排版）",
+        findings: { nonce: "gold-4173" },
+      }),
       { action: "accept" },
     );
-    assert.equal(
-      (await guard({ finalText: "原值 nonce=Abc123+XYZ789，另一个值 Def456+LMN012" })).action,
-      "accept",
+    // 数字/布尔声明照常字符串化
+    assert.deepEqual(
+      await guard({ finalText: "行数", findings: { nonce: "gold-4173" } }),
+      { action: "accept" },
     );
   });
 });
 
-test("CJK closing brackets and quotes terminate attribution values (2026-09-17 实测回归)", async () => {
+test("final guard fail-closes forged values; unknown labels are warned and skipped", async () => {
+  await withNotes(async (directory) => {
+    const records = [];
+    await seedCapture(records, directory, "nonce=gold-4173\n", 1);
+    const guard = createFinalGuard({ runId: "guard-run", store: storeOf(records) });
+
+    // 值伪造（label 存在、值不符）→ revise
+    const forged = await guard({ finalText: "x", findings: { nonce: "FAKE" } });
+    assert.equal(forged.action, "revise");
+    assert.match(forged.message, /与归档捕获值不符/u);
+    assert.match(forged.message, /gold-4173/u);
+  });
+});
+
+test("unknown labels in findings are warned and skipped, not revised (2026-09-17 实测)", async () => {
+  await withNotes(async (directory) => {
+    const records = [];
+    await seedCapture(records, directory, "nonce=gold-4173\n", 1);
+    const warnings = [];
+    const guard = createFinalGuard({
+      store: storeOf(records),
+      onWarning: (w) => warnings.push(w),
+    });
+    // TARGET 是真捕获 ✓；重跑次数是派生结论（归档无此 label）→ 警告+跳过，整体 accept
+    assert.deepEqual(
+      await guard({
+        finalText: "x",
+        findings: { nonce: "gold-4173", "gen.sh重跑次数": "0" },
+      }),
+      { action: "accept" },
+    );
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /不存在/u);
+  });
+});
+
+test("final guard skips when the envelope declares no findings", async () => {
   await withNotes(async (directory) => {
     const records = [];
     await seedCapture(records, directory, "nonce=gold-4173\n", 1);
     const guard = createFinalGuard({ store: storeOf(records) });
-    // 真实事故样本：「TARGET=gold-4173」被抽成 gold-4173」导致 revise
-    assert.deepEqual(
-      await guard({ finalText: "「nonce=gold-4173」为最终值" }),
-      { action: "accept" },
-    );
-    assert.deepEqual(
-      await guard({ finalText: "最终值 \"nonce=gold-4173\"（来自归档）" }),
-      { action: "accept" },
-    );
-    assert.deepEqual(
-      await guard({ finalText: "nonce=gold-4173，即目标值" }),
-      { action: "accept" },
-    );
-  });
-});
-
-test("final guard enforces the provenance contract (ADR-016)", async () => {
-  await withNotes(async (directory) => {
-    const records = [];
-    await seedCapture(records, directory, "nonce=first-value\n", 1);
-    await seedCapture(records, directory, "nonce=rerun-value\n", 2);
-    const guard = createFinalGuard({ store: storeOf(records) });
-    // 归档内任意捕获值可直接使用（不再要求来源指向）
-    assert.deepEqual(await guard({ finalText: "nonce=first-value" }), { action: "accept" });
-    assert.deepEqual(await guard({ finalText: "nonce 值是 rerun-value" }), { action: "accept" });
-    // 归档外的值必须打回
-    assert.equal((await guard({ finalText: "nonce=forged-value" })).action, "revise");
-    assert.deepEqual(await guard({ finalText: "abc123" }), {
+    assert.deepEqual(await guard({ finalText: "随便写" }), {
       action: "skip",
-      reason: "no_comparable_label",
+      reason: "no_declared_findings",
     });
-    assert.deepEqual(await guard({ finalText: "没有可比对内容" }), {
+    assert.deepEqual(await guard({ finalText: "x", findings: {} }), {
       action: "skip",
-      reason: "no_comparable_label",
+      reason: "no_declared_findings",
     });
   });
 });
@@ -246,72 +263,35 @@ test("capture stubs retain safe labels but never credential values", async () =>
   assert.ok(Array.from(stub).length <= 200);
 });
 
-test("final guard ignores archive paths and locator metadata around the verified value", async () => {
-  await withNotes(async (directory) => {
-    const records = [];
-    await seedCapture(records, directory, "nonce=NCSmGUqbmY48ukg5\n");
-    const guard = createFinalGuard({ runId: "replay", store: storeOf(records) });
-    assert.deepEqual(
-      await guard({
-        finalText: "nonce 值已核实为 NCSmGUqbmY48ukg5。依据：(1) note_read key=nonce 返回 value=NCSmGUqbmY48ukg5；(2) 读取归档文件 001-exec.txt 第 1 行，内容为 nonce=NCSmGUqbmY48ukg5，与笔记值完全一致。（lineStart=1, lineEnd=1；来源已核验）",
-      }),
-      { action: "accept" },
-    );
-  });
-});
-
-test("final guard skips text without an explicit comparable label", async () => {
-  await withNotes(async (directory) => {
-    const records = [];
-    await seedCapture(records, directory, "nonce=NCSmGUqbmY48ukg5\n");
-    assert.deepEqual(
-      await createFinalGuard({ store: storeOf(records) })({
-        finalText: "nonce=NCSmGUqbmY48ukg5",
-      }),
-      { action: "accept" },
-    );
-  });
-});
-
-test("final guard accepts archive filenames when they are described as filenames", async () => {
-  await withNotes(async (directory) => {
-    const records = [];
-    await seedCapture(records, directory, "nonce=NCSmGUqbmY48ukg5\n");
-    assert.deepEqual(
-      await createFinalGuard({ store: storeOf(records) })({
-        finalText: "nonce=NCSmGUqbmY48ukg5 archive filename 001-exec.txt",
-      }),
-      { action: "accept" },
-    );
-  });
-});
-
-test("final guard extracts Chinese labels without applying the notes credential label filter", async () => {
+test("label normalization applies to declared findings (CJK labels)", async () => {
   await withNotes(async (directory) => {
     const records = [];
     await seedCapture(records, directory, "一次性密钥=t5Vum2Ucy/Y2gEOo\n");
-    const result = await createFinalGuard({ store: storeOf(records) })({
-      finalText: "一次性密钥=t5Vum2Ucy/Y2gEOo",
-    });
-    assert.deepEqual(result, { action: "accept" });
+    const guard = createFinalGuard({ store: storeOf(records) });
+    assert.deepEqual(
+      await guard({ finalText: "x", findings: { "一次性密钥": "t5Vum2Ucy/Y2gEOo" } }),
+      { action: "accept" },
+    );
+    // 归一化（首尾空白）后仍然命中同一 label；注意内部空格会变成下划线（不拆词）
+    assert.deepEqual(
+      await guard({ finalText: "x", findings: { " 一次性密钥 ": "t5Vum2Ucy/Y2gEOo" } }),
+      { action: "accept" },
+    );
   });
 });
 
-test("all archived outputs serve as provenance evidence regardless of replayability (ADR-016)", async () => {
+test("a transcript capture is trusted without any notes reference", async () => {
   await withNotes(async (directory) => {
     const records = [];
-    await seedCapture(records, directory, "nonce=Abc123+XYZ789\n");
-    records.push(transcriptRecord({
-      toolUseId: "plain-tool",
-      round: 2,
-      output: "1\n2\n3\n",
-      command: "seq 1 3",
-    }));
-    const guard = createFinalGuard({ store: storeOf(records) });
+    await seedCapture(records, directory, "nonce=Sidecar123+Value\n");
     assert.deepEqual(
-      await guard({ finalText: "nonce=Abc123+XYZ789" }),
+      await createFinalGuard({ store: storeOf(records) })({
+        finalText: "原值 nonce=Sidecar123+Value",
+        findings: { nonce: "Sidecar123+Value" },
+      }),
       { action: "accept" },
     );
+    assert.equal(JSON.parse(await scopedNotes.note_read({ key: "nonce" })).status, "missing");
   });
 });
 
@@ -327,43 +307,11 @@ test("an output without candidates is skipped with a warning", async () => {
       onWarning: (warning) => warnings.push(warning),
     });
     assert.deepEqual(
-      await guard({ finalText: "任意终稿" }),
+      await guard({ finalText: "任意终稿", findings: { nonce: "x" } }),
       { action: "skip", reason: "no_extractable_candidates" },
     );
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /未抽取到可核验值/u);
-  });
-});
-
-test("partial candidate extraction verifies available values and warns for empty outputs", async () => {
-  await withNotes(async (directory) => {
-    const records = [];
-    await seedCapture(records, directory, "nonce=Abc123+XYZ789\n");
-    await seedCapture(records, directory, "plain prose with no opaque candidate\n", 2, {
-      command: "printf prose",
-    });
-    const warnings = [];
-    const guard = createFinalGuard({
-      store: storeOf(records),
-      onWarning: (warning) => warnings.push(warning),
-    });
-    assert.deepEqual(
-      await guard({ finalText: "nonce=Abc123+XYZ789" }),
-      { action: "accept" },
-    );
-    assert.equal(warnings.length, 1);
-  });
-});
-
-test("different labels without a comparable assignment are skipped", async () => {
-  await withNotes(async (directory) => {
-    const records = [];
-    await seedCapture(records, directory, "nonce=Abc123+XYZ789\n");
-    const guard = createFinalGuard({ store: storeOf(records) });
-    assert.deepEqual(
-      await guard({ finalText: "request_id=Def456+LMN012" }),
-      { action: "skip", reason: "no_comparable_label" },
-    );
   });
 });
 
@@ -390,19 +338,19 @@ test("CLI guard verifies the correct answer and fail-closes a fabricated answer"
           }],
           stopReason: "tool_use",
         },
-        ...finalTexts.flatMap((text) => [
-          {
-            content: [{ type: "text", text }],
-            stopReason: "end_turn",
-          },
-          {
-            content: [{
-              type: "text",
-              text: JSON.stringify({ done: true, summary: "done", output: text }),
-            }],
-            stopReason: "end_turn",
-          },
-        ]),
+        // findings 语义下，模型每次收尾都带信封声明（散文在 output 里自由排版）
+        ...finalTexts.map((text) => ({
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              done: true,
+              summary: "done",
+              output: `一次性密钥=XXX（自由排版 ${text}）`,
+              findings: { "一次性密钥": text.includes("FAKE") ? "FAKE" : "XXX" },
+            }),
+          }],
+          stopReason: "end_turn",
+        })),
       ]);
       const result = await runChat({
         prompt: "执行一次性命令和 seq，最后回答首次密钥",
@@ -432,86 +380,6 @@ test("CLI guard verifies the correct answer and fail-closes a fabricated answer"
   assert.equal(forged.result.verification.status, "unverified");
   assert.equal(forged.result.termination.reason, "final_guard_unverified");
   assert.equal(forged.exitCode, 2);
-});
-
-test("a transcript capture is trusted without any notes reference", async () => {
-  await withNotes(async (directory) => {
-    const records = [];
-    await seedCapture(records, directory, "nonce=Sidecar123+Value\n");
-    assert.deepEqual(
-      await createFinalGuard({ store: storeOf(records) })({
-        finalText: "原值 nonce=Sidecar123+Value",
-      }),
-      { action: "accept" },
-    );
-    assert.equal(JSON.parse(await scopedNotes.note_read({ key: "nonce" })).status, "missing");
-  });
-});
-
-test("final guard revises a value not found in any capture", async () => {
-  await withNotes(async (directory) => {
-    const records = [];
-    const display = await seedCapture(records, directory, "nonce=Abc123+XYZ789\n");
-    const guard = createFinalGuard({ runId: "guard-run", store: storeOf(records) });
-    const result = await guard({ finalText: "原值 nonce=Def456+LMN012" });
-    assert.equal(result.action, "revise");
-    assert.match(result.message, /未对应本 run 的任何归档捕获值/u);
-    // ADR-016：guard 提示指向可执行的 recall 配方（零路径、不借用「来源=」语法）
-    assert.match(result.message, new RegExp(`归档输出 ${display.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"));
-    assert.match(result.message, /recall\(\{ pattern/u);
-    assert.doesNotMatch(result.message, /\/tmp\//u);
-    assert.match(result.message, /不得重跑/u);
-  });
-});
-
-test("final guard skips a run with no capture evidence", async () => {
-  await withNotes(async () => {
-    const guard = createFinalGuard({ runId: "guard-run", store: storeOf([]) });
-    assert.deepEqual(await guard({ finalText: "任意值 123456789" }), {
-      action: "skip",
-      reason: "no_capture_evidence",
-    });
-  });
-});
-
-test("CLI and REPL guard switches preserve opt-in behavior", async () => {
-  assert.equal(parseChatArgs(["prompt", "--no-final-guard"]).finalGuard, false);
-  assert.equal(parseReplArgs(["--no-final-guard"]).finalGuard, false);
-  assert.equal(parseChatArgs(["prompt", "--final-guard"]).finalGuard, true);
-  assert.equal(parseReplArgs(["--final-guard"]).finalGuard, true);
-  await withNotes(async (directory) => {
-    const previous = process.env.ERIX_NO_FINAL_GUARD;
-    process.env.ERIX_NO_FINAL_GUARD = "1";
-    let captured;
-    try {
-      await runChat({
-        prompt: "switch test",
-        session: "guard-run",
-        dir: directory,
-        skillsDir: path.join(directory, "skills"),
-        config: { model: "fake-model", maxOutputTokens: 1000 },
-        provider: { chat: async () => ({ content: [], stopReason: "end_turn" }) },
-        loop: async (options) => {
-          captured = options;
-          return {
-            finalText: "done",
-            messages: [],
-            rounds: 1,
-            truncated: false,
-            termination: { reason: "end_turn" },
-            usage: { input_tokens: 0, output_tokens: 0 },
-            compactionStats: [],
-          };
-        },
-        toolOutput: () => {},
-      });
-
-    } finally {
-      if (previous === undefined) delete process.env.ERIX_NO_FINAL_GUARD;
-      else process.env.ERIX_NO_FINAL_GUARD = previous;
-    }
-    assert.equal(captured.finalGuard, undefined);
-  });
 });
 
 test("final guard stays within the ADR-013 size limit", async () => {

@@ -24,7 +24,30 @@ function normalizedWrapup(value) {
     done: value.done,
     summary: value.summary ?? "",
     output: value.output ?? "",
+    ...(normalizeFindings(value.findings) === undefined
+      ? {}
+      : { findings: normalizeFindings(value.findings) }),
   };
+}
+
+/**
+ * ADR-016 后续（2026-09-17 实测裁定）：终稿关键值声明的唯一权威载体是信封的
+ * findings 字段（label→原始值字符串）；guard 不再解析散文。值必须是可字符串化的
+ * 原始值；非法条目逐条丢弃，全部非法时视为未声明。
+ */
+function normalizeFindings(value) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) return undefined;
+  const findings = {};
+  let count = 0;
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof key !== "string" || key.length === 0) continue;
+    if (!["string", "number", "boolean"].includes(typeof item)) continue;
+    if (!Number.isFinite(item) && typeof item === "number") continue;
+    findings[key] = String(item);
+    count += 1;
+  }
+  return count > 0 ? findings : undefined;
 }
 
 function* jsonCandidates(text) {
@@ -78,8 +101,8 @@ export function tryParseWrapupJson(text) {
 
 const WRAPUP_NORMALIZATION_PROMPT = `请把下面模型的最终文本归一化为结束协议 JSON。
 只输出 JSON，不要输出其他文字：
-{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果"}
-如果原文表示任务已完成，done 为 true；否则为 false。缺少最终结果时 output 使用空字符串。
+{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果","findings":{"label":"value"}}
+如果原文表示任务已完成，done 为 true；否则为 false。缺少最终结果时 output 使用空字符串。原文本中的关键值（label=value 形态）逐条搬进 findings。
 
 原始文本：
 `;
