@@ -49,6 +49,23 @@ The guard's output is a **state** (`verified` / `suspect` / `mismatch` / `skippe
 - **`skipped` does not mean "no problem"**: it only means "there was nothing comparable". The host consumption contract must state:
   only `verified` may be considered source-verified (see the verification consumption contract in README).
 
+## 修订注（2026-09-17，#124 / #126 / #127）
+
+- **核验载体改为信封 findings（#126）**：guard 不再解析终稿散文。终稿的
+  `label=value` 正则抽取被实证不可靠（`「TARGET=gold-4173」` 被抽成
+  `gold-4173」`，诚实终稿被误杀），改为只比对结束协议信封 `findings`
+  字段与归档捕获值的字符串相等——机器可比对的事实回到机器可读载体上。
+- **「有捕获但未声明」不再算跳过（#127）**：`skip` 的语义收窄为"确实无可核验
+  值"；有捕获却一条不声明是模型跳过声明流程，改为 `revise` 并在重试耗尽后
+  fail-closed 到 `unverified`。配套：CLI 为 `skipped` 单列退出码 4，避免
+  "没核验"与"核过了"在退出码上不可分（规则 4：状态必须有消费者，且不能被误读）。
+- **未知 label 警告并跳过**：归档中不存在的 label（如 `重跑次数=0` 这类派生结论）
+  既无法核验也无法证伪，打回只会诱发绕路风暴（实测 15 轮 / 152k tokens 全废）。
+  这不违反规则 3（不做自然语言推断）——判据仍是字符串相等，未知即不比对。
+- **LLM 只做协议归一化，不做核验**：`ERIX_WRAPUP_NORMALIZE` 路径允许 LLM 把
+  散文搬进信封，但每个值必须是原文逐字子串（机械校验，非逐字即丢弃）。
+  核验本身仍不调 LLM（规则 1/2 不变）。
+
 ## Consequences
 
 - **Positive**: guard complexity remains controlled, false-kill risk is low, and responsibility boundaries are clear; failure modes are forced to be solved

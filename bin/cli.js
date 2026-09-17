@@ -7,6 +7,7 @@ import path from "node:path";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  DEFAULT_REFLECTION_MIN_ROUNDS,
   createOpenAIProvider,
   runToolLoop,
 } from "../src/index.js";
@@ -48,7 +49,7 @@ const HELP_TEXT = `用法：
   --session <id>        会话 ID（默认按工作目录自动派生）
   --dir <path>          Transcript 存档目录（chat 默认：~/.erix/transcripts）
   --max-rounds <n>      工具循环最大轮数（默认：64，可用 ERIX_MAX_ROUNDS 覆盖）
-  --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 32 时启用）
+  --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 16 时启用，见 DEFAULT_REFLECTION_MIN_ROUNDS）
   --final-guard         开启终稿 provenance 核验（默认关闭）
   --no-final-guard      兼容别名（默认已关闭，no-op）
   --no-notes            仅移除 notes 技能，保留其他 skill
@@ -74,7 +75,13 @@ const HELP_TEXT = `用法：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
   MCP 配置默认读取当前目录 .mcp.json 或 ~/.erix/mcp.json。
   slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。
-  slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。`;
+  slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。
+
+退出码：
+  0  成功（开了 --final-guard 时为 verified）
+  2  终稿核验未通过（unverified）
+  3  核验过程出错（error）
+  4  核验未执行（skipped：没有归档输出或归档里无可核验值）`;
 
 const MCP_HELP_TEXT = `用法：
   erix mcp [--config <path>]
@@ -139,7 +146,7 @@ function resolveMaxRounds(maxRounds) {
   return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_ROUNDS;
 }
 
-function resolveReflection(reflection, maxRounds) {
+export function resolveReflection(reflection, maxRounds) {
   if (process.env.ERIX_NO_REFLECTION?.trim() === "1") return false;
   if (reflection !== undefined) {
     if (reflection === true) return { enabled: true };
@@ -148,7 +155,7 @@ function resolveReflection(reflection, maxRounds) {
   const raw = process.env.ERIX_REFLECTION?.trim().toLowerCase();
   if (raw === "on") return { enabled: true };
   if (raw === "off") return false;
-  return maxRounds >= 32 ? { enabled: true } : false;
+  return maxRounds >= DEFAULT_REFLECTION_MIN_ROUNDS ? { enabled: true } : false;
 }
 
 function resolveFinalGuard(
@@ -907,6 +914,9 @@ async function main(args) {
 export function exitCodeForVerification(verification) {
   if (verification?.status === "unverified") return 2;
   if (verification?.status === "error") return 3;
+  // 核验没执行（没归档输出 / 归档里无可核验值）——不能与 verified 同为 0，
+  // 否则调用方分不清"值核过了"和"根本没核"。
+  if (verification?.status === "skipped") return 4;
   return 0;
 }
 

@@ -5,8 +5,10 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { DEFAULT_REFLECTION_MIN_ROUNDS } from "../src/index.js";
 import {
   exitCodeForVerification,
+  resolveReflection,
   parseChatArgs,
   runChat,
 } from "../bin/cli.js";
@@ -96,10 +98,41 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
   }
 });
 
-test("CLI uses distinct nonzero exits for unverified and guard errors", () => {
+test("reflection default threshold comes from the library constant (issue #127)", () => {
+  const saved = {
+    ERIX_REFLECTION: process.env.ERIX_REFLECTION,
+    ERIX_NO_REFLECTION: process.env.ERIX_NO_REFLECTION,
+  };
+  delete process.env.ERIX_REFLECTION;
+  delete process.env.ERIX_NO_REFLECTION;
+  try {
+    // 「库写 16、CLI 写 32」的漂移被消掉后，两边必须是同一个数
+    assert.equal(resolveReflection(undefined, DEFAULT_REFLECTION_MIN_ROUNDS - 1), false);
+    assert.deepEqual(
+      resolveReflection(undefined, DEFAULT_REFLECTION_MIN_ROUNDS),
+      { enabled: true },
+    );
+    assert.equal(resolveReflection(true, 4)?.enabled, true);
+    assert.equal(resolveReflection(false, 64), false);
+    assert.equal(resolveReflection(undefined, 64)?.enabled, true);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("CLI uses distinct nonzero exits for unverified, guard errors, and skipped verification", () => {
   assert.equal(exitCodeForVerification({ status: "verified" }), 0);
   assert.equal(exitCodeForVerification({ status: "unverified" }), 2);
   assert.equal(exitCodeForVerification({ status: "error" }), 3);
+  // skipped 不能与 verified 同为 0：调用方必须能区分"核过了"和"根本没核"
+  assert.equal(exitCodeForVerification({ status: "skipped", reason: "no_capture_evidence" }), 4);
+  assert.notEqual(
+    exitCodeForVerification({ status: "skipped" }),
+    exitCodeForVerification({ status: "verified" }),
+  );
 });
 
 test("CLI formats guard metrics and shows disabled guards explicitly", () => {

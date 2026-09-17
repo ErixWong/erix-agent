@@ -29,6 +29,30 @@
   收窄为 `cwd`。
 - 老 transcript 中带 `replayable` 标记的块：新代码忽略该标记，向后兼容读。
 
+### fix（#127：实测四轮暴露的待修点）
+
+- **guard：有捕获值却没声明 findings → 打回，不再静默跳过**。此前
+  "归档里有可核验值、终稿信封没写 findings" 被当作 `skipped` 放过，等于模型
+  可以自己免检；现在改为 `revise`（消息列出可用 label 与 recall 配方），
+  重试耗尽后 fail-closed 到 `unverified`。真无值可核的两种情形
+  （`no_capture_evidence` / `no_extractable_candidates`）仍为 `skipped`。
+- **CLI 退出码区分"没核验"与"核过了"**：`skipped` 由 0 改为 4（`verified` 仍是 0，
+  `unverified` 2，`error` 3），并在 `--help` 里写明。此前调用方无法区分两者。
+- **recall 新增按行直读**：`recall({ fromRound, lineOffset, lineLimit })` 一次取回
+  归档输出的连续行窗口（带行号与"共 N 行 / 继续读用 lineOffset="导航标记，
+  导航信息不会被截断吃掉）；单次默认 100 行、硬顶 400 行，总量受 token 预算约束。
+  实测中模型为读 42KB 输出的中段，用 12 次"假装行号"的正则探针绕了 10 轮
+  （多花约 60k tokens）。
+- **LLM 归一化只许搬运，不许改写**：归一化提示词明确"值必须逐字摘自 agent 原文"，
+  并对归一化结果做机械校验——值不是原文逐字子串的条目直接丢弃。同时修掉一个
+  真实缺口：LLM 归一化路径产生的 `findings` 此前没有传给 guard（静默丢失），
+  现在与信封路径一致透传。
+- **reflection 门槛单一来源 + 扩轮步长按比例**：CLI 曾把门槛写死为
+  `max-rounds >= 32`，与库常量 `DEFAULT_REFLECTION_MIN_ROUNDS`（16）漂移——16 轮
+  的任务永远拿不到扩轮保护（实测第 4 次运行踩线过关）。CLI 现在复用同一个常量；
+  默认扩轮步长由固定 `+32` 改为 `max(8, maxRounds * 0.5)`（16 轮任务一次扩 8 轮，
+  而不是一口气加到 48）。
+
 ### 保留（与可重放无关，勿误伤）
 
 - 输出卫生（4096 截断 + `toolOutputs` 字节保真 + bounded recall）与 recall 契约；

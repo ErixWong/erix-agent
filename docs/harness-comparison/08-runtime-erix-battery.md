@@ -64,6 +64,30 @@ revise 文案同步；3 条真实事故样本回归测试。
    走通 responses API）与 hermes（64k 窗口硬下限、compression 0.75 地板）的运行时对比
    待做；接线结论已足够指导 relay 侧适配。
 
+
+## 7. 复测（findings 契约 + 按行直读 + reflection 门槛，2026-09-17）
+
+改动落地后复跑同一道任务，验证 #127 的四条修复：
+
+| 运行 | 配置 | rounds | input tokens | recall 次数 | 结果 |
+|---|---|---|---|---|---|
+| 4（基线） | guard findings v2，reflection off | 16 | 128,515 | 17（12 次"假装行号"正则探针） | verified |
+| 5 | 同上 + 按行直读 + 漏声明打回 | **7** | **53,405** | **2** | verified |
+| 6 | 去掉 `--reflection off`（用默认门槛） | 9 | 83,152 | 2 | verified（termination=`judge_done`，judge.log 有决策记录） |
+
+要点：
+
+- **recall 探针消失**：run5 只用了两次 pattern recall（`TARGET`、`TARGET=`），
+  不再出现 run4 那种 `block1-line-5\d\d → block1-[a-z]` 的 12 次摸索。
+  按行直读把"读归档中段"从正则猜谜变成一次窗口读取。
+- **成本回到 5 万量级**：run4 的 128k 里相当一部分是 10 轮归档审计；
+  run5 降到 53k，与 run2 的 59k 基线同量级。
+- **reflection 默认门槛生效**：run6 未显式配置 reflection，`--max-rounds 16`
+  即自动开启 judge（`termination=judge_done`、`transcripts6/outputs/battery6/judge.log`
+  有拦截与轮次决策记录），不再需要 `--reflection on`。
+- 扩轮路径（16 轮预算一次扩 8 轮）由单测精确锁定（`test/reflection.test.js`：
+  跑到 24 轮 `max_rounds_cap`），实机未触发（模型没走到需要扩轮的地步）。
+
 ## 6. 接线事实存档
 
 - codex：npm 包二进制为 musl 动态链接（本机无 loader，segfault）→ 用官方 release

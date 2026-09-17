@@ -150,7 +150,7 @@ export function buildCliToolsSystemPrompt() {
 
 export function buildArchiveNotice(archiveDir) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
-  return "\n\n[工具输出归档]\n大输出已由引擎全量归档。需要早期原文时用 recall({ pattern: \"关键词\" }) 取回，需要精确值时用 note_list/note_read 读取；不要凭记忆补值。";
+  return "\n\n[工具输出归档]\n大输出已由引擎全量归档。需要早期原文时用 recall({ pattern: \"关键词\" }) 搜索，或 recall({ fromRound, lineOffset, lineLimit }) 按行直读某段原文；需要精确值时用 note_list/note_read 读取；不要凭记忆补值，不要重跑命令。";
 }
 
 

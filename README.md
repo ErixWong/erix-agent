@@ -262,7 +262,10 @@ cannot return a normal result.
 
 - `finalGuard` is optional. Before a normal stop (`end_turn`, `no_tool`,
   `judge_done`, completion, or a non-continuable cap), it receives
-  `{ finalText, messages, round, rounds, signal, termination }`.
+  `{ finalText, findings, messages, round, rounds, signal, termination }`,
+  where `findings` is the completion envelope's declared `label -> exact
+  value` map (the authoritative carrier for verifiable claims; the guard
+  does not parse free prose).
   It can return `{ action: "accept" }`, `{ action: "skip", reason }`, or
   `{ action: "revise", message }`.
 - `finalGuardMaxRetries` defaults to `2`; `finalGuardTimeoutMs` defaults to
@@ -284,15 +287,22 @@ cannot return a normal result.
 
 Only `verification.status === "verified"` means that a final text passed a
 guard. `skipped` means that no verification was performed or no comparable
-capture existed; it is not a positive correctness result.
+capture existed; it is not a positive correctness result. The CLI therefore
+uses a distinct exit code (`4`) for `skipped`, so callers cannot mistake
+"not checked" for "checked and passed". Verification covers the values
+declared in `findings`; statements that never enter `findings` are not
+checked.
 
 ### Reflection and judge governance
 
 When `reflection` is omitted, the library enables the basic judge
-automatically for `maxRounds >= 16`, unless `ERIX_NO_REFLECTION=1` is set.
-Pass `reflection: false` to disable it. The CLI has separate defaults:
-`chat` enables reflection at `max-rounds >= 32`, while `repl` explicitly
-passes `reflection: false`. `ERIX_NO_ROUND_JUDGE=1` disables round judging
+automatically for `maxRounds >= 16` (`DEFAULT_REFLECTION_MIN_ROUNDS`),
+unless `ERIX_NO_REFLECTION=1` is set. Pass `reflection: false` to disable
+it. The CLI reuses the same constant in `chat` (no separate threshold), so
+the two defaults cannot drift apart; `repl` explicitly passes
+`reflection: false`. The default extension step scales with the budget
+(`max(8, maxRounds * 0.5)`), so a 16-round task is not extended by a fixed
++32 rounds. `ERIX_NO_ROUND_JUDGE=1` disables round judging
 without disabling transparent interception.
 
 The object form accepts:

@@ -86,6 +86,7 @@ export {
   parseReflectionSummary,
   parseSummary,
 } from "./reflection/l0.js";
+export { DEFAULT_REFLECTION_MIN_ROUNDS } from "./loop/reflection.js";
 
 // ADR-015：有界 recall 协议的公共实现——项目侧 TranscriptStore 适配器（DB 后端）
 // 的 recall(runIdOrOptions) 对象形态直接委托给它，与 memory/file store 行为一致。

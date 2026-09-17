@@ -139,18 +139,34 @@ test("unknown labels in findings are warned and skipped, not revised (2026-09-17
   });
 });
 
-test("final guard skips when the envelope declares no findings", async () => {
+test("final guard revises when captures exist but the envelope declares no findings", async () => {
   await withNotes(async (directory) => {
     const records = [];
     await seedCapture(records, directory, "nonce=gold-4173\n", 1);
     const guard = createFinalGuard({ store: storeOf(records) });
+    // 有可核验捕获值却一条都不声明 → 不是"本任务没有可核验值"，打回逼它声明
+    const missing = await guard({ finalText: "随便写" });
+    assert.equal(missing.action, "revise");
+    assert.match(missing.message, /没有声明 findings/u);
+    assert.match(missing.message, /nonce/u);
+    assert.match(missing.message, /recall/u);
+    // 显式空 findings 同样不算声明
+    const empty = await guard({ finalText: "x", findings: {} });
+    assert.equal(empty.action, "revise");
+  });
+});
+
+test("final guard still skips when the archive has no verifiable value at all", async () => {
+  await withNotes(async (directory) => {
+    const records = [];
+    await seedCapture(records, directory, "plain prose with nothing to verify\n", 1);
+    const guard = createFinalGuard({
+      store: storeOf(records),
+      onWarning: () => {},
+    });
     assert.deepEqual(await guard({ finalText: "随便写" }), {
       action: "skip",
-      reason: "no_declared_findings",
-    });
-    assert.deepEqual(await guard({ finalText: "x", findings: {} }), {
-      action: "skip",
-      reason: "no_declared_findings",
+      reason: "no_extractable_candidates",
     });
   });
 });
