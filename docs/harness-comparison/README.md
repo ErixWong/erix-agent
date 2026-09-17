@@ -13,7 +13,7 @@
 | [04-hermes-agent.md](04-hermes-agent.md) | NousResearch Hermes Agent（Python）单项目剖析 |
 | [05-erix-llm-kit.md](05-erix-llm-kit.md) | 本项目 erix-agent / erix-llm-kit 单项目剖析 |
 | **[06-cross-comparison.md](06-cross-comparison.md)** | **五方对比主文档**（按 5 个维度逐项对照） |
-| [07-takeaways-and-open-questions.md](07-takeaways-and-open-questions.md) | 结论、可借鉴清单、开放问题 |
+| [07-takeaways-and-open-questions.md](07-takeaways-and-open-questions.md)，[08-runtime-erix-battery.md](08-runtime-erix-battery.md)（运行时实测）| 结论、可借鉴清单、开放问题 |
 
 ## 分析对象与快照
 
