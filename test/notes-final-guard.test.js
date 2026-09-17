@@ -95,6 +95,27 @@ test("final guard accepts a final value found in an archived artifact", async ()
   });
 });
 
+test("CJK closing brackets and quotes terminate attribution values (2026-09-17 实测回归)", async () => {
+  await withNotes(async (directory) => {
+    const records = [];
+    await seedCapture(records, directory, "nonce=gold-4173\n", 1);
+    const guard = createFinalGuard({ store: storeOf(records) });
+    // 真实事故样本：「TARGET=gold-4173」被抽成 gold-4173」导致 revise
+    assert.deepEqual(
+      await guard({ finalText: "「nonce=gold-4173」为最终值" }),
+      { action: "accept" },
+    );
+    assert.deepEqual(
+      await guard({ finalText: "最终值 \"nonce=gold-4173\"（来自归档）" }),
+      { action: "accept" },
+    );
+    assert.deepEqual(
+      await guard({ finalText: "nonce=gold-4173，即目标值" }),
+      { action: "accept" },
+    );
+  });
+});
+
 test("final guard enforces the provenance contract (ADR-016)", async () => {
   await withNotes(async (directory) => {
     const records = [];
@@ -434,9 +455,10 @@ test("final guard revises a value not found in any capture", async () => {
     const guard = createFinalGuard({ runId: "guard-run", store: storeOf(records) });
     const result = await guard({ finalText: "原值 nonce=Def456+LMN012" });
     assert.equal(result.action, "revise");
-    assert.match(result.message, /未对应本 run 的任何捕获值/u);
-    // ADR-015 4b：guard 提示指向 transcript 定位符（零路径）
-    assert.match(result.message, new RegExp(`来源=归档:${display.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"));
+    assert.match(result.message, /未对应本 run 的任何归档捕获值/u);
+    // ADR-016：guard 提示指向可执行的 recall 配方（零路径、不借用「来源=」语法）
+    assert.match(result.message, new RegExp(`归档输出 ${display.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"));
+    assert.match(result.message, /recall\(\{ pattern/u);
     assert.doesNotMatch(result.message, /\/tmp\//u);
     assert.match(result.message, /不得重跑/u);
   });

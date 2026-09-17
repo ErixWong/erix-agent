@@ -1,7 +1,6 @@
 import path from "node:path";
 
 import {
-  archiveSourceTarget,
   buildCaptureStub,
   collectTranscriptCaptures,
   inspectRun,
@@ -18,12 +17,14 @@ function escapeRegex(value) {
   return String(value).replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 function explicitAttributions(text, knownLabels) {
+  // 值终止符：空白/常见括号外，还含 CJK 右引号、右书名号、顿号——
+  // 实测「TARGET=gold-4173」被抽成 gold-4173」导致诚实终稿被误杀（guard 误报）。
   const attributions = [];
   for (const label of knownLabels) {
     const pattern = new RegExp(
       `(?:^|[^\\p{L}\\p{N}_])${escapeRegex(label)}(?![\\p{L}\\p{N}_])\\s*`
         + `(?:(?:=|:|：)|(?:的\\s*)?(?:值\\s*(?:已[^是为]{0,20})?(?:是|为)|是|为))\\s*`
-        + `([^\\s,，。；;（）()\\]}]+)`,
+        + `([^\\s,，。；;（）()\\]}"'」』】〉》、]+)`,
       "giu",
     );
     for (const match of String(text ?? "").matchAll(pattern)) {
@@ -76,10 +77,12 @@ function captureIndex(captures) {
     : `\n捕获目录视图（最多 10 条）：\n${visible.join("\n")}`;
 }
 function capturePointer(capture) {
-  // ADR-016：capture 无自动笔记 key；显式笔记来源走 note_read:<key> 溯源（sameArtifact）
-  if (capture?.display) return `来源=归档:${archiveSourceTarget(capture)}`;
-  if (capture?.archivePath) return `来源=归档:${path.basename(String(capture.archivePath))}`;
-  return "可信捕获";
+  // ADR-016：capture 无自动笔记 key；指针必须指向可执行的取回动作（recall 配方），
+  // 不借用已退役的「来源=」语法（实测中模型会去文件系统找 digest 字符串，白绕 8 轮）。
+  const target = capture?.display
+    ?? (capture?.archivePath ? path.basename(String(capture.archivePath)) : "");
+  if (!target) return "可信捕获";
+  return `归档输出 ${target}（用 recall({ pattern: "关键词" }) 取回原文核实）`;
 }
 /**
  * Build the deterministic CLI-side provenance gate for one run.
@@ -119,7 +122,7 @@ export function createFinalGuard({
       if (matching.length === 0) {
         const pointer = captures[0] ? capturePointer(captures[0]) : "可信归档";
         return revise(
-          `终稿中的 ${attribution.label}=${attribution.value} 未对应本 run 的任何捕获值。请读取 ${pointer} 核实原始值，不得重跑命令；若确认无法恢复，请明确说明不可恢复。`,
+          `终稿中的 ${attribution.label}=${attribution.value} 未对应本 run 的任何归档捕获值。${pointer}；不得重跑命令；若确认无法恢复，请明确说明不可恢复。`,
         );
       }
     }
