@@ -84,9 +84,13 @@ function normalizeTodo(todo) {
   };
 }
 
+const SEMANTIC_TEXT_MAX_CHARS = 1200;
+const SEMANTIC_RENDER_MAX_LINES = 16;
+
 function normalizeSemantic(semantic, expectedVersion) {
   if (!semantic) return { status: "absent" };
-  const sourceText = boundedText(semantic.text, 220);
+  // ADR-015：semantic 槽位承载宿主目录（如 notes 小抄目录），220→1200 字符
+  const sourceText = boundedText(semantic.text, SEMANTIC_TEXT_MAX_CHARS);
   const redacted = looksLikeCredential("", sourceText);
   const text = redacted ? "[redacted]" : sourceText;
   const version = semantic.version ?? semantic.semanticStateVersion;
@@ -102,7 +106,9 @@ function normalizeSemantic(semantic, expectedVersion) {
     text,
     semanticStateVersion: Number.isSafeInteger(version) ? version : null,
     ...(redacted ? { redacted: true } : {}),
-    ...(Array.from(String(semantic.text ?? "")).length > 220 ? { truncated: true } : {}),
+    ...(Array.from(String(semantic.text ?? "")).length > SEMANTIC_TEXT_MAX_CHARS
+      ? { truncated: true }
+      : {}),
   };
 }
 
@@ -339,7 +345,10 @@ export function renderRunState(state) {
     `termination=${safeText(deterministic.termination?.reason, 32) || "running"} errors=${safeInteger(errors.tool)}/${safeInteger(errors.checkpoint)}/${safeInteger(errors.archive)}`,
     SEMANTIC_MARKER,
     `status=${safeText(semantic.status, 16)} version=${semantic.semanticStateVersion ?? "-"}`,
-    ...(semantic.text ? [`text=${safeText(semantic.text, 180)}`] : []),
+    // ADR-015：semantic 文本多行渲染（宿主目录如 notes 小抄目录）；行数封顶防膨胀
+    ...(semantic.text
+      ? String(semantic.text).split("\n").slice(0, SEMANTIC_RENDER_MAX_LINES)
+      : []),
     END_MARKER,
   ];
   return renderLines(lines);
