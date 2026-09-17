@@ -40,6 +40,57 @@ test("recall without arguments returns an overview and folded watermark", async 
   assert.equal(tool.schema.inputSchema.properties.episodeId, undefined);
 });
 
+test("line window reads a slice of one archived output with line numbers", async () => {
+  const store = createMemoryTranscriptStore();
+  const lines = Array.from({ length: 500 }, (_, index) => `block1-line-${index + 1}: payload`);
+  await store.appendRound("run", {
+    round: 4,
+    messages: [{
+      role: "user",
+      content: [{ type: "tool_result", content: lines.join("\n") }],
+    }],
+  });
+  const tool = createRecallTool({ store, runId: "run" });
+  const result = await tool.execute({ fromRound: 4, toRound: 4, lineOffset: 498, lineLimit: 2 });
+  assert.match(result, /499\tblock1-line-499/u);
+  assert.match(result, /500\tblock1-line-500/u);
+  assert.match(result, /\[行 499-500 \/ 共 500 行\]/u);
+  // 行号是 1 基展示、lineOffset 是 0 基
+  assert.doesNotMatch(result, /498\tblock1-line-498/u);
+});
+
+test("line window clamps the requested limit and points at the next offset", async () => {
+  const store = createMemoryTranscriptStore();
+  const lines = Array.from({ length: 900 }, (_, index) => `line-${index + 1}`);
+  await store.appendRound("run", {
+    round: 4,
+    messages: [{ role: "user", content: [{ type: "tool_result", content: lines.join("\n") }] }],
+  });
+  const tool = createRecallTool({ store, runId: "run" });
+  const clamped = await tool.execute({ fromRound: 4, lineOffset: 0, lineLimit: 5000 });
+  assert.match(clamped, /单次上限 400 行/u);
+  assert.match(clamped, /lineOffset=400/u);
+  assert.match(clamped, /\[行 1-400 \/ 共 900 行/u);
+});
+
+test("line window keeps the output within the token budget and is empty past the end", async () => {
+  const store = createMemoryTranscriptStore();
+  const lines = Array.from({ length: 200 }, (_, index) => `line-${index + 1}-${"x".repeat(60)}`);
+  await store.appendRound("run", {
+    round: 4,
+    messages: [{ role: "user", content: [{ type: "tool_result", content: lines.join("\n") }] }],
+  });
+  const tool = createRecallTool({ store, runId: "run", limits: { totalTokens: 120 } });
+  const bounded = await tool.execute({ fromRound: 4, lineOffset: 0, lineLimit: 200 });
+  assert.ok(estimateTokens(bounded) <= 120, `tokens=${estimateTokens(bounded)}`);
+  // 正文被截断，但尾部导航标记（共 N 行）必须挺过截断
+  assert.match(bounded, /\[段截断\]/u);
+  assert.match(bounded, /共 200 行/u);
+  const past = await tool.execute({ fromRound: 4, lineOffset: 5000 });
+  assert.match(past, /起始行超出范围/u);
+  assert.match(past, /共 200 行/u);
+});
+
 test("pattern recall returns grep context, textifies tool blocks, and caps segments", async () => {
   const store = await seedStore();
   const tool = createRecallTool({

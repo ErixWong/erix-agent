@@ -89,12 +89,6 @@ export function createFinalGuard({
       return { action: "skip", reason: "no_extractable_candidates" };
     }
 
-    const declarations = normalizeDeclarations(findings);
-    if (declarations.length === 0) {
-      onWarning("终稿信封未声明 findings 关键值，跳过核验");
-      return { action: "skip", reason: "no_declared_findings" };
-    }
-
     const knownLabels = new Map();
     for (const capture of inspected.captures) {
       const captures = knownLabels.get(capture.label) ?? [];
@@ -103,6 +97,17 @@ export function createFinalGuard({
     }
 
     const revise = (message) => ({ action: "revise", message });
+
+    // 归档里有可核验值、终稿却没声明任何 findings：这是模型没走声明流程，
+    // 不是"本任务没有可核验值"（后者在前面 no_extractable_candidates 已拦），
+    // 打回一次逼它声明；仍不声明则由 guard 重试上限兜底 → unverified。
+    const declarations = normalizeDeclarations(findings);
+    if (declarations.length === 0) {
+      const labels = [...knownLabels.keys()].slice(0, 10).join("、");
+      return revise(
+        `终稿信封没有声明 findings 关键值，但本 run 的归档输出里有 ${inspected.captures.length} 条可核验捕获值（可用 label：${labels}）。请在结束信封的 findings 中声明结论用到的值（label→精确值，逐字取自归档原文）；若本次结论确实不依赖任何归档值，请在终稿中明确说明。${capturePointer(inspected.captures[0])}`,
+      );
+    }
     for (const { label, value } of declarations) {
       const captures = knownLabels.get(label) ?? [];
       if (captures.length === 0) {

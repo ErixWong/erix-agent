@@ -209,6 +209,22 @@ function persistenceErrorEvent({ port = "transcript", operation, phase, runId, s
   };
 }
 
+// 归一化结果的机械校验：LLM 只许搬运，不许改写。
+// 每个 finding 值必须是 agent 原文的逐字子串，否则丢弃该条（宁少不多）。
+function filterFindingsBySource(findings, sourceText) {
+  if (findings === undefined || findings === null
+    || typeof findings !== "object" || Array.isArray(findings)) {
+    return undefined;
+  }
+  const source = typeof sourceText === "string" ? sourceText : "";
+  const kept = {};
+  for (const [key, value] of Object.entries(findings)) {
+    const text = typeof value === "string" ? value : String(value);
+    if (text.length > 0 && source.includes(text)) kept[key] = value;
+  }
+  return Object.keys(kept).length > 0 ? kept : undefined;
+}
+
 function makePersistenceFailure({ operation, phase, sideEffect, runId, error, event, errorLedger }) {
   const failure = new KitError(
     "persistence_failed",
@@ -799,7 +815,8 @@ export async function runToolLoop(options) {
   const reflectionExtensionStep = Number.isSafeInteger(effectiveReflection?.extensionStep)
     && effectiveReflection.extensionStep > 0
     ? effectiveReflection.extensionStep
-    : 32;
+    // 默认按当前上限的一半扩——固定 +32 是给大任务调的数，16 轮的任务一次加到 48 比例失衡
+    : Math.max(8, Math.floor(maxRounds * 0.5));
   const reflectionMaxExtensions = Number.isSafeInteger(effectiveReflection?.maxExtensions)
     && effectiveReflection.maxExtensions >= 0
     ? effectiveReflection.maxExtensions
@@ -2069,7 +2086,7 @@ export async function runToolLoop(options) {
 已运行轮数：${rounds}
 本轮 agent 最终输出（可能为空）：${JSON.stringify(responseText).slice(0, 2000)}
 若 agent 已给出明确结论/产物就绪则 done=true；若它在工作中途停下/放弃则判断产出是否可判定，可判定则 done=true 否则 done=false。
-只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果","findings":{"label":"value"}}。findings 声明结论中的关键值（label→精确值），没有关键值可省略。` }],
+只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果","findings":{"label":"value"}}。findings 只做搬运：value 必须逐字摘自本轮 agent 原文（原样复制，不得改写/规整/补全/翻译，包括引号与标点）；原文里抄不到的值的就省略该条，宁可少写。` }],
           }],
           signal,
         };
@@ -2081,6 +2098,9 @@ export async function runToolLoop(options) {
           textFromBlocks(blocksFor(judgeResponse?.content)),
         );
         if (candidate !== null) {
+          // 归一化只许“搬运”：LLM 给出的每个 finding 值必须是 agent 原文的逐字子串；
+          // 不是就丢掉该条（不得靠 LLM 改写去“修好”模型输出，那会把核验变成不可复现）。
+          candidate.findings = filterFindingsBySource(candidate.findings, responseText);
           normalizedWrapup = candidate;
           if (candidate.summary !== "" || candidate.output !== "") {
             roundSummary = candidate.summary || candidate.output || roundSummary;
@@ -2101,6 +2121,11 @@ export async function runToolLoop(options) {
       } catch {
         // 归一化失败降级：走现有 noToolStreak/completion 兑底，不崩 loop
       }
+    }
+    // LLM 归一化路径也要把 findings 透给 guard——否则模型没用 JSON 信封时，
+    // 归一化出来的声明会静默消失，guard 只能看到“没声明”
+    if (normalizedWrapup?.findings !== undefined) {
+      declaredFindings = normalizedWrapup.findings;
     }
     // 失忆兑底：超过 5 轮后模型若输出欢迎语（误以为新会话），注入任务提醒并继续
     // （上下文折叠可能让模型丢失任务感；此处把主线拉回，避免空转）

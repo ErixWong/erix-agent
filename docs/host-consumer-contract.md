@@ -156,7 +156,7 @@ Before consuming a `runToolLoop` result, the host must inspect
 | Status | Contract |
 |---|---|
 | `verified` | The only status the loop uses for a final answer accepted by the configured guard. |
-| `skipped` | There was nothing the guard could compare, or the guard was not enabled. **This does not mean that the answer is correct** and must not be rewritten as `verified`. |
+| `skipped` | There was nothing the guard could compare, or the guard was not enabled. **This does not mean that the answer is correct** and must not be rewritten as `verified`. The CLI exits with code 4, so "not checked" is distinguishable from `verified` (exit code 0). |
 | `unverified` | The required provenance check was not satisfied. The CLI exits with code 2; the host must not consume the result as a successful result. |
 | `error` | The guard threw, returned an invalid decision, or timed out. The CLI exits with code 3; the host must not consume the result as a verified fact. |
 
@@ -171,7 +171,10 @@ provider, tool, or loop failures follow the normal failure path.
 The loop calls a configured guard before stopping for
 `end_turn`, `no_tool`, `judge_done`, `max_rounds_cap`, `stall`,
 `continuation_exhausted`, or `reflection_stop`. The guard receives
-`finalText`, `messages`, `round`, `rounds`, `signal`, and `termination`. `{ action: "accept" }` permits normal
+`finalText`, `findings`, `messages`, `round`, `rounds`, `signal`, and
+`termination`. `findings` is the completion envelope's declared
+`label -> exact value` map; it is the authoritative carrier for verifiable
+claims, and `finalText` is not parsed for them. `{ action: "accept" }` permits normal
 termination. `{ action: "skip", reason }` terminates with `skipped`. A
 `{ action: "revise", message }` decision is injected as a separate user text
 message and the loop continues, up to `finalGuardMaxRetries` revision retries
@@ -220,18 +223,36 @@ The CLI guard in `bin/final-guard.js` is a deterministic provenance checker,
 not a task-completion evaluator (ADR-016). Evidence is the run transcript's
 archived tool outputs (`toolOutputs`, byte-faithful) plus legacy capture
 manifests; there is no replayability filter — every archived output is
-evidence. An explicit `label=value` in the final text must match an archived
-value, otherwise the guard returns `revise`. Missing, forged, escaped, or
-truncated evidence cannot establish verification.
+evidence. The guard compares the envelope's declared `findings` against
+archived capture values by exact string equality; free prose is never parsed.
+
+- a declared label whose value matches an archived value → the entry passes;
+- a declared label that exists in the archive but whose value differs →
+  `action: "revise"` (the forgery signal), including the captured values and
+  the recall recipe in the message;
+- a declared label that does not exist in the archive at all (e.g. derived
+  counts) → warned and skipped, because it can be neither verified nor
+  falsified; a revise here only provokes looping (measured);
+- captures exist but the envelope declares nothing → `action: "revise"`.
+  Having something to compare and not declaring it is the model skipping the
+  declaration step, which is not the same as "this task has no verifiable
+  values". The guard retries within `finalGuardMaxRetries` and then
+  fail-closes to `unverified`; it never silently passes.
 
 A run with no archived outputs returns `action: "skip"` with
 `reason: "no_capture_evidence"`. Archived outputs with no extractable
 candidates return `action: "skip"` with
-`reason: "no_extractable_candidates"`. A final answer with no comparable
-explicit label returns `action: "skip"` with
-`reason: "no_comparable_label"`. The guard does not add natural
+`reason: "no_extractable_candidates"`. The guard does not add natural
 language inference, keyword guessing, or similarity rules. A skipped check
 is still not `verified`.
+
+When the loop has to normalize a prose final answer into the envelope with
+an LLM (`ERIX_WRAPUP_NORMALIZE=1` or `reflection.wrapupNormalize`), the
+normalizer is only allowed to transcribe: every normalized finding value
+must appear verbatim in the model's own final text, otherwise that entry is
+dropped before the guard sees it. An LLM must not be able to "repair" a
+model's value on the way to verification, which would make the check
+irreproducible.
 
 ## Bounded recall
 
