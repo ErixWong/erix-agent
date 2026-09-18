@@ -109,25 +109,16 @@ otherwise returns `{ input_tokens?, output_tokens? }` built from
 `prompt_tokens`/`completion_tokens` — it does **not** accept canonical aliases,
 so passing `{ input_tokens: 5 }` yields `{}` rather than a passthrough.
 
-## 5. The `resourceStore` port is removed
+## 5. The `resourceStore` port never shipped — nothing to migrate
 
-The archive port is gone in 0.6.0. Archived tool output now lives in the
-transcript's byte-faithful `toolOutputs` (ADR-015), so there is no second
-archive and nothing to keep in sync:
-
-```js
-// 0.5.1
-await runToolLoop({ assemblyPort, resourceStore: createFileResourceStore({ dir }) });
-
-// 0.6.0
-await runToolLoop({ assemblyPort }); // archived output is in the transcript
-```
-
-Passing `resourceStore` (top-level or through `createAssemblyPort`) now throws
-`TypeError` as an unknown option. Delete `validateResourceStore`,
-`createFileResourceStore`, and the `resourceStoreContract` import; legacy
-capture manifests remain readable by the guard for old transcripts, but new
-runs never write them.
+`resourceStore` was added during the unreleased 0.6.0 window and removed again
+before the release (ADR-015 folded archived output into the transcript's
+`toolOutputs`). It does not exist in 0.5.1, so a 0.5.1 host has nothing to
+remove. The only observable effect is that explicitly passing the key now
+throws `TypeError` through the unknown-option check (§3). If you adopted a
+commit from `main` during the window, delete the `resourceStore` option and any
+`createFileResourceStore` wiring; archived output now lives in the transcript
+and is retrieved with `recall`.
 
 ## 6. Archive hints no longer contain filesystem paths
 
@@ -185,3 +176,45 @@ that previously ran unguarded by reflection now makes judge calls — set
 `reflection: false` explicitly if that cost is not wanted. The default
 extension step is now `max(8, maxRounds * 0.5)` instead of a fixed `+32`, so a
 small task is extended proportionally.
+
+## 10. `erix-agent/tools` no longer exports the jail/file helpers
+
+`JailError`, `createJail`, and `createFileTools` were dead code and are gone.
+A 0.5.1 host that imported them must bring its own path/permission handling:
+
+```js
+// 0.5.1
+import { createJail, createFileTools } from "erix-agent/tools";
+
+// 0.6.0 — implement the boundary in the host, or keep using the CLI's
+// bin/tools.js exec tool; the library does not ship a sandbox (ADR-009)
+```
+
+The remaining `erix-agent/tools` exports are `createToolRegistry`,
+`createStaticToolProvider`, `createJsonFileToolProvider`,
+`createCompositeToolProvider`, and `createRecallTool`.
+
+## 11. Two new defaults change model-visible behavior
+
+These are not crashes, but they change what the model sees and what a run costs:
+
+- **Output hygiene is on by default.** A tool result longer than 4096 characters
+  is archived byte-faithfully into the transcript's `toolOutputs`; the model
+  sees a truncated remainder plus a `recall({ pattern: "…" })` recipe instead
+  of the whole text. Hosts that relied on the model reading a complete large
+  tool result should rely on `recall` (or raise the limit through their own
+  tool) instead. Nothing is lost: the full bytes stay in the transcript.
+- **`recall` is a standard engine tool.** The loop registers it by default and
+  serves calls itself (an identically named host tool wins; `recall: false`
+  opts out). A host that already exposes its own retrieval tool should either
+  drop it or keep the name to take precedence.
+
+## 12. The contract test suites got stricter
+
+`executeToolContract` now describes only the structured call shape, and the
+positional `(name, input)` form moved into `executeToolMigrationContract` as a
+negative assertion (`name` receives the whole execution object, `input` is
+`undefined`). `resourceStoreContract` no longer exists. A host adapter that was
+"green on 0.5.1" can therefore go red on 0.6.0 without any code change — that
+is the intended tightening, not a regression: run both suites and fix the
+adapter rather than loosening the assertion.

@@ -376,8 +376,8 @@ block rather than appending duplicates, and persists the current state with
 `saveRunState` when the supplied `TranscriptStore` supports it. The
 deterministic portion contains engine-known facts only: budget, tool call
 counts and failures, written-file paths, injected todo state,
-fold/navigation/capture counts, termination, and tool/checkpoint/archive
-error counts. The current termination reason is exposed through the same
+fold/navigation counts, termination, and tool/checkpoint/unpersisted error
+counts. The current termination reason is exposed through the same
 termination values as the loop, including `end_turn`, `no_tool`, `stall`,
 `max_rounds_cap`, `reflection_stop`, `judge_done`,
 `continuation_exhausted`, `final_guard_unverified`, `aborted`, and `failed`.
@@ -390,12 +390,14 @@ The engine does not call a model to obtain semantic state.
 
 The persisted object is bounded by
 `RUN_STATE_MAX_SERIALIZED_BYTES` (`64 * 1024`). The rendered prompt block is
-bounded by `RUN_STATE_MAX_CHARS` (`400`). The run-state helpers also cap tool
+bounded by `RUN_STATE_MAX_CHARS` (`1600`). The run-state helpers also cap tool
 entries at 128, file entries at 128, todo entries at 64, ordinary bounded
-name/path/id/status fields at 120 characters, and semantic source text at 220
-characters. When entries or serialized state are trimmed,
-`bounds.truncated` and the applicable omission counts are explicit; the
-rendered block uses `[run state truncated]` when its 400-character limit is
+name/path/id/status fields at 120 characters, and semantic source text at
+1200 characters (multi-line: newlines are preserved so each directory entry
+renders on its own line, at most 16 lines, and a line-count cut is reported as
+`... (semantic lines truncated: N more)`). When entries or serialized state are
+trimmed, `bounds.truncated` and the applicable omission counts are explicit;
+the rendered block uses `[run state truncated]` when its character limit is
 reached.
 
 An unknown schema or incomplete persisted state is not silently treated as a
