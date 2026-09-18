@@ -21,7 +21,7 @@ assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, too
 writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
-maxTokenContinuations, context, resourceStore, todoStateProvider, semanticStateProvider,
+maxTokenContinuations, context, todoStateProvider, semanticStateProvider,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, runState, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
@@ -56,7 +56,6 @@ const assemblyPort = createAssemblyPort({
   tools: { definitions, executeTool, getToolMetadata? },
   store,       // complete TranscriptStore
   session: { id, resume?, initialMessages? },
-  resourceStore?, // opaque archive adapter
   policy?,     // explicit run options
   emit?,       // (eventType, payload) => void
 });
@@ -64,7 +63,7 @@ const assemblyPort = createAssemblyPort({
 await runToolLoop({ assemblyPort });
 ```
 
-`modelConfig`, `provider`, `tools`, `store`, `session`, `resourceStore`, and `policy` may also
+`modelConfig`, `provider`, `tools`, `store`, `session`, and `policy` may also
 be synchronous zero-argument factories when passed to `createAssemblyPort`.
 The required methods are checked at assembly/startup: `modelConfig.resolve`,
 either `provider.chat` or `provider.chatStream`, `tools.definitions`,
@@ -86,9 +85,6 @@ the port at the composition boundary and does not wrap or change the loop
 injection contract. If `emit` is present, it is used as the default event
 sink; an explicit `onEvent` still wins. `assemblyPortContract` from
 `erix-agent/contract-tests` locks these startup and precedence rules.
-`resourceStore` is a top-level loop option rather than a field tunneled through
-`context`; an explicit `context` therefore cannot discard the assembled archive
-adapter.
 An assembly-shaped fine-grained entry performs the same provider, executor,
 model-config, session, and required-persistence fail-fast checks before the
 first provider call. `persistence: "none"` does not require a TranscriptStore.
@@ -98,37 +94,35 @@ it performs no I/O. The CLI continues to use its existing file-backed
 provider, tool, and transcript adapters, so no host needs to adopt the port
 in one migration.
 
-## ResourceStore
+## Persistence failure reporting
 
-`ResourceStore` is the boundary for archived or otherwise external resources.
-Its locator is opaque to the library:
+Persistence failures are reported through two reliable channels; neither
+depends on the model reading a hint:
 
-```js
-resourceStore.put(bytesOrText)
-// -> Promise<{ locator, digest, display }>
+- `result.unpersisted` — the error bill (schema frozen as an array). Each
+  entry carries `ts`, `kind`, `port`, `operation`, optional `phase`, `fatal`,
+  `repeat`, and `error: { name, message }` (message capped at 500 characters,
+  stack dropped). Identical failures are deduplicated into one entry with an
+  increasing `repeat` count instead of flooding the bill.
+- `diagnostics.error(event)` — the same identity as an event, delivered when
+  the host configured a sink. A sink that throws is itself recorded as a
+  `delivery_failure` entry.
 
-resourceStore.get(locator)
-// -> Promise<string|Uint8Array>
-```
+The deterministic run state carries the same bill (`deterministic.errors.unpersisted`)
+so a mid-run crash does not lose it; the model-visible render shows only the
+count, never host error text.
 
-`put` must return the exact locator used by `get`, a stable digest of the
-stored bytes, and a non-empty host-facing `display` string. `get` returns the
-stored resource unchanged; an unknown locator must reject with an explicit
-not-found error, and adapter failures must propagate. The engine never parses
-locator fields or assumes paths, URI syntax, line numbers, or byte offsets.
-Fold navigation records carry the adapter's locator and display; display is
-the only string intended for a model-facing stub.
+The failure tiers are per operation, not per port: transcript
+append/checkpoint/run-state failures terminate the run (side effects are
+tracked, per ADR-013), while `notes` writes continue, report, and return a
+tool result that does not look like a saved note. A host port reports its own
+writes through the injected `reportPersistenceFailure` bridge, which produces
+the same event and bill shapes as the transcript path.
 
-`createFileResourceStore({ dir })` is the built-in filesystem adapter. Its
-locator is an opaque object and its display is an opaque model-facing reference;
-hosts may replace it with an object store, database, or service
-without changing folding or recall code. `resourceStoreContract` checks
-round-trip fidelity, stable/different digests, store isolation, unknown-locator
-behavior, return shapes, and failure propagation. CLI compression writes new
-capture artifacts through the run-local `createFileResourceStore`; manifests
-carry opaque locators and the final guard reads them through `store.get()`.
-Older manifests containing only `archivePath` and line locators remain readable
-through the legacy filesystem path and are marked legacy by the reader.
+`result.completionErrors[]` collects teardown failures (multiple failures do
+not overwrite each other). When the main result is an exception, the original
+error stays primary and the completion errors are attached to it as
+`error.completionErrors`.
 
 ## Reusable normalization primitives
 
@@ -137,7 +131,7 @@ helpers from the package root. They perform no I/O or model calls:
 
 | Export | Signature | Semantics |
 |---|---|---|
-| `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | Maps OpenAI token fields and canonical aliases to `input_tokens`/`output_tokens`; empty or non-object input is omitted. |
+| `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | `null`/`undefined` return `undefined`; any other input returns an object mapping `prompt_tokens`/`completion_tokens` to `input_tokens`/`output_tokens` when present (so `{}`, an array, or a string yields `{}`). Canonical aliases are **not** accepted. |
 | `normalizeOpenAIStopReason` | `(reason, fallback = "unknown") -> string` | Maps `stop`, `tool_calls`/`function_call`, and `length` to canonical stop reasons; unknown values pass through. |
 | `parseOpenAIToolArguments` | `(rawArguments) -> any` | Parses JSON, uses `{}` when absent, and returns malformed values under `_truncatedArguments` and `_raw`. |
 | `createOpenAIStreamAccumulator` | `() -> accumulator` | Accumulates indexed or legacy streamed tool-call fragments; `getToolUseBlocks()` returns canonical tool-use blocks. |

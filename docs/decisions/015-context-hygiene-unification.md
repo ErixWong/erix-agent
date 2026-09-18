@@ -80,7 +80,7 @@
   - CLI 手写的 `buildCaptureStub` / `buildCaptureRecoveryHint`（换引擎生成）；
   - #112 的"去路径化"方向——模型可见文本（stub/rerun 提示/系统提示词/guard 消息）零路径、
     零 ResourceStore 词汇，泄漏不再需要打补丁。
-- **Phase 4b（并入 #109 第 2 步）**：ResourceStore 仅存的 **capture 证据角色**（非重放 exec 的
+- **Phase 4b（并入 #109 第 2 步；端口最终删除见 2026-09-17 收尾）**：ResourceStore 仅存的 **capture 证据角色**（非重放 exec 的
   capture manifest，provenance gate 专用）——它与 auto-capture/guard 是同一子系统，证据源迁移到
   transcript 与吞错修复一并做，避免同一处代码改两遍。
 - **保留**：
@@ -107,8 +107,11 @@
 1. ✅ **recall 标配化**：引擎默认注册（opt-out 旗子）+ 撕票显式报错 + 宿主同名工具让位
 2. ✅ **输出卫生进引擎**：超限输出 → 档案 + stub；checkpoint/resume 字节保真；四路 recall 语料覆盖
 3. ✅ **notes 目录注入**：semantic 槽位扩容（220→1200 字符多行渲染）+ CLI 目录 provider
-4. ✅ **退役清理 4a**：ResourceStore 输出档案角色退役（exec 交全量、模型可见文本零路径）；
-   ⏳ 4b（capture 证据源迁移）并入 #109 第 2 步
+4. ✅ **退役清理 4a**：ResourceStore 输出档案角色退役（exec 交全量、模型可见文本零路径）
+5. ✅ **退役清理 4b**：capture 证据源迁移至 transcript（#109 第 2 步）
+6. ✅ **端口删除（2026-09-17 收尾）**：`resourceStore` 选项、`validateResourceStore`、
+   `createFileResourceStore`、fold 的 `materializeFoldResources`、`resourceStoreContract`
+   全部删除——折叠原文由 transcript 承载，引擎侧不再有第二个档案
 
 > 实施记录（2026-09-16）：库侧 `recallContract` 独立契约测试与 touwaka adapter 对拍待补
 > （4b 时一并做，覆盖同一条 store 接口面）；本表状态以 #115 验收清单为准。

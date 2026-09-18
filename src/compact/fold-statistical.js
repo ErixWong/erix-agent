@@ -13,7 +13,6 @@ import {
   selectFoldedRounds,
   isRealUser,
 } from "./helpers.js";
-import { validateResourceStore } from "../store/resource.js";
 
 export const FOLD_SUMMARY_MARKER = "【上下文折叠·v1·erix-9f6e2c】";
 const MAX_NAVIGATION_ARTIFACTS = 10;
@@ -63,26 +62,6 @@ function parseToolFootprint(value) {
     }
   }
   return counts;
-}
-
-async function materializeFoldResources(messages, resourceStore) {
-  if (resourceStore === undefined) return messages;
-  const store = validateResourceStore(resourceStore);
-  return Promise.all(messages.map(async (message) => {
-    if (!Array.isArray(message?.content)) return message;
-    let changed = false;
-    const content = await Promise.all(message.content.map(async (block) => {
-      if (!block?.artifact || typeof block.artifact !== "object"
-        || block.artifact.resource === undefined) {
-        return block;
-      }
-      const reference = await store.put(block.artifact.resource);
-      const { resource: _resource, ...artifact } = block.artifact;
-      changed = true;
-      return { ...block, artifact: { ...artifact, ...reference } };
-    }));
-    return changed ? { ...message, content } : message;
-  }));
 }
 
 function safeNavigationId(value) {
@@ -401,11 +380,10 @@ export function createFoldStatisticalStrategy(options = {}) {
         keep,
         settings.protectedMessage,
       );
-      let foldedPayload = cloneFoldPayload(
+      const foldedPayload = cloneFoldPayload(
         folded.flatMap((round) => round.messages),
         settings.stripHistoricalImages,
       );
-      foldedPayload = await materializeFoldResources(foldedPayload, settings.resourceStore);
       const roundRange = roundRangeForIndexes(
         foldedIndexes,
         settings.roundOffset,

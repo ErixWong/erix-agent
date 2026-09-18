@@ -41,8 +41,6 @@ export {
   createAssemblyPort,
   assemblyPortOptions,
 } from "./assembly.js";
-export { createFileResourceStore } from "./store/resource-file.js";
-export { validateResourceStore } from "./store/resource.js";
 export {
   NotesStoreError,
   assertNotesStore,

@@ -112,7 +112,6 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "finalGuardTimeoutMs",
   "maxTokenContinuations",
   "context",
-  "resourceStore",
   "todoStateProvider",
   "semanticStateProvider",
   "modelConfig",
@@ -420,7 +419,6 @@ export async function runToolLoop(options) {
     finalGuardTimeoutMs = 30_000,
     maxTokenContinuations = 3,
     context,
-    resourceStore,
     todoStateProvider,
     semanticStateProvider,
     modelConfig,
@@ -735,14 +733,11 @@ export async function runToolLoop(options) {
     });
   }
   if (budgetTokens !== undefined) validateBudget(budgetTokens);
-  const compactionContext = context === undefined
-    && budgetTokens === undefined
-    && resourceStore === undefined
+  const compactionContext = context === undefined && budgetTokens === undefined
     ? undefined
     : {
         ...(context ?? {}),
         ...(budgetTokens === undefined ? {} : { budgetTokens }),
-        ...(resourceStore === undefined ? {} : { resourceStore }),
       };
   const baseToolContext = {
     ...toolContextFor({
@@ -1350,6 +1345,7 @@ export async function runToolLoop(options) {
       terminationReason: currentTerminationReason,
       toolErrorCount,
       checkpointFailureCount,
+      unpersisted: errorLedger.toUnpersisted(),
     });
     if (semantic && typeof semanticStateProvider === "function") {
       try {
@@ -1701,8 +1697,7 @@ export async function runToolLoop(options) {
         "onBeforeFold",
         "onAfterFold",
         "stubFor",
-        "resourceStore",
-      ]) {
+            ]) {
         if (compactionContext[key] !== undefined) compactOptions[key] = compactionContext[key];
       }
       const result = await strategy.compact(messages, compactOptions);
@@ -1737,7 +1732,6 @@ export async function runToolLoop(options) {
           protectedMessage: compactionContext.protectedMessage,
           stripHistoricalImages: compactionContext.stripHistoricalImages,
           stubFor: compactionContext.stubFor,
-          resourceStore: compactionContext.resourceStore,
           roundOffset: foldedThrough,
           roundNumbers: roundNumbersForMessages(compactedMessages),
         });

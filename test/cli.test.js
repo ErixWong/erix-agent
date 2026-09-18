@@ -69,7 +69,6 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
     diagnostics: { error() {} },
     notesDir,
     notesStore: createFileNotesStore({ dir: notesDir }),
-    resourceStore: undefined,
     store: createMemoryTranscriptStore(),
   };
   try {

@@ -175,7 +175,6 @@ export function foldOptions(factoryOptions, callOptions = {}) {
       optionValue(callOptions, factoryOptions, "afterFold"),
     ),
     stubFor: optionValue(callOptions, factoryOptions, "stubFor"),
-    resourceStore: optionValue(callOptions, factoryOptions, "resourceStore"),
     roundOffset: Number.isFinite(callOptions.roundOffset)
       ? Math.max(0, Math.floor(callOptions.roundOffset))
       : Number.isFinite(factoryOptions?.roundOffset)

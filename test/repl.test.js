@@ -296,8 +296,6 @@ test("runRepl injects archive status at fold time instead of into loop context",
 
     assert.ok(captured);
     assert.equal(typeof captured.context.recoveryHint, "function");
-    // ADR-015 4b：REPL 装配不再有 ResourceStore（转录即档案）
-    assert.equal(captured.resourceStore, undefined);
   } finally {
     input.destroy();
     output.destroy();
@@ -314,7 +312,6 @@ test("CLI assembly root provides transcript and notes stores", async () => {
       notesDir: join(dir, "notes"),
     });
     assert.equal(typeof root.store.appendRound, "function");
-    assert.equal(root.resourceStore, undefined);
     assert.equal(typeof root.notesStore.read, "function");
     assert.equal(typeof root.diagnostics.error, "function");
     assert.equal(root.archiveDir, join(dir, "outputs", "assembly-root"));

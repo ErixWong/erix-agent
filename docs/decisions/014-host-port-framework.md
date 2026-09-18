@@ -91,8 +91,8 @@ ADR-001/002 已建立端口范式并落地部分：
 | `ToolExecutor`（executeTool） | 事实上存在、从未声明 | ❌ 新增 `executeToolContract` | `bin/tools.js`（CLI 工具集） |
 | `diagnostics.error`（#98） | ❌ 新增——headless 最低错误出口 | 随 #98 | CLI：stderr + error.log |
 | `AssemblyPort`（组合根） | ✅ P2 已落地——`createAssemblyPort` 收齐下列端口 | ✅ `assemblyPortContract` | `createAssemblyPort`；CLI 适配器可渐进迁移 |
-| `ResourceStore`（归档产出物） | ✅ P2 已落地 | ✅ `resourceStoreContract` | `createFileResourceStore`（文件系统） |
-| `NotesStore` | ❌ 新增（P3）——**引擎核心技能**（跨 run 记忆，ADR-007 落地件；用户裁定 2026-09-15 晚） | ❌ | CLI：文件系统 |
+| `NotesStore` | ✅ P3 已落地（引擎核心技能：跨 run 记忆，ADR-007 落地件） | ✅ `notesStoreContract` | CLI：文件系统 |
+| ~~`ResourceStore`（归档产出物）~~ | ❌ **已退役（ADR-015 4a/4b + 0.6.0）**：输出档案角色并入 transcript `toolOutputs`，capture 证据角色并入 #109 第 2 步；端口、`createFileResourceStore`、契约测试一并删除 | — | — |
 | ~~LogPort / MessagePort / MetricsPort~~ | **明确不做**：只写不读走 `emit(event)`；messages 就是 store 的数据 | — | — |
 
 ### 2.4 各端口的关键约定
@@ -209,8 +209,8 @@ createAssemblyPort({
 | **P0** | #98：diagnostics + persistence 模式 + 启动校验 + 删静默跳过 | ② | #98 |
 | **P0** | ToolExecutor 唯一形态（两侧删 `.length` 猜测）+ run options 拒绝陌生键 | ② | #49 |
 | **P1** | 素材归库：导出归一化原语 + 库内改用 + 删宿主 ~200 行 | ① | #49 |
-| **P2** | 契约补齐（provider / store 9 方法 / round record / executeToolContract）+ AssemblyPort + ResourceStore + 对应契约 | ② | #49 |
-| **P3** | NotesStore 端口化（notes 形状从现有实现提取，见 2.7） | ② | #49 |
+| **P2** | 契约补齐（provider / store 9 方法 / round record / executeToolContract）+ AssemblyPort + 对应契约 | ② | #49 |
+| **P3** | NotesStore 端口化（notes 形状从现有实现提取，见 2.7）——✅ 已落地 | ② | #49 |
 
 ## 四、明确不做
 
@@ -238,3 +238,19 @@ createAssemblyPort({
 - **静默失效是当前最大风险**：#96（`this`）与 #98（persist 跳过）证明，隐式契约的失效
   都发生在生产、无声无息——契约测试是把它们拦在门口的唯一手段；
 - **顺序经过论证**：先收敛（P1）再冻结（P2），否则契约测试会把三份重复实现焊死。
+
+---
+
+## 六、修订注（2026-09-17，0.6.0）
+
+- **落地状态**：端口三件套（声明 / 契约测试 / 默认实现）在 `createAssemblyPort` + CLI 装配下齐备；
+  实际端口集为 `ModelConfigProvider`、`Provider`、`TranscriptStore`、`ToolExecutor`、`diagnostics.error`、
+  `AssemblyPort`；`NotesStore` 由 CLI 侧装配（引擎不认识 notes，只提供持久化失败报告桥）。
+- **`ResourceStore` 退役**（ADR-015 4a/4b）：该端口在 0.6.0 删除，含 `validateResourceStore`、
+  `createFileResourceStore` 与 `resourceStoreContract`。宿主若仍传 `resourceStore` 会因陌生顶层键被拒
+  （见 0.6.0 升级指南）。
+- **`executeTool` 迁移负例独立成组**：`executeToolContract` 只描述受支持的结构化形态；
+  位置形态 `(name, input)` 的误用由 `executeToolMigrationContract` 断言为必错（`name` 收到整个对象、
+  `input` 为 `undefined`），不再混在通过路径里。
+- **API 名修正**：宿主组合根是 `createAssemblyPort(input)`，`runToolLoop` 消费 `assemblyPort`；
+  旧文中的 `createSession()` 从未落地。

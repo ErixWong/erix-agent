@@ -371,47 +371,6 @@ test("no-artifact-id keeps the legacy navigation record byte-identical", async (
   );
 });
 
-test("materializes fold resources through ResourceStore before rendering stubs", async () => {
-  const calls = [];
-  const result = await createFoldStatisticalStrategy({
-    resourceStore: {
-      async put(resource) {
-        calls.push(resource);
-        return {
-          locator: { token: "opaque-token" },
-          digest: "c".repeat(64),
-          display: "object://bucket/resource-1",
-        };
-      },
-      async get() {
-        return "resource";
-      },
-    },
-  }).compact([
-    { role: "user", content: "task" },
-    {
-      role: "assistant",
-      content: [{ type: "tool_use", id: "resource", name: "exec", input: {} }],
-    },
-    {
-      role: "user",
-      content: [{
-        type: "tool_result",
-        tool_use_id: "resource",
-        artifact: { resource: "archive bytes" },
-        content: "archive bytes",
-      }],
-    },
-    { role: "user", content: "keep" },
-  ], {
-    keepRounds: 1,
-    stubFor: (message) => `display=${message.content[0].artifact.display}`,
-  });
-
-  assert.deepEqual(calls, ["archive bytes"]);
-  assert.match(result.messages[0].content[0].text, /object:\/\/bucket\/resource-1/u);
-  assert.deepEqual(result.navigationRecord.artifacts[0].locator, { token: "opaque-token" });
-});
 
 test("replaces summaries, navigation, and stubs across two and three folds", async () => {
   const strategy = createFoldStatisticalStrategy();
