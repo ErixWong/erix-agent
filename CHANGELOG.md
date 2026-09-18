@@ -29,6 +29,30 @@
   收窄为 `cwd`。
 - 老 transcript 中带 `replayable` 标记的块：新代码忽略该标记，向后兼容读。
 
+### Breaking（ResourceStore 端口退役，#109 第 3 步收尾）
+
+- **`resourceStore` 端口整体删除**（ADR-015 4a/4b 的收尾）：输出档案角色早已并入
+  transcript `toolOutputs`，capture 证据角色并入 #109 第 2 步；剩下唯一的 fold 用途
+  也随 ADR-015 的"一个档案"结论消失。删除 `validateResourceStore`、
+  `createFileResourceStore`、fold 的 `materializeFoldResources`、`resourceStoreContract`
+  契约测试与 `assembly.js`/`runToolLoop` 的对应选项。宿主若仍传该键，会因陌生顶层键被
+  排拒（fail-loud，而不是静默忽略）。
+- **`executeToolContract` 拆出迁移负例组**：位置形态 `(name, input)` 从"通过路径里的
+  兼容诊断"改为 `executeToolMigrationContract` 的负例断言（`name` 收到整个 execution
+  对象、`input` 为 `undefined` = 必错），契约通过路径只描述结构化形态。
+
+### fix（#109 第 3/4 步：错误通道与账本可靠性）
+
+- **账本去重**：完全相同的持久化失败（同 port/operation/phase/fatal/错误消息）合并为
+  一条并累加 `repeat`，不再每轮刷一条；`toUnpersisted` 返回浅拷贝，调用方不能改内部数组。
+- **账本落盘**：deterministic run-state 新增 `deterministic.errors.unpersisted`
+  （`{ count, items }`，最多留 10 条明细），run 中途崩溃不丢账；模型可见渲染只显示条数
+  （`errors=tool/checkpoint/unpersisted`），宿主错误正文不进上下文。
+- **异常路径的收尾失败不再只剩 stderr**：主结果是异常时，收尾失败数组挂到
+  `error.completionErrors` 上（此前只在 `console.error` 里）。
+- **`NotesStore` 写契约与作用域规范化**写入宿主契约（中英同步）；文档事实源对齐
+  `normalizeOpenAIUsage` 的真实语义（不接受 canonical alias、非 null 输入返回对象）。
+
 ### fix（#127：实测四轮暴露的待修点）
 
 - **guard：有捕获值却没声明 findings → 打回，不再静默跳过**。此前

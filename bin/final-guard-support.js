@@ -233,8 +233,7 @@ export function collectTranscriptCaptures(records) {
   return { captures, warnings, readable };
 }
 
-export async function inspectRun({ archiveDir, resourceStore, store, runId }) {
-  void resourceStore;
+export async function inspectRun({ archiveDir, store, runId }) {
   const captures = [];
   const warnings = [];
   let readableArtifacts = 0;

@@ -54,6 +54,28 @@ test("delivery failures are recorded with the failed event identity", () => {
   });
 });
 
+test("repeated identical failures are counted on one entry, not duplicated (issue #109 修正 4)", () => {
+  const ledger = createErrorLedger();
+  for (let index = 0; index < 30; index += 1) {
+    ledger.record({
+      port: "notes",
+      operation: "note_write",
+      phase: "tool",
+      error: new Error("disk full"),
+    });
+  }
+  const entries = ledger.toUnpersisted();
+  assert.equal(entries.length, 1, "同一失败只占一条");
+  assert.equal(entries[0].repeat, 30);
+  assert.equal(entries[0].error.message, "disk full");
+  assert.ok(entries[0].lastTs >= entries[0].ts);
+
+  // 不同操作/端口/错误消息各自成条
+  ledger.record({ port: "notes", operation: "note_read", error: new Error("disk full") });
+  ledger.record({ port: "notes", operation: "note_write", error: new Error("permission denied") });
+  assert.equal(ledger.toUnpersisted().length, 3);
+});
+
 test("ledger caps entries and reports the overflow explicitly", () => {
   const ledger = createErrorLedger();
   for (let i = 0; i < LEDGER_LIMITS.maxEntries + 5; i += 1) {

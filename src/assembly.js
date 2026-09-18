@@ -1,4 +1,3 @@
-import { validateResourceStore } from "./store/resource.js";
 
 export const MODEL_CONFIG_RESOLVER_HINT =
   "modelConfig must expose resolve(slot); wrap plain config with createModelConfigResolver(...)";
@@ -123,8 +122,6 @@ function missingAssemblyMethods(port) {
  *   Optional complete TranscriptStore implementation with all nine methods.
  * @property {{id:string,modelSlot?:string,resume?:boolean,initialMessages?:object[]}} session
  *   Run identity and optional resume seed.
- * @property {{put:Function,get:Function}} [resourceStore]
- *   Optional opaque resource archive used by compaction adapters.
  * @property {object} [policy]
  *   Explicit run options; unknown policy keys are rejected.
  * @property {(event:string,payload:object)=>void|Promise<void>} [emit]
@@ -149,11 +146,6 @@ export function createAssemblyPort(input = {}) {
     store: resolveAssemblyMember(input.store, "store"),
     session: resolveAssemblyMember(input.session, "session"),
     policy: resolveAssemblyMember(input.policy, "policy"),
-    ...(input.resourceStore === undefined
-      ? {}
-      : { resourceStore: validateResourceStore(
-        resolveAssemblyMember(input.resourceStore, "resourceStore"),
-      ) }),
     ...(input.emit === undefined ? {} : { emit: input.emit }),
   };
   const missing = missingAssemblyMethods(port);
@@ -197,7 +189,6 @@ export async function assemblyPortOptions(input, overrides = {}) {
     tools: port.tools.definitions,
     executeTool: port.tools.executeTool,
     ...(port.store === undefined ? {} : { store: port.store }),
-    ...(port.resourceStore === undefined ? {} : { resourceStore: port.resourceStore }),
     runId: port.session.id,
     session: port.session,
     ...(port.session.resume === undefined ? {} : { resume: port.session.resume }),

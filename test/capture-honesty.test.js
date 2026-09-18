@@ -76,7 +76,6 @@ test("runChat finally: completeRun failure lands in completionErrors, main resul
         diagnostics: { error() {} },
         notesDir: join(dir, "notes"),
         notesStore,
-        resourceStore: undefined,
         store: createMemoryTranscriptStore(),
       },
     });
@@ -89,3 +88,95 @@ test("runChat finally: completeRun failure lands in completionErrors, main resul
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("runChat finally: when the main result is an exception, completion errors ride on the error (#109 修正 4)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "erix-finally-throw-"));
+  try {
+    const notesStore = {
+      write: async () => {},
+      read: async () => undefined,
+      list: async () => [],
+      complete: async () => { throw new Error("complete failed after crash"); },
+      janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+    };
+    await assert.rejects(
+      runChat({
+        prompt: "hello",
+        session: "finally-throw-run",
+        dir,
+        notesDir: join(dir, "notes"),
+        provider: createFakeProvider([]),   // 空 provider → 主流程抛错
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        maxRounds: 1,
+        idleTimeout: 0,
+        toolOutput: () => {},
+        _assemblyRoot: {
+          archiveDir: join(dir, "outputs"),
+          diagnostics: { error() {} },
+          notesDir: join(dir, "notes"),
+          notesStore,
+          store: createMemoryTranscriptStore(),
+        },
+      }),
+      (error) => {
+        // 原异常仍是主；收尾失败挂在它身上，不再只剩 stderr
+        assert.equal(Array.isArray(error.completionErrors), true);
+        assert.equal(error.completionErrors[0].operation, "notes_complete_run");
+        assert.match(error.completionErrors[0].error.message, /complete failed after crash/u);
+        return true;
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("transcript port failure keeps the fatal档位 and the same bill field shape as notes (#109 修正 3/4)", async () => {
+  const bareNotesStore = {
+    write: async () => { throw new Error("notes disk gone"); },
+    read: async () => undefined,
+    list: async () => [],
+    complete: async () => ({ status: "found", completed: 0 }),
+    janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+  };
+  const events = [];
+  const dir = await mkdtemp(join(tmpdir(), "erix-two-port-"));
+  try {
+    // transcript 端口：required 写失败 → 致命（终止 + 异常携带账单，#103 语义不变）
+    const failingStore = createMemoryTranscriptStore();
+    failingStore.appendRound = async () => { throw new Error("transcript db down"); };
+    await assert.rejects(
+      runChat({
+        prompt: "hello",
+        session: "port-transcript",
+        dir,
+        notesDir: join(dir, "notes"),
+        provider: createFakeProvider([{ content: [{ type: "text", text: "done" }] }]),
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        maxRounds: 1,
+        idleTimeout: 0,
+        toolOutput: () => {},
+        _assemblyRoot: {
+          archiveDir: join(dir, "outputs"),
+          diagnostics: { error: (event) => events.push(event) },
+          notesDir: join(dir, "notes"),
+          notesStore: bareNotesStore,
+          store: failingStore,
+        },
+      }),
+      (error) => {
+        assert.equal(Array.isArray(error.unpersisted), true);
+        const entry = error.unpersisted.find((item) => item.port === "transcript");
+        assert.ok(entry, "transcript 失败必须入账");
+        assert.equal(entry.fatal, true);           // 致命档位
+        assert.equal(typeof entry.operation, "string");
+        assert.equal(typeof entry.error.name, "string");
+        assert.equal(typeof entry.error.message, "string");
+        return true;
+      },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+

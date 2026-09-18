@@ -249,6 +249,26 @@ function renderLines(lines) {
  * Build the engine-known half of a run state. Inputs are structured facts
  * collected by the loop; this function never inspects tool result prose.
  */
+const RUN_STATE_MAX_UNPERSISTED_ITEMS = 10;
+
+function normalizeUnpersisted(value) {
+  if (!Array.isArray(value) || value.length === 0) return { count: 0, items: [] };
+  const items = value.slice(-RUN_STATE_MAX_UNPERSISTED_ITEMS).map((entry) => ({
+    ts: safeText(entry?.ts, 32),
+    kind: safeText(entry?.kind, 32),
+    port: safeText(entry?.port, 32),
+    operation: safeText(entry?.operation, 48),
+    ...(entry?.phase === undefined ? {} : { phase: safeText(entry.phase, 32) }),
+    fatal: entry?.fatal === true,
+    ...(Number.isSafeInteger(entry?.repeat) && entry.repeat > 1 ? { repeat: entry.repeat } : {}),
+    error: {
+      name: safeText(entry?.error?.name, 40),
+      message: safeText(entry?.error?.message, 240),
+    },
+  }));
+  return { count: value.length, items };
+}
+
 export function createDeterministicRunState({
   runId,
   stateVersion = 0,
@@ -263,6 +283,7 @@ export function createDeterministicRunState({
   terminationReason = "running",
   toolErrorCount = 0,
   checkpointFailureCount = 0,
+  unpersisted,
 } = {}) {
   const safeRounds = safeInteger(rounds);
   const safeMaxRounds = safeInteger(maxRounds);
@@ -293,6 +314,8 @@ export function createDeterministicRunState({
       errors: {
         tool: safeInteger(toolErrorCount),
         checkpoint: safeInteger(checkpointFailureCount),
+        // issue #109 修正 4：账单不只放内存——run 中途崩溃时 run-state 里也有账
+        unpersisted: normalizeUnpersisted(unpersisted),
       },
     },
     bounds: {
@@ -336,7 +359,7 @@ export function renderRunState(state) {
     `run=${safeText(state.runId, 48)} v=${safeInteger(state.stateVersion)} r=${safeInteger(budget.rounds)}/${safeInteger(budget.maxRounds)} left=${safeInteger(budget.remainingRounds)} low=${budget.lowBudgetPrompted === true ? 1 : 0}`,
     `tools=${tools || "-"} files=${files || "-"}`,
     `todo=${todo || safeText(deterministic.todo?.status, 16) || "-"} fold=${safeInteger(fold.foldedRounds)}/${safeInteger(fold.navigationRecords)}`,
-    `termination=${safeText(deterministic.termination?.reason, 32) || "running"} errors=${safeInteger(errors.tool)}/${safeInteger(errors.checkpoint)}/${safeInteger(errors.archive)}`,
+    `termination=${safeText(deterministic.termination?.reason, 32) || "running"} errors=${safeInteger(errors.tool)}/${safeInteger(errors.checkpoint)}/${safeInteger(errors.unpersisted?.count)}`,
     SEMANTIC_MARKER,
     `status=${safeText(semantic.status, 16)} version=${semantic.semanticStateVersion ?? "-"}`,
     // ADR-015：semantic 文本多行渲染（宿主目录如 notes 小抄目录）；行数封顶防膨胀

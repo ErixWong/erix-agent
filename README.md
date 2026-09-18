@@ -157,6 +157,36 @@ and compaction helpers, transcript stores, run-state helpers, configuration
 providers, `runToolLoop`, and reflection helpers. The optional
 `erix-agent/tools` subpath exports the tool helpers listed above.
 
+## Host ports and the error ledger
+
+Four adapter ports are validated once at the composition boundary; the rest of
+the host boundary is passed as explicit `runToolLoop` options:
+
+```js
+const assemblyPort = createAssemblyPort({
+  modelConfig, // ModelConfigProvider: { resolve(slot) }
+  provider,    // { chat?, chatStream? }
+  tools: { definitions, executeTool, getToolMetadata? },
+  store,       // complete TranscriptStore (nine methods) unless persistence: "none"
+  session: { id, resume?, initialMessages? },
+  policy?,     // explicit runToolLoop options; unknown keys are rejected
+  emit?,       // (eventType, payload) => void
+});
+```
+
+`NotesStore` is a CLI-side engine skill (cross-run memory). Its write contract
+lives in [docs/host-consumer-contract.md](docs/host-consumer-contract.md);
+the engine never inspects notes, it only exposes the injected
+`reportPersistenceFailure` bridge so host ports produce the same event and bill
+shapes as the transcript path.
+
+Persistence failures are never silent. Every `runToolLoop` result carries
+`unpersisted: Entry[]` (deduplicated, message-capped at 500 characters) and
+`completionErrors: []`; the same bill is mirrored into the deterministic run
+state, and a thrown persistence failure carries it as `error.unpersisted`. A
+diagnostics sink that itself throws is recorded as a `delivery_failure` entry
+instead of disappearing.
+
 ## Reusable normalization primitives
 
 The package root exports protocol normalization helpers for hosts that own
@@ -165,7 +195,7 @@ calls:
 
 | Export | Signature | Semantics |
 |---|---|---|
-| `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | Maps `prompt_tokens`/`completion_tokens` (and canonical aliases) to `input_tokens`/`output_tokens`; empty or non-object input returns `undefined`. |
+| `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | `null`/`undefined` return `undefined`; other input returns `{ input_tokens?, output_tokens? }` built from `prompt_tokens`/`completion_tokens` (so `{}`, arrays, or strings yield `{}`). Canonical aliases are **not** accepted. |
 | `normalizeOpenAIStopReason` | `(reason, fallback = "unknown") -> string` | Maps OpenAI finish reasons to canonical `end_turn`, `tool_use`, or `max_tokens`; unknown values pass through. |
 | `parseOpenAIToolArguments` | `(rawArguments) -> any` | Parses JSON, defaults missing arguments to `{}`, and preserves invalid input in `_truncatedArguments`/`_raw` instead of throwing. |
 | `createOpenAIStreamAccumulator` | `() -> accumulator` | Accumulates indexed OpenAI tool-call deltas; `getToolUseBlocks()` returns canonical tool-use blocks and malformed JSON follows `parseOpenAIToolArguments`. |
@@ -334,8 +364,9 @@ The defaults used by the loop are:
 - `judgeInterceptTimeoutMs` is `30000`; an interception timeout or judge
   failure degrades to executing the original tool.
 - `triggerRound` defaults to 80% of the initial `maxRounds`.
-- `extensionStep` defaults to `32`, `maxExtensions` to `2`, and
-  `maxRoundsCap` to at least the initial `maxRounds` and otherwise `256`.
+- `extensionStep` defaults to `max(8, maxRounds * 0.5)`, `maxExtensions` to
+  `2`, and `maxRoundsCap` to at least the initial `maxRounds` and otherwise
+  `256`.
 - A round judge can stop only with `done: true` and `confidence >= 0.7`.
   A `done: false` decision injects a continuation/nudge; `direction:
   "off_track"` is a soft direction hint and does not itself block a tool.

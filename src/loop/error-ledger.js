@@ -30,21 +30,46 @@ function capError(error) {
 
 export function createErrorLedger() {
   const entries = [];
+  const index = new Map();
   let dropped = 0;
 
+  // 去重键：同一端口同一操作反复失败（如每轮都写失败）不刷屏，累计在 repeat 上。
+  function dedupKey(entry) {
+    return [
+      entry.kind,
+      entry.port,
+      entry.operation,
+      entry.phase,
+      entry.fatal === true,
+      entry.error?.name,
+      entry.error?.message,
+    ].join("\u0000");
+  }
+
   return {
-    /** 记一条"没存上"。错误统一截断；其余字段原样保留（调用方自己的数据）。 */
+    /** 记一条“没存上”。错误统一截断；其余字段原样保留（调用方自己的数据）。 */
     record(entry = {}) {
-      if (entries.length >= MAX_LEDGER_ENTRIES) {
-        dropped += 1;
-        return false;
-      }
-      entries.push({
+      const record = {
         ts: entry.ts ?? new Date().toISOString(),
         kind: entry.kind ?? "persistence_error",
         ...entry,
         error: capError(entry.error),
-      });
+      };
+      const key = dedupKey(record);
+      const existing = index.get(key);
+      if (existing !== undefined) {
+        // 重复失败：只涨计数与最后发生时间，不新增条目
+        existing.repeat += 1;
+        existing.lastTs = record.ts;
+        return true;
+      }
+      if (entries.length >= MAX_LEDGER_ENTRIES) {
+        dropped += 1;
+        return false;
+      }
+      record.repeat = 1;
+      entries.push(record);
+      index.set(key, record);
       return true;
     },
 
@@ -75,7 +100,7 @@ export function createErrorLedger() {
 
     /** 序列化为 result.unpersisted；溢出时末尾追加申报条目。 */
     toUnpersisted() {
-      const out = [...entries];
+      const out = entries.map((entry) => ({ ...entry }));
       if (dropped > 0) {
         out.push({ ts: new Date().toISOString(), kind: "ledger_overflow", port: "diagnostics", dropped, fatal: false });
       }

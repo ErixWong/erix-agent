@@ -28,18 +28,6 @@ assemblyPortContract("reference", () => ({
     },
   },
   store: createMemoryTranscriptStore(),
-  resourceStore: {
-    async put(resource) {
-      return {
-        locator: { key: `resource-${String(resource)}` },
-        digest: "a".repeat(64),
-        display: `memory:${String(resource)}`,
-      };
-    },
-    async get() {
-      return "resource";
-    },
-  },
   session: { id: `assembly-contract-${process.pid}` },
 }));
 
@@ -59,29 +47,18 @@ test("assembly port supports default and explicit modelConfig paths", async () =
   });
 
   test("assemblyPortOptions applies explicit fine-grained overrides", async () => {
-    const assemblyResourceStore = {
-      async put() {},
-      async get() {},
-    };
-    const explicitResourceStore = {
-      async put() {},
-      async get() {},
-    };
     const explicitModelConfig = { resolve: async () => ({ model: "explicit" }) };
     const port = createAssemblyPort({
       modelConfig: { resolve: async () => ({ model: "assembly" }) },
       provider: createProvider(),
       tools: { definitions: [], async executeTool() {} },
       store: createMemoryTranscriptStore(),
-      resourceStore: assemblyResourceStore,
       session: { id: `assembly-helper-overrides-${process.pid}` },
     });
 
     const options = await assemblyPortOptions(port, {
-      resourceStore: explicitResourceStore,
       modelConfig: explicitModelConfig,
     });
-    assert.equal(options.resourceStore, explicitResourceStore);
     assert.equal(options.modelConfig, explicitModelConfig);
     await assert.rejects(
       assemblyPortOptions(port, { modelConfig: { model: "plain" } }),
@@ -115,61 +92,6 @@ test("assembly port supports default and explicit modelConfig paths", async () =
   assert.equal(resolveCount, 0);
 });
 
-test("assembly port keeps its resourceStore when explicit context is supplied", async () => {
-  let putCount = 0;
-  const resourceStore = {
-    async put(resource) {
-      putCount += 1;
-      return {
-        locator: { id: `resource-${putCount}` },
-        digest: "a".repeat(64),
-        display: `opaque-resource-${putCount}`,
-      };
-    },
-    async get() {
-      return "resource";
-    },
-  };
-  const port = createAssemblyPort({
-    modelConfig: { resolve: async () => ({}) },
-    provider: createProvider(),
-    tools: { definitions: [], async executeTool() {} },
-    store: createMemoryTranscriptStore(),
-    resourceStore,
-    session: { id: `assembly-resource-context-${process.pid}` },
-  });
-
-  await runToolLoop({
-    assemblyPort: port,
-    context: {
-      strategy: createFoldStatisticalStrategy(),
-      budgetTokens: 1,
-      keepRounds: 0,
-    },
-    initialMessages: [
-      { role: "user", content: "task" },
-      {
-        role: "assistant",
-        content: [{ type: "tool_use", id: "old", name: "tool", input: {} }],
-      },
-      {
-        role: "user",
-        content: [{
-          type: "tool_result",
-          tool_use_id: "old",
-          content: "old",
-          artifact: { resource: "materialize me" },
-        }],
-      },
-      { role: "assistant", content: [{ type: "text", text: "recent" }] },
-    ],
-    completion: false,
-    wrapup: false,
-    maxRounds: 1,
-  });
-
-  assert.equal(putCount, 1);
-});
 
 test("plain explicit modelConfig is rejected with resolver migration guidance", async () => {
   const port = createAssemblyPort({

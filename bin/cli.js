@@ -779,6 +779,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   };
 
   let loopResult;
+  let thrown;
   try {
     const result = await (loopOverride ?? runToolLoop)(loopOptions);
     loopResult = result;
@@ -811,7 +812,11 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     );
     return result;
   } catch (error) {
-    if (idle?.timedOut()) throw new IdleTimeoutError(idleTimeout);
+    if (idle?.timedOut()) {
+      thrown = new IdleTimeoutError(idleTimeout);
+      throw thrown;
+    }
+    thrown = error;
     throw error;
   } finally {
     idle?.dispose();
@@ -837,17 +842,21 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       for (const failure of completionErrors) {
         console.error(`completion error (${failure.operation}): ${failure.error?.message ?? String(failure.error)}`);
       }
-      if (loopResult && typeof loopResult === "object") {
-        loopResult.completionErrors = [
-          ...(Array.isArray(loopResult.completionErrors) ? loopResult.completionErrors : []),
-          ...completionErrors.map((failure) => ({
-            phase: "cli_completion",
-            operation: failure.operation,
-            error: {
-              name: String(failure.error?.name ?? "Error"),
-              message: String(failure.error?.message ?? failure.error).slice(0, 500),
-            },
-          })),
+      const mapped = completionErrors.map((failure) => ({
+        phase: "cli_completion",
+        operation: failure.operation,
+        error: {
+          name: String(failure.error?.name ?? "Error"),
+          message: String(failure.error?.message ?? failure.error).slice(0, 500),
+        },
+      }));
+      // 主结果成功 → 挂在 result 上；主结果已异常 → 原异常仍是主，
+      // 收尾失败挂到异常对象的 completionErrors（否则异常路径下收尾错误只剩 stderr）
+      const carrier = loopResult && typeof loopResult === "object" ? loopResult : thrown;
+      if (carrier && typeof carrier === "object") {
+        carrier.completionErrors = [
+          ...(Array.isArray(carrier.completionErrors) ? carrier.completionErrors : []),
+          ...mapped,
         ];
       }
     }

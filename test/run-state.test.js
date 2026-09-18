@@ -13,6 +13,37 @@ import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.j
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
+test("run state carries the persistence bill so a mid-run crash does not lose it (issue #109 修正 4)", () => {
+  const state = createDeterministicRunState({
+    runId: "bill",
+    unpersisted: [
+      { ts: "2026-09-17T00:00:00.000Z", kind: "persistence_error", port: "notes", operation: "note_write", phase: "tool", fatal: false, repeat: 4, error: { name: "Error", message: "disk full" } },
+      { ts: "2026-09-17T00:00:01.000Z", kind: "persistence_error", port: "transcript", operation: "appendRound", fatal: true, error: { name: "Error", message: "db down" } },
+    ],
+  });
+  assert.equal(state.deterministic.errors.unpersisted.count, 2);
+  assert.equal(state.deterministic.errors.unpersisted.items.length, 2);
+  assert.equal(state.deterministic.errors.unpersisted.items[0].repeat, 4);
+  assert.equal(state.deterministic.errors.unpersisted.items[1].fatal, true);
+  // 渲染行只给条数，不把宿主错误正文灌进模型上下文
+  const rendered = renderRunState(state);
+  assert.match(rendered, /errors=0\/0\/2/u);
+  assert.doesNotMatch(rendered, /disk full/u);
+
+  // 条目数封顶，但总数不丢
+  const many = createDeterministicRunState({
+    runId: "bill-many",
+    unpersisted: Array.from({ length: 40 }, (_unused, index) => ({
+      ts: "2026-09-17T00:00:00.000Z",
+      port: "notes",
+      operation: `op-${index}`,
+      error: { name: "Error", message: "boom" },
+    })),
+  });
+  assert.equal(many.deterministic.errors.unpersisted.count, 40);
+  assert.equal(many.deterministic.errors.unpersisted.items.length, 10);
+});
+
 test("run state is bounded, marked when truncated, and does not expose credentials", () => {
   const state = createDeterministicRunState({
     runId: "bounded",
