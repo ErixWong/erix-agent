@@ -254,11 +254,12 @@ capture 元数据，因此新的 CLI 工具实例也能识别之前的执行。�
 附加信息，不能覆盖确定性事实。引擎不会调用模型来获取语义状态。
 
 持久化对象受 `RUN_STATE_MAX_SERIALIZED_BYTES`（`64 * 1024`）限制。渲染的 prompt
-块受 `RUN_STATE_MAX_CHARS`（`400`）限制。运行状态 helper 还会将工具条目限制为 128、
+块受 `RUN_STATE_MAX_CHARS`（`1600`）限制。运行状态 helper 还会将工具条目限制为 128、
 文件条目限制为 128、todo 条目限制为 64，将普通的有界 name/path/id/status 字段限制
 为 120 个字符，将语义源文本限制为 220 个字符。裁剪条目或序列化状态时，
-`bounds.truncated` 和适用的省略计数会明确记录；达到 400 字符限制时，渲染块使用
-`[run state truncated]`。
+`bounds.truncated` 和适用的省略计数会明确记录；达到 1600 字符限制时，渲染块使用
+`[run state truncated]`。闭合标记 `[/run state]` 在渲染之后恒被追加，因此截断时
+依然存活——旧块会被原地替换，而不会在上下文中累积出第二份。
 
 未知 schema 或不完整的持久化状态不会被静默当作有效默认值。resume 时，它会以
 `runState.stateAvailability.status = "state_unavailable"` 暴露（例如

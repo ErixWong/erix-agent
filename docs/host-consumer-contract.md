@@ -432,13 +432,15 @@ The engine does not call a model to obtain semantic state.
 
 The persisted object is bounded by
 `RUN_STATE_MAX_SERIALIZED_BYTES` (`64 * 1024`). The rendered prompt block is
-bounded by `RUN_STATE_MAX_CHARS` (`400`). The run-state helpers also cap tool
+bounded by `RUN_STATE_MAX_CHARS` (`1600`). The run-state helpers also cap tool
 entries at 128, file entries at 128, todo entries at 64, ordinary bounded
 name/path/id/status fields at 120 characters, and semantic source text at 220
 characters. When entries or serialized state are trimmed,
 `bounds.truncated` and the applicable omission counts are explicit; the
-rendered block uses `[run state truncated]` when its 400-character limit is
-reached.
+rendered block uses `[run state truncated]` when its 1600-character limit is
+reached. The closing `[/run state]` marker is always appended after
+rendering, so it survives truncation and replaces the previous block in
+place instead of accumulating a second copy.
 
 An unknown schema or incomplete persisted state is not silently treated as a
 valid default. On resume it is exposed as

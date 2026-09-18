@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   createDeterministicRunState,
   renderRunState,
+  RUN_STATE_MAX_CHARS,
   RUN_STATE_MAX_SERIALIZED_BYTES,
   upsertRunStateInMessages,
   validateRunState,
@@ -33,9 +34,23 @@ test("run state is bounded, marked when truncated, and does not expose credentia
   });
   const rendered = renderRunState(withSemantic);
 
-  assert.ok(rendered.length <= 400);
-  assert.match(rendered, /\[run state truncated\]/u);
+  assert.ok(rendered.length <= RUN_STATE_MAX_CHARS);
   assert.doesNotMatch(rendered, /sk-secret|Bearer/u);
+
+  // 预算 400→1600 后上面的小 fixture 不再溢出，但截断路径仍必须可达：
+  // 宿主 notes 目录形态的长 semantic 文本（1200 字上限）依然超出整块预算。
+  const longState = withSemanticRunState(state, {
+    text: "note-entry ".repeat(120),
+    version: 3,
+  });
+  const longRendered = renderRunState(longState);
+
+  assert.ok(
+    longRendered.length <= RUN_STATE_MAX_CHARS,
+    `rendered=${longRendered.length} > RUN_STATE_MAX_CHARS=${RUN_STATE_MAX_CHARS}`,
+  );
+  assert.match(longRendered, /\[run state truncated\]/u);
+  assert.ok(longRendered.endsWith("[/run state]"), "closing marker must survive truncation");
 });
 
 test("persisted run state is bounded, marked, and redacts semantic credentials", () => {
@@ -103,6 +118,39 @@ test("resume exposes unknown persisted schema instead of silently resetting it",
 
   assert.equal(result.runState.stateAvailability.status, "state_unavailable");
   assert.equal(result.runState.stateAvailability.reason, "unknown_schema");
+});
+
+test("truncated run state keeps the closing marker so replacement stays idempotent", () => {
+  // 2026-09-18 全面评审 M2 回归：超预算时 END_MARKER 曾被截掉，
+  // upsert 正则匹配不到旧块 → 第二次 upsert 追加第二个块（上下文累积）。
+  const state = createDeterministicRunState({
+    runId: "trunc-marker",
+    stateVersion: 3,
+    rounds: 9,
+    maxRounds: 16,
+    toolStats: Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`very-long-tool-name-${i}-aaaaaaaaaaaaaaaa`, [20, 1]])),
+    filesWritten: Array.from({ length: 8 }, (_, i) => `src/very/long/path/component-${i}/bbbbbbbbbbbbbbbbbbbb.js`),
+    todo: { status: "active", items: Array.from({ length: 6 }, (_, i) => ({ id: `todo-item-${i}-cccccc`, status: "in_progress" })) },
+  });
+  const withSemantic = withSemanticRunState(state, {
+    text: Array.from({ length: 16 }, (_, i) => `note-key-${i}: ${"value-".repeat(13)}`).join("\n"),
+    semanticStateVersion: 1,
+  });
+  const rendered = renderRunState(withSemantic);
+
+  assert.ok(rendered.length > 1000, "fixture should overflow the old 400 cap");
+  assert.ok(rendered.endsWith("[/run state]"), "closing marker must survive truncation");
+
+  const next = renderRunState({ ...withSemantic, stateVersion: 4 });
+  const original = [{ role: "user", content: [{ type: "text", text: `摘要\n${rendered}` }] }];
+  const once = upsertRunStateInMessages(original, next);
+  const twice = upsertRunStateInMessages(once, next);
+
+  assert.equal(
+    (twice[0].content[0].text.match(/\[run state deterministic v/gu) ?? []).length,
+    1,
+    "repeated upserts must replace, not accumulate",
+  );
 });
 
 test("run state replacement is idempotent across repeated folds", () => {

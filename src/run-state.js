@@ -1,6 +1,6 @@
 import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 
-const MAX_RENDERED_CHARS = 400;
+const MAX_RENDERED_CHARS = 1600;
 export const RUN_STATE_SCHEMA_VERSION = 1;
 export const RUN_STATE_MAX_SERIALIZED_BYTES = 64 * 1024;
 export const RUN_STATE_MAX_TOOL_ENTRIES = 128;
@@ -146,8 +146,9 @@ function compactStateForSize(state) {
 }
 
 /**
- * Bound the object written to a TranscriptStore. The rendered 400-character
- * block is not a substitute for bounding the persisted state itself.
+ * Bound the object written to a TranscriptStore. The rendered
+ * RUN_STATE_MAX_CHARS-character block is not a substitute for bounding the
+ * persisted state itself.
  */
 export function boundRunState(state) {
   if (!state || typeof state !== "object" || Array.isArray(state)) {
@@ -220,29 +221,29 @@ export function validateRunState(state) {
   return { ok: true, status: "available", state };
 }
 
-function renderLines(lines) {
+function renderLines(lines, budget = MAX_RENDERED_CHARS) {
   const marker = "[run state truncated]";
   const output = [];
   let length = 0;
   for (const line of lines) {
     const separator = output.length === 0 ? 0 : 1;
-    if (length + separator + Array.from(line).length + 1 > MAX_RENDERED_CHARS) break;
+    if (length + separator + Array.from(line).length + 1 > budget) break;
     output.push(line);
     length += separator + Array.from(line).length;
   }
   if (output.length < lines.length) {
     while (output.length > 0
       && length + (output.length === 0 ? 0 : 1) + Array.from(marker).length
-        > MAX_RENDERED_CHARS) {
+        > budget) {
       const removed = output.pop();
       length -= Array.from(removed).length + (output.length === 0 ? 0 : 1);
     }
     if (length + (output.length === 0 ? 0 : 1) + Array.from(marker).length
-      <= MAX_RENDERED_CHARS) {
+      <= budget) {
       output.push(marker);
     }
   }
-  return output.join("\n").slice(0, MAX_RENDERED_CHARS);
+  return output.join("\n").slice(0, budget);
 }
 
 /**
@@ -349,9 +350,12 @@ export function renderRunState(state) {
     ...(semantic.text
       ? String(semantic.text).split("\n").slice(0, SEMANTIC_RENDER_MAX_LINES)
       : []),
-    END_MARKER,
   ];
-  return renderLines(lines);
+  // 闭合标记必须存活：若把它当作 lines 的最后一行，超预算时会被截掉，
+  // upsertRunStateInMessages 的替换正则（要求 END_MARKER 收尾）就匹配不到旧块 →
+  // 下一次 upsert 会追加第二个块（run-state 在上下文里累积，2026-09-18 全面评审 M2）。
+  // 为它预留空间、渲染后永远追加。
+  return `${renderLines(lines, MAX_RENDERED_CHARS - END_MARKER.length - 1)}\n${END_MARKER}`;
 }
 
 function runStateBlockPattern() {
