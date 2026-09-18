@@ -749,10 +749,15 @@ export async function runToolLoop(options) {
   const judgeInterceptEnabled = reflectionEnabled
     && effectiveReflection?.judgeIntercept !== false;
   // 工具透明审计频率：每 judgeIntervalRound 次真实工具执行后，审计下一次调用。
+  // 默认 10（运行时评估 §5.1：默认 5 过密，任务中途 done:false 必然成立 → 大量误拦截与成本税）。
+  // 无有效配置时取 ERIX_JUDGE_INTERVAL；非法值（非正整数）忽略并回退默认 10。
+  const envJudgeInterval = Number(process.env.ERIX_JUDGE_INTERVAL);
   const judgeIntervalRound = Number.isSafeInteger(effectiveReflection?.judgeIntervalRound)
     && effectiveReflection.judgeIntervalRound > 0
     ? effectiveReflection.judgeIntervalRound
-    : 5;
+    : Number.isSafeInteger(envJudgeInterval) && envJudgeInterval > 0
+      ? envJudgeInterval
+      : 10;
   const judgeInterceptTimeoutMs = Number.isFinite(effectiveReflection?.judgeInterceptTimeoutMs)
     && effectiveReflection.judgeInterceptTimeoutMs > 0
     ? effectiveReflection.judgeInterceptTimeoutMs

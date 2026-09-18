@@ -1194,6 +1194,91 @@ test("transparent interception returns correction evidence without executing the
   assert.match(text, /写 microsim 而非 gates\.txt/);
 });
 
+test("judge intercept interval defaults to 10 (runtime eval §5.1: the denser default caused false blocks)", async () => {
+  const previous = process.env.ERIX_JUDGE_INTERVAL;
+  delete process.env.ERIX_JUDGE_INTERVAL;
+  try {
+    // 6 次工具执行：默认间隔 10 时都不该触发审计（默认 5 时第 6 次会被拦截）
+    const provider = createFakeProvider([
+      toolResponse("t1", "work", { round: 1 }),
+      toolResponse("t2", "work", { round: 2 }),
+      toolResponse("t3", "work", { round: 3 }),
+      toolResponse("t4", "work", { round: 4 }),
+      toolResponse("t5", "work", { round: 5 }),
+      toolResponse("t6", "work", { round: 6 }),
+      { content: [{ type: "text", text: "收尾" }], stopReason: "end_turn" },
+    ]);
+    const judge = createFakeProvider([
+      judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "未创建产物" }),
+    ]);
+    const executed = [];
+    await runToolLoop({
+      provider,
+      initialUserMessage: "task",
+      executeTool: async ({ input }) => {
+        executed.push(input.round);
+        return "ok";
+      },
+      maxRounds: 20,
+      completion: false,
+      reflection: { enabled: true, roundJudge: false, judge: { provider: judge } },
+    });
+    assert.deepEqual(executed, [1, 2, 3, 4, 5, 6]);
+    assert.equal(judge.requests.length, 0);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_JUDGE_INTERVAL;
+    else process.env.ERIX_JUDGE_INTERVAL = previous;
+  }
+});
+
+test("ERIX_JUDGE_INTERVAL overrides the intercept interval and invalid values fall back to the default", async () => {
+  const previous = process.env.ERIX_JUDGE_INTERVAL;
+  const runWithTools = async (toolCount) => {
+    const responses = [];
+    for (let round = 1; round <= toolCount; round += 1) {
+      responses.push(toolResponse(`t${round}`, "work", { round }));
+    }
+    responses.push({ content: [{ type: "text", text: "收尾" }], stopReason: "end_turn" });
+    const provider = createFakeProvider(responses);
+    const judge = createFakeProvider([
+      judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "未创建产物" }),
+    ]);
+    const executed = [];
+    await runToolLoop({
+      provider,
+      initialUserMessage: "task",
+      executeTool: async ({ input }) => {
+        executed.push(input.round);
+        return "ok";
+      },
+      maxRounds: 20,
+      completion: false,
+      reflection: { enabled: true, roundJudge: false, judge: { provider: judge } },
+    });
+    return { executed, judgeCalls: judge.requests.length, provider };
+  };
+  try {
+    // 间隔 3：前 3 次执行计数到 3，第 4 次先审计（done:false → 拦截未执行）
+    process.env.ERIX_JUDGE_INTERVAL = "3";
+    const overridden = await runWithTools(4);
+    assert.deepEqual(overridden.executed, [1, 2, 3]);
+    assert.equal(overridden.judgeCalls, 1);
+    const intercepted = overridden.provider.requests.at(-1).messages
+      .flatMap((m) => m.content ?? []).filter((b) => b.type === "tool_result")
+      .map((b) => b.content).join("");
+    assert.match(intercepted, /【审计拦截】方向可能偏/);
+
+    // 非法值（非正整数）忽略 → 回退默认 10：6 次执行都不触发审计
+    process.env.ERIX_JUDGE_INTERVAL = "abc";
+    const invalid = await runWithTools(6);
+    assert.deepEqual(invalid.executed, [1, 2, 3, 4, 5, 6]);
+    assert.equal(invalid.judgeCalls, 0);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_JUDGE_INTERVAL;
+    else process.env.ERIX_JUDGE_INTERVAL = previous;
+  }
+});
+
 test("transparent interception releases the exact cached tool call when approved and keeps on-track execution unannotated", async () => {
   const provider = createFakeProvider([
     toolResponse("first", "work", { step: 1 }),
