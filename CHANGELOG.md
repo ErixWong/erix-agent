@@ -2,7 +2,9 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
-## [Unreleased]（0.6.0 破坏窗口累积，见 ADR-016 / issue #119）
+## [0.6.0] - 2026-09-17
+
+破坏窗口收口（ADR-015 / ADR-016 / #109 / #110 / #111）。以下条目此前记在 Unreleased，现随 0.6.0 一并发布。
 
 ### Breaking（ADR-016：可重放概念退役）
 

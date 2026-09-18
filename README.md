@@ -483,10 +483,9 @@ implemented by `bin/cli.js`; the `repl` flags above are implemented by
 `--reflection`, `--timeout`, `--no-notes`, or `--judge-log`.
 
 `chat` defaults to 64 rounds, a 300-second idle timeout, reflection enabled
-when `max-rounds >= 32`, and the final guard disabled. `repl` defaults to
-32 rounds, no idle timeout, `reflection: false`, and completion after one
-no-tool round. The CLI help text in `bin/repl.js` still labels its default as
-16; the executable constant and `runToolLoop` call use 32.
+at `max-rounds >= 16` (`DEFAULT_REFLECTION_MIN_ROUNDS`, shared with the
+library), and the final guard disabled. `repl` defaults to 32 rounds, no idle
+timeout, `reflection: false`, and completion after one no-tool round.
 
 The shared CLI flags are:
 

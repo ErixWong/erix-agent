@@ -183,7 +183,7 @@ failed
 
 ### Reflection 与 judge 治理
 
-省略 `reflection` 时，当 `maxRounds >= 16`，库会自动启用基础 judge，除非设置了 `ERIX_NO_REFLECTION=1`。传入 `reflection: false` 可禁用。CLI 有单独的默认值：`chat` 在 `max-rounds >= 32` 时启用 reflection，而 `repl` 显式传入 `reflection: false`。`ERIX_NO_ROUND_JUDGE=1` 会禁用 round judging，但不会禁用透明拦截。
+省略 `reflection` 时，当 `maxRounds >= 16`（`DEFAULT_REFLECTION_MIN_ROUNDS`），库会自动启用基础 judge，除非设置了 `ERIX_NO_REFLECTION=1`。传入 `reflection: false` 可禁用。CLI 的 `chat` 复用同一个常量（不再有单独门槛），因此两边默认值不会漂移；`repl` 显式传入 `reflection: false`。`ERIX_NO_ROUND_JUDGE=1` 会禁用 round judging，但不会禁用透明拦截。
 
 对象形式接受：
 
@@ -211,7 +211,7 @@ onReflection
 - `judgeIntervalRound` 为 `5`；完成这么多次真实工具执行后，下一次工具调用会在执行前独立审计。
 - `judgeInterceptTimeoutMs` 为 `30000`；拦截超时或 judge 失败时，会降级为执行原始工具。
 - `triggerRound` 默认为初始 `maxRounds` 的 80%。
-- `extensionStep` 默认为 `32`，`maxExtensions` 默认为 `2`，`maxRoundsCap` 至少为初始 `maxRounds`，否则为 `256`。
+- `extensionStep` 默认为 `max(8, maxRounds * 0.5)`，`maxExtensions` 默认为 `2`，`maxRoundsCap` 至少为初始 `maxRounds`，否则为 `256`。
 - round judge 只有在 `done: true` 且 `confidence >= 0.7` 时才能停止。`done: false` 决策会注入 continuation/nudge；`direction: "off_track"` 是软方向提示，本身不会阻止工具执行。
 - wrap-up LLM 规范化默认关闭；启用 `wrapupNormalize: true` 或 `ERIX_WRAPUP_NORMALIZE=1`。
 
@@ -264,7 +264,7 @@ erix mcp [--config <path>]
 
 不带参数运行 `erix` 会进入 `repl`。`chat` 参数由 `bin/cli.js` 实现；上面的 `repl` 参数由 `bin/repl.js` 实现。特别是，`repl` 不实现 `--stream`、`--reflection`、`--timeout`、`--no-notes` 或 `--judge-log`。
 
-`chat` 默认 64 轮、300 秒 idle timeout、在 `max-rounds >= 32` 时启用 reflection，并关闭 final guard。`repl` 默认 32 轮、无 idle timeout、`reflection: false`，并在一轮无工具轮次后完成。`bin/repl.js` 中的 CLI help 文本仍将默认值标为 16；可执行常量和 `runToolLoop` 调用使用 32。
+`chat` 默认 64 轮、300 秒 idle timeout、在 `max-rounds >= 16` 时启用 reflection，并关闭 final guard。`repl` 默认 32 轮、无 idle timeout、`reflection: false`，并在一轮无工具轮次后完成。
 
 共享 CLI 参数包括：
 
