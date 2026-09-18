@@ -69,7 +69,7 @@ instead of re-solving the engineering underneath it.
 | Lower the barrier to LLM use | `runToolLoop` as the single entry point; dual-protocol providers; canonical message model; compaction; checkpoint/resume; classified errors | product-level prompt and workflow design |
 | Centralised model configuration and run policy | duck-typed `ModelConfigProvider.resolve(slot)` with `static` / `env` / `json-file` adapters, per-slot models, `apiKey`/`apiKeyEnv`/`apiKeyFile` indirection, budget derivation | the configuration store itself (database or config centre), project and tenant quotas, fallback policy, prompt and agent versions |
 | Traceable calls, cost analysis and audit | event stream (`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`), token accounting, `TranscriptStore` persistence, stable run ids, checkpoints and bounded recall for replay | log and cost storage, dashboards, retention, audit process |
-| One tool, permission and safety boundary | a single execution entry (`executeTool`), an executor registry that data cannot extend, schema intersection, optional jail/file/recall helpers under `erix-agent/tools` | the policy itself: which project may run which agent, which tools, which operations need confirmation, network and write access, rate and time limits |
+| One tool, permission and safety boundary | a single execution entry (`executeTool`), an executor registry that data cannot extend, schema intersection, and the built-in `recall` retrieval tool under `erix-agent/tools` | the policy itself: which project may run which agent, which tools, which operations need confirmation, network and write access, rate and time limits |
 | Contain third-party framework churn | zero runtime dependencies and an owned implementation, a stable exported surface plus `erix-agent/contract-tests` for consumers | — |
 | Accumulate reusable agent engineering | canonical message and tool formats, ADR-tracked decisions, contract tests, benchmark harness | — |
 
@@ -214,12 +214,16 @@ handles legacy `function_call` streams.
   `ErixWong/erix-agent` on GitHub.
 - Never commit tokens, API keys, or other credentials.
 
-The published package currently has version `0.5.1` in `package.json`. Its
+The published package currently has version `0.6.0` in `package.json`. Its
 declared `files` are:
 
 ```json
-["src", "bin", "skills", "README.md", "CHANGELOG.md",
- "docs/host-consumer-contract.md", "test/contract", "LICENSE"]
+["src", "bin", "skills", "README.md", "README_cn.md", "CHANGELOG.md",
+ "docs/host-consumer-contract.md", "docs/host-upgrade-guide-0.6.0.md",
+ "test/contract/assembly-port.js", "test/contract/execute-tool.js",
+ "test/contract/index.js", "test/contract/model-config-provider.js",
+ "test/contract/notes-store.js", "test/contract/recall-contract.js",
+ "test/contract/transcript-store.js", "LICENSE"]
 ```
 
 Its public `exports` are:
@@ -483,10 +487,9 @@ implemented by `bin/cli.js`; the `repl` flags above are implemented by
 `--reflection`, `--timeout`, `--no-notes`, or `--judge-log`.
 
 `chat` defaults to 64 rounds, a 300-second idle timeout, reflection enabled
-when `max-rounds >= 32`, and the final guard disabled. `repl` defaults to
-32 rounds, no idle timeout, `reflection: false`, and completion after one
-no-tool round. The CLI help text in `bin/repl.js` still labels its default as
-16; the executable constant and `runToolLoop` call use 32.
+at `max-rounds >= 16` (`DEFAULT_REFLECTION_MIN_ROUNDS`, shared with the
+library), and the final guard disabled. `repl` defaults to 32 rounds, no idle
+timeout, `reflection: false`, and completion after one no-tool round.
 
 The shared CLI flags are:
 
@@ -576,6 +579,8 @@ library-level controls
   configuration, storage, compaction, reflection, tools, skills, safety,
   judge direction, engine/model/host boundaries, and guard policy
 - [docs/testing.md](docs/testing.md) - test strategy and behavior metrics
+- [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
+  breaking-window migration steps
 - [docs/host-consumer-contract.md](docs/host-consumer-contract.md) - host
   consumer contract for verification, bounded recall, provenance, and reruns
 - [docs/host-upgrade-guide-v030.md](docs/host-upgrade-guide-v030.md) - host
@@ -592,19 +597,25 @@ The bounded recall design note is
 
 ## Status and version history
 
-The current package version is **v0.5.1**, dated 2026-09-15 according to
-`package.json` and `CHANGELOG.md`.
+The current package version is **v0.6.0**, dated 2026-09-18 according to
+`package.json` and `CHANGELOG.md`. Migration steps for the 0.6.0 breaking
+window are in [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
 - **v0.5.1 (2026-09-15)**: fixes repeated accumulation of fold summaries,
   navigation records, stubs, `[本 run 状态]`, and run state by recognizing
   and replacing the fold marker; adds end-to-end Memento scenario coverage
   for folded truth, credential-safe stubs, reruns, repeated folding, and
   bounded recall.
-- **Unreleased (0.6.0 window, ADR-016)**: retires the replayability concept —
-  classification, `rerunOf` notices, rerun detection, and auto-capture are
-  removed; the guard verifies the final text against **all** archived outputs.
+- **v0.6.0 (2026-09-18)**: closing of the ADR-015/ADR-016 breaking window —
+  the replayability concept (`rerunOf` notices, rerun detection, auto-capture)
+  and the `resourceStore` port are removed, the guard verifies the envelope's
+  `findings` against all archived outputs, the engine ships recall as a
+  standard tool with output hygiene (`toolOutputs`), persistence failures are
+  reported through `unpersisted`/`completionErrors`, and unknown run options
+  throw. See CHANGELOG and the 0.6.0 upgrade guide.
 - **v0.5.0 (2026-09-15)**: makes the CLI provenance guard opt-in;
-  normalized reruns execute and report `rerunOf` instead of being blocked;
+  normalized reruns executed and reported `rerunOf` instead of being blocked
+  (both the concept and the notices were removed in 0.6.0);
   adds object-form bounded recall, cursor and source binding, replayability
   provenance, bounded fold navigation and stubs, deterministic run state,
   host-injected `todoStateProvider`/`semanticStateProvider`, and forced-final

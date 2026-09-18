@@ -1,6 +1,6 @@
 import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 
-const MAX_RENDERED_CHARS = 400;
+const MAX_RENDERED_CHARS = 1600;
 export const RUN_STATE_SCHEMA_VERSION = 1;
 export const RUN_STATE_MAX_SERIALIZED_BYTES = 64 * 1024;
 export const RUN_STATE_MAX_TOOL_ENTRIES = 128;
@@ -13,6 +13,23 @@ const END_MARKER = "[/run state]";
 
 function boundedText(value, maxChars) {
   const text = String(value ?? "").replaceAll(/\s+/gu, " ").trim();
+  return Array.from(text).slice(0, maxChars).join("");
+}
+
+// semantic 文本是多行目录（notes 小抄目录）——不能像单行字段那样把换行压平，
+// 否则"多行渲染"退化成一行连写，模型读不出条目边界（2026-09-17 发布前评审）。
+function boundedMultilineText(value, maxChars) {
+  const text = String(value ?? "")
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    // 保留 \n；其余空白（含制表符）压成单个空格，并去掉其余控制字符
+    .replaceAll(/[^\S\n]+/gu, " ")
+    .replaceAll(/[\u0000-\u0009\u000b-\u001f\u007f]/gu, "")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .replaceAll(/\n{3,}/gu, "\n\n")
+    .trim();
   return Array.from(text).slice(0, maxChars).join("");
 }
 
@@ -90,7 +107,7 @@ const SEMANTIC_RENDER_MAX_LINES = 16;
 function normalizeSemantic(semantic, expectedVersion) {
   if (!semantic) return { status: "absent" };
   // ADR-015：semantic 槽位承载宿主目录（如 notes 小抄目录），220→1200 字符
-  const sourceText = boundedText(semantic.text, SEMANTIC_TEXT_MAX_CHARS);
+  const sourceText = boundedMultilineText(semantic.text, SEMANTIC_TEXT_MAX_CHARS);
   const redacted = looksLikeCredential("", sourceText);
   const text = redacted ? "[redacted]" : sourceText;
   const version = semantic.version ?? semantic.semanticStateVersion;
@@ -362,9 +379,17 @@ export function renderRunState(state) {
     `termination=${safeText(deterministic.termination?.reason, 32) || "running"} errors=${safeInteger(errors.tool)}/${safeInteger(errors.checkpoint)}/${safeInteger(errors.unpersisted?.count)}`,
     SEMANTIC_MARKER,
     `status=${safeText(semantic.status, 16)} version=${semantic.semanticStateVersion ?? "-"}`,
-    // ADR-015：semantic 文本多行渲染（宿主目录如 notes 小抄目录）；行数封顶防膨胀
+    // ADR-015：semantic 文本多行渲染（宿主目录如 notes 小抄目录）；行数封顶防膨胀，
+    // 但截断必须可见——模型要能知道目录条目不完整，而不是以为就这几条
     ...(semantic.text
-      ? String(semantic.text).split("\n").slice(0, SEMANTIC_RENDER_MAX_LINES)
+      ? (() => {
+          const lines = String(semantic.text).split("\n");
+          const visible = lines.slice(0, SEMANTIC_RENDER_MAX_LINES);
+          if (lines.length > SEMANTIC_RENDER_MAX_LINES) {
+            visible.push(`... (semantic lines truncated: ${lines.length - SEMANTIC_RENDER_MAX_LINES} more)`);
+          }
+          return visible;
+        })()
       : []),
     END_MARKER,
   ];

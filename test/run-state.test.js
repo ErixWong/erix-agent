@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   createDeterministicRunState,
   renderRunState,
+  RUN_STATE_MAX_CHARS,
   RUN_STATE_MAX_SERIALIZED_BYTES,
   upsertRunStateInMessages,
   validateRunState,
@@ -62,10 +63,20 @@ test("run state is bounded, marked when truncated, and does not expose credentia
     version: 3,
   });
   const rendered = renderRunState(withSemantic);
-
-  assert.ok(rendered.length <= 400);
-  assert.match(rendered, /\[run state truncated\]/u);
+  assert.ok(rendered.length <= RUN_STATE_MAX_CHARS);
   assert.doesNotMatch(rendered, /sk-secret|Bearer/u);
+
+  // 语义目录最长 1200 字符：整块必须放得下（放不下才出现 truncation 标记）
+  const longSemantic = withSemanticRunState(state, {
+    text: Array.from({ length: 200 }, (_unused, index) => `note line ${index}`).join("\n"),
+    version: 3,
+  });
+  const longRendered = renderRunState(longSemantic);
+  assert.ok(
+    longRendered.length <= RUN_STATE_MAX_CHARS,
+    `rendered=${longRendered.length} > RUN_STATE_MAX_CHARS=${RUN_STATE_MAX_CHARS}`,
+  );
+  assert.match(longRendered, /\.\.\. \(semantic lines truncated: \d+ more\)/u);
 });
 
 test("persisted run state is bounded, marked, and redacts semantic credentials", () => {

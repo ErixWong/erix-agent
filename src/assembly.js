@@ -44,7 +44,6 @@ const ASSEMBLY_POLICY_OPTION_NAMES = new Set([
   "requestId",
   "toolContext",
   "persistence",
-  "runState",
   "onRound",
   "onJudge",
   "onToolResult",

@@ -2,7 +2,9 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
-## [Unreleased]（0.6.0 破坏窗口累积，见 ADR-016 / issue #119）
+## [0.6.0] - 2026-09-18
+
+破坏窗口收口（ADR-015 / ADR-016 / #109 / #110 / #111）。以下条目此前记在 Unreleased，现随 0.6.0 一并发布。
 
 ### Breaking（ADR-016：可重放概念退役）
 
@@ -21,15 +23,18 @@
   （`candidateLines` 迁入 final-guard-support 供 guard 抽值）。显式 notes
   （note_take/note_read/note_list）不受影响。
 - **guard 解耦并扩大核验面**：终稿核验不再只针对"非重放捕获值"，改为对 transcript
-  **全部归档输出**比对——终稿显式 `label=value` 必须能在归档输出中找到。来源指向
-  要求（`来源=note_read:<key>` / `来源=归档:...`）与 first/rerun 之辨删除；
-  guard 贡献面更大、代码更少（300 行上限内从 ~250 行降至 ~130 行）。
+  **全部归档输出**比对。核验载体是结束协议信封的 `findings` 字段（label→精确值），
+  guard 只做字符串相等比对，**不再解析终稿散文**——散文正则抽取已被实测证伪
+  （`「TARGET=gold-4173」` 被判成伪造值，诚实终稿被误杀）。来源指向要求与
+  first/rerun 之辨删除；guard 贡献面更大、代码更少。
 - `runToolLoop` 选项 `runState`（唯一用途是共享 rerunDetected 标记）删除；
   `wrapExecuteTool` 选项 `capture` / `notesScope` 删除；`createCliTools` 选项
   收窄为 `cwd`。
 - 老 transcript 中带 `replayable` 标记的块：新代码忽略该标记，向后兼容读。
 
-### Breaking（ResourceStore 端口退役，#109 第 3 步收尾）
+### 窗口内清理（ResourceStore 端口，0.5.1 无影响）
+
+> 该端口只存在于未发布的 0.6.0 窗口（先随 #106 新增，后随 ADR-015 收尾删除），0.5.1 没有它——宿主不需要迁移，唯一可见影响是显式传该键会被陌生顶层键校验拒绝。
 
 - **`resourceStore` 端口整体删除**（ADR-015 4a/4b 的收尾）：输出档案角色早已并入
   transcript `toolOutputs`，capture 证据角色并入 #109 第 2 步；剩下唯一的 fold 用途
@@ -37,9 +42,11 @@
   `createFileResourceStore`、fold 的 `materializeFoldResources`、`resourceStoreContract`
   契约测试与 `assembly.js`/`runToolLoop` 的对应选项。宿主若仍传该键，会因陌生顶层键被
   排拒（fail-loud，而不是静默忽略）。
-- **`executeToolContract` 拆出迁移负例组**：位置形态 `(name, input)` 从"通过路径里的
-  兼容诊断"改为 `executeToolMigrationContract` 的负例断言（`name` 收到整个 execution
-  对象、`input` 为 `undefined` = 必错），契约通过路径只描述结构化形态。
+- **`executeToolContract` 拆出迁移负例组**（契约测试套件）：位置形态 `(name, input)`
+  从"通过路径里的兼容诊断"改为 `executeToolMigrationContract` 的负例断言（`name`
+  收到整个 execution 对象、`input` 为 `undefined` = 必错），契约通过路径只描述
+  结构化形态。宿主 store/executor 若原先靠宽松断言"全绿"，升级后可能变红——这是
+  有意收紧，见 0.6.0 升级指南。
 
 ### fix（#109 第 3/4 步：错误通道与账本可靠性）
 
@@ -77,11 +84,32 @@
   默认扩轮步长由固定 `+32` 改为 `max(8, maxRounds * 0.5)`（16 轮任务一次扩 8 轮，
   而不是一口气加到 48）。
 
-### 保留（与可重放无关，勿误伤）
+### Breaking（`erix-agent/tools` 子路径）
 
-- 输出卫生（4096 截断 + `toolOutputs` 字节保真 + bounded recall）与 recall 契约；
-- 折叠值锚点 stub 泛化为全部 tool_result（不再限于非重放块）；
-- 显式 notes、持久化失败诚实上报（#109 第 2 步）、guard 防伪造职责。
+- **`JailError` / `createJail` / `createFileTools` 删除**（窗口内 commit `a8cd193`，
+  原为死代码对）。0.5.1 从 `erix-agent/tools` 导入这三个符号的宿主必须改用自己的
+  路径/权限实现；本库自 ADR-009 起不提供安全边界。
+- **`resourceStore`（`erix-agent/tools` 之外的装配端口）为非破坏项**：该端口在
+  未发布的 0.6.0 窗口内新增又删除，0.5.1 从未包含它；唯一可见影响是宿主显式传该键
+  会因陌生顶层键被拒。
+
+### feat（ADR-015 整窗）
+
+- **recall 标配化**：引擎默认注册 `recall` 工具（可 opt-out；宿主同名工具让位；
+  无 store 时显式撕票，不静默）。新增按行直读 `recall({ fromRound, lineOffset,
+  lineLimit })`（默认 100 行、硬顶 400 行、导航标记不会被截断吃掉）。
+- **输出卫生进引擎**：超限工具输出全量归档进 transcript 的字节保真 `toolOutputs`，
+  模型可见侧只留截断提示 + recall 配方；checkpoint/resume 字节保真；CLI 不再写第二份
+  archive 文件、不再有 `.meta.json` / 路径提示（模型侧零路径）。
+- **notes 小抄目录注入 run-state**：semantic 槽位 220→1200 字符、多行渲染（条目各自
+  成行）、行数封顶 16 行且截断可见；整块渲染上限 400→1600 字符。
+- **新增公共导出**：`createAssemblyPort` / `assemblyPortOptions` /
+  `createModelConfigResolver` / `createFileNotesStore` / `assertNotesStore` /
+  `NotesStoreError` / `isNoteRecord` / `boundedRecall` / `normalizeOpenAIUsage` /
+  `normalizeOpenAIStopReason` / `parseOpenAIToolArguments` /
+  `createOpenAIStreamAccumulator` / `DEFAULT_REFLECTION_MIN_ROUNDS`。
+- 显式 notes、持久化失败诚实上报（#109）、guard 防伪造职责、折叠值锚点 stub 泛化到
+  全部 tool_result。
 
 ## [0.5.1] - 2026-09-15
 
@@ -237,5 +265,7 @@
 - notes 是 pull-only：system prompt 只提供值型笔记的 key/标签索引，不注入笔记值；模型需要时调用
   `note_read`（未知 key 才先 `note_list`），归档引用只用于审计和有界恢复。
 
+[0.6.0]: https://github.com/ErixWong/erix-agent/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/ErixWong/erix-agent/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ErixWong/erix-agent/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ErixWong/erix-agent/compare/v0.3.5...v0.4.0

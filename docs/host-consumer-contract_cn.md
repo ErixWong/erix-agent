@@ -169,8 +169,7 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 ### CLI 侧来源 guard
 
 `bin/final-guard.js` 中的 CLI guard 是确定性的来源检查器，而不是任务完成度评估器
-（ADR-016）。证据是本 run transcript 的归档工具输出（`toolOutputs`，字节保真）加上
-legacy capture manifest；没有可重放性过滤——每条归档输出都是证据。guard 用字符串相等
+（ADR-016）。证据是本 run transcript 的归档工具输出（`toolOutputs`，字节保真）；没有可重放性过滤——每条归档输出都是证据。（旧 transcript 的 legacy capture manifest 仍可读，但新 run 不再写。）guard 用字符串相等
 比对信封声明的 `findings` 与归档捕获值；**从不解析自由散文**。
 
 - 声明的 label 命中归档值 → 该条通过；
@@ -287,7 +286,7 @@ recall 取回，不要凭记忆。”
 引擎构建确定性的运行状态，并能在上下文折叠时注入其有界渲染。它会替换既有的单个 run-state
 块而不是追加重复块，并在提供的 `TranscriptStore` 支持时用 `saveRunState` 持久化当前状态。
 确定性部分只包含引擎已知事实：预算、工具调用次数与失败次数、已写文件路径、注入的 todo
-状态、折叠/导航/捕获计数、终止原因，以及工具/checkpoint/未存上（`unpersisted`）计数。
+状态、折叠/导航计数、终止原因，以及工具/checkpoint/未存上（`unpersisted`）计数。
 当前终止原因使用与 loop 相同的取值，包括 `end_turn`、`no_tool`、`stall`、
 `max_rounds_cap`、`reflection_stop`、`judge_done`、`continuation_exhausted`、
 `final_guard_unverified`、`aborted`、`failed`。
@@ -297,10 +296,12 @@ recall 取回，不要凭记忆。”
 确定性事实。引擎不调用模型来获取语义状态。
 
 持久化对象受 `RUN_STATE_MAX_SERIALIZED_BYTES`（`64 * 1024`）约束。渲染的提示块受
-`RUN_STATE_MAX_CHARS`（`400`）约束。run-state 辅助函数还把工具条目限制为 128、文件条目
-128、todo 条目 64、普通受限的 name/path/id/status 字段 120 字符、语义源文本 220 字符。
-条目或序列化状态被裁剪时，`bounds.truncated` 与相应的省略计数是显式的；渲染块在触到
-400 字符上限时使用 `[run state truncated]`。
+`RUN_STATE_MAX_CHARS`（`1600`）约束。run-state 辅助函数还把工具条目限制为 128、文件条目
+128、todo 条目 64、普通受限的 name/path/id/status 字段 120 字符、语义源文本 1200 字符
+（多行：保留换行，每条目录条目单独成行，最多 16 行，行数被裁剪时显式报告
+`... (semantic lines truncated: N more)`）。条目或序列化状态被裁剪时，`bounds.truncated`
+与相应的省略计数是显式的；渲染块在触到字符上限时使用 `[run state truncated]`。语义文本自身的字符级裁剪由持久化的
+`semantic.truncated` 标志表达，不内联渲染。
 
 未知 schema 或不完整的持久化状态不会被静默当作有效默认值。恢复时它表现为
 `runState.stateAvailability.status = "state_unavailable"`（例如 `unknown_schema` 或
