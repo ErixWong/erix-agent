@@ -22,9 +22,10 @@ function boundedMultilineText(value, maxChars) {
   const text = String(value ?? "")
     .replaceAll("\r\n", "\n")
     .replaceAll("\r", "\n")
-    // 保留 \n；其余空白（含制表符）压成单个空格，并去掉其余控制字符
+    // 控制字符先删（\v/\f 直接删掉而不是折成空格；含 C1 区 \u0080-\u009f），
+    // 再把其余空白（含制表符）压成单个空格；\n 保留
+    .replaceAll(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/gu, "")
     .replaceAll(/[^\S\n]+/gu, " ")
-    .replaceAll(/[\u0000-\u0009\u000b-\u001f\u007f]/gu, "")
     .split("\n")
     .map((line) => line.trimEnd())
     .join("\n")
@@ -237,13 +238,13 @@ export function validateRunState(state) {
   return { ok: true, status: "available", state };
 }
 
-function renderLines(lines) {
+function renderLines(lines, budget = MAX_RENDERED_CHARS) {
   const marker = "[run state truncated]";
   const output = [];
   let length = 0;
   for (const line of lines) {
     const separator = output.length === 0 ? 0 : 1;
-    if (length + separator + Array.from(line).length + 1 > MAX_RENDERED_CHARS) break;
+    if (length + separator + Array.from(line).length + 1 > budget) break;
     output.push(line);
     length += separator + Array.from(line).length;
   }
@@ -255,11 +256,11 @@ function renderLines(lines) {
       length -= Array.from(removed).length + (output.length === 0 ? 0 : 1);
     }
     if (length + (output.length === 0 ? 0 : 1) + Array.from(marker).length
-      <= MAX_RENDERED_CHARS) {
+      <= budget) {
       output.push(marker);
     }
   }
-  return output.join("\n").slice(0, MAX_RENDERED_CHARS);
+  return output.join("\n").slice(0, budget);
 }
 
 /**
@@ -391,9 +392,12 @@ export function renderRunState(state) {
           return visible;
         })()
       : []),
-    END_MARKER,
   ];
-  return renderLines(lines);
+  // 闭合标记必须存活：若把它当作 lines 的最后一行，超预算时会被截掉，
+  // upsertRunStateInMessages 的替换正则（要求 END_MARKER 收尾）就匹配不到旧块 →
+  // 下一次 upsert 会追加第二个块（run-state 在上下文里累积，2026-09-18 全面评审 M2）。
+  // 为它预留空间、渲染后永远追加。
+  return `${renderLines(lines, MAX_RENDERED_CHARS - END_MARKER.length - 1)}\n${END_MARKER}`;
 }
 
 function runStateBlockPattern() {

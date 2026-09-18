@@ -15,12 +15,12 @@
 
 ```text
 assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
-writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
+recall, outputHygiene, writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, context, todoStateProvider, semanticStateProvider,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
-toolContext, store, persistence, runId, runState, resume, onRound, onJudge,
+toolContext, store, persistence, runId, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
 ```
@@ -84,9 +84,11 @@ provider、工具与 transcript 适配器，因此没有宿主需要一次性迁
 持久化失败有两条可靠通道，都不依赖模型是否读提示：
 
 - `result.unpersisted` —— 错误账单（数组，schema 冻结）。每条含 `ts`、`kind`、`port`、
-  `operation`、可选 `phase`、`fatal`、`repeat` 与 `error: { name, message }`
-  （message 截断到 500 字符、不带堆栈）。完全相同的失败会去重成一条并累加 `repeat`，
-  不会刷屏。
+  `operation`、可选 `phase`、`fatal`、`repeat`、可选 `lastTs`（吸收重复失败时更新）
+  与 `error: { name, message }`（message 截断到 500 字符、不带堆栈）；
+  `delivery_failure` 条目额外带 `failedEvent`（没能送出去的事件身份）。完全相同的
+  失败——同 port/operation/phase/fatal/message，`delivery_failure` 还要同 failedEvent
+  身份——会去重成一条并累加 `repeat`，不会刷屏。
 - `diagnostics.error(event)` —— 同一身份的事件；宿主编排了 sink 时投递。sink 自身抛错
   也会记成一条 `delivery_failure`。
 
@@ -212,7 +214,9 @@ const page = await store.recall({
 `limit`、`maxBytes`、`cursor`。`fromRound` 与 `toRound` 是非负整数边界；`pattern`
 是可选的子串过滤器。`artifactRef` 可以用字符串身份，或用 `artifactId`、`id`、
 `archivePath`、`digest` 等字段标识一个精确 artifact。`limit` 与 `maxBytes` 是可选上限；
-`limit: 0` 与 `maxBytes: 0` 会以 `status: "error"` 被拒绝且不返回 cursor。legacy 位置
+`limit: 0` 与 `maxBytes: 0` 会以 `status: "error"` 被拒绝且不返回 cursor。`lineOffset`/`lineLimit` 请求对单条归档记录做按行直读：`lineOffset` 0 基，`lineLimit`
+默认 100、硬顶 400，展示行号 1 基，还有更多行时回复以「继续读用 lineOffset=<n>」提示收尾。
+两者与 `pattern` 同给时按行直读优先、`pattern` 被忽略。legacy 位置
 参数形式 `store.recall(runId, fromRound, toRound, pattern)` 仍是独立的字符串返回接口，
 不提供有界分页状态或 cursor。
 

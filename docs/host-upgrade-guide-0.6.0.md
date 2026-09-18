@@ -229,3 +229,20 @@ rather than loosening the assertion. What changed in `erix-agent/contract-tests`
   last-write-wins, assembly startup and precedence). A host store or port that
   never faced them should run them before upgrading.
 - `resourceStoreContract` no longer exists (see §5).
+
+## 13. The persisted run-state shape changed
+
+Hosts that read the persisted run-state object (or `result.runState`) must
+update field access:
+
+- `deterministic.errors.archive` is gone; persistence failures now live in
+  `deterministic.errors.unpersisted` as `{ count, items }` (`items` capped at
+  10, mirroring `result.unpersisted`).
+- The retired capture counters `nonReplayableCaptures` and
+  `unrecoverableCaptures` no longer exist.
+- Semantic source text is capped at 1200 characters (was 220), keeps newlines
+  (each directory entry renders on its own line), and the rendered block caps
+  at 16 lines with a visible `... (semantic lines truncated: N more)` marker.
+- The rendered prompt block cap is 1600 characters (was 400) and the block now
+  always ends with `[/run state]`, even when truncated (truncation shows
+  `[run state truncated]` before the closing marker).

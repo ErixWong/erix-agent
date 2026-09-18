@@ -417,8 +417,10 @@ decide whether to consume the result.
   required checkpoint and run-state persistence. Pass `persistence: "none"` to
   explicitly disable all writes. The object form of
   `store.recall()` supports `fromRound`, `toRound`, `pattern`, `artifactRef`,
-  `limit`, `cursor`, and `maxBytes`, returning `{ text, truncated,
-  nextCursor?, status }`. It is bounded exact retrieval, not semantic
+  `limit`, `cursor`, `maxBytes`, and a straight line read via `lineOffset`
+  (0-based) plus `lineLimit` (default 100, hard cap 400) for reading the middle
+  of one large archived record without re-running the command, returning
+  `{ text, truncated, nextCursor?, status }`. It is bounded exact retrieval, not semantic
   search, completion proof, or provenance verification. `cursor` is bound
   to its run, range, filter, limits, and source version; mismatch is
   rejected rather than silently restarting. `limit: 0` and `maxBytes: 0`

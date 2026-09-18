@@ -312,11 +312,11 @@ export function createRecallTool({ store, runId, limits = {} }) {
         offset: { type: "integer", description: "pattern 模式的段偏移（不是行号）" },
         lineOffset: {
           type: "integer",
-          description: "按行直读：起始行号（0 基）。想看某次大输出的中间一段时用它，不要用 pattern 假装行号",
+          description: "按行直读：起始行号（0 基）。想看某次大输出的中间一段时用它，不要用 pattern 假装行号。与 pattern 同给时按行直读优先、pattern 被忽略",
         },
         lineLimit: {
           type: "integer",
-          description: `按行直读：读取行数（默认 ${DEFAULT_LINE_LIMIT}，上限 ${MAX_LINE_LIMIT}）`,
+          description: `按行直读：读取行数（默认 ${DEFAULT_LINE_LIMIT}，上限 ${MAX_LINE_LIMIT}，最小 1——0 会被当作 1）`,
         },
       },
       additionalProperties: false,

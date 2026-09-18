@@ -34,6 +34,8 @@ export function createErrorLedger() {
   let dropped = 0;
 
   // 去重键：同一端口同一操作反复失败（如每轮都写失败）不刷屏，累计在 repeat 上。
+  // delivery_failure 还要把 failedEvent 身份入键：同一错误消息、不同出事事件
+  // 是两条不同的账（2026-09-18 全面评审 m6）。
   function dedupKey(entry) {
     return [
       entry.kind,
@@ -43,6 +45,9 @@ export function createErrorLedger() {
       entry.fatal === true,
       entry.error?.name,
       entry.error?.message,
+      entry.failedEvent
+        ? [entry.failedEvent.type, entry.failedEvent.port, entry.failedEvent.operation, entry.failedEvent.phase].join("\u0000")
+        : "",
     ].join("\u0000");
   }
 

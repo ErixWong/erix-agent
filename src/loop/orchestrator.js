@@ -1697,7 +1697,7 @@ export async function runToolLoop(options) {
         "onBeforeFold",
         "onAfterFold",
         "stubFor",
-            ]) {
+      ]) {
         if (compactionContext[key] !== undefined) compactOptions[key] = compactionContext[key];
       }
       const result = await strategy.compact(messages, compactOptions);

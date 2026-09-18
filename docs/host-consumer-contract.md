@@ -18,12 +18,12 @@ must be placed in an explicit namespace such as `toolContext` or `context`.
 
 ```text
 assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
-writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
+recall, outputHygiene, writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, context, todoStateProvider, semanticStateProvider,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
-toolContext, store, persistence, runId, runState, resume, onRound, onJudge,
+toolContext, store, persistence, runId, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
 ```
@@ -101,8 +101,12 @@ depends on the model reading a hint:
 
 - `result.unpersisted` — the error bill (schema frozen as an array). Each
   entry carries `ts`, `kind`, `port`, `operation`, optional `phase`, `fatal`,
-  `repeat`, and `error: { name, message }` (message capped at 500 characters,
-  stack dropped). Identical failures are deduplicated into one entry with an
+  `repeat`, optional `lastTs` (set when the entry absorbed a duplicate),
+  and `error: { name, message }` (message capped at 500 characters,
+  stack dropped). `delivery_failure` entries additionally carry `failedEvent`
+  (the identity of the event that could not be delivered). Identical failures —
+  same port/operation/phase/fatal/message, and for `delivery_failure` also the
+  same failed-event identity — are deduplicated into one entry with an
   increasing `repeat` count instead of flooding the bill.
 - `diagnostics.error(event)` — the same identity as an event, delivered when
   the host configured a sink. A sink that throws is itself recorded as a
@@ -272,7 +276,11 @@ const page = await store.recall({
 filter. `artifactRef` may identify one exact artifact by its string identity
 or by fields such as `artifactId`, `id`, `archivePath`, or `digest`. `limit`
 and `maxBytes` are optional caps; `limit: 0` and `maxBytes: 0` are rejected
-with `status: "error"` and no cursor. The legacy positional
+with `status: "error"` and no cursor. `lineOffset`/`lineLimit` request a straight line read of one archived record:
+`lineOffset` is 0-based, `lineLimit` defaults to 100 with a hard cap of 400,
+the shown line numbers are 1-based, and the reply ends with a
+`继续读用 lineOffset=<n>` hint when more lines remain. When both are given,
+the line read takes precedence and `pattern` is ignored. The legacy positional
 `store.recall(runId, fromRound, toRound, pattern)` form remains a separate
 string-returning interface and does not provide bounded-page statuses or
 cursors.

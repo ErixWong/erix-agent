@@ -105,7 +105,7 @@ export function createFinalGuard({
     if (declarations.length === 0) {
       const labels = [...knownLabels.keys()].slice(0, 10).join("、");
       return revise(
-        `终稿信封没有声明 findings 关键值，但本 run 的归档输出里有 ${inspected.captures.length} 条可核验捕获值（可用 label：${labels}）。请在结束信封的 findings 中声明结论用到的值（label→精确值，逐字取自归档原文）；若本次结论确实不依赖任何归档值，请在终稿中明确说明。${capturePointer(inspected.captures[0])}`,
+        `终稿信封没有声明 findings 关键值，但本 run 的归档输出里有 ${inspected.captures.length} 条可核验捕获值（可用 label：${labels}）。请在结束信封的 findings 中声明结论用到的值（label→精确值，逐字取自归档原文）；guard 只读 findings，不解析终稿散文——若结论确实不依赖任何归档值，本次运行在重试耗尽后将以 unverified 收尾（fail-closed）。${capturePointer(inspected.captures[0])}`,
       );
     }
     for (const { label, value } of declarations) {
