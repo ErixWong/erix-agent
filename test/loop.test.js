@@ -155,6 +155,51 @@ test("clears the stall streak after a normal tool call", async () => {
   assert.equal(provider.requests.length, 6);
 });
 
+test("stall detection defaults to consecutive so interleaved re-reads are not stalls", async () => {
+  // 真实项目评估 §5.2（R4a）：写报告前回看刚读过的文件被 appear 模式判停滞。
+  // 默认改为 consecutive：交替签名（a/b 交替重读同一批文件）不再触发停滞 nudge。
+  const readPattern = () => [
+    { content: [{ type: "tool_use", id: "a1", name: "readFile", input: { path: "a.txt" } }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "b1", name: "readFile", input: { path: "b.txt" } }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "a2", name: "readFile", input: { path: "a.txt" } }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "b2", name: "readFile", input: { path: "b.txt" } }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "a3", name: "readFile", input: { path: "a.txt" } }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "b3", name: "readFile", input: { path: "b.txt" } }], stopReason: "tool_use" },
+    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
+  ];
+  const run = async (options) => {
+    const provider = createFakeProvider(readPattern());
+    const result = await runToolLoop({
+      provider,
+      initialUserMessage: "重读已读文件",
+      executeTool: async () => "ok",
+      maxRounds: 6,
+      completion: false,
+      ...options,
+    });
+    const nudgeRequests = provider.requests.filter((request) => request.messages.some((message) => (
+      Array.isArray(message.content)
+      && message.content.some((block) => /疑似重复调用/.test(block.text ?? ""))
+    ))).length;
+    return { result, nudgeRequests };
+  };
+
+  // 默认（不传 stallDetection）= consecutive：交替签名不算停滞，无 nudge
+  const byDefault = await run({});
+  assert.equal(byDefault.result.termination.reason, "max_rounds_cap");
+  assert.equal(byDefault.result.rounds, 6);
+  assert.equal(byDefault.nudgeRequests, 0, "默认 consecutive 下交替重读不应判停滞");
+
+  // 显式传对象（未指定 mode）维持原有 appear 语义：显式调用方行为不变
+  const explicit = await run({ stallDetection: { window: 4 } });
+  assert.equal(explicit.result.termination.reason, "max_rounds_cap");
+  assert.ok(explicit.nudgeRequests > 0, "显式 {window:4} 仍是 appear 语义");
+
+  // appear 仍可显式选择
+  const appear = await run({ stallDetection: { window: 4, mode: "appear" } });
+  assert.ok(appear.nudgeRequests > 0, "显式 mode:appear 仍能命中停滞");
+});
+
 test("feeds executeTool errors back as is_error and continues", async () => {
   const provider = createFakeProvider([
     {

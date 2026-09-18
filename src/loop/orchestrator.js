@@ -263,8 +263,11 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * When `reflection` is omitted, the basic judge is enabled automatically for
  * runs with `maxRounds >= 16`; pass `reflection: false` to disable it.
  *
- * Stall detection defaults to `appear`, which detects a signature anywhere in
- * the window; `consecutive` requires the entire window to match.
+ * Stall detection defaults to `consecutive`, which requires the entire window to
+ * hold the same signature (legitimate re-reads of a file no longer count as a
+ * stall); pass `{ mode: "appear" }` to detect a signature anywhere in the
+ * window instead. `ERIX_STALL_MODE` overrides the mode unless `stallDetection`
+ * is explicitly `false`.
  *
  * @param {{
  *   assemblyPort?: import("../assembly.js").AssemblyPort,
@@ -281,10 +284,11 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *                     // "recall" are served by the engine (never reach host executeTool). A host-provided
  *                     // "recall" tool definition always wins (no duplicate registration).
  *   outputHygiene?: false | { limit?: number }, // Engine-side output hygiene (ADR-015): tool results larger
- *                     // than limit characters (default 4096) are archived in full into the round record
+ *                     // than limit characters are archived in full into the round record
  *                     // (toolOutputs) and stubbed in the context view with a recall recipe. Requires a
  *                     // transcript store (the archive lives in the record). Defaults to enabled when a
- *                     // store is present; pass false to opt out.
+ *                     // store is present; pass false to opt out. Default limit: 15% of the host-provided
+ *                     // contextWindowTokens clamped to [8192, 100000], else 4096; an explicit limit wins.
  *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to ["writeFile"].
  *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
@@ -301,7 +305,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *     maxExtensions?:number, maxRoundsCap?:number, format?:"json"|"text",
  *     judge?:{provider?:object,evaluator?:object},
  *     onReflection?:(info:{round:number, decision:object, extendedTo:number}) => void}|false,
- *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false,
+ *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false, // Defaults to
+ *                   // {window:4, mode:"consecutive"}; ERIX_STALL_MODE overrides the mode unless false.
  *   retry?: {attempts?:number, backoffBaseMs?:number, backoffMaxMs?:number,
  *     sleepImpl?:(ms:number)=>Promise<void>}|false,
  *   completion?: {signals?:string[], maxNoToolRounds?:number}|false,
@@ -398,7 +403,7 @@ export async function runToolLoop(options) {
     timeoutMs,
     deadlineMs,
     reflection,
-    stallDetection = { window: 4 },
+    stallDetection = { window: 4, mode: "consecutive" },
     retry = false,
     completion = { signals: [], maxNoToolRounds: 3 },
     finalGuard,
@@ -508,8 +513,6 @@ export async function runToolLoop(options) {
     throw new TypeError("outputHygiene requires a transcript store (archive lives in the round record)");
   }
   const outputHygieneEnabled = outputHygiene !== false && outputHygieneCapable;
-  const outputHygieneLimit = (outputHygiene && outputHygiene !== false
-    && outputHygiene.limit) || 4096;
   const archivedOutputs = [];
   const persistenceRequired = persistenceMode === "required";
   if (persistenceRequired) {
@@ -691,6 +694,18 @@ export async function runToolLoop(options) {
     provider,
     context,
   });
+  // ADR-015：截断阈值按窗口缩放——宿主提供 contextWindowTokens 时取 15% 窗口（夹在 8k–100k），
+  // 否则维持 4096（未接模型元数据的宿主行为不变）。显式 outputHygiene.limit 优先级最高。
+  const outputHygieneExplicitLimit = outputHygiene && outputHygiene !== false
+    ? outputHygiene.limit
+    : undefined;
+  const outputHygieneWindowTokens = Number.isFinite(metadata?.contextWindowTokens)
+    && metadata.contextWindowTokens > 0
+    ? metadata.contextWindowTokens
+    : undefined;
+  const outputHygieneLimit = outputHygieneExplicitLimit ?? (outputHygieneWindowTokens === undefined
+    ? 4096
+    : Math.min(100000, Math.max(8192, Math.floor(outputHygieneWindowTokens * 0.15))));
   const resolvedWriteToolNames = normalizeToolNameSet(writeToolNames, ["writeFile"]);
   const resolvedWriteToolPathKeys = Array.isArray(writeToolPathKeys)
     ? writeToolPathKeys.filter((key) => typeof key === "string" && key.trim() !== "")
@@ -1092,7 +1107,9 @@ export async function runToolLoop(options) {
   const taskBrief = resolveTaskBrief({ task, context, messages: taskBriefSource });
   const recentSignatures = [];
   const envStallMode = process.env.ERIX_STALL_MODE;
-  // stallDetection:false 显式关闭优先于环境变量（调用方显式关闭不应被 env 重新打开）
+  // 默认 stallDetection 为 {window:4, mode:"consecutive"}（参数默认值，真实项目评估 §5.2：appear 误杀合法重读）。
+  // stallDetection:false 显式关闭优先于环境变量（调用方显式关闭不应被 env 重新打开）。
+  // 调用方显式传对象时缺省 mode 仍为 appear（只有引擎默认值才是 consecutive）。
   const resolvedStallDetection = stallDetection === false
     ? false
     : envStallMode

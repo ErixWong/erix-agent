@@ -288,10 +288,10 @@ reporting; it does not infer write tools. For each configured write tool,
 - `completion` defaults to `{ signals: [], maxNoToolRounds: 3 }`. A completion
   signal can stop a no-tool response, and after tool use the no-tool streak
   stops at `maxNoToolRounds`. `completion: false` disables this policy.
-- `stallDetection` defaults to `{ window: 4 }` with mode `"appear"`. Mode
-  `"consecutive"` requires the same tool signature throughout the window;
-  `false` disables detection. `ERIX_STALL_MODE` can provide the mode unless
-  the option is explicitly `false`.
+- `stallDetection` defaults to `{ window: 4, mode: "consecutive" }`: the whole
+  window must hold the same tool signature. Pass `{ mode: "appear" }` to treat a
+  signature anywhere in the window as a stall, or `false` to disable detection.
+  `ERIX_STALL_MODE` can provide the mode unless the option is explicitly `false`.
 - `maxTokenContinuations` defaults to `3`. A response ending with
   `stopReason === "max_tokens"` can therefore receive up to three continuation
   calls in the same round.

@@ -159,7 +159,9 @@ export function createCheckpointExecutor(ctx) {
         ...execution,
         content: `${fullText.slice(0, ctx.outputHygieneLimit)}`
           + `\n[完整输出已由引擎归档（第 ${round} 轮，共 ${fullText.length} 字符）。`
-          + `需要原文：recall({ round: ${round}, pattern: "关键词" })；不要重跑有副作用的命令]`,
+          + `需要原文：recall({ round: ${round}, pattern: "关键词" })；不要重跑有副作用的命令。`
+          + `若原命令有副作用，不要仅凭截断输出判断成败，也不要为补全输出重跑有副作用的命令；`
+          + `用 recall 取回原文或改用只读方式复核。]`,
       };
     }
     const toolResult = {
@@ -264,6 +266,14 @@ export function createCheckpointExecutor(ctx) {
     }
     ctx.judgeInterceptCount = 0;
 
+    // 放行规则（issue #32 / 运行时评估 §5）：done:false 只是「任务尚未完成」，与「这次调用该不该执行」正交。
+    // 任务中途 done:false 必然成立，若一律拦截就会误杀方向正确的工具调用（实测 39 次）。
+    // 因此仅当 judge 明确 direction === "on_track" 时放行；uncertain / off_track / 缺省 direction 维持拦截。
+    const onTrackPassThrough = decision !== undefined
+      && decision !== null
+      && decision.done === false
+      && decision.direction === "on_track";
+
     if (decision === undefined || decision === null) {
       const emitJudge = ctx.emitJudge;
       emitJudge({
@@ -294,11 +304,13 @@ export function createCheckpointExecutor(ctx) {
           direction: decision.direction,
           directionReason: decision.directionReason,
         },
-        action: decision.done === false ? "blocked" : "executed",
+        action: onTrackPassThrough || decision.done !== false ? "executed" : "blocked",
+        ...(onTrackPassThrough ? { passThrough: "on_track" } : {}),
       });
     }
 
-    if (decision?.done !== false) {
+    // on_track 放行的调用照常执行（judge 已给出方向判断，无需再打断）
+    if (onTrackPassThrough || decision?.done !== false) {
       try {
         const toolResult = await executeToolBlock(block, round, toolResults, pendingToolUses);
         const directionHint = directionHintText(

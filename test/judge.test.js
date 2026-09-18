@@ -1457,6 +1457,117 @@ test("transparent interception emits a blocked onJudge event when denied", async
   }]);
 });
 
+test("transparent interception executes on-track calls even when the judge reports done:false", async () => {
+  // issue #32 / 运行时评估 §5：任务中途 done:false 是常态，direction 自评 on_track 的调用不该被拦截
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "writeFile", { path: "result.txt", content: "42" }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const decision = {
+    done: false,
+    confidence: 0.6,
+    reason: "任务尚未完成",
+    evidence: "还剩两项验证",
+    direction: "on_track",
+    directionReason: "正在按计划推进",
+  };
+  const judge = createFakeProvider([judgeResponse(decision)]);
+  const events = [];
+  const calls = [];
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async ({ id, name, input }) => {
+      calls.push({ id, name, input });
+      return "ok";
+    },
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  // 工具照常执行（第二个调用没有被取消）
+  assert.deepEqual(calls, [
+    { id: "first", name: "work", input: { step: 1 } },
+    { id: "second", name: "writeFile", input: { path: "result.txt", content: "42" } },
+  ]);
+  const secondResult = result.transcript.flatMap((message) => message.content ?? [])
+    .find((block) => block.tool_use_id === "second");
+  assert.equal(secondResult.content, "ok");
+  assert.equal(secondResult.executionStatus, undefined);
+  // 无【审计拦截】文本注入
+  const toolResultText = result.transcript.flatMap((message) => message.content ?? [])
+    .filter((block) => block?.type === "tool_result")
+    .map((block) => String(block.content)).join("\n");
+  assert.doesNotMatch(toolResultText, /审计拦截/);
+  // judge 事件仍可区分放行：action=executed + passThrough=on_track
+  assert.deepEqual(events, [{
+    kind: "intercept",
+    tool: { id: "second", name: "writeFile", input: { path: "result.txt", content: "42" } },
+    decision,
+    action: "executed",
+    passThrough: "on_track",
+  }]);
+});
+
+test("transparent interception still blocks done:false calls marked off-track", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "work", { step: 2 }),
+    { content: [{ type: "text", text: "改方向后收尾" }], stopReason: "end_turn" },
+  ]);
+  const decision = {
+    done: false,
+    confidence: 0.8,
+    reason: "方向偏了",
+    evidence: "需要重新确认目标",
+    direction: "off_track",
+    directionReason: "当前方法反复失败",
+  };
+  const judge = createFakeProvider([judgeResponse(decision)]);
+  const events = [];
+  const executed = [];
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async ({ input }) => {
+      executed.push(input.step);
+      return "ok";
+    },
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  // done:false + 非 on_track（off_track/uncertain/缺失）维持拦截：第二个调用未执行
+  assert.deepEqual(executed, [1]);
+  const auditText = result.transcript.flatMap((message) => message.content ?? [])
+    .filter((block) => block?.type === "tool_result")
+    .map((block) => String(block.content)).join("\n");
+  assert.match(auditText, /【审计拦截】方向可能偏/);
+  assert.deepEqual(events, [{
+    kind: "intercept",
+    tool: { id: "second", name: "work", input: { step: 2 } },
+    decision,
+    action: "blocked",
+  }]);
+});
+
 test("transparent interception emits degraded when the judge fails", async () => {
   const provider = createFakeProvider([
     toolResponse("first", "work", { step: 1 }),
