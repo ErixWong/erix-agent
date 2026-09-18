@@ -398,7 +398,8 @@ renders on its own line, at most 16 lines, and a line-count cut is reported as
 `... (semantic lines truncated: N more)`). When entries or serialized state are
 trimmed, `bounds.truncated` and the applicable omission counts are explicit;
 the rendered block uses `[run state truncated]` when its character limit is
-reached.
+reached. Character-level trimming of the semantic text itself is reported by
+the persisted `semantic.truncated` flag rather than rendered inline.
 
 An unknown schema or incomplete persisted state is not silently treated as a
 valid default. On resume it is exposed as

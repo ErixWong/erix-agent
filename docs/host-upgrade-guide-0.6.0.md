@@ -198,7 +198,8 @@ The remaining `erix-agent/tools` exports are `createToolRegistry`,
 
 These are not crashes, but they change what the model sees and what a run costs:
 
-- **Output hygiene is on by default.** A tool result longer than 4096 characters
+- **Output hygiene is on by default** (`outputHygiene: { limit: 4096 }`; pass
+  `outputHygiene: false` to turn it off entirely). A tool result longer than 4096 characters
   is archived byte-faithfully into the transcript's `toolOutputs`; the model
   sees a truncated remainder plus a `recall({ pattern: "…" })` recipe instead
   of the whole text. Hosts that relied on the model reading a complete large
@@ -211,10 +212,20 @@ These are not crashes, but they change what the model sees and what a run costs:
 
 ## 12. The contract test suites got stricter
 
-`executeToolContract` now describes only the structured call shape, and the
-positional `(name, input)` form moved into `executeToolMigrationContract` as a
-negative assertion (`name` receives the whole execution object, `input` is
-`undefined`). `resourceStoreContract` no longer exists. A host adapter that was
-"green on 0.5.1" can therefore go red on 0.6.0 without any code change — that
-is the intended tightening, not a regression: run both suites and fix the
-adapter rather than loosening the assertion.
+A host adapter that was "green on 0.5.1" can go red on 0.6.0 without any code
+change. That is the intended tightening, not a regression: fix the adapter
+rather than loosening the assertion. What changed in `erix-agent/contract-tests`:
+
+- `executeToolContract` now describes only the structured call shape; the
+  positional `(name, input)` form moved into `executeToolMigrationContract` as
+  a negative assertion (`name` receives the whole execution object, `input` is
+  `undefined`).
+- `transcriptStoreContract` gained assertions for checkpoint round-trip
+  fidelity, multiple-`runId` isolation, the `loadRunState` return shape
+  (`{ state, stateVersion }`), and the rule that a write failure must reject
+  rather than be swallowed.
+- `recallContract`, `notesStoreContract`, and `assemblyPortContract` are new
+  suites (bounded recall statuses/cursors, NotesStore canonical scope and
+  last-write-wins, assembly startup and precedence). A host store or port that
+  never faced them should run them before upgrading.
+- `resourceStoreContract` no longer exists (see §5).

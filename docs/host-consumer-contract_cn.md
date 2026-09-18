@@ -300,7 +300,8 @@ recall 取回，不要凭记忆。”
 128、todo 条目 64、普通受限的 name/path/id/status 字段 120 字符、语义源文本 1200 字符
 （多行：保留换行，每条目录条目单独成行，最多 16 行，行数被裁剪时显式报告
 `... (semantic lines truncated: N more)`）。条目或序列化状态被裁剪时，`bounds.truncated`
-与相应的省略计数是显式的；渲染块在触到字符上限时使用 `[run state truncated]`。
+与相应的省略计数是显式的；渲染块在触到字符上限时使用 `[run state truncated]`。语义文本自身的字符级裁剪由持久化的
+`semantic.truncated` 标志表达，不内联渲染。
 
 未知 schema 或不完整的持久化状态不会被静默当作有效默认值。恢复时它表现为
 `runState.stateAvailability.status = "state_unavailable"`（例如 `unknown_schema` 或

@@ -220,7 +220,10 @@ declared `files` are:
 ```json
 ["src", "bin", "skills", "README.md", "README_cn.md", "CHANGELOG.md",
  "docs/host-consumer-contract.md", "docs/host-upgrade-guide-0.6.0.md",
- "test/contract/*.js (excluding the self-test .test.js files)", "LICENSE"]
+ "test/contract/assembly-port.js", "test/contract/execute-tool.js",
+ "test/contract/index.js", "test/contract/model-config-provider.js",
+ "test/contract/notes-store.js", "test/contract/recall-contract.js",
+ "test/contract/transcript-store.js", "LICENSE"]
 ```
 
 Its public `exports` are:

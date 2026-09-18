@@ -122,7 +122,10 @@ src/
 ```json
 ["src", "bin", "skills", "README.md", "README_cn.md", "CHANGELOG.md",
  "docs/host-consumer-contract.md", "docs/host-upgrade-guide-0.6.0.md",
- "test/contract/*.js（不含自测 .test.js）", "LICENSE"]
+ "test/contract/assembly-port.js", "test/contract/execute-tool.js",
+ "test/contract/index.js", "test/contract/model-config-provider.js",
+ "test/contract/notes-store.js", "test/contract/recall-contract.js",
+ "test/contract/transcript-store.js", "LICENSE"]
 ```
 
 ## 宿主端口与错误账本
@@ -206,7 +209,7 @@ failed
 
 ### 终稿 guard 与收尾
 
-- `finalGuard` 是可选的。在正常停止（`end_turn`、`no_tool`、`judge_done`、completion 或不可继续的 cap）之前，它会接收 `{ finalText, messages, round, rounds, signal, termination }`。它可以返回 `{ action: "accept" }`、`{ action: "skip", reason }` 或 `{ action: "revise", message }`。
+- `finalGuard` 是可选的。在正常停止（`end_turn`、`no_tool`、`judge_done`、completion 或不可继续的 cap）之前，它会接收 `{ finalText, findings, messages, round, rounds, signal, termination }`，其中 `findings` 是结束信封声明的 `label -> 精确值` 映射（可核验断言的权威载体，guard 不解析散文）。它可以返回 `{ action: "accept" }`、`{ action: "skip", reason }` 或 `{ action: "revise", message }`。
 - `finalGuardMaxRetries` 默认为 `2`；`finalGuardTimeoutMs` 默认为 `30000`。revise 决策会将返回的 `message` 注入为 user message，并在仍有重试次数时继续。对不可继续的停止进行 revise，或重试耗尽后仍 revise，会返回 `termination.reason === "final_guard_unverified"`，并令 `verification.status === "unverified"`。guard 错误或显式 skip 会保留原始终止原因。guard 错误和超时会报告 `verification.status === "error"`，为保证可用性而 fail open，但文本并未得到核验。
 
 没有 guard 时，verification 为 `skipped`，原因是 `no_final_guard`。
@@ -256,7 +259,7 @@ onReflection
 - `executeTool` 只接收结构化对象 `({ id, name, input, context, signal })`。三种规范返回形态是 `string`、`{ content, metadata?, success? }` 和 `Error`；旧的 `{ data, success, ... }` 及其他 duck-typed 形状仍会宽容归一化，但已弃用，不应依赖。
 - `context` 可选，默认为 `undefined`；提供时接受 `strategy`、`budgetTokens`、`keepRounds`、`toolContext` 和 `task`。没有 `budgetTokens` 时，循环会从 `modelConfig`、`modelMetadata`、`model`、`provider` 或 `context` 中的 `contextWindowTokens` 和 `maxOutputTokens` 推导。策略启用时，压缩默认保留六轮。任务 brief 的优先级依次为：显式 `task`、`context.task`，然后是入口 transcript 中最后一条 user message。
 - 压缩支持 `summaryRole`、`recoveryHint`、`protectedMessage`、`stripHistoricalImages`、`onBeforeFold`、`onAfterFold` 和 `stubFor`。如果 protected set 本身无法放入预算，protected messages 可能降级；结果会记录 `compactionStats[].protectedDowngraded`。单个无法放入预算的 protected message 会产生 `invalid_budget`。
-- `stubFor(message)` hook 可以为折叠后的 `replayable: false` 工具结果保留有界、非秘密 stub。CLI 的 capture stub 限制为 200 个字符，最多包含三个安全的 `label=value` fact。折叠导航记录是形如 `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }` 的仅地址记录，最多 10 个 artifact、400 个字符。它们不是语义搜索，也不是 provenance 证明。
+- `stubFor(message)` hook 可以为折叠后的工具结果保留有界、非秘密 stub（**全部** tool_result，不再有可重放性标记子集——ADR-016）。CLI 的 stub 限制为 200 个字符，最多包含三个安全的 `label=value` fact。折叠导航记录是形如 `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }` 的仅地址记录，最多 10 个 artifact、400 个字符。它们不是语义搜索，也不是 provenance 证明。
 - `writeToolNames` 默认为 `["writeFile"]`；自定义写工具必须显式命名。`writeToolPathKeys` 默认为 `["path", "file_path"]`。judge 的 `filesWritten` 足迹不会根据工具名称推断任意写工具。
 - `TranscriptStore` 实现提供幂等的 `appendRound`，以及可选的 checkpoint 和 run-state 持久化。`store.recall()` 的对象形式支持 `fromRound`、`toRound`、`pattern`、`artifactRef`、`limit`、`cursor` 和 `maxBytes`，返回 `{ text, truncated, nextCursor?, status }`。这是有界的精确取回，不是语义搜索、完成证明或 provenance 核验。`cursor` 与其 run、范围、筛选条件、限制和 source version 绑定；不匹配时会拒绝，而不是静默重新开始。`limit: 0` 和 `maxBytes: 0` 会被拒绝。File store 会将过大的源记录报告为 `status: "truncated"`，并令 `error.code === "record_too_large"`。旧的位置参数 recall 仍可用，并返回字符串。
 - `runState` 是确定性的、有界的，并在压缩点以替换方式注入。store 可以实现 `markRunState`、`saveRunState`/`loadRunState`、`saveCheckpoint`/`appendCheckpoint` 和 `loadLatestCheckpoint`。持久化 run state 有 64 KiB 序列化硬上限，以及条目和字段上限；裁剪通过 `bounds.truncated` 可见。`todoStateProvider` 和 `semanticStateProvider` 由宿主注入；语义状态有界且带版本，过期版本标记为 `stale`。无效或损坏的状态在 resume 时报告为 `state_unavailable`，而不是静默当作全新状态。
@@ -318,7 +321,7 @@ erix mcp [--config <path>]
 
 重复的 `exec` 命令会正常执行并返回新输出：引擎不做幂等分类、不检测重跑、也不发重跑告知（ADR-016）。重跑值可能不同，所以副作用与重跑风险由宿主的权限/沙箱/幂等层承担——引擎的审计事实是归档输出本身，而不是"这条命令是否可重放"。
 
-内置的自描述 `notes` skill 提供 `note_take`、`note_read`、`note_list` 和 `note_forget`。它是一个面向 run、pull-only 的便利索引，用于事实、一次性值、决策和 artifact 引用；它不是逐轮日志，也不替代 provenance guard 使用的 capture manifest。内置 skill 从 `skills/notes/` 加载；用户和项目 skill 可以从 `~/.erix/skills/`、项目的 `.erix/skills/` 或 `--skills-dir <path>` 提供。`erix skills` 会列出发现的 skill。
+内置的自描述 `notes` skill 提供 `note_take`、`note_read`、`note_list` 和 `note_forget`。它是一个面向 run、pull-only 的便利索引，用于事实、一次性值、决策和 artifact 引用；它不是逐轮日志，也不是 provenance 证据源（guard 的证据是 transcript 的归档输出）。内置 skill 从 `skills/notes/` 加载；用户和项目 skill 可以从 `~/.erix/skills/`、项目的 `.erix/skills/` 或 `--skills-dir <path>` 提供。`erix skills` 会列出发现的 skill。
 
 MCP 使用标准 `.mcp.json` 配置，并支持 stdio 和 HTTP server。`mcp` proxy 提供 `list`、`search`、`call` 和 `status` action。`erix mcp` 会列出已配置的 server 及其连接状态。
 
