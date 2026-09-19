@@ -241,31 +241,57 @@ test("adds no mechanical section when the folded payload has nothing to extract"
   assert.doesNotMatch(text, /锚点索引|用户最新未解决输入|中止\/撤销/u);
 });
 
-test("anchors:false omits the anchor section but keeps the rest of the fidelity layer", async () => {
-  const result = await createFoldLlmStrategy({
-    summarizer: async () => "## 下一步\n已完成项禁止重做",
+test("anchors:false strips the stale anchor section from a previous default fold (review fix)", async () => {
+  const summarizer = async () => "## 下一步\n已完成项禁止重做";
+  const strategy = createFoldLlmStrategy({ summarizer });
+
+  // fold1 默认（anchors 缺省开启）：产生真锚点节。
+  const fold1 = await strategy.compact(anchorConversation(), { keepRounds: 2 });
+  const fold1Text = fold1.messages[0].content[0].text;
+  assert.match(fold1Text, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
+  assert.match(fold1Text, /^shas: 1ed3f35$/mu);
+  assert.match(fold1Text, /^paths: src\/compact\/fold-llm\.js:120$/mu);
+
+  // 模拟对话继续：旧摘要消息留在 head（未被折），且仍有轮次可折。
+  const continued = [
+    ...fold1.messages,
+    { role: "user", content: "second wave request" },
+    { role: "assistant", content: [{ type: "text", text: "second wave answer" }] },
+  ];
+
+  // fold2 anchors:false：旧锚点节必须从旧 content 清除。
+  const fold2 = await strategy.compact(continued, { keepRounds: 2, anchors: false });
+  const whole2 = JSON.stringify(fold2.messages);
+  // 无锚点节标题、无旧锚点值（「改做锚点索引」是用户原文逐字引用，合法保留）。
+  assert.doesNotMatch(whole2, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
+  assert.doesNotMatch(whole2, /1ed3f35|src\/compact\/fold-llm\.js:120|#32|git\.erix\.vip/u);
+  // 旧摘要的非锚点内容保留（只剥锚点节，不动其余）。
+  const oldBlock = fold2.messages[0].content[1].text;
+  assert.match(oldBlock, /## 下一步\n已完成项禁止重做/u);
+  assert.doesNotMatch(oldBlock, /## 锚点索引/u);
+  // 其余保真层（逐字引用）在新摘要里照常生成，不受影响。
+  const newBlock = fold2.messages[0].content[0].text;
+  assert.match(newBlock, /## 用户最新未解决输入/u);
+  assert.match(newBlock, /^> final request$/m);
+
+  // call-level 与工厂级 anchors:false 等价。
+  const factoryDisabled = await createFoldLlmStrategy({
+    summarizer,
     anchors: false,
-  }).compact(anchorConversation(), { keepRounds: 2 });
-  const text = result.messages[0].content[0].text;
+  }).compact(continued, { keepRounds: 2 });
+  assert.deepEqual(factoryDisabled.messages, fold2.messages);
 
-  assert.doesNotMatch(text, /## 锚点索引/u);
-  assert.doesNotMatch(text, /1ed3f35/u);
-  // 其余保真层（逐字引用 / 反向信号）不受影响。
-  assert.match(text, /## 用户最新未解决输入/u);
-  assert.match(text, /^> 取消旧方案，改做锚点索引$/m);
+  // fold3 仍 anchors:false：锚点节不复活。
+  const fold3 = await strategy.compact(fold2.messages, { keepRounds: 1, anchors: false });
+  const whole3 = JSON.stringify(fold3.messages);
+  assert.doesNotMatch(whole3, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
+  assert.doesNotMatch(whole3, /1ed3f35|src\/compact\/fold-llm\.js:120|#32|git\.erix\.vip/u);
 
-  // call-level anchors:false 与工厂级一致；默认（不传）则含锚点节。
-  const callDisabled = await createFoldLlmStrategy({
-    summarizer: async () => "## 下一步\n已完成项禁止重做",
-  }).compact(anchorConversation(), { keepRounds: 2, anchors: false });
-  assert.equal(
-    callDisabled.messages[0].content[0].text,
-    text,
-  );
-  const byDefault = await createFoldLlmStrategy({
-    summarizer: async () => "## 下一步\n已完成项禁止重做",
-  }).compact(anchorConversation(), { keepRounds: 2 });
-  assert.match(byDefault.messages[0].content[0].text, /## 锚点索引/u);
+  // anchorsEnabled 缺省路径行为不变：旧 content 原样保留（旧锚点节仍在）。
+  const foldDefault = await strategy.compact(continued, { keepRounds: 2 });
+  const wholeDefault = JSON.stringify(foldDefault.messages);
+  assert.match(wholeDefault, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
+  assert.match(wholeDefault, /1ed3f35/u);
 });
 
 test("keeps the anchor section intact when maxSummaryTokens is tiny (A2)", async () => {

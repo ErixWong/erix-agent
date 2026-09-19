@@ -5,6 +5,7 @@ import { extractAnchors } from "./anchors.js";
 import { buildFoldFidelitySection } from "./fold-fidelity.js";
 import {
   buildFoldNavigationRecord,
+  stripAnchorSection,
   summarizeFoldedPayload,
 } from "./fold-statistical.js";
 import {
@@ -79,7 +80,20 @@ function isRealUser(message) {
     || blocks.some((block) => block?.type !== "tool_result");
 }
 
-function prependSummary(head, summary, summaryRole = "user") {
+// anchors:false（评审修复）：旧 content 里的锚点节一并清除——否则 fold1（默认，产生
+// 锚点节）之后 fold2 传 anchors:false 时旧摘要留在 head，锚点节会被原样保留下来。
+// 复用 fold-statistical 的 stripAnchorSection，不复制实现；anchorsEnabled 缺省为 true，
+// 此时旧 content 原样保留，行为与之前完全一致（向后兼容）。
+function stripAnchorBlocks(content, anchorsEnabled) {
+  if (anchorsEnabled) return content;
+  return content.flatMap((block) => {
+    if (block?.type !== "text" || typeof block.text !== "string") return [block];
+    const stripped = stripAnchorSection(block.text);
+    return stripped.trim() === "" ? [] : [{ ...block, text: stripped }];
+  });
+}
+
+function prependSummary(head, summary, summaryRole = "user", anchorsEnabled = true) {
   if (summaryRole === "system") {
     const systemIndex = head.findLastIndex((message) => message?.role === "system");
     if (systemIndex < 0) {
@@ -92,7 +106,10 @@ function prependSummary(head, summary, summaryRole = "user") {
       : Array.isArray(system.content) ? system.content : [];
     updatedHead[systemIndex] = {
       ...system,
-      content: [{ type: "text", text: summary }, ...content],
+      content: [
+        { type: "text", text: summary },
+        ...stripAnchorBlocks(content, anchorsEnabled),
+      ],
     };
     return updatedHead;
   }
@@ -100,11 +117,14 @@ function prependSummary(head, summary, summaryRole = "user") {
   if (userIndex < 0) return head;
 
   const user = head[userIndex];
-  const originalContent = typeof user.content === "string"
-    ? [{ type: "text", text: user.content }]
-    : Array.isArray(user.content)
-      ? user.content
-      : [];
+  const originalContent = stripAnchorBlocks(
+    typeof user.content === "string"
+      ? [{ type: "text", text: user.content }]
+      : Array.isArray(user.content)
+        ? user.content
+        : [],
+    anchorsEnabled,
+  );
   const updatedHead = head.slice();
   updatedHead[userIndex] = {
     ...user,
@@ -330,7 +350,12 @@ export function createFoldLlmStrategy({
             foldedPayload,
             settings.anchors,
           );
-        compactedHead = prependSummary(head, compactedSummary, settings.summaryRole);
+        compactedHead = prependSummary(
+          head,
+          compactedSummary,
+          settings.summaryRole,
+          settings.anchors !== false,
+        );
       }
 
       const compactedMessages = [

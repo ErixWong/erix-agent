@@ -1,6 +1,11 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { estimateMessageTokens } from "../tokens.js";
-import { clampAnchorSection, extractAnchors, splitAnchorValues } from "./anchors.js";
+import {
+  ANCHOR_SECTION_HEADING,
+  clampAnchorSection,
+  extractAnchors,
+  splitAnchorValues,
+} from "./anchors.js";
 import {
   cloneFoldPayload,
   DEFAULT_RECOVERY_HINT,
@@ -198,6 +203,24 @@ function parseAnchorSection(value) {
     found = true;
   }
   return found ? byKind : undefined;
+}
+
+// 锚点节剥离（fold-llm prependSummary 复用，避免复制实现）：截掉锚点节标题行到节尾
+// （下一个 `## ` 标题或文本结束），并收敛残留空行。无锚点节时原样返回。
+export function stripAnchorSection(text) {
+  const lines = String(text ?? "").split("\n");
+  const headingIndex = lines.findIndex((line) => line.includes(ANCHOR_SECTION_HEADING));
+  if (headingIndex < 0) return text;
+  let end = lines.length;
+  for (let index = headingIndex + 1; index < lines.length; index += 1) {
+    if (lines[index].startsWith("## ")) {
+      end = index;
+      break;
+    }
+  }
+  const kept = lines.slice(0, headingIndex);
+  while (kept.length > 0 && kept[kept.length - 1].trim() === "") kept.pop();
+  return [...kept, ...lines.slice(end)].join("\n");
 }
 
 function parseFoldSummaryMatch(value, match, legacy) {
