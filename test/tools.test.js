@@ -23,12 +23,122 @@ async function withDirectory(callback) {
   }
 }
 
-test("createCliTools exposes all five tools", () => {
+test("createCliTools exposes all six tools", () => {
   const { tools } = createCliTools();
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
-    ["exec", "readFile", "rg", "tree", "writeFile"],
+    ["exec", "grep", "readFile", "rg", "tree", "writeFile"],
   );
+});
+
+test("grep finds matches grouped by file with line numbers", async () => {
+  await withDirectory(async (cwd) => {
+    await mkdir(join(cwd, "src"));
+    await writeFile(join(cwd, "src", "a.js"), "const needle = 1;\nconst other = 2;\n", "utf8");
+    await writeFile(join(cwd, "src", "b.js"), "let needle2 = needle;\n", "utf8");
+    const { executeTool } = createCliTools({ cwd });
+
+    const output = await executeTool("grep", { pattern: "needle", path: "src" });
+    assert.match(output, /src\/a\.js\n1: const needle = 1;/);
+    assert.match(output, /src\/b\.js\n1: let needle2 = needle;/);
+    // 按文件分组：a.js 的命中块在 b.js 之前，块间空行分隔
+    assert.ok(output.indexOf("src/a.js") < output.indexOf("src/b.js"));
+  });
+});
+
+test("grep supports literal mode and reports invalid regex", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "x.txt"), "a.b (literal)\n", "utf8");
+    const { executeTool } = createCliTools({ cwd });
+
+    // 字面量：点号不当正则元字符
+    assert.match(
+      await executeTool("grep", { pattern: "a.b (literal)", path: cwd, is_regex: false }),
+      /x\.txt\n1: a\.b \(literal\)/,
+    );
+    // 正则模式默认开启
+    assert.match(
+      await executeTool("grep", { pattern: "a\.b", path: cwd }),
+      /x\.txt\n1: a\.b \(literal\)/,
+    );
+    // 无效正则返回错误提示而不是抛异常
+    assert.match(
+      await executeTool("grep", { pattern: "([", path: cwd }),
+      /无效正则/,
+    );
+  });
+});
+
+test("grep truncates at max_results with a truncation note", async () => {
+  await withDirectory(async (cwd) => {
+    const lines = Array.from({ length: 20 }, (_, index) => `hit line ${index}`);
+    await writeFile(join(cwd, "many.txt"), `${lines.join("\n")}\n`, "utf8");
+    const { executeTool } = createCliTools({ cwd });
+
+    const output = await executeTool("grep", {
+      pattern: "hit line",
+      path: cwd,
+      max_results: 5,
+    });
+    // 5 条命中（文件头 + 5 行），另有截断说明段
+    const hitLines = output.split("\n").filter((line) => /^\d+: /.test(line));
+    assert.equal(hitLines.length, 5);
+    assert.match(output, /max_results=5 截断/);
+    // 硬上限 200：传 999 也只按 200 截断
+    const more = await mkdtemp(join(tmpdir(), "erix-grep-cap-"));
+    try {
+      const many = Array.from({ length: 250 }, (_, index) => `hit line ${index}`);
+      await writeFile(join(more, "many.txt"), `${many.join("\n")}\n`, "utf8");
+      const capped = await executeTool("grep", {
+        pattern: "hit line",
+        path: more,
+        max_results: 999,
+      });
+      const cappedHits = capped.split("\n").filter((line) => /^\d+: /.test(line));
+      assert.equal(cappedHits.length, 200);
+      assert.match(capped, /max_results=200 截断/);
+    } finally {
+      await rm(more, { recursive: true, force: true });
+    }
+  });
+});
+
+test("grep skips node_modules, .git, hidden directories, and oversized files", async () => {
+  await withDirectory(async (cwd) => {
+    await mkdir(join(cwd, "node_modules", "pkg"), { recursive: true });
+    await mkdir(join(cwd, ".git"), { recursive: true });
+    await mkdir(join(cwd, ".hidden"), { recursive: true });
+    await writeFile(join(cwd, "node_modules", "pkg", "index.js"), "needle nm\n", "utf8");
+    await writeFile(join(cwd, ".git", "config.txt"), "needle git\n", "utf8");
+    await writeFile(join(cwd, ".hidden", "secret.txt"), "needle hidden\n", "utf8");
+    await writeFile(join(cwd, "big.log"), `needle ${"x".repeat(2 * 1024 * 1024)}\n`, "utf8");
+    await writeFile(join(cwd, "keep.txt"), "needle keep\n", "utf8");
+    const { executeTool } = createCliTools({ cwd });
+
+    const output = await executeTool("grep", { pattern: "needle", path: cwd });
+    assert.match(output, /keep\.txt\n1: needle keep/);
+    assert.doesNotMatch(output, /needle nm/);
+    assert.doesNotMatch(output, /needle git/);
+    assert.doesNotMatch(output, /needle hidden/);
+    assert.doesNotMatch(output, /big\.log/);
+  });
+});
+
+test("grep glob filters file names and truncates long lines", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "a.js"), "needle js\n", "utf8");
+    await writeFile(join(cwd, "b.txt"), "needle txt\n", "utf8");
+    await writeFile(join(cwd, "long.js"), `needle ${"y".repeat(500)}\n`, "utf8");
+    const { executeTool } = createCliTools({ cwd });
+
+    const byGlob = await executeTool("grep", { pattern: "needle", path: cwd, glob: "*.js" });
+    assert.match(byGlob, /a\.js/);
+    assert.doesNotMatch(byGlob, /b\.txt/);
+
+    const longLine = await executeTool("grep", { pattern: "needle", path: cwd, glob: "long.js" });
+    const hitLine = longLine.split("\n").find((line) => line.startsWith("1: "));
+    assert.ok(hitLine.length <= 4 + 200 + 1, `命中行应截断到 200 字符：${hitLine.length}`);
+  });
 });
 
 test("file tools operate on paths outside the working directory", async () => {

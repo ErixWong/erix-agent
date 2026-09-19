@@ -227,7 +227,10 @@ function formatErrors(recentErrors) {
 
 // 完整对话的 token 预算：round judge 给全量，intercept 只取最新的一段（成本/延迟更省）。
 const JUDGE_CONVERSATION_TOKENS = 100_000;
-export const INTERCEPT_CONVERSATION_TOKENS = 40_000;
+// intercept 审计只取最近进展。2026-09-20 基准实测：relay prefill ~700-900 tok/s，
+// 40k prefill 需 45-60s 必超 judgeInterceptTimeoutMs 默认 30s（实测 6/7 次审计超时），
+// 每次阻塞主循环 30s；6k prefill ~8s 可稳进 30s 超时内。
+export const INTERCEPT_CONVERSATION_TOKENS = 6_000;
 
 function jsonish(value) {
   if (value === undefined || value === null) return "（无）";

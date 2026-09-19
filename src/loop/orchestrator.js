@@ -1583,9 +1583,12 @@ export async function runToolLoop(options) {
           ),
         }],
       }],
-      maxTokens: 8000,
+      // 2026-09-20 基准实测：judge 只输出一段 JSON（~100 token），8000 上限纯浪费
+      // （输出越长漂移越大：实测 glm-5.3-flash-awq 变长 4 倍且漂成英文）。
+      maxTokens: 512,
       temperature: 0,
-      reasoning_effort: "none",
+      // 不写死 reasoning_effort：实测对 glm-5.3-flash-awq 是负优化
+      // （该模型 reasoning_tokens 恒 0，参数无正面作用反而致输出漂移），交给 provider 默认/配置层。
     };
     let timeoutController;
     let timeoutId;
@@ -1639,9 +1642,12 @@ export async function runToolLoop(options) {
         ...(Number.isFinite(outputTokens) ? { output_tokens: outputTokens } : {}),
       }
       : undefined;
+    // 原始输出未截断带出（可审计性）：intercept 落 judge.log 时截断由调用方负责。
+    const rawText = textFromBlocks(blocksFor(response?.content));
     return {
-      decision: parseJudgeDecision(textFromBlocks(blocksFor(response?.content))),
+      decision: parseJudgeDecision(rawText),
       usage: judgeUsage,
+      raw: rawText,
     };
   };
 
@@ -1987,7 +1993,12 @@ export async function runToolLoop(options) {
     emitEvent({ type: "round_start", round });
     const compaction = await compactBeforeRound();
     const roundStart = messages.length;
-    let providerResult = await callProvider({ round });
+    // 预算兜底（2026-09-20 基准实测：剩余轮数耗尽时模型无视文字提示继续调工具，
+    // 撞 max_rounds 被 truncate，靠 wrapup 全量重发历史 + 额外 4 分钟兜底）：
+    // 本轮是最后一个预算轮时不带 tools，强制输出文本终稿。此时消息历史里所有
+    // tool_use 均已配平 tool_result（结果总在下一轮请求前追加），无 tools 请求安全。
+    const isFinalBudgetRound = budgetRounds >= governorState.effectiveMaxRounds;
+    let providerResult = await callProvider({ round, omitTools: isFinalBudgetRound });
     let response = providerResult.response;
     let content = blocksFor(response?.content);
 
@@ -2013,7 +2024,11 @@ export async function runToolLoop(options) {
         await compactBeforeRound();
       }
       tokenContinuationCount += 1;
-      providerResult = await callProvider({ allowPendingToolUse: true, round });
+      providerResult = await callProvider({
+        allowPendingToolUse: true,
+        round,
+        omitTools: isFinalBudgetRound,
+      });
       response = providerResult.response;
       const continuation = blocksFor(response?.content);
       const assistant = messages.at(-1);

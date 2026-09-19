@@ -390,3 +390,66 @@ test("ERIX_STALL_MODE env overrides stall detection mode", async () => {
     }
   }
 });
+
+test("final budget round omits tools and finishes with text (no max_rounds_cap truncation)", async () => {
+  // 2026-09-20 预算兜底：最后一轮不带 tools，强制模型输出文本终稿
+  const provider = createFakeProvider([
+    { content: [{ type: "tool_use", id: "call-1", name: "step", input: { n: 1 } }], stopReason: "tool_use" },
+    { content: [{ type: "text", text: "最终结论：任务完成" }], stopReason: "end_turn" },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "ok",
+    tools: [{ name: "step", description: "d", inputSchema: { type: "object", properties: {} } }],
+    maxRounds: 2,
+    completion: false,
+    reflection: false,
+  });
+
+  assert.equal(provider.requests.length, 2);
+  // 第 1 轮（非最后）带 tools；第 2 轮（最后一轮）不带 tools
+  assert.equal(Array.isArray(provider.requests[0].tools), true);
+  assert.equal("tools" in provider.requests[1], false);
+  // 以文本终稿收尾，不是 max_rounds_cap 截断路径
+  assert.equal(result.finalText, "最终结论：任务完成");
+  assert.equal(result.truncated, false);
+  assert.notEqual(result.termination.reason, "max_rounds_cap");
+});
+
+test("final budget round skips intercept audit (no tools to judge)", async () => {
+  // maxRounds=1 → 唯一一轮即最后一轮：即使审计间隔已到也不调 intercept judge
+  const provider = createFakeProvider([
+    { content: [{ type: "tool_use", id: "t1", name: "step", input: { n: 1 } }], stopReason: "tool_use" },
+    // 循环耗尽预算后 forceFinalIfNeeded 会向主 provider 再要一次强制收尾
+    { content: [{ type: "text", text: "强制收尾结论" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    { content: [{ type: "text", text: '{"done":false,"confidence":0.9}' }] },
+  ]);
+  const executed = [];
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async ({ input }) => {
+      executed.push(input.n);
+      return "ok";
+    },
+    maxRounds: 1,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      maxExtensions: 0, // 关掉 near-limit legacy 反射，隔离出 intercept 路径
+      judge: { provider: judge },
+    },
+  });
+
+  // intercept 审计被跳过：judge 零调用，工具照常执行
+  assert.equal(judge.requests.length, 0);
+  assert.deepEqual(executed, [1]);
+  assert.equal(result.rounds, 1);
+});

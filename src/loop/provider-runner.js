@@ -3,7 +3,13 @@ import { normalizeMessages } from "./messages.js";
 import { throwIfAborted } from "./abort.js";
 import { validateMessages } from "../messages/rounds.js";
 
-export async function callProvider(ctx, { allowPendingToolUse = false, round } = {}) {
+export async function callProvider(ctx, {
+  allowPendingToolUse = false,
+  round,
+  // 预算兜底（2026-09-20 基准：撞 64 轮截断 + wrapup 全量重发历史多花 4 分钟）：
+  // 最后一轮省略 tools，强制模型输出文本终稿。OpenAI/Anthropic 两协议均允许无 tools 请求。
+  omitTools = false,
+} = {}) {
   let retryIndex = 0;
   let recovered = false;
   while (true) {
@@ -58,9 +64,9 @@ export async function callProvider(ctx, { allowPendingToolUse = false, round } =
       const request = {
         system: ctx.mainSystem,
         messages: ctx.messages,
-        tools: ctx.tools,
         signal: ctx.signal,
       };
+      if (omitTools !== true) request.tools = ctx.tools;
       if (ctx.maxTokens !== undefined) request.maxTokens = ctx.maxTokens;
       if (ctx.temperature !== undefined) request.temperature = ctx.temperature;
       if (ctx.topP !== undefined) request.topP = ctx.topP;

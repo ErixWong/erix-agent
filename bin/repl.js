@@ -33,6 +33,7 @@ import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
   createCliTools,
+  filterToolsByAllowlist,
   wrapExecuteTool,
 } from "./tools.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
@@ -46,7 +47,7 @@ const NON_TTY_MESSAGE =
   'repl 需要交互式终端，单次对话请用：erix chat "<prompt>"';
 
 const REPL_HELP_TEXT = `REPL 用法：
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]
   --session <id>        会话 ID（默认按工作目录自动派生）
   --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
                         run 作用域笔记按 session 隔离；相同 --session 会共享笔记，
@@ -55,6 +56,7 @@ const REPL_HELP_TEXT = `REPL 用法：
   --idle-timeout <秒>   无进展自动中止（默认：0=不启用）
   --final-guard         开启终稿 provenance 核验（默认关闭）
   --no-final-guard      兼容别名（默认已关闭，no-op）
+  --tools <名1,名2>     工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
 
 命令：
   /help                 显示此帮助
@@ -174,6 +176,7 @@ export function parseReplArgs(argv, cwd = process.cwd()) {
       || argument === "--compact-budget"
       || argument === "--max-rounds"
       || argument === "--idle-timeout"
+      || argument === "--tools"
     ) {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
@@ -198,6 +201,9 @@ export function parseReplArgs(argv, cwd = process.cwd()) {
         options.compactBudget = parseIntegerOption(argument, rawValue, 0);
       } else if (argument === "--max-rounds") {
         options.maxRounds = parseIntegerOption(argument, rawValue, 1);
+      } else if (argument === "--tools") {
+        if (rawValue.trim() === "") usageError("--tools 不能为空");
+        options.tools = rawValue;
       } else {
         options.idleTimeout = parseIntegerOption(argument, rawValue, 0);
       }
@@ -393,6 +399,20 @@ export async function runRepl(argv, io = {}) {
     __erix: { runId: options.session, notesDir, notesStore },
   });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: options.configPath, cwd });
+  // --tools 白名单：启动时校验一次——未知名字 stderr 警告并忽略，过滤后为空 → usageError。
+  // 之后每轮输入只按名字集合过滤可见工具，不重复警告。
+  let toolsAllowlistNames;
+  if (options.tools !== undefined) {
+    const allTools = [...cliTools.tools, ...skillTools.tools];
+    if (mcpProxy?.enabled) allTools.push(mcpProxy.schema);
+    try {
+      toolsAllowlistNames = new Set(filterToolsByAllowlist(allTools, options.tools, {
+        onUnknown: (message) => writeLine(errorOutput, message),
+      }).map((tool) => tool.name));
+    } catch (error) {
+      usageError(error?.message ?? String(error));
+    }
+  }
   const executeTool = wrapExecuteTool(
     buildExecuteTool(cliTools, skillTools, mcpProxy),
     {
@@ -599,6 +619,9 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       if (mcpProxy?.enabled) {
         tools.push(mcpProxy.schema);
       }
+      const visibleTools = toolsAllowlistNames === undefined
+        ? tools
+        : tools.filter((tool) => toolsAllowlistNames.has(tool.name));
       const idle = createIdleTimeout(options.idleTimeout);
       const runController = new AbortController();
       activeRunController = runController;
@@ -634,7 +657,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
               finalGuardMaxRetries: 2,
             }
           : {}),
-        tools,
+        tools: visibleTools,
         executeTool: executeToolForLoop,
         store,
         runId: options.session,
