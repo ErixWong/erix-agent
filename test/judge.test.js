@@ -1711,3 +1711,130 @@ test("transparent interception resets its counter after an audit", async () => {
     else process.env.ERIX_WRAPUP_NORMALIZE = prev;
   }
 });
+
+test("round judge decision event carries the call usage for transcript accounting (issue #33 B)", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([{
+    ...judgeResponse({ done: true, confidence: 0.9, reason: "已完成", evidence: "验证通过" }),
+    usage: { input_tokens: 1234, output_tokens: 56 },
+  }]);
+  const events = [];
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(events, [{
+    round: 1,
+    kind: "round",
+    decision: {
+      done: true,
+      confidence: 0.9,
+      reason: "已完成",
+      evidence: "验证通过",
+      direction: undefined,
+      directionReason: "",
+    },
+    action: "judge_done",
+    usage: { input_tokens: 1234, output_tokens: 56 },
+  }]);
+});
+
+test("intercept judge event carries usage and omits it on timeout (issue #33 B)", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "work", { step: 2 }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([{
+    ...judgeResponse({
+      done: false,
+      confidence: 0.6,
+      reason: "任务尚未完成",
+      evidence: "还剩两项验证",
+      direction: "on_track",
+      directionReason: "正在按计划推进",
+    }),
+    usage: { input_tokens: 777, output_tokens: 12 },
+  }]);
+  const events = [];
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "ok",
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(events, [{
+    kind: "intercept",
+    tool: { id: "second", name: "work", input: { step: 2 } },
+    decision: {
+      done: false,
+      confidence: 0.6,
+      reason: "任务尚未完成",
+      evidence: "还剩两项验证",
+      direction: "on_track",
+      directionReason: "正在按计划推进",
+    },
+    action: "executed",
+    passThrough: "on_track",
+    usage: { input_tokens: 777, output_tokens: 12 },
+  }]);
+
+  // 超时路径：usage 缺省、事件其余字段不变、不炸。
+  const slowJudge = {
+    async chat() {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return {
+        ...judgeResponse({ done: false, confidence: 1, reason: "late", evidence: "late" }),
+        usage: { input_tokens: 1, output_tokens: 2 },
+      };
+    },
+  };
+  const timeoutEvents = [];
+  await runToolLoop({
+    provider: createFakeProvider([
+      toolResponse("first", "work", { step: 1 }),
+      toolResponse("second", "work", { step: 2 }),
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "task",
+    executeTool: async () => "ok",
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judgeInterceptTimeoutMs: 5,
+      judge: { provider: slowJudge },
+    },
+    onJudge: (info) => timeoutEvents.push(info),
+  });
+
+  assert.deepEqual(timeoutEvents, [{
+    kind: "intercept",
+    tool: { id: "second", name: "work", input: { step: 2 } },
+    decision: null,
+    action: "degraded",
+    error: "timeout",
+  }]);
+  assert.equal("usage" in timeoutEvents[0], false);
+});

@@ -350,13 +350,16 @@ export function createCheckpointExecutor(ctx) {
       throw failure;
     }
     let decision;
+    let judgeUsage;
     let interceptError;
     try {
       const callRoundJudge = ctx.callRoundJudge;
-      decision = await callRoundJudge(round, undefined, {
+      const judged = await callRoundJudge(round, undefined, {
         timeoutMs: ctx.judgeInterceptTimeoutMs,
         conversationBudgetTokens: ctx.judgeInterceptConversationTokens,
       });
+      decision = judged?.decision;
+      judgeUsage = judged?.usage;
     } catch (error) {
       if (ctx.signal?.aborted) throwIfAborted(ctx.signal);
       decision = undefined;
@@ -404,6 +407,8 @@ export function createCheckpointExecutor(ctx) {
         },
         action: onTrackPassThrough || decision.done !== false ? "executed" : "blocked",
         ...(onTrackPassThrough ? { passThrough: "on_track" } : {}),
+        // judge 当次调用用量（issue #33 B）：judge.log 对账；超时/出错时缺省。
+        ...(judgeUsage ? { usage: judgeUsage } : {}),
       });
     }
 
