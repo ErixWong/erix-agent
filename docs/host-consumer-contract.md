@@ -405,9 +405,12 @@ name/path/id/status fields at 120 characters, and semantic source text at
 renders on its own line, at most 16 lines, and a line-count cut is reported as
 `... (semantic lines truncated: N more)`). When entries or serialized state are
 trimmed, `bounds.truncated` and the applicable omission counts are explicit;
-the rendered block uses `[run state truncated]` when its character limit is
-reached. Character-level trimming of the semantic text itself is reported by
-the persisted `semantic.truncated` flag rather than rendered inline.
+the rendered block uses `[run state truncated]` when its 1600-character limit
+is reached. Character-level trimming of the semantic text itself is reported by
+the persisted `semantic.truncated` flag rather than rendered inline. The closing
+`[/run state]` marker is always appended after rendering, so it survives
+truncation and replaces the previous block in place instead of accumulating a
+second copy.
 
 An unknown schema or incomplete persisted state is not silently treated as a
 valid default. On resume it is exposed as

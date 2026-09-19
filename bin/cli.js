@@ -67,6 +67,8 @@ const HELP_TEXT = `用法：
   ERIX_NO_TOOL_ROUNDS 模型连续无工具调用几轮后强制完成（默认：3，最小：1）
   ERIX_MAX_ROUNDS     工具循环最大轮数（默认：64，最小：1）
   ERIX_REFLECTION     反思开关（on/off；ERIX_NO_REFLECTION=1 强制关闭）
+  ERIX_JUDGE_INTERVAL  intercept judge 审计间隔（每 N 次工具执行审计一次，默认 10）
+  ERIX_STALL_MODE      停滞检测模式（appear/consecutive，默认 consecutive；appear=窗口内出现过同一调用即判停滞）
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
   ERIX_NO_NOTES=1       仅移除 notes 技能，保留其他 skill
   ERIX_JUDGE_LOG      judge 决策 JSONL 路径（默认已写入 run 归档目录，无需设置）

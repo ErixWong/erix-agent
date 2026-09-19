@@ -313,7 +313,9 @@ test("resume rebuilds L1 and L0 chains for the evaluator", async () => {
     reflection: {
       enabled: true,
       roundJudge: false, judgeIntercept: false,
-      triggerRound: 3,
+      // triggerRound 按本轮预算轮数判（budgetRounds，issue #32 #8）：resume 的预算从 0 起，
+      // triggerRound=1 即续接会话第一轮就触发评估（本节要验的是评估提示里的 L1/L0 链）
+      triggerRound: 1,
       maxExtensions: 1,
       maxRoundsCap: 4,
     },

@@ -209,10 +209,62 @@ test("wrapped commands and legal second UUID generation are never blocked", asyn
   });
 });
 
-test("truncateResult caps oversized output and reports its original length", () => {
-  const result = truncateResult("x".repeat(4097));
-  assert.equal(result.slice(0, 4096), "x".repeat(4096));
-  assert.equal(result, `${"x".repeat(4096)}\n[已截断，共 4097 字符]`);
+test("truncateResult keeps head and tail for oversized output (issue #32 #2)", () => {
+  const oversized = `HEAD-MARKER-${"x".repeat(4097)}-TAIL-ERROR-MARKER`;
+  const result = truncateResult(oversized);
+  const marker = result.match(/\n\[中间省略 (\d+) 字符，共 (\d+) 字符\]\n/u);
+  assert.ok(marker, `expected a head+tail marker, got ${result.slice(0, 120)}`);
+  const [head, tail] = result.split(marker[0]);
+  // 头部：开头命令上下文可见（head-only 截断的旧行为也满足）
+  assert.equal(head, oversized.slice(0, head.length));
+  assert.match(head, /^HEAD-MARKER-/u);
+  // 尾部：结局/报错可见——这正是 head-only 截断会整段丢掉的部分
+  assert.match(tail, /-TAIL-ERROR-MARKER$/u);
+  assert.equal(tail, oversized.slice(oversized.length - tail.length));
+  // 省略字符数标注：head + tail + omitted == 原文长度
+  assert.equal(
+    Number(marker[1]) + head.length + tail.length,
+    oversized.length,
+  );
+  assert.equal(Number(marker[2]), oversized.length);
+  assert.ok(head.length + tail.length <= 4096, "head+tail 不超过原上限");
+  assert.ok(tail.length > 0, "尾部必须保留（报错/exit 行）");
+});
+
+test("truncateResult leaves short output and closed archive markers untouched", () => {
+  assert.equal(truncateResult("abc"), "abc");
+  assert.equal(truncateResult("x".repeat(4096)), "x".repeat(4096));
+  const closed = `${"y".repeat(5000)}\n[完整输出已归档：/tmp/x.txt]`;
+  assert.equal(truncateResult(closed), closed);
+});
+
+test("truncateResult never splits a surrogate pair (CJK/emoji safe)", () => {
+  const emoji = "🙂".repeat(4000);
+  const result = truncateResult(emoji);
+  assert.doesNotMatch(
+    result,
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u,
+    "head/tail 边界不得切碎代理对",
+  );
+  assert.match(result, /中间省略 3904 字符/u);
+});
+
+test("wrapExecuteTool exec log line keeps the trailing error (head+tail)", async () => {
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (line) => lines.push(line);
+  let result;
+  try {
+    const executeTool = wrapExecuteTool(async () => `head-line\n${"f".repeat(6000)}\nexit 1: boom at the end`);
+    result = await executeTool("exec", { command: "make" });
+  } finally {
+    console.log = originalLog;
+  }
+  assert.match(result, /exit 1: boom at the end$/u, "返回值不截断");
+  const logLine = lines[1];
+  assert.match(logLine, /^← exec: head-line\n/u);
+  assert.match(logLine, /中间省略 \d+ 字符，共 \d+ 字符/u);
+  assert.match(logLine, /exit 1: boom at the end$/u, "日志尾部保留报错");
 });
 
 test("wrapExecuteTool logs calls and truncates result summaries", async () => {

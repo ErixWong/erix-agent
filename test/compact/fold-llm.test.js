@@ -75,12 +75,15 @@ test("uses section priorities when enforcing the summary budget", async () => {
     maxSummaryTokens: 1500,
   }).compact(conversation(), { keepRounds: 1 });
   const foldedSummary = result.messages[0].content[0].text;
+  const [llmPart] = foldedSummary.split("## 用户最新未解决输入");
 
   assert.match(foldedSummary, /## 已验证项/);
   assert.match(foldedSummary, /## 下一步/);
   assert.match(foldedSummary, /已完成项禁止重做/);
   assert.match(foldedSummary, /\[已修剪\]/);
-  assert.ok(estimateTokens(foldedSummary) <= 1500);
+  // LLM 摘要受 maxSummaryTokens 约束；机械保真层在其后追加（见 docs/design A2）。
+  assert.ok(estimateTokens(llmPart) <= 1500);
+  assert.match(foldedSummary, /^> continue again$/m);
 });
 
 test("token truncates an unsectioned summary and marks the truncation", async () => {
@@ -90,9 +93,13 @@ test("token truncates an unsectioned summary and marks the truncation", async ()
     summarizer: async () => summary,
     maxSummaryTokens,
   }).compact(conversation(), { keepRounds: 1 });
+  const text = result.messages[0].content[0].text;
+  const [llmPart] = text.split("## 用户最新未解决输入");
 
-  assert.match(result.messages[0].content[0].text, /截断|修剪/);
-  assert.ok(estimateTokens(result.messages[0].content[0].text) <= maxSummaryTokens);
+  assert.match(llmPart, /截断|修剪/);
+  assert.ok(estimateTokens(llmPart) <= maxSummaryTokens);
+  // 机械保真层在尺寸截断之后才追加，所以摘要预算削不掉它（A2 的关键行为）。
+  assert.match(text, /^> continue again$/m);
 });
 
 test("publishes recovery guidance requirements without recall advertising", () => {
@@ -134,4 +141,102 @@ test("does not call the summarizer when every round is retained", async () => {
   assert.equal(result.compacted, false);
   assert.deepEqual(result.foldedPayload, []);
   assert.deepEqual(result.messages, messages);
+});
+
+function anchorConversation() {
+  return [
+    { role: "user", content: "initial request" },
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "t1", name: "exec", input: { command: "git log -1" } }],
+    },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "t1",
+        content: "1ed3f35 fix src/compact/fold-llm.js:120 (#32) "
+          + "https://git.erix.vip/eric/erix-llm-kit/commit/1ed3f35",
+      }],
+    },
+    { role: "assistant", content: [{ type: "text", text: "folded phase" }] },
+    { role: "user", content: "取消旧方案，改做锚点索引" },
+    { role: "assistant", content: [{ type: "text", text: "ok" }] },
+    { role: "user", content: "final request" },
+    { role: "assistant", content: [{ type: "text", text: "final answer" }] },
+  ];
+}
+
+test("appends the mechanical fidelity layer after the LLM summary" + " (anchor index / verbatim user input / reverse signal)", async () => {
+  const messages = anchorConversation();
+  const paraphrased = [
+    "## 阶段",
+    "早期工作已完成（提交了某个 commit）。",
+    "## 下一步",
+    "已完成项禁止重做；继续收尾。",
+  ].join("\n");
+  const result = await createFoldLlmStrategy({
+    summarizer: async () => paraphrased,
+  }).compact(messages, { keepRounds: 2 });
+  const text = result.messages[0].content[0].text;
+
+  // LLM 复述必然丢失精确值（SHA → "某个 commit"），机械保真层把原文值兜回来。
+  assert.match(text, /提交了某个 commit/);
+  assert.match(text, /## 锚点索引（机械抽取，未经 LLM 改写）/);
+  assert.match(text, /^shas: 1ed3f35$/m);
+  assert.match(text, /^paths: src\/compact\/fold-llm\.js:120$/m);
+  assert.match(text, /^issues: #32$/m);
+  assert.match(text, /^urls: https:\/\/git\.erix\.vip\/eric\/erix-llm-kit\/commit\/1ed3f35$/m);
+  // 逐字引用被折轮次里最后一条真实 user 消息，并标注反向信号。
+  assert.match(text, /## 用户最新未解决输入（逐字引用，未经 LLM 改写）/);
+  assert.match(text, /⚠ 用户曾发出中止\/撤销信号（命中：取消）/);
+  assert.match(text, /^> 取消旧方案，改做锚点索引$/m);
+  // 保真层整体追加在 LLM 摘要之后，锚点节位于最末。
+  assert.ok(text.indexOf(paraphrased) < text.indexOf("## 用户最新未解决输入"));
+  assert.ok(text.lastIndexOf("## 锚点索引") > text.indexOf("## 用户最新未解决输入"));
+  assert.ok(text.trimEnd().endsWith("https://git.erix.vip/eric/erix-llm-kit/commit/1ed3f35"));
+  // 引用的是"被折轮次里"最后一条真实 user 消息；仍在上下文里的最新 user 输入不重复注入。
+  assert.doesNotMatch(text, /^> final request$/m);
+  assert.equal(result.foldedRounds, 4);
+  assert.deepEqual(result.messages.at(-1), messages.at(-1));
+});
+
+test("keeps the mechanical fidelity layer when the summary budget is tiny", async () => {
+  const result = await createFoldLlmStrategy({
+    summarizer: async () => "unsectioned summary ".repeat(200),
+    maxSummaryTokens: 40,
+  }).compact(anchorConversation(), { keepRounds: 2 });
+  const text = result.messages[0].content[0].text;
+  const [llmPart] = text.split("## 用户最新未解决输入");
+
+  assert.ok(estimateTokens(llmPart) <= 40);
+  assert.match(llmPart, /截断|修剪/);
+  assert.match(text, /^shas: 1ed3f35$/m);
+  assert.match(text, /^> 取消旧方案，改做锚点索引$/m);
+});
+
+test("adds no mechanical section when the folded payload has nothing to extract", async () => {
+  const messages = [
+    { role: "user", content: "initial request" },
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "t1", name: "exec", input: { command: "echo hi" } }],
+    },
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "t1", content: "plain output" }],
+    },
+    { role: "assistant", content: [{ type: "text", text: "no precise identifiers" }] },
+    { role: "assistant", content: [{ type: "text", text: "recent" }] },
+  ];
+  const result = await createFoldLlmStrategy({
+    summarizer: async () => "## 下一步\n已完成项禁止重做",
+  }).compact(messages, { keepRounds: 1 });
+  const text = result.messages[0].content[0].text;
+
+  assert.equal(
+    text,
+    "## 下一步\n已完成项禁止重做\n## 恢复提示\n需要原文请重读文件或查看持久笔记；关键值应当已落盘",
+  );
+  assert.doesNotMatch(text, /锚点索引|用户最新未解决输入|中止\/撤销/u);
 });

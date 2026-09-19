@@ -2,6 +2,35 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [0.7.0] - 2026-09-19
+
+来源：2026-09-18 真实项目运行时评估（`docs/eval/2026-09-18-erix-060-real-project-eval.md`，touwaka 快照 × deepseek-flash，10 run）的优化清单批次 1/2；方案经 GitHub Copilot 架构审计修订（批末重写→增量准入、砍同轮去重、截断方向下沉宿主）。
+
+### Added
+
+- **单轮聚合输出预算**（`src/loop/aggregate-budget.js`）：工具结果到达即判定内联或归档+stub（增量准入，不重排、不改 tool_use_id），整轮可见输出超 `clamp(0.30 × 可用预算, 16000, 200000)` 估算 token 时逐条归档；intercept 控制性结果不计入；失败结果 stub 保留 `is_error` 与关键错误片段；归档失败 fail-closed（`unrecoverable`，不承诺 recall 可取回）。无窗口配置时聚合层关闭，行为同 0.6.0。
+- **折叠摘要锚点索引**（`src/compact/anchors.js`）：折叠时从被折原文正则机械抽取 commit SHA / PR·issue 号 / 路径:行号 / URL，作为不经 LLM 的保真层追加到摘要尾（频次排序、封顶 20 条 / 1200 字符），同时是 recall 的搜索关键词种子。
+- 折叠摘要补「用户最新未解决输入」逐字引用与反向信号识别（stop/undo/取消 → 覆盖旧待办的警告行）。
+- CLI exec 截断改 **head+tail**（保留命令上下文与结尾报错；readFile 维持 head+offset）。
+- 环境变量 `ERIX_JUDGE_INTERVAL`（intercept 审计间隔，默认 10）与 `ERIX_STALL_MODE`（appear/consecutive，默认 consecutive）文档化。
+- 新增运行时成本/召回回归工具：erix-bench `harness/cost-report.mjs`（累计 input / 末轮 input 比）与 `harness/recall-probe/`（折叠后召回探针，5/5 fixture 自测）。
+
+### Changed
+
+- **intercept judge 审计间隔默认 5 → 10**，且 `direction:"on_track"` + `done:false` 时不再拦截（放行，judge 事件带 `passThrough:"on_track"`）。运行时评估实测旧默认在单任务内产生 39 次误拦截（最高占 18.6% 工具调用）。
+- **stall 检测默认 `mode: "consecutive"`**（原 `appear`：窗口内出现过同签名即停滞，合法重读文件被误判掐断任务）。显式传 `stallDetection` 的宿主语义不变，`ERIX_STALL_MODE=appear` 可显式回退。
+- **输出卫生单结果阈值按窗口缩放**：`clamp(15% × contextWindowTokens, 8192, 100000)`；无窗口配置保持 4096；显式 `outputHygiene.limit` 优先级最高。
+- resume 语义：轮号（身份，跨 resume 连续）与轮预算（`budgetRounds`，每次 run 从 0 起计）拆分——**resume 后续聊不再继承耗尽的轮预算**；run-state `budget` 双报 `rounds`（会话累计）/ `runRounds` / `remainingRounds`。
+
+### Fixed
+
+- 续接轮 transcript 完整性：resume 后新轮次的记录不再因 dedupKey 轮号撞车而留近空行。
+
+### 文档
+
+- `docs/eval/2026-09-18-erix-060-real-project-eval.md`：0.6.0 真实项目综合评估报告。
+- `docs/harness-comparison/`：五家 harness 上下文/记忆机制横向对比补实施方案。
+
 ## [0.6.0] - 2026-09-18
 
 破坏窗口收口（ADR-015 / ADR-016 / #109 / #110 / #111）。以下条目此前记在 Unreleased，现随 0.6.0 一并发布。

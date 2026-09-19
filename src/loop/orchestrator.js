@@ -277,8 +277,11 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * When `reflection` is omitted, the basic judge is enabled automatically for
  * runs with `maxRounds >= 16`; pass `reflection: false` to disable it.
  *
- * Stall detection defaults to `appear`, which detects a signature anywhere in
- * the window; `consecutive` requires the entire window to match.
+ * Stall detection defaults to `consecutive`, which requires the entire window to
+ * hold the same signature (legitimate re-reads of a file no longer count as a
+ * stall); pass `{ mode: "appear" }` to detect a signature anywhere in the
+ * window instead. `ERIX_STALL_MODE` overrides the mode unless `stallDetection`
+ * is explicitly `false`.
  *
  * @param {{
  *   assemblyPort?: import("../assembly.js").AssemblyPort,
@@ -295,10 +298,24 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *                     // "recall" are served by the engine (never reach host executeTool). A host-provided
  *                     // "recall" tool definition always wins (no duplicate registration).
  *   outputHygiene?: false | { limit?: number }, // Engine-side output hygiene (ADR-015): tool results larger
- *                     // than limit characters (default 4096) are archived in full into the round record
+ *                     // than limit characters are archived in full into the round record
  *                     // (toolOutputs) and stubbed in the context view with a recall recipe. Requires a
  *                     // transcript store (the archive lives in the record). Defaults to enabled when a
- *                     // store is present; pass false to opt out.
+ *                     // store is present; pass false to opt out. Default limit: 15% of the host-provided
+ *                     // contextWindowTokens clamped to [8192, 100000], else 4096; an explicit limit wins.
+ *                     //
+ *                     // A second, round-level layer (issue #32 #2) chains onto the per-result limit:
+ *                     // the combined inline cost of one round's tool results is capped at
+ *                     // clamp(0.30 x budgetTokens, 16000, 200000) **estimated tokens** (estimateTokens,
+ *                     // stub text and per-result framing included; intercepted control results excluded,
+ *                     // failed results counted). Budget base is the engine's existing budgetTokens
+ *                     // (computeBudget / context.budgetTokens) — no second window source. Admission is
+ *                     // incremental in arrival order: results keep declaration order and ids, nothing is
+ *                     // rewritten after its checkpoint, so checkpoint/resume semantics are unchanged.
+ *                     // The layer is off when budgetTokens is absent or outputHygiene is false.
+ *                     // If a round's archived payload would push its record past the bounded-recall
+ *                     // parser limit, the layer fails closed (stub states the origin is unrecoverable
+ *                     // instead of promising recall) rather than emitting a silently skipped record.
  *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to ["writeFile"].
  *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
@@ -315,7 +332,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *     maxExtensions?:number, maxRoundsCap?:number, format?:"json"|"text",
  *     judge?:{provider?:object,evaluator?:object},
  *     onReflection?:(info:{round:number, decision:object, extendedTo:number}) => void}|false,
- *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false,
+ *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false, // Defaults to
+ *                   // {window:4, mode:"consecutive"}; ERIX_STALL_MODE overrides the mode unless false.
  *   retry?: {attempts?:number, backoffBaseMs?:number, backoffMaxMs?:number,
  *     sleepImpl?:(ms:number)=>Promise<void>}|false,
  *   completion?: {signals?:string[], maxNoToolRounds?:number}|false,
@@ -411,7 +429,7 @@ export async function runToolLoop(options) {
     timeoutMs,
     deadlineMs,
     reflection,
-    stallDetection = { window: 4 },
+    stallDetection = { window: 4, mode: "consecutive" },
     retry = false,
     completion = { signals: [], maxNoToolRounds: 3 },
     finalGuard,
@@ -519,8 +537,6 @@ export async function runToolLoop(options) {
     throw new TypeError("outputHygiene requires a transcript store (archive lives in the round record)");
   }
   const outputHygieneEnabled = outputHygiene !== false && outputHygieneCapable;
-  const outputHygieneLimit = (outputHygiene && outputHygiene !== false
-    && outputHygiene.limit) || 4096;
   const archivedOutputs = [];
   const persistenceRequired = persistenceMode === "required";
   if (persistenceRequired) {
@@ -719,6 +735,18 @@ export async function runToolLoop(options) {
     provider,
     context,
   });
+  // ADR-015：截断阈值按窗口缩放——宿主提供 contextWindowTokens 时取 15% 窗口（夹在 8k–100k），
+  // 否则维持 4096（未接模型元数据的宿主行为不变）。显式 outputHygiene.limit 优先级最高。
+  const outputHygieneExplicitLimit = outputHygiene && outputHygiene !== false
+    ? outputHygiene.limit
+    : undefined;
+  const outputHygieneWindowTokens = Number.isFinite(metadata?.contextWindowTokens)
+    && metadata.contextWindowTokens > 0
+    ? metadata.contextWindowTokens
+    : undefined;
+  const outputHygieneLimit = outputHygieneExplicitLimit ?? (outputHygieneWindowTokens === undefined
+    ? 4096
+    : Math.min(100000, Math.max(8192, Math.floor(outputHygieneWindowTokens * 0.15))));
   const resolvedWriteToolNames = normalizeToolNameSet(writeToolNames, ["writeFile"]);
   const resolvedWriteToolPathKeys = Array.isArray(writeToolPathKeys)
     ? writeToolPathKeys.filter((key) => typeof key === "string" && key.trim() !== "")
@@ -733,6 +761,11 @@ export async function runToolLoop(options) {
     });
   }
   if (budgetTokens !== undefined) validateBudget(budgetTokens);
+  // 单轮聚合输出预算（issue #32 #2）：口径统一写在 src/loop/aggregate-budget.js 顶部（估算 token、
+  // 计入 stub 开销与 framing）。预算基准**复用**上面算出的 budgetTokens，不新引 contextWindowTokens
+  // 第二套口径；budgetTokens 不存在（宿主无窗口配置）或 outputHygiene 被 opt-out 时聚合层整体关闭。
+  const aggregateBudgetTokens = outputHygieneEnabled ? budgetTokens : undefined;
+  // main 的 ADR-016 退役了 resourceStore 端口——compactionContext 不再拼它（两侧语义合并）
   const compactionContext = context === undefined && budgetTokens === undefined
     ? undefined
     : {
@@ -778,10 +811,15 @@ export async function runToolLoop(options) {
   const judgeInterceptEnabled = reflectionEnabled
     && effectiveReflection?.judgeIntercept !== false;
   // 工具透明审计频率：每 judgeIntervalRound 次真实工具执行后，审计下一次调用。
+  // 默认 10（运行时评估 §5.1：默认 5 过密，任务中途 done:false 必然成立 → 大量误拦截与成本税）。
+  // 无有效配置时取 ERIX_JUDGE_INTERVAL；非法值（非正整数）忽略并回退默认 10。
+  const envJudgeInterval = Number(process.env.ERIX_JUDGE_INTERVAL);
   const judgeIntervalRound = Number.isSafeInteger(effectiveReflection?.judgeIntervalRound)
     && effectiveReflection.judgeIntervalRound > 0
     ? effectiveReflection.judgeIntervalRound
-    : 5;
+    : Number.isSafeInteger(envJudgeInterval) && envJudgeInterval > 0
+      ? envJudgeInterval
+      : 10;
   const judgeInterceptTimeoutMs = Number.isFinite(effectiveReflection?.judgeInterceptTimeoutMs)
     && effectiveReflection.judgeInterceptTimeoutMs > 0
     ? effectiveReflection.judgeInterceptTimeoutMs
@@ -932,7 +970,17 @@ export async function runToolLoop(options) {
   let taskBriefSource = messages;
   const messageRounds = new WeakMap();
   for (const message of messages) messageRounds.set(message, 0);
+  // 双计数器约定（issue #32 #8）——改这两处语义前先读这里：
+  // - `rounds`：**身份**轮号。跨 resume 单调递增（resume 从 transcript 最大 round 续起），
+  //   用于 round 编号 / `roundKey` / messageRounds / judge 的"已运行轮数"展示 /
+  //   checkpoint round / 结果 `result.rounds`。它**不是**轮预算。
+  // - `budgetRounds`：**本次 runToolLoop 的预算消耗**。每次调用从 0 起计，
+  //   resume **不**继承历史（否则续接轮轮号已到顶，主循环一次进不去，
+  //   直接被 max_rounds_cap 强制收尾）。用于主循环条件 / `remainingRounds` /
+  //   budget hint / reflection `nearLimit` / memory-loss 阈值。
+  // 契约：非 resume 单段调用两者数值恒等（都从 0 起、同步自增）。
   let rounds = 0;
+  let budgetRounds = 0;
   let foldedThrough = 0;
   let resumeCheckpoint;
   let resumePendingTools = [];
@@ -1096,7 +1144,9 @@ export async function runToolLoop(options) {
   const taskBrief = resolveTaskBrief({ task, context, messages: taskBriefSource });
   const recentSignatures = [];
   const envStallMode = process.env.ERIX_STALL_MODE;
-  // stallDetection:false 显式关闭优先于环境变量（调用方显式关闭不应被 env 重新打开）
+  // 默认 stallDetection 为 {window:4, mode:"consecutive"}（参数默认值，真实项目评估 §5.2：appear 误杀合法重读）。
+  // stallDetection:false 显式关闭优先于环境变量（调用方显式关闭不应被 env 重新打开）。
+  // 调用方显式传对象时缺省 mode 仍为 appear（只有引擎默认值才是 consecutive）。
   const resolvedStallDetection = stallDetection === false
     ? false
     : envStallMode
@@ -1335,6 +1385,7 @@ export async function runToolLoop(options) {
       runId,
       stateVersion: runStateVersion,
       rounds,
+      runRounds: budgetRounds,
       maxRounds: governorState.effectiveMaxRounds,
       lowBudgetPrompted,
       toolStats,
@@ -1587,6 +1638,8 @@ export async function runToolLoop(options) {
     baseToolContext,
     outputHygieneEnabled,
     outputHygieneLimit,
+    aggregateBudgetTokens,
+    emitEvent,
     archivedOutputs,
     toolSignal,
     signal,
@@ -1595,6 +1648,9 @@ export async function runToolLoop(options) {
     hasCheckpointStore,
     toolStats,
     governorState,
+    get budgetRounds() {
+      return budgetRounds;
+    },
     awaitWithAbort,
     emitJudge,
     callRoundJudge,
@@ -1640,6 +1696,9 @@ export async function runToolLoop(options) {
     },
     executedToolIds,
     checkpointResults,
+    // 「没存上」账本（ADR-016）：聚合层 fail-closed 丢原文时必须留痕——
+    // main 退役了 run-state 的 errors.archive 计数，账本是其继任通道
+    errorLedger,
   };
   const checkpointExecutor = createCheckpointExecutor(checkpointContext);
   const {
@@ -1879,7 +1938,10 @@ export async function runToolLoop(options) {
       const persisted = await persist("appendRound", runId, {
         round: resumeCheckpoint.round,
         roundKey: `${String(runId)}:round:${String(resumeCheckpoint.round)}`,
-        dedupKey: `${String(runId)}:round:${String(resumeCheckpoint.round)}`,
+        // 引擎命名空间：宿主可能已用默认键 `${runId}:round:N` 写入自己的行（追问/历史种子），
+        // 同键会被 appendRound 去重 → 续接轮（含补跑工具结果）落盘被静默丢弃，
+        // transcript 只剩宿主那条近空行（issue #32 #8）。`:resume` 幂等，重启重跑不重复写。
+        dedupKey: `${String(runId)}:engine:round:${String(resumeCheckpoint.round)}:resume`,
         messages: cloneState(resumeMessagesToPersist),
         ...(archivedOutputs.some((entry) => entry.round === resumeCheckpoint.round)
           ? {
@@ -1896,7 +1958,12 @@ export async function runToolLoop(options) {
     }
     appendResumeTailMessages();
 
-    while (rounds < governorState.effectiveMaxRounds) {
+    // 预算条件用 budgetRounds（本次 runToolLoop 的消耗），不是身份轮号 rounds：
+    // resume 续接时 rounds 已到顶，用它当预算会导致续接轮一次进不了循环。
+    while (budgetRounds < governorState.effectiveMaxRounds) {
+    // 轮预算在进入本轮时自增（与既有 `round` 语义对齐：budgetRounds === 本轮序号），
+    // 这样预算提示 / 剩余轮数在工具执行期读到的就是正确值
+    budgetRounds += 1;
     const round = rounds + 1;
     toolExecutedThisRound = false;
     roundEventDeltas = [];
@@ -2123,7 +2190,7 @@ export async function runToolLoop(options) {
     }
     // 失忆兑底：超过 5 轮后模型若输出欢迎语（误以为新会话），注入任务提醒并继续
     // （上下文折叠可能让模型丢失任务感；此处把主线拉回，避免空转）
-    const memoryLossDetected = rounds > 5
+    const memoryLossDetected = budgetRounds > 5
       && wrapupJson === null
       && !hasToolUse(content)
       && isLikelyWelcomeResponse(finalText);
@@ -2137,6 +2204,7 @@ export async function runToolLoop(options) {
       governorState.noToolStreak += 1;
     }
 
+    // 身份轮号自增（非 resume 单段调用 budgetRounds 与 rounds 恒等；resume 后 rounds 领先）
     rounds = round;
     const currentRoundMessages = messages.slice(roundStart);
     const currentL0 = extractL0Facts(currentRoundMessages, {
@@ -2156,7 +2224,9 @@ export async function runToolLoop(options) {
     }
     const actionSignals = {
       round,
-      rounds,
+      // 治理层的 rounds 只用于推进速率估算（elapsedMs / rounds），跟预算同域：
+      // resume 后 elapsedMs 是本次会话的，必须配本次会话的轮数（budgetRounds）
+      rounds: budgetRounds,
       hasToolUse: hasToolUse(content),
       shouldContinue,
       noToolRound,
@@ -2171,7 +2241,7 @@ export async function runToolLoop(options) {
       stallStreak,
       wrapUpNudged: governorState.wrapUpNudged,
       reflectionEnabled: roundJudgeEnabled ? false : reflectionEnabled,
-      nearLimit: rounds >= governorState.nextReflectionRound,
+      nearLimit: budgetRounds >= governorState.nextReflectionRound,
       extensionCount: governorState.extensionCount,
       maxExtensions: reflectionMaxExtensions,
       effectiveMaxRounds: governorState.effectiveMaxRounds,
@@ -2294,7 +2364,9 @@ export async function runToolLoop(options) {
     const record = {
       round,
       roundKey: `${String(runId)}:round:${String(round)}`,
-      dedupKey: `${String(runId)}:round:${String(round)}`,
+      // 引擎命名空间（同 resume 预落盘，见上方注释）：宿主若已用默认键
+      // `${runId}:round:N` 写了同行号的行，引擎本轮的完整记录不会被去重丢掉。
+      dedupKey: `${String(runId)}:engine:round:${String(round)}`,
       messages: messages.slice(roundStart),
       ts: new Date().toISOString(),
       response: {
@@ -2371,7 +2443,7 @@ export async function runToolLoop(options) {
       );
       governorState.extensionCount += 1;
       governorState.nextReflectionRound = Math.max(
-        rounds + 1,
+        budgetRounds + 1,
         Math.floor(governorState.effectiveMaxRounds * 0.8),
       );
       const continuationMessage = {
