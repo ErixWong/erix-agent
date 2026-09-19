@@ -1,6 +1,7 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 import { enforceSize } from "./enforce-size.js";
+import { buildFoldFidelitySection } from "./fold-fidelity.js";
 import {
   cloneFoldPayload,
   foldOptions,
@@ -36,6 +37,14 @@ export const SUMMARIZER_PROMPT_GUIDE = createSummarizerPromptGuide();
 function withRecoveryHint(summary, recoveryHint) {
   if (summary.includes(recoveryHint)) return summary;
   return `${summary}\n## 恢复提示\n${recoveryHint}`;
+}
+
+// 机械保真层（锚点索引 / 逐字引用 / 反向信号）在尺寸截断之后追加，
+// 所以摘要预算削不掉它；没有抽到任何内容时不输出空小节。
+function appendFoldFidelity(summary, foldedPayload) {
+  const fidelity = buildFoldFidelitySection(foldedPayload);
+  if (fidelity === undefined) return summary;
+  return summary.trim() === "" ? fidelity : `${summary}\n\n${fidelity}`;
 }
 
 function normalizedKeepRounds(value) {
@@ -274,9 +283,12 @@ export function createFoldLlmStrategy({
         if (typeof summary !== "string") {
           throw new TypeError("fold-llm summarizer must return a string");
         }
-        const compactedSummary = enforceSummarySize(
-          withRecoveryHint(summary, recoveryHint),
-          summaryBudget,
+        const compactedSummary = appendFoldFidelity(
+          enforceSummarySize(
+            withRecoveryHint(summary, recoveryHint),
+            summaryBudget,
+          ),
+          foldedPayload,
         );
         compactedHead = prependSummary(head, compactedSummary, settings.summaryRole);
       }
