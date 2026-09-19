@@ -131,12 +131,49 @@ function rankEntries(entries) {
   ));
 }
 
+// 值内转义（评审修复）：errors/urls 的值可含 `,`（如 "Error: failed, retry later"、
+// "https://x.com/?a=1,2"），而多值以 ", " 连接——序列化转义 `\` 与 `,`，解析端按
+// splitAnchorValues 反转义，保证五种 kind 全部 round-trip 保真。
+// （paths/shas/issues 的正则字符集不含 `,`/`\`，转义对它们是恒等操作。）
+function encodeAnchorValue(value) {
+  return value.replaceAll("\\", "\\\\").replaceAll(",", "\\,");
+}
+
+/**
+ * 解析锚点行的取值列表（renderAnchorSection 的逆操作）：按未转义的 `,` 切分，
+ * `\x` 还原为字面 x。供 fold-statistical 的 parseAnchorSection 复用。
+ */
+export function splitAnchorValues(text) {
+  const values = [];
+  let current = "";
+  let index = 0;
+  const value = String(text);
+  while (index < value.length) {
+    const char = value[index];
+    if (char === "\\" && index + 1 < value.length) {
+      current += value[index + 1];
+      index += 2;
+      continue;
+    }
+    if (char === ",") {
+      values.push(current);
+      current = "";
+      index += value[index + 1] === " " ? 2 : 1;
+      continue;
+    }
+    current += char;
+    index += 1;
+  }
+  values.push(current);
+  return values;
+}
+
 function renderAnchorSection(entries) {
   const lines = [ANCHOR_SECTION_HEADING];
   for (const kind of ANCHOR_KINDS) {
     const values = entries
       .filter((entry) => entry.kind === kind)
-      .map((entry) => entry.value);
+      .map((entry) => encodeAnchorValue(entry.value));
     if (values.length > 0) lines.push(`${kind}: ${values.join(", ")}`);
   }
   return lines.join("\n");

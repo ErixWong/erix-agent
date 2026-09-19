@@ -593,6 +593,114 @@ test("unions anchors across three folds without loss, duplication, or overflow (
   assert.ok(anchorSection.length <= 1200);
 });
 
+test("comma-bearing error and url anchors round-trip across three folds", async () => {
+  const strategy = createFoldStatisticalStrategy();
+  const round = (id, content) => [
+    { role: "assistant", content: [{ type: "tool_use", id, name: "exec", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: id, content }] },
+  ];
+  const first = await strategy.compact([
+    { role: "user", content: "task" },
+    ...round("a", "Error: failed, retry later\nsee https://api.x.com/?a=1,2"),
+    { role: "user", content: "keep" },
+  ], { keepRounds: 1, roundNumbers: [1, 2, 3] });
+  // 第 1 次折叠：值内逗号被转义，单行单值。
+  const firstText = first.messages[0].content[0].text;
+  assert.match(firstText, /^errors: Error: failed\\, retry later$/mu);
+  assert.match(firstText, /^urls: https:\/\/api\.x\.com\/\?a=1\\,2$/mu);
+
+  const second = await strategy.compact([
+    ...first.messages,
+    ...round("b", "Traceback: index, out of range\nsee https://z.io/p?q=3,4"),
+    { role: "user", content: "keep again" },
+  ], { keepRounds: 1, roundNumbers: [2, 3, 4, 5] });
+  const third = await strategy.compact([
+    ...second.messages,
+    ...round("c", "all good sha 0c309e6"),
+    { role: "user", content: "keep final" },
+  ], { keepRounds: 1, roundNumbers: [3, 4, 5, 6, 7] });
+
+  const text = third.messages[0].content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+  // 三次折叠后逗号值仍是完整单值（旧值在前、新值在后，未被子句拆分）。
+  assert.match(
+    text,
+    /^errors: Error: failed\\, retry later, Traceback: index\\, out of range$/mu,
+  );
+  assert.match(
+    text,
+    /^urls: https:\/\/api\.x\.com\/\?a=1\\,2, https:\/\/z\.io\/p\?q=3\\,4$/mu,
+  );
+  // 没有被拆成半截值（如 "Error: failed" 单独成行）。
+  assert.doesNotMatch(text, /^errors: Error: failed$/mu);
+  assert.doesNotMatch(text, /^urls: https:\/\/api\.x\.com\/\?a=1$/mu);
+  assert.equal((text.match(/## 锚点索引/gu) ?? []).length, 1);
+});
+
+test("anchors:false on a later fold removes the anchor section from an earlier default fold", async () => {
+  const strategy = createFoldStatisticalStrategy();
+  const round = (id, content) => [
+    { role: "assistant", content: [{ type: "tool_use", id, name: "exec", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: id, content }] },
+  ];
+  const first = await strategy.compact([
+    { role: "user", content: "task" },
+    ...round("a", "sha 0c309e6 path src/one/a.js"),
+    { role: "user", content: "keep" },
+  ], { keepRounds: 1, roundNumbers: [1, 2, 3] });
+  assert.match(first.messages[0].content[0].text, /## 锚点索引/u);
+
+  // 第 2 次折叠 anchors:false：旧摘要解析出的锚点节必须被丢弃，整段消息里不再出现。
+  const second = await strategy.compact([
+    ...first.messages,
+    ...round("b", "sha 1ed3f35 path src/two/b.js"),
+    { role: "user", content: "keep again" },
+  ], { keepRounds: 1, roundNumbers: [2, 3, 4, 5], anchors: false });
+  assert.doesNotMatch(JSON.stringify(second.messages), /锚点索引/u);
+  assert.doesNotMatch(JSON.stringify(second.messages), /0c309e6|src\/one\/a\.js/u);
+
+  // 第 3 次仍 anchors:false：节不会复活（行为与 0.7.0 一致）。
+  const third = await strategy.compact([
+    ...second.messages,
+    ...round("c", "sha 9f8e7d6"),
+    { role: "user", content: "keep final" },
+  ], { keepRounds: 1, roundNumbers: [3, 4, 5, 6, 7], anchors: false });
+  assert.doesNotMatch(JSON.stringify(third.messages), /锚点索引/u);
+  assert.doesNotMatch(JSON.stringify(third.messages), /1ed3f35|9f8e7d6/u);
+});
+
+test("anchors:false combines with maxPerKind across factory and call levels", async () => {
+  const messages = [
+    { role: "user", content: "task" },
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "a", name: "exec", input: {} }],
+    },
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "a", content: "#1 #2 #3 sha 0c309e6" }],
+    },
+    { role: "user", content: "keep" },
+  ];
+  // 工厂默认 maxPerKind:1，call-level anchors:false 覆盖 → 无锚点节。
+  const clampedFactory = createFoldStatisticalStrategy({ anchors: { maxPerKind: 1 } });
+  const disabled = await clampedFactory.compact(messages, { keepRounds: 1, anchors: false });
+  assert.doesNotMatch(JSON.stringify(disabled.messages), /锚点索引/u);
+
+  // 工厂 anchors:false，call-level 对象形式覆盖 → 对象生效并按 maxPerKind 夹取。
+  const offFactory = createFoldStatisticalStrategy({ anchors: false });
+  const enabled = await offFactory.compact(messages, {
+    keepRounds: 1,
+    anchors: { maxPerKind: 2 },
+  });
+  const text = enabled.messages[0].content[0].text;
+  assert.match(text, /## 锚点索引/u);
+  assert.match(text, /^issues: #1, #2$/mu);
+  assert.doesNotMatch(text, /#3/u);
+});
+
 test("re-clamps merged anchors to maxPerKind across folds", async () => {
   const strategy = createFoldStatisticalStrategy({ anchors: { maxPerKind: 2 } });
   const round = (id, content) => [

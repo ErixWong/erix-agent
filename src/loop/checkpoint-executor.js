@@ -409,6 +409,9 @@ export function createCheckpointExecutor(ctx) {
         decision: null,
         action: "degraded",
         error: decision === undefined ? interceptError : "parse",
+        // parse 失败但 usage 已可取得时同样带出（超时/抛错路径 judgeUsage 为 undefined，
+        // 展开为空、字段缺省，行为不变）。
+        ...(judgeUsage ? { usage: judgeUsage } : {}),
       });
     } else {
       const emitJudge = ctx.emitJudge;

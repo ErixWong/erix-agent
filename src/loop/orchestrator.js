@@ -2280,6 +2280,9 @@ export async function runToolLoop(options) {
             decision: null,
             action: "degraded",
             error: "parse",
+            // parse 失败但 response.usage 已可取得（issue #33 评审修复）：
+            // degraded 事件同样带 usage，judge.log 可对账这部分消耗。
+            ...(judgeUsage ? { usage: judgeUsage } : {}),
           });
         } else {
           roundJudgeFailures = 0;

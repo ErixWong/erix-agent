@@ -403,7 +403,14 @@ with `summaryRole: "system"`). Its fixed sections, in order:
    `tool_result` content and real user messages, never from assistant prose.
    Kinds render in the fixed order `paths, shas, issues, urls, errors`;
    `errors` lines contain `Error`/`Exception`/`Traceback`/`fatal:` and are
-   kept verbatim up to 120 chars, at most 5. Caps: 20 anchors total,
+   kept verbatim up to 120 chars, at most 5. Within a line, multiple values
+   are joined with `, `; a literal `,` or `\` inside a value is escaped as
+   `\,` / `\\` at render time and unescaped when the section is re-parsed,
+   so every kind round-trips losslessly across repeated folds (e.g. an error
+   line `Error: failed, retry later` or a URL query `?a=1,2` stays a single
+   value). Note the `paths` regex charset excludes `,`, so paths containing
+   commas are not extracted — an accepted false-negative tradeoff.
+   Caps: 20 anchors total,
    1200 chars for the whole section (ranked by frequency, then first
    appearance). Across consecutive folds the section is re-parsed and merged
    as a per-kind union (existing entries first, new entries appended,
@@ -412,7 +419,10 @@ with `summaryRole: "system"`). Its fixed sections, in order:
 
    The anchor section is on by default. Pass `anchors: false` (strategy
    factory or per-`compact` options) to restore the exact 0.7.0 behavior —
-   no anchor section; the rest of the summary is unchanged. An object form
+   no anchor section, and anchor sections from previously folded summaries
+   are dropped on merge (a later `anchors: false` fold fully removes an
+   anchor section created by an earlier default fold); the rest of the
+   summary is unchanged. An object form
    `anchors: { maxPerKind, maxChars }` clamps per-kind counts and section
    characters. In `fold-llm` the section is appended after the LLM summary
    (and after size enforcement), so `maxSummaryTokens` cannot truncate it.

@@ -6,6 +6,7 @@ import {
   MAX_ANCHORS,
   MAX_ANCHOR_SECTION_CHARS,
   extractAnchors,
+  splitAnchorValues,
 } from "../../src/compact/anchors.js";
 
 // A2 抽取范围：只扫 tool_result 内容 + 真实 user 消息；assistant 散文不参与。
@@ -194,6 +195,43 @@ test("skips entries that would break the anchor section character cap", () => {
   assert.equal(result.omitted, 1);
   assert.deepEqual(result.byKind.urls, []);
   assert.deepEqual(result.byKind.paths, ["src/short/a.js", "src/short/b.js"]);
+});
+
+test("escapes commas and backslashes so every kind round-trips losslessly", () => {
+  const result = extractAnchors([
+    toolResult("Error: failed, retry later\nfatal: copy C:\\tmp\\a, C:\\tmp\\b failed"),
+    { role: "user", content: "stats https://x.com/?a=1,2 其他 https://y.com/dir\\name" },
+  ]);
+
+  // 值本身保真（含逗号/反斜杠的原值）。
+  assert.deepEqual(result.byKind.errors, [
+    "Error: failed, retry later",
+    "fatal: copy C:\\tmp\\a, C:\\tmp\\b failed",
+  ]);
+  assert.deepEqual(result.byKind.urls, [
+    "https://x.com/?a=1,2",
+    "https://y.com/dir\\name",
+  ]);
+  // 渲染层转义：值内 `,` → `\,`、值内 `\` → `\\`，单行人类可读格式不变。
+  assert.match(result.text, /^errors: Error: failed\\, retry later, /mu);
+  assert.match(
+    result.text,
+    /^urls: https:\/\/x\.com\/\?a=1\\,2, https:\/\/y\.com\/dir\\\\name$/mu,
+  );
+  // 逆操作逐值还原：每行 `kind: …` 的取值列表与 byKind 完全一致（round-trip 保真）。
+  for (const line of result.text.split("\n").slice(1)) {
+    const separator = line.indexOf(": ");
+    const kind = line.slice(0, separator);
+    assert.deepEqual(
+      splitAnchorValues(line.slice(separator + 2)),
+      result.byKind[kind],
+      line,
+    );
+  }
+  // 常见边界：只有反斜杠的值、空值列表、无转义字符的 plain 值。
+  assert.deepEqual(splitAnchorValues("a\\\\b"), ["a\\b"]);
+  assert.deepEqual(splitAnchorValues(""), [""]);
+  assert.deepEqual(splitAnchorValues("plain, value"), ["plain", "value"]);
 });
 
 test("returns no section for empty or anchor-free payloads", () => {

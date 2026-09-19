@@ -3,13 +3,17 @@ import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 import { enforceSize } from "./enforce-size.js";
 import { extractAnchors } from "./anchors.js";
 import { buildFoldFidelitySection } from "./fold-fidelity.js";
-import { summarizeFoldedPayload } from "./fold-statistical.js";
+import {
+  buildFoldNavigationRecord,
+  summarizeFoldedPayload,
+} from "./fold-statistical.js";
 import {
   cloneFoldPayload,
   foldOptions,
   optionValue,
   roundRangeForIndexes,
   resolveFoldRecoveryHint,
+  resolveFoldStubs,
   resolveRecoveryHint,
   runFoldHook,
   selectFoldedRounds,
@@ -278,6 +282,11 @@ export function createFoldLlmStrategy({
       let compactedHead = head;
       if (folded.length > 0) {
         const range = roundRange ?? { from: 1, to: folded.length };
+        // 降级摘要的恢复信息（评审修复）：与 fold-statistical 共用 resolveFoldStubs /
+        // buildFoldNavigationRecord（复用不复制），保证降级摘要不比原生统计摘要少
+        // `[已折叠] …` stub 与 artifact 导航记录。
+        const foldedStubs = await resolveFoldStubs(foldedPayload, settings.stubFor);
+        const navigationRecord = buildFoldNavigationRecord(foldedPayload, range);
         // 降级兜底（issue #33 D）：summarizer 运行时失败（reject/throw）不再让 run 中途死亡，
         // 改为对同一 foldedPayload 生成统计摘要并加可识别降级标记；
         // 构造期参数错误（summarizer 非函数）在 createFoldLlmStrategy 里已 fail-loud，不经此路径。
@@ -304,6 +313,8 @@ export function createFoldLlmStrategy({
               to: range.to,
               count: folded.length,
               recoveryHint,
+              stubs: foldedStubs,
+              ...(navigationRecord === undefined ? {} : { navigationRecord }),
               ...(settings.anchors === false
                 ? {}
                 : { anchors: extractAnchors(

@@ -336,6 +336,47 @@ test("degrades to a statistical summary when the summarizer rejects at runtime (
   assert.deepEqual(result.messages.at(-1), messages.at(-1));
 });
 
+test("degraded summary carries stubs and the artifact navigation record (review fix)", async () => {
+  const messages = [
+    { role: "user", content: "task" },
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "t1", name: "exec", input: { command: "npm test" } }],
+    },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "t1",
+        content: "credential=must-not-enter-summary",
+        artifact: {
+          artifactId: "001-exec.txt",
+          archivePath: "/tmp/archive/001-exec.txt",
+          digest: "a".repeat(64),
+          locator: { lineStart: 1, lineEnd: 2 },
+        },
+      }],
+    },
+    { role: "assistant", content: [{ type: "text", text: "old" }] },
+    { role: "user", content: "keep" },
+  ];
+  const strategy = createFoldLlmStrategy({
+    summarizer: async () => {
+      throw new Error("LLM provider unavailable");
+    },
+    stubFor: () => "[已折叠] 值：nonce=abc123；原文：/tmp/archive/001-exec.txt",
+  });
+  const result = await strategy.compact(messages, { keepRounds: 1 });
+  const text = result.messages[0].content[0].text;
+
+  assert.match(text, /已降级为统计摘要/u);
+  // 降级摘要不比原生 statistical 摘要少恢复信息：stub 行 + artifact 导航记录。
+  assert.match(text, /^\[已折叠\] 值：nonce=abc123；原文：\/tmp\/archive\/001-exec\.txt$/mu);
+  assert.match(text, /^导航记录：\{/mu);
+  assert.match(text, /001-exec\.txt/u);
+  assert.doesNotMatch(text, /credential=must-not-enter-summary/u);
+});
+
 test("degrades when the summarizer throws synchronously or returns a non-string", async () => {
   const messages = [
     { role: "user", content: "task" },

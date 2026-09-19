@@ -1748,6 +1748,82 @@ test("round judge decision event carries the call usage for transcript accountin
   }]);
 });
 
+test("round judge parse failure still reports usage on the degraded event (review fix)", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  // decision 文本不可解析（parse 失败），但 response.usage 已可取得。
+  const judge = createFakeProvider([{
+    content: [{ type: "text", text: "totally not a json decision" }],
+    usage: { input_tokens: 432, output_tokens: 7 },
+    times: 5,
+  }]);
+  const events = [];
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(result.termination, { reason: "end_turn" });
+  assert.deepEqual(events, [{
+    round: 1,
+    kind: "round",
+    decision: null,
+    action: "degraded",
+    error: "parse",
+    usage: { input_tokens: 432, output_tokens: 7 },
+  }]);
+});
+
+test("intercept judge parse failure still reports usage on the degraded event (review fix)", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "work", { step: 2 }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([{
+    content: [{ type: "text", text: "not parseable at all" }],
+    usage: { input_tokens: 99, output_tokens: 3 },
+  }]);
+  const events = [];
+  const executed = [];
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async ({ input }) => {
+      executed.push(input.step);
+      return "ok";
+    },
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(events, [{
+    kind: "intercept",
+    tool: { id: "second", name: "work", input: { step: 2 } },
+    decision: null,
+    action: "degraded",
+    error: "parse",
+    usage: { input_tokens: 99, output_tokens: 3 },
+  }]);
+  // degraded 后工具照常执行（既有行为不变）。
+  assert.deepEqual(executed, [1, 2]);
+});
+
 test("intercept judge event carries usage and omits it on timeout (issue #33 B)", async () => {
   const provider = createFakeProvider([
     toolResponse("first", "work", { step: 1 }),

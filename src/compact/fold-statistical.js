@@ -1,6 +1,6 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { estimateMessageTokens } from "../tokens.js";
-import { clampAnchorSection, extractAnchors } from "./anchors.js";
+import { clampAnchorSection, extractAnchors, splitAnchorValues } from "./anchors.js";
 import {
   cloneFoldPayload,
   DEFAULT_RECOVERY_HINT,
@@ -181,7 +181,7 @@ function parseMarkedFoldSummary(text) {
   return parseFoldSummaryMatch(value, markedMatch, false);
 }
 
-// 锚点节解析：按 kind 分桶为结构化数据（values 用固定渲染格式 `kind: v1, v2` 还原），
+// 锚点节解析：按 kind 分桶为结构化数据（values 用 splitAnchorValues 还原转义后的渲染格式），
 // 参与 mergedFoldSummaryContent 的并集合并——不靠切原文保锚点。
 const ANCHOR_KIND_PATTERN = /^(paths|shas|issues|urls|errors): (.*)$/u;
 
@@ -194,7 +194,7 @@ function parseAnchorSection(value) {
   for (const line of lines.slice(headingIndex + 1)) {
     const kindMatch = line.match(ANCHOR_KIND_PATTERN);
     if (!kindMatch) continue;
-    byKind[kindMatch[1]] = kindMatch[2].split(", ").filter((item) => item !== "");
+    byKind[kindMatch[1]] = splitAnchorValues(kindMatch[2]).filter((item) => item !== "");
     found = true;
   }
   return found ? byKind : undefined;
@@ -292,7 +292,13 @@ export function formatFoldSummary({
   return anchors && anchors.text !== "" ? `${summary}\n\n${anchors.text}` : summary;
 }
 
-function mergedFoldSummaryContent(originalContent, summary, recoveryHint, anchorClamp = {}) {
+function mergedFoldSummaryContent(
+  originalContent,
+  summary,
+  recoveryHint,
+  anchorClamp = {},
+  anchorsEnabled = true,
+) {
   const summaries = originalContent
     .filter((block) => block?.type === "text")
     .flatMap((block) => parseFoldSummaries(block.text));
@@ -311,7 +317,11 @@ function mergedFoldSummaryContent(originalContent, summary, recoveryHint, anchor
       }
     }
   }
-  const mergedAnchors = clampAnchorSection(unionByKind, anchorClamp);
+  // anchors:false（评审修复）：旧摘要里解析出的锚点一并丢弃，合并结果不得含锚点节
+  // ——否则第 1 次默认折叠产生锚点后，第 2 次 anchors:false 折叠仍会把它带回来。
+  const mergedAnchors = anchorsEnabled
+    ? clampAnchorSection(unionByKind, anchorClamp)
+    : { byKind: {}, text: "" };
   const mergedRange = {
     from: Math.min(...merged.map((parsed) => parsed.from)),
     to: Math.max(...merged.map((parsed) => parsed.to)),
@@ -356,6 +366,7 @@ function prependSummary(
   summaryRole = "user",
   recoveryHint = DEFAULT_RECOVERY_HINT,
   anchorClamp = {},
+  anchorsEnabled = true,
 ) {
   if (summaryRole === "system") {
     const systemIndex = head.findLastIndex((message) => message?.role === "system");
@@ -369,7 +380,13 @@ function prependSummary(
       : Array.isArray(system.content) ? system.content : [];
     updatedHead[systemIndex] = {
       ...system,
-      content: mergedFoldSummaryContent(content, summary, recoveryHint, anchorClamp),
+      content: mergedFoldSummaryContent(
+        content,
+        summary,
+        recoveryHint,
+        anchorClamp,
+        anchorsEnabled,
+      ),
     };
     return updatedHead;
   }
@@ -387,7 +404,13 @@ function prependSummary(
     ...user,
     // 合并后的单段摘要放 content 最前：模型先看到折叠提示，任务原文紧跟其后；
     // （safeTruncate 同消息字段按 index 截断，任务在后可避免被先截成 [已修剪]）
-    content: mergedFoldSummaryContent(originalContent, summary, recoveryHint, anchorClamp),
+    content: mergedFoldSummaryContent(
+      originalContent,
+      summary,
+      recoveryHint,
+      anchorClamp,
+      anchorsEnabled,
+    ),
   };
   return updatedHead;
 }
@@ -473,13 +496,13 @@ export function createFoldStatisticalStrategy(options = {}) {
         roundRange,
       });
 
-      // 锚点索引（A2）：默认启用，anchors:false 时与 0.7.0 行为完全一致（无锚点节）。
+      // 锚点索引（A2）：默认启用，anchors:false 时与 0.7.0 行为完全一致
+      // （本轮不抽取，且旧摘要的锚点节在合并时丢弃）。
+      const anchorsEnabled = settings.anchors !== false;
       const anchorClamp = settings.anchors === false
         ? {}
         : (settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {});
-      const anchors = settings.anchors === false
-        ? undefined
-        : extractAnchors(foldedPayload, anchorClamp);
+      const anchors = anchorsEnabled ? extractAnchors(foldedPayload, anchorClamp) : undefined;
 
       let compactedHead = head;
       if (folded.length > 0) {
@@ -500,6 +523,7 @@ export function createFoldStatisticalStrategy(options = {}) {
           settings.summaryRole,
           recoveryHint,
           anchorClamp,
+          anchorsEnabled,
         );
       }
 
