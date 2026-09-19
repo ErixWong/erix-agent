@@ -80,52 +80,58 @@ function isRealUser(message) {
     || blocks.some((block) => block?.type !== "tool_result");
 }
 
-// anchors:false（评审修复）：旧 content 里的锚点节一并清除——否则 fold1（默认，产生
-// 锚点节）之后 fold2 传 anchors:false 时旧摘要留在 head，锚点节会被原样保留下来。
-// 复用 fold-statistical 的 stripAnchorSection，不复制实现；anchorsEnabled 缺省为 true，
-// 此时旧 content 原样保留，行为与之前完全一致（向后兼容）。
-function stripAnchorBlocks(content, anchorsEnabled) {
-  if (anchorsEnabled) return content;
-  return content.flatMap((block) => {
-    if (block?.type !== "text" || typeof block.text !== "string") return [block];
-    const stripped = stripAnchorSection(block.text);
-    return stripped.trim() === "" ? [] : [{ ...block, text: stripped }];
+// anchors:false（评审终审修复）：对 head 全部消息的所有 text 块统一剥离锚点节——
+// 定点清理只覆盖目标消息，summaryRole:"system" 或 role 切换时旧摘要落在另一 role 的
+// 消息里会残留锚点节。复用 fold-statistical 的 stripAnchorSection，不复制实现；
+// anchorsEnabled 缺省为 true 时 head 原样不动，行为与之前字节级一致（向后兼容）。
+function stripAnchorsFromHead(head, anchorsEnabled) {
+  if (anchorsEnabled) return head;
+  return head.map((message) => {
+    const content = typeof message?.content === "string"
+      ? [{ type: "text", text: message.content }]
+      : Array.isArray(message?.content)
+        ? message.content
+        : [];
+    const stripped = content.flatMap((block) => {
+      if (block?.type !== "text" || typeof block.text !== "string") return [block];
+      const text = stripAnchorSection(block.text);
+      return text.trim() === "" ? [] : [{ ...block, text }];
+    });
+    return { ...message, content: stripped };
   });
 }
 
 function prependSummary(head, summary, summaryRole = "user", anchorsEnabled = true) {
+  const strippedHead = stripAnchorsFromHead(head, anchorsEnabled);
   if (summaryRole === "system") {
-    const systemIndex = head.findLastIndex((message) => message?.role === "system");
+    const systemIndex = strippedHead.findLastIndex((message) => message?.role === "system");
     if (systemIndex < 0) {
-      return [{ role: "system", content: [{ type: "text", text: summary }] }, ...head];
+      return [
+        { role: "system", content: [{ type: "text", text: summary }] },
+        ...strippedHead,
+      ];
     }
-    const updatedHead = head.slice();
+    const updatedHead = strippedHead.slice();
     const system = updatedHead[systemIndex];
     const content = typeof system.content === "string"
       ? [{ type: "text", text: system.content }]
       : Array.isArray(system.content) ? system.content : [];
     updatedHead[systemIndex] = {
       ...system,
-      content: [
-        { type: "text", text: summary },
-        ...stripAnchorBlocks(content, anchorsEnabled),
-      ],
+      content: [{ type: "text", text: summary }, ...content],
     };
     return updatedHead;
   }
-  const userIndex = head.findLastIndex(isRealUser);
-  if (userIndex < 0) return head;
+  const userIndex = strippedHead.findLastIndex(isRealUser);
+  if (userIndex < 0) return strippedHead;
 
-  const user = head[userIndex];
-  const originalContent = stripAnchorBlocks(
-    typeof user.content === "string"
-      ? [{ type: "text", text: user.content }]
-      : Array.isArray(user.content)
-        ? user.content
-        : [],
-    anchorsEnabled,
-  );
-  const updatedHead = head.slice();
+  const user = strippedHead[userIndex];
+  const originalContent = typeof user.content === "string"
+    ? [{ type: "text", text: user.content }]
+    : Array.isArray(user.content)
+      ? user.content
+      : [];
+  const updatedHead = strippedHead.slice();
   updatedHead[userIndex] = {
     ...user,
     content: [{ type: "text", text: summary }, ...originalContent],

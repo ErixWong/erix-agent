@@ -294,6 +294,65 @@ test("anchors:false strips the stale anchor section from a previous default fold
   assert.match(wholeDefault, /1ed3f35/u);
 });
 
+test("anchors:false strips the stale anchor section from every head message when the summary lands in system", async () => {
+  const summarizer = async () => "## 下一步\n已完成项禁止重做";
+  const strategy = createFoldLlmStrategy({ summarizer, summaryRole: "system" });
+
+  // fold1 默认（anchors 缺省开启）：摘要落进 system 消息（无既有 system 则新建），带真锚点节。
+  const fold1 = await strategy.compact(anchorConversation(), { keepRounds: 2 });
+  assert.equal(fold1.messages[0].role, "system");
+  const fold1Text = fold1.messages[0].content[0].text;
+  assert.match(fold1Text, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
+  assert.match(fold1Text, /^shas: 1ed3f35$/mu);
+
+  const continued = [
+    ...fold1.messages,
+    { role: "user", content: "second wave request" },
+    { role: "assistant", content: [{ type: "text", text: "second wave answer" }] },
+  ];
+
+  // fold2 anchors:false：旧 system 摘要里的锚点节必须被剥掉（全 head 剥离，不只目标消息）。
+  const fold2 = await strategy.compact(continued, { keepRounds: 2, anchors: false });
+  const whole2 = JSON.stringify(fold2.messages);
+  assert.doesNotMatch(whole2, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
+  assert.doesNotMatch(whole2, /1ed3f35|src\/compact\/fold-llm\.js:120|#32|git\.erix\.vip/u);
+  // 旧摘要的非锚点内容保留，新摘要照常前置到 system 消息（其后是恢复提示与逐字引用层）。
+  const systemBlocks = fold2.messages[0].content;
+  assert.match(systemBlocks[0].text, /^## 下一步\n已完成项禁止重做/u);
+  assert.doesNotMatch(systemBlocks[0].text, /## 锚点索引/u);
+});
+
+test("anchors:false leaves no stale anchors when the summary role switches between folds", async () => {
+  const summarizer = async () => "## 下一步\n已完成项禁止重做";
+
+  // fold1 默认：摘要落在 user 消息（summaryRole 缺省 user），产生锚点节。
+  const strategy = createFoldLlmStrategy({ summarizer });
+  const fold1 = await strategy.compact(anchorConversation(), { keepRounds: 2 });
+  assert.equal(fold1.messages[0].role, "user");
+  assert.match(fold1.messages[0].content[0].text, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
+
+  const continued = [
+    ...fold1.messages,
+    { role: "user", content: "second wave request" },
+    { role: "assistant", content: [{ type: "text", text: "second wave answer" }] },
+  ];
+
+  // fold2 切到 system + anchors:false：旧摘要还在 user 消息里，锚点节同样不得残留。
+  const fold2 = await createFoldLlmStrategy({
+    summarizer,
+    summaryRole: "system",
+  }).compact(continued, { keepRounds: 2, anchors: false });
+  const whole2 = JSON.stringify(fold2.messages);
+  assert.doesNotMatch(whole2, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
+  assert.doesNotMatch(whole2, /1ed3f35|src\/compact\/fold-llm\.js:120|#32|git\.erix\.vip/u);
+  // 新摘要落进新建 system 消息，旧 user 摘要的非锚点内容保留。
+  assert.equal(fold2.messages[0].role, "system");
+  assert.match(fold2.messages[0].content[0].text, /已完成项禁止重做/u);
+  const userSummary = fold2.messages.find((message) => message.role === "user");
+  assert.match(userSummary.content[0].text, /## 下一步\n已完成项禁止重做/u);
+  assert.doesNotMatch(userSummary.content[0].text, /## 锚点索引/u);
+});
+
 test("keeps the anchor section intact when maxSummaryTokens is tiny (A2)", async () => {
   const result = await createFoldLlmStrategy({
     summarizer: async () => "unsectioned summary ".repeat(200),
