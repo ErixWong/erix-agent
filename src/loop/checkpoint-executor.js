@@ -7,8 +7,24 @@ import {
   toolResultData,
 } from "./messages.js";
 import { directionHintText } from "./reflection.js";
+import {
+  aggregateStubText,
+  aggregateUnrecoverableStubText,
+  createRoundAggregateGate,
+  errorSnippet,
+} from "./aggregate-budget.js";
 
 export function createCheckpointExecutor(ctx) {
+  // 单轮聚合输出预算（issue #32 #2）：逐条 outputHygiene 之外的「本轮合计」闸门。
+  // 预算基准用引擎既有 budgetTokens（无窗口配置 → 聚合层整体关闭，行为不变）。
+  const aggregateGate = createRoundAggregateGate({
+    // 归档通道不存在（理论上 outputHygiene 已保证，这里只做防御）→ 聚合层关闭，不产生假 stub
+    budgetTokens: Array.isArray(ctx.archivedOutputs) ? ctx.aggregateBudgetTokens : undefined,
+    archivedOutputs: ctx.archivedOutputs ?? [],
+    listRoundResults: () => [...(ctx.checkpointResults?.values() ?? [])],
+  });
+  // 终止态事件每轮只报一次（诊断用；不参与判定，故无恢复语义）
+  const aggregateTerminalRounds = new Set();
   const normalizeExecutionResult = (value, startedAt) => {
     if (value instanceof Error) {
       return {
@@ -73,6 +89,75 @@ export function createCheckpointExecutor(ctx) {
     if (mergeToolResultsIntoMessages(snapshot, toolResults) !== false) return snapshot;
     snapshot.push({ role: "user", content: cloneState(toolResults) });
     return snapshot;
+  };
+
+  // 单轮聚合预算（issue #32 #2）：在 onToolResult 改写 + 逐条 outputHygiene 之后、后置 checkpoint
+  // **之前**立即判定内联或归档+stub。声明顺序与 tool_use_id 不变、不重排、不做批末回写——
+  // 因此已 checkpoint 的 tool_result 永远不会被回写，resume 语义与改动前一致。
+  const applyRoundAggregate = (block, round, toolName, execution, failed) => {
+    if (!aggregateGate.enabled) return execution;
+    // 聚合层要求稳定的 tool_use id（OpenAI/Anthropic 双协议都强制提供）：归档条目的幂等与
+    // 终止态判定都以 toolUseId 为键，缺 id 会让多条结果互相冒充。无 id 的结果维持现状（内联）。
+    if (block.id === undefined) return execution;
+    const decision = aggregateGate.evaluate({
+      round,
+      toolUseId: block.id,
+      content: execution.content,
+    });
+    if (decision.action === "inline") return execution;
+    const fullText = execution.content;
+    const snippet = failed ? errorSnippet(fullText) : undefined;
+    const emitAggregate = (action, extra = {}) => {
+      const emitEvent = ctx.emitEvent;
+      if (typeof emitEvent !== "function") return;
+      emitEvent({
+        type: "tool_output_aggregate",
+        round,
+        toolUseId: block.id,
+        name: toolName,
+        action,
+        reason: decision.reason,
+        budgetTokens: decision.budgetTokens,
+        inlineTokens: decision.inlineTokens,
+        costTokens: decision.costTokens,
+        projectedTokens: decision.projectedTokens,
+        contentLength: fullText.length,
+        ...extra,
+      });
+    };
+    if (decision.action === "archive") {
+      ctx.archivedOutputs.push({
+        toolUseId: block.id,
+        name: toolName,
+        round,
+        content: fullText,
+      });
+      emitAggregate("archived", { archivedBytes: decision.bytes });
+      return {
+        ...execution,
+        content: aggregateStubText({ round, length: fullText.length, errorSnippet: snippet }),
+      };
+    }
+    if (decision.action === "unrecoverable") {
+      // fail-closed：不归档、不承诺 recall，显式计数 + 事件（宁丢不骗）
+      ctx.archiveFailureCount += 1;
+      emitAggregate("unrecoverable", { archivedBytes: decision.archivedBytes });
+      return {
+        ...execution,
+        content: aggregateUnrecoverableStubText({
+          round,
+          length: fullText.length,
+          reason: decision.reason,
+          errorSnippet: snippet,
+        }),
+      };
+    }
+    // stub_kept：已在档（逐条或聚合归档过）→ 不再二次替换；全部 stub 化即终止，每轮只报一次
+    if (decision.terminal === true && !aggregateTerminalRounds.has(round)) {
+      aggregateTerminalRounds.add(round);
+      emitAggregate("terminated");
+    }
+    return execution;
   };
 
   const executeToolBlock = async (block, round, toolResults, pendingToolUses = []) => {
@@ -166,6 +251,15 @@ export function createCheckpointExecutor(ctx) {
           + `用 recall 取回原文或改用只读方式复核。]`,
       };
     }
+    // 单轮聚合预算：逐条阈值与聚合阈值**串联且独立**——逐条先跑，聚合再判；
+    // 已是 stub 的结果不再被聚合层二次替换（两者叠加不死循环）。
+    execution = applyRoundAggregate(
+      block,
+      round,
+      toolName,
+      execution,
+      isError || execution.success === false,
+    );
     const toolResult = {
       type: "tool_result",
       tool_use_id: block.id,

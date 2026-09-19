@@ -16,6 +16,8 @@ import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
 const OUTPUT_LIMIT = 4096;
+// 尾部保留比例（截断时）：结局（报错 / exit / 汇总）留在尾部可见
+const TRUNCATE_TAIL_SHARE = 0.25;
 const ARCHIVE_THRESHOLD = 800;
 const MAX_ARCHIVE_BYTES = 1024 * 1024;
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
@@ -319,11 +321,37 @@ function executeExecCommand(input, cwd) {
   });
 }
 
+/**
+ * Head+tail truncation for oversized tool output (host layer).
+ *
+ * 保留开头（命令上下文 / 第一条结果）与结尾（报错、exit 行、汇总），中间省略并标注字符数。
+ * 之前的 head-only 截断会把尾部报错信息整段丢掉（issue #32 #2）。本函数不按工具名分支：
+ * exec 结果经它截断；readFile 不经过它（自带 offset/limit 的 head+offset 窗口，行为不变）。
+ *
+ * @param {string} text
+ * @param {number} limit 保留的总字符数上限（head + tail）
+ * @param {string} omittedNote
+ * @returns {string}
+ */
+export function headTailTruncate(text, limit, omittedNote) {
+  if (text.length <= limit) return text;
+  const tailLength = Math.max(1, Math.floor(limit * TRUNCATE_TAIL_SHARE));
+  const headLength = Math.max(0, limit - tailLength);
+  // 不切碎代理对（CJK 之外的 emoji 会占两个 UTF-16 单元）
+  const head = text.slice(0, headLength).replace(/[\uD800-\uDBFF]$/u, "");
+  const tail = text.slice(text.length - tailLength).replace(/^[\uDC00-\uDFFF]/u, "");
+  const omitted = text.length - head.length - tail.length;
+  return `${head}\n[${omittedNote(omitted, text.length)}]\n${tail}`;
+}
+
 export function truncateResult(result) {
   const text = String(result ?? "");
   if (/\n\[完整输出(?:已归档|归档失败)：[^\n]+\]$/u.test(text)) return text;
-  if (text.length <= OUTPUT_LIMIT) return text;
-  return `${text.slice(0, OUTPUT_LIMIT)}\n[已截断，共 ${text.length} 字符]`;
+  return headTailTruncate(
+    text,
+    OUTPUT_LIMIT,
+    (omitted, total) => `中间省略 ${omitted} 字符，共 ${total} 字符`,
+  );
 }
 
 const TOOL_INPUT_LIMIT = 120;
@@ -364,7 +392,14 @@ function summarizeToolResult(name, result) {
   const text = String(result ?? "");
   // exec 输出可能是验证/回归脚本的多行结果，必须完整可见（对齐 exec 内部 4096 截断）
   const limit = name === "exec" ? TOOL_EXEC_RESULT_LIMIT : TOOL_RESULT_LIMIT;
-  return truncateDisplayText(text, limit);
+  // exec 日志同用 head+tail：尾部报错/exit 比中段 filler 有价值（issue #32 #2）
+  return name === "exec"
+    ? headTailTruncate(
+      text,
+      limit,
+      (omitted, total) => `中间省略 ${omitted} 字符，共 ${total} 字符`,
+    )
+    : truncateDisplayText(text, limit);
 }
 
 function metadataWithPrivateOutput(metadata, fullOutput) {

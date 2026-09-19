@@ -289,6 +289,19 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *                     // transcript store (the archive lives in the record). Defaults to enabled when a
  *                     // store is present; pass false to opt out. Default limit: 15% of the host-provided
  *                     // contextWindowTokens clamped to [8192, 100000], else 4096; an explicit limit wins.
+ *                     //
+ *                     // A second, round-level layer (issue #32 #2) chains onto the per-result limit:
+ *                     // the combined inline cost of one round's tool results is capped at
+ *                     // clamp(0.30 x budgetTokens, 16000, 200000) **estimated tokens** (estimateTokens,
+ *                     // stub text and per-result framing included; intercepted control results excluded,
+ *                     // failed results counted). Budget base is the engine's existing budgetTokens
+ *                     // (computeBudget / context.budgetTokens) — no second window source. Admission is
+ *                     // incremental in arrival order: results keep declaration order and ids, nothing is
+ *                     // rewritten after its checkpoint, so checkpoint/resume semantics are unchanged.
+ *                     // The layer is off when budgetTokens is absent or outputHygiene is false.
+ *                     // If a round's archived payload would push its record past the bounded-recall
+ *                     // parser limit, the layer fails closed (stub states the origin is unrecoverable
+ *                     // instead of promising recall) rather than emitting a silently skipped record.
  *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to ["writeFile"].
  *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
@@ -720,6 +733,10 @@ export async function runToolLoop(options) {
     });
   }
   if (budgetTokens !== undefined) validateBudget(budgetTokens);
+  // 单轮聚合输出预算（issue #32 #2）：口径统一写在 src/loop/aggregate-budget.js 顶部（估算 token、
+  // 计入 stub 开销与 framing）。预算基准**复用**上面算出的 budgetTokens，不新引 contextWindowTokens
+  // 第二套口径；budgetTokens 不存在（宿主无窗口配置）或 outputHygiene 被 opt-out 时聚合层整体关闭。
+  const aggregateBudgetTokens = outputHygieneEnabled ? budgetTokens : undefined;
   const compactionContext = context === undefined
     && budgetTokens === undefined
     && resourceStore === undefined
@@ -1602,6 +1619,8 @@ export async function runToolLoop(options) {
     baseToolContext,
     outputHygieneEnabled,
     outputHygieneLimit,
+    aggregateBudgetTokens,
+    emitEvent,
     archivedOutputs,
     toolSignal,
     signal,
