@@ -1587,8 +1587,11 @@ export async function runToolLoop(options) {
       // （输出越长漂移越大：实测 glm-5.3-flash-awq 变长 4 倍且漂成英文）。
       maxTokens: 512,
       temperature: 0,
-      // 不写死 reasoning_effort：实测对 glm-5.3-flash-awq 是负优化
-      // （该模型 reasoning_tokens 恒 0，参数无正面作用反而致输出漂移），交给 provider 默认/配置层。
+      // 2026-09-20 实测（glm-5.3-flash-awq）：reasoning_effort 是该 relay 上**唯一**能真
+      // 正关思考的参数（enable_thinking/chat_template_kwargs/thinking:{type:disabled} 都
+      // 关不掉，GLM 把思考放非标准 `reasoning` 字段）；关掉后 judge 输出纯 JSON，不关
+      // 则 512 预算被思考吃光 → content 空。qwen/deepseek 同样认此参数。不要删。
+      reasoning_effort: "none",
     };
     let timeoutController;
     let timeoutId;

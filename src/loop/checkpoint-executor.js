@@ -378,6 +378,7 @@ export function createCheckpointExecutor(ctx) {
     let judgeUsage;
     let judgeRaw;
     let interceptError;
+    let interceptErrorMessage;
     try {
       const callRoundJudge = ctx.callRoundJudge;
       const judged = await callRoundJudge(round, undefined, {
@@ -391,6 +392,8 @@ export function createCheckpointExecutor(ctx) {
       if (ctx.signal?.aborted) throwIfAborted(ctx.signal);
       decision = undefined;
       interceptError = error?.code === "judge_intercept_timeout" ? "timeout" : "error";
+      // 错误详情落 judge.log（可审计性）：judge 空转/报错需要能看到根因，300 字符截断。
+      interceptErrorMessage = String(error?.message ?? String(error)).slice(0, 300);
     }
     ctx.judgeInterceptCount = 0;
 
@@ -424,6 +427,7 @@ export function createCheckpointExecutor(ctx) {
         decision: null,
         action: "degraded",
         error: decision === undefined ? interceptError : "parse",
+        ...(interceptErrorMessage ? { errorDetail: interceptErrorMessage } : {}),
         // parse 失败但 usage 已可取得时同样带出（超时/抛错路径 judgeUsage 为 undefined，
         // 展开为空、字段缺省，行为不变）。
         ...(judgeUsage ? { usage: judgeUsage } : {}),

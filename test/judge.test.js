@@ -274,8 +274,10 @@ test("judge runs on non-tool rounds only, with reasoning disabled (tool rounds s
 
   // tool_use 轮不调 judge；仅 end_turn 轮调 1 次 → judge_done 停
   assert.equal(judge.requests.length, 1);
-  // 2026-09-20 修复：不再写死 reasoning_effort（实测负优化），由 provider 默认/配置层决定
-  assert.equal(judge.requests[0].reasoning_effort, undefined);
+  // 2026-09-20 修复：恢复 reasoning_effort:"none"——实测（glm-5.3-flash-awq）它是该 relay
+  // 上唯一能真正关思考的参数（GLM 把思考放非标准 `reasoning` 字段）；不关则 512 预算被
+  // 思考耗尽 → content 空 → provider 报 missing content。
+  assert.equal(judge.requests[0].reasoning_effort, "none");
   // judge 只输出一段 JSON，maxTokens 收敛到 512（原 8000 实测致输出漂移变长 4 倍）
   assert.equal(judge.requests[0].maxTokens, 512);
   assert.equal(judge.requests[0].temperature, 0);
@@ -1609,6 +1611,7 @@ test("transparent interception emits degraded when the judge fails", async () =>
     decision: null,
     action: "degraded",
     error: "error",
+    errorDetail: "judge unavailable",
   }]);
 });
 
@@ -1924,6 +1927,7 @@ test("intercept judge event carries usage and omits it on timeout (issue #33 B)"
     decision: null,
     action: "degraded",
     error: "timeout",
+    errorDetail: "Judge interception timed out",
   }]);
   assert.equal("usage" in timeoutEvents[0], false);
 });
