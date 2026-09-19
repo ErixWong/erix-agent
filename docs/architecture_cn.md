@@ -441,16 +441,31 @@ createCompositeToolProvider({ providers })
 
 执行器映射是由代码拥有的能力集合。`ToolProvider` 选择 schema，并可以覆盖描述和约束，但不能引入注册表中不存在的执行器。对于此类 schema，`resolveTools` 会以 `KitError("tool_unknown_executor", ...)` 失败。注册表执行会在调用执行器前校验 `required`、属性 `type` 和 `maxLength`；无效输入会变成错误字符串，不会到达执行器。不使用 `createToolRegistry` 的直接 `runToolLoop` 调用方须负责自己的输入校验。
 
-static 和 JSON-file 提供器选择 `sel.set` 或 `default`。composite 提供器按提供器顺序以名称合并 schema。`erix-agent/tools` 子路径还导出 `createRecallTool`、工具注册表和工具 provider。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集；库不包含路径牢笼和文件系统助手。
+static 和 JSON-file 提供器选择 `sel.set` 或 `default`。composite 提供器按提供器顺序以名称合并 schema。`erix-agent/tools` 子路径还导出 `createRecallTool`、工具注册表和工具 provider。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集（原有的 path-jail 与 file-tools 助手已在 0.5.1 窗口移除；按 ADR-009，本库不提供安全边界）。
 
 ## 4. 源码布局
 
 ```text
 src/
 ├── index.js                  # 公共根导出
-├── loop.js                   # runToolLoop 与 reflection 决策解析
+├── loop.js                   # 薄转发垫片（runToolLoop / parseReflectionDecision）
+├── assembly.js               # AssemblyPort 校验与 port→options 转换
 ├── run-state.js              # 有界的确定性与语义运行状态
 ├── tokens.js                 # 无依赖的 token 估算
+├── loop/                     # 编排核心
+│   ├── orchestrator.js       # runToolLoop 主循环（轮循环、wrapup、治理接线）
+│   ├── provider-runner.js    # provider 调用、重试与快照回滚
+│   ├── checkpoint-executor.js# 工具前后检查点与单轮聚合闸门
+│   ├── budget.js             # 预算校验与状态克隆辅助函数
+│   ├── aggregate-budget.js   # 单轮聚合输出闸门（issue #32）
+│   ├── termination.js        # 终态归类
+│   ├── resume-manager.js     # 断点恢复与 run-state 应用
+│   ├── error-ledger.js       # 重复错误记账
+│   ├── messages.js           # 消息/block 辅助函数（tool-result 合并、文本抽取）
+│   ├── reflection.js         # 反思提示与决策解析
+│   ├── task-brief.js         # judge/reflection/wrapup 的任务简报选取
+│   ├── abort.js              # 中止信号辅助函数
+│   └── block-helpers.js      # block 访问辅助函数
 ├── providers/
 │   ├── anthropic.js          # Anthropic Messages 请求与流式传输
 │   ├── errors.js             # KitError 与提供器错误分类
@@ -460,28 +475,32 @@ src/
 ├── messages/
 │   ├── anthropic.js          # 规范 <-> Anthropic 转换与 SSE 组装
 │   ├── canonical.js          # 规范块与 OpenAI 转换
+│   ├── openai-normalization.js # OpenAI usage/stopReason 归一化与流聚合器
 │   └── rounds.js             # 消息校验与轮次分组
 ├── compact/
 │   ├── budget.js             # computeBudget
 │   ├── enforce-size.js       # 确定性字段裁剪
 │   ├── fold-llm.js           # LLM 驱动的整轮折叠
 │   ├── fold-statistical.js   # 确定性的整轮折叠
-│   ├── helpers.js             # 共享的折叠选择与钩子辅助函数
+│   ├── anchors.js            # 机械锚点抽取（路径/SHA/issue/URL/错误行）
+│   ├── fold-fidelity.js      # 用户输入逐字引用与反向信号检测
+│   ├── helpers.js            # 共享的折叠选择与钩子辅助函数
 │   └── sliding-window.js     # 整轮滑动窗口折叠
 ├── store/
 │   ├── bounded-recall.js     # 有界、基于游标的 recall 实现
 │   ├── file.js               # JSONL transcript、状态与 checkpoint 存储
-│   └── memory.js             # 进程内 transcript、状态与 checkpoint 存储
+│   ├── memory.js             # 进程内 transcript、状态与 checkpoint 存储
+│   └── notes.js              # 宿主侧 notes 存储
 ├── config/
 │   ├── api-key.js            # 直接、环境和文件密钥解析
 │   ├── env.js                # 基于环境的模型配置
 │   ├── json-file.js          # 基于 JSON 文件的模型配置
 │   └── static.js              # 静态模型配置
 ├── reflection/
-│   ├── governor.js            # 确定性的续接与停止决策
-│   ├── judge.js               # 客观时间线与 judge 解析
-│   ├── l0.js                  # 客观工具结果事实与摘要解析
-│   └── wrapup.js              # 回合结束 JSON 解析与规范化
+│   ├── governor.js           # 确定性的续接与停止决策
+│   ├── judge.js              # 客观时间线与 judge 解析
+│   ├── l0.js                 # 客观工具结果事实与摘要解析
+│   └── wrapup.js             # 回合结束 JSON 解析与规范化
 └── tools/
     ├── index.js               # erix-agent/tools 子路径导出
     ├── providers.js           # static、JSON-file 和 composite ToolProvider

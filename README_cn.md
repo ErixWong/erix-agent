@@ -21,7 +21,7 @@ CLI（`erix`）是验证器和调试器，不是产品：
 
 运行时还提供自描述 skill、MCP 集成、transcript store 和宿主提供的任务状态等扩展面。仓库内置 `notes` skill；todo skill 是 `examples/skills/todo/` 下的示例，不是内置的 `runToolLoop` 能力。
 
-> **安全边界：** 运行时不执行安全策略。安全责任由调用方承担。在本地运行意味着让 agent 访问你的本地信任域；嵌入式或沙盒部署必须由宿主隔离。CLI 工具有意允许任意文件路径和 shell 命令，不添加白名单或确认提示。可选的 `erix-agent/tools` export 包含 jail helper，供调用方构建受限工具面。
+> **安全边界：** 运行时不执行安全策略。安全责任由调用方承担。在本地运行意味着让 agent 访问你的本地信任域；嵌入式或沙盒部署必须由宿主隔离。CLI 工具有意允许任意文件路径和 shell 命令，不添加白名单或确认提示。
 
 项目面向包括 `app_container`（PI Agent 审计/开发路径）和 `touwaka`（AgentLoop/对话路径）在内的集成。这些宿主集成不属于本包的生命周期边界。
 
@@ -65,9 +65,24 @@ Agent 行为难以预测。统一 Headless Agent 的价值，就是让业务代�
 ```text
 src/
   index.js                         公共导出
-  loop.js                          runToolLoop 与 reflection 解析
+  loop.js                          薄转发垫片（runToolLoop 本体在 loop/）
+  assembly.js                      AssemblyPort 校验（宿主边界）
   run-state.js                     有界的确定性与语义运行状态
   tokens.js                        保守的 token 估算
+  loop/                            # 编排核心
+    orchestrator.js                runToolLoop 主循环
+    provider-runner.js             provider 调用、重试与快照回滚
+    checkpoint-executor.js         工具前后检查点与聚合闸门
+    budget.js                      预算校验与状态克隆辅助函数
+    aggregate-budget.js            单轮聚合输出闸门
+    termination.js                 终态归类
+    resume-manager.js              断点恢复与 run-state 应用
+    error-ledger.js                重复错误记账
+    messages.js                    消息/block 辅助函数
+    reflection.js                  反思提示与决策解析
+    task-brief.js                  任务简报选取
+    abort.js                       中止信号辅助函数
+    block-helpers.js               block 访问辅助函数
   providers/
     anthropic.js                   Anthropic provider 与流式处理
     errors.js                       provider 错误与分类
@@ -83,12 +98,15 @@ src/
     enforce-size.js                 字段大小限制
     fold-llm.js                     LLM 辅助的折叠策略
     fold-statistical.js             统计折叠与导航记录
+    anchors.js                      机械锚点抽取（路径/SHA/issue/URL/错误行）
+    fold-fidelity.js                用户输入逐字引用与反向信号检测
     helpers.js                      共享的折叠、保护、stub 与 hook 辅助函数
     sliding-window.js               滑动窗口折叠策略
   store/
     bounded-recall.js               有界、基于游标的 recall 实现
     file.js                         JSONL transcript、checkpoint 与状态存储
     memory.js                        进程内 transcript、checkpoint 与状态存储
+    notes.js                        宿主侧 notes 存储
   config/
     api-key.js                      API key 物化
     env.js                          基于环境变量的模型配置
@@ -100,9 +118,7 @@ src/
     l0.js                           objective facts 与摘要解析
     wrapup.js                       wrap-up 协议解析与规范化
   tools/
-    file-tools.js                   文件工具实现
     index.js                        可选 tools 子路径导出
-    jail.js                         可选的路径 jail helper
     providers.js                    tool-provider adapter
     recall.js                       可选 recall tool adapter
     registry.js                     工具 schema 与 executor registry

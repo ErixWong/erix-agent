@@ -46,8 +46,7 @@ repository bundles the `notes` skill; the todo skill is an example under
 > agent access to your local trust domain; embedded or sandboxed deployments
 > must be isolated by the host. The CLI tools intentionally allow arbitrary
 > file paths and shell commands and do not add an allowlist or confirmation
-> prompt. The optional `erix-agent/tools` export includes a jail helper for
-> callers that want to build a restricted tool surface.
+> prompt.
 
 The project is intended for integrations including `app_container` (PI Agent
 audit/development paths) and `touwaka` (AgentLoop/conversation paths). Those
@@ -108,9 +107,24 @@ The public entry point is `src/index.js`; the complete current source tree is:
 ```text
 src/
   index.js                         Public exports
-  loop.js                          runToolLoop and reflection parsing
+  loop.js                          Thin re-export shim (runToolLoop lives in loop/)
+  assembly.js                      AssemblyPort validation (host boundary)
   run-state.js                     Bounded deterministic and semantic run state
   tokens.js                        Conservative token estimation
+  loop/                            # orchestration core
+    orchestrator.js                runToolLoop main loop
+    provider-runner.js             Provider call, retry, and snapshot rollback
+    checkpoint-executor.js         Pre/post tool checkpoints and aggregate gate
+    budget.js                      Budget validation and state cloning helpers
+    aggregate-budget.js            Per-round aggregate output gate
+    termination.js                 Termination reason classification
+    resume-manager.js              Resume restore and run-state application
+    error-ledger.js                Repeated-error accounting
+    messages.js                    Message/block helpers
+    reflection.js                  Reflection prompts and decision parsing
+    task-brief.js                  Task brief selection
+    abort.js                       Abort-signal helpers
+    block-helpers.js               Block access helpers
   providers/
     anthropic.js                   Anthropic provider and streaming
     errors.js                      Provider errors and classification
@@ -127,12 +141,15 @@ src/
     enforce-size.js                Field-size enforcement
     fold-llm.js                    LLM-assisted folding strategy
     fold-statistical.js            Statistical folding and navigation records
+    anchors.js                     Mechanical anchor extraction (paths/SHAs/issues/URLs/errors)
+    fold-fidelity.js               Verbatim user-input quotes and reverse-signal detection
     helpers.js                     Shared folding, protection, stub, and hook helpers
     sliding-window.js              Sliding-window folding strategy
   store/
     bounded-recall.js              Bounded, cursor-based recall implementation
     file.js                        JSONL transcript, checkpoint, and state store
     memory.js                      In-process transcript, checkpoint, and state store
+    notes.js                       Host-side notes store
   config/
     api-key.js                     API-key materialization
     env.js                         Environment-backed model configuration
@@ -144,9 +161,7 @@ src/
     l0.js                          Objective facts and summary parsing
     wrapup.js                      Wrap-up protocol parsing and normalization
   tools/
-    file-tools.js                  File tool implementations
     index.js                       Optional tools subpath exports
-    jail.js                        Optional path-jail helper
     providers.js                   Tool-provider adapters
     recall.js                      Optional recall tool adapter
     registry.js                    Tool schemas and executor registry

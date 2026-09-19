@@ -29,18 +29,21 @@ modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }))
 2. **Fake provider**（`test/helpers/fake-provider.js`）是内存中的、符合 `LlmProvider` 形状的 provider。它记录请求，返回脚本化文本和 `tool_use` 内容，支持重复的脚本步骤，也可以抛出脚本化错误。循环测试直接使用它，因为测试对象是编排而不是 HTTP。
 3. **Canonical round fixtures**（`test/fixtures/rounds-fixtures.mjs`）提供具有代表性的纯文本、单工具、多工具和混合多轮对话，供消息转换和压缩测试使用。
 4. **本地 MCP fixtures** 位于仓库根目录的 `fixtures/` 目录：`fixtures/mock-mcp-server.mjs` 和 `fixtures/mock-mcp-http-server.mjs`。它们是供 `test/mcp.test.js` 使用的可执行 stdio 和 HTTP server。请将这些 server 保持在 `test/` 之外：`node --test` 会发现 test tree 下的文件，将长驻 fixture server 当作测试文件执行可能导致测试运行挂起。`test/fixtures/` 下的数据 fixture 由测试导入，并不是 server 入口。
-5. **契约 helpers**（`test/contract/index.js`、`test/contract/transcript-store.js` 和 `test/contract/model-config-provider.js`）定义共享的 transcript-store 和 model-config-provider 断言。内置的 memory/file store 和 config provider 会在各自测试中注册这些契约。
+5. **契约 helpers**（`test/contract/index.js`、`test/contract/transcript-store.js`、`test/contract/model-config-provider.js`、`test/contract/assembly-port.js`、`test/contract/execute-tool.js`、`test/contract/notes-store.js` 和 `test/contract/recall-contract.js`）定义宿主端口的共享断言。内置的 memory/file store 和 config provider 会在各自测试中注册这些契约。
 
 完整的、已跟踪的 `test/` tree 如下：
 
 ```text
 test/
 ├── app-container-p0.test.js
+├── capture-honesty.test.js
 ├── cli.test.js
 ├── codewrite.test.js
 ├── config.test.js
+├── error-ledger.test.js
 ├── governor.test.js
 ├── judge.test.js
+├── loop-callback-this.test.js
 ├── loop-final-guard.test.js
 ├── loop-fr2.test.js
 ├── loop-resume.test.js
@@ -52,9 +55,14 @@ test/
 ├── loop.test.js
 ├── mcp.test.js
 ├── notes-autocapture.test.js
+├── notes-directory.test.js
 ├── notes-experiment.test.js
 ├── notes-final-guard.test.js
 ├── notes.test.js
+├── output-aggregate-budget.test.js
+├── output-hygiene.test.js
+├── persistence-diagnostics.test.js
+├── recall-standard.test.js
 ├── reflection.test.js
 ├── repl.test.js
 ├── run-state.test.js
@@ -63,8 +71,10 @@ test/
 ├── tools.test.js
 ├── wrapup.test.js
 ├── compact/
+│   ├── anchors.test.js
 │   ├── budget.test.js
 │   ├── enforce-size.test.js
+│   ├── fold-fidelity.test.js
 │   ├── fold-llm.test.js
 │   ├── fold-statistical.test.js
 │   ├── sliding-window.test.js
@@ -75,10 +85,15 @@ test/
 │   ├── json-file.test.js
 │   └── static.test.js
 ├── contract/
+│   ├── assembly-port.js / assembly-port.test.js
+│   ├── execute-tool.js / execute-tool.test.js
 │   ├── index.js
 │   ├── model-config-provider.js
+│   ├── notes-store.js
+│   ├── recall-contract.js
 │   └── transcript-store.js
 ├── fixtures/
+│   ├── notes/
 │   └── rounds-fixtures.mjs
 ├── helpers/
 │   ├── fake-provider.js
@@ -88,6 +103,7 @@ test/
 ├── messages/
 │   ├── anthropic.test.js
 │   ├── canonical.test.js
+│   ├── openai-normalization.test.js
 │   ├── rounds.test.js
 │   └── v020-alpha.test.js
 ├── providers/
@@ -102,12 +118,12 @@ test/
 │   ├── memory.test.js
 │   └── v020-rc.test.js
 └── tools/
-    ├── file-tools.test.js
-    ├── jail.test.js
     ├── providers.test.js
     ├── recall.test.js
     └── registry.test.js
 ```
+
+（上图是地图，不是清单；权威目录以 `find test -name "*.js" | sort` 为准。）
 
 ## 1. v0.0（MVP）——基础路径可用
 
@@ -143,7 +159,7 @@ test/
 | Resume 与 run state | `test/loop-resume.test.js`、`test/run-state.test.js` | 恢复时不重放付费 provider 调用或已执行工具、部分工具结果、折叠 checkpoint、有界/脱敏 run state、schema 可用性、幂等替换和持久化的工具事实 |
 | Store 与压缩 | `test/store/file.test.js`、`test/store/v020-rc.test.js`、`test/compact/fold-llm.test.js`、`test/compact/v020-rc.test.js` | JSONL append/load、畸形尾部和崩溃安全处理、原子 state 写入、去重、有界 recall cursor、注入的 LLM summarizer、尺寸执法、受保护轮次、全局轮次偏移和 image 清理 |
 | 配置 | `test/config/json-file.test.js`、`test/config.test.js` | JSON-file slot、API-key materialization、default-slot 回退、CLI 配置路径、环境覆盖、context-window 解析和压缩上下文构建 |
-| 工具 | `test/tools/file-tools.test.js`、`test/tools/jail.test.js`、`test/tools/providers.test.js`、`test/tools/recall.test.js`、`test/tools/registry.test.js`、`test/tools.test.js` | Jail 边界和符号链接处理、文件操作、tool-provider 组合、recall 与折叠 payload、schema 交集和输入校验、CLI 工具执行、归档、可重放性、脱敏和输出限制 |
+| 工具 | `test/tools/providers.test.js`、`test/tools/recall.test.js`、`test/tools/registry.test.js`、`test/tools.test.js` | tool-provider 组合、recall 与折叠 payload、schema 交集和输入校验、CLI 工具执行、归档和输出限制 |
 | CLI、REPL、MCP 与 skills | `test/cli.test.js`、`test/repl.test.js`、`test/mcp.test.js`、`test/skills.test.js`、`test/codewrite.test.js` | CLI/repl 参数和 session 处理、MCP stdio 与 HTTP fixtures、工具发现/调用/错误、skill 发现/加载/冲突，以及 CLI 写代码工具 |
 
 仓库还有一个场景级测试 `test/integration/memento-scenario.test.js`。它跨 loop、tools、compaction 和 memory store，测试折叠、不可重放值、凭据排除、归档指针、重复折叠以及逐字节一致的有界 recall。
@@ -157,6 +173,7 @@ test/
 | Judge 与 governor | `test/judge.test.js`、`test/governor.test.js` | 轮次和工具使用判定、透明拦截、方向提示、降级 judge 行为、进度/错误治理、反思请求、收尾提示和可观测的 judge 决策 |
 | Reflection 与最终校验 | `test/reflection.test.js`、`test/wrapup.test.js`、`test/loop-final-guard.test.js` | 反思决策、收尾解析与循环行为、final-guard 验收/修订、provenance、重试上限、超时/错误报告和 fail-closed 校验 |
 | Notes 与 capture | `test/notes.test.js`、`test/notes-autocapture.test.js`、`test/notes-final-guard.test.js`、`test/notes-experiment.test.js` | 笔记生命周期和作用域、provenance、凭据过滤、自动捕获和归档、final-guard 集成、实验规划/成本门槛、usage 摘要和可复现性报告 |
+| 档案、recall 与输出卫生（ADR-015） | `test/output-hygiene.test.js`、`test/output-aggregate-budget.test.js`、`test/recall-standard.test.js`、`test/persistence-diagnostics.test.js`、`test/error-ledger.test.js`、`test/capture-honesty.test.js`、`test/compact/anchors.test.js`、`test/compact/fold-fidelity.test.js` | 引擎 recall 工具注册、bounded-recall 游标契约、输出 stub 与单轮聚合闸门、持久化诊断、重复错误记账、机械锚点、用户输入逐字保真和 capture 诚实性 |
 
 这些是当前产品表面的测试，不是对上面按版本标记的回归文件的新替代；`npm test` 会将它们一起运行。
 

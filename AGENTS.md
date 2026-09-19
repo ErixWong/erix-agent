@@ -19,16 +19,21 @@ Project-specific rules; shared/global conventions live in `~/projects/AGENTS.md`
 ```
 src/
 ├── index.js
-├── loop.js
+├── loop.js        # thin re-export shim (runToolLoop lives in loop/)
+├── assembly.js    # AssemblyPort validation (host boundary)
 ├── run-state.js
 ├── tokens.js
-├── compact/       # context compaction
+├── loop/          # orchestration core: orchestrator (runToolLoop), provider-runner,
+│                  # checkpoint-executor, budget, aggregate-budget, termination,
+│                  # resume-manager, error-ledger, messages, reflection, task-brief, abort
+├── compact/       # context compaction: budget, sliding-window, fold-statistical,
+│                  # fold-llm, anchors, fold-fidelity, enforce-size
 ├── config/        # configuration adapters
-├── messages/      # message representations
+├── messages/      # canonical message model + OpenAI/Anthropic conversion
 ├── providers/     # OpenAI/Anthropic dual-protocol providers
 ├── reflection/    # governor, judge, l0, wrapup
-├── store/         # bounded-recall, file, memory
-└── tools/         # file-tools, jail, providers, recall, registry
+├── store/         # bounded-recall, file, memory, notes
+└── tools/         # registry, providers, recall (opt-in erix-agent/tools subpath)
 bin/              # CLI (validator/debugger): cli.js (entry/chat), repl.js (TUI), tools.js (built-in tools + prompts), skills.js, mcp.js, config.js, final-guard-support.js, final-guard.js, guard-metrics.js
 test/             # unit tests (node --test), with compact/, providers/, tools/, config/, messages/, contract/, helpers/, fixtures/, integration/, and top-level test files
 fixtures/         # test fixtures (mock MCP servers) — ⚠️ mock MCP servers must not be put under test/ (node --test runs all files under test and can hang)
