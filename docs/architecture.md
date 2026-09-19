@@ -592,20 +592,36 @@ executor. Direct `runToolLoop` callers that do not use `createToolRegistry`
 are responsible for their own input validation.
 
 The static and JSON-file providers select `sel.set` or `default`. The
-composite provider merges schemas by name in provider order. The
+composite provider merges schemas by name in provider order.
 The `erix-agent/tools` subpath also exports `createRecallTool`, the tool
 registry, and tool providers. These are opt-in helpers, not an implicit tool
-set installed into `runToolLoop`; path-jail and filesystem helpers are not
-part of the library.
+set installed into `runToolLoop` (the former path-jail and file-tools helpers
+were removed in the 0.5.1 window; per ADR-009 the library provides no security
+boundary).
 
 ## 4. Source layout
 
 ```text
 src/
 ├── index.js                  # Public root exports
-├── loop.js                   # runToolLoop and reflection decision parsing
+├── loop.js                   # Thin re-export shim (runToolLoop / parseReflectionDecision)
+├── assembly.js               # AssemblyPort validation and port-to-options conversion
 ├── run-state.js              # Bounded deterministic and semantic run state
 ├── tokens.js                 # Dependency-free token estimates
+├── loop/                     # Orchestration core
+│   ├── orchestrator.js       # runToolLoop main loop (round loop, wrapup, governance wiring)
+│   ├── provider-runner.js    # Provider call, retry, and snapshot rollback
+│   ├── checkpoint-executor.js# Pre/post tool checkpoints and per-round aggregate gate
+│   ├── budget.js             # Budget validation and state cloning helpers
+│   ├── aggregate-budget.js   # Per-round aggregate output gate (issue #32)
+│   ├── termination.js        # Termination reason classification
+│   ├── resume-manager.js     # Resume restore and run-state application
+│   ├── error-ledger.js       # Repeated-error accounting
+│   ├── messages.js           # Message/block helpers (tool-result merging, text extraction)
+│   ├── reflection.js         # Reflection prompts and decision parsing
+│   ├── task-brief.js         # Task brief selection for judge/reflection/wrapup
+│   ├── abort.js              # Abort-signal helpers
+│   └── block-helpers.js      # Block access helpers
 ├── providers/
 │   ├── anthropic.js          # Anthropic Messages requests and streaming
 │   ├── errors.js             # KitError and provider error classification
@@ -615,28 +631,32 @@ src/
 ├── messages/
 │   ├── anthropic.js          # Canonical <-> Anthropic conversion and SSE assembly
 │   ├── canonical.js          # Canonical blocks and OpenAI conversion
+│   ├── openai-normalization.js # OpenAI usage/stopReason normalization and stream accumulator
 │   └── rounds.js             # Message validation and round grouping
 ├── compact/
 │   ├── budget.js             # computeBudget
 │   ├── enforce-size.js       # Deterministic field pruning
 │   ├── fold-llm.js           # LLM-backed whole-round folding
 │   ├── fold-statistical.js   # Deterministic whole-round folding
-│   ├── helpers.js             # Shared folding selection and hook helpers
+│   ├── anchors.js            # Mechanical anchor extraction (paths/SHAs/issues/URLs/errors)
+│   ├── fold-fidelity.js      # Verbatim user-input quotes and reverse-signal detection
+│   ├── helpers.js            # Shared folding selection and hook helpers
 │   └── sliding-window.js     # Whole-round sliding-window folding
 ├── store/
 │   ├── bounded-recall.js     # Bounded, cursor-based recall implementation
 │   ├── file.js               # JSONL transcript, state, and checkpoint store
-│   └── memory.js             # In-process transcript, state, and checkpoint store
+│   ├── memory.js             # In-process transcript, state, and checkpoint store
+│   └── notes.js              # Host-side notes store
 ├── config/
 │   ├── api-key.js            # Direct, environment, and file key resolution
 │   ├── env.js                # Environment-backed model configuration
 │   ├── json-file.js          # JSON-file-backed model configuration
 │   └── static.js              # Static model configuration
 ├── reflection/
-│   ├── governor.js            # Deterministic continuation and stop decisions
-│   ├── judge.js               # Objective timeline and judge parsing
-│   ├── l0.js                  # Objective tool-result facts and summary parsing
-│   └── wrapup.js              # End-of-turn JSON parsing and normalization
+│   ├── governor.js           # Deterministic continuation and stop decisions
+│   ├── judge.js              # Objective timeline and judge parsing
+│   ├── l0.js                 # Objective tool-result facts and summary parsing
+│   └── wrapup.js             # End-of-turn JSON parsing and normalization
 └── tools/
     ├── index.js               # erix-agent/tools subpath exports
     ├── providers.js           # Static, JSON-file, and composite ToolProvider

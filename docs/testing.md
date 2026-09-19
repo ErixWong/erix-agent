@@ -29,18 +29,21 @@ modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }))
 2. **Fake provider** (`test/helpers/fake-provider.js`) is an in-memory `LlmProvider`-shaped provider. It records requests, returns scripted text and `tool_use` content, supports repeated script steps, and can throw a scripted error. Loop tests use it directly because they exercise orchestration rather than HTTP.
 3. **Canonical round fixtures** (`test/fixtures/rounds-fixtures.mjs`) provide representative text-only, single-tool, multiple-tool, and mixed multi-round conversations for message conversion and compaction tests.
 4. **Local MCP fixtures** live in the repository-root `fixtures/` directory: `fixtures/mock-mcp-server.mjs` and `fixtures/mock-mcp-http-server.mjs`. They are executable stdio and HTTP servers used by `test/mcp.test.js`. Keep these servers outside `test/`: `node --test` discovers files under the test tree, and executing a long-lived fixture server as a test file can hang the test run. The data fixture under `test/fixtures/` is imported by tests and is not a server entry point.
-5. **Contract helpers** (`test/contract/index.js`, `test/contract/transcript-store.js`, and `test/contract/model-config-provider.js`) define the shared transcript-store and model-config-provider assertions. The built-in memory/file stores and config providers register these contracts from their own tests.
+5. **Contract helpers** (`test/contract/index.js`, `test/contract/transcript-store.js`, `test/contract/model-config-provider.js`, `test/contract/assembly-port.js`, `test/contract/execute-tool.js`, `test/contract/notes-store.js`, and `test/contract/recall-contract.js`) define the shared assertions for the host ports. The built-in memory/file stores and config providers register these contracts from their own tests.
 
 The complete tracked `test/` tree is:
 
 ```text
 test/
 ├── app-container-p0.test.js
+├── capture-honesty.test.js
 ├── cli.test.js
 ├── codewrite.test.js
 ├── config.test.js
+├── error-ledger.test.js
 ├── governor.test.js
 ├── judge.test.js
+├── loop-callback-this.test.js
 ├── loop-final-guard.test.js
 ├── loop-fr2.test.js
 ├── loop-resume.test.js
@@ -52,9 +55,14 @@ test/
 ├── loop.test.js
 ├── mcp.test.js
 ├── notes-autocapture.test.js
+├── notes-directory.test.js
 ├── notes-experiment.test.js
 ├── notes-final-guard.test.js
 ├── notes.test.js
+├── output-aggregate-budget.test.js
+├── output-hygiene.test.js
+├── persistence-diagnostics.test.js
+├── recall-standard.test.js
 ├── reflection.test.js
 ├── repl.test.js
 ├── run-state.test.js
@@ -63,8 +71,10 @@ test/
 ├── tools.test.js
 ├── wrapup.test.js
 ├── compact/
+│   ├── anchors.test.js
 │   ├── budget.test.js
 │   ├── enforce-size.test.js
+│   ├── fold-fidelity.test.js
 │   ├── fold-llm.test.js
 │   ├── fold-statistical.test.js
 │   ├── sliding-window.test.js
@@ -75,10 +85,15 @@ test/
 │   ├── json-file.test.js
 │   └── static.test.js
 ├── contract/
+│   ├── assembly-port.js / assembly-port.test.js
+│   ├── execute-tool.js / execute-tool.test.js
 │   ├── index.js
 │   ├── model-config-provider.js
+│   ├── notes-store.js
+│   ├── recall-contract.js
 │   └── transcript-store.js
 ├── fixtures/
+│   ├── notes/
 │   └── rounds-fixtures.mjs
 ├── helpers/
 │   ├── fake-provider.js
@@ -88,6 +103,7 @@ test/
 ├── messages/
 │   ├── anthropic.test.js
 │   ├── canonical.test.js
+│   ├── openai-normalization.test.js
 │   ├── rounds.test.js
 │   └── v020-alpha.test.js
 ├── providers/
@@ -102,12 +118,12 @@ test/
 │   ├── memory.test.js
 │   └── v020-rc.test.js
 └── tools/
-    ├── file-tools.test.js
-    ├── jail.test.js
     ├── providers.test.js
     ├── recall.test.js
     └── registry.test.js
 ```
+
+(The listing is a map, not a manifest; the authoritative inventory is `find test -name "*.js" | sort`.)
 
 ## 1. v0.0 (MVP) — the basic path works
 
@@ -143,7 +159,7 @@ The migration acceptance criterion remains external to this repository: after `a
 | Resume and run state | `test/loop-resume.test.js`, `test/run-state.test.js` | Resuming without replaying paid provider calls or executed tools, partial tool results, folded checkpoints, bounded/redacted run state, schema availability, idempotent replacement, and persisted tool facts |
 | Stores and compaction | `test/store/file.test.js`, `test/store/v020-rc.test.js`, `test/compact/fold-llm.test.js`, `test/compact/v020-rc.test.js` | JSONL append/load, malformed-tail and crash-safe handling, atomic state writes, deduplication, bounded recall cursors, injected LLM summarizers, size enforcement, protected rounds, global round offsets, and image cleanup |
 | Configuration | `test/config/json-file.test.js`, `test/config.test.js` | JSON-file slots, API-key materialization, default-slot fallback, CLI config paths, environment overrides, context-window parsing, and compaction-context construction |
-| Tools | `test/tools/file-tools.test.js`, `test/tools/jail.test.js`, `test/tools/providers.test.js`, `test/tools/recall.test.js`, `test/tools/registry.test.js`, `test/tools.test.js` | Jail boundaries and symlink handling, file operations, tool-provider composition, recall and folded payloads, schema intersection and input validation, CLI tool execution, archiving, replayability, redaction, and output limits |
+| Tools | `test/tools/providers.test.js`, `test/tools/recall.test.js`, `test/tools/registry.test.js`, `test/tools.test.js` | Tool-provider composition, recall and folded payloads, schema intersection and input validation, CLI tool execution, archiving, and output limits |
 | CLI, REPL, MCP, and skills | `test/cli.test.js`, `test/repl.test.js`, `test/mcp.test.js`, `test/skills.test.js`, `test/codewrite.test.js` | CLI/repl argument and session handling, MCP stdio and HTTP fixtures, tool discovery/calls/errors, skill discovery/loading/conflicts, and the CLI code-writing tools |
 
 The repository also has a scenario-level test in `test/integration/memento-scenario.test.js`. It exercises folding, non-replayable values, credential exclusion, archive pointers, repeated folds, and byte-for-byte bounded recall across the loop, tools, compaction, and memory store.
@@ -157,6 +173,7 @@ The later/current suite is represented by:
 | Judge and governor | `test/judge.test.js`, `test/governor.test.js` | Round and tool-use judging, transparent interception, direction hints, degraded judge behavior, progress/error governance, reflection requests, wrap-up nudges, and observable judge decisions |
 | Reflection and final verification | `test/reflection.test.js`, `test/wrapup.test.js`, `test/loop-final-guard.test.js` | Reflection decisions, wrap-up parsing and loop behavior, final-guard acceptance/revision, provenance, retry limits, timeout/error reporting, and fail-closed verification |
 | Notes and capture | `test/notes.test.js`, `test/notes-autocapture.test.js`, `test/notes-final-guard.test.js`, `test/notes-experiment.test.js` | Note lifecycle and scoping, provenance, credential filtering, automatic capture and archival, final-guard integration, experiment planning/cost gates, usage summaries, and reproducibility reporting |
+| Archive, recall, and output hygiene (ADR-015) | `test/output-hygiene.test.js`, `test/output-aggregate-budget.test.js`, `test/recall-standard.test.js`, `test/persistence-diagnostics.test.js`, `test/error-ledger.test.js`, `test/capture-honesty.test.js`, `test/compact/anchors.test.js`, `test/compact/fold-fidelity.test.js` | Engine recall-tool registration, bounded-recall cursor contracts, output stubs and per-round aggregate gates, persistence diagnostics, repeated-error accounting, mechanical anchors, verbatim user-input fidelity, and capture honesty |
 
 These files are current product-surface tests rather than a new replacement for the version-tagged regression files above; `npm test` runs them together.
 
