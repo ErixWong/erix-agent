@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  archiveResult,
   createCliTools,
   getCommandTimeoutMs,
   getExecTimeoutMs,
@@ -30,69 +29,6 @@ test("createCliTools exposes all five tools", () => {
     tools.map((tool) => tool.name).sort(),
     ["exec", "readFile", "rg", "tree", "writeFile"],
   );
-});
-
-test("replayability records declared, policy, heuristic, and unknown sources", async () => {
-  await withDirectory(async (cwd) => {
-    const cases = [
-      {
-        name: "declared",
-        options: {
-          replayable: { exec: false },
-          nonReplayable: { patterns: ["declared"] },
-        },
-        command: "printf declared",
-        source: "declared",
-      },
-      {
-        name: "policy",
-        options: { nonReplayable: { patterns: ["policy"] } },
-        command: "printf policy",
-        source: "policy",
-      },
-      {
-        name: "heuristic",
-        options: {},
-        command: "printf heuristic; : \"$RANDOM\"",
-        source: "heuristic",
-      },
-      {
-        name: "unknown",
-        options: {},
-        command: "printf unknown",
-        source: "unknown",
-      },
-    ];
-
-    for (const [index, item] of cases.entries()) {
-      const archiveDir = join(cwd, `outputs-${index}`);
-      const tools = createCliTools({
-        cwd,
-        archiveDir,
-        ...item.options,
-      });
-      const result = await tools.executeTool("exec", { command: item.command });
-      const metadata = tools.getLastToolMetadata();
-      assert.equal(metadata.replayableSource, item.source, item.name);
-      assert.equal(metadata.replayable, item.source === "unknown" ? undefined : false);
-      // ADR-015 4a：非重放 exec 落 capture manifest（guard 专用），模型文本不再带归档 stub
-      assert.doesNotMatch(result, /完整输出已归档/u, item.name);
-      assert.equal(
-        metadata.artifactStatus === undefined,
-        item.source === "unknown",
-        item.name,
-      );
-    }
-
-    const unknownTools = createCliTools({
-      cwd,
-      archiveDir: join(cwd, "unknown-rerun"),
-    });
-    await unknownTools.executeTool("exec", { command: "printf rerun" });
-    const rerun = await unknownTools.executeTool("exec", { command: "printf rerun" });
-    assert.doesNotMatch(rerun, /已拦截重复执行/u);
-    assert.equal(unknownTools.getLastToolMetadata().replayableSource, "unknown");
-  });
 });
 
 test("file tools operate on paths outside the working directory", async () => {
@@ -233,229 +169,32 @@ test("exec returns full output (truncation retired to engine outputHygiene, ADR-
   assert.doesNotMatch(result, /已截断/);
 });
 
-test("replayable large output is returned in full; ResourceStore no longer archives it (ADR-015)", async () => {
+test("large output is returned in full; nothing is archived to disk (ADR-015)", async () => {
   await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const { executeTool } = createCliTools({ cwd, archiveDir });
+    const { executeTool } = createCliTools({ cwd });
     const result = await executeTool("exec", { command: "seq 1 500" });
     assert.ok(result.includes("500"));
     assert.doesNotMatch(result, /完整输出已归档/);
-    assert.equal(
-      existsSync(archiveDir) ? readdirSync(archiveDir).filter((name) => name.endsWith(".txt")).length : 0,
-      0,
-    );
   });
 });
 
-test("reruns get recall-style guidance without paths (ADR-015)", async () => {
+test("reruns return fresh output without guidance (ADR-016)", async () => {
   await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const { executeTool } = createCliTools({ cwd, archiveDir });
+    const { executeTool } = createCliTools({ cwd });
     const command = "seq 1 500";
 
-    const first = await executeTool("exec", { command });
+    await executeTool("exec", { command });
     const second = await executeTool("exec", { command });
 
-    assert.doesNotMatch(first, /这是第 2 次执行/u);
-    assert.match(second, /这是第 2 次执行/u);
-    assert.match(second, /recall\(\{ pattern/u);
-    assert.doesNotMatch(second, new RegExp(archiveDir.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
-    assert.equal(
-      existsSync(archiveDir) ? readdirSync(archiveDir).filter((name) => name.endsWith(".txt")).length : 0,
-      0,
-    );
-  });
-});
-
-test("cross-instance archive resume scans existing sequence and rerun provenance", async () => {
-  await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const seeded = archiveResult(archiveDir, "exec", "nonce=seed\n", 1, {
-      force: true,
-      replayable: false,
-      replayableSource: "declared",
-      command: "printf nonce",
-      context: { round: 7 },
-    });
-    assert.ok(seeded?.artifact);
-
-    const firstInstance = createCliTools({
-      cwd,
-      archiveDir,
-      replayable: { exec: false },
-    });
-    const firstExecute = wrapExecuteTool(firstInstance.executeTool, {
-      output: () => {},
-      getToolMetadata: firstInstance.getLastToolMetadata,
-      returnMetadata: true,
-    });
-    const second = await firstExecute({
-      id: "cross-process-2",
-      name: "exec",
-      input: { command: "printf nonce" },
-      context: { round: 8 },
-    });
-    assert.equal(second.rerunOf.artifactId, "001-exec.txt");
-    assert.equal(second.rerunOf.round, 7);
-    assert.equal(second.rerunOf.status, "ok");
-    assert.equal(second.artifact.artifactId, "002-exec.txt");
-
-    const resumedInstance = createCliTools({
-      cwd,
-      archiveDir,
-      replayable: { exec: false },
-    });
-    const resumedExecute = wrapExecuteTool(resumedInstance.executeTool, {
-      output: () => {},
-      getToolMetadata: resumedInstance.getLastToolMetadata,
-      returnMetadata: true,
-    });
-    const third = await resumedExecute({
-      id: "cross-process-3",
-      name: "exec",
-      input: { command: "printf nonce" },
-      context: { round: 9 },
-    });
-    assert.equal(third.rerunOf.artifactId, "001-exec.txt");
-    assert.equal(third.artifact.artifactId, "003-exec.txt");
-    assert.deepEqual(
-      (await readdir(archiveDir)).filter((name) => name.endsWith(".txt")).sort(),
-      ["001-exec.txt", "002-exec.txt", "003-exec.txt"],
-    );
-  });
-});
-
-test("archive sequence collision retries without losing either artifact", async () => {
-  await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const results = await Promise.all([
-      archiveResult(archiveDir, "exec", "first\n", 1, { force: true }),
-      archiveResult(archiveDir, "exec", "second\n", 1, { force: true }),
-    ]);
-    assert.equal(results.filter(Boolean).length, 2);
-    assert.deepEqual(
-      (await readdir(archiveDir)).filter((name) => name.endsWith(".txt")).sort(),
-      ["001-exec.txt", "002-exec.txt"],
-    );
-  });
-});
-
-test("executes a captured non-replayable rerun with first provenance metadata", async () => {
-  await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const notesDir = join(cwd, "notes");
-    const tools = createCliTools({
-      cwd,
-      archiveDir,
-      notesScope: { runId: "rerun-guard", notesDir },
-    });
-    const executeTool = wrapExecuteTool(tools.executeTool, {
-      output: () => {},
-      getToolMetadata: tools.getLastToolMetadata,
-      notesScope: { runId: "rerun-guard", notesDir },
-      returnMetadata: true,
-    });
-    const command = "printf 'nonce=%s\\n' \"$NON_IDEMPOTENT_VALUE\"; : \"$RANDOM\"";
-
-    process.env.NON_IDEMPOTENT_VALUE = "first-value";
-    try {
-      const first = await executeTool({
-        id: "first-exec",
-        name: "exec",
-        input: { command },
-        context: { round: 1 },
-      });
-      await notes.note_take({
-        key: "nonce",
-        content: "agent-overwrite",
-        __erix: { runId: "rerun-guard", notesDir },
-      });
-      process.env.NON_IDEMPOTENT_VALUE = "second-value";
-      const second = await executeTool({
-        id: "second-exec",
-        name: "exec",
-        input: { command: `  ${command}  ` },
-        context: { round: 2 },
-      });
-
-      assert.match(first.data, /nonce=first-value/u);
-      assert.match(second.data, /nonce=second-value/u);
-      assert.match(second.data, /首次执行记录：first-value/u);
-      assert.equal(second.rerunOf.round, 1);
-      assert.equal(second.rerunOf.artifactId, "001-exec.txt");
-      assert.equal(second.rerunOf.status, "ok");
-      assert.doesNotMatch(second.data, /agent-overwrite/u);
-    } finally {
-      delete process.env.NON_IDEMPOTENT_VALUE;
-    }
-  });
-});
-
-test("executes credential reruns without copying credentials into provenance", async () => {
-  await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const notesDir = join(cwd, "notes");
-    const tools = createCliTools({
-      cwd,
-      archiveDir,
-      notesScope: { runId: "credential-rerun", notesDir },
-    });
-    const executeTool = wrapExecuteTool(tools.executeTool, {
-      output: () => {},
-      getToolMetadata: tools.getLastToolMetadata,
-      notesScope: { runId: "credential-rerun", notesDir },
-      returnMetadata: true,
-    });
-    const command = "printf 'token: secret-value-%s\\n' \"$RANDOM\"";
-
-    const first = await executeTool({
-      id: "credential-first",
-      name: "exec",
-      input: { command },
-      context: { round: 1 },
-    });
-    const second = await executeTool({
-      id: "credential-second",
-      name: "exec",
-      input: { command: ` ${command} ` },
-      context: { round: 2 },
-    });
-
-    assert.match(first.data, /token: secret-value-/u);
-    assert.match(second.data, /secret-value-/u);
-    assert.equal(second.rerunOf.status, "ok");
-    assert.doesNotMatch(second.data.split("\n")[0], /secret-value-/u);
-    assert.doesNotMatch(JSON.stringify(second.rerunOf), /secret-value-/u);
-    assert.doesNotMatch(JSON.stringify(tools.getLastToolMetadata()), /secret-value-/u);
-  });
-});
-
-test("reports missing and stale first artifacts without blocking the rerun", async () => {
-  await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const missingTools = createCliTools({ cwd, archiveDir, replayable: { exec: false } });
-    await missingTools.executeTool("exec", { command: "printf missing" });
-    await rm(join(archiveDir, "001-exec.txt"));
-    const missing = await missingTools.executeTool("exec", { command: "printf missing" });
-    assert.match(missing, /这是第 2 次执行/u);
-    assert.equal(missingTools.getLastToolMetadata().rerunOf.status, "missing");
-
-    const staleTools = createCliTools({
-      cwd,
-      archiveDir: join(cwd, "stale-outputs"),
-      replayable: { exec: false },
-    });
-    await staleTools.executeTool("exec", { command: "printf stale" });
-    await writeFile(join(cwd, "stale-outputs", "001-exec.txt"), "changed", "utf8");
-    const stale = await staleTools.executeTool("exec", { command: "printf stale" });
-    assert.match(stale, /这是第 2 次执行/u);
-    assert.equal(staleTools.getLastToolMetadata().rerunOf.status, "stale");
+    assert.match(second, /\n500/u);
+    assert.doesNotMatch(second, /这是第/u);
+    assert.doesNotMatch(second, /recall\(\{ pattern/u);
   });
 });
 
 test("wrapped commands and legal second UUID generation are never blocked", async () => {
   await withDirectory(async (cwd) => {
-    const { executeTool } = createCliTools({ cwd, archiveDir: join(cwd, "outputs") });
+    const { executeTool } = createCliTools({ cwd });
     await executeTool("exec", { command: "printf wrapped" });
     const wrapped = await executeTool("exec", { command: "bash -lc 'printf wrapped'" });
     assert.match(wrapped, /wrapped/u);
@@ -467,164 +206,6 @@ test("wrapped commands and legal second UUID generation are never blocked", asyn
     assert.match(first, /^[0-9a-f-]{36}\n/u);
     assert.match(second, /^[\s\S]*[0-9a-f-]{36}\n/u);
     assert.doesNotMatch(second, /拦截/u);
-  });
-});
-
-test("allows a non-replayable rerun when the first execution was not captured", async () => {
-  await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const tools = createCliTools({ cwd, archiveDir });
-    const command = "printf 'nonce=%s\\n' \"$NON_IDEMPOTENT_VALUE\"; : \"$RANDOM\"";
-
-    process.env.NON_IDEMPOTENT_VALUE = "first-value";
-    try {
-      await tools.executeTool("exec", { command });
-      process.env.NON_IDEMPOTENT_VALUE = "second-value";
-      const second = await tools.executeTool("exec", { command });
-
-      assert.match(second, /nonce=second-value/u);
-      assert.match(second, /这是第 2 次执行/u);
-    } finally {
-      delete process.env.NON_IDEMPOTENT_VALUE;
-    }
-  });
-});
-
-test("does not intercept a different non-replayable command", async () => {
-  await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const notesDir = join(cwd, "notes");
-    const tools = createCliTools({
-      cwd,
-      archiveDir,
-      notesScope: { runId: "different-rerun", notesDir },
-    });
-    const executeTool = wrapExecuteTool(tools.executeTool, {
-      output: () => {},
-      getToolMetadata: tools.getLastToolMetadata,
-      notesScope: { runId: "different-rerun", notesDir },
-      returnMetadata: true,
-    });
-
-    process.env.NON_IDEMPOTENT_VALUE = "first-value";
-    try {
-      await executeTool({
-        id: "first-different",
-        name: "exec",
-        input: {
-          command: "printf 'nonce=first-value\\n'; : \"$RANDOM\"",
-        },
-        context: { round: 1 },
-      });
-      const second = await executeTool({
-        id: "second-different",
-        name: "exec",
-        input: {
-          command: "printf 'nonce=other-value\\n'; : \"$RANDOM\"",
-        },
-        context: { round: 2 },
-      });
-
-      assert.match(second.data, /nonce=other-value/u);
-      assert.doesNotMatch(second.data, /该命令非幂等、不可重放/u);
-    } finally {
-      delete process.env.NON_IDEMPOTENT_VALUE;
-    }
-  });
-});
-
-test("increments the rerun notice count on every execution", async () => {
-  await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const { executeTool } = createCliTools({ cwd, archiveDir });
-    const command = "seq 1 500";
-
-    await executeTool("exec", { command });
-    const second = await executeTool("exec", { command });
-    const third = await executeTool("exec", { command });
-
-    assert.match(second, /这是第 2 次执行/u);
-    assert.match(third, /这是第 3 次执行/u);
-    assert.doesNotMatch(third, /这是第 2 次执行/u);
-  });
-});
-
-test("archives replayable reruns independently instead of blocking them", async () => {
-  await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const { executeTool } = createCliTools({
-      cwd,
-      archiveDir,
-      replayable: { exec: true },
-    });
-    const command = "printf small";
-
-    await executeTool("exec", { command });
-    const second = await executeTool("exec", { command });
-
-    assert.match(second, /这是第 2 次执行/u);
-    assert.match(second, /recall\(\{ pattern/u);
-    assert.doesNotMatch(second, /归档/u);
-  });
-});
-
-test("does not add repeated command guards when archiving is disabled", async () => {
-  const { executeTool } = createCliTools();
-  const command = "seq 1 500";
-
-  await executeTool("exec", { command });
-  const second = await executeTool("exec", { command });
-
-  assert.doesNotMatch(second, /该命令本次运行已执行过/u);
-});
-
-test("does not trigger the guard for different commands", async () => {
-  await withDirectory(async (cwd) => {
-    const archiveDir = join(cwd, "outputs");
-    const { executeTool } = createCliTools({ cwd, archiveDir });
-
-    await executeTool("exec", { command: "seq 1 500" });
-    const differentCommand = await executeTool("exec", { command: "seq 1 501" });
-
-    assert.doesNotMatch(differentCommand, /该命令本次运行已执行过/u);
-  });
-});
-
-test("continues returning tool output when the archive cannot be written", async () => {
-  await withDirectory(async (cwd) => {
-    const archiveParent = join(cwd, "archive-file");
-    await writeFile(archiveParent, "not a directory", "utf8");
-    const { executeTool } = createCliTools({
-      cwd,
-      archiveDir: join(archiveParent, "outputs"),
-    });
-
-    const result = await executeTool("exec", { command: "seq 1 500" });
-    const repeated = await executeTool("exec", { command: "seq 1 500" });
-
-    // ADR-015 4a：可重放输出不再归档，全文直返（写失败也无所谓）
-    assert.doesNotMatch(result, /完整输出归档失败/u);
-    assert.match(result, /1\n2\n3/u);
-    assert.match(repeated, /这是第 2 次执行/u);
-    assert.match(repeated, /1\n2\n3/u);
-    assert.doesNotMatch(repeated, /原始输出在 .*archive-file/u);
-  });
-});
-
-test("failed non-replayable archives do not expose output or archive errors", () => {
-  return withDirectory(async (cwd) => {
-    const parent = join(cwd, "archive-file");
-    await writeFile(parent, "not a directory", "utf8");
-    const archived = archiveResult(
-      join(parent, "outputs"),
-      "exec",
-      "one-time-secret=do-not-leak\n",
-      1,
-      { force: true, replayable: false, command: "synthetic-random-command" },
-    );
-
-    assert.match(archived.text, /完整输出归档失败：原始输出不可恢复/u);
-    assert.doesNotMatch(archived.text, /do-not-leak|ENOTDIR|archive-file/u);
   });
 });
 

@@ -112,7 +112,6 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "finalGuardTimeoutMs",
   "maxTokenContinuations",
   "context",
-  "resourceStore",
   "todoStateProvider",
   "semanticStateProvider",
   "modelConfig",
@@ -127,7 +126,6 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "store",
   "persistence",
   "runId",
-  "runState",
   "resume",
   "onRound",
   "onJudge",
@@ -192,14 +190,14 @@ function persistenceInfoFor(error) {
   return undefined;
 }
 
-function persistenceErrorEvent({ port = "transcript", operation, phase, runId, sideEffect, error }) {
+function persistenceErrorEvent({ port = "transcript", operation, phase, runId, sideEffect, error, fatal = true }) {
   return {
     type: "persistence_error",
     port,
     phase,
     operation,
     runId,
-    fatal: true,
+    fatal,
     sideEffect,
     error: {
       name: String(error?.name ?? "Error"),
@@ -208,6 +206,22 @@ function persistenceErrorEvent({ port = "transcript", operation, phase, runId, s
     },
     ts: new Date().toISOString(),
   };
+}
+
+// 归一化结果的机械校验：LLM 只许搬运，不许改写。
+// 每个 finding 值必须是 agent 原文的逐字子串，否则丢弃该条（宁少不多）。
+function filterFindingsBySource(findings, sourceText) {
+  if (findings === undefined || findings === null
+    || typeof findings !== "object" || Array.isArray(findings)) {
+    return undefined;
+  }
+  const source = typeof sourceText === "string" ? sourceText : "";
+  const kept = {};
+  for (const [key, value] of Object.entries(findings)) {
+    const text = typeof value === "string" ? value : String(value);
+    if (text.length > 0 && source.includes(text)) kept[key] = value;
+  }
+  return Object.keys(kept).length > 0 ? kept : undefined;
 }
 
 function makePersistenceFailure({ operation, phase, sideEffect, runId, error, event, errorLedger }) {
@@ -341,7 +355,6 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   persistence?:"none"|"required", // Defaults to required with a store and none without one.
  *   diagnostics?: {error:(event:object)=>void|Promise<void>},
  *   runId?: string,
- *   runState?:{rerunDetected?:boolean},
  *   resume?: boolean,
  *   onRound?: Function,
  *   onJudge?:(info:JudgeEvent) => void,
@@ -424,7 +437,6 @@ export async function runToolLoop(options) {
     finalGuardTimeoutMs = 30_000,
     maxTokenContinuations = 3,
     context,
-    resourceStore,
     todoStateProvider,
     semanticStateProvider,
     modelConfig,
@@ -439,7 +451,6 @@ export async function runToolLoop(options) {
     store,
     persistence,
     runId,
-    runState,
     resume = false,
     onRound,
     onJudge,
@@ -597,6 +608,23 @@ export async function runToolLoop(options) {
       }
     }
   };
+  // #109 第2步：通用持久化失败报告桥——宿主端口（notes 等）写失败的唯一入账通道。
+  // 引擎不认识 notes：宿主只报 port/operation/phase/error；非致命（继续 + 事件 + 账单）。
+  // 经 executeTool context 注入，宿主调它即可获得与 transcript 同构的事件/账单/observer 链路。
+  const reportHostPersistenceFailure = async (info = {}) => {
+    const event = persistenceErrorEvent({
+      port: typeof info.port === "string" && info.port !== "" ? info.port : "host",
+      operation: typeof info.operation === "string" && info.operation !== ""
+        ? info.operation
+        : "unknown",
+      phase: typeof info.phase === "string" && info.phase !== "" ? info.phase : "write",
+      runId,
+      sideEffect: info.sideEffect,
+      error: info.error,
+      fatal: false,
+    });
+    await reportPersistenceError(info.error, event);
+  };
   const reportObserverError = (error) => {
     if (typeof onObserverError === "function") {
       try {
@@ -737,24 +765,26 @@ export async function runToolLoop(options) {
   // 计入 stub 开销与 framing）。预算基准**复用**上面算出的 budgetTokens，不新引 contextWindowTokens
   // 第二套口径；budgetTokens 不存在（宿主无窗口配置）或 outputHygiene 被 opt-out 时聚合层整体关闭。
   const aggregateBudgetTokens = outputHygieneEnabled ? budgetTokens : undefined;
-  const compactionContext = context === undefined
-    && budgetTokens === undefined
-    && resourceStore === undefined
+  // main 的 ADR-016 退役了 resourceStore 端口——compactionContext 不再拼它（两侧语义合并）
+  const compactionContext = context === undefined && budgetTokens === undefined
     ? undefined
     : {
         ...(context ?? {}),
         ...(budgetTokens === undefined ? {} : { budgetTokens }),
-        ...(resourceStore === undefined ? {} : { resourceStore }),
       };
-  const baseToolContext = toolContextFor({
-    toolContext,
-    context,
-    expert,
-    user,
-    task,
-    session,
-    requestId,
-  });
+  const baseToolContext = {
+    ...toolContextFor({
+      toolContext,
+      context,
+      expert,
+      user,
+      task,
+      session,
+      requestId,
+    }),
+    // #109 第2步：宿主侧端口（notes 等）持久化失败的通用报告桥
+    reportPersistenceFailure: reportHostPersistenceFailure,
+  };
   const toolSignal = signal ?? new AbortController().signal;
   // reflection 未显式配置时，长任务（>=16 轮）默认开启基础 judge——无头宿主零配置获得保护
   const resolvedReflectionOption = reflection === undefined
@@ -818,7 +848,8 @@ export async function runToolLoop(options) {
   const reflectionExtensionStep = Number.isSafeInteger(effectiveReflection?.extensionStep)
     && effectiveReflection.extensionStep > 0
     ? effectiveReflection.extensionStep
-    : 32;
+    // 默认按当前上限的一半扩——固定 +32 是给大任务调的数，16 轮的任务一次加到 48 比例失衡
+    : Math.max(8, Math.floor(maxRounds * 0.5));
   const reflectionMaxExtensions = Number.isSafeInteger(effectiveReflection?.maxExtensions)
     && effectiveReflection.maxExtensions >= 0
     ? effectiveReflection.maxExtensions
@@ -846,11 +877,8 @@ export async function runToolLoop(options) {
   let lowBudgetPrompted = false;
   let foldedRoundCount = 0;
   let navigationRecordCount = 0;
-  let nonReplayableCaptureCount = 0;
-  let unrecoverableCaptureCount = 0;
   let toolErrorCount = 0;
   let checkpointFailureCount = 0;
-  let archiveFailureCount = 0;
   let runStateVersion = 0;
   let currentRunState;
   let runStateAvailability = { status: "available" };
@@ -1079,18 +1107,6 @@ export async function runToolLoop(options) {
     set navigationRecordCount(value) {
       navigationRecordCount = value;
     },
-    get nonReplayableCaptureCount() {
-      return nonReplayableCaptureCount;
-    },
-    set nonReplayableCaptureCount(value) {
-      nonReplayableCaptureCount = value;
-    },
-    get unrecoverableCaptureCount() {
-      return unrecoverableCaptureCount;
-    },
-    set unrecoverableCaptureCount(value) {
-      unrecoverableCaptureCount = value;
-    },
     get toolErrorCount() {
       return toolErrorCount;
     },
@@ -1102,12 +1118,6 @@ export async function runToolLoop(options) {
     },
     set checkpointFailureCount(value) {
       checkpointFailureCount = value;
-    },
-    get archiveFailureCount() {
-      return archiveFailureCount;
-    },
-    set archiveFailureCount(value) {
-      archiveFailureCount = value;
     },
     get semanticState() {
       return semanticState;
@@ -1161,6 +1171,7 @@ export async function runToolLoop(options) {
     : 3;
   const compactionStats = [];
   let finalText = "";
+  let declaredFindings;
   let forcedFinal = false;
   let lastAssistantContent = [];
   const finalGuardRetryLimit = Number.isSafeInteger(finalGuardMaxRetries)
@@ -1178,7 +1189,6 @@ export async function runToolLoop(options) {
     verified: 0,
     skipped: 0,
     revised: 0,
-    rerun_cited: 0,
     unverified: 0,
     guard_error: 0,
   };
@@ -1281,6 +1291,12 @@ export async function runToolLoop(options) {
     set finalText(value) {
       finalText = value;
     },
+    get declaredFindings() {
+      return declaredFindings;
+    },
+    set declaredFindings(value) {
+      declaredFindings = value;
+    },
     get usage() {
       return usage;
     },
@@ -1377,12 +1393,10 @@ export async function runToolLoop(options) {
       todo: todoState,
       foldedRounds: foldedRoundCount,
       navigationRecords: navigationRecordCount,
-      nonReplayableCaptures: nonReplayableCaptureCount,
-      unrecoverableCaptures: unrecoverableCaptureCount,
       terminationReason: currentTerminationReason,
       toolErrorCount,
       checkpointFailureCount,
-      archiveFailureCount,
+      unpersisted: errorLedger.toUnpersisted(),
     });
     if (semantic && typeof semanticStateProvider === "function") {
       try {
@@ -1438,7 +1452,6 @@ export async function runToolLoop(options) {
     wrapupEnabled,
     throwIfAborted,
     messageRounds,
-    runState,
     usage,
     compactionStats,
     refreshRunState,
@@ -1453,6 +1466,12 @@ export async function runToolLoop(options) {
     },
     set finalText(value) {
       finalText = value;
+    },
+    get declaredFindings() {
+      return declaredFindings;
+    },
+    set declaredFindings(value) {
+      declaredFindings = value;
     },
     get rounds() {
       return rounds;
@@ -1651,24 +1670,6 @@ export async function runToolLoop(options) {
     set lowBudgetPrompted(value) {
       lowBudgetPrompted = value;
     },
-    get nonReplayableCaptureCount() {
-      return nonReplayableCaptureCount;
-    },
-    set nonReplayableCaptureCount(value) {
-      nonReplayableCaptureCount = value;
-    },
-    get archiveFailureCount() {
-      return archiveFailureCount;
-    },
-    set archiveFailureCount(value) {
-      archiveFailureCount = value;
-    },
-    get unrecoverableCaptureCount() {
-      return unrecoverableCaptureCount;
-    },
-    set unrecoverableCaptureCount(value) {
-      unrecoverableCaptureCount = value;
-    },
     get toolErrorCount() {
       return toolErrorCount;
     },
@@ -1695,6 +1696,9 @@ export async function runToolLoop(options) {
     },
     executedToolIds,
     checkpointResults,
+    // 「没存上」账本（ADR-016）：聚合层 fail-closed 丢原文时必须留痕——
+    // main 退役了 run-state 的 errors.archive 计数，账本是其继任通道
+    errorLedger,
   };
   const checkpointExecutor = createCheckpointExecutor(checkpointContext);
   const {
@@ -1752,7 +1756,6 @@ export async function runToolLoop(options) {
         "onBeforeFold",
         "onAfterFold",
         "stubFor",
-        "resourceStore",
       ]) {
         if (compactionContext[key] !== undefined) compactOptions[key] = compactionContext[key];
       }
@@ -1788,7 +1791,6 @@ export async function runToolLoop(options) {
           protectedMessage: compactionContext.protectedMessage,
           stripHistoricalImages: compactionContext.stripHistoricalImages,
           stubFor: compactionContext.stubFor,
-          resourceStore: compactionContext.resourceStore,
           roundOffset: foldedThrough,
           roundNumbers: roundNumbersForMessages(compactedMessages),
         });
@@ -2029,6 +2031,7 @@ export async function runToolLoop(options) {
       ? tryParseWrapupJson(responseText)
       : null;
     const parsedSummary = parseL1Summary(responseText);
+    declaredFindings = wrapupJson?.findings;
     let roundSummary = wrapupJson === null
       ? parsedSummary.summary
       : wrapupJson.summary;
@@ -2144,7 +2147,7 @@ export async function runToolLoop(options) {
 已运行轮数：${rounds}
 本轮 agent 最终输出（可能为空）：${JSON.stringify(responseText).slice(0, 2000)}
 若 agent 已给出明确结论/产物就绪则 done=true；若它在工作中途停下/放弃则判断产出是否可判定，可判定则 done=true 否则 done=false。
-只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果"}` }],
+只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果","findings":{"label":"value"}}。findings 只做搬运：value 必须逐字摘自本轮 agent 原文（原样复制，不得改写/规整/补全/翻译，包括引号与标点）；原文里抄不到的值的就省略该条，宁可少写。` }],
           }],
           signal,
         };
@@ -2156,6 +2159,9 @@ export async function runToolLoop(options) {
           textFromBlocks(blocksFor(judgeResponse?.content)),
         );
         if (candidate !== null) {
+          // 归一化只许“搬运”：LLM 给出的每个 finding 值必须是 agent 原文的逐字子串；
+          // 不是就丢掉该条（不得靠 LLM 改写去“修好”模型输出，那会把核验变成不可复现）。
+          candidate.findings = filterFindingsBySource(candidate.findings, responseText);
           normalizedWrapup = candidate;
           if (candidate.summary !== "" || candidate.output !== "") {
             roundSummary = candidate.summary || candidate.output || roundSummary;
@@ -2176,6 +2182,11 @@ export async function runToolLoop(options) {
       } catch {
         // 归一化失败降级：走现有 noToolStreak/completion 兑底，不崩 loop
       }
+    }
+    // LLM 归一化路径也要把 findings 透给 guard——否则模型没用 JSON 信封时，
+    // 归一化出来的声明会静默消失，guard 只能看到“没声明”
+    if (normalizedWrapup?.findings !== undefined) {
+      declaredFindings = normalizedWrapup.findings;
     }
     // 失忆兑底：超过 5 轮后模型若输出欢迎语（误以为新会话），注入任务提醒并继续
     // （上下文折叠可能让模型丢失任务感；此处把主线拉回，避免空转）

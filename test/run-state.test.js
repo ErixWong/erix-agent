@@ -14,6 +14,37 @@ import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.j
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
+test("run state carries the persistence bill so a mid-run crash does not lose it (issue #109 修正 4)", () => {
+  const state = createDeterministicRunState({
+    runId: "bill",
+    unpersisted: [
+      { ts: "2026-09-17T00:00:00.000Z", kind: "persistence_error", port: "notes", operation: "note_write", phase: "tool", fatal: false, repeat: 4, error: { name: "Error", message: "disk full" } },
+      { ts: "2026-09-17T00:00:01.000Z", kind: "persistence_error", port: "transcript", operation: "appendRound", fatal: true, error: { name: "Error", message: "db down" } },
+    ],
+  });
+  assert.equal(state.deterministic.errors.unpersisted.count, 2);
+  assert.equal(state.deterministic.errors.unpersisted.items.length, 2);
+  assert.equal(state.deterministic.errors.unpersisted.items[0].repeat, 4);
+  assert.equal(state.deterministic.errors.unpersisted.items[1].fatal, true);
+  // 渲染行只给条数，不把宿主错误正文灌进模型上下文
+  const rendered = renderRunState(state);
+  assert.match(rendered, /errors=0\/0\/2/u);
+  assert.doesNotMatch(rendered, /disk full/u);
+
+  // 条目数封顶，但总数不丢
+  const many = createDeterministicRunState({
+    runId: "bill-many",
+    unpersisted: Array.from({ length: 40 }, (_unused, index) => ({
+      ts: "2026-09-17T00:00:00.000Z",
+      port: "notes",
+      operation: `op-${index}`,
+      error: { name: "Error", message: "boom" },
+    })),
+  });
+  assert.equal(many.deterministic.errors.unpersisted.count, 40);
+  assert.equal(many.deterministic.errors.unpersisted.items.length, 10);
+});
+
 test("run state is bounded, marked when truncated, and does not expose credentials", () => {
   const state = createDeterministicRunState({
     runId: "bounded",
@@ -26,14 +57,12 @@ test("run state is bounded, marked when truncated, and does not expose credentia
     filesWritten: Array.from({ length: 20 }, (_unused, index) => `/tmp/file-${index}.js`),
     foldedRounds: 8,
     navigationRecords: 3,
-    unrecoverableCaptures: 1,
   });
   const withSemantic = withSemanticRunState(state, {
     text: "Bearer sk-secret-value-123456789",
     version: 3,
   });
   const rendered = renderRunState(withSemantic);
-
   assert.ok(rendered.length <= RUN_STATE_MAX_CHARS);
   assert.doesNotMatch(rendered, /sk-secret|Bearer/u);
 
@@ -51,6 +80,18 @@ test("run state is bounded, marked when truncated, and does not expose credentia
   );
   assert.match(longRendered, /\[run state truncated\]/u);
   assert.ok(longRendered.endsWith("[/run state]"), "closing marker must survive truncation");
+
+  // 语义目录最长 1200 字符：整块必须放得下；行数封顶时截断必须可见
+  const longSemantic = withSemanticRunState(state, {
+    text: Array.from({ length: 200 }, (_unused, index) => `note line ${index}`).join("\n"),
+    version: 3,
+  });
+  const longSemanticRendered = renderRunState(longSemantic);
+  assert.ok(
+    longSemanticRendered.length <= RUN_STATE_MAX_CHARS,
+    `rendered=${longSemanticRendered.length} > RUN_STATE_MAX_CHARS=${RUN_STATE_MAX_CHARS}`,
+  );
+  assert.match(longSemanticRendered, /\.\.\. \(semantic lines truncated: \d+ more\)/u);
 });
 
 test("persisted run state is bounded, marked, and redacts semantic credentials", () => {
@@ -211,7 +252,7 @@ test("run state records tool facts, files, budget prompts, todo status, and pers
   const result = await runToolLoop({
     provider,
     initialUserMessage: "write a file",
-    executeTool: async () => ({ success: true, data: "written", replayable: false }),
+    executeTool: async () => ({ success: true, data: "written" }),
     maxRounds: 2,
     completion: false,
     store,
@@ -231,7 +272,6 @@ test("run state records tool facts, files, budget prompts, todo status, and pers
     failures: 0,
   }]);
   assert.deepEqual(state.deterministic.filesWritten, ["src/new.js"]);
-  assert.equal(state.deterministic.fold.nonReplayableCaptures, 1);
   assert.deepEqual(state.deterministic.todo.items, [{ id: "task-1", status: "done" }]);
   assert.equal((await store.loadRunState("facts")).stateVersion, state.stateVersion);
 });

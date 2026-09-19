@@ -133,16 +133,25 @@ export function executeToolContract(label, createExecutor) {
     assert.equal(toolResultFrom(provider).is_error, true);
   });
 
-  test(`${label}: a wrapper can migrate a positional implementation`, async () => {
+  test(`${label}: an explicit wrapper can adapt a positional implementation`, async () => {
+    // 结构化边界是唯一的，但宿主可以自己写适配器把旧实现包起来——包装动作必须显式可见
     const positionalImplementation = async (name, input) => `${name}:${input.key}`;
-    const touwakaStyleWrapper = async (execution) => (
+    const wrapper = async (execution) => (
       positionalImplementation(execution.name, execution.input)
     );
-    const wrapped = await runExecutor(touwakaStyleWrapper);
+    const wrapped = await runExecutor(wrapper);
     assert.equal(toolResultFrom(wrapped.provider).content, "lookup:value");
   });
+}
 
-  test(`${label}: migration diagnostic exposes positional misuse`, async () => {
+/**
+ * 迁移负例（ADR-014 §2.4）：旧的 `(name, input)` 位置形态**不受支持**。
+ * 它不是"能跑但语义不同"，而是必错：第一个参数收到整个 execution 对象、
+ * 第二个参数是 undefined——工具分发会全错且不报错（最危险的一类）。
+ * 宿主若仍在传位置形态实现，必须到本套件里看到这条断言，而不是把它当兼容行为。
+ */
+export function executeToolMigrationContract(label, createExecutor) {
+  test(`${label}: positional (name, input) executors are rejected by the contract`, async () => {
     const legacyTwoArgumentExecutor = async (name, input) => (
       `nameType=${typeof name}; nameIsObject=${name !== null && typeof name === "object"}; input=${String(input)}`
     );
@@ -150,6 +159,18 @@ export function executeToolContract(label, createExecutor) {
     assert.equal(
       toolResultFrom(provider).content,
       "nameType=object; nameIsObject=true; input=undefined",
+      "位置形态会让 name 收到 execution 对象、input 变 undefined——适配器必须显式包装",
     );
+  });
+
+  test(`${label}: the migration wrapper is what makes a positional implementation work`, async () => {
+    const seen = [];
+    const wrapper = async (execution) => {
+      seen.push(execution.name);
+      return `ok:${execution.name}`;
+    };
+    const { provider } = await runExecutor(wrapper);
+    assert.deepEqual(seen, ["lookup"]);
+    assert.equal(toolResultFrom(provider).content, "ok:lookup");
   });
 }

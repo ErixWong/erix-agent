@@ -18,12 +18,12 @@ must be placed in an explicit namespace such as `toolContext` or `context`.
 
 ```text
 assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
-writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
+recall, outputHygiene, writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
-maxTokenContinuations, context, resourceStore, todoStateProvider, semanticStateProvider,
+maxTokenContinuations, context, todoStateProvider, semanticStateProvider,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
-toolContext, store, persistence, runId, runState, resume, onRound, onJudge,
+toolContext, store, persistence, runId, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
 ```
@@ -56,7 +56,6 @@ const assemblyPort = createAssemblyPort({
   tools: { definitions, executeTool, getToolMetadata? },
   store,       // complete TranscriptStore
   session: { id, resume?, initialMessages? },
-  resourceStore?, // opaque archive adapter
   policy?,     // explicit run options
   emit?,       // (eventType, payload) => void
 });
@@ -64,7 +63,7 @@ const assemblyPort = createAssemblyPort({
 await runToolLoop({ assemblyPort });
 ```
 
-`modelConfig`, `provider`, `tools`, `store`, `session`, `resourceStore`, and `policy` may also
+`modelConfig`, `provider`, `tools`, `store`, `session`, and `policy` may also
 be synchronous zero-argument factories when passed to `createAssemblyPort`.
 The required methods are checked at assembly/startup: `modelConfig.resolve`,
 either `provider.chat` or `provider.chatStream`, `tools.definitions`,
@@ -86,9 +85,6 @@ the port at the composition boundary and does not wrap or change the loop
 injection contract. If `emit` is present, it is used as the default event
 sink; an explicit `onEvent` still wins. `assemblyPortContract` from
 `erix-agent/contract-tests` locks these startup and precedence rules.
-`resourceStore` is a top-level loop option rather than a field tunneled through
-`context`; an explicit `context` therefore cannot discard the assembled archive
-adapter.
 An assembly-shaped fine-grained entry performs the same provider, executor,
 model-config, session, and required-persistence fail-fast checks before the
 first provider call. `persistence: "none"` does not require a TranscriptStore.
@@ -98,37 +94,39 @@ it performs no I/O. The CLI continues to use its existing file-backed
 provider, tool, and transcript adapters, so no host needs to adopt the port
 in one migration.
 
-## ResourceStore
+## Persistence failure reporting
 
-`ResourceStore` is the boundary for archived or otherwise external resources.
-Its locator is opaque to the library:
+Persistence failures are reported through two reliable channels; neither
+depends on the model reading a hint:
 
-```js
-resourceStore.put(bytesOrText)
-// -> Promise<{ locator, digest, display }>
+- `result.unpersisted` — the error bill (schema frozen as an array). Each
+  entry carries `ts`, `kind`, `port`, `operation`, optional `phase`, `fatal`,
+  `repeat`, optional `lastTs` (set when the entry absorbed a duplicate),
+  and `error: { name, message }` (message capped at 500 characters,
+  stack dropped). `delivery_failure` entries additionally carry `failedEvent`
+  (the identity of the event that could not be delivered). Identical failures —
+  same port/operation/phase/fatal/message, and for `delivery_failure` also the
+  same failed-event identity — are deduplicated into one entry with an
+  increasing `repeat` count instead of flooding the bill.
+- `diagnostics.error(event)` — the same identity as an event, delivered when
+  the host configured a sink. A sink that throws is itself recorded as a
+  `delivery_failure` entry.
 
-resourceStore.get(locator)
-// -> Promise<string|Uint8Array>
-```
+The deterministic run state carries the same bill (`deterministic.errors.unpersisted`)
+so a mid-run crash does not lose it; the model-visible render shows only the
+count, never host error text.
 
-`put` must return the exact locator used by `get`, a stable digest of the
-stored bytes, and a non-empty host-facing `display` string. `get` returns the
-stored resource unchanged; an unknown locator must reject with an explicit
-not-found error, and adapter failures must propagate. The engine never parses
-locator fields or assumes paths, URI syntax, line numbers, or byte offsets.
-Fold navigation records carry the adapter's locator and display; display is
-the only string intended for a model-facing stub.
+The failure tiers are per operation, not per port: transcript
+append/checkpoint/run-state failures terminate the run (side effects are
+tracked, per ADR-013), while `notes` writes continue, report, and return a
+tool result that does not look like a saved note. A host port reports its own
+writes through the injected `reportPersistenceFailure` bridge, which produces
+the same event and bill shapes as the transcript path.
 
-`createFileResourceStore({ dir })` is the built-in filesystem adapter. Its
-locator is an opaque object and its display is an opaque model-facing reference;
-hosts may replace it with an object store, database, or service
-without changing folding or recall code. `resourceStoreContract` checks
-round-trip fidelity, stable/different digests, store isolation, unknown-locator
-behavior, return shapes, and failure propagation. CLI compression writes new
-capture artifacts through the run-local `createFileResourceStore`; manifests
-carry opaque locators and the final guard reads them through `store.get()`.
-Older manifests containing only `archivePath` and line locators remain readable
-through the legacy filesystem path and are marked legacy by the reader.
+`result.completionErrors[]` collects teardown failures (multiple failures do
+not overwrite each other). When the main result is an exception, the original
+error stays primary and the completion errors are attached to it as
+`error.completionErrors`.
 
 ## Reusable normalization primitives
 
@@ -137,7 +135,7 @@ helpers from the package root. They perform no I/O or model calls:
 
 | Export | Signature | Semantics |
 |---|---|---|
-| `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | Maps OpenAI token fields and canonical aliases to `input_tokens`/`output_tokens`; empty or non-object input is omitted. |
+| `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | `null`/`undefined` return `undefined`; any other input returns an object mapping `prompt_tokens`/`completion_tokens` to `input_tokens`/`output_tokens` when present (so `{}`, an array, or a string yields `{}`). Canonical aliases are **not** accepted. |
 | `normalizeOpenAIStopReason` | `(reason, fallback = "unknown") -> string` | Maps `stop`, `tool_calls`/`function_call`, and `length` to canonical stop reasons; unknown values pass through. |
 | `parseOpenAIToolArguments` | `(rawArguments) -> any` | Parses JSON, uses `{}` when absent, and returns malformed values under `_truncatedArguments` and `_raw`. |
 | `createOpenAIStreamAccumulator` | `() -> accumulator` | Accumulates indexed or legacy streamed tool-call fragments; `getToolUseBlocks()` returns canonical tool-use blocks. |
@@ -156,7 +154,7 @@ Before consuming a `runToolLoop` result, the host must inspect
 | Status | Contract |
 |---|---|
 | `verified` | The only status the loop uses for a final answer accepted by the configured guard. |
-| `skipped` | There was nothing the guard could compare, or the guard was not enabled. **This does not mean that the answer is correct** and must not be rewritten as `verified`. |
+| `skipped` | There was nothing the guard could compare, or the guard was not enabled. **This does not mean that the answer is correct** and must not be rewritten as `verified`. The CLI exits with code 4, so "not checked" is distinguishable from `verified` (exit code 0). |
 | `unverified` | The required provenance check was not satisfied. The CLI exits with code 2; the host must not consume the result as a successful result. |
 | `error` | The guard threw, returned an invalid decision, or timed out. The CLI exits with code 3; the host must not consume the result as a verified fact. |
 
@@ -171,8 +169,10 @@ provider, tool, or loop failures follow the normal failure path.
 The loop calls a configured guard before stopping for
 `end_turn`, `no_tool`, `judge_done`, `max_rounds_cap`, `stall`,
 `continuation_exhausted`, or `reflection_stop`. The guard receives
-`finalText`, `messages`, `round`, `rounds`, `signal`, and `termination`, plus
-the current `rerunDetected` value. `{ action: "accept" }` permits normal
+`finalText`, `findings`, `messages`, `round`, `rounds`, `signal`, and
+`termination`. `findings` is the completion envelope's declared
+`label -> exact value` map; it is the authoritative carrier for verifiable
+claims, and `finalText` is not parsed for them. `{ action: "accept" }` permits normal
 termination. `{ action: "skip", reason }` terminates with `skipped`. A
 `{ action: "revise", message }` decision is injected as a separate user text
 message and the loop continues, up to `finalGuardMaxRetries` revision retries
@@ -188,9 +188,7 @@ fail-open with respect to loop availability: the original termination reason is
 preserved, but `verification.status` is `error` and the result is never
 `verified`. Each guard outcome emits an `onEvent` event with
 `type: "final_guard"` and an `action` of `accept`, `skip`, `revise`,
-`degraded`, or `error`. An accepted decision with `rerunCited: true` is still
-`verified`, but is counted separately in `verification.metrics.rerun_cited`.
-When a store provides `markRunState`, the terminal state is
+`degraded`, or `error`. When a store provides `markRunState`, the terminal state is
 `unverified_error` for an unverified result, `guard_error` for a guard error,
 and `succeeded` otherwise.
 
@@ -220,29 +218,39 @@ the adapter does not add a lock or another concurrency mechanism.
 ### CLI-side provenance guard
 
 The CLI guard in `bin/final-guard.js` is a deterministic provenance checker,
-not a task-completion evaluator. It considers only capture manifests under
-`archiveDir` that can be verified as `kind: "erix.tool-capture"` with
-`schemaVersion: 1`, `replayable: false`, `truncated: false`, a 64-character
-hexadecimal `digest`, and a valid `locator`. Legacy manifests with
-`archivePath` must also resolve to a matching regular non-symlink file inside
-the run archive root; new manifests without `archivePath` are read through the
-injected ResourceStore. In both cases the digest must match the recovered
-bytes. Replayable artifacts and artifacts with `unknown` replayability do not
-become trusted capture values. Missing, forged, escaped, truncated, or
-digest-mismatched captures cannot establish verification.
+not a task-completion evaluator (ADR-016). Evidence is the run transcript's
+archived tool outputs (`toolOutputs`, byte-faithful) plus legacy capture
+manifests; there is no replayability filter — every archived output is
+evidence. The guard compares the envelope's declared `findings` against
+archived capture values by exact string equality; free prose is never parsed.
 
-No capture manifest returns `action: "skip"` with
-`reason: "no_capture_manifest"`. A readable artifact with no extractable
-candidates returns `action: "skip"` with
-`reason: "no_extractable_candidates"`. A final answer with no comparable
-explicit label returns `action: "skip"` with
-`reason: "no_comparable_label"`. Explicit attributions are compared with
-captured values. A value from the first capture may be accepted directly; a
-value from a later rerun requires an explicit source reference such as
-`来源=note_read:<key>` or `来源=归档:<file>`, and is returned as
-`{ action: "accept", rerunCited: true }`. The guard does not add natural
+- a declared label whose value matches an archived value → the entry passes;
+- a declared label that exists in the archive but whose value differs →
+  `action: "revise"` (the forgery signal), including the captured values and
+  the recall recipe in the message;
+- a declared label that does not exist in the archive at all (e.g. derived
+  counts) → warned and skipped, because it can be neither verified nor
+  falsified; a revise here only provokes looping (measured);
+- captures exist but the envelope declares nothing → `action: "revise"`.
+  Having something to compare and not declaring it is the model skipping the
+  declaration step, which is not the same as "this task has no verifiable
+  values". The guard retries within `finalGuardMaxRetries` and then
+  fail-closes to `unverified`; it never silently passes.
+
+A run with no archived outputs returns `action: "skip"` with
+`reason: "no_capture_evidence"`. Archived outputs with no extractable
+candidates return `action: "skip"` with
+`reason: "no_extractable_candidates"`. The guard does not add natural
 language inference, keyword guessing, or similarity rules. A skipped check
 is still not `verified`.
+
+When the loop has to normalize a prose final answer into the envelope with
+an LLM (`ERIX_WRAPUP_NORMALIZE=1` or `reflection.wrapupNormalize`), the
+normalizer is only allowed to transcribe: every normalized finding value
+must appear verbatim in the model's own final text, otherwise that entry is
+dropped before the guard sees it. An LLM must not be able to "repair" a
+model's value on the way to verification, which would make the check
+irreproducible.
 
 ## Bounded recall
 
@@ -268,7 +276,11 @@ const page = await store.recall({
 filter. `artifactRef` may identify one exact artifact by its string identity
 or by fields such as `artifactId`, `id`, `archivePath`, or `digest`. `limit`
 and `maxBytes` are optional caps; `limit: 0` and `maxBytes: 0` are rejected
-with `status: "error"` and no cursor. The legacy positional
+with `status: "error"` and no cursor. `lineOffset`/`lineLimit` request a straight line read of one archived record:
+`lineOffset` is 0-based, `lineLimit` defaults to 100 with a hard cap of 400,
+the shown line numbers are 1-based, and the reply ends with a
+`继续读用 lineOffset=<n>` hint when more lines remain. When both are given,
+the line read takes precedence and `pattern` is ignored. The legacy positional
 `store.recall(runId, fromRound, toRound, pattern)` form remains a separate
 string-returning interface and does not provide bounded-page statuses or
 cursors.
@@ -312,27 +324,6 @@ proof, or provenance verification. This library does not provide a security
 boundary; under ADR-009, the host remains responsible for permissions,
 leases, and adversarial authentication.
 
-## `replayableSource` and artifact state
-
-The trust order for `replayableSource` is:
-
-`declared > policy > heuristic > unknown`.
-
-An explicit declaration wins first, then the configured non-replayable
-policy, then the built-in `exec` heuristic. `unknown` means that there is
-not enough declaration to make a replayability claim: it must not be treated
-as safe, replayable, or verified, and it must not be converted into a
-boolean safety assertion. In the `unknown` case, `replayable` is omitted
-rather than defaulted.
-
-Archive and artifact facts use `ok`, `truncated`, `missing`, `stale`, and
-`unrecoverable`. An artifact carries an `artifactId`, `archivePath`, `digest`,
-`locator`, and status metadata; consumers must return to that exact
-`artifact`/`locator` and verify the `digest` instead of trusting a display
-string. Archives larger than 1 MiB are stored with `truncated: true` and a
-digest of the bytes actually on disk; such an artifact cannot pass the CLI
-provenance guard.
-
 `createMemoryTranscriptStore` and `createFileTranscriptStore` isolate
 transcript records by `runId`. `appendRound` deduplicates by
 `dedupKey`, then `roundKey`, then `${runId}:round:${round}`. This is
@@ -340,45 +331,20 @@ persistence idempotence only; it does not deduplicate or suppress tool
 execution. The file store is designed for one writer per `runId`; concurrent
 cross-process writes require a host-provided file lock.
 
-## Repeated commands and side effects
+## Repeated commands and side effects (ADR-016)
 
-With a CLI `archiveDir`, the same normalized `exec` command is **executed and
-reported**, not blocked. Normalization trims outer whitespace and normalizes
-line endings. Duplicate tracking is scoped to the archive directory and
-hydrates existing capture metadata, so it can identify a prior execution in a
-new CLI tool instance. Each execution attempts its own archive; an archive
-failure leaves no recoverable artifact.
-
-The structured tool-result metadata reports the first execution through
-`rerunOf`:
-
-```js
-{
-  round,
-  artifactId,
-  archivePath,
-  digest,
-  locator,
-  status,
-}
-```
-
-The model-facing notice is only a bounded display of the safe first value,
-archive path, and artifact status. Hosts that need `round`, `digest`,
-`locator`, or the complete provenance record must read the structured
-metadata, not parse the notice. Repeated execution also sets
-`runState.rerunDetected`; it does not prove that the model will use the first
-source correctly. `rerunOf` and its notice cannot undo a payment, deletion,
-publication, write, or external API side effect that has already occurred.
+The engine performs no replayability classification, rerun detection, or
+rerun notices. A repeated command is executed normally and returns its fresh
+output. The rerun-value-mismatch risk is carried by one line in the system
+prompt: "Re-running the same command may produce a different value; when an
+earlier exact value is needed, retrieve it with recall instead of relying on
+memory."
 
 The host must therefore carry side-effect and rerun risk in its tool
 capabilities, permissions, sandbox, or idempotence layer, and decide whether
-`unrecoverable`, `stale`, or `unverified` should trigger human review, a
-retry, or failure. The guard remains an opt-in mechanical checker; do not add
-natural-language inference, keyword guessing, or similarity rules to it.
-Prefer source-level mechanisms such as folded stubs, structured notices,
-producer declarations, and bounded retrieval.
-
+unverified results should trigger human review, a retry, or failure. The
+guard remains an opt-in mechanical checker; do not add natural-language
+inference, keyword guessing, or similarity rules to it.
 ## Error ledger (issue #109 step 1)
 
 `runToolLoop` results carry two always-present ledger fields:
@@ -418,8 +384,8 @@ block rather than appending duplicates, and persists the current state with
 `saveRunState` when the supplied `TranscriptStore` supports it. The
 deterministic portion contains engine-known facts only: budget, tool call
 counts and failures, written-file paths, injected todo state,
-fold/navigation/capture counts, termination, and tool/checkpoint/archive
-error counts. The current termination reason is exposed through the same
+fold/navigation counts, termination, and tool/checkpoint/unpersisted error
+counts. The current termination reason is exposed through the same
 termination values as the loop, including `end_turn`, `no_tool`, `stall`,
 `max_rounds_cap`, `reflection_stop`, `judge_done`,
 `continuation_exhausted`, `final_guard_unverified`, `aborted`, and `failed`.
@@ -434,13 +400,17 @@ The persisted object is bounded by
 `RUN_STATE_MAX_SERIALIZED_BYTES` (`64 * 1024`). The rendered prompt block is
 bounded by `RUN_STATE_MAX_CHARS` (`1600`). The run-state helpers also cap tool
 entries at 128, file entries at 128, todo entries at 64, ordinary bounded
-name/path/id/status fields at 120 characters, and semantic source text at 220
-characters. When entries or serialized state are trimmed,
-`bounds.truncated` and the applicable omission counts are explicit; the
-rendered block uses `[run state truncated]` when its 1600-character limit is
-reached. The closing `[/run state]` marker is always appended after
-rendering, so it survives truncation and replaces the previous block in
-place instead of accumulating a second copy.
+name/path/id/status fields at 120 characters, and semantic source text at
+1200 characters (multi-line: newlines are preserved so each directory entry
+renders on its own line, at most 16 lines, and a line-count cut is reported as
+`... (semantic lines truncated: N more)`). When entries or serialized state are
+trimmed, `bounds.truncated` and the applicable omission counts are explicit;
+the rendered block uses `[run state truncated]` when its 1600-character limit
+is reached. Character-level trimming of the semantic text itself is reported by
+the persisted `semantic.truncated` flag rather than rendered inline. The closing
+`[/run state]` marker is always appended after rendering, so it survives
+truncation and replaces the previous block in place instead of accumulating a
+second copy.
 
 An unknown schema or incomplete persisted state is not silently treated as a
 valid default. On resume it is exposed as

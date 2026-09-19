@@ -58,12 +58,12 @@ export function createTerminationManager(ctx) {
   const callFinalGuard = async (reason, detail) => {
     const payload = {
       finalText: ctx.finalText,
+      findings: ctx.declaredFindings,
       messages: cloneState(ctx.messages),
       round: ctx.rounds,
       rounds: ctx.rounds,
       signal: ctx.toolSignal,
       termination: makeTermination(reason, detail),
-      rerunDetected: ctx.runState?.rerunDetected === true,
     };
     let timeoutId;
     try {
@@ -83,7 +83,6 @@ export function createTerminationManager(ctx) {
       ]);
       if (decision?.action === "accept") {
         ctx.guardMetrics.verified += 1;
-        if (decision.rerunCited === true) ctx.guardMetrics.rerun_cited += 1;
         ctx.verification = { status: "verified" };
         const emitEvent = ctx.emitEvent;
         emitEvent({ type: "final_guard", round: ctx.rounds, action: "accept" });
@@ -201,6 +200,7 @@ export function createTerminationManager(ctx) {
     ctx.finalText = wrapup === null
       ? responseText
       : wrapup.output || wrapup.summary;
+    ctx.declaredFindings = wrapup?.findings;
     ctx.forcedFinal = true;
     const emitEvent = ctx.emitEvent;
     emitEvent({ type: "forced_final", round: ctx.rounds, reason });

@@ -97,6 +97,11 @@ test("run-state semantic block renders multi-line text (directory fits)", async 
   assert.match(rendered, /\[notes 小抄目录\]/);
   assert.match(rendered, /- final_report \(★ @agent\)/);
   assert.match(rendered, /- api_token \(@auto\)/);
+  // 必须是多行：条目各自成行（此前把换行压平，模型读不出条目边界）
+  const lines = rendered.split("\n");
+  assert.ok(lines.includes("[notes 小抄目录]"), "目录标题独占一行");
+  assert.ok(lines.some((line) => line.startsWith("- final_report")), "条目独占一行");
+  assert.ok(lines.some((line) => line.startsWith("- api_token")), "条目独占一行");
 });
 
 test("semantic text bound: >1200 chars truncated flag set", async () => {

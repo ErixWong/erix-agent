@@ -5,6 +5,9 @@ const DEFAULT_SEGMENT_TOKENS = 300;
 const DEFAULT_MAX_SEGMENTS = 5;
 const DEFAULT_TOTAL_TOKENS = 1500;
 const DEFAULT_OVERVIEW_TOKENS = 500;
+// 按行直读：默认一次 100 行，硬顶 400 行（限流——否则模型会拿它整篇通读）
+const DEFAULT_LINE_LIMIT = 100;
+const MAX_LINE_LIMIT = 400;
 
 function blocksFor(content) {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -261,6 +264,19 @@ function patternSegmentsFromText(text, pattern) {
   });
 }
 
+async function rangeText(store, runId, fromRound, toRound) {
+  const recalled = await recallText(store, runId, { fromRound, toRound });
+  if (recalled !== undefined) return recalled;
+  const records = await store.load(runId);
+  return records
+    .filter((record) => (
+      (fromRound === undefined || record.round >= fromRound)
+      && (toRound === undefined || record.round <= toRound)
+    ))
+    .map((record) => recordFragments(record).join("\n"))
+    .join("\n");
+}
+
 async function recallText(store, runId, options) {
   if (typeof store.recall !== "function") return undefined;
   try {
@@ -286,14 +302,22 @@ export function createRecallTool({ store, runId, limits = {} }) {
   const bounded = limitsFrom(limits);
   const schema = {
     name: "recall",
-    description: "Recall folded transcript context: start with a pattern, then use a round range.",
+    description: "Recall folded transcript context: search with a pattern, read a round range, or read lines of one archived output.",
     inputSchema: {
       type: "object",
       properties: {
         pattern: { type: "string", description: "关键词（子串匹配；含 | 等正则元字符时按正则匹配）。优先用这个，短词比长句准" },
         fromRound: { type: "integer" },
         toRound: { type: "integer" },
-        offset: { type: "integer" },
+        offset: { type: "integer", description: "pattern 模式的段偏移（不是行号）" },
+        lineOffset: {
+          type: "integer",
+          description: "按行直读：起始行号（0 基）。想看某次大输出的中间一段时用它，不要用 pattern 假装行号。与 pattern 同给时按行直读优先、pattern 被忽略",
+        },
+        lineLimit: {
+          type: "integer",
+          description: `按行直读：读取行数（默认 ${DEFAULT_LINE_LIMIT}，上限 ${MAX_LINE_LIMIT}，最小 1——0 会被当作 1）`,
+        },
       },
       additionalProperties: false,
     },
@@ -302,6 +326,30 @@ export function createRecallTool({ store, runId, limits = {} }) {
   const execute = async (input = {}) => {
     const options = input && typeof input === "object" ? input : {};
     const offset = nonNegativeInteger(options.offset, 0);
+
+    if (options.lineOffset !== undefined || options.lineLimit !== undefined) {
+      const start = nonNegativeInteger(options.lineOffset, 0);
+      const requested = options.lineLimit === undefined
+        ? DEFAULT_LINE_LIMIT
+        : Math.max(1, nonNegativeInteger(options.lineLimit, DEFAULT_LINE_LIMIT));
+      const limit = Math.min(requested, MAX_LINE_LIMIT);
+      const text = await rangeText(store, runId, options.fromRound, options.toRound);
+      if (text === "") return "该范围内没有归档原文可读";
+      const lines = text.split("\n");
+      const window = lines.slice(start, start + limit);
+      if (window.length === 0) {
+        return `起始行超出范围：该范围共 ${lines.length} 行（lineOffset 是 0 基，最多 ${Math.max(0, lines.length - 1)}）`;
+      }
+      const last = start + window.length - 1;
+      const body = window
+        .map((line, index) => `${start + index + 1}\t${line}`)
+        .join("\n");
+      const suffix = `[行 ${start + 1}-${last + 1} / 共 ${lines.length} 行${
+        requested > limit ? `，单次上限 ${MAX_LINE_LIMIT} 行` : ""
+      }${last + 1 < lines.length ? `；继续读用 lineOffset=${last + 1}` : ""}]`;
+      // 导航信息必须挺过截断：截的是正文，不是尾部标记
+      return fitBodyWithSuffix(body, suffix, bounded.totalTokens);
+    }
 
     if (options.pattern !== undefined) {
       const pattern = String(options.pattern);

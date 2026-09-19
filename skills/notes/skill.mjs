@@ -455,7 +455,10 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
       });
     }
   } catch (error) {
-    return invalid(key, error?.message ?? String(error));
+    // #109 第2步：主动拒绝（输入/记录校验，NotesStoreError）保持 invalid 返回；
+    // 存储故障（IO 等）原样上抛，不得伪装成输入拒绝（吞错修复）。
+    if (error?.name === "NotesStoreError") return invalid(key, error?.message ?? String(error));
+    throw error;
   }
   return json({
     status: "found",
@@ -768,7 +771,7 @@ export async function completeRun(input = {}) {
 const TOOL_DEFINITIONS = [
   {
     name: "note_take",
-    description: "记录 run 作用域的事实、具体值或 artifact 引用；旧 current 会保留为已作废的 superseded。when-to-use：产生后续还要用的关键事实、一次性值或决策时调用；上下文被折叠时先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
+    description: "记录 run 作用域的事实、具体值或 artifact 引用；旧 current 会保留为已作废的 superseded。when-to-use：产生后续还要用的关键事实、一次性值或决策时调用；上下文被折叠时先 note_list，再 note_read key=...；不要遍历归档目录凭记忆补值",
     inputSchema: {
       type: "object",
       properties: {
@@ -787,7 +790,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_read",
-    description: "按精确 key 读取 current，并返回已作废的 superseded 与 folded。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
+    description: "按精确 key 读取 current，并返回已作废的 superseded 与 folded。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；不要遍历归档目录凭记忆补值",
     inputSchema: {
       type: "object",
       properties: {
@@ -800,7 +803,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_list",
-    description: "列出 run 作用域笔记的 key、标签和 current 元数据，不返回完整内容。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
+    description: "列出 run 作用域笔记的 key、标签和 current 元数据，不返回完整内容。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；不要遍历归档目录凭记忆补值",
     inputSchema: {
       type: "object",
       properties: {
@@ -817,7 +820,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_forget",
-    description: "撤销一个 run 作用域笔记并保留墓碑。when-to-use：值已失效或必须明确撤销时调用；上下文被折叠时先 note_list，再 note_read key=...；不要重跑非幂等命令，不要遍历归档目录",
+    description: "撤销一个 run 作用域笔记并保留墓碑。when-to-use：值已失效或必须明确撤销时调用；上下文被折叠时先 note_list，再 note_read key=...；不要遍历归档目录凭记忆补值",
     inputSchema: {
       type: "object",
       properties: {

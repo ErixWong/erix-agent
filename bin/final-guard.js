@@ -1,41 +1,34 @@
 import path from "node:path";
 
 import {
-  archiveSourceTarget,
   buildCaptureStub,
+  collectTranscriptCaptures,
   inspectRun,
   readCaptureManifests,
 } from "./final-guard-support.js";
+import { normalizedLabel } from "../skills/notes/credential-patterns.mjs";
 
 export { buildCaptureStub };
-const SOURCE_PATTERN =
-  /来源\s*(?:=|:|：)\s*(note_read|归档)\s*[:：]\s*([^\s,，。；;）)\]}]+)/giu;
 function warningMessage(message) {
   return `finalGuard warning: ${message}`;
 }
-function escapeRegex(value) {
-  return String(value).replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-function explicitAttributions(text, knownLabels) {
-  const attributions = [];
-  for (const label of knownLabels) {
-    const pattern = new RegExp(
-      `(?:^|[^\\p{L}\\p{N}_])${escapeRegex(label)}(?![\\p{L}\\p{N}_])\\s*`
-        + `(?:(?:=|:|：)|(?:的\\s*)?(?:值\\s*(?:已[^是为]{0,20})?(?:是|为)|是|为))\\s*`
-        + `([^\\s,，。；;（）()\\]}]+)`,
-      "giu",
-    );
-    for (const match of String(text ?? "").matchAll(pattern)) {
-      attributions.push({ label, value: match[1].trim() });
+export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload, store, runId } = {}) {
+  let records = [];
+  if (store && typeof store.load === "function") {
+    try {
+      records = await store.load(runId);
+    } catch {
+      records = [];
     }
   }
-  return attributions;
-}
-function sourceReferences(text) {
-  return [...String(text ?? "").matchAll(SOURCE_PATTERN)].map((match) => ({
-    kind: match[1].toLowerCase(),
-    target: match[2],
-  }));
+  const { captures: transcriptCaptures } = collectTranscriptCaptures(records);
+  const loaded = await readCaptureManifests(archiveDir);
+  const legacyManifests = loaded.manifests
+    .map(({ manifest }) => manifest);
+  const archivedOutputs = transcriptCaptures.length > 0
+    ? new Set(transcriptCaptures.map((capture) => capture.artifact?.digest)).size
+    : legacyManifests.length;
+  return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${archivedOutputs} 条输出已归档。需要精确值时用 note_list → note_read 取回，或 recall({ pattern: "关键词" }) 取回原文。${captureIndex(transcriptCaptures.length > 0 ? transcriptCaptures : legacyManifests.map((manifest) => ({ display: manifest.display ?? manifest.archivePath, command: manifest.command })))}`;
 }
 function countFoldedOutputs(foldedPayload) {
   if (!Array.isArray(foldedPayload)) return 0;
@@ -44,131 +37,56 @@ function countFoldedOutputs(foldedPayload) {
     return total + message.content.filter((block) => block?.type === "tool_result").length;
   }, 0);
 }
-function boundedCommandSummary(command) {
-  const text = String(command ?? "exec")
-    .replaceAll(/\r\n|\r|\n/gu, " ")
-    .replaceAll(
-      /(\b[\p{L}\p{N}_-]{1,80}\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s;&|]+)/gu,
-      "$1<值>",
-    )
-    .replaceAll(/\s+/gu, " ")
-    .trim();
-  return text.slice(0, 100);
-}
-
-function archiveDisplay(manifest, resourceStore) {
-  if (resourceStore !== undefined) {
-    return manifest?.display ?? manifest?.artifactId ?? "ResourceStore 中的归档资源";
+function captureDisplayName(capture) {
+  if (typeof capture?.display === "string" && capture.display.length > 0) {
+    return capture.display;
   }
-  if (typeof manifest?.display === "string" && manifest.display.length > 0) {
-    return manifest.display;
-  }
-  if (typeof manifest?.archivePath === "string") return path.basename(manifest.archivePath);
-  return manifest?.artifactId;
+  if (typeof capture?.archivePath === "string") return path.basename(capture.archivePath);
+  return capture?.artifact?.artifactId;
 }
-function archiveIndex(manifests, resourceStore) {
-  const entries = manifests
-    .map(({ manifest }) => manifest)
-    .filter((manifest) => manifest?.replayable === false)
-    .sort((left, right) => (
-      String(archiveDisplay(left, resourceStore))
-      .localeCompare(String(archiveDisplay(right, resourceStore)))
-    ));
-  const visible = entries.slice(0, 10).map((manifest) => (
-    `${archiveDisplay(manifest, resourceStore)} ← ${boundedCommandSummary(manifest.command)} [不可重放]`
+function captureIndex(captures) {
+  const entries = [...captures].sort((left, right) => (
+    String(captureDisplayName(left)).localeCompare(String(captureDisplayName(right)))
   ));
+  const visible = entries.slice(0, 10).map((capture) => captureDisplayName(capture));
   const remaining = entries.length - visible.length;
-  if (remaining > 0) visible.push(`另有 ${remaining} 条归档`);
+  if (remaining > 0) visible.push(`另有 ${remaining} 条捕获`);
   return visible.length === 0
     ? ""
-    : `\n归档目录视图（最多 10 条）：\n${visible.join("\n")}`;
+    : `\n捕获目录视图（最多 10 条）：\n${visible.join("\n")}`;
 }
-export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload, resourceStore } = {}) {
-  const loaded = await readCaptureManifests(archiveDir);
-  const nonReplayableCaptures = loaded.manifests.filter(({ manifest }) => (
-    manifest?.replayable === false
-  )).length;
-  const archiveReference = resourceStore === undefined
-    ? typeof archiveDir === "string" && archiveDir.length > 0 ? `${path.resolve(archiveDir)}/<n>-exec.txt` : "明确的归档文件"
-    : "ResourceStore 中的 opaque locator";
-  return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${nonReplayableCaptures} 条为不可重放捕获（重跑会得到不同值）。需要时用 note_list → note_read 取回，或读取归档 ${archiveReference}。${archiveIndex(loaded.manifests, resourceStore)}`;
-}
-function sameArtifact(left, right) {
-  return Boolean(
-    left
-      && right
-      && left.replayable === false
-      && right.replayable === false
-      && left.archivePath === right.archivePath
-      && left.digest === right.digest
-      && left.locator?.lineStart === right.locator?.lineStart
-      && left.locator?.lineEnd === right.locator?.lineEnd,
-  );
-}
-async function sourceMatchesCapture(source, capture, { notesStore, runId } = {}) {
-  if (source.kind === "note_read") {
-    if (source.target !== capture.key || !notesStore) return source.target === capture.key;
-    const record = await notesStore.read({
-      scope: "run",
-      scopeRef: runId,
-      key: source.target,
-    });
-    return record?.state !== "revoked"
-      && sameArtifact(record?.current?.artifactRef, capture.artifact);
-  }
-  if (source.kind !== "归档") return false;
-  const archivePath = String(capture.archivePath ?? "");
-  const display = String(capture.display ?? "");
-  const artifactId = String(capture.artifact?.artifactId ?? "");
-  const target = String(source.target ?? "");
-  return target === archiveSourceTarget(capture)
-    || target === archivePath
-    || target === display
-    || target === artifactId
-    || target === path.basename(archivePath)
-    || archivePath.endsWith(`/${target}`);
-}
-
 function capturePointer(capture) {
-  const pointers = [];
-  if (capture?.key) pointers.push(`note_read key=${capture.key}`);
-  if (capture?.display) pointers.push(`来源=归档:${archiveSourceTarget(capture)}`);
-  else if (capture?.archivePath) pointers.push(`来源=归档:${path.basename(String(capture.archivePath))}`);
-  return pointers.join(" / ") || "可信归档";
+  // ADR-016：capture 无自动笔记 key；指针必须指向可执行的取回动作（recall 配方），
+  // 不借用已退役的「来源=」语法（实测中模型会去文件系统找 digest 字符串，白绕 8 轮）。
+  const target = capture?.display
+    ?? (capture?.archivePath ? path.basename(String(capture.archivePath)) : "");
+  if (!target) return "可信捕获";
+  return `归档输出 ${target}（用 recall({ pattern: "关键词" }) 取回原文核实）`;
 }
-function archiveSourceHint() {
-  return "来源=归档:<文件名> 或 note_read:<key>";
-}
-
 /**
  * Build the deterministic CLI-side provenance gate for one run.
- * Only explicit attributions to labels captured in this run are compared.
+ *
+ * 2026-09-17 裁定（用户）：终稿关键值声明的唯一权威载体 = 结束协议信封的
+ * `findings` 字段（label→精确值）。guard 只做 findings ↔ 归档捕获值的字符串
+ * 相等比对，**不解析终稿散文**——正则从自由文本里猜值边界已被实证不可靠
+ * （「TARGET=gold-4173」被抽成 gold-4173」导致诚实终稿被误杀）。
  */
 export function createFinalGuard({
   archiveDir,
   onWarning = (message) => console.warn(warningMessage(message)),
-  runState,
-  resourceStore,
-  notesStore,
   runId,
+  store,
 } = {}) {
   return async function finalGuard({
-    finalText,
-    rerunDetected = runState?.rerunDetected === true,
+    findings,
   } = {}) {
-    const inspected = await inspectRun({ archiveDir, resourceStore });
+    const inspected = await inspectRun({ archiveDir, store, runId });
     for (const warning of inspected.warnings) onWarning(warning);
-    if (inspected.references.length === 0) {
-      return { action: "skip", reason: "no_capture_manifest" };
-    }
-    if (inspected.captures.length === 0 && inspected.readableArtifacts > 0) {
-      return { action: "skip", reason: "no_extractable_candidates" };
+    if (inspected.readableArtifacts === 0) {
+      return { action: "skip", reason: "no_capture_evidence" };
     }
     if (inspected.captures.length === 0) {
-      return {
-        action: "revise",
-        message: "本 run 的 capture manifest 未通过归档根目录、digest、截断或可重放性核验；请读取可信归档或明确说明不可恢复，不得把该值当作已核验事实。",
-      };
+      return { action: "skip", reason: "no_extractable_candidates" };
     }
 
     const knownLabels = new Map();
@@ -178,69 +96,53 @@ export function createFinalGuard({
       knownLabels.set(capture.label, captures);
     }
 
-    const attributions = explicitAttributions(finalText, knownLabels.keys());
-    const sources = sourceReferences(finalText);
     const revise = (message) => ({ action: "revise", message });
 
-    for (const attribution of attributions) {
-      const captures = knownLabels.get(attribution.label) ?? [];
-      const matching = captures.filter((capture) => capture.value === attribution.value);
-      if (matching.length === 0) {
-        const pointer = captures[0] ? capturePointer(captures[0]) : "可信归档";
-        return revise(
-          `终稿中的 ${attribution.label}=${attribution.value} 未对应本 run 的任何捕获值。请读取 ${pointer} 核实原始值，不得重跑命令；若确认无法恢复，请明确说明不可恢复。`,
-        );
-      }
-      if (matching.some((capture) => capture.first)) continue;
-      let cited;
-      for (const capture of matching) {
-        for (const source of sources) {
-          if (await sourceMatchesCapture(source, capture, { notesStore, runId })) {
-            cited = capture;
-            break;
-          }
-        }
-        if (cited) break;
-      }
-      if (!cited) {
-        return revise(
-          `终稿中的 ${attribution.label}=${attribution.value} 是后续重跑捕获值，但没有来源指向对应 artifact。请补充来源=note_read:<key> 或 ${archiveSourceHint()}，或改用首次捕获值；不得把重跑值当作原值。`,
-        );
-      }
-    }
-
-    let rerunCited = false;
-    for (const capture of inspected.captures) {
-      if (capture.first || !String(finalText ?? "").includes(capture.value)) continue;
-      let cited = false;
-      for (const attribution of attributions) {
-        if (attribution.label !== capture.label || attribution.value !== capture.value) continue;
-        for (const source of sources) {
-          if (await sourceMatchesCapture(source, capture, { notesStore, runId })) {
-            cited = true;
-            break;
-          }
-        }
-        if (cited) break;
-      }
-      if (!cited) {
-        return revise(
-          `终稿包含后续捕获值 ${capture.value} 但没有可验证来源（${capturePointer(capture)}）。请补充来源=note_read:<key> 或 ${archiveSourceHint()}，或改用首次捕获值；不得重跑命令。`,
-        );
-      }
-      rerunCited = true;
-    }
-
-    if (attributions.length === 0 && !rerunCited) {
-      onWarning(
-        rerunDetected
-          ? "终稿没有显式来源归属；本 run 检测到重跑，无法核对终稿中的值，跳过核验"
-          : "终稿没有与 capture manifest 同 label 的显式归属，跳过核验",
+    // 归档里有可核验值、终稿却没声明任何 findings：这是模型没走声明流程，
+    // 不是"本任务没有可核验值"（后者在前面 no_extractable_candidates 已拦），
+    // 打回一次逼它声明；仍不声明则由 guard 重试上限兜底 → unverified。
+    const declarations = normalizeDeclarations(findings);
+    if (declarations.length === 0) {
+      const labels = [...knownLabels.keys()].slice(0, 10).join("、");
+      return revise(
+        `终稿信封没有声明 findings 关键值，但本 run 的归档输出里有 ${inspected.captures.length} 条可核验捕获值（可用 label：${labels}）。请在结束信封的 findings 中声明结论用到的值（label→精确值，逐字取自归档原文）；guard 只读 findings，不解析终稿散文——若结论确实不依赖任何归档值，本次运行在重试耗尽后将以 unverified 收尾（fail-closed）。${capturePointer(inspected.captures[0])}`,
       );
-      return { action: "skip", reason: "no_comparable_label" };
     }
-    return rerunCited ? { action: "accept", rerunCited: true } : { action: "accept" };
+    for (const { label, value } of declarations) {
+      const captures = knownLabels.get(label) ?? [];
+      if (captures.length === 0) {
+        // 未知 label ≠ 伪造：归档里从未出现该 label，无法核验也无法证伪
+        //（实测：模型把"重跑次数=0"这类派生结论塞进 findings 会被误打回，引发绕路风暴）。
+        // 警告并忽略该条，继续核验其余声明。
+        onWarning(`终稿 findings 声明了归档中不存在的 label「${label}」（无法核验，已跳过该条）`);
+        continue;
+      }
+      const matched = captures.filter((capture) => capture.value === value);
+      if (matched.length === 0) {
+        const observed = [...new Set(captures.map((capture) => capture.value))].slice(0, 5);
+        return revise(
+          `终稿 findings 声明的 ${label}=${value} 与归档捕获值不符（捕获值：${observed.join(" | ")}）。${capturePointer(captures[0])}；不得重跑命令；若确认无法恢复，请明确说明不可恢复。`,
+        );
+      }
+    }
+    return { action: "accept" };
   };
+}
+
+function normalizeDeclarations(findings) {
+  if (findings === undefined || findings === null
+    || typeof findings !== "object" || Array.isArray(findings)) {
+    return [];
+  }
+  const declarations = [];
+  for (const [key, item] of Object.entries(findings)) {
+    if (typeof key !== "string" || key.length === 0) continue;
+    if (!["string", "number", "boolean"].includes(typeof item)) continue;
+    const label = normalizedLabel(key);
+    if (label.length === 0) continue;
+    declarations.push({ label, value: String(item) });
+  }
+  return declarations;
 }
 
 export const finalGuard = createFinalGuard;

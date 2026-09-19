@@ -2,6 +2,115 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [0.6.0] - 2026-09-18
+
+破坏窗口收口（ADR-015 / ADR-016 / #109 / #110 / #111）。以下条目此前记在 Unreleased，现随 0.6.0 一并发布。
+
+### Breaking（ADR-016：可重放概念退役）
+
+- **replayable 分类学整体删除**：`resolveReplayability` / `isNonReplayableCommand` /
+  `NON_REPLAYABLE_COMMAND_PATTERNS` / `replayableSource` 四源分类、工具 schema 的
+  `replayable` 字段、宿主选项 `replayable` / `toolReplayability` / `nonReplayable`、
+  tool_result 块上的 `replayable` 标记全部移除。"命令是否幂等"不可机器判定，
+  分类学是对不可判定问题建的架子（依据：五家 harness 对照无一做幂等分类；
+  43 轮野外实测 auto-capture 0 触发；codex Goals 模式"机器可数才机器强制"原则）。
+- **重跑检测与重跑告知退役**：`duplicateCommands` / `rerunOf` / 重跑警示文案、
+  跨进程 `hydrateTranscriptCaptures`、run-state 的 `nonReplayableCaptures` /
+  `unrecoverableCaptures` / `errors.archive` 字段、guard metrics 的 `rerun_cited`
+  全部删除。重跑值错配风险降为系统提示一行："重跑同一命令可能得到不同的值；
+  需要早期精确值时用 recall 取回，不要凭记忆"。
+- **auto-capture 退役**：`bin/auto-capture.js` 删除；exec 不再自动写捕获笔记
+  （`candidateLines` 迁入 final-guard-support 供 guard 抽值）。显式 notes
+  （note_take/note_read/note_list）不受影响。
+- **guard 解耦并扩大核验面**：终稿核验不再只针对"非重放捕获值"，改为对 transcript
+  **全部归档输出**比对。核验载体是结束协议信封的 `findings` 字段（label→精确值），
+  guard 只做字符串相等比对，**不再解析终稿散文**——散文正则抽取已被实测证伪
+  （`「TARGET=gold-4173」` 被判成伪造值，诚实终稿被误杀）。来源指向要求与
+  first/rerun 之辨删除；guard 贡献面更大、代码更少。
+- `runToolLoop` 选项 `runState`（唯一用途是共享 rerunDetected 标记）删除；
+  `wrapExecuteTool` 选项 `capture` / `notesScope` 删除；`createCliTools` 选项
+  收窄为 `cwd`。
+- 老 transcript 中带 `replayable` 标记的块：新代码忽略该标记，向后兼容读。
+
+### 窗口内清理（ResourceStore 端口，0.5.1 无影响）
+
+> 该端口只存在于未发布的 0.6.0 窗口（先随 #106 新增，后随 ADR-015 收尾删除），0.5.1 没有它——宿主不需要迁移，唯一可见影响是显式传该键会被陌生顶层键校验拒绝。
+
+- **`resourceStore` 端口整体删除**（ADR-015 4a/4b 的收尾）：输出档案角色早已并入
+  transcript `toolOutputs`，capture 证据角色并入 #109 第 2 步；剩下唯一的 fold 用途
+  也随 ADR-015 的"一个档案"结论消失。删除 `validateResourceStore`、
+  `createFileResourceStore`、fold 的 `materializeFoldResources`、`resourceStoreContract`
+  契约测试与 `assembly.js`/`runToolLoop` 的对应选项。宿主若仍传该键，会因陌生顶层键被
+  排拒（fail-loud，而不是静默忽略）。
+- **`executeToolContract` 拆出迁移负例组**（契约测试套件）：位置形态 `(name, input)`
+  从"通过路径里的兼容诊断"改为 `executeToolMigrationContract` 的负例断言（`name`
+  收到整个 execution 对象、`input` 为 `undefined` = 必错），契约通过路径只描述
+  结构化形态。宿主 store/executor 若原先靠宽松断言"全绿"，升级后可能变红——这是
+  有意收紧，见 0.6.0 升级指南。
+
+### fix（#109 第 3/4 步：错误通道与账本可靠性）
+
+- **账本去重**：完全相同的持久化失败（同 port/operation/phase/fatal/错误消息）合并为
+  一条并累加 `repeat`，不再每轮刷一条；`toUnpersisted` 返回浅拷贝，调用方不能改内部数组。
+- **账本落盘**：deterministic run-state 新增 `deterministic.errors.unpersisted`
+  （`{ count, items }`，最多留 10 条明细），run 中途崩溃不丢账；模型可见渲染只显示条数
+  （`errors=tool/checkpoint/unpersisted`），宿主错误正文不进上下文。
+- **异常路径的收尾失败不再只剩 stderr**：主结果是异常时，收尾失败数组挂到
+  `error.completionErrors` 上（此前只在 `console.error` 里）。
+- **`NotesStore` 写契约与作用域规范化**写入宿主契约（中英同步）；文档事实源对齐
+  `normalizeOpenAIUsage` 的真实语义（不接受 canonical alias、非 null 输入返回对象）。
+
+### fix（#127：实测四轮暴露的待修点）
+
+- **guard：有捕获值却没声明 findings → 打回，不再静默跳过**。此前
+  "归档里有可核验值、终稿信封没写 findings" 被当作 `skipped` 放过，等于模型
+  可以自己免检；现在改为 `revise`（消息列出可用 label 与 recall 配方），
+  重试耗尽后 fail-closed 到 `unverified`。真无值可核的两种情形
+  （`no_capture_evidence` / `no_extractable_candidates`）仍为 `skipped`。
+- **CLI 退出码区分"没核验"与"核过了"**：`skipped` 由 0 改为 4（`verified` 仍是 0，
+  `unverified` 2，`error` 3），并在 `--help` 里写明。此前调用方无法区分两者。
+- **recall 新增按行直读**：`recall({ fromRound, lineOffset, lineLimit })` 一次取回
+  归档输出的连续行窗口（带行号与"共 N 行 / 继续读用 lineOffset="导航标记，
+  导航信息不会被截断吃掉）；单次默认 100 行、硬顶 400 行，总量受 token 预算约束。
+  实测中模型为读 42KB 输出的中段，用 12 次"假装行号"的正则探针绕了 10 轮
+  （多花约 60k tokens）。
+- **LLM 归一化只许搬运，不许改写**：归一化提示词明确"值必须逐字摘自 agent 原文"，
+  并对归一化结果做机械校验——值不是原文逐字子串的条目直接丢弃。同时修掉一个
+  真实缺口：LLM 归一化路径产生的 `findings` 此前没有传给 guard（静默丢失），
+  现在与信封路径一致透传。
+- **reflection 门槛单一来源 + 扩轮步长按比例**：CLI 曾把门槛写死为
+  `max-rounds >= 32`，与库常量 `DEFAULT_REFLECTION_MIN_ROUNDS`（16）漂移——16 轮
+  的任务永远拿不到扩轮保护（实测第 4 次运行踩线过关）。CLI 现在复用同一个常量；
+  默认扩轮步长由固定 `+32` 改为 `max(8, maxRounds * 0.5)`（16 轮任务一次扩 8 轮，
+  而不是一口气加到 48）。
+
+### Breaking（`erix-agent/tools` 子路径）
+
+- **`JailError` / `createJail` / `createFileTools` 删除**（窗口内 commit `a8cd193`，
+  原为死代码对）。0.5.1 从 `erix-agent/tools` 导入这三个符号的宿主必须改用自己的
+  路径/权限实现；本库自 ADR-009 起不提供安全边界。
+- **`resourceStore`（`erix-agent/tools` 之外的装配端口）为非破坏项**：该端口在
+  未发布的 0.6.0 窗口内新增又删除，0.5.1 从未包含它；唯一可见影响是宿主显式传该键
+  会因陌生顶层键被拒。
+
+### feat（ADR-015 整窗）
+
+- **recall 标配化**：引擎默认注册 `recall` 工具（可 opt-out；宿主同名工具让位；
+  无 store 时显式撕票，不静默）。新增按行直读 `recall({ fromRound, lineOffset,
+  lineLimit })`（默认 100 行、硬顶 400 行、导航标记不会被截断吃掉）。
+- **输出卫生进引擎**：超限工具输出全量归档进 transcript 的字节保真 `toolOutputs`，
+  模型可见侧只留截断提示 + recall 配方；checkpoint/resume 字节保真；CLI 不再写第二份
+  archive 文件、不再有 `.meta.json` / 路径提示（模型侧零路径）。
+- **notes 小抄目录注入 run-state**：semantic 槽位 220→1200 字符、多行渲染（条目各自
+  成行）、行数封顶 16 行且截断可见；整块渲染上限 400→1600 字符。
+- **新增公共导出**：`createAssemblyPort` / `assemblyPortOptions` /
+  `createModelConfigResolver` / `createFileNotesStore` / `assertNotesStore` /
+  `NotesStoreError` / `isNoteRecord` / `boundedRecall` / `normalizeOpenAIUsage` /
+  `normalizeOpenAIStopReason` / `parseOpenAIToolArguments` /
+  `createOpenAIStreamAccumulator` / `DEFAULT_REFLECTION_MIN_ROUNDS`。
+- 显式 notes、持久化失败诚实上报（#109）、guard 防伪造职责、折叠值锚点 stub 泛化到
+  全部 tool_result。
+
 ## [0.5.1] - 2026-09-15
 
 ### fix
@@ -156,5 +265,7 @@
 - notes 是 pull-only：system prompt 只提供值型笔记的 key/标签索引，不注入笔记值；模型需要时调用
   `note_read`（未知 key 才先 `note_list`），归档引用只用于审计和有界恢复。
 
+[0.6.0]: https://github.com/ErixWong/erix-agent/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/ErixWong/erix-agent/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/ErixWong/erix-agent/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ErixWong/erix-agent/compare/v0.3.5...v0.4.0

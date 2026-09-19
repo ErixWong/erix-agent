@@ -260,6 +260,64 @@ test("ERIX_NO_WRAPUP_INSTRUCTION disables the complete wrapup protocol", async (
   }
 });
 
+test("LLM normalization may only transcribe: findings whose value is not verbatim in the agent text are dropped (issue #127)", async () => {
+  const provider = createFakeProvider([
+    // agent 原文里是打错的值 gold-417（没有末位 3）
+    { content: [{ type: "text", text: "TARGET=gold-417" }], stopReason: "end_turn" },
+    // 归一化器"好心"补全成 gold-4173——不是原文子串，必须被机械校验丢掉
+    {
+      content: [{
+        type: "text",
+        text: '{"done":true,"summary":"s","output":"TARGET=gold-417","findings":{"TARGET":"gold-4173"}}',
+      }],
+      stopReason: "end_turn",
+    },
+  ]);
+  const seen = [];
+  await runToolLoop({
+    provider,
+    initialUserMessage: "报出 TARGET",
+    executeTool: async () => "ok",
+    maxRounds: 3,
+    completion: false,
+    reflection: { wrapupNormalize: true, roundJudge: false, judgeIntercept: false },
+    finalGuard: async ({ findings }) => {
+      seen.push(findings);
+      return { action: "accept" };
+    },
+  });
+  // 归一化的 findings 被丢弃 → guard 看到的是"没声明"
+  assert.deepEqual(seen, [undefined]);
+});
+
+test("LLM normalization keeps findings copied verbatim from the agent text", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "TARGET=gold-417" }], stopReason: "end_turn" },
+    {
+      content: [{
+        type: "text",
+        text: '{"done":true,"summary":"s","output":"TARGET=gold-417","findings":{"TARGET":"gold-417","note":"没有用过的值"}}',
+      }],
+      stopReason: "end_turn",
+    },
+  ]);
+  const seen = [];
+  await runToolLoop({
+    provider,
+    initialUserMessage: "报出 TARGET",
+    executeTool: async () => "ok",
+    maxRounds: 3,
+    completion: false,
+    reflection: { wrapupNormalize: true, roundJudge: false, judgeIntercept: false },
+    finalGuard: async ({ findings }) => {
+      seen.push(findings);
+      return { action: "accept" };
+    },
+  });
+  // 逐字子串的保留；凭空出现的值被剔除
+  assert.deepEqual(seen, [{ TARGET: "gold-417" }]);
+});
+
 test("normalizeWrapupWithLlm parses the evaluator response", async () => {
   const requests = [];
   const evaluator = {

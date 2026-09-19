@@ -139,8 +139,18 @@ export function createCheckpointExecutor(ctx) {
       };
     }
     if (decision.action === "unrecoverable") {
-      // fail-closed：不归档、不承诺 recall，显式计数 + 事件（宁丢不骗）
-      ctx.archiveFailureCount += 1;
+      // fail-closed：不归档、不承诺 recall，显式计数 + 事件（宁丢不骗）。
+      // main/ADR-016 退役了 run-state 的 `errors.archive` 计数，「没存上」改入错误账本
+      // （`deterministic.errors.unpersisted`）——语义同一：这一份原文被丢了。
+      ctx.errorLedger?.record?.({
+        port: "transcript",
+        operation: "archiveToolOutput",
+        phase: "tool",
+        fatal: false,
+        error: new Error(
+          `aggregate archive capacity exceeded: round ${round} output of ${fullText.length} chars not archived`,
+        ),
+      });
       emitAggregate("unrecoverable", { archivedBytes: decision.archivedBytes });
       return {
         ...execution,
@@ -266,14 +276,6 @@ export function createCheckpointExecutor(ctx) {
       content: execution.content,
       ...execution.metadata,
     };
-    const artifactStatus = execution.metadata.artifactStatus
-      ?? execution.metadata.artifact?.status
-      ?? execution.metadata.rerunOf?.status;
-    if (execution.metadata.replayable === false) ctx.nonReplayableCaptureCount += 1;
-    if (["missing", "stale", "unrecoverable", "error"].includes(artifactStatus)) {
-      ctx.archiveFailureCount += 1;
-    }
-    if (artifactStatus === "unrecoverable") ctx.unrecoverableCaptureCount += 1;
     if (isError || execution.success === false) {
       toolStat.failures += 1;
       ctx.toolErrorCount += 1;

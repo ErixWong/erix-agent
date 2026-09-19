@@ -446,8 +446,14 @@ test("bounded recall record limit: the aggregate layer fails closed instead of e
       ],
     );
     const records = await store.load("agg-cap");
-    // 显式失败留痕（run-state 的 archive 错误计数）
-    assert.equal(records.at(-1)?.runState?.deterministic?.errors?.archive, 2);
+    // 显式失败留痕。main/ADR-016 退役了 run-state 的 `errors.archive`——「没存上」的
+    // 继任通道是错误账本（`deterministic.errors.unpersisted`），语义同一：这轮丢了 2 份原文。
+    // 账本按（端口/操作/阶段/错误）去重，故 count=1 + repeat=2。
+    const unpersisted = records.at(-1)?.runState?.deterministic?.errors?.unpersisted;
+    assert.equal(unpersisted?.count, 1, "同因失败去重为一条账");
+    assert.equal(unpersisted?.items?.[0]?.repeat, 2, "丢了两份原文，repeat 累计");
+    assert.equal(unpersisted?.items?.[0]?.port, "transcript");
+    assert.equal(unpersisted?.items?.[0]?.operation, "archiveToolOutput");
     const record = records.find((entry) => entry.round === 1);
     const recordBytes = Buffer.byteLength(JSON.stringify(record), "utf8");
     assert.ok(

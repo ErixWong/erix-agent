@@ -248,7 +248,7 @@ test("runRepl resumes from the transcript store with the engine-standard recall 
     assert.match(provider.requests[0].system, /大输出已由引擎全量归档/u);
     assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/repl-store`));
     assert.doesNotMatch(provider.requests[0].system, /ResourceStore/u);
-    assert.match(provider.requests[0].system, /禁止重跑非幂等命令/u);
+    assert.doesNotMatch(provider.requests[0].system, /幂等/u);
     assert.ok(provider.requests[1].messages.some((message) => (
       message.role === "user"
       && message.content?.some((block) => block.text === "second")
@@ -296,9 +296,6 @@ test("runRepl injects archive status at fold time instead of into loop context",
 
     assert.ok(captured);
     assert.equal(typeof captured.context.recoveryHint, "function");
-    assert.ok(captured.resourceStore);
-    assert.equal(typeof captured.resourceStore.put, "function");
-    assert.equal(typeof captured.resourceStore.get, "function");
   } finally {
     input.destroy();
     output.destroy();
@@ -306,7 +303,7 @@ test("runRepl injects archive status at fold time instead of into loop context",
   }
 });
 
-test("CLI assembly root provides transcript, resource, and notes stores", async () => {
+test("CLI assembly root provides transcript and notes stores", async () => {
   const dir = await mkdtemp(join(tmpdir(), "erix-assembly-root-test-"));
   try {
     const root = createCliAssemblyRoot({
@@ -315,7 +312,6 @@ test("CLI assembly root provides transcript, resource, and notes stores", async 
       notesDir: join(dir, "notes"),
     });
     assert.equal(typeof root.store.appendRound, "function");
-    assert.equal(typeof root.resourceStore.put, "function");
     assert.equal(typeof root.notesStore.read, "function");
     assert.equal(typeof root.diagnostics.error, "function");
     assert.equal(root.archiveDir, join(dir, "outputs", "assembly-root"));
@@ -479,7 +475,17 @@ test("chat artifacts resume in REPL and pass the final guard", async () => {
     { content: [{ type: "text", text: "nonce=e2e-value" }] },
   ]);
   const replProvider = createFakeProvider([
-    { content: [{ type: "text", text: "nonce=e2e-value" }] },
+    {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          done: true,
+          summary: "done",
+          output: "nonce=e2e-value",
+          findings: { nonce: "e2e-value" },
+        }),
+      }],
+    },
   ]);
   try {
     const chatResult = await runChat({

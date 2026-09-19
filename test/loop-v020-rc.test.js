@@ -43,15 +43,21 @@ test("structured executeTool receives context and returns tool metadata", async 
   assert.equal(received.id, "structured-1");
   assert.equal(received.name, "lookup");
   assert.deepEqual(received.input, { key: "x" });
-  assert.deepEqual(received.context, {
-    tenant: "tenant-1",
-    expert: "expert-1",
-    user: { id: "user-1" },
-    task: { id: "task-1" },
-    session: "session-1",
-    requestId: "request-1",
-    round: 1,
-  });
+  assert.deepEqual(
+    { ...received.context, reportPersistenceFailure: undefined },
+    {
+      tenant: "tenant-1",
+      expert: "expert-1",
+      user: { id: "user-1" },
+      task: { id: "task-1" },
+      session: "session-1",
+      requestId: "request-1",
+      round: 1,
+      reportPersistenceFailure: undefined,
+    },
+  );
+  // #109 第2步：宿主持久化失败报告桥随 context 注入
+  assert.equal(typeof received.context.reportPersistenceFailure, "function");
   assert.ok(received.signal === undefined || received.signal instanceof AbortSignal);
 
   const result = provider.requests[1].messages.at(-1).content[0];

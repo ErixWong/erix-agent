@@ -43,7 +43,7 @@ test("does not report compaction when all rounds are retained", async () => {
   assert.deepEqual(result.messages, messages);
 });
 
-test("keeps a non-replayable result stub in the retained head", async () => {
+test("keeps a folded result stub in the retained head", async () => {
   const messages = [
     { role: "user", content: "task" },
     {
@@ -55,7 +55,6 @@ test("keeps a non-replayable result stub in the retained head", async () => {
       content: [{
         type: "tool_result",
         tool_use_id: "capture",
-        replayable: false,
         content: "secret",
       }],
     },
@@ -82,7 +81,6 @@ test("emits the same bounded navigation contract as statistical folding", async 
       content: [{
         type: "tool_result",
         tool_use_id: "archive",
-        replayable: false,
         artifact: {
           artifactId: "001-exec.txt",
           digest: "a".repeat(64),
@@ -107,46 +105,4 @@ test("emits the same bounded navigation contract as statistical folding", async 
     status: "archived",
   }]);
   assert.doesNotMatch(JSON.stringify(result.navigationRecord), /secret/u);
-});
-
-test("materializes fallback resources before rendering stubs", async () => {
-  const calls = [];
-  const result = await createSlidingWindowStrategy().compact([
-    { role: "user", content: "task" },
-    {
-      role: "assistant",
-      content: [{ type: "tool_use", id: "resource", name: "exec", input: {} }],
-    },
-    {
-      role: "user",
-      content: [{
-        type: "tool_result",
-        tool_use_id: "resource",
-        replayable: false,
-        artifact: { resource: "fallback bytes" },
-        content: "fallback bytes",
-      }],
-    },
-    { role: "user", content: "keep" },
-  ], {
-    keepRounds: 1,
-    resourceStore: {
-      async put(resource) {
-        calls.push(resource);
-        return {
-          locator: { token: "fallback" },
-          digest: "d".repeat(64),
-          display: "object://fallback",
-        };
-      },
-      async get() {
-        return "fallback bytes";
-      },
-    },
-    stubFor: (message) => `display=${message.content[0].artifact.display}`,
-  });
-
-  assert.deepEqual(calls, ["fallback bytes"]);
-  assert.match(JSON.stringify(result.messages), /object:\/\/fallback/u);
-  assert.deepEqual(result.navigationRecord.artifacts[0].locator, { token: "fallback" });
 });

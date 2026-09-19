@@ -69,7 +69,7 @@ instead of re-solving the engineering underneath it.
 | Lower the barrier to LLM use | `runToolLoop` as the single entry point; dual-protocol providers; canonical message model; compaction; checkpoint/resume; classified errors | product-level prompt and workflow design |
 | Centralised model configuration and run policy | duck-typed `ModelConfigProvider.resolve(slot)` with `static` / `env` / `json-file` adapters, per-slot models, `apiKey`/`apiKeyEnv`/`apiKeyFile` indirection, budget derivation | the configuration store itself (database or config centre), project and tenant quotas, fallback policy, prompt and agent versions |
 | Traceable calls, cost analysis and audit | event stream (`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`), token accounting, `TranscriptStore` persistence, stable run ids, checkpoints and bounded recall for replay | log and cost storage, dashboards, retention, audit process |
-| One tool, permission and safety boundary | a single execution entry (`executeTool`), an executor registry that data cannot extend, schema intersection, optional jail/file/recall helpers under `erix-agent/tools` | the policy itself: which project may run which agent, which tools, which operations need confirmation, network and write access, rate and time limits |
+| One tool, permission and safety boundary | a single execution entry (`executeTool`), an executor registry that data cannot extend, schema intersection, and the built-in `recall` retrieval tool under `erix-agent/tools` | the policy itself: which project may run which agent, which tools, which operations need confirmation, network and write access, rate and time limits |
 | Contain third-party framework churn | zero runtime dependencies and an owned implementation, a stable exported surface plus `erix-agent/contract-tests` for consumers | — |
 | Accumulate reusable agent engineering | canonical message and tool formats, ADR-tracked decisions, contract tests, benchmark harness | — |
 
@@ -157,6 +157,36 @@ and compaction helpers, transcript stores, run-state helpers, configuration
 providers, `runToolLoop`, and reflection helpers. The optional
 `erix-agent/tools` subpath exports the tool helpers listed above.
 
+## Host ports and the error ledger
+
+Four adapter ports are validated once at the composition boundary; the rest of
+the host boundary is passed as explicit `runToolLoop` options:
+
+```js
+const assemblyPort = createAssemblyPort({
+  modelConfig, // ModelConfigProvider: { resolve(slot) }
+  provider,    // { chat?, chatStream? }
+  tools: { definitions, executeTool, getToolMetadata? },
+  store,       // complete TranscriptStore (nine methods) unless persistence: "none"
+  session: { id, resume?, initialMessages? },
+  policy?,     // explicit runToolLoop options; unknown keys are rejected
+  emit?,       // (eventType, payload) => void
+});
+```
+
+`NotesStore` is a CLI-side engine skill (cross-run memory). Its write contract
+lives in [docs/host-consumer-contract.md](docs/host-consumer-contract.md);
+the engine never inspects notes, it only exposes the injected
+`reportPersistenceFailure` bridge so host ports produce the same event and bill
+shapes as the transcript path.
+
+Persistence failures are never silent. Every `runToolLoop` result carries
+`unpersisted: Entry[]` (deduplicated, message-capped at 500 characters) and
+`completionErrors: []`; the same bill is mirrored into the deterministic run
+state, and a thrown persistence failure carries it as `error.unpersisted`. A
+diagnostics sink that itself throws is recorded as a `delivery_failure` entry
+instead of disappearing.
+
 ## Reusable normalization primitives
 
 The package root exports protocol normalization helpers for hosts that own
@@ -165,7 +195,7 @@ calls:
 
 | Export | Signature | Semantics |
 |---|---|---|
-| `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | Maps `prompt_tokens`/`completion_tokens` (and canonical aliases) to `input_tokens`/`output_tokens`; empty or non-object input returns `undefined`. |
+| `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | `null`/`undefined` return `undefined`; other input returns `{ input_tokens?, output_tokens? }` built from `prompt_tokens`/`completion_tokens` (so `{}`, arrays, or strings yield `{}`). Canonical aliases are **not** accepted. |
 | `normalizeOpenAIStopReason` | `(reason, fallback = "unknown") -> string` | Maps OpenAI finish reasons to canonical `end_turn`, `tool_use`, or `max_tokens`; unknown values pass through. |
 | `parseOpenAIToolArguments` | `(rawArguments) -> any` | Parses JSON, defaults missing arguments to `{}`, and preserves invalid input in `_truncatedArguments`/`_raw` instead of throwing. |
 | `createOpenAIStreamAccumulator` | `() -> accumulator` | Accumulates indexed OpenAI tool-call deltas; `getToolUseBlocks()` returns canonical tool-use blocks and malformed JSON follows `parseOpenAIToolArguments`. |
@@ -184,12 +214,16 @@ handles legacy `function_call` streams.
   `ErixWong/erix-agent` on GitHub.
 - Never commit tokens, API keys, or other credentials.
 
-The published package currently has version `0.5.1` in `package.json`. Its
+The published package currently has version `0.6.0` in `package.json`. Its
 declared `files` are:
 
 ```json
-["src", "bin", "skills", "README.md", "CHANGELOG.md",
- "docs/host-consumer-contract.md", "test/contract", "LICENSE"]
+["src", "bin", "skills", "README.md", "README_cn.md", "CHANGELOG.md",
+ "docs/host-consumer-contract.md", "docs/host-upgrade-guide-0.6.0.md",
+ "test/contract/assembly-port.js", "test/contract/execute-tool.js",
+ "test/contract/index.js", "test/contract/model-config-provider.js",
+ "test/contract/notes-store.js", "test/contract/recall-contract.js",
+ "test/contract/transcript-store.js", "LICENSE"]
 ```
 
 Its public `exports` are:
@@ -262,7 +296,10 @@ cannot return a normal result.
 
 - `finalGuard` is optional. Before a normal stop (`end_turn`, `no_tool`,
   `judge_done`, completion, or a non-continuable cap), it receives
-  `{ finalText, messages, round, rounds, signal, termination }`.
+  `{ finalText, findings, messages, round, rounds, signal, termination }`,
+  where `findings` is the completion envelope's declared `label -> exact
+  value` map (the authoritative carrier for verifiable claims; the guard
+  does not parse free prose).
   It can return `{ action: "accept" }`, `{ action: "skip", reason }`, or
   `{ action: "revise", message }`.
 - `finalGuardMaxRetries` defaults to `2`; `finalGuardTimeoutMs` defaults to
@@ -284,15 +321,22 @@ cannot return a normal result.
 
 Only `verification.status === "verified"` means that a final text passed a
 guard. `skipped` means that no verification was performed or no comparable
-capture existed; it is not a positive correctness result.
+capture existed; it is not a positive correctness result. The CLI therefore
+uses a distinct exit code (`4`) for `skipped`, so callers cannot mistake
+"not checked" for "checked and passed". Verification covers the values
+declared in `findings`; statements that never enter `findings` are not
+checked.
 
 ### Reflection and judge governance
 
 When `reflection` is omitted, the library enables the basic judge
-automatically for `maxRounds >= 16`, unless `ERIX_NO_REFLECTION=1` is set.
-Pass `reflection: false` to disable it. The CLI has separate defaults:
-`chat` enables reflection at `max-rounds >= 32`, while `repl` explicitly
-passes `reflection: false`. `ERIX_NO_ROUND_JUDGE=1` disables round judging
+automatically for `maxRounds >= 16` (`DEFAULT_REFLECTION_MIN_ROUNDS`),
+unless `ERIX_NO_REFLECTION=1` is set. Pass `reflection: false` to disable
+it. The CLI reuses the same constant in `chat` (no separate threshold), so
+the two defaults cannot drift apart; `repl` explicitly passes
+`reflection: false`. The default extension step scales with the budget
+(`max(8, maxRounds * 0.5)`), so a 16-round task is not extended by a fixed
++32 rounds. `ERIX_NO_ROUND_JUDGE=1` disables round judging
 without disabling transparent interception.
 
 The object form accepts:
@@ -324,8 +368,9 @@ The defaults used by the loop are:
 - `judgeInterceptTimeoutMs` is `30000`; an interception timeout or judge
   failure degrades to executing the original tool.
 - `triggerRound` defaults to 80% of the initial `maxRounds`.
-- `extensionStep` defaults to `32`, `maxExtensions` to `2`, and
-  `maxRoundsCap` to at least the initial `maxRounds` and otherwise `256`.
+- `extensionStep` defaults to `max(8, maxRounds * 0.5)`, `maxExtensions` to
+  `2`, and `maxRoundsCap` to at least the initial `maxRounds` and otherwise
+  `256`.
 - A round judge can stop only with `done: true` and `confidence >= 0.7`.
   A `done: false` decision injects a continuation/nudge; `direction:
   "off_track"` is a soft direction hint and does not itself block a tool.
@@ -358,9 +403,9 @@ decide whether to consume the result.
   fit the budget; the result records `compactionStats[].protectedDowngraded`.
   A single protected message that cannot fit produces `invalid_budget`.
 - A `stubFor(message)` hook can retain a bounded, non-secret stub for folded
-  `replayable: false` tool results. The CLI's capture stub is limited to
-  200 characters and at most three safe `label=value` facts. Fold navigation
-  records are address-only records of the form
+  tool results (all of them, not a marked subset — ADR-016). The CLI's stub is
+  limited to 200 characters and at most three safe `label=value` facts. Fold
+  navigation records are address-only records of the form
   `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }`,
   bounded to at most 10 artifacts and 400 characters. They are not semantic
   search or provenance proof.
@@ -372,8 +417,10 @@ decide whether to consume the result.
   required checkpoint and run-state persistence. Pass `persistence: "none"` to
   explicitly disable all writes. The object form of
   `store.recall()` supports `fromRound`, `toRound`, `pattern`, `artifactRef`,
-  `limit`, `cursor`, and `maxBytes`, returning `{ text, truncated,
-  nextCursor?, status }`. It is bounded exact retrieval, not semantic
+  `limit`, `cursor`, `maxBytes`, and a straight line read via `lineOffset`
+  (0-based) plus `lineLimit` (default 100, hard cap 400) for reading the middle
+  of one large archived record without re-running the command, returning
+  `{ text, truncated, nextCursor?, status }`. It is bounded exact retrieval, not semantic
   search, completion proof, or provenance verification. `cursor` is bound
   to its run, range, filter, limits, and source version; mismatch is
   rejected rather than silently restarting. `limit: 0` and `maxBytes: 0`
@@ -442,10 +489,9 @@ implemented by `bin/cli.js`; the `repl` flags above are implemented by
 `--reflection`, `--timeout`, `--no-notes`, or `--judge-log`.
 
 `chat` defaults to 64 rounds, a 300-second idle timeout, reflection enabled
-when `max-rounds >= 32`, and the final guard disabled. `repl` defaults to
-32 rounds, no idle timeout, `reflection: false`, and completion after one
-no-tool round. The CLI help text in `bin/repl.js` still labels its default as
-16; the executable constant and `runToolLoop` call use 32.
+at `max-rounds >= 16` (`DEFAULT_REFLECTION_MIN_ROUNDS`, shared with the
+library), and the final guard disabled. `repl` defaults to 32 rounds, no idle
+timeout, `reflection: false`, and completion after one no-tool round.
 
 The shared CLI flags are:
 
@@ -469,32 +515,19 @@ The shared CLI flags are:
   as JSONL in `chat`.
 
 The built-in CLI tools are `readFile`, `rg`, `tree`, `writeFile`, and `exec`.
-They operate on arbitrary paths and commands. When an archive directory is
-configured, outputs longer than 800 characters and every `exec` result are
-written to:
-
-```text
-<transcriptDir>/outputs/<safeRunId>/<sequence>-<toolName>.txt
-```
-
-Each archive has a `.meta.json` sidecar with `digest`, `locator`, replayability
-metadata, and `status` (`ok` or `truncated`). A single archive is capped at
-1 MiB. Existing sequence numbers are scanned and concurrent collisions are
-advanced safely. The tool result points to the absolute archive path; read
-that archive with `readFile` or `cat` instead of rerunning a command.
-
-For a normalized repeated `exec` command, the CLI still executes the command.
-It adds `rerunOf` metadata pointing to the first round, artifact, digest,
-locator, and artifact status (`ok`, `truncated`, `missing`, `stale`, or
-`unrecoverable`). This is an audit notice, not an effect rollback,
-correctness guarantee, or protection against payment, deletion, publication,
-write, or external API side effects.
+They operate on arbitrary paths and commands. Tool outputs are archived by the
+engine into the transcript (`toolOutputs`, byte-faithful) and are retrievable
+with bounded recall; folded outputs expose value-anchor stubs. There is no
+replayability classification, rerun detection, or rerun notice: a repeated
+command executes normally and returns its fresh output (ADR-016). The
+rerun-value-mismatch risk is carried by one system-prompt line: re-running
+the same command may produce a different value; when an earlier exact value
+is needed, retrieve it with recall instead of relying on memory.
 
 The bundled self-describing `notes` skill provides `note_take`, `note_read`,
 `note_list`, and `note_forget`. It is a run-scoped, pull-only convenience
 index for facts, one-time values, decisions, and artifact references; it is
-not a per-round log and it does not replace the capture manifest used by the
-provenance guard. The bundled skill is loaded from `skills/notes/`; user and
+not a per-round log. The bundled skill is loaded from `skills/notes/`; user and
 project skills can be supplied from `~/.erix/skills/`, the project
 `.erix/skills/`, or `--skills-dir <path>`. `erix skills` lists discovered
 skills.
@@ -548,6 +581,8 @@ library-level controls
   configuration, storage, compaction, reflection, tools, skills, safety,
   judge direction, engine/model/host boundaries, and guard policy
 - [docs/testing.md](docs/testing.md) - test strategy and behavior metrics
+- [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
+  breaking-window migration steps
 - [docs/host-consumer-contract.md](docs/host-consumer-contract.md) - host
   consumer contract for verification, bounded recall, provenance, and reruns
 - [docs/host-upgrade-guide-v030.md](docs/host-upgrade-guide-v030.md) - host
@@ -564,16 +599,25 @@ The bounded recall design note is
 
 ## Status and version history
 
-The current package version is **v0.5.1**, dated 2026-09-15 according to
-`package.json` and `CHANGELOG.md`.
+The current package version is **v0.6.0**, dated 2026-09-18 according to
+`package.json` and `CHANGELOG.md`. Migration steps for the 0.6.0 breaking
+window are in [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
 - **v0.5.1 (2026-09-15)**: fixes repeated accumulation of fold summaries,
   navigation records, stubs, `[本 run 状态]`, and run state by recognizing
   and replacing the fold marker; adds end-to-end Memento scenario coverage
   for folded truth, credential-safe stubs, reruns, repeated folding, and
   bounded recall.
+- **v0.6.0 (2026-09-18)**: closing of the ADR-015/ADR-016 breaking window —
+  the replayability concept (`rerunOf` notices, rerun detection, auto-capture)
+  and the `resourceStore` port are removed, the guard verifies the envelope's
+  `findings` against all archived outputs, the engine ships recall as a
+  standard tool with output hygiene (`toolOutputs`), persistence failures are
+  reported through `unpersisted`/`completionErrors`, and unknown run options
+  throw. See CHANGELOG and the 0.6.0 upgrade guide.
 - **v0.5.0 (2026-09-15)**: makes the CLI provenance guard opt-in;
-  normalized reruns execute and report `rerunOf` instead of being blocked;
+  normalized reruns executed and reported `rerunOf` instead of being blocked
+  (both the concept and the notices were removed in 0.6.0);
   adds object-form bounded recall, cursor and source binding, replayability
   provenance, bounded fold navigation and stubs, deterministic run state,
   host-injected `todoStateProvider`/`semanticStateProvider`, and forced-final

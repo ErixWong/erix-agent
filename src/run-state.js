@@ -16,6 +16,24 @@ function boundedText(value, maxChars) {
   return Array.from(text).slice(0, maxChars).join("");
 }
 
+// semantic 文本是多行目录（notes 小抄目录）——不能像单行字段那样把换行压平，
+// 否则"多行渲染"退化成一行连写，模型读不出条目边界（2026-09-17 发布前评审）。
+function boundedMultilineText(value, maxChars) {
+  const text = String(value ?? "")
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    // 控制字符先删（\v/\f 直接删掉而不是折成空格；含 C1 区 \u0080-\u009f），
+    // 再把其余空白（含制表符）压成单个空格；\n 保留
+    .replaceAll(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/gu, "")
+    .replaceAll(/[^\S\n]+/gu, " ")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .replaceAll(/\n{3,}/gu, "\n\n")
+    .trim();
+  return Array.from(text).slice(0, maxChars).join("");
+}
+
 function safeText(value, maxChars = 120) {
   const text = boundedText(value, maxChars);
   return looksLikeCredential("", text) ? "[redacted]" : text;
@@ -90,7 +108,7 @@ const SEMANTIC_RENDER_MAX_LINES = 16;
 function normalizeSemantic(semantic, expectedVersion) {
   if (!semantic) return { status: "absent" };
   // ADR-015：semantic 槽位承载宿主目录（如 notes 小抄目录），220→1200 字符
-  const sourceText = boundedText(semantic.text, SEMANTIC_TEXT_MAX_CHARS);
+  const sourceText = boundedMultilineText(semantic.text, SEMANTIC_TEXT_MAX_CHARS);
   const redacted = looksLikeCredential("", sourceText);
   const text = redacted ? "[redacted]" : sourceText;
   const version = semantic.version ?? semantic.semanticStateVersion;
@@ -250,6 +268,26 @@ function renderLines(lines, budget = MAX_RENDERED_CHARS) {
  * Build the engine-known half of a run state. Inputs are structured facts
  * collected by the loop; this function never inspects tool result prose.
  */
+const RUN_STATE_MAX_UNPERSISTED_ITEMS = 10;
+
+function normalizeUnpersisted(value) {
+  if (!Array.isArray(value) || value.length === 0) return { count: 0, items: [] };
+  const items = value.slice(-RUN_STATE_MAX_UNPERSISTED_ITEMS).map((entry) => ({
+    ts: safeText(entry?.ts, 32),
+    kind: safeText(entry?.kind, 32),
+    port: safeText(entry?.port, 32),
+    operation: safeText(entry?.operation, 48),
+    ...(entry?.phase === undefined ? {} : { phase: safeText(entry.phase, 32) }),
+    fatal: entry?.fatal === true,
+    ...(Number.isSafeInteger(entry?.repeat) && entry.repeat > 1 ? { repeat: entry.repeat } : {}),
+    error: {
+      name: safeText(entry?.error?.name, 40),
+      message: safeText(entry?.error?.message, 240),
+    },
+  }));
+  return { count: value.length, items };
+}
+
 export function createDeterministicRunState({
   runId,
   stateVersion = 0,
@@ -262,12 +300,10 @@ export function createDeterministicRunState({
   todo,
   foldedRounds = 0,
   navigationRecords = 0,
-  nonReplayableCaptures = 0,
-  unrecoverableCaptures = 0,
   terminationReason = "running",
   toolErrorCount = 0,
   checkpointFailureCount = 0,
-  archiveFailureCount = 0,
+  unpersisted,
 } = {}) {
   const safeRounds = safeInteger(rounds);
   // 双计数器（issue #32 #8）：rounds = 会话累计身份轮号（跨 resume 单调递增）；
@@ -298,14 +334,13 @@ export function createDeterministicRunState({
       fold: {
         foldedRounds: safeInteger(foldedRounds),
         navigationRecords: safeInteger(navigationRecords),
-        nonReplayableCaptures: safeInteger(nonReplayableCaptures),
-        unrecoverableCaptures: safeInteger(unrecoverableCaptures),
       },
       termination: { reason: safeText(terminationReason, 48) || "running" },
       errors: {
         tool: safeInteger(toolErrorCount),
         checkpoint: safeInteger(checkpointFailureCount),
-        archive: safeInteger(archiveFailureCount),
+        // issue #109 修正 4：账单不只放内存——run 中途崩溃时 run-state 里也有账
+        unpersisted: normalizeUnpersisted(unpersisted),
       },
     },
     bounds: {
@@ -353,13 +388,21 @@ export function renderRunState(state) {
       renderedRunRounds === renderedSessionRounds ? "" : ` session=${renderedSessionRounds}`
     }`,
     `tools=${tools || "-"} files=${files || "-"}`,
-    `todo=${todo || safeText(deterministic.todo?.status, 16) || "-"} fold=${safeInteger(fold.foldedRounds)}/${safeInteger(fold.navigationRecords)} nonreplay=${safeInteger(fold.nonReplayableCaptures)}`,
-    `termination=${safeText(deterministic.termination?.reason, 32) || "running"} errors=${safeInteger(errors.tool)}/${safeInteger(errors.checkpoint)}/${safeInteger(errors.archive)}`,
+    `todo=${todo || safeText(deterministic.todo?.status, 16) || "-"} fold=${safeInteger(fold.foldedRounds)}/${safeInteger(fold.navigationRecords)}`,
+    `termination=${safeText(deterministic.termination?.reason, 32) || "running"} errors=${safeInteger(errors.tool)}/${safeInteger(errors.checkpoint)}/${safeInteger(errors.unpersisted?.count)}`,
     SEMANTIC_MARKER,
     `status=${safeText(semantic.status, 16)} version=${semantic.semanticStateVersion ?? "-"}`,
-    // ADR-015：semantic 文本多行渲染（宿主目录如 notes 小抄目录）；行数封顶防膨胀
+    // ADR-015：semantic 文本多行渲染（宿主目录如 notes 小抄目录）；行数封顶防膨胀，
+    // 但截断必须可见——模型要能知道目录条目不完整，而不是以为就这几条
     ...(semantic.text
-      ? String(semantic.text).split("\n").slice(0, SEMANTIC_RENDER_MAX_LINES)
+      ? (() => {
+          const lines = String(semantic.text).split("\n");
+          const visible = lines.slice(0, SEMANTIC_RENDER_MAX_LINES);
+          if (lines.length > SEMANTIC_RENDER_MAX_LINES) {
+            visible.push(`... (semantic lines truncated: ${lines.length - SEMANTIC_RENDER_MAX_LINES} more)`);
+          }
+          return visible;
+        })()
       : []),
   ];
   // 闭合标记必须存活：若把它当作 lines 的最后一行，超预算时会被截掉，

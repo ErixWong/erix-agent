@@ -7,6 +7,7 @@ import path from "node:path";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  DEFAULT_REFLECTION_MIN_ROUNDS,
   createOpenAIProvider,
   runToolLoop,
 } from "../src/index.js";
@@ -48,7 +49,7 @@ const HELP_TEXT = `用法：
   --session <id>        会话 ID（默认按工作目录自动派生）
   --dir <path>          Transcript 存档目录（chat 默认：~/.erix/transcripts）
   --max-rounds <n>      工具循环最大轮数（默认：64，可用 ERIX_MAX_ROUNDS 覆盖）
-  --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 32 时启用）
+  --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 16 时启用，见 DEFAULT_REFLECTION_MIN_ROUNDS）
   --final-guard         开启终稿 provenance 核验（默认关闭）
   --no-final-guard      兼容别名（默认已关闭，no-op）
   --no-notes            仅移除 notes 技能，保留其他 skill
@@ -76,7 +77,13 @@ const HELP_TEXT = `用法：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
   MCP 配置默认读取当前目录 .mcp.json 或 ~/.erix/mcp.json。
   slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。
-  slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。`;
+  slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。
+
+退出码：
+  0  成功（开了 --final-guard 时为 verified）
+  2  终稿核验未通过（unverified）
+  3  核验过程出错（error）
+  4  核验未执行（skipped：没有归档输出或归档里无可核验值）`;
 
 const MCP_HELP_TEXT = `用法：
   erix mcp [--config <path>]
@@ -141,7 +148,7 @@ function resolveMaxRounds(maxRounds) {
   return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_ROUNDS;
 }
 
-function resolveReflection(reflection, maxRounds) {
+export function resolveReflection(reflection, maxRounds) {
   if (process.env.ERIX_NO_REFLECTION?.trim() === "1") return false;
   if (reflection !== undefined) {
     if (reflection === true) return { enabled: true };
@@ -150,7 +157,7 @@ function resolveReflection(reflection, maxRounds) {
   const raw = process.env.ERIX_REFLECTION?.trim().toLowerCase();
   if (raw === "on") return { enabled: true };
   if (raw === "off") return false;
-  return maxRounds >= 32 ? { enabled: true } : false;
+  return maxRounds >= DEFAULT_REFLECTION_MIN_ROUNDS ? { enabled: true } : false;
 }
 
 function resolveFinalGuard(
@@ -159,8 +166,7 @@ function resolveFinalGuard(
   archiveDir,
   notesDir,
   notesStore,
-  runState,
-  resourceStore,
+  store,
 ) {
   if (typeof finalGuard === "function") return finalGuard;
   if (
@@ -172,8 +178,7 @@ function resolveFinalGuard(
     archiveDir,
     notesDir,
     notesStore,
-    runState,
-    resourceStore,
+    store,
   });
 }
 
@@ -551,8 +556,6 @@ async function runChatWithNotes({
     diagnostics,
     notesDir,
     notesStore,
-    resourceStore,
-    runState,
     store,
   } = assemblyRoot;
   const existingRecords = await store.load(runId);
@@ -573,13 +576,7 @@ async function runChatWithNotes({
       ts: new Date().toISOString(),
     });
   }
-  const cliTools = createCliTools({
-    cwd,
-    archiveDir,
-    resourceStore,
-    notesScope: { runId, notesDir, notesStore },
-    runState,
-  });
+  const cliTools = createCliTools({ cwd });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
   const skillTools = await buildSkillTools({
     cwd,
@@ -600,17 +597,17 @@ async function runChatWithNotes({
       ? ({ foldedPayload }) => buildCaptureRecoveryHint({
         archiveDir,
         foldedPayload,
-        resourceStore,
+        store,
+        runId,
       })
       : undefined,
-    ({ content }) => buildCaptureStub({ content }, resourceStore, diagnostics),
+    ({ content }) => buildCaptureStub({ content }),
   );
   const context = baseContext;
   const idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, {
     output: toolOutput,
     getToolMetadata: cliTools.getLastToolMetadata,
-    notesScope: { runId, notesDir, notesStore },
     returnMetadata: true,
   });
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
@@ -620,8 +617,7 @@ async function runChatWithNotes({
     archiveDir,
     notesDir,
     notesStore,
-    runState,
-    resourceStore,
+    store,
   );
   // judge 决策日志默认跟随 run 归档（与工具捕获同目录）；--judge-log / ERIX_JUDGE_LOG 可覆盖
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG ?? path.join(archiveDir, "judge.log");
@@ -703,8 +699,8 @@ async function runChatWithNotes({
     }
     : undefined;
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt(resourceStore)}`;
-  systemPrompt += buildArchiveNotice(archiveDir, resourceStore);
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt()}`;
+  systemPrompt += buildArchiveNotice(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `
 
@@ -713,7 +709,6 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
 
   const loopOptions = {
     ...(context ? { context } : {}),
-    resourceStore,
     provider,
     system: systemPrompt,
     initialUserMessage: prompt,
@@ -721,7 +716,6 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     store,
     diagnostics,
     runId,
-    runState,
     resume,
     // ADR-015：notes 小抄目录经 semantic 槽位注入 run-state 块（折叠时注入，正好对准失忆点）
     ...(notesDisabled || !notesStore ? {} : {
@@ -786,8 +780,11 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     onJudge,
   };
 
+  let loopResult;
+  let thrown;
   try {
     const result = await (loopOverride ?? runToolLoop)(loopOptions);
+    loopResult = result;
     const compacted = result.compactionStats.some((stat) => stat.compacted === true);
     const protectedDowngraded = result.compactionStats.reduce(
       (total, stat) => total + (Number.isSafeInteger(stat.protectedDowngraded)
@@ -817,15 +814,53 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     );
     return result;
   } catch (error) {
-    if (idle?.timedOut()) throw new IdleTimeoutError(idleTimeout);
+    if (idle?.timedOut()) {
+      thrown = new IdleTimeoutError(idleTimeout);
+      throw thrown;
+    }
+    thrown = error;
     throw error;
   } finally {
     idle?.dispose();
+    // #109 第2步/修正4：收尾失败进 completionErrors[]，不互覆盖、不掩盖主结果；
+    // 主结果已异常时原异常仍为主，收尾错误仅 console 留痕（宿主可见）。
+    const completionErrors = [];
     try {
       await skillTools.notesCompleteRun?.({ __erix: { runId, notesDir, notesStore } });
+    } catch (error) {
+      completionErrors.push({ operation: "notes_complete_run", error });
+    }
+    try {
       await skillTools.notesJanitor?.({ __erix: { runId, notesDir, notesStore } });
-    } finally {
+    } catch (error) {
+      completionErrors.push({ operation: "notes_janitor", error });
+    }
+    try {
       await closeAllMcpServers();
+    } catch (error) {
+      completionErrors.push({ operation: "mcp_close", error });
+    }
+    if (completionErrors.length > 0) {
+      for (const failure of completionErrors) {
+        console.error(`completion error (${failure.operation}): ${failure.error?.message ?? String(failure.error)}`);
+      }
+      const mapped = completionErrors.map((failure) => ({
+        phase: "cli_completion",
+        operation: failure.operation,
+        error: {
+          name: String(failure.error?.name ?? "Error"),
+          message: String(failure.error?.message ?? failure.error).slice(0, 500),
+        },
+      }));
+      // 主结果成功 → 挂在 result 上；主结果已异常 → 原异常仍是主，
+      // 收尾失败挂到异常对象的 completionErrors（否则异常路径下收尾错误只剩 stderr）
+      const carrier = loopResult && typeof loopResult === "object" ? loopResult : thrown;
+      if (carrier && typeof carrier === "object") {
+        carrier.completionErrors = [
+          ...(Array.isArray(carrier.completionErrors) ? carrier.completionErrors : []),
+          ...mapped,
+        ];
+      }
     }
   }
 }
@@ -890,6 +925,9 @@ async function main(args) {
 export function exitCodeForVerification(verification) {
   if (verification?.status === "unverified") return 2;
   if (verification?.status === "error") return 3;
+  // 核验没执行（没归档输出 / 归档里无可核验值）——不能与 verified 同为 0，
+  // 否则调用方分不清"值核过了"和"根本没核"。
+  if (verification?.status === "skipped") return 4;
   return 0;
 }
 

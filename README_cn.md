@@ -38,7 +38,7 @@ Agent 行为难以预测。统一 Headless Agent 的价值，就是让业务代�
 | 降低使用 LLM 的门槛 | `runToolLoop` 单一入口；双协议 provider；规范消息模型；上下文压缩；checkpoint/resume；错误分类 | 产品级的 Prompt 与流程设计 |
 | 统一管理模型配置与运行策略 | 鸭子类型的 `ModelConfigProvider.resolve(slot)`，内置 `static` / `env` / `json-file` 适配器；按 slot 选模型；`apiKey`/`apiKeyEnv`/`apiKeyFile` 间接引用；预算推导 | 配置来源本身（数据库/配置中心）、项目与租户额度、fallback 策略、Prompt 与 Agent 版本 |
 | 统一记录调用、支撑成本分析与事后审计 | 事件流（`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`）、token 计量、`TranscriptStore` 落盘、稳定 run id、checkpoint 与有界 recall（支持回放） | 日志与成本存储、监控看板、保留策略、审计流程 |
-| 统一安全、权限与工具调用边界 | 唯一执行入口（`executeTool`）；数据无法扩张的执行器注册表；schema 求交；`erix-agent/tools` 下可选的 jail / 文件 / recall 助手 | 策略本身：哪个项目能用哪些 Agent、可调哪些工具、哪些操作需人工确认、是否允许联网与写操作、调用次数与时长限制 |
+| 统一安全、权限与工具调用边界 | 唯一执行入口（`executeTool`）；数据无法扩张的执行器注册表；schema 求交；`erix-agent/tools` 下内置的 `recall` 取回工具 | 策略本身：哪个项目能用哪些 Agent、可调哪些工具、哪些操作需人工确认、是否允许联网与写操作、调用次数与时长限制 |
 | 降低第三方框架升级的影响 | 零运行时依赖、自有实现；稳定导出面 + 面向消费方的 `erix-agent/contract-tests` | — |
 | 沉淀统一的 Agent 能力与工程规范 | 规范消息与工具格式、ADR 决策记录、契约测试、基准 harness | — |
 
@@ -117,12 +117,49 @@ src/
 - 包以 `erix-agent` 发布到 npm，代码托管于 GitHub 的 `ErixWong/erix-agent`。
 - 永远不要提交 token、API key 或其他凭据。
 
-当前 `package.json` 中发布包的版本是 `0.5.1`。声明的 `files` 为：
+当前 `package.json` 中发布包的版本是 `0.6.0`。声明的 `files` 为：
 
 ```json
-["src", "bin", "skills", "README.md", "CHANGELOG.md",
- "docs/host-consumer-contract.md", "test/contract", "LICENSE"]
+["src", "bin", "skills", "README.md", "README_cn.md", "CHANGELOG.md",
+ "docs/host-consumer-contract.md", "docs/host-upgrade-guide-0.6.0.md",
+ "test/contract/assembly-port.js", "test/contract/execute-tool.js",
+ "test/contract/index.js", "test/contract/model-config-provider.js",
+ "test/contract/notes-store.js", "test/contract/recall-contract.js",
+ "test/contract/transcript-store.js", "LICENSE"]
 ```
+
+## 宿主端口与错误账本
+
+组合边界上一次性校验四个适配器端口，其余宿主边界作为显式 `runToolLoop` 选项传入：
+
+```js
+const assemblyPort = createAssemblyPort({
+  modelConfig, // ModelConfigProvider: { resolve(slot) }
+  provider,    // { chat?, chatStream? }
+  tools: { definitions, executeTool, getToolMetadata? },
+  store,       // 完整 TranscriptStore（九方法），除非 persistence: "none"
+  session: { id, resume?, initialMessages? },
+  policy?,     // 显式 runToolLoop 选项；陌生键会被拒绝
+  emit?,       // (eventType, payload) => void
+});
+```
+
+`NotesStore` 是 CLI 侧引擎技能（跨 run 记忆），其写契约见
+[docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md)；引擎不检查 notes
+内容，只提供注入的 `reportPersistenceFailure` 桥，让宿主端口产生与 transcript 路径一致的
+事件与账单形状。
+
+持久化失败不再静默：每个 `runToolLoop` 结果都带 `unpersisted: Entry[]`（去重、错误消息
+截断到 500 字符）与 `completionErrors: []`；同一份账单会镜像进确定性 run state，抛出型
+持久化失败则挂在 `error.unpersisted`。diagnostics sink 自身抛错会记成 `delivery_failure`
+条目，而不是凭空消失。
+
+## 可复用的归一化原语
+
+自带 OpenAI 兼容传输层的宿主可以从包根导入这些辅助函数（不做 I/O、不调用模型）：
+`normalizeOpenAIUsage`、`normalizeOpenAIStopReason`、`parseOpenAIToolArguments`、
+`createOpenAIStreamAccumulator`。完整语义表见
+[docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md)。
 
 公共 `exports` 为：
 
@@ -172,7 +209,7 @@ failed
 
 ### 终稿 guard 与收尾
 
-- `finalGuard` 是可选的。在正常停止（`end_turn`、`no_tool`、`judge_done`、completion 或不可继续的 cap）之前，它会接收 `{ finalText, messages, round, rounds, signal, termination }`。它可以返回 `{ action: "accept" }`、`{ action: "skip", reason }` 或 `{ action: "revise", message }`。
+- `finalGuard` 是可选的。在正常停止（`end_turn`、`no_tool`、`judge_done`、completion 或不可继续的 cap）之前，它会接收 `{ finalText, findings, messages, round, rounds, signal, termination }`，其中 `findings` 是结束信封声明的 `label -> 精确值` 映射（可核验断言的权威载体，guard 不解析散文）。它可以返回 `{ action: "accept" }`、`{ action: "skip", reason }` 或 `{ action: "revise", message }`。
 - `finalGuardMaxRetries` 默认为 `2`；`finalGuardTimeoutMs` 默认为 `30000`。revise 决策会将返回的 `message` 注入为 user message，并在仍有重试次数时继续。对不可继续的停止进行 revise，或重试耗尽后仍 revise，会返回 `termination.reason === "final_guard_unverified"`，并令 `verification.status === "unverified"`。guard 错误或显式 skip 会保留原始终止原因。guard 错误和超时会报告 `verification.status === "error"`，为保证可用性而 fail open，但文本并未得到核验。
 
 没有 guard 时，verification 为 `skipped`，原因是 `no_final_guard`。
@@ -183,7 +220,7 @@ failed
 
 ### Reflection 与 judge 治理
 
-省略 `reflection` 时，当 `maxRounds >= 16`，库会自动启用基础 judge，除非设置了 `ERIX_NO_REFLECTION=1`。传入 `reflection: false` 可禁用。CLI 有单独的默认值：`chat` 在 `max-rounds >= 32` 时启用 reflection，而 `repl` 显式传入 `reflection: false`。`ERIX_NO_ROUND_JUDGE=1` 会禁用 round judging，但不会禁用透明拦截。
+省略 `reflection` 时，当 `maxRounds >= 16`（`DEFAULT_REFLECTION_MIN_ROUNDS`），库会自动启用基础 judge，除非设置了 `ERIX_NO_REFLECTION=1`。传入 `reflection: false` 可禁用。CLI 的 `chat` 复用同一个常量（不再有单独门槛），因此两边默认值不会漂移；`repl` 显式传入 `reflection: false`。`ERIX_NO_ROUND_JUDGE=1` 会禁用 round judging，但不会禁用透明拦截。
 
 对象形式接受：
 
@@ -211,7 +248,7 @@ onReflection
 - `judgeIntervalRound` 为 `5`；完成这么多次真实工具执行后，下一次工具调用会在执行前独立审计。
 - `judgeInterceptTimeoutMs` 为 `30000`；拦截超时或 judge 失败时，会降级为执行原始工具。
 - `triggerRound` 默认为初始 `maxRounds` 的 80%。
-- `extensionStep` 默认为 `32`，`maxExtensions` 默认为 `2`，`maxRoundsCap` 至少为初始 `maxRounds`，否则为 `256`。
+- `extensionStep` 默认为 `max(8, maxRounds * 0.5)`，`maxExtensions` 默认为 `2`，`maxRoundsCap` 至少为初始 `maxRounds`，否则为 `256`。
 - round judge 只有在 `done: true` 且 `confidence >= 0.7` 时才能停止。`done: false` 决策会注入 continuation/nudge；`direction: "off_track"` 是软方向提示，本身不会阻止工具执行。
 - wrap-up LLM 规范化默认关闭；启用 `wrapupNormalize: true` 或 `ERIX_WRAPUP_NORMALIZE=1`。
 
@@ -222,7 +259,7 @@ onReflection
 - `executeTool` 只接收结构化对象 `({ id, name, input, context, signal })`。三种规范返回形态是 `string`、`{ content, metadata?, success? }` 和 `Error`；旧的 `{ data, success, ... }` 及其他 duck-typed 形状仍会宽容归一化，但已弃用，不应依赖。
 - `context` 可选，默认为 `undefined`；提供时接受 `strategy`、`budgetTokens`、`keepRounds`、`toolContext` 和 `task`。没有 `budgetTokens` 时，循环会从 `modelConfig`、`modelMetadata`、`model`、`provider` 或 `context` 中的 `contextWindowTokens` 和 `maxOutputTokens` 推导。策略启用时，压缩默认保留六轮。任务 brief 的优先级依次为：显式 `task`、`context.task`，然后是入口 transcript 中最后一条 user message。
 - 压缩支持 `summaryRole`、`recoveryHint`、`protectedMessage`、`stripHistoricalImages`、`onBeforeFold`、`onAfterFold` 和 `stubFor`。如果 protected set 本身无法放入预算，protected messages 可能降级；结果会记录 `compactionStats[].protectedDowngraded`。单个无法放入预算的 protected message 会产生 `invalid_budget`。
-- `stubFor(message)` hook 可以为折叠后的 `replayable: false` 工具结果保留有界、非秘密 stub。CLI 的 capture stub 限制为 200 个字符，最多包含三个安全的 `label=value` fact。折叠导航记录是形如 `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }` 的仅地址记录，最多 10 个 artifact、400 个字符。它们不是语义搜索，也不是 provenance 证明。
+- `stubFor(message)` hook 可以为折叠后的工具结果保留有界、非秘密 stub（**全部** tool_result，不再有可重放性标记子集——ADR-016）。CLI 的 stub 限制为 200 个字符，最多包含三个安全的 `label=value` fact。折叠导航记录是形如 `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }` 的仅地址记录，最多 10 个 artifact、400 个字符。它们不是语义搜索，也不是 provenance 证明。
 - `writeToolNames` 默认为 `["writeFile"]`；自定义写工具必须显式命名。`writeToolPathKeys` 默认为 `["path", "file_path"]`。judge 的 `filesWritten` 足迹不会根据工具名称推断任意写工具。
 - `TranscriptStore` 实现提供幂等的 `appendRound`，以及可选的 checkpoint 和 run-state 持久化。`store.recall()` 的对象形式支持 `fromRound`、`toRound`、`pattern`、`artifactRef`、`limit`、`cursor` 和 `maxBytes`，返回 `{ text, truncated, nextCursor?, status }`。这是有界的精确取回，不是语义搜索、完成证明或 provenance 核验。`cursor` 与其 run、范围、筛选条件、限制和 source version 绑定；不匹配时会拒绝，而不是静默重新开始。`limit: 0` 和 `maxBytes: 0` 会被拒绝。File store 会将过大的源记录报告为 `status: "truncated"`，并令 `error.code === "record_too_large"`。旧的位置参数 recall 仍可用，并返回字符串。
 - `runState` 是确定性的、有界的，并在压缩点以替换方式注入。store 可以实现 `markRunState`、`saveRunState`/`loadRunState`、`saveCheckpoint`/`appendCheckpoint` 和 `loadLatestCheckpoint`。持久化 run state 有 64 KiB 序列化硬上限，以及条目和字段上限；裁剪通过 `bounds.truncated` 可见。`todoStateProvider` 和 `semanticStateProvider` 由宿主注入；语义状态有界且带版本，过期版本标记为 `stale`。无效或损坏的状态在 resume 时报告为 `state_unavailable`，而不是静默当作全新状态。
@@ -264,7 +301,7 @@ erix mcp [--config <path>]
 
 不带参数运行 `erix` 会进入 `repl`。`chat` 参数由 `bin/cli.js` 实现；上面的 `repl` 参数由 `bin/repl.js` 实现。特别是，`repl` 不实现 `--stream`、`--reflection`、`--timeout`、`--no-notes` 或 `--judge-log`。
 
-`chat` 默认 64 轮、300 秒 idle timeout、在 `max-rounds >= 32` 时启用 reflection，并关闭 final guard。`repl` 默认 32 轮、无 idle timeout、`reflection: false`，并在一轮无工具轮次后完成。`bin/repl.js` 中的 CLI help 文本仍将默认值标为 16；可执行常量和 `runToolLoop` 调用使用 32。
+`chat` 默认 64 轮、300 秒 idle timeout、在 `max-rounds >= 16` 时启用 reflection，并关闭 final guard。`repl` 默认 32 轮、无 idle timeout、`reflection: false`，并在一轮无工具轮次后完成。
 
 共享 CLI 参数包括：
 
@@ -280,17 +317,11 @@ erix mcp [--config <path>]
 - `--compact-budget <tokens>` 覆盖自动压缩预算。
 - `--judge-log <path>` 在 `chat` 中以 JSONL 追加经过脱敏的轮次/judge 拦截决策。
 
-内置 CLI 工具为 `readFile`、`rg`、`tree`、`writeFile` 和 `exec`。它们操作任意路径和命令。配置 archive 目录后，超过 800 个字符的输出以及每个 `exec` 结果都会写入：
+内置 CLI 工具为 `readFile`、`rg`、`tree`、`writeFile` 和 `exec`。它们操作任意路径和命令。超过 4096 字符的工具输出由引擎全量归档进 transcript 的字节保真 `toolOutputs`，模型可见侧只看到截断 stderr/提示与 recall 配方（ADR-015）；CLI 不再写第二份 archive 文件，也没有 `.meta.json` sidecar。早期精确值用 `recall({ pattern: "关键词" })` 搜索、或 `recall({ fromRound, lineOffset, lineLimit })` 按行直读取回。
 
-```text
-<transcriptDir>/outputs/<safeRunId>/<sequence>-<toolName>.txt
-```
+重复的 `exec` 命令会正常执行并返回新输出：引擎不做幂等分类、不检测重跑、也不发重跑告知（ADR-016）。重跑值可能不同，所以副作用与重跑风险由宿主的权限/沙箱/幂等层承担——引擎的审计事实是归档输出本身，而不是"这条命令是否可重放"。
 
-每个 archive 都有一个包含 `digest`、`locator`、可重放性 metadata 和 `status`（`ok` 或 `truncated`）的 `.meta.json` sidecar。单个 archive 上限为 1 MiB。程序会扫描已有序号，并安全推进并发冲突。工具结果会指向 archive 的绝对路径；使用 `readFile` 或 `cat` 读取 archive，不要重新运行命令。
-
-对于规范化后的重复 `exec` 命令，CLI 仍会执行命令。它会添加 `rerunOf` metadata，指向首次执行的 round、artifact、digest、locator 和 artifact status（`ok`、`truncated`、`missing`、`stale` 或 `unrecoverable`）。这是审计提示，不是副作用回滚、正确性保证，也不能防止付款、删除、发布、写入或外部 API 副作用。
-
-内置的自描述 `notes` skill 提供 `note_take`、`note_read`、`note_list` 和 `note_forget`。它是一个面向 run、pull-only 的便利索引，用于事实、一次性值、决策和 artifact 引用；它不是逐轮日志，也不替代 provenance guard 使用的 capture manifest。内置 skill 从 `skills/notes/` 加载；用户和项目 skill 可以从 `~/.erix/skills/`、项目的 `.erix/skills/` 或 `--skills-dir <path>` 提供。`erix skills` 会列出发现的 skill。
+内置的自描述 `notes` skill 提供 `note_take`、`note_read`、`note_list` 和 `note_forget`。它是一个面向 run、pull-only 的便利索引，用于事实、一次性值、决策和 artifact 引用；它不是逐轮日志，也不是 provenance 证据源（guard 的证据是 transcript 的归档输出）。内置 skill 从 `skills/notes/` 加载；用户和项目 skill 可以从 `~/.erix/skills/`、项目的 `.erix/skills/` 或 `--skills-dir <path>` 提供。`erix skills` 会列出发现的 skill。
 
 MCP 使用标准 `.mcp.json` 配置，并支持 stdio 和 HTTP server。`mcp` proxy 提供 `list`、`search`、`call` 和 `status` action。`erix mcp` 会列出已配置的 server 及其连接状态。
 
@@ -323,6 +354,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - [docs/decisions/](docs/decisions/) - 设计决策，包括配置、存储、压缩、reflection、工具、skill、安全、judge 方向、引擎/模型/宿主边界和 guard policy
 - [docs/testing_cn.md](docs/testing_cn.md) - 测试策略与行为指标
 - [docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md) - 关于核验、有界 recall、provenance 和重跑的宿主消费者契约
+- [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0 破坏窗口迁移步骤（英文）
 - [docs/host-upgrade-guide-v030_cn.md](docs/host-upgrade-guide-v030_cn.md) - 面向 `touwaka` / `app_container` 的宿主升级指南与 v0.3.x 行为
 - [docs/maintenance-policy_cn.md](docs/maintenance-policy_cn.md) - 维护策略与内部替换/止损标准
 - [docs/research/](docs/research/) - 调研报告（仅中文）
@@ -333,11 +365,13 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 ## 状态与版本历史
 
-当前包版本为 **v0.5.1**，依据 `package.json` 和 `CHANGELOG.md`，日期为 2026-09-15。
+当前包版本为 **v0.6.0**，依据 `package.json` 和 `CHANGELOG.md`，日期为 2026-09-18。0.6.0 破坏窗口的迁移步骤见
+[docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)。
 
+- **v0.6.0 (2026-09-18)**：ADR-015/ADR-016 破坏窗口收口——可重放概念（`rerunOf` 告知、重跑检测、auto-capture）与 `resourceStore` 端口删除；guard 改为核验结束信封的 `findings` 与全部归档输出比对；引擎标配 recall 工具与输出卫生（`toolOutputs`）；持久化失败通过 `unpersisted`/`completionErrors` 上报；陌生 run 选项抛错。详见 CHANGELOG 与 0.6.0 升级指南。
 - **v0.5.1 (2026-09-15)**：通过识别并替换 fold marker，修复 fold summary、导航记录、stub、`[本 run 状态]` 和 run state 反复累积的问题；增加端到端 Memento 场景覆盖折叠后的 truth、凭据安全 stub、重跑、重复折叠和有界 recall。
-- **v0.5.0 (2026-09-15)**：将 CLI provenance guard 改为 opt-in；规范化重跑会执行并报告 `rerunOf`，而不是被阻止；增加对象形式的有界 recall、cursor 与 source binding、可重放性 provenance、有界 fold navigation 和 stub、确定性 run state、宿主注入的 `todoStateProvider`/`semanticStateProvider` 以及 forced-final 处理。
-- **v0.4.0 (2026-09-14)**：增加 run-scoped notes skill、工具输出 archive 和 provenance capture。Notes 使用 `current` 加最多三个 `superseded` 值以及可见的 `folded` 计数；旧 notes ledger、version chain 和相关环境变量已移除。Provenance guard 比较 capture manifest，而不是信任 notes。
+- **v0.5.0 (2026-09-15)**：将 CLI provenance guard 改为 opt-in；规范化重跑会执行并报告 `rerunOf`（该概念与告知已在 0.6.0 删除），而不是被阻止；增加对象形式的有界 recall、cursor 与 source binding、可重放性 provenance、有界 fold navigation 和 stub、确定性 run state、宿主注入的 `todoStateProvider`/`semanticStateProvider` 以及 forced-final 处理。
+- **v0.4.0 (2026-09-14)**：（历史）增加 run-scoped notes skill、工具输出 archive 和 provenance capture；archive/capture 机制已在 0.6.0 退役。Notes 使用 `current` 加最多三个 `superseded` 值以及可见的 `folded` 计数；旧 notes ledger、version chain 和相关环境变量已移除。Provenance guard 比较 capture manifest，而不是信任 notes。
 - **v0.3.5 (2026-09-12)**：大范围兼容性与持久化修复批次，包括实时流式回调、工具执行后 checkpoint 持久化失败时 fail-closed、完整 pending-tool resume、provider SSE 和 legacy `function_call` 兼容、更安全的 file-store ID、REPL 持久化、MCP 清理、输入校验和 `onObserverError`。
 - **v0.3.4 (2026-09-07)**：修正多轮宿主的任务 brief 选择。显式 `task` 和 `context.task` 优先级最高，其次是入口 transcript 的最后一条 user message；resume 不再使用不可信的历史 task seed。
 - **v0.3.3 (2026-09-06)**：`wrapup: false` 同时禁用整个 wrap-up 指令/解析/替换/规范化协议，并加强顶层 `done` 校验。

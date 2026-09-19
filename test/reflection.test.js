@@ -105,6 +105,30 @@ test("reflection extends the budget and injects the plan into the next task requ
   );
 });
 
+test("default extension step scales with maxRounds instead of a fixed +32 (issue #127)", async () => {
+  // 默认步长改按比例：16 轮的任务一次扩 8 轮（max(8, 16*0.5)），而不是一口气加到 48
+  const provider = createFakeProvider([
+    ...Array.from({ length: 12 }, (_value, index) => toolResponse(index + 1)),
+    reflectionResponse({ progress: 60, stalled: false, continue: true, reason: "仍有价值", plan: "继续做" }),
+    // 模型一直干活不交卷：轮数会一路顶到扩轮后的上限，正好量出步长
+    ...Array.from({ length: 60 }, (_value, index) => toolResponse(index + 13)),
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "完成一个重要任务",
+    executeTool: async () => "ok",
+    maxRounds: 16,
+    completion: false,
+    reflection: { enabled: true, roundJudge: false, judgeIntercept: false, maxExtensions: 1 },
+  });
+
+  // 16 + max(8, 16*0.5) = 24；若还是旧的固定 +32 则会跑到 48
+  assert.equal(result.rounds, 24);
+  assert.equal(result.truncated, true);
+  assert.equal(result.termination.reason, "max_rounds_cap");
+});
+
 test("reflection can stop before the hard round limit without truncation", async () => {
   const provider = createFakeProvider([
     ...Array.from({ length: 8 }, (_value, index) => toolResponse(index + 1)),

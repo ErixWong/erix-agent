@@ -93,6 +93,7 @@ export function transcriptStoreContract(label, createStore) {
     const store = await createStore();
     const first = {
       round: 1,
+      ts: "2026-08-29T00:01:00.000Z",
       status: "pending",
       pendingToolUse: { id: "tool-1", name: "inspect", input: { path: "." } },
       messages: [{ role: "assistant", content: "before" }],
@@ -119,11 +120,13 @@ export function transcriptStoreContract(label, createStore) {
     const store = await createStore();
     await store.saveCheckpoint("run-a", {
       round: 1,
+      ts: "2026-08-29T00:01:00.000Z",
       status: "pending",
       pendingToolUse: { id: "a" },
     });
     await store.appendCheckpoint("run-b", {
       round: 2,
+      ts: "2026-08-29T00:02:00.000Z",
       status: "executed",
       pendingToolUse: { id: "b" },
     });
@@ -188,6 +191,7 @@ export function transcriptStoreContract(label, createStore) {
     for (let round = 1; round <= 24; round += 1) {
       await store.appendRound("bounded-run", {
         round,
+        ts: "2026-08-29T00:00:00.000Z",
         messages: [{
           role: "assistant",
           content: [{ type: "text", text: `round-${round}-${"x".repeat(120)}` }],
@@ -230,6 +234,7 @@ export function transcriptStoreContract(label, createStore) {
     const store = await createStore();
     await store.appendRound("integrity-run", {
       round: 1,
+      ts: "2026-08-29T00:01:00.000Z",
       messages: [{
         role: "assistant",
         content: [{ type: "text", text: "needle-first-content" }],
@@ -237,6 +242,7 @@ export function transcriptStoreContract(label, createStore) {
     });
     await store.appendRound("integrity-run", {
       round: 2,
+      ts: "2026-08-29T00:02:00.000Z",
       messages: [{
         role: "assistant",
         content: [{ type: "text", text: "needle-second-content" }],
@@ -287,6 +293,7 @@ export function transcriptStoreContract(label, createStore) {
     for (let round = 1; round <= 3; round += 1) {
       await store.appendRound("pattern-run", {
         round,
+        ts: "2026-08-29T00:00:00.000Z",
         messages: [{
           role: "assistant",
           content: [
@@ -329,6 +336,7 @@ export function transcriptStoreContract(label, createStore) {
     const store = await createStore();
     await store.appendRound("invalid-cursor-run", {
       round: 1,
+      ts: "2026-08-29T00:01:00.000Z",
       messages: [{ role: "assistant", content: [{ type: "text", text: "visible" }] }],
     });
     const first = await store.recall({
@@ -360,10 +368,12 @@ export function transcriptStoreContract(label, createStore) {
     const store = await createStore();
     await store.appendRound("bounded-run", {
       round: 1,
+      ts: "2026-08-29T00:01:00.000Z",
       messages: [{ role: "assistant", content: [{ type: "text", text: "one" }] }],
     });
     await store.appendRound("bounded-run", {
       round: 2,
+      ts: "2026-08-29T00:02:00.000Z",
       messages: [{ role: "assistant", content: [{ type: "text", text: "two" }] }],
     });
 
@@ -377,6 +387,7 @@ export function transcriptStoreContract(label, createStore) {
     assert.equal(first.status, "truncated");
     await store.appendRound("bounded-run", {
       round: 3,
+      ts: "2026-08-29T00:03:00.000Z",
       messages: [{ role: "assistant", content: [{ type: "text", text: "three" }] }],
     });
     const stale = await store.recall({
@@ -401,6 +412,7 @@ export function transcriptStoreContract(label, createStore) {
     const store = await createStore();
     await store.appendRound("artifact-run", {
       round: 1,
+      ts: "2026-08-29T00:01:00.000Z",
       messages: [{
         role: "user",
         content: [
@@ -455,10 +467,12 @@ export function transcriptStoreContract(label, createStore) {
     const store = await createStore();
     await store.appendRound("gap-run", {
       round: 1,
+      ts: "2026-08-29T00:01:00.000Z",
       messages: [{ role: "assistant", content: [{ type: "text", text: "one" }] }],
     });
     await store.appendRound("gap-run", {
       round: 100001,
+      ts: "2026-08-29T00:41:00.000Z",
       messages: [{ role: "assistant", content: [{ type: "text", text: "last" }] }],
     });
     const result = await store.recall({
