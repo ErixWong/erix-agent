@@ -177,9 +177,11 @@ function userInputSection(quote, warningLine) {
  * Build the mechanical fidelity block appended after the LLM summary.
  *
  * @param {object[]} foldedPayload Raw folded messages (before summarization).
+ * @param {{anchors?: false | {maxPerKind?: number, maxChars?: number}}} [options]
+ *   `anchors: false` 时跳过锚点节（其余保真层不变，向后兼容 0.7.0 关闭形态）。
  * @returns {string|undefined} `undefined` when nothing was extracted (no empty sections).
  */
-export function buildFoldFidelitySection(foldedPayload) {
+export function buildFoldFidelitySection(foldedPayload, options = {}) {
   const sections = [];
   const latestUserInput = extractLatestUserInput(foldedPayload);
   const reverseSignals = detectReverseSignals(foldedPayload);
@@ -191,8 +193,13 @@ export function buildFoldFidelitySection(foldedPayload) {
     sections.push(userInputSection(latestUserInput, warningLine).join("\n"));
   }
 
-  const anchors = extractAnchors(foldedPayload);
-  if (anchors.text !== "") sections.push(anchors.text);
+  if (options?.anchors !== false) {
+    const anchorOptions = options?.anchors && typeof options.anchors === "object"
+      ? options.anchors
+      : {};
+    const anchors = extractAnchors(foldedPayload, anchorOptions);
+    if (anchors.text !== "") sections.push(anchors.text);
+  }
 
   return sections.length === 0 ? undefined : sections.join("\n\n");
 }

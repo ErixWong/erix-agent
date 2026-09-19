@@ -118,7 +118,8 @@ test("emits no empty sections when nothing was extracted", () => {
 test("appends the anchor index after the user input section", () => {
   const payload = [
     { role: "user", content: "看 1ed3f35 的改动" },
-    { role: "assistant", content: [{ type: "text", text: "改了 src/a/b.js:12 (#32)" }] },
+    // A2 抽取范围：锚点只来自 tool_result 与真实 user 消息；assistant 散文里的标识不参与。
+    toolResult("改了 src/a/b.js:12 (#32)"),
   ];
   const section = buildFoldFidelitySection(payload);
 

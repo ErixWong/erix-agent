@@ -41,8 +41,9 @@ function withRecoveryHint(summary, recoveryHint) {
 
 // 机械保真层（锚点索引 / 逐字引用 / 反向信号）在尺寸截断之后追加，
 // 所以摘要预算削不掉它；没有抽到任何内容时不输出空小节。
-function appendFoldFidelity(summary, foldedPayload) {
-  const fidelity = buildFoldFidelitySection(foldedPayload);
+// anchors:false 时跳过锚点节（其余保真层不变，向后兼容 0.7.0 关闭形态）。
+function appendFoldFidelity(summary, foldedPayload, anchorSettings) {
+  const fidelity = buildFoldFidelitySection(foldedPayload, { anchors: anchorSettings });
   if (fidelity === undefined) return summary;
   return summary.trim() === "" ? fidelity : `${summary}\n\n${fidelity}`;
 }
@@ -289,6 +290,7 @@ export function createFoldLlmStrategy({
             summaryBudget,
           ),
           foldedPayload,
+          settings.anchors,
         );
         compactedHead = prependSummary(head, compactedSummary, settings.summaryRole);
       }

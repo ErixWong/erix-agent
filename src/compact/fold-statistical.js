@@ -1,5 +1,6 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { estimateMessageTokens } from "../tokens.js";
+import { clampAnchorSection, extractAnchors } from "./anchors.js";
 import {
   cloneFoldPayload,
   DEFAULT_RECOVERY_HINT,
@@ -30,18 +31,20 @@ function blocksFor(message) {
   return message.content;
 }
 
-function toolFootprint(rounds) {
+function countToolUses(messages) {
   const counts = new Map();
-
-  for (const round of rounds) {
-    for (const message of round.messages) {
-      for (const block of blocksFor(message)) {
-        if (block?.type !== "tool_use") continue;
-        const name = String(block.name ?? "");
-        counts.set(name, (counts.get(name) ?? 0) + 1);
-      }
+  for (const message of messages) {
+    for (const block of blocksFor(message)) {
+      if (block?.type !== "tool_use") continue;
+      const name = String(block.name ?? "");
+      counts.set(name, (counts.get(name) ?? 0) + 1);
     }
   }
+  return counts;
+}
+
+function toolFootprint(rounds) {
+  const counts = countToolUses(rounds.flatMap((round) => round.messages));
 
   if (counts.size === 0) return "无";
 
@@ -178,6 +181,25 @@ function parseMarkedFoldSummary(text) {
   return parseFoldSummaryMatch(value, markedMatch, false);
 }
 
+// 锚点节解析：按 kind 分桶为结构化数据（values 用固定渲染格式 `kind: v1, v2` 还原），
+// 参与 mergedFoldSummaryContent 的并集合并——不靠切原文保锚点。
+const ANCHOR_KIND_PATTERN = /^(paths|shas|issues|urls|errors): (.*)$/u;
+
+function parseAnchorSection(value) {
+  const lines = String(value).split("\n");
+  const headingIndex = lines.findIndex((line) => line.includes("## 锚点索引"));
+  if (headingIndex < 0) return undefined;
+  const byKind = {};
+  let found = false;
+  for (const line of lines.slice(headingIndex + 1)) {
+    const kindMatch = line.match(ANCHOR_KIND_PATTERN);
+    if (!kindMatch) continue;
+    byKind[kindMatch[1]] = kindMatch[2].split(", ").filter((item) => item !== "");
+    found = true;
+  }
+  return found ? byKind : undefined;
+}
+
 function parseFoldSummaryMatch(value, match, legacy) {
   if (!match) return undefined;
   let navigationRecord;
@@ -200,6 +222,7 @@ function parseFoldSummaryMatch(value, match, legacy) {
     stubs: [...String(value).matchAll(/^\[已折叠\][^\n]*/gmu)]
       .map((stub) => stub[0]),
     navigationRecord,
+    anchors: parseAnchorSection(value),
     legacy,
   };
 }
@@ -243,6 +266,7 @@ function formatFoldSummary({
   stubs = [],
   navigationRecord,
   recoveryHint = DEFAULT_RECOVERY_HINT,
+  anchors,
 }) {
   const footprint = tools.size === 0
     ? "无"
@@ -261,18 +285,33 @@ function formatFoldSummary({
   lines.push(recoveryHint);
   const prefix = lines.slice(0, 2).join("");
   const suffix = lines.slice(2).join("\n");
-  return stubs.length > 0 || navigationRecord
+  const summary = stubs.length > 0 || navigationRecord
     ? `${prefix}\n${suffix}`
     : `${prefix}${suffix}`;
+  // 锚点节（A2）固定追加在摘要最末：recoveryHint 之后，整节为机械抽取文本。
+  return anchors && anchors.text !== "" ? `${summary}\n\n${anchors.text}` : summary;
 }
 
-function mergedFoldSummaryContent(originalContent, summary, recoveryHint) {
+function mergedFoldSummaryContent(originalContent, summary, recoveryHint, anchorClamp = {}) {
   const summaries = originalContent
     .filter((block) => block?.type === "text")
     .flatMap((block) => parseFoldSummaries(block.text));
   const current = parseFoldSummary(summary);
   const merged = [...summaries, current].filter((parsed) => parsed !== undefined);
   const mergedStubs = [...new Set(merged.flatMap((parsed) => parsed.stubs ?? []))].slice(0, 10);
+  // 锚点并集（A2 关键回归）：旧摘要锚点在前、新折叠锚点按 kind 追加在后，去重后重新夹取上限
+  // （MAX_ANCHORS=20 / 1200 字符）——连续折叠锚点不丢、不重复、不超限。
+  const unionByKind = {};
+  for (const parsed of merged) {
+    for (const [kind, values] of Object.entries(parsed.anchors ?? {})) {
+      if (!Array.isArray(values)) continue;
+      const bucket = (unionByKind[kind] ??= []);
+      for (const value of values) {
+        if (!bucket.includes(value)) bucket.push(value);
+      }
+    }
+  }
+  const mergedAnchors = clampAnchorSection(unionByKind, anchorClamp);
   const mergedRange = {
     from: Math.min(...merged.map((parsed) => parsed.from)),
     to: Math.max(...merged.map((parsed) => parsed.to)),
@@ -296,6 +335,7 @@ function mergedFoldSummaryContent(originalContent, summary, recoveryHint) {
       stubs: mergedStubs,
       navigationRecord: mergedNavigation,
       recoveryHint: resolveRecoveryHint(recoveryHint),
+      anchors: mergedAnchors,
     });
   const contentWithoutSummaries = originalContent.flatMap((block) => {
     // 旧格式仅兼容读取，保留原块；v1 marker 是专用的可替换区段。
@@ -315,6 +355,7 @@ function prependSummary(
   summary,
   summaryRole = "user",
   recoveryHint = DEFAULT_RECOVERY_HINT,
+  anchorClamp = {},
 ) {
   if (summaryRole === "system") {
     const systemIndex = head.findLastIndex((message) => message?.role === "system");
@@ -328,7 +369,7 @@ function prependSummary(
       : Array.isArray(system.content) ? system.content : [];
     updatedHead[systemIndex] = {
       ...system,
-      content: mergedFoldSummaryContent(content, summary, recoveryHint),
+      content: mergedFoldSummaryContent(content, summary, recoveryHint, anchorClamp),
     };
     return updatedHead;
   }
@@ -346,7 +387,7 @@ function prependSummary(
     ...user,
     // 合并后的单段摘要放 content 最前：模型先看到折叠提示，任务原文紧跟其后；
     // （safeTruncate 同消息字段按 index 截断，任务在后可避免被先截成 [已修剪]）
-    content: mergedFoldSummaryContent(originalContent, summary, recoveryHint),
+    content: mergedFoldSummaryContent(originalContent, summary, recoveryHint, anchorClamp),
   };
   return updatedHead;
 }
@@ -408,6 +449,14 @@ export function createFoldStatisticalStrategy(options = {}) {
         roundRange,
       });
 
+      // 锚点索引（A2）：默认启用，anchors:false 时与 0.7.0 行为完全一致（无锚点节）。
+      const anchorClamp = settings.anchors === false
+        ? {}
+        : (settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {});
+      const anchors = settings.anchors === false
+        ? undefined
+        : extractAnchors(foldedPayload, anchorClamp);
+
       let compactedHead = head;
       if (folded.length > 0) {
         const range = roundRange ?? { from: 1, to: folded.length };
@@ -415,25 +464,18 @@ export function createFoldStatisticalStrategy(options = {}) {
           from: range.from,
           to: range.to,
           count: folded.length,
-          tools: folded.reduce((counts, round) => {
-            for (const message of round.messages) {
-              for (const block of blocksFor(message)) {
-                if (block?.type !== "tool_use") continue;
-                const name = String(block.name ?? "");
-                counts.set(name, (counts.get(name) ?? 0) + 1);
-              }
-            }
-            return counts;
-          }, new Map()),
+          tools: countToolUses(folded.flatMap((round) => round.messages)),
           stubs: foldedStubs,
           navigationRecord,
           recoveryHint,
+          anchors,
         });
         compactedHead = prependSummary(
           head,
           summary,
           settings.summaryRole,
           recoveryHint,
+          anchorClamp,
         );
       }
 

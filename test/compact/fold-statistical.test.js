@@ -488,3 +488,133 @@ test("replaces summaries, navigation, and stubs across two and three folds", asy
   assert.equal((text.match(/\[run state deterministic v1\]/gu) ?? []).length, 1);
   assert.doesNotMatch(text, /first-secret|second-secret|third-secret/u);
 });
+
+test("includes the mechanical anchor section in a single fold by default (A2)", async () => {
+  const messages = [
+    { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "tool_use", id: "a", name: "exec", input: {} }] },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "a",
+        content: "commit 0c309e6 touched src/compact/fold-statistical.js:8 (#33) "
+          + "https://git.erix.vip/eric/erix-llm-kit/issues/33",
+      }],
+    },
+    { role: "assistant", content: "散文里的 1ed3f35 src/other/file.js 不参与抽取" },
+    { role: "user", content: "keep" },
+  ];
+  const result = await createFoldStatisticalStrategy().compact(messages, { keepRounds: 1 });
+  const summary = result.messages[0].content[0].text;
+
+  assert.match(summary, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
+  assert.match(summary, /^shas: 0c309e6$/mu);
+  assert.match(summary, /^paths: src\/compact\/fold-statistical\.js:8$/mu);
+  assert.match(summary, /^issues: #33$/mu);
+  assert.match(summary, /^urls: https:\/\/git\.erix\.vip\/eric\/erix-llm-kit\/issues\/33$/mu);
+  // assistant 散文不参与（A2 降误报）。
+  assert.doesNotMatch(summary, /1ed3f35|src\/other\/file\.js/u);
+});
+
+test("anchors:false keeps the 0.7.0 summary shape exactly (no anchor section)", async () => {
+  const messages = [
+    { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "tool_use", id: "a", name: "exec", input: {} }] },
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "a", content: "commit 0c309e6 done" }],
+    },
+    { role: "user", content: "keep" },
+  ];
+  const withAnchors = await createFoldStatisticalStrategy().compact(messages, { keepRounds: 1 });
+  const withoutAnchors = await createFoldStatisticalStrategy({ anchors: false })
+    .compact(messages, { keepRounds: 1 });
+
+  assert.match(withAnchors.messages[0].content[0].text, /## 锚点索引/u);
+  assert.doesNotMatch(withoutAnchors.messages[0].content[0].text, /锚点索引/u);
+  assert.doesNotMatch(JSON.stringify(withoutAnchors.messages), /0c309e6/u);
+  // call-level anchors:false 覆盖工厂默认（与 0.7.0 无锚点节的字节形态一致）。
+  const callDisabled = await createFoldStatisticalStrategy()
+    .compact(messages, { keepRounds: 1, anchors: false });
+  assert.equal(
+    JSON.stringify(callDisabled.messages),
+    JSON.stringify(withoutAnchors.messages),
+  );
+});
+
+test("unions anchors across three folds without loss, duplication, or overflow (A2 key regression)", async () => {
+  const strategy = createFoldStatisticalStrategy();
+  const round = (id, content) => [
+    { role: "assistant", content: [{ type: "tool_use", id, name: "exec", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: id, content }] },
+  ];
+  const firstMessages = [
+    { role: "user", content: "task" },
+    ...round("a", "sha 1ed3f35 path src/one/a.js (#1)"),
+    { role: "user", content: "keep" },
+  ];
+  const first = await strategy.compact(firstMessages, {
+    keepRounds: 1,
+    roundNumbers: [1, 2, 3],
+  });
+  const second = await strategy.compact([
+    ...first.messages,
+    ...round("b", "sha 1ed3f35 again plus 0c309e6 path src/two/b.js (#1) (#2)"),
+    { role: "user", content: "keep again" },
+  ], {
+    keepRounds: 1,
+    roundNumbers: [2, 3, 4, 5],
+  });
+  const third = await strategy.compact([
+    ...second.messages,
+    ...round("c", "path src/three/c.js sha 9f8e7d6\nfatal: boom"),
+    { role: "user", content: "keep final" },
+  ], {
+    keepRounds: 1,
+    roundNumbers: [3, 4, 5, 6, 7],
+  });
+
+  const text = third.messages[0].content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+  assert.equal((text.match(/## 锚点索引/gu) ?? []).length, 1);
+  // 并集：三个折叠轮的锚点都在，旧锚点在前、新锚点在后，无重复。
+  assert.match(text, /^shas: 1ed3f35, 0c309e6, 9f8e7d6$/mu);
+  assert.match(text, /^paths: src\/one\/a\.js, src\/two\/b\.js, src\/three\/c\.js$/mu);
+  assert.match(text, /^issues: #1, #2$/mu);
+  assert.match(text, /^errors: fatal: boom$/mu);
+  for (const value of ["1ed3f35", "0c309e6", "9f8e7d6", "src/one/a.js", "src/two/b.js"]) {
+    assert.equal((text.match(new RegExp(value.replaceAll("/", "\\/"), "gu")) ?? []).length, 1, value);
+  }
+  // 重新夹取上限：总数 ≤ 20、节字符 ≤ 1200。
+  const anchorSection = text.slice(text.indexOf("## 锚点索引"));
+  assert.ok(anchorSection.length <= 1200);
+});
+
+test("re-clamps merged anchors to maxPerKind across folds", async () => {
+  const strategy = createFoldStatisticalStrategy({ anchors: { maxPerKind: 2 } });
+  const round = (id, content) => [
+    { role: "assistant", content: [{ type: "tool_use", id, name: "exec", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: id, content }] },
+  ];
+  const first = await strategy.compact([
+    { role: "user", content: "task" },
+    ...round("a", "#1 #2 #3"),
+    { role: "user", content: "keep" },
+  ], { keepRounds: 1, roundNumbers: [1, 2, 3] });
+  const second = await strategy.compact([
+    ...first.messages,
+    ...round("b", "#2 #3 #4"),
+    { role: "user", content: "keep again" },
+  ], { keepRounds: 1, roundNumbers: [2, 3, 4, 5] });
+
+  const text = second.messages[0].content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+  // 并集去重后是 #1 #2 #3 #4（4 个），maxPerKind=2 重新夹取到前 2 个。
+  assert.match(text, /^issues: #1, #2$/mu);
+  assert.doesNotMatch(text, /#3|#4/u);
+});

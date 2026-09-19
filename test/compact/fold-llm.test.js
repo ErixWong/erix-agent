@@ -240,3 +240,48 @@ test("adds no mechanical section when the folded payload has nothing to extract"
   );
   assert.doesNotMatch(text, /锚点索引|用户最新未解决输入|中止\/撤销/u);
 });
+
+test("anchors:false omits the anchor section but keeps the rest of the fidelity layer", async () => {
+  const result = await createFoldLlmStrategy({
+    summarizer: async () => "## 下一步\n已完成项禁止重做",
+    anchors: false,
+  }).compact(anchorConversation(), { keepRounds: 2 });
+  const text = result.messages[0].content[0].text;
+
+  assert.doesNotMatch(text, /## 锚点索引/u);
+  assert.doesNotMatch(text, /1ed3f35/u);
+  // 其余保真层（逐字引用 / 反向信号）不受影响。
+  assert.match(text, /## 用户最新未解决输入/u);
+  assert.match(text, /^> 取消旧方案，改做锚点索引$/m);
+
+  // call-level anchors:false 与工厂级一致；默认（不传）则含锚点节。
+  const callDisabled = await createFoldLlmStrategy({
+    summarizer: async () => "## 下一步\n已完成项禁止重做",
+  }).compact(anchorConversation(), { keepRounds: 2, anchors: false });
+  assert.equal(
+    callDisabled.messages[0].content[0].text,
+    text,
+  );
+  const byDefault = await createFoldLlmStrategy({
+    summarizer: async () => "## 下一步\n已完成项禁止重做",
+  }).compact(anchorConversation(), { keepRounds: 2 });
+  assert.match(byDefault.messages[0].content[0].text, /## 锚点索引/u);
+});
+
+test("keeps the anchor section intact when maxSummaryTokens is tiny (A2)", async () => {
+  const result = await createFoldLlmStrategy({
+    summarizer: async () => "unsectioned summary ".repeat(200),
+    maxSummaryTokens: 50,
+  }).compact(anchorConversation(), { keepRounds: 2 });
+  const text = result.messages[0].content[0].text;
+  const [llmPart] = text.split("## 用户最新未解决输入");
+
+  // 摘要本体被削到 50 token 内，但锚点节完整保留（在尺寸截断之后追加）。
+  assert.ok(estimateTokens(llmPart) <= 50);
+  assert.match(llmPart, /截断|修剪/);
+  const anchorSection = text.slice(text.indexOf("## 锚点索引"));
+  assert.match(anchorSection, /^shas: 1ed3f35$/mu);
+  assert.match(anchorSection, /^paths: src\/compact\/fold-llm\.js:120$/mu);
+  assert.match(anchorSection, /^issues: #32$/mu);
+  assert.match(anchorSection, /^urls: https:\/\/git\.erix\.vip\/eric\/erix-llm-kit\/commit\/1ed3f35$/mu);
+});

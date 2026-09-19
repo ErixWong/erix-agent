@@ -376,6 +376,47 @@ thrown persistence failure as `error.unpersisted`.
 `persistence_error` diagnostic events now include `port: "transcript"`;
 the field is additive and existing consumers are unaffected.
 
+## Fold summary structure
+
+Both round-folding strategies (`fold-statistical` and `fold-llm`) prepend a
+single fold-summary text block to the head task message (or system message
+with `summaryRole: "system"`). Its fixed sections, in order:
+
+1. Marker line `【上下文折叠·v1·erix-9f6e2c】早期第 N–M 轮（共 K 轮）已折叠。`
+   plus the deterministic tool footprint (`工具足迹：name×count, …` or `无`).
+2. Optional `导航记录：{…}` line (bounded JSON, only when folded tool results
+   carry archive artifacts).
+3. Optional `[已折叠] …` stubs (at most 10).
+4. The recovery hint line.
+5. Optional **anchor index** section (mechanical extraction, no LLM rewrite):
+
+   ```
+   ## 锚点索引（机械抽取，未经 LLM 改写）
+   paths: src/a/b.js:12, …
+   shas: 1ed3f35, …
+   issues: #32, …
+   urls: https://…
+   errors: TypeError: …, …
+   ```
+
+   Anchors are regex-extracted from the folded payload — only from
+   `tool_result` content and real user messages, never from assistant prose.
+   Kinds render in the fixed order `paths, shas, issues, urls, errors`;
+   `errors` lines contain `Error`/`Exception`/`Traceback`/`fatal:` and are
+   kept verbatim up to 120 chars, at most 5. Caps: 20 anchors total,
+   1200 chars for the whole section (ranked by frequency, then first
+   appearance). Across consecutive folds the section is re-parsed and merged
+   as a per-kind union (existing entries first, new entries appended,
+   deduplicated) and re-clamped, so anchors survive repeated folding without
+   loss, duplication, or overflow.
+
+   The anchor section is on by default. Pass `anchors: false` (strategy
+   factory or per-`compact` options) to restore the exact 0.7.0 behavior —
+   no anchor section; the rest of the summary is unchanged. An object form
+   `anchors: { maxPerKind, maxChars }` clamps per-kind counts and section
+   characters. In `fold-llm` the section is appended after the LLM summary
+   (and after size enforcement), so `maxSummaryTokens` cannot truncate it.
+
 ## Run state
 
 The engine builds a deterministic run state and can inject its bounded
