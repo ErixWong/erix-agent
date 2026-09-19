@@ -2,6 +2,23 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [0.7.1] - 2026-09-19
+
+来源：0.7.0 发布当日 issue #33（折叠锚点默认路径）评审修复批次（PR #134）。
+
+### Fixed
+
+- **折叠锚点接入 fold-statistical 默认路径**（issue #33 A）：锚点保真层不再仅限显式调用方，折叠摘要默认携带机械抽取的精确标识。
+- **intercept judge 对只读工具放行**（issue #33 C）：readFile/tree/rg/note_read/note_list/recall 类调用不再被审计拦截（实测拦截净收益为负）。
+- **judge LLM 用量进 judge.log 与逐轮事件**（issue #33 B）：轮判与拦截审计的 token 消耗可观测。
+- **fold-llm summarizer 运行时失败降级为统计摘要**（issue #33 D）：摘要模型不可用时不再中断折叠。
+- 评审退回项：锚点逗号 round-trip、`anchors:false` 全关（含 system/role 切换的 head 全量剥离与 prependSummary 清理）、降级摘要补 stub 与导航记录、judge parse 失败带 usage。
+
+### 文档
+
+- 新增架构图文档 `docs/charts.md` / `charts_cn.md`（数据流 / 模块架构 / 端到端时序 / 机制解析 / 评审 Q&A）。
+- 源码结构描述同步（`src/loop/` 目录化）；清理 jail/file-tools 过期残留（0.5.1 已删，README / architecture / testing / AGENTS 跟进）。
+
 ## [0.7.0] - 2026-09-19
 
 来源：2026-09-18 真实项目运行时评估（`docs/eval/2026-09-18-erix-060-real-project-eval.md`，touwaka 快照 × deepseek-flash，10 run）的优化清单批次 1/2；方案经 GitHub Copilot 架构审计修订（批末重写→增量准入、砍同轮去重、截断方向下沉宿主）。
