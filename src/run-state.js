@@ -254,6 +254,7 @@ export function createDeterministicRunState({
   runId,
   stateVersion = 0,
   rounds = 0,
+  runRounds,
   maxRounds = 0,
   lowBudgetPrompted = false,
   toolStats,
@@ -269,6 +270,10 @@ export function createDeterministicRunState({
   archiveFailureCount = 0,
 } = {}) {
   const safeRounds = safeInteger(rounds);
+  // 双计数器（issue #32 #8）：rounds = 会话累计身份轮号（跨 resume 单调递增）；
+  // runRounds = 本次 runToolLoop 消耗的轮数（resume 后从 0 重算，缺省等于 rounds，
+  // 保证非 resume 单段调用两者一致）；remainingRounds 以本次预算为准。
+  const safeRunRounds = safeInteger(runRounds ?? safeRounds);
   const safeMaxRounds = safeInteger(maxRounds);
   const tools = normalizeCountMap(toolStats);
   const files = normalizeFiles(filesWritten);
@@ -282,8 +287,9 @@ export function createDeterministicRunState({
     deterministic: {
       budget: {
         rounds: safeRounds,
+        runRounds: safeRunRounds,
         maxRounds: safeMaxRounds,
-        remainingRounds: Math.max(0, safeMaxRounds - safeRounds),
+        remainingRounds: Math.max(0, safeMaxRounds - safeRunRounds),
         lowBudgetPrompted: lowBudgetPrompted === true,
       },
       tools: tools.items,
@@ -338,9 +344,14 @@ export function renderRunState(state) {
     .map((item) => `${safeText(item.id, 18)}:${safeText(item.status, 12)}`)
     .join(",");
   const semantic = state.semantic ?? { status: "absent" };
+  // 预算行报本次会话的消耗（runRounds），resume 后与累计身份轮号不同时额外标出 session
+  const renderedRunRounds = safeInteger(budget.runRounds ?? budget.rounds);
+  const renderedSessionRounds = safeInteger(budget.rounds);
   const lines = [
     DETERMINISTIC_MARKER,
-    `run=${safeText(state.runId, 48)} v=${safeInteger(state.stateVersion)} r=${safeInteger(budget.rounds)}/${safeInteger(budget.maxRounds)} left=${safeInteger(budget.remainingRounds)} low=${budget.lowBudgetPrompted === true ? 1 : 0}`,
+    `run=${safeText(state.runId, 48)} v=${safeInteger(state.stateVersion)} r=${renderedRunRounds}/${safeInteger(budget.maxRounds)} left=${safeInteger(budget.remainingRounds)} low=${budget.lowBudgetPrompted === true ? 1 : 0}${
+      renderedRunRounds === renderedSessionRounds ? "" : ` session=${renderedSessionRounds}`
+    }`,
     `tools=${tools || "-"} files=${files || "-"}`,
     `todo=${todo || safeText(deterministic.todo?.status, 16) || "-"} fold=${safeInteger(fold.foldedRounds)}/${safeInteger(fold.navigationRecords)} nonreplay=${safeInteger(fold.nonReplayableCaptures)}`,
     `termination=${safeText(deterministic.termination?.reason, 32) || "running"} errors=${safeInteger(errors.tool)}/${safeInteger(errors.checkpoint)}/${safeInteger(errors.archive)}`,

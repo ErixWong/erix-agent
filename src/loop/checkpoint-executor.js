@@ -57,8 +57,10 @@ export function createCheckpointExecutor(ctx) {
     };
   };
 
-  const budgetHintFor = (round) => {
-    const remaining = ctx.governorState.effectiveMaxRounds - round;
+  // 剩余轮数必须配本次 runToolLoop 的预算计数器（budgetRounds），不能用身份轮号：
+  // resume 后身份轮号已到顶，会算出错误的剩余轮数提前催收尾（issue #32 #8）
+  const budgetHintFor = () => {
+    const remaining = ctx.governorState.effectiveMaxRounds - ctx.budgetRounds;
     if (remaining <= 2) ctx.lowBudgetPrompted = true;
     return remaining <= 2
       ? `[预算] 本轮后仅剩 ${Math.max(0, remaining)} 轮；请立即给出结论，或明确声明不可恢复`
@@ -182,7 +184,7 @@ export function createCheckpointExecutor(ctx) {
       toolStat.failures += 1;
       ctx.toolErrorCount += 1;
     }
-    const budgetHint = budgetHintFor(round);
+    const budgetHint = budgetHintFor();
     if (budgetHint) toolResult.content = `${toolResult.content}\n${budgetHint}`;
     if (isError || execution.success === false) toolResult.is_error = true;
     toolResults.push(toolResult);
@@ -337,7 +339,7 @@ export function createCheckpointExecutor(ctx) {
       executionStatus: "intercepted",
       content: `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。`,
     };
-    const budgetHint = budgetHintFor(round);
+    const budgetHint = budgetHintFor();
     if (budgetHint) toolResult.content = `${toolResult.content}\n${budgetHint}`;
     if (block.id !== undefined) ctx.checkpointResults.set(block.id, toolResult);
     toolResults.push(toolResult);

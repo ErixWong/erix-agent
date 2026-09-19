@@ -776,7 +776,9 @@ test("resume without a round-zero seed keeps the judge brief empty", async () =>
     provider: resumedProvider,
     resume: true,
     executeTool: async () => "unused",
-    maxRounds: 2,
+    // 预算计数器拆分（issue #32 #8）后 resume 的轮预算从 0 起算，
+    // maxRounds=1 即续接会话只跑一轮（judge 恰好被调用一次）
+    maxRounds: 1,
     completion: false,
     wrapup: false,
     reflection: { enabled: true, judge: { provider: resumedJudge } },

@@ -925,7 +925,17 @@ export async function runToolLoop(options) {
   let taskBriefSource = messages;
   const messageRounds = new WeakMap();
   for (const message of messages) messageRounds.set(message, 0);
+  // 双计数器约定（issue #32 #8）——改这两处语义前先读这里：
+  // - `rounds`：**身份**轮号。跨 resume 单调递增（resume 从 transcript 最大 round 续起），
+  //   用于 round 编号 / `roundKey` / messageRounds / judge 的"已运行轮数"展示 /
+  //   checkpoint round / 结果 `result.rounds`。它**不是**轮预算。
+  // - `budgetRounds`：**本次 runToolLoop 的预算消耗**。每次调用从 0 起计，
+  //   resume **不**继承历史（否则续接轮轮号已到顶，主循环一次进不去，
+  //   直接被 max_rounds_cap 强制收尾）。用于主循环条件 / `remainingRounds` /
+  //   budget hint / reflection `nearLimit` / memory-loss 阈值。
+  // 契约：非 resume 单段调用两者数值恒等（都从 0 起、同步自增）。
   let rounds = 0;
+  let budgetRounds = 0;
   let foldedThrough = 0;
   let resumeCheckpoint;
   let resumePendingTools = [];
@@ -1342,6 +1352,7 @@ export async function runToolLoop(options) {
       runId,
       stateVersion: runStateVersion,
       rounds,
+      runRounds: budgetRounds,
       maxRounds: governorState.effectiveMaxRounds,
       lowBudgetPrompted,
       toolStats,
@@ -1599,6 +1610,9 @@ export async function runToolLoop(options) {
     hasCheckpointStore,
     toolStats,
     governorState,
+    get budgetRounds() {
+      return budgetRounds;
+    },
     awaitWithAbort,
     emitJudge,
     callRoundJudge,
@@ -1903,7 +1917,10 @@ export async function runToolLoop(options) {
       const persisted = await persist("appendRound", runId, {
         round: resumeCheckpoint.round,
         roundKey: `${String(runId)}:round:${String(resumeCheckpoint.round)}`,
-        dedupKey: `${String(runId)}:round:${String(resumeCheckpoint.round)}`,
+        // 引擎命名空间：宿主可能已用默认键 `${runId}:round:N` 写入自己的行（追问/历史种子），
+        // 同键会被 appendRound 去重 → 续接轮（含补跑工具结果）落盘被静默丢弃，
+        // transcript 只剩宿主那条近空行（issue #32 #8）。`:resume` 幂等，重启重跑不重复写。
+        dedupKey: `${String(runId)}:engine:round:${String(resumeCheckpoint.round)}:resume`,
         messages: cloneState(resumeMessagesToPersist),
         ...(archivedOutputs.some((entry) => entry.round === resumeCheckpoint.round)
           ? {
@@ -1920,7 +1937,12 @@ export async function runToolLoop(options) {
     }
     appendResumeTailMessages();
 
-    while (rounds < governorState.effectiveMaxRounds) {
+    // 预算条件用 budgetRounds（本次 runToolLoop 的消耗），不是身份轮号 rounds：
+    // resume 续接时 rounds 已到顶，用它当预算会导致续接轮一次进不了循环。
+    while (budgetRounds < governorState.effectiveMaxRounds) {
+    // 轮预算在进入本轮时自增（与既有 `round` 语义对齐：budgetRounds === 本轮序号），
+    // 这样预算提示 / 剩余轮数在工具执行期读到的就是正确值
+    budgetRounds += 1;
     const round = rounds + 1;
     toolExecutedThisRound = false;
     roundEventDeltas = [];
@@ -2138,7 +2160,7 @@ export async function runToolLoop(options) {
     }
     // 失忆兑底：超过 5 轮后模型若输出欢迎语（误以为新会话），注入任务提醒并继续
     // （上下文折叠可能让模型丢失任务感；此处把主线拉回，避免空转）
-    const memoryLossDetected = rounds > 5
+    const memoryLossDetected = budgetRounds > 5
       && wrapupJson === null
       && !hasToolUse(content)
       && isLikelyWelcomeResponse(finalText);
@@ -2152,6 +2174,7 @@ export async function runToolLoop(options) {
       governorState.noToolStreak += 1;
     }
 
+    // 身份轮号自增（非 resume 单段调用 budgetRounds 与 rounds 恒等；resume 后 rounds 领先）
     rounds = round;
     const currentRoundMessages = messages.slice(roundStart);
     const currentL0 = extractL0Facts(currentRoundMessages, {
@@ -2171,7 +2194,9 @@ export async function runToolLoop(options) {
     }
     const actionSignals = {
       round,
-      rounds,
+      // 治理层的 rounds 只用于推进速率估算（elapsedMs / rounds），跟预算同域：
+      // resume 后 elapsedMs 是本次会话的，必须配本次会话的轮数（budgetRounds）
+      rounds: budgetRounds,
       hasToolUse: hasToolUse(content),
       shouldContinue,
       noToolRound,
@@ -2186,7 +2211,7 @@ export async function runToolLoop(options) {
       stallStreak,
       wrapUpNudged: governorState.wrapUpNudged,
       reflectionEnabled: roundJudgeEnabled ? false : reflectionEnabled,
-      nearLimit: rounds >= governorState.nextReflectionRound,
+      nearLimit: budgetRounds >= governorState.nextReflectionRound,
       extensionCount: governorState.extensionCount,
       maxExtensions: reflectionMaxExtensions,
       effectiveMaxRounds: governorState.effectiveMaxRounds,
@@ -2309,7 +2334,9 @@ export async function runToolLoop(options) {
     const record = {
       round,
       roundKey: `${String(runId)}:round:${String(round)}`,
-      dedupKey: `${String(runId)}:round:${String(round)}`,
+      // 引擎命名空间（同 resume 预落盘，见上方注释）：宿主若已用默认键
+      // `${runId}:round:N` 写了同行号的行，引擎本轮的完整记录不会被去重丢掉。
+      dedupKey: `${String(runId)}:engine:round:${String(round)}`,
       messages: messages.slice(roundStart),
       ts: new Date().toISOString(),
       response: {
@@ -2386,7 +2413,7 @@ export async function runToolLoop(options) {
       );
       governorState.extensionCount += 1;
       governorState.nextReflectionRound = Math.max(
-        rounds + 1,
+        budgetRounds + 1,
         Math.floor(governorState.effectiveMaxRounds * 0.8),
       );
       const continuationMessage = {

@@ -553,3 +553,151 @@ test("archives replayed tool results without duplicating multiple resume tails",
   });
   assert.equal(secondProvider.requests.length, 1);
 });
+
+test("resumed session gets its own round budget and persists the continuation rounds (issue #32 #8)", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "resume-budget-after-cap";
+
+  // 第一段：maxRounds 跑满（每轮都调工具）→ 以 max_rounds_cap 强制收尾
+  const firstProvider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "s1-a", name: "work", input: { step: 1 } }],
+      stopReason: "tool_use",
+    },
+    {
+      content: [{ type: "tool_use", id: "s1-b", name: "work", input: { step: 2 } }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "session-one-final" }], stopReason: "end_turn" },
+  ]);
+  const first = await runToolLoop({
+    provider: firstProvider,
+    initialUserMessage: "session one task",
+    executeTool: async ({ input }) => `done-${input.step}`,
+    maxRounds: 2,
+    completion: false,
+    store,
+    runId,
+  });
+  assert.equal(first.rounds, 2);
+  assert.equal(first.termination.reason, "max_rounds_cap");
+
+  // 第二段：宿主以 CLI/REPL 同样的方式落一条同 session 追问输入行
+  // （round = 当前最大轮号，独立 dedupKey；见 bin/cli.js、bin/repl.js 的 resume 路径）
+  const beforeResume = await store.load(runId);
+  const latestRound = Math.max(0, ...beforeResume.map((record) => record.round ?? 0));
+  const inputKey = `${runId}:input:1`;
+  await store.appendRound(runId, {
+    round: latestRound,
+    roundKey: inputKey,
+    dedupKey: inputKey,
+    messages: [textMessage("session two follow-up")],
+    ts: new Date().toISOString(),
+  });
+
+  const secondProvider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "s2-a", name: "work", input: { step: "follow-up" } }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "session-two-answer" }], stopReason: "end_turn" },
+  ]);
+  const executed = [];
+  const second = await runToolLoop({
+    provider: secondProvider,
+    resume: true,
+    executeTool: async ({ input }) => {
+      executed.push(input.step);
+      return `resumed-${input.step}`;
+    },
+    maxRounds: 2,
+    completion: false,
+    store,
+    runId,
+  });
+
+  // 轮预算（budgetRounds）从 0 起算：续接会话能真正跑满并执行工具。
+  // 修复前 rounds 已 = maxRounds（2），主循环 `rounds < effectiveMaxRounds` 一次都进不去，
+  // 既没有工具调用，也不落任何续接轮记录（transcript 只剩追问那条近空行）。
+  assert.deepEqual(executed, ["follow-up"]);
+  assert.equal(second.finalText, "session-two-answer");
+  assert.deepEqual(second.termination, { reason: "end_turn" });
+  // 身份轮号（rounds）跨 resume 单调递增
+  assert.equal(second.rounds, 4);
+
+  // run-state 双报：rounds = 会话累计，runRounds / remainingRounds = 本次预算
+  const budget = second.runState.deterministic.budget;
+  assert.equal(budget.rounds, 4);
+  assert.equal(budget.runRounds, 2);
+  assert.equal(budget.maxRounds, 2);
+  assert.equal(budget.remainingRounds, 0);
+  assert.match(second.runState.rendered, /r=2\/2 left=0/u);
+  assert.match(second.runState.rendered, /session=4/u);
+
+  // transcript 完整：追问在案、续接轮记录在案且含 response 文本，轮号递增不撞号
+  const records = await store.load(runId);
+  assert.deepEqual(records.map((record) => record.round), [0, 1, 2, 2, 3, 4]);
+  const flatMessages = records.flatMap((record) => record.messages ?? []);
+  assert.equal(
+    flatMessages.filter((message) => (
+      (message.content ?? []).some((block) => block?.text === "session two follow-up")
+    )).length,
+    1,
+  );
+  const continuationRecords = records.filter((record) => record.round > latestRound);
+  assert.equal(continuationRecords.length, 2, "续接轮记录不得被去重丢弃");
+  const continuationText = continuationRecords.flatMap((record) => record.messages ?? []);
+  assert.ok(
+    continuationText.some((message) => message.role === "user"
+      && (message.content ?? []).some((block) => block?.type === "tool_result")),
+    "续接轮记录应含 user（tool_result）消息",
+  );
+  const answerRecords = records.filter((record) => (
+    (record.messages ?? []).some((message) => (
+      (message.content ?? []).some((block) => block?.text === "session-two-answer")
+    ))
+  ));
+  assert.equal(answerRecords.length, 1, "续接轮的 response 文本必须落盘");
+  assert.ok(answerRecords[0].round > latestRound);
+});
+
+test("engine round records are not deduped away by a host row with the same round number", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "engine-round-key-namespace";
+  // 宿主预置历史行：默认键（无 dedupKey/roundKey）→ `${runId}:round:1`
+  await store.appendRound(runId, {
+    round: 1,
+    messages: [textMessage("宿主预置历史")],
+  });
+
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "engine-1", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "engine-answer" }], stopReason: "end_turn" },
+  ]);
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "engine task",
+    executeTool: async () => "tool-out",
+    maxRounds: 2,
+    completion: false,
+    store,
+    runId,
+  });
+
+  assert.equal(result.finalText, "engine-answer");
+  const records = await store.load(runId);
+  // 宿主行 + 引擎 round 1 行并存（修复前引擎行被同键去重吃掉，transcript 只剩宿主那行）
+  assert.deepEqual(records.map((record) => record.round), [1, 0, 1, 2]);
+  const engineRoundOne = records.filter((record) => record.round === 1
+    && (record.messages ?? []).some((message) => message.role === "assistant"));
+  assert.equal(engineRoundOne.length, 1);
+  assert.ok((engineRoundOne[0].messages ?? []).some((message) => (
+    message.content?.some((block) => block?.type === "tool_result")
+  )));
+  assert.ok(records.some((record) => (record.messages ?? []).some((message) => (
+    message.content?.some((block) => block?.text === "engine-answer")
+  ))));
+});

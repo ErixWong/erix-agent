@@ -34,7 +34,9 @@ export async function restoreResume(ctx) {
         failures: Number.isSafeInteger(tool.failures) ? tool.failures : 0,
       });
     }
-    ctx.lowBudgetPrompted = deterministic.budget?.lowBudgetPrompted === true;
+    // lowBudgetPrompted 属于“本次预算”类状态：预算轮数每次 runToolLoop 从 0 起算，
+    // 续接会话有全新预算，不得继承上一次的“预算将尽”标记（只影响 run-state 报告口径）
+    ctx.lowBudgetPrompted = false;
     ctx.foldedRoundCount = deterministic.fold?.foldedRounds ?? 0;
     ctx.navigationRecordCount = deterministic.fold?.navigationRecords ?? 0;
     ctx.nonReplayableCaptureCount = deterministic.fold?.nonReplayableCaptures ?? 0;
@@ -121,7 +123,11 @@ export async function restoreResume(ctx) {
           }
         }
       }
-      // 以最大 round 为续跑基数（含 round 0 种子记录时 records.length 会多算一轮）
+      // 以最大 round 为续跑基数（含 round 0 种子记录时 records.length 会多算一轮）。
+      // 双计数器约定（issue #32 #8）：`rounds` 是**身份**轮号，跨 resume 单调递增，
+      // 只用于 round 编号 / roundKey / judge 已运行轮数展示 / checkpoint round；
+      // 轮**预算**是 orchestrator 里每次 runToolLoop 从 0 起的 `budgetRounds`，
+      // resume **不**把历史轮号当预算恢复（否则续接轮轮号已到顶，主循环一次进不了）。
       ctx.rounds = Math.max(...records.map((record) => record.round ?? 0));
       ctx.foldedThrough = Math.max(
         0,
@@ -244,6 +250,8 @@ export async function restoreResume(ctx) {
     const persisted = await persist("appendRound", ctx.runId, {
       round: 0,
       roundKey: `${String(ctx.runId)}:round:0`,
+      // 引擎命名空间：宿主/上一次运行的默认键行不应把本次种子去重没（transcript 完整性）
+      dedupKey: `${String(ctx.runId)}:engine:round:0:seed`,
       messages: [...ctx.messages],
       summary: "missing",
       l0facts: extractL0Facts(ctx.messages),

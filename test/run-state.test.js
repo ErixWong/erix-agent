@@ -95,6 +95,25 @@ test("unknown and incomplete run state are explicitly unavailable", () => {
   });
 });
 
+test("validateRunState accepts the additive runRounds budget field", () => {
+  const state = createDeterministicRunState({
+    runId: "additive-budget",
+    stateVersion: 1,
+    rounds: 12,
+    runRounds: 4,
+    maxRounds: 20,
+  });
+
+  assert.equal(state.deterministic.budget.runRounds, 4);
+  assert.equal(state.deterministic.budget.remainingRounds, 16);
+  assert.equal(validateRunState(state).ok, true);
+  // 旧（无 runRounds）持久化状态仍可读：缺省回落到 rounds
+  const legacy = structuredClone(state);
+  delete legacy.deterministic.budget.runRounds;
+  assert.equal(validateRunState(legacy).ok, true);
+  assert.match(renderRunState(legacy), /r=12\/20 left=16/u);
+});
+
 test("resume exposes unknown persisted schema instead of silently resetting it", async () => {
   const store = createMemoryTranscriptStore();
   await store.appendRound("unknown-schema", {
@@ -272,4 +291,43 @@ test("semantic state with an old version is explicitly stale", () => {
     version: 1,
   }));
   assert.match(stale, /status=stale version=1/u);
+});
+
+test("single-session runs keep both counters equal and drain remainingRounds monotonically", async () => {
+  const store = createMemoryTranscriptStore();
+  const budgets = [];
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      {
+        content: [{ type: "tool_use", id: "a", name: "work", input: { step: 1 } }],
+        stopReason: "tool_use",
+      },
+      {
+        content: [{ type: "tool_use", id: "b", name: "work", input: { step: 2 } }],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "work",
+    executeTool: async () => "worked",
+    maxRounds: 3,
+    completion: false,
+    store,
+    runId: "budget-monotonic",
+    onRound: (record) => budgets.push(record.runState.deterministic.budget),
+  });
+
+  // 非 resume 单段调用：身份轮号与预算轮数恒等
+  assert.deepEqual(
+    budgets.map((budget) => [budget.rounds, budget.runRounds, budget.remainingRounds]),
+    [[1, 1, 2], [2, 2, 1], [3, 3, 0]],
+  );
+  assert.deepEqual(
+    budgets.map((budget) => budget.remainingRounds),
+    [2, 1, 0],
+  );
+  assert.equal(result.termination.reason, "end_turn");
+  assert.deepEqual(result.runState.deterministic.budget.runRounds, 3);
+  assert.match(result.runState.rendered, /r=3\/3 left=0/u);
+  assert.doesNotMatch(result.runState.rendered, /session=/u);
 });
