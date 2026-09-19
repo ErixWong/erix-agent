@@ -285,3 +285,115 @@ test("keeps the anchor section intact when maxSummaryTokens is tiny (A2)", async
   assert.match(anchorSection, /^issues: #32$/mu);
   assert.match(anchorSection, /^urls: https:\/\/git\.erix\.vip\/eric\/erix-llm-kit\/commit\/1ed3f35$/mu);
 });
+
+test("constructor parameter errors stay fail-loud (summarizer must be a function)", () => {
+  assert.throws(() => createFoldLlmStrategy({ summarizer: "not-a-function" }), {
+    name: "TypeError",
+    message: "fold-llm summarizer must be a function",
+  });
+  assert.throws(() => createFoldLlmStrategy(), {
+    name: "TypeError",
+  });
+});
+
+test("degrades to a statistical summary when the summarizer rejects at runtime (issue #33 D)", async () => {
+  const messages = [
+    { role: "user", content: "task" },
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "t1", name: "exec", input: { command: "npm test" } }],
+    },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "t1",
+        content: "commit 0c309e6 done src/compact/fold-llm.js:1",
+      }],
+    },
+    { role: "assistant", content: [{ type: "text", text: "old" }] },
+    { role: "user", content: "keep" },
+  ];
+  const strategy = createFoldLlmStrategy({
+    summarizer: async () => {
+      throw new Error("LLM provider unavailable: rate limited");
+    },
+  });
+  const result = await strategy.compact(messages, { keepRounds: 1 });
+  const text = result.messages[0].content[0].text;
+
+  // compact 正常返回：降级标记可识别、含截断原因；统计摘要本体（足迹/锚点/恢复提示）齐全。
+  assert.match(text, /^\[fold-llm 摘要失败，已降级为统计摘要（原因: LLM provider unavailable: rate limited）\]/u);
+  assert.match(text, /【上下文折叠·v1·erix-9f6e2c】早期第 1–2 轮（共 2 轮）已折叠。/u);
+  assert.match(text, /工具足迹：exec×1。/u);
+  assert.match(text, /需要原文请重读文件或查看持久笔记；关键值应当已落盘/u);
+  assert.match(text, /^shas: 0c309e6$/mu);
+  assert.match(text, /^paths: src\/compact\/fold-llm\.js:1$/mu);
+  // foldedPayload 仍归档可 recall。
+  assert.deepEqual(result.foldedPayload, messages.slice(1, 4));
+  assert.equal(result.compacted, true);
+  assert.equal(result.foldedRounds, 2);
+  assert.deepEqual(result.messages.at(-1), messages.at(-1));
+});
+
+test("degrades when the summarizer throws synchronously or returns a non-string", async () => {
+  const messages = [
+    { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "text", text: "old" }] },
+    { role: "user", content: "keep" },
+  ];
+  const syncThrow = await createFoldLlmStrategy({
+    summarizer: () => {
+      throw new Error("sync blow up");
+    },
+  }).compact(messages, { keepRounds: 1 });
+  assert.match(
+    syncThrow.messages[0].content[0].text,
+    /\[fold-llm 摘要失败，已降级为统计摘要（原因: sync blow up）\]/u,
+  );
+
+  const nonString = await createFoldLlmStrategy({
+    summarizer: async () => ({ not: "a string" }),
+  }).compact(messages, { keepRounds: 1 });
+  assert.match(
+    nonString.messages[0].content[0].text,
+    /\[fold-llm 摘要失败，已降级为统计摘要（原因: fold-llm summarizer must return a string）\]/u,
+  );
+});
+
+test("degraded summary respects anchors:false exactly like the normal path", async () => {
+  const messages = [
+    { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "text", text: "old 1ed3f35" }] },
+    { role: "user", content: "keep" },
+  ];
+  const result = await createFoldLlmStrategy({
+    summarizer: async () => {
+      throw new Error("boom");
+    },
+    anchors: false,
+  }).compact(messages, { keepRounds: 1 });
+
+  const text = result.messages[0].content[0].text;
+  assert.match(text, /已降级为统计摘要/u);
+  assert.doesNotMatch(text, /## 锚点索引/u);
+  assert.doesNotMatch(text, /1ed3f35/u);
+});
+
+test("a long failure reason is truncated inside the degradation marker", async () => {
+  const messages = [
+    { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "text", text: "old" }] },
+    { role: "user", content: "keep" },
+  ];
+  const result = await createFoldLlmStrategy({
+    summarizer: async () => {
+      throw new Error(`e${"x".repeat(300)}`);
+    },
+  }).compact(messages, { keepRounds: 1 });
+
+  const text = result.messages[0].content[0].text;
+  const marker = text.split("\n")[0];
+  assert.match(marker, /已降级为统计摘要（原因: ex{1,119}…?）\]$/u);
+  assert.ok(marker.length < 200);
+});

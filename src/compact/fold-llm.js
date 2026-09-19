@@ -1,7 +1,9 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 import { enforceSize } from "./enforce-size.js";
+import { extractAnchors } from "./anchors.js";
 import { buildFoldFidelitySection } from "./fold-fidelity.js";
+import { summarizeFoldedPayload } from "./fold-statistical.js";
 import {
   cloneFoldPayload,
   foldOptions,
@@ -275,23 +277,48 @@ export function createFoldLlmStrategy({
 
       let compactedHead = head;
       if (folded.length > 0) {
-        const summary = await summarizer({
-          messages: foldedPayload,
-          roundRange: roundRange ?? { from: 1, to: folded.length },
-          recoveryHint,
-          promptGuide: createSummarizerPromptGuide(recoveryHint),
-        });
-        if (typeof summary !== "string") {
-          throw new TypeError("fold-llm summarizer must return a string");
+        const range = roundRange ?? { from: 1, to: folded.length };
+        // 降级兜底（issue #33 D）：summarizer 运行时失败（reject/throw）不再让 run 中途死亡，
+        // 改为对同一 foldedPayload 生成统计摘要并加可识别降级标记；
+        // 构造期参数错误（summarizer 非函数）在 createFoldLlmStrategy 里已 fail-loud，不经此路径。
+        let summary;
+        let degradeReason;
+        try {
+          summary = await summarizer({
+            messages: foldedPayload,
+            roundRange: range,
+            recoveryHint,
+            promptGuide: createSummarizerPromptGuide(recoveryHint),
+          });
+          if (typeof summary !== "string") {
+            throw new TypeError("fold-llm summarizer must return a string");
+          }
+        } catch (error) {
+          degradeReason = String(error?.message ?? error).slice(0, 120);
+          summary = undefined;
         }
-        const compactedSummary = appendFoldFidelity(
-          enforceSummarySize(
-            withRecoveryHint(summary, recoveryHint),
-            summaryBudget,
-          ),
-          foldedPayload,
-          settings.anchors,
-        );
+        const compactedSummary = summary === undefined
+          ? `[fold-llm 摘要失败，已降级为统计摘要（原因: ${degradeReason}）]\n`
+            + summarizeFoldedPayload(foldedPayload, {
+              from: range.from,
+              to: range.to,
+              count: folded.length,
+              recoveryHint,
+              ...(settings.anchors === false
+                ? {}
+                : { anchors: extractAnchors(
+                  foldedPayload,
+                  settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {},
+                ) }),
+            })
+          : appendFoldFidelity(
+            enforceSummarySize(
+              withRecoveryHint(summary, recoveryHint),
+              summaryBudget,
+            ),
+            foldedPayload,
+            settings.anchors,
+          );
         compactedHead = prependSummary(head, compactedSummary, settings.summaryRole);
       }
 

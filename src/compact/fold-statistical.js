@@ -258,7 +258,7 @@ function stripMarkedFoldSummaries(block) {
   return prefix === "" ? [] : [{ ...block, text: prefix }];
 }
 
-function formatFoldSummary({
+export function formatFoldSummary({
   from,
   to,
   count,
@@ -390,6 +390,30 @@ function prependSummary(
     content: mergedFoldSummaryContent(originalContent, summary, recoveryHint, anchorClamp),
   };
   return updatedHead;
+}
+
+/**
+ * 对给定 foldedPayload 生成统计摘要文本（fold-llm 降级路径复用，避免复制逻辑）。
+ * 工具足迹、锚点节、恢复提示与 fold-statistical 的 compact 产物同一套规则。
+ *
+ * @param {object[]} foldedPayload Raw folded messages.
+ * @param {{from?: number, to?: number, count?: number, recoveryHint?: string,
+ *   anchors?: {text: string}, stubs?: string[], navigationRecord?: object}} [options]
+ * @returns {string}
+ */
+export function summarizeFoldedPayload(foldedPayload, options = {}) {
+  const from = Number.isSafeInteger(options.from) && options.from > 0 ? options.from : 1;
+  const to = Number.isSafeInteger(options.to) && options.to >= from ? options.to : from;
+  return formatFoldSummary({
+    from,
+    to,
+    count: Number.isSafeInteger(options.count) && options.count > 0 ? options.count : to - from + 1,
+    tools: countToolUses(Array.isArray(foldedPayload) ? foldedPayload : []),
+    stubs: Array.isArray(options.stubs) ? options.stubs : [],
+    ...(options.navigationRecord === undefined ? {} : { navigationRecord: options.navigationRecord }),
+    recoveryHint: resolveRecoveryHint(options.recoveryHint),
+    ...(options.anchors === undefined ? {} : { anchors: options.anchors }),
+  });
 }
 
 /**
