@@ -1711,3 +1711,335 @@ test("transparent interception resets its counter after an audit", async () => {
     else process.env.ERIX_WRAPUP_NORMALIZE = prev;
   }
 });
+
+test("round judge decision event carries the call usage for transcript accounting (issue #33 B)", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([{
+    ...judgeResponse({ done: true, confidence: 0.9, reason: "已完成", evidence: "验证通过" }),
+    usage: { input_tokens: 1234, output_tokens: 56 },
+  }]);
+  const events = [];
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(events, [{
+    round: 1,
+    kind: "round",
+    decision: {
+      done: true,
+      confidence: 0.9,
+      reason: "已完成",
+      evidence: "验证通过",
+      direction: undefined,
+      directionReason: "",
+    },
+    action: "judge_done",
+    usage: { input_tokens: 1234, output_tokens: 56 },
+  }]);
+});
+
+test("round judge parse failure still reports usage on the degraded event (review fix)", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  // decision 文本不可解析（parse 失败），但 response.usage 已可取得。
+  const judge = createFakeProvider([{
+    content: [{ type: "text", text: "totally not a json decision" }],
+    usage: { input_tokens: 432, output_tokens: 7 },
+    times: 5,
+  }]);
+  const events = [];
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    completion: false,
+    reflection: { enabled: true, judge: { provider: judge } },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(result.termination, { reason: "end_turn" });
+  assert.deepEqual(events, [{
+    round: 1,
+    kind: "round",
+    decision: null,
+    action: "degraded",
+    error: "parse",
+    usage: { input_tokens: 432, output_tokens: 7 },
+  }]);
+});
+
+test("intercept judge parse failure still reports usage on the degraded event (review fix)", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "work", { step: 2 }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([{
+    content: [{ type: "text", text: "not parseable at all" }],
+    usage: { input_tokens: 99, output_tokens: 3 },
+  }]);
+  const events = [];
+  const executed = [];
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async ({ input }) => {
+      executed.push(input.step);
+      return "ok";
+    },
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(events, [{
+    kind: "intercept",
+    tool: { id: "second", name: "work", input: { step: 2 } },
+    decision: null,
+    action: "degraded",
+    error: "parse",
+    usage: { input_tokens: 99, output_tokens: 3 },
+  }]);
+  // degraded 后工具照常执行（既有行为不变）。
+  assert.deepEqual(executed, [1, 2]);
+});
+
+test("intercept judge event carries usage and omits it on timeout (issue #33 B)", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "work", { step: 1 }),
+    toolResponse("second", "work", { step: 2 }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([{
+    ...judgeResponse({
+      done: false,
+      confidence: 0.6,
+      reason: "任务尚未完成",
+      evidence: "还剩两项验证",
+      direction: "on_track",
+      directionReason: "正在按计划推进",
+    }),
+    usage: { input_tokens: 777, output_tokens: 12 },
+  }]);
+  const events = [];
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async () => "ok",
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(events, [{
+    kind: "intercept",
+    tool: { id: "second", name: "work", input: { step: 2 } },
+    decision: {
+      done: false,
+      confidence: 0.6,
+      reason: "任务尚未完成",
+      evidence: "还剩两项验证",
+      direction: "on_track",
+      directionReason: "正在按计划推进",
+    },
+    action: "executed",
+    passThrough: "on_track",
+    usage: { input_tokens: 777, output_tokens: 12 },
+  }]);
+
+  // 超时路径：usage 缺省、事件其余字段不变、不炸。
+  const slowJudge = {
+    async chat() {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return {
+        ...judgeResponse({ done: false, confidence: 1, reason: "late", evidence: "late" }),
+        usage: { input_tokens: 1, output_tokens: 2 },
+      };
+    },
+  };
+  const timeoutEvents = [];
+  await runToolLoop({
+    provider: createFakeProvider([
+      toolResponse("first", "work", { step: 1 }),
+      toolResponse("second", "work", { step: 2 }),
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "task",
+    executeTool: async () => "ok",
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judgeInterceptTimeoutMs: 5,
+      judge: { provider: slowJudge },
+    },
+    onJudge: (info) => timeoutEvents.push(info),
+  });
+
+  assert.deepEqual(timeoutEvents, [{
+    kind: "intercept",
+    tool: { id: "second", name: "work", input: { step: 2 } },
+    decision: null,
+    action: "degraded",
+    error: "timeout",
+  }]);
+  assert.equal("usage" in timeoutEvents[0], false);
+});
+
+test("readonly tools pass through interception even when off-track, exec stays blocked (issue #33 C)", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "readFile", { path: "src/a.js" }),
+    toolResponse("second", "exec", { command: "rm -rf build" }),
+    toolResponse("third", "readFile", { path: "src/b.js" }),
+    toolResponse("fourth", "readFile", { path: "src/c.js" }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  // 两次拦截（judgeIntervalRound=1：每第 2 个工具触发审计，1/3 直通）：
+  // 工具2 exec（写路径，应 blocked），工具4 readFile（只读，应放行）。
+  const decisionExec = {
+    done: false,
+    confidence: 0.8,
+    reason: "方向偏了",
+    evidence: "需要重新确认目标",
+    direction: "off_track",
+    directionReason: "当前方法反复失败",
+  };
+  const decisionRead = {
+    done: false,
+    confidence: 0.8,
+    reason: "方向偏了",
+    evidence: "需要重新确认目标",
+    direction: "off_track",
+    directionReason: "当前方法反复失败",
+  };
+  const judge = createFakeProvider([judgeResponse(decisionExec), judgeResponse(decisionRead)]);
+  const events = [];
+  const executed = [];
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async ({ name, input }) => {
+      executed.push({ name, input });
+      return "ok";
+    },
+    maxRounds: 10,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  // 只读 readFile 照常执行；exec 在同决策下仍 blocked。
+  assert.deepEqual(executed, [
+    { name: "readFile", input: { path: "src/a.js" } },
+    { name: "readFile", input: { path: "src/b.js" } },
+    { name: "readFile", input: { path: "src/c.js" } },
+  ]);
+  const readResult = result.transcript.flatMap((message) => message.content ?? [])
+    .find((block) => block.tool_use_id === "fourth");
+  assert.equal(readResult.content, "ok");
+  assert.equal(readResult.executionStatus, undefined);
+  const execResult = result.transcript.flatMap((message) => message.content ?? [])
+    .find((block) => block.tool_use_id === "second");
+  assert.match(String(execResult.content), /【审计拦截】方向可能偏/u);
+  assert.equal(execResult.executionStatus, "intercepted");
+
+  assert.deepEqual(events, [{
+    kind: "intercept",
+    tool: { id: "second", name: "exec", input: { command: "rm -rf build" } },
+    decision: decisionExec,
+    action: "blocked",
+  }, {
+    kind: "intercept",
+    tool: { id: "fourth", name: "readFile", input: { path: "src/c.js" } },
+    decision: decisionRead,
+    action: "executed",
+    passThrough: "readonly",
+  }]);
+
+  // directionHint 照常附加（放行路径也注入提示，供模型换思路）。
+  const hintText = result.transcript.flatMap((message) => message.content ?? [])
+    .filter((block) => block?.type === "text")
+    .map((block) => String(block.text)).join("\n");
+  assert.match(hintText, /方向提示/u);
+});
+
+test("readonly pass-through also applies to uncertain direction", async () => {
+  const provider = createFakeProvider([
+    toolResponse("first", "recall", { pattern: "nonce" }),
+    toolResponse("second", "recall", { pattern: "anchor" }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const decision = {
+    done: false,
+    confidence: 0.5,
+    reason: "不确定",
+    evidence: "上下文不足",
+    direction: "uncertain",
+    directionReason: "难以判断",
+  };
+  const judge = createFakeProvider([judgeResponse(decision)]);
+  const events = [];
+  const executed = [];
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "task",
+    executeTool: async ({ input }) => {
+      executed.push(input.pattern);
+      return "ok";
+    },
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 1,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.deepEqual(executed, ["nonce", "anchor"]);
+  assert.deepEqual(events, [{
+    kind: "intercept",
+    tool: { id: "second", name: "recall", input: { pattern: "anchor" } },
+    decision,
+    action: "executed",
+    passThrough: "readonly",
+  }]);
+});

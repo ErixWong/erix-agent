@@ -14,6 +14,18 @@ import {
   errorSnippet,
 } from "./aggregate-budget.js";
 
+// 只读工具集合（issue #33 C）：拦截 judge 对这类工具放行——只读调用无外部副作用，
+// uncertain/off_track 时拦它净收益为负（实测 readFile 被拦后缺陷反而漏出）。
+// exec/writeFile/mcp 等写路径不在此列，维持拦截语义不变。
+export const READONLY_INTERCEPT_TOOLS = new Set([
+  "readFile",
+  "tree",
+  "rg",
+  "note_read",
+  "note_list",
+  "recall",
+]);
+
 export function createCheckpointExecutor(ctx) {
   // 单轮聚合输出预算（issue #32 #2）：逐条 outputHygiene 之外的「本轮合计」闸门。
   // 预算基准用引擎既有 budgetTokens（无窗口配置 → 聚合层整体关闭，行为不变）。
@@ -350,13 +362,16 @@ export function createCheckpointExecutor(ctx) {
       throw failure;
     }
     let decision;
+    let judgeUsage;
     let interceptError;
     try {
       const callRoundJudge = ctx.callRoundJudge;
-      decision = await callRoundJudge(round, undefined, {
+      const judged = await callRoundJudge(round, undefined, {
         timeoutMs: ctx.judgeInterceptTimeoutMs,
         conversationBudgetTokens: ctx.judgeInterceptConversationTokens,
       });
+      decision = judged?.decision;
+      judgeUsage = judged?.usage;
     } catch (error) {
       if (ctx.signal?.aborted) throwIfAborted(ctx.signal);
       decision = undefined;
@@ -371,6 +386,16 @@ export function createCheckpointExecutor(ctx) {
       && decision !== null
       && decision.done === false
       && decision.direction === "on_track";
+    // 只读放行（issue #33 C）：done:false 且方向非 on_track 时，只读工具照常执行
+    // （无外部副作用，拦截净收益为负）；事件 action 仍为 executed，passThrough 标 "readonly"
+    // 与 on_track 同构，审计可辨；uncertain/off_track 语义本身不变，写工具维持拦截。
+    const readOnlyPassThrough = decision !== undefined
+      && decision !== null
+      && decision.done === false
+      && READONLY_INTERCEPT_TOOLS.has(String(block.name ?? ""));
+    const passThrough = onTrackPassThrough
+      ? "on_track"
+      : (readOnlyPassThrough ? "readonly" : undefined);
 
     if (decision === undefined || decision === null) {
       const emitJudge = ctx.emitJudge;
@@ -384,6 +409,9 @@ export function createCheckpointExecutor(ctx) {
         decision: null,
         action: "degraded",
         error: decision === undefined ? interceptError : "parse",
+        // parse 失败但 usage 已可取得时同样带出（超时/抛错路径 judgeUsage 为 undefined，
+        // 展开为空、字段缺省，行为不变）。
+        ...(judgeUsage ? { usage: judgeUsage } : {}),
       });
     } else {
       const emitJudge = ctx.emitJudge;
@@ -402,13 +430,15 @@ export function createCheckpointExecutor(ctx) {
           direction: decision.direction,
           directionReason: decision.directionReason,
         },
-        action: onTrackPassThrough || decision.done !== false ? "executed" : "blocked",
-        ...(onTrackPassThrough ? { passThrough: "on_track" } : {}),
+        action: passThrough !== undefined || decision.done !== false ? "executed" : "blocked",
+        ...(passThrough ? { passThrough } : {}),
+        // judge 当次调用用量（issue #33 B）：judge.log 对账；超时/出错时缺省。
+        ...(judgeUsage ? { usage: judgeUsage } : {}),
       });
     }
 
-    // on_track 放行的调用照常执行（judge 已给出方向判断，无需再打断）
-    if (onTrackPassThrough || decision?.done !== false) {
+    // on_track / readonly 放行的调用照常执行（judge 已给出方向判断，无需再打断）
+    if (onTrackPassThrough || readOnlyPassThrough || decision?.done !== false) {
       try {
         const toolResult = await executeToolBlock(block, round, toolResults, pendingToolUses);
         const directionHint = directionHintText(

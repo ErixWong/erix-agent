@@ -175,6 +175,9 @@ export function foldOptions(factoryOptions, callOptions = {}) {
       optionValue(callOptions, factoryOptions, "afterFold"),
     ),
     stubFor: optionValue(callOptions, factoryOptions, "stubFor"),
+    // 锚点索引（A2）：默认启用；false 完全关闭（行为与 0.7.0 一致），
+    // 对象形式可夹取 { maxPerKind, maxChars }。
+    anchors: optionValue(callOptions, factoryOptions, "anchors"),
     roundOffset: Number.isFinite(callOptions.roundOffset)
       ? Math.max(0, Math.floor(callOptions.roundOffset))
       : Number.isFinite(factoryOptions?.roundOffset)

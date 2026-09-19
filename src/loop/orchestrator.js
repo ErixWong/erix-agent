@@ -1629,7 +1629,20 @@ export async function runToolLoop(options) {
       removeParentAbort?.();
     }
     addUsage(response, undefined, { trackLatest: false });
-    return parseJudgeDecision(textFromBlocks(blocksFor(response?.content)));
+    // 带出当次 judge 调用的用量（issue #33 B）：judge.log / 逐轮 transcript 可对账；
+    // 超时/出错路径 response 为 undefined，usage 缺省（调用方不设置该字段）。
+    const inputTokens = response?.usage?.input_tokens;
+    const outputTokens = response?.usage?.output_tokens;
+    const judgeUsage = Number.isFinite(inputTokens) || Number.isFinite(outputTokens)
+      ? {
+        ...(Number.isFinite(inputTokens) ? { input_tokens: inputTokens } : {}),
+        ...(Number.isFinite(outputTokens) ? { output_tokens: outputTokens } : {}),
+      }
+      : undefined;
+    return {
+      decision: parseJudgeDecision(textFromBlocks(blocksFor(response?.content))),
+      usage: judgeUsage,
+    };
   };
 
   const checkpointContext = {
@@ -2251,10 +2264,13 @@ export async function runToolLoop(options) {
       remainingMs: remainingMs(),
     };
     let judgeDecision;
+    let judgeUsage;
     // end_turn 轮完整评估；工具中途审计已在工具执行前独立完成，不参与停机判定。
     if (roundJudgeEnabled && isEndTurn) {
       try {
-        judgeDecision = await callRoundJudge(round, currentL0);
+        const judged = await callRoundJudge(round, currentL0);
+        judgeDecision = judged.decision;
+        judgeUsage = judged.usage;
         if (judgeDecision === null) {
           roundJudgeFailures += 1;
           if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
@@ -2264,6 +2280,9 @@ export async function runToolLoop(options) {
             decision: null,
             action: "degraded",
             error: "parse",
+            // parse 失败但 response.usage 已可取得（issue #33 评审修复）：
+            // degraded 事件同样带 usage，judge.log 可对账这部分消耗。
+            ...(judgeUsage ? { usage: judgeUsage } : {}),
           });
         } else {
           roundJudgeFailures = 0;
@@ -2281,6 +2300,7 @@ export async function runToolLoop(options) {
             action: judgeDecision.done === true && judgeDecision.confidence >= 0.7
               ? "judge_done"
               : (judgeDecision.done === false ? "nudge" : "continue"),
+            ...(judgeUsage ? { usage: judgeUsage } : {}),
           });
         }
       } catch (error) {

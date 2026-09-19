@@ -1,13 +1,20 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 import { enforceSize } from "./enforce-size.js";
+import { extractAnchors } from "./anchors.js";
 import { buildFoldFidelitySection } from "./fold-fidelity.js";
+import {
+  buildFoldNavigationRecord,
+  stripAnchorSection,
+  summarizeFoldedPayload,
+} from "./fold-statistical.js";
 import {
   cloneFoldPayload,
   foldOptions,
   optionValue,
   roundRangeForIndexes,
   resolveFoldRecoveryHint,
+  resolveFoldStubs,
   resolveRecoveryHint,
   runFoldHook,
   selectFoldedRounds,
@@ -41,8 +48,9 @@ function withRecoveryHint(summary, recoveryHint) {
 
 // 机械保真层（锚点索引 / 逐字引用 / 反向信号）在尺寸截断之后追加，
 // 所以摘要预算削不掉它；没有抽到任何内容时不输出空小节。
-function appendFoldFidelity(summary, foldedPayload) {
-  const fidelity = buildFoldFidelitySection(foldedPayload);
+// anchors:false 时跳过锚点节（其余保真层不变，向后兼容 0.7.0 关闭形态）。
+function appendFoldFidelity(summary, foldedPayload, anchorSettings) {
+  const fidelity = buildFoldFidelitySection(foldedPayload, { anchors: anchorSettings });
   if (fidelity === undefined) return summary;
   return summary.trim() === "" ? fidelity : `${summary}\n\n${fidelity}`;
 }
@@ -72,13 +80,38 @@ function isRealUser(message) {
     || blocks.some((block) => block?.type !== "tool_result");
 }
 
-function prependSummary(head, summary, summaryRole = "user") {
+// anchors:false（评审终审修复）：对 head 全部消息的所有 text 块统一剥离锚点节——
+// 定点清理只覆盖目标消息，summaryRole:"system" 或 role 切换时旧摘要落在另一 role 的
+// 消息里会残留锚点节。复用 fold-statistical 的 stripAnchorSection，不复制实现；
+// anchorsEnabled 缺省为 true 时 head 原样不动，行为与之前字节级一致（向后兼容）。
+function stripAnchorsFromHead(head, anchorsEnabled) {
+  if (anchorsEnabled) return head;
+  return head.map((message) => {
+    const content = typeof message?.content === "string"
+      ? [{ type: "text", text: message.content }]
+      : Array.isArray(message?.content)
+        ? message.content
+        : [];
+    const stripped = content.flatMap((block) => {
+      if (block?.type !== "text" || typeof block.text !== "string") return [block];
+      const text = stripAnchorSection(block.text);
+      return text.trim() === "" ? [] : [{ ...block, text }];
+    });
+    return { ...message, content: stripped };
+  });
+}
+
+function prependSummary(head, summary, summaryRole = "user", anchorsEnabled = true) {
+  const strippedHead = stripAnchorsFromHead(head, anchorsEnabled);
   if (summaryRole === "system") {
-    const systemIndex = head.findLastIndex((message) => message?.role === "system");
+    const systemIndex = strippedHead.findLastIndex((message) => message?.role === "system");
     if (systemIndex < 0) {
-      return [{ role: "system", content: [{ type: "text", text: summary }] }, ...head];
+      return [
+        { role: "system", content: [{ type: "text", text: summary }] },
+        ...strippedHead,
+      ];
     }
-    const updatedHead = head.slice();
+    const updatedHead = strippedHead.slice();
     const system = updatedHead[systemIndex];
     const content = typeof system.content === "string"
       ? [{ type: "text", text: system.content }]
@@ -89,16 +122,16 @@ function prependSummary(head, summary, summaryRole = "user") {
     };
     return updatedHead;
   }
-  const userIndex = head.findLastIndex(isRealUser);
-  if (userIndex < 0) return head;
+  const userIndex = strippedHead.findLastIndex(isRealUser);
+  if (userIndex < 0) return strippedHead;
 
-  const user = head[userIndex];
+  const user = strippedHead[userIndex];
   const originalContent = typeof user.content === "string"
     ? [{ type: "text", text: user.content }]
     : Array.isArray(user.content)
       ? user.content
       : [];
-  const updatedHead = head.slice();
+  const updatedHead = strippedHead.slice();
   updatedHead[userIndex] = {
     ...user,
     content: [{ type: "text", text: summary }, ...originalContent],
@@ -274,23 +307,61 @@ export function createFoldLlmStrategy({
 
       let compactedHead = head;
       if (folded.length > 0) {
-        const summary = await summarizer({
-          messages: foldedPayload,
-          roundRange: roundRange ?? { from: 1, to: folded.length },
-          recoveryHint,
-          promptGuide: createSummarizerPromptGuide(recoveryHint),
-        });
-        if (typeof summary !== "string") {
-          throw new TypeError("fold-llm summarizer must return a string");
+        const range = roundRange ?? { from: 1, to: folded.length };
+        // 降级摘要的恢复信息（评审修复）：与 fold-statistical 共用 resolveFoldStubs /
+        // buildFoldNavigationRecord（复用不复制），保证降级摘要不比原生统计摘要少
+        // `[已折叠] …` stub 与 artifact 导航记录。
+        const foldedStubs = await resolveFoldStubs(foldedPayload, settings.stubFor);
+        const navigationRecord = buildFoldNavigationRecord(foldedPayload, range);
+        // 降级兜底（issue #33 D）：summarizer 运行时失败（reject/throw）不再让 run 中途死亡，
+        // 改为对同一 foldedPayload 生成统计摘要并加可识别降级标记；
+        // 构造期参数错误（summarizer 非函数）在 createFoldLlmStrategy 里已 fail-loud，不经此路径。
+        let summary;
+        let degradeReason;
+        try {
+          summary = await summarizer({
+            messages: foldedPayload,
+            roundRange: range,
+            recoveryHint,
+            promptGuide: createSummarizerPromptGuide(recoveryHint),
+          });
+          if (typeof summary !== "string") {
+            throw new TypeError("fold-llm summarizer must return a string");
+          }
+        } catch (error) {
+          degradeReason = String(error?.message ?? error).slice(0, 120);
+          summary = undefined;
         }
-        const compactedSummary = appendFoldFidelity(
-          enforceSummarySize(
-            withRecoveryHint(summary, recoveryHint),
-            summaryBudget,
-          ),
-          foldedPayload,
+        const compactedSummary = summary === undefined
+          ? `[fold-llm 摘要失败，已降级为统计摘要（原因: ${degradeReason}）]\n`
+            + summarizeFoldedPayload(foldedPayload, {
+              from: range.from,
+              to: range.to,
+              count: folded.length,
+              recoveryHint,
+              stubs: foldedStubs,
+              ...(navigationRecord === undefined ? {} : { navigationRecord }),
+              ...(settings.anchors === false
+                ? {}
+                : { anchors: extractAnchors(
+                  foldedPayload,
+                  settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {},
+                ) }),
+            })
+          : appendFoldFidelity(
+            enforceSummarySize(
+              withRecoveryHint(summary, recoveryHint),
+              summaryBudget,
+            ),
+            foldedPayload,
+            settings.anchors,
+          );
+        compactedHead = prependSummary(
+          head,
+          compactedSummary,
+          settings.summaryRole,
+          settings.anchors !== false,
         );
-        compactedHead = prependSummary(head, compactedSummary, settings.summaryRole);
       }
 
       const compactedMessages = [
