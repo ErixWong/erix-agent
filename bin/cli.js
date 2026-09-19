@@ -666,9 +666,13 @@ async function runChatWithNotes({
   };
   const redactJudgeInfo = (info) => {
     const redacted = { ...info };
-    // judge 原文（raw）同 reason/evidence 处理：可能复述凭据，截断/隐藏后才落盘
+    // judge 原文（raw）可审计性优先：不做整体截断/隐藏（源头已截 2000 字符），
+    // 仅把凭据模式内联掩码后保留正文（judge 可能复述工具结果里的凭据）。
     if (typeof redacted.raw === "string") {
-      redacted.raw = redactValue(redacted.raw);
+      redacted.raw = redacted.raw.replace(
+        new RegExp(CREDENTIAL_PATTERN.source, "gi"),
+        "[凭据已隐藏]",
+      );
     }
     if (redacted.decision && typeof redacted.decision === "object") {
       // judge reason/evidence 可能复述凭据——截断即可（judge 输出通常短）

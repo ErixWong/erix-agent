@@ -1583,9 +1583,9 @@ export async function runToolLoop(options) {
           ),
         }],
       }],
-      // 2026-09-20 基准实测：judge 只输出一段 JSON（~100 token），8000 上限纯浪费
-      // （输出越长漂移越大：实测 glm-5.3-flash-awq 变长 4 倍且漂成英文）。
-      maxTokens: 512,
+      // 2026-09-20 基准实测：judge 只输出一段 JSON，8000 上限纯浪费（输出越长漂移越大）；
+      // 但 512 实测会被 glm 冗长 JSON 截断致 parse 失败 → 1024。
+      maxTokens: 1024,
       temperature: 0,
       // 2026-09-20 实测（glm-5.3-flash-awq）：reasoning_effort 是该 relay 上**唯一**能真
       // 正关思考的参数（enable_thinking/chat_template_kwargs/thinking:{type:disabled} 都
@@ -2289,6 +2289,7 @@ export async function runToolLoop(options) {
         const judged = await callRoundJudge(round, currentL0);
         judgeDecision = judged.decision;
         judgeUsage = judged.usage;
+        const judgeRaw = judged.raw;
         if (judgeDecision === null) {
           roundJudgeFailures += 1;
           if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
@@ -2301,6 +2302,8 @@ export async function runToolLoop(options) {
             // parse 失败但 response.usage 已可取得（issue #33 评审修复）：
             // degraded 事件同样带 usage，judge.log 可对账这部分消耗。
             ...(judgeUsage ? { usage: judgeUsage } : {}),
+            // 原文落盘（可审计性）：parse 失败时最需要看 judge 到底输出了什么
+            ...(typeof judgeRaw === "string" && judgeRaw !== "" ? { raw: judgeRaw } : {}),
           });
         } else {
           roundJudgeFailures = 0;
@@ -2319,6 +2322,7 @@ export async function runToolLoop(options) {
               ? "judge_done"
               : (judgeDecision.done === false ? "nudge" : "continue"),
             ...(judgeUsage ? { usage: judgeUsage } : {}),
+            ...(typeof judgeRaw === "string" && judgeRaw !== "" ? { raw: judgeRaw } : {}),
           });
         }
       } catch (error) {

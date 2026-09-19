@@ -278,8 +278,9 @@ test("judge runs on non-tool rounds only, with reasoning disabled (tool rounds s
   // 上唯一能真正关思考的参数（GLM 把思考放非标准 `reasoning` 字段）；不关则 512 预算被
   // 思考耗尽 → content 空 → provider 报 missing content。
   assert.equal(judge.requests[0].reasoning_effort, "none");
-  // judge 只输出一段 JSON，maxTokens 收敛到 512（原 8000 实测致输出漂移变长 4 倍）
-  assert.equal(judge.requests[0].maxTokens, 512);
+  // judge 只输出一段 JSON，maxTokens 收敛到 1024（原 8000 实测致输出漂移变长 4 倍；
+  // 512 实测会被 glm 冗长 JSON 截断致 parse 失败）
+  assert.equal(judge.requests[0].maxTokens, 1024);
   assert.equal(judge.requests[0].temperature, 0);
 });
 
@@ -337,6 +338,7 @@ test("round judge emits an onJudge decision event", async () => {
     kind: "round",
     decision: judgeDecision,
     action: "judge_done",
+    raw: JSON.stringify(judgeDecision),
   }]);
 });
 
@@ -1090,7 +1092,7 @@ test("ERIX_NO_ROUND_JUDGE env disables the round judge (reviewer P2#3)", async (
     });
     // round judge 关闭（其请求特征 temperature:0 + maxTokens:512）；legacy callReflection 仍可能调 judge（nearLimit）——用特征区分
     const roundJudgeCalls = judge.requests.filter((r) => (
-      r.temperature === 0 && r.maxTokens === 512
+      r.temperature === 0 && r.maxTokens === 1024
     )).length;
     assert.equal(roundJudgeCalls, 0);
   } finally {
@@ -1757,6 +1759,7 @@ test("round judge decision event carries the call usage for transcript accountin
     },
     action: "judge_done",
     usage: { input_tokens: 1234, output_tokens: 56 },
+    raw: JSON.stringify({ done: true, confidence: 0.9, reason: "已完成", evidence: "验证通过" }),
   }]);
 });
 
@@ -1790,6 +1793,7 @@ test("round judge parse failure still reports usage on the degraded event (revie
     action: "degraded",
     error: "parse",
     usage: { input_tokens: 432, output_tokens: 7 },
+    raw: "totally not a json decision",
   }]);
 });
 
