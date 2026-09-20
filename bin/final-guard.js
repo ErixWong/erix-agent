@@ -28,7 +28,7 @@ export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload, stor
   const archivedOutputs = transcriptCaptures.length > 0
     ? new Set(transcriptCaptures.map((capture) => capture.artifact?.digest)).size
     : legacyManifests.length;
-  return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${archivedOutputs} 条输出已归档。需要精确值时用 note_list → note_read 取回，或 recall({ pattern: "关键词" }) 取回原文。${captureIndex(transcriptCaptures.length > 0 ? transcriptCaptures : legacyManifests.map((manifest) => ({ display: manifest.display ?? manifest.archivePath, command: manifest.command })))}`;
+  return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${archivedOutputs} 条输出已归档。需要精确值时先用 note_list 查找，再用 note_read 读取；若未记录且无法确定性重算，请省略对应 findings 声明。${captureIndex(transcriptCaptures.length > 0 ? transcriptCaptures : legacyManifests.map((manifest) => ({ display: manifest.display ?? manifest.archivePath, command: manifest.command })))}`;
 }
 function countFoldedOutputs(foldedPayload) {
   if (!Array.isArray(foldedPayload)) return 0;
@@ -56,12 +56,12 @@ function captureIndex(captures) {
     : `\n捕获目录视图（最多 10 条）：\n${visible.join("\n")}`;
 }
 function capturePointer(capture) {
-  // ADR-016：capture 无自动笔记 key；指针必须指向可执行的取回动作（recall 配方），
-  // 不借用已退役的「来源=」语法（实测中模型会去文件系统找 digest 字符串，白绕 8 轮）。
+  // ADR-016：capture 无自动笔记 key；指针必须指向可执行的 note-first 动作，
+  // 不借用来源文本让模型去文件系统盲目搜索。
   const target = capture?.display
     ?? (capture?.archivePath ? path.basename(String(capture.archivePath)) : "");
-  if (!target) return "可信捕获";
-  return `归档输出 ${target}（用 recall({ pattern: "关键词" }) 取回原文核实）`;
+  if (!target) return "没有可执行取回指针；若未记录且无法确定性重算，请省略对应 findings 声明";
+  return `归档输出 ${target}（先用 note_list 查找，再用 note_read 读取；若未记录且无法确定性重算，请省略对应 findings 声明）`;
 }
 /**
  * Build the deterministic CLI-side provenance gate for one run.

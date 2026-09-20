@@ -50,7 +50,7 @@ async function captureStubForResult(block) {
       .slice(0, 3)
       .map(({ label, value }) => `${label}=${value}`);
     const prefix = "[已折叠] 值：";
-    const suffix = "；原文可 recall({ pattern: \"关键词\" }) 取回";
+    const suffix = "；后续先 note_list 查找，再 note_read 读取；未记录且无法确定性重算时省略对应 findings 声明";
     let result = `${prefix}${lines.join("；")}${suffix}`;
     if (Array.from(result).length > 200) {
       const available = Math.max(0, 200 - Array.from(`${prefix}${suffix}`).length - 1);
@@ -59,7 +59,7 @@ async function captureStubForResult(block) {
     }
     return Array.from(result).slice(0, 200).join("");
   }
-  return "[已折叠] 原文可 recall({ pattern: \"关键词\" }) 取回".slice(0, 200);
+  return "[已折叠] 后续先 note_list 查找，再 note_read 读取；未记录且无法确定性重算时省略对应 findings 声明".slice(0, 200);
 }
 
 export async function buildCaptureStub(message) {

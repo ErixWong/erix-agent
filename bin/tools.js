@@ -13,6 +13,9 @@ import path from "node:path";
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;
 const OUTPUT_LIMIT = 4096;
+// grep：单行命中内容展示上限 / max_results 硬上限（2026-09-20 基准：防爆炸输出拖慢主循环）
+const GREP_LINE_LIMIT = 200;
+const GREP_MAX_RESULTS_HARD_CAP = 200;
 // 尾部保留比例（截断时）：结局（报错 / exit / 汇总）留在尾部可见
 const TRUNCATE_TAIL_SHARE = 0.25;
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
@@ -44,6 +47,10 @@ export function getCommandTimeoutMs(command) {
 function normalizeNonNegativeInteger(value, fallback) {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(0, Math.floor(value));
+}
+
+function escapeRegExpLiteral(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function splitLines(text) {
@@ -92,6 +99,22 @@ const schemas = [
     },
   },
   {
+    name: "grep",
+    description: "Search file contents with a regex or literal pattern, grouped by file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern: { type: "string" },
+        path: { type: "string" },
+        glob: { type: "string" },
+        is_regex: { type: "boolean" },
+        max_results: { type: "integer" },
+      },
+      required: ["pattern"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "tree",
     description: "List a directory tree.",
     inputSchema: {
@@ -129,13 +152,14 @@ const schemas = [
 ].map(normalizeSchema);
 
 export const CLI_TOOLS_SYSTEM_PROMPT =
-  `可用工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出。
+  `可用工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，grep 递归搜索文件内容（支持 glob 文件名过滤、字面量/正则模式，结果按文件分组），tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出。
 
 [你的处境]
 上下文会被折叠，早期细节你会真的忘记——不是记不清，是没有。
 拿到后面还要用的具体值/决定时，立刻 note_take；
 需要早期细节而想不起来时，先 note_list 再 note_read，不要猜。
-重跑同一命令可能得到不同的值；需要早期精确值时用 recall 取回，不要凭记忆。
+重跑同一命令可能得到不同的值；后续需要精确值时先 note_take 记下，不要凭记忆。
+内部思考（reasoning）一律使用英文；对用户的可见输出不受此限，跟随用户语言。
 终稿的结束协议 JSON 必须带 findings 字段，只把归档输出中出现过的字面值声明为 label→精确值（如 "findings":{"nonce":"abc123"}）；不要声明计数/次数/引用等派生结论；没有关键值时省略该字段。
 
 [工具纪律]
@@ -145,6 +169,28 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 - 不要主动读取密钥、凭据或 .env 文件；只用本次工具返回明确给出的来源
 - 任务完成后直接汇报结果，默认使用中文`;
 
+/**
+ * --tools 白名单过滤（chat/repl 共用）：对组合后的工具集做 allowlist。
+ * 未知工具名 → onUnknown 警告（调用方写 stderr）并忽略；过滤后为空 → 抛错（调用方转 usageError）。
+ */
+export function filterToolsByAllowlist(tools, allowlist, { onUnknown } = {}) {
+  if (allowlist === undefined || allowlist === null) return tools;
+  const requested = String(allowlist)
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name !== "");
+  const known = new Set((Array.isArray(tools) ? tools : []).map((tool) => tool?.name));
+  for (const name of requested) {
+    if (!known.has(name)) onUnknown?.(`警告：--tools 中的工具名 "${name}" 不存在，已忽略`);
+  }
+  const allowed = new Set(requested);
+  const filtered = (Array.isArray(tools) ? tools : []).filter((tool) => allowed.has(tool?.name));
+  if (filtered.length === 0) {
+    throw new Error("--tools 过滤后没有可用工具，请检查工具名列表");
+  }
+  return filtered;
+}
+
 export function buildCliToolsSystemPrompt() {
   // ADR-015：ResourceStore 退出模型视野——所有宿主形态同一份提示词，不提 opaque 工件/路径。
   return CLI_TOOLS_SYSTEM_PROMPT;
@@ -152,7 +198,7 @@ export function buildCliToolsSystemPrompt() {
 
 export function buildArchiveNotice(archiveDir) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
-  return "\n\n[工具输出归档]\n大输出已由引擎全量归档。需要早期原文时用 recall({ pattern: \"关键词\" }) 搜索，或 recall({ fromRound, lineOffset, lineLimit }) 按行直读某段原文；需要精确值时用 note_list/note_read 读取；不要凭记忆补值，不要重跑命令。";
+  return "\n\n[工具输出归档]\n大输出已由引擎全量归档。后续需要精确值时先用 note_list 查找记录，再用 note_read 读取；若未记录且无法确定性重算，请省略对应 findings 声明，不要凭记忆补值，也不要重跑命令。";
 }
 
 
@@ -443,6 +489,124 @@ export function createCliTools({
     return results.join("\n");
   }
 
+  async function grep({
+    pattern,
+    path: searchPath = ".",
+    glob,
+    is_regex = true,
+    max_results = 50,
+  }) {
+    if (typeof pattern !== "string" || pattern === "") {
+      throw new TypeError("grep pattern must be a non-empty string");
+    }
+    // max_results 硬上限 200：防爆输出（2026-09-20 基准：无上限搜索曾单次返回数千行）
+    const resultLimit = Math.min(
+      Math.max(1, normalizeNonNegativeInteger(max_results, 50)),
+      GREP_MAX_RESULTS_HARD_CAP,
+    );
+    let expression;
+    try {
+      expression = is_regex === false
+        ? new RegExp(escapeRegExpLiteral(pattern))
+        : new RegExp(String(pattern));
+    } catch {
+      return `错误：无效正则：${truncateDisplayText(pattern, 80)}`;
+    }
+    // glob 只支持简单 * 通配（文件名匹配，不跨目录分隔符）
+    let globExpression;
+    if (typeof glob === "string" && glob.trim() !== "") {
+      globExpression = new RegExp(`^${glob.split("*").map(escapeRegExpLiteral).join(".*")}$`);
+    }
+
+    const resolvedSearchPath = resolveToolPath(root, searchPath);
+    const displayBase = root;
+    const visitedDirectories = new Set();
+    const grouped = new Map();
+    let total = 0;
+    let truncated = false;
+
+    const displayName = (filePath) => {
+      const relative = path.relative(displayBase, filePath);
+      return (relative || path.basename(filePath)).split(path.sep).join("/");
+    };
+
+    const searchFile = (filePath, stat) => {
+      if (total >= resultLimit || stat.size > MAX_FILE_BYTES) return;
+      if (globExpression !== undefined && !globExpression.test(path.basename(filePath))) return;
+      let bytes;
+      try {
+        bytes = readFileSync(filePath);
+      } catch {
+        return;
+      }
+      if (bytes.includes(0)) return; // 二进制文件跳过
+      const lines = splitLines(bytes.toString("utf8"));
+      let fileHits = grouped.get(filePath);
+      for (let index = 0; index < lines.length; index += 1) {
+        if (total >= resultLimit) {
+          truncated = true;
+          return;
+        }
+        expression.lastIndex = 0;
+        if (!expression.test(lines[index])) continue;
+        if (fileHits === undefined) {
+          fileHits = [];
+          grouped.set(filePath, fileHits);
+        }
+        fileHits.push(`${index + 1}: ${truncateDisplayText(lines[index], GREP_LINE_LIMIT)}`);
+        total += 1;
+      }
+    };
+
+    const visit = (currentPath) => {
+      if (total >= resultLimit) return;
+      let stat;
+      try {
+        stat = statSync(currentPath);
+      } catch {
+        return; // 悬空 symlink / 权限受限：跳过
+      }
+      if (stat.isFile()) {
+        searchFile(currentPath, stat);
+        return;
+      }
+      if (!stat.isDirectory() || visitedDirectories.has(currentPath)) return;
+      visitedDirectories.add(currentPath);
+
+      let entries;
+      try {
+        entries = readdirSync(currentPath, { withFileTypes: true })
+          .sort((left, right) => left.name.localeCompare(right.name));
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (total >= resultLimit) return;
+        if (entry.isSymbolicLink()) continue;
+        // 跳过 node_modules/.git 及隐藏目录（纯 node 递归 walk，不依赖外部 rg）
+        if (entry.isDirectory()
+          && (entry.name === "node_modules"
+            || entry.name === ".git"
+            || entry.name.startsWith("."))) {
+          continue;
+        }
+        visit(path.join(currentPath, entry.name));
+      }
+    };
+
+    visit(resolvedSearchPath);
+
+    const sections = [];
+    for (const [filePath, hits] of grouped) {
+      sections.push([displayName(filePath), ...hits].join("\n"));
+    }
+    if (truncated || total >= resultLimit) {
+      sections.push(`[命中过多，已按 max_results=${resultLimit} 截断]`);
+    }
+    if (sections.length === 0) return "（无命中）";
+    return sections.join("\n\n");
+  }
+
   async function tree({ path: treePath = ".", depth = 3 }) {
     const resolvedTreePath = resolveToolPath(root, treePath);
     const maxDepth = normalizeNonNegativeInteger(depth, 3);
@@ -505,6 +669,7 @@ export function createCliTools({
   const executors = {
     readFile,
     rg,
+    grep,
     tree,
     writeFile,
     exec: (input) => executeExecCommand(input, root),
@@ -517,8 +682,7 @@ export function createCliTools({
     }
     const normalizedInput = normalizeToolInput(input);
     lastToolMetadata = { name };
-    // ADR-016：重跑值错配风险由提示语一行承担（"重跑可能得到不同的值，需要早期
-    // 精确值用 recall 取回"），引擎不再做幂等分类/重跑检测/捕值。
+    // ADR-016：重跑值错配风险由提示语承担，引擎不做幂等分类/重跑检测/捕值。
     const result = await executor(normalizedInput);
     return result;
   }

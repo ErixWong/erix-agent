@@ -32,25 +32,11 @@ export const AGGREGATE_BUDGET_MIN_TOKENS = 16000;
 export const AGGREGATE_BUDGET_MAX_TOKENS = 200000;
 /** 每条 tool_result 的 framing 开销（块壳 + tool_use_id），计入聚合预算。 */
 export const AGGREGATE_FRAMING_TOKENS = 8;
-/**
- * 单轮 tool_result 负载字节上限（UTF-8 字节；内联文本 + 归档原文合计）。
- *
- * bounded recall 的解析器对**单条 round record** 有 64KB 上限
- * （`src/store/file.js` 的 `MAX_BOUNDED_RECALL_RECORD_BYTES`），超限记录会被静默
- * `record_too_large` 跳过。聚合归档会把一整轮的原文塞进同一条记录，因此单轮负载必须封顶：
- * 48KB 负载 + 16KB 余量（messages 封装 / response / runState）< 64KB。
- *
- * 超出即 **fail-closed**：不归档、stub 标「原文不可恢复」，并计数 + 发事件。
- * 宁可显式失败，也不产出一条会被 bounded recall 静默跳过的记录。
- */
-export const AGGREGATE_ROUND_PAYLOAD_BYTES = 48 * 1024;
-
 /** 失败结果被 stub 化时保留的关键错误片段上限（字符）。 */
 export const AGGREGATE_ERROR_SNIPPET_CHARS = 200;
 
 const UNRECOVERABLE_REASONS = Object.freeze({
   invalid_content: "输出内容不是可归档的文本",
-  archive_capacity_exceeded: "本轮归档容量已达上限（保证 bounded recall 单记录上限不被顶穿）",
 });
 
 /**
@@ -97,9 +83,8 @@ export function estimateInlineCost(content) {
 }
 
 /**
- * 聚合归档 stub（可 recall）。
+ * 聚合归档 stub.
  *
- * 配方用 recall 工具 schema 里的合法字段（pattern / fromRound / toRound），不使用裸 `round`。
  * 失败结果（is_error）额外保留关键错误片段。
  *
  * @param {{round:number, length:number, errorSnippet?:string}} options
@@ -110,13 +95,14 @@ export function aggregateStubText({ round, length, errorSnippet: snippet }) {
     ? `失败摘要：${snippet}；`
     : "";
   return `[本轮工具输出已超单轮聚合预算：完整输出已由引擎归档（第 ${round} 轮，共 ${length} 字符）。${failed}`
-    + `需要原文：recall({ fromRound: ${round}, toRound: ${round}, pattern: "关键词" })；`
-    + `若原命令有副作用，不要仅凭截断输出判断成败，也不要为补全输出重跑有副作用的命令；`
-    + `用 recall 取回原文或改用只读方式复核。]`;
+    + "后续需要该值：先用 note_list 查找记录，再用 note_read 读取；"
+    + "若未记录且无法确定性重算，请省略对应 findings 声明，不要猜测；"
+    + "若原命令有副作用，不要仅凭截断输出判断成败，也不要为补全输出重跑有副作用的命令；"
+    + "改用只读方式复核。]";
 }
 
 /**
- * 聚合归档 fail-closed stub：**不得**声称可 recall。
+ * 聚合归档 fail-closed stub：**不得**声称原文可恢复。
  *
  * @param {{round:number, length:number, reason:string, errorSnippet?:string}} options
  * @returns {string}
@@ -167,8 +153,6 @@ export function createRoundAggregateGate({
     );
     const inlineTokens = countedResults
       .reduce((total, result) => total + estimateInlineCost(result?.content), 0);
-    const roundInlineBytes = countedResults
-      .reduce((total, result) => total + utf8Bytes(result?.content), 0);
 
     if (budget === undefined) {
       return {
@@ -210,25 +194,12 @@ export function createRoundAggregateGate({
       unrecoverableIds.add(toolUseId);
       return { ...base, action: "unrecoverable", reason: "invalid_content" };
     }
-    // 单轮负载封顶：bounded recall 的单记录 64KB 上限 → 宁可显式失败，不产静默被跳过的记录
-    const projectedBytes = roundInlineBytes + archivedBytes + utf8Bytes(text);
-    if (projectedBytes > AGGREGATE_ROUND_PAYLOAD_BYTES) {
-      unrecoverableIds.add(toolUseId);
-      return {
-        ...base,
-        action: "unrecoverable",
-        reason: "archive_capacity_exceeded",
-        archivedBytes,
-        projectedBytes,
-      };
-    }
     return {
       ...base,
       action: "archive",
       reason: "aggregate_budget",
       archivedBytes,
       bytes: utf8Bytes(text),
-      projectedBytes,
     };
   };
 

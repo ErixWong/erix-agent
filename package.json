@@ -23,7 +23,6 @@
     "test/contract/index.js",
     "test/contract/model-config-provider.js",
     "test/contract/notes-store.js",
-    "test/contract/recall-contract.js",
     "test/contract/transcript-store.js",
     "LICENSE"
   ],

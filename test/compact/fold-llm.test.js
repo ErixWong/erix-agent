@@ -44,7 +44,6 @@ test("folds old rounds through the injected summarizer and preserves the payload
   assert.equal(strategy.name, "fold-llm");
   assert.deepEqual(calls[0].messages, messages.slice(1, 5));
   assert.deepEqual(calls[0].roundRange, { from: 1, to: 4 });
-  assert.doesNotMatch(calls[0].promptGuide, /recall/i);
   assert.equal(calls[0].recoveryHint, "需要原文请重读文件或查看持久笔记；关键值应当已落盘");
   assert.deepEqual(result.foldedPayload, messages.slice(1, 5));
   assert.equal(result.foldedRounds, 4);
@@ -102,14 +101,13 @@ test("token truncates an unsectioned summary and marks the truncation", async ()
   assert.match(text, /^> continue again$/m);
 });
 
-test("publishes recovery guidance requirements without recall advertising", () => {
+test("publishes note-first recovery guidance requirements", () => {
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 阶段/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 已改文件/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 已验证项/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 下一步/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /已完成项禁止重做/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 主题词面包屑/);
-  assert.doesNotMatch(SUMMARIZER_PROMPT_GUIDE, /recall/i);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /需要原文请重读文件或查看持久笔记；关键值应当已落盘/);
 });
 
@@ -414,7 +412,7 @@ test("degrades to a statistical summary when the summarizer rejects at runtime (
   assert.match(text, /需要原文请重读文件或查看持久笔记；关键值应当已落盘/u);
   assert.match(text, /^shas: 0c309e6$/mu);
   assert.match(text, /^paths: src\/compact\/fold-llm\.js:1$/mu);
-  // foldedPayload 仍归档可 recall。
+  // foldedPayload 仍随 transcript 归档。
   assert.deepEqual(result.foldedPayload, messages.slice(1, 4));
   assert.equal(result.compacted, true);
   assert.equal(result.foldedRounds, 2);

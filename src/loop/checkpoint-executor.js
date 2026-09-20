@@ -23,8 +23,16 @@ export const READONLY_INTERCEPT_TOOLS = new Set([
   "rg",
   "note_read",
   "note_list",
-  "recall",
 ]);
+
+// judge 原文落盘前的防爆日志截断（2026-09-20）：单条 intercept 记录最多 2000 字符。
+const JUDGE_RAW_LOG_LIMIT = 2000;
+function truncateJudgeRaw(text) {
+  const value = String(text ?? "");
+  return value.length > JUDGE_RAW_LOG_LIMIT
+    ? `${value.slice(0, JUDGE_RAW_LOG_LIMIT)}…[截断，共 ${value.length} 字符]`
+    : value;
+}
 
 export function createCheckpointExecutor(ctx) {
   // 单轮聚合输出预算（issue #32 #2）：逐条 outputHygiene 之外的「本轮合计」闸门。
@@ -151,7 +159,7 @@ export function createCheckpointExecutor(ctx) {
       };
     }
     if (decision.action === "unrecoverable") {
-      // fail-closed：不归档、不承诺 recall，显式计数 + 事件（宁丢不骗）。
+      // fail-closed：不归档，显式计数 + 事件（宁丢不骗）。
       // main/ADR-016 退役了 run-state 的 `errors.archive` 计数，「没存上」改入错误账本
       // （`deterministic.errors.unpersisted`）——语义同一：这一份原文被丢了。
       ctx.errorLedger?.record?.({
@@ -254,7 +262,7 @@ export function createCheckpointExecutor(ctx) {
       }
     }
 
-    // ADR-015 输出卫生：超限结果全量入档（round record 的 toolOutputs），上下文视图留 stub + recall 配方。
+    // 输出卫生：超限结果全量入档（round record 的 toolOutputs），上下文视图留可执行的笔记提示。
     // 在 onToolResult 重写之后执行：宿主的改写/脱敏先行，引擎归档的是宿主最终交出的内容。
     if (ctx.outputHygieneEnabled && execution.content.length > ctx.outputHygieneLimit) {
       const fullText = execution.content;
@@ -268,9 +276,10 @@ export function createCheckpointExecutor(ctx) {
         ...execution,
         content: `${fullText.slice(0, ctx.outputHygieneLimit)}`
           + `\n[完整输出已由引擎归档（第 ${round} 轮，共 ${fullText.length} 字符）。`
-          + `需要原文：recall({ round: ${round}, pattern: "关键词" })；不要重跑有副作用的命令。`
+          + "后续需要该值：先用 note_list 查找记录，再用 note_read 读取；"
+          + "若未记录且无法确定性重算，请省略对应 findings 声明，不要猜测。不要重跑有副作用的命令。"
           + `若原命令有副作用，不要仅凭截断输出判断成败，也不要为补全输出重跑有副作用的命令；`
-          + `用 recall 取回原文或改用只读方式复核。]`,
+          + "改用只读方式复核。]",
       };
     }
     // 单轮聚合预算：逐条阈值与聚合阈值**串联且独立**——逐条先跑，聚合再判；
@@ -288,6 +297,10 @@ export function createCheckpointExecutor(ctx) {
       content: execution.content,
       ...execution.metadata,
     };
+    // 年龄标记（issue #35）：TTL 折叠按创建轮判定。附加字段穿过
+    // cloneState/协议转换（wire 上被 canonicalToOpenAI 丢弃）/validateMessages 均安全，
+    // checkpoint persist/restore 后仍在（resume-manager 经 cloneState 原样带回）。
+    if (Number.isFinite(round)) toolResult.erixRound = round;
     if (isError || execution.success === false) {
       toolStat.failures += 1;
       ctx.toolErrorCount += 1;
@@ -332,7 +345,11 @@ export function createCheckpointExecutor(ctx) {
     toolResults,
     pendingToolUses = [],
   ) => {
-    const interceptEnabled = ctx.judgeInterceptEnabled
+    // 最后一轮（无 tools 请求）跳过 intercept 审计：无工具可审（2026-09-20 预算兜底修复）。
+    // 用 budgetRounds 而非身份轮号：resume 后身份轮号已到顶，会误判剩余轮数（issue #32 #8 同口径）。
+    const finalBudgetRound = ctx.budgetRounds >= ctx.governorState.effectiveMaxRounds;
+    const interceptEnabled = !finalBudgetRound
+      && ctx.judgeInterceptEnabled
       && ctx.judgeInterceptCount >= ctx.judgeIntervalRound;
     if (!interceptEnabled) {
       ctx.judgeInterceptCount += 1;
@@ -363,7 +380,9 @@ export function createCheckpointExecutor(ctx) {
     }
     let decision;
     let judgeUsage;
+    let judgeRaw;
     let interceptError;
+    let interceptErrorMessage;
     try {
       const callRoundJudge = ctx.callRoundJudge;
       const judged = await callRoundJudge(round, undefined, {
@@ -372,10 +391,13 @@ export function createCheckpointExecutor(ctx) {
       });
       decision = judged?.decision;
       judgeUsage = judged?.usage;
+      judgeRaw = judged?.raw;
     } catch (error) {
       if (ctx.signal?.aborted) throwIfAborted(ctx.signal);
       decision = undefined;
       interceptError = error?.code === "judge_intercept_timeout" ? "timeout" : "error";
+      // 错误详情落 judge.log（可审计性）：judge 空转/报错需要能看到根因，300 字符截断。
+      interceptErrorMessage = String(error?.message ?? String(error)).slice(0, 300);
     }
     ctx.judgeInterceptCount = 0;
 
@@ -409,9 +431,14 @@ export function createCheckpointExecutor(ctx) {
         decision: null,
         action: "degraded",
         error: decision === undefined ? interceptError : "parse",
+        ...(interceptErrorMessage ? { errorDetail: interceptErrorMessage } : {}),
         // parse 失败但 usage 已可取得时同样带出（超时/抛错路径 judgeUsage 为 undefined，
         // 展开为空、字段缺省，行为不变）。
         ...(judgeUsage ? { usage: judgeUsage } : {}),
+        // judge 原文落盘（可审计性）：截断 2000 字符防爆日志；超时/无响应时 raw 为空串，缺省。
+        ...(typeof judgeRaw === "string" && judgeRaw !== ""
+          ? { raw: truncateJudgeRaw(judgeRaw) }
+          : {}),
       });
     } else {
       const emitJudge = ctx.emitJudge;
@@ -434,6 +461,10 @@ export function createCheckpointExecutor(ctx) {
         ...(passThrough ? { passThrough } : {}),
         // judge 当次调用用量（issue #33 B）：judge.log 对账；超时/出错时缺省。
         ...(judgeUsage ? { usage: judgeUsage } : {}),
+        // judge 原文落盘（可审计性）：截断 2000 字符防爆日志。
+        ...(typeof judgeRaw === "string" && judgeRaw !== ""
+          ? { raw: truncateJudgeRaw(judgeRaw) }
+          : {}),
       });
     }
 

@@ -68,3 +68,14 @@ tool_result 统一抽值（值锚点不再区分来源）。
   架构词汇里不再有不可判定的概念。
 - resume 兼容：老 transcript 的 deterministic.fold 旧字段由 resume 侧
   `?? 0` 默认值吸收，不需要迁移。
+
+## 补充决定：issue #36 退休 recall 与 bounded-recall（2026-09-20）
+
+issue #36 完成后，`recall` 工具、TranscriptStore 的 recall 能力、
+`bounded-recall` 游标协议及其公共导出全部删除；`toolOutputs` 仍作为 transcript
+中的完整归档证据保留，用于 checkpoint/resume 与 guard 核验，但不再提供引擎取回通道。
+ADR-015 中关于“一个档案、一个 recall 通道”的决策由本补充决定取代。
+
+所有折叠、归档和 final-guard 指针改为可执行的 note-first 动作：先用
+`note_list` 查找记录，再用 `note_read` 读取；若值从未记录且无法确定性重算，
+必须省略对应的 `findings` 声明，不得猜测或为补全输出重跑有副作用的命令。

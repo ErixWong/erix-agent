@@ -20,7 +20,6 @@ import {
   upsertRunStateInMessages,
   withSemanticRunState,
 } from "../run-state.js";
-import { createRecallTool } from "../tools/recall.js";
 import {
   appendAssistantContent,
   blocksFor,
@@ -63,6 +62,10 @@ import {
 } from "./budget.js";
 import { abortError, defaultSleep, throwIfAborted } from "./abort.js";
 import { callProvider as runProvider } from "./provider-runner.js";
+import {
+  TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
+  TOOL_RESULT_TTL_DEFAULT,
+} from "./tool-result-ttl.js";
 import { createCheckpointExecutor } from "./checkpoint-executor.js";
 import { restoreResume } from "./resume-manager.js";
 import {
@@ -75,7 +78,6 @@ export { parseReflectionDecision };
 const TRANSCRIPT_STORE_METHODS = [
   "appendRound",
   "load",
-  "recall",
   "saveCheckpoint",
   "appendCheckpoint",
   "loadLatestCheckpoint",
@@ -92,12 +94,13 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "initialUserMessage",
   "initialMessages",
   "tools",
-  "recall",
   "outputHygiene",
   "writeToolNames",
   "writeToolPathKeys",
   "executeTool",
   "maxRounds",
+  "toolResultTtl",
+  "toolResultFoldMinTokens",
   "maxTokens",
   "temperature",
   "topP",
@@ -293,13 +296,9 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   initialUserMessage?: string,
  *   initialMessages?: object[],
  *   tools?: object[],
- *   recall?: boolean, // Engine-standard transcript recall tool (ADR-015). Defaults to enabled when a store
- *                     // with load() and a runId are present; pass false to opt out. Calls to a tool named
- *                     // "recall" are served by the engine (never reach host executeTool). A host-provided
- *                     // "recall" tool definition always wins (no duplicate registration).
  *   outputHygiene?: false | { limit?: number }, // Engine-side output hygiene (ADR-015): tool results larger
  *                     // than limit characters are archived in full into the round record
- *                     // (toolOutputs) and stubbed in the context view with a recall recipe. Requires a
+ *                     // (toolOutputs) and stubbed in the context view. Requires a
  *                     // transcript store (the archive lives in the record). Defaults to enabled when a
  *                     // store is present; pass false to opt out. Default limit: 15% of the host-provided
  *                     // contextWindowTokens clamped to [8192, 100000], else 4096; an explicit limit wins.
@@ -313,9 +312,6 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *                     // incremental in arrival order: results keep declaration order and ids, nothing is
  *                     // rewritten after its checkpoint, so checkpoint/resume semantics are unchanged.
  *                     // The layer is off when budgetTokens is absent or outputHygiene is false.
- *                     // If a round's archived payload would push its record past the bounded-recall
- *                     // parser limit, the layer fails closed (stub states the origin is unrecoverable
- *                     // instead of promising recall) rather than emitting a silently skipped record.
  *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to ["writeFile"].
  *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
@@ -417,12 +413,13 @@ export async function runToolLoop(options) {
     initialUserMessage,
     initialMessages,
     tools = [],
-    recall,
     outputHygiene,
     writeToolNames = ["writeFile"],
     writeToolPathKeys = ["path", "file_path"],
     executeTool,
     maxRounds = 8,
+    toolResultTtl = TOOL_RESULT_TTL_DEFAULT,
+    toolResultFoldMinTokens = TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
     maxTokens,
     temperature,
     topP,
@@ -507,19 +504,7 @@ export async function runToolLoop(options) {
   if (persistenceMode !== "none" && persistenceMode !== "required") {
     throw new TypeError('persistence must be "none" or "required"');
   }
-  // ADR-015：引擎标配 recall 工具（转录即档案、recall 即通道）。显式 true 但能力缺失 = 撕票，报错；
-  // 默认（未传）时能力具备才注册，不做静默承诺。宿主自带 recall 工具定义时宿主优先。
-  if (recall !== undefined && typeof recall !== "boolean") {
-    throw new TypeError("recall must be a boolean");
-  }
-  const recallCapable = store !== undefined
-    && typeof store.load === "function"
-    && typeof runId === "string"
-    && runId.length > 0;
-  if (recall === true && !recallCapable) {
-    throw new TypeError("recall: true requires a store with load() and a non-empty runId");
-  }
-  // ADR-015 输出卫生：档案在 round record（toolOutputs）里，必须有 store 落盘，否则 stub 就是纯丢失。
+  // 输出卫生：档案在 round record（toolOutputs）里，必须有 store 落盘，否则 stub 就是纯丢失。
   if (outputHygiene !== undefined && outputHygiene !== false
     && (outputHygiene === null || typeof outputHygiene !== "object"
       || Array.isArray(outputHygiene))) {
@@ -549,23 +534,7 @@ export async function runToolLoop(options) {
       );
     }
   }
-  // 引擎标配 recall（ADR-015）：宿主工具面已有同名 "recall" 定义时宿主优先，不重复注册/拦截。
-  const recallEnabled = recallCapable && recall !== false;
-  const engineRecallTool = recallEnabled
-    && !tools.some((tool) => tool?.name === "recall")
-    ? createRecallTool({ store, runId })
-    : undefined;
-  const providerTools = engineRecallTool === undefined
-    ? tools
-    : [...tools, engineRecallTool.schema];
-  const executeToolWithRecall = engineRecallTool === undefined
-    ? executeTool
-    : async (structuredOptions) => {
-      if (structuredOptions?.name === "recall") {
-        return engineRecallTool.execute(structuredOptions.input);
-      }
-      return executeTool(structuredOptions);
-    };
+  const providerTools = tools;
 
   const retryOptions = retry && typeof retry === "object" ? retry : null;
   const retryAttempts = retryOptions === null
@@ -1273,6 +1242,15 @@ export async function runToolLoop(options) {
     awaitWithAbort,
     waitForRetry,
     estimateMessageTokens,
+    // TTL 折叠配置（issue #35）。终稿保护口径与 checkpoint-executor 的 budgetHintFor 对齐：
+    // 最后一轮（omitTools 终稿轮）/ 剩余轮数 <= 2 / 已发低预算提示时不折叠——
+    // 收尾阶段模型常要回头引用早期证据，此时折叠净收益为负。返回 null = 本轮关闭。
+    get toolResultFold() {
+      const remaining = governorState.effectiveMaxRounds - budgetRounds;
+      if (budgetRounds >= governorState.effectiveMaxRounds) return null;
+      if (remaining <= 2 || lowBudgetPrompted) return null;
+      return { ttl: toolResultTtl, minTokens: toolResultFoldMinTokens };
+    },
     get messages() {
       return messages;
     },
@@ -1354,7 +1332,7 @@ export async function runToolLoop(options) {
           toolUseId: toolResult.tool_use_id,
           toolResult: cloneState(toolResult),
         })),
-        // ADR-015：本 round 已归档的全量输出随 checkpoint 落盘，崩溃恢复后 recall 仍可兑现
+        // 本 round 已归档的全量输出随 checkpoint 落盘，保证崩溃恢复后证据仍可核验
         toolOutputs: cloneState(archivedOutputs.filter((entry) => entry.round === round)),
         ts: new Date().toISOString(),
       });
@@ -1583,8 +1561,14 @@ export async function runToolLoop(options) {
           ),
         }],
       }],
-      maxTokens: 8000,
+      // 2026-09-20 基准实测：judge 只输出一段 JSON，8000 上限纯浪费（输出越长漂移越大）；
+      // 但 512 实测会被 glm 冗长 JSON 截断致 parse 失败 → 1024。
+      maxTokens: 1024,
       temperature: 0,
+      // 2026-09-20 实测（glm-5.3-flash-awq）：reasoning_effort 是该 relay 上**唯一**能真
+      // 正关思考的参数（enable_thinking/chat_template_kwargs/thinking:{type:disabled} 都
+      // 关不掉，GLM 把思考放非标准 `reasoning` 字段）；关掉后 judge 输出纯 JSON，不关
+      // 则 512 预算被思考吃光 → content 空。qwen/deepseek 同样认此参数。不要删。
       reasoning_effort: "none",
     };
     let timeoutController;
@@ -1639,15 +1623,18 @@ export async function runToolLoop(options) {
         ...(Number.isFinite(outputTokens) ? { output_tokens: outputTokens } : {}),
       }
       : undefined;
+    // 原始输出未截断带出（可审计性）：intercept 落 judge.log 时截断由调用方负责。
+    const rawText = textFromBlocks(blocksFor(response?.content));
     return {
-      decision: parseJudgeDecision(textFromBlocks(blocksFor(response?.content))),
+      decision: parseJudgeDecision(rawText),
       usage: judgeUsage,
+      raw: rawText,
     };
   };
 
   const checkpointContext = {
     runId,
-    executeTool: executeToolWithRecall,
+    executeTool,
     baseToolContext,
     outputHygieneEnabled,
     outputHygieneLimit,
@@ -1987,7 +1974,12 @@ export async function runToolLoop(options) {
     emitEvent({ type: "round_start", round });
     const compaction = await compactBeforeRound();
     const roundStart = messages.length;
-    let providerResult = await callProvider({ round });
+    // 预算兜底（2026-09-20 基准实测：剩余轮数耗尽时模型无视文字提示继续调工具，
+    // 撞 max_rounds 被 truncate，靠 wrapup 全量重发历史 + 额外 4 分钟兜底）：
+    // 本轮是最后一个预算轮时不带 tools，强制输出文本终稿。此时消息历史里所有
+    // tool_use 均已配平 tool_result（结果总在下一轮请求前追加），无 tools 请求安全。
+    const isFinalBudgetRound = budgetRounds >= governorState.effectiveMaxRounds;
+    let providerResult = await callProvider({ round, omitTools: isFinalBudgetRound });
     let response = providerResult.response;
     let content = blocksFor(response?.content);
 
@@ -2013,7 +2005,11 @@ export async function runToolLoop(options) {
         await compactBeforeRound();
       }
       tokenContinuationCount += 1;
-      providerResult = await callProvider({ allowPendingToolUse: true, round });
+      providerResult = await callProvider({
+        allowPendingToolUse: true,
+        round,
+        omitTools: isFinalBudgetRound,
+      });
       response = providerResult.response;
       const continuation = blocksFor(response?.content);
       const assistant = messages.at(-1);
@@ -2271,6 +2267,7 @@ export async function runToolLoop(options) {
         const judged = await callRoundJudge(round, currentL0);
         judgeDecision = judged.decision;
         judgeUsage = judged.usage;
+        const judgeRaw = judged.raw;
         if (judgeDecision === null) {
           roundJudgeFailures += 1;
           if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
@@ -2283,6 +2280,8 @@ export async function runToolLoop(options) {
             // parse 失败但 response.usage 已可取得（issue #33 评审修复）：
             // degraded 事件同样带 usage，judge.log 可对账这部分消耗。
             ...(judgeUsage ? { usage: judgeUsage } : {}),
+            // 原文落盘（可审计性）：parse 失败时最需要看 judge 到底输出了什么
+            ...(typeof judgeRaw === "string" && judgeRaw !== "" ? { raw: judgeRaw } : {}),
           });
         } else {
           roundJudgeFailures = 0;
@@ -2301,6 +2300,7 @@ export async function runToolLoop(options) {
               ? "judge_done"
               : (judgeDecision.done === false ? "nudge" : "continue"),
             ...(judgeUsage ? { usage: judgeUsage } : {}),
+            ...(typeof judgeRaw === "string" && judgeRaw !== "" ? { raw: judgeRaw } : {}),
           });
         }
       } catch (error) {

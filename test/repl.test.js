@@ -61,6 +61,27 @@ test("parseReplArgs accepts session and directory overrides", () => {
   assert.equal(parseReplArgs(["--session", "work"], "/tmp/other").session, "work");
 });
 
+test("parseReplArgs accepts a tools allowlist", () => {
+  assert.deepEqual(
+    parseReplArgs(["--tools", "readFile,exec"]),
+    {
+      session: defaultSessionId(process.cwd()),
+      dir: join(homedir(), ".erix", "transcripts"),
+      maxRounds: 32,
+      idleTimeout: 0,
+      tools: "readFile,exec",
+    },
+  );
+  assert.throws(
+    () => parseReplArgs(["--tools"]),
+    /--tools 缺少数值/,
+  );
+  assert.throws(
+    () => parseReplArgs(["--tools", " "]),
+    /--tools 不能为空/,
+  );
+});
+
 test("parseReplArgs rejects an invalid compact budget", () => {
   assert.throws(
     () => parseReplArgs(["--compact-budget", "-1"]),
@@ -219,7 +240,7 @@ test("runRepl aborts the active loop on SIGINT and keeps readline open", async (
   }
 });
 
-test("runRepl resumes from the transcript store with the engine-standard recall tool (ADR-015)", async () => {
+test("runRepl resumes from the transcript store without an engine-owned retrieval tool", async () => {
   const dir = await mkdtemp(join(tmpdir(), "erix-repl-store-test-"));
   const input = new PassThrough();
   input.isTTY = true;
@@ -243,7 +264,6 @@ test("runRepl resumes from the transcript store with the engine-standard recall 
     await run;
 
     assert.equal(provider.requests.length, 2);
-    assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), true);
     // ADR-015 4a：归档提示零路径、不提 ResourceStore
     assert.match(provider.requests[0].system, /大输出已由引擎全量归档/u);
     assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/repl-store`));

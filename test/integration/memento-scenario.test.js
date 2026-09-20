@@ -130,8 +130,8 @@ test("S2 keeps credentials out of a folded stub while retaining its archive poin
       .map((block) => block?.text)
       .find((text) => typeof text === "string" && text.includes("[已折叠]"));
     assert.equal(typeof foldedStub, "string");
-    // ADR-015 4b：stub 值直接取自 tool_result 内容，原文指针 = recall 配方（零路径）
-    assert.match(foldedStub, /recall/u);
+    // ADR-016：stub 值直接取自 tool_result 内容，后续恢复走 note-first 提示（零路径）
+    assert.match(foldedStub, /note_list|note_read/u);
     assert.match(foldedStub, new RegExp(safeValue));
     assert.doesNotMatch(foldedStub, new RegExp(secret));
   } finally {
@@ -284,63 +284,4 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-});
-
-test("S5 recalls one run byte-for-byte and rejects invalid or unrecoverable cursors", async () => {
-  const runId = "s5-run";
-  const original = "memento-recall-原文-0123456789";
-  const store = createMemoryTranscriptStore();
-  const provider = createFakeProvider([
-    {
-      content: [{ type: "text", text: original }],
-      stopReason: "end_turn",
-    },
-  ]);
-
-  await runToolLoop({
-    provider,
-    initialUserMessage: "保存一段 bounded recall 测试内容。",
-    executeTool: async () => "unused",
-    maxRounds: 1,
-    completion: false,
-    wrapup: false,
-    reflection: false,
-    store,
-    runId,
-  });
-
-  const recallOptions = {
-    runId,
-    fromRound: 1,
-    toRound: 1,
-    pattern: original,
-    limit: 1,
-    maxBytes: 7,
-  };
-  const chunks = [];
-  let page = await store.recall(recallOptions);
-  assert.equal(page.status, "truncated");
-  while (page) {
-    chunks.push(page.text);
-    if (!page.nextCursor) break;
-    page = await store.recall({ ...recallOptions, cursor: page.nextCursor });
-  }
-  assert.equal(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk, "utf8"))).toString("utf8"), original);
-
-  const firstPage = await store.recall(recallOptions);
-  const tampered = await store.recall({
-    ...recallOptions,
-    cursor: `${firstPage.nextCursor}x`,
-  });
-  assert.equal(tampered.status, "cursor_mismatch");
-  assert.equal(tampered.error.code, "cursor_mismatch");
-  assert.equal(tampered.text, "");
-
-  const outOfBounds = await store.recall({
-    ...recallOptions,
-    fromRound: 99,
-    toRound: 100,
-  });
-  assert.equal(outOfBounds.status, "unrecoverable");
-  assert.equal(outOfBounds.text, "");
 });

@@ -2,15 +2,33 @@ import { cloneState } from "./budget.js";
 import { normalizeMessages } from "./messages.js";
 import { throwIfAborted } from "./abort.js";
 import { validateMessages } from "../messages/rounds.js";
+import { foldToolResultsForRequest } from "./tool-result-ttl.js";
 
-export async function callProvider(ctx, { allowPendingToolUse = false, round } = {}) {
+export async function callProvider(ctx, {
+  allowPendingToolUse = false,
+  round,
+  // 预算兜底（2026-09-20 基准：撞 64 轮截断 + wrapup 全量重发历史多花 4 分钟）：
+  // 最后一轮省略 tools，强制模型输出文本终稿。OpenAI/Anthropic 两协议均允许无 tools 请求。
+  omitTools = false,
+} = {}) {
   let retryIndex = 0;
   let recovered = false;
   while (true) {
     normalizeMessages(ctx.messages);
     validateMessages(ctx.messages, { allowPendingToolUse });
+    // TTL 折叠（issue #35）：只替换请求视图，ctx.messages 本身不动（checkpoint 仍存全文）。
+    // toolResultFold 是 orchestrator 的配置 getter（含终稿保护口径），每次 attempt 重新读取；
+    // null/undefined = 本轮不折叠。
+    const foldConfig = ctx.toolResultFold ?? null;
+    const requestMessages = foldConfig === null || foldConfig === undefined
+      ? ctx.messages
+      : foldToolResultsForRequest(ctx.messages, {
+        currentRound: round,
+        ttl: foldConfig.ttl,
+        minTokens: foldConfig.minTokens,
+      });
     const estimateMessageTokens = ctx.estimateMessageTokens;
-    const requestEstimatedTokens = estimateMessageTokens(ctx.messages);
+    const requestEstimatedTokens = estimateMessageTokens(requestMessages);
     const snapshot = {
       messages: cloneState(ctx.messages),
       eventDeltas: [...ctx.roundEventDeltas],
@@ -57,10 +75,10 @@ export async function callProvider(ctx, { allowPendingToolUse = false, round } =
     try {
       const request = {
         system: ctx.mainSystem,
-        messages: ctx.messages,
-        tools: ctx.tools,
+        messages: requestMessages,
         signal: ctx.signal,
       };
+      if (omitTools !== true) request.tools = ctx.tools;
       if (ctx.maxTokens !== undefined) request.maxTokens = ctx.maxTokens;
       if (ctx.temperature !== undefined) request.temperature = ctx.temperature;
       if (ctx.topP !== undefined) request.topP = ctx.topP;

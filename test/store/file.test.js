@@ -5,17 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileTranscriptStore, safeRunId } from "../../src/store/file.js";
 import { transcriptStoreContract } from "../contract/transcript-store.js";
-import { recallContract } from "../contract/recall-contract.js";
 
 async function makeTempDir() {
   return mkdtemp(join(tmpdir(), "erix-llm-kit-file-store-"));
 }
 
 // 通用行为：契约套件（每次给干净目录 = 干净 store）
-recallContract("file", async () => {
-  // 同一工厂：契约内用完即弃
-  return createFileTranscriptStore({ dir: await mkdtemp(join(tmpdir(), "erix-file-recall-contract-")) });
-});
 transcriptStoreContract("file", async () => {
   const dir = await makeTempDir();
   return createFileTranscriptStore({ dir });
@@ -263,88 +258,6 @@ test("file: appendRound 无 LF 尾部同 key 不重复写入（幂等）", async
     assert.equal(loaded[0].round, 5);
     const transcript = await readFile(join(root, "run.jsonl"), "utf8");
     assert.equal((transcript.match(/"round":5/g) ?? []).length, 1, "不应重复写入同 round");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("file: bounded recall skips an oversized JSONL record with a resumable cursor", async () => {
-  const root = await makeTempDir();
-  try {
-    const store = createFileTranscriptStore({ dir: root });
-    await writeFile(
-      join(root, "huge.jsonl"),
-      `${JSON.stringify({
-        round: 1,
-        messages: [{
-          role: "assistant",
-          content: [{ type: "text", text: "x".repeat(5 * 1024 * 1024) }],
-        }],
-      })}\n`,
-      "utf8",
-    );
-
-    const first = await store.recall({
-      runId: "huge",
-      fromRound: 1,
-      toRound: 1,
-      limit: 1,
-      maxBytes: 64,
-    });
-    assert.equal(first.status, "truncated");
-    assert.equal(first.truncated, true);
-    assert.ok(Buffer.byteLength(first.text, "utf8") <= 64);
-    assert.match(first.error.code, /record_too_large/u);
-    assert.ok(first.nextCursor);
-
-    const resumed = await store.recall({
-      runId: "huge",
-      fromRound: 1,
-      toRound: 1,
-      limit: 1,
-      maxBytes: 64,
-      cursor: first.nextCursor,
-    });
-    assert.notEqual(resumed.status, "error");
-    assert.equal(resumed.nextCursor, undefined);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("file: 合法 bounded recall 游标可由新 store 实例续取", async () => {
-  const root = await makeTempDir();
-  try {
-    const firstStore = createFileTranscriptStore({ dir: root });
-    await firstStore.appendRound("resume", {
-      round: 1,
-      messages: [{ role: "assistant", content: [{ type: "text", text: "first-page" }] }],
-    });
-    await firstStore.appendRound("resume", {
-      round: 2,
-      messages: [{ role: "assistant", content: [{ type: "text", text: "second-page" }] }],
-    });
-
-    const first = await firstStore.recall({
-      runId: "resume",
-      fromRound: 1,
-      toRound: 2,
-      maxBytes: 5,
-    });
-    assert.equal(first.status, "truncated");
-    assert.equal(first.text, "first");
-
-    const secondStore = createFileTranscriptStore({ dir: root });
-    const resumed = await secondStore.recall({
-      runId: "resume",
-      fromRound: 1,
-      toRound: 2,
-      maxBytes: 5,
-      cursor: first.nextCursor,
-    });
-    assert.equal(resumed.status, "truncated");
-    assert.equal(resumed.text, "-page");
-    assert.ok(resumed.nextCursor);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -93,6 +93,7 @@ export function executeToolContract(label, createExecutor) {
       type: "tool_result",
       tool_use_id: "contract-tool-1",
       content: "string result",
+      erixRound: 1, // issue #35 TTL 折叠年龄标记
     });
   });
 

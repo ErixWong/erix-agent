@@ -1,13 +1,10 @@
 import { createReadStream } from "node:fs";
-import { statSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { boundedRecall } from "./bounded-recall.js";
 import { boundRunState } from "../run-state.js";
 
 const HASHED_RUN_ID_PREFIX = "run-h-";
-const MAX_BOUNDED_RECALL_RECORD_BYTES = 64 * 1024;
 
 /**
  * @typedef {{
@@ -58,42 +55,10 @@ function recordKey(runId, record) {
     ?? `${String(runId)}:round:${String(record?.round)}`;
 }
 
-function blocksFor(content) {
-  if (typeof content === "string") return [{ type: "text", text: content }];
-  return Array.isArray(content) ? content : [];
-}
-
-function blockText(block) {
-  if (!block || typeof block !== "object") return null;
-  if (block.type === "text") return String(block.text ?? "");
-  if (block.type === "tool_use") {
-    return `${block.name ?? ""}${JSON.stringify(block.input)}`;
-  }
-  if (block.type === "tool_result") return String(block.content ?? "");
-  return null;
-}
-
-function boundedRecordBytes(maxBytes) {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
-    return MAX_BOUNDED_RECALL_RECORD_BYTES;
-  }
-  return Math.min(
-    MAX_BOUNDED_RECALL_RECORD_BYTES,
-    Math.max(4096, maxBytes + 4096),
-  );
-}
-
-function recordRoundPrefix(value) {
-  const match = String(value).match(/^\s*\{\s*"round"\s*:\s*(\d+)/u);
-  return match ? Number.parseInt(match[1], 10) : undefined;
-}
-
-async function* readRecords(path, { maxRecordBytes = Number.POSITIVE_INFINITY } = {}) {
+async function* readRecords(path) {
   try {
     const stream = createReadStream(path, { encoding: "utf8" });
     let buffer = "";
-    let oversized = false;
-    let oversizedRound;
 
     for await (const chunk of stream) {
       buffer += chunk;
@@ -102,54 +67,19 @@ async function* readRecords(path, { maxRecordBytes = Number.POSITIVE_INFINITY } 
         const line = buffer.slice(0, newlineIndex);
         buffer = buffer.slice(newlineIndex + 1);
         const jsonLine = line.endsWith("\r") ? line.slice(0, -1) : line;
-        if (oversized || Buffer.byteLength(jsonLine, "utf8") > maxRecordBytes) {
-          yield {
-            __boundedRecallSkipped: true,
-            reason: "record_too_large",
-            ...(oversizedRound === undefined
-              ? { round: recordRoundPrefix(jsonLine) }
-              : { round: oversizedRound }),
-          };
-          oversized = false;
-          oversizedRound = undefined;
-        } else {
-          yield JSON.parse(jsonLine);
-        }
+        yield JSON.parse(jsonLine);
         newlineIndex = buffer.indexOf("\n");
-      }
-      if (!oversized && Buffer.byteLength(buffer, "utf8") > maxRecordBytes) {
-        oversized = true;
-        oversizedRound = recordRoundPrefix(buffer);
-        buffer = "";
-      } else if (oversized) {
-        buffer = "";
       }
     }
 
     // A crash can leave a complete JSON record after the final newline.
     // Ignore an incomplete tail, matching repairTrailingFragment semantics.
-    if (oversized) {
-      yield {
-        __boundedRecallSkipped: true,
-        reason: "record_too_large",
-        ...(oversizedRound === undefined ? {} : { round: oversizedRound }),
-      };
-    } else if (buffer.length > 0) {
+    if (buffer.length > 0) {
       const jsonLine = buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer;
-      if (Buffer.byteLength(jsonLine, "utf8") > maxRecordBytes) {
-        yield {
-          __boundedRecallSkipped: true,
-          reason: "record_too_large",
-          ...(recordRoundPrefix(jsonLine) === undefined
-            ? {}
-            : { round: recordRoundPrefix(jsonLine) }),
-        };
-      } else {
-        try {
-          yield JSON.parse(jsonLine);
-        } catch {
-          // An incomplete EOF fragment is not a readable record.
-        }
+      try {
+        yield JSON.parse(jsonLine);
+      } catch {
+        // An incomplete EOF fragment is not a readable record.
       }
     }
   } catch (error) {
@@ -242,7 +172,6 @@ async function appendRecord(path, runId, record) {
  * @returns {{
  *   appendRound: (runId:string, record:RoundRecord) => Promise<void>,
  *   load: (runId:string) => Promise<RoundRecord[]>,
- *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string|object>,
  *   markRunState: (runId:string, state:string) => Promise<void>,
  *   saveRunState: (runId:string, state:object) => Promise<void>,
  *   loadRunState: (runId:string) => Promise<object|undefined>,
@@ -261,15 +190,6 @@ export function createFileTranscriptStore({ dir }) {
       records.push(record);
     }
     return records;
-  };
-  const sourceVersion = (runId) => {
-    try {
-      const stat = statSync(transcriptPath(dir, runId));
-      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-    } catch (error) {
-      if (error?.code === "ENOENT") return "missing";
-      throw error;
-    }
   };
   const withAppendLock = async (runId, operation) => {
     const key = safeRunId(runId);
@@ -294,67 +214,6 @@ export function createFileTranscriptStore({ dir }) {
 
     async load(runId) {
       return loadRecords(runId);
-    },
-
-    async recall(runIdOrOptions, fromRound, toRound, pattern) {
-      const objectOptions = runIdOrOptions
-        && typeof runIdOrOptions === "object"
-        && !Array.isArray(runIdOrOptions)
-        ? runIdOrOptions
-        : undefined;
-      const runId = objectOptions?.runId ?? runIdOrOptions;
-      const path = transcriptPath(dir, runId);
-      await repairTranscriptTail(path);
-      if (objectOptions) {
-        return boundedRecall({
-          ...objectOptions,
-          runId,
-          sourceVersion: sourceVersion(runId),
-          records: () => readRecords(path, {
-            maxRecordBytes: boundedRecordBytes(objectOptions.maxBytes),
-          }),
-        });
-      }
-      let result = "";
-      let hasFragment = false;
-
-      for await (const record of readRecords(path)) {
-        if (fromRound !== undefined && record.round < fromRound) continue;
-        if (toRound !== undefined && record.round > toRound) continue;
-
-        for (const message of record.messages ?? []) {
-          for (const block of blocksFor(message?.content)) {
-            const text = blockText(block);
-            if (text === null) continue;
-            if (pattern !== undefined && !text.includes(pattern)) continue;
-            if (hasFragment) result += "\n";
-            result += text;
-            hasFragment = true;
-          }
-        }
-        // 折叠原文同属档案，一并纳入检索（fold 只影响视图）
-        for (const message of record.foldedPayload ?? []) {
-          for (const block of blocksFor(message?.content)) {
-            const text = blockText(block);
-            if (text === null) continue;
-            if (pattern !== undefined && !text.includes(pattern)) continue;
-            if (hasFragment) result += "\n";
-            result += text;
-            hasFragment = true;
-          }
-        }
-        // ADR-015：全量归档输出同属档案（输出卫生的取回通道）
-        for (const output of record.toolOutputs ?? []) {
-          const text = typeof output?.content === "string" ? output.content : "";
-          if (text.length === 0) continue;
-          if (pattern !== undefined && !text.includes(pattern)) continue;
-          if (hasFragment) result += "\n";
-          result += text;
-          hasFragment = true;
-        }
-      }
-
-      return result;
     },
 
     async markRunState(runId, state) {

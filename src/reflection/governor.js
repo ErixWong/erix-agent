@@ -1,4 +1,4 @@
-const MEMORY_LOSS_TEXT = "你的任务仍在进行中。请回顾对话中的任务指令继续执行（必要时可用 recall 工具找回早期上下文）。";
+const MEMORY_LOSS_TEXT = "你的任务仍在进行中。请回顾对话中的任务指令和已有笔记继续执行；需要早期精确值时先用 note_list 查找，再用 note_read 读取。";
 const NO_TOOL_TEXT = "（请继续完成任务）";
 export const STALL_STREAK_LIMIT = 3;
 
