@@ -63,6 +63,10 @@ import {
 } from "./budget.js";
 import { abortError, defaultSleep, throwIfAborted } from "./abort.js";
 import { callProvider as runProvider } from "./provider-runner.js";
+import {
+  TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
+  TOOL_RESULT_TTL_DEFAULT,
+} from "./tool-result-ttl.js";
 import { createCheckpointExecutor } from "./checkpoint-executor.js";
 import { restoreResume } from "./resume-manager.js";
 import {
@@ -98,6 +102,8 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "writeToolPathKeys",
   "executeTool",
   "maxRounds",
+  "toolResultTtl",
+  "toolResultFoldMinTokens",
   "maxTokens",
   "temperature",
   "topP",
@@ -423,6 +429,8 @@ export async function runToolLoop(options) {
     writeToolPathKeys = ["path", "file_path"],
     executeTool,
     maxRounds = 8,
+    toolResultTtl = TOOL_RESULT_TTL_DEFAULT,
+    toolResultFoldMinTokens = TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
     maxTokens,
     temperature,
     topP,
@@ -1273,6 +1281,15 @@ export async function runToolLoop(options) {
     awaitWithAbort,
     waitForRetry,
     estimateMessageTokens,
+    // TTL 折叠配置（issue #35）。终稿保护口径与 checkpoint-executor 的 budgetHintFor 对齐：
+    // 最后一轮（omitTools 终稿轮）/ 剩余轮数 <= 2 / 已发低预算提示时不折叠——
+    // 收尾阶段模型常要回头引用早期证据，此时折叠净收益为负。返回 null = 本轮关闭。
+    get toolResultFold() {
+      const remaining = governorState.effectiveMaxRounds - budgetRounds;
+      if (budgetRounds >= governorState.effectiveMaxRounds) return null;
+      if (remaining <= 2 || lowBudgetPrompted) return null;
+      return { ttl: toolResultTtl, minTokens: toolResultFoldMinTokens };
+    },
     get messages() {
       return messages;
     },

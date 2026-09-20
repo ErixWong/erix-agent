@@ -71,6 +71,8 @@ const HELP_TEXT = `用法：
   ERIX_REFLECTION     反思开关（on/off；ERIX_NO_REFLECTION=1 强制关闭）
   ERIX_JUDGE_INTERVAL  intercept judge 审计间隔（每 N 次工具执行审计一次，默认 10）
   ERIX_STALL_MODE      停滞检测模式（appear/consecutive，默认 consecutive；appear=窗口内出现过同一调用即判停滞）
+  ERIX_TOOL_RESULT_TTL 工具结果 TTL 折叠存活轮数（默认：2，0=关闭）
+  ERIX_TOOL_RESULT_FOLD_MIN_TOKENS 低于此体积（估算 tokens）的工具结果永不折叠（默认：4000）
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
   ERIX_NO_NOTES=1       仅移除 notes 技能，保留其他 skill
   ERIX_JUDGE_LOG      judge 决策 JSONL 路径（默认已写入 run 归档目录，无需设置）
@@ -148,6 +150,21 @@ function resolveMaxRounds(maxRounds) {
   if (raw === undefined || raw === "") return DEFAULT_MAX_ROUNDS;
   const value = Number(raw);
   return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_ROUNDS;
+}
+
+// 工具结果 TTL 折叠（issue #35）：CLI 只负责读环境变量并透传，语义在引擎内。
+function resolveToolResultTtl() {
+  const raw = process.env.ERIX_TOOL_RESULT_TTL?.trim();
+  if (raw === undefined || raw === "") return undefined; // 用引擎默认
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function resolveToolResultFoldMinTokens() {
+  const raw = process.env.ERIX_TOOL_RESULT_FOLD_MIN_TOKENS?.trim();
+  if (raw === undefined || raw === "") return undefined; // 用引擎默认
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 export function resolveReflection(reflection, maxRounds) {
@@ -759,6 +776,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       return result;
     },
     maxRounds: resolvedMaxRounds,
+    toolResultTtl: resolveToolResultTtl(),
+    toolResultFoldMinTokens: resolveToolResultFoldMinTokens(),
     reflection: resolveReflection(reflection, resolvedMaxRounds),
     ...(resolvedFinalGuard === undefined
       ? {}

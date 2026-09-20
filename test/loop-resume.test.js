@@ -194,7 +194,7 @@ test("resumes a partial tool-result message without dropping text or breaking pa
   assert.deepEqual(toolResultMessage.content, [
     { type: "tool_result", tool_use_id: "a", content: "done-a" },
     { type: "text", text: "keep this text" },
-    { type: "tool_result", tool_use_id: "b", content: "done-b" },
+    { type: "tool_result", tool_use_id: "b", content: "done-b", erixRound: 1 },
   ]);
 });
 

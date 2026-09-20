@@ -48,6 +48,7 @@ test("feeds tool results back to the provider on the next round", async () => {
       type: "tool_result",
       tool_use_id: "call-1",
       content: "lookup:x",
+      erixRound: 1, // issue #35 年龄标记（TTL 折叠按创建轮判定）
     }],
   });
 });
@@ -224,6 +225,7 @@ test("feeds executeTool errors back as is_error and continues", async () => {
     tool_use_id: "bad",
     content: "permission denied",
     is_error: true,
+    erixRound: 1, // issue #35 年龄标记
   });
 });
 
@@ -452,4 +454,91 @@ test("final budget round skips intercept audit (no tools to judge)", async () =>
   assert.equal(judge.requests.length, 0);
   assert.deepEqual(executed, [1]);
   assert.equal(result.rounds, 1);
+});
+
+test("tool result TTL fold: placeholder replaces aged large results in later requests (issue #35)", async () => {
+  const big = `line: ${"x".repeat(20_000)}`;
+  const toolSteps = [1, 2, 3, 4, 5].map((n) => ({
+    content: [{
+      type: "tool_use",
+      id: `call-${n}`,
+      name: "scan",
+      input: { path: `src/f${n}.js`, offset: 0, limit: 100 },
+    }],
+    stopReason: "tool_use",
+  }));
+  const provider = createFakeProvider([
+    ...toolSteps,
+    { content: [{ type: "text", text: "最终结论：完成" }], stopReason: "end_turn" },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "scan it",
+    executeTool: async () => big,
+    maxRounds: 6,
+    stallDetection: false,
+    completion: false,
+  });
+
+  assert.equal(result.truncated, false);
+  assert.equal(result.finalText, "最终结论：完成");
+  assert.equal(provider.requests.length, 6);
+
+  const resultContentAt = (requestIndex) => {
+    const blocks = provider.requests[requestIndex].messages
+      .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+      .filter((block) => block?.type === "tool_result");
+    return blocks.map((block) => block.content);
+  };
+
+  // r2 请求：r1 的结果刚产生 1 轮（age=1 < ttl=2），原文在场
+  assert.deepEqual(resultContentAt(1), [big]);
+  // r3 请求：age=2 >= ttl=2 → 占位符在场
+  const foldedViews = resultContentAt(2);
+  assert.equal(foldedViews.length, 2);
+  assert.match(foldedViews[0], /【已折叠·TTL】scan path/);
+  assert.match(foldedViews[0], /recall\(\{fromRound:1/);
+  assert.ok(!foldedViews[0].includes("xxxx"));
+  // r2 产生的结果 age=1 不折
+  assert.equal(foldedViews[1], big);
+  // 终稿保护：r6 是 omitTools 终稿轮 → 折叠关闭，原文恢复在场（协议不报错）
+  const finalViews = resultContentAt(5);
+  assert.equal(finalViews[0], big);
+
+  // ctx.messages 本身始终保留全文（checkpoint/归档语义不受影响）
+  const stored = result.messages
+    .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+    .filter((block) => block?.type === "tool_result");
+  assert.ok(stored.length >= 1);
+  for (const block of stored) assert.ok(block.content.startsWith(big));
+});
+
+test("tool result TTL fold: disabled via ttl=0 keeps originals in every request", async () => {
+  const big = "y".repeat(20_000);
+  const provider = createFakeProvider([
+    { content: [{ type: "tool_use", id: "call-1", name: "scan", input: { n: 1 } }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "call-2", name: "scan", input: { n: 2 } }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "call-3", name: "scan", input: { n: 3 } }], stopReason: "tool_use" },
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "go",
+    executeTool: async () => big,
+    maxRounds: 4,
+    stallDetection: false,
+    completion: false,
+    toolResultTtl: 0,
+  });
+
+  assert.equal(result.truncated, false);
+  for (const request of provider.requests) {
+    const blocks = request.messages
+      .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+      .filter((block) => block?.type === "tool_result");
+    // 低预算提示可能追加在结果尾部（budgetHintFor），原文必须仍在场
+    for (const block of blocks) assert.ok(block.content.startsWith(big));
+  }
 });

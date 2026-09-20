@@ -2,6 +2,7 @@ import { cloneState } from "./budget.js";
 import { normalizeMessages } from "./messages.js";
 import { throwIfAborted } from "./abort.js";
 import { validateMessages } from "../messages/rounds.js";
+import { foldToolResultsForRequest } from "./tool-result-ttl.js";
 
 export async function callProvider(ctx, {
   allowPendingToolUse = false,
@@ -15,8 +16,19 @@ export async function callProvider(ctx, {
   while (true) {
     normalizeMessages(ctx.messages);
     validateMessages(ctx.messages, { allowPendingToolUse });
+    // TTL 折叠（issue #35）：只替换请求视图，ctx.messages 本身不动（checkpoint 仍存全文）。
+    // toolResultFold 是 orchestrator 的配置 getter（含终稿保护口径），每次 attempt 重新读取；
+    // null/undefined = 本轮不折叠。
+    const foldConfig = ctx.toolResultFold ?? null;
+    const requestMessages = foldConfig === null || foldConfig === undefined
+      ? ctx.messages
+      : foldToolResultsForRequest(ctx.messages, {
+        currentRound: round,
+        ttl: foldConfig.ttl,
+        minTokens: foldConfig.minTokens,
+      });
     const estimateMessageTokens = ctx.estimateMessageTokens;
-    const requestEstimatedTokens = estimateMessageTokens(ctx.messages);
+    const requestEstimatedTokens = estimateMessageTokens(requestMessages);
     const snapshot = {
       messages: cloneState(ctx.messages),
       eventDeltas: [...ctx.roundEventDeltas],
@@ -63,7 +75,7 @@ export async function callProvider(ctx, {
     try {
       const request = {
         system: ctx.mainSystem,
-        messages: ctx.messages,
+        messages: requestMessages,
         signal: ctx.signal,
       };
       if (omitTools !== true) request.tools = ctx.tools;

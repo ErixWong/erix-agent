@@ -297,6 +297,10 @@ export function createCheckpointExecutor(ctx) {
       content: execution.content,
       ...execution.metadata,
     };
+    // 年龄标记（issue #35）：TTL 折叠按创建轮判定。附加字段穿过
+    // cloneState/协议转换（wire 上被 canonicalToOpenAI 丢弃）/validateMessages 均安全，
+    // checkpoint persist/restore 后仍在（resume-manager 经 cloneState 原样带回）。
+    if (Number.isFinite(round)) toolResult.erixRound = round;
     if (isError || execution.success === false) {
       toolStat.failures += 1;
       ctx.toolErrorCount += 1;
