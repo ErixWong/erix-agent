@@ -308,6 +308,14 @@ test("compacts context before the second round and records its payload and stats
     foldedRounds: 1,
     tokensBefore: 23,
     tokensAfter: 10,
+    layers: {
+      ttl: { triggered: 0, tokensSaved: 0 },
+      slidingWindow: { triggered: 0, tokensSaved: 0 },
+      foldStatistical: { triggered: 0, tokensSaved: 0 },
+      foldLlm: { triggered: 0, tokensSaved: 0 },
+      anchors: { triggered: 0, tokensSaved: 0 },
+      enforceSize: { triggered: 0, tokensSaved: 0 },
+    },
   }]);
 });
 

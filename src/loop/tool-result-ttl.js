@@ -195,6 +195,8 @@ function shouldNeverFold(block, toolName) {
  * @param {number} [options.ttl=2] 存活轮数：currentRound - erixRound >= ttl 时折叠
  * @param {number} [options.minTokens=4000] 低于此估算 tokens 的结果永不折叠
  * @param {(info:object)=>string} [options.retrievalHint] 自定义取回提示文本生成
+ * @param {{foldedCount?: number, warnedCount?: number, tokensBefore?: number, tokensAfter?: number}} [options.stats]
+ *   可选的可变统计出参；只报告实际折叠/预警，不改变请求视图语义
  * @returns {Array<object>} 折叠后的浅拷贝视图（无折叠时返回原数组引用）
  */
 export function foldToolResultsForRequest(messages, {
@@ -202,7 +204,17 @@ export function foldToolResultsForRequest(messages, {
   ttl = TOOL_RESULT_TTL_DEFAULT,
   minTokens = TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
   retrievalHint,
+  stats,
 } = {}) {
+  const report = stats !== null && typeof stats === "object" && !Array.isArray(stats)
+    ? stats
+    : undefined;
+  if (report !== undefined) {
+    report.foldedCount = 0;
+    report.warnedCount = 0;
+    report.tokensBefore = 0;
+    report.tokensAfter = 0;
+  }
   if (!Array.isArray(messages)) return messages;
   if (!Number.isFinite(currentRound) || !Number.isFinite(ttl) || !Number.isFinite(minTokens)) {
     return messages;
@@ -249,6 +261,7 @@ export function foldToolResultsForRequest(messages, {
             if (nextContent === undefined) nextContent = content.slice();
             nextContent[index] = { ...block, content: `${text}\n${TTL_WARNING_LINE}` };
             changedCount += 1;
+            if (report !== undefined) report.warnedCount += 1;
           }
         }
         continue;
@@ -278,6 +291,11 @@ export function foldToolResultsForRequest(messages, {
       if (nextContent === undefined) nextContent = content.slice();
       nextContent[index] = { ...block, content: contentSummary };
       changedCount += 1;
+      if (report !== undefined) {
+        report.foldedCount += 1;
+        report.tokensBefore += tokens;
+        report.tokensAfter += estimateTokens(contentSummary);
+      }
     }
 
     if (nextContent === undefined) return message;

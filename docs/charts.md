@@ -239,27 +239,111 @@ sequenceDiagram
 
 ## Mechanism 1 · Context Shaping Pipeline (compaction ladder)
 
-> Goal: never let an over-budget request reach the provider — while preserving as much task-relevant information as possible.
+> Mental model: **TTL owns the lifecycle of one result; whole-round strategies own
+> budget-overflow emergency handling**. TTL does not mutate canonical messages or write
+> the archive. Whole-round folding changes the next request's model view and keeps the
+> original `foldedPayload` in the round archive. The ordered six-layer declaration lives
+> in `src/compact/pipeline.js`; this section describes its runtime behavior.
 
 ```mermaid
-flowchart LR
-    A{"messages over budget?"} -- no --> Z["sent to provider as-is"]
-    A -- yes --> B["① strategy fold (whole-round unit)<br/>sliding-window /<br/>fold-statistical /<br/>fold-llm"]
-    B --> C["② mechanical fidelity layer appended<br/>anchor index + verbatim latest user input<br/>(zero LLM, deterministic, un-cuttable)"]
-    C --> D{"still over budget?"}
-    D -- no --> Z
-    D -- yes --> E["③ zero-keep sliding window fallback"]
-    E --> F["④ enforce-size safe truncation<br/>(prune fields / strip images / clear tool inputs /<br/>downgrade protected messages)"]
-    F --> Z
+flowchart TD
+    A["compactBeforeRound:<br/>strategy or budget trigger?"] --> B{"whole-round chain?"}
+    B -- no --> E["provider attempt"]
+    B -- yes --> C["②/③/④ choose one whole-round strategy<br/>sliding-window / fold-statistical / fold-llm"]
+    C --> D["⑤ mechanical fidelity<br/>anchors / fold-fidelity"]
+    D --> F{"local estimate or API projection still over budget?"}
+    F -- no --> E
+    F -- yes --> G["② sliding-window zero-keep fallback"]
+    G --> H{"still over budget?"}
+    H -- no --> E
+    H -- yes --> I["⑥ enforce-size safety fallback"]
+    I --> E
+    E --> J["① TTL: one tool_result<br/>request-only view"]
+    J --> Z["send request copy"]
 ```
 
-### Why it's built this way (five points)
+### Six-layer registry (order, trigger, granularity, and product)
 
-- **Whole-round folding never breaks the chain**: a `tool_use` must be immediately followed by its matching `tool_result` — a protocol invariant. Folding operates on whole rounds (assistant message + its following user tool_result), so normal folding cannot create orphan tool messages; `validateMessages` re-asserts before every provider call.
-- **LLM summaries are not trusted, so a mechanical fidelity layer is stacked on top**: LLM paraphrase inevitably loses precision (a commit SHA becomes "some commit"). `anchors.js` mechanically extracts paths/SHAs/issues/URLs/error lines (≤20 entries, ≤1200 chars) from the folded rounds' **original text**; `fold-fidelity.js` quotes the user's latest unresolved input verbatim (≤800 chars) and detects abort/revoke-style reverse signals — none of it rewritten by a model, and none of it cuttable by the summary budget.
-- **`fold-llm` summary size is enforced deterministically**: an LLM-produced summary passes `enforceSize` before entering context; an over-long summary from a model that "forgot to finish" is mechanically trimmed and cannot blow the budget.
-- **System head and first user message never fold**: all whole-round strategies keep the system head + first real user message; protected messages are not downgraded on normal paths — only the level-④ fallback may downgrade them (recorded in `compactionStats[].protectedDowngraded`); a single protected message that cannot fit raises `KitError("invalid_budget")` instead of silently corrupting.
-- **Fold products are archived**: `foldedPayload` + the navigation record (fold-statistical's deterministic tool footprint) enter the round record — folding changes the model view, never the archive source; recovery is note-first (`note_take` while content is in context, then `note_list`/`note_read`; values never noted and not deterministically re-derivable are omitted, not guessed).
+The registry order is the stable six-layer mental model (TTL is the outer request
+mechanism around the provider call). `slidingWindow` has two
+roles—budget folding when no strategy is configured, and zero-keep fallback when a
+strategy still exceeds the budget—so it can appear before or after the selected
+strategy in one request. `foldStatistical` and `foldLlm` are mutually exclusive
+selected strategies, not two consecutive folds.
+
+| Layer (registry order) | Trigger | Granularity | Model/archive product |
+|---|---|---|---|
+| `ttl` | Every provider attempt when enabled and the estimated result reaches `minTokens`: `currentRound - erixRound >= ttl` folds it to a handle, while `age === ttl - 1` only adds a warning. Error results, `note_`/`todo_`, and old results without a round marker are conservatively retained. Its `triggered` metric counts actual folded `tool_result` blocks, not warning-only views | One `tool_result` | A request-only `【已折叠·TTL】` handle with tool/input snippet, estimated tokens, read round, and retrieval hint; optional `导航` digest and JSON `骨架`. The prior round gets a warning. `ctx.messages`, checkpoints, and the archive retain the full result |
+| `slidingWindow` | A budget overflow with no selected whole-round strategy (including a configured strategy whose `shouldCompact()` returns false), or a local/API projection that remains over budget after the selected strategy; the fallback uses `keepRounds: 0` | Whole rounds (assistant plus paired `tool_result`) | Keeps the head/protected and recent rounds; original folded rounds become `foldedPayload`, optional `stubFor` output is put in the head, and a bounded `navigationRecord` is produced |
+| `foldStatistical` | `context.strategy` requests compaction and its strategy name is `fold-statistical` | Whole rounds | A deterministic summary containing folded range, tool footprint, stubs, recovery hint, and navigation record; `foldedPayload` remains separate |
+| `foldLlm` | `context.strategy` requests compaction and its strategy name is `fold-llm` | Whole rounds | An injected summarizer produces the summary; the summary first passes `enforceSize`, failures degrade to a statistical summary, and a mechanical fidelity block may follow; the original remains in `foldedPayload` |
+| `anchors` | A whole-round fold actually emits an anchors or fold-fidelity section; `anchors: false` only disables the anchor index, while `fold-llm` user quotes/reverse-signal warnings may still trigger | Recognizable source fragments in folded rounds | `anchors.js` mechanically extracts paths, SHAs, issues, URLs, and error lines from tool results and real user text (≤20 entries/1200 chars). `fold-llm` additionally uses `fold-fidelity.js` for a verbatim latest unresolved user input (≤800 chars) and reverse-signal warnings. Zero LLM; it is not the archive navigation index |
+| `enforceSize` | Summary-size enforcement inside fold-llm, or final safety truncation after all strategy/window steps still exceed the budget | Fields/messages (the final fallback also removes complete rounds) | Low-priority fields become `[已修剪]`; images are removed, tool inputs are cleared, and protected messages may be downgraded as a last resort. `protectedDowngraded` records that downgrade; one protected message that cannot fit raises `invalid_budget` |
+
+### Exact per-request sequence
+
+1. `compactBeforeRound` estimates the **canonical messages** first and always invokes
+   a configured `context.strategy.shouldCompact(...)`, even when no budget is
+   configured. The whole-round chain starts when that hook returns true, or when a
+   budget exists and the local estimate/recent API input exceeds the budget. With no
+   selected strategy (including a configured strategy whose hook returns false), an
+   over-budget request uses `sliding-window`.
+2. The selected strategy folds complete rounds; the system head, first real user
+   message, and configured protected rounds remain on the normal path. It creates
+   summaries/stubs/fidelity products and recomputes the token estimate.
+3. If the result is still over budget, the loop runs `sliding-window(keepRounds: 0)`;
+   if it is still over budget, `safeTruncateMessages` runs the deterministic field-level
+   safety fallback from `enforce-size.js`.
+4. The loop writes the resulting messages back to `ctx.messages` and refreshes run-state.
+   Only then does `provider-runner` build a request copy using the current TTL settings,
+   validate `tool_use`/`tool_result` pairing, and call the provider. TTL therefore never
+   enters `foldedPayload` or changes archive recovery semantics.
+
+### TTL digest versus navigation record
+
+Both can contain a short description of what was folded, but they have different
+contracts:
+
+- **TTL digest** is a short-lived, request-level handle for one large
+  `tool_result`. It lets the model identify the result and return to existing notes; it
+  does not summarize a round range, prove archival, or count folded rounds, and is not
+  persisted separately after the request.
+- **`navigationRecord`** is the archive index for a whole-round fold. It is built from
+  artifact metadata in `foldedPayload`, records round range plus artifact
+  locator/digest/status, and is persisted in the round record for host audit, resume,
+  and note-first retrieval. It does not reproduce the tool-result body.
+
+### Product, statistics, and recovery invariants
+
+- A `tool_use` must stay paired with its matching `tool_result`; whole-round strategies
+  operate on complete rounds, and `validateMessages` asserts the protocol again before
+  every provider call.
+- `foldedPayload` is always the original archive payload; the summary is only the model
+  view. Recovery remains note-first, then `note_list`/`note_read`; values that were not
+  recorded and cannot be deterministically recomputed are not guessed.
+- `compactionStats` keeps the existing `compacted`, `foldedRounds`, `tokensBefore`, and
+  `tokensAfter` fields and adds uniform detail for all six layers:
+
+  ```js
+  layers: {
+    ttl: { triggered: 0, tokensSaved: 0 },
+    slidingWindow: { triggered: 0, tokensSaved: 0 },
+    foldStatistical: { triggered: 0, tokensSaved: 0 },
+    foldLlm: { triggered: 0, tokensSaved: 0 },
+    anchors: { triggered: 0, tokensSaved: 0 },
+    enforceSize: { triggered: 0, tokensSaved: 0 },
+  }
+  ```
+
+  `triggered` counts actual applications/products; `tokensSaved` is the non-negative
+  estimated token reduction across that layer (the fidelity layer does not claim
+  savings when it adds text). For `ttl`, `triggered` is the number of actual folded
+  single results; warning-only attempts do not create a TTL stat. These statistics
+  are bounded rather than an infinite history: `normalizeCompactionStats` retains
+  the most recent 32 entries, and run-state serialization reduces them to the most
+  recent 8 entries if the size limit is exceeded. Every stat is available on the
+  returned result, current run-state, checkpoint/round archive, and
+  `onEvent({ type: "compaction" })` so a host can query it by layer.
 
 ---
 

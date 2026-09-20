@@ -237,27 +237,97 @@ sequenceDiagram
 
 ## 机制解析 1 · 上下文塑形管道（compaction ladder）
 
-> 目标：任何情况下都不让"超预算请求"到达 provider——同时尽量保住对任务有用的信息。
+> 心智模型：**TTL 管“单结果生命周期”，整轮策略管“预算超限应急”**。TTL
+> 不改变规范消息、不写档案；整轮折叠才改变下一次请求的模型视图，并把原文
+> `foldedPayload` 随轮档案保存。六层的有序声明集中在
+> `src/compact/pipeline.js`，本文描述的是该声明驱动的运行时行为。
 
 ```mermaid
-flowchart LR
-    A{"消息超预算?"} -- 否 --> Z["原样进 provider"]
-    A -- 是 --> B["① 策略折叠（整轮为单位）<br/>sliding-window /<br/>fold-statistical /<br/>fold-llm"]
-    B --> C["② 机械保真层追加<br/>锚点索引 + 用户最新输入逐字引用<br/>（零 LLM、确定性、削不掉）"]
-    C --> D{"仍超预算?"}
-    D -- 否 --> Z
-    D -- 是 --> E["③ 零保留滑窗兜底"]
-    E --> F["④ enforce-size 安全截断<br/>（裁剪字段 / 去图 / 清工具入参 /<br/>降级受保护消息）"]
-    F --> Z
+flowchart TD
+    A["compactBeforeRound：<br/>策略主动触发或预算超限?"] --> B{"需要整轮链?"}
+    B -- 否 --> E["provider attempt"]
+    B -- 是 --> C["②/③/④ 选择一个整轮策略<br/>sliding-window / fold-statistical / fold-llm"]
+    C --> D["⑤ 机械保真层<br/>anchors / fold-fidelity"]
+    D --> F{"本地估算或 API 投影仍超预算?"}
+    F -- 否 --> E
+    F -- 是 --> G["② sliding-window 零保留兜底"]
+    G --> H{"仍超预算?"}
+    H -- 否 --> E
+    H -- 是 --> I["⑥ enforce-size 安全截断兜底"]
+    I --> E
+    E --> J["① TTL：单个 tool_result<br/>只构造请求视图"]
+    J --> Z["发送请求副本"]
 ```
 
-### 巧妙在哪（五点）
+### 六层注册表（顺序、触发、粒度与产物）
 
-- **整轮折叠不断链**：tool_use 必须紧跟匹配 tool_result 是协议硬约束——折叠以"完整轮"（assistant 消息 + 紧随的 user tool_result）为单位，正常折叠不可能造出孤儿工具消息；发给 provider 前还有 `validateMessages` 二次断言
-- **LLM 摘要不可信，所以叠了机械保真层**：LLM 复述精确值必然损耗（commit SHA 变成"某个提交"）。`anchors.js` 用正则从被折轮次**原文**机械抽取路径/SHA/issue/URL/错误行（≤20 条、≤1200 字符），`fold-fidelity.js` 逐字引用用户最新未解决输入（≤800 字符）并检测中止/撤销类反向信号——全部不经模型改写，且摘要预算削不掉
-- **fold-llm 的摘要尺寸是确定性强制的**：LLM 生成摘要后过 `enforceSize` 才允许进上下文，模型"忘记收尾"写出的超长摘要会被机械截断，不会反噬预算
-- **系统头与首条用户消息永不折**：所有整轮策略保留 system 头部 + 第一条真实用户消息；受保护消息在正常路径不降级，只有第 ④ 级兜底才可能降级（并记入 `compactionStats[].protectedDowngraded`）；单条受保护消息自己都塞不下 → 直接 `KitError("invalid_budget")`，不静默损坏
-- **折叠产物随档案保存**：`foldedPayload` + 导航记录（fold-statistical 的确定性工具足迹）进入 round 记录——折叠改变模型视图，不改变档案源；恢复走 note-first（趁在场 `note_take`，之后 `note_list`/`note_read` 取回；未记录且无法确定性重算的值不声明）
+注册表的顺序是稳定的六层心智模型（TTL 是包住 provider 请求的外层机制）；其中 `slidingWindow` 同时承担“无策略时的
+预算折叠”和“策略产物仍超限时的零保留兜底”，所以它在一次请求里可能出现在
+选定策略之前或之后。`foldStatistical` 与 `foldLlm` 是互斥的选定整轮策略，
+不是连续执行的两次折叠。
+
+| 层（注册表顺序） | 触发条件 | 粒度 | 进入模型/档案的产物 |
+|---|---|---|---|
+| `ttl` | 每次 provider attempt；配置允许且结果估算 token 达到 `minTokens`：`currentRound - erixRound >= ttl` 时折为句柄，`age === ttl - 1` 时只追加预警。错误结果、`note_`/`todo_`、缺少轮号的旧结果保守不折。其 `triggered` 只统计实际折叠的 `tool_result` 数量，不统计仅预警的请求 | 单个 `tool_result` | 仅请求视图中的 `【已折叠·TTL】`句柄，含工具/入参片段、估算 token、读取轮、取回提示；可附 `导航` digest 与 JSON `骨架`。临界前一轮只追加 TTL 预警。`ctx.messages`、checkpoint、round archive 保留全文 |
+| `slidingWindow` | 预算超限且没有选定整轮策略（包括已配置策略但其 `shouldCompact()` 返回 false），或选定策略完成后本地估算/API 输入投影仍超限；兜底使用 `keepRounds: 0` | 整轮（assistant + 配对 `tool_result`） | 保留 head/受保护轮与近期轮；被折轮原文进入 `foldedPayload`，可把 `stubFor` 结果追加到 head，并生成有界 `navigationRecord` |
+| `foldStatistical` | `context.strategy` 主动要求压缩且策略名为 `fold-statistical` | 整轮 | 带折叠轮范围、工具足迹、存根、恢复提示、导航记录的确定性摘要；`foldedPayload` 与摘要分离保存 |
+| `foldLlm` | `context.strategy` 主动要求压缩且策略名为 `fold-llm` | 整轮 | 注入的 summarizer 生成摘要；摘要先过 `enforceSize`，失败时降级统计摘要；随后可追加机械保真段；原文仍在 `foldedPayload` |
+| `anchors` | 整轮折叠实际产生 anchors 或 fold-fidelity 段落；`anchors: false` 只关闭锚点索引，`fold-llm` 的用户引文/反向信号仍可能触发 | 被折整轮中的可识别原文片段 | `anchors.js` 从 tool-result 与真实 user 文本机械抽取路径、SHA、issue、URL、错误行（最多 20 条/1200 字符）；`fold-llm` 另外由 `fold-fidelity.js` 逐字引用最新未解决 user 输入（最多 800 字符）并标出撤销信号。零 LLM，不承担档案导航 |
+| `enforceSize` | fold-llm 的摘要尺寸强制，或所有策略/滑窗之后仍超预算的最终安全截断 | 字段/消息（最终兜底也会按完整轮移除） | 低优先级字段替换为 `[已修剪]`，移除图片、清空 tool input，必要时降级受保护消息；`protectedDowngraded` 记录降级，单条受保护消息仍放不下则抛 `invalid_budget` |
+
+### 一轮请求的精确时序
+
+1. `compactBeforeRound` 先在**原始规范消息**上估算 token；只要配置了策略，
+   就会无条件调用 `context.strategy.shouldCompact(...)`，即使没有预算。策略钩子
+   返回真，或存在预算且本地估算/API 最近一次输入超过预算时，才启动整轮链。
+   没有选定整轮策略（包括已配置策略但其钩子返回假）时，超预算使用
+   `sliding-window`。
+2. 选定策略折叠完整轮次；system head、第一条真实 user 消息和配置的受保护轮
+   正常路径不折。整轮折叠先生成摘要/存根/保真产物，并计算新的 token 估算。
+3. 结果仍超过预算时才执行 `sliding-window(keepRounds: 0)`；仍超过时执行
+   `safeTruncateMessages`，其中 `enforce-size.js` 是字段级确定性安全截断器。
+4. 消息回写 `ctx.messages` 后刷新 run-state；随后 provider-runner 才按本轮 TTL
+   配置构造请求副本，校验 tool_use/tool_result 配对，再发送给 provider。TTL
+   只作用于这个副本，因此不会被 `foldedPayload` 或档案恢复语义混入。
+
+### TTL digest 与导航记录的边界
+
+两者都可能出现“原文长什么样”的文字，但职责不同，不能互相替代：
+
+- **TTL digest** 是单个大 `tool_result` 的短期、请求级句柄：服务于模型在当前
+  对话中识别“这是哪个工具结果、如何回到已有笔记”，不表示整轮已经归档，也不
+  统计被折轮范围；请求结束后不单独持久化。
+- **`navigationRecord`** 是整轮折叠的档案索引：从 `foldedPayload` 的 artifact
+  元数据构造，记录轮范围、artifact locator/digest/status，并随 round record
+  保存；服务于宿主审计、恢复和 note-first 取回，不复述 tool-result 正文。
+
+### 产物、统计与恢复不变量
+
+- `tool_use` 必须和匹配的 `tool_result` 保持协议配对；整轮策略以完整轮为单位，
+  provider 调用前再次 `validateMessages`。
+- `foldedPayload` 永远是被折原文的归档载荷，摘要只是模型视图；恢复仍先取在场
+  笔记，再用 `note_list`/`note_read`，不猜测未记录且不可确定性重算的值。
+- `compactionStats` 保留既有 `compacted`、`foldedRounds`、`tokensBefore`、
+  `tokensAfter` 字段，并新增六层统一明细：
+
+  ```js
+  layers: {
+    ttl: { triggered: 0, tokensSaved: 0 },
+    slidingWindow: { triggered: 0, tokensSaved: 0 },
+    foldStatistical: { triggered: 0, tokensSaved: 0 },
+    foldLlm: { triggered: 0, tokensSaved: 0 },
+    anchors: { triggered: 0, tokensSaved: 0 },
+    enforceSize: { triggered: 0, tokensSaved: 0 },
+  }
+  ```
+
+  `triggered` 是该层实际产出/执行的次数；对 `ttl` 特别表示实际折叠的单个
+  `tool_result` 数量，仅预警不计数。`tokensSaved` 是该层前后估算 token 的
+  非负节省量（保真层不以增加的 token 冒充节省）。这些统计是有界保留而非无限
+  历史：`normalizeCompactionStats` 保留最近 32 条；run-state 序列化超出大小
+  上限时再缩至最近 8 条。每条统计同时挂在返回结果、当前 run-state、
+  checkpoint/round archive 与 `onEvent({ type: "compaction" })` 事件上，便于
+  宿主按层查询。
 
 ---
 

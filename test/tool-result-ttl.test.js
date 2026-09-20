@@ -55,6 +55,33 @@ test("年龄 >= ttl 才折叠；age===ttl-1 预警轮；其余保持原引用", 
   assert.match(resultBlock(aged).content, /【已折叠·TTL】/);
 });
 
+test("stats 只统计实际折叠，预警轮不增加 foldedCount", () => {
+  const messages = conversation();
+  const warningStats = {};
+  foldToolResultsForRequest(messages, {
+    currentRound: 2,
+    ttl: 2,
+    stats: warningStats,
+  });
+  assert.deepEqual(warningStats, {
+    foldedCount: 0,
+    warnedCount: 1,
+    tokensBefore: 0,
+    tokensAfter: 0,
+  });
+
+  const foldedStats = {};
+  const view = foldToolResultsForRequest(messages, {
+    currentRound: 3,
+    ttl: 2,
+    stats: foldedStats,
+  });
+  assert.equal(foldedStats.foldedCount, 1);
+  assert.equal(foldedStats.warnedCount, 0);
+  assert.equal(foldedStats.tokensBefore, estimateTokens(BIG));
+  assert.equal(foldedStats.tokensAfter, estimateTokens(resultBlock(view).content));
+});
+
 test("低于 minTokens 的结果永不折叠", () => {
   const messages = conversation({ resultContent: "small" });
   const view = foldToolResultsForRequest(messages, { currentRound: 10, ttl: 1, minTokens: 4000 });

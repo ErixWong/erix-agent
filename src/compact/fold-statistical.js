@@ -526,6 +526,9 @@ export function createFoldStatisticalStrategy(options = {}) {
         ? {}
         : (settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {});
       const anchors = anchorsEnabled ? extractAnchors(foldedPayload, anchorClamp) : undefined;
+      if (anchors?.text !== "") {
+        settings.onLayer?.({ layerId: "anchors" });
+      }
 
       let compactedHead = head;
       if (folded.length > 0) {

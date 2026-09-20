@@ -41,6 +41,7 @@ export async function restoreResume(ctx) {
     ctx.navigationRecordCount = deterministic.fold?.navigationRecords ?? 0;
     ctx.toolErrorCount = deterministic.errors?.tool ?? 0;
     ctx.checkpointFailureCount = deterministic.errors?.checkpoint ?? 0;
+    ctx.compactionStats = deterministic.compactionStats;
     ctx.governorState.filesWritten = Array.isArray(deterministic.filesWritten)
       ? deterministic.filesWritten.map((path) => ({ path }))
       : [];
