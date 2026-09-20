@@ -24,6 +24,13 @@ test("normalizes OpenAI usage aliases and ignores unknown fields", () => {
     { input_tokens: 4 },
   );
   assert.deepEqual(
+    normalizeOpenAIUsage({
+      prompt_tokens: 20,
+      prompt_tokens_details: { cached_tokens: 15 },
+    }),
+    { input_tokens: 20, cacheRead: 15 },
+  );
+  assert.deepEqual(
     normalizeOpenAIUsage({ input_tokens: null }),
     {},
   );

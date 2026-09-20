@@ -29,6 +29,83 @@ test("serializes system and string content, including an empty conversation", ()
   );
 });
 
+test("serializes OpenAI prefixes deterministically and ignores cache hints", () => {
+  const messages = [{
+    role: "user",
+    cacheBoundary: true,
+    content: [{
+      type: "text",
+      text: "stable",
+      cache: true,
+    }],
+  }, {
+    role: "assistant",
+    content: [{
+      type: "tool_use",
+      id: "call-1",
+      name: "lookup",
+      input: { z: 1, a: 2 },
+    }],
+  }];
+  const tools = [
+    {
+      name: "zeta",
+      inputSchema: {
+        properties: {
+          z: { type: "string" },
+          a: { type: "number" },
+        },
+        required: ["z", "a"],
+      },
+    },
+    {
+      name: "alpha",
+      inputSchema: {
+        required: ["value"],
+        properties: { value: { type: "string" } },
+      },
+    },
+  ];
+
+  const firstMessages = canonicalToOpenAIMessages(undefined, messages);
+  const alternateMessages = structuredClone(messages);
+  alternateMessages[1].content[0].input = { a: 2, z: 1 };
+  const secondMessages = canonicalToOpenAIMessages(undefined, alternateMessages);
+  assert.equal(JSON.stringify(firstMessages), JSON.stringify(secondMessages));
+  assert.equal("cacheBoundary" in firstMessages[0], false);
+  assert.equal(firstMessages[0].content, "stable");
+
+  const serializedTools = canonicalToolsToOpenAI(tools);
+  assert.deepEqual(serializedTools.map((tool) => tool.function.name), ["alpha", "zeta"]);
+  assert.equal(
+    JSON.stringify(serializedTools),
+    JSON.stringify(canonicalToolsToOpenAI(structuredClone(tools).reverse())),
+  );
+});
+
+test("preserves prototype-like tool schema keys with deterministic ordering", () => {
+  const firstSchema = JSON.parse(
+    '{"type":"object","properties":{"prototype":{"type":"boolean"},"constructor":{"type":"number"},"__proto__":{"type":"string"}}}',
+  );
+  const secondSchema = JSON.parse(
+    '{"properties":{"__proto__":{"type":"string"},"constructor":{"type":"number"},"prototype":{"type":"boolean"}},"type":"object"}',
+  );
+  const first = canonicalToolsToOpenAI([{ name: "lookup", inputSchema: firstSchema }]);
+  const second = canonicalToolsToOpenAI([{ name: "lookup", inputSchema: secondSchema }]);
+
+  assert.deepEqual(Object.keys(first[0].function.parameters.properties), [
+    "__proto__",
+    "constructor",
+    "prototype",
+  ]);
+  assert.equal(Object.hasOwn(first[0].function.parameters.properties, "__proto__"), true);
+  assert.deepEqual(first[0].function.parameters, second[0].function.parameters);
+  assert.equal(
+    JSON.stringify(first[0].function.parameters),
+    '{"properties":{"__proto__":{"type":"string"},"constructor":{"type":"number"},"prototype":{"type":"boolean"}},"type":"object"}',
+  );
+});
+
 test("serializes assistant text, tool calls, and mixed content", () => {
   assert.deepEqual(
     canonicalToOpenAIMessages(undefined, [

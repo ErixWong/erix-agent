@@ -80,9 +80,10 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
     });
     const fixtureCwd = fixture.modelVisible.system.match(/工作目录 (.+?)。/u)?.[1];
     assert.ok(fixtureCwd, "golden fixture must contain its recorded cwd");
+    const requestSystem = provider.requests[0].system;
     const actualModelVisible = {
-      system: provider.requests[0].system,
-      messages: provider.requests[0].messages,
+      system: typeof requestSystem === "string" ? requestSystem : requestSystem.content,
+      messages: provider.requests[0].messages.map(({ cacheBoundary: _cacheBoundary, ...message }) => message),
       output: result.finalText,
     };
     assert.deepEqual(
@@ -168,7 +169,7 @@ test("archive guidance is present once in the system prompt", async () => {
       idleTimeout: 0,
       toolOutput: () => {},
     });
-    const system = provider.requests[0].system;
+    const system = provider.requests[0].system?.content ?? provider.requests[0].system;
     // ADR-015 4a：归档提示单次出现、零路径、不提 ResourceStore/opaque 工件
     assert.equal((system.match(/\[工具输出归档\]/u) ?? []).length, 1);
     assert.match(system, /大输出已由引擎全量归档/u);
@@ -204,8 +205,9 @@ test("runChat does not add a value-note index to the system prompt", async () =>
       idleTimeout: 0,
       toolOutput: () => {},
     });
-    assert.doesNotMatch(provider.requests[0].system, /\[notes value index\]/u);
-    assert.doesNotMatch(provider.requests[0].system, /secret-value-must-not-leak/u);
+    const system = provider.requests[0].system?.content ?? provider.requests[0].system;
+    assert.doesNotMatch(system, /\[notes value index\]/u);
+    assert.doesNotMatch(system, /secret-value-must-not-leak/u);
     assert.deepEqual(
       provider.requests[0].tools
         .map((tool) => tool.name)
@@ -225,7 +227,8 @@ test("runChat does not add a value-note index to the system prompt", async () =>
       idleTimeout: 0,
       toolOutput: () => {},
     });
-    assert.doesNotMatch(emptyProvider.requests[0].system, /\[notes value index\]/u);
+    const emptySystem = emptyProvider.requests[0].system?.content ?? emptyProvider.requests[0].system;
+    assert.doesNotMatch(emptySystem, /\[notes value index\]/u);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -420,10 +423,11 @@ test("chat loop wires a file transcript store without an engine-owned retrieval 
       maxRounds: 2,
     });
 
-    assert.match(provider.requests[0].system, /大输出已由引擎全量归档/u);
-    assert.doesNotMatch(provider.requests[0].system, /ResourceStore/u);
-    assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/chat-wiring`));
-    assert.doesNotMatch(provider.requests[0].system, /幂等/u);
+    const system = provider.requests[0].system?.content ?? provider.requests[0].system;
+    assert.match(system, /大输出已由引擎全量归档/u);
+    assert.doesNotMatch(system, /ResourceStore/u);
+    assert.doesNotMatch(system, new RegExp(`${dir}/outputs/chat-wiring`));
+    assert.doesNotMatch(system, /幂等/u);
     const records = await createFileTranscriptStore({ dir }).load("chat-wiring");
     assert.deepEqual(records.map((record) => record.round), [0, 1]);
   } finally {

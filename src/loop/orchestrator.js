@@ -90,6 +90,7 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "assemblyPort",
   "provider",
   "system",
+  "cacheStablePrefix",
   "wrapup",
   "initialUserMessage",
   "initialMessages",
@@ -290,6 +291,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   assemblyPort?: import("../assembly.js").AssemblyPort,
  *   provider: {chat?: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
  *   system?: string,
+ *   cacheStablePrefix?: boolean, // Marks the stable system and first user prefix boundaries by default.
  *   wrapup?: boolean, // Controls instruction injection, JSON parsing, finalText replacement, and LLM normalization.
  *                   // Defaults to true (omit = enabled). ERIX_NO_WRAPUP_INSTRUCTION=1 env overrides even an
  *                   // explicit wrapup:true — either off disables the whole protocol.
@@ -374,7 +376,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"judge_done"|"continuation_exhausted"|"final_guard_unverified"|"aborted"|"failed", detail?:string},
  *   verification:{status:"verified"|"unverified"|"skipped"|"error", reason?:string, detail?:string},
  *   runState?:object,
- *   usage:{input_tokens:number, output_tokens:number},
+ *   usage:{input_tokens:number, output_tokens:number, cacheRead?:number, cacheWrite?:number},
  *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number}[]
  * }>}
  */
@@ -409,6 +411,7 @@ export async function runToolLoop(options) {
   const {
     provider,
     system,
+    cacheStablePrefix = true,
     wrapup = true,
     initialUserMessage,
     initialMessages,
@@ -1192,6 +1195,10 @@ export async function runToolLoop(options) {
     if (Number.isFinite(response?.usage?.output_tokens)) {
       usage.output_tokens += response.usage.output_tokens;
     }
+    for (const key of ["cacheRead", "cacheWrite"]) {
+      const value = response?.usage?.[key];
+      if (Number.isFinite(value)) usage[key] = (usage[key] ?? 0) + value;
+    }
   };
 
   const awaitWithAbort = async (promise) => {
@@ -1223,6 +1230,7 @@ export async function runToolLoop(options) {
   const providerContext = {
     provider,
     mainSystem,
+    cacheStablePrefix,
     tools: providerTools,
     signal,
     maxTokens,
@@ -1423,6 +1431,7 @@ export async function runToolLoop(options) {
     addUsage,
     estimateMessageTokens,
     mainSystem,
+    cacheStablePrefix,
     maxTokens,
     temperature,
     topP,

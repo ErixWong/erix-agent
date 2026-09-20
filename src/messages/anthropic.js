@@ -12,6 +12,29 @@ function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+const MAX_CACHE_BREAKPOINTS = 4;
+const EPHEMERAL_CACHE_CONTROL = { type: "ephemeral" };
+
+function hasCacheMarker(value) {
+  return value?.cache === true || value?.cacheBoundary === true;
+}
+
+function withoutCacheMarker(value) {
+  if (!isRecord(value)) return value;
+  const { cache: _cache, cacheBoundary: _cacheBoundary, ...rest } = value;
+  return rest;
+}
+
+function cacheControlProperty(value) {
+  return value?.cache_control === undefined
+    ? {}
+    : { cache_control: value.cache_control };
+}
+
+function shallowCopyBlock(value) {
+  return isRecord(value) ? { ...value } : value;
+}
+
 function sourceFromDataUrl(value) {
   if (typeof value !== "string") return undefined;
   const match = /^data:([^;,]+);base64,(.*)$/s.exec(value);
@@ -47,7 +70,13 @@ function canonicalImageSource(block) {
 }
 
 function canonicalReasoningToAnthropic(block) {
-  const { type: _type, text, ...metadata } = block;
+  const {
+    type: _type,
+    text,
+    cache: _cache,
+    cacheBoundary: _cacheBoundary,
+    ...metadata
+  } = block;
   return { type: "thinking", thinking: String(text ?? ""), ...metadata };
 }
 
@@ -62,10 +91,18 @@ function rawReasoningText(block) {
 
 function canonicalBlockToAnthropic(block) {
   if (block?.type === "text") {
-    return { type: "text", text: String(block.text ?? "") };
+    return {
+      type: "text",
+      text: String(block.text ?? ""),
+      ...cacheControlProperty(block),
+    };
   }
   if (block?.type === "image") {
-    return { type: "image", source: canonicalImageSource(block) };
+    return {
+      type: "image",
+      source: canonicalImageSource(block),
+      ...cacheControlProperty(block),
+    };
   }
   if (block?.type === "reasoning") return canonicalReasoningToAnthropic(block);
   if (block?.type === "tool_use") {
@@ -74,6 +111,7 @@ function canonicalBlockToAnthropic(block) {
       id: block.id,
       name: block.name,
       input: block.input ?? {},
+      ...cacheControlProperty(block),
     };
   }
   if (block?.type === "tool_result") {
@@ -82,6 +120,7 @@ function canonicalBlockToAnthropic(block) {
       tool_use_id: block.tool_use_id,
       content: block.content,
       ...(block.is_error === undefined ? {} : { is_error: Boolean(block.is_error) }),
+      ...cacheControlProperty(block),
     };
   }
   if (block?.type === "raw") {
@@ -89,18 +128,136 @@ function canonicalBlockToAnthropic(block) {
     if (reasoning !== undefined) {
       return { type: "thinking", thinking: String(reasoning) };
     }
-    if (block.protocol === "anthropic") return block.payload;
-    return block;
+    if (block.protocol === "anthropic" && isRecord(block.payload)) {
+      return { ...block.payload };
+    }
+    return withoutCacheMarker(block);
   }
-  return block;
+  return withoutCacheMarker(block);
 }
 
-function messageContent(content) {
+function canonicalContentBlocks(content) {
   if (typeof content === "string") {
     return [{ type: "text", text: content }];
   }
-  if (Array.isArray(content)) return content.map(canonicalBlockToAnthropic);
+  if (Array.isArray(content)) return content;
   throw new TypeError("Anthropic message content must be a string or block array");
+}
+
+function systemContentSpec(system, systemCacheBoundary) {
+  if (typeof system === "string") {
+    return {
+      blocks: [{ type: "text", text: system }],
+      output: "string",
+      value: system,
+      canonicalize: systemCacheBoundary === true,
+      cacheBoundary: systemCacheBoundary === true,
+    };
+  }
+  if (Array.isArray(system)) {
+    const canonicalize = systemCacheBoundary === true || system.some(hasCacheMarker);
+    return {
+      blocks: system,
+      output: "array",
+      value: system,
+      canonicalize,
+      cacheBoundary: systemCacheBoundary === true,
+    };
+  }
+  if (isRecord(system) && Object.hasOwn(system, "content")) {
+    const blocks = canonicalContentBlocks(system.content);
+    const canonicalize = systemCacheBoundary === true
+      || hasCacheMarker(system)
+      || blocks.some(hasCacheMarker);
+    return {
+      blocks,
+      output: typeof system.content === "string" ? "string" : "array",
+      value: system.content,
+      canonicalize,
+      cacheBoundary: hasCacheMarker(system) || systemCacheBoundary === true,
+    };
+  }
+  return {
+    blocks: undefined,
+    output: "value",
+    value: system,
+    canonicalize: false,
+    cacheBoundary: false,
+  };
+}
+
+function cacheBoundaryRefs(systemEntry, messageEntries) {
+  const refs = [];
+  const add = (kind, messageIndex, blockIndex) => {
+    const key = `${kind}:${messageIndex ?? ""}:${blockIndex}`;
+    if (!refs.some((ref) => ref.key === key)) refs.push({ key, kind, messageIndex, blockIndex });
+  };
+
+  for (let index = 0; index < (systemEntry.canonicalBlocks?.length ?? 0); index += 1) {
+    if (hasCacheMarker(systemEntry.canonicalBlocks[index])) add("system", undefined, index);
+  }
+  if (systemEntry.cacheBoundary && systemEntry.canonicalBlocks.length > 0) {
+    add("system", undefined, systemEntry.canonicalBlocks.length - 1);
+  }
+  for (const [messageIndex, entry] of messageEntries.entries()) {
+    const blocks = entry.canonicalBlocks;
+    for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
+      if (hasCacheMarker(blocks[blockIndex])) add("message", messageIndex, blockIndex);
+    }
+    if (entry.message?.cacheBoundary === true && blocks.length > 0) {
+      add("message", messageIndex, blocks.length - 1);
+    }
+  }
+  return refs;
+}
+
+function existingCacheControlRefs(systemEntry, messageEntries) {
+  const refs = [];
+  const add = (kind, messageIndex, blockIndex, block) => {
+    if (block?.cache_control !== undefined) {
+      refs.push({ key: `${kind}:${messageIndex ?? ""}:${blockIndex}`, kind, messageIndex, blockIndex });
+    }
+  };
+  for (let index = 0; index < (systemEntry.serializedBlocks?.length ?? 0); index += 1) {
+    add("system", undefined, index, systemEntry.serializedBlocks[index]);
+  }
+  for (const [messageIndex, entry] of messageEntries.entries()) {
+    for (let blockIndex = 0; blockIndex < entry.serializedBlocks.length; blockIndex += 1) {
+      add("message", messageIndex, blockIndex, entry.serializedBlocks[blockIndex]);
+    }
+  }
+  return refs;
+}
+
+function applyCacheBreakpoints(systemEntry, messageEntries, explicitCacheMarkers) {
+  if (!explicitCacheMarkers) return;
+
+  const generated = cacheBoundaryRefs(systemEntry, messageEntries);
+  const existing = existingCacheControlRefs(systemEntry, messageEntries);
+  const refs = [];
+  for (const ref of [...existing, ...generated]) {
+    if (!refs.some((current) => current.key === ref.key)) refs.push(ref);
+  }
+  refs.sort((left, right) => (
+    (left.kind === "system" ? -1 : left.messageIndex)
+      - (right.kind === "system" ? -1 : right.messageIndex)
+      || left.blockIndex - right.blockIndex
+  ));
+  const kept = new Set(refs.slice(-MAX_CACHE_BREAKPOINTS).map((ref) => ref.key));
+
+  for (const ref of refs) {
+    if (!kept.has(ref.key)) {
+      if (ref.kind === "system") delete systemEntry.serializedBlocks[ref.blockIndex].cache_control;
+      else delete messageEntries[ref.messageIndex].serializedBlocks[ref.blockIndex].cache_control;
+    }
+  }
+  for (const ref of generated) {
+    if (!kept.has(ref.key)) continue;
+    const block = ref.kind === "system"
+      ? systemEntry.serializedBlocks[ref.blockIndex]
+      : messageEntries[ref.messageIndex].serializedBlocks[ref.blockIndex];
+    block.cache_control = { ...EPHEMERAL_CACHE_CONTROL };
+  }
 }
 
 function usageFromResponse(source) {
@@ -109,6 +266,12 @@ function usageFromResponse(source) {
   const usage = {};
   if (source.input_tokens !== undefined) usage.input_tokens = source.input_tokens;
   if (source.output_tokens !== undefined) usage.output_tokens = source.output_tokens;
+  if (source.cache_read_input_tokens !== undefined) {
+    usage.cacheRead = source.cache_read_input_tokens;
+  }
+  if (source.cache_creation_input_tokens !== undefined) {
+    usage.cacheWrite = source.cache_creation_input_tokens;
+  }
   return usage;
 }
 
@@ -117,8 +280,9 @@ function usageFromResponse(source) {
  *
  * @param {{
  *   model:string,
- *   system?:string,
- *   messages?:Array<{role:string, content:string|Block[]}>,
+ *   system?:string|Block[]|{content:string|Block[], cacheBoundary?:boolean},
+ *   systemCacheBoundary?:boolean,
+ *   messages?:Array<{role:string, content:string|Block[], cacheBoundary?:boolean}>,
  *   tools?:Array<{name:string, description?:string, inputSchema:object}>,
  *   maxTokens:number,
  *   temperature?:number,
@@ -139,6 +303,7 @@ function usageFromResponse(source) {
 export function canonicalToAnthropicRequest({
   model,
   system,
+  systemCacheBoundary,
   messages = [],
   tools,
   maxTokens,
@@ -165,16 +330,58 @@ export function canonicalToAnthropicRequest({
     throw new TypeError("Anthropic tools must be an array");
   }
 
+  const systemSpec = systemContentSpec(system, systemCacheBoundary);
+  const messageEntries = messages.map((message) => {
+    const canonicalBlocks = canonicalContentBlocks(message?.content);
+    return {
+      message,
+      canonicalBlocks,
+      serializedBlocks: canonicalBlocks.map(canonicalBlockToAnthropic),
+    };
+  });
+  const systemEntry = {
+    canonicalBlocks: systemSpec.blocks ?? [],
+    serializedBlocks: systemSpec.blocks === undefined
+      ? []
+      : systemSpec.canonicalize
+        ? systemSpec.blocks.map(canonicalBlockToAnthropic)
+        : systemSpec.blocks.map(shallowCopyBlock),
+    cacheBoundary: systemSpec.cacheBoundary,
+  };
+  const existingCacheMarkers = existingCacheControlRefs(systemEntry, messageEntries);
+  const explicitCacheMarkers = systemSpec.cacheBoundary
+    || systemSpec.blocks?.some(hasCacheMarker)
+    || messageEntries.some((entry) => (
+      entry.message?.cacheBoundary === true
+      || entry.canonicalBlocks.some(hasCacheMarker)
+    ))
+    || existingCacheMarkers.length > 0;
+
+  applyCacheBreakpoints(systemEntry, messageEntries, explicitCacheMarkers);
+
   const payload = {
     model,
-    messages: messages.map((message) => ({
-      role: message?.role,
-      content: messageContent(message?.content),
+    messages: messageEntries.map((entry) => ({
+      role: entry.message?.role,
+      content: entry.serializedBlocks,
     })),
     max_tokens: maxTokens,
   };
 
-  if (system !== undefined) payload.system = system;
+  if (system !== undefined) {
+    const systemHasCacheControl = systemEntry.serializedBlocks.some(
+      (block) => block?.cache_control !== undefined,
+    );
+    payload.system = systemSpec.output === "string" && !systemSpec.canonicalize
+      ? systemSpec.value
+      : systemSpec.output === "array"
+        && !systemSpec.canonicalize
+        && !systemHasCacheControl
+        ? systemSpec.value
+        : systemSpec.output === "value"
+          ? systemSpec.value
+          : systemEntry.serializedBlocks;
+  }
   if (tools?.length) {
     payload.tools = tools.map((tool) => ({
       name: tool.name,
@@ -204,7 +411,7 @@ export function canonicalToAnthropicRequest({
  * Convert an Anthropic Messages API response into the canonical response.
  *
  * @param {object} json
- * @returns {{content:Block[], stopReason:string, usage?:{input_tokens?:number, output_tokens?:number}}}
+ * @returns {{content:Block[], stopReason:string, usage?:{input_tokens?:number, output_tokens?:number, cacheRead?:number, cacheWrite?:number}}}
  */
 export function anthropicResponseToCanonical(json) {
   if (!Array.isArray(json?.content)) {
@@ -306,7 +513,7 @@ function parsedInput(partialJson) {
  * }} [callbacks]
  * @returns {{
  *   push:(eventType:string, data:object|string)=>void,
- *   finish:()=>{content:Block[], stopReason:string, usage?:{input_tokens?:number, output_tokens?:number}}
+ *   finish:()=>{content:Block[], stopReason:string, usage?:{input_tokens?:number, output_tokens?:number, cacheRead?:number, cacheWrite?:number}}
  * }}
  */
 export function createAnthropicStreamAssembler(callbacks) {
@@ -333,6 +540,14 @@ export function createAnthropicStreamAssembler(callbacks) {
     }
     if (source.output_tokens !== undefined) {
       usage.output_tokens = source.output_tokens;
+      hasUsage = true;
+    }
+    if (source.cache_read_input_tokens !== undefined) {
+      usage.cacheRead = source.cache_read_input_tokens;
+      hasUsage = true;
+    }
+    if (source.cache_creation_input_tokens !== undefined) {
+      usage.cacheWrite = source.cache_creation_input_tokens;
       hasUsage = true;
     }
   }

@@ -84,6 +84,9 @@ function canonicalUsageToOpenAI(usage) {
   const result = {};
   if (usage.input_tokens !== undefined) result.prompt_tokens = usage.input_tokens;
   if (usage.output_tokens !== undefined) result.completion_tokens = usage.output_tokens;
+  if (usage.cacheRead !== undefined) {
+    result.prompt_tokens_details = { cached_tokens: usage.cacheRead };
+  }
   return Object.keys(result).length === 0 ? undefined : result;
 }
 

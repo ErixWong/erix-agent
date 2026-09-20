@@ -11,7 +11,7 @@ import {
  * A canonical content block.
  *
  * @typedef {(
- *   {type:"text", text:string} |
+ *   {type:"text", text:string, cache?:boolean} |
  *   {type:"image", url?:string, base64?:string, mediaType?:string, [key:string]:any} |
  *   {type:"reasoning", text:string, [key:string]:any} |
  *   {type:"tool_use", id:string, name:string, input:object, [key:string]:any} |
@@ -24,6 +24,9 @@ import {
  * @typedef {Object} CanonicalMessage
  * @property {"system"|"user"|"assistant"} role
  * @property {string|Block[]} content
+ * @property {boolean} [cacheBoundary] Mark this message's final content block as
+ * a stable prefix boundary. Provider adapters may use this hint differently;
+ * OpenAI ignores it because its cache is automatic.
  */
 
 /**
@@ -37,11 +40,49 @@ import {
  * @typedef {Object} ChatResponse
  * @property {Block[]} content
  * @property {string} stopReason
- * @property {{input_tokens?:number, output_tokens?:number}} [usage]
+ * @property {{input_tokens?:number, output_tokens?:number, cacheRead?:number, cacheWrite?:number}} [usage]
  */
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function compareStrings(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function defineStableProperty(target, key, value) {
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
+}
+
+/**
+ * Copy request data with lexicographically ordered object keys. Message and
+ * tool ordering remains semantic, while nested JSON becomes byte-stable across
+ * equivalent input objects built in different insertion orders.
+ */
+function stableCopy(value) {
+  if (Array.isArray(value)) return value.map(stableCopy);
+  if (!isRecord(value)) return value;
+  const result = {};
+  for (const key of Object.keys(value).sort(compareStrings)) {
+    defineStableProperty(result, key, stableCopy(value[key]));
+  }
+  return result;
+}
+
+function withoutCacheMetadata(value) {
+  if (!isRecord(value)) return value;
+  const result = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "cache" || key === "cacheBoundary") continue;
+    result[key] = entry;
+  }
+  return result;
 }
 
 function asBlocks(content) {
@@ -50,7 +91,7 @@ function asBlocks(content) {
 }
 
 function safeJson(value) {
-  const serialized = JSON.stringify(value);
+  const serialized = JSON.stringify(stableCopy(value));
   return serialized === undefined ? String(value) : serialized;
 }
 
@@ -111,7 +152,7 @@ function canonicalImageToOpenAI(block) {
   if (block?.detail !== undefined && imageUrl.detail === undefined) {
     imageUrl.detail = block.detail;
   }
-  return { type: "image_url", image_url: imageUrl };
+  return { type: "image_url", image_url: stableCopy(imageUrl) };
 }
 
 function openAIImageToCanonical(part) {
@@ -165,7 +206,9 @@ function contentPartsToOpenAI(parts, { emptyValue = null, textSeparator = "" } =
 }
 
 function appendRawBlocks(target, rawBlocks) {
-  if (rawBlocks.length > 0) target.raw_blocks = rawBlocks.slice();
+  if (rawBlocks.length > 0) {
+    target.raw_blocks = rawBlocks.map((block) => stableCopy(withoutCacheMetadata(block)));
+  }
 }
 
 function appendReasoning(target, reasoningParts) {
@@ -200,11 +243,13 @@ function assistantToOpenAI(message) {
         block?.type === "reasoning" ? String(block.text ?? "") : reasoningText(block),
       );
     } else if (block?.type === "raw" && rawToolCall(block) !== undefined) {
-      toolCalls.push(rawToolCall(block));
+      toolCalls.push(stableCopy(withoutCacheMetadata(rawToolCall(block))));
     } else if (block?.type === "raw") {
       const payload = rawPayloadBlock(block);
       if (payload?.type === "text" || payload?.type === "image_url") {
-        parts.push(payload.type === "image_url" ? payload : { ...payload });
+        parts.push(payload.type === "image_url"
+          ? stableCopy(payload)
+          : stableCopy(withoutCacheMetadata(payload)));
       } else {
         rawBlocks.push(block);
       }
@@ -287,7 +332,9 @@ function userToOpenAI(message, out) {
     } else if (block?.type === "raw") {
       const payload = rawPayloadBlock(block);
       if (payload?.type === "text" || payload?.type === "image_url") {
-        parts.push(payload.type === "image_url" ? payload : { ...payload });
+        parts.push(payload.type === "image_url"
+          ? stableCopy(payload)
+          : stableCopy(withoutCacheMetadata(payload)));
       } else {
         rawBlocks.push(block);
       }
@@ -309,6 +356,10 @@ export function canonicalToOpenAIMessages(system, messages) {
   const out = [];
   if (typeof system === "string" && system.length > 0) {
     out.push({ role: "system", content: system });
+  } else if (Array.isArray(system)) {
+    out.push(systemToOpenAI({ role: "system", content: system }));
+  } else if (isRecord(system) && Object.hasOwn(system, "content")) {
+    out.push(systemToOpenAI(system));
   }
 
   for (const message of messages ?? []) {
@@ -331,12 +382,15 @@ export function canonicalToOpenAIMessages(system, messages) {
  * @returns {object[]}
  */
 export function canonicalToolsToOpenAI(tools) {
-  return (tools ?? []).map((tool) => ({
+  return (tools ?? [])
+    .slice()
+    .sort((left, right) => compareStrings(String(left?.name ?? ""), String(right?.name ?? "")))
+    .map((tool) => ({
     type: "function",
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: tool.inputSchema,
+      parameters: stableCopy(tool.inputSchema),
     },
   }));
 }

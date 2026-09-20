@@ -77,6 +77,22 @@ function systemMessageText(content) {
     .join("");
 }
 
+function systemContentBlocks(content) {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  if (Array.isArray(content)) return content.slice();
+  if (content !== null && typeof content === "object" && !Array.isArray(content)
+    && Object.hasOwn(content, "content")) {
+    return systemContentBlocks(content.content);
+  }
+  return [{ type: "text", text: systemMessageText(content) }];
+}
+
+function hasCanonicalCacheMarker(value) {
+  if (value?.cache === true || value?.cacheBoundary === true) return true;
+  if (Array.isArray(value)) return value.some(hasCanonicalCacheMarker);
+  return Array.isArray(value?.content) && value.content.some(hasCanonicalCacheMarker);
+}
+
 function normalizeAnthropicSystemMessages(request) {
   const systemMessages = [];
   const messages = [];
@@ -85,6 +101,31 @@ function normalizeAnthropicSystemMessages(request) {
     else messages.push(message);
   }
   if (systemMessages.length === 0) return request;
+
+  const hasCacheMarker = hasCanonicalCacheMarker(request.system)
+    || systemMessages.some(hasCanonicalCacheMarker);
+  if (hasCacheMarker) {
+    const systemBlocks = [];
+    if (request.system !== undefined && request.system !== "") {
+      const blocks = systemContentBlocks(request.system);
+      if (request.system?.cacheBoundary === true && blocks.length > 0) {
+        blocks[blocks.length - 1] = { ...blocks.at(-1), cache: true };
+      }
+      systemBlocks.push(...blocks);
+    }
+    for (const message of systemMessages) {
+      const blocks = systemContentBlocks(message.content);
+      if (message.cacheBoundary === true && blocks.length > 0) {
+        blocks[blocks.length - 1] = { ...blocks.at(-1), cache: true };
+      }
+      systemBlocks.push(...blocks);
+    }
+    return {
+      ...request,
+      system: systemBlocks,
+      messages,
+    };
+  }
 
   const systemParts = [];
   if (request.system !== undefined && request.system !== "") {

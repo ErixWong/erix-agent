@@ -52,6 +52,7 @@ test("revalidates messages before each later provider round", async () => {
       initialUserMessage: "start",
       executeTool: async () => "done",
       completion: false,
+      cacheStablePrefix: false,
     }),
     (error) => error instanceof KitError && error.code === "invalid_messages",
   );

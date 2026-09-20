@@ -4,6 +4,31 @@ import { throwIfAborted } from "./abort.js";
 import { validateMessages } from "../messages/rounds.js";
 import { foldToolResultsForRequest } from "./tool-result-ttl.js";
 
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function markSystemCacheBoundary(system) {
+  if (system === undefined || system === null) return system;
+  if (isRecord(system) && Object.hasOwn(system, "content")) {
+    return { ...system, cacheBoundary: true };
+  }
+  return { content: system, cacheBoundary: true };
+}
+
+export function markStablePrefix(system, messages) {
+  let firstUserMarked = false;
+  const markedMessages = messages.map((message) => {
+    if (firstUserMarked || message?.role !== "user") return message;
+    firstUserMarked = true;
+    return { ...message, cacheBoundary: true };
+  });
+  return {
+    system: markSystemCacheBoundary(system),
+    messages: markedMessages,
+  };
+}
+
 export async function callProvider(ctx, {
   allowPendingToolUse = false,
   round,
@@ -73,9 +98,12 @@ export async function callProvider(ctx, {
       attemptEvents.push({ event, callback });
     };
     try {
+      const stablePrefix = ctx.cacheStablePrefix !== false
+        ? markStablePrefix(ctx.mainSystem, requestMessages)
+        : { system: ctx.mainSystem, messages: requestMessages };
       const request = {
-        system: ctx.mainSystem,
-        messages: requestMessages,
+        system: stablePrefix.system,
+        messages: stablePrefix.messages,
         signal: ctx.signal,
       };
       if (omitTools !== true) request.tools = ctx.tools;
@@ -163,6 +191,10 @@ export async function callProvider(ctx, {
       ctx.finalText = snapshot.finalText;
       ctx.usage.input_tokens = snapshot.usage.input_tokens;
       ctx.usage.output_tokens = snapshot.usage.output_tokens;
+      for (const key of ["cacheRead", "cacheWrite"]) {
+        if (snapshot.usage[key] === undefined) delete ctx.usage[key];
+        else ctx.usage[key] = snapshot.usage[key];
+      }
       ctx.latestApiInputTokens = snapshot.latestApiInputTokens;
       ctx.latestApiEstimatedTokens = snapshot.latestApiEstimatedTokens;
       ctx.roundStopReason = snapshot.stopReason;

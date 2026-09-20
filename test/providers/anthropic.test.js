@@ -122,6 +122,48 @@ test("parses non-streaming responses and supports an endpoint ending in /v1", as
   });
 });
 
+test("forwards Anthropic cache boundaries and normalizes cache usage", async () => {
+  const { fetchImpl, provider } = makeProvider([{
+    json: {
+      content: [{ type: "text", text: "Done" }],
+      stop_reason: "end_turn",
+      usage: {
+        input_tokens: 20,
+        output_tokens: 4,
+        cache_read_input_tokens: 15,
+        cache_creation_input_tokens: 5,
+      },
+    },
+  }]);
+
+  const response = await provider.chat({
+    system: [{ type: "text", text: "Stable system", cache: true }],
+    messages: [{
+      role: "user",
+      content: "Stable request",
+      cacheBoundary: true,
+    }],
+    maxTokens: 64,
+  });
+
+  assert.deepEqual(fetchImpl.calls[0].body.system, [{
+    type: "text",
+    text: "Stable system",
+    cache_control: { type: "ephemeral" },
+  }]);
+  assert.deepEqual(fetchImpl.calls[0].body.messages[0].content, [{
+    type: "text",
+    text: "Stable request",
+    cache_control: { type: "ephemeral" },
+  }]);
+  assert.deepEqual(response.usage, {
+    input_tokens: 20,
+    output_tokens: 4,
+    cacheRead: 15,
+    cacheWrite: 5,
+  });
+});
+
 test("assembles streaming text, tool JSON, and merged usage", async () => {
   const deltas = [];
   const { fetchImpl, provider } = makeProvider([{
