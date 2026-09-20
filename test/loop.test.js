@@ -492,16 +492,19 @@ test("tool result TTL fold: placeholder replaces aged large results in later req
     return blocks.map((block) => block.content);
   };
 
-  // r2 请求：r1 的结果刚产生 1 轮（age=1 < ttl=2），原文在场
-  assert.deepEqual(resultContentAt(1), [big]);
+  // r2 请求：r1 的结果 age=1 === ttl-1 → 预警轮，原文在场 + 末尾预警行
+  const warnedViews = resultContentAt(1);
+  assert.ok(warnedViews[0].startsWith(big));
+  assert.match(warnedViews[0], /\n【TTL 预警】此结果下一轮将折叠为句柄/);
   // r3 请求：age=2 >= ttl=2 → 占位符在场
   const foldedViews = resultContentAt(2);
   assert.equal(foldedViews.length, 2);
   assert.match(foldedViews[0], /【已折叠·TTL】scan path/);
   assert.match(foldedViews[0], /recall\(\{fromRound:1/);
   assert.ok(!foldedViews[0].includes("xxxx"));
-  // r2 产生的结果 age=1 不折
-  assert.equal(foldedViews[1], big);
+  // r2 产生的结果 age=1 === ttl-1 → 不折，预警行在场
+  assert.ok(foldedViews[1].startsWith(big));
+  assert.match(foldedViews[1], /\n【TTL 预警】此结果下一轮将折叠为句柄/);
   // 终稿保护：r6 是 omitTools 终稿轮 → 折叠关闭，原文恢复在场（协议不报错）
   const finalViews = resultContentAt(5);
   assert.equal(finalViews[0], big);
