@@ -78,6 +78,67 @@ test("serializes canonical Anthropic requests", () => {
   );
 });
 
+test("keeps an unmarked string-system request byte-compatible with the baseline", () => {
+  const payload = canonicalToAnthropicRequest({
+    model: "claude-test",
+    system: "system",
+    messages: [{ role: "user", content: "hello" }],
+    maxTokens: 32,
+  });
+
+  assert.equal(
+    JSON.stringify(payload),
+    '{"model":"claude-test","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":32,"system":"system"}',
+  );
+});
+
+test("passes through an unmarked system array without remapping block metadata", () => {
+  const system = [{
+    type: "text",
+    text: "system",
+    citations: [{ source: "doc-1", start: 0, end: 6 }],
+    metadata: { source: "host" },
+  }];
+  const payload = canonicalToAnthropicRequest({
+    model: "claude-test",
+    system,
+    messages: [],
+    maxTokens: 32,
+  });
+
+  assert.strictEqual(payload.system, system);
+  assert.equal(
+    JSON.stringify(payload),
+    '{"model":"claude-test","messages":[],"max_tokens":32,"system":[{"type":"text","text":"system","citations":[{"source":"doc-1","start":0,"end":6}],"metadata":{"source":"host"}}]}',
+  );
+});
+
+test("normalizes unmarked system content objects to strings or block arrays", () => {
+  const blocks = [{
+    type: "text",
+    text: "system",
+    citations: [{ source: "doc-1" }],
+  }];
+  assert.equal(
+    canonicalToAnthropicRequest({
+      model: "claude-test",
+      system: { content: "system" },
+      messages: [],
+      maxTokens: 32,
+    }).system,
+    "system",
+  );
+  assert.deepEqual(
+    canonicalToAnthropicRequest({
+      model: "claude-test",
+      system: { content: blocks },
+      messages: [],
+      maxTokens: 32,
+    }).system,
+    blocks,
+  );
+});
+
 test("requires maxTokens and maps non-stream responses", () => {
   assert.throws(
     () => canonicalToAnthropicRequest({
@@ -105,6 +166,114 @@ test("requires maxTokens and maps non-stream responses", () => {
       usage: { input_tokens: 12, output_tokens: 7 },
     },
   );
+});
+
+test("maps canonical cache hints to Anthropic breakpoints and keeps four", () => {
+  const marked = canonicalToAnthropicRequest({
+    model: "claude-test",
+    system: [{ type: "text", text: "stable system", cache: true }],
+    messages: [
+      { role: "user", content: "first", cacheBoundary: true },
+      { role: "assistant", content: [{ type: "text", text: "second", cache: true }] },
+    ],
+    maxTokens: 32,
+  });
+  assert.deepEqual(marked.system, [{
+    type: "text",
+    text: "stable system",
+    cache_control: { type: "ephemeral" },
+  }]);
+  assert.deepEqual(marked.messages.map((message) => message.content), [
+    [{ type: "text", text: "first", cache_control: { type: "ephemeral" } }],
+    [{ type: "text", text: "second", cache_control: { type: "ephemeral" } }],
+  ]);
+
+  const capped = canonicalToAnthropicRequest({
+    model: "claude-test",
+    system: [{ type: "text", text: "system", cache: true }],
+    messages: Array.from({ length: 5 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: `message-${index}`,
+      cacheBoundary: true,
+    })),
+    maxTokens: 32,
+  });
+  const breakpoints = [
+    ...(capped.system ?? []),
+    ...capped.messages.flatMap((message) => message.content),
+  ].filter((block) => block.cache_control !== undefined);
+  assert.equal(breakpoints.length, 4);
+  assert.deepEqual(
+    capped.messages.map((message) => message.content[0].cache_control !== undefined),
+    [false, true, true, true, true],
+  );
+});
+
+test("counts native cache_control blocks toward the four-breakpoint cap", () => {
+  const capped = canonicalToAnthropicRequest({
+    model: "claude-test",
+    messages: Array.from({ length: 5 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: [{
+        type: "text",
+        text: `message-${index}`,
+        cache_control: { type: "ephemeral" },
+      }],
+    })),
+    maxTokens: 32,
+  });
+  const blocks = capped.messages.map((message) => message.content[0]);
+
+  assert.equal(blocks.filter((block) => block.cache_control !== undefined).length, 4);
+  assert.equal(blocks[0].cache_control, undefined);
+  assert.deepEqual(blocks.slice(1).map((block) => block.cache_control), [
+    { type: "ephemeral" },
+    { type: "ephemeral" },
+    { type: "ephemeral" },
+    { type: "ephemeral" },
+  ]);
+});
+
+test("normalizes Anthropic cache usage for batch and stream responses", () => {
+  assert.deepEqual(
+    anthropicResponseToCanonical({
+      content: [{ type: "text", text: "done" }],
+      stop_reason: "end_turn",
+      usage: {
+        input_tokens: 20,
+        output_tokens: 4,
+        cache_read_input_tokens: 15,
+        cache_creation_input_tokens: 5,
+      },
+    }).usage,
+    {
+      input_tokens: 20,
+      output_tokens: 4,
+      cacheRead: 15,
+      cacheWrite: 5,
+    },
+  );
+
+  const assembler = createAnthropicStreamAssembler();
+  assembler.push("message_start", {
+    message: {
+      usage: {
+        input_tokens: 20,
+        cache_read_input_tokens: 15,
+        cache_creation_input_tokens: 5,
+      },
+    },
+  });
+  assembler.push("message_delta", {
+    usage: { output_tokens: 4 },
+    delta: { stop_reason: "end_turn" },
+  });
+  assert.deepEqual(assembler.finish().usage, {
+    input_tokens: 20,
+    output_tokens: 4,
+    cacheRead: 15,
+    cacheWrite: 5,
+  });
 });
 
 test("assembles text and tool-use stream events", () => {

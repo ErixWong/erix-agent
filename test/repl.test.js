@@ -265,10 +265,11 @@ test("runRepl resumes from the transcript store without an engine-owned retrieva
 
     assert.equal(provider.requests.length, 2);
     // ADR-015 4a：归档提示零路径、不提 ResourceStore
-    assert.match(provider.requests[0].system, /大输出已由引擎全量归档/u);
-    assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/repl-store`));
-    assert.doesNotMatch(provider.requests[0].system, /ResourceStore/u);
-    assert.doesNotMatch(provider.requests[0].system, /幂等/u);
+    const system = provider.requests[0].system?.content ?? provider.requests[0].system;
+    assert.match(system, /大输出已由引擎全量归档/u);
+    assert.doesNotMatch(system, new RegExp(`${dir}/outputs/repl-store`));
+    assert.doesNotMatch(system, /ResourceStore/u);
+    assert.doesNotMatch(system, /幂等/u);
     assert.ok(provider.requests[1].messages.some((message) => (
       message.role === "user"
       && message.content?.some((block) => block.text === "second")
@@ -542,7 +543,8 @@ test("chat artifacts resume in REPL and pass the final guard", async () => {
     assert.ok(replProvider.requests[0].messages.some((message) => (
       JSON.stringify(message).includes("nonce=e2e-value")
     )));
-    assert.doesNotMatch(replProvider.requests[0].system, new RegExp(`${dir}/outputs/assembly-e2e`));
+    const system = replProvider.requests[0].system?.content ?? replProvider.requests[0].system;
+    assert.doesNotMatch(system, new RegExp(`${dir}/outputs/assembly-e2e`));
   } finally {
     input.destroy();
     output.destroy();

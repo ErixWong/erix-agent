@@ -12,7 +12,7 @@ function hasOwn(value, key) {
  * Normalize OpenAI usage fields to canonical token names.
  *
  * @param {object|undefined|null} usage
- * @returns {{input_tokens?:number, output_tokens?:number}|undefined}
+ * @returns {{input_tokens?:number, output_tokens?:number, cacheRead?:number}|undefined}
  */
 export function normalizeOpenAIUsage(usage) {
   if (usage == null) return undefined;
@@ -23,6 +23,9 @@ export function normalizeOpenAIUsage(usage) {
   }
   if (usage.completion_tokens !== undefined) {
     normalized.output_tokens = usage.completion_tokens;
+  }
+  if (usage.prompt_tokens_details?.cached_tokens !== undefined) {
+    normalized.cacheRead = usage.prompt_tokens_details.cached_tokens;
   }
   return normalized;
 }

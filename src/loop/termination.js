@@ -1,3 +1,9 @@
+import { markStablePrefix } from "./provider-runner.js";
+import { tryParseWrapupJson } from "../reflection/wrapup.js";
+import { validateMessages } from "../messages/rounds.js";
+import { cloneState } from "./budget.js";
+import { blocksFor, hasToolUse, textFromBlocks } from "./messages.js";
+
 export const TRUNCATED_TERMINATION_REASONS = new Set([
   "max_rounds_cap",
   "continuation_exhausted",
@@ -173,9 +179,12 @@ export function createTerminationManager(ctx) {
     ctx.messages.push(instruction);
     ctx.messageRounds.set(instruction, ctx.rounds);
     validateMessages(ctx.messages, { allowPendingToolUse: true });
+    const stablePrefix = ctx.cacheStablePrefix !== false
+      ? markStablePrefix(ctx.mainSystem, ctx.messages)
+      : { system: ctx.mainSystem, messages: ctx.messages };
     const request = {
-      system: ctx.mainSystem,
-      messages: ctx.messages,
+      system: stablePrefix.system,
+      messages: stablePrefix.messages,
       tools: [],
       signal: ctx.signal,
     };
@@ -255,7 +264,3 @@ export function createTerminationManager(ctx) {
     finish,
   };
 }
-import { tryParseWrapupJson } from "../reflection/wrapup.js";
-import { validateMessages } from "../messages/rounds.js";
-import { cloneState } from "./budget.js";
-import { blocksFor, hasToolUse, textFromBlocks } from "./messages.js";

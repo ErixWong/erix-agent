@@ -24,6 +24,34 @@ test("returns a single-turn final response", async () => {
   ]);
 });
 
+test("marks the stable prefix by default and supports opting out", async () => {
+  const run = async (cacheStablePrefix) => {
+    const provider = createFakeProvider([
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]);
+    await runToolLoop({
+      provider,
+      system: "stable system",
+      wrapup: false,
+      initialUserMessage: "hello",
+      executeTool: async () => "unused",
+      ...(cacheStablePrefix === undefined ? {} : { cacheStablePrefix }),
+    });
+    return provider.requests[0];
+  };
+
+  const marked = await run(undefined);
+  assert.deepEqual(marked.system, {
+    content: "stable system",
+    cacheBoundary: true,
+  });
+  assert.equal(marked.messages[0].cacheBoundary, true);
+
+  const unmarked = await run(false);
+  assert.equal(unmarked.system, "stable system");
+  assert.equal("cacheBoundary" in unmarked.messages[0], false);
+});
+
 test("feeds tool results back to the provider on the next round", async () => {
   const provider = createFakeProvider([
     {
@@ -282,12 +310,12 @@ test("accumulates input and output usage", async () => {
     {
       content: [{ type: "tool_use", id: "u1", name: "work", input: {} }],
       stopReason: "tool_use",
-      usage: { input_tokens: 4, output_tokens: 2 },
+      usage: { input_tokens: 4, output_tokens: 2, cacheRead: 1, cacheWrite: 2 },
     },
     {
       content: [{ type: "text", text: "ok" }],
       stopReason: "end_turn",
-      usage: { input_tokens: 7, output_tokens: 3 },
+      usage: { input_tokens: 7, output_tokens: 3, cacheRead: 3 },
     },
   ]);
 
@@ -298,7 +326,12 @@ test("accumulates input and output usage", async () => {
     completion: false,
   });
 
-  assert.deepEqual(result.usage, { input_tokens: 11, output_tokens: 5 });
+  assert.deepEqual(result.usage, {
+    input_tokens: 11,
+    output_tokens: 5,
+    cacheRead: 4,
+    cacheWrite: 2,
+  });
 });
 
 test("stall detection can be disabled", async () => {

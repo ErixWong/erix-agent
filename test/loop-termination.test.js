@@ -64,15 +64,16 @@ test("adds the low-budget hint only when two rounds or fewer remain", async () =
 });
 
 test("returns max_rounds_cap when the effective round limit is reached", async () => {
+  const provider = createFakeProvider([
+    {
+      times: 2,
+      content: [{ type: "tool_use", id: "work", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
+  ]);
   const result = await runToolLoop({
-    provider: createFakeProvider([
-      {
-        times: 2,
-        content: [{ type: "tool_use", id: "work", name: "work", input: {} }],
-        stopReason: "tool_use",
-      },
-      { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
-    ]),
+    provider,
     initialUserMessage: "continue",
     maxRounds: 2,
     executeTool: async () => "worked",
@@ -83,6 +84,9 @@ test("returns max_rounds_cap when the effective round limit is reached", async (
   assert.deepEqual(result.termination, { reason: "max_rounds_cap", forcedFinal: true });
   assert.equal(result.truncated, true);
   assert.equal(result.rounds, 2);
+  const forcedFinal = provider.requests.at(-1);
+  assert.equal(forcedFinal.system.cacheBoundary, true);
+  assert.equal(forcedFinal.messages[0].cacheBoundary, true);
 });
 
 test("returns continuation_exhausted after max-token continuations run out", async () => {

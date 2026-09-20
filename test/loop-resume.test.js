@@ -30,6 +30,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
     executeTool: async ({ input }) => `completed-${input.step}`,
     maxRounds: 3,
     completion: false,
+    cacheStablePrefix: false,
     store,
     runId: "resume-run",
   });
@@ -50,6 +51,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
     executeTool: async () => "unused",
     maxRounds: 4,
     completion: false,
+    cacheStablePrefix: false,
     store,
     runId: "resume-run",
     resume: true,
