@@ -515,6 +515,13 @@ test("tool result TTL fold: placeholder replaces aged large results in later req
     .filter((block) => block?.type === "tool_result");
   assert.ok(stored.length >= 1);
   for (const block of stored) assert.ok(block.content.startsWith(big));
+
+  const ttlStats = result.compactionStats.map((stat) => stat.layers.ttl);
+  assert.deepEqual(ttlStats.map((layer) => layer.triggered), [1]);
+  assert.equal(
+    result.compactionStats.reduce((total, stat) => total + stat.layers.ttl.triggered, 0),
+    1,
+  );
 });
 
 test("tool result TTL fold: disabled via ttl=0 keeps originals in every request", async () => {

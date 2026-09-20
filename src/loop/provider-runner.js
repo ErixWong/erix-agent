@@ -20,15 +20,26 @@ export async function callProvider(ctx, {
     // toolResultFold 是 orchestrator 的配置 getter（含终稿保护口径），每次 attempt 重新读取；
     // null/undefined = 本轮不折叠。
     const foldConfig = ctx.toolResultFold ?? null;
+    const ttlStats = {};
     const requestMessages = foldConfig === null || foldConfig === undefined
       ? ctx.messages
       : foldToolResultsForRequest(ctx.messages, {
         currentRound: round,
         ttl: foldConfig.ttl,
         minTokens: foldConfig.minTokens,
+        stats: ttlStats,
       });
     const estimateMessageTokens = ctx.estimateMessageTokens;
     const requestEstimatedTokens = estimateMessageTokens(requestMessages);
+    if (ttlStats.foldedCount > 0) {
+      await ctx.recordCompactionLayer?.({
+        layerId: "ttl",
+        round,
+        triggered: ttlStats.foldedCount,
+        tokensBefore: estimateMessageTokens(ctx.messages),
+        tokensAfter: requestEstimatedTokens,
+      });
+    }
     const snapshot = {
       messages: cloneState(ctx.messages),
       eventDeltas: [...ctx.roundEventDeltas],

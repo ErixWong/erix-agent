@@ -49,9 +49,10 @@ function withRecoveryHint(summary, recoveryHint) {
 // 机械保真层（锚点索引 / 逐字引用 / 反向信号）在尺寸截断之后追加，
 // 所以摘要预算削不掉它；没有抽到任何内容时不输出空小节。
 // anchors:false 时跳过锚点节（其余保真层不变，向后兼容 0.7.0 关闭形态）。
-function appendFoldFidelity(summary, foldedPayload, anchorSettings) {
+function appendFoldFidelity(summary, foldedPayload, anchorSettings, onLayer) {
   const fidelity = buildFoldFidelitySection(foldedPayload, { anchors: anchorSettings });
   if (fidelity === undefined) return summary;
+  onLayer?.({ layerId: "anchors" });
   return summary.trim() === "" ? fidelity : `${summary}\n\n${fidelity}`;
 }
 
@@ -223,15 +224,28 @@ function truncateWholeSummary(summary, budgetTokens) {
   return prefix.length > 0 ? `${prefix}\n${marker}` : marker;
 }
 
-function enforceSummarySize(summary, maxSummaryTokens) {
+function enforceSummarySize(summary, maxSummaryTokens, onLayer) {
+  const tokensBefore = estimateTokens(summary);
   const fields = sectionsFromSummary(summary);
   if (fields === null) {
-    return truncateWholeSummary(summary, maxSummaryTokens);
+    const rendered = truncateWholeSummary(summary, maxSummaryTokens);
+    onLayer?.({
+      layerId: "enforceSize",
+      tokensBefore,
+      tokensAfter: estimateTokens(rendered),
+    });
+    return rendered;
   }
 
   const enforced = enforceSize(fields, maxSummaryTokens);
   const rendered = renderFields(enforced.fields);
-  return truncateWholeSummary(rendered, maxSummaryTokens);
+  const bounded = truncateWholeSummary(rendered, maxSummaryTokens);
+  onLayer?.({
+    layerId: "enforceSize",
+    tokensBefore,
+    tokensAfter: estimateTokens(bounded),
+  });
+  return bounded;
 }
 
 /**
@@ -332,6 +346,15 @@ export function createFoldLlmStrategy({
           degradeReason = String(error?.message ?? error).slice(0, 120);
           summary = undefined;
         }
+        const fallbackAnchors = summary === undefined && settings.anchors !== false
+          ? extractAnchors(
+            foldedPayload,
+            settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {},
+          )
+          : undefined;
+        if (summary === undefined && fallbackAnchors?.text !== "") {
+          settings.onLayer?.({ layerId: "anchors" });
+        }
         const compactedSummary = summary === undefined
           ? `[fold-llm 摘要失败，已降级为统计摘要（原因: ${degradeReason}）]\n`
             + summarizeFoldedPayload(foldedPayload, {
@@ -343,18 +366,17 @@ export function createFoldLlmStrategy({
               ...(navigationRecord === undefined ? {} : { navigationRecord }),
               ...(settings.anchors === false
                 ? {}
-                : { anchors: extractAnchors(
-                  foldedPayload,
-                  settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {},
-                ) }),
+                : { anchors: fallbackAnchors }),
             })
           : appendFoldFidelity(
             enforceSummarySize(
               withRecoveryHint(summary, recoveryHint),
               summaryBudget,
+              settings.onLayer,
             ),
             foldedPayload,
             settings.anchors,
+            settings.onLayer,
           );
         compactedHead = prependSummary(
           head,

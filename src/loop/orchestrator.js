@@ -63,6 +63,14 @@ import {
 import { abortError, defaultSleep, throwIfAborted } from "./abort.js";
 import { callProvider as runProvider } from "./provider-runner.js";
 import {
+  createCompactionStat,
+  createEmptyCompactionLayers,
+  getCompactionFallbackChain,
+  getCompactionLayer,
+  getCompactionLayerForStrategy,
+  observeCompactionLayer,
+} from "../compact/pipeline.js";
+import {
   TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
   TOOL_RESULT_TTL_DEFAULT,
 } from "./tool-result-ttl.js";
@@ -251,7 +259,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"round_end"|"final_guard"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"round_end"|"compaction"|"final_guard"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -375,7 +383,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   verification:{status:"verified"|"unverified"|"skipped"|"error", reason?:string, detail?:string},
  *   runState?:object,
  *   usage:{input_tokens:number, output_tokens:number},
- *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number}[]
+ *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number, layers:object}[]
  * }>}
  */
 export async function runToolLoop(options) {
@@ -854,6 +862,7 @@ export async function runToolLoop(options) {
   let currentTerminationReason = "running";
   let todoState;
   let semanticState;
+  const compactionStats = [];
   const trimFilesWritten = () => {
     const seen = new Set();
     const kept = [];
@@ -1094,6 +1103,12 @@ export async function runToolLoop(options) {
     set semanticState(value) {
       semanticState = value;
     },
+    get compactionStats() {
+      return compactionStats;
+    },
+    set compactionStats(value) {
+      compactionStats.splice(0, compactionStats.length, ...(Array.isArray(value) ? value : []));
+    },
     get todoState() {
       return todoState;
     },
@@ -1138,7 +1153,6 @@ export async function runToolLoop(options) {
   const continuationLimit = Number.isInteger(maxTokenContinuations)
     ? Math.max(0, maxTokenContinuations)
     : 3;
-  const compactionStats = [];
   let finalText = "";
   let declaredFindings;
   let forcedFinal = false;
@@ -1167,6 +1181,17 @@ export async function runToolLoop(options) {
 
   const emitEvent = (event) => {
     onEvent?.(event);
+  };
+
+  const recordCompactionStat = (stat, round) => {
+    const normalized = createCompactionStat(stat);
+    compactionStats.push(normalized);
+    emitEvent({
+      type: "compaction",
+      round,
+      compaction: cloneState(normalized),
+    });
+    return normalized;
   };
 
   const emitJudge = (info) => {
@@ -1238,6 +1263,25 @@ export async function runToolLoop(options) {
     backoffBaseMs,
     backoffMaxMs,
     emitEvent,
+    recordCompactionLayer: async ({
+      layerId,
+      round,
+      triggered,
+      tokensBefore,
+      tokensAfter,
+    }) => {
+      const layers = createEmptyCompactionLayers();
+      observeCompactionLayer(layers, layerId, {
+        triggered,
+        tokensBefore,
+        tokensAfter,
+      });
+      recordCompactionStat({
+        tokensBefore,
+        tokensAfter,
+        layers,
+      }, round);
+    },
     reportObserverError,
     awaitWithAbort,
     waitForRetry,
@@ -1246,9 +1290,12 @@ export async function runToolLoop(options) {
     // 最后一轮（omitTools 终稿轮）/ 剩余轮数 <= 2 / 已发低预算提示时不折叠——
     // 收尾阶段模型常要回头引用早期证据，此时折叠净收益为负。返回 null = 本轮关闭。
     get toolResultFold() {
-      const remaining = governorState.effectiveMaxRounds - budgetRounds;
-      if (budgetRounds >= governorState.effectiveMaxRounds) return null;
-      if (remaining <= 2 || lowBudgetPrompted) return null;
+      const ttlLayer = getCompactionLayer("ttl");
+      if (!ttlLayer?.shouldSchedule({
+        budgetRounds,
+        effectiveMaxRounds: governorState.effectiveMaxRounds,
+        lowBudgetPrompted,
+      })) return null;
       return { ttl: toolResultTtl, minTokens: toolResultFoldMinTokens };
     },
     get messages() {
@@ -1334,6 +1381,7 @@ export async function runToolLoop(options) {
         })),
         // 本 round 已归档的全量输出随 checkpoint 落盘，保证崩溃恢复后证据仍可核验
         toolOutputs: cloneState(archivedOutputs.filter((entry) => entry.round === round)),
+        compactionStats: cloneState(compactionStats),
         ts: new Date().toISOString(),
       });
     } catch (error) {
@@ -1375,6 +1423,7 @@ export async function runToolLoop(options) {
       toolErrorCount,
       checkpointFailureCount,
       unpersisted: errorLedger.toUnpersisted(),
+      compactionStats,
     });
     if (semantic && typeof semanticStateProvider === "function") {
       try {
@@ -1716,7 +1765,7 @@ export async function runToolLoop(options) {
     });
   };
 
-  const compactBeforeRound = async () => {
+  const compactBeforeRound = async (round = rounds + 1) => {
     normalizeMessages(messages);
     const configuredStrategy = compactionContext?.strategy;
     // API input usage is per request; keep the aggregate for billing output.
@@ -1731,10 +1780,13 @@ export async function runToolLoop(options) {
       ? await configuredStrategy.shouldCompact(messages, budgetTokens)
       : false;
     if (strategyRequestsCompaction || overBudget) {
+      const [budgetFallbackLayer, safetyFallbackLayer] = getCompactionFallbackChain();
       const strategy = strategyRequestsCompaction
         ? configuredStrategy
         : createSlidingWindowStrategy();
       const tokensBefore = estimateMessageTokens(messages);
+      const layers = createEmptyCompactionLayers();
+      const selectedLayer = getCompactionLayerForStrategy(strategy);
       const configuredKeepRounds = compactionContext.keepRounds ?? 6;
       // 上下文膨胀到预算 2 倍以上时收紧 keepRounds（防折叠后立刻再超预算的恶性循环）
       const keepRounds = estimatedTokens / budgetTokens > 2
@@ -1749,6 +1801,19 @@ export async function runToolLoop(options) {
         enumerable: false,
       });
       if (foldedThrough > 0) compactOptions.roundOffset = foldedThrough;
+      Object.defineProperty(compactOptions, "onLayer", {
+        enumerable: false,
+        value: ({
+        layerId,
+        tokensBefore: layerTokensBefore,
+        tokensAfter: layerTokensAfter,
+        }) => {
+          observeCompactionLayer(layers, layerId, {
+            tokensBefore: layerTokensBefore,
+            tokensAfter: layerTokensAfter,
+          });
+        },
+      });
       for (const key of [
         "summaryRole",
         "protectedMessage",
@@ -1775,6 +1840,12 @@ export async function runToolLoop(options) {
       let compacted = result.compacted === true;
       let protectedDowngraded = 0;
       let tokensAfter = estimateMessageTokens(compactedMessages);
+      if (selectedLayer !== undefined && foldedRounds > 0) {
+        observeCompactionLayer(layers, selectedLayer.id, {
+          tokensBefore,
+          tokensAfter,
+        });
+      }
       const apiEstimateBefore = latestApiEstimatedTokens ?? tokensBefore;
       let apiTokensAfter = projectedApiInputTokens(
         apiInputTokens,
@@ -1785,6 +1856,7 @@ export async function runToolLoop(options) {
         (budgetTokens !== undefined && tokensAfter > budgetTokens)
         || isApiInputOverBudget(apiTokensAfter, budgetTokens)
       ) {
+        const fallbackTokensBefore = estimateMessageTokens(compactedMessages);
         const fallback = await createSlidingWindowStrategy().compact(compactedMessages, {
           keepRounds: 0,
           budgetTokens,
@@ -1806,6 +1878,12 @@ export async function runToolLoop(options) {
           );
         }
         tokensAfter = estimateMessageTokens(compactedMessages);
+        if (fallback.foldedRounds > 0) {
+          observeCompactionLayer(layers, budgetFallbackLayer?.id, {
+            tokensBefore: fallbackTokensBefore,
+            tokensAfter,
+          });
+        }
         apiTokensAfter = projectedApiInputTokens(
           apiInputTokens,
           apiEstimateBefore,
@@ -1816,6 +1894,7 @@ export async function runToolLoop(options) {
         (budgetTokens !== undefined && tokensAfter > budgetTokens)
         || isApiInputOverBudget(apiTokensAfter, budgetTokens)
       ) {
+        const safetyTokensBefore = estimateMessageTokens(compactedMessages);
         const apiAwareBudget = isApiInputOverBudget(apiTokensAfter, budgetTokens)
           ? Math.max(
             1,
@@ -1833,6 +1912,10 @@ export async function runToolLoop(options) {
         compacted = compacted || fallback.protectedDowngraded > 0;
         tokensAfter = fallback.tokensAfter;
         protectedDowngraded = fallback.protectedDowngraded;
+        observeCompactionLayer(layers, safetyFallbackLayer?.id, {
+          tokensBefore: safetyTokensBefore,
+          tokensAfter,
+        });
       }
       messages = compactedMessages;
       latestApiInputTokens = undefined;
@@ -1854,11 +1937,12 @@ export async function runToolLoop(options) {
         foldedRounds,
         tokensBefore,
         tokensAfter,
+        layers,
       };
-      if (protectedDowngraded > 0) {
-        compactionStat.protectedDowngraded = protectedDowngraded;
-      }
-      compactionStats.push(compactionStat);
+      recordCompactionStat({
+        ...compactionStat,
+        protectedDowngraded,
+      }, round);
       normalizeMessages(messages);
       const runState = await refreshRunState({
         semantic: foldedStateChanged,
@@ -1972,7 +2056,8 @@ export async function runToolLoop(options) {
     let stallSignature = null;
     let lastSignatureThisRound = null;
     emitEvent({ type: "round_start", round });
-    const compaction = await compactBeforeRound();
+    const compactionStatsStart = compactionStats.length;
+    const compaction = await compactBeforeRound(round);
     const roundStart = messages.length;
     // 预算兜底（2026-09-20 基准实测：剩余轮数耗尽时模型无视文字提示继续调工具，
     // 撞 max_rounds 被 truncate，靠 wrapup 全量重发历史 + 额外 4 分钟兜底）：
@@ -2002,7 +2087,7 @@ export async function runToolLoop(options) {
           estimateMessageTokens(messages) > budgetTokens
           || isApiInputOverBudget(latestApiInputTokens, budgetTokens)
         )) {
-        await compactBeforeRound();
+        await compactBeforeRound(round);
       }
       tokenContinuationCount += 1;
       providerResult = await callProvider({
@@ -2399,6 +2484,9 @@ export async function runToolLoop(options) {
       summary: roundSummary,
       l0facts: currentL0,
       runState: cloneState(roundRunState),
+      ...(compactionStats.length > compactionStatsStart
+        ? { compactionStats: cloneState(compactionStats.slice(compactionStatsStart)) }
+        : {}),
       ...(judgeDecision === null || judgeDecision === undefined ? {} : {
         judge: {
           done: judgeDecision.done,

@@ -1,4 +1,8 @@
 import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
+import {
+  COMPACTION_LAYER_IDS,
+  normalizeCompactionStats,
+} from "./compact/pipeline.js";
 
 const MAX_RENDERED_CHARS = 1600;
 export const RUN_STATE_SCHEMA_VERSION = 1;
@@ -139,6 +143,7 @@ function compactStateForSize(state) {
   const deterministic = compact.deterministic ?? {};
   deterministic.tools = (deterministic.tools ?? []).slice(0, 16);
   deterministic.filesWritten = (deterministic.filesWritten ?? []).slice(-16);
+  deterministic.compactionStats = (deterministic.compactionStats ?? []).slice(-8);
   if (deterministic.todo?.items) {
     deterministic.todo = {
       ...deterministic.todo,
@@ -190,6 +195,7 @@ export function boundRunState(state) {
       tools: [],
       filesWritten: [],
       fold: deterministic.fold ?? {},
+      compactionStats: deterministic.compactionStats ?? [],
       termination: deterministic.termination ?? { reason: "running" },
       errors: deterministic.errors ?? {},
     },
@@ -304,6 +310,7 @@ export function createDeterministicRunState({
   toolErrorCount = 0,
   checkpointFailureCount = 0,
   unpersisted,
+  compactionStats,
 } = {}) {
   const safeRounds = safeInteger(rounds);
   // 双计数器（issue #32 #8）：rounds = 会话累计身份轮号（跨 resume 单调递增）；
@@ -335,6 +342,7 @@ export function createDeterministicRunState({
         foldedRounds: safeInteger(foldedRounds),
         navigationRecords: safeInteger(navigationRecords),
       },
+      compactionStats: normalizeCompactionStats(compactionStats),
       termination: { reason: safeText(terminationReason, 48) || "running" },
       errors: {
         tool: safeInteger(toolErrorCount),
@@ -378,6 +386,18 @@ export function renderRunState(state) {
     ?.slice(0, 6)
     .map((item) => `${safeText(item.id, 18)}:${safeText(item.status, 12)}`)
     .join(",");
+  const compaction = deterministic.compactionStats ?? [];
+  const compactionLayers = COMPACTION_LAYER_IDS
+    .map((id) => {
+      const totals = compaction.reduce((result, stat) => {
+        const layer = stat?.layers?.[id];
+        result.triggered += safeInteger(layer?.triggered);
+        result.tokensSaved += safeInteger(layer?.tokensSaved);
+        return result;
+      }, { triggered: 0, tokensSaved: 0 });
+      return `${id}=${totals.triggered}/${totals.tokensSaved}`;
+    })
+    .join(",");
   const semantic = state.semantic ?? { status: "absent" };
   // 预算行报本次会话的消耗（runRounds），resume 后与累计身份轮号不同时额外标出 session
   const renderedRunRounds = safeInteger(budget.runRounds ?? budget.rounds);
@@ -389,6 +409,7 @@ export function renderRunState(state) {
     }`,
     `tools=${tools || "-"} files=${files || "-"}`,
     `todo=${todo || safeText(deterministic.todo?.status, 16) || "-"} fold=${safeInteger(fold.foldedRounds)}/${safeInteger(fold.navigationRecords)}`,
+    `compact=${compactionLayers || "-"}`,
     `termination=${safeText(deterministic.termination?.reason, 32) || "running"} errors=${safeInteger(errors.tool)}/${safeInteger(errors.checkpoint)}/${safeInteger(errors.unpersisted?.count)}`,
     SEMANTIC_MARKER,
     `status=${safeText(semantic.status, 16)} version=${semantic.semanticStateVersion ?? "-"}`,
