@@ -370,13 +370,20 @@ export function openAIResponseToCanonical(json) {
     || Array.isArray(message?.content);
   const hasToolCalls = Array.isArray(message?.tool_calls) && message.tool_calls.length > 0;
   const hasFunctionCall = isRecord(legacyFunctionCall);
-  if (!isRecord(message) || (!hasContent && !hasToolCalls && !hasFunctionCall)) {
+  // reasoning/reasoning_content-only 响应不再抛错（2026-09-20 基准：glm-5.3-flash-awq 把思考
+  // 放在非标准 `reasoning` 字段，maxTokens 被思考耗尽时 content 缺失，纯思考响应是合法返回）
+  const hasReasoning = typeof message?.reasoning === "string"
+    || typeof message?.reasoning_content === "string";
+  if (!isRecord(message) || (!hasContent && !hasToolCalls && !hasFunctionCall && !hasReasoning)) {
     throw new KitError("server", `OpenAI choice is missing message content: ${responsePreview(json)}`);
   }
   const content = [];
 
   if (typeof message.reasoning_content === "string") {
     content.push({ type: "reasoning", text: message.reasoning_content });
+  } else if (typeof message.reasoning === "string") {
+    // GLM 系（智坊/Zhipu 风格）把思考放在 `reasoning` 字段（非 reasoning_content）
+    content.push({ type: "reasoning", text: message.reasoning });
   }
   if (typeof message.content === "string") {
     content.push({ type: "text", text: message.content });

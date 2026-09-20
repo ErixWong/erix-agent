@@ -274,8 +274,13 @@ test("judge runs on non-tool rounds only, with reasoning disabled (tool rounds s
 
   // tool_use 轮不调 judge；仅 end_turn 轮调 1 次 → judge_done 停
   assert.equal(judge.requests.length, 1);
+  // 2026-09-20 修复：恢复 reasoning_effort:"none"——实测（glm-5.3-flash-awq）它是该 relay
+  // 上唯一能真正关思考的参数（GLM 把思考放非标准 `reasoning` 字段）；不关则 512 预算被
+  // 思考耗尽 → content 空 → provider 报 missing content。
   assert.equal(judge.requests[0].reasoning_effort, "none");
-  assert.equal(judge.requests[0].maxTokens, 8000);
+  // judge 只输出一段 JSON，maxTokens 收敛到 1024（原 8000 实测致输出漂移变长 4 倍；
+  // 512 实测会被 glm 冗长 JSON 截断致 parse 失败）
+  assert.equal(judge.requests[0].maxTokens, 1024);
   assert.equal(judge.requests[0].temperature, 0);
 });
 
@@ -333,6 +338,7 @@ test("round judge emits an onJudge decision event", async () => {
     kind: "round",
     decision: judgeDecision,
     action: "judge_done",
+    raw: JSON.stringify(judgeDecision),
   }]);
 });
 
@@ -1084,8 +1090,10 @@ test("ERIX_NO_ROUND_JUDGE env disables the round judge (reviewer P2#3)", async (
       completion: false,
       reflection: { enabled: true, judge: { provider: judge } },
     });
-    // round judge 关闭（其请求特征 reasoning_effort:'none'）；legacy callReflection 仍可能调 judge（nearLimit）——用特征区分
-    const roundJudgeCalls = judge.requests.filter((r) => r.reasoning_effort === "none").length;
+    // round judge 关闭（其请求特征 temperature:0 + maxTokens:512）；legacy callReflection 仍可能调 judge（nearLimit）——用特征区分
+    const roundJudgeCalls = judge.requests.filter((r) => (
+      r.temperature === 0 && r.maxTokens === 1024
+    )).length;
     assert.equal(roundJudgeCalls, 0);
   } finally {
     if (prev === undefined) delete process.env.ERIX_NO_ROUND_JUDGE;
@@ -1411,6 +1419,8 @@ test("transparent interception emits an executed onJudge event when approved", a
     tool: { id: "second", name: "writeFile", input: { path: "result.txt", content: "42" } },
     decision,
     action: "executed",
+    // judge 原文落盘（未截断，此处短）
+    raw: JSON.stringify(decision),
   }]);
 });
 
@@ -1456,6 +1466,7 @@ test("transparent interception emits a blocked onJudge event when denied", async
     tool: { id: "second", name: "work", input: { step: 2 } },
     decision,
     action: "blocked",
+    raw: JSON.stringify(decision),
   }]);
 });
 
@@ -1517,6 +1528,7 @@ test("transparent interception executes on-track calls even when the judge repor
     decision,
     action: "executed",
     passThrough: "on_track",
+    raw: JSON.stringify(decision),
   }]);
 });
 
@@ -1567,6 +1579,7 @@ test("transparent interception still blocks done:false calls marked off-track", 
     tool: { id: "second", name: "work", input: { step: 2 } },
     decision,
     action: "blocked",
+    raw: JSON.stringify(decision),
   }]);
 });
 
@@ -1600,6 +1613,7 @@ test("transparent interception emits degraded when the judge fails", async () =>
     decision: null,
     action: "degraded",
     error: "error",
+    errorDetail: "judge unavailable",
   }]);
 });
 
@@ -1745,6 +1759,7 @@ test("round judge decision event carries the call usage for transcript accountin
     },
     action: "judge_done",
     usage: { input_tokens: 1234, output_tokens: 56 },
+    raw: JSON.stringify({ done: true, confidence: 0.9, reason: "已完成", evidence: "验证通过" }),
   }]);
 });
 
@@ -1778,6 +1793,7 @@ test("round judge parse failure still reports usage on the degraded event (revie
     action: "degraded",
     error: "parse",
     usage: { input_tokens: 432, output_tokens: 7 },
+    raw: "totally not a json decision",
   }]);
 });
 
@@ -1819,6 +1835,8 @@ test("intercept judge parse failure still reports usage on the degraded event (r
     action: "degraded",
     error: "parse",
     usage: { input_tokens: 99, output_tokens: 3 },
+    // parse 失败但 response 存在：raw 照常带出（可审计性）
+    raw: "not parseable at all",
   }]);
   // degraded 后工具照常执行（既有行为不变）。
   assert.deepEqual(executed, [1, 2]);
@@ -1830,15 +1848,16 @@ test("intercept judge event carries usage and omits it on timeout (issue #33 B)"
     toolResponse("second", "work", { step: 2 }),
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
+  const usageDecision = {
+    done: false,
+    confidence: 0.6,
+    reason: "任务尚未完成",
+    evidence: "还剩两项验证",
+    direction: "on_track",
+    directionReason: "正在按计划推进",
+  };
   const judge = createFakeProvider([{
-    ...judgeResponse({
-      done: false,
-      confidence: 0.6,
-      reason: "任务尚未完成",
-      evidence: "还剩两项验证",
-      direction: "on_track",
-      directionReason: "正在按计划推进",
-    }),
+    ...judgeResponse(usageDecision),
     usage: { input_tokens: 777, output_tokens: 12 },
   }]);
   const events = [];
@@ -1872,6 +1891,7 @@ test("intercept judge event carries usage and omits it on timeout (issue #33 B)"
     action: "executed",
     passThrough: "on_track",
     usage: { input_tokens: 777, output_tokens: 12 },
+    raw: JSON.stringify(usageDecision),
   }]);
 
   // 超时路径：usage 缺省、事件其余字段不变、不炸。
@@ -1911,6 +1931,7 @@ test("intercept judge event carries usage and omits it on timeout (issue #33 B)"
     decision: null,
     action: "degraded",
     error: "timeout",
+    errorDetail: "Judge interception timed out",
   }]);
   assert.equal("usage" in timeoutEvents[0], false);
 });
@@ -1983,12 +2004,14 @@ test("readonly tools pass through interception even when off-track, exec stays b
     tool: { id: "second", name: "exec", input: { command: "rm -rf build" } },
     decision: decisionExec,
     action: "blocked",
+    raw: JSON.stringify(decisionExec),
   }, {
     kind: "intercept",
     tool: { id: "fourth", name: "readFile", input: { path: "src/c.js" } },
     decision: decisionRead,
     action: "executed",
     passThrough: "readonly",
+    raw: JSON.stringify(decisionRead),
   }]);
 
   // directionHint 照常附加（放行路径也注入提示，供模型换思路）。
@@ -2041,5 +2064,6 @@ test("readonly pass-through also applies to uncertain direction", async () => {
     decision,
     action: "executed",
     passThrough: "readonly",
+    raw: JSON.stringify(decision),
   }]);
 });

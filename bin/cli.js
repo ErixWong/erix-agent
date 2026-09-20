@@ -29,6 +29,7 @@ import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
   createCliTools,
+  filterToolsByAllowlist,
   wrapExecuteTool,
 } from "./tools.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
@@ -39,8 +40,8 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
@@ -57,6 +58,7 @@ const HELP_TEXT = `用法：
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
   --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL（默认：<归档目录>/judge.log）
   --error-log <path>   将持久化错误事件追加写入 JSONL（默认仅 stderr；也可用 ERIX_ERROR_LOG）
+  --tools <名1,名2>    工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -255,6 +257,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       || argument === "--idle-timeout"
       || argument === "--judge-log"
       || argument === "--error-log"
+      || argument === "--tools"
     ) {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
@@ -269,7 +272,8 @@ export function parseChatArgs(args, cwd = process.cwd()) {
           || argument === "--dir"
           || argument === "--reflection"
           || argument === "--judge-log"
-          || argument === "--error-log")
+          || argument === "--error-log"
+          || argument === "--tools")
         && rawValue.startsWith("--")
       )) {
         usageError(`${argument} 缺少数值`);
@@ -302,6 +306,9 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       } else if (argument === "--error-log") {
         if (rawValue.trim() === "") usageError("--error-log 不能为空");
         options.errorLog = rawValue;
+      } else if (argument === "--tools") {
+        if (rawValue.trim() === "") usageError("--tools 不能为空");
+        options.tools = rawValue;
       } else {
         options.idleTimeout = parseIntegerOption(argument, rawValue, 0);
       }
@@ -517,6 +524,7 @@ async function runChatWithNotes({
   dir = join(homedir(), ".erix", "transcripts"),
   judgeLog,
   errorLog,
+  tools: toolsAllowlist,
   noNotes = false,
   provider: providerOverride,
   config: configOverride,
@@ -589,7 +597,19 @@ async function runChatWithNotes({
   });
   await skillTools.notesJanitor?.({ __erix: { runId, notesDir, notesStore } });
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
-  const tools = combineTools(cliTools, skillTools, mcpProxy);
+  const combinedTools = combineTools(cliTools, skillTools, mcpProxy);
+  // --tools 白名单：未知名字 stderr 警告并忽略；过滤后为空 → usageError
+  let tools;
+  try {
+    tools = {
+      ...combinedTools,
+      tools: filterToolsByAllowlist(combinedTools.tools, toolsAllowlist, {
+        onUnknown: (message) => console.error(message),
+      }),
+    };
+  } catch (error) {
+    usageError(error?.message ?? String(error));
+  }
   const baseContext = buildCompactionContext(
     config,
     compactBudget,
@@ -646,6 +666,14 @@ async function runChatWithNotes({
   };
   const redactJudgeInfo = (info) => {
     const redacted = { ...info };
+    // judge 原文（raw）可审计性优先：不做整体截断/隐藏（源头已截 2000 字符），
+    // 仅把凭据模式内联掩码后保留正文（judge 可能复述工具结果里的凭据）。
+    if (typeof redacted.raw === "string") {
+      redacted.raw = redacted.raw.replace(
+        new RegExp(CREDENTIAL_PATTERN.source, "gi"),
+        "[凭据已隐藏]",
+      );
+    }
     if (redacted.decision && typeof redacted.decision === "object") {
       // judge reason/evidence 可能复述凭据——截断即可（judge 输出通常短）
       for (const key of ["reason", "evidence", "directionReason"]) {
@@ -706,6 +734,9 @@ async function runChatWithNotes({
 
 MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=search query=关键词 查找工具；action=call server=... tool=... args=... 调用工具。`;
   }
+  // 2026-09-20 基准实测：模型直接闷头调工具、计划不可见导致 judge 难判方向——
+  // 每轮先一句话声明计划再动手。
+  systemPrompt += "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
 
   const loopOptions = {
     ...(context ? { context } : {}),

@@ -1583,8 +1583,14 @@ export async function runToolLoop(options) {
           ),
         }],
       }],
-      maxTokens: 8000,
+      // 2026-09-20 基准实测：judge 只输出一段 JSON，8000 上限纯浪费（输出越长漂移越大）；
+      // 但 512 实测会被 glm 冗长 JSON 截断致 parse 失败 → 1024。
+      maxTokens: 1024,
       temperature: 0,
+      // 2026-09-20 实测（glm-5.3-flash-awq）：reasoning_effort 是该 relay 上**唯一**能真
+      // 正关思考的参数（enable_thinking/chat_template_kwargs/thinking:{type:disabled} 都
+      // 关不掉，GLM 把思考放非标准 `reasoning` 字段）；关掉后 judge 输出纯 JSON，不关
+      // 则 512 预算被思考吃光 → content 空。qwen/deepseek 同样认此参数。不要删。
       reasoning_effort: "none",
     };
     let timeoutController;
@@ -1639,9 +1645,12 @@ export async function runToolLoop(options) {
         ...(Number.isFinite(outputTokens) ? { output_tokens: outputTokens } : {}),
       }
       : undefined;
+    // 原始输出未截断带出（可审计性）：intercept 落 judge.log 时截断由调用方负责。
+    const rawText = textFromBlocks(blocksFor(response?.content));
     return {
-      decision: parseJudgeDecision(textFromBlocks(blocksFor(response?.content))),
+      decision: parseJudgeDecision(rawText),
       usage: judgeUsage,
+      raw: rawText,
     };
   };
 
@@ -1987,7 +1996,12 @@ export async function runToolLoop(options) {
     emitEvent({ type: "round_start", round });
     const compaction = await compactBeforeRound();
     const roundStart = messages.length;
-    let providerResult = await callProvider({ round });
+    // 预算兜底（2026-09-20 基准实测：剩余轮数耗尽时模型无视文字提示继续调工具，
+    // 撞 max_rounds 被 truncate，靠 wrapup 全量重发历史 + 额外 4 分钟兜底）：
+    // 本轮是最后一个预算轮时不带 tools，强制输出文本终稿。此时消息历史里所有
+    // tool_use 均已配平 tool_result（结果总在下一轮请求前追加），无 tools 请求安全。
+    const isFinalBudgetRound = budgetRounds >= governorState.effectiveMaxRounds;
+    let providerResult = await callProvider({ round, omitTools: isFinalBudgetRound });
     let response = providerResult.response;
     let content = blocksFor(response?.content);
 
@@ -2013,7 +2027,11 @@ export async function runToolLoop(options) {
         await compactBeforeRound();
       }
       tokenContinuationCount += 1;
-      providerResult = await callProvider({ allowPendingToolUse: true, round });
+      providerResult = await callProvider({
+        allowPendingToolUse: true,
+        round,
+        omitTools: isFinalBudgetRound,
+      });
       response = providerResult.response;
       const continuation = blocksFor(response?.content);
       const assistant = messages.at(-1);
@@ -2271,6 +2289,7 @@ export async function runToolLoop(options) {
         const judged = await callRoundJudge(round, currentL0);
         judgeDecision = judged.decision;
         judgeUsage = judged.usage;
+        const judgeRaw = judged.raw;
         if (judgeDecision === null) {
           roundJudgeFailures += 1;
           if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
@@ -2283,6 +2302,8 @@ export async function runToolLoop(options) {
             // parse 失败但 response.usage 已可取得（issue #33 评审修复）：
             // degraded 事件同样带 usage，judge.log 可对账这部分消耗。
             ...(judgeUsage ? { usage: judgeUsage } : {}),
+            // 原文落盘（可审计性）：parse 失败时最需要看 judge 到底输出了什么
+            ...(typeof judgeRaw === "string" && judgeRaw !== "" ? { raw: judgeRaw } : {}),
           });
         } else {
           roundJudgeFailures = 0;
@@ -2301,6 +2322,7 @@ export async function runToolLoop(options) {
               ? "judge_done"
               : (judgeDecision.done === false ? "nudge" : "continue"),
             ...(judgeUsage ? { usage: judgeUsage } : {}),
+            ...(typeof judgeRaw === "string" && judgeRaw !== "" ? { raw: judgeRaw } : {}),
           });
         }
       } catch (error) {

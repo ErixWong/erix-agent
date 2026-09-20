@@ -200,7 +200,8 @@ test("runChat does not add a value-note index to the system prompt", async () =>
       notesDir,
       provider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
-      maxRounds: 1,
+      // maxRounds: 2 —— maxRounds:1 时本轮即最后一轮，按预算兜底规则不带 tools（C3）
+      maxRounds: 2,
       idleTimeout: 0,
       toolOutput: () => {},
     });
@@ -306,6 +307,103 @@ test("parseChatArgs supports disabling only the notes skill", () => {
   assert.equal(parseChatArgs(["hello", "--no-notes"]).noNotes, true);
 });
 
+test("parseChatArgs accepts a tools allowlist", () => {
+  const options = parseChatArgs(
+    ["hello", "--tools", "readFile, tree"],
+    "/tmp/project",
+  );
+  assert.equal(options.tools, "readFile, tree");
+  assert.throws(
+    () => parseChatArgs(["hello", "--tools"], "/tmp/project"),
+    /缺少数值/,
+  );
+  assert.throws(
+    () => parseChatArgs(["hello", "--tools", "  "], "/tmp/project"),
+    /--tools 不能为空/,
+  );
+  assert.throws(
+    () => parseChatArgs(
+      ["hello", "--tools", "a", "--tools", "b"],
+      "/tmp/project",
+    ),
+    /参数重复/,
+  );
+});
+
+test("runChat filters tools via --tools allowlist and warns on unknown names", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-cli-tools-flag-"));
+  let captured;
+  const warnings = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = (chunk) => {
+    warnings.push(String(chunk));
+    return true;
+  };
+  try {
+    await runChat({
+      prompt: "hi",
+      session: "tools-allowlist",
+      dir,
+      skillsDir: join(dir, "skills"),
+      provider: createFakeProvider([]),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 2,
+      idleTimeout: 0,
+      toolOutput: () => {},
+      tools: "readFile, tree, bogus_tool",
+      loop: async (options) => {
+        captured = options;
+        return {
+          finalText: "done",
+          messages: [],
+          rounds: 1,
+          truncated: false,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          compactionStats: [],
+        };
+      },
+    });
+  } finally {
+    process.stderr.write = originalWrite;
+    await rm(dir, { recursive: true, force: true });
+  }
+
+  assert.ok(captured);
+  const names = captured.tools.map((tool) => tool.name);
+  assert.ok(names.includes("readFile"));
+  assert.ok(names.includes("tree"));
+  assert.ok(!names.includes("exec"));
+  assert.ok(!names.includes("bogus_tool"));
+  // 未知名字 stderr 警告
+  assert.ok(warnings.some((line) => line.includes("bogus_tool")));
+});
+
+test("runChat rejects a --tools allowlist that filters out every tool", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-cli-tools-empty-"));
+  try {
+    await assert.rejects(
+      runChat({
+        prompt: "hi",
+        session: "tools-empty",
+        dir,
+        skillsDir: join(dir, "skills"),
+        provider: createFakeProvider([]),
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        maxRounds: 2,
+        idleTimeout: 0,
+        toolOutput: () => {},
+        tools: "only_bogus_tool",
+        loop: async () => {
+          throw new Error("loop must not run when allowlist is empty");
+        },
+      }),
+      /--tools 过滤后没有可用工具/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("chat loop wires a file transcript store with the engine-standard recall tool (ADR-015)", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-test-"));
   try {
@@ -319,7 +417,8 @@ test("chat loop wires a file transcript store with the engine-standard recall to
       skillsDir: join(dir, "skills"),
       provider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
-      maxRounds: 1,
+      // maxRounds: 2 —— maxRounds:1 时本轮即最后一轮，按预算兜底规则不带 tools（C3）
+      maxRounds: 2,
     });
 
     assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), true);

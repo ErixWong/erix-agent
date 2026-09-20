@@ -3,3 +3,6 @@ logs/
 *.log
 .env
 .worktrees/
+
+# 任务工作目录（实验记录、原始产物，不入库）
+docs/tasks/
