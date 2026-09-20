@@ -230,6 +230,7 @@ test("merges adjacent assistant messages before every provider call", async () =
       { role: "assistant", content: [{ type: "text", text: "second" }] },
     ],
     executeTool: async () => "unused",
+    cacheStablePrefix: false,
   });
 
   assert.deepEqual(provider.requests[0].messages, [
@@ -284,6 +285,7 @@ test("compacts context before the second round and records its payload and stats
     executeTool: async () => "worked",
     completion: false,
     context: { strategy, budgetTokens: 99, keepRounds: 4 },
+    cacheStablePrefix: false,
     store: (() => {
       const store = createMemoryTranscriptStore();
       const appendRound = store.appendRound.bind(store);

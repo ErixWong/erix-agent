@@ -126,7 +126,11 @@ test("probes usage for reasoning streams that omit a usage event", async () => {
     {
       json: {
         choices: [{ message: { content: "" }, finish_reason: "stop" }],
-        usage: { prompt_tokens: 37, completion_tokens: 1 },
+        usage: {
+          prompt_tokens: 37,
+          completion_tokens: 1,
+          prompt_tokens_details: { cached_tokens: 30 },
+        },
       },
     },
   ]);
@@ -143,9 +147,13 @@ test("probes usage for reasoning streams that omit a usage event", async () => {
   assert.deepEqual(response, {
     content: [{ type: "text", text: "done" }],
     stopReason: "end_turn",
-    usage: { input_tokens: 37, output_tokens: 1 },
+    usage: { input_tokens: 37, output_tokens: 1, cacheRead: 30 },
   });
-  assert.deepEqual(usage, [{ prompt_tokens: 37, completion_tokens: 1 }]);
+  assert.deepEqual(usage, [{
+    prompt_tokens: 37,
+    completion_tokens: 1,
+    prompt_tokens_details: { cached_tokens: 30 },
+  }]);
   assert.equal(fetchImpl.calls.length, 2);
   assert.equal(fetchImpl.calls[1].body.stream, undefined);
   assert.equal(fetchImpl.calls[1].body.max_tokens, 1);
@@ -432,5 +440,33 @@ test("assembles legacy streamed function_call deltas as tool_use", async () => {
       input: { city: "Paris" },
     }],
     stopReason: "tool_use",
+  });
+});
+
+test("normalizes cached prompt tokens from streamed usage", async () => {
+  const fetchImpl = createMockFetch([{
+    body: [
+      sse({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }),
+      sse({
+        choices: [],
+        usage: {
+          prompt_tokens: 20,
+          completion_tokens: 3,
+          prompt_tokens_details: { cached_tokens: 15 },
+        },
+      }),
+      "data: [DONE]\n\n",
+    ].join(""),
+  }]);
+
+  const response = await makeProvider(fetchImpl).chatStream({
+    system: "",
+    messages: [{ role: "user", content: "hello" }],
+  });
+
+  assert.deepEqual(response.usage, {
+    input_tokens: 20,
+    output_tokens: 3,
+    cacheRead: 15,
   });
 });

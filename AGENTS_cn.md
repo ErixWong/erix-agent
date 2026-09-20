@@ -25,16 +25,17 @@ src/
 ├── tokens.js
 ├── loop/          # 编排核心：orchestrator（runToolLoop）、provider-runner、
 │                  # checkpoint-executor、budget、aggregate-budget、termination、
-│                  # resume-manager、error-ledger、messages、reflection、task-brief、abort
+│                  # resume-manager、error-ledger、messages、reflection、task-brief、abort、
+│                  # tool-result-ttl
 ├── compact/       # 上下文压缩：budget、sliding-window、fold-statistical、
 │                  # fold-llm、anchors、fold-fidelity、enforce-size
 ├── config/        # 配置适配器
 ├── messages/      # 规范消息模型 + OpenAI/Anthropic 转换
 ├── providers/     # OpenAI/Anthropic 双协议 provider
 ├── reflection/    # governor、judge、l0、wrapup
-├── store/         # bounded-recall、file、memory、notes
-└── tools/         # registry、providers、recall（可选 erix-agent/tools 子路径）
-bin/              # CLI（验证器/调试器）：cli.js（入口/chat）、repl.js（TUI）、tools.js（内置工具 + 提示词）、skills.js、mcp.js、config.js、auto-capture.js、final-guard-support.js、final-guard.js、guard-metrics.js
+├── store/         # file、memory、notes
+└── tools/         # registry、providers（可选 erix-agent/tools 子路径）
+bin/              # CLI（验证器/调试器）：cli.js（入口/chat）、repl.js（TUI）、tools.js（内置工具 + 提示词）、skills.js、mcp.js、config.js、final-guard-support.js、final-guard.js、guard-metrics.js
 test/             # 单元测试（node --test），包含 compact/、providers/、tools/、config/、messages/、contract/、helpers/、fixtures/、integration/ 以及顶层测试文件
 fixtures/         # 测试夹具（mock MCP 服务器）——⚠️ mock MCP 服务器不得放在 test/ 下（node --test 会运行 test/ 下的所有文件，可能卡住）
 examples/         # 示例（skills/ 示例、演示和基准）
@@ -59,7 +60,7 @@ scripts/          # 实验脚本和结果
 - 必须移除 `private`（否则 403）；使用 node 脚本编辑 JSON，不要用 sed 删除一行（否则尾部逗号会破坏 JSON）。
 - `files`: `["src", "bin", "skills", "README.md", "CHANGELOG.md", "docs/host-consumer-contract.md", "test/contract", "LICENSE"]` — 发布前使用 `npm publish --dry-run` 检查 tarball。
 - `repository.url` 使用 `git+https://...` 格式（或运行 `npm pkg fix`）。
-- 当前版本：`0.5.1`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
+- 当前版本：`0.8.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
 
 ### npm 2026 政策变化（TOTP 停止 + bypass token 限制）
 - ❌ 不再支持新的 TOTP 注册（`enable-2fa` 返回 404）。

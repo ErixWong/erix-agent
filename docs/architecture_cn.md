@@ -184,6 +184,8 @@ runToolLoop({
   finalGuardMaxRetries = 2,
   finalGuardTimeoutMs = 30000,
   maxTokenContinuations = 3,
+  toolResultTtl = 2,
+  toolResultFoldMinTokens = 4000,
   context,
   todoStateProvider,
   semanticStateProvider,
@@ -243,6 +245,7 @@ runToolLoop({
 #### 完成、重试与终止
 
 - `retry` 是选择启用的。`false` 或省略表示不重试提供器。使用对象时，`attempts` 默认为初始调用之后重试 `2` 次，`backoffBaseMs` 默认为 `1500`，`backoffMaxMs` 默认为 `10000`，`sleepImpl` 默认为循环中支持 abort 的 sleeper。仅标记为 `retryable` 的错误会重试。
+- 存在但没有文本、工具调用或 reasoning block 的 assistant 消息会被标记为可重试。`retry: {}` 因此会在初始调用后默认重试两次；CLI 读取 `ERIX_RETRY_ATTEMPTS`（默认 `2`）使用同一策略。
 - `completion` 默认为 `{ signals: [], maxNoToolRounds: 3 }`。完成信号可以停止无工具响应；工具使用后，无工具连续轮次在达到 `maxNoToolRounds` 时停止。`completion: false` 会禁用此策略。
 - `stallDetection` 默认为 `{ window: 4, mode: "consecutive" }`：整个窗口内必须是同一个工具签名。传 `{ mode: "appear" }` 表示窗口内出现过同一签名即判停滞，传 `false` 会禁用检测。除非选项显式为 `false`，否则 `ERIX_STALL_MODE` 可以提供该模式。
 - `maxTokenContinuations` 默认为 `3`。因此，以 `stopReason === "max_tokens"` 结束的响应可以在同一轮中最多接收三次续接调用。
@@ -336,6 +339,8 @@ reflection: {
 
 governor 是确定性的且无副作用。它处理重复错误、记忆丢失响应、无工具连续轮次、停滞连续轮次、时间截止、reflection 扩展和完成。reflection 扩展会将轮次增加 `extensionStep`，上限为 `maxRoundsCap`，最多进行 `maxExtensions` 次。judge 和 reflection 使用的任务简述按以下顺序选择：`task`、`context.task`，然后是入口 transcript 中最新的 user 文本。
 
+Judge 拦截使用 6,000 token 的会话预算；round judge 请求最多输出 1,024 token，并设置 `reasoning_effort: "none"`。原始 judge 输出保留在 `judge.log` 中。最终预算轮次始终发送不带工具的请求。
+
 ### 3.3 压缩
 
 ```js
@@ -381,6 +386,10 @@ createFoldLlmStrategy({
 
 当配置的策略仍使请求超出预算时，循环首先回退到保留数为零的滑动窗口，然后使用确定性的安全截断。最终回退会按需裁剪未受保护的字段、移除图像、清空工具输入并降级受保护消息；`compactionStats[].protectedDowngraded` 会记录这类降级。无法容纳的单个受保护消息会产生 `KitError("invalid_budget", ...)`。
 
+#### Tool-result TTL 折叠
+
+独立于上下文压缩，旧的或较大的工具结果可以在 provider request view 中折叠。`toolResultTtl` 默认是 `2` 轮（`0` 表示禁用），`toolResultFoldMinTokens` 默认是估算的 `4000` token。在 `age === ttl - 1` 时，warning round 会要求模型使用 `note_take` 提取重要事实；达到 TTL 后，request view 会将结果替换为 navigation digest，并在适合的 JSON 内容中附带 JSON skeleton。checkpoint 和 transcript 持久化保留完整工具结果文本。`note_*`、todo、错误以及显式保护的结果不会折叠。
+
 ### 3.4 模型配置提供器
 
 ```js
@@ -401,7 +410,6 @@ resolveApiKey(config = {})
  * @typedef {Object} TranscriptStore
  * @property {(runId:string, record:object) => Promise<void>} appendRound
  * @property {(runId:string) => Promise<object[]>} load
- * @property {(runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string|object>} recall
  * @property {(runId:string, state:string) => Promise<void>} markRunState
  * @property {(runId:string, state:object) => Promise<void>} saveRunState
  * @property {(runId:string) => Promise<object|undefined>} loadRunState
@@ -413,11 +421,9 @@ resolveApiKey(config = {})
 
 内存实现是进程内 `Map` 的克隆。文件实现将每行一个 JSON 对象存储在 `<safeRunId(runId)>.jsonl` 中，并将当前运行状态存储在 `<safeRunId(runId)>.state.json`、最新 checkpoint 存储在 `<safeRunId(runId)>.checkpoint.json` 中。`appendRound` 通过 `dedupKey`、`roundKey` 或存储器生成的 run/round key 实现幂等。
 
-旧版位置参数形式 `recall(runId, fromRound?, toRound?, pattern?)` 返回字符串。对象形式支持包括 `artifactRef`、`limit`、`cursor` 和 `maxBytes` 在内的有界 recall 选项，并返回 `{ text, truncated, status, nextCursor?, error? }`。游标绑定到 run、范围、模式、限制、产物引用和源版本。缺失的记录或范围可以报告为 `unrecoverable`；源或参数发生变化时报告 `stale`；JSONL 记录过大时报告 `record_too_large`。
-
 该存储器设计为每个 `runId` 和每个进程一个写入方。它会修复缺少末尾换行符的完整 JSONL 记录，并隔离不完整的尾部片段。跨进程锁定不属于存储器契约。
 
-`runToolLoop` 在提供 store 时默认使用 `persistence: "required"`，并在 provider 调用前校验全部九个方法；`persistence: "none"` 是显式的完全 no-op 模式。required 写入复用 loop retry 策略，重试耗尽后通过 `diagnostics.error` 发出 `persistence_error`，并以 `persistence_failed` 终止。checkpoint 在工具前后都执行：前置失败报告 `sideEffect: "not_started"` 且阻止工具执行；后置失败报告 `sideEffect: "executed_uncommitted"`，同时保留 `checkpoint_failed` 错误类。恢复会按原始顺序重放待处理的工具调用；宿主仍必须使有副作用的 `executeTool` 实现具备幂等性。
+`runToolLoop` 在提供 store 时默认使用 `persistence: "required"`，并在 provider 调用前校验全部八个方法；`persistence: "none"` 是显式的完全 no-op 模式。required 写入复用 loop retry 策略，重试耗尽后通过 `diagnostics.error` 发出 `persistence_error`，并以 `persistence_failed` 终止。checkpoint 在工具前后都执行：前置失败报告 `sideEffect: "not_started"` 且阻止工具执行；后置失败报告 `sideEffect: "executed_uncommitted"`，同时保留 `checkpoint_failed` 错误类。恢复会按原始顺序重放待处理的工具调用；宿主仍必须使有副作用的 `executeTool` 实现具备幂等性。
 
 安全文件名命名空间会让匹配 `[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*` 的简单 ID 保持可读，但 `"."`、`".."` 和保留的 `run-h-` 前缀除外。其他 ID 会变成 `run-h-` 加其 SHA-256 摘要的前 24 个十六进制字符。
 
@@ -441,7 +447,7 @@ createCompositeToolProvider({ providers })
 
 执行器映射是由代码拥有的能力集合。`ToolProvider` 选择 schema，并可以覆盖描述和约束，但不能引入注册表中不存在的执行器。对于此类 schema，`resolveTools` 会以 `KitError("tool_unknown_executor", ...)` 失败。注册表执行会在调用执行器前校验 `required`、属性 `type` 和 `maxLength`；无效输入会变成错误字符串，不会到达执行器。不使用 `createToolRegistry` 的直接 `runToolLoop` 调用方须负责自己的输入校验。
 
-static 和 JSON-file 提供器选择 `sel.set` 或 `default`。composite 提供器按提供器顺序以名称合并 schema。`erix-agent/tools` 子路径还导出 `createRecallTool`、工具注册表和工具 provider。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集（原有的 path-jail 与 file-tools 助手已在 0.5.1 窗口移除；按 ADR-009，本库不提供安全边界）。
+static 和 JSON-file 提供器选择 `sel.set` 或 `default`。composite 提供器按提供器顺序以名称合并 schema。`erix-agent/tools` 子路径导出工具注册表和工具 provider。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集（原有的 path-jail 与 file-tools 助手已在 0.5.1 窗口移除；按 ADR-009，本库不提供安全边界）。模型侧取回采用 note-first：先使用 `note_list`，再使用 `note_read`；transcript recall API 已在 0.8.0 退役。
 
 ## 4. 源码布局
 
@@ -458,6 +464,7 @@ src/
 │   ├── checkpoint-executor.js# 工具前后检查点与单轮聚合闸门
 │   ├── budget.js             # 预算校验与状态克隆辅助函数
 │   ├── aggregate-budget.js   # 单轮聚合输出闸门（issue #32）
+│   ├── tool-result-ttl.js    # 旧工具结果的 request-view TTL 折叠（issue #32）
 │   ├── termination.js        # 终态归类
 │   ├── resume-manager.js     # 断点恢复与 run-state 应用
 │   ├── error-ledger.js       # 重复错误记账
@@ -487,7 +494,6 @@ src/
 │   ├── helpers.js            # 共享的折叠选择与钩子辅助函数
 │   └── sliding-window.js     # 整轮滑动窗口折叠
 ├── store/
-│   ├── bounded-recall.js     # 有界、基于游标的 recall 实现
 │   ├── file.js               # JSONL transcript、状态与 checkpoint 存储
 │   ├── memory.js             # 进程内 transcript、状态与 checkpoint 存储
 │   └── notes.js              # 宿主侧 notes 存储
@@ -504,7 +510,6 @@ src/
 └── tools/
     ├── index.js               # erix-agent/tools 子路径导出
     ├── providers.js           # static、JSON-file 和 composite ToolProvider
-    ├── recall.js              # 有界 transcript recall 工具适配器
     └── registry.js             # 由代码拥有的执行器/schema 注册表
 ```
 
@@ -516,7 +521,7 @@ src/
 2. 规范工具调用轮次按完整的 assistant/tool-result 组折叠，因此正常压缩不会产生孤立的工具消息。
 3. 整轮策略会将 system 消息和首个真实 user 消息保留在头部。如果请求仍超出预算，紧急安全截断回退可以减少或移除未受保护的内容。
 4. LLM 生成的折叠摘要在插入上下文前会经过确定性的尺寸强制。
-5. 折叠内容以 `foldedPayload` 返回，并在配置了 `TranscriptStore` 时包含于持久化轮次记录中；折叠改变模型视图，而不是归档源。
+5. 上下文压缩可以返回用于持久化的 `foldedPayload`；tool-result TTL 折叠只改变 provider request view，checkpoint 保留完整的工具结果文本。
 6. 库源码中不嵌入 secret。API key 可以直接提供，也可以通过 `apiKeyEnv` 和 `apiKeyFile` 间接解析。
 7. 执行器注册表由代码拥有。JSON 或其他提供器数据可以选择和约束暴露的 schema，但不能添加可执行能力。
 8. 只有 `verification.status === "verified"` 这一结果状态允许宿主将 `finalText` 视为经过 final-guard 验证。`skipped`、`unverified` 和 `error` 需要宿主按自身规则处理。
