@@ -1,23 +1,21 @@
 // 工具结果 TTL 折叠（issue #35）：已消费的大体积 tool_result 在存活 ttl 轮后，
-// 从发往 provider 的请求视图里替换为占位符（recall 配方指向 checkpoint 全文档案）。
+// 从发往 provider 的请求视图里替换为占位符。
 // 纯函数：返回浅拷贝视图，不改原数组、不改原块对象；ctx.messages 始终保留全文，
-// checkpoint/归档/recall 语义不受影响。叠加在既有压缩（fold-statistical 等）之上，
+// checkpoint/归档语义不受影响。叠加在既有压缩（fold-statistical 等）之上，
 // 互不干扰。
 //
 // 增强（issue #35 探索项，v4 A/B 实测驱动）：
 // 1. 预警轮：age === ttl-1（下一轮即折叠）的大结果，content 末尾追加一行预警，
 //    提示模型趁全文在场用 note_take 记录要点（拷贝块后追加，绝不动原块）。
-// 2. 结构化导航摘要：折叠占位符内嵌确定性 digest（定义行签名 + 行号），
-//    recall 从全文重读升级为精确取段。
+// 2. 结构化导航摘要：折叠占位符内嵌确定性 digest（定义行签名 + 行号）。
 
 import { estimateTokens } from "../tokens.js";
 
 export const TOOL_RESULT_TTL_DEFAULT = 2;
 export const TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT = 4000;
 
-// recall / note_* / todo_* 的结果折叠净收益为负（recall 本身就是取回通道，
-// note/todo 是轻量状态读数），永不折叠。
-const NEVER_FOLD_NAME = /^(recall|note_|todo_)/i;
+// note/todo 是轻量状态读数，折叠净收益为负，永不折叠。
+const NEVER_FOLD_NAME = /^(note_|todo_)/i;
 // 占位符里允许出现的原文/入参片段上限（防「换皮重发」）。
 const SNIPPET_LIMIT = 100;
 const COMMAND_SNIPPET_LIMIT = 80;
@@ -176,10 +174,8 @@ function jsonSkeleton(content) {
   return parts.length === 0 ? undefined : `骨架: ${parts.join(" · ")}`;
 }
 
-function defaultRecallHint({ round }) {
-  // recall 签名（src/tools/recall.js）：fromRound/toRound/pattern/offset/lineOffset/lineLimit。
-  // fromRound 取结果创建轮：rangeText 按轮取回归档原文。
-  return `原文已归档，recall({fromRound:${round}, pattern:"关键词"}) 可取回`;
+function defaultRetrievalHint() {
+  return "后续需要时先用 note_list 查找，再用 note_read 读取；未记录且无法确定性重算时请省略，不要猜测";
 }
 
 function shouldNeverFold(block, toolName) {
@@ -198,14 +194,14 @@ function shouldNeverFold(block, toolName) {
  * @param {number} options.currentRound 即将执行的轮号
  * @param {number} [options.ttl=2] 存活轮数：currentRound - erixRound >= ttl 时折叠
  * @param {number} [options.minTokens=4000] 低于此估算 tokens 的结果永不折叠
- * @param {(info:object)=>string} [options.recallHint] 自定义 recall 句柄文本生成
+ * @param {(info:object)=>string} [options.retrievalHint] 自定义取回提示文本生成
  * @returns {Array<object>} 折叠后的浅拷贝视图（无折叠时返回原数组引用）
  */
 export function foldToolResultsForRequest(messages, {
   currentRound,
   ttl = TOOL_RESULT_TTL_DEFAULT,
   minTokens = TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
-  recallHint,
+  retrievalHint,
 } = {}) {
   if (!Array.isArray(messages)) return messages;
   if (!Number.isFinite(currentRound) || !Number.isFinite(ttl) || !Number.isFinite(minTokens)) {
@@ -262,9 +258,9 @@ export function foldToolResultsForRequest(messages, {
       if (tokens < minTokens) continue;
 
       const inputSummary = summarizeToolCall(call.name, call.input);
-      const hint = typeof recallHint === "function"
-        ? recallHint({ name: toolName, inputSummary, tokens, round: block.erixRound })
-        : defaultRecallHint({
+      const hint = typeof retrievalHint === "function"
+        ? retrievalHint({ name: toolName, inputSummary, tokens, round: block.erixRound })
+        : defaultRetrievalHint({
           name: toolName,
           inputSummary,
           tokens,

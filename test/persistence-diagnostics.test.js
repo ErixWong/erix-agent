@@ -8,7 +8,6 @@ import { createFakeProvider } from "./helpers/fake-provider.js";
 const STORE_METHODS = [
   "appendRound",
   "load",
-  "recall",
   "saveCheckpoint",
   "appendCheckpoint",
   "loadLatestCheckpoint",

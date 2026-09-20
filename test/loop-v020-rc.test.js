@@ -679,7 +679,7 @@ test("none persistence mode ignores an incomplete store without stopping the loo
   assert.equal(errors.length, 0);
 });
 
-test("keeps fold recall round numbers global across loop compactions", async () => {
+test("keeps fold round numbers global across loop compactions", async () => {
   const provider = createFakeProvider([
     toolResponse("global-1"),
     toolResponse("global-2"),

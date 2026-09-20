@@ -1,8 +1,8 @@
 // issue #32 #2：单轮聚合输出预算（增量准入，checkpoint 兼容）
 //
-// 覆盖：聚合临界值（含 framing / stub 开销）、CJK+emoji 归档往返保真、逐条与聚合两条闸门
-// 独立、全 stub 化终止态（不死循环）、resume 一致性、opt-out（outputHygiene:false / 宿主
-// recall 覆盖 / 无窗口预算）、bounded recall 单记录上限专项（fail-closed）、intercept 不计入、
+// 覆盖：聚合临界值（含 framing / stub 开销）、CJK+emoji 归档保真、逐条与聚合两条闸门
+// 独立、全 stub 化终止态（不死循环）、resume 一致性、opt-out（outputHygiene:false /
+// 无窗口预算）、intercept 不计入、
 // 失败结果保留 is_error + 错误片段、下一轮请求看到的是替换后 stub。
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -16,7 +16,6 @@ import { createFileTranscriptStore } from "../src/store/file.js";
 import { estimateTokens } from "../src/tokens.js";
 import {
   AGGREGATE_FRAMING_TOKENS,
-  AGGREGATE_ROUND_PAYLOAD_BYTES,
   computeAggregateBudgetTokens,
   estimateInlineCost,
 } from "../src/loop/aggregate-budget.js";
@@ -28,9 +27,6 @@ const AGGREGATE_BUDGET = computeAggregateBudgetTokens(BUDGET_BASE);
 const BIG_LIMIT = { limit: 100000 }; // 关掉逐条阈值，只考察聚合层
 
 const AGGREGATE_STUB = /本轮工具输出已超单轮聚合预算/u;
-const AGGREGATE_UNRECOVERABLE = /原文不可恢复/u;
-// 与 src/store/file.js 的 MAX_BOUNDED_RECALL_RECORD_BYTES 对齐
-const BOUNDED_RECALL_RECORD_LIMIT = 64 * 1024;
 
 /**
  * 生成 estimateTokens() 恰好等于 target 的字符串（CJK 打底省字节 + ASCII 微调），
@@ -228,7 +224,7 @@ test("stub overhead is counted against the round budget", async () => {
   assert.ok(estimateInlineCost(contents.get("c3")) > 0, "stub 本身也计入（下一轮判定会看到）");
 });
 
-test("CJK + emoji round trip: recall returns text identical to the archived text", async () => {
+test("CJK + emoji round trip: archived text remains byte-identical", async () => {
   const marker = "尾部锚点🀄️🙂UNIQUE_TAIL";
   const huge = textOrFail(20000, { suffix: marker });
   const runId = "agg-cjk";
@@ -236,21 +232,21 @@ test("CJK + emoji round trip: recall returns text identical to the archived text
   const archived = roundToolOutputs(await store.load(runId), 1);
   assert.equal(archived.length, 1);
   assert.equal(archived[0].content, huge, "归档文本 == 原文（含 CJK/emoji）");
-  const recalled = await store.recall(runId, 1, 1, marker);
-  assert.equal(recalled, huge, "recall 取回文本 == 归档文本");
+  assert.equal(archived[0].content.includes(marker), true);
 });
 
-test("file store: aggregated archive is recallable and byte-identical", async () => {
+test("file store: aggregated archive is byte-identical", async () => {
   const dir = await mkdtemp(join(tmpdir(), "erix-agg-file-"));
   try {
     const store = createFileTranscriptStore({ dir });
     const marker = "文件通道尾部锚点🔎";
     const huge = textOrFail(20000, { suffix: marker });
     await runRound({ runId: "agg-file", outputs: ["small-head", huge], store });
-    assert.equal(await store.recall("agg-file", 1, 1, marker), huge);
-    const bounded = await store.recall({ runId: "agg-file", pattern: marker });
-    assert.equal(bounded.status, "ok");
-    assert.equal(String(bounded.text).includes(marker), true);
+    const records = await store.load("agg-file");
+    const archived = roundToolOutputs(records, 1);
+    assert.equal(archived.length, 1);
+    assert.equal(archived[0].content, huge);
+    assert.equal(archived[0].content.includes(marker), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -375,98 +371,6 @@ test("opt-out: no budgetTokens (no window config) keeps the aggregate layer off"
   });
   assert.deepEqual(roundToolOutputs(await store.load(runId), 1), []);
   assert.deepEqual(aggregateEvents(events), []);
-});
-
-test("opt-out: a host-provided recall tool keeps owning recall; aggregation still archives", async () => {
-  const huge = textOrFail(20000);
-  const hostCalls = [];
-  const hostTools = [{
-    name: "recall",
-    description: "host-owned recall",
-    inputSchema: { type: "object", properties: {} },
-  }];
-  const { result, store } = await runRound({
-    runId: "agg-host-recall",
-    outputs: [huge, "host-recall-result"],
-    responses: [
-      toolResponseCalls(["c1"]),
-      { content: [{ type: "tool_use", id: "c-recall", name: "recall", input: { pattern: "x" } }], stopReason: "tool_use" },
-      DONE,
-    ],
-    extra: {
-      tools: hostTools,
-      executeTool: async (options) => {
-        hostCalls.push(options.name);
-        return options.id === "c1" ? huge : "host-recall-result";
-      },
-    },
-  });
-  const contents = toolResultContents(result.messages);
-  assert.match(String(contents.get("c1")), AGGREGATE_STUB, "聚合层照常归档 + stub");
-  assert.equal(contents.get("c-recall"), "host-recall-result", "宿主 recall 仍由宿主服务");
-  assert.deepEqual(hostCalls, ["tool-c1", "recall"], "引擎不拦截宿主 recall");
-  assert.equal(roundToolOutputs(await store.load("agg-host-recall"), 1).length, 1);
-});
-
-test("bounded recall record limit: the aggregate layer fails closed instead of emitting a skipped record", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-agg-cap-"));
-  try {
-    const store = createFileTranscriptStore({ dir });
-    // 先确认该上限真实存在：手写一条超大记录会被 bounded recall 静默跳过
-    const oversizedText = "q".repeat(70000);
-    await store.appendRound("agg-cap-manual", {
-      round: 1,
-      ts: "2026-09-18T00:00:00.000Z",
-      messages: [{ role: "user", content: [{ type: "text", text: "q" }] }],
-      toolOutputs: [{ toolUseId: "t1", name: "big", content: oversizedText }],
-    });
-    const skipped = await store.recall({ runId: "agg-cap-manual", pattern: "qqqqq" });
-    assert.equal(skipped.error?.code, "record_too_large", "单记录上限确实存在且会静默跳过");
-
-    // 聚合层：逐条阈值放到最大 → 只考察聚合层的单轮负载封顶（显式失败，不产被跳过的记录）
-    const big = "z".repeat(30000);
-    const { result, events } = await runRound({
-      runId: "agg-cap",
-      outputs: [big, big, big],
-      budgetTokens: 60000,
-      store,
-    });
-    assert.ok(Buffer.byteLength(big, "utf8") * 2 > AGGREGATE_ROUND_PAYLOAD_BYTES);
-    const contents = toolResultContents(result.messages);
-    assert.equal(contents.get("c1"), big, "第一条内联（仍在 token 预算内）");
-    assert.match(String(contents.get("c2")), AGGREGATE_STUB);
-    assert.match(String(contents.get("c2")), AGGREGATE_UNRECOVERABLE);
-    assert.doesNotMatch(String(contents.get("c2")), /recall\(/u, "fail-closed：不得声称可 recall");
-    assert.match(String(contents.get("c3")), AGGREGATE_UNRECOVERABLE);
-    assert.deepEqual(
-      aggregateEvents(events).map((event) => [event.action, event.reason]),
-      [
-        ["unrecoverable", "archive_capacity_exceeded"],
-        ["unrecoverable", "archive_capacity_exceeded"],
-      ],
-    );
-    const records = await store.load("agg-cap");
-    // 显式失败留痕。main/ADR-016 退役了 run-state 的 `errors.archive`——「没存上」的
-    // 继任通道是错误账本（`deterministic.errors.unpersisted`），语义同一：这轮丢了 2 份原文。
-    // 账本按（端口/操作/阶段/错误）去重，故 count=1 + repeat=2。
-    const unpersisted = records.at(-1)?.runState?.deterministic?.errors?.unpersisted;
-    assert.equal(unpersisted?.count, 1, "同因失败去重为一条账");
-    assert.equal(unpersisted?.items?.[0]?.repeat, 2, "丢了两份原文，repeat 累计");
-    assert.equal(unpersisted?.items?.[0]?.port, "transcript");
-    assert.equal(unpersisted?.items?.[0]?.operation, "archiveToolOutput");
-    const record = records.find((entry) => entry.round === 1);
-    const recordBytes = Buffer.byteLength(JSON.stringify(record), "utf8");
-    assert.ok(
-      recordBytes < BOUNDED_RECALL_RECORD_LIMIT,
-      `round record 必须低于 bounded recall 单记录上限（实际 ${recordBytes}）`,
-    );
-    const recalled = await store.recall({ runId: "agg-cap", pattern: "zzzzz" });
-    assert.notEqual(recalled.status, "error");
-    assert.notEqual(recalled.error?.code, "record_too_large");
-    assert.equal(String(recalled.text).includes(big), true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
 });
 
 test("intercepted control results are neither counted nor archived", async (t) => {

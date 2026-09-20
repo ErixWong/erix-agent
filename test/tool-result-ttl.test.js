@@ -61,13 +61,13 @@ test("低于 minTokens 的结果永不折叠", () => {
   assert.equal(view, messages);
 });
 
-test("占位符保留工具名/入参摘要/recall 句柄，且引用原文为 0", () => {
+test("占位符保留工具名/入参摘要/笔记提示，且引用原文为 0", () => {
   const messages = conversation();
   const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
   const folded = resultBlock(view);
   assert.match(folded.content, /【已折叠·TTL】scan path=src\/a\.js offset=0 limit=100/);
   assert.match(folded.content, /约 \d+ tokens，r1 读取/);
-  assert.match(folded.content, /recall\(\{fromRound:1, pattern:"关键词"\}\)/);
+  assert.match(folded.content, /先用 note_list 查找，再用 note_read 读取/);
   // 配对信息不丢（OpenAI 协议要求 tool_use 必有配对结果）
   assert.equal(folded.type, "tool_result");
   assert.equal(folded.tool_use_id, "call-1");
@@ -117,11 +117,10 @@ test("JSON 骨架带 error 摘要", () => {
   assert.match(resultBlock(view).content, /骨架: success=false · error=boom/);
 });
 
-test("永不折叠名单：is_error / recall / note_* / todo_* / noFold", () => {
+test("永不折叠名单：is_error / note_* / todo_* / noFold", () => {
   for (const [label, options] of [
     ["is_error", { extraResultFields: { is_error: true } }],
     ["noFold", { extraResultFields: { noFold: true } }],
-    ["recall", { toolName: "recall", input: { fromRound: 1 } }],
     ["note_read", { toolName: "note_read", input: {} }],
     ["todo_add", { toolName: "todo_add", input: {} }],
   ]) {
@@ -165,12 +164,12 @@ test("浅拷贝：不改原数组、不改原块对象，未折叠消息保持�
   assert.equal(view[1], messages[1]);
 });
 
-test("自定义 recallHint 生效", () => {
+test("自定义 retrievalHint 生效", () => {
   const messages = conversation();
   const view = foldToolResultsForRequest(messages, {
     currentRound: 3,
     ttl: 2,
-    recallHint: ({ round, tokens }) => `自定义取回 r${round}/${tokens}`,
+    retrievalHint: ({ round, tokens }) => `自定义取回 r${round}/${tokens}`,
   });
   assert.match(resultBlock(view).content, /自定义取回 r1\/\d+/);
 });
@@ -227,8 +226,8 @@ test("预警轮：体积低于 minTokens 的结果不预警", () => {
   assert.equal(view, messages);
 });
 
-test("预警轮：never-fold 名单（recall/note_*）不预警", () => {
-  for (const toolName of ["recall", "note_read", "todo_add"]) {
+test("预警轮：never-fold 名单（note_*/todo_*）不预警", () => {
+  for (const toolName of ["note_read", "todo_add"]) {
     const messages = conversation({ toolName, input: {} });
     const view = foldToolResultsForRequest(messages, { currentRound: 2, ttl: 2 });
     assert.equal(view, messages, `${toolName} must not warn`);

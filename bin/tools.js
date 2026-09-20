@@ -158,7 +158,8 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 上下文会被折叠，早期细节你会真的忘记——不是记不清，是没有。
 拿到后面还要用的具体值/决定时，立刻 note_take；
 需要早期细节而想不起来时，先 note_list 再 note_read，不要猜。
-重跑同一命令可能得到不同的值；需要早期精确值时用 recall 取回，不要凭记忆。
+重跑同一命令可能得到不同的值；后续需要精确值时先 note_take 记下，不要凭记忆。
+内部思考（reasoning）一律使用英文；对用户的可见输出不受此限，跟随用户语言。
 终稿的结束协议 JSON 必须带 findings 字段，只把归档输出中出现过的字面值声明为 label→精确值（如 "findings":{"nonce":"abc123"}）；不要声明计数/次数/引用等派生结论；没有关键值时省略该字段。
 
 [工具纪律]
@@ -197,7 +198,7 @@ export function buildCliToolsSystemPrompt() {
 
 export function buildArchiveNotice(archiveDir) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
-  return "\n\n[工具输出归档]\n大输出已由引擎全量归档。需要早期原文时用 recall({ pattern: \"关键词\" }) 搜索，或 recall({ fromRound, lineOffset, lineLimit }) 按行直读某段原文；需要精确值时用 note_list/note_read 读取；不要凭记忆补值，不要重跑命令。";
+  return "\n\n[工具输出归档]\n大输出已由引擎全量归档。后续需要精确值时先用 note_list 查找记录，再用 note_read 读取；若未记录且无法确定性重算，请省略对应 findings 声明，不要凭记忆补值，也不要重跑命令。";
 }
 
 
@@ -681,8 +682,7 @@ export function createCliTools({
     }
     const normalizedInput = normalizeToolInput(input);
     lastToolMetadata = { name };
-    // ADR-016：重跑值错配风险由提示语一行承担（"重跑可能得到不同的值，需要早期
-    // 精确值用 recall 取回"），引擎不再做幂等分类/重跑检测/捕值。
+    // ADR-016：重跑值错配风险由提示语承担，引擎不做幂等分类/重跑检测/捕值。
     const result = await executor(normalizedInput);
     return result;
   }

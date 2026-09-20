@@ -69,7 +69,7 @@ test("appends a summary to array user content without adding a message", async (
   assert.equal(result.messages[0].content.length, 2);
 });
 
-test("omits recall from the default summary and accepts an injected recovery hint", async () => {
+test("keeps the default summary free of retired retrieval recipes and accepts an injected recovery hint", async () => {
   const messages = [
     { role: "user", content: "request" },
     { role: "assistant", content: [{ type: "text", text: "old" }] },
@@ -77,8 +77,6 @@ test("omits recall from the default summary and accepts an injected recovery hin
   ];
   const defaultResult = await createFoldStatisticalStrategy().compact(messages, { keepRounds: 1 });
   const defaultSummary = defaultResult.messages[0].content[0].text;
-  assert.doesNotMatch(defaultSummary, /recall/i);
-
   const hint = "恢复提示：请查看 durable-notes.md";
   const customResult = await createFoldStatisticalStrategy({ recoveryHint: hint })
     .compact(messages, { keepRounds: 1 });
@@ -157,7 +155,7 @@ test("call-level undefined does not clear factory options", async () => {
 });
 
 test("legacy fold summaries are read but never removed from user content", async () => {
-  const legacy = "【上下文折叠】早期第 1–1 轮（共 1 轮）已折叠。工具足迹：无。可用 recall(pattern: \"关键词\") 搜回细节，或 recall(fromRound: 1, toRound: 1) 取原文（大段可能截断，优先关键词）。";
+  const legacy = "【上下文折叠】早期第 1–1 轮（共 1 轮）已折叠。工具足迹：无。后续请先用 note_list 查找，再用 note_read 读取精确值。";
   const result = await createFoldStatisticalStrategy().compact([
     { role: "user", content: legacy },
     { role: "assistant", content: "old" },

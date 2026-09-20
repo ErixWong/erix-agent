@@ -240,7 +240,7 @@ test("runRepl aborts the active loop on SIGINT and keeps readline open", async (
   }
 });
 
-test("runRepl resumes from the transcript store with the engine-standard recall tool (ADR-015)", async () => {
+test("runRepl resumes from the transcript store without an engine-owned retrieval tool", async () => {
   const dir = await mkdtemp(join(tmpdir(), "erix-repl-store-test-"));
   const input = new PassThrough();
   input.isTTY = true;
@@ -264,7 +264,6 @@ test("runRepl resumes from the transcript store with the engine-standard recall 
     await run;
 
     assert.equal(provider.requests.length, 2);
-    assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), true);
     // ADR-015 4a：归档提示零路径、不提 ResourceStore
     assert.match(provider.requests[0].system, /大输出已由引擎全量归档/u);
     assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/repl-store`));

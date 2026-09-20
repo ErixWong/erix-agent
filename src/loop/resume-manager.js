@@ -203,7 +203,7 @@ export async function restoreResume(ctx) {
               ctx.resumeCheckpointResults.set(entry.toolUseId, entry.toolResult);
             }
           }
-          // ADR-015：崩溃前已归档的全量输出回填引擎缓冲（byte fidelity：recall 仍可取回）
+          // 崩溃前已归档的全量输出回填引擎缓冲，保持证据的字节保真。
           for (const output of ctx.resumeCheckpoint.toolOutputs ?? []) {
             if (typeof output?.content === "string" && output.content.length > 0) {
               ctx.archivedOutputs.push({
@@ -242,7 +242,7 @@ export async function restoreResume(ctx) {
     }
   } else if (ctx.store && ctx.runId !== undefined && ctx.messages.length > 0) {
     // 种子记录：初始消息（initialMessages/initialUserMessage）先入档，
-    // 否则它们永不在 store 中——recall 在 fold 后找不到被折的初始历史（ADR-002 档案完整性）
+    // 否则它们永不在 store 中，fold 后的初始历史将无法用于恢复（ADR-002 档案完整性）。
     const persist = ctx.persist;
     const persisted = await persist("appendRound", ctx.runId, {
       round: 0,

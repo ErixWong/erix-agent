@@ -1,4 +1,3 @@
-import { boundedRecall } from "./bounded-recall.js";
 import { boundRunState } from "../run-state.js";
 
 /**
@@ -22,28 +21,12 @@ function copyRecord(record) {
   return structuredClone(record);
 }
 
-function blocksFor(content) {
-  if (typeof content === "string") return [{ type: "text", text: content }];
-  return Array.isArray(content) ? content : [];
-}
-
-function blockText(block) {
-  if (!block || typeof block !== "object") return null;
-  if (block.type === "text") return String(block.text ?? "");
-  if (block.type === "tool_use") {
-    return `${block.name ?? ""}${JSON.stringify(block.input)}`;
-  }
-  if (block.type === "tool_result") return String(block.content ?? "");
-  return null;
-}
-
 /**
  * Create an in-process transcript store backed by a Map.
  *
  * @returns {{
  *   appendRound: (runId:string, record:RoundRecord) => Promise<void>,
  *   load: (runId:string) => Promise<RoundRecord[]>,
- *   recall: (runId:string, fromRound?:number, toRound?:number, pattern?:string) => Promise<string|object>,
  *   markRunState: (runId:string, state:string) => Promise<void>,
  *   saveRunState: (runId:string, state:object) => Promise<void>,
  *   loadRunState: (runId:string) => Promise<object|undefined>,
@@ -54,7 +37,6 @@ function blockText(block) {
  */
 export function createMemoryTranscriptStore() {
   const transcripts = new Map();
-  const revisions = new Map();
   const checkpoints = new Map();
   const runStates = new Map();
 
@@ -71,64 +53,10 @@ export function createMemoryTranscriptStore() {
       if (records.some((existing) => recordKey(runId, existing) === key)) return;
       records.push(copyRecord(record));
       transcripts.set(runId, records);
-      revisions.set(runId, (revisions.get(runId) ?? 0) + 1);
     },
 
     async load(runId) {
       return (transcripts.get(runId) ?? []).map(copyRecord);
-    },
-
-    async recall(runIdOrOptions, fromRound, toRound, pattern) {
-      if (
-        runIdOrOptions
-        && typeof runIdOrOptions === "object"
-        && !Array.isArray(runIdOrOptions)
-      ) {
-        const options = runIdOrOptions;
-        const runId = options.runId;
-        return boundedRecall({
-          ...options,
-          runId,
-          sourceVersion: revisions.get(runId) ?? 0,
-          records: async function* records() {
-            for (const record of transcripts.get(runId) ?? []) yield record;
-          },
-        });
-      }
-
-      const runId = runIdOrOptions;
-      const records = transcripts.get(runId) ?? [];
-      const fragments = [];
-
-      for (const record of records) {
-        if (fromRound !== undefined && record.round < fromRound) continue;
-        if (toRound !== undefined && record.round > toRound) continue;
-
-        for (const message of record.messages ?? []) {
-          for (const block of blocksFor(message?.content)) {
-            const text = blockText(block);
-            if (text !== null) fragments.push(text);
-          }
-        }
-        // 折叠原文同属档案，一并纳入检索（fold 只影响视图）
-        for (const message of record.foldedPayload ?? []) {
-          for (const block of blocksFor(message?.content)) {
-            const text = blockText(block);
-            if (text !== null) fragments.push(text);
-          }
-        }
-        // ADR-015：全量归档输出同属档案（输出卫生的取回通道）
-        for (const output of record.toolOutputs ?? []) {
-          if (typeof output?.content === "string" && output.content.length > 0) {
-            fragments.push(output.content);
-          }
-        }
-      }
-
-      const selected = pattern === undefined
-        ? fragments
-        : fragments.filter((fragment) => fragment.includes(pattern));
-      return selected.join("\n");
     },
 
     async markRunState(runId, state) {

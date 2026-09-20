@@ -23,7 +23,6 @@ export const READONLY_INTERCEPT_TOOLS = new Set([
   "rg",
   "note_read",
   "note_list",
-  "recall",
 ]);
 
 // judge 原文落盘前的防爆日志截断（2026-09-20）：单条 intercept 记录最多 2000 字符。
@@ -160,7 +159,7 @@ export function createCheckpointExecutor(ctx) {
       };
     }
     if (decision.action === "unrecoverable") {
-      // fail-closed：不归档、不承诺 recall，显式计数 + 事件（宁丢不骗）。
+      // fail-closed：不归档，显式计数 + 事件（宁丢不骗）。
       // main/ADR-016 退役了 run-state 的 `errors.archive` 计数，「没存上」改入错误账本
       // （`deterministic.errors.unpersisted`）——语义同一：这一份原文被丢了。
       ctx.errorLedger?.record?.({
@@ -263,7 +262,7 @@ export function createCheckpointExecutor(ctx) {
       }
     }
 
-    // ADR-015 输出卫生：超限结果全量入档（round record 的 toolOutputs），上下文视图留 stub + recall 配方。
+    // 输出卫生：超限结果全量入档（round record 的 toolOutputs），上下文视图留可执行的笔记提示。
     // 在 onToolResult 重写之后执行：宿主的改写/脱敏先行，引擎归档的是宿主最终交出的内容。
     if (ctx.outputHygieneEnabled && execution.content.length > ctx.outputHygieneLimit) {
       const fullText = execution.content;
@@ -277,9 +276,10 @@ export function createCheckpointExecutor(ctx) {
         ...execution,
         content: `${fullText.slice(0, ctx.outputHygieneLimit)}`
           + `\n[完整输出已由引擎归档（第 ${round} 轮，共 ${fullText.length} 字符）。`
-          + `需要原文：recall({ round: ${round}, pattern: "关键词" })；不要重跑有副作用的命令。`
+          + "后续需要该值：先用 note_list 查找记录，再用 note_read 读取；"
+          + "若未记录且无法确定性重算，请省略对应 findings 声明，不要猜测。不要重跑有副作用的命令。"
           + `若原命令有副作用，不要仅凭截断输出判断成败，也不要为补全输出重跑有副作用的命令；`
-          + `用 recall 取回原文或改用只读方式复核。]`,
+          + "改用只读方式复核。]",
       };
     }
     // 单轮聚合预算：逐条阈值与聚合阈值**串联且独立**——逐条先跑，聚合再判；

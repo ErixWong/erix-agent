@@ -500,7 +500,7 @@ test("tool result TTL fold: placeholder replaces aged large results in later req
   const foldedViews = resultContentAt(2);
   assert.equal(foldedViews.length, 2);
   assert.match(foldedViews[0], /【已折叠·TTL】scan path/);
-  assert.match(foldedViews[0], /recall\(\{fromRound:1/);
+  assert.match(foldedViews[0], /先用 note_list 查找，再用 note_read 读取/);
   assert.ok(!foldedViews[0].includes("xxxx"));
   // r2 产生的结果 age=1 === ttl-1 → 不折，预警行在场
   assert.ok(foldedViews[1].startsWith(big));

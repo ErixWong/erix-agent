@@ -2023,8 +2023,8 @@ test("readonly tools pass through interception even when off-track, exec stays b
 
 test("readonly pass-through also applies to uncertain direction", async () => {
   const provider = createFakeProvider([
-    toolResponse("first", "recall", { pattern: "nonce" }),
-    toolResponse("second", "recall", { pattern: "anchor" }),
+    toolResponse("first", "note_read", { key: "nonce" }),
+    toolResponse("second", "note_read", { key: "anchor" }),
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
   const decision = {
@@ -2043,7 +2043,7 @@ test("readonly pass-through also applies to uncertain direction", async () => {
     provider,
     initialUserMessage: "task",
     executeTool: async ({ input }) => {
-      executed.push(input.pattern);
+      executed.push(input.key);
       return "ok";
     },
     maxRounds: 5,
@@ -2060,7 +2060,7 @@ test("readonly pass-through also applies to uncertain direction", async () => {
   assert.deepEqual(executed, ["nonce", "anchor"]);
   assert.deepEqual(events, [{
     kind: "intercept",
-    tool: { id: "second", name: "recall", input: { pattern: "anchor" } },
+    tool: { id: "second", name: "note_read", input: { key: "anchor" } },
     decision,
     action: "executed",
     passThrough: "readonly",

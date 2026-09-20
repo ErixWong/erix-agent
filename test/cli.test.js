@@ -23,7 +23,6 @@ import { createFileTranscriptStore } from "../src/store/file.js";
 import { createFileNotesStore } from "../src/store/notes.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { runToolLoop } from "../src/loop.js";
-import { createRecallTool } from "../src/tools/index.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 function normalizeGoldenEnvironment(value, cwd, fixtureCwd) {
@@ -49,7 +48,7 @@ function normalizeGoldenEnvironment(value, cwd, fixtureCwd) {
 test("CLI prompt constrains provenance of one-shot values", () => {
   // ADR-016：重跑风险降为提示语一行（不再提幂等分类）
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /重跑同一命令可能得到不同的值/u);
-  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /需要早期精确值时用 recall 取回/u);
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /后续需要精确值时先 note_take 记下/u);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /具体数值必须来自当前工具返回或 note_read/u);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不要主动读取密钥、凭据或 \.env/u);
 });
@@ -173,7 +172,7 @@ test("archive guidance is present once in the system prompt", async () => {
     // ADR-015 4a：归档提示单次出现、零路径、不提 ResourceStore/opaque 工件
     assert.equal((system.match(/\[工具输出归档\]/u) ?? []).length, 1);
     assert.match(system, /大输出已由引擎全量归档/u);
-    assert.match(system, /recall\(\{ pattern/u);
+    assert.match(system, /先用 note_list 查找记录，再用 note_read 读取/u);
     assert.doesNotMatch(system, new RegExp(`${dir}/outputs/archive-guidance-run`));
     assert.doesNotMatch(system, /ResourceStore|opaque 工件|明确的归档文件|归档目录：/u);
     assert.doesNotMatch(system, /幂等/u);
@@ -404,7 +403,7 @@ test("runChat rejects a --tools allowlist that filters out every tool", async ()
   }
 });
 
-test("chat loop wires a file transcript store with the engine-standard recall tool (ADR-015)", async () => {
+test("chat loop wires a file transcript store without an engine-owned retrieval tool", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-test-"));
   try {
     const provider = createFakeProvider([
@@ -421,7 +420,6 @@ test("chat loop wires a file transcript store with the engine-standard recall to
       maxRounds: 2,
     });
 
-    assert.equal(provider.requests[0].tools.some((tool) => tool.name === "recall"), true);
     assert.match(provider.requests[0].system, /大输出已由引擎全量归档/u);
     assert.doesNotMatch(provider.requests[0].system, /ResourceStore/u);
     assert.doesNotMatch(provider.requests[0].system, new RegExp(`${dir}/outputs/chat-wiring`));
@@ -474,7 +472,7 @@ test("runChat closes MCP connections when used as a module", async () => {
   }
 });
 
-test("file transcript preserves folded payload for recall", async () => {
+test("file transcript preserves folded payload", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-fold-test-"));
   try {
     const store = createFileTranscriptStore({ dir });
@@ -508,14 +506,13 @@ test("file transcript preserves folded payload for recall", async () => {
 
     const records = await store.load("fold-file");
     assert.ok(records.some((record) => Array.isArray(record.foldedPayload)));
-    const recall = createRecallTool({ store, runId: "fold-file" });
-    assert.match(await recall.execute({ pattern: "fold-me" }), /fold-me/);
+    assert.match(JSON.stringify(records), /fold-me/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("chat creates distinct default sessions and recall finds the second prompt", async () => {
+test("chat creates distinct default sessions and preserves the second prompt", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-default-session-test-"));
   try {
     const config = { model: "fake-model", maxOutputTokens: 1000 };
@@ -550,9 +547,7 @@ test("chat creates distinct default sessions and recall finds the second prompt"
       JSON.stringify(record).includes("second-prompt")
     )));
     assert.ok(secondRun);
-    const secondRunId = runIds[records.indexOf(secondRun)];
-    const recall = createRecallTool({ store, runId: secondRunId });
-    assert.match(await recall.execute({ pattern: "second-prompt" }), /second-prompt/);
+    assert.match(JSON.stringify(secondRun), /second-prompt/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

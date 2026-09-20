@@ -5,7 +5,6 @@ export const MODEL_CONFIG_RESOLVER_HINT =
 const TRANSCRIPT_STORE_METHODS = [
   "appendRound",
   "load",
-  "recall",
   "saveCheckpoint",
   "appendCheckpoint",
   "loadLatestCheckpoint",

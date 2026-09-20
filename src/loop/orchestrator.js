@@ -20,7 +20,6 @@ import {
   upsertRunStateInMessages,
   withSemanticRunState,
 } from "../run-state.js";
-import { createRecallTool } from "../tools/recall.js";
 import {
   appendAssistantContent,
   blocksFor,
@@ -79,7 +78,6 @@ export { parseReflectionDecision };
 const TRANSCRIPT_STORE_METHODS = [
   "appendRound",
   "load",
-  "recall",
   "saveCheckpoint",
   "appendCheckpoint",
   "loadLatestCheckpoint",
@@ -96,7 +94,6 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "initialUserMessage",
   "initialMessages",
   "tools",
-  "recall",
   "outputHygiene",
   "writeToolNames",
   "writeToolPathKeys",
@@ -299,13 +296,9 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   initialUserMessage?: string,
  *   initialMessages?: object[],
  *   tools?: object[],
- *   recall?: boolean, // Engine-standard transcript recall tool (ADR-015). Defaults to enabled when a store
- *                     // with load() and a runId are present; pass false to opt out. Calls to a tool named
- *                     // "recall" are served by the engine (never reach host executeTool). A host-provided
- *                     // "recall" tool definition always wins (no duplicate registration).
  *   outputHygiene?: false | { limit?: number }, // Engine-side output hygiene (ADR-015): tool results larger
  *                     // than limit characters are archived in full into the round record
- *                     // (toolOutputs) and stubbed in the context view with a recall recipe. Requires a
+ *                     // (toolOutputs) and stubbed in the context view. Requires a
  *                     // transcript store (the archive lives in the record). Defaults to enabled when a
  *                     // store is present; pass false to opt out. Default limit: 15% of the host-provided
  *                     // contextWindowTokens clamped to [8192, 100000], else 4096; an explicit limit wins.
@@ -319,9 +312,6 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *                     // incremental in arrival order: results keep declaration order and ids, nothing is
  *                     // rewritten after its checkpoint, so checkpoint/resume semantics are unchanged.
  *                     // The layer is off when budgetTokens is absent or outputHygiene is false.
- *                     // If a round's archived payload would push its record past the bounded-recall
- *                     // parser limit, the layer fails closed (stub states the origin is unrecoverable
- *                     // instead of promising recall) rather than emitting a silently skipped record.
  *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to ["writeFile"].
  *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
@@ -423,7 +413,6 @@ export async function runToolLoop(options) {
     initialUserMessage,
     initialMessages,
     tools = [],
-    recall,
     outputHygiene,
     writeToolNames = ["writeFile"],
     writeToolPathKeys = ["path", "file_path"],
@@ -515,19 +504,7 @@ export async function runToolLoop(options) {
   if (persistenceMode !== "none" && persistenceMode !== "required") {
     throw new TypeError('persistence must be "none" or "required"');
   }
-  // ADR-015：引擎标配 recall 工具（转录即档案、recall 即通道）。显式 true 但能力缺失 = 撕票，报错；
-  // 默认（未传）时能力具备才注册，不做静默承诺。宿主自带 recall 工具定义时宿主优先。
-  if (recall !== undefined && typeof recall !== "boolean") {
-    throw new TypeError("recall must be a boolean");
-  }
-  const recallCapable = store !== undefined
-    && typeof store.load === "function"
-    && typeof runId === "string"
-    && runId.length > 0;
-  if (recall === true && !recallCapable) {
-    throw new TypeError("recall: true requires a store with load() and a non-empty runId");
-  }
-  // ADR-015 输出卫生：档案在 round record（toolOutputs）里，必须有 store 落盘，否则 stub 就是纯丢失。
+  // 输出卫生：档案在 round record（toolOutputs）里，必须有 store 落盘，否则 stub 就是纯丢失。
   if (outputHygiene !== undefined && outputHygiene !== false
     && (outputHygiene === null || typeof outputHygiene !== "object"
       || Array.isArray(outputHygiene))) {
@@ -557,23 +534,7 @@ export async function runToolLoop(options) {
       );
     }
   }
-  // 引擎标配 recall（ADR-015）：宿主工具面已有同名 "recall" 定义时宿主优先，不重复注册/拦截。
-  const recallEnabled = recallCapable && recall !== false;
-  const engineRecallTool = recallEnabled
-    && !tools.some((tool) => tool?.name === "recall")
-    ? createRecallTool({ store, runId })
-    : undefined;
-  const providerTools = engineRecallTool === undefined
-    ? tools
-    : [...tools, engineRecallTool.schema];
-  const executeToolWithRecall = engineRecallTool === undefined
-    ? executeTool
-    : async (structuredOptions) => {
-      if (structuredOptions?.name === "recall") {
-        return engineRecallTool.execute(structuredOptions.input);
-      }
-      return executeTool(structuredOptions);
-    };
+  const providerTools = tools;
 
   const retryOptions = retry && typeof retry === "object" ? retry : null;
   const retryAttempts = retryOptions === null
@@ -1371,7 +1332,7 @@ export async function runToolLoop(options) {
           toolUseId: toolResult.tool_use_id,
           toolResult: cloneState(toolResult),
         })),
-        // ADR-015：本 round 已归档的全量输出随 checkpoint 落盘，崩溃恢复后 recall 仍可兑现
+        // 本 round 已归档的全量输出随 checkpoint 落盘，保证崩溃恢复后证据仍可核验
         toolOutputs: cloneState(archivedOutputs.filter((entry) => entry.round === round)),
         ts: new Date().toISOString(),
       });
@@ -1673,7 +1634,7 @@ export async function runToolLoop(options) {
 
   const checkpointContext = {
     runId,
-    executeTool: executeToolWithRecall,
+    executeTool,
     baseToolContext,
     outputHygieneEnabled,
     outputHygieneLimit,

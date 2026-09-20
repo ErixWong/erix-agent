@@ -149,7 +149,8 @@ test("final guard revises when captures exist but the envelope declares no findi
     assert.equal(missing.action, "revise");
     assert.match(missing.message, /没有声明 findings/u);
     assert.match(missing.message, /nonce/u);
-    assert.match(missing.message, /recall/u);
+    assert.match(missing.message, /note_list.*note_read/u);
+    assert.match(missing.message, /省略对应 findings 声明/u);
     // 显式空 findings 同样不算声明
     const empty = await guard({ finalText: "x", findings: {} });
     assert.equal(empty.action, "revise");

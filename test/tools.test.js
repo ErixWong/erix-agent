@@ -298,7 +298,6 @@ test("reruns return fresh output without guidance (ADR-016)", async () => {
 
     assert.match(second, /\n500/u);
     assert.doesNotMatch(second, /这是第/u);
-    assert.doesNotMatch(second, /recall\(\{ pattern/u);
   });
 });
 
