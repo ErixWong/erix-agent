@@ -3,8 +3,8 @@
 > Three charts: ① simplified data flow (PPT-level) ② module architecture ③ end-to-end sequence (one task lifecycle).
 > Terminology: **Host** = the application calling `runToolLoop` (app_container / touwaka / CLI);
 > **run** = one `runToolLoop` invocation; **canonical message** = the engine-internal CanonicalMessage/Block format;
-> **archive** = round records persisted by `TranscriptStore` (transcript-as-archive, ADR-015).
-> Plus: **mechanism deep-dives** (context shaping / checkpoint-resume / judge governance / archive & recall) and an **architecture review Q&A** at the end.
+> **archive** = round records persisted by `TranscriptStore` (transcript-as-archive); **notes** = the run-scoped key-facts store behind the note tools (note-first retrieval, ADR-016 retirement supplement).
+> Plus: **mechanism deep-dives** (context shaping / checkpoint-resume / judge governance / archive & notes) and an **architecture review Q&A** at the end.
 >
 > Sibling document (interface-contract level): [architecture.md](architecture.md); this one is "charts + why".
 
@@ -100,13 +100,12 @@ flowchart TB
     subgraph store2["store/ archive"]
         MEM["memory.js<br/>in-process Map"]
         FIL["file.js<br/>JSONL + state + checkpoint"]
-        BR["bounded-recall.js<br/>cursor-based recall (ADR-015)"]
         NOT["notes.js<br/>host-side notes storage"]
     end
 
     subgraph cfg["config / tools / run-state"]
         CFG["config/<br/>static · env · json-file · api-key"]
-        TR["tools/<br/>registry (code-owned executors)<br/>providers · recall"]
+        TR["tools/<br/>registry (code-owned executors)<br/>providers"]
         RS["run-state.js<br/>bounded deterministic run state"]
     end
 
@@ -160,7 +159,7 @@ flowchart TB
 - **The orchestration core (loop/) is the heart**: main loop, provider calls, checkpoint execution, budget, termination, resume, and error accounting are all assembled here; `reflection/` and `compact/` are side-effect-free "decision/transformation" modules only invoked by the loop.
 - **The message layer is the single protocol adaptation point**: internally there is exactly one CanonicalMessage/Block format; OpenAI and Anthropic conversions + stream assembly live in `messages/` + `providers/`. Adding a protocol means adding one pair of adapters.
 - **The CLI is not the product**: `bin/` is a verifier/debugger (chat one-shot + repl interactive + MCP/skill/final-guard implementations). The real evaluation surface is the external erix-bench headless harness; CLI archive/output-capture behavior is outside the library contract.
-- **`erix-agent/tools` is an optional subpath**: tool registry, tool providers (static/json-file/composite), and the recall tool — the host may opt in; nothing is implicitly installed into runToolLoop.
+- **`erix-agent/tools` is an optional subpath**: tool registry and tool providers (static/json-file/composite) — the host may opt in; nothing is implicitly installed into runToolLoop (recall retired, issue #36).
 
 ---
 
@@ -181,7 +180,7 @@ sequenceDiagram
     Note over H,L: Phase 0 — assembly validation (once; failure throws TypeError)
     H->>L: runToolLoop({provider, executeTool, store, modelConfig, ...})
     L->>L: option whitelist validation (with typo hints) + AssemblyPort method assertions
-    Note over L: recall / outputHygiene capability checks<br/>(explicit true without capability = throw, no silent promises)
+    Note over L: outputHygiene capability checks<br/>(explicit true without capability = throw, no silent promises)
     end
 
     rect rgb(240, 255, 240)
@@ -203,7 +202,7 @@ sequenceDiagram
         J-->>L: done:false blocks and returns audit result / off_track adds direction hint / allow
         L->>S: checkpoint (pre-tool) — failure → sideEffect=not_started, execution blocked
         L->>T: executeTool({id, name, input, context, signal})
-        T-->>L: tool_result (large outputs archived as stubs; model sees summary, ADR-015)
+        T-->>L: tool_result (large outputs archived as stubs; model sees summary)
         L->>S: checkpoint (post-tool) + appendRound (idempotent dedup)
     else stopReason = end_turn
         L->>L: wrapup JSON parsing (done:true → finish; false → inject continuation)
@@ -231,7 +230,7 @@ sequenceDiagram
 ### Key points
 
 - **Phase 0 is a fail-fast contract**: unknown options (with near-name hints), missing methods, illegal policy keys, and missing capabilities all throw before the provider is called — host integration errors can never detonate mid-run.
-- **The tool path in Phase 2 carries audit and checkpoints**: the intercept judge only blocks "write paths" (read-only tools readFile/tree/rg/note_read/note_list/recall are exempt); a pre-tool checkpoint failure blocks execution outright, a post-tool failure marks `executed_uncommitted` while keeping the result.
+- **The tool path in Phase 2 carries audit and checkpoints**: the intercept judge only blocks "write paths" (read-only tools readFile/tree/rg/note_read/note_list are exempt); a pre-tool checkpoint failure blocks execution outright, a post-tool failure marks `executed_uncommitted` while keeping the result.
 - **`max_tokens` truncation continues within the same round**: when reasoning models over-think and truncate, up to 3 continuations (`maxTokenContinuations`) are issued, compacting first if already over budget — the budget is not burned in a truncation loop (issue #11).
 - **Phase 3: only `verified` may be treated as verified**: `skipped`/`unverified`/`error` all demand host-specific handling; a guard error or timeout is **not** verified either.
 - **Phase 4: `result.transcript` is only an in-memory snapshot**: the authoritative archive lives in the `TranscriptStore`; the two are deliberately separated so the host can swap in a DB backend (implement the nine methods; see ADR-002).
@@ -260,7 +259,7 @@ flowchart LR
 - **LLM summaries are not trusted, so a mechanical fidelity layer is stacked on top**: LLM paraphrase inevitably loses precision (a commit SHA becomes "some commit"). `anchors.js` mechanically extracts paths/SHAs/issues/URLs/error lines (≤20 entries, ≤1200 chars) from the folded rounds' **original text**; `fold-fidelity.js` quotes the user's latest unresolved input verbatim (≤800 chars) and detects abort/revoke-style reverse signals — none of it rewritten by a model, and none of it cuttable by the summary budget.
 - **`fold-llm` summary size is enforced deterministically**: an LLM-produced summary passes `enforceSize` before entering context; an over-long summary from a model that "forgot to finish" is mechanically trimmed and cannot blow the budget.
 - **System head and first user message never fold**: all whole-round strategies keep the system head + first real user message; protected messages are not downgraded on normal paths — only the level-④ fallback may downgrade them (recorded in `compactionStats[].protectedDowngraded`); a single protected message that cannot fit raises `KitError("invalid_budget")` instead of silently corrupting.
-- **Fold products are archived**: `foldedPayload` + the navigation record (fold-statistical's deterministic tool footprint) enter the round record — forgotten details can be recovered via recall, and the archive is the recovery source (ADR-015: folding changes the model view, never the archive source).
+- **Fold products are archived**: `foldedPayload` + the navigation record (fold-statistical's deterministic tool footprint) enter the round record — folding changes the model view, never the archive source; recovery is note-first (`note_take` while content is in context, then `note_list`/`note_read`; values never noted and not deterministically re-derivable are omitted, not guessed).
 
 ---
 
@@ -281,13 +280,13 @@ flowchart LR
 
 - **Round judge (end_turn evaluation)**: the model saying "done" is not done. A separate (or shared) provider evaluates the final response against an objective timeline (tool calls, file footprint, L0 facts); only `done:true` with `confidence ≥ 0.7` yields `judge_done`, otherwise a corrective message is injected and the run continues. Parse failures and evaluator errors **degrade** to the plain governor; after 3 consecutive failures the judge disables itself — a governance failure can never deadlock the run.
 - **Transparent tool audit (intercept)**: every 5 real tool executions, the next call is audited: `done:false` blocks the original execution and returns the audit result to the model as its tool_result (the model learns *why* it shouldn't, not a silent failure); `off_track` never blocks, it only adds a direction hint to the next round's context. `ERIX_NO_ROUND_JUDGE=1` disables the round judge independently.
-- **Read-only tool exemption**: readFile / tree / rg / note_read / note_list / recall are allowed through — blocking them is net-negative (measured: blocking readFile actually leaked defects). Write paths (exec/writeFile/mcp etc.) keep interception semantics.
+- **Read-only tool exemption**: readFile / tree / rg / note_read / note_list are allowed through — blocking them is net-negative (measured: blocking readFile actually leaked defects). Write paths (exec/writeFile/mcp etc.) keep interception semantics.
 - **The governor is deterministic**: a pure, side-effect-free function mapping signals (stall streak, no-tool streak, error repeat count, remaining time, extension count) to continue/stop/wrap-up actions. Hard budget expiry lands softly — a wrap-up nudge is injected rather than a hard kill.
 - **Adaptive budget**: past the reflection trigger (default `maxRounds × 0.8`), if the governor sees continued progress it can extend the budget (step 32, at most 2 times, capped at `maxRoundsCap ≥ 256`) — long tasks are neither killed by the initial round count nor allowed to inflate forever.
 
 ---
 
-## Mechanism 4 · Archive & Recall (ADR-015: transcript-as-archive, recall-as-channel)
+## Mechanism 4 · Archive & Notes (transcript-as-archive, note-first retrieval)
 
 ```mermaid
 flowchart TB
@@ -302,26 +301,24 @@ flowchart TB
         CK["<runId>.checkpoint.json<br/>latest checkpoint"]
     end
 
-    subgraph surfaces["three consumption channels"]
-        REC["engine recall tool<br/>(auto-registered; host tool with same name wins)"]
-        BR2["boundedRecall()<br/>cursor pagination + pattern filter"]
+    subgraph surfaces["consumption channels"]
+        NOTES["note tools<br/>note_list → note_read (note-first)"]
         HOST2["host reads store directly<br/>(DB adapter backend)"]
     end
 
     ORC2 -- "appendRound (idempotent dedup)" --> JSONL
+    ORC2 -- "note_take / note_read (facts externalized)" --> NOTES
     ORC2 --> ST
     CPE2 --> CK
     CPE2 -- "large outputs → toolOutputs archive; model sees stub" --> JSONL
-    JSONL --> BR2
-    JSONL --> REC
-    BR2 --> HOST2
+    JSONL --> HOST2
 ```
 
 ### Key points
 
 - **Large outputs don't blow up context**: `outputHygiene` (default limit 4096) stores oversized tool_result originals in the round record's `toolOutputs`; the model sees a stub + pointer. A per-round aggregate gate (`aggregate-budget`) backstops the total — archive intact, context unharmed.
-- **Recall is a bounded protocol**: `boundedRecall` cursors bind run / range / pattern / limit / artifactRef / **source version**; changed source reports `stale`, missing records report `unrecoverable`, oversized records report `record_too_large` — never "looks successful" dirty data.
-- **The engine recall tool is zero-config**: auto-registered when a store + runId exist (a host-defined recall tool with the same name takes precedence); after early context is compacted away, the model can recover it via recall itself.
+- **Retrieval is note-first (ADR-016 retirement supplement, issue #36)**: key facts are externalized via `note_take` while content is in context; later retrieved via `note_list → note_read`. The recall / bounded-recall protocol is retired — model-curated notes are high-signal content, superior to fuzzy search over raw archived output; values never noted and not deterministically re-derivable are omitted, not guessed (bench data: recall 2/0/6/0 across four runs; the notes loop 31 writes / 21 reads fully replaced it).
+- **The archive remains directly readable by the host**: round records / toolOutputs / checkpoint are fully persisted; hosts (DB backends) can reconcile and audit — the model simply no longer gets a recall retrieval channel.
 - **The file store is a reference implementation**: one JSON record per JSONL line, repairs a missing trailing newline, isolates corrupt tail fragments; the contract assumes **a single writer** (one per runId per process) — cross-process locking is out of contract. Hosts needing concurrency/shared storage implement the same nine methods over a database.
 
 ---
@@ -348,14 +345,14 @@ flowchart TB
 | Question | Answer |
 |---|---|
 | Why insist on zero npm dependencies? | Hosts are mostly embedded/audit-sensitive scenarios (app_container, touwaka). Depending on third-party frameworks = pushing supply-chain risk and version churn onto every host. Pure ESM + `node:` built-ins lets the engine absorb "contain third-party framework churn" once. The cost — hand-written SSE parsing and token estimation — is pinned by contract tests. |
-| Why an internal canonical message model instead of passing OpenAI/Anthropic through? | Dual-protocol is today's reality, not the architectural center. The canonical Block layer lets compaction/judge/recall face exactly one structure; adding a protocol = adding one adapter pair without touching the engine. `validateMessages` asserts protocol invariants before every provider call. |
+| Why an internal canonical message model instead of passing OpenAI/Anthropic through? | Dual-protocol is today's reality, not the architectural center. The canonical Block layer lets compaction/judge face exactly one structure; adding a protocol = adding one adapter pair without touching the engine. `validateMessages` asserts protocol invariants before every provider call. |
 | Why checkpoint both before and after a tool call? | Pre-only: a crash after execution leaves "said it would, unknown whether it did". Post-only: a crash before execution loses the "about to" intent. Twin checkpoints let the restoring side distinguish `not_started` (safe replay) from `executed_uncommitted` (must not blindly replay) precisely, drawing the idempotency responsibility line clearly. |
 | Does judge interception slow down or mis-block normal tool calls? | Audits carry a 30s timeout; errors/timeouts always **degrade to direct execution** (fail-open execution, fail-closed governance); read-only tools are exempted as a class; `off_track` only hints, never blocks. Every governance-failure path falls back to "the plain loop without a judge". |
-| What if an LLM-produced fold summary is untrustworthy? | Three layers of defense: ① summaries pass deterministic `enforceSize` before entering context; ② anchor index / user-input quotes are mechanically extracted, never LLM-rewritten; ③ originals are kept in `foldedPayload` in the archive, recoverable via recall. Summaries may lose narrative, never facts. |
+| What if an LLM-produced fold summary is untrustworthy? | Three layers of defense: ① summaries pass deterministic `enforceSize` before entering context; ② anchor index / user-input quotes are mechanically extracted, never LLM-rewritten; ③ the fold warning prompts `note_take` while content is in context, later retrieved via note_list/note_read; un-noted values are omitted. Summaries may lose narrative, never facts. |
 | Can resume guarantee side effects happen exactly once? | No — and the contract says so: the engine guarantees order, accounting, and checkpoint semantics; whether an "executed but uncommitted" side effect should replay, only the host knows (a bank transfer must not replay; a file read may). The host must make executeTool idempotent. Packaging "exactly-once" as an engine capability would be a lie, so it is not done. |
 | Does TranscriptStore support multi-process concurrent writes? | No; the contract is "single writer per runId per process". The file store only isolates corrupt tail fragments and deduplicates idempotently — no cross-process locking. Hosts needing concurrency/shared storage go through a DB backend and use the database's own transactions. |
 | Why no queues / retry scheduling / multi-role orchestration in the engine? | ADR-012: the engine boundary ends at a single task lifecycle. Absorbing orchestration turns a small runtime into a headless platform, and zero-dependency plus a stable contract would both erode. Hosts (touwaka/app_container) already have schedulers. |
 | Who owns model quota and fallback to a backup model? | The host. Engine discipline (AGENTS.md §8): model names are never hardcoded; an unavailable model **fails immediately**; silent fallback never happens — users switch models for cost/quota reasons, and silently switching back is a betrayal. |
-| Can compaction trim context to the point the task can't finish? | Possibly — hence the mitigations: the governor detects "amnesia responses" (model claims done with no tool footprint) and injects a recovery prompt + the recall channel to recover early context; fold-statistical leaves a deterministic navigation record. The engine admits compression is lossy and makes "recovery" a first-class capability instead of pretending losslessness. |
+| Can compaction trim context to the point the task can't finish? | Possibly — hence the mitigations: the governor detects "amnesia responses" (model claims done with no tool footprint) and injects a recovery prompt; the model retrieves noted facts via note_list/note_read; fold-statistical leaves a deterministic navigation record. The engine admits compression is lossy and makes "recovery" a first-class note-first capability instead of pretending losslessness. |
 | The security model in one sentence? | The engine enforces no security policy (ADR-009). Local execution = granting the local trust domain; embedded/sandboxed deployments are isolated by the host. The CLI tools intentionally allow arbitrary paths and shell, with no allowlist and no confirmation prompt — "whether to block" is host policy, not half a policy hidden in the library. |
 | How does this document relate to architecture.md? | `architecture.md` is the **interface contract** (field-by-field, option-by-option specification); this document is **architecture charts + design rationale**. They complement each other. For the source layout, chart 2 here is authoritative (`src/loop/` has become a directory; anchors/fold-fidelity/aggregate-budget and other newer modules are included). |
