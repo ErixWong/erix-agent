@@ -2,22 +2,36 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
-## [0.7.1] - 2026-09-19
+## [0.8.0] - 2026-09-21
 
-来源：0.7.0 发布当日 issue #33（折叠锚点默认路径）评审修复批次（PR #134）。
+来源：issue #33 修复批次（PR #134）+ 260920 基准驱动两批（PR #34 judge/预算/工具层效率、PR #37 TTL 折叠与 recall 退役）+ 文档同步（PR #38）。
+
+> ⚠️ 0.7.1 曾提交版本号但从未发布到 registry（registry 无此版本），其内容并入本版本，不再单独发 0.7.1。
+
+### Removed（BREAKING）
+
+- **退役 recall 工具与 bounded-recall 协议**（issue #36）：删除 `src/tools/recall.js`、`src/store/bounded-recall.js` 及全部模型可见面（工具注册、系统提示行、归档通知、guard 捕获指针、TTL 占位符配方）；取回指引统一 note-first（`note_list` → `note_read`）；ADR-015 标记 superseded，ADR-016 补记退役决策。依据：四 run 基准（recall 2/0/6/0，bench7 note 闭环 31/21 完全替代）。**宿主如依赖 `boundedRecall` 公共导出或 recall 工具需改造为 note 工作流。**
+
+### Added
+
+- **工具结果 TTL 折叠**（issue #35）：大结果次轮起折叠为句柄——年龄（`erixRound` 标记）+ 体积（4k tokens）双门槛，请求视图层折叠（checkpoint 保持全文）；预警轮（`age===ttl-1` 追加「下一轮折叠」提示，给模型免费提炼窗口）+ 结构化导航摘要（函数/类/章节签名 + JSON 骨架，≤600 字符）；类型感知（never-fold 名单）；终稿保护。环境变量 `ERIX_TOOL_RESULT_TTL`（默认 2，0=关）/ `ERIX_TOOL_RESULT_FOLD_MIN_TOKENS`（默认 4000）。参考 touwaka `truncateToolContent` 生产经验，erix 护栏更强。
+- **空 assistant 消息可重试 + CLI 默认接通重试**：present-but-empty message 标记 `retryable:true`（relay/vLLM 瞬时空响应实测），结构性错误保持不可重试；`runToolLoop` 默认 `retry{attempts:2}`，`ERIX_RETRY_ATTEMPTS` 可覆盖。
+- **CLI 新增 `--tools` 白名单**（chat/repl）：硬只读红线能力；**新增纯 node grep 工具**（glob 过滤 / 结果上限 / 目录跳过）。
+- **系统提示新增思考语言指令**：内部思考一律使用英文，可见输出跟随用户语言。
+- **折叠锚点接入 fold-statistical 默认路径**（issue #33 A）：折叠摘要默认携带机械抽取的精确标识，不再仅限显式调用方。
+- **judge LLM 用量进 judge.log 与逐轮事件**（issue #33 B）：轮判与拦截审计的 token 消耗可观测。
 
 ### Fixed
 
-- **折叠锚点接入 fold-statistical 默认路径**（issue #33 A）：锚点保真层不再仅限显式调用方，折叠摘要默认携带机械抽取的精确标识。
+- **judge/预算/工具层效率修复**（260920 基准驱动）：INTERCEPT 会话预算 40k→6k（40k 必超 30s 超时，6/7 空转）；judge maxTokens 512；恢复 judge 请求 `reasoning_effort:none`（GLM 上唯一真正关思考的参数，前次「负优化」结论纠正）；纯思考响应（reasoning-only）不再抛 missing content；round judge maxTokens 512→1024 修复 JSON 截断；judge 原始输出落盘 judge.log（raw 字段，脱敏保留正文）。
+- **最后一轮强制无 tools 请求**：文本终稿收尾，不再撞 max_rounds 截断。
 - **intercept judge 对只读工具放行**（issue #33 C）：readFile/tree/rg/note_read/note_list/recall 类调用不再被审计拦截（实测拦截净收益为负）。
-- **judge LLM 用量进 judge.log 与逐轮事件**（issue #33 B）：轮判与拦截审计的 token 消耗可观测。
-- **fold-llm summarizer 运行时失败降级为统计摘要**（issue #33 D）：摘要模型不可用时不再中断折叠。
-- 评审退回项：锚点逗号 round-trip、`anchors:false` 全关（含 system/role 切换的 head 全量剥离与 prependSummary 清理）、降级摘要补 stub 与导航记录、judge parse 失败带 usage。
+- **fold-llm summarizer 运行时失败降级为统计摘要**（issue #33 D）；`anchors:false` 清理改为 head 全量剥离（含 system/role 切换）；锚点逗号 round-trip、降级摘要补 stub 与导航、judge parse 失败带 usage 等评审退回项。
 
 ### 文档
 
-- 新增架构图文档 `docs/charts.md` / `charts_cn.md`（数据流 / 模块架构 / 端到端时序 / 机制解析 / 评审 Q&A）。
-- 源码结构描述同步（`src/loop/` 目录化）；清理 jail/file-tools 过期残留（0.5.1 已删，README / architecture / testing / AGENTS 跟进）。
+- 新增架构图文档 `docs/charts.md` / `charts_cn.md`（数据流 / 模块架构 / 端到端时序 / 机制解析 / 评审 Q&A），并随 recall 退役同步（机制解析 4 改写为「档案与小抄」，移除 bounded-recall 节点）。
+- 源码结构描述同步（`src/loop/` 目录化）；清理 jail/file-tools 过期残留；docs/tasks 目录移出版本控制。
 
 ## [0.7.0] - 2026-09-19
 

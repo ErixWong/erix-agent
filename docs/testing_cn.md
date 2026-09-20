@@ -29,7 +29,7 @@ modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }))
 2. **Fake provider**（`test/helpers/fake-provider.js`）是内存中的、符合 `LlmProvider` 形状的 provider。它记录请求，返回脚本化文本和 `tool_use` 内容，支持重复的脚本步骤，也可以抛出脚本化错误。循环测试直接使用它，因为测试对象是编排而不是 HTTP。
 3. **Canonical round fixtures**（`test/fixtures/rounds-fixtures.mjs`）提供具有代表性的纯文本、单工具、多工具和混合多轮对话，供消息转换和压缩测试使用。
 4. **本地 MCP fixtures** 位于仓库根目录的 `fixtures/` 目录：`fixtures/mock-mcp-server.mjs` 和 `fixtures/mock-mcp-http-server.mjs`。它们是供 `test/mcp.test.js` 使用的可执行 stdio 和 HTTP server。请将这些 server 保持在 `test/` 之外：`node --test` 会发现 test tree 下的文件，将长驻 fixture server 当作测试文件执行可能导致测试运行挂起。`test/fixtures/` 下的数据 fixture 由测试导入，并不是 server 入口。
-5. **契约 helpers**（`test/contract/index.js`、`test/contract/transcript-store.js`、`test/contract/model-config-provider.js`、`test/contract/assembly-port.js`、`test/contract/execute-tool.js`、`test/contract/notes-store.js` 和 `test/contract/recall-contract.js`）定义宿主端口的共享断言。内置的 memory/file store 和 config provider 会在各自测试中注册这些契约。
+5. **契约 helpers**（`test/contract/index.js`、`test/contract/transcript-store.js`、`test/contract/model-config-provider.js`、`test/contract/assembly-port.js`、`test/contract/execute-tool.js` 和 `test/contract/notes-store.js`）定义宿主端口的共享断言。内置的 memory/file store 和 config provider 会在各自测试中注册这些契约。
 
 完整的、已跟踪的 `test/` tree 如下：
 
@@ -62,7 +62,7 @@ test/
 ├── output-aggregate-budget.test.js
 ├── output-hygiene.test.js
 ├── persistence-diagnostics.test.js
-├── recall-standard.test.js
+├── tool-result-ttl.test.js
 ├── reflection.test.js
 ├── repl.test.js
 ├── run-state.test.js
@@ -90,7 +90,6 @@ test/
 │   ├── index.js
 │   ├── model-config-provider.js
 │   ├── notes-store.js
-│   ├── recall-contract.js
 │   └── transcript-store.js
 ├── fixtures/
 │   ├── notes/
@@ -119,7 +118,6 @@ test/
 │   └── v020-rc.test.js
 └── tools/
     ├── providers.test.js
-    ├── recall.test.js
     └── registry.test.js
 ```
 
@@ -157,12 +155,12 @@ test/
 | Provider/message 版本回归 | `test/providers/v020-alpha.test.js`、`test/providers/v020-beta.test.js`、`test/providers/v020-rc.test.js`、`test/messages/v020-alpha.test.js` | 可选 provider payload、reasoning 和 image block、provider options、流式 reasoning/tool 事件、timeout 阶段、重试分类、transport 转发和 Anthropic system summary |
 | Loop 版本回归 | `test/loop-v020.test.js`、`test/loop-v020-beta.test.js`、`test/loop-v020-rc.test.js` | 消息重新校验、continuation 压缩、snapshot 重试、结构化和位置式工具执行、完成默认值、压缩预算、checkpoint 行为和持久化失败处理 |
 | Resume 与 run state | `test/loop-resume.test.js`、`test/run-state.test.js` | 恢复时不重放付费 provider 调用或已执行工具、部分工具结果、折叠 checkpoint、有界/脱敏 run state、schema 可用性、幂等替换和持久化的工具事实 |
-| Store 与压缩 | `test/store/file.test.js`、`test/store/v020-rc.test.js`、`test/compact/fold-llm.test.js`、`test/compact/v020-rc.test.js` | JSONL append/load、畸形尾部和崩溃安全处理、原子 state 写入、去重、有界 recall cursor、注入的 LLM summarizer、尺寸执法、受保护轮次、全局轮次偏移和 image 清理 |
+| Store 与压缩 | `test/store/file.test.js`、`test/store/v020-rc.test.js`、`test/compact/fold-llm.test.js`、`test/compact/v020-rc.test.js`、`test/tool-result-ttl.test.js` | JSONL append/load、畸形尾部和崩溃安全处理、原子 state 写入、去重、注入的 LLM summarizer、尺寸执法、受保护轮次、全局轮次偏移、image 清理、request-view TTL 折叠、warning round、navigation digest 和 JSON skeleton |
 | 配置 | `test/config/json-file.test.js`、`test/config.test.js` | JSON-file slot、API-key materialization、default-slot 回退、CLI 配置路径、环境覆盖、context-window 解析和压缩上下文构建 |
-| 工具 | `test/tools/providers.test.js`、`test/tools/recall.test.js`、`test/tools/registry.test.js`、`test/tools.test.js` | tool-provider 组合、recall 与折叠 payload、schema 交集和输入校验、CLI 工具执行、归档和输出限制 |
+| 工具 | `test/tools/providers.test.js`、`test/tools/registry.test.js`、`test/tools.test.js` | tool-provider 组合、note 工具与折叠 payload、schema 交集和输入校验、CLI 工具执行、`grep`、归档和输出限制 |
 | CLI、REPL、MCP 与 skills | `test/cli.test.js`、`test/repl.test.js`、`test/mcp.test.js`、`test/skills.test.js`、`test/codewrite.test.js` | CLI/repl 参数和 session 处理、MCP stdio 与 HTTP fixtures、工具发现/调用/错误、skill 发现/加载/冲突，以及 CLI 写代码工具 |
 
-仓库还有一个场景级测试 `test/integration/memento-scenario.test.js`。它跨 loop、tools、compaction 和 memory store，测试折叠、不可重放值、凭据排除、归档指针、重复折叠以及逐字节一致的有界 recall。
+仓库还有一个场景级测试 `test/integration/memento-scenario.test.js`。它跨 loop、tools、compaction 和 memory store，测试折叠、凭据排除、归档指针、重复折叠以及 note-first 恢复。
 
 ## 4. v0.3 及当前行为——判定、反思、笔记和恢复无回归
 
@@ -173,7 +171,7 @@ test/
 | Judge 与 governor | `test/judge.test.js`、`test/governor.test.js` | 轮次和工具使用判定、透明拦截、方向提示、降级 judge 行为、进度/错误治理、反思请求、收尾提示和可观测的 judge 决策 |
 | Reflection 与最终校验 | `test/reflection.test.js`、`test/wrapup.test.js`、`test/loop-final-guard.test.js` | 反思决策、收尾解析与循环行为、final-guard 验收/修订、provenance、重试上限、超时/错误报告和 fail-closed 校验 |
 | Notes 与 capture | `test/notes.test.js`、`test/notes-autocapture.test.js`、`test/notes-final-guard.test.js`、`test/notes-experiment.test.js` | 笔记生命周期和作用域、provenance、凭据过滤、自动捕获和归档、final-guard 集成、实验规划/成本门槛、usage 摘要和可复现性报告 |
-| 档案、recall 与输出卫生（ADR-015） | `test/output-hygiene.test.js`、`test/output-aggregate-budget.test.js`、`test/recall-standard.test.js`、`test/persistence-diagnostics.test.js`、`test/error-ledger.test.js`、`test/capture-honesty.test.js`、`test/compact/anchors.test.js`、`test/compact/fold-fidelity.test.js` | 引擎 recall 工具注册、bounded-recall 游标契约、输出 stub 与单轮聚合闸门、持久化诊断、重复错误记账、机械锚点、用户输入逐字保真和 capture 诚实性 |
+| 输出卫生与折叠 | `test/output-hygiene.test.js`、`test/output-aggregate-budget.test.js`、`test/persistence-diagnostics.test.js`、`test/error-ledger.test.js`、`test/capture-honesty.test.js`、`test/compact/anchors.test.js`、`test/compact/fold-fidelity.test.js`、`test/tool-result-ttl.test.js` | checkpoint 保留完整输出、request-view TTL 占位符、warning round 的 note 提取、单轮聚合闸门、持久化诊断、重复错误记账、机械锚点、用户输入逐字保真和 capture 诚实性 |
 
 这些是当前产品表面的测试，不是对上面按版本标记的回归文件的新替代；`npm test` 会将它们一起运行。
 
@@ -186,7 +184,7 @@ test/
 ## 6. 跨领域约定
 
 - **单元测试不调用外部服务。** 协议测试使用 `test/helpers/mock-fetch.js`；循环测试使用 `test/helpers/fake-provider.js`。MCP 覆盖使用仓库根目录 `fixtures/` 中的本地 server。
-- **对确定性行为使用确定性断言。** 预算计算、统计折叠、`enforce-size`、run-state 渲染、有界 recall 以及 provenance/脱敏行为都必须精确断言。不要为本质上可变的 LLM 输出做 snapshot。
+- **对确定性行为使用确定性断言。** 预算计算、统计折叠、`enforce-size`、run-state 渲染、TTL 折叠、note 行为以及 provenance/脱敏行为都必须精确断言。不要为本质上可变的 LLM 输出做 snapshot。
 - **主动覆盖失败路径。** 错误分类、可重试性、abort、畸形数据、持久化失败、过期或被篡改的 cursor、无效工具输入以及 fail-closed 行为，都是套件的一部分，而不是事后补充。
 - **保持测试状态隔离。** 触及 `~/.erix`、`~/.pi`、环境变量、sessions 或 MCP 配置的测试必须注入 `home`、`cwd`、临时目录，或恢复环境，避免使用真实用户的配置。
 - **示例是集成文档。** `examples/` 程序展示调用方集成和可选的真实 relay 行为；保持可读，并使用 `LLM_KIT_E2E=1` 显式运行。

@@ -18,10 +18,11 @@ must be placed in an explicit namespace such as `toolContext` or `context`.
 
 ```text
 assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
-recall, outputHygiene, writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
+writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
-maxTokenContinuations, context, todoStateProvider, semanticStateProvider,
+maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
+todoStateProvider, semanticStateProvider,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
@@ -54,7 +55,7 @@ const assemblyPort = createAssemblyPort({
   modelConfig, // ModelConfigProvider
   provider,    // Provider
   tools: { definitions, executeTool, getToolMetadata? },
-  store,       // complete TranscriptStore
+  store?,      // optional TranscriptStore
   session: { id, resume?, initialMessages? },
   policy?,     // explicit run options
   emit?,       // (eventType, payload) => void
@@ -67,10 +68,13 @@ await runToolLoop({ assemblyPort });
 be synchronous zero-argument factories when passed to `createAssemblyPort`.
 The required methods are checked at assembly/startup: `modelConfig.resolve`,
 either `provider.chat` or `provider.chatStream`, `tools.definitions`,
-`tools.executeTool`, `session.id`, and
-all nine `TranscriptStore` methods. A missing method throws `TypeError`
+`tools.executeTool`, and `session.id`. When supplied, `store` must implement
+all eight `TranscriptStore` methods. A missing method throws `TypeError`
 before the run starts. `policy` contains only named `runToolLoop` options;
 unknown policy keys are rejected.
+Those store methods are `appendRound`, `load`, `saveCheckpoint`,
+`appendCheckpoint`, `loadLatestCheckpoint`, `saveRunState`, `loadRunState`, and
+`markRunState`; `getToolMetadata` and `emit` remain optional.
 
 `modelConfig` is always the resolver-shaped `ModelConfigProvider`, including an
 explicit override supplied alongside `assemblyPort`. A plain config object is
@@ -226,8 +230,8 @@ archived capture values by exact string equality; free prose is never parsed.
 
 - a declared label whose value matches an archived value → the entry passes;
 - a declared label that exists in the archive but whose value differs →
-  `action: "revise"` (the forgery signal), including the captured values and
-  the recall recipe in the message;
+`action: "revise"` (the forgery signal), including the captured values in
+the message;
 - a declared label that does not exist in the archive at all (e.g. derived
   counts) → warned and skipped, because it can be neither verified nor
   falsified; a revise here only provokes looping (measured);
@@ -252,84 +256,20 @@ dropped before the guard sees it. An LLM must not be able to "repair" a
 model's value on the way to verification, which would make the check
 irreproducible.
 
-## Bounded recall
+## Retrieval and request-view folding
 
-Use the object form of the store API for precise, bounded retrieval. Every
-limit must be enforced at the store source:
+Model-facing retrieval is note-first: use `note_list` to discover saved notes,
+then `note_read` to read the exact note. Do not guess forgotten values, and do
+not depend on a transcript-recall API; the retired recall adapters are not part
+of the 0.8.0 contract.
 
-```js
-const page = await store.recall({
-  runId,
-  fromRound,
-  toRound,
-  pattern,
-  artifactRef,
-  limit,
-  maxBytes,
-  cursor,
-});
-```
-
-`runId`, `fromRound`, `toRound`, `pattern`, `artifactRef`, `limit`,
-`maxBytes`, and `cursor` are the object-form request fields. `fromRound` and
-`toRound` are non-negative integer bounds; `pattern` is an optional substring
-filter. `artifactRef` may identify one exact artifact by its string identity
-or by fields such as `artifactId`, `id`, `archivePath`, or `digest`. `limit`
-and `maxBytes` are optional caps; `limit: 0` and `maxBytes: 0` are rejected
-with `status: "error"` and no cursor. `lineOffset`/`lineLimit` request a straight line read of one archived record:
-`lineOffset` is 0-based, `lineLimit` defaults to 100 with a hard cap of 400,
-the shown line numbers are 1-based, and the reply ends with a
-`继续读用 lineOffset=<n>` hint when more lines remain. When both are given,
-the line read takes precedence and `pattern` is ignored. The legacy positional
-`store.recall(runId, fromRound, toRound, pattern)` form remains a separate
-string-returning interface and does not provide bounded-page statuses or
-cursors.
-
-`cursor` is opaque. Do not parse, concatenate, edit, or reuse it across a
-different `runId`, range, `pattern`, `limit`, `maxBytes`, `artifactRef`, or
-source version. It binds all of those values plus cursor version `v` and a
-`sig`. The signature is a SHA-256 digest of the normalized payload truncated
-to 16 hexadecimal characters. Callers must not depend on or modify the
-encoding, field layout, or payload. A malformed or empty cursor, invalid
-base64url, non-JSON payload, missing field, unknown version, or failed
-signature returns `status: "cursor_mismatch"`, empty `text`, and no new
-cursor. The implementation must not silently restart from the beginning or
-skip content. A valid cursor whose source version or bound request no longer
-matches returns `status: "stale"`, also with no consumable text. Both
-`cursor_mismatch` and `stale` must be discarded rather than consumed.
-
-The result is an object containing `text`, `truncated`, and `status`, with
-`nextCursor` when more bounded content remains and `error` when applicable.
-`truncated` requires the caller to resume with the returned `nextCursor`; a
-single bounded page is not a complete archive. Retrieval slices by UTF-8
-bytes without splitting a code point, so continuation can reassemble a
-fragment without duplicate or omitted fragment bytes. The file store caps a
-single JSONL source record at 64 KiB for bounded parsing. If that record is
-larger, it is skipped and the file store returns `truncated` with
-`error.code: "record_too_large"` and a resumable cursor.
-
-`artifactRef` selects only the exact matching artifact. If it is not found,
-the result is `status: "unrecoverable"` rather than a successful empty
-string. `unrecoverable` also reports an absent or incomplete requested range
-that cannot be proved complete. `empty` means that no fragment matched when
-no exact artifact was requested. Invalid request parameters and zero caps
-use `status: "error"`. The memory store uses a revision source version; the
-file store uses the transcript file identity, size, and modification time.
-A file-store cursor can therefore be resumed by a new store instance when
-the source has not changed, but the signature is not keyed and is not an
-adversarial authentication boundary.
-
-Bounded recall is raw transcript navigation, not semantic search, completion
-proof, or provenance verification. This library does not provide a security
-boundary; under ADR-009, the host remains responsible for permissions,
-leases, and adversarial authentication.
-
-`createMemoryTranscriptStore` and `createFileTranscriptStore` isolate
-transcript records by `runId`. `appendRound` deduplicates by
-`dedupKey`, then `roundKey`, then `${runId}:round:${round}`. This is
-persistence idempotence only; it does not deduplicate or suppress tool
-execution. The file store is designed for one writer per `runId`; concurrent
-cross-process writes require a host-provided file lock.
+Old or large tool results may be folded only in the provider request view.
+`toolResultTtl` defaults to `2` rounds (`0` disables folding), and
+`toolResultFoldMinTokens` defaults to `4000` estimated tokens. The warning
+round at `age === ttl - 1` asks the model to extract important facts with
+`note_take`; the folded placeholder contains a navigation digest and, where
+applicable, a JSON skeleton. Checkpoints retain the full tool-result text.
+Note, todo, error, and explicitly protected results are not folded.
 
 ## Repeated commands and side effects (ADR-016)
 
@@ -337,8 +277,8 @@ The engine performs no replayability classification, rerun detection, or
 rerun notices. A repeated command is executed normally and returns its fresh
 output. The rerun-value-mismatch risk is carried by one line in the system
 prompt: "Re-running the same command may produce a different value; when an
-earlier exact value is needed, retrieve it with recall instead of relying on
-memory."
+earlier exact value is needed, use note_list then note_read instead of relying
+on memory."
 
 The host must therefore carry side-effect and rerun risk in its tool
 capabilities, permissions, sandbox, or idempotence layer, and decide whether

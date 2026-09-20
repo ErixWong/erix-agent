@@ -15,10 +15,11 @@
 
 ```text
 assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
-recall, outputHygiene, writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
+writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
-maxTokenContinuations, context, todoStateProvider, semanticStateProvider,
+maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
+todoStateProvider, semanticStateProvider,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
@@ -49,7 +50,7 @@ const assemblyPort = createAssemblyPort({
   modelConfig, // ModelConfigProvider
   provider,    // Provider
   tools: { definitions, executeTool, getToolMetadata? },
-  store,       // 完整 TranscriptStore
+  store?,      // 可选 TranscriptStore
   session: { id, resume?, initialMessages? },
   policy?,     // 显式 run 选项
   emit?,       // (eventType, payload) => void
@@ -61,8 +62,11 @@ await runToolLoop({ assemblyPort });
 传给 `createAssemblyPort` 时，`modelConfig`、`provider`、`tools`、`store`、`session`
 和 `policy` 也可以是同步的零参工厂。启动时必须具备 `modelConfig.resolve`、
 `provider.chat` 或 `provider.chatStream`、`tools.definitions`、`tools.executeTool`、
-`session.id` 以及完整九方法 `TranscriptStore`；缺方法在 run 开始前抛 `TypeError`。
+`session.id`。若提供 `store`，它必须具备完整八方法 `TranscriptStore`；缺方法在 run 开始前抛 `TypeError`。
 `policy` 只装具名的 `runToolLoop` 选项；陌生 policy 键会被拒绝。
+这八个 store 方法是 `appendRound`、`load`、`saveCheckpoint`、
+`appendCheckpoint`、`loadLatestCheckpoint`、`saveRunState`、`loadRunState`
+和 `markRunState`；`getToolMetadata` 与 `emit` 仍是可选项。
 
 `modelConfig` 始终是 resolver 形态的 `ModelConfigProvider`——即便它是随 `assemblyPort`
 一起显式提供的覆盖项。plain 配置对象会被拒绝并给出迁移提示，请用
@@ -175,8 +179,7 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 比对信封声明的 `findings` 与归档捕获值；**从不解析自由散文**。
 
 - 声明的 label 命中归档值 → 该条通过；
-- 声明的 label 在归档里存在但值不符 → `action: "revise"`（伪造信号），消息里带上捕获值
-  与 recall 配方；
+- 声明的 label 在归档里存在但值不符 → `action: "revise"`（伪造信号），消息里带上捕获值；
 - 声明的 label 在归档里完全不存在（例如派生计数）→ 告警并跳过该条：既无法核验也无法
   证伪，在此处打回只会诱发绕路（已实测）；
 - 归档里有捕获值、信封却一条都不声明 → `action: "revise"`。有东西可比却不声明，是模型
@@ -193,69 +196,24 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 出现在模型自己的终答文本里，否则该条在 guard 看到之前就被丢弃。LLM 不得在通往核验的
 路上“修好”模型的值，那会让核验不可复现。
 
-## 有界 recall
+## 取回与 request-view 折叠
 
-使用 store API 的对象形式进行精确、有界的取回。每个上限都必须在 store 源头强制执行：
+模型侧取回采用 note-first：先用 `note_list` 发现已保存的笔记，再用
+`note_read` 读取精确内容。不要猜测遗忘的值，也不要依赖 transcript recall API；
+recall 适配器已在 0.8.0 契约中退役。
 
-```js
-const page = await store.recall({
-  runId,
-  fromRound,
-  toRound,
-  pattern,
-  artifactRef,
-  limit,
-  maxBytes,
-  cursor,
-});
-```
-
-对象形式的请求字段为 `runId`、`fromRound`、`toRound`、`pattern`、`artifactRef`、
-`limit`、`maxBytes`、`cursor`。`fromRound` 与 `toRound` 是非负整数边界；`pattern`
-是可选的子串过滤器。`artifactRef` 可以用字符串身份，或用 `artifactId`、`id`、
-`archivePath`、`digest` 等字段标识一个精确 artifact。`limit` 与 `maxBytes` 是可选上限；
-`limit: 0` 与 `maxBytes: 0` 会以 `status: "error"` 被拒绝且不返回 cursor。`lineOffset`/`lineLimit` 请求对单条归档记录做按行直读：`lineOffset` 0 基，`lineLimit`
-默认 100、硬顶 400，展示行号 1 基，还有更多行时回复以「继续读用 lineOffset=<n>」提示收尾。
-两者与 `pattern` 同给时按行直读优先、`pattern` 被忽略。legacy 位置
-参数形式 `store.recall(runId, fromRound, toRound, pattern)` 仍是独立的字符串返回接口，
-不提供有界分页状态或 cursor。
-
-`cursor` 是不透明值。不得解析、拼接、编辑，也不得跨不同的 `runId`、范围、`pattern`、
-`limit`、`maxBytes`、`artifactRef` 或 source version 复用。它绑定上述所有值以及
-cursor 版本 `v` 和 `sig`。签名是规范化载荷的 SHA-256 digest，截取 16 个十六进制字符。
-调用方不得依赖或修改编码、字段布局或载荷。畸形或空 cursor、无效 base64url、非 JSON
-载荷、缺字段、未知版本或签名失败都会返回 `status: "cursor_mismatch"`、空 `text` 且没有
-新 cursor。实现不得静默从头开始或跳过内容。source version 或绑定请求不再匹配的有效
-cursor 返回 `status: "stale"`，同样没有可消费文本。`cursor_mismatch` 与 `stale` 都必须
-丢弃，不得消费。
-
-结果是包含 `text`、`truncated`、`status` 的对象；还有更多有界内容时含 `nextCursor`，
-适用时含 `error`。`truncated` 要求调用方用返回的 `nextCursor` 继续；单个有界页面不是
-完整归档。取回按 UTF-8 字节切片且不拆分码点，因此继续取回可以重新组装片段，不会重复或
-遗漏片段字节。file store 对单条 JSONL 源记录的有界解析上限为 64 KiB。若记录更大，则
-跳过该记录，file store 返回带 `error.code: "record_too_large"` 的 `truncated` 以及可
-继续使用的 cursor。
-
-`artifactRef` 只选精确匹配的 artifact。找不到时结果是 `status: "unrecoverable"`，而不是
-“成功的空字符串”。`unrecoverable` 也用于报告请求的范围缺失或不完整、无法证明完整。
-`empty` 表示未请求精确 artifact 时没有片段命中。非法请求参数与零上限使用
-`status: "error"`。memory store 使用修订号作为 source version；file store 使用
-transcript 文件身份、大小与修改时间。因此源未变化时，file-store cursor 可以由新的 store
-实例继续使用，但该签名不是带密钥的，也不构成对抗性认证边界。
-
-有界 recall 是原始 transcript 导航，不是语义搜索、完成证明或来源核验。本库不提供安全
-边界；按 ADR-009，权限、租约与对抗性认证仍由宿主负责。
-
-`createMemoryTranscriptStore` 与 `createFileTranscriptStore` 按 `runId` 隔离 transcript
-记录。`appendRound` 依次按 `dedupKey`、`roundKey`、`${runId}:round:${round}` 去重。这
-只是持久化幂等，不去重也不抑制工具执行。file store 按“每个 `runId` 一个写入者”设计；
-跨进程并发写需要宿主提供文件锁。
+旧的或较大的工具结果只会在 provider request view 中折叠。`toolResultTtl`
+默认为 `2` 轮（`0` 表示禁用），`toolResultFoldMinTokens` 默认为估算的
+`4000` token。在 `age === ttl - 1` 的 warning round 中，模型会被要求使用
+`note_take` 提取重要事实；折叠占位符包含 navigation digest，并在适用时包含
+JSON skeleton。checkpoint 保留完整工具结果文本。note、todo、错误和显式保护的
+结果不会折叠。
 
 ## 重复命令与副作用（ADR-016）
 
 引擎不做可重放性分类、重跑检测或重跑告知。重复命令会正常执行并返回它的新输出。重跑值
-错配的风险由系统提示里的一行承担：“重跑同一命令可能得到不同的值；需要早期精确值时用
-recall 取回，不要凭记忆。”
+错配的风险由系统提示里的一行承担：“重跑同一命令可能得到不同的值；需要早期精确值时先
+用 note_list 再用 note_read，不要凭记忆。”
 
 因此宿主必须在自己的工具能力、权限、沙箱或幂等层里承担副作用与重跑风险，并决定未核验
 结果应当触发人工审核、重试还是失败。guard 仍是一个 opt-in 的机械检查器；不要往里面加

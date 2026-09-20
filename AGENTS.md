@@ -25,15 +25,16 @@ src/
 ├── tokens.js
 ├── loop/          # orchestration core: orchestrator (runToolLoop), provider-runner,
 │                  # checkpoint-executor, budget, aggregate-budget, termination,
-│                  # resume-manager, error-ledger, messages, reflection, task-brief, abort
+│                  # resume-manager, error-ledger, messages, reflection, task-brief, abort,
+│                  # tool-result-ttl
 ├── compact/       # context compaction: budget, sliding-window, fold-statistical,
 │                  # fold-llm, anchors, fold-fidelity, enforce-size
 ├── config/        # configuration adapters
 ├── messages/      # canonical message model + OpenAI/Anthropic conversion
 ├── providers/     # OpenAI/Anthropic dual-protocol providers
 ├── reflection/    # governor, judge, l0, wrapup
-├── store/         # bounded-recall, file, memory, notes
-└── tools/         # registry, providers, recall (opt-in erix-agent/tools subpath)
+├── store/         # file, memory, notes
+└── tools/         # registry, providers (opt-in erix-agent/tools subpath)
 bin/              # CLI (validator/debugger): cli.js (entry/chat), repl.js (TUI), tools.js (built-in tools + prompts), skills.js, mcp.js, config.js, final-guard-support.js, final-guard.js, guard-metrics.js
 test/             # unit tests (node --test), with compact/, providers/, tools/, config/, messages/, contract/, helpers/, fixtures/, integration/, and top-level test files
 fixtures/         # test fixtures (mock MCP servers) — ⚠️ mock MCP servers must not be put under test/ (node --test runs all files under test and can hang)
@@ -59,7 +60,7 @@ scripts/          # experiment scripts and results
 - `private` must be removed (otherwise 403); edit JSON with a node script, not sed to delete a line (a trailing comma would break JSON).
 - `files`: `["src", "bin", "skills", "README.md", "CHANGELOG.md", "docs/host-consumer-contract.md", "test/contract", "LICENSE"]` — inspect the tarball with `npm publish --dry-run` before publishing.
 - Use the `git+https://...` format for `repository.url` (or run `npm pkg fix`).
-- Current version: `0.5.1`; use `npm version <x.y.z> --no-git-tag-version` for version changes (do not use 0.0.0 for a feature-complete first release).
+- Current version: `0.8.0`; use `npm version <x.y.z> --no-git-tag-version` for version changes (do not use 0.0.0 for a feature-complete first release).
 
 ### npm 2026 policy changes (TOTP discontinued + bypass token restrictions)
 - ❌ New TOTP enrollment is no longer supported (`enable-2fa` returns 404).

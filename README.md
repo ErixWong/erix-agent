@@ -4,7 +4,7 @@
 
 **erix-agent** is a zero-dependency, pure ESM LLM runtime for headless coding
 agents. It provides dual-protocol streaming providers, a tool-calling loop,
-context compaction, checkpointing, resume, bounded recall, and an optional
+context compaction, checkpointing, resume, note-first retrieval, and an optional
 reflection/judge layer for unattended work.
 
 **Positioning: headless agent.** The product is an engine plus a
@@ -67,8 +67,8 @@ instead of re-solving the engineering underneath it.
 |---|---|---|
 | Lower the barrier to LLM use | `runToolLoop` as the single entry point; dual-protocol providers; canonical message model; compaction; checkpoint/resume; classified errors | product-level prompt and workflow design |
 | Centralised model configuration and run policy | duck-typed `ModelConfigProvider.resolve(slot)` with `static` / `env` / `json-file` adapters, per-slot models, `apiKey`/`apiKeyEnv`/`apiKeyFile` indirection, budget derivation | the configuration store itself (database or config centre), project and tenant quotas, fallback policy, prompt and agent versions |
-| Traceable calls, cost analysis and audit | event stream (`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`), token accounting, `TranscriptStore` persistence, stable run ids, checkpoints and bounded recall for replay | log and cost storage, dashboards, retention, audit process |
-| One tool, permission and safety boundary | a single execution entry (`executeTool`), an executor registry that data cannot extend, schema intersection, and the built-in `recall` retrieval tool under `erix-agent/tools` | the policy itself: which project may run which agent, which tools, which operations need confirmation, network and write access, rate and time limits |
+| Traceable calls, cost analysis and audit | event stream (`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`), token accounting, `TranscriptStore` persistence, stable run ids, and checkpoints | log and cost storage, dashboards, retention, audit process |
+| One tool, permission and safety boundary | a single execution entry (`executeTool`), an executor registry that data cannot extend, schema intersection, and note-first retrieval through `note_list` → `note_read` | the policy itself: which project may run which agent, which tools, which operations need confirmation, network and write access, rate and time limits |
 | Contain third-party framework churn | zero runtime dependencies and an owned implementation, a stable exported surface plus `erix-agent/contract-tests` for consumers | — |
 | Accumulate reusable agent engineering | canonical message and tool formats, ADR-tracked decisions, contract tests, benchmark harness | — |
 
@@ -117,6 +117,7 @@ src/
     checkpoint-executor.js         Pre/post tool checkpoints and aggregate gate
     budget.js                      Budget validation and state cloning helpers
     aggregate-budget.js            Per-round aggregate output gate
+    tool-result-ttl.js             Request-view TTL folding for old tool results
     termination.js                 Termination reason classification
     resume-manager.js              Resume restore and run-state application
     error-ledger.js                Repeated-error accounting
@@ -146,7 +147,6 @@ src/
     helpers.js                     Shared folding, protection, stub, and hook helpers
     sliding-window.js              Sliding-window folding strategy
   store/
-    bounded-recall.js              Bounded, cursor-based recall implementation
     file.js                        JSONL transcript, checkpoint, and state store
     memory.js                      In-process transcript, checkpoint, and state store
     notes.js                       Host-side notes store
@@ -163,14 +163,14 @@ src/
   tools/
     index.js                       Optional tools subpath exports
     providers.js                   Tool-provider adapters
-    recall.js                      Optional recall tool adapter
     registry.js                    Tool schemas and executor registry
 ```
 
 `src/index.js` exports the providers, canonical message conversions, token
 and compaction helpers, transcript stores, run-state helpers, configuration
 providers, `runToolLoop`, and reflection helpers. The optional
-`erix-agent/tools` subpath exports the tool helpers listed above.
+`erix-agent/tools` subpath exports the tool registry and provider helpers;
+model-facing retrieval is note-first (`note_list` → `note_read`).
 
 ## Host ports and the error ledger
 
@@ -182,7 +182,7 @@ const assemblyPort = createAssemblyPort({
   modelConfig, // ModelConfigProvider: { resolve(slot) }
   provider,    // { chat?, chatStream? }
   tools: { definitions, executeTool, getToolMetadata? },
-  store,       // complete TranscriptStore (nine methods) unless persistence: "none"
+  store?,      // optional TranscriptStore (eight methods)
   session: { id, resume?, initialMessages? },
   policy?,     // explicit runToolLoop options; unknown keys are rejected
   emit?,       // (eventType, payload) => void
@@ -229,7 +229,7 @@ handles legacy `function_call` streams.
   `ErixWong/erix-agent` on GitHub.
 - Never commit tokens, API keys, or other credentials.
 
-The published package currently has version `0.6.0` in `package.json`. Its
+The published package currently has version `0.8.0` in `package.json`. Its
 declared `files` are:
 
 ```json
@@ -237,8 +237,8 @@ declared `files` are:
  "docs/host-consumer-contract.md", "docs/host-upgrade-guide-0.6.0.md",
  "test/contract/assembly-port.js", "test/contract/execute-tool.js",
  "test/contract/index.js", "test/contract/model-config-provider.js",
- "test/contract/notes-store.js", "test/contract/recall-contract.js",
- "test/contract/transcript-store.js", "LICENSE"]
+ "test/contract/notes-store.js", "test/contract/transcript-store.js",
+ "LICENSE"]
 ```
 
 Its public `exports` are:
@@ -272,6 +272,9 @@ optional `runState`, aggregate `usage`, and `compactionStats`.
   classified as retryable; with `retry: {}` the default is two retries after
   the initial attempt. `backoffBaseMs` defaults to `1500` and
   `backoffMaxMs` to `10000`.
+- A present assistant message with no text, tool call, or reasoning blocks is
+  retryable. The CLI reads `ERIX_RETRY_ATTEMPTS` (default `2`) for this retry
+  policy.
 - `maxRounds` defaults to `8` in the library. The CLI supplies its own
   command-specific defaults.
 - `maxTokenContinuations` defaults to `3`. A response ending in
@@ -392,6 +395,10 @@ The defaults used by the loop are:
 - Wrap-up LLM normalization is off by default; enable
   `wrapupNormalize: true` or `ERIX_WRAPUP_NORMALIZE=1`.
 
+Judge interception uses a 6,000-token conversation budget; round-judge output
+is capped at 1,024 tokens with `reasoning_effort: "none"`, and raw judge output
+is written to `judge.log`. The final budget round forces a no-tools request.
+
 `onJudge` receives round and interception decisions, including `judge_done`,
 `nudge`, `continue`, `executed`, `blocked`, and `degraded` actions. The loop
 does not treat a judge as a host-level completion certificate; hosts still
@@ -424,24 +431,23 @@ decide whether to consume the result.
   `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }`,
   bounded to at most 10 artifacts and 400 characters. They are not semantic
   search or provenance proof.
+- Tool-result TTL folding is separate from context compaction. It changes only
+  the provider request view; checkpoints retain full tool-result text.
+  `toolResultTtl` defaults to `2` rounds (`0` disables it), and
+  `toolResultFoldMinTokens` defaults to `4000` estimated tokens. The warning
+  round at `age === ttl - 1` asks the model to use `note_take`; folded
+  placeholders contain a navigation digest and, for suitable JSON, a JSON
+  skeleton. `note_*`, todo, error, and explicitly protected results are not
+  folded.
 - `writeToolNames` defaults to `["writeFile"]`; custom write tools must be
   named explicitly. `writeToolPathKeys` defaults to `["path", "file_path"]`.
   The judge's `filesWritten` footprint does not infer arbitrary write tools
   from their names.
 - `TranscriptStore` implementations provide idempotent `appendRound` plus
-  required checkpoint and run-state persistence. Pass `persistence: "none"` to
-  explicitly disable all writes. The object form of
-  `store.recall()` supports `fromRound`, `toRound`, `pattern`, `artifactRef`,
-  `limit`, `cursor`, `maxBytes`, and a straight line read via `lineOffset`
-  (0-based) plus `lineLimit` (default 100, hard cap 400) for reading the middle
-  of one large archived record without re-running the command, returning
-  `{ text, truncated, nextCursor?, status }`. It is bounded exact retrieval, not semantic
-  search, completion proof, or provenance verification. `cursor` is bound
-  to its run, range, filter, limits, and source version; mismatch is
-  rejected rather than silently restarting. `limit: 0` and `maxBytes: 0`
-  are rejected. File stores report an oversized source record as
-  `status: "truncated"` with `error.code === "record_too_large"`.
-  Legacy positional recall remains available and returns a string.
+  eight persistence methods for checkpoints and run state. Pass
+  `persistence: "none"` to explicitly disable all writes. Model-facing
+  retrieval is note-first: use `note_list` then `note_read`; there is no
+  transcript retrieval API; the former recall adapters were retired in 0.8.0.
 - `runState` is deterministic, bounded, and replace-injected at compaction
   points. Stores can implement `markRunState`,
   `saveRunState`/`loadRunState`, `saveCheckpoint`/`appendCheckpoint`, and
@@ -492,8 +498,8 @@ headless runtime's product interface.
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
-erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
+erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
 ```
@@ -526,18 +532,22 @@ The shared CLI flags are:
 - `--idle-timeout <seconds>` aborts after no progress; it defaults to 300
   for `chat` and 0 (disabled) for `repl`.
 - `--compact-budget <tokens>` overrides the automatic compaction budget.
+- `--tools <comma-separated names>` is a hard capability whitelist for both
+  `chat` and `repl`; unknown names warn, and an empty filtered set is an error.
 - `--judge-log <path>` appends redacted round/interception judge decisions
   as JSONL in `chat`.
 
-The built-in CLI tools are `readFile`, `rg`, `tree`, `writeFile`, and `exec`.
-They operate on arbitrary paths and commands. Tool outputs are archived by the
-engine into the transcript (`toolOutputs`, byte-faithful) and are retrievable
-with bounded recall; folded outputs expose value-anchor stubs. There is no
-replayability classification, rerun detection, or rerun notice: a repeated
-command executes normally and returns its fresh output (ADR-016). The
-rerun-value-mismatch risk is carried by one system-prompt line: re-running
-the same command may produce a different value; when an earlier exact value
-is needed, retrieve it with recall instead of relying on memory.
+The built-in CLI tools are `readFile`, `rg`, `grep`, `tree`, `writeFile`, and
+`exec`. `grep` is a pure-Node search tool with simple glob filename filtering,
+directory skipping, per-line limits, and a hard result cap of 200. They
+operate on arbitrary paths and commands. Tool outputs are retained in full by
+checkpoints while TTL folding may reduce only the provider request view.
+There is no replayability classification, rerun detection, or rerun notice: a
+repeated command executes normally and returns its fresh output (ADR-016).
+When an earlier exact value is needed, use the note-first sequence
+`note_list` → `note_read` instead of relying on memory. The system prompt
+instructs internal thinking in English and user-visible output in the user's
+language.
 
 The bundled self-describing `notes` skill provides `note_take`, `note_read`,
 `note_list`, and `note_forget`. It is a run-scoped, pull-only convenience
@@ -582,7 +592,9 @@ MCP configuration is read from the current directory's `.mcp.json` or
 `ERIX_NOTES_DIR` changes the notes root. Both CLI modes honor
 `ERIX_EXEC_TIMEOUT_MS` and `ERIX_FINAL_GUARD`; `chat` additionally honors
 `ERIX_NO_TOOL_ROUNDS`, `ERIX_MAX_ROUNDS`, `ERIX_REFLECTION`,
-`ERIX_NO_REFLECTION`, `ERIX_NO_NOTES`, and `ERIX_JUDGE_LOG`. The
+`ERIX_NO_REFLECTION`, `ERIX_NO_NOTES`, `ERIX_RETRY_ATTEMPTS`,
+`ERIX_TOOL_RESULT_TTL`, `ERIX_TOOL_RESULT_FOLD_MIN_TOKENS`, and
+`ERIX_JUDGE_LOG`. The
 library-level controls
 `ERIX_NO_WRAPUP_INSTRUCTION`, `ERIX_NO_FORCED_FINAL`, and
 `ERIX_STALL_MODE` are also honored by the relevant loop behavior;
@@ -599,7 +611,7 @@ library-level controls
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
 - [docs/host-consumer-contract.md](docs/host-consumer-contract.md) - host
-  consumer contract for verification, bounded recall, provenance, and reruns
+  consumer contract for verification, note-first retrieval, provenance, and reruns
 - [docs/host-upgrade-guide-v030.md](docs/host-upgrade-guide-v030.md) - host
   upgrade guidance for `touwaka` / `app_container` and v0.3.x behavior
 - [docs/maintenance-policy.md](docs/maintenance-policy.md) - maintenance
@@ -608,32 +620,33 @@ library-level controls
 - [docs/design/](docs/design/) - design and RFC material (Chinese only)
 - [docs/tasks/](docs/tasks/) - active task documents (Chinese only)
 
-The bounded recall design note is
-[docs/design/2026-09-14-bounded-recall-api.md](docs/design/2026-09-14-bounded-recall-api.md)
-(Chinese only).
-
 ## Status and version history
 
-The current package version is **v0.6.0**, dated 2026-09-18 according to
-`package.json` and `CHANGELOG.md`. Migration steps for the 0.6.0 breaking
-window are in [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
+The current package version is **v0.8.0**. The 0.6.0 migration steps remain in
+[docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
+
+- **v0.8.0**: retires the recall adapters and bounded transcript retrieval;
+  model-facing retrieval is note-first (`note_list` → `note_read`). Adds
+  request-view tool-result TTL folding, retryable empty assistant messages,
+  CLI tool whitelists, the pure-Node `grep` tool, and language-aware output
+  instructions.
 
 - **v0.5.1 (2026-09-15)**: fixes repeated accumulation of fold summaries,
   navigation records, stubs, `[本 run 状态]`, and run state by recognizing
   and replacing the fold marker; adds end-to-end Memento scenario coverage
   for folded truth, credential-safe stubs, reruns, repeated folding, and
-  bounded recall.
+  note-first recovery.
 - **v0.6.0 (2026-09-18)**: closing of the ADR-015/ADR-016 breaking window —
   the replayability concept (`rerunOf` notices, rerun detection, auto-capture)
   and the `resourceStore` port are removed, the guard verifies the envelope's
-  `findings` against all archived outputs, the engine ships recall as a
+  `findings` against all archived outputs, the engine ships transcript
   standard tool with output hygiene (`toolOutputs`), persistence failures are
   reported through `unpersisted`/`completionErrors`, and unknown run options
   throw. See CHANGELOG and the 0.6.0 upgrade guide.
 - **v0.5.0 (2026-09-15)**: makes the CLI provenance guard opt-in;
   normalized reruns executed and reported `rerunOf` instead of being blocked
   (both the concept and the notices were removed in 0.6.0);
-  adds object-form bounded recall, cursor and source binding, replayability
+  adds object-form bounded transcript navigation, cursor and source binding, replayability
   provenance, bounded fold navigation and stubs, deterministic run state,
   host-injected `todoStateProvider`/`semanticStateProvider`, and forced-final
   handling.
@@ -661,7 +674,7 @@ window are in [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.m
   `onJudge` / `--judge-log` observability. Reflection defaults to enabled in
   the library for `maxRounds >= 16` when omitted.
 - **v0.2.0 (2026-09-01)**: dual-protocol streaming, full tool loops,
-  automatic budget-driven folding, file stores and recall, JSON-file
+  automatic budget-driven folding, file stores, JSON-file
   configuration, the interactive CLI, persistence, self-describing skills,
   built-in CLI tools, streaming output, MCP stdio/HTTP integration, and
   idle timeouts.
