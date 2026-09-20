@@ -244,7 +244,36 @@ test("maps legacy function_call and rejects empty choices", () => {
 
   assert.throws(
     () => openAIResponseToCanonical({ choices: [{}] }),
-    (error) => error instanceof KitError && error.code === "server",
+    (error) => (
+      error instanceof KitError
+      && error.code === "server"
+      && error.retryable === false
+    ),
+  );
+});
+
+test("retries an empty assistant message but accepts reasoning-only responses", () => {
+  assert.throws(
+    () => openAIResponseToCanonical({
+      choices: [{
+        message: { role: "assistant" },
+        finish_reason: "stop",
+      }],
+    }),
+    (error) => error instanceof KitError && error.retryable === true,
+  );
+
+  assert.deepEqual(
+    openAIResponseToCanonical({
+      choices: [{
+        message: { role: "assistant", reasoning: "thinking" },
+        finish_reason: "stop",
+      }],
+    }),
+    {
+      content: [{ type: "reasoning", text: "thinking" }],
+      stopReason: "end_turn",
+    },
   );
 });
 
@@ -256,6 +285,7 @@ test("throws a diagnostic error when choices are missing", () => {
       assert.match(error.message, /missing choices/);
       assert.ok(error.message.includes('"error":"bad response"'));
       assert.ok(error.message.length < 560);
+      assert.equal(error.retryable, false);
       return true;
     },
   );

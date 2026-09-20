@@ -787,6 +787,14 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     maxTokens,
+    retry: {
+      attempts: (() => {
+        const raw = process.env.ERIX_RETRY_ATTEMPTS?.trim();
+        if (raw === undefined || raw === "") return 2;
+        const value = Number(raw);
+        return Number.isSafeInteger(value) && value >= 0 ? value : 2;
+      })(),
+    },
     completion: completion === false ? false : {
       signals: [
         "任务已完成",

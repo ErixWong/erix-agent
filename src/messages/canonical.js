@@ -360,7 +360,11 @@ function responsePreview(response) {
  */
 export function openAIResponseToCanonical(json) {
   if (!Array.isArray(json?.choices) || json.choices.length === 0) {
-    throw new KitError("server", `OpenAI response is missing choices: ${responsePreview(json)}`);
+    throw new KitError(
+      "server",
+      `OpenAI response is missing choices: ${responsePreview(json)}`,
+      { retryable: false },
+    );
   }
 
   const choice = json.choices[0] ?? {};
@@ -374,8 +378,19 @@ export function openAIResponseToCanonical(json) {
   // 放在非标准 `reasoning` 字段，maxTokens 被思考耗尽时 content 缺失，纯思考响应是合法返回）
   const hasReasoning = typeof message?.reasoning === "string"
     || typeof message?.reasoning_content === "string";
-  if (!isRecord(message) || (!hasContent && !hasToolCalls && !hasFunctionCall && !hasReasoning)) {
-    throw new KitError("server", `OpenAI choice is missing message content: ${responsePreview(json)}`);
+  if (!isRecord(message)) {
+    throw new KitError(
+      "server",
+      `OpenAI choice is missing message content: ${responsePreview(json)}`,
+      { retryable: false },
+    );
+  }
+  if (!hasContent && !hasToolCalls && !hasFunctionCall && !hasReasoning) {
+    throw new KitError(
+      "server",
+      `OpenAI choice is missing message content: ${responsePreview(json)}`,
+      { retryable: true },
+    );
   }
   const content = [];
 
