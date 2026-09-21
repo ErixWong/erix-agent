@@ -247,7 +247,6 @@ judgeIntercept
 judgeIntervalRound
 judgeInterceptTimeoutMs
 judgeFailureLimit
-triggerRound
 extensionStep
 maxExtensions
 maxRoundsCap
@@ -261,11 +260,16 @@ onReflection
 
 - reflection 启用时，`roundJudge` 和 `judgeIntercept` 都启用。
 - `judgeFailureLimit` 默认为 `3`；round judge 连续失败后，剩余运行期间会禁用 round judging。
-- `judgeIntervalRound` 为 `5`；完成这么多次真实工具执行后，下一次工具调用会在执行前独立审计。
+- `judgeIntervalRound` 为 `10`；完成这么多次真实工具执行后，下一次工具调用会在执行前独立审计。
 - `judgeInterceptTimeoutMs` 为 `30000`；拦截超时或 judge 失败时，会降级为执行原始工具。
-- `triggerRound` 默认为初始 `maxRounds` 的 80%。
+- 当进入 `nearLimit`（`budgetRounds >= floor(effectiveMaxRounds * 0.8)`）时，
+  end-turn judge 和下一次工具拦截审计都会收到当前预算与扩轮次数。Judge 还必须返回
+  `extend`、`extendReason` 和 `plan`；允许 `extend: true` 会增加有效预算，
+  `extend: false` 会提示模型尽快收敛。
 - `extensionStep` 默认为 `max(8, maxRounds * 0.5)`，`maxExtensions` 默认为 `2`，`maxRoundsCap` 至少为初始 `maxRounds`，否则为 `256`。
-- round judge 只有在 `done: true` 且 `confidence >= 0.7` 时才能停止。`done: false` 决策会注入 continuation/nudge；`direction: "off_track"` 是软方向提示，本身不会阻止工具执行。
+- round judge 只有在 `done: true` 且 `confidence >= 0.7` 时才能停止。`done: false` 决策会注入 continuation/nudge；
+  nearLimit 时 `extend: true` 可以扩轮，`direction: "off_track"` 会把 continuation
+  变为换思路指令。
 - wrap-up LLM 规范化默认关闭；启用 `wrapupNormalize: true` 或 `ERIX_WRAPUP_NORMALIZE=1`。
 
 Judge 拦截使用 6,000 token 的会话预算；round judge 最多输出 1,024 token，
