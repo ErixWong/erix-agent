@@ -117,3 +117,16 @@ pi 0.84.2 `-p`（deepseek-flash，n=3，erix-station 只读分析同任务）vs 
 - **引证有效性**（文件存在 + 行号在范围内）：erix 95/95 = **100%**；pi 161/167 = 96.4%（6 处行号越界）
 - **人工对质源码**（3 条关键安全发现）：① `debug.routes.js` 仅挂 `authenticate()`、无 `requireAdmin`（对比 `expert.routes.js` 确有 requireAdmin）——**真**（erix e1、pi p3 命中）；② `validateInternalAccess` 采信客户端可控 `x-forwarded-for` 含 `127.0.0.1` 即放行——**真**（6/6 run 全覆盖）；③ `lib/mcp-tool-caller.js:95-137` `generateAdminToken()` 用 `JWT_SECRET` 现场签发 1 小时管理员 JWT 并下发给子进程技能——**真**（仅 erix e1 命中）
 - **诚实标注**：n=3；主题判定为关键词口径（措辞不同者可能漏计）；质量无独立裁判（仅人工核验 3 条）；erix 受 64 轮上限约束而 pi 无（p2 的 144 轮正是成本失控来源）；两臂目标树相同（无 node_modules/.git），依赖分析均基于清单文件
+
+**⚠️ 工具剖面口径澄清（2026-09-21 补）**：上表「exec 100 / readFile 3」是按工具名计数，**不代表 erix 读得少**——erix 把「读文件片段 / 搜索 / 统计」都装进 `exec`（shell 逃生舱，一条命令还能串联多动作），pi 则主要走专用 `read` + `bash`。同口径拆解后两臂实际探索量级一致：
+
+| run | 专用读工具 | shell 读片段 | shell 搜索 | 合计读 | 合计搜索 |
+|---|---|---|---|---|---|
+| erix-e1 | 3 | 47 | 42 | 50 | 42 |
+| erix-e2 | 6 | 31 | 35 | 37 | 35 |
+| erix-e3 | 31 | 13 | 44 | 44 | 44 |
+| pi-p1 | 26 | 12 | 45 | 38 | 45 |
+| pi-p2 | 80 | 13 | 86 | 93 | 86 |
+| pi-p3 | 17 | 19 | 25 | 36 | 25 |
+
+差异在**工具词汇**（deepseek 在 erix 内的自然模式为 exec 主导，同 260926 记录），不在努力程度；成本与覆盖结论不受影响。后续跨 harness 对比应统一按「实际动作」而非「工具名」计数。
