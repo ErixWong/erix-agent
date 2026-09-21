@@ -25,6 +25,7 @@ const NUMBER_FIELDS = [
 const BOOLEAN_FIELDS = [
   ["SUPPORTS_REASONING", "supports_reasoning"],
   ["ENABLE_THINKING", "enable_thinking"],
+  ["CACHE_CAPABLE", "cacheCapable"],
 ];
 
 const JSON_FIELDS = [
