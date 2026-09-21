@@ -71,7 +71,7 @@ const HELP_TEXT = `用法：
   ERIX_REFLECTION     反思开关（on/off；ERIX_NO_REFLECTION=1 强制关闭）
   ERIX_JUDGE_INTERVAL  intercept judge 审计间隔（每 N 次工具执行审计一次，默认 10）
   ERIX_STALL_MODE      停滞检测模式（appear/consecutive，默认 consecutive；appear=窗口内出现过同一调用即判停滞）
-  ERIX_TOOL_RESULT_TTL 工具结果 TTL 折叠存活轮数（默认：2，0=关闭；slot 配置 cacheCapable:true 时默认关闭（0），环境变量显式设置优先）
+  ERIX_TOOL_RESULT_TTL 工具结果 TTL 折叠存活轮数（默认：2，0=关闭；slot 配置 cacheCapable:true 时默认关闭（0），环境变量显式设置优先。⚠️ 实测不推荐 cacheCapable:TTL=0 在 cache 端点有效成本 +53%（issue #44），保留仅为兼容/观测）
   ERIX_TOOL_RESULT_FOLD_MIN_TOKENS 低于此体积（估算 tokens）的工具结果永不折叠（默认：4000）
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
   ERIX_NO_NOTES=1       仅移除 notes 技能，保留其他 skill
