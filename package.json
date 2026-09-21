@@ -1,6 +1,6 @@
 {
   "name": "erix-agent",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Headless coding-agent runtime for unattended, host-scheduled use: zero-dependency, dual-protocol streaming, tool loop, context compaction, checkpoint/resume. The CLI is a verifier/debugger.",
   "type": "module",
   "engines": {

@@ -2,6 +2,20 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [0.9.0] - 2026-09-22
+
+来源：issue #49 修复（PR #50，260920 基准 64 轮撞 cap 实证驱动）。
+
+### Changed（BREAKING）
+
+- **扩轮决策统一归 judge**（issue #49）：nearLimit（`budgetRounds >= floor(effectiveMaxRounds × 0.8)`）时，end-turn judge 与工具拦截审计的 prompt 追加预算事实（`r/上限`、`extensionCount/maxExtensions`）并要求返回 `extend`/`extendReason`/`plan`；`extend:true` 且扩展配额未用时给有效预算增加 `extensionStep` 轮（拦截审计也携带该决策，模型从不 `end_turn` 也能触达扩轮）；`extend:false` 注入收尾压力 nudge；字段缺失/解析失败/超时 fail-closed 不扩。此前默认配置（roundJudge on）下扩轮路径不可达，长任务只能撞 `max_rounds_cap` 靠 wrapup 兜底。
+- 删除 legacy nearLimit reflection 路径：`reflection.triggerRound` 选项移除、`callReflection` 独立评估调用移除；`reflection_stop` 终止原因保留在类型枚举中但当前无触发路径（stop 权归 roundJudge/termination）。
+- `onReflection` 回调保留，现在仅在 judge 扩轮决策时触发（`decision` 为 judge 决策数据）。
+
+### Fixed
+
+- docs/architecture 双语对齐：移除 `triggerRound`/固定 `extensionStep=32`/`judgeIntervalRound=5` 过时默认值，补 nearLimit extend 决策口径。
+
 ## [0.8.0] - 2026-09-21
 
 来源：issue #33 修复批次（PR #134）+ 260920 基准驱动两批（PR #34 judge/预算/工具层效率、PR #37 TTL 折叠与 recall 退役）+ 文档同步（PR #38）。
