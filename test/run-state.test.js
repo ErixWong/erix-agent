@@ -5,6 +5,7 @@ import {
   renderRunState,
   RUN_STATE_MAX_CHARS,
   RUN_STATE_MAX_SERIALIZED_BYTES,
+  appendRunStateToRequestView,
   upsertRunStateInMessages,
   validateRunState,
   withSemanticRunState,
@@ -238,6 +239,33 @@ test("run state replacement is idempotent across repeated folds", () => {
   assert.match(text, /run=replace v=2 r=7\/8/u);
   assert.doesNotMatch(text, /run=replace v=1/u);
   assert.deepEqual(twice, once);
+});
+
+test("run state request view appends without modifying persistent messages", () => {
+  const rendered = "[run state deterministic v1]\n[/run state]";
+  const original = [
+    { role: "assistant", content: [{ type: "text", text: "先前回复" }] },
+    { role: "user", content: [{ type: "text", text: "继续" }] },
+  ];
+
+  const view = appendRunStateToRequestView(original, rendered);
+  assert.notEqual(view, original);
+  assert.deepEqual(view.slice(0, -1), original);
+  assert.deepEqual(view.at(-1), {
+    role: "user",
+    content: [{ type: "text", text: rendered }],
+  });
+  assert.deepEqual(original, [
+    { role: "assistant", content: [{ type: "text", text: "先前回复" }] },
+    { role: "user", content: [{ type: "text", text: "继续" }] },
+  ]);
+});
+
+test("run state request view returns the original input for empty or invalid data", () => {
+  const messages = [{ role: "user", content: "继续" }];
+  assert.equal(appendRunStateToRequestView(messages, ""), messages);
+  assert.equal(appendRunStateToRequestView(messages, 42), messages);
+  assert.equal(appendRunStateToRequestView(null, "state"), null);
 });
 
 test("run state records tool facts, files, budget prompts, todo status, and persists", async () => {

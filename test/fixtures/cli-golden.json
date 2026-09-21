@@ -21,6 +21,15 @@
             "text": "golden fixed input"
           }
         ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "[run state deterministic v1]\nrun=golden v=1 r=1/1 left=0 low=0 session=0\ntools=- files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+          }
+        ]
       }
     ],
     "output": "stub=golden-value"

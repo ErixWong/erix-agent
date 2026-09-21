@@ -867,6 +867,9 @@ export async function runToolLoop(options) {
   let toolErrorCount = 0;
   let checkpointFailureCount = 0;
   let runStateVersion = 0;
+  let ttlInjectArmed = false;
+  let ttlInjectConsumed = false;
+  let lowBudgetInjectFired = false;
   let currentRunState;
   let runStateAvailability = { status: "available" };
   let currentTerminationReason = "running";
@@ -1285,6 +1288,14 @@ export async function runToolLoop(options) {
       tokensBefore,
       tokensAfter,
     }) => {
+      if (
+        layerId === "ttl"
+        && Number.isFinite(triggered)
+        && triggered > 0
+        && !ttlInjectConsumed
+      ) {
+        ttlInjectArmed = true;
+      }
       const layers = createEmptyCompactionLayers();
       observeCompactionLayer(layers, layerId, {
         triggered,
@@ -1795,6 +1806,12 @@ export async function runToolLoop(options) {
     const strategyRequestsCompaction = configuredStrategy
       ? await configuredStrategy.shouldCompact(messages, budgetTokens)
       : false;
+    let foldedPayload = [];
+    let foldedRoundRange;
+    let navigationRecord;
+    let foldedRounds = 0;
+    let compacted = false;
+    let protectedDowngraded = 0;
     if (strategyRequestsCompaction || overBudget) {
       const [budgetFallbackLayer, safetyFallbackLayer] = getCompactionFallbackChain();
       const strategy = strategyRequestsCompaction
@@ -1845,16 +1862,16 @@ export async function runToolLoop(options) {
         throw new TypeError("Compaction strategy must return a messages array");
       }
       let compactedMessages = result.messages;
-      let foldedPayload = Array.isArray(result.foldedPayload)
+      foldedPayload = Array.isArray(result.foldedPayload)
         ? result.foldedPayload
         : [];
-      let foldedRoundRange = result.foldedRoundRange;
-      let navigationRecord = result.navigationRecord;
-      let foldedRounds = Number.isSafeInteger(result.foldedRounds)
+      foldedRoundRange = result.foldedRoundRange;
+      navigationRecord = result.navigationRecord;
+      foldedRounds = Number.isSafeInteger(result.foldedRounds)
         ? result.foldedRounds
         : 0;
-      let compacted = result.compacted === true;
-      let protectedDowngraded = 0;
+      compacted = result.compacted === true;
+      protectedDowngraded = 0;
       let tokensAfter = estimateMessageTokens(compactedMessages);
       if (selectedLayer !== undefined && foldedRounds > 0) {
         observeCompactionLayer(layers, selectedLayer.id, {
@@ -1940,13 +1957,13 @@ export async function runToolLoop(options) {
       if (foldedRoundRange?.to !== undefined) {
         foldedThrough = Math.max(foldedThrough, foldedRoundRange.to);
       }
-      const foldedStateChanged = foldedRounds > 0
+      if (
+        foldedRounds > 0
         || foldedRoundRange !== undefined
-        || navigationRecord !== undefined;
-      if (foldedStateChanged) {
+        || navigationRecord !== undefined
+      ) {
         foldedRoundCount += foldedRounds;
         if (navigationRecord !== undefined) navigationRecordCount += 1;
-        runStateVersion += 1;
       }
       const compactionStat = {
         compacted,
@@ -1959,20 +1976,49 @@ export async function runToolLoop(options) {
         ...compactionStat,
         protectedDowngraded,
       }, round);
-      normalizeMessages(messages);
-      const runState = await refreshRunState({
-        semantic: foldedStateChanged,
-        inject: foldedStateChanged,
-      });
-      return {
-        folded: compacted,
-        foldedPayload: compacted ? foldedPayload : undefined,
-        foldedRoundRange,
-        navigationRecord,
-        runState,
-      };
     }
-    return { folded: false, foldedPayload: undefined };
+    const foldedStateChanged = foldedRounds > 0
+      || foldedRoundRange !== undefined
+      || navigationRecord !== undefined;
+    // 低预算按本次调用的 budgetRounds 计算；resume 时不能用跨会话身份轮号 rounds。
+    const remainingRounds = governorState.effectiveMaxRounds - budgetRounds;
+    const isLowBudget = remainingRounds <= 2;
+    const persistInject = foldedStateChanged;
+    const requestInject = !persistInject
+      && (ttlInjectArmed || (isLowBudget && !lowBudgetInjectFired));
+    // 折叠轮优先把新鲜状态持久挂到摘要块（通道 A）；只有没有持久挂载时，
+    // 才追加请求视图尾部（通道 B），避免同一轮同时产生两个 run-state 块。
+    if (persistInject || requestInject) {
+      runStateVersion += 1;
+      if (requestInject && ttlInjectArmed) {
+        // TTL 首折和低预算门各只消费一次，避免每轮改写破坏前缀缓存。
+        ttlInjectArmed = false;
+        ttlInjectConsumed = true;
+      }
+      if (requestInject && isLowBudget && !lowBudgetInjectFired) {
+        lowBudgetInjectFired = true;
+      }
+    }
+    const runState = (
+      strategyRequestsCompaction
+      || overBudget
+      || persistInject
+      || requestInject
+    )
+      ? await refreshRunState({
+          semantic: persistInject || requestInject,
+          inject: persistInject,
+        })
+      : undefined;
+    normalizeMessages(messages);
+    return {
+      folded: compacted,
+      foldedPayload: compacted ? foldedPayload : undefined,
+      foldedRoundRange,
+      navigationRecord,
+      runState,
+      requestStateBlock: requestInject ? runState?.rendered : undefined,
+    };
   };
 
   const appendToolResultsToTranscript = (toolResults, roundNumber) => {
@@ -2000,6 +2046,11 @@ export async function runToolLoop(options) {
 
   try {
     await refreshRunState();
+    // resume 后注入旗标按本次 run 重置；后续 TTL 折叠/低预算会重新注入请求视图，
+    // 无需把 run-state 写入 checkpoint 或持久 transcript。
+    ttlInjectArmed = false;
+    ttlInjectConsumed = false;
+    lowBudgetInjectFired = false;
     throwIfAborted(signal);
     if (resumePendingTools.length > 0) {
       const resumedToolResults = [];
@@ -2074,13 +2125,18 @@ export async function runToolLoop(options) {
     emitEvent({ type: "round_start", round });
     const compactionStatsStart = compactionStats.length;
     const compaction = await compactBeforeRound(round);
+    let requestStateBlock = compaction.requestStateBlock;
     const roundStart = messages.length;
     // 预算兜底（2026-09-20 基准实测：剩余轮数耗尽时模型无视文字提示继续调工具，
     // 撞 max_rounds 被 truncate，靠 wrapup 全量重发历史 + 额外 4 分钟兜底）：
     // 本轮是最后一个预算轮时不带 tools，强制输出文本终稿。此时消息历史里所有
     // tool_use 均已配平 tool_result（结果总在下一轮请求前追加），无 tools 请求安全。
     const isFinalBudgetRound = budgetRounds >= governorState.effectiveMaxRounds;
-    let providerResult = await callProvider({ round, omitTools: isFinalBudgetRound });
+    let providerResult = await callProvider({
+      round,
+      omitTools: isFinalBudgetRound,
+      requestStateBlock,
+    });
     let response = providerResult.response;
     let content = blocksFor(response?.content);
 
@@ -2103,13 +2159,15 @@ export async function runToolLoop(options) {
           estimateMessageTokens(messages) > budgetTokens
           || isApiInputOverBudget(latestApiInputTokens, budgetTokens)
         )) {
-        await compactBeforeRound(round);
+        const continuationCompaction = await compactBeforeRound(round);
+        requestStateBlock = continuationCompaction.requestStateBlock;
       }
       tokenContinuationCount += 1;
       providerResult = await callProvider({
         allowPendingToolUse: true,
         round,
         omitTools: isFinalBudgetRound,
+        requestStateBlock,
       });
       response = providerResult.response;
       const continuation = blocksFor(response?.content);

@@ -225,7 +225,13 @@ test("enforces the budget after an oversized fold result", async () => {
 
   assert.ok(result.compactionStats.length >= 1);
   for (const request of provider.requests) {
-    assert.ok(estimateMessageTokens(request.messages) <= budgetTokens);
+    const persistentView = request.messages.filter((message) => (
+      !Array.isArray(message.content) || !message.content.some((block) => (
+        block?.type === "text"
+        && /\[run state deterministic v/u.test(block.text ?? "")
+      ))
+    ));
+    assert.ok(estimateMessageTokens(persistentView) <= budgetTokens);
   }
   assert.ok(result.compactionStats[0].tokensAfter <= budgetTokens);
 });
