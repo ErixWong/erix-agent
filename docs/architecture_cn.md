@@ -320,11 +320,10 @@ reflection: {
   enabled,
   roundJudge = true,
   judgeIntercept = true,
-  judgeIntervalRound = 5,
+  judgeIntervalRound = 10,
   judgeInterceptTimeoutMs = 30000,
   judgeFailureLimit = 3,
-  triggerRound = Math.max(1, Math.floor(maxRounds * 0.8)),
-  extensionStep = 32,
+  extensionStep = Math.max(8, Math.floor(maxRounds * 0.5)),
   maxExtensions = 2,
   maxRoundsCap = Math.max(maxRounds, 256),
   wrapupNormalize,
@@ -335,9 +334,11 @@ reflection: {
 
 `ERIX_NO_ROUND_JUDGE=1` 会独立于工具拦截禁用回合结束 judge。回合 judge 使用独立或共享的提供器评估 `end_turn` 响应。只有 `done: true` 且 `confidence >= 0.7` 才会产生 `judge_done`；`done: false` 会注入纠正性的续接消息。解析失败和评估器错误会降级到普通 governor；连续失败达到 `judgeFailureLimit` 后，回合 judge 会被禁用。
 
+进入 `nearLimit`（`budgetRounds >= floor(effectiveMaxRounds × 0.8)`）后，judge prompt 会额外要求返回 `extend`、`extendReason` 和 `plan`；这同时适用于 end-turn judge 和下一次工具拦截审计，因此模型即使从不输出 `end_turn` 也能触达扩轮决策。`extend: true`（且 `extensionCount < maxExtensions`、未达 `maxRoundsCap`）会把有效预算增加 `extensionStep` 轮，并把 plan 作为 continuation 消息注入；`direction: "off_track"` 会把该 continuation 变为换思路指令。`extend: false` 则提示模型尽快收敛。`extend` 字段缺失或解析失败意味着不扩轮（fail-closed）；最终预算轮回退到强制无工具的终稿请求。
+
 每执行 `judgeIntervalRound` 次工具后，下一次工具调用会被透明审计。`done: false` 的审计会阻止原始执行，并向模型返回审计结果。审计错误和超时会降级为直接执行。带有 `direction: "off_track"` 的 judge 结果不会阻止工具；它会向下一次模型上下文添加方向提示。`onJudge` 会接收回合和拦截决策，包括降级决策。
 
-governor 是确定性的且无副作用。它处理重复错误、记忆丢失响应、无工具连续轮次、停滞连续轮次、时间截止、reflection 扩展和完成。reflection 扩展会将轮次增加 `extensionStep`，上限为 `maxRoundsCap`，最多进行 `maxExtensions` 次。judge 和 reflection 使用的任务简述按以下顺序选择：`task`、`context.task`，然后是入口 transcript 中最新的 user 文本。
+governor 是确定性的且无副作用。它处理重复错误、记忆丢失响应、无工具连续轮次、停滞连续轮次、时间截止、judge 驱动的扩轮和完成。judge 扩轮会把轮次增加 `extensionStep`，上限为 `maxRoundsCap`，最多进行 `maxExtensions` 次。judge 和 wrap-up 使用的任务简述按以下顺序选择：`task`、`context.task`，然后是入口 transcript 中最新的 user 文本。
 
 Judge 拦截使用 6,000 token 的会话预算；round judge 请求最多输出 1,024 token，并设置 `reasoning_effort: "none"`。原始 judge 输出保留在 `judge.log` 中。最终预算轮次始终发送不带工具的请求。
 
