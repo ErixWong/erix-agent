@@ -98,3 +98,22 @@ pi 0.84.2 `-p`（deepseek-flash，n=3，erix-station 只读分析同任务）vs 
 - **反面对照**：通道 B 曾在 r3/4（TTL 首折，无失忆）注入过同一清单——被完全无视。**清单≠检索动机；清单×失忆点同帧才产生行为**。这解释了 §8 A/B 中 w 臂 note_read 未涨：erix-station run 轮级折叠少，清单多在「不需要」的时刻在场。
 
 **探针结果：0/5 合规**。5 个重读轮的可见输出全部为空（r29：reasoning 有内容、text 为空）——重读是默认路径，模型不为默认路径叙述理由；但主动取回时会自发给出理由。结论：**提示词要不到重读决策的理由，重读拦截（环境层注入）是唯一可靠的观测/干预点**。
+
+## 9. pi vs erix-agent 第二轮对比（touwaka 复杂项目，2026-09-21）
+
+任务：只读代码分析（6 方面 + file:line 证据），目标 = touwaka 源码副本（622 个 JS、约 18 万行，剔除 node_modules/.git），模型 deepseek-flash，两臂各 n=3。erix 臂 = 当时分支构建（含 #47 注入修复）；pi = `-p --no-extensions --no-skills --no-prompt-templates`。
+
+| | 轮数 | 总输入 | 缓存占比 | **有效成本** | 工具剖面 | 终稿字符 | file:line 引用 |
+|---|---|---|---|---|---|---|---|
+| erix e1 | 63 | 2.05M | 93% | **326k** | exec 100 / readFile 3 / note 7+7 | 11.9k | 29（100% 有效） |
+| erix e2 | 55 | 1.99M | 94% | **303k** | exec 74 / readFile 6 / note 4+2 | 12.3k | 33（100%） |
+| erix e3 | 63 | 2.10M | 95% | **304k** | exec 67 / readFile 31 / note 1 | 9.6k | 33（100%） |
+| pi p1 | 36 | 2.31M | 95% | 341k | bash 66 / read 26 | 10.9k | 43（98%） |
+| pi p2 | **144** | 9.20M | 98% | **1066k** | bash 113 / read 80 | 15.3k | 60（100%） |
+| pi p3 | 36 | 1.99M | 96% | 273k | bash 50 / read 17 | 12.1k | 64（92%） |
+
+- **成本**：erix 均值 **311k** vs pi **560k** → erix 低 **44%**（与 §7 首轮 -39% 一致）。pi 内部方差极大（p2 = p1/p3 的 3.1×，144 轮无硬上限）；erix 55–63 轮紧贴 64 轮上限，方差小
+- **质量（12 主题覆盖矩阵，关键词判定）**：erix 均值 6.7（11/5/4），pi 均值 5.0（6/5/4）；erix e1 命中 11/12 为全部 6 run 最高（唯一同时发现 debug 无 requireAdmin、XFF 可伪造、`generateAdminToken` 铸造管理员令牌三连安全链的 run）
+- **引证有效性**（文件存在 + 行号在范围内）：erix 95/95 = **100%**；pi 161/167 = 96.4%（6 处行号越界）
+- **人工对质源码**（3 条关键安全发现）：① `debug.routes.js` 仅挂 `authenticate()`、无 `requireAdmin`（对比 `expert.routes.js` 确有 requireAdmin）——**真**（erix e1、pi p3 命中）；② `validateInternalAccess` 采信客户端可控 `x-forwarded-for` 含 `127.0.0.1` 即放行——**真**（6/6 run 全覆盖）；③ `lib/mcp-tool-caller.js:95-137` `generateAdminToken()` 用 `JWT_SECRET` 现场签发 1 小时管理员 JWT 并下发给子进程技能——**真**（仅 erix e1 命中）
+- **诚实标注**：n=3；主题判定为关键词口径（措辞不同者可能漏计）；质量无独立裁判（仅人工核验 3 条）；erix 受 64 轮上限约束而 pi 无（p2 的 144 轮正是成本失控来源）；两臂目标树相同（无 node_modules/.git），依赖分析均基于清单文件
