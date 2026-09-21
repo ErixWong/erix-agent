@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { DEFAULT_REFLECTION_MIN_ROUNDS } from "../src/index.js";
 import {
   exitCodeForVerification,
+  resolveToolResultTtl,
   resolveReflection,
   parseChatArgs,
   runChat,
@@ -119,6 +120,22 @@ test("reflection default threshold comes from the library constant (issue #127)"
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+});
+
+test("CLI tool result TTL honors explicit environment and cacheCapable config", () => {
+  const previous = process.env.ERIX_TOOL_RESULT_TTL;
+  try {
+    process.env.ERIX_TOOL_RESULT_TTL = "3";
+    assert.equal(resolveToolResultTtl({ cacheCapable: true }), 3);
+
+    delete process.env.ERIX_TOOL_RESULT_TTL;
+    assert.equal(resolveToolResultTtl({ cacheCapable: true }), 0);
+    assert.equal(resolveToolResultTtl({ cacheCapable: false }), undefined);
+    assert.equal(resolveToolResultTtl({}), undefined);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_TOOL_RESULT_TTL;
+    else process.env.ERIX_TOOL_RESULT_TTL = previous;
   }
 });
 

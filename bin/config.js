@@ -79,6 +79,7 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
     "reasoning",
     "reasoning_effort",
     "enable_thinking",
+    "cacheCapable",
     "chat_template_kwargs",
     "providerOptions",
     "frequency_penalty",

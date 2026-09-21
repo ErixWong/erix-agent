@@ -585,3 +585,50 @@ test("tool result TTL fold: disabled via ttl=0 keeps originals in every request"
     for (const block of blocks) assert.ok(block.content.startsWith(big));
   }
 });
+
+test("cacheCapable defaults TTL folding off while explicit TTL remains authoritative", async () => {
+  const big = "z".repeat(20_000);
+  const runProbe = async (options = {}) => {
+    const provider = createFakeProvider([
+      ...[1, 2, 3, 4, 5, 6, 7].map((n) => ({
+        content: [{
+          type: "tool_use",
+          id: `call-${n}`,
+          name: "scan",
+          input: { n },
+        }],
+        stopReason: "tool_use",
+      })),
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]);
+    await runToolLoop({
+      provider,
+      initialUserMessage: "go",
+      executeTool: async () => big,
+      maxRounds: 8,
+      stallDetection: false,
+      completion: false,
+      ...options,
+    });
+    return provider;
+  };
+  const resultContentsAt = (provider, requestIndex) => provider.requests[requestIndex].messages
+    .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+    .filter((block) => block?.type === "tool_result")
+    .map((block) => block.content);
+
+  const cacheCapable = await runProbe({ cacheCapable: true });
+  assert.ok(resultContentsAt(cacheCapable, 2).every((content) => content.startsWith(big)));
+
+  const explicitThree = await runProbe({ cacheCapable: true, toolResultTtl: 3 });
+  assert.ok(resultContentsAt(explicitThree, 2).every((content) => content.startsWith(big)));
+  assert.match(resultContentsAt(explicitThree, 3)[0], /【已折叠·TTL】/u);
+
+  const explicitZero = await runProbe({ cacheCapable: true, toolResultTtl: 0 });
+  assert.ok(resultContentsAt(explicitZero, 3).every((content) => content.startsWith(big)));
+
+  const defaultTtl = await runProbe();
+  assert.match(resultContentsAt(defaultTtl, 2)[0], /【已折叠·TTL】/u);
+  const explicitFalse = await runProbe({ cacheCapable: false });
+  assert.match(resultContentsAt(explicitFalse, 2)[0], /【已折叠·TTL】/u);
+});

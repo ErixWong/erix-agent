@@ -81,6 +81,7 @@ test("loadCliConfig reads the configured model", async () => {
           model: "file-model",
           maxOutputTokens: 4096,
           contextWindowTokens: 32768,
+          cacheCapable: true,
         },
       },
     });
@@ -92,6 +93,7 @@ test("loadCliConfig reads the configured model", async () => {
         model: "file-model",
         maxOutputTokens: 4096,
         contextWindowTokens: 32768,
+        cacheCapable: true,
       });
     });
   });

@@ -108,6 +108,7 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "writeToolPathKeys",
   "executeTool",
   "maxRounds",
+  "cacheCapable",
   "toolResultTtl",
   "toolResultFoldMinTokens",
   "maxTokens",
@@ -327,6 +328,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
  *     => Promise<string|{content:any, metadata?:object, success?:boolean}|Error>,
  *   maxRounds?: number,
+ *   cacheCapable?: boolean, // cache-capable 端点默认关闭工具结果 TTL 折叠；显式 toolResultTtl 优先。
+ *   toolResultTtl?: number, // 工具结果 TTL 折叠存活轮数；未设置时默认 2。
  *   maxTokens?: number,
  *   temperature?: number,
  *   topP?: number,
@@ -429,7 +432,8 @@ export async function runToolLoop(options) {
     writeToolPathKeys = ["path", "file_path"],
     executeTool,
     maxRounds = 8,
-    toolResultTtl = TOOL_RESULT_TTL_DEFAULT,
+    cacheCapable = false,
+    toolResultTtl,
     toolResultFoldMinTokens = TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
     maxTokens,
     temperature,
@@ -474,6 +478,9 @@ export async function runToolLoop(options) {
     onUsage,
     onEvent,
   } = effectiveOptions;
+  const resolvedToolResultTtl = toolResultTtl === undefined && cacheCapable === true
+    ? 0
+    : toolResultTtl ?? TOOL_RESULT_TTL_DEFAULT;
   const fineGrainedPortShape = assemblyPort === undefined && (
     (session !== undefined && session !== null && typeof session === "object")
     || Object.hasOwn(explicitOptions, "modelConfig")
@@ -1304,7 +1311,7 @@ export async function runToolLoop(options) {
         effectiveMaxRounds: governorState.effectiveMaxRounds,
         lowBudgetPrompted,
       })) return null;
-      return { ttl: toolResultTtl, minTokens: toolResultFoldMinTokens };
+      return { ttl: resolvedToolResultTtl, minTokens: toolResultFoldMinTokens };
     },
     get messages() {
       return messages;

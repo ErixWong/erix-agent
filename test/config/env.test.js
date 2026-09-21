@@ -84,6 +84,31 @@ test("env: boolean fields accept only true/false/1/0", async () => {
   }
 });
 
+test("env: cacheCapable parses true/false/1/0", async () => {
+  const prefix = `ERIX_ENV_CACHE_CAPABLE_${process.pid}_`;
+  const name = `${prefix}CACHE_CAPABLE`;
+  const previous = process.env[name];
+  try {
+    for (const [value, expected] of [
+      ["true", true],
+      ["false", false],
+      ["1", true],
+      ["0", false],
+    ]) {
+      process.env[name] = value;
+      const config = await createEnvModelConfigProvider(prefix).resolve();
+      assert.equal(config.cacheCapable, expected);
+    }
+
+    process.env[name] = "maybe";
+    const config = await createEnvModelConfigProvider(prefix).resolve();
+    assert.equal(Object.hasOwn(config, "cacheCapable"), false);
+  } finally {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  }
+});
+
 test("env: invalid numeric values throw field-specific configuration errors", async () => {
   const prefix = `ERIX_ENV_NUMERIC_${process.pid}_`;
   for (const [suffix, value, field] of [
