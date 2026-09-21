@@ -25,6 +25,60 @@ CLI（`erix`）是验证器和调试器，不是产品：
 
 项目面向包括 `app_container`（PI Agent 审计/开发路径）和 `touwaka`（AgentLoop/对话路径）在内的集成。这些宿主集成不属于本包的生命周期边界。
 
+## 快速开始
+
+从 npm 安装（Node 22+）：
+
+```bash
+npm i erix-agent
+```
+
+最小工具循环——运行时只管理一个任务生命周期，工具和安全策略归调用方：
+
+```js
+import {
+  createOpenAIProvider,
+  createMemoryTranscriptStore,
+  runToolLoop,
+} from "erix-agent";
+
+const provider = createOpenAIProvider({
+  endpoint: "https://your-relay.example.com/v1", // 任意 OpenAI 兼容端点
+  apiKey: process.env.LLM_API_KEY,
+  model: "your-model",
+});
+
+const result = await runToolLoop({
+  provider,
+  system: "你是编码助手。先用工具检查，再回答。",
+  initialUserMessage: "统计 ./src 下 JS 文件数量和总行数。",
+  tools: [{
+    name: "exec",
+    description: "执行只读 shell 命令，返回 stdout+stderr",
+    inputSchema: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+    },
+  }],
+  executeTool: async ({ name, input }) => {
+    // 你的执行逻辑 + 安全策略（库本身不执行任何东西）
+  },
+  maxRounds: 16,
+  store: createMemoryTranscriptStore(),
+  runId: "demo-001",
+});
+
+console.log(result.finalText);            // 最终回答
+console.log(result.rounds, result.usage); // 运行统计
+```
+
+或者用 CLI 驱动（读取 `~/.erix/config.json`，见[配置与本地状态](#配置与本地状态)）：
+
+```bash
+erix chat "统计这个项目的代码行数" --max-rounds 32
+```
+
 ## 为什么需要统一的 Headless Agent？
 
 多个自研项目与 vibe coding 项目需要接入 LLM，但开发者未必熟悉 Prompt、上下文工程、
@@ -125,24 +179,6 @@ src/
 
 `src/index.js` 导出 provider、规范消息转换、token 与压缩辅助函数、transcript store、run-state 辅助函数、配置 provider、`runToolLoop` 以及 reflection 辅助函数。可选的 `erix-agent/tools` 子路径导出工具 registry 和 provider 辅助函数；模型侧取回采用 note-first（`note_list` → `note_read`）。
 
-## 工程约束
-
-- 零运行时 npm 依赖、纯 ESM、Node 22+，无构建步骤。
-- 测试使用 `node --test`；类型信息通过 JSDoc typedef 表达。
-- 包以 `erix-agent` 发布到 npm，代码托管于 GitHub 的 `ErixWong/erix-agent`。
-- 永远不要提交 token、API key 或其他凭据。
-
-当前 `package.json` 中发布包的版本是 `0.8.0`。声明的 `files` 为：
-
-```json
-["src", "bin", "skills", "README.md", "README_cn.md", "CHANGELOG.md",
- "docs/host-consumer-contract.md", "docs/host-upgrade-guide-0.6.0.md",
- "test/contract/assembly-port.js", "test/contract/execute-tool.js",
- "test/contract/index.js", "test/contract/model-config-provider.js",
- "test/contract/notes-store.js", "test/contract/transcript-store.js",
- "LICENSE"]
-```
-
 ## 宿主端口与错误账本
 
 组合边界上一次性校验四个适配器端口，其余宿主边界作为显式 `runToolLoop` 选项传入：
@@ -184,6 +220,24 @@ const assemblyPort = createAssemblyPort({
   "./tools": "./src/tools/index.js",
   "./contract-tests": "./test/contract/index.js"
 }
+```
+
+## 工程约束
+
+- 零运行时 npm 依赖、纯 ESM、Node 22+，无构建步骤。
+- 测试使用 `node --test`；类型信息通过 JSDoc typedef 表达。
+- 包以 `erix-agent` 发布到 npm，代码托管于 GitHub 的 `ErixWong/erix-agent`。
+- 永远不要提交 token、API key 或其他凭据。
+
+当前 `package.json` 中发布包的版本是 `0.9.0`。声明的 `files` 为：
+
+```json
+["src", "bin", "skills", "README.md", "README_cn.md", "CHANGELOG.md",
+ "docs/host-consumer-contract.md", "docs/host-upgrade-guide-0.6.0.md",
+ "test/contract/assembly-port.js", "test/contract/execute-tool.js",
+ "test/contract/index.js", "test/contract/model-config-provider.js",
+ "test/contract/notes-store.js", "test/contract/transcript-store.js",
+ "LICENSE"]
 ```
 
 ## `runToolLoop` API
@@ -389,20 +443,14 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 ## 状态与版本历史
 
-当前包版本为 **v0.8.0**。0.6.0 破坏窗口的迁移步骤见
-[docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)。
+当前包版本为 **v0.9.0**。0.6.0 破坏窗口的迁移步骤见
+[docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)；完整版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-- **v0.8.0**：recall 适配器和有界 transcript 取回退役；模型侧改为 note-first（`note_list` → `note_read`）。新增 request-view 工具结果 TTL 折叠、可重试的空 assistant 消息、CLI 工具白名单、纯 Node `grep` 工具和按语言输出指令。
+- **v0.9.0 (2026-09-22)**：扩轮决策统一归 judge——nearLimit 时 end-turn judge 与工具拦截审计必须返回 `extend`/`extendReason`/`plan`；批准的 `extend: true` 提升有效轮数预算（拦截路径补上了「模型从不 end_turn」的盲区）。删除 legacy nearLimit reflection 路径：`reflection.triggerRound` 移除，`reflection_stop` 当前无触发路径。长任务不再「未评估即撞 `max_rounds_cap`」。
+- **v0.8.0 (2026-09-21)**：recall 适配器和有界 transcript 取回退役；模型侧改为 note-first（`note_list` → `note_read`）。新增 request-view 工具结果 TTL 折叠、可重试的空 assistant 消息、CLI 工具白名单、纯 Node `grep` 工具和按语言输出指令。
+- **v0.7.0 (2026-09-19)**：单轮聚合输出预算、折叠摘要锚点（路径/SHA/URL 机械保真）、CLI exec 截断改 head+tail、intercept 审计间隔 5→10 且 on_track 放行、stall 检测默认 `consecutive`、resume 轮号/轮预算拆分。
 - **v0.6.0 (2026-09-18)**：ADR-015/ADR-016 破坏窗口收口——可重放概念（`rerunOf` 告知、重跑检测、auto-capture）与 `resourceStore` 端口删除；guard 改为核验结束信封的 `findings` 与全部归档输出比对；引擎标配 transcript 输出卫生（`toolOutputs`）；持久化失败通过 `unpersisted`/`completionErrors` 上报；陌生 run 选项抛错。详见 CHANGELOG 与 0.6.0 升级指南。
-- **v0.5.1 (2026-09-15)**：通过识别并替换 fold marker，修复 fold summary、导航记录、stub、`[本 run 状态]` 和 run state 反复累积的问题；增加端到端 Memento 场景覆盖折叠后的 truth、凭据安全 stub、重跑、重复折叠和 note-first 恢复。
-- **v0.5.0 (2026-09-15)**：将 CLI provenance guard 改为 opt-in；规范化重跑会执行并报告 `rerunOf`（该概念与告知已在 0.6.0 删除），而不是被阻止；增加对象形式的有界 transcript 导航、cursor 与 source binding、可重放性 provenance、有界 fold navigation 和 stub、确定性 run state、宿主注入的 `todoStateProvider`/`semanticStateProvider` 以及 forced-final 处理。
-- **v0.4.0 (2026-09-14)**：（历史）增加 run-scoped notes skill、工具输出 archive 和 provenance capture；archive/capture 机制已在 0.6.0 退役。Notes 使用 `current` 加最多三个 `superseded` 值以及可见的 `folded` 计数；旧 notes ledger、version chain 和相关环境变量已移除。Provenance guard 比较 capture manifest，而不是信任 notes。
-- **v0.3.5 (2026-09-12)**：大范围兼容性与持久化修复批次，包括实时流式回调、工具执行后 checkpoint 持久化失败时 fail-closed、完整 pending-tool resume、provider SSE 和 legacy `function_call` 兼容、更安全的 file-store ID、REPL 持久化、MCP 清理、输入校验和 `onObserverError`。
-- **v0.3.4 (2026-09-07)**：修正多轮宿主的任务 brief 选择。显式 `task` 和 `context.task` 优先级最高，其次是入口 transcript 的最后一条 user message；resume 不再使用不可信的历史 task seed。
-- **v0.3.3 (2026-09-06)**：`wrapup: false` 同时禁用整个 wrap-up 指令/解析/替换/规范化协议，并加强顶层 `done` 校验。
-- **v0.3.2 (2026-09-06)**：MIT 许可和 README 重构；无运行时功能变化。
-- **v0.3.0 (2026-09-06)**：judge 治理可用：透明工具拦截、round judge、方向提示、stall 修正以及 `onJudge` / `--judge-log` 可观测性。省略时，`maxRounds >= 16` 的库默认启用 reflection。
-- **v0.2.0 (2026-09-01)**：双协议流式、完整工具循环、自动按预算折叠、file store、JSON-file 配置、交互式 CLI、持久化、自描述 skill、内置 CLI 工具、流式输出和 MCP stdio/HTTP 集成，以及 idle timeout。
+- 更早版本（v0.2.0 ~ v0.5.1）：见 [CHANGELOG.md](CHANGELOG.md)。
 
 项目所描述的宿主迁移和 benchmark 工作仍在进行中，不能据此承诺未来的宿主或 sandbox 组件已经包含在本包中。
 
@@ -424,71 +472,11 @@ Notes 实验脚本同样按 `--model`、`ERIX_EXPERIMENT_MODEL` 或 `--config`/`
 
 ### 通过任务（reward=1，按模型）
 
-`historical-model` 在广泛的任务集中有 **34 个通过任务**：
+- `historical-model`：广泛任务集 **34 个通过**（`bn-fit-modify`、`break-filter-js-from-html`、`build-cython-ext`、`crack-7z-hash`、`fix-git`、`git-multibranch`、`prove-plus-comm`、`sqlite-db-truncate` 等）。
+- `historical-model-2`（较新的困难任务与恢复样本）：**11 个通过**（`adaptive-rejection-sampler`、`chess-best-move`、`code-from-image`、`db-wal-recovery`、`fix-code-vulnerability`、`password-recovery` 等）。
+- 同样本上的 `pi` 对照：**4 个通过**（`break-filter-js-from-html`、`build-cython-ext`、`build-pov-ray`、`distribution-search`）。
 
-```text
-bn-fit-modify
-break-filter-js-from-html
-build-cython-ext
-build-pmars
-cancel-async-tasks
-cobol-modernization
-configure-git-webserver
-constraints-scheduling
-count-dataset-tokens
-crack-7z-hash
-custom-memory-heap-crash
-extract-elf
-financial-document-processor
-fix-git
-git-leak-recovery
-git-multibranch
-hf-model-inference
-kv-store-grpc
-log-summary-date-ranges
-merge-diff-arc-agi-task
-modernize-scientific-stack
-mteb-retrieve
-multi-source-data-merger
-openssl-selfsigned-cert
-polyglot-c-py
-portfolio-optimization
-prove-plus-comm
-pypi-server
-regex-log
-reshard-c4-data
-sam-cell-seg
-sqlite-db-truncate
-torch-tensor-parallelism
-vulnerable-secret
-```
-
-`historical-model-2` 在较新的困难任务样本中有 **11 个通过任务**：
-
-```text
-adaptive-rejection-sampler
-break-filter-js-from-html
-build-cython-ext
-build-pov-ray
-cancel-async-tasks
-chess-best-move
-code-from-image
-configure-git-webserver
-db-wal-recovery
-fix-code-vulnerability
-password-recovery
-```
-
-`historical-model-2` 样本中的 `pi` 对照有 **4 个通过任务**：
-
-```text
-break-filter-js-from-html
-build-cython-ext
-build-pov-ray
-distribution-search
-```
-
-两个 `historical-model` 总数不可直接比较：前者运行次数更多、任务组合更广；后者更强调困难任务和恢复任务。
+两个 `historical-model` 总数不可直接比较：前者运行次数更多、任务组合更广；后者更强调困难任务和恢复任务。逐任务明细见 erix-bench 仓库。
 
 ### 透明拦截与 judge 证据
 
