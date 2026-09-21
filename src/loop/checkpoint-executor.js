@@ -400,6 +400,16 @@ export function createCheckpointExecutor(ctx) {
       interceptErrorMessage = String(error?.message ?? String(error)).slice(0, 300);
     }
     ctx.judgeInterceptCount = 0;
+    const nearLimit = ctx.budgetRounds >= Math.floor(
+      ctx.governorState.effectiveMaxRounds * 0.8,
+    );
+    const extensionDecision = nearLimit
+      && decision !== undefined
+      && decision !== null
+      && typeof decision.extend === "boolean";
+    if (extensionDecision && ctx.interceptJudgeDecision === undefined) {
+      ctx.interceptJudgeDecision = decision;
+    }
 
     // 放行规则（issue #32 / 运行时评估 §5）：done:false 只是「任务尚未完成」，与「这次调用该不该执行」正交。
     // 任务中途 done:false 必然成立，若一律拦截就会误杀方向正确的工具调用（实测 39 次）。
@@ -442,8 +452,14 @@ export function createCheckpointExecutor(ctx) {
       });
     } else {
       const emitJudge = ctx.emitJudge;
+      const extensionAction = decision.extend === true
+        ? (decision.direction === "off_track" ? "extend+redirect" : "extend")
+        : decision.extend === false
+          ? "decline_extend"
+          : undefined;
       emitJudge({
-        kind: "intercept",
+        ...(extensionDecision ? { round } : {}),
+        kind: extensionDecision ? "round" : "intercept",
         tool: {
           id: block.id,
           name: block.name,
@@ -456,8 +472,12 @@ export function createCheckpointExecutor(ctx) {
           evidence: decision.evidence,
           direction: decision.direction,
           directionReason: decision.directionReason,
+          ...(decision.extend === undefined ? {} : { extend: decision.extend }),
+          ...(decision.extendReason === undefined ? {} : { extendReason: decision.extendReason }),
+          ...(decision.plan === undefined ? {} : { plan: decision.plan }),
         },
-        action: passThrough !== undefined || decision.done !== false ? "executed" : "blocked",
+        action: extensionAction
+          ?? (passThrough !== undefined || decision.done !== false ? "executed" : "blocked"),
         ...(passThrough ? { passThrough } : {}),
         // judge 当次调用用量（issue #33 B）：judge.log 对账；超时/出错时缺省。
         ...(judgeUsage ? { usage: judgeUsage } : {}),

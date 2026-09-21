@@ -17,7 +17,7 @@ function toolResponse(round) {
   };
 }
 
-function reflectionResponse(fields) {
+function judgeResponse(fields) {
   return {
     content: [{ type: "text", text: JSON.stringify(fields) }],
     stopReason: "end_turn",
@@ -62,16 +62,23 @@ test("parseReflectionDecision accepts JSON, markdown JSON, and text fallback", (
 
 test("reflection extends the budget and injects the plan into the next task request", async () => {
   const provider = createFakeProvider([
-    ...Array.from({ length: 8 }, (_value, index) => toolResponse(index + 1)),
-    reflectionResponse({
-      progress: 60,
-      stalled: false,
-      continue: true,
+    ...Array.from({ length: 7 }, (_value, index) => toolResponse(index + 1)),
+    { content: [{ type: "text", text: "阶段结论" }], stopReason: "end_turn" },
+    ...Array.from({ length: 3 }, (_value, index) => toolResponse(index + 9)),
+    { content: [{ type: "text", text: "最终结论" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({
+      done: false,
+      confidence: 0.8,
       reason: "仍有价值",
+      evidence: "还有验证工作",
+      direction: "on_track",
+      extend: true,
+      extendReason: "当前上限不足",
       plan: "做X",
     }),
-    ...Array.from({ length: 4 }, (_value, index) => toolResponse(index + 9)),
-    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
+    judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已验证" }),
   ]);
 
   const result = await runToolLoop({
@@ -82,21 +89,22 @@ test("reflection extends the budget and injects the plan into the next task requ
     completion: false,
     reflection: {
       enabled: true,
-      roundJudge: false, judgeIntercept: false,
-      triggerRound: 8,
+      roundJudge: true,
+      judgeIntercept: false,
       extensionStep: 2,
       maxExtensions: 1,
       maxRoundsCap: 12,
+      judge: { provider: judge },
     },
   });
 
   assert.equal(result.rounds, 12);
-  assert.equal(result.truncated, true);
+  assert.equal(result.truncated, false);
   assert.match(
-    provider.requests[9].messages.at(-1).content[0].text,
-    /继续执行。反思建议的下一步：做X/,
+    provider.requests[8].messages.at(-1).content[0].text,
+    /下一步：做X/,
   );
-  assert.match(provider.requests[8].messages[0].content[0].text, /进度反思/);
+  assert.match(judge.requests[0].messages[0].content[0].text, /extend=true/);
   assert.equal(
     result.messages.some((message) => (
       message.content?.[0]?.text?.includes("进度反思")
@@ -108,10 +116,22 @@ test("reflection extends the budget and injects the plan into the next task requ
 test("default extension step scales with maxRounds instead of a fixed +32 (issue #127)", async () => {
   // 默认步长改按比例：16 轮的任务一次扩 8 轮（max(8, 16*0.5)），而不是一口气加到 48
   const provider = createFakeProvider([
-    ...Array.from({ length: 12 }, (_value, index) => toolResponse(index + 1)),
-    reflectionResponse({ progress: 60, stalled: false, continue: true, reason: "仍有价值", plan: "继续做" }),
-    // 模型一直干活不交卷：轮数会一路顶到扩轮后的上限，正好量出步长
-    ...Array.from({ length: 60 }, (_value, index) => toolResponse(index + 13)),
+    ...Array.from({ length: 11 }, (_value, index) => toolResponse(index + 1)),
+    { content: [{ type: "text", text: "阶段结论" }], stopReason: "end_turn" },
+    ...Array.from({ length: 11 }, (_value, index) => toolResponse(index + 13)),
+    { content: [{ type: "text", text: "最终结论" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({
+      done: false,
+      confidence: 0.8,
+      reason: "仍有价值",
+      evidence: "还有工作",
+      extend: true,
+      extendReason: "当前上限不足",
+      plan: "继续做",
+    }),
+    judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已验证" }),
   ]);
 
   const result = await runToolLoop({
@@ -120,26 +140,28 @@ test("default extension step scales with maxRounds instead of a fixed +32 (issue
     executeTool: async () => "ok",
     maxRounds: 16,
     completion: false,
-    reflection: { enabled: true, roundJudge: false, judgeIntercept: false, maxExtensions: 1 },
+    reflection: {
+      enabled: true,
+      roundJudge: true,
+      judgeIntercept: false,
+      maxExtensions: 1,
+      judge: { provider: judge },
+    },
   });
 
   // 16 + max(8, 16*0.5) = 24；若还是旧的固定 +32 则会跑到 48
   assert.equal(result.rounds, 24);
-  assert.equal(result.truncated, true);
-  assert.equal(result.termination.reason, "max_rounds_cap");
+  assert.equal(result.truncated, false);
+  assert.equal(result.termination.reason, "judge_done");
 });
 
-test("reflection can stop before the hard round limit without truncation", async () => {
+test("judge can stop before the hard round limit without truncation", async () => {
   const provider = createFakeProvider([
-    ...Array.from({ length: 8 }, (_value, index) => toolResponse(index + 1)),
-    reflectionResponse({
-      progress: 100,
-      stalled: false,
-      continue: false,
-      reason: "已完成",
-      plan: "",
-    }),
-    toolResponse(9),
+    ...Array.from({ length: 7 }, (_value, index) => toolResponse(index + 1)),
+    { content: [{ type: "text", text: "阶段完成" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: true, confidence: 0.9, reason: "已完成", evidence: "已完成" }),
   ]);
 
   const result = await runToolLoop({
@@ -148,26 +170,38 @@ test("reflection can stop before the hard round limit without truncation", async
     executeTool: async () => "ok",
     maxRounds: 10,
     completion: false,
-    reflection: { enabled: true, roundJudge: false, judgeIntercept: false, triggerRound: 8 },
+    reflection: {
+      enabled: true,
+      roundJudge: true,
+      judgeIntercept: false,
+      judge: { provider: judge },
+    },
   });
 
   assert.equal(result.rounds, 8);
   assert.equal(result.truncated, false);
-  assert.equal(provider.requests.length, 9);
+  assert.equal(provider.requests.length, 8);
 });
 
-test("stalled reflection injects a change-of-approach instruction", async () => {
+test("stalled judge extension injects a change-of-approach instruction", async () => {
   const provider = createFakeProvider([
     toolResponse(1),
-    reflectionResponse({
-      progress: 40,
-      stalled: true,
-      continue: true,
-      stallPattern: "重复旧方法",
+    { content: [{ type: "text", text: "阶段结论" }], stopReason: "end_turn" },
+    toolResponse(3),
+    { content: [{ type: "text", text: "最终结论" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({
+      done: false,
+      confidence: 0.8,
+      reason: "重复旧方法",
+      evidence: "没有新进展",
+      direction: "off_track",
+      extend: true,
+      extendReason: "重复旧方法",
       plan: "改用另一种方法",
     }),
-    ...Array.from({ length: 3 }, (_value, index) => toolResponse(index + 2)),
-    { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
+    judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已完成" }),
   ]);
 
   const result = await runToolLoop({
@@ -178,11 +212,12 @@ test("stalled reflection injects a change-of-approach instruction", async () => 
     completion: false,
     reflection: {
       enabled: true,
-      roundJudge: false, judgeIntercept: false,
-      triggerRound: 1,
+      roundJudge: true,
+      judgeIntercept: false,
       extensionStep: 1,
       maxExtensions: 1,
       maxRoundsCap: 4,
+      judge: { provider: judge },
     },
   });
 
@@ -275,7 +310,7 @@ test("memory loss is nudged in the same round and resets no-tool streak", async 
   )));
 });
 
-test("resume rebuilds L1 and L0 chains for the evaluator", async () => {
+test("resume judge sees the rebuilt L1 and L0 evidence", async () => {
   const store = createMemoryTranscriptStore();
   await runToolLoop({
     provider: createFakeProvider([
@@ -302,29 +337,36 @@ test("resume rebuilds L1 and L0 chains for the evaluator", async () => {
   });
   const resumedProvider = createFakeProvider([
     { content: [{ type: "text", text: "round three" }], stopReason: "end_turn" },
-    { content: [{ type: "text", text: "{\"continue\":false}" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({
+      done: false,
+      confidence: 0.5,
+      reason: "继续",
+      evidence: "还需工作",
+      extend: false,
+      extendReason: "无需扩轮",
+      plan: "收敛",
+    }),
   ]);
   await runToolLoop({
     provider: resumedProvider,
     initialUserMessage: "ignored",
     executeTool: async () => "unused",
-    maxRounds: 3,
+    maxRounds: 1,
     completion: false,
     reflection: {
       enabled: true,
-      roundJudge: false, judgeIntercept: false,
-      // triggerRound 按本轮预算轮数判（budgetRounds，issue #32 #8）：resume 的预算从 0 起，
-      // triggerRound=1 即续接会话第一轮就触发评估（本节要验的是评估提示里的 L1/L0 链）
-      triggerRound: 1,
-      maxExtensions: 1,
-      maxRoundsCap: 4,
+      roundJudge: true,
+      judgeIntercept: false,
+      judge: { provider: judge },
     },
     store,
     runId: "governor-resume",
     resume: true,
   });
-  assert.match(resumedProvider.requests[1].messages[0].content[0].text, /出现错误/);
-  assert.match(resumedProvider.requests[1].messages[0].content[0].text, /resume/);
+  assert.match(judge.requests[0].messages[0].content[0].text, /resume error/);
+  assert.match(judge.requests[0].messages[0].content[0].text, /resume/);
 });
 
 test("continuation exhaustion stops before reflection can extend", async () => {
@@ -343,7 +385,6 @@ test("continuation exhaustion stops before reflection can extend", async () => {
     reflection: {
       enabled: true,
       roundJudge: false, judgeIntercept: false,
-      triggerRound: 1,
       maxExtensions: 1,
     },
   });

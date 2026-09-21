@@ -205,7 +205,7 @@ test("can disable the forced final call with the environment switch", async () =
   }
 });
 
-test("returns reflection_stop when the evaluator declines continuation", async () => {
+test("caps the run when the judge declines extension", async () => {
   const result = await runToolLoop({
     provider: createFakeProvider([
       {
@@ -213,26 +213,30 @@ test("returns reflection_stop when the evaluator declines continuation", async (
         stopReason: "tool_use",
       },
       {
+        content: [{ type: "text", text: "stopped" }],
+        stopReason: "end_turn",
+      },
+      {
         content: [{
           type: "text",
-          text: '{"continue":false,"reason":"complete","plan":""}',
+          text: '{"done":false,"confidence":0.9,"reason":"complete","evidence":"verified","extend":false,"extendReason":"sufficient","plan":""}',
         }],
+        stopReason: "end_turn",
+      },
+      {
+        content: [{ type: "text", text: "final" }],
         stopReason: "end_turn",
       },
     ]),
     initialUserMessage: "work",
     executeTool: async () => "worked",
-    maxRounds: 1,
+    maxRounds: 2,
     reflection: {
-      roundJudge: false,
-      triggerRound: 1,
+      roundJudge: true,
       maxExtensions: 1,
     },
   });
 
-  assert.deepEqual(result.termination, {
-    reason: "reflection_stop",
-    detail: "complete",
-  });
-  assert.equal(result.truncated, false);
+  assert.equal(result.termination.reason, "max_rounds_cap");
+  assert.equal(result.truncated, true);
 });

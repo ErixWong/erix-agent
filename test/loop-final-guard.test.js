@@ -219,20 +219,27 @@ test("finalGuard is called for non-continuable stop paths without another model 
       },
     },
     {
-      name: "reflection_stop",
+      name: "judge_declines_extension",
       options: {
         maxRounds: 2,
         reflection: {
           enabled: true,
-          roundJudge: false,
-          triggerRound: 1,
+          roundJudge: true,
           maxExtensions: 1,
           maxRoundsCap: 3,
           extensionStep: 1,
         },
         providerResponses: [
           { content: [{ type: "text", text: "stopped" }], stopReason: "end_turn" },
-          { content: [{ type: "text", text: '{"continue":false,"reason":"not worth continuing"}' }] },
+          {
+            content: [{
+              type: "text",
+              text: '{"done":false,"confidence":0.9,"reason":"not worth continuing","evidence":"budget","extend":false,"extendReason":"sufficient","plan":""}',
+            }],
+            stopReason: "end_turn",
+          },
+          { content: [{ type: "tool_use", id: "cap", name: "noop", input: {} }], stopReason: "tool_use" },
+          { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
         ],
       },
     },

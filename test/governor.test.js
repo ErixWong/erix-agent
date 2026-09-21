@@ -274,9 +274,8 @@ test("governor preserves the intermediate no-tool nudge", () => {
   );
 });
 
-test("governor requests reflection, then extends or redirects from evaluation", () => {
+test("governor applies near-limit judge extension decisions", () => {
   const signals = {
-    reflectionEnabled: true,
     nearLimit: true,
     extensionCount: 0,
     maxExtensions: 2,
@@ -285,18 +284,18 @@ test("governor requests reflection, then extends or redirects from evaluation", 
     extensionStep: 5,
     shouldContinue: true,
   };
-  assert.deepEqual(decideRoundAction(signals), { kind: "reflect" });
+  assert.deepEqual(decideRoundAction(signals), { kind: "continue" });
   assert.equal(
     decideWithEvaluation(signals, {
-      continue: true,
-      stalled: false,
+      extend: true,
+      extendReason: "仍有价值",
       plan: "运行测试",
     }).kind,
     "extend",
   );
   assert.equal(
     decideWithEvaluation(signals, {
-      continue: true,
+      extend: true,
       stalled: true,
       stallPattern: "重复",
       plan: "换方案",
@@ -304,14 +303,17 @@ test("governor requests reflection, then extends or redirects from evaluation", 
     "extend+redirect",
   );
   assert.equal(
-    decideWithEvaluation(signals, { continue: false }).value,
-    "reflection-stop",
+    decideWithEvaluation(signals, { extend: false }).reason,
+    "noExtend",
+  );
+  assert.match(
+    decideWithEvaluation(signals, { extend: false }).text,
+    /评审认为无需扩轮/,
   );
 });
 
 test("governor skips extension but continues when time is short", () => {
   const action = decideWithEvaluation({
-    reflectionEnabled: true,
     nearLimit: true,
     extensionCount: 0,
     maxExtensions: 1,

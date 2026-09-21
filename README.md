@@ -366,7 +366,6 @@ judgeIntercept
 judgeIntervalRound
 judgeInterceptTimeoutMs
 judgeFailureLimit
-triggerRound
 extensionStep
 maxExtensions
 maxRoundsCap
@@ -381,17 +380,22 @@ The defaults used by the loop are:
 - `roundJudge` and `judgeIntercept` are enabled when reflection is enabled.
 - `judgeFailureLimit` defaults to `3`; repeated round-judge failures then
   disable round judging for the remainder of the run.
-- `judgeIntervalRound` is `5`; after that many real tool executions, the
+- `judgeIntervalRound` is `10`; after that many real tool executions, the
   next tool call is independently audited before execution.
 - `judgeInterceptTimeoutMs` is `30000`; an interception timeout or judge
   failure degrades to executing the original tool.
-- `triggerRound` defaults to 80% of the initial `maxRounds`.
+- At `nearLimit` (`budgetRounds >= floor(effectiveMaxRounds * 0.8)`), both
+  end-turn judging and the next interception audit receive the current budget
+  and extension count. The judge must additionally return `extend`,
+  `extendReason`, and `plan`. An allowed `extend: true` decision increases
+  the effective budget; `extend: false` nudges the model to converge.
 - `extensionStep` defaults to `max(8, maxRounds * 0.5)`, `maxExtensions` to
   `2`, and `maxRoundsCap` to at least the initial `maxRounds` and otherwise
   `256`.
 - A round judge can stop only with `done: true` and `confidence >= 0.7`.
-  A `done: false` decision injects a continuation/nudge; `direction:
-  "off_track"` is a soft direction hint and does not itself block a tool.
+  A `done: false` decision injects a continuation/nudge; near the limit,
+  `extend: true` can instead extend the budget and `direction: "off_track"`
+  turns that continuation into a change-of-approach instruction.
 - Wrap-up LLM normalization is off by default; enable
   `wrapupNormalize: true` or `ERIX_WRAPUP_NORMALIZE=1`.
 
