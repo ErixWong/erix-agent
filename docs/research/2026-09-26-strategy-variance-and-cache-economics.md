@@ -53,3 +53,13 @@ PR #45（cacheCapable→TTL=0）合并后按 issue 验证方案跑了 TTL=0 臂�
 ## 6. 复现要点
 
 runner 必须显式 `cd ~/projects/erix-station`（v1 作废教训：cwd 是协议的一部分）；产物 /tmp/erix-bench-260926-strategy/ 重启即失，本报告与任务文档为准。分析脚本逻辑（工具序列/区间重叠重读/命中矩阵）已内嵌任务文档表格。
+
+## 7. #46 追加：erix vs pi 无头同任务对比（2026-09-26）
+
+pi 0.84.2 `-p`（deepseek-flash，n=3，erix-station 只读分析同任务）vs erix TTL=2 基线（n=6）：
+
+- 有效成本/run：erix **392k** vs pi **680k**（缓存重发税 347k + 新增 293k + compaction 全价 124k）——erix 低 39%
+- 交付 100% vs 100%；质量命中 6.7 vs 7.7（n 小不显著）；终稿 13–17k vs 13–15k
+- 结构性差异：erix TTL 折叠为确定性规则（零 LLM 调用），pi 阈值压缩为 LLM 总结（2–3 次/run、全价、刻意禁缓存写）；pi 全文常驻 + AGENTS.md + thinking=high → ΣcacheRead 3.47M/run
+
+**判定**：无头场景 erix 强制协议栈为净收益（成本 -39%、质量持平）。与 §4 的 TTL=0 证伪互为印证——「规则折叠削全价尾部」在跨 harness 对照中再次成立。诚实标注：erix judge 审计调用未计入成本（不影响排序）；pi 读 AGENTS.md 属其原生设计。
