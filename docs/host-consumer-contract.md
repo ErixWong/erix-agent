@@ -223,14 +223,64 @@ the adapter does not add a lock or another concurrency mechanism.
 
 The canonical note tool implementation is `src/tools/notes.js`. A headless host
 can call `createBuiltinNotesTools({ notesDir, notesStore, runId })` from the
-package root or from `erix-agent/tools`; the returned provider exposes the four
-`note_*` schemas, a scoped executor, and the `completeRun`/`runNotesJanitor`
-lifecycle hooks. The host remains responsible for choosing and injecting the
+package root or from `erix-agent/tools` (Tier 2 host integration). The factory
+is a full assembler: it binds the logical run scope, the notes directory
+(`notesDir` ?? `ERIX_NOTES_DIR` ?? `~/.erix/notes`), and a single `NotesStore`
+instance at creation time, and every returned view reuses them while forcibly
+overriding any caller-forged `__erix` injection. The returned object contains:
+
+- `definitions` (alias `tools`) — the four `note_*` schemas;
+- `provider` / `listTools` / `resolveTools` — a `ToolProvider` shape usable in
+  `createCompositeToolProvider` aggregation;
+- `executors(name, input, context)` — the registry positional view;
+- `executeTool({id, name, input, context, signal})` — the structured view that
+  matches the `runToolLoop` / checkpoint-executor calling convention (the
+  positional `executeTool(name, input, context)` form is retained for existing
+  callers);
+- `lifecycle.onRunStart` / `lifecycle.onRunComplete` — janitor before the run,
+  and `completeRun` followed by janitor after it; completion errors are
+  collected into the returned `errors[]` instead of throwing over the primary
+  error;
+- `semanticStateProvider` — the ADR-015 fold-point notes directory (active
+  only, max 20, pinned first then `updated_at` order, version echoing
+  `state.stateVersion`).
+
+Typical wiring with an explicit try/finally:
+
+```js
+const notes = createBuiltinNotesTools({ runId, notesDir, notesStore });
+await notes.lifecycle.onRunStart();
+try {
+  return await runToolLoop({
+    /* ... */
+    tools: [...hostTools, ...notes.definitions],
+    executeTool: async (execution) => {
+      if (notesToolNames.has(execution.name)) {
+        return notes.executeTool(execution);
+      }
+      return hostExecuteTool(execution);
+    },
+    semanticStateProvider: notes.semanticStateProvider,
+  });
+} finally {
+  const { errors } = await notes.lifecycle.onRunComplete();
+  for (const failure of errors) {
+    hostReportCompletionError(failure.operation, failure.error);
+  }
+}
+```
+
+Notes write failures are reported through the engine's generic host-persistence
+bridge (`context.reportPersistenceFailure`, `port: "notes"`); they are never
+silently swallowed. The host remains responsible for choosing and injecting the
 `NotesStore` and logical run scope.
 
 The CLI's bundled `skills/notes/skill.mjs` is retained as a thin compatibility
-re-export so `buildSkillTools` and user/project skill discovery keep their
-existing paths. It is not a second implementation or a portable standalone
+re-export (a compatibility layer for legacy discovery and third-party skill
+loaders; its retirement is a version-policy decision) so `buildSkillTools` and
+user/project skill discovery keep their existing paths. The CLI itself always
+excludes the bundled notes skill and assembles notes through the factory. It is
+not a second implementation or a portable standalone
 copy; portable integrations should use the npm package entry point.
 
 ### CLI-side provenance guard

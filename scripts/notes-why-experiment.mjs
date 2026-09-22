@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  createBuiltinNotesTools,
   createFileTranscriptStore,
   createOpenAIProvider,
   runToolLoop,
@@ -143,8 +144,8 @@ function noteDescription(name) {
   return descriptions[name];
 }
 
-function toolsForVariant(cliTools, skillTools, variant) {
-  const tools = [...cliTools.tools, ...skillTools.tools]
+function toolsForVariant(cliTools, skillTools, variant, notesDefinitions = []) {
+  const tools = [...cliTools.tools, ...skillTools.tools, ...notesDefinitions]
     .map((tool) => structuredClone(tool));
   if (variant !== "V3") return tools;
   for (const tool of tools) {
@@ -392,14 +393,22 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
     cwd: runRoot,
     ...(archiveDir === undefined ? {} : { archiveDir }),
   });
+  // notes 装配统一走工厂（#53）：bundled notes skill 始终排除，避免两套同名工具。
   const skillTools = await buildSkillTools({
     home: root,
     cwd: runRoot,
-    runId,
-    notesDir,
-    builtinNames: cliTools.tools.map((tool) => tool.name),
+    excludeSkillIds: ["notes"],
+    builtinNames: [
+      ...cliTools.tools.map((tool) => tool.name),
+      "note_take",
+      "note_read",
+      "note_list",
+      "note_forget",
+    ],
   });
-  const tools = toolsForVariant(cliTools, skillTools, variant);
+  const notesAssembler = createBuiltinNotesTools({ runId, notesDir });
+  await notesAssembler.lifecycle.onRunStart();
+  const tools = toolsForVariant(cliTools, skillTools, variant, notesAssembler.definitions);
   const executeTool = async ({ id, name, input, context }) => {
     const round = context?.round;
     const call = {
@@ -415,7 +424,9 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
 
     const result = cliTools.tools.some((tool) => tool.name === name)
       ? await cliTools.executeTool(name, input, { toolUseId: id, round })
-      : await skillTools.executeTool(name, input, context);
+      : notesAssembler.definitions.some((tool) => tool.name === name)
+        ? await notesAssembler.executors(name, input, context)
+        : await skillTools.executeTool(name, input, context);
     if (name === "exec") {
       const metadata = cliTools.getLastToolMetadata();
       const output = metadata?.fullOutput ?? String(result ?? "");
@@ -426,7 +437,7 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
           if (!secretValues.includes(value)) secretValues.push(value);
         }
         if (secretValues.length === 1) {
-          await skillTools.executeTool("note_take", {
+          await notesAssembler.executors("note_take", {
             key: NOTE_KEY,
             content: secretValues[0],
             pinned: true,
@@ -488,6 +499,14 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
     console.error(caught?.stack ?? String(caught));
   } finally {
     clearTimeout(timeoutId);
+    try {
+      const notesCompletion = await notesAssembler.lifecycle.onRunComplete();
+      for (const failure of notesCompletion.errors) {
+        console.error(`completion error (${failure.operation}): ${failure.error?.message ?? String(failure.error)}`);
+      }
+    } catch (completionError) {
+      console.error(`completion error (notes_lifecycle): ${completionError?.message ?? String(completionError)}`);
+    }
   }
   const durationMs = Date.now() - started;
   const finalText = result?.finalText ?? "";

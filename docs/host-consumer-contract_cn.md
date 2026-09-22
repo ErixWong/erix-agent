@@ -175,12 +175,55 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 ### Notes 工具注册来源
 
 规范的 notes 工具实现位于 `src/tools/notes.js`。headless 宿主可以从包根或
-`erix-agent/tools` 子路径调用 `createBuiltinNotesTools({ notesDir, notesStore, runId })`；
-返回对象提供四个 `note_*` schema、带 scope 的执行器，以及 `completeRun`/
-`runNotesJanitor` 生命周期钩子。宿主仍负责选择并注入 `NotesStore` 与逻辑 run scope。
+`erix-agent/tools` 子路径调用 `createBuiltinNotesTools({ notesDir, notesStore, runId })`
+（Tier 2 宿主集成）。工厂是全套 assembler：创建时即绑定逻辑 run scope、notes 目录
+（`notesDir` ?? `ERIX_NOTES_DIR` ?? `~/.erix/notes`）与单一 `NotesStore` 实例，
+所有返回视图共用它们，并强制覆盖调用方伪造的 `__erix` 注入。返回对象包含：
 
-CLI 的 bundled `skills/notes/skill.mjs` 保留为薄兼容转发壳，因此 `buildSkillTools` 和用户/
-项目 skill 的发现路径保持不变。它不是第二套实现，也不再是可独立复制运行的 skill；
+- `definitions`（别名 `tools`）——四个 `note_*` schema；
+- `provider` / `listTools` / `resolveTools`——可直接用于 `createCompositeToolProvider`
+  聚合的 provider 形态；
+- `executors(name, input, context)`——registry 位置参数形态；
+- `executeTool({id, name, input, context, signal})`——结构化形态，对齐 `runToolLoop`/
+  checkpoint-executor 的调用约定（位置参数形态 `executeTool(name, input, context)`
+  为兼容既有调用方保留）；
+- `lifecycle.onRunStart` / `lifecycle.onRunComplete`——run 前 janitor；run 后
+  `completeRun` 后接 janitor；收尾错误收集在返回值的 `errors[]` 里返回，不抛出覆盖主错误；
+- `semanticStateProvider`——ADR-015 折叠点 notes 小抄目录（仅 active、最多 20 条、
+  pinned 优先后按 `updated_at` 排序、版本回声 `state.stateVersion`）。
+
+典型接线（显式 try/finally）：
+
+```js
+const notes = createBuiltinNotesTools({ runId, notesDir, notesStore });
+await notes.lifecycle.onRunStart();
+try {
+  return await runToolLoop({
+    /* ... */
+    tools: [...hostTools, ...notes.definitions],
+    executeTool: async (execution) => {
+      if (notesToolNames.has(execution.name)) {
+        return notes.executeTool(execution);
+      }
+      return hostExecuteTool(execution);
+    },
+    semanticStateProvider: notes.semanticStateProvider,
+  });
+} finally {
+  const { errors } = await notes.lifecycle.onRunComplete();
+  for (const failure of errors) {
+    hostReportCompletionError(failure.operation, failure.error);
+  }
+}
+```
+
+notes 写失败经引擎的通用宿主持久化失败报告桥上报（`context.reportPersistenceFailure`，
+`port: "notes"`），不得静默吞错。宿主仍负责选择并注入 `NotesStore` 与逻辑 run scope。
+
+CLI 的 bundled `skills/notes/skill.mjs` 保留为薄兼容转发壳（兼容层，供旧 discovery 路径与
+第三方 skill 加载器使用；未来退役由版本策略决定），因此 `buildSkillTools` 和用户/
+项目 skill 的发现路径保持不变。CLI 自身始终排除 bundled notes skill，统一经工厂装配 notes。
+它不是第二套实现，也不再是可独立复制运行的 skill；
 可移植集成应使用 npm 包入口。
 
 ### CLI 侧来源 guard

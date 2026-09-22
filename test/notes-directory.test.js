@@ -8,7 +8,7 @@ import {
   renderRunState,
   withSemanticRunState,
 } from "../src/run-state.js";
-import { createNotesDirectoryProvider } from "../bin/cli.js";
+import { createBuiltinNotesTools } from "../src/tools/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const RECORDS = [
@@ -38,12 +38,12 @@ function fakeNotesStore(records) {
   return { list: async () => structuredClone(records) };
 }
 
+function directoryProvider(notesStore, runId = "run-1") {
+  return createBuiltinNotesTools({ notesStore, runId }).semanticStateProvider;
+}
+
 test("directory provider: active notes rendered pinned-first with source markers", async () => {
-  const provider = createNotesDirectoryProvider({
-    notesStore: fakeNotesStore(RECORDS),
-    runId: "run-1",
-  });
-  const provided = await provider({ state: { stateVersion: 7 } });
+  const provided = await directoryProvider(fakeNotesStore(RECORDS))({ state: { stateVersion: 7 } });
   const lines = provided.text.split("\n");
   assert.equal(lines[0], "[notes 小抄目录]（note_read key=... 取全文）");
   assert.match(lines[1], /- final_report \(★ @agent\): 报告已写入 \/tmp\/x\.md/);
@@ -54,14 +54,10 @@ test("directory provider: active notes rendered pinned-first with source markers
 });
 
 test("directory provider: empty store and list failure both yield undefined (不装懂)", async () => {
-  const empty = await createNotesDirectoryProvider({
-    notesStore: fakeNotesStore([]),
-    runId: "run-1",
-  })({ state: { stateVersion: 1 } });
+  const empty = await directoryProvider(fakeNotesStore([]))({ state: { stateVersion: 1 } });
   assert.equal(empty, undefined);
-  const failing = await createNotesDirectoryProvider({
-    notesStore: { list: async () => { throw new Error("disk gone"); } },
-    runId: "run-1",
+  const failing = await directoryProvider({
+    list: async () => { throw new Error("disk gone"); },
   })({ state: { stateVersion: 1 } });
   assert.equal(failing, undefined);
 });
@@ -73,10 +69,7 @@ test("directory provider caps at 20 entries and truncates long summaries", async
     updated_at: new Date(Date.UTC(2026, 8, 16, 0, index)).toISOString(),
     current: { summary: "x".repeat(120) },
   }));
-  const provided = await createNotesDirectoryProvider({
-    notesStore: fakeNotesStore(many),
-    runId: "run-1",
-  })({ state: { stateVersion: 1 } });
+  const provided = await directoryProvider(fakeNotesStore(many))({ state: { stateVersion: 1 } });
   assert.equal(provided.text.split("\n").length, 21);
   assert.ok(provided.text.includes("…"));
 });
