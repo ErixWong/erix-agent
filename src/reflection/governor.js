@@ -45,19 +45,16 @@ function extensionAllowed(signals) {
 function normalizeEvaluation(evaluation) {
   if (!evaluation || typeof evaluation !== "object") return {};
   return {
-    continueFlag: evaluation.continueFlag === true
-      || evaluation.continue === true
-      || evaluation.shouldContinue === true,
-    stalled: evaluation.stalled === true,
-    reason: String(evaluation.reason ?? ""),
+    extend: typeof evaluation.extend === "boolean" ? evaluation.extend : undefined,
+    extendReason: String(evaluation.extendReason ?? evaluation.reason ?? ""),
+    stalled: evaluation.stalled === true || evaluation.direction === "off_track",
     plan: String(evaluation.plan ?? ""),
     stallPattern: String(evaluation.stallPattern ?? ""),
   };
 }
 
 /**
- * Phase one of governance. This function never performs I/O. A reflect action
- * is a request for the loop to obtain an evaluation and call phase two.
+ * Phase one of governance. This function never performs I/O.
  */
 export function decideRoundAction(signals = {}) {
   const noToolRound = signals.noToolRound !== false
@@ -126,14 +123,6 @@ export function decideRoundAction(signals = {}) {
       continue: true,
     };
   }
-  if (
-    signals.reflectionEnabled === true
-    && signals.nearLimit === true
-    && !signals.completionSignalDetected
-    && extensionAllowed(signals)
-  ) {
-    return { kind: "reflect" };
-  }
   return signals.shouldContinue === true
     ? { kind: "continue" }
     : { kind: "stop", value: "complete", truncated: false };
@@ -148,17 +137,14 @@ export function decideWithEvaluation(signals = {}, evaluation = {}) {
     return { kind: "stop", value: "cap", truncated: true };
   }
   if (signals.memoryLoss === true) {
-    return decideRoundAction({ ...signals, reflectionEnabled: false });
+    return decideRoundAction(signals);
   }
   if (signals.completionSignalDetected === true && signals.shouldContinue === false) {
     return { kind: "stop", value: "completion", truncated: false };
   }
-  if (signals.noToolRound === true
-    || (signals.noToolRound === undefined && numberOr(signals.noToolStreak) > 0)) {
-    return decideRoundAction({ ...signals, reflectionEnabled: false });
-  }
+  if (signals.nearLimit !== true) return decideRoundAction(signals);
   if (timeGuarded(signals)) {
-    // 临近超时：不扩轮但继续正常跑完剩余轮次（放弃反射建议的扩展）
+    // 临近超时：不扩轮但继续正常跑完剩余轮次。
     return { kind: "continue", timedOut: true };
   }
   if (!extensionAllowed(signals)) {
@@ -166,22 +152,25 @@ export function decideWithEvaluation(signals = {}, evaluation = {}) {
   }
 
   const decision = normalizeEvaluation(evaluation);
-  if (!decision.continueFlag) {
+  if (decision.extend === undefined) {
+    return decideRoundAction(signals);
+  }
+  if (decision.extend === false) {
     return {
-      kind: "stop",
-      value: "reflection-stop",
-      truncated: false,
-      reason: decision.reason,
+      kind: "nudge",
+      reason: "noExtend",
+      text: "评审认为无需扩轮，请尽快收敛：确保产物可判定、运行验证并给出最终结论。",
+      continue: true,
     };
   }
   const kind = decision.stalled ? "extend+redirect" : "extend";
   const text = decision.stalled
-    ? `检测到可能打转：${decision.stallPattern || decision.reason}。请换思路：${decision.plan}。不要重复已失败的尝试。`
-    : `继续执行。反思建议的下一步：${decision.plan}`;
+    ? `检测到可能打转：${decision.stallPattern || decision.extendReason}。请换思路：${decision.plan}。不要重复已失败的尝试。`
+    : `继续执行。评审建议扩轮：${decision.extendReason || "当前预算不足以可靠完成"}。下一步：${decision.plan}`;
   return {
     kind,
     text,
-    reason: decision.reason,
+    reason: decision.extendReason,
     plan: decision.plan,
     extensionStep: signals.extensionStep,
   };

@@ -127,3 +127,18 @@ historical-model；强制压缩 e2e 用 initialMessages 构造历史确定性触
 access.count++；一周后冷循环蒸馏出 L3 fact"my-relay token 未开通 Qwen3.5"进初始上下文；
 后来开通则旧 fact 标 superseded 留档；三个月未再访问则摘要降档、40 轮原文不动。
 （该示例同时是 v0.2 记忆评测夹具的设计参考。）
+
+## Amendment (2026-09-22)
+
+`note_take`、`note_read`、`note_list`、`note_forget` 的规范实现已迁入
+`src/tools/notes.js`，并通过内置工具工厂及 `erix-agent/tools` 子路径暴露。迁移原因是：
+引擎提示词已经约定感知 `note_*`，`src` 不应反向依赖 `skills`，同时消除
+`NotesStore` 旁边重复存在的文件 IO。
+
+存储边界不变：notes 仍使用宿主提供的 `NotesStore` 端口（未注入端口时使用库内文件适配器），
+工具层不变成存储实现。`credential-patterns` 随工具迁移，但只用于检测/脱敏提示；
+ADR-009 的安全分层原则不变，库本身不承担安全边界。
+
+`skills/notes/skill.mjs` 保留为 CLI 兼容转发壳。独立复制到用户目录的 skill 不再自包含；
+需要可移植使用时，应从发布包的 `erix-agent/tools` 入口导入，并提供宿主的 `NotesStore`
+与 run scope。

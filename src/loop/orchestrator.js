@@ -35,7 +35,6 @@ import {
   WRAPUP_INSTRUCTION,
   isLikelyWelcomeResponse,
   parseReflectionDecision,
-  reflectionPrompt,
 } from "./reflection.js";
 import {
   resolveTaskBrief,
@@ -336,7 +335,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   timeoutMs?: number,
  *   deadlineMs?: number,
  *   reflection?: {enabled?:boolean, roundJudge?:boolean, judgeIntercept?:boolean,
- *     judgeIntervalRound?:number, judgeInterceptTimeoutMs?:number, triggerRound?:number,
+ *     judgeIntervalRound?:number, judgeInterceptTimeoutMs?:number,
  *     extensionStep?:number,
  *     maxExtensions?:number, maxRoundsCap?:number, format?:"json"|"text",
  *     judge?:{provider?:object,evaluator?:object},
@@ -813,6 +812,7 @@ export async function runToolLoop(options) {
     : 30_000;
   const judgeInterceptConversationTokens = INTERCEPT_CONVERSATION_TOKENS;
   let judgeInterceptCount = 0;
+  let interceptJudgeDecision;
   const wrapupEnabled = wrapup !== false
     && process.env.ERIX_NO_WRAPUP_INSTRUCTION?.trim() !== "1";
   const mainSystem = wrapupEnabled
@@ -828,10 +828,6 @@ export async function runToolLoop(options) {
     process.env.ERIX_WRAPUP_NORMALIZE?.trim() === "1"
       || effectiveReflection?.wrapupNormalize === true
   );
-  const reflectionTriggerRound = Number.isSafeInteger(effectiveReflection?.triggerRound)
-    && effectiveReflection.triggerRound > 0
-    ? effectiveReflection.triggerRound
-    : Math.max(1, Math.floor(maxRounds * 0.8));
   const reflectionExtensionStep = Number.isSafeInteger(effectiveReflection?.extensionStep)
     && effectiveReflection.extensionStep > 0
     ? effectiveReflection.extensionStep
@@ -851,7 +847,6 @@ export async function runToolLoop(options) {
   const governorState = {
     effectiveMaxRounds: maxRounds,
     extensionCount: 0,
-    nextReflectionRound: reflectionTriggerRound,
     noToolStreak: 0,
     wrapUpNudged: false,
     errorSeen: new Map(),
@@ -1133,6 +1128,12 @@ export async function runToolLoop(options) {
     },
     set judgeInterceptCount(value) {
       judgeInterceptCount = value;
+    },
+    get interceptJudgeDecision() {
+      return interceptJudgeDecision;
+    },
+    set interceptJudgeDecision(value) {
+      interceptJudgeDecision = value;
     },
     });
   } catch (error) {
@@ -1571,44 +1572,6 @@ export async function runToolLoop(options) {
     finish,
   } = terminationManager;
 
-  const callReflection = async (round, currentL0, currentSummary) => {
-    const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
-    const runningLog = [
-      ...governorState.runningLog,
-      { round, summary: currentSummary },
-    ];
-    const reflectionMessages = [{
-      role: "user",
-      content: [{
-        type: "text",
-        text: reflectionPrompt({
-          rounds: round,
-          taskBrief,
-          runningLog,
-          l0Facts,
-          errorText: l0Facts
-            .flatMap((fact) => fact.errorTexts ?? (fact.errorText ? [fact.errorText] : []))
-            .filter((text, index, values) => values.indexOf(text) === index)
-            .slice(-5)
-            .join("\n"),
-        }),
-      }],
-    }];
-    const judge = effectiveReflection?.judge;
-    const evaluator = judge?.provider ?? judge?.evaluator ?? provider;
-    const request = {
-      system: "你是严格的独立评审者，不是执行者。只评估任务价值与是否继续，不执行工具。",
-      messages: reflectionMessages,
-      signal,
-    };
-    if (maxTokens !== undefined) request.maxTokens = maxTokens;
-    if (temperature !== undefined) request.temperature = temperature;
-    if (topP !== undefined) request.topP = topP;
-    const response = await awaitWithAbort(evaluator.chat(request));
-    addUsage(response, undefined, { trackLatest: false });
-    return parseReflectionDecision(textFromBlocks(blocksFor(response?.content)));
-  };
-
   const callRoundJudge = async (round, currentL0, { timeoutMs, conversationBudgetTokens } = {}) => {
     const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
     const recentErrors = l0Facts
@@ -1617,6 +1580,9 @@ export async function runToolLoop(options) {
       .slice(-5);
     const judge = effectiveReflection?.judge;
     const evaluator = judge?.provider ?? judge?.evaluator ?? provider;
+    const nearLimit = budgetRounds >= Math.floor(
+      governorState.effectiveMaxRounds * 0.8,
+    );
     const request = {
       system: "你是交付评审者，独立判断任务是否完成。只输出 JSON。",
       messages: [{
@@ -1625,7 +1591,7 @@ export async function runToolLoop(options) {
           type: "text",
           text: buildJudgePrompt(
             taskBrief,
-            round,
+            budgetRounds,
             governorState.timeline,
             governorState.filesWritten,
             recentErrors,
@@ -1634,6 +1600,13 @@ export async function runToolLoop(options) {
                 ? conversationBudgetTokens
                 : undefined,
             }),
+            {
+              budgetRounds,
+              effectiveMaxRounds: governorState.effectiveMaxRounds,
+              extensionCount: governorState.extensionCount,
+              maxExtensions: reflectionMaxExtensions,
+              nearLimit,
+            },
           ),
         }],
       }],
@@ -1641,10 +1614,10 @@ export async function runToolLoop(options) {
       // 但 512 实测会被 glm 冗长 JSON 截断致 parse 失败 → 1024。
       maxTokens: 1024,
       temperature: 0,
-      // 2026-09-20 实测（glm-5.3-flash-awq）：reasoning_effort 是该 relay 上**唯一**能真
-      // 正关思考的参数（enable_thinking/chat_template_kwargs/thinking:{type:disabled} 都
-      // 关不掉，GLM 把思考放非标准 `reasoning` 字段）；关掉后 judge 输出纯 JSON，不关
-      // 则 512 预算被思考吃光 → content 空。qwen/deepseek 同样认此参数。不要删。
+      // judge 继续发送 reasoning_effort:"none"（统一语义=不思考）；OpenAI provider
+      // 的 payload 层会将 GLM 系模型自动转译为 "low"（见
+      // src/providers/payload.js 的 OpenAI 载荷组装出口），因为该 relay 把 GLM 的
+      // "none" 处理成思考漏进 content。deepseek/qwen 在同一 relay 上语义正确，不受影响。
       reasoning_effort: "none",
     };
     let timeoutController;
@@ -1769,6 +1742,12 @@ export async function runToolLoop(options) {
     },
     set judgeInterceptCount(value) {
       judgeInterceptCount = value;
+    },
+    get interceptJudgeDecision() {
+      return interceptJudgeDecision;
+    },
+    set interceptJudgeDecision(value) {
+      interceptJudgeDecision = value;
     },
     executedToolIds,
     checkpointResults,
@@ -2117,6 +2096,7 @@ export async function runToolLoop(options) {
     budgetRounds += 1;
     const round = rounds + 1;
     toolExecutedThisRound = false;
+    interceptJudgeDecision = undefined;
     roundEventDeltas = [];
     roundStopReason = undefined;
     let stallSuspicion = false;
@@ -2408,8 +2388,7 @@ export async function runToolLoop(options) {
       stallSuspicion,
       stallStreak,
       wrapUpNudged: governorState.wrapUpNudged,
-      reflectionEnabled: roundJudgeEnabled ? false : reflectionEnabled,
-      nearLimit: budgetRounds >= governorState.nextReflectionRound,
+      nearLimit: budgetRounds >= Math.floor(governorState.effectiveMaxRounds * 0.8),
       extensionCount: governorState.extensionCount,
       maxExtensions: reflectionMaxExtensions,
       effectiveMaxRounds: governorState.effectiveMaxRounds,
@@ -2418,9 +2397,9 @@ export async function runToolLoop(options) {
       elapsedMs: elapsedMs(),
       remainingMs: remainingMs(),
     };
-    let judgeDecision;
+    let judgeDecision = interceptJudgeDecision;
     let judgeUsage;
-    // end_turn 轮完整评估；工具中途审计已在工具执行前独立完成，不参与停机判定。
+    // end_turn 轮完整评估；工具中途审计的 nearLimit 扩轮决策已由拦截器回传。
     if (roundJudgeEnabled && isEndTurn) {
       try {
         const judged = await callRoundJudge(round, currentL0);
@@ -2444,6 +2423,11 @@ export async function runToolLoop(options) {
           });
         } else {
           roundJudgeFailures = 0;
+          const extensionAction = judgeDecision.extend === true
+            ? (judgeDecision.direction === "off_track" ? "extend+redirect" : "extend")
+            : judgeDecision.extend === false
+              ? "decline_extend"
+              : undefined;
           emitJudge({
             round,
             kind: "round",
@@ -2454,10 +2438,15 @@ export async function runToolLoop(options) {
               evidence: judgeDecision.evidence,
               direction: judgeDecision.direction,
               directionReason: judgeDecision.directionReason,
+              ...(judgeDecision.extend === undefined ? {} : { extend: judgeDecision.extend }),
+              ...(judgeDecision.extendReason === undefined
+                ? {}
+                : { extendReason: judgeDecision.extendReason }),
+              ...(judgeDecision.plan === undefined ? {} : { plan: judgeDecision.plan }),
             },
             action: judgeDecision.done === true && judgeDecision.confidence >= 0.7
               ? "judge_done"
-              : (judgeDecision.done === false ? "nudge" : "continue"),
+              : (extensionAction ?? (judgeDecision.done === false ? "nudge" : "continue")),
             ...(judgeUsage ? { usage: judgeUsage } : {}),
             ...(typeof judgeRaw === "string" && judgeRaw !== "" ? { raw: judgeRaw } : {}),
           });
@@ -2485,6 +2474,9 @@ export async function runToolLoop(options) {
         value: "judge_done",
         truncated: false,
       };
+    } else if (actionSignals.nearLimit
+      && typeof judgeDecision?.extend === "boolean") {
+      action = decideWithEvaluation(actionSignals, judgeDecision);
     } else if (judgeDecision?.done === false) {
       const reason = judgeDecision.reason || "任务尚未完成";
       const evidence = judgeDecision.evidence || "评审未提供更多证据";
@@ -2500,35 +2492,16 @@ export async function runToolLoop(options) {
     } else {
       action = decideRoundAction(actionSignals);
     }
-    let reflectionDecision;
-    if (action.kind === "reflect") {
-      // Phase two stays in the loop because only the loop owns the provider.
-      try {
-        reflectionDecision = await callReflection(round, currentL0, roundSummary);
-      } catch (error) {
-        if (signal?.aborted) throwIfAborted(signal);
-        // judge 失败降级：不崩 loop，回到无评估的 actionSignals 决策
-        reflectionDecision = undefined;
-        action = decideRoundAction({
-          ...actionSignals,
-          reflectionEnabled: false,
-        });
-      }
-      if (reflectionDecision !== undefined) {
-        action = decideWithEvaluation(actionSignals, reflectionDecision);
-        if (typeof effectiveReflection?.onReflection === "function") {
-          await effectiveReflection.onReflection({
-            round,
-            decision: reflectionDecision,
-            extendedTo: action.kind === "extend" || action.kind === "extend+redirect"
-              ? Math.min(
-                governorState.effectiveMaxRounds + reflectionExtensionStep,
-                reflectionMaxRoundsCap,
-              )
-              : governorState.effectiveMaxRounds,
-          });
-        }
-      }
+    if ((action.kind === "extend" || action.kind === "extend+redirect")
+      && typeof effectiveReflection?.onReflection === "function") {
+      await effectiveReflection.onReflection({
+        round,
+        decision: judgeDecision,
+        extendedTo: Math.min(
+          governorState.effectiveMaxRounds + reflectionExtensionStep,
+          reflectionMaxRoundsCap,
+        ),
+      });
     }
     addGovernorHistory(
       round,
@@ -2569,6 +2542,11 @@ export async function runToolLoop(options) {
           evidence: judgeDecision.evidence,
           direction: judgeDecision.direction,
           directionReason: judgeDecision.directionReason,
+          ...(judgeDecision.extend === undefined ? {} : { extend: judgeDecision.extend }),
+          ...(judgeDecision.extendReason === undefined
+            ? {}
+            : { extendReason: judgeDecision.extendReason }),
+          ...(judgeDecision.plan === undefined ? {} : { plan: judgeDecision.plan }),
         },
       }),
       ...(wrapupJson === null ? {} : { wrapup: wrapupJson }),
@@ -2624,10 +2602,6 @@ export async function runToolLoop(options) {
         reflectionMaxRoundsCap,
       );
       governorState.extensionCount += 1;
-      governorState.nextReflectionRound = Math.max(
-        budgetRounds + 1,
-        Math.floor(governorState.effectiveMaxRounds * 0.8),
-      );
       const continuationMessage = {
         role: "user",
         content: [{ type: "text", text: action.text }],

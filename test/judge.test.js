@@ -79,6 +79,45 @@ test("buildJudgePrompt includes the recent timeline, files, and errors", () => {
   assert.match(prompt, /direction 只是提示，不影响 done/);
 });
 
+test("buildJudgePrompt adds budget facts and extension fields only near the limit", () => {
+  const outside = buildJudgePrompt(
+    "task",
+    6,
+    [],
+    [],
+    [],
+    "",
+    {
+      budgetRounds: 6,
+      effectiveMaxRounds: 10,
+      extensionCount: 0,
+      maxExtensions: 2,
+      nearLimit: false,
+    },
+  );
+  assert.match(outside, /预算事实：当前预算轮 r=6\/10；扩轮次数 0\/2/);
+  assert.doesNotMatch(outside, /extend=true/);
+
+  const near = buildJudgePrompt(
+    "task",
+    8,
+    [],
+    [],
+    [],
+    "",
+    {
+      budgetRounds: 8,
+      effectiveMaxRounds: 10,
+      extensionCount: 1,
+      maxExtensions: 2,
+    },
+  );
+  assert.match(near, /当前已进入 nearLimit 扩轮评估窗口/);
+  assert.match(near, /"extend":true\|false/);
+  assert.match(near, /"extendReason"/);
+  assert.match(near, /"plan"/);
+});
+
 test("buildTimeline labels errors, interceptions, pending calls, and repeated parameters", () => {
   const messages = [
     {
@@ -251,6 +290,36 @@ test("parseJudgeDecision ignores invalid direction values while preserving compa
       direction: undefined,
       directionReason: "",
     },
+  );
+});
+
+test("parseJudgeDecision preserves the near-limit extension decision fields", () => {
+  assert.deepEqual(
+    parseJudgeDecision(JSON.stringify({
+      done: false,
+      confidence: 0.8,
+      reason: "尚未完成",
+      evidence: "还缺验证",
+      direction: "off_track",
+      extend: true,
+      extendReason: "当前上限不足",
+      plan: "换方法完成验证",
+    })),
+    {
+      done: false,
+      confidence: 0.8,
+      reason: "尚未完成",
+      evidence: "还缺验证",
+      direction: "off_track",
+      directionReason: "",
+      extend: true,
+      extendReason: "当前上限不足",
+      plan: "换方法完成验证",
+    },
+  );
+  assert.equal(
+    parseJudgeDecision('{"done":false,"confidence":0.5,"extend":"true"}'),
+    null,
   );
 });
 
@@ -1090,7 +1159,7 @@ test("ERIX_NO_ROUND_JUDGE env disables the round judge (reviewer P2#3)", async (
       completion: false,
       reflection: { enabled: true, judge: { provider: judge } },
     });
-    // round judge 关闭（其请求特征 temperature:0 + maxTokens:512）；legacy callReflection 仍可能调 judge（nearLimit）——用特征区分
+    // round judge 关闭时不应发出 round-judge 请求。
     const roundJudgeCalls = judge.requests.filter((r) => (
       r.temperature === 0 && r.maxTokens === 1024
     )).length;
@@ -1165,6 +1234,74 @@ test("tool-use rounds get transparent interception without preempting prior work
   assert.equal(result.rounds, 7);
   assert.deepEqual(executed, [1, 2, 3, 4, 5]);
   assert.deepEqual(result.termination, { reason: "judge_done" });
+});
+
+test("near-limit interception feeds an extension decision back into the governor", async () => {
+  const provider = createFakeProvider([
+    ...Array.from({ length: 6 }, (_value, index) => (
+      toolResponse(`work-${index + 1}`, "work", { step: index + 1 })
+    )),
+    { content: [{ type: "text", text: "最终结论" }], stopReason: "end_turn" },
+  ]);
+  const decision = {
+    done: false,
+    confidence: 0.8,
+    reason: "仍需验证",
+    evidence: "验证尚未完成",
+    direction: "on_track",
+    directionReason: "",
+    extend: true,
+    extendReason: "当前上限不足",
+    plan: "完成最后验证",
+  };
+  const judge = createFakeProvider([judgeResponse(decision)]);
+  const events = [];
+  const executed = [];
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "完成验证任务",
+    executeTool: async ({ input }) => {
+      executed.push(input.step);
+      return "ok";
+    },
+    maxRounds: 5,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntervalRound: 3,
+      extensionStep: 2,
+      maxExtensions: 1,
+      maxRoundsCap: 20,
+      judge: { provider: judge },
+    },
+    onJudge: (info) => events.push(info),
+  });
+
+  assert.equal(result.rounds, 7);
+  assert.equal(executed.length, 6);
+  assert.equal(judge.requests.length, 1);
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  assert.match(prompt, /预算事实：当前预算轮 r=4\/5；扩轮次数 0\/1/);
+  assert.match(prompt, /"extend":true\|false/);
+  assert.deepEqual(events[0], {
+    round: 4,
+    kind: "round",
+    tool: {
+      id: "work-4",
+      name: "work",
+      input: { step: 4 },
+    },
+    decision,
+    action: "extend",
+    passThrough: "on_track",
+    raw: JSON.stringify(decision),
+  });
+  assert.match(
+    provider.requests[4].messages.at(-1).content[0].text,
+    /下一步：完成最后验证/,
+  );
 });
 
 test("transparent interception returns correction evidence without executing the tool", async () => {

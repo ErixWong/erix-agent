@@ -8,7 +8,9 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   DEFAULT_REFLECTION_MIN_ROUNDS,
+  createBuiltinNotesTools,
   createOpenAIProvider,
+  resolveNotesDir,
   runToolLoop,
 } from "../src/index.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
@@ -53,7 +55,7 @@ const HELP_TEXT = `用法：
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 16 时启用，见 DEFAULT_REFLECTION_MIN_ROUNDS）
   --final-guard         开启终稿 provenance 核验（默认关闭）
   --no-final-guard      兼容别名（默认已关闭，no-op）
-  --no-notes            仅移除 notes 技能，保留其他 skill
+  --no-notes            不装配 notes 工厂并排除 bundled notes skill（note_* 工具不再可用），保留其他 skill
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
   --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL（默认：<归档目录>/judge.log）
@@ -74,7 +76,7 @@ const HELP_TEXT = `用法：
   ERIX_TOOL_RESULT_TTL 工具结果 TTL 折叠存活轮数（默认：2，0=关闭；slot 配置 cacheCapable:true 时默认关闭（0），环境变量显式设置优先。⚠️ 实测不推荐 cacheCapable:TTL=0 在 cache 端点有效成本 +53%（issue #44），保留仅为兼容/观测）
   ERIX_TOOL_RESULT_FOLD_MIN_TOKENS 低于此体积（估算 tokens）的工具结果永不折叠（默认：4000）
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
-  ERIX_NO_NOTES=1       仅移除 notes 技能，保留其他 skill
+  ERIX_NO_NOTES=1       不装配 notes 工厂并排除 bundled notes skill，保留其他 skill
   ERIX_JUDGE_LOG      judge 决策 JSONL 路径（默认已写入 run 归档目录，无需设置）
 
 配置文件：
@@ -406,12 +408,17 @@ function parseMcpArgs(args) {
   return options;
 }
 
-function combineTools(cliTools, skillTools, mcpProxy) {
-  const tools = [...cliTools.tools, ...skillTools.tools];
+function combineTools(cliTools, skillTools, mcpProxy, notesAssembler) {
+  const tools = [
+    ...cliTools.tools,
+    ...skillTools.tools,
+    ...(notesAssembler?.definitions ?? []),
+  ];
   if (mcpProxy?.enabled) {
     tools.push(mcpProxy.schema);
   }
   const skillToolNames = new Set(skillTools.tools.map((tool) => tool.name));
+  const notesToolNames = new Set(notesAssembler?.definitions.map((tool) => tool.name) ?? []);
   return {
     tools,
     executeTool: async (name, input, context) => {
@@ -420,6 +427,9 @@ function combineTools(cliTools, skillTools, mcpProxy) {
       }
       if (skillToolNames.has(name)) {
         return skillTools.executeTool(name, input, context);
+      }
+      if (notesToolNames.has(name)) {
+        return notesAssembler.executors(name, input, context);
       }
       return cliTools.executeTool(name, input, context);
     },
@@ -512,9 +522,7 @@ async function runMcp({ configPath }) {
 
 export async function runChat(options = {}) {
   const runId = options.session ?? defaultSessionId(process.cwd(), { unique: true });
-  const notesDir = options.notesDir
-    ?? process.env.ERIX_NOTES_DIR
-    ?? path.join(homedir(), ".erix", "notes");
+  const notesDir = resolveNotesDir(options.notesDir);
   // Notes scope is explicit throughout the CLI path; avoid mutating process
   // globals so concurrent runChat calls cannot restore each other's env.
   return runChatWithNotes({
@@ -605,18 +613,20 @@ async function runChatWithNotes({
   }
   const cliTools = createCliTools({ cwd });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
+  // bundled notes skill 始终排除：notes 装配统一走工厂，否则会出现两套同名 note_* 工具。
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir,
-    runId,
-    notesDir,
-    notesStore,
-    excludeSkillIds: notesDisabled ? ["notes"] : [],
-    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
+    excludeSkillIds: ["notes"],
+    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp", "note_take", "note_read", "note_list", "note_forget"],
   });
-  await skillTools.notesJanitor?.({ __erix: { runId, notesDir, notesStore } });
+  // --no-notes / ERIX_NO_NOTES：不装配工厂（skill 已始终排除，对外行为等价）。
+  const notesAssembler = notesDisabled || !notesStore
+    ? undefined
+    : createBuiltinNotesTools({ runId, notesDir, notesStore });
+  await notesAssembler?.lifecycle.onRunStart();
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
-  const combinedTools = combineTools(cliTools, skillTools, mcpProxy);
+  const combinedTools = combineTools(cliTools, skillTools, mcpProxy, notesAssembler);
   // --tools 白名单：未知名字 stderr 警告并忽略；过滤后为空 → usageError
   let tools;
   try {
@@ -768,8 +778,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     runId,
     resume,
     // ADR-015：notes 小抄目录经 semantic 槽位注入 run-state 块（折叠时注入，正好对准失忆点）
-    ...(notesDisabled || !notesStore ? {} : {
-      semanticStateProvider: createNotesDirectoryProvider({ notesStore, runId }),
+    ...(notesAssembler === undefined ? {} : {
+      semanticStateProvider: notesAssembler.semanticStateProvider,
     }),
     tools: tools.tools,
     executeTool: async (execution) => {
@@ -886,14 +896,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     // 主结果已异常时原异常仍为主，收尾错误仅 console 留痕（宿主可见）。
     const completionErrors = [];
     try {
-      await skillTools.notesCompleteRun?.({ __erix: { runId, notesDir, notesStore } });
+      const notesCompletion = await notesAssembler?.lifecycle.onRunComplete();
+      for (const failure of notesCompletion?.errors ?? []) {
+        completionErrors.push(failure);
+      }
     } catch (error) {
-      completionErrors.push({ operation: "notes_complete_run", error });
-    }
-    try {
-      await skillTools.notesJanitor?.({ __erix: { runId, notesDir, notesStore } });
-    } catch (error) {
-      completionErrors.push({ operation: "notes_janitor", error });
+      completionErrors.push({ operation: "notes_lifecycle", error });
     }
     try {
       await closeAllMcpServers();
@@ -989,51 +997,6 @@ export function exitCodeForVerification(verification) {
   // 否则调用方分不清"值核过了"和"根本没核"。
   if (verification?.status === "skipped") return 4;
   return 0;
-}
-
-// ADR-015：notes 小抄目录 → semantic 槽位（引擎在折叠时注入 run-state 块，对准失忆点）。
-// 只在折叠发生时被引擎调用；空目录返回 undefined（无语义文本，不装懂）；list 失败同侀。
-export function createNotesDirectoryProvider({ notesStore, runId }) {
-  return async ({ state }) => {
-    let records;
-    try {
-      records = await notesStore.list({ scopeRef: runId });
-    } catch {
-      return undefined;
-    }
-    if (!Array.isArray(records)) return undefined;
-    const entries = records
-      .filter((record) => record?.state === "active"
-        && typeof record?.key === "string" && record.key !== "")
-      .sort((a, b) => (
-        (b?.pinned === true ? 1 : 0) - (a?.pinned === true ? 1 : 0)
-        || String(b?.updated_at ?? "").localeCompare(String(a?.updated_at ?? ""))
-      ))
-      .slice(0, 20);
-    if (entries.length === 0) return undefined;
-    const summaryOf = (record) => {
-      const current = record.current;
-      const raw = typeof current === "string"
-        ? current
-        : String(current?.summary ?? current?.content ?? "");
-      const firstLine = raw.split("\n")[0]?.trim() ?? "";
-      return firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
-    };
-    const lines = entries.map((record) => {
-      const flags = [
-        record.pinned === true ? "★" : null,
-        typeof record.source === "string" && record.source !== ""
-          ? `@${record.source}`
-          : null,
-      ].filter(Boolean).join(" ");
-      return `- ${record.key}${flags ? ` (${flags})` : ""}: ${summaryOf(record)}`;
-    });
-    return {
-      text: ["[notes 小抄目录]（note_read key=... 取全文）", ...lines].join("\n"),
-      version: state?.stateVersion,
-      status: "ok",
-    };
-  };
 }
 
 if (

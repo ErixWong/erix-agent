@@ -369,6 +369,7 @@ export function buildJudgePrompt(
   filesWritten = [],
   recentErrors = [],
   conversationText = "",
+  budget = {},
 ) {
   const entries = Array.isArray(timeline)
     ? timeline
@@ -377,10 +378,27 @@ export function buildJudgePrompt(
       : [];
   const recent = entries.slice(-12).reverse();
   const outputLines = conversationText ? "（详见完整对话记录）" : "无";
+  const hasBudget = Number.isFinite(budget?.budgetRounds)
+    && Number.isFinite(budget?.effectiveMaxRounds);
+  const nearLimit = budget?.nearLimit === true
+    || (hasBudget && budget.budgetRounds >= Math.floor(budget.effectiveMaxRounds * 0.8));
+  const budgetLine = hasBudget
+    ? `预算事实：当前预算轮 r=${budget.budgetRounds}/${budget.effectiveMaxRounds}；扩轮次数 ${Number.isFinite(budget.extensionCount) ? budget.extensionCount : 0}/${Number.isFinite(budget.maxExtensions) ? budget.maxExtensions : "∞"}`
+    : "";
+  const extensionInstruction = nearLimit
+    ? `当前已进入 nearLimit 扩轮评估窗口。必须额外判断是否需要扩轮：
+- extend=true 仅表示任务尚未完成且当前上限不足以可靠完成；extend=false 表示无需扩轮、应尽快收敛。
+- extendReason 填写扩轮判断依据；plan 填写扩轮后下一步具体动作。
+`
+    : "";
+  const decisionSchema = nearLimit
+    ? '{"done":true|false,"confidence":0-1,"reason":"一句话","evidence":"支撑事实","direction":"on_track|uncertain|off_track","directionReason":"路线判断一句话（可选）","extend":true|false,"extendReason":"扩轮判断依据","plan":"下一步具体动作"}'
+    : '{"done":true|false,"confidence":0-1,"reason":"一句话","evidence":"支撑事实","direction":"on_track|uncertain|off_track","directionReason":"路线判断一句话（可选）"}';
   return `【每轮 Judge】你是交付评审者，独立判断任务是否完成。不要执行工具，不要相信模型自报。
 
 任务目标：${Array.from(String(taskBrief ?? "")).slice(0, 2000).join("") || "（未提供）"}
 已运行轮数：${Number.isFinite(rounds) ? rounds : 0}
+${budgetLine}
 时间线（最新在前）：
 ${formatTimeline(recent)}
 写过的文件：${formatFiles(filesWritten)}
@@ -399,8 +417,9 @@ ${conversationText}
       : "判断是否已经满足原始任务目标。若方向错误、关键产物缺失或验证输出不符合目标，done 必须为 false。\n"
   }
 额外判断方向（direction）：看时间线模型是否在合理推进（尝试新方法、接近验证、产物渐进），还是深陷单一实现细节反复调试。direction 只是提示，不影响 done。
+${extensionInstruction}
 只输出 JSON，不要输出其他文字：
-{"done":true|false,"confidence":0-1,"reason":"一句话","evidence":"支撑事实","direction":"on_track|uncertain|off_track","directionReason":"路线判断一句话（可选）"}`;
+${decisionSchema}`;
 }
 
 /**
@@ -417,7 +436,10 @@ export function parseJudgeDecision(text) {
         || parsed.confidence > 1) continue;
       if (parsed.reason !== undefined && typeof parsed.reason !== "string") continue;
       if (parsed.evidence !== undefined && typeof parsed.evidence !== "string") continue;
-      return {
+      if (parsed.extend !== undefined && typeof parsed.extend !== "boolean") continue;
+      if (parsed.extendReason !== undefined && typeof parsed.extendReason !== "string") continue;
+      if (parsed.plan !== undefined && typeof parsed.plan !== "string") continue;
+      const decision = {
         done: parsed.done,
         confidence: parsed.confidence,
         reason: String(parsed.reason ?? ""),
@@ -431,6 +453,10 @@ export function parseJudgeDecision(text) {
           ? parsed.directionReason
           : "",
       };
+      if (parsed.extend !== undefined) decision.extend = parsed.extend;
+      if (parsed.extendReason !== undefined) decision.extendReason = parsed.extendReason;
+      if (parsed.plan !== undefined) decision.plan = parsed.plan;
+      return decision;
     } catch {
       // Try the next balanced object in surrounding provider text.
     }

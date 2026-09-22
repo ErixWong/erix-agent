@@ -52,6 +52,62 @@ The project is intended for integrations including `app_container` (PI Agent
 audit/development paths) and `touwaka` (AgentLoop/conversation paths). Those
 host integrations are outside this package's lifecycle boundary.
 
+## Quickstart
+
+Install from npm (Node 22+):
+
+```bash
+npm i erix-agent
+```
+
+Minimal tool loop — the runtime owns one task lifecycle; you own the tools
+and the safety policy:
+
+```js
+import {
+  createOpenAIProvider,
+  createMemoryTranscriptStore,
+  runToolLoop,
+} from "erix-agent";
+
+const provider = createOpenAIProvider({
+  endpoint: "https://your-relay.example.com/v1", // any OpenAI-compatible endpoint
+  apiKey: process.env.LLM_API_KEY,
+  model: "your-model",
+});
+
+const result = await runToolLoop({
+  provider,
+  system: "You are a coding assistant. Inspect with tools, then answer.",
+  initialUserMessage: "List the JavaScript files in ./src and count their total lines.",
+  tools: [{
+    name: "exec",
+    description: "Run a read-only shell command, returns stdout+stderr",
+    inputSchema: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+    },
+  }],
+  executeTool: async ({ name, input }) => {
+    // your execution + safety policy (the library never executes anything)
+  },
+  maxRounds: 16,
+  store: createMemoryTranscriptStore(),
+  runId: "demo-001",
+});
+
+console.log(result.finalText);            // final answer
+console.log(result.rounds, result.usage); // run statistics
+```
+
+Or drive it from the CLI (reads `~/.erix/config.json`, see
+[Configuration](#configuration-and-local-state)):
+
+```bash
+erix chat "Count the lines of code in this project" --max-rounds 32
+```
+
 ## Why a unified headless agent?
 
 Several in-house projects and vibe-coded prototypes need LLM capability, and
@@ -229,7 +285,7 @@ handles legacy `function_call` streams.
   `ErixWong/erix-agent` on GitHub.
 - Never commit tokens, API keys, or other credentials.
 
-The published package currently has version `0.8.0` in `package.json`. Its
+The published package currently has version `0.9.0` in `package.json`. Its
 declared `files` are:
 
 ```json
@@ -366,7 +422,6 @@ judgeIntercept
 judgeIntervalRound
 judgeInterceptTimeoutMs
 judgeFailureLimit
-triggerRound
 extensionStep
 maxExtensions
 maxRoundsCap
@@ -381,17 +436,22 @@ The defaults used by the loop are:
 - `roundJudge` and `judgeIntercept` are enabled when reflection is enabled.
 - `judgeFailureLimit` defaults to `3`; repeated round-judge failures then
   disable round judging for the remainder of the run.
-- `judgeIntervalRound` is `5`; after that many real tool executions, the
+- `judgeIntervalRound` is `10`; after that many real tool executions, the
   next tool call is independently audited before execution.
 - `judgeInterceptTimeoutMs` is `30000`; an interception timeout or judge
   failure degrades to executing the original tool.
-- `triggerRound` defaults to 80% of the initial `maxRounds`.
+- At `nearLimit` (`budgetRounds >= floor(effectiveMaxRounds * 0.8)`), both
+  end-turn judging and the next interception audit receive the current budget
+  and extension count. The judge must additionally return `extend`,
+  `extendReason`, and `plan`. An allowed `extend: true` decision increases
+  the effective budget; `extend: false` nudges the model to converge.
 - `extensionStep` defaults to `max(8, maxRounds * 0.5)`, `maxExtensions` to
   `2`, and `maxRoundsCap` to at least the initial `maxRounds` and otherwise
   `256`.
 - A round judge can stop only with `done: true` and `confidence >= 0.7`.
-  A `done: false` decision injects a continuation/nudge; `direction:
-  "off_track"` is a soft direction hint and does not itself block a tool.
+  A `done: false` decision injects a continuation/nudge; near the limit,
+  `extend: true` can instead extend the budget and `direction: "off_track"`
+  turns that continuation into a change-of-approach instruction.
 - Wrap-up LLM normalization is off by default; enable
   `wrapupNormalize: true` or `ERIX_WRAPUP_NORMALIZE=1`.
 
@@ -526,7 +586,7 @@ The shared CLI flags are:
 - `--final-guard` enables the CLI provenance guard;
   `--no-final-guard` is a compatibility no-op because the default is already
   off.
-- `--no-notes` removes only the `notes` skill and leaves other skills loaded.
+- `--no-notes` (or `ERIX_NO_NOTES=1`) skips the notes factory assembly and excludes the bundled notes skill (`note_*` tools become unavailable); other skills stay loaded.
 - `--timeout <ms>` supplies a soft task deadline to `chat`; it nudges the
   loop toward wrap-up rather than hard-killing the process.
 - `--idle-timeout <seconds>` aborts after no progress; it defaults to 300
@@ -549,13 +609,19 @@ When an earlier exact value is needed, use the note-first sequence
 instructs internal thinking in English and user-visible output in the user's
 language.
 
-The bundled self-describing `notes` skill provides `note_take`, `note_read`,
-`note_list`, and `note_forget`. It is a run-scoped, pull-only convenience
-index for facts, one-time values, decisions, and artifact references; it is
-not a per-round log. The bundled skill is loaded from `skills/notes/`; user and
-project skills can be supplied from `~/.erix/skills/`, the project
-`.erix/skills/`, or `--skills-dir <path>`. `erix skills` lists discovered
-skills.
+The built-in `notes` tools provide `note_take`, `note_read`, `note_list`, and
+`note_forget`. They are a run-scoped, pull-only convenience index for facts,
+one-time values, decisions, and artifact references; they are not a per-round
+log. Headless hosts can assemble them with `createBuiltinNotesTools` from the
+package root or `erix-agent/tools`; the factory returns dual executor views
+(`executors` / structured `executeTool`), a `ToolProvider`, run lifecycle hooks
+(`onRunStart` janitor, `onRunComplete` completeRun+janitor), and the ADR-015
+fold-point `semanticStateProvider` — all bound to one run scope and one
+`NotesStore` instance. The CLI keeps `skills/notes/skill.mjs` as a thin
+compatibility layer for legacy skill discovery and always excludes the bundled
+notes skill in favor of the factory; user and project skills can still be
+supplied from `~/.erix/skills/`, the project `.erix/skills/`, or
+`--skills-dir <path>`. `erix skills` lists discovered skills.
 
 MCP uses standard `.mcp.json` configuration and supports both stdio and HTTP
 servers. The `mcp` proxy exposes `list`, `search`, `call`, and `status`
@@ -584,7 +650,7 @@ MCP configuration is read from the current directory's `.mcp.json` or
     <safeRunId>.checkpoint.json
     <safeRunId>.state.json
   <session>.json                 REPL session snapshot
-  notes/run/<safeRunId>/         notes skill data
+  notes/run/<safeRunId>/         NotesStore data
   skills/                        user skills
   todos/                         used by the example todo skill
 ```
@@ -622,62 +688,28 @@ library-level controls
 
 ## Status and version history
 
-The current package version is **v0.8.0**. The 0.6.0 migration steps remain in
-[docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
+The current package version is **v0.9.0**. The 0.6.0 migration steps remain in
+[docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md); the
+complete history lives in [CHANGELOG.md](CHANGELOG.md).
 
-- **v0.8.0**: retires the recall adapters and bounded transcript retrieval;
-  model-facing retrieval is note-first (`note_list` → `note_read`). Adds
-  request-view tool-result TTL folding, retryable empty assistant messages,
-  CLI tool whitelists, the pure-Node `grep` tool, and language-aware output
-  instructions.
-
-- **v0.5.1 (2026-09-15)**: fixes repeated accumulation of fold summaries,
-  navigation records, stubs, `[本 run 状态]`, and run state by recognizing
-  and replacing the fold marker; adds end-to-end Memento scenario coverage
-  for folded truth, credential-safe stubs, reruns, repeated folding, and
-  note-first recovery.
-- **v0.6.0 (2026-09-18)**: closing of the ADR-015/ADR-016 breaking window —
-  the replayability concept (`rerunOf` notices, rerun detection, auto-capture)
-  and the `resourceStore` port are removed, the guard verifies the envelope's
-  `findings` against all archived outputs, the engine ships transcript
-  standard tool with output hygiene (`toolOutputs`), persistence failures are
-  reported through `unpersisted`/`completionErrors`, and unknown run options
-  throw. See CHANGELOG and the 0.6.0 upgrade guide.
-- **v0.5.0 (2026-09-15)**: makes the CLI provenance guard opt-in;
-  normalized reruns executed and reported `rerunOf` instead of being blocked
-  (both the concept and the notices were removed in 0.6.0);
-  adds object-form bounded transcript navigation, cursor and source binding, replayability
-  provenance, bounded fold navigation and stubs, deterministic run state,
-  host-injected `todoStateProvider`/`semanticStateProvider`, and forced-final
-  handling.
-- **v0.4.0 (2026-09-14)**: adds the run-scoped notes skill, tool-output
-  archives and provenance capture. Notes use `current` plus at most three
-  `superseded` values and visible `folded` counts; the old notes ledger,
-  version chain, and related environment variables were removed. The
-  provenance guard compares capture manifests rather than trusting notes.
-- **v0.3.5 (2026-09-12)**: the broad compatibility and persistence repair
-  batch, including real-time streaming callbacks, fail-closed post-tool
-  checkpoint persistence, complete pending-tool resume, provider SSE and
-  legacy `function_call` compatibility, safer file-store IDs, REPL
-  persistence, MCP cleanup, input validation, and `onObserverError`.
-- **v0.3.4 (2026-09-07)**: task-brief selection for multi-turn hosts was
-  corrected. Explicit `task` and `context.task` take precedence, followed
-  by the last entry user message; resume does not use untrusted historical
-  task seeds.
-- **v0.3.3 (2026-09-06)**: `wrapup: false` disables the whole wrap-up
-  instruction/parsing/replacement/normalization protocol, with stricter
-  top-level `done` validation.
-- **v0.3.2 (2026-09-06)**: MIT licensing and README restructuring; no
-  runtime feature change.
-- **v0.3.0 (2026-09-06)**: judge governance became available: transparent
-  tool interception, round judge, direction hints, stall correction, and
-  `onJudge` / `--judge-log` observability. Reflection defaults to enabled in
-  the library for `maxRounds >= 16` when omitted.
-- **v0.2.0 (2026-09-01)**: dual-protocol streaming, full tool loops,
-  automatic budget-driven folding, file stores, JSON-file
-  configuration, the interactive CLI, persistence, self-describing skills,
-  built-in CLI tools, streaming output, MCP stdio/HTTP integration, and
-  idle timeouts.
+- **v0.9.0 (2026-09-22)**: extension decisions move to the judge — at
+  `nearLimit` the end-turn judge and the interception audit must return
+  `extend`/`extendReason`/`plan`; an approved `extend: true` raises the
+  effective round budget (the interception path closes the
+  model-never-ends-a-turn blind spot). The legacy nearLimit reflection path
+  is removed, so `reflection.triggerRound` is gone and `reflection_stop` has
+  no current trigger path. Long tasks no longer hit `max_rounds_cap`
+  un-evaluated.
+- **v0.8.0 (2026-09-21)**: retires the recall adapters and bounded
+  transcript retrieval; model-facing retrieval is note-first
+  (`note_list` → `note_read`). Adds request-view tool-result TTL folding,
+  retryable empty assistant messages, CLI tool whitelists, the pure-Node
+  `grep` tool, and language-aware output instructions.
+- **v0.7.0 (2026-09-19)**: per-round aggregate output budget, fold-summary
+  anchors (paths/SHAs/URLs mechanically preserved), head+tail CLI exec
+  truncation, interception interval 5→10 with on-track pass-through, stall
+  detection default `consecutive`, and resume round-budget semantics
+  (identity rounds vs per-run `budgetRounds`).
 
 The host migration and benchmark work described by the project is ongoing
 integration work, not a promise that a future host or sandbox component is
@@ -713,75 +745,21 @@ not a claim that this repository runs those tasks automatically.
 
 ### Passing tasks (reward=1, by model)
 
-`historical-model` has **34 passing tasks** across a broad task set:
-
-```text
-bn-fit-modify
-break-filter-js-from-html
-build-cython-ext
-build-pmars
-cancel-async-tasks
-cobol-modernization
-configure-git-webserver
-constraints-scheduling
-count-dataset-tokens
-crack-7z-hash
-custom-memory-heap-crash
-extract-elf
-financial-document-processor
-fix-git
-git-leak-recovery
-git-multibranch
-hf-model-inference
-kv-store-grpc
-log-summary-date-ranges
-merge-diff-arc-agi-task
-modernize-scientific-stack
-mteb-retrieve
-multi-source-data-merger
-openssl-selfsigned-cert
-polyglot-c-py
-portfolio-optimization
-prove-plus-comm
-pypi-server
-regex-log
-reshard-c4-data
-sam-cell-seg
-sqlite-db-truncate
-torch-tensor-parallelism
-vulnerable-secret
-```
-
-`historical-model-2` has **11 passing tasks** in the more recent difficult-task
-sample:
-
-```text
-adaptive-rejection-sampler
-break-filter-js-from-html
-build-cython-ext
-build-pov-ray
-cancel-async-tasks
-chess-best-move
-code-from-image
-configure-git-webserver
-db-wal-recovery
-fix-code-vulnerability
-password-recovery
-```
-
-The `pi` comparison on the `historical-model-2` sample has **4 passing
-tasks**:
-
-```text
-break-filter-js-from-html
-build-cython-ext
-build-pov-ray
-distribution-search
-```
+- `historical-model`: **34 passing tasks** across a broad task mix
+  (`bn-fit-modify`, `break-filter-js-from-html`, `build-cython-ext`,
+  `crack-7z-hash`, `fix-git`, `git-multibranch`, `prove-plus-comm`,
+  `sqlite-db-truncate`, …).
+- `historical-model-2` (recent difficult-task and recovery sample):
+  **11 passing tasks** (`adaptive-rejection-sampler`, `chess-best-move`,
+  `code-from-image`, `db-wal-recovery`, `fix-code-vulnerability`,
+  `password-recovery`, …).
+- `pi` comparison on the same `historical-model-2` sample: **4 passing
+  tasks** (`break-filter-js-from-html`, `build-cython-ext`,
+  `build-pov-ray`, `distribution-search`).
 
 The two `historical-model` totals are not directly comparable: the first has
 more runs and a broader task mix, while the second emphasizes difficult and
-recovery tasks.
+recovery tasks. The full per-task lists live in the erix-bench repository.
 
 ### Transparent interception and judge evidence
 

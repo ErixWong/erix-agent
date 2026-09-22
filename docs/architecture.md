@@ -398,11 +398,10 @@ reflection: {
   enabled,
   roundJudge = true,
   judgeIntercept = true,
-  judgeIntervalRound = 5,
+  judgeIntervalRound = 10,
   judgeInterceptTimeoutMs = 30000,
   judgeFailureLimit = 3,
-  triggerRound = Math.max(1, Math.floor(maxRounds * 0.8)),
-  extensionStep = 32,
+  extensionStep = Math.max(8, Math.floor(maxRounds * 0.5)),
   maxExtensions = 2,
   maxRoundsCap = Math.max(maxRounds, 256),
   wrapupNormalize,
@@ -418,6 +417,18 @@ or shared provider. Only `done: true` with `confidence >= 0.7` yields
 failures and evaluator errors degrade to the normal governor, and the round
 judge is disabled after `judgeFailureLimit` consecutive failures.
 
+At `nearLimit` (`budgetRounds >= floor(effectiveMaxRounds * 0.8)`) the judge
+prompt additionally requires `extend`, `extendReason`, and `plan`; this
+applies to both the end-turn judge and the next interception audit, so a
+model that never emits `end_turn` still reaches the extension decision.
+`extend: true` (while `extensionCount < maxExtensions` and below
+`maxRoundsCap`) adds `extensionStep` rounds to the effective budget and
+injects the plan as a continuation message; `direction: "off_track"` turns
+that continuation into a change-of-approach instruction. `extend: false`
+nudges the model to converge instead. A missing or unparseable `extend`
+field means no extension (fail-closed); the final budget round falls back to
+the forced no-tools final answer.
+
 After `judgeIntervalRound` tool executions, the next tool call is transparently
 audited. A `done: false` audit blocks the original execution and returns an
 audit result to the model. Audit errors and timeouts degrade to direct
@@ -427,9 +438,9 @@ round and interception decisions, including degraded decisions.
 
 The governor is deterministic and side-effect free. It handles repeated
 errors, memory-loss responses, no-tool streaks, stall streaks, time
-deadlines, reflection extensions, and completion. Reflection extensions add
+deadlines, judge-driven extensions, and completion. Judge extensions add
 `extensionStep` rounds up to `maxRoundsCap`, at most `maxExtensions` times.
-The task brief used by judge and reflection is selected in this order:
+The task brief used by judge and wrap-up is selected in this order:
 `task`, `context.task`, then the latest user text in the entry transcript.
 
 Judge interception uses a 6,000-token conversation budget, round-judge requests

@@ -48,6 +48,12 @@ export {
   isNoteRecord,
 } from "./store/notes.js";
 export {
+  createBuiltinNotesTools,
+  MAX_CONTENT_LENGTH,
+  NOTE_VALUE_MAX_CHARS,
+  resolveNotesDir,
+} from "./tools/notes.js";
+export {
   createDeterministicRunState,
   renderRunState,
   upsertRunStateInMessages,
