@@ -250,6 +250,15 @@ createAssemblyPort({
   `createFileResourceStore` 与 `resourceStoreContract`。宿主若仍传 `resourceStore` 会因陌生顶层键被拒
   （见 0.6.0 升级指南）。
 - **`executeTool` 迁移负例独立成组**：`executeToolContract` 只描述受支持的结构化形态；
+
+## 七、修订注（2026-09-22，#53）
+
+- **notes 装配收敛为单一工厂**：`createBuiltinNotesTools` 从「provider + 执行器」升级为全套
+  assembler（双视图 `executors`/`executeTool` + `lifecycle` + `semanticStateProvider`，
+  创建时绑定 runId/notesDir/单一 NotesStore 实例并强制覆盖伪造 `__erix`）；CLI 三处手写装配
+  （cli.js 注入与 janitor/completeRun 生命周期、skills.js 的 notes 特判、cli.js 的语义目录
+  provider）全部迁上工厂，bundled notes skill 始终排除、`skill.mjs` 降级为兼容层。
+  引擎侧不变：仍不认识 notes，只提供持久化失败报告桥（宿主报 `port="notes"`）。
   位置形态 `(name, input)` 的误用由 `executeToolMigrationContract` 断言为必错（`name` 收到整个对象、
   `input` 为 `undefined`），不再混在通过路径里。
 - **API 名修正**：宿主组合根是 `createAssemblyPort(input)`，`runToolLoop` 消费 `assemblyPort`；

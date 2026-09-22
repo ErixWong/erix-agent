@@ -586,7 +586,7 @@ The shared CLI flags are:
 - `--final-guard` enables the CLI provenance guard;
   `--no-final-guard` is a compatibility no-op because the default is already
   off.
-- `--no-notes` removes only the `notes` skill and leaves other skills loaded.
+- `--no-notes` (or `ERIX_NO_NOTES=1`) skips the notes factory assembly and excludes the bundled notes skill (`note_*` tools become unavailable); other skills stay loaded.
 - `--timeout <ms>` supplies a soft task deadline to `chat`; it nudges the
   loop toward wrap-up rather than hard-killing the process.
 - `--idle-timeout <seconds>` aborts after no progress; it defaults to 300
@@ -612,10 +612,15 @@ language.
 The built-in `notes` tools provide `note_take`, `note_read`, `note_list`, and
 `note_forget`. They are a run-scoped, pull-only convenience index for facts,
 one-time values, decisions, and artifact references; they are not a per-round
-log. Headless hosts can register them with `createBuiltinNotesTools` from the
-package root or `erix-agent/tools`. The CLI keeps `skills/notes/skill.mjs` as a
-thin compatibility entry for `buildSkillTools`; user and project skills can
-still be supplied from `~/.erix/skills/`, the project `.erix/skills/`, or
+log. Headless hosts can assemble them with `createBuiltinNotesTools` from the
+package root or `erix-agent/tools`; the factory returns dual executor views
+(`executors` / structured `executeTool`), a `ToolProvider`, run lifecycle hooks
+(`onRunStart` janitor, `onRunComplete` completeRun+janitor), and the ADR-015
+fold-point `semanticStateProvider` — all bound to one run scope and one
+`NotesStore` instance. The CLI keeps `skills/notes/skill.mjs` as a thin
+compatibility layer for legacy skill discovery and always excludes the bundled
+notes skill in favor of the factory; user and project skills can still be
+supplied from `~/.erix/skills/`, the project `.erix/skills/`, or
 `--skills-dir <path>`. `erix skills` lists discovered skills.
 
 MCP uses standard `.mcp.json` configuration and supports both stdio and HTTP

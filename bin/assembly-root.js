@@ -1,10 +1,10 @@
 import { appendFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 
 import {
   createFileNotesStore,
   createFileTranscriptStore,
+  resolveNotesDir,
 } from "../src/index.js";
 import { safeRunId } from "../src/store/file.js";
 
@@ -50,7 +50,9 @@ export function createCliAssemblyRoot({
   const archiveDir = path.join(path.resolve(dir), "outputs", safeRunId(runId));
   mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
   const root = path.resolve(String(cwd));
-  const resolvedNotesDir = notesDir ?? path.join(homedir(), ".erix", "notes");
+  // 与 notes 工厂缺省语义对齐（resolveNotesDir：显式值 ?? ERIX_NOTES_DIR ?? ~/.erix/notes），
+  // 避免装配根与工厂两套缺省。
+  const resolvedNotesDir = path.resolve(resolveNotesDir(notesDir));
   const resolvedNotesStore = notesStore ?? createFileNotesStore({ dir: resolvedNotesDir });
   const diagnostics = {
     error(event) {

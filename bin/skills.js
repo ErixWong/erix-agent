@@ -242,10 +242,6 @@ export async function buildSkillTools({
   home,
   cwd,
   skillsDir,
-  runId,
-  scopeRef,
-  notesDir,
-  notesStore,
   excludeSkillIds = [],
   builtinNames = [],
 } = {}) {
@@ -260,8 +256,6 @@ export async function buildSkillTools({
   const schemas = [];
   const executors = {};
   const excludedSkills = new Set(excludeSkillIds);
-  let notesJanitor;
-  let notesCompleteRun;
 
   for (const skill of loaded.skills) {
     if (excludedSkills.has(skill.skillId)) continue;
@@ -288,15 +282,6 @@ export async function buildSkillTools({
       });
       continue;
     }
-    if (skill.skillId === "notes") {
-      if (typeof skillModule.runNotesJanitor === "function") {
-        notesJanitor = skillModule.runNotesJanitor;
-      }
-      if (typeof skillModule.completeRun === "function") {
-        notesCompleteRun = skillModule.completeRun;
-      }
-    }
-
     const missingExecutors = skill.tools
       .map((tool) => tool.name)
       .filter((name) => typeof skillModule[name] !== "function");
@@ -312,30 +297,7 @@ export async function buildSkillTools({
     for (const tool of skill.tools) {
       usedNames.add(tool.name);
       schemas.push(tool);
-      executors[tool.name] = (input, context) => {
-        if (skill.skillId !== "notes" || !["note_take", "note_read", "note_list", "note_forget"].includes(tool.name)) {
-          return skillModule[tool.name](input, context);
-        }
-        const allowed = new Set(Object.keys(tool.inputSchema?.properties ?? {}));
-        const filteredInput = input && typeof input === "object" && !Array.isArray(input)
-          ? Object.fromEntries(
-              Object.entries(input).filter(([key]) => key !== "__erix" && allowed.has(key)),
-            )
-          : {};
-        const explicitScopeRef = scopeRef ?? runId ?? context?.session;
-        const explicitNotesDir = notesDir ?? context?.notesDir;
-        const hostScope = explicitScopeRef !== undefined && explicitNotesDir !== undefined
-          ? {
-              runId: String(explicitScopeRef),
-              notesDir: String(explicitNotesDir),
-              ...(notesStore === undefined ? {} : { notesStore }),
-            }
-          : undefined;
-        const injected = hostScope === undefined
-          ? filteredInput
-          : { ...filteredInput, __erix: hostScope };
-        return skillModule[tool.name](injected, context);
-      };
+      executors[tool.name] = (input, context) => skillModule[tool.name](input, context);
     }
   }
 
@@ -344,7 +306,5 @@ export async function buildSkillTools({
     tools: schemas,
     executeTool: registry.executeTool,
     errors,
-    notesJanitor,
-    notesCompleteRun,
   };
 }

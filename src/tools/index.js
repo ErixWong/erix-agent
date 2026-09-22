@@ -13,6 +13,7 @@ export {
   note_read,
   note_take,
   recordAutoCapture,
+  resolveNotesDir,
   runNotesJanitor,
   setNotesClock,
   MAX_CONTENT_LENGTH,

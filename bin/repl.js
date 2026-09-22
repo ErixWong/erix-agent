@@ -13,7 +13,9 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 import {
+  createBuiltinNotesTools,
   createOpenAIProvider,
+  resolveNotesDir,
   runToolLoop,
 } from "../src/index.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
@@ -75,6 +77,7 @@ const REPL_HELP_TEXT = `REPL 用法：
   ERIX_DEFAULT_MODEL    无配置模型时使用的显式默认模型（可选）
   ERIX_EXEC_TIMEOUT_MS  exec 前台命令超时毫秒数（默认：120000）
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
+  ERIX_NO_NOTES=1       不装配 notes 工厂并排除 bundled notes skill
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
@@ -331,14 +334,18 @@ function clearScreen(output) {
   }
 }
 
-function buildExecuteTool(cliTools, skillTools, mcpProxy) {
+function buildExecuteTool(cliTools, skillTools, mcpProxy, notesAssembler) {
   const skillToolNames = new Set(skillTools.tools.map((tool) => tool.name));
+  const notesToolNames = new Set(notesAssembler?.definitions.map((tool) => tool.name) ?? []);
   return async (name, input, context) => {
     if (name === "mcp" && mcpProxy?.enabled) {
       return mcpProxy.execute(input);
     }
     if (skillToolNames.has(name)) {
       return skillTools.executeTool(name, input, context);
+    }
+    if (notesToolNames.has(name)) {
+      return notesAssembler.executors(name, input, context);
     }
     return cliTools.executeTool(name, input, context);
   };
@@ -351,9 +358,8 @@ export async function runRepl(argv, io = {}) {
   const output = io.output ?? process.stdout;
   const errorOutput = io.errorOutput ?? process.stderr;
   const sessionDir = io.sessionDir ?? join(homedir(), ".erix");
-  const notesDir = io.notesDir
-    ?? process.env.ERIX_NOTES_DIR
-    ?? join(homedir(), ".erix", "notes");
+  const notesDir = resolveNotesDir(io.notesDir);
+  const notesDisabled = process.env.ERIX_NO_NOTES?.trim() === "1";
 
   if (options.showHelp) {
     writeLine(output, REPL_HELP_TEXT);
@@ -387,23 +393,28 @@ export async function runRepl(argv, io = {}) {
   const providerFactory = io.providerFactory
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
   const cliTools = createCliTools({ cwd });
+  // bundled notes skill 始终排除：notes 装配统一走工厂（ERIX_NO_NOTES=1 时不装配工厂）。
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,
-    runId: options.session,
-    notesDir,
-    notesStore,
-    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp"],
+    excludeSkillIds: ["notes"],
+    builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp", "note_take", "note_read", "note_list", "note_forget"],
   });
-  await skillTools.notesJanitor?.({
-    __erix: { runId: options.session, notesDir, notesStore },
-  });
+  const notesAssembler = notesDisabled || !notesStore
+    ? undefined
+    : createBuiltinNotesTools({ runId: options.session, notesDir, notesStore });
+  // REPL 会话边界生命周期：进 run 前 janitor；会话收尾（saveAndFinish）completeRun 后接 janitor。
+  await notesAssembler?.lifecycle.onRunStart();
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: options.configPath, cwd });
   // --tools 白名单：启动时校验一次——未知名字 stderr 警告并忽略，过滤后为空 → usageError。
   // 之后每轮输入只按名字集合过滤可见工具，不重复警告。
   let toolsAllowlistNames;
   if (options.tools !== undefined) {
-    const allTools = [...cliTools.tools, ...skillTools.tools];
+    const allTools = [
+      ...cliTools.tools,
+      ...skillTools.tools,
+      ...(notesAssembler?.definitions ?? []),
+    ];
     if (mcpProxy?.enabled) allTools.push(mcpProxy.schema);
     try {
       toolsAllowlistNames = new Set(filterToolsByAllowlist(allTools, options.tools, {
@@ -414,7 +425,7 @@ export async function runRepl(argv, io = {}) {
     }
   }
   const executeTool = wrapExecuteTool(
-    buildExecuteTool(cliTools, skillTools, mcpProxy),
+    buildExecuteTool(cliTools, skillTools, mcpProxy, notesAssembler),
     {
       output: (line) => writeLine(output, line),
       getToolMetadata: cliTools.getLastToolMetadata,
@@ -473,12 +484,17 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
 
   const saveAndFinish = async () => {
     await saveSession(sessionDir, options.session, messages);
-    await skillTools.notesCompleteRun?.({
-      __erix: { runId: options.session, notesDir, notesStore },
-    });
-    await skillTools.notesJanitor?.({
-      __erix: { runId: options.session, notesDir, notesStore },
-    });
+    try {
+      const notesCompletion = await notesAssembler?.lifecycle.onRunComplete();
+      for (const failure of notesCompletion?.errors ?? []) {
+        writeLine(
+          errorOutput,
+          `completion error (${failure.operation}): ${failure.error?.message ?? String(failure.error)}`,
+        );
+      }
+    } catch (error) {
+      writeLine(errorOutput, `completion error (notes_lifecycle): ${error?.message ?? String(error)}`);
+    }
     writeLine(output, `再见（会话已保存到 ${archivePath}）`);
     resolveRun();
   };
@@ -663,6 +679,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         runId: options.session,
         diagnostics,
         resume,
+        // ADR-015：notes 小抄目录经 semantic 槽位注入 run-state 块（折叠时注入，对准失忆点）
+        ...(notesAssembler === undefined ? {} : {
+          semanticStateProvider: notesAssembler.semanticStateProvider,
+        }),
         signal,
         stream: true,
         onDelta: (chunk) => {

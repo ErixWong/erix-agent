@@ -31,17 +31,22 @@ export function setNotesClock(nextClock) {
   };
 }
 
+/**
+ * Resolve the notes root directory the same way everywhere (factory default,
+ * assembly root, standalone tool fallback): explicit host value first, then
+ * ERIX_NOTES_DIR, then ~/.erix/notes.
+ */
+export function resolveNotesDir(notesDir) {
+  return notesDir ?? process.env.ERIX_NOTES_DIR ?? path.join(homedir(), ".erix", "notes");
+}
+
 function injectedNotesDir(input) {
   const value = input?.__erix?.notesDir;
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function notesRoot(input) {
-  return path.resolve(
-    injectedNotesDir(input)
-      ?? process.env.ERIX_NOTES_DIR
-      ?? path.join(homedir(), ".erix", "notes"),
-  );
+  return path.resolve(resolveNotesDir(injectedNotesDir(input)));
 }
 
 function injectedNotesStore(input) {
@@ -548,13 +553,41 @@ const TOOL_EXECUTORS = {
   note_forget,
 };
 
-function scopeForBuiltin({ notesDir, notesStore, runId, scopeRef } = {}) {
-  const scope = {};
-  if (runId !== undefined) scope.runId = String(runId);
-  else if (scopeRef !== undefined) scope.scopeRef = String(scopeRef);
-  if (notesDir !== undefined) scope.notesDir = String(notesDir);
-  if (notesStore !== undefined) scope.notesStore = notesStore;
-  return scope;
+// ADR-015：notes 小抄目录语义——仅 active、最多 20 条、pinned 优先后按 updated_at 排序，
+// 以 state.stateVersion 作版本（否则被判 stale）。list 失败或全空返回 undefined（不装懂）。
+function renderNotesDirectory(records, state) {
+  if (!Array.isArray(records)) return undefined;
+  const entries = records
+    .filter((record) => record?.state === "active"
+      && typeof record?.key === "string" && record.key !== "")
+    .sort((a, b) => (
+      (b?.pinned === true ? 1 : 0) - (a?.pinned === true ? 1 : 0)
+      || String(b?.updated_at ?? "").localeCompare(String(a?.updated_at ?? ""))
+    ))
+    .slice(0, 20);
+  if (entries.length === 0) return undefined;
+  const summaryOf = (record) => {
+    const current = record.current;
+    const raw = typeof current === "string"
+      ? current
+      : String(current?.summary ?? current?.content ?? "");
+    const firstLine = raw.split("\n")[0]?.trim() ?? "";
+    return firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
+  };
+  const lines = entries.map((record) => {
+    const flags = [
+      record.pinned === true ? "★" : null,
+      typeof record.source === "string" && record.source !== ""
+        ? `@${record.source}`
+        : null,
+    ].filter(Boolean).join(" ");
+    return `- ${record.key}${flags ? ` (${flags})` : ""}: ${summaryOf(record)}`;
+  });
+  return {
+    text: ["[notes 小抄目录]（note_read key=... 取全文）", ...lines].join("\n"),
+    version: state?.stateVersion,
+    status: "ok",
+  };
 }
 
 function scopedToolInput(input, name, scope) {
@@ -571,21 +604,94 @@ function scopedToolInput(input, name, scope) {
     : filtered;
 }
 
+const REPORTABLE_STORE_METHODS = ["read", "write", "list", "complete", "janitor"];
+
 /**
- * Create the built-in notes provider and its scoped executor.
- *
- * The returned object is both a ToolProvider (`listTools`) and a convenient
- * host assembly containing `executeTool`, definitions, and lifecycle hooks.
- * Hosts may pass `provider` plus `executeTool` to their own registry, or use
- * the returned pair directly.
+ * Decorate a NotesStore so persistence failures are reported through the
+ * engine's generic host-persistence bridge (`context.reportPersistenceFailure`,
+ * port="notes") instead of being silently swallowed into tool-level "invalid"
+ * JSON. The original error is always re-thrown so existing tool error paths
+ * keep working. The reporter is bound per tool execution by the assembler.
+ */
+function withPersistenceReporting(store, getReporter) {
+  const decorated = {};
+  for (const method of REPORTABLE_STORE_METHODS) {
+    decorated[method] = async (request) => {
+      try {
+        return await store[method](request);
+      } catch (error) {
+        const reporter = getReporter();
+        if (typeof reporter === "function") {
+          try {
+            await reporter({
+              port: "notes",
+              operation: method,
+              phase: method === "write" ? "write" : "read",
+              sideEffect: method === "write" ? "executed_uncommitted" : "not_started",
+              error,
+            });
+          } catch {
+            // 报告桥自身失败不得阻断工具原有的错误路径。
+          }
+        }
+        throw error;
+      }
+    };
+  }
+  return decorated;
+}
+
+/**
+ * Full notes assembler. One call binds the run scope (runId/scopeRef), the
+ * notes directory, and a single NotesStore instance; every returned view
+ * (executors, executeTool, lifecycle, semanticStateProvider) reuses them and
+ * forcibly overrides any caller-forged `__erix` injection.
  *
  * @param {{notesDir?: string, notesStore?: object, runId?: string, scopeRef?: string}} options
+ * @returns {{
+ *   definitions: object[], tools: object[],
+ *   provider: object, listTools: Function, resolveTools: Function,
+ *   executors: Function, executeTool: Function,
+ *   lifecycle: {onRunStart: Function, onRunComplete: Function},
+ *   semanticStateProvider: Function,
+ *   notesJanitor: Function, notesCompleteRun: Function,
+ *   runNotesJanitor: Function, completeRun: Function,
+ * }}
  */
 export function createBuiltinNotesTools(options = {}) {
+  const opts = options && typeof options === "object" ? options : {};
+  // scope 固定：创建时解析并绑定 runId/scopeRef、notesDir、notesStore。
+  const boundScopeRef = opts.runId !== undefined
+    ? String(opts.runId)
+    : opts.scopeRef !== undefined ? String(opts.scopeRef) : undefined;
+  const resolvedNotesDir = path.resolve(resolveNotesDir(opts.notesDir));
+  // 单一 store 实例：executeTool、lifecycle、semanticStateProvider 共用，
+  // 禁止各自隐式创建。
+  const boundStore = opts.notesStore ?? createFileNotesStore({
+    dir: resolvedNotesDir,
+    clock: () => clock(),
+  });
+
+  let activeReporter;
+  const store = withPersistenceReporting(boundStore, () => activeReporter);
+  const scope = {
+    ...(boundScopeRef === undefined ? {} : { runId: boundScopeRef }),
+    notesDir: resolvedNotesDir,
+    notesStore: store,
+  };
+
+  // lifecycle 输入同样强制覆盖调用方伪造的 __erix（评审修正项）。
+  const lifecycleInput = (input) => {
+    const base = input && typeof input === "object" && !Array.isArray(input)
+      ? input
+      : {};
+    const { __erix: _discarded, ...rest } = base;
+    return { ...rest, __erix: scope };
+  };
+
   const provider = createStaticToolProvider({
     sets: { default: TOOL_DEFINITIONS },
   });
-  const scope = scopeForBuiltin(options);
   const registry = createToolRegistry({
     executors: Object.fromEntries(
       Object.entries(TOOL_EXECUTORS).map(([name, executor]) => [
@@ -595,21 +701,81 @@ export function createBuiltinNotesTools(options = {}) {
     ),
     schemas: TOOL_DEFINITIONS,
   });
-  const executeTool = (name, input, context) => (
-    registry.executeTool(name, scopedToolInput(input, name, scope), context)
-  );
-  const lifecycleInput = (input) => (
-    input === undefined
-      ? (Object.keys(scope).length > 0 ? { __erix: scope } : {})
-      : input
-  );
+
+  // registry 位置参数形态：(name, input, context)。
+  const executors = async (name, input, context) => {
+    const previousReporter = activeReporter;
+    activeReporter = context?.reportPersistenceFailure;
+    try {
+      return await registry.executeTool(name, scopedToolInput(input, name, scope), context);
+    } finally {
+      activeReporter = previousReporter;
+    }
+  };
+
+  // 结构化形态：兼容 runToolLoop/checkpoint-executor 的调用约定
+  // executeTool({id, name, input, context, signal})；同时保留位置参数
+  // 视图 executeTool(name, input, context) 以兼容既有调用方。
+  const executeTool = async (firstArg, positionalInput, positionalContext) => {
+    const structured = firstArg
+      && typeof firstArg === "object"
+      && !Array.isArray(firstArg)
+      && typeof firstArg.name === "string";
+    const name = structured ? firstArg.name : firstArg;
+    const input = structured ? firstArg.input : positionalInput;
+    const context = structured
+      ? { ...(firstArg.context ?? {}), toolUseId: firstArg.id }
+      : positionalContext;
+    return executors(name, input, context);
+  };
+
+  // onRunStart = janitor；onRunComplete = completeRun 后接 janitor，
+  // 收尾错误收集在返回值的 errors[] 里返回，不抛出覆盖主错误。
+  const lifecycle = {
+    onRunStart: async (input) => {
+      await runNotesJanitor(lifecycleInput(input));
+    },
+    onRunComplete: async (input) => {
+      const completionErrors = [];
+      let completed;
+      let janitor;
+      try {
+        completed = await completeRun(lifecycleInput(input));
+      } catch (error) {
+        completionErrors.push({ operation: "notes_complete_run", error });
+      }
+      try {
+        janitor = await runNotesJanitor(lifecycleInput(input));
+      } catch (error) {
+        completionErrors.push({ operation: "notes_janitor", error });
+      }
+      return { completed, janitor, errors: completionErrors };
+    },
+  };
+
+  // ADR-015：notes 小抄目录 → semantic 槽位；复用绑定的同一 store 实例。
+  const semanticScopeRef = boundScopeRef ?? currentScopeRef(undefined);
+  const semanticStateProvider = async ({ state } = {}) => {
+    let records;
+    try {
+      records = await store.list({ scopeRef: semanticScopeRef });
+    } catch {
+      return undefined;
+    }
+    return renderNotesDirectory(records, state);
+  };
+
   return {
     provider,
     listTools: provider.listTools,
     tools: TOOL_DEFINITIONS,
     definitions: TOOL_DEFINITIONS,
+    executors,
     executeTool,
     resolveTools: registry.resolveTools,
+    lifecycle,
+    semanticStateProvider,
+    // 兼容别名：PR #52 形状的可调用方式保留。
     notesJanitor: (input) => runNotesJanitor(lifecycleInput(input)),
     notesCompleteRun: (input) => completeRun(lifecycleInput(input)),
     runNotesJanitor: (input) => runNotesJanitor(lifecycleInput(input)),

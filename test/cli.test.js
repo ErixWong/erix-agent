@@ -397,6 +397,126 @@ test("runChat filters tools via --tools allowlist and warns on unknown names", a
   assert.ok(warnings.some((line) => line.includes("bogus_tool")));
 });
 
+test("runChat assembles note tools via the factory and --no-notes removes them", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-cli-no-notes-"));
+  try {
+    let captured;
+    const captureLoop = async (options) => {
+      captured = options;
+      return {
+        finalText: "done",
+        messages: [],
+        rounds: 1,
+        truncated: false,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        compactionStats: [],
+      };
+    };
+    await runChat({
+      prompt: "hi",
+      session: "notes-on",
+      dir,
+      provider: createFakeProvider([]),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 2,
+      idleTimeout: 0,
+      toolOutput: () => {},
+      loop: captureLoop,
+    });
+    const noteNamesOn = captured.tools.map((tool) => tool.name).filter((name) => name.startsWith("note_"));
+    assert.deepEqual(noteNamesOn, ["note_take", "note_read", "note_list", "note_forget"]);
+    assert.equal(typeof captured.semanticStateProvider, "function");
+    const takeResult = await captured.executeTool({
+      id: "t1",
+      name: "note_take",
+      input: { key: "greeting", content: "hello world", __erix: { runId: "forged" } },
+      context: {},
+    });
+    // wrapExecuteTool(returnMetadata) 包裹后结果在 .data 里
+    assert.equal(JSON.parse(takeResult.data).status, "found");
+
+    captured = undefined;
+    await runChat({
+      prompt: "hi",
+      session: "notes-off",
+      dir,
+      noNotes: true,
+      provider: createFakeProvider([]),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 2,
+      idleTimeout: 0,
+      toolOutput: () => {},
+      loop: captureLoop,
+    });
+    assert.equal(
+      captured.tools.map((tool) => tool.name).filter((name) => name.startsWith("note_")).length,
+      0,
+      "--no-notes 后不得再装配 note_* 工具",
+    );
+    assert.equal(captured.semanticStateProvider, undefined);
+
+    captured = undefined;
+    const saved = process.env.ERIX_NO_NOTES;
+    process.env.ERIX_NO_NOTES = "1";
+    try {
+      await runChat({
+        prompt: "hi",
+        session: "notes-env-off",
+        dir,
+        provider: createFakeProvider([]),
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        maxRounds: 2,
+        idleTimeout: 0,
+        toolOutput: () => {},
+        loop: captureLoop,
+      });
+    } finally {
+      if (saved === undefined) delete process.env.ERIX_NO_NOTES;
+      else process.env.ERIX_NO_NOTES = saved;
+    }
+    assert.equal(
+      captured.tools.map((tool) => tool.name).filter((name) => name.startsWith("note_")).length,
+      0,
+      "ERIX_NO_NOTES=1 后不得再装配 note_* 工具",
+    );
+    assert.equal(captured.semanticStateProvider, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runChat --tools allowlist also applies to factory note tools", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-cli-notes-allowlist-"));
+  let captured;
+  try {
+    await runChat({
+      prompt: "hi",
+      session: "notes-allowlist",
+      dir,
+      provider: createFakeProvider([]),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 2,
+      idleTimeout: 0,
+      toolOutput: () => {},
+      tools: "note_take, exec",
+      loop: async (options) => {
+        captured = options;
+        return {
+          finalText: "done",
+          messages: [],
+          rounds: 1,
+          truncated: false,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          compactionStats: [],
+        };
+      },
+    });
+    assert.deepEqual(captured.tools.map((tool) => tool.name).sort(), ["exec", "note_take"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runChat rejects a --tools allowlist that filters out every tool", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-tools-empty-"));
   try {
