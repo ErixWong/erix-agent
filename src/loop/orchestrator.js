@@ -1603,10 +1603,10 @@ export async function runToolLoop(options) {
       // 但 512 实测会被 glm 冗长 JSON 截断致 parse 失败 → 1024。
       maxTokens: 1024,
       temperature: 0,
-      // 2026-09-20 实测（glm-5.3-flash-awq）：reasoning_effort 是该 relay 上**唯一**能真
-      // 正关思考的参数（enable_thinking/chat_template_kwargs/thinking:{type:disabled} 都
-      // 关不掉，GLM 把思考放非标准 `reasoning` 字段）；关掉后 judge 输出纯 JSON，不关
-      // 则 512 预算被思考吃光 → content 空。qwen/deepseek 同样认此参数。不要删。
+      // judge 继续发送 reasoning_effort:"none"（统一语义=不思考）；OpenAI provider
+      // 的 payload 层会将 GLM 系模型自动转译为 "low"（见
+      // src/providers/payload.js 的 OpenAI 载荷组装出口），因为该 relay 把 GLM 的
+      // "none" 处理成思考漏进 content。deepseek/qwen 在同一 relay 上语义正确，不受影响。
       reasoning_effort: "none",
     };
     let timeoutController;

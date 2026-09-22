@@ -10,6 +10,21 @@ const baseRequest = {
   messages: [{ role: "user", content: "hello" }],
 };
 
+async function openAIRequestBody(model, request = {}) {
+  const fetchImpl = createMockFetch([{
+    json: { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] },
+  }]);
+  const provider = createOpenAIProvider({
+    endpoint: "https://api.example.test/v1",
+    apiKey: "test-key",
+    model,
+    fetchImpl,
+  });
+
+  await provider.chat({ ...baseRequest, ...request });
+  return fetchImpl.calls[0].body;
+}
+
 test("OpenAI leaves optional alpha payload fields absent when unset", async () => {
   const fetchImpl = createMockFetch([{
     json: { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] },
@@ -74,6 +89,36 @@ test("OpenAI forwards alpha thinking fields and sanitized provider options", asy
     presence_penalty: 0,
     response_format: { type: "json_object" },
   });
+});
+
+test("OpenAI translates GLM reasoning_effort none to low", async () => {
+  const body = await openAIRequestBody("glm-5.3-flash-awq", {
+    reasoning_effort: "none",
+  });
+
+  assert.equal(body.reasoning_effort, "low");
+});
+
+test("OpenAI preserves reasoning_effort none for non-GLM models", async () => {
+  const body = await openAIRequestBody("deepseek-flash", {
+    reasoning_effort: "none",
+  });
+
+  assert.equal(body.reasoning_effort, "none");
+});
+
+test("OpenAI preserves GLM reasoning_effort low", async () => {
+  const body = await openAIRequestBody("glm-5.3-flash-awq", {
+    reasoning_effort: "low",
+  });
+
+  assert.equal(body.reasoning_effort, "low");
+});
+
+test("OpenAI omits reasoning_effort when it is not provided", async () => {
+  const body = await openAIRequestBody("glm-5.3-flash-awq");
+
+  assert.equal(Object.hasOwn(body, "reasoning_effort"), false);
 });
 
 test("Anthropic forwards alpha payload fields and provider-specific options", async () => {

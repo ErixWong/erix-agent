@@ -122,6 +122,20 @@ export function applyProviderPayloadOptions(
     if (value !== undefined && value !== null) payload[key] = value;
   }
 
+  // The relay currently treats reasoning_effort:"none" for GLM models as
+  // unisolated reasoning, leaking CoT into content; "low" keeps the reasoning
+  // isolated while leaving content clean. DeepSeek and other models retain the
+  // shared "none" semantics, so this translation is limited to OpenAI GLM
+  // payloads. Revisit it if the relay supports the official vLLM
+  // chat_template_kwargs:{enable_thinking:false} behavior.
+  if (
+    provider === "openai"
+    && payload.reasoning_effort === "none"
+    && /glm/i.test(String(payload.model ?? ""))
+  ) {
+    payload.reasoning_effort = "low";
+  }
+
   return payload;
 }
 
