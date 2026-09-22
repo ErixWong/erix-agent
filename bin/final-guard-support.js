@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
-import { normalizedLabel } from "../skills/notes/credential-patterns.mjs";
+import { normalizedLabel, looksLikeCredential } from "../src/tools/credential-patterns.js";
 
 const LABEL_PATTERN = /^\s*([^:=\s][^:=\s]{0,80}?)\s*=\s*(.*?)\s*$/u;
 
@@ -17,9 +17,6 @@ export function candidateLines(output) {
   }
   return candidates;
 }
-import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
-
-
 async function legacyArchivedOutput(block) {
   // 旧会话兼容：tool_result content 是指针文本，原文在归档文件里
   const artifact = block?.artifact && typeof block.artifact === "object" ? block.artifact : block;

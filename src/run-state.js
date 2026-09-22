@@ -1,4 +1,4 @@
-import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
+import { looksLikeCredential } from "./tools/credential-patterns.js";
 import {
   COMPACTION_LAYER_IDS,
   normalizeCompactionStats,
