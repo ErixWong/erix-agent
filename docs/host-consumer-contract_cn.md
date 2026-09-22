@@ -172,6 +172,17 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 取代的历史（last-write-wins）。需要并发更新的宿主必须在宿主边界串行化；适配器不提供
 锁或其他并发机制。
 
+### Notes 工具注册来源
+
+规范的 notes 工具实现位于 `src/tools/notes.js`。headless 宿主可以从包根或
+`erix-agent/tools` 子路径调用 `createBuiltinNotesTools({ notesDir, notesStore, runId })`；
+返回对象提供四个 `note_*` schema、带 scope 的执行器，以及 `completeRun`/
+`runNotesJanitor` 生命周期钩子。宿主仍负责选择并注入 `NotesStore` 与逻辑 run scope。
+
+CLI 的 bundled `skills/notes/skill.mjs` 保留为薄兼容转发壳，因此 `buildSkillTools` 和用户/
+项目 skill 的发现路径保持不变。它不是第二套实现，也不再是可独立复制运行的 skill；
+可移植集成应使用 npm 包入口。
+
 ### CLI 侧来源 guard
 
 `bin/final-guard.js` 中的 CLI guard 是确定性的来源检查器，而不是任务完成度评估器

@@ -609,13 +609,14 @@ When an earlier exact value is needed, use the note-first sequence
 instructs internal thinking in English and user-visible output in the user's
 language.
 
-The bundled self-describing `notes` skill provides `note_take`, `note_read`,
-`note_list`, and `note_forget`. It is a run-scoped, pull-only convenience
-index for facts, one-time values, decisions, and artifact references; it is
-not a per-round log. The bundled skill is loaded from `skills/notes/`; user and
-project skills can be supplied from `~/.erix/skills/`, the project
-`.erix/skills/`, or `--skills-dir <path>`. `erix skills` lists discovered
-skills.
+The built-in `notes` tools provide `note_take`, `note_read`, `note_list`, and
+`note_forget`. They are a run-scoped, pull-only convenience index for facts,
+one-time values, decisions, and artifact references; they are not a per-round
+log. Headless hosts can register them with `createBuiltinNotesTools` from the
+package root or `erix-agent/tools`. The CLI keeps `skills/notes/skill.mjs` as a
+thin compatibility entry for `buildSkillTools`; user and project skills can
+still be supplied from `~/.erix/skills/`, the project `.erix/skills/`, or
+`--skills-dir <path>`. `erix skills` lists discovered skills.
 
 MCP uses standard `.mcp.json` configuration and supports both stdio and HTTP
 servers. The `mcp` proxy exposes `list`, `search`, `call`, and `status`
@@ -644,7 +645,7 @@ MCP configuration is read from the current directory's `.mcp.json` or
     <safeRunId>.checkpoint.json
     <safeRunId>.state.json
   <session>.json                 REPL session snapshot
-  notes/run/<safeRunId>/         notes skill data
+  notes/run/<safeRunId>/         NotesStore data
   skills/                        user skills
   todos/                         used by the example todo skill
 ```

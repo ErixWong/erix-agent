@@ -219,6 +219,20 @@ updates can lose one update and its superseded history (last-write-wins).
 Hosts that need concurrent updates must serialize them at the host boundary;
 the adapter does not add a lock or another concurrency mechanism.
 
+### Notes tool registration
+
+The canonical note tool implementation is `src/tools/notes.js`. A headless host
+can call `createBuiltinNotesTools({ notesDir, notesStore, runId })` from the
+package root or from `erix-agent/tools`; the returned provider exposes the four
+`note_*` schemas, a scoped executor, and the `completeRun`/`runNotesJanitor`
+lifecycle hooks. The host remains responsible for choosing and injecting the
+`NotesStore` and logical run scope.
+
+The CLI's bundled `skills/notes/skill.mjs` is retained as a thin compatibility
+re-export so `buildSkillTools` and user/project skill discovery keep their
+existing paths. It is not a second implementation or a portable standalone
+copy; portable integrations should use the npm package entry point.
+
 ### CLI-side provenance guard
 
 The CLI guard in `bin/final-guard.js` is a deterministic provenance checker,

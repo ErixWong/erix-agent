@@ -127,3 +127,22 @@ historical-model; forced-compression e2e constructed history with initialMessage
 `access.count++`; one week later the cold loop distills the L3 fact "my-relay token is not enabled for Qwen3.5" into the initial context;
 once it is enabled later, the old fact is marked superseded and retained for auditing; after three months without access, the summary is downgraded while the 40 rounds of original text remain untouched.
 (This example is also the design reference for the v0.2 memory evaluation fixture.)
+
+## Amendment (2026-09-22)
+
+The `note_take`, `note_read`, `note_list`, and `note_forget` implementations now live in
+`src/tools/notes.js` and are exposed through the built-in tools factory and the
+`erix-agent/tools` subpath. The move is deliberate: engine prompts already treat
+`note_*` as known recovery tools, `src` must not depend back on `skills`, and the
+duplicate file I/O previously living beside `NotesStore` is removed.
+
+The storage boundary is unchanged. Notes still use the host-provided `NotesStore`
+port (or the library's file adapter when no port is injected); the tool layer does
+not become a storage implementation. `credential-patterns` moved with the tools,
+but remains a detection/redaction hint only. ADR-009's security-layering rule is
+unchanged: the library does not become a security boundary.
+
+The bundled `skills/notes/skill.mjs` remains only as a CLI-compatible re-export.
+Copied standalone skill directories are no longer self-contained; portable use
+should import the published `erix-agent/tools` entry point and provide the
+host's `NotesStore` and run scope.

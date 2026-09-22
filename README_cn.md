@@ -401,7 +401,7 @@ erix mcp [--config <path>]
 
 重复的 `exec` 命令会正常执行并返回新输出：引擎不做幂等分类、不检测重跑、也不发重跑告知（ADR-016）。重跑值可能不同，所以副作用与重跑风险由宿主的权限/沙箱/幂等层承担——引擎的审计事实是归档输出本身，而不是"这条命令是否可重放"。
 
-内置的自描述 `notes` skill 提供 `note_take`、`note_read`、`note_list` 和 `note_forget`。它是一个面向 run、pull-only 的便利索引，用于事实、一次性值、决策和 artifact 引用；它不是逐轮日志，也不是 provenance 证据源（guard 的证据是 transcript 的归档输出）。内置 skill 从 `skills/notes/` 加载；用户和项目 skill 可以从 `~/.erix/skills/`、项目的 `.erix/skills/` 或 `--skills-dir <path>` 提供。`erix skills` 会列出发现的 skill。
+内置的 `notes` 工具提供 `note_take`、`note_read`、`note_list` 和 `note_forget`。它是一个面向 run、pull-only 的便利索引，用于事实、一次性值、决策和 artifact 引用；它不是逐轮日志，也不是 provenance 证据源（guard 的证据是 transcript 的归档输出）。headless 宿主可以从包根或 `erix-agent/tools` 通过 `createBuiltinNotesTools` 注册。CLI 保留 `skills/notes/skill.mjs` 作为 `buildSkillTools` 的薄兼容入口；用户和项目 skill 仍可从 `~/.erix/skills/`、项目的 `.erix/skills/` 或 `--skills-dir <path>` 提供。`erix skills` 会列出发现的 skill。
 
 MCP 使用标准 `.mcp.json` 配置，并支持 stdio 和 HTTP server。`mcp` proxy 提供 `list`、`search`、`call` 和 `status` action。`erix mcp` 会列出已配置的 server 及其连接状态。
 
@@ -420,7 +420,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
     <safeRunId>.checkpoint.json
     <safeRunId>.state.json
   <session>.json                 REPL session 快照
-  notes/run/<safeRunId>/         notes skill 数据
+  notes/run/<safeRunId>/         NotesStore 数据
   skills/                        用户 skill
   todos/                         由示例 todo skill 使用
 ```
