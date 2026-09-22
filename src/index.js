@@ -57,6 +57,7 @@ export {
   createDeterministicRunState,
   renderRunState,
   upsertRunStateInMessages,
+  appendRunStateToRequestView,
   withSemanticRunState,
   RUN_STATE_MAX_CHARS,
 } from "./run-state.js";

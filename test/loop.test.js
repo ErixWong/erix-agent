@@ -512,6 +512,11 @@ test("tool result TTL fold: placeholder replaces aged large results in later req
     maxRounds: 6,
     stallDetection: false,
     completion: false,
+    toolResultTtl: 2,
+    semanticStateProvider: ({ state }) => ({
+      text: "notes: use note_list before note_read",
+      version: state.stateVersion,
+    }),
   });
 
   assert.equal(result.truncated, false);
@@ -538,6 +543,14 @@ test("tool result TTL fold: placeholder replaces aged large results in later req
   // r2 产生的结果 age=1 === ttl-1 → 不折，预警行在场
   assert.ok(foldedViews[1].startsWith(big));
   assert.match(foldedViews[1], /\n【TTL 预警】此结果下一轮将折叠为句柄/);
+  // TTL 首次折叠只在下一轮把 semantic/run-state 块带入真实请求视图。
+  const nextRoundText = provider.requests[3].messages
+    .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+    .filter((block) => block?.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+  assert.match(nextRoundText, /\[run state deterministic v1\]/u);
+  assert.match(nextRoundText, /notes: use note_list before note_read/u);
   // 终稿保护：r6 是 omitTools 终稿轮 → 折叠关闭，原文恢复在场（协议不报错）
   const finalViews = resultContentAt(5);
   assert.equal(finalViews[0], big);
@@ -554,6 +567,56 @@ test("tool result TTL fold: placeholder replaces aged large results in later req
   assert.equal(
     result.compactionStats.reduce((total, stat) => total + stat.layers.ttl.triggered, 0),
     1,
+  );
+});
+
+test("low-budget injection fires once without compaction events", async () => {
+  const store = createMemoryTranscriptStore();
+  const provider = createFakeProvider([
+    ...[1, 2, 3, 4].map((n) => ({
+      content: [{ type: "tool_use", id: `low-${n}`, name: "work", input: { n } }],
+      stopReason: "tool_use",
+    })),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  let semanticCalls = 0;
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "work",
+    executeTool: async () => "small result",
+    maxRounds: 5,
+    stallDetection: false,
+    completion: false,
+    store,
+    runId: "low-budget-injection",
+    semanticStateProvider: ({ state }) => {
+      semanticCalls += 1;
+      return { text: "notes directory", version: state.stateVersion };
+    },
+  });
+
+  assert.equal(semanticCalls, 1);
+  const requestStateMessages = provider.requests
+    .map((request) => request.messages)
+    .filter((messages) => JSON.stringify(messages).includes("[run state deterministic v"));
+  assert.equal(requestStateMessages.length, 1);
+  assert.match(JSON.stringify(requestStateMessages[0]), /notes directory/u);
+  assert.doesNotMatch(JSON.stringify(result.messages), /\[run state deterministic v/u);
+  const transcriptMessages = (await store.load("low-budget-injection"))
+    .flatMap((record) => record.messages ?? []);
+  assert.doesNotMatch(JSON.stringify(transcriptMessages), /\[run state deterministic v/u);
+  assert.equal(
+    requestStateMessages[0].at(-1).role,
+    "user",
+  );
+  assert.equal(
+    result.compactionStats.reduce(
+      (total, stat) => total + Object.values(stat.layers)
+        .reduce((layerTotal, layer) => layerTotal + layer.triggered, 0),
+      0,
+    ),
+    0,
   );
 });
 

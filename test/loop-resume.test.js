@@ -40,6 +40,17 @@ test("resumes after three rounds without replaying paid provider calls", async (
   assert.equal(firstResult.rounds, 3);
   assert.deepEqual(firstResult.messages, storedMessages); // 种子记录后档案 = 完整消息
   assert.equal(firstProvider.requests.length, 3);
+  assert.ok(
+    firstProvider.requests[0].messages.some((message) => (
+      Array.isArray(message.content)
+      && message.content.some((block) => /\[run state deterministic v/u.test(block?.text ?? ""))
+    )),
+    "低预算 run-state 只应出现在 provider 请求视图",
+  );
+  assert.doesNotMatch(
+    JSON.stringify(storedMessages),
+    /\[run state deterministic v/u,
+  );
 
   const resumedProvider = createFakeProvider([
     { content: [{ type: "text", text: "round four" }], stopReason: "end_turn" },
@@ -471,14 +482,103 @@ test("resumes folded checkpoints from the persisted transcript anchor", async ()
     const requestMessages = resumedProvider.requests[0].messages;
     const serialized = JSON.stringify(requestMessages);
     assert.equal((serialized.match(/fold-base-input/g) ?? []).length, 1);
+    const tailIndex = requestMessages.findIndex((message) => (
+      Array.isArray(message.content)
+      && message.content.some((block) => block?.text === "tail-after-fold")
+    ));
+    assert.notEqual(tailIndex, -1);
     assert.equal(
-      requestMessages.at(-1).content[0].text,
+      requestMessages[tailIndex].content[0].text,
       "tail-after-fold",
     );
     assert.ok(requestMessages.findIndex((message) => (
-      message.content?.some((block) => block.type === "tool_result")
+      Array.isArray(message.content)
+      && message.content.some((block) => block.type === "tool_result")
     )) < requestMessages.length - 1);
+    const transcriptMessages = (await store.load(`fold-${keepRounds}`))
+      .flatMap((record) => record.messages ?? []);
+    assert.doesNotMatch(
+      JSON.stringify(transcriptMessages),
+      /\[run state deterministic v/u,
+    );
   }
+});
+
+test("keeps the initial input when request-view injection meets a tiny budget", async () => {
+  const store = createMemoryTranscriptStore();
+  const controller = new AbortController();
+  const firstProvider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "reg-c1", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    {
+      content: [{ type: "tool_use", id: "reg-c2", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    {
+      content: [{ type: "tool_use", id: "reg-c3", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+  ]);
+  let calls = 0;
+  const strategy = {
+    shouldCompact: () => true,
+    compact: (messages, options) => createFoldStatisticalStrategy().compact(
+      messages,
+      { ...options, keepRounds: 0 },
+    ),
+  };
+
+  await assert.rejects(
+    runToolLoop({
+      provider: firstProvider,
+      initialUserMessage: "fold-base-input",
+      executeTool: ({ signal }) => {
+        calls += 1;
+        if (calls === 3) {
+          controller.abort();
+          return "not reached";
+        }
+        return `tool-out-${calls}`;
+      },
+      maxRounds: 6,
+      completion: false,
+      context: { strategy, budgetTokens: 30 },
+      store,
+      runId: "small-budget-run-state-regression",
+      signal: controller.signal,
+    }),
+    /aborted|abort/i,
+  );
+  await store.appendRound("small-budget-run-state-regression", {
+    round: 2,
+    dedupKey: "small-budget-run-state-regression:input",
+    messages: [textMessage("tail-after-fold")],
+  });
+
+  const resumedProvider = createFakeProvider([
+    { content: [{ type: "text", text: "final" }] },
+  ]);
+  await runToolLoop({
+    provider: resumedProvider,
+    resume: true,
+    completion: false,
+    store,
+    runId: "small-budget-run-state-regression",
+    executeTool: async () => "resumed-tool",
+  });
+
+  const requestMessages = resumedProvider.requests[0].messages;
+  const serialized = JSON.stringify(requestMessages);
+  assert.equal((serialized.match(/fold-base-input/g) ?? []).length, 1);
+  assert.equal(
+    requestMessages.filter((message) => (
+      Array.isArray(message.content)
+      && message.content.some((block) => block?.text === "tail-after-fold")
+    )).length,
+    1,
+  );
 });
 
 test("archives replayed tool results without duplicating multiple resume tails", async () => {

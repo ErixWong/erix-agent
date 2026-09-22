@@ -3,6 +3,7 @@ import { normalizeMessages } from "./messages.js";
 import { throwIfAborted } from "./abort.js";
 import { validateMessages } from "../messages/rounds.js";
 import { foldToolResultsForRequest } from "./tool-result-ttl.js";
+import { appendRunStateToRequestView } from "../run-state.js";
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -32,6 +33,7 @@ export function markStablePrefix(system, messages) {
 export async function callProvider(ctx, {
   allowPendingToolUse = false,
   round,
+  requestStateBlock,
   // 预算兜底（2026-09-20 基准：撞 64 轮截断 + wrapup 全量重发历史多花 4 分钟）：
   // 最后一轮省略 tools，强制模型输出文本终稿。OpenAI/Anthropic 两协议均允许无 tools 请求。
   omitTools = false,
@@ -46,7 +48,7 @@ export async function callProvider(ctx, {
     // null/undefined = 本轮不折叠。
     const foldConfig = ctx.toolResultFold ?? null;
     const ttlStats = {};
-    const requestMessages = foldConfig === null || foldConfig === undefined
+    let requestMessages = foldConfig === null || foldConfig === undefined
       ? ctx.messages
       : foldToolResultsForRequest(ctx.messages, {
         currentRound: round,
@@ -54,6 +56,8 @@ export async function callProvider(ctx, {
         minTokens: foldConfig.minTokens,
         stats: ttlStats,
       });
+    // run-state 只追加到本次请求视图，保留前缀以实现零缓存失效。
+    requestMessages = appendRunStateToRequestView(requestMessages, requestStateBlock);
     const estimateMessageTokens = ctx.estimateMessageTokens;
     const requestEstimatedTokens = estimateMessageTokens(requestMessages);
     if (ttlStats.foldedCount > 0) {

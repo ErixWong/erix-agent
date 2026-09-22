@@ -427,8 +427,7 @@ export function renderRunState(state) {
       : []),
   ];
   // 闭合标记必须存活：若把它当作 lines 的最后一行，超预算时会被截掉，
-  // upsertRunStateInMessages 的替换正则（要求 END_MARKER 收尾）就匹配不到旧块 →
-  // 下一次 upsert 会追加第二个块（run-state 在上下文里累积，2026-09-18 全面评审 M2）。
+  // upsertRunStateInMessages 的替换正则（要求 END_MARKER 收尾）就匹配不到旧块。
   // 为它预留空间、渲染后永远追加。
   return `${renderLines(lines, MAX_RENDERED_CHARS - END_MARKER.length - 1)}\n${END_MARKER}`;
 }
@@ -507,6 +506,20 @@ export function upsertRunStateInMessages(messages, rendered) {
     content: typeof message.content === "string" ? nextContent[0].text : nextContent,
   };
   return updated;
+}
+
+/**
+ * 仅向本次 provider 请求视图追加 run-state，不修改持久消息；
+ * 尾部追加保持原前缀不变，实现前缀缓存零失效。
+ */
+export function appendRunStateToRequestView(messages, rendered) {
+  if (!Array.isArray(messages) || typeof rendered !== "string" || rendered === "") {
+    return messages;
+  }
+  return [
+    ...messages,
+    { role: "user", content: [{ type: "text", text: rendered }] },
+  ];
 }
 
 export const RUN_STATE_MAX_CHARS = MAX_RENDERED_CHARS;
