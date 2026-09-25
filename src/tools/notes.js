@@ -761,5 +761,3 @@ export function createBuiltinNotesTools(options = {}) {
     semanticStateProvider,
   };
 }
-
-
