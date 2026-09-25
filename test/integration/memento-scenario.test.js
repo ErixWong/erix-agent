@@ -74,7 +74,7 @@ test("S1 folds an early value into the provider request", async () => {
   }
 });
 
-test("S2 keeps credentials out of a folded stub while retaining its archive pointer", async () => {
+test("S2 folds a stub verbatim (no agent-side credential filter, #55) while retaining its archive pointer", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "erix-memento-s2-"));
   const archiveDir = path.join(directory, "archive");
   const secret = "sk-deterministic-secret";
@@ -133,7 +133,9 @@ test("S2 keeps credentials out of a folded stub while retaining its archive poin
     // ADR-016：stub 值直接取自 tool_result 内容，后续恢复走 note-first 提示（零路径）
     assert.match(foldedStub, /note_list|note_read/u);
     assert.match(foldedStub, new RegExp(safeValue));
-    assert.doesNotMatch(foldedStub, new RegExp(secret));
+    // issue #55：折叠锚点不再凭据过滤——凭据样式的值原样保留；
+    // 防敏感信息到达上游 LLM 是 token hub（relay/LiteLLM 网关）的职责。
+    assert.match(foldedStub, new RegExp(secret));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

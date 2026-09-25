@@ -20,7 +20,6 @@ import {
 import { createFinalGuard } from "../bin/final-guard.js";
 import * as notes from "../skills/notes/skill.mjs";
 import { NOTE_VALUE_MAX_CHARS } from "../skills/notes/skill.mjs";
-import { looksLikeCredential } from "../skills/notes/credential-patterns.mjs";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 async function withTempDirectory(callback) {

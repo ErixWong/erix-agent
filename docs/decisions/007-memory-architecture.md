@@ -144,8 +144,20 @@ unchanged: the library does not become a security boundary.
 
 Update (issue #136): the write-side credential guard in `note_take` has been
 retired — credential-shaped keys/contents are now written and read back
-unchanged. Credential detection remains only for run-state redaction and
-final-guard candidate filtering.
+unchanged.
+
+Update (issue #55): the agent-side credential heuristic redaction
+(`looksLikeCredential`) is retired entirely — the run-state `[redacted]`
+decision, the semantic `redacted` field, and the final-guard folded-stub
+candidate-line filter are all removed; credential-shaped values are persisted
+and rendered verbatim. Keeping sensitive data away from the upstream LLM is
+the token hub's job (relay/LiteLLM gateway, per ADR-009 layering); the agent
+runtime's two side-channel gates covered neither the main channel (raw
+tool_results already go to the relay) and false-positived navigation info
+like `config/api_key.json`. `normalizedLabel` is kept and moved to
+`src/text/label.js` (required for final-guard findings↔archive label
+matching, semantics unchanged); `src/tools/credential-patterns.js` and the
+`skills/notes/credential-patterns.mjs` compatibility shim are deleted.
 
 The bundled `skills/notes/skill.mjs` remains only as a CLI-compatible re-export.
 Copied standalone skill directories are no longer self-contained; portable use

@@ -1,4 +1,3 @@
-import { looksLikeCredential } from "./tools/credential-patterns.js";
 import {
   COMPACTION_LAYER_IDS,
   normalizeCompactionStats,
@@ -38,9 +37,10 @@ function boundedMultilineText(value, maxChars) {
   return Array.from(text).slice(0, maxChars).join("");
 }
 
+// 只负责 bounding，不做凭据启发式判定：防敏感信息到达上游 LLM 是 token hub
+// （relay/LiteLLM 网关）的职责（issue #55，ADR-009 层级一致性）。
 function safeText(value, maxChars = 120) {
-  const text = boundedText(value, maxChars);
-  return looksLikeCredential("", text) ? "[redacted]" : text;
+  return boundedText(value, maxChars);
 }
 
 function safeInteger(value, fallback = 0) {
@@ -113,8 +113,6 @@ function normalizeSemantic(semantic, expectedVersion) {
   if (!semantic) return { status: "absent" };
   // ADR-015：semantic 槽位承载宿主目录（如 notes 小抄目录），220→1200 字符
   const sourceText = boundedMultilineText(semantic.text, SEMANTIC_TEXT_MAX_CHARS);
-  const redacted = looksLikeCredential("", sourceText);
-  const text = redacted ? "[redacted]" : sourceText;
   const version = semantic.version ?? semantic.semanticStateVersion;
   const versionMatches = Number.isSafeInteger(version)
     && version === expectedVersion;
@@ -125,9 +123,8 @@ function normalizeSemantic(semantic, expectedVersion) {
     : "stale";
   return {
     status,
-    text,
+    text: sourceText,
     semanticStateVersion: Number.isSafeInteger(version) ? version : null,
-    ...(redacted ? { redacted: true } : {}),
     ...(Array.from(String(semantic.text ?? "")).length > SEMANTIC_TEXT_MAX_CHARS
       ? { truncated: true }
       : {}),
