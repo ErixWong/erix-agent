@@ -394,7 +394,7 @@ test("wrapExecuteTool logs calls and truncates result summaries", async () => {
   assert.match(lines[1], /second line/);
 });
 
-test("wrapExecuteTool redacts sensitive generic input fields", async () => {
+test("wrapExecuteTool echoes generic input fields verbatim (pi 对齐，回显不打码)", async () => {
   const lines = [];
   const executeTool = wrapExecuteTool(
     async () => "ok",
@@ -403,5 +403,5 @@ test("wrapExecuteTool redacts sensitive generic input fields", async () => {
 
   await executeTool("tree", { path: ".", token: "secret-value" });
 
-  assert.equal(lines[0], '→ tree: {"path":".","token":"[已隐藏]"}');
+  assert.equal(lines[0], '→ tree: {"path":".","token":"secret-value"}');
 });

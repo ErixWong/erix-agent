@@ -313,7 +313,6 @@ const TOOL_INPUT_LIMIT = 120;
 const TOOL_RESULT_LIMIT = 200;
 const TOOL_EXEC_RESULT_LIMIT = 4096;
 const TOOL_FIELD_LIMIT = 80;
-const SENSITIVE_INPUT_KEY = /(?:api[-_]?key|private[-_]?key|access[-_]?token|token|secret|password|authorization|credential)/iu;
 
 function truncateDisplayText(value, limit) {
   const text = String(value ?? "");
@@ -334,12 +333,11 @@ function summarizeToolInput(name, input) {
     }
   }
 
-  const serialized = JSON.stringify(input, (key, value) => {
-    if (key !== "" && SENSITIVE_INPUT_KEY.test(key)) return "[已隐藏]";
-    return typeof value === "string"
-      ? truncateDisplayText(value, TOOL_FIELD_LIMIT)
-      : value;
-  });
+  // 与 pi 对齐：终端回显不做内容检测/打码，只按显示宽度截断；
+  // 凭据安全由 token hub 等执行侧职责保障（issue #55）
+  const serialized = JSON.stringify(input, (key, value) => (typeof value === "string"
+    ? truncateDisplayText(value, TOOL_FIELD_LIMIT)
+    : value));
   return truncateDisplayText(serialized ?? input, TOOL_INPUT_LIMIT);
 }
 
