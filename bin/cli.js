@@ -671,82 +671,15 @@ async function runChatWithNotes({
   // judge 决策日志默认跟随 run 归档（与工具捕获同目录）；--judge-log / ERIX_JUDGE_LOG 可覆盖
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG ?? path.join(archiveDir, "judge.log");
   let judgeLogWriteFailed = false;
-  // 脱敏：judge-log 不落原始工具输入（可能含 token/密钥/文件内容）——只留工具名 + 安全摘要
-  const SENSITIVE_KEY = /token|key|secret|password|passwd|authorization|auth|api[_-]?key|bearer|cookie|credential|session|jwt|private/i;
-  // 内容级凭据模式：值内嵌密钥/令牌时整体隐藏（judge reason/evidence 可能复述）
-  const CREDENTIAL_PATTERN = /(sk-[a-z0-9_-]{8,}|sk_live_[a-zA-Z0-9]{16,}|eyJ[a-zA-Z0-9_-]{10,}|Bearer\s+[a-zA-Z0-9._-]{8,}|ghp_|gho_|ghs_|ghu_|ghr_|github_pat_[a-zA-Z0-9_]{20,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|-----BEGIN\s+[A-Z ]+-----|xox[baprs]-[a-zA-Z0-9-]{10,}|npm_[a-zA-Z0-9]{30,}|pypi-[a-zA-Z0-9_-]{30,}|AIza[a-zA-Z0-9_-]{30,})/i;
-  const redactValue = (value) => {
-    if (typeof value === "string") {
-      if (value.length > 120) return `[${value.length}字符，已截断]`;
-      if (CREDENTIAL_PATTERN.test(value)) return "[含凭据内容，已隐藏]";
-      return value;
-    }
-    if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
-    if (Array.isArray(value)) return `[数组${value.length}项]`;
-    if (typeof value === "object") {
-      const output = {};
-      for (const [key, item] of Object.entries(value)) {
-        if (SENSITIVE_KEY.test(key)) output[key] = "[已隐藏]";
-        else output[key] = redactValue(item);
-      }
-      return output;
-    }
-    return String(value);
-  };
-  const redactJudgeInfo = (info) => {
-    const redacted = { ...info };
-    // judge 原文（raw）可审计性优先：不做整体截断/隐藏（源头已截 2000 字符），
-    // 仅把凭据模式内联掩码后保留正文（judge 可能复述工具结果里的凭据）。
-    if (typeof redacted.raw === "string") {
-      redacted.raw = redacted.raw.replace(
-        new RegExp(CREDENTIAL_PATTERN.source, "gi"),
-        "[凭据已隐藏]",
-      );
-    }
-    if (redacted.decision && typeof redacted.decision === "object") {
-      // judge reason/evidence 可能复述凭据——截断即可（judge 输出通常短）
-      for (const key of ["reason", "evidence", "directionReason"]) {
-        if (typeof redacted.decision[key] === "string") {
-          redacted.decision[key] = redactValue(redacted.decision[key]);
-        }
-      }
-    }
-    if (redacted.tool && typeof redacted.tool === "object") {
-      const { input, ...toolRest } = redacted.tool;
-      redacted.tool = toolRest;
-      if (input !== undefined) {
-        let summary = "";
-        try {
-          if (typeof input === "object" && input !== null) {
-            const command = input.command ?? input.url ?? "";
-            if (typeof command === "string" && command) {
-              // 命令类：含敏感键或凭据内容直接隐藏（token 常出现在命令中且无关键词）
-              if (SENSITIVE_KEY.test(command) || CREDENTIAL_PATTERN.test(command)) summary = "[命令含敏感信息，已隐藏]";
-              else summary = command.slice(0, 80);
-            } else if (input.path && typeof input.path === "string") {
-              summary = `path=${input.path.slice(0, 80)}`;
-            } else {
-              // 其他参数：递归脱敏（嵌套敏感键也覆盖）后截断
-              summary = JSON.stringify(redactValue(input)).slice(0, 80);
-            }
-          } else if (typeof input === "string") {
-            summary = SENSITIVE_KEY.test(input) ? "[含敏感信息，已隐藏]" : input.slice(0, 80);
-          } else {
-            summary = String(input).slice(0, 80);
-          }
-        } catch { summary = "[无法序列化]"; }
-        redacted.tool.inputSummary = summary;
-      }
-    }
-    return redacted;
-  };
+  // judge-log 为同信任域全量审计档案（与 run JSONL/工具捕获同目录，本就明文）：
+  // 原始 info 原样落盘，不做脱敏——脱敏是 token hub 职责（ADR-009 信任模型）
   const onJudge = judgeLogPath
     ? (info) => {
       if (judgeLogWriteFailed) return;
       try {
         appendFileSync(
           judgeLogPath,
-          `${JSON.stringify({ ts: new Date().toISOString(), ...redactJudgeInfo(info) })}\n`,
+          `${JSON.stringify({ ts: new Date().toISOString(), ...info })}\n`,
           "utf8",
         );
       } catch (error) {

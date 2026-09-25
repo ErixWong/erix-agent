@@ -96,3 +96,13 @@ judge.log 完整审计链（3 条全落盘可查）：
 - 宿主持久化：touwaka #1116 / app_container #71（judge 决策链存宿主侧）
 - judge 叙事链（每轮 reason/evidence 累积）供复盘——store 已含 record.judge
 - harness 结果目录 run 序号已隔离（不覆盖历史），artifacts docker cp 误导问题已在 run3 后消除
+
+## 修订记录
+
+修订（2026-09-25，issue #55）：judge-log 脱敏退役。整条打码链（`SENSITIVE_KEY`、
+`CREDENTIAL_PATTERN`、`redactValue`、`redactJudgeInfo`）删除，`onJudge` 直接写原始
+judge info。理由：judge.log 与同目录 run JSONL 全量档案同信任域（本就明文），打码是
+假闸门；`SENSITIVE_KEY` 无词边界（`grep monkey` 被误隐藏）；且 #49 新增的
+`plan`/`extendReason` 字段从未被覆盖——本身就是漏的。按 ADR-009 信任模型（本地盘=
+信任域），防敏感外泄是 token hub 职责。审计性提升：judge-log 现在原样记录 judge
+所见。
