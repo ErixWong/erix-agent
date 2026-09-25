@@ -373,7 +373,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   transcript:object[],
  *   rounds:number,
  *   truncated:boolean,
- *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"judge_done"|"continuation_exhausted"|"final_guard_unverified"|"aborted"|"failed", detail?:string},
+ *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"judge_done"|"continuation_exhausted"|"final_guard_unverified"|"aborted"|"failed", detail?:string},
  *   verification:{status:"verified"|"unverified"|"skipped"|"error", reason?:string, detail?:string},
  *   runState?:object,
  *   usage:{input_tokens:number, output_tokens:number, cacheRead?:number, cacheWrite?:number},
@@ -2588,18 +2588,17 @@ export async function runToolLoop(options) {
     }
     if (action.kind === "stop") {
       const reason = terminationReasonForAction(action, continuationExhausted);
-      const detail = reason === "reflection_stop" ? action.reason : undefined;
       await forceFinalIfNeeded(reason);
       if (
         typeof finalGuard === "function"
         && FINAL_GUARD_TERMINATION_REASONS.has(reason)
       ) {
-        const guardDecision = await callFinalGuard(reason, detail);
+        const guardDecision = await callFinalGuard(reason);
         if (guardDecision.action === "error") {
-          return finish(reason, detail);
+          return finish(reason);
         }
         if (guardDecision.action === "skip") {
-          return finish(reason, detail);
+          return finish(reason);
         }
         if (FINAL_GUARD_NON_CONTINUABLE_REASONS.has(reason)) {
           guardMetrics.unverified += 1;
@@ -2641,7 +2640,7 @@ export async function runToolLoop(options) {
           continue;
         }
       }
-      return finish(reason, detail);
+      return finish(reason);
     }
     if (action.kind === "continue") continue;
     }

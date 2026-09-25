@@ -140,7 +140,7 @@ run（副作用三态不变，#103）；notes 写失败则继续 + 事件 + 账�
 走正常失败路径。
 
 loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`、
-`continuation_exhausted` 或 `reflection_stop` 停机前，会调用已配置的 guard。guard 收到
+`continuation_exhausted` 停机前，会调用已配置的 guard。guard 收到
 `finalText`、`findings`、`messages`、`round`、`rounds`、`signal` 与 `termination`。
 `findings` 是结束信封声明的 `label -> 精确值` 映射，是可核验断言的权威载体；核验不解析
 `finalText`。`{ action: "accept" }` 允许正常终止。`{ action: "skip", reason }` 以
@@ -149,8 +149,8 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 `finalText`，把 `verification.status` 置为 `unverified`，并以
 `termination.reason === "final_guard_unverified"` 终止（fail-closed）。
 
-不可续的停机原因 `max_rounds_cap`、`stall`、`continuation_exhausted`、
-`reflection_stop` 不会仅因 guard 返回 `accept` 就变成 verified；它们降级为
+不可续的停机原因 `max_rounds_cap`、`stall`、`continuation_exhausted`
+不会仅因 guard 返回 `accept` 就变成 verified；它们降级为
 `final_guard_unverified`。guard 抛错、返回无效决策或超时，对循环可用性是 fail-open：
 原终止原因保留，但 `verification.status` 为 `error`，结果永远不会是 `verified`。
 每种 guard 结果都发出 `onEvent` 事件，`type: "final_guard"`，`action` 为 `accept`、
@@ -304,7 +304,7 @@ JSON skeleton。checkpoint 保留完整工具结果文本。note、todo、错误
 确定性部分只包含引擎已知事实：预算、工具调用次数与失败次数、已写文件路径、注入的 todo
 状态、折叠/导航计数、终止原因，以及工具/checkpoint/未存上（`unpersisted`）计数。
 当前终止原因使用与 loop 相同的取值，包括 `end_turn`、`no_tool`、`stall`、
-`max_rounds_cap`、`reflection_stop`、`judge_done`、`continuation_exhausted`、
+`max_rounds_cap`、`judge_done`、`continuation_exhausted`、
 `final_guard_unverified`、`aborted`、`failed`。
 
 `todoStateProvider` 是可选的宿主 todo 状态回调。`semanticStateProvider` 是可选的宿主回调，

@@ -249,7 +249,7 @@ runToolLoop({
 - `completion` 默认为 `{ signals: [], maxNoToolRounds: 3 }`。完成信号可以停止无工具响应；工具使用后，无工具连续轮次在达到 `maxNoToolRounds` 时停止。`completion: false` 会禁用此策略。
 - `stallDetection` 默认为 `{ window: 4, mode: "consecutive" }`：整个窗口内必须是同一个工具签名。传 `{ mode: "appear" }` 表示窗口内出现过同一签名即判停滞，传 `false` 会禁用检测。除非选项显式为 `false`，否则 `ERIX_STALL_MODE` 可以提供该模式。
 - `maxTokenContinuations` 默认为 `3`。因此，以 `stopReason === "max_tokens"` 结束的响应可以在同一轮中最多接收三次续接调用。
-- `maxRounds` 默认为 `8`，且必须是正的安全整数。正常终止原因包括 `end_turn`、`no_tool`、`stall`、`max_rounds_cap`、`reflection_stop`、`judge_done` 和 `continuation_exhausted`；中止和未捕获失败使用 `aborted` 和 `failed`。
+- `maxRounds` 默认为 `8`，且必须是正的安全整数。正常终止原因包括 `end_turn`、`no_tool`、`stall`、`max_rounds_cap`、`judge_done` 和 `continuation_exhausted`；中止和未捕获失败使用 `aborted` 和 `failed`。
 
 启用时，`wrapup` 会追加要求以下 JSON 形状的回合结束指令：
 
@@ -277,7 +277,7 @@ finalGuard({
 >
 ```
 
-默认 `finalGuardMaxRetries` 为 `2`。正的 `finalGuardTimeoutMs` 按原值使用；非正值或非有限值使用默认值 `30000` ms。对于包括 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`、`continuation_exhausted` 和 `reflection_stop` 在内的非 abort 停止路径，都会运行 guard。`accept` 产生 `verification.status === "verified"`。`skip` 产生 `"skipped"`。当循环可以继续时，`revise` 会将返回的消息作为 user 消息注入。如果不可继续的停止路径无法修订，或达到重试上限，结果为 `"unverified"`，且 `termination.reason === "final_guard_unverified"`。guard 错误或超时会返回最终文本并使用 `"error"` 状态；不会将其视为已验证。未配置 guard 会产生原因是 `"no_final_guard"` 的 `"skipped"`。
+默认 `finalGuardMaxRetries` 为 `2`。正的 `finalGuardTimeoutMs` 按原值使用；非正值或非有限值使用默认值 `30000` ms。对于包括 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`、`continuation_exhausted` 在内的非 abort 停止路径，都会运行 guard。`accept` 产生 `verification.status === "verified"`。`skip` 产生 `"skipped"`。当循环可以继续时，`revise` 会将返回的消息作为 user 消息注入。如果不可继续的停止路径无法修订，或达到重试上限，结果为 `"unverified"`，且 `termination.reason === "final_guard_unverified"`。guard 错误或超时会返回最终文本并使用 `"error"` 状态；不会将其视为已验证。未配置 guard 会产生原因是 `"no_final_guard"` 的 `"skipped"`。
 
 结果形状为：
 

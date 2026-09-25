@@ -7,19 +7,6 @@ export const WRAPUP_INSTRUCTION = `任务完成或需要给出结论时（不再
 
 export const DEFAULT_REFLECTION_MIN_ROUNDS = 16;
 
-export function reflectionPrompt({ rounds, taskBrief, runningLog, l0Facts, errorText }) {
-  return `【进度反思】你是严格的独立评审者，不是执行者。请根据客观事实判断是否值得继续：
-
-任务原始目标：${taskBrief || "（未提供）"}
-已运行轮数：${rounds}
-L0 客观事实链：${JSON.stringify(l0Facts).slice(0, 4000)}
-L1 增量日志链：${JSON.stringify(runningLog).slice(0, 4000)}
-最近 distinct 错误摘录：${errorText || "无"}
-
-只输出 JSON（不要其他文字）：
-{"progress":0-100,"stalled":true/false,"continue":true/false,"stallPattern":"描述或空","reason":"一句话","plan":"下一步具体动作"}`;
-}
-
 export function isLikelyWelcomeResponse(text) {
   const value = String(text ?? "").trim();
   return /^(?:你好|嗨|hello)\s*[!！,，。.]?\s*(?:我是|i\s*(?:am|'m))[\s\S]*(?:助手|assistant)/iu.test(value)

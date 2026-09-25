@@ -172,7 +172,7 @@ provider, tool, or loop failures follow the normal failure path.
 
 The loop calls a configured guard before stopping for
 `end_turn`, `no_tool`, `judge_done`, `max_rounds_cap`, `stall`,
-`continuation_exhausted`, or `reflection_stop`. The guard receives
+or `continuation_exhausted`. The guard receives
 `finalText`, `findings`, `messages`, `round`, `rounds`, `signal`, and
 `termination`. `findings` is the completion envelope's declared
 `label -> exact value` map; it is the authoritative carrier for verifiable
@@ -184,8 +184,8 @@ message and the loop continues, up to `finalGuardMaxRetries` revision retries
 last `finalText`, sets `verification.status` to `unverified`, and terminates
 with `termination.reason === "final_guard_unverified"` (fail-closed).
 
-The non-continuable stop reasons `max_rounds_cap`, `stall`,
-`continuation_exhausted`, and `reflection_stop` cannot become verified merely
+The non-continuable stop reasons `max_rounds_cap`, `stall`, and
+`continuation_exhausted` cannot become verified merely
 because a guard returns `accept`; they degrade to
 `final_guard_unverified`. A guard exception, invalid decision, or timeout is
 fail-open with respect to loop availability: the original termination reason is
@@ -442,7 +442,7 @@ counts and failures, written-file paths, injected todo state,
 fold/navigation counts, termination, and tool/checkpoint/unpersisted error
 counts. The current termination reason is exposed through the same
 termination values as the loop, including `end_turn`, `no_tool`, `stall`,
-`max_rounds_cap`, `reflection_stop`, `judge_done`,
+`max_rounds_cap`, `judge_done`,
 `continuation_exhausted`, `final_guard_unverified`, `aborted`, and `failed`.
 
 `todoStateProvider` is an optional host callback for todo state.
