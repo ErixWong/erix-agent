@@ -53,7 +53,7 @@ CLI 可以在工具执行周围加入自己的产出归档行为。这属于库�
  * @typedef {Object} ChatResponse
  * @property {Block[]} content
  * @property {string} stopReason
- * @property {{input_tokens?:number, output_tokens?:number}} [usage]
+ * @property {{input_tokens?:number, output_tokens?:number, cacheRead?:number, cacheWrite?:number}} [usage]
  */
 ```
 
@@ -298,7 +298,7 @@ finalGuard({
     }
   },
   runState?,
-  usage: { input_tokens, output_tokens },
+  usage: { input_tokens, output_tokens, cacheRead?, cacheWrite? },
   compactionStats: [{
     compacted,
     foldedRounds,
@@ -493,7 +493,8 @@ src/
 │   ├── anchors.js            # 机械锚点抽取（路径/SHA/issue/URL/错误行）
 │   ├── fold-fidelity.js      # 用户输入逐字引用与反向信号检测
 │   ├── helpers.js            # 共享的折叠选择与钩子辅助函数
-│   └── sliding-window.js     # 整轮滑动窗口折叠
+│   ├── sliding-window.js     # 整轮滑动窗口折叠
+│   └── pipeline.js           # 六层压缩注册表声明（顺序、fallback 链、逐层统计）
 ├── store/
 │   ├── file.js               # JSONL transcript、状态与 checkpoint 存储
 │   ├── memory.js             # 进程内 transcript、状态与 checkpoint 存储
@@ -510,6 +511,7 @@ src/
 │   └── wrapup.js             # 回合结束 JSON 解析与规范化
 └── tools/
     ├── index.js               # erix-agent/tools 子路径导出
+    ├── notes.js               # createBuiltinNotesTools 装配器（executors/executeTool/lifecycle/semanticStateProvider）
     ├── providers.js           # static、JSON-file 和 composite ToolProvider
     └── registry.js             # 由代码拥有的执行器/schema 注册表
 ```

@@ -20,7 +20,7 @@ flowchart LR
     LLM[("LLM API")]
     TOOLS["executeTool<br/>host tool boundary"]
     STORE[("TranscriptStore<br/>transcript archive")]
-    JUDGE["Reflection / Judge<br/>(optional governance)"]
+    JUDGE["Reflection governance<br/>round judge + intercept judge<br/>+ governor (optional)"]
     GUARD["finalGuard<br/>(optional host injection)"]
 
     HOST -- "① inject provider / executeTool /<br/>store / modelConfig / finalGuard" --> LOOP
@@ -44,6 +44,7 @@ flowchart LR
 - **One-directional data flow**: tasks in, events out. `runToolLoop` owns exactly **one** task lifecycle (start/run/stop/resume/event stream); queues, arbitration, retry scheduling, and reapers belong to the host (ADR-012).
 - **Model view ≠ archive source**: compaction only rewrites what is sent to the model; `foldedPayload` is persisted with the round record. Folding changes "what the model sees", never "what the archive stores".
 - **Governance in the loop, policy outside it**: judge/governor is an optional in-engine layer (suggestions and corrections), but **which policy to enforce** (which project runs which agent, which operations need confirmation, network and write access) is the host's responsibility (ADR-009).
+- **Cache-aware request shape**: `cacheStablePrefix` (default on) marks the system + first real user message as a stable prefix boundary (`cacheBoundary` hint) for the provider cache adapter — OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`, normalized into `usage.cacheRead`/`cacheWrite`. For `cacheCapable` endpoints the tool-result TTL defaults to 0 (explicit `toolResultTtl` always wins), keeping the provider prefix cache effective.
 
 ---
 
@@ -88,6 +89,7 @@ flowchart TB
         FL["fold-llm.js<br/>LLM summary + enforce-size"]
         ANC["anchors.js / fold-fidelity.js<br/>mechanical fidelity layer (zero LLM)"]
         ES["enforce-size.js<br/>deterministic pruning fallback"]
+        PIPE["pipeline.js<br/>six-layer registry + fallback chain<br/>+ per-layer stats (declaration)"]
     end
 
     subgraph refl["reflection/ governance"]
@@ -98,14 +100,16 @@ flowchart TB
     end
 
     subgraph store2["store/ archive"]
-        MEM["memory.js<br/>in-process Map"]
-        FIL["file.js<br/>JSONL + state + checkpoint"]
-        NOT["notes.js<br/>host-side notes storage"]
+        TS["TranscriptStore port<br/>8-method contract (ADR-002)"]
+        MEM["memory.js<br/>in-process Map (reference impl)"]
+        FIL["file.js<br/>JSONL + state + checkpoint (reference impl)"]
+        NSTORE["store/notes.js<br/>NotesStore (run-scoped facts)"]
     end
 
     subgraph cfg["config / tools / run-state"]
         CFG["config/<br/>static · env · json-file · api-key"]
         TR["tools/<br/>registry (code-owned executors)<br/>providers"]
+        NTOOL["tools/notes.js<br/>createBuiltinNotesTools assembler"]
         RS["run-state.js<br/>bounded deterministic run state"]
     end
 
@@ -114,6 +118,7 @@ flowchart TB
         REPL["repl.js<br/>interactive TUI"]
         MCPB["mcp.js / skills.js<br/>MCP proxy tools / skill discovery"]
         FGB["final-guard.js + guard-metrics.js<br/>provenance verification implementation"]
+        ASMROOT["assembly-root.js<br/>composition root: file store +<br/>notesStore + archiveDir"]
     end
 
     MC --> ASM
@@ -135,28 +140,38 @@ flowchart TB
     FS --> ANC
     FL --> ANC
     CB --> ES
+    ORC --> PIPE
     ORC --> GOV
-    GOV --> JUD2
+    ORC --> JUD2
     JUD2 --> L0
+    RESM --> L0
     ORC --> WU
-    ORC --> MEM
-    ORC --> FIL
-    BR --> MEM
-    BR --> FIL
+    ORC -. "consumes store port only (options.store)" .-> TS
+    MEM -. "reference impl" .-> TS
+    FIL -. "reference impl" .-> TS
+    NTOOL -- "executeTool → NotesStore<br/>(same store instance)" --> NSTORE
+    ASMROOT -- "createFileTranscriptStore" --> FIL
+    ASMROOT -- "createFileNotesStore" --> NSTORE
     TR --> ORC
     RS --> RESM
     IDX --> ORC
-    CLI1 --> ASM
-    REPL --> ORC
-    MCPB --> ORC
-    FGB --> ORC
+    CLI1 --> ASMROOT
+    REPL --> ASMROOT
+    CLI1 -- "fine-grained options → runToolLoop" --> ORC
+    REPL -- "fine-grained options → runToolLoop" --> ORC
+    CLI1 -. "createBuiltinNotesTools" .-> NTOOL
+    REPL -. "createBuiltinNotesTools" .-> NTOOL
+    MCPB -- "MCP proxy / skill tools" --> CLI1
+    MCPB --> REPL
+    FGB --> CLI1
+    FGB --> REPL
     POL -. host responsibility .-> EX
 ```
 
 ### Key points
 
 - **Pure ESM, zero npm dependencies**: only `node:` built-ins + relative paths. The 2.5k-line orchestration core concentrates in a single `orchestrator.js`; surrounding modules are small single-responsibility files with one-directional dependencies (compact/reflection/store/tools never depend back on loop).
-- **The orchestration core (loop/) is the heart**: main loop, provider calls, checkpoint execution, budget, termination, resume, and error accounting are all assembled here; `reflection/` and `compact/` are side-effect-free "decision/transformation" modules only invoked by the loop.
+- **The orchestration core (loop/) is the heart**: main loop, provider calls, checkpoint execution, budget, termination, resume, and error accounting are all assembled here; `reflection/` and `compact/` are loop-driven "decision/transformation" modules only invoked by the loop — governor/judge-prompt building are pure, while fold-llm/wrapup may call an injected summarizer/evaluator (external calls, never hardcoded).
 - **The message layer is the single protocol adaptation point**: internally there is exactly one CanonicalMessage/Block format; OpenAI and Anthropic conversions + stream assembly live in `messages/` + `providers/`. Adding a protocol means adding one pair of adapters.
 - **The CLI is not the product**: `bin/` is a verifier/debugger (chat one-shot + repl interactive + MCP/skill/final-guard implementations). The real evaluation surface is the external erix-bench headless harness; CLI archive/output-capture behavior is outside the library contract.
 - **`erix-agent/tools` is an optional subpath**: tool registry and tool providers (static/json-file/composite) — the host may opt in; nothing is implicitly installed into runToolLoop (recall retired, issue #36).
@@ -198,7 +213,7 @@ sequenceDiagram
     M-->>P: streamed chunks (delta / reasoning / tool_call)
     P-->>L: ChatResponse (Block[] + stopReason + usage)
     alt stopReason = tool_use
-        L->>J: audit the next call transparently, every 5 real tool executions
+        L->>J: audit the next call transparently, every judgeIntervalRound (default 10) real tool executions
         J-->>L: done:false blocks and returns audit result / off_track adds direction hint / allow
         L->>S: checkpoint (pre-tool) — failure → sideEffect=not_started, execution blocked
         L->>T: executeTool({id, name, input, context, signal})
@@ -210,6 +225,7 @@ sequenceDiagram
         J-->>L: done:true + confidence≥0.7 → judge_done<br/>otherwise inject corrective message and continue
     end
     L->>L: governor deterministic verdict (stall / no-tool streak / deadline / budget extension)
+    Note over L,J: nearLimit (rounds ≥ 80% effectiveMaxRounds) + judge extend/plan<br/>→ decideWithEvaluation → effectiveMaxRounds += extensionStep,<br/>plan injected as continuation (round & intercept paths; off_track → extend+redirect)
     end
 
     rect rgb(255, 240, 240)
@@ -233,7 +249,7 @@ sequenceDiagram
 - **The tool path in Phase 2 carries audit and checkpoints**: the intercept judge only blocks "write paths" (read-only tools readFile/tree/rg/note_read/note_list are exempt); a pre-tool checkpoint failure blocks execution outright, a post-tool failure marks `executed_uncommitted` while keeping the result.
 - **`max_tokens` truncation continues within the same round**: when reasoning models over-think and truncate, up to 3 continuations (`maxTokenContinuations`) are issued, compacting first if already over budget — the budget is not burned in a truncation loop (issue #11).
 - **Phase 3: only `verified` may be treated as verified**: `skipped`/`unverified`/`error` all demand host-specific handling; a guard error or timeout is **not** verified either.
-- **Phase 4: `result.transcript` is only an in-memory snapshot**: the authoritative archive lives in the `TranscriptStore`; the two are deliberately separated so the host can swap in a DB backend (implement the nine methods; see ADR-002).
+- **Phase 4: `result.transcript` is only an in-memory snapshot**: the authoritative archive lives in the `TranscriptStore`; the two are deliberately separated so the host can swap in a DB backend (implement the eight methods; see ADR-002).
 
 ---
 
@@ -247,19 +263,29 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
+    subgraph reg["src/compact/pipeline.js — six-layer registry (declaration)"]
+        REG["① ttl → ② slidingWindow → ③ foldStatistical → ④ foldLlm → ⑤ anchors → ⑥ enforceSize<br/>fallback chain: slidingWindow(keepRounds:0) → enforceSize · per-layer compactionStats"]
+    end
+    REG -. "orchestrator schedules by registry order" .-> A
     A["compactBeforeRound:<br/>strategy or budget trigger?"] --> B{"whole-round chain?"}
-    B -- no --> E["provider attempt"]
+    B -- no --> CC{"cacheCapable &&<br/>no explicit toolResultTtl?"}
     B -- yes --> C["②/③/④ choose one whole-round strategy<br/>sliding-window / fold-statistical / fold-llm"]
     C --> D["⑤ mechanical fidelity<br/>anchors / fold-fidelity"]
     D --> F{"local estimate or API projection still over budget?"}
-    F -- no --> E
+    F -- no --> CC
     F -- yes --> G["② sliding-window zero-keep fallback"]
     G --> H{"still over budget?"}
-    H -- no --> E
+    H -- no --> CC
     H -- yes --> I["⑥ enforce-size safety fallback"]
-    I --> E
-    E --> J["① TTL: one tool_result<br/>request-only view"]
-    J --> Z["send request copy"]
+    I --> CC
+    CC -- yes --> T0["① TTL default = 0 for this request<br/>(whole-round folding unaffected)"]
+    CC -- no --> J["① TTL: one tool_result<br/>request-only view"]
+    T0 --> Z["send request copy"]
+    J --> Z
+    Z --> SP{"cacheStablePrefix?<br/>(default on)"}
+    SP -- yes --> SPM["markStablePrefix<br/>system + first user → cacheBoundary hint"]
+    SPM --> ADAPT["provider cache adapter<br/>OpenAI cached_tokens / Anthropic cache_read_input_tokens<br/>→ usage.cacheRead / cacheWrite"]
+    SP -- no --> ADAPT
 ```
 
 ### Six-layer registry (order, trigger, granularity, and product)
@@ -270,6 +296,9 @@ roles—budget folding when no strategy is configured, and zero-keep fallback wh
 strategy still exceeds the budget—so it can appear before or after the selected
 strategy in one request. `foldStatistical` and `foldLlm` are mutually exclusive
 selected strategies, not two consecutive folds.
+
+- **`cacheCapable` only changes the TTL default** (`orchestrator.js:480-482`): with `cacheCapable: true` and no explicit `toolResultTtl`, the request's TTL resolves to 0 (single-result folding off, keeping the provider prefix cache effective); an explicit `toolResultTtl` always wins; whole-round folding strategies are untouched — it does **not** "delete whole-round compaction".
+- **`cacheStablePrefix` → provider cache adapter** (default on): before each request `markStablePrefix` (`provider-runner.js:20`) marks the system + first real user message with a `cacheBoundary` hint; each protocol adapter maps it its own way (OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`), normalized into `usage.cacheRead`/`cacheWrite`.
 
 | Layer (registry order) | Trigger | Granularity | Model/archive product |
 |---|---|---|---|
@@ -353,7 +382,7 @@ contracts:
 
 - **Twin checkpoints bracket tool execution**: a pre-tool checkpoint persists "about to execute this tool_use"; a post-tool one persists "executed + result". Pre-tool failure → `sideEffect: "not_started"`, **execution blocked**; post-tool failure → `executed_uncommitted`, result kept but explicitly marked uncommitted.
 - **Resume = replay pending tool_use in original order**: resume loads messages + latest checkpoint + run-state, then re-hands the unfinished tool calls after the checkpoint to `executeTool`. **The engine guarantees order and accounting, not side-effect idempotency** — the host must make side-effecting executeTool implementations idempotent (stated in the contract, not a hidden assumption).
-- **Two persistence semantics**: with a store, `required` is the default (all nine methods validated, writes follow the retry policy, exhaustion → `persistence_failed` termination); explicit `none` bypasses everything. A failed archive write terminates explicitly — never "pretend archived" and continue.
+- **Two persistence semantics**: with a store, `required` is the default (all eight methods validated, writes follow the retry policy, exhaustion → `persistence_failed` termination); explicit `none` bypasses everything. A failed archive write terminates explicitly — never "pretend archived" and continue.
 - **Run state is bounded and deterministic**: `run-state.js` maintains tool stats, fold counts, budget prompts, etc. (capped at `RUN_STATE_MAX_CHARS`), validates shape and version on resume, and marks corrupted state unavailable instead of silently reusing it; "this-budget" flags like `lowBudgetPrompted` do not carry across resume.
 
 ---
@@ -363,10 +392,11 @@ contracts:
 > Goal: in unattended scenarios nobody is watching — the engine must notice "off-track / stuck / should wrap up" by itself. But governance only **advises and corrects**; it never makes policy decisions.
 
 - **Round judge (end_turn evaluation)**: the model saying "done" is not done. A separate (or shared) provider evaluates the final response against an objective timeline (tool calls, file footprint, L0 facts); only `done:true` with `confidence ≥ 0.7` yields `judge_done`, otherwise a corrective message is injected and the run continues. Parse failures and evaluator errors **degrade** to the plain governor; after 3 consecutive failures the judge disables itself — a governance failure can never deadlock the run.
-- **Transparent tool audit (intercept)**: every 5 real tool executions, the next call is audited: `done:false` blocks the original execution and returns the audit result to the model as its tool_result (the model learns *why* it shouldn't, not a silent failure); `off_track` never blocks, it only adds a direction hint to the next round's context. `ERIX_NO_ROUND_JUDGE=1` disables the round judge independently.
+- **Transparent tool audit (intercept)**: every `judgeIntervalRound` real tool executions (default **10**; `reflection.judgeIntervalRound` or `ERIX_JUDGE_INTERVAL` overrides, `orchestrator.js:799-813`), the next call is audited: `done:false` blocks the original execution and returns the audit result to the model as its tool_result (the model learns *why* it shouldn't, not a silent failure); `off_track` never blocks, it only adds a direction hint to the next round's context. `ERIX_NO_ROUND_JUDGE=1` disables the round judge independently.
 - **Read-only tool exemption**: readFile / tree / rg / note_read / note_list are allowed through — blocking them is net-negative (measured: blocking readFile actually leaked defects). Write paths (exec/writeFile/mcp etc.) keep interception semantics.
 - **The governor is deterministic**: a pure, side-effect-free function mapping signals (stall streak, no-tool streak, error repeat count, remaining time, extension count) to continue/stop/wrap-up actions. Hard budget expiry lands softly — a wrap-up nudge is injected rather than a hard kill.
-- **Adaptive budget**: past the reflection trigger (default `maxRounds × 0.8`), if the governor sees continued progress it can extend the budget (step 32, at most 2 times, capped at `maxRoundsCap ≥ 256`) — long tasks are neither killed by the initial round count nor allowed to inflate forever.
+- **Adaptive budget**: past the reflection trigger (`nearLimit`, rounds ≥ 80% of `effectiveMaxRounds`), the governor enters extension consideration — an actual extension requires a judge verdict (`extend:true` + plan): `effectiveMaxRounds += extensionStep` (default 32, capped at `maxRoundsCap`), at most `maxExtensions` times — long tasks are neither killed by the initial round count nor allowed to inflate forever.
+- **nearLimit extension (round & intercept paths share it)**: a judge verdict carrying `extend`/`extendReason`/`plan` at `nearLimit` goes through `governor.decideWithEvaluation` (`governor.js:135-179`): `extend:true` → `effectiveMaxRounds += extensionStep` and the plan is injected as a continuation user message; judged `off_track` (stall pattern) → `extend+redirect` ("change approach"); `extend:false` → a converge nudge; a timed-out guard means no extension, just normal remaining rounds. The intercept audit, when it fires mid-tool near the limit, hands its decision back at round end and rides the same path (`checkpoint-executor.js` → `interceptJudgeDecision` → `decideWithEvaluation`).
 
 ---
 
@@ -377,6 +407,8 @@ flowchart TB
     subgraph run["run time"]
         ORC2["orchestrator"]
         CPE2["checkpoint-executor"]
+        EXB["executeTool boundary<br/>(host tool boundary)"]
+        NASS["src/tools/notes.js<br/>createBuiltinNotesTools assembler"]
     end
 
     subgraph archive["archive (one per run)"]
@@ -386,15 +418,17 @@ flowchart TB
     end
 
     subgraph surfaces["consumption channels"]
-        NOTES["note tools<br/>note_list → note_read (note-first)"]
+        NOTES["NotesStore (src/store/notes.js)<br/>note_list → note_read (note-first)<br/>recall / bounded-recall retired (#36)"]
         HOST2["host reads store directly<br/>(DB adapter backend)"]
     end
 
     ORC2 -- "appendRound (idempotent dedup)" --> JSONL
-    ORC2 -- "note_take / note_read (facts externalized)" --> NOTES
     ORC2 --> ST
     CPE2 --> CK
     CPE2 -- "large outputs → toolOutputs archive; model sees stub" --> JSONL
+    EXB -- "note_take / note_read / note_list / note_forget<br/>(no credential interception — #55)" --> NASS
+    NASS -- "createBuiltinNotesTools().executeTool → NotesStore<br/>(same store instance)" --> NOTES
+    NASS -. "semanticStateProvider → run-state<br/>(notes directory injected, ADR-015)" .-> ORC2
     JSONL --> HOST2
 ```
 
@@ -403,7 +437,7 @@ flowchart TB
 - **Large outputs don't blow up context**: `outputHygiene` (default limit 4096) stores oversized tool_result originals in the round record's `toolOutputs`; the model sees a stub + pointer. A per-round aggregate gate (`aggregate-budget`) backstops the total — archive intact, context unharmed.
 - **Retrieval is note-first (ADR-016 retirement supplement, issue #36)**: key facts are externalized via `note_take` while content is in context; later retrieved via `note_list → note_read`. The recall / bounded-recall protocol is retired — model-curated notes are high-signal content, superior to fuzzy search over raw archived output; values never noted and not deterministically re-derivable are omitted, not guessed (bench data: recall 2/0/6/0 across four runs; the notes loop 31 writes / 21 reads fully replaced it).
 - **The archive remains directly readable by the host**: round records / toolOutputs / checkpoint are fully persisted; hosts (DB backends) can reconcile and audit — the model simply no longer gets a recall retrieval channel.
-- **The file store is a reference implementation**: one JSON record per JSONL line, repairs a missing trailing newline, isolates corrupt tail fragments; the contract assumes **a single writer** (one per runId per process) — cross-process locking is out of contract. Hosts needing concurrency/shared storage implement the same nine methods over a database.
+- **The file store is a reference implementation**: one JSON record per JSONL line, repairs a missing trailing newline, isolates corrupt tail fragments; the contract assumes **a single writer** (one per runId per process) — cross-process locking is out of contract. Hosts needing concurrency/shared storage implement the same eight methods over a database.
 
 ---
 
