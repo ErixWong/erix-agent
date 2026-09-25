@@ -613,7 +613,8 @@ async function runChatWithNotes({
   }
   const cliTools = createCliTools({ cwd });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
-  // bundled notes skill 始终排除：notes 装配统一走工厂，否则会出现两套同名 note_* 工具。
+  // 用户级 notes skill 经 excludeSkillIds 排除：notes 装配统一走工厂，否则会出现两套同名 note_* 工具
+  // （bundled notes skill 已于 v0.11.0 退役，见 issue #61）。
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir,
