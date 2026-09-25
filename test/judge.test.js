@@ -7,7 +7,7 @@ import {
   parseJudgeDecision,
   renderConversation,
 } from "../src/reflection/judge.js";
-import { runToolLoop } from "../src/loop.js";
+import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 

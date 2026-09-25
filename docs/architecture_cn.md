@@ -455,7 +455,6 @@ static 和 JSON-file 提供器选择 `sel.set` 或 `default`。composite 提供�
 ```text
 src/
 ├── index.js                  # 公共根导出
-├── loop.js                   # 薄转发垫片（runToolLoop / parseReflectionDecision）
 ├── assembly.js               # AssemblyPort 校验与 port→options 转换
 ├── run-state.js              # 有界的确定性与语义运行状态
 ├── tokens.js                 # 无依赖的 token 估算

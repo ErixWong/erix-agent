@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop.js";
+import { runToolLoop } from "../src/loop/orchestrator.js";
 import { validateMessages } from "../src/messages/rounds.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";

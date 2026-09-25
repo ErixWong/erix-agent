@@ -7,7 +7,7 @@ import path from "node:path";
 import { buildCaptureRecoveryHint, buildCaptureStub } from "../../bin/final-guard.js";
 import { createCliTools, wrapExecuteTool } from "../../bin/tools.js";
 import { buildCompactionContext } from "../../bin/config.js";
-import { runToolLoop } from "../../src/loop.js";
+import { runToolLoop } from "../../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { estimateMessageTokens } from "../../src/tokens.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";

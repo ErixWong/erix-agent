@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop.js";
+import { runToolLoop } from "../src/loop/orchestrator.js";
 
 test("restores a round snapshot and flushes only the successful attempt events", async () => {
   const text = [];

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop.js";
+import { runToolLoop } from "../src/loop/orchestrator.js";
 import { KitError } from "../src/providers/errors.js";
 
 test("rejects invalid initial message pairs before the first provider call", async () => {

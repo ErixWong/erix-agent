@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseReflectionDecision, runToolLoop } from "../src/loop.js";
+import { runToolLoop } from "../src/loop/orchestrator.js";
+import { parseReflectionDecision } from "../src/loop/reflection.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 

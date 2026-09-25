@@ -10,7 +10,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runToolLoop } from "../src/loop.js";
+import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { estimateTokens } from "../src/tokens.js";

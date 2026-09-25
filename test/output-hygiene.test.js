@@ -1,7 +1,7 @@
 // ADR-015 Phase 2：输出卫生进引擎（超限全量入档 + stub）
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runToolLoop } from "../src/loop.js";
+import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 

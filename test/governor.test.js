@@ -12,7 +12,7 @@ import {
   extractL0Facts,
   parseL1Summary,
 } from "../src/reflection/l0.js";
-import { runToolLoop } from "../src/loop.js";
+import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 

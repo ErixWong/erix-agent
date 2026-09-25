@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { createStaticModelConfigProvider } from "../../src/config/static.js";
 import { assemblyPortOptions, createAssemblyPort } from "../../src/assembly.js";
-import { runToolLoop } from "../../src/loop.js";
+import { runToolLoop } from "../../src/loop/orchestrator.js";
 import { createFoldStatisticalStrategy } from "../../src/compact/fold-statistical.js";
 import { assemblyPortContract } from "./assembly-port.js";
 
@@ -127,7 +127,7 @@ test("plain explicit modelConfig is rejected with resolver migration guidance", 
 });
 
 test("fine-grained startup validation rejects incomplete assembly-shaped input", async () => {
-  const { runToolLoop } = await import("../../src/loop.js");
+  const { runToolLoop } = await import("../../src/loop/orchestrator.js");
   await assert.rejects(
     runToolLoop({
       provider: {},
