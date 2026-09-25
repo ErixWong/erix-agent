@@ -19,7 +19,3 @@ export {
   MAX_CONTENT_LENGTH,
   NOTE_VALUE_MAX_CHARS,
 } from "./notes.js";
-export {
-  looksLikeCredential,
-  normalizedLabel,
-} from "./credential-patterns.js";

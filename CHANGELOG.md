@@ -2,6 +2,16 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [Unreleased]
+
+### Changed（BREAKING）
+
+- 退役 notes 写入侧凭据检测（issue #136）：`note_take` 不再按 key/content 形状拦截疑似凭据，
+  写入与回读恢复一致契约；如需写入拦截由宿主在工具调用层自行负责。
+- `erix-agent/tools` 子路径不再导出 `looksLikeCredential` / `normalizedLabel`（breaking）；
+  `src/tools/credential-patterns.js` 本体保留，仍供 `src/run-state.js` 脱敏与
+  `bin/final-guard*` 候选行过滤内部使用。
+
 ## [0.9.0] - 2026-09-22
 
 来源：issue #49 修复（PR #50，260920 基准 64 轮撞 cap 实证驱动）。

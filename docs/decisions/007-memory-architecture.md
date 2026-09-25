@@ -142,6 +142,11 @@ not become a storage implementation. `credential-patterns` moved with the tools,
 but remains a detection/redaction hint only. ADR-009's security-layering rule is
 unchanged: the library does not become a security boundary.
 
+Update (issue #136): the write-side credential guard in `note_take` has been
+retired — credential-shaped keys/contents are now written and read back
+unchanged. Credential detection remains only for run-state redaction and
+final-guard candidate filtering.
+
 The bundled `skills/notes/skill.mjs` remains only as a CLI-compatible re-export.
 Copied standalone skill directories are no longer self-contained; portable use
 should import the published `erix-agent/tools` entry point and provide the

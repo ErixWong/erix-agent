@@ -139,6 +139,9 @@ access.count++；一周后冷循环蒸馏出 L3 fact"my-relay token 未开通 Qw
 工具层不变成存储实现。`credential-patterns` 随工具迁移，但只用于检测/脱敏提示；
 ADR-009 的安全分层原则不变，库本身不承担安全边界。
 
+更新（issue #136）：`note_take` 的写入侧凭据守卫已退役，凭据形状的 key/content
+现在原样写入并原样回读；凭据检测仅保留在 run-state 脱敏与 final-guard 候选行过滤。
+
 `skills/notes/skill.mjs` 保留为 CLI 兼容转发壳。独立复制到用户目录的 skill 不再自包含；
 需要可移植使用时，应从发布包的 `erix-agent/tools` 入口导入，并提供宿主的 `NotesStore`
 与 run scope。

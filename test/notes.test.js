@@ -424,29 +424,21 @@ test("missing and revoked notes are explicit and retain a tombstone", async () =
   });
 });
 
-test("possible credentials are rejected without writing files", async () => {
-  await withNotes(async (directory) => {
+test("credential-shaped notes are written and read back unchanged", async () => {
+  await withNotes(async () => {
     const samples = [
+      ["secret_code", "芝麻开门"],
       ["token-value", "token: abcdefghijklmnop"],
-      ["password-value", "password=not-for-notes"],
-      ["bearer-value", "Bearer abcdefghijklmnop"],
       ["jwt-value", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.signature"],
-      ["aws-value", "AKIAIOSFODNN7EXAMPLE"],
       ["github-value", "ghp_abcdefghijklmnopqrstuvwxyz123456"],
-      ["postgres-value", "postgres://u:p@h/db"],
-      ["aws-secret-value", "AWS_SECRET_ACCESS_KEY=example"],
-      ["database-url-value", "DATABASE_URL=postgres://u:p@h/db"],
-      ["chinese-secret-value", "访问令牌: example"],
-      ["private-body-value", "MIIEowIBAAKCAQEAabcdefghijklmnop"],
-      ["short-openai-value", "sk-abc"],
-      ["url-parameter-value", "https://example.test/?token=abc"],
     ];
     for (const [key, content] of samples) {
-      const result = parsed(await scopedNotes.note_take({ key, content }));
-      assert.equal(result.status, "invalid");
-      assert.match(result.reason, /凭据/u);
+      const saved = parsed(await scopedNotes.note_take({ key, content }));
+      assert.equal(saved.status, "found");
+      const readBack = parsed(await scopedNotes.note_read({ key }));
+      assert.equal(readBack.status, "found");
+      assert.equal(readBack.value, content);
     }
-    await assert.rejects(readdir(path.join(directory, "run", "notes-test-run")));
   });
 });
 

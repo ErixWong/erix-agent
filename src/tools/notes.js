@@ -5,7 +5,6 @@ import path from "node:path";
 import { createFileNotesStore } from "../store/notes.js";
 import { createStaticToolProvider } from "./providers.js";
 import { createToolRegistry } from "./registry.js";
-import { looksLikeCredential } from "./credential-patterns.js";
 
 export const MAX_CONTENT_LENGTH = 4000;
 export const NOTE_VALUE_MAX_CHARS = 256;
@@ -239,10 +238,6 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
   } catch {
     return invalid(key, "artifactRef 必须可序列化为 JSON");
   }
-  if (looksLikeCredential(key, canonical(payload))) {
-    return invalid(key, "疑似凭据，不写入笔记");
-  }
-
   const store = notesStoreFor(input);
   let old;
   try {
