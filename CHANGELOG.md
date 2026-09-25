@@ -12,6 +12,13 @@
   `src/tools/credential-patterns.js` 本体保留，仍供 `src/run-state.js` 脱敏与
   `bin/final-guard*` 候选行过滤内部使用。
 
+### Changed
+
+- 清理 legacy reflection 残留（issue #60）：删除全仓零调用的 `reflectionPrompt()`；
+  `termination.reason` 的 `"reflection_stop"` 枚举值与 `"reflection-stop"` action 映射删除
+  （引擎内部枚举值，v0.9.0 起已不可达，不在契约测试锁定面）。宿主若仍按字符串匹配该值，
+  需自行调整。
+
 ## [0.9.0] - 2026-09-22
 
 来源：issue #49 修复（PR #50，260920 基准 64 轮撞 cap 实证驱动）。

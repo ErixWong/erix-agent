@@ -18,14 +18,12 @@ export const FINAL_GUARD_TERMINATION_REASONS = new Set([
   "max_rounds_cap",
   "stall",
   "continuation_exhausted",
-  "reflection_stop",
 ]);
 
 export const FINAL_GUARD_NON_CONTINUABLE_REASONS = new Set([
   "max_rounds_cap",
   "stall",
   "continuation_exhausted",
-  "reflection_stop",
 ]);
 
 export function makeTermination(reason, detail) {
@@ -56,7 +54,6 @@ export function terminationReasonForAction(action, continuationExhausted) {
   if (action?.value === "noTool") return "no_tool";
   if (action?.value === "stall") return "stall";
   if (action?.value === "cap") return "max_rounds_cap";
-  if (action?.value === "reflection-stop") return "reflection_stop";
   return "end_turn";
 }
 

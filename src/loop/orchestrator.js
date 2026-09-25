@@ -75,23 +75,13 @@ import {
 } from "./tool-result-ttl.js";
 import { createCheckpointExecutor } from "./checkpoint-executor.js";
 import { restoreResume } from "./resume-manager.js";
+import { assemblyPortOptions } from "../assembly.js";
 import {
-  assemblyPortOptions,
-  MODEL_CONFIG_RESOLVER_HINT,
-} from "../assembly.js";
+  collectLoopCapabilitiesMissing,
+  validateTranscriptStore,
+} from "../assembly-validators.js";
 
 export { parseReflectionDecision };
-
-const TRANSCRIPT_STORE_METHODS = [
-  "appendRound",
-  "load",
-  "saveCheckpoint",
-  "appendCheckpoint",
-  "loadLatestCheckpoint",
-  "saveRunState",
-  "loadRunState",
-  "markRunState",
-];
 
 const RUN_TOOL_LOOP_OPTION_NAMES = [
   "assemblyPort",
@@ -383,7 +373,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   transcript:object[],
  *   rounds:number,
  *   truncated:boolean,
- *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"reflection_stop"|"judge_done"|"continuation_exhausted"|"final_guard_unverified"|"aborted"|"failed", detail?:string},
+ *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"judge_done"|"continuation_exhausted"|"final_guard_unverified"|"aborted"|"failed", detail?:string},
  *   verification:{status:"verified"|"unverified"|"skipped"|"error", reason?:string, detail?:string},
  *   runState?:object,
  *   usage:{input_tokens:number, output_tokens:number, cacheRead?:number, cacheWrite?:number},
@@ -485,27 +475,15 @@ export async function runToolLoop(options) {
     || Object.hasOwn(explicitOptions, "modelConfig")
     || typeof modelConfig?.resolve === "function"
   );
-  const startupMissing = [];
-  if (!provider
-    || (typeof provider.chat !== "function"
-      && typeof provider.chatStream !== "function")) {
-    startupMissing.push("provider.chat or provider.chatStream");
-  }
-  if (typeof executeTool !== "function") startupMissing.push("executeTool");
-  if (fineGrainedPortShape) {
-    if (!modelConfig || typeof modelConfig.resolve !== "function") {
-      startupMissing.push(`modelConfig.resolve (${MODEL_CONFIG_RESOLVER_HINT})`);
-    }
-    if (session !== undefined && (!session || typeof session !== "object"
-      || Array.isArray(session)
-      || typeof session.id !== "string" || session.id.length === 0)) {
-      startupMissing.push("session.id");
-    }
-  } else if (assemblyPort !== undefined
-    && explicitOptions.modelConfig !== undefined
-    && (!modelConfig || typeof modelConfig.resolve !== "function")) {
-    startupMissing.push(`modelConfig.resolve (${MODEL_CONFIG_RESOLVER_HINT})`);
-  }
+  const startupMissing = collectLoopCapabilitiesMissing({
+    provider,
+    executeTool,
+    modelConfig,
+    session,
+    fineGrainedPortShape,
+    hasExplicitModelConfigOverride: assemblyPort !== undefined
+      && explicitOptions.modelConfig !== undefined,
+  });
   if (startupMissing.length > 0) {
     throw new TypeError(`assembly port is missing methods: ${startupMissing.join(", ")}`);
   }
@@ -542,9 +520,7 @@ export async function runToolLoop(options) {
   const archivedOutputs = [];
   const persistenceRequired = persistenceMode === "required";
   if (persistenceRequired) {
-    const missingMethods = TRANSCRIPT_STORE_METHODS.filter((method) => (
-      typeof store?.[method] !== "function"
-    ));
+    const missingMethods = validateTranscriptStore(store);
     if (missingMethods.length > 0) {
       throw new TypeError(
         `required persistence store is missing methods: ${missingMethods.join(", ")}`,
@@ -2612,18 +2588,17 @@ export async function runToolLoop(options) {
     }
     if (action.kind === "stop") {
       const reason = terminationReasonForAction(action, continuationExhausted);
-      const detail = reason === "reflection_stop" ? action.reason : undefined;
       await forceFinalIfNeeded(reason);
       if (
         typeof finalGuard === "function"
         && FINAL_GUARD_TERMINATION_REASONS.has(reason)
       ) {
-        const guardDecision = await callFinalGuard(reason, detail);
+        const guardDecision = await callFinalGuard(reason);
         if (guardDecision.action === "error") {
-          return finish(reason, detail);
+          return finish(reason);
         }
         if (guardDecision.action === "skip") {
-          return finish(reason, detail);
+          return finish(reason);
         }
         if (FINAL_GUARD_NON_CONTINUABLE_REASONS.has(reason)) {
           guardMetrics.unverified += 1;
@@ -2665,7 +2640,7 @@ export async function runToolLoop(options) {
           continue;
         }
       }
-      return finish(reason, detail);
+      return finish(reason);
     }
     if (action.kind === "continue") continue;
     }

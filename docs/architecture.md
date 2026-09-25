@@ -303,7 +303,7 @@ reporting; it does not infer write tools. For each configured write tool,
   calls in the same round.
 - `maxRounds` defaults to `8` and must be a positive safe integer. Normal
   termination reasons are `end_turn`, `no_tool`, `stall`, `max_rounds_cap`,
-  `reflection_stop`, `judge_done`, and `continuation_exhausted`; aborts and
+  `judge_done`, and `continuation_exhausted`; aborts and
   uncaught failures use `aborted` and `failed`.
 
 When enabled, `wrapup` appends the end-of-turn instruction requiring this JSON
@@ -343,7 +343,7 @@ The default `finalGuardMaxRetries` is `2`. A positive
 `finalGuardTimeoutMs` is used as-is; a non-positive or non-finite value uses
 the default `30000` ms. The guard runs for non-abort stop paths including
 `end_turn`, `no_tool`, `judge_done`, `max_rounds_cap`, `stall`,
-`continuation_exhausted`, and `reflection_stop`. `accept` produces
+`continuation_exhausted`. `accept` produces
 `verification.status === "verified"`. `skip` produces `"skipped"`.
 `revise` injects the returned message as a user message when the loop can
 continue. If a non-continuable stop path cannot be revised, or the retry
