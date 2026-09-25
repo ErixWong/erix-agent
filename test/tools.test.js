@@ -12,7 +12,7 @@ import {
   truncateResult,
   wrapExecuteTool,
 } from "../bin/tools.js";
-import * as notes from "../skills/notes/skill.mjs";
+import * as notes from "../src/tools/notes.js";
 
 async function withDirectory(callback) {
   const directory = await mkdtemp(join(tmpdir(), "erix-cli-tools-test-"));

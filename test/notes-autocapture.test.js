@@ -18,8 +18,8 @@ import {
   wrapExecuteTool,
 } from "../bin/tools.js";
 import { createFinalGuard } from "../bin/final-guard.js";
-import * as notes from "../skills/notes/skill.mjs";
-import { NOTE_VALUE_MAX_CHARS } from "../skills/notes/skill.mjs";
+import * as notes from "../src/tools/notes.js";
+import { NOTE_VALUE_MAX_CHARS } from "../src/tools/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 async function withTempDirectory(callback) {
@@ -56,7 +56,18 @@ async function withNotes(callback, { runId = "auto-run", graceMs } = {}) {
 }
 
 let activeNotesScope;
-const scopedNotes = new Proxy(notes, {
+// 模块级导出无 lifecycle 视图；此处按 assembler 的 canonical 形态补一个
+// lifecycle.onRunStart（语义 = 带当前 scope 的 runNotesJanitor），供测试走 canonical API。
+const scopedWithLifecycle = {
+  ...notes,
+  lifecycle: {
+    onRunStart: (input = {}) => notes.runNotesJanitor({
+      ...input,
+      __erix: input.__erix ?? activeNotesScope,
+    }),
+  },
+};
+const scopedNotes = new Proxy(scopedWithLifecycle, {
   get(target, property) {
     const value = target[property];
     if (typeof value !== "function") return value;
@@ -115,13 +126,13 @@ test("GC revokes expired pinned notes and keeps a tombstone with an injected clo
       await scopedNotes.note_take({ key: "lifecycle", content: "value", pinned: true });
       await scopedNotes.completeRun();
       assert.equal(JSON.parse(await scopedNotes.note_read({ key: "lifecycle" })).status, "found");
-      await scopedNotes.runNotesJanitor();
+      await scopedNotes.lifecycle.onRunStart({});
       const done = JSON.parse(await scopedNotes.note_read({ key: "lifecycle" }));
       assert.equal(done.status, "found");
       assert.equal(done.state, "done");
 
       now.value += 1001;
-      await scopedNotes.runNotesJanitor();
+      await scopedNotes.lifecycle.onRunStart({});
       const revoked = JSON.parse(await scopedNotes.note_read({ key: "lifecycle" }));
       assert.equal(revoked.status, "revoked");
       const tombstone = JSON.parse(await readFile(

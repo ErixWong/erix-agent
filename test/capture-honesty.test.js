@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
-import { recordAutoCapture } from "../skills/notes/skill.mjs";
+import { recordAutoCapture } from "../src/tools/notes.js";
 import { runChat } from "../bin/cli.js";
 
 test("writeNote classification: storage fault throws, NotesStoreError stays invalid", async () => {

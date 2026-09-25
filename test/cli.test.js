@@ -18,7 +18,7 @@ import { getMcpPoolStatus } from "../bin/mcp.js";
 import {
   CLI_TOOLS_SYSTEM_PROMPT,
 } from "../bin/tools.js";
-import * as notes from "../skills/notes/skill.mjs";
+import * as notes from "../src/tools/notes.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { createFileNotesStore } from "../src/store/notes.js";

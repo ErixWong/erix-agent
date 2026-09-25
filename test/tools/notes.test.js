@@ -10,7 +10,6 @@ import {
   note_take,
   resolveNotesDir,
 } from "../../src/tools/notes.js";
-import * as skillNotes from "../../skills/notes/skill.mjs";
 import { createFileNotesStore } from "../../src/store/notes.js";
 
 async function withDirectory(callback) {
@@ -54,7 +53,7 @@ test("notes source implementation uses the injected NotesStore and scope", async
   });
 });
 
-test("builtin notes tools expose a provider and sanitize into the host scope", async () => {
+test("builtin notes tools expose canonical definitions and sanitize into the host scope", async () => {
   await withDirectory(async (directory) => {
     const notesStore = createFileNotesStore({ dir: directory });
     const builtin = createBuiltinNotesTools({
@@ -64,10 +63,9 @@ test("builtin notes tools expose a provider and sanitize into the host scope", a
     });
 
     assert.deepEqual(
-      (await builtin.listTools()).map((tool) => tool.name),
+      builtin.definitions.map((tool) => tool.name),
       ["note_take", "note_read", "note_list", "note_forget"],
     );
-    assert.ok(builtin.provider);
     const result = JSON.parse(await builtin.executeTool("note_take", {
       key: "answer",
       content: "from-builtin",
@@ -79,19 +77,15 @@ test("builtin notes tools expose a provider and sanitize into the host scope", a
       JSON.parse(await builtin.executeTool("note_read", { key: "answer" })).value,
       "from-builtin",
     );
-    assert.deepEqual(await builtin.notesCompleteRun(), { status: "found", completed: 1 });
+    const completion = await builtin.lifecycle.onRunComplete({});
+    assert.deepEqual(completion.completed, { status: "found", completed: 1 });
+    assert.deepEqual(completion.errors, []);
     assert.equal(
       JSON.parse(await readFile(path.join(directory, "run", "builtin-run", "answer.json"), "utf8"))
         .state,
       "done",
     );
   });
-});
-
-test("bundled skill entry re-exports the source implementation", () => {
-  assert.equal(skillNotes.note_take, note_take);
-  assert.equal(skillNotes.note_read, note_read);
-  assert.equal(typeof skillNotes.getSkillDefinition, "function");
 });
 
 test("assembler dual views agree on the same input (executors vs structured executeTool)", async () => {
