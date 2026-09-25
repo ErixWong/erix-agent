@@ -808,7 +808,7 @@ test("judge log defaults into the run archive directory", async () => {
   }
 });
 
-test("judge-log redacts credentials from tool input and judge reason", async () => {
+test("judge-log persists raw tool input and judge reason verbatim (redaction retired, #55)", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-judgelog-"));
   const judgeLogPath = join(dir, "judge.log");
   try {
@@ -844,9 +844,9 @@ test("judge-log redacts credentials from tool input and judge reason", async () 
 
     const content = readFileSync(judgeLogPath, "utf8");
     assert.ok(content.length > 0, "judge.log 应生成");
-    assert.ok(!content.includes("sk-abcdef1234567890"), "工具输入中的密钥不应落盘");
-    assert.ok(!content.includes("Bearer sk-"), "reason 复述的凭据不应落盘");
-    assert.ok(content.includes("[含"), "应有脱敏标记");
+    // 脱敏退役（#55）：judge.log 与 run 全量档案同目录同信任域，原始字段原样落盘
+    assert.ok(content.includes("sk-abcdef1234567890"), "工具输入中的密钥应原样落盘");
+    assert.ok(content.includes("Bearer sk-abcdef1234567890"), "reason 复述的凭据应原样落盘");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

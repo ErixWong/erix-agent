@@ -265,17 +265,20 @@ test("capture recovery index is bounded, value-free, and replaced on each fold",
   });
 });
 
-test("capture stubs retain safe labels but never credential values", async () => {
+test("capture stubs keep credential-style values verbatim (agent-side filter retired, #55)", async () => {
   const stub = await buildCaptureStub({
     content: [{
       type: "tool_result",
       tool_use_id: "stub-1",
       // ADR-016：content 即输出，值直接从中抽取（全部 tool_result 同权）
-      content: `nonce=abc123\nsafe=${"x".repeat(1000)}\napi_key=sk-secret-value\npassword=hunter2\n`,
+      content: `api_key=sk-secret-value\npassword=hunter2\nnonce=abc123\nsafe=${"x".repeat(1000)}\n`,
     }],
   });
+  // issue #55：折叠锚点不再凭据过滤——凭据样式的值与值面其余部分同权保留；
+  // 防敏感信息到达上游 LLM 是 token hub 的职责。
+  assert.match(stub, /api_key=sk-secret-value/u);
+  assert.match(stub, /password=hunter2/u);
   assert.match(stub, /nonce=abc123/u);
-  assert.doesNotMatch(stub, /sk-secret-value|hunter2/u);
   assert.doesNotMatch(stub, /x{201,}/u);
   assert.ok(Array.from(stub).length <= 200);
 });

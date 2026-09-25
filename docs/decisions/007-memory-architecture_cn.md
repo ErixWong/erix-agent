@@ -140,7 +140,17 @@ access.count++；一周后冷循环蒸馏出 L3 fact"my-relay token 未开通 Qw
 ADR-009 的安全分层原则不变，库本身不承担安全边界。
 
 更新（issue #136）：`note_take` 的写入侧凭据守卫已退役，凭据形状的 key/content
-现在原样写入并原样回读；凭据检测仅保留在 run-state 脱敏与 final-guard 候选行过滤。
+现在原样写入并原样回读。
+
+更新（issue #55）：agent 层凭据启发式脱敏（`looksLikeCredential`）整体退役——
+run-state 的 `[redacted]` 判定、semantic `redacted` 字段与 final-guard 折叠锚点的
+候选行过滤全部移除，凭据样式的值原样持久化/渲染。防敏感信息到达上游 LLM 是
+token hub（relay/LiteLLM 网关）的职责（ADR-009 层级一致性）；agent 运行时的两条
+支流闸门既不覆盖主通道（对话原始 tool_result 本就发往 relay），又误伤
+`config/api_key.json` 这类导航信息。`normalizedLabel` 保留并迁至
+`src/text/label.js`（final-guard findings↔归档 label 对比必需，语义不变）；
+`src/tools/credential-patterns.js` 与 `skills/notes/credential-patterns.mjs`
+兼容 shim 随之删除。
 
 `skills/notes/skill.mjs` 保留为 CLI 兼容转发壳。独立复制到用户目录的 skill 不再自包含；
 需要可移植使用时，应从发布包的 `erix-agent/tools` 入口导入，并提供宿主的 `NotesStore`

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
-import { normalizedLabel, looksLikeCredential } from "../src/tools/credential-patterns.js";
+import { normalizedLabel } from "../src/text/label.js";
 
 const LABEL_PATTERN = /^\s*([^:=\s][^:=\s]{0,80}?)\s*=\s*(.*?)\s*$/u;
 
@@ -39,11 +39,9 @@ async function captureStubForResult(block) {
     const legacy = await legacyArchivedOutput(block);
     if (typeof legacy === "string") output = legacy;
   }
-  const safeCandidates = candidateLines(output).filter(({ label, value }) => (
-    !looksLikeCredential(label, value)
-  ));
-  if (safeCandidates.length > 0) {
-    const lines = safeCandidates
+  const candidates = candidateLines(output);
+  if (candidates.length > 0) {
+    const lines = candidates
       .slice(0, 3)
       .map(({ label, value }) => `${label}=${value}`);
     const prefix = "[已折叠] 值：";

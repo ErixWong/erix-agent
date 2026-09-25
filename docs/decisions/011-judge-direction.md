@@ -99,3 +99,16 @@ In historical run1, the model spent 721s on apt/network reconnaissance (without 
 - Host persistence: touwaka #1116 / app_container #71 (judge decision chain stored on the host side)
 - Judge narrative chain (accumulating reason/evidence each round) for retrospective analysis—store already includes record.judge
 - Harness result directories are now isolated by run number (do not overwrite history); the artifacts docker cp misleading issue was eliminated after run3
+
+## Revision history
+
+Update (2026-09-25, issue #55): judge-log redaction is retired. The whole
+redaction chain (`SENSITIVE_KEY`, `CREDENTIAL_PATTERN`, `redactValue`,
+`redactJudgeInfo`) is deleted; `onJudge` writes the raw judge info verbatim.
+Rationale: judge.log shares its directory and trust domain with the full run
+JSONL archives (already plaintext), so the redaction was a fake gate;
+`SENSITIVE_KEY` had no word boundaries (false positives such as `grep monkey`
+being hidden); and the `plan`/`extendReason` fields added in #49 were never
+covered — an outright leak in the other direction. Per ADR-009's trust model
+(local disk = trust domain), keeping secrets away is the token hub's job.
+Auditability improves: the judge log now records exactly what the judge saw.

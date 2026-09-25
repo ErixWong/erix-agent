@@ -46,7 +46,7 @@ test("run state carries the persistence bill so a mid-run crash does not lose it
   assert.equal(many.deterministic.errors.unpersisted.items.length, 10);
 });
 
-test("run state is bounded, marked when truncated, and does not expose credentials", () => {
+test("run state is bounded and marked when truncated (no agent-side credential redaction)", () => {
   const state = createDeterministicRunState({
     runId: "bounded",
     stateVersion: 3,
@@ -59,13 +59,15 @@ test("run state is bounded, marked when truncated, and does not expose credentia
     foldedRounds: 8,
     navigationRecords: 3,
   });
+  // issue #55：agent 层凭据启发式脱敏已退役，凭据样式的 semantic 文本原样渲染——
+  // 防敏感信息到达上游 LLM 是 token hub 的职责，不是 run-state 的。
   const withSemantic = withSemanticRunState(state, {
     text: "Bearer sk-secret-value-123456789",
     version: 3,
   });
   const rendered = renderRunState(withSemantic);
   assert.ok(rendered.length <= RUN_STATE_MAX_CHARS);
-  assert.doesNotMatch(rendered, /sk-secret|Bearer/u);
+  assert.match(rendered, /Bearer sk-secret-value-123456789/u);
 
   // 预算 400→1600 后上面的小 fixture 不再溢出，但截断路径仍必须可达：
   // 宿主 notes 目录形态的长 semantic 文本（1200 字上限）依然超出整块预算。
@@ -95,7 +97,7 @@ test("run state is bounded, marked when truncated, and does not expose credentia
   assert.match(longSemanticRendered, /\.\.\. \(semantic lines truncated: \d+ more\)/u);
 });
 
-test("persisted run state is bounded, marked, and redacts semantic credentials", () => {
+test("persisted run state is bounded and marked (semantic text kept verbatim, issue #55)", () => {
   const state = withSemanticRunState(createDeterministicRunState({
     runId: "persisted-bounds",
     toolStats: new Map(
@@ -120,7 +122,9 @@ test("persisted run state is bounded, marked, and redacts semantic credentials",
   assert.ok(Buffer.byteLength(JSON.stringify(state), "utf8") <= RUN_STATE_MAX_SERIALIZED_BYTES);
   assert.equal(state.bounds.truncated, true);
   assert.ok(state.bounds.omittedTools > 0);
-  assert.doesNotMatch(JSON.stringify(state), /secret-value-should-not-persist/u);
+  // issue #55：不再脱敏——凭据样式的 semantic 文本原样持久化，也没有 redacted 字段。
+  assert.match(JSON.stringify(state), /secret-value-should-not-persist/u);
+  assert.equal(state.semantic.redacted, undefined);
   assert.equal(validateRunState(state).ok, true);
 });
 

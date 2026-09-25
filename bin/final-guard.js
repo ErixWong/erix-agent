@@ -6,7 +6,7 @@ import {
   inspectRun,
   readCaptureManifests,
 } from "./final-guard-support.js";
-import { normalizedLabel } from "../src/tools/credential-patterns.js";
+import { normalizedLabel } from "../src/text/label.js";
 
 export { buildCaptureStub };
 function warningMessage(message) {
