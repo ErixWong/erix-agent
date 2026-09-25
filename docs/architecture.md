@@ -58,7 +58,7 @@ convert to and from their protocol-native representations.
  * @typedef {Object} ChatResponse
  * @property {Block[]} content
  * @property {string} stopReason
- * @property {{input_tokens?:number, output_tokens?:number}} [usage]
+ * @property {{input_tokens?:number, output_tokens?:number, cacheRead?:number, cacheWrite?:number}} [usage]
  */
 ```
 
@@ -371,7 +371,7 @@ The result shape is:
     }
   },
   runState?,
-  usage: { input_tokens, output_tokens },
+  usage: { input_tokens, output_tokens, cacheRead?, cacheWrite? },
   compactionStats: [{
     compacted,
     foldedRounds,
@@ -667,7 +667,8 @@ src/
 │   ├── anchors.js            # Mechanical anchor extraction (paths/SHAs/issues/URLs/errors)
 │   ├── fold-fidelity.js      # Verbatim user-input quotes and reverse-signal detection
 │   ├── helpers.js            # Shared folding selection and hook helpers
-│   └── sliding-window.js     # Whole-round sliding-window folding
+│   ├── sliding-window.js     # Whole-round sliding-window folding
+│   └── pipeline.js           # Six-layer compaction registry declaration (order, fallback chain, per-layer stats)
 ├── store/
 │   ├── file.js               # JSONL transcript, state, and checkpoint store
 │   ├── memory.js             # In-process transcript, state, and checkpoint store
@@ -684,6 +685,7 @@ src/
 │   └── wrapup.js             # End-of-turn JSON parsing and normalization
 └── tools/
     ├── index.js              # erix-agent/tools subpath exports
+    ├── notes.js              # createBuiltinNotesTools assembler (executors/executeTool/lifecycle/semanticStateProvider)
     ├── providers.js          # Static, JSON-file, and composite ToolProvider
     └── registry.js            # Code-owned executor/schema registry
 ```

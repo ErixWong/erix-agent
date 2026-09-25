@@ -20,7 +20,7 @@ flowchart LR
     LLM[("LLM API")]
     TOOLS["executeTool<br/>宿主工具边界"]
     STORE[("TranscriptStore<br/>转录档案")]
-    JUDGE["Reflection / Judge<br/>（可选治理层）"]
+    JUDGE["Reflection 治理<br/>round judge + intercept judge<br/>+ governor（可选）"]
     GUARD["finalGuard<br/>（宿主可选注入）"]
 
     HOST -- "① 注入 provider / executeTool /<br/>store / modelConfig / finalGuard" --> LOOP
@@ -43,7 +43,8 @@ flowchart LR
 - **五个注入点全部显式**：`provider`（模型 I/O）、`executeTool`（工具边界）、`store`（持久化）、`modelConfig`（模型配置）、`finalGuard`（终稿核验）。引擎不发现工具、不实现工具、不读凭据——库源码零密钥
 - **单向数据流**：任务进、事件出。`runToolLoop` 只拥有**一个**任务生命周期（start/run/stop/resume/event stream）；队列、仲裁、重试调度、收割都属于宿主（ADR-012）
 - **模型视图 ≠ 档案源**：compaction 只改写发给模型的上下文；`foldedPayload` 随 round 记录入档案。折叠改变"模型看到什么"，不改"档案存了什么"
-- **治理在环内、策略在环外**：judge/governor 是引擎内可选层（做"建议与纠偏"），但**执行什么策略**（哪个项目跑哪个 agent、什么操作要确认、网络与写权限）由宿主负责（ADR-009）
+- **治理在环内、策略在环外**：judge/governor 是引擎内可选层（做“建议与纠偏”），但**执行什么策略**（哪个项目跑哪个 agent、什么操作要确认、网络与写权限）由宿主负责（ADR-009）
+- **请求形态对缓存友好**：`cacheStablePrefix`（默认开）把 system + 首条真实 user 消息标记为稳定前缀（`cacheBoundary` 提示）交给 provider 缓存适配器——OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`，归一化为 `usage.cacheRead`/`cacheWrite`；`cacheCapable` 端点下工具结果 TTL 默认取 0（显式 `toolResultTtl` 始终优先），保住 provider 前缀缓存命中率
 
 ---
 
@@ -88,6 +89,7 @@ flowchart TB
         FL["fold-llm.js<br/>LLM 摘要 + enforce-size"]
         ANC["anchors.js / fold-fidelity.js<br/>机械保真层（零 LLM）"]
         ES["enforce-size.js<br/>确定性裁剪兜底"]
+        PIPE["pipeline.js<br/>六层注册表 + fallback chain<br/>+ 逐层统计（声明）"]
     end
 
     subgraph refl["reflection/ 治理"]
@@ -98,14 +100,16 @@ flowchart TB
     end
 
     subgraph store2["store/ 档案"]
-        MEM["memory.js<br/>进程内 Map"]
-        FIL["file.js<br/>JSONL + state + checkpoint"]
-        NOT["notes.js<br/>宿主侧 notes 存储"]
+        TS["TranscriptStore 端口<br/>8 方法契约（ADR-002）"]
+        MEM["memory.js<br/>进程内 Map（参考实现）"]
+        FIL["file.js<br/>JSONL + state + checkpoint（参考实现）"]
+        NSTORE["store/notes.js<br/>NotesStore（run 级要点）"]
     end
 
     subgraph cfg["config / tools / run-state"]
         CFG["config/<br/>static · env · json-file · api-key"]
         TR["tools/<br/>registry（executor 代码持有）<br/>providers"]
+        NTOOL["tools/notes.js<br/>createBuiltinNotesTools 装配器"]
         RS["run-state.js<br/>有界确定性运行状态"]
     end
 
@@ -114,6 +118,7 @@ flowchart TB
         REPL["repl.js<br/>交互 TUI"]
         MCPB["mcp.js / skills.js<br/>MCP 代理工具 / 技能发现"]
         FGB["final-guard.js + guard-metrics.js<br/>provenance 核验实现"]
+        ASMROOT["assembly-root.js<br/>composition root：文件 store +<br/>notesStore + archiveDir"]
     end
 
     MC --> ASM
@@ -135,26 +140,38 @@ flowchart TB
     FS --> ANC
     FL --> ANC
     CB --> ES
+    ORC --> PIPE
     ORC --> GOV
-    GOV --> JUD2
+    ORC --> JUD2
     JUD2 --> L0
+    RESM --> L0
     ORC --> WU
-    ORC --> MEM
-    ORC --> FIL
+    ORC -. "只消费 store 端口（options.store）" .-> TS
+    MEM -. "参考实现" .-> TS
+    FIL -. "参考实现" .-> TS
+    NTOOL -- "executeTool → NotesStore<br/>（同一 store 实例）" --> NSTORE
+    ASMROOT -- "createFileTranscriptStore" --> FIL
+    ASMROOT -- "createFileNotesStore" --> NSTORE
     TR --> ORC
     RS --> RESM
     IDX --> ORC
-    CLI1 --> ASM
-    REPL --> ORC
-    MCPB --> ORC
-    FGB --> ORC
+    CLI1 --> ASMROOT
+    REPL --> ASMROOT
+    CLI1 -- "细粒度 options → runToolLoop" --> ORC
+    REPL -- "细粒度 options → runToolLoop" --> ORC
+    CLI1 -. "createBuiltinNotesTools" .-> NTOOL
+    REPL -. "createBuiltinNotesTools" .-> NTOOL
+    MCPB -- "MCP 代理 / 技能工具" --> CLI1
+    MCPB --> REPL
+    FGB --> CLI1
+    FGB --> REPL
     POL -. 宿主责任 .-> EX
 ```
 
 ### 要点
 
 - **纯 ESM、零 npm 依赖**：只 import `node:` 内置模块 + 相对路径；编排核心 2500 行集中在一个 `orchestrator.js`，周边模块按职责切小文件，依赖单向指向（compact/reflection/store/tools 不反向依赖 loop）
-- **编排核心（loop/）是心脏**：主循环、provider 调用、检查点执行、预算、终态、恢复、错误记账全部在这里被组装；`reflection/` 与 `compact/` 是无副作用的"决策/变换"模块，只被 loop 调用
+- **编排核心（loop/）是心脏**：主循环、provider 调用、检查点执行、预算、终态、恢复、错误记账全部在这里被组装；`reflection/` 与 `compact/` 是由 loop 驱动的“决策/变换”模块、只被 loop 调用——governor/judge 提示构造是纯函数，fold-llm/wrapup 可调用注入的 summarizer/evaluator（外部调用，绝不硬编码）
 - **消息层是唯一协议适配点**：内部只有一套 CanonicalMessage/Block；OpenAI 与 Anthropic 双向转换 + 流式聚合都在 `messages/` + `providers/`，新增协议只需加一对适配器
 - **CLI 不是产品**：`bin/` 是校验器/调试器（chat 单发 + repl 交互 + MCP/技能/final-guard 实现），真正验收面是外部 erix-bench 无头 harness；CLI 的 archive/输出捕获行为不属于库契约
 - **`erix-agent/tools` 是可选子路径**：工具注册表、工具 provider（static/json-file/composite）——宿主可按需取用，不是隐式安装进 runToolLoop 的工具集（recall 已退役，issue #36）
@@ -196,7 +213,7 @@ sequenceDiagram
     M-->>P: 流式块（delta / reasoning / tool_call）
     P-->>L: ChatResponse（Block[] + stopReason + usage）
     alt stopReason = tool_use
-        L->>J: 每 5 次真实工具执行 → 透明审计下一次调用
+        L->>J: 每 judgeIntervalRound（默认 10）次真实工具执行 → 透明审计下一次调用
         J-->>L: done:false 拦截并回审计结果 / off_track 加方向提示 / 放行
         L->>S: checkpoint（pre-tool）——失败则 sideEffect=not_started，不执行
         L->>T: executeTool({id, name, input, context, signal})
@@ -208,6 +225,7 @@ sequenceDiagram
         J-->>L: done:true + confidence≥0.7 → judge_done<br/>否则注入纠偏消息续跑
     end
     L->>L: governor 确定性裁决（停滞 / 无工具 streak / 时限 / 扩预算）
+    Note over L,J: nearLimit（轮数 ≥ 80% effectiveMaxRounds）+ judge extend/plan<br/>→ decideWithEvaluation → effectiveMaxRounds += extensionStep，<br/>plan 注入为 continuation（round 与 intercept 路径同效；off_track → extend+redirect）
     end
 
     rect rgb(255, 240, 240)
@@ -231,7 +249,7 @@ sequenceDiagram
 - **阶段 2 的工具路径带审计与检查点**：拦截 judge 只拦“写路径”（readFile/tree/rg/note_read/note_list 只读工具豁免）；pre-tool checkpoint 失败直接阻断执行，post-tool 失败标记 `executed_uncommitted` 但结果保留
 - **max_tokens 截断在同轮内续写**：reasoning 模型推理过长触发截断时最多续 3 次（`maxTokenContinuations`），续写前若已超预算先压缩——不会把预算耗死在截断循环（issue #11）
 - **阶段 3 只有 `verified` 能当"已核验"用**：`skipped`/`unverified`/`error` 都要求宿主自行处理；guard 自身报错/超时也**不算** verified
-- **阶段 4 的 result.transcript 只是内存快照**：权威档案在 `TranscriptStore`；两者刻意分离，宿主可换 DB 后端（实现九方法即可，见 ADR-002）
+- **阶段 4 的 result.transcript 只是内存快照**：权威档案在 `TranscriptStore`；两者刻意分离，宿主可换 DB 后端（实现八方法即可，见 ADR-002）
 
 ---
 
@@ -244,19 +262,29 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
+    subgraph reg["src/compact/pipeline.js —— 六层注册表（声明）"]
+        REG["① ttl → ② slidingWindow → ③ foldStatistical → ④ foldLlm → ⑤ anchors → ⑥ enforceSize<br/>fallback chain：slidingWindow(keepRounds:0) → enforceSize · 逐层 compactionStats"]
+    end
+    REG -. "orchestrator 按注册表顺序逐层调度" .-> A
     A["compactBeforeRound：<br/>策略主动触发或预算超限?"] --> B{"需要整轮链?"}
-    B -- 否 --> E["provider attempt"]
+    B -- 否 --> CC{"cacheCapable 且<br/>未显式指定 toolResultTtl?"}
     B -- 是 --> C["②/③/④ 选择一个整轮策略<br/>sliding-window / fold-statistical / fold-llm"]
     C --> D["⑤ 机械保真层<br/>anchors / fold-fidelity"]
     D --> F{"本地估算或 API 投影仍超预算?"}
-    F -- 否 --> E
+    F -- 否 --> CC
     F -- 是 --> G["② sliding-window 零保留兜底"]
     G --> H{"仍超预算?"}
-    H -- 否 --> E
+    H -- 否 --> CC
     H -- 是 --> I["⑥ enforce-size 安全截断兜底"]
-    I --> E
-    E --> J["① TTL：单个 tool_result<br/>只构造请求视图"]
-    J --> Z["发送请求副本"]
+    I --> CC
+    CC -- 是 --> T0["① 该请求 TTL 默认 = 0<br/>（整轮折叠不受影响）"]
+    CC -- 否 --> J["① TTL：单个 tool_result<br/>只构造请求视图"]
+    T0 --> Z["发送请求副本"]
+    J --> Z
+    Z --> SP{"cacheStablePrefix?<br/>（默认开）"}
+    SP -- 是 --> SPM["markStablePrefix<br/>system + 首条 user → cacheBoundary 提示"]
+    SPM --> ADAPT["provider 缓存适配器<br/>OpenAI cached_tokens / Anthropic cache_read_input_tokens<br/>→ usage.cacheRead / cacheWrite"]
+    SP -- 否 --> ADAPT
 ```
 
 ### 六层注册表（顺序、触发、粒度与产物）
@@ -265,6 +293,15 @@ flowchart TD
 预算折叠”和“策略产物仍超限时的零保留兜底”，所以它在一次请求里可能出现在
 选定策略之前或之后。`foldStatistical` 与 `foldLlm` 是互斥的选定整轮策略，
 不是连续执行的两次折叠。
+
+- **`cacheCapable` 只改 TTL 默认值**（`orchestrator.js:480-482`）：`cacheCapable: true`
+  且未显式指定 `toolResultTtl` 时，该请求 TTL 解析为 0（单结果折叠关闭，保住
+  provider 前缀缓存）；显式 `toolResultTtl` 始终优先；整轮折叠策略完全不受影响——
+  不是“删除 whole-round compaction”。
+- **`cacheStablePrefix` → provider 缓存适配器**（默认开）：每次请求前
+  `markStablePrefix`（`provider-runner.js:20`）把 system + 首条真实 user 消息打上
+  `cacheBoundary` 提示；两个协议适配器各自映射（OpenAI `cached_tokens` /
+  Anthropic `cache_read_input_tokens`），归一化为 `usage.cacheRead`/`cacheWrite`。
 
 | 层（注册表顺序） | 触发条件 | 粒度 | 进入模型/档案的产物 |
 |---|---|---|---|
@@ -337,7 +374,7 @@ flowchart TD
 
 - **双检查点夹住工具执行**：pre-tool checkpoint 落盘"我将执行这个 tool_use"；post-tool 落盘"已执行 + 结果"。pre-tool 失败 → `sideEffect: "not_started"`，**阻断执行**；post-tool 失败 → `executed_uncommitted`，结果保留但明确标记未提交
 - **恢复 = 按原序重放 pending tool_use**：resume 加载消息 + 最新 checkpoint + run-state，把 checkpoint 之后未完成的工具调用重新交给 `executeTool`。**引擎保证顺序与记账，不保证副作用幂等**——宿主必须让有副作用的 executeTool 实现幂等（契约明示，不是隐藏假设）
-- **持久化两档语义**：配了 store 默认 `required`（九方法全验、写入走重试策略、耗尽 → `persistence_failed` 终止）；显式 `none` 则全旁路。存档写不进 = 明确终止，绝不"假装存档成功"继续跑
+- **持久化两档语义**：配了 store 默认 `required`（八方法全验、写入走重试策略、耗尽 → `persistence_failed` 终止）；显式 `none` 则全旁路。存档写不进 = 明确终止，绝不"假装存档成功"继续跑
 - **run-state 有界且确定性**：`run-state.js` 维护工具统计、折叠计数、预算提示等确定性状态（`RUN_STATE_MAX_CHARS` 上限），resume 时校验版本与形状，损坏则标记不可用而**不**静默沿用；`lowBudgetPrompted` 这类"本次预算"状态不跨 resume 继承
 
 ---
@@ -347,10 +384,11 @@ flowchart TD
 > 目标：无头场景没人盯着，引擎要自己能发现"跑偏了/卡住了/该收尾了"——但治理只给**建议与纠偏**，越权决策不做。
 
 - **round judge（end_turn 评估）**：模型说"做完了"不等于做完。独立（或共享）provider 用客观时间线（工具调用、文件足迹、L0 事实）评估终稿，`done:true` 且 `confidence ≥ 0.7` 才判 `judge_done`；否则注入纠偏消息续跑。解析失败/评估器错误**降级**到普通 governor，连续失败 3 次后停用 judge——治理故障永远不把 run 卡死
-- **工具透明审计（intercept）**：每 5 次真实工具执行，审计下一次调用：`done:false` 拦截原执行并把审计结果当 tool_result 还给模型（模型得到"为什么不该这么做"而不是静默失败）；`off_track` 不拦工具，只给下一轮上下文加方向提示。`env ERIX_NO_ROUND_JUDGE=1` 可独立关轮判
+- **工具透明审计（intercept）**：每 `judgeIntervalRound` 次真实工具执行（默认 **10**；`reflection.judgeIntervalRound` 或 `ERIX_JUDGE_INTERVAL` 可覆盖，`orchestrator.js:799-813`），审计下一次调用：`done:false` 拦截原执行并把审计结果当 tool_result 还给模型（模型得到“为什么不该这么做”而不是静默失败）；`off_track` 不拦工具，只给下一轮上下文加方向提示。`env ERIX_NO_ROUND_JUDGE=1` 可独立关轮判
 - **只读工具豁免**：readFile / tree / rg / note_read / note_list 被拦净收益为负（实测拦 readFile 反而漏缺陷）——审计对这类调用直接放行，写路径（exec/writeFile/mcp 等）维持拦截语义
 - **governor 是确定性的**：纯函数、无副作用，输入信号（停滞 streak、无工具 streak、错误重复数、剩余时间、扩预算次数）输出续/停/收尾动作。硬预算到期前以"引导收尾"软着陆（注入 wrap-up 提示），而非硬杀
-- **自适应预算**：reflection 触发点（默认 `maxRounds × 0.8`）后若 governor 判断仍在推进，可扩预算（步长 32、最多 2 次、上限 `maxRoundsCap ≥ 256`）——长任务不被初始轮数拍死，也不会无限膨胀
+- **自适应预算**：越过 reflection 触发点（`nearLimit`，轮数 ≥ `effectiveMaxRounds` 的 80%）后 governor 进入扩轮考虑——真正扩轮需要 judge 裁决（`extend:true` + plan）：`effectiveMaxRounds += extensionStep`（默认 32，上限 `maxRoundsCap`），最多 `maxExtensions` 次——长任务不被初始轮数拍死，也不会无限膨胀
+- **nearLimit 扩轮（round 与 intercept 路径共用）**：`nearLimit` 时携带 `extend`/`extendReason`/`plan` 的 judge 裁决进入 `governor.decideWithEvaluation`（`governor.js:135-179`）：`extend:true` → `effectiveMaxRounds += extensionStep`，plan 注入为 continuation user 消息；判 `off_track`（打转模式）→ `extend+redirect`（换思路）；`extend:false` → 收敛 nudge；超时守卫则只跑完剩余轮次不扩轮。intercept 审计在工具途中命中 nearLimit 时把决策回传，轮末走同一路径（`checkpoint-executor` → `interceptJudgeDecision` → `decideWithEvaluation`）
 
 ---
 
@@ -361,6 +399,8 @@ flowchart TB
     subgraph run["run 运行期"]
         ORC2["orchestrator"]
         CPE2["checkpoint-executor"]
+        EXB["executeTool boundary<br/>（宿主工具边界）"]
+        NASS["src/tools/notes.js<br/>createBuiltinNotesTools 装配器"]
     end
 
     subgraph archive["档案（每 run 一份）"]
@@ -370,15 +410,17 @@ flowchart TB
     end
 
     subgraph surfaces["消费通道"]
-        NOTES["notes 工具<br/>note_list → note_read（note-first）"]
+        NOTES["NotesStore（src/store/notes.js）<br/>note_list → note_read（note-first）<br/>recall / bounded-recall 已退役（#36）"]
         HOST2["宿主直接读 store<br/>（DB 适配器后端）"]
     end
 
     ORC2 -- "appendRound（幂等去重）" --> JSONL
-    ORC2 -- "note_take / note_read（要点外置）" --> NOTES
     ORC2 --> ST
     CPE2 --> CK
     CPE2 -- "大输出 → toolOutputs 归档，模型见 stub" --> JSONL
+    EXB -- "note_take / note_read / note_list / note_forget<br/>（无凭据拦截——#55）" --> NASS
+    NASS -- "createBuiltinNotesTools().executeTool → NotesStore<br/>（同一 store 实例）" --> NOTES
+    NASS -. "semanticStateProvider → run-state<br/>（注入 notes 目录，ADR-015）" .-> ORC2
     JSONL --> HOST2
 ```
 
@@ -387,7 +429,7 @@ flowchart TB
 - **大输出不爆上下文**：`outputHygiene`（默认 limit 4096）把超长 tool_result 原文存进 round 记录的 `toolOutputs`，模型只见 stub + 指针；单轮合计还有聚合闸门（`aggregate-budget`）兜底——档案在，上下文不炸
 - **取回走 note-first（ADR-016 退休补充，issue #36）**：要点趁在场 `note_take` 外置；之后 `note_list → note_read` 取回。recall / bounded-recall 协议已退役——笔记是模型策划的高信号内容，优于对归档原文的模糊检索；未记录且无法确定性重算的值，正确动作是省略而非猜测（bench 实测：四 run 中 recall 2/0/6/0 次，笔记闭环 31 写/21 读完全替代）
 - **档案仍可由宿主直接读**：round 记录 / toolOutputs / checkpoint 完整落盘，宿主（DB 后端）可对账与审计——只是不再向模型暴露 recall 取回通道
-- **file store 是参考实现**：JSONL 每行一条记录、修复缺尾换行、隔离残缺尾部片段；约定**单写者**（每 runId 每进程一份），跨进程锁在契约之外——DB 后端（touwaka 等宿主）实现同一九方法即可替换
+- **file store 是参考实现**：JSONL 每行一条记录、修复缺尾换行、隔离残缺尾部片段；约定**单写者**（每 runId 每进程一份），跨进程锁在契约之外——DB 后端（touwaka 等宿主）实现同一八方法即可替换
 
 ---
 
