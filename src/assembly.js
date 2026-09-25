@@ -1,17 +1,14 @@
 
-export const MODEL_CONFIG_RESOLVER_HINT =
-  "modelConfig must expose resolve(slot); wrap plain config with createModelConfigResolver(...)";
+import {
+  MODEL_CONFIG_RESOLVER_HINT,
+  validateModelConfigResolver,
+  validateProviderBoundary,
+  validateTranscriptStore,
+} from "./assembly-validators.js";
 
-const TRANSCRIPT_STORE_METHODS = [
-  "appendRound",
-  "load",
-  "saveCheckpoint",
-  "appendCheckpoint",
-  "loadLatestCheckpoint",
-  "saveRunState",
-  "loadRunState",
-  "markRunState",
-];
+// Re-exported for existing consumers (loop/orchestrator.js imports the hint
+// from this module); the canonical definition lives in assembly-validators.js.
+export { MODEL_CONFIG_RESOLVER_HINT };
 
 const ASSEMBLY_POLICY_OPTION_NAMES = new Set([
   "system",
@@ -70,14 +67,8 @@ function missingAssemblyMethods(port) {
   if (!port || typeof port !== "object" || Array.isArray(port)) {
     return ["assemblyPort"];
   }
-  if (!port.modelConfig || typeof port.modelConfig.resolve !== "function") {
-    missing.push(`modelConfig.resolve (${MODEL_CONFIG_RESOLVER_HINT})`);
-  }
-  if (!port.provider
-    || (typeof port.provider.chat !== "function"
-      && typeof port.provider.chatStream !== "function")) {
-    missing.push("provider.chat or provider.chatStream");
-  }
+  missing.push(...validateModelConfigResolver(port.modelConfig));
+  missing.push(...validateProviderBoundary(port.provider));
   if (!port.tools || !Array.isArray(port.tools.definitions)) {
     missing.push("tools.definitions");
   }
@@ -88,9 +79,7 @@ function missingAssemblyMethods(port) {
     if (typeof port.store !== "object" || port.store === null || Array.isArray(port.store)) {
       missing.push("store");
     } else {
-      for (const method of TRANSCRIPT_STORE_METHODS) {
-        if (typeof port.store[method] !== "function") missing.push(`store.${method}`);
-      }
+      missing.push(...validateTranscriptStore(port.store));
     }
   }
   if (!port.session || typeof port.session !== "object" || Array.isArray(port.session)) {
