@@ -613,13 +613,16 @@ The built-in `notes` tools provide `note_take`, `note_read`, `note_list`, and
 `note_forget`. They are a run-scoped, pull-only convenience index for facts,
 one-time values, decisions, and artifact references; they are not a per-round
 log. Headless hosts can assemble them with `createBuiltinNotesTools` from the
-package root or `erix-agent/tools`; the factory returns dual executor views
-(`executors` / structured `executeTool`), a `ToolProvider`, run lifecycle hooks
-(`onRunStart` janitor, `onRunComplete` completeRun+janitor), and the ADR-015
-fold-point `semanticStateProvider` — all bound to one run scope and one
-`NotesStore` instance. The CLI keeps `skills/notes/skill.mjs` as a thin
-compatibility layer for legacy skill discovery and always excludes the bundled
-notes skill in favor of the factory; user and project skills can still be
+package root or `erix-agent/tools`; the factory returns the canonical 6-key API
+(`definitions`, dual executor views `executors` / structured `executeTool`,
+`resolveTools`, run lifecycle hooks `lifecycle.onRunStart` janitor /
+`lifecycle.onRunComplete` completeRun+janitor, and the ADR-015 fold-point
+`semanticStateProvider`) — all bound to one run scope and one `NotesStore`
+instance. Hosts that need a `ToolProvider` shape can build one from
+`createStaticToolProvider({ sets: { default: notes.definitions } })`. The CLI
+retired the bundled `skills/notes/skill.mjs` compatibility shim in v0.11.0
+(issue #61): notes are always assembled through the factory and `erix skills`
+no longer lists a bundled notes skill; user and project skills can still be
 supplied from `~/.erix/skills/`, the project `.erix/skills/`, or
 `--skills-dir <path>`. `erix skills` lists discovered skills.
 

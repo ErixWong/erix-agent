@@ -180,9 +180,10 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 （`notesDir` ?? `ERIX_NOTES_DIR` ?? `~/.erix/notes`）与单一 `NotesStore` 实例，
 所有返回视图共用它们，并强制覆盖调用方伪造的 `__erix` 注入。返回对象包含：
 
-- `definitions`（别名 `tools`）——四个 `note_*` schema；
-- `provider` / `listTools` / `resolveTools`——可直接用于 `createCompositeToolProvider`
-  聚合的 provider 形态；
+- `definitions`——四个 `note_*` schema；
+- `resolveTools`——registry schema 解析视图；需要 `ToolProvider` 形态的宿主
+  （如用于 `createCompositeToolProvider` 聚合）可自行构建：
+  `createStaticToolProvider({ sets: { default: notes.definitions } })`；
 - `executors(name, input, context)`——registry 位置参数形态；
 - `executeTool({id, name, input, context, signal})`——结构化形态，对齐 `runToolLoop`/
   checkpoint-executor 的调用约定（位置参数形态 `executeTool(name, input, context)`
@@ -220,10 +221,12 @@ try {
 notes 写失败经引擎的通用宿主持久化失败报告桥上报（`context.reportPersistenceFailure`，
 `port: "notes"`），不得静默吞错。宿主仍负责选择并注入 `NotesStore` 与逻辑 run scope。
 
-CLI 的 bundled `skills/notes/skill.mjs` 保留为薄兼容转发壳（兼容层，供旧 discovery 路径与
-第三方 skill 加载器使用；未来退役由版本策略决定），因此 `buildSkillTools` 和用户/
-项目 skill 的发现路径保持不变。CLI 自身始终排除 bundled notes skill，统一经工厂装配 notes。
-它不是第二套实现，也不再是可独立复制运行的 skill；
+CLI 的 bundled `skills/notes/skill.mjs` 已于 v0.11.0 退役（issue #61），与 assembler
+别名键一并移除：notes 统一经 `createBuiltinNotesTools` 工厂交付，`erix skills`
+不再列出 bundled notes skill（用户/项目 skill 发现不受影响）。旧第三方 skill
+loader 请直接 import `src/tools/notes.js` 或 `erix-agent/tools` 子路径；
+`getSkillDefinition` / `getNotesSkillDefinition` 已随 shim 一并删除。它不是第二套
+实现，也不再是可独立复制运行的 skill；
 可移植集成应使用 npm 包入口。
 
 ### CLI 侧来源 guard
