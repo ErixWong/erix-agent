@@ -7,7 +7,6 @@ export {
 export {
   createBuiltinNotesTools,
   completeRun,
-  getSkillDefinition as getNotesSkillDefinition,
   note_forget,
   note_list,
   note_read,

@@ -3,13 +3,11 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { createFileNotesStore } from "../store/notes.js";
-import { createStaticToolProvider } from "./providers.js";
 import { createToolRegistry } from "./registry.js";
 
 export const MAX_CONTENT_LENGTH = 4000;
 export const NOTE_VALUE_MAX_CHARS = 256;
 const MAX_SUPERSEDED = 3;
-const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/u;
 const MISSING_NEXT = "该 key 从未记录（never recorded）；未记录、不可恢复；不得重跑命令、不得凭记忆给值";
 let clock = () => Date.now();
 
@@ -644,13 +642,10 @@ function withPersistenceReporting(store, getReporter) {
  *
  * @param {{notesDir?: string, notesStore?: object, runId?: string, scopeRef?: string}} options
  * @returns {{
- *   definitions: object[], tools: object[],
- *   provider: object, listTools: Function, resolveTools: Function,
- *   executors: Function, executeTool: Function,
+ *   definitions: object[],
+ *   executors: Function, executeTool: Function, resolveTools: Function,
  *   lifecycle: {onRunStart: Function, onRunComplete: Function},
  *   semanticStateProvider: Function,
- *   notesJanitor: Function, notesCompleteRun: Function,
- *   runNotesJanitor: Function, completeRun: Function,
  * }}
  */
 export function createBuiltinNotesTools(options = {}) {
@@ -684,9 +679,6 @@ export function createBuiltinNotesTools(options = {}) {
     return { ...rest, __erix: scope };
   };
 
-  const provider = createStaticToolProvider({
-    sets: { default: TOOL_DEFINITIONS },
-  });
   const registry = createToolRegistry({
     executors: Object.fromEntries(
       Object.entries(TOOL_EXECUTORS).map(([name, executor]) => [
@@ -761,30 +753,13 @@ export function createBuiltinNotesTools(options = {}) {
   };
 
   return {
-    provider,
-    listTools: provider.listTools,
-    tools: TOOL_DEFINITIONS,
     definitions: TOOL_DEFINITIONS,
     executors,
     executeTool,
     resolveTools: registry.resolveTools,
     lifecycle,
     semanticStateProvider,
-    // 兼容别名：PR #52 形状的可调用方式保留。
-    notesJanitor: (input) => runNotesJanitor(lifecycleInput(input)),
-    notesCompleteRun: (input) => completeRun(lifecycleInput(input)),
-    runNotesJanitor: (input) => runNotesJanitor(lifecycleInput(input)),
-    completeRun: (input) => completeRun(lifecycleInput(input)),
   };
 }
 
-export function getSkillDefinition() {
-  for (const tool of TOOL_DEFINITIONS) {
-    if (!TOOL_NAME_PATTERN.test(tool.name)) throw new Error(`非法 notes 工具名：${tool.name}`);
-  }
-  return {
-    schema_version: 1,
-    skill: { id: "notes", runtime: "node", entrypoint: "skill.mjs" },
-    tools: TOOL_DEFINITIONS,
-  };
-}
+
