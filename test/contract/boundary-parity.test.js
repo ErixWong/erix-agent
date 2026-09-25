@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createAssemblyPort, assemblyPortOptions } from "../../src/assembly.js";
-import { runToolLoop } from "../../src/loop.js";
+import { runToolLoop } from "../../src/loop/orchestrator.js";
 
 function createValidProvider() {
   return {

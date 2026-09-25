@@ -69,7 +69,8 @@ export { createEnvModelConfigProvider } from "./config/env.js";
 export { createJsonFileModelConfigProvider } from "./config/json-file.js";
 export { resolveApiKey } from "./config/api-key.js";
 export { createFoldLlmStrategy, SUMMARIZER_PROMPT_GUIDE } from "./compact/fold-llm.js";
-export { parseReflectionDecision, runToolLoop } from "./loop.js";
+export { runToolLoop } from "./loop/orchestrator.js";
+export { parseReflectionDecision } from "./loop/reflection.js";
 export { tryParseWrapupJson, normalizeWrapupWithLlm } from "./reflection/wrapup.js";
 export {
   buildTimeline,

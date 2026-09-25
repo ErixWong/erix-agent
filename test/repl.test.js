@@ -16,7 +16,7 @@ import {
 } from "../bin/repl.js";
 import { createCliAssemblyRoot } from "../bin/assembly-root.js";
 import { runChat } from "../bin/cli.js";
-import { runToolLoop } from "../src/loop.js";
+import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFileTranscriptStore, safeRunId } from "../src/store/file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 

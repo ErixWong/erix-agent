@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runToolLoop } from "../../src/loop.js";
+import { runToolLoop } from "../../src/loop/orchestrator.js";
 
 function createProvider() {
   const requests = [];

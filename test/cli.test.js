@@ -23,7 +23,7 @@ import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.j
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { createFileNotesStore } from "../src/store/notes.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
-import { runToolLoop } from "../src/loop.js";
+import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 function normalizeGoldenEnvironment(value, cwd, fixtureCwd) {

@@ -629,7 +629,6 @@ transcript retrieval API; recall adapters were retired in 0.8.0.
 ```text
 src/
 ├── index.js                  # Public root exports
-├── loop.js                   # Thin re-export shim (runToolLoop / parseReflectionDecision)
 ├── assembly.js               # AssemblyPort validation and port-to-options conversion
 ├── run-state.js              # Bounded deterministic and semantic run state
 ├── tokens.js                 # Dependency-free token estimates
