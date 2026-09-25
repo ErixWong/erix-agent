@@ -282,8 +282,10 @@ together with the assembler's alias keys: notes are delivered exclusively
 through `createBuiltinNotesTools`, and `erix skills` no longer lists a bundled
 notes skill (user/project skill discovery is unchanged). Legacy third-party
 skill loaders should import `src/tools/notes.js` or the `erix-agent/tools`
-subpath directly; `getSkillDefinition` / `getNotesSkillDefinition` were removed
-with the shim. It was never a second implementation or a portable standalone
+subpath directly; the bundled notes shim's own `getSkillDefinition` export
+(`getNotesSkillDefinition` on the `erix-agent/tools` subpath) was removed with
+the shim — the generic skill loader still supports `getSkillDefinition()` for
+third-party skills. It was never a second implementation or a portable standalone
 copy; portable integrations should use the npm package entry point.
 
 ### CLI-side provenance guard

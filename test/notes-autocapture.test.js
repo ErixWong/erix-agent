@@ -135,13 +135,13 @@ test("GC revokes expired pinned notes and keeps a tombstone with an injected clo
         JSON.parse(await scopedNotes.note_read({ key: "lifecycle" })).status,
         "found",
       );
-      await scopedNotes.lifecycle.onRunStart({});
+      await tools.lifecycle.onRunStart({});
       const done = JSON.parse(await scopedNotes.note_read({ key: "lifecycle" }));
       assert.equal(done.status, "found");
       assert.equal(done.state, "done");
 
       now.value += 1001;
-      await scopedNotes.lifecycle.onRunStart({});
+      await tools.lifecycle.onRunStart({});
       const revoked = JSON.parse(await scopedNotes.note_read({ key: "lifecycle" }));
       assert.equal(revoked.status, "revoked");
       const tombstone = JSON.parse(await readFile(

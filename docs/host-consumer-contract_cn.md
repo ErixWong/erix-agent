@@ -224,8 +224,10 @@ notes 写失败经引擎的通用宿主持久化失败报告桥上报（`context
 CLI 的 bundled `skills/notes/skill.mjs` 已于 v0.11.0 退役（issue #61），与 assembler
 别名键一并移除：notes 统一经 `createBuiltinNotesTools` 工厂交付，`erix skills`
 不再列出 bundled notes skill（用户/项目 skill 发现不受影响）。旧第三方 skill
-loader 请直接 import `src/tools/notes.js` 或 `erix-agent/tools` 子路径；
-`getSkillDefinition` / `getNotesSkillDefinition` 已随 shim 一并删除。它不是第二套
+loader 请直接 import `src/tools/notes.js` 或 `erix-agent/tools` 子路径；bundled notes
+shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
+`getNotesSkillDefinition`）已随 shim 一并删除，通用 skill loader 对第三方 skill 的
+`getSkillDefinition()` 支持不受影响。它不是第二套
 实现，也不再是可独立复制运行的 skill；
 可移植集成应使用 npm 包入口。
 

@@ -586,7 +586,7 @@ The shared CLI flags are:
 - `--final-guard` enables the CLI provenance guard;
   `--no-final-guard` is a compatibility no-op because the default is already
   off.
-- `--no-notes` (or `ERIX_NO_NOTES=1`) skips the notes factory assembly and excludes the bundled notes skill (`note_*` tools become unavailable); other skills stay loaded.
+- `--no-notes` (or `ERIX_NO_NOTES=1`) skips the notes factory assembly (`note_*` tools become unavailable); other skills stay loaded.
 - `--timeout <ms>` supplies a soft task deadline to `chat`; it nudges the
   loop toward wrap-up rather than hard-killing the process.
 - `--idle-timeout <seconds>` aborts after no progress; it defaults to 300
@@ -621,7 +621,8 @@ package root or `erix-agent/tools`; the factory returns the canonical 6-key API
 instance. Hosts that need a `ToolProvider` shape can build one from
 `createStaticToolProvider({ sets: { default: notes.definitions } })`. The CLI
 retired the bundled `skills/notes/skill.mjs` compatibility shim in v0.11.0
-(issue #61): notes are always assembled through the factory and `erix skills`
+(issue #61): when notes are enabled they are assembled exclusively through the
+factory (`--no-notes` / `ERIX_NO_NOTES=1` opts out) and `erix skills`
 no longer lists a bundled notes skill; user and project skills can still be
 supplied from `~/.erix/skills/`, the project `.erix/skills/`, or
 `--skills-dir <path>`. `erix skills` lists discovered skills.
