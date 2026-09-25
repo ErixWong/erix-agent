@@ -78,7 +78,9 @@ test("builtin notes tools expose canonical definitions and sanitize into the hos
       "from-builtin",
     );
     const completion = await builtin.lifecycle.onRunComplete({});
+    assert.deepEqual([...Object.keys(completion)].sort(), ["completed", "errors", "janitor"]);
     assert.deepEqual(completion.completed, { status: "found", completed: 1 });
+    assert.deepEqual(completion.janitor, { status: "found", changed: 0, revoked: 0 });
     assert.deepEqual(completion.errors, []);
     assert.equal(
       JSON.parse(await readFile(path.join(directory, "run", "builtin-run", "answer.json"), "utf8"))

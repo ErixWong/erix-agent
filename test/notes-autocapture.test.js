@@ -123,9 +123,18 @@ test("GC revokes expired pinned notes and keeps a tombstone with an injected clo
   await withNotes(async (directory) => {
     const restoreClock = notes.setNotesClock(() => now.value);
     try {
-      await scopedNotes.note_take({ key: "lifecycle", content: "value", pinned: true });
-      await scopedNotes.completeRun();
-      assert.equal(JSON.parse(await scopedNotes.note_read({ key: "lifecycle" })).status, "found");
+      // issue #61：completion 语义改由真实 assembler 的 lifecycle.onRunComplete 覆盖
+      // （临时目录真实 store，返回形状锁定为 {completed, janitor, errors}）。
+      const tools = notes.createBuiltinNotesTools({ notesDir: directory, runId: "auto-run" });
+      await tools.executors("note_take", { key: "lifecycle", content: "value", pinned: true });
+      const completion = await tools.lifecycle.onRunComplete({});
+      assert.deepEqual([...Object.keys(completion)].sort(), ["completed", "errors", "janitor"]);
+      assert.deepEqual(completion.completed, { status: "found", completed: 1 });
+      assert.deepEqual(completion.errors, []);
+      assert.equal(
+        JSON.parse(await scopedNotes.note_read({ key: "lifecycle" })).status,
+        "found",
+      );
       await scopedNotes.lifecycle.onRunStart({});
       const done = JSON.parse(await scopedNotes.note_read({ key: "lifecycle" }));
       assert.equal(done.status, "found");
