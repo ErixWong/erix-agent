@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { createFileNotesStore } from "../store/notes.js";
+import { createFileNotesStore, assertNotesStore } from "../store/notes.js";
 import { createToolRegistry } from "./registry.js";
 
 export const MAX_CONTENT_LENGTH = 4000;
@@ -53,7 +53,9 @@ function injectedNotesStore(input) {
     && typeof store.read === "function"
     && typeof store.list === "function"
     && typeof store.complete === "function"
+    && typeof store.revoke === "function"
     && typeof store.janitor === "function"
+    && typeof store.purge === "function"
     ? store
     : undefined;
 }
@@ -449,17 +451,10 @@ export async function note_forget(input = {}) {
   }
   if (!record) return missing(key);
   if (record.state === "revoked") return json({ status: "revoked", key });
-  const timestamp = now();
   try {
-    await store.write({
-      ...storeRequest(input, key),
-      record: {
-        ...record,
-        state: "revoked",
-        revoked_at: timestamp,
-        updated_at: timestamp,
-      },
-    });
+    // forget = 经 store.revoke 写墓碑（不再读后自写，撤销语义单一来源）。
+    const result = await store.revoke(storeRequest(input, key));
+    if (result.status === "missing") return missing(key);
   } catch (error) {
     return invalid(key, error?.message ?? String(error));
   }
@@ -601,9 +596,10 @@ function scopedToolInput(input, name, scope) {
     : filtered;
 }
 
-const REPORTABLE_STORE_METHODS = ["read", "write", "list", "complete", "janitor"];
-// complete/janitor 与 write 一样会真实写文件，按写副作用分类；read/list 是纯读。
-const WRITE_SIDE_EFFECT_METHODS = new Set(["write", "complete", "janitor"]);
+const REPORTABLE_STORE_METHODS = ["read", "write", "list", "complete", "revoke", "janitor", "purge"];
+// complete/revoke/janitor/purge 与 write 一样会真实写文件（purge 直接 unlink），
+// 按写副作用分类；read/list 是纯读。
+const WRITE_SIDE_EFFECT_METHODS = new Set(["write", "complete", "revoke", "janitor", "purge"]);
 // 已上报过的 (error, operation) 组合（防 decorator 与调用点重复上报同一组合；
 // 同一 Error 对象被 complete/janitor 等多个操作复用时，每个 operation 各报一次）。
 const reportedStoreFailures = new WeakMap();
@@ -655,16 +651,35 @@ function withPersistenceReporting(store, getReporter) {
 }
 
 /**
+ * liveness 是宿主交给 assembler 的 active orphan 判定端口：isAlive 返回
+ * false 的 scopeRef 由 lifecycle.revokeInactive 撤销其 active 记录。
+ * ttlMs 必须是 >0 安全整数，否则创建时抛错（不静默降级）。
+ */
+function validateLiveness(liveness) {
+  if (liveness === undefined || liveness === null) return undefined;
+  if (typeof liveness !== "object" || Array.isArray(liveness)) {
+    throw new TypeError("liveness must be an object with ttlMs and isAlive");
+  }
+  if (!Number.isSafeInteger(liveness.ttlMs) || liveness.ttlMs <= 0) {
+    throw new TypeError("liveness.ttlMs must be a positive safe integer");
+  }
+  if (typeof liveness.isAlive !== "function") {
+    throw new TypeError("liveness.isAlive must be a function");
+  }
+  return { ttlMs: liveness.ttlMs, isAlive: liveness.isAlive };
+}
+
+/**
  * Full notes assembler. One call binds the run scope (runId/scopeRef), the
  * notes directory, and a single NotesStore instance; every returned view
  * (executors, executeTool, lifecycle, semanticStateProvider) reuses them and
  * forcibly overrides any caller-forged `__erix` injection.
  *
- * @param {{notesDir?: string, notesStore?: object, runId?: string, scopeRef?: string}} options
+ * @param {{notesDir?: string, notesStore?: object, runId?: string, scopeRef?: string, liveness?: {ttlMs: number, isAlive: Function}}} options
  * @returns {{
  *   definitions: object[],
  *   executors: Function, executeTool: Function, resolveTools: Function,
- *   lifecycle: {onRunStart: Function, onRunComplete: Function},
+ *   lifecycle: {onRunStart: Function, onRunComplete: Function, revokeInactive: Function},
  *   semanticStateProvider: Function,
  * }}
  */
@@ -681,6 +696,12 @@ export function createBuiltinNotesTools(options = {}) {
     dir: resolvedNotesDir,
     clock: () => clock(),
   });
+  // 创建期即校验端口完整性：缺 revoke/purge 等方法立即 TypeError，
+  // 不静默回退到隐式 file store（生命周期三阶段拆分后两者都是必需方法）。
+  assertNotesStore(boundStore);
+  // liveness（host 的 active orphan 判定）与 notesStore 同级绑定进作用域，
+  // 调用方伪造的 __erix 无法覆盖（lifecycleInput 强制覆盖）。
+  const boundLiveness = validateLiveness(opts.liveness);
 
   // 并发约定：assembler 假定宿主串行调用（runToolLoop 单线程循环）；
   // activeReporter 的 set/restore 不防并发交错，并发复用同一 assembler
@@ -691,6 +712,7 @@ export function createBuiltinNotesTools(options = {}) {
     ...(boundScopeRef === undefined ? {} : { runId: boundScopeRef }),
     notesDir: resolvedNotesDir,
     notesStore: store,
+    ...(boundLiveness === undefined ? {} : { liveness: boundLiveness }),
   };
 
   // lifecycle 输入同样强制覆盖调用方伪造的 __erix（评审修正项）。
@@ -739,7 +761,7 @@ export function createBuiltinNotesTools(options = {}) {
     return executors(name, input, context);
   };
 
-  // lifecycle 调用（complete/janitor 会写文件）同样绑定 reporter：
+  // lifecycle 调用（complete/revoke 会写文件）同样绑定 reporter：
   // 宿主可经 lifecycle 输入的 reportPersistenceFailure 注入；
   // set/restore 模式与 executor 视图一致。
   const withLifecycleReporter = async (input, fn) => {
@@ -753,27 +775,106 @@ export function createBuiltinNotesTools(options = {}) {
     }
   };
 
-  // onRunStart = janitor；onRunComplete = completeRun 后接 janitor，
-  // 收尾错误收集在返回值的 errors[] 里返回，不抛出覆盖主错误。
+  // lifecycle 三阶段拆分（issue #67）：
+  // - onRunStart：轻量 no-op 兼容入口。run 起点不再跑 janitor——过期 done
+  //   清理由宿主显式调度 janitor，active orphan 清理权归宿主 liveness。
+  // - onRunComplete：只调 completeRun（active → done），返回
+  //   { completed, errors }（janitor 字段已移除，breaking）。
+  // - revokeInactive：宿主 liveness callback 的入口；对 isAlive=false 的
+  //   scopeRef 撤销其 active 记录（经 store.revoke 的 expected-state 护栏）。
   const lifecycle = {
-    onRunStart: (input) => withLifecycleReporter(input, async () => {
-      await runNotesJanitor(lifecycleInput(input));
-    }),
+    onRunStart: (input) => withLifecycleReporter(input, async () => ({
+      status: "skipped",
+      reason: "notes janitor is host-scheduled; run start performs no notes GC",
+    })),
     onRunComplete: (input) => withLifecycleReporter(input, async () => {
       const completionErrors = [];
       let completed;
-      let janitor;
       try {
         completed = await completeRun(lifecycleInput(input));
       } catch (error) {
         completionErrors.push({ operation: "notes_complete_run", error });
       }
-      try {
-        janitor = await runNotesJanitor(lifecycleInput(input));
-      } catch (error) {
-        completionErrors.push({ operation: "notes_janitor", error });
+      return { completed, errors: completionErrors };
+    }),
+    revokeInactive: (input) => withLifecycleReporter(input, async () => {
+      if (boundLiveness === undefined) {
+        return {
+          status: "found",
+          checked: 0,
+          alive: 0,
+          revoked: 0,
+          skipped: 0,
+          reason: "liveness not configured; pass liveness to createBuiltinNotesTools to enable active orphan cleanup",
+        };
       }
-      return { completed, janitor, errors: completionErrors };
+      const scoped = lifecycleInput(input);
+      const scopeRefs = Array.isArray(scoped.scopeRefs)
+        ? scoped.scopeRefs.filter((value) => typeof value === "string" && value.trim() !== "")
+        : [];
+      const errors = [];
+      let checked = 0;
+      let alive = 0;
+      let revoked = 0;
+      let skipped = 0;
+      for (const scopeRef of scopeRefs) {
+        let isAlive;
+        try {
+          isAlive = await boundLiveness.isAlive(scopeRef, {
+            now: clock(),
+            ttlMs: boundLiveness.ttlMs,
+          });
+        } catch (error) {
+          // isAlive 抛错是整体失败信号：进 errors[]，绝不解释为 false（不得 revoke）。
+          errors.push({ operation: "notes_liveness_check", scopeRef, error });
+          continue;
+        }
+        if (typeof isAlive !== "boolean") {
+          errors.push({
+            operation: "notes_liveness_check",
+            scopeRef,
+            error: new TypeError("liveness.isAlive must return a boolean"),
+          });
+          continue;
+        }
+        checked += 1;
+        if (isAlive) {
+          alive += 1;
+          continue;
+        }
+        let records;
+        try {
+          records = await store.list({ scope: "run", scopeRef });
+        } catch (error) {
+          errors.push({ operation: "notes_revoke_inactive", scopeRef, error });
+          continue;
+        }
+        for (const record of records) {
+          if (record.state !== "active") continue;
+          try {
+            const result = await store.revoke({
+              scope: "run",
+              scopeRef,
+              key: record.key,
+              reason: scoped.reason ?? "scope_inactive",
+              expectedState: "active",
+              expectedUpdatedAt: record.updated_at,
+            });
+            if (result.status === "found") revoked += 1;
+            else skipped += 1;
+          } catch (error) {
+            errors.push({ operation: "notes_revoke_inactive", scopeRef, key: record.key, error });
+          }
+        }
+      }
+      return {
+        status: "found",
+        checked,
+        alive,
+        revoked,
+        skipped,
+        ...(errors.length > 0 ? { errors } : {}),
+      };
     }),
   };
 

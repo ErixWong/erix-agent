@@ -27,6 +27,8 @@ async function withNotes(callback, options = {}) {
     [
       "ERIX_NOTES_DIR",
       "ERIX_NOTES_GRACE_MS",
+      "ERIX_NOTES_DONE_GRACE_MS",
+      "ERIX_NOTES_TOMBSTONE_RETENTION_MS",
     ]
       .map((name) => [name, process.env[name]]),
   );
@@ -38,6 +40,8 @@ async function withNotes(callback, options = {}) {
   };
   if (options.graceMs === undefined) delete process.env.ERIX_NOTES_GRACE_MS;
   else process.env.ERIX_NOTES_GRACE_MS = String(options.graceMs);
+  delete process.env.ERIX_NOTES_DONE_GRACE_MS;
+  delete process.env.ERIX_NOTES_TOMBSTONE_RETENTION_MS;
   try {
     return await callback(directory);
   } finally {
@@ -329,8 +333,9 @@ test("unsafe explicit scope round-trips through the skill lifecycle", async () =
     });
     assert.deepEqual(await scopedNotes.runNotesJanitor({ __erix: scope }), {
       status: "found",
-      changed: 0,
+      scanned: 1,
       revoked: 0,
+      nextCursor: null,
     });
     const runEntries = await readdir(path.join(directory, "run"));
     assert.equal(runEntries.length, 1);
@@ -497,8 +502,8 @@ test("project and user scopes are explicit unsupported stubs", async () => {
   });
 });
 
-test("run lifecycle transitions active to done and then revokes expired notes", async () => {
-  await withNotes(async (directory, options) => {
+test("run lifecycle transitions active to done and janitor reclaims only expired done", async () => {
+  await withNotes(async (directory) => {
     const now = { value: Date.now() };
     const restoreClock = notes.setNotesClock(() => now.value);
     try {
@@ -512,44 +517,58 @@ test("run lifecycle transitions active to done and then revokes expired notes", 
       assert.equal(completed.state, "done");
       assert.ok(completed.expires_at);
 
-      await scopedNotes.runNotesJanitor();
-      process.env.ERIX_NOTES_GRACE_MS = "0";
+      // 未过期：janitor 不动 done 记录。
+      assert.equal((await scopedNotes.runNotesJanitor()).revoked, 0);
+      assert.equal(parsed(await scopedNotes.note_read({ key: "lifecycle" })).state, "done");
+      // 过期：janitor 写墓碑（revoked_at + revoke_reason）。
       now.value = Date.parse(completed.expires_at) + 1;
-      await scopedNotes.runNotesJanitor();
+      assert.equal((await scopedNotes.runNotesJanitor()).revoked, 1);
       const tombstone = parsed(await readFile(
         path.join(directory, "run", "notes-test-run", "lifecycle.json"),
         "utf8",
       ));
       assert.equal(tombstone.state, "revoked");
       assert.ok(tombstone.revoked_at);
+      assert.equal(tombstone.revoke_reason, "done_expired");
       assert.equal(parsed(await scopedNotes.note_read({ key: "lifecycle" })).status, "revoked");
-      void options;
     } finally {
       restoreClock();
     }
   }, { graceMs: 60_000 });
 });
 
-test("janitor revokes expired notes from other sessions and filters inactive notes", async () => {
+test("janitor keeps foreign active notes active (even with grace env zero) and reclaims their expired done", async () => {
   const now = { value: Date.now() };
   await withNotes(async (directory) => {
     const restoreClock = notes.setNotesClock(() => now.value);
     try {
       await scopedNotes.note_take({ key: "orphan", content: "value" });
-      assert.equal(parsed(await scopedNotes.note_list({ __erix: { runId: "current-run", notesDir: directory } })).total, 0);
-      assert.equal((await scopedNotes.runNotesJanitor({ __erix: { runId: "current-run", notesDir: directory } })).status, "found");
-      let orphan = parsed(await readFile(
+      const foreignJanitor = () => scopedNotes.runNotesJanitor({
+        __erix: { runId: "current-run", notesDir: directory },
+      });
+      const readOrphan = async () => parsed(await readFile(
         path.join(directory, "run", "notes-test-run", "orphan.json"),
         "utf8",
       ));
-      assert.equal(orphan.state, "active");
+      // 回归核心：另一 run 的 active 笔记长时间未写，janitor 跑完后仍 active。
+      now.value += 30 * 24 * 60 * 60 * 1000;
+      assert.equal((await foreignJanitor()).revoked, 0);
+      assert.equal((await readOrphan()).state, "active");
+      // ERIX_NOTES_GRACE_MS=0 同样不得回收 active：grace 不再含 active 清理语义。
+      process.env.ERIX_NOTES_GRACE_MS = "0";
+      assert.equal((await foreignJanitor()).revoked, 0);
+      assert.equal((await readOrphan()).state, "active");
+      process.env.ERIX_NOTES_GRACE_MS = "1000";
+
+      // 该笔记 complete 后过期，janitor 负责回收（过期 done → tombstone）。
+      await scopedNotes.completeRun();
+      assert.equal((await foreignJanitor()).revoked, 0, "未过期的 done 不得回收");
+      assert.equal((await readOrphan()).state, "done");
       now.value += 1001;
-      await scopedNotes.runNotesJanitor({ __erix: { runId: "current-run", notesDir: directory } });
-      orphan = parsed(await readFile(
-        path.join(directory, "run", "notes-test-run", "orphan.json"),
-        "utf8",
-      ));
-      assert.equal(orphan.state, "revoked");
+      assert.equal((await foreignJanitor()).revoked, 1);
+      const tombstone = await readOrphan();
+      assert.equal(tombstone.state, "revoked");
+      assert.ok(tombstone.revoked_at);
       assert.equal(parsed(await scopedNotes.note_list({ includeInactive: true })).total, 1);
     } finally {
       restoreClock();

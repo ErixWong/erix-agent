@@ -647,6 +647,8 @@ async function runChatWithNotes({
   const notesAssembler = notesDisabled || !notesStore
     ? undefined
     : createBuiltinNotesTools({ runId, notesDir, notesStore });
+  // issue #67：onRunStart 是轻量 no-op 兼容入口（run 起点不再跑 notes GC——
+  // 过期 done 清理由宿主调度 janitor，active orphan 清理权归宿主 liveness）。
   await notesAssembler?.lifecycle.onRunStart();
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
   const combinedTools = combineTools(cliTools, skillTools, mcpProxy, notesAssembler);
