@@ -14,7 +14,8 @@ import path from "node:path";
 const HASHED_ID_PREFIX = "run-h-";
 const HASHED_KEY_PREFIX = "note-h-";
 const HASHED_ID_PATTERN = /^run-h-[0-9a-f]{24}$/u;
-const DEFAULT_GRACE_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_DONE_GRACE_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_SUPERSEDED = 3;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 const SAFE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -57,7 +58,9 @@ const STATES = new Set(["active", "done", "revoked"]);
  *   read: (request: {scope?: "run", scopeRef: string, key: string}) => Promise<NoteRecord|undefined>,
  *   list: (request: {scope?: "run", scopeRef: string}) => Promise<NoteRecord[]>,
  *   complete: (request: {scope?: "run", scopeRef: string}) => Promise<{status: "found", completed: number}>,
- *   janitor: (request: {scope?: "run", scopeRef: string}) => Promise<{status: "found", changed: number, revoked: number}>
+ *   revoke: (request: {scope?: "run", scopeRef: string, key: string, reason?: string, expectedState?: "active"|"done", expectedUpdatedAt?: string}) => Promise<{status: "found"|"missing"|"unchanged", revoked: number, revision?: string}>,
+ *   janitor: (request: {scope?: "run", scopeRef?: string, limit?: number, cursor?: number}) => Promise<{status: "found", scanned: number, revoked: number, nextCursor: number|null}>,
+ *   purge: (request: {scope?: "run", scopeRef?: string, limit?: number, cursor?: string, before?: string}) => Promise<{status: "found", scanned: number, purged: number, nextCursor: string|null}>
  * }} NotesStore
  */
 
@@ -90,14 +93,17 @@ function safeKey(value) {
     : `${HASHED_KEY_PREFIX}${digest(text)}`;
 }
 
-function assertRequest(request, { keyRequired = false } = {}) {
+function assertRequest(request, { keyRequired = false, scopeRefRequired = true } = {}) {
   if (!request || typeof request !== "object" || Array.isArray(request)) {
     throw new TypeError("NotesStore request must be an object");
   }
   if (request.scope !== undefined && request.scope !== "run") {
     throw new TypeError("NotesStore supports only run scope");
   }
-  if (typeof request.scopeRef !== "string" || request.scopeRef.trim() === "") {
+  if (
+    (scopeRefRequired || request.scopeRef !== undefined)
+    && (typeof request.scopeRef !== "string" || request.scopeRef.trim() === "")
+  ) {
     throw new TypeError("NotesStore scopeRef must be a non-empty string");
   }
   if (keyRequired && (typeof request.key !== "string" || request.key.length === 0)) {
@@ -139,7 +145,7 @@ export function isNoteRecord(record, expected = {}) {
 }
 
 export function assertNotesStore(store) {
-  const required = ["write", "read", "list", "complete", "janitor"];
+  const required = ["write", "read", "list", "complete", "revoke", "janitor", "purge"];
   const missing = required.filter((method) => typeof store?.[method] !== "function");
   if (missing.length > 0) {
     throw new TypeError(`NotesStore missing required method(s): ${missing.join(", ")}`);
@@ -251,11 +257,104 @@ async function listFiles(directory) {
     .map((entry) => path.join(directory, entry.name));
 }
 
-function graceMs() {
-  const configured = Number(process.env.ERIX_NOTES_GRACE_MS);
-  return Number.isSafeInteger(configured) && configured >= 0
-    ? configured
-    : DEFAULT_GRACE_MS;
+function configuredMs(name) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+// done 保留期：ERIX_NOTES_DONE_GRACE_MS 优先；ERIX_NOTES_GRACE_MS 仅作 deprecated
+// alias（两者并存以新变量为准）。graceMs=0 不再有 active orphan 清理语义——
+// active 记录的撤销权归宿主 liveness callback（revokeInactive）。
+function doneGraceMs() {
+  return configuredMs("ERIX_NOTES_DONE_GRACE_MS")
+    ?? configuredMs("ERIX_NOTES_GRACE_MS")
+    ?? DEFAULT_DONE_GRACE_MS;
+}
+
+// tombstone 保留期：purge 只删除 revoked_at 早于 now-retention 的墓碑文件。
+function tombstoneRetentionMs() {
+  return configuredMs("ERIX_NOTES_TOMBSTONE_RETENTION_MS")
+    ?? DEFAULT_TOMBSTONE_RETENTION_MS;
+}
+
+function assertLimit(request) {
+  if (request.limit !== undefined
+    && (!Number.isSafeInteger(request.limit) || request.limit < 1)) {
+    throw new TypeError("NotesStore limit must be a positive safe integer");
+  }
+}
+
+function assertJanitorPagination(request) {
+  assertLimit(request);
+  if (request.cursor !== undefined
+    && (!Number.isSafeInteger(request.cursor) || request.cursor < 0)) {
+    throw new TypeError("NotesStore cursor must be a non-negative safe integer");
+  }
+}
+
+// purge 分页中途会 unlink 文件：数值 offset 游标会因条目左移而跳过墓碑。
+// 因此 purge 的 cursor 是稳定的不透明 key（"scopeRef/file"，按扫描序可比较），
+// 已处理条目被删除不影响排在其后的条目。
+function entryKey(entry) {
+  return `${entry.scopeRef}/${path.basename(entry.file)}`;
+}
+
+/**
+ * 收集 run 根下全部 scope 的记录条目（只读扫描）。损坏记录与符号链接按旧
+ * janitor 语义跳过；scopeRef 非 canonical 的目录不参与扫描。
+ *
+ * @param {string} root
+ * @returns {Promise<Array<{scopeRef: string, file: string, record: NoteRecord}>>}
+ */
+async function collectScopeEntries(root) {
+  const runDirectory = path.join(root, "run");
+  let entries;
+  try {
+    const stat = await lstat(runDirectory);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new NotesStoreError(`笔记 run 路径无效：${runDirectory}`, "unsafe_path");
+    }
+    entries = await readdir(runDirectory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  const collected = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isDirectory()) continue;
+    const directory = path.join(runDirectory, entry.name);
+    const stat = await lstat(directory);
+    if (stat.isSymbolicLink()) {
+      throw new NotesStoreError(`拒绝扫描符号链接目录：${directory}`, "unsafe_path");
+    }
+    const scopeRef = safeId(entry.name);
+    if (scopeRef !== entry.name) continue;
+    for (const file of (await listFiles(directory)).sort()) {
+      let record;
+      try {
+        record = await readRecord(file, undefined, scopeRef);
+      } catch (error) {
+        if (error?.code === "invalid_record" || error?.code === "unsafe_path") continue;
+        throw error;
+      }
+      if (record) collected.push({ scopeRef, file, record });
+    }
+  }
+  return collected;
+}
+
+/**
+ * 对扫描结果做 limit/cursor 分页。limit 缺省=全部；窗口恰好覆盖末尾时
+ * nextCursor 为 null（调用方循环终止条件）。
+ */
+function pageWindow(entries, { limit, cursor } = {}) {
+  const start = cursor ?? 0;
+  const size = limit ?? entries.length;
+  const window = entries.slice(start, start + size);
+  const consumed = start + window.length;
+  return { window, nextCursor: consumed < entries.length ? consumed : null };
 }
 
 /**
@@ -315,7 +414,7 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
     async complete(request) {
       const scopeRef = requestScope(request);
       const records = await store.list({ scope: "run", scopeRef });
-      const expires = new Date(clock() + graceMs()).toISOString();
+      const expires = new Date(clock() + doneGraceMs()).toISOString();
       let completed = 0;
       for (const record of records) {
         if (record.state !== "active") continue;
@@ -337,77 +436,110 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
       return { status: "found", completed };
     },
 
-    async janitor(request) {
-      const liveScope = requestScope(request);
-      const runDirectory = path.join(root, "run");
-      let entries;
-      try {
-        const stat = await lstat(runDirectory);
-        if (stat.isSymbolicLink() || !stat.isDirectory()) {
-          throw new NotesStoreError(`笔记 run 路径无效：${runDirectory}`, "unsafe_path");
-        }
-        entries = await readdir(runDirectory, { withFileTypes: true });
-      } catch (error) {
-        if (error?.code === "ENOENT") return { status: "found", changed: 0, revoked: 0 };
-        throw error;
+    async revoke(request) {
+      assertRequest(request, { keyRequired: true });
+      const scopeRef = requestScope(request);
+      const current = await store.read({ scope: "run", scopeRef, key: request.key });
+      if (!current) return { status: "missing", revoked: 0 };
+      if (current.state === "revoked") return { status: "unchanged", revoked: 0 };
+      // expectedState/expectedUpdatedAt 是并发护栏：检查后被他人改写过的
+      // 记录一律 unchanged，不得覆盖（防并发误撤销）。
+      if (request.expectedState !== undefined && current.state !== request.expectedState) {
+        return { status: "unchanged", revoked: 0 };
       }
+      if (
+        request.expectedUpdatedAt !== undefined
+        && current.updated_at !== request.expectedUpdatedAt
+      ) {
+        return { status: "unchanged", revoked: 0 };
+      }
+      const timestamp = new Date(clock()).toISOString();
+      await store.write({
+        scope: "run",
+        scopeRef,
+        key: current.key,
+        record: {
+          ...current,
+          state: "revoked",
+          revoked_at: timestamp,
+          updated_at: timestamp,
+          ...(request.reason === undefined ? {} : { revoke_reason: request.reason }),
+        },
+      });
+      return { status: "found", revoked: 1, revision: timestamp };
+    },
 
-      let changed = 0;
+    async janitor(request = {}) {
+      // 只做一件事：state === "done" && expires_at <= now 的过期记录逐条
+      // revoke（写墓碑，revoked_at = tombstone 起点）。active orphan /
+      // liveScope / grace 启发式判定已全部移除——active 记录的清理权归宿主
+      // liveness callback；墓碑文件删除归 purge。
+      assertRequest(request, { scopeRefRequired: false });
+      assertJanitorPagination(request);
+      const nowMs = clock();
+      const entries = await collectScopeEntries(root);
+      const { window, nextCursor } = pageWindow(entries, request);
       let revoked = 0;
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        const directory = path.join(runDirectory, entry.name);
-        const stat = await lstat(directory);
-        if (stat.isSymbolicLink()) {
-          throw new NotesStoreError(`拒绝扫描符号链接目录：${directory}`, "unsafe_path");
-        }
-        const scopeRef = safeId(entry.name);
-        if (scopeRef !== entry.name) continue;
-        for (const file of await listFiles(directory)) {
-          let record;
-          try {
-            record = await readRecord(file, undefined, scopeRef);
-          } catch (error) {
-            if (error?.code === "invalid_record" || error?.code === "unsafe_path") continue;
-            throw error;
-          }
-          if (!record) continue;
-          const expires = Date.parse(record.expires_at ?? "");
-          const updated = Date.parse(record.updated_at ?? record.created_at ?? "");
-          const expiredDone = record.state === "done"
-            && Number.isFinite(expires)
-            && expires <= clock();
-          const orphanActive = record.state === "active"
-            && scopeRef !== liveScope
-            && Number.isFinite(updated)
-            && clock() - updated >= graceMs();
-          if (!expiredDone && !orphanActive) continue;
+      for (const { scopeRef, record } of window) {
+        if (record.state !== "done") continue;
+        const expires = Date.parse(record.expires_at ?? "");
+        if (!Number.isFinite(expires) || expires > nowMs) continue;
+        const result = await store.revoke({
+          scope: "run",
+          scopeRef,
+          key: record.key,
+          reason: "done_expired",
+          expectedState: "done",
+          expectedUpdatedAt: record.updated_at,
+        });
+        if (result.status === "found") revoked += 1;
+      }
+      return { status: "found", scanned: window.length, revoked, nextCursor };
+    },
 
-          const current = await readRecord(file, record.key, scopeRef);
-          if (!current) continue;
-          const stillEligible = (
-            (expiredDone && current.state === "done")
-            || (orphanActive && current.state === "active")
-          );
-          if (!stillEligible) continue;
-          const timestamp = new Date(clock()).toISOString();
-          await store.write({
-            scope: "run",
-            scopeRef,
-            key: current.key,
-            record: {
-              ...current,
-              state: "revoked",
-              revoked_at: timestamp,
-              gc_at: timestamp,
-              updated_at: timestamp,
-            },
-          });
-          changed += 1;
-          revoked += 1;
+    async purge(request = {}) {
+      // 真正删除墓碑文件：state === "revoked" && revoked_at（缺省兜底
+      // updated_at）<= now - tombstoneRetention。before 只能缩小范围
+      // （取更早的 cutoff，绝不放大删除窗口）。
+      assertRequest(request, { scopeRefRequired: false });
+      assertLimit(request);
+      let beforeMs;
+      if (request.before !== undefined) {
+        beforeMs = Date.parse(request.before);
+        if (!Number.isFinite(beforeMs)) {
+          throw new TypeError("NotesStore purge before must be a parseable date string");
         }
       }
-      return { status: "found", changed, revoked };
+      const cutoff = Math.min(beforeMs ?? Number.POSITIVE_INFINITY, clock() - tombstoneRetentionMs());
+      const entries = await collectScopeEntries(root);
+      let start = 0;
+      if (request.cursor !== undefined) {
+        if (typeof request.cursor !== "string" || request.cursor.trim() === "") {
+          throw new TypeError("NotesStore purge cursor must be a non-empty string");
+        }
+        const following = entries.findIndex((entry) => entryKey(entry) > request.cursor);
+        start = following === -1 ? entries.length : following;
+      }
+      const size = request.limit ?? entries.length;
+      const window = entries.slice(start, start + size);
+      const nextCursor = start + window.length < entries.length && window.length > 0
+        ? entryKey(window[window.length - 1])
+        : null;
+      let purged = 0;
+      for (const { scopeRef, file, record } of window) {
+        if (record.state !== "revoked") continue;
+        const revokedAt = Date.parse(record.revoked_at ?? record.updated_at ?? "");
+        if (!Number.isFinite(revokedAt) || revokedAt > cutoff) continue;
+        // 删除前重读：期间被 revive（state 不再是 revoked）或 revoked_at 变化
+        // 的墓碑不得删除。
+        const current = await readRecord(file, record.key, scopeRef);
+        if (!current || current.state !== "revoked") continue;
+        const currentRevokedAt = Date.parse(current.revoked_at ?? current.updated_at ?? "");
+        if (!Number.isFinite(currentRevokedAt) || currentRevokedAt > cutoff) continue;
+        await unlink(file);
+        purged += 1;
+      }
+      return { status: "found", scanned: window.length, purged, nextCursor };
     },
   };
 

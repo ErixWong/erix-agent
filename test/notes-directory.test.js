@@ -42,7 +42,16 @@ const RECORDS = [
 ];
 
 function fakeNotesStore(records) {
-  return { list: async () => structuredClone(records) };
+  // 创建期 assertNotesStore 要求完整端口（issue #67）：fake 只需 list 生效。
+  return {
+    list: async () => structuredClone(records),
+    read: async () => undefined,
+    write: async () => {},
+    complete: async () => ({ status: "found", completed: 0 }),
+    revoke: async () => ({ status: "missing", revoked: 0 }),
+    janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+    purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
+  };
 }
 
 function directoryProvider(notesStore, runId = "run-1") {
@@ -90,9 +99,9 @@ test("directory provider: real file-store integration renders source markers and
 test("directory provider: empty store and list failure both yield undefined (不装懂)", async () => {
   const empty = await directoryProvider(fakeNotesStore([]))({ state: { stateVersion: 1 } });
   assert.equal(empty, undefined);
-  const failing = await directoryProvider({
-    list: async () => { throw new Error("disk gone"); },
-  })({ state: { stateVersion: 1 } });
+  const failingStore = fakeNotesStore([]);
+  failingStore.list = async () => { throw new Error("disk gone"); };
+  const failing = await directoryProvider(failingStore)({ state: { stateVersion: 1 } });
   assert.equal(failing, undefined);
 });
 
