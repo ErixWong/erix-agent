@@ -13,7 +13,6 @@ import {
 } from "../src/run-state.js";
 import {
   createBuiltinNotesTools,
-  recordAutoCapture,
 } from "../src/tools/notes.js";
 import { createFileNotesStore } from "../src/store/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -80,12 +79,31 @@ test("directory provider: real file-store integration renders source markers and
   try {
     const notesStore = createFileNotesStore({ dir: directory });
     const builtin = createBuiltinNotesTools({ notesDir: directory, notesStore, runId: "dir-run" });
-    // 真实写入：agent 笔记、auto 捕获、artifact-only 笔记（无 content）
+    // 真实写入：agent 笔记、历史 auto 记录（ADR-016：recordAutoCapture 已删，
+    // 直接写 store 构造 auto 源的存量数据）、artifact-only 笔记（无 content）
     await builtin.executeTool("note_take", { key: "agent_note", content: "人工记录的值" });
-    await recordAutoCapture({
+    await notesStore.write({
+      scope: "run",
+      scopeRef: "dir-run",
       key: "auto_note",
-      content: "自动捕获的 token",
-      __erix: { runId: "dir-run", notesDir: directory },
+      record: {
+        key: "auto_note",
+        scope: "run",
+        scopeRef: "dir-run",
+        current: {
+          content: "自动捕获的 token",
+          provenance: { source: "auto", verified: true, ts: "2026-09-15T02:00:00.000Z" },
+          ts: "2026-09-15T02:00:00.000Z",
+        },
+        superseded: [],
+        folded: 0,
+        pinned: false,
+        tags: [],
+        relevance: 0.8,
+        state: "active",
+        created_at: "2026-09-15T02:00:00.000Z",
+        updated_at: "2026-09-15T02:00:00.000Z",
+      },
     });
     await builtin.executeTool("note_take", {
       key: "artifact_note",

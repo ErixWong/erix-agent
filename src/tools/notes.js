@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { createFileNotesStore, assertNotesStore, NotesStoreError } from "../store/notes.js";
+import {
+  createFileNotesStore,
+  assertNotesStore,
+  normalizeNoteRecord,
+  NotesStoreError,
+} from "../store/notes.js";
 import { createToolRegistry } from "./registry.js";
 
 export const MAX_CONTENT_LENGTH = 4000;
@@ -101,15 +106,6 @@ function json(value) {
   return JSON.stringify(value);
 }
 
-function unsupported(scope, key) {
-  return json({
-    status: "unsupported",
-    ...(key === undefined ? {} : { key }),
-    scope,
-    next: "当前阶段只支持 run 作用域；请显式使用 scope=run",
-  });
-}
-
 function missing(key) {
   return json({ status: "missing", key, next: MISSING_NEXT });
 }
@@ -139,9 +135,11 @@ function canonical(value) {
   return JSON.stringify(stable(value));
 }
 
+// breaking（issue #67 PR 3）：schema 收敛为 run-only；project/user 直接
+// invalid（提示「当前仅支持 run 作用域」），不再是「暂不支持」的将来 API 表面。
 function validateScope(input) {
   const scope = input?.scope ?? "run";
-  return scope === "run" || scope === "project" || scope === "user" ? scope : null;
+  return scope === "run" ? "run" : null;
 }
 
 function validateKey(input) {
@@ -194,8 +192,7 @@ function publicEntry(entry, { invalid: markInvalid = false } = {}) {
 function validateInput(input) {
   const scope = validateScope(input);
   const key = validateKey(input);
-  if (!scope) return { error: invalid(key, "scope 必须是 run、project 或 user") };
-  if (scope !== "run") return { error: unsupported(scope, key) };
+  if (!scope) return { error: invalid(key, "当前仅支持 run 作用域（scope 仅接受 run）") };
   if (!key) return { error: invalid(key, "key 必须是非空字符串") };
   if (contentProvided(input) && typeof input.content !== "string") {
     return { error: invalid(key, "content 必须是字符串") };
@@ -224,7 +221,8 @@ function validateInput(input) {
   return { scope, key, tags, relevance };
 }
 
-async function writeNote(input = {}, { source = "agent" } = {}) {
+// ADR-016：auto-capture 桥退役，写入口只剩 agent 源（note_take）。
+async function writeNote(input = {}) {
   const checked = validateInput(input);
   if (checked.error) return checked.error;
   const { key, tags, relevance } = checked;
@@ -248,11 +246,11 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
   const timestamp = now();
   const supplied = input.provenance ?? {};
   const provenance = {
-    source,
+    source: "agent",
     verified: supplied.verified ?? contentProvided(input),
     ...(supplied.toolUseId === undefined ? {} : { toolUseId: supplied.toolUseId }),
     ...(supplied.round === undefined ? {} : { round: supplied.round }),
-    ts: source === "auto" ? (supplied.ts ?? timestamp) : timestamp,
+    ts: timestamp,
   };
   const superseded = old
     ? [
@@ -271,7 +269,7 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
     folded,
     pinned: input.pinned ?? old?.pinned ?? false,
     tags: input.tags === undefined ? (old?.tags ?? tags) : tags,
-    relevance: relevance ?? old?.relevance ?? (source === "auto" ? 0.8 : 0.5),
+    relevance: relevance ?? old?.relevance ?? 0.5,
     state: "active",
     created_at: old?.created_at ?? timestamp,
     updated_at: timestamp,
@@ -301,15 +299,8 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
   });
 }
 
-/**
- * Private CLI capture arm. It is intentionally not listed in the tool schema.
- */
-export async function recordAutoCapture(input = {}) {
-  return writeNote(input, { source: "auto" });
-}
-
 export async function note_take(input = {}) {
-  return writeNote(input, { source: "agent" });
+  return writeNote(input);
 }
 
 function noteReadValue(record) {
@@ -340,8 +331,7 @@ function noteReadValue(record) {
 export async function note_read(input = {}) {
   const scope = validateScope(input);
   const key = validateKey(input);
-  if (!scope) return invalid(key, "scope 必须是 run、project 或 user");
-  if (scope !== "run") return unsupported(scope, key);
+  if (!scope) return invalid(key, "当前仅支持 run 作用域（scope 仅接受 run）");
   if (!key) return invalid(key, "key 必须是非空字符串");
   let record;
   try {
@@ -350,6 +340,8 @@ export async function note_read(input = {}) {
     return invalid(key, error?.message ?? String(error));
   }
   if (!record) return missing(key);
+  // 注入 store 不经过 file adapter 的 readRecord 统一出口：防御性 normalize。
+  record = normalizeNoteRecord(record, { key });
   if (record.state === "revoked") {
     return json({
       status: "revoked",
@@ -381,8 +373,7 @@ function listEntry(record) {
 
 export async function note_list(input = {}) {
   const scope = validateScope(input);
-  if (!scope) return invalid(undefined, "scope 必须是 run、project 或 user");
-  if (scope !== "run") return unsupported(scope);
+  if (!scope) return invalid(undefined, "当前仅支持 run 作用域（scope 仅接受 run）");
   if (input.tag !== undefined && typeof input.tag !== "string") {
     return invalid(undefined, "tag 必须是字符串");
   }
@@ -440,7 +431,8 @@ export async function note_list(input = {}) {
       next: "分页游标已过期（scope 内记录已变更）；请去掉 cursor 从头翻页",
     });
   }
-  const notes = page.records.map(listEntry);
+  // 注入 store 的记录缺时间字段时 normalize 兜底（排序/展示不崩）。
+  const notes = page.records.map((record) => listEntry(normalizeNoteRecord(record)));
   return json({
     status: "found",
     count: notes.length,
@@ -456,8 +448,7 @@ export async function note_list(input = {}) {
 export async function note_forget(input = {}) {
   const scope = validateScope(input);
   const key = validateKey(input);
-  if (!scope) return invalid(key, "scope 必须是 run、project 或 user");
-  if (scope !== "run") return unsupported(scope, key);
+  if (!scope) return invalid(key, "当前仅支持 run 作用域（scope 仅接受 run）");
   if (!key) return invalid(key, "key 必须是非空字符串");
   const store = notesStoreFor(input);
   let record;
@@ -496,7 +487,7 @@ const TOOL_DEFINITIONS = [
         key: { type: "string" },
         content: { type: "string", maxLength: MAX_CONTENT_LENGTH },
         artifactRef: {},
-        scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
+        scope: { type: "string", enum: ["run"], default: "run" },
         tags: { type: "array", items: { type: "string" } },
         relevance: { type: "number", minimum: 0, maximum: 1 },
         pinned: { type: "boolean" },
@@ -513,7 +504,7 @@ const TOOL_DEFINITIONS = [
       type: "object",
       properties: {
         key: { type: "string" },
-        scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
+        scope: { type: "string", enum: ["run"], default: "run" },
       },
       required: ["key"],
       additionalProperties: false,
@@ -525,7 +516,7 @@ const TOOL_DEFINITIONS = [
     inputSchema: {
       type: "object",
       properties: {
-        scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
+        scope: { type: "string", enum: ["run"], default: "run" },
         tag: { type: "string" },
         minRelevance: { type: "number", minimum: 0, maximum: 1 },
         source: { type: "string", enum: ["auto", "agent"] },
@@ -545,7 +536,7 @@ const TOOL_DEFINITIONS = [
       type: "object",
       properties: {
         key: { type: "string" },
-        scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
+        scope: { type: "string", enum: ["run"], default: "run" },
       },
       required: ["key"],
       additionalProperties: false,
@@ -897,7 +888,8 @@ export function createBuiltinNotesTools(options = {}) {
               cursor = null;
               continue;
             }
-            records.push(...page.records);
+            // 注入 store 的记录可能缺时间字段：expectedUpdatedAt 取值前 normalize。
+            records.push(...page.records.map((record) => normalizeNoteRecord(record)));
             cursor = page.nextCursor;
           } while (cursor !== null);
         } catch (error) {
@@ -975,7 +967,10 @@ export function createBuiltinNotesTools(options = {}) {
         sourceRevision: page.revision,
       };
     }
-    const records = page.status === "found" ? page.records : [];
+    const records = page.status === "found"
+      // 注入 store 不经过 file adapter 出口：渲染（updated_at 排序）前 normalize。
+      ? page.records.map((record) => normalizeNoteRecord(record))
+      : [];
     const rendered = renderNotesDirectory(records, state);
     if (rendered === undefined) return undefined;
     semanticCache = { epoch: semanticEpoch, revision: page.revision, text: rendered.text };
