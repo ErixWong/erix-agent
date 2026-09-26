@@ -18,6 +18,7 @@
     "CHANGELOG.md",
     "docs/host-consumer-contract.md",
     "docs/host-upgrade-guide-0.6.0.md",
+    "docs/host-upgrade-guide-0.12.0.md",
     "test/contract/assembly-port.js",
     "test/contract/execute-tool.js",
     "test/contract/index.js",

@@ -6,7 +6,8 @@
 重试/重跑策略以及最终消费决策归宿主。责任边界见
 [ADR-012](decisions/012-engine-truth-model-efficiency-host-policy.md) 与
 [ADR-013](decisions/013-guard-charter.md)。0.6.0 迁移步骤见
-[host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md)。
+[host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md)；0.12.0 notes 契约迁移步骤见
+[host-upgrade-guide-0.12.0.md](host-upgrade-guide-0.12.0.md)。
 
 ## `runToolLoop` 选项与工具执行契约
 
@@ -161,16 +162,52 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 等事实。任务是否完成、交付物是否满足要求、能否自动进入下游，仍由宿主、测试系统或人工
 审核决定。
 
-### NotesStore 作用域与写契约
+### NotesStore 接口、作用域与写契约（0.12.0）
+
+`NotesStore` 端口有七个必需方法：
+
+```text
+write, read, list, complete, revoke, janitor, purge
+```
+
+`createBuiltinNotesTools` 在 assembler 创建期即经 `assertNotesStore` 校验——缺任一方法
+在第一轮 run 之前抛 `TypeError`，不再静默回退到隐式 file store。`write`/`read` 是 run
+作用域的记录读写对；`list` 返回分页视图；`complete`、`revoke`、`janitor`、`purge`
+是生命周期与维护方法，见 [notes 维护调度](#notes-维护调度0120)。
+
+`list()` 返回 `NotesListPage`，不再是全量数组：
+
+```js
+{
+  status: "found" | "cursor_stale",
+  records,            // NoteRecord[]，仅本页
+  nextCursor,         // 不透明字符串 "<revision>:<offset>"，末页为 null
+  revision,           // 本页绑定的 scope revision
+}
+```
+
+请求接受 `limit`（默认 50，钳制到 200）、`cursor`（上一次响应的 `nextCursor`——绝不自行
+构造）、`filters`（`state`、`tag`、`source`、`minRelevance`）与 `sort`
+（`"relevance"` | `"pinned_updated"`）。若翻页期间 scope 已变更（`revision` 不匹配），
+返回页为 `status: "cursor_stale"`、空窗口、`nextCursor: null`；调用方必须从头翻页。
+每个 scope 目录带隐藏 metadata 文件 `.revision`，作游标与 semantic 增量缓存的锚点；
+宿主若在外部枚举 notes 目录必须跳过点文件。
 
 文件型 `NotesStore` 在适配器边界上对每个 `scopeRef` 做一次规范化。`../escape`、绝对
 路径、编码分隔符等不安全的 scope 引用会被映射为稳定的 `run-h-...` 目录；目录与持久化的
 `record.scopeRef` 使用同一个规范值。宿主与技能必须把原始逻辑 scope 引用交给适配器，
-不要预先规范化。已处于规范哈希形态的既有目录仍可读，并参与 list、complete、janitor。
+不要预先规范化。已处于规范哈希形态的既有目录仍可读，并参与 list、complete、janitor、purge。
 
 文件适配器假定每个 scope/key 只有一个写入者。并发的读-改-写更新可能丢一次更新及其被
 取代的历史（last-write-wins）。需要并发更新的宿主必须在宿主边界串行化；适配器不提供
-锁或其他并发机制。
+锁或其他并发机制。`revoke`
+在 API 层再进一步：`expectedState` / `expectedUpdatedAt` 并发护栏让与其他写入方竞态的
+revoke 返回 `{ status: "unchanged" }`，而不是覆盖它没见过的记录。
+
+记录时间字段在每次读取时兜底：缺 `updated_at` 回退 `created_at`，两者都缺用固定 epoch
+`1970-01-01T00:00:00.000Z`（适配器绝不替没写过的记录伪造"现在"）。
+`normalizeNoteRecord()`（从 `src/store/notes.js` 导出）是适配器 read/list 出口与
+tools 层（注入 store）共用的兜底。
 
 ### Notes 工具注册来源
 
@@ -188,11 +225,18 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 - `executeTool({id, name, input, context, signal})`——结构化形态，对齐 `runToolLoop`/
   checkpoint-executor 的调用约定（位置参数形态 `executeTool(name, input, context)`
   为兼容既有调用方保留）；
-- `lifecycle.onRunStart` / `lifecycle.onRunComplete`——run 前 janitor；run 后
-  `completeRun` 后接 janitor；收尾错误收集在返回值的 `errors[]` 里返回，不抛出覆盖主错误。
+- `lifecycle`——三阶段生命周期（0.12.0）。`onRunStart` 是兼容 no-op：run 起点不再跑
+  任何 notes GC，返回 `{ status: "skipped", reason: "notes janitor is host-scheduled; ..." }`。
+  `onRunComplete` 只调 `completeRun`（active → done），返回 `{ completed, errors }`——
+  旧的 `janitor` 字段已移除。收尾错误收集在返回值的 `errors[]` 里返回，不抛出覆盖主错误。
   两者入参都接受可选的 `reportPersistenceFailure` reporter
-  （`onRunComplete({ reportPersistenceFailure })`）：注入后 complete/janitor 期间的
-  store 失败像工具执行失败一样经它上报；无参调用（如下例）保持原行为——失败只经
+  （`onRunComplete({ reportPersistenceFailure })`）：注入后 complete 期间的 store 失败像
+  工具执行失败一样经它上报。`revokeInactive({ scopeRefs, reason? })` 是宿主 liveness
+  callback 的入口：对每个 `liveness.isAlive(scopeRef, { now, ttlMs })` 返回 `false` 的
+  scopeRef，经 store 的 expected-state 护栏撤销其 active 记录。assembler 未传
+  `liveness` 时 `revokeInactive` 是 no-op，返回
+  `{ checked: 0, revoked: 0, reason: "liveness not configured" }`——无 liveness 宿主的
+  active orphan 永不自动回收（宁积累不误杀）。无参调用（如下例）保持原行为——失败只经
   返回值的 `errors[]` 或抛出的错误可见；
 - `semanticStateProvider`——ADR-015 折叠点 notes 小抄目录（仅 active、最多 20 条、
   pinned 优先后按 `updated_at` 排序、版本回声 `state.stateVersion`）。入参 payload
@@ -202,8 +246,7 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 典型接线（显式 try/finally）：
 
 ```js
-const notes = createBuiltinNotesTools({ runId, notesDir, notesStore });
-await notes.lifecycle.onRunStart();
+const notes = createBuiltinNotesTools({ runId, notesDir, notesStore, liveness });
 try {
   return await runToolLoop({
     /* ... */
@@ -227,6 +270,10 @@ try {
 notes 写失败经引擎的通用宿主持久化失败报告桥上报（`context.reportPersistenceFailure`，
 `port: "notes"`），不得静默吞错。宿主仍负责选择并注入 `NotesStore` 与逻辑 run scope。
 
+assembler 接受可选的 `liveness: { ttlMs, isAlive }` 绑定（`ttlMs` 必须是正安全整数，
+`isAlive` 必须返回布尔值）。它唯一服务于 `lifecycle.revokeInactive`；引擎绝不自行调用
+`isAlive`。`isAlive` 抛错是失败信号，进返回的 `errors[]`——绝不解释为 `false`。
+
 **note 的 provenance 是调用方自报的 metadata，不是事实。** 记录上 `source` 以外的
 `provenance` 字段——`verified`、`toolUseId`、`round`——由调用方自报、可被伪造，
 不得作为授权输入或任何 guard 的依据。run 实际做了什么，事实依据是归档 transcript
@@ -241,6 +288,25 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 `getSkillDefinition()` 支持不受影响。它不是第二套
 实现，也不再是可独立复制运行的 skill；
 可移植集成应使用 npm 包入口。
+
+### notes 维护调度（0.12.0）
+
+自 0.12.0 起，引擎不再隐式执行任何 notes 维护：run 起点/终点都不再触发 janitor，
+也没有任何组件自动清理墓碑。宿主拥有以下三个维护循环并显式调度：
+
+1. **过期 done 清理**——循环调用 `store.janitor({ limit, cursor })` 直到
+   `nextCursor === null`。`janitor` 现在只做一件事：撤销 `state === "done"` 且
+   `expires_at` 已过的记录（旧的时间启发式 orphan 猜测已移除）；其 cursor 是数值
+   offset，结果为 `{ status, scanned, revoked, nextCursor }`——旧 `changed` 字段已移除。
+   done 保留期来自 `ERIX_NOTES_DONE_GRACE_MS`（默认 24h）；deprecated 别名
+   `ERIX_NOTES_GRACE_MS` 仍被读取，但已失去 active orphan 清理语义。
+2. **墓碑清理**——循环调用 `store.purge({ limit, cursor })` 直到 `nextCursor === null`。
+   `purge` 真正删除墓碑文件（`state === "revoked"` 且 `revoked_at` 早于
+   `now - ERIX_NOTES_TOMBSTONE_RETENTION_MS`，默认 30 天），删除前重读防竞态；
+   其 cursor 是逐条目的不透明 key（数值 offset 会因文件 unlink 左移而跳过条目）。
+3. **active orphan 清理**——宿主凭自己的 liveness 知识判定哪些 scope 已死，调用
+   `notes.lifecycle.revokeInactive({ scopeRefs, reason? })`。无 liveness 的宿主
+   永不自动回收 active orphan。
 
 ### CLI 侧来源 guard
 
