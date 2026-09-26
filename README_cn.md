@@ -267,7 +267,6 @@ end_turn
 no_tool
 stall
 max_rounds_cap
-reflection_stop
 judge_done
 continuation_exhausted
 final_guard_unverified
