@@ -625,7 +625,10 @@ retired the bundled `skills/notes/skill.mjs` compatibility shim in v0.11.0
 factory (`--no-notes` / `ERIX_NO_NOTES=1` opts out) and `erix skills`
 no longer lists a bundled notes skill; user and project skills can still be
 supplied from `~/.erix/skills/`, the project `.erix/skills/`, or
-`--skills-dir <path>`. `erix skills` lists discovered skills.
+`--skills-dir <path>`. `erix skills` lists discovered skills. Note `provenance` fields other than
+`source` (`verified`, `toolUseId`, `round`) are caller-reported metadata and
+never an authorization or guard basis; ground truth is the archived transcript
+(ADR-016).
 
 MCP uses standard `.mcp.json` configuration and supports both stdio and HTTP
 servers. The `mcp` proxy exposes `list`, `search`, `call`, and `status`

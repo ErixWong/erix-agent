@@ -277,6 +277,13 @@ bridge (`context.reportPersistenceFailure`, `port: "notes"`); they are never
 silently swallowed. The host remains responsible for choosing and injecting the
 `NotesStore` and logical run scope.
 
+**Note provenance is caller-reported metadata, not fact.** The `provenance`
+fields on a note record other than `source` — `verified`, `toolUseId`, `round`
+— are self-reported by the caller and can be forged; they must never be used as
+an authorization input or as the basis of any guard. Ground truth about what
+the run actually did is the archived transcript (`toolOutputs`, ADR-016), not
+any field on a note record.
+
 The CLI's bundled `skills/notes/skill.mjs` was retired in v0.11.0 (issue #61),
 together with the assembler's alias keys: notes are delivered exclusively
 through `createBuiltinNotesTools`, and `erix skills` no longer lists a bundled

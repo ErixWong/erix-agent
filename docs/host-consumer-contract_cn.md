@@ -221,6 +221,11 @@ try {
 notes 写失败经引擎的通用宿主持久化失败报告桥上报（`context.reportPersistenceFailure`，
 `port: "notes"`），不得静默吞错。宿主仍负责选择并注入 `NotesStore` 与逻辑 run scope。
 
+**note 的 provenance 是调用方自报的 metadata，不是事实。** 记录上 `source` 以外的
+`provenance` 字段——`verified`、`toolUseId`、`round`——由调用方自报、可被伪造，
+不得作为授权输入或任何 guard 的依据。run 实际做了什么，事实依据是归档 transcript
+（`toolOutputs`，ADR-016），而不是 note 记录上的任何字段。
+
 CLI 的 bundled `skills/notes/skill.mjs` 已于 v0.11.0 退役（issue #61），与 assembler
 别名键一并移除：notes 统一经 `createBuiltinNotesTools` 工厂交付，`erix skills`
 不再列出 bundled notes skill（用户/项目 skill 发现不受影响）。旧第三方 skill
