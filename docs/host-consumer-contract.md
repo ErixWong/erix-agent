@@ -242,10 +242,17 @@ overriding any caller-forged `__erix` injection. The returned object contains:
 - `lifecycle.onRunStart` / `lifecycle.onRunComplete` — janitor before the run,
   and `completeRun` followed by janitor after it; completion errors are
   collected into the returned `errors[]` instead of throwing over the primary
-  error;
+  error. Both accept an optional `reportPersistenceFailure` reporter in their
+  input (`onRunComplete({ reportPersistenceFailure })`); when injected, store
+  failures during complete/janitor are reported through it exactly like tool
+  execution failures. Calling them with no arguments (as in the example below)
+  keeps the previous behavior — failures surface only through the returned
+  `errors[]` or the thrown error;
 - `semanticStateProvider` — the ADR-015 fold-point notes directory (active
   only, max 20, pinned first then `updated_at` order, version echoing
-  `state.stateVersion`).
+  `state.stateVersion`). Its payload accepts an optional
+  `reportPersistenceFailure`; when provided, a failed store list is reported
+  through it (the provider still returns `undefined` in that case).
 
 Typical wiring with an explicit try/finally:
 

@@ -189,9 +189,15 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
   checkpoint-executor 的调用约定（位置参数形态 `executeTool(name, input, context)`
   为兼容既有调用方保留）；
 - `lifecycle.onRunStart` / `lifecycle.onRunComplete`——run 前 janitor；run 后
-  `completeRun` 后接 janitor；收尾错误收集在返回值的 `errors[]` 里返回，不抛出覆盖主错误；
+  `completeRun` 后接 janitor；收尾错误收集在返回值的 `errors[]` 里返回，不抛出覆盖主错误。
+  两者入参都接受可选的 `reportPersistenceFailure` reporter
+  （`onRunComplete({ reportPersistenceFailure })`）：注入后 complete/janitor 期间的
+  store 失败像工具执行失败一样经它上报；无参调用（如下例）保持原行为——失败只经
+  返回值的 `errors[]` 或抛出的错误可见；
 - `semanticStateProvider`——ADR-015 折叠点 notes 小抄目录（仅 active、最多 20 条、
-  pinned 优先后按 `updated_at` 排序、版本回声 `state.stateVersion`）。
+  pinned 优先后按 `updated_at` 排序、版本回声 `state.stateVersion`）。入参 payload
+  接受可选的 `reportPersistenceFailure`：显式传入时，store list 失败经它上报
+  （该情形下 provider 仍返回 `undefined`）。
 
 典型接线（显式 try/finally）：
 

@@ -289,6 +289,64 @@ test("assembler lifecycle binds reporter from lifecycle input and classifies com
   });
 });
 
+test("assembler reports distinct operations separately even when they share one Error object", async () => {
+  await withDirectory(async (directory) => {
+    const backing = createFileNotesStore({ dir: directory });
+    const shared = new Error("shared boom");
+    const failingStore = {
+      read: backing.read.bind(backing),
+      write: backing.write.bind(backing),
+      list: backing.list.bind(backing),
+      // complete 与 janitor 复用同一 Error 对象：去重粒度是 (error, operation)，
+      // 两个 operation 必须各报一次，第二次不得被吞。
+      complete: async () => { throw shared; },
+      janitor: async () => { throw shared; },
+    };
+    const reports = [];
+    const builtin = createBuiltinNotesTools({
+      notesDir: directory,
+      notesStore: failingStore,
+      runId: "shared-error-run",
+    });
+    await builtin.lifecycle.onRunComplete({
+      reportPersistenceFailure: (info) => reports.push(info),
+    });
+    assert.equal(reports.length, 2);
+    assert.deepEqual(
+      reports.map((report) => report.operation).sort(),
+      ["complete", "janitor"],
+    );
+  });
+});
+
+test("assembler semanticStateProvider reports list failure only when a reporter is injected", async () => {
+  await withDirectory(async (directory) => {
+    const failingStore = {
+      list: async () => { throw new Error("list boom"); },
+    };
+    const builtin = createBuiltinNotesTools({
+      notesDir: directory,
+      notesStore: failingStore,
+      runId: "sem-fail-run",
+    });
+    // 未注入 reporter（fold 点真实形态）：静默返回 undefined，不装懂也不上报
+    const silent = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.equal(silent, undefined);
+    // 显式注入：对外仍返回 undefined，但补发一条可观察诊断
+    const reports = [];
+    const reported = await builtin.semanticStateProvider({
+      state: { stateVersion: 1 },
+      reportPersistenceFailure: (info) => reports.push(info),
+    });
+    assert.equal(reported, undefined);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].port, "notes");
+    assert.equal(reports[0].operation, "list");
+    assert.equal(reports[0].phase, "read");
+    assert.equal(reports[0].sideEffect, "not_started");
+  });
+});
+
 test("assembler semanticStateProvider sorts, caps at 20, and echoes stateVersion", async () => {
   await withDirectory(async (directory) => {
     const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "sem-run" });

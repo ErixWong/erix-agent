@@ -604,11 +604,15 @@ function scopedToolInput(input, name, scope) {
 const REPORTABLE_STORE_METHODS = ["read", "write", "list", "complete", "janitor"];
 // complete/janitor 与 write 一样会真实写文件，按写副作用分类；read/list 是纯读。
 const WRITE_SIDE_EFFECT_METHODS = new Set(["write", "complete", "janitor"]);
-// 已上报过的 store 错误（WeakSet 防 decorator 与调用点重复上报同一错误）。
-const reportedStoreErrors = new WeakSet();
+// 已上报过的 (error, operation) 组合（防 decorator 与调用点重复上报同一组合；
+// 同一 Error 对象被 complete/janitor 等多个操作复用时，每个 operation 各报一次）。
+const reportedStoreFailures = new WeakMap();
 
 async function reportStoreFailure(reporter, operation, error) {
-  if (typeof reporter !== "function" || reportedStoreErrors.has(error)) return;
+  if (typeof reporter !== "function") return;
+  const dedupable = error !== null && (typeof error === "object" || typeof error === "function");
+  const reported = dedupable ? reportedStoreFailures.get(error) : undefined;
+  if (reported?.has(operation)) return;
   try {
     await reporter({
       port: "notes",
@@ -619,7 +623,9 @@ async function reportStoreFailure(reporter, operation, error) {
         : "not_started",
       error,
     });
-    reportedStoreErrors.add(error);
+    if (!dedupable) return;
+    if (reported) reported.add(operation);
+    else reportedStoreFailures.set(error, new Set([operation]));
   } catch {
     // 报告桥自身失败不得阻断工具原有的错误路径。
   }
@@ -676,6 +682,9 @@ export function createBuiltinNotesTools(options = {}) {
     clock: () => clock(),
   });
 
+  // 并发约定：assembler 假定宿主串行调用（runToolLoop 单线程循环）；
+  // activeReporter 的 set/restore 不防并发交错，并发复用同一 assembler
+  // 需宿主在宿主边界自行串行化（与 NotesStore 的 single-writer 约定一致）。
   let activeReporter;
   const store = withPersistenceReporting(boundStore, () => activeReporter);
   const scope = {
@@ -769,14 +778,16 @@ export function createBuiltinNotesTools(options = {}) {
   };
 
   // ADR-015：notes 小抄目录 → semantic 槽位；复用绑定的同一 store 实例。
+  // fold 点调用不在 executor 上下文内，activeReporter 恒为 undefined：
+  // 失败诊断改为可选注入——宿主显式传 reportPersistenceFailure 才上报。
   const semanticScopeRef = boundScopeRef ?? currentScopeRef(undefined);
-  const semanticStateProvider = async ({ state } = {}) => {
+  const semanticStateProvider = async ({ state, reportPersistenceFailure } = {}) => {
     let records;
     try {
       records = await store.list({ scopeRef: semanticScopeRef });
     } catch (error) {
-      // 不装懂：对外仍返回 undefined；但 reporter 可用时补发可观察诊断（不重复上报）。
-      await reportStoreFailure(activeReporter, "list", error);
+      // 不装懂：对外仍返回 undefined；显式注入 reporter 时补发可观察诊断。
+      await reportStoreFailure(reportPersistenceFailure, "list", error);
       return undefined;
     }
     return renderNotesDirectory(records, state);
