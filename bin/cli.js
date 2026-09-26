@@ -26,7 +26,12 @@ import {
   buildCaptureStub,
   createFinalGuard,
 } from "./final-guard.js";
-import { buildSkillTools, discoverSkills, loadAllSkills } from "./skills.js";
+import {
+  buildSkillTools,
+  discoverSkills,
+  loadAllSkills,
+  warnBuiltinToolConflicts,
+} from "./skills.js";
 import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
@@ -621,6 +626,8 @@ async function runChatWithNotes({
     excludeSkillIds: ["notes"],
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp", "note_take", "note_read", "note_list", "note_forget"],
   });
+  // 同名 skill 工具冲突：内置实现优先，skill 版本被忽略，此处一次性告警（issue #65）。
+  warnBuiltinToolConflicts(skillTools.errors);
   // --no-notes / ERIX_NO_NOTES：不装配工厂（用户级 notes skill 仍经 excludeSkillIds 排除，对外行为等价）。
   const notesAssembler = notesDisabled || !notesStore
     ? undefined

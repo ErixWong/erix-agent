@@ -1,5 +1,7 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -149,10 +151,58 @@ const schemas = [
       additionalProperties: false,
     },
   },
+  {
+    name: "todo_add",
+    description: "添加一条待办任务（存 ~/.erix/todos/，按工作目录隔离），返回确认文本",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "任务内容" },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "todo_list",
+    description: "列出当前工作目录的所有待办任务，可按状态过滤，返回格式化列表文本",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: {
+          type: "string",
+          enum: ["pending", "done"],
+          description: "可选过滤状态：pending 或 done",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "todo_done",
+    description: "将指定 id 的任务标记为完成",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "number", description: "任务 id" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "todo_clear",
+    description: "清空当前工作目录的全部任务",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
 ].map(normalizeSchema);
 
 export const CLI_TOOLS_SYSTEM_PROMPT =
-  `可用工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，grep 递归搜索文件内容（支持 glob 文件名过滤、字面量/正则模式，结果按文件分组），tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出。
+  `可用工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，grep 递归搜索文件内容（支持 glob 文件名过滤、字面量/正则模式，结果按文件分组），tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出，todo_add 添加待办任务、todo_list 列出待办、todo_done 标记完成、todo_clear 清空（均返回可读文本，数据存 ~/.erix/todos/ 按工作目录隔离）。
 
 [你的处境]
 上下文会被折叠，早期细节你会真的忘记——不是记不清，是没有。
@@ -164,7 +214,7 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 终稿的结束协议 JSON 必须带 findings 字段，只把归档输出中出现过的字面值声明为 label→精确值（如 "findings":{"nonce":"abc123"}）；不要声明计数/次数/引用等派生结论；没有关键值时省略该字段。
 
 [工具纪律]
-- 复杂任务先规划并逐步执行；长任务用 todo 工具记录进度
+- 复杂任务先规划并逐步执行；长任务用 todo_add 记录进度、todo_done 标记完成，随时 todo_list 核对剩余项
 - 大文件用 readFile 的 offset/limit 分段读取，操作后验证结果
 - 具体数值必须来自当前工具返回或 note_read，不得编造
 - 不要主动读取密钥、凭据或 .env 文件；只用本次工具返回明确给出的来源
@@ -665,6 +715,82 @@ export function createCliTools({
     return Buffer.byteLength(content, "utf8");
   }
 
+  // ---- todo 内置工具（issue #65：自 ~/.erix/skills/todo/skill.mjs 移植）----
+  // 数据文件定位与格式与原 skill 完全一致：~/.erix/todos/<basename>-<hash8>.json
+  // （basename+cwd 的 sha256 前 8 位，按 cwd 隔离），老数据天然兼容。
+  // 内置化后工具返回可读字符串（原 skill 返回对象，由宿主序列化）。
+
+  function todoDataFile() {
+    const base = path.basename(root) || "root";
+    const hash = createHash("sha256").update(root).digest("hex").slice(0, 8);
+    return path.join(homedir(), ".erix", "todos", `${base}-${hash}.json`);
+  }
+
+  function loadTodos() {
+    const file = todoDataFile();
+    if (!existsSync(file)) return [];
+    try {
+      const parsed = JSON.parse(readFileSync(file, "utf8"));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveTodos(todos) {
+    const file = todoDataFile();
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(todos, null, 2), "utf8");
+  }
+
+  function formatTodoList(todos) {
+    if (todos.length === 0) return "（无任务）";
+    const lines = todos.map((item) => `#${item.id} [${item.status}] ${item.text}`);
+    return [`共 ${todos.length} 条任务`, ...lines].join("\n");
+  }
+
+  async function todoAdd({ text }) {
+    if (typeof text !== "string" || text.trim() === "") {
+      throw new TypeError("todo_add text 必须是非空字符串");
+    }
+    const todos = loadTodos();
+    const id = todos.length > 0 ? Math.max(...todos.map((item) => Number(item.id) || 0)) + 1 : 1;
+    const item = {
+      id,
+      text: String(text),
+      status: "pending",
+      createdAt: new Date().toISOString(),
+    };
+    todos.push(item);
+    saveTodos(todos);
+    return `已添加任务 #${id}: ${item.text}`;
+  }
+
+  async function todoList({ status } = {}) {
+    let todos = loadTodos();
+    if (status === "pending" || status === "done") {
+      todos = todos.filter((item) => item.status === status);
+    }
+    return formatTodoList(todos);
+  }
+
+  async function todoDone({ id }) {
+    const todos = loadTodos();
+    const item = todos.find((entry) => entry.id === Number(id));
+    if (!item) {
+      throw new Error(`任务不存在: id=${id}`);
+    }
+    item.status = "done";
+    saveTodos(todos);
+    return `已将任务 #${item.id} 标记为完成：${item.text}`;
+  }
+
+  async function todoClear() {
+    const before = loadTodos().length;
+    saveTodos([]);
+    return `已清空全部任务（共 ${before} 条）`;
+  }
+
   const executors = {
     readFile,
     rg,
@@ -672,6 +798,10 @@ export function createCliTools({
     tree,
     writeFile,
     exec: (input) => executeExecCommand(input, root),
+    todo_add: todoAdd,
+    todo_list: todoList,
+    todo_done: todoDone,
+    todo_clear: todoClear,
   };
 
   async function executeTool(name, input, context) {

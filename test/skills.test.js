@@ -10,6 +10,7 @@ import {
   loadSkill,
   loadAllSkills,
   skillDirectories,
+  warnBuiltinToolConflicts,
 } from "../bin/skills.js";
 
 async function withDirectory(callback) {
@@ -278,6 +279,33 @@ test("buildSkillTools reports conflicts with built-in tools", async () => {
     assert.deepEqual(result.tools, []);
     assert.equal(result.errors.length, 1);
     assert.match(result.errors[0].error, /工具名冲突：readFile/);
+  });
+});
+
+test("warnBuiltinToolConflicts 合并同名冲突为一次性告警（issue #65）", async () => {
+  await withDirectory(async (cwd) => {
+    const skillsDirectory = join(cwd, ".erix", "skills");
+    await writeSkill(skillsDirectory, "todo", v1Definition("todo", "todo_add"));
+    await writeSkill(skillsDirectory, "conflict2", v1Definition("conflict2", "readFile"));
+    const result = await buildSkillTools({
+      home: cwd,
+      cwd,
+      skillsDir: skillsDirectory,
+      builtinNames: ["readFile", "todo_add"],
+    });
+    assert.equal(result.errors.length, 2);
+
+    const warnings = [];
+    warnBuiltinToolConflicts(result.errors, { warn: (msg) => warnings.push(msg) });
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /已采用内置实现/);
+    assert.match(warnings[0], /todo（todo_add）/);
+    assert.match(warnings[0], /conflict2（readFile）/);
+
+    // 无冲突时静默；非数组输入也不抛错
+    warnBuiltinToolConflicts([], { warn: (msg) => warnings.push(msg) });
+    warnBuiltinToolConflicts(undefined, { warn: (msg) => warnings.push(msg) });
+    assert.equal(warnings.length, 1);
   });
 });
 
