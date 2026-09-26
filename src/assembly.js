@@ -163,9 +163,11 @@ export function createAssemblyPort(input = {}) {
  */
 export async function assemblyPortOptions(input, overrides = {}) {
   const port = createAssemblyPort(input);
-  if (overrides.modelConfig !== undefined
-    && (!overrides.modelConfig || typeof overrides.modelConfig.resolve !== "function")) {
-    throw new TypeError(`assembly port is missing methods: modelConfig.resolve (${MODEL_CONFIG_RESOLVER_HINT})`);
+  if (overrides.modelConfig !== undefined) {
+    const missing = validateModelConfigResolver(overrides.modelConfig);
+    if (missing.length > 0) {
+      throw new TypeError(`assembly port is missing methods: ${missing.join(", ")}`);
+    }
   }
   const options = {
     ...port.policy,

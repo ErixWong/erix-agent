@@ -21,6 +21,7 @@ function createValidTools() {
 
 const ASSEMBLY_PREFIX = "assembly port is missing methods: ";
 const PERSISTENCE_PREFIX = "required persistence store is missing methods: ";
+const PROVIDER_MISSING_MESSAGE = `${ASSEMBLY_PREFIX}provider.chat or provider.chatStream`;
 
 function missingItems(message, prefix) {
   assert.ok(message.startsWith(prefix), `unexpected prefix: ${message}`);
@@ -29,7 +30,6 @@ function missingItems(message, prefix) {
 
 test("boundary parity: missing provider.chat/chatStream reports identically in both shapes", async () => {
   const brokenProvider = { notChat: true };
-  const providerItem = "provider.chat or provider.chatStream";
 
   // Shape 1: createAssemblyPort / assemblyPortOptions
   assert.throws(
@@ -40,8 +40,7 @@ test("boundary parity: missing provider.chat/chatStream reports identically in b
       session: { id: `parity-provider-${process.pid}` },
     }),
     (error) => error instanceof TypeError
-      && error.message.startsWith(ASSEMBLY_PREFIX)
-      && error.message.includes(providerItem),
+      && error.message === PROVIDER_MISSING_MESSAGE,
   );
   await assert.rejects(
     assemblyPortOptions({
@@ -51,8 +50,7 @@ test("boundary parity: missing provider.chat/chatStream reports identically in b
       session: { id: `parity-provider-${process.pid}` },
     }),
     (error) => error instanceof TypeError
-      && error.message.startsWith(ASSEMBLY_PREFIX)
-      && error.message.includes(providerItem),
+      && error.message === PROVIDER_MISSING_MESSAGE,
   );
 
   // Shape 2: runToolLoop with fine-grained options
@@ -64,8 +62,7 @@ test("boundary parity: missing provider.chat/chatStream reports identically in b
       session: { id: `parity-provider-${process.pid}` },
     }),
     (error) => error instanceof TypeError
-      && error.message.startsWith(ASSEMBLY_PREFIX)
-      && error.message.includes(providerItem),
+      && error.message === PROVIDER_MISSING_MESSAGE,
   );
 });
 
@@ -115,23 +112,8 @@ test("boundary parity: incomplete transcript store reports the same missing meth
   // Only appendRound present; the other seven methods are missing.
   const brokenStore = { appendRound: async () => {} };
 
-  // Shape 1: createAssemblyPort rejects with the assembly prefix.
-  assert.throws(
-    () => createAssemblyPort({
-      modelConfig: createValidModelConfig(),
-      provider: createValidProvider(),
-      tools: createValidTools(),
-      store: brokenStore,
-      session: { id: `parity-store-${process.pid}` },
-    }),
-    (error) => error instanceof TypeError
-      && error.message.startsWith(ASSEMBLY_PREFIX)
-      && error.message.includes("store.load")
-      && error.message.includes("store.markRunState"),
-  );
-
-  // Shape 2: runToolLoop with fine-grained options + required persistence
-  // keeps its own prefix but the missing-item list must be identical.
+  // Capture the createAssemblyPort missing-item list once; every shape below
+  // must surface this exact, ordered list under its own error prefix.
   let assemblyItems = null;
   try {
     createAssemblyPort({
@@ -146,6 +128,41 @@ test("boundary parity: incomplete transcript store reports the same missing meth
   }
   assert.ok(Array.isArray(assemblyItems));
 
+  // Shape 1a: createAssemblyPort rejects with the assembly prefix.
+  assert.throws(
+    () => createAssemblyPort({
+      modelConfig: createValidModelConfig(),
+      provider: createValidProvider(),
+      tools: createValidTools(),
+      store: brokenStore,
+      session: { id: `parity-store-${process.pid}` },
+    }),
+    (error) => error instanceof TypeError
+      && error.message.startsWith(ASSEMBLY_PREFIX)
+      && error.message.includes("store.load")
+      && error.message.includes("store.markRunState"),
+  );
+
+  // Shape 1b: assemblyPortOptions routes through createAssemblyPort, so the
+  // same assembly prefix and the same missing-item list must surface.
+  await assert.rejects(
+    assemblyPortOptions({
+      modelConfig: createValidModelConfig(),
+      provider: createValidProvider(),
+      tools: createValidTools(),
+      store: brokenStore,
+      session: { id: `parity-store-${process.pid}` },
+    }),
+    (error) => error instanceof TypeError
+      && (() => {
+        const items = missingItems(error.message, ASSEMBLY_PREFIX);
+        assert.deepEqual(items, assemblyItems);
+        return true;
+      })(),
+  );
+
+  // Shape 2: runToolLoop with fine-grained options + required persistence
+  // keeps its own prefix but the missing-item list must be identical.
   await assert.rejects(
     runToolLoop({
       provider: createValidProvider(),
@@ -157,9 +174,8 @@ test("boundary parity: incomplete transcript store reports the same missing meth
     (error) => error instanceof TypeError
       && (() => {
         const items = missingItems(error.message, PERSISTENCE_PREFIX);
-        return error.message.startsWith(PERSISTENCE_PREFIX)
-          && items.length === assemblyItems.length
-          && items.every((item) => assemblyItems.includes(item));
+        assert.deepEqual(items, assemblyItems);
+        return true;
       })(),
   );
 });
