@@ -78,6 +78,7 @@ const REPL_HELP_TEXT = `REPL 用法：
   ERIX_EXEC_TIMEOUT_MS  exec 前台命令超时毫秒数（默认：120000）
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
   ERIX_NO_NOTES=1       不装配 notes 工厂（note_* 工具不再可用）
+  ERIX_NO_TODO=1        彻底关闭 todo（内置 todo_* 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除）
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
@@ -360,6 +361,9 @@ export async function runRepl(argv, io = {}) {
   const sessionDir = io.sessionDir ?? join(homedir(), ".erix");
   const notesDir = resolveNotesDir(io.notesDir);
   const notesDisabled = process.env.ERIX_NO_NOTES?.trim() === "1";
+  // issue #69：ERIX_NO_TODO=1（repl 仅 env，与 notes 对称）——彻底关 todo：内置四工具不注册、
+  // 系统提示不再含 todo、用户级 todo skill 经 excludeSkillIds 一并排除。
+  const todoDisabled = process.env.ERIX_NO_TODO?.trim() === "1";
 
   if (options.showHelp) {
     writeLine(output, REPL_HELP_TEXT);
@@ -392,12 +396,13 @@ export async function runRepl(argv, io = {}) {
   const config = io.config ?? await loadCliConfig({ configPath: options.configPath });
   const providerFactory = io.providerFactory
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
-  const cliTools = createCliTools({ cwd });
+  const cliTools = createCliTools({ cwd, todo: !todoDisabled });
   // 用户级 notes skill 仍经 excludeSkillIds 排除：notes 装配统一走工厂（ERIX_NO_NOTES=1 时不装配工厂）。
+  // todo 关闭时用户级 todo skill 同样经 excludeSkillIds 排除。
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,
-    excludeSkillIds: ["notes"],
+    excludeSkillIds: ["notes", ...(todoDisabled ? ["todo"] : [])],
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp", "note_take", "note_read", "note_list", "note_forget"],
   });
   // 同名 skill 工具冲突：内置实现优先，skill 版本被忽略，此处一次性告警（issue #65）。
@@ -445,7 +450,7 @@ export async function runRepl(argv, io = {}) {
     writeLine(output, `已恢复会话 ${options.session}（${messages.length} 条消息）`);
   }
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt()}`;
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({ todo: !todoDisabled })}`;
   systemPrompt += buildArchiveNotice(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `

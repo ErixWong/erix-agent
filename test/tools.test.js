@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  buildCliToolsSystemPrompt,
+  CLI_TOOLS_SYSTEM_PROMPT,
   createCliTools,
   getCommandTimeoutMs,
   getExecTimeoutMs,
@@ -40,6 +42,27 @@ test("createCliTools exposes all builtin tools including the todo quartet", () =
       "writeFile",
     ],
   );
+});
+
+test("createCliTools({ todo: false }) drops the todo quartet (issue #69)", async () => {
+  const { tools, executeTool } = createCliTools({ todo: false });
+  assert.deepEqual(
+    tools.map((tool) => tool.name).sort(),
+    ["exec", "grep", "readFile", "rg", "tree", "writeFile"],
+  );
+  await assert.rejects(executeTool("todo_add", { text: "x" }), /未知工具/u);
+});
+
+test("buildCliToolsSystemPrompt({ todo: false }) removes all todo mentions (issue #69)", () => {
+  const disabled = buildCliToolsSystemPrompt({ todo: false });
+  assert.doesNotMatch(disabled, /todo/i);
+  // 基础段自身完整：工具清单行句号收尾、规划 bullet 保留、notes 纪律不受影响
+  assert.match(disabled, /执行 shell 命令并返回输出。\n\n\[你的处境\]/u);
+  assert.match(disabled, /复杂任务先规划并逐步执行\n/u);
+  assert.match(disabled, /note_take/u);
+  // 默认路径与导出常量逐字节一致（golden 锁定）
+  assert.equal(buildCliToolsSystemPrompt(), CLI_TOOLS_SYSTEM_PROMPT);
+  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /todo_add 添加待办任务/u);
 });
 
 test("grep finds matches grouped by file with line numbers", async () => {

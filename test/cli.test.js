@@ -284,6 +284,16 @@ test("runChat injects archive status at fold time instead of into loop context",
   }
 });
 
+test("parseChatArgs parses --no-todo (issue #69)", () => {
+  const options = parseChatArgs(["hello", "--no-todo"], "/tmp/project");
+  assert.equal(options.noTodo, true);
+  assert.equal(parseChatArgs(["hello"], "/tmp/project").noTodo, undefined);
+  assert.throws(
+    () => parseChatArgs(["hello", "--no-todo", "--no-todo"], "/tmp/project"),
+    /参数重复/u,
+  );
+});
+
 test("parseChatArgs accepts session and transcript directory overrides", () => {
   const options = parseChatArgs([
     "hello",

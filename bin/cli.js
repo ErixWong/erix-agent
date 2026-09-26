@@ -47,7 +47,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--no-todo] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
@@ -61,6 +61,7 @@ const HELP_TEXT = `用法：
   --final-guard         开启终稿 provenance 核验（默认关闭）
   --no-final-guard      兼容别名（默认已关闭，no-op）
   --no-notes            不装配 notes 工厂（note_* 工具不再可用），保留其他 skill
+  --no-todo             彻底关闭 todo：内置 todo_* 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
   --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL（默认：<归档目录>/judge.log）
@@ -82,6 +83,7 @@ const HELP_TEXT = `用法：
   ERIX_TOOL_RESULT_FOLD_MIN_TOKENS 低于此体积（估算 tokens）的工具结果永不折叠（默认：4000）
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
   ERIX_NO_NOTES=1       不装配 notes 工厂（note_* 工具不再可用），保留其他 skill
+  ERIX_NO_TODO=1        彻底关闭 todo（同 --no-todo），chat/repl 均生效
   ERIX_JUDGE_LOG      judge 决策 JSONL 路径（默认已写入 run 归档目录，无需设置）
 
 配置文件：
@@ -269,6 +271,14 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       }
       seenOptions.add(argument);
       options.noNotes = true;
+      continue;
+    }
+    if (argument === "--no-todo") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.noTodo = true;
       continue;
     }
     if (
@@ -558,6 +568,7 @@ async function runChatWithNotes({
   errorLog,
   tools: toolsAllowlist,
   noNotes = false,
+  noTodo = false,
   provider: providerOverride,
   config: configOverride,
   toolOutput = console.log,
@@ -616,14 +627,18 @@ async function runChatWithNotes({
       ts: new Date().toISOString(),
     });
   }
-  const cliTools = createCliTools({ cwd });
+  // issue #69：--no-todo / ERIX_NO_TODO=1 —— 彻底关：内置 todo 四工具不注册、
+  // 系统提示不再含 todo、用户级 todo skill 经 excludeSkillIds 一并排除。
+  const todoDisabled = noTodo === true || process.env.ERIX_NO_TODO?.trim() === "1";
+  const cliTools = createCliTools({ cwd, todo: !todoDisabled });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
   // 用户级 notes skill 经 excludeSkillIds 排除：notes 装配统一走工厂，否则会出现两套同名 note_* 工具
   // （bundled notes skill 已于 v0.11.0 退役，见 issue #61）。
+  // todo 关闭时用户级 todo skill 同样经 excludeSkillIds 排除（内置实现与 skill 不同名共存会双份）。
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir,
-    excludeSkillIds: ["notes"],
+    excludeSkillIds: ["notes", ...(todoDisabled ? ["todo"] : [])],
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp", "note_take", "note_read", "note_list", "note_forget"],
   });
   // 同名 skill 工具冲突：内置实现优先，skill 版本被忽略，此处一次性告警（issue #65）。
@@ -697,7 +712,7 @@ async function runChatWithNotes({
     }
     : undefined;
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt()}`;
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({ todo: !todoDisabled })}`;
   systemPrompt += buildArchiveNotice(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `
