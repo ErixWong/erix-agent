@@ -1,5 +1,14 @@
 # erix-agent / erix-llm-kit 上下文与记忆机制剖析
 
+> **Historical snapshot（历史快照标注）**：本文写于评审时点（0.5.1 时代，
+> HEAD=`0c309e6`），文中引用的 `skills/notes/skill.mjs`、`bin/auto-capture.js`、
+> 旧 janitor 语义（时间启发式 active orphan 清理、run 起终点自动 GC）与
+> 全量数组 `list()` 均为该时点的实现快照。这些机制随后已被 0.11.0
+> （bundled notes skill 退役，issue #61）与 0.12.0（生命周期三阶段拆分、
+> liveness 承接 active orphan 清理、list 分页，issue #67 / ADR-018）演进取代。
+> 正文保留原貌供评审历史对照；当前契约以
+> [host-consumer-contract.md](../host-consumer-contract.md) 为准。
+
 ## 0. 版本与范围
 
 - 项目：**erix-agent**（包名 `erix-llm-kit`，`package.json` 的 `name` 为 `erix-agent`），版本 `0.5.1`（package.json:3）。

@@ -13,7 +13,6 @@ import {
 } from "../src/run-state.js";
 import {
   createBuiltinNotesTools,
-  recordAutoCapture,
 } from "../src/tools/notes.js";
 import { createFileNotesStore } from "../src/store/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -41,8 +40,23 @@ const RECORDS = [
   },
 ];
 
-function fakeNotesStore(records) {
-  return { list: async () => structuredClone(records) };
+function fakeNotesStore(records, revision = "fake-revision-1") {
+  // 创建期 assertNotesStore 要求完整端口（issue #67）：fake 只需 list 生效。
+  // breaking（issue #67 PR 2）：list 返回分页页面对象，不再是裸数组。
+  return {
+    list: async () => ({
+      status: "found",
+      records: structuredClone(records),
+      nextCursor: null,
+      revision,
+    }),
+    read: async () => undefined,
+    write: async () => {},
+    complete: async () => ({ status: "found", completed: 0 }),
+    revoke: async () => ({ status: "missing", revoked: 0 }),
+    janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+    purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
+  };
 }
 
 function directoryProvider(notesStore, runId = "run-1") {
@@ -65,12 +79,31 @@ test("directory provider: real file-store integration renders source markers and
   try {
     const notesStore = createFileNotesStore({ dir: directory });
     const builtin = createBuiltinNotesTools({ notesDir: directory, notesStore, runId: "dir-run" });
-    // 真实写入：agent 笔记、auto 捕获、artifact-only 笔记（无 content）
+    // 真实写入：agent 笔记、历史 auto 记录（ADR-016：recordAutoCapture 已删，
+    // 直接写 store 构造 auto 源的存量数据）、artifact-only 笔记（无 content）
     await builtin.executeTool("note_take", { key: "agent_note", content: "人工记录的值" });
-    await recordAutoCapture({
+    await notesStore.write({
+      scope: "run",
+      scopeRef: "dir-run",
       key: "auto_note",
-      content: "自动捕获的 token",
-      __erix: { runId: "dir-run", notesDir: directory },
+      record: {
+        key: "auto_note",
+        scope: "run",
+        scopeRef: "dir-run",
+        current: {
+          content: "自动捕获的 token",
+          provenance: { source: "auto", verified: true, ts: "2026-09-15T02:00:00.000Z" },
+          ts: "2026-09-15T02:00:00.000Z",
+        },
+        superseded: [],
+        folded: 0,
+        pinned: false,
+        tags: [],
+        relevance: 0.8,
+        state: "active",
+        created_at: "2026-09-15T02:00:00.000Z",
+        updated_at: "2026-09-15T02:00:00.000Z",
+      },
     });
     await builtin.executeTool("note_take", {
       key: "artifact_note",
@@ -90,9 +123,9 @@ test("directory provider: real file-store integration renders source markers and
 test("directory provider: empty store and list failure both yield undefined (不装懂)", async () => {
   const empty = await directoryProvider(fakeNotesStore([]))({ state: { stateVersion: 1 } });
   assert.equal(empty, undefined);
-  const failing = await directoryProvider({
-    list: async () => { throw new Error("disk gone"); },
-  })({ state: { stateVersion: 1 } });
+  const failingStore = fakeNotesStore([]);
+  failingStore.list = async () => { throw new Error("disk gone"); };
+  const failing = await directoryProvider(failingStore)({ state: { stateVersion: 1 } });
   assert.equal(failing, undefined);
 });
 

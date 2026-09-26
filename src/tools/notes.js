@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { createFileNotesStore } from "../store/notes.js";
+import {
+  createFileNotesStore,
+  assertNotesStore,
+  normalizeNoteRecord,
+  NotesStoreError,
+} from "../store/notes.js";
 import { createToolRegistry } from "./registry.js";
 
 export const MAX_CONTENT_LENGTH = 4000;
@@ -53,7 +58,9 @@ function injectedNotesStore(input) {
     && typeof store.read === "function"
     && typeof store.list === "function"
     && typeof store.complete === "function"
+    && typeof store.revoke === "function"
     && typeof store.janitor === "function"
+    && typeof store.purge === "function"
     ? store
     : undefined;
 }
@@ -99,15 +106,6 @@ function json(value) {
   return JSON.stringify(value);
 }
 
-function unsupported(scope, key) {
-  return json({
-    status: "unsupported",
-    ...(key === undefined ? {} : { key }),
-    scope,
-    next: "当前阶段只支持 run 作用域；请显式使用 scope=run",
-  });
-}
-
 function missing(key) {
   return json({ status: "missing", key, next: MISSING_NEXT });
 }
@@ -137,9 +135,11 @@ function canonical(value) {
   return JSON.stringify(stable(value));
 }
 
+// breaking（issue #67 PR 3）：schema 收敛为 run-only；project/user 直接
+// invalid（提示「当前仅支持 run 作用域」），不再是「暂不支持」的将来 API 表面。
 function validateScope(input) {
   const scope = input?.scope ?? "run";
-  return scope === "run" || scope === "project" || scope === "user" ? scope : null;
+  return scope === "run" ? "run" : null;
 }
 
 function validateKey(input) {
@@ -192,8 +192,7 @@ function publicEntry(entry, { invalid: markInvalid = false } = {}) {
 function validateInput(input) {
   const scope = validateScope(input);
   const key = validateKey(input);
-  if (!scope) return { error: invalid(key, "scope 必须是 run、project 或 user") };
-  if (scope !== "run") return { error: unsupported(scope, key) };
+  if (!scope) return { error: invalid(key, "当前仅支持 run 作用域（scope 仅接受 run）") };
   if (!key) return { error: invalid(key, "key 必须是非空字符串") };
   if (contentProvided(input) && typeof input.content !== "string") {
     return { error: invalid(key, "content 必须是字符串") };
@@ -222,7 +221,8 @@ function validateInput(input) {
   return { scope, key, tags, relevance };
 }
 
-async function writeNote(input = {}, { source = "agent" } = {}) {
+// ADR-016：auto-capture 桥退役，写入口只剩 agent 源（note_take）。
+async function writeNote(input = {}) {
   const checked = validateInput(input);
   if (checked.error) return checked.error;
   const { key, tags, relevance } = checked;
@@ -246,11 +246,11 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
   const timestamp = now();
   const supplied = input.provenance ?? {};
   const provenance = {
-    source,
+    source: "agent",
     verified: supplied.verified ?? contentProvided(input),
     ...(supplied.toolUseId === undefined ? {} : { toolUseId: supplied.toolUseId }),
     ...(supplied.round === undefined ? {} : { round: supplied.round }),
-    ts: source === "auto" ? (supplied.ts ?? timestamp) : timestamp,
+    ts: timestamp,
   };
   const superseded = old
     ? [
@@ -269,7 +269,7 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
     folded,
     pinned: input.pinned ?? old?.pinned ?? false,
     tags: input.tags === undefined ? (old?.tags ?? tags) : tags,
-    relevance: relevance ?? old?.relevance ?? (source === "auto" ? 0.8 : 0.5),
+    relevance: relevance ?? old?.relevance ?? 0.5,
     state: "active",
     created_at: old?.created_at ?? timestamp,
     updated_at: timestamp,
@@ -299,15 +299,8 @@ async function writeNote(input = {}, { source = "agent" } = {}) {
   });
 }
 
-/**
- * Private CLI capture arm. It is intentionally not listed in the tool schema.
- */
-export async function recordAutoCapture(input = {}) {
-  return writeNote(input, { source: "auto" });
-}
-
 export async function note_take(input = {}) {
-  return writeNote(input, { source: "agent" });
+  return writeNote(input);
 }
 
 function noteReadValue(record) {
@@ -338,8 +331,7 @@ function noteReadValue(record) {
 export async function note_read(input = {}) {
   const scope = validateScope(input);
   const key = validateKey(input);
-  if (!scope) return invalid(key, "scope 必须是 run、project 或 user");
-  if (scope !== "run") return unsupported(scope, key);
+  if (!scope) return invalid(key, "当前仅支持 run 作用域（scope 仅接受 run）");
   if (!key) return invalid(key, "key 必须是非空字符串");
   let record;
   try {
@@ -348,6 +340,8 @@ export async function note_read(input = {}) {
     return invalid(key, error?.message ?? String(error));
   }
   if (!record) return missing(key);
+  // 注入 store 不经过 file adapter 的 readRecord 统一出口：防御性 normalize。
+  record = normalizeNoteRecord(record, { key });
   if (record.state === "revoked") {
     return json({
       status: "revoked",
@@ -379,8 +373,7 @@ function listEntry(record) {
 
 export async function note_list(input = {}) {
   const scope = validateScope(input);
-  if (!scope) return invalid(undefined, "scope 必须是 run、project 或 user");
-  if (scope !== "run") return unsupported(scope);
+  if (!scope) return invalid(undefined, "当前仅支持 run 作用域（scope 仅接受 run）");
   if (input.tag !== undefined && typeof input.tag !== "string") {
     return invalid(undefined, "tag 必须是字符串");
   }
@@ -395,41 +388,59 @@ export async function note_list(input = {}) {
   ) {
     return invalid(undefined, "minRelevance 必须是 0 到 1 之间的数字");
   }
-  let records;
+  if (
+    input.limit !== undefined
+    && (!Number.isSafeInteger(Number(input.limit)) || Number(input.limit) < 1)
+  ) {
+    return invalid(undefined, "limit 必须为正整数");
+  }
+  // breaking（issue #67 PR 2）：cursor 从整数 offset 改为不透明字符串
+  // （上一次返回的 nextCursor），由 store 绑定 scope revision 校验。
+  if (
+    input.cursor !== undefined
+    && (typeof input.cursor !== "string" || input.cursor.trim() === "")
+  ) {
+    return invalid(undefined, "cursor 必须是不透明字符串（取上一次返回的 nextCursor）");
+  }
+  // 过滤与排序全部下沉 store（本地不再全量排序、不再裸调 localeCompare）。
+  const filters = {};
+  if (input.includeInactive !== true) filters.state = "active";
+  if (input.tag !== undefined) filters.tag = input.tag;
+  if (input.source !== undefined) filters.source = input.source;
+  if (input.minRelevance !== undefined) filters.minRelevance = input.minRelevance;
+  let page;
   try {
-    records = await notesStoreFor(input).list(storeRequest(input));
+    page = await notesStoreFor(input).list({
+      ...storeRequest(input),
+      ...(input.limit === undefined ? {} : { limit: Number(input.limit) }),
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      filters,
+      sort: "relevance",
+    });
   } catch (error) {
     return invalid(undefined, error?.message ?? String(error));
   }
-  records = records.filter((record) => {
-    if (input.includeInactive !== true && record.state !== "active") return false;
-    if (input.tag !== undefined && !record.tags.includes(input.tag)) return false;
-    const source = record.current?.provenance?.source === "auto" ? "auto" : "agent";
-    const relevance = Number.isFinite(record.relevance) ? record.relevance : 0.5;
-    if (input.source !== undefined && source !== input.source) return false;
-    if (input.minRelevance !== undefined && relevance < input.minRelevance) return false;
-    return true;
-  });
-  records.sort((left, right) => {
-    const relevanceDifference = (
-      (Number.isFinite(right.relevance) ? right.relevance : 0.5)
-      - (Number.isFinite(left.relevance) ? left.relevance : 0.5)
-    );
-    return relevanceDifference || right.updated_at.localeCompare(left.updated_at);
-  });
-  const limit = input.limit === undefined ? 50 : Number(input.limit);
-  const cursor = input.cursor === undefined ? 0 : Number(input.cursor);
-  if (!Number.isSafeInteger(limit) || limit < 1 || !Number.isSafeInteger(cursor) || cursor < 0) {
-    return invalid(undefined, "limit 必须为正整数，cursor 必须为非负整数");
+  if (page.status === "cursor_stale") {
+    // 可恢复的结构化结果：提示从头翻页，不崩溃。
+    return json({
+      status: "cursor_stale",
+      notes: [],
+      count: 0,
+      nextCursor: null,
+      revision: page.revision,
+      next: "分页游标已过期（scope 内记录已变更）；请去掉 cursor 从头翻页",
+    });
   }
-  const notes = records.slice(cursor, cursor + Math.min(limit, 200)).map(listEntry);
+  // 注入 store 的记录缺时间字段时 normalize 兜底（排序/展示不崩）。
+  const notes = page.records.map((record) => listEntry(normalizeNoteRecord(record)));
   return json({
     status: "found",
     count: notes.length,
-    total: records.length,
     notes,
-    next: notes.length < records.length - cursor
-      ? `还有 ${records.length - cursor - notes.length} 条元数据，可用 cursor=${cursor + notes.length} 继续`
+    nextCursor: page.nextCursor,
+    // breaking：不再承诺 total（分页视图不提供总数）。
+    next: page.nextCursor !== null
+      ? "还有更多条目；用返回的 nextCursor 继续翻页"
       : "清单仅含当前记录元数据；需要具体值时用 note_read 精确读取",
   });
 }
@@ -437,8 +448,7 @@ export async function note_list(input = {}) {
 export async function note_forget(input = {}) {
   const scope = validateScope(input);
   const key = validateKey(input);
-  if (!scope) return invalid(key, "scope 必须是 run、project 或 user");
-  if (scope !== "run") return unsupported(scope, key);
+  if (!scope) return invalid(key, "当前仅支持 run 作用域（scope 仅接受 run）");
   if (!key) return invalid(key, "key 必须是非空字符串");
   const store = notesStoreFor(input);
   let record;
@@ -449,17 +459,10 @@ export async function note_forget(input = {}) {
   }
   if (!record) return missing(key);
   if (record.state === "revoked") return json({ status: "revoked", key });
-  const timestamp = now();
   try {
-    await store.write({
-      ...storeRequest(input, key),
-      record: {
-        ...record,
-        state: "revoked",
-        revoked_at: timestamp,
-        updated_at: timestamp,
-      },
-    });
+    // forget = 经 store.revoke 写墓碑（不再读后自写，撤销语义单一来源）。
+    const result = await store.revoke(storeRequest(input, key));
+    if (result.status === "missing") return missing(key);
   } catch (error) {
     return invalid(key, error?.message ?? String(error));
   }
@@ -484,7 +487,7 @@ const TOOL_DEFINITIONS = [
         key: { type: "string" },
         content: { type: "string", maxLength: MAX_CONTENT_LENGTH },
         artifactRef: {},
-        scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
+        scope: { type: "string", enum: ["run"], default: "run" },
         tags: { type: "array", items: { type: "string" } },
         relevance: { type: "number", minimum: 0, maximum: 1 },
         pinned: { type: "boolean" },
@@ -501,7 +504,7 @@ const TOOL_DEFINITIONS = [
       type: "object",
       properties: {
         key: { type: "string" },
-        scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
+        scope: { type: "string", enum: ["run"], default: "run" },
       },
       required: ["key"],
       additionalProperties: false,
@@ -509,16 +512,18 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_list",
-    description: "列出 run 作用域笔记的 key、标签和 current 元数据，不返回完整内容。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；不要遍历归档目录凭记忆补值",
+    description: "列出 run 作用域笔记的 key、标签和 current 元数据，不返回完整内容。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；翻页用返回的 nextCursor 作为 cursor；不要遍历归档目录凭记忆补值",
     inputSchema: {
       type: "object",
       properties: {
-        scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
+        scope: { type: "string", enum: ["run"], default: "run" },
         tag: { type: "string" },
         minRelevance: { type: "number", minimum: 0, maximum: 1 },
         source: { type: "string", enum: ["auto", "agent"] },
         limit: { type: "integer", minimum: 1 },
-        cursor: { type: "integer", minimum: 0 },
+        // breaking（issue #67 PR 2）：cursor 从整数 offset 改为不透明字符串
+        // （上一次响应的 nextCursor），由 store 绑定 scope revision 校验。
+        cursor: { type: "string" },
         includeInactive: { type: "boolean", default: false },
       },
       additionalProperties: false,
@@ -531,7 +536,7 @@ const TOOL_DEFINITIONS = [
       type: "object",
       properties: {
         key: { type: "string" },
-        scope: { type: "string", enum: ["run", "project", "user"], default: "run" },
+        scope: { type: "string", enum: ["run"], default: "run" },
       },
       required: ["key"],
       additionalProperties: false,
@@ -601,9 +606,10 @@ function scopedToolInput(input, name, scope) {
     : filtered;
 }
 
-const REPORTABLE_STORE_METHODS = ["read", "write", "list", "complete", "janitor"];
-// complete/janitor 与 write 一样会真实写文件，按写副作用分类；read/list 是纯读。
-const WRITE_SIDE_EFFECT_METHODS = new Set(["write", "complete", "janitor"]);
+const REPORTABLE_STORE_METHODS = ["read", "write", "list", "complete", "revoke", "janitor", "purge"];
+// complete/revoke/janitor/purge 与 write 一样会真实写文件（purge 直接 unlink），
+// 按写副作用分类；read/list 是纯读。
+const WRITE_SIDE_EFFECT_METHODS = new Set(["write", "complete", "revoke", "janitor", "purge"]);
 // 已上报过的 (error, operation) 组合（防 decorator 与调用点重复上报同一组合；
 // 同一 Error 对象被 complete/janitor 等多个操作复用时，每个 operation 各报一次）。
 const reportedStoreFailures = new WeakMap();
@@ -655,16 +661,35 @@ function withPersistenceReporting(store, getReporter) {
 }
 
 /**
+ * liveness 是宿主交给 assembler 的 active orphan 判定端口：isAlive 返回
+ * false 的 scopeRef 由 lifecycle.revokeInactive 撤销其 active 记录。
+ * ttlMs 必须是 >0 安全整数，否则创建时抛错（不静默降级）。
+ */
+function validateLiveness(liveness) {
+  if (liveness === undefined || liveness === null) return undefined;
+  if (typeof liveness !== "object" || Array.isArray(liveness)) {
+    throw new TypeError("liveness must be an object with ttlMs and isAlive");
+  }
+  if (!Number.isSafeInteger(liveness.ttlMs) || liveness.ttlMs <= 0) {
+    throw new TypeError("liveness.ttlMs must be a positive safe integer");
+  }
+  if (typeof liveness.isAlive !== "function") {
+    throw new TypeError("liveness.isAlive must be a function");
+  }
+  return { ttlMs: liveness.ttlMs, isAlive: liveness.isAlive };
+}
+
+/**
  * Full notes assembler. One call binds the run scope (runId/scopeRef), the
  * notes directory, and a single NotesStore instance; every returned view
  * (executors, executeTool, lifecycle, semanticStateProvider) reuses them and
  * forcibly overrides any caller-forged `__erix` injection.
  *
- * @param {{notesDir?: string, notesStore?: object, runId?: string, scopeRef?: string}} options
+ * @param {{notesDir?: string, notesStore?: object, runId?: string, scopeRef?: string, liveness?: {ttlMs: number, isAlive: Function}}} options
  * @returns {{
  *   definitions: object[],
  *   executors: Function, executeTool: Function, resolveTools: Function,
- *   lifecycle: {onRunStart: Function, onRunComplete: Function},
+ *   lifecycle: {onRunStart: Function, onRunComplete: Function, revokeInactive: Function},
  *   semanticStateProvider: Function,
  * }}
  */
@@ -681,16 +706,36 @@ export function createBuiltinNotesTools(options = {}) {
     dir: resolvedNotesDir,
     clock: () => clock(),
   });
+  // 创建期即校验端口完整性：缺 revoke/purge 等方法立即 TypeError，
+  // 不静默回退到隐式 file store（生命周期三阶段拆分后两者都是必需方法）。
+  assertNotesStore(boundStore);
+  // liveness（host 的 active orphan 判定）与 notesStore 同级绑定进作用域，
+  // 调用方伪造的 __erix 无法覆盖（lifecycleInput 强制覆盖）。
+  const boundLiveness = validateLiveness(opts.liveness);
 
   // 并发约定：assembler 假定宿主串行调用（runToolLoop 单线程循环）；
   // activeReporter 的 set/restore 不防并发交错，并发复用同一 assembler
   // 需宿主在宿主边界自行串行化（与 NotesStore 的 single-writer 约定一致）。
   let activeReporter;
-  const store = withPersistenceReporting(boundStore, () => activeReporter);
+  const reportedStore = withPersistenceReporting(boundStore, () => activeReporter);
+  // issue #67 PR 2：semantic 增量缓存的本地失效锚。store 是单写者（file
+  // adapter 约定），assembler 内任何变更（write/complete/revoke/janitor/
+  // purge）都会经过这里并推进 epoch；epoch 未变则 scope revision 不可能变，
+  // semantic 直接复用缓存文本，连 list 都不调（不读任何记录文件）。
+  let semanticEpoch = 0;
+  const store = { ...reportedStore };
+  for (const method of ["write", "complete", "revoke", "janitor", "purge"]) {
+    store[method] = async (request) => {
+      const result = await reportedStore[method](request);
+      semanticEpoch += 1;
+      return result;
+    };
+  }
   const scope = {
     ...(boundScopeRef === undefined ? {} : { runId: boundScopeRef }),
     notesDir: resolvedNotesDir,
     notesStore: store,
+    ...(boundLiveness === undefined ? {} : { liveness: boundLiveness }),
   };
 
   // lifecycle 输入同样强制覆盖调用方伪造的 __erix（评审修正项）。
@@ -739,7 +784,7 @@ export function createBuiltinNotesTools(options = {}) {
     return executors(name, input, context);
   };
 
-  // lifecycle 调用（complete/janitor 会写文件）同样绑定 reporter：
+  // lifecycle 调用（complete/revoke 会写文件）同样绑定 reporter：
   // 宿主可经 lifecycle 输入的 reportPersistenceFailure 注入；
   // set/restore 模式与 executor 视图一致。
   const withLifecycleReporter = async (input, fn) => {
@@ -753,27 +798,130 @@ export function createBuiltinNotesTools(options = {}) {
     }
   };
 
-  // onRunStart = janitor；onRunComplete = completeRun 后接 janitor，
-  // 收尾错误收集在返回值的 errors[] 里返回，不抛出覆盖主错误。
+  // lifecycle 三阶段拆分（issue #67）：
+  // - onRunStart：轻量 no-op 兼容入口。run 起点不再跑 janitor——过期 done
+  //   清理由宿主显式调度 janitor，active orphan 清理权归宿主 liveness。
+  // - onRunComplete：只调 completeRun（active → done），返回
+  //   { completed, errors }（janitor 字段已移除，breaking）。
+  // - revokeInactive：宿主 liveness callback 的入口；对 isAlive=false 的
+  //   scopeRef 撤销其 active 记录（经 store.revoke 的 expected-state 护栏）。
   const lifecycle = {
-    onRunStart: (input) => withLifecycleReporter(input, async () => {
-      await runNotesJanitor(lifecycleInput(input));
-    }),
+    onRunStart: (input) => withLifecycleReporter(input, async () => ({
+      status: "skipped",
+      reason: "notes janitor is host-scheduled; run start performs no notes GC",
+    })),
     onRunComplete: (input) => withLifecycleReporter(input, async () => {
       const completionErrors = [];
       let completed;
-      let janitor;
       try {
         completed = await completeRun(lifecycleInput(input));
       } catch (error) {
         completionErrors.push({ operation: "notes_complete_run", error });
       }
-      try {
-        janitor = await runNotesJanitor(lifecycleInput(input));
-      } catch (error) {
-        completionErrors.push({ operation: "notes_janitor", error });
+      return { completed, errors: completionErrors };
+    }),
+    revokeInactive: (input) => withLifecycleReporter(input, async () => {
+      if (boundLiveness === undefined) {
+        return {
+          status: "found",
+          checked: 0,
+          alive: 0,
+          revoked: 0,
+          skipped: 0,
+          reason: "liveness not configured; pass liveness to createBuiltinNotesTools to enable active orphan cleanup",
+        };
       }
-      return { completed, janitor, errors: completionErrors };
+      const scoped = lifecycleInput(input);
+      const scopeRefs = Array.isArray(scoped.scopeRefs)
+        ? scoped.scopeRefs.filter((value) => typeof value === "string" && value.trim() !== "")
+        : [];
+      const errors = [];
+      let checked = 0;
+      let alive = 0;
+      let revoked = 0;
+      let skipped = 0;
+      for (const scopeRef of scopeRefs) {
+        let isAlive;
+        try {
+          isAlive = await boundLiveness.isAlive(scopeRef, {
+            now: clock(),
+            ttlMs: boundLiveness.ttlMs,
+          });
+        } catch (error) {
+          // isAlive 抛错是整体失败信号：进 errors[]，绝不解释为 false（不得 revoke）。
+          errors.push({ operation: "notes_liveness_check", scopeRef, error });
+          continue;
+        }
+        if (typeof isAlive !== "boolean") {
+          errors.push({
+            operation: "notes_liveness_check",
+            scopeRef,
+            error: new TypeError("liveness.isAlive must return a boolean"),
+          });
+          continue;
+        }
+        checked += 1;
+        if (isAlive) {
+          alive += 1;
+          continue;
+        }
+        // list 已分页：先只读翻页收集 active key，再逐条 revoke（revoke 会
+        // 递增 revision，边翻页边写会让剩余游标立刻 stale）。
+        const records = [];
+        try {
+          let cursor = null;
+          let staleRetries = 0;
+          do {
+            const page = await store.list({
+              scope: "run",
+              scopeRef,
+              limit: 200,
+              ...(cursor === null ? {} : { cursor }),
+            });
+            if (page.status === "cursor_stale") {
+              // 翻页期间记录被写入：游标失效，从头重扫（上限防活锁）。
+              staleRetries += 1;
+              if (staleRetries > 3) {
+                throw new NotesStoreError("revokeInactive 分页游标反复过期", "cursor_stale");
+              }
+              records.length = 0;
+              cursor = null;
+              continue;
+            }
+            // 注入 store 的记录可能缺时间字段：expectedUpdatedAt 取值前 normalize。
+            records.push(...page.records.map((record) => normalizeNoteRecord(record)));
+            cursor = page.nextCursor;
+          } while (cursor !== null);
+        } catch (error) {
+          errors.push({ operation: "notes_revoke_inactive", scopeRef, error });
+          continue;
+        }
+        for (const record of records) {
+          if (record.state !== "active") continue;
+          try {
+            const result = await store.revoke({
+              scope: "run",
+              scopeRef,
+              key: record.key,
+              reason: scoped.reason ?? "scope_inactive",
+              expectedState: "active",
+              expectedUpdatedAt: record.updated_at,
+            });
+            if (result.status === "found") revoked += 1;
+            else skipped += 1;
+          } catch (error) {
+            errors.push({ operation: "notes_revoke_inactive", scopeRef, key: record.key, error });
+          }
+        }
+      }
+      return {
+        status: "found",
+        checked,
+        alive,
+        revoked,
+        skipped,
+        ...(errors.length > 0 ? { errors } : {}),
+      };
     }),
   };
 
@@ -781,16 +929,52 @@ export function createBuiltinNotesTools(options = {}) {
   // fold 点调用不在 executor 上下文内，activeReporter 恒为 undefined：
   // 失败诊断改为可选注入——宿主显式传 reportPersistenceFailure 才上报。
   const semanticScopeRef = boundScopeRef ?? currentScopeRef(undefined);
+  // issue #67 PR 2：进程内增量缓存 { epoch, revision, text }。list 只取第一页
+  // （pinned_updated 前 20 条 = 目录全部内容）。epoch 未变 → 直接复用缓存
+  // 文本（不调 list、不读任何记录文件）；epoch 变了才调 list 复核 revision，
+  // revision 未变仍复用文本（如 revoke 未命中这类无效变更），revision 变化才
+  // 重渲染目录并替换缓存。
+  let semanticCache;
   const semanticStateProvider = async ({ state, reportPersistenceFailure } = {}) => {
-    let records;
+    if (semanticCache !== undefined && semanticCache.epoch === semanticEpoch) {
+      return {
+        text: semanticCache.text,
+        version: state?.stateVersion,
+        status: "ok",
+        sourceRevision: semanticCache.revision,
+      };
+    }
+    let page;
     try {
-      records = await store.list({ scopeRef: semanticScopeRef });
+      page = await store.list({
+        scopeRef: semanticScopeRef,
+        limit: 20,
+        filters: { state: "active" },
+        sort: "pinned_updated",
+      });
     } catch (error) {
-      // 不装懂：对外仍返回 undefined；显式注入 reporter 时补发可观察诊断。
+      // 不装懂：list 失败返回 undefined（显式注入 reporter 时补发可观察诊断），
+      // 绝不拿旧 cache 冒充最新。
       await reportStoreFailure(reportPersistenceFailure, "list", error);
       return undefined;
     }
-    return renderNotesDirectory(records, state);
+    if (semanticCache !== undefined && semanticCache.revision === page.revision) {
+      semanticCache = { epoch: semanticEpoch, revision: page.revision, text: semanticCache.text };
+      return {
+        text: semanticCache.text,
+        version: state?.stateVersion,
+        status: "ok",
+        sourceRevision: page.revision,
+      };
+    }
+    const records = page.status === "found"
+      // 注入 store 不经过 file adapter 出口：渲染（updated_at 排序）前 normalize。
+      ? page.records.map((record) => normalizeNoteRecord(record))
+      : [];
+    const rendered = renderNotesDirectory(records, state);
+    if (rendered === undefined) return undefined;
+    semanticCache = { epoch: semanticEpoch, revision: page.revision, text: rendered.text };
+    return { ...rendered, sourceRevision: page.revision };
   };
 
   return {

@@ -410,7 +410,9 @@ export async function runRepl(argv, io = {}) {
   const notesAssembler = notesDisabled || !notesStore
     ? undefined
     : createBuiltinNotesTools({ runId: options.session, notesDir, notesStore });
-  // REPL 会话边界生命周期：进 run 前 janitor；会话收尾（saveAndFinish）completeRun 后接 janitor。
+  // REPL 会话边界生命周期（issue #67）：onRunStart 为轻量 no-op 兼容入口；
+  // 会话收尾（saveAndFinish）onRunComplete 只 completeRun（active → done），
+  // 不再附带 janitor——过期 done 清理与 active orphan 清理分别归 janitor/宿主 liveness。
   await notesAssembler?.lifecycle.onRunStart();
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: options.configPath, cwd });
   // --tools 白名单：启动时校验一次——未知名字 stderr 警告并忽略，过滤后为空 → usageError。
