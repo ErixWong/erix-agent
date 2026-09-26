@@ -17,7 +17,7 @@ import {
   isNoteRecord,
 } from "../../src/store/notes.js";
 import { notesStoreContract } from "../contract/notes-store.js";
-import * as notes from "../../skills/notes/skill.mjs";
+import * as notes from "../../src/tools/notes.js";
 
 async function makeTempDirectory() {
   return mkdtemp(path.join(tmpdir(), "erix-notes-store-"));

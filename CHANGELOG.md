@@ -23,6 +23,32 @@
   （引擎内部枚举值，v0.9.0 起已不可达，不在契约测试锁定面）。宿主若仍按字符串匹配该值，
   需自行调整。
 
+## [0.11.0] - 2026-09-26
+
+来源：issue #61 重构（notes assembler API 收敛，`refactor-260926-01`）。
+
+### Changed（BREAKING）
+
+- `createBuiltinNotesTools()` 返回对象收敛为 6 键 canonical API：`definitions` /
+  `executors` / `executeTool` / `resolveTools` / `lifecycle` / `semanticStateProvider`；
+  退役 7 个冗余别名键：`tools`、`provider`、`listTools`、`notesJanitor`、
+  `notesCompleteRun`、`runNotesJanitor`、`completeRun`（issue #61）。
+- 迁移指引：需要 provider 形态的宿主，用 `erix-agent/tools` 子路径导出的
+  `createStaticToolProvider` 配合 assembler 的 `definitions` 自建
+  （`createStaticToolProvider({ sets: { default: notes.definitions } })`）；
+  原 janitor / complete 可调用别名改走 `lifecycle.onRunStart(...)` /
+  `lifecycle.onRunComplete(...)`（后者返回 `{completed, janitor, errors}`）。
+  模块级导出的实现函数 `runNotesJanitor` / `completeRun`（`src/tools/notes.js`，
+  经 `erix-agent/tools` 子路径 re-export）为 lifecycle 内部实现，不受影响、照旧可用。
+- 旧 skill loader 消费方：直接 import `src/tools/notes.js` 导出的函数，或经
+  `erix-agent/tools` 子路径获取同源导出。
+- bundled notes skill 退役：删除 `skills/notes/`（skill.mjs 兼容 shim 一并移除），notes
+  工具交付统一走 `createBuiltinNotesTools` 工厂；`erix skills` 不再列出 bundled notes
+  （bundled skill 发现机制本身保留，`skills/` 目录仍在发现列表，用户级 skill 发现不受影响）；
+  `getSkillDefinition()` 导出连同 `erix-agent/tools` 子路径的 `getNotesSkillDefinition`
+  re-export 一并删除。第三方依赖 bundled notes skill 的旧 loader 会失去该发现路径，
+  需改为直接 import `src/tools/notes.js` 或 `erix-agent/tools` 子路径（breaking）。
+
 ## [0.9.0] - 2026-09-22
 
 来源：issue #49 修复（PR #50，260920 基准 64 轮撞 cap 实证驱动）。

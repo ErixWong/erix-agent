@@ -55,7 +55,7 @@ const HELP_TEXT = `用法：
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 16 时启用，见 DEFAULT_REFLECTION_MIN_ROUNDS）
   --final-guard         开启终稿 provenance 核验（默认关闭）
   --no-final-guard      兼容别名（默认已关闭，no-op）
-  --no-notes            不装配 notes 工厂并排除 bundled notes skill（note_* 工具不再可用），保留其他 skill
+  --no-notes            不装配 notes 工厂（note_* 工具不再可用），保留其他 skill
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
   --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL（默认：<归档目录>/judge.log）
@@ -76,7 +76,7 @@ const HELP_TEXT = `用法：
   ERIX_TOOL_RESULT_TTL 工具结果 TTL 折叠存活轮数（默认：2，0=关闭；slot 配置 cacheCapable:true 时默认关闭（0），环境变量显式设置优先。⚠️ 实测不推荐 cacheCapable:TTL=0 在 cache 端点有效成本 +53%（issue #44），保留仅为兼容/观测）
   ERIX_TOOL_RESULT_FOLD_MIN_TOKENS 低于此体积（估算 tokens）的工具结果永不折叠（默认：4000）
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
-  ERIX_NO_NOTES=1       不装配 notes 工厂并排除 bundled notes skill，保留其他 skill
+  ERIX_NO_NOTES=1       不装配 notes 工厂（note_* 工具不再可用），保留其他 skill
   ERIX_JUDGE_LOG      judge 决策 JSONL 路径（默认已写入 run 归档目录，无需设置）
 
 配置文件：
@@ -613,14 +613,15 @@ async function runChatWithNotes({
   }
   const cliTools = createCliTools({ cwd });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
-  // bundled notes skill 始终排除：notes 装配统一走工厂，否则会出现两套同名 note_* 工具。
+  // 用户级 notes skill 经 excludeSkillIds 排除：notes 装配统一走工厂，否则会出现两套同名 note_* 工具
+  // （bundled notes skill 已于 v0.11.0 退役，见 issue #61）。
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir,
     excludeSkillIds: ["notes"],
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp", "note_take", "note_read", "note_list", "note_forget"],
   });
-  // --no-notes / ERIX_NO_NOTES：不装配工厂（skill 已始终排除，对外行为等价）。
+  // --no-notes / ERIX_NO_NOTES：不装配工厂（用户级 notes skill 仍经 excludeSkillIds 排除，对外行为等价）。
   const notesAssembler = notesDisabled || !notesStore
     ? undefined
     : createBuiltinNotesTools({ runId, notesDir, notesStore });

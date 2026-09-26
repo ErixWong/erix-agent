@@ -180,17 +180,24 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 （`notesDir` ?? `ERIX_NOTES_DIR` ?? `~/.erix/notes`）与单一 `NotesStore` 实例，
 所有返回视图共用它们，并强制覆盖调用方伪造的 `__erix` 注入。返回对象包含：
 
-- `definitions`（别名 `tools`）——四个 `note_*` schema；
-- `provider` / `listTools` / `resolveTools`——可直接用于 `createCompositeToolProvider`
-  聚合的 provider 形态；
+- `definitions`——四个 `note_*` schema；
+- `resolveTools`——registry schema 解析视图；需要 `ToolProvider` 形态的宿主
+  （如用于 `createCompositeToolProvider` 聚合）可自行构建：
+  `createStaticToolProvider({ sets: { default: notes.definitions } })`；
 - `executors(name, input, context)`——registry 位置参数形态；
 - `executeTool({id, name, input, context, signal})`——结构化形态，对齐 `runToolLoop`/
   checkpoint-executor 的调用约定（位置参数形态 `executeTool(name, input, context)`
   为兼容既有调用方保留）；
 - `lifecycle.onRunStart` / `lifecycle.onRunComplete`——run 前 janitor；run 后
-  `completeRun` 后接 janitor；收尾错误收集在返回值的 `errors[]` 里返回，不抛出覆盖主错误；
+  `completeRun` 后接 janitor；收尾错误收集在返回值的 `errors[]` 里返回，不抛出覆盖主错误。
+  两者入参都接受可选的 `reportPersistenceFailure` reporter
+  （`onRunComplete({ reportPersistenceFailure })`）：注入后 complete/janitor 期间的
+  store 失败像工具执行失败一样经它上报；无参调用（如下例）保持原行为——失败只经
+  返回值的 `errors[]` 或抛出的错误可见；
 - `semanticStateProvider`——ADR-015 折叠点 notes 小抄目录（仅 active、最多 20 条、
-  pinned 优先后按 `updated_at` 排序、版本回声 `state.stateVersion`）。
+  pinned 优先后按 `updated_at` 排序、版本回声 `state.stateVersion`）。入参 payload
+  接受可选的 `reportPersistenceFailure`：显式传入时，store list 失败经它上报
+  （该情形下 provider 仍返回 `undefined`）。
 
 典型接线（显式 try/finally）：
 
@@ -220,10 +227,19 @@ try {
 notes 写失败经引擎的通用宿主持久化失败报告桥上报（`context.reportPersistenceFailure`，
 `port: "notes"`），不得静默吞错。宿主仍负责选择并注入 `NotesStore` 与逻辑 run scope。
 
-CLI 的 bundled `skills/notes/skill.mjs` 保留为薄兼容转发壳（兼容层，供旧 discovery 路径与
-第三方 skill 加载器使用；未来退役由版本策略决定），因此 `buildSkillTools` 和用户/
-项目 skill 的发现路径保持不变。CLI 自身始终排除 bundled notes skill，统一经工厂装配 notes。
-它不是第二套实现，也不再是可独立复制运行的 skill；
+**note 的 provenance 是调用方自报的 metadata，不是事实。** 记录上 `source` 以外的
+`provenance` 字段——`verified`、`toolUseId`、`round`——由调用方自报、可被伪造，
+不得作为授权输入或任何 guard 的依据。run 实际做了什么，事实依据是归档 transcript
+（`toolOutputs`，ADR-016），而不是 note 记录上的任何字段。
+
+CLI 的 bundled `skills/notes/skill.mjs` 已于 v0.11.0 退役（issue #61），与 assembler
+别名键一并移除：notes 统一经 `createBuiltinNotesTools` 工厂交付，`erix skills`
+不再列出 bundled notes skill（用户/项目 skill 发现不受影响）。旧第三方 skill
+loader 请直接 import `src/tools/notes.js` 或 `erix-agent/tools` 子路径；bundled notes
+shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
+`getNotesSkillDefinition`）已随 shim 一并删除，通用 skill loader 对第三方 skill 的
+`getSkillDefinition()` 支持不受影响。它不是第二套
+实现，也不再是可独立复制运行的 skill；
 可移植集成应使用 npm 包入口。
 
 ### CLI 侧来源 guard

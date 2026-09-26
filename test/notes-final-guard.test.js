@@ -12,7 +12,7 @@ import {
   createFinalGuard,
 } from "../bin/final-guard.js";
 import { parseReplArgs } from "../bin/repl.js";
-import * as notes from "../skills/notes/skill.mjs";
+import * as notes from "../src/tools/notes.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createFileNotesStore } from "../src/store/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";

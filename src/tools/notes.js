@@ -3,13 +3,11 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { createFileNotesStore } from "../store/notes.js";
-import { createStaticToolProvider } from "./providers.js";
 import { createToolRegistry } from "./registry.js";
 
 export const MAX_CONTENT_LENGTH = 4000;
 export const NOTE_VALUE_MAX_CHARS = 256;
 const MAX_SUPERSEDED = 3;
-const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/u;
 const MISSING_NEXT = "该 key 从未记录（never recorded）；未记录、不可恢复；不得重跑命令、不得凭记忆给值";
 let clock = () => Date.now();
 
@@ -567,14 +565,18 @@ function renderNotesDirectory(records, state) {
       ? current
       : String(current?.summary ?? current?.content ?? "");
     const firstLine = raw.split("\n")[0]?.trim() ?? "";
-    return firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
+    if (firstLine !== "") {
+      return firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
+    }
+    // artifact-only（无 content）条目不留空摘要，渲染占位标记。
+    return current?.artifactRef !== undefined ? "artifact 引用" : "";
   };
   const lines = entries.map((record) => {
+    // source 与 note_list 一致从 current.provenance.source 派生；
+    // 真实落盘记录的顶层没有 source 字段，读顶层会让 @agent 标记永远不出现。
     const flags = [
       record.pinned === true ? "★" : null,
-      typeof record.source === "string" && record.source !== ""
-        ? `@${record.source}`
-        : null,
+      `@${record.current?.provenance?.source === "auto" ? "auto" : "agent"}`,
     ].filter(Boolean).join(" ");
     return `- ${record.key}${flags ? ` (${flags})` : ""}: ${summaryOf(record)}`;
   });
@@ -600,13 +602,42 @@ function scopedToolInput(input, name, scope) {
 }
 
 const REPORTABLE_STORE_METHODS = ["read", "write", "list", "complete", "janitor"];
+// complete/janitor 与 write 一样会真实写文件，按写副作用分类；read/list 是纯读。
+const WRITE_SIDE_EFFECT_METHODS = new Set(["write", "complete", "janitor"]);
+// 已上报过的 (error, operation) 组合（防 decorator 与调用点重复上报同一组合；
+// 同一 Error 对象被 complete/janitor 等多个操作复用时，每个 operation 各报一次）。
+const reportedStoreFailures = new WeakMap();
+
+async function reportStoreFailure(reporter, operation, error) {
+  if (typeof reporter !== "function") return;
+  const dedupable = error !== null && (typeof error === "object" || typeof error === "function");
+  const reported = dedupable ? reportedStoreFailures.get(error) : undefined;
+  if (reported?.has(operation)) return;
+  try {
+    await reporter({
+      port: "notes",
+      operation,
+      phase: WRITE_SIDE_EFFECT_METHODS.has(operation) ? "write" : "read",
+      sideEffect: WRITE_SIDE_EFFECT_METHODS.has(operation)
+        ? "executed_uncommitted"
+        : "not_started",
+      error,
+    });
+    if (!dedupable) return;
+    if (reported) reported.add(operation);
+    else reportedStoreFailures.set(error, new Set([operation]));
+  } catch {
+    // 报告桥自身失败不得阻断工具原有的错误路径。
+  }
+}
 
 /**
  * Decorate a NotesStore so persistence failures are reported through the
  * engine's generic host-persistence bridge (`context.reportPersistenceFailure`,
  * port="notes") instead of being silently swallowed into tool-level "invalid"
  * JSON. The original error is always re-thrown so existing tool error paths
- * keep working. The reporter is bound per tool execution by the assembler.
+ * keep working. The reporter is bound per tool execution (and per lifecycle
+ * call) by the assembler.
  */
 function withPersistenceReporting(store, getReporter) {
   const decorated = {};
@@ -615,20 +646,7 @@ function withPersistenceReporting(store, getReporter) {
       try {
         return await store[method](request);
       } catch (error) {
-        const reporter = getReporter();
-        if (typeof reporter === "function") {
-          try {
-            await reporter({
-              port: "notes",
-              operation: method,
-              phase: method === "write" ? "write" : "read",
-              sideEffect: method === "write" ? "executed_uncommitted" : "not_started",
-              error,
-            });
-          } catch {
-            // 报告桥自身失败不得阻断工具原有的错误路径。
-          }
-        }
+        await reportStoreFailure(getReporter(), method, error);
         throw error;
       }
     };
@@ -644,13 +662,10 @@ function withPersistenceReporting(store, getReporter) {
  *
  * @param {{notesDir?: string, notesStore?: object, runId?: string, scopeRef?: string}} options
  * @returns {{
- *   definitions: object[], tools: object[],
- *   provider: object, listTools: Function, resolveTools: Function,
- *   executors: Function, executeTool: Function,
+ *   definitions: object[],
+ *   executors: Function, executeTool: Function, resolveTools: Function,
  *   lifecycle: {onRunStart: Function, onRunComplete: Function},
  *   semanticStateProvider: Function,
- *   notesJanitor: Function, notesCompleteRun: Function,
- *   runNotesJanitor: Function, completeRun: Function,
  * }}
  */
 export function createBuiltinNotesTools(options = {}) {
@@ -667,6 +682,9 @@ export function createBuiltinNotesTools(options = {}) {
     clock: () => clock(),
   });
 
+  // 并发约定：assembler 假定宿主串行调用（runToolLoop 单线程循环）；
+  // activeReporter 的 set/restore 不防并发交错，并发复用同一 assembler
+  // 需宿主在宿主边界自行串行化（与 NotesStore 的 single-writer 约定一致）。
   let activeReporter;
   const store = withPersistenceReporting(boundStore, () => activeReporter);
   const scope = {
@@ -684,9 +702,6 @@ export function createBuiltinNotesTools(options = {}) {
     return { ...rest, __erix: scope };
   };
 
-  const provider = createStaticToolProvider({
-    sets: { default: TOOL_DEFINITIONS },
-  });
   const registry = createToolRegistry({
     executors: Object.fromEntries(
       Object.entries(TOOL_EXECUTORS).map(([name, executor]) => [
@@ -724,13 +739,27 @@ export function createBuiltinNotesTools(options = {}) {
     return executors(name, input, context);
   };
 
+  // lifecycle 调用（complete/janitor 会写文件）同样绑定 reporter：
+  // 宿主可经 lifecycle 输入的 reportPersistenceFailure 注入；
+  // set/restore 模式与 executor 视图一致。
+  const withLifecycleReporter = async (input, fn) => {
+    const previousReporter = activeReporter;
+    const reporter = input?.reportPersistenceFailure;
+    if (typeof reporter === "function") activeReporter = reporter;
+    try {
+      return await fn();
+    } finally {
+      activeReporter = previousReporter;
+    }
+  };
+
   // onRunStart = janitor；onRunComplete = completeRun 后接 janitor，
   // 收尾错误收集在返回值的 errors[] 里返回，不抛出覆盖主错误。
   const lifecycle = {
-    onRunStart: async (input) => {
+    onRunStart: (input) => withLifecycleReporter(input, async () => {
       await runNotesJanitor(lifecycleInput(input));
-    },
-    onRunComplete: async (input) => {
+    }),
+    onRunComplete: (input) => withLifecycleReporter(input, async () => {
       const completionErrors = [];
       let completed;
       let janitor;
@@ -745,46 +774,31 @@ export function createBuiltinNotesTools(options = {}) {
         completionErrors.push({ operation: "notes_janitor", error });
       }
       return { completed, janitor, errors: completionErrors };
-    },
+    }),
   };
 
   // ADR-015：notes 小抄目录 → semantic 槽位；复用绑定的同一 store 实例。
+  // fold 点调用不在 executor 上下文内，activeReporter 恒为 undefined：
+  // 失败诊断改为可选注入——宿主显式传 reportPersistenceFailure 才上报。
   const semanticScopeRef = boundScopeRef ?? currentScopeRef(undefined);
-  const semanticStateProvider = async ({ state } = {}) => {
+  const semanticStateProvider = async ({ state, reportPersistenceFailure } = {}) => {
     let records;
     try {
       records = await store.list({ scopeRef: semanticScopeRef });
-    } catch {
+    } catch (error) {
+      // 不装懂：对外仍返回 undefined；显式注入 reporter 时补发可观察诊断。
+      await reportStoreFailure(reportPersistenceFailure, "list", error);
       return undefined;
     }
     return renderNotesDirectory(records, state);
   };
 
   return {
-    provider,
-    listTools: provider.listTools,
-    tools: TOOL_DEFINITIONS,
     definitions: TOOL_DEFINITIONS,
     executors,
     executeTool,
     resolveTools: registry.resolveTools,
     lifecycle,
     semanticStateProvider,
-    // 兼容别名：PR #52 形状的可调用方式保留。
-    notesJanitor: (input) => runNotesJanitor(lifecycleInput(input)),
-    notesCompleteRun: (input) => completeRun(lifecycleInput(input)),
-    runNotesJanitor: (input) => runNotesJanitor(lifecycleInput(input)),
-    completeRun: (input) => completeRun(lifecycleInput(input)),
-  };
-}
-
-export function getSkillDefinition() {
-  for (const tool of TOOL_DEFINITIONS) {
-    if (!TOOL_NAME_PATTERN.test(tool.name)) throw new Error(`非法 notes 工具名：${tool.name}`);
-  }
-  return {
-    schema_version: 1,
-    skill: { id: "notes", runtime: "node", entrypoint: "skill.mjs" },
-    tools: TOOL_DEFINITIONS,
   };
 }

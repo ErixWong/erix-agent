@@ -14,11 +14,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import * as notes from "../skills/notes/skill.mjs";
+import * as notes from "../src/tools/notes.js";
+import { createBuiltinNotesTools } from "../src/tools/notes.js";
 import { discoverSkills, skillDirectories } from "../bin/skills.js";
 import { estimateTokens } from "../src/tokens.js";
 
-const skillPath = fileURLToPath(new URL("../skills/notes/skill.mjs", import.meta.url));
+const skillPath = fileURLToPath(new URL("../src/tools/notes.js", import.meta.url));
 
 async function withNotes(callback, options = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "erix-notes-test-"));
@@ -77,21 +78,21 @@ function parsed(value) {
 }
 
 test("notes declares four provider-safe tool names", () => {
-  const definition = notes.getSkillDefinition();
-  assert.equal(definition.schema_version, 1);
-  assert.equal(definition.skill.id, "notes");
+  // bundled skill 定义（getSkillDefinition）已随 shim 退役；canonical 定义经 assembler 暴露。
+  const definitions = createBuiltinNotesTools({ runId: "definition-run" }).definitions;
   assert.deepEqual(
-    definition.tools.map((tool) => tool.name),
+    definitions.map((tool) => tool.name),
     ["note_take", "note_read", "note_list", "note_forget"],
   );
-  for (const tool of definition.tools) {
-    assert.match(tool.name, /^[a-zA-Z0-9_-]{1,64}$/);
+  for (const tool of definitions) {
+    assert.match(tool.name, /^[a-zA-Z0-9_-]{1,64}$/u);
   }
 });
 
 test("notes tool descriptions explain current and superseded recovery usage", () => {
   const tools = Object.fromEntries(
-    notes.getSkillDefinition().tools.map((tool) => [tool.name, tool.description]),
+    createBuiltinNotesTools({ runId: "description-run" })
+      .definitions.map((tool) => [tool.name, tool.description]),
   );
   for (const description of Object.values(tools)) {
     assert.match(description, /when-to-use/u);
@@ -584,12 +585,14 @@ test("completeRun and janitor report the new lifecycle statuses", async () => {
   });
 });
 
-test("bundled notes skill is discoverable and user notes skill overrides it", async () => {
+test("bundled notes skill is retired and user notes skill remains discoverable", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "erix-notes-home-"));
   const cwd = await mkdtemp(path.join(tmpdir(), "erix-notes-cwd-"));
   try {
+    // issue #61：bundled notes skill 已退役（skills/ 目录不再含 notes 子目录），
+    // bundled 发现机制本身保留（skills/ 目录仍在发现列表内）。
     const bundled = discoverSkills({ home, cwd }).find((skill) => skill.id === "notes");
-    assert.equal(bundled.dir, path.resolve("skills/notes"));
+    assert.equal(bundled, undefined);
     assert.ok(skillDirectories({ home, cwd }).includes(path.resolve("skills")));
 
     const userDirectory = path.join(home, ".erix", "skills", "notes");
@@ -604,8 +607,8 @@ test("bundled notes skill is discoverable and user notes skill overrides it", as
       }
       export function custom_note() { return "user"; }
     `, "utf8");
-    const overridden = discoverSkills({ home, cwd }).find((skill) => skill.id === "notes");
-    assert.equal(overridden.dir, userDirectory);
+    const discovered = discoverSkills({ home, cwd }).find((skill) => skill.id === "notes");
+    assert.equal(discovered.dir, userDirectory);
   } finally {
     await rm(home, { recursive: true, force: true });
     await rm(cwd, { recursive: true, force: true });

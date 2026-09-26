@@ -77,7 +77,7 @@ const REPL_HELP_TEXT = `REPL 用法：
   ERIX_DEFAULT_MODEL    无配置模型时使用的显式默认模型（可选）
   ERIX_EXEC_TIMEOUT_MS  exec 前台命令超时毫秒数（默认：120000）
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
-  ERIX_NO_NOTES=1       不装配 notes 工厂并排除 bundled notes skill
+  ERIX_NO_NOTES=1       不装配 notes 工厂（note_* 工具不再可用）
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
@@ -393,7 +393,7 @@ export async function runRepl(argv, io = {}) {
   const providerFactory = io.providerFactory
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
   const cliTools = createCliTools({ cwd });
-  // bundled notes skill 始终排除：notes 装配统一走工厂（ERIX_NO_NOTES=1 时不装配工厂）。
+  // 用户级 notes skill 仍经 excludeSkillIds 排除：notes 装配统一走工厂（ERIX_NO_NOTES=1 时不装配工厂）。
   const skillTools = await buildSkillTools({
     cwd,
     skillsDir: options.skillsDir,

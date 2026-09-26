@@ -229,9 +229,11 @@ is a full assembler: it binds the logical run scope, the notes directory
 instance at creation time, and every returned view reuses them while forcibly
 overriding any caller-forged `__erix` injection. The returned object contains:
 
-- `definitions` (alias `tools`) — the four `note_*` schemas;
-- `provider` / `listTools` / `resolveTools` — a `ToolProvider` shape usable in
-  `createCompositeToolProvider` aggregation;
+- `definitions` — the four `note_*` schemas;
+- `resolveTools` — the registry schema-resolution view; hosts that need a
+  `ToolProvider` shape (e.g. for `createCompositeToolProvider` aggregation)
+  build it themselves:
+  `createStaticToolProvider({ sets: { default: notes.definitions } })`;
 - `executors(name, input, context)` — the registry positional view;
 - `executeTool({id, name, input, context, signal})` — the structured view that
   matches the `runToolLoop` / checkpoint-executor calling convention (the
@@ -240,10 +242,17 @@ overriding any caller-forged `__erix` injection. The returned object contains:
 - `lifecycle.onRunStart` / `lifecycle.onRunComplete` — janitor before the run,
   and `completeRun` followed by janitor after it; completion errors are
   collected into the returned `errors[]` instead of throwing over the primary
-  error;
+  error. Both accept an optional `reportPersistenceFailure` reporter in their
+  input (`onRunComplete({ reportPersistenceFailure })`); when injected, store
+  failures during complete/janitor are reported through it exactly like tool
+  execution failures. Calling them with no arguments (as in the example below)
+  keeps the previous behavior — failures surface only through the returned
+  `errors[]` or the thrown error;
 - `semanticStateProvider` — the ADR-015 fold-point notes directory (active
   only, max 20, pinned first then `updated_at` order, version echoing
-  `state.stateVersion`).
+  `state.stateVersion`). Its payload accepts an optional
+  `reportPersistenceFailure`; when provided, a failed store list is reported
+  through it (the provider still returns `undefined` in that case).
 
 Typical wiring with an explicit try/finally:
 
@@ -275,12 +284,22 @@ bridge (`context.reportPersistenceFailure`, `port: "notes"`); they are never
 silently swallowed. The host remains responsible for choosing and injecting the
 `NotesStore` and logical run scope.
 
-The CLI's bundled `skills/notes/skill.mjs` is retained as a thin compatibility
-re-export (a compatibility layer for legacy discovery and third-party skill
-loaders; its retirement is a version-policy decision) so `buildSkillTools` and
-user/project skill discovery keep their existing paths. The CLI itself always
-excludes the bundled notes skill and assembles notes through the factory. It is
-not a second implementation or a portable standalone
+**Note provenance is caller-reported metadata, not fact.** The `provenance`
+fields on a note record other than `source` — `verified`, `toolUseId`, `round`
+— are self-reported by the caller and can be forged; they must never be used as
+an authorization input or as the basis of any guard. Ground truth about what
+the run actually did is the archived transcript (`toolOutputs`, ADR-016), not
+any field on a note record.
+
+The CLI's bundled `skills/notes/skill.mjs` was retired in v0.11.0 (issue #61),
+together with the assembler's alias keys: notes are delivered exclusively
+through `createBuiltinNotesTools`, and `erix skills` no longer lists a bundled
+notes skill (user/project skill discovery is unchanged). Legacy third-party
+skill loaders should import `src/tools/notes.js` or the `erix-agent/tools`
+subpath directly; the bundled notes shim's own `getSkillDefinition` export
+(`getNotesSkillDefinition` on the `erix-agent/tools` subpath) was removed with
+the shim — the generic skill loader still supports `getSkillDefinition()` for
+third-party skills. It was never a second implementation or a portable standalone
 copy; portable integrations should use the npm package entry point.
 
 ### CLI-side provenance guard
