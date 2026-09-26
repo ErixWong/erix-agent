@@ -23,11 +23,22 @@ async function withDirectory(callback) {
   }
 }
 
-test("createCliTools exposes all six tools", () => {
+test("createCliTools exposes all builtin tools including the todo quartet", () => {
   const { tools } = createCliTools();
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
-    ["exec", "grep", "readFile", "rg", "tree", "writeFile"],
+    [
+      "exec",
+      "grep",
+      "readFile",
+      "rg",
+      "todo_add",
+      "todo_clear",
+      "todo_done",
+      "todo_list",
+      "tree",
+      "writeFile",
+    ],
   );
 });
 

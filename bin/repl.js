@@ -30,7 +30,7 @@ import {
   closeAllMcpServers,
   createMcpProxyTool,
 } from "./mcp.js";
-import { buildSkillTools } from "./skills.js";
+import { buildSkillTools, warnBuiltinToolConflicts } from "./skills.js";
 import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
@@ -400,6 +400,8 @@ export async function runRepl(argv, io = {}) {
     excludeSkillIds: ["notes"],
     builtinNames: [...cliTools.tools.map((tool) => tool.name), "mcp", "note_take", "note_read", "note_list", "note_forget"],
   });
+  // 同名 skill 工具冲突：内置实现优先，skill 版本被忽略，此处一次性告警（issue #65）。
+  warnBuiltinToolConflicts(skillTools.errors);
   const notesAssembler = notesDisabled || !notesStore
     ? undefined
     : createBuiltinNotesTools({ runId: options.session, notesDir, notesStore });

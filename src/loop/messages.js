@@ -50,7 +50,18 @@ export function textFromUserMessage(message) {
 }
 
 export function toolResultContent(result) {
-  return typeof result === "string" ? result : String(result);
+  if (typeof result === "string") return result;
+  // 非字符串结果（裸对象/数组路径）：结构化序列化为可读的 JSON 文本；
+  // 循环引用等 stringify 失败场景回退 String()（issue #65）。
+  // 注意：{ data, content } 结构化结果由 checkpoint-executor 前置拆解，
+  // 落入这里的裸对象不含该协议形态，序列化它们不会遮蔽 data 通道。
+  try {
+    const serialized = JSON.stringify(result, null, 2);
+    if (typeof serialized === "string") return serialized;
+  } catch {
+    // stringify 失败（循环引用等）→ 回退 String()
+  }
+  return String(result);
 }
 
 export function toolResultData(value) {

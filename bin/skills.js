@@ -238,6 +238,21 @@ export async function loadAllSkills({ home, cwd, skillsDir } = {}) {
   return { skills, errors };
 }
 
+/**
+ * 同名冲突一次性告警（issue #65）：builtin 优先，skill 版本被 buildSkillTools 以
+ * 「工具名冲突」错误跳过。chat/repl 装配路径各调用一次，多个冲突合并为一行。
+ */
+export function warnBuiltinToolConflicts(errors, { warn = (msg) => console.error(msg) } = {}) {
+  const conflicts = (Array.isArray(errors) ? errors : []).filter((item) => (
+    item && typeof item.error === "string" && item.error.startsWith("工具名冲突：")
+  ));
+  if (conflicts.length === 0) return;
+  const details = conflicts
+    .map((item) => `${item.skillId}（${item.error.slice("工具名冲突：".length)}）`)
+    .join("；");
+  warn(`提示：skill 工具与内置工具同名，已采用内置实现，skill 版本已忽略：${details}`);
+}
+
 export async function buildSkillTools({
   home,
   cwd,
