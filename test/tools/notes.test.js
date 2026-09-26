@@ -26,7 +26,7 @@ test("notes source implementation uses the injected NotesStore and scope", async
     const backing = createFileNotesStore({ dir: directory });
     const calls = [];
     const notesStore = Object.fromEntries(
-      ["write", "read", "list", "complete", "janitor"].map((method) => [
+      ["write", "read", "list", "complete", "revoke", "janitor", "purge"].map((method) => [
         method,
         async (request) => {
           calls.push({ method, request });
@@ -78,9 +78,8 @@ test("builtin notes tools expose canonical definitions and sanitize into the hos
       "from-builtin",
     );
     const completion = await builtin.lifecycle.onRunComplete({});
-    assert.deepEqual([...Object.keys(completion)].sort(), ["completed", "errors", "janitor"]);
+    assert.deepEqual([...Object.keys(completion)].sort(), ["completed", "errors"]);
     assert.deepEqual(completion.completed, { status: "found", completed: 1 });
-    assert.deepEqual(completion.janitor, { status: "found", changed: 0, revoked: 0 });
     assert.deepEqual(completion.errors, []);
     assert.equal(
       JSON.parse(await readFile(path.join(directory, "run", "builtin-run", "answer.json"), "utf8"))
@@ -171,23 +170,59 @@ test("assembler binds run scope at creation time (cross-run isolation)", async (
   });
 });
 
-test("assembler lifecycle completes before janitor and collects errors without throwing", async () => {
+test("assembler lifecycle: onRunComplete only completes and onRunStart never runs janitor", async () => {
   await withDirectory(async (directory) => {
     const calls = [];
     const backing = createFileNotesStore({ dir: directory });
-    const flakyStore = Object.fromEntries(
-      ["read", "write", "list"].map((method) => [
+    const spyStore = Object.fromEntries(
+      ["read", "write", "list", "revoke", "janitor", "purge"].map((method) => [
         method,
-        (request) => backing[method](request),
+        async (request) => {
+          calls.push(method);
+          return backing[method](request);
+        },
       ]),
     );
-    flakyStore.complete = async () => {
+    spyStore.complete = async (request) => {
       calls.push("complete");
-      throw new Error("complete boom");
+      return backing.complete(request);
     };
-    flakyStore.janitor = async () => {
-      calls.push("janitor");
-      return { status: "found", revoked: 0 };
+    const builtin = createBuiltinNotesTools({
+      notesDir: directory,
+      notesStore: spyStore,
+      runId: "lifecycle-run",
+    });
+    await builtin.executeTool("note_take", { key: "k", content: "v" });
+    calls.length = 0;
+    const completion = await builtin.lifecycle.onRunComplete();
+    assert.deepEqual(calls, ["complete"], "onRunComplete 只调 completeRun，不再调 janitor");
+    assert.deepEqual([...Object.keys(completion)].sort(), ["completed", "errors"]);
+    assert.deepEqual(completion.completed, { status: "found", completed: 1 });
+    assert.deepEqual(completion.errors, []);
+    calls.length = 0;
+    const start = await builtin.lifecycle.onRunStart();
+    assert.deepEqual(calls, [], "onRunStart 是 no-op，不得触发任何 store 调用");
+    assert.equal(start.status, "skipped");
+    assert.equal(
+      JSON.parse(await readFile(path.join(directory, "run", "lifecycle-run", "k.json"), "utf8")).state,
+      "done",
+    );
+  });
+});
+
+test("assembler onRunComplete collects completeRun errors without throwing", async () => {
+  await withDirectory(async (directory) => {
+    const backing = createFileNotesStore({ dir: directory });
+    const flakyStore = {
+      read: (request) => backing.read(request),
+      write: (request) => backing.write(request),
+      list: (request) => backing.list(request),
+      revoke: (request) => backing.revoke(request),
+      janitor: (request) => backing.janitor(request),
+      purge: (request) => backing.purge(request),
+      complete: async () => {
+        throw new Error("complete boom");
+      },
     };
     const builtin = createBuiltinNotesTools({
       notesDir: directory,
@@ -195,14 +230,10 @@ test("assembler lifecycle completes before janitor and collects errors without t
       runId: "flaky-run",
     });
     const completion = await builtin.lifecycle.onRunComplete();
-    assert.deepEqual(calls, ["complete", "janitor"], "completeRun 抛错后仍须执行 janitor");
+    assert.equal(completion.completed, undefined);
     assert.equal(completion.errors.length, 1);
     assert.equal(completion.errors[0].operation, "notes_complete_run");
     assert.match(completion.errors[0].error.message, /complete boom/);
-    assert.deepEqual(completion.janitor, { status: "found", revoked: 0 });
-    // onRunStart = janitor
-    await builtin.lifecycle.onRunStart();
-    assert.deepEqual(calls, ["complete", "janitor", "janitor"]);
   });
 });
 
@@ -213,7 +244,9 @@ test("assembler reports notes write failures via the host persistence bridge (po
       read: backing.read.bind(backing),
       list: backing.list.bind(backing),
       complete: backing.complete.bind(backing),
+      revoke: backing.revoke.bind(backing),
       janitor: backing.janitor.bind(backing),
+      purge: backing.purge.bind(backing),
       write: async () => {
         const error = new Error("disk full");
         error.name = "NotesStoreError";
@@ -239,18 +272,18 @@ test("assembler reports notes write failures via the host persistence bridge (po
   });
 });
 
-test("assembler lifecycle binds reporter from lifecycle input and classifies complete/janitor as write side effects", async () => {
+test("assembler lifecycle binds reporter from lifecycle input and classifies complete/revoke as write side effects", async () => {
   await withDirectory(async (directory) => {
     const backing = createFileNotesStore({ dir: directory });
     const failingStore = {
       read: backing.read.bind(backing),
       write: backing.write.bind(backing),
       list: backing.list.bind(backing),
+      revoke: backing.revoke.bind(backing),
+      janitor: backing.janitor.bind(backing),
+      purge: backing.purge.bind(backing),
       complete: async () => {
         throw new Error("complete write boom");
-      },
-      janitor: async () => {
-        throw new Error("janitor write boom");
       },
     };
     const reports = [];
@@ -263,25 +296,42 @@ test("assembler lifecycle binds reporter from lifecycle input and classifies com
       runId: "lifecycle-report-run",
     });
     const completion = await builtin.lifecycle.onRunComplete({ reportPersistenceFailure: reporter });
-    assert.equal(completion.errors.length, 2);
-    assert.equal(reports.length, 2, "complete 与 janitor 的失败都必须经桥上报");
-    for (const operation of ["complete", "janitor"]) {
-      const report = reports.find((entry) => entry.operation === operation);
-      assert.ok(report, `${operation} 必须上报`);
-      assert.equal(report.port, "notes");
-      assert.equal(report.phase, "write", `${operation} 真实写文件，不得报 read`);
-      assert.equal(report.sideEffect, "executed_uncommitted");
-    }
-    // onRunStart = janitor：错误照旧向外抛（无 errors[] 收集），但先经桥上报且分类一致
+    assert.equal(completion.errors.length, 1);
+    assert.equal(reports.length, 1, "complete 失败必须经桥上报");
+    assert.equal(reports[0].operation, "complete");
+    assert.equal(reports[0].port, "notes");
+    assert.equal(reports[0].phase, "write", "complete 真实写文件，不得报 read");
+    assert.equal(reports[0].sideEffect, "executed_uncommitted");
+    // revoke 失败（note_forget 路径）：同样是写副作用，分类一致
     reports.length = 0;
-    await assert.rejects(
-      builtin.lifecycle.onRunStart({ reportPersistenceFailure: reporter }),
-      /janitor write boom/,
-    );
+    const failingRevoke = {
+      read: backing.read.bind(backing),
+      write: backing.write.bind(backing),
+      list: backing.list.bind(backing),
+      revoke: async () => {
+        throw new Error("revoke write boom");
+      },
+      janitor: backing.janitor.bind(backing),
+      purge: backing.purge.bind(backing),
+      complete: backing.complete.bind(backing),
+    };
+    const forgetBuiltin = createBuiltinNotesTools({
+      notesDir: directory,
+      notesStore: failingRevoke,
+      runId: "lifecycle-report-run",
+    });
+    await forgetBuiltin.executors("note_take", { key: "k", content: "v" }, {});
+    await forgetBuiltin.executors("note_forget", { key: "k" }, {
+      reportPersistenceFailure: reporter,
+    });
     assert.equal(reports.length, 1);
-    assert.equal(reports[0].operation, "janitor");
+    assert.equal(reports[0].operation, "revoke");
     assert.equal(reports[0].phase, "write");
     assert.equal(reports[0].sideEffect, "executed_uncommitted");
+    // onRunStart = no-op：不得触发任何 store 调用与上报
+    reports.length = 0;
+    await builtin.lifecycle.onRunStart({ reportPersistenceFailure: reporter });
+    assert.equal(reports.length, 0);
     // restore：lifecycle 之后 reporter 不得泄漏到无 reporter 的调用
     reports.length = 0;
     await builtin.lifecycle.onRunComplete();
@@ -297,10 +347,12 @@ test("assembler reports distinct operations separately even when they share one 
       read: backing.read.bind(backing),
       write: backing.write.bind(backing),
       list: backing.list.bind(backing),
-      // complete 与 janitor 复用同一 Error 对象：去重粒度是 (error, operation)，
+      // complete 与 revoke 复用同一 Error 对象：去重粒度是 (error, operation)，
       // 两个 operation 必须各报一次，第二次不得被吞。
       complete: async () => { throw shared; },
+      revoke: async () => { throw shared; },
       janitor: async () => { throw shared; },
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
     };
     const reports = [];
     const builtin = createBuiltinNotesTools({
@@ -308,13 +360,17 @@ test("assembler reports distinct operations separately even when they share one 
       notesStore: failingStore,
       runId: "shared-error-run",
     });
+    await builtin.executors("note_take", { key: "k", content: "v" }, {});
     await builtin.lifecycle.onRunComplete({
+      reportPersistenceFailure: (info) => reports.push(info),
+    });
+    await builtin.executors("note_forget", { key: "k" }, {
       reportPersistenceFailure: (info) => reports.push(info),
     });
     assert.equal(reports.length, 2);
     assert.deepEqual(
       reports.map((report) => report.operation).sort(),
-      ["complete", "janitor"],
+      ["complete", "revoke"],
     );
   });
 });
@@ -322,7 +378,13 @@ test("assembler reports distinct operations separately even when they share one 
 test("assembler semanticStateProvider reports list failure only when a reporter is injected", async () => {
   await withDirectory(async (directory) => {
     const failingStore = {
+      read: async () => undefined,
+      write: async () => {},
       list: async () => { throw new Error("list boom"); },
+      complete: async () => ({ status: "found", completed: 0 }),
+      revoke: async () => ({ status: "missing", revoked: 0 }),
+      janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
     };
     const builtin = createBuiltinNotesTools({
       notesDir: directory,
@@ -375,6 +437,8 @@ test("assembler semanticStateProvider sorts, caps at 20, and echoes stateVersion
     const provided = await builtin.semanticStateProvider({ state: { stateVersion: 9 } });
     assert.equal(provided.version, 9);
     assert.equal(provided.status, "ok");
+    // issue #67 PR 2：返回值带 sourceRevision（list 页 revision）。
+    assert.equal(typeof provided.sourceRevision, "string");
     const lines = provided.text.split("\n");
     assert.equal(lines.length, 21, "标题 + 20 条封顶");
     assert.match(lines[1], /- note_3 \(★ @agent\): value 3/, "pinned 排最前");
@@ -413,4 +477,301 @@ test("resolveNotesDir honors explicit value, ERIX_NOTES_DIR, then the home defau
     if (saved === undefined) delete process.env.ERIX_NOTES_DIR;
     else process.env.ERIX_NOTES_DIR = saved;
   }
+});
+
+test("assembler creation throws TypeError when the store lacks revoke or purge", async () => {
+  await withDirectory(async (directory) => {
+    assert.throws(
+      () => createBuiltinNotesTools({
+        notesDir: directory,
+        notesStore: { write() {}, read() {}, list() {}, complete() {}, janitor() {} },
+        runId: "incomplete-run",
+      }),
+      /revoke/u,
+    );
+    assert.throws(
+      () => createBuiltinNotesTools({
+        notesDir: directory,
+        notesStore: {
+          write() {}, read() {}, list() {}, complete() {}, revoke() {}, janitor() {},
+        },
+        runId: "incomplete-run",
+      }),
+      /purge/u,
+    );
+  });
+});
+
+test("assembler validates liveness at creation time", async () => {
+  await withDirectory(async (directory) => {
+    const store = createFileNotesStore({ dir: directory });
+    const isAlive = async () => true;
+    for (const liveness of [
+      { ttlMs: 0, isAlive },
+      { ttlMs: -1, isAlive },
+      { ttlMs: 1.5, isAlive },
+      { ttlMs: Number.NaN, isAlive },
+      { ttlMs: 60_000 },
+      { ttlMs: 60_000, isAlive: "not-a-function" },
+      "not-an-object",
+    ]) {
+      assert.throws(
+        () => createBuiltinNotesTools({
+          notesDir: directory,
+          notesStore: store,
+          runId: "liveness-run",
+          liveness,
+        }),
+        /liveness/u,
+      );
+    }
+    assert.doesNotThrow(() => createBuiltinNotesTools({
+      notesDir: directory,
+      notesStore: store,
+      runId: "liveness-run",
+      liveness: { ttlMs: 60_000, isAlive },
+    }));
+  });
+});
+
+test("lifecycle.revokeInactive revokes only dead scopes and skips alive ones", async () => {
+  await withDirectory(async (directory) => {
+    const liveScope = { runId: "live-scope", notesDir: directory };
+    const deadScope = { runId: "dead-scope", notesDir: directory };
+    await note_take({ key: "a", content: "va", __erix: liveScope });
+    await note_take({ key: "b", content: "vb", __erix: deadScope });
+    const builtin = createBuiltinNotesTools({
+      notesDir: directory,
+      runId: "host-run",
+      liveness: {
+        ttlMs: 60_000,
+        isAlive: async (scopeRef, { now, ttlMs }) => {
+          assert.equal(typeof now, "number");
+          assert.equal(ttlMs, 60_000);
+          return scopeRef === "live-scope";
+        },
+      },
+    });
+    const result = await builtin.lifecycle.revokeInactive({
+      scopeRefs: ["live-scope", "dead-scope"],
+    });
+    assert.deepEqual(result, { status: "found", checked: 2, alive: 1, revoked: 1, skipped: 0 });
+    assert.equal(JSON.parse(await note_read({ key: "a", __erix: liveScope })).state, "active");
+    assert.equal(JSON.parse(await note_read({ key: "b", __erix: deadScope })).status, "revoked");
+    const tombstone = JSON.parse(await readFile(
+      path.join(directory, "run", "dead-scope", "b.json"),
+      "utf8",
+    ));
+    assert.equal(tombstone.state, "revoked");
+    assert.equal(tombstone.revoke_reason, "scope_inactive");
+  });
+});
+
+test("lifecycle.revokeInactive records isAlive failures in errors[] and never revokes", async () => {
+  await withDirectory(async (directory) => {
+    const scope = { runId: "boom-scope", notesDir: directory };
+    await note_take({ key: "a", content: "va", __erix: scope });
+    const throwing = createBuiltinNotesTools({
+      notesDir: directory,
+      runId: "host-run",
+      liveness: {
+        ttlMs: 60_000,
+        isAlive: async () => {
+          throw new Error("liveness probe down");
+        },
+      },
+    });
+    const failed = await throwing.lifecycle.revokeInactive({
+      scopeRefs: ["boom-scope"],
+      reason: "host_sweep",
+    });
+    assert.equal(failed.status, "found");
+    assert.equal(failed.checked, 0);
+    assert.equal(failed.revoked, 0);
+    assert.equal(failed.errors.length, 1);
+    assert.equal(failed.errors[0].operation, "notes_liveness_check");
+    assert.equal(failed.errors[0].scopeRef, "boom-scope");
+    assert.match(failed.errors[0].error.message, /liveness probe down/);
+    assert.equal(JSON.parse(await note_read({ key: "a", __erix: scope })).state, "active");
+
+    // 非 boolean 返回同样进 errors[]，不解释为 false。
+    const nonBoolean = createBuiltinNotesTools({
+      notesDir: directory,
+      runId: "host-run",
+      liveness: { ttlMs: 60_000, isAlive: async () => "yes" },
+    });
+    const rejected = await nonBoolean.lifecycle.revokeInactive({ scopeRefs: ["boom-scope"] });
+    assert.equal(rejected.revoked, 0);
+    assert.equal(rejected.errors.length, 1);
+    assert.match(rejected.errors[0].error.message, /boolean/u);
+    assert.equal(JSON.parse(await note_read({ key: "a", __erix: scope })).state, "active");
+  });
+});
+
+test("lifecycle.revokeInactive counts expected-state mismatches as skipped", async () => {
+  await withDirectory(async (directory) => {
+    const scope = { runId: "racy-scope", notesDir: directory };
+    await note_take({ key: "racy", content: "v", __erix: scope });
+    const backing = createFileNotesStore({ dir: directory });
+    const racingStore = {
+      read: backing.read.bind(backing),
+      write: backing.write.bind(backing),
+      list: backing.list.bind(backing),
+      complete: backing.complete.bind(backing),
+      janitor: backing.janitor.bind(backing),
+      purge: backing.purge.bind(backing),
+      // 模拟并发：检查之后记录被改写，revoke 的 expectedUpdatedAt 护栏命中。
+      revoke: async (request) => (
+        request.key === "racy"
+          ? { status: "unchanged", revoked: 0 }
+          : backing.revoke(request)
+      ),
+    };
+    const builtin = createBuiltinNotesTools({
+      notesDir: directory,
+      notesStore: racingStore,
+      runId: "host-run",
+      liveness: { ttlMs: 60_000, isAlive: async () => false },
+    });
+    const result = await builtin.lifecycle.revokeInactive({ scopeRefs: ["racy-scope"] });
+    assert.deepEqual(result, { status: "found", checked: 1, alive: 0, revoked: 0, skipped: 1 });
+    assert.equal(JSON.parse(await note_read({ key: "racy", __erix: scope })).state, "active");
+  });
+});
+
+test("lifecycle.revokeInactive without liveness is a documented no-op", async () => {
+  await withDirectory(async (directory) => {
+    const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "host-run" });
+    const result = await builtin.lifecycle.revokeInactive({ scopeRefs: ["whatever"] });
+    assert.deepEqual(result, {
+      status: "found",
+      checked: 0,
+      alive: 0,
+      revoked: 0,
+      skipped: 0,
+      reason: "liveness not configured; pass liveness to createBuiltinNotesTools to enable active orphan cleanup",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// issue #67 PR 2：semanticStateProvider 进程内增量缓存（revision 短路）
+// ---------------------------------------------------------------------------
+
+test("assembler semanticStateProvider reuses cached text within one revision without relisting", async () => {
+  await withDirectory(async (directory) => {
+    const backing = createFileNotesStore({ dir: directory });
+    let listCalls = 0;
+    const spyStore = {
+      read: backing.read.bind(backing),
+      write: backing.write.bind(backing),
+      complete: backing.complete.bind(backing),
+      revoke: backing.revoke.bind(backing),
+      janitor: backing.janitor.bind(backing),
+      purge: backing.purge.bind(backing),
+      list: async (request) => {
+        listCalls += 1;
+        return backing.list(request);
+      },
+    };
+    const builtin = createBuiltinNotesTools({
+      notesDir: directory,
+      notesStore: spyStore,
+      runId: "sem-cache-run",
+    });
+    await builtin.executeTool("note_take", { key: "cached", content: "cached-value" });
+    listCalls = 0;
+
+    const first = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.match(first.text, /- cached \(@agent\): cached-value/);
+    assert.equal(first.sourceRevision, (
+      await backing.list({ scopeRef: "sem-cache-run" })
+    ).revision);
+    assert.equal(listCalls, 1);
+
+    // 同 revision：直接复用缓存文本，不再调 list（也就不读任何记录文件）。
+    const second = await builtin.semanticStateProvider({ state: { stateVersion: 2 } });
+    assert.equal(second.text, first.text);
+    assert.equal(second.version, 2, "version 仍回声当前 stateVersion（stale 语义不变）");
+    assert.equal(second.sourceRevision, first.sourceRevision);
+    assert.equal(listCalls, 1, "同 revision 内不得重复 list");
+  });
+});
+
+test("assembler semanticStateProvider rerenders when revision changes", async () => {
+  await withDirectory(async (directory) => {
+    const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "sem-rev-run" });
+    await builtin.executeTool("note_take", { key: "before", content: "first-value" });
+    const first = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.match(first.text, /before/);
+
+    // revision 变化（新写入）→ 目录更新，缓存替换。
+    await builtin.executeTool("note_take", { key: "after", content: "second-value" });
+    const second = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.match(second.text, /after \(@agent\): second-value/);
+    assert.notEqual(second.sourceRevision, first.sourceRevision);
+    assert.equal(second.text.includes("second-value"), true);
+
+    // note_forget 经 store.revoke 递增 revision → 目录重渲染，墓碑不进目录。
+    await builtin.executeTool("note_take", { key: "keep", content: "kept" });
+    await builtin.executeTool("note_forget", { key: "before" });
+    const third = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.equal(third.text.includes("before"), false, "revoked 记录不进目录");
+    assert.match(third.text, /after \(@agent\): second-value/);
+    assert.match(third.text, /keep \(@agent\): kept/);
+
+    // complete（active → done）同样推进 revision；全部 done 后目录为空 →
+    // 返回 undefined（不装懂），旧缓存不得冒充最新。
+    await builtin.lifecycle.onRunComplete();
+    const emptied = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.equal(emptied, undefined, "无 active 记录时目录为 undefined");
+  });
+});
+
+test("assembler semanticStateProvider list failure returns undefined and never serves stale cache", async () => {
+  await withDirectory(async (directory) => {
+    const backing = createFileNotesStore({ dir: directory });
+    let failLists = false;
+    const flakyStore = {
+      read: backing.read.bind(backing),
+      write: backing.write.bind(backing),
+      complete: backing.complete.bind(backing),
+      revoke: backing.revoke.bind(backing),
+      janitor: backing.janitor.bind(backing),
+      purge: backing.purge.bind(backing),
+      list: async (request) => {
+        if (failLists) throw new Error("list transient boom");
+        return backing.list(request);
+      },
+    };
+    const builtin = createBuiltinNotesTools({
+      notesDir: directory,
+      notesStore: flakyStore,
+      runId: "sem-stale-run",
+    });
+    await builtin.executeTool("note_take", { key: "k", content: "v" });
+    const cached = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.match(cached.text, /- k \(@agent\): v/);
+
+    // list 失败：重验证路径（先有一次递增 revision 的写入）上 list 抛错 →
+    // 返回 undefined 并上报，绝不拿旧 cache 冒充最新。
+    failLists = true;
+    await builtin.executeTool("note_take", { key: "k-mutation", content: "v" });
+    const reports = [];
+    const failed = await builtin.semanticStateProvider({
+      state: { stateVersion: 2 },
+      reportPersistenceFailure: (info) => reports.push(info),
+    });
+    assert.equal(failed, undefined);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].operation, "list");
+    assert.equal(reports[0].phase, "read");
+
+    // 恢复后重新渲染（缓存未被错误地保留为“最新”）。
+    failLists = false;
+    await builtin.executeTool("note_take", { key: "k2", content: "v2" });
+    const recovered = await builtin.semanticStateProvider({ state: { stateVersion: 3 } });
+    assert.match(recovered.text, /k2 \(@agent\): v2/);
+    assert.match(recovered.text, /k-mutation \(@agent\): v/);
+  });
 });

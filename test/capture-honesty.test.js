@@ -16,9 +16,11 @@ test("writeNote classification: storage fault throws, NotesStoreError stays inva
     const scope = { __erix: { runId: "classify-run", notesDir, notesStore: {
       write: async () => { throw new Error("EACCES: disk gone"); },
       read: async () => undefined,
-      list: async () => [],
+      list: async () => ({ status: "found", records: [], nextCursor: null, revision: "fake-revision-1" }),
       complete: async () => ({ status: "found", completed: 0 }),
-      janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+      janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+      revoke: async () => ({ status: "missing", revoked: 0 }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
     } } };
 
     // 存储故障 → 上抛（不再伪装 invalid）
@@ -36,9 +38,11 @@ test("writeNote classification: storage fault throws, NotesStoreError stays inva
           throw error;
         },
         read: async () => undefined,
-        list: async () => [],
+        list: async () => ({ status: "found", records: [], nextCursor: null, revision: "fake-revision-1" }),
         complete: async () => ({ status: "found", completed: 0 }),
-        janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+        janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+      revoke: async () => ({ status: "missing", revoked: 0 }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
       },
     } });
     // skill 层返回 JSON 字符串（LLM 工具形态），解析后取 status
@@ -54,9 +58,11 @@ test("runChat finally: completeRun failure lands in completionErrors, main resul
     const notesStore = {
       write: async () => {},
       read: async () => undefined,
-      list: async () => [],
+      list: async () => ({ status: "found", records: [], nextCursor: null, revision: "fake-revision-1" }),
       complete: async () => { throw new Error("complete failed on disk gone"); },
-      janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+      janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+      revoke: async () => ({ status: "missing", revoked: 0 }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
     };
     const provider = createFakeProvider([
       { content: [{ type: "text", text: "done" }] },
@@ -95,9 +101,11 @@ test("runChat finally: when the main result is an exception, completion errors r
     const notesStore = {
       write: async () => {},
       read: async () => undefined,
-      list: async () => [],
+      list: async () => ({ status: "found", records: [], nextCursor: null, revision: "fake-revision-1" }),
       complete: async () => { throw new Error("complete failed after crash"); },
-      janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+      janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+      revoke: async () => ({ status: "missing", revoked: 0 }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
     };
     await assert.rejects(
       runChat({
@@ -135,9 +143,11 @@ test("transcript port failure keeps the fatal档位 and the same bill field shap
   const bareNotesStore = {
     write: async () => { throw new Error("notes disk gone"); },
     read: async () => undefined,
-    list: async () => [],
+    list: async () => ({ status: "found", records: [], nextCursor: null, revision: "fake-revision-1" }),
     complete: async () => ({ status: "found", completed: 0 }),
-    janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+    janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+      revoke: async () => ({ status: "missing", revoked: 0 }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
   };
   const events = [];
   const dir = await mkdtemp(join(tmpdir(), "erix-two-port-"));

@@ -27,6 +27,8 @@ async function withNotes(callback, options = {}) {
     [
       "ERIX_NOTES_DIR",
       "ERIX_NOTES_GRACE_MS",
+      "ERIX_NOTES_DONE_GRACE_MS",
+      "ERIX_NOTES_TOMBSTONE_RETENTION_MS",
     ]
       .map((name) => [name, process.env[name]]),
   );
@@ -38,6 +40,8 @@ async function withNotes(callback, options = {}) {
   };
   if (options.graceMs === undefined) delete process.env.ERIX_NOTES_GRACE_MS;
   else process.env.ERIX_NOTES_GRACE_MS = String(options.graceMs);
+  delete process.env.ERIX_NOTES_DONE_GRACE_MS;
+  delete process.env.ERIX_NOTES_TOMBSTONE_RETENTION_MS;
   try {
     return await callback(directory);
   } finally {
@@ -155,12 +159,17 @@ test("note list sorts by relevance and filters bounded metadata", async () => {
 
     const listed = parsed(await scopedNotes.note_list({ limit: 2 }));
     assert.equal(listed.count, 2);
-    assert.equal(listed.total, 3);
+    // breaking（issue #67 PR 2）：不再承诺 total；翻页走 nextCursor。
+    assert.equal("total" in listed, false);
+    assert.equal(typeof listed.nextCursor, "string");
     assert.deepEqual(listed.notes.map((note) => [note.key, note.relevance]), [
       ["high", 0.9],
       ["auto", 0.8],
     ]);
     assert.equal(listed.notes[1].source, "auto");
+    const rest = parsed(await scopedNotes.note_list({ cursor: listed.nextCursor }));
+    assert.deepEqual(rest.notes.map((note) => note.key), ["low"]);
+    assert.equal(rest.nextCursor, null);
     assert.deepEqual(
       parsed(await scopedNotes.note_list({ minRelevance: 0.8 })).notes.map((note) => note.key),
       ["high", "auto"],
@@ -205,7 +214,7 @@ test("take/read/list supports current, superseded, and folded content", async ()
 
     const listed = parsed(await scopedNotes.note_list({ tag: "decision" }));
     assert.equal(listed.status, "found");
-    assert.equal(listed.total, 1);
+    assert.equal(listed.count, 1);
     assert.equal(listed.notes[0].hasContent, true);
     assert.equal("content" in listed.notes[0], false);
     assert.equal("value" in listed.notes[0], false);
@@ -320,7 +329,7 @@ test("unsafe explicit scope round-trips through the skill lifecycle", async () =
       "safe",
     );
     assert.equal(
-      parsed(await scopedNotes.note_list({ __erix: scope })).total,
+      parsed(await scopedNotes.note_list({ __erix: scope })).count,
       1,
     );
     assert.deepEqual(await scopedNotes.completeRun({ __erix: scope }), {
@@ -329,8 +338,9 @@ test("unsafe explicit scope round-trips through the skill lifecycle", async () =
     });
     assert.deepEqual(await scopedNotes.runNotesJanitor({ __erix: scope }), {
       status: "found",
-      changed: 0,
+      scanned: 1,
       revoked: 0,
+      nextCursor: null,
     });
     const runEntries = await readdir(path.join(directory, "run"));
     assert.equal(runEntries.length, 1);
@@ -482,7 +492,8 @@ test("corruption is not silently reported as missing and unsafe keys stay inside
     }
     const entries = await readdir(scope);
     assert.equal(entries.some((name) => name === "x.json"), false);
-    assert.ok(entries.every((name) => name.endsWith(".json")));
+    // .revision 是 scope metadata（隐藏文件），不是 note 记录。
+    assert.ok(entries.filter((name) => !name.startsWith(".")).every((name) => name.endsWith(".json")));
   });
 });
 
@@ -497,8 +508,8 @@ test("project and user scopes are explicit unsupported stubs", async () => {
   });
 });
 
-test("run lifecycle transitions active to done and then revokes expired notes", async () => {
-  await withNotes(async (directory, options) => {
+test("run lifecycle transitions active to done and janitor reclaims only expired done", async () => {
+  await withNotes(async (directory) => {
     const now = { value: Date.now() };
     const restoreClock = notes.setNotesClock(() => now.value);
     try {
@@ -512,45 +523,59 @@ test("run lifecycle transitions active to done and then revokes expired notes", 
       assert.equal(completed.state, "done");
       assert.ok(completed.expires_at);
 
-      await scopedNotes.runNotesJanitor();
-      process.env.ERIX_NOTES_GRACE_MS = "0";
+      // 未过期：janitor 不动 done 记录。
+      assert.equal((await scopedNotes.runNotesJanitor()).revoked, 0);
+      assert.equal(parsed(await scopedNotes.note_read({ key: "lifecycle" })).state, "done");
+      // 过期：janitor 写墓碑（revoked_at + revoke_reason）。
       now.value = Date.parse(completed.expires_at) + 1;
-      await scopedNotes.runNotesJanitor();
+      assert.equal((await scopedNotes.runNotesJanitor()).revoked, 1);
       const tombstone = parsed(await readFile(
         path.join(directory, "run", "notes-test-run", "lifecycle.json"),
         "utf8",
       ));
       assert.equal(tombstone.state, "revoked");
       assert.ok(tombstone.revoked_at);
+      assert.equal(tombstone.revoke_reason, "done_expired");
       assert.equal(parsed(await scopedNotes.note_read({ key: "lifecycle" })).status, "revoked");
-      void options;
     } finally {
       restoreClock();
     }
   }, { graceMs: 60_000 });
 });
 
-test("janitor revokes expired notes from other sessions and filters inactive notes", async () => {
+test("janitor keeps foreign active notes active (even with grace env zero) and reclaims their expired done", async () => {
   const now = { value: Date.now() };
   await withNotes(async (directory) => {
     const restoreClock = notes.setNotesClock(() => now.value);
     try {
       await scopedNotes.note_take({ key: "orphan", content: "value" });
-      assert.equal(parsed(await scopedNotes.note_list({ __erix: { runId: "current-run", notesDir: directory } })).total, 0);
-      assert.equal((await scopedNotes.runNotesJanitor({ __erix: { runId: "current-run", notesDir: directory } })).status, "found");
-      let orphan = parsed(await readFile(
+      const foreignJanitor = () => scopedNotes.runNotesJanitor({
+        __erix: { runId: "current-run", notesDir: directory },
+      });
+      const readOrphan = async () => parsed(await readFile(
         path.join(directory, "run", "notes-test-run", "orphan.json"),
         "utf8",
       ));
-      assert.equal(orphan.state, "active");
+      // 回归核心：另一 run 的 active 笔记长时间未写，janitor 跑完后仍 active。
+      now.value += 30 * 24 * 60 * 60 * 1000;
+      assert.equal((await foreignJanitor()).revoked, 0);
+      assert.equal((await readOrphan()).state, "active");
+      // ERIX_NOTES_GRACE_MS=0 同样不得回收 active：grace 不再含 active 清理语义。
+      process.env.ERIX_NOTES_GRACE_MS = "0";
+      assert.equal((await foreignJanitor()).revoked, 0);
+      assert.equal((await readOrphan()).state, "active");
+      process.env.ERIX_NOTES_GRACE_MS = "1000";
+
+      // 该笔记 complete 后过期，janitor 负责回收（过期 done → tombstone）。
+      await scopedNotes.completeRun();
+      assert.equal((await foreignJanitor()).revoked, 0, "未过期的 done 不得回收");
+      assert.equal((await readOrphan()).state, "done");
       now.value += 1001;
-      await scopedNotes.runNotesJanitor({ __erix: { runId: "current-run", notesDir: directory } });
-      orphan = parsed(await readFile(
-        path.join(directory, "run", "notes-test-run", "orphan.json"),
-        "utf8",
-      ));
-      assert.equal(orphan.state, "revoked");
-      assert.equal(parsed(await scopedNotes.note_list({ includeInactive: true })).total, 1);
+      assert.equal((await foreignJanitor()).revoked, 1);
+      const tombstone = await readOrphan();
+      assert.equal(tombstone.state, "revoked");
+      assert.ok(tombstone.revoked_at);
+      assert.equal(parsed(await scopedNotes.note_list({ includeInactive: true })).count, 1);
     } finally {
       restoreClock();
     }
@@ -613,4 +638,59 @@ test("bundled notes skill is retired and user notes skill remains discoverable",
     await rm(home, { recursive: true, force: true });
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// issue #67 PR 2：note_list 分页（opaque cursor、无 total、cursor_stale 可恢复）
+// ---------------------------------------------------------------------------
+
+test("note list paginates via opaque nextCursor and rejects legacy integer cursors", async () => {
+  await withNotes(async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await scopedNotes.note_take({
+        key: `paginate-${index}`,
+        content: `value-${index}`,
+        relevance: 0.9 - index * 0.1,
+      });
+    }
+    const page1 = parsed(await scopedNotes.note_list({ limit: 2 }));
+    assert.equal(page1.count, 2);
+    assert.equal(typeof page1.nextCursor, "string");
+    const page2 = parsed(await scopedNotes.note_list({ limit: 2, cursor: page1.nextCursor }));
+    assert.deepEqual(page2.notes.map((note) => note.key), ["paginate-2"]);
+    assert.equal(page2.nextCursor, null);
+
+    // breaking：整数 offset cursor 不再合法。
+    const legacy = parsed(await scopedNotes.note_list({ cursor: 2 }));
+    assert.equal(legacy.status, "invalid");
+    assert.match(legacy.reason, /nextCursor/u);
+    const malformed = parsed(await scopedNotes.note_list({ cursor: "bogus" }));
+    assert.equal(malformed.status, "invalid");
+    const badLimit = parsed(await scopedNotes.note_list({ limit: 0 }));
+    assert.equal(badLimit.status, "invalid");
+    assert.match(badLimit.reason, /limit/u);
+  });
+});
+
+test("note list surfaces cursor_stale as a recoverable structured result", async () => {
+  await withNotes(async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await scopedNotes.note_take({ key: `stale-${index}`, content: `v${index}` });
+    }
+    const page1 = parsed(await scopedNotes.note_list({ limit: 1 }));
+    assert.equal(typeof page1.nextCursor, "string");
+    // 翻页期间记录变更 → 旧游标过期。
+    await scopedNotes.note_take({ key: "stale-new", content: "new" });
+    const stale = parsed(await scopedNotes.note_list({ limit: 1, cursor: page1.nextCursor }));
+    assert.equal(stale.status, "cursor_stale");
+    assert.deepEqual(stale.notes, []);
+    assert.equal(stale.count, 0);
+    assert.equal(stale.nextCursor, null);
+    assert.equal(typeof stale.revision, "string");
+    assert.match(stale.next, /从头翻页/u);
+    // 可恢复：去掉 cursor 从头翻页正常返回。
+    const restarted = parsed(await scopedNotes.note_list({ limit: 1 }));
+    assert.equal(restarted.status, "found");
+    assert.equal(restarted.count, 1);
+  });
 });
