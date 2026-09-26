@@ -201,8 +201,18 @@ const schemas = [
   },
 ].map(normalizeSchema);
 
-export const CLI_TOOLS_SYSTEM_PROMPT =
-  `可用工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，grep 递归搜索文件内容（支持 glob 文件名过滤、字面量/正则模式，结果按文件分组），tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出，todo_add 添加待办任务、todo_list 列出待办、todo_done 标记完成、todo_clear 清空（均返回可读文本，数据存 ~/.erix/todos/ 按工作目录隔离）。
+// CLI 系统提示拆成「基础段 + todo 段」（issue #69）：
+// --no-todo / ERIX_NO_TODO=1 时 todo 段整体消失（工具清单行后缀 + 工具纪律行的 todo 分句），
+// 基础段自身是完整句子（工具清单行以「输出。」收尾）。默认路径拼接结果与拆分前逐字节一致。
+const CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD =
+  "可用工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，grep 递归搜索文件内容（支持 glob 文件名过滤、字面量/正则模式，结果按文件分组），tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出";
+
+// todo 段①：工具清单行的 todo 后缀（含句号，接在基础段 HEAD 之后）
+const CLI_TOOLS_SYSTEM_PROMPT_TODO_TOOLS =
+  "，todo_add 添加待办任务、todo_list 列出待办、todo_done 标记完成、todo_clear 清空（均返回可读文本，数据存 ~/.erix/todos/ 按工作目录隔离）。";
+
+const CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE =
+  `
 
 [你的处境]
 上下文会被折叠，早期细节你会真的忘记——不是记不清，是没有。
@@ -214,11 +224,25 @@ export const CLI_TOOLS_SYSTEM_PROMPT =
 终稿的结束协议 JSON 必须带 findings 字段，只把归档输出中出现过的字面值声明为 label→精确值（如 "findings":{"nonce":"abc123"}）；不要声明计数/次数/引用等派生结论；没有关键值时省略该字段。
 
 [工具纪律]
-- 复杂任务先规划并逐步执行；长任务用 todo_add 记录进度、todo_done 标记完成，随时 todo_list 核对剩余项
+- 复杂任务先规划并逐步执行`;
+
+// todo 段②：工具纪律行首条 bullet 的 todo 分句（接在基础段「先规划并逐步执行」之后）
+const CLI_TOOLS_SYSTEM_PROMPT_TODO_DISCIPLINE =
+  "；长任务用 todo_add 记录进度、todo_done 标记完成，随时 todo_list 核对剩余项";
+
+const CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL =
+  `
 - 大文件用 readFile 的 offset/limit 分段读取，操作后验证结果
 - 具体数值必须来自当前工具返回或 note_read，不得编造
 - 不要主动读取密钥、凭据或 .env 文件；只用本次工具返回明确给出的来源
 - 任务完成后直接汇报结果，默认使用中文`;
+
+export const CLI_TOOLS_SYSTEM_PROMPT =
+  CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD
+  + CLI_TOOLS_SYSTEM_PROMPT_TODO_TOOLS
+  + CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE
+  + CLI_TOOLS_SYSTEM_PROMPT_TODO_DISCIPLINE
+  + CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL;
 
 /**
  * --tools 白名单过滤（chat/repl 共用）：对组合后的工具集做 allowlist。
@@ -242,8 +266,12 @@ export function filterToolsByAllowlist(tools, allowlist, { onUnknown } = {}) {
   return filtered;
 }
 
-export function buildCliToolsSystemPrompt() {
+export function buildCliToolsSystemPrompt({ todo = true } = {}) {
   // ADR-015：ResourceStore 退出模型视野——所有宿主形态同一份提示词，不提 opaque 工件/路径。
+  // issue #69：todo=false 时拼接无 todo 段的基础提示（--no-todo / ERIX_NO_TODO）。
+  if (todo === false) {
+    return `${CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD}。${CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE}${CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL}`;
+  }
   return CLI_TOOLS_SYSTEM_PROMPT;
 }
 
@@ -456,10 +484,14 @@ function normalizeCommand(command) {
 }
 
 
+const TODO_TOOL_NAMES = new Set(["todo_add", "todo_list", "todo_done", "todo_clear"]);
+
 export function createCliTools({
   cwd = process.cwd(),
+  todo = true,
 } = {}) {
   const root = path.resolve(cwd);
+  const todoEnabled = todo !== false;
   // ADR-016：replayable 分类、重跑检测、auto-capture 全部退役；
   // lastToolMetadata 仅存工具名（元数据通道收窄）。
   let lastToolMetadata;
@@ -798,11 +830,14 @@ export function createCliTools({
     tree,
     writeFile,
     exec: (input) => executeExecCommand(input, root),
-    todo_add: todoAdd,
-    todo_list: todoList,
-    todo_done: todoDone,
-    todo_clear: todoClear,
   };
+  // issue #69：--no-todo / ERIX_NO_TODO=1 时 todo 四工具不注册（schemas 同步过滤，见 return）。
+  if (todoEnabled) {
+    executors.todo_add = todoAdd;
+    executors.todo_list = todoList;
+    executors.todo_done = todoDone;
+    executors.todo_clear = todoClear;
+  }
 
   async function executeTool(name, input, context) {
     const executor = executors[name];
@@ -817,7 +852,9 @@ export function createCliTools({
   }
 
   return {
-    tools: schemas.map((schema) => structuredClone(schema)),
+    tools: schemas
+      .filter((schema) => todoEnabled || !TODO_TOOL_NAMES.has(schema.name))
+      .map((schema) => structuredClone(schema)),
     executeTool,
     getLastToolMetadata: () => lastToolMetadata,
     truncateResult,
