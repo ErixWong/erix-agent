@@ -159,12 +159,17 @@ test("note list sorts by relevance and filters bounded metadata", async () => {
 
     const listed = parsed(await scopedNotes.note_list({ limit: 2 }));
     assert.equal(listed.count, 2);
-    assert.equal(listed.total, 3);
+    // breaking（issue #67 PR 2）：不再承诺 total；翻页走 nextCursor。
+    assert.equal("total" in listed, false);
+    assert.equal(typeof listed.nextCursor, "string");
     assert.deepEqual(listed.notes.map((note) => [note.key, note.relevance]), [
       ["high", 0.9],
       ["auto", 0.8],
     ]);
     assert.equal(listed.notes[1].source, "auto");
+    const rest = parsed(await scopedNotes.note_list({ cursor: listed.nextCursor }));
+    assert.deepEqual(rest.notes.map((note) => note.key), ["low"]);
+    assert.equal(rest.nextCursor, null);
     assert.deepEqual(
       parsed(await scopedNotes.note_list({ minRelevance: 0.8 })).notes.map((note) => note.key),
       ["high", "auto"],
@@ -209,7 +214,7 @@ test("take/read/list supports current, superseded, and folded content", async ()
 
     const listed = parsed(await scopedNotes.note_list({ tag: "decision" }));
     assert.equal(listed.status, "found");
-    assert.equal(listed.total, 1);
+    assert.equal(listed.count, 1);
     assert.equal(listed.notes[0].hasContent, true);
     assert.equal("content" in listed.notes[0], false);
     assert.equal("value" in listed.notes[0], false);
@@ -324,7 +329,7 @@ test("unsafe explicit scope round-trips through the skill lifecycle", async () =
       "safe",
     );
     assert.equal(
-      parsed(await scopedNotes.note_list({ __erix: scope })).total,
+      parsed(await scopedNotes.note_list({ __erix: scope })).count,
       1,
     );
     assert.deepEqual(await scopedNotes.completeRun({ __erix: scope }), {
@@ -487,7 +492,8 @@ test("corruption is not silently reported as missing and unsafe keys stay inside
     }
     const entries = await readdir(scope);
     assert.equal(entries.some((name) => name === "x.json"), false);
-    assert.ok(entries.every((name) => name.endsWith(".json")));
+    // .revision 是 scope metadata（隐藏文件），不是 note 记录。
+    assert.ok(entries.filter((name) => !name.startsWith(".")).every((name) => name.endsWith(".json")));
   });
 });
 
@@ -569,7 +575,7 @@ test("janitor keeps foreign active notes active (even with grace env zero) and r
       const tombstone = await readOrphan();
       assert.equal(tombstone.state, "revoked");
       assert.ok(tombstone.revoked_at);
-      assert.equal(parsed(await scopedNotes.note_list({ includeInactive: true })).total, 1);
+      assert.equal(parsed(await scopedNotes.note_list({ includeInactive: true })).count, 1);
     } finally {
       restoreClock();
     }
@@ -632,4 +638,59 @@ test("bundled notes skill is retired and user notes skill remains discoverable",
     await rm(home, { recursive: true, force: true });
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// issue #67 PR 2：note_list 分页（opaque cursor、无 total、cursor_stale 可恢复）
+// ---------------------------------------------------------------------------
+
+test("note list paginates via opaque nextCursor and rejects legacy integer cursors", async () => {
+  await withNotes(async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await scopedNotes.note_take({
+        key: `paginate-${index}`,
+        content: `value-${index}`,
+        relevance: 0.9 - index * 0.1,
+      });
+    }
+    const page1 = parsed(await scopedNotes.note_list({ limit: 2 }));
+    assert.equal(page1.count, 2);
+    assert.equal(typeof page1.nextCursor, "string");
+    const page2 = parsed(await scopedNotes.note_list({ limit: 2, cursor: page1.nextCursor }));
+    assert.deepEqual(page2.notes.map((note) => note.key), ["paginate-2"]);
+    assert.equal(page2.nextCursor, null);
+
+    // breaking：整数 offset cursor 不再合法。
+    const legacy = parsed(await scopedNotes.note_list({ cursor: 2 }));
+    assert.equal(legacy.status, "invalid");
+    assert.match(legacy.reason, /nextCursor/u);
+    const malformed = parsed(await scopedNotes.note_list({ cursor: "bogus" }));
+    assert.equal(malformed.status, "invalid");
+    const badLimit = parsed(await scopedNotes.note_list({ limit: 0 }));
+    assert.equal(badLimit.status, "invalid");
+    assert.match(badLimit.reason, /limit/u);
+  });
+});
+
+test("note list surfaces cursor_stale as a recoverable structured result", async () => {
+  await withNotes(async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await scopedNotes.note_take({ key: `stale-${index}`, content: `v${index}` });
+    }
+    const page1 = parsed(await scopedNotes.note_list({ limit: 1 }));
+    assert.equal(typeof page1.nextCursor, "string");
+    // 翻页期间记录变更 → 旧游标过期。
+    await scopedNotes.note_take({ key: "stale-new", content: "new" });
+    const stale = parsed(await scopedNotes.note_list({ limit: 1, cursor: page1.nextCursor }));
+    assert.equal(stale.status, "cursor_stale");
+    assert.deepEqual(stale.notes, []);
+    assert.equal(stale.count, 0);
+    assert.equal(stale.nextCursor, null);
+    assert.equal(typeof stale.revision, "string");
+    assert.match(stale.next, /从头翻页/u);
+    // 可恢复：去掉 cursor 从头翻页正常返回。
+    const restarted = parsed(await scopedNotes.note_list({ limit: 1 }));
+    assert.equal(restarted.status, "found");
+    assert.equal(restarted.count, 1);
+  });
 });

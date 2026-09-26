@@ -74,10 +74,12 @@ export function notesStoreContract(label, createStore) {
       await store.read({ scope: "run", scopeRef: RECORD.scopeRef, key: RECORD.key }),
       RECORD,
     );
-    assert.deepEqual(
-      await store.list({ scope: "run", scopeRef: RECORD.scopeRef }),
-      [RECORD],
-    );
+    // breaking（issue #67 PR 2）：list 返回分页页面对象，不再返回数组。
+    const page = await store.list({ scope: "run", scopeRef: RECORD.scopeRef });
+    assert.equal(page.status, "found");
+    assert.deepEqual(page.records, [RECORD]);
+    assert.equal(page.nextCursor, null);
+    assert.equal(typeof page.revision, "string");
   });
 
   test(`${label}: missing records are explicit and scopes are isolated`, async () => {
@@ -87,10 +89,11 @@ export function notesStoreContract(label, createStore) {
       await store.read({ scope: "run", scopeRef: "contract-run", key: "missing" }),
       undefined,
     );
-    assert.deepEqual(
-      await store.list({ scope: "run", scopeRef: "other-run" }),
-      [],
-    );
+    const empty = await store.list({ scope: "run", scopeRef: "other-run" });
+    assert.equal(empty.status, "found");
+    assert.deepEqual(empty.records, []);
+    assert.equal(empty.nextCursor, null);
+    assert.equal(typeof empty.revision, "string");
   });
 
   test(`${label}: unsafe scopes round-trip through canonical storage and lifecycle`, async () => {
@@ -109,11 +112,11 @@ export function notesStoreContract(label, createStore) {
       const read = await store.read({ scope: "run", scopeRef, key: record.key });
       assert.equal(read.scopeRef, canonicalScopeRef);
       assert.deepEqual(
-        (await store.list({ scope: "run", scopeRef })).map((entry) => entry.scopeRef),
+        (await store.list({ scope: "run", scopeRef })).records.map((entry) => entry.scopeRef),
         [canonicalScopeRef],
       );
       assert.deepEqual(
-        (await store.list({ scope: "run", scopeRef: canonicalScopeRef })).map((entry) => entry.scopeRef),
+        (await store.list({ scope: "run", scopeRef: canonicalScopeRef })).records.map((entry) => entry.scopeRef),
         [canonicalScopeRef],
       );
       assert.deepEqual(
@@ -140,7 +143,7 @@ export function notesStoreContract(label, createStore) {
       },
     });
     assert.equal(
-      (await store.list({ scope: "run", scopeRef: legacyScopeRef })).length,
+      (await store.list({ scope: "run", scopeRef: legacyScopeRef })).records.length,
       1,
     );
     assert.deepEqual(

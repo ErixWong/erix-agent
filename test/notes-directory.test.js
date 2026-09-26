@@ -41,10 +41,16 @@ const RECORDS = [
   },
 ];
 
-function fakeNotesStore(records) {
+function fakeNotesStore(records, revision = "fake-revision-1") {
   // 创建期 assertNotesStore 要求完整端口（issue #67）：fake 只需 list 生效。
+  // breaking（issue #67 PR 2）：list 返回分页页面对象，不再是裸数组。
   return {
-    list: async () => structuredClone(records),
+    list: async () => ({
+      status: "found",
+      records: structuredClone(records),
+      nextCursor: null,
+      revision,
+    }),
     read: async () => undefined,
     write: async () => {},
     complete: async () => ({ status: "found", completed: 0 }),

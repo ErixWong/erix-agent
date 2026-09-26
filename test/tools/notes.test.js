@@ -437,6 +437,8 @@ test("assembler semanticStateProvider sorts, caps at 20, and echoes stateVersion
     const provided = await builtin.semanticStateProvider({ state: { stateVersion: 9 } });
     assert.equal(provided.version, 9);
     assert.equal(provided.status, "ok");
+    // issue #67 PR 2：返回值带 sourceRevision（list 页 revision）。
+    assert.equal(typeof provided.sourceRevision, "string");
     const lines = provided.text.split("\n");
     assert.equal(lines.length, 21, "标题 + 20 条封顶");
     assert.match(lines[1], /- note_3 \(★ @agent\): value 3/, "pinned 排最前");
@@ -649,5 +651,127 @@ test("lifecycle.revokeInactive without liveness is a documented no-op", async ()
       skipped: 0,
       reason: "liveness not configured; pass liveness to createBuiltinNotesTools to enable active orphan cleanup",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// issue #67 PR 2：semanticStateProvider 进程内增量缓存（revision 短路）
+// ---------------------------------------------------------------------------
+
+test("assembler semanticStateProvider reuses cached text within one revision without relisting", async () => {
+  await withDirectory(async (directory) => {
+    const backing = createFileNotesStore({ dir: directory });
+    let listCalls = 0;
+    const spyStore = {
+      read: backing.read.bind(backing),
+      write: backing.write.bind(backing),
+      complete: backing.complete.bind(backing),
+      revoke: backing.revoke.bind(backing),
+      janitor: backing.janitor.bind(backing),
+      purge: backing.purge.bind(backing),
+      list: async (request) => {
+        listCalls += 1;
+        return backing.list(request);
+      },
+    };
+    const builtin = createBuiltinNotesTools({
+      notesDir: directory,
+      notesStore: spyStore,
+      runId: "sem-cache-run",
+    });
+    await builtin.executeTool("note_take", { key: "cached", content: "cached-value" });
+    listCalls = 0;
+
+    const first = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.match(first.text, /- cached \(@agent\): cached-value/);
+    assert.equal(first.sourceRevision, (
+      await backing.list({ scopeRef: "sem-cache-run" })
+    ).revision);
+    assert.equal(listCalls, 1);
+
+    // 同 revision：直接复用缓存文本，不再调 list（也就不读任何记录文件）。
+    const second = await builtin.semanticStateProvider({ state: { stateVersion: 2 } });
+    assert.equal(second.text, first.text);
+    assert.equal(second.version, 2, "version 仍回声当前 stateVersion（stale 语义不变）");
+    assert.equal(second.sourceRevision, first.sourceRevision);
+    assert.equal(listCalls, 1, "同 revision 内不得重复 list");
+  });
+});
+
+test("assembler semanticStateProvider rerenders when revision changes", async () => {
+  await withDirectory(async (directory) => {
+    const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "sem-rev-run" });
+    await builtin.executeTool("note_take", { key: "before", content: "first-value" });
+    const first = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.match(first.text, /before/);
+
+    // revision 变化（新写入）→ 目录更新，缓存替换。
+    await builtin.executeTool("note_take", { key: "after", content: "second-value" });
+    const second = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.match(second.text, /after \(@agent\): second-value/);
+    assert.notEqual(second.sourceRevision, first.sourceRevision);
+    assert.equal(second.text.includes("second-value"), true);
+
+    // note_forget 经 store.revoke 递增 revision → 目录重渲染，墓碑不进目录。
+    await builtin.executeTool("note_take", { key: "keep", content: "kept" });
+    await builtin.executeTool("note_forget", { key: "before" });
+    const third = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.equal(third.text.includes("before"), false, "revoked 记录不进目录");
+    assert.match(third.text, /after \(@agent\): second-value/);
+    assert.match(third.text, /keep \(@agent\): kept/);
+
+    // complete（active → done）同样推进 revision；全部 done 后目录为空 →
+    // 返回 undefined（不装懂），旧缓存不得冒充最新。
+    await builtin.lifecycle.onRunComplete();
+    const emptied = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.equal(emptied, undefined, "无 active 记录时目录为 undefined");
+  });
+});
+
+test("assembler semanticStateProvider list failure returns undefined and never serves stale cache", async () => {
+  await withDirectory(async (directory) => {
+    const backing = createFileNotesStore({ dir: directory });
+    let failLists = false;
+    const flakyStore = {
+      read: backing.read.bind(backing),
+      write: backing.write.bind(backing),
+      complete: backing.complete.bind(backing),
+      revoke: backing.revoke.bind(backing),
+      janitor: backing.janitor.bind(backing),
+      purge: backing.purge.bind(backing),
+      list: async (request) => {
+        if (failLists) throw new Error("list transient boom");
+        return backing.list(request);
+      },
+    };
+    const builtin = createBuiltinNotesTools({
+      notesDir: directory,
+      notesStore: flakyStore,
+      runId: "sem-stale-run",
+    });
+    await builtin.executeTool("note_take", { key: "k", content: "v" });
+    const cached = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.match(cached.text, /- k \(@agent\): v/);
+
+    // list 失败：重验证路径（先有一次递增 revision 的写入）上 list 抛错 →
+    // 返回 undefined 并上报，绝不拿旧 cache 冒充最新。
+    failLists = true;
+    await builtin.executeTool("note_take", { key: "k-mutation", content: "v" });
+    const reports = [];
+    const failed = await builtin.semanticStateProvider({
+      state: { stateVersion: 2 },
+      reportPersistenceFailure: (info) => reports.push(info),
+    });
+    assert.equal(failed, undefined);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].operation, "list");
+    assert.equal(reports[0].phase, "read");
+
+    // 恢复后重新渲染（缓存未被错误地保留为“最新”）。
+    failLists = false;
+    await builtin.executeTool("note_take", { key: "k2", content: "v2" });
+    const recovered = await builtin.semanticStateProvider({ state: { stateVersion: 3 } });
+    assert.match(recovered.text, /k2 \(@agent\): v2/);
+    assert.match(recovered.text, /k-mutation \(@agent\): v/);
   });
 });

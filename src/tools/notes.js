@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { createFileNotesStore, assertNotesStore } from "../store/notes.js";
+import { createFileNotesStore, assertNotesStore, NotesStoreError } from "../store/notes.js";
 import { createToolRegistry } from "./registry.js";
 
 export const MAX_CONTENT_LENGTH = 4000;
@@ -397,41 +397,58 @@ export async function note_list(input = {}) {
   ) {
     return invalid(undefined, "minRelevance 必须是 0 到 1 之间的数字");
   }
-  let records;
+  if (
+    input.limit !== undefined
+    && (!Number.isSafeInteger(Number(input.limit)) || Number(input.limit) < 1)
+  ) {
+    return invalid(undefined, "limit 必须为正整数");
+  }
+  // breaking（issue #67 PR 2）：cursor 从整数 offset 改为不透明字符串
+  // （上一次返回的 nextCursor），由 store 绑定 scope revision 校验。
+  if (
+    input.cursor !== undefined
+    && (typeof input.cursor !== "string" || input.cursor.trim() === "")
+  ) {
+    return invalid(undefined, "cursor 必须是不透明字符串（取上一次返回的 nextCursor）");
+  }
+  // 过滤与排序全部下沉 store（本地不再全量排序、不再裸调 localeCompare）。
+  const filters = {};
+  if (input.includeInactive !== true) filters.state = "active";
+  if (input.tag !== undefined) filters.tag = input.tag;
+  if (input.source !== undefined) filters.source = input.source;
+  if (input.minRelevance !== undefined) filters.minRelevance = input.minRelevance;
+  let page;
   try {
-    records = await notesStoreFor(input).list(storeRequest(input));
+    page = await notesStoreFor(input).list({
+      ...storeRequest(input),
+      ...(input.limit === undefined ? {} : { limit: Number(input.limit) }),
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      filters,
+      sort: "relevance",
+    });
   } catch (error) {
     return invalid(undefined, error?.message ?? String(error));
   }
-  records = records.filter((record) => {
-    if (input.includeInactive !== true && record.state !== "active") return false;
-    if (input.tag !== undefined && !record.tags.includes(input.tag)) return false;
-    const source = record.current?.provenance?.source === "auto" ? "auto" : "agent";
-    const relevance = Number.isFinite(record.relevance) ? record.relevance : 0.5;
-    if (input.source !== undefined && source !== input.source) return false;
-    if (input.minRelevance !== undefined && relevance < input.minRelevance) return false;
-    return true;
-  });
-  records.sort((left, right) => {
-    const relevanceDifference = (
-      (Number.isFinite(right.relevance) ? right.relevance : 0.5)
-      - (Number.isFinite(left.relevance) ? left.relevance : 0.5)
-    );
-    return relevanceDifference || right.updated_at.localeCompare(left.updated_at);
-  });
-  const limit = input.limit === undefined ? 50 : Number(input.limit);
-  const cursor = input.cursor === undefined ? 0 : Number(input.cursor);
-  if (!Number.isSafeInteger(limit) || limit < 1 || !Number.isSafeInteger(cursor) || cursor < 0) {
-    return invalid(undefined, "limit 必须为正整数，cursor 必须为非负整数");
+  if (page.status === "cursor_stale") {
+    // 可恢复的结构化结果：提示从头翻页，不崩溃。
+    return json({
+      status: "cursor_stale",
+      notes: [],
+      count: 0,
+      nextCursor: null,
+      revision: page.revision,
+      next: "分页游标已过期（scope 内记录已变更）；请去掉 cursor 从头翻页",
+    });
   }
-  const notes = records.slice(cursor, cursor + Math.min(limit, 200)).map(listEntry);
+  const notes = page.records.map(listEntry);
   return json({
     status: "found",
     count: notes.length,
-    total: records.length,
     notes,
-    next: notes.length < records.length - cursor
-      ? `还有 ${records.length - cursor - notes.length} 条元数据，可用 cursor=${cursor + notes.length} 继续`
+    nextCursor: page.nextCursor,
+    // breaking：不再承诺 total（分页视图不提供总数）。
+    next: page.nextCursor !== null
+      ? "还有更多条目；用返回的 nextCursor 继续翻页"
       : "清单仅含当前记录元数据；需要具体值时用 note_read 精确读取",
   });
 }
@@ -504,7 +521,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_list",
-    description: "列出 run 作用域笔记的 key、标签和 current 元数据，不返回完整内容。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；不要遍历归档目录凭记忆补值",
+    description: "列出 run 作用域笔记的 key、标签和 current 元数据，不返回完整内容。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；翻页用返回的 nextCursor 作为 cursor；不要遍历归档目录凭记忆补值",
     inputSchema: {
       type: "object",
       properties: {
@@ -513,7 +530,9 @@ const TOOL_DEFINITIONS = [
         minRelevance: { type: "number", minimum: 0, maximum: 1 },
         source: { type: "string", enum: ["auto", "agent"] },
         limit: { type: "integer", minimum: 1 },
-        cursor: { type: "integer", minimum: 0 },
+        // breaking（issue #67 PR 2）：cursor 从整数 offset 改为不透明字符串
+        // （上一次响应的 nextCursor），由 store 绑定 scope revision 校验。
+        cursor: { type: "string" },
         includeInactive: { type: "boolean", default: false },
       },
       additionalProperties: false,
@@ -707,7 +726,20 @@ export function createBuiltinNotesTools(options = {}) {
   // activeReporter 的 set/restore 不防并发交错，并发复用同一 assembler
   // 需宿主在宿主边界自行串行化（与 NotesStore 的 single-writer 约定一致）。
   let activeReporter;
-  const store = withPersistenceReporting(boundStore, () => activeReporter);
+  const reportedStore = withPersistenceReporting(boundStore, () => activeReporter);
+  // issue #67 PR 2：semantic 增量缓存的本地失效锚。store 是单写者（file
+  // adapter 约定），assembler 内任何变更（write/complete/revoke/janitor/
+  // purge）都会经过这里并推进 epoch；epoch 未变则 scope revision 不可能变，
+  // semantic 直接复用缓存文本，连 list 都不调（不读任何记录文件）。
+  let semanticEpoch = 0;
+  const store = { ...reportedStore };
+  for (const method of ["write", "complete", "revoke", "janitor", "purge"]) {
+    store[method] = async (request) => {
+      const result = await reportedStore[method](request);
+      semanticEpoch += 1;
+      return result;
+    };
+  }
   const scope = {
     ...(boundScopeRef === undefined ? {} : { runId: boundScopeRef }),
     notesDir: resolvedNotesDir,
@@ -842,9 +874,32 @@ export function createBuiltinNotesTools(options = {}) {
           alive += 1;
           continue;
         }
-        let records;
+        // list 已分页：先只读翻页收集 active key，再逐条 revoke（revoke 会
+        // 递增 revision，边翻页边写会让剩余游标立刻 stale）。
+        const records = [];
         try {
-          records = await store.list({ scope: "run", scopeRef });
+          let cursor = null;
+          let staleRetries = 0;
+          do {
+            const page = await store.list({
+              scope: "run",
+              scopeRef,
+              limit: 200,
+              ...(cursor === null ? {} : { cursor }),
+            });
+            if (page.status === "cursor_stale") {
+              // 翻页期间记录被写入：游标失效，从头重扫（上限防活锁）。
+              staleRetries += 1;
+              if (staleRetries > 3) {
+                throw new NotesStoreError("revokeInactive 分页游标反复过期", "cursor_stale");
+              }
+              records.length = 0;
+              cursor = null;
+              continue;
+            }
+            records.push(...page.records);
+            cursor = page.nextCursor;
+          } while (cursor !== null);
         } catch (error) {
           errors.push({ operation: "notes_revoke_inactive", scopeRef, error });
           continue;
@@ -882,16 +937,49 @@ export function createBuiltinNotesTools(options = {}) {
   // fold 点调用不在 executor 上下文内，activeReporter 恒为 undefined：
   // 失败诊断改为可选注入——宿主显式传 reportPersistenceFailure 才上报。
   const semanticScopeRef = boundScopeRef ?? currentScopeRef(undefined);
+  // issue #67 PR 2：进程内增量缓存 { epoch, revision, text }。list 只取第一页
+  // （pinned_updated 前 20 条 = 目录全部内容）。epoch 未变 → 直接复用缓存
+  // 文本（不调 list、不读任何记录文件）；epoch 变了才调 list 复核 revision，
+  // revision 未变仍复用文本（如 revoke 未命中这类无效变更），revision 变化才
+  // 重渲染目录并替换缓存。
+  let semanticCache;
   const semanticStateProvider = async ({ state, reportPersistenceFailure } = {}) => {
-    let records;
+    if (semanticCache !== undefined && semanticCache.epoch === semanticEpoch) {
+      return {
+        text: semanticCache.text,
+        version: state?.stateVersion,
+        status: "ok",
+        sourceRevision: semanticCache.revision,
+      };
+    }
+    let page;
     try {
-      records = await store.list({ scopeRef: semanticScopeRef });
+      page = await store.list({
+        scopeRef: semanticScopeRef,
+        limit: 20,
+        filters: { state: "active" },
+        sort: "pinned_updated",
+      });
     } catch (error) {
-      // 不装懂：对外仍返回 undefined；显式注入 reporter 时补发可观察诊断。
+      // 不装懂：list 失败返回 undefined（显式注入 reporter 时补发可观察诊断），
+      // 绝不拿旧 cache 冒充最新。
       await reportStoreFailure(reportPersistenceFailure, "list", error);
       return undefined;
     }
-    return renderNotesDirectory(records, state);
+    if (semanticCache !== undefined && semanticCache.revision === page.revision) {
+      semanticCache = { epoch: semanticEpoch, revision: page.revision, text: semanticCache.text };
+      return {
+        text: semanticCache.text,
+        version: state?.stateVersion,
+        status: "ok",
+        sourceRevision: page.revision,
+      };
+    }
+    const records = page.status === "found" ? page.records : [];
+    const rendered = renderNotesDirectory(records, state);
+    if (rendered === undefined) return undefined;
+    semanticCache = { epoch: semanticEpoch, revision: page.revision, text: rendered.text };
+    return { ...rendered, sourceRevision: page.revision };
   };
 
   return {
