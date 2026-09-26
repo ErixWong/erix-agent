@@ -239,6 +239,56 @@ test("assembler reports notes write failures via the host persistence bridge (po
   });
 });
 
+test("assembler lifecycle binds reporter from lifecycle input and classifies complete/janitor as write side effects", async () => {
+  await withDirectory(async (directory) => {
+    const backing = createFileNotesStore({ dir: directory });
+    const failingStore = {
+      read: backing.read.bind(backing),
+      write: backing.write.bind(backing),
+      list: backing.list.bind(backing),
+      complete: async () => {
+        throw new Error("complete write boom");
+      },
+      janitor: async () => {
+        throw new Error("janitor write boom");
+      },
+    };
+    const reports = [];
+    const reporter = async (info) => {
+      reports.push(info);
+    };
+    const builtin = createBuiltinNotesTools({
+      notesDir: directory,
+      notesStore: failingStore,
+      runId: "lifecycle-report-run",
+    });
+    const completion = await builtin.lifecycle.onRunComplete({ reportPersistenceFailure: reporter });
+    assert.equal(completion.errors.length, 2);
+    assert.equal(reports.length, 2, "complete 与 janitor 的失败都必须经桥上报");
+    for (const operation of ["complete", "janitor"]) {
+      const report = reports.find((entry) => entry.operation === operation);
+      assert.ok(report, `${operation} 必须上报`);
+      assert.equal(report.port, "notes");
+      assert.equal(report.phase, "write", `${operation} 真实写文件，不得报 read`);
+      assert.equal(report.sideEffect, "executed_uncommitted");
+    }
+    // onRunStart = janitor：错误照旧向外抛（无 errors[] 收集），但先经桥上报且分类一致
+    reports.length = 0;
+    await assert.rejects(
+      builtin.lifecycle.onRunStart({ reportPersistenceFailure: reporter }),
+      /janitor write boom/,
+    );
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].operation, "janitor");
+    assert.equal(reports[0].phase, "write");
+    assert.equal(reports[0].sideEffect, "executed_uncommitted");
+    // restore：lifecycle 之后 reporter 不得泄漏到无 reporter 的调用
+    reports.length = 0;
+    await builtin.lifecycle.onRunComplete();
+    assert.equal(reports.length, 0, "未注入 reporter 的 lifecycle 调用不得上报");
+  });
+});
+
 test("assembler semanticStateProvider sorts, caps at 20, and echoes stateVersion", async () => {
   await withDirectory(async (directory) => {
     const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "sem-run" });
@@ -269,9 +319,9 @@ test("assembler semanticStateProvider sorts, caps at 20, and echoes stateVersion
     assert.equal(provided.status, "ok");
     const lines = provided.text.split("\n");
     assert.equal(lines.length, 21, "标题 + 20 条封顶");
-    assert.match(lines[1], /- note_3 \(★\): value 3/, "pinned 排最前");
+    assert.match(lines[1], /- note_3 \(★ @agent\): value 3/, "pinned 排最前");
     // 其余按 updated_at 倒序：最新（index 24）在 pinned 之后第一行
-    assert.match(lines[2], /- note_24: value 24/);
+    assert.match(lines[2], /- note_24 \(@agent\): value 24/);
   });
 });
 
@@ -282,7 +332,7 @@ test("assembler default notesStore is a single shared file-store instance", asyn
     // executeTool 写入 → semanticStateProvider（同一 store + scope）必须能列出
     await builtin.executeTool("note_take", { key: "k", content: "shared" });
     const provided = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
-    assert.match(provided.text, /- k: shared/);
+    assert.match(provided.text, /- k \(@agent\): shared/);
     // lifecycle（同一 store）complete 后落盘在 notesDir 下
     await builtin.lifecycle.onRunComplete();
     assert.equal(

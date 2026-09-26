@@ -1,6 +1,9 @@
 // ADR-015 Phase 3：notes 小抄目录 → semantic 槽位 → run-state 块
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import {
@@ -8,24 +11,28 @@ import {
   renderRunState,
   withSemanticRunState,
 } from "../src/run-state.js";
-import { createBuiltinNotesTools } from "../src/tools/notes.js";
+import {
+  createBuiltinNotesTools,
+  recordAutoCapture,
+} from "../src/tools/notes.js";
+import { createFileNotesStore } from "../src/store/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
+// 真实记录形态：source 在 current.provenance.source（writeNote 构造），
+// 顶层没有 source 字段——旧 fake 的顶层 source 正是评审抓到的字段错位。
 const RECORDS = [
   {
     key: "final_report",
     state: "active",
     pinned: true,
-    source: "agent",
     updated_at: "2026-09-16T01:00:00.000Z",
-    current: { summary: "报告已写入 /tmp/x.md" },
+    current: { summary: "报告已写入 /tmp/x.md", provenance: { source: "agent" } },
   },
   {
     key: "api_token",
     state: "active",
-    source: "auto",
     updated_at: "2026-09-16T00:30:00.000Z",
-    current: { summary: "PrintService 测试环境 token" },
+    current: { summary: "PrintService 测试环境 token", provenance: { source: "auto" } },
   },
   {
     key: "done_note",
@@ -51,6 +58,33 @@ test("directory provider: active notes rendered pinned-first with source markers
   assert.ok(!provided.text.includes("done_note"), "done 状态不进目录");
   assert.equal(provided.version, 7, "版本必须回声 state.stateVersion，否则被判 stale");
   assert.equal(provided.status, "ok");
+});
+
+test("directory provider: real file-store integration renders source markers and artifact placeholder", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "erix-notes-directory-"));
+  try {
+    const notesStore = createFileNotesStore({ dir: directory });
+    const builtin = createBuiltinNotesTools({ notesDir: directory, notesStore, runId: "dir-run" });
+    // 真实写入：agent 笔记、auto 捕获、artifact-only 笔记（无 content）
+    await builtin.executeTool("note_take", { key: "agent_note", content: "人工记录的值" });
+    await recordAutoCapture({
+      key: "auto_note",
+      content: "自动捕获的 token",
+      __erix: { runId: "dir-run", notesDir: directory },
+    });
+    await builtin.executeTool("note_take", {
+      key: "artifact_note",
+      artifactRef: { archivePath: "/tmp/out/report.json", locator: "$.total" },
+    });
+    const provided = await builtin.semanticStateProvider({ state: { stateVersion: 3 } });
+    assert.equal(provided.status, "ok");
+    assert.equal(provided.version, 3);
+    assert.match(provided.text, /- agent_note \(@agent\): 人工记录的值/);
+    assert.match(provided.text, /- auto_note \(@auto\): 自动捕获的 token/);
+    assert.match(provided.text, /- artifact_note \(@agent\): artifact 引用/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("directory provider: empty store and list failure both yield undefined (不装懂)", async () => {
