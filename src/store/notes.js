@@ -64,7 +64,7 @@ const STATES = new Set(["active", "done", "revoked"]);
  *   list: (request: {scope?: "run", scopeRef: string, limit?: number, filters?: {state?: ("active"|"done"|"revoked")|("active"|"done"|"revoked")[], tag?: string, source?: "agent"|"auto", minRelevance?: number}, sort?: "relevance"|"pinned_updated"}) => Promise<NoteRecord[]>,
  *   complete: (request: {scope?: "run", scopeRef: string}) => Promise<{status: "found", completed: number}>,
  *   revoke: (request: {scope?: "run", scopeRef: string, key: string, reason?: string, expectedState?: "active"|"done", expectedUpdatedAt?: string}) => Promise<{status: "found"|"missing"|"unchanged", revoked: number}>,
- *   purge: (request: {scope?: "run", scopeRef?: string, before?: string}) => Promise<{status: "found", scanned: number, purged: number}>  // scanned = 扫描的 scope 目录数，purged = 删除的记录文件数
+ *   purge: (request: {scope?: "run", before?: string}) => Promise<{status: "found", scanned: number, purged: number}>  // 全量清扫（无视 scopeRef），scanned = 扫描的 scope 目录数，purged = 删除的记录文件数
  * }} NotesStore
  */
 
@@ -553,6 +553,7 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
       // 内容；state 只服务模型可见性与语义标签，与清理无关。
       // before 只能缩小范围（取更早的 cutoff，绝不放大删除窗口）。
       // 无 limit/cursor 分页（ADR-018 D8，审计 C 项）：一次调用全量处理。
+      // purge 对整个 run 根全量清扫：不给 scopeRef，传了也忽略（不分 scope）。
       assertRequest(request, { scopeRefRequired: false });
       let beforeMs;
       if (request.before !== undefined) {

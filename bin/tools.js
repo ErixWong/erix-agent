@@ -33,12 +33,14 @@ export function notesRetentionMs() {
 }
 
 export function purgeInactiveNoteScopes({ notesDir, sessionActivityFile }) {
+  // 收尾维护路径，契约是「永不影响主流程」：任何失败（只读目录、被占用、
+  // 权限变化……）只跳过该 scope 并 console.error 留痕，绝不向外抛出——
+  // CLI finally 中抛出会覆盖主异常/结果，REPL saveAndFinish 中会 reject。
   let scopeDirs;
   const runDir = path.join(notesDir, "run");
   try {
     scopeDirs = readdirSync(runDir, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return { scanned: 0, purged: 0 };
+  } catch {
     return { scanned: 0, purged: 0 };
   }
   const retention = notesRetentionMs();
@@ -48,25 +50,26 @@ export function purgeInactiveNoteScopes({ notesDir, sessionActivityFile }) {
     if (!entry.isDirectory()) continue;
     scanned += 1;
     const scopeDir = path.join(runDir, entry.name);
-    let lastActivityMs = -Infinity;
     try {
-      lastActivityMs = statSync(sessionActivityFile(entry.name)).mtimeMs;
-    } catch {
-      // 无会话文件：回退该 scope 笔记文件的最大 mtime。
+      let lastActivityMs = -Infinity;
       try {
+        lastActivityMs = statSync(sessionActivityFile(entry.name)).mtimeMs;
+      } catch {
+        // 无会话文件：回退该 scope 笔记文件的最大 mtime。
         for (const file of readdirSync(scopeDir)) {
           const fileStat = statSync(path.join(scopeDir, file));
           if (fileStat.isFile() && fileStat.mtimeMs > lastActivityMs) {
             lastActivityMs = fileStat.mtimeMs;
           }
         }
-      } catch {
-        // 目录不可读则跳过本 scope。
       }
-    }
-    if (Number.isFinite(lastActivityMs) && Date.now() - lastActivityMs > retention) {
-      rmSync(scopeDir, { recursive: true, force: true });
-      purged += 1;
+      if (Number.isFinite(lastActivityMs) && Date.now() - lastActivityMs > retention) {
+        rmSync(scopeDir, { recursive: true, force: true });
+        purged += 1;
+      }
+    } catch (error) {
+      // 单 scope 清扫失败（如目录只读/被占用）：留痕后跳过，继续扫下一个。
+      console.error(`notes purge skipped (${entry.name}): ${error?.message ?? String(error)}`);
     }
   }
   return { scanned, purged };

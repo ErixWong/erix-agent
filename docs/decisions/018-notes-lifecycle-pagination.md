@@ -65,10 +65,12 @@ touwaka 接入时用调度器状态实现该循环。本节的方案对比保留
 未发布，出厂前削减零额外 breaking 成本。最终契约：
 
 - `list()` 返回 `NoteRecord[]`；不给 `limit` = 全部匹配记录（内部消费方
-  complete/revokeInactive 依赖全量语义），给了 `limit` 钳制最大 200。
-  `filters`/`sort` 照旧下沉 store。
+  complete 与宿主自建 list+revoke 循环依赖全量语义——终版无
+  revokeInactive，见 D8），给了 `limit` 钳制最大 200。`filters`/`sort`
+  照旧下沉 store。
 - `note_list` 连 `limit` 一并移除：始终返回该 scope 全部匹配记录，
-  无截断提示；超限用 `tag`/`source`/`minRelevance` 过滤缩小范围。
+  无截断提示；超限用 `tag`/`includeInactive` 收窄（终版 `note_list`
+  入参只剩这两个，见 D7 附带收窄）。
 - **保留 epoch 缓存的理由**：semantic 目录是纯进程内派生视图，fold 点
   高频调用；单写者约定下「assembler 内任何写方法推进 epoch、epoch 未变
   直接复用文本」是最便宜的正确短路，不依赖任何落盘协议。删 revision
@@ -81,8 +83,9 @@ scope 规模数量级增长，分页是局部优化，届时以实测数据重�
 
 list 每次扫描目录构建内存视图后排序分页，不维护 `.index.json` 索引。
 理由：单 scope 记录量在 note_list（≤200/页）与 semantic（≤20）的消费规模下
-全量读取成本可控；索引要写穿 write/complete/revoke/janitor/purge 五处失效点
-并处理崩溃一致性（索引与目录脱节后的重建协议），复杂度大于收益。
+全量读取成本可控；索引要写穿 write/complete/revoke/purge 失效点（终版
+janitor 已删，见 D7）并处理崩溃一致性（索引与目录脱节后的重建协议），
+复杂度大于收益。
 若未来单 scope 规模数量级增长，索引是局部优化，不动本决策的接口面。
 
 ### D5：normalize 用固定 epoch 兜底，不用"现在"

@@ -42,7 +42,9 @@ try {
   return await runToolLoop({ /* ... */ });
 } finally {
   const { completed, errors } = await notes.lifecycle.onRunComplete();
-  // `completed` is the number of records flipped active → done.
+  // `completed` is the raw completeRun result: { status: "found", completed } —
+  // `completed.completed` is the number of records flipped active → done.
+  const doneCount = completed?.completed ?? 0;
   for (const failure of errors) hostReportCompletionError(failure.operation, failure.error);
   await hostScheduleNotesPurge(); // the host's own maintenance (§5)
 }

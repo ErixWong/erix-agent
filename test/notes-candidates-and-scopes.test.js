@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -21,6 +22,7 @@ import { candidateLines } from "../bin/final-guard-support.js";
 import {
   buildArchiveNotice,
   createCliTools,
+  purgeInactiveNoteScopes,
   wrapExecuteTool,
 } from "../bin/tools.js";
 import { createFinalGuard } from "../bin/final-guard.js";
@@ -327,3 +329,59 @@ test("concurrent runChat calls keep explicit note scopes isolated", async () => 
     }
   });
 });
+
+// 验收回归（P1）：清扫路径的失败必须静默——只读/被占用的 scope 目录让 rmSync 抛错
+// 时，不得覆盖 CLI 主异常/结果，也不得让 REPL saveAndFinish reject。
+test("purgeInactiveNoteScopes silently skips an undeletable scope directory", async () => {
+    await withTempDirectory(async (directory) => {
+      const transcriptsDir = path.join(directory, "transcripts");
+      const notesDir = path.join(directory, "notes");
+      await mkdir(transcriptsDir, { recursive: true });
+      await seedDeadScope(notesDir, "stuck-run");
+      // transcript 40 天无活动 → scope 判死、进入删除分支。
+      await writeFile(path.join(transcriptsDir, "stuck-run.jsonl"), "{}\n", "utf8");
+      const stale = new Date(Date.now() - 40 * DAY);
+      await utimes(path.join(transcriptsDir, "stuck-run.jsonl"), stale, stale);
+      // 只读目录：内部 unlink 必然 EACCES/EPERM。
+      const scopeDir = path.join(notesDir, "run", "stuck-run");
+      await chmod(scopeDir, 0o500);
+      let result;
+      let thrown = null;
+      try {
+        result = purgeInactiveNoteScopes({
+          notesDir,
+          sessionActivityFile: (scopeRef) => path.join(transcriptsDir, `${scopeRef}.jsonl`),
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      assert.equal(thrown, null, "purging must never throw");
+      assert.equal(result.scanned, 1);
+      assert.equal(result.purged, 0, "undeletable scope is skipped, not counted as purged");
+      // 恢复写权限，保证外层临时目录可以清理。
+      await chmod(scopeDir, 0o700);
+    });
+  });
+
+test("CLI runChat completes normally when the dead scope cannot be deleted", async () => {
+    await withTempDirectory(async (directory) => {
+      const transcriptsDir = path.join(directory, "transcripts");
+      const notesDir = path.join(directory, "notes");
+      await mkdir(transcriptsDir, { recursive: true });
+      await seedDeadScope(notesDir, "stuck-run");
+      await writeFile(path.join(transcriptsDir, "stuck-run.jsonl"), "{}\n", "utf8");
+      const stale = new Date(Date.now() - 40 * DAY);
+      await utimes(path.join(transcriptsDir, "stuck-run.jsonl"), stale, stale);
+      const scopeDir = path.join(notesDir, "run", "stuck-run");
+      await chmod(scopeDir, 0o500);
+      try {
+        // runChat 正常 resolve：清扫失败只 console.error 留痕，不覆盖主异常/结果。
+        await runQuietChat({ transcriptsDir, notesDir, session: "live-run" });
+        // 只读 scope 依旧原样（跳过而非半删）。
+        const entries = await readdir(scopeDir);
+        assert.deepEqual(entries, ["remnant.json"]);
+      } finally {
+        await chmod(scopeDir, 0o700);
+      }
+    });
+  });
