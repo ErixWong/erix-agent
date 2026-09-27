@@ -298,7 +298,7 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
    `nextCursor === null`。`janitor` 现在只做一件事：撤销 `state === "done"` 且
    `expires_at` 已过的记录（旧的时间启发式 orphan 猜测已移除）；其 cursor 是数值
    offset，结果为 `{ status, scanned, revoked, nextCursor }`——旧 `changed` 字段已移除。
-   done 保留期来自 `ERIX_NOTES_DONE_GRACE_MS`（默认 24h）；deprecated 别名
+   done 保留期来自 `ERIX_NOTES_DONE_GRACE_MS`（默认 3 天）；deprecated 别名
    `ERIX_NOTES_GRACE_MS` 仍被读取，但已失去 active orphan 清理语义。
 2. **墓碑清理**——循环调用 `store.purge({ limit, cursor })` 直到 `nextCursor === null`。
    `purge` 真正删除墓碑文件（`state === "revoked"` 且 `revoked_at` 早于

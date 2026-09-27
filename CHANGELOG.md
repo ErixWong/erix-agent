@@ -22,7 +22,7 @@ PR 3 #73 schema run-only；决策记录 ADR-018）。宿主迁移指引见
 - **janitor 收窄**：只做过期 done 清理（`state === "done"` 且 `expires_at` 已过），
   删除 orphanActive / liveScope / grace 时间启发式全家；结果收窄为
   `{ status, scanned, revoked, nextCursor }`（`changed` 字段移除），cursor 为数值 offset。
-- **配置拆分**：新增 `ERIX_NOTES_DONE_GRACE_MS`（默认 24h，done 保留期）；
+- **配置拆分**：新增 `ERIX_NOTES_DONE_GRACE_MS`（默认 3 天，done 保留期）；
   `ERIX_NOTES_GRACE_MS` 降为 deprecated alias（仍被读取，但失去 active orphan
   清理语义）；新增 `ERIX_NOTES_TOMBSTONE_RETENTION_MS`（默认 30 天，墓碑保留期）。
 - **`NotesStore` 必需方法扩为七个**：`write/read/list/complete/revoke/janitor/purge`，

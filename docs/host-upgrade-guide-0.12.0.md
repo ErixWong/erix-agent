@@ -187,7 +187,7 @@ Configuration for (a) and (b):
 
 | Environment variable | Default | Semantics |
 |---|---|---|
-| `ERIX_NOTES_DONE_GRACE_MS` | 24h | done retention — `complete` sets `expires_at = now + this` |
+| `ERIX_NOTES_DONE_GRACE_MS` | 3 days | done retention — `complete` sets `expires_at = now + this` |
 | `ERIX_NOTES_GRACE_MS` | — | deprecated alias of the above; still read when the new name is absent, but it has lost the old active-orphan cleanup meaning |
 | `ERIX_NOTES_TOMBSTONE_RETENTION_MS` | 30 days | `purge` only deletes tombstones older than this |
 

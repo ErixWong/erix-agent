@@ -14,7 +14,8 @@ import path from "node:path";
 const HASHED_ID_PREFIX = "run-h-";
 const HASHED_KEY_PREFIX = "note-h-";
 const HASHED_ID_PATTERN = /^run-h-[0-9a-f]{24}$/u;
-const DEFAULT_DONE_GRACE_MS = 24 * 60 * 60 * 1000;
+// 默认 3 天：跨周末场景（周五讨论，周一回来）done 笔记仍在保留期内可查。
+const DEFAULT_DONE_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
 const DEFAULT_TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_SUPERSEDED = 3;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
