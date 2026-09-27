@@ -34,7 +34,12 @@ async function withTempDirectory(callback) {
 async function withNotes(callback, { runId = "auto-run", graceMs } = {}) {
   return withTempDirectory(async (directory) => {
     const previous = Object.fromEntries(
-      ["ERIX_NOTES_DIR", "ERIX_NOTES_GRACE_MS"]
+      [
+        "ERIX_NOTES_DIR",
+        "ERIX_NOTES_GRACE_MS",
+        "ERIX_NOTES_DONE_GRACE_MS",
+        "ERIX_NOTES_TOMBSTONE_RETENTION_MS",
+      ]
         .map((name) => [name, process.env[name]]),
     );
     process.env.ERIX_NOTES_DIR = directory;
@@ -42,6 +47,8 @@ async function withNotes(callback, { runId = "auto-run", graceMs } = {}) {
     activeNotesScope = { runId, notesDir: directory };
     if (graceMs === undefined) delete process.env.ERIX_NOTES_GRACE_MS;
     else process.env.ERIX_NOTES_GRACE_MS = String(graceMs);
+    delete process.env.ERIX_NOTES_DONE_GRACE_MS;
+    delete process.env.ERIX_NOTES_TOMBSTONE_RETENTION_MS;
     try {
       return await callback(directory);
     } finally {
@@ -56,18 +63,7 @@ async function withNotes(callback, { runId = "auto-run", graceMs } = {}) {
 }
 
 let activeNotesScope;
-// 模块级导出无 lifecycle 视图；此处按 assembler 的 canonical 形态补一个
-// lifecycle.onRunStart（语义 = 带当前 scope 的 runNotesJanitor），供测试走 canonical API。
-const scopedWithLifecycle = {
-  ...notes,
-  lifecycle: {
-    onRunStart: (input = {}) => notes.runNotesJanitor({
-      ...input,
-      __erix: input.__erix ?? activeNotesScope,
-    }),
-  },
-};
-const scopedNotes = new Proxy(scopedWithLifecycle, {
+const scopedNotes = new Proxy(notes, {
   get(target, property) {
     const value = target[property];
     if (typeof value !== "function") return value;
@@ -123,12 +119,12 @@ test("GC revokes expired pinned notes and keeps a tombstone with an injected clo
   await withNotes(async (directory) => {
     const restoreClock = notes.setNotesClock(() => now.value);
     try {
-      // issue #61：completion 语义改由真实 assembler 的 lifecycle.onRunComplete 覆盖
-      // （临时目录真实 store，返回形状锁定为 {completed, janitor, errors}）。
+      // issue #67：onRunComplete 只 completeRun（返回形状锁定为 {completed, errors}）；
+      // 过期清理由宿主显式调度 janitor（lifecycle.onRunStart 是 no-op 兼容入口）。
       const tools = notes.createBuiltinNotesTools({ notesDir: directory, runId: "auto-run" });
       await tools.executors("note_take", { key: "lifecycle", content: "value", pinned: true });
       const completion = await tools.lifecycle.onRunComplete({});
-      assert.deepEqual([...Object.keys(completion)].sort(), ["completed", "errors", "janitor"]);
+      assert.deepEqual([...Object.keys(completion)].sort(), ["completed", "errors"]);
       assert.deepEqual(completion.completed, { status: "found", completed: 1 });
       assert.deepEqual(completion.errors, []);
       assert.equal(
@@ -141,7 +137,7 @@ test("GC revokes expired pinned notes and keeps a tombstone with an injected clo
       assert.equal(done.state, "done");
 
       now.value += 1001;
-      await tools.lifecycle.onRunStart({});
+      await scopedNotes.runNotesJanitor({});
       const revoked = JSON.parse(await scopedNotes.note_read({ key: "lifecycle" }));
       assert.equal(revoked.status, "revoked");
       const tombstone = JSON.parse(await readFile(
@@ -149,7 +145,8 @@ test("GC revokes expired pinned notes and keeps a tombstone with an injected clo
         "utf8",
       ));
       assert.equal(tombstone.state, "revoked");
-      assert.ok(tombstone.gc_at);
+      assert.ok(tombstone.revoked_at);
+      assert.equal(tombstone.revoke_reason, "done_expired");
     } finally {
       restoreClock();
     }

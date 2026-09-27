@@ -37,7 +37,13 @@ export function notesStoreContract(label, createStore) {
   test(`${label}: rejects a port with missing methods`, () => {
     assert.throws(
       () => assertNotesStore({ write() {}, read() {}, list() {}, complete() {} }),
-      /janitor/u,
+      /revoke/u,
+    );
+    assert.throws(
+      () => assertNotesStore({
+        write() {}, read() {}, list() {}, complete() {}, revoke() {}, janitor() {},
+      }),
+      /purge/u,
     );
   });
 
@@ -68,10 +74,13 @@ export function notesStoreContract(label, createStore) {
       await store.read({ scope: "run", scopeRef: RECORD.scopeRef, key: RECORD.key }),
       RECORD,
     );
-    assert.deepEqual(
-      await store.list({ scope: "run", scopeRef: RECORD.scopeRef }),
-      [RECORD],
-    );
+    // 契约收窄（ADR-018 D3 决策反转）：list 返回朴素数组；不给 limit =
+    // 全部匹配记录，给了 limit 钳制最大 200。
+    const all = await store.list({ scope: "run", scopeRef: RECORD.scopeRef });
+    assert.deepEqual(all, [RECORD]);
+    assert.equal(Array.isArray(all), true);
+    const limited = await store.list({ scope: "run", scopeRef: RECORD.scopeRef, limit: 5000 });
+    assert.deepEqual(limited, [RECORD], "limit 超过 200 钳制后仍是全量结果");
   });
 
   test(`${label}: missing records are explicit and scopes are isolated`, async () => {
@@ -81,10 +90,8 @@ export function notesStoreContract(label, createStore) {
       await store.read({ scope: "run", scopeRef: "contract-run", key: "missing" }),
       undefined,
     );
-    assert.deepEqual(
-      await store.list({ scope: "run", scopeRef: "other-run" }),
-      [],
-    );
+    const empty = await store.list({ scope: "run", scopeRef: "other-run" });
+    assert.deepEqual(empty, []);
   });
 
   test(`${label}: unsafe scopes round-trip through canonical storage and lifecycle`, async () => {
@@ -139,14 +146,79 @@ export function notesStoreContract(label, createStore) {
     );
     assert.deepEqual(
       await store.janitor({ scope: "run", scopeRef: "live-scope" }),
-      { status: "found", changed: 1, revoked: 1 },
+      { status: "found", scanned: 4, revoked: 1, nextCursor: null },
     );
     assert.equal(
       (await store.read({ scope: "run", scopeRef: legacyScopeRef, key: "legacy" })).state,
       "revoked",
     );
+    // 墓碑未到保留期：purge 不删文件；超过保留期才真正 unlink。
+    assert.deepEqual(
+      await store.purge({ scope: "run", scopeRef: "live-scope" }),
+      { status: "found", scanned: 4, purged: 0, nextCursor: null },
+    );
+    assert.equal(
+      (await store.read({ scope: "run", scopeRef: legacyScopeRef, key: "legacy" }))?.state,
+      "revoked",
+    );
   });
 
+  test(`${label}: revoke writes a tombstone with expected-state guards`, async () => {
+    const store = await createStore();
+    assertNotesStore(store);
+    await store.write({
+      scope: "run",
+      scopeRef: RECORD.scopeRef,
+      key: RECORD.key,
+      record: RECORD,
+    });
+    assert.deepEqual(
+      await store.revoke({ scope: "run", scopeRef: RECORD.scopeRef, key: "missing" }),
+      { status: "missing", revoked: 0 },
+    );
+    // expectedState 不匹配 → unchanged，不写入。
+    assert.deepEqual(
+      await store.revoke({
+        scope: "run", scopeRef: RECORD.scopeRef, key: RECORD.key, expectedState: "done",
+      }),
+      { status: "unchanged", revoked: 0 },
+    );
+    // expectedUpdatedAt 不匹配（检查后被他人改写）→ unchanged，不写入。
+    assert.deepEqual(
+      await store.revoke({
+        scope: "run",
+        scopeRef: RECORD.scopeRef,
+        key: RECORD.key,
+        expectedState: "active",
+        expectedUpdatedAt: "2099-01-01T00:00:00.000Z",
+      }),
+      { status: "unchanged", revoked: 0 },
+    );
+    assert.equal(
+      (await store.read({ scope: "run", scopeRef: RECORD.scopeRef, key: RECORD.key })).state,
+      "active",
+    );
+    const revoked = await store.revoke({
+      scope: "run",
+      scopeRef: RECORD.scopeRef,
+      key: RECORD.key,
+      reason: "test",
+      expectedState: "active",
+      expectedUpdatedAt: RECORD.updated_at,
+    });
+    assert.equal(revoked.status, "found");
+    assert.equal(revoked.revoked, 1);
+    const tombstone = await store.read({
+      scope: "run", scopeRef: RECORD.scopeRef, key: RECORD.key,
+    });
+    assert.equal(tombstone.state, "revoked");
+    assert.ok(tombstone.revoked_at);
+    // 已是墓碑 → unchanged。
+    assert.deepEqual(
+      await store.revoke({ scope: "run", scopeRef: RECORD.scopeRef, key: RECORD.key }),
+      { status: "unchanged", revoked: 0 },
+    );
+  });
   // This documents the one-writer limitation: concurrent RMW updates are LWW,
   // but must still leave one valid record rather than corrupting the file.
   test(`${label}: concurrent same-key updates are last-write-wins`, async () => {

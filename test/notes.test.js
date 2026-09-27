@@ -16,8 +16,49 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as notes from "../src/tools/notes.js";
 import { createBuiltinNotesTools } from "../src/tools/notes.js";
+import { createFileNotesStore } from "../src/store/notes.js";
 import { discoverSkills, skillDirectories } from "../bin/skills.js";
 import { estimateTokens } from "../src/tokens.js";
+
+const HISTORICAL_TS = "2026-09-15T02:00:00.000Z";
+
+// ADR-016：recordAutoCapture 已删；「历史 auto 记录」由测试直接写 store 构造。
+function historicalAutoRecord(key, { content, artifactRef, toolUseId, relevance = 0.8 } = {}) {
+  return {
+    key,
+    scope: "run",
+    scopeRef: "notes-test-run",
+    current: {
+      ...(content === undefined ? {} : { content }),
+      ...(artifactRef === undefined ? {} : { artifactRef }),
+      provenance: {
+        source: "auto",
+        verified: true,
+        ts: HISTORICAL_TS,
+        ...(toolUseId === undefined ? {} : { toolUseId }),
+      },
+      ts: HISTORICAL_TS,
+    },
+    superseded: [],
+    folded: 0,
+    pinned: false,
+    tags: [],
+    relevance,
+    state: "active",
+    created_at: HISTORICAL_TS,
+    updated_at: HISTORICAL_TS,
+  };
+}
+
+async function seedHistoricalAutoNote(directory, record) {
+  const store = createFileNotesStore({ dir: directory });
+  await store.write({
+    scope: "run",
+    scopeRef: record.scopeRef,
+    key: record.key,
+    record,
+  });
+}
 
 const skillPath = fileURLToPath(new URL("../src/tools/notes.js", import.meta.url));
 
@@ -27,6 +68,8 @@ async function withNotes(callback, options = {}) {
     [
       "ERIX_NOTES_DIR",
       "ERIX_NOTES_GRACE_MS",
+      "ERIX_NOTES_DONE_GRACE_MS",
+      "ERIX_NOTES_TOMBSTONE_RETENTION_MS",
     ]
       .map((name) => [name, process.env[name]]),
   );
@@ -38,6 +81,8 @@ async function withNotes(callback, options = {}) {
   };
   if (options.graceMs === undefined) delete process.env.ERIX_NOTES_GRACE_MS;
   else process.env.ERIX_NOTES_GRACE_MS = String(options.graceMs);
+  delete process.env.ERIX_NOTES_DONE_GRACE_MS;
+  delete process.env.ERIX_NOTES_TOMBSTONE_RETENTION_MS;
   try {
     return await callback(directory);
   } finally {
@@ -61,7 +106,6 @@ const scopedNotes = new Proxy(notes, {
         "note_read",
         "note_list",
         "note_forget",
-        "recordAutoCapture",
         "completeRun",
         "runNotesJanitor",
       ].includes(property)
@@ -130,7 +174,7 @@ test("note list exposes keys and tags but never content", async () => {
 });
 
 test("note list sorts by relevance and filters bounded metadata", async () => {
-  await withNotes(async () => {
+  await withNotes(async (directory) => {
     await scopedNotes.note_take({
       key: "low",
       content: "low",
@@ -143,22 +187,23 @@ test("note list sorts by relevance and filters bounded metadata", async () => {
       relevance: 0.9,
       tags: ["important"],
     });
-    await scopedNotes.recordAutoCapture({
-      key: "auto",
+    await seedHistoricalAutoNote(directory, historicalAutoRecord("auto", {
       artifactRef: {
         archivePath: "/run/archive/001-exec.txt",
         digest: "a".repeat(64),
         locator: { lineStart: 1, lineEnd: 1 },
       },
-      provenance: { source: "auto" },
-    });
+    }));
 
-    const listed = parsed(await scopedNotes.note_list({ limit: 2 }));
-    assert.equal(listed.count, 2);
-    assert.equal(listed.total, 3);
+    const listed = parsed(await scopedNotes.note_list({}));
+    assert.equal(listed.count, 3);
+    assert.equal("total" in listed, false);
+    assert.equal("nextCursor" in listed, false);
+    assert.equal("limit" in listed, false, "limit 已随截断协议一并移除");
     assert.deepEqual(listed.notes.map((note) => [note.key, note.relevance]), [
       ["high", 0.9],
       ["auto", 0.8],
+      ["low", 0.2],
     ]);
     assert.equal(listed.notes[1].source, "auto");
     assert.deepEqual(
@@ -205,7 +250,7 @@ test("take/read/list supports current, superseded, and folded content", async ()
 
     const listed = parsed(await scopedNotes.note_list({ tag: "decision" }));
     assert.equal(listed.status, "found");
-    assert.equal(listed.total, 1);
+    assert.equal(listed.count, 1);
     assert.equal(listed.notes[0].hasContent, true);
     assert.equal("content" in listed.notes[0], false);
     assert.equal("value" in listed.notes[0], false);
@@ -222,17 +267,15 @@ test("take/read/list supports current, superseded, and folded content", async ()
 });
 
 test("list and read make value and reference notes distinguishable", async () => {
-  await withNotes(async () => {
+  await withNotes(async (directory) => {
     await scopedNotes.note_take({ key: "value-note", content: "available" });
-    await scopedNotes.recordAutoCapture({
-      key: "reference-note",
+    await seedHistoricalAutoNote(directory, historicalAutoRecord("reference-note", {
       artifactRef: {
         archivePath: "/run/archive/001-exec.txt",
         digest: "a".repeat(64),
         locator: { lineStart: 2, lineEnd: 2 },
       },
-      provenance: { verified: false },
-    });
+    }));
 
     const listed = parsed(await scopedNotes.note_list({}));
     const valueNote = listed.notes.find((note) => note.key === "value-note");
@@ -320,7 +363,7 @@ test("unsafe explicit scope round-trips through the skill lifecycle", async () =
       "safe",
     );
     assert.equal(
-      parsed(await scopedNotes.note_list({ __erix: scope })).total,
+      parsed(await scopedNotes.note_list({ __erix: scope })).count,
       1,
     );
     assert.deepEqual(await scopedNotes.completeRun({ __erix: scope }), {
@@ -329,8 +372,9 @@ test("unsafe explicit scope round-trips through the skill lifecycle", async () =
     });
     assert.deepEqual(await scopedNotes.runNotesJanitor({ __erix: scope }), {
       status: "found",
-      changed: 0,
+      scanned: 1,
       revoked: 0,
+      nextCursor: null,
     });
     const runEntries = await readdir(path.join(directory, "run"));
     assert.equal(runEntries.length, 1);
@@ -373,8 +417,8 @@ test("pinned notes are scoped and retain provenance metadata", async () => {
   });
 });
 
-test("tool provenance cannot claim auto capture while the private capture arm can", async () => {
-  await withNotes(async () => {
+test("tool provenance cannot claim auto capture; historical auto records stay readable", async () => {
+  await withNotes(async (directory) => {
     const artifactRef = {
       artifactId: "001-exec.txt",
       archivePath: "/run/archive/001-exec.txt",
@@ -390,14 +434,18 @@ test("tool provenance cannot claim auto capture while the private capture arm ca
       parsed(await scopedNotes.note_read({ key: "tool-written" })).provenance.source,
       "agent",
     );
-    await scopedNotes.recordAutoCapture({
-      key: "auto-written",
+    // 历史 auto 记录（auto-capture 退役前产生，直接写 store 构造）仍完整可读，
+    // 且 note_list 的 source 过滤与 @auto 标记等历史读取能力保留。
+    await seedHistoricalAutoNote(directory, historicalAutoRecord("auto-written", {
       artifactRef,
-      provenance: { source: "auto", toolUseId: "tool-1" },
-    });
+      toolUseId: "tool-1",
+    }));
     const captured = parsed(await scopedNotes.note_read({ key: "auto-written" }));
     assert.equal(captured.provenance.source, "auto");
     assert.equal(captured.provenance.toolUseId, "tool-1");
+    const autoListed = parsed(await scopedNotes.note_list({ source: "auto" }));
+    assert.deepEqual(autoListed.notes.map((note) => note.key), ["auto-written"]);
+    assert.equal(autoListed.notes[0].source, "auto");
   });
 });
 
@@ -482,23 +530,94 @@ test("corruption is not silently reported as missing and unsafe keys stay inside
     }
     const entries = await readdir(scope);
     assert.equal(entries.some((name) => name === "x.json"), false);
-    assert.ok(entries.every((name) => name.endsWith(".json")));
+    // 隐藏 metadata sidecar（若有）不得被当成 note 记录（防御未来）。
+    assert.ok(entries.filter((name) => !name.startsWith(".")).every((name) => name.endsWith(".json")));
   });
 });
 
-test("project and user scopes are explicit unsupported stubs", async () => {
+test("scope schema is run-only and non-run scopes are invalid (issue #67 PR 3)", async () => {
+  // D1：4 个工具的 scope enum 只剩 ["run"]（断言 definitions JSON）。
+  const definitions = createBuiltinNotesTools({ runId: "scope-run" }).definitions;
+  assert.equal(definitions.length, 4);
+  for (const tool of definitions) {
+    assert.deepEqual(tool.inputSchema.properties.scope.enum, ["run"]);
+    assert.equal(tool.inputSchema.properties.scope.default, "run");
+  }
   await withNotes(async () => {
     for (const scope of ["project", "user"]) {
-      assert.equal(parsed(await scopedNotes.note_take({ key: "x", content: "y", scope })).status, "unsupported");
-      assert.equal(parsed(await scopedNotes.note_read({ key: "x", scope })).status, "unsupported");
-      assert.equal(parsed(await scopedNotes.note_list({ scope })).status, "unsupported");
-      assert.equal(parsed(await scopedNotes.note_forget({ key: "x", scope })).status, "unsupported");
+      // project/user 直接 invalid（不再返回 unsupported/「暂不支持」）。
+      const take = parsed(await scopedNotes.note_take({ key: "x", content: "y", scope }));
+      assert.equal(take.status, "invalid");
+      assert.match(take.reason, /当前仅支持 run 作用域/u);
+      const read = parsed(await scopedNotes.note_read({ key: "x", scope }));
+      assert.equal(read.status, "invalid");
+      assert.match(read.reason, /当前仅支持 run 作用域/u);
+      const listed = parsed(await scopedNotes.note_list({ scope }));
+      assert.equal(listed.status, "invalid");
+      assert.match(listed.reason, /当前仅支持 run 作用域/u);
+      const forgotten = parsed(await scopedNotes.note_forget({ key: "x", scope }));
+      assert.equal(forgotten.status, "invalid");
+      assert.match(forgotten.reason, /当前仅支持 run 作用域/u);
+      // 「暂不支持」语义已删除：响应文案不再出现。
+      for (const response of [take, read, listed, forgotten]) {
+        assert.doesNotMatch(JSON.stringify(response), /暂不支持/u);
+      }
     }
   });
 });
 
-test("run lifecycle transitions active to done and then revokes expired notes", async () => {
-  await withNotes(async (directory, options) => {
+test("recordAutoCapture is no longer exported anywhere (ADR-016, issue #67 PR 3)", async () => {
+  const toolsIndex = await import("../src/tools/index.js");
+  const agentIndex = await import("../src/index.js");
+  assert.equal(notes.recordAutoCapture, undefined);
+  assert.equal(toolsIndex.recordAutoCapture, undefined);
+  assert.equal(agentIndex.recordAutoCapture, undefined);
+});
+
+test("records missing time fields from an injected store stay readable, listable, and renderable", async () => {
+  // D3：注入 store 不经过 file adapter 的 readRecord 统一出口，时间字段可能缺失。
+  const recordWithoutTimes = (key, relevance) => ({
+    key,
+    scope: "run",
+    scopeRef: "normalize-run",
+    current: { content: `v-${key}`, provenance: { source: "agent" } },
+    superseded: [],
+    folded: 0,
+    pinned: false,
+    tags: [],
+    relevance,
+    state: "active",
+  });
+  const bareStore = {
+    write: async () => {},
+    read: async ({ key }) => (key === "bare" ? recordWithoutTimes("bare", 0.5) : undefined),
+    list: async () => [
+      recordWithoutTimes("bare-a", 0.2),
+      recordWithoutTimes("bare-b", 0.9),
+    ],
+    complete: async () => ({ status: "found", completed: 0 }),
+    revoke: async () => ({ status: "missing", revoked: 0 }),
+    janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+    purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
+  };
+  const tools = createBuiltinNotesTools({ notesStore: bareStore, runId: "normalize-run" });
+  const read = parsed(await tools.executeTool("note_read", { key: "bare" }));
+  assert.equal(read.status, "found");
+  assert.equal(read.value, "v-bare");
+  const listed = parsed(await tools.executeTool("note_list", {}));
+  assert.equal(listed.status, "found");
+  // 排序下沉 store：注入 store 返回什么顺序就是什么顺序；关键是缺时间字段
+  // 的记录经防御性 normalize 后 list 元数据完整、不崩。
+  assert.deepEqual(listed.notes.map((note) => note.key), ["bare-a", "bare-b"]);
+  assert.equal(typeof listed.notes[0].updated_at, "string");
+  const semantic = await tools.semanticStateProvider({ state: { stateVersion: 1 } });
+  assert.equal(semantic.status, "ok");
+  // renderNotesDirectory 的 pinned_updated 排序路径在缺时间字段时不崩。
+  assert.match(semantic.text, /bare-a/u);
+});
+
+test("run lifecycle transitions active to done and janitor reclaims only expired done", async () => {
+  await withNotes(async (directory) => {
     const now = { value: Date.now() };
     const restoreClock = notes.setNotesClock(() => now.value);
     try {
@@ -512,45 +631,59 @@ test("run lifecycle transitions active to done and then revokes expired notes", 
       assert.equal(completed.state, "done");
       assert.ok(completed.expires_at);
 
-      await scopedNotes.runNotesJanitor();
-      process.env.ERIX_NOTES_GRACE_MS = "0";
+      // 未过期：janitor 不动 done 记录。
+      assert.equal((await scopedNotes.runNotesJanitor()).revoked, 0);
+      assert.equal(parsed(await scopedNotes.note_read({ key: "lifecycle" })).state, "done");
+      // 过期：janitor 写墓碑（revoked_at + revoke_reason）。
       now.value = Date.parse(completed.expires_at) + 1;
-      await scopedNotes.runNotesJanitor();
+      assert.equal((await scopedNotes.runNotesJanitor()).revoked, 1);
       const tombstone = parsed(await readFile(
         path.join(directory, "run", "notes-test-run", "lifecycle.json"),
         "utf8",
       ));
       assert.equal(tombstone.state, "revoked");
       assert.ok(tombstone.revoked_at);
+      assert.equal(tombstone.revoke_reason, "done_expired");
       assert.equal(parsed(await scopedNotes.note_read({ key: "lifecycle" })).status, "revoked");
-      void options;
     } finally {
       restoreClock();
     }
   }, { graceMs: 60_000 });
 });
 
-test("janitor revokes expired notes from other sessions and filters inactive notes", async () => {
+test("janitor keeps foreign active notes active (even with grace env zero) and reclaims their expired done", async () => {
   const now = { value: Date.now() };
   await withNotes(async (directory) => {
     const restoreClock = notes.setNotesClock(() => now.value);
     try {
       await scopedNotes.note_take({ key: "orphan", content: "value" });
-      assert.equal(parsed(await scopedNotes.note_list({ __erix: { runId: "current-run", notesDir: directory } })).total, 0);
-      assert.equal((await scopedNotes.runNotesJanitor({ __erix: { runId: "current-run", notesDir: directory } })).status, "found");
-      let orphan = parsed(await readFile(
+      const foreignJanitor = () => scopedNotes.runNotesJanitor({
+        __erix: { runId: "current-run", notesDir: directory },
+      });
+      const readOrphan = async () => parsed(await readFile(
         path.join(directory, "run", "notes-test-run", "orphan.json"),
         "utf8",
       ));
-      assert.equal(orphan.state, "active");
+      // 回归核心：另一 run 的 active 笔记长时间未写，janitor 跑完后仍 active。
+      now.value += 30 * 24 * 60 * 60 * 1000;
+      assert.equal((await foreignJanitor()).revoked, 0);
+      assert.equal((await readOrphan()).state, "active");
+      // ERIX_NOTES_GRACE_MS=0 同样不得回收 active：grace 不再含 active 清理语义。
+      process.env.ERIX_NOTES_GRACE_MS = "0";
+      assert.equal((await foreignJanitor()).revoked, 0);
+      assert.equal((await readOrphan()).state, "active");
+      process.env.ERIX_NOTES_GRACE_MS = "1000";
+
+      // 该笔记 complete 后过期，janitor 负责回收（过期 done → tombstone）。
+      await scopedNotes.completeRun();
+      assert.equal((await foreignJanitor()).revoked, 0, "未过期的 done 不得回收");
+      assert.equal((await readOrphan()).state, "done");
       now.value += 1001;
-      await scopedNotes.runNotesJanitor({ __erix: { runId: "current-run", notesDir: directory } });
-      orphan = parsed(await readFile(
-        path.join(directory, "run", "notes-test-run", "orphan.json"),
-        "utf8",
-      ));
-      assert.equal(orphan.state, "revoked");
-      assert.equal(parsed(await scopedNotes.note_list({ includeInactive: true })).total, 1);
+      assert.equal((await foreignJanitor()).revoked, 1);
+      const tombstone = await readOrphan();
+      assert.equal(tombstone.state, "revoked");
+      assert.ok(tombstone.revoked_at);
+      assert.equal(parsed(await scopedNotes.note_list({ includeInactive: true })).count, 1);
     } finally {
       restoreClock();
     }
@@ -613,4 +746,35 @@ test("bundled notes skill is retired and user notes skill remains discoverable",
     await rm(home, { recursive: true, force: true });
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// 契约收窄 + 追加简化（ADR-018 D3 决策反转）：note_list 无 cursor/limit——
+// 始终返回该 scope 全部匹配记录（实测平均 2 条/峰值 9 条，LLM 可应对）。
+// ---------------------------------------------------------------------------
+
+test("note list returns all active notes in the scope, even beyond the former default page size", async () => {
+  await withNotes(async () => {
+    for (let index = 0; index < 60; index += 1) {
+      await scopedNotes.note_take({
+        key: `bulk-${String(index).padStart(2, "0")}`,
+        content: `value-${index}`,
+        relevance: 0.5,
+        ...(index === 59 ? { tags: ["needle"] } : {}),
+      });
+    }
+    // 60 条 > 旧默认 limit=50：一次全量返回、无截断提示。
+    const listed = parsed(await scopedNotes.note_list({}));
+    assert.equal(listed.count, 60);
+    assert.equal(listed.notes.length, 60);
+    assert.equal(listed.status, "found");
+    assert.equal("nextCursor" in listed, false);
+    assert.equal("revision" in listed, false);
+    assert.doesNotMatch(listed.next, /截断/u);
+    assert.match(listed.next, /note_read/u);
+
+    // tag 过滤缩小范围仍然有效。
+    const filtered = parsed(await scopedNotes.note_list({ tag: "needle" }));
+    assert.deepEqual(filtered.notes.map((note) => note.key), ["bulk-59"]);
+  });
 });

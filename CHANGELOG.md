@@ -2,6 +2,73 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [0.12.0] - 2026-09-27
+
+来源：issue #67 notes host 迁移（PR 1 #71 生命周期拆分、PR 2 #72 list 契约与
+semantic 缓存、PR 3 #73 schema run-only；决策记录 ADR-018，含维护者复盘的
+D3 决策反转——revision/分页协议判定为 YAGNI，出厂前削减）。宿主迁移指引见
+[docs/host-upgrade-guide-0.12.0.md](docs/host-upgrade-guide-0.12.0.md)，契约文本见
+[docs/host-consumer-contract.md](docs/host-consumer-contract.md)。
+
+### Changed（BREAKING）
+
+- **notes lifecycle 三阶段拆分**（issue #67 PR 1）：`onRunStart` 变为 no-op 兼容入口
+  （run 起点不再 GC）；`onRunComplete` 只调 completeRun（active → done），返回
+  `{ completed, errors }`，移除 `janitor` 字段；新增
+  `lifecycle.revokeInactive({ scopeRefs, reason? })` 作为宿主 liveness 入口。
+- **维护时序责任转移宿主**：run 起点/终点不再自动 janitor；过期 done 清理
+  （循环 `store.janitor({limit, cursor})`）与墓碑清理（循环 `store.purge({limit, cursor})`）
+  由宿主显式调度直到 `nextCursor === null`；active orphan 清理 = 宿主 liveness +
+  `revokeInactive()`，无 liveness 的宿主 active orphan 永不自动回收（宁积累不误杀）。
+- **janitor 收窄**：只做过期 done 清理（`state === "done"` 且 `expires_at` 已过），
+  删除 orphanActive / liveScope / grace 时间启发式全家；结果收窄为
+  `{ status, scanned, revoked, nextCursor }`（`changed` 字段移除），cursor 为数值 offset。
+- **配置拆分**：新增 `ERIX_NOTES_DONE_GRACE_MS`（默认 7 天，done 保留期）；
+  `ERIX_NOTES_GRACE_MS` 降为 deprecated alias（仍被读取，但失去 active orphan
+  清理语义）；新增 `ERIX_NOTES_TOMBSTONE_RETENTION_MS`（默认 30 天，墓碑保留期）。
+- **`NotesStore` 必需方法扩为七个**：`write/read/list/complete/revoke/janitor/purge`，
+  assembler 创建期 `assertNotesStore` 校验，缺方法立即 `TypeError`（不再静默回退
+  隐式 file store）。
+- **`list()` 契约**：`filters`（`state`/`tag`/`source`/`minRelevance`）与
+  `sort`（`relevance`/`pinned_updated`，稳定比较下沉 store，不再裸调
+  localeCompare）下沉 store；不给 `limit` 返回全部匹配记录，给了 `limit`
+  钳制最大 200（store 层参数保留：semantic 传 20、内部消费方可用）。
+- **`note_list` 参数与输出收窄**（issue #67 PR 2 + 维护者追加简化）：`cursor`
+  （翻页）与 `limit`（限额）参数全部移除——始终返回该 scope 全部匹配记录
+  （实测平均约 2 条、峰值 9 条，20 条以内 LLM 完全可应对）；输出移除
+  `total`/`nextCursor`/`revision`/`sourceRevision`，保留 `count` 与过滤
+  （`tag`/`source`/`minRelevance`/`includeInactive`）。
+- **schema 收敛 run-only**（issue #67 PR 3）：4 个 `note_*` 工具 scope enum 只剩
+  `["run"]`，`project`/`user` 直接 invalid（不再是"暂不支持"的假 API 表面）。
+
+### Added
+
+- **store 新方法**：`revoke(request)` 写撤销墓碑，带 `expectedState`/`expectedUpdatedAt`
+  并发护栏（竞态返回 `unchanged`，不覆盖）；`purge(request)` 真删墓碑文件
+  （retention 到期 + 删除前重读防竞态），cursor 为不透明 key（防 unlink 漂移跳过）。
+- **宿主 liveness 端口**：`createBuiltinNotesTools({ liveness: { ttlMs, isAlive } })`
+  （创建期校验，非法即 TypeError）；`isAlive` 抛错进 `errors[]`，绝不解释为 false。
+- **`normalizeNoteRecord()`**（`src/store/notes.js` 导出）：记录时间字段统一兜底——
+  缺 `updated_at` 回退 `created_at`，均缺/非法用固定 epoch
+  `1970-01-01T00:00:00.000Z`（不伪造"现在"）。
+- **semanticStateProvider 进程内缓存**（纯 epoch 短路）：assembler 内任何变更
+  推进 epoch，epoch 未变零 list 调用直接复用缓存文本，变化才重渲染；list 失败
+  返回 `undefined` 绝不拿旧缓存冒充最新。
+- **notes 持久化失败上报扩展**：`revoke`/`purge` 纳入上报面（`revoke`/`purge`
+  按写副作用分类）。
+
+### Removed
+
+- **删除 `recordAutoCapture()`**（issue #67 PR 3，ADR-016 收尾）：`note_take` 为唯一
+  写入口；历史 auto 记录读取能力保留（`source` 过滤 + `@auto` 标记）。
+
+### Fixed
+
+- **防误杀回归**：另一 run 活跃长写的记录不再被 janitor 时间启发式误撤销
+  （新增回归用例锁定）。
+- **complete 全量收集**：complete 改为内部扫描本 scope 全量置 done（不受 limit
+  钳制截断）；实测单 run 平均约 2 条、峰值 9 条笔记，无翻页/版本协议负担。
+
 ## [Unreleased]
 
 ### Changed（BREAKING）

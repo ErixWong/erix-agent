@@ -8,7 +8,9 @@ retry/rerun policy, and the final consumption decision. See
 [ADR-012](decisions/012-engine-truth-model-efficiency-host-policy.md) and
 [ADR-013](decisions/013-guard-charter.md) for the responsibility boundary.
 The 0.6.0 migration steps are in
-[host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md).
+[host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md); the 0.12.0 notes
+contract migration steps are in
+[host-upgrade-guide-0.12.0.md](host-upgrade-guide-0.12.0.md).
 
 ## `runToolLoop` options
 
@@ -203,7 +205,43 @@ whether the deliverable meets its requirements, and whether it may proceed
 automatically downstream remain decisions for the host, test system, or human
 review.
 
-### NotesStore scope and write contract
+### NotesStore interface, scope, and write contract (0.12.0)
+
+The `NotesStore` port has seven required methods:
+
+```text
+write, read, list, complete, revoke, janitor, purge
+```
+
+`createBuiltinNotesTools` validates them at assembler creation time via
+`assertNotesStore` — a store missing any method throws `TypeError` before the
+first run starts, instead of silently falling back to an implicit file store.
+`write`/`read` are the run-scope record read/write pair; `list` returns a
+plain array of matching records; `complete`, `revoke`, `janitor`, and `purge`
+are the lifecycle and maintenance methods described in
+[Notes maintenance scheduling](#notes-maintenance-scheduling-0120).
+
+`list()` returns `NoteRecord[]`, not a page object:
+
+```js
+const records = await store.list({
+  scope: "run",
+  scopeRef,
+  // optional:
+  limit,    // only when given: clamped to a maximum of 200; omit = all matches
+  filters,  // { state, tag, source, minRelevance }
+  sort,     // "relevance" | "pinned_updated" (stable comparisons, no localeCompare)
+});
+```
+
+Without `limit`, every matching record is returned — the internal consumers
+(`complete`, `revokeInactive`) rely on that full-collection semantics. There is
+no cursor, no `cursor_stale` status, and no scope revision protocol: a
+maintainer review of real usage (average ~2 notes per run, peak 9) judged
+pagination and version anchoring YAGNI for 0.12.0 (ADR-018 D3 reversal). Host
+maintenance loops that page through large directories still use the `limit` /
+`cursor` pagination of `janitor` and `purge` (see
+[Notes maintenance scheduling](#notes-maintenance-scheduling-0120)).
 
 The file-backed `NotesStore` canonicalizes each `scopeRef` exactly at the
 adapter boundary. Unsafe scope references such as `../escape`, absolute paths,
@@ -211,13 +249,23 @@ and encoded separators are mapped to a stable `run-h-...` directory; the same
 canonical value is used for the directory and persisted `record.scopeRef`.
 Hosts and skills must pass the original logical scope reference to the adapter,
 not pre-canonicalize it. Existing directories whose scope reference is already
-in canonical hashed form remain readable and participate in list, complete, and
-janitor operations.
+in canonical hashed form remain readable and participate in list, complete,
+janitor, and purge operations.
 
 The file adapter assumes one writer per scope/key. Concurrent read-modify-write
 updates can lose one update and its superseded history (last-write-wins).
 Hosts that need concurrent updates must serialize them at the host boundary;
-the adapter does not add a lock or another concurrency mechanism.
+the adapter does not add a lock or another concurrency mechanism. `revoke`
+carries this one step further at the API level: an `expectedState` /
+`expectedUpdatedAt` guard makes a revoke that raced with another writer return
+`{ status: "unchanged" }` instead of overwriting a record it did not see.
+
+Record time fields are normalized on every read: a record missing `updated_at`
+falls back to `created_at`, and a record missing both gets the fixed
+`1970-01-01T00:00:00.000Z` epoch (the adapter never fabricates "now" for a
+record it did not write). `normalizeNoteRecord()` (exported from
+`src/store/notes.js`) is the shared fallback used by the adapter read/list
+exit and by the tool layer for injected stores.
 
 ### Notes tool registration
 
@@ -239,15 +287,25 @@ overriding any caller-forged `__erix` injection. The returned object contains:
   matches the `runToolLoop` / checkpoint-executor calling convention (the
   positional `executeTool(name, input, context)` form is retained for existing
   callers);
-- `lifecycle.onRunStart` / `lifecycle.onRunComplete` — janitor before the run,
-  and `completeRun` followed by janitor after it; completion errors are
-  collected into the returned `errors[]` instead of throwing over the primary
-  error. Both accept an optional `reportPersistenceFailure` reporter in their
-  input (`onRunComplete({ reportPersistenceFailure })`); when injected, store
-  failures during complete/janitor are reported through it exactly like tool
-  execution failures. Calling them with no arguments (as in the example below)
-  keeps the previous behavior — failures surface only through the returned
-  `errors[]` or the thrown error;
+- `lifecycle` — three-phase lifecycle (0.12.0). `onRunStart` is a
+  compatibility no-op: the run start no longer runs any notes GC, it returns
+  `{ status: "skipped", reason: "notes janitor is host-scheduled; ..." }`.
+  `onRunComplete` only calls `completeRun` (active → done) and returns
+  `{ completed, errors }` — the old `janitor` field is gone. Completion
+  errors are collected into the returned `errors[]` instead of throwing over
+  the primary error. Both accept an optional `reportPersistenceFailure`
+  reporter in their input (`onRunComplete({ reportPersistenceFailure })`);
+  when injected, store failures during complete are reported through it
+  exactly like tool execution failures. `revokeInactive({ scopeRefs, reason? })`
+  is the host liveness callback entry point: for every `scopeRef` whose
+  `liveness.isAlive(scopeRef, { now, ttlMs })` returns `false`, it revokes
+  the scope's active records through the store's expected-state guards. When
+  `liveness` was not passed to the assembler, `revokeInactive` is a no-op
+  that reports `{ checked: 0, revoked: 0, reason: "liveness not configured" }`
+  — active orphans of a host without liveness are never reclaimed
+  automatically (accumulation is preferred over a wrongful kill). Calling them
+  with no arguments (as in the example below) keeps the previous behavior —
+  failures surface only through the returned `errors[]` or the thrown error;
 - `semanticStateProvider` — the ADR-015 fold-point notes directory (active
   only, max 20, pinned first then `updated_at` order, version echoing
   `state.stateVersion`). Its payload accepts an optional
@@ -257,8 +315,7 @@ overriding any caller-forged `__erix` injection. The returned object contains:
 Typical wiring with an explicit try/finally:
 
 ```js
-const notes = createBuiltinNotesTools({ runId, notesDir, notesStore });
-await notes.lifecycle.onRunStart();
+const notes = createBuiltinNotesTools({ runId, notesDir, notesStore, liveness });
 try {
   return await runToolLoop({
     /* ... */
@@ -284,6 +341,12 @@ bridge (`context.reportPersistenceFailure`, `port: "notes"`); they are never
 silently swallowed. The host remains responsible for choosing and injecting the
 `NotesStore` and logical run scope.
 
+The assembler accepts an optional `liveness: { ttlMs, isAlive }` binding
+(`ttlMs` must be a positive safe integer, `isAlive` a function returning a
+boolean). It exists solely to power `lifecycle.revokeInactive`; the engine
+never calls `isAlive` on its own. An `isAlive` throw is a failure signal that
+lands in the returned `errors[]` — it is never interpreted as `false`.
+
 **Note provenance is caller-reported metadata, not fact.** The `provenance`
 fields on a note record other than `source` — `verified`, `toolUseId`, `round`
 — are self-reported by the caller and can be forged; they must never be used as
@@ -301,6 +364,32 @@ subpath directly; the bundled notes shim's own `getSkillDefinition` export
 the shim — the generic skill loader still supports `getSkillDefinition()` for
 third-party skills. It was never a second implementation or a portable standalone
 copy; portable integrations should use the npm package entry point.
+
+### Notes maintenance scheduling (0.12.0)
+
+Since 0.12.0 the engine never runs notes maintenance implicitly: run
+start/end no longer trigger janitor, and nothing purges tombstones on its own.
+The host owns all three maintenance loops and schedules them explicitly:
+
+1. **Expired done cleanup** — loop `store.janitor({ limit, cursor })` until
+   `nextCursor === null`. `janitor` now only revokes records whose state is
+   `done` and whose `expires_at` is past (the old time-heuristic orphan
+   guessing is gone); its cursor is a numeric offset and the result is
+   `{ status, scanned, revoked, nextCursor }` — the old `changed` field is
+   removed. The done retention window comes from
+   `ERIX_NOTES_DONE_GRACE_MS` (default 7 days); the deprecated alias
+   `ERIX_NOTES_GRACE_MS` is still read but has lost its active-orphan cleanup
+   semantics.
+2. **Tombstone cleanup** — loop `store.purge({ limit, cursor })` until
+   `nextCursor === null`. `purge` really deletes tombstone files
+   (`state === "revoked"` whose `revoked_at` is older than
+   `now - ERIX_NOTES_TOMBSTONE_RETENTION_MS`, default 30 days) after a
+   re-read guard, and its cursor is an opaque per-entry key (a numeric offset
+   would skip entries as files are unlinked).
+3. **Active orphan cleanup** — the host decides which scopes are dead through
+   its own liveness knowledge and calls
+   `notes.lifecycle.revokeInactive({ scopeRefs, reason? })`. A host without
+   liveness never reclaims active orphans automatically.
 
 ### CLI-side provenance guard
 

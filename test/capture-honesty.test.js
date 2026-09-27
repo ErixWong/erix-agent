@@ -1,5 +1,6 @@
 // #109 第 2 步：writeNote 存储故障诚实上抛 + finally 不掩盖主结果
 // ADR-016：auto-capture 桥与 captureToolExecution 随可重放概念退役，相关测试删除
+// （issue #67 PR 3：recordAutoCapture 一并删除，本条用 note_take 覆盖同一 writeNote 路径）
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -7,7 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
-import { recordAutoCapture } from "../src/tools/notes.js";
+import { note_take } from "../src/tools/notes.js";
 import { runChat } from "../bin/cli.js";
 
 test("writeNote classification: storage fault throws, NotesStoreError stays invalid", async () => {
@@ -18,17 +19,19 @@ test("writeNote classification: storage fault throws, NotesStoreError stays inva
       read: async () => undefined,
       list: async () => [],
       complete: async () => ({ status: "found", completed: 0 }),
-      janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+      janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+      revoke: async () => ({ status: "missing", revoked: 0 }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
     } } };
 
     // 存储故障 → 上抛（不再伪装 invalid）
     await assert.rejects(
-      recordAutoCapture({ key: "k1", content: "v", __erix: scope.__erix }),
+      note_take({ key: "k1", content: "v", __erix: scope.__erix }),
       /EACCES/,
     );
 
     // 主动拒绝（NotesStoreError = 输入/记录校验）→ 保持 invalid 返回
-    const rejected = await recordAutoCapture({ key: "k2", content: "v", __erix: {
+    const rejected = await note_take({ key: "k2", content: "v", __erix: {
       runId: "classify-run", notesDir, notesStore: {
         write: async () => {
           const error = new Error("invalid record");
@@ -38,7 +41,9 @@ test("writeNote classification: storage fault throws, NotesStoreError stays inva
         read: async () => undefined,
         list: async () => [],
         complete: async () => ({ status: "found", completed: 0 }),
-        janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+        janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+      revoke: async () => ({ status: "missing", revoked: 0 }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
       },
     } });
     // skill 层返回 JSON 字符串（LLM 工具形态），解析后取 status
@@ -56,7 +61,9 @@ test("runChat finally: completeRun failure lands in completionErrors, main resul
       read: async () => undefined,
       list: async () => [],
       complete: async () => { throw new Error("complete failed on disk gone"); },
-      janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+      janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+      revoke: async () => ({ status: "missing", revoked: 0 }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
     };
     const provider = createFakeProvider([
       { content: [{ type: "text", text: "done" }] },
@@ -97,7 +104,9 @@ test("runChat finally: when the main result is an exception, completion errors r
       read: async () => undefined,
       list: async () => [],
       complete: async () => { throw new Error("complete failed after crash"); },
-      janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+      janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+      revoke: async () => ({ status: "missing", revoked: 0 }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
     };
     await assert.rejects(
       runChat({
@@ -137,7 +146,9 @@ test("transcript port failure keeps the fatal档位 and the same bill field shap
     read: async () => undefined,
     list: async () => [],
     complete: async () => ({ status: "found", completed: 0 }),
-    janitor: async () => ({ status: "found", changed: 0, revoked: 0 }),
+    janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
+      revoke: async () => ({ status: "missing", revoked: 0 }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
   };
   const events = [];
   const dir = await mkdtemp(join(tmpdir(), "erix-two-port-"));
