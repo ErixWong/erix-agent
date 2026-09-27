@@ -36,6 +36,7 @@ import {
   buildCliToolsSystemPrompt,
   createCliTools,
   filterToolsByAllowlist,
+  purgeInactiveNoteScopes,
   wrapExecuteTool,
 } from "./tools.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
@@ -410,10 +411,9 @@ export async function runRepl(argv, io = {}) {
   const notesAssembler = notesDisabled || !notesStore
     ? undefined
     : createBuiltinNotesTools({ runId: options.session, notesDir, notesStore });
-  // REPL 会话边界生命周期（issue #67）：onRunStart 为轻量 no-op 兼容入口；
-  // 会话收尾（saveAndFinish）onRunComplete 只 completeRun（active → done），
-  // 不再附带 janitor——过期 done 清理与 active orphan 清理分别归 janitor/宿主 liveness。
-  await notesAssembler?.lifecycle.onRunStart();
+  // ADR-018 D8：lifecycle 只有 onRunComplete；REPL 自身是宿主——会话收尾
+  //（saveAndFinish）completeRun 后接着跑一次统一保留期清理（store.purge
+  // 全量扫描），维护失败不影响主流程。
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: options.configPath, cwd });
   // --tools 白名单：启动时校验一次——未知名字 stderr 警告并忽略，过滤后为空 → usageError。
   // 之后每轮输入只按名字集合过滤可见工具，不重复警告。
@@ -503,6 +503,14 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       }
     } catch (error) {
       writeLine(errorOutput, `completion error (notes_lifecycle): ${error?.message ?? String(error)}`);
+    }
+    // ADR-018 D7/D8：REPL 自身是宿主——会话收尾按会话时钟清理过期笔记
+    // scope（会话存档超 30 天无活动的 session 其笔记一起清理；失败静默）。
+    if (!notesDisabled && notesStore) {
+      purgeInactiveNoteScopes({
+        notesDir,
+        sessionActivityFile: (scopeRef) => sessionPath(sessionDir, scopeRef),
+      });
     }
     writeLine(output, `再见（会话已保存到 ${archivePath}）`);
     resolveRun();

@@ -41,7 +41,7 @@ export function notesStoreContract(label, createStore) {
     );
     assert.throws(
       () => assertNotesStore({
-        write() {}, read() {}, list() {}, complete() {}, revoke() {}, janitor() {},
+        write() {}, read() {}, list() {}, complete() {}, revoke() {},
       }),
       /purge/u,
     );
@@ -127,6 +127,8 @@ export function notesStoreContract(label, createStore) {
       );
     }
 
+    // legacy done 记录（expires_at 久远过去）：expires_at 是历史遗留字段，
+    // purge 不读它；scope 时钟（最新文件写入）仍在保留期内 → 记录保留。
     const legacyScopeRef = `run-h-${createHash("sha256").update("../legacy").digest("hex").slice(0, 24)}`;
     await store.write({
       scope: "run",
@@ -144,22 +146,23 @@ export function notesStoreContract(label, createStore) {
       (await store.list({ scope: "run", scopeRef: legacyScopeRef })).length,
       1,
     );
-    assert.deepEqual(
-      await store.janitor({ scope: "run", scopeRef: "live-scope" }),
-      { status: "found", scanned: 4, revoked: 1, nextCursor: null },
-    );
-    assert.equal(
-      (await store.read({ scope: "run", scopeRef: legacyScopeRef, key: "legacy" })).state,
-      "revoked",
-    );
-    // 墓碑未到保留期：purge 不删文件；超过保留期才真正 unlink。
-    assert.deepEqual(
-      await store.purge({ scope: "run", scopeRef: "live-scope" }),
-      { status: "found", scanned: 4, purged: 0, nextCursor: null },
-    );
+    // purge（ADR-018 D7 scope 时钟）：刚写入的 scope 全部豁免。
+    const purged = await store.purge({ scope: "run", scopeRef: "live-scope" });
+    assert.equal(purged.status, "found");
+    assert.equal(purged.purged, 0, "保留期内的 scope 一条不删（含 legacy done）");
     assert.equal(
       (await store.read({ scope: "run", scopeRef: legacyScopeRef, key: "legacy" }))?.state,
-      "revoked",
+      "done",
+    );
+    for (const [index] of unsafeScopes.entries()) {
+      const read = await store.read({
+        scope: "run", scopeRef: `run-h-${createHash("sha256").update(unsafeScopes[index]).digest("hex").slice(0, 24)}`, key: `unsafe-${index}`,
+      });
+      assert.equal(read.state, "done", "保留期内的 done 记录不被 purge 删除");
+    }
+    await assert.rejects(
+      store.purge({ before: "not-a-date" }),
+      /parseable date/u,
     );
   });
 

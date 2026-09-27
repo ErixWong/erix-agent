@@ -54,9 +54,9 @@ test/
 ├── loop-v020.test.js
 ├── loop.test.js
 ├── mcp.test.js
-├── notes-autocapture.test.js
+├── notes-candidates-and-scopes.test.js
 ├── notes-directory.test.js
-├── notes-experiment.test.js
+├── notes-experiment-script.test.js
 ├── notes-final-guard.test.js
 ├── notes.test.js
 ├── output-aggregate-budget.test.js
@@ -170,7 +170,7 @@ The later/current suite is represented by:
 |---|---|---|
 | Judge and governor | `test/judge.test.js`, `test/governor.test.js` | Round and tool-use judging, transparent interception, direction hints, degraded judge behavior, progress/error governance, reflection requests, wrap-up nudges, and observable judge decisions |
 | Reflection and final verification | `test/reflection.test.js`, `test/wrapup.test.js`, `test/loop-final-guard.test.js` | Reflection decisions, wrap-up parsing and loop behavior, final-guard acceptance/revision, provenance, retry limits, timeout/error reporting, and fail-closed verification |
-| Notes and capture | `test/notes.test.js`, `test/notes-autocapture.test.js`, `test/notes-final-guard.test.js`, `test/notes-experiment.test.js` | Note lifecycle and scoping, provenance, automatic capture and archival (credential filtering retired, #136/#55), final-guard integration, experiment planning/cost gates, usage summaries, and reproducibility reporting |
+| Notes and capture | `test/notes.test.js`, `test/notes-candidates-and-scopes.test.js`, `test/notes-final-guard.test.js`, `test/notes-experiment-script.test.js` | Note lifecycle and scoping, provenance, automatic capture and archival (credential filtering retired, #136/#55), final-guard integration, experiment planning/cost gates, usage summaries, and reproducibility reporting |
 | Output hygiene and folding | `test/output-hygiene.test.js`, `test/output-aggregate-budget.test.js`, `test/persistence-diagnostics.test.js`, `test/error-ledger.test.js`, `test/capture-honesty.test.js`, `test/compact/anchors.test.js`, `test/compact/fold-fidelity.test.js`, `test/tool-result-ttl.test.js` | Full checkpoint output retention, request-view TTL placeholders, warning-round note extraction, per-round aggregate gates, persistence diagnostics, repeated-error accounting, mechanical anchors, verbatim user-input fidelity, and capture honesty |
 
 These files are current product-surface tests rather than a new replacement for the version-tagged regression files above; `npm test` runs them together.

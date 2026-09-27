@@ -54,9 +54,9 @@ test/
 ├── loop-v020.test.js
 ├── loop.test.js
 ├── mcp.test.js
-├── notes-autocapture.test.js
+├── notes-candidates-and-scopes.test.js
 ├── notes-directory.test.js
-├── notes-experiment.test.js
+├── notes-experiment-script.test.js
 ├── notes-final-guard.test.js
 ├── notes.test.js
 ├── output-aggregate-budget.test.js
@@ -170,7 +170,7 @@ test/
 |---|---|---|
 | Judge 与 governor | `test/judge.test.js`、`test/governor.test.js` | 轮次和工具使用判定、透明拦截、方向提示、降级 judge 行为、进度/错误治理、反思请求、收尾提示和可观测的 judge 决策 |
 | Reflection 与最终校验 | `test/reflection.test.js`、`test/wrapup.test.js`、`test/loop-final-guard.test.js` | 反思决策、收尾解析与循环行为、final-guard 验收/修订、provenance、重试上限、超时/错误报告和 fail-closed 校验 |
-| Notes 与 capture | `test/notes.test.js`、`test/notes-autocapture.test.js`、`test/notes-final-guard.test.js`、`test/notes-experiment.test.js` | 笔记生命周期和作用域、provenance、自动捕获和归档（凭据过滤已退役，#136/#55）、final-guard 集成、实验规划/成本门槛、usage 摘要和可复现性报告 |
+| Notes 与 capture | `test/notes.test.js`、`test/notes-candidates-and-scopes.test.js`、`test/notes-final-guard.test.js`、`test/notes-experiment-script.test.js` | 笔记生命周期和作用域、provenance、自动捕获和归档（凭据过滤已退役，#136/#55）、final-guard 集成、实验规划/成本门槛、usage 摘要和可复现性报告 |
 | 输出卫生与折叠 | `test/output-hygiene.test.js`、`test/output-aggregate-budget.test.js`、`test/persistence-diagnostics.test.js`、`test/error-ledger.test.js`、`test/capture-honesty.test.js`、`test/compact/anchors.test.js`、`test/compact/fold-fidelity.test.js`、`test/tool-result-ttl.test.js` | checkpoint 保留完整输出、request-view TTL 占位符、warning round 的 note 提取、单轮聚合闸门、持久化诊断、重复错误记账、机械锚点、用户输入逐字保真和 capture 诚实性 |
 
 这些是当前产品表面的测试，不是对上面按版本标记的回归文件的新替代；`npm test` 会将它们一起运行。

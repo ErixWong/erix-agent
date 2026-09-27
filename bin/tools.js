@@ -5,12 +5,75 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+
+// ---------------------------------------------------------------------------
+// notes 会话时钟维护（ADR-018 D7）：CLI/REPL 作为宿主在收尾时清理过期笔记
+// scope——笔记寿命 = 会话寿命 + ERIX_NOTES_RETENTION_MS（默认 30 天）尸检期。
+// 每个 scope 的生死由宿主定义的「会话最后活动」判定（chat = transcript
+// mtime；repl = 会话存档 mtime；调度型宿主 = 调度器状态，库不猜不问）；
+// 找不到会话文件时回退为该 scope 笔记文件的最大 mtime（库内 purge 基线）。
+// 纯同步 fs：收尾维护路径，失败静默（下次收尾重试），绝不影响主流程。
+// ---------------------------------------------------------------------------
+
+export function notesRetentionMs() {
+  for (const name of ["ERIX_NOTES_RETENTION_MS", "ERIX_NOTES_GRACE_MS"]) {
+    const raw = process.env[name];
+    if (raw === undefined || raw.trim() === "") continue;
+    const value = Number(raw);
+    if (Number.isSafeInteger(value) && value >= 0) return value;
+  }
+  return 30 * 24 * 60 * 60 * 1000;
+}
+
+export function purgeInactiveNoteScopes({ notesDir, sessionActivityFile }) {
+  // 收尾维护路径，契约是「永不影响主流程」：任何失败（只读目录、被占用、
+  // 权限变化……）只跳过该 scope 并 console.error 留痕，绝不向外抛出——
+  // CLI finally 中抛出会覆盖主异常/结果，REPL saveAndFinish 中会 reject。
+  let scopeDirs;
+  const runDir = path.join(notesDir, "run");
+  try {
+    scopeDirs = readdirSync(runDir, { withFileTypes: true });
+  } catch {
+    return { scanned: 0, purged: 0 };
+  }
+  const retention = notesRetentionMs();
+  let scanned = 0;
+  let purged = 0;
+  for (const entry of scopeDirs) {
+    if (!entry.isDirectory()) continue;
+    scanned += 1;
+    const scopeDir = path.join(runDir, entry.name);
+    try {
+      let lastActivityMs = -Infinity;
+      try {
+        lastActivityMs = statSync(sessionActivityFile(entry.name)).mtimeMs;
+      } catch {
+        // 无会话文件：回退该 scope 笔记文件的最大 mtime。
+        for (const file of readdirSync(scopeDir)) {
+          const fileStat = statSync(path.join(scopeDir, file));
+          if (fileStat.isFile() && fileStat.mtimeMs > lastActivityMs) {
+            lastActivityMs = fileStat.mtimeMs;
+          }
+        }
+      }
+      if (Number.isFinite(lastActivityMs) && Date.now() - lastActivityMs > retention) {
+        rmSync(scopeDir, { recursive: true, force: true });
+        purged += 1;
+      }
+    } catch (error) {
+      // 单 scope 清扫失败（如目录只读/被占用）：留痕后跳过，继续扫下一个。
+      console.error(`notes purge skipped (${entry.name}): ${error?.message ?? String(error)}`);
+    }
+  }
+  return { scanned, purged };
+}
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TREE_ENTRIES = 500;

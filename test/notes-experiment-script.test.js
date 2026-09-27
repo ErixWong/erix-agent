@@ -1,3 +1,5 @@
+// 覆盖 scripts/notes-experiment.mjs（notes A/B 实验框架：参数解析、臂轮转、
+// 成本门槛、usage 汇总与可复现性报告）。原名暗示测试 notes 本体，改名澄清。
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
