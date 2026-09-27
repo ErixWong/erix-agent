@@ -377,7 +377,7 @@ The host owns all three maintenance loops and schedules them explicitly:
    guessing is gone); its cursor is a numeric offset and the result is
    `{ status, scanned, revoked, nextCursor }` — the old `changed` field is
    removed. The done retention window comes from
-   `ERIX_NOTES_DONE_GRACE_MS` (default 3 days); the deprecated alias
+   `ERIX_NOTES_DONE_GRACE_MS` (default 7 days); the deprecated alias
    `ERIX_NOTES_GRACE_MS` is still read but has lost its active-orphan cleanup
    semantics.
 2. **Tombstone cleanup** — loop `store.purge({ limit, cursor })` until
