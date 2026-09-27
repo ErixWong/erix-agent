@@ -10,7 +10,7 @@ import {
   note_take,
   resolveNotesDir,
 } from "../../src/tools/notes.js";
-import { createFileNotesStore } from "../../src/store/notes.js";
+import { createFileNotesStore, normalizeNoteRecord } from "../../src/store/notes.js";
 
 async function withDirectory(callback) {
   const directory = await mkdtemp(path.join(tmpdir(), "erix-builtin-notes-"));
@@ -26,7 +26,7 @@ test("notes source implementation uses the injected NotesStore and scope", async
     const backing = createFileNotesStore({ dir: directory });
     const calls = [];
     const notesStore = Object.fromEntries(
-      ["write", "read", "list", "complete", "revoke", "janitor", "purge"].map((method) => [
+      ["write", "read", "list", "complete", "revoke", "purge"].map((method) => [
         method,
         async (request) => {
           calls.push({ method, request });
@@ -170,12 +170,12 @@ test("assembler binds run scope at creation time (cross-run isolation)", async (
   });
 });
 
-test("assembler lifecycle: onRunComplete only completes and onRunStart never runs janitor", async () => {
+test("assembler lifecycle: onRunComplete only completes active → done", async () => {
   await withDirectory(async (directory) => {
     const calls = [];
     const backing = createFileNotesStore({ dir: directory });
     const spyStore = Object.fromEntries(
-      ["read", "write", "list", "revoke", "janitor", "purge"].map((method) => [
+      ["read", "write", "list", "revoke", "purge"].map((method) => [
         method,
         async (request) => {
           calls.push(method);
@@ -195,14 +195,11 @@ test("assembler lifecycle: onRunComplete only completes and onRunStart never run
     await builtin.executeTool("note_take", { key: "k", content: "v" });
     calls.length = 0;
     const completion = await builtin.lifecycle.onRunComplete();
-    assert.deepEqual(calls, ["complete"], "onRunComplete 只调 completeRun，不再调 janitor");
+    assert.deepEqual(calls, ["complete"], "onRunComplete 只调 completeRun，不再跑任何维护");
     assert.deepEqual([...Object.keys(completion)].sort(), ["completed", "errors"]);
     assert.deepEqual(completion.completed, { status: "found", completed: 1 });
     assert.deepEqual(completion.errors, []);
-    calls.length = 0;
-    const start = await builtin.lifecycle.onRunStart();
-    assert.deepEqual(calls, [], "onRunStart 是 no-op，不得触发任何 store 调用");
-    assert.equal(start.status, "skipped");
+    assert.deepEqual(Object.keys(builtin.lifecycle).sort(), ["onRunComplete"], "lifecycle 只剩 onRunComplete（ADR-018 D8）");
     assert.equal(
       JSON.parse(await readFile(path.join(directory, "run", "lifecycle-run", "k.json"), "utf8")).state,
       "done",
@@ -218,7 +215,6 @@ test("assembler onRunComplete collects completeRun errors without throwing", asy
       write: (request) => backing.write(request),
       list: (request) => backing.list(request),
       revoke: (request) => backing.revoke(request),
-      janitor: (request) => backing.janitor(request),
       purge: (request) => backing.purge(request),
       complete: async () => {
         throw new Error("complete boom");
@@ -245,7 +241,6 @@ test("assembler reports notes write failures via the host persistence bridge (po
       list: backing.list.bind(backing),
       complete: backing.complete.bind(backing),
       revoke: backing.revoke.bind(backing),
-      janitor: backing.janitor.bind(backing),
       purge: backing.purge.bind(backing),
       write: async () => {
         const error = new Error("disk full");
@@ -280,7 +275,6 @@ test("assembler lifecycle binds reporter from lifecycle input and classifies com
       write: backing.write.bind(backing),
       list: backing.list.bind(backing),
       revoke: backing.revoke.bind(backing),
-      janitor: backing.janitor.bind(backing),
       purge: backing.purge.bind(backing),
       complete: async () => {
         throw new Error("complete write boom");
@@ -311,7 +305,6 @@ test("assembler lifecycle binds reporter from lifecycle input and classifies com
       revoke: async () => {
         throw new Error("revoke write boom");
       },
-      janitor: backing.janitor.bind(backing),
       purge: backing.purge.bind(backing),
       complete: backing.complete.bind(backing),
     };
@@ -328,10 +321,6 @@ test("assembler lifecycle binds reporter from lifecycle input and classifies com
     assert.equal(reports[0].operation, "revoke");
     assert.equal(reports[0].phase, "write");
     assert.equal(reports[0].sideEffect, "executed_uncommitted");
-    // onRunStart = no-op：不得触发任何 store 调用与上报
-    reports.length = 0;
-    await builtin.lifecycle.onRunStart({ reportPersistenceFailure: reporter });
-    assert.equal(reports.length, 0);
     // restore：lifecycle 之后 reporter 不得泄漏到无 reporter 的调用
     reports.length = 0;
     await builtin.lifecycle.onRunComplete();
@@ -351,8 +340,7 @@ test("assembler reports distinct operations separately even when they share one 
       // 两个 operation 必须各报一次，第二次不得被吞。
       complete: async () => { throw shared; },
       revoke: async () => { throw shared; },
-      janitor: async () => { throw shared; },
-      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0 }),
     };
     const reports = [];
     const builtin = createBuiltinNotesTools({
@@ -383,8 +371,7 @@ test("assembler semanticStateProvider reports list failure only when a reporter 
       list: async () => { throw new Error("list boom"); },
       complete: async () => ({ status: "found", completed: 0 }),
       revoke: async () => ({ status: "missing", revoked: 0 }),
-      janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
-      purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
+      purge: async () => ({ status: "found", scanned: 0, purged: 0 }),
     };
     const builtin = createBuiltinNotesTools({
       notesDir: directory,
@@ -482,7 +469,7 @@ test("assembler creation throws TypeError when the store lacks revoke or purge",
     assert.throws(
       () => createBuiltinNotesTools({
         notesDir: directory,
-        notesStore: { write() {}, read() {}, list() {}, complete() {}, janitor() {} },
+        notesStore: { write() {}, read() {}, list() {}, complete() {} },
         runId: "incomplete-run",
       }),
       /revoke/u,
@@ -491,7 +478,7 @@ test("assembler creation throws TypeError when the store lacks revoke or purge",
       () => createBuiltinNotesTools({
         notesDir: directory,
         notesStore: {
-          write() {}, read() {}, list() {}, complete() {}, revoke() {}, janitor() {},
+          write() {}, read() {}, list() {}, complete() {}, revoke() {},
         },
         runId: "incomplete-run",
       }),
@@ -500,62 +487,61 @@ test("assembler creation throws TypeError when the store lacks revoke or purge",
   });
 });
 
-test("assembler validates liveness at creation time", async () => {
+// ADR-018 D8：liveness 端口已整体删除——宿主拿着公开 store.list + store.revoke
+// 原语自建清理循环（生死判定的知识本来就在宿主：调度器状态/进程表/最后心跳）。
+// 这两条例测试就是宿主侧循环的参考实现。
+async function hostSweepInactiveScopes(store, { scopeRefs, reason } = {}) {
+  let revoked = 0;
+  let skipped = 0;
+  const errors = [];
+  for (const scopeRef of scopeRefs) {
+    let records;
+    try {
+      records = (await store.list({ scope: "run", scopeRef, filters: { state: "active" } }))
+        .map((record) => normalizeNoteRecord(record));
+    } catch (error) {
+      errors.push({ operation: "notes_host_sweep", scopeRef, error });
+      continue;
+    }
+    for (const record of records) {
+      if (record.state !== "active") continue;
+      try {
+        const result = await store.revoke({
+          scope: "run",
+          scopeRef,
+          key: record.key,
+          reason: reason ?? "scope_inactive",
+          expectedState: "active",
+          expectedUpdatedAt: record.updated_at,
+        });
+        if (result.status === "found") revoked += 1;
+        else skipped += 1;
+      } catch (error) {
+        errors.push({ operation: "notes_host_sweep", scopeRef, key: record.key, error });
+      }
+    }
+  }
+  return { revoked, skipped, ...(errors.length > 0 ? { errors } : {}) };
+}
+
+test("host-built orphan cleanup loop revokes only the scopes the host judges dead", async () => {
   await withDirectory(async (directory) => {
     const store = createFileNotesStore({ dir: directory });
-    const isAlive = async () => true;
-    for (const liveness of [
-      { ttlMs: 0, isAlive },
-      { ttlMs: -1, isAlive },
-      { ttlMs: 1.5, isAlive },
-      { ttlMs: Number.NaN, isAlive },
-      { ttlMs: 60_000 },
-      { ttlMs: 60_000, isAlive: "not-a-function" },
-      "not-an-object",
-    ]) {
-      assert.throws(
-        () => createBuiltinNotesTools({
-          notesDir: directory,
-          notesStore: store,
-          runId: "liveness-run",
-          liveness,
-        }),
-        /liveness/u,
-      );
-    }
-    assert.doesNotThrow(() => createBuiltinNotesTools({
-      notesDir: directory,
-      notesStore: store,
-      runId: "liveness-run",
-      liveness: { ttlMs: 60_000, isAlive },
-    }));
-  });
-});
-
-test("lifecycle.revokeInactive revokes only dead scopes and skips alive ones", async () => {
-  await withDirectory(async (directory) => {
-    const liveScope = { runId: "live-scope", notesDir: directory };
-    const deadScope = { runId: "dead-scope", notesDir: directory };
-    await note_take({ key: "a", content: "va", __erix: liveScope });
-    await note_take({ key: "b", content: "vb", __erix: deadScope });
-    const builtin = createBuiltinNotesTools({
-      notesDir: directory,
-      runId: "host-run",
-      liveness: {
-        ttlMs: 60_000,
-        isAlive: async (scopeRef, { now, ttlMs }) => {
-          assert.equal(typeof now, "number");
-          assert.equal(ttlMs, 60_000);
-          return scopeRef === "live-scope";
-        },
-      },
-    });
-    const result = await builtin.lifecycle.revokeInactive({
-      scopeRefs: ["live-scope", "dead-scope"],
-    });
-    assert.deepEqual(result, { status: "found", checked: 2, alive: 1, revoked: 1, skipped: 0 });
-    assert.equal(JSON.parse(await note_read({ key: "a", __erix: liveScope })).state, "active");
-    assert.equal(JSON.parse(await note_read({ key: "b", __erix: deadScope })).status, "revoked");
+    await note_take({ key: "a", content: "va", __erix: { runId: "live-scope", notesDir: directory } });
+    await note_take({ key: "b", content: "vb", __erix: { runId: "dead-scope", notesDir: directory } });
+    // 宿主的生死判定（等价于已删除的 liveness.isAlive）：只扫自己判死的 scope。
+    const hostJudgedDead = (scopeRef) => scopeRef === "dead-scope";
+    const deadScopes = ["live-scope", "dead-scope"].filter(hostJudgedDead);
+    const result = await hostSweepInactiveScopes(store, { scopeRefs: deadScopes });
+    assert.deepEqual(result, { revoked: 1, skipped: 0 });
+    assert.equal(
+      JSON.parse(await note_read({ key: "a", __erix: { runId: "live-scope", notesDir: directory } })).state,
+      "active",
+    );
+    assert.equal(
+      JSON.parse(await note_read({ key: "b", __erix: { runId: "dead-scope", notesDir: directory } })).status,
+      "revoked",
+    );
     const tombstone = JSON.parse(await readFile(
       path.join(directory, "run", "dead-scope", "b.json"),
       "utf8",
@@ -565,90 +551,32 @@ test("lifecycle.revokeInactive revokes only dead scopes and skips alive ones", a
   });
 });
 
-test("lifecycle.revokeInactive records isAlive failures in errors[] and never revokes", async () => {
+test("host-built cleanup loop: expected-state guard turns racy revokes into unchanged", async () => {
   await withDirectory(async (directory) => {
-    const scope = { runId: "boom-scope", notesDir: directory };
-    await note_take({ key: "a", content: "va", __erix: scope });
-    const throwing = createBuiltinNotesTools({
-      notesDir: directory,
-      runId: "host-run",
-      liveness: {
-        ttlMs: 60_000,
-        isAlive: async () => {
-          throw new Error("liveness probe down");
-        },
-      },
-    });
-    const failed = await throwing.lifecycle.revokeInactive({
-      scopeRefs: ["boom-scope"],
-      reason: "host_sweep",
-    });
-    assert.equal(failed.status, "found");
-    assert.equal(failed.checked, 0);
-    assert.equal(failed.revoked, 0);
-    assert.equal(failed.errors.length, 1);
-    assert.equal(failed.errors[0].operation, "notes_liveness_check");
-    assert.equal(failed.errors[0].scopeRef, "boom-scope");
-    assert.match(failed.errors[0].error.message, /liveness probe down/);
-    assert.equal(JSON.parse(await note_read({ key: "a", __erix: scope })).state, "active");
-
-    // 非 boolean 返回同样进 errors[]，不解释为 false。
-    const nonBoolean = createBuiltinNotesTools({
-      notesDir: directory,
-      runId: "host-run",
-      liveness: { ttlMs: 60_000, isAlive: async () => "yes" },
-    });
-    const rejected = await nonBoolean.lifecycle.revokeInactive({ scopeRefs: ["boom-scope"] });
-    assert.equal(rejected.revoked, 0);
-    assert.equal(rejected.errors.length, 1);
-    assert.match(rejected.errors[0].error.message, /boolean/u);
-    assert.equal(JSON.parse(await note_read({ key: "a", __erix: scope })).state, "active");
-  });
-});
-
-test("lifecycle.revokeInactive counts expected-state mismatches as skipped", async () => {
-  await withDirectory(async (directory) => {
-    const scope = { runId: "racy-scope", notesDir: directory };
-    await note_take({ key: "racy", content: "v", __erix: scope });
+    await note_take({ key: "racy", content: "v", __erix: { runId: "racy-scope", notesDir: directory } });
     const backing = createFileNotesStore({ dir: directory });
     const racingStore = {
       read: backing.read.bind(backing),
       write: backing.write.bind(backing),
       list: backing.list.bind(backing),
       complete: backing.complete.bind(backing),
-      janitor: backing.janitor.bind(backing),
+      revoke: backing.revoke.bind(backing),
       purge: backing.purge.bind(backing),
-      // 模拟并发：检查之后记录被改写，revoke 的 expectedUpdatedAt 护栏命中。
-      revoke: async (request) => (
-        request.key === "racy"
-          ? { status: "unchanged", revoked: 0 }
-          : backing.revoke(request)
-      ),
     };
-    const builtin = createBuiltinNotesTools({
-      notesDir: directory,
-      notesStore: racingStore,
-      runId: "host-run",
-      liveness: { ttlMs: 60_000, isAlive: async () => false },
-    });
-    const result = await builtin.lifecycle.revokeInactive({ scopeRefs: ["racy-scope"] });
-    assert.deepEqual(result, { status: "found", checked: 1, alive: 0, revoked: 0, skipped: 1 });
-    assert.equal(JSON.parse(await note_read({ key: "racy", __erix: scope })).state, "active");
-  });
-});
-
-test("lifecycle.revokeInactive without liveness is a documented no-op", async () => {
-  await withDirectory(async (directory) => {
-    const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "host-run" });
-    const result = await builtin.lifecycle.revokeInactive({ scopeRefs: ["whatever"] });
-    assert.deepEqual(result, {
-      status: "found",
-      checked: 0,
-      alive: 0,
-      revoked: 0,
-      skipped: 0,
-      reason: "liveness not configured; pass liveness to createBuiltinNotesTools to enable active orphan cleanup",
-    });
+    // 模拟并发：宿主读取与 revoke 之间记录被改写（陈旧读）——
+    // expectedUpdatedAt 护栏命中，unchanged，不覆盖新值。
+    const originalRevoke = racingStore.revoke;
+    racingStore.revoke = async (request) => (
+      request.key === "racy"
+        ? { status: "unchanged", revoked: 0 }
+        : originalRevoke(request)
+    );
+    const result = await hostSweepInactiveScopes(racingStore, { scopeRefs: ["racy-scope"] });
+    assert.deepEqual(result, { revoked: 0, skipped: 1 });
+    assert.equal(
+      JSON.parse(await note_read({ key: "racy", __erix: { runId: "racy-scope", notesDir: directory } })).state,
+      "active",
+    );
   });
 });
 
@@ -666,7 +594,6 @@ test("assembler semanticStateProvider reuses cached text within one epoch withou
       write: backing.write.bind(backing),
       complete: backing.complete.bind(backing),
       revoke: backing.revoke.bind(backing),
-      janitor: backing.janitor.bind(backing),
       purge: backing.purge.bind(backing),
       list: async (request) => {
         listCalls += 1;
@@ -731,7 +658,6 @@ test("assembler semanticStateProvider list failure returns undefined and never s
       write: backing.write.bind(backing),
       complete: backing.complete.bind(backing),
       revoke: backing.revoke.bind(backing),
-      janitor: backing.janitor.bind(backing),
       purge: backing.purge.bind(backing),
       list: async (request) => {
         if (failLists) throw new Error("list transient boom");

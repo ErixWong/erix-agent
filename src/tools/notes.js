@@ -59,7 +59,6 @@ function injectedNotesStore(input) {
     && typeof store.list === "function"
     && typeof store.complete === "function"
     && typeof store.revoke === "function"
-    && typeof store.janitor === "function"
     && typeof store.purge === "function"
     ? store
     : undefined;
@@ -273,9 +272,8 @@ async function writeNote(input = {}) {
     state: "active",
     created_at: old?.created_at ?? timestamp,
     updated_at: timestamp,
-    ...(old?.state === "done" || old?.expires_at === undefined
-      ? {}
-      : { expires_at: old.expires_at }),
+    // expires_at 已退役（ADR-018 D7）：0.12.0 起不再写入/透传——清理只看
+    // scope 级 mtime，该字段是历史遗留，随 revive 覆写自然消失。
     ...(old?.state === "revoked" ? { revived_at: timestamp } : {}),
   };
   try {
@@ -377,23 +375,12 @@ export async function note_list(input = {}) {
   if (input.tag !== undefined && typeof input.tag !== "string") {
     return invalid(undefined, "tag 必须是字符串");
   }
-  if (input.source !== undefined && input.source !== "auto" && input.source !== "agent") {
-    return invalid(undefined, "source 必须是 auto 或 agent");
-  }
-  if (
-    input.minRelevance !== undefined
-    && (!Number.isFinite(input.minRelevance)
-      || input.minRelevance < 0
-      || input.minRelevance > 1)
-  ) {
-    return invalid(undefined, "minRelevance 必须是 0 到 1 之间的数字");
-  }
+  // source/minRelevance 过滤参数已随 schema 瘦身移除（ADR-018 D7）：模型侧
+  // 几乎不用；store 层 filters 能力保留（内部消费方/远程 store 契约完整性）。
   // 过滤与排序全部下沉 store（本地不再全量排序、不再裸调 localeCompare）。
   const filters = {};
   if (input.includeInactive !== true) filters.state = "active";
   if (input.tag !== undefined) filters.tag = input.tag;
-  if (input.source !== undefined) filters.source = input.source;
-  if (input.minRelevance !== undefined) filters.minRelevance = input.minRelevance;
   let records;
   try {
     // 无 limit/游标协议（ADR-018 D3 决策反转）：始终返回该 scope 全部匹配
@@ -440,10 +427,6 @@ export async function note_forget(input = {}) {
   return json({ status: "revoked", key, next: "已写入撤销墓碑；历史 current 与 superseded 均不可作为当前值" });
 }
 
-export async function runNotesJanitor(input = {}) {
-  return notesStoreFor(input).janitor(storeRequest(input));
-}
-
 export async function completeRun(input = {}) {
   return notesStoreFor(input).complete(storeRequest(input));
 }
@@ -483,14 +466,12 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "note_list",
-    description: "列出 run 作用域笔记的 key、标签和 current 元数据（全部 active 记录，不返回完整内容）。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；结果过多时用 tag/source/minRelevance 过滤；不要遍历归档目录凭记忆补值",
+    description: "列出 run 作用域笔记的 key、标签和 current 元数据（全部 active 记录，不返回完整内容）。when-to-use：上下文被折叠时先 note_list，再 note_read key=...；结果过多时用 tag 过滤；不要遍历归档目录凭记忆补值",
     inputSchema: {
       type: "object",
       properties: {
         scope: { type: "string", enum: ["run"], default: "run" },
         tag: { type: "string" },
-        minRelevance: { type: "number", minimum: 0, maximum: 1 },
-        source: { type: "string", enum: ["auto", "agent"] },
         includeInactive: { type: "boolean", default: false },
       },
       additionalProperties: false,
@@ -573,12 +554,12 @@ function scopedToolInput(input, name, scope) {
     : filtered;
 }
 
-const REPORTABLE_STORE_METHODS = ["read", "write", "list", "complete", "revoke", "janitor", "purge"];
-// complete/revoke/janitor/purge 与 write 一样会真实写文件（purge 直接 unlink），
+const REPORTABLE_STORE_METHODS = ["read", "write", "list", "complete", "revoke", "purge"];
+// complete/revoke/purge 与 write 一样会真实写文件（purge 直接 unlink），
 // 按写副作用分类；read/list 是纯读。
-const WRITE_SIDE_EFFECT_METHODS = new Set(["write", "complete", "revoke", "janitor", "purge"]);
+const WRITE_SIDE_EFFECT_METHODS = new Set(["write", "complete", "revoke", "purge"]);
 // 已上报过的 (error, operation) 组合（防 decorator 与调用点重复上报同一组合；
-// 同一 Error 对象被 complete/janitor 等多个操作复用时，每个 operation 各报一次）。
+// 同一 Error 对象被 complete/revoke 等多个操作复用时，每个 operation 各报一次）。
 const reportedStoreFailures = new WeakMap();
 
 async function reportStoreFailure(reporter, operation, error) {
@@ -628,35 +609,16 @@ function withPersistenceReporting(store, getReporter) {
 }
 
 /**
- * liveness 是宿主交给 assembler 的 active orphan 判定端口：isAlive 返回
- * false 的 scopeRef 由 lifecycle.revokeInactive 撤销其 active 记录。
- * ttlMs 必须是 >0 安全整数，否则创建时抛错（不静默降级）。
- */
-function validateLiveness(liveness) {
-  if (liveness === undefined || liveness === null) return undefined;
-  if (typeof liveness !== "object" || Array.isArray(liveness)) {
-    throw new TypeError("liveness must be an object with ttlMs and isAlive");
-  }
-  if (!Number.isSafeInteger(liveness.ttlMs) || liveness.ttlMs <= 0) {
-    throw new TypeError("liveness.ttlMs must be a positive safe integer");
-  }
-  if (typeof liveness.isAlive !== "function") {
-    throw new TypeError("liveness.isAlive must be a function");
-  }
-  return { ttlMs: liveness.ttlMs, isAlive: liveness.isAlive };
-}
-
-/**
  * Full notes assembler. One call binds the run scope (runId/scopeRef), the
  * notes directory, and a single NotesStore instance; every returned view
  * (executors, executeTool, lifecycle, semanticStateProvider) reuses them and
  * forcibly overrides any caller-forged `__erix` injection.
  *
- * @param {{notesDir?: string, notesStore?: object, runId?: string, scopeRef?: string, liveness?: {ttlMs: number, isAlive: Function}}} options
+ * @param {{notesDir?: string, notesStore?: object, runId?: string, scopeRef?: string}} options
  * @returns {{
  *   definitions: object[],
  *   executors: Function, executeTool: Function, resolveTools: Function,
- *   lifecycle: {onRunStart: Function, onRunComplete: Function, revokeInactive: Function},
+ *   lifecycle: {onRunComplete: Function},
  *   semanticStateProvider: Function,
  * }}
  */
@@ -674,11 +636,8 @@ export function createBuiltinNotesTools(options = {}) {
     clock: () => clock(),
   });
   // 创建期即校验端口完整性：缺 revoke/purge 等方法立即 TypeError，
-  // 不静默回退到隐式 file store（生命周期三阶段拆分后两者都是必需方法）。
+  // 不静默回退到隐式 file store。
   assertNotesStore(boundStore);
-  // liveness（host 的 active orphan 判定）与 notesStore 同级绑定进作用域，
-  // 调用方伪造的 __erix 无法覆盖（lifecycleInput 强制覆盖）。
-  const boundLiveness = validateLiveness(opts.liveness);
 
   // 并发约定：assembler 假定宿主串行调用（runToolLoop 单线程循环）；
   // activeReporter 的 set/restore 不防并发交错，并发复用同一 assembler
@@ -687,11 +646,11 @@ export function createBuiltinNotesTools(options = {}) {
   const reportedStore = withPersistenceReporting(boundStore, () => activeReporter);
   // issue #67 PR 2 / ADR-018 D3 决策反转：semantic 缓存的本地失效锚。store
   // 是单写者（file adapter 约定），assembler 内任何变更（write/complete/
-  // revoke/janitor/purge）都会经过这里并推进 epoch；epoch 未变则目录文本
+  // revoke/purge）都会经过这里并推进 epoch；epoch 未变则目录文本
   // 不可能变，semantic 直接复用缓存文本，连 list 都不调（ADR-018 D3）。
   let semanticEpoch = 0;
   const store = { ...reportedStore };
-  for (const method of ["write", "complete", "revoke", "janitor", "purge"]) {
+  for (const method of ["write", "complete", "revoke", "purge"]) {
     store[method] = async (request) => {
       const result = await reportedStore[method](request);
       semanticEpoch += 1;
@@ -702,7 +661,6 @@ export function createBuiltinNotesTools(options = {}) {
     ...(boundScopeRef === undefined ? {} : { runId: boundScopeRef }),
     notesDir: resolvedNotesDir,
     notesStore: store,
-    ...(boundLiveness === undefined ? {} : { liveness: boundLiveness }),
   };
 
   // lifecycle 输入同样强制覆盖调用方伪造的 __erix（评审修正项）。
@@ -765,18 +723,11 @@ export function createBuiltinNotesTools(options = {}) {
     }
   };
 
-  // lifecycle 三阶段拆分（issue #67）：
-  // - onRunStart：轻量 no-op 兼容入口。run 起点不再跑 janitor——过期 done
-  //   清理由宿主显式调度 janitor，active orphan 清理权归宿主 liveness。
-  // - onRunComplete：只调 completeRun（active → done），返回
-  //   { completed, errors }（janitor 字段已移除，breaking）。
-  // - revokeInactive：宿主 liveness callback 的入口；对 isAlive=false 的
-  //   scopeRef 撤销其 active 记录（经 store.revoke 的 expected-state 护栏）。
+  // lifecycle 收敛为单一收尾钩子（ADR-018 D8）：onRunComplete 只调
+  // completeRun（active → done），返回 { completed, errors }。run 起点
+  // 无 no-op 兼容桩；统一保留期清理（purge）与 active orphan 清理
+  // （宿主用 store.list + store.revoke 原语自建循环）都是宿主职责。
   const lifecycle = {
-    onRunStart: (input) => withLifecycleReporter(input, async () => ({
-      status: "skipped",
-      reason: "notes janitor is host-scheduled; run start performs no notes GC",
-    })),
     onRunComplete: (input) => withLifecycleReporter(input, async () => {
       const completionErrors = [];
       let completed;
@@ -787,92 +738,6 @@ export function createBuiltinNotesTools(options = {}) {
       }
       return { completed, errors: completionErrors };
     }),
-    revokeInactive: (input) => withLifecycleReporter(input, async () => {
-      if (boundLiveness === undefined) {
-        return {
-          status: "found",
-          checked: 0,
-          alive: 0,
-          revoked: 0,
-          skipped: 0,
-          reason: "liveness not configured; pass liveness to createBuiltinNotesTools to enable active orphan cleanup",
-        };
-      }
-      const scoped = lifecycleInput(input);
-      const scopeRefs = Array.isArray(scoped.scopeRefs)
-        ? scoped.scopeRefs.filter((value) => typeof value === "string" && value.trim() !== "")
-        : [];
-      const errors = [];
-      let checked = 0;
-      let alive = 0;
-      let revoked = 0;
-      let skipped = 0;
-      for (const scopeRef of scopeRefs) {
-        let isAlive;
-        try {
-          isAlive = await boundLiveness.isAlive(scopeRef, {
-            now: clock(),
-            ttlMs: boundLiveness.ttlMs,
-          });
-        } catch (error) {
-          // isAlive 抛错是整体失败信号：进 errors[]，绝不解释为 false（不得 revoke）。
-          errors.push({ operation: "notes_liveness_check", scopeRef, error });
-          continue;
-        }
-        if (typeof isAlive !== "boolean") {
-          errors.push({
-            operation: "notes_liveness_check",
-            scopeRef,
-            error: new TypeError("liveness.isAlive must return a boolean"),
-          });
-          continue;
-        }
-        checked += 1;
-        if (isAlive) {
-          alive += 1;
-          continue;
-        }
-        // 全量收集：store.list 不给 limit = 返回全部匹配记录；逐条 revoke
-        // （revoke 会写文件，先收集完再写，避免扫描-写入交错）。
-        let records;
-        try {
-          // 注入 store 的记录可能缺时间字段：expectedUpdatedAt 取值前 normalize。
-          records = (await store.list({
-            scope: "run",
-            scopeRef,
-            filters: { state: "active" },
-          })).map((record) => normalizeNoteRecord(record));
-        } catch (error) {
-          errors.push({ operation: "notes_revoke_inactive", scopeRef, error });
-          continue;
-        }
-        for (const record of records) {
-          if (record.state !== "active") continue;
-          try {
-            const result = await store.revoke({
-              scope: "run",
-              scopeRef,
-              key: record.key,
-              reason: scoped.reason ?? "scope_inactive",
-              expectedState: "active",
-              expectedUpdatedAt: record.updated_at,
-            });
-            if (result.status === "found") revoked += 1;
-            else skipped += 1;
-          } catch (error) {
-            errors.push({ operation: "notes_revoke_inactive", scopeRef, key: record.key, error });
-          }
-        }
-      }
-      return {
-        status: "found",
-        checked,
-        alive,
-        revoked,
-        skipped,
-        ...(errors.length > 0 ? { errors } : {}),
-      };
-    }),
   };
 
   // ADR-015：notes 小抄目录 → semantic 槽位；复用绑定的同一 store 实例。
@@ -880,7 +745,7 @@ export function createBuiltinNotesTools(options = {}) {
   // 失败诊断改为可选注入——宿主显式传 reportPersistenceFailure 才上报。
   const semanticScopeRef = boundScopeRef ?? currentScopeRef(undefined);
   // issue #67 PR 2 / ADR-018 D3 决策反转：进程内缓存退化为纯 epoch
-  // { epoch, text }。assembler 内任何变更（write/complete/revoke/janitor/
+  // { epoch, text }。assembler 内任何变更（write/complete/revoke/
   // purge）都会推进 epoch；epoch 未变 → 直接复用缓存文本（零 list 调用、
   // 不读任何记录文件）；epoch 变了才调 list 重渲染并替换缓存。无 revision
   // 协议。list 只取 pinned_updated 前 20 条（= 目录全部内容）。

@@ -12,7 +12,6 @@ export {
   note_read,
   note_take,
   resolveNotesDir,
-  runNotesJanitor,
   setNotesClock,
   MAX_CONTENT_LENGTH,
   NOTE_VALUE_MAX_CHARS,

@@ -37,6 +37,7 @@ import {
   buildCliToolsSystemPrompt,
   createCliTools,
   filterToolsByAllowlist,
+  purgeInactiveNoteScopes,
   wrapExecuteTool,
 } from "./tools.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
@@ -647,9 +648,16 @@ async function runChatWithNotes({
   const notesAssembler = notesDisabled || !notesStore
     ? undefined
     : createBuiltinNotesTools({ runId, notesDir, notesStore });
-  // issue #67：onRunStart 是轻量 no-op 兼容入口（run 起点不再跑 notes GC——
-  // 过期 done 清理由宿主调度 janitor，active orphan 清理权归宿主 liveness）。
-  await notesAssembler?.lifecycle.onRunStart();
+  // ADR-018 D7/D8：lifecycle 只有 onRunComplete；CLI 自身是宿主——收尾后
+  // 按会话时钟清理过期笔记 scope（transcript 超 30 天无活动的 session，
+  // 其笔记随 transcript 过期一起清理；维护失败静默，不影响主流程）。
+  const purgeExpiredNotes = () => {
+    if (notesDisabled || !notesStore) return;
+    purgeInactiveNoteScopes({
+      notesDir,
+      sessionActivityFile: (scopeRef) => path.join(dir, `${scopeRef}.jsonl`),
+    });
+  };
   const mcpProxy = createMcpProxyTool({ mcpConfigPath: configPath, cwd });
   const combinedTools = combineTools(cliTools, skillTools, mcpProxy, notesAssembler);
   // --tools 白名单：未知名字 stderr 警告并忽略；过滤后为空 → usageError
@@ -861,6 +869,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     } catch (error) {
       completionErrors.push({ operation: "notes_lifecycle", error });
     }
+    purgeExpiredNotes();
     try {
       await closeAllMcpServers();
     } catch (error) {

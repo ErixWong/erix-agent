@@ -49,8 +49,7 @@ function fakeNotesStore(records) {
     write: async () => {},
     complete: async () => ({ status: "found", completed: 0 }),
     revoke: async () => ({ status: "missing", revoked: 0 }),
-    janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
-    purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
+    purge: async () => ({ status: "found", scanned: 0, purged: 0 }),
   };
 }
 

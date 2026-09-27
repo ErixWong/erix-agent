@@ -8,6 +8,7 @@ import {
   readFile,
   readdir,
   rm,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -71,7 +72,7 @@ test("notes skill consumes an injected NotesStore instead of its file path", asy
     const backing = createFileNotesStore({ dir: root });
     const calls = [];
     const notesStore = Object.fromEntries(
-      ["write", "read", "list", "complete", "revoke", "janitor", "purge"].map((method) => [
+      ["write", "read", "list", "complete", "revoke", "purge"].map((method) => [
         method,
         async (...args) => {
           calls.push(method);
@@ -108,7 +109,7 @@ test("notes skill passes unsafe scope references to the adapter without pre-cano
     const canonicalScopeRef = `run-h-${createHash("sha256").update(scopeRef).digest("hex").slice(0, 24)}`;
     const seenScopes = [];
     const notesStore = Object.fromEntries(
-      ["write", "read", "list", "complete", "revoke", "janitor", "purge"].map((method) => [
+      ["write", "read", "list", "complete", "revoke", "purge"].map((method) => [
         method,
         async (request) => {
           seenScopes.push(request.scopeRef);
@@ -128,10 +129,6 @@ test("notes skill passes unsafe scope references to the adapter without pre-cano
     assert.equal(listed.count, 1);
     assert.equal(listed.notes[0].key, "unsafe");
     assert.deepEqual(await notes.completeRun({ __erix: scope }), { status: "found", completed: 1 });
-    const janitorResult = await notes.runNotesJanitor({ __erix: scope });
-    assert.equal(janitorResult.status, "found");
-    assert.equal(janitorResult.revoked, 0);
-    assert.equal(janitorResult.nextCursor, null);
     assert.ok(seenScopes.length > 0);
     assert.ok(seenScopes.every((value) => value === scopeRef));
     assert.equal(
@@ -174,101 +171,6 @@ function makeRecord(key, scopeRef, overrides = {}) {
   };
 }
 
-test("janitor never reclaims foreign active notes, even with grace env set to zero", async () => {
-  const root = await makeTempDirectory();
-  const now = { value: Date.UTC(2026, 8, 27, 0, 0, 0) };
-  try {
-    await withNotesEnv({ ERIX_NOTES_GRACE_MS: "0" }, async () => {
-      const store = createFileNotesStore({ dir: root, clock: () => now.value });
-      // 另一个 run 的 active 记录：updated_at 远早于 grace 窗口，按旧启发式必被回收。
-      const stale = new Date(now.value - 30 * 24 * 60 * 60 * 1000).toISOString();
-      await store.write({
-        scope: "run",
-        scopeRef: "stale-run",
-        key: "orphan",
-        record: makeRecord("orphan", "stale-run", { updated_at: stale, created_at: stale }),
-      });
-      const result = await store.janitor({ scope: "run", scopeRef: "live-run" });
-      assert.deepEqual(result, { status: "found", scanned: 1, revoked: 0, nextCursor: null });
-      const record = await store.read({ scope: "run", scopeRef: "stale-run", key: "orphan" });
-      assert.equal(record.state, "active", "active orphan 清理权归宿主 liveness，janitor 不得回收");
-      assert.equal(record.updated_at, stale, "janitor 不得触碰 active 记录");
-    });
-    assert.equal(process.env.ERIX_NOTES_GRACE_MS, undefined, "env 必须还原，不得污染其他测试");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("janitor revokes expired done notes across scopes with limit/cursor pagination", async () => {
-  const root = await makeTempDirectory();
-  const now = { value: Date.UTC(2026, 8, 27, 0, 0, 0) };
-  try {
-    const store = createFileNotesStore({ dir: root, clock: () => now.value });
-    const expired = new Date(now.value - 1000).toISOString();
-    for (let index = 0; index < 5; index += 1) {
-      await store.write({
-        scope: "run",
-        scopeRef: `done-run-${index}`,
-        key: "note",
-        record: makeRecord("note", `done-run-${index}`, {
-          state: "done",
-          expires_at: expired,
-        }),
-      });
-    }
-    // 未到期的 done 与 active 记录不处理。
-    await store.write({
-      scope: "run",
-      scopeRef: "fresh-run",
-      key: "fresh",
-      record: makeRecord("fresh", "fresh-run", {
-        state: "done",
-        expires_at: new Date(now.value + 60_000).toISOString(),
-      }),
-    });
-    await store.write({
-      scope: "run",
-      scopeRef: "fresh-run",
-      key: "live",
-      record: makeRecord("live", "fresh-run"),
-    });
-
-    let cursor;
-    let totalRevoked = 0;
-    const scannedPages = [];
-    const cursors = [];
-    do {
-      const page = await store.janitor({ limit: 2, ...(cursor === undefined ? {} : { cursor }) });
-      scannedPages.push(page.scanned);
-      cursors.push(page.nextCursor);
-      totalRevoked += page.revoked;
-      cursor = page.nextCursor;
-    } while (cursor !== null);
-    assert.deepEqual(scannedPages, [2, 2, 2, 1], "6 条记录 4 页（末页 1 条），fresh 两条也在扫描内");
-    assert.deepEqual(cursors, [2, 4, 6, null], "nextCursor 恰好覆盖末尾时为 null");
-    assert.equal(totalRevoked, 5, "只有 5 条过期 done 被 revoke");
-    for (let index = 0; index < 5; index += 1) {
-      assert.equal(
-        (await store.read({ scope: "run", scopeRef: `done-run-${index}`, key: "note" })).state,
-        "revoked",
-      );
-    }
-    assert.equal(
-      (await store.read({ scope: "run", scopeRef: "fresh-run", key: "fresh" })).state,
-      "done",
-    );
-    assert.equal(
-      (await store.read({ scope: "run", scopeRef: "fresh-run", key: "live" })).state,
-      "active",
-    );
-    await assert.rejects(store.janitor({ limit: 0 }), /positive safe integer/u);
-    await assert.rejects(store.janitor({ cursor: -1 }), /non-negative safe integer/u);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test("revoke leaves a changed record untouched (expectedUpdatedAt guard)", async () => {
   const root = await makeTempDirectory();
   try {
@@ -307,71 +209,89 @@ test("revoke leaves a changed record untouched (expectedUpdatedAt guard)", async
   }
 });
 
-test("expired done becomes a tombstone and purge unlinks the file only past retention", async () => {
+// 把 scope 目录下全部记录文件的 mtime 统一拨到 ms 毫秒前（真实时钟基准）。
+// purge 的 scope 时钟看的是文件 mtime，不是记录里的 updated_at 字段。
+async function ageScopeFiles(root, scopeRef, ms) {
+  const directory = path.join(root, "run", scopeRef);
+  const stamp = new Date(Date.now() - ms);
+  for (const name of await readdir(directory)) {
+    if (name.startsWith(".") || !name.endsWith(".json")) continue;
+    await utimes(path.join(directory, name), stamp, stamp);
+  }
+}
+
+test("purge shoots the whole scope past retention and spares live scopes (scope-level clock)", async () => {
   const root = await makeTempDirectory();
-  const now = { value: Date.UTC(2026, 8, 27, 0, 0, 0) };
   const DAY = 24 * 60 * 60 * 1000;
   try {
-    await withNotesEnv({ ERIX_NOTES_DONE_GRACE_MS: "60000" }, async () => {
-      const store = createFileNotesStore({ dir: root, clock: () => now.value });
+    await withNotesEnv({ ERIX_NOTES_RETENTION_MS: String(30 * DAY) }, async () => {
+      const store = createFileNotesStore({ dir: root });
+      // scope A：active/done/revoked 混合，最新写入 40 天前 → 整本删除（含 active）。
       await store.write({
-        scope: "run",
-        scopeRef: "retention-run",
-        key: "lifecycle",
-        record: makeRecord("lifecycle", "retention-run"),
+        scope: "run", scopeRef: "scope-a", key: "alive",
+        record: makeRecord("alive", "scope-a"),
       });
-      // active → done：expires = now + 60s（DONE_GRACE_MS）。
-      assert.deepEqual(await store.complete({ scope: "run", scopeRef: "retention-run" }), {
-        status: "found",
-        completed: 1,
+      await store.write({
+        scope: "run", scopeRef: "scope-a", key: "finished",
+        record: makeRecord("finished", "scope-a", { state: "done" }),
       });
-      // 过期：janitor 写墓碑（revoked_at = tombstone 起点）。
-      now.value += 61_000;
-      assert.deepEqual(await store.janitor({}), {
-        status: "found",
-        scanned: 1,
-        revoked: 1,
-        nextCursor: null,
+      await store.write({
+        scope: "run", scopeRef: "scope-a", key: "killed",
+        record: makeRecord("killed", "scope-a", {
+          state: "revoked", revoked_at: "2026-09-01T00:00:00.000Z",
+        }),
       });
-      const tombstone = await store.read({
-        scope: "run", scopeRef: "retention-run", key: "lifecycle",
+      await ageScopeFiles(root, "scope-a", 40 * DAY);
+      // scope B：最新写入 10 天前，但其中有一条 40 天前的老笔记 → 整体豁免
+      //（会话活着，笔记本整体保留）。
+      await store.write({
+        scope: "run", scopeRef: "scope-b", key: "old-note",
+        record: makeRecord("old-note", "scope-b"),
       });
-      assert.equal(tombstone.state, "revoked");
-      assert.ok(tombstone.revoked_at);
-      assert.equal(tombstone.revoke_reason, "done_expired");
+      await store.write({
+        scope: "run", scopeRef: "scope-b", key: "recent-note",
+        record: makeRecord("recent-note", "scope-b"),
+      });
+      await ageScopeFiles(root, "scope-b", 40 * DAY);
+      const stamp10d = new Date(Date.now() - 10 * DAY);
+      await utimes(path.join(root, "run", "scope-b", "recent-note.json"), stamp10d, stamp10d);
+      // scope C：空目录。c-old 目录自身 40 天前 → 移除；c-fresh 保留。
+      await mkdir(path.join(root, "run", "scope-c-old"), { recursive: true });
+      await mkdir(path.join(root, "run", "scope-c-fresh"), { recursive: true });
+      const stamp40d = new Date(Date.now() - 40 * DAY);
+      await utimes(path.join(root, "run", "scope-c-old"), stamp40d, stamp40d);
 
-      // 未到 30 天保留期：文件仍在，purge 不删。
-      now.value += 29 * DAY;
-      assert.deepEqual(await store.purge({}), {
-        status: "found",
-        scanned: 1,
-        purged: 0,
-        nextCursor: null,
-      });
-      assert.ok(await store.read({ scope: "run", scopeRef: "retention-run", key: "lifecycle" }));
-
-      // before 只能缩小范围：传未来时刻不得放大删除窗口。
+      assert.deepEqual(await store.purge({}), { status: "found", scanned: 4, purged: 3 });
       assert.equal(
-        (await store.purge({ before: new Date(now.value + DAY).toISOString() })).purged,
-        0,
-      );
-
-      // 超过保留期：purge 真正 unlink 文件。
-      now.value += 2 * DAY;
-      assert.deepEqual(await store.purge({}), {
-        status: "found",
-        scanned: 1,
-        purged: 1,
-        nextCursor: null,
-      });
-      assert.equal(
-        await store.read({ scope: "run", scopeRef: "retention-run", key: "lifecycle" }),
+        await store.read({ scope: "run", scopeRef: "scope-a", key: "alive" }),
         undefined,
       );
-      // 隐藏 metadata sidecar（若有）不参与 note 扫描：目录里只剩点文件（若有）。
       assert.deepEqual(
-        (await readdir(path.join(root, "run", "retention-run"))).filter((name) => !name.startsWith(".")),
-        [],
+        (await readdir(path.join(root, "run"))).sort(),
+        ["scope-b", "scope-c-fresh"],
+        "死 scope 目录移除；活 scope 与新鲜空目录保留",
+      );
+      assert.equal(
+        (await store.read({ scope: "run", scopeRef: "scope-b", key: "old-note" })).state,
+        "active",
+        "40 天前的老笔记随活 scope 豁免",
+      );
+
+      // before 只能缩小范围（取更早的 cutoff，绝不放大删除窗口）。
+      await store.write({
+        scope: "run", scopeRef: "scope-d", key: "x",
+        record: makeRecord("x", "scope-d"),
+      });
+      await ageScopeFiles(root, "scope-d", 40 * DAY);
+      assert.equal(
+        (await store.purge({ before: new Date(Date.now() - 45 * DAY).toISOString() })).purged,
+        0,
+        "45 天前的 before 把 40 天死的 scope 也豁免",
+      );
+      assert.equal((await store.purge({})).purged, 1, "自然 cutoff 下 scope-d 被删");
+      assert.equal(
+        await store.read({ scope: "run", scopeRef: "scope-d", key: "x" }),
+        undefined,
       );
     });
   } finally {
@@ -379,71 +299,93 @@ test("expired done becomes a tombstone and purge unlinks the file only past rete
   }
 });
 
-test("purge paginates with limit/cursor and unlinks only eligible tombstones", async () => {
+test("complete flips active to done without expires_at; done records die with their scope", async () => {
   const root = await makeTempDirectory();
-  const now = { value: Date.UTC(2026, 8, 27, 0, 0, 0) };
   const DAY = 24 * 60 * 60 * 1000;
   try {
-    await withNotesEnv({ ERIX_NOTES_TOMBSTONE_RETENTION_MS: String(DAY) }, async () => {
-      const store = createFileNotesStore({ dir: root, clock: () => now.value });
-      const old = new Date(now.value - 2 * DAY).toISOString();
-      for (let index = 0; index < 3; index += 1) {
-        await store.write({
-          scope: "run",
-          scopeRef: `tomb-run-${index}`,
-          key: "note",
-          record: makeRecord("note", `tomb-run-${index}`, {
-            state: "revoked",
-            revoked_at: old,
-            updated_at: old,
-          }),
-        });
-      }
-      // 未到保留期与 active 记录不删。
-      const recent = new Date(now.value - 60_000).toISOString();
-      await store.write({
-        scope: "run",
-        scopeRef: "mixed-run",
-        key: "recent-tomb",
-        record: makeRecord("recent-tomb", "mixed-run", {
-          state: "revoked",
-          revoked_at: recent,
-          updated_at: recent,
-        }),
-      });
-      await store.write({
-        scope: "run",
-        scopeRef: "mixed-run",
-        key: "live",
-        record: makeRecord("live", "mixed-run"),
-      });
-
-      let cursor;
-      let totalPurged = 0;
-      const pages = [];
-      do {
-        const page = await store.purge({ limit: 2, ...(cursor === undefined ? {} : { cursor }) });
-        pages.push([page.scanned, page.purged]);
-        totalPurged += page.purged;
-        cursor = page.nextCursor;
-      } while (cursor !== null);
-      // 扫描顺序按 scope 名排序：mixed-run 两条在前（不删），随后三条墓碑逐页删除。
-      // purge 的 cursor 是不透明 key：中途 unlink 不会导致后续墓碑被跳过。
-      assert.deepEqual(pages, [[2, 0], [2, 2], [1, 1]]);
-      assert.equal(totalPurged, 3);
-      await assert.rejects(store.purge({ cursor: 3 }), /non-empty string/u);
-      await assert.rejects(store.purge({ limit: 0 }), /positive safe integer/u);
-      // 未到保留期的墓碑与 active 记录都还在。
-      const recentTomb = await store.read({
-        scope: "run", scopeRef: "mixed-run", key: "recent-tomb",
-      });
-      assert.equal(recentTomb.state, "revoked");
-      const live = await store.read({ scope: "run", scopeRef: "mixed-run", key: "live" });
-      assert.equal(live.state, "active");
+    const store = createFileNotesStore({ dir: root });
+    await store.write({
+      scope: "run", scopeRef: "done-run", key: "note",
+      record: makeRecord("note", "done-run"),
     });
+    assert.deepEqual(await store.complete({ scope: "run", scopeRef: "done-run" }), {
+      status: "found",
+      completed: 1,
+    });
+    const done = await store.read({ scope: "run", scopeRef: "done-run", key: "note" });
+    assert.equal(done.state, "done");
+    assert.equal(done.expires_at, undefined, "expires_at 已退役（ADR-018 D7）");
+    // 会话仍在保留期内：done 文件存在，purge 不删。
+    assert.deepEqual(await store.purge({}), { status: "found", scanned: 1, purged: 0 });
+    // 整个 scope 最后写入超过保留期：done 记录随本一起删除（含目录移除）。
+    await ageScopeFiles(root, "done-run", 31 * DAY);
+    assert.deepEqual(await store.purge({}), { status: "found", scanned: 1, purged: 1 });
+    assert.equal(
+      await store.read({ scope: "run", scopeRef: "done-run", key: "note" }),
+      undefined,
+    );
+    assert.deepEqual(await readdir(path.join(root, "run")), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("retention env: ERIX_NOTES_RETENTION_MS wins, ERIX_NOTES_GRACE_MS is the only deprecated alias, dead names are ignored", async () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const MINUTE = 60_000;
+  // ERIX_NOTES_GRACE_MS（0.11.0 发布过的 deprecated alias）→ 映射到统一保留期。
+  const graceRoot = await makeTempDirectory();
+  await withNotesEnv({ ERIX_NOTES_GRACE_MS: String(MINUTE) }, async () => {
+    const store = createFileNotesStore({ dir: graceRoot });
+    await store.write({
+      scope: "run", scopeRef: "alias-run", key: "grace",
+      record: makeRecord("grace", "alias-run"),
+    });
+    await ageScopeFiles(graceRoot, "alias-run", 2 * MINUTE);
+    assert.deepEqual(await store.purge({}), { status: "found", scanned: 1, purged: 1 });
+  });
+  await rm(graceRoot, { recursive: true, force: true });
+  // 并存时以 ERIX_NOTES_RETENTION_MS 为准。
+  const precedenceRoot = await makeTempDirectory();
+  await withNotesEnv({
+    ERIX_NOTES_RETENTION_MS: String(30 * DAY),
+    ERIX_NOTES_GRACE_MS: String(MINUTE),
+  }, async () => {
+    const store = createFileNotesStore({ dir: precedenceRoot });
+    await store.write({
+      scope: "run", scopeRef: "alias-run", key: "precedence",
+      record: makeRecord("precedence", "alias-run"),
+    });
+    await ageScopeFiles(precedenceRoot, "alias-run", 2 * MINUTE);
+    assert.equal((await store.purge({})).purged, 0, "新变量优先，2 分钟远未超 30 天");
+  });
+  await rm(precedenceRoot, { recursive: true, force: true });
+  // ERIX_NOTES_DONE_GRACE_MS / ERIX_NOTES_TOMBSTONE_RETENTION_MS 从未随 0.12.0
+  // 发布：即使被设置也完全不读，按默认 30 天处理（审计 F 项）。
+  const deadRoot = await makeTempDirectory();
+  await withNotesEnv({
+    ERIX_NOTES_DONE_GRACE_MS: String(MINUTE),
+    ERIX_NOTES_TOMBSTONE_RETENTION_MS: String(MINUTE),
+  }, async () => {
+    const store = createFileNotesStore({ dir: deadRoot });
+    await store.write({
+      scope: "run", scopeRef: "alias-run", key: "a",
+      record: makeRecord("a", "alias-run"),
+    });
+    await store.write({
+      scope: "run", scopeRef: "alias-run", key: "b",
+      record: makeRecord("b", "alias-run"),
+    });
+    await ageScopeFiles(deadRoot, "alias-run", 20 * DAY);
+    assert.equal(
+      (await store.purge({})).purged,
+      0,
+      "假兼容名被无视：20 天未超默认 30 天，不删",
+    );
+    await ageScopeFiles(deadRoot, "alias-run", 40 * DAY);
+    assert.equal((await store.purge({})).purged, 2, "默认 30 天到期即删");
+  });
+  await rm(deadRoot, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -601,30 +543,27 @@ test("list clamps an explicit limit to 200 even when the scope holds more record
 
 test("complete collects the whole scope internally and is not truncated by the limit clamp", async () => {
   const root = await makeTempDirectory();
-  const now = { value: Date.UTC(2026, 8, 27, 0, 0, 0) };
   try {
-    await withNotesEnv({ ERIX_NOTES_DONE_GRACE_MS: "60000" }, async () => {
-      const store = createFileNotesStore({ dir: root, clock: () => now.value });
-      // 210 条 active：complete 走内部全量收集（不走公共 list 的 limit 钳制）。
-      for (let index = 0; index < 210; index += 1) {
-        await store.write({
-          scope: "run", scopeRef: "bulk-run", key: `note-${String(index).padStart(3, "0")}`,
-          record: makeListRecord(`note-${String(index).padStart(3, "0")}`, "bulk-run"),
-        });
-      }
-      assert.deepEqual(await store.complete({ scope: "run", scopeRef: "bulk-run" }), {
-        status: "found",
-        completed: 210,
+    const store = createFileNotesStore({ dir: root, clock: () => Date.UTC(2026, 8, 27) });
+    // 210 条 active：complete 走内部全量收集（不走公共 list 的 limit 钳制）。
+    for (let index = 0; index < 210; index += 1) {
+      await store.write({
+        scope: "run", scopeRef: "bulk-run", key: `note-${String(index).padStart(3, "0")}`,
+        record: makeListRecord(`note-${String(index).padStart(3, "0")}`, "bulk-run"),
       });
-      const done = await store.list({
-        scope: "run", scopeRef: "bulk-run", filters: { state: "done" },
-      });
-      assert.equal(done.length, 210, "全部 active 逐条置 done，无截断");
-      const stillActive = await store.list({
-        scope: "run", scopeRef: "bulk-run", filters: { state: "active" },
-      });
-      assert.equal(stillActive.length, 0);
+    }
+    assert.deepEqual(await store.complete({ scope: "run", scopeRef: "bulk-run" }), {
+      status: "found",
+      completed: 210,
     });
+    const done = await store.list({
+      scope: "run", scopeRef: "bulk-run", filters: { state: "done" },
+    });
+    assert.equal(done.length, 210, "全部 active 逐条置 done，无截断");
+    const stillActive = await store.list({
+      scope: "run", scopeRef: "bulk-run", filters: { state: "active" },
+    });
+    assert.equal(stillActive.length, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

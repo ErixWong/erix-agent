@@ -245,7 +245,8 @@ const assemblyPort = createAssemblyPort({
 });
 ```
 
-`NotesStore` is a CLI-side engine skill (cross-run memory). Its write contract
+`NotesStore` is a CLI-side engine skill (run-scoped scratchpad for facts,
+one-time values, and artifact references). Its write contract
 lives in [docs/host-consumer-contract.md](docs/host-consumer-contract.md);
 the engine never inspects notes, it only exposes the injected
 `reportPersistenceFailure` bridge so host ports produce the same event and bill
@@ -614,9 +615,10 @@ one-time values, decisions, and artifact references; they are not a per-round
 log. Headless hosts can assemble them with `createBuiltinNotesTools` from the
 package root or `erix-agent/tools`; the factory returns the canonical 6-key API
 (`definitions`, dual executor views `executors` / structured `executeTool`,
-`resolveTools`, run lifecycle hooks `lifecycle.onRunStart` janitor /
-`lifecycle.onRunComplete` completeRun+janitor, and the ADR-015 fold-point
-`semanticStateProvider`) — all bound to one run scope and one `NotesStore`
+`resolveTools`, the run lifecycle hook `lifecycle.onRunComplete`
+(completeRun only — expired-retention cleanup is host-scheduled via
+session-clock `store.purge`; the CLI chains it after run completion), and the
+ADR-015 fold-point `semanticStateProvider`) — all bound to one run scope and one `NotesStore`
 instance. Hosts that need a `ToolProvider` shape can build one from
 `createStaticToolProvider({ sets: { default: notes.definitions } })`. The CLI
 retired the bundled `skills/notes/skill.mjs` compatibility shim in v0.11.0

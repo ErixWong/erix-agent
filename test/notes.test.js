@@ -8,6 +8,7 @@ import {
   rename,
   rm,
   stat,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -67,9 +68,8 @@ async function withNotes(callback, options = {}) {
   const previous = Object.fromEntries(
     [
       "ERIX_NOTES_DIR",
+      "ERIX_NOTES_RETENTION_MS",
       "ERIX_NOTES_GRACE_MS",
-      "ERIX_NOTES_DONE_GRACE_MS",
-      "ERIX_NOTES_TOMBSTONE_RETENTION_MS",
     ]
       .map((name) => [name, process.env[name]]),
   );
@@ -79,10 +79,11 @@ async function withNotes(callback, options = {}) {
     runId: options.runId ?? "notes-test-run",
     notesDir: directory,
   };
-  if (options.graceMs === undefined) delete process.env.ERIX_NOTES_GRACE_MS;
-  else process.env.ERIX_NOTES_GRACE_MS = String(options.graceMs);
-  delete process.env.ERIX_NOTES_DONE_GRACE_MS;
-  delete process.env.ERIX_NOTES_TOMBSTONE_RETENTION_MS;
+  // 统一保留期（ADR-018 D7）：retentionMs 直接设权威变量；
+  // ERIX_NOTES_GRACE_MS 是唯一 deprecated alias，测试前一律清除避免串扰。
+  if (options.retentionMs === undefined) delete process.env.ERIX_NOTES_RETENTION_MS;
+  else process.env.ERIX_NOTES_RETENTION_MS = String(options.retentionMs);
+  delete process.env.ERIX_NOTES_GRACE_MS;
   try {
     return await callback(directory);
   } finally {
@@ -107,7 +108,6 @@ const scopedNotes = new Proxy(notes, {
         "note_list",
         "note_forget",
         "completeRun",
-        "runNotesJanitor",
       ].includes(property)
     ) return value;
     return (input = {}) => value({
@@ -173,7 +173,7 @@ test("note list exposes keys and tags but never content", async () => {
   });
 });
 
-test("note list sorts by relevance and filters bounded metadata", async () => {
+test("note list sorts by relevance and filters bounded metadata (tag only at tool layer)", async () => {
   await withNotes(async (directory) => {
     await scopedNotes.note_take({
       key: "low",
@@ -205,15 +205,18 @@ test("note list sorts by relevance and filters bounded metadata", async () => {
       ["auto", 0.8],
       ["low", 0.2],
     ]);
-    assert.equal(listed.notes[1].source, "auto");
+    assert.equal(listed.notes[1].source, "auto", "输出元数据仍标注 provenance source");
+    // schema 瘦身（ADR-018 D7）：source/minRelevance 入参已删——传了也随
+    // scopedToolInput 白名单过滤丢弃，等价于无过滤。
     assert.deepEqual(
       parsed(await scopedNotes.note_list({ minRelevance: 0.8 })).notes.map((note) => note.key),
-      ["high", "auto"],
+      ["high", "auto", "low"],
     );
     assert.deepEqual(
       parsed(await scopedNotes.note_list({ tag: "old", source: "agent" }))
         .notes.map((note) => note.key),
       ["low"],
+      "tag 保留，source 被丢弃后只剩 tag 过滤",
     );
   });
 });
@@ -370,12 +373,6 @@ test("unsafe explicit scope round-trips through the skill lifecycle", async () =
       status: "found",
       completed: 1,
     });
-    assert.deepEqual(await scopedNotes.runNotesJanitor({ __erix: scope }), {
-      status: "found",
-      scanned: 1,
-      revoked: 0,
-      nextCursor: null,
-    });
     const runEntries = await readdir(path.join(directory, "run"));
     assert.equal(runEntries.length, 1);
     assert.match(runEntries[0], /^run-h-[0-9a-f]{24}$/u);
@@ -435,7 +432,8 @@ test("tool provenance cannot claim auto capture; historical auto records stay re
       "agent",
     );
     // 历史 auto 记录（auto-capture 退役前产生，直接写 store 构造）仍完整可读，
-    // 且 note_list 的 source 过滤与 @auto 标记等历史读取能力保留。
+    // 且输出元数据仍标注 @auto provenance；note_list 的 source 入参已随
+    // schema 瘦身移除，历史 auto 记录照常出现在清单里。
     await seedHistoricalAutoNote(directory, historicalAutoRecord("auto-written", {
       artifactRef,
       toolUseId: "tool-1",
@@ -444,8 +442,11 @@ test("tool provenance cannot claim auto capture; historical auto records stay re
     assert.equal(captured.provenance.source, "auto");
     assert.equal(captured.provenance.toolUseId, "tool-1");
     const autoListed = parsed(await scopedNotes.note_list({ source: "auto" }));
-    assert.deepEqual(autoListed.notes.map((note) => note.key), ["auto-written"]);
+    // relevance 排序：历史 auto 记录（0.8）在前，tool-written（0.5）在后；
+    // source 入参被 schema 白名单丢弃，两条都返回。
+    assert.deepEqual(autoListed.notes.map((note) => note.key), ["auto-written", "tool-written"]);
     assert.equal(autoListed.notes[0].source, "auto");
+    assert.equal(autoListed.notes[1].source, "agent");
   });
 });
 
@@ -597,8 +598,7 @@ test("records missing time fields from an injected store stay readable, listable
     ],
     complete: async () => ({ status: "found", completed: 0 }),
     revoke: async () => ({ status: "missing", revoked: 0 }),
-    janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
-    purge: async () => ({ status: "found", scanned: 0, purged: 0, nextCursor: null }),
+    purge: async () => ({ status: "found", scanned: 0, purged: 0 }),
   };
   const tools = createBuiltinNotesTools({ notesStore: bareStore, runId: "normalize-run" });
   const read = parsed(await tools.executeTool("note_read", { key: "bare" }));
@@ -616,7 +616,7 @@ test("records missing time fields from an injected store stay readable, listable
   assert.match(semantic.text, /bare-a/u);
 });
 
-test("run lifecycle transitions active to done and janitor reclaims only expired done", async () => {
+test("run lifecycle transitions active to done and purge reclaims the scope past retention (scope clock)", async () => {
   await withNotes(async (directory) => {
     const now = { value: Date.now() };
     const restoreClock = notes.setNotesClock(() => now.value);
@@ -629,65 +629,51 @@ test("run lifecycle transitions active to done and janitor reclaims only expired
         "utf8",
       ));
       assert.equal(completed.state, "done");
-      assert.ok(completed.expires_at);
+      assert.equal(completed.expires_at, undefined, "expires_at 已退役（ADR-018 D7）");
 
-      // 未过期：janitor 不动 done 记录。
-      assert.equal((await scopedNotes.runNotesJanitor()).revoked, 0);
+      // 会话时钟在保留期内：done 文件原样存在，purge 不删。
+      const store = createFileNotesStore({ dir: directory, clock: () => now.value });
+      assert.equal((await store.purge({})).purged, 0);
       assert.equal(parsed(await scopedNotes.note_read({ key: "lifecycle" })).state, "done");
-      // 过期：janitor 写墓碑（revoked_at + revoke_reason）。
-      now.value = Date.parse(completed.expires_at) + 1;
-      assert.equal((await scopedNotes.runNotesJanitor()).revoked, 1);
-      const tombstone = parsed(await readFile(
-        path.join(directory, "run", "notes-test-run", "lifecycle.json"),
-        "utf8",
-      ));
-      assert.equal(tombstone.state, "revoked");
-      assert.ok(tombstone.revoked_at);
-      assert.equal(tombstone.revoke_reason, "done_expired");
-      assert.equal(parsed(await scopedNotes.note_read({ key: "lifecycle" })).status, "revoked");
+      // scope 最后写入超过保留期（推进注入时钟模拟）：purge 整本物理删除
+      //（含目录移除），不再有 done → revoked 墓碑翻转。
+      now.value += 2 * 60_000;
+      assert.equal((await store.purge({})).purged, 1);
+      await assert.rejects(
+        readFile(path.join(directory, "run", "notes-test-run", "lifecycle.json"), "utf8"),
+      );
+      await assert.rejects(readdir(path.join(directory, "run", "notes-test-run")));
+      assert.equal(parsed(await scopedNotes.note_read({ key: "lifecycle" })).status, "missing");
     } finally {
       restoreClock();
     }
-  }, { graceMs: 60_000 });
+  }, { retentionMs: 60_000 });
 });
 
-test("janitor keeps foreign active notes active (even with grace env zero) and reclaims their expired done", async () => {
-  const now = { value: Date.now() };
+test("purge shoots the whole scope past retention whatever the state mix, and spares scopes with a recent write", async () => {
+  const DAY = 24 * 60 * 60 * 1000;
   await withNotes(async (directory) => {
-    const restoreClock = notes.setNotesClock(() => now.value);
-    try {
-      await scopedNotes.note_take({ key: "orphan", content: "value" });
-      const foreignJanitor = () => scopedNotes.runNotesJanitor({
-        __erix: { runId: "current-run", notesDir: directory },
-      });
-      const readOrphan = async () => parsed(await readFile(
-        path.join(directory, "run", "notes-test-run", "orphan.json"),
-        "utf8",
-      ));
-      // 回归核心：另一 run 的 active 笔记长时间未写，janitor 跑完后仍 active。
-      now.value += 30 * 24 * 60 * 60 * 1000;
-      assert.equal((await foreignJanitor()).revoked, 0);
-      assert.equal((await readOrphan()).state, "active");
-      // ERIX_NOTES_GRACE_MS=0 同样不得回收 active：grace 不再含 active 清理语义。
-      process.env.ERIX_NOTES_GRACE_MS = "0";
-      assert.equal((await foreignJanitor()).revoked, 0);
-      assert.equal((await readOrphan()).state, "active");
-      process.env.ERIX_NOTES_GRACE_MS = "1000";
-
-      // 该笔记 complete 后过期，janitor 负责回收（过期 done → tombstone）。
-      await scopedNotes.completeRun();
-      assert.equal((await foreignJanitor()).revoked, 0, "未过期的 done 不得回收");
-      assert.equal((await readOrphan()).state, "done");
-      now.value += 1001;
-      assert.equal((await foreignJanitor()).revoked, 1);
-      const tombstone = await readOrphan();
-      assert.equal(tombstone.state, "revoked");
-      assert.ok(tombstone.revoked_at);
-      assert.equal(parsed(await scopedNotes.note_list({ includeInactive: true })).count, 1);
-    } finally {
-      restoreClock();
-    }
-  }, { graceMs: 1000 });
+    await scopedNotes.note_take({ key: "orphan", content: "value" });
+    await scopedNotes.note_take({ key: "second", content: "v2" });
+    await scopedNotes.completeRun();
+    const foreignPurge = () => createFileNotesStore({ dir: directory }).purge({});
+    const scopeDir = path.join(directory, "run", "notes-test-run");
+    const ageAll = async (ms) => {
+      const stamp = new Date(Date.now() - ms);
+      for (const name of await readdir(scopeDir)) {
+        await utimes(path.join(scopeDir, name), stamp, stamp);
+      }
+    };
+    // scope 时钟在保留期内：done 文件原样存在。
+    assert.equal((await foreignPurge()).purged, 0);
+    assert.equal(parsed(await scopedNotes.note_read({ key: "orphan" })).state, "done");
+    // 整个 scope 最后写入超过保留期：done/active 混合整本删除（含目录移除）。
+    await ageAll(31 * DAY);
+    assert.equal((await foreignPurge()).purged, 2);
+    await assert.rejects(readFile(path.join(scopeDir, "orphan.json"), "utf8"));
+    assert.deepEqual(await readdir(path.join(directory, "run")), [], "死 scope 目录移除");
+    assert.equal(parsed(await scopedNotes.note_list({ includeInactive: true })).count, 0);
+  }, { retentionMs: 30 * DAY });
 });
 
 test("note writes no longer expose a lock API", async () => {
@@ -709,12 +695,16 @@ test("note files contain no lock sidecars", async () => {
   });
 });
 
-test("completeRun and janitor report the new lifecycle statuses", async () => {
+test("completeRun reports the lifecycle status and host purge is the only GC", async () => {
   await withNotes(async (directory) => {
     await scopedNotes.note_take({ key: "busy", content: "value" });
     assert.equal((await scopedNotes.completeRun()).status, "found");
-    assert.equal((await scopedNotes.runNotesJanitor()).status, "found");
     assert.equal(parsed(await scopedNotes.note_read({ key: "busy" })).state, "done");
+    // 保留期内 purge 不动 done 记录（默认 30 天）。
+    assert.equal(
+      (await createFileNotesStore({ dir: directory }).purge({})).purged,
+      0,
+    );
   });
 });
 
