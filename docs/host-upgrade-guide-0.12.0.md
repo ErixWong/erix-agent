@@ -112,52 +112,34 @@ adapter. What the new/changed methods do:
   before `unlink`. Its cursor is an opaque per-entry key — do not construct it
   yourself — because a numeric offset would skip entries as files are removed.
 
-## 4. `list()` returns a page, not an array — and `note_list` paginates
+## 4. `list()` returns an array again — `note_list` dropped cursor and limit
 
-`store.list()` returns a `NotesListPage`:
+`store.list()` returns a plain `NoteRecord[]` (0.11.x returned an array too;
+the paged `NotesListPage` experiment never shipped). Requests take an optional
+`limit` (only when given, clamped to a maximum of 200 — omit it for all
+matching records, which is what the internal `complete`/`revokeInactive`
+consumers rely on), `filters` (`state`, `tag`, `source`, `minRelevance`), and
+`sort` (`"relevance"` | `"pinned_updated"`). There is no cursor and no
+`cursor_stale` status: a maintainer review of real usage (average ~2 notes per
+run, peak 9) judged pagination and the scope-revision anchor YAGNI for 0.12.0
+(ADR-018 D3 reversal), and 0.12.0 is unreleased, so cutting the protocol costs
+no extra breaking change. The `.revision` metadata file is gone as well.
 
-```js
-{
-  status: "found" | "cursor_stale",
-  records,        // this page only
-  nextCursor,     // opaque "<revision>:<offset>" string, or null at the end
-  revision,       // scope revision this page was bound to
-}
-```
-
-Requests take `limit` (default 50, clamped to 200), `cursor` (the previous
-response's `nextCursor` — opaque, never built by hand), `filters`
-(`state`, `tag`, `source`, `minRelevance`), and `sort`
-(`"relevance" | "pinned_updated"`). When the scope changes mid-pagination the
-page comes back `status: "cursor_stale"` with an empty window and
-`nextCursor: null`; restart from the first page.
-
-The `note_list` tool follows the same contract, replacing the 0.11.x offset
-cursor:
+The `note_list` tool follows the same simplification — both `cursor` and
+`limit` are removed, and it always returns every matching note in the scope:
 
 ```js
-// 0.11.x — integer offset cursor, and the output had `total`
+// 0.11.x — integer offset cursor / limit paging, output had `total`
 await note_list({ limit: 50, cursor: 200 });
 
-// 0.12.0 — opaque cursor taken from the previous response; `total` is gone
-let cursor;
-const all = [];
-do {
-  const page = JSON.parse(await note_list({ limit: 50, ...(cursor ? { cursor } : {}) }));
-  if (page.status === "cursor_stale") {
-    cursor = undefined;      // scope changed while paging; restart
-    all.length = 0;
-    continue;
-  }
-  all.push(...page.notes);   // `count` = page size; there is no `total`
-  cursor = page.nextCursor;  // null when the listing is exhausted
-} while (cursor);
+// 0.12.0 — no cursor, no limit; narrow with filters when the list is long
+const listed = JSON.parse(await note_list({ tag: "value" }));
+// { status: "found", count, notes, next }
 ```
 
-`note_list` output now carries `count` (page size) and `nextCursor`, and no
-longer promises `total`. A stale cursor is a recoverable structured result —
-`{ status: "cursor_stale", notes: [], count: 0, nextCursor: null, revision }` —
-not an error.
+`note_list` output carries `count` and the note metadata array; `total`,
+`nextCursor`, and `revision` are gone. If the list is longer than useful,
+narrow it with `tag`/`source`/`minRelevance` filters.
 
 ## 5. Maintenance scheduling moved to the host
 
@@ -210,9 +192,6 @@ calls; the model writes what matters via `note_take`.
   fields are normalized on every read: missing `updated_at` falls back to
   `created_at`; a record missing both gets the fixed epoch
   `1970-01-01T00:00:00.000Z` (the adapter never fabricates "now").
-- Each scope directory now contains a hidden `.revision` metadata file that
-  anchors list cursors and the semantic-state incremental cache. External
-  enumeration of the notes directory must skip dot files.
 - `notesStoreContract` in `erix-agent/contract-tests` locks the new store
-  surface (required methods, page shape, cursor stability). Run it against a
+  surface (required methods, array-returning `list`). Run it against a
   custom store before upgrading.

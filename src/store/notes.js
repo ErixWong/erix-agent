@@ -56,18 +56,11 @@ const STATES = new Set(["active", "done", "revoked"]);
  * (last-write-wins); hosts that need concurrency must serialize writes.
  *
  * @typedef {{
- *   status: "found"|"cursor_stale",
- *   records: NoteRecord[],
- *   nextCursor: string|null,
- *   revision: string
- * }} NotesListPage
- *
- * @typedef {{
  *   write: (request: {scope?: "run", scopeRef: string, key: string, record: NoteRecord}) => Promise<void>,
  *   read: (request: {scope?: "run", scopeRef: string, key: string}) => Promise<NoteRecord|undefined>,
- *   list: (request: {scope?: "run", scopeRef: string, limit?: number, cursor?: string|null, filters?: {state?: ("active"|"done"|"revoked")|("active"|"done"|"revoked")[], tag?: string, source?: "agent"|"auto", minRelevance?: number}, sort?: "relevance"|"pinned_updated"}) => Promise<NotesListPage>,
+ *   list: (request: {scope?: "run", scopeRef: string, limit?: number, filters?: {state?: ("active"|"done"|"revoked")|("active"|"done"|"revoked")[], tag?: string, source?: "agent"|"auto", minRelevance?: number}, sort?: "relevance"|"pinned_updated"}) => Promise<NoteRecord[]>,
  *   complete: (request: {scope?: "run", scopeRef: string}) => Promise<{status: "found", completed: number}>,
- *   revoke: (request: {scope?: "run", scopeRef: string, key: string, reason?: string, expectedState?: "active"|"done", expectedUpdatedAt?: string}) => Promise<{status: "found"|"missing"|"unchanged", revoked: number, revision?: string}>,
+ *   revoke: (request: {scope?: "run", scopeRef: string, key: string, reason?: string, expectedState?: "active"|"done", expectedUpdatedAt?: string}) => Promise<{status: "found"|"missing"|"unchanged", revoked: number}>,
  *   janitor: (request: {scope?: "run", scopeRef?: string, limit?: number, cursor?: number}) => Promise<{status: "found", scanned: number, revoked: number, nextCursor: number|null}>,
  *   purge: (request: {scope?: "run", scopeRef?: string, limit?: number, cursor?: string, before?: string}) => Promise<{status: "found", scanned: number, purged: number, nextCursor: string|null}>
  * }} NotesStore
@@ -289,7 +282,7 @@ async function listFiles(directory) {
     throw error;
   }
   return entries
-    // 隐藏文件（.revision 等 metadata）不得被当成 note 记录。
+    // 隐藏文件（metadata sidecar 等）不得被当成 note 记录。
     .filter((entry) => (entry.isFile() || entry.isSymbolicLink())
       && !entry.name.startsWith(".")
       && entry.name.endsWith(".json"))
@@ -397,86 +390,9 @@ function pageWindow(entries, { limit, cursor } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// scope revision：每个 scope 维护一个单调递增的非负整数 revision，落在
-// run/<scope>/.revision（隐藏文件，listFiles 已排除，绝不参与 note 扫描）。
-// revision 是 list() 分页游标与 semantic 增量缓存的绑定版本；文件缺失/损坏
-// 时从目录状态（note 文件数）重建并落盘——缺失不得被当成 revision=0 后
-// 永不递增。重建值可能小于历史峰值（外部删文件+丢 .revision 的极端情况），
-// 只可能造成缓存误失效，不会造成误命中。
-// ---------------------------------------------------------------------------
-
-const REVISION_FILE = ".revision";
-
-function revisionPath(directory) {
-  return path.join(directory, REVISION_FILE);
-}
-
-async function readRevisionNumber(directory) {
-  const target = revisionPath(directory);
-  try {
-    const stat = await lstat(target);
-    if (stat.isSymbolicLink()) {
-      throw new NotesStoreError(`拒绝使用符号链接文件：${target}`, "unsafe_path");
-    }
-    if (!stat.isFile()) return undefined;
-    const parsed = Number.parseInt(await readFile(target, "utf8"), 10);
-    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
-  } catch (error) {
-    if (error?.code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
-async function persistRevisionNumber(directory, value) {
-  const target = revisionPath(directory);
-  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, `${value}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await chmod(temporary, 0o600);
-    await rename(temporary, target);
-    await chmod(target, 0o600);
-  } catch (error) {
-    try {
-      await unlink(temporary);
-    } catch (cleanupError) {
-      if (cleanupError?.code !== "ENOENT") error.cause = cleanupError;
-    }
-    throw error;
-  }
-}
-
-// revisions 是 adapter 进程内的 scope→revision 缓存：write 是热路径，
-// 每次递增都重读 .revision 文件代价过高；单写者约定下缓存单调且唯一。
-async function currentRevisionNumber(directory, revisions) {
-  const cached = revisions.get(directory);
-  if (cached !== undefined) return cached;
-  const existing = await readRevisionNumber(directory);
-  let value;
-  if (existing !== undefined) {
-    value = existing;
-  } else {
-    // 文件缺失/损坏：从目录状态（note 文件数）重建并落盘——缺失不得被
-    // 当成 revision=0 后永不递增。
-    value = (await listFiles(directory)).length;
-    try {
-      await persistRevisionNumber(directory, value);
-    } catch {
-      // 只读目录等落盘失败：本次调用用重建值，后续变更时继续递增/重建。
-    }
-  }
-  revisions.set(directory, value);
-  return value;
-}
-
-async function bumpRevisionNumber(directory, revisions) {
-  const next = (await currentRevisionNumber(directory, revisions)) + 1;
-  revisions.set(directory, next);
-  await persistRevisionNumber(directory, next);
-  return next;
-}
-
-// ---------------------------------------------------------------------------
-// list() 请求规整：limit 钳制（默认 50、最大 200）、filters、sort、cursor。
+// list() 请求规整：limit 钳制（给了才生效，最大 200；不给 = 全部匹配记录）、
+// filters、sort。无 revision/游标协议——单 run 实测量级（平均约 2 条、峰值
+// 9 条）下翻页与版本锚是 YAGNI（维护者复盘，ADR-018 D3 决策反转）。
 // ---------------------------------------------------------------------------
 
 function normalizeListFilters(filters) {
@@ -561,40 +477,20 @@ const LIST_SORTS = {
 };
 
 function normalizeListRequest(request) {
-  let limit = 50;
+  let limit;
   if (request.limit !== undefined) {
     if (!Number.isSafeInteger(request.limit) || request.limit < 1) {
       throw new TypeError("NotesStore limit must be a positive safe integer");
     }
-    // 超过 200 钳制到 200（不是报错）。
+    // 超过 200 钳制到 200（不是报错）；不给 limit = 返回全部匹配记录。
     limit = Math.min(request.limit, 200);
-  }
-  let cursor = null;
-  if (request.cursor !== undefined && request.cursor !== null) {
-    if (typeof request.cursor !== "string" || request.cursor.trim() === "") {
-      throw new TypeError("NotesStore cursor must be a non-empty opaque string");
-    }
-    cursor = request.cursor;
   }
   const filters = normalizeListFilters(request.filters);
   const sort = request.sort === undefined ? "relevance" : request.sort;
   if (!Object.hasOwn(LIST_SORTS, sort)) {
     throw new TypeError('NotesStore sort must be "relevance" or "pinned_updated"');
   }
-  return { limit, cursor, filters, sort };
-}
-
-// cursor 是不透明字符串 "<revision>:<offset>"：revision 绑定生成时的 scope
-// 版本；revision 不匹配说明翻页期间记录已变更，调用方必须从头翻页。
-function parseListCursor(cursor) {
-  const separator = cursor.indexOf(":");
-  const revision = separator === -1 ? "" : cursor.slice(0, separator);
-  const offsetText = separator === -1 ? "" : cursor.slice(separator + 1);
-  const offset = Number.parseInt(offsetText, 10);
-  if (revision === "" || !/^(0|[1-9]\d*)$/u.test(offsetText)) {
-    throw new TypeError("NotesStore cursor is not a valid opaque list cursor");
-  }
-  return { revision, offset };
+  return { limit, filters, sort };
 }
 
 /**
@@ -606,8 +502,6 @@ function parseListCursor(cursor) {
 export function createFileNotesStore({ dir, clock = () => Date.now() }) {
   const root = notesRootDirectory(dir);
   if (typeof clock !== "function") throw new TypeError("NotesStore clock must be a function");
-  // scope revision 的 adapter 进程内缓存（见 currentRevisionNumber）。
-  const revisions = new Map();
 
   const requestScope = (request) => {
     assertRequest(request);
@@ -630,9 +524,6 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
         throw new TypeError("NotesStore write requires a valid NoteRecord");
       }
       await writeRecord(root, scopeRef, record);
-      // write 是 complete/revoke/janitor 变更的最终落点：统一在这里递增
-      // scope revision（complete/revoke/janitor 经 store.write 写回）。
-      await bumpRevisionNumber(scopeDirectory(root, scopeRef), revisions);
     },
 
     async read(request) {
@@ -643,28 +534,17 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
       return readRecord(notePath(directory, request.key), request.key, scopeRef);
     },
 
-    // 分页 list：返回 NotesListPage。索引方案取舍（issue #67 PR 2）：file
-    // adapter 选择「每次扫描目录构建内存视图 + 分页」而非 .index.json 缓存——
-    // 单 scope 记录量在 note_list（≤200/页）与 semantic（≤20）的消费规模下
-    // 全量读取成本可控；索引要写穿 write/complete/revoke/janitor/purge 五处
-    // 失效点并处理崩溃一致性，复杂度大于收益。revision 仍是分页与增量的
-    // 正确性锚点，semantic 层靠它做进程内缓存短路。
+    // list：朴素数组契约。不给 limit → 返回全部匹配记录（内部消费方
+    // complete/revokeInactive 依赖全量语义）；给了 limit → 钳制最大 200。
+    // 索引方案取舍（ADR-018 D4）：file adapter 选择「每次扫描目录构建内存
+    // 视图 + 过滤排序」，不维护 .index.json 索引——单 scope 记录量在
+    // note_list 与 semantic 的消费规模下全量读取成本可控；索引要写穿
+    // write/complete/revoke/janitor/purge 五处失效点并处理崩溃一致性，
+    // 复杂度大于收益。无 revision/游标协议（ADR-018 D3 决策反转）。
     async list(request) {
       const scopeRef = requestScope(request);
-      const { limit, cursor, filters, sort } = normalizeListRequest(request);
+      const { limit, filters, sort } = normalizeListRequest(request);
       const directory = await existingScopeDirectory(root, scopeRef);
-      const revision = directory === undefined
-        ? "0"
-        : String(await currentRevisionNumber(directory, revisions));
-      let offset = 0;
-      if (cursor !== null) {
-        const parsed = parseListCursor(cursor);
-        if (parsed.revision !== revision) {
-          // 翻页期间 scope 已变更：游标不可恢复，调用方从头翻页。
-          return { status: "cursor_stale", records: [], nextCursor: null, revision };
-        }
-        offset = parsed.offset;
-      }
       const records = [];
       if (directory !== undefined) {
         for (const file of await listFiles(directory)) {
@@ -674,46 +554,23 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
         }
       }
       records.sort(LIST_SORTS[sort]);
-      const window = records.slice(offset, offset + limit);
-      const consumed = offset + window.length;
-      return {
-        status: "found",
-        records: window,
-        nextCursor: consumed < records.length ? `${revision}:${consumed}` : null,
-        revision,
-      };
+      return limit === undefined ? records : records.slice(0, limit);
     },
 
     async complete(request) {
       const scopeRef = requestScope(request);
       const expires = new Date(clock() + doneGraceMs()).toISOString();
-      // 先只读分页收集 active key，再逐条 read+write：write 会递增 revision，
-      // 边翻页边写会让剩余游标立刻 stale。
+      // 内部全量收集：不走公共 list（避免 limit 钳制截断），直接扫描本
+      // scope 目录取全部 active 记录，再逐条 read+write 置 done。
+      const directory = await existingScopeDirectory(root, scopeRef);
       const activeKeys = [];
-      let cursor = null;
-      let staleRetries = 0;
-      do {
-        const page = await store.list({
-          scope: "run",
-          scopeRef,
-          limit: 200,
-          ...(cursor === null ? {} : { cursor }),
-        });
-        if (page.status === "cursor_stale") {
-          // 翻页期间记录被（外部）写入：游标失效，从头重扫；重试上限防活锁。
-          staleRetries += 1;
-          if (staleRetries > 3) {
-            throw new NotesStoreError("complete 分页游标反复过期", "cursor_stale");
-          }
-          activeKeys.length = 0;
-          cursor = null;
-          continue;
+      if (directory !== undefined) {
+        for (const file of await listFiles(directory)) {
+          const record = await readRecord(file, undefined, scopeRef);
+          if (record === undefined || record.state !== "active") continue;
+          activeKeys.push(record.key);
         }
-        for (const record of page.records) {
-          if (record.state === "active") activeKeys.push(record.key);
-        }
-        cursor = page.nextCursor;
-      } while (cursor !== null);
+      }
       let completed = 0;
       for (const key of activeKeys) {
         const current = await store.read({ scope: "run", scopeRef, key });
@@ -764,7 +621,7 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
           ...(request.reason === undefined ? {} : { revoke_reason: request.reason }),
         },
       });
-      return { status: "found", revoked: 1, revision: timestamp };
+      return { status: "found", revoked: 1 };
     },
 
     async janitor(request = {}) {
@@ -835,9 +692,6 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
         const currentRevokedAt = Date.parse(current.revoked_at ?? current.updated_at ?? "");
         if (!Number.isFinite(currentRevokedAt) || currentRevokedAt > cutoff) continue;
         await unlink(file);
-        // purge 直接删除文件（不经过 store.write），revision 在这里递增：
-        // list 视图变化必须让进行中的分页游标与 semantic 缓存失效。
-        await bumpRevisionNumber(path.dirname(file), revisions);
         purged += 1;
       }
       return { status: "found", scanned: window.length, purged, nextCursor };

@@ -74,12 +74,13 @@ export function notesStoreContract(label, createStore) {
       await store.read({ scope: "run", scopeRef: RECORD.scopeRef, key: RECORD.key }),
       RECORD,
     );
-    // breaking（issue #67 PR 2）：list 返回分页页面对象，不再返回数组。
-    const page = await store.list({ scope: "run", scopeRef: RECORD.scopeRef });
-    assert.equal(page.status, "found");
-    assert.deepEqual(page.records, [RECORD]);
-    assert.equal(page.nextCursor, null);
-    assert.equal(typeof page.revision, "string");
+    // 契约收窄（ADR-018 D3 决策反转）：list 返回朴素数组；不给 limit =
+    // 全部匹配记录，给了 limit 钳制最大 200。
+    const all = await store.list({ scope: "run", scopeRef: RECORD.scopeRef });
+    assert.deepEqual(all, [RECORD]);
+    assert.equal(Array.isArray(all), true);
+    const limited = await store.list({ scope: "run", scopeRef: RECORD.scopeRef, limit: 5000 });
+    assert.deepEqual(limited, [RECORD], "limit 超过 200 钳制后仍是全量结果");
   });
 
   test(`${label}: missing records are explicit and scopes are isolated`, async () => {
@@ -90,10 +91,7 @@ export function notesStoreContract(label, createStore) {
       undefined,
     );
     const empty = await store.list({ scope: "run", scopeRef: "other-run" });
-    assert.equal(empty.status, "found");
-    assert.deepEqual(empty.records, []);
-    assert.equal(empty.nextCursor, null);
-    assert.equal(typeof empty.revision, "string");
+    assert.deepEqual(empty, []);
   });
 
   test(`${label}: unsafe scopes round-trip through canonical storage and lifecycle`, async () => {
@@ -112,11 +110,11 @@ export function notesStoreContract(label, createStore) {
       const read = await store.read({ scope: "run", scopeRef, key: record.key });
       assert.equal(read.scopeRef, canonicalScopeRef);
       assert.deepEqual(
-        (await store.list({ scope: "run", scopeRef })).records.map((entry) => entry.scopeRef),
+        (await store.list({ scope: "run", scopeRef })).map((entry) => entry.scopeRef),
         [canonicalScopeRef],
       );
       assert.deepEqual(
-        (await store.list({ scope: "run", scopeRef: canonicalScopeRef })).records.map((entry) => entry.scopeRef),
+        (await store.list({ scope: "run", scopeRef: canonicalScopeRef })).map((entry) => entry.scopeRef),
         [canonicalScopeRef],
       );
       assert.deepEqual(
@@ -143,7 +141,7 @@ export function notesStoreContract(label, createStore) {
       },
     });
     assert.equal(
-      (await store.list({ scope: "run", scopeRef: legacyScopeRef })).records.length,
+      (await store.list({ scope: "run", scopeRef: legacyScopeRef })).length,
       1,
     );
     assert.deepEqual(
@@ -210,7 +208,6 @@ export function notesStoreContract(label, createStore) {
     });
     assert.equal(revoked.status, "found");
     assert.equal(revoked.revoked, 1);
-    assert.equal(typeof revoked.revision, "string");
     const tombstone = await store.read({
       scope: "run", scopeRef: RECORD.scopeRef, key: RECORD.key,
     });

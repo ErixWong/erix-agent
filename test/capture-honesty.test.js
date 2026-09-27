@@ -17,7 +17,7 @@ test("writeNote classification: storage fault throws, NotesStoreError stays inva
     const scope = { __erix: { runId: "classify-run", notesDir, notesStore: {
       write: async () => { throw new Error("EACCES: disk gone"); },
       read: async () => undefined,
-      list: async () => ({ status: "found", records: [], nextCursor: null, revision: "fake-revision-1" }),
+      list: async () => [],
       complete: async () => ({ status: "found", completed: 0 }),
       janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
       revoke: async () => ({ status: "missing", revoked: 0 }),
@@ -39,7 +39,7 @@ test("writeNote classification: storage fault throws, NotesStoreError stays inva
           throw error;
         },
         read: async () => undefined,
-        list: async () => ({ status: "found", records: [], nextCursor: null, revision: "fake-revision-1" }),
+        list: async () => [],
         complete: async () => ({ status: "found", completed: 0 }),
         janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
       revoke: async () => ({ status: "missing", revoked: 0 }),
@@ -59,7 +59,7 @@ test("runChat finally: completeRun failure lands in completionErrors, main resul
     const notesStore = {
       write: async () => {},
       read: async () => undefined,
-      list: async () => ({ status: "found", records: [], nextCursor: null, revision: "fake-revision-1" }),
+      list: async () => [],
       complete: async () => { throw new Error("complete failed on disk gone"); },
       janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
       revoke: async () => ({ status: "missing", revoked: 0 }),
@@ -102,7 +102,7 @@ test("runChat finally: when the main result is an exception, completion errors r
     const notesStore = {
       write: async () => {},
       read: async () => undefined,
-      list: async () => ({ status: "found", records: [], nextCursor: null, revision: "fake-revision-1" }),
+      list: async () => [],
       complete: async () => { throw new Error("complete failed after crash"); },
       janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
       revoke: async () => ({ status: "missing", revoked: 0 }),
@@ -144,7 +144,7 @@ test("transcript port failure keeps the fatal档位 and the same bill field shap
   const bareNotesStore = {
     write: async () => { throw new Error("notes disk gone"); },
     read: async () => undefined,
-    list: async () => ({ status: "found", records: [], nextCursor: null, revision: "fake-revision-1" }),
+    list: async () => [],
     complete: async () => ({ status: "found", completed: 0 }),
     janitor: async () => ({ status: "found", scanned: 0, revoked: 0, nextCursor: null }),
       revoke: async () => ({ status: "missing", revoked: 0 }),

@@ -124,10 +124,9 @@ test("notes skill passes unsafe scope references to the adapter without pre-cano
       __erix: scope,
     })).status, "found");
     assert.equal(JSON.parse(await notes.note_read({ key: "unsafe", __erix: scope })).value, "through-port");
-    // breaking（issue #67 PR 2）：total 移除，用 count + nextCursor。
     const listed = JSON.parse(await notes.note_list({ __erix: scope }));
     assert.equal(listed.count, 1);
-    assert.equal(listed.nextCursor, null);
+    assert.equal(listed.notes[0].key, "unsafe");
     assert.deepEqual(await notes.completeRun({ __erix: scope }), { status: "found", completed: 1 });
     const janitorResult = await notes.runNotesJanitor({ __erix: scope });
     assert.equal(janitorResult.status, "found");
@@ -369,7 +368,7 @@ test("expired done becomes a tombstone and purge unlinks the file only past rete
         await store.read({ scope: "run", scopeRef: "retention-run", key: "lifecycle" }),
         undefined,
       );
-      // .revision 是 scope metadata（隐藏文件），purge 后仍保留。
+      // 隐藏 metadata sidecar（若有）不参与 note 扫描：目录里只剩点文件（若有）。
       assert.deepEqual(
         (await readdir(path.join(root, "run", "retention-run"))).filter((name) => !name.startsWith(".")),
         [],
@@ -448,7 +447,8 @@ test("purge paginates with limit/cursor and unlinks only eligible tombstones", a
 });
 
 // ---------------------------------------------------------------------------
-// issue #67 PR 2：list 分页、scope revision 与 cursor_stale
+// 契约收窄（ADR-018 D3 决策反转）：list 返回朴素数组——不给 limit = 全部
+// 匹配记录，给了 limit 钳制最大 200；filters/sort 照旧；无 revision/游标协议。
 // ---------------------------------------------------------------------------
 
 function makeListRecord(key, scopeRef, overrides = {}) {
@@ -460,7 +460,7 @@ function makeListRecord(key, scopeRef, overrides = {}) {
   });
 }
 
-test("list paginates with limit clamping, filters and both stable sorts", async () => {
+test("list returns all matching records without limit and clamps limit to 200, with filters and both stable sorts", async () => {
   const root = await makeTempDirectory();
   try {
     const store = createFileNotesStore({ dir: root, clock: () => Date.UTC(2026, 8, 27) });
@@ -502,37 +502,19 @@ test("list paginates with limit clamping, filters and both stable sorts", async 
       record: makeListRecord("done-note", "page-run", { state: "done" }),
     });
 
-    // 默认 limit=50：一页装下 5 条 active（done 被 state 过滤排除需显式 filters）。
-    const first = await store.list({ scope: "run", scopeRef: "page-run", filters: { state: "active" } });
-    assert.equal(first.status, "found");
-    assert.equal(first.records.length, 5);
-    assert.equal(first.nextCursor, null);
+    // 不给 limit：返回全部匹配记录（含 done-note 共 6 条）。
+    const all = await store.list({
+      scope: "run", scopeRef: "page-run", filters: { state: ["active", "done"] },
+    });
+    assert.equal(Array.isArray(all), true);
+    assert.equal(all.length, 6);
 
-    // limit 翻页到 nextCursor === null；relevance 排序稳定（relevance DESC,
-    // updated_at DESC, key ASC）。
-    const page1 = await store.list({
+    // limit 截断到前 N 条；relevance 排序稳定（relevance DESC, updated_at DESC,
+    // key ASC）。
+    const top2 = await store.list({
       scope: "run", scopeRef: "page-run", limit: 2, filters: { state: "active" },
     });
-    assert.equal(page1.records.map((record) => record.key).join(","), "bravo,alpha");
-    const page2 = await store.list({
-      scope: "run", scopeRef: "page-run", limit: 2, filters: { state: "active" },
-      cursor: page1.nextCursor,
-    });
-    assert.equal(page2.records.map((record) => record.key).join(","), "delta,echo");
-    assert.equal(typeof page2.nextCursor, "string");
-    const page3 = await store.list({
-      scope: "run", scopeRef: "page-run", limit: 2, filters: { state: "active" },
-      cursor: page2.nextCursor,
-    });
-    assert.equal(page3.records.map((record) => record.key).join(","), "charlie");
-    assert.equal(page3.nextCursor, null, "恰好覆盖末尾时 nextCursor 为 null");
-
-    // limit 超过 200 钳制到 200（不是报错）：201 条请求一次取回全部。
-    const clamped = await store.list({
-      scope: "run", scopeRef: "page-run", limit: 5000, filters: { state: ["active", "done"] },
-    });
-    assert.equal(clamped.records.length, 6);
-    assert.equal(clamped.nextCursor, null);
+    assert.equal(top2.map((record) => record.key).join(","), "bravo,alpha");
     await assert.rejects(
       store.list({ scope: "run", scopeRef: "page-run", limit: 0 }),
       /positive safe integer/u,
@@ -542,30 +524,30 @@ test("list paginates with limit clamping, filters and both stable sorts", async 
     const tagFiltered = await store.list({
       scope: "run", scopeRef: "page-run", filters: { state: "active", tag: "keep" },
     });
-    assert.equal(tagFiltered.records.length, 4);
+    assert.equal(tagFiltered.length, 4);
     const sourceFiltered = await store.list({
       scope: "run", scopeRef: "page-run", filters: { state: "active", source: "auto" },
     });
-    assert.deepEqual(sourceFiltered.records.map((record) => record.key), ["bravo"]);
+    assert.deepEqual(sourceFiltered.map((record) => record.key), ["bravo"]);
     const relevanceFiltered = await store.list({
       scope: "run", scopeRef: "page-run", filters: { state: "active", minRelevance: 0.8 },
     });
     assert.deepEqual(
-      relevanceFiltered.records.map((record) => record.key),
+      relevanceFiltered.map((record) => record.key),
       ["bravo", "alpha", "delta"],
     );
     const doneFiltered = await store.list({
       scope: "run", scopeRef: "page-run", filters: { state: ["done"] },
     });
-    assert.deepEqual(doneFiltered.records.map((record) => record.key), ["done-note"]);
+    assert.deepEqual(doneFiltered.map((record) => record.key), ["done-note"]);
 
     // pinned_updated：pinned DESC, updated_at DESC, key ASC。
     const pinned = await store.list({
       scope: "run", scopeRef: "page-run", filters: { state: "active" }, sort: "pinned_updated",
     });
-    assert.equal(pinned.records[0].key, "delta", "pinned 排最前");
+    assert.equal(pinned[0].key, "delta", "pinned 排最前");
     assert.deepEqual(
-      pinned.records.slice(1).map((record) => record.key),
+      pinned.slice(1).map((record) => record.key),
       ["charlie", "bravo", "echo", "alpha"],
       "其余按 updated_at 倒序",
     );
@@ -580,7 +562,7 @@ test("list paginates with limit clamping, filters and both stable sorts", async 
       record: makeListRecord("beta", "tie-run"),
     });
     const tied = await store.list({ scope: "run", scopeRef: "tie-run" });
-    assert.deepEqual(tied.records.map((record) => record.key), ["beta", "zeta"]);
+    assert.deepEqual(tied.map((record) => record.key), ["beta", "zeta"]);
 
     await assert.rejects(
       store.list({ scope: "run", scopeRef: "page-run", sort: "bogus" }),
@@ -590,165 +572,59 @@ test("list paginates with limit clamping, filters and both stable sorts", async 
       store.list({ scope: "run", scopeRef: "page-run", filters: { state: "bogus" } }),
       /state/u,
     );
-    await assert.rejects(
-      store.list({ scope: "run", scopeRef: "page-run", cursor: "not-a-cursor" }),
-      /opaque list cursor/u,
-    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("list scope revision advances on write/complete/revoke and janitor revoke", async () => {
+test("list clamps an explicit limit to 200 even when the scope holds more records", async () => {
+  const root = await makeTempDirectory();
+  try {
+    const store = createFileNotesStore({ dir: root, clock: () => Date.UTC(2026, 8, 27) });
+    // 210 条 active：不给 limit 全量返回；limit=5000 钳到 200。
+    for (let index = 0; index < 210; index += 1) {
+      await store.write({
+        scope: "run", scopeRef: "clamp-run", key: `note-${String(index).padStart(3, "0")}`,
+        record: makeListRecord(`note-${String(index).padStart(3, "0")}`, "clamp-run"),
+      });
+    }
+    const all = await store.list({ scope: "run", scopeRef: "clamp-run" });
+    assert.equal(all.length, 210, "不给 limit = 全部匹配记录");
+    const clamped = await store.list({ scope: "run", scopeRef: "clamp-run", limit: 5000 });
+    assert.equal(clamped.length, 200, "limit 超过 200 钳制到 200（不是报错）");
+    const exact = await store.list({ scope: "run", scopeRef: "clamp-run", limit: 200 });
+    assert.equal(exact.length, 200);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("complete collects the whole scope internally and is not truncated by the limit clamp", async () => {
   const root = await makeTempDirectory();
   const now = { value: Date.UTC(2026, 8, 27, 0, 0, 0) };
   try {
     await withNotesEnv({ ERIX_NOTES_DONE_GRACE_MS: "60000" }, async () => {
       const store = createFileNotesStore({ dir: root, clock: () => now.value });
-      const revisionOf = async () => (
-        await store.list({ scope: "run", scopeRef: "rev-run" })
-      ).revision;
-
-      // 空 scope（目录不存在）：revision 固定为 "0"，不产生写副作用。
-      assert.equal(await revisionOf(), "0");
-      assert.equal((await revisionOf()), "0");
-
-      await store.write({
-        scope: "run", scopeRef: "rev-run", key: "one",
-        record: makeListRecord("one", "rev-run"),
-      });
-      const afterWrite = await revisionOf();
-      assert.notEqual(afterWrite, "0");
-
-      await store.write({
-        scope: "run", scopeRef: "rev-run", key: "two",
-        record: makeListRecord("two", "rev-run"),
-      });
-      const afterSecondWrite = await revisionOf();
-      assert.notEqual(afterSecondWrite, afterWrite, "第二次 write 继续递增");
-
-      // complete：active → done，revision 变化。
-      assert.deepEqual(await store.complete({ scope: "run", scopeRef: "rev-run" }), {
+      // 210 条 active：complete 走内部全量收集（不走公共 list 的 limit 钳制）。
+      for (let index = 0; index < 210; index += 1) {
+        await store.write({
+          scope: "run", scopeRef: "bulk-run", key: `note-${String(index).padStart(3, "0")}`,
+          record: makeListRecord(`note-${String(index).padStart(3, "0")}`, "bulk-run"),
+        });
+      }
+      assert.deepEqual(await store.complete({ scope: "run", scopeRef: "bulk-run" }), {
         status: "found",
-        completed: 2,
+        completed: 210,
       });
-      const afterComplete = await revisionOf();
-      assert.notEqual(afterComplete, afterSecondWrite);
-
-      // revoke：revision 变化。
-      const revoked = await store.revoke({ scope: "run", scopeRef: "rev-run", key: "one" });
-      assert.equal(revoked.status, "found");
-      const afterRevoke = await revisionOf();
-      assert.notEqual(afterRevoke, afterComplete);
-
-      // janitor 的过期 done revoke 同样推进 revision。
-      now.value += 61_000;
-      const janitor = await store.janitor({});
-      assert.equal(janitor.revoked, 1, "two 的 done 已过期，janitor 写墓碑");
-      const afterJanitor = await revisionOf();
-      assert.notEqual(afterJanitor, afterRevoke);
-    });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("list cursor stays valid within one revision and goes stale after a change", async () => {
-  const root = await makeTempDirectory();
-  try {
-    const store = createFileNotesStore({ dir: root, clock: () => Date.UTC(2026, 8, 27) });
-    for (let index = 0; index < 4; index += 1) {
-      await store.write({
-        scope: "run", scopeRef: "stale-run", key: `note-${index}`,
-        record: makeListRecord(`note-${index}`, "stale-run", {
-          relevance: 0.5 + index * 0.1,
-          updated_at: `2026-09-15T0${index}:00:00.000Z`,
-        }),
+      const done = await store.list({
+        scope: "run", scopeRef: "bulk-run", filters: { state: "done" },
       });
-    }
-    const page1 = await store.list({ scope: "run", scopeRef: "stale-run", limit: 2 });
-    assert.equal(page1.records.length, 2);
-    assert.notEqual(page1.nextCursor, null);
-
-    // 同 revision 内翻页一致：再次用同一游标取到同一页。
-    const again = await store.list({
-      scope: "run", scopeRef: "stale-run", limit: 2, cursor: page1.nextCursor,
-    });
-    assert.deepEqual(
-      again.records.map((record) => record.key),
-      (await store.list({
-        scope: "run", scopeRef: "stale-run", limit: 2, cursor: page1.nextCursor,
-      })).records.map((record) => record.key),
-    );
-
-    // 变更后旧游标 stale：结构化空结果 + 当前 revision，不崩溃。
-    await store.write({
-      scope: "run", scopeRef: "stale-run", key: "note-4",
-      record: makeListRecord("note-4", "stale-run"),
-    });
-    const stale = await store.list({
-      scope: "run", scopeRef: "stale-run", limit: 2, cursor: page1.nextCursor,
-    });
-    assert.equal(stale.status, "cursor_stale");
-    assert.deepEqual(stale.records, []);
-    assert.equal(stale.nextCursor, null);
-    assert.notEqual(stale.revision, page1.revision);
-    assert.equal(stale.revision, (await store.list({ scope: "run", scopeRef: "stale-run" })).revision);
-
-    // purge 删除文件同样推进 revision（ Tombstone 路径 ）。
-    await store.revoke({ scope: "run", scopeRef: "stale-run", key: "note-0" });
-    const beforePurge = (await store.list({ scope: "run", scopeRef: "stale-run" })).revision;
-    await withNotesEnv({ ERIX_NOTES_TOMBSTONE_RETENTION_MS: "0" }, async () => {
-      const purged = await store.purge({});
-      assert.equal(purged.purged, 1);
-    });
-    const afterPurge = (await store.list({ scope: "run", scopeRef: "stale-run" })).revision;
-    assert.notEqual(afterPurge, beforePurge, "purge 删除文件必须让 revision 失效缓存");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("list rebuilds a missing or corrupt revision file from directory state", async () => {
-  const root = await makeTempDirectory();
-  try {
-    const store = createFileNotesStore({ dir: root, clock: () => Date.UTC(2026, 8, 27) });
-    const scopeDir = path.join(root, "run", "rebuild-run");
-    for (let index = 0; index < 3; index += 1) {
-      await store.write({
-        scope: "run", scopeRef: "rebuild-run", key: `note-${index}`,
-        record: makeListRecord(`note-${index}`, "rebuild-run"),
+      assert.equal(done.length, 210, "全部 active 逐条置 done，无截断");
+      const stillActive = await store.list({
+        scope: "run", scopeRef: "bulk-run", filters: { state: "active" },
       });
-    }
-    assert.equal(typeof (await store.list({ scope: "run", scopeRef: "rebuild-run" })).revision, "string");
-
-    // revision 缓存是 adapter 进程内的：.revision 丢失/损坏由新实例（冷缓存，
-    // 模拟进程重启）发现并从目录状态重建。
-    await rm(path.join(scopeDir, ".revision"));
-    const restarted = createFileNotesStore({ dir: root, clock: () => Date.UTC(2026, 8, 27) });
-    const rebuilt = await restarted.list({ scope: "run", scopeRef: "rebuild-run" });
-    assert.equal(rebuilt.status, "found");
-    assert.equal(rebuilt.records.length, 3, "revision 文件缺失绝不当成空 notes");
-    assert.equal(typeof rebuilt.revision, "string");
-    await restarted.write({
-      scope: "run", scopeRef: "rebuild-run", key: "note-3",
-      record: makeListRecord("note-3", "rebuild-run"),
+      assert.equal(stillActive.length, 0);
     });
-    const afterWrite = (await restarted.list({ scope: "run", scopeRef: "rebuild-run" })).revision;
-    assert.notEqual(afterWrite, rebuilt.revision, "重建后仍必须递增，不得卡在重建值");
-
-    // 写坏 .revision：新实例同样重建，记录照常列出并自愈落盘。
-    const revisionFile = path.join(scopeDir, ".revision");
-    const beforeCorrupt = Number.parseInt(await readFile(revisionFile, "utf8"), 10);
-    assert.ok(Number.isSafeInteger(beforeCorrupt));
-    await writeFile(revisionFile, "{corrupt", "utf8");
-    const recoveredStore = createFileNotesStore({ dir: root, clock: () => Date.UTC(2026, 8, 27) });
-    const recovered = await recoveredStore.list({ scope: "run", scopeRef: "rebuild-run" });
-    assert.equal(recovered.records.length, 4, "损坏 revision 文件不得导致空列表");
-    // 自愈：损坏文件被重建值覆盖。
-    const selfHealed = Number.parseInt(await readFile(revisionFile, "utf8"), 10);
-    assert.ok(Number.isSafeInteger(selfHealed));
-    assert.ok(selfHealed >= beforeCorrupt, "重建值不得小于已持久化的历史值");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -809,13 +685,13 @@ test("read/list normalize records missing updated_at and stay sortable", async (
     assert.equal(invalidRead.updated_at, "2026-09-10T00:00:00.000Z");
 
     // 列表与排序不崩：非法时间值排最后，其余按规则。
-    const page = await store.list({ scope: "run", scopeRef: "legacy-run" });
-    assert.equal(page.records.length, 3);
+    const listed = await store.list({ scope: "run", scopeRef: "legacy-run" });
+    assert.equal(listed.length, 3);
     const sorted = await store.list({
       scope: "run", scopeRef: "legacy-run", sort: "pinned_updated",
     });
     assert.deepEqual(
-      sorted.records.map((record) => record.key),
+      sorted.map((record) => record.key),
       ["created-only", "invalid-time", "legacy"],
       "updated_at 回退后 created-only 最新，legacy（epoch 兜底）最后按 key 稳定",
     );

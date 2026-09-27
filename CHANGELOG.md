@@ -4,8 +4,9 @@
 
 ## [0.12.0] - 2026-09-27
 
-来源：issue #67 notes host 迁移（PR 1 #71 生命周期拆分、PR 2 #72 分页/revision、
-PR 3 #73 schema run-only；决策记录 ADR-018）。宿主迁移指引见
+来源：issue #67 notes host 迁移（PR 1 #71 生命周期拆分、PR 2 #72 list 契约与
+semantic 缓存、PR 3 #73 schema run-only；决策记录 ADR-018，含维护者复盘的
+D3 决策反转——revision/分页协议判定为 YAGNI，出厂前削减）。宿主迁移指引见
 [docs/host-upgrade-guide-0.12.0.md](docs/host-upgrade-guide-0.12.0.md)，契约文本见
 [docs/host-consumer-contract.md](docs/host-consumer-contract.md)。
 
@@ -28,14 +29,15 @@ PR 3 #73 schema run-only；决策记录 ADR-018）。宿主迁移指引见
 - **`NotesStore` 必需方法扩为七个**：`write/read/list/complete/revoke/janitor/purge`，
   assembler 创建期 `assertNotesStore` 校验，缺方法立即 `TypeError`（不再静默回退
   隐式 file store）。
-- **`list()` 返回 `NotesListPage`**（issue #67 PR 2）：`{ status: "found"|"cursor_stale",
-  records, nextCursor, revision }` 取代全量数组；支持 `limit`（默认 50、钳制 200）/
-  `cursor`/`filters`/`sort`（`relevance`/`pinned_updated`，稳定比较下沉 store，
-  不再裸调 localeCompare）。
-- **`note_list` 分页契约**（issue #67 PR 2）：`cursor` 从整数 offset 改为不透明字符串
-  （取上一次响应的 `nextCursor`，格式 `"<revision>:<offset>"`，由 store 绑定 scope
-  revision 校验）；输出移除 `total`，新增 `nextCursor`/`count`；`cursor_stale` 转为
-  可恢复结构化结果（提示从头翻页，不崩溃）。
+- **`list()` 契约**：`filters`（`state`/`tag`/`source`/`minRelevance`）与
+  `sort`（`relevance`/`pinned_updated`，稳定比较下沉 store，不再裸调
+  localeCompare）下沉 store；不给 `limit` 返回全部匹配记录，给了 `limit`
+  钳制最大 200（store 层参数保留：semantic 传 20、内部消费方可用）。
+- **`note_list` 参数与输出收窄**（issue #67 PR 2 + 维护者追加简化）：`cursor`
+  （翻页）与 `limit`（限额）参数全部移除——始终返回该 scope 全部匹配记录
+  （实测平均约 2 条、峰值 9 条，20 条以内 LLM 完全可应对）；输出移除
+  `total`/`nextCursor`/`revision`/`sourceRevision`，保留 `count` 与过滤
+  （`tag`/`source`/`minRelevance`/`includeInactive`）。
 - **schema 收敛 run-only**（issue #67 PR 3）：4 个 `note_*` 工具 scope enum 只剩
   `["run"]`，`project`/`user` 直接 invalid（不再是"暂不支持"的假 API 表面）。
 
@@ -46,16 +48,12 @@ PR 3 #73 schema run-only；决策记录 ADR-018）。宿主迁移指引见
   （retention 到期 + 删除前重读防竞态），cursor 为不透明 key（防 unlink 漂移跳过）。
 - **宿主 liveness 端口**：`createBuiltinNotesTools({ liveness: { ttlMs, isAlive } })`
   （创建期校验，非法即 TypeError）；`isAlive` 抛错进 `errors[]`，绝不解释为 false。
-- **scope revision**：每个 scope 维护单调递增 revision（隐藏文件
-  `run/<scope>/.revision`），作 list 游标与 semantic 增量缓存的锚点；缺失/损坏按
-  目录状态重建并落盘。外部枚举 notes 目录需忽略点文件。
 - **`normalizeNoteRecord()`**（`src/store/notes.js` 导出）：记录时间字段统一兜底——
   缺 `updated_at` 回退 `created_at`，均缺/非法用固定 epoch
   `1970-01-01T00:00:00.000Z`（不伪造"现在"）。
-- **semanticStateProvider 进程内增量缓存**（issue #67 PR 2）：
-  `{ epoch, revision, text }` 两级短路——epoch 未变零 list 调用，revision 未变
-  复用文本，变化才重渲染；返回值新增 `sourceRevision`；list 失败返回 `undefined`
-  绝不拿旧缓存冒充最新。
+- **semanticStateProvider 进程内缓存**（纯 epoch 短路）：assembler 内任何变更
+  推进 epoch，epoch 未变零 list 调用直接复用缓存文本，变化才重渲染；list 失败
+  返回 `undefined` 绝不拿旧缓存冒充最新。
 - **notes 持久化失败上报扩展**：`revoke`/`purge` 纳入上报面（`revoke`/`purge`
   按写副作用分类）。
 
@@ -68,8 +66,8 @@ PR 3 #73 schema run-only；决策记录 ADR-018）。宿主迁移指引见
 
 - **防误杀回归**：另一 run 活跃长写的记录不再被 janitor 时间启发式误撤销
   （新增回归用例锁定）。
-- **翻页正确性**：complete/revokeInactive 改"先只读分页收集 key、再逐条写"，避免
-  边翻页边写导致剩余游标立刻 stale；`cursor_stale` 从头重扫设上限防活锁。
+- **complete 全量收集**：complete 改为内部扫描本 scope 全量置 done（不受 limit
+  钳制截断）；实测单 run 平均约 2 条、峰值 9 条笔记，无翻页/版本协议负担。
 
 ## [Unreleased]
 

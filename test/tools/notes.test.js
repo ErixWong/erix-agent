@@ -437,8 +437,6 @@ test("assembler semanticStateProvider sorts, caps at 20, and echoes stateVersion
     const provided = await builtin.semanticStateProvider({ state: { stateVersion: 9 } });
     assert.equal(provided.version, 9);
     assert.equal(provided.status, "ok");
-    // issue #67 PR 2：返回值带 sourceRevision（list 页 revision）。
-    assert.equal(typeof provided.sourceRevision, "string");
     const lines = provided.text.split("\n");
     assert.equal(lines.length, 21, "标题 + 20 条封顶");
     assert.match(lines[1], /- note_3 \(★ @agent\): value 3/, "pinned 排最前");
@@ -655,10 +653,11 @@ test("lifecycle.revokeInactive without liveness is a documented no-op", async ()
 });
 
 // ---------------------------------------------------------------------------
-// issue #67 PR 2：semanticStateProvider 进程内增量缓存（revision 短路）
+// 契约收窄（ADR-018 D3 决策反转）：semanticStateProvider 进程内缓存退化为
+// 纯 epoch 短路——无写入时零 list 调用，写入后重渲染，list 失败返回 undefined。
 // ---------------------------------------------------------------------------
 
-test("assembler semanticStateProvider reuses cached text within one revision without relisting", async () => {
+test("assembler semanticStateProvider reuses cached text within one epoch without relisting", async () => {
   await withDirectory(async (directory) => {
     const backing = createFileNotesStore({ dir: directory });
     let listCalls = 0;
@@ -684,35 +683,30 @@ test("assembler semanticStateProvider reuses cached text within one revision wit
 
     const first = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
     assert.match(first.text, /- cached \(@agent\): cached-value/);
-    assert.equal(first.sourceRevision, (
-      await backing.list({ scopeRef: "sem-cache-run" })
-    ).revision);
     assert.equal(listCalls, 1);
 
-    // 同 revision：直接复用缓存文本，不再调 list（也就不读任何记录文件）。
+    // 同 epoch：直接复用缓存文本，不再调 list（也就不读任何记录文件）。
     const second = await builtin.semanticStateProvider({ state: { stateVersion: 2 } });
     assert.equal(second.text, first.text);
     assert.equal(second.version, 2, "version 仍回声当前 stateVersion（stale 语义不变）");
-    assert.equal(second.sourceRevision, first.sourceRevision);
-    assert.equal(listCalls, 1, "同 revision 内不得重复 list");
+    assert.equal(listCalls, 1, "同 epoch 内不得重复 list");
   });
 });
 
-test("assembler semanticStateProvider rerenders when revision changes", async () => {
+test("assembler semanticStateProvider rerenders after a write advances the epoch", async () => {
   await withDirectory(async (directory) => {
     const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "sem-rev-run" });
     await builtin.executeTool("note_take", { key: "before", content: "first-value" });
     const first = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
     assert.match(first.text, /before/);
 
-    // revision 变化（新写入）→ 目录更新，缓存替换。
+    // 新写入推进 epoch → 目录更新，缓存替换。
     await builtin.executeTool("note_take", { key: "after", content: "second-value" });
     const second = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
     assert.match(second.text, /after \(@agent\): second-value/);
-    assert.notEqual(second.sourceRevision, first.sourceRevision);
     assert.equal(second.text.includes("second-value"), true);
 
-    // note_forget 经 store.revoke 递增 revision → 目录重渲染，墓碑不进目录。
+    // note_forget 经 store.revoke 推进 epoch → 目录重渲染，墓碑不进目录。
     await builtin.executeTool("note_take", { key: "keep", content: "kept" });
     await builtin.executeTool("note_forget", { key: "before" });
     const third = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
@@ -720,7 +714,7 @@ test("assembler semanticStateProvider rerenders when revision changes", async ()
     assert.match(third.text, /after \(@agent\): second-value/);
     assert.match(third.text, /keep \(@agent\): kept/);
 
-    // complete（active → done）同样推进 revision；全部 done 后目录为空 →
+    // complete（active → done）同样推进 epoch；全部 done 后目录为空 →
     // 返回 undefined（不装懂），旧缓存不得冒充最新。
     await builtin.lifecycle.onRunComplete();
     const emptied = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
@@ -753,7 +747,7 @@ test("assembler semanticStateProvider list failure returns undefined and never s
     const cached = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
     assert.match(cached.text, /- k \(@agent\): v/);
 
-    // list 失败：重验证路径（先有一次递增 revision 的写入）上 list 抛错 →
+    // list 失败：重验证路径（先有一次推进 epoch 的写入）上 list 抛错 →
     // 返回 undefined 并上报，绝不拿旧 cache 冒充最新。
     failLists = true;
     await builtin.executeTool("note_take", { key: "k-mutation", content: "v" });

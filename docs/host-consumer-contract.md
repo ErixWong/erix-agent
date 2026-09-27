@@ -217,31 +217,31 @@ write, read, list, complete, revoke, janitor, purge
 `assertNotesStore` — a store missing any method throws `TypeError` before the
 first run starts, instead of silently falling back to an implicit file store.
 `write`/`read` are the run-scope record read/write pair; `list` returns a
-paged view; `complete`, `revoke`, `janitor`, and `purge` are the lifecycle
-and maintenance methods described in
+plain array of matching records; `complete`, `revoke`, `janitor`, and `purge`
+are the lifecycle and maintenance methods described in
 [Notes maintenance scheduling](#notes-maintenance-scheduling-0120).
 
-`list()` returns a `NotesListPage`, not a full array:
+`list()` returns `NoteRecord[]`, not a page object:
 
 ```js
-{
-  status: "found" | "cursor_stale",
-  records,            // NoteRecord[] for this page only
-  nextCursor,         // opaque string "<revision>:<offset>", or null at the end
-  revision,           // scope revision the page was bound to
-}
+const records = await store.list({
+  scope: "run",
+  scopeRef,
+  // optional:
+  limit,    // only when given: clamped to a maximum of 200; omit = all matches
+  filters,  // { state, tag, source, minRelevance }
+  sort,     // "relevance" | "pinned_updated" (stable comparisons, no localeCompare)
+});
 ```
 
-Requests accept `limit` (default 50, clamped to 200), `cursor` (the
-`nextCursor` of the previous response — never construct it yourself),
-`filters` (`state`, `tag`, `source`, `minRelevance`), and `sort`
-(`"relevance"` | `"pinned_updated"`). If the scope changed while a caller
-was paging (`revision` mismatch), the page comes back with
-`status: "cursor_stale"`, an empty window, and `nextCursor: null`; the caller
-must restart from the first page. Each scope directory carries a hidden
-`.revision` metadata file that anchors cursors and the semantic-state
-incremental cache; hosts that enumerate the notes directory externally must
-skip dot files.
+Without `limit`, every matching record is returned — the internal consumers
+(`complete`, `revokeInactive`) rely on that full-collection semantics. There is
+no cursor, no `cursor_stale` status, and no scope revision protocol: a
+maintainer review of real usage (average ~2 notes per run, peak 9) judged
+pagination and version anchoring YAGNI for 0.12.0 (ADR-018 D3 reversal). Host
+maintenance loops that page through large directories still use the `limit` /
+`cursor` pagination of `janitor` and `purge` (see
+[Notes maintenance scheduling](#notes-maintenance-scheduling-0120)).
 
 The file-backed `NotesStore` canonicalizes each `scopeRef` exactly at the
 adapter boundary. Unsafe scope references such as `../escape`, absolute paths,

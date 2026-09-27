@@ -1,7 +1,7 @@
-# ADR-018：notes 生命周期三阶段拆分（complete/revoke/purge）、宿主 liveness 承接 active orphan 清理、list 以 scope revision 为锚分页
+# ADR-018：notes 生命周期三阶段拆分（complete/revoke/purge）、宿主 liveness 承接 active orphan 清理、list 朴素数组契约（revision/分页协议已判定 YAGNI 并削减）
 
 - 状态：Accepted（2026-09-27）
-- 关联：实施 issue #67（PR 1 #71 / PR 2 #72 / PR 3 #73）；修订 ADR-015（notes 小抄目录）与 ADR-016（replayable 退役）中 notes 写入与 janitor 的表述；破坏面落在 0.12.0
+- 关联：实施 issue #67（PR 1 #71 / PR 2 #72 list 契约与 semantic 缓存 / PR 3 #73）；D3 记录决策反转：初版实现 revision+分页后由维护者复盘削减（单 run 实测平均 2 条、峰值 9 条，YAGNI）；修订 ADR-015（notes 小抄目录）与 ADR-016（replayable 退役）中 notes 写入与 janitor 的表述；破坏面落在 0.12.0
 - 依据：issue #67 方案（issuecomment-1555 第 4 节）；0.11.x janitor 时间启发式在宿主调度场景下的误杀分析
 
 ## 背景
@@ -41,17 +41,30 @@ ERIX_NOTES_DONE_GRACE_MS`），不存在猜测；active 的生死不可由时间
 无 liveness 的宿主：active orphan 永不自动回收。这是显式接受的代价
 （积累优于误杀），与 ADR-012 的引擎真相/宿主策略分工一致。
 
-### D3：list 分页以 scope revision 为锚
+### D3：list 朴素数组契约——revision/分页协议实现后判定 YAGNI，0.12.0 出厂前削减
 
-`list()` 返回 `NotesListPage { status: "found"|"cursor_stale", records,
-nextCursor, revision }`；cursor 是不透明串 `"<revision>:<offset>"`，
-revision 是每个 scope 单调递增的目录级版本（隐藏文件 `.revision`）。
-翻页期间 revision 变化 → 该页返回 `cursor_stale`、空窗口，调用方从头翻页。
+初版实现了完整方案：`list()` 返回 `NotesListPage { status: "found"|
+"cursor_stale", records, nextCursor, revision }`，cursor 是不透明串
+`"<revision>:<offset>"`，revision 是每个 scope 单调递增的目录级版本
+（隐藏文件 `.revision`），semantic 目录缓存做 epoch × revision 两级短路。
 
-不选"纯 offset 游标"：单 writer 约定下翻页中途写入会让 offset 语义静默错页
-（读到重复/漏读且无信号）。revision 把"期间已变更"变成显式可恢复结果；
-offset 嵌在串内保证同 scope 单调消费。semantic 目录的进程内增量缓存
-（epoch × revision 两级短路）复用同一锚，不引入第二套失效协议。
+维护者复盘实测数据后决策反转：单 run 笔记量平均约 2 条、峰值 9 条——
+20 条以内 LLM 完全可应对，翻页协议、cursor_stale 恢复语义、revision
+落盘/重建/缓存的复杂度全部是为一个不存在的规模问题支付的。0.12.0
+未发布，出厂前削减零额外 breaking 成本。最终契约：
+
+- `list()` 返回 `NoteRecord[]`；不给 `limit` = 全部匹配记录（内部消费方
+  complete/revokeInactive 依赖全量语义），给了 `limit` 钳制最大 200。
+  `filters`/`sort` 照旧下沉 store。
+- `note_list` 连 `limit` 一并移除：始终返回该 scope 全部匹配记录，
+  无截断提示；超限用 `tag`/`source`/`minRelevance` 过滤缩小范围。
+- **保留 epoch 缓存的理由**：semantic 目录是纯进程内派生视图，fold 点
+  高频调用；单写者约定下「assembler 内任何写方法推进 epoch、epoch 未变
+  直接复用文本」是最便宜的正确短路，不依赖任何落盘协议。删 revision
+  后缓存退化为纯 `{ epoch, text }`。
+
+不选"纯 offset 游标"（初版已拒绝）的理由在反转后不再相关；若未来单
+scope 规模数量级增长，分页是局部优化，届时以实测数据重开决策。
 
 ### D4：file adapter 内存视图，不写 .index.json
 
@@ -59,7 +72,6 @@ list 每次扫描目录构建内存视图后排序分页，不维护 `.index.jso
 理由：单 scope 记录量在 note_list（≤200/页）与 semantic（≤20）的消费规模下
 全量读取成本可控；索引要写穿 write/complete/revoke/janitor/purge 五处失效点
 并处理崩溃一致性（索引与目录脱节后的重建协议），复杂度大于收益。
-`.revision` 只承担版本锚职责（单整数、原子 rename 写），不承担索引职责。
 若未来单 scope 规模数量级增长，索引是局部优化，不动本决策的接口面。
 
 ### D5：normalize 用固定 epoch 兜底，不用"现在"
@@ -80,14 +92,16 @@ epoch `1970-01-01T00:00:00.000Z`。不用当前时间——用 now 兜底会把"
 
 - **破坏面（0.12.0）**：`NotesStore` 必需方法扩为七方法（创建期
   `assertNotesStore` fail-fast）；`onRunComplete` 返回值去掉 `janitor` 字段；
-  `onRunStart` 不再 GC；`list()` 返回 `NotesListPage`；`note_list` cursor
-  改不透明串、输出移除 `total`；`ERIX_NOTES_GRACE_MS` 降级为 deprecated
+  `onRunStart` 不再 GC；`note_list` 移除 `cursor`/`limit` 参数、输出移除
+  `total`；`ERIX_NOTES_GRACE_MS` 降级为 deprecated
   alias；`recordAutoCapture` 删除。迁移指引见
   [host-upgrade-guide-0.12.0.md](../host-upgrade-guide-0.12.0.md)。
-- **得到的**：误杀面归零（active 生死只由宿主知识判定）；list/semantic
-  可分页、增量缓存正确；写入口单一；janitor 语义可机械验证
-  （done + expires_at，无启发式）。
+- **得到的**：误杀面归零（active 生死只由宿主知识判定）；写入口单一；
+  janitor 语义可机械验证（done + expires_at，无启发式）；list/semantic
+  消费面零协议负担（实测平均 2 条、峰值 9 条）。
 - **失去的**：无 liveness 宿主的 active 记录无限积累（显式接受）；
   宿主多承担两个显式维护循环（janitor/purge 翻页）。
-- **兼容**：`.revision` 缺失/损坏时从目录状态重建并落盘；老目录无
-  `.revision` 直接可读；cursor_stale 是可恢复结构化结果，不抛错。
+- **兼容**：list 回到 0.11.x 的数组形态（0.12.0 未发布，无 shipped
+  分页契约需要兼容）；老目录无 `.revision` 直接可读，遗留的 `.revision`
+  文件是惰性垃圾，由 purge 或宿主清理；semantic 缓存纯 epoch 短路，
+  与任何落盘协议解耦。

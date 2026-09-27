@@ -172,26 +172,27 @@ write, read, list, complete, revoke, janitor, purge
 
 `createBuiltinNotesTools` 在 assembler 创建期即经 `assertNotesStore` 校验——缺任一方法
 在第一轮 run 之前抛 `TypeError`，不再静默回退到隐式 file store。`write`/`read` 是 run
-作用域的记录读写对；`list` 返回分页视图；`complete`、`revoke`、`janitor`、`purge`
+作用域的记录读写对；`list` 返回朴素数组；`complete`、`revoke`、`janitor`、`purge`
 是生命周期与维护方法，见 [notes 维护调度](#notes-维护调度0120)。
 
-`list()` 返回 `NotesListPage`，不再是全量数组：
+`list()` 返回 `NoteRecord[]`，不再是分页页面对象：
 
 ```js
-{
-  status: "found" | "cursor_stale",
-  records,            // NoteRecord[]，仅本页
-  nextCursor,         // 不透明字符串 "<revision>:<offset>"，末页为 null
-  revision,           // 本页绑定的 scope revision
-}
+const records = await store.list({
+  scope: "run",
+  scopeRef,
+  // 均可选：
+  limit,    // 仅显式传入时生效：钳制最大 200；不传 = 返回全部匹配记录
+  filters,  // { state, tag, source, minRelevance }
+  sort,     // "relevance" | "pinned_updated"（稳定比较，不裸调 localeCompare）
+});
 ```
 
-请求接受 `limit`（默认 50，钳制到 200）、`cursor`（上一次响应的 `nextCursor`——绝不自行
-构造）、`filters`（`state`、`tag`、`source`、`minRelevance`）与 `sort`
-（`"relevance"` | `"pinned_updated"`）。若翻页期间 scope 已变更（`revision` 不匹配），
-返回页为 `status: "cursor_stale"`、空窗口、`nextCursor: null`；调用方必须从头翻页。
-每个 scope 目录带隐藏 metadata 文件 `.revision`，作游标与 semantic 增量缓存的锚点；
-宿主若在外部枚举 notes 目录必须跳过点文件。
+不给 `limit` 返回全部匹配记录——内部消费方（`complete`、`revokeInactive`）依赖这个
+全量语义。无 cursor、无 `cursor_stale` 状态、无 scope revision 协议：维护者复盘实测
+（单 run 平均约 2 条、峰值 9 条）判定翻页与版本锚为 YAGNI，0.12.0 出厂前削减
+（ADR-018 D3 决策反转）。宿主维护循环翻遍大目录仍用 `janitor`/`purge` 的
+`limit`/`cursor` 内部分页（见 [notes 维护调度](#notes-维护调度0120)）。
 
 文件型 `NotesStore` 在适配器边界上对每个 `scopeRef` 做一次规范化。`../escape`、绝对
 路径、编码分隔符等不安全的 scope 引用会被映射为稳定的 `run-h-...` 目录；目录与持久化的
