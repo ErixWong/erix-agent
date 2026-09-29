@@ -200,7 +200,7 @@ sequenceDiagram
 
     rect rgb(240, 255, 240)
     Note over L,S: Phase 1 — restore (only when resume=true)
-    L->>S: load(runId) + loadLatestCheckpoint + loadRunState
+    L->>S: load(runId) + loadLatestRunSnapshot + loadRunState
     S-->>L: messages / pending tool_use / run state
     Note over L: replay pending tool calls in original order<br/>(side-effect idempotency is the host's duty)
     end
@@ -380,9 +380,9 @@ contracts:
 
 > Goal: after a process kill, provider failure, or container reclaim, the run continues from the breakpoint — without double side effects.
 
-- **Twin checkpoints bracket tool execution**: a pre-tool checkpoint persists "about to execute this tool_use"; a post-tool one persists "executed + result". Pre-tool failure → `sideEffect: "not_started"`, **execution blocked**; post-tool failure → `executed_uncommitted`, result kept but explicitly marked uncommitted.
-- **Resume = replay pending tool_use in original order**: resume loads messages + latest checkpoint + run-state, then re-hands the unfinished tool calls after the checkpoint to `executeTool`. **The engine guarantees order and accounting, not side-effect idempotency** — the host must make side-effecting executeTool implementations idempotent (stated in the contract, not a hidden assumption).
-- **Two persistence semantics**: with a store, `required` is the default (all eight methods validated, writes follow the retry policy, exhaustion → `persistence_failed` termination); explicit `none` bypasses everything. A failed archive write terminates explicitly — never "pretend archived" and continue.
+- **Twin run snapshots bracket tool execution** (issue #78: the former "checkpoint" surface, renamed because it is a latest-only autosave, not a multi-version checkpoint): a pre-tool snapshot persists "about to execute this tool_use"; a post-tool one persists "executed + result". Pre-tool failure → `sideEffect: "not_started"`, **execution blocked**; post-tool failure → `executed_uncommitted`, result kept but explicitly marked uncommitted.
+- **Resume = replay pending tool_use in original order**: resume loads messages + latest run snapshot + run-state, then re-hands the unfinished tool calls after the snapshot to `executeTool`. **The engine guarantees order and accounting, not side-effect idempotency** — the host must make side-effecting executeTool implementations idempotent (stated in the contract, not a hidden assumption).
+- **Two persistence semantics**: with a store, `required` is the default (only `appendRound`/`load` are required; run-snapshot/run-state methods are optional capabilities — a missing one emits one `persistence_capability_degraded` event and degrades, never fails; writes follow the retry policy, exhaustion → `persistence_failed` termination); explicit `none` bypasses everything. A failed archive write terminates explicitly — never "pretend archived" and continue.
 - **Run state is bounded and deterministic**: `run-state.js` maintains tool stats, fold counts, budget prompts, etc. (capped at `RUN_STATE_MAX_CHARS`), validates shape and version on resume, and marks corrupted state unavailable instead of silently reusing it; "this-budget" flags like `lowBudgetPrompted` do not carry across resume.
 
 ---
@@ -414,7 +414,7 @@ flowchart TB
     subgraph archive["archive (one per run)"]
         JSONL["<runId>.jsonl<br/>per-round record: messages + foldedPayload + toolOutputs"]
         ST["<runId>.state.json<br/>run-state"]
-        CK["<runId>.checkpoint.json<br/>latest checkpoint"]
+        CK["<runId>.snapshot.json<br/>latest run snapshot<br/>(legacy .checkpoint.json read-compatible)"]
     end
 
     subgraph surfaces["consumption channels"]

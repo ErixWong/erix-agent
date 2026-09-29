@@ -200,7 +200,7 @@ sequenceDiagram
 
     rect rgb(240, 255, 240)
     Note over L,S: 阶段 1 —— 恢复（仅 resume=true）
-    L->>S: load(runId) + loadLatestCheckpoint + loadRunState
+    L->>S: load(runId) + loadLatestRunSnapshot + loadRunState
     S-->>L: 消息 / pending tool_use / 运行状态
     Note over L: 按原序重放 pending 工具调用<br/>（副作用幂等由宿主保证）
     end
@@ -406,7 +406,7 @@ flowchart TB
     subgraph archive["档案（每 run 一份）"]
         JSONL["<runId>.jsonl<br/>每轮记录：消息 + foldedPayload + toolOutputs"]
         ST["<runId>.state.json<br/>run-state"]
-        CK["<runId>.checkpoint.json<br/>最新检查点"]
+        CK["<runId>.snapshot.json<br/>最新 run snapshot<br/>（旧 .checkpoint.json 读取兼容）"]
     end
 
     subgraph surfaces["消费通道"]

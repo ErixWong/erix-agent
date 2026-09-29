@@ -389,3 +389,45 @@ test("file: deprecated 别名 saveCheckpoint/appendCheckpoint/loadLatestCheckpoi
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("file: 新后缀 .snapshot.json 损坏 JSON 显式抛错、不回落旧后缀", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    // 新后缀存在但内容是非法 JSON；旧后缀同时存在一个"合法"旧快照——
+    // 必须抛错而不是静默回落到旧文件（回落会拿过期现场冒充最新现场）。
+    await writeFile(join(root, "run-1.snapshot.json"), "{not-json\n", "utf8");
+    await writeFile(
+      join(root, "run-1.checkpoint.json"),
+      `${JSON.stringify({ round: 1, status: "pending" })}\n`,
+      "utf8",
+    );
+
+    await assert.rejects(
+      store.loadLatestRunSnapshot("run-1"),
+      (error) => error instanceof SyntaxError,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: 旧后缀 .checkpoint.json 损坏 JSON 显式抛错", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    await writeFile(join(root, "run-1.checkpoint.json"), "{broken\n", "utf8");
+
+    await assert.rejects(
+      store.loadLatestRunSnapshot("run-1"),
+      (error) => error instanceof SyntaxError,
+    );
+    // deprecated 旧名读取同样显式失败（内部走同一读取路径）
+    await assert.rejects(
+      store.loadLatestCheckpoint("run-1"),
+      (error) => error instanceof SyntaxError,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

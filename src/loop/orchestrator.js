@@ -981,6 +981,9 @@ export async function runToolLoop(options) {
     persistenceRequired,
     runId,
     archivedOutputs,
+    // issue #78 验收修正：resume 消费可选能力（loadRunState / snapshot loader）
+    // 缺失时走与 persist 守卫同一的单条去重诊断通道。
+    notifyCapabilitySkipped,
     get currentRunState() {
       return currentRunState;
     },

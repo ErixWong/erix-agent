@@ -342,12 +342,16 @@ optional `runState`, aggregate `usage`, and `compactionStats`.
   `mode: "consecutive"` requires the whole window to match. Pass
   `stallDetection: false` to disable it.
 - `resume` defaults to `false`. With a `store` and `runId`, `resume: true`
-  restores the transcript, run state, latest checkpoint, and all pending
-  tool calls that still need execution. Checkpoint stores with both a writer
-  (`saveCheckpoint` or `appendCheckpoint`) and `loadLatestCheckpoint` fail
-  closed when a pre-execution or post-execution checkpoint cannot be
-  persisted. The host's `executeTool` must still be idempotent by tool id;
-  the loop cannot guarantee exactly-once external side effects.
+  restores the transcript, run state, latest run snapshot, and all pending
+  tool calls that still need execution. Stores with both a snapshot writer
+  (`saveRunSnapshot`) and a snapshot loader (`loadLatestRunSnapshot` or the
+  deprecated `loadLatestCheckpoint`) fail closed when a pre-execution or
+  post-execution snapshot cannot be persisted. Snapshot/run-state methods
+  are optional capabilities: a store that lacks them degrades with a
+  one-shot `persistence_capability_degraded` event per missing method (the
+  run completes normally, only mid-flight crash resume is unavailable). The
+  host's `executeTool` must still be idempotent by tool id; the loop cannot
+  guarantee exactly-once external side effects.
 
 The normal termination vocabulary is:
 
@@ -503,15 +507,18 @@ decide whether to consume the result.
   named explicitly. `writeToolPathKeys` defaults to `["path", "file_path"]`.
   The judge's `filesWritten` footprint does not infer arbitrary write tools
   from their names.
-- `TranscriptStore` implementations provide idempotent `appendRound` plus
-  eight persistence methods for checkpoints and run state. Pass
+- `TranscriptStore` implementations provide idempotent `appendRound` and
+  `load` (the two required methods) plus optional run-snapshot
+  (`saveRunSnapshot`/`loadLatestRunSnapshot`) and run-state
+  (`markRunState`, `saveRunState`/`loadRunState`) capabilities — see the
+  capability tiers in `docs/host-consumer-contract.md`. Pass
   `persistence: "none"` to explicitly disable all writes. Model-facing
   retrieval is note-first: use `note_list` then `note_read`; there is no
   transcript retrieval API; the former recall adapters were retired in 0.8.0.
 - `runState` is deterministic, bounded, and replace-injected at compaction
   points. Stores can implement `markRunState`,
-  `saveRunState`/`loadRunState`, `saveCheckpoint`/`appendCheckpoint`, and
-  `loadLatestCheckpoint`. Persisted run state has a 64 KiB serialized hard
+  `saveRunState`/`loadRunState`, `saveRunSnapshot`, and
+  `loadLatestRunSnapshot`. Persisted run state has a 64 KiB serialized hard
   limit plus entry and field limits; truncation is visible through
   `bounds.truncated`. `todoStateProvider` and `semanticStateProvider` are
   host-injected; semantic state is bounded and versioned, and stale versions
@@ -546,7 +553,9 @@ Streaming observers (`onDelta`, `onReasoningDelta`, `onToolCall`, and
 Persistence failures use `onPersistenceError`. `onEvent` receives structured
 events including `round_start`, `round_end`, `tool_use`, `tool_result`,
 `attempt`, `recovering`, `recovered`, `delta`, `reasoning_delta`, `tool_call`,
-`usage`, `forced_final`, and `final_guard`.
+`usage`, `forced_final`, `final_guard`, and
+`persistence_capability_degraded` (one shot per missing optional store
+capability).
 
 ## CLI: `erix`
 
@@ -655,7 +664,8 @@ MCP configuration is read from the current directory's `.mcp.json` or
   mcp.json
   transcripts/
     <safeRunId>.jsonl
-    <safeRunId>.checkpoint.json
+    <safeRunId>.snapshot.json
+    <safeRunId>.checkpoint.json  legacy snapshot suffix (read-compatible)
     <safeRunId>.state.json
   <session>.json                 REPL session snapshot
   notes/run/<safeRunId>/         NotesStore data

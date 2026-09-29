@@ -803,3 +803,62 @@ test("engine round records are not deduped away by a host row with the same roun
     message.content?.some((block) => block?.text === "engine-answer")
   ))));
 });
+
+test("resume with a store lacking snapshot/run-state loaders degrades with one diagnostic each (issue #78)", async () => {
+  // 最小 store：必需两方法 + run-state/snapshot 写入方法，但缺所有 loader。
+  // resume 想消费 loadRunState / loadLatestRunSnapshot 而不可得——必须各发一条
+  // 单条去重诊断（不能静默降级），run 本身正常跑完。
+  const stored = [{
+    round: 0,
+    ts: "2026-09-29T00:00:00.000Z",
+    messages: [textMessage("seed")],
+    summary: "missing",
+    l0facts: { errors: 0 },
+  }];
+  const appended = [];
+  const store = {
+    appendRound: async (runId, record) => {
+      appended.push(record);
+    },
+    load: async () => stored.map((record) => structuredClone(record)),
+    markRunState: async () => {},
+    saveRunState: async () => {},
+    saveRunSnapshot: async () => {},
+  };
+  const events = [];
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "resume-tool", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "resumed without loaders" }], stopReason: "end_turn" },
+  ]);
+  let executions = 0;
+
+  const result = await runToolLoop({
+    provider,
+    store,
+    runId: "resume-no-loaders",
+    resume: true,
+    initialUserMessage: "ignored on resume",
+    executeTool: async () => {
+      executions += 1;
+      return "worked";
+    },
+    completion: false,
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.equal(result.finalText, "resumed without loaders");
+  assert.equal(executions, 1);
+
+  const degraded = events.filter((event) => event.type === "persistence_capability_degraded");
+  const methods = degraded.map((event) => event.method);
+  assert.equal(degraded.length, 2, `恰好两条诊断，实际：${methods.join(",")}`);
+  assert.ok(methods.includes("loadRunState"), "缺 loadRunState 必须诊断");
+  assert.ok(methods.includes("loadLatestRunSnapshot"), "缺 loadLatestRunSnapshot 必须诊断");
+  for (const event of degraded) {
+    assert.equal(event.runId, "resume-no-loaders");
+    assert.match(event.detail, new RegExp(event.method));
+  }
+});

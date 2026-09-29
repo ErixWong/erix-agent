@@ -502,17 +502,14 @@ test("minimal store (required methods only) runs to completion with one-shot cap
   assert.equal(result.unpersisted.length, 0);
 
   // 缺失的可选方法各只诊断一次（不每轮刷屏）：saveRunSnapshot 每轮工具前后都会被跳过，
-  // 事件流里只能出现一条；saveRunState/markRunState 同理。
+  // 事件流里只能出现一条；saveRunState/markRunState 同理。断言事件总数与 detail 字段。
   const degraded = events.filter((event) => event.type === "persistence_capability_degraded");
-  const byMethod = new Map();
-  for (const event of degraded) {
+  assert.equal(degraded.length, 3, `降级诊断总数必须为 3，实际：${degraded.map((e) => e.method).join(",")}`);
+  const byMethod = new Map(degraded.map((event) => [event.method, event]));
+  for (const method of ["saveRunSnapshot", "saveRunState", "markRunState"]) {
+    assert.ok(byMethod.has(method), `必须诊断缺失的 ${method}`);
+    const event = byMethod.get(method);
     assert.equal(event.runId, "minimal-store-run");
-    byMethod.set(event.method, (byMethod.get(event.method) ?? 0) + 1);
+    assert.match(event.detail, new RegExp(method), "detail 必须点名缺失方法");
   }
-  for (const [method, count] of byMethod) {
-    assert.equal(count, 1, `${method} 诊断必须单条，实际 ${count} 条`);
-  }
-  assert.ok(byMethod.has("saveRunSnapshot"), "必须诊断缺失的 saveRunSnapshot");
-  assert.ok(byMethod.has("saveRunState"), "必须诊断缺失的 saveRunState");
-  assert.ok(byMethod.has("markRunState"), "必须诊断缺失的 markRunState");
 });

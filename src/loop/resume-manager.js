@@ -50,8 +50,13 @@ export async function restoreResume(ctx) {
   };
 
   const restorePersistedRunState = async () => {
-    if (!ctx.resume || typeof ctx.store?.loadRunState !== "function"
-      || ctx.runId === undefined) return;
+    if (!ctx.resume || ctx.runId === undefined) return;
+    if (typeof ctx.store?.loadRunState !== "function") {
+      // issue #78 验收修正：resume 想消费 run-state 但 store 缺 loader——
+      // 走 orchestrator 的单条去重诊断（与 persist 守卫同一事件通道/语义）。
+      ctx.notifyCapabilitySkipped?.("loadRunState");
+      return;
+    }
     const stored = await ctx.store.loadRunState(ctx.runId);
     if (stored === undefined) return;
     const restored = stored?.runState && typeof stored.runState === "object"
@@ -131,8 +136,6 @@ export async function restoreResume(ctx) {
         0,
         ...records.map((record) => record.foldedRoundRange?.to ?? 0),
       );
-      // issue #78：run snapshot 为可选 capability。优先新方法；旧名 loadLatestCheckpoint
-      // 作为过渡期 fallback 支持尚未迁移的第三方 store；两者皆无 → 跳过崩溃现场恢复。
       const loadLatestSnapshot = typeof ctx.store.loadLatestRunSnapshot === "function"
         ? ctx.store.loadLatestRunSnapshot
         : typeof ctx.store.loadLatestCheckpoint === "function"
@@ -243,6 +246,10 @@ export async function restoreResume(ctx) {
             && !ctx.resumeCheckpointResults.has(pendingTool.id)
           ));
         }
+      } else {
+        // issue #78 验收修正：resume 想消费 run snapshot 但 store 无任何 loader——
+        // 单条去重诊断（loadLatestCheckpoint 旧名也缺才走到这里），跳过崩溃现场恢复。
+        ctx.notifyCapabilitySkipped?.("loadLatestRunSnapshot");
       }
     } catch (error) {
       const fail = ctx.fail;
