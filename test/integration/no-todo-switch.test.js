@@ -233,6 +233,7 @@ test("runRepl ERIX_NO_TODO=1：repl env 路径工具表无 todo_*、系统提示
         input,
         output,
         sessionDir: dir,
+        home: dir,
         config: { model: "fake-model", maxOutputTokens: 1000 },
         providerFactory: () => provider,
       },

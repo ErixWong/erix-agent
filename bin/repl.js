@@ -31,6 +31,7 @@ import {
   createMcpProxyTool,
 } from "./mcp.js";
 import { buildSkillTools, warnBuiltinToolConflicts } from "./skills.js";
+import { recordChatSession } from "./sessions.js";
 import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
@@ -359,6 +360,7 @@ export async function runRepl(argv, io = {}) {
   const input = io.input ?? process.stdin;
   const output = io.output ?? process.stdout;
   const errorOutput = io.errorOutput ?? process.stderr;
+  const home = io.home ?? homedir();
   const sessionDir = io.sessionDir ?? join(homedir(), ".erix");
   const notesDir = resolveNotesDir(io.notesDir);
   const notesDisabled = process.env.ERIX_NO_NOTES?.trim() === "1";
@@ -754,6 +756,11 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           );
         }
         await saveSession(sessionDir, options.session, messages);
+        // issue #75：本轮真实产出 transcript 后 upsert 会话索引（缓存，失败静默）——
+        // 无 transcript 的会话没有可续内容，不入索引（与 chat 行为一致）。
+        if (existsSync(join(options.dir, `${safeRunId(options.session)}.jsonl`))) {
+          await recordChatSession({ home, sessionId: options.session, cwd, prompt: line });
+        }
       } catch (error) {
         if (idle?.timedOut()) throw new IdleTimeoutError(options.idleTimeout);
         throw error;
