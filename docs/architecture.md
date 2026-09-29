@@ -580,10 +580,14 @@ trailing fragment. Cross-process locking is outside the store contract.
 provided and validates the two required methods before the provider is
 called; the run-snapshot and run-state methods are optional capabilities.
 When an optional method is absent, the engine emits one
-`persistence_capability_degraded` event per missing method (deduplicated for
-the whole run) and skips that persistence — the run completes normally, only
-mid-flight crash resume is unavailable. `persistence: "none"` is an explicit
-no-op mode. Writes to methods the store does advertise use the
+`persistence_capability_degraded` event per missing method (`{type, runId,
+method, detail}`; deduplicated for the whole run) and skips that persistence
+— the run completes normally, only mid-flight crash resume is unavailable.
+During the transition period the engine also accepts legacy-only stores:
+the snapshot writer resolves as `saveRunSnapshot` → `saveCheckpoint` →
+`appendCheckpoint`, and the snapshot loader as `loadLatestRunSnapshot` →
+`loadLatestCheckpoint` (the built-in stores expose the old names as
+`@deprecated` aliases). `persistence: "none"` is an explicit no-op mode. Writes to methods the store does advertise use the
 loop retry policy; an exhausted write emits a `persistence_error` through
 `diagnostics.error` and terminates with `reason: "persistence_failed"`.
 Snapshot persistence is used before and after tool execution. A pre-tool
@@ -679,8 +683,8 @@ src/
 │   ├── sliding-window.js     # Whole-round sliding-window folding
 │   └── pipeline.js           # Six-layer compaction registry declaration (order, fallback chain, per-layer stats)
 ├── store/
-│   ├── file.js               # JSONL transcript, state, and checkpoint store
-│   ├── memory.js             # In-process transcript, state, and checkpoint store
+│   ├── file.js               # JSONL transcript, state, and run-snapshot store
+│   ├── memory.js             # In-process transcript, state, and run-snapshot store
 │   └── notes.js              # Host-side notes store
 ├── config/
 │   ├── api-key.js            # Direct, environment, and file key resolution

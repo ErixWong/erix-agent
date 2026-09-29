@@ -30,7 +30,7 @@ flowchart LR
     PROV -- "⑤ 规范响应（Block + stopReason + usage）" --> LOOP
     LOOP -- "⑥ tool_use → 结构化执行对象" --> TOOLS
     TOOLS -- "⑦ tool_result（is_error 归一）" --> LOOP
-    LOOP -- "⑧ 每轮 appendRound / 工具前后 checkpoint" --> STORE
+    LOOP -- "⑧ 每轮 appendRound / 工具前后 run snapshot" --> STORE
     LOOP -- "⑨ round judge 评估 end_turn / 定期工具审计" --> JUDGE
     JUDGE -- "⑩ 裁决：放行 / 拦截 / 纠偏" --> LOOP
     LOOP -- "⑪ 终稿核验" --> GUARD
@@ -100,9 +100,9 @@ flowchart TB
     end
 
     subgraph store2["store/ 档案"]
-        TS["TranscriptStore 端口<br/>8 方法契约（ADR-002）"]
+        TS["TranscriptStore 端口<br/>必需 appendRound + load；<br/>可选 run-snapshot/run-state（ADR-002，issue #78）"]
         MEM["memory.js<br/>进程内 Map（参考实现）"]
-        FIL["file.js<br/>JSONL + state + checkpoint（参考实现）"]
+        FIL["file.js<br/>JSONL + state + run snapshot（参考实现）"]
         NSTORE["store/notes.js<br/>NotesStore（run 级要点）"]
     end
 
@@ -215,10 +215,10 @@ sequenceDiagram
     alt stopReason = tool_use
         L->>J: 每 judgeIntervalRound（默认 10）次真实工具执行 → 透明审计下一次调用
         J-->>L: done:false 拦截并回审计结果 / off_track 加方向提示 / 放行
-        L->>S: checkpoint（pre-tool）——失败则 sideEffect=not_started，不执行
+        L->>S: run snapshot（pre-tool）——失败则 sideEffect=not_started，不执行
         L->>T: executeTool({id, name, input, context, signal})
         T-->>L: tool_result（大输出归档为 stub，模型只见摘要）
-        L->>S: checkpoint（post-tool）+ appendRound（幂等去重）
+        L->>S: run snapshot（post-tool）+ appendRound（幂等去重）
     else stopReason = end_turn
         L->>L: wrapup JSON 解析（done:true → 收尾；false → 注入继续）
         L->>J: round judge 评估 end_turn（独立或共享 provider）
@@ -239,17 +239,17 @@ sequenceDiagram
     Note over H,S: 阶段 4 —— 结果与事件流
     L-->>H: result{finalText, termination, verification, usage, compactionStats}
     L-->>H: 全程事件 onRound / onDelta / onToolCall / onUsage / onJudge / onEvent
-    Note over S: 档案完整：每轮 JSONL + 折叠载荷 + checkpoint + run-state<br/>——宿主可对账、回放、审计
+    Note over S: 档案完整：每轮 JSONL + 折叠载荷 + run snapshot + run-state<br/>——宿主可对账、回放、审计
     end
 ```
 
 ### 要点
 
-- **阶段 0 是 fail-fast 契约**：未知选项（含拼写近似提示）、缺方法、策略键非法、能力缺失全部在调 provider 之前抛错——宿主集成错误不可能拖到运行期才炸
+- **阶段 0 是 fail-fast 契约**：未知选项（含拼写近似提示）、缺*必需*方法（`appendRound`/`load`）、策略键非法全部在调 provider 之前抛错——宿主集成错误不可能拖到运行期才炸。缺*可选* capability（run snapshot / run-state）不抛错：引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`），run 照常执行（issue #78）
 - **阶段 2 的工具路径带审计与检查点**：拦截 judge 只拦“写路径”（readFile/tree/rg/note_read/note_list 只读工具豁免）；pre-tool checkpoint 失败直接阻断执行，post-tool 失败标记 `executed_uncommitted` 但结果保留
 - **max_tokens 截断在同轮内续写**：reasoning 模型推理过长触发截断时最多续 3 次（`maxTokenContinuations`），续写前若已超预算先压缩——不会把预算耗死在截断循环（issue #11）
 - **阶段 3 只有 `verified` 能当"已核验"用**：`skipped`/`unverified`/`error` 都要求宿主自行处理；guard 自身报错/超时也**不算** verified
-- **阶段 4 的 result.transcript 只是内存快照**：权威档案在 `TranscriptStore`；两者刻意分离，宿主可换 DB 后端（实现八方法即可，见 ADR-002）
+- **阶段 4 的 result.transcript 只是内存快照**：权威档案在 `TranscriptStore`；两者刻意分离，宿主可换 DB 后端（实现两个必需方法 + 需要的可选 capability 即可，见 ADR-002、issue #78）
 
 ---
 
@@ -373,8 +373,8 @@ flowchart TD
 > 目标：进程被杀、provider 挂了、容器被回收之后，run 能从断点继续，且副作用不重复。
 
 - **双检查点夹住工具执行**：pre-tool checkpoint 落盘"我将执行这个 tool_use"；post-tool 落盘"已执行 + 结果"。pre-tool 失败 → `sideEffect: "not_started"`，**阻断执行**；post-tool 失败 → `executed_uncommitted`，结果保留但明确标记未提交
-- **恢复 = 按原序重放 pending tool_use**：resume 加载消息 + 最新 checkpoint + run-state，把 checkpoint 之后未完成的工具调用重新交给 `executeTool`。**引擎保证顺序与记账，不保证副作用幂等**——宿主必须让有副作用的 executeTool 实现幂等（契约明示，不是隐藏假设）
-- **持久化两档语义**：配了 store 默认 `required`（八方法全验、写入走重试策略、耗尽 → `persistence_failed` 终止）；显式 `none` 则全旁路。存档写不进 = 明确终止，绝不"假装存档成功"继续跑
+- **恢复 = 按原序重放 pending tool_use**：resume 加载消息 + 最新 run snapshot + run-state，把 snapshot 之后未完成的工具调用重新交给 `executeTool`。**引擎保证顺序与记账，不保证副作用幂等**——宿主必须让有副作用的 executeTool 实现幂等（契约明示，不是隐藏假设）
+- **持久化两档语义**：配了 store 默认 `required`（只验必需 `appendRound`/`load`；可选 run-snapshot/run-state 方法缺失 → 单条 `persistence_capability_degraded` 降级，不报错；已实现的方法写入走重试策略，耗尽 → `persistence_failed` 终止）；显式 `none` 则全旁路。存档写不进 = 明确终止，绝不"假装存档成功"继续跑
 - **run-state 有界且确定性**：`run-state.js` 维护工具统计、折叠计数、预算提示等确定性状态（`RUN_STATE_MAX_CHARS` 上限），resume 时校验版本与形状，损坏则标记不可用而**不**静默沿用；`lowBudgetPrompted` 这类"本次预算"状态不跨 resume 继承
 
 ---
@@ -428,8 +428,8 @@ flowchart TB
 
 - **大输出不爆上下文**：`outputHygiene`（默认 limit 4096）把超长 tool_result 原文存进 round 记录的 `toolOutputs`，模型只见 stub + 指针；单轮合计还有聚合闸门（`aggregate-budget`）兜底——档案在，上下文不炸
 - **取回走 note-first（ADR-016 退休补充，issue #36）**：要点趁在场 `note_take` 外置；之后 `note_list → note_read` 取回。recall / bounded-recall 协议已退役——笔记是模型策划的高信号内容，优于对归档原文的模糊检索；未记录且无法确定性重算的值，正确动作是省略而非猜测（bench 实测：四 run 中 recall 2/0/6/0 次，笔记闭环 31 写/21 读完全替代）
-- **档案仍可由宿主直接读**：round 记录 / toolOutputs / checkpoint 完整落盘，宿主（DB 后端）可对账与审计——只是不再向模型暴露 recall 取回通道
-- **file store 是参考实现**：JSONL 每行一条记录、修复缺尾换行、隔离残缺尾部片段；约定**单写者**（每 runId 每进程一份），跨进程锁在契约之外——DB 后端（touwaka 等宿主）实现同一八方法即可替换
+- **档案仍可由宿主直接读**：round 记录 / toolOutputs / run snapshot 完整落盘，宿主（DB 后端）可对账与审计——只是不再向模型暴露 recall 取回通道
+- **file store 是参考实现**：JSONL 每行一条记录、修复缺尾换行、隔离残缺尾部片段；约定**单写者**（每 runId 每进程一份），跨进程锁在契约之外——DB 后端（touwaka 等宿主）实现同一套契约即可替换（必需 `appendRound`/`load` + 可选 run-snapshot/run-state capability）
 
 ---
 

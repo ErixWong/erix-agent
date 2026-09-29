@@ -188,7 +188,7 @@ const assemblyPort = createAssemblyPort({
   modelConfig, // ModelConfigProvider: { resolve(slot) }
   provider,    // { chat?, chatStream? }
   tools: { definitions, executeTool, getToolMetadata? },
-  store?,      // 可选 TranscriptStore（八方法）
+  store?,      // 可选 TranscriptStore（必需：appendRound、load；可选：run-snapshot/run-state）
   session: { id, resume?, initialMessages? },
   policy?,     // 显式 runToolLoop 选项；陌生键会被拒绝
   emit?,       // (eventType, payload) => void
@@ -258,7 +258,7 @@ runToolLoop({ provider, executeTool, ...options })
 - 库中的 `maxRounds` 默认为 `8`。CLI 提供自己的命令级默认值。
 - `maxTokenContinuations` 默认为 `3`。以 `max_tokens` 结束的响应最多可以继续指定次数；耗尽后产生 `termination.reason === "continuation_exhausted"`。
 - `stallDetection` 默认为 `{ window: 4 }`。默认模式是 `appear`，会检测窗口内任意位置重复的工具签名；`mode: "consecutive"` 要求整个窗口都匹配。传入 `stallDetection: false` 可禁用。
-- `resume` 默认为 `false`。配合 `store` 和 `runId` 时，`resume: true` 会恢复 transcript、运行状态、最新 run snapshot，以及所有仍需执行的待处理工具调用。若 store 同时提供快照 writer（`saveRunSnapshot`）与 loader（`loadLatestRunSnapshot`，或 deprecated 的 `loadLatestCheckpoint`），则在执行前或执行后 snapshot 无法持久化时会 fail closed。快照/run-state 方法为可选 capability：缺失时引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（run 正常跑完，仅不支持中途 crash resume）。宿主的 `executeTool` 仍必须按 tool id 保证幂等；循环无法保证外部副作用 exactly-once。
+- `resume` 默认为 `false`。配合 `store` 和 `runId` 时，`resume: true` 会恢复 transcript、运行状态、最新 run snapshot，以及所有仍需执行的待处理工具调用。若 store 同时提供快照 writer（`saveRunSnapshot`；仅实现旧名的 store 仍被接受，fallback 链 `saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint`）与 loader（`loadLatestRunSnapshot`，或 deprecated 的 `loadLatestCheckpoint`），则在执行前或执行后 snapshot 无法持久化时会 fail closed。快照/run-state 方法为可选 capability：缺失时引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`，run 正常跑完，仅不支持中途 crash resume）。宿主的 `executeTool` 仍必须按 tool id 保证幂等；循环无法保证外部副作用 exactly-once。
 
 正常终止词汇为：
 

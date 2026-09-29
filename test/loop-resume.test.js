@@ -862,3 +862,61 @@ test("resume with a store lacking snapshot/run-state loaders degrades with one d
     assert.match(event.detail, new RegExp(event.method));
   }
 });
+
+test("resume with a stale snapshot (loader present, round behind transcript) does not emit capability diagnostics (issue #78)", async () => {
+  // 回归锁定：loader 存在但返回过round落后的快照时，走 loader 路径（而非缺失 else 分支），
+  // 静默丢弃过期现场是正常语义——绝不得误发 persistence_capability_degraded。
+  const stored = [
+    {
+      round: 0,
+      ts: "2026-09-29T00:00:00.000Z",
+      messages: [textMessage("seed")],
+      summary: "missing",
+      l0facts: { errors: 0 },
+    },
+    {
+      round: 1,
+      ts: "2026-09-29T00:01:00.000Z",
+      messages: [{ role: "assistant", content: [{ type: "text", text: "earlier" }] }],
+      summary: "missing",
+      l0facts: { errors: 0 },
+    },
+  ];
+  let snapshotCalls = 0;
+  const store = {
+    appendRound: async () => {},
+    load: async () => stored.map((record) => structuredClone(record)),
+    markRunState: async () => {},
+    saveRunState: async () => {},
+    loadRunState: async () => undefined,
+    // loader 存在但快照 round 落后（transcript 已到 round 1，快照还在 round 0）
+    loadLatestRunSnapshot: async () => {
+      snapshotCalls += 1;
+      return { round: 0, status: "executed", messages: [textMessage("seed")] };
+    },
+  };
+  const events = [];
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "continued past stale snapshot" }], stopReason: "end_turn" },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    store,
+    runId: "resume-stale-snapshot",
+    resume: true,
+    initialUserMessage: "ignored on resume",
+    executeTool: async () => "unused",
+    completion: false,
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.equal(result.finalText, "continued past stale snapshot");
+  assert.equal(snapshotCalls, 1, "loader 必须被调用（走 loader 路径，不是缺失 else 分支）");
+  const degraded = events.filter((event) => event.type === "persistence_capability_degraded");
+  assert.deepEqual(
+    degraded.map((event) => event.method),
+    [],
+    `loader 存在时不得误发能力降级诊断，实际：${degraded.map((event) => event.method).join(",")}`,
+  );
+});

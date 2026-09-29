@@ -238,7 +238,7 @@ const assemblyPort = createAssemblyPort({
   modelConfig, // ModelConfigProvider: { resolve(slot) }
   provider,    // { chat?, chatStream? }
   tools: { definitions, executeTool, getToolMetadata? },
-  store?,      // optional TranscriptStore (eight methods)
+  store?,      // optional TranscriptStore (required: appendRound, load; optional: run-snapshot/run-state)
   session: { id, resume?, initialMessages? },
   policy?,     // explicit runToolLoop options; unknown keys are rejected
   emit?,       // (eventType, payload) => void
@@ -344,12 +344,15 @@ optional `runState`, aggregate `usage`, and `compactionStats`.
 - `resume` defaults to `false`. With a `store` and `runId`, `resume: true`
   restores the transcript, run state, latest run snapshot, and all pending
   tool calls that still need execution. Stores with both a snapshot writer
-  (`saveRunSnapshot`) and a snapshot loader (`loadLatestRunSnapshot` or the
-  deprecated `loadLatestCheckpoint`) fail closed when a pre-execution or
-  post-execution snapshot cannot be persisted. Snapshot/run-state methods
-  are optional capabilities: a store that lacks them degrades with a
-  one-shot `persistence_capability_degraded` event per missing method (the
-  run completes normally, only mid-flight crash resume is unavailable). The
+  (`saveRunSnapshot`; legacy-only stores are still accepted via the fallback
+  chain `saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint`) and a
+  snapshot loader (`loadLatestRunSnapshot`, or the deprecated
+  `loadLatestCheckpoint`) fail closed when a pre-execution or post-execution
+  snapshot cannot be persisted. Snapshot/run-state methods are optional
+  capabilities: a store that lacks them degrades with a one-shot
+  `persistence_capability_degraded` event (`{type, runId, method, detail}`)
+  per missing method (the run completes normally, only mid-flight crash
+  resume is unavailable). The
   host's `executeTool` must still be idempotent by tool id; the loop cannot
   guarantee exactly-once external side effects.
 
