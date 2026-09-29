@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -196,6 +196,85 @@ test("recordChatSession truncates the prompt and swallows failures", async () =>
     await rm(join(home, ".erix"), { recursive: true, force: true });
     await writeFile(join(home, ".erix"), "blocked");
     await recordChatSession({ home, sessionId: "run-rec", cwd: "/tmp", prompt: "hi" });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("concurrent upserts do not lose entries (in-process serialization)", async () => {
+  const home = await makeHome();
+  try {
+    const ids = Array.from({ length: 25 }, (_unused, index) => `run-${index}`);
+    await Promise.all(ids.map((sessionId) => upsertSessionIndex({
+      home,
+      sessionId,
+      cwd: "/tmp/project",
+      firstUserText: `prompt ${sessionId}`,
+    })));
+    const entries = JSON.parse(await readFile(sessionsIndexPath(home), "utf8"));
+    assert.equal(entries.length, ids.length);
+    for (const id of ids) {
+      assert.ok(entries.some((entry) => entry.sessionId === id), `missing ${id}`);
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("rebuildSessionsIndex skips corrupt transcripts but tolerates a trailing fragment", async () => {
+  const home = await makeHome();
+  try {
+    const transcriptsDir = join(home, "transcripts");
+    await mkdir(transcriptsDir, { recursive: true });
+    const line = (text) => `${JSON.stringify({ round: 1, messages: [
+      { role: "user", content: [{ type: "text", text }] },
+    ] })}\n`;
+    await writeFile(join(transcriptsDir, "run-good.jsonl"), line("good session"));
+    // 中间非法 JSON 行：store.load 也会炸，必须整段跳过
+    await writeFile(join(transcriptsDir, "run-bad.jsonl"), `${line("bad session")}{ not json\n${line("after bad")}`);
+    // 末尾不完整残段（崩溃截断）：file store 读取同样忽略，应容忍收录
+    await writeFile(join(transcriptsDir, "run-tail.jsonl"), `${line("tail session")}{ "truncated"`);
+    // 空文件：load 返回空，无可续内容，不入索引
+    await writeFile(join(transcriptsDir, "run-empty.jsonl"), "");
+
+    const entries = await rebuildSessionsIndex({ home, transcriptsDir });
+    assert.deepEqual(
+      entries.map((entry) => entry.sessionId).sort(),
+      ["run-good", "run-tail"],
+    );
+    assert.equal(entries.find((entry) => entry.sessionId === "run-good").firstUserText, "good session");
+    // 损坏会话即使 cwd 匹配也不会被 -c 选中
+    const picked = await resolveContinueSessionId({ home, cwd: "/tmp/anywhere", transcriptsDir });
+    assert.notEqual(picked, "run-bad");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("-c keeps working after index loss: record → delete index → rebuild restores cwd", async () => {
+  const home = await makeHome();
+  try {
+    const transcriptsDir = join(home, ".erix", "transcripts");
+    await mkdir(transcriptsDir, { recursive: true });
+    // 模拟一次真实 chat 运行后的落盘状态：transcript + recordChatSession upsert
+    await writeFile(join(transcriptsDir, "run-a.jsonl"), `${JSON.stringify({ round: 1, messages: [
+      { role: "user", content: [{ type: "text", text: "hello project" }] },
+    ] })}\n`);
+    await recordChatSession({ home, sessionId: "run-a", cwd: "/tmp/project", prompt: "hello project" });
+
+    // 索引丢失（session-meta 仍在）→ rebuild 必须恢复 cwd，-c 才能选中当前目录会话
+    await unlink(sessionsIndexPath(home));
+    const picked = await resolveContinueSessionId({ home, cwd: "/tmp/project", transcriptsDir });
+    assert.equal(picked, "run-a");
+    // rebuild 结果已落盘，后续读取不再触发重建
+    const { entries, rebuilt } = await readSessionsIndex({ home, transcriptsDir });
+    assert.equal(rebuilt, false);
+    assert.equal(entries[0].cwd, "/tmp/project");
+
+    // 其他目录的 -c 仍不匹配（cwd 恢复不是无脑全匹配）
+    await unlink(sessionsIndexPath(home));
+    const elsewhere = await resolveContinueSessionId({ home, cwd: "/tmp/elsewhere", transcriptsDir });
+    assert.equal(elsewhere, null);
   } finally {
     await rm(home, { recursive: true, force: true });
   }

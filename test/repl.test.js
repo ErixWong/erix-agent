@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,6 +38,54 @@ test("defaultSessionId is stable, path-specific, and includes the basename", () 
   assert.equal(first, same);
   assert.notEqual(first, second);
   assert.match(first, /^project-[a-f0-9]{8}$/);
+});
+
+test("parseReplArgs derives the default --dir from the injected home", () => {
+  const home = join(tmpdir(), "erix-fake-home");
+  const options = parseReplArgs([], "/tmp/project", home);
+  assert.equal(options.dir, join(home, ".erix", "transcripts"));
+  // 不传 home 时保持真实 homedir 默认（生产行为不变）
+  assert.equal(parseReplArgs([]).dir, join(homedir(), ".erix", "transcripts"));
+});
+
+test("runRepl routes default session/transcripts dirs into the injected home", async () => {
+  const home = await mkdtemp(join("/tmp", "erix-repl-home-default-test-"));
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  try {
+    const session = defaultSessionId(process.cwd());
+    const run = runRepl(
+      [],
+      {
+        input,
+        output,
+        home,
+        notesDir: join(home, "notes"),
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        providerFactory: () => ({}),
+        loop: async () => ({
+          finalText: "done",
+          messages: [],
+          rounds: 1,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          compactionStats: [],
+        }),
+      },
+    );
+    input.end("hi\n/exit\n");
+    await run;
+
+    // 默认 sessionDir（会话存档）与默认 --dir（transcripts/outputs）都落在注入 home 下
+    assert.ok(existsSync(join(home, ".erix", `${session}.json`)));
+    assert.ok(existsSync(join(home, ".erix", "transcripts", "outputs", session)));
+    // 不碰真实 ~/.erix：真实目录里不存在本会话的存档
+    assert.equal(existsSync(join(homedir(), ".erix", `${session}.json`)), false);
+  } finally {
+    input.destroy();
+    output.destroy();
+    await rm(home, { recursive: true, force: true });
+  }
 });
 
 test("parseReplArgs accepts session and directory overrides", () => {

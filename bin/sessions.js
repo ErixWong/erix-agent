@@ -3,8 +3,17 @@
 // 本模块一行不改那条路径。索引丢失/损坏时用 readdir transcripts 目录重建
 //（只认 *.jsonl，排除 .state.json/.checkpoint.json；safeRunId 哈希文件名 run-h-*
 // 不可往返，跳过）。所有写入失败静默——缓存性质，不影响主流程。
+//
+// 验收修正（PR #79 review）：
+// - cwd 归属单独持久化在 ~/.erix/session-meta.json（upsert 时同写）——索引丢/损坏时
+//   rebuild 仍能恢复 cwd，否则 -c（严格要求 entry.cwd === cwd）重建后永远选不中；
+//   旧 transcript 无 meta 时条目退化为不含 cwd（仍可 -r 展示，只是 -c 不匹配）。
+// - rebuild 对 transcript 做完整 JSON 行校验：中间非法行 = store.load 也会炸，
+//   整个会话跳过不进索引；仅容忍末尾不完整残段（与 file store 读取语义对齐）。
+// - 写者串行化：单写者假设（CLI 场景同 home 只有一个写进程），同进程内 promise 链
+//   串行化 read-modify-write，临时文件名含 randomUUID；跨进程互斥锁不做（超出范围）。
 
-import { createReadStream } from "node:fs";
+import { randomUUID } from "node:crypto";
 import {
   mkdir,
   readFile,
@@ -23,8 +32,15 @@ import { safeRunId } from "../src/store/file.js";
 export const FIRST_USER_TEXT_MAX = 80;
 // 索引条目上限：防 unbounded 增长；重建时也只保留最近的一批
 const INDEX_ENTRY_LIMIT = 500;
-// 重建时从每个 transcript 头扫的行数上限（firstUserText 通常在很前面）
-const REBUILD_SCAN_LINES = 200;
+
+// 单写者假设：同一 home 的索引/meta 写入在同进程内经 promise 链串行化。
+let indexWriteQueue = Promise.resolve();
+
+function withIndexWriteLock(task) {
+  const run = indexWriteQueue.then(task);
+  indexWriteQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 export function truncateFirstUserText(text) {
   const value = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -35,6 +51,42 @@ export function truncateFirstUserText(text) {
 
 export function sessionsIndexPath(home) {
   return path.join(String(home), ".erix", "sessions.json");
+}
+
+// cwd 归属的持久化（索引丢/损坏时 rebuild 恢复 -c 可用性）。同为缓存性质，写失败静默。
+export function sessionMetaPath(home) {
+  return path.join(String(home), ".erix", "session-meta.json");
+}
+
+async function readSessionMeta(home) {
+  try {
+    const parsed = JSON.parse(await readFile(sessionMetaPath(home), "utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+async function writeSessionMeta(home, meta) {
+  const target = sessionMetaPath(home);
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    await writeFile(
+      temporary,
+      `${JSON.stringify(meta, null, 2)}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+    await rename(temporary, target);
+  } catch {
+    // 写入失败静默：与索引同性质的缓存
+    try {
+      await unlink(temporary);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 // 读取索引；文件缺失或损坏时返回 rebuilt=true（此时 entries 来自 rebuild）。
@@ -73,91 +125,91 @@ function normalizeTimestamp(value) {
 }
 
 // readdir transcripts 目录派生索引。只认 *.jsonl；跳过 run-h-*（safeRunId 哈希，
-// 无法还原原始 session id）；cwd 无法从 transcript 可靠恢复，故重建条目不含 cwd。
+// 无法还原原始 session id）。每个 transcript 整文件 JSON 行校验：中间非法行 =
+// store.load 也会炸，该会话跳过不进索引；仅末尾不完整残段容忍（load 同样忽略）。
+// cwd 从 session-meta.json 恢复（upsert 时持久化）；无 meta 的条目不含 cwd。
 export async function rebuildSessionsIndex({ home, transcriptsDir }) {
-  let files;
-  try {
-    files = await readdir(String(transcriptsDir), { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const candidates = files
-    .filter((file) => file.isFile())
-    .map((file) => file.name)
-    .filter((name) => name.endsWith(".jsonl"))
-    .filter((name) => {
-      const sessionId = name.slice(0, -".jsonl".length);
-      // 可往返才收录：哈希化文件名无法恢复用户原始 session id
-      return safeRunId(sessionId) === sessionId;
-    });
-
-  const entries = [];
-  for (const name of candidates) {
-    const filePath = path.join(String(transcriptsDir), name);
+  return withIndexWriteLock(async () => {
+    let files;
     try {
-      const info = await stat(filePath);
-      const sessionId = name.slice(0, -".jsonl".length);
-      entries.push({
-        sessionId,
-        updatedAt: info.mtime.toISOString(),
-        ...(await extractFirstUserText(filePath)),
-      });
+      files = await readdir(String(transcriptsDir), { withFileTypes: true });
     } catch {
-      // 单个文件读失败（竞态删除等）不影响整体重建
+      return [];
     }
-  }
-  entries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  await writeIndex(home, entries.slice(0, INDEX_ENTRY_LIMIT));
-  return entries.slice(0, INDEX_ENTRY_LIMIT);
-}
+    const candidates = files
+      .filter((file) => file.isFile())
+      .map((file) => file.name)
+      .filter((name) => name.endsWith(".jsonl"))
+      .filter((name) => {
+        const sessionId = name.slice(0, -".jsonl".length);
+        // 可往返才收录：哈希化文件名无法恢复用户原始 session id
+        return safeRunId(sessionId) === sessionId;
+      });
 
-async function extractFirstUserText(filePath) {
-  try {
-    const rl = createInterface({
-      input: createReadStream(filePath, { encoding: "utf8" }),
-      crlfDelay: Infinity,
-    });
-    let scanned = 0;
-    let result = {};
-    for await (const line of rl) {
-      scanned += 1;
-      if (scanned > REBUILD_SCAN_LINES) break;
-      const text = firstUserTextOfRecord(line);
-      if (text !== undefined) {
-        result = { firstUserText: text };
-        break;
+    const meta = await readSessionMeta(home);
+    const entries = [];
+    for (const name of candidates) {
+      const filePath = path.join(String(transcriptsDir), name);
+      try {
+        const records = await readTranscriptRecords(filePath);
+        // 空文件/全残段：store.load 也返回空，无可续内容，不入索引
+        if (records.length === 0) continue;
+        const info = await stat(filePath);
+        const sessionId = name.slice(0, -".jsonl".length);
+        const cwd = meta?.[sessionId]?.cwd;
+        entries.push({
+          sessionId,
+          ...(typeof cwd === "string" ? { cwd } : {}),
+          updatedAt: info.mtime.toISOString(),
+          ...firstUserTextOfRecords(records),
+        });
+      } catch {
+        // 单个文件损坏/读失败（竞态删除等）不影响整体重建
       }
     }
-    rl.close();
-    return result;
-  } catch {
-    return {};
-  }
+    entries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    await writeIndex(home, entries.slice(0, INDEX_ENTRY_LIMIT));
+    return entries.slice(0, INDEX_ENTRY_LIMIT);
+  });
 }
 
-function firstUserTextOfRecord(line) {
-  let record;
-  try {
-    record = JSON.parse(line);
-  } catch {
-    return undefined;
+// 整文件读 + 逐行 JSON.parse。中间任何非法行抛错（调用方跳过该会话）；
+// 仅末尾不完整残段（崩溃截断）跳过——与 file store readRecords 的容忍语义一致。
+async function readTranscriptRecords(filePath) {
+  const raw = await readFile(filePath, "utf8");
+  const lines = raw.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  const records = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    try {
+      records.push(JSON.parse(lines[index]));
+    } catch (error) {
+      if (index === lines.length - 1) continue;
+      throw error;
+    }
   }
-  const messages = record?.messages;
-  if (!Array.isArray(messages)) return undefined;
-  for (const message of messages) {
-    if (message?.role !== "user") continue;
-    for (const block of message.content ?? []) {
-      if (block?.type === "text" && typeof block.text === "string" && block.text.trim() !== "") {
-        return truncateFirstUserText(block.text);
+  return records;
+}
+
+function firstUserTextOfRecords(records) {
+  for (const record of records) {
+    const messages = record?.messages;
+    if (!Array.isArray(messages)) continue;
+    for (const message of messages) {
+      if (message?.role !== "user") continue;
+      for (const block of message.content ?? []) {
+        if (block?.type === "text" && typeof block.text === "string" && block.text.trim() !== "") {
+          return { firstUserText: truncateFirstUserText(block.text) };
+        }
       }
     }
   }
-  return undefined;
+  return {};
 }
 
 async function writeIndex(home, entries) {
   const target = sessionsIndexPath(home);
-  const temporary = `${target}.${process.pid}.tmp`;
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
     await writeFile(
@@ -176,27 +228,41 @@ async function writeIndex(home, entries) {
   }
 }
 
-// chat / repl 每次运行 upsert（同 sessionId 覆盖）。写入失败静默。
+// chat / repl 每次运行 upsert（同 sessionId 覆盖）。read-modify-write 经 promise 链
+// 串行化（同进程并发不丢条目）；cwd 归属随写 session-meta。写入失败静默。
 export async function upsertSessionIndex({ home, sessionId, cwd, firstUserText }) {
   if (typeof sessionId !== "string" || sessionId.trim() === "") return;
-  let entries = [];
-  try {
-    const parsed = JSON.parse(await readFile(sessionsIndexPath(home), "utf8"));
-    if (Array.isArray(parsed)) entries = sanitizeEntries(parsed);
-  } catch {
-    entries = [];
-  }
-  const next = {
-    sessionId,
-    ...(typeof cwd === "string" ? { cwd } : {}),
-    updatedAt: new Date().toISOString(),
-    ...(typeof firstUserText === "string" && firstUserText.length > 0
-      ? { firstUserText }
-      : {}),
-  };
-  entries = [next, ...entries.filter((entry) => entry.sessionId !== sessionId)];
-  entries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  await writeIndex(home, entries.slice(0, INDEX_ENTRY_LIMIT));
+  await withIndexWriteLock(async () => {
+    let entries = [];
+    try {
+      const parsed = JSON.parse(await readFile(sessionsIndexPath(home), "utf8"));
+      if (Array.isArray(parsed)) entries = sanitizeEntries(parsed);
+    } catch {
+      entries = [];
+    }
+    const next = {
+      sessionId,
+      ...(typeof cwd === "string" ? { cwd } : {}),
+      updatedAt: new Date().toISOString(),
+      ...(typeof firstUserText === "string" && firstUserText.length > 0
+        ? { firstUserText }
+        : {}),
+    };
+    entries = [next, ...entries.filter((entry) => entry.sessionId !== sessionId)];
+    entries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    await writeIndex(home, entries.slice(0, INDEX_ENTRY_LIMIT));
+
+    // cwd 归属持久化：rebuild（索引丢/损坏）时恢复 -c 可用性。
+    // meta 与索引条目集对齐裁剪，防 unbounded 增长。
+    const meta = await readSessionMeta(home);
+    for (const entry of entries) {
+      if (typeof entry.cwd === "string") meta[entry.sessionId] = { cwd: entry.cwd };
+    }
+    for (const key of Object.keys(meta)) {
+      if (!entries.some((entry) => entry.sessionId === key)) delete meta[key];
+    }
+    await writeSessionMeta(home, meta);
+  });
 }
 
 // chat/repl 运行记录入口：prompt 截断为 firstUserText。静默、绝不抛出。
