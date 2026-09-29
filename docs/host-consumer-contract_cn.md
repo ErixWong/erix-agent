@@ -63,11 +63,43 @@ await runToolLoop({ assemblyPort });
 传给 `createAssemblyPort` 时，`modelConfig`、`provider`、`tools`、`store`、`session`
 和 `policy` 也可以是同步的零参工厂。启动时必须具备 `modelConfig.resolve`、
 `provider.chat` 或 `provider.chatStream`、`tools.definitions`、`tools.executeTool`、
-`session.id`。若提供 `store`，它必须具备完整八方法 `TranscriptStore`；缺方法在 run 开始前抛 `TypeError`。
-`policy` 只装具名的 `runToolLoop` 选项；陌生 policy 键会被拒绝。
-这八个 store 方法是 `appendRound`、`load`、`saveCheckpoint`、
-`appendCheckpoint`、`loadLatestCheckpoint`、`saveRunState`、`loadRunState`
-和 `markRunState`；`getToolMetadata` 与 `emit` 仍是可选项。
+`session.id`。若提供 `store`，它必须具备两个必需方法 `appendRound` 与 `load`；
+缺必需方法在 run 开始前抛 `TypeError`。`policy` 只装具名的 `runToolLoop` 选项；
+陌生 policy 键会被拒绝。
+
+### TranscriptStore capability 分级（issue #78）
+
+原 "checkpoint" 表面更名为 **run snapshot** 并降级为可选 capability。实际语义从来就是
+latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现场），从来不是多版本 checkpoint。
+分级如下：
+
+| 分级 | 方法 | 缺失时行为 |
+| --- | --- | --- |
+| 必需 | `appendRound`、`load` | assembly/startup 抛 `TypeError` |
+| 可选 run snapshot | `saveRunSnapshot`、`loadLatestRunSnapshot` | 跳过快照持久化；run 正常跑完，仅不支持中途 crash resume |
+| 可选 run-state | `saveRunState`、`loadRunState`、`markRunState` | 跳过 run-state 持久化；run 正常跑完 |
+
+可选方法缺失时，引擎对每个缺失方法只发**一条**
+`persistence_capability_degraded` 事件（`{type, runId, method, detail}`），
+随后整轮 run 跳过对应持久化——不每轮刷屏。`getToolMetadata` 与 `emit` 仍是可选项。
+
+**更名与合并。** `saveCheckpoint` → `saveRunSnapshot`，
+`loadLatestCheckpoint` → `loadLatestRunSnapshot`。`appendCheckpoint` **并入
+`saveRunSnapshot`**：两者本来就是同一语义的 latest-only 覆盖写，单独保留 "append"
+只会误导出"有版本"的错觉。file store 的快照落盘文件改为 `<runId>.snapshot.json`
+（原 `<runId>.checkpoint.json`）；读取时新后缀不存在则回落旧后缀（读取兼容，不做数据迁移）。
+
+**过渡期别名（deprecated）。** 库内 store 仍保留
+`saveCheckpoint` / `appendCheckpoint` / `loadLatestCheckpoint`，标记 `@deprecated`
+并内部委托新方法。只实现旧名的第三方 store 继续可用：引擎按
+`saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint` 解析快照写入，
+`loadLatestRunSnapshot` → `loadLatestCheckpoint` 解析快照读取。宿主应迁移到新名；
+未来 major 版本可能移除别名。
+
+**已知重复（本 issue 只记录不改）。** 最新 run-state 被双写：既内嵌在每轮
+round record（`RoundRecord.runState`）里，又经独立 run-state 方法
+（`saveRunState`/`markRunState`）落盘。该重复早于 issue #78，已记为 follow-up；
+本 issue 只改命名与 capability 分级，不动结构。
 
 `modelConfig` 始终是 resolver 形态的 `ModelConfigProvider`——即便它是随 `assemblyPort`
 一起显式提供的覆盖项。plain 配置对象会被拒绝并给出迁移提示，请用
@@ -100,10 +132,11 @@ provider、工具与 transcript 适配器，因此没有宿主需要一次性迁
 deterministic run-state 里带同一份账单（`deterministic.errors.unpersisted`），run 中途
 崩溃也不会丢；模型可见渲染只给条数，不把宿主错误正文灌进上下文。
 
-失败档位按操作而非按端口划分：transcript 的 append/checkpoint/run-state 写失败会终止
-run（副作用三态不变，#103）；notes 写失败则继续 + 事件 + 账单，且工具结果不会长得像
-“已保存”。宿主端口通过注入的 `reportPersistenceFailure` 桥上报自己的写失败，事件与
-账单形状与 transcript 路径一致。
+失败档位按操作而非按端口划分：transcript 的 append 与 run-snapshot/run-state 写失败会终止
+run（副作用三态不变，#103）——但仅当 store 实现了该方法；缺可选 capability 的 store 是
+降级而非报错（见上文「TranscriptStore capability 分级」）。notes 写失败则继续 + 事件 + 账单，
+且工具结果不会长得像“已保存”。宿主端口通过注入的 `reportPersistenceFailure` 桥上报自己的写
+失败，事件与账单形状与 transcript 路径一致。
 
 `result.completionErrors[]` 收集收尾失败（多个失败互不覆盖）。主结果若是异常，原异常
 仍是主，收尾失败挂在 `error.completionErrors` 上。
@@ -337,7 +370,7 @@ recall 适配器已在 0.8.0 契约中退役。
 默认为 `2` 轮（`0` 表示禁用），`toolResultFoldMinTokens` 默认为估算的
 `4000` token。在 `age === ttl - 1` 的 warning round 中，模型会被要求使用
 `note_take` 提取重要事实；折叠占位符包含 navigation digest，并在适用时包含
-JSON skeleton。checkpoint 保留完整工具结果文本。note、todo、错误和显式保护的
+JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错误和显式保护的
 结果不会折叠。
 
 ## 重复命令与副作用（ADR-016）

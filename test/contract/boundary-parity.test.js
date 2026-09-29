@@ -109,8 +109,8 @@ test("boundary parity: plain modelConfig without resolve reports identically in 
 });
 
 test("boundary parity: incomplete transcript store reports the same missing method list in both shapes", async () => {
-  // Only appendRound present; the other seven methods are missing.
-  const brokenStore = { appendRound: async () => {} };
+  // issue #78：必需方法只有 appendRound/load；这里两者都缺（七个可选方法缺失不算不完整）。
+  const brokenStore = {};
 
   // Capture the createAssemblyPort missing-item list once; every shape below
   // must surface this exact, ordered list under its own error prefix.
@@ -139,8 +139,11 @@ test("boundary parity: incomplete transcript store reports the same missing meth
     }),
     (error) => error instanceof TypeError
       && error.message.startsWith(ASSEMBLY_PREFIX)
+      && error.message.includes("store.appendRound")
       && error.message.includes("store.load")
-      && error.message.includes("store.markRunState"),
+      // issue #78：可选 capability（快照/run-state）缺失不得出现在必需缺失清单里。
+      && !error.message.includes("saveRunSnapshot")
+      && !error.message.includes("markRunState"),
   );
 
   // Shape 1b: assemblyPortOptions routes through createAssemblyPort, so the

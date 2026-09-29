@@ -131,8 +131,15 @@ export async function restoreResume(ctx) {
         0,
         ...records.map((record) => record.foldedRoundRange?.to ?? 0),
       );
-      if (typeof ctx.store.loadLatestCheckpoint === "function") {
-        ctx.resumeCheckpoint = await ctx.store.loadLatestCheckpoint(ctx.runId);
+      // issue #78：run snapshot 为可选 capability。优先新方法；旧名 loadLatestCheckpoint
+      // 作为过渡期 fallback 支持尚未迁移的第三方 store；两者皆无 → 跳过崩溃现场恢复。
+      const loadLatestSnapshot = typeof ctx.store.loadLatestRunSnapshot === "function"
+        ? ctx.store.loadLatestRunSnapshot
+        : typeof ctx.store.loadLatestCheckpoint === "function"
+          ? ctx.store.loadLatestCheckpoint
+          : undefined;
+      if (loadLatestSnapshot !== undefined) {
+        ctx.resumeCheckpoint = await loadLatestSnapshot.call(ctx.store, ctx.runId);
         if (ctx.resumeCheckpoint?.round > ctx.rounds
           && Array.isArray(ctx.resumeCheckpoint.messages)) {
           const recordedEntries = [];

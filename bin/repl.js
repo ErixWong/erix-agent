@@ -314,7 +314,7 @@ async function deleteSession(dir, session) {
 
 async function deleteTranscript(dir, session) {
   const base = join(String(dir), safeRunId(session));
-  for (const suffix of [".jsonl", ".checkpoint.json", ".state.json"]) {
+  for (const suffix of [".jsonl", ".snapshot.json", ".checkpoint.json", ".state.json"]) {
     try {
       await unlink(`${base}${suffix}`);
     } catch (error) {

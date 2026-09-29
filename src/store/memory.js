@@ -30,6 +30,8 @@ function copyRecord(record) {
  *   markRunState: (runId:string, state:string) => Promise<void>,
  *   saveRunState: (runId:string, state:object) => Promise<void>,
  *   loadRunState: (runId:string) => Promise<object|undefined>,
+ *   saveRunSnapshot: (runId:string, snapshot:object) => Promise<void>,
+ *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   appendCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
@@ -37,7 +39,7 @@ function copyRecord(record) {
  */
 export function createMemoryTranscriptStore() {
   const transcripts = new Map();
-  const checkpoints = new Map();
+  const runSnapshots = new Map();
   const runStates = new Map();
 
   const recordKey = (runId, record) => (
@@ -77,17 +79,35 @@ export function createMemoryTranscriptStore() {
       });
     },
 
+    async saveRunSnapshot(runId, snapshot) {
+      runSnapshots.set(runId, copyRecord(snapshot));
+    },
+
+    async loadLatestRunSnapshot(runId) {
+      const snapshot = runSnapshots.get(runId);
+      return snapshot === undefined ? undefined : copyRecord(snapshot);
+    },
+
+    /**
+     * @deprecated issue #78：checkpoint 更名 run snapshot。请改用 saveRunSnapshot。
+     */
     async saveCheckpoint(runId, checkpoint) {
-      checkpoints.set(runId, copyRecord(checkpoint));
+      await this.saveRunSnapshot(runId, checkpoint);
     },
 
+    /**
+     * @deprecated issue #78：append 语义与 save 相同（latest-only 覆盖写），
+     * 别名已合并——请改用 saveRunSnapshot。
+     */
     async appendCheckpoint(runId, checkpoint) {
-      await this.saveCheckpoint(runId, checkpoint);
+      await this.saveRunSnapshot(runId, checkpoint);
     },
 
+    /**
+     * @deprecated issue #78：请改用 loadLatestRunSnapshot。
+     */
     async loadLatestCheckpoint(runId) {
-      const checkpoint = checkpoints.get(runId);
-      return checkpoint === undefined ? undefined : copyRecord(checkpoint);
+      return this.loadLatestRunSnapshot(runId);
     },
 
     async loadRunState(runId) {
