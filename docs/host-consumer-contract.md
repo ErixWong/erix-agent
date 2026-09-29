@@ -71,12 +71,49 @@ be synchronous zero-argument factories when passed to `createAssemblyPort`.
 The required methods are checked at assembly/startup: `modelConfig.resolve`,
 either `provider.chat` or `provider.chatStream`, `tools.definitions`,
 `tools.executeTool`, and `session.id`. When supplied, `store` must implement
-all eight `TranscriptStore` methods. A missing method throws `TypeError`
-before the run starts. `policy` contains only named `runToolLoop` options;
-unknown policy keys are rejected.
-Those store methods are `appendRound`, `load`, `saveCheckpoint`,
-`appendCheckpoint`, `loadLatestCheckpoint`, `saveRunState`, `loadRunState`, and
-`markRunState`; `getToolMetadata` and `emit` remain optional.
+the two required `TranscriptStore` methods — `appendRound` and `load`. A
+missing required method throws `TypeError` before the run starts. `policy`
+contains only named `runToolLoop` options; unknown policy keys are rejected.
+
+### TranscriptStore capability tiers (issue #78)
+
+The former "checkpoint" surface was renamed to **run snapshot** and demoted
+to an optional capability. The actual semantics were always latest-only
+autosave (each round overwrites the same slot; used only to resume a crashed
+run), never a multi-version checkpoint. The tiers are:
+
+| Tier | Methods | Missing behavior |
+| --- | --- | --- |
+| Required | `appendRound`, `load` | `TypeError` at assembly/startup |
+| Optional run snapshot | `saveRunSnapshot`, `loadLatestRunSnapshot` | snapshot persistence skipped; run completes normally, no mid-flight crash resume |
+| Optional run-state | `saveRunState`, `loadRunState`, `markRunState` | run-state persistence skipped; run completes normally |
+
+When an optional method is absent, the engine emits **one**
+`persistence_capability_degraded` event per missing method (`{type, runId,
+method, detail}`) and skips the corresponding persistence for the whole run —
+no per-round log spam. `getToolMetadata` and `emit` remain optional.
+
+**Rename & merge.** `saveCheckpoint` → `saveRunSnapshot`,
+`loadLatestCheckpoint` → `loadLatestRunSnapshot`. `appendCheckpoint` was
+**merged into `saveRunSnapshot`**: both were identical latest-only overwrite
+writes, so a separate "append" only invited the false assumption of
+versioning. The file store persists snapshots as `<runId>.snapshot.json`
+(was `<runId>.checkpoint.json`); reading falls back to the legacy suffix when
+the new file does not exist (read-compatible, no data migration).
+
+**Deprecated aliases (transition period).** The built-in stores still expose
+`saveCheckpoint` / `appendCheckpoint` / `loadLatestCheckpoint` as `@deprecated`
+aliases delegating to the new methods. Third-party stores that only implement
+the old names keep working: the engine resolves the snapshot writer as
+`saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint`, and the snapshot
+loader as `loadLatestRunSnapshot` → `loadLatestCheckpoint`. Hosts should
+migrate to the new names; the aliases may be removed in a future major.
+
+**Known duplication (documented, not fixed here).** The latest run-state is
+written twice: embedded in each round record (`RoundRecord.runState`) and via
+the standalone run-state methods (`saveRunState`/`markRunState`). This
+duplication predates issue #78 and is tracked as a follow-up; this issue
+changes only the naming and capability tiering, not the structure.
 
 `modelConfig` is always the resolver-shaped `ModelConfigProvider`, including an
 explicit override supplied alongside `assemblyPort`. A plain config object is
@@ -122,12 +159,14 @@ The deterministic run state carries the same bill (`deterministic.errors.unpersi
 so a mid-run crash does not lose it; the model-visible render shows only the
 count, never host error text.
 
-The failure tiers are per operation, not per port: transcript
-append/checkpoint/run-state failures terminate the run (side effects are
-tracked, per ADR-013), while `notes` writes continue, report, and return a
-tool result that does not look like a saved note. A host port reports its own
-writes through the injected `reportPersistenceFailure` bridge, which produces
-the same event and bill shapes as the transcript path.
+The failure tiers are per operation, not per port: transcript append and
+run-snapshot/run-state write failures terminate the run (side effects are
+tracked, per ADR-013) — but only when the store actually advertises the
+method; a store that lacks an optional capability degrades instead of failing
+(see "TranscriptStore capability tiers" above). `notes` writes continue,
+report, and return a tool result that does not look like a saved note. A host
+port reports its own writes through the injected `reportPersistenceFailure`
+bridge, which produces the same event and bill shapes as the transcript path.
 
 `result.completionErrors[]` collects teardown failures (multiple failures do
 not overwrite each other). When the main result is an exception, the original
@@ -432,7 +471,7 @@ Old or large tool results may be folded only in the provider request view.
 `toolResultFoldMinTokens` defaults to `4000` estimated tokens. The warning
 round at `age === ttl - 1` asks the model to extract important facts with
 `note_take`; the folded placeholder contains a navigation digest and, where
-applicable, a JSON skeleton. Checkpoints retain the full tool-result text.
+applicable, a JSON skeleton. Run snapshots retain the full tool-result text.
 Note, todo, error, and explicitly protected results are not folded.
 
 ## Repeated commands and side effects (ADR-016)

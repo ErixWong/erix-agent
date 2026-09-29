@@ -5,12 +5,15 @@ import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
-const STORE_METHODS = [
+const REQUIRED_STORE_METHODS = [
   "appendRound",
   "load",
-  "saveCheckpoint",
-  "appendCheckpoint",
-  "loadLatestCheckpoint",
+];
+
+// issue #78：快照/run-state 为可选 capability，缺失不得在启动时报错。
+const OPTIONAL_STORE_METHODS = [
+  "saveRunSnapshot",
+  "loadLatestRunSnapshot",
   "saveRunState",
   "loadRunState",
   "markRunState",
@@ -34,8 +37,8 @@ function toolProvider(id = "tool-1") {
   }]);
 }
 
-test("required persistence validates every store method before provider or tool execution", async () => {
-  for (const missing of STORE_METHODS) {
+test("required persistence validates required store methods before provider or tool execution", async () => {
+  for (const missing of REQUIRED_STORE_METHODS) {
     const store = fullStore();
     delete store[missing];
     const provider = textProvider();
@@ -58,6 +61,23 @@ test("required persistence validates every store method before provider or tool 
     );
     assert.equal(provider.requests.length, 0, missing);
     assert.equal(executions, 0, missing);
+  }
+});
+
+test("missing optional snapshot/run-state methods do not fail startup (issue #78)", async () => {
+  for (const missing of OPTIONAL_STORE_METHODS) {
+    const store = fullStore();
+    delete store[missing];
+    const provider = textProvider();
+
+    const result = await runToolLoop({
+      provider,
+      store,
+      runId: `missing-optional-${missing}`,
+      initialUserMessage: "validate",
+      executeTool: async () => "unused",
+    });
+    assert.equal(result.finalText, "done", missing);
   }
 });
 
@@ -118,10 +138,10 @@ test("required persistence retries appendRound and terminates with a transcript 
   );
 });
 
-test("checkpoint failure before a tool reports not_started and skips execution", async () => {
+test("snapshot failure before a tool reports not_started and skips execution", async () => {
   const store = fullStore();
-  store.saveCheckpoint = async () => {
-    throw new Error("checkpoint unavailable");
+  store.saveRunSnapshot = async () => {
+    throw new Error("snapshot unavailable");
   };
   const events = [];
   let executions = 0;
@@ -141,7 +161,7 @@ test("checkpoint failure before a tool reports not_started and skips execution",
     }),
     (error) => error.code === "checkpoint_failed"
       && error.termination?.reason === "persistence_failed"
-      && error.operation === "saveCheckpoint"
+      && error.operation === "saveRunSnapshot"
       && error.phase === "checkpoint_before_tool"
       && error.sideEffect === "not_started",
   );
@@ -149,10 +169,10 @@ test("checkpoint failure before a tool reports not_started and skips execution",
   assert.equal(events[0].sideEffect, "not_started");
 });
 
-test("checkpoint failure after a tool reports executed_uncommitted and terminates", async () => {
+test("snapshot failure after a tool reports executed_uncommitted and terminates", async () => {
   const store = fullStore();
-  store.saveCheckpoint = async (_runId, checkpoint) => {
-    if (checkpoint.status === "executed") throw new Error("checkpoint unavailable");
+  store.saveRunSnapshot = async (_runId, snapshot) => {
+    if (snapshot.status === "executed") throw new Error("snapshot unavailable");
   };
   const events = [];
   let executions = 0;
@@ -172,7 +192,7 @@ test("checkpoint failure after a tool reports executed_uncommitted and terminate
     }),
     (error) => error.code === "checkpoint_failed"
       && error.termination?.reason === "persistence_failed"
-      && error.operation === "saveCheckpoint"
+      && error.operation === "saveRunSnapshot"
       && error.phase === "checkpoint_after_tool"
       && error.sideEffect === "executed_uncommitted",
   );
@@ -180,14 +200,14 @@ test("checkpoint failure after a tool reports executed_uncommitted and terminate
   assert.equal(events[0].sideEffect, "executed_uncommitted");
 });
 
-test("intercept pre-tool checkpoint failure fails closed before judging or executing", async () => {
+test("intercept pre-tool snapshot failure fails closed before judging or executing", async () => {
   const store = fullStore();
-  const originalSaveCheckpoint = store.saveCheckpoint.bind(store);
-  let checkpointCalls = 0;
-  store.saveCheckpoint = async (runId, checkpoint) => {
-    checkpointCalls += 1;
-    if (checkpointCalls === 3) throw new Error("intercept checkpoint unavailable");
-    return originalSaveCheckpoint(runId, checkpoint);
+  const originalSaveRunSnapshot = store.saveRunSnapshot.bind(store);
+  let snapshotCalls = 0;
+  store.saveRunSnapshot = async (runId, snapshot) => {
+    snapshotCalls += 1;
+    if (snapshotCalls === 3) throw new Error("intercept snapshot unavailable");
+    return originalSaveRunSnapshot(runId, snapshot);
   };
   const judge = textProvider(JSON.stringify({
     done: true,
@@ -230,20 +250,20 @@ test("intercept pre-tool checkpoint failure fails closed before judging or execu
       && error.termination?.reason === "persistence_failed"
       && error.sideEffect === "not_started",
   );
-  assert.equal(checkpointCalls, 3);
+  assert.equal(snapshotCalls, 3);
   assert.equal(executions, 1);
   assert.equal(provider.requests.length, 2);
   assert.equal(judge.requests.length, 0);
 });
 
-test("intercept result checkpoint failure terminates without running the blocked tool", async () => {
+test("intercept result snapshot failure terminates without running the blocked tool", async () => {
   const store = fullStore();
-  const originalSaveCheckpoint = store.saveCheckpoint.bind(store);
-  let checkpointCalls = 0;
-  store.saveCheckpoint = async (runId, checkpoint) => {
-    checkpointCalls += 1;
-    if (checkpointCalls === 4) throw new Error("intercept result unavailable");
-    return originalSaveCheckpoint(runId, checkpoint);
+  const originalSaveRunSnapshot = store.saveRunSnapshot.bind(store);
+  let snapshotCalls = 0;
+  store.saveRunSnapshot = async (runId, snapshot) => {
+    snapshotCalls += 1;
+    if (snapshotCalls === 4) throw new Error("intercept result unavailable");
+    return originalSaveRunSnapshot(runId, snapshot);
   };
   const judge = textProvider(JSON.stringify({
     done: false,
@@ -286,7 +306,7 @@ test("intercept result checkpoint failure terminates without running the blocked
       && error.termination?.reason === "persistence_failed"
       && error.sideEffect === "not_started",
   );
-  assert.equal(checkpointCalls, 4);
+  assert.equal(snapshotCalls, 4);
   assert.equal(executions, 1);
   assert.equal(provider.requests.length, 2);
   assert.equal(judge.requests.length, 1);
@@ -442,4 +462,54 @@ test("happy-path result always exposes unpersisted and completionErrors", async 
   assert.deepEqual(result.unpersisted, []);
   assert.deepEqual(result.completionErrors, []);
   assert.ok(Object.isFrozen(Object.getPrototypeOf(result)) || Array.isArray(result.unpersisted));
+});
+
+test("minimal store (required methods only) runs to completion with one-shot capability diagnostics (issue #78)", async () => {
+  const store = {
+    appendRound: async () => {},
+    load: async () => [],
+  };
+  const events = [];
+  let executions = 0;
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "tool-1", name: "work", input: {} }],
+      stopReason: "tool_use",
+    },
+    {
+      content: [{ type: "text", text: "minimal store done" }],
+      stopReason: "end_turn",
+    },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    store,
+    runId: "minimal-store-run",
+    initialUserMessage: "work",
+    executeTool: async () => {
+      executions += 1;
+      return "worked";
+    },
+    completion: false,
+    onEvent: (event) => events.push(event),
+  });
+
+  // run 正常执行（含工具调用），仅不支持中途 crash resume
+  assert.equal(result.finalText, "minimal store done");
+  assert.equal(executions, 1);
+  assert.equal(provider.requests.length, 2);
+  assert.equal(result.unpersisted.length, 0);
+
+  // 缺失的可选方法各只诊断一次（不每轮刷屏）：saveRunSnapshot 每轮工具前后都会被跳过，
+  // 事件流里只能出现一条；saveRunState/markRunState 同理。断言事件总数与 detail 字段。
+  const degraded = events.filter((event) => event.type === "persistence_capability_degraded");
+  assert.equal(degraded.length, 3, `降级诊断总数必须为 3，实际：${degraded.map((e) => e.method).join(",")}`);
+  const byMethod = new Map(degraded.map((event) => [event.method, event]));
+  for (const method of ["saveRunSnapshot", "saveRunState", "markRunState"]) {
+    assert.ok(byMethod.has(method), `必须诊断缺失的 ${method}`);
+    const event = byMethod.get(method);
+    assert.equal(event.runId, "minimal-store-run");
+    assert.match(event.detail, new RegExp(method), "detail 必须点名缺失方法");
+  }
 });

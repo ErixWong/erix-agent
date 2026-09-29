@@ -40,6 +40,11 @@ import {
   purgeInactiveNoteScopes,
   wrapExecuteTool,
 } from "./tools.js";
+import {
+  recordChatSession,
+  resolveChatSessionSelection,
+} from "./sessions.js";
+import { safeRunId } from "../src/store/file.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
 
 const DEFAULT_MAX_ROUNDS = 64;
@@ -48,7 +53,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--no-todo] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--no-todo] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
@@ -56,6 +61,8 @@ const HELP_TEXT = `用法：
 
   --stream              流式输出模型文本
   --session <id>        会话 ID（默认按工作目录自动派生）
+  -c, --continue       接续当前目录最近一次的会话（等价 --session <最近id>，与 --session 互斥）
+  -r                   交互式会话选择器（需 TTY；非交互环境请改用 -c 或 --session）
   --dir <path>          Transcript 存档目录（chat 默认：~/.erix/transcripts）
   --max-rounds <n>      工具循环最大轮数（默认：64，可用 ERIX_MAX_ROUNDS 覆盖）
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 16 时启用，见 DEFAULT_REFLECTION_MIN_ROUNDS）
@@ -266,6 +273,22 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       options.finalGuard = argument === "--final-guard";
       continue;
     }
+    if (argument === "-c" || argument === "--continue") {
+      if (seenOptions.has("--continue")) {
+        usageError("参数重复：--continue");
+      }
+      seenOptions.add("--continue");
+      options.continueSession = true;
+      continue;
+    }
+    if (argument === "-r") {
+      if (seenOptions.has("-r")) {
+        usageError("参数重复：-r");
+      }
+      seenOptions.add("-r");
+      options.resumePicker = true;
+      continue;
+    }
     if (argument === "--no-notes") {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
@@ -360,6 +383,16 @@ export function parseChatArgs(args, cwd = process.cwd()) {
     } else {
       prompt = `${prompt} ${argument}`;
     }
+  }
+
+  if (seenOptions.has("--session") && options.continueSession === true) {
+    usageError("--session 与 -c/--continue 互斥");
+  }
+  if (seenOptions.has("--session") && options.resumePicker === true) {
+    usageError("--session 与 -r 互斥");
+  }
+  if (options.continueSession === true && options.resumePicker === true) {
+    usageError("-c/--continue 与 -r 互斥");
   }
 
   return { prompt, ...options };
@@ -948,10 +981,43 @@ async function main(args) {
     printHelp();
     return;
   }
-  const result = await runChat({
-    ...chatArgs,
-    sessionExplicit: args.slice(1).includes("--session"),
-  });
+  const selection = await resolveChatSessionSelection(
+    {
+      continueSession: chatArgs.continueSession,
+      resumePicker: chatArgs.resumePicker,
+      session: chatArgs.session,
+      sessionExplicit: args.slice(1).includes("--session"),
+      dir: chatArgs.dir,
+    },
+    {
+      home: homedir(),
+      cwd: process.cwd(),
+      input: process.stdin,
+      output: process.stderr,
+    },
+  );
+  if (selection.cancelled === true) return;
+  // 索引只收录真实产生过 transcript 的会话（resume 的前提是 store.load 非空，
+  // 无 transcript 的条目只会遮蔽真正可续的会话）。
+  const transcriptPath = join(chatArgs.dir, `${safeRunId(selection.session)}.jsonl`);
+  let result;
+  try {
+    result = await runChat({
+      ...chatArgs,
+      session: selection.session,
+      sessionExplicit: selection.sessionExplicit,
+    });
+  } finally {
+    // issue #75：会话索引是缓存不是真相——记录失败静默，绝不影响主流程
+    if (existsSync(transcriptPath)) {
+      await recordChatSession({
+        home: homedir(),
+        sessionId: selection.session,
+        cwd: process.cwd(),
+        prompt: chatArgs.prompt,
+      });
+    }
+  }
   const verificationExitCode = exitCodeForVerification(result?.verification);
   if (verificationExitCode !== 0) process.exitCode = verificationExitCode;
   return result;

@@ -109,8 +109,8 @@ test("boundary parity: plain modelConfig without resolve reports identically in 
 });
 
 test("boundary parity: incomplete transcript store reports the same missing method list in both shapes", async () => {
-  // Only appendRound present; the other seven methods are missing.
-  const brokenStore = { appendRound: async () => {} };
+  // issue #78：必需方法只有 appendRound/load；这里两者都缺（七个可选方法缺失不算不完整）。
+  const brokenStore = {};
 
   // Capture the createAssemblyPort missing-item list once; every shape below
   // must surface this exact, ordered list under its own error prefix.
@@ -139,8 +139,11 @@ test("boundary parity: incomplete transcript store reports the same missing meth
     }),
     (error) => error instanceof TypeError
       && error.message.startsWith(ASSEMBLY_PREFIX)
+      && error.message.includes("store.appendRound")
       && error.message.includes("store.load")
-      && error.message.includes("store.markRunState"),
+      // issue #78：可选 capability（快照/run-state）缺失不得出现在必需缺失清单里。
+      && !error.message.includes("saveRunSnapshot")
+      && !error.message.includes("markRunState"),
   );
 
   // Shape 1b: assemblyPortOptions routes through createAssemblyPort, so the
@@ -178,4 +181,48 @@ test("boundary parity: incomplete transcript store reports the same missing meth
         return true;
       })(),
   );
+});
+
+test("boundary parity: minimal store (required methods only) assembles and runs in both shapes (issue #78)", async () => {
+  // 可选 capability（快照/run-state）全部缺失不得阻止组装或运行——两条入口都要验证。
+  const appendCalls = [];
+  const minimalStore = {
+    appendRound: async (runId, record) => {
+      appendCalls.push(record);
+    },
+    load: async () => [],
+  };
+
+  // Shape 1a: createAssemblyPort 组装成功（缺可选方法不报错）
+  const port = createAssemblyPort({
+    modelConfig: createValidModelConfig(),
+    provider: createValidProvider(),
+    tools: createValidTools(),
+    store: minimalStore,
+    session: { id: `parity-minimal-${process.pid}` },
+  });
+  assert.equal(typeof port.store.appendRound, "function");
+  assert.equal(typeof port.store.load, "function");
+
+  // Shape 1b: assemblyPortOptions 解析成功且带同一 store
+  const options = await assemblyPortOptions({
+    modelConfig: createValidModelConfig(),
+    provider: createValidProvider(),
+    tools: createValidTools(),
+    store: minimalStore,
+    session: { id: `parity-minimal-${process.pid}` },
+  });
+  assert.equal(options.store, minimalStore);
+
+  // Shape 2: 细粒度 runToolLoop 全 run 正常完成
+  const result = await runToolLoop({
+    provider: createValidProvider(),
+    executeTool: async () => "unused",
+    modelConfig: createValidModelConfig(),
+    store: minimalStore,
+    session: { id: `parity-minimal-${process.pid}` },
+    completion: false,
+  });
+  assert.equal(result.finalText, "ok");
+  assert.ok(appendCalls.length > 0, "transcript appendRound 必须被调用");
 });

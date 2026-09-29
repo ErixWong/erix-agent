@@ -106,7 +106,10 @@ function missingAssemblyMethods(port) {
  * @property {{definitions:object[],executeTool:Function,getToolMetadata?:Function}} tools
  *   Tool definitions and the structured ToolExecutor.
  * @property {object} [store]
- *   Optional complete TranscriptStore implementation with all nine methods.
+ *   Optional TranscriptStore. Required: `appendRound`, `load`. Optional
+ *   capabilities (issue #78): run snapshot (`saveRunSnapshot`,
+ *   `loadLatestRunSnapshot`) and run-state (`markRunState`, `saveRunState`,
+ *   `loadRunState`); missing optional methods degrade, they do not fail.
  * @property {{id:string,modelSlot?:string,resume?:boolean,initialMessages?:object[]}} session
  *   Run identity and optional resume seed.
  * @property {object} [policy]

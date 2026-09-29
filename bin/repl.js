@@ -31,6 +31,7 @@ import {
   createMcpProxyTool,
 } from "./mcp.js";
 import { buildSkillTools, warnBuiltinToolConflicts } from "./skills.js";
+import { recordChatSession } from "./sessions.js";
 import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
@@ -157,7 +158,8 @@ export function defaultSessionId(cwd, { unique = false } = {}) {
   return unique ? `${stableId}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}` : stableId;
 }
 
-export function parseReplArgs(argv, cwd = process.cwd()) {
+// home 参与默认 --dir 计算：注入 io.home 的测试/调用方不会误写真实 ~/.erix。
+export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
   const args = Array.isArray(argv) ? argv : [];
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
     return { showHelp: true };
@@ -165,7 +167,7 @@ export function parseReplArgs(argv, cwd = process.cwd()) {
 
   const options = {
     session: defaultSessionId(cwd),
-    dir: join(homedir(), ".erix", "transcripts"),
+    dir: join(home, ".erix", "transcripts"),
     maxRounds: DEFAULT_MAX_ROUNDS,
     idleTimeout: DEFAULT_IDLE_TIMEOUT_SECONDS,
   };
@@ -314,7 +316,7 @@ async function deleteSession(dir, session) {
 
 async function deleteTranscript(dir, session) {
   const base = join(String(dir), safeRunId(session));
-  for (const suffix of [".jsonl", ".checkpoint.json", ".state.json"]) {
+  for (const suffix of [".jsonl", ".snapshot.json", ".checkpoint.json", ".state.json"]) {
     try {
       await unlink(`${base}${suffix}`);
     } catch (error) {
@@ -355,11 +357,12 @@ function buildExecuteTool(cliTools, skillTools, mcpProxy, notesAssembler) {
 
 export async function runRepl(argv, io = {}) {
   const cwd = process.cwd();
-  const options = parseReplArgs(argv, cwd);
   const input = io.input ?? process.stdin;
   const output = io.output ?? process.stdout;
   const errorOutput = io.errorOutput ?? process.stderr;
-  const sessionDir = io.sessionDir ?? join(homedir(), ".erix");
+  const home = io.home ?? homedir();
+  const options = parseReplArgs(argv, cwd, home);
+  const sessionDir = io.sessionDir ?? join(home, ".erix");
   const notesDir = resolveNotesDir(io.notesDir);
   const notesDisabled = process.env.ERIX_NO_NOTES?.trim() === "1";
   // issue #69：ERIX_NO_TODO=1（repl 仅 env，与 notes 对称）——彻底关 todo：内置四工具不注册、
@@ -754,6 +757,11 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           );
         }
         await saveSession(sessionDir, options.session, messages);
+        // issue #75：本轮真实产出 transcript 后 upsert 会话索引（缓存，失败静默）——
+        // 无 transcript 的会话没有可续内容，不入索引（与 chat 行为一致）。
+        if (existsSync(join(options.dir, `${safeRunId(options.session)}.jsonl`))) {
+          await recordChatSession({ home, sessionId: options.session, cwd, prompt: line });
+        }
       } catch (error) {
         if (idle?.timedOut()) throw new IdleTimeoutError(options.idleTimeout);
         throw error;

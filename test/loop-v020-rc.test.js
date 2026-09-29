@@ -450,10 +450,10 @@ test("injects a task reminder after a late welcome response", async () => {
 test("checkpoints before tools and resumes without replaying an executed tool", async () => {
   const store = createMemoryTranscriptStore();
   const events = [];
-  const originalSaveCheckpoint = store.saveCheckpoint;
-  store.saveCheckpoint = async (runId, checkpoint) => {
-    events.push(["checkpoint", checkpoint.status]);
-    return originalSaveCheckpoint.call(store, runId, checkpoint);
+  const originalSaveRunSnapshot = store.saveRunSnapshot;
+  store.saveRunSnapshot = async (runId, snapshot) => {
+    events.push(["checkpoint", snapshot.status]);
+    return originalSaveRunSnapshot.call(store, runId, snapshot);
   };
   const provider = createFakeProvider([
     toolResponse("checkpoint-1"),
@@ -542,8 +542,8 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
 
 test("fails closed when a checkpoint cannot be persisted before a tool", async () => {
   const store = createMemoryTranscriptStore();
-  store.saveCheckpoint = async () => {
-    throw new Error("checkpoint disk full");
+  store.saveRunSnapshot = async () => {
+    throw new Error("snapshot disk full");
   };
   const provider = createFakeProvider([
     toolResponse("checkpoint-failure", "work"),
@@ -574,13 +574,13 @@ test("fails closed when a checkpoint cannot be persisted before a tool", async (
 
 test("fails closed after a tool when its executed checkpoint cannot be persisted", async () => {
   const store = createMemoryTranscriptStore();
-  const originalSaveCheckpoint = store.saveCheckpoint;
+  const originalSaveRunSnapshot = store.saveRunSnapshot;
   let executions = 0;
-  store.saveCheckpoint = async (runId, checkpoint) => {
-    if (checkpoint.status === "executed") {
-      throw new Error("checkpoint disk full after execution");
+  store.saveRunSnapshot = async (runId, snapshot) => {
+    if (snapshot.status === "executed") {
+      throw new Error("snapshot disk full after execution");
     }
-    return originalSaveCheckpoint.call(store, runId, checkpoint);
+    return originalSaveRunSnapshot.call(store, runId, snapshot);
   };
 
   await assert.rejects(

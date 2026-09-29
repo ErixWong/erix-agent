@@ -1,9 +1,15 @@
-// TranscriptStore 契约测试套件（ADR-002）
+// TranscriptStore 契约测试套件（ADR-002，issue #78 分级修订）
 // 任何 TranscriptStore 实现（库内置 memory/file、项目侧 MariaDB/PG 适配器）
 // 都必须通过同一组断言。用法：
 //   import { transcriptStoreContract } from "erix-agent/contract-tests";
 //   transcriptStoreContract("mariadb", () => createMariaTranscriptStore(...));
 // 实现特有行为（崩溃恢复/连接管理/清理）由实现方自行补充测试，不进契约。
+//
+// issue #78 capability 分级：必需方法只有 appendRound/load；run snapshot
+// （saveRunSnapshot/loadLatestRunSnapshot，latest-only 覆盖写，非多版本 checkpoint）
+// 与 run-state（saveRunState/loadRunState/markRunState）为可选 capability。
+// 本套件覆盖完整表面（库内置实现均全量实现）；最小实现（仅必需两方法）的
+// 行为由 assembly/persistence 校验测试锁定（缺可选方法不得报错）。
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -57,7 +63,7 @@ export function transcriptStoreContract(label, createStore) {
     assert.equal((await store.load("run-b"))[0].round, 2);
   });
 
-  test(`${label}: checkpoint 三件套往返保真与追加语义`, async () => {
+  test(`${label}: run snapshot 往返保真与 latest-only 覆盖语义`, async () => {
     const store = await createStore();
     const first = {
       round: 1,
@@ -73,26 +79,28 @@ export function transcriptStoreContract(label, createStore) {
       toolResults: [{ toolUseId: "tool-2", toolResult: { content: "ok" } }],
     };
 
-    await store.saveCheckpoint("checkpoint-run", first);
-    await store.appendCheckpoint("checkpoint-run", latest);
+    // issue #78：appendCheckpoint 已并入 saveRunSnapshot（两者同为覆盖写），
+    // 第二次保存覆盖第一次——latest-only autosave 语义。
+    await store.saveRunSnapshot("snapshot-run", first);
+    await store.saveRunSnapshot("snapshot-run", latest);
 
-    assert.deepEqual(await store.loadLatestCheckpoint("checkpoint-run"), latest);
+    assert.deepEqual(await store.loadLatestRunSnapshot("snapshot-run"), latest);
   });
 
-  test(`${label}: checkpoint 未知 runId 返回 undefined`, async () => {
+  test(`${label}: run snapshot 未知 runId 返回 undefined`, async () => {
     const store = await createStore();
-    assert.equal(await store.loadLatestCheckpoint("missing-checkpoint-run"), undefined);
+    assert.equal(await store.loadLatestRunSnapshot("missing-snapshot-run"), undefined);
   });
 
-  test(`${label}: checkpoint/run-state 多 runId 隔离`, async () => {
+  test(`${label}: run snapshot/run-state 多 runId 隔离`, async () => {
     const store = await createStore();
-    await store.saveCheckpoint("run-a", {
+    await store.saveRunSnapshot("run-a", {
       round: 1,
       ts: "2026-08-29T00:01:00.000Z",
       status: "pending",
       pendingToolUse: { id: "a" },
     });
-    await store.appendCheckpoint("run-b", {
+    await store.saveRunSnapshot("run-b", {
       round: 2,
       ts: "2026-08-29T00:02:00.000Z",
       status: "executed",
@@ -103,19 +111,18 @@ export function transcriptStoreContract(label, createStore) {
     await store.markRunState("run-a", "failed");
     await store.markRunState("run-b", "succeeded");
 
-    assert.equal((await store.loadLatestCheckpoint("run-a")).pendingToolUse.id, "a");
-    assert.equal((await store.loadLatestCheckpoint("run-b")).pendingToolUse.id, "b");
+    assert.equal((await store.loadLatestRunSnapshot("run-a")).pendingToolUse.id, "a");
+    assert.equal((await store.loadLatestRunSnapshot("run-b")).pendingToolUse.id, "b");
     assert.equal((await store.loadRunState("run-a")).state, "failed");
     assert.equal((await store.loadRunState("run-b")).state, "succeeded");
     assert.equal((await store.loadRunState("run-a")).stateVersion, 1);
     assert.equal((await store.loadRunState("run-b")).stateVersion, 2);
   });
 
-  test(`${label}: checkpoint/run-state 写失败向上抛出`, async () => {
+  test(`${label}: run snapshot/run-state 写失败向上抛出`, async () => {
     const store = await createStore();
     const methods = [
-      ["saveCheckpoint", ["failed-run", { round: 1 }]],
-      ["appendCheckpoint", ["failed-run", { round: 1 }]],
+      ["saveRunSnapshot", ["failed-run", { round: 1 }]],
       ["saveRunState", ["failed-run", { stateVersion: 1 }]],
       ["markRunState", ["failed-run", "failed"]],
     ];
