@@ -188,7 +188,7 @@ const assemblyPort = createAssemblyPort({
   modelConfig, // ModelConfigProvider: { resolve(slot) }
   provider,    // { chat?, chatStream? }
   tools: { definitions, executeTool, getToolMetadata? },
-  store?,      // 可选 TranscriptStore（八方法）
+  store?,      // 可选 TranscriptStore（必需：appendRound、load；可选：run-snapshot/run-state）
   session: { id, resume?, initialMessages? },
   policy?,     // 显式 runToolLoop 选项；陌生键会被拒绝
   emit?,       // (eventType, payload) => void
@@ -258,7 +258,7 @@ runToolLoop({ provider, executeTool, ...options })
 - 库中的 `maxRounds` 默认为 `8`。CLI 提供自己的命令级默认值。
 - `maxTokenContinuations` 默认为 `3`。以 `max_tokens` 结束的响应最多可以继续指定次数；耗尽后产生 `termination.reason === "continuation_exhausted"`。
 - `stallDetection` 默认为 `{ window: 4 }`。默认模式是 `appear`，会检测窗口内任意位置重复的工具签名；`mode: "consecutive"` 要求整个窗口都匹配。传入 `stallDetection: false` 可禁用。
-- `resume` 默认为 `false`。配合 `store` 和 `runId` 时，`resume: true` 会恢复 transcript、运行状态、最新 checkpoint，以及所有仍需执行的待处理工具调用。若 checkpoint store 同时提供 writer（`saveCheckpoint` 或 `appendCheckpoint`）和 `loadLatestCheckpoint`，则在执行前或执行后 checkpoint 无法持久化时会 fail closed。宿主的 `executeTool` 仍必须按 tool id 保证幂等；循环无法保证外部副作用 exactly-once。
+- `resume` 默认为 `false`。配合 `store` 和 `runId` 时，`resume: true` 会恢复 transcript、运行状态、最新 run snapshot，以及所有仍需执行的待处理工具调用。若 store 同时提供快照 writer（`saveRunSnapshot`；仅实现旧名的 store 仍被接受，fallback 链 `saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint`）与 loader（`loadLatestRunSnapshot`，或 deprecated 的 `loadLatestCheckpoint`），则在执行前或执行后 snapshot 无法持久化时会 fail closed。快照/run-state 方法为可选 capability：缺失时引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`，run 正常跑完，仅不支持中途 crash resume）。宿主的 `executeTool` 仍必须按 tool id 保证幂等；循环无法保证外部副作用 exactly-once。
 
 正常终止词汇为：
 
@@ -339,8 +339,8 @@ Judge 拦截使用 6,000 token 的会话预算；round judge 最多输出 1,024 
 - `stubFor(message)` hook 可以为折叠后的工具结果保留有界、非秘密 stub（**全部** tool_result，不再有可重放性标记子集——ADR-016）。CLI 的 stub 限制为 200 个字符，最多包含三个安全的 `label=value` fact。折叠导航记录是形如 `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }` 的仅地址记录，最多 10 个 artifact、400 个字符。它们不是语义搜索，也不是 provenance 证明。
 - tool-result TTL 折叠独立于上下文压缩，只改变 provider request view；checkpoint 保留完整工具结果文本。`toolResultTtl` 默认为 `2` 轮（`0` 表示禁用），`toolResultFoldMinTokens` 默认为估算的 `4000` token。`age === ttl - 1` 的 warning round 会要求模型使用 `note_take`；折叠占位符包含 navigation digest，并在适用的 JSON 中包含 JSON skeleton。`note_*`、todo、错误和显式保护的结果不会折叠。
 - `writeToolNames` 默认为 `["writeFile"]`；自定义写工具必须显式命名。`writeToolPathKeys` 默认为 `["path", "file_path"]`。judge 的 `filesWritten` 足迹不会根据工具名称推断任意写工具。
-- `TranscriptStore` 实现提供幂等的 `appendRound`，以及 checkpoint 和 run-state 所需的八个持久化方法。传入 `persistence: "none"` 可显式禁用所有写入。模型侧取回采用 note-first：先用 `note_list`，再用 `note_read`；transcript recall API 已在 0.8.0 退役。
-- `runState` 是确定性的、有界的，并在压缩点以替换方式注入。store 可以实现 `markRunState`、`saveRunState`/`loadRunState`、`saveCheckpoint`/`appendCheckpoint` 和 `loadLatestCheckpoint`。持久化 run state 有 64 KiB 序列化硬上限，以及条目和字段上限；裁剪通过 `bounds.truncated` 可见。`todoStateProvider` 和 `semanticStateProvider` 由宿主注入；语义状态有界且带版本，过期版本标记为 `stale`。无效或损坏的状态在 resume 时报告为 `state_unavailable`，而不是静默当作全新状态。
+- `TranscriptStore` 实现提供幂等的 `appendRound` 与 `load`（两个必需方法），以及可选的 run-snapshot（`saveRunSnapshot`/`loadLatestRunSnapshot`）与 run-state（`markRunState`、`saveRunState`/`loadRunState`）capability——分级详见 `docs/host-consumer-contract.md`。传入 `persistence: "none"` 可显式禁用所有写入。模型侧取回采用 note-first：先用 `note_list`，再用 `note_read`；transcript recall API 已在 0.8.0 退役。
+- `runState` 是确定性的、有界的，并在压缩点以替换方式注入。store 可以实现 `markRunState`、`saveRunState`/`loadRunState`、`saveRunSnapshot` 和 `loadLatestRunSnapshot`。持久化 run state 有 64 KiB 序列化硬上限，以及条目和字段上限；裁剪通过 `bounds.truncated` 可见。`todoStateProvider` 和 `semanticStateProvider` 由宿主注入；语义状态有界且带版本，过期版本标记为 `stale`。无效或损坏的状态在 resume 时报告为 `state_unavailable`，而不是静默当作全新状态。
 - Provider 特有的细节保持显式：`transport` 作为 `dispatcher` 透传给 fetch（也可以增强 fetch options）；格式错误的 OpenAI 工具参数以 `_truncatedArguments` 暴露，`_raw` 为兼容别名；不安全的 run ID 映射为 `run-h-<sha256 first 24 hex characters>`。
 
 ### 回调与事件
@@ -360,7 +360,7 @@ onUsage
 onEvent
 ```
 
-流式 observer（`onDelta`、`onReasoningDelta`、`onToolCall` 和 `onUsage`）在 observer 抛出异常时通过 `onObserverError` 报告。持久化失败使用 `onPersistenceError`。`onEvent` 接收包括 `round_start`、`round_end`、`tool_use`、`tool_result`、`attempt`、`recovering`、`recovered`、`delta`、`reasoning_delta`、`tool_call`、`usage`、`forced_final` 和 `final_guard` 在内的结构化事件。
+流式 observer（`onDelta`、`onReasoningDelta`、`onToolCall` 和 `onUsage`）在 observer 抛出异常时通过 `onObserverError` 报告。持久化失败使用 `onPersistenceError`。`onEvent` 接收包括 `round_start`、`round_end`、`tool_use`、`tool_result`、`attempt`、`recovering`、`recovered`、`delta`、`reasoning_delta`、`tool_call`、`usage`、`forced_final`、`final_guard` 和 `persistence_capability_degraded`（每个缺失的可选 store capability 各发一条）在内的结构化事件。
 
 ## CLI：`erix`
 
@@ -416,7 +416,8 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
   mcp.json
   transcripts/
     <safeRunId>.jsonl
-    <safeRunId>.checkpoint.json
+    <safeRunId>.snapshot.json
+    <safeRunId>.checkpoint.json  旧快照后缀（读取兼容）
     <safeRunId>.state.json
   <session>.json                 REPL session 快照
   notes/run/<safeRunId>/         NotesStore 数据

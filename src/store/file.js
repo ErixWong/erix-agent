@@ -41,7 +41,12 @@ function transcriptPath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.jsonl`);
 }
 
-function checkpointPath(dir, runId) {
+function snapshotPath(dir, runId) {
+  return join(dir, `${safeRunId(runId)}.snapshot.json`);
+}
+
+// 旧后缀（issue #78 更名前）：仅用于读取兼容，不再写入。
+function legacyCheckpointPath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.checkpoint.json`);
 }
 
@@ -166,7 +171,8 @@ async function appendRecord(path, runId, record) {
  * 并发模型：**单写者**（每 runId 单进程写入——宿主单实例/CLI 单跑）。appendRound 的
  * 进程内锁防同实例交错；跨进程写同一 transcript 是设计外场景（需宿主自行加文件锁）。
  * 崩溃恢复：appendRound 前 repairTrailingFragment 修复尾部（半行残段隔离 .corrupt.*，
- * 完整 JSON 缺换行则补 \n）；checkpoint 支持 at-least-once 恢复（副作用工具需宿主幂等）。
+ * 完整 JSON 缺换行则补 \n）；run snapshot 支持 at-least-once 恢复（副作用工具需宿主幂等）。
+ * snapshot 是 latest-only 覆盖写（每轮覆盖、只用于中断恢复现场），不是多版本 checkpoint。
  *
  * @param {{dir:string}} options
  * @returns {{
@@ -175,6 +181,8 @@ async function appendRecord(path, runId, record) {
  *   markRunState: (runId:string, state:string) => Promise<void>,
  *   saveRunState: (runId:string, state:object) => Promise<void>,
  *   loadRunState: (runId:string) => Promise<object|undefined>,
+ *   saveRunSnapshot: (runId:string, snapshot:object) => Promise<void>,
+ *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   appendCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
@@ -259,25 +267,49 @@ export function createFileTranscriptStore({ dir }) {
       await rename(temporary, target);
     },
 
-    async saveCheckpoint(runId, checkpoint) {
+    async saveRunSnapshot(runId, snapshot) {
       await mkdir(dir, { recursive: true });
-      const target = checkpointPath(dir, runId);
+      const target = snapshotPath(dir, runId);
       const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-      await writeFile(temporary, `${JSON.stringify(checkpoint)}\n`, "utf8");
+      await writeFile(temporary, `${JSON.stringify(snapshot)}\n`, "utf8");
       await rename(temporary, target);
     },
 
-    async appendCheckpoint(runId, checkpoint) {
-      await this.saveCheckpoint(runId, checkpoint);
-    },
-
-    async loadLatestCheckpoint(runId) {
+    async loadLatestRunSnapshot(runId) {
+      // 优先读新后缀 .snapshot.json；不存在回落旧后缀 .checkpoint.json（读取兼容，不做迁移）
       try {
-        return JSON.parse(await readFile(checkpointPath(dir, runId), "utf8"));
+        return JSON.parse(await readFile(snapshotPath(dir, runId), "utf8"));
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      try {
+        return JSON.parse(await readFile(legacyCheckpointPath(dir, runId), "utf8"));
       } catch (error) {
         if (error?.code === "ENOENT") return undefined;
         throw error;
       }
+    },
+
+    /**
+     * @deprecated issue #78：checkpoint 更名 run snapshot。请改用 saveRunSnapshot。
+     */
+    async saveCheckpoint(runId, checkpoint) {
+      await this.saveRunSnapshot(runId, checkpoint);
+    },
+
+    /**
+     * @deprecated issue #78：append 语义与 save 相同（latest-only 覆盖写），
+     * 别名已合并——请改用 saveRunSnapshot。
+     */
+    async appendCheckpoint(runId, checkpoint) {
+      await this.saveRunSnapshot(runId, checkpoint);
+    },
+
+    /**
+     * @deprecated issue #78：请改用 loadLatestRunSnapshot（新方法兼容读取旧 .checkpoint.json）。
+     */
+    async loadLatestCheckpoint(runId) {
+      return this.loadLatestRunSnapshot(runId);
     },
 
     async loadRunState(runId) {

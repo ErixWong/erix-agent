@@ -348,8 +348,10 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   expert?:any, user?:any,
  *   task?:any, // Explicit judge/reflection/wrapup brief; non-empty values take precedence as task > context.task > entry transcript's last user text. Explicit values use a 1500-code-point budget; message fallback uses 500. Multi-turn hosts should pass the current/latest instruction as a string.
  *   session?:any, requestId?:string, toolContext?:object,
- *   store?: {appendRound?: Function, saveCheckpoint?:Function, appendCheckpoint?:Function,
- *     markRunState?:Function, saveRunState?:Function, loadRunState?:Function, loadLatestCheckpoint?:Function},
+ *   store?: {appendRound?: Function, load?:Function, // required pair (issue #78)
+ *     saveRunSnapshot?:Function, loadLatestRunSnapshot?:Function, // optional run-snapshot capability
+ *     markRunState?:Function, saveRunState?:Function, loadRunState?:Function}, // optional run-state capability
+ *     // Deprecated aliases still honoured at runtime: saveCheckpoint/appendCheckpoint/loadLatestCheckpoint.
  *   persistence?:"none"|"required", // Defaults to required with a store and none without one.
  *   diagnostics?: {error:(event:object)=>void|Promise<void>},
  *   runId?: string,
@@ -598,8 +600,27 @@ export async function runToolLoop(options) {
     }
     console.error("Observer callback error:", error);
   };
+  // issue #78：可选 capability（run snapshot / run-state）缺失时跳过对应持久化，
+  // 只发一次诊断事件（不每轮刷屏）；run 正常执行，仅不支持中途 crash resume。
+  const skippedCapabilityMethods = new Set();
+  const notifyCapabilitySkipped = (method) => {
+    if (skippedCapabilityMethods.has(method)) return;
+    skippedCapabilityMethods.add(method);
+    // 直接用 onEvent（函数参数，任何时点可用）；emitEvent 的 const 定义在下方，
+    // restoreResume 早于它执行（markRunState("running")），不能引用。
+    onEvent?.({
+      type: "persistence_capability_degraded",
+      runId,
+      method,
+      detail: `store does not implement ${method}; the corresponding persistence is skipped for this run`,
+    });
+  };
   const persist = async (method, ...args) => {
     if (!persistenceRequired) return false;
+    if (typeof store?.[method] !== "function") {
+      notifyCapabilitySkipped(method);
+      return false;
+    }
     const phase = method === "appendRound"
       ? "transcript"
       : method === "saveRunState" || method === "markRunState"
@@ -960,6 +981,9 @@ export async function runToolLoop(options) {
     persistenceRequired,
     runId,
     archivedOutputs,
+    // issue #78 验收修正：resume 消费可选能力（loadRunState / snapshot loader）
+    // 缺失时走与 persist 守卫同一的单条去重诊断通道。
+    notifyCapabilitySkipped,
     get currentRunState() {
       return currentRunState;
     },
@@ -1351,8 +1375,17 @@ export async function runToolLoop(options) {
 
   const executedToolIds = new Set(resumeExecutedToolIds);
   const checkpointResults = new Map(resumeCheckpointResults);
-  // required mode validates the complete checkpoint writer/loader contract above.
-  const hasCheckpointStore = persistenceRequired;
+  // issue #78：run snapshot 是可选 capability。优先新方法 saveRunSnapshot；
+  // 旧名（saveCheckpoint/appendCheckpoint）作为过渡期 fallback 继续支持第三方 store；
+  // 三者皆无 → 无快照能力：跳过快照持久化，工具照常执行（仅失去中途 crash resume）。
+  const snapshotSaveMethod = typeof store?.saveRunSnapshot === "function"
+    ? "saveRunSnapshot"
+    : typeof store?.saveCheckpoint === "function"
+      ? "saveCheckpoint"
+      : typeof store?.appendCheckpoint === "function"
+        ? "appendCheckpoint"
+        : undefined;
+  const hasCheckpointStore = persistenceRequired && snapshotSaveMethod !== undefined;
   const persistCheckpoint = async ({
     round,
     pendingToolUse,
@@ -1362,12 +1395,13 @@ export async function runToolLoop(options) {
     messagesOverride,
   }) => {
     lastPersistenceFailure = undefined;
-    const method = typeof store?.saveCheckpoint === "function"
-      ? "saveCheckpoint"
-      : typeof store?.appendCheckpoint === "function"
-        ? "appendCheckpoint"
-        : undefined;
-    if (method === undefined) return false;
+    const method = snapshotSaveMethod;
+    if (method === undefined) {
+      // 无快照能力：单条诊断（Set 去重，不每轮刷屏），工具照常执行。
+      // persistence "none" 模式本来就不要求持久化，不诊断。
+      if (persistenceRequired) notifyCapabilitySkipped("saveRunSnapshot");
+      return false;
+    }
     try {
       return await persist(method, runId, {
         round,

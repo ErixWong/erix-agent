@@ -30,7 +30,7 @@ flowchart LR
     PROV -- "⑤ canonical response (Block + stopReason + usage)" --> LOOP
     LOOP -- "⑥ tool_use → structured execution object" --> TOOLS
     TOOLS -- "⑦ tool_result (is_error normalized)" --> LOOP
-    LOOP -- "⑧ per-round appendRound / pre+post tool checkpoint" --> STORE
+    LOOP -- "⑧ per-round appendRound / pre+post tool run snapshot" --> STORE
     LOOP -- "⑨ round judge on end_turn / periodic tool audit" --> JUDGE
     JUDGE -- "⑩ verdict: allow / block / correct" --> LOOP
     LOOP -- "⑪ final-text verification" --> GUARD
@@ -100,9 +100,9 @@ flowchart TB
     end
 
     subgraph store2["store/ archive"]
-        TS["TranscriptStore port<br/>8-method contract (ADR-002)"]
+        TS["TranscriptStore port<br/>required: appendRound + load;<br/>optional run-snapshot/run-state (ADR-002, issue #78)"]
         MEM["memory.js<br/>in-process Map (reference impl)"]
-        FIL["file.js<br/>JSONL + state + checkpoint (reference impl)"]
+        FIL["file.js<br/>JSONL + state + run snapshot (reference impl)"]
         NSTORE["store/notes.js<br/>NotesStore (run-scoped facts)"]
     end
 
@@ -200,7 +200,7 @@ sequenceDiagram
 
     rect rgb(240, 255, 240)
     Note over L,S: Phase 1 — restore (only when resume=true)
-    L->>S: load(runId) + loadLatestCheckpoint + loadRunState
+    L->>S: load(runId) + loadLatestRunSnapshot + loadRunState
     S-->>L: messages / pending tool_use / run state
     Note over L: replay pending tool calls in original order<br/>(side-effect idempotency is the host's duty)
     end
@@ -215,10 +215,10 @@ sequenceDiagram
     alt stopReason = tool_use
         L->>J: audit the next call transparently, every judgeIntervalRound (default 10) real tool executions
         J-->>L: done:false blocks and returns audit result / off_track adds direction hint / allow
-        L->>S: checkpoint (pre-tool) — failure → sideEffect=not_started, execution blocked
+        L->>S: run snapshot (pre-tool) — failure → sideEffect=not_started, execution blocked
         L->>T: executeTool({id, name, input, context, signal})
         T-->>L: tool_result (large outputs archived as stubs; model sees summary)
-        L->>S: checkpoint (post-tool) + appendRound (idempotent dedup)
+        L->>S: run snapshot (post-tool) + appendRound (idempotent dedup)
     else stopReason = end_turn
         L->>L: wrapup JSON parsing (done:true → finish; false → inject continuation)
         L->>J: round judge evaluates end_turn (separate or shared provider)
@@ -239,17 +239,17 @@ sequenceDiagram
     Note over H,S: Phase 4 — result and event stream
     L-->>H: result{finalText, termination, verification, usage, compactionStats}
     L-->>H: full-event stream onRound / onDelta / onToolCall / onUsage / onJudge / onEvent
-    Note over S: archive complete: per-round JSONL + folded payload + checkpoint + run-state<br/>— the host can reconcile, replay, and audit
+    Note over S: archive complete: per-round JSONL + folded payload + run snapshot + run-state<br/>— the host can reconcile, replay, and audit
     end
 ```
 
 ### Key points
 
-- **Phase 0 is a fail-fast contract**: unknown options (with near-name hints), missing methods, illegal policy keys, and missing capabilities all throw before the provider is called — host integration errors can never detonate mid-run.
+- **Phase 0 is a fail-fast contract**: unknown options (with near-name hints), missing *required* methods (`appendRound`/`load`), and illegal policy keys all throw before the provider is called — host integration errors can never detonate mid-run. Missing *optional* capabilities (run snapshot / run-state) never throw: the engine emits one `persistence_capability_degraded` event per missing method (`{type, runId, method, detail}`) and the run proceeds normally (issue #78).
 - **The tool path in Phase 2 carries audit and checkpoints**: the intercept judge only blocks "write paths" (read-only tools readFile/tree/rg/note_read/note_list are exempt); a pre-tool checkpoint failure blocks execution outright, a post-tool failure marks `executed_uncommitted` while keeping the result.
 - **`max_tokens` truncation continues within the same round**: when reasoning models over-think and truncate, up to 3 continuations (`maxTokenContinuations`) are issued, compacting first if already over budget — the budget is not burned in a truncation loop (issue #11).
 - **Phase 3: only `verified` may be treated as verified**: `skipped`/`unverified`/`error` all demand host-specific handling; a guard error or timeout is **not** verified either.
-- **Phase 4: `result.transcript` is only an in-memory snapshot**: the authoritative archive lives in the `TranscriptStore`; the two are deliberately separated so the host can swap in a DB backend (implement the eight methods; see ADR-002).
+- **Phase 4: `result.transcript` is only an in-memory snapshot**: the authoritative archive lives in the `TranscriptStore`; the two are deliberately separated so the host can swap in a DB backend (implement the two required methods plus whichever optional capabilities it wants; see ADR-002, issue #78).
 
 ---
 
@@ -380,9 +380,9 @@ contracts:
 
 > Goal: after a process kill, provider failure, or container reclaim, the run continues from the breakpoint — without double side effects.
 
-- **Twin checkpoints bracket tool execution**: a pre-tool checkpoint persists "about to execute this tool_use"; a post-tool one persists "executed + result". Pre-tool failure → `sideEffect: "not_started"`, **execution blocked**; post-tool failure → `executed_uncommitted`, result kept but explicitly marked uncommitted.
-- **Resume = replay pending tool_use in original order**: resume loads messages + latest checkpoint + run-state, then re-hands the unfinished tool calls after the checkpoint to `executeTool`. **The engine guarantees order and accounting, not side-effect idempotency** — the host must make side-effecting executeTool implementations idempotent (stated in the contract, not a hidden assumption).
-- **Two persistence semantics**: with a store, `required` is the default (all eight methods validated, writes follow the retry policy, exhaustion → `persistence_failed` termination); explicit `none` bypasses everything. A failed archive write terminates explicitly — never "pretend archived" and continue.
+- **Twin run snapshots bracket tool execution** (issue #78: the former "checkpoint" surface, renamed because it is a latest-only autosave, not a multi-version checkpoint): a pre-tool snapshot persists "about to execute this tool_use"; a post-tool one persists "executed + result". Pre-tool failure → `sideEffect: "not_started"`, **execution blocked**; post-tool failure → `executed_uncommitted`, result kept but explicitly marked uncommitted.
+- **Resume = replay pending tool_use in original order**: resume loads messages + latest run snapshot + run-state, then re-hands the unfinished tool calls after the snapshot to `executeTool`. **The engine guarantees order and accounting, not side-effect idempotency** — the host must make side-effecting executeTool implementations idempotent (stated in the contract, not a hidden assumption).
+- **Two persistence semantics**: with a store, `required` is the default (only `appendRound`/`load` are required; run-snapshot/run-state methods are optional capabilities — a missing one emits one `persistence_capability_degraded` event and degrades, never fails; writes follow the retry policy, exhaustion → `persistence_failed` termination); explicit `none` bypasses everything. A failed archive write terminates explicitly — never "pretend archived" and continue.
 - **Run state is bounded and deterministic**: `run-state.js` maintains tool stats, fold counts, budget prompts, etc. (capped at `RUN_STATE_MAX_CHARS`), validates shape and version on resume, and marks corrupted state unavailable instead of silently reusing it; "this-budget" flags like `lowBudgetPrompted` do not carry across resume.
 
 ---
@@ -414,7 +414,7 @@ flowchart TB
     subgraph archive["archive (one per run)"]
         JSONL["<runId>.jsonl<br/>per-round record: messages + foldedPayload + toolOutputs"]
         ST["<runId>.state.json<br/>run-state"]
-        CK["<runId>.checkpoint.json<br/>latest checkpoint"]
+        CK["<runId>.snapshot.json<br/>latest run snapshot<br/>(legacy .checkpoint.json read-compatible)"]
     end
 
     subgraph surfaces["consumption channels"]
@@ -436,8 +436,8 @@ flowchart TB
 
 - **Large outputs don't blow up context**: `outputHygiene` (default limit 4096) stores oversized tool_result originals in the round record's `toolOutputs`; the model sees a stub + pointer. A per-round aggregate gate (`aggregate-budget`) backstops the total — archive intact, context unharmed.
 - **Retrieval is note-first (ADR-016 retirement supplement, issue #36)**: key facts are externalized via `note_take` while content is in context; later retrieved via `note_list → note_read`. The recall / bounded-recall protocol is retired — model-curated notes are high-signal content, superior to fuzzy search over raw archived output; values never noted and not deterministically re-derivable are omitted, not guessed (bench data: recall 2/0/6/0 across four runs; the notes loop 31 writes / 21 reads fully replaced it).
-- **The archive remains directly readable by the host**: round records / toolOutputs / checkpoint are fully persisted; hosts (DB backends) can reconcile and audit — the model simply no longer gets a recall retrieval channel.
-- **The file store is a reference implementation**: one JSON record per JSONL line, repairs a missing trailing newline, isolates corrupt tail fragments; the contract assumes **a single writer** (one per runId per process) — cross-process locking is out of contract. Hosts needing concurrency/shared storage implement the same eight methods over a database.
+- **The archive remains directly readable by the host**: round records / toolOutputs / run snapshot are fully persisted; hosts (DB backends) can reconcile and audit — the model simply no longer gets a recall retrieval channel.
+- **The file store is a reference implementation**: one JSON record per JSONL line, repairs a missing trailing newline, isolates corrupt tail fragments; the contract assumes **a single writer** (one per runId per process) — cross-process locking is out of contract. Hosts needing concurrency/shared storage implement the same contract over a database (required `appendRound`/`load`, plus optional run-snapshot/run-state capabilities).
 
 ---
 

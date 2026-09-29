@@ -313,3 +313,121 @@ test("file: appendRound 遇中间损坏行抛错不追加（fail-closed）", asy
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// ---- issue #78：run snapshot 更名与新旧后缀兼容 ----
+
+test("file: saveRunSnapshot 写入新后缀 .snapshot.json", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const snapshot = { round: 1, status: "pending", pendingToolUse: { id: "t1" } };
+    await store.saveRunSnapshot("run-1", snapshot);
+
+    const files = await readdir(root);
+    assert.deepEqual(files, ["run-1.snapshot.json"]);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(root, "run-1.snapshot.json"), "utf8")),
+      snapshot,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: loadLatestRunSnapshot 兼容读取旧后缀 .checkpoint.json（不做迁移）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    // 旧版本引擎写入的 legacy 快照文件，直接手工放置模拟
+    const legacy = { round: 7, status: "executed", pendingToolUse: { id: "legacy-tool" } };
+    await writeFile(join(root, "run-1.checkpoint.json"), `${JSON.stringify(legacy)}\n`, "utf8");
+
+    assert.deepEqual(await store.loadLatestRunSnapshot("run-1"), legacy);
+    // 读取兼容 ≠ 迁移：旧文件原样保留，新后缀文件不产生
+    assert.deepEqual(await readdir(root), ["run-1.checkpoint.json"]);
+
+    // 未知 runId：新旧后缀都不存在 → undefined
+    assert.equal(await store.loadLatestRunSnapshot("missing"), undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: 新旧后缀并存时优先读新后缀 .snapshot.json", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const newer = { round: 2, status: "executed" };
+    const older = { round: 1, status: "pending" };
+    await writeFile(join(root, "run-1.snapshot.json"), `${JSON.stringify(newer)}\n`, "utf8");
+    await writeFile(join(root, "run-1.checkpoint.json"), `${JSON.stringify(older)}\n`, "utf8");
+
+    assert.deepEqual(await store.loadLatestRunSnapshot("run-1"), newer);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: deprecated 别名 saveCheckpoint/appendCheckpoint/loadLatestCheckpoint 委托新方法", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    await store.saveCheckpoint("run-1", { round: 1, status: "pending" });
+    await store.appendCheckpoint("run-1", { round: 2, status: "executed" });
+
+    // 别名写入也走新后缀
+    assert.deepEqual(await readdir(root), ["run-1.snapshot.json"]);
+    assert.deepEqual(
+      await store.loadLatestCheckpoint("run-1"),
+      { round: 2, status: "executed" },
+    );
+    assert.deepEqual(
+      await store.loadLatestRunSnapshot("run-1"),
+      { round: 2, status: "executed" },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: 新后缀 .snapshot.json 损坏 JSON 显式抛错、不回落旧后缀", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    // 新后缀存在但内容是非法 JSON；旧后缀同时存在一个"合法"旧快照——
+    // 必须抛错而不是静默回落到旧文件（回落会拿过期现场冒充最新现场）。
+    await writeFile(join(root, "run-1.snapshot.json"), "{not-json\n", "utf8");
+    await writeFile(
+      join(root, "run-1.checkpoint.json"),
+      `${JSON.stringify({ round: 1, status: "pending" })}\n`,
+      "utf8",
+    );
+
+    await assert.rejects(
+      store.loadLatestRunSnapshot("run-1"),
+      (error) => error instanceof SyntaxError,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: 旧后缀 .checkpoint.json 损坏 JSON 显式抛错", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    await writeFile(join(root, "run-1.checkpoint.json"), "{broken\n", "utf8");
+
+    await assert.rejects(
+      store.loadLatestRunSnapshot("run-1"),
+      (error) => error instanceof SyntaxError,
+    );
+    // deprecated 旧名读取同样显式失败（内部走同一读取路径）
+    await assert.rejects(
+      store.loadLatestCheckpoint("run-1"),
+      (error) => error instanceof SyntaxError,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
