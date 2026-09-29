@@ -173,20 +173,29 @@ export async function rebuildSessionsIndex({ home, transcriptsDir }) {
   });
 }
 
-// 整文件读 + 逐行 JSON.parse。中间任何非法行抛错（调用方跳过该会话）；
-// 仅末尾不完整残段（崩溃截断）跳过——与 file store readRecords 的容忍语义一致。
+// 整文件读 + 逐行 JSON.parse，与 file store（readRecords/repairTrailingFragment）语义对齐：
+// - 凡以 \n 终止的行必须是合法 JSON 对象——null/数组/标量同样拒绝（repairTrailingFragment
+//   对这类值也是隔离截断；resume 依赖 record.messages 对象语义）；
+// - 仅最后一个【无 \n 终止且无法解析】的片段视为崩溃残段容忍（store 打开时会截掉）——
+//   以 \n 终止的损坏行不在容忍范围；无 \n 终止但解析出完整值的按对象规则判定。
 async function readTranscriptRecords(filePath) {
   const raw = await readFile(filePath, "utf8");
-  const lines = raw.split("\n");
-  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  const terminated = raw.endsWith("\n");
+  const lines = terminated ? raw.slice(0, -1).split("\n") : raw.split("\n");
   const records = [];
   for (let index = 0; index < lines.length; index += 1) {
+    const isUnterminatedTail = !terminated && index === lines.length - 1;
+    let parsed;
     try {
-      records.push(JSON.parse(lines[index]));
+      parsed = JSON.parse(lines[index]);
     } catch (error) {
-      if (index === lines.length - 1) continue;
+      if (isUnterminatedTail) continue;
       throw error;
     }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new TypeError("transcript line must be a JSON object");
+    }
+    records.push(parsed);
   }
   return records;
 }
@@ -250,16 +259,19 @@ export async function upsertSessionIndex({ home, sessionId, cwd, firstUserText }
     };
     entries = [next, ...entries.filter((entry) => entry.sessionId !== sessionId)];
     entries.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-    await writeIndex(home, entries.slice(0, INDEX_ENTRY_LIMIT));
+    // 先 slice 一次，索引与 meta 共用同一条目集——否则超过上限后 meta 会保留
+    // 已被索引裁掉的 session id，集合不对齐。
+    const kept = entries.slice(0, INDEX_ENTRY_LIMIT);
+    await writeIndex(home, kept);
 
     // cwd 归属持久化：rebuild（索引丢/损坏）时恢复 -c 可用性。
     // meta 与索引条目集对齐裁剪，防 unbounded 增长。
     const meta = await readSessionMeta(home);
-    for (const entry of entries) {
+    for (const entry of kept) {
       if (typeof entry.cwd === "string") meta[entry.sessionId] = { cwd: entry.cwd };
     }
     for (const key of Object.keys(meta)) {
-      if (!entries.some((entry) => entry.sessionId === key)) delete meta[key];
+      if (!kept.some((entry) => entry.sessionId === key)) delete meta[key];
     }
     await writeSessionMeta(home, meta);
   });

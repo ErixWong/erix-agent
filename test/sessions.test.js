@@ -14,6 +14,7 @@ import {
   recordChatSession,
   resolveChatSessionSelection,
   resolveContinueSessionId,
+  sessionMetaPath,
   sessionsIndexPath,
   truncateFirstUserText,
   upsertSessionIndex,
@@ -234,6 +235,10 @@ test("rebuildSessionsIndex skips corrupt transcripts but tolerates a trailing fr
     await writeFile(join(transcriptsDir, "run-bad.jsonl"), `${line("bad session")}{ not json\n${line("after bad")}`);
     // 末尾不完整残段（崩溃截断）：file store 读取同样忽略，应容忍收录
     await writeFile(join(transcriptsDir, "run-tail.jsonl"), `${line("tail session")}{ "truncated"`);
+    // 以 \n 终止的损坏行：readRecords 会拒绝（不是尾残段），必须整段跳过
+    await writeFile(join(transcriptsDir, "run-badline.jsonl"), `${line("badline session")}{not-json}\n`);
+    // 无 \n 终止但解析出非对象值（数组）：repairTrailingFragment 语义是隔离截断，拒绝
+    await writeFile(join(transcriptsDir, "run-nonobj.jsonl"), `${line("nonobj session")}\n[1,2,3]`);
     // 空文件：load 返回空，无可续内容，不入索引
     await writeFile(join(transcriptsDir, "run-empty.jsonl"), "");
 
@@ -246,6 +251,42 @@ test("rebuildSessionsIndex skips corrupt transcripts but tolerates a trailing fr
     // 损坏会话即使 cwd 匹配也不会被 -c 选中
     const picked = await resolveContinueSessionId({ home, cwd: "/tmp/anywhere", transcriptsDir });
     assert.notEqual(picked, "run-bad");
+    assert.notEqual(picked, "run-badline");
+    assert.notEqual(picked, "run-nonobj");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("session meta stays aligned with the capped index entry set beyond 500 entries", async () => {
+  const home = await makeHome();
+  try {
+    // INDEX_ENTRY_LIMIT = 500：预置满 500 条索引 + 对齐的 meta，再一次 upsert 触发裁剪
+    const old = new Date(Date.now() - 60_000).toISOString();
+    const existing = Array.from({ length: 500 }, (_unused, index) => ({
+      sessionId: `e${String(index).padStart(3, "0")}`,
+      cwd: "/tmp/project",
+      updatedAt: old,
+      firstUserText: `prompt ${index}`,
+    }));
+    await mkdir(join(home, ".erix"), { recursive: true });
+    await writeFile(sessionsIndexPath(home), JSON.stringify(existing));
+    await writeFile(sessionMetaPath(home), JSON.stringify(Object.fromEntries(
+      existing.map((entry) => [entry.sessionId, { cwd: entry.cwd }]),
+    )));
+
+    await upsertSessionIndex({ home, sessionId: "new", cwd: "/tmp/project", firstUserText: "newest" });
+
+    const indexIds = JSON.parse(await readFile(sessionsIndexPath(home), "utf8"))
+      .map((entry) => entry.sessionId);
+    const meta = JSON.parse(await readFile(sessionMetaPath(home), "utf8"));
+    assert.equal(indexIds.length, 500);
+    assert.ok(indexIds.includes("new"));
+    // meta 与裁剪后的索引条目集严格一致：不残留被裁掉的 session id
+    assert.deepEqual(Object.keys(meta).sort(), [...indexIds].sort());
+    for (const id of indexIds) {
+      assert.equal(meta[id]?.cwd, "/tmp/project");
+    }
   } finally {
     await rm(home, { recursive: true, force: true });
   }
