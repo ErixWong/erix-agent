@@ -126,7 +126,7 @@ src/
   loop/                            # 编排核心
     orchestrator.js                runToolLoop 主循环
     provider-runner.js             provider 调用、重试与快照回滚
-    checkpoint-executor.js         工具前后检查点与聚合闸门
+    run-snapshot-executor.js       工具前后检查点与聚合闸门
     budget.js                      预算校验与状态克隆辅助函数
     aggregate-budget.js            单轮聚合输出闸门
     tool-result-ttl.js             旧工具结果的 request-view TTL 折叠

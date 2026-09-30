@@ -257,7 +257,7 @@ tools 层（注入 store）共用的兜底。
   `createStaticToolProvider({ sets: { default: notes.definitions } })`；
 - `executors(name, input, context)`——registry 位置参数形态；
 - `executeTool({id, name, input, context, signal})`——结构化形态，对齐 `runToolLoop`/
-  checkpoint-executor 的调用约定（位置参数形态 `executeTool(name, input, context)`
+  run-snapshot-executor 的调用约定（位置参数形态 `executeTool(name, input, context)`
   为兼容既有调用方保留）；
 - `lifecycle`——单一收尾钩子（0.12.0）。`onRunComplete` 只调 `completeRun`
   （active → done），返回 `{ completed, errors }`。收尾错误收集在返回值的

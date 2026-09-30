@@ -66,7 +66,7 @@ flowchart TB
     subgraph core["loop/ 编排核心"]
         ORC["orchestrator.js<br/>runToolLoop 主循环：轮循环 + wrapup 解析"]
         PRV["provider-runner.js<br/>调用 / 重试 / 快照回滚"]
-        CPE["checkpoint-executor.js<br/>工具前后检查点 + 单轮聚合闸门"]
+        CPE["run-snapshot-executor.js<br/>工具前后检查点 + 单轮聚合闸门"]
         BUD["budget.js<br/>aggregate-budget.js<br/>预算与单轮输出闸门"]
         TERM["termination.js<br/>终态归类（11 种 reason）"]
         RESM["resume-manager.js<br/>断点恢复 + run-state 校验"]
@@ -388,7 +388,7 @@ flowchart TD
 - **只读工具豁免**：readFile / tree / rg / note_read / note_list 被拦净收益为负（实测拦 readFile 反而漏缺陷）——审计对这类调用直接放行，写路径（exec/writeFile/mcp 等）维持拦截语义
 - **governor 是确定性的**：纯函数、无副作用，输入信号（停滞 streak、无工具 streak、错误重复数、剩余时间、扩预算次数）输出续/停/收尾动作。硬预算到期前以"引导收尾"软着陆（注入 wrap-up 提示），而非硬杀
 - **自适应预算**：越过 reflection 触发点（`nearLimit`，轮数 ≥ `effectiveMaxRounds` 的 80%）后 governor 进入扩轮考虑——真正扩轮需要 judge 裁决（`extend:true` + plan）：`effectiveMaxRounds += extensionStep`（默认 32，上限 `maxRoundsCap`），最多 `maxExtensions` 次——长任务不被初始轮数拍死，也不会无限膨胀
-- **nearLimit 扩轮（round 与 intercept 路径共用）**：`nearLimit` 时携带 `extend`/`extendReason`/`plan` 的 judge 裁决进入 `governor.decideWithEvaluation`（`governor.js:135-179`）：`extend:true` → `effectiveMaxRounds += extensionStep`，plan 注入为 continuation user 消息；判 `off_track`（打转模式）→ `extend+redirect`（换思路）；`extend:false` → 收敛 nudge；超时守卫则只跑完剩余轮次不扩轮。intercept 审计在工具途中命中 nearLimit 时把决策回传，轮末走同一路径（`checkpoint-executor` → `interceptJudgeDecision` → `decideWithEvaluation`）
+- **nearLimit 扩轮（round 与 intercept 路径共用）**：`nearLimit` 时携带 `extend`/`extendReason`/`plan` 的 judge 裁决进入 `governor.decideWithEvaluation`（`governor.js:135-179`）：`extend:true` → `effectiveMaxRounds += extensionStep`，plan 注入为 continuation user 消息；判 `off_track`（打转模式）→ `extend+redirect`（换思路）；`extend:false` → 收敛 nudge；超时守卫则只跑完剩余轮次不扩轮。intercept 审计在工具途中命中 nearLimit 时把决策回传，轮末走同一路径（`run-snapshot-executor` → `interceptJudgeDecision` → `decideWithEvaluation`）
 
 ---
 
@@ -398,7 +398,7 @@ flowchart TD
 flowchart TB
     subgraph run["run 运行期"]
         ORC2["orchestrator"]
-        CPE2["checkpoint-executor"]
+        CPE2["run-snapshot-executor"]
         EXB["executeTool boundary<br/>（宿主工具边界）"]
         NASS["src/tools/notes.js<br/>createBuiltinNotesTools 装配器"]
     end

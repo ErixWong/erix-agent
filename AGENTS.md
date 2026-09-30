@@ -24,7 +24,7 @@ src/
 ├── run-state.js
 ├── tokens.js
 ├── loop/          # orchestration core: orchestrator (runToolLoop), provider-runner,
-│                  # checkpoint-executor, budget, aggregate-budget, termination,
+│                  # run-snapshot-executor, budget, aggregate-budget, termination,
 │                  # resume-manager, error-ledger, messages, reflection, task-brief, abort,
 │                  # tool-result-ttl
 ├── compact/       # context compaction: budget, sliding-window, fold-statistical,

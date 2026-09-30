@@ -66,7 +66,7 @@ flowchart TB
     subgraph core["loop/ orchestration core"]
         ORC["orchestrator.js<br/>runToolLoop main loop: round loop + wrapup parsing"]
         PRV["provider-runner.js<br/>call / retry / snapshot rollback"]
-        CPE["checkpoint-executor.js<br/>pre+post tool checkpoints + per-round aggregate gate"]
+        CPE["run-snapshot-executor.js<br/>pre+post tool checkpoints + per-round aggregate gate"]
         BUD["budget.js<br/>aggregate-budget.js<br/>budget and per-round output gate"]
         TERM["termination.js<br/>termination classification (11 reasons)"]
         RESM["resume-manager.js<br/>resume + run-state validation"]
@@ -396,7 +396,7 @@ contracts:
 - **Read-only tool exemption**: readFile / tree / rg / note_read / note_list are allowed through — blocking them is net-negative (measured: blocking readFile actually leaked defects). Write paths (exec/writeFile/mcp etc.) keep interception semantics.
 - **The governor is deterministic**: a pure, side-effect-free function mapping signals (stall streak, no-tool streak, error repeat count, remaining time, extension count) to continue/stop/wrap-up actions. Hard budget expiry lands softly — a wrap-up nudge is injected rather than a hard kill.
 - **Adaptive budget**: past the reflection trigger (`nearLimit`, rounds ≥ 80% of `effectiveMaxRounds`), the governor enters extension consideration — an actual extension requires a judge verdict (`extend:true` + plan): `effectiveMaxRounds += extensionStep` (default 32, capped at `maxRoundsCap`), at most `maxExtensions` times — long tasks are neither killed by the initial round count nor allowed to inflate forever.
-- **nearLimit extension (round & intercept paths share it)**: a judge verdict carrying `extend`/`extendReason`/`plan` at `nearLimit` goes through `governor.decideWithEvaluation` (`governor.js:135-179`): `extend:true` → `effectiveMaxRounds += extensionStep` and the plan is injected as a continuation user message; judged `off_track` (stall pattern) → `extend+redirect` ("change approach"); `extend:false` → a converge nudge; a timed-out guard means no extension, just normal remaining rounds. The intercept audit, when it fires mid-tool near the limit, hands its decision back at round end and rides the same path (`checkpoint-executor.js` → `interceptJudgeDecision` → `decideWithEvaluation`).
+- **nearLimit extension (round & intercept paths share it)**: a judge verdict carrying `extend`/`extendReason`/`plan` at `nearLimit` goes through `governor.decideWithEvaluation` (`governor.js:135-179`): `extend:true` → `effectiveMaxRounds += extensionStep` and the plan is injected as a continuation user message; judged `off_track` (stall pattern) → `extend+redirect` ("change approach"); `extend:false` → a converge nudge; a timed-out guard means no extension, just normal remaining rounds. The intercept audit, when it fires mid-tool near the limit, hands its decision back at round end and rides the same path (`run-snapshot-executor.js` → `interceptJudgeDecision` → `decideWithEvaluation`).
 
 ---
 
@@ -406,7 +406,7 @@ contracts:
 flowchart TB
     subgraph run["run time"]
         ORC2["orchestrator"]
-        CPE2["checkpoint-executor"]
+        CPE2["run-snapshot-executor"]
         EXB["executeTool boundary<br/>(host tool boundary)"]
         NASS["src/tools/notes.js<br/>createBuiltinNotesTools assembler"]
     end
