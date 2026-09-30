@@ -40,7 +40,7 @@ export async function restoreResume(ctx) {
     ctx.foldedRoundCount = deterministic.fold?.foldedRounds ?? 0;
     ctx.navigationRecordCount = deterministic.fold?.navigationRecords ?? 0;
     ctx.toolErrorCount = deterministic.errors?.tool ?? 0;
-    ctx.checkpointFailureCount = deterministic.errors?.checkpoint ?? 0;
+    ctx.runSnapshotFailureCount = deterministic.errors?.checkpoint ?? 0;
     ctx.compactionStats = deterministic.compactionStats;
     ctx.governorState.filesWritten = Array.isArray(deterministic.filesWritten)
       ? deterministic.filesWritten.map((path) => ({ path }))
@@ -128,7 +128,7 @@ export async function restoreResume(ctx) {
       }
       // 以最大 round 为续跑基数（含 round 0 种子记录时 records.length 会多算一轮）。
       // 双计数器约定（issue #32 #8）：`rounds` 是**身份**轮号，跨 resume 单调递增，
-      // 只用于 round 编号 / roundKey / judge 已运行轮数展示 / checkpoint round；
+      // 只用于 round 编号 / roundKey / judge 已运行轮数展示 / run snapshot round；
       // 轮**预算**是 orchestrator 里每次 runToolLoop 从 0 起的 `budgetRounds`，
       // resume **不**把历史轮号当预算恢复（否则续接轮轮号已到顶，主循环一次进不了）。
       ctx.rounds = Math.max(...records.map((record) => record.round ?? 0));
@@ -142,9 +142,9 @@ export async function restoreResume(ctx) {
           ? ctx.store.loadLatestCheckpoint
           : undefined;
       if (loadLatestSnapshot !== undefined) {
-        ctx.resumeCheckpoint = await loadLatestSnapshot.call(ctx.store, ctx.runId);
-        if (ctx.resumeCheckpoint?.round > ctx.rounds
-          && Array.isArray(ctx.resumeCheckpoint.messages)) {
+        ctx.resumeRunSnapshot = await loadLatestSnapshot.call(ctx.store, ctx.runId);
+        if (ctx.resumeRunSnapshot?.round > ctx.rounds
+          && Array.isArray(ctx.resumeRunSnapshot.messages)) {
           const recordedEntries = [];
           for (const record of records) {
             for (const message of record.messages ?? []) {
@@ -154,16 +154,16 @@ export async function restoreResume(ctx) {
               });
             }
           }
-          const checkpointAnchor = Number.isSafeInteger(
-            ctx.resumeCheckpoint.persistedTranscriptLength,
-          ) && ctx.resumeCheckpoint.persistedTranscriptLength >= 0
-            ? Math.min(ctx.resumeCheckpoint.persistedTranscriptLength, recordedEntries.length)
+          const snapshotAnchor = Number.isSafeInteger(
+            ctx.resumeRunSnapshot.persistedTranscriptLength,
+          ) && ctx.resumeRunSnapshot.persistedTranscriptLength >= 0
+            ? Math.min(ctx.resumeRunSnapshot.persistedTranscriptLength, recordedEntries.length)
             : undefined;
           let searchFrom = 0;
           let lastMatchedIndex = -1;
-          const checkpointMessageRounds = [];
-          const checkpointMessageIndices = [];
-          for (const message of ctx.resumeCheckpoint.messages) {
+          const snapshotMessageRounds = [];
+          const snapshotMessageIndices = [];
+          for (const message of ctx.resumeRunSnapshot.messages) {
             const key = JSON.stringify(message);
             let matchedIndex = -1;
             for (let index = searchFrom; index < recordedEntries.length; index += 1) {
@@ -173,27 +173,27 @@ export async function restoreResume(ctx) {
               }
             }
             if (matchedIndex === -1) {
-              checkpointMessageRounds.push(undefined);
-              checkpointMessageIndices.push(-1);
+              snapshotMessageRounds.push(undefined);
+              snapshotMessageIndices.push(-1);
               continue;
             }
             searchFrom = matchedIndex + 1;
             lastMatchedIndex = matchedIndex;
-            checkpointMessageRounds.push(recordedEntries[matchedIndex].round);
-            checkpointMessageIndices.push(matchedIndex);
+            snapshotMessageRounds.push(recordedEntries[matchedIndex].round);
+            snapshotMessageIndices.push(matchedIndex);
           }
           ctx.resumeTailMessages = recordedEntries
-            .slice(checkpointAnchor ?? lastMatchedIndex + 1)
+            .slice(snapshotAnchor ?? lastMatchedIndex + 1)
             .map((entry) => ({
               message: cloneState(entry.message),
               round: entry.round,
             }));
-          ctx.messages = cloneState(ctx.resumeCheckpoint.messages);
+          ctx.messages = cloneState(ctx.resumeRunSnapshot.messages);
           ctx.resumeTranscriptStart = ctx.messages.length;
-          ctx.resumeCheckpointMessages = ctx.messages.filter((_message, index) => {
-            const matchedIndex = checkpointMessageIndices[index];
+          ctx.resumeRunSnapshotMessages = ctx.messages.filter((_message, index) => {
+            const matchedIndex = snapshotMessageIndices[index];
             const isPersisted = matchedIndex >= 0
-              && (checkpointAnchor === undefined || matchedIndex < checkpointAnchor);
+              && (snapshotAnchor === undefined || matchedIndex < snapshotAnchor);
             return !isPersisted && blocksFor(_message?.content).some((block) => (
               block?.type === "tool_use" || block?.type === "tool_result"
             ));
@@ -201,26 +201,26 @@ export async function restoreResume(ctx) {
           for (const [index, message] of ctx.messages.entries()) {
             ctx.messageRounds.set(
               message,
-              checkpointMessageRounds[index] ?? ctx.resumeCheckpoint.round,
+              snapshotMessageRounds[index] ?? ctx.resumeRunSnapshot.round,
             );
           }
-          ctx.rounds = ctx.resumeCheckpoint.round;
-          for (const id of ctx.resumeCheckpoint.executedToolIds ?? []) {
+          ctx.rounds = ctx.resumeRunSnapshot.round;
+          for (const id of ctx.resumeRunSnapshot.executedToolIds ?? []) {
             ctx.resumeExecutedToolIds.add(id);
           }
           ctx.judgeInterceptCount = ctx.resumeExecutedToolIds.size;
-          for (const entry of ctx.resumeCheckpoint.toolResults ?? []) {
+          for (const entry of ctx.resumeRunSnapshot.toolResults ?? []) {
             if (entry?.toolUseId !== undefined && entry.toolResult !== undefined) {
-              ctx.resumeCheckpointResults.set(entry.toolUseId, entry.toolResult);
+              ctx.resumeRunSnapshotResults.set(entry.toolUseId, entry.toolResult);
             }
           }
           // 崩溃前已归档的全量输出回填引擎缓冲，保持证据的字节保真。
-          for (const output of ctx.resumeCheckpoint.toolOutputs ?? []) {
+          for (const output of ctx.resumeRunSnapshot.toolOutputs ?? []) {
             if (typeof output?.content === "string" && output.content.length > 0) {
               ctx.archivedOutputs.push({
                 toolUseId: output.toolUseId,
                 name: output.name,
-                round: ctx.resumeCheckpoint.round,
+                round: ctx.resumeRunSnapshot.round,
                 content: output.content,
               });
             }
@@ -230,20 +230,20 @@ export async function restoreResume(ctx) {
               .filter((block) => block?.type === "tool_result")
               .map((block) => block.tool_use_id),
           );
-          const replayResults = [...ctx.resumeCheckpointResults.values()]
+          const replayResults = [...ctx.resumeRunSnapshotResults.values()]
             .filter((toolResult) => !recordedIds.has(toolResult.tool_use_id));
           if (replayResults.length > 0) {
             const replayMessage = { role: "user", content: replayResults };
             ctx.messages.push(replayMessage);
-            ctx.messageRounds.set(replayMessage, ctx.resumeCheckpoint.round);
+            ctx.messageRounds.set(replayMessage, ctx.resumeRunSnapshot.round);
           }
-          const pendingTools = ctx.resumeCheckpoint.pendingToolUses
-            ?? (ctx.resumeCheckpoint.pendingToolUse
-              ? [ctx.resumeCheckpoint.pendingToolUse]
+          const pendingTools = ctx.resumeRunSnapshot.pendingToolUses
+            ?? (ctx.resumeRunSnapshot.pendingToolUse
+              ? [ctx.resumeRunSnapshot.pendingToolUse]
               : []);
           ctx.resumePendingTools = pendingTools.filter((pendingTool) => (
-            !ctx.resumeCheckpoint.executedToolIds?.includes(pendingTool.id)
-            && !ctx.resumeCheckpointResults.has(pendingTool.id)
+            !ctx.resumeRunSnapshot.executedToolIds?.includes(pendingTool.id)
+            && !ctx.resumeRunSnapshotResults.has(pendingTool.id)
           ));
         }
       } else {

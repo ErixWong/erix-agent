@@ -1,7 +1,7 @@
 // 工具结果 TTL 折叠（issue #35）：已消费的大体积 tool_result 在存活 ttl 轮后，
 // 从发往 provider 的请求视图里替换为占位符。
 // 纯函数：返回浅拷贝视图，不改原数组、不改原块对象；ctx.messages 始终保留全文，
-// checkpoint/归档语义不受影响。叠加在既有压缩（fold-statistical 等）之上，
+// run snapshot/归档语义不受影响。叠加在既有压缩（fold-statistical 等）之上，
 // 互不干扰。
 //
 // 增强（issue #35 探索项，v4 A/B 实测驱动）：
@@ -245,7 +245,7 @@ export function foldToolResultsForRequest(messages, {
       const call = toolCalls.get(block.tool_use_id) ?? {};
       const toolName = String(call.name ?? "");
       if (shouldNeverFold(block, toolName)) continue;
-      // 年龄标记缺失（旧 checkpoint 恢复的结果）→ 保守不折。
+      // 年龄标记缺失（旧 run snapshot 恢复的结果）→ 保守不折。
       if (!Number.isFinite(block.erixRound)) continue;
       const age = currentRound - block.erixRound;
       const text = typeof block.content === "string"

@@ -24,7 +24,7 @@ src/
 ├── run-state.js
 ├── tokens.js
 ├── loop/          # 编排核心：orchestrator（runToolLoop）、provider-runner、
-│                  # checkpoint-executor、budget、aggregate-budget、termination、
+│                  # run-snapshot-executor、budget、aggregate-budget、termination、
 │                  # resume-manager、error-ledger、messages、reflection、task-brief、abort、
 │                  # tool-result-ttl
 ├── compact/       # 上下文压缩：budget、sliding-window、fold-statistical、

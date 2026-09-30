@@ -1,6 +1,6 @@
 // toolResultContent 序列化单测（issue #65）
 // 契约：字符串原样返回；裸对象/数组 pretty JSON 序列化；stringify 失败（循环引用）
-// 回退 String()。{ data, content } 结构化结果由 checkpoint-executor 前置拆解，
+// 回退 String()。{ data, content } 结构化结果由 run-snapshot-executor 前置拆解，
 // 本函数不遮蔽 data 通道（用 toolResultData 探测 + runToolLoop 集成双重锁定）。
 import test from "node:test";
 import assert from "node:assert/strict";

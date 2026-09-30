@@ -649,7 +649,7 @@ src/
 ├── loop/                     # Orchestration core
 │   ├── orchestrator.js       # runToolLoop main loop (round loop, wrapup, governance wiring)
 │   ├── provider-runner.js    # Provider call, retry, and snapshot rollback
-│   ├── checkpoint-executor.js# Pre/post tool checkpoints and per-round aggregate gate
+│   ├── run-snapshot-executor.js# Pre/post tool checkpoints and per-round aggregate gate
 │   ├── budget.js             # Budget validation and state cloning helpers
 │   ├── aggregate-budget.js   # Per-round aggregate output gate (issue #32)
 │   ├── tool-result-ttl.js    # Request-view TTL folding for old tool results

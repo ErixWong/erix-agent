@@ -305,6 +305,9 @@ export function createDeterministicRunState({
   navigationRecords = 0,
   terminationReason = "running",
   toolErrorCount = 0,
+  // 保留旧名（issue #83）：该参数名即导出 API 的选项键，其值又以 `errors.checkpoint` 落盘
+  // 并渲染进模型可见的 run-state 文本行；改名属破坏性变更，故引擎内部机制名统一为
+  // run snapshot 时此处键名不动。
   checkpointFailureCount = 0,
   unpersisted,
   compactionStats,
@@ -343,6 +346,7 @@ export function createDeterministicRunState({
       termination: { reason: safeText(terminationReason, 48) || "running" },
       errors: {
         tool: safeInteger(toolErrorCount),
+        // 持久化 JSON 键 `errors.checkpoint` 保留旧名（issue #83）：已落盘数据形状，改名属破坏性变更。
         checkpoint: safeInteger(checkpointFailureCount),
         // issue #109 修正 4：账单不只放内存——run 中途崩溃时 run-state 里也有账
         unpersisted: normalizeUnpersisted(unpersisted),
@@ -407,6 +411,7 @@ export function renderRunState(state) {
     `tools=${tools || "-"} files=${files || "-"}`,
     `todo=${todo || safeText(deterministic.todo?.status, 16) || "-"} fold=${safeInteger(fold.foldedRounds)}/${safeInteger(fold.navigationRecords)}`,
     `compact=${compactionLayers || "-"}`,
+    // `errors=tool/checkpoint/unpersisted` 中的 `checkpoint` 是模型可见文本（issue #83 保留旧名）。
     `termination=${safeText(deterministic.termination?.reason, 32) || "running"} errors=${safeInteger(errors.tool)}/${safeInteger(errors.checkpoint)}/${safeInteger(errors.unpersisted?.count)}`,
     SEMANTIC_MARKER,
     `status=${safeText(semantic.status, 16)} version=${semantic.semanticStateVersion ?? "-"}`,

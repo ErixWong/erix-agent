@@ -17,7 +17,7 @@
 //   失败结果（is_error）**计入**预算，但其 stub 必须保留 is_error 与关键错误片段。
 // - `budgetTokens` 不存在（宿主未提供窗口配置）时聚合层整体关闭，行为与改动前完全一致。
 //
-// 终止态：判定是**到达顺序的增量准入**（不重排、不批末回写，因此 checkpoint/resume 语义不变）。
+// 终止态：判定是**到达顺序的增量准入**（不重排、不批末回写，因此 run snapshot/resume 语义不变）。
 // 因此不做同轮去重、不做按大小重排；已经在档（逐条或聚合归档）的结果不再被二次替换——
 // 极端情况（一轮全部结果是 stub 仍超预算）有明确终止态：全部 stub 化即停，并发出可见事件，
 // 绝不反复替换。
@@ -120,7 +120,7 @@ export function aggregateUnrecoverableStubText({ round, length, reason, errorSni
  * 单轮聚合准入闸门（到达顺序增量准入）。
  *
  * 状态尽量**从既有结构派生**（归档条目 + 本轮既有 tool_result），不引入需要跨 resume 恢复的
- * 计数器：崩溃重跑时，已执行结果已随 checkpoint 落盘（含 stub），派生量与正常路径一致。
+ * 计数器：崩溃重跑时，已执行结果已随 run snapshot 落盘（含 stub），派生量与正常路径一致。
  *
  * @param {{
  *   budgetTokens?: number,

@@ -322,7 +322,7 @@ overriding any caller-forged `__erix` injection. The returned object contains:
   `createStaticToolProvider({ sets: { default: notes.definitions } })`;
 - `executors(name, input, context)` — the registry positional view;
 - `executeTool({id, name, input, context, signal})` — the structured view that
-  matches the `runToolLoop` / checkpoint-executor calling convention (the
+  matches the `runToolLoop` / run-snapshot-executor calling convention (the
   positional `executeTool(name, input, context)` form is retained for existing
   callers);
 - `lifecycle` — a single completion hook (0.12.0). `onRunComplete` only
