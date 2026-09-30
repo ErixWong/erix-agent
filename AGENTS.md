@@ -102,10 +102,12 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 
 ## 5. Git and remotes
 
-- **origin** = self-hosted Gitea (`git.erix.vip/eric/erix-llm-kit`, archived backup)
-- **github** = `ErixWong/erix-agent` (main remote, public)
+- **origin** = self-hosted Gitea (`git.erix.vip/eric/erix-llm-kit`) — **主仓，唯一真相源**：全部 issue / PR / 评审 / 开发工作流在这里；main 已启用分支保护（禁 force-push，2026-09-30 起）
+- **github** = `ErixWong/erix-agent` — **公开镜像（只读跟随）**：main + tags 通过双推或 `sync-erix-mirror.sh` cron（Gitea→GitHub，无 force，每 10 分钟）跟随，issue/PR 区冻结为历史；origin 已配置双 push URL（`git push origin main` 同时推两仓）
+- Issue 以 Gitea 为准（单源，不双建）；GitHub issue 区不新开、不回复
 - Contribution flow: branch `feat-YYMMDD-NN-<描述>` → PR merged into main (for large changes); small changes/documentation can be pushed directly.
 - Commit messages: conventional commits + 中文摘要
+- 历史注记：2026-09-30 前 GitHub 曾为真相源、本仓为其归档镜像；当日全部工作流已实际落在 Gitea，镜像方向反转并去 force（否则 cron 会把 Gitea 新 merge 当漂移回滚，事故实录见当日两次 main 回退）
 
 ## 6. Local runtime data (not committed to the repository)
 
