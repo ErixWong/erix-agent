@@ -96,6 +96,9 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 7. **Publish success ≠ registry availability**: after the `+ erix-agent@<ver>` success line, npm prints `Your package is being processed and may take a few minutes to become available` — the registry can lag minutes; poll `https://registry.npmjs.org/<pkg>` before declaring failure.
 8. **Right after publishing, `npm i -g` hits stale cached metadata** (ETARGET / old version): install with `--prefer-online` or pin the exact version.
 9. **npm 12 lives at `~/.npm-global/bin/npm` and is shadowed by `/usr/bin/npm` (10.x)** in default PATH — invoke it by absolute path in scripts, or a 404/401 PUT will mislead you into diagnosing the wrong layer.
+10. **Stale token → publish PUT 404 (2026-09-30, 0.13.0)**: an expired `~/.npmrc` token makes `npm publish` fail with E404 on the PUT (misleading); `npm whoami` returning E401 is the ground truth. Re-run `npm login --auth-type=web` (pty URL capture per pitfall 4), then publish.
+11. **npm 12 publish PUT returns 202 Accepted (async processing, 2026-09-30)**: the `+ erix-agent@<ver>` success line prints BEFORE the package is visible on the registry (~2 min lag observed). Poll `npm view <pkg> version --prefer-online` for a few minutes before declaring failure (extends pitfall 7).
+12. **npm publish triggers its own device-flow auth EVERY time (2026 policy) — including after a fresh `npm login`**; the publish URL (`npmjs.com/auth/cli/<uuid>`) must be captured via pty in headless environments and surfaced to the user immediately (see pitfall 4/6).
 
 ## 5. Git and remotes
 
