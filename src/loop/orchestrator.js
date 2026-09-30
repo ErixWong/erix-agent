@@ -73,7 +73,7 @@ import {
   TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
   TOOL_RESULT_TTL_DEFAULT,
 } from "./tool-result-ttl.js";
-import { createCheckpointExecutor } from "./checkpoint-executor.js";
+import { createRunSnapshotExecutor } from "./run-snapshot-executor.js";
 import { restoreResume } from "./resume-manager.js";
 import { assemblyPortOptions } from "../assembly.js";
 import {
@@ -310,7 +310,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *                     // failed results counted). Budget base is the engine's existing budgetTokens
  *                     // (computeBudget / context.budgetTokens) — no second window source. Admission is
  *                     // incremental in arrival order: results keep declaration order and ids, nothing is
- *                     // rewritten after its checkpoint, so checkpoint/resume semantics are unchanged.
+ *                     // rewritten after its run snapshot, so snapshot/resume semantics are unchanged.
  *                     // The layer is off when budgetTokens is absent or outputHygiene is false.
  *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to ["writeFile"].
  *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
@@ -857,7 +857,7 @@ export async function runToolLoop(options) {
   let foldedRoundCount = 0;
   let navigationRecordCount = 0;
   let toolErrorCount = 0;
-  let checkpointFailureCount = 0;
+  let runSnapshotFailureCount = 0;
   let runStateVersion = 0;
   let ttlInjectArmed = false;
   let ttlInjectConsumed = false;
@@ -956,7 +956,7 @@ export async function runToolLoop(options) {
   // 双计数器约定（issue #32 #8）——改这两处语义前先读这里：
   // - `rounds`：**身份**轮号。跨 resume 单调递增（resume 从 transcript 最大 round 续起），
   //   用于 round 编号 / `roundKey` / messageRounds / judge 的"已运行轮数"展示 /
-  //   checkpoint round / 结果 `result.rounds`。它**不是**轮预算。
+  //   run snapshot round / 结果 `result.rounds`。它**不是**轮预算。
   // - `budgetRounds`：**本次 runToolLoop 的预算消耗**。每次调用从 0 起计，
   //   resume **不**继承历史（否则续接轮轮号已到顶，主循环一次进不去，
   //   直接被 max_rounds_cap 强制收尾）。用于主循环条件 / `remainingRounds` /
@@ -965,14 +965,14 @@ export async function runToolLoop(options) {
   let rounds = 0;
   let budgetRounds = 0;
   let foldedThrough = 0;
-  let resumeCheckpoint;
+  let resumeRunSnapshot;
   let resumePendingTools = [];
   let resumeTailMessages = [];
   let resumeTranscriptStart;
-  let resumeCheckpointMessages = [];
+  let resumeRunSnapshotMessages = [];
   let persistedTranscriptLength = 0;
   const resumeExecutedToolIds = new Set();
-  const resumeCheckpointResults = new Map();
+  const resumeRunSnapshotResults = new Map();
   let lastPersistenceFailure;
   try {
     await restoreResume({
@@ -1027,11 +1027,11 @@ export async function runToolLoop(options) {
     set foldedThrough(value) {
       foldedThrough = value;
     },
-    get resumeCheckpoint() {
-      return resumeCheckpoint;
+    get resumeRunSnapshot() {
+      return resumeRunSnapshot;
     },
-    set resumeCheckpoint(value) {
-      resumeCheckpoint = value;
+    set resumeRunSnapshot(value) {
+      resumeRunSnapshot = value;
     },
     get resumePendingTools() {
       return resumePendingTools;
@@ -1051,11 +1051,11 @@ export async function runToolLoop(options) {
     set resumeTranscriptStart(value) {
       resumeTranscriptStart = value;
     },
-    get resumeCheckpointMessages() {
-      return resumeCheckpointMessages;
+    get resumeRunSnapshotMessages() {
+      return resumeRunSnapshotMessages;
     },
-    set resumeCheckpointMessages(value) {
-      resumeCheckpointMessages = value;
+    set resumeRunSnapshotMessages(value) {
+      resumeRunSnapshotMessages = value;
     },
     get persistedTranscriptLength() {
       return persistedTranscriptLength;
@@ -1064,7 +1064,7 @@ export async function runToolLoop(options) {
       persistedTranscriptLength = value;
     },
     resumeExecutedToolIds,
-    resumeCheckpointResults,
+    resumeRunSnapshotResults,
     toolStats,
     governorState,
     resolvedWriteToolNames,
@@ -1099,11 +1099,11 @@ export async function runToolLoop(options) {
     set toolErrorCount(value) {
       toolErrorCount = value;
     },
-    get checkpointFailureCount() {
-      return checkpointFailureCount;
+    get runSnapshotFailureCount() {
+      return runSnapshotFailureCount;
     },
-    set checkpointFailureCount(value) {
-      checkpointFailureCount = value;
+    set runSnapshotFailureCount(value) {
+      runSnapshotFailureCount = value;
     },
     get semanticState() {
       return semanticState;
@@ -1313,7 +1313,7 @@ export async function runToolLoop(options) {
     awaitWithAbort,
     waitForRetry,
     estimateMessageTokens,
-    // TTL 折叠配置（issue #35）。终稿保护口径与 checkpoint-executor 的 budgetHintFor 对齐：
+    // TTL 折叠配置（issue #35）。终稿保护口径与 run-snapshot-executor 的 budgetHintFor 对齐：
     // 最后一轮（omitTools 终稿轮）/ 剩余轮数 <= 2 / 已发低预算提示时不折叠——
     // 收尾阶段模型常要回头引用早期证据，此时折叠净收益为负。返回 null = 本轮关闭。
     get toolResultFold() {
@@ -1374,7 +1374,7 @@ export async function runToolLoop(options) {
   const callProvider = (options) => runProvider(providerContext, options);
 
   const executedToolIds = new Set(resumeExecutedToolIds);
-  const checkpointResults = new Map(resumeCheckpointResults);
+  const snapshotResults = new Map(resumeRunSnapshotResults);
   // issue #78：run snapshot 是可选 capability。优先新方法 saveRunSnapshot；
   // 旧名（saveCheckpoint/appendCheckpoint）作为过渡期 fallback 继续支持第三方 store；
   // 三者皆无 → 无快照能力：跳过快照持久化，工具照常执行（仅失去中途 crash resume）。
@@ -1385,8 +1385,8 @@ export async function runToolLoop(options) {
       : typeof store?.appendCheckpoint === "function"
         ? "appendCheckpoint"
         : undefined;
-  const hasCheckpointStore = persistenceRequired && snapshotSaveMethod !== undefined;
-  const persistCheckpoint = async ({
+  const hasRunSnapshotStore = persistenceRequired && snapshotSaveMethod !== undefined;
+  const persistRunSnapshot = async ({
     round,
     pendingToolUse,
     pendingToolUses = [],
@@ -1416,7 +1416,7 @@ export async function runToolLoop(options) {
           toolUseId: toolResult.tool_use_id,
           toolResult: cloneState(toolResult),
         })),
-        // 本 round 已归档的全量输出随 checkpoint 落盘，保证崩溃恢复后证据仍可核验
+        // 本 round 已归档的全量输出随 run snapshot 落盘，保证崩溃恢复后证据仍可核验
         toolOutputs: cloneState(archivedOutputs.filter((entry) => entry.round === round)),
         compactionStats: cloneState(compactionStats),
         ts: new Date().toISOString(),
@@ -1458,7 +1458,10 @@ export async function runToolLoop(options) {
       navigationRecords: navigationRecordCount,
       terminationReason: currentTerminationReason,
       toolErrorCount,
-      checkpointFailureCount,
+      // 键名保持旧名 checkpointFailureCount（issue #83）：它是 createDeterministicRunState 的
+      // 导出选项键，且其值以 `errors.checkpoint` 落盘、渲染进模型可见的 run-state 文本行——
+      // 三处均属宿主/持久化契约，改名是破坏性变更，故此处只改引擎内部变量名、不改键名。
+      checkpointFailureCount: runSnapshotFailureCount,
       unpersisted: errorLedger.toUnpersisted(),
       compactionStats,
     });
@@ -1691,7 +1694,7 @@ export async function runToolLoop(options) {
     };
   };
 
-  const checkpointContext = {
+  const runSnapshotContext = {
     runId,
     executeTool,
     baseToolContext,
@@ -1703,8 +1706,8 @@ export async function runToolLoop(options) {
     toolSignal,
     signal,
     onToolResult,
-    persistCheckpoint,
-    hasCheckpointStore,
+    persistRunSnapshot,
+    hasRunSnapshotStore,
     toolStats,
     governorState,
     get budgetRounds() {
@@ -1735,11 +1738,11 @@ export async function runToolLoop(options) {
     set toolErrorCount(value) {
       toolErrorCount = value;
     },
-    get checkpointFailureCount() {
-      return checkpointFailureCount;
+    get runSnapshotFailureCount() {
+      return runSnapshotFailureCount;
     },
-    set checkpointFailureCount(value) {
-      checkpointFailureCount = value;
+    set runSnapshotFailureCount(value) {
+      runSnapshotFailureCount = value;
     },
     get lastPersistenceFailure() {
       return lastPersistenceFailure;
@@ -1760,16 +1763,16 @@ export async function runToolLoop(options) {
       interceptJudgeDecision = value;
     },
     executedToolIds,
-    checkpointResults,
+    snapshotResults,
     // 「没存上」账本（ADR-016）：聚合层 fail-closed 丢原文时必须留痕——
     // main 退役了 run-state 的 errors.archive 计数，账本是其继任通道
     errorLedger,
   };
-  const checkpointExecutor = createCheckpointExecutor(checkpointContext);
+  const runSnapshotExecutor = createRunSnapshotExecutor(runSnapshotContext);
   const {
     executeToolWithIntercept,
     pendingDirectionHints,
-  } = checkpointExecutor;
+  } = runSnapshotExecutor;
 
   const roundNumbersForMessages = (currentMessages) => {
     const grouped = groupIntoRounds(currentMessages).rounds;
@@ -2036,7 +2039,7 @@ export async function runToolLoop(options) {
   try {
     await refreshRunState();
     // resume 后注入旗标按本次 run 重置；后续 TTL 折叠/低预算会重新注入请求视图，
-    // 无需把 run-state 写入 checkpoint 或持久 transcript。
+    // 无需把 run-state 写入 run snapshot 或持久 transcript。
     ttlInjectArmed = false;
     ttlInjectConsumed = false;
     lowBudgetInjectFired = false;
@@ -2069,24 +2072,24 @@ export async function runToolLoop(options) {
       }
       resumePendingTools = [];
     }
-    if (resumeCheckpoint && resumeTranscriptStart !== undefined) {
+    if (resumeRunSnapshot && resumeTranscriptStart !== undefined) {
       const resumeRecordMessages = messages.slice(resumeTranscriptStart);
       const resumeMessagesToPersist = [
-        ...resumeCheckpointMessages,
+        ...resumeRunSnapshotMessages,
         ...resumeRecordMessages,
       ];
       const persisted = await persist("appendRound", runId, {
-        round: resumeCheckpoint.round,
-        roundKey: `${String(runId)}:round:${String(resumeCheckpoint.round)}`,
+        round: resumeRunSnapshot.round,
+        roundKey: `${String(runId)}:round:${String(resumeRunSnapshot.round)}`,
         // 引擎命名空间：宿主可能已用默认键 `${runId}:round:N` 写入自己的行（追问/历史种子），
         // 同键会被 appendRound 去重 → 续接轮（含补跑工具结果）落盘被静默丢弃，
         // transcript 只剩宿主那条近空行（issue #32 #8）。`:resume` 幂等，重启重跑不重复写。
-        dedupKey: `${String(runId)}:engine:round:${String(resumeCheckpoint.round)}:resume`,
+        dedupKey: `${String(runId)}:engine:round:${String(resumeRunSnapshot.round)}:resume`,
         messages: cloneState(resumeMessagesToPersist),
-        ...(archivedOutputs.some((entry) => entry.round === resumeCheckpoint.round)
+        ...(archivedOutputs.some((entry) => entry.round === resumeRunSnapshot.round)
           ? {
             toolOutputs: archivedOutputs
-              .filter((entry) => entry.round === resumeCheckpoint.round)
+              .filter((entry) => entry.round === resumeRunSnapshot.round)
               .map(({ toolUseId, name, content }) => ({ toolUseId, name, content })),
           }
           : {}),
@@ -2094,7 +2097,7 @@ export async function runToolLoop(options) {
       });
       if (persisted) persistedTranscriptLength += resumeMessagesToPersist.length;
       resumeTranscriptStart = undefined;
-      resumeCheckpointMessages = [];
+      resumeRunSnapshotMessages = [];
     }
     appendResumeTailMessages();
 
@@ -2234,7 +2237,7 @@ export async function runToolLoop(options) {
           if (recentSignatures.length > stallWindow) recentSignatures.shift();
         }
 
-        const recordedToolResult = checkpointResults.get(block.id);
+        const recordedToolResult = snapshotResults.get(block.id);
         const toolResult = executedToolIds.has(block.id) && recordedToolResult !== undefined
           ? cloneState(recordedToolResult)
           : await executeToolWithIntercept(
@@ -2585,7 +2588,7 @@ export async function runToolLoop(options) {
     if (onRound) await onRound(record);
 
     executedToolIds.clear();
-    checkpointResults.clear();
+    snapshotResults.clear();
     toolExecutedThisRound = false;
     emitEvent({
       type: "round_end",

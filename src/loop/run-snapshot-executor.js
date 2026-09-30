@@ -1,3 +1,11 @@
+// 工具执行器（issue #83：原「checkpoint 执行器」统一更名为 run snapshot 执行器）：执行工具块、
+// judge 拦截审计、以及工具前后的 run snapshot 落盘。
+//
+// 本模块有意保留的旧术语（宿主可见契约，改名属破坏性变更，issue #83 不动）：
+//   - 错误码 `checkpoint_failed`：docs/host-upgrade-guide-v030*.md / docs/decisions/002-* 已对外文档化
+//   - 诊断 phase `checkpoint_before_tool` / `checkpoint_after_tool`：随 `persistence_error` 事件
+//     与抛出的 KitError 暴露给宿主（test/persistence-diagnostics.test.js 断言）
+//   - 抛出错误的英文 message 文本：宿主日志/正则可能匹配
 import { KitError } from "../providers/errors.js";
 import { cloneState } from "./budget.js";
 import { throwIfAborted } from "./abort.js";
@@ -34,14 +42,14 @@ function truncateJudgeRaw(text) {
     : value;
 }
 
-export function createCheckpointExecutor(ctx) {
+export function createRunSnapshotExecutor(ctx) {
   // 单轮聚合输出预算（issue #32 #2）：逐条 outputHygiene 之外的「本轮合计」闸门。
   // 预算基准用引擎既有 budgetTokens（无窗口配置 → 聚合层整体关闭，行为不变）。
   const aggregateGate = createRoundAggregateGate({
     // 归档通道不存在（理论上 outputHygiene 已保证，这里只做防御）→ 聚合层关闭，不产生假 stub
     budgetTokens: Array.isArray(ctx.archivedOutputs) ? ctx.aggregateBudgetTokens : undefined,
     archivedOutputs: ctx.archivedOutputs ?? [],
-    listRoundResults: () => [...(ctx.checkpointResults?.values() ?? [])],
+    listRoundResults: () => [...(ctx.snapshotResults?.values() ?? [])],
   });
   // 终止态事件每轮只报一次（诊断用；不参与判定，故无恢复语义）
   const aggregateTerminalRounds = new Set();
@@ -111,9 +119,9 @@ export function createCheckpointExecutor(ctx) {
     return snapshot;
   };
 
-  // 单轮聚合预算（issue #32 #2）：在 onToolResult 改写 + 逐条 outputHygiene 之后、后置 checkpoint
+  // 单轮聚合预算（issue #32 #2）：在 onToolResult 改写 + 逐条 outputHygiene 之后、后置 run snapshot
   // **之前**立即判定内联或归档+stub。声明顺序与 tool_use_id 不变、不重排、不做批末回写——
-  // 因此已 checkpoint 的 tool_result 永远不会被回写，resume 语义与改动前一致。
+  // 因此已随 run snapshot 落盘的 tool_result 永远不会被回写，resume 语义与改动前一致。
   const applyRoundAggregate = (block, round, toolName, execution, failed) => {
     if (!aggregateGate.enabled) return execution;
     // 聚合层要求稳定的 tool_use id（OpenAI/Anthropic 双协议都强制提供）：归档条目的幂等与
@@ -195,15 +203,15 @@ export function createCheckpointExecutor(ctx) {
     const toolStat = ctx.toolStats.get(toolName) ?? { calls: 0, failures: 0 };
     toolStat.calls += 1;
     ctx.toolStats.set(toolName, toolStat);
-    const persistCheckpoint = ctx.persistCheckpoint;
-    const checkpointPersisted = await persistCheckpoint({
+    const persistRunSnapshot = ctx.persistRunSnapshot;
+    const runSnapshotPersisted = await persistRunSnapshot({
       round,
       pendingToolUse: block,
       pendingToolUses,
       toolResults,
     });
-    if (!checkpointPersisted && ctx.hasCheckpointStore) {
-      ctx.checkpointFailureCount += 1;
+    if (!runSnapshotPersisted && ctx.hasRunSnapshotStore) {
+      ctx.runSnapshotFailureCount += 1;
       const failure = new KitError(
         "checkpoint_failed",
         `Checkpoint persistence failed before tool execution (runId=${String(ctx.runId)}, round=${round})`,
@@ -299,7 +307,7 @@ export function createCheckpointExecutor(ctx) {
     };
     // 年龄标记（issue #35）：TTL 折叠按创建轮判定。附加字段穿过
     // cloneState/协议转换（wire 上被 canonicalToOpenAI 丢弃）/validateMessages 均安全，
-    // checkpoint persist/restore 后仍在（resume-manager 经 cloneState 原样带回）。
+    // run snapshot persist/restore 后仍在（resume-manager 经 cloneState 原样带回）。
     if (Number.isFinite(round)) toolResult.erixRound = round;
     if (isError || execution.success === false) {
       toolStat.failures += 1;
@@ -310,9 +318,9 @@ export function createCheckpointExecutor(ctx) {
     if (isError || execution.success === false) toolResult.is_error = true;
     toolResults.push(toolResult);
     if (block.id !== undefined) ctx.executedToolIds.add(block.id);
-    ctx.checkpointResults.set(block.id, toolResult);
-    const persistCheckpointAfter = ctx.persistCheckpoint;
-    const postCheckpointPersisted = await persistCheckpointAfter({
+    ctx.snapshotResults.set(block.id, toolResult);
+    const persistRunSnapshotAfter = ctx.persistRunSnapshot;
+    const postRunSnapshotPersisted = await persistRunSnapshotAfter({
       round,
       pendingToolUse: block,
       pendingToolUses,
@@ -320,8 +328,8 @@ export function createCheckpointExecutor(ctx) {
       status: "executed",
       messagesOverride: messagesWithToolResults(toolResults),
     });
-    if (!postCheckpointPersisted && ctx.hasCheckpointStore) {
-      ctx.checkpointFailureCount += 1;
+    if (!postRunSnapshotPersisted && ctx.hasRunSnapshotStore) {
+      ctx.runSnapshotFailureCount += 1;
       const failure = new KitError(
         "checkpoint_failed",
         `Checkpoint persistence failed after tool execution: tool already executed but result was not persisted (toolUseId=${String(block.id)}, runId=${String(ctx.runId)}, round=${round})`,
@@ -356,15 +364,15 @@ export function createCheckpointExecutor(ctx) {
       return executeToolBlock(block, round, toolResults, pendingToolUses);
     }
 
-    const persistCheckpointAfterIntercept = ctx.persistCheckpoint;
-    const checkpointPersisted = await persistCheckpointAfterIntercept({
+    const persistRunSnapshotAfterIntercept = ctx.persistRunSnapshot;
+    const runSnapshotPersisted = await persistRunSnapshotAfterIntercept({
       round,
       pendingToolUse: block,
       pendingToolUses,
       toolResults,
     });
-    if (!checkpointPersisted && ctx.hasCheckpointStore) {
-      ctx.checkpointFailureCount += 1;
+    if (!runSnapshotPersisted && ctx.hasRunSnapshotStore) {
+      ctx.runSnapshotFailureCount += 1;
       const failure = new KitError(
         "checkpoint_failed",
         `Checkpoint persistence failed before intercepted tool execution (runId=${String(ctx.runId)}, round=${round})`,
@@ -518,7 +526,7 @@ export function createCheckpointExecutor(ctx) {
     };
     const budgetHint = budgetHintFor();
     if (budgetHint) toolResult.content = `${toolResult.content}\n${budgetHint}`;
-    if (block.id !== undefined) ctx.checkpointResults.set(block.id, toolResult);
+    if (block.id !== undefined) ctx.snapshotResults.set(block.id, toolResult);
     toolResults.push(toolResult);
     const overriddenMessages = [
       ...ctx.messages,
@@ -530,8 +538,8 @@ export function createCheckpointExecutor(ctx) {
         content: pendingDirectionHints.map((text) => ({ type: "text", text })),
       });
     }
-    const persistCheckpointForInterceptResult = ctx.persistCheckpoint;
-    const resultCheckpointPersisted = await persistCheckpointForInterceptResult({
+    const persistRunSnapshotForInterceptResult = ctx.persistRunSnapshot;
+    const resultRunSnapshotPersisted = await persistRunSnapshotForInterceptResult({
       round,
       pendingToolUse: block,
       pendingToolUses,
@@ -539,8 +547,8 @@ export function createCheckpointExecutor(ctx) {
       status: "intercepted",
       messagesOverride: overriddenMessages,
     });
-    if (!resultCheckpointPersisted && ctx.hasCheckpointStore) {
-      ctx.checkpointFailureCount += 1;
+    if (!resultRunSnapshotPersisted && ctx.hasRunSnapshotStore) {
+      ctx.runSnapshotFailureCount += 1;
       const failure = new KitError(
         "checkpoint_failed",
         `Checkpoint persistence failed after intercept result (runId=${String(ctx.runId)}, round=${round})`,

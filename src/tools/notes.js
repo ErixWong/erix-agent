@@ -693,7 +693,7 @@ export function createBuiltinNotesTools(options = {}) {
     }
   };
 
-  // 结构化形态：兼容 runToolLoop/checkpoint-executor 的调用约定
+  // 结构化形态：兼容 runToolLoop/run-snapshot-executor 的调用约定
   // executeTool({id, name, input, context, signal})；同时保留位置参数
   // 视图 executeTool(name, input, context) 以兼容既有调用方。
   const executeTool = async (firstArg, positionalInput, positionalContext) => {

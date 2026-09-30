@@ -43,7 +43,7 @@ export async function callProvider(ctx, {
   while (true) {
     normalizeMessages(ctx.messages);
     validateMessages(ctx.messages, { allowPendingToolUse });
-    // TTL 折叠（issue #35）：只替换请求视图，ctx.messages 本身不动（checkpoint 仍存全文）。
+    // TTL 折叠（issue #35）：只替换请求视图，ctx.messages 本身不动（run snapshot 仍存全文）。
     // toolResultFold 是 orchestrator 的配置 getter（含终稿保护口径），每次 attempt 重新读取；
     // null/undefined = 本轮不折叠。
     const foldConfig = ctx.toolResultFold ?? null;
