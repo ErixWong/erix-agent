@@ -17,7 +17,7 @@
   |                               |-- tool_use -> executeTool ------>| 调用方代码
   |                               |<-- tool_result ------------------|
   |                               |-- completion / stall / judge     |
-  |                               |-- checkpoint 与轮次归档          |
+  |                               |-- run snapshot 与轮次归档        |
   |<------------- 结果 -----------|                                  |
 ```
 
@@ -228,7 +228,7 @@ runToolLoop({
 }>
 ```
 
-`initialMessages` 优先于 `initialUserMessage`。当 `resume: true` 时，循环加载 `runId` 对应的 transcript 和 checkpoint，使用持久化的消息及轮次状态，而不是初始消息。
+`initialMessages` 优先于 `initialUserMessage`。当 `resume: true` 时，循环加载 `runId` 对应的 transcript 和最新 run snapshot，使用持久化的消息及轮次状态，而不是初始消息。
 
 `executeTool` 支持以下任一形式：
 
@@ -526,7 +526,7 @@ src/
 2. 规范工具调用轮次按完整的 assistant/tool-result 组折叠，因此正常压缩不会产生孤立的工具消息。
 3. 整轮策略会将 system 消息和首个真实 user 消息保留在头部。如果请求仍超出预算，紧急安全截断回退可以减少或移除未受保护的内容。
 4. LLM 生成的折叠摘要在插入上下文前会经过确定性的尺寸强制。
-5. 上下文压缩可以返回用于持久化的 `foldedPayload`；tool-result TTL 折叠只改变 provider request view，checkpoint 保留完整的工具结果文本。
+5. 上下文压缩可以返回用于持久化的 `foldedPayload`；tool-result TTL 折叠只改变 provider request view，run snapshot 保留完整的工具结果文本。
 6. 库源码中不嵌入 secret。API key 可以直接提供，也可以通过 `apiKeyEnv` 和 `apiKeyFile` 间接解析。
 7. 执行器注册表由代码拥有。JSON 或其他提供器数据可以选择和约束暴露的 schema，但不能添加可执行能力。
 8. 只有 `verification.status === "verified"` 这一结果状态允许宿主将 `finalText` 视为经过 final-guard 验证。`skipped`、`unverified` 和 `error` 需要宿主按自身规则处理。

@@ -4,8 +4,8 @@
 
 **erix-agent** is a zero-dependency, pure ESM LLM runtime for headless coding
 agents. It provides dual-protocol streaming providers, a tool-calling loop,
-context compaction, checkpointing, resume, note-first retrieval, and an optional
-reflection/judge layer for unattended work.
+context compaction, run snapshot (latest-only autosave), resume, note-first
+retrieval, and an optional reflection/judge layer for unattended work.
 
 **Positioning: headless agent.** The product is an engine plus a
 programmatic task entry point: a task enters, the agent runs its tool loop,
@@ -123,7 +123,7 @@ instead of re-solving the engineering underneath it.
 |---|---|---|
 | Lower the barrier to LLM use | `runToolLoop` as the single entry point; dual-protocol providers; canonical message model; compaction; checkpoint/resume; classified errors | product-level prompt and workflow design |
 | Centralised model configuration and run policy | duck-typed `ModelConfigProvider.resolve(slot)` with `static` / `env` / `json-file` adapters, per-slot models, `apiKey`/`apiKeyEnv`/`apiKeyFile` indirection, budget derivation | the configuration store itself (database or config centre), project and tenant quotas, fallback policy, prompt and agent versions |
-| Traceable calls, cost analysis and audit | event stream (`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`), token accounting, `TranscriptStore` persistence, stable run ids, and checkpoints | log and cost storage, dashboards, retention, audit process |
+| Traceable calls, cost analysis and audit | event stream (`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`), token accounting, `TranscriptStore` persistence, stable run ids, and run snapshots (latest-only autosave) | log and cost storage, dashboards, retention, audit process |
 | One tool, permission and safety boundary | a single execution entry (`executeTool`), an executor registry that data cannot extend, schema intersection, and note-first retrieval through `note_list` → `note_read` | the policy itself: which project may run which agent, which tools, which operations need confirmation, network and write access, rate and time limits |
 | Contain third-party framework churn | zero runtime dependencies and an owned implementation, a stable exported surface plus `erix-agent/contract-tests` for consumers | — |
 | Accumulate reusable agent engineering | canonical message and tool formats, ADR-tracked decisions, contract tests, benchmark harness | — |
@@ -570,7 +570,7 @@ headless runtime's product interface.
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
 erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
@@ -590,7 +590,15 @@ The shared CLI flags are:
 
 - `--stream` streams model text in `chat`.
 - `--session <id>` selects the session; without an explicit chat session,
-  `chat` creates a unique ID derived from the working directory.
+  `chat` creates a unique ID derived from the working directory. An explicit
+  `--session <id>` takes precedence over `-c`/`--continue` and `-r`
+  (combining them is a usage error).
+- `-c`, `--continue` resumes the most recent session recorded for the current
+  working directory (equivalent to `--session <most-recent-id>`; mutually
+  exclusive with `--session` and `-r`).
+- `-r` opens an interactive session picker (arrow keys to move, Enter to
+  select, Esc to cancel); it requires a TTY, so non-interactive environments
+  must use `-c`/`--continue` or `--session <id>` instead.
 - `--dir <path>` selects the transcript directory; the `chat` default is
   `~/.erix/transcripts`.
 - `--max-rounds <n>` sets the tool-loop round limit.
@@ -608,6 +616,22 @@ The shared CLI flags are:
   `chat` and `repl`; unknown names warn, and an empty filtered set is an error.
 - `--judge-log <path>` appends redacted round/interception judge decisions
   as JSONL in `chat`.
+
+### Session continuation
+
+`chat` can resume a previous session instead of starting a new one.
+`-c`/`--continue` picks the most recent session recorded for the current
+working directory; `-r` opens an interactive picker listing recorded
+sessions (most recent first, each row showing timestamp, directory, and a
+preview of the first prompt). Both resolve to the same path as an explicit
+`--session <id>`, which takes precedence — combining `--session` with `-c`
+or `-r` is a usage error. Session discovery is backed by
+`~/.erix/sessions.json`, an index maintained automatically after each
+`chat`/`repl` run and capped at 500 entries; when the file is missing or
+corrupt it is rebuilt automatically by scanning the transcripts directory.
+The index is a cache, not the source of truth: resuming still requires a
+non-empty transcript for the session, and index write failures never affect
+the run itself.
 
 The built-in CLI tools are `readFile`, `rg`, `grep`, `tree`, `writeFile`, and
 `exec`. `grep` is a pure-Node search tool with simple glob filename filtering,
@@ -665,6 +689,8 @@ MCP configuration is read from the current directory's `.mcp.json` or
 ~/.erix/
   config.json
   mcp.json
+  sessions.json                session index (cache; auto-maintained, auto-rebuilt)
+  session-meta.json            cwd ownership for the session index
   transcripts/
     <safeRunId>.jsonl
     <safeRunId>.snapshot.json
