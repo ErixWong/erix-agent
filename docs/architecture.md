@@ -17,7 +17,7 @@ Caller                         erix-agent                         LLM API
   |                               |-- tool_use -> executeTool ------>| Caller-owned code
   |                               |<-- tool_result ------------------|
   |                               |-- completion / stall / judge     |
-  |                               |-- checkpoint and round archive  |
+  |                               |-- run snapshot and round archive |
   |<------------- result ---------|                                  |
 ```
 
@@ -260,8 +260,8 @@ runToolLoop({
 ```
 
 `initialMessages` takes precedence over `initialUserMessage`. With `resume:
-true`, the loop loads the transcript and checkpoint for `runId` and uses the
-persisted messages and round state instead of the initial messages.
+true`, the loop loads the transcript and the latest run snapshot for `runId`
+and uses the persisted messages and round state instead of the initial messages.
 
 `executeTool` receives one structured execution object:
 
@@ -719,7 +719,7 @@ through the `erix-agent/tools` subpath. The current tree intentionally has no
 4. LLM-generated fold summaries pass deterministic size enforcement before they
    are inserted into the context.
 5. Context compaction may return `foldedPayload` for persistence, while
-   tool-result TTL folding changes only the provider request view; checkpoints
+   tool-result TTL folding changes only the provider request view; run snapshots
    retain the complete tool-result text.
 6. No secret is embedded in the library source. API keys can be supplied
    directly or resolved indirectly through `apiKeyEnv` and `apiKeyFile`.

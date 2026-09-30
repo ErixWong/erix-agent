@@ -2,7 +2,7 @@
 
 > English version: [README.md](README.md)
 
-**erix-agent** 是一个零依赖、纯 ESM 的无头编码 agent LLM 运行时。它提供双协议流式 provider、工具调用循环、上下文压缩、checkpoint、恢复、note-first 取回，以及可选的 reflection/judge 层，用于无人值守工作。
+**erix-agent** 是一个零依赖、纯 ESM 的无头编码 agent LLM 运行时。它提供双协议流式 provider、工具调用循环、上下文压缩、run snapshot（latest-only autosave）、恢复、note-first 取回，以及可选的 reflection/judge 层，用于无人值守工作。
 
 **定位：无头 agent。** 产品形态是一个引擎加编程式任务入口：任务进入，agent 运行工具循环，事件离开进程，运行可以恢复。它不是 UI，也不是为坐在终端前的人设计的。`runToolLoop` 管理一个 agent 任务的完整生命周期：启动、运行、停止、恢复，并通过 `onRound`、`onDelta`、`onToolCall`、`onUsage` 和 `onEvent` 流式传出事件。
 
@@ -91,7 +91,7 @@ Agent 行为难以预测。统一 Headless Agent 的价值，就是让业务代�
 |---|---|---|
 | 降低使用 LLM 的门槛 | `runToolLoop` 单一入口；双协议 provider；规范消息模型；上下文压缩；checkpoint/resume；错误分类 | 产品级的 Prompt 与流程设计 |
 | 统一管理模型配置与运行策略 | 鸭子类型的 `ModelConfigProvider.resolve(slot)`，内置 `static` / `env` / `json-file` 适配器；按 slot 选模型；`apiKey`/`apiKeyEnv`/`apiKeyFile` 间接引用；预算推导 | 配置来源本身（数据库/配置中心）、项目与租户额度、fallback 策略、Prompt 与 Agent 版本 |
-| 统一记录调用、支撑成本分析与事后审计 | 事件流（`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`）、token 计量、`TranscriptStore` 落盘、稳定 run id 和 checkpoint | 日志与成本存储、监控看板、保留策略、审计流程 |
+| 统一记录调用、支撑成本分析与事后审计 | 事件流（`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`）、token 计量、`TranscriptStore` 落盘、稳定 run id 和 run snapshot（latest-only autosave） | 日志与成本存储、监控看板、保留策略、审计流程 |
 | 统一安全、权限与工具调用边界 | 唯一执行入口（`executeTool`）；数据无法扩张的执行器注册表；schema 求交；通过 `note_list` → `note_read` 的 note-first 取回 | 策略本身：哪个项目能用哪些 Agent、可调哪些工具、哪些操作需人工确认、是否允许联网与写操作、调用次数与时长限制 |
 | 降低第三方框架升级的影响 | 零运行时依赖、自有实现；稳定导出面 + 面向消费方的 `erix-agent/contract-tests` | — |
 | 沉淀统一的 Agent 能力与工程规范 | 规范消息与工具格式、ADR 决策记录、契约测试、基准 harness | — |
@@ -371,7 +371,7 @@ onEvent
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
 erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
@@ -384,7 +384,9 @@ erix mcp [--config <path>]
 共享 CLI 参数包括：
 
 - `--stream` 在 `chat` 中流式输出模型文本。
-- `--session <id>` 选择 session；未显式指定 chat session 时，`chat` 会创建一个从工作目录派生的唯一 ID。
+- `--session <id>` 选择 session；未显式指定 chat session 时，`chat` 会创建一个从工作目录派生的唯一 ID。显式 `--session <id>` 优先级最高——与 `-c`/`--continue` 或 `-r` 同时使用会直接报参数错误。
+- `-c`、`--continue` 接续当前工作目录最近一次的会话（等价 `--session <最近id>`；与 `--session` 和 `-r` 互斥）。
+- `-r` 打开交互式会话选择器（方向键移动，Enter 选中，Esc 取消）；需要 TTY，非交互环境请改用 `-c`/`--continue` 或 `--session <id>`。
 - `--dir <path>` 选择 transcript 目录；`chat` 默认使用 `~/.erix/transcripts`。
 - `--max-rounds <n>` 设置工具循环轮次上限。
 - `--reflection <on|off>` 选择 chat reflection 行为。
@@ -395,6 +397,10 @@ erix mcp [--config <path>]
 - `--compact-budget <tokens>` 覆盖自动压缩预算。
 - `--tools <逗号分隔名称>` 是 `chat` 和 `repl` 的硬能力白名单；未知名称会告警，过滤后为空会报错。
 - `--judge-log <path>` 在 `chat` 中以 JSONL 追加经过脱敏的轮次/judge 拦截决策。
+
+### 会话接续
+
+`chat` 可以接续之前的会话，而不是每次新建。`-c`/`--continue` 接续当前工作目录最近一次的会话；`-r` 打开交互式选择器列出已记录的会话（最近的在前，每行显示时间、目录和首条 prompt 预览）。两者解析后与显式 `--session <id>` 走同一条路径，显式 `--session <id>` 优先级最高——与 `-c` 或 `-r` 同时使用会直接报参数错误。会话发现依赖 `~/.erix/sessions.json` 索引：每次 `chat`/`repl` 运行后自动维护，上限 500 条；文件缺失或损坏时自动扫描 transcripts 目录重建。索引只是缓存不是真相：接续仍以该会话存在非空 transcript 为准，索引写入失败绝不影响运行本身。
 
 内置 CLI 工具为 `readFile`、`rg`、`grep`、`tree`、`writeFile` 和 `exec`。`grep` 是纯 Node 搜索工具，支持简单 glob 文件名过滤、跳过目录、逐行限制和 200 条硬结果上限。工具操作任意路径和命令；checkpoint 保留完整结果，而 TTL 折叠只缩减 provider request view。没有可重放性分类、重跑检测或重跑告知：重复命令正常执行并返回新输出（ADR-016）。需要早期精确值时使用 note-first 顺序 `note_list` → `note_read`，不要依赖记忆。系统提示要求内部思考使用 English，面向用户的输出遵循用户语言。
 
@@ -414,6 +420,8 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 ~/.erix/
   config.json
   mcp.json
+  sessions.json                会话索引（缓存；自动维护、损坏自动重建）
+  session-meta.json            会话索引的 cwd 归属
   transcripts/
     <safeRunId>.jsonl
     <safeRunId>.snapshot.json
