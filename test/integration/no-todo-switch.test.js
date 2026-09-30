@@ -13,6 +13,14 @@ import { runChat } from "../../bin/cli.js";
 import { runRepl } from "../../bin/repl.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 
+// issue #81：注入 notesDir / skillsDir / 空 MCP 配置，避免触达真实 ~/.erix
+//（notes 收尾 purge 会扫描真实笔记目录，MCP 缺省解析真实 ~/.erix/mcp.json）。
+async function writeEmptyMcpConfig(dir) {
+  const configPath = join(dir, "mcp.json");
+  await writeFile(configPath, JSON.stringify({ mcpServers: {} }), "utf8");
+  return configPath;
+}
+
 function captureLoop(ref) {
   return async (options) => {
     ref.options = options;
@@ -69,7 +77,9 @@ test("runChat 默认路径：todo 四工具在模型工具表中（回归）", a
       prompt: "hi",
       session: "no-todo-on",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills-empty"),
+      configPath: await writeEmptyMcpConfig(dir),
       provider: createFakeProvider([]),
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 2,
@@ -100,7 +110,9 @@ test("runChat --no-todo：工具表无 todo_*、系统提示无 todo、用户级
       prompt: "hi",
       session: "no-todo-flag",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir,
+      configPath: await writeEmptyMcpConfig(dir),
       noTodo: true,
       provider: createFakeProvider([]),
       config: { model: "fake-model", maxOutputTokens: 1000 },
@@ -136,6 +148,9 @@ test("runChat --no-todo 与 --tools 白名单正交：先关 todo 再过白名�
       prompt: "hi",
       session: "no-todo-allowlist",
       dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath: await writeEmptyMcpConfig(dir),
       noTodo: true,
       tools: "todo_add,exec",
       provider: createFakeProvider([]),
@@ -166,6 +181,9 @@ test("runChat ERIX_NO_TODO=1：env 路径与 --no-todo 等价（env 隔离注入
       prompt: "hi",
       session: "no-todo-env",
       dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath: await writeEmptyMcpConfig(dir),
       provider: createFakeProvider([]),
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 2,
@@ -194,7 +212,9 @@ test("runChat 用户级 todo skill 默认路径产生同名冲突告警（issue 
       prompt: "hi",
       session: "no-todo-conflict",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir,
+      configPath: await writeEmptyMcpConfig(dir),
       provider: createFakeProvider([]),
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 2,
@@ -228,12 +248,13 @@ test("runRepl ERIX_NO_TODO=1：repl env 路径工具表无 todo_*、系统提示
   process.env.ERIX_NO_TODO = "1";
   try {
     const run = runRepl(
-      ["--session", "no-todo-repl", "--dir", dir],
+      ["--session", "no-todo-repl", "--dir", dir, "--config", await writeEmptyMcpConfig(dir)],
       {
         input,
         output,
         sessionDir: dir,
         home: dir,
+        notesDir: join(dir, "notes"),
         config: { model: "fake-model", maxOutputTokens: 1000 },
         providerFactory: () => provider,
       },

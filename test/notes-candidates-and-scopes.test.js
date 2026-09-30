@@ -31,6 +31,14 @@ import { NOTE_VALUE_MAX_CHARS } from "../src/tools/notes.js";
 import { createFileNotesStore } from "../src/store/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
+// issue #81：注入空 MCP 配置，避免 runChat 的 MCP 代理解析真实 ~/.erix/mcp.json。
+async function writeEmptyMcpConfig(dir) {
+  const configPath = path.join(dir, "mcp.json");
+  await mkdir(dir, { recursive: true });
+  await writeFile(configPath, JSON.stringify({ mcpServers: {} }), "utf8");
+  return configPath;
+}
+
 async function withTempDirectory(callback) {
   const directory = await mkdtemp(path.join(tmpdir(), "erix-notes-autocapture-"));
   try {
@@ -170,11 +178,14 @@ test("run completes pinned notes and host purge reclaims the scope past retentio
 // ADR-018 D7 会话时钟：CLI 宿主在收尾时按 transcript 最后活动清理过期笔记
 // scope（笔记寿命 = 会话寿命 + 30 天尸检期）；找不到 transcript 回退笔记 mtime。
 async function runQuietChat({ transcriptsDir, notesDir, session }) {
+  const root = path.dirname(transcriptsDir);
   await runChat({
     prompt: "ping",
     session,
     dir: transcriptsDir,
     notesDir,
+    skillsDir: path.join(root, "skills"),
+    configPath: await writeEmptyMcpConfig(root),
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }] },
     ]),
@@ -285,11 +296,15 @@ test("concurrent runChat calls keep explicit note scopes isolated", async () => 
     };
     process.env.ERIX_NOTES_DIR = path.join(directory, "sentinel-notes");
     try {
+      // issue #81：空 MCP 配置在 Promise.all 之前写好，避免并发写同一文件。
+      const configPath = await writeEmptyMcpConfig(directory);
       const run = (runId, value) => runChat({
         prompt: `save ${value}`,
         session: runId,
         dir: path.join(directory, `${runId}-transcripts`),
         notesDir: path.join(directory, `${runId}-notes`),
+        skillsDir: path.join(directory, "skills"),
+        configPath,
         provider: createFakeProvider([
           {
             content: [{

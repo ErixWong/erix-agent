@@ -21,6 +21,15 @@ import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFileTranscriptStore, safeRunId } from "../src/store/file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
+// issue #81：runRepl 的 notesDir 缺省解析真实 ~/.erix/notes（收尾 purge 会扫描甚至删除
+// 真实笔记），MCP 配置缺省解析真实 ~/.erix/mcp.json（可能配了真实远端 server）。
+// 每个用例注入 notesDir 与空 MCP 配置，彻底隔离真实 home。
+async function writeEmptyMcpConfig(dir) {
+  const configPath = join(dir, "mcp.json");
+  await writeFile(configPath, JSON.stringify({ mcpServers: {} }), "utf8");
+  return configPath;
+}
+
 test("parseReplArgs uses the default session and directory", () => {
   assert.deepEqual(parseReplArgs([]), {
     session: defaultSessionId(process.cwd()),
@@ -55,8 +64,9 @@ test("runRepl routes default session/transcripts dirs into the injected home", a
   const output = new PassThrough();
   try {
     const session = defaultSessionId(process.cwd());
+    const mcpConfigPath = await writeEmptyMcpConfig(home);
     const run = runRepl(
-      [],
+      ["--config", mcpConfigPath],
       {
         input,
         output,
@@ -265,12 +275,13 @@ test("runRepl aborts the active loop on SIGINT and keeps readline open", async (
 
   try {
     const run = runRepl(
-      ["--session", "repl-sigint", "--dir", dir],
+      ["--session", "repl-sigint", "--dir", dir, "--config", await writeEmptyMcpConfig(dir)],
       {
         input,
         output,
         sessionDir: dir,
         home: dir,
+        notesDir: join(dir, "notes"),
         config: { model: "fake-model", maxOutputTokens: 1000 },
         providerFactory: () => provider,
       },
@@ -301,12 +312,13 @@ test("runRepl resumes from the transcript store without an engine-owned retrieva
   ]);
   try {
     const run = runRepl(
-      ["--session", "repl-store", "--dir", dir],
+      ["--session", "repl-store", "--dir", dir, "--config", await writeEmptyMcpConfig(dir)],
       {
         input,
         output,
         sessionDir: dir,
         home: dir,
+        notesDir: join(dir, "notes"),
         config: { model: "fake-model", maxOutputTokens: 1000 },
         providerFactory: () => provider,
       },
@@ -344,12 +356,13 @@ test("runRepl injects archive status at fold time instead of into loop context",
   let captured;
   try {
     const run = runRepl(
-      ["--session", "repl-recovery", "--dir", dir, "--compact-budget", "100"],
+      ["--session", "repl-recovery", "--dir", dir, "--compact-budget", "100", "--config", await writeEmptyMcpConfig(dir)],
       {
         input,
         output,
         sessionDir: dir,
         home: dir,
+        notesDir: join(dir, "notes"),
         config: { model: "fake-model", maxOutputTokens: 1000 },
         providerFactory: () => ({}),
         loop: async (options) => {
@@ -402,13 +415,14 @@ test("runRepl wires persistence diagnostics to stderr", async () => {
   let captured;
   try {
     const run = runRepl(
-      ["--session", "repl-diagnostics", "--dir", dir],
+      ["--session", "repl-diagnostics", "--dir", dir, "--config", await writeEmptyMcpConfig(dir)],
       {
         input,
         output,
         errorOutput,
         sessionDir: dir,
         home: dir,
+        notesDir: join(dir, "notes"),
         config: { model: "fake-model", maxOutputTokens: 1000 },
         providerFactory: () => ({}),
         loop: async (options) => {
@@ -455,6 +469,7 @@ test("runRepl reports a damaged MCP config instead of treating it as absent", as
         output,
         sessionDir: dir,
         home: dir,
+        notesDir: join(dir, "notes"),
         config: { model: "fake-model", maxOutputTokens: 1000 },
       },
     );
@@ -504,12 +519,13 @@ test("runRepl preserves new input when resuming an aborted tool", async () => {
     );
 
     const run = runRepl(
-      ["--session", session, "--dir", dir],
+      ["--session", session, "--dir", dir, "--config", await writeEmptyMcpConfig(dir)],
       {
         input,
         output,
         sessionDir: dir,
         home: dir,
+        notesDir: join(dir, "notes"),
         config: { model: "fake-model", maxOutputTokens: 1000 },
         providerFactory: () => resumeProvider,
       },
@@ -569,6 +585,8 @@ test("chat artifacts resume in REPL and pass the final guard", async () => {
       session: "assembly-e2e",
       dir,
       notesDir,
+      skillsDir: join(dir, "skills"),
+      configPath: await writeEmptyMcpConfig(dir),
       provider: chatProvider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 2,
@@ -579,7 +597,7 @@ test("chat artifacts resume in REPL and pass the final guard", async () => {
     assert.equal(chatResult.verification.status, "skipped");
 
     const run = runRepl(
-      ["--session", "assembly-e2e", "--dir", dir, "--final-guard"],
+      ["--session", "assembly-e2e", "--dir", dir, "--final-guard", "--config", join(dir, "mcp.json")],
       {
         input,
         output,

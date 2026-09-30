@@ -372,11 +372,14 @@ test("CLI guard verifies the correct answer and fail-closes a fabricated answer"
           stopReason: "end_turn",
         })),
       ]);
+      const mcpConfigPath = path.join(directory, "mcp.json");
+      await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }), "utf8");
       const result = await runChat({
         prompt: "执行一次性命令和 seq，最后回答首次密钥",
         session: `e2e-${finalTexts.length}-${finalTexts[0].includes("FAKE") ? "fake" : "real"}`,
         dir: transcriptDir,
         skillsDir: path.join(directory, "skills"),
+        configPath: mcpConfigPath,
         provider,
         config: { model: "fake-model", maxOutputTokens: 1000 },
         finalGuard: true,
@@ -409,12 +412,15 @@ test("final guard stays within the ADR-013 size limit", async () => {
 
 test("chat leaves the final guard disabled by default", async () => {
   await withNotes(async (directory) => {
+    const mcpConfigPath = path.join(directory, "mcp.json");
+    await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }), "utf8");
     let captured;
     await runChat({
       prompt: "default guard",
       session: "guard-default",
       dir: directory,
       skillsDir: path.join(directory, "skills"),
+      configPath: mcpConfigPath,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       provider: { chat: async () => ({ content: [], stopReason: "end_turn" }) },
       loop: async (options) => {
@@ -437,12 +443,15 @@ test("chat leaves the final guard disabled by default", async () => {
 
 test("chat enables the final guard explicitly", async () => {
   await withNotes(async (directory) => {
+    const mcpConfigPath = path.join(directory, "mcp.json");
+    await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }), "utf8");
     let captured;
     await runChat({
       prompt: "explicit guard",
       session: "guard-explicit",
       dir: directory,
       skillsDir: path.join(directory, "skills"),
+      configPath: mcpConfigPath,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       finalGuard: true,
       provider: { chat: async () => ({ content: [], stopReason: "end_turn" }) },

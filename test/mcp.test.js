@@ -135,7 +135,7 @@ test("createMcpProxyTool is disabled when config is invalid", async () => {
 test("createMcpProxyTool is enabled with a valid config", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
-    const proxy = createMcpProxyTool({ cwd: dir });
+    const proxy = createMcpProxyTool({ cwd: dir, home: dir });
     assert.equal(proxy.enabled, true);
     assert.equal(proxy.schema.name, "mcp");
   });
@@ -147,7 +147,7 @@ test("createMcpProxyTool exposes configured server names", async () => {
       mock: { command: "node", args: [mockServerPath] },
       other: { command: "node", args: [mockServerPath] },
     });
-    const proxy = createMcpProxyTool({ cwd: dir });
+    const proxy = createMcpProxyTool({ cwd: dir, home: dir });
     assert.deepEqual(proxy.listConfiguredServers().sort(), ["mock", "other"]);
   });
 });
@@ -156,7 +156,7 @@ test("createMcpProxyTool is lazy and does not spawn before use", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
     await withMcpCleanup(() => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       assert.deepEqual(getMcpPoolStatus(), {});
       assert.deepEqual(proxy.status(), { mock: "idle" });
       return Promise.resolve();
@@ -168,7 +168,7 @@ test("execute list connects, handshakes, and returns tools", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const result = await proxy.execute({ action: "list" });
       assert.match(result, /mock：4 个工具/);
       assert.match(result, /echo/);
@@ -234,7 +234,7 @@ test("execute search finds tools by keyword", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const result = await proxy.execute({ action: "search", query: "uppercase" });
       assert.match(result, /uppercase/);
       assert.match(result, /mock/);
@@ -250,7 +250,7 @@ test("execute search reports no matches", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const result = await proxy.execute({ action: "search", query: "nothing" });
       assert.match(result, /未找到/);
     });
@@ -261,7 +261,7 @@ test("execute call invokes a tool and returns text", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const result = await proxy.execute({
         action: "call",
         server: "mock",
@@ -277,7 +277,7 @@ test("execute call resolves mcp_<server>_<tool> id", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const result = await proxy.execute({
         action: "call",
         tool: "mcp_mock_echo",
@@ -292,7 +292,7 @@ test("execute call resolves an mcp tool id for a server name with underscores", 
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { my_server: { command: "node", args: [mockServerPath] } });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const result = await proxy.execute({
         action: "call",
         tool: "mcp_my_server_echo",
@@ -307,7 +307,7 @@ test("execute call returns uppercase result", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const result = await proxy.execute({
         action: "call",
         server: "mock",
@@ -323,7 +323,7 @@ test("execute call omits image content blocks", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const result = await proxy.execute({ action: "call", server: "mock", tool: "image" });
       assert.equal(result.trim(), "[data-url omitted]");
     });
@@ -334,7 +334,7 @@ test("execute call omits base64 data URLs in text", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const result = await proxy.execute({ action: "call", server: "mock", tool: "binary" });
       assert.equal(result.trim(), "[data-url omitted]");
     });
@@ -345,7 +345,7 @@ test("execute call returns an error for an unknown tool", async () => {
   await withTempDir(async (dir) => {
     await writeMcpConfig(dir, { mock: { command: "node", args: [mockServerPath] } });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const result = await proxy.execute({
         action: "call",
         server: "mock",
@@ -370,7 +370,7 @@ test("broken server does not block a healthy server in list", async () => {
       broken: { command: "definitely-not-a-command-" + Date.now(), args: [] },
     });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const result = await proxy.execute({ action: "list" });
       assert.match(result, /healthy：4 个工具/);
       assert.match(result, /broken：错误/);
@@ -386,7 +386,7 @@ test("status reports errors for broken servers", async () => {
       broken: { command: badCommand, args: [] },
     });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       // Trigger connection attempt via list, which marks server as error.
       await proxy.execute({ action: "list" });
       const result = proxy.status();
@@ -432,7 +432,7 @@ rl.on("line", (line) => {
       tempfs: { command: "node", args: [serverPath] },
     });
     await withMcpCleanup(async () => {
-      const proxy = createMcpProxyTool({ cwd: dir });
+      const proxy = createMcpProxyTool({ cwd: dir, home: dir });
       const searchResult = await proxy.execute({ action: "search", query: "read" });
       assert.match(searchResult, /read_file/);
       assert.match(searchResult, /tempfs/);
@@ -459,7 +459,7 @@ test("HTTP MCP server: list and call tools via JSON response", async () => {
         httpMock: { url: `http://127.0.0.1:${port}/json` },
       });
       await withMcpCleanup(async () => {
-        const proxy = createMcpProxyTool({ cwd: dir });
+        const proxy = createMcpProxyTool({ cwd: dir, home: dir });
         const listResult = await proxy.execute({ action: "list" });
         assert.match(listResult, /httpMock：1 个工具/);
         assert.match(listResult, /echo/);
@@ -499,7 +499,7 @@ test("HTTP MCP server: headers expand !cat with relative path", async () => {
         },
       });
       await withMcpCleanup(async () => {
-        const proxy = createMcpProxyTool({ cwd: dir });
+        const proxy = createMcpProxyTool({ cwd: dir, home: dir });
         await proxy.execute({ action: "list" });
         assert.equal(seenAuth, "secret-token-value");
       });
@@ -553,7 +553,7 @@ test("HTTP MCP server: JSON response id must match the request", async () => {
         httpMock: { url: `http://127.0.0.1:${port}/wrong-id` },
       });
       await withMcpCleanup(async () => {
-        const proxy = createMcpProxyTool({ cwd: dir });
+        const proxy = createMcpProxyTool({ cwd: dir, home: dir });
         const result = await proxy.execute({ action: "list" });
         assert.match(result, /JSON-RPC 响应 id 不匹配/);
       });
@@ -579,7 +579,7 @@ test("HTTP MCP server: caches Mcp-Session-Id for subsequent requests", async () 
         httpMock: { url: `http://127.0.0.1:${port}/json` },
       });
       await withMcpCleanup(async () => {
-        const proxy = createMcpProxyTool({ cwd: dir });
+        const proxy = createMcpProxyTool({ cwd: dir, home: dir });
         await proxy.execute({ action: "list" });
         await proxy.execute({
           action: "call",
@@ -604,7 +604,7 @@ test("HTTP MCP server: SSE response", async () => {
         httpMock: { url: `http://127.0.0.1:${port}/sse` },
       });
       await withMcpCleanup(async () => {
-        const proxy = createMcpProxyTool({ cwd: dir });
+        const proxy = createMcpProxyTool({ cwd: dir, home: dir });
         const listResult = await proxy.execute({ action: "list" });
         assert.match(listResult, /echo/);
         const callResult = await proxy.execute({

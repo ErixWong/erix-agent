@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -25,6 +25,15 @@ import { createFileNotesStore } from "../src/store/notes.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+
+// issue #81：runChat 的 MCP 代理默认解析 ~/.erix/mcp.json（可能配了真实远端 server），
+// 每个用例必须注入空配置，彻底与真实 home 隔离。
+async function writeEmptyMcpConfig(dir) {
+  const configPath = join(dir, "mcp.json");
+  await mkdir(dir, { recursive: true });
+  await writeFile(configPath, JSON.stringify({ mcpServers: {} }), "utf8");
+  return configPath;
+}
 
 function normalizeGoldenEnvironment(value, cwd, fixtureCwd) {
   if (typeof value === "string") {
@@ -61,6 +70,7 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
   ));
   await rm(fixture.input.dir, { recursive: true, force: true });
   const notesDir = join(fixture.input.dir, "notes");
+  const mcpConfigPath = await writeEmptyMcpConfig(fixture.input.dir);
   const provider = createFakeProvider([
     { content: [{ type: "text", text: fixture.modelVisible.output }], stopReason: "end_turn" },
   ]);
@@ -75,6 +85,7 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
     const result = await runChat({
       ...fixture.input,
       provider,
+      configPath: mcpConfigPath,
       idleTimeout: 0,
       toolOutput: () => {},
       _assemblyRoot: root,
@@ -175,11 +186,14 @@ test("archive guidance is present once in the system prompt", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-archive-guidance-test-"));
   try {
     const provider = createFakeProvider([{ content: [{ type: "text", text: "done" }] }]);
+    const configPath = await writeEmptyMcpConfig(dir);
     await runChat({
       prompt: "answer",
       session: "archive-guidance-run",
       dir,
       notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
       provider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 1,
@@ -202,6 +216,7 @@ test("archive guidance is present once in the system prompt", async () => {
 test("runChat does not add a value-note index to the system prompt", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-value-index-test-"));
   const notesDir = join(dir, "notes");
+  const configPath = await writeEmptyMcpConfig(dir);
   try {
     await notes.note_take({
       key: "captured-nonce",
@@ -215,6 +230,8 @@ test("runChat does not add a value-note index to the system prompt", async () =>
       session: "value-index-run",
       dir: join(dir, "transcripts"),
       notesDir,
+      skillsDir: join(dir, "skills"),
+      configPath,
       provider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       // maxRounds: 2 —— maxRounds:1 时本轮即最后一轮，按预算兜底规则不带 tools（C3）
@@ -238,6 +255,8 @@ test("runChat does not add a value-note index to the system prompt", async () =>
       session: "empty-value-index-run",
       dir: join(dir, "empty-transcripts"),
       notesDir: join(dir, "empty-notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
       provider: emptyProvider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 1,
@@ -255,11 +274,14 @@ test("runChat injects archive status at fold time instead of into loop context",
   const dir = await mkdtemp(join("/tmp", "erix-cli-recovery-hint-test-"));
   let captured;
   try {
+    const configPath = await writeEmptyMcpConfig(dir);
     await runChat({
       prompt: "capture compaction context",
       session: "chat-recovery",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills"),
+      configPath,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       compactBudget: 100,
       provider: createFakeProvider([]),
@@ -369,11 +391,14 @@ test("runChat filters tools via --tools allowlist and warns on unknown names", a
     return true;
   };
   try {
+    const configPath = await writeEmptyMcpConfig(dir);
     await runChat({
       prompt: "hi",
       session: "tools-allowlist",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills"),
+      configPath,
       provider: createFakeProvider([]),
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 2,
@@ -410,6 +435,7 @@ test("runChat filters tools via --tools allowlist and warns on unknown names", a
 test("runChat assembles note tools via the factory and --no-notes removes them", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-no-notes-"));
   try {
+    const configPath = await writeEmptyMcpConfig(dir);
     let captured;
     const captureLoop = async (options) => {
       captured = options;
@@ -426,6 +452,9 @@ test("runChat assembles note tools via the factory and --no-notes removes them",
       prompt: "hi",
       session: "notes-on",
       dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
       provider: createFakeProvider([]),
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 2,
@@ -450,6 +479,9 @@ test("runChat assembles note tools via the factory and --no-notes removes them",
       prompt: "hi",
       session: "notes-off",
       dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
       noNotes: true,
       provider: createFakeProvider([]),
       config: { model: "fake-model", maxOutputTokens: 1000 },
@@ -473,6 +505,9 @@ test("runChat assembles note tools via the factory and --no-notes removes them",
         prompt: "hi",
         session: "notes-env-off",
         dir,
+        notesDir: join(dir, "notes"),
+        skillsDir: join(dir, "skills"),
+        configPath,
         provider: createFakeProvider([]),
         config: { model: "fake-model", maxOutputTokens: 1000 },
         maxRounds: 2,
@@ -499,10 +534,14 @@ test("runChat --tools allowlist also applies to factory note tools", async () =>
   const dir = await mkdtemp(join("/tmp", "erix-cli-notes-allowlist-"));
   let captured;
   try {
+    const configPath = await writeEmptyMcpConfig(dir);
     await runChat({
       prompt: "hi",
       session: "notes-allowlist",
       dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
       provider: createFakeProvider([]),
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 2,
@@ -530,12 +569,15 @@ test("runChat --tools allowlist also applies to factory note tools", async () =>
 test("runChat rejects a --tools allowlist that filters out every tool", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-tools-empty-"));
   try {
+    const configPath = await writeEmptyMcpConfig(dir);
     await assert.rejects(
       runChat({
         prompt: "hi",
         session: "tools-empty",
         dir,
+        notesDir: join(dir, "notes"),
         skillsDir: join(dir, "skills"),
+        configPath,
         provider: createFakeProvider([]),
         config: { model: "fake-model", maxOutputTokens: 1000 },
         maxRounds: 2,
@@ -559,11 +601,14 @@ test("chat loop wires a file transcript store without an engine-owned retrieval 
     const provider = createFakeProvider([
       { content: [{ type: "text", text: "done" }] },
     ]);
+    const configPath = await writeEmptyMcpConfig(dir);
     await runChat({
       prompt: "remember this",
       session: "chat-wiring",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills"),
+      configPath,
       provider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       // maxRounds: 2 —— maxRounds:1 时本轮即最后一轮，按预算兜底规则不带 tools（C3）
@@ -610,6 +655,7 @@ test("runChat closes MCP connections when used as a module", async () => {
       prompt: "use mcp",
       configPath: mcpConfigPath,
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills"),
       provider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
@@ -667,10 +713,13 @@ test("chat creates distinct default sessions and preserves the second prompt", a
   const dir = await mkdtemp(join("/tmp", "erix-cli-default-session-test-"));
   try {
     const config = { model: "fake-model", maxOutputTokens: 1000 };
+    const configPath = await writeEmptyMcpConfig(dir);
     await runChat({
       prompt: "first-prompt",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills"),
+      configPath,
       provider: createFakeProvider([{ content: [{ type: "text", text: "first" }] }]),
       config,
       maxRounds: 1,
@@ -679,7 +728,9 @@ test("chat creates distinct default sessions and preserves the second prompt", a
     await runChat({
       prompt: "second-prompt",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills"),
+      configPath,
       provider: createFakeProvider([{ content: [{ type: "text", text: "second" }] }]),
       config,
       maxRounds: 1,
@@ -708,11 +759,14 @@ test("chat reuses an explicitly selected session and keeps the new prompt", asyn
   const dir = await mkdtemp(join("/tmp", "erix-cli-explicit-session-test-"));
   try {
     const config = { model: "fake-model", maxOutputTokens: 1000 };
+    const configPath = await writeEmptyMcpConfig(dir);
     await runChat({
       prompt: "explicit-first",
       session: "explicit-run",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills"),
+      configPath,
       provider: createFakeProvider([{ content: [{ type: "text", text: "first" }] }]),
       config,
       maxRounds: 1,
@@ -725,7 +779,9 @@ test("chat reuses an explicitly selected session and keeps the new prompt", asyn
       prompt: "explicit-second",
       session: "explicit-run",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills"),
+      configPath,
       provider: secondProvider,
       config,
       maxRounds: 2,
@@ -762,7 +818,9 @@ test("chat continues after text-only rounds (maxNoToolRounds default 3)", async 
       prompt: "continue-after-text",
       session: "notool-continue",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills"),
+      configPath: await writeEmptyMcpConfig(dir),
       provider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 4,
@@ -787,6 +845,7 @@ test("chat continues after text-only rounds (maxNoToolRounds default 3)", async 
 test("judge log defaults into the run archive directory", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-judgelog-default-"));
   try {
+    const configPath = await writeEmptyMcpConfig(dir);
     const provider = createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]);
@@ -797,7 +856,9 @@ test("judge log defaults into the run archive directory", async () => {
       prompt: "finish",
       session: "judgelog-default",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills"),
+      configPath,
       provider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 1,
@@ -837,7 +898,9 @@ test("judge-log persists raw tool input and judge reason verbatim (redaction ret
       prompt: "run command",
       session: "judgelog-redact",
       dir,
+      notesDir: join(dir, "notes"),
       skillsDir: join(dir, "skills"),
+      configPath: await writeEmptyMcpConfig(dir),
       provider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 3,
