@@ -3,13 +3,21 @@
 // （issue #67 PR 3：recordAutoCapture 一并删除，本条用 note_take 覆盖同一 writeNote 路径）
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { note_take } from "../src/tools/notes.js";
 import { runChat } from "../bin/cli.js";
+
+// issue #81：注入空 MCP 配置，避免 runChat 的 MCP 代理解析真实 ~/.erix/mcp.json。
+async function writeEmptyMcpConfig(dir) {
+  const configPath = join(dir, "mcp.json");
+  await mkdir(dir, { recursive: true });
+  await writeFile(configPath, JSON.stringify({ mcpServers: {} }), "utf8");
+  return configPath;
+}
 
 test("writeNote classification: storage fault throws, NotesStoreError stays invalid", async () => {
   const notesDir = await mkdtemp(join(tmpdir(), "erix-capture-cls-"));
@@ -65,11 +73,14 @@ test("runChat finally: completeRun failure lands in completionErrors, main resul
     const provider = createFakeProvider([
       { content: [{ type: "text", text: "done" }] },
     ]);
+    const configPath = await writeEmptyMcpConfig(dir);
     const result = await runChat({
       prompt: "hello",
       session: "finally-run",
       dir,
       notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
       provider,
       config: { model: "fake-model", maxOutputTokens: 1000 },
       maxRounds: 1,
@@ -110,6 +121,8 @@ test("runChat finally: when the main result is an exception, completion errors r
         session: "finally-throw-run",
         dir,
         notesDir: join(dir, "notes"),
+        skillsDir: join(dir, "skills"),
+        configPath: await writeEmptyMcpConfig(dir),
         provider: createFakeProvider([]),   // 空 provider → 主流程抛错
         config: { model: "fake-model", maxOutputTokens: 1000 },
         maxRounds: 1,
@@ -157,6 +170,8 @@ test("transcript port failure keeps the fatal档位 and the same bill field shap
         session: "port-transcript",
         dir,
         notesDir: join(dir, "notes"),
+        skillsDir: join(dir, "skills"),
+        configPath: await writeEmptyMcpConfig(dir),
         provider: createFakeProvider([{ content: [{ type: "text", text: "done" }] }]),
         config: { model: "fake-model", maxOutputTokens: 1000 },
         maxRounds: 1,

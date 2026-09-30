@@ -329,7 +329,7 @@ test("buildSkillTools executes an exported skill function", async () => {
       }
       export async function echo({ value }) { return value; }
     `);
-    const result = await buildSkillTools({ cwd, builtinNames: [] });
+    const result = await buildSkillTools({ cwd, home: cwd, builtinNames: [] });
     assert.equal(result.errors.length, 0);
     assert.equal(await result.executeTool("echo", { value: "hello" }), "hello");
     assert.equal(directory.endsWith("echo-skill"), true);
@@ -377,7 +377,7 @@ test("buildSkillTools returns a friendly result for an unknown tool", async () =
   await withDirectory(async (cwd) => {
     const skillsDirectory = join(cwd, ".erix", "skills");
     await writeSkill(skillsDirectory, "known", v1Definition("known"));
-    const result = await buildSkillTools({ cwd });
+    const result = await buildSkillTools({ cwd, home: cwd });
     assert.equal(await result.executeTool("missing", {}), "Unknown tool: missing");
   });
 });
