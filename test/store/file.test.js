@@ -125,8 +125,52 @@ test("file: markRunState 使用临时文件原子替换", async () => {
     await store.markRunState("run", "running");
     await store.markRunState("run", "succeeded");
 
-    assert.equal((await store.loadRunState("run")).state, "succeeded");
-    assert.deepEqual(await readdir(root), ["run.state.json"]);
+    assert.equal(await store.loadRunStateStatus("run"), "succeeded");
+    assert.deepEqual(await readdir(root), ["run.status.json"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: loadRunStateStatus 回落旧内嵌终态且 loadRunState 原样透传", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const legacy = {
+      runId: "legacy-run",
+      state: "failed",
+      stateVersion: 2,
+      deterministic: { rounds: 3 },
+    };
+    await writeFile(join(root, "legacy-run.state.json"), JSON.stringify(legacy), "utf8");
+
+    assert.equal(await store.loadRunStateStatus("legacy-run"), "failed");
+    assert.deepEqual(await store.loadRunState("legacy-run"), legacy);
+    assert.deepEqual(await readdir(root), ["legacy-run.state.json"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: saveRunState 不把旧快照中的内嵌终态续写到新快照", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    await writeFile(
+      join(root, "legacy-run.state.json"),
+      JSON.stringify({
+        runId: "legacy-run",
+        state: "failed",
+        stateVersion: 1,
+      }),
+      "utf8",
+    );
+
+    await store.saveRunState("legacy-run", { stateVersion: 2 });
+
+    const snapshot = await store.loadRunState("legacy-run");
+    assert.equal(Object.hasOwn(snapshot, "state"), false);
+    assert.equal(snapshot.stateVersion, 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

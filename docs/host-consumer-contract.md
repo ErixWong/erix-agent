@@ -87,11 +87,27 @@ run), never a multi-version checkpoint. The tiers are:
 | Required | `appendRound`, `load` | `TypeError` at assembly/startup |
 | Optional run snapshot | `saveRunSnapshot`, `loadLatestRunSnapshot` | snapshot persistence skipped; run completes normally, no mid-flight crash resume |
 | Optional run-state | `saveRunState`, `loadRunState`, `markRunState` | run-state persistence skipped; run completes normally |
+| Host-facing optional terminal-status read | `loadRunStateStatus` | not used or validated by the engine; its absence does not emit a degraded-capability event |
 
 When an optional method is absent, the engine emits **one**
 `persistence_capability_degraded` event per missing method (`{type, runId,
 method, detail}`) and skips the corresponding persistence for the whole run —
 no per-round log spam. `getToolMetadata` and `emit` remain optional.
+
+`saveRunState`/`loadRunState` manage one latest-only structured snapshot per
+run, not a history of versions. New snapshots do not persist a `state` key;
+`markRunState` writes terminal status through a separate channel. Hosts that
+need the status should use the optional `loadRunStateStatus` reader. The engine
+does not call or validate this host-facing method. It reads the independent
+status first and falls back to the embedded `state` in legacy `.state.json`
+data. `loadRunState` continues to return legacy snapshot objects unchanged,
+including an embedded `state` key.
+
+**Migration.** Replace host reads of `loadRunState(runId).state` with
+`loadRunStateStatus(runId)`, and continue using `loadRunState` for snapshot
+fields such as `stateVersion`, `deterministic`, and `semantic`. Existing
+embedded statuses remain readable; new snapshot writes no longer include
+`state`.
 
 **Rename & merge.** `saveCheckpoint` → `saveRunSnapshot`,
 `loadLatestCheckpoint` → `loadLatestRunSnapshot`. `appendCheckpoint` was

@@ -28,8 +28,9 @@ function copyRecord(record) {
  *   appendRound: (runId:string, record:RoundRecord) => Promise<void>,
  *   load: (runId:string) => Promise<RoundRecord[]>,
  *   markRunState: (runId:string, state:string) => Promise<void>,
- *   saveRunState: (runId:string, state:object) => Promise<void>,
+ *   saveRunState: (runId:string, snapshot:object) => Promise<void>,
  *   loadRunState: (runId:string) => Promise<object|undefined>,
+ *   loadRunStateStatus: (runId:string) => Promise<string|undefined>,
  *   saveRunSnapshot: (runId:string, snapshot:object) => Promise<void>,
  *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
@@ -41,6 +42,7 @@ export function createMemoryTranscriptStore() {
   const transcripts = new Map();
   const runSnapshots = new Map();
   const runStates = new Map();
+  const runStatuses = new Map();
 
   const recordKey = (runId, record) => (
     record?.dedupKey
@@ -62,21 +64,18 @@ export function createMemoryTranscriptStore() {
     },
 
     async markRunState(runId, state) {
-      runStates.set(runId, {
-        ...(runStates.get(runId) ?? {}),
-        runId,
-        state,
-        ts: new Date().toISOString(),
-      });
+      runStatuses.set(runId, state);
     },
 
-    async saveRunState(runId, state) {
-      runStates.set(runId, {
+    async saveRunState(runId, snapshot) {
+      const persisted = boundRunState({
         ...(runStates.get(runId) ?? {}),
-        ...boundRunState({ ...copyRecord(state), runId }),
+        ...copyRecord(snapshot),
         runId,
         ts: new Date().toISOString(),
       });
+      delete persisted.state;
+      runStates.set(runId, persisted);
     },
 
     async saveRunSnapshot(runId, snapshot) {
@@ -113,6 +112,11 @@ export function createMemoryTranscriptStore() {
     async loadRunState(runId) {
       const state = runStates.get(runId);
       return state === undefined ? undefined : copyRecord(state);
+    },
+
+    async loadRunStateStatus(runId) {
+      if (runStatuses.has(runId)) return runStatuses.get(runId);
+      return runStates.get(runId)?.state;
     },
   };
 }

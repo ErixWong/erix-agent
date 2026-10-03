@@ -473,7 +473,7 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
   });
 
   assert.deepEqual(events.slice(0, 2), [["checkpoint", "pending"], ["tool"]]);
-  assert.equal((await store.loadRunState("checkpoint-run")).state, "succeeded");
+  assert.equal(await store.loadRunStateStatus("checkpoint-run"), "succeeded");
 
   const resumeStore = createMemoryTranscriptStore();
   await resumeStore.appendRound("resume-checkpoint", {
@@ -605,7 +605,7 @@ test("fails closed after a tool when its executed checkpoint cannot be persisted
       && error.termination?.reason === "persistence_failed",
   );
   assert.equal(executions, 1);
-  assert.equal((await store.loadRunState("post-checkpoint-failure-run")).state, "failed");
+  assert.equal(await store.loadRunStateStatus("post-checkpoint-failure-run"), "failed");
 });
 
 test("none persistence mode does not call a save-only checkpoint writer", async () => {

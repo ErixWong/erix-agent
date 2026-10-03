@@ -78,10 +78,21 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 | 必需 | `appendRound`、`load` | assembly/startup 抛 `TypeError` |
 | 可选 run snapshot | `saveRunSnapshot`、`loadLatestRunSnapshot` | 跳过快照持久化；run 正常跑完，仅不支持中途 crash resume |
 | 可选 run-state | `saveRunState`、`loadRunState`、`markRunState` | 跳过 run-state 持久化；run 正常跑完 |
+| 宿主面向的可选终态读取 | `loadRunStateStatus` | 引擎不调用、不校验；缺失不会发出 capability 降级事件 |
 
 可选方法缺失时，引擎对每个缺失方法只发**一条**
 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`），
 随后整轮 run 跳过对应持久化——不每轮刷屏。`getToolMetadata` 与 `emit` 仍是可选项。
+
+`saveRunState`/`loadRunState` 管理每个 run 的单份 latest-only 结构化快照，不保留版本历史。
+新写入的快照不再持久化 `state` 键；`markRunState` 通过独立通道写终态。宿主需要读取终态时，
+应使用可选的 `loadRunStateStatus`。引擎不会调用或校验这个宿主面向的方法。该方法优先读取独立
+status，再回落读取旧 `.state.json` 数据内嵌的 `state`。`loadRunState` 对旧快照对象仍原样透传，
+包括其中的 `state` 键。
+
+**迁移指引。** 将宿主的 `loadRunState(runId).state` 改为 `loadRunStateStatus(runId)`；继续用
+`loadRunState` 读取 `stateVersion`、`deterministic`、`semantic` 等快照字段。旧的内嵌终态仍可读取，
+但新写入的快照不再带 `state`。
 
 **更名与合并。** `saveCheckpoint` → `saveRunSnapshot`，
 `loadLatestCheckpoint` → `loadLatestRunSnapshot`。`appendCheckpoint` **并入

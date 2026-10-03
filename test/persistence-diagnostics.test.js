@@ -365,9 +365,10 @@ test("appendRound failure preserves the independent failed run-state", async () 
       && error.operation === "appendRound",
   );
 
+  const status = await store.loadRunStateStatus("append-failure-state");
   const persisted = await store.loadRunState("append-failure-state");
-  assert.equal(persisted.state, "failed");
-  assert.equal(persisted.runId, "append-failure-state");
+  assert.equal(status, "failed");
+  assert.equal(persisted, undefined);
 });
 
 test("none persistence mode is a no-op even with an incomplete failing store", async () => {

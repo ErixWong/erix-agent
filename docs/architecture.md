@@ -560,13 +560,16 @@ configuration is passed to a provider factory by the host.
  * @property {(runId:string, state:string) => Promise<void>} markRunState
  * @property {(runId:string, state:object) => Promise<void>} saveRunState
  * @property {(runId:string) => Promise<object|undefined>} loadRunState
+ *   Host-facing optional terminal-status reader (not consumed or validated by the engine):
+ * @property {(runId:string) => Promise<string|undefined>} loadRunStateStatus
  */
 ```
 
 The memory implementation is a cloned in-process `Map`. The file
 implementation stores one JSON object per line in
-`<safeRunId(runId)>.jsonl`, plus current run state in
-`<safeRunId(runId)>.state.json` and the latest run snapshot in
+`<safeRunId(runId)>.jsonl`, plus the current run-state snapshot in
+`<safeRunId(runId)>.state.json`, terminal status in
+`<safeRunId(runId)>.status.json`, and the latest run snapshot in
 `<safeRunId(runId)>.snapshot.json` (legacy `.checkpoint.json` files are still
 read when the new suffix is absent; read-compatible, no migration).
 `appendRound` is idempotent by
