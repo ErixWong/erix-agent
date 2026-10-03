@@ -215,14 +215,9 @@ export function validateRunState(state) {
       reason: String(state.stateStatus),
     };
   }
-  if (state.stateAvailability?.status
-    && state.stateAvailability.status !== "available") {
-    return {
-      ok: false,
-      status: "state_unavailable",
-      reason: String(state.stateAvailability.reason ?? state.stateAvailability.status),
-    };
-  }
+  // stateAvailability records the current resume observation, not an intrinsic
+  // property of the persisted data. Rejecting it here creates a ratchet where
+  // one damaged resume makes every later resume reject the same state.
   if (state.schemaVersion !== RUN_STATE_SCHEMA_VERSION) {
     return { ok: false, status: "state_unavailable", reason: "unknown_schema" };
   }

@@ -345,6 +345,31 @@ test("appendRound failure after a tool reports executed_uncommitted", async () =
   assert.equal(events.at(-1).sideEffect, "executed_uncommitted");
 });
 
+test("appendRound failure preserves the independent failed run-state", async () => {
+  const store = fullStore();
+  store.appendRound = async () => {
+    throw new Error("transcript unavailable");
+  };
+
+  await assert.rejects(
+    runToolLoop({
+      provider: textProvider("done"),
+      store,
+      runId: "append-failure-state",
+      initialUserMessage: "persist",
+      executeTool: async () => "unused",
+      completion: false,
+      retry: { attempts: 0 },
+    }),
+    (error) => error.termination?.reason === "persistence_failed"
+      && error.operation === "appendRound",
+  );
+
+  const persisted = await store.loadRunState("append-failure-state");
+  assert.equal(persisted.state, "failed");
+  assert.equal(persisted.runId, "append-failure-state");
+});
+
 test("none persistence mode is a no-op even with an incomplete failing store", async () => {
   let calls = 0;
   const result = await runToolLoop({

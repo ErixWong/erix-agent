@@ -14,10 +14,10 @@ export async function restoreResume(ctx) {
         status: validation.status,
         reason: validation.reason,
       };
-      return false;
+      return "invalid";
     }
     applyRestoredRunState(validation.state);
-    return true;
+    return "applied";
   };
 
   const applyRestoredRunState = (restored) => {
@@ -50,29 +50,33 @@ export async function restoreResume(ctx) {
   };
 
   const restorePersistedRunState = async () => {
-    if (!ctx.resume || ctx.runId === undefined) return;
+    if (!ctx.resume || ctx.runId === undefined) return "absent";
     if (typeof ctx.store?.loadRunState !== "function") {
       // issue #78 验收修正：resume 想消费 run-state 但 store 缺 loader——
       // 走 orchestrator 的单条去重诊断（与 persist 守卫同一事件通道/语义）。
       ctx.notifyCapabilitySkipped?.("loadRunState");
-      return;
+      return "absent";
     }
     const stored = await ctx.store.loadRunState(ctx.runId);
-    if (stored === undefined) return;
+    if (stored === undefined) return "absent";
     const restored = stored?.runState && typeof stored.runState === "object"
       ? stored.runState
       : stored;
-    restoreRunState(restored);
+    return restoreRunState(restored);
   };
+
+  const resolveRunStateSource = (persistedResult) => (
+    persistedResult === "absent" ? "record" : "independent"
+  );
 
   const markRunState = ctx.markRunState;
   await markRunState("running");
-  await restorePersistedRunState();
+  const persistedRunStateResult = await restorePersistedRunState();
   if (ctx.resume && ctx.store && ctx.runId !== undefined) {
     try {
       const records = await ctx.store.load(ctx.runId);
       if (records.length === 0) throw new Error("resume: 无可恢复记录");
-      if (ctx.currentRunState === undefined) {
+      if (resolveRunStateSource(persistedRunStateResult) === "record") {
         const latestStateRecord = [...records].reverse().find((record) => (
           record?.runState && typeof record.runState === "object"
         ));

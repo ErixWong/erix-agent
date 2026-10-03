@@ -435,3 +435,5 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 `runState.stateAvailability.status = "state_unavailable"`（例如 `unknown_schema` 或
 `missing_fields`）。损坏的 file-store JSON 状态同样报告为不可用，而不是被恢复。完全不存
 在的持久化状态是正常的，不等同于“存在但无效”。
+`stateAvailability` 是本次 resume 的诊断观测结果，会随 state 保留用于诊断，但不会仅因该标记
+而拒绝下一次 resume 时结构仍然有效的 state。

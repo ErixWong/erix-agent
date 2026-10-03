@@ -612,3 +612,6 @@ valid default. On resume it is exposed as
 `unknown_schema` or `missing_fields`). A corrupt file-store JSON state is also
 reported as unavailable rather than restored. An entirely absent persisted
 state is normal and is not the same as a present but invalid state.
+`stateAvailability` is a diagnostic observation from the current resume attempt;
+it is retained in persisted state but does not by itself reject a structurally
+valid state on a later resume.
