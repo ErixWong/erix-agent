@@ -103,12 +103,15 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 
 ## 5. Git and remotes
 
-- **origin** = self-hosted Gitea (`git.erix.vip/eric/erix-llm-kit`) — **主仓，唯一真相源**：全部 issue / PR / 评审 / 开发工作流在这里；main 已启用分支保护（禁 force-push，2026-09-30 起）
-- **github** = `ErixWong/erix-agent` — **公开镜像（只读跟随）**：main + tags 通过双推或 `sync-erix-mirror.sh` cron（Gitea→GitHub，无 force，每 10 分钟）跟随，issue/PR 区冻结为历史；origin 已配置双 push URL（`git push origin main` 同时推两仓）
-- Issue 以 Gitea 为准（单源，不双建）；GitHub issue 区不新开、不回复
+- **Two repos, one code line, dual push**: `origin` fetches from GitHub (the workflow source of truth) and pushes to **both** GitHub and Gitea — `git push origin <ref>` updates both.
+  - `origin` fetch = `ErixWong/erix-agent` (GitHub)
+  - `origin` push URLs = GitHub **+** `git.erix.vip/eric/erix-llm-kit` (Gitea)
+- **GitHub** = development workflow source of truth: issues, PRs and reviews live here. The Gitea issue/PR area is a frozen historical archive — do not open or reply there.
+- **Gitea** = code mirror only (same commits, dual-pushed).
+- **The `sync-erix-mirror.sh` cron is disabled (2026-10-03)**: mirror crons have proven to re-sync wrong versions; dual push is the only sync mechanism. If a push fails on one URL, that side silently lags — verify both sides after pushing.
 - Contribution flow: branch `feat-YYMMDD-NN-<描述>` → PR merged into main (for large changes); small changes/documentation can be pushed directly.
 - Commit messages: conventional commits + 中文摘要
-- 历史注记：2026-09-30 前 GitHub 曾为真相源、本仓为其归档镜像；当日全部工作流已实际落在 Gitea，镜像方向反转并去 force（否则 cron 会把 Gitea 新 merge 当漂移回滚，事故实录见当日两次 main 回退）
+- History note: GitHub was the truth source until 2026-09-30, when a session flipped the roles to Gitea (commit `2ee65ce`, cron mirror + dual push URL). On 2026-10-03 the flip was reverted: GitHub is the workflow source of truth again, the cron was disabled, and the two repos are kept in sync by dual push. The old Gitea-first note misled later sessions — keep this section and `AGENTS_cn.md` in sync when it changes.
 
 ## 6. Local runtime data (not committed to the repository)
 
