@@ -597,8 +597,16 @@ Snapshot persistence is used before and after tool execution. A pre-tool
 failure reports `sideEffect: "not_started"` and prevents execution; a
 post-tool failure reports `sideEffect: "executed_uncommitted"` while retaining
 the `checkpoint_failed` error class. Resume replays pending tool calls in
-their original order; hosts must still make side-effecting `executeTool`
-implementations idempotent.
+their original order by default; hosts must still make side-effecting
+`executeTool` implementations idempotent. Tool schemas may declare
+`replay: "safe" | "unsafe"` (omission defaults to unsafe), which is captured
+on each `pendingToolUses` intent in the run snapshot. The engine-level
+`replayPolicy: "always-replay"` default ignores that declaration during
+recovery. With `"per-tool-declaration"`, safe calls replay as before and
+unsafe calls are skipped and returned to the model as interrupted tool results;
+the optional `tool_replay_decision_required` event marks them for host
+resolution. Snapshots written before this declaration existed are treated as
+unsafe under the opt-in policy.
 
 The safe file-name namespace keeps simple IDs matching
 `[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*` readable, except `"."`, `".."`, and

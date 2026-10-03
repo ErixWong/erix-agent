@@ -94,6 +94,24 @@ When an optional method is absent, the engine emits **one**
 method, detail}`) and skips the corresponding persistence for the whole run —
 no per-round log spam. `getToolMetadata` and `emit` remain optional.
 
+### Tool replay policy (issue #139)
+
+Tool schemas may declare `replay: "safe" | "unsafe"` on each canonical
+`tools` definition; omission means `unsafe`, and other values are rejected at
+startup. The declaration is engine metadata and is not sent to the model. Run
+snapshots persist the resolved declaration on each `pendingToolUses` entry so
+recovery uses the intent recorded when that tool call was made.
+
+`replayPolicy` defaults to `"always-replay"`, preserving the existing resume
+behavior regardless of declarations. Opt into `"per-tool-declaration"` to
+replay only entries recorded as `safe`. An unsafe entry (including an older
+snapshot with no `replay` field) is not executed; the model receives a
+`tool_result` with `executionStatus: "interrupted"`, `is_error: true`, and an
+explanation plus any captured output available in the run snapshot. The engine
+emits the optional `tool_replay_decision_required` event with the run/tool IDs
+and `requiresHostDecision: true`. The host owns any follow-up decision; the
+engine does not schedule or retry the tool.
+
 `saveRunState`/`loadRunState` manage one latest-only structured snapshot per
 run, not a history of versions. New snapshots do not persist a `state` key;
 `markRunState` writes terminal status through a separate channel. Hosts that

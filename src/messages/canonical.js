@@ -34,6 +34,7 @@ import {
  * @property {string} name
  * @property {string} [description]
  * @property {object} inputSchema JSON Schema object accepted by the tool.
+ * @property {"safe"|"unsafe"} [replay] Whether a pending invocation may be replayed after resume.
  */
 
 /**
