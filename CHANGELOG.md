@@ -2,6 +2,92 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [Unreleased]
+
+### Changed（BREAKING）
+
+- 退役 notes 写入侧凭据检测（issue #136）：`note_take` 不再按 key/content 形状拦截疑似凭据，
+  写入与回读恢复一致契约；如需写入拦截由宿主在工具调用层自行负责。
+- `erix-agent/tools` 子路径不再导出 `looksLikeCredential` / `normalizedLabel`（breaking）；
+  `src/tools/credential-patterns.js` 本体保留，仍供 `src/run-state.js` 脱敏与
+  `bin/final-guard*` 候选行过滤内部使用。
+- 删除 `src/loop.js` 转发 shim（issue #60 Phase 2）：`runToolLoop` / `parseReflectionDecision`
+  改由 `src/index.js` 直接从 `loop/orchestrator.js` 与 `loop/reflection.js` 导出；包入口与
+  `erix-agent` 主入口导出不变。直捣 `src/loop.js` 相对路径的宿主消费方需改为直接 import
+  对应实现文件（`package.json` 的 `exports` 未暴露 `./loop.js` 子路径，包名子路径导入本就不可达）。
+
+### Changed
+
+- 清理 legacy reflection 残留（issue #60）：删除全仓零调用的 `reflectionPrompt()`；
+  `termination.reason` 的 `"reflection_stop"` 枚举值与 `"reflection-stop"` action 映射删除
+  （引擎内部枚举值，v0.9.0 起已不可达，不在契约测试锁定面）。宿主若仍按字符串匹配该值，
+  需自行调整。
+
+### Fixed
+
+- **损坏的 run-state 不再被 record fallback 吞掉**（issue #89）：独立 run-state 存在但校验不通过时，
+  旧行为会「报告 `state_unavailable`、却从最新 `RoundRecord.runState` 恢复一份**更旧**的状态」。
+  现在明确区分「**不存在**」（`loadRunState` 缺失或返回 `undefined`，才允许 fallback 到 record）与
+  「**存在但无效**」（报不可用、**不** fallback）。
+- **消除 `stateAvailability` 的自我传播**（issue #89）：该字段是**本次 resume 的观测结果**，不再作为
+  后续 resume 的结构校验拒绝条件——修掉「一次损坏 → 之后每次 resume 都判不可用」的棘轮（实测该污染
+  会同时击中两份拷贝）。字段本身仍随 run-state 保留供诊断。详见 `docs/host-consumer-contract.md`。
+- 行为影响：独立 state 损坏时不再静默使用旧状态（run 照常继续，只是不恢复状态）；未实现
+  `loadRunState` 的宿主（如 touwaka 的 `{appendRound, load}` 最小 store）不受影响。
+
+## [0.13.0] - 2026-09-30
+
+来源：issue #78 run snapshot 更名与 capability 分级（PR #80）+ issue #75
+chat 会话接续与会话索引（PR #79）+ issue #81 测试全量隔离真实 ~/.erix
+（PR #85）。
+宿主迁移指引见
+[docs/host-consumer-contract.md](docs/host-consumer-contract.md)。
+
+### Changed（BREAKING）
+
+- **checkpoint 更名 run snapshot，快照/run-state 方法降级为可选 capability**
+  （issue #78，PR #80）：语义显式化为 latest-only autosave——每轮覆盖同一
+  槽位、仅用于中断恢复现场，从来不是多版本 checkpoint。更名：
+  `saveCheckpoint` → `saveRunSnapshot`，
+  `loadLatestCheckpoint` → `loadLatestRunSnapshot`；`appendCheckpoint`
+  **并入** `saveRunSnapshot`（两者同为覆盖写，保留 append 只会误导出版本化
+  错觉）。**capability 分级**：必需方法只剩 `appendRound`/`load`
+  （TRANSCRIPT_STORE_METHODS）；可选 run snapshot（`saveRunSnapshot`/
+  `loadLatestRunSnapshot`）+ 可选 run-state（`saveRunState`/`loadRunState`/
+  `markRunState`）缺省时引擎跳过对应持久化、run 正常执行（仅不支持中途
+  crash resume），每个缺失方法只发一条 `persistence_capability_degraded`
+  诊断事件（`{type, runId, method, detail}`，不每轮刷屏）；广告了方法但写
+  失败仍按原档位终止 run。file store 落盘后缀 `.checkpoint.json` →
+  `.snapshot.json`，读取优先新后缀、ENOENT 回落旧后缀（读取兼容，不做数据
+  迁移）。旧方法名在 file/memory store 保留为 `@deprecated` 别名；运行时
+  兼容只实现旧名的第三方 store（写入解析 `saveRunSnapshot` → `saveCheckpoint`
+  → `appendCheckpoint`，读取解析 `loadLatestRunSnapshot` → `loadLatestCheckpoint`）——
+  宿主应迁移到新名，别名可能在未来 major 移除。
+
+### Added
+
+- **chat 增加 `-c`/`--continue` 与 `-r` 会话接续**（issue #75，PR #79）：
+  `-c` 解析为当前 cwd 最近会话（等价手动 `--session <最近id>`，与 `--session`
+  互斥，无可续会话报清晰错误）；`-r` 为零依赖交互式 picker（readline
+  keypress + raw mode，Esc/Ctrl+C 取消，非 TTY 报 usageError）。新增
+  `bin/sessions.js`：`~/.erix/sessions.json` 缓存索引（sessionId/cwd/
+  updatedAt/firstUserText，上限 500 条，原子写入、失败静默），索引丢失/损坏时
+  readdir transcripts 目录重建（只认可往返的 `*.jsonl`，跳过 run-h-* 哈希
+  文件名与非法 JSON 行会话）；cwd 归属单独持久化在 `~/.erix/session-meta.json`。
+  chat/repl 运行后 upsert 索引（仅收录真实产出 transcript 的会话）；
+  resume 判定逻辑一行未改，`src/` 零改动。
+
+### Fixed
+
+- **测试全量隔离真实 `~/.erix`**（issue #81，PR #85）：系统排查 test/ 全部
+  `runChat`/`runRepl`/`createMcpProxyTool`/`buildSkillTools` 调用点，凡缺省
+  解析真实 `~/.erix` 的路径全部注入临时 home / notesDir / skillsDir / 空
+  MCP 配置——纯测试改动、不碰生产代码。覆盖：note_take 真实写入
+  `~/.erix/notes/`（本机实证）、收尾 purgeInactiveNoteScopes 以真实笔记目录为
+  扫描对象（存在删除真实笔记风险）、MCP 代理/skills 工具缺省解析
+  `~/.erix/mcp.json`、`test/fixtures/cli-golden.json` 删除环境依赖段落使黄金
+  用例确定化。此前这些用例在装有真实配置的机器上行为不确定且有副作用。
+
 ## [0.12.0] - 2026-09-27
 
 来源：issue #67 notes host 迁移（PR 1 #71 生命周期拆分、PR 2 #72 list 契约与
@@ -106,80 +192,6 @@ D3 决策反转——revision/分页协议判定为 YAGNI，出厂前削减）+ 
   永不清理。
 - **complete 全量收集**：complete 改为内部扫描本 scope 全量置 done（不受 limit
   钳制截断）；实测单 run 平均约 2 条、峰值 9 条笔记，无翻页/版本协议负担。
-
-## [0.13.0] - 2026-09-30
-
-来源：issue #78 run snapshot 更名与 capability 分级（PR #80）+ issue #75
-chat 会话接续与会话索引（PR #79）+ issue #81 测试全量隔离真实 ~/.erix
-（PR #85）。
-宿主迁移指引见
-[docs/host-consumer-contract.md](docs/host-consumer-contract.md)。
-
-### Changed（BREAKING）
-
-- **checkpoint 更名 run snapshot，快照/run-state 方法降级为可选 capability**
-  （issue #78，PR #80）：语义显式化为 latest-only autosave——每轮覆盖同一
-  槽位、仅用于中断恢复现场，从来不是多版本 checkpoint。更名：
-  `saveCheckpoint` → `saveRunSnapshot`，
-  `loadLatestCheckpoint` → `loadLatestRunSnapshot`；`appendCheckpoint`
-  **并入** `saveRunSnapshot`（两者同为覆盖写，保留 append 只会误导出版本化
-  错觉）。**capability 分级**：必需方法只剩 `appendRound`/`load`
-  （TRANSCRIPT_STORE_METHODS）；可选 run snapshot（`saveRunSnapshot`/
-  `loadLatestRunSnapshot`）+ 可选 run-state（`saveRunState`/`loadRunState`/
-  `markRunState`）缺省时引擎跳过对应持久化、run 正常执行（仅不支持中途
-  crash resume），每个缺失方法只发一条 `persistence_capability_degraded`
-  诊断事件（`{type, runId, method, detail}`，不每轮刷屏）；广告了方法但写
-  失败仍按原档位终止 run。file store 落盘后缀 `.checkpoint.json` →
-  `.snapshot.json`，读取优先新后缀、ENOENT 回落旧后缀（读取兼容，不做数据
-  迁移）。旧方法名在 file/memory store 保留为 `@deprecated` 别名；运行时
-  兼容只实现旧名的第三方 store（写入解析 `saveRunSnapshot` → `saveCheckpoint`
-  → `appendCheckpoint`，读取解析 `loadLatestRunSnapshot` → `loadLatestCheckpoint`）——
-  宿主应迁移到新名，别名可能在未来 major 移除。
-
-### Added
-
-- **chat 增加 `-c`/`--continue` 与 `-r` 会话接续**（issue #75，PR #79）：
-  `-c` 解析为当前 cwd 最近会话（等价手动 `--session <最近id>`，与 `--session`
-  互斥，无可续会话报清晰错误）；`-r` 为零依赖交互式 picker（readline
-  keypress + raw mode，Esc/Ctrl+C 取消，非 TTY 报 usageError）。新增
-  `bin/sessions.js`：`~/.erix/sessions.json` 缓存索引（sessionId/cwd/
-  updatedAt/firstUserText，上限 500 条，原子写入、失败静默），索引丢失/损坏时
-  readdir transcripts 目录重建（只认可往返的 `*.jsonl`，跳过 run-h-* 哈希
-  文件名与非法 JSON 行会话）；cwd 归属单独持久化在 `~/.erix/session-meta.json`。
-  chat/repl 运行后 upsert 索引（仅收录真实产出 transcript 的会话）；
-  resume 判定逻辑一行未改，`src/` 零改动。
-
-### Fixed
-
-- **测试全量隔离真实 `~/.erix`**（issue #81，PR #85）：系统排查 test/ 全部
-  `runChat`/`runRepl`/`createMcpProxyTool`/`buildSkillTools` 调用点，凡缺省
-  解析真实 `~/.erix` 的路径全部注入临时 home / notesDir / skillsDir / 空
-  MCP 配置——纯测试改动、不碰生产代码。覆盖：note_take 真实写入
-  `~/.erix/notes/`（本机实证）、收尾 purgeInactiveNoteScopes 以真实笔记目录为
-  扫描对象（存在删除真实笔记风险）、MCP 代理/skills 工具缺省解析
-  `~/.erix/mcp.json`、`test/fixtures/cli-golden.json` 删除环境依赖段落使黄金
-  用例确定化。此前这些用例在装有真实配置的机器上行为不确定且有副作用。
-
-## [Unreleased]
-
-### Changed（BREAKING）
-
-- 退役 notes 写入侧凭据检测（issue #136）：`note_take` 不再按 key/content 形状拦截疑似凭据，
-  写入与回读恢复一致契约；如需写入拦截由宿主在工具调用层自行负责。
-- `erix-agent/tools` 子路径不再导出 `looksLikeCredential` / `normalizedLabel`（breaking）；
-  `src/tools/credential-patterns.js` 本体保留，仍供 `src/run-state.js` 脱敏与
-  `bin/final-guard*` 候选行过滤内部使用。
-- 删除 `src/loop.js` 转发 shim（issue #60 Phase 2）：`runToolLoop` / `parseReflectionDecision`
-  改由 `src/index.js` 直接从 `loop/orchestrator.js` 与 `loop/reflection.js` 导出；包入口与
-  `erix-agent` 主入口导出不变。直捣 `src/loop.js` 相对路径的宿主消费方需改为直接 import
-  对应实现文件（`package.json` 的 `exports` 未暴露 `./loop.js` 子路径，包名子路径导入本就不可达）。
-
-### Changed
-
-- 清理 legacy reflection 残留（issue #60）：删除全仓零调用的 `reflectionPrompt()`；
-  `termination.reason` 的 `"reflection_stop"` 枚举值与 `"reflection-stop"` action 映射删除
-  （引擎内部枚举值，v0.9.0 起已不可达，不在契约测试锁定面）。宿主若仍按字符串匹配该值，
-  需自行调整。
 
 ## [0.11.0] - 2026-09-26
 
