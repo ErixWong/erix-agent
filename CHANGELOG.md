@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- 工具重放幂等声明（issue #139）：工具 schema 可声明 `replay: "safe" | "unsafe"`，
+  run snapshot 持久化每个 pending intent；`replayPolicy: "per-tool-declaration"` 下只自动重放
+  safe 工具，unsafe 工具回注 interrupted 结果并发出待宿主决策事件。缺省 `always-replay`
+  保持现有恢复行为。
+
 ### Changed（BREAKING）
 
 - **run-state 终态与快照拆分通道**（issue #91 项 2）：`markRunState` 现在独立写终态，

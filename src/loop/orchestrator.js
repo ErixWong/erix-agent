@@ -96,6 +96,7 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "writeToolNames",
   "writeToolPathKeys",
   "executeTool",
+  "replayPolicy",
   "maxRounds",
   "cacheCapable",
   "toolResultTtl",
@@ -250,13 +251,18 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"round_end"|"compaction"|"final_guard"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
  * @property {object} [usage] Provider usage reported after a successful call.
  * @property {object} [toolUse] Completed canonical tool_use block.
  * @property {object} [toolResult] Canonical tool_result block.
+ * @property {string} [runId] Run identity on host-facing diagnostics.
+ * @property {string} [toolUseId] Tool invocation requiring host replay decision.
+ * @property {string} [toolName] Tool name requiring host replay decision.
+ * @property {boolean} [requiresHostDecision] Whether the host must decide whether to retry.
+ * @property {boolean} [partialOutputAvailable] Whether captured output was included in the interrupted result.
  * @property {string} [finalText] Text accumulated at round end.
  * @property {string} [stopReason] Canonical provider stop reason.
  * @property {"accept"|"skip"|"revise"|"degraded"|"error"} [action]
@@ -316,6 +322,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
  *     => Promise<string|{content:any, metadata?:object, success?:boolean}|Error>,
+ *   replayPolicy?:"always-replay"|"per-tool-declaration", // Default always-replay preserves existing resume behavior.
  *   maxRounds?: number,
  *   cacheCapable?: boolean, // cache-capable 端点默认关闭工具结果 TTL 折叠；显式 toolResultTtl 优先。
  *   toolResultTtl?: number, // 工具结果 TTL 折叠存活轮数；未设置时默认 2。
@@ -422,6 +429,7 @@ export async function runToolLoop(options) {
     writeToolNames = ["writeFile"],
     writeToolPathKeys = ["path", "file_path"],
     executeTool,
+    replayPolicy = "always-replay",
     maxRounds = 8,
     cacheCapable = false,
     toolResultTtl,
@@ -496,6 +504,18 @@ export async function runToolLoop(options) {
   if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) {
     throw new TypeError("maxRounds must be a finite positive integer");
   }
+  if (replayPolicy !== "always-replay" && replayPolicy !== "per-tool-declaration") {
+    throw new TypeError('replayPolicy must be "always-replay" or "per-tool-declaration"');
+  }
+  if (Array.isArray(tools)) {
+    for (const [index, tool] of tools.entries()) {
+      if (tool?.replay !== undefined
+        && tool.replay !== "safe"
+        && tool.replay !== "unsafe") {
+        throw new TypeError(`tools[${index}].replay must be "safe" or "unsafe"`);
+      }
+    }
+  }
 
   const persistenceMode = persistence ?? (store === undefined ? "none" : "required");
   if (persistenceMode !== "none" && persistenceMode !== "required") {
@@ -529,7 +549,16 @@ export async function runToolLoop(options) {
       );
     }
   }
-  const providerTools = tools;
+  const hasReplayDeclarations = Array.isArray(tools) && tools.some((tool) => (
+    tool && typeof tool === "object" && Object.hasOwn(tool, "replay")
+  ));
+  const providerTools = hasReplayDeclarations
+    ? tools.map((tool) => {
+      if (!tool || typeof tool !== "object" || !Object.hasOwn(tool, "replay")) return tool;
+      const { replay: _replay, ...providerTool } = tool;
+      return providerTool;
+    })
+    : tools;
 
   const retryOptions = retry && typeof retry === "object" ? retry : null;
   const retryAttempts = retryOptions === null
@@ -1386,6 +1415,24 @@ export async function runToolLoop(options) {
         ? "appendCheckpoint"
         : undefined;
   const hasRunSnapshotStore = persistenceRequired && snapshotSaveMethod !== undefined;
+  const replayForToolUse = (toolUse) => {
+    const resumedToolUse = resumePendingTools.find((candidate) => (
+      candidate?.id === toolUse?.id
+      && candidate?.name === toolUse?.name
+    ));
+    if (resumedToolUse?.replay === "safe" || resumedToolUse?.replay === "unsafe") {
+      return resumedToolUse.replay;
+    }
+    const definition = Array.isArray(tools)
+      ? tools.find((candidate) => candidate?.name === toolUse?.name)
+      : undefined;
+    return definition?.replay === "safe" ? "safe" : "unsafe";
+  };
+  const withReplayDeclaration = (toolUse) => (
+    toolUse && typeof toolUse === "object"
+      ? { ...toolUse, replay: replayForToolUse(toolUse) }
+      : toolUse
+  );
   const persistRunSnapshot = async ({
     round,
     pendingToolUse,
@@ -1403,12 +1450,18 @@ export async function runToolLoop(options) {
       return false;
     }
     try {
+      const snapshotPendingToolUse = withReplayDeclaration(pendingToolUse);
+      const snapshotPendingToolUses = pendingToolUses.length > 0
+        ? pendingToolUses.map(withReplayDeclaration)
+        : pendingToolUse === undefined
+          ? pendingToolUses
+          : [snapshotPendingToolUse];
       return await persist(method, runId, {
         round,
         status,
-        pendingToolUse: cloneState(pendingToolUse),
-        toolUse: cloneState(pendingToolUse),
-        pendingToolUses: cloneState(pendingToolUses),
+        pendingToolUse: cloneState(snapshotPendingToolUse),
+        toolUse: cloneState(snapshotPendingToolUse),
+        pendingToolUses: cloneState(snapshotPendingToolUses),
         messages: cloneState(messagesOverride ?? messages),
         persistedTranscriptLength,
         executedToolIds: [...executedToolIds],
@@ -2047,9 +2100,58 @@ export async function runToolLoop(options) {
     if (resumePendingTools.length > 0) {
       const resumedToolResults = [];
       for (const [index, resumePendingTool] of resumePendingTools.entries()) {
-        emitEvent({ type: "tool_use", round: rounds, toolUse: cloneState(resumePendingTool) });
+        const resumedToolUse = { ...resumePendingTool };
+        delete resumedToolUse.replay;
+        emitEvent({ type: "tool_use", round: rounds, toolUse: cloneState(resumedToolUse) });
+        if (replayPolicy === "per-tool-declaration" && resumePendingTool.replay !== "safe") {
+          const existingToolResult = messages
+            .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
+            .find((block) => (
+              block?.type === "tool_result"
+              && block.tool_use_id === resumePendingTool.id
+            ));
+          const partialOutput = [
+            archivedOutputs.find((output) => output.toolUseId === resumePendingTool.id)?.content,
+            existingToolResult?.content,
+          ]
+            .filter((content, outputIndex, outputs) => (
+              typeof content === "string"
+              && content.length > 0
+              && outputs.indexOf(content) === outputIndex
+            ))
+            .join("\n\n");
+          const toolResult = {
+            type: "tool_result",
+            tool_use_id: resumePendingTool.id,
+            content: "The previous execution was interrupted before its outcome could be recorded. "
+              + "This unsafe tool was not replayed; the host must decide whether to retry it."
+              + (typeof partialOutput === "string" && partialOutput.length > 0
+                ? `\n\nPreviously captured partial output:\n${partialOutput}`
+                : ""),
+            is_error: true,
+            executionStatus: "interrupted",
+          };
+          if (existingToolResult) {
+            existingToolResult.content = toolResult.content;
+            existingToolResult.is_error = true;
+            existingToolResult.executionStatus = "interrupted";
+          }
+          resumedToolResults.push(toolResult);
+          emitEvent({
+            type: "tool_replay_decision_required",
+            runId,
+            round: rounds,
+            toolUseId: resumePendingTool.id,
+            toolName: resumePendingTool.name,
+            replay: "unsafe",
+            requiresHostDecision: true,
+            partialOutputAvailable: partialOutput.length > 0,
+          });
+          emitEvent({ type: "tool_result", round: rounds, toolResult: cloneState(toolResult) });
+          continue;
+        }
         await executeToolWithIntercept(
-          resumePendingTool,
+          resumedToolUse,
           rounds,
           resumedToolResults,
           resumePendingTools.slice(index),

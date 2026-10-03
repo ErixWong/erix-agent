@@ -11,6 +11,25 @@ const textMessage = (text) => ({
   content: [{ type: "text", text }],
 });
 
+test("replay policy and tool declarations reject unsupported values", async () => {
+  const options = {
+    provider: createFakeProvider([]),
+    executeTool: async () => "unused",
+    completion: false,
+  };
+  await assert.rejects(
+    runToolLoop({
+      ...options,
+      tools: [{ name: "work", inputSchema: { type: "object" }, replay: "sometimes" }],
+    }),
+    /tools\[0\]\.replay must be "safe" or "unsafe"/u,
+  );
+  await assert.rejects(
+    runToolLoop({ ...options, replayPolicy: "sometimes" }),
+    /replayPolicy must be "always-replay" or "per-tool-declaration"/u,
+  );
+});
+
 test("resume prefers a valid independent run-state over the latest record state", async () => {
   const store = createMemoryTranscriptStore();
   const independentState = createDeterministicRunState({
@@ -253,6 +272,11 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
   const store = createMemoryTranscriptStore();
   const controller = new AbortController();
   const firstExecutions = [];
+  const tools = [{
+    name: "work",
+    inputSchema: { type: "object" },
+    replay: "unsafe",
+  }];
   const firstProvider = createFakeProvider([{
     content: [
       { type: "tool_use", id: "a", name: "work", input: { step: "a" } },
@@ -275,13 +299,29 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
       completion: false,
       store,
       runId: "resume-pending-tools",
+      tools,
       signal: controller.signal,
     }),
     /aborted|abort/i,
   );
   assert.deepEqual(firstExecutions, ["a", "b"]);
+  assert.equal(firstProvider.requests[0].tools[0].replay, undefined);
+  const pendingSnapshot = await store.loadLatestRunSnapshot("resume-pending-tools");
+  assert.deepEqual(
+    pendingSnapshot.pendingToolUses.map(({ id, name, input, replay }) => ({
+      id,
+      name,
+      input,
+      replay,
+    })),
+    [
+      { id: "b", name: "work", input: { step: "b" }, replay: "unsafe" },
+      { id: "c", name: "work", input: { step: "c" }, replay: "unsafe" },
+    ],
+  );
 
   const resumedExecutions = [];
+  const resumedEvents = [];
   const resumedProvider = createFakeProvider([
     { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
   ]);
@@ -291,6 +331,8 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
     completion: false,
     store,
     runId: "resume-pending-tools",
+    tools,
+    onEvent: (event) => resumedEvents.push(event),
     executeTool: async ({ id }) => {
       resumedExecutions.push(id);
       return `resumed-${id}`;
@@ -298,6 +340,11 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
   });
 
   assert.deepEqual(resumedExecutions, ["b", "c"]);
+  assert.ok(resumedEvents
+    .filter((event) => event.type === "tool_use")
+    .every((event) => !Object.hasOwn(event.toolUse, "replay")));
+  const replaySnapshot = await store.loadLatestRunSnapshot("resume-pending-tools");
+  assert.ok(replaySnapshot.pendingToolUses.every((toolUse) => toolUse.replay === "unsafe"));
   assert.equal(resumedProvider.requests.length, 1);
   const toolUseIds = result.messages
     .flatMap((message) => message.content ?? [])
@@ -319,6 +366,150 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
     .filter((block) => block.type === "tool_result")
     .map((block) => block.tool_use_id);
   assert.deepEqual(persistedToolResultIds, ["a", "b", "c"]);
+});
+
+test("per-tool replay policy replays safe pending tools", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "resume-safe-tool";
+  const toolUse = {
+    type: "tool_use",
+    id: "safe-call",
+    name: "safe_work",
+    input: { step: 1 },
+    replay: "safe",
+  };
+  const storedToolUse = {
+    type: toolUse.type,
+    id: toolUse.id,
+    name: toolUse.name,
+    input: toolUse.input,
+  };
+  await store.appendRound(runId, {
+    round: 0,
+    messages: [textMessage("continue safely")],
+  });
+  await store.saveRunSnapshot(runId, {
+    round: 1,
+    status: "pending",
+    pendingToolUses: [toolUse],
+    messages: [
+      textMessage("continue safely"),
+      { role: "assistant", content: [storedToolUse] },
+    ],
+    executedToolIds: [],
+    toolResults: [],
+  });
+
+  const executions = [];
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  await runToolLoop({
+    provider,
+    resume: true,
+    completion: false,
+    replayPolicy: "per-tool-declaration",
+    tools: [{
+      name: "safe_work",
+      inputSchema: { type: "object" },
+      replay: "safe",
+    }],
+    store,
+    runId,
+    executeTool: async ({ id }) => {
+      executions.push(id);
+      return "replayed safely";
+    },
+  });
+
+  assert.deepEqual(executions, ["safe-call"]);
+  const replayedResult = provider.requests[0].messages
+    .flatMap((message) => message.content ?? [])
+    .find((block) => block.type === "tool_result" && block.tool_use_id === "safe-call");
+  assert.equal(replayedResult.content, "replayed safely");
+});
+
+test("per-tool replay policy interrupts unsafe tools and exposes saved partial output", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "resume-unsafe-tool";
+  const toolUse = {
+    type: "tool_use",
+    id: "unsafe-call",
+    name: "unsafe_work",
+    input: { action: "publish" },
+  };
+  await store.appendRound(runId, {
+    round: 0,
+    messages: [textMessage("resume carefully")],
+  });
+  await store.saveRunSnapshot(runId, {
+    round: 1,
+    status: "pending",
+    pendingToolUses: [{ ...toolUse, replay: "unsafe" }],
+    messages: [
+      textMessage("resume carefully"),
+      { role: "assistant", content: [toolUse] },
+      {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: "unsafe-call",
+          content: "partial response already persisted",
+        }],
+      },
+    ],
+    executedToolIds: [],
+    toolResults: [],
+    toolOutputs: [{
+      toolUseId: "unsafe-call",
+      name: "unsafe_work",
+      content: "captured output before interruption",
+    }],
+  });
+
+  const events = [];
+  let executions = 0;
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const result = await runToolLoop({
+    provider,
+    resume: true,
+    completion: false,
+    replayPolicy: "per-tool-declaration",
+    tools: [{
+      name: "unsafe_work",
+      inputSchema: { type: "object" },
+      replay: "unsafe",
+    }],
+    store,
+    runId,
+    onEvent: (event) => events.push(event),
+    executeTool: async () => {
+      executions += 1;
+      return "must not run";
+    },
+  });
+
+  assert.equal(executions, 0);
+  const interruptedResult = result.messages
+    .flatMap((message) => message.content ?? [])
+    .find((block) => block.type === "tool_result" && block.tool_use_id === "unsafe-call");
+  assert.equal(interruptedResult.executionStatus, "interrupted");
+  assert.equal(interruptedResult.is_error, true);
+  assert.match(interruptedResult.content, /was not replayed/u);
+  assert.match(interruptedResult.content, /captured output before interruption/u);
+  assert.match(interruptedResult.content, /partial response already persisted/u);
+  const decisionEvent = events.find((event) => event.type === "tool_replay_decision_required");
+  assert.equal(decisionEvent.toolUseId, "unsafe-call");
+  assert.equal(decisionEvent.requiresHostDecision, true);
+  assert.equal(decisionEvent.partialOutputAvailable, true);
+  const modelResult = provider.requests[0].messages
+    .flatMap((message) => message.content ?? [])
+    .find((block) => block.type === "tool_result" && block.tool_use_id === "unsafe-call");
+  assert.equal(modelResult.executionStatus, "interrupted");
+  assert.match(modelResult.content, /captured output before interruption/u);
+  assert.match(modelResult.content, /partial response already persisted/u);
 });
 
 test("resumes a partial tool-result message without dropping text or breaking pairing", async () => {

@@ -76,6 +76,12 @@ export function transcriptStoreContract(label, createStore) {
       round: 2,
       status: "executed",
       pendingToolUse: { id: "tool-2", name: "write", input: { path: "out" } },
+      pendingToolUses: [{
+        id: "tool-2",
+        name: "write",
+        input: { path: "out" },
+        replay: "unsafe",
+      }],
       toolResults: [{ toolUseId: "tool-2", toolResult: { content: "ok" } }],
     };
 
