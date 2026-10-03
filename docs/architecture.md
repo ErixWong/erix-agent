@@ -201,6 +201,7 @@ runToolLoop({
   writeToolNames = ["writeFile"],
   writeToolPathKeys = ["path", "file_path"],
   executeTool,
+  partialPersistence = false,
   maxRounds = 8,
   maxTokens,
   temperature,
@@ -262,6 +263,18 @@ runToolLoop({
 `initialMessages` takes precedence over `initialUserMessage`. With `resume:
 true`, the loop loads the transcript and the latest run snapshot for `runId`
 and uses the persisted messages and round state instead of the initial messages.
+
+`partialPersistence` is disabled by default. Opting in with
+`{ intervalMs, minBytes? }` writes streamed assistant text into the latest run
+snapshot using the existing snapshot writer; it adds no TranscriptStore method.
+With the default threshold, the engine schedules a partial snapshot at least
+once per `intervalMs` while text is arriving, and a crash loses at most the
+text generated during that interval. Writes are single-flight; deltas received
+during a write are coalesced into the next commit. A configured `minBytes`
+suppresses timer scheduling for smaller individual deltas. New snapshots carry
+`partialText` and `partialRound`; resume appends a matching partial as assistant
+text only when restoring a newer snapshot. Snapshots without these fields are
+unchanged.
 
 `executeTool` receives one structured execution object:
 

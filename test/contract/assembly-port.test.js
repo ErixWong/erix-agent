@@ -44,9 +44,16 @@ test("assembly port supports default and explicit modelConfig paths", async () =
     tools: { definitions: [], async executeTool() {} },
     store: createMemoryTranscriptStore(),
     session: { id: `assembly-precedence-${process.pid}` },
-    policy: { replayPolicy: "per-tool-declaration" },
+    policy: {
+      replayPolicy: "per-tool-declaration",
+      partialPersistence: { intervalMs: 25, minBytes: 1 },
+    },
   });
   assert.equal((await assemblyPortOptions(port)).replayPolicy, "per-tool-declaration");
+  assert.deepEqual(
+    (await assemblyPortOptions(port)).partialPersistence,
+    { intervalMs: 25, minBytes: 1 },
+  );
 
   test("assemblyPortOptions applies explicit fine-grained overrides", async () => {
     const explicitModelConfig = { resolve: async () => ({ model: "explicit" }) };

@@ -24,12 +24,22 @@ writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
-todoStateProvider, semanticStateProvider,
+todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
 ```
+
+`partialPersistence` defaults to `false`, preserving the existing no-write
+streaming behavior. Set it to `{ intervalMs, minBytes? }` to opt into
+interval-throttled partial assistant-text snapshots. This uses the existing
+latest-only `saveRunSnapshot` capability and introduces no store method;
+without that capability there is no partial write. Recovery consumes a
+well-formed `partialText`/`partialRound` from a newer snapshot as assistant
+text, while older snapshots without those fields retain their existing
+behavior. If `minBytes` is set, individual smaller deltas do not schedule a
+write; omit it when the interval loss bound must apply to every incoming delta.
 
 The `executeTool` boundary has one call shape and no arity negotiation:
 
