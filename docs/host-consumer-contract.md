@@ -127,11 +127,12 @@ the old names keep working: the engine resolves the snapshot writer as
 loader as `loadLatestRunSnapshot` → `loadLatestCheckpoint`. Hosts should
 migrate to the new names; the aliases may be removed in a future major.
 
-**Known duplication (documented, not fixed here).** The latest run-state is
+**Known duplication (decided, not removed).** The latest run-state is
 written twice: embedded in each round record (`RoundRecord.runState`) and via
-the standalone run-state methods (`saveRunState`/`markRunState`). This
-duplication predates issue #78 and is tracked as a follow-up; this issue
-changes only the naming and capability tiering, not the structure.
+the standalone run-state methods (`saveRunState`/`markRunState`). Both copies
+are load-bearing, so issue #82 kept both instead of deleting one — see
+[ADR-019](decisions/019-run-state-store-authority.md) for the authority rules and
+the alternatives that were rejected or deferred.
 The standalone run-state (`saveRunState`/`loadRunState`) is the authoritative
 latest-only state; `RoundRecord.runState` is the history-side per-round
 snapshot. On resume, a valid standalone state takes precedence; only an absent

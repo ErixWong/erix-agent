@@ -110,8 +110,9 @@ status，再回落读取旧 `.state.json` 数据内嵌的 `state`。`loadRunStat
 
 **已知重复（本 issue 只记录不改）。** 最新 run-state 被双写：既内嵌在每轮
 round record（`RoundRecord.runState`）里，又经独立 run-state 方法
-（`saveRunState`/`markRunState`）落盘。该重复早于 issue #78，已记为 follow-up；
-本 issue 只改命名与 capability 分级，不动结构。
+（`saveRunState`/`markRunState`）落盘。两份拷贝都是承重的，所以 issue #82 选择保留而非删除
+其中一份——权威规则、以及被拒绝/推迟的备选见
+[ADR-019](decisions/019-run-state-store-authority.md)。
 独立 run-state（`saveRunState`/`loadRunState`）是 latest-only 权威状态；随 transcript
 保存的 `RoundRecord.runState` 属于 history 侧的每轮快照。引擎恢复时优先采用有效的独立 state；
 仅当独立 state 不存在时才回落到最新 record；若独立 state 存在但无效，则报告
