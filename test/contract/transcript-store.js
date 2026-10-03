@@ -110,13 +110,32 @@ export function transcriptStoreContract(label, createStore) {
     await store.saveRunState("run-b", { stateVersion: 2, deterministic: { rounds: 2 } });
     await store.markRunState("run-a", "failed");
     await store.markRunState("run-b", "succeeded");
+    const loadStatus = async (runId) => {
+      if (typeof store.loadRunStateStatus === "function") {
+        return store.loadRunStateStatus(runId);
+      }
+      // Legacy path for third-party stores that still embed terminal state in the snapshot.
+      return (await store.loadRunState(runId))?.state;
+    };
 
     assert.equal((await store.loadLatestRunSnapshot("run-a")).pendingToolUse.id, "a");
     assert.equal((await store.loadLatestRunSnapshot("run-b")).pendingToolUse.id, "b");
-    assert.equal((await store.loadRunState("run-a")).state, "failed");
-    assert.equal((await store.loadRunState("run-b")).state, "succeeded");
+    assert.equal(await loadStatus("run-a"), "failed");
+    assert.equal(await loadStatus("run-b"), "succeeded");
     assert.equal((await store.loadRunState("run-a")).stateVersion, 1);
     assert.equal((await store.loadRunState("run-b")).stateVersion, 2);
+  });
+
+  test(`${label}: 新写入的 run-state 快照不包含终态 state`, async () => {
+    const store = await createStore();
+    await store.saveRunState("snapshot-state", {
+      stateVersion: 1,
+      deterministic: { rounds: 1 },
+    });
+    await store.markRunState("snapshot-state", "succeeded");
+
+    const snapshot = await store.loadRunState("snapshot-state");
+    assert.equal(Object.hasOwn(snapshot, "state"), false);
   });
 
   test(`${label}: run snapshot/run-state 写失败向上抛出`, async () => {
@@ -139,7 +158,7 @@ export function transcriptStoreContract(label, createStore) {
     }
   });
 
-  test(`${label}: run-state 三件套往返保真与 mark 合并语义`, async () => {
+  test(`${label}: run-state 快照保真且终态独立读取`, async () => {
     const store = await createStore();
     await store.saveRunState("state-run", {
       stateVersion: 3,
@@ -150,7 +169,10 @@ export function transcriptStoreContract(label, createStore) {
 
     const state = await store.loadRunState("state-run");
     assert.equal(state.runId, "state-run");
-    assert.equal(state.state, "succeeded");
+    const status = typeof store.loadRunStateStatus === "function"
+      ? await store.loadRunStateStatus("state-run")
+      : state.state; // Legacy path for stores without the host-facing status reader.
+    assert.equal(status, "succeeded");
     assert.equal(state.stateVersion, 3);
     assert.deepEqual(state.deterministic, { rounds: 2 });
     assert.deepEqual(state.semantic, { text: "summary", version: 1 });

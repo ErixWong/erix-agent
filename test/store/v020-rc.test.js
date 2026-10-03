@@ -22,7 +22,7 @@ test("memory store deduplicates rounds and stores run state/snapshots", async ()
   await store.saveRunSnapshot("run", { round: 2, executedToolIds: ["tool-1"] });
 
   assert.equal((await store.load("run")).length, 1);
-  assert.equal((await store.loadRunState("run")).state, "running");
+  assert.equal(await store.loadRunStateStatus("run"), "running");
   assert.deepEqual(await store.loadLatestRunSnapshot("run"), {
     round: 2,
     executedToolIds: ["tool-1"],
@@ -40,7 +40,7 @@ test("file store deduplicates rounds and persists snapshot/state with sanitized 
     await store.saveRunSnapshot(runId, { round: 3, pendingToolUse: { id: "tool-3" } });
 
     assert.equal((await store.load(runId)).length, 1);
-    assert.equal((await store.loadRunState(runId)).state, "failed");
+    assert.equal(await store.loadRunStateStatus(runId), "failed");
     assert.deepEqual(await store.loadLatestRunSnapshot(runId), {
       round: 3,
       pendingToolUse: { id: "tool-3" },

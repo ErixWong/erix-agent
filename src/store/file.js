@@ -54,6 +54,10 @@ function statePath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.state.json`);
 }
 
+function statusPath(dir, runId) {
+  return join(dir, `${safeRunId(runId)}.status.json`);
+}
+
 function recordKey(runId, record) {
   return record?.dedupKey
     ?? record?.roundKey
@@ -179,8 +183,9 @@ async function appendRecord(path, runId, record) {
  *   appendRound: (runId:string, record:RoundRecord) => Promise<void>,
  *   load: (runId:string) => Promise<RoundRecord[]>,
  *   markRunState: (runId:string, state:string) => Promise<void>,
- *   saveRunState: (runId:string, state:object) => Promise<void>,
+ *   saveRunState: (runId:string, snapshot:object) => Promise<void>,
  *   loadRunState: (runId:string) => Promise<object|undefined>,
+ *   loadRunStateStatus: (runId:string) => Promise<string|undefined>,
  *   saveRunSnapshot: (runId:string, snapshot:object) => Promise<void>,
  *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
@@ -226,28 +231,17 @@ export function createFileTranscriptStore({ dir }) {
 
     async markRunState(runId, state) {
       await mkdir(dir, { recursive: true });
-      const target = statePath(dir, runId);
+      const target = statusPath(dir, runId);
       const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-      let previous = {};
-      try {
-        previous = JSON.parse(await readFile(target, "utf8"));
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
       await writeFile(
         temporary,
-        `${JSON.stringify({
-          ...previous,
-          runId,
-          state,
-          ts: new Date().toISOString(),
-        })}\n`,
+        `${JSON.stringify({ runId, status: state, ts: new Date().toISOString() })}\n`,
         "utf8",
       );
       await rename(temporary, target);
     },
 
-    async saveRunState(runId, state) {
+    async saveRunState(runId, snapshot) {
       await mkdir(dir, { recursive: true });
       const target = statePath(dir, runId);
       const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
@@ -259,10 +253,11 @@ export function createFileTranscriptStore({ dir }) {
       }
       const persisted = boundRunState({
         ...previous,
-        ...state,
+        ...snapshot,
         runId,
         ts: new Date().toISOString(),
       });
+      delete persisted.state;
       await writeFile(temporary, `${JSON.stringify(persisted)}\n`, "utf8");
       await rename(temporary, target);
     },
@@ -326,6 +321,16 @@ export function createFileTranscriptStore({ dir }) {
         }
         throw error;
       }
+    },
+
+    async loadRunStateStatus(runId) {
+      try {
+        const persisted = JSON.parse(await readFile(statusPath(dir, runId), "utf8"));
+        if (typeof persisted?.status === "string") return persisted.status;
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      return (await this.loadRunState(runId))?.state;
     },
   };
 }

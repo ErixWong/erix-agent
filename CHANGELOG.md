@@ -6,6 +6,12 @@
 
 ### Changed（BREAKING）
 
+- **run-state 终态与快照拆分通道**（issue #91 项 2）：`markRunState` 现在独立写终态，
+  宿主可用新增的 `loadRunStateStatus` 读取（引擎不调用、不校验该宿主面向读方法）；
+  `saveRunState` 的 latest-only 快照不再写入 `state` 键。宿主应将
+  `loadRunState(runId).state` 迁移为 `loadRunStateStatus(runId)`，继续用 `loadRunState`
+  读取快照字段。旧数据中的内嵌 `state` 仍由 `loadRunState` 原样透传，并作为新 status
+  reader 的回落来源。
 - 退役 notes 写入侧凭据检测（issue #136）：`note_take` 不再按 key/content 形状拦截疑似凭据，
   写入与回读恢复一致契约；如需写入拦截由宿主在工具调用层自行负责。
 - `erix-agent/tools` 子路径不再导出 `looksLikeCredential` / `normalizedLabel`（breaking）；

@@ -130,7 +130,7 @@ test("finalGuard fail-closes after the retry limit without rewriting finalText",
     reason: "max_retries",
   });
   assert.equal(
-    (await store.loadRunState("guard-unverified-state")).state,
+    await store.loadRunStateStatus("guard-unverified-state"),
     "unverified_error",
   );
 });
@@ -161,7 +161,7 @@ test("finalGuard errors fail open and emit an error event", async () => {
     action: "error",
     reason: "error",
   });
-  assert.equal((await store.loadRunState("guard-error-state")).state, "guard_error");
+  assert.equal(await store.loadRunStateStatus("guard-error-state"), "guard_error");
 });
 
 test("finalGuard timeout is observable and returns an error verification", async () => {
@@ -183,7 +183,7 @@ test("finalGuard timeout is observable and returns an error verification", async
   assert.equal(result.verification.status, "error");
   assert.equal(result.verification.reason, "timeout");
   assert.equal(events.at(-1).reason, "timeout");
-  assert.equal((await store.loadRunState("guard-timeout-state")).state, "guard_error");
+  assert.equal(await store.loadRunStateStatus("guard-timeout-state"), "guard_error");
 });
 
 test("finalGuard is called for non-continuable stop paths without another model round", async () => {

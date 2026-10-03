@@ -420,10 +420,12 @@ resolveApiKey(config = {})
  * @property {(runId:string, state:string) => Promise<void>} markRunState
  * @property {(runId:string, state:object) => Promise<void>} saveRunState
  * @property {(runId:string) => Promise<object|undefined>} loadRunState
+ *   宿主面向的可选终态读取（引擎不调用、不校验）：
+ * @property {(runId:string) => Promise<string|undefined>} loadRunStateStatus
  */
 ```
 
-内存实现是进程内 `Map` 的克隆。文件实现将每行一个 JSON 对象存储在 `<safeRunId(runId)>.jsonl` 中，并将当前运行状态存储在 `<safeRunId(runId)>.state.json`、最新 run snapshot 存储在 `<safeRunId(runId)>.snapshot.json` 中（新后缀不存在时仍读取旧 `.checkpoint.json`；读取兼容，不做迁移）。`appendRound` 通过 `dedupKey`、`roundKey` 或存储器生成的 run/round key 实现幂等。
+内存实现是进程内 `Map` 的克隆。文件实现将每行一个 JSON 对象存储在 `<safeRunId(runId)>.jsonl` 中，并将当前 run-state 快照存储在 `<safeRunId(runId)>.state.json`、终态存储在 `<safeRunId(runId)>.status.json`、最新 run snapshot 存储在 `<safeRunId(runId)>.snapshot.json` 中（新后缀不存在时仍读取旧 `.checkpoint.json`；读取兼容，不做迁移）。`appendRound` 通过 `dedupKey`、`roundKey` 或存储器生成的 run/round key 实现幂等。
 
 该存储器设计为每个 `runId` 和每个进程一个写入方。它会修复缺少末尾换行符的完整 JSONL 记录，并隔离不完整的尾部片段。跨进程锁定不属于存储器契约。
 

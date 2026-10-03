@@ -38,6 +38,8 @@ export const RUN_SNAPSHOT_STORE_METHODS = [
 /**
  * Optional run-state capability (issue #78). Reference for
  * diagnostics/documentation; NOT enforced by validateTranscriptStore.
+ * `loadRunStateStatus` is a separate host-facing reader and is intentionally
+ * not part of the engine capability lists.
  */
 export const RUN_STATE_STORE_METHODS = [
   "saveRunState",

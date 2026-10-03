@@ -110,6 +110,8 @@ function missingAssemblyMethods(port) {
  *   capabilities (issue #78): run snapshot (`saveRunSnapshot`,
  *   `loadLatestRunSnapshot`) and run-state (`markRunState`, `saveRunState`,
  *   `loadRunState`); missing optional methods degrade, they do not fail.
+ *   `loadRunStateStatus` is an optional host-facing terminal-status reader;
+ *   the engine does not consume or validate it.
  * @property {{id:string,modelSlot?:string,resume?:boolean,initialMessages?:object[]}} session
  *   Run identity and optional resume seed.
  * @property {object} [policy]
