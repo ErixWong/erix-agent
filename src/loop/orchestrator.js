@@ -510,6 +510,9 @@ export async function runToolLoop(options) {
   if (replayPolicy !== "always-replay" && replayPolicy !== "per-tool-declaration") {
     throw new TypeError('replayPolicy must be "always-replay" or "per-tool-declaration"');
   }
+  if (partialPersistence !== false && !stream) {
+    throw new TypeError("partialPersistence requires stream: true");
+  }
   if (partialPersistence !== false
     && (partialPersistence === null
       || typeof partialPersistence !== "object"

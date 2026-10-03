@@ -47,6 +47,7 @@ test("assembly port supports default and explicit modelConfig paths", async () =
     policy: {
       replayPolicy: "per-tool-declaration",
       partialPersistence: { intervalMs: 25, minBytes: 1 },
+      stream: true,
     },
   });
   assert.equal((await assemblyPortOptions(port)).replayPolicy, "per-tool-declaration");

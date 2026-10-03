@@ -40,6 +40,7 @@ well-formed `partialText`/`partialRound` from a newer snapshot as assistant
 text, while older snapshots without those fields retain their existing
 behavior. If `minBytes` is set, individual smaller deltas do not schedule a
 write; omit it when the interval loss bound must apply to every incoming delta.
+Prerequisite: set `stream: true`; otherwise startup throws.
 
 The `executeTool` boundary has one call shape and no arity negotiation:
 

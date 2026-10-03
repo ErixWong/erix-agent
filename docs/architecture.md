@@ -275,6 +275,7 @@ suppresses timer scheduling for smaller individual deltas. New snapshots carry
 `partialText` and `partialRound`; resume appends a matching partial as assistant
 text only when restoring a newer snapshot. Snapshots without these fields are
 unchanged.
+Prerequisite: set `stream: true`; otherwise startup throws.
 
 `executeTool` receives one structured execution object:
 
