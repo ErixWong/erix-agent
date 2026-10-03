@@ -132,6 +132,23 @@ test("file: markRunState 使用临时文件原子替换", async () => {
   }
 });
 
+test("file: loadRunStateStatus 解构调用可回落旧快照", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    await writeFile(
+      join(root, "status-run.state.json"),
+      JSON.stringify({ runId: "status-run", state: "succeeded" }),
+      "utf8",
+    );
+    const { loadRunStateStatus } = store;
+
+    assert.equal(await loadRunStateStatus("status-run"), "succeeded");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("file: loadRunStateStatus 回落旧内嵌终态且 loadRunState 原样透传", async () => {
   const root = await makeTempDir();
   try {
@@ -147,6 +164,49 @@ test("file: loadRunStateStatus 回落旧内嵌终态且 loadRunState 原样透�
     assert.equal(await store.loadRunStateStatus("legacy-run"), "failed");
     assert.deepEqual(await store.loadRunState("legacy-run"), legacy);
     assert.deepEqual(await readdir(root), ["legacy-run.state.json"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: 损坏的 run-state status 文件抛出含 runId 的错误", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    await writeFile(join(root, "corrupt-status-run.status.json"), "{not-json", "utf8");
+
+    await assert.rejects(
+      store.loadRunStateStatus("corrupt-status-run"),
+      (error) => {
+        assert.match(error.message, /corrupt/);
+        assert.match(error.message, /runId=corrupt-status-run/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: 畸形的 run-state status 文件抛错且不回落旧内嵌终态", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    await writeFile(join(root, "malformed-status-run.status.json"), "{}", "utf8");
+    await writeFile(
+      join(root, "malformed-status-run.state.json"),
+      JSON.stringify({ runId: "malformed-status-run", state: "failed" }),
+      "utf8",
+    );
+
+    await assert.rejects(
+      store.loadRunStateStatus("malformed-status-run"),
+      (error) => {
+        assert.match(error.message, /malformed/);
+        assert.match(error.message, /runId=malformed-status-run/);
+        return true;
+      },
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
