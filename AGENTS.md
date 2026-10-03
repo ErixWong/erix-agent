@@ -19,22 +19,23 @@ Project-specific rules; shared/global conventions live in `~/projects/AGENTS.md`
 ```
 src/
 ├── index.js
-├── loop.js        # thin re-export shim (runToolLoop lives in loop/)
 ├── assembly.js    # AssemblyPort validation (host boundary)
+├── assembly-validators.js  # shared port/option validators (internal)
 ├── run-state.js
 ├── tokens.js
 ├── loop/          # orchestration core: orchestrator (runToolLoop), provider-runner,
 │                  # run-snapshot-executor, budget, aggregate-budget, termination,
 │                  # resume-manager, error-ledger, messages, reflection, task-brief, abort,
-│                  # tool-result-ttl
-├── compact/       # context compaction: budget, sliding-window, fold-statistical,
-│                  # fold-llm, anchors, fold-fidelity, enforce-size
+│                  # block-helpers, tool-result-ttl
+├── compact/       # context compaction: budget, pipeline, sliding-window, fold-statistical,
+│                  # fold-llm, anchors, fold-fidelity, enforce-size, helpers
 ├── config/        # configuration adapters
 ├── messages/      # canonical message model + OpenAI/Anthropic conversion
 ├── providers/     # OpenAI/Anthropic dual-protocol providers
 ├── reflection/    # governor, judge, l0, wrapup
 ├── store/         # file, memory, notes
-└── tools/         # registry, providers (opt-in erix-agent/tools subpath)
+├── text/          # shared text helpers (label normalization)
+└── tools/         # registry, providers, notes (opt-in erix-agent/tools subpath)
 bin/              # CLI (validator/debugger): cli.js (entry/chat), repl.js (TUI), tools.js (built-in tools + prompts), skills.js, mcp.js, config.js, final-guard-support.js, final-guard.js, guard-metrics.js
 test/             # unit tests (node --test), with compact/, providers/, tools/, config/, messages/, contract/, helpers/, fixtures/, integration/, and top-level test files
 fixtures/         # test fixtures (mock MCP servers) — ⚠️ mock MCP servers must not be put under test/ (node --test runs all files under test and can hang)

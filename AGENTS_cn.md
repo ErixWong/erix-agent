@@ -19,22 +19,23 @@
 ```
 src/
 ├── index.js
-├── loop.js        # 薄转发垫片（runToolLoop 本体在 loop/）
 ├── assembly.js    # AssemblyPort 校验（宿主边界）
+├── assembly-validators.js  # 端口/选项校验共享实现（内部模块）
 ├── run-state.js
 ├── tokens.js
 ├── loop/          # 编排核心：orchestrator（runToolLoop）、provider-runner、
 │                  # run-snapshot-executor、budget、aggregate-budget、termination、
 │                  # resume-manager、error-ledger、messages、reflection、task-brief、abort、
-│                  # tool-result-ttl
-├── compact/       # 上下文压缩：budget、sliding-window、fold-statistical、
-│                  # fold-llm、anchors、fold-fidelity、enforce-size
+│                  # block-helpers、tool-result-ttl
+├── compact/       # 上下文压缩：budget、pipeline、sliding-window、fold-statistical、
+│                  # fold-llm、anchors、fold-fidelity、enforce-size、helpers
 ├── config/        # 配置适配器
 ├── messages/      # 规范消息模型 + OpenAI/Anthropic 转换
 ├── providers/     # OpenAI/Anthropic 双协议 provider
 ├── reflection/    # governor、judge、l0、wrapup
 ├── store/         # file、memory、notes
-└── tools/         # registry、providers（可选 erix-agent/tools 子路径）
+├── text/          # 共享文本辅助函数（label 归一化）
+└── tools/         # registry、providers、notes（可选 erix-agent/tools 子路径）
 bin/              # CLI（验证器/调试器）：cli.js（入口/chat）、repl.js（TUI）、tools.js（内置工具 + 提示词）、skills.js、mcp.js、config.js、final-guard-support.js、final-guard.js、guard-metrics.js
 test/             # 单元测试（node --test），包含 compact/、providers/、tools/、config/、messages/、contract/、helpers/、fixtures/、integration/ 以及顶层测试文件
 fixtures/         # 测试夹具（mock MCP 服务器）——⚠️ mock MCP 服务器不得放在 test/ 下（node --test 会运行 test/ 下的所有文件，可能卡住）

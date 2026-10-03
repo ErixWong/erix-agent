@@ -163,8 +163,8 @@ The public entry point is `src/index.js`; the complete current source tree is:
 ```text
 src/
   index.js                         Public exports
-  loop.js                          Thin re-export shim (runToolLoop lives in loop/)
   assembly.js                      AssemblyPort validation (host boundary)
+  assembly-validators.js           Shared port/option validators (internal)
   run-state.js                     Bounded deterministic and semantic run state
   tokens.js                        Conservative token estimation
   loop/                            # orchestration core
@@ -195,6 +195,7 @@ src/
     rounds.js                      Message validation and round grouping
   compact/
     budget.js                      Context-budget calculation
+    pipeline.js                    Canonical compaction pipeline declaration
     enforce-size.js                Field-size enforcement
     fold-llm.js                    LLM-assisted folding strategy
     fold-statistical.js            Statistical folding and navigation records
@@ -216,8 +217,11 @@ src/
     judge.js                       Objective timeline and judge prompt/response parsing
     l0.js                          Objective facts and summary parsing
     wrapup.js                      Wrap-up protocol parsing and normalization
+  text/
+    label.js                       Note/findings label normalization
   tools/
     index.js                       Optional tools subpath exports
+    notes.js                       Host-side notes tools
     providers.js                   Tool-provider adapters
     registry.js                    Tool schemas and executor registry
 ```

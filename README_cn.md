@@ -119,8 +119,8 @@ Agent 行为难以预测。统一 Headless Agent 的价值，就是让业务代�
 ```text
 src/
   index.js                         公共导出
-  loop.js                          薄转发垫片（runToolLoop 本体在 loop/）
   assembly.js                      AssemblyPort 校验（宿主边界）
+  assembly-validators.js           端口/选项校验共享实现（内部模块）
   run-state.js                     有界的确定性与语义运行状态
   tokens.js                        保守的 token 估算
   loop/                            # 编排核心
@@ -147,9 +147,11 @@ src/
   messages/
     anthropic.js                   Anthropic 协议转换与流组装
     canonical.js                    规范消息/工具转换
+    openai-normalization.js         OpenAI-compatible 归一化原语
     rounds.js                       消息校验与轮次分组
   compact/
     budget.js                       上下文预算计算
+    pipeline.js                     压缩流水线声明
     enforce-size.js                 字段大小限制
     fold-llm.js                     LLM 辅助的折叠策略
     fold-statistical.js             统计折叠与导航记录
@@ -171,8 +173,11 @@ src/
     judge.js                        objective timeline 与 judge prompt/response 解析
     l0.js                           objective facts 与摘要解析
     wrapup.js                       wrap-up 协议解析与规范化
+  text/
+    label.js                        note/findings label 归一化
   tools/
     index.js                        可选 tools 子路径导出
+    notes.js                        宿主侧 notes 工具
     providers.js                    tool-provider adapter
     registry.js                     工具 schema 与 executor registry
 ```
