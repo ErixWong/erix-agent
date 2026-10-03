@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-03
+
+来源：issue #139/#140 工具幂等声明与 partial 落盘（PR #141/#142，含 e2e 验收发现的
+#143 流式前提校验，PR #144）+ issue #91 项 1/项 2 run-state 终态通道拆分（PR #92/#93/#94，
+决策记录 ADR-019）+ issue #89 run-state 损坏态回落与可用性棘轮修复（PR #90）+ issue #136
+notes 凭据检测退役 + issue #60 Phase 2 loop.js shim 删除。
+宿主迁移指引见
+[docs/host-upgrade-guide-0.14.0.md](docs/host-upgrade-guide-0.14.0.md)，契约文本见
+[docs/host-consumer-contract.md](docs/host-consumer-contract.md)。
+
 ### Added
 
 - 可选 partial 落盘窗口（issue #140）：`partialPersistence` 缺省关闭；启用后按 interval
