@@ -28,6 +28,23 @@ test("replay policy and tool declarations reject unsupported values", async () =
     runToolLoop({ ...options, replayPolicy: "sometimes" }),
     /replayPolicy must be "always-replay" or "per-tool-declaration"/u,
   );
+  for (const partialPersistence of [
+    null,
+    true,
+    [],
+    {},
+    { intervalMs: 0 },
+    { intervalMs: -1 },
+    { intervalMs: 1.5 },
+    { intervalMs: Number.POSITIVE_INFINITY },
+    { intervalMs: 10, minBytes: -1 },
+    { intervalMs: 10, minBytes: 1.5 },
+  ]) {
+    await assert.rejects(
+      runToolLoop({ ...options, partialPersistence }),
+      TypeError,
+    );
+  }
 });
 
 test("resume prefers a valid independent run-state over the latest record state", async () => {

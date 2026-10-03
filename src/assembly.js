@@ -16,6 +16,7 @@ const ASSEMBLY_POLICY_OPTION_NAMES = new Set([
   "writeToolNames",
   "writeToolPathKeys",
   "replayPolicy",
+  "partialPersistence",
   "maxRounds",
   "maxTokens",
   "temperature",

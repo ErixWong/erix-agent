@@ -208,6 +208,18 @@ export async function restoreResume(ctx) {
               snapshotMessageRounds[index] ?? ctx.resumeRunSnapshot.round,
             );
           }
+          const partialText = ctx.resumeRunSnapshot.partialText;
+          const partialRound = ctx.resumeRunSnapshot.partialRound;
+          if (typeof partialText === "string" && partialText.length > 0
+            && Number.isSafeInteger(partialRound)
+            && partialRound === ctx.resumeRunSnapshot.round) {
+            const partialMessage = {
+              role: "assistant",
+              content: [{ type: "text", text: partialText }],
+            };
+            ctx.messages.push(partialMessage);
+            ctx.messageRounds.set(partialMessage, partialRound);
+          }
           ctx.rounds = ctx.resumeRunSnapshot.round;
           for (const id of ctx.resumeRunSnapshot.executedToolIds ?? []) {
             ctx.resumeExecutedToolIds.add(id);

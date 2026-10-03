@@ -133,13 +133,16 @@ export async function callProvider(ctx, {
         const awaitWithAbort = ctx.awaitWithAbort;
         let response = await awaitWithAbort(ctx.provider.chatStream({
           ...request,
-          onDelta: (chunk) => queueEvent(
-            { type: "delta", delta: chunk },
-            () => {
-              const onDelta = ctx.onDelta;
-              onDelta?.(chunk);
-            },
-          ),
+          onDelta: (chunk) => {
+            if (ctx.onPartialDelta !== undefined) ctx.onPartialDelta(chunk, round);
+            queueEvent(
+              { type: "delta", delta: chunk },
+              () => {
+                const onDelta = ctx.onDelta;
+                onDelta?.(chunk);
+              },
+            );
+          },
           onReasoningDelta: (chunk, metadata) => queueEvent(
             {
               type: "reasoning_delta",
@@ -169,6 +172,9 @@ export async function callProvider(ctx, {
             );
           },
         }));
+        if (ctx.onPartialAttemptEnd !== undefined) {
+          await ctx.onPartialAttemptEnd({ round, retrying: false });
+        }
         if (attemptUsage !== undefined && response?.usage === undefined) {
           response = { ...response, usage: attemptUsage };
         }
@@ -197,8 +203,16 @@ export async function callProvider(ctx, {
         estimatedTokens: requestEstimatedTokens,
       };
     } catch (error) {
-      if (ctx.signal?.aborted) throwIfAborted(ctx.signal);
+      if (ctx.signal?.aborted) {
+        if (ctx.onPartialAttemptEnd !== undefined) {
+          await ctx.onPartialAttemptEnd({ round, retrying: false });
+        }
+        throwIfAborted(ctx.signal);
+      }
       if (ctx.retryOptions === null || error?.retryable !== true) {
+        if (ctx.onPartialAttemptEnd !== undefined) {
+          await ctx.onPartialAttemptEnd({ round, retrying: false });
+        }
         throw error;
       }
       ctx.messages = cloneState(snapshot.messages);
@@ -213,7 +227,15 @@ export async function callProvider(ctx, {
       ctx.latestApiInputTokens = snapshot.latestApiInputTokens;
       ctx.latestApiEstimatedTokens = snapshot.latestApiEstimatedTokens;
       ctx.roundStopReason = snapshot.stopReason;
-      if (retryIndex >= ctx.retryAttempts) throw error;
+      if (retryIndex >= ctx.retryAttempts) {
+        if (ctx.onPartialAttemptEnd !== undefined) {
+          await ctx.onPartialAttemptEnd({ round, retrying: false });
+        }
+        throw error;
+      }
+      if (ctx.onPartialAttemptEnd !== undefined) {
+        await ctx.onPartialAttemptEnd({ round, retrying: true });
+      }
       const delay = Math.min(
         ctx.backoffBaseMs * (2 ** retryIndex),
         ctx.backoffMaxMs,

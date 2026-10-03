@@ -97,6 +97,7 @@ const RUN_TOOL_LOOP_OPTION_NAMES = [
   "writeToolPathKeys",
   "executeTool",
   "replayPolicy",
+  "partialPersistence",
   "maxRounds",
   "cacheCapable",
   "toolResultTtl",
@@ -323,6 +324,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
  *     => Promise<string|{content:any, metadata?:object, success?:boolean}|Error>,
  *   replayPolicy?:"always-replay"|"per-tool-declaration", // Default always-replay preserves existing resume behavior.
+ *   partialPersistence?:false|{intervalMs:number,minBytes?:number}, // Default false; persist partial streamed text on an interval.
  *   maxRounds?: number,
  *   cacheCapable?: boolean, // cache-capable 端点默认关闭工具结果 TTL 折叠；显式 toolResultTtl 优先。
  *   toolResultTtl?: number, // 工具结果 TTL 折叠存活轮数；未设置时默认 2。
@@ -430,6 +432,7 @@ export async function runToolLoop(options) {
     writeToolPathKeys = ["path", "file_path"],
     executeTool,
     replayPolicy = "always-replay",
+    partialPersistence = false,
     maxRounds = 8,
     cacheCapable = false,
     toolResultTtl,
@@ -507,6 +510,31 @@ export async function runToolLoop(options) {
   if (replayPolicy !== "always-replay" && replayPolicy !== "per-tool-declaration") {
     throw new TypeError('replayPolicy must be "always-replay" or "per-tool-declaration"');
   }
+  if (partialPersistence !== false
+    && (partialPersistence === null
+      || typeof partialPersistence !== "object"
+      || Array.isArray(partialPersistence))) {
+    throw new TypeError("partialPersistence must be false or an object");
+  }
+  if (partialPersistence !== false
+    && (!Number.isSafeInteger(partialPersistence.intervalMs)
+      || partialPersistence.intervalMs <= 0)) {
+    throw new TypeError("partialPersistence.intervalMs must be a positive integer");
+  }
+  if (partialPersistence !== false
+    && partialPersistence.minBytes !== undefined
+    && (!Number.isSafeInteger(partialPersistence.minBytes)
+      || partialPersistence.minBytes < 0)) {
+    throw new TypeError("partialPersistence.minBytes must be a non-negative integer");
+  }
+  const partialPersistenceConfig = partialPersistence === false
+    ? undefined
+    : {
+      intervalMs: partialPersistence.intervalMs,
+      ...(partialPersistence.minBytes === undefined
+        ? {}
+        : { minBytes: partialPersistence.minBytes }),
+    };
   if (Array.isArray(tools)) {
     for (const [index, tool] of tools.entries()) {
       if (tool?.replay !== undefined
@@ -1440,6 +1468,8 @@ export async function runToolLoop(options) {
     toolResults = [],
     status = "pending",
     messagesOverride,
+    partialText,
+    partialRound,
   }) => {
     lastPersistenceFailure = undefined;
     const method = snapshotSaveMethod;
@@ -1472,6 +1502,7 @@ export async function runToolLoop(options) {
         // 本 round 已归档的全量输出随 run snapshot 落盘，保证崩溃恢复后证据仍可核验
         toolOutputs: cloneState(archivedOutputs.filter((entry) => entry.round === round)),
         compactionStats: cloneState(compactionStats),
+        ...(partialText === undefined ? {} : { partialText, partialRound }),
         ts: new Date().toISOString(),
       });
     } catch (error) {
@@ -1482,6 +1513,107 @@ export async function runToolLoop(options) {
       throw error;
     }
   };
+
+  if (partialPersistenceConfig !== undefined && hasRunSnapshotStore) {
+    const { intervalMs, minBytes } = partialPersistenceConfig;
+    const maxTimerDelay = 2_147_483_647;
+    let partialAttempt;
+
+    const clearPartialTimer = (attempt) => {
+      if (attempt.timer !== undefined) {
+        clearTimeout(attempt.timer);
+        attempt.timer = undefined;
+      }
+    };
+
+    const commitPartialSnapshot = async (attempt) => {
+      if (attempt.closed || attempt.inFlight !== undefined
+        || !attempt.dirty || attempt.failure !== undefined) return;
+      const partialText = attempt.text;
+      attempt.dirty = false;
+      const write = (async () => {
+        try {
+          await persistRunSnapshot({
+            round: attempt.round,
+            status: "pending",
+            partialText,
+            partialRound: attempt.round,
+          });
+          if (lastPersistenceFailure !== undefined) throw lastPersistenceFailure;
+          attempt.persistedText = partialText;
+        } catch (error) {
+          attempt.failure = error;
+          clearPartialTimer(attempt);
+        }
+      })();
+      attempt.inFlight = write;
+      await write;
+      if (attempt.inFlight === write) attempt.inFlight = undefined;
+      if (attempt.closed || attempt.failure !== undefined || !attempt.dirty) return;
+      if (attempt.commitDue) {
+        attempt.commitDue = false;
+        void commitPartialSnapshot(attempt);
+      }
+    };
+
+    const schedulePartialCommit = (attempt) => {
+      if (attempt.timer !== undefined || attempt.closed || attempt.failure !== undefined) return;
+      attempt.timerStartedAt = performance.now();
+      const onTimer = () => {
+        const remaining = intervalMs - (performance.now() - attempt.timerStartedAt);
+        if (remaining > 0) {
+          attempt.timer = setTimeout(onTimer, Math.min(remaining, maxTimerDelay));
+          return;
+        }
+        attempt.timer = undefined;
+        if (attempt.inFlight !== undefined) {
+          attempt.commitDue = true;
+          return;
+        }
+        void commitPartialSnapshot(attempt);
+      };
+      attempt.timer = setTimeout(onTimer, Math.min(intervalMs, maxTimerDelay));
+    };
+
+    providerContext.onPartialDelta = (chunk, round) => {
+      if (typeof chunk !== "string" || chunk.length === 0) return;
+      if (partialAttempt === undefined || partialAttempt.round !== round) {
+        partialAttempt = {
+          round,
+          text: "",
+          dirty: false,
+          timer: undefined,
+          inFlight: undefined,
+          commitDue: false,
+          closed: false,
+          persistedText: undefined,
+          failure: undefined,
+        };
+      }
+      partialAttempt.text += chunk;
+      partialAttempt.dirty = true;
+      if (minBytes === undefined || Buffer.byteLength(chunk, "utf8") >= minBytes) {
+        schedulePartialCommit(partialAttempt);
+      }
+    };
+
+    providerContext.onPartialAttemptEnd = async ({ round, retrying }) => {
+      const attempt = partialAttempt;
+      if (attempt === undefined || attempt.round !== round) return;
+      attempt.closed = true;
+      clearPartialTimer(attempt);
+      try {
+        if (attempt.inFlight !== undefined) await attempt.inFlight;
+        if (attempt.failure !== undefined) throw attempt.failure;
+        if (retrying && attempt.persistedText !== undefined) {
+          await persistRunSnapshot({ round, status: "pending" });
+          if (lastPersistenceFailure !== undefined) throw lastPersistenceFailure;
+        }
+      } finally {
+        if (partialAttempt === attempt) partialAttempt = undefined;
+      }
+    };
+  }
 
   const refreshRunState = async ({
     semantic = false,
