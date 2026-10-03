@@ -47,6 +47,30 @@ test("replay policy and tool declarations reject unsupported values", async () =
   }
 });
 
+test("partial persistence requires streaming mode", async () => {
+  const options = {
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    executeTool: async () => "unused",
+    completion: false,
+    partialPersistence: { intervalMs: 10 },
+  };
+
+  for (const streamOption of [{}, { stream: false }]) {
+    await assert.rejects(
+      runToolLoop({ ...options, ...streamOption }),
+      {
+        name: "TypeError",
+        message: "partialPersistence requires stream: true",
+      },
+    );
+  }
+
+  const result = await runToolLoop({ ...options, stream: true });
+  assert.equal(result.finalText, "done");
+});
+
 test("resume prefers a valid independent run-state over the latest record state", async () => {
   const store = createMemoryTranscriptStore();
   const independentState = createDeterministicRunState({

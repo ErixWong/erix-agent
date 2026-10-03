@@ -8,7 +8,8 @@
 
 - 可选 partial 落盘窗口（issue #140）：`partialPersistence` 缺省关闭；启用后按 interval
   单飞覆盖写流式 assistant 文本到 run snapshot，resume 可恢复有效 partial，沿用现有
-  `saveRunSnapshot`，不新增 TranscriptStore 方法。
+  `saveRunSnapshot`，不新增 TranscriptStore 方法；启用需设置 `stream: true`，
+  否则启动时报错（issue #143）。
 - 工具重放幂等声明（issue #139）：工具 schema 可声明 `replay: "safe" | "unsafe"`，
   run snapshot 持久化每个 pending intent；`replayPolicy: "per-tool-declaration"` 下只自动重放
   safe 工具，unsafe 工具回注 interrupted 结果并发出待宿主决策事件。缺省 `always-replay`
