@@ -108,7 +108,7 @@ status，再回落读取旧 `.state.json` 数据内嵌的 `state`。`loadRunStat
 `loadLatestRunSnapshot` → `loadLatestCheckpoint` 解析快照读取。宿主应迁移到新名；
 未来 major 版本可能移除别名。
 
-**已知重复（本 issue 只记录不改）。** 最新 run-state 被双写：既内嵌在每轮
+**已知重复（已决策，未移除）。** 最新 run-state 被双写：既内嵌在每轮
 round record（`RoundRecord.runState`）里，又经独立 run-state 方法
 （`saveRunState`/`markRunState`）落盘。两份拷贝都是承重的，所以 issue #82 选择保留而非删除
 其中一份——权威规则、以及被拒绝/推迟的备选见
