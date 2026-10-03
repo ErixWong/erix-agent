@@ -88,7 +88,8 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 新写入的快照不再持久化 `state` 键；`markRunState` 通过独立通道写终态。宿主需要读取终态时，
 应使用可选的 `loadRunStateStatus`。引擎不会调用或校验这个宿主面向的方法。该方法优先读取独立
 status，再回落读取旧 `.state.json` 数据内嵌的 `state`。`loadRunState` 对旧快照对象仍原样透传，
-包括其中的 `state` 键。
+包括其中的 `state` 键。仅当 status 文件不存在时才回落；status JSON 损坏或解析后没有字符串
+`status` 时会抛错，不会回落到可能过期的旧值。
 
 **迁移指引。** 将宿主的 `loadRunState(runId).state` 改为 `loadRunStateStatus(runId)`；继续用
 `loadRunState` 读取 `stateVersion`、`deterministic`、`semantic` 等快照字段。旧的内嵌终态仍可读取，
@@ -111,6 +112,10 @@ status，再回落读取旧 `.state.json` 数据内嵌的 `state`。`loadRunStat
 round record（`RoundRecord.runState`）里，又经独立 run-state 方法
 （`saveRunState`/`markRunState`）落盘。该重复早于 issue #78，已记为 follow-up；
 本 issue 只改命名与 capability 分级，不动结构。
+独立 run-state（`saveRunState`/`loadRunState`）是 latest-only 权威状态；随 transcript
+保存的 `RoundRecord.runState` 属于 history 侧的每轮快照。引擎恢复时优先采用有效的独立 state；
+仅当独立 state 不存在时才回落到最新 record；若独立 state 存在但无效，则报告
+`state_unavailable`，且不回落。
 
 `modelConfig` 始终是 resolver 形态的 `ModelConfigProvider`——即便它是随 `assemblyPort`
 一起显式提供的覆盖项。plain 配置对象会被拒绝并给出迁移提示，请用

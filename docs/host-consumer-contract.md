@@ -98,10 +98,12 @@ no per-round log spam. `getToolMetadata` and `emit` remain optional.
 run, not a history of versions. New snapshots do not persist a `state` key;
 `markRunState` writes terminal status through a separate channel. Hosts that
 need the status should use the optional `loadRunStateStatus` reader. The engine
-does not call or validate this host-facing method. It reads the independent
-status first and falls back to the embedded `state` in legacy `.state.json`
-data. `loadRunState` continues to return legacy snapshot objects unchanged,
-including an embedded `state` key.
+does not call or validate this host-facing method. When called, this method
+reads the independent status first and falls back to the embedded `state` in
+legacy `.state.json` data only when the status file is absent. Corrupt status
+JSON or parsed JSON without a string `status` throws instead of falling back.
+`loadRunState` continues to return legacy snapshot objects unchanged, including
+an embedded `state` key.
 
 **Migration.** Replace host reads of `loadRunState(runId).state` with
 `loadRunStateStatus(runId)`, and continue using `loadRunState` for snapshot
@@ -130,6 +132,11 @@ written twice: embedded in each round record (`RoundRecord.runState`) and via
 the standalone run-state methods (`saveRunState`/`markRunState`). This
 duplication predates issue #78 and is tracked as a follow-up; this issue
 changes only the naming and capability tiering, not the structure.
+The standalone run-state (`saveRunState`/`loadRunState`) is the authoritative
+latest-only state; `RoundRecord.runState` is the history-side per-round
+snapshot. On resume, a valid standalone state takes precedence; only an absent
+standalone state falls back to the latest record, while a present but invalid
+standalone state is reported as `state_unavailable` without fallback.
 
 `modelConfig` is always the resolver-shaped `ModelConfigProvider`, including an
 explicit override supplied alongside `assemblyPort`. A plain config object is

@@ -204,6 +204,21 @@ export function createFileTranscriptStore({ dir }) {
     }
     return records;
   };
+  const readStateSnapshot = async (runId) => {
+    try {
+      return JSON.parse(await readFile(statePath(dir, runId), "utf8"));
+    } catch (error) {
+      if (error?.code === "ENOENT") return undefined;
+      if (error instanceof SyntaxError) {
+        return {
+          runId,
+          stateStatus: "state_unavailable",
+          stateError: "corrupt",
+        };
+      }
+      throw error;
+    }
+  };
   const withAppendLock = async (runId, operation) => {
     const key = safeRunId(runId);
     const previous = appendLocks.get(key) ?? Promise.resolve();
@@ -308,29 +323,32 @@ export function createFileTranscriptStore({ dir }) {
     },
 
     async loadRunState(runId) {
-      try {
-        return JSON.parse(await readFile(statePath(dir, runId), "utf8"));
-      } catch (error) {
-        if (error?.code === "ENOENT") return undefined;
-        if (error instanceof SyntaxError) {
-          return {
-            runId,
-            stateStatus: "state_unavailable",
-            stateError: "corrupt",
-          };
-        }
-        throw error;
-      }
+      return readStateSnapshot(runId);
     },
 
     async loadRunStateStatus(runId) {
+      const target = statusPath(dir, runId);
+      let persisted;
       try {
-        const persisted = JSON.parse(await readFile(statusPath(dir, runId), "utf8"));
-        if (typeof persisted?.status === "string") return persisted.status;
+        persisted = JSON.parse(await readFile(target, "utf8"));
       } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
+        if (error?.code === "ENOENT") {
+          return (await readStateSnapshot(runId))?.state;
+        }
+        if (error instanceof SyntaxError) {
+          throw new Error(
+            `run-state status file is corrupt (runId=${runId}): ${target}`,
+            { cause: error },
+          );
+        }
+        throw error;
       }
-      return (await this.loadRunState(runId))?.state;
+      // This channel has one clean type (string | undefined): damaged data must remain visible,
+      // not silently fall back to a potentially stale legacy state.
+      if (typeof persisted?.status !== "string") {
+        throw new Error(`run-state status file is malformed (runId=${runId}): ${target}`);
+      }
+      return persisted.status;
     },
   };
 }
