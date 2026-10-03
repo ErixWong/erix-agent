@@ -2,12 +2,179 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
+import { createDeterministicRunState } from "../src/run-state.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const textMessage = (text) => ({
   role: "user",
   content: [{ type: "text", text }],
+});
+
+test("resume prefers a valid independent run-state over the latest record state", async () => {
+  const store = createMemoryTranscriptStore();
+  const independentState = createDeterministicRunState({
+    runId: "independent-state",
+    stateVersion: 4,
+    maxRounds: 1,
+    toolStats: new Map([["independent-tool", { calls: 7, failures: 2 }]]),
+  });
+  const recordState = createDeterministicRunState({
+    runId: "independent-state",
+    stateVersion: 9,
+    maxRounds: 1,
+    toolStats: new Map([["record-tool", { calls: 11, failures: 3 }]]),
+  });
+  await store.appendRound("independent-state", {
+    round: 0,
+    messages: [textMessage("seed")],
+    runState: recordState,
+  });
+  store.loadRunState = async () => independentState;
+
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    resume: true,
+    completion: false,
+    store,
+    runId: "independent-state",
+    executeTool: async () => "unused",
+  });
+
+  assert.deepEqual(result.runState.deterministic.tools, [{
+    name: "independent-tool",
+    calls: 7,
+    failures: 2,
+  }]);
+});
+
+test("resume falls back to the latest record run-state when the store has no loader", async () => {
+  const runId = "record-state-fallback";
+  const recordState = createDeterministicRunState({
+    runId,
+    stateVersion: 3,
+    maxRounds: 1,
+    toolStats: new Map([["record-tool", { calls: 5, failures: 1 }]]),
+  });
+  const records = [{
+    round: 0,
+    messages: [textMessage("seed")],
+    runState: recordState,
+  }];
+  const store = {
+    appendRound: async (_runId, record) => records.push(structuredClone(record)),
+    load: async () => records.map((record) => structuredClone(record)),
+  };
+
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    resume: true,
+    completion: false,
+    store,
+    runId,
+    executeTool: async () => "unused",
+  });
+
+  assert.deepEqual(result.runState.deterministic.tools, [{
+    name: "record-tool",
+    calls: 5,
+    failures: 1,
+  }]);
+});
+
+test("resume does not fall back when an independent run-state is present but invalid", async () => {
+  const store = createMemoryTranscriptStore();
+  const recordState = createDeterministicRunState({
+    runId: "invalid-independent-state",
+    stateVersion: 3,
+    maxRounds: 1,
+    toolStats: new Map([["record-tool", { calls: 11, failures: 3 }]]),
+  });
+  await store.appendRound("invalid-independent-state", {
+    round: 0,
+    messages: [textMessage("seed")],
+    runState: recordState,
+  });
+  store.loadRunState = async () => ({ schemaVersion: 99 });
+
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    resume: true,
+    completion: false,
+    store,
+    runId: "invalid-independent-state",
+    executeTool: async () => "unused",
+  });
+
+  assert.equal(result.runState.stateAvailability.status, "state_unavailable");
+  assert.equal(result.runState.stateAvailability.reason, "unknown_schema");
+  assert.deepEqual(result.runState.deterministic.tools, []);
+});
+
+test("run-state availability does not make the next resume invalid", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "run-state-availability-ratchet";
+  const originalLoadRunState = store.loadRunState.bind(store);
+  let loadRunStateCalls = 0;
+  store.loadRunState = async (requestedRunId) => {
+    loadRunStateCalls += 1;
+    if (loadRunStateCalls === 1) return { schemaVersion: 99 };
+    return originalLoadRunState(requestedRunId);
+  };
+  await store.appendRound(runId, {
+    round: 0,
+    messages: [textMessage("seed")],
+  });
+
+  const first = await runToolLoop({
+    provider: createFakeProvider([
+      {
+        content: [{ type: "tool_use", id: "ratchet-tool", name: "work", input: {} }],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "first done" }], stopReason: "end_turn" },
+    ]),
+    resume: true,
+    completion: false,
+    store,
+    runId,
+    maxRounds: 2,
+    executeTool: async () => "worked",
+  });
+
+  assert.equal(first.runState.stateAvailability.status, "state_unavailable");
+  const persisted = await originalLoadRunState(runId);
+  assert.equal(persisted.stateAvailability.status, "state_unavailable");
+  assert.deepEqual(persisted.deterministic.tools, [{
+    name: "work",
+    calls: 1,
+    failures: 0,
+  }]);
+
+  const second = await runToolLoop({
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "second done" }], stopReason: "end_turn" },
+    ]),
+    resume: true,
+    completion: false,
+    store,
+    runId,
+    maxRounds: 1,
+    executeTool: async () => "unused",
+  });
+
+  assert.equal(loadRunStateCalls, 2);
+  assert.deepEqual(second.runState.deterministic.tools, [{
+    name: "work",
+    calls: 1,
+    failures: 0,
+  }]);
 });
 
 test("resumes after three rounds without replaying paid provider calls", async () => {
