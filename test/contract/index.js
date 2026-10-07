@@ -5,3 +5,4 @@ export { modelConfigProviderContract } from "./model-config-provider.js";
 export { executeToolContract, executeToolMigrationContract } from "./execute-tool.js";
 export { assemblyPortContract } from "./assembly-port.js";
 export { notesStoreContract } from "./notes-store.js";
+export { engineApiContract } from "./engine-api.js";
