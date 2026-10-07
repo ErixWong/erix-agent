@@ -33,8 +33,10 @@ import { randomUUID } from "node:crypto";
  *   key: string,
  *   dedupKey: string,
  *   round: number,
- *   written: boolean,
- *   record?: object            // existing record when written === false
+ *   written: boolean,      // true 表示本次调用执行了 appendRound；不保证并发去重
+ *                          // 场景下实际落盘（store 可能吞掉并发重复写）。同 key 的
+ *                          // 追加应由宿主串行（或在宿主事务内）发起。
+ *   record?: object        // existing record when written === false
  * }>}
  */
 export async function appendUserTurn(store, { key, text, messageId, ts } = {}) {
@@ -46,7 +48,8 @@ export async function appendUserTurn(store, { key, text, messageId, ts } = {}) {
   if (typeof key !== "string" || key === "") {
     throw new TypeError("appendUserTurn: key must be a non-empty string");
   }
-  if (typeof text !== "string" || text === "") {
+  if (typeof text !== "string" || text.trim() === "") {
+    // 仅空白（空格/换行/制表符）同样拒绝；写入记录仍用原文 text。
     throw new TypeError("appendUserTurn: text must be a non-empty string");
   }
   if (messageId !== undefined && messageId !== null
@@ -55,11 +58,16 @@ export async function appendUserTurn(store, { key, text, messageId, ts } = {}) {
   }
 
   const records = await store.load(key);
+  if (!Array.isArray(records)) {
+    throw new TypeError(
+      "appendUserTurn: store contract violation — load(key) must resolve to an array of records",
+    );
+  }
   // 与既有 CLI 对齐：round 复用现有最大 round（引擎 resume 从最大 round 续起，
   // 其自身记录落在下一个 round）；空 store 时为 0（种子路径）。
   const round = Math.max(
     0,
-    ...(Array.isArray(records) ? records : []).map((record) => (
+    ...records.map((record) => (
       Number.isSafeInteger(record?.round) ? record.round : 0
     )),
   );
@@ -69,7 +77,7 @@ export async function appendUserTurn(store, { key, text, messageId, ts } = {}) {
     // 有稳定 id：dedupKey 稳定 → 崩溃/重跑天然幂等，可重复调用。
     : `${key}:input:${String(messageId)}`;
 
-  const existing = (Array.isArray(records) ? records : []).find(
+  const existing = records.find(
     (record) => (record?.dedupKey ?? record?.roundKey) === dedupKey,
   );
   if (existing !== undefined) {

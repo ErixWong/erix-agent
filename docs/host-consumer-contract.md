@@ -201,10 +201,14 @@ in one migration.
 
 To continue an existing run with a new user message, the host **pre-writes a
 user turn** into the transcript store and then calls `runToolLoop` with
-`resume: true`. On resume the engine rebuilds its message state from
+`resume: true`. When — and only when — `resume: true` is combined with a
+supplied `store` and `runId` (the condition in
+`src/loop/resume-manager.js:75`), the engine rebuilds its message state from
 `store.load(runId)` and **ignores `initialMessages` and
 `initialUserMessage`** — a host-provided user message reaches the model only
-through a pre-written record, never through those options.
+through a pre-written record, never through those options. Resuming without a
+`store` or without a `runId` is an unsupported call: the initial-message
+options are not overridden in that case.
 
 A correct pre-written `RoundRecord` must satisfy:
 
@@ -224,7 +228,11 @@ A correct pre-written `RoundRecord` must satisfy:
 - **Idempotency:** the store deduplicates by `dedupKey` (falling back to
   `roundKey`), and crash-rerun judgement is by `dedupKey`: a repeated append
   with the same `dedupKey` is a no-op, so a stable `dedupKey` (derived from a
-  host message id) makes the pre-write safely repeatable.
+  host message id) makes the pre-write safely repeatable. This guarantee is
+  **sequential-rerun** semantics — crash-rerun or sequential retry by
+  `dedupKey`. Concurrent appends against the same key are not covered: the
+  host should serialize appends per key (or issue them inside its receiving
+  transaction).
 - **Timing:** persist the user turn inside the transaction that accepts the
   user message (when the host decides the turn belongs to this run), not
   lazily after a worker picks the task up — a crash between acceptance and
@@ -691,7 +699,13 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 It is a pure function: no I/O, no model calls, no mutation of the input records,
 no host-specific assumptions. It accepts any subset of records (a filtered or
 sliced `load()` result is fine) and returns turns ordered by `round` ascending;
-records without a usable `round` keep their input order and sort last.
+records without a usable `round` keep their input order and sort last (ties on
+the same `round` also keep their input relative order).
+
+The returned value is a **read-only view**: the `blocks`, `usage`,
+`navigationRecord`, and similar objects inside each turn are shared references
+to the input records, not copies. Hosts must treat the projection result as
+immutable data — mutating it mutates the transcript records themselves.
 
 ### Which `RoundRecord` fields a host may render
 

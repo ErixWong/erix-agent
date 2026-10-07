@@ -802,6 +802,63 @@ test("chat reuses an explicitly selected session and keeps the new prompt", asyn
   }
 });
 
+test("chat resume 路径预写 :input: 记录且复用最大 round（issue #97 写侧契约 CLI 端）", async () => {
+  // 参照 test/repl.test.js 两轮集成断言：第二轮走 resume，预写行由
+  // appendUserTurn 落入 transcript：存在 <key>:input: 记录，round 序列
+  // [0, 1, 1, 2]——预写行复用既有最大 round（1），引擎自身行落在下一个 round（2）。
+  const dir = await mkdtemp(join("/tmp", "erix-cli-resume-prewrite-test-"));
+  try {
+    const config = { model: "fake-model", maxOutputTokens: 1000 };
+    const configPath = await writeEmptyMcpConfig(dir);
+    const firstRun = {
+      prompt: "resume-first",
+      session: "resume-prewrite",
+      dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
+      config,
+      maxRounds: 1,
+      idleTimeout: 0,
+    };
+    await runChat({
+      ...firstRun,
+      provider: createFakeProvider([{ content: [{ type: "text", text: "first" }] }]),
+    });
+    const secondProvider = createFakeProvider([
+      { content: [{ type: "text", text: "second" }] },
+    ]);
+    await runChat({
+      ...firstRun,
+      prompt: "resume-second",
+      provider: secondProvider,
+      maxRounds: 2,
+    });
+
+    // resume 成功重建上下文：新 prompt 经预写行达到模型
+    assert.ok(secondProvider.requests[0].messages.some((message) => (
+      message.role === "user"
+      && message.content?.some((block) => block.text === "resume-second")
+    )));
+
+    const records = await createFileTranscriptStore({ dir }).load("resume-prewrite");
+    // 预写行存在且命名空间正确，内容为新一轮 user 消息
+    const prewritten = records.filter((record) => (
+      typeof record.dedupKey === "string" && record.dedupKey.startsWith("resume-prewrite:input:")
+    ));
+    assert.equal(prewritten.length, 1);
+    assert.deepEqual(prewritten[0].messages, [
+      { role: "user", content: [{ type: "text", text: "resume-second" }] },
+    ]);
+    assert.equal(prewritten[0].roundKey, prewritten[0].dedupKey);
+    // 预写复用最大 round：[0, 1]（首轮）+ [1（预写复用）, 2（引擎续轮）]
+    assert.deepEqual(records.map((record) => record.round), [0, 1, 1, 2]);
+    assert.equal(prewritten[0].round, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("chat continues after text-only rounds (maxNoToolRounds default 3)", async () => {
   const dir = await mkdtemp(join("/tmp", "erix-cli-notool-test-"));
   try {

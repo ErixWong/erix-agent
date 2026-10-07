@@ -247,6 +247,32 @@ test("records are projected in ascending round order regardless of input order",
   assert.deepEqual(entries.map((entry) => entry.text), ["one", "早期第 1–1 轮已折叠。", "two", "three"]);
 });
 
+test("records sharing the same round keep their input relative order (index tiebreak)", () => {
+  // 预写入 :input: 行与引擎自身行共享最大 round（appendUserTurn 语义），
+  // 实现用输入索引打破平局：同 round 输出必须保持输入相对顺序。
+  const entries = projectTranscriptForDisplay([
+    { round: 2, messages: [{ role: "user", content: [{ type: "text", text: "pre-written input" }] }], dedupKey: "k:input:m-1" },
+    { round: 2, response: { content: [{ type: "text", text: "engine answer" }] } },
+    { round: 2, messages: [{ role: "user", content: [{ type: "text", text: "second input" }] }], dedupKey: "k:input:m-2" },
+  ]);
+  assert.deepEqual(entries.map((entry) => `${entry.role}:${entry.text}`), [
+    "user:pre-written input",
+    "assistant:engine answer",
+    "user:second input",
+  ]);
+  // 输入顺序反转时，输出相对顺序随之反转（非字典序/稳定 sort 的另一种假象）
+  const reversed = projectTranscriptForDisplay([
+    { round: 2, messages: [{ role: "user", content: [{ type: "text", text: "second input" }] }], dedupKey: "k:input:m-2" },
+    { round: 2, response: { content: [{ type: "text", text: "engine answer" }] } },
+    { round: 2, messages: [{ role: "user", content: [{ type: "text", text: "pre-written input" }] }], dedupKey: "k:input:m-1" },
+  ]);
+  assert.deepEqual(reversed.map((entry) => `${entry.role}:${entry.text}`), [
+    "user:second input",
+    "assistant:engine answer",
+    "user:pre-written input",
+  ]);
+});
+
 test("tolerates empty input, missing fields, legacy records and odd shapes", () => {
   assert.deepEqual(projectTranscriptForDisplay([]), []);
   assert.deepEqual(projectTranscriptForDisplay(undefined), []);

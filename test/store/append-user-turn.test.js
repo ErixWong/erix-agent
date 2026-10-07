@@ -131,6 +131,62 @@ test("appendUserTurn: 参数校验失败抛 TypeError", async () => {
   await assert.rejects(() => appendUserTurn(null, { key: "k", text: "x" }), TypeError);
 });
 
+test("appendUserTurn: store.load 返回非数组时抛 TypeError（store 违约不当空库）", async () => {
+  for (const loaded of [undefined, null, {}, "nope", 7]) {
+    const store = {
+      load: async () => loaded,
+      appendRound: async () => {
+        throw new Error("appendRound must not be reached");
+      },
+    };
+    await assert.rejects(
+      () => appendUserTurn(store, { key: "bad-load", text: "x" }),
+      (error) => error instanceof TypeError && /store contract violation/u.test(error.message),
+      `expected TypeError for load() → ${String(loaded)}`,
+    );
+  }
+});
+
+test("appendUserTurn: text 仅空白时拒绝，非空白原文原样落盘（不存 trim 后的）", async () => {
+  const store = createMemoryTranscriptStore();
+  for (const blank of [" ", "\n", "\t \n ", "\u3000"]) {
+    await assert.rejects(
+      () => appendUserTurn(store, { key: "blank-key", text: blank }),
+      TypeError,
+      `expected TypeError for blank text ${JSON.stringify(blank)}`,
+    );
+  }
+  assert.deepEqual(await store.load("blank-key"), []);
+  // 含实义字符的前后空白文本：校验通过且落盘保留原文（不 trim）
+  await appendUserTurn(store, { key: "blank-key", text: "  padded  ", messageId: "m-pad" });
+  const [record] = await store.load("blank-key");
+  assert.equal(record.messages[0].content[0].text, "  padded  ");
+});
+
+test("appendUserTurn: messageId 为 0 时生成 <key>:input:0 且幂等", async () => {
+  const store = createMemoryTranscriptStore();
+  const first = await appendUserTurn(store, { key: "run-zero", text: "zero id", messageId: 0 });
+  assert.equal(first.dedupKey, "run-zero:input:0");
+  assert.equal(first.written, true);
+  const second = await appendUserTurn(store, { key: "run-zero", text: "zero id", messageId: 0 });
+  assert.equal(second.dedupKey, "run-zero:input:0");
+  assert.equal(second.written, false);
+  assert.equal(second.record.dedupKey, "run-zero:input:0");
+  assert.equal((await store.load("run-zero")).length, 1);
+});
+
+test("appendUserTurn: ts 非 ISO 字符串时原样落盘（合法性由调用方负责，不新增校验）", async () => {
+  const store = createMemoryTranscriptStore();
+  await appendUserTurn(store, {
+    key: "run-bads-ts",
+    text: "odd ts",
+    messageId: "m-odd",
+    ts: "not-a-timestamp",
+  });
+  const [record] = await store.load("run-bads-ts");
+  assert.equal(record.ts, "not-a-timestamp");
+});
+
 test("appendUserTurn: 与 file store 协作（JSONL 往返 + 跨实例幂等）", async () => {
   const { createFileTranscriptStore } = await import("../../src/store/file.js");
   const { mkdtemp, rm } = await import("node:fs/promises");
