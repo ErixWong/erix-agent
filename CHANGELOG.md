@@ -4,6 +4,44 @@
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-07
+
+来源：宿主 erix-station 反馈的三个 issue（Gitea erix-llm-kit #95/#96/#97）——「transcript 作为唯一真相」
+的完整宿主侧接口：读侧官方展示投影（PR #146）+ 写侧追加用户轮引擎能力（PR #147）+ 升级指南形状
+修正（21a7672）；另含独立第三方审计后的收口（PR #148：契约语义收窄、行为硬化、测试/类型/中文文档补口）。
+全部为增量能力，无破坏性变更。宿主迁移指引见
+[docs/host-upgrade-guide-0.15.0.md](docs/host-upgrade-guide-0.15.0.md)。
+
+### Added
+
+- `appendUserTurn(store, { key, text, messageId?, ts? })`（宿主 Gitea issue #97，写侧契约）：
+  引擎能力化「预写入 user 轮 + `resume: true`」多轮续跑模式——round 推导（复用现有最大 round，
+  空 store 为 0）、dedupKey 生成与唯一性（有 `messageId` 时稳定幂等）、记录形态、幂等判据
+  （顺序重跑语义，以 `dedupKey` 为准）全部由引擎负责；内置 CLI/REPL 已改为调用它。契约文档
+  新增「Multi-turn resume contract」小节（含 resume 时 `initialMessages`/`initialUserMessage`
+  被忽略的前提声明、事务内落树时机）。中文同步小节见 `host-consumer-contract_cn.md`。
+- `projectTranscriptForDisplay(records)`（宿主 Gitea issue #95，读侧契约）：官方宿主展示投影纯函数，
+  输出 `[{ role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]`——reasoning 与
+  text 分离、折叠轮只呈现摘要+范围+导航指针（不渲染 `foldedPayload` 原文）、合成轮以
+  `meta.synthetic`/`meta.source` 标注。契约文档新增「Host display projection」小节：展示字段白名单、
+  稳定性承诺（投影输出形状是宿主可长期依赖的契约面，`RoundRecord` 内部字段不是）、只读视图声明、
+  反模式声明（不要把第二份有损消息表当模型上下文来源）。
+- `test/contract/engine-api.js` 契约套件（PR #148）：宿主可引用验证包入口导出
+  `appendUserTurn`/`projectTranscriptForDisplay` 与最小预写行为；随包发布。
+
+### Fixed
+
+- 0.14.0 升级指南 §1 示例与源码/契约测试不一致（宿主 Gitea issue #96）：`loadRunStateStatus`
+  返回**状态字符串**（`Promise<string | undefined>`）而非状态记录对象，示例改为
+  `if (status === "succeeded")`；契约文档 capability tiers 表附近同步补返回形状。
+
+### Changed（契约语义明确，无行为破坏）
+
+- `appendUserTurn` 行为硬化（PR #148）：`store.load()` 返回非数组现在抛 `TypeError`（不再静默
+  当空库）；仅空白 `text` 拒绝；`written: true` 语义明确为「本次调用执行了 appendRound」，
+  不承诺并发去重下落盘——同一 key 的追加应由宿主串行或在接收事务内发起（顺序重跑幂等不受影响）。
+- `RoundRecord` typedef 补齐既有事实字段 `roundKey`/`navigationRecord`（仅 JSDoc 补全）。
+
 ## [0.14.0] - 2026-10-03
 
 来源：issue #139/#140 工具幂等声明与 partial 落盘（PR #141/#142，含 e2e 验收发现的
