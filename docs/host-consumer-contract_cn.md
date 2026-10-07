@@ -20,12 +20,20 @@ writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
-todoStateProvider, semanticStateProvider,
+todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
 ```
+
+`partialPersistence` 默认为 `false`，保持既有的流式零写入行为。设为
+`{ intervalMs, minBytes? }` 可启用按间隔节流的部分 assistant 文本快照。它复用既有的
+latest-only `saveRunSnapshot` capability，不引入新的 store 方法；缺该 capability 时
+不发生部分写入。恢复时，较新快照中形状完好的 `partialText`/`partialRound` 会被作为
+assistant 文本消费，而不带这些字段的旧快照保持既有行为。设了 `minBytes` 时，比它小的
+单个 delta 不会触发写入；当间隔损失界限必须作用于每一个到来的 delta 时就不要传它。
+前提：设 `stream: true`，否则启动即抛。
 
 `executeTool` 边界只有一种调用形态，不做 arity 协商：
 
@@ -87,6 +95,20 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 可选方法缺失时，引擎对每个缺失方法只发**一条**
 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`），
 随后整轮 run 跳过对应持久化——不每轮刷屏。`getToolMetadata` 与 `emit` 仍是可选项。
+
+### 工具重放策略（issue #139）
+
+工具 schema 可以在每个规范 `tools` 定义上声明 `replay: "safe" | "unsafe"`；省略即
+`unsafe`，其他取值在启动时被拒绝。该声明是引擎元数据，不会发送给模型。run snapshot
+会把解析后的声明持久化到每个 `pendingToolUses` 条目上，因此恢复时使用发起该工具调用
+时记录下来的意图。
+
+`replayPolicy` 默认为 `"always-replay"`，无论声明如何都保持既有的续跑行为。选择
+`"per-tool-declaration"` 则只重放被记录为 `safe` 的条目。unsafe 条目（包括没有
+`replay` 字段的旧快照）不会被执行；模型会收到一条 `tool_result`，带
+`executionStatus: "interrupted"`、`is_error: true`，外加解释说明以及 run snapshot 中
+可用的已捕获输出。引擎发出可选的 `tool_replay_decision_required` 事件，带 run/tool 的
+ID 与 `requiresHostDecision: true`。任何后续处置决策归宿主；引擎不会调度或重试该工具。
 
 `saveRunState`/`loadRunState` 管理每个 run 的单份 latest-only 结构化快照，不保留版本历史。
 新写入的快照不再持久化 `state` 键；`markRunState` 通过独立通道写终态。宿主需要读取终态时，
@@ -190,7 +212,7 @@ deterministic run-state 里带同一份账单（`deterministic.errors.unpersiste
 崩溃也不会丢；模型可见渲染只给条数，不把宿主错误正文灌进上下文。
 
 失败档位按操作而非按端口划分：transcript 的 append 与 run-snapshot/run-state 写失败会终止
-run（副作用三态不变，#103）——但仅当 store 实现了该方法；缺可选 capability 的 store 是
+run（副作用被追踪，见 ADR-013）——但仅当 store 实现了该方法；缺可选 capability 的 store 是
 降级而非报错（见上文「TranscriptStore capability 分级」）。notes 写失败则继续 + 事件 + 账单，
 且工具结果不会长得像“已保存”。宿主端口通过注入的 `reportPersistenceFailure` 桥上报自己的写
 失败，事件与账单形状与 transcript 路径一致。
@@ -445,7 +467,7 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 `runToolLoop` 结果带两个恒定存在的账本字段：
 
 - `result.unpersisted: Entry[]` —— run 期间持久化失败的权威记录。默认 `[]`。
-- `result.completionErrors: []` —— 预留给收尾阶段失败；默认 `[]`。
+- `result.completionErrors: []` —— 预留给收尾阶段失败（在后续步骤接线）；默认 `[]`。
 
 `Entry` 取值之一：
 
@@ -463,6 +485,45 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 
 `persistence_error` 诊断事件现在带 `port: "transcript"`；该字段是增量添加，既有消费者
 不受影响。
+
+## 折叠摘要结构
+
+两种轮次折叠策略（`fold-statistical` 与 `fold-llm`）都会在头部任务消息（或
+`summaryRole: "system"` 时的 system 消息）前部冠以单个折叠摘要文本块。其固定分节，按顺序为：
+
+1. 标记行 `【上下文折叠·v1·erix-9f6e2c】早期第 N–M 轮（共 K 轮）已折叠。`，
+   外加确定性的工具足迹（`工具足迹：name×count, …` 或 `无`）。
+2. 可选的 `导航记录：{…}` 行（有界 JSON，仅当被折叠的工具结果携带归档产物时出现）。
+3. 可选的 `[已折叠] …` 存根（最多 10 条）。
+4. 恢复提示行。
+5. 可选的**锚点索引**分节（机械抽取，不经 LLM 改写）：
+
+   ```
+   ## 锚点索引（机械抽取，未经 LLM 改写）
+   paths: src/a/b.js:12, …
+   shas: 1ed3f35, …
+   issues: #32, …
+   urls: https://…
+   errors: TypeError: …, …
+   ```
+
+   锚点用正则从被折叠的负载中抽取——只取自 `tool_result` 内容与真实用户消息，绝不取自
+   assistant 散文。各类按固定顺序 `paths, shas, issues, urls, errors` 渲染；
+   `errors` 行含 `Error`/`Exception`/`Traceback`/`fatal:`，逐字保留至多 120 字符、
+   最多 5 条。同一行内多个值以 `, ` 连接；值内的字面 `,` 或 `\` 在渲染时转义为
+   `\,` / `\\`，在该分节被重新解析时反转义，因此每一类都能在反复折叠之间无损往返
+   （例如错误行 `Error: failed, retry later` 或 URL 查询串 `?a=1,2` 仍是单个值）。
+   注意 `paths` 的正则字符集排除了 `,`，含逗号的 paths 不会被抽取——这是接受的漏报代价。
+   上限：锚点总计 20 个，整个分节 1200 字符（按频次排序，其次按首次出现）。连续折叠之间
+   该分节会被重新解析并按类做并集合并（既有条目在前、新条目追加、去重）后重新钳制，
+   因此锚点在反复折叠中不丢失、不重复、不溢出。
+
+   锚点分节默认开启。传 `anchors: false`（策略工厂或每次 `compact` 的选项）可恢复
+   0.7.0 的确切行为——没有锚点分节，且此前折叠摘要中带有的锚点分节会在合并时被丢弃
+   （一次 `anchors: false` 折叠会彻底移除早先默认折叠创建的锚点分节）；摘要其余部分
+   不变。对象形态 `anchors: { maxPerKind, maxChars }` 可钳制每类条数与分节字符数。
+   在 `fold-llm` 中，该分节在 LLM 摘要之后（且在尺寸钳制之后）追加，因此
+   `maxSummaryTokens` 截不到它。
 
 ## 宿主展示投影
 
