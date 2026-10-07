@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 import {
+  appendUserTurn,
   createBuiltinNotesTools,
   createOpenAIProvider,
   resolveNotesDir,
@@ -449,7 +450,6 @@ export async function runRepl(argv, io = {}) {
     : await loadSession(sessionDir, options.session);
   let model = config.model;
   let usage = { input_tokens: 0, output_tokens: 0 };
-  let inputSequence = 0;
 
   if (storedRecords.length > 0 || existsSync(archivePath)) {
     writeLine(output, `已恢复会话 ${options.session}（${messages.length} 条消息）`);
@@ -622,21 +622,9 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       const existingRecords = await store.load(options.session);
       const resume = existingRecords.length > 0;
       if (resume) {
-        const latestRound = Math.max(
-          0,
-          ...existingRecords.map((record) => (
-            Number.isSafeInteger(record?.round) ? record.round : 0
-          )),
-        );
-        const dedupKey = `${String(options.session)}:input:${String(Date.now())}:${String(inputSequence)}`;
-        inputSequence += 1;
-        await store.appendRound(options.session, {
-          round: latestRound,
-          roundKey: dedupKey,
-          dedupKey,
-          messages: [roundMessages.at(-1)],
-          ts: new Date().toISOString(),
-        });
+        // issue #97：预写入 user 轮收敛为引擎能力 appendUserTurn（round 推导、
+        // dedupKey 唯一性与幂等判据由引擎负责，REPL 不再手搓记录）。
+        await appendUserTurn(store, { key: options.session, text: line });
       }
       const context = buildCompactionContext(
         config,

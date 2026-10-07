@@ -38,6 +38,7 @@ export { enforceSize } from "./compact/enforce-size.js";
 export { createMemoryTranscriptStore } from "./store/memory.js";
 export { createFileTranscriptStore } from "./store/file.js";
 export { projectTranscriptForDisplay } from "./display/projection.js";
+export { appendUserTurn } from "./store/append-user-turn.js";
 export {
   createAssemblyPort,
   assemblyPortOptions,
