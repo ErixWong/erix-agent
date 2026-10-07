@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   DEFAULT_REFLECTION_MIN_ROUNDS,
+  appendUserTurn,
   createBuiltinNotesTools,
   createOpenAIProvider,
   resolveNotesDir,
@@ -646,20 +646,9 @@ async function runChatWithNotes({
   const existingRecords = await store.load(runId);
   const resume = explicitSession && existingRecords.length > 0;
   if (resume) {
-    const latestRound = Math.max(
-      0,
-      ...existingRecords.map((record) => (
-        Number.isSafeInteger(record?.round) ? record.round : 0
-      )),
-    );
-    const dedupKey = `${String(runId)}:input:${Date.now()}:${randomUUID()}`;
-    await store.appendRound(runId, {
-      round: latestRound,
-      roundKey: dedupKey,
-      dedupKey,
-      messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
-      ts: new Date().toISOString(),
-    });
+    // issue #97：预写入 user 轮收敛为引擎能力 appendUserTurn（round 推导、
+    // dedupKey 唯一性与幂等判据由引擎负责，宿主不再手搓记录）。
+    await appendUserTurn(store, { key: runId, text: prompt });
   }
   // issue #69：--no-todo / ERIX_NO_TODO=1 —— 彻底关：内置 todo 四工具不注册、
   // 系统提示不再含 todo、用户级 todo skill 经 excludeSkillIds 一并排除。

@@ -197,6 +197,49 @@ it performs no I/O. The CLI continues to use its existing file-backed
 provider, tool, and transcript adapters, so no host needs to adopt the port
 in one migration.
 
+## Multi-turn resume contract (issue #97)
+
+To continue an existing run with a new user message, the host **pre-writes a
+user turn** into the transcript store and then calls `runToolLoop` with
+`resume: true`. On resume the engine rebuilds its message state from
+`store.load(runId)` and **ignores `initialMessages` and
+`initialUserMessage`** — a host-provided user message reaches the model only
+through a pre-written record, never through those options.
+
+A correct pre-written `RoundRecord` must satisfy:
+
+- **Shape:** `{ round, messages: [{ role: "user", content: [{ type: "text",
+  text }] }], dedupKey, roundKey, ts }` with `ts` an ISO-8601 string
+  (`new Date().toISOString()`).
+- **Round:** reuse the existing maximum round across `load` results
+  (`Math.max(0, ...rounds)`, `0` for an empty store). The engine resumes from
+  that maximum round and writes its own records at later rounds; pre-writes
+  must not advance it. An empty `load` result is the seed path: pre-write the
+  turn at round `0`; the built-in CLI instead passes
+  `initialMessages`/`initialUserMessage` without `resume` when no records
+  exist yet, which is equivalent for the engine.
+- **dedupKey:** namespaced `"<key>:input:<suffix>"`, unique per turn. The
+  engine writes its own rows under `"<runId>:engine:round:<n>"` and
+  `"…:resume"`, so host `:input:` keys never collide with engine rows.
+- **Idempotency:** the store deduplicates by `dedupKey` (falling back to
+  `roundKey`), and crash-rerun judgement is by `dedupKey`: a repeated append
+  with the same `dedupKey` is a no-op, so a stable `dedupKey` (derived from a
+  host message id) makes the pre-write safely repeatable.
+- **Timing:** persist the user turn inside the transaction that accepts the
+  user message (when the host decides the turn belongs to this run), not
+  lazily after a worker picks the task up — a crash between acceptance and
+  pre-write would otherwise lose the turn or duplicate it.
+
+Hosts should not hand-roll this. The engine exports
+`appendUserTurn(store, { key, text, messageId?, ts? })` which performs the
+`load`, the round derivation, `dedupKey` generation, the idempotency check,
+and the `appendRound` in one call. With `messageId` the `dedupKey` is stable
+(`<key>:input:<messageId>`) and reruns are naturally idempotent; without it
+the suffix degrades to timestamp + random UUID (unique per call). It resolves
+to `{ key, dedupKey, round, written, record? }` — `written: false` plus the
+existing `record` when the idempotency check hit. The built-in CLI and REPL
+are the reference consumers.
+
 ## Persistence failure reporting
 
 Persistence failures are reported through two reliable channels; neither
