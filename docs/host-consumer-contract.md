@@ -100,6 +100,11 @@ run), never a multi-version checkpoint. The tiers are:
 | Optional run-state | `saveRunState`, `loadRunState`, `markRunState` | run-state persistence skipped; run completes normally |
 | Host-facing optional terminal-status read | `loadRunStateStatus` | not used or validated by the engine; its absence does not emit a degraded-capability event |
 
+`loadRunStateStatus` resolves to the terminal status **string** —
+`(runId: string) => Promise<string | undefined>`, with `undefined` when no
+status is recorded for that run — not a status record object (mirrors the
+source typedef in `src/store/memory.js` / `src/store/file.js`).
+
 When an optional method is absent, the engine emits **one**
 `persistence_capability_degraded` event per missing method (`{type, runId,
 method, detail}`) and skips the corresponding persistence for the whole run —
@@ -126,8 +131,10 @@ engine does not schedule or retry the tool.
 `saveRunState`/`loadRunState` manage one latest-only structured snapshot per
 run, not a history of versions. New snapshots do not persist a `state` key;
 `markRunState` writes terminal status through a separate channel. Hosts that
-need the status should use the optional `loadRunStateStatus` reader. The engine
-does not call or validate this host-facing method. When called, this method
+need the status should use the optional `loadRunStateStatus` reader (returns
+the status string, `Promise<string | undefined>`; see the shape note above).
+The engine does not call or validate this host-facing method. When called,
+this method
 reads the independent status first and falls back to the embedded `state` in
 legacy `.state.json` data only when the status file is absent. Corrupt status
 JSON or parsed JSON without a string `status` throws instead of falling back.

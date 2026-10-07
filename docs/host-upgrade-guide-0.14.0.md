@@ -29,7 +29,9 @@ decision, and the changelog for the full entry list.
 - `saveRunState` **no longer writes** the `state` key. It remains the latest-only
   snapshot (resume现场) only.
 - `markRunState` writes the terminal status through its own channel.
-- New host-facing reader: `loadRunStateStatus(runId)` → the status record.
+- New host-facing reader: `loadRunStateStatus(runId)` → the status **string**
+  (`Promise<string | undefined>`; `undefined` when no status is recorded for
+  that run yet). It returns a plain string, not a status record object.
 - A status file that is corrupt or malformed **throws** instead of silently
   falling back to a possibly stale value.
 - Backward compatibility for stored data: `loadRunState` still passes an
@@ -43,9 +45,14 @@ if (runState?.state === "succeeded") { /* ... */ }
 
 // 0.14.0
 const status = await store.loadRunStateStatus(runId);   // host-facing read
-if (status?.status === "succeeded") { /* ... */ }
+if (status === "succeeded") { /* ... */ }
 const snapshot = await store.loadRunState(runId);       // snapshot fields only
 ```
+
+`loadRunStateStatus` resolves to the status string directly (compare it with
+`===`, not `status?.status`); if you need snapshot fields such as
+`stateVersion`, `deterministic`, or `semantic`, keep reading them from
+`loadRunState`.
 
 `loadRunStateStatus` is deliberately **not** part of `RUN_STATE_STORE_METHODS`
 or `OPTIONAL_TRANSCRIPT_STORE_METHODS`: the engine never calls or validates it,
@@ -124,8 +131,10 @@ instead of silently persisting nothing.
 
 ## 6. Upgrade checklist
 
-1. Replace `loadRunState(runId).state` reads with `loadRunStateStatus(runId)`
-   (keep `loadRunState` for snapshot fields).
+1. Replace `loadRunState(runId).state` reads with
+   `loadRunStateStatus(runId)` — it resolves to the status string
+   (`Promise<string | undefined>`), not a record object (keep `loadRunState`
+   for snapshot fields).
 2. Move any note-write credential policy into your own tool layer.
 3. Drop imports of `looksLikeCredential` / `normalizedLabel` from
    `erix-agent/tools`; import the engine from the package entry rather than
