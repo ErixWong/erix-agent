@@ -80,13 +80,18 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 | 可选 run-state | `saveRunState`、`loadRunState`、`markRunState` | 跳过 run-state 持久化；run 正常跑完 |
 | 宿主面向的可选终态读取 | `loadRunStateStatus` | 引擎不调用、不校验；缺失不会发出 capability 降级事件 |
 
+`loadRunStateStatus` 解析为终态**字符串**——`(runId: string) => Promise<string | undefined>`，
+该 run 未记录终态时返回 `undefined`——不是状态记录对象（与 `src/store/memory.js` /
+`src/store/file.js` 的源 typedef 一致）。
+
 可选方法缺失时，引擎对每个缺失方法只发**一条**
 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`），
 随后整轮 run 跳过对应持久化——不每轮刷屏。`getToolMetadata` 与 `emit` 仍是可选项。
 
 `saveRunState`/`loadRunState` 管理每个 run 的单份 latest-only 结构化快照，不保留版本历史。
 新写入的快照不再持久化 `state` 键；`markRunState` 通过独立通道写终态。宿主需要读取终态时，
-应使用可选的 `loadRunStateStatus`。引擎不会调用或校验这个宿主面向的方法。该方法优先读取独立
+应使用可选的 `loadRunStateStatus`（返回终态字符串，`Promise<string | undefined>`；形状见上方
+说明）。引擎不会调用或校验这个宿主面向的方法。该方法优先读取独立
 status，再回落读取旧 `.state.json` 数据内嵌的 `state`。`loadRunState` 对旧快照对象仍原样透传，
 包括其中的 `state` 键。仅当 status 文件不存在时才回落；status JSON 损坏或解析后没有字符串
 `status` 时会抛错，不会回落到可能过期的旧值。
@@ -132,6 +137,41 @@ model-config、session 与 required 持久化 fail-fast 校验。`persistence: "
 
 库内 `createAssemblyPort` 是参考装配实现，不做任何 I/O。CLI 继续使用它自己的文件型
 provider、工具与 transcript 适配器，因此没有宿主需要一次性迁移到该端口。
+
+## 多轮续跑契约（issue #97）
+
+要用新的用户消息继续一个既有 run，宿主需**预写入一个用户轮**到 transcript store，
+然后以 `resume: true` 调用 `runToolLoop`。当且仅当 `resume: true` 与提供的 `store`、
+`runId` 同时成立时（即 `src/loop/resume-manager.js:75` 的条件分支），引擎会从
+`store.load(runId)` 重建消息状态，并**忽略 `initialMessages` 与 `initialUserMessage`**
+——宿主提供的用户消息只能通过预写记录到达模型，绝不通过这两个选项。resume 而缺少
+`store` 或 `runId` 属于未支持的调用：此时初始消息选项不会被覆盖。
+
+正确的预写 `RoundRecord` 必须满足：
+
+- **形状：** `{ round, messages: [{ role: "user", content: [{ type: "text",
+  text }] }], dedupKey, roundKey, ts }`，`ts` 为 ISO-8601 字符串
+  （`new Date().toISOString()`）。
+- **round：** 复用 `load` 结果中的现有最大 round（`Math.max(0, ...rounds)`，空
+  store 为 `0`）。引擎从该最大 round 续起并把自身记录落在更后的 round；预写不得推
+  进它。空 `load` 结果是种子路径：在 round `0` 预写该轮；内置 CLI 则在没有既有记录
+  时不带 `resume` 地传 `initialMessages`/`initialUserMessage`，对引擎而言等价。
+- **dedupKey：** 命名空间为 `"<key>:input:<suffix>"`，每轮唯一。引擎自身行写在
+  `"<runId>:engine:round:<n>"` 与 `"…:resume"` 下，宿主 `:input:` 键永不与引擎行碰撞。
+- **幂等性：** store 按 `dedupKey`（回落 `roundKey`）去重，崩溃重跑的判定依据是
+  `dedupKey`：同 `dedupKey` 的重复 append 是 no-op，因此稳定的 `dedupKey`（由宿主消
+  息 id 推导）使预写可安全重复。这个保证是**顺序重跑**语义——崩溃重跑或按
+  `dedupKey` 的顺序重试。同一 key 的并发追加不在保证范围内：宿主应按 key 串行发起
+  追加（或在接收事务内发起）。
+- **时机：** 在接受用户消息的事务内持久化该轮（当宿主决定该轮属于本 run 时），
+  而不是懒到 worker 接手之后再写——否则接受与预写之间崩溃会丢失或重复该轮。
+
+宿主不应手写这套逻辑。引擎导出
+`appendUserTurn(store, { key, text, messageId?, ts? })`，一次调用完成 `load`、round
+推导、`dedupKey` 生成、幂等检查与 `appendRound`。带 `messageId` 时 `dedupKey` 稳定
+（`<key>:input:<messageId>`），重跑天然幂等；不带时后缀退化为时间戳 + 随机 UUID（每次
+调用唯一）。它解析为 `{ key, dedupKey, round, written, record? }`——幂等检查命中时
+`written: false` 并附既有 `record`。内置 CLI 与 REPL 是参考消费者。
 
 ## 持久化失败上报
 
@@ -423,6 +463,96 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 
 `persistence_error` 诊断事件现在带 `port: "transcript"`；该字段是增量添加，既有消费者
 不受影响。
+
+## 宿主展示投影
+
+transcript 就是模型上下文真相：`RoundRecord` 为回放保持字节保真，同时携带模型面对的
+负载与面向展示的字段。需要人类可读聊天视图的宿主应从 transcript 派生，而不是维护第二
+张有损消息表。`projectTranscriptForDisplay` 是官方、宿主无关的投影助手：
+
+```js
+import { projectTranscriptForDisplay } from "erix-agent";
+
+const turns = projectTranscriptForDisplay(await store.load(runId));
+// [{ role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
+```
+
+它是纯函数：无 I/O、无模型调用、不变更输入记录、无宿主特有假设。它接受任意记录子集
+（过滤或切片后的 `load()` 结果均可），按 `round` 升序返回轮次；没有可用 `round` 的记
+录保持输入顺序并排在最后（同 `round` 的记录也保持输入相对顺序）。
+
+返回值是**只读视图**：每轮内的 `blocks`、`usage`、`navigationRecord` 等对象与输入记录
+是共享引用而非拷贝。宿主必须把投影返回值当作不可变数据——改动它等于改 transcript 记录
+本身。
+
+### 宿主可渲染哪些 `RoundRecord` 字段
+
+| 字段 | 通道 | 宿主指引 |
+|---|---|---|
+| `textPreview` | 展示 | 有界的 assistant 文本预览。可安全渲染；投影仅在 `response` 缺失（旧记录）时用它兜底。 |
+| `summary` | 展示 | 每轮的 `{ action, note }` 摘要（或 `"missing"`）。可安全渲染，通常作单行轮次注解。它**不是**折叠摘要。 |
+| `folded` / `foldedRoundRange` | 展示 | 标记早期上下文被折叠的轮次及被折叠的 round 区间。可安全渲染为“此段已折叠”横幅。 |
+| `foldedPayload` | 展示（有界） | 被折叠移除的原始消息。体积很大的归档；**不要**倒进聊天视图。投影只报 `meta.foldedPayloadMessages`（计数）。 |
+| `navigationRecord` | 展示 | 有界归档指针 `{ roundFrom, roundTo, artifacts[], truncated? }`，指向被恢复的工具输出。渲染为导航链接/指针，绝不作为消息内容。 |
+| `messages` | 模型 | 精确的模型上下文切片，含 `tool_use`/`tool_result` 块与折叠占位符。不要裸渲染；投影从中提取可展示文本与工具调用摘要。 |
+| `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。展示字段由它派生；其块形状是模型面向的，可能变化。 |
+| `l0facts`、`runState`、`compactionStats`、`judge`、`wrapup`、`toolOutputs`、`dedupKey`、`roundKey` | 模型 / 引擎内部 | 给 governor、resume、诊断用的事实。只有 `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` 被拷进投影的 `meta` 供可选标注；其余不属于展示表面。 |
+
+### 稳定性承诺
+
+**投影输出形状就是宿主可长期依赖的契约表面**：`role`、`text`、`blocks`、`toolCalls`、
+`reasoning`、`folded`、`round`、`ts`、`meta`。`RoundRecord` 内部细节不是。只要投影继续
+产出相同形状，`messages`/`response`/`foldedPayload`/`runState` 内部的字段名、嵌套与块形
+状可在次版本间变化。投影条目与 `meta` 的增量追加是非破坏性的；宿主必须忽略未知的
+`meta` 键，不得对键顺序做断言。投影形状的破坏性变更遵循常规版本化迁移策略，并在升级
+指南中公告。
+
+`blocks` 是透传的块数组，供需要更丰富渲染（代码块、图片、结构化工具输入）的宿主使用。
+只展示纯文本的宿主应改用 `text` 与 `reasoning`。
+
+### 折叠轮次
+
+折叠轮次始终以**摘要加区间**渲染，绝不渲染原始负载：
+
+- 投影会在该轮自身内容之前发出一条 `role: "system"`、`folded: true` 的轮次。当记录携带
+  带标记的折叠摘要时其 `text` 就是该摘要（恢复后的种子记录把摘要块留在头部任务消息里，
+  投影会把它从用户气泡里拆出）；否则是 `foldedRoundRange`、`summary` 与
+  `navigationRecord` 产物计数的有界组合。
+- `meta.foldedRoundRange`、`meta.navigationRecord`、`meta.foldedPayloadMessages` 为宿主
+  的折叠段 UI 提供信息（“此段已折叠，摘要如下”，外加归档链接）。
+- 宿主不得在聊天流中渲染 `foldedPayload` 内容。它是被折叠掉的原始材料，为恢复与锚点
+  保留；展示它会破坏折叠，把模型已看不到的负载重新塞回来。
+
+### 推理文本
+
+`reasoning` 携带该轮的推理文本（规范 `reasoning` 块，外加 provider 归一化的
+`thinking`/`reasoning_content` 形状），**从不**合并进 `text`。建议默认用折叠/可展开块
+展示，因为它长且噪，并与答案保持视觉区分。宿主在向模型回放历史时，不得在自己的存储
+中静默丢弃推理——推理回放是模型侧契约（见 thinking 模式要求），与本展示字段无关。
+
+### 合成消息
+
+运行时注入的消息对模型可见但非用户撰写。投影保留其底层 role（通常是 `user`，有时是
+`system`）并加标签：
+
+- 每个非用户撰写轮次都带 `meta.synthetic: true`；真实用户与 assistant 轮带
+  `meta.synthetic: false`。
+- transcript 带标记时 `meta.source` 标明注入方：`judge-control`（round-judge 方向提示与
+  续跑催促）、`audit-intercept`（重复命令拦截文本）、`system`、`fold-summary`（折叠横幅）、
+  `wrapup`，或 `textPreview`（assistant 轮的旧版预览兜底）。
+- 轮级判定在存在时出现在 `meta.judge` 与 `meta.wrapup`，宿主无需解析散文就能标注一轮。
+
+宿主应区分地渲染合成轮（徽标、淡化样式）或折叠它们，但不得从声称镜像 transcript 的视图
+中丢弃它们。
+
+### 反模式
+
+不要把第二张有损消息表当作模型上下文的真相源。只存 `{ role, text }` 的 UI 表无法往返
+工具调用、推理与折叠状态；它一旦出现，宿主就被迫向模型重新注入历史，而 thinking 模式
+provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store：transcript 保持模型
+上下文，每个 UI 视图都通过 `projectTranscriptForDisplay` 从它派生（与 #91、#135 同一
+主题）。宿主特有锚点（session id、序号、附件、run 归属）可以存在 transcript 旁边，但
+消息内容不得在那里重复一份。
 
 ## 运行状态
 
