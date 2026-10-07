@@ -1,6 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
+> 同步基线：host-consumer-contract.md @ 2026-10-07（结构对齐检查：`node scripts/docs-sync-check.mjs`；翻译补齐后更新本日期）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
