@@ -8,6 +8,8 @@ import { boundRunState } from "../run-state.js";
  *   ts?:string,
  *   foldedPayload?:any,
  *   dedupKey?:string,
+ *   roundKey?:string,
+ *   navigationRecord?:object,
  *   foldedRoundRange?:{from:number,to:number},
  *   response?:{content:object[], stopReason?:string, usage?:object},
  *   textPreview?:string,

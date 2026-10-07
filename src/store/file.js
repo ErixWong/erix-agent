@@ -14,6 +14,8 @@ const HASHED_RUN_ID_PREFIX = "run-h-";
  *   ts?:string,
  *   foldedPayload?:any,
  *   dedupKey?:string,
+ *   roundKey?:string,
+ *   navigationRecord?:object,
  *   foldedRoundRange?:{from:number,to:number},
  *   response?:{content:object[], stopReason?:string, usage?:object},
  *   textPreview?:string,
