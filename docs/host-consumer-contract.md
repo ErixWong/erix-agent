@@ -630,6 +630,113 @@ with `summaryRole: "system"`). Its fixed sections, in order:
    characters. In `fold-llm` the section is appended after the LLM summary
    (and after size enforcement), so `maxSummaryTokens` cannot truncate it.
 
+## Host display projection
+
+The transcript is the model-context truth: `RoundRecord` is byte-faithful for
+replay and carries both model-facing payloads and display-oriented fields. Hosts
+that need a human-readable chat view must derive it from the transcript instead
+of maintaining a second lossy message table. `projectTranscriptForDisplay` is
+the official, host-agnostic projection helper:
+
+```js
+import { projectTranscriptForDisplay } from "erix-agent";
+
+const turns = projectTranscriptForDisplay(await store.load(runId));
+// [{ role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
+```
+
+It is a pure function: no I/O, no model calls, no mutation of the input records,
+no host-specific assumptions. It accepts any subset of records (a filtered or
+sliced `load()` result is fine) and returns turns ordered by `round` ascending;
+records without a usable `round` keep their input order and sort last.
+
+### Which `RoundRecord` fields a host may render
+
+| Field | Channel | Host guidance |
+|---|---|---|
+| `textPreview` | display | Bounded assistant text preview. Safe to render; the projection uses it only as a fallback when `response` is absent (legacy records). |
+| `summary` | display | Per-round `{ action, note }` summary (or `"missing"`). Safe to render, typically as a one-line round caption. It is **not** the fold summary. |
+| `folded` / `foldedRoundRange` | display | Marks a round whose earlier context was folded, and the folded round range. Safe to render as a "this span is collapsed" banner. |
+| `foldedPayload` | display (bounded) | The raw messages removed by folding. It is a large archive; do **not** dump it into the chat view. The projection reports only `meta.foldedPayloadMessages` (a count). |
+| `navigationRecord` | display | Bounded archive pointers `{ roundFrom, roundTo, artifacts[], truncated? }` for recovered tool outputs. Render as navigation links/pointers, never as message content. |
+| `messages` | model | The exact model-context slice, including `tool_use`/`tool_result` blocks and fold placeholders. Do not render it raw; the projection extracts displayable text and tool-call summaries from it. |
+| `response` | model | Full provider response content (`text`, `reasoning`, `tool_use` blocks), `stopReason`, `usage`. Display fields are derived from it; its block shape is model-facing and may change. |
+| `l0facts`, `runState`, `compactionStats`, `judge`, `wrapup`, `toolOutputs`, `dedupKey`, `roundKey` | model / engine internals | Facts for the governor, resume, and diagnostics. Only `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` are copied into the projection's `meta` for optional labelling; the rest is not part of the display surface. |
+
+### Stability promise
+
+The **projection output shape is the contract surface hosts may depend on long
+term**: `role`, `text`, `blocks`, `toolCalls`, `reasoning`, `folded`, `round`,
+`ts`, `meta`. `RoundRecord` internals are not. Field names, nesting, and
+block shapes inside `messages`/`response`/`foldedPayload`/`runState` may change
+between minor versions as long as the projection keeps producing the same
+shape. Additions to projection entries and to `meta` are non-breaking; hosts must
+ignore unknown `meta` keys and must not assert on key order. Breaking changes to
+the projection shape follow the normal versioned-migration policy and are
+announced in the upgrade guide.
+
+`blocks` is the passthrough block array for hosts that want richer rendering
+(code blocks, images, structured tool input). Hosts that only show plain text
+should use `text` and `reasoning` instead.
+
+### Folded rounds
+
+A folded round is rendered as **summary plus range**, never as the original
+payload:
+
+- The projection emits a `role: "system"`, `folded: true` turn before the
+  round's own content. Its `text` is the engine's marked fold summary when the
+  record carries it (a resumed seed record keeps the summary block inside the
+  head task message; the projection splits it out of the user bubble), and
+  otherwise a bounded composition of `foldedRoundRange`, `summary`, and the
+  `navigationRecord` artifact count.
+- `meta.foldedRoundRange`, `meta.navigationRecord`, and
+  `meta.foldedPayloadMessages` are provided for the host's collapsed-segment UI
+  ("this span is folded, summary below", plus archive links).
+- The host must not render `foldedPayload` content in the chat stream. It is the
+  folded-away original material, kept for recovery and anchoring; showing it
+  defeats the fold and re-introduces the payload the model no longer sees.
+
+### Reasoning
+
+`reasoning` holds the round's reasoning text (canonical `reasoning` blocks plus
+the provider-normalized `thinking`/`reasoning_content` shapes) and is **never**
+merged into `text`. Recommendation: show it in a collapsed/expandable block by
+default, since it is long and noisy, and keep it visually distinct from the
+answer. Hosts must not silently drop reasoning from their own storage when they
+also replay history to the model — reasoning replay is a model-side contract
+(see the thinking-mode requirement), independent of this display field.
+
+### Synthetic messages
+
+Runtime-injected messages are model-visible but not user-authored. The
+projection keeps the underlying role (usually `user`, sometimes `system`) and
+labels them:
+
+- `meta.synthetic: true` for every non-user-authored turn; real user and
+  assistant turns carry `meta.synthetic: false`.
+- `meta.source` names the injector when the transcript carries the marker: `judge-control`
+  (round-judge direction hints and continuation nudges), `audit-intercept`
+  (repeated-command intercept text), `system`, `fold-summary` (the fold banner),
+  `wrapup`, or `textPreview` (legacy preview fallback for the assistant turn).
+- Round-level judgements appear in `meta.judge` and `meta.wrapup` when present,
+  so a host can label a round without parsing prose.
+
+Hosts should render synthetic turns distinctly (badge, muted style) or fold them
+away, but should not drop them from a view that claims to mirror the transcript.
+
+### Anti-pattern
+
+Do not treat a second, lossy message table as the source of truth for model
+context. A UI table that keeps only `{ role, text }` cannot round-trip tool
+calls, reasoning, or fold state; once it exists, hosts are forced to re-inject
+history into the model and thinking-mode providers reject text-only assistant
+history. The supported pattern is single-store: the transcript stays the model
+context, and every UI view is derived from it through
+`projectTranscriptForDisplay` (the same theme as #91 and #135). Host-specific
+anchors (session id, sequence number, attachments, run attribution) may live
+beside the transcript, but message content must not be duplicated there.
+
 ## Run state
 
 The engine builds a deterministic run state and can inject its bounded
