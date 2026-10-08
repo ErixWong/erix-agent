@@ -22,6 +22,26 @@ import {
   errorSnippet,
 } from "./aggregate-budget.js";
 
+// run snapshot 落盘失败的 fail-closed 收口（issue #174：原先四处 pre/post-tool 检查逐字重复）：
+// 计数 +1，并把底层持久化失败明细并入对外的 `checkpoint_failed` KitError（宿主可见契约）。
+// phase/sideEffect 由调用点给出（工具是否已执行、是否留下外部副作用），
+// operation/persistence/persistenceError 从 lastPersistenceFailure 透传；
+// 落盘成功或本次 run 没有 snapshot store 时静默返回（语义与合并前的四段 if 完全一致）。
+function assertSnapshotPersisted(ctx, persisted, { phase, sideEffect, message }) {
+  if (persisted || !ctx.hasRunSnapshotStore) return;
+  ctx.runSnapshotFailureCount += 1;
+  const failure = new KitError("checkpoint_failed", message);
+  const previous = ctx.lastPersistenceFailure;
+  if (previous) {
+    failure.operation = previous.operation;
+    failure.phase = phase;
+    failure.sideEffect = sideEffect;
+    failure.persistence = previous.persistence;
+    failure.persistenceError = previous.persistenceError;
+  }
+  throw failure;
+}
+
 // 只读工具集合（issue #33 C）：拦截 judge 对这类工具放行——只读调用无外部副作用，
 // uncertain/off_track 时拦它净收益为负（实测 readFile 被拦后缺陷反而漏出）。
 // exec/writeFile/mcp 等写路径不在此列，维持拦截语义不变。
@@ -210,21 +230,11 @@ export function createRunSnapshotExecutor(ctx) {
       pendingToolUses,
       toolResults,
     });
-    if (!runSnapshotPersisted && ctx.hasRunSnapshotStore) {
-      ctx.runSnapshotFailureCount += 1;
-      const failure = new KitError(
-        "checkpoint_failed",
-        `Checkpoint persistence failed before tool execution (runId=${String(ctx.runId)}, round=${round})`,
-      );
-      if (ctx.lastPersistenceFailure) {
-        failure.operation = ctx.lastPersistenceFailure.operation;
-        failure.phase = "checkpoint_before_tool";
-        failure.sideEffect = "not_started";
-        failure.persistence = ctx.lastPersistenceFailure.persistence;
-        failure.persistenceError = ctx.lastPersistenceFailure.persistenceError;
-      }
-      throw failure;
-    }
+    assertSnapshotPersisted(ctx, runSnapshotPersisted, {
+      phase: "checkpoint_before_tool",
+      sideEffect: "not_started",
+      message: `Checkpoint persistence failed before tool execution (runId=${String(ctx.runId)}, round=${round})`,
+    });
     const startedAt = Date.now();
     let execution;
     let isError = false;
@@ -328,21 +338,11 @@ export function createRunSnapshotExecutor(ctx) {
       status: "executed",
       messagesOverride: messagesWithToolResults(toolResults),
     });
-    if (!postRunSnapshotPersisted && ctx.hasRunSnapshotStore) {
-      ctx.runSnapshotFailureCount += 1;
-      const failure = new KitError(
-        "checkpoint_failed",
-        `Checkpoint persistence failed after tool execution: tool already executed but result was not persisted (toolUseId=${String(block.id)}, runId=${String(ctx.runId)}, round=${round})`,
-      );
-      if (ctx.lastPersistenceFailure) {
-        failure.operation = ctx.lastPersistenceFailure.operation;
-        failure.phase = "checkpoint_after_tool";
-        failure.sideEffect = "executed_uncommitted";
-        failure.persistence = ctx.lastPersistenceFailure.persistence;
-        failure.persistenceError = ctx.lastPersistenceFailure.persistenceError;
-      }
-      throw failure;
-    }
+    assertSnapshotPersisted(ctx, postRunSnapshotPersisted, {
+      phase: "checkpoint_after_tool",
+      sideEffect: "executed_uncommitted",
+      message: `Checkpoint persistence failed after tool execution: tool already executed but result was not persisted (toolUseId=${String(block.id)}, runId=${String(ctx.runId)}, round=${round})`,
+    });
     return toolResult;
   };
 
@@ -371,21 +371,11 @@ export function createRunSnapshotExecutor(ctx) {
       pendingToolUses,
       toolResults,
     });
-    if (!runSnapshotPersisted && ctx.hasRunSnapshotStore) {
-      ctx.runSnapshotFailureCount += 1;
-      const failure = new KitError(
-        "checkpoint_failed",
-        `Checkpoint persistence failed before intercepted tool execution (runId=${String(ctx.runId)}, round=${round})`,
-      );
-      if (ctx.lastPersistenceFailure) {
-        failure.operation = ctx.lastPersistenceFailure.operation;
-        failure.phase = "checkpoint_before_tool";
-        failure.sideEffect = "not_started";
-        failure.persistence = ctx.lastPersistenceFailure.persistence;
-        failure.persistenceError = ctx.lastPersistenceFailure.persistenceError;
-      }
-      throw failure;
-    }
+    assertSnapshotPersisted(ctx, runSnapshotPersisted, {
+      phase: "checkpoint_before_tool",
+      sideEffect: "not_started",
+      message: `Checkpoint persistence failed before intercepted tool execution (runId=${String(ctx.runId)}, round=${round})`,
+    });
     let decision;
     let judgeUsage;
     let judgeRaw;
@@ -547,22 +537,12 @@ export function createRunSnapshotExecutor(ctx) {
       status: "intercepted",
       messagesOverride: overriddenMessages,
     });
-    if (!resultRunSnapshotPersisted && ctx.hasRunSnapshotStore) {
-      ctx.runSnapshotFailureCount += 1;
-      const failure = new KitError(
-        "checkpoint_failed",
-        `Checkpoint persistence failed after intercept result (runId=${String(ctx.runId)}, round=${round})`,
-      );
-      if (ctx.lastPersistenceFailure) {
-        // The intercepted tool never ran, so losing its decision/result has no external side effect.
-        failure.operation = ctx.lastPersistenceFailure.operation;
-        failure.phase = "checkpoint_before_tool";
-        failure.sideEffect = "not_started";
-        failure.persistence = ctx.lastPersistenceFailure.persistence;
-        failure.persistenceError = ctx.lastPersistenceFailure.persistenceError;
-      }
-      throw failure;
-    }
+    // 被拦截的工具从未执行，因此丢失这份判定/结果没有外部副作用 → not_started。
+    assertSnapshotPersisted(ctx, resultRunSnapshotPersisted, {
+      phase: "checkpoint_before_tool",
+      sideEffect: "not_started",
+      message: `Checkpoint persistence failed after intercept result (runId=${String(ctx.runId)}, round=${round})`,
+    });
     return toolResult;
   };
 
