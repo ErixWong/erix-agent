@@ -732,7 +732,7 @@ the official, host-agnostic projection helper:
 import { projectTranscriptForDisplay } from "erix-agent";
 
 const turns = projectTranscriptForDisplay(await store.load(runId));
-// [{ role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
+// [{ key, role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
 ```
 
 It is a pure function: no I/O, no model calls, no mutation of the input records
@@ -741,6 +741,41 @@ subset of records (a filtered or sliced `load()` result is fine) and returns
 turns ordered by `round` ascending;
 records without a usable `round` keep their input order and sort last (ties on
 the same `round` also keep their input relative order).
+
+### Projected identity and tool-call shape
+
+Every projected turn has a `key` derived as
+`${roundToken}#${recordIndex}:${entryIndex}`. `roundToken` is `String(round)`
+for a usable round and `?` otherwise; `recordIndex` is the record's zero-based
+position in the input array, and `entryIndex` is the turn's zero-based position
+among entries projected from that record. Every tool call has a `key` derived
+as `${turnKey}:t${toolCallIndex}`, where `toolCallIndex` is its zero-based
+position in that turn's `toolCalls` array. These keys are unique within one
+projection and deterministic when projecting the same input array again.
+They are not durable identifiers: filtering, slicing, or appending to the
+input array can change keys, and key stability across different input arrays
+is not guaranteed.
+
+`toolCalls` is an array of summaries with this public shape:
+`{ key, name, id?, argsSummary?, resultPreview?, isError?, executionStatus? }`.
+
+| Field | Meaning |
+|---|---|
+| `key` | Non-empty host-rendering identity for this tool call, derived from its turn key and position; it is not the provider's tool-use ID. |
+| `name` | Tool name as supplied by the provider, or an empty string when absent. |
+| `id?` | Provider-supplied `tool_use.id`, stringified when present and omitted when absent; it remains the result-association ID, while `blocks[].id` passes through unchanged. |
+| `argsSummary?` | Bounded, one-line summary of the tool input, omitted when there is nothing to summarize. |
+| `resultPreview?` | Bounded preview of the associated tool result, omitted when no non-empty result text is available. |
+| `isError?` | Whether the associated result explicitly marks an error; omitted when no error flag is present. |
+| `executionStatus?` | String execution status supplied by the associated result, omitted otherwise. |
+
+Within a record, results are indexed by `tool_use_id` in message order; when
+multiple `tool_result` blocks reuse an ID, the last result wins. Every tool
+call in that record with the repeated ID receives that same last result. This
+is the current behavior, not occurrence-order pairing; provider reuse of a
+tool-use ID is degenerate input. Results are matched within one record only,
+not across records. A missing provider ID does not prevent the tool call from
+having a display `key`.
 
 The result is not frozen or deep-copied. Each turn's `blocks` is a new array,
 but ordinary block elements are shared references to the input; changing one
@@ -769,8 +804,9 @@ records must remain unchanged.
 ### Stability promise
 
 The **projection output shape is the contract surface hosts may depend on long
-term**: `role`, `text`, `blocks`, `toolCalls`, `reasoning`, `folded`, `round`,
-`ts`, `meta`. `RoundRecord` internals are not. Field names, nesting, and
+term**: `key`, `role`, `text`, `blocks`, `toolCalls` (including each tool call's
+`key`), `reasoning`, `folded`, `round`, `ts`, `meta`. `RoundRecord` internals
+are not. Field names, nesting, and
 block shapes inside `messages`/`response`/`foldedPayload`/`runState` may change
 between minor versions as long as the projection keeps producing the same
 shape. Additions to projection entries and to `meta` are non-breaking; hosts must

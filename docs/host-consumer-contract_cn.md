@@ -569,12 +569,39 @@ transcript 就是模型上下文真相：`RoundRecord` 为回放保持字节保�
 import { projectTranscriptForDisplay } from "erix-agent";
 
 const turns = projectTranscriptForDisplay(await store.load(runId));
-// [{ role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
+// [{ key, role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
 ```
 
 它是纯函数：无 I/O、无模型调用、构造结果时不变更输入记录、无宿主特有假设。它接受任意记录
 子集（过滤或切片后的 `load()` 结果均可），按 `round` 升序返回轮次；没有可用 `round` 的记
 录保持输入顺序并排在最后（同 `round` 的记录也保持输入相对顺序）。
+
+### 投影身份与工具调用形状
+
+每条投影轮次都有一个 `key`，派生格式为 `${roundToken}#${recordIndex}:${entryIndex}`。
+`roundToken` 在 round 可用时为 `String(round)`，否则为 `?`；`recordIndex` 是记录在输入数组
+中的零起始位置，`entryIndex` 是该记录所投影出的轮次零起始位置。每个工具调用也有一个
+`key`，格式为 `${turnKey}:t${toolCallIndex}`，其中 `toolCallIndex` 是该轮 `toolCalls` 数组
+中的零起始位置。同一次投影内这些 key 唯一；使用同一输入数组再次投影时，它们具有确定性。
+它们不是持久标识：过滤、切片或追加输入数组都可能改变 key，不保证不同输入数组之间保持稳定。
+
+`toolCalls` 是摘要数组，其公开形状为：
+`{ key, name, id?, argsSummary?, resultPreview?, isError?, executionStatus? }`。
+
+| 字段 | 含义 |
+|---|---|
+| `key` | 宿主渲染用的非空工具调用身份，由所属轮次 key 与位置派生；它不是 provider 的工具调用 ID。 |
+| `name` | provider 提供的工具名；缺失时为空字符串。 |
+| `id?` | provider 提供的 `tool_use.id`，存在时转为字符串，缺失时省略；它仍用于结果关联，而 `blocks[].id` 原样透传。 |
+| `argsSummary?` | 工具输入的有界单行摘要；没有可摘要内容时省略。 |
+| `resultPreview?` | 关联工具结果的有界预览；没有非空结果文本时省略。 |
+| `isError?` | 关联结果是否明确标记为错误；没有错误标记时省略。 |
+| `executionStatus?` | 关联结果提供的字符串执行状态；否则省略。 |
+
+在单条记录内，结果按消息顺序以 `tool_use_id` 建索引；多个 `tool_result` 块复用同一 ID 时，
+后写入的结果覆盖先前结果。该记录中所有 ID 相同的工具调用都会拿到同一条最后结果。这是当前
+行为，不是按出现顺序配对；provider 复用工具调用 ID 属于退化输入。结果仅在单条记录内关联，
+不会跨记录匹配。provider 未提供 ID 时，工具调用仍有展示 `key`。
 
 投影结果不会被冻结或深拷贝。每轮的 `blocks` 是新数组，但普通块元素与输入共享引用；修改
 元素会改到输入记录。只有为移除折叠标记而拆分的块才会重建为 `{ ...block, text: head }`，
@@ -599,8 +626,9 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 
 ### 稳定性承诺
 
-**投影输出形状就是宿主可长期依赖的契约表面**：`role`、`text`、`blocks`、`toolCalls`、
-`reasoning`、`folded`、`round`、`ts`、`meta`。`RoundRecord` 内部细节不是。只要投影继续
+**投影输出形状就是宿主可长期依赖的契约表面**：`key`、`role`、`text`、`blocks`、
+`toolCalls`（包括每个工具调用的 `key`）、`reasoning`、`folded`、`round`、`ts`、`meta`。
+`RoundRecord` 内部细节不是。只要投影继续
 产出相同形状，`messages`/`response`/`foldedPayload`/`runState` 内部的字段名、嵌套与块形
 状可在次版本间变化。投影条目与 `meta` 的增量追加是非破坏性的；宿主必须忽略未知的
 `meta` 键，不得对键顺序做断言。投影形状的破坏性变更遵循常规版本化迁移策略，并在升级
