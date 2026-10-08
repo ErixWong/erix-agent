@@ -47,6 +47,8 @@ import {
   makeTermination,
   terminationDetailForError,
   terminationReasonForAction,
+  withErrorCode,
+  withTerminationPayload,
 } from "./termination.js";
 import { createErrorLedger } from "./error-ledger.js";
 import {
@@ -731,6 +733,14 @@ export async function runToolLoop(options) {
   const markRunState = async (state) => {
     await persist("markRunState", runId, state);
   };
+  // issue #180（方案 A）：抛错路径的终局载荷来源。fail() 在累计量声明之前也可能被调用
+  // （ctx 构建的早退 catch，那时 usage/finalText 还在 TDZ），所以这里用可变槽位持有读取器，
+  // 累计量就绪后由下方赋值接管；未接管前按「无用量 = 0」交付，保证字段形状恒成立。
+  let readLoopPayload = () => ({
+    usage: { input_tokens: 0, output_tokens: 0 },
+    rounds: 0,
+    finalText: "",
+  });
   const fail = async (error) => {
     let finalError = error;
     const originalPersistence = persistenceInfoFor(error);
@@ -760,7 +770,12 @@ export async function runToolLoop(options) {
         ? "failed"
         : "persistence_failed";
     currentTerminationReason = reason;
-    const termination = makeTermination(reason, terminationDetailForError(finalError));
+    // issue #176：reason === "failed" 时把根因分类（error.code，无则 unknown）一并交出，
+    // 宿主无需解析 detail 字符串就能按根因分流（#170 裁决表的数据面）。
+    const termination = withErrorCode(
+      makeTermination(reason, terminationDetailForError(finalError)),
+      finalError,
+    );
     if (persistenceFailure !== undefined) {
       Object.assign(termination, {
         operation: persistenceFailure.operation,
@@ -768,7 +783,15 @@ export async function runToolLoop(options) {
         sideEffect: persistenceFailure.sideEffect,
       });
     }
-    const annotated = annotateTermination(finalError, termination);
+    // issue #180（方案 A）：抛错也要带已累计量——「停止」的 run 在宿主账面上不再是 0。
+    // 语义不变：abort 仍然抛错，只是同一个错误对象上多了 usage/rounds/finalText，
+    // aborted 时 termination 里同步 {usage, rounds, partial:true}。
+    const loopPayload = readLoopPayload();
+    const annotated = annotateTermination(
+      finalError,
+      withTerminationPayload(termination, loopPayload),
+      loopPayload,
+    );
     throw annotated;
   };
   const metadata = modelMetadataFor({
@@ -1228,6 +1251,9 @@ export async function runToolLoop(options) {
     ? Math.max(0, maxTokenContinuations)
     : 3;
   let finalText = "";
+  // issue #180：累计量就绪，接管 fail() 的载荷读取器（闭包在调用时读实值，含逐轮累加的
+  // cacheRead/cacheWrite；usage 与 makeResult 交出的是同一个对象）。
+  readLoopPayload = () => ({ usage, rounds, finalText });
   let declaredFindings;
   let forcedFinal = false;
   let lastAssistantContent = [];

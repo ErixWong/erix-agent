@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { KitError } from "../src/providers/errors.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 test("returns end_turn for a normal model completion", async () => {
@@ -129,12 +130,69 @@ test("annotates aborted errors with an aborted termination", async () => {
 
   await assert.rejects(run, (error) => {
     assert.equal(error, reason);
+    // issue #180：抛错路径也带终局载荷；未产生用量时为 0，字段形状恒成立。
     assert.deepEqual(error.termination, {
       reason: "aborted",
       detail: "user stopped",
+      usage: { input_tokens: 0, output_tokens: 0 },
+      rounds: 0,
+      partial: true,
     });
+    assert.deepEqual(error.usage, { input_tokens: 0, output_tokens: 0 });
+    assert.equal(error.rounds, 0);
+    assert.equal(error.finalText, "");
     return true;
   });
+});
+
+test("carries accumulated usage and rounds on the thrown abort error (issue #180)", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const provider = {
+    protocol: "fake",
+    model: "fake-model",
+    async chat() {
+      calls += 1;
+      if (calls > 2) return new Promise(() => {}); // 第 3 轮永悬，由 abort 抢输
+      return {
+        content: [{ type: "tool_use", id: `work-${calls}`, name: "work", input: { n: calls } }],
+        stopReason: "tool_use",
+        usage: { input_tokens: 100 * calls, output_tokens: 10 * calls, cacheRead: 500, cacheWrite: 5 },
+      };
+    },
+  };
+
+  await assert.rejects(
+    runToolLoop({
+      provider,
+      initialUserMessage: "work",
+      executeTool: async () => "worked",
+      signal: controller.signal,
+      maxRounds: 10,
+      completion: false,
+      stallDetection: false,
+      // 第 2 轮完整产出（响应已计入 usage、轮号已自增）后置 abort：第 3 轮进 provider 即被打断
+      onEvent: (event) => {
+        if (event.type === "round_end" && event.round === 2) controller.abort(new Error("user stopped"));
+      },
+    }),
+    (error) => {
+      assert.equal(error.termination.reason, "aborted");
+      assert.ok(error.usage.input_tokens > 0, `usage.input_tokens: ${error.usage.input_tokens}`);
+      assert.equal(error.usage.input_tokens, 300);
+      assert.equal(error.usage.output_tokens, 30);
+      assert.equal(error.usage.cacheRead, 1000);
+      assert.equal(error.usage.cacheWrite, 10);
+      assert.equal(error.rounds, 2);
+      assert.equal(error.finalText, "");
+      // termination 与错误对象上的量同一个口径（同一个对象）
+      assert.equal(error.termination.usage, error.usage);
+      assert.equal(error.termination.rounds, 2);
+      assert.equal(error.termination.partial, true);
+      return true;
+    },
+  );
+  assert.equal(calls, 3);
 });
 
 test("annotates failed provider errors with a failed termination", async () => {
@@ -149,13 +207,62 @@ test("annotates failed provider errors with a failed termination", async () => {
     }),
     (error) => {
       assert.equal(error, failure);
+      // issue #176：无分类字段的错误回落 errorCode: "unknown"。
       assert.deepEqual(error.termination, {
         reason: "failed",
         detail: "provider failed",
+        errorCode: "unknown",
       });
+      // issue #180：failed 抛错同样带已累计量（本轮未产出任何用量）。
+      assert.deepEqual(error.usage, { input_tokens: 0, output_tokens: 0 });
+      assert.equal(error.rounds, 0);
+      assert.equal(error.finalText, "");
       return true;
     },
   );
+});
+
+test("carries the error code on a failed termination (issue #176)", async () => {
+  // retry 默认关闭（retry: false）：timeout KitError 直接以原始分类抛出。
+  const failure = new KitError("timeout", "upstream timed out after 30s");
+  const provider = createFakeProvider([{ throw: failure }]);
+
+  await assert.rejects(
+    runToolLoop({
+      provider,
+      initialUserMessage: "fail",
+      executeTool: async () => "unused",
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      // 宿主的裁决表（#170）无需解析 detail 字符串即可按根因分流。
+      assert.deepEqual(error.termination, {
+        reason: "failed",
+        detail: "upstream timed out after 30s",
+        errorCode: "timeout",
+      });
+      // 与既有的 error.code 保持一致（additive 字段不改变原始错误）。
+      assert.equal(error.code, "timeout");
+      return true;
+    },
+  );
+});
+
+test("keeps errorCode off non-failed terminations (issue #176 additive shape)", async () => {
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "hello",
+    executeTool: async () => "unused",
+  });
+
+  // 成功返回路径的终局与载荷形状不变：无 errorCode、无 partial。
+  assert.deepEqual(result.termination, { reason: "end_turn" });
+  assert.equal("errorCode" in result.termination, false);
+  assert.equal("partial" in result.termination, false);
+  assert.equal("usage" in result.termination, false);
+  assert.equal(result.usage.input_tokens, 0);
 });
 
 test("returns a truncated stall termination after the repeated-call limit", async () => {

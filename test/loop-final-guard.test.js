@@ -343,10 +343,16 @@ test("abort during finalGuard propagates the abort", async () => {
   controller.abort(reason);
   await assert.rejects(run, (error) => {
     assert.equal(error, reason);
+    // issue #180：abort 抛错携带终局载荷（本例脚本响应无 usage → 累计量仍为 0，轮号为 1）。
     assert.deepEqual(error.termination, {
       reason: "aborted",
       detail: "stopped",
+      usage: { input_tokens: 0, output_tokens: 0 },
+      rounds: 1,
+      partial: true,
     });
+    assert.equal(error.rounds, 1);
+    assert.equal(error.finalText, "done");
     return true;
   });
 });

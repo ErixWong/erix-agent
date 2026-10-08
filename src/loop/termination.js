@@ -37,15 +37,57 @@ export function terminationDetailForError(error) {
   return error?.message === undefined ? String(error) : String(error.message);
 }
 
-export function annotateTermination(error, termination) {
-  if (error && (typeof error === "object" || typeof error === "function")) {
-    error.termination = termination;
-    return error;
+// issue #176：`failed` 终局的根因分类。引擎不解释语义、不维护枚举，只把错误上已有的分类字段
+// （`KitError.code`：timeout / rate_limited / auth / server / checkpoint_failed / …）
+// 原样透出；没有分类字段时回落到 `unknown`，宿主因此总能在终局里读到该字段。
+export function terminationErrorCodeForError(error) {
+  const code = error?.code;
+  return typeof code === "string" && code.trim() !== ""
+    ? code
+    : "unknown";
+}
+
+// issue #176：additive 字段——只有 `reason === "failed"` 才挂 `errorCode`，
+// 其余 reason 的终局形状保持不变（宿主既有 deepEqual 断言不受影响）。
+export function withErrorCode(termination, error) {
+  if (termination?.reason !== "failed" || termination.errorCode !== undefined) {
+    return termination;
   }
-  const wrapped = new Error(String(error));
-  wrapped.cause = error;
-  wrapped.termination = termination;
-  return wrapped;
+  return { ...termination, errorCode: terminationErrorCodeForError(error) };
+}
+
+// issue #180（方案 A）：抛错路径同样携带终局载荷。`aborted` 的 run 真花了 token，
+// 宿主却只能在 catch 里写 0，因此把已累计量同步进 termination（additive 字段，
+// 「abort = 抛错」语义不变）。
+export function withTerminationPayload(termination, payload) {
+  if (termination?.reason !== "aborted" || termination.usage !== undefined) {
+    return termination;
+  }
+  return {
+    ...termination,
+    usage: payload.usage,
+    rounds: payload.rounds,
+    partial: true,
+  };
+}
+
+export function annotateTermination(error, termination, payload) {
+  const target = error && (typeof error === "object" || typeof error === "function")
+    ? error
+    : (() => {
+        const wrapped = new Error(String(error));
+        wrapped.cause = error;
+        return wrapped;
+      })();
+  target.termination = termination;
+  // issue #180（方案 A）：与 `makeResult` 同一对象口径的 usage/rounds/finalText 挂到
+  // 同一个错误对象上（finalText 为已产出的部分终稿，无则为空串）。
+  if (payload !== undefined) {
+    target.usage = payload.usage;
+    target.rounds = payload.rounds;
+    target.finalText = payload.finalText ?? "";
+  }
+  return target;
 }
 
 export function terminationReasonForAction(action, continuationExhausted) {
@@ -212,11 +254,13 @@ export function createTerminationManager(ctx) {
     emitEvent({ type: "forced_final", round: ctx.rounds, reason });
   };
 
-  const makeResult = (reason, detail) => {
-    const termination = {
+  const makeResult = (reason, detail, error) => {
+    // issue #176：成功返回路径上 `failed` 目前不是可达 reason（失败统一走 fail() 抛错），
+    // 此处只保持与抛错路径同一口径的字段规则，避免两条终路形状分叉。
+    const termination = withErrorCode({
       ...makeTermination(reason, detail),
       ...(ctx.forcedFinal ? { forcedFinal: true } : {}),
-    };
+    }, error);
     return {
       finalText: ctx.finalText,
       messages: ctx.messages,
@@ -237,7 +281,7 @@ export function createTerminationManager(ctx) {
     };
   };
 
-  const finish = async (reason, detail) => {
+  const finish = async (reason, detail, error) => {
     ctx.currentTerminationReason = reason;
     const refreshRunState = ctx.refreshRunState;
     try {
@@ -249,7 +293,7 @@ export function createTerminationManager(ctx) {
           : "succeeded";
       const markRunState = ctx.markRunState;
       await markRunState(state);
-      return makeResult(reason, detail);
+      return makeResult(reason, detail, error);
     } catch (error) {
       return ctx.fail(error);
     }
