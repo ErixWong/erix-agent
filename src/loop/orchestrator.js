@@ -854,8 +854,21 @@ export async function runToolLoop(options) {
   }
   if (budgetTokens !== undefined) validateBudget(budgetTokens);
   // issue #182：预算推不出来且原因确实是元数据不齐（宿主自己给了 context.budgetTokens 时
-  // 压缩仍然启用，不该告警）——发一次性诊断事件。
-  if (budgetTokens === undefined && !budgetMetadataComplete) notifyModelMetadataMissing();
+  // 压缩仍然启用，不该告警）——发一次性诊断事件。宿主回调在启动期抛错时，按 fail() 尾部
+  // 同一口径直接注解后抛出（不能直接调 fail：currentTerminationReason 尚未初始化，TDZ）：
+  // 保证抛出的错误仍带 termination/{usage,rounds,finalText}（#180 载荷恒成立；#173 现状：onEvent 抛错 fatal）。
+  if (budgetTokens === undefined && !budgetMetadataComplete) {
+    try {
+      notifyModelMetadataMissing();
+    } catch (hostError) {
+      const startupPayload = readLoopPayload();
+      const startupTermination = withTerminationPayload(
+        withErrorCode(makeTermination("failed", terminationDetailForError(hostError)), hostError),
+        startupPayload,
+      );
+      throw annotateTermination(hostError, startupTermination, startupPayload);
+    }
+  }
   // 单轮聚合输出预算（issue #32 #2）：口径统一写在 src/loop/aggregate-budget.js 顶部（估算 token、
   // 计入 stub 开销与 framing）。预算基准**复用**上面算出的 budgetTokens，不新引 contextWindowTokens
   // 第二套口径；budgetTokens 不存在（宿主无窗口配置）或 outputHygiene 被 opt-out 时聚合层整体关闭。

@@ -88,8 +88,11 @@ test("status quo #173: a throwing onEvent aborts the run with a failed terminati
     },
   );
 
-  // 事件流就地断裂：round_start 之后的 attempt/tool_use/tool_result/round_end 都没发过
-  assert.deepEqual(events, ["round_start"]);
+  // 事件流就地断裂：第一个事件之后没有任何后续（attempt/tool_use/tool_result/round_end 都没发过）
+  // 形状注记（#182，2026-10-09）：本文件装配不带预算元数据，启动期现在会先发一条
+  // model_metadata_missing（#182），它取代 round_start 成为第一个触发宿主回调的事件；
+  // 致命性语义不变（在哪个事件上抛都同样杀 run 并带完整终局注解）。
+  assert.deepEqual(events, ["model_metadata_missing"]);
   // run 在任何 provider 调用之前就死了（第一次 round_start 早于第一次请求）
   assert.equal(provider.requests.length, 0);
   // 且完全不走 onObserverError 记账——宿主只拿到一个 rejected promise
