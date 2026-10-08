@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { boundRunState } from "../run-state.js";
 
@@ -64,6 +64,21 @@ function recordKey(runId, record) {
   return record?.dedupKey
     ?? record?.roundKey
     ?? `${String(runId)}:round:${String(record?.round)}`;
+}
+
+// issue #160：(size, mtimeMs) 新鲜度戳。文件缺失时 size/mtimeMs 均为 null。
+async function statStamp(path) {
+  try {
+    const { size, mtimeMs } = await stat(path);
+    return { size, mtimeMs };
+  } catch (error) {
+    if (error?.code === "ENOENT") return { size: null, mtimeMs: null };
+    throw error;
+  }
+}
+
+function stampsMatch(a, b) {
+  return a.size === b.size && a.mtimeMs === b.mtimeMs;
 }
 
 async function* readRecords(path) {
@@ -142,29 +157,73 @@ async function repairTranscriptTail(path) {
   }
 }
 
-async function appendRecord(path, runId, record) {
+/**
+ * issue #160：appendRecord 的幂等判据取 key set——优先命中进程内缓存（新鲜度以
+ * 修复尾部后的 (size, mtimeMs) 戳一致为准），不一致时流式重建（readRecords，保持
+ * fail-closed：中间损坏行照旧抛错）。仅当扫描前后戳一致才把重建结果落缓存；
+ * 0 字节文件无记录，直接视为可信空集。
+ *
+ * @param {string} path
+ * @param {string} runId
+ * @param {{size:number|null, mtimeMs:number|null}} stamp 修复尾部后的当前戳
+ * @param {Map<string, {keys:Set<string>, size:number|null, mtimeMs:number|null}>} dedupCaches
+ */
+async function dedupKeysFor(path, runId, stamp, dedupCaches) {
+  const cacheKey = safeRunId(runId);
+  const cached = dedupCaches.get(cacheKey);
+  if (cached && stampsMatch(cached, stamp)) return cached;
+
+  // 空文件无记录可扫——免读全文，直接构造可信空集并落缓存
+  if (stamp.size === 0) {
+    const entry = { keys: new Set(), size: 0, mtimeMs: stamp.mtimeMs, transient: false };
+    dedupCaches.set(cacheKey, entry);
+    return entry;
+  }
+
+  const keys = new Set();
+  try {
+    // fail-closed：中间损坏行抛错（与旧全量 parse 语义一致），失败不落缓存
+    for await (const existing of readRecords(path)) {
+      if (existing !== null) keys.add(recordKey(runId, existing));
+    }
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(`Transcript contains a malformed line: ${path}`, { cause: error });
+    }
+    throw error;
+  }
+  const afterScan = await statStamp(path);
+  if (!stampsMatch(stamp, afterScan)) {
+    // 扫描期间被外部改动——本次判定仍用刚扫出的集合（与旧 readFile 同等的瞬时快照），
+    // 但不落缓存，避免把不新鲜的 key set 当成有效缓存
+    return { keys, size: null, mtimeMs: null, transient: true };
+  }
+  const entry = { keys, size: afterScan.size, mtimeMs: afterScan.mtimeMs, transient: false };
+  dedupCaches.set(cacheKey, entry);
+  return entry;
+}
+
+async function appendRecord(path, runId, record, dedupCaches) {
   const handle = await open(path, "a+");
   try {
     await repairTrailingFragment(path, handle);
-    // 修复尾部后重新读全文做 dedup（防无 LF 尾部绕过幂等检查——审计发现）
-    // 注意：a+ 模式 handle 读位置在末尾，需用独立只读通道读全文
-    // malformed 行不吞（fail-closed，与原 loadRecords 一致）——吞错会污染损坏 transcript
-    const fileContents = await readFile(path, "utf8");
-    const records = [];
-    for (const line of fileContents.split("\n")) {
-      if (line.trim() === "") continue;
-      let parsed;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        throw new Error(`Transcript contains a malformed line: ${path}`);
-      }
-      if (parsed !== null) records.push(parsed);
-    }
-    if (records.some((existing) => recordKey(runId, existing) === recordKey(runId, record))) {
+    // 幂等判定（防无 LF 尾部绕过幂等检查——审计发现）：issue #160 起优先用进程内
+    // dedup key 缓存（修复尾部后 stat 戳一致即命中，O(1)，不再全文读）；不一致时
+    // 流式重建（见 dedupKeysFor）
+    const stamp = await statStamp(path);
+    const entry = await dedupKeysFor(path, runId, stamp, dedupCaches);
+    const key = recordKey(runId, record);
+    if (entry.keys.has(key)) {
       return false;
     }
     await handle.write(`${JSON.stringify(record)}\n`, null, "utf8");
+    // 写后：新 key 入 set、刷新戳（仅当缓存条目可信；transient 条目不落缓存）
+    if (!entry.transient) {
+      if (record !== null && record !== undefined) entry.keys.add(key);
+      const afterWrite = await statStamp(path);
+      entry.size = afterWrite.size;
+      entry.mtimeMs = afterWrite.mtimeMs;
+    }
     return true;
   } finally {
     await handle.close();
@@ -197,12 +256,27 @@ async function appendRecord(path, runId, record) {
  */
 export function createFileTranscriptStore({ dir }) {
   const appendLocks = new Map();
+  // issue #160：进程内 dedup key 缓存（safeRunId → { keys, size, mtimeMs }）。
+  // keys 恒等于文件里全部记录的 key（与全量 parse 结果相同）→ 幂等语义逐字不变；
+  // 新鲜度由 (size, mtimeMs) 戳校验，外部改动/跨实例写会因戳不一致触发流式重建。
+  const dedupCaches = new Map();
   const loadRecords = async (runId) => {
     const path = transcriptPath(dir, runId);
     await repairTranscriptTail(path);
+    // 顺手填充 dedup 缓存（issue #160）：本次扫描本来就要全量读，把 key 收进集合，
+    // 扫描前后各 stat 一次，仅当戳一致才落缓存（防止"扫到一半被外部改动"的集合被当成新鲜）
+    const stampBefore = await statStamp(path);
     const records = [];
+    const keys = new Set();
     for await (const record of readRecords(path)) {
       records.push(record);
+      if (record !== null) keys.add(recordKey(runId, record));
+    }
+    const stampAfter = await statStamp(path);
+    if (stampsMatch(stampBefore, stampAfter)) {
+      dedupCaches.set(safeRunId(runId), {
+        keys, size: stampAfter.size, mtimeMs: stampAfter.mtimeMs, transient: false,
+      });
     }
     return records;
   };
@@ -237,8 +311,9 @@ export function createFileTranscriptStore({ dir }) {
     async appendRound(runId, record) {
       await withAppendLock(runId, async () => {
         await mkdir(dir, { recursive: true });
-        // dedup 在 appendRecord 内修复尾部后重读判断（防无 LF 尾部绕过幂等）
-        await appendRecord(transcriptPath(dir, runId), runId, record);
+        // dedup 在 appendRecord 内修复尾部后判断（防无 LF 尾部绕过幂等）；issue #160：
+        // 判定优先走进程内 key set 缓存（(size, mtimeMs) 校验），未命中才流式重建
+        await appendRecord(transcriptPath(dir, runId), runId, record, dedupCaches);
       });
     },
 
