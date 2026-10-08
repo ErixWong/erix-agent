@@ -81,7 +81,8 @@ await provider.chat({ messages });
   字段同名（例如经 `providerOptions` 带进来的）同样丢弃。
 - 每一个被丢弃的字段都会通过 `console.warn` 向 stderr 告警，只带字段名（不带值），且每个
   provider 实例每个字段只说一次：保留字段在构造时告警，逐请求冲突在首次出现时告警。
-- 两个注入口都在构造时取快照：事后改宿主自己的对象不会改变线上行为。宿主本来就是按 run
+- 两个注入口都在构造时取**顶层**快照：事后改宿主自己的对象不会改变线上行为；但
+  **`extraBody` 里的嵌套对象仍按引用共享**——需要稳定的值请自行深拷贝/冻结。宿主本来就是按 run
   构造 provider，这也正是设计粒度。
 - 两个参数都不传时，发出的请求头与请求体与之前版本**逐字节一致**。`providerOptions` 仍是
   payload 逃生口，对核心字段依旧**静默**丢弃；`extraBody` 是会告警的那条通道。
@@ -306,7 +307,7 @@ additive：既有字段不变形状、不变值、不变语义，忽略它们的
 | 字段 | 出现在 | 契约 |
 |---|---|---|
 | `termination.errorCode` | `result.termination` / `error.termination` 且 `reason === "failed"` 时 | 失败的根因分类。引擎只透传错误**已有**的分类字段（`KitError.code`，如 `timeout`、`rate_limited`、`auth`、`server`、`checkpoint_failed`），没带分类时回落 `"unknown"`——绝不自己发明或重新归因。其他 reason 不得多出该字段。宿主裁决表因此可以直接按 `errorCode` 分流，而不是解析 `termination.detail` 字符串。 |
-| `error.usage`、`error.rounds`、`error.finalText` | `runToolLoop` 抛出的每一个错误 | 抛错时刻的累计用量——就是 `result.usage` 本会携带的**同一个对象**（含 `cacheRead`/`cacheWrite`）——外加轮号与已产出的部分终稿（无产出时为 `""`）。尚未产生任何累计时，这些字段是**零值而不是缺字段**：`{ input_tokens: 0, output_tokens: 0 }`、`0`、`""`。 |
+| `error.usage`、`error.rounds`、`error.finalText` | 运行生命周期开始之后抛出的每一个错误（终局 `fail()` 路径与启动期诊断路径） | 抛错时刻的累计用量——就是 `result.usage` 本会携带的**同一个对象**（含 `cacheRead`/`cacheWrite`）——外加轮号与已产出的部分终稿（无产出时为 `""`）。尚未产生任何累计时，这些字段是**零值而不是缺字段**：`{ input_tokens: 0, output_tokens: 0 }`、`0`、`""`。运行开始前的校验错误（未知/非法选项 `TypeError`、装配失败、`modelConfig.resolve` 拒绝）时尚不存在 run，不携带这些字段。 |
 | `termination.usage`、`termination.rounds`、`termination.partial` | `error.termination` 且 `reason === "aborted"` 时 | 与错误对象上的量同口径（`termination.usage === error.usage`），`partial: true` 表示这是部分稿而非终稿。 |
 
 abort 载荷的存在理由：用户点「停止」的 run 真的花了 token。引擎此前的行为是抛出异常而

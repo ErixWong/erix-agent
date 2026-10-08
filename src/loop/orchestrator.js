@@ -939,9 +939,12 @@ export async function runToolLoop(options) {
     try {
       notifyModelMetadataMissing();
     } catch (hostError) {
+      // 与 fail() 同口径：abort 信号优先于 failed（独立验收 #182 发现的边界：启动期
+      // 同时 abort + onEvent 抛错时，fail() 会判 aborted，这里不得硬编 failed）。
+      const startupReason = signal?.aborted ? "aborted" : "failed";
       const startupPayload = readLoopPayload();
       const startupTermination = withTerminationPayload(
-        withErrorCode(makeTermination("failed", terminationDetailForError(hostError)), hostError),
+        withErrorCode(makeTermination(startupReason, terminationDetailForError(hostError)), hostError),
         startupPayload,
       );
       throw annotateTermination(hostError, startupTermination, startupPayload);

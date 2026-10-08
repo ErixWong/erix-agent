@@ -464,3 +464,13 @@ test("http-shared: resolveExtraBody 构造期就对保留键告警，值为 unde
   );
   assert.deepEqual(untouched, [], "值为 undefined 的保留键不构成冲突");
 });
+
+test("http-shared: defaultHeaders 名为 __proto__ 时仍成为自有属性（独立验收发现：直接赋值命中原型 setter 会静默丢 header）", () => {
+  // Object.fromEntries 产出真实自有键（字面量 __proto__: v 会命中原型语义，非自有键，不算此场景）
+  const hostHeaders = Object.fromEntries([["__proto__", "attr-value"], ["X-Run", "r-1"]]);
+  const out = resolveRequestHeaders({ Authorization: "Bearer k" }, hostHeaders);
+  assert.equal(Object.getPrototypeOf(out), Object.prototype, "原型不得被宿主值改写");
+  assert.ok(Object.prototype.hasOwnProperty.call(out, "__proto__"), "__proto__ header 必须是自有属性");
+  assert.equal(Object.getOwnPropertyDescriptor(out, "__proto__").value, "attr-value");
+  assert.equal(out["X-Run"], "r-1");
+});

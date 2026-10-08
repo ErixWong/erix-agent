@@ -272,3 +272,27 @@ test("the diagnostic fires before the first provider call, so a host can bail ou
   assert.equal(seen[0], EVENT_TYPE);
   assert.equal(provider.requests.length, 0, "诊断事件必须在首次 provider 调用前送达");
 });
+
+test("startup diagnostic host-callback throw with aborted signal reports aborted (issue #182/#180 edge)", async () => {
+  // 独立验收发现：启动期 onEvent 抛错同时 abort 信号已置位时，终局 reason 必须与
+  // fail() 同口径判 aborted（而不是硬编 failed），且载荷照常携带。
+  const controller = new AbortController();
+  await assert.rejects(
+    runToolLoop({
+      provider: textProvider(),
+      initialUserMessage: "go",
+      executeTool: async () => "ok",
+      persistence: "none",
+      completion: false,
+      signal: controller.signal,
+      onEvent: () => { controller.abort(); throw new Error("host onEvent blew up"); },
+    }),
+    (error) => {
+      assert.equal(error.termination.reason, "aborted");
+      assert.ok(error.usage && typeof error.rounds === "number");
+      assert.equal(error.termination.usage, error.usage);
+      assert.equal(error.termination.partial, true);
+      return true;
+    },
+  );
+});

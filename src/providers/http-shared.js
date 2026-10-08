@@ -142,7 +142,14 @@ export function resolveRequestHeaders(engineHeaders = {}, defaultHeaders) {
       );
     }
     if (value === undefined || value === null) continue;
-    headers[name] = headerValue(name, value);
+    // defineProperty 而非直接赋值：名字为 `__proto__` 时 `headers[name] = v` 会命中
+    // 原型 setter 静默丢弃（独立验收 #181 发现），必须建自有属性。
+    Object.defineProperty(headers, name, {
+      value: headerValue(name, value),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   }
   return headers;
 }

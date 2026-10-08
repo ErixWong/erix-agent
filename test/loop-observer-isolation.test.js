@@ -76,7 +76,7 @@ test("status quo #173: a throwing onEvent aborts the run with a failed terminati
       provider,
       onEvent: (event) => {
         events.push(event.type);
-        throw boom; // 第一个事件（round_start）就抛
+        throw boom; // 第一个事件（无元数据装配下为 model_metadata_missing，#182）就抛
       },
       onObserverError: (error) => observerErrors.push(error),
     }),

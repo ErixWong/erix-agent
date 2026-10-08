@@ -9,6 +9,20 @@
 - `termination.errorCode`（issue #176，additive / semver minor）：`reason === "failed"` 的终局（`result.termination` 与抛出的 `error.termination`）现在携带根因分类——引擎只透传错误已有的分类字段（`KitError.code`，如 `timeout`/`rate_limited`/`auth`/`server`/`checkpoint_failed`），未携带时回落 `"unknown"`，绝不自己归因；其他 reason 不带该字段。宿主终止裁决表（#170）可从此按 `errorCode` 分流，不再解析 `termination.detail` 字符串。
 - abort/failed 抛错携带终局载荷（issue #180，方案 A，additive / semver minor）：`runToolLoop` 抛出的错误现在挂 `error.usage`（与 `result.usage` 同一个对象，含 `cacheRead`/`cacheWrite`）、`error.rounds`、`error.finalText`（无产出时为 `""`）；`reason === "aborted"` 时 `termination` 同步 `{usage, rounds, partial:true}`。无累计量时为零值而非缺字段。「abort = 抛错」语义不变，宿主不再需要为用户点「停止」的 run 写死 `usage: 0`。新增 `terminationPayloadContract` 契约套件（`erix-agent/contract-tests`）。
 - `runToolLoop` 新增一次性诊断事件 `model_metadata_missing`（issue #182，additive 事件类型 = semver minor）：当 `modelConfig`/`modelMetadata`/`model`/`provider`/`context` 里探不到 `contextWindowTokens` + `maxOutputTokens` 完整组合、且宿主也没直接给 `context.budgetTokens` 时（即 `budgetTokens` 推不出来），每个 run 恰好发一条 `{type, runId, detail}`：上下文压缩完全不跑、单轮聚合输出预算（#120）保持关闭、输出截断上限退回 4096（已知窗口或显式 `outputHygiene.limit` 已定值时 `detail` 改报实际解析值）。形状与一次性去重风格照抄 `persistence_capability_degraded`（同样绕开 `emitEvent` 直调 `onEvent?.()`，因为事件在启动期触发）。宿主自此可在验收/CI 里直接断言「我的装配是否把压缩关掉了」（真机 92 轮 run compaction=0 的根因）。零配置宿主行为不变（只是多一条事件）；`docs/host-consumer-contract.md` 与中文版同步。
+- provider 新增 `defaultHeaders` 与 `extraBody` 注入口（issue #181，additive / semver minor）：宿主无需包装 `fetchImpl` 即可给请求打 per-run/per-session 归因标识（LiteLLM spend log 可直接对 `run_id`）。红线：引擎自有 header（openai 侧 `Authorization`/`Content-Type`，anthropic 侧 `x-api-key`/`anthropic-version`）不可覆盖，宿主同名（大小写不敏感）构造期抛 `TypeError`；告警与错误文案只带字段名不带值；`extraBody` 与引擎字段冲突时引擎优先 + `console.warn`。两参数都不传时请求头/体与旧版逐字节一致。`__proto__` 作为 header 名同样生效（自有属性赋值，不被原型 setter 静默丢）。
+
+### Changed
+
+- token 估算热路径优化（issue #172，零行为变化）：`estimateTokens` 加 ASCII 快路径（实测 5.3×，结果**逐字节同值**，仓库内复刻旧实现 80k+ 码点/fuzz 比对）；`compactBeforeRound` 删 3 对纯重复全量估算（每轮 8→5 次）；`trimGovernorHistory` O(n²) 线性化（resume 灌历史场景实测 391×）。每轮估算 CPU 实测 302ms → 37ms（−87.8%）。
+
+### Fixed
+
+- 启动期 `model_metadata_missing` 诊断事件的宿主回调抛错改走与 `fail()` 同口径的终局注解（#182/#180 合流处独立验收发现：原先会抛出不带 `termination`/载荷的裸错误；同时 abort 信号优先于 `failed` 判定，与 `fail()` 一致）。
+- 契约文档措辞收窄两处（独立验收发现）：#180 载荷承诺限定「运行生命周期开始之后抛出的错误」（运行前选项校验/装配错误本就不携带）；#181 「构造时快照」明确为**顶层**快照（`extraBody` 嵌套对象按引用共享）。
+
+### Documentation
+
+- 0.17.0 升级指南 §2 参考 SQL 改为与契约正文/运行时同一 nullish 判据（issue #171，宿主 touwaka 报告：旧 `OR` sketch 在 `dedupKey`/`roundKey` 并存且不等时多命中，照抄会静默丢一轮）；契约新增 `loadMaxRound` 非空 store 返 `≥0` 边界、`__` 宿主保留记账命名空间声明；契约套件新增 nullish 判据分叉 fixture（宿主写成 `OR` 会红）。
 
 ## [0.17.0] - 2026-10-08
 

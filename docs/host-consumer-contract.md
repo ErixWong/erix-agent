@@ -96,8 +96,10 @@ await provider.chat({ messages });
 - Each dropped field is reported on stderr with `console.warn`, carrying the field
   name only (never the value), once per provider instance per field: reserved-key
   conflicts at construction, per-request conflicts at first occurrence.
-- Both injection points are snapshotted at construction; mutating the host object
-  afterwards does not change what goes on the wire. Hosts construct a provider per
+- Both injection points take a **top-level** snapshot at construction; mutating the
+  host object afterwards does not change what goes on the wire, but **nested objects
+  inside `extraBody` stay shared by reference** — deep-freeze or deep-copy any value
+  that must be stable. Hosts construct a provider per
   run already, which is the intended granularity.
 - With neither option supplied, outgoing headers and bodies are byte-identical to
   previous releases. `providerOptions` stays the payload escape hatch and keeps
@@ -399,7 +401,7 @@ shape, value, or meaning, and a host that ignores them behaves exactly as before
 | Field | Present on | Contract |
 |---|---|---|
 | `termination.errorCode` | `result.termination` / `error.termination` when `reason === "failed"` | Root-cause class of the failure. The engine passes through the classification the error already carries (`KitError.code`, e.g. `timeout`, `rate_limited`, `auth`, `server`, `checkpoint_failed`) and falls back to `"unknown"` when the error carries none — it never invents or re-derives a code. No other reason gains the field. A host decision table can therefore branch on `errorCode` instead of parsing `termination.detail`. |
-| `error.usage`, `error.rounds`, `error.finalText` | every error thrown by `runToolLoop` | The accumulated usage at the throw point — literally the same object `result.usage` would have carried, including `cacheRead`/`cacheWrite` — plus the round counter and the partial final text (`""` when nothing was produced). When nothing had accumulated these are **zero values, not absent fields**: `{ input_tokens: 0, output_tokens: 0 }`, `0`, `""`. |
+| `error.usage`, `error.rounds`, `error.finalText` | every error thrown after the run lifecycle has begun (the terminal `fail()` path and the startup-diagnostic path) | The accumulated usage at the throw point — literally the same object `result.usage` would have carried, including `cacheRead`/`cacheWrite` — plus the round counter and the partial final text (`""` when nothing was produced). When nothing had accumulated these are **zero values, not absent fields**: `{ input_tokens: 0, output_tokens: 0 }`, `0`, `""`. Pre-execution validation errors (unknown/malformed option `TypeError`s, assembly failures, `modelConfig.resolve` rejections) are thrown before a run exists and carry none of these fields. |
 | `termination.usage`, `termination.rounds`, `termination.partial` | `error.termination` when `reason === "aborted"` | The same values as on the error object (`termination.usage === error.usage`), with `partial: true` marking the text as a partial draft rather than a final answer. |
 
 The abort payload exists because a run the user stopped really did spend tokens.
