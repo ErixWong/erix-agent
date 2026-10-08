@@ -681,6 +681,45 @@ with `summaryRole: "system"`). Its fixed sections, in order:
    characters. In `fold-llm` the section is appended after the LLM summary
    (and after size enforcement), so `maxSummaryTokens` cannot truncate it.
 
+## Store fidelity requirements
+
+A host `TranscriptStore` must preserve the complete `RoundRecord` and complete
+message objects, including fields it does not understand. It must not rebuild
+records or messages from a field whitelist: required fields evolve with the
+implementation, and dropping an unknown field can change engine behavior.
+
+There are two separate fidelity requirements:
+
+- **Display-projection fidelity** means retaining the fields that
+  `projectTranscriptForDisplay` reads to produce correct turns, labels, tool
+  previews, folded summaries, ordering, and timestamps.
+- **Resume/model-context fidelity** means `load()` reconstructs the messages,
+  their content blocks, metadata, order, and unknown fields so model replay and
+  judge filtering see the same context. A plausible display projection does
+  not prove resume fidelity.
+
+The minimum fields relevant to projection and judge correctness include:
+
+| Field | If it is lost |
+|---|---|
+| `messages[].meta.source` | Synthetic classification falls back to text-prefix heuristics; an injected judge direction hint can appear to be a real user message and can escape the judge's `judge-control` exclusion after resume. The current text heuristic does not recognize its `【Judge 评审意见】` prefix. Absence on an ordinary historical message is not evidence of store loss. |
+| `messages[].content[type="tool_use"].id` and `messages[].content[type="tool_result"].tool_use_id` | Tool uses cannot be paired with their results, so the projected tool-result preview is missing. |
+| `response.content`, including reasoning blocks | Assistant output, tool calls, or reasoning can disappear from the projection and from the reconstructed model context. |
+| `folded` | The folded-round banner and folded-segment treatment are omitted. |
+| `foldedRoundRange` | The banner loses the exact collapsed round range. |
+| `foldedPayload` | The archived folded messages are unavailable for recovery and anchoring. |
+| `navigationRecord` | Fold navigation and links to archived artifacts are missing. |
+| `summary` | The composed fold summary loses its round action/note fallback. |
+| `round` | Turns lose their round number and cannot be ordered by the recorded round. |
+| `ts` | Projected turns lose their timestamp. |
+
+A lossy store currently does not cause an error. The projection silently falls
+back to text-prefix sniffing for some synthetic messages, `textPreview` when a
+response is absent, or `summary` when a marked fold summary is unavailable;
+these fallbacks do not detect or report store loss. Hosts are responsible for
+proving fidelity, for example by running and extending the assertions in
+`test/contract/transcript-store.js` for their own schema and unknown fields.
+
 ## Host display projection
 
 The transcript is the model-context truth: `RoundRecord` is byte-faithful for
@@ -696,16 +735,22 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 // [{ role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
 ```
 
-It is a pure function: no I/O, no model calls, no mutation of the input records,
-no host-specific assumptions. It accepts any subset of records (a filtered or
-sliced `load()` result is fine) and returns turns ordered by `round` ascending;
+It is a pure function: no I/O, no model calls, no mutation of the input records
+while producing the result, and no host-specific assumptions. It accepts any
+subset of records (a filtered or sliced `load()` result is fine) and returns
+turns ordered by `round` ascending;
 records without a usable `round` keep their input order and sort last (ties on
 the same `round` also keep their input relative order).
 
-The returned value is a **read-only view**: the `blocks`, `usage`,
-`navigationRecord`, and similar objects inside each turn are shared references
-to the input records, not copies. Hosts must treat the projection result as
-immutable data — mutating it mutates the transcript records themselves.
+The result is not frozen or deep-copied. Each turn's `blocks` is a new array,
+but ordinary block elements are shared references to the input; changing one
+changes the input record. Only a block split to remove a fold marker is rebuilt
+as `{ ...block, text: head }`, so changing that block does not change the input
+block (nested objects on it remain shallow-shared). Each turn's `meta` object
+is new, while nested values such as `meta.usage`, `meta.navigationRecord`,
+`meta.foldedRoundRange`, `meta.summary`, `meta.judge`, and `meta.wrapup` are
+shared references when present. Treat shared values as immutable if the source
+records must remain unchanged.
 
 ### Which `RoundRecord` fields a host may render
 
@@ -717,6 +762,7 @@ immutable data — mutating it mutates the transcript records themselves.
 | `foldedPayload` | display (bounded) | The raw messages removed by folding. It is a large archive; do **not** dump it into the chat view. The projection reports only `meta.foldedPayloadMessages` (a count). |
 | `navigationRecord` | display | Bounded archive pointers `{ roundFrom, roundTo, artifacts[], truncated? }` for recovered tool outputs. Render as navigation links/pointers, never as message content. |
 | `messages` | model | The exact model-context slice, including `tool_use`/`tool_result` blocks and fold placeholders. Do not render it raw; the projection extracts displayable text and tool-call summaries from it. |
+| `messages[].meta` | model / engine | Preserve this object, including unknown keys. `meta.source` is an engine-reserved marker used by projection classification and judge visibility; do not reuse it for host-owned source information. |
 | `response` | model | Full provider response content (`text`, `reasoning`, `tool_use` blocks), `stopReason`, `usage`. Display fields are derived from it; its block shape is model-facing and may change. |
 | `l0facts`, `runState`, `compactionStats`, `judge`, `wrapup`, `toolOutputs`, `dedupKey`, `roundKey` | model / engine internals | Facts for the governor, resume, and diagnostics. Only `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` are copied into the projection's `meta` for optional labelling; the rest is not part of the display surface. |
 
@@ -776,6 +822,15 @@ labels them:
   (round-judge direction hints and continuation nudges), `audit-intercept`
   (repeated-command intercept text), `system`, `fold-summary` (the fold banner),
   `wrapup`, or `textPreview` (legacy preview fallback for the assistant turn).
+- `message.meta.source` is engine-reserved: the projection treats **any
+  non-empty string** value as synthetic. Hosts must not store ordinary source
+  information there, because that would misclassify a real message.
+- `meta.sourceInferred: true` is added only when the projection classifies a
+  synthetic message by matching a configured text prefix. It is an additive
+  `meta` field (hosts must ignore unknown `meta` keys) that a UI may optionally
+  show as "classification inferred heuristically". It is not a detector for a
+  lossy store. It is absent when `message.meta.source` supplies the
+  classification and when `role: "system"` alone makes the message synthetic.
 - Round-level judgements appear in `meta.judge` and `meta.wrapup` when present,
   so a host can label a round without parsing prose.
 

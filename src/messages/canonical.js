@@ -27,6 +27,11 @@ import {
  * @property {boolean} [cacheBoundary] Mark this message's final content block as
  * a stable prefix boundary. Provider adapters may use this hint differently;
  * OpenAI ignores it because its cache is automatic.
+ * @property {{source?:string, [key:string]:any}} [meta] Message metadata.
+ *   `meta.source` is reserved by the engine (for example, `judge-control`):
+ *   display projection classification and judge visibility depend on it.
+ *   Host stores must preserve it unchanged and must not use it for host-owned
+ *   source information.
  */
 
 /**

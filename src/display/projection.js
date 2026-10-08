@@ -182,7 +182,7 @@ function syntheticInfo(message, text) {
   }
   for (const { prefix, source } of SYNTHETIC_TEXT_SOURCES) {
     if (typeof text === "string" && text.startsWith(prefix)) {
-      return { synthetic: true, source };
+      return { synthetic: true, source, sourceInferred: true };
     }
   }
   if (message?.role === "system") return { synthetic: true, source: "system" };
@@ -349,6 +349,7 @@ function projectRecord(record) {
       ...base,
       meta: recordMeta(record, {
         synthetic: synthetic.synthetic,
+        ...(synthetic.sourceInferred === true ? { sourceInferred: true } : {}),
         ...(typeof messageSource === "string" && messageSource !== ""
           ? { source: messageSource }
           : (synthetic.source === undefined ? {} : { source: synthetic.source })),

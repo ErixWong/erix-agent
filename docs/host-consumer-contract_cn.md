@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-07（结构对齐检查：`node scripts/docs-sync-check.mjs`；翻译补齐后更新本日期）
+> 同步基线：host-consumer-contract.md @ 2026-10-08（结构对齐检查：`node scripts/docs-sync-check.mjs`；翻译补齐后更新本日期）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -526,6 +526,39 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
    在 `fold-llm` 中，该分节在 LLM 摘要之后（且在尺寸钳制之后）追加，因此
    `maxSummaryTokens` 截不到它。
 
+## Store 保真要求
+
+宿主 `TranscriptStore` **必须保留完整的 `RoundRecord` 与完整 message 对象**，包括宿主不认识
+的字段。不得按字段白名单重建 record 或 message：必需字段会随实现演进，丢弃未知字段可能改变
+引擎行为。
+
+这里有两个彼此独立的保真口径：
+
+- **展示投影保真**：保留 `projectTranscriptForDisplay` 读取并生成正确轮次、标签、工具预览、
+  折叠摘要、排序与时间戳所需的字段。
+- **resume / 模型上下文保真**：`load()` 必须重建相同的 messages、内容块、元数据、顺序与未知
+  字段，使模型回放与 judge 过滤看到相同上下文。展示投影看似正常，不能证明 resume 保真。
+
+与投影和 judge 正确性相关的最小字段至少包括：
+
+| 字段 | 丢失后的退化 |
+|---|---|
+| `messages[].meta.source` | 合成分类会回退到文本前缀启发式；引擎注入的 judge 方向提示可能显示成真实用户消息，并在 resume 后逃过 judge 的 `judge-control` 排除。当前文本启发式不识别其 `【Judge 评审意见】` 前缀。普通历史消息没有该字段，并不能证明 store 有损。 |
+| `messages[].content[type="tool_use"].id` 与 `messages[].content[type="tool_result"].tool_use_id` | 工具调用无法与结果配对，投影中的工具结果预览会丢失。 |
+| `response.content`（含 reasoning 块） | assistant 输出、工具调用或推理可能从投影及重建的模型上下文中消失。 |
+| `folded` | 折叠轮横幅与折叠段呈现被省略。 |
+| `foldedRoundRange` | 横幅失去精确的折叠轮次范围。 |
+| `foldedPayload` | 恢复与锚定所需的折叠归档消息不可用。 |
+| `navigationRecord` | 折叠导航及归档产物链接丢失。 |
+| `summary` | 组合折叠摘要失去轮次 action/note 兜底内容。 |
+| `round` | 轮次丢失轮号，无法按记录的轮号排序。 |
+| `ts` | 投影轮次失去时间戳。 |
+
+有损 store 当前不会触发报错。投影会静默回退：部分合成消息使用文本前缀嗅探，缺少 response
+时用 `textPreview`，缺少带标记的折叠摘要时用 `summary` 兜底；这些回退不会检测或报告 store
+有损。宿主必须自证保真，例如针对自身 schema 与未知字段运行并扩展
+`test/contract/transcript-store.js` 中的断言。
+
 ## 宿主展示投影
 
 transcript 就是模型上下文真相：`RoundRecord` 为回放保持字节保真，同时携带模型面对的
@@ -539,13 +572,16 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 // [{ role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
 ```
 
-它是纯函数：无 I/O、无模型调用、不变更输入记录、无宿主特有假设。它接受任意记录子集
-（过滤或切片后的 `load()` 结果均可），按 `round` 升序返回轮次；没有可用 `round` 的记
+它是纯函数：无 I/O、无模型调用、构造结果时不变更输入记录、无宿主特有假设。它接受任意记录
+子集（过滤或切片后的 `load()` 结果均可），按 `round` 升序返回轮次；没有可用 `round` 的记
 录保持输入顺序并排在最后（同 `round` 的记录也保持输入相对顺序）。
 
-返回值是**只读视图**：每轮内的 `blocks`、`usage`、`navigationRecord` 等对象与输入记录
-是共享引用而非拷贝。宿主必须把投影返回值当作不可变数据——改动它等于改 transcript 记录
-本身。
+投影结果不会被冻结或深拷贝。每轮的 `blocks` 是新数组，但普通块元素与输入共享引用；修改
+元素会改到输入记录。只有为移除折叠标记而拆分的块才会重建为 `{ ...block, text: head }`，
+修改该块不会改到输入块（其中嵌套对象仍是浅层共享）。每轮的 `meta` 对象是新建的，但存在时其内嵌值
+（如 `meta.usage`、`meta.navigationRecord`、`meta.foldedRoundRange`、`meta.summary`、
+`meta.judge`、`meta.wrapup`）与输入共享引用。若需保持源 record 不变，宿主应把这些共享值
+视为不可变。
 
 ### 宿主可渲染哪些 `RoundRecord` 字段
 
@@ -557,6 +593,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 | `foldedPayload` | 展示（有界） | 被折叠移除的原始消息。体积很大的归档；**不要**倒进聊天视图。投影只报 `meta.foldedPayloadMessages`（计数）。 |
 | `navigationRecord` | 展示 | 有界归档指针 `{ roundFrom, roundTo, artifacts[], truncated? }`，指向被恢复的工具输出。渲染为导航链接/指针，绝不作为消息内容。 |
 | `messages` | 模型 | 精确的模型上下文切片，含 `tool_use`/`tool_result` 块与折叠占位符。不要裸渲染；投影从中提取可展示文本与工具调用摘要。 |
+| `messages[].meta` | 模型 / 引擎 | 保留该对象及未知键。`meta.source` 是引擎保留标记，投影分类与 judge 可见性依赖它；不得复用它承载宿主自己的来源信息。 |
 | `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。展示字段由它派生；其块形状是模型面向的，可能变化。 |
 | `l0facts`、`runState`、`compactionStats`、`judge`、`wrapup`、`toolOutputs`、`dedupKey`、`roundKey` | 模型 / 引擎内部 | 给 governor、resume、诊断用的事实。只有 `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` 被拷进投影的 `meta` 供可选标注；其余不属于展示表面。 |
 
@@ -602,6 +639,12 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 - transcript 带标记时 `meta.source` 标明注入方：`judge-control`（round-judge 方向提示与
   续跑催促）、`audit-intercept`（重复命令拦截文本）、`system`、`fold-summary`（折叠横幅）、
   `wrapup`，或 `textPreview`（assistant 轮的旧版预览兜底）。
+- `message.meta.source` 是引擎保留字段：投影把**任何非空字符串**值判为 synthetic。宿主不得
+  在其中存放普通来源信息，否则真实消息也会被误分类。
+- 只有投影通过匹配已配置的文本前缀来判断合成消息时，才会添加
+  `meta.sourceInferred: true`。它是增量 `meta` 字段（宿主须忽略未知 `meta` 键），UI 可选展示
+  “此条分类来自启发式”；它不是有损 store 检测标记。由 `message.meta.source` 提供分类时，
+  以及仅因 `role: "system"` 而判为合成时，均不会添加该字段。
 - 轮级判定在存在时出现在 `meta.judge` 与 `meta.wrapup`，宿主无需解析散文就能标注一轮。
 
 宿主应区分地渲染合成轮（徽标、淡化样式）或折叠它们，但不得从声称镜像 transcript 的视图

@@ -47,6 +47,25 @@ export function transcriptStoreContract(label, createStore) {
     assert.equal(loaded[0].ts, ROUND_1.ts);
   });
 
+  test(`${label}: RoundRecord 与 message 未知字段及 source 标记完整往返`, async () => {
+    const store = await createStore();
+    const record = {
+      round: 3,
+      ts: "2026-08-29T00:03:00.000Z",
+      unknownRoundField: { retained: true },
+      messages: [{
+        role: "user",
+        meta: { source: "judge-control", hostMetadata: { retained: true } },
+        content: [{ type: "text", text: "direction hint", unknownBlockField: 1 }],
+        unknownMessageField: ["retained"],
+      }],
+    };
+
+    await store.appendRound("fidelity-run", record);
+
+    assert.deepEqual((await store.load("fidelity-run"))[0], record);
+  });
+
   test(`${label}: load 未知 runId 返回空数组`, async () => {
     const store = await createStore();
     assert.deepEqual(await store.load("nonexistent-run"), []);

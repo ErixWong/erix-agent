@@ -3,7 +3,7 @@ import { boundRunState } from "../run-state.js";
 /**
  * @typedef {{
  *   round:number,
- *   messages: object[],
+ *   messages: import("../messages/canonical.js").CanonicalMessage[],
  *   folded?:boolean,
  *   ts?:string,
  *   foldedPayload?:any,
