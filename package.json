@@ -26,6 +26,7 @@
     "test/contract/index.js",
     "test/contract/model-config-provider.js",
     "test/contract/notes-store.js",
+    "test/contract/termination-payload.js",
     "test/contract/transcript-store.js",
     "LICENSE",
     "docs/host-upgrade-guide-0.15.0.md",

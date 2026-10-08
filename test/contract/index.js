@@ -6,3 +6,4 @@ export { executeToolContract, executeToolMigrationContract } from "./execute-too
 export { assemblyPortContract } from "./assembly-port.js";
 export { notesStoreContract } from "./notes-store.js";
 export { engineApiContract } from "./engine-api.js";
+export { terminationPayloadContract } from "./termination-payload.js";
