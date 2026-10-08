@@ -10,7 +10,10 @@ retry/rerun policy, and the final consumption decision. See
 The 0.6.0 migration steps are in
 [host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md); the 0.12.0 notes
 contract migration steps are in
-[host-upgrade-guide-0.12.0.md](host-upgrade-guide-0.12.0.md).
+[host-upgrade-guide-0.12.0.md](host-upgrade-guide-0.12.0.md). The 0.16.0
+store-fidelity, same-round ordering, and additive display-projection migration
+steps are in
+[host-upgrade-guide-0.16.0.md](host-upgrade-guide-0.16.0.md).
 
 ## `runToolLoop` options
 

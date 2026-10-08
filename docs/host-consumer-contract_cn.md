@@ -1,14 +1,16 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-08（结构对齐检查：`node scripts/docs-sync-check.mjs`；翻译补齐后更新本日期）
+> 同步基线：host-consumer-contract.md @ 2026-10-08（已同步 0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
 [ADR-012](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/012-engine-truth-model-efficiency-host-policy.md) 与
 [ADR-013](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/013-guard-charter.md)。0.6.0 迁移步骤见
 [host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md)；0.12.0 notes 契约迁移步骤见
-[host-upgrade-guide-0.12.0.md](host-upgrade-guide-0.12.0.md)。
+[host-upgrade-guide-0.12.0.md](host-upgrade-guide-0.12.0.md)；0.16.0 store 保真、同轮保序与
+展示投影增量变更的迁移步骤见
+[host-upgrade-guide-0.16.0.md](host-upgrade-guide-0.16.0.md)。
 
 ## `runToolLoop` 选项与工具执行契约
 

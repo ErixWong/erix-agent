@@ -313,6 +313,7 @@ The npm tarball is controlled by the `files` allowlist in `package.json`:
   "test/contract/transcript-store.js",
   "LICENSE",
   "docs/host-upgrade-guide-0.15.0.md",
+  "docs/host-upgrade-guide-0.16.0.md",
   "test/contract/engine-api.js"
 ]
 ```
