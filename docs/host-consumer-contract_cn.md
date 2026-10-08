@@ -189,6 +189,25 @@ provider、工具与 transcript 适配器，因此没有宿主需要一次性迁
 - **时机：** 在接受用户消息的事务内持久化该轮（当宿主决定该轮属于本 run 时），
   而不是懒到 worker 接手之后再写——否则接受与预写之间崩溃会丢失或重复该轮。
 
+### load 返回顺序
+
+`load(runId)` 必须按持久化追加顺序返回全部记录；尤其是同一 `round` 的多条记录必须保留
+追加顺序（先追加的先返回）。SQL 类 store 应按持久化追加序号排序，或按持久化插入时间加
+唯一次级键排序。例如，当 round 按追加顺序单调递增时，可用
+`ORDER BY round_no, append_seq`，其中 `append_seq` 是单调递增的持久化列或持久化主键的一
+部分。排序必须保证整个结果集都与追加顺序一致；不得依赖查询执行计划、主键扫描巧合或
+`filesort` 的偶然结果。
+
+`src/loop/resume-manager.js` 按 `load()` 返回顺序重建状态，且不对记录二次排序。受顺序
+影响的不只是 `messages`，还包括 governor history（`:101-109`）、供
+`taskBriefSource` 使用的 round 0 seed 消息（`:88-90`），以及对顺序敏感的 snapshot
+`recordedEntries` 匹配（`:152-200`）。典型平局是上一段引擎轮处于 `round=max`，预写 user
+行也处于同一 round——因为 `appendUserTurn` 刻意复用最大 round。若这两行顺序反转，新用户
+消息就会排在上一段引擎轮之前，改变消息序列语义。
+
+引擎不会对同 round 记录二次排序或修正，包括不会按 `dedupKey` 命名空间等启发式处理；
+顺序是宿主 store 的责任。`appendUserTurn` 继续复用最大 round，这是本契约的既有约定。
+
 宿主不应手写这套逻辑。引擎导出
 `appendUserTurn(store, { key, text, messageId?, ts? })`，一次调用完成 `load`、round
 推导、`dedupKey` 生成、幂等检查与 `appendRound`。带 `messageId` 时 `dedupKey` 稳定

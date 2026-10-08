@@ -238,6 +238,33 @@ A correct pre-written `RoundRecord` must satisfy:
   lazily after a worker picks the task up — a crash between acceptance and
   pre-write would otherwise lose the turn or duplicate it.
 
+### Load order
+
+`load(runId)` must return records in persistence append order for the entire
+result; in particular, records with the same `round` must retain their append
+order (the earlier append comes first). SQL-backed stores should order by a
+persisted append sequence, or by a persisted insertion timestamp plus a unique
+secondary key. For example, `ORDER BY round_no, append_seq` is suitable when
+rounds are monotonic in append order and `append_seq` is a persisted,
+monotonically increasing column or part of a primary key. The ordering must
+preserve append order across the whole result. Do not rely on query execution
+plans, incidental primary-key scan order, or accidental `filesort` behavior.
+
+`src/loop/resume-manager.js` rebuilds state in the order returned by `load()`
+and does not sort records again. This order controls not only `messages`, but
+also governor history (`:101-109`), round-0 seed messages used for
+`taskBriefSource` (`:88-90`), and the order-sensitive snapshot
+`recordedEntries` matching (`:152-200`). A typical tie is the previous engine
+round at `round=max` followed by a pre-written user row at the same round,
+because `appendUserTurn` deliberately reuses the maximum round. Reversing
+those rows places the new user message before the previous engine turn and
+changes the message sequence semantics.
+
+The engine does not re-sort or repair same-round records, including by
+heuristics such as `dedupKey` namespaces; maintaining this order is the host
+store's responsibility. `appendUserTurn` continues to reuse the maximum
+round, as already specified by this contract.
+
 Hosts should not hand-roll this. The engine exports
 `appendUserTurn(store, { key, text, messageId?, ts? })` which performs the
 `load`, the round derivation, `dedupKey` generation, the idempotency check,

@@ -47,6 +47,31 @@ export function transcriptStoreContract(label, createStore) {
     assert.equal(loaded[0].ts, ROUND_1.ts);
   });
 
+  test(`${label}: load 保留同 round 记录的持久化追加顺序`, async () => {
+    const store = await createStore();
+    const runId = "same-round-order-run";
+    const engineKey = `${runId}:engine:round:2`;
+    const inputKey = `${runId}:input:m1`;
+    await store.appendRound(runId, {
+      round: 2,
+      dedupKey: engineKey,
+      messages: [{ role: "assistant", content: [{ type: "text", text: "engine round" }] }],
+    });
+    await store.appendRound(runId, {
+      round: 2,
+      dedupKey: inputKey,
+      messages: [{ role: "user", content: [{ type: "text", text: "pre-written user row" }] }],
+    });
+
+    const loaded = await store.load(runId);
+    assert.deepEqual(loaded.map((record) => record.dedupKey), [engineKey, inputKey]);
+    assert.deepEqual(
+      loaded.flatMap((record) => record.messages ?? [])
+        .map((message) => message.content?.[0]?.text),
+      ["engine round", "pre-written user row"],
+    );
+  });
+
   test(`${label}: RoundRecord 与 message 未知字段及 source 标记完整往返`, async () => {
     const store = await createStore();
     const record = {
