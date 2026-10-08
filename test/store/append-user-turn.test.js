@@ -208,3 +208,148 @@ test("appendUserTurn: 与 file store 协作（JSONL 往返 + 跨实例幂等）"
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// —— issue #157：成对可选 capability 快路径（loadByDedupKey / loadMaxRound）——
+
+/** 构造带调用计数的 stub store；caps 控制实现哪些可选探针（成对检测测试用）。 */
+function probeStore({ rounds = [], dedupHits = new Map(), caps = "both", maxRound } = {}) {
+  const calls = { load: 0, loadByDedupKey: 0, loadMaxRound: 0, appendRound: 0 };
+  const store = {
+    load: async () => { calls.load += 1; return rounds; },
+    appendRound: async (_key, record) => { calls.appendRound += 1; rounds.push(record); },
+  };
+  if (caps === "both" || caps === "dedup") {
+    store.loadByDedupKey = async (_key, dk) => {
+      calls.loadByDedupKey += 1;
+      return dedupHits.get(dk) ?? null;
+    };
+  }
+  if (caps === "both" || caps === "max") {
+    store.loadMaxRound = async () => {
+      calls.loadMaxRound += 1;
+      return maxRound === undefined ? Math.max(0, ...rounds.map((r) => (Number.isSafeInteger(r.round) ? r.round : 0))) : maxRound;
+    };
+  }
+  return { store, calls };
+}
+
+test("appendUserTurn: 快路径①双能力在→走点查且 store.load 零调用（未命中写路径）", async () => {
+  const { store, calls } = probeStore({ maxRound: 4 });
+  const result = await appendUserTurn(store, { key: "fp-1", text: "hi", messageId: "m-1" });
+  assert.equal(calls.load, 0, "快路径全程禁止调用 store.load");
+  assert.equal(calls.loadByDedupKey, 1);
+  assert.equal(calls.loadMaxRound, 1);
+  assert.equal(calls.appendRound, 1);
+  assert.equal(result.written, true);
+  assert.equal(result.round, 4);
+  assert.equal(result.dedupKey, "fp-1:input:m-1");
+});
+
+test("appendUserTurn: 快路径②命中路径仅 1 次点查即返回 record（loadMaxRound/load 均未被调）", async () => {
+  const existing = {
+    round: 9,
+    messages: [{ role: "user", content: [{ type: "text", text: "already" }] }],
+    dedupKey: "fp-2:input:m-1",
+    roundKey: "fp-2:input:m-1",
+    ts: "2026-01-01T00:00:00.000Z",
+  };
+  const { store, calls } = probeStore({ dedupHits: new Map([[existing.dedupKey, existing]]), maxRound: 100 });
+  const result = await appendUserTurn(store, { key: "fp-2", text: "dup", messageId: "m-1" });
+  assert.equal(calls.loadByDedupKey, 1);
+  assert.equal(calls.loadMaxRound, 0, "命中即返回，不调 loadMaxRound");
+  assert.equal(calls.load, 0);
+  assert.equal(calls.appendRound, 0);
+  assert.deepEqual(result, { key: "fp-2", dedupKey: existing.dedupKey, round: 9, written: false, record: existing });
+});
+
+test("appendUserTurn: 快路径③未命中经 loadMaxRound 派生 round 后 appendRound（记录形态与全量路径一致）", async () => {
+  const rounds = [];
+  const { store, calls } = probeStore({ rounds, maxRound: 7 });
+  const result = await appendUserTurn(store, { key: "fp-3", text: "new", messageId: "m-9" });
+  assert.equal(calls.loadMaxRound, 1);
+  assert.equal(calls.load, 0);
+  assert.equal(result.round, 7);
+  assert.equal(result.written, true);
+  // 落盘记录形态与全量路径一致（round/messages/dedupKey/roundKey）
+  assert.equal(rounds.length, 1);
+  assert.equal(rounds[0].round, 7);
+  assert.equal(rounds[0].dedupKey, "fp-3:input:m-9");
+  assert.equal(rounds[0].roundKey, rounds[0].dedupKey);
+  assert.deepEqual(rounds[0].messages, [{ role: "user", content: [{ type: "text", text: "new" }] }]);
+  assert.equal(new Date(rounds[0].ts).toISOString(), rounds[0].ts);
+});
+
+test("appendUserTurn: 快路径④半能力（只实现其一）→ 回退全量 load 现行为", async () => {
+  for (const caps of ["dedup", "max"]) {
+    const { store, calls } = probeStore({
+      rounds: [{ round: 2, dedupKey: "fp-4:engine:round:2" }],
+      caps,
+    });
+    const result = await appendUserTurn(store, { key: "fp-4", text: "x", messageId: "m" });
+    assert.equal(calls.load, 1, `caps=${caps}: 半能力必须回退全量 load`);
+    assert.equal(result.round, 2);
+    assert.equal(result.written, true);
+  }
+});
+
+test("appendUserTurn: 快路径⑤探针坏返回值各抛 store 违约 TypeError", async () => {
+  // loadByDedupKey 返回字符串
+  await assert.rejects(
+    () => appendUserTurn({
+      load: async () => [], appendRound: async () => {},
+      loadByDedupKey: async () => "nope", loadMaxRound: async () => 0,
+    }, { key: "fp-5", text: "x", messageId: "m" }),
+    (e) => e instanceof TypeError && /store contract violation.*loadByDedupKey/u.test(e.message),
+  );
+  // loadMaxRound 返回字符串 / 非安全整数
+  for (const bad of ["7", 1.5, NaN, Infinity, -Infinity]) {
+    await assert.rejects(
+      () => appendUserTurn({
+        load: async () => [], appendRound: async () => {},
+        loadByDedupKey: async () => null, loadMaxRound: async () => bad,
+      }, { key: "fp-5", text: "x", messageId: "m" }),
+      (e) => e instanceof TypeError && /store contract violation.*loadMaxRound/u.test(e.message),
+      `expected TypeError for loadMaxRound() → ${String(bad)}`,
+    );
+  }
+});
+
+test("appendUserTurn: 快路径⑥loadMaxRound null/undefined/负数→round 0；返回 7→round 7", async () => {
+  for (const [probed, expected] of [[null, 0], [undefined, 0], [-3, 0], [7, 7], [0, 0]]) {
+    const { store } = probeStore({ maxRound: probed });
+    const result = await appendUserTurn(store, { key: "fp-6", text: `x-${String(probed)}`, messageId: `m-${String(probed)}` });
+    assert.equal(result.round, expected, `loadMaxRound() → ${String(probed)} 应派生 round ${expected}`);
+  }
+});
+
+test("appendUserTurn: 快路径⑦命中记录 existing.round 非法→回落 loadMaxRound 派生", async () => {
+  const existing = { round: "nope", messages: [], dedupKey: "fp-7:input:m", roundKey: "fp-7:input:m" };
+  const { store, calls } = probeStore({ dedupHits: new Map([[existing.dedupKey, existing]]), maxRound: 5 });
+  const result = await appendUserTurn(store, { key: "fp-7", text: "x", messageId: "m" });
+  assert.equal(result.written, false);
+  assert.equal(result.round, 5, "existing.round 非法时回落 loadMaxRound 的 Math.max(0,…)");
+  assert.equal(calls.loadByDedupKey, 1);
+  assert.equal(calls.loadMaxRound, 1);
+  assert.equal(calls.load, 0);
+  assert.deepEqual(result.record, existing);
+});
+
+test("appendUserTurn: 快路径⑧探针返回 null 与 undefined 都算未命中（不报 TypeError）", async () => {
+  for (const miss of [null, undefined]) {
+    const { store, calls } = probeStore({ maxRound: 1 });
+    store.loadByDedupKey = async () => miss;
+    const result = await appendUserTurn(store, { key: "fp-8", text: "x", messageId: `m-${String(miss)}` });
+    assert.equal(result.written, true);
+    assert.equal(calls.load, 0);
+  }
+});
+
+test("appendUserTurn: 快路径写入的 dedupKey 无 messageId 时同样唯一且零 load", async () => {
+  const { store, calls } = probeStore({ maxRound: 0 });
+  const a = await appendUserTurn(store, { key: "fp-9", text: "one" });
+  const b = await appendUserTurn(store, { key: "fp-9", text: "two" });
+  assert.notEqual(a.dedupKey, b.dedupKey);
+  assert.match(a.dedupKey, /^fp-9:input:\d+:[0-9a-f-]+$/u);
+  assert.equal(calls.load, 0);
+  assert.equal(calls.appendRound, 2);
+});
