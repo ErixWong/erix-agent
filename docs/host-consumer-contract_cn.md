@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #182 一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -87,13 +87,9 @@ await provider.chat({ messages });
 - 两个参数都不传时，发出的请求头与请求体与之前版本**逐字节一致**。`providerOptions` 仍是
   payload 逃生口，对核心字段依旧**静默**丢弃；`extraBody` 是会告警的那条通道。
 
-预算元数据按 `modelConfig`、`modelMetadata`、`model`、`provider`、`context` 的顺序探测。
-若探测拿不到 `contextWindowTokens` + `maxOutputTokens` 的完整组合，宿主也没直接给
-`context.budgetTokens`，就推不出上下文预算，loop 每个 run 只发**一条**
-`model_metadata_missing` 事件（`{type, runId, detail}`，与 `persistence_capability_degraded`
-同款一次性去重风格）：上下文压缩完全不跑、单轮聚合输出预算保持关闭；输出截断上限退回
-`4096`（已知窗口或显式 `outputHygiene.limit` 已经定值时保持该值，`detail` 报出实际解析到的
-数字）。这就是宿主断言「我的装配是否把压缩静默关掉了」的抓手（issue #182）。
+预算元数据是另一份契约：模型 slot 能携带哪些字段、按什么顺序被探测、loop 何时发出一次性的
+`model_metadata_missing` 诊断事件，全部在下文「模型元数据与预算推导（issue #182）」里定义
+（issue #182）。
 
 ## AssemblyPort
 
@@ -205,6 +201,162 @@ model-config、session 与 required 持久化 fail-fast 校验。`persistence: "
 
 库内 `createAssemblyPort` 是参考装配实现，不做任何 I/O。CLI 继续使用它自己的文件型
 provider、工具与 transcript 适配器，因此没有宿主需要一次性迁移到该端口。
+
+## 模型元数据与预算推导（issue #182）
+
+`modelConfig` 与 `modelMetadata` 是白名单选项名，但它们能携带哪些字段此前契约零字。
+其中只有 `contextWindowTokens` 与 `maxOutputTokens` 这一对字段对引擎自己的预算推算
+有分量（且必须成对），其余字段全部流向 provider 请求。两个预算字段都不写的宿主，
+整个 run 的上下文压缩与单轮聚合输出预算都是关的，唯一的信号就是下文的
+`model_metadata_missing` 事件。
+
+### 探测顺序与槽位选择
+
+| 探测位次 | 候选 | 需要装什么 |
+|---|---|---|
+| 1 | **已解析的** `modelConfig` | `modelConfig.resolve(session?.modelSlot)` 返回的对象——解析器本身从不被探测 |
+| 2 | `modelMetadata` | 只承载元数据；没有其他地方读它 |
+| 3 | `model` | `model` 选项对象 |
+| 4 | `provider` | 两个内置工厂在构造时拿到 `contextWindowTokens` / `maxOutputTokens` 后，会将其回挂在返回的对象上（`src/providers/openai.js:575-584`、`src/providers/anthropic.js:541-550`） |
+| 5 | `context` | 压缩上下文选项 |
+
+- 探测按上述固定顺序 duck-type，返回**第一个**携带任一字段的候选
+  （`src/loop/budget.js:59-69`，调用点 `src/loop/orchestrator.js:898-904`）。
+  字段**从不跨候选合并**：slot 里只写 `contextWindowTokens`、`modelMetadata` 里只写
+  `maxOutputTokens`，结果是什么预算也推不出来。这一对字段必须写在同一个对象里。
+- `modelConfig` 必须是解析器（`{ resolve(slot?) }`）。直接把普通配置对象当
+  `modelConfig` 传会在启动期抛 `assembly port is missing methods:
+  modelConfig.resolve`——因为这个选项名一出现就被当成端口读
+  （`src/loop/orchestrator.js:567-582`）。被探测的是**解析后的值**，不是解析器。
+- 槽位选择是 per-run 的：槽位名经 `session.modelSlot` 传入
+  （`src/loop/orchestrator.js:584-587`）。两个内置 provider 对不认识的槽位名都
+  回落到 `default` 槽，所以拼错槽位名不会让这个 run 失败。
+- `createJsonFileModelConfigProvider` 从 JSON 文件读
+  `{ "slots": { "<name>": { … } } }`；`createStaticModelConfigProvider` 接内存里的同构形状。
+  两者都是**原样**返回 slot，只额外物化一个 `apiKey`
+  （`apiKey` → `apiKeyEnv` → `apiKeyFile`，`src/config/api-key.js:9-36`）。
+
+### 字段契约
+
+| slot 字段 | 单位 | 进 provider 请求 | 驱动预算 / 压缩 | 缺省行为 |
+|---|---|---|---|---|
+| `contextWindowTokens` | token（正安全整数） | 否 | **是**——预算输入，也决定输出截断上限的尺寸 | 推不出预算 → 压缩与聚合输出预算均关；上限退回 `4096` |
+| `maxOutputTokens` | token（≥ 0 的安全整数） | 是，作为 `maxTokens` 缺席时的 `max_tokens` 默认值 | **是**——第二个必需的预算输入 | OpenAI 不写 `max_tokens`；Anthropic 用 `4096`；推不出预算 |
+| `maxTokens` | token | 是——请求 `max_tokens`，优先于 `maxOutputTokens` | **否**，从不参与预算 | 字段省略 |
+| `temperature` | 数值 | 是——`temperature` | 否 | 字段省略 |
+| `topP` | 数值 | 是——`top_p` | 否 | 字段省略 |
+| `thinking`、`reasoning`、`reasoning_effort`、`enable_thinking`、`chat_template_kwargs` | 因协议而异 | 是，原样拷进 payload | 否 | 字段省略；推理模型识别关闭 |
+| `model_type`、`supports_reasoning`、`thinking_format` | 因协议而异 | 否，但它们会把端点标为推理模型并打开 stream-usage 探针；回挂在 provider 对象上 | 否 | 探针关闭 |
+| `frequency_penalty`、`presence_penalty`、`response_format`、`providerOptions` | 因协议而异 | 是（`providerOptions` 里核心字段是**静默**丢弃的，见 #181） | 否 | 字段省略 |
+| `timeoutMs`、`requestTimeoutMs`、`firstByteTimeoutMs`、`streamIdleTimeoutMs`、`streamTotalTimeoutMs`（snake_case 别名同样接受） | ms | 请求 / 流超时 | 否 | 引擎默认值 |
+| `endpoint`、`apiKey` / `apiKeyEnv` / `apiKeyFile`、`model` / `model_name`、`protocol` | — | 端点与凭据身份；`protocol` 选的是**宿主自己**要构造哪个工厂——引擎从不按它分发 | 否 | endpoint / key / model 解析后为空时，provider 构造抛 `provider_config`（`src/providers/errors.js:37-51`） |
+
+循环自身的 `maxTokens`、`temperature`、`topP` 选项会注入每一次请求，因此**覆盖**
+slot 里的同名字段（`src/loop/provider-runner.js:125-127`、`src/providers/openai.js:51-55`）。
+
+**slot 里的未知字段是惰性的，也是安全的。** 内置 provider 原样拷贝 slot
+（`src/config/json-file.js:22-39`、`src/config/static.js:26-38`），两个工厂又只读固定的
+参数列表（`src/providers/openai.js:110-153`、`src/providers/anthropic.js:290-334`），
+所以认不出的键既上不了线，也不会抛错。这条安全声明只覆盖
+**slot 对象**：*顶层* `runToolLoop` 选项写错名仍会抛 `TypeError`（见「`runToolLoop`
+选项与工具执行契约」）。
+
+### 预算推导
+
+`budgetTokens = context.budgetTokens ?? computeBudget({ contextWindowTokens, maxOutputTokens })`，
+其中 `computeBudget = contextWindowTokens - maxOutputTokens - max(2000, ceil(窗口 × 0.1))`
+（`src/loop/orchestrator.js:924-933`、`src/compact/budget.js:9-33`）。
+`budgetTokens` 是上下文压缩、单轮聚合输出预算、以及 request-view 预算块的总门。
+输出截断上限是另一套推导：先看显式 `outputHygiene.limit`，否则
+`clamp(15% × contextWindowTokens, 8192, 100000)`，否则 `4096`
+（`src/loop/orchestrator.js:906-917`）。
+
+| 启动时的条件 | 引擎行为 |
+|---|---|
+| 五个候选里两个字段都找不到 | **静默跳过**：`budgetTokens` 保持 `undefined`，压缩与聚合输出预算保持关，并且恰好发**一条** `model_metadata_missing` 事件 |
+| 字段找到了但值非法（非整数、字符串、窗口 ≤ 0、`maxOutputTokens` < 0）或窗口不够大（算出的预算 ≤ 0） | `computeBudget` 在首次 provider 调用前**抛 `invalid_budget`** |
+| 宿主自己给了 `context.budgetTokens` | 完全绕开推导——压缩是否启用只看这个值，且无论探测到什么**都不发**事件；非正 / 非整数值由 `validateBudget` 抛 `invalid_budget` |
+| 宿主给了 `context.strategy` | 策略被询问时会原样拿到 `budgetTokens`，所以配了策略就能在零元数据下自己门控压缩（`src/loop/orchestrator.js:2129-2132`）；注意内置 sliding-window 策略也是拿这个值去比，`undefined` 时永不触发（`src/compact/sliding-window.js:34-36`） |
+
+两种 `invalid_budget` 都是**运行前**抛错：运行生命周期尚未开始，抛出的错误不带
+`termination`、`usage`、`rounds`、`finalText`（边界见「终局载荷（issue #176 / #180）」
+里的范围声明）。
+
+### 装配自检断言点
+
+`model_metadata_missing`（`{type, runId, detail}`，每个 run 最多一条）就是宿主对自己
+装配的断言点：指望压缩生效的宿主断言它**不出现**；故意不压缩的宿主断言它恰好出现一次。
+`detail` 还报出实际解析到的输出上限，所以同一个断言也能接住「我的窗口没参与输出截断上限的计算」。
+这个启动期事件上 `onEvent` 抛错是致命的，按标准的 `failed` / `aborted` 终局形状上报
+（`src/loop/orchestrator.js:938-952`）。
+
+### 多模型槽位装配示例（issue #182）
+
+一份模型目录、一个模型一个 slot、每个 run 选一个 slot。把请求参数与预算元数据
+放在一起，才能让 temperature、`max_tokens`、思考档位跟着被选中的模型走，而不是
+被钉在整个进程上：
+
+```json
+{
+  "slots": {
+    "default": {
+      "protocol": "openai",
+      "endpoint": "https://gateway.example/v1",
+      "apiKeyEnv": "GATEWAY_KEY",
+      "model": "big-model",
+      "contextWindowTokens": 200000,
+      "maxOutputTokens": 8192,
+      "maxTokens": 2048,
+      "temperature": 0.2,
+      "reasoning_effort": "low"
+    },
+    "triage": {
+      "protocol": "openai",
+      "endpoint": "https://gateway.example/v1",
+      "apiKeyEnv": "GATEWAY_KEY",
+      "model": "small-model",
+      "contextWindowTokens": 32768,
+      "maxOutputTokens": 4096,
+      "maxTokens": 1024,
+      "temperature": 0
+    }
+  }
+}
+```
+
+```js
+import { createJsonFileModelConfigProvider, createOpenAIProvider, runToolLoop } from "erix-agent";
+
+const modelConfig = createJsonFileModelConfigProvider({ path: configPath });
+
+// per-run 的槽位选择跟着 run 走，不跟着进程走。
+// 不认识的槽位名会回落到 "default" 槽，而不是让这个 run 失败。
+const modelSlot = run.triage ? "triage" : undefined;
+const slot = await modelConfig.resolve(modelSlot);
+
+const events = [];
+const result = await runToolLoop({
+  provider: createOpenAIProvider(slot),  // 请求参数：model / max_tokens / temperature 均来自 slot
+  modelConfig,                           // 预算元数据：经 session.modelSlot 重新解析
+  session: { id: run.id, modelSlot },
+  initialUserMessage: run.prompt,
+  executeTool,
+  maxRounds: 8,
+  persistence: "none",
+  onEvent: (event) => {
+    events.push(event.type);
+    if (event.type === "model_metadata_missing") {
+      throw new Error("slot carries no window metadata: compaction is off for this run");
+    }
+  },
+});
+
+result.termination.reason; // "end_turn"——而且上面的断言已经证明预算真的被推导出来了
+```
+
+引擎不会在 run 中途换模型：宿主用自己选的 slot 构造 provider，循环只是重新读一次
+slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随后换一个
+`session.modelSlot` 开新 run。
 
 ## 多轮续跑契约（issue #97）
 
@@ -320,6 +472,87 @@ abort 载荷的存在理由：用户点「停止」的 run 真的花了 token。
 `aborted` 仍然意味着「循环抛错」——本次改动不把 abort 变成正常返回，正常返回路径也不会
 多出 `errorCode`、`partial` 或嵌套 `usage` 字段。要不要重跑、要不要告警、怎么记账，仍然是
 宿主的决策（reason 枚举见下文「终答核验」，终态另见运行状态一节）。
+
+## 终止裁决决策表（issue #170）
+
+宿主应该能不读循环就判断一个终局该怎么办。下面每个机制写的都是**同一个**
+`termination.reason` 字段，但一个 run 里只能有一个机制获胜：它们是有序且互斥的。
+行号引用是实现真相；代码与本表不一致时，代码是对的，本表就是 bug。
+
+返回路径上可枚举的 reason 共 9 个（`src/loop/orchestrator.js:468`）；
+`persistence_failed` 是第十个，只在抛错路径上出现，所以也列出。`truncated` 恰好
+对 `max_rounds_cap`、`continuation_exhausted`、`stall`、`final_guard_unverified` 为
+`true`（`src/loop/termination.js:7-11`）。
+
+| `termination.reason` | 触发机制（file:line） | 在优先级链中的位置 | 宿主开关 | 推荐宿主动作 |
+|---|---|---|---|---|
+| `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js:111-113`）或兜底 stop `complete`（`src/reflection/governor.js:126-128`），均由 `terminationReasonForAction` 映射（`src/loop/termination.js:93-100`）。输入：`shouldContinue`（`src/loop/orchestrator.js:2668-2669`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js:2671-2674`、`2676-2730`）） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`src/loop/orchestrator.js:2866-2873`） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js:1019-1023`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js:1363`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
+| `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`src/loop/orchestrator.js:2866-2873`，`isEndTurn` 在 2574），映射在 `src/loop/termination.js:94` | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js:979-993`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js:979-982`、`src/loop/reflection.js:8`） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
+| `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js:114-117`），门在 `noToolRound`（`src/loop/orchestrator.js:2742-2746`）且连续数 `>= maxNoToolRounds`（默认 3，`src/loop/orchestrator.js:1364-1366`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
+| `stall` | 同一工具调用签名在处理窗口内重复（`src/loop/orchestrator.js:2607-2621`）叠加 streak 累加（`src/loop/orchestrator.js:2658-2665`），stop 在 `src/reflection/governor.js:66-69`，`STALL_STREAK_LIMIT = 3`（`src/reflection/governor.js:3`），映射在 `src/loop/termination.js:97` | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死（`src/reflection/governor.js:65`） | `stallDetection:false` 使其**不可达**（`src/loop/orchestrator.js:1348-1359`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
+| `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`src/loop/orchestrator.js:2567-2568`，循环在 2530）；治理层 stop `cap`（`src/reflection/governor.js:62-64` / `136-138`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:95`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`src/loop/orchestrator.js:1367-1369`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
+| `max_rounds_cap` | (a) 治理层 stop `cap`：接近上限且不允许扩轮（`src/reflection/governor.js:150-152`）；(b) 轮循环自然跑完（`src/loop/orchestrator.js:2490`，收尾在 `3072-3090`） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`src/loop/orchestrator.js:1034-1049`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
+| `final_guard_unverified` | 配了 `finalGuard` 且它没能认证：不可续跑降级（`src/loop/orchestrator.js:3024-3037`）、修订次数触顶（`3039-3052`）、或轮循环跑完的收尾（`3077-3090`）。只对 6 个 guard 适用 reason 生效（`src/loop/termination.js:14-21`），且仅当 `finalGuard` 是函数（`src/loop/orchestrator.js:3013-3016`） | 严格位于 stop 之后的**后阶段**：它替换 reason，不介入轮内治理 | 整体不传 `finalGuard`（此时 `verification` 为 `skipped` / `no_final_guard`，`src/loop/orchestrator.js:1385-1387`）；`finalGuardMaxRetries` 调修订上限（默认 2，`src/loop/orchestrator.js:1377-1380`） | **不得当已验事实消费**：`verification.status === "unverified"`（`non_continuable` / `max_retries`）。转人工复核或测试系统 |
+| `aborted` | 终局 `fail()` 路径且宿主 signal 已 abort（`src/loop/orchestrator.js:845-895`；分类在 847-848 与 867-872，注解在 887-894） | 在抛错路径上压过失败分类——信号先被检查，启动期诊断路径也一样（`src/loop/orchestrator.js:938-951`） | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的 |
+| `failed` | run 生命周期内抛出的任意错误，经 `fail()`（`src/loop/orchestrator.js:845-895`，循环 catch 在 `3068-3070`），并透传 `termination.errorCode`（`src/loop/termination.js:43-57`） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js:675-686`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`unknown` → 转去查 `termination.detail` |
+| `persistence_failed` | 同一个 `fail()` 路径，在错误携带持久化信息时被选中（`src/loop/orchestrator.js:867-872`），并额外挂上 `operation` / `phase` / `sideEffect`（`src/loop/orchestrator.js:880-886`） | 替换 `failed`，不会反向发生；不带 `errorCode`（该字段为 `failed` 专属） | `persistence:"none"` 直接移除 transcript 写入路径；可选 store 能力是降级而非失败（见能力分级） | **告警**：副作用被跟踪过，所以这是完整性信号（ADR-013），不是重试候选 |
+
+### 核验状态与 CLI 退出码
+
+核验结论与终局 reason 是两个独立的轴：`end_turn` 可以 `unverified`；而
+`max_rounds_cap` / `stall` / `continuation_exhausted` 只能以 `skipped` 或 `error`
+收尾——配了 guard 之后它们拿不到 `verified`，因为 guard 对这三个 reason 返回
+`accept` 也仍然以 `final_guard_unverified` 终局（`src/loop/orchestrator.js:3024-3037`）。
+CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1015-1022`）：
+
+| `verification.status` | 含义 | 实际会看到的 `verification.reason` | CLI 退出码 |
+|---|---|---|---|
+| `verified` | 已配置的 guard 接受了一份终答 | —（无 reason 字段） | `0` |
+| `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js:1385-1387`）；CLI guard 的 `no_capture_evidence` / `no_extractable_candidates`（`bin/final-guard.js:86,89`） | `4` |
+| `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js:3025-3029`）、`max_retries`（`3041-3045`） | `2` |
+| `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`（`src/loop/termination.js:173-176`） | `3` |
+
+`exitCodeForVerification` 对其他任何 status（包括根本没有 `verification` 对象）都返回
+`0`，所以**退出码 0 本身不是已验答案的证明**——请读 `verification.status`。抛错的 run
+从 CLI 顶层 handler 退出 `1`（`bin/cli.js:1032-1042`），那是失败信号，不是核验结果。
+
+### 机制优先级与互斥关系
+
+同一个轮次内只有一个机制能拍板，顺序如下
+（`src/loop/orchestrator.js:2866-2891`、`src/reflection/governor.js:59-129`、
+`src/loop/termination.js:93-100`）：
+
+1. **token 补全边界**——连续 `max_tokens` 响应置上 `continuationExhausted`，它是两个
+   治理入口的首要检查（`src/reflection/governor.js:62-64`、`136-138`）。因为
+   `continuationExhausted` 在 `cap` 映射之前被检查（`src/loop/termination.js:95`），
+   由输出截断引起的 `cap` stop 报的是 `continuation_exhausted`，**永远不会**是
+   `max_rounds_cap`。
+2. **stall stop**（`src/reflection/governor.js:66-69`）——故意高于收尾 nudge 与错误
+   重复 nudge，以免真打转被低优先级 nudge 拖到退化成 `max_rounds_cap`。
+3. **wrapup 声明**——`done:true` 信封会压住 `shouldContinue` 并置上
+   `completionSignalDetected`（`src/loop/orchestrator.js:2668-2674`），这既产生
+   `completion` stop（`src/reflection/governor.js:111-113`），又使 `noToolRound`
+   为假（`src/loop/orchestrator.js:2742-2746`）。**声明完成与 `no_tool` 因此互斥。**
+4. **completion 关键词兜底**——同样这个信号，在没解析出信封时来自
+   `completion.signals` 命中终答文本（`src/loop/orchestrator.js:2672-2674`），或来自
+   end-turn 轮完全拿不到 JSON 时的 LLM 归一化器（`2676-2730`，开关是
+   `reflection.wrapupNormalize` / `ERIX_WRAPUP_NORMALIZE=1`）。
+5. **`no_tool` stop**——只在什么都没声明完成且本轮没调工具时可达
+   （`src/loop/orchestrator.js:2742-2746`）。
+6. **judge 的 end-turn 评估**——`judge_done` 在治理层**之前**被评估
+   （`src/loop/orchestrator.js:2866-2873`），因此在其生效的那一轮压过 2-5；它要求
+   `isEndTurn`，即 `stopReason === "end_turn"` 且无工具调用
+   （`src/loop/orchestrator.js:2574`）。工具轮因此永远不可能产生 `judge_done`；
+   `max_tokens` 轮也不可能同时产生 `judge_done` 与 `continuation_exhausted`
+   （映射先优 `judge_done`，`src/loop/termination.js:94`）。
+7. **停止后验证**——stop reason 定下来后，三个不可续跑 reason 可能多一次强制收尾的
+   provider 调用（`src/loop/termination.js:203-256`），然后 `finalGuard` 可以 accept /
+   skip / revise / 失败。`revise` 不是终局：它注入一条用户消息，本轮治理重新开始
+   （`src/loop/orchestrator.js:3039-3061`）。修订重试次数受 `finalGuardMaxRetries`
+   约束（默认 2，`src/loop/orchestrator.js:1377-1380`），guard 自身超时默认 30s
+   （`src/loop/orchestrator.js:1381-1383`）。
+8. **`fail()` 分类**——任何时刻抛错都会用 `aborted`（信号已置）或 `failed` /
+   `persistence_failed` 替换掉上面全部（`src/loop/orchestrator.js:845-895`）。
 
 ## 可复用的归一化原语
 

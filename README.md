@@ -745,7 +745,10 @@ library-level controls
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
 - [docs/host-consumer-contract.md](docs/host-consumer-contract.md) - host
-  consumer contract for verification, note-first retrieval, provenance, and reruns
+  consumer contract for verification, note-first retrieval, provenance, and reruns;
+  includes the termination decision table (per-reason mechanism, precedence, host
+  switch, recommended action) and the model metadata / budget-derivation field
+  contract with a multi-model slot assembly example
 - [docs/host-upgrade-guide-v030.md](https://github.com/ErixWong/erix-agent/blob/main/docs/host-upgrade-guide-v030.md) - host
   upgrade guidance for `touwaka` / `app_container` and v0.3.x behavior
 - [docs/maintenance-policy.md](https://github.com/ErixWong/erix-agent/blob/main/docs/maintenance-policy.md) - maintenance

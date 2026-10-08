@@ -105,17 +105,10 @@ await provider.chat({ messages });
   previous releases. `providerOptions` stays the payload escape hatch and keeps
   dropping core keys **silently**; `extraBody` is the channel that warns.
 
-Budget metadata is probed from `modelConfig`, `modelMetadata`, `model`,
-`provider`, and `context`, in that order. When the probe cannot reach a
-complete `contextWindowTokens` + `maxOutputTokens` pair and the host supplied
-no `context.budgetTokens`, no context budget can be derived, so the loop emits
-**one** `model_metadata_missing` event per run (`{type, runId, detail}`, the
-same one-shot style as `persistence_capability_degraded`): context compaction
-never runs, the per-round aggregate output budget stays off, and the output
-truncation limit resolves to `4096` unless a known window or an explicit
-`outputHygiene.limit` already sized it — `detail` names the value it actually
-resolved to. This is the host's assertion point for "did my assembly silently
-turn compaction off" (issue #182).
+Budget metadata is a separate contract: which fields a model slot may carry, in
+which order it is probed, and when the loop emits the one-shot
+`model_metadata_missing` diagnostic event are all specified in "Model metadata
+and budget derivation (issue #182)" below (issue #182).
 
 ## AssemblyPort
 
@@ -256,6 +249,176 @@ The library's `createAssemblyPort` is the reference assembly implementation;
 it performs no I/O. The CLI continues to use its existing file-backed
 provider, tool, and transcript adapters, so no host needs to adopt the port
 in one migration.
+
+## Model metadata and budget derivation (issue #182)
+
+`modelConfig` and `modelMetadata` are whitelisted option names whose payload
+fields used to be documented nowhere. Exactly two of those fields are
+load-bearing for the engine's own budget math — `contextWindowTokens` and
+`maxOutputTokens` — and everything else a slot carries goes to the provider
+request instead. A host that writes neither budget field keeps context
+compaction and the per-round aggregate output budget switched off for the whole
+run; the only signal is the `model_metadata_missing` event named below.
+
+### Probe order and slot selection
+
+| Probe position | Candidate | What it must hold |
+|---|---|---|
+| 1 | the **resolved** `modelConfig` | the object returned by `modelConfig.resolve(session?.modelSlot)` — the resolver itself is never probed |
+| 2 | `modelMetadata` | metadata-only carrier; nothing else reads it |
+| 3 | `model` | the `model` option object |
+| 4 | `provider` | both built-in factories re-expose `contextWindowTokens` / `maxOutputTokens` on the returned object when they were given them (`src/providers/openai.js:575-584`, `src/providers/anthropic.js:541-550`) |
+| 5 | `context` | the compaction-context option |
+
+- The probe is a duck-type over that exact order and returns the **first**
+  candidate that carries either field (`src/loop/budget.js:59-69`, called at
+  `src/loop/orchestrator.js:898-904`). Fields are **never merged across
+  candidates**: a slot with only `contextWindowTokens` plus a `modelMetadata`
+  carrying `maxOutputTokens` derives no budget at all. Keep the pair in one
+  object.
+- `modelConfig` must be a resolver (`{ resolve(slot?) }`). A plain config object
+  passed as `modelConfig` is rejected at startup with
+  `assembly port is missing methods: modelConfig.resolve`, because the option
+  name is read as a port whenever it is present (`src/loop/orchestrator.js:567-582`).
+  The resolved value — not the resolver — is what the probe reads.
+- Slot selection is per run: the slot name travels in `session.modelSlot`
+  (`src/loop/orchestrator.js:584-587`). Both built-in providers fall back to the
+  `default` slot for an unknown name, so per-run selection never fails a run
+  that only misspelled a slot.
+- `createJsonFileModelConfigProvider` reads `{ "slots": { "<name>": { … } } }`
+  from a JSON file; `createStaticModelConfigProvider` takes the same shape in
+  memory. Both return the slot **verbatim** plus a materialized `apiKey`
+  (`apiKey` → `apiKeyEnv` → `apiKeyFile`, `src/config/api-key.js:9-36`).
+
+### Field contract
+
+| Slot field | Unit | Reaches the provider request | Drives budget / compaction | Behavior when absent |
+|---|---|---|---|---|
+| `contextWindowTokens` | tokens (safe integer > 0) | no | **yes** — budget input, and it sizes the output-truncation limit | no budget derivable → compaction and aggregate output budget off; limit falls back to `4096` |
+| `maxOutputTokens` | tokens (safe integer ≥ 0) | yes, as the default `max_tokens` when `maxTokens` is absent | **yes** — second required budget input | OpenAI omits `max_tokens`; Anthropic uses `4096`; no budget derivable |
+| `maxTokens` | tokens | yes — request `max_tokens`, wins over `maxOutputTokens` | **no**, never a budget input | field omitted |
+| `temperature` | number | yes — `temperature` | no | field omitted |
+| `topP` | number | yes — `top_p` | no | field omitted |
+| `thinking`, `reasoning`, `reasoning_effort`, `enable_thinking`, `chat_template_kwargs` | provider-specific | yes, copied verbatim into the payload | no | field omitted; reasoning detection off |
+| `model_type`, `supports_reasoning`, `thinking_format` | provider-specific | no, but they mark the endpoint as a reasoning model and switch on the stream-usage probe; re-exposed on the provider object | no | probe off |
+| `frequency_penalty`, `presence_penalty`, `response_format`, `providerOptions` | provider-specific | yes (`providerOptions` core keys are dropped **silently**, see #181) | no | field omitted |
+| `timeoutMs`, `requestTimeoutMs`, `firstByteTimeoutMs`, `streamIdleTimeoutMs`, `streamTotalTimeoutMs` (snake_case aliases accepted) | ms | request / stream timeouts | no | engine defaults |
+| `endpoint`, `apiKey` / `apiKeyEnv` / `apiKeyFile`, `model` / `model_name`, `protocol` | — | endpoint and credential identity; `protocol` selects the factory **the host** builds — the engine never dispatches on it | no | provider construction throws `provider_config` once endpoint / key / model resolve empty (`src/providers/errors.js:37-51`) |
+
+The loop's own `maxTokens`, `temperature`, and `topP` options are injected into
+every request and therefore **override** the same slot fields
+(`src/loop/provider-runner.js:125-127`, `src/providers/openai.js:51-55`).
+
+**Unknown slot fields are inert and safe.** The built-in providers copy the slot
+verbatim (`src/config/json-file.js:22-39`, `src/config/static.js:26-38`), and both
+factories read a fixed parameter list (`src/providers/openai.js:110-153`,
+`src/providers/anthropic.js:290-334`), so an unrecognized key cannot reach the wire
+and cannot throw. That safety statement is about **slot
+objects** only: an unknown *top-level* `runToolLoop` option still throws
+`TypeError` (see "`runToolLoop` options").
+
+### Budget derivation
+
+`budgetTokens = context.budgetTokens ?? computeBudget({ contextWindowTokens, maxOutputTokens })`
+with `computeBudget = contextWindowTokens - maxOutputTokens - max(2000, ceil(window × 0.1))`
+(`src/loop/orchestrator.js:924-933`, `src/compact/budget.js:9-33`).
+`budgetTokens` is the gate for context compaction, for the per-round aggregate
+output budget, and for the budget block in the request view. The output-truncation
+limit is a separate derivation: explicit `outputHygiene.limit` first, else
+`clamp(15% × contextWindowTokens, 8192, 100000)`, else `4096`
+(`src/loop/orchestrator.js:906-917`).
+
+| Condition at startup | Engine behavior |
+|---|---|
+| neither field found in any of the five candidates | **silent skip**: `budgetTokens` stays `undefined`, compaction and the aggregate output budget stay off, and exactly **one** `model_metadata_missing` event is emitted |
+| fields found but malformed (non-integer, string, window ≤ 0, `maxOutputTokens` < 0) or too small (derived budget ≤ 0) | `computeBudget` **throws `invalid_budget`** before the first provider call |
+| host supplies `context.budgetTokens` | derivation is bypassed entirely — compaction is on whatever that value enables, and **no** event is emitted whatever the probe found; a non-positive / non-integer value throws `invalid_budget` from `validateBudget` |
+| host supplies `context.strategy` | the strategy is asked with `budgetTokens` as-is, so a configured strategy can gate compaction without any metadata (`src/loop/orchestrator.js:2129-2132`); note the built-in sliding-window strategy compares against that value and therefore never fires on `undefined` (`src/compact/sliding-window.js:34-36`) |
+
+Both `invalid_budget` shapes are **pre-execution** throws: the run lifecycle has
+not begun, so the thrown error carries no `termination`, `usage`, `rounds`, or
+`finalText` (see the scope note in "Termination payload (issue #176 / #180)").
+
+### Assembly self-check assertion
+
+`model_metadata_missing` (`{type, runId, detail}`, at most one per run) is the
+host's assertion point for its own assembly. A host that expects compaction
+asserts the event is **absent**; a host that intentionally runs uncompacted
+asserts it is present exactly once. `detail` also names the output limit it
+resolved to, so the same assertion catches "my window never reached the
+truncation sizing". A throwing `onEvent` on this startup event is fatal and is
+reported with the standard `failed` / `aborted` termination shape
+(`src/loop/orchestrator.js:938-952`).
+
+### Multi-model slot assembly (issue #182)
+
+One directory of models, one slot per model, one slot chosen per run. Keeping
+request parameters next to the budget metadata is what makes temperature,
+`max_tokens`, and thinking tiers follow the model that was picked instead of
+being pinned process-wide:
+
+```json
+{
+  "slots": {
+    "default": {
+      "protocol": "openai",
+      "endpoint": "https://gateway.example/v1",
+      "apiKeyEnv": "GATEWAY_KEY",
+      "model": "big-model",
+      "contextWindowTokens": 200000,
+      "maxOutputTokens": 8192,
+      "maxTokens": 2048,
+      "temperature": 0.2,
+      "reasoning_effort": "low"
+    },
+    "triage": {
+      "protocol": "openai",
+      "endpoint": "https://gateway.example/v1",
+      "apiKeyEnv": "GATEWAY_KEY",
+      "model": "small-model",
+      "contextWindowTokens": 32768,
+      "maxOutputTokens": 4096,
+      "maxTokens": 1024,
+      "temperature": 0
+    }
+  }
+}
+```
+
+```js
+import { createJsonFileModelConfigProvider, createOpenAIProvider, runToolLoop } from "erix-agent";
+
+const modelConfig = createJsonFileModelConfigProvider({ path: configPath });
+
+// Per-run slot choice travels with the run, not with the process.
+// An unknown name falls back to the "default" slot instead of failing the run.
+const modelSlot = run.triage ? "triage" : undefined;
+const slot = await modelConfig.resolve(modelSlot);
+
+const events = [];
+const result = await runToolLoop({
+  provider: createOpenAIProvider(slot),  // request params: model / max_tokens / temperature come from the slot
+  modelConfig,                           // budget metadata: re-resolved through session.modelSlot
+  session: { id: run.id, modelSlot },
+  initialUserMessage: run.prompt,
+  executeTool,
+  maxRounds: 8,
+  persistence: "none",
+  onEvent: (event) => {
+    events.push(event.type);
+    if (event.type === "model_metadata_missing") {
+      throw new Error("slot carries no window metadata: compaction is off for this run");
+    }
+  },
+});
+
+result.termination.reason; // "end_turn" — and the assertion above proves the budget was derived
+```
+
+The engine does not switch models mid-run: the host builds the provider from the
+slot it selected, and the loop only re-reads the slot for budget metadata. A run
+that must change models ends and starts a new run with a different
+`session.modelSlot`.
 
 ## Multi-turn resume contract (issue #97)
 
@@ -419,6 +582,103 @@ normal returns, and the normal return path gains no `errorCode`, `partial`, or
 nested `usage` field. Whether to re-run, alert, or merely bill is the host's
 decision (see the termination-reason list under "Final-answer verification"
 and the run state section).
+
+## Termination decision table (issue #170)
+
+A host should be able to decide what to do with a terminal outcome without
+reading the loop. Every mechanism below writes the **same** `termination.reason`
+field, but only one of them can win a given run: the mechanisms are ordered and
+mutually exclusive. Line references are the implementation truth; if code and
+table disagree, the code is right and this table is a bug.
+
+Nine reasons are enumerable on the return path (`src/loop/orchestrator.js:468`);
+`persistence_failed` is a tenth that only ever appears on the throw path, so it
+is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
+`continuation_exhausted`, `stall`, and `final_guard_unverified`
+(`src/loop/termination.js:7-11`).
+
+| `termination.reason` | Triggering mechanism (file:line) | Position in the precedence chain | Host switch | Recommended host action |
+|---|---|---|---|---|
+| `end_turn` | governance stop `completion` (`src/reflection/governor.js:111-113`) or the fall-through stop `complete` (`src/reflection/governor.js:126-128`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:93-100`). Inputs: `shouldContinue` (`src/loop/orchestrator.js:2668-2669`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:2671-2674`, `2676-2730`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js:2866-2873`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js:1019-1023`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js:1363`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
+| `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:2866-2873`, `isEndTurn` at `2574`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js:979-993`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js:979-982`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
+| `no_tool` | governance stop `noTool` (`src/reflection/governor.js:114-117`), gated by `noToolRound` (`src/loop/orchestrator.js:2742-2746`) and a streak `>= maxNoToolRounds`, default 3 (`src/loop/orchestrator.js:1364-1366`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
+| `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2607-2621`), streak accumulation (`src/loop/orchestrator.js:2658-2665`), stop at `src/reflection/governor.js:66-69` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`src/loop/orchestrator.js:1348-1359`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
+| `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`src/loop/orchestrator.js:2567-2568`, loop at `2530`); governance stop `cap` (`src/reflection/governor.js:62-64` / `136-138`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:95`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`src/loop/orchestrator.js:1367-1369`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
+| `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:150-152`); (b) the round loop simply runs out (`src/loop/orchestrator.js:2490`, tail handling at `3072-3090`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`src/loop/orchestrator.js:1034-1049`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
+| `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3024-3037`), revision limit (`3039-3052`), or the budget-exhaustion tail (`3077-3090`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js:3013-3016`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1385-1387`); `finalGuardMaxRetries` moves the revision limit (default 2, `src/loop/orchestrator.js:1377-1380`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
+| `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:845-895`; classification at `847-848` and `867-872`, annotation at `887-894`) | overrides failure classification on the throw path — the signal is checked first, including in the startup-diagnostic path (`src/loop/orchestrator.js:938-951`) | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
+| `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:845-895`, loop catch at `3068-3070`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js:675-686`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `unknown` → inspect `termination.detail` |
+| `persistence_failed` | same `fail()` path, selected when the error carries persistence info (`src/loop/orchestrator.js:867-872`), which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js:880-886`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
+
+### Verification status and CLI exit codes
+
+`verification` is a separate axis from the termination reason: an `end_turn` can
+come back `unverified`, and a `max_rounds_cap` / `stall` /
+`continuation_exhausted` can only ever end up `skipped` or `error` — with a guard
+configured, a `verified` verdict is not available to them, because a guard
+`accept` on those three reasons still terminates as `final_guard_unverified`
+(`src/loop/orchestrator.js:3024-3037`). The CLI mapping is
+`exitCodeForVerification` (`bin/cli.js:1015-1022`):
+
+| `verification.status` | Meaning | `verification.reason` seen in practice | CLI exit code |
+|---|---|---|---|
+| `verified` | the configured guard accepted this final answer | — (no reason field) | `0` |
+| `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js:1385-1387`); CLI guard `no_capture_evidence` / `no_extractable_candidates` (`bin/final-guard.js:86,89`) | `4` |
+| `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js:3025-3029`), `max_retries` (`3041-3045`) | `2` |
+| `error` | the guard threw, decided invalidly, or timed out (fail-open for availability, never `verified`) | `timeout` or `error` (`src/loop/termination.js:173-176`) | `3` |
+
+`exitCodeForVerification` returns `0` for any other status, including a missing
+`verification` object, so **exit code 0 is not by itself proof of a verified
+answer** — read `verification.status`. A run that threw exits `1` from the CLI's
+top-level handler (`bin/cli.js:1032-1042`), which is a failure signal, not a
+verification outcome.
+
+### Mechanism precedence and mutual exclusion
+
+Within one round, exactly one mechanism gets to decide, in this order
+(`src/loop/orchestrator.js:2866-2891`, `src/reflection/governor.js:59-129`,
+`src/loop/termination.js:93-100`):
+
+1. **token-continuation boundary** — repeated `max_tokens` responses set
+   `continuationExhausted`, which is the first test in both governance entry
+   points (`src/reflection/governor.js:62-64`, `136-138`). Because
+   `continuationExhausted` is checked before the `cap` mapping
+   (`src/loop/termination.js:95`), a `cap` stop caused by truncated output
+   reports `continuation_exhausted`, never `max_rounds_cap`.
+2. **stall stop** (`src/reflection/governor.js:66-69`) — above the wrap-up and
+   repeated-error nudges on purpose, so a low-priority nudge cannot starve a
+   genuine loop into `max_rounds_cap`.
+3. **wrapup declaration** — a `done:true` envelope suppresses continuation and
+   raises `completionSignalDetected` (`src/loop/orchestrator.js:2668-2674`),
+   which both produces the `completion` stop (`src/reflection/governor.js:111-113`)
+   and makes `noToolRound` false (`src/loop/orchestrator.js:2742-2746`). Declared
+   completion and `no_tool` are therefore mutually exclusive.
+4. **completion keyword fallback** — the same signal with no parseable envelope
+   comes from `completion.signals` matching the final text
+   (`src/loop/orchestrator.js:2672-2674`), or from the LLM normalizer when an
+   end-turn round produced no envelope at all (`2676-2730`, opt-in via
+   `reflection.wrapupNormalize` / `ERIX_WRAPUP_NORMALIZE=1`).
+5. **`no_tool` stop** — reachable only when nothing declared completion and the
+   round produced no tool call (`src/loop/orchestrator.js:2742-2746`).
+6. **round judge end-turn evaluation** — `judge_done` is evaluated *before* the
+   governor (2866-2873), so it outranks 2-5 in the round it fires; it requires
+   `isEndTurn`, i.e. `stopReason === "end_turn"` with no tool use
+   (`src/loop/orchestrator.js:2574`). A tool round can therefore never produce
+   `judge_done`, and a `max_tokens` round can never produce both `judge_done`
+   and `continuation_exhausted` (the mapping prefers `judge_done` anyway,
+   `src/loop/termination.js:94`).
+7. **post-stop verification** — after a stop reason exists, forced wrap-up may
+   add one more provider call for the three non-continuable reasons
+   (`src/loop/termination.js:203-256`), then `finalGuard` may accept, skip,
+   revise, or fail. A `revise` verdict is not terminal: it injects a user
+   message and governance starts over for that round
+   (`src/loop/orchestrator.js:3039-3061`). Revision retries are bounded by
+   `finalGuardMaxRetries` (default 2, `src/loop/orchestrator.js:1377-1380`),
+   and the guard's own timeout defaults to 30 s
+   (`src/loop/orchestrator.js:1381-1383`).
+8. **`fail()` classification** — any throw at any point replaces all of the
+   above with `aborted` (signal set) or `failed` / `persistence_failed`
+   (`src/loop/orchestrator.js:845-895`).
 
 ## Reusable normalization primitives
 

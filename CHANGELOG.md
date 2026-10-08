@@ -22,6 +22,9 @@
 
 ### Documentation
 
+- 契约新增「终止裁决决策表（issue #170）」（中英同步）：9 个返回态 reason + 抛错态 `persistence_failed` 逐行给出**触发机制（file:line）/ 在优先级链中的位置 / 宿主开关 / 推荐宿主动作**（`src/reflection/governor.js:59-129`、`src/loop/termination.js:93-100`、`src/loop/orchestrator.js:845-895,2866-2891,3010-3090` 等逐行校对），并附 `verification.status` 四值与 CLI 退出码映射（`verified`/`skipped`/`unverified`/`error` → `0`/`4`/`2`/`3`，`bin/cli.js:1015-1022`）与「机制优先级与互斥关系」小节（token 补全边界 → stall → wrapup 声明 → completion 关键词兜底 → `no_tool` → judge end-turn 评估 → 停止后验证 → `fail()` 分类）；`failed` 行按 `termination.errorCode` 分流（#176）、`aborted` 行指向 `error.usage`/`rounds`/`finalText`（#180）。宿主不再需要通读 orchestrator 就能裁决终局。
+- 契约新增「模型元数据与预算推导（issue #182）」（中英同步）：把 `modelConfig`/`modelMetadata` 能携带的字段钉成表格（`contextWindowTokens`/`maxOutputTokens`/`maxTokens`/`temperature`/`topP` 与思考类、超时、身份类、未知字段），逐项标注**进 provider 请求 / 驱动预算与压缩 / 缺省行为**；写清 duck-type 探测顺序 `[modelConfig, modelMetadata, model, provider, context]` 且**首个命中不合并**（`src/loop/budget.js:59-69`）、`modelConfig` 必须是解析器、`session.modelSlot` per-run 选槽与未知槽回落 `default`、slot 未知字段的惰性透传承诺，以及两种口径的触发条件（元数据缺位 → 静默跳过 + 恰好一条 `model_metadata_missing`；值非法/窗口不够大 → `computeBudget` 运行前抛 `invalid_budget`，不带 #180 载荷），并把该事件正式引为宿主装配自检断言点；#181 节末原本悬空的一段预算文字改为指向新节的指针（不重复、不漂移）。
+- 契约新增可执行的「多模型槽位装配示例（issue #182）」（中英同步）：`slots` 目录 JSON 形状 + `createJsonFileModelConfigProvider` → per-run `session.modelSlot` 选槽 → `createOpenAIProvider(slot)`，把“温度/`max_tokens`/思考档位跟着模型走”钉死；`test/contract/doc-examples.js` 的 js 围栏数 6→7，新围栏以真文件 provider + 真 openai provider + 真 `runToolLoop` 跑 L3（只给磁盘与网络接桩），epilogue 断言 per-run 选槽真的落到了请求的 `model`/`max_tokens`/`temperature` 上、`apiKeyEnv` 在 `resolve()` 时被物化。
 - 0.17.0 升级指南 §2 参考 SQL 改为与契约正文/运行时同一 nullish 判据（issue #171，宿主 touwaka 报告：旧 `OR` sketch 在 `dedupKey`/`roundKey` 并存且不等时多命中，照抄会静默丢一轮）；契约新增 `loadMaxRound` 非空 store 返 `≥0` 边界、`__` 宿主保留记账命名空间声明；契约套件新增 nullish 判据分叉 fixture（宿主写成 `OR` 会红）。
 
 ## [0.17.0] - 2026-10-08

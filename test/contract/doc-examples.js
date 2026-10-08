@@ -10,7 +10,7 @@
 //
 // 文档约定说明：契约文档用 TS 风格 `prop?,` 标注可选字段（如 `store?,`），这不是
 // 合法 JS；本 harness 在三层验证前统一剥离该标记（正则见 stripDocConvention）。
-// 另：fence :825 含顶层 `import ... from "erix-agent"`，L1 将其改写为
+// 另：fence :388 与 fence :1127 含顶层 `import ... from "erix-agent"`，L1 将其改写为
 // `const { ... } = await import(...)` 以便 vm.Script 编译。
 
 import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -29,7 +29,7 @@ export const FAKE_PROVIDER_URL = pathToFileURL(
   join(REPO_ROOT, "test", "helpers", "fake-provider.js"),
 ).href;
 
-export const EXPECTED_JS_FENCE_COUNT = 6;
+export const EXPECTED_JS_FENCE_COUNT = 7;
 export const L3_TIMEOUT_MS = 15000;
 
 /** 提取 markdown 中所有 ```js 围栏 → [{ line, code }]（line 为围栏起始行号，1-based）。 */
@@ -165,7 +165,7 @@ if (__body__.user !== \`\${fde}:\${sessionId}\`) throw new Error("extraBody.user
 if ("stream" in __body__) throw new Error("非流式调用不得出现 stream 字段");
 `,
   },
-  // fence #2（EN :111，createAssemblyPort + runToolLoop）
+  // fence #2（EN :118，createAssemblyPort + runToolLoop）
   {
     linkImports: [
       `import { createAssemblyPort, runToolLoop, createMemoryTranscriptStore } from ${JSON.stringify(INDEX_URL)};`,
@@ -188,7 +188,80 @@ const emit = () => {};
 if (provider.requests.length < 1) throw new Error("runToolLoop 未发起任何 provider 调用（示例体没跑到底）");
 `,
   },
-  // fence #3（EN :470，store.list 返回 plain array）
+  // fence #3（EN :388，多模型槽位装配 + 预算元数据自检，issue #182）
+  // 本围栏自带顶层 import：真文件 provider + 真 openai provider + 真 runToolLoop 全链路
+  // 执行，只把磁盘（tmpdir 里的 config.json）与网络（fetch 桩）接桩。
+  {
+    linkImports: [],
+    stubs: `
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir as __osTmpdir } from "node:os";
+import { join as __join } from "node:path";
+const __slotsDir__ = mkdtempSync(__join(__osTmpdir(), "doc-example-slots-"));
+const configPath = __join(__slotsDir__, "config.json");
+writeFileSync(configPath, JSON.stringify({ slots: {
+  default: {
+    protocol: "openai",
+    endpoint: "https://doc-gateway.test/v1",
+    apiKeyEnv: "ERIX_DOC_EXAMPLE_KEY",
+    model: "doc-big-model",
+    contextWindowTokens: 200000,
+    maxOutputTokens: 8192,
+    maxTokens: 2048,
+    temperature: 0.2,
+  },
+  triage: {
+    protocol: "openai",
+    endpoint: "https://doc-gateway.test/v1",
+    apiKeyEnv: "ERIX_DOC_EXAMPLE_KEY",
+    model: "doc-small-model",
+    contextWindowTokens: 32768,
+    maxOutputTokens: 4096,
+    maxTokens: 1024,
+    temperature: 0,
+  },
+} }));
+// apiKeyEnv 间接引用在 resolve() 时被物化（ADR-001），桩先于示例体生效。
+process.env.ERIX_DOC_EXAMPLE_KEY = "doc-example-key";
+const run = { id: \`doc-example-slots-\${process.pid}-\${Date.now()}\`, triage: true, prompt: "doc example task" };
+const executeTool = async () => "doc-example-tool-result";
+const __requests__ = [];
+// provider 在构造时取 globalThis.fetch 作为默认值，桩能接住真实出门的请求。
+globalThis.fetch = async (url, options) => {
+  __requests__.push({ url, options });
+  return {
+    status: 200,
+    async text() {
+      return JSON.stringify({
+        choices: [{ message: { content: "doc-example done" }, finish_reason: "stop" }],
+      });
+    },
+  };
+};
+`,
+    epilogue: `
+// 「本 run 没发 model_metadata_missing」由示例自身的 onEvent 断言把守：事件一出现就抛错。
+// 这里只能看 stub 作用域的量（示例体跑在函数里，局部量不外泄）。
+if (__requests__.length !== 1) throw new Error(\`provider 应发起 1 次请求，实际 \${__requests__.length} 次\`);
+const __body__ = JSON.parse(__requests__[0]?.options?.body ?? "{}");
+// per-run 选槽真的生效：出门的 model / max_tokens / temperature 全部来自 triage 槽。
+if (__body__.model !== "doc-small-model") {
+  throw new Error(\`per-run 选槽未生效，实际 model=\${String(__body__.model)}\`);
+}
+if (__body__.max_tokens !== 1024) {
+  throw new Error(\`triage 槽的 maxTokens 未跟着模型走，实际 max_tokens=\${String(__body__.max_tokens)}\`);
+}
+if (__body__.temperature !== 0) {
+  throw new Error(\`triage 槽的 temperature 未跟着模型走，实际 temperature=\${String(__body__.temperature)}\`);
+}
+if (!String(__requests__[0]?.options?.headers?.Authorization ?? "").startsWith("Bearer doc-example-key")) {
+  throw new Error("apiKeyEnv 未在 resolve() 时物化为 Authorization 头");
+}
+if (!__body__.messages || !Array.isArray(__body__.messages)) throw new Error("请求体缺 messages：循环未真正跑起来");
+rmSync(__slotsDir__, { recursive: true, force: true });
+`,
+  },
+  // fence #4（EN :772，store.list 返回 plain array）
   {
     linkImports: [],
     stubs: `
@@ -204,7 +277,7 @@ if (__listQueries__.length !== 1) throw new Error(\`store.list 应被调用 1 �
 if (__listQueries__[0]?.scope !== "run") throw new Error("store.list 查询 scope 应为 \\"run\\"");
 `,
   },
-  // fence #4（EN :552，createBuiltinNotesTools 接线）
+  // fence #5（EN :854，createBuiltinNotesTools 接线）
   {
     linkImports: [
       `import { createBuiltinNotesTools } from ${JSON.stringify(INDEX_URL)};`,
@@ -255,7 +328,7 @@ if (readdirSync(__notesDir__).length === 0) throw new Error("note_take 未在 tm
 rmSync(__notesDir__, { recursive: true, force: true });
 `,
   },
-  // fence #5（EN :825，projectTranscriptForDisplay 展示投影）
+  // fence #6（EN :1127，projectTranscriptForDisplay 展示投影）
   {
     linkImports: [],
     stubs: `
