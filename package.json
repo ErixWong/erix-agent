@@ -17,6 +17,7 @@
     "README_cn.md",
     "CHANGELOG.md",
     "docs/host-consumer-contract.md",
+    "docs/host-consumer-contract_cn.md",
     "docs/host-upgrade-guide-0.6.0.md",
     "docs/host-upgrade-guide-0.12.0.md",
     "docs/host-upgrade-guide-0.14.0.md",
@@ -41,7 +42,8 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/index.js"
+    "check": "node --check src/index.js",
+    "check:pack-links": "node scripts/pack-link-check.mjs"
   },
   "license": "MIT"
 }

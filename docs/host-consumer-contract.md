@@ -5,8 +5,8 @@
 This document defines the host integration boundary for `erix-agent`. The engine
 maintains auditable run facts; the host owns tool permissions, archive policy,
 retry/rerun policy, and the final consumption decision. See
-[ADR-012](decisions/012-engine-truth-model-efficiency-host-policy.md) and
-[ADR-013](decisions/013-guard-charter.md) for the responsibility boundary.
+[ADR-012](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/012-engine-truth-model-efficiency-host-policy.md) and
+[ADR-013](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/013-guard-charter.md) for the responsibility boundary.
 The 0.6.0 migration steps are in
 [host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md); the 0.12.0 notes
 contract migration steps are in
@@ -167,7 +167,7 @@ migrate to the new names; the aliases may be removed in a future major.
 written twice: embedded in each round record (`RoundRecord.runState`) and via
 the standalone run-state methods (`saveRunState`/`markRunState`). Both copies
 are load-bearing, so issue #82 kept both instead of deleting one — see
-[ADR-019](decisions/019-run-state-store-authority.md) for the authority rules and
+[ADR-019](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/019-run-state-store-authority.md) for the authority rules and
 the alternatives that were rejected or deferred.
 The standalone run-state (`saveRunState`/`loadRunState`) is the authoritative
 latest-only state; `RoundRecord.runState` is the history-side per-round

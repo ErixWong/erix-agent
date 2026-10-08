@@ -97,9 +97,9 @@ Agent 行为难以预测。统一 Headless Agent 的价值，就是让业务代�
 | 沉淀统一的 Agent 能力与工程规范 | 规范消息与工具格式、ADR 决策记录、契约测试、基准 harness | — |
 
 两条边界让这张表站得住：运行时**不执行任何策略**——只提供钩子，由宿主决定
-（[ADR-009](docs/decisions/009-safety-layering_cn.md)）；运行时**只负责单个任务生命周期**——
+（[ADR-009](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/009-safety-layering_cn.md)）；运行时**只负责单个任务生命周期**——
 队列、仲裁与重试调度留在宿主
-（[ADR-012](docs/decisions/012-engine-truth-model-efficiency-host-policy_cn.md)）。
+（[ADR-012](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/012-engine-truth-model-efficiency-host-policy_cn.md)）。
 
 ## 为什么构建自有实现？
 
@@ -442,16 +442,16 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 ## 文档
 
-- [docs/requirements_cn.md](docs/requirements_cn.md) - 需求与阶段
-- [docs/architecture_cn.md](docs/architecture_cn.md) - API 契约与数据流
-- [docs/decisions/](docs/decisions/) - 设计决策，包括配置、存储、压缩、reflection、工具、skill、安全、judge 方向、引擎/模型/宿主边界和 guard policy
-- [docs/testing_cn.md](docs/testing_cn.md) - 测试策略与行为指标
+- [docs/requirements_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/requirements_cn.md) - 需求与阶段
+- [docs/architecture_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/architecture_cn.md) - API 契约与数据流
+- [docs/decisions/](https://github.com/ErixWong/erix-agent/tree/main/docs/decisions) - 设计决策，包括配置、存储、压缩、reflection、工具、skill、安全、judge 方向、引擎/模型/宿主边界和 guard policy
+- [docs/testing_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing_cn.md) - 测试策略与行为指标
 - [docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md) - 关于核验、note-first 取回、provenance 和重跑的宿主消费者契约
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0 破坏窗口迁移步骤（英文）
-- [docs/host-upgrade-guide-v030_cn.md](docs/host-upgrade-guide-v030_cn.md) - 面向 `touwaka` / `app_container` 的宿主升级指南与 v0.3.x 行为
-- [docs/maintenance-policy_cn.md](docs/maintenance-policy_cn.md) - 维护策略与内部替换/止损标准
-- [docs/research/](docs/research/) - 调研报告（仅中文）
-- [docs/design/](docs/design/) - 设计与 RFC 材料（仅中文）
+- [docs/host-upgrade-guide-v030_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/host-upgrade-guide-v030_cn.md) - 面向 `touwaka` / `app_container` 的宿主升级指南与 v0.3.x 行为
+- [docs/maintenance-policy_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/maintenance-policy_cn.md) - 维护策略与内部替换/止损标准
+- [docs/research/](https://github.com/ErixWong/erix-agent/tree/main/docs/research) - 调研报告（仅中文）
+- [docs/design/](https://github.com/ErixWong/erix-agent/tree/main/docs/design) - 设计与 RFC 材料（仅中文）
 - [docs/tasks/](docs/tasks/) - 当前任务文档（仅中文）
 
 ## 状态与版本历史
@@ -504,7 +504,7 @@ Notes 实验脚本同样按 `--model`、`ERIX_EXPERIMENT_MODEL` 或 `--config`/`
 | cancel-async-tasks | reward=1（117s） | Judge logging 和透明放行观察到一条正确路线 |
 | circuit-fibsqrt | reward=0（64 个完整轮次） | 11 条真实拦截记录；报告将失败归因于模型能力，而非该机制 |
 
-这些 benchmark 数字是项目历史证据，不是 API 保证。Judge 设计决策记录在 [ADR-011](docs/decisions/011-judge-direction_cn.md)。
+这些 benchmark 数字是项目历史证据，不是 API 保证。Judge 设计决策记录在 [ADR-011](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/011-judge-direction_cn.md)。
 
 ## 许可证
 

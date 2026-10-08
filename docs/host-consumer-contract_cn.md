@@ -5,8 +5,8 @@
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
-[ADR-012](decisions/012-engine-truth-model-efficiency-host-policy.md) 与
-[ADR-013](decisions/013-guard-charter.md)。0.6.0 迁移步骤见
+[ADR-012](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/012-engine-truth-model-efficiency-host-policy.md) 与
+[ADR-013](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/013-guard-charter.md)。0.6.0 迁移步骤见
 [host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md)；0.12.0 notes 契约迁移步骤见
 [host-upgrade-guide-0.12.0.md](host-upgrade-guide-0.12.0.md)。
 
@@ -140,7 +140,7 @@ status，再回落读取旧 `.state.json` 数据内嵌的 `state`。`loadRunStat
 round record（`RoundRecord.runState`）里，又经独立 run-state 方法
 （`saveRunState`/`markRunState`）落盘。两份拷贝都是承重的，所以 issue #82 选择保留而非删除
 其中一份——权威规则、以及被拒绝/推迟的备选见
-[ADR-019](decisions/019-run-state-store-authority.md)。
+[ADR-019](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/019-run-state-store-authority.md)。
 独立 run-state（`saveRunState`/`loadRunState`）是 latest-only 权威状态；随 transcript
 保存的 `RoundRecord.runState` 属于 history 侧的每轮快照。引擎恢复时优先采用有效的独立 state；
 仅当独立 state 不存在时才回落到最新 record；若独立 state 存在但无效，则报告

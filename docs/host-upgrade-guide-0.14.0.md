@@ -11,7 +11,7 @@ declaration (`replay` + `replayPolicy`) and partial stream persistence
 The breaking items are all host-facing reads/exports; the engine's default
 resume behaviour is unchanged. See
 [host-consumer-contract.md](host-consumer-contract.md) for the current contract
-text, [ADR-019](decisions/019-run-state-store-authority.md) for the run-state
+text, [ADR-019](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/019-run-state-store-authority.md) for the run-state
 decision, and the changelog for the full entry list.
 
 > **Scope note:** this is the 0.14.0 upgrade guide, not current release notes.

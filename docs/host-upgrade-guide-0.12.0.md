@@ -6,7 +6,7 @@ removal, purge de-pagination). The changes below are breaking for hosts that
 integrate notes through `createBuiltinNotesTools` or a custom `NotesStore`.
 Nothing outside notes changes in this release. See
 [host-consumer-contract.md](host-consumer-contract.md) for the current contract
-text and [ADR-018](decisions/018-notes-lifecycle-pagination.md) for the
+text and [ADR-018](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/018-notes-lifecycle-pagination.md) for the
 reasoning.
 
 > **Scope note:** this is the 0.12.0 upgrade guide, not current release notes.
