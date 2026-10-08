@@ -290,6 +290,28 @@ run（副作用被追踪，见 ADR-013）——但仅当 store 实现了该方�
 `result.completionErrors[]` 收集收尾失败（多个失败互不覆盖）。主结果若是异常，原异常
 仍是主，收尾失败挂在 `error.completionErrors` 上。
 
+## 终局载荷（issue #176 / #180）
+
+无论 `runToolLoop` 是正常返回还是抛错，终局都要把同一套事实交给宿主。下列字段全部是
+additive：既有字段不变形状、不变值、不变语义，忽略它们的宿主行为与从前一致。
+
+| 字段 | 出现在 | 契约 |
+|---|---|---|
+| `termination.errorCode` | `result.termination` / `error.termination` 且 `reason === "failed"` 时 | 失败的根因分类。引擎只透传错误**已有**的分类字段（`KitError.code`，如 `timeout`、`rate_limited`、`auth`、`server`、`checkpoint_failed`），没带分类时回落 `"unknown"`——绝不自己发明或重新归因。其他 reason 不得多出该字段。宿主裁决表因此可以直接按 `errorCode` 分流，而不是解析 `termination.detail` 字符串。 |
+| `error.usage`、`error.rounds`、`error.finalText` | `runToolLoop` 抛出的每一个错误 | 抛错时刻的累计用量——就是 `result.usage` 本会携带的**同一个对象**（含 `cacheRead`/`cacheWrite`）——外加轮号与已产出的部分终稿（无产出时为 `""`）。尚未产生任何累计时，这些字段是**零值而不是缺字段**：`{ input_tokens: 0, output_tokens: 0 }`、`0`、`""`。 |
+| `termination.usage`、`termination.rounds`、`termination.partial` | `error.termination` 且 `reason === "aborted"` 时 | 与错误对象上的量同口径（`termination.usage === error.usage`），`partial: true` 表示这是部分稿而非终稿。 |
+
+abort 载荷的存在理由：用户点「停止」的 run 真的花了 token。引擎此前的行为是抛出异常而
+把累计量留在函数作用域里，宿主只能在 `catch` 分支写死
+`usage: { input_tokens: 0, output_tokens: 0 }, rounds: 0`——于是最长（最贵）的那批 run 记账为
+0；靠累加 `usage` 事件也求不出真值：该事件只在 provider 响应完成后才发，而收尾的
+`final_guard` / 强制收尾请求根本不发 `usage` 事件。宿主必须从接到的错误上读这份载荷；
+「停掉的 run 就不记账」不是合法行为。
+
+`aborted` 仍然意味着「循环抛错」——本次改动不把 abort 变成正常返回，正常返回路径也不会
+多出 `errorCode`、`partial` 或嵌套 `usage` 字段。要不要重跑、要不要告警、怎么记账，仍然是
+宿主的决策（reason 枚举见下文「终答核验」，终态另见运行状态一节）。
+
 ## 可复用的归一化原语
 
 自带 OpenAI 兼容传输层的宿主可以从包根导入这些辅助函数。它们不做 I/O，也不调用模型：

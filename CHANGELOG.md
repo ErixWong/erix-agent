@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `termination.errorCode`（issue #176，additive / semver minor）：`reason === "failed"` 的终局（`result.termination` 与抛出的 `error.termination`）现在携带根因分类——引擎只透传错误已有的分类字段（`KitError.code`，如 `timeout`/`rate_limited`/`auth`/`server`/`checkpoint_failed`），未携带时回落 `"unknown"`，绝不自己归因；其他 reason 不带该字段。宿主终止裁决表（#170）可从此按 `errorCode` 分流，不再解析 `termination.detail` 字符串。
+- abort/failed 抛错携带终局载荷（issue #180，方案 A，additive / semver minor）：`runToolLoop` 抛出的错误现在挂 `error.usage`（与 `result.usage` 同一个对象，含 `cacheRead`/`cacheWrite`）、`error.rounds`、`error.finalText`（无产出时为 `""`）；`reason === "aborted"` 时 `termination` 同步 `{usage, rounds, partial:true}`。无累计量时为零值而非缺字段。「abort = 抛错」语义不变，宿主不再需要为用户点「停止」的 run 写死 `usage: 0`。新增 `terminationPayloadContract` 契约套件（`erix-agent/contract-tests`）。
+
 ## [0.17.0] - 2026-10-08
 
 本次合并 #157/#160/#158：`appendUserTurn` 成对可选快路径探针（DB 宿主事务内免全量读）、

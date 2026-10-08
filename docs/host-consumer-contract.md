@@ -378,6 +378,34 @@ not overwrite each other). When the main result is an exception, the original
 error stays primary and the completion errors are attached to it as
 `error.completionErrors`.
 
+## Termination payload (issue #176 / #180)
+
+Every terminal outcome hands the host the same facts, whether `runToolLoop`
+returned or threw. All fields below are additive: no existing field changes
+shape, value, or meaning, and a host that ignores them behaves exactly as before.
+
+| Field | Present on | Contract |
+|---|---|---|
+| `termination.errorCode` | `result.termination` / `error.termination` when `reason === "failed"` | Root-cause class of the failure. The engine passes through the classification the error already carries (`KitError.code`, e.g. `timeout`, `rate_limited`, `auth`, `server`, `checkpoint_failed`) and falls back to `"unknown"` when the error carries none — it never invents or re-derives a code. No other reason gains the field. A host decision table can therefore branch on `errorCode` instead of parsing `termination.detail`. |
+| `error.usage`, `error.rounds`, `error.finalText` | every error thrown by `runToolLoop` | The accumulated usage at the throw point — literally the same object `result.usage` would have carried, including `cacheRead`/`cacheWrite` — plus the round counter and the partial final text (`""` when nothing was produced). When nothing had accumulated these are **zero values, not absent fields**: `{ input_tokens: 0, output_tokens: 0 }`, `0`, `""`. |
+| `termination.usage`, `termination.rounds`, `termination.partial` | `error.termination` when `reason === "aborted"` | The same values as on the error object (`termination.usage === error.usage`), with `partial: true` marking the text as a partial draft rather than a final answer. |
+
+The abort payload exists because a run the user stopped really did spend tokens.
+The engine's previous behavior — throwing with the accumulated usage and round
+counter left inside the closure — forced hosts to hardcode
+`usage: { input_tokens: 0, output_tokens: 0 }, rounds: 0` in their `catch`
+branch, so the longest (most expensive) runs were booked as zero, and summing
+the per-round `usage` events does not recover the truth: those events are only
+emitted after a provider response completes, and the closing `final_guard` /
+forced-final provider calls never emit one. Hosts must read the payload off the
+caught error; giving up on bookkeeping for a stopped run is not allowed.
+
+`aborted` still means "the loop throws" — this change does not turn aborts into
+normal returns, and the normal return path gains no `errorCode`, `partial`, or
+nested `usage` field. Whether to re-run, alert, or merely bill is the host's
+decision (see the termination-reason list under "Final-answer verification"
+and the run state section).
+
 ## Reusable normalization primitives
 
 Hosts that provide their own OpenAI-compatible transport can import these
