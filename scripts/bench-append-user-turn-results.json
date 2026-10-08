@@ -1,0 +1,741 @@
+{
+  "schemaVersion": 1,
+  "kind": "append-user-turn-full-load-benchmark",
+  "issue": "ErixWong/erix-agent#157",
+  "protocol": {
+    "operation": "单次 appendUserTurn 调用（含 store.load + store.appendRound），每次采样前把 store 重置为恰好 N 轮",
+    "rounds": [
+      50,
+      150,
+      300
+    ],
+    "recordShape": "assistant(text+tool_use) + user(tool_result 大输出) + response/summary/l0facts/toolOutputs",
+    "roundBytesTarget": 8192,
+    "warmups": 1,
+    "repsPolicy": "至少 5 次，累计计时不足 200ms 则继续（上限 11 次）",
+    "quantile": "线性插值百分位（p50/p95）",
+    "seeding": "确定性 PRNG（mulberry32，种子 = rounds）→ 同一轮数内容固定，档位间可比",
+    "storeResetPerSample": "计时区外重置，保证每次采样面对恰好 N 轮",
+    "loadAssertionRecords": "N+1 —— seed 为 N 条，appendUserTurn 追加第 N+1 条；load-only/幂等重跑两趟跑在 append 趟之后且不再 reset，故面对 N+1 条",
+    "noLlm": true,
+    "noNetwork": true
+  },
+  "environment": {
+    "nodeVersion": "v22.23.2",
+    "execPath": "/usr/bin/node",
+    "platform": "linux/x86_64",
+    "cpu": "Intel(R) Xeon(R) CPU E5-2686 v4 @ 2.30GHz",
+    "cpuCount": 36,
+    "totalMemoryBytes": 134972534784,
+    "invokedAs": [
+      "../../../../../../usr/bin/node",
+      "scripts/bench-append-user-turn.mjs"
+    ],
+    "execArgv": [],
+    "experimentalSqliteFlag": false,
+    "nodeSqlite": {
+      "available": true,
+      "exports": [
+        "DatabaseSync",
+        "StatementSync",
+        "backup",
+        "constants",
+        "default"
+      ]
+    },
+    "noLlm": true
+  },
+  "hostReport": {
+    "source": "issue #157 宿主报告值（touwaka-mate 自研三表 DB store；非本机复现）",
+    "rounds": [
+      50,
+      150,
+      300
+    ],
+    "loadMs": [
+      10,
+      28,
+      36
+    ]
+  },
+  "metrics": [
+    "appendUserTurnMs —— 单次 appendUserTurn 调用端到端耗时（与 issue #157 的\"事务内全量读\"同口径）",
+    "loadOnlyMs —— 仅 store.load 的耗时（与宿主报告的\"load 耗时\"同口径）",
+    "idempotentRerunMs —— 同 messageId 重跑（written:false，只付 load + 判重，不再 appendRound）",
+    "perTurnCallProfile.fullFileReads —— 每轮实际发生的全量读次数（file store：load 1 次 + appendRecord 幂等再读 1 次 = 2）",
+    "perTurnCallProfile.fsBytesRead —— 每轮实际从 fs 读走的字节数"
+  ],
+  "startedAt": "2026-10-08T08:22:12.463Z",
+  "completedAt": "2026-10-08T08:22:22.179Z",
+  "tiers": [
+    {
+      "id": "a",
+      "label": "a · memory store（createMemoryTranscriptStore，下界）",
+      "skipped": false,
+      "cells": [
+        {
+          "rounds": 50,
+          "samples": 11,
+          "appendUserTurnMs": {
+            "n": 11,
+            "p50": 1.804,
+            "p95": 2.659,
+            "min": 1.419,
+            "max": 2.801,
+            "mean": 1.9
+          },
+          "loadOnlyMs": {
+            "n": 15,
+            "p50": 1.581,
+            "p95": 2.196,
+            "min": 1.369,
+            "max": 2.73,
+            "mean": 1.682
+          },
+          "idempotentRerunMs": {
+            "n": 15,
+            "p50": 1.395,
+            "p95": 2.56,
+            "min": 1.165,
+            "max": 2.733,
+            "mean": 1.6
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 1,
+            "appendRoundCalls": 1,
+            "recordsReadPerLoad": 50,
+            "fullFileReads": 0,
+            "createReadStreamCalls": 0,
+            "readFileCalls": 0,
+            "openCalls": 0,
+            "fsBytesRead": 0,
+            "logicalBytesRead": 441616,
+            "storeInternal": null
+          },
+          "storageBytes": {
+            "logicalJsonBytes": 441615
+          },
+          "derived": {
+            "appendUserTurnMsPerRound": 0.036,
+            "hostReportLoadMs": 10
+          }
+        },
+        {
+          "rounds": 150,
+          "samples": 11,
+          "appendUserTurnMs": {
+            "n": 11,
+            "p50": 3.479,
+            "p95": 4.542,
+            "min": 3.157,
+            "max": 4.661,
+            "mean": 3.771
+          },
+          "loadOnlyMs": {
+            "n": 15,
+            "p50": 3.411,
+            "p95": 4.57,
+            "min": 3.139,
+            "max": 5.315,
+            "mean": 3.522
+          },
+          "idempotentRerunMs": {
+            "n": 15,
+            "p50": 3.381,
+            "p95": 4.699,
+            "min": 3.087,
+            "max": 5.733,
+            "mean": 3.579
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 1,
+            "appendRoundCalls": 1,
+            "recordsReadPerLoad": 150,
+            "fullFileReads": 0,
+            "createReadStreamCalls": 0,
+            "readFileCalls": 0,
+            "openCalls": 0,
+            "fsBytesRead": 0,
+            "logicalBytesRead": 1326906,
+            "storeInternal": null
+          },
+          "storageBytes": {
+            "logicalJsonBytes": 1326905
+          },
+          "derived": {
+            "appendUserTurnMsPerRound": 0.023,
+            "hostReportLoadMs": 28
+          }
+        },
+        {
+          "rounds": 300,
+          "samples": 11,
+          "appendUserTurnMs": {
+            "n": 11,
+            "p50": 6.871,
+            "p95": 8.064,
+            "min": 6.733,
+            "max": 9.125,
+            "mean": 7.07
+          },
+          "loadOnlyMs": {
+            "n": 15,
+            "p50": 6.955,
+            "p95": 8.462,
+            "min": 6.74,
+            "max": 8.692,
+            "mean": 7.336
+          },
+          "idempotentRerunMs": {
+            "n": 15,
+            "p50": 7.062,
+            "p95": 8.698,
+            "min": 6.931,
+            "max": 9.099,
+            "mean": 7.359
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 1,
+            "appendRoundCalls": 1,
+            "recordsReadPerLoad": 300,
+            "fullFileReads": 0,
+            "createReadStreamCalls": 0,
+            "readFileCalls": 0,
+            "openCalls": 0,
+            "fsBytesRead": 0,
+            "logicalBytesRead": 2654144,
+            "storeInternal": null
+          },
+          "storageBytes": {
+            "logicalJsonBytes": 2654143
+          },
+          "derived": {
+            "appendUserTurnMsPerRound": 0.023,
+            "hostReportLoadMs": 36
+          }
+        }
+      ]
+    },
+    {
+      "id": "b",
+      "label": "b · file store（createFileTranscriptStore，库内置真实实现）",
+      "skipped": false,
+      "cells": [
+        {
+          "rounds": 50,
+          "samples": 11,
+          "appendUserTurnMs": {
+            "n": 11,
+            "p50": 9.092,
+            "p95": 10.825,
+            "min": 8.483,
+            "max": 11.047,
+            "mean": 9.338
+          },
+          "loadOnlyMs": {
+            "n": 15,
+            "p50": 4.167,
+            "p95": 5.458,
+            "min": 3.925,
+            "max": 5.609,
+            "mean": 4.286
+          },
+          "idempotentRerunMs": {
+            "n": 15,
+            "p50": 4.045,
+            "p95": 5.417,
+            "min": 3.854,
+            "max": 5.634,
+            "mean": 4.186
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 1,
+            "appendRoundCalls": 1,
+            "recordsReadPerLoad": 50,
+            "fullFileReads": 2,
+            "createReadStreamCalls": 1,
+            "readFileCalls": 1,
+            "openCalls": 2,
+            "fsBytesRead": 880230,
+            "logicalBytesRead": 441616,
+            "storeInternal": null
+          },
+          "storageBytes": {
+            "transcriptFileBytes": 441815
+          },
+          "derived": {
+            "appendUserTurnMsPerRound": 0.182,
+            "hostReportLoadMs": 10
+          }
+        },
+        {
+          "rounds": 150,
+          "samples": 8,
+          "appendUserTurnMs": {
+            "n": 8,
+            "p50": 25.172,
+            "p95": 27.059,
+            "min": 24.315,
+            "max": 27.409,
+            "mean": 25.419
+          },
+          "loadOnlyMs": {
+            "n": 15,
+            "p50": 11.481,
+            "p95": 13.335,
+            "min": 10.853,
+            "max": 13.516,
+            "mean": 11.861
+          },
+          "idempotentRerunMs": {
+            "n": 15,
+            "p50": 11.084,
+            "p95": 13.229,
+            "min": 10.485,
+            "max": 14.068,
+            "mean": 11.584
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 1,
+            "appendRoundCalls": 1,
+            "recordsReadPerLoad": 150,
+            "fullFileReads": 2,
+            "createReadStreamCalls": 1,
+            "readFileCalls": 1,
+            "openCalls": 2,
+            "fsBytesRead": 2644810,
+            "logicalBytesRead": 1326906,
+            "storeInternal": null
+          },
+          "storageBytes": {
+            "transcriptFileBytes": 1327110
+          },
+          "derived": {
+            "appendUserTurnMsPerRound": 0.168,
+            "hostReportLoadMs": 28
+          }
+        },
+        {
+          "rounds": 300,
+          "samples": 5,
+          "appendUserTurnMs": {
+            "n": 5,
+            "p50": 48.721,
+            "p95": 52.301,
+            "min": 47.441,
+            "max": 53.179,
+            "mean": 49.171
+          },
+          "loadOnlyMs": {
+            "n": 15,
+            "p50": 22.6,
+            "p95": 24.814,
+            "min": 20.614,
+            "max": 28.985,
+            "mean": 22.681
+          },
+          "idempotentRerunMs": {
+            "n": 15,
+            "p50": 22.04,
+            "p95": 22.564,
+            "min": 20.403,
+            "max": 22.69,
+            "mean": 21.732
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 1,
+            "appendRoundCalls": 1,
+            "recordsReadPerLoad": 300,
+            "fullFileReads": 2,
+            "createReadStreamCalls": 1,
+            "readFileCalls": 1,
+            "openCalls": 2,
+            "fsBytesRead": 5290286,
+            "logicalBytesRead": 2654144,
+            "storeInternal": null
+          },
+          "storageBytes": {
+            "transcriptFileBytes": 2654348
+          },
+          "derived": {
+            "appendUserTurnMsPerRound": 0.162,
+            "hostReportLoadMs": 36
+          }
+        }
+      ]
+    },
+    {
+      "id": "c",
+      "label": "c · SQLite 三表适配器（node:sqlite，宿主同构 schema）",
+      "skipped": false,
+      "cells": [
+        {
+          "rounds": 50,
+          "samples": 11,
+          "appendUserTurnMs": {
+            "n": 11,
+            "p50": 4.546,
+            "p95": 5.665,
+            "min": 4.445,
+            "max": 6.704,
+            "mean": 4.726
+          },
+          "loadOnlyMs": {
+            "n": 15,
+            "p50": 3.293,
+            "p95": 4.57,
+            "min": 2.454,
+            "max": 6.038,
+            "mean": 3.438
+          },
+          "idempotentRerunMs": {
+            "n": 15,
+            "p50": 3.302,
+            "p95": 4.42,
+            "min": 2.495,
+            "max": 5.716,
+            "mean": 3.411
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 1,
+            "appendRoundCalls": 1,
+            "recordsReadPerLoad": 50,
+            "fullFileReads": 0,
+            "createReadStreamCalls": 0,
+            "readFileCalls": 0,
+            "openCalls": 0,
+            "fsBytesRead": 0,
+            "logicalBytesRead": 441616,
+            "storeInternal": {
+              "rows": 50,
+              "joinedRows": 100,
+              "contentBytes": 401532,
+              "recordBytes": 19814
+            }
+          },
+          "storageBytes": {
+            "sqliteFileBytes": 1027008
+          },
+          "derived": {
+            "appendUserTurnMsPerRound": 0.091,
+            "hostReportLoadMs": 10
+          }
+        },
+        {
+          "rounds": 150,
+          "samples": 11,
+          "appendUserTurnMs": {
+            "n": 11,
+            "p50": 11.288,
+            "p95": 12.693,
+            "min": 10.896,
+            "max": 13.838,
+            "mean": 11.455
+          },
+          "loadOnlyMs": {
+            "n": 15,
+            "p50": 5.774,
+            "p95": 7.599,
+            "min": 5.479,
+            "max": 8.677,
+            "mean": 6.128
+          },
+          "idempotentRerunMs": {
+            "n": 15,
+            "p50": 5.598,
+            "p95": 7.113,
+            "min": 5.442,
+            "max": 8.181,
+            "mean": 5.92
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 1,
+            "appendRoundCalls": 1,
+            "recordsReadPerLoad": 150,
+            "fullFileReads": 0,
+            "createReadStreamCalls": 0,
+            "readFileCalls": 0,
+            "openCalls": 0,
+            "fsBytesRead": 0,
+            "logicalBytesRead": 1326906,
+            "storeInternal": {
+              "rows": 150,
+              "joinedRows": 300,
+              "contentBytes": 1205775,
+              "recordBytes": 59718
+            }
+          },
+          "storageBytes": {
+            "sqliteFileBytes": 2818096
+          },
+          "derived": {
+            "appendUserTurnMsPerRound": 0.075,
+            "hostReportLoadMs": 28
+          }
+        },
+        {
+          "rounds": 300,
+          "samples": 11,
+          "appendUserTurnMs": {
+            "n": 11,
+            "p50": 17.115,
+            "p95": 18.63,
+            "min": 13.52,
+            "max": 19.58,
+            "mean": 16.948
+          },
+          "loadOnlyMs": {
+            "n": 15,
+            "p50": 12.646,
+            "p95": 14.78,
+            "min": 12.071,
+            "max": 14.804,
+            "mean": 13.436
+          },
+          "idempotentRerunMs": {
+            "n": 15,
+            "p50": 12.204,
+            "p95": 14.027,
+            "min": 12.08,
+            "max": 14.075,
+            "mean": 12.546
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 1,
+            "appendRoundCalls": 1,
+            "recordsReadPerLoad": 300,
+            "fullFileReads": 0,
+            "createReadStreamCalls": 0,
+            "readFileCalls": 0,
+            "openCalls": 0,
+            "fsBytesRead": 0,
+            "logicalBytesRead": 2654144,
+            "storeInternal": {
+              "rows": 300,
+              "joinedRows": 600,
+              "contentBytes": 2410906,
+              "recordBytes": 119868
+            }
+          },
+          "storageBytes": {
+            "sqliteFileBytes": 5545808
+          },
+          "derived": {
+            "appendUserTurnMsPerRound": 0.057,
+            "hostReportLoadMs": 36
+          }
+        }
+      ],
+      "schema": "agent_rounds / messages / tool_calls（JOIN 重组，ORDER BY round_no, append_seq）"
+    },
+    {
+      "id": "d",
+      "label": "d · CLI 集成检查（bin/cli.js resume 预写路径，不跑 LLM）",
+      "skipped": false,
+      "cells": [
+        {
+          "rounds": 50,
+          "samples": 3,
+          "cliStoreAttributableMs": {
+            "n": 3,
+            "p50": 14.12,
+            "p95": 15.949,
+            "min": 13.769,
+            "max": 16.152,
+            "mean": 14.68
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 2,
+            "appendRoundCalls": 1,
+            "fullReadCalls": 3,
+            "readFileCalls": 1,
+            "createReadStreamCalls": 2,
+            "openCalls": 3,
+            "fsBytesRead": 1318845,
+            "recordsRead": 100,
+            "logicalBytesRead": 0,
+            "storeInternal": null
+          },
+          "observedOps": [
+            "load",
+            "load",
+            "appendRound"
+          ],
+          "callsDetail": [
+            {
+              "op": "load",
+              "ms": 4.528,
+              "records": 50,
+              "fs": {
+                "createReadStreamCalls": 1,
+                "readFileCalls": 0,
+                "openCalls": 1,
+                "fullReadCalls": 1,
+                "bytesRead": 438615
+              }
+            },
+            {
+              "op": "load",
+              "ms": 4.442,
+              "records": 50,
+              "fs": {
+                "createReadStreamCalls": 1,
+                "readFileCalls": 0,
+                "openCalls": 1,
+                "fullReadCalls": 1,
+                "bytesRead": 438615
+              }
+            },
+            {
+              "op": "appendRound",
+              "ms": 5.15,
+              "records": 1,
+              "fs": {
+                "createReadStreamCalls": 0,
+                "readFileCalls": 1,
+                "openCalls": 1,
+                "fullReadCalls": 1,
+                "bytesRead": 441615
+              }
+            }
+          ]
+        },
+        {
+          "rounds": 150,
+          "samples": 3,
+          "cliStoreAttributableMs": {
+            "n": 3,
+            "p50": 42.237,
+            "p95": 43.056,
+            "min": 40.733,
+            "max": 43.147,
+            "mean": 42.039
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 2,
+            "appendRoundCalls": 1,
+            "fullReadCalls": 3,
+            "readFileCalls": 1,
+            "createReadStreamCalls": 2,
+            "openCalls": 3,
+            "fsBytesRead": 3962715,
+            "recordsRead": 300,
+            "logicalBytesRead": 0,
+            "storeInternal": null
+          },
+          "observedOps": [
+            "load",
+            "load",
+            "appendRound"
+          ],
+          "callsDetail": [
+            {
+              "op": "load",
+              "ms": 14.808,
+              "records": 150,
+              "fs": {
+                "createReadStreamCalls": 1,
+                "readFileCalls": 0,
+                "openCalls": 1,
+                "fullReadCalls": 1,
+                "bytesRead": 1317905
+              }
+            },
+            {
+              "op": "load",
+              "ms": 12.109,
+              "records": 150,
+              "fs": {
+                "createReadStreamCalls": 1,
+                "readFileCalls": 0,
+                "openCalls": 1,
+                "fullReadCalls": 1,
+                "bytesRead": 1317905
+              }
+            },
+            {
+              "op": "appendRound",
+              "ms": 15.32,
+              "records": 1,
+              "fs": {
+                "createReadStreamCalls": 0,
+                "readFileCalls": 1,
+                "openCalls": 1,
+                "fullReadCalls": 1,
+                "bytesRead": 1326905
+              }
+            }
+          ]
+        },
+        {
+          "rounds": 300,
+          "samples": 3,
+          "cliStoreAttributableMs": {
+            "n": 3,
+            "p50": 70.815,
+            "p95": 76.816,
+            "min": 68.802,
+            "max": 77.483,
+            "mean": 72.367
+          },
+          "perTurnCallProfile": {
+            "loadCalls": 2,
+            "appendRoundCalls": 1,
+            "fullReadCalls": 3,
+            "readFileCalls": 1,
+            "createReadStreamCalls": 2,
+            "openCalls": 3,
+            "fsBytesRead": 7926429,
+            "recordsRead": 600,
+            "logicalBytesRead": 0,
+            "storeInternal": null
+          },
+          "observedOps": [
+            "load",
+            "load",
+            "appendRound"
+          ],
+          "callsDetail": [
+            {
+              "op": "load",
+              "ms": 23.624,
+              "records": 300,
+              "fs": {
+                "createReadStreamCalls": 1,
+                "readFileCalls": 0,
+                "openCalls": 1,
+                "fullReadCalls": 1,
+                "bytesRead": 2636143
+              }
+            },
+            {
+              "op": "load",
+              "ms": 24.688,
+              "records": 300,
+              "fs": {
+                "createReadStreamCalls": 1,
+                "readFileCalls": 0,
+                "openCalls": 1,
+                "fullReadCalls": 1,
+                "bytesRead": 2636143
+              }
+            },
+            {
+              "op": "appendRound",
+              "ms": 29.171,
+              "records": 1,
+              "fs": {
+                "createReadStreamCalls": 0,
+                "readFileCalls": 1,
+                "openCalls": 1,
+                "fullReadCalls": 1,
+                "bytesRead": 2654143
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "conclusion": "结论：appendUserTurn 每次调用付 1 次全量 load + 1 次 appendRound 的读侧成本（file store 每轮 2 次全量读）。\n- a · memory store（createMemoryTranscriptStore，下界）：50轮 p50=1.804ms，150轮 p50=3.479ms，300轮 p50=6.871ms\n- b · file store（createFileTranscriptStore，库内置真实实现）：50轮 p50=9.092ms，150轮 p50=25.172ms，300轮 p50=48.721ms\n- c · SQLite 三表适配器（node:sqlite，宿主同构 schema）：50轮 p50=4.546ms，150轮 p50=11.288ms，300轮 p50=17.115ms\n- d · CLI 集成检查（bin/cli.js resume 预写路径，不跑 LLM）：CLI resume 路径每轮 3 次全量读（CLI 自身 load 1 次 + appendUserTurn load 1 次 + file appendRecord 幂等再读 1 次）"
+}
