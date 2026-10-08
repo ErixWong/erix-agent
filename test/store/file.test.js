@@ -535,3 +535,118 @@ test("file: 旧后缀 .checkpoint.json 损坏 JSON 显式抛错", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// ---- issue #160：进程内 dedup key 缓存（(size,mtimeMs) 失效校验）特有行为 ----
+
+test("file#160: 缓存预热后幂等仍成立（同 key 二次 append 仍只 1 条）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const record = { round: 1, dedupKey: "run:input:m1", messages: [] };
+    await store.appendRound("run", record);
+    // load 顺手填充缓存（issue #160 设计点 1），二次 append 走缓存命中路径
+    await store.load("run");
+    await store.appendRound("run", { ...record, messages: [{ role: "user", content: [] }] });
+    assert.deepEqual(await store.load("run"), [record]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file#160: 跨实例写靠 (size,mtimeMs) 失效检测兜底（同 key no-op、新 key 正常落）", async () => {
+  const root = await makeTempDir();
+  try {
+    const storeB = createFileTranscriptStore({ dir: root });
+    const x = { round: 1, dedupKey: "run:input:x", messages: [] };
+    await storeB.appendRound("run", x); // B 先建缓存（stamp s1）
+    const storeA = createFileTranscriptStore({ dir: root });
+    const y = { round: 2, dedupKey: "run:input:y", messages: [] };
+    await storeA.appendRound("run", y); // A 追加 → 文件戳变化
+    await storeB.appendRound("run", x); // B 缓存已过期 → 必须靠戳失效重建 → no-op
+    const z = { round: 3, dedupKey: "run:input:z", messages: [] };
+    await storeB.appendRound("run", z); // 新 key 正常写入
+    assert.deepEqual(await storeB.load("run"), [x, y, z]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file#160: 外部进程直接改文件后，append 已存在 key 为 no-op（缓存重建）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const x = { round: 1, dedupKey: "run:input:x", messages: [] };
+    await store.appendRound("run", x);
+    await store.load("run"); // 预热缓存
+    // 模拟另一进程直接追加 y 行（fs 直写，store 不知情）
+    const y = { round: 2, dedupKey: "run:input:y", messages: [] };
+    await appendFile(join(root, "run.jsonl"), `${JSON.stringify(y)}\n`, "utf8");
+    await store.appendRound("run", x); // x 已在文件里 → 缓存重建后必须判为 no-op
+    await store.appendRound("run", y); // y 同理
+    const transcript = await readFile(join(root, "run.jsonl"), "utf8");
+    assert.equal(transcript.trim().split("\n").length, 2, "外部写入后重复 append 不得重复落行");
+    assert.deepEqual(await store.load("run"), [x, y]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file#160: 修复尾部路径不污染缓存（隔离/补 LF 后幂等仍成立）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const x = { round: 1, dedupKey: "run:input:x", messages: [] };
+    await store.appendRound("run", x);
+    await store.load("run"); // 预热缓存
+    // 崩溃残留：完整 JSON 缺末尾 LF（repair 应补 \n），且是缓存里没有的新 key y
+    const y = { round: 2, dedupKey: "run:input:y", messages: [] };
+    await appendFile(join(root, "run.jsonl"), JSON.stringify(y), "utf8");
+    await store.appendRound("run", y); // repair 补 \n 后：y 已在文件 → no-op（修复不得骗过缓存）
+    // 再隔离半行残段：截断后 append 新 key 正常，且同 key 重放仍 no-op
+    await appendFile(join(root, "run.jsonl"), '{"round":3,"messages":[', "utf8");
+    const z = { round: 4, dedupKey: "run:input:z", messages: [] };
+    await store.appendRound("run", z); // repair 截断残段后 z 正常写入
+    await store.appendRound("run", z); // 缓存已刷新 → no-op
+    await store.appendRound("run", x); // 旧 key 重放 → no-op（缓存含 x/y/z 全集）
+    assert.deepEqual(await store.load("run"), [x, y, z]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file#160: 中间损坏行抛错不落脏缓存（fail-closed 不回归，恢复后幂等正常）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const x = { round: 1, dedupKey: "run:input:x", messages: [] };
+    await store.appendRound("run", x);
+    await store.load("run"); // 预热缓存（戳 s1）
+    // 外部写入一个含中间损坏行的文件（戳变化 → 触发流式重建 → 必须抛错）
+    await writeFile(
+      join(root, "run.jsonl"),
+      `${JSON.stringify(x)}\n{"round":2,"messages":[broken\n`,
+      "utf8",
+    );
+    const y = { round: 2, dedupKey: "run:input:y", messages: [] };
+    await assert.rejects(store.appendRound("run", y), /malformed line/);
+    // 恢复：外部写回干净文件（含外部写入的 y）。缓存不得是抛错前的脏数据
+    await writeFile(join(root, "run.jsonl"), `${JSON.stringify(x)}\n${JSON.stringify(y)}\n`, "utf8");
+    await store.appendRound("run", y); // 必须靠重建发现 y → no-op
+    assert.deepEqual(await store.load("run"), [x, y]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file#160: 空 store 首次 append 走空集快速路径，随后同 key 重放 no-op", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const x = { round: 0, dedupKey: "run:input:x", messages: [] };
+    await store.appendRound("run", x);
+    await store.appendRound("run", x);
+    assert.deepEqual(await store.load("run"), [x]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
