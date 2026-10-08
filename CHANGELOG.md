@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 契约文档示例可执行性检查（issue #158）：新增 `test/contract/doc-examples.{js,test.js}`，直接从 `docs/host-consumer-contract.md` 提取全部 5 个 ```js 围栏做三层验证（L1 语法编译 / L2 真实符号链接 / L3 注入上下文子进程真实执行，超时 15s），并断言 CN 版围栏代码骨架与 EN 一致；API 漂移会让 `npm test` 变红并报出围栏行号与子进程 stderr。两个新文件不进 npm files 白名单（宿主不需要）。新增 `npm run check:docs-examples`。
+
 ### Fixed
 
 - file store 的幂等判定改为进程内 dedup key 缓存（`(size, mtimeMs)` 校验，issue #160）：每次 `appendRound` 不再全量读 transcript，`appendUserTurn` 每轮全量读 2→1 次（CLI resume 路径 3→2 次），300 轮单次调用 p50 从 50 ms 降至 22.5 ms。幂等语义、崩溃修复与 `load()` 行为不变（无新文件、无格式变更）。
