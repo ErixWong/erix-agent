@@ -8,6 +8,8 @@
 // issue #78 capability 分级：必需方法只有 appendRound/load；run snapshot
 // （saveRunSnapshot/loadLatestRunSnapshot，latest-only 覆盖写，非多版本 checkpoint）
 // 与 run-state（saveRunState/loadRunState/markRunState）为可选 capability。
+// issue #157 追加成对可选快路径探针（loadByDedupKey/loadMaxRound）：宿主 store
+// 实现时 appendUserTurn 走零 load 点查路径，实现则必须与 load 事实一致（见下）。
 // 本套件覆盖完整表面（库内置实现均全量实现）；最小实现（仅必需两方法）的
 // 行为由 assembly/persistence 校验测试锁定（缺可选方法不得报错）。
 
@@ -260,5 +262,45 @@ export function transcriptStoreContract(label, createStore) {
     const loaded = await store.load("run-1");
     assert.equal(loaded[0].folded, true);
     assert.deepEqual(loaded[0].foldedPayload, payload);
+  });
+
+  // issue #157 可选快路径探针一致性：appendUserTurn 在宿主 store 实现
+  // loadByDedupKey/loadMaxRound 时走点查快路径（全程不调 load）。两者必须
+  // 成对实现（缺一如缺二，引擎回退全量 load）；实现则必须与 appendRound/load
+  // 的既有事实一致，否则快路径与慢路径会得出不同结论。
+  test(`${label}: 可选快路径探针 loadByDedupKey/loadMaxRound 与 load 事实一致（实现时）`, async () => {
+    const store = await createStore();
+    const hasDedup = typeof store.loadByDedupKey === "function";
+    const hasMax = typeof store.loadMaxRound === "function";
+    // 成对约束对任何实现都生效（只实现其一是契约违规）。
+    assert.equal(hasDedup, hasMax, `${label}: loadByDedupKey/loadMaxRound 必须成对实现（缺一如缺二）`);
+    if (!hasDedup) return; // 未实现：回退全量 load，由上方必需用例覆盖。
+
+    // 未命中：返回 null/undefined，不抛错。
+    const miss = await store.loadByDedupKey("probe-run", "probe-run:input:none");
+    assert.ok(miss === null || miss === undefined, "未命中必须返回 null/undefined");
+
+    // 命中：返回整条已存在记录，与 load 结果逐字段保真（含未知字段）。
+    const record = {
+      round: 4,
+      ts: "2026-08-29T00:04:00.000Z",
+      dedupKey: "probe-run:input:m1",
+      roundKey: "probe-run:input:m1",
+      hostColumn: { retained: true },
+      messages: [{ role: "user", content: [{ type: "text", text: "probed" }] }],
+    };
+    await store.appendRound("probe-run", record);
+    assert.deepEqual(await store.loadByDedupKey("probe-run", record.dedupKey), record);
+    // dedupKey 缺失时回退 roundKey 匹配（与 appendUserTurn 慢路径判据一致）。
+    const roundKeyOnly = { round: 6, roundKey: "probe-run:input:m2", messages: [] };
+    await store.appendRound("probe-run", roundKeyOnly);
+    assert.deepEqual(await store.loadByDedupKey("probe-run", roundKeyOnly.roundKey), roundKeyOnly);
+
+    // loadMaxRound：与 load 结果的 Math.max(0, 安全整数 round…) 等价。
+    assert.equal(await store.loadMaxRound("probe-run"), 6);
+    // 空 store：null/undefined/负数（appendUserTurn 均派生 round 0）。
+    const empty = await store.loadMaxRound("probe-run-empty");
+    assert.ok(empty === null || empty === undefined || (typeof empty === "number" && empty < 0),
+      "空 store 的 loadMaxRound 必须返回 null/undefined/负数");
   });
 }
