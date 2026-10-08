@@ -27,12 +27,81 @@ export const MESSAGE_OVERHEAD = 4;
 export const MESSAGE_OVERHEAD_TOKENS = MESSAGE_OVERHEAD;
 
 /**
- * @param {string} character
+ * Lowest code point any CJK range starts at: every code point below it is
+ * guaranteed non-CJK, which is what makes the ASCII fast path exact.
+ */
+const CJK_FLOOR = Math.min(...CJK_RANGES.map(([start]) => start));
+
+/**
+ * @param {number} codePoint
  * @returns {boolean}
  */
-function isCjkUnifiedIdeograph(character) {
-  const codePoint = character.codePointAt(0);
-  return CJK_RANGES.some(([start, end]) => codePoint >= start && codePoint <= end);
+function isCjkCodePoint(codePoint) {
+  for (const [start, end] of CJK_RANGES) {
+    if (codePoint >= start && codePoint <= end) return true;
+  }
+  return false;
+}
+
+/**
+ * Character classes feeding the mixed-language heuristic, as `[cjk, nonCjk]`
+ * code-point counts.
+ *
+ * `estimateTokens` ceils once over the whole text, so its *result* is not
+ * additive across parts, while these counts are: concatenating text just adds
+ * their tallies. A caller that repeatedly re-serializes a growing list (the
+ * governor history trim loop) can therefore count each part once and finish with
+ * `estimateTokensFromCharacterCounts` instead of re-scanning the whole string.
+ *
+ * @param {unknown} text
+ * @returns {[cjkCharacters: number, otherCharacters: number]}
+ */
+export function countEstimateCharacters(text) {
+  const value = typeof text === "string" ? text : String(text ?? "");
+  let cjkCharacters = 0;
+  let otherCharacters = 0;
+  // Hot path: every code point below the first CJK range (all ASCII/Latin/
+  // punctuation plus CJK punctuation and kana) is guaranteed non-CJK, so it
+  // skips the 8-range scan entirely. Indexing also avoids the string iterator
+  // (an order of magnitude slower per character), while the surrogate branch
+  // keeps the code-point semantics of `for...of`: one surrogate pair counts as
+  // one character, and a lone surrogate counts as one character too (the
+  // original yielded U+FFFD there, which is non-CJK as well).
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit < CJK_FLOOR) {
+      otherCharacters += 1;
+      continue;
+    }
+    let codePoint = codeUnit;
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff && index + 1 < value.length) {
+      const trail = value.charCodeAt(index + 1);
+      if (trail >= 0xdc00 && trail <= 0xdfff) {
+        codePoint = 0x10000 + ((codeUnit - 0xd800) * 0x400) + (trail - 0xdc00);
+        index += 1;
+      }
+    }
+    if (isCjkCodePoint(codePoint)) cjkCharacters += 1;
+    else otherCharacters += 1;
+  }
+  return [cjkCharacters, otherCharacters];
+}
+
+/**
+ * Finish an estimate begun with `countEstimateCharacters`, applying the same
+ * coefficients and rounding as `estimateTokens`.
+ *
+ * @param {[cjkCharacters: number, otherCharacters: number]} counts
+ * @param {EstimateTokenOptions} [opts]
+ * @returns {number}
+ */
+export function estimateTokensFromCharacterCounts(counts, opts = {}) {
+  const cjkTokensPerChar = optionNumber(opts, ["cjkTokensPerChar"], 1.5);
+  const charsPerToken = optionNumber(opts, ["charsPerToken"], 3.5);
+  const margin = optionNumber(opts, ["margin"], 1.15);
+  const rawTokens = (counts?.[0] ?? 0) * cjkTokensPerChar
+    + (counts?.[1] ?? 0) / charsPerToken;
+  return Math.ceil(rawTokens * margin);
 }
 
 /**
@@ -47,20 +116,7 @@ export function estimateTokens(text, opts = {}) {
   if (Array.isArray(text)) {
     return text.reduce((total, block) => total + estimateBlockTokens(block, opts), 0);
   }
-  const value = typeof text === "string" ? text : String(text ?? "");
-  const cjkTokensPerChar = optionNumber(opts, ["cjkTokensPerChar"], 1.5);
-  const charsPerToken = optionNumber(opts, ["charsPerToken"], 3.5);
-  const margin = optionNumber(opts, ["margin"], 1.15);
-
-  let cjkCharacters = 0;
-  let otherCharacters = 0;
-  for (const character of value) {
-    if (isCjkUnifiedIdeograph(character)) cjkCharacters += 1;
-    else otherCharacters += 1;
-  }
-
-  const rawTokens = cjkCharacters * cjkTokensPerChar + otherCharacters / charsPerToken;
-  return Math.ceil(rawTokens * margin);
+  return estimateTokensFromCharacterCounts(countEstimateCharacters(text), opts);
 }
 
 function optionNumber(opts, names, fallback, { allowZero = false } = {}) {
