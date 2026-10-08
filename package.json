@@ -44,6 +44,7 @@
   "scripts": {
     "test": "node --test",
     "check": "node --check src/index.js",
+    "check:docs-examples": "node --test test/contract/doc-examples.test.js",
     "check:pack-links": "node scripts/pack-link-check.mjs"
   },
   "license": "MIT"
