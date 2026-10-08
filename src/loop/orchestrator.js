@@ -2,7 +2,11 @@ import { KitError } from "../providers/errors.js";
 import { computeBudget } from "../compact/budget.js";
 import { createSlidingWindowStrategy } from "../compact/sliding-window.js";
 import { mergeFoldNavigationRecords } from "../compact/fold-statistical.js";
-import { estimateMessageTokens, estimateTokens } from "../tokens.js";
+import {
+  countEstimateCharacters,
+  estimateMessageTokens,
+  estimateTokensFromCharacterCounts,
+} from "../tokens.js";
 import { groupIntoRounds } from "../messages/rounds.js";
 import { decideRoundAction, decideWithEvaluation } from "../reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "../reflection/l0.js";
@@ -84,6 +88,80 @@ import {
 } from "../assembly-validators.js";
 
 export { parseReflectionDecision };
+
+/**
+ * Governor 历史的估算上限（与 #172 A4 之前的内联 4000 同口径）。
+ */
+export const GOVERNOR_HISTORY_TOKEN_LIMIT = 4000;
+
+/**
+ * 逐条目估算字符计数 + JSON 数组骨架，供 {@link trimGovernorHistory} 递减。
+ *
+ * @param {unknown[]} entries
+ * @returns {{ perEntry: [number, number][], total: [number, number] }}
+ */
+function governorHistoryCounts(entries) {
+  const perEntry = entries.map((entry) => countEstimateCharacters(
+    // 数组位上的 undefined / 函数在 JSON 里就是 null，逐条序列化必须同口径
+    JSON.stringify(entry) ?? "null",
+  ));
+  const total = [0, 0];
+  for (const [cjk, other] of perEntry) {
+    total[0] += cjk;
+    total[1] += other;
+  }
+  // JSON 数组骨架：两个方括号 + (n-1) 个逗号，全部非 CJK
+  total[1] += entries.length === 0 ? 2 : entries.length + 1;
+  return { perEntry, total };
+}
+
+/**
+ * 从账本里减去第 index 条（即刚被弹出队头的那一条）与其分隔逗号。
+ *
+ * @param {{ perEntry: [number, number][], total: [number, number] }} history
+ * @param {number} index
+ */
+function dropGovernorHistoryEntry(history, index) {
+  const entry = history.perEntry[index];
+  if (entry === undefined) return;
+  history.total[0] -= entry[0];
+  // 条目自身 + 它带来的一个分隔逗号；弹到空数组时括号仍是 2 个（增量 0）
+  history.total[1] -= entry[1] + (history.perEntry.length - index - 1 === 0 ? 0 : 1);
+}
+
+/**
+ * 修剪 governor 历史：估算总量超预算就从队头弹出，**至少保留 1 条**（语义不变）。
+ *
+ * #172 A4：旧实现（orchestrator.js:959-965）在 `while` 里每移出一个元素就对**剩余
+ * 全量** `runningLog`/`l0Facts` 各跑一遍 JSON.stringify + estimateTokens，弹 k 条
+ * 就付 O(k·n) 次全量扫描。现在改成逐条目只序列化/计数一次，总量按被移出条目递减。
+ *
+ * 口径逐位不变：`JSON.stringify([a,b]) === "[" + stringify(a) + "," + stringify(b) + "]"`，
+ * 而 `estimateTokens` 的两个字符类计数对拼接可加（ceil 只在尾部做一次），骨架字符
+ * （括号/逗号）全为非 CJK——所以下面的递减账本与旧实现的「每次全量重估」逐位相等。
+ *
+ * @param {{runningLog: unknown[], l0Facts: unknown[]}} state
+ * @param {number} [tokenLimit=4000]
+ * @returns {number} 被移出的条目数
+ */
+export function trimGovernorHistory(state, tokenLimit = GOVERNOR_HISTORY_TOKEN_LIMIT) {
+  const runningLog = governorHistoryCounts(state.runningLog);
+  const l0Facts = governorHistoryCounts(state.l0Facts);
+  const historyTokens = (history) => estimateTokensFromCharacterCounts(history.total);
+  let dropped = 0;
+  while (runningLog.perEntry.length > dropped + 1
+    && historyTokens(runningLog) + historyTokens(l0Facts) > tokenLimit) {
+    dropGovernorHistoryEntry(runningLog, dropped);
+    dropGovernorHistoryEntry(l0Facts, dropped);
+    dropped += 1;
+  }
+  if (dropped > 0) {
+    // 等价于 shift() 调用 dropped 次，但只动一次数组
+    state.runningLog.splice(0, dropped);
+    state.l0Facts.splice(0, dropped);
+  }
+  return dropped;
+}
 
 const RUN_TOOL_LOOP_OPTION_NAMES = [
   "assemblyPort",
@@ -1021,14 +1099,7 @@ export async function runToolLoop(options) {
     : configuredDeadline > startedAt
       ? configuredDeadline - Date.now()
       : configuredDeadline - elapsedMs();
-  const trimGovernorHistory = () => {
-    while (governorState.runningLog.length > 1
-      && estimateTokens(JSON.stringify(governorState.runningLog))
-        + estimateTokens(JSON.stringify(governorState.l0Facts)) > 4000) {
-      governorState.runningLog.shift();
-      governorState.l0Facts.shift();
-    }
-  };
+  // #172 A4：修剪逻辑已上提为模块级 `trimGovernorHistory`（线性化、可单测）。
   const addGovernorHistory = (round, summary, l0facts, ts, wrapup, judge) => {
     governorState.runningLog.push({
       round,
@@ -1044,7 +1115,8 @@ export async function runToolLoop(options) {
       ts,
     });
     governorState.l0Facts.push({ round, ...l0facts });
-    trimGovernorHistory();
+    // #172 A4：线性修剪（原为闭包内 O(n²) 的 while 全量重估）
+    trimGovernorHistory(governorState);
   };
   const restoreErrorSeen = (l0facts) => {
     // 优先 errorCounts（每轮持久化的累计 count，resume 精确重建）；
@@ -2065,7 +2137,8 @@ export async function runToolLoop(options) {
       const strategy = strategyRequestsCompaction
         ? configuredStrategy
         : createSlidingWindowStrategy();
-      const tokensBefore = estimateMessageTokens(messages);
+      // messages 自 estimatedTokens 起只被读取（shouldCompact 为纯判定），直接复用（#172 A2）
+      const tokensBefore = estimatedTokens;
       const layers = createEmptyCompactionLayers();
       const selectedLayer = getCompactionLayerForStrategy(strategy);
       const configuredKeepRounds = compactionContext.keepRounds ?? 6;
@@ -2137,7 +2210,9 @@ export async function runToolLoop(options) {
         (budgetTokens !== undefined && tokensAfter > budgetTokens)
         || isApiInputOverBudget(apiTokensAfter, budgetTokens)
       ) {
-        const fallbackTokensBefore = estimateMessageTokens(compactedMessages);
+        // 同一 compactedMessages，自 tokensAfter 之后只做了 observeCompactionLayer /
+        // 投影计算（#172 A2：复用上一次全量估算，不再重跑）
+        const fallbackTokensBefore = tokensAfter;
         const fallback = await createSlidingWindowStrategy().compact(compactedMessages, {
           keepRounds: 0,
           budgetTokens,
@@ -2175,7 +2250,8 @@ export async function runToolLoop(options) {
         (budgetTokens !== undefined && tokensAfter > budgetTokens)
         || isApiInputOverBudget(apiTokensAfter, budgetTokens)
       ) {
-        const safetyTokensBefore = estimateMessageTokens(compactedMessages);
+        // 同一 compactedMessages，与下方 safety 层的 tokensBefore 等价（#172 A2）
+        const safetyTokensBefore = tokensAfter;
         const apiAwareBudget = isApiInputOverBudget(apiTokensAfter, budgetTokens)
           ? Math.max(
             1,
