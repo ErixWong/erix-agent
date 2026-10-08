@@ -6,7 +6,8 @@
 
 ### Added
 
-- `appendUserTurn` 新增成对可选快路径探针（宿主 Gitea issue #157，写侧契约）：宿主 store 同时实现 `loadByDedupKey(key, dedupKey)` 与 `loadMaxRound(key)` 时，预写 user 轮改走点查路径（先算 dedupKey → 命中即返回；未命中才 `loadMaxRound` 派生 round → `appendRound`），全程零 `load` 调用，消除 DB store 事务内全量读随数据量线性变慢；只实现其一等同全不实现，回退现行为（全量 `load`）逐行不变；返回值违约抛 `TypeError`；签名、`written` 语义与返回形状不变，内置 file store 不实现（#160 已优化）。契约文档「TranscriptStore capability tiers」与「Multi-turn resume contract」中英同步。
+- `appendUserTurn` 新增成对可选快路径探针（issue #157，写侧契约）：宿主 store 同时实现 `loadByDedupKey(key, dedupKey)` 与 `loadMaxRound(key)` 时，预写 user 轮改走点查路径（先算 dedupKey → 命中即返回；未命中才 `loadMaxRound` 派生 round → `appendRound`），全程零 `load` 调用，消除 DB store 事务内全量读随数据量线性变慢；只实现其一等同全不实现，回退现行为（全量 `load`）逐行不变；返回值违约抛 `TypeError`；签名、`written` 语义与返回形状不变，内置 file store 不实现（#160 已优化）。契约文档「TranscriptStore capability tiers」与「Multi-turn resume contract」中英同步。
+- 契约文档示例可执行性检查（issue #158）：新增 `test/contract/doc-examples.{js,test.js}`，直接从 `docs/host-consumer-contract.md` 提取全部 5 个 ```js 围栏做三层验证（L1 语法编译 / L2 真实符号链接 / L3 注入上下文子进程真实执行，超时 15s），并断言 CN 版围栏代码骨架与 EN 一致；API 漂移会让 `npm test` 变红并报出围栏行号与子进程 stderr。两个新文件不进 npm files 白名单（宿主不需要）。新增 `npm run check:docs-examples`。
 
 ### Fixed
 
