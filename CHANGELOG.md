@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- file store 的幂等判定改为进程内 dedup key 缓存（`(size, mtimeMs)` 校验，issue #160）：每次 `appendRound` 不再全量读 transcript，`appendUserTurn` 每轮全量读 2→1 次（CLI resume 路径 3→2 次），300 轮单次调用 p50 从 50 ms 降至 22.5 ms。幂等语义、崩溃修复与 `load()` 行为不变（无新文件、无格式变更）。
+
 ## [0.16.0] - 2026-10-08
 
 本次合并 #151/#152/#153/#154，并吸收未发布的 0.15.1 文档与打包修复。宿主迁移指引见
