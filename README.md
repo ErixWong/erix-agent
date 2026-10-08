@@ -750,7 +750,6 @@ library-level controls
   policy and internal replacement/stop-loss criteria
 - [docs/research/](https://github.com/ErixWong/erix-agent/tree/main/docs/research) - research reports (Chinese only)
 - [docs/design/](https://github.com/ErixWong/erix-agent/tree/main/docs/design) - design and RFC material (Chinese only)
-- [docs/tasks/](docs/tasks/) - active task documents (Chinese only)
 
 ## Status and version history
 

@@ -452,7 +452,6 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - [docs/maintenance-policy_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/maintenance-policy_cn.md) - 维护策略与内部替换/止损标准
 - [docs/research/](https://github.com/ErixWong/erix-agent/tree/main/docs/research) - 调研报告（仅中文）
 - [docs/design/](https://github.com/ErixWong/erix-agent/tree/main/docs/design) - 设计与 RFC 材料（仅中文）
-- [docs/tasks/](docs/tasks/) - 当前任务文档（仅中文）
 
 ## 状态与版本历史
 

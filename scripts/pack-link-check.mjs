@@ -1,9 +1,7 @@
 #!/usr/bin/env node
-// Blocking npm-tarball Markdown link closure check. Unlike docs-sync-check.mjs,
-// which only warns (exit 0 by default) about EN/CN contract heading alignment,
-// this checks every packed Markdown file against npm's actual dry-run file list.
-// Links whose targets are already absent from the repository are pre-existing
-// broken links, not package omissions, and are left for the final report.
+// npm-tarball Markdown link closure check. A link to a repository file omitted
+// from the tarball is blocking (exit 1); a link whose target is absent from the
+// repository is reported as a warning and does not change the exit code.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -51,6 +49,7 @@ if (pack.error) {
       filePath.toLowerCase().endsWith(".md"),
     );
     const deadLinks = [];
+    const missingTargets = [];
     const linkPattern = /\]\(\s*(?:<([^>\r\n]*)>|((?:\\.|[^)\s])+))(?:\s+[^)]*)?\s*\)/g;
 
     const isPacked = (targetPath) => {
@@ -87,14 +86,20 @@ if (pack.error) {
         if (
           relativePath === ".." ||
           relativePath.startsWith(`..${path.sep}`) ||
-          path.isAbsolute(relativePath) ||
-          !existsSync(absolutePath)
+          path.isAbsolute(relativePath)
         ) {
           continue;
         }
 
+        const line = source.slice(0, match.index).split("\n").length;
+        if (!existsSync(absolutePath)) {
+          missingTargets.push(
+            `${markdownPath}:${line} → target absent from repository: ${target}`,
+          );
+          continue;
+        }
+
         if (!isPacked(repositoryPath)) {
-          const line = source.slice(0, match.index).split("\n").length;
           deadLinks.push(`${markdownPath}:${line} → dead link ${match[1] ?? match[2]}`);
         }
       }
@@ -107,6 +112,16 @@ if (pack.error) {
     } else {
       console.log(
         `pack-link-check: OK — ${markdownPaths.length} packaged Markdown files have no links to omitted repository files`,
+      );
+    }
+
+    if (missingTargets.length > 0) {
+      console.warn(
+        `pack-link-check: warn — ${missingTargets.length} link target(s) absent from the repository:`,
+      );
+      for (const missingTarget of missingTargets) console.warn(`  ${missingTarget}`);
+      console.warn(
+        "pack-link-check: 这类目标在仓库中不存在，请确认是有意为之还是链接写错。",
       );
     }
   }
