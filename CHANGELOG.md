@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-08
+
+本次合并 #157/#160/#158：`appendUserTurn` 成对可选快路径探针（DB 宿主事务内免全量读）、
+内置 file store 幂等缓存与契约文档示例可执行性检查。宿主升级指引见
+[docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md)。
+
 ### Added
 
 - `appendUserTurn` 新增成对可选快路径探针（issue #157，写侧契约）：宿主 store 同时实现 `loadByDedupKey(key, dedupKey)` 与 `loadMaxRound(key)` 时，预写 user 轮改走点查路径（先算 dedupKey → 命中即返回；未命中才 `loadMaxRound` 派生 round → `appendRound`），全程零 `load` 调用，消除 DB store 事务内全量读随数据量线性变慢；只实现其一等同全不实现，回退现行为（全量 `load`）逐行不变；返回值违约抛 `TypeError`；签名、`written` 语义与返回形状不变，内置 file store 不实现（#160 已优化）。契约文档「TranscriptStore capability tiers」与「Multi-turn resume contract」中英同步。

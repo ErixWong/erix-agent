@@ -314,6 +314,7 @@ The npm tarball is controlled by the `files` allowlist in `package.json`:
   "LICENSE",
   "docs/host-upgrade-guide-0.15.0.md",
   "docs/host-upgrade-guide-0.16.0.md",
+  "docs/host-upgrade-guide-0.17.0.md",
   "test/contract/engine-api.js"
 ]
 ```
