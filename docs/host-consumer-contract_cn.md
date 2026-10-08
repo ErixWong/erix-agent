@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-08（已同步 0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-08（已同步 #157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -90,6 +90,7 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 | 可选 run snapshot | `saveRunSnapshot`、`loadLatestRunSnapshot` | 跳过快照持久化；run 正常跑完，仅不支持中途 crash resume |
 | 可选 run-state | `saveRunState`、`loadRunState`、`markRunState` | 跳过 run-state 持久化；run 正常跑完 |
 | 宿主面向的可选终态读取 | `loadRunStateStatus` | 引擎不调用、不校验；缺失不会发出 capability 降级事件 |
+| 可选预写快路径探针（issue #157） | `loadByDedupKey`、`loadMaxRound` | `appendUserTurn` 回退全量 `load`（成对生效：只实现其一等同全不实现） |
 
 `loadRunStateStatus` 解析为终态**字符串**——`(runId: string) => Promise<string | undefined>`，
 该 run 未记录终态时返回 `undefined`——不是状态记录对象（与 `src/store/memory.js` /
@@ -216,6 +217,20 @@ provider、工具与 transcript 适配器，因此没有宿主需要一次性迁
 （`<key>:input:<messageId>`），重跑天然幂等；不带时后缀退化为时间戳 + 随机 UUID（每次
 调用唯一）。它解析为 `{ key, dedupKey, round, written, record? }`——幂等检查命中时
 `written: false` 并附既有 `record`。内置 CLI 与 REPL 是参考消费者。
+
+`appendUserTurn` 另为数据库型宿主提供**成对可选快路径**（issue #157）：当 `store`
+同时实现 `loadByDedupKey(key, dedupKey)` 与 `loadMaxRound(key)` 时，助手先算出
+`dedupKey` 再点查 `loadByDedupKey`——命中立即返回（既不调 `loadMaxRound` 也不调
+`load`）；未命中才由 `loadMaxRound` 推导 `round` 后追加。快路径全程不调用
+`store.load`。只实现两个探针之一等同全不实现：上方全量 `load` 路径原样执行。
+`loadByDedupKey` 点查必须按 `(record.dedupKey ?? record.roundKey) === dedupKey`
+匹配——与全量路径对 `load` 结果使用的判据相同——并返回完整既存记录（命中）或
+`null`/`undefined`（未命中）。`loadMaxRound(key)` 必须等价于对 `load` 结果取
+`Math.max(0, …安全整数 round…)`，空 store 返回 `null`/`undefined`（或负数）。
+违约抛 `TypeError`：`loadByDedupKey` 返回值既非对象也非 `null`/`undefined`；
+`loadMaxRound` 返回值既非 number 也非 `null`/`undefined`；或 `loadMaxRound` 返回的
+number 不是安全整数。命中记录自身 `round` 不是安全整数时，助手回落由
+`loadMaxRound` 推导。内置 file store 两个探针都不实现（点查对 JSONL 无意义）。
 
 ## 持久化失败上报
 
