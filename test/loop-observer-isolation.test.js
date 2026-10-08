@@ -11,7 +11,7 @@ import { createFakeProvider } from "./helpers/fake-provider.js";
 //   | 回调 | 抛错后果 | 记账 |
 //   |---|---|---|
 //   | onEvent / onRound / onToolResult | **整个 run 终止**：runToolLoop 抛出宿主错误对象，
-//     并带 error.termination = {reason:"failed", detail:<宿主错误消息>} | 无 |
+//     并带 error.termination = {reason:"failed", detail:<宿主错误消息>, errorCode:<错误分类|"unknown">} | 无 |
 //   | onDelta / onReasoningDelta / onToolCall / onUsage | run 正常完成 | onObserverError
 //     （未配置时退到 console.error("Observer callback error:", err)，见 loop-stream.test.js） |
 //   | onJudge | run 正常完成 | 无（裸 catch 静默吞） |
@@ -116,7 +116,7 @@ test("status quo #173: onEvent is fatal on every event type, not just the first 
       (error) => {
         assert.deepEqual(
           error.termination,
-          { reason: "failed", detail: `boom-${eventType}` },
+          { reason: "failed", detail: `boom-${eventType}`, errorCode: "unknown" },
           `onEvent throwing on ${eventType} must fail the run`,
         );
         return true;
@@ -147,7 +147,8 @@ test("status quo #173: a throwing onRound aborts the run after the round was alr
     }),
     (error) => {
       assert.equal(error, boom);
-      assert.deepEqual(error.termination, { reason: "failed", detail: "host onRound blew up" });
+      // 形状注记（#176，2026-10-09）：failed 终局按 additive 契约新增 errorCode 字段。
+      assert.deepEqual(error.termination, { reason: "failed", detail: "host onRound blew up", errorCode: "unknown" });
       return true;
     },
   );
@@ -178,7 +179,7 @@ test("status quo #173: a throwing onToolResult aborts the run before the result 
     }),
     (error) => {
       assert.equal(error, boom);
-      assert.deepEqual(error.termination, { reason: "failed", detail: "host onToolResult blew up" });
+      assert.deepEqual(error.termination, { reason: "failed", detail: "host onToolResult blew up", errorCode: "unknown" });
       return true;
     },
   );
@@ -393,7 +394,7 @@ test("status quo #173: the three-way divergence table (update this matrix in PR-
         runToolLoop(options),
         (error) => {
           assert.equal(error, boom, `${channel} 现状：直接杀 run`);
-          assert.deepEqual(error.termination, { reason: "failed", detail: boom.message });
+          assert.deepEqual(error.termination, { reason: "failed", detail: boom.message, errorCode: "unknown" });
           return true;
         },
         `${channel} 应当（现状）终止 run`,
