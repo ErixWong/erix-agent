@@ -102,6 +102,7 @@ run), never a multi-version checkpoint. The tiers are:
 | Optional run snapshot | `saveRunSnapshot`, `loadLatestRunSnapshot` | snapshot persistence skipped; run completes normally, no mid-flight crash resume |
 | Optional run-state | `saveRunState`, `loadRunState`, `markRunState` | run-state persistence skipped; run completes normally |
 | Host-facing optional terminal-status read | `loadRunStateStatus` | not used or validated by the engine; its absence does not emit a degraded-capability event |
+| Optional fast-path pre-write probes (issue #157) | `loadByDedupKey`, `loadMaxRound` | `appendUserTurn` falls back to full `load` (paired: implementing one without the other behaves exactly like implementing neither) |
 
 `loadRunStateStatus` resolves to the terminal status **string** —
 `(runId: string) => Promise<string | undefined>`, with `undefined` when no
@@ -277,6 +278,27 @@ the suffix degrades to timestamp + random UUID (unique per call). It resolves
 to `{ key, dedupKey, round, written, record? }` — `written: false` plus the
 existing `record` when the idempotency check hit. The built-in CLI and REPL
 are the reference consumers.
+
+`appendUserTurn` additionally accepts a **paired optional fast path** for
+database-backed hosts (issue #157): when `store` implements both
+`loadByDedupKey(key, dedupKey)` and `loadMaxRound(key)`, the helper derives
+the `dedupKey` first, then point-queries `loadByDedupKey` — a hit returns
+immediately (neither `loadMaxRound` nor `load` is called); on a miss it
+derives `round` from `loadMaxRound` and appends. The fast path never calls
+`store.load`. Implementing only one of the two probes behaves exactly like
+implementing neither: the full-`load` path above runs unchanged. A
+`loadByDedupKey` point query must match records by
+`(record.dedupKey ?? record.roundKey) === dedupKey` — the same predicate the
+full path applies to `load` results — and return the complete stored record
+(hit) or `null`/`undefined` (miss). `loadMaxRound(key)` must be equivalent to
+`Math.max(0, …safe-integer round…)` over the `load` results, returning
+`null`/`undefined` (or a negative number) for an empty store. Contract
+violations throw `TypeError`: a `loadByDedupKey` result that is neither an
+object nor `null`/`undefined`; a `loadMaxRound` result that is neither a
+number nor `null`/`undefined`; or a `loadMaxRound` number that is not a safe
+integer. When a hit record's own `round` is not a safe integer, the helper
+falls back to deriving it from `loadMaxRound`. The built-in file store
+implements neither probe (point queries are meaningless for JSONL).
 
 ## Persistence failure reporting
 
