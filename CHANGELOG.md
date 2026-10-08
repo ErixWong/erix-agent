@@ -4,7 +4,10 @@
 
 ## [Unreleased]
 
-## [0.15.1] - 2026-10-08
+## [0.16.0] - 2026-10-08
+
+本次合并 #151/#152/#153/#154，并吸收未发布的 0.15.1 文档与打包修复。宿主迁移指引见
+[docs/host-upgrade-guide-0.16.0.md](docs/host-upgrade-guide-0.16.0.md)。
 
 ### Fixed
 
@@ -13,11 +16,17 @@
 
 ### Added
 
+- 展示投影新增稳定身份 `key`（turn 级与 `toolCalls[]` 级），同一输入数组内唯一且确定；新增 `meta.sourceInferred`，仅文本前缀启发式命中时出现。
 - 新增阻塞式 `npm run check:pack-links` 包内链接闭合检查。
+
+### Changed（宿主契约新增义务）
+
+- 新增「Store fidelity requirements」：宿主 store 必须保留完整 `RoundRecord` 与 message 对象（包括未知字段）；`messages[].meta.source` 是引擎保留标记；`load()` 必须对同一 `round` 的记录按持久化追加顺序返回，引擎不做二次排序。
 
 ### Compatibility
 
-- 宿主零义务变化，无需迁移。
+- 宿主应按 `docs/host-upgrade-guide-0.16.0.md` 自查 store 保真与同轮排序。
+- 投影新增字段均为 additive（非破坏）；无 API 移除。
 
 ## [0.15.0] - 2026-10-07
 

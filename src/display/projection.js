@@ -10,10 +10,11 @@ import { FOLD_SUMMARY_MARKER } from "../compact/fold-statistical.js";
  * table. See `docs/host-consumer-contract.md` → "Host display projection".
  *
  * @typedef {{
+ *   key: string,
  *   role: "user"|"assistant"|"system",
  *   text: string,
  *   blocks: object[],
- *   toolCalls?: { name:string, id?:string, argsSummary?:string,
+ *   toolCalls?: { key:string, name:string, id?:string, argsSummary?:string,
  *     resultPreview?:string, isError?:boolean, executionStatus?:string }[],
  *   reasoning?: string,
  *   folded?: boolean,
@@ -182,7 +183,7 @@ function syntheticInfo(message, text) {
   }
   for (const { prefix, source } of SYNTHETIC_TEXT_SOURCES) {
     if (typeof text === "string" && text.startsWith(prefix)) {
-      return { synthetic: true, source };
+      return { synthetic: true, source, sourceInferred: true };
     }
   }
   if (message?.role === "system") return { synthetic: true, source: "system" };
@@ -295,7 +296,7 @@ function recordMeta(record, extra = {}) {
   return meta;
 }
 
-function projectRecord(record) {
+function projectRecord(record, recordIndex) {
   const entries = [];
   if (!isObject(record)) return entries;
 
@@ -349,6 +350,7 @@ function projectRecord(record) {
       ...base,
       meta: recordMeta(record, {
         synthetic: synthetic.synthetic,
+        ...(synthetic.sourceInferred === true ? { sourceInferred: true } : {}),
         ...(typeof messageSource === "string" && messageSource !== ""
           ? { source: messageSource }
           : (synthetic.source === undefined ? {} : { source: synthetic.source })),
@@ -417,6 +419,15 @@ function projectRecord(record) {
       if (result !== undefined) Object.assign(call, result);
     }
   }
+
+  const round = roundOf(record?.round);
+  const roundToken = round === undefined ? "?" : String(round);
+  for (const [entryIndex, entry] of entries.entries()) {
+    entry.key = `${roundToken}#${recordIndex}:${entryIndex}`;
+    for (const [toolCallIndex, call] of (entry.toolCalls ?? []).entries()) {
+      call.key = `${entry.key}:t${toolCallIndex}`;
+    }
+  }
   return entries;
 }
 
@@ -442,5 +453,5 @@ export function projectTranscriptForDisplay(records) {
       round: roundOf(record?.round) ?? Number.MAX_SAFE_INTEGER,
     }))
     .sort((left, right) => (left.round - right.round) || (left.index - right.index));
-  return decorated.flatMap(({ record }) => projectRecord(record));
+  return decorated.flatMap(({ record, index }) => projectRecord(record, index));
 }

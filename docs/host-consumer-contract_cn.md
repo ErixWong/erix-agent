@@ -1,14 +1,16 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-07（结构对齐检查：`node scripts/docs-sync-check.mjs`；翻译补齐后更新本日期）
+> 同步基线：host-consumer-contract.md @ 2026-10-08（已同步 0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
 [ADR-012](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/012-engine-truth-model-efficiency-host-policy.md) 与
 [ADR-013](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/013-guard-charter.md)。0.6.0 迁移步骤见
 [host-upgrade-guide-0.6.0.md](host-upgrade-guide-0.6.0.md)；0.12.0 notes 契约迁移步骤见
-[host-upgrade-guide-0.12.0.md](host-upgrade-guide-0.12.0.md)。
+[host-upgrade-guide-0.12.0.md](host-upgrade-guide-0.12.0.md)；0.16.0 store 保真、同轮保序与
+展示投影增量变更的迁移步骤见
+[host-upgrade-guide-0.16.0.md](host-upgrade-guide-0.16.0.md)。
 
 ## `runToolLoop` 选项与工具执行契约
 
@@ -188,6 +190,25 @@ provider、工具与 transcript 适配器，因此没有宿主需要一次性迁
   追加（或在接收事务内发起）。
 - **时机：** 在接受用户消息的事务内持久化该轮（当宿主决定该轮属于本 run 时），
   而不是懒到 worker 接手之后再写——否则接受与预写之间崩溃会丢失或重复该轮。
+
+### load 返回顺序
+
+`load(runId)` 必须按持久化追加顺序返回全部记录；尤其是同一 `round` 的多条记录必须保留
+追加顺序（先追加的先返回）。SQL 类 store 应按持久化追加序号排序，或按持久化插入时间加
+唯一次级键排序。例如，当 round 按追加顺序单调递增时，可用
+`ORDER BY round_no, append_seq`，其中 `append_seq` 是单调递增的持久化列或持久化主键的一
+部分。排序必须保证整个结果集都与追加顺序一致；不得依赖查询执行计划、主键扫描巧合或
+`filesort` 的偶然结果。
+
+`src/loop/resume-manager.js` 按 `load()` 返回顺序重建状态，且不对记录二次排序。受顺序
+影响的不只是 `messages`，还包括 governor history（`:101-109`）、供
+`taskBriefSource` 使用的 round 0 seed 消息（`:88-90`），以及对顺序敏感的 snapshot
+`recordedEntries` 匹配（`:152-200`）。典型平局是上一段引擎轮处于 `round=max`，预写 user
+行也处于同一 round——因为 `appendUserTurn` 刻意复用最大 round。若这两行顺序反转，新用户
+消息就会排在上一段引擎轮之前，改变消息序列语义。
+
+引擎不会对同 round 记录二次排序或修正，包括不会按 `dedupKey` 命名空间等启发式处理；
+顺序是宿主 store 的责任。`appendUserTurn` 继续复用最大 round，这是本契约的既有约定。
 
 宿主不应手写这套逻辑。引擎导出
 `appendUserTurn(store, { key, text, messageId?, ts? })`，一次调用完成 `load`、round
@@ -526,6 +547,39 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
    在 `fold-llm` 中，该分节在 LLM 摘要之后（且在尺寸钳制之后）追加，因此
    `maxSummaryTokens` 截不到它。
 
+## Store 保真要求
+
+宿主 `TranscriptStore` **必须保留完整的 `RoundRecord` 与完整 message 对象**，包括宿主不认识
+的字段。不得按字段白名单重建 record 或 message：必需字段会随实现演进，丢弃未知字段可能改变
+引擎行为。
+
+这里有两个彼此独立的保真口径：
+
+- **展示投影保真**：保留 `projectTranscriptForDisplay` 读取并生成正确轮次、标签、工具预览、
+  折叠摘要、排序与时间戳所需的字段。
+- **resume / 模型上下文保真**：`load()` 必须重建相同的 messages、内容块、元数据、顺序与未知
+  字段，使模型回放与 judge 过滤看到相同上下文。展示投影看似正常，不能证明 resume 保真。
+
+与投影和 judge 正确性相关的最小字段至少包括：
+
+| 字段 | 丢失后的退化 |
+|---|---|
+| `messages[].meta.source` | 合成分类会回退到文本前缀启发式；引擎注入的 judge 方向提示可能显示成真实用户消息，并在 resume 后逃过 judge 的 `judge-control` 排除。当前文本启发式不识别其 `【Judge 评审意见】` 前缀。普通历史消息没有该字段，并不能证明 store 有损。 |
+| `messages[].content[type="tool_use"].id` 与 `messages[].content[type="tool_result"].tool_use_id` | 工具调用无法与结果配对，投影中的工具结果预览会丢失。 |
+| `response.content`（含 reasoning 块） | assistant 输出、工具调用或推理可能从投影及重建的模型上下文中消失。 |
+| `folded` | 折叠轮横幅与折叠段呈现被省略。 |
+| `foldedRoundRange` | 横幅失去精确的折叠轮次范围。 |
+| `foldedPayload` | 恢复与锚定所需的折叠归档消息不可用。 |
+| `navigationRecord` | 折叠导航及归档产物链接丢失。 |
+| `summary` | 组合折叠摘要失去轮次 action/note 兜底内容。 |
+| `round` | 轮次丢失轮号，无法按记录的轮号排序。 |
+| `ts` | 投影轮次失去时间戳。 |
+
+有损 store 当前不会触发报错。投影会静默回退：部分合成消息使用文本前缀嗅探，缺少 response
+时用 `textPreview`，缺少带标记的折叠摘要时用 `summary` 兜底；这些回退不会检测或报告 store
+有损。宿主必须自证保真，例如针对自身 schema 与未知字段运行并扩展
+`test/contract/transcript-store.js` 中的断言。
+
 ## 宿主展示投影
 
 transcript 就是模型上下文真相：`RoundRecord` 为回放保持字节保真，同时携带模型面对的
@@ -536,16 +590,46 @@ transcript 就是模型上下文真相：`RoundRecord` 为回放保持字节保�
 import { projectTranscriptForDisplay } from "erix-agent";
 
 const turns = projectTranscriptForDisplay(await store.load(runId));
-// [{ role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
+// [{ key, role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
 ```
 
-它是纯函数：无 I/O、无模型调用、不变更输入记录、无宿主特有假设。它接受任意记录子集
-（过滤或切片后的 `load()` 结果均可），按 `round` 升序返回轮次；没有可用 `round` 的记
+它是纯函数：无 I/O、无模型调用、构造结果时不变更输入记录、无宿主特有假设。它接受任意记录
+子集（过滤或切片后的 `load()` 结果均可），按 `round` 升序返回轮次；没有可用 `round` 的记
 录保持输入顺序并排在最后（同 `round` 的记录也保持输入相对顺序）。
 
-返回值是**只读视图**：每轮内的 `blocks`、`usage`、`navigationRecord` 等对象与输入记录
-是共享引用而非拷贝。宿主必须把投影返回值当作不可变数据——改动它等于改 transcript 记录
-本身。
+### 投影身份与工具调用形状
+
+每条投影轮次都有一个 `key`，派生格式为 `${roundToken}#${recordIndex}:${entryIndex}`。
+`roundToken` 在 round 可用时为 `String(round)`，否则为 `?`；`recordIndex` 是记录在输入数组
+中的零起始位置，`entryIndex` 是该记录所投影出的轮次零起始位置。每个工具调用也有一个
+`key`，格式为 `${turnKey}:t${toolCallIndex}`，其中 `toolCallIndex` 是该轮 `toolCalls` 数组
+中的零起始位置。同一次投影内这些 key 唯一；使用同一输入数组再次投影时，它们具有确定性。
+它们不是持久标识：过滤、切片或追加输入数组都可能改变 key，不保证不同输入数组之间保持稳定。
+
+`toolCalls` 是摘要数组，其公开形状为：
+`{ key, name, id?, argsSummary?, resultPreview?, isError?, executionStatus? }`。
+
+| 字段 | 含义 |
+|---|---|
+| `key` | 宿主渲染用的非空工具调用身份，由所属轮次 key 与位置派生；它不是 provider 的工具调用 ID。 |
+| `name` | provider 提供的工具名；缺失时为空字符串。 |
+| `id?` | provider 提供的 `tool_use.id`，存在时转为字符串，缺失时省略；它仍用于结果关联，而 `blocks[].id` 原样透传。 |
+| `argsSummary?` | 工具输入的有界单行摘要；没有可摘要内容时省略。 |
+| `resultPreview?` | 关联工具结果的有界预览；没有非空结果文本时省略。 |
+| `isError?` | 关联结果是否明确标记为错误；没有错误标记时省略。 |
+| `executionStatus?` | 关联结果提供的字符串执行状态；否则省略。 |
+
+在单条记录内，结果按消息顺序以 `tool_use_id` 建索引；多个 `tool_result` 块复用同一 ID 时，
+后写入的结果覆盖先前结果。该记录中所有 ID 相同的工具调用都会拿到同一条最后结果。这是当前
+行为，不是按出现顺序配对；provider 复用工具调用 ID 属于退化输入。结果仅在单条记录内关联，
+不会跨记录匹配。provider 未提供 ID 时，工具调用仍有展示 `key`。
+
+投影结果不会被冻结或深拷贝。每轮的 `blocks` 是新数组，但普通块元素与输入共享引用；修改
+元素会改到输入记录。只有为移除折叠标记而拆分的块才会重建为 `{ ...block, text: head }`，
+修改该块不会改到输入块（其中嵌套对象仍是浅层共享）。每轮的 `meta` 对象是新建的，但存在时其内嵌值
+（如 `meta.usage`、`meta.navigationRecord`、`meta.foldedRoundRange`、`meta.summary`、
+`meta.judge`、`meta.wrapup`）与输入共享引用。若需保持源 record 不变，宿主应把这些共享值
+视为不可变。
 
 ### 宿主可渲染哪些 `RoundRecord` 字段
 
@@ -557,13 +641,15 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 | `foldedPayload` | 展示（有界） | 被折叠移除的原始消息。体积很大的归档；**不要**倒进聊天视图。投影只报 `meta.foldedPayloadMessages`（计数）。 |
 | `navigationRecord` | 展示 | 有界归档指针 `{ roundFrom, roundTo, artifacts[], truncated? }`，指向被恢复的工具输出。渲染为导航链接/指针，绝不作为消息内容。 |
 | `messages` | 模型 | 精确的模型上下文切片，含 `tool_use`/`tool_result` 块与折叠占位符。不要裸渲染；投影从中提取可展示文本与工具调用摘要。 |
+| `messages[].meta` | 模型 / 引擎 | 保留该对象及未知键。`meta.source` 是引擎保留标记，投影分类与 judge 可见性依赖它；不得复用它承载宿主自己的来源信息。 |
 | `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。展示字段由它派生；其块形状是模型面向的，可能变化。 |
 | `l0facts`、`runState`、`compactionStats`、`judge`、`wrapup`、`toolOutputs`、`dedupKey`、`roundKey` | 模型 / 引擎内部 | 给 governor、resume、诊断用的事实。只有 `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` 被拷进投影的 `meta` 供可选标注；其余不属于展示表面。 |
 
 ### 稳定性承诺
 
-**投影输出形状就是宿主可长期依赖的契约表面**：`role`、`text`、`blocks`、`toolCalls`、
-`reasoning`、`folded`、`round`、`ts`、`meta`。`RoundRecord` 内部细节不是。只要投影继续
+**投影输出形状就是宿主可长期依赖的契约表面**：`key`、`role`、`text`、`blocks`、
+`toolCalls`（包括每个工具调用的 `key`）、`reasoning`、`folded`、`round`、`ts`、`meta`。
+`RoundRecord` 内部细节不是。只要投影继续
 产出相同形状，`messages`/`response`/`foldedPayload`/`runState` 内部的字段名、嵌套与块形
 状可在次版本间变化。投影条目与 `meta` 的增量追加是非破坏性的；宿主必须忽略未知的
 `meta` 键，不得对键顺序做断言。投影形状的破坏性变更遵循常规版本化迁移策略，并在升级
@@ -602,6 +688,12 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 - transcript 带标记时 `meta.source` 标明注入方：`judge-control`（round-judge 方向提示与
   续跑催促）、`audit-intercept`（重复命令拦截文本）、`system`、`fold-summary`（折叠横幅）、
   `wrapup`，或 `textPreview`（assistant 轮的旧版预览兜底）。
+- `message.meta.source` 是引擎保留字段：投影把**任何非空字符串**值判为 synthetic。宿主不得
+  在其中存放普通来源信息，否则真实消息也会被误分类。
+- 只有投影通过匹配已配置的文本前缀来判断合成消息时，才会添加
+  `meta.sourceInferred: true`。它是增量 `meta` 字段（宿主须忽略未知 `meta` 键），UI 可选展示
+  “此条分类来自启发式”；它不是有损 store 检测标记。由 `message.meta.source` 提供分类时，
+  以及仅因 `role: "system"` 而判为合成时，均不会添加该字段。
 - 轮级判定在存在时出现在 `meta.judge` 与 `meta.wrapup`，宿主无需解析散文就能标注一轮。
 
 宿主应区分地渲染合成轮（徽标、淡化样式）或折叠它们，但不得从声称镜像 transcript 的视图

@@ -204,10 +204,12 @@ test("synthetic turns are labelled with role and meta.synthetic", () => {
   assert.equal(judge.role, "user");
   assert.equal(judge.meta.synthetic, true);
   assert.equal(judge.meta.source, "judge-control");
+  assert.equal(judge.meta.sourceInferred, undefined);
 
   const system = entries.find((entry) => entry.text === "system note");
   assert.equal(system.role, "system");
   assert.equal(system.meta.synthetic, true);
+  assert.equal(system.meta.sourceInferred, undefined);
 
   const real = entries.find((entry) => entry.text === "real user follow-up");
   assert.equal(real.role, "user");
@@ -224,6 +226,7 @@ test("audit-intercept and wrapup synthetic shapes are labelled", () => {
   }]);
   assert.equal(audit[0].meta.synthetic, true);
   assert.equal(audit[0].meta.source, "audit-intercept");
+  assert.equal(audit[0].meta.sourceInferred, true);
 
   const wrapup = projectTranscriptForDisplay([{
     round: 7,
@@ -316,6 +319,47 @@ test("does not mutate the input records", () => {
   const snapshot = structuredClone(record);
   projectTranscriptForDisplay([record]);
   assert.deepEqual(record, snapshot);
+});
+
+test("projection preserves its documented block and nested-meta reference boundaries", () => {
+  const ordinaryBlock = { type: "text", text: "ordinary" };
+  const foldedBlock = {
+    type: "text",
+    text: "lead-in\n【上下文折叠·v1·erix-9f6e2c】早期第 1–2 轮已折叠。\n\nremaining task",
+  };
+  const usage = { inputTokens: 1 };
+  const record = {
+    round: 1,
+    messages: [
+      { role: "user", content: [ordinaryBlock] },
+      { role: "user", content: [foldedBlock] },
+    ],
+    response: {
+      content: [{ type: "text", text: "answer" }],
+      usage,
+    },
+  };
+
+  const turns = projectTranscriptForDisplay([record]);
+  const ordinary = turns.find((turn) => turn.text === "ordinary");
+  const folded = turns.find((turn) => turn.text === "lead-in\nremaining task");
+  const assistant = turns.find((turn) => turn.role === "assistant");
+
+  assert.notEqual(ordinary.blocks, record.messages[0].content);
+  assert.equal(ordinary.blocks[0], ordinaryBlock);
+  ordinary.blocks[0].text = "changed ordinary";
+  assert.equal(record.messages[0].content[0].text, "changed ordinary");
+
+  assert.notEqual(folded.blocks[0], foldedBlock);
+  folded.blocks[0].text = "changed folded";
+  assert.equal(
+    record.messages[1].content[0].text,
+    "lead-in\n【上下文折叠·v1·erix-9f6e2c】早期第 1–2 轮已折叠。\n\nremaining task",
+  );
+
+  assert.equal(assistant.meta.usage, usage);
+  assistant.meta.usage.inputTokens = 2;
+  assert.equal(record.response.usage.inputTokens, 2);
 });
 
 test("projects records produced by a real run (seed, tool rounds, real fold summary)", async () => {
