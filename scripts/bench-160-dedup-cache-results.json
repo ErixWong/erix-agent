@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "kind": "file-store-dedup-key-cache-before-after-benchmark",
+  "issue": "ErixWong/erix-agent#160",
+  "generatedAt": "2026-10-08T09:30:44.321Z",
+  "environment": {
+    "node": "v22.23.2",
+    "machine": "x86_64",
+    "platform": "linux",
+    "cpu": "Intel(R) Xeon(R) CPU E5-2686 v4 @ 2.30GHz"
+  },
+  "command": "node scripts/bench-append-user-turn.mjs --rounds=50,150,300 --tiers=b,d --min-reps=5 --max-reps=11 --sample-budget-ms=200 --warmups=1 --quiet",
+  "baselineCommit": "9b2b581",
+  "afterCommit": "a018ca1",
+  "metricNotes": {
+    "fullFileReads": "b 档 perTurnCallProfile.fullFileReads；d 档 perTurnCallProfile.fullReadCalls（同口径：createReadStream + readFile 全量读次数）",
+    "readFileCalls": "fs/promises readFile 全文读次数（改前 appendRecord 幂等判定每次 1 次；改后 append 路径为 0）",
+    "p50Ms": "b 档 appendUserTurnMs.p50；d 档 cliStoreAttributableMs.p50"
+  },
+  "before": [
+    {
+      "tier": "b",
+      "rounds": 50,
+      "fullFileReads": 2,
+      "readFileCalls": 1,
+      "createReadStreamCalls": 1,
+      "fsBytesRead": 880230,
+      "p50Ms": 11.181
+    },
+    {
+      "tier": "b",
+      "rounds": 150,
+      "fullFileReads": 2,
+      "readFileCalls": 1,
+      "createReadStreamCalls": 1,
+      "fsBytesRead": 2644810,
+      "p50Ms": 25.395
+    },
+    {
+      "tier": "b",
+      "rounds": 300,
+      "fullFileReads": 2,
+      "readFileCalls": 1,
+      "createReadStreamCalls": 1,
+      "fsBytesRead": 5290286,
+      "p50Ms": 47.604
+    },
+    {
+      "tier": "d",
+      "rounds": 50,
+      "fullFileReads": 3,
+      "readFileCalls": 1,
+      "createReadStreamCalls": 2,
+      "fsBytesRead": 1318845,
+      "p50Ms": 12.376
+    },
+    {
+      "tier": "d",
+      "rounds": 150,
+      "fullFileReads": 3,
+      "readFileCalls": 1,
+      "createReadStreamCalls": 2,
+      "fsBytesRead": 3962715,
+      "p50Ms": 35.951
+    },
+    {
+      "tier": "d",
+      "rounds": 300,
+      "fullFileReads": 3,
+      "readFileCalls": 1,
+      "createReadStreamCalls": 2,
+      "fsBytesRead": 7926429,
+      "p50Ms": 69.627
+    }
+  ],
+  "after": [
+    {
+      "tier": "b",
+      "rounds": 50,
+      "fullFileReads": 1,
+      "readFileCalls": 0,
+      "createReadStreamCalls": 1,
+      "fsBytesRead": 438615,
+      "p50Ms": 6.791
+    },
+    {
+      "tier": "b",
+      "rounds": 150,
+      "fullFileReads": 1,
+      "readFileCalls": 0,
+      "createReadStreamCalls": 1,
+      "fsBytesRead": 1317905,
+      "p50Ms": 12.594
+    },
+    {
+      "tier": "b",
+      "rounds": 300,
+      "fullFileReads": 1,
+      "readFileCalls": 0,
+      "createReadStreamCalls": 1,
+      "fsBytesRead": 2636143,
+      "p50Ms": 22.134
+    },
+    {
+      "tier": "d",
+      "rounds": 50,
+      "fullFileReads": 2,
+      "readFileCalls": 0,
+      "createReadStreamCalls": 2,
+      "fsBytesRead": 877230,
+      "p50Ms": 9.047
+    },
+    {
+      "tier": "d",
+      "rounds": 150,
+      "fullFileReads": 2,
+      "readFileCalls": 0,
+      "createReadStreamCalls": 2,
+      "fsBytesRead": 2635810,
+      "p50Ms": 24.59
+    },
+    {
+      "tier": "d",
+      "rounds": 300,
+      "fullFileReads": 2,
+      "readFileCalls": 0,
+      "createReadStreamCalls": 2,
+      "fsBytesRead": 5272286,
+      "p50Ms": 47.542
+    }
+  ],
+  "deltas": {
+    "b_fullFileReads": "2 → 1（appendRecord 命中进程内 dedup key 缓存，不再 readFile 全文）",
+    "d_fullFileReads": "3 → 2（剩 CLI 自身 resume load + appendUserTurn 的 load 两次流式读）",
+    "b_fsBytesRead_300": "5,290,286 → 2,636,143（约减半，transcript 文件本身 ~2.65MB）",
+    "b_p50_300": "47.6ms → 22.1ms",
+    "d_p50_300": "69.6ms → 47.5ms"
+  }
+}
