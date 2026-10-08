@@ -254,7 +254,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -262,6 +262,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * @property {object} [toolUse] Completed canonical tool_use block.
  * @property {object} [toolResult] Canonical tool_result block.
  * @property {string} [runId] Run identity on host-facing diagnostics.
+ * @property {string} [detail] One-shot capability diagnostic text (persistence_capability_degraded, model_metadata_missing).
  * @property {string} [toolUseId] Tool invocation requiring host replay decision.
  * @property {string} [toolName] Tool name requiring host replay decision.
  * @property {boolean} [requiresHostDecision] Whether the host must decide whether to retry.
@@ -677,6 +678,28 @@ export async function runToolLoop(options) {
       detail: `store does not implement ${method}; the corresponding persistence is skipped for this run`,
     });
   };
+  // issue #182：预算元数据缺失时本 run 的压缩总开关不进入（budgetTokens 未定义 → overBudget 恒
+  // false）、单轮聚合输出预算（#120）整体关闭、输出截断上限退回 4096，而此前全链路零告警
+  // （真机 92 轮 run compaction=0）。一次性诊断事件让宿主能在验收/CI 里直接断言「我的装配是否
+  // 把压缩关掉了」；去重与直调 onEvent?.() 的风格照抄上方 notifyCapabilitySkipped（同样绕开
+  // 定义在下方的 emitEvent，本事件在启动期预算推导段触发，引用会踩 TDZ），每 run 最多一条。
+  // 同理，detail 引用的 outputHygieneLimit 也在下方声明：本函数的唯一调用点在它之后，更早调用会踩 TDZ。
+  let modelMetadataNoticeSent = false;
+  const notifyModelMetadataMissing = () => {
+    if (modelMetadataNoticeSent) return;
+    modelMetadataNoticeSent = true;
+    // detail 前三句是 issue #182 约定的固定原文（宿主可直接断言）；输出上限一句按实际解析值
+    // 说真话——显式 outputHygiene.limit 或只带了 contextWindowTokens 时并不是 4096。
+    onEvent?.({
+      type: "model_metadata_missing",
+      runId,
+      detail: "contextWindowTokens/maxOutputTokens unavailable; compaction and aggregate output"
+        + " budget are disabled for this run;"
+        + (outputHygieneLimit === 4096
+          ? " output limit falls back to 4096"
+          : ` output limit resolves to ${outputHygieneLimit}`),
+    });
+  };
   const persist = async (method, ...args) => {
     if (!persistenceRequired) return false;
     if (typeof store?.[method] !== "function") {
@@ -817,16 +840,22 @@ export async function runToolLoop(options) {
   const resolvedWriteToolPathKeys = Array.isArray(writeToolPathKeys)
     ? writeToolPathKeys.filter((key) => typeof key === "string" && key.trim() !== "")
     : ["path", "file_path"];
+  // issue #182：预算元数据齐备性是压缩的隐含总开关——computeBudget 需要 contextWindowTokens 与
+  // maxOutputTokens 同时可得，缺一个就推不出 budgetTokens。把它抽成一个判据，推导段与诊断段共用，
+  // 避免两处口径漂移。
+  const budgetMetadataComplete = metadata?.contextWindowTokens !== undefined
+    && metadata?.maxOutputTokens !== undefined;
   let budgetTokens = context?.budgetTokens;
-  if (budgetTokens === undefined
-    && metadata?.contextWindowTokens !== undefined
-    && metadata?.maxOutputTokens !== undefined) {
+  if (budgetTokens === undefined && budgetMetadataComplete) {
     budgetTokens = computeBudget({
       contextWindowTokens: metadata.contextWindowTokens,
       maxOutputTokens: metadata.maxOutputTokens,
     });
   }
   if (budgetTokens !== undefined) validateBudget(budgetTokens);
+  // issue #182：预算推不出来且原因确实是元数据不齐（宿主自己给了 context.budgetTokens 时
+  // 压缩仍然启用，不该告警）——发一次性诊断事件。
+  if (budgetTokens === undefined && !budgetMetadataComplete) notifyModelMetadataMissing();
   // 单轮聚合输出预算（issue #32 #2）：口径统一写在 src/loop/aggregate-budget.js 顶部（估算 token、
   // 计入 stub 开销与 framing）。预算基准**复用**上面算出的 budgetTokens，不新引 contextWindowTokens
   // 第二套口径；budgetTokens 不存在（宿主无窗口配置）或 outputHygiene 被 opt-out 时聚合层整体关闭。

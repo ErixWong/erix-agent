@@ -46,6 +46,9 @@ test("restores a round snapshot and flushes only the successful attempt events",
   assert.deepEqual(text, ["same"]);
   assert.deepEqual(reasoning, ["thinking"]);
   assert.deepEqual(events.map((event) => event.type), [
+    // issue #182：本用例不传模型元数据 → 启动期先落一条一次性预算元数据诊断事件，
+    // 之后才是轮次事件（additive，不影响既有事件顺序）。
+    "model_metadata_missing",
     "round_start",
     "attempt",
     "recovering",

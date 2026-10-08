@@ -103,6 +103,18 @@ await provider.chat({ messages });
   previous releases. `providerOptions` stays the payload escape hatch and keeps
   dropping core keys **silently**; `extraBody` is the channel that warns.
 
+Budget metadata is probed from `modelConfig`, `modelMetadata`, `model`,
+`provider`, and `context`, in that order. When the probe cannot reach a
+complete `contextWindowTokens` + `maxOutputTokens` pair and the host supplied
+no `context.budgetTokens`, no context budget can be derived, so the loop emits
+**one** `model_metadata_missing` event per run (`{type, runId, detail}`, the
+same one-shot style as `persistence_capability_degraded`): context compaction
+never runs, the per-round aggregate output budget stays off, and the output
+truncation limit resolves to `4096` unless a known window or an explicit
+`outputHygiene.limit` already sized it — `detail` names the value it actually
+resolved to. This is the host's assertion point for "did my assembly silently
+turn compaction off" (issue #182).
+
 ## AssemblyPort
 
 Hosts that assemble a complete run can provide one validated composition root

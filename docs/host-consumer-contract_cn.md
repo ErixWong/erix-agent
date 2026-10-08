@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #181 provider 请求注入口 defaultHeaders/extraBody；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #182 一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -85,6 +85,14 @@ await provider.chat({ messages });
   构造 provider，这也正是设计粒度。
 - 两个参数都不传时，发出的请求头与请求体与之前版本**逐字节一致**。`providerOptions` 仍是
   payload 逃生口，对核心字段依旧**静默**丢弃；`extraBody` 是会告警的那条通道。
+
+预算元数据按 `modelConfig`、`modelMetadata`、`model`、`provider`、`context` 的顺序探测。
+若探测拿不到 `contextWindowTokens` + `maxOutputTokens` 的完整组合，宿主也没直接给
+`context.budgetTokens`，就推不出上下文预算，loop 每个 run 只发**一条**
+`model_metadata_missing` 事件（`{type, runId, detail}`，与 `persistence_capability_degraded`
+同款一次性去重风格）：上下文压缩完全不跑、单轮聚合输出预算保持关闭；输出截断上限退回
+`4096`（已知窗口或显式 `outputHygiene.limit` 已经定值时保持该值，`detail` 报出实际解析到的
+数字）。这就是宿主断言「我的装配是否把压缩静默关掉了」的抓手（issue #182）。
 
 ## AssemblyPort
 

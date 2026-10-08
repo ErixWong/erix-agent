@@ -8,6 +8,7 @@
 
 - `termination.errorCode`（issue #176，additive / semver minor）：`reason === "failed"` 的终局（`result.termination` 与抛出的 `error.termination`）现在携带根因分类——引擎只透传错误已有的分类字段（`KitError.code`，如 `timeout`/`rate_limited`/`auth`/`server`/`checkpoint_failed`），未携带时回落 `"unknown"`，绝不自己归因；其他 reason 不带该字段。宿主终止裁决表（#170）可从此按 `errorCode` 分流，不再解析 `termination.detail` 字符串。
 - abort/failed 抛错携带终局载荷（issue #180，方案 A，additive / semver minor）：`runToolLoop` 抛出的错误现在挂 `error.usage`（与 `result.usage` 同一个对象，含 `cacheRead`/`cacheWrite`）、`error.rounds`、`error.finalText`（无产出时为 `""`）；`reason === "aborted"` 时 `termination` 同步 `{usage, rounds, partial:true}`。无累计量时为零值而非缺字段。「abort = 抛错」语义不变，宿主不再需要为用户点「停止」的 run 写死 `usage: 0`。新增 `terminationPayloadContract` 契约套件（`erix-agent/contract-tests`）。
+- `runToolLoop` 新增一次性诊断事件 `model_metadata_missing`（issue #182，additive 事件类型 = semver minor）：当 `modelConfig`/`modelMetadata`/`model`/`provider`/`context` 里探不到 `contextWindowTokens` + `maxOutputTokens` 完整组合、且宿主也没直接给 `context.budgetTokens` 时（即 `budgetTokens` 推不出来），每个 run 恰好发一条 `{type, runId, detail}`：上下文压缩完全不跑、单轮聚合输出预算（#120）保持关闭、输出截断上限退回 4096（已知窗口或显式 `outputHygiene.limit` 已定值时 `detail` 改报实际解析值）。形状与一次性去重风格照抄 `persistence_capability_degraded`（同样绕开 `emitEvent` 直调 `onEvent?.()`，因为事件在启动期触发）。宿主自此可在验收/CI 里直接断言「我的装配是否把压缩关掉了」（真机 92 轮 run compaction=0 的根因）。零配置宿主行为不变（只是多一条事件）；`docs/host-consumer-contract.md` 与中文版同步。
 
 ## [0.17.0] - 2026-10-08
 
