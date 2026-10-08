@@ -20,15 +20,16 @@ import {
   resolveProviderTimeouts,
 } from "./payload.js";
 import { createProviderTimeoutContext } from "./timeout.js";
+import {
+  fetchOptionsWithTransport,
+  hasOwn,
+  parseJson,
+  timeoutError,
+  truncateBody,
+} from "./http-shared.js";
 
-function hasOwn(value, key) {
-  return Object.prototype.hasOwnProperty.call(value, key);
-}
-
-function truncateBody(bodyText) {
-  return String(bodyText ?? "").slice(0, 500);
-}
-
+// issue #175：与另一侧 provider 逐字节相同的 helper 已提取到 ./http-shared.js；
+// readResponseBody 两侧实现有差异（各自的读体/流式语义），按要求保留在各自文件内。
 async function readResponseBody(response) {
   if (typeof response?.text === "function") {
     return response.text();
@@ -38,23 +39,6 @@ async function readResponseBody(response) {
     return JSON.stringify(value);
   }
   return "";
-}
-
-function parseJson(bodyText) {
-  try {
-    return { parsed: true, value: JSON.parse(bodyText) };
-  } catch {
-    return { parsed: false, value: undefined };
-  }
-}
-
-function timeoutError(cause, { phase = "request", elapsedMs } = {}) {
-  return new KitError("timeout", "Request timed out", {
-    retryable: true,
-    phase,
-    ...(elapsedMs === undefined ? {} : { elapsedMs }),
-    ...(cause === undefined ? {} : { cause }),
-  });
 }
 
 function buildPayload(req = {}, stream = false, model, defaults = {}) {
@@ -120,19 +104,6 @@ function abortReason(signal) {
   const error = new Error("The operation was aborted");
   error.name = "AbortError";
   return error;
-}
-
-function fetchOptionsWithTransport(options, transport) {
-  if (transport === undefined) return options;
-  if (typeof transport === "function") {
-    const enhanced = transport(options);
-    if (enhanced === undefined) return options;
-    if (enhanced === null || typeof enhanced !== "object") {
-      throw new TypeError("transport fetch-options enhancer must return an object");
-    }
-    return enhanced;
-  }
-  return { ...options, dispatcher: transport };
 }
 
 export function createOpenAIProvider({
