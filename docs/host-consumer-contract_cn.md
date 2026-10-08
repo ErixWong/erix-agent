@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-08（已同步 #157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #181 provider 请求注入口 defaultHeaders/extraBody；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -52,6 +52,39 @@ executeTool({ id, name, input, context, signal })
 
 旧的 `{ data, success, ... }` 形态与其他鸭子类型形态为兼容起见仍被宽松归一化，但已废弃，
 不得依赖。
+
+## Provider 请求注入口（issue #181）
+
+`createOpenAIProvider` 与 `createAnthropicProvider` 新增两个完全可选的选项，让宿主无需
+包装 `fetchImpl` 就能给自己的请求打上归因标识（会话级 / run 级）：
+
+```js
+const provider = createOpenAIProvider({
+  endpoint, apiKey, model,
+  defaultHeaders: { "X-Station-Run-Id": runId, "X-Station-Session-Id": sessionId },
+  extraBody: { user: `${fde}:${sessionId}` },
+});
+await provider.chat({ messages });
+```
+
+- `defaultHeaders` 是**追加**到引擎自有请求头之后，引擎头的值与顺序保持不变。引擎头
+  不可被覆盖：宿主传入与 OpenAI 侧 `Authorization` / `Content-Type` 或 Anthropic 侧
+  `x-api-key` / `anthropic-version` / `content-type` 同名（大小写不敏感）的键时，在
+  **构造时**抛 `TypeError`，而不是静默忽略。值为 `undefined` / `null` 的键跳过（供宿主
+  条件注入）；其余值必须是字符串、数字或布尔，且不得包含 CR、LF、NUL。
+- **header 值不得进入错误文案与日志。** 该注入口新增的每一条文案只写 header 名字，不写
+  值 —— 与 `apiKey` 脱敏同口径，因为宿主会把网关 key 放进 header。
+- `extraBody` 在引擎组装**之后**合并进 JSON 请求体，因此引擎自有字段永远优先，宿主无法
+  悄悄改掉 `stream` 或 `model`。保留字段为 `model`、`messages`、`system`、`tools`、
+  `max_tokens`、`temperature`、`top_p`、`stream`、`stream_options`、`frequency_penalty`、
+  `presence_penalty`、`response_format`；宿主传保留字段一律丢弃，与引擎当次请求已写入的
+  字段同名（例如经 `providerOptions` 带进来的）同样丢弃。
+- 每一个被丢弃的字段都会通过 `console.warn` 向 stderr 告警，只带字段名（不带值），且每个
+  provider 实例每个字段只说一次：保留字段在构造时告警，逐请求冲突在首次出现时告警。
+- 两个注入口都在构造时取快照：事后改宿主自己的对象不会改变线上行为。宿主本来就是按 run
+  构造 provider，这也正是设计粒度。
+- 两个参数都不传时，发出的请求头与请求体与之前版本**逐字节一致**。`providerOptions` 仍是
+  payload 逃生口，对核心字段依旧**静默**丢弃；`extraBody` 是会告警的那条通道。
 
 ## AssemblyPort
 

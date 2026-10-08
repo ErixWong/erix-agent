@@ -13,6 +13,7 @@ import {
 import { resolveProviderTimeouts } from "./payload.js";
 import { createProviderTimeoutContext } from "./timeout.js";
 import {
+  createRequestInjection,
   fetchOptionsWithTransport,
   hasOwn,
   parseJson,
@@ -327,6 +328,8 @@ export function createAnthropicProvider({
   model_type,
   supports_reasoning,
   thinking_format,
+  defaultHeaders,
+  extraBody,
 } = {}) {
   const selectedModel = model ?? model_name;
   validateProviderConfig("Anthropic", { endpoint, apiKey, model: selectedModel });
@@ -365,11 +368,15 @@ export function createAnthropicProvider({
   };
   const base = String(endpoint).replace(/\/+$/, "");
   const url = base.endsWith("/v1") ? `${base}/messages` : `${base}/v1/messages`;
-  const headers = {
-    "x-api-key": apiKey,
-    "anthropic-version": "2023-06-01",
-    "content-type": "application/json",
-  };
+  const injection = createRequestInjection({
+    engineHeaders: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    defaultHeaders,
+    extraBody,
+  });
 
   function requestWithDefaults(req, stream = false) {
     const request = { ...requestDefaults };
@@ -385,16 +392,16 @@ export function createAnthropicProvider({
   }
 
   async function chat(req) {
-    const payload = canonicalToAnthropicRequest(
+    const payload = injection.applyExtraBody(canonicalToAnthropicRequest(
       normalizeAnthropicSystemMessages(requestWithDefaults(req)),
-    );
+    ));
     const context = createRequestContext(requestTimeout, req?.signal);
 
     try {
       const response = await Promise.race([
         fetchImpl(url, fetchOptionsWithTransport({
           method: "POST",
-          headers,
+          headers: injection.requestHeaders(),
           body: JSON.stringify(payload),
           signal: context.controller.signal,
         }, transport)),
@@ -460,9 +467,9 @@ export function createAnthropicProvider({
   }
 
   async function chatStream(req) {
-    const payload = canonicalToAnthropicRequest(
+    const payload = injection.applyExtraBody(canonicalToAnthropicRequest(
       normalizeAnthropicSystemMessages(requestWithDefaults(req, true)),
-    );
+    ));
     const requestTimeouts = resolveProviderTimeouts({
       ...providerTimeoutOptions,
       ...req,
@@ -480,7 +487,7 @@ export function createAnthropicProvider({
       const response = await context.race(
         fetchImpl(url, fetchOptionsWithTransport({
           method: "POST",
-          headers,
+          headers: injection.requestHeaders(),
           body: JSON.stringify(payload),
           signal: context.controller.signal,
         }, transport)),

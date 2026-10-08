@@ -1,5 +1,7 @@
 const PROVIDER_NAMES = new Set(["openai", "anthropic"]);
-const CORE_PAYLOAD_KEYS = new Set([
+// 引擎自有 payload 字段：provider 选项表里都有对应入口，宿主经 `extraBody`
+// 注入同名字段时一律以引擎值为准（issue #181 红线 3，见 http-shared.js）。
+export const CORE_PAYLOAD_KEYS = new Set([
   "model",
   "messages",
   "system",

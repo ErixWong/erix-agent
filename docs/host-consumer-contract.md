@@ -61,6 +61,48 @@ The older `{ data, success, ... }` shape and other duck-typed shapes are
 normalized permissively for compatibility, but are deprecated and must not be
 depended on.
 
+## Provider request injection (issue #181)
+
+`createOpenAIProvider` and `createAnthropicProvider` accept two additional, fully
+optional option keys, so a host can tag outgoing requests with its own
+attribution identifiers (per-run / per-session) without wrapping `fetchImpl`:
+
+```js
+const provider = createOpenAIProvider({
+  endpoint, apiKey, model,
+  defaultHeaders: { "X-Station-Run-Id": runId, "X-Station-Session-Id": sessionId },
+  extraBody: { user: `${fde}:${sessionId}` },
+});
+await provider.chat({ messages });
+```
+
+- `defaultHeaders` is **appended** to the engine-owned request headers, which keep
+  their existing values and ordering. Engine headers are immutable: a host key
+  that collides — case-insensitively — with OpenAI's `Authorization` /
+  `Content-Type` or Anthropic's `x-api-key` / `anthropic-version` / `content-type`
+  throws `TypeError` at construction rather than being silently ignored.
+  `undefined` / `null` values are skipped (conditional injection); any other value
+  must be a string, number, or boolean without CR, LF, or NUL.
+- **Header values never enter error text or log output.** Every message added by
+  this surface names the header only, never its value — the same masking policy as
+  `apiKey`, because hosts put gateway keys in headers.
+- `extraBody` is merged into the JSON request body **after** engine assembly, so an
+  engine-owned field always wins and a host cannot quietly redefine `stream` or
+  `model`. Reserved keys are `model`, `messages`, `system`, `tools`, `max_tokens`,
+  `temperature`, `top_p`, `stream`, `stream_options`, `frequency_penalty`,
+  `presence_penalty`, `response_format`; a host-supplied reserved key is dropped,
+  and so is any key the engine already wrote for that specific request (for
+  example one arriving through `providerOptions`).
+- Each dropped field is reported on stderr with `console.warn`, carrying the field
+  name only (never the value), once per provider instance per field: reserved-key
+  conflicts at construction, per-request conflicts at first occurrence.
+- Both injection points are snapshotted at construction; mutating the host object
+  afterwards does not change what goes on the wire. Hosts construct a provider per
+  run already, which is the intended granularity.
+- With neither option supplied, outgoing headers and bodies are byte-identical to
+  previous releases. `providerOptions` stays the payload escape hatch and keeps
+  dropping core keys **silently**; `extraBody` is the channel that warns.
+
 ## AssemblyPort
 
 Hosts that assemble a complete run can provide one validated composition root

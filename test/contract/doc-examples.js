@@ -10,7 +10,7 @@
 //
 // 文档约定说明：契约文档用 TS 风格 `prop?,` 标注可选字段（如 `store?,`），这不是
 // 合法 JS；本 harness 在三层验证前统一剥离该标记（正则见 stripDocConvention）。
-// 另：fence :761 含顶层 `import ... from "erix-agent"`，L1 将其改写为
+// 另：fence :825 含顶层 `import ... from "erix-agent"`，L1 将其改写为
 // `const { ... } = await import(...)` 以便 vm.Script 编译。
 
 import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -29,7 +29,7 @@ export const FAKE_PROVIDER_URL = pathToFileURL(
   join(REPO_ROOT, "test", "helpers", "fake-provider.js"),
 ).href;
 
-export const EXPECTED_JS_FENCE_COUNT = 5;
+export const EXPECTED_JS_FENCE_COUNT = 6;
 export const L3_TIMEOUT_MS = 15000;
 
 /** 提取 markdown 中所有 ```js 围栏 → [{ line, code }]（line 为围栏起始行号，1-based）。 */
@@ -125,7 +125,47 @@ const signal = undefined;
 if (__calls__.length !== 1) throw new Error(\`executeTool stub 应被调用 1 次，实际 \${__calls__.length} 次\`);
 `,
   },
-  // fence #1（EN :69，createAssemblyPort + runToolLoop）
+  // fence #1（EN :70，provider 请求注入口 defaultHeaders / extraBody，issue #181）
+  {
+    linkImports: [
+      `import { createAnthropicProvider, createOpenAIProvider } from ${JSON.stringify(INDEX_URL)};`,
+    ],
+    stubs: `
+const __requests__ = [];
+const endpoint = "https://doc-example.test/v1";
+const apiKey = "doc-example-key";
+const model = "doc-example-model";
+const runId = \`doc-example-injection-\${process.pid}-\${Date.now()}\`;
+const sessionId = "doc-example-session";
+const fde = "fde-a";
+const messages = [{ role: "user", content: [{ type: "text", text: "doc example" }] }];
+// provider 的 fetchImpl 默认就是 globalThis.fetch，且默认值在构造时求值：
+// stubs 先于示例体执行，因此这里的桩能接住真实出门的请求。
+globalThis.fetch = async (url, options) => {
+  __requests__.push({ url, options });
+  return {
+    status: 200,
+    async text() {
+      return JSON.stringify({
+        choices: [{ message: { content: "doc-example done" }, finish_reason: "stop" }],
+      });
+    },
+  };
+};
+`,
+    epilogue: `
+if (__requests__.length !== 1) throw new Error(\`provider 应发起 1 次请求，实际 \${__requests__.length} 次\`);
+const __options__ = __requests__[0].options ?? {};
+const __headers__ = __options__.headers ?? {};
+if (__headers__.Authorization !== \`Bearer \${apiKey}\`) throw new Error("引擎自有 Authorization 丢了");
+if (__headers__["X-Station-Run-Id"] !== runId) throw new Error("defaultHeaders 未出现在实际请求头");
+const __body__ = JSON.parse(__options__.body ?? "{}");
+if (__body__.model !== model) throw new Error("extraBody 不得覆盖引擎 model");
+if (__body__.user !== \`\${fde}:\${sessionId}\`) throw new Error("extraBody.user 未出现在请求体");
+if ("stream" in __body__) throw new Error("非流式调用不得出现 stream 字段");
+`,
+  },
+  // fence #2（EN :111，createAssemblyPort + runToolLoop）
   {
     linkImports: [
       `import { createAssemblyPort, runToolLoop, createMemoryTranscriptStore } from ${JSON.stringify(INDEX_URL)};`,
@@ -148,7 +188,7 @@ const emit = () => {};
 if (provider.requests.length < 1) throw new Error("runToolLoop 未发起任何 provider 调用（示例体没跑到底）");
 `,
   },
-  // fence #2（EN :406，store.list 返回 plain array）
+  // fence #3（EN :470，store.list 返回 plain array）
   {
     linkImports: [],
     stubs: `
@@ -164,7 +204,7 @@ if (__listQueries__.length !== 1) throw new Error(\`store.list 应被调用 1 �
 if (__listQueries__[0]?.scope !== "run") throw new Error("store.list 查询 scope 应为 \\"run\\"");
 `,
   },
-  // fence #3（EN :488，createBuiltinNotesTools 接线）
+  // fence #4（EN :552，createBuiltinNotesTools 接线）
   {
     linkImports: [
       `import { createBuiltinNotesTools } from ${JSON.stringify(INDEX_URL)};`,
@@ -215,7 +255,7 @@ if (readdirSync(__notesDir__).length === 0) throw new Error("note_take 未在 tm
 rmSync(__notesDir__, { recursive: true, force: true });
 `,
   },
-  // fence #4（EN :761，projectTranscriptForDisplay 展示投影）
+  // fence #5（EN :825，projectTranscriptForDisplay 展示投影）
   {
     linkImports: [],
     stubs: `

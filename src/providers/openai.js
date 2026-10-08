@@ -21,6 +21,7 @@ import {
 } from "./payload.js";
 import { createProviderTimeoutContext } from "./timeout.js";
 import {
+  createRequestInjection,
   fetchOptionsWithTransport,
   hasOwn,
   parseJson,
@@ -147,6 +148,8 @@ export function createOpenAIProvider({
   model_type,
   supports_reasoning,
   thinking_format,
+  defaultHeaders,
+  extraBody,
 } = {}) {
   const selectedModel = model ?? model_name;
   validateProviderConfig("OpenAI", { endpoint, apiKey, model: selectedModel });
@@ -198,9 +201,19 @@ export function createOpenAIProvider({
   const url = base.endsWith("/v1")
     ? `${base}/chat/completions`
     : `${base}/v1/chat/completions`;
+  const injection = createRequestInjection({
+    engineHeaders: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    defaultHeaders,
+    extraBody,
+  });
 
   async function chat(req) {
-    const payload = buildPayload(req, false, selectedModel, payloadDefaults);
+    const payload = injection.applyExtraBody(
+      buildPayload(req, false, selectedModel, payloadDefaults),
+    );
 
     const controller = new AbortController();
     const signal = req?.signal;
@@ -256,10 +269,7 @@ export function createOpenAIProvider({
       const response = await raceRequest(
         fetchImpl(url, fetchOptionsWithTransport({
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
+          headers: injection.requestHeaders(),
           body: JSON.stringify(payload),
           signal: controller.signal,
         }, transport)),
@@ -332,7 +342,9 @@ export function createOpenAIProvider({
 
   async function chatStream(req = {}) {
     const { signal } = req;
-    const payload = buildPayload(req, true, selectedModel, payloadDefaults);
+    const payload = injection.applyExtraBody(
+      buildPayload(req, true, selectedModel, payloadDefaults),
+    );
     const requestTimeouts = resolveProviderTimeouts({
       ...providerTimeoutOptions,
       ...req,
@@ -349,10 +361,7 @@ export function createOpenAIProvider({
       context.throwIfAborted();
       const response = await context.race(fetchImpl(url, fetchOptionsWithTransport({
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
+        headers: injection.requestHeaders(),
         body: JSON.stringify(payload),
         signal: context.controller.signal,
       }, transport)), [{ phase: "request", duration: requestTimeouts.requestTimeoutMs }]);
