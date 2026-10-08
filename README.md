@@ -130,9 +130,9 @@ instead of re-solving the engineering underneath it.
 
 Two boundaries keep this honest. The runtime **executes no policy** — it
 exposes the hooks and the host decides
-([ADR-009](docs/decisions/009-safety-layering.md)). And it **owns exactly one
+([ADR-009](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/009-safety-layering.md)). And it **owns exactly one
 task lifecycle** — queues, arbitration and retry scheduling stay with the host
-([ADR-012](docs/decisions/012-engine-truth-model-efficiency-host-policy.md)).
+([ADR-012](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/012-engine-truth-model-efficiency-host-policy.md)).
 
 ## Why build our own?
 
@@ -290,16 +290,31 @@ handles legacy `function_call` streams.
   `ErixWong/erix-agent` on GitHub.
 - Never commit tokens, API keys, or other credentials.
 
-The published package currently has version `0.9.0` in `package.json`. Its
-declared `files` are:
+The npm tarball is controlled by the `files` allowlist in `package.json`:
 
 ```json
-["src", "bin", "skills", "README.md", "README_cn.md", "CHANGELOG.md",
- "docs/host-consumer-contract.md", "docs/host-upgrade-guide-0.6.0.md",
- "test/contract/assembly-port.js", "test/contract/execute-tool.js",
- "test/contract/index.js", "test/contract/model-config-provider.js",
- "test/contract/notes-store.js", "test/contract/transcript-store.js",
- "LICENSE"]
+[
+  "src",
+  "bin",
+  "skills",
+  "README.md",
+  "README_cn.md",
+  "CHANGELOG.md",
+  "docs/host-consumer-contract.md",
+  "docs/host-consumer-contract_cn.md",
+  "docs/host-upgrade-guide-0.6.0.md",
+  "docs/host-upgrade-guide-0.12.0.md",
+  "docs/host-upgrade-guide-0.14.0.md",
+  "test/contract/assembly-port.js",
+  "test/contract/execute-tool.js",
+  "test/contract/index.js",
+  "test/contract/model-config-provider.js",
+  "test/contract/notes-store.js",
+  "test/contract/transcript-store.js",
+  "LICENSE",
+  "docs/host-upgrade-guide-0.15.0.md",
+  "test/contract/engine-api.js"
+]
 ```
 
 Its public `exports` are:
@@ -719,23 +734,22 @@ library-level controls
 
 ## Documentation
 
-- [docs/requirements.md](docs/requirements.md) - requirements and stages
-- [docs/architecture.md](docs/architecture.md) - API contracts and data flow
-- [docs/decisions/](docs/decisions/) - design decisions, including
+- [docs/requirements.md](https://github.com/ErixWong/erix-agent/blob/main/docs/requirements.md) - requirements and stages
+- [docs/architecture.md](https://github.com/ErixWong/erix-agent/blob/main/docs/architecture.md) - API contracts and data flow
+- [docs/decisions/](https://github.com/ErixWong/erix-agent/tree/main/docs/decisions) - design decisions, including
   configuration, storage, compaction, reflection, tools, skills, safety,
   judge direction, engine/model/host boundaries, and guard policy
-- [docs/testing.md](docs/testing.md) - test strategy and behavior metrics
+- [docs/testing.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing.md) - test strategy and behavior metrics
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
 - [docs/host-consumer-contract.md](docs/host-consumer-contract.md) - host
   consumer contract for verification, note-first retrieval, provenance, and reruns
-- [docs/host-upgrade-guide-v030.md](docs/host-upgrade-guide-v030.md) - host
+- [docs/host-upgrade-guide-v030.md](https://github.com/ErixWong/erix-agent/blob/main/docs/host-upgrade-guide-v030.md) - host
   upgrade guidance for `touwaka` / `app_container` and v0.3.x behavior
-- [docs/maintenance-policy.md](docs/maintenance-policy.md) - maintenance
+- [docs/maintenance-policy.md](https://github.com/ErixWong/erix-agent/blob/main/docs/maintenance-policy.md) - maintenance
   policy and internal replacement/stop-loss criteria
-- [docs/research/](docs/research/) - research reports (Chinese only)
-- [docs/design/](docs/design/) - design and RFC material (Chinese only)
-- [docs/tasks/](docs/tasks/) - active task documents (Chinese only)
+- [docs/research/](https://github.com/ErixWong/erix-agent/tree/main/docs/research) - research reports (Chinese only)
+- [docs/design/](https://github.com/ErixWong/erix-agent/tree/main/docs/design) - design and RFC material (Chinese only)
 
 ## Status and version history
 
@@ -830,7 +844,7 @@ stall correction, and direction hints. Judge decisions were written to
 
 These benchmark figures are historical project evidence and are not an API
 guarantee. The judge design decision is documented in
-[ADR-011](docs/decisions/011-judge-direction.md).
+[ADR-011](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/011-judge-direction.md).
 
 ## License
 

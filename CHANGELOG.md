@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-08
+
+### Fixed
+
+- 修复 npm 包缺少中文版宿主消费者契约，并将包内指向未随包发布文档的相对链接改为 GitHub 绝对链接。
+- 移除 README 中指向未入库 `docs/tasks/` 的死链；`check:pack-links` 现在会报告仓库内不存在的链接目标（警告，不阻塞）。
+
+### Added
+
+- 新增阻塞式 `npm run check:pack-links` 包内链接闭合检查。
+
+### Compatibility
+
+- 宿主零义务变化，无需迁移。
+
 ## [0.15.0] - 2026-10-07
 
 来源：宿主 erix-station 反馈的三个 issue（Gitea erix-llm-kit #95/#96/#97）——「transcript 作为唯一真相」
