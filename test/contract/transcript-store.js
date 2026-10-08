@@ -80,6 +80,9 @@ export function transcriptStoreContract(label, createStore) {
       round: 3,
       ts: "2026-08-29T00:03:00.000Z",
       unknownRoundField: { retained: true },
+      // issue #171：`__` 前缀是宿主保留记账命名空间（引擎不产出也不消费），
+      // 但对保真而言它仍是普通未知字段：必须原样往返。
+      __hostLedger: { hostWritten: ["unknownRoundField"] },
       messages: [{
         role: "user",
         meta: { source: "judge-control", hostMetadata: { retained: true } },
@@ -302,5 +305,48 @@ export function transcriptStoreContract(label, createStore) {
     const empty = await store.loadMaxRound("probe-run-empty");
     assert.ok(empty === null || empty === undefined || (typeof empty === "number" && empty < 0),
       "空 store 的 loadMaxRound 必须返回 null/undefined/负数");
+    // 非空 store 边界（issue #171）：必须返回 ≥0 的安全整数，
+    // 负数/null/undefined 只是空 store 信号，不得作为真实 round 返回。
+    const nonEmpty = await store.loadMaxRound("probe-run");
+    assert.ok(Number.isSafeInteger(nonEmpty) && nonEmpty >= 0,
+      `非空 store 的 loadMaxRound 必须返回 ≥0 的安全整数，实际：${String(nonEmpty)}`);
+  });
+
+  // issue #171：loadByDedupKey 的判据必须是 nullish 回退，不是 OR。
+  // 分叉数据：同一条 record 同时带有不等值的 dedupKey 与 roundKey。
+  //   ?? （契约正文 + src/store/append-user-turn.js 全量路径）：只看 dedupKey，
+  //      按 roundKey 的值查询判 miss。
+  //   OR （0.17.0 升级指南旧 sketch）：按 roundKey 的值查询判 hit——快路径多
+  //      命中会让 appendUserTurn 直接返回 written:false，这一轮静默不追加，
+  //      不报错也不降级。本用例永久锁住 nullish 语义：宿主写成 OR 会在这里红。
+  test(`${label}: loadByDedupKey 按 nullish 判据匹配（dedupKey 存在时绝不回退 roundKey，#171）`, async () => {
+    const store = await createStore();
+    if (typeof store.loadByDedupKey !== "function") return; // 未实现快路径：由全量路径覆盖
+
+    const record = {
+      round: 8,
+      ts: "2026-08-29T00:08:00.000Z",
+      dedupKey: "nullish-run:A",
+      roundKey: "nullish-run:B",
+      messages: [{ role: "user", content: [{ type: "text", text: "two keys" }] }],
+    };
+    await store.appendRound("nullish-run", record);
+
+    // 按 dedupKey 查：命中并返回完整记录。
+    assert.deepEqual(await store.loadByDedupKey("nullish-run", record.dedupKey), record);
+
+    // 按 roundKey 的值查：必须判 miss（?? 不回退）。
+    const byRoundKey = await store.loadByDedupKey("nullish-run", record.roundKey);
+    assert.ok(byRoundKey === null || byRoundKey === undefined,
+      "record 已有 dedupKey 时，按 roundKey 值查询必须判 miss（nullish 判据，非 OR）");
+
+    // 一般化：探针结论逐值等于全量路径的 ?? 判据，两路径不得给出不同答案。
+    const records = await store.load("nullish-run");
+    const fullPathHit = (probe) => records.find((r) => (r.dedupKey ?? r.roundKey) === probe);
+    for (const probe of [record.dedupKey, record.roundKey, "nullish-run:absent"]) {
+      const probed = await store.loadByDedupKey("nullish-run", probe);
+      assert.deepEqual(probed ?? null, fullPathHit(probe) ?? null,
+        `loadByDedupKey(${probe}) 与全量 load 的 ?? 判据结论不一致`);
+    }
   });
 }

@@ -353,3 +353,36 @@ test("appendUserTurn: 快路径写入的 dedupKey 无 messageId 时同样唯一�
   assert.equal(calls.load, 0);
   assert.equal(calls.appendRound, 2);
 });
+
+// issue #171：锁住快路径与全量路径的同一判据（nullish 而非 OR）。
+// 分叉数据：既存 record 同时带有不等值的 dedupKey 与 roundKey，查询值等于它的
+// roundKey。?? 判 miss（必须追加），OR 判 hit（快路径直接 written:false，这一轮
+// 静默不追加）。0.17.0 升级指南旧 sketch 的 OR 写法会在本用例红。
+test("appendUserTurn: 快路径⑩探针按 nullish 判据匹配，dedupKey 存在时绝不按 roundKey 命中（#171）", async () => {
+  const stored = {
+    round: 3,
+    messages: [{ role: "assistant", content: [{ type: "text", text: "engine round" }] }],
+    dedupKey: "fp-10:engine:round:3",
+    roundKey: "fp-10:input:m-1",
+    ts: "2026-01-01T00:00:00.000Z",
+  };
+  for (const withProbes of [false, true]) {
+    const rounds = [stored];
+    const store = {
+      load: async () => rounds,
+      appendRound: async (_key, record) => { rounds.push(record); },
+    };
+    if (withProbes) {
+      store.loadByDedupKey = async (_key, dk) =>
+        rounds.find((record) => (record.dedupKey ?? record.roundKey) === dk) ?? null;
+      store.loadMaxRound = async () =>
+        Math.max(0, ...rounds.map((r) => (Number.isSafeInteger(r.round) ? r.round : 0)));
+    }
+    const result = await appendUserTurn(store, { key: "fp-10", text: "new turn", messageId: "m-1" });
+    assert.equal(result.written, true,
+      `withProbes=${String(withProbes)}: ?? 判据下这条 record 不算既存，该轮必须追加`);
+    assert.equal(rounds.length, 2, `withProbes=${String(withProbes)}: 两条路径都必须落盘新轮`);
+    assert.equal(result.dedupKey, "fp-10:input:m-1");
+    assert.equal(result.round, 3, "两条路径均复用既有最大 round");
+  }
+});
