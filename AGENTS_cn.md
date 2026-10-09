@@ -51,9 +51,14 @@ scripts/          # 实验脚本和结果
 |---|---|
 | `npm test` | 全量测试（`node --test`） |
 | `node --check <file>` | 语法安全检查 |
+| `npm run check:docs` | 文档漂移检查（`scripts/docs-drift-check.mjs`：版本声明、README 引用的 `files`/`exports` 清单、模块地图、文中路径与命令、从 `src/` 直抽的 14 条关键默认值、中英 README 标题骸架）+ 中英契约标题结构对齐 |
+| `npm run check:docs:strict` | 同上，但把告警升级为失败 |
+| `npm run check:docs-examples` | 真实执行 `docs/host-consumer-contract.md` 里的 js 围栏（issue #158） |
+| `npm run check:pack-links` | 随包 Markdown 的链接闭合检查 |
 | `node bin/cli.js ...` | 本地运行 CLI（无需安装） |
 
 - 测试隔离规则：涉及 `~/.erix` 或 `~/.pi` 的测试必须注入 `home`/`cwd` 参数（skills/mcp/config 测试提供了先例），以免污染真实用户配置。
+- 文档规则（issue #164）：改 `README*.md`、`docs/requirements*.md`、任何默认值或 `files`/`exports` 清单时，必须保证 `npm run check:docs` 绿。该检查直接从 `package.json` 与 `src/` 取真值，因此文档无法静默漂移；「当前版本」声明的规范写法写在 `scripts/docs-drift-check.mjs` 顶部注释里。中英文文档成对同步（见 `AGENTS_cn.md` 对应小节）。
 
 ## 4. npm 发布指南（已根据 2026-08 政策验证）
 

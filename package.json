@@ -46,6 +46,8 @@
   "scripts": {
     "test": "node --test",
     "check": "node --check src/index.js",
+    "check:docs": "node scripts/docs-drift-check.mjs && node scripts/docs-sync-check.mjs",
+    "check:docs:strict": "node scripts/docs-drift-check.mjs --strict",
     "check:docs-examples": "node --test test/contract/doc-examples.test.js",
     "check:pack-links": "node scripts/pack-link-check.mjs"
   },

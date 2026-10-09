@@ -1,0 +1,505 @@
+#!/usr/bin/env node
+// docs-drift-check.mjs — 文档事实漂移检查（issue #164；零依赖，仅 node: 内置）
+//
+// 背景：独立审计（#164）证明 README/requirements 会点状腐坏——版本号停在 0.9.0、
+// stallDetection 默认模式写成 appear、模块地图漏了 src/display/、requirements 的
+// 「当前版本」停在 0.8.0。这类漂移不影响测试变红，却会直接把宿主引导到错误默认值上。
+// 本脚本把「文档说的 == 代码/清单里真实的那份」钉成可执行检查。
+//
+// 检查面（issue #164 的「数值层」。判据层——升级指南里的参考 SQL/谓词 sketch 必须与运行时同
+// 判据——本轮仍只纳入人工检查清单，中期归 #158 三层可执行验证扩面）：
+//   1. version    中英 README 与 docs/requirements 的「当前版本」声明必须 == package.json；
+//                 文中出现的任何版本号都不得高于 package.json（不得把没发布的东西写成事实）
+//   2. defaults   关键默认值白名单（stall 窗口与模式、maxRounds、TTL 与折叠阈值、judge
+//                 interval/timeout/failureLimit、退避、reflection 门槛、notes 保留期…）逐条从
+//                 源码参数默认值里抽真值，再要求中英文档同口径
+//   3. pkg-block  README 引用的 files/exports JSON 围栏必须与 package.json 逐项一致；
+//                 test/contract/index.js 再导出的套件必须真的在 npm files 白名单里
+//   4. modulemap  src/ 下每个 .js 都必须出现在中英 README 的模块地图里
+//   5. paths      README 引用的仓库内路径与 node <file> / npm run <script> 命令必须存在
+//   6. skeleton   中英 README 标题数量与层级骨架必须一致（做法参考 docs-sync-check.mjs，更轻）
+//
+// 严重级与 #158 三层验证「先告警后阻塞」同口径：
+//   - error（默认 exit 1）：会直接把宿主引导错的——当前版本声明、默认值、路径/命令、
+//     files/exports 清单、模块地图、中英骨架、引用了高于 package.json 的版本。
+//   - warn（默认 exit 0，`--strict` 升级为 error）：只表示「文档没跟上」的滞后信号——
+//     版本历史最高条目落后于 package.json、requirements 阶段表 current 行落后、
+//     `test/contract/index.js` 再导出的套件未进 npm `files`。
+//
+// 用法：
+//   node scripts/docs-drift-check.mjs              # error 才阻塞
+//   node scripts/docs-drift-check.mjs --strict     # warn 也阻塞
+//   node scripts/docs-drift-check.mjs --verbose    # 打印每条规则的实测值与检查面
+
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const STRICT = process.argv.includes("--strict");
+const VERBOSE = process.argv.includes("--verbose");
+
+const PKG = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
+const PKG_VERSION = PKG.version;
+
+const README_EN = "README.md";
+const README_CN = "README_cn.md";
+const REQ_EN = "docs/requirements.md";
+const REQ_CN = "docs/requirements_cn.md";
+
+function read(rel) {
+  return readFileSync(path.join(ROOT, rel), "utf8");
+}
+
+const errors = [];
+const warnings = [];
+const checked = [];
+const err = (msg) => errors.push(msg);
+const warn = (msg) => warnings.push(msg);
+const note = (msg) => checked.push(msg);
+
+/** 行内代码形式的值（`8`）；数字里的 `_` 分隔符（30_000）会被归一。 */
+const bt = (v) => {
+  const s = String(v);
+  const norm = /^[\d_]+$/.test(s) ? s.replace(/_/g, "") : s;
+  return "`" + norm + "`";
+};
+/** 把文档需要引用的字面量转成正则片段。 */
+const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** 语义化版本比较：a<b → -1，a==b → 0，a>b → 1。 */
+function cmpSemver(a, b) {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) < (pb[i] ?? 0) ? -1 : 1;
+  }
+  return 0;
+}
+
+// ── 1. 版本声明 ───────────────────────────────────────────────────────────────
+// 「当前版本」的规范写法（新增/改写文档时请沿用，否则等于绕过检查）：
+//   README.md     Current release: **vX.Y.Z**
+//   README_cn.md  当前发布版本：**vX.Y.Z**
+//   requirements  "…shipped in version X.Y.Z" / "package version X.Y.Z"
+//                 「与 X.Y.Z 版本交付的实现」「package 版本 X.Y.Z」
+const CURRENT_CLAIMS = [
+  { file: README_EN, label: "README 当前发布行", re: /Current release:\s*\*\*v?(\d+\.\d+\.\d+)\*\*/ },
+  { file: README_CN, label: "README_cn 当前发布行", re: /当前发布版本[：:]\s*\*\*v?(\d+\.\d+\.\d+)\*\*/ },
+  { file: REQ_EN, label: "requirements 对照版本", re: /implementation shipped in version (\d+\.\d+\.\d+)/ },
+  { file: REQ_EN, label: "requirements §4 对照版本", re: /exists in package version (\d+\.\d+\.\d+)/ },
+  { file: REQ_CN, label: "requirements_cn 对照版本", re: /与\s*(\d+\.\d+\.\d+)\s*版本交付的实现/ },
+  { file: REQ_CN, label: "requirements_cn §4 对照版本", re: /package 版本\s*(\d+\.\d+\.\d+)/ },
+];
+
+for (const claim of CURRENT_CLAIMS) {
+  const text = read(claim.file);
+  const matches = [...text.matchAll(claim.re.global ? claim.re : new RegExp(claim.re, "g"))];
+  if (matches.length === 0) {
+    err(`version: ${claim.file} 缺少「${claim.label}」声明（规范写法见 scripts/docs-drift-check.mjs 顶部注释），检查面失效本身就是漂移`);
+    continue;
+  }
+  for (const m of matches) {
+    if (m[1] !== PKG_VERSION) {
+      err(`version: ${claim.file} 的「${claim.label}」写的是 ${m[1]}，package.json 是 ${PKG_VERSION}`);
+    } else {
+      note(`version: ${claim.file}「${claim.label}」= ${m[1]}（== package.json ${PKG_VERSION}）`);
+    }
+  }
+}
+
+// 文档里出现的任何版本号都不得高于当前发布版本（不得把未发布的东西写成事实）。
+const FOUR_FILES = [README_EN, README_CN, REQ_EN, REQ_CN];
+for (const rel of FOUR_FILES) {
+  const text = read(rel);
+  const seen = new Set();
+  for (const m of text.matchAll(/(?<![\w./-])(?:v|V)?(\d+\.\d+\.\d+)(?![\w./-])/g)) {
+    if (seen.has(m[1])) continue;
+    seen.add(m[1]);
+    if (cmpSemver(m[1], PKG_VERSION) > 0) {
+      err(`version: ${rel} 引用了高于 package.json（${PKG_VERSION}）的版本 ${m[1]}`);
+    }
+  }
+}
+
+// 「版本历史」/阶段表的最高条目落后于 package.json 只算滞后信号（先告警后阻塞）。
+const HISTORY_MAX = { [README_EN]: /v(\d+\.\d+\.\d+)/g, [README_CN]: /v(\d+\.\d+\.\d+)/g };
+for (const [rel, re] of Object.entries(HISTORY_MAX)) {
+  const versions = [...read(rel).matchAll(re)].map((m) => m[1]);
+  const max = versions.sort(cmpSemver).at(-1);
+  if (max && cmpSemver(max, PKG_VERSION) < 0) {
+    warn(`version: ${rel} 提到的最高版本是 ${max}，落后于 package.json 的 ${PKG_VERSION}（新版本条目/里程碑未补）`);
+  } else if (max) {
+    note(`version: ${rel} 提到的最高版本 ${max} == package.json ${PKG_VERSION}`);
+  }
+}
+
+// requirements 阶段表里被标为 current 的那一行，必须覆盖当前版本。
+for (const rel of [REQ_EN, REQ_CN]) {
+  const row = read(rel)
+    .split("\n")
+    .find((line) => /^\|\s*\*\*v[\d.]+.*(?:—\s*(?:current|当前))/i.test(line));
+  if (!row) {
+    err(`version: ${rel} §4 阶段表找不到标为 current 的行，无法核对「当前版本」`);
+    continue;
+  }
+  const versions = [...row.matchAll(/(\d+\.\d+\.\d+)/g)].map((m) => m[1]);
+  const max = versions.sort(cmpSemver).at(-1);
+  if (!max) {
+    err(`version: ${rel} 的 current 行没有版本号：${row.slice(0, 60)}…`);
+  } else if (cmpSemver(max, PKG_VERSION) < 0) {
+    warn(`version: ${rel} 阶段表 current 行停在 ${max}，落后于 package.json 的 ${PKG_VERSION}`);
+  } else {
+    note(`version: ${rel} current 行覆盖到 ${max}（package.json ${PKG_VERSION}）`);
+  }
+}
+
+// ── 2. 关键默认值白名单 ───────────────────────────────────────────────────────
+// 每条规则：从源码里抽出**真值**（抽不到即规则失效 → error，逼着改代码的人同步改这里），
+// 再用 must（正则模板）要求文档同口径、mustNot 拦住旧措辞复活。
+const DEFAULT_RULES = [
+  {
+    id: "stallDetection 默认窗口与模式",
+    src: "src/loop/orchestrator.js",
+    srcRe: /stallDetection = \{ window: (\d+), mode: "(\w+)" \}/,
+    docs: [README_EN, README_CN, REQ_EN, REQ_CN],
+    must: ([w, mode]) => [new RegExp(`stallDetection[\\s\\S]{0,220}?window: ${w}, mode: "${mode}"`)],
+    mustNot: [/default(?:se)? (?:mode|mode is)?\s*is\s*\n?\s*`?appear`?/, /默认模式是\s*`?appear`?/],
+    hint: "orchestrator 的参数默认值是唯一真值（ERIX_STALL_MODE 只在运行时覆盖）",
+  },
+  {
+    id: "maxRounds 默认值",
+    src: "src/loop/orchestrator.js",
+    srcRe: /\n\s+maxRounds = (\d+),/,
+    docs: [README_EN, README_CN],
+    must: ([v]) => [new RegExp(`maxRounds[\\s\\S]{0,60}?(?:defaults to|默认为)\\s*${bt(v)}`)],
+  },
+  {
+    id: "maxTokenContinuations 默认值",
+    src: "src/loop/orchestrator.js",
+    srcRe: /\n\s+maxTokenContinuations = (\d+),/,
+    docs: [README_EN, README_CN],
+    must: ([v]) => [new RegExp(`maxTokenContinuations[\\s\\S]{0,40}?(?:defaults to|默认为)\\s*${bt(v)}`)],
+  },
+  {
+    id: "tool-result TTL 默认轮数",
+    src: "src/loop/tool-result-ttl.js",
+    srcRe: /TOOL_RESULT_TTL_DEFAULT = (\d+)/,
+    docs: [README_EN, README_CN],
+    must: ([v]) => [new RegExp(`toolResultTtl[\\s\\S]{0,40}?(?:defaults to|默认为)\\s*${bt(v)}`)],
+  },
+  {
+    id: "toolResultFoldMinTokens 默认值",
+    src: "src/loop/tool-result-ttl.js",
+    srcRe: /TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT = (\d+)/,
+    docs: [README_EN, README_CN],
+    must: ([v]) => [new RegExp(`toolResultFoldMinTokens[\\s\\S]{0,80}?(?:defaults to|默认为)[\\s\\S]{0,24}?${v}`)],
+  },
+  {
+    id: "judgeIntervalRound 默认值",
+    src: "src/loop/orchestrator.js",
+    srcRe: /const judgeIntervalRound = [\s\S]{0,600}?: (\d+);/,
+    docs: [README_EN, README_CN],
+    must: ([v]) => [new RegExp(`judgeIntervalRound[\\s\\S]{0,30}?(?:is|defaults to|为|默认为)\\s*${bt(v)}`)],
+  },
+  {
+    id: "judgeInterceptTimeoutMs 默认值",
+    src: "src/loop/orchestrator.js",
+    srcRe: /const judgeInterceptTimeoutMs = [\s\S]{0,400}?: (\d[\d_]*);/,
+    docs: [README_EN, README_CN],
+    must: ([v]) => [new RegExp(`judgeInterceptTimeoutMs[\\s\\S]{0,30}?(?:is|defaults to|为|默认为)\\s*${bt(v)}`)],
+  },
+  {
+    id: "judgeFailureLimit 默认值",
+    src: "src/loop/orchestrator.js",
+    srcRe: /const roundJudgeFailureLimit = [\s\S]{0,300}?: (\d+);/,
+    docs: [README_EN, README_CN],
+    must: ([v]) => [new RegExp(`judgeFailureLimit[\\s\\S]{0,40}?(?:defaults to|默认为)\\s*${bt(v)}`)],
+  },
+  {
+    id: "reflection 自动启用门槛",
+    src: "src/loop/reflection.js",
+    srcRe: /DEFAULT_REFLECTION_MIN_ROUNDS = (\d+)/,
+    docs: [README_EN, README_CN, REQ_EN, REQ_CN],
+    must: ([v]) => [new RegExp(`maxRounds >= ${v}`)],
+  },
+  {
+    id: "maxExtensions 默认值",
+    src: "src/loop/orchestrator.js",
+    srcRe: /const reflectionMaxExtensions = [\s\S]{0,300}?: (\d+);/,
+    docs: [README_EN, README_CN],
+    must: ([v]) => [new RegExp(`maxExtensions[\\s\\S]{0,80}?${bt(v)}`)],
+  },
+  {
+    id: "maxRoundsCap 兜底值",
+    src: "src/loop/orchestrator.js",
+    srcRe: /const reflectionMaxRoundsCap = [\s\S]{0,500}?: (\d+),/,
+    docs: [README_EN, README_CN],
+    must: ([v]) => [new RegExp(`maxRoundsCap[\\s\\S]{0,160}?${bt(v)}`)],
+  },
+  {
+    id: "retry 退避下限/上限",
+    src: "src/loop/orchestrator.js",
+    srcRe: /const backoffBaseMs = [\s\S]{0,200}?: (\d+);[\s\S]{0,200}?const backoffMaxMs = [\s\S]{0,200}?: (\d+);/,
+    docs: [README_EN, README_CN],
+    must: ([base, max]) => [
+      // 允许「A defaults to X and B to Y」这类共用动词的句式，因此按出现顺序校两个真值。
+      new RegExp(`backoffBaseMs[\\s\\S]{0,120}?${bt(base)}[\\s\\S]{0,120}?backoffMaxMs[\\s\\S]{0,120}?${bt(max)}`),
+    ],
+  },
+  {
+    id: "writeToolNames / writeToolPathKeys 默认值",
+    src: "src/loop/orchestrator.js",
+    srcRe: /\n\s+writeToolNames = (\[[^\]]+\]),[\s\S]{0,60}?writeToolPathKeys = (\[[^\]]+\]),/,
+    docs: [README_EN, README_CN],
+    must: ([names, keys]) => [
+      new RegExp(`writeToolNames[\\s\\S]{0,60}?${esc(names)}`),
+      new RegExp(`writeToolPathKeys[\\s\\S]{0,60}?${esc(keys)}`),
+    ],
+  },
+  {
+    id: "notes 统一保留期",
+    src: "src/store/notes.js",
+    srcRe: /const DEFAULT_RETENTION_MS = (\d+) \* 24/,
+    docs: ["docs/host-consumer-contract.md", "docs/host-consumer-contract_cn.md"],
+    must: ([days]) => [new RegExp(`(?:default|默认)\\s*${days}\\s*(?:days|天)`, "i")],
+    hint: "契约里 ERIX_NOTES_RETENTION_MS 的默认天数",
+  },
+];
+
+for (const rule of DEFAULT_RULES) {
+  const srcText = read(rule.src);
+  const m = srcText.match(rule.srcRe);
+  if (!m) {
+    err(`defaults: 规则「${rule.id}」在 ${rule.src} 里抽不到真值——源码形状变了，请同步更新本脚本（否则检查面会静默失效）`);
+    continue;
+  }
+  const values = m.slice(1);
+  for (const rel of rule.docs) {
+    const text = read(rel);
+    for (const re of rule.must(values)) {
+      if (!re.test(text)) {
+        err(`defaults: ${rel} 没有按源码真值声明「${rule.id}」= ${JSON.stringify(values)}（${rule.src}；规则提示：${rule.hint ?? "文档需与参数默认值同口径"}）`);
+      }
+    }
+    for (const re of rule.mustNot ?? []) {
+      if (re.test(text)) {
+        err(`defaults: ${rel} 仍含有害旧措辞 /${re}/（「${rule.id}」的真值是 ${JSON.stringify(values)}）`);
+      }
+    }
+  }
+  note(`defaults: 「${rule.id}」实测值 ${JSON.stringify(values)}（${rule.src}），已在 ${rule.docs.join(" / ")} 核对`);
+}
+
+// ── 3. README 引用的 package.json 清单（files / exports）────────────────────────
+function fencedJsonBlocks(rel) {
+  const blocks = [];
+  let current = null;
+  for (const line of read(rel).split("\n")) {
+    if (line.trim() === "```json") {
+      current = [];
+      continue;
+    }
+    if (current && line.trim() === "```") {
+      blocks.push(current.join("\n"));
+      current = null;
+      continue;
+    }
+    if (current) current.push(line);
+  }
+  return blocks;
+}
+
+for (const rel of [README_EN, README_CN]) {
+  const blocks = fencedJsonBlocks(rel).map((b) => {
+    try {
+      return JSON.parse(b);
+    } catch {
+      return undefined;
+    }
+  });
+  const filesBlock = blocks.find((b) => Array.isArray(b) && b.includes("src"));
+  const exportsBlock = blocks.find((b) => b && !Array.isArray(b) && b["./tools"]);
+  if (!filesBlock) {
+    warn(`pkg-block: ${rel} 没有可解析的 \`files\` JSON 围栏（无法与 package.json 比对）`);
+  } else {
+    const missing = PKG.files.filter((f) => !filesBlock.includes(f));
+    const extra = filesBlock.filter((f) => !PKG.files.includes(f));
+    if (missing.length || extra.length) {
+      err(`pkg-block: ${rel} 的 files 清单与 package.json 不一致：缺 ${missing.join(", ") || "—"}；多 ${extra.join(", ") || "—"}`);
+    } else {
+      note(`pkg-block: ${rel} files 清单与 package.json 一致（${PKG.files.length} 项）`);
+    }
+  }
+  if (!exportsBlock) {
+    warn(`pkg-block: ${rel} 没有可解析的 \`exports\` JSON 围栏（无法与 package.json 比对）`);
+  } else {
+    const keys = Object.keys(PKG.exports).sort();
+    const docKeys = Object.keys(exportsBlock).sort();
+    const same = keys.length === docKeys.length && keys.every((k, i) => docKeys[i] === k && exportsBlock[k] === PKG.exports[k]);
+    if (!same) {
+      err(`pkg-block: ${rel} 的 exports 清单与 package.json 不一致：文档 ${JSON.stringify(exportsBlock)} vs package.json ${JSON.stringify(PKG.exports)}`);
+    } else {
+      note(`pkg-block: ${rel} exports 清单与 package.json 一致（${keys.length} 项）`);
+    }
+  }
+}
+
+// 随包发布的契约套件必须真的在 files 白名单里（否则宿主 import 'erix-agent/contract-tests' 会炸）。
+const contractIndex = read("test/contract/index.js");
+for (const m of contractIndex.matchAll(/from "\.\/([\w.-]+\.js)"/g)) {
+  const rel = `test/contract/${m[1]}`;
+  if (!PKG.files.includes(rel)) {
+    warn(`pkg-block: ${rel} 被 test/contract/index.js（npm 入口 ./contract-tests）再导出，但不在 package.json 的 files 白名单里 → 发布包内该套件会缺失`);
+  }
+}
+
+// ── 4. 模块地图完整性 ─────────────────────────────────────────────────────────
+function walk(rel, acc = []) {
+  for (const name of readdirSync(path.join(ROOT, rel))) {
+    const childRel = `${rel}/${name}`;
+    if (statSync(path.join(ROOT, childRel)).isDirectory()) walk(childRel, acc);
+    else acc.push(childRel);
+  }
+  return acc;
+}
+
+const srcFiles = walk("src").filter((f) => f.endsWith(".js"));
+for (const rel of [README_EN, README_CN]) {
+  const mapBlock = read(rel)
+    .split(/^```text$/m)
+    .find((chunk) => chunk.includes("orchestrator.js") && chunk.includes("index.js"));
+  if (!mapBlock) {
+    err(`modulemap: ${rel} 找不到模块地图围栏（text 围栏块），检查面失效`);
+    continue;
+  }
+  const counts = new Map();
+  for (const m of mapBlock.matchAll(/([\w.-]+\.js)/g)) {
+    counts.set(m[1], (counts.get(m[1]) ?? 0) + 1);
+  }
+  const missing = [];
+  for (const f of srcFiles) {
+    const base = path.basename(f);
+    const needed = srcFiles.filter((x) => path.basename(x) === base).length;
+    if ((counts.get(base) ?? 0) < needed) {
+      counts.set(base, needed); // 同一缺失名只报一次
+      missing.push(f);
+    }
+  }
+  if (missing.length) {
+    err(`modulemap: ${rel} 的模块地图缺少 ${missing.join(", ")}`);
+  } else {
+    note(`modulemap: ${rel} 覆盖 src/ 全部 ${srcFiles.length} 个文件`);
+  }
+}
+
+// ── 5. README 引用的路径与命令 ────────────────────────────────────────────────
+// 历史上真实存在过、但按文意必须保留的字面路径（退役说明、宿主侧证据路径）。
+const EXPECTED_ABSENT_PATHS = new Set([
+  "skills/notes/skill.mjs", // v0.11.0 已退役的兼容 shim，README 在讲「已删除」
+  "src/loop.js", // v0.14.0 已删除的转发 shim，README 在讲迁移
+  "judge.log", // 引擎写入 transcripts/outputs/<runId>/ 的运行产物名，不是仓库文件
+  "erix-state/judge.log", // 2026-09 基准证据里的宿主侧路径，不在本仓库
+]);
+
+function candidatePaths(rel) {
+  const out = new Set();
+  const text = read(rel);
+  // markdown 链接目标 + 行内代码里的路径
+  for (const m of text.matchAll(/\]\(([^)\s]+)\)/g)) out.add(m[1]);
+  for (const m of text.matchAll(/`([^`\s]+)`/g)) out.add(m[1]);
+  // `node <path>` / `npm run <script>`
+  const commands = [];
+  for (const m of text.matchAll(/(?:^|\s)(?:LLM_KIT_E2E=1\s+)?node\s+([\w./-]+\.(?:mjs|js))/g)) {
+    commands.push({ kind: "file", value: m[1] });
+  }
+  for (const m of text.matchAll(/npm run ([\w:.-]+)/g)) {
+    commands.push({ kind: "script", value: m[1] });
+  }
+  const paths = [];
+  for (const raw of out) {
+    let p = raw;
+    const url = p.match(/^https?:\/\/[^/]+\/(?:ErixWong\/erix-agent)?\/?(?:blob|tree)\/main\/(.+)$/);
+    if (url) p = url[1];
+    else if (/^https?:/.test(p)) continue;
+    p = p.replace(/#.*$/, "");
+    if (!p || p.startsWith("#")) continue;
+    if (/^[~$]/.test(p)) continue; // 用户目录（~/.erix）与环境变量形式（$XDG_CONFIG_HOME）不属于本仓库
+    if (p.startsWith(".")) continue; // .mcp.json / .erix/skills/ 这类宿主侧配置目录
+    if (/[*<>|]/.test(p)) continue; // glob 与占位符
+    if (!/\.(?:js|mjs|json|md|ts|sh|log|mjs)$|\/$/.test(p)) continue; // 只核对像路径的东西
+    paths.push(p);
+  }
+  return { paths, commands };
+}
+
+for (const rel of [README_EN, README_CN]) {
+  const { paths, commands } = candidatePaths(rel);
+  const bad = [];
+  for (const p of paths) {
+    if (EXPECTED_ABSENT_PATHS.has(p)) continue;
+    if (!existsSync(path.join(ROOT, p))) bad.push(p);
+  }
+  const badCommands = commands.filter((c) =>
+    c.kind === "file"
+      ? !existsSync(path.join(ROOT, c.value))
+      : !(PKG.scripts ?? {})[c.value],
+  );
+  if (bad.length) {
+    err(`paths: ${rel} 引用了仓库里不存在的文件：${bad.join(", ")}（确属历史事实就加进 EXPECTED_ABSENT_PATHS 并注明原因）`);
+  }
+  if (badCommands.length) {
+    err(`paths: ${rel} 引用的命令不可执行：${badCommands.map((c) => (c.kind === "file" ? `node ${c.value}` : `npm run ${c.value}`)).join(", ")}`);
+  }
+  note(`paths: ${rel} 核对 ${new Set(paths).size} 个路径、${commands.length} 个命令（${[...new Set(commands.map((c) => (c.kind === "file" ? `node ${c.value}` : `npm run ${c.value}`)))].join(", ")}）`);
+}
+
+// ── 6. 中英 README 标题骨架 ───────────────────────────────────────────────────
+function headingLevels(rel) {
+  return read(rel)
+    .split("\n")
+    .reduce((acc, line, i) => {
+      const m = line.match(/^(#{1,6})\s+(.*)/);
+      if (m) acc.push({ line: i + 1, level: m[1].length, title: m[2].trim() });
+      return acc;
+    }, []);
+}
+
+const enH = headingLevels(README_EN);
+const cnH = headingLevels(README_CN);
+const seq = (hs) => hs.map((h) => h.level).join(",");
+if (enH.length !== cnH.length) {
+  err(`skeleton: 中英 README 标题总数不齐：EN ${enH.length} vs CN ${cnH.length}`);
+}
+if (seq(enH) !== seq(cnH)) {
+  const i = [...seq(enH), "..."].findIndex((v, idx) => v !== [...seq(cnH), "..."][idx]);
+  const at = Math.min(i, enH.length - 1, cnH.length - 1);
+  err(
+    `skeleton: 中英 README 标题层级序列不齐（第 ${i + 1} 个标题起）：EN「${enH[at]?.title ?? "无"}」(L${enH[at]?.line ?? "-"}) vs CN「${cnH[at]?.title ?? "无"}」(L${cnH[at]?.line ?? "-"})；`
+    + `\n    EN ${seq(enH)}\n    CN ${seq(cnH)}`,
+  );
+}
+for (const level of new Set([...enH.map((h) => h.level), ...cnH.map((h) => h.level)])) {
+  const ne = enH.filter((h) => h.level === level).length;
+  const nc = cnH.filter((h) => h.level === level).length;
+  if (ne !== nc) err(`skeleton: h${level} 数量不齐：EN ${ne} vs CN ${nc}`);
+}
+if (!errors.some((e) => e.startsWith("skeleton:"))) {
+  note(`skeleton: 中英 README 标题骨架一致（${enH.length} 个标题，层级序列相同）`);
+}
+
+// ── 输出 ─────────────────────────────────────────────────────────────────────
+if (VERBOSE) {
+  console.log("docs-drift-check 检查面：");
+  for (const c of checked) console.log(`  ✓ ${c}`);
+}
+if (errors.length || (STRICT && warnings.length)) {
+  console.log(`docs-drift-check: 失败 — ${errors.length} 处漂移${STRICT && warnings.length ? `，${warnings.length} 处告警（--strict）` : ""}`);
+  for (const e of errors) console.log(`  ✗ ${e}`);
+  for (const w of warnings) console.log(`  ⚠ ${w}`);
+  process.exit(1);
+}
+console.log(
+  `docs-drift-check: OK — 版本/默认值/清单/模块地图/路径/中英骨架共 ${checked.length} 项对齐 package.json ${PKG_VERSION} 与源码`
+  + (warnings.length ? `（${warnings.length} 处告警，先告警后阻塞：\n` + warnings.map((w) => `  ⚠ ${w}`).join("\n") + "\n）" : ""),
+);

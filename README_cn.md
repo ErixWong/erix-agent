@@ -141,6 +141,7 @@ src/
   providers/
     anthropic.js                   Anthropic provider 与流式处理
     errors.js                       provider 错误与分类
+    http-shared.js                  两个 provider 共用的 HTTP 与注入 helper（header/extraBody 红线）
     openai.js                       OpenAI-compatible provider 与流式处理
     payload.js                      provider payload 与超时选项
     timeout.js                      provider 超时处理
@@ -163,11 +164,14 @@ src/
     file.js                         JSONL transcript、checkpoint 与状态存储
     memory.js                        进程内 transcript、checkpoint 与状态存储
     notes.js                        宿主侧 notes 存储
+    append-user-turn.js             多轮续跑契约的预写 user 轮
   config/
     api-key.js                      API key 物化
     env.js                          基于环境变量的模型配置
     json-file.js                    基于 JSON 文件的模型配置
     static.js                       静态模型配置
+  display/
+    projection.js                   宿主展示投影（RoundRecord[] 的读侧视图）
   reflection/
     governor.js                     确定性的轮次治理
     judge.js                        objective timeline 与 judge prompt/response 解析
@@ -182,7 +186,7 @@ src/
     registry.js                     工具 schema 与 executor registry
 ```
 
-`src/index.js` 导出 provider、规范消息转换、token 与压缩辅助函数、transcript store、run-state 辅助函数、配置 provider、`runToolLoop` 以及 reflection 辅助函数。可选的 `erix-agent/tools` 子路径导出工具 registry 和 provider 辅助函数；模型侧取回采用 note-first（`note_list` → `note_read`）。
+`src/index.js` 导出 provider、规范消息转换、token 与压缩辅助函数、transcript store、run-state 辅助函数、宿主展示投影（`projectTranscriptForDisplay`）、多轮预写辅助函数（`appendUserTurn`）、配置 provider、`runToolLoop` 以及 reflection 辅助函数。可选的 `erix-agent/tools` 子路径导出工具 registry 和 provider 辅助函数；模型侧取回采用 note-first（`note_list` → `note_read`）。
 
 ## 宿主端口与错误账本
 
@@ -231,18 +235,43 @@ const assemblyPort = createAssemblyPort({
 
 - 零运行时 npm 依赖、纯 ESM、Node 22+，无构建步骤。
 - 测试使用 `node --test`；类型信息通过 JSDoc typedef 表达。
+- 文档事实受机器校验，陈旧的 README 不可能静默过线：`npm run check:docs` 将版本声明、
+  引用的 `files`/`exports` 清单、模块地图、文中路径与命令，以及关键默认值白名单逐个比对
+  `package.json` 与源码，并对齐本文与 [README.md](README.md) 的标题骨架；
+  `npm run check:docs-examples` 真实执行契约里的 js 围栏；`npm run check:pack-links` 检查随包
+  Markdown 的链接闭合。
 - 包以 `erix-agent` 发布到 npm，代码托管于 GitHub 的 `ErixWong/erix-agent`。
 - 永远不要提交 token、API key 或其他凭据。
 
-当前 `package.json` 中发布包的版本是 `0.9.0`。声明的 `files` 为：
+权威的版本口径是 [`package.json`](package.json) 的 `version` 字段（`npm run check:docs` 会校验本文的
+发布行）。当前发布版本：**v0.17.0**。下面引用的 `files` 清单以 `package.json` 为权威：
 
 ```json
-["src", "bin", "skills", "README.md", "README_cn.md", "CHANGELOG.md",
- "docs/host-consumer-contract.md", "docs/host-upgrade-guide-0.6.0.md",
- "test/contract/assembly-port.js", "test/contract/execute-tool.js",
- "test/contract/index.js", "test/contract/model-config-provider.js",
- "test/contract/notes-store.js", "test/contract/transcript-store.js",
- "LICENSE"]
+[
+  "src",
+  "bin",
+  "skills",
+  "README.md",
+  "README_cn.md",
+  "CHANGELOG.md",
+  "LICENSE",
+  "docs/host-consumer-contract.md",
+  "docs/host-consumer-contract_cn.md",
+  "docs/host-upgrade-guide-0.6.0.md",
+  "docs/host-upgrade-guide-0.12.0.md",
+  "docs/host-upgrade-guide-0.14.0.md",
+  "docs/host-upgrade-guide-0.15.0.md",
+  "docs/host-upgrade-guide-0.16.0.md",
+  "docs/host-upgrade-guide-0.17.0.md",
+  "test/contract/assembly-port.js",
+  "test/contract/engine-api.js",
+  "test/contract/execute-tool.js",
+  "test/contract/index.js",
+  "test/contract/model-config-provider.js",
+  "test/contract/notes-store.js",
+  "test/contract/termination-payload.js",
+  "test/contract/transcript-store.js"
+]
 ```
 
 ## `runToolLoop` API
@@ -262,7 +291,7 @@ runToolLoop({ provider, executeTool, ...options })
 - 存在但没有文本、工具调用或 reasoning block 的 assistant 消息会被标记为可重试。CLI 读取 `ERIX_RETRY_ATTEMPTS`（默认 `2`）使用该重试策略。
 - 库中的 `maxRounds` 默认为 `8`。CLI 提供自己的命令级默认值。
 - `maxTokenContinuations` 默认为 `3`。以 `max_tokens` 结束的响应最多可以继续指定次数；耗尽后产生 `termination.reason === "continuation_exhausted"`。
-- `stallDetection` 默认为 `{ window: 4 }`。默认模式是 `appear`，会检测窗口内任意位置重复的工具签名；`mode: "consecutive"` 要求整个窗口都匹配。传入 `stallDetection: false` 可禁用。
+- `stallDetection` 默认为 `{ window: 4, mode: "consecutive" }`：整个四签名窗口都必须是同一签名，因此合法地重读同一个文件不再被判为 stall。传入 `{ mode: "appear" }` 会检测窗口内任意位置重复的工具签名；传入 `stallDetection: false` 可禁用检测（同时使 `termination.reason === "stall"` 不可达）。`ERIX_STALL_MODE` 会覆盖 mode，除非该选项显式为 `false`；传入对象但未写 `mode` 时仍回落为 `appear`（只有引擎默认值才是 `consecutive`）。
 - `resume` 默认为 `false`。配合 `store` 和 `runId` 时，`resume: true` 会恢复 transcript、运行状态、最新 run snapshot，以及所有仍需执行的待处理工具调用。若 store 同时提供快照 writer（`saveRunSnapshot`；仅实现旧名的 store 仍被接受，fallback 链 `saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint`）与 loader（`loadLatestRunSnapshot`，或 deprecated 的 `loadLatestCheckpoint`），则在执行前或执行后 snapshot 无法持久化时会 fail closed。快照/run-state 方法为可选 capability：缺失时引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`，run 正常跑完，仅不支持中途 crash resume）。宿主的 `executeTool` 仍必须按 tool id 保证幂等；循环无法保证外部副作用 exactly-once。
 
 正常终止词汇为：
@@ -448,6 +477,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - [docs/testing_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing_cn.md) - 测试策略与行为指标
 - [docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md) - 关于核验、note-first 取回、provenance 和重跑的宿主消费者契约；内含终止裁决决策表（逐 reason 的触发机制、优先级位置、宿主开关、推荐动作）与模型元数据 / 预算推导字段契约及多模型槽位装配示例
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0 破坏窗口迁移步骤（英文）
+- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - 最新的破坏窗口迁移指南（英文）；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`
 - [docs/host-upgrade-guide-v030_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/host-upgrade-guide-v030_cn.md) - 面向 `touwaka` / `app_container` 的宿主升级指南与 v0.3.x 行为
 - [docs/maintenance-policy_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/maintenance-policy_cn.md) - 维护策略与内部替换/止损标准
 - [docs/research/](https://github.com/ErixWong/erix-agent/tree/main/docs/research) - 调研报告（仅中文）
@@ -455,9 +485,14 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 ## 状态与版本历史
 
-当前包版本为 **v0.9.0**。0.6.0 破坏窗口的迁移步骤见
-[docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)；完整版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.17.0**（2026-10-08）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
+[docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)。
 
+- **v0.17.0 (2026-10-08)**：`appendUserTurn` 新增成对可选快路径探针 `loadByDedupKey`/`loadMaxRound`（DB 宿主预写 user 轮不再每轮全量读），契约文档的 js 围栏改为可执行测试（`npm run check:docs-examples`）。
+- **v0.15.0–v0.16.0 (2026-10-07/08)**：「transcript 即真相」的宿主侧接口——读侧 `projectTranscriptForDisplay`、写侧 `appendUserTurn`（多轮续跑契约）、投影稳定 `key`，以及 store 保真义务（保留完整 `RoundRecord`、同轮记录按追加顺序 `load()`）。
+- **v0.14.0 (2026-10-03)**：run-state 终态改由 `markRunState`/`loadRunStateStatus` 承载（latest-only 快照不再写 `state`）、工具可声明 `replay: "safe"|"unsafe"` 并配合 `replayPolicy`、新增可选 partial 落盘，删除 `src/loop.js` 转发 shim。
+- **v0.13.0 (2026-09-30)**：run snapshot 更名与 `TranscriptStore` capability 分级公开，CLI 会话索引（`~/.erix/sessions.json`）。
+- **v0.11.0–v0.12.0 (2026-09-26/27)**：notes 迁到宿主侧 `NotesStore` 并收敛为单一保留期旋钮（`ERIX_NOTES_RETENTION_MS`），`createBuiltinNotesTools()` 收敛为 6 键 canonical API（退役 bundled notes skill shim）。
 - **v0.9.0 (2026-09-22)**：扩轮决策统一归 judge——nearLimit 时 end-turn judge 与工具拦截审计必须返回 `extend`/`extendReason`/`plan`；批准的 `extend: true` 提升有效轮数预算（拦截路径补上了「模型从不 end_turn」的盲区）。删除 legacy nearLimit reflection 路径：`reflection.triggerRound` 移除，`reflection_stop` 当前无触发路径。长任务不再「未评估即撞 `max_rounds_cap`」。
 - **v0.8.0 (2026-09-21)**：recall 适配器和有界 transcript 取回退役；模型侧改为 note-first（`note_list` → `note_read`）。新增 request-view 工具结果 TTL 折叠、可重试的空 assistant 消息、CLI 工具白名单、纯 Node `grep` 工具和按语言输出指令。
 - **v0.7.0 (2026-09-19)**：单轮聚合输出预算、折叠摘要锚点（路径/SHA/URL 机械保真）、CLI exec 截断改 head+tail、intercept 审计间隔 5→10 且 on_track 放行、stall 检测默认 `consecutive`、resume 轮号/轮预算拆分。

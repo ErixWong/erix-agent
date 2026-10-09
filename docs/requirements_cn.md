@@ -2,7 +2,7 @@
 
 > English version: [requirements.md](requirements.md)
 
-本文档初稿于 2026-08-29，现已与 0.8.0 版本交付的实现完成对照。它描述的是库的实际范围与 API，而不是未经限定的未来计划清单。
+本文档初稿于 2026-08-29，现已与 0.17.0 版本交付的实现完成对照。它描述的是库的实际范围与 API，而不是未经限定的未来计划清单。
 
 ## 1. 消费方背景与痛点
 
@@ -35,7 +35,7 @@
 - ❌ 不要提供安全策略或安全边界（白名单、密钥脱敏策略、产物闸门或宿主隔离）。安全仍由宿主/运行环境负责。
 - ❌ 不要选择数据库引擎，也不要拥有消费方项目的数据库 schema。消费方在自己的侧实现适配器契约。
 - ❌ 不要成为“mini pi”。需要完整交互式 agent 的消费方应直接使用 pi 本身或其 SDK，而不是把本包继续扩展成一个完整 agent。
-- ❌ 不要在 0.8.0 运行时交付计划中的 `psyche` 压缩策略。它的上下文塑形理念仍是面向对话、属于未来的设计候选，不是当前实现。
+- ❌ 不要在当前交付的运行时中交付计划中的 `psyche` 压缩策略。它的上下文塑形理念仍是面向对话、属于未来的设计候选，不是当前实现。
 
 ## 3. 功能需求
 
@@ -55,7 +55,7 @@
 |---|---|---|
 | FR-2.1 | 宿主注入带标准 JSON Schema 定义的 `tools`，以及结构化的 `executeTool({ id, name, input, context, signal })` 回调；库不拥有执行策略 | **已交付。** `runToolLoop` 将 schema 传给 provider，并严格以一个结构化对象调用回调。 |
 | FR-2.2 | 从轮内快照重试可重试的 provider 失败或存在但为空的 assistant 响应，默认重试两次，并以 1.5s 起步、上限 10s 的指数退避；重试耗尽后抛出 | **已交付。** 使用 `retry: {}` 时，`runToolLoop` 默认重试两次、基础延迟为 1.5s、上限为 10s，恢复轮内快照，并仅重试可重试失败。存在但为空的 assistant 响应会标记为可重试；CLI 默认值可由 `ERIX_RETRY_ATTEMPTS` 覆盖。工具执行本身不会自动重试。 |
-| FR-2.3 | 通过滑动窗口比较工具签名检测停滞，先 nudge，只有在重复超限后才以 `termination.reason="stall"` 正常停止 | **已交付。** `stallDetection` 默认为四签名窗口，支持 `appear` 和 `consecutive` 模式，早期命中时发送 nudge，并在停滞连续命中达到三次上限后停止。 |
+| FR-2.3 | 通过滑动窗口比较工具签名检测停滞，先 nudge，只有在重复超限后才以 `termination.reason="stall"` 正常停止 | **已交付。** `stallDetection` 默认为四签名窗口且使用 `consecutive` 模式（`{ window: 4, mode: "consecutive" }`），也支持 `appear`，早期命中时发送 nudge，并在停滞连续命中达到三次上限后停止。 |
 | FR-2.4 | 应用完成信号与无工具轮策略：有工具历史后，将没有完成信号的响应视为过渡文本并继续；默认连续三轮无工具后强制终止；合并相邻 assistant 消息以避免 400 | **已交付，并提供显式开关。** `completion` 默认为 `{ signals: [], maxNoToolRounds: 3 }`；收尾 JSON 协议支持 `done: false` 继续和 `done: true` 完成，`normalizeMessages` 会合并相邻 assistant 消息。`completion: false` 会为对话式宿主禁用无工具策略。 |
 | FR-2.5 | 继续被 `max_tokens` 截断的响应 | **已交付，并带有上限。** 循环最多继续 `maxTokenContinuations` 次（默认 `3`），达到上限后报告 `termination.reason="continuation_exhausted"`。 |
 | FR-2.6 | 每次 LLM 调用前执行压缩检查，并将压缩事件纳入返回的统计信息 | **在配置预算或策略时已交付。** 循环会在每轮请求前检查，并在请求超出预算时于续写前再次检查；返回的 `compactionStats` 包含压缩结果和 token 数量。 |
@@ -88,7 +88,7 @@
 
 ## 4. 分期与实现状态
 
-下面将原始分期计划与 package 版本 0.8.0 中已有的内容对齐。“已交付”描述仓库代码；消费方迁移和真实 provider 基准运行仍属于外部验收工作。
+下面将原始分期计划与 package 版本 0.17.0 中已有的内容对齐。“已交付”描述仓库代码；消费方迁移和真实 provider 基准运行仍属于外部验收工作。
 
 | 版本 | 范围 | 验收/状态 |
 |---|---|---|
@@ -96,10 +96,11 @@
 | **v0.1 — 已交付** | 完整 provider 层（Anthropic 加流式）、`src/messages/`、tokens、FR-1/2 所代表的循环能力、`sliding-window`、`fold-statistical`、memory store，以及 static/environment 配置 | 库的表面能力已存在，并由仓库测试覆盖。完整的 `app_container` 迁移和 24 轮行为对比属于消费方验收标准，并非此处已验证的交付事实。 |
 | **v0.2 — 已交付** | JSONL file store、JSON-file 配置、注入 summarizer 的 `fold-llm`，以及可选的 `erix-agent/tools` 导出：registry 和 tool providers | store 和循环已实现崩溃修复/恢复与折叠载荷持久化。宿主仍自行决定是否使用参考工具。 |
 | **v0.3.x–v0.4.x — 已交付** | 检查点/恢复强化，以及 `src/reflection/` 中的可选反思层：governor 决策、L0 facts、收尾解析/归一化、轮次 judge、透明工具拦截、方向提示和 `finalGuard`/验证钩子 | 循环通过 `reflection`、`onJudge`、`finalGuard` 以及返回的终止/验证数据暴露这些行为。当 `maxRounds >= 16` 时，反思会自动启用，除非显式禁用。 |
-| **v0.5.0–v0.7.x — 已被取代** | 早期档案/取回实验、确定性运行状态、折叠导航记录和可安全恢复的状态持久化 | 发布历史记录了这些变化；当前公共表面是 0.8.0 的 note-first 工作流与请求视图 TTL 折叠。 |
-| **v0.8.0 — 当前** | Note-first 取回（`note_list` → `note_read`）、请求视图工具结果 TTL 折叠、可重试的空 assistant 响应、CLI `--tools` 能力白名单、纯 Node `grep` 工具、按语言的 system-prompt 指令以及更高效的 judge/最终轮次行为 | `ERIX_TOOL_RESULT_TTL` 默认 `2`（`0` 关闭折叠），`ERIX_TOOL_RESULT_FOLD_MIN_TOKENS` 默认 `4000`，`ERIX_RETRY_ATTEMPTS` 覆盖 CLI 重试次数。拦截预算为 6,000 token，round judge 输出上限为 1,024 且不启用 reasoning，保留原始 judge 输出，最终预算轮次不发送工具。 |
-| **v1.0 候选 — 未交付** | touwaka 迁移，初步仅限 token 工具和 history compactor，完整 `AgentLoop` 迁移留作单独决策 | 本仓库的 0.8.0 实现不包含 touwaka 迁移。消费方回归和行为检查必须由宿主项目运行。 |
-| **v2 候选 — 延后** | 面向上下文塑形理念的冷循环蒸馏加 L3 fact 注入，以及未来 provider 层重新评估认为合理时的原生 Gemini 支持 | 0.8.0 的 `src/` 中没有 `psyche` 或 Gemini-native provider。这仍是单独划定范围的工作。 |
+| **v0.5.0–v0.7.x — 已被取代** | 早期档案/取回实验、确定性运行状态、折叠导航记录和可安全恢复的状态持久化 | 发布历史记录了这些变化；当前公共表面是 0.8.0 引入的 note-first 工作流与请求视图 TTL 折叠。 |
+| **v0.8.0 — 已交付** | Note-first 取回（`note_list` → `note_read`）、请求视图工具结果 TTL 折叠、可重试的空 assistant 响应、CLI `--tools` 能力白名单、纯 Node `grep` 工具、按语言的 system-prompt 指令以及更高效的 judge/最终轮次行为 | `ERIX_TOOL_RESULT_TTL` 默认 `2`（`0` 关闭折叠），`ERIX_TOOL_RESULT_FOLD_MIN_TOKENS` 默认 `4000`，`ERIX_RETRY_ATTEMPTS` 覆盖 CLI 重试次数。拦截预算为 6,000 token，round judge 输出上限为 1,024 且不启用 reasoning，保留原始 judge 输出，最终预算轮次不发送工具。 |
+| **v0.9.0–v0.17.0 — 当前** | 扩轮决策归 judge、notes 迁到宿主侧 `NotesStore` 并收敛为单一保留期旋钮、run snapshot 更名与 `TranscriptStore` capability 分级、run-state 终态通道（`markRunState`/`loadRunStateStatus`）、工具 `replay` 声明与 `replayPolicy`、可选 partial 落盘、「transcript 即真相」的宿主侧接口（`projectTranscriptForDisplay`、`appendUserTurn`）、契约文档可执行示例与文档/打包检查 | 公共表面由 `README.md` 与 `docs/host-consumer-contract.md` 描述，由 `node --test` 与 `erix-agent/contract-tests` 锁定，并逐版本记录在 `CHANGELOG.md`。`npm run check:docs` 持续校验文档中的版本、默认值与清单与源码对齐。消费方迁移仍为宿主侧验收工作。 |
+| **v1.0 候选 — 未交付** | touwaka 迁移，初步仅限 token 工具和 history compactor，完整 `AgentLoop` 迁移留作单独决策 | 本仓库在当前发布版本不包含 touwaka 迁移。消费方回归和行为检查必须由宿主项目运行。 |
+| **v2 候选 — 延后** | 面向上下文塑形理念的冷循环蒸馏加 L3 fact 注入，以及未来 provider 层重新评估认为合理时的原生 Gemini 支持 | 当前发布版本的 `src/` 中没有 `psyche` 或 Gemini-native provider。这仍是单独划定范围的工作。 |
 
 ## 5. 非功能需求
 
@@ -115,8 +116,8 @@
 | 风险 | 缓解措施 |
 |---|---|
 | 抽象泄漏：规范化隐藏了协议特有功能 | provider 和消息适配器保留 `raw` 逃生舱块；provider 特有的 payload 选项仍可通过适配器层使用。 |
-| Touwaka 迁移回归：其 `AgentLoop` 包含 R15/R16/R19 生产修复 | 将 touwaka 迁移排除在 0.8.0 声明之外；先迁移纯工具层，再将完整循环作为单独决策，并配合宿主侧回归测试。 |
+| Touwaka 迁移回归：其 `AgentLoop` 包含 R15/R16/R19 生产修复 | 将 touwaka 迁移排除在当前发布版本的声明之外；先迁移纯工具层，再将完整循环作为单独决策，并配合宿主侧回归测试。 |
 | 单维护者项目的发布摩擦 | 使用语义化版本和 changelog；消费方锁定版本并有意升级。 |
-| 消费方因即时收益抵不过集成成本而推迟迁移 | 将消费方迁移作为宿主项目的明确里程碑。0.8.0 库不只是工具包，但不能声称本仓库中不存在的迁移已经完成。 |
+| 消费方因即时收益抵不过集成成本而推迟迁移 | 将消费方迁移作为宿主项目的明确里程碑。本库不只是工具包，但不能声称本仓库中不存在的迁移已经完成。 |
 | 上游 API 吸收上下文编辑或服务端循环能力 | 将价值主张锚定在这些服务不可用的自托管 relay 和开放模型上；如果这一前提改变，重新评估项目边界。 |
 | 压缩演进变成四级承诺，但实际只使用第一级 | 不要描述 `psyche` 已交付。只有在行为足以支持时才从 `fold-statistical` 进入 `fold-llm`；单独评估延后的上下文塑形设计，不跳过实证门槛。 |

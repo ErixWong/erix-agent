@@ -51,9 +51,18 @@ scripts/          # experiment scripts and results
 |---|---|
 | `npm test` | Full test suite (`node --test`) |
 | `node --check <file>` | Syntax safety check |
+| `npm run check:docs` | Documentation drift check (`scripts/docs-drift-check.mjs`: version claims, quoted `files`/`exports` lists, module map, referenced paths/commands, 14 key defaults read out of the source, EN/CN README skeleton) plus the EN/CN contract heading sync |
+| `npm run check:docs:strict` | Same check, promoting its warnings to failures |
+| `npm run check:docs-examples` | Executes the JavaScript fences in `docs/host-consumer-contract.md` (issue #158) |
+| `npm run check:pack-links` | Link closure inside packaged Markdown |
 | `node bin/cli.js ...` | Run the CLI locally (no installation required) |
 
 - Test isolation rule: tests involving `~/.erix` or `~/.pi` must inject `home`/`cwd` parameters (the skills/mcp/config tests provide precedents), to avoid contaminating real user configuration.
+- Documentation rule (issue #164): any change to `README*.md`, `docs/requirements*.md`, a default value, or the
+  `files`/`exports` list must keep `npm run check:docs` green. The check reads ground truth from
+  `package.json` and `src/`, so docs cannot silently drift; the required phrasing for
+  "current version" claims is documented in the header comment of `scripts/docs-drift-check.mjs`.
+  Chinese/English document pairs stay in sync (see `AGENTS_cn.md`).
 
 ## 4. npm publishing guide (verified against the 2026-08 policy)
 

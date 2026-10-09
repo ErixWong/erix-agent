@@ -185,6 +185,7 @@ src/
   providers/
     anthropic.js                   Anthropic provider and streaming
     errors.js                      Provider errors and classification
+    http-shared.js                 Shared HTTP/injection helpers (header + extraBody guards)
     openai.js                      OpenAI-compatible provider and streaming
     payload.js                     Provider payload and timeout options
     timeout.js                     Provider timeout handling
@@ -207,11 +208,14 @@ src/
     file.js                        JSONL transcript, checkpoint, and state store
     memory.js                      In-process transcript, checkpoint, and state store
     notes.js                       Host-side notes store
+    append-user-turn.js            Pre-written user turn for the multi-turn resume contract
   config/
     api-key.js                     API-key materialization
     env.js                         Environment-backed model configuration
     json-file.js                   JSON-file model configuration
     static.js                      Static model configuration
+  display/
+    projection.js                  Host display projection over RoundRecord[] (read side)
   reflection/
     governor.js                    Deterministic round governance
     judge.js                       Objective timeline and judge prompt/response parsing
@@ -227,8 +231,10 @@ src/
 ```
 
 `src/index.js` exports the providers, canonical message conversions, token
-and compaction helpers, transcript stores, run-state helpers, configuration
-providers, `runToolLoop`, and reflection helpers. The optional
+and compaction helpers, transcript stores, run-state helpers, the host display
+projection (`projectTranscriptForDisplay`), the multi-turn pre-write helper
+(`appendUserTurn`), configuration providers, `runToolLoop`, and reflection
+helpers. The optional
 `erix-agent/tools` subpath exports the tool registry and provider helpers;
 model-facing retrieval is note-first (`note_list` → `note_read`).
 
@@ -286,11 +292,20 @@ handles legacy `function_call` streams.
 
 - Zero runtime npm dependencies, pure ESM, Node 22+, and no build step.
 - Tests use `node --test`; type information is expressed with JSDoc typedefs.
+- Documentation facts are machine-checked, so a stale README cannot pass CI
+  silently: `npm run check:docs` compares version claims, the quoted
+  `files`/`exports` blocks, the module map, referenced paths and commands, and a
+  whitelist of key defaults against `package.json` and the source, and aligns
+  the [README_cn.md](README_cn.md) heading skeleton; `npm run check:docs-examples`
+  executes the contract's JavaScript fences; `npm run check:pack-links` verifies
+  links inside packaged Markdown.
 - The package is published as `erix-agent` on npm and hosted at
   `ErixWong/erix-agent` on GitHub.
 - Never commit tokens, API keys, or other credentials.
 
-The npm tarball is controlled by the `files` allowlist in `package.json`:
+The npm tarball is controlled by the `files` allowlist in `package.json`
+(`package.json` is the authoritative list; `npm run check:docs` verifies the
+quoted blocks below against it):
 
 ```json
 [
@@ -300,22 +315,23 @@ The npm tarball is controlled by the `files` allowlist in `package.json`:
   "README.md",
   "README_cn.md",
   "CHANGELOG.md",
+  "LICENSE",
   "docs/host-consumer-contract.md",
   "docs/host-consumer-contract_cn.md",
   "docs/host-upgrade-guide-0.6.0.md",
   "docs/host-upgrade-guide-0.12.0.md",
   "docs/host-upgrade-guide-0.14.0.md",
+  "docs/host-upgrade-guide-0.15.0.md",
+  "docs/host-upgrade-guide-0.16.0.md",
+  "docs/host-upgrade-guide-0.17.0.md",
   "test/contract/assembly-port.js",
+  "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
   "test/contract/index.js",
   "test/contract/model-config-provider.js",
   "test/contract/notes-store.js",
-  "test/contract/transcript-store.js",
-  "LICENSE",
-  "docs/host-upgrade-guide-0.15.0.md",
-  "docs/host-upgrade-guide-0.16.0.md",
-  "docs/host-upgrade-guide-0.17.0.md",
-  "test/contract/engine-api.js"
+  "test/contract/termination-payload.js",
+  "test/contract/transcript-store.js"
 ]
 ```
 
@@ -358,10 +374,14 @@ optional `runState`, aggregate `usage`, and `compactionStats`.
 - `maxTokenContinuations` defaults to `3`. A response ending in
   `max_tokens` can be continued up to that many times; exhaustion produces
   `termination.reason === "continuation_exhausted"`.
-- `stallDetection` defaults to `{ window: 4 }`. The default mode is
-  `appear`, which detects a repeated tool signature anywhere in the window;
-  `mode: "consecutive"` requires the whole window to match. Pass
-  `stallDetection: false` to disable it.
+- `stallDetection` defaults to `{ window: 4, mode: "consecutive" }`: the whole
+  four-signature window must hold the same signature, so legitimate re-reads of
+  one file no longer count as a stall. Pass `{ mode: "appear" }` to detect a
+  repeated signature anywhere in the window, and `stallDetection: false` to
+  disable detection (which also makes `termination.reason === "stall"`
+  unreachable). `ERIX_STALL_MODE` overrides the mode unless the option is
+  explicitly `false`; an object passed without `mode` falls back to `appear`
+  (only the engine default is `consecutive`).
 - `resume` defaults to `false`. With a `store` and `runId`, `resume: true`
   restores the transcript, run state, latest run snapshot, and all pending
   tool calls that still need execution. Stores with both a snapshot writer
@@ -744,6 +764,9 @@ library-level controls
 - [docs/testing.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing.md) - test strategy and behavior metrics
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
+- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - latest
+  breaking-window guide; each later breaking window ships its own
+  `docs/host-upgrade-guide-<version>.md` (the packaged set is listed above)
 - [docs/host-consumer-contract.md](docs/host-consumer-contract.md) - host
   consumer contract for verification, note-first retrieval, provenance, and reruns;
   includes the termination decision table (per-reason mechanism, precedence, host
@@ -758,10 +781,35 @@ library-level controls
 
 ## Status and version history
 
-The current package version is **v0.9.0**. The 0.6.0 migration steps remain in
-[docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md); the
-complete history lives in [CHANGELOG.md](CHANGELOG.md).
+The authoritative version is the `version` field of
+[`package.json`](package.json), and `npm run check:docs` verifies the release
+line below against it. Current release: **v0.17.0** (2026-10-08). The complete,
+authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
+only the releases that changed how a host consumes the runtime. The 0.6.0
+migration steps remain in
+[docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
+- **v0.17.0 (2026-10-08)**: `appendUserTurn` gains the paired
+  `loadByDedupKey`/`loadMaxRound` fast path (a DB-backed store no longer reads
+  the whole transcript per pre-write), and contract code fences became
+  executable tests (`npm run check:docs-examples`).
+- **v0.15.0–v0.16.0 (2026-10-07/08)**: the transcript-as-truth host surface —
+  `projectTranscriptForDisplay` (read side), `appendUserTurn` (write side of the
+  multi-turn resume contract), stable projection keys, and the store fidelity
+  requirements (retain full `RoundRecord` objects, return same-round records in
+  append order).
+- **v0.14.0 (2026-10-03)**: the run-state terminal status moves to
+  `markRunState`/`loadRunStateStatus` (the latest-only snapshot no longer
+  carries `state`), tools can declare `replay: "safe"|"unsafe"` with
+  `replayPolicy`, optional partial persistence is added, and the `src/loop.js`
+  forwarding shim is removed.
+- **v0.13.0 (2026-09-30)**: run-snapshot renames plus the published
+  `TranscriptStore` capability tiers, and the CLI session index
+  (`~/.erix/sessions.json`).
+- **v0.11.0–v0.12.0 (2026-09-26/27)**: notes move behind the host-side
+  `NotesStore` with a single retention knob (`ERIX_NOTES_RETENTION_MS`), and
+  `createBuiltinNotesTools()` converges on the 6-key canonical API (the bundled
+  notes skill shim is retired).
 - **v0.9.0 (2026-09-22)**: extension decisions move to the judge — at
   `nearLimit` the end-turn judge and the interception audit must return
   `extend`/`extendReason`/`plan`; an approved `extend: true` raises the

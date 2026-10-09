@@ -19,6 +19,7 @@
 
 - 启动期 `model_metadata_missing` 诊断事件的宿主回调抛错改走与 `fail()` 同口径的终局注解（#182/#180 合流处独立验收发现：原先会抛出不带 `termination`/载荷的裸错误；同时 abort 信号优先于 `failed` 判定，与 `fail()` 一致）。
 - 契约文档措辞收窄两处（独立验收发现）：#180 载荷承诺限定「运行生命周期开始之后抛出的错误」（运行前选项校验/装配错误本就不携带）；#181 「构造时快照」明确为**顶层**快照（`extraBody` 嵌套对象按引用共享）。
+- 文档事实漂移修正（issue #164，零行为变化，中英成对）：README 的「当前包版本 v0.9.0」改为与 `package.json` 联动口径（真值只写一处，由 `npm run check:docs` 校验）并补齐 0.9→0.17 里程碑条目；`stallDetection` 默认值由错误的 `{ window: 4 }` + 「默认模式 `appear`」改为代码真值 `{ window: 4, mode: "consecutive" }`（并写明 `ERIX_STALL_MODE` 覆盖与「显式传对象但未写 `mode` 仍回落 `appear`」这两个真实边界）；模块地图补齐 `src/display/projection.js`、`src/providers/http-shared.js`、`src/store/append-user-turn.js`；README 引用的 `files`/`exports` 清单与 `package.json` 对齐；`docs/requirements.md`（中英）的「当前版本」口径从 0.8.0 推至 0.17.0（新增 v0.9.0–v0.17.0 阶段行，v0.8.0 行降为已交付）并在 FR-2.3 钉上 stall 默认模式。
 
 ### Documentation
 
@@ -26,6 +27,7 @@
 - 契约新增「模型元数据与预算推导（issue #182）」（中英同步）：把 `modelConfig`/`modelMetadata` 能携带的字段钉成表格（`contextWindowTokens`/`maxOutputTokens`/`maxTokens`/`temperature`/`topP` 与思考类、超时、身份类、未知字段），逐项标注**进 provider 请求 / 驱动预算与压缩 / 缺省行为**；写清 duck-type 探测顺序 `[modelConfig, modelMetadata, model, provider, context]` 且**首个命中不合并**（`src/loop/budget.js:59-69`）、`modelConfig` 必须是解析器、`session.modelSlot` per-run 选槽与未知槽回落 `default`、slot 未知字段的惰性透传承诺，以及两种口径的触发条件（元数据缺位 → 静默跳过 + 恰好一条 `model_metadata_missing`；值非法/窗口不够大 → `computeBudget` 运行前抛 `invalid_budget`，不带 #180 载荷），并把该事件正式引为宿主装配自检断言点；#181 节末原本悬空的一段预算文字改为指向新节的指针（不重复、不漂移）。
 - 契约新增可执行的「多模型槽位装配示例（issue #182）」（中英同步）：`slots` 目录 JSON 形状 + `createJsonFileModelConfigProvider` → per-run `session.modelSlot` 选槽 → `createOpenAIProvider(slot)`，把“温度/`max_tokens`/思考档位跟着模型走”钉死；`test/contract/doc-examples.js` 的 js 围栏数 6→7，新围栏以真文件 provider + 真 openai provider + 真 `runToolLoop` 跑 L3（只给磁盘与网络接桩），epilogue 断言 per-run 选槽真的落到了请求的 `model`/`max_tokens`/`temperature` 上、`apiKeyEnv` 在 `resolve()` 时被物化。
 - 0.17.0 升级指南 §2 参考 SQL 改为与契约正文/运行时同一 nullish 判据（issue #171，宿主 touwaka 报告：旧 `OR` sketch 在 `dedupKey`/`roundKey` 并存且不等时多命中，照抄会静默丢一轮）；契约新增 `loadMaxRound` 非空 store 返 `≥0` 边界、`__` 宿主保留记账命名空间声明；契约套件新增 nullish 判据分叉 fixture（宿主写成 `OR` 会红）。
+- 新增轻量文档漂移检查 `scripts/docs-drift-check.mjs`（issue #164，零依赖）：把「文档说的 == 代码/清单里真值」钉成可执行检查——① 版本（README/requirements 的「当前版本」声明、文中引用的任何版本号不得高于 `package.json`、requirements 阶段表 current 行）；② 关键默认值白名单 14 条（stall 窗口与模式、maxRounds、maxTokenContinuations、TTL 与 fold 阈值、judge interval/timeout/failureLimit、reflection 自动启用门槛、maxExtensions/maxRoundsCap、退避上下限、writeToolNames/writeToolPathKeys、notes 统一保留期），真值直接从 `src/` 参数默认值里抽（抽不到就报错，避免规则静默失效）；③ README 引用的 `files`/`exports` 清单与 `package.json` 逐项比对，并校 `test/contract/index.js` 再导出的套件真的在 `files` 里；④ 模块地图必须覆盖 `src/` 全部文件；⑤ README 引用的仓库内路径与 `node <file>` / `npm run <script>` 命令存在；⑥ 中英 README 标题骸架对齐（做法参考 `docs-sync-check.mjs`，更轻）。与 #158 三层验证同口径采用**先告警后阻塞**：会误导宿主的为 error，只表示文档没跟上的滞后信号为 warn（`--strict` 升级）。挂入 `npm run check:docs`（带 `docs-sync-check`）与 `npm run check:docs:strict`；README 「Engineering constraints」与 AGENTS 开发命令表已补说明，规范写法约定（「当前版本」声明的固定句式）写在脚本顶部注释里。判据层（升级指南的参考 SQL 与运行时同判据）本轮只纳入人工清单，中期归 #158 扩展覆盖面。
 
 ## [0.17.0] - 2026-10-08
 
