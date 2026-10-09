@@ -1241,8 +1241,11 @@ copy; portable integrations should use the npm package entry point.
 ### File tool registration
 
 The canonical file tool implementation is `src/tools/file-tools.js`. A headless
-host can call `createFileTools({ cwd, allowRead, allowWrite })` from the package
-root or from `erix-agent/tools` (Tier 2 host integration). The library ships no
+host can call `createFileTools({ cwd, allowRead, allowWrite })` **only** from the
+`erix-agent/tools` subpath: it is **not** exported from the package root (ADR-005
+Layer Two — "it is not part of the main export"; `package.json` `exports` maps
+only `.` / `./tools` / `./contract-tests`, no deep path), which is the Tier 2
+host integration. The library ships no
 jail: the two predicates are the whole boundary surface, and both default to
 `() => true`, which reproduces the historical `path.resolve(cwd, value)`
 behaviour exactly — no containment, no safety promise (ADR-009 keeps the cage on
@@ -1253,8 +1256,10 @@ wrapping `executeTool` from the outside.
 
 The returned object contains:
 
-- `definitions` — the six `readFile` / `searchText` / `rg` / `grep` / `tree` /
-  `writeFile` schemas. Tool names and existing input fields (`offset`/`limit`/`path`/
+- `definitions` — the seven `readFile` / `searchText` / `rg` / `grep` / `tree` /
+  `edit` / `writeFile` schemas (the count is asserted by the contract suite
+  `fileToolsContract`, `test/contract/file-tools.js`: `searchText` was added in
+  issue #195 and `edit` in issue #191). Tool names and existing input fields (`offset`/`limit`/`path`/
   `pattern`/`glob`/`is_regex`/`max_results`/`maxResults`/`depth`) are unchanged,
   so registering this factory is a zero-migration change for a host that already
   shipped the CLI's copies — **with one behavioural caveat**: `rg`'s `is_regex`
@@ -1329,6 +1334,17 @@ no unit at all (issue #196 follow-up). A result never shows the human-readable v
 to the raw byte count — two numbers for one quantity is a ledger the model cannot reconcile.
 Thresholds stay raw in this document and in `metadata`, where there is no second copy
 to contradict them.
+
+**Export-surface caveat for these two helpers.** `formatSize()` and `toolMarker()`
+are **module-level exports of `src/tools/file-tools.js`** — the wording above
+describes the module, not a public API. They are **not on the public `exports`
+surface**: `package.json` maps only `.` / `./tools` / `./contract-tests` (no deep
+path), and the `erix-agent/tools` barrel does not re-export them either, so a host
+consuming the npm package **cannot import them today**. Render the same values
+yourself if you need them; promoting the two helpers onto `erix-agent/tools` is a
+possible follow-up (an additive minor), and until then nothing in this paragraph
+is an import promise — and the marker wording itself remains Experimental (see
+above), so read the structured `metadata` fields instead of parsing marker text.
 
 Defaults a host must know about, because they change what the model sees
 (ADR-010: default denoising is legal only while it stays revocable):

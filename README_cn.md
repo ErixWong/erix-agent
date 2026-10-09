@@ -185,7 +185,7 @@ src/
   text/
     label.js                        note/findings label 归一化
   tools/
-    file-tools.js                    文件工具规范实现：readFile/rg/grep/tree/writeFile
+    file-tools.js                    文件工具规范实现：readFile/searchText/rg/grep/tree/edit/writeFile
     index.js                        可选 tools 子路径导出
     notes.js                        宿主侧 notes 工具
     providers.js                    tool-provider adapter
@@ -271,6 +271,8 @@ const assemblyPort = createAssemblyPort({
   "docs/host-upgrade-guide-0.15.0.md",
   "docs/host-upgrade-guide-0.16.0.md",
   "docs/host-upgrade-guide-0.17.0.md",
+  "docs/host-upgrade-guide-0.18.0.md",
+  "docs/host-upgrade-guide-0.18.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -449,7 +451,7 @@ erix mcp [--config <path>]
 
 `chat` 可以接续之前的会话，而不是每次新建。`-c`/`--continue` 接续当前工作目录最近一次的会话；`-r` 打开交互式选择器列出已记录的会话（最近的在前，每行显示时间、目录和首条 prompt 预览）。两者解析后与显式 `--session <id>` 走同一条路径，显式 `--session <id>` 优先级最高——与 `-c` 或 `-r` 同时使用会直接报参数错误。会话发现依赖 `~/.erix/sessions.json` 索引：每次 `chat`/`repl` 运行后自动维护，上限 500 条；文件缺失或损坏时自动扫描 transcripts 目录重建。索引只是缓存不是真相：接续仍以该会话存在非空 transcript 为准，索引写入失败绝不影响运行本身。
 
-内置 CLI 工具为 `readFile`、`searchText`、`rg`、`grep`、`tree`、`writeFile` 和 `exec`。`searchText` 是唯一的搜索入口（issue #195）：它的 `mode` **必填且无默认值**——`literal` 按字面量匹配、`regex` 按 JavaScript 正则匹配，没传或传了非法 `mode` 都是显式报错而不是猜一个。它的名称过滤参数叫 `name_pattern`，**只匹配文件名、不跨 `/`**（所以 `**/*.ts` 一律不命中）。`rg` 与 `grep` 现在是它的**薄别名**（两者都映射到 `mode` = `regex`，`grep` 继续吃 `glob` 作为文件名过滤），各自在结果尾部挂一行弃用提示，而工具名与入参形状照用——移除它们要等 major bump（issue #188）。**三个**搜索工具都是纯 Node 实现，不是 `rg`/`grep` 二进制：别名的 `is_regex` 默认 `true`，即默认走正则（与真实命令一致）；传 `is_regex=false` 走字面量，等价 `rg --fixed-strings` / `grep -F`。每条命中行按**同一个**共享上限截到 500 字符，默认跳过 `node_modules`/`dist`/`build`/`target`/`vendor` 与 `.` 开头的目录（结果尾部回报跳过数量；**不读** `.gitignore`），并有 200 条硬结果上限。`readFile` 在字节上限内有界读取（默认 `262144`，可用 `ERIX_FILE_READ_MAX_BYTES` 覆盖）。工具操作任意路径和命令；checkpoint 保留完整结果，而 TTL 折叠只缩减 provider request view。没有可重放性分类、重跑检测或重跑告知：重复命令正常执行并返回新输出（ADR-016）。需要早期精确值时使用 note-first 顺序 `note_list` → `note_read`，不要依赖记忆。系统提示要求内部思考使用 English，面向用户的输出遵循用户语言。
+内置 CLI 工具为 `readFile`、`searchText`、`rg`、`grep`、`tree`、`edit`、`writeFile` 和 `exec`。`searchText` 是唯一的搜索入口（issue #195）：它的 `mode` **必填且无默认值**——`literal` 按字面量匹配、`regex` 按 JavaScript 正则匹配，没传或传了非法 `mode` 都是显式报错而不是猜一个。它的名称过滤参数叫 `name_pattern`，**只匹配文件名、不跨 `/`**（所以 `**/*.ts` 一律不命中）。`rg` 与 `grep` 现在是它的**薄别名**（两者都映射到 `mode` = `regex`，`grep` 继续吃 `glob` 作为文件名过滤），各自在结果尾部挂一行弃用提示，而工具名与入参形状照用——移除它们要等 major bump（issue #188）。**三个**搜索工具都是纯 Node 实现，不是 `rg`/`grep` 二进制：别名的 `is_regex` 默认 `true`，即默认走正则（与真实命令一致）；传 `is_regex=false` 走字面量，等价 `rg --fixed-strings` / `grep -F`。每条命中行按**同一个**共享上限截到 500 字符，默认跳过 `node_modules`/`dist`/`build`/`target`/`vendor` 与 `.` 开头的目录（结果尾部回报跳过数量；**不读** `.gitignore`），并有 200 条硬结果上限。`readFile` 在字节上限内有界读取（默认 `262144`，可用 `ERIX_FILE_READ_MAX_BYTES` 覆盖）。工具操作任意路径和命令；checkpoint 保留完整结果，而 TTL 折叠只缩减 provider request view。没有可重放性分类、重跑检测或重跑告知：重复命令正常执行并返回新输出（ADR-016）。需要早期精确值时使用 note-first 顺序 `note_list` → `note_read`，不要依赖记忆。系统提示要求内部思考使用 English，面向用户的输出遵循用户语言。
 
 重复的 `exec` 命令会正常执行并返回新输出：引擎不做幂等分类、不检测重跑、也不发重跑告知（ADR-016）。重跑值可能不同，所以副作用与重跑风险由宿主的权限/沙箱/幂等层承担——引擎的审计事实是归档输出本身，而不是"这条命令是否可重放"。
 
@@ -490,7 +492,8 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - [docs/testing_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing_cn.md) - 测试策略与行为指标
 - [docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md) - 关于核验、note-first 取回、provenance 和重跑的宿主消费者契约；内含终止裁决决策表（逐 reason 的触发机制、优先级位置、宿主开关、推荐动作）与模型元数据 / 预算推导字段契约及多模型槽位装配示例
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0 破坏窗口迁移步骤（英文）
-- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - 最新的破坏窗口迁移指南（英文）；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`
+- [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) / [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md) - 最新的宿主迁移指南（中英成对）：judge 的 `writeToolNames` 默认值、七项文件工具清单、`rg`/`grep` 的弃用提示行、属 Experimental 的 marker 文案、以及 `erix-agent/tools` 导入路径；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`（随包清单见上文）
+- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - 上一个破坏窗口迁移指南：成对可选快路径探针（英文）
 - [docs/host-upgrade-guide-v030_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/host-upgrade-guide-v030_cn.md) - 面向 `touwaka` / `app_container` 的宿主升级指南与 v0.3.x 行为
 - [docs/maintenance-policy_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/maintenance-policy_cn.md) - 维护策略与内部替换/止损标准
 - [docs/research/](https://github.com/ErixWong/erix-agent/tree/main/docs/research) - 调研报告（仅中文）
@@ -501,7 +504,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.18.0**（2026-10-09）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)。
 
-- **v0.18.0 (2026-10-09)**：宿主集成面专场——观察者回调从此杀不掉 run（九通道一律经 `onObserverError` 记账后继续，终止 run 走 `signal.abort()`，抛出的错误携带 `usage`/`rounds`/`finalText`）；failed 终局携带 `termination.errorCode`；`context.strategy` 可按名选内置策略（`"fold-llm"` 开箱自带主力 provider summarizer，每次压缩多一次调用、usage 计入总账）；新增一次性 `model_metadata_missing` 与终局 `run_outcome` 事件，judge 记录增补 `model` 归因；provider 新增 `defaultHeaders`/`extraBody` 注入口；token 估算热路径优化（逐字节同值，每轮估算 CPU 约 −88%）。0.17 宿主零必改升级，全量清单见 CHANGELOG。
+- **v0.18.0 (2026-10-09)**：宿主集成面专场——观察者回调从此杀不掉 run（九通道一律经 `onObserverError` 记账后继续，终止 run 走 `signal.abort()`，抛出的错误携带 `usage`/`rounds`/`finalText`）；failed 终局携带 `termination.errorCode`；`context.strategy` 可按名选内置策略（`"fold-llm"` 开箱自带主力 provider summarizer，每次压缩多一次调用、usage 计入总账）；新增一次性 `model_metadata_missing` 与终局 `run_outcome` 事件，judge 记录增补 `model` 归因；provider 新增 `defaultHeaders`/`extraBody` 注入口；token 估算热路径优化（逐字节同值，每轮估算 CPU 约 −88%）。0.17 宿主无必改的 API 适配，但三种宿主习惯各需要查一次——judge 的 `writeToolNames`（显式传是整体替换，`edit` 不会被并入）、被钉死的文件工具名清单（现为七项）、以及对 `rg`/`grep` 输出的逐字匹配（每次调用尾部多一行弃用提示）：见 [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md)，全量清单见 CHANGELOG。
 - **v0.17.0 (2026-10-08)**：`appendUserTurn` 新增成对可选快路径探针 `loadByDedupKey`/`loadMaxRound`（DB 宿主预写 user 轮不再每轮全量读），契约文档的 js 围栏改为可执行测试（`npm run check:docs-examples`）。
 - **v0.15.0–v0.16.0 (2026-10-07/08)**：「transcript 即真相」的宿主侧接口——读侧 `projectTranscriptForDisplay`、写侧 `appendUserTurn`（多轮续跑契约）、投影稳定 `key`，以及 store 保真义务（保留完整 `RoundRecord`、同轮记录按追加顺序 `load()`）。
 - **v0.14.0 (2026-10-03)**：run-state 终态改由 `markRunState`/`loadRunStateStatus` 承载（latest-only 快照不再写 `state`）、工具可声明 `replay: "safe"|"unsafe"` 并配合 `replayPolicy`、新增可选 partial 落盘，删除 `src/loop.js` 转发 shim。

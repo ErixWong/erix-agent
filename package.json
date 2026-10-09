@@ -34,7 +34,9 @@
     "test/contract/engine-api.js",
     "docs/host-upgrade-guide-0.17.0.md",
     "test/contract/file-tools.js",
-    "test/contract/skills-loader.js"
+    "test/contract/skills-loader.js",
+    "docs/host-upgrade-guide-0.18.0.md",
+    "docs/host-upgrade-guide-0.18.0_cn.md"
   ],
   "repository": {
     "type": "git",

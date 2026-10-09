@@ -4,7 +4,8 @@ export {
   createJsonFileToolProvider,
   createCompositeToolProvider,
 } from "./providers.js";
-// 文件工具规范实现（issue #184）：root 与 erix-agent/tools 双导出，CLI 反过来 import 它。
+// 文件工具规范实现（issue #184）：**只从 `erix-agent/tools` 子路径导出**，不在包根
+// （ADR-005 第二层：「不属于主导出」；实测 `src/index.js` 不转出 `createFileTools`），CLI 反过来 import 它。
 export {
   createFileTools,
   resolveFileReadMaxBytes,

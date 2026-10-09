@@ -995,9 +995,11 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 
 ### 文件工具注册
 
-文件工具的规范实现是 `src/tools/file-tools.js`。无头宿主可以从包根，也可以从
-`erix-agent/tools` 调用 `createFileTools({ cwd, allowRead, allowWrite })`
-（Tier 2 host integration）。库不带牢笼：两个谓词就是边界的全部，默认都是
+文件工具的规范实现是 `src/tools/file-tools.js`。无头宿主**只能**从 `erix-agent/tools`
+子路径调用 `createFileTools({ cwd, allowRead, allowWrite })`——它**不**从包根导出
+（ADR-005 第二层：「不属于主导出，只能经显式 `import … from "erix-agent/tools"`」；
+`package.json` 的 `exports` 只有 `.` / `./tools` / `./contract-tests`，无深路径），
+这就是 Tier 2 host integration。库不带牢笼：两个谓词就是边界的全部，默认都是
 `() => true`，与历史 `path.resolve(cwd, value)` 行为完全一致（不做 containment、
 不做安全承诺；ADR-009 把牢笼留给宿主）。路径归一由库自己做，喂给谓词的是
 **绝对路径**，而且是在遍历中**逐条**判定；这个逐条挂钩正是宿主在外面包一层
@@ -1005,8 +1007,9 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 
 返回对象包含：
 
-- `definitions`：`readFile` / `searchText` / `rg` / `grep` / `tree` / `writeFile` 六个
-  schema。工具名与既有字段（`offset`/`limit`/`path`/`pattern`/`glob`/`is_regex`/
+- `definitions`：`readFile` / `searchText` / `rg` / `grep` / `tree` / `edit` / `writeFile` 七个
+  schema（项数由契约套件 `fileToolsContract` 断言：`searchText` 由 issue #195 加入、`edit` 由
+  issue #191 加入）。工具名与既有字段（`offset`/`limit`/`path`/`pattern`/`glob`/`is_regex`/
   `max_results`/`maxResults`/`depth`）保持不变，自带过 CLI 那份实现的宿主接上本
   工厂是零迁移——**但有一条行为口径要注意**：`rg` 的 `is_regex` 默认是 `true`（#184
   追加轮 A，与真实 `rg` 命令一致），而已退役的 CLI 那份实现把「不传 `is_regex`」当作
@@ -1060,6 +1063,15 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 `953674.3MB`——六位数带单位等于没单位（issue #196 追加轮）。并且同一段结果文本里
 **不会**同时出现可读值与裸字节数——同一件事给两个数，模型对不上账。阈值本身在本文与
 `metadata` 里仍写裸数字，那里没有第二份数字互相打脸。
+
+**这两个辅助函数的导出面限定。** `formatSize()` 与 `toolMarker()` 是
+`src/tools/file-tools.js` 的**模块级导出**——上面那段描述的是模块内部，不是公共 API。
+它们**不在公共 `exports` 面**上：`package.json` 只映射 `.` / `./tools` /
+`./contract-tests`（无深路径），`erix-agent/tools` 的 barrel 也没把它们转出，因此
+把本包当依赖安装的宿主**当前拿不到**这两个函数。需要同样渲染请自行实现；把它们转进
+`erix-agent/tools` 是后续可选动作（additive minor），在那之前本段任何一句都不构成
+导入承诺——而且 marker 文案本身仍属 Experimental（见上文），宿主应读结构化的
+`metadata` 字段而不是解析 marker 文本。
 
 宿主必须知道的默认值，因为它们会改变模型看到的东西（ADR-010：默认去噪只有在可撤销
 时才是合法的）：
