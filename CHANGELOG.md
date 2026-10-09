@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- 文件工具纳入公开 exports（issue #184，ADR-005 第二层补账，零 npm 依赖）：新增 `src/tools/file-tools.js` 规范实现，`createFileTools({ cwd, allowRead, allowWrite })` 从**包根**与 `erix-agent/tools` 双导出（先例 `src/tools/notes.js`），返回 `{ definitions, executeTool, executors }`。`bin/tools.js` 反过来 import 它，自己只留 `exec`（ADR-005 红线：库不自带会执行的工具）、`todo_*`（CLI 会话状态 `~/.erix/todos/`）、终端回显 `wrapExecuteTool`、`--tools` 过滤与提示词装配，`createCliTools` 返回值形状逐字不变（`bin/cli.js` / `bin/repl.js` 两个调用点零改动）。**边界只有两个布尔谓词**，默认 `() => true`（库里不放任何 jail 默认、不引入错误类型、不做 containment、零安全承诺，ADR-009 牢笼归宿主）：库负责 `path.resolve` 归一后把**绝对路径**喂给谓词，并在遍历中**逐条**判定（宿主在外面包一层 `executeTool` 拿不到这个挂钩）。`executeTool` 同时接受位置形态 `(name, input, context)` 与结构化 `({id, name, input, context, signal})`（顶层 `signal` 并入 `context.signal`）。**可中止**：遍历每 32 个条目 `setImmediate` 让出一次并查中止（中止抛 AbortError 交给引擎），**无 signal 时完全不插入让出**，非中止路径行为与开销零变化。工具名与既有 schema 字段（`offset`/`limit`/`path`/`pattern`/`glob`/`is_regex`/`max_results`/`maxResults`/`depth`）逐字保持，新参数一律 snake_case：`include_vendor` / `include_hidden`（`rg`/`grep`/`tree`）、`max_bytes`（`readFile`）、`rg` 的 `is_regex`；两个搜索工具都同时接受 `max_results` 与 `maxResults`。新增契约套件 `fileToolsContract`（`test/contract/file-tools.js`，工厂注入风格，已进 `test/contract/index.js` 与 npm `files` 白名单；vendor 用例自建临时 `node_modules` fixture，一律注入临时 cwd，不碰真实 `~/.erix`）。契约文档新增「File tool registration」中英两节（含 Tier 2 host integration 口径）。
+
+### Changed
+
+- 三处**模型可见文本**变更（issue #184，不是纯 additive，宿主按 marker 子串匹配的代码会受影响）：① `rg` 空命中从**空字符串**改成 `（无命中）`（空串让模型分不清「没搜到」与「搜了但被静音」，`grep` 早就是这个口径）；② `tree` 撞上限从静默 `return` 改成带 marker + 剩余计数：条目上限触发 `[另有 N 条未列出，条目上限 500 已达；…]`、depth 到顶触发 `[另有 N 个目录未展开，depth=D 已到上限；传 depth=D+2 或 include_vendor=true 查看更多]`；③ `rg`/`grep`/`tree` 结果尾部新增排除账 `[已跳过 node_modules/.git 等 N 个目录、M 个 >1MiB 文件、…；要一起搜传 include_vendor=true, include_hidden=true]`（`grep` 此前跳 vendor/隐藏目录却**一字不提**，`rg` 压根不跳）。三者都是「默认去噪 + 显式回报 + 可撤销开关 + 写进工具描述」而非显示全部（ADR-010）；`node_modules` 与 `.git` 在任何默认参数组合下都进跳过账。连带：`tree` 现在与 `grep` 共用同一套跳过逻辑（此前只有 `grep` 跳），CLI 系统提示的工具清单段新增一句「默认跳过 node_modules、dist、build、target、vendor 与 `.` 开头的目录（结果尾部会回报跳过数量）；要一起搜传 `include_vendor=true`、`include_hidden=true`」，`test/fixtures/cli-golden.json` 内嵌整段提示词同步。
+- `readFile` 改为有界读（issue #184）：单次返回不超过 `max_bytes`（默认 `262144`，`ERIX_FILE_READ_MAX_BYTES` 可覆盖，三件套钳到 1024–4194304，非法值回退默认）。实现是定位读（`openSync` + `readSync(fd, …, position)`）+ 行窗口**按块扫行 + 早停**，内存上限 = 一个块 + 一个残段；此前 `readFileSync` 整文件读，几百 MB 直接 `RangeError: Invalid string length` 或 OOM-kill，run 以 transport 错误终态。文件 ≤ `max_bytes` 时输出与历史**逐字节一致**（行号格式与 `[共 N 行，offset=… 继续]` marker 原样保留，这是模型侧唯一通道）；超限时的新 marker 为 `[本次返回已达 max_bytes=…，共 N 行；offset=… 继续]` / `[文件 N 字节 > max_bytes=…，行窗口之后的内容未读取；offset=… 继续]` / `[单行超过 max_bytes=…，超长部分已截断]`。
+- `rg` 正则硬化 + 上限收口（issue #184）：默认按**字面量**匹配（`is_regex=true` 才走正则，走 `grep` 已有的 `escapeRegExpLiteral` 分支，不新写一套），无效正则返回 `错误：无效正则：…` 工具错误结果而非抛异常（此前 `new RegExp(pattern)` 直接抛）。`rg` 的 `maxResults` 现与 `grep` 同样钳到硬上限 200 并在触顶时带 `[命中过多，已按 max_results=N 截断]` marker（此前既无上限也无 marker）。
+- 所有「跳过 / 截断 / 空命中」文案改由 `src/tools/file-tools.js` 内**单一** marker 生成函数 `toolMarker(kind, values)` 产出，五个 executor 只传语义值、不再各自拼带方括号的字符串（issue #188 三层分级的前置：marker 字面量 = Experimental，可在任意 minor 变，改文案只动一处；`allowRead`/`allowWrite` 谓词签名与「返回 `false` → 工具返回错误结果而不抛异常」= Stable）。
+
+### Fixed
+
+- CLI 侧两处 **signal 丢失**（issue #184，现成 bug，不依赖新 API）：`wrapExecuteTool` 只取 `firstArg.context` 与 `firstArg.id`，丢掉了引擎放在**顶层**的 `signal`（`src/loop/run-snapshot-executor.js:244`）；`createCliTools.executeTool` 调的是 `executor(normalizedInput)`，连 `context` 都不传。两处现在都把信号并/透传进 `context.signal`，否则库里的遍历与有界读永远看不到中止信号（无 signal 时不凭空造 `signal` 字段，形状与历史一致）。
+- 越界读写不再抛异常：`allowRead` 返回 `false` 时 `readFile` 与被拒的遍历根路径返回 `错误：读取被宿主边界拒绝：…` 文本结果，遍历类工具跳过该条目并计入排除账；`allowWrite` 返回 `false` 时 `writeFile` 返回 `错误：写入被宿主边界拒绝：…` 且不落盘（沿用 `bin/tools.js` 既有的「错误结果而非异常」口径）。
+
+### Documentation
+
+- 契约新增「File tool registration」/「文件工具注册」两节（`docs/host-consumer-contract*.md` 中英成对，结构与措辞照 `### Notes tool registration`）：工厂返回的三个视图（`definitions` / 结构化 `executeTool` / `executors`）、默认无 containment 的理由、以及**两层口径**——`allowRead`/`allowWrite` 的谓词签名 `(absolutePath: string) => boolean` 与「返回 `false` → 工具返回错误结果而不抛异常」属 **Stable**，而**所有 marker 字面量属 Experimental**（可在任意 minor 变，指向 issue #188 的三层分级；需要稳定信号的宿主按工具结果分支，不按 marker 子串匹配）；另列出四组会改变模型所见内容的默认值。README 中英模块地图补 `src/tools/file-tools.js`，README 中英引用的 `files` 清单与 `package.json` 对齐（新增 `test/contract/file-tools.js`）。
+
 ## [0.18.0] - 2026-10-09
 
 ### Added

@@ -1238,6 +1238,78 @@ the shim — the generic skill loader still supports `getSkillDefinition()` for
 third-party skills. It was never a second implementation or a portable standalone
 copy; portable integrations should use the npm package entry point.
 
+### File tool registration
+
+The canonical file tool implementation is `src/tools/file-tools.js`. A headless
+host can call `createFileTools({ cwd, allowRead, allowWrite })` from the package
+root or from `erix-agent/tools` (Tier 2 host integration). The library ships no
+jail: the two predicates are the whole boundary surface, and both default to
+`() => true`, which reproduces the historical `path.resolve(cwd, value)`
+behaviour exactly — no containment, no safety promise (ADR-009 keeps the cage on
+the host side). The library resolves every path itself and hands the
+**absolute** path to the predicate, and it consults the predicate **per entry
+during traversal**; that per-entry hook is exactly what a host cannot build by
+wrapping `executeTool` from the outside.
+
+The returned object contains:
+
+- `definitions` — the five `readFile` / `rg` / `grep` / `tree` / `writeFile`
+  schemas. Tool names and existing input fields (`offset`/`limit`/`path`/
+  `pattern`/`glob`/`is_regex`/`max_results`/`maxResults`/`depth`) are unchanged,
+  so registering this factory is a zero-migration change for a host that already
+  shipped the CLI's copies; new parameters are snake_case, and both search-limit
+  spellings (`max_results` and `maxResults`) are accepted by both search tools;
+- `executeTool({id, name, input, context, signal})` — the structured view that
+  matches the `runToolLoop` / run-snapshot-executor calling convention (the
+  positional `executeTool(name, input, context)` form is retained for existing
+  callers). A `signal` carried at the top level is folded into
+  `context.signal`; traversals yield to the event loop every 32 entries **only
+  when a signal is present**, so the non-abortable path keeps its previous cost
+  and behaviour;
+- `executors(name, input, context)` — the registry positional view, used by the
+  CLI, which assembles its own `exec` and `todo_*` tools next to it (ADR-005
+  keeps "a tool that executes" out of the library).
+
+**Boundary semantics are Stable.** `allowRead` returning `false` for a traversal
+entry makes the tool skip that entry and count it in the exclusion account
+appended to the result; for `readFile`, and for a denied traversal root, the tool
+returns an error result text (`错误：…`) instead of throwing. `allowWrite`
+returning `false` likewise returns an error result text — no exception, and the
+library introduces no error type of its own. Hosts may code against the
+predicate signature `(absolutePath: string) => boolean` and against the
+"false → error result, never a throw" rule; they must not code against the
+wording of those error texts.
+
+**Marker literals are Experimental** (issue #188 three-tier classification, may
+change in any minor release). Every "skipped / truncated / no-match" string — the
+`[已跳过 …]` exclusion account, the `[另有 N 条未列出 …]` and
+`[另有 N 个目录未展开 …]` tree markers, `[共 N 行，offset=… 继续]`, and the
+`（无命中）` no-match result — is produced by a single marker function inside
+`src/tools/file-tools.js` (the executors pass semantic values, they never build
+bracketed strings themselves), which is why the wording can move without touching
+five call sites. A host that needs a stable signal must branch on the tool
+result it receives, not on a marker substring.
+
+Defaults a host must know about, because they change what the model sees
+(ADR-010: default denoising is legal only while it stays revocable):
+
+- `rg` / `grep` / `tree` skip `node_modules`, `dist`, `build`, `target`,
+  `vendor` and dot-directories (`.git` included) unless `include_vendor=true`
+  / `include_hidden=true`, and state the skipped counts at the end of the
+  result together with the switch names that undo them;
+- an empty search result is `（无命中）`, never an empty string;
+- `tree` truncation always carries a marker with the remainder count and the
+  parameter that would widen it;
+- `readFile` is bounded: one call returns at most `max_bytes` UTF-8 bytes
+  (default `262144`, overridable through `ERIX_FILE_READ_MAX_BYTES`, clamped to
+  1024–4194304) and scans lines block-by-block with early stop instead of
+  reading the whole file into memory.
+
+The CLI keeps only assembly and presentation: `bin/tools.js` imports this module,
+adds `exec` and `todo_*`, and passes no predicates, so CLI behaviour stays
+"no boundary" exactly as before. `bin/` no longer owns a second copy of the file
+tools (issue #184).
+
 ### Notes maintenance scheduling (0.12.0)
 
 The root rule is the **session clock** (ADR-018 D7): note lifetime = session

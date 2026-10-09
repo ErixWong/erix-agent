@@ -183,6 +183,7 @@ src/
   text/
     label.js                        note/findings label 归一化
   tools/
+    file-tools.js                    文件工具规范实现：readFile/rg/grep/tree/writeFile
     index.js                        可选 tools 子路径导出
     notes.js                        宿主侧 notes 工具
     providers.js                    tool-provider adapter
@@ -269,6 +270,7 @@ const assemblyPort = createAssemblyPort({
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
+  "test/contract/file-tools.js",
   "test/contract/index.js",
   "test/contract/model-config-provider.js",
   "test/contract/notes-store.js",

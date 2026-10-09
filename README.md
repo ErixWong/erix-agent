@@ -227,6 +227,7 @@ src/
   text/
     label.js                       Note/findings label normalization
   tools/
+    file-tools.js                  Canonical file tools: readFile/rg/grep/tree/writeFile
     index.js                       Optional tools subpath exports
     notes.js                       Host-side notes tools
     providers.js                   Tool-provider adapters
@@ -330,6 +331,7 @@ quoted blocks below against it):
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
+  "test/contract/file-tools.js",
   "test/contract/index.js",
   "test/contract/model-config-provider.js",
   "test/contract/notes-store.js",

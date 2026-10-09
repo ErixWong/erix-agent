@@ -32,7 +32,8 @@
     "docs/host-upgrade-guide-0.15.0.md",
     "docs/host-upgrade-guide-0.16.0.md",
     "test/contract/engine-api.js",
-    "docs/host-upgrade-guide-0.17.0.md"
+    "docs/host-upgrade-guide-0.17.0.md",
+    "test/contract/file-tools.js"
   ],
   "repository": {
     "type": "git",
