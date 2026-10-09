@@ -925,8 +925,8 @@ export async function runToolLoop(options) {
   let runOutcomeEmitted = false;
   // run 级 outcome 汇总走既有 onEvent 通道（新增事件类型 `run_outcome`，不新增回调）：
   // `onJudge` 的 payload 语义是「一条 judge 决策」，把终局裁决塞进去会让宿主按决策计数/过滤
-  // 的代码静默跑偏。宿主回调抛错此处**吞掉**（与 `emitEvent` 现状「onEvent 抛错 fatal」不同）：
-  // 这条记录是审计面，不能让已跑完的 run 因为宿主日志失败而变成 `failed`。
+  // 的代码静默跑偏。宿主回调抛错经 reportObserverError 记账（#173 PR-B 统一口径：一切观察者
+  // 抛错都上报、都不改变终局——这条是审计面记录，run 已跑完，宿主日志失败不会让它变 `failed`）。
   const emitRunOutcome = (outcome) => {
     if (typeof onEvent !== "function" || runOutcomeEmitted) return;
     runOutcomeEmitted = true;
@@ -938,8 +938,8 @@ export async function runToolLoop(options) {
         judgeRecordCount,
         ...(verification === undefined ? {} : { verification }),
       }));
-    } catch {
-      // 观测面失败不得改变终局（与 emitJudge 的静默吞掉口径一致）。
+    } catch (hostError) {
+      reportObserverError(hostError, { channel: "onEvent", type: "run_outcome" });
     }
   };
   const fail = async (error) => {

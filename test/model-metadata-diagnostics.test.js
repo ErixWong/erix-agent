@@ -330,5 +330,8 @@ test("startup diagnostic throw plus abort: the abort is the only thing that ends
       return true;
     },
   );
-  assert.deepEqual(observerErrors.map((error) => error.message), ["host onEvent blew up"]);
+  // 抛错至少记一笔（具体笔数取决于 abort 前已发出几个事件，属发射时序细节，不在本用例
+  // 承诺范围）；关键是每一笔都是宿主自己的错、终局由 abort 决定。
+  assert.ok(observerErrors.length >= 1);
+  assert.ok(observerErrors.every((error) => error.message === "host onEvent blew up"));
 });

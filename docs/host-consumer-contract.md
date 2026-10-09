@@ -742,10 +742,10 @@ one as the current outcome, or key on `(runId, ts)` when you need every attempt.
 `run_outcome` is a new event type on the existing `onEvent` stream (additive
 event type = semver minor); no new callback was introduced, because the `onJudge`
 payload means "one judge decision" and pushing a terminal verdict into it would
-silently skew hosts that count decisions. One deliberate asymmetry: unlike other
-events (a host `onEvent` throwing mid-round is fatal, see issue #173), a throw
-from this single terminal event is swallowed — an audit record must not turn a
-finished run into `failed`.
+silently skew hosts that count decisions. Host throws from this single terminal
+event follow the unified observer rule (issue #173): they are reported through
+`onObserverError` and never change the termination — an audit record must not
+turn a finished run into `failed`.
 
 Field stability: the record shape is a host consumption surface, so fields are
 additive only — new optional fields may appear, existing ones are never renamed,

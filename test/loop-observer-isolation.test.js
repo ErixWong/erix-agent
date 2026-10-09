@@ -124,6 +124,8 @@ test("pr-b #173: a throwing onEvent is isolated into onObserverError and the run
     "model_metadata_missing",
     "round_start", "attempt", "tool_use", "tool_result", "round_end",
     "round_start", "attempt", "round_end",
+    // #165 后成功终局追加 run_outcome 汇总事件（append-only，不影响本用例语义）
+    "run_outcome",
   ]);
   // 每次抛错各记一笔，且带定位上下文
   assert.equal(observers.seen.length, events.length);
@@ -141,6 +143,11 @@ test("pr-b #173: a throwing onEvent is isolated into onObserverError and the run
   }, "每条上报都带 runId：并行多 run 的宿主靠它归因");
   assert.deepEqual(
     observers.contexts.at(-1),
+    { runId: "observer-on-event-isolated", channel: "onEvent", type: "run_outcome" },
+    "终局 run_outcome 事件的抛错同样上报（#173 统一口径，#165 事件排在末位）",
+  );
+  assert.deepEqual(
+    observers.contexts.at(-2),
     { runId: "observer-on-event-isolated", channel: "onEvent", type: "round_end", round: 2 },
   );
 });
