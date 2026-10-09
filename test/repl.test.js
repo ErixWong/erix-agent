@@ -20,6 +20,7 @@ import { runChat } from "../bin/cli.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFileTranscriptStore, safeRunId } from "../src/store/file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 // issue #81：runRepl 的 notesDir 缺省解析真实 ~/.erix/notes（收尾 purge 会扫描甚至删除
 // 真实笔记），MCP 配置缺省解析真实 ~/.erix/mcp.json（可能配了真实远端 server）。
@@ -58,7 +59,7 @@ test("parseReplArgs derives the default --dir from the injected home", () => {
 });
 
 test("runRepl routes default session/transcripts dirs into the injected home", async () => {
-  const home = await mkdtemp(join("/tmp", "erix-repl-home-default-test-"));
+  const home = await makeTmp("erix-repl-home-default-test-");
   const input = new PassThrough();
   input.isTTY = true;
   const output = new PassThrough();
@@ -349,7 +350,7 @@ test("runRepl resumes from the transcript store without an engine-owned retrieva
 });
 
 test("runRepl injects archive status at fold time instead of into loop context", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-repl-recovery-hint-test-"));
+  const dir = await makeTmp("erix-repl-recovery-hint-test-");
   const input = new PassThrough();
   input.isTTY = true;
   const output = new PassThrough();
@@ -407,7 +408,7 @@ test("CLI assembly root provides transcript and notes stores", async () => {
 });
 
 test("runRepl wires persistence diagnostics to stderr", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-repl-diagnostics-test-"));
+  const dir = await makeTmp("erix-repl-diagnostics-test-");
   const input = new PassThrough();
   input.isTTY = true;
   const output = new PassThrough();
@@ -455,7 +456,7 @@ test("runRepl wires persistence diagnostics to stderr", async () => {
 });
 
 test("runRepl reports a damaged MCP config instead of treating it as absent", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-repl-mcp-error-test-"));
+  const dir = await makeTmp("erix-repl-mcp-error-test-");
   const input = new PassThrough();
   input.isTTY = true;
   const output = new PassThrough();

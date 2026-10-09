@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -25,6 +25,7 @@ import { createFileNotesStore } from "../src/store/notes.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 // issue #81：runChat 的 MCP 代理默认解析 ~/.erix/mcp.json（可能配了真实远端 server），
 // 每个用例必须注入空配置，彻底与真实 home 隔离。
@@ -35,20 +36,31 @@ async function writeEmptyMcpConfig(dir) {
   return configPath;
 }
 
-function normalizeGoldenEnvironment(value, cwd, fixtureCwd) {
+function normalizeGoldenEnvironment(value, cwd, fixtureCwd, goldenDirs = []) {
+  // issue #185：落盘目录不再钉死在 /tmp，比较前把「实际临时目录」与「fixture 里记录的 dir」
+  // 都归一化成同一个占位符，golden 断言因此与 TMPDIR 无关（长串先替换，避免前缀互吃）。
+  const substitutions = [
+    [fixtureCwd, "<cwd>"],
+    [cwd, "<cwd>"],
+    ...goldenDirs.map((from) => [from, "<dir>"]),
+  ]
+    .filter(([from]) => typeof from === "string" && from.length > 0)
+    .sort(([a], [b]) => b.length - a.length);
+  const text = (input) => substitutions.reduce(
+    (acc, [from, to]) => acc.split(from).join(to),
+    input,
+  );
   if (typeof value === "string") {
-    return value
-      .split(fixtureCwd).join("<cwd>")
-      .split(cwd).join("<cwd>");
+    return text(value);
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => normalizeGoldenEnvironment(entry, cwd, fixtureCwd));
+    return value.map((entry) => normalizeGoldenEnvironment(entry, cwd, fixtureCwd, goldenDirs));
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => [
         key,
-        normalizeGoldenEnvironment(entry, cwd, fixtureCwd),
+        normalizeGoldenEnvironment(entry, cwd, fixtureCwd, goldenDirs),
       ]),
     );
   }
@@ -68,14 +80,17 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
     new URL("./fixtures/cli-golden.json", import.meta.url),
     "utf8",
   ));
-  await rm(fixture.input.dir, { recursive: true, force: true });
-  const notesDir = join(fixture.input.dir, "notes");
-  const mcpConfigPath = await writeEmptyMcpConfig(fixture.input.dir);
+  // issue #185：fixture 里记录的 dir 是钉死的 /tmp/erix-cli-golden，只作为比较占位；
+  // 实际落盘改从 os.tmpdir() 取（前缀不复用 fixture 目录名，避免字符串前缀互相命中）。
+  const dir = await makeTmp("erix-golden-run-");
+  const goldenDirs = [dir, fixture.input.dir];
+  const notesDir = join(dir, "notes");
+  const mcpConfigPath = await writeEmptyMcpConfig(dir);
   const provider = createFakeProvider([
     { content: [{ type: "text", text: fixture.modelVisible.output }], stopReason: "end_turn" },
   ]);
   const root = {
-    archiveDir: join(fixture.input.dir, "outputs", "golden"),
+    archiveDir: join(dir, "outputs", "golden"),
     diagnostics: { error() {} },
     notesDir,
     notesStore: createFileNotesStore({ dir: notesDir }),
@@ -84,6 +99,7 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
   try {
     const result = await runChat({
       ...fixture.input,
+      dir,
       provider,
       configPath: mcpConfigPath,
       idleTimeout: 0,
@@ -99,13 +115,13 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
       output: result.finalText,
     };
     assert.deepEqual(
-      normalizeGoldenEnvironment(actualModelVisible, resolve(process.cwd()), fixtureCwd),
-      normalizeGoldenEnvironment(fixture.modelVisible, resolve(process.cwd()), fixtureCwd),
+      normalizeGoldenEnvironment(actualModelVisible, resolve(process.cwd()), fixtureCwd, goldenDirs),
+      normalizeGoldenEnvironment(fixture.modelVisible, resolve(process.cwd()), fixtureCwd, goldenDirs),
     );
     assert.match(fixture.modelVisible.system, /\[工具输出归档\]/u);
     assert.match(fixture.modelVisible.output, /^stub=/u);
   } finally {
-    await rm(fixture.input.dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -183,7 +199,7 @@ test("CLI formats guard metrics and shows disabled guards explicitly", () => {
 });
 
 test("archive guidance is present once in the system prompt", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-archive-guidance-test-"));
+  const dir = await makeTmp("erix-cli-archive-guidance-test-");
   try {
     const provider = createFakeProvider([{ content: [{ type: "text", text: "done" }] }]);
     const configPath = await writeEmptyMcpConfig(dir);
@@ -214,7 +230,7 @@ test("archive guidance is present once in the system prompt", async () => {
 });
 
 test("runChat does not add a value-note index to the system prompt", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-value-index-test-"));
+  const dir = await makeTmp("erix-cli-value-index-test-");
   const notesDir = join(dir, "notes");
   const configPath = await writeEmptyMcpConfig(dir);
   try {
@@ -271,7 +287,7 @@ test("runChat does not add a value-note index to the system prompt", async () =>
 });
 
 test("runChat injects archive status at fold time instead of into loop context", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-recovery-hint-test-"));
+  const dir = await makeTmp("erix-cli-recovery-hint-test-");
   let captured;
   try {
     const configPath = await writeEmptyMcpConfig(dir);
@@ -382,7 +398,7 @@ test("parseChatArgs accepts a tools allowlist", () => {
 });
 
 test("runChat filters tools via --tools allowlist and warns on unknown names", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-tools-flag-"));
+  const dir = await makeTmp("erix-cli-tools-flag-");
   let captured;
   const warnings = [];
   const originalWrite = process.stderr.write;
@@ -433,7 +449,7 @@ test("runChat filters tools via --tools allowlist and warns on unknown names", a
 });
 
 test("runChat assembles note tools via the factory and --no-notes removes them", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-no-notes-"));
+  const dir = await makeTmp("erix-cli-no-notes-");
   try {
     const configPath = await writeEmptyMcpConfig(dir);
     let captured;
@@ -531,7 +547,7 @@ test("runChat assembles note tools via the factory and --no-notes removes them",
 });
 
 test("runChat --tools allowlist also applies to factory note tools", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-notes-allowlist-"));
+  const dir = await makeTmp("erix-cli-notes-allowlist-");
   let captured;
   try {
     const configPath = await writeEmptyMcpConfig(dir);
@@ -567,7 +583,7 @@ test("runChat --tools allowlist also applies to factory note tools", async () =>
 });
 
 test("runChat rejects a --tools allowlist that filters out every tool", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-tools-empty-"));
+  const dir = await makeTmp("erix-cli-tools-empty-");
   try {
     const configPath = await writeEmptyMcpConfig(dir);
     await assert.rejects(
@@ -596,7 +612,7 @@ test("runChat rejects a --tools allowlist that filters out every tool", async ()
 });
 
 test("chat loop wires a file transcript store without an engine-owned retrieval tool", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-test-"));
+  const dir = await makeTmp("erix-cli-test-");
   try {
     const provider = createFakeProvider([
       { content: [{ type: "text", text: "done" }] },
@@ -628,7 +644,7 @@ test("chat loop wires a file transcript store without an engine-owned retrieval 
 });
 
 test("runChat closes MCP connections when used as a module", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-mcp-cleanup-test-"));
+  const dir = await makeTmp("erix-cli-mcp-cleanup-test-");
   const mcpConfigPath = join(dir, "mcp.json");
   try {
     await writeFile(mcpConfigPath, JSON.stringify({
@@ -670,7 +686,7 @@ test("runChat closes MCP connections when used as a module", async () => {
 });
 
 test("file transcript preserves folded payload", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-fold-test-"));
+  const dir = await makeTmp("erix-cli-fold-test-");
   try {
     const store = createFileTranscriptStore({ dir });
     const provider = createFakeProvider([
@@ -710,7 +726,7 @@ test("file transcript preserves folded payload", async () => {
 });
 
 test("chat creates distinct default sessions and preserves the second prompt", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-default-session-test-"));
+  const dir = await makeTmp("erix-cli-default-session-test-");
   try {
     const config = { model: "fake-model", maxOutputTokens: 1000 };
     const configPath = await writeEmptyMcpConfig(dir);
@@ -756,7 +772,7 @@ test("chat creates distinct default sessions and preserves the second prompt", a
 });
 
 test("chat reuses an explicitly selected session and keeps the new prompt", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-explicit-session-test-"));
+  const dir = await makeTmp("erix-cli-explicit-session-test-");
   try {
     const config = { model: "fake-model", maxOutputTokens: 1000 };
     const configPath = await writeEmptyMcpConfig(dir);
@@ -806,7 +822,7 @@ test("chat resume 路径预写 :input: 记录且复用最大 round（issue #97 �
   // 参照 test/repl.test.js 两轮集成断言：第二轮走 resume，预写行由
   // appendUserTurn 落入 transcript：存在 <key>:input: 记录，round 序列
   // [0, 1, 1, 2]——预写行复用既有最大 round（1），引擎自身行落在下一个 round（2）。
-  const dir = await mkdtemp(join("/tmp", "erix-cli-resume-prewrite-test-"));
+  const dir = await makeTmp("erix-cli-resume-prewrite-test-");
   try {
     const config = { model: "fake-model", maxOutputTokens: 1000 };
     const configPath = await writeEmptyMcpConfig(dir);
@@ -860,7 +876,7 @@ test("chat resume 路径预写 :input: 记录且复用最大 round（issue #97 �
 });
 
 test("chat continues after text-only rounds (maxNoToolRounds default 3)", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-notool-test-"));
+  const dir = await makeTmp("erix-cli-notool-test-");
   try {
     // 模型先用工具干活（exec 是 CLI 真实工具），然后输出文本（无工具调用）——
     // 之前 maxNoToolRounds=1 会立即判定完成；默认 3 应追加"请继续"并保持循环。
@@ -900,7 +916,7 @@ test("chat continues after text-only rounds (maxNoToolRounds default 3)", async 
 });
 
 test("judge log defaults into the run archive directory", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-judgelog-default-"));
+  const dir = await makeTmp("erix-judgelog-default-");
   try {
     const configPath = await writeEmptyMcpConfig(dir);
     const provider = createFakeProvider([
@@ -990,7 +1006,7 @@ async function runJudgeChat({ dir, session, judgeLog, provider, judge, config })
 }
 
 test("judge.log carries runId + model per decision and a run-level outcome record (#165)", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-judgelog-shape-"));
+  const dir = await makeTmp("erix-judgelog-shape-");
   const judgeLogPath = join(dir, "judge.log");
   try {
     await runJudgeChat({
@@ -1034,7 +1050,7 @@ test("judge.log carries runId + model per decision and a run-level outcome recor
 });
 
 test("injected --judge-log path and default archive path write identical record shapes (#165)", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-judgelog-parity-"));
+  const dir = await makeTmp("erix-judgelog-parity-");
   const injectedPath = join(dir, "injected-judge.log");
   try {
     await runJudgeChat({
@@ -1080,7 +1096,7 @@ test("injected --judge-log path and default archive path write identical record 
 });
 
 test("judge.log omits the model field instead of writing a placeholder (#165)", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-judgelog-nomodel-"));
+  const dir = await makeTmp("erix-judgelog-nomodel-");
   const judgeLogPath = join(dir, "judge.log");
   try {
     const provider = createFakeProvider([
@@ -1115,7 +1131,7 @@ test("judge.log omits the model field instead of writing a placeholder (#165)", 
 });
 
 test("judge-log persists raw tool input and judge reason verbatim (redaction retired, #55)", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-judgelog-"));
+  const dir = await makeTmp("erix-judgelog-");
   const judgeLogPath = join(dir, "judge.log");
   try {
     const provider = createFakeProvider([
@@ -1193,7 +1209,7 @@ test("parseChatArgs rejects unknown or missing --compaction values (#167)", () =
 });
 
 test("runChat keeps the default compaction strategy and forwards an explicit name (#167)", async () => {
-  const dir = await mkdtemp(join("/tmp", "erix-cli-compaction-test-"));
+  const dir = await makeTmp("erix-cli-compaction-test-");
   try {
     const configPath = await writeEmptyMcpConfig(dir);
     const captureLoop = async (options) => {
