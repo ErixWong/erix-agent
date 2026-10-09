@@ -201,7 +201,7 @@ test("有 signal 时遍历周期让出，中途可被中止（同步遍历不卡
 });
 
 // issue #196 R2：字节数人类可读。单位标签按 issue 规格写 KB/MB，基数是 1024。
-test("formatSize：边界表（<1KB / 整 KB / 跨 MB / 非整除 / 舍入进位 / 非法值）", () => {
+test("formatSize：边界表（<1KB / 整 KB / 跨 MB / 跨 GB / 跨 TB / 非整除 / 舍入晋级 / 非法值）", () => {
   const cases = [
     [0, "0B"],                                  // 零不是「0KB」
     [1, "1B"],
@@ -219,6 +219,15 @@ test("formatSize：边界表（<1KB / 整 KB / 跨 MB / 非整除 / 舍入进位
     [1_572_864, "1.5MB"],                        // 跨 MB 保留一位小数
     [2_621_440, "2.5MB"],
     [4_194_304, "4.0MB"],                        // max_bytes 硬顶 4MiB 的可读形式
+    // 追加轮 R6：GB / TB 两档。判据与 MB 同规则（一位小数 + **渲染后**到 1024 就晋级上一档），
+    // 所以边界内侧留在 MB、进位的那个数换档——「1024.0MB」与「953674.3MB」都是没单位等于没单位。
+    [1_072_693_248, "1023.0MB"],                 // 1023MB：GB 档边界内侧
+    [1_073_741_823, "1.0GB"],                    // 1024MB 差 1 字节 → 进位晋级 GB，不产出 1024.0MB
+    [1_073_741_824, "1.0GB"],                    // 恰好 1GB
+    [1_610_612_736, "1.5GB"],                    // 跨 GB 保留一位小数
+    [1_099_511_627_776, "1.0TB"],                // 恰好 1TB（1024GB → 晋级）
+    [1_649_267_441_664, "1.5TB"],
+    [1_000_000_000_000, "931.3GB"],              // 1e12：修复前是 953674.3MB（六位数单位）
     [-5, "0B"],                                  // 非法值不 producing 负数
     [Number.NaN, "0B"],
     [Number.POSITIVE_INFINITY, "0B"],
@@ -229,6 +238,11 @@ test("formatSize：边界表（<1KB / 整 KB / 跨 MB / 非整除 / 舍入进位
   // 结果里绝不会出现空格分隔的单位，也不会同时给两份数（模型对账只用一个数）
   for (const [bytes] of cases) {
     assert.doesNotMatch(formatSize(bytes), /\s/u, `formatSize(${bytes}) 单位不得带空格`);
+  }
+  // 档位齐全且互不重叠：每一档都得真的能出现（写死到 MB 的旧实现给不出 GB/TB → 这条会红）
+  const units = new Set(cases.map(([, rendered]) => rendered.replace(/^[\d.]+/u, "")));
+  for (const unit of ["B", "KB", "MB", "GB", "TB"]) {
+    assert.ok(units.has(unit), `边界表里没有 ${unit} 档的样本 → 该档没被测到`);
   }
   // 真值随调用变化：不同上限必须给不同可读值（模板占位过不了这条）
   assert.notEqual(formatSize(4_096), formatSize(8_192));

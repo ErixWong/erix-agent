@@ -101,7 +101,11 @@ function escapeRegExpLiteral(text) {
  * - 整 KB（可被 1024 整除）→ `NNNKB`（无空格）
  * - 非整除              → 按 KB 四舍五入到整数（`1536` → `2KB`）
  * - `>= 1024*1024`      → 一位小数 `x.yMB`（`1572864` → `1.5MB`、`262144` → `256KB`）
- * 四舍五入进位到 1024KB 时晋级 MB（`1048575` → `1.0MB`），免得产出「1024KB」这种看着像 bug 的值。
+ * - `>= 1GB` / `>= 1TB` → 同规则继续晋级 `x.yGB` / `x.yTB`（追加轮 R6：原先 1e12 会吐
+ *   `953674.3MB`——六位数单位等于没单位，模型读不出「这是几十 GB 的日志」这个量级）
+ * 四舍五入进位到 1024KB 时晋级 MB（`1048575` → `1.0MB`），免得产出「1024KB」这种看着像 bug 的值；
+ * MB→GB、GB→TB 用同一条判据（**按渲染后的值**判，不是按原值），所以 `1073741823` → `1.0GB`
+ * 而不是 `1024.0MB`。
  * 非有限值/负数按 0 处理：marker 是给模型读的事实，不额外开异常通道。
  *
  * ⚠ **同一段结果文本里不得同时出现人类可读值与裸字节数**（issue #196 R2）：两个数说的是同一件事，
@@ -118,7 +122,12 @@ export function formatSize(bytes) {
     const kb = Math.round(value / 1024);
     if (kb < 1024) return `${kb}KB`; // 整除时 Math.round 是恒等 → 天然满足「整 KB → NNNKB」
   }
-  return `${(value / (1024 * 1024)).toFixed(1)}MB`;
+  // 晋级判据统一是「**渲染后**的值到没到 1024」：到就换上一档，永远不产出 1024.0MB / 1024.0GB。
+  const mb = value / (1024 * 1024);
+  if (Number(mb.toFixed(1)) < 1024) return `${mb.toFixed(1)}MB`;
+  const gb = mb / 1024;
+  if (Number(gb.toFixed(1)) < 1024) return `${gb.toFixed(1)}GB`;
+  return `${(gb / 1024).toFixed(1)}TB`;
 }
 
 export function truncateDisplayText(value, limit) {
@@ -275,17 +284,18 @@ export function toolMarker(kind, values = {}) {
     case "noMatch":
       // 无命中统一口径：空串会让模型分不清「没搜到」与「搜了但被静音」
       return "（无命中）";
-    case "searchTruncated":
-      // 规范入口 `searchText` 总带 `nextOffset`（模型可见承诺，见下方调用处注释）；
-      // 别名不传 `offset` 也不开 `emitMetadata` → 拿不到 `nextOffset`，所以那条出口只能指向规范入口
-      // （#196 前这里是不带任何出口的纯状态文本；#188 的「别名不得被继任入口带跑」约束的是命中行，
-      //  不含这条新增的出口——命中行、分组形状与 `max_results` 数字仍逐字不变）。
-      // 措辞与 readFile 侧的续读 marker 同形状（#196 R1.3）：`；下一步：searchText 传 offset=<真值> 继续`。
-      // 别名拿不到 nextOffset（不吃 offset），出口只能指向规范入口——这也是**本次调用**的真值
-      // （max_results 就是这次实际生效的上限），不是模板。
-      return values.nextOffset === undefined
-        ? `[命中过多，已按 max_results=${values.limit} 截断；${NEXT_STEP_CLAUSE}改用 searchText 传 offset 续读（本别名不接受 offset）]`
+    case "searchTruncated": {
+      // 规范入口与两个薄别名**共用同一个数**（#196 追加轮 R5 主 agent 裁决）：`nextOffset` =
+      // 调用方传入的 offset + 本次实际返回的命中条数，与 `metadata.searchNextOffset` 同源，
+      // 不在这里另算一套。别名**不接受** offset 入参（#188：入参形状属 Stable），但「不吃入参」
+      // 不是「把真值藏起来」的理由——模型照抄这个数到 `searchText` 上就能续读，不给就得自己数命中行。
+      // 两侧文案差异只剩「改用 …」前缀与「（本别名不接受 offset）」这句限定，数字同源。
+      // （#196 前这里是不带任何出口的纯状态文本；#188 的「别名不得被继任入口带跑」约束的是命中行、
+      //  分组形状与 `max_results` 数字，三者仍逐字不变。）
+      return values.alias === true
+        ? `[命中过多，已按 max_results=${values.limit} 截断；${NEXT_STEP_CLAUSE}改用 searchText 传 offset=${values.nextOffset} 继续（本别名不接受 offset）]`
         : `[命中过多，已按 max_results=${values.limit} 截断；${NEXT_STEP_CLAUSE}searchText 传 offset=${values.nextOffset} 继续]`;
+    }
     case "deprecated":
       // 别名弃用告警（issue #188 三层分级：工具名与入参形状属 Stable → 本轮只加告警不删）。
       // ⚠ 文案里不得出现 `…`：既有的「未触顶的行不得带省略号」断言比对的是整段结果文本。
@@ -296,6 +306,10 @@ export function toolMarker(kind, values = {}) {
       return `[另有 ${values.remaining} 个目录未展开，depth=${values.depth} 已到上限；传 depth=${values.depth + 2} 或 include_vendor=true 查看更多]`;
     case "readBytesCap": {
       // 字节数走 formatSize（#196 R2）：这段文本里不再出现裸字节数。
+      // ⚠ 措辞**不得声称内容完整**（#196 追加轮 R4）：触顶时最后一条物理行可能只回了一半、甚至
+      //   整行没回来，而这里的 `offset` 语义固定是「下一个未读整行」——被裁那行的剩余部分不在它覆盖
+      //   范围内，那是紧随其后的 readLineTruncated 的职责（它带的是那条**自己的** offset）。
+      //   两条 marker 的先后顺序就是这里的职责顺序，别合并成一条模糊承诺。
       const total = values.total === undefined ? "" : `，共 ${values.total} 行`;
       return `[本次返回已达 max_bytes=${formatSize(values.maxBytes)} 上限${total}；${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset} 继续]`;
     }
@@ -392,6 +406,10 @@ function fitByteBudget(text, budget) {
  * - 文件 ≤ max_bytes：扫到 EOF，行号与 `[共 N 行，offset=… 继续]` marker 与历史逐字节一致。
  * - 文件 > max_bytes：行窗口取满即早停（不再读之后的字节），marker 诚实说明「之后未读取」。
  * - 单个物理行超过 max_bytes：截断成一行并回报，其余内容丢到下一个换行（防单行 OOM）。
+ * - 同一条超宽行**没跨块**（整行落在一个读块内）时走的是「整行放不下剩余额度」那条路：它一个字节
+ *   都没进结果，后果与半行相同——所以只要单行本身超内容预算（`limit=1` 也救不回来）就同样记进
+ *   `truncatedLines`（#196 追加轮 R4）。普通短行被额度截住不记：它靠 `readBytesCap` 的 offset
+ *   续读就能拿回，报成「单行超过 max_bytes」是另一条谎。
  */
 function readLineWindow(absolutePath, { start, count, maxBytes }) {
   const size = statSync(absolutePath).size;
@@ -422,6 +440,14 @@ function readLineWindow(absolutePath, { start, count, maxBytes }) {
     let bytes = Buffer.byteLength(formatted, "utf8") + separator;
     if (contentBytes + bytes > contentBudget) {
       if (!mayTruncate) {
+        // 整行装不进剩余额度 → 触顶。只有「这一行本身就超内容预算」（换 limit=1 也放不下，
+        // 即真正的超宽行）才记行号：readLineWindow 只在跨块截断分支采 truncatedLines，
+        // 整行落在单个读块内的超宽行就会从这里漏掉，模型照 readBytesCap 的 offset 续读
+        // 永远跳过它（#196 追加轮 R4）。
+        if (Buffer.byteLength(formatted, "utf8") > contentBudget) {
+          truncatedLines.push(index + 1);
+          lineTruncated = true;
+        }
         contentCapped = true;
         return false;
       }
@@ -810,6 +836,8 @@ export function createFileTools({
    * @param {number} [options.offset]        跳过前 N 条命中（只有 `searchText` 会传；别名固定 0 → 行为逐字不变）
    * @param {boolean} [options.emitMetadata] 真则返回 `{content, metadata}`（引擎支持该形状，
    *   见 src/loop/run-snapshot-executor.js:83-121），假则返回历史形状的纯字符串
+   * @param {boolean} [options.alias]  调用方是薄别名（`rg`/`grep`）：它们**不接受** `offset`，
+   *   但截断 marker 仍要给本次的真值，只有措辞不同（#196 追加轮 R5）
    */
   const runSearch = async ({
     expression,
@@ -821,6 +849,7 @@ export function createFileTools({
     includeHidden,
     format,
     emitMetadata,
+    alias = false,
   }, context) => {
     const resolvedSearchPath = resolveToolPath(root, searchPath);
     if (!canRead(resolvedSearchPath)) return readDenied(resolvedSearchPath);
@@ -899,9 +928,13 @@ export function createFileTools({
       limit: resultLimit,
       // issue #195（主 agent 验收补漏）：CLI 提示词向模型承诺「截断时给出续读 offset」，那这条承诺
       // 必须落在**模型可见**的 marker 上——`metadata` 进 transcript 但不上 wire，首查被截时模型
-      // 看不见 offset 只能猜个数。规范入口（`emitMetadata`）无论是否带 offset 都给；
-      // 别名不吃 offset，输出逐字不变（issue #188：别名不得被继任入口带跑）。
-      ...(emitMetadata || offset > 0 ? { nextOffset: offset + hits.length } : {}),
+      // 看不见 offset 只能猜个数。
+      // 追加轮 R5：这个数**三个入口都给**，且与上面的 `searchNextOffset` 是同一个表达式（别名固定
+      // offset=0，所以它就是把「本次返回的命中条数」原样报出来）。区别只在措辞：规范入口说「传
+      // offset=N 继续」（它吃这个参数），别名说「改用 searchText 传 offset=N 继续（本别名不接受
+      // offset）」（#188 的别名口径是不改**入参形状**与命中行正文，不是把真值藏掉）。
+      nextOffset: offset + hits.length,
+      alias,
     });
 
     if (hits.length === 0) {
@@ -974,6 +1007,7 @@ export function createFileTools({
       includeVendor: normalizeFlag(input?.include_vendor),
       includeHidden: normalizeFlag(input?.include_hidden),
       format: "flat",
+      alias: true,
     }, context);
     return withDeprecation(result, "rg", 'searchText with mode="regex"');
   };
@@ -999,6 +1033,7 @@ export function createFileTools({
       includeVendor: normalizeFlag(input?.include_vendor),
       includeHidden: normalizeFlag(input?.include_hidden),
       format: "grouped",
+      alias: true,
     }, context);
     return withDeprecation(result, "grep", 'searchText with mode="regex" and name_pattern');
   };

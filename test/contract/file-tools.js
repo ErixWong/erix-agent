@@ -583,12 +583,24 @@ export function fileToolsContract(label, { createFileTools }) {
       // issue #195（主 agent 验收补漏）：提示词承诺「截断时给出续读 offset」——首查（不传 offset）
       // 被截时也必须给得出，不能只住在不进 wire 的 metadata 里。
       assert.match(capped.content, /offset=3 继续/u, `规范入口首查被截的 marker 必须自带续读 offset：${capped.content}`);
-      // 别名输出逐字不变（issue #188）：它们不吃 offset，marker 不得被继任入口带跑。
+      // 别名不吃 offset **入参**（issue #188：入参形状属 Stable，别名也不得被继任入口带跑），
+      // 但 #196 追加轮 R5 之后它的截断 marker 给的是**本次真值**（主 agent 裁决：把数藏起来等于让
+      // 模型自己数命中行）。原来那条 `doesNotMatch(/offset=\d+ 继续/)` 守的是「别名不给数」，语义
+      // 已反转 → 现在钉「marker 里的数字 == 本次返回的命中条数 == metadata.searchNextOffset（同一
+      // 个表达式算出来的，不是各算一套）」；「别名传 offset 参数仍不生效」降级成下面的行为断言。
       const rgCapped = await tools.executeTool("rg", { pattern: "hit", max_results: 3 });
-      // #196 R1.3：别名的截断 marker 尾部补了「改用 searchText 传 offset 续读」的出口，
-      // 所以不再以 `截断]` 收尾；`offset=\d+ 继续` 那条断言仍守着「别名不吃 offset」。
       assert.match(rgCapped, /max_results=3 截断/u);
-      assert.doesNotMatch(rgCapped, /offset=\d+ 继续/u, "别名不吃 offset，marker 里不该出现续读偏移");
+      assert.match(rgCapped, /改用 searchText 传 offset=3 继续（本别名不接受 offset）/u,
+        `别名 marker 的 offset 必须就是本次返回的命中条数：${rgCapped}`);
+      assert.equal(Number(rgCapped.match(/offset=(\d+)/u)[1]), capped.metadata.searchNextOffset,
+        "别名 marker 的 offset 与规范入口的 searchNextOffset 必须同源");
+      assert.equal(rgCapped.split("\n").filter((line) => line.includes("hit ")).length, 3,
+        "对照用：本次确实返回 3 条命中（marker 给的数就是它）");
+      const rgWithOffset = await tools.executeTool("rg", { pattern: "hit", max_results: 3, offset: 3 });
+      assert.match(rgWithOffset, /hit 0/u, "别名不吃 offset：传了也从头给");
+      assert.doesNotMatch(rgWithOffset, /hit 3/u, "别名传 offset=3 不得真的跳过 3 条");
+      assert.equal(withoutDeprecation(rgWithOffset), withoutDeprecation(rgCapped),
+        "别名带不带 offset，输出逐字相同（入参形状属 Stable，未动）");
 
       // offset 续读：next_offset 传回去能拿到剩下那批（截断可撤销，ADR-010）
       const next = await tools.executeTool("searchText", { pattern: "hit", mode: "literal", max_results: 3, offset: capped.metadata.searchNextOffset });
@@ -674,14 +686,79 @@ export function fileToolsContract(label, { createFileTools }) {
       const search5 = markerWith(await tools.executeTool("searchText", { pattern: "needle", mode: "literal", max_results: 5 }), /命中过多/u);
       assert.match(search3, /searchText 传 offset=3 继续/u, search3);
       assert.match(search5, /searchText 传 offset=5 继续/u, search5);
-      // 别名不吃 offset → 出口把模型指向规范入口，且不凭空造一个数字 offset（#188 别名口径）
+      // 别名**不吃 offset 入参**（#188），但 marker 给的是**本次真值**（#196 追加轮 R5）：数字 ==
+      // 本次实际返回的命中条数，且跟着 max_results 变。原先这条是 `doesNotMatch(/offset=\d+/)`
+      //（守「别名不给数」）→ 语义反转成「给的必须是这个数」；「别名传 offset 参数仍不生效」由
+      // 最后的逐字等式守住（别名只是把数交给模型，它自己不会续读）。
       const aliasCapped = withoutDeprecation(await tools.executeTool("grep", { pattern: "needle", max_results: 4 }));
+      const aliasCapped6 = withoutDeprecation(await tools.executeTool("grep", { pattern: "needle", max_results: 6 }));
+      const aliasCapped3 = withoutDeprecation(await tools.executeTool("grep", { pattern: "needle", max_results: 3 }));
+      const hitCount = (output) => (output.match(/needle \d/gu) ?? []).length;
       assert.match(aliasCapped, /下一步[^\n]*searchText/u, `别名也要有出口，且只能指向 searchText：${aliasCapped}`);
-      assert.doesNotMatch(aliasCapped, /offset=\d+/u, "别名不接受 offset，marker 里不该出现数字偏移");
+      assert.match(aliasCapped, /本别名不接受 offset）\]$/u, `出口要同时说清别名不吃这个参数：${aliasCapped}`);
+      assert.equal(offsetOf(aliasCapped), hitCount(aliasCapped), `offset 必须等于本次命中条数：${aliasCapped}`);
+      assert.equal(offsetOf(aliasCapped6), hitCount(aliasCapped6), aliasCapped6);
+      assert.equal(offsetOf(aliasCapped), 4, `max_results=4 → 本次 4 条 → 给 4：${aliasCapped}`);
+      assert.equal(offsetOf(aliasCapped6), 6, aliasCapped6);
+      assert.ok(offsetOf(aliasCapped6) > offsetOf(aliasCapped), "max_results 变了 offset 就得跟着变（不是模板）");
+      assert.equal(offsetOf(aliasCapped3), offsetOf(search3), "别名与规范入口的 offset 同源（同一表达式）");
+      const aliasWithOffset = withoutDeprecation(await tools.executeTool("grep", { pattern: "needle", max_results: 4, offset: 10 }));
+      assert.equal(aliasWithOffset, aliasCapped, "别名带 offset 的输出必须与不带时逐字相同");
 
       // 收紧条款：marker 里不得出现本模块没有的工具名（宿主可能根本没装 exec）
       for (const marker of [rows5, rows7, cap4Marker, cap8Marker, wideOne, wideTwo, search3, search5, aliasCapped]) {
         assert.doesNotMatch(marker, /\b(?:exec|sed|awk|cat|head|tail|shell)\b/u, `marker 只能提 readFile / searchText：${marker}`);
+      }
+    });
+  });
+
+  // issue #196 追加轮 R4：**中间夹超宽行**时，`readBytesCap` 的续读 offset 语义固定是「下一个未读
+  // 整行」，它天生**绕不过**被裁的那条行——照它做就永远跳过那条超宽行。所以只要本次读取里真有一行
+  // 被裁，就必须再挂一条 `readLineTruncated`，带**那条自己的**行号 / 0-based offset / 文件路径 /
+  // 文件大小。本用例钉的是「照做能拿回」：从 marker 文本里正则抽出 offset，原样传回 readFile。
+  test(`${label}: 超宽行 marker 的出口照做能拿回该行（触顶 marker 的 offset 兑不了这个现，#196 追加轮 R4）`, async () => {
+    await withDirectory(async (cwd) => {
+      const esc = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // 两种形态都要钉住：① 超宽行**跨读块**（> 64 KiB）→ 走截断分支，结果里是**半行**；
+      // ② 超宽行**整行落在一个读块内** → 走「整行装不进剩余额度」分支，一个字节都没回来。
+      // 两者后果相同（照 `readBytesCap` 的 offset 续读都会跳过它），所以出口必须一模一样。
+      const shapes = [
+        { name: "mid-cross-block.txt", width: 200_000 },
+        { name: "mid-in-block.txt", width: 30_000 },
+      ];
+      const tools = createFileTools({ cwd });
+      for (const { name, width } of shapes) {
+        await writeFile(path.join(cwd, name), `a1\nb2\n${"h".repeat(width)}\nd4\ne5\n`, "utf8");
+        const output = String(await tools.executeTool("readFile", { path: name, max_bytes: 4_096 }));
+        const resultLines = output.split("\n");
+        const capIndex = resultLines.findIndex((line) => line.startsWith("[本次返回已达"));
+        const wideIndex = resultLines.findIndex((line) => line.startsWith("[单行超过"));
+        assert.ok(capIndex >= 0, `${name}：必须报字节上限：${resultLines.at(-1)}`);
+        assert.ok(wideIndex >= 0,
+          `${name}：窗口内有被裁的超宽行就必须单独回报，只报触顶兑不了现：${resultLines.at(-1)}`);
+        assert.ok(capIndex < wideIndex,
+          `${name}：顺序必须是触顶在前、被裁行在后：${resultLines.slice(-2).join(" / ")}`);
+        assert.ok(Buffer.byteLength(output, "utf8") <= 4_096, `${name}：多一条 marker 也不得突破 max_bytes`);
+        const wide = resultLines[wideIndex];
+        assert.match(wide, /第 3 行/u, `${name}：被裁那行的行号是真值：${wide}`);
+        assert.match(wide, new RegExp(esc(name), "u"), `${name}：要带本次的文件显示路径：${wide}`);
+        assert.match(wide, /\d+(?:\.\d+)?KB/u, `${name}：要带文件大小（决定 max_bytes 提多高）：${wide}`);
+        assert.equal(resultLines.filter((line) => line.includes("下一步：")).length, 2,
+          `${name}：两条 marker 各自都要有出口：${resultLines.slice(-2).join(" / ")}`);
+        assert.doesNotMatch(resultLines[capIndex], /完整|全部|整份/u,
+          `触顶 marker 不得声称内容完整：${resultLines[capIndex]}`);
+        // ★ 核心判据：照 marker 说的做（offset + limit=1 + 提高 max_bytes）必须真的拿回那条超宽行
+        const offset = Number(wide.match(/offset=(\d+)/u)?.[1]);
+        assert.ok(Number.isInteger(offset), `${name}：出口必须给出该行的 0-based offset：${wide}`);
+        assert.equal(offset, 2, `${name}：第 3 行的 0-based offset 就是 2（不是续读的 3）`);
+        const retrieved = String(await tools.executeTool("readFile", { path: name, offset, limit: 1, max_bytes: 400_000 }));
+        assert.match(retrieved, new RegExp(`^3: h{${width}}$`, "mu"),
+          `${name}：照做必须拿回完整超宽行（${width} 字符）：${retrieved.slice(0, 120)}`);
+        assert.doesNotMatch(retrieved.split("\n")[0], /…$/u, `${name}：拿回的必须是未再截断的整行`);
+        // 反向对照：不提高 max_bytes 就仍然拿不回——所以出口写的是「并提高 max_bytes」而不是空话
+        const sameBudget = String(await tools.executeTool("readFile", { path: name, offset, limit: 1, max_bytes: 4_096 }));
+        assert.doesNotMatch(sameBudget, new RegExp(`^3: h{${width}}$`, "mu"),
+          `${name}：同一额度下这条行还是回不来（这就是出口要求提高 max_bytes 的理由）`);
       }
     });
   });
@@ -694,14 +771,14 @@ export function fileToolsContract(label, { createFileTools }) {
       const tools = createFileTools({ cwd });
 
       const capped = String(await tools.executeTool("readFile", { path: "big.txt", max_bytes: 4_096 }));
-      assert.match(capped, /\d+(?:\.\d+)?(?:B|KB|MB)\b/u, `字节数要写成可读单位：${capped.slice(-200)}`);
+      assert.match(capped, /\d+(?:\.\d+)?(?:B|KB|MB|GB|TB)\b/u, `字节数要写成可读单位：${capped.slice(-200)}`);
       assert.doesNotMatch(capped, /(?<![\d.])4096(?!\d)/u, "可读值与裸字节数不得同时出现");
 
       // 未扫到 EOF 的那条 marker 同时带文件大小与上限：两边都必须是可读单位
       const notScanned = String(await tools.executeTool("readFile", { path: "big.txt", limit: 1, max_bytes: 1_024 }));
       assert.match(notScanned, /max_bytes=1KB/u, notScanned);
       assert.doesNotMatch(notScanned, /(?<![\d.])1024(?!\d)/u, notScanned);
-      assert.match(notScanned, /文件 \d+(?:\.\d+)?(?:KB|MB) > /u, `文件大小也要可读单位：${notScanned}`);
+      assert.match(notScanned, /文件 \d+(?:\.\d+)?(?:KB|MB|GB|TB) > /u, `文件大小也要可读单位：${notScanned}`);
     });
   });
 }

@@ -1044,10 +1044,20 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 `offset`。marker 里允许出现的工具名只有本模块自己的（`readFile` / `searchText`）：
 `exec` 属 CLI 装配层（`bin/tools.js`），ADR-005 把「会执行东西的工具」挡在库外，写进去
 就是给模型开一张本库兑不了现的支票——这一条相对 issue 原文是收紧。
+两个追加细节（issue #196 第二轮）：其一，超宽行**没跨读块**时也要回报——整行落在一个
+64 KiB 读块内时它是一字节都没回来（而不是回了一半），而 `max_bytes` 触顶 marker 的
+`offset` 语义钉死为「下一个未读整行」，照做正好跳过它，那条行的剩余内容永远取不到；
+所以两条 marker 的先后是固定的（触顶在前，被裁那行自己的行号 / `offset` / 路径 / 文件
+大小在后），且触顶那条**不得声称内容完整**。其二，`rg` / `grep` 别名的截断 marker 现在
+给出与 `searchText` 同源的数（本次返回的命中条数，也就是 `metadata.searchNextOffset`
+里那个值），但它自己仍不接受 `offset` 参数——给数与吃参数是两条承诺。
 
 **结果文本里的字节数一律人类可读**（issue #196 R2）。`formatSize()`（与 `toolMarker()`
-同文件、由 `src/tools/file-tools.js` 导出）按 1024 基数渲染 `B`/`KB`/`MB`
-（`262144` → `256KB`、`1572864` → `1.5MB`、`1536` → `2KB`），并且同一段结果文本里
+同文件、由 `src/tools/file-tools.js` 导出）按 1024 基数渲染 `B`/`KB`/`MB`/`GB`/`TB`
+（`262144` → `256KB`、`1572864` → `1.5MB`、`1536` → `2KB`、`1073741824` → `1.0GB`、
+`1649267441664` → `1.5TB`）；进位判据看的是**渲染后的值**是否到 1024，到就晋级上一档，
+所以永远不会出现 `1024.0MB`，而 `1e12` 是 `931.3GB` 而不是只有 MB 档时那个六位数的
+`953674.3MB`——六位数带单位等于没单位（issue #196 追加轮）。并且同一段结果文本里
 **不会**同时出现可读值与裸字节数——同一件事给两个数，模型对不上账。阈值本身在本文与
 `metadata` 里仍写裸数字，那里没有第二份数字互相打脸。
 
@@ -1076,7 +1086,7 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 - 每条截断 marker 都以「可执行的下一步」收尾，带的是**本次调用**的真值（续读要传的
   `readFile` `offset`、被截那行的行号与文件路径、或搜索的续读 `offset`），且只允许点名
   `readFile` 或 `searchText`——`exec` 是 CLI 自己的工具，不属于库（issue #196 R1）；
-- 结果文本里的字节数一律人类可读（`B`/`KB`/`MB`，1024 基数，走 `formatSize`），
+- 结果文本里的字节数一律人类可读（`B`/`KB`/`MB`/`GB`/`TB`，1024 基数，走 `formatSize`），
   可读值与裸字节数不在同一段结果文本里并存（issue #196 R2）；裸的默认值继续留在本文
   与 `metadata` 里。
 
@@ -1117,7 +1127,9 @@ CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `e
 - `content` 是扁平的 `path:line:命中行` 形态，一行一条命中。两个别名保留各自的历史渲染
   （`rg` 扁平、`grep` 按文件分组），所以**跳工具的不变式是「命中行正文」**：三个入口共跑
   同一份实现体，连 500 字符行宽上限、`（无命中）` 口径与排除账都一起产生。契约套件逐字钉
-  住了这个等式（issue #195 硬判据）；宿主不得在别名上假定扁平形态去写解析器。
+  住了这个等式（issue #195 硬判据）；宿主不得在别名上假定扁平形态去写解析器。别名的截断 marker 带的是与规范入口同一个数
+（`…；下一步：改用 searchText 传 offset=N 继续（本别名不接受 offset）`，N = 本次返回的
+命中条数），即别名**给真值但不因此获得参数**（issue #196 追加轮）。
 - `searchText` 返回 `{ content, metadata }`。`metadata` 携带 `searchHits`、
   `searchMatchedLines`、`searchFiles`、`searchLimit`、`searchOffset`、`searchTruncated`、
   `searchNextOffset`（仅在截断时）与 `searchSkipped { vendorDirectories,

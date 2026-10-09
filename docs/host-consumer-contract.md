@@ -1307,12 +1307,26 @@ names a marker may use are limited to this module's own (`readFile` / `searchTex
 `exec` belongs to the CLI assembly layer (`bin/tools.js`) and ADR-005 keeps
 "executes something" out of the library, so naming it would hand the model a cheque
 this library cannot cash — a tightening relative to the original issue text.
+Two follow-up details (issue #196, second round): an over-wide line is reported even when
+it never crossed a read block — a long line that fits inside one 64 KiB block is dropped
+**whole** rather than half-returned, and the byte-cap `offset` is pinned to "the next
+unread whole line", so following it walks straight past that line and its remainder is
+unreachable; the two markers therefore appear in a fixed order (byte cap first, then the
+clipped line's own line number / `offset` / path / file size) and the byte-cap wording
+must not claim the content is complete. Second, the `rg` / `grep` aliases now quote the
+same continuation number as `searchText` — this call's hit count, the very value
+`metadata.searchNextOffset` carries — while still not accepting an `offset` parameter:
+giving the number and taking the parameter are different promises.
 
 **Byte quantities inside a result are human-readable** (issue #196 R2).
 `formatSize()`, exported next to `toolMarker()` from `src/tools/file-tools.js`,
-renders `B` / `KB` / `MB` on a 1024 base (`262144` → `256KB`, `1572864` → `1.5MB`,
-`1536` → `2KB`), and a result never shows the human-readable value next to the raw
-byte count — two numbers for one quantity is a ledger the model cannot reconcile.
+renders `B` / `KB` / `MB` / `GB` / `TB` on a 1024 base (`262144` → `256KB`,
+`1572864` → `1.5MB`, `1536` → `2KB`, `1073741824` → `1.0GB`, `1649267441664` → `1.5TB`);
+rounding that reaches `1024` **of the rendered value** promotes to the next unit, so no
+output ever reads `1024.0MB`, and `1e12` is `931.3GB` rather than the six-digit
+`953674.3MB` the MB-only version produced — a six-digit number with a unit is the same as
+no unit at all (issue #196 follow-up). A result never shows the human-readable value next
+to the raw byte count — two numbers for one quantity is a ledger the model cannot reconcile.
 Thresholds stay raw in this document and in `metadata`, where there is no second copy
 to contradict them.
 
@@ -1352,8 +1366,8 @@ Defaults a host must know about, because they change what the model sees
   values (the `readFile` `offset` to continue from, the truncated line's number and
   file path, or the search continuation `offset`), and it may only name `readFile`
   or `searchText` — `exec` is the CLI's own tool, not the library's (issue #196 R1);
-- byte quantities inside a result are human-readable (`B`/`KB`/`MB`, 1024 base, via
-  `formatSize`), and the human-readable value and the raw byte count never appear in
+- byte quantities inside a result are human-readable (`B`/`KB`/`MB`/`GB`/`TB`, 1024 base,
+  via `formatSize`), and the human-readable value and the raw byte count never appear in
   the same result text (issue #196 R2); the raw defaults stay here and in `metadata`.
 
 **Search is a pure-Node subset, not the `rg` / `grep` binary** (issue #184). The
@@ -1411,7 +1425,10 @@ What a host can code against:
   500-character line-width cap, the `（无命中）` no-match text and the exclusion
   account. The contract suite pins this verbatim equality (issue #195 hard
   criterion); hosts must not build a parser that assumes the flat form on the
-  aliases.
+  aliases. The alias truncation marker carries the same number the canonical entry would
+  (`…；下一步：改用 searchText 传 offset=N 继续（本别名不接受 offset）`, N = this call's hit
+  count), so the aliases give the truth without acquiring the parameter (issue #196
+  follow-up).
 - `searchText` returns `{ content, metadata }`. `metadata` carries
   `searchHits`, `searchMatchedLines`, `searchFiles`, `searchLimit`,
   `searchOffset`, `searchTruncated`, `searchNextOffset` (only when truncated) and
