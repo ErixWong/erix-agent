@@ -625,3 +625,14 @@ test("chat artifacts resume in REPL and pass the final guard", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("parseReplArgs accepts --compaction and rejects unknown strategy names (#167)", () => {
+  assert.equal(parseReplArgs(["--compaction", "fold-llm"]).compaction, "fold-llm");
+  assert.equal(parseReplArgs([]).compaction, undefined);
+  assert.throws(
+    () => parseReplArgs(["--compaction", "fold-lm"]),
+    /--compaction[\s\S]*sliding-window \| fold-statistical \| fold-llm/u,
+  );
+  assert.throws(() => parseReplArgs(["--compaction", " "]), /--compaction 不能为空/u);
+  assert.throws(() => parseReplArgs(["--compaction"]), /--compaction 缺少数值/u);
+});

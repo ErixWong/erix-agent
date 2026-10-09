@@ -1159,3 +1159,89 @@ test("judge-log persists raw tool input and judge reason verbatim (redaction ret
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("parseChatArgs accepts --compaction with the built-in strategy names (#167)", () => {
+  assert.equal(
+    parseChatArgs(["hello", "--compaction", "fold-llm"], "/tmp/project").compaction,
+    "fold-llm",
+  );
+  assert.equal(
+    parseChatArgs(["hello", "--compaction", " sliding-window "], "/tmp/project").compaction,
+    "sliding-window",
+  );
+  assert.equal(parseChatArgs(["hello"], "/tmp/project").compaction, undefined);
+});
+
+test("parseChatArgs rejects unknown or missing --compaction values (#167)", () => {
+  assert.throws(
+    () => parseChatArgs(["hello", "--compaction", "psyche"], "/tmp/project"),
+    /--compaction[\s\S]*sliding-window \| fold-statistical \| fold-llm/u,
+  );
+  assert.throws(() => parseChatArgs(["hello", "--compaction", ""], "/tmp/project"), /不能为空/u);
+  assert.throws(() => parseChatArgs(["hello", "--compaction"], "/tmp/project"), /缺少数值/u);
+  assert.throws(
+    () => parseChatArgs(["hello", "--compaction", "--stream"], "/tmp/project"),
+    /缺少数值/u,
+  );
+  assert.throws(
+    () => parseChatArgs(
+      ["hello", "--compaction", "fold-llm", "--compaction", "fold-llm"],
+      "/tmp/project",
+    ),
+    /参数重复/u,
+  );
+});
+
+test("runChat keeps the default compaction strategy and forwards an explicit name (#167)", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-cli-compaction-test-"));
+  try {
+    const configPath = await writeEmptyMcpConfig(dir);
+    const captureLoop = async (options) => {
+      return {
+        finalText: "done",
+        messages: [],
+        rounds: 1,
+        truncated: false,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        compactionStats: [],
+        _context: options.context,
+      };
+    };
+    const shared = {
+      prompt: "compaction strategy wiring",
+      dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
+      config: { model: "fake-model", maxOutputTokens: 1000, contextWindowTokens: 20000 },
+      provider: createFakeProvider([]),
+      loop: captureLoop,
+      toolOutput: () => {},
+      idleTimeout: 0,
+    };
+
+    const defaulted = await runChat({ ...shared, session: "compaction-default" });
+    assert.equal(defaulted._context.strategy, "fold-statistical");
+
+    const named = await runChat({
+      ...shared,
+      session: "compaction-named",
+      compaction: "fold-llm",
+    });
+    assert.equal(named._context.strategy, "fold-llm");
+
+    const fromConfig = await runChat({
+      ...shared,
+      session: "compaction-config",
+      config: {
+        model: "fake-model",
+        maxOutputTokens: 1000,
+        contextWindowTokens: 20000,
+        compaction: "sliding-window",
+      },
+    });
+    assert.equal(fromConfig._context.strategy, "sliding-window");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

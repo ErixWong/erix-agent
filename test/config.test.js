@@ -8,6 +8,7 @@ import {
   buildCompactionContext,
   defaultConfigPath,
   loadCliConfig,
+  normalizeCompactionOption,
 } from "../bin/config.js";
 
 const ENV_NAMES = [
@@ -343,6 +344,76 @@ test("loadCliConfig preserves the existing missing endpoint and API key error", 
         {
           message: "缺少配置：LLM_KIT_ENDPOINT、LLM_KIT_API_KEY、LLM_KIT_MODEL or ERIX_DEFAULT_MODEL or slots.default.model。\n请在配置文件 slots.default.model 设置 model，或设置 LLM_KIT_MODEL/ERIX_DEFAULT_MODEL。",
         },
+      );
+    });
+  });
+});
+
+test("buildCompactionContext honours the configured strategy name and defaults to fold-statistical (#167)", () => {
+  const base = { contextWindowTokens: 20000, maxOutputTokens: 2000 };
+  assert.equal(buildCompactionContext(base).strategy, "fold-statistical");
+  assert.equal(buildCompactionContext(base, 8000).strategy, "fold-statistical");
+  for (const name of ["sliding-window", "fold-statistical", "fold-llm"]) {
+    const withName = { ...base, compaction: name };
+    assert.equal(buildCompactionContext(withName).strategy, name);
+    assert.equal(buildCompactionContext(withName, 8000).strategy, name);
+    assert.equal(buildCompactionContext(withName, 8000, "hint", () => "stub").strategy, name);
+    assert.equal(buildCompactionContext(withName, 8000).budgetTokens, 8000);
+  }
+  assert.throws(
+    () => buildCompactionContext({ ...base, compaction: "psyche" }),
+    /未知压缩策略[\s\S]*sliding-window \| fold-statistical \| fold-llm/u,
+  );
+});
+
+test("normalizeCompactionOption validates CLI values and config feeds the strategy name (#167)", async () => {
+  assert.equal(normalizeCompactionOption(" fold-llm "), "fold-llm");
+  assert.throws(() => normalizeCompactionOption("llm-fold"), { name: "Error" });
+  assert.throws(() => normalizeCompactionOption(""), { message: /sliding-window/u });
+
+  await withDirectory(async (directory) => {
+    const configPath = await writeConfig(directory, {
+      slots: {
+        default: {
+          endpoint: "https://file.example.invalid",
+          apiKey: "file-config-key",
+          model: "file-model",
+          contextWindowTokens: 32768,
+          compaction: "fold-llm",
+        },
+      },
+    });
+    await withEnvironment({}, async () => {
+      assert.equal((await loadCliConfig({ configPath })).compaction, "fold-llm");
+    });
+
+    const defaultPath = await writeConfig(directory, {
+      slots: {
+        default: {
+          endpoint: "https://file.example.invalid",
+          apiKey: "file-config-key",
+          model: "file-model",
+        },
+      },
+    });
+    await withEnvironment({}, async () => {
+      assert.equal((await loadCliConfig({ configPath: defaultPath })).compaction, undefined);
+    });
+
+    const badPath = await writeConfig(directory, {
+      slots: {
+        default: {
+          endpoint: "https://file.example.invalid",
+          apiKey: "file-config-key",
+          model: "file-model",
+          compaction: "nope",
+        },
+      },
+    });
+    await withEnvironment({}, async () => {
+      await assert.rejects(
+        loadCliConfig({ configPath: badPath }),
+        /未知压缩策略[\s\S]*fold-statistical/u,
       );
     });
   });
