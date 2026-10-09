@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { makeTmp } from "./helpers/tmp.js";
 
 import {
   buildSkillTools,
@@ -31,7 +32,7 @@ skillsLoaderContract("src/skills/loader", {
 
 
 async function withDirectory(callback) {
-  const directory = await mkdtemp(join(tmpdir(), "erix-skills-test-"));
+  const directory = await makeTmp("erix-skills-test-");
   try {
     return await callback(directory);
   } finally {

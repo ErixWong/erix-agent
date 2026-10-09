@@ -4,14 +4,14 @@
 // 用 captureLoop 截获模型侧可见的工具表与系统提示；env 注入隔离，测完还原。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
 import { runChat } from "../../bin/cli.js";
 import { runRepl } from "../../bin/repl.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 // issue #81：注入 notesDir / skillsDir / 空 MCP 配置，避免触达真实 ~/.erix
 //（notes 收尾 purge 会扫描真实笔记目录，MCP 缺省解析真实 ~/.erix/mcp.json）。
@@ -70,7 +70,7 @@ export async function todo_list() { return "skill todo_list"; }
 }
 
 test("runChat 默认路径：todo 四工具在模型工具表中（回归）", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-no-todo-on-"));
+  const dir = await makeTmp("erix-no-todo-on-");
   const ref = {};
   try {
     await runChat({
@@ -98,7 +98,7 @@ test("runChat 默认路径：todo 四工具在模型工具表中（回归）", a
 });
 
 test("runChat --no-todo：工具表无 todo_*、系统提示无 todo、用户级 todo skill 被排除且无同名告警", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-no-todo-flag-"));
+  const dir = await makeTmp("erix-no-todo-flag-");
   const ref = {};
   const skillsDir = join(dir, "skills");
   const stderrLines = [];
@@ -138,7 +138,7 @@ test("runChat --no-todo：工具表无 todo_*、系统提示无 todo、用户级
 });
 
 test("runChat --no-todo 与 --tools 白名单正交：先关 todo 再过白名单（issue #69）", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-no-todo-allowlist-"));
+  const dir = await makeTmp("erix-no-todo-allowlist-");
   const ref = {};
   const stderrLines = [];
   const originalError = console.error;
@@ -172,7 +172,7 @@ test("runChat --no-todo 与 --tools 白名单正交：先关 todo 再过白名�
 });
 
 test("runChat ERIX_NO_TODO=1：env 路径与 --no-todo 等价（env 隔离注入、测完还原）", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-no-todo-env-"));
+  const dir = await makeTmp("erix-no-todo-env-");
   const ref = {};
   const saved = process.env.ERIX_NO_TODO;
   process.env.ERIX_NO_TODO = "1";
@@ -200,7 +200,7 @@ test("runChat ERIX_NO_TODO=1：env 路径与 --no-todo 等价（env 隔离注入
 });
 
 test("runChat 用户级 todo skill 默认路径产生同名冲突告警（issue #65 行为对照）", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-no-todo-conflict-"));
+  const dir = await makeTmp("erix-no-todo-conflict-");
   const ref = {};
   const skillsDir = join(dir, "skills");
   const stderrLines = [];
@@ -236,7 +236,7 @@ test("runChat 用户级 todo skill 默认路径产生同名冲突告警（issue 
 });
 
 test("runRepl ERIX_NO_TODO=1：repl env 路径工具表无 todo_*、系统提示无 todo", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-no-todo-repl-"));
+  const dir = await makeTmp("erix-no-todo-repl-");
   const input = new PassThrough();
   input.isTTY = true;
   const output = new PassThrough();
