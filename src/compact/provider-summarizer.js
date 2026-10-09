@@ -8,8 +8,11 @@ function textOfContent(content) {
   const parts = [];
   for (const block of content) {
     if (block === null || typeof block !== "object") continue;
-    if (block.type === "text" || block.type === "thinking") {
-      if (typeof block.text === "string" && block.text !== "") parts.push(block.text);
+    if (block.type === "text" || block.type === "thinking" || block.type === "reasoning") {
+      const text = [block.text, block.thinking, block.reasoning_content]
+        .filter((value) => typeof value === "string" && value !== "")
+        .join("\n");
+      if (text !== "") parts.push(text);
       continue;
     }
     if (block.type === "tool_use") {
