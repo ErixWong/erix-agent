@@ -1007,8 +1007,9 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 
 返回对象包含：
 
-- `definitions`：`readFile` / `searchText` / `rg` / `grep` / `tree` / `writeFile` 六个
-  schema。工具名与既有字段（`offset`/`limit`/`path`/`pattern`/`glob`/`is_regex`/
+- `definitions`：`readFile` / `searchText` / `rg` / `grep` / `tree` / `edit` / `writeFile` 七个
+  schema（项数由契约套件 `fileToolsContract` 断言：`searchText` 由 issue #195 加入、`edit` 由
+  issue #191 加入）。工具名与既有字段（`offset`/`limit`/`path`/`pattern`/`glob`/`is_regex`/
   `max_results`/`maxResults`/`depth`）保持不变，自带过 CLI 那份实现的宿主接上本
   工厂是零迁移——**但有一条行为口径要注意**：`rg` 的 `is_regex` 默认是 `true`（#184
   追加轮 A，与真实 `rg` 命令一致），而已退役的 CLI 那份实现把「不传 `is_regex`」当作

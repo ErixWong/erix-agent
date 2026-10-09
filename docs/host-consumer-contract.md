@@ -1256,8 +1256,10 @@ wrapping `executeTool` from the outside.
 
 The returned object contains:
 
-- `definitions` — the six `readFile` / `searchText` / `rg` / `grep` / `tree` /
-  `writeFile` schemas. Tool names and existing input fields (`offset`/`limit`/`path`/
+- `definitions` — the seven `readFile` / `searchText` / `rg` / `grep` / `tree` /
+  `edit` / `writeFile` schemas (the count is asserted by the contract suite
+  `fileToolsContract`, `test/contract/file-tools.js`: `searchText` was added in
+  issue #195 and `edit` in issue #191). Tool names and existing input fields (`offset`/`limit`/`path`/
   `pattern`/`glob`/`is_regex`/`max_results`/`maxResults`/`depth`) are unchanged,
   so registering this factory is a zero-migration change for a host that already
   shipped the CLI's copies — **with one behavioural caveat**: `rg`'s `is_regex`
