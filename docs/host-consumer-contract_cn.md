@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -992,6 +992,82 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 `getSkillDefinition()` 支持不受影响。它不是第二套
 实现，也不再是可独立复制运行的 skill；
 可移植集成应使用 npm 包入口。
+
+### 文件工具注册
+
+文件工具的规范实现是 `src/tools/file-tools.js`。无头宿主可以从包根，也可以从
+`erix-agent/tools` 调用 `createFileTools({ cwd, allowRead, allowWrite })`
+（Tier 2 host integration）。库不带牢笼：两个谓词就是边界的全部，默认都是
+`() => true`，与历史 `path.resolve(cwd, value)` 行为完全一致（不做 containment、
+不做安全承诺；ADR-009 把牢笼留给宿主）。路径归一由库自己做，喂给谓词的是
+**绝对路径**，而且是在遍历中**逐条**判定；这个逐条挂钩正是宿主在外面包一层
+`executeTool` 做不到、必须在库里挂钩的理由。
+
+返回对象包含：
+
+- `definitions`：`readFile` / `rg` / `grep` / `tree` / `writeFile` 五个 schema。
+  工具名与既有字段（`offset`/`limit`/`path`/`pattern`/`glob`/`is_regex`/
+  `max_results`/`maxResults`/`depth`）保持不变，自带过 CLI 那份实现的宿主接上本
+  工厂是零迁移——**但有一条行为口径要注意**：`rg` 的 `is_regex` 默认是 `true`（#184
+  追加轮 A，与真实 `rg` 命令一致），而已退役的 CLI 那份实现把「不传 `is_regex`」当作
+  字面量，携那个默认的宿主会看到不同的命中结果（见下面的默认值清单）；新参数一律
+  snake_case，两个搜索工具都同时接受 `max_results` 与 `maxResults` 两种上限写法；
+- `executeTool({id, name, input, context, signal})`：与 `runToolLoop` /
+  run-snapshot-executor 调用约定对齐的结构化视图（同时保留位置形态
+  `executeTool(name, input, context)` 以兼容现有调用方）。放在**顶层**的 `signal`
+  会被并入 `context.signal`；遍历每 32 个条目让出一次事件循环，且**仅在存在
+  signal 时**插入，所以不可中止路径的开销与行为零变化；
+- `executors(name, input, context)`：registry 的位置参数视图，CLI 用的就是它，
+  并在它旁边拼上自己的 `exec` 与 `todo_*`（ADR-005：库不自带会执行的工具）。
+
+**边界语义属 Stable。** `allowRead` 对某个遍历条目返回 `false`，工具就跳过该条目，
+并把计数写进结果尾部的排除账；`readFile` 以及被拒的遍历根路径则返回错误结果文本
+（`错误：…`）而非抛异常。`allowWrite` 返回 `false` 同样返回错误结果文本：不抛，
+库也不引入自己的错误类型。宿主可以依赖两件事：谓词签名
+`(absolutePath: string) => boolean`，以及「返回 `false` → 工具返回错误结果而不抛
+异常」这条规则；但不得把错误文本的措辞当契约。
+
+**marker 字面量属 Experimental**（issue #188 三层分级，可在任意 minor 变）。所有
+「跳过 / 截断 / 空命中」字符串：`[已跳过 …]` 排除账、`[另有 N 条未列出 …]` 与
+`[另有 N 个目录未展开 …]` 两个 tree marker、`[共 N 行，offset=… 继续]`，以及空命中
+的 `（无命中）`，全部由 `src/tools/file-tools.js` 里**单一** marker 生成函数产出
+（executor 只传语义值，不各自拼带方括号的字符串）。这正是文案能只改一处、而不是
+改五个调用点的原因。需要稳定信号的宿主只能按拿到的工具结果分支，不得按 marker
+子串匹配。
+
+宿主必须知道的默认值，因为它们会改变模型看到的东西（ADR-010：默认去噪只有在可撤销
+时才是合法的）：
+
+- `rg` / `grep` / `tree` 默认跳过 `node_modules`、`dist`、`build`、`target`、
+  `vendor` 与 `.` 开头的目录（含 `.git`），除非传 `include_vendor=true` /
+  `include_hidden=true`；结果尾部会带跳过数量，以及能撤销它们的开关名；
+- **两个搜索工具都默认按正则匹配**（`rg` 与 `grep` 一致，也是真实 `rg` / `grep`
+  命令自己的默认；#184 追加轮 A 推翻了此前「`rg` 默认字面量」的选择——同一库里两个
+  搜索工具默认相反才是本轮修掉的反常）。`is_regex=false` 是字面量逃生口，按真实旗标
+  命名：等价 `rg --fixed-strings` / `grep -F`。非法正则返回工具错误结果
+  `错误：无效正则：…`，**绝不抛异常**（真实命令是非零退出）；
+- **两个搜索工具把每条命中行截到同一个 500 字符** + 尾部一个 `…`，共用**同一个**上限，两边不可能
+  再各自漂移（#184 追加轮 A：上限原先是 200，会把正常代码行截成半行，模型看到半行容易误判；且当时
+  只有 `grep` 截、`rg` 原样输出，同一库里两个搜索工具口径相反）。真实 `rg` / `grep` 命令**都不截行**
+  （已实测：807 字符的命中行逐字节原样输出），所以这个截断是**本实现自己的输出预算**——一个超长行
+  （minified 文件常见：一行几百 KB）能独自把一次工具调用撑爆。这个数是**本实现的默认值**，不是对宿主
+  的要求，且已写进两个工具的描述；
+- 空命中结果是 `（无命中）`，不再是空串；
+- `tree` 截断永远带 marker，并给出剩余计数与能放宽它的参数；
+- `readFile` 有界：单次返回不超过 `max_bytes` 个 UTF-8 字节（默认 `262144`，可用
+  `ERIX_FILE_READ_MAX_BYTES` 覆盖，钳到 1024-4194304），行窗口按块扫行 + 早停，
+  不再把整个文件读进内存。
+
+**搜索是纯 Node 子集，不是 `rg` / `grep` 二进制**（issue #184）。只有默认值与逃生口命名
+跟真实命令一致，能力面故意不一致：没有 `-i`、没有 `-A`/`-B` 上下文行、没有 `--type`/
+`--include`，模式是 JavaScript 正则（ripgrep 内置的是另一套正则引擎，GNU `grep` 默认是
+BRE，都不是这里用的 JavaScript flavor），**完全不读 `.gitignore`**，vendor 排除是一份硬
+编码清单（`node_modules`/`dist`/`build`/`target`/`vendor`），以结果尾部的排除账回报，而不
+是 ripgrep 那套 ignore 文件遍历。宿主不得把自己的模型或用户误导成「这就是 ripgrep 二进制」。
+
+CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `exec` 与 `todo_*`，
+且不传任何谓词，所以 CLI 行为与以前一致，仍是「无边界」。`bin/` 不再持有第二套
+文件工具实现（issue #184）。
 
 ### notes 维护调度（0.12.0）
 

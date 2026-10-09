@@ -28,6 +28,10 @@
    这是两个项目都需要的纯逻辑，与"执行什么"无关，值得共享。
 2. **文件工具参考实现**（readFile/rg/tree/writeFile）——建在 jail 上，
    适合脚本/原型/低风险场景直接用；生产场景项目可抄可换。
+   **修订（2026-10，issue #184）：「建在 jail 上」已不成立。** 这组工具已回到库里
+   （`src/tools/file-tools.js`，以 `createFileTools` 从 `erix-agent/tools` 导出），但改为建在
+   **宿主注入的 `allowRead`/`allowWrite` 谓词**上；库内不放 jail 默认、也不引入越界错误类型
+   （见 ADR-009 修订记录 2026-10）。CLI 自己就是它的消费者。
 3. **`recall` 工具**（用户点名内置）——建在 TranscriptStore 上：
 
 ```

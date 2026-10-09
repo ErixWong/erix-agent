@@ -227,6 +227,7 @@ src/
   text/
     label.js                       Note/findings label normalization
   tools/
+    file-tools.js                  Canonical file tools: readFile/rg/grep/tree/writeFile
     index.js                       Optional tools subpath exports
     notes.js                       Host-side notes tools
     providers.js                   Tool-provider adapters
@@ -330,6 +331,7 @@ quoted blocks below against it):
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
+  "test/contract/file-tools.js",
   "test/contract/index.js",
   "test/contract/model-config-provider.js",
   "test/contract/notes-store.js",
@@ -716,10 +718,17 @@ non-empty transcript for the session, and index write failures never affect
 the run itself.
 
 The built-in CLI tools are `readFile`, `rg`, `grep`, `tree`, `writeFile`, and
-`exec`. `grep` is a pure-Node search tool with simple glob filename filtering,
-directory skipping, per-line limits, and a hard result cap of 200. They
-operate on arbitrary paths and commands. Tool outputs are retained in full by
-checkpoints while TTL folding may reduce only the provider request view.
+`exec`. **Both** search tools (`rg` and `grep`) are pure-Node implementations,
+not the `rg`/`grep` binaries: the `is_regex` default is `true`, i.e. patterns are
+regex (matching the real commands); pass `is_regex=false` for literal matching —
+the equivalent of `rg --fixed-strings` / `grep -F`. Each matched line is truncated
+to 500 characters by a single shared limit, `node_modules`/`dist`/`build`/
+`target`/`vendor` and dot-directories are skipped by default (the skip count is
+reported at the end of the result; `.gitignore` is **not** read), and there is a
+hard result cap of 200. `readFile` reads within a byte bound (default `262144`,
+overridable through `ERIX_FILE_READ_MAX_BYTES`). They operate on arbitrary paths
+and commands. Tool outputs are retained in full by checkpoints while TTL folding
+may reduce only the provider request view.
 There is no replayability classification, rerun detection, or rerun notice: a
 repeated command executes normally and returns its fresh output (ADR-016).
 When an earlier exact value is needed, use the note-first sequence

@@ -57,12 +57,109 @@ test("buildCliToolsSystemPrompt({ todo: false }) removes all todo mentions (issu
   const disabled = buildCliToolsSystemPrompt({ todo: false });
   assert.doesNotMatch(disabled, /todo/i);
   // 基础段自身完整：工具清单行句号收尾、规划 bullet 保留、notes 纪律不受影响
-  assert.match(disabled, /执行 shell 命令并返回输出。\n\n\[你的处境\]/u);
+  // （#184：工具清单行后面插了一句 vendor 默认 + 开关名）
+  assert.match(disabled, /执行 shell 命令并返回输出。\n搜索与目录类工具/u);
+  assert.match(disabled, /include_vendor=true、include_hidden=true。\n\n\[你的处境\]/u);
   assert.match(disabled, /复杂任务先规划并逐步执行\n/u);
   assert.match(disabled, /note_take/u);
   // 默认路径与导出常量逐字节一致（golden 锁定）
   assert.equal(buildCliToolsSystemPrompt(), CLI_TOOLS_SYSTEM_PROMPT);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /todo_add 添加待办任务/u);
+});
+
+test("默认跳 vendor + 开关名写进了系统提示（#184：「告诉模型」是本轮核心要求）", () => {
+  for (const prompt of [CLI_TOOLS_SYSTEM_PROMPT, buildCliToolsSystemPrompt({ todo: false })]) {
+    assert.match(prompt, /默认跳过 node_modules、dist、build、target、vendor/u);
+    assert.match(prompt, /\. 开头的目录/u);
+    assert.match(prompt, /include_vendor=true、include_hidden=true/u);
+    assert.match(prompt, /结果尾部会回报跳过数量/u);
+    // rg 的默认口径也必须让模型知道：正则默认（与真实 rg 一致）+ 字面量逃生口的真实旗标名
+    assert.match(prompt, /默认按正则匹配，与 rg 命令一致/u);
+    assert.match(prompt, /is_regex=false 按字面量匹配，等价 rg --fixed-strings/u);
+    assert.match(prompt, /grep 递归搜索文件内容（默认正则，等价 grep -E；传 is_regex=false 按字面量，等价 grep -F/u);
+    // 旧的「默认字面量」口径不得复活（模型读到旧口径就等于本轮白做）
+    assert.doesNotMatch(prompt, /默认按字面量/u);
+  }
+});
+
+test("CLI 文件工具完全来自库实现，且 exec/todo_* 行为不变（#184 分层）", async () => {
+  await withDirectory(async (cwd) => {
+    await mkdir(join(cwd, "src"));
+    await writeFile(join(cwd, "src", "a.js"), "needle\n", "utf8");
+    await mkdir(join(cwd, "node_modules", "pkg"), { recursive: true });
+    await writeFile(join(cwd, "node_modules", "pkg", "i.js"), "needle vendor\n", "utf8");
+    const { tools, executeTool } = createCliTools({ cwd });
+
+    // schema 名单与顺序不变（readFile/rg/grep/tree/writeFile 在前，exec 在后）
+    assert.deepEqual(
+      tools.map((tool) => tool.name),
+      ["readFile", "rg", "grep", "tree", "writeFile", "exec", "todo_add", "todo_list", "todo_done", "todo_clear"],
+    );
+    // 库里新增的参数从 CLI 一路可用（不是 CLI 自己另写一套）
+    assert.ok(tools.find((tool) => tool.name === "readFile").inputSchema.properties.max_bytes);
+    assert.ok(tools.find((tool) => tool.name === "rg").inputSchema.properties.include_vendor);
+
+    // 排除账 + 无命中口径从 CLI 可见
+    const skipped = await executeTool("grep", { pattern: "needle" });
+    assert.match(skipped, /已跳过/u);
+    assert.match(skipped, /include_vendor=true/u);
+    // 无命中同样统一口径，且排除账一起给出（不是空串）
+    assert.match(
+      await executeTool("rg", { pattern: "nothing-here" }),
+      /^（无命中）\n\[已跳过 /u,
+    );
+    // exec 不受影响（ADR-005：不下库）
+    assert.equal(await executeTool("exec", { command: "printf ok" }), "ok");
+  });
+});
+
+test("signal 不再被丢：wrapExecuteTool 把顶层 signal 并入 context（#184）", async () => {
+  let seen;
+  const executeTool = wrapExecuteTool(
+    async (_name, _input, context) => {
+      seen = context;
+      return "ok";
+    },
+    { output: () => {} },
+  );
+  const controller = new AbortController();
+
+  await executeTool({
+    id: "toolu_1",
+    name: "tree",
+    input: { path: "." },
+    context: { round: 4 },
+    signal: controller.signal,
+  });
+
+  assert.equal(seen.signal, controller.signal, "引擎放在顶层的 signal 必须并入 context");
+  assert.equal(seen.toolUseId, "toolu_1");
+  assert.equal(seen.round, 4);
+
+  // 没有 signal 时不得凭空造出 signal 字段（形状与历史一致）
+  await executeTool({ id: "toolu_2", name: "tree", input: {}, context: { round: 5 } });
+  assert.equal("signal" in seen, false);
+});
+
+test("signal 不再被丢：createCliTools.executeTool 把 context 透传给 executor（#184）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "a.txt"), "needle\n", "utf8");
+    const { executeTool } = createCliTools({ cwd });
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      executeTool("rg", { pattern: "needle" }, { signal: controller.signal }),
+      (error) => error?.name === "AbortError",
+      "context 没透传的话，库里的中止检查永远看不到 signal",
+    );
+    await assert.rejects(
+      executeTool("tree", { path: "." }, { signal: controller.signal }),
+      (error) => error?.name === "AbortError",
+    );
+    // 无 signal 路径行为不变
+    assert.match(await executeTool("rg", { pattern: "needle" }), /a\.txt:1:needle/);
+  });
 });
 
 test("grep finds matches grouped by file with line numbers", async () => {
@@ -158,11 +255,13 @@ test("grep skips node_modules, .git, hidden directories, and oversized files", a
   });
 });
 
-test("grep glob filters file names and truncates long lines", async () => {
+test("grep glob filters file names and truncates long lines at 500 chars (200 → 500，#184 追加轮 A)", async () => {
   await withDirectory(async (cwd) => {
     await writeFile(join(cwd, "a.js"), "needle js\n", "utf8");
     await writeFile(join(cwd, "b.txt"), "needle txt\n", "utf8");
-    await writeFile(join(cwd, "long.js"), `needle ${"y".repeat(500)}\n`, "utf8");
+    await writeFile(join(cwd, "long.js"), `needle ${"y".repeat(800)}\n`, "utf8");
+    // 297 字符：旧的 200 上限会把它截成半行（本轮要修的就是这个），新上限下必须整行返回
+    await writeFile(join(cwd, "normal.js"), `needle ${"z".repeat(290)}\n`, "utf8");
     const { executeTool } = createCliTools({ cwd });
 
     const byGlob = await executeTool("grep", { pattern: "needle", path: cwd, glob: "*.js" });
@@ -171,7 +270,16 @@ test("grep glob filters file names and truncates long lines", async () => {
 
     const longLine = await executeTool("grep", { pattern: "needle", path: cwd, glob: "long.js" });
     const hitLine = longLine.split("\n").find((line) => line.startsWith("1: "));
-    assert.ok(hitLine.length <= 4 + 200 + 1, `命中行应截断到 200 字符：${hitLine.length}`);
+    // 恰 500 字符正文 + 1 个省略号 + 3 个前缀字符（"1: "）；旧的 200 上限会是 204
+    assert.equal(hitLine.length, 3 + 500 + 1, `命中行必须按 500 字符截断，实得到 ${hitLine.length}`);
+    assert.ok(hitLine.endsWith("…"), "截断必须留省略号尾巴");
+
+    const normal = await executeTool("grep", { pattern: "needle", path: cwd, glob: "normal.js" });
+    assert.ok(
+      normal.includes(`1: needle ${"z".repeat(290)}`),
+      "297 字符的正常行不得再被截断（这就是 200 → 500 的理由）",
+    );
+    assert.doesNotMatch(normal, /…/u, "未触顶的行不得带省略号");
   });
 });
 
