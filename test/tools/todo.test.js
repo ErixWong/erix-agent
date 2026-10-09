@@ -3,12 +3,12 @@
 // 测试通过隔离的临时 HOME 注入，绝不触碰真实 ~/.erix/todos/。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join, basename } from "node:path";
 
 import { createCliTools } from "../../bin/tools.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 function todoDataPath(home, cwd) {
   const base = basename(cwd) || "root";
@@ -17,8 +17,8 @@ function todoDataPath(home, cwd) {
 }
 
 async function withIsolatedHome(callback) {
-  const home = await mkdtemp(join(tmpdir(), "erix-todo-home-"));
-  const cwd = await mkdtemp(join(tmpdir(), "erix-todo-cwd-"));
+  const home = await makeTmp("erix-todo-home-");
+  const cwd = await makeTmp("erix-todo-cwd-");
   const originalHome = process.env.HOME;
   // os.homedir() 在 POSIX 上优先读 $HOME，借此隔离数据目录
   process.env.HOME = home;

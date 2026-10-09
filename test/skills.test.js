@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import path, { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { makeTmp } from "./helpers/tmp.js";
 
 import {
   buildSkillTools,
@@ -12,9 +15,24 @@ import {
   skillDirectories,
   warnBuiltinToolConflicts,
 } from "../bin/skills.js";
+import * as cliSkills from "../bin/skills.js";
+import * as librarySkills from "../src/skills/loader.js";
+
+import { skillsLoaderContract } from "./contract/skills-loader.js";
+
+// 契约套件跑规范实现（宿主从 `erix-agent/tools` 拿到的就是这一份）。
+// CLI 装配层（bin/skills.js）不重复跑整套契约：它的契约**故意多一件**——必须替调用方把
+// 内置目录补上，「不传 bundledDir 时内置根缺席」那一条对它天然不成立。
+// CLI 自己的口径由本文件末尾的「CLI 薄装配层」对照段钉住（发现顺序、默认内置目录、re-export 同一函数引用）。
+skillsLoaderContract("src/skills/loader", {
+  discoverSkills: librarySkills.discoverSkills,
+  loadSkill: librarySkills.loadSkill,
+  buildSkillTools: librarySkills.buildSkillTools,
+});
+
 
 async function withDirectory(callback) {
-  const directory = await mkdtemp(join(tmpdir(), "erix-skills-test-"));
+  const directory = await makeTmp("erix-skills-test-");
   try {
     return await callback(directory);
   } finally {
@@ -385,4 +403,160 @@ test("buildSkillTools returns a friendly result for an unknown tool", async () =
     const result = await buildSkillTools({ cwd, home: cwd });
     assert.equal(await result.executeTool("missing", {}), "Unknown tool: missing");
   });
+});
+
+// ---------------------------------------------------------------------------
+// CLI 薄装配层（bin/skills.js）对照段（issue #197）
+//
+// 契约套件跑的是规范实现 `src/skills/loader.js`（宿主从 `erix-agent/tools` 拿到的那一份）。
+// CLI 层比库**多一件义务**：它必须替 `bin/cli.js` / `bin/repl.js` 把内置技能目录补上，
+// 所以这里单独钉住三件事，证明「搬进 src/ + 参数化」没有改动 CLI 的对外行为：
+//   1. 默认内置目录仍是 `<package>/skills`，且发现顺序是 用户全局 → 项目本地 → 内置；
+//   2. 校验失败形状不变（不阻塞、`errors[]` 可枚举、形状 `{skillId, dir, error}`）；
+//   3. `buildSkillTools` 产出的仍是库的 `ToolSchema`（input 校验由 createToolRegistry 真实执行）。
+// 另加两条「实现没有偷偷复刻一份」的守卫：re-export 必须是同一函数引用，
+// 且显式 `bundledDir` 必须能穿透 CLI 包装器（宿主/测试注入通道）。
+// ---------------------------------------------------------------------------
+
+test("库 loader 不引入任何自身层级推断（源码形状守卫，issue #197）", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL("../src/skills/loader.js", import.meta.url)),
+    "utf8",
+  );
+  // 只查代码：本文件的注释里本来就要提 `import.meta.url`（解释为什么要参数化）。
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+  for (const forbidden of ["import.meta", "new URL(", "BUNDLED_SKILLS_DIRECTORY"]) {
+    assert.ok(
+      !code.includes(forbidden),
+      `src/skills/loader.js 的代码里不应出现 ${forbidden}：内置技能目录必须由 bundledDir 参数决定，库内猜层级会在宿主安装形态下静默算歪`,
+    );
+  }
+  assert.match(code, /function bundledRoot\(bundledDir\)/);
+});
+
+test("同一个库 loader 喂两个不同 bundledDir，发现结果必须跟着变（不传则内置根缺席）", async () => {
+  await withDirectory(async (sandbox) => {
+    const home = join(sandbox, "home");
+    const cwd = join(sandbox, "cwd");
+    const bundledA = join(sandbox, "a", "skills");
+    const bundledB = join(sandbox, "deep", "nested", "b", "skills");
+    await writeSkill(bundledA, "alpha", v1Definition("alpha", "alpha_tool"));
+    await writeSkill(bundledB, "beta", v1Definition("beta", "beta_tool"));
+
+    // CLI 包装器同样必须把 bundledDir 透传给库（显式传值时覆盖 CLI 默认）。
+    for (const [name, impl] of [["bin/skills.js", cliSkills], ["src/skills/loader.js", librarySkills]]) {
+      assert.deepEqual(
+        impl.discoverSkills({ home, cwd, bundledDir: bundledA }).map((skill) => skill.id),
+        ["alpha"],
+        `${name} 必须按传入的 bundledDir 发现`,
+      );
+      assert.deepEqual(
+        impl.discoverSkills({ home, cwd, bundledDir: bundledB }).map((skill) => skill.id),
+        ["beta"],
+        `${name} 的内置目录必须是参数，而不是自身层级的函数`,
+      );
+    }
+
+    // 库侧：不传 = 内置根完全不参与（这一条正是「猜层级」的负控制点）。
+    await mkdir(join(home, ".erix", "skills"), { recursive: true });
+    await mkdir(join(cwd, ".erix", "skills"), { recursive: true });
+    assert.deepEqual(
+      librarySkills.skillDirectories({ home, cwd }),
+      [join(home, ".erix", "skills"), join(cwd, ".erix", "skills")],
+      "不传 bundledDir 时内置根必须逗都不来",
+    );
+    assert.deepEqual(
+      librarySkills.skillDirectories({ home, cwd, bundledDir: bundledA }),
+      [join(home, ".erix", "skills"), join(cwd, ".erix", "skills"), bundledA],
+      "传了 bundledDir 就追加在末尾（CLI 历史的发现顺序）",
+    );
+  });
+});
+
+test("CLI 默认仍注入 <package>/skills，发现顺序 用户全局 → 项目本地 → 内置", async () => {
+  await withDirectory(async (home) => {
+    await withDirectory(async (cwd) => {
+      const globalSkills = join(home, ".erix", "skills");
+      const projectSkills = join(cwd, ".erix", "skills");
+      await mkdir(globalSkills, { recursive: true });
+      await mkdir(projectSkills, { recursive: true });
+
+      // CLI 的内置目录 = bin/ 的上一级 skills/（层级在 CLI 侧算，issue #197）。
+      // 测试文件在 test/、CLI 在 bin/，两者上一级的 skills/ 是同一个仓内路径。
+      assert.equal(
+        cliSkills.BUNDLED_SKILLS_DIRECTORY,
+        path.resolve(import.meta.dirname, "..", "skills"),
+        "bin/skills.js 的内置目录必须仍按 bin/ 的层级算（上一层 + skills/）",
+      );
+      assert.equal(existsSync(cliSkills.BUNDLED_SKILLS_DIRECTORY), true);
+
+      assert.deepEqual(cliSkills.skillDirectories({ home, cwd }), [
+        globalSkills,
+        projectSkills,
+        cliSkills.BUNDLED_SKILLS_DIRECTORY,
+      ]);
+    });
+  });
+});
+
+test("CLI 层的校验失败形状与 ToolSchema 形态不变（issue #197 硬判据）", async () => {
+  await withDirectory(async (cwd) => {
+    const skillsDirectory = join(cwd, ".erix", "skills");
+    const badDirectory = await writeSkill(skillsDirectory, "bad", `
+      export function getSkillDefinition() {
+        return { schema_version: 1, skill: { id: "bad", entrypoint: "missing.mjs" }, tools: [] };
+      }
+    `);
+    await writeSkill(skillsDirectory, "good", `
+      export function getSkillDefinition() {
+        return {
+          schema_version: 1,
+          skill: { id: "good", entrypoint: "skill.mjs" },
+          tools: [{
+            name: "cli_echo",
+            description: "cli parity",
+            inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] }
+          }]
+        };
+      }
+      export function cli_echo({ value }) { return \`cli:\${value}\`; }
+    `);
+
+    const built = await cliSkills.buildSkillTools({ home: cwd, cwd, bundledDir: null });
+    assert.deepEqual(built.tools.map((tool) => tool.name), ["cli_echo"]);
+    assert.equal(built.errors.length, 1);
+    assert.deepEqual(Object.keys(built.errors[0]).sort(), ["dir", "error", "skillId"]);
+    assert.equal(built.errors[0].dir, badDirectory);
+    assert.match(built.errors[0].error, /entrypoint 不存在/);
+
+    // ToolSchema 形态：input 校验由 createToolRegistry 真实执行，未知工具是文本结果。
+    assert.equal(await built.executeTool("cli_echo", { value: "x" }), "cli:x");
+    assert.match(await built.executeTool("cli_echo", {}), /missing required field "value"/);
+    assert.equal(await built.executeTool("nope", {}), "Unknown tool: nope");
+  });
+});
+
+test("bin/skills.js 是 re-export 而非第二份实现（issue #197 分层守卫）", async () => {
+  assert.equal(cliSkills.loadSkill, librarySkills.loadSkill);
+  assert.equal(cliSkills.warnBuiltinToolConflicts, librarySkills.warnBuiltinToolConflicts);
+  for (const name of ["skillDirectories", "discoverSkills", "loadAllSkills", "buildSkillTools"]) {
+    assert.equal(typeof cliSkills[name], "function", `bin/skills.js 必须继续导出 ${name}`);
+    assert.notEqual(cliSkills[name], librarySkills[name], `${name} 需要 CLI 侧注入默认内置目录`);
+  }
+  // 库的六个符号必须可从公开子路径拿到（宿主不需要知道包里 skills/ 在哪）。
+  const toolsSubpath = await import("../src/tools/index.js");
+  for (const name of [
+    "skillDirectories",
+    "discoverSkills",
+    "loadSkill",
+    "loadAllSkills",
+    "buildSkillTools",
+    "warnBuiltinToolConflicts",
+  ]) {
+    assert.equal(toolsSubpath[name], librarySkills[name], `erix-agent/tools 必须转出 ${name}`);
+  }
 });

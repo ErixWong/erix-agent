@@ -33,10 +33,14 @@ src/
 ├── messages/      # canonical message model + OpenAI/Anthropic conversion
 ├── providers/     # OpenAI/Anthropic dual-protocol providers
 ├── reflection/    # governor, judge, l0, wrapup
+├── skills/        # canonical skill-pack loader (discovery/validation/assembly); the
+│                  # bundled skill directory is injected by the caller (`bundledDir`) —
+│                  # the library never derives it from its own file layout
 ├── store/         # file, memory, notes
 ├── text/          # shared text helpers (label normalization)
-└── tools/         # registry, providers, notes (opt-in erix-agent/tools subpath)
-bin/              # CLI (validator/debugger): cli.js (entry/chat), repl.js (TUI), tools.js (built-in tools + prompts), skills.js, mcp.js, config.js, final-guard-support.js, final-guard.js, guard-metrics.js
+└── tools/         # registry, providers, notes, file tools, and the skill-loader re-export
+                   # (opt-in erix-agent/tools subpath)
+bin/              # CLI (validator/debugger): cli.js (entry/chat), repl.js (TUI), tools.js (built-in tools + prompts), skills.js (thin assembly over src/skills/loader.js), mcp.js, config.js, final-guard-support.js, final-guard.js, guard-metrics.js
 test/             # unit tests (node --test), with compact/, providers/, tools/, config/, messages/, contract/, helpers/, fixtures/, integration/, and top-level test files
 fixtures/         # test fixtures (mock MCP servers) — ⚠️ mock MCP servers must not be put under test/ (node --test runs all files under test and can hang)
 examples/         # examples (skills/ examples, demos, and benchmarks)

@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeTmp } from "./helpers/tmp.js";
 
 import {
   buildCliToolsSystemPrompt,
@@ -17,7 +17,7 @@ import {
 import * as notes from "../src/tools/notes.js";
 
 async function withDirectory(callback) {
-  const directory = await mkdtemp(join(tmpdir(), "erix-cli-tools-test-"));
+  const directory = await makeTmp("erix-cli-tools-test-");
   try {
     return await callback(directory);
   } finally {
@@ -251,7 +251,7 @@ test("grep truncates at max_results with a truncation note", async () => {
     assert.equal(hitLines.length, 5);
     assert.match(output, /max_results=5 截断/);
     // 硬上限 200：传 999 也只按 200 截断
-    const more = await mkdtemp(join(tmpdir(), "erix-grep-cap-"));
+    const more = await makeTmp("erix-grep-cap-");
     try {
       const many = Array.from({ length: 250 }, (_, index) => `hit line ${index}`);
       await writeFile(join(more, "many.txt"), `${many.join("\n")}\n`, "utf8");

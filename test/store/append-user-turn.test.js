@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { appendUserTurn } from "../../src/store/append-user-turn.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
@@ -189,10 +190,9 @@ test("appendUserTurn: ts 非 ISO 字符串时原样落盘（合法性由调用�
 
 test("appendUserTurn: 与 file store 协作（JSONL 往返 + 跨实例幂等）", async () => {
   const { createFileTranscriptStore } = await import("../../src/store/file.js");
-  const { mkdtemp, rm } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
+  const { rm } = await import("node:fs/promises");
   const { join } = await import("node:path");
-  const dir = await mkdtemp(join(tmpdir(), "erix-append-user-turn-"));
+  const dir = await makeTmp("erix-append-user-turn-");
   try {
     const store = createFileTranscriptStore({ dir });
     const first = await appendUserTurn(store, { key: "run-7", text: "persisted", messageId: "m-1" });

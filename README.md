@@ -224,6 +224,8 @@ src/
     judge.js                       Objective timeline and judge prompt/response parsing
     l0.js                          Objective facts and summary parsing
     wrapup.js                      Wrap-up protocol parsing and normalization
+  skills/
+    loader.js                        Skill-package discovery, validation, assembly (issue #197)
   text/
     label.js                       Note/findings label normalization
   tools/
@@ -239,8 +241,11 @@ and compaction helpers, transcript stores, run-state helpers, the host display
 projection (`projectTranscriptForDisplay`), the multi-turn pre-write helper
 (`appendUserTurn`), configuration providers, `runToolLoop`, and reflection
 helpers. The optional
-`erix-agent/tools` subpath exports the tool registry and provider helpers;
-model-facing retrieval is note-first (`note_list` → `note_read`).
+`erix-agent/tools` subpath exports the tool registry and provider helpers, the
+canonical file and notes factories, and the skill-package loader
+(`discoverSkills` / `loadSkill` / `buildSkillTools`, issue #197 — the bundled skill
+root is passed in as `bundledDir`; the library never infers it from its own file
+location); model-facing retrieval is note-first (`note_list` → `note_read`).
 
 ## Host ports and the error ledger
 
@@ -335,6 +340,7 @@ quoted blocks below against it):
   "test/contract/index.js",
   "test/contract/model-config-provider.js",
   "test/contract/notes-store.js",
+  "test/contract/skills-loader.js",
   "test/contract/termination-payload.js",
   "test/contract/transcript-store.js"
 ]

@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #197 技能加载器注册（`bundledDir` 归调用方、库内不猜层级、内置 < 全局 < 项目的优先级、不阻塞且可枚举的 `{skillId, dir, error}` 失败形状、产出即 `ToolSchema`、无新沙箱）与 `skillsLoaderContract` 套件；#184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -1113,6 +1113,53 @@ CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `e
   `--type`、没加 `.gitignore` 感知。每一条都会与边界注入/输出预算/中止交叉（`-A`/`-B`
   会顶破字节上限；读 `.gitignore` 本身要过 `allowRead`），所以上游要求先看 transcript
   证据——模型到底写了哪些我们不支持的参数形状、因此误判了几次。
+### 技能加载器注册（issue #197）
+
+技能包 loader 的规范实现是 `src/skills/loader.js`，经 `erix-agent/tools` 导出——
+**故意没有**新增 `./skills` 子路径：打包面一字不改，本来就读 `./tools` 的宿主不需要多一条 import 映射。
+`bin/skills.js` 只剩装配 + re-export（它唯一的职责是把自己那份内置技能目录补进去），
+所以 `erix skills` 与 repl 的 `/skills` 行为与搬迁前逐字一致。
+
+公开面是六个函数：
+
+- `skillDirectories({ home, cwd, skillsDir, bundledDir })` — 返回真实存在的技能根，顺序是
+  用户全局 → 项目本地 → 内置；
+- `discoverSkills({ home, cwd, skillsDir, bundledDir })` — 一级技能目录 `[{ id, dir }]`，
+  尾部挂一个不可枚举的 `errors` 数组；
+- `loadSkill(dir)` / `loadAllSkills(options)` — 校验单个技能目录 / 全部已发现的目录；
+- `buildSkillTools({ home, cwd, skillsDir, bundledDir, excludeSkillIds, builtinNames })` —
+  装配出 `{ tools, executeTool, errors }`，`errors` 同时带上所有被跳过的原因；
+- `warnBuiltinToolConflicts(errors, { warn })` — CLI 那条同名冲突的一次性告警。
+
+**`bundledDir` 是宿主必须看懂的那个选项。** 内置技能目录**归调用方所有**：库绞不按自身
+文件位置推导它，不传 `bundledDir` 就等于内置根压根不参与发现——只看 `<home>/.erix/skills`
+与 `<cwd>/.erix/skills`。理由不是风格：退役前的 `bin/skills.js` 把路径写成相对 `import.meta.url`
+的 `../skills`，文件住在 `bin/` 时恰好命中 `<package>/skills`，搬到 `src/skills/` 就差一层，
+宿主从 `node_modules` 里解析这个包时又是另一套。猜错的失败方式是**静默**的——内置技能就是
+发现不到了——所以这个参数是契约而不是便利顶。CLI 传自己的 `<package>/skills`；宿主传自己
+那一份，或者什么都不传、只拿用户级与项目级技能。
+
+优先级是定死的：内置技能在同名竞争里输给用户全局技能，用户全局技能又输给项目本地技能
+（扫描顺序 内置 → 全局 → 项目，后者替换前者）。`skillsDir` 是单目录覆盖（即 CLI 的
+`--skills-dir`）：一旦给出就只扫那一个目录，相对值按 `cwd` 解析。
+
+**发现与校验都不阻塞，且每个失败都可枚举。** `loadSkill` 对单个目录是抛错（不支持的
+`schema_version`、绝对路径或逃逸技能根的 entrypoint、空 / 重复 / 畸形的 `tools`、既没导出
+`getSkillDefinition()` 也没导出 `getTools()` 的模块），`loadAllSkills` / `buildSkillTools`
+会把每一次抛错转成一条 `{ skillId, dir, error }` 记录——`error` 是字符串，该技能**整体**被
+跳过（不会留下半套工具），同一根下的其他技能照常装配。工具名与 `builtinNames` 冲突的技能
+也按同一条路回报并被跳过，而不是静默覆盖内置工具。宿主可以对「记录形状」与「整体跳过」这两件事
+编码，不得对那些错误文案编码。
+
+`buildSkillTools` 交出去的就是本库的 `ToolSchema` 列表，直接交给 `createToolRegistry`，所以
+技能工具身上 registry 的 input 校验是真生效的：缺 `required` 字段或字段类型不符会拿回
+registry 的 `Tool <name> …` 文本，未注册的名字拿回 `Unknown tool: <name>`，都不抛。
+技能模块是**在宿主进程内、以宿主的权限**被 import 的——库不提供任何沙箱（ADR-008，
+ADR-009 把牢笼留在宿主侧），所以 `excludeSkillIds` 与 `builtinNames` 是策略输入，不是安全边界。
+
+`erix-agent/contract-tests` 里的 `skillsLoaderContract(label, { discoverSkills, loadSkill,
+buildSkillTools })` 会断言「内置目录由参数决定」「优先级」「不阻塞且可枚举的 errors 形状」
+「产出是 ToolSchema 形态」四组事实，对宿主接进来的任何实现都跑同一套。
 
 ### notes 维护调度（0.12.0）
 
@@ -1444,14 +1491,14 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 ## 契约测试套件（issue #183）
 
 `erix-agent/contract-tests`（即 `./contract-tests` 子路径导出，`test/contract/index.js`）
-随包发布七个套件文件、共**九个**可复用的 `node:test` 注册函数（`execute-tool.js` 里有两个：
+随包发布九个套件文件、共**十一个**可复用的 `node:test` 注册函数（`execute-tool.js` 里有两个：
 现行形状与迁移形状；`notes-store.js` 自 issue #183 起也有两个：通用套件与可选的 CAS
 子套件）。每一个的签名都是 `xxxContract(label, factory)`：调用它即注册一批以
 `label` 命名的断言，在 `node --test` 跑起来之前什么都不会执行。`npm run check:docs:strict`
 会对「被 `test/contract/index.js` 再导出、但 `files` 白名单漏掉」的套件直接失败（在普通的
-`npm run check:docs` 下它是 warn），因此随包集合不可能无声变小。九个里最新的是
-`notesStoreCasContract`（issue #183），其次是 `terminationPayloadContract`（issue #180）：
-装在已发布的 0.17.0 上的宿主只有七个，不是九个。
+`npm run check:docs` 下它是 warn），因此随包集合不可能无声变小。十一个里最新的是
+`skillsLoaderContract`（issue #197），其次是 `fileToolsContract`（issue #184）：
+装在已发布的 0.18.0 上的宿主只有九个，不是十一个。
 
 ### 套件能证明什么、不能证明什么（issue #183）
 
@@ -1519,6 +1566,7 @@ notesStoreCasContract("my-host-store", () => createFileNotesStore({ dir: notesDi
 | `assemblyPortContract(label, createPort)` | factory | 你的 `AssemblyPort` 对象；套件会在它之上启动一个真实的 `runToolLoop` |
 | `engineApiContract(label, getEntry)` | factory | **包入口命名空间**，即 `() => import("erix-agent")` —— 它断言的是导出的引擎 API，不是你的代码 |
 | `terminationPayloadContract(label, getEntry)` | factory | 同一个入口命名空间（`{ runToolLoop }`）；它自带 provider 桩 |
+| `skillsLoaderContract(label, { discoverSkills, loadSkill, buildSkillTools })` | 三个函数，不是 factory | 宿主接进来的技能包 loader；它断言 `bundledDir` 归调用方、内置 → 全局 → 项目的优先级、不阻塞的 `{skillId, dir, error}` 失败形状，以及 `ToolSchema` 产出形态 |
 
 ### 套件清单（issue #183）
 

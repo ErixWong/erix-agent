@@ -33,7 +33,8 @@
     "docs/host-upgrade-guide-0.16.0.md",
     "test/contract/engine-api.js",
     "docs/host-upgrade-guide-0.17.0.md",
-    "test/contract/file-tools.js"
+    "test/contract/file-tools.js",
+    "test/contract/skills-loader.js"
   ],
   "repository": {
     "type": "git",
@@ -50,7 +51,8 @@
     "check:docs": "node scripts/docs-drift-check.mjs && node scripts/docs-sync-check.mjs",
     "check:docs:strict": "node scripts/docs-drift-check.mjs --strict",
     "check:docs-examples": "node --test test/contract/doc-examples.test.js",
-    "check:pack-links": "node scripts/pack-link-check.mjs"
+    "check:pack-links": "node scripts/pack-link-check.mjs",
+    "check:tests": "node scripts/test-hygiene-check.mjs"
   },
   "license": "MIT"
 }

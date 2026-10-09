@@ -1,16 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createJsonFileModelConfigProvider } from "../../src/config/json-file.js";
 import { KitError } from "../../src/providers/errors.js";
 import { modelConfigProviderContract } from "../contract/model-config-provider.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 const KEY_ENV = `ERIX_JSON_CONTRACT_KEY_${process.pid}`;
 
 async function withConfig(config, callback) {
-  const directory = await mkdtemp(join(tmpdir(), "erix-llm-kit-config-"));
+  const directory = await makeTmp("erix-llm-kit-config-");
   const path = join(directory, "models.json");
   try {
     await writeFile(path, JSON.stringify(config), "utf8");
@@ -23,7 +23,7 @@ async function withConfig(config, callback) {
 modelConfigProviderContract("json-file", async () => {
   process.env[KEY_ENV] = "json-contract-secret";
   // json-file 每次 resolve 重读文件：目录须活过整个契约套件，进程退出后由 OS 清理
-  const directory = await mkdtemp(join(tmpdir(), "erix-json-contract-"));
+  const directory = await makeTmp("erix-json-contract-");
   const path = join(directory, "models.json");
   await writeFile(path, JSON.stringify({
     slots: {

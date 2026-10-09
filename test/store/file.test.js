@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { appendFile, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createFileTranscriptStore, safeRunId } from "../../src/store/file.js";
 import { transcriptStoreContract } from "../contract/transcript-store.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 async function makeTempDir() {
-  return mkdtemp(join(tmpdir(), "erix-llm-kit-file-store-"));
+  return makeTmp("erix-llm-kit-file-store-");
 }
 
 // 通用行为：契约套件（每次给干净目录 = 干净 store）

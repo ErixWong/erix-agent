@@ -8,3 +8,4 @@ export { notesStoreContract, notesStoreCasContract } from "./notes-store.js";
 export { engineApiContract } from "./engine-api.js";
 export { terminationPayloadContract } from "./termination-payload.js";
 export { fileToolsContract } from "./file-tools.js";
+export { skillsLoaderContract } from "./skills-loader.js";

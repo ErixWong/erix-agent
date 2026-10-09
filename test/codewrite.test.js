@@ -1,17 +1,17 @@
 import { execFile, spawnSync } from "node:child_process";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 
 import { createCliTools } from "../bin/tools.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 const execFileAsync = promisify(execFile);
 
 async function withTempDir(callback) {
-  const directory = await mkdtemp(join(tmpdir(), "erix-codewrite-"));
+  const directory = await makeTmp("erix-codewrite-");
   try {
     return await callback(directory);
   } finally {
@@ -40,7 +40,7 @@ const git = probeGit();
 
 test("writeFile writes to an arbitrary path", async () => {
   await withTempDir(async (cwd) => {
-    const destination = await mkdtemp(join(tmpdir(), "erix-codewrite-destination-"));
+    const destination = await makeTmp("erix-codewrite-destination-");
     try {
       const target = join(destination, "nested", "hello.txt");
       const { executeTool } = createCliTools({ cwd });

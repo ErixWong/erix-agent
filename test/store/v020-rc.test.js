@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { createFileTranscriptStore } from "../../src/store/file.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 const record = {
   round: 1,
@@ -30,7 +30,7 @@ test("memory store deduplicates rounds and stores run state/snapshots", async ()
 });
 
 test("file store deduplicates rounds and persists snapshot/state with sanitized IDs", async () => {
-  const root = await mkdtemp(join(tmpdir(), "erix-llm-kit-rc-store-"));
+  const root = await makeTmp("erix-llm-kit-rc-store-");
   try {
     const store = createFileTranscriptStore({ dir: root });
     const runId = "../unsafe run";
