@@ -199,3 +199,50 @@ pi 的「折叠」有两条机制：**compaction**（上下文超限或 `/compac
 - **要做长期记忆** → pi 的答案是「不给内置，只给钩子」：文件型（AGENTS.md 层级）承载稳定事实，session JSONL 承载可回滚原文，扩展承载结构化偏好。若你要做向量记忆，需自己在 `before_agent_start` 注入检索结果，并接受它可能打断缓存这一代价。
 - **要做「压缩后可召回」** → 直接抄 pi：不删原文，只缩短「进入上下文的路径」，并稳定地把原始文件路径暴露给模型（`PI_SESSION_FILE`）。成本极低，且召回质量可以被 grep 验证。
 - **prompt 缓存优先级**：把每轮会变的东西（时间、git 状态、TODO）放在上下文**尾部**或以独立消息注入，而不是改 system prompt——pi 默认完全不注入这些，是它缓存命中率高的隐性原因（`dist/core/system-prompt.js:107` 只放了一行 cwd）。
+
+---
+
+## 7. pi 1.1.0 修订注（2026-10-10，#190）
+
+**基线声明**：自本注起，本文（以及 `README.md` 一页结论、`06-cross-comparison.md` 的 pi 列）的分析基线更新为 **`@earendil-works/pi-coding-agent` 1.1.0**（2026-10-07 发布，仓库 `earendil-works/pi`，tag `v1.1.0`；pi 于 2026-10-01 发 1.0.0）。**上面 §0~§6 正文一字未改**——含 §0 的版本快照仍写 `0.84.2`、以及全文的 `dist/...:行号` 引用。那是「我们曾经这么认为」的留痕，不是待清理的错字。
+
+**本注的证据来源与正文不是同一套路径，不可互换**：正文引的是 0.84.2 的 **npm 产物**（`dist/*.js` + 包内 `docs/*.md`）；本注一律引 `earendil-works/pi` 源码仓在 **tag `v1.1.0`** 下的 `packages/<pkg>/...`（本机 `~/projects/github/pi`），只在需要抽查产物路径时标注本机已安装的 **1.0.0 npm 包**。因此本注**没有**逐条把正文的 `dist/...:行号` 重核到新产物——那是一次独立工作量（见 §7.4 末的路径抽查）。
+
+### 7.1 确实过期、就地认账的两条
+
+**① MCP 已经内置（推翻 §0 总纲「明确声明不内置 MCP」、速查行「无内置 MCP」、§4「MCP：未内置」）**
+
+- 0.84.2 的依据那句「It intentionally does not include built-in MCP」（正文引 `docs/usage.md:304`）**已经从文档里消失**：本机 1.0.0 npm 包的 `docs/usage.md` 全文 94 行、`intentionally` 零命中；1.1.0 的对应口径变成 `packages/coding-agent/README.md:19`——「skips features like sub-agents and plan mode」，**跳过清单里已经没有 MCP**。
+- 1.1.0 的内置形态：`packages/coding-agent/docs/mcp.md:1-3`（经 stdio 或 streamable HTTP 连 MCP server，把其 tools 与 resources 交给模型）、`:31`（配置在 `~/.pi/agent/mcp.json` 与项目 `.pi/mcp.json`，项目层要过 trust）、`:100`（会话启动即后台连接所有 enabled server；只有 `direct` 工具会在首个 prompt 前最多等 10 s）、`:189-198`（exposure 四值 `codemode`（默认）/ `deferred` / `direct` / `hidden`）。
+- 上游自己的用词更直接：`packages/coding-agent/CHANGELOG.md:65`（`[1.0.4]` 段："Added `--no-mcp` to disable the **built-in MCP support** for one run"）、`docs/cli.md:197`（`-ne` 下仍可用 `-e builtin:mcp` 只留「built-in MCP support」）。
+- 所谓「codemode 形态」：模型写一段 JavaScript，跑在 **QuickJS 沙箱**里（无 Node API、无文件系统、无网络、无定时器），只能通过被注入的 `tools.*` 与 `models` 触达外界，且**只有脚本输出回到模型**（`packages/coding-agent/docs/codemode.md:3-7`）。工具侧 exposure 五值见 `packages/coding-agent/docs/extensions.md:155-160`。
+- **连带推翻**：§4「**未找到**任何工具名命名空间规范（如 `mcp__server__tool`）」不再成立——1.1.0 把每个 server 工具固定注册成 `mcp__<server>__<tool>`（`docs/mcp.md:191`）。registry 的「同名覆盖」语义本注未重核，但「无命名空间约定」这句已作废，`06` §4.2 的「`mcp__server__tool` 是事实共识（cx/hm）」据此改写。
+
+**② 内置 `tool_search`（推翻 §4「延迟加载…引擎不在本包」与 §6 代价清单「未找到内置的 `search_tools`」）**
+
+- `packages/coding-agent/docs/cli.md:151`（内置扩展再加两个工具，**默认关闭**，MCP 扩展在需要时打开）、`:155-156`（`codemode` 与 `tool_search` 的表）、`:182`（`tool_search` 默认关，用 `--tools` 或 `"defaultTools": ["+tool_search"]` 打开；排序与 `searchTools()` 同源；被加载的工具像其他工具变更一样记进 transcript，在该分支上保持声明）。
+- 排序引擎**就在本包里**，不再是「扩展自己写一遍 loader」：`packages/coding-agent/src/extensions/tool-search/tool.ts:1-8`（对工具元数据做 **BM25** 排序，`tool_search` 与 codemode 的 `searchTools()` 共用同一实现；加载经 active tool set，故记进 transcript 并跨 `/tree`、resume、fork 存活）、`:20`（`DEFAULT_TOOL_SEARCH_LIMIT = 8`）。
+- 这条**只推翻「loader 得自己写」**：正文里 provider 侧原生 deferred 协议（`defer_loading` / `tool_search_call`）那套分发在 1.1.0 仍在（`packages/ai/README.md:1601` 段仍按 `supportsMidConvoToolChanges` / `supportsToolSearch` 分流）。
+- 「工具定义 token 预算未找到」这句**不在本注判定范围**，保持原样（见 §7.4）。
+
+### 7.2 会话中途 system message：1.1.0 的**新增能力**，不是「我们错了」
+
+- 相对 0.84.2 基线这是新增：transcript-backed mid-conversation system prompt / tool changes 在 **pi-ai 0.86.0**（2026-09-19，晚于本文基线 0.84.2）加入（`packages/ai/CHANGELOG.md:203`，PR #9548），1.1.0 段又把 mid-conversation system messages 与 tool changes 扩到更多模型（`packages/ai/CHANGELOG.md:3,14`）。
+- 语义：`packages/ai/README.md:1572-1575`（transcript 可在会话中途携带 system 消息来改 prompt 或工具集，而不必重写历史；`sections` 按名 patch，`null` 删除）、`:1601`（`supportsMidConvoSystemMessages` 的模型逐条**原位**收下，原文口径「so the cached prefix stays intact」；其余模型收 `collapseSystemMessages(transcript)`）。
+- harness 侧的对应姿势：`packages/coding-agent/docs/extensions.md:103` 现在**建议** `before_agent_start` 优先改 prompt sections / selected tools / guidelines，好让 pi 追加一条 transcript delta。
+- **窄表述照旧保留**（不写成更正）：同一条 `:103` 仍写着「Returning `systemPrompt`, or setting `forceSystemPrompt`, **replaces the whole prompt for that run**」，所以 §6 代价清单里「`before_agent_start` 一旦返回 `systemPrompt` 就整体替换本轮 prompt、写错会打断 prompt cache」在 1.1.0 依然成立。§1 里「每轮动态注入：默认没有」这句本注也**不改**（默认路径仍不注入；`mcp_servers` 段变化时是「往会话尾部追加、不动工具声明」，`docs/mcp.md:202`）。
+- 需要降级的只是更宽的那层推论：**「pi 要注入动态内容就只能在『整段替换 prompt』与『不注入』之间二选一」**。1.1.0 给了第三条路（尾部 delta / 中途 system 消息），所以「想要缓存就不能有动态内容」不再是唯一解。
+
+### 7.3 观察者隔离：原结论成立，但两侧口径都要限定
+
+- **pi 原语层仍然没有隔离**：`packages/agent/src/agent.ts:609-611`（`processEvents()`（`:565`）尾部就是 `for (const listener of this.listeners) { await listener(event, signal); }`，**无 try/catch**）；监听器抛错冒泡到 `runWithLifecycle()` 的 catch（`:525-526`），交 `handleRunFailure()` 产一条 `stopReason: "aborted" | "error"` 的失败消息（`:532,540`）终止本次 run。**所以「pi 1.1 已在观察者隔离上追平」不成立，本仓结论在原语层依然成立。**
+- 但口径只能停在「原语层」：harness 的扩展派发层是**逐个 handler** 包 catch 并走 `emitError` 错误通道（`packages/coding-agent/src/core/extensions/runner.ts:1046-1058`），所以反过来写成「pi 整体无兜底」也不成立。
+- **本仓侧要收紧的限定**（免得反向夸大）：八个事件通道的宿主异常经 `reportObserverError`（`src/loop/orchestrator.js:781-801`）记账后继续，但该函数唯一的动作是**同步调用宿主的 `onObserverError`**（它自己再抛就退到 `console.error`）——不写 run state、不进 `result.unpersisted`、不产 `delivery_failure`。即：这是**内存记账，不是持久账本**；要计数得宿主自己从 `onObserverError` 攒，durable 账本仍是未做的决定（`docs/host-consumer-contract.md:108`「Observer callback errors」第 3 条）。
+- **隔离强度分两档，不是「八通道一律」**：只有被 `await` 的 `onRound`（`src/loop/orchestrator.js:3155-3163`）与 `onToolResult`（`src/loop/run-snapshot-executor.js:275-296`，失败时保留引擎原始结果）同时覆盖同步 throw 与 rejected Promise；其余六通道只覆盖**同步 throw**，async 回调的 rejection 不在承诺范围（`emitEvent` 的守卫与这条口径写在注释里，`src/loop/orchestrator.js:1556-1570`，注释见 `:1559-1560`）。
+
+### 7.4 范围外信息 + 本注明确没有改的东西
+
+- **`pi-agent-core` 拆分（范围外，仅作背景）**：`packages/agent/CHANGELOG.md:21-25`（`[1.0.0]` breaking：`AgentHarness`、sessions/session storage、durable runtime、harness tools、compaction、skills、prompt templates 等全部移出，包内只剩 `Agent` + agent loop + proxy stream + types，durable sessions 改用 `@earendil-works/pi-durable`）。§0 早就把 `pi-agent-core` 划在分析范围之外，所以这条**不是本文任何一条五维对比结论被推翻**，只是后续想引用 pi 内部结构时要换包名。
+- **产物路径抽查（仅此一条，别读成「行号也可信」）**：`src/core/agent-session.ts`、`src/core/tools/index.ts`、`src/utils/tool-result-images.ts`、`src/core/system-prompt.ts` 在 tag `v1.1.0` 源码里都还在；本机 1.0.0 npm 包里 `dist/core/agent-session.js`、`dist/core/tools/index.js`、`dist/utils/tool-result-images.js` 也还在。漂移主要在**行号**，但正文的 `dist/...:行号` 未经逐条重核，引用时按「0.84.2 坐标」对待。
+- **没有改的正文结论**（理由逐条）：§1 的 system prompt 拼装顺序 / `SYSTEM.md` 替换 / AGENTS.md 发现与合并、§2 的 2000 行 / 50KB 双上限、§3 的 compaction 全套、§5 的长期记忆与 session 隔离维度——#190 **没有复核**这些维度，所以既不改也不宣布「已核实仍成立」；§4「工具定义 token 预算未找到」是否定命题，需要独立复核，#190 未判定过期；§6「上下文增强全靠扩展」里 git / 时间 / TODO / 审批那部分仍按 0.84.2 口径（本注只判定 MCP 一项过期）。
+- **不新建英文版**：`docs/harness-comparison/` 历史上就没有中英对（目录内 `_cn.md` 计数为 0），`scripts/docs-sync-check.mjs` 只校验 `docs/host-consumer-contract.md` ↔ `_cn.md` 那一对；在这里造一份英文版只会得到一份无人校验的孤儿文档。
