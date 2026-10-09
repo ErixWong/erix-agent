@@ -60,16 +60,34 @@ async function withDirectory(callback) {
  *   => { definitions: object[], executeTool: Function } }} deps 待验实现
  */
 export function fileToolsContract(label, { createFileTools }) {
-  test(`${label}: 导出六个文件工具的 definitions（#195 新增 searchText）`, () => {
+  test(`${label}: 导出七个文件工具的 definitions（#195 新增 searchText、#191 新增 edit）`, () => {
     const tools = createFileTools({ cwd: process.cwd() });
     assert.deepEqual(
       tools.definitions.map((definition) => definition.name).sort(),
-      ["grep", "readFile", "rg", "searchText", "tree", "writeFile"],
+      ["edit", "grep", "readFile", "rg", "searchText", "tree", "writeFile"],
     );
     for (const definition of tools.definitions) {
       assert.ok(definition.inputSchema, `${definition.name} 必须有 inputSchema`);
       assert.equal(definition.inputSchema.additionalProperties, false);
     }
+  });
+
+  test(`${label}: edit 的 schema 把「精确匹配、无模糊兜底」写成模型读得到的声明（#191）`, () => {
+    const tools = createFileTools({ cwd: process.cwd() });
+    const edit = tools.definitions.find((definition) => definition.name === "edit");
+    assert.deepEqual(edit.inputSchema.required, ["path", "edits"]);
+    assert.equal(edit.inputSchema.properties.edits.type, "array");
+    assert.deepEqual(edit.inputSchema.properties.edits.items.required, ["oldText", "newText"]);
+    assert.equal(edit.inputSchema.properties.edits.items.additionalProperties, false);
+    // 只有描述能告诉模型「这不是模糊替换」：不写清就会换来一轮莫名其妙的重试
+    assert.match(edit.description, /EXACT matching only/u);
+    assert.match(edit.description, /NO fuzzy fallback/u);
+    assert.match(edit.description, /NFKC/u);
+    assert.match(edit.description, /ORIGINAL file/u);
+    assert.match(edit.description, /must match exactly once/u);
+    assert.match(edit.description, /allowWrite false/u);
+    assert.match(edit.description, /never thrown/u);
+    assert.match(edit.description, /BOM and CRLF are preserved/u);
   });
 
   test(`${label}: searchText 的 mode 是必填枚举（无默认值），name_pattern 顶掉 glob`, () => {
@@ -127,14 +145,16 @@ export function fileToolsContract(label, { createFileTools }) {
       await tools.executeTool("readFile", { path: "a.txt" });
       await tools.executeTool("tree", { path: "." });
       await tools.executeTool("writeFile", { path: "sub/b.txt", content: "x" });
+      // issue #191：`edit` 是第二个写工具，必须吃同一个 allowWrite 谓词（宿主只包 executeTool 外层拦不住）
+      await tools.executeTool("edit", { path: "sub/b.txt", edits: [{ oldText: "x", newText: "y" }] });
 
       assert.ok(reads.length >= 2, `allowRead 必须被调用（实际 ${reads.length} 次）`);
-      assert.ok(writes.length >= 1, `allowWrite 必须被调用（实际 ${writes.length} 次）`);
+      assert.ok(writes.length >= 2, `allowWrite 必须被 writeFile 与 edit 各调一次（实际 ${writes.length} 次）`);
       for (const target of [...reads, ...writes]) {
         assert.ok(path.isAbsolute(target), `谓词必须收到绝对路径，实际收到 ${target}`);
       }
       assert.ok(reads.includes(path.join(cwd, "a.txt")), "readFile 的解析结果必须原样喂给 allowRead");
-      assert.ok(writes.includes(path.resolve(cwd, "sub/b.txt")));
+      assert.ok(writes.includes(path.resolve(cwd, "sub/b.txt")), "两个写工具的解析结果必须原样喂给 allowWrite");
     });
   });
 
@@ -174,6 +194,116 @@ export function fileToolsContract(label, { createFileTools }) {
       assert.match(search, /^错误：/u);
       const tree = await tools.executeTool("tree", { path: "." });
       assert.match(tree, /^错误：/u);
+
+      // issue #191：`edit` 的越界写也是错误结果而非 throw，且不得落盘
+      const edited = await tools.executeTool("edit", { path: "secret.txt", edits: [{ oldText: "top", newText: "bot" }] });
+      assert.match(String(edited), /^错误：/u);
+      assert.match(String(edited), /宿主边界拒绝|写入被.*拒绝/u, "越界写要说清是宿主边界挡的");
+      assert.equal(await readFile(path.join(cwd, "secret.txt"), "utf8"), "top secret\n",
+        "allowWrite false 时 edit 不得改文件");
+    });
+  });
+
+  // ── edit（issue #191）──
+  // 契约面只钉「换个实现也会坑调用方」的四件事：形状容忍、逐字节精确匹配、对**原文**匹配、
+  // BOM/CRLF 保留。具体文案与 diff 排版是实现细节，不在契约里钉（契约文档同口径）。
+  test(`${label}: edit 只接受逐字节相等：0 命中与多处命中都是错误结果且整次不落盘（#191）`, async () => {
+    await withDirectory(async (cwd) => {
+      await writeFile(path.join(cwd, "exact.txt"), "alpha\nbeta\nbeta\n", "utf8");
+      const tools = createFileTools({ cwd });
+
+      // 行尾多一个空格 = 0 命中：不做行尾空白兜底（模糊兜底本轮不做的直接后果，写进了契约）
+      const missing = await tools.executeTool("edit", { path: "exact.txt", edits: [{ oldText: "beta ", newText: "x" }] });
+      assert.match(String(missing), /^错误：/u);
+      assert.match(String(missing), /readFile/u, "0 命中必须给出下一步（回读原文再逐字复制）");
+
+      const ambiguous = await tools.executeTool("edit", { path: "exact.txt", edits: [{ oldText: "beta", newText: "x" }] });
+      assert.match(String(ambiguous), /^错误：/u);
+      assert.match(String(ambiguous), /2 处/u, "多处命中必须报出到底几处");
+      assert.match(String(ambiguous), /唯一/u, "多处命中必须给出下一步（加上下文使匹配唯一）");
+
+      assert.equal(await readFile(path.join(cwd, "exact.txt"), "utf8"), "alpha\nbeta\nbeta\n",
+        "任一条错就整次不落盘（不是部分成功）");
+
+      const overlap = await tools.executeTool("edit", {
+        path: "exact.txt",
+        edits: [{ oldText: "alpha", newText: "A" }, { oldText: "lph", newText: "B" }],
+      });
+      assert.match(String(overlap), /^错误：/u, "命中区间重叠必须报错（两条在抢同一段文本）");
+      assert.match(String(overlap), /重叠/u);
+      assert.equal(await readFile(path.join(cwd, "exact.txt"), "utf8"), "alpha\nbeta\nbeta\n");
+
+      const noop = await tools.executeTool("edit", { path: "exact.txt", edits: [{ oldText: "alpha", newText: "alpha" }] });
+      assert.match(String(noop), /^错误：/u, "全部无变化也是错误结果（不能让宿主误判为已改）");
+      assert.match(String(noop), /未做任何修改/u);
+    });
+  });
+
+  test(`${label}: edit 的每条 oldText 对**原文**匹配，不是逐条累加后的中间态（#191）`, async () => {
+    await withDirectory(async (cwd) => {
+      // 逐条累加会把第 2 条的 oldText "two" 撞到第 1 条刚写出的那个 "two"（那时它会 2 命中而报错）。
+      // 对原文匹配时两条各自命中原文的一处，互不影响 —— 这个用例唯一地区分了两种语义。
+      await writeFile(path.join(cwd, "chain.txt"), "one two\n", "utf8");
+      const tools = createFileTools({ cwd });
+      const result = await tools.executeTool("edit", {
+        path: "chain.txt",
+        edits: [{ oldText: "one", newText: "two" }, { oldText: "two", newText: "X" }],
+      });
+      assert.match(result, /^已编辑/u, `两条各自命中原文的不同位置，不得当成冲突：${result}`);
+      assert.match(result, /替换 2 处/u);
+      assert.equal(await readFile(path.join(cwd, "chain.txt"), "utf8"), "two X\n");
+
+      // 而「第 2 条想改第 1 条刚写出来的内容」必须显式失败（而不是悄悄按累加语义改掉）
+      await writeFile(path.join(cwd, "progressive.txt"), "aaa\n", "utf8");
+      const chained = await tools.executeTool("edit", {
+        path: "progressive.txt",
+        edits: [{ oldText: "aaa", newText: "bbb" }, { oldText: "bbb", newText: "CCC" }],
+      });
+      assert.match(String(chained), /^错误：/u, "oldText 必须存在于**原文**里，不能是上一条的产物");
+      assert.match(String(chained), /第 2 条/u, "错误要指到具体哪一条");
+      assert.equal(await readFile(path.join(cwd, "progressive.txt"), "utf8"), "aaa\n");
+    });
+  });
+
+  test(`${label}: edit 保留 BOM 与 CRLF 行尾（#191）`, async () => {
+    await withDirectory(async (cwd) => {
+      await writeFile(path.join(cwd, "bom.txt"), "\uFEFFone\r\ntwo\r\n", "utf8");
+      const tools = createFileTools({ cwd });
+
+      const output = await tools.executeTool("edit", { path: "bom.txt", edits: [{ oldText: "two", newText: "TWO" }] });
+      assert.match(output, /^已编辑/u);
+      const bytes = await readFile(path.join(cwd, "bom.txt"));
+      assert.equal(bytes.subarray(0, 3).toString("hex"), "efbbbf", "BOM 不得丢");
+      assert.equal(bytes.toString("utf8"), "\uFEFFone\r\nTWO\r\n", "CRLF 不得被归一成 LF");
+
+      // 模型传 LF 或 CRLF 的 oldText 都要能命中同一个 CRLF 文件（匹配在归一空间里做，写回再还原）
+      const lfNeedle = await tools.executeTool("edit", { path: "bom.txt", edits: [{ oldText: "one\nTWO", newText: "X" }] });
+      assert.match(lfNeedle, /^已编辑/u, `LF 形态的 oldText 必须能命中 CRLF 文件：${lfNeedle}`);
+      assert.equal(await readFile(path.join(cwd, "bom.txt"), "utf8"), "\uFEFFX\r\n");
+    });
+  });
+
+  test(`${label}: edit 接受数组 / 单对象 / JSON 字符串三种形状（#191）`, async () => {
+    await withDirectory(async (cwd) => {
+      await writeFile(path.join(cwd, "shapes.txt"), "one\ntwo\nthree\n", "utf8");
+      const tools = createFileTools({ cwd });
+
+      assert.match(await tools.executeTool("edit", {
+        path: "shapes.txt",
+        edits: JSON.stringify([{ oldText: "one", newText: "ONE" }]),
+      }), /^已编辑/u, "edits 传成 JSON 字符串要能直接工（模型常发这种形状）");
+      assert.match(await tools.executeTool("edit", {
+        path: "shapes.txt",
+        edits: { oldText: "two", newText: "TWO" },
+      }), /^已编辑/u, "单条对象要能直接工");
+
+      const broken = await tools.executeTool("edit", { path: "shapes.txt", edits: "[{\"oldText\":"
+      });
+      assert.match(String(broken), /^错误：/u, "非法 JSON 是错误结果而不是 throw");
+      const missingField = await tools.executeTool("edit", { path: "shapes.txt", edits: [{ oldText: "three" }] });
+      assert.match(String(missingField), /^错误：/u, "newText 缺失是错误结果（删除要显式传空串）");
+      assert.equal(await readFile(path.join(cwd, "shapes.txt"), "utf8"), "ONE\nTWO\nthree\n",
+        "两次失败调用都没动过文件");
     });
   });
 

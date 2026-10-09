@@ -30,6 +30,7 @@ test("createCliTools exposes all builtin tools including the todo quartet", () =
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
     [
+      "edit",
       "exec",
       "grep",
       "readFile",
@@ -49,7 +50,7 @@ test("createCliTools({ todo: false }) drops the todo quartet (issue #69)", async
   const { tools, executeTool } = createCliTools({ todo: false });
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
-    ["exec", "grep", "readFile", "rg", "searchText", "tree", "writeFile"],
+    ["edit", "exec", "grep", "readFile", "rg", "searchText", "tree", "writeFile"],
   );
   await assert.rejects(executeTool("todo_add", { text: "x" }), /未知工具/u);
 });
@@ -121,10 +122,10 @@ test("CLI 文件工具完全来自库实现，且 exec/todo_* 行为不变（#18
     await writeFile(join(cwd, "node_modules", "pkg", "i.js"), "needle vendor\n", "utf8");
     const { tools, executeTool } = createCliTools({ cwd });
 
-    // schema 名单与顺序（文件工具在前、exec 在后；#195 在 rg 之前插入 searchText，其余位置不动）
+    // schema 名单与顺序（文件工具在前、exec 在后；#195 在 rg 之前插入 searchText、#191 在 writeFile 之前插入 edit，其余位置不动）
     assert.deepEqual(
       tools.map((tool) => tool.name),
-      ["readFile", "searchText", "rg", "grep", "tree", "writeFile", "exec", "todo_add", "todo_list", "todo_done", "todo_clear"],
+      ["readFile", "searchText", "rg", "grep", "tree", "edit", "writeFile", "exec", "todo_add", "todo_list", "todo_done", "todo_clear"],
     );
     // 新工具的 schema 从库里一路可用（不是 CLI 自己另写一套）
     const searchTextSchema = tools.find((tool) => tool.name === "searchText").inputSchema;
@@ -133,6 +134,8 @@ test("CLI 文件工具完全来自库实现，且 exec/todo_* 行为不变（#18
     // 库里新增的参数从 CLI 一路可用（不是 CLI 自己另写一套）
     assert.ok(tools.find((tool) => tool.name === "readFile").inputSchema.properties.max_bytes);
     assert.ok(tools.find((tool) => tool.name === "rg").inputSchema.properties.include_vendor);
+    // issue #191：`edit` 的 schema 也只能来自库（CLI 不再自己塑一份工具面）
+    assert.match(tools.find((tool) => tool.name === "edit").description, /EXACT matching only/u);
 
     // 排除账 + 无命中口径从 CLI 可见
     const skipped = await executeTool("grep", { pattern: "needle" });

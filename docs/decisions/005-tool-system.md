@@ -30,12 +30,19 @@ It is not part of the main export; it is available only through an explicit `imp
    implementation is no longer shipped.
    After resolution the path must still be inside root (an out-of-bounds path throws), writes are limited to writable subtrees, and maskedPaths cannot be read.
    This is pure logic needed by both projects and is worth sharing because it is unrelated to "what to execute".
-2. **Reference filesystem tools** (readFile/rg/tree/writeFile)—built on the jail,
+2. **Reference filesystem tools** (readFile/rg/tree/writeFile/edit)—built on the jail,
    suitable for direct use in scripts/prototypes/low-risk scenarios; production scenarios may copy or replace them.
    **Amended (2026-10, issue #184): the jail base is gone.** These tools are back in the library
    (`src/tools/file-tools.js`, exported as `createFileTools` on `erix-agent/tools`) but built on
    **host-injected `allowRead`/`allowWrite` predicates**; the library ships no jail default and no
    boundary error type (see ADR-009 rev. 2026-10). The CLI is itself a consumer of them.
+   **Amended (2026-10, issue #191): `edit` joins this set** as the **second write tool** —
+   `{path, edits}`, byte-exact matching, each `oldText` must match exactly once, every edit matched
+   against the **original** content, and 0-hit / multi-hit / out-of-bounds / no-change are error
+   results rather than throws. Being a write tool, it also moves the judge's default
+   `writeToolNames` to `["writeFile", "edit"]` (single source of truth:
+   `DEFAULT_WRITE_TOOL_NAMES` in `src/reflection/judge.js`); hosts that pass `writeToolNames`
+   explicitly are unaffected.
 3. **`recall` tool** (explicitly requested as built-in)—built on TranscriptStore:
 
 ```

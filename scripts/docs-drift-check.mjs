@@ -248,12 +248,23 @@ const DEFAULT_RULES = [
     ],
   },
   {
-    id: "writeToolNames / writeToolPathKeys 默认值",
-    src: "src/loop/orchestrator.js",
-    srcRe: /\n\s+writeToolNames = (\[[^\]]+\]),[\s\S]{0,60}?writeToolPathKeys = (\[[^\]]+\]),/,
+    // issue #191：`writeToolNames` 的默认值不再是 orchestrator 里的字面量（它与 judge timeline 的回退
+    // 已归一为 src/reflection/judge.js 的共享常量），真值从常量定义处抽。
+    id: "writeToolNames 默认值",
+    src: "src/reflection/judge.js",
+    srcRe: /export const DEFAULT_WRITE_TOOL_NAMES = (\[[^\]]+\]);/,
     docs: [README_EN, README_CN],
-    must: ([names, keys]) => [
+    must: ([names]) => [
       new RegExp(`writeToolNames[\\s\\S]{0,60}?${esc(names)}`),
+    ],
+    hint: "judge 的默认写工具集；orchestrator 的参数默认值与 normalizeToolNameSet 回退共用这个常量",
+  },
+  {
+    id: "writeToolPathKeys 默认值",
+    src: "src/loop/orchestrator.js",
+    srcRe: /\n\s+writeToolPathKeys = (\[[^\]]+\]),/,
+    docs: [README_EN, README_CN],
+    must: ([keys]) => [
       new RegExp(`writeToolPathKeys[\\s\\S]{0,60}?${esc(keys)}`),
     ],
   },

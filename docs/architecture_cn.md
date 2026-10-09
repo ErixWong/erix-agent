@@ -167,7 +167,7 @@ runToolLoop({
   initialUserMessage,
   initialMessages,
   tools = [],
-  writeToolNames = ["writeFile"],
+  writeToolNames = ["writeFile", "edit"],
   writeToolPathKeys = ["path", "file_path"],
   executeTool,
   maxRounds = 8,

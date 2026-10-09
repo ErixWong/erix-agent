@@ -4,7 +4,7 @@
 // rg/grep 默认正则与真实命令同口径（#184 追加轮 A，含 schema 描述真值）。
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile as readFilePromise, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setImmediate as immediate } from "node:timers";
 import { makeTmp } from "../helpers/tmp.js";
@@ -197,6 +197,137 @@ test("有 signal 时遍历周期让出，中途可被中止（同步遍历不卡
     const running = executeTool("rg", { pattern: "needle" }, { signal: controller.signal });
     await assert.rejects(running, (error) => error?.name === "AbortError");
     assert.ok(yielded, "有 signal 时每 32 个条目必须让出一次事件循环");
+  });
+});
+
+// ── edit（issue #191）：库自己的口径 ───────────────────────────────────────────
+// 契约面（形状容忍 / 精确匹配 / 对原文匹配 / BOM+CRLF / 边界谓词）在 fileToolsContract 里；
+// 这里只钉本实现的输出预算与护栏：结果首行摘要、短 diff、截断 marker、体积与条数上限、
+// 以及「任何失败都是错误结果而不是 throw」。
+
+test("edit 返回短 unified diff：首行摘要 + @@ 段 + 3 行上下文 + 首个变更行（#191）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "a.txt"), Array.from({ length: 20 }, (_, i) => `l${i + 1}`).join("\n") + "\n", "utf8");
+    const { executeTool } = createFileTools({ cwd });
+
+    const output = await executeTool("edit", { path: "a.txt", edits: [{ oldText: "l10", newText: "TEN" }] });
+    const [header, ...rest] = output.split("\n");
+    assert.match(header, /^已编辑 a\.txt，替换 1 处，首个变更行 10，写入 \d+ 字节$/u, header);
+    assert.deepEqual(rest.slice(0, 2), ["--- a/a.txt", "+++ b/a.txt"], "diff 要有文件头，模型才知道改的是哪份");
+    assert.match(rest[2], /^@@ -\d+,7 \+\d+,7 @@$/u, `3 行上下文的 hunk 头：${rest[2]}`);
+    const changed = rest.slice(2).filter((line) => line.startsWith("-") || line.startsWith("+"));
+    assert.deepEqual(changed, ["-l10", "+TEN"], "变更行只有这两条（文件头 --- / +++ 不算）");
+    const context = rest.filter((line) => line.startsWith(" ") && line.trim() !== "");
+    assert.equal(context.length, 6, `变更两侧各 3 行上下文，实际 ${context.length}：${output}`);
+    // diff 是「不必回读就能自证」的最小凭证：一次单行替换不该回显整份文件
+    // 1 处单行变更 = 摘要 1 行 + 文件头 2 行 + hunk 头 1 行 + 上下文 6 行 + 变更 2 行 = 12 行；
+    // 20 行的文件若整份回显会是 20+ 行，所以这个上限只可能钉住「短 diff」而不是「整文件」。
+    assert.ok(output.split("\n").length < 15, `diff 必须短：${output.split("\n").length} 行`);
+  });
+});
+
+test("edit 的多个相邻变更归并进同一个 hunk，远离的分成多段（#191）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "a.txt"), Array.from({ length: 40 }, (_, i) => `l${i + 1}`).join("\n") + "\n", "utf8");
+    const { executeTool } = createFileTools({ cwd });
+
+    const near = await executeTool("edit", { path: "a.txt", edits: [
+      { oldText: "l5", newText: "A" },
+      { oldText: "l7", newText: "B" },
+    ] });
+    assert.equal((near.match(/^@@ /gmu) ?? []).length, 1, "上下文相接的两处必须归并，别把同一行回显两遍");
+    assert.match(near, /首个变更行 5/u);
+
+    const far = await executeTool("edit", { path: "a.txt", edits: [
+      { oldText: "A", newText: "l5" },
+      { oldText: "l30", newText: "C" },
+    ] });
+    assert.equal((far.match(/^@@ /gmu) ?? []).length, 2, "隔得远的两处各成一个 hunk");
+  });
+});
+
+test("edit 的 diff 有段数与行数预算，超了带 marker 与剩余计数（#191）", async () => {
+  await withDirectory(async (cwd) => {
+    // 行名补零到 3 位：否则 "l1" 会同时命中 l1/l10/l100，测试就变成在测唯一性了
+    const lines = Array.from({ length: 400 }, (_, i) => `l${String(i + 1).padStart(3, "0")}`);
+    await writeFile(join(cwd, "a.txt"), lines.join("\n") + "\n", "utf8");
+    const { executeTool } = createFileTools({ cwd });
+
+    // 20 处分散变更：段数超过 EDIT_DIFF_MAX_CHUNKS(8) 就必须截断并回报剩余
+    const output = await executeTool("edit", { path: "a.txt", edits: Array.from({ length: 20 }, (_, i) => ({
+      oldText: `l${String(i * 20 + 1).padStart(3, "0")}`, newText: `X${i}`,
+    })) });
+    assert.equal((output.match(/^@@ /gmu) ?? []).length, 8, `段数上限 8：${output.slice(0, 200)}`);
+    assert.match(output, /\[diff 已截断：另有 12 处变更未显示/u, output.split("\n").at(-1));
+    assert.match(output, /readFile/u, "截断 marker 要给取回路径（ADR-010：去噪必须可撤销）");
+    // 截断只砍 diff 回显，不砍实际写入：20 处都得真的落盘
+    const content = await readFilePromise(join(cwd, "a.txt"), "utf8");
+    for (let i = 0; i < 20; i += 1) assert.ok(content.includes(`X${i}`), `第 ${i} 处必须真的写进去`);
+
+    // 行数预算：三段各 80/90 行的变更合起来超过 EDIT_DIFF_MAX_LINES(200)。
+    // 换一个干净文件做：上面那 20 处已经改过 a.txt，精确匹配的世界里没有"大概还是原文"。
+    await writeFile(join(cwd, "b.txt"), lines.join("\n") + "\n", "utf8");
+    const block = (from, to) => lines.slice(from - 1, to).join("\n");
+    const three = await executeTool("edit", { path: "b.txt", edits: [
+      { oldText: block(1, 80), newText: "B1" },
+      { oldText: block(120, 200), newText: Array.from({ length: 90 }, (_, i) => `n${i}`).join("\n") },
+      { oldText: block(300, 380), newText: "B3" },
+    ] });
+    assert.match(three, /^已编辑 b\.txt，替换 3 处，首个变更行 1/u, three.slice(0, 160));
+    assert.match(three, /\[diff 已截断：另有 \d+ 处变更未显示，diff 行数上限 200 已达/u, three.split("\n").at(-1));
+    const written = await readFilePromise(join(cwd, "b.txt"), "utf8");
+    assert.ok(written.includes("B3"), "行数截断同样不许影响实际写入");
+  });
+});
+
+test("edit 有整文件载入上限与单次条数上限，超限给下一步而不是抛（#191）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "big.txt"), "x".repeat(5 * 1024 * 1024), "utf8");
+    await writeFile(join(cwd, "small.txt"), "solo\n", "utf8");
+    const { executeTool } = createFileTools({ cwd });
+
+    const tooBig = await executeTool("edit", { path: "big.txt", edits: [{ oldText: "xxx", newText: "yyy" }] });
+    assert.match(String(tooBig), /^错误：/u);
+    assert.match(String(tooBig), /超过 edit 的整文件载入上限 4194304 字节/u);
+    assert.match(String(tooBig), /writeFile/u, "超限要给出下一步（分段确认 / 整写）");
+
+    const tooMany = await executeTool("edit", { path: "small.txt", edits: Array.from({ length: 65 }, (_, i) => ({
+      oldText: `nope${i}`, newText: "x",
+    })) });
+    assert.match(String(tooMany), /^错误：/u);
+    assert.match(String(tooMany), /超过单次上限 64 条/u);
+  });
+});
+
+test("edit 对二进制、目录、不存在的目标一律返回错误结果并给下一步（#191）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "bin.dat"), Buffer.from([0x61, 0x00, 0x62]));
+    const { executeTool } = createFileTools({ cwd });
+
+    assert.match(String(await executeTool("edit", { path: "bin.dat", edits: [{ oldText: "a", newText: "b" }] })),
+      /含 NUL 字节/u);
+    assert.match(String(await executeTool("edit", { path: "ghost.txt", edits: [{ oldText: "a", newText: "b" }] })),
+      /^错误：edit 读不到 ghost\.txt（ENOENT）/u);
+    assert.match(String(await executeTool("edit", { path: "ghost.txt", edits: [{ oldText: "a", newText: "b" }] })),
+      /新建请用 writeFile/u);
+    assert.match(String(await executeTool("edit", { path: ".", edits: [{ oldText: "a", newText: "b" }] })),
+      /EISDIR/u);
+    assert.match(String(await executeTool("edit", { edits: [{ oldText: "a", newText: "b" }] })),
+      /^错误：edit 的 path 必须是非空字符串/u);
+    assert.match(String(await executeTool("edit", { path: "ghost.txt", edits: [] })),
+      /edits 是空数组/u);
+  });
+});
+
+test("edit 混合行尾：写回统一成 CRLF，不做逐行保留（口径已写进描述与契约，#191）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "mixed.txt"), "a\nb\r\nc\r\n", "utf8");
+    const { executeTool } = createFileTools({ cwd });
+
+    const output = await executeTool("edit", { path: "mixed.txt", edits: [{ oldText: "a", newText: "A" }] });
+    assert.match(output, /^已编辑/u);
+    assert.match(output, /CRLF 行尾已保留/u, "结果要自报行尾被统一过，不当隐藏行为");
+    assert.equal(await readFilePromise(join(cwd, "mixed.txt"), "utf8"), "A\r\nb\r\nc\r\n");
   });
 });
 

@@ -574,7 +574,9 @@ decide whether to consume the result.
   placeholders contain a navigation digest and, for suitable JSON, a JSON
   skeleton. `note_*`, todo, error, and explicitly protected results are not
   folded.
-- `writeToolNames` defaults to `["writeFile"]`; custom write tools must be
+- `writeToolNames` defaults to `["writeFile", "edit"]` (`edit` joined the default
+  set in 0.18.0, issue #191 — an `edit` that the judge could not see was a write
+  it silently never counted); custom write tools must still be
   named explicitly. `writeToolPathKeys` defaults to `["path", "file_path"]`.
   The judge's `filesWritten` footprint does not infer arbitrary write tools
   from their names.

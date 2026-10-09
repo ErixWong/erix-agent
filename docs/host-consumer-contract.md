@@ -1386,6 +1386,71 @@ adds `exec` and `todo_*`, and passes no predicates, so CLI behaviour stays
 "no boundary" exactly as before. `bin/` no longer owns a second copy of the file
 tools (issue #184).
 
+### File edit tool `edit` (issue #191)
+
+`edit` is the **second write tool** in the same `definitions` array and the same
+`executeTool` entry point — a host that registers `File tool registration` above
+gets it with zero extra wiring. It exists because the tool surface previously had
+only `writeFile{path, content}`: a three-line change cost a full re-typed file
+(`src/loop/orchestrator.js` at 3277 lines ≈ 33k output tokens), and that rewrite
+can itself be cut off by the model's own output budget — `continuation_exhausted`
+is a first-class terminal reason in this library. `edit` moves the cost of "change
+a small span" from file-size to diff-size.
+
+```js
+import { createFileTools } from "erix-agent/tools";
+
+const fileTools = createFileTools({ cwd, allowWrite: (absolutePath) => absolutePath === expectedPath });
+
+const edited = await fileTools.executeTool({
+  id: "toolu_edit_1",
+  name: "edit",
+  input: { path: "a.js", edits: [{ oldText: "const a = 1;", newText: "const a = 2;" }] },
+  context: {},
+});
+
+// 越界写：allowWrite false 走的是与 writeFile 同一份错误结果，不抛、不落盘
+const denied = await createFileTools({ cwd, allowWrite: () => false })
+  .executeTool({ id: "toolu_edit_2", name: "edit", input: { path: "a.js", edits: [{ oldText: "const a = 2;", newText: "const a = 3;" }] }, context: {} });
+```
+
+
+What a host can code against:
+
+| Surface | Contract |
+| --- | --- |
+| Input | `{ path, edits }`. `edits` is accepted in exactly three shapes and no others: `[{oldText, newText}]`, a single `{oldText, newText}` object, or either of those as a JSON string. Every other shape (invalid JSON, a non-string `oldText`/`newText`, an empty list) is an error result. Tolerating the three shapes is normalising the **shape**, never guessing the intent |
+| Matching | byte-exact. `oldText` must equal a span of the file character for character, whitespace and indentation included. **No fuzzy fallback**: no NFKC folding, no curly-quote folding, no trailing-whitespace tolerance |
+| Uniqueness | each `oldText` must match exactly once. `0` matches and `N>1` matches are error results; the `N>1` text names the count and the first two hit lines |
+| Independence | every `oldText` is matched against the **original** content, not against the state produced by earlier edits in the same call; matched ranges must not overlap |
+| Atomicity | nothing is written unless every edit validated. There is no partial application, and an all-no-op call is an error result (`未做任何修改…`) rather than a silent success |
+| Write boundary | `allowWrite(absolutePath)` — the same predicate `writeFile` uses, consulted before anything is read. A denial is an error result, never a throw, and the file keeps its previous bytes |
+| Line endings | a BOM is preserved; a file whose newlines include CRLF is matched in LF space and written back with CRLF. A mixed-line-ending file is therefore normalised to CRLF on write — the result line says `CRLF 行尾已保留` rather than leaving that as hidden behaviour |
+| Result | a summary line (`已编辑 <path>，替换 N 处，首个变更行 N，写入 N 字节`, plus the BOM/CRLF notes when they apply) followed by a unified-style diff with 3 context lines, grouped per edit region and capped at 8 hunks / 200 diff lines. A capped diff appends a truncation marker with the remaining count and a `readFile` next step (ADR-010: denoising stays revocable) |
+| Diff fidelity | the diff is a **self-verification aid, not a patch**: hunks are per edit region with whole-line boundaries and prefix/suffix trimming, so it can show more changed lines than a minimal LCS diff (never fewer) and nothing promises `git apply` works. For byte-exact confirmation use `readFile` |
+| Guards | a target over 4 MiB, more than 64 edits in one call, a NUL-containing (binary) file, a directory, and a missing path all return error results that name the next step (`writeFile` for new files, `readFile` to re-read) |
+| Judge | `edit` is in the default `writeToolNames` (`["writeFile", "edit"]`), so its `path` reaches the judge's `filesWritten` without host configuration. An explicit host `writeToolNames` **replaces** that default outright — it is never merged with it |
+
+**Why there is no fuzzy fallback in this round.** pi's `edit` carries NFKC
+normalisation, curly-quote folding and trailing-whitespace tolerance, added
+*after* its transcripts showed models mistyping a character while copying
+`readFile` output. This library has no such transcript evidence (the same rule
+that kept `-i`/`-A`/`.gitignore` out of `searchText` in issue #195 R4: no
+evidence, no scope), and folding would exchange the one signal a model can
+self-verify — `0 matches`, an error result it can act on — for a silent
+"matched somewhere else". That is the exact class of silent lying issues
+#184/#195 have been closing. Concretely: a wrong-but-plausible fuzzy match costs
+a whole round-trip to notice, an exact-match miss costs one retry. Adopting a
+fallback later is additive (it widens what matches, never narrows it), so nothing
+here is a one-way door.
+
+Hosts that classify tool side effects (journaling, permission prompts, TUI write
+badges, replay policy) must treat `edit` as a **write**: its `path` argument looks
+like `readFile`'s, and a name-based read/write table that keeps only `writeFile`
+will under-report every edit. The retired `bin/tools.js` tool surface never had
+one, and the CLI now lists `edit` in its tool-list line, which is why
+`test/fixtures/cli-golden.json` changed in this release.
+
 ### Search tool (issue #195)
 
 `searchText` is the single search entry point (Tier 2 host integration, same
