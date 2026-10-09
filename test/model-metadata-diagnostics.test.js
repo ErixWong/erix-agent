@@ -254,6 +254,7 @@ test("the diagnostic fires before the first provider call, so a host can bail ou
   const seen = [];
   const controller = new AbortController();
   const provider = textProvider();
+  // issue #173 PR-B：宿主想提前停机只能用 signal.abort()（抛错不再是控制流，见下一条用例）。
   await assert.rejects(
     runToolLoop({
       provider,
@@ -273,10 +274,43 @@ test("the diagnostic fires before the first provider call, so a host can bail ou
   assert.equal(provider.requests.length, 0, "诊断事件必须在首次 provider 调用前送达");
 });
 
-test("startup diagnostic host-callback throw with aborted signal reports aborted (issue #182/#180 edge)", async () => {
-  // 独立验收发现：启动期 onEvent 抛错同时 abort 信号已置位时，终局 reason 必须与
-  // fail() 同口径判 aborted（而不是硬编 failed），且载荷照常携带。
+test("startup diagnostic host-callback throw is isolated and the run continues (issue #173 PR-B)", async () => {
+  // PR-A 锁的是「启动期 onEvent 抛错 → 按 fail() 同口径注解终局后抛出」；PR-B 删除了那段：
+  // 抛错现在走观察者隔离，run 继续跑完，model_metadata_missing 仍然恰好一条。
+  const events = [];
+  const observerErrors = [];
+  const provider = textProvider();
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "go",
+    executeTool: async () => "ok",
+    persistence: "none",
+    completion: false,
+    onEvent: (event) => {
+      events.push(event);
+      throw new Error("host onEvent blew up");
+    },
+    onObserverError: (error, context) => observerErrors.push({ error, context }),
+  });
+
+  assert.equal(result.finalText, "done");
+  assert.deepEqual(result.termination, { reason: "end_turn" }, "抛错不再是拒绝 run 的机制");
+  assert.equal(provider.requests.length, 1, "首次 provider 调用照常发生");
+  assert.equal(noticesOf(events).length, 1, "去重语义不受抛错影响：仍然恰好一条");
+  // onEvent 每条事件都在抛，因此每个事件各记一笔；这里只取启动诊断那一笔
+  const notice = observerErrors.filter((entry) => entry.context.type === EVENT_TYPE);
+  assert.equal(notice.length, 1);
+  assert.equal(notice[0].error.message, "host onEvent blew up");
+  assert.equal(notice[0].context.channel, "onEvent");
+  assert.equal(notice[0].context.runId, undefined, "未传 runId 时不编造字段");
+});
+
+test("startup diagnostic throw plus abort: the abort is the only thing that ends the run (issue #173/#180)", async () => {
+  // PR-B 后的口径：抛错被隔离，run 继续；终局由宿主自己的 abort 决定（不再是「startup throw
+  // 注解 failed/aborted」），载荷仍按 #180 携带。
   const controller = new AbortController();
+  const observerErrors = [];
   await assert.rejects(
     runToolLoop({
       provider: textProvider(),
@@ -286,13 +320,15 @@ test("startup diagnostic host-callback throw with aborted signal reports aborted
       completion: false,
       signal: controller.signal,
       onEvent: () => { controller.abort(); throw new Error("host onEvent blew up"); },
+      onObserverError: (error) => observerErrors.push(error),
     }),
     (error) => {
-      assert.equal(error.termination.reason, "aborted");
+      assert.equal(error.termination.reason, "aborted", "终局来自 abort，不是来自抛错");
       assert.ok(error.usage && typeof error.rounds === "number");
       assert.equal(error.termination.usage, error.usage);
       assert.equal(error.termination.partial, true);
       return true;
     },
   );
+  assert.deepEqual(observerErrors.map((error) => error.message), ["host onEvent blew up"]);
 });

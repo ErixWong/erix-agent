@@ -90,7 +90,10 @@ export async function callProvider(ctx, {
       maxAttempts: ctx.retryAttempts + 1,
     });
 
-    const dispatchAttemptEvent = (event, callback) => {
+    // issue #173 PR-B：流式观察者（onDelta/onReasoningDelta/onToolCall/onUsage）的抛错原本就走
+    // reportObserverError 隔离，语义不回退；这里只是给它们补上**自己的通道名**上下文（与新增的
+    // onEvent/onRound/onToolResult/onJudge 同一口径），宿主能直接按 channel 分流。
+    const dispatchAttemptEvent = (event, callback, observerChannel = "unknown") => {
       if (event.type === "usage") {
         const emitEvent = ctx.emitEvent;
         emitEvent({ type: "usage", round, usage: event.usage });
@@ -102,15 +105,15 @@ export async function callProvider(ctx, {
         callback();
       } catch (error) {
         const reportObserverError = ctx.reportObserverError;
-        reportObserverError(error);
+        reportObserverError(error, { channel: observerChannel, round, type: event.type });
       }
     };
-    const queueEvent = (event, callback) => {
+    const queueEvent = (event, callback, observerChannel) => {
       if (ctx.retryAttempts === 0) {
-        dispatchAttemptEvent(event, callback);
+        dispatchAttemptEvent(event, callback, observerChannel);
         return;
       }
-      attemptEvents.push({ event, callback });
+      attemptEvents.push({ event, callback, observerChannel });
     };
     try {
       const stablePrefix = ctx.cacheStablePrefix !== false
@@ -141,6 +144,7 @@ export async function callProvider(ctx, {
                 const onDelta = ctx.onDelta;
                 onDelta?.(chunk);
               },
+              "onDelta",
             );
           },
           onReasoningDelta: (chunk, metadata) => queueEvent(
@@ -153,6 +157,7 @@ export async function callProvider(ctx, {
               const onReasoningDelta = ctx.onReasoningDelta;
               onReasoningDelta?.(chunk, metadata);
             },
+            "onReasoningDelta",
           ),
           onToolCall: (fragment) => queueEvent(
             { type: "tool_call", ...fragment },
@@ -160,6 +165,7 @@ export async function callProvider(ctx, {
               const onToolCall = ctx.onToolCall;
               onToolCall?.(fragment);
             },
+            "onToolCall",
           ),
           onUsage: (reportedUsage) => {
             attemptUsage = reportedUsage;
@@ -169,6 +175,7 @@ export async function callProvider(ctx, {
                 const onUsage = ctx.onUsage;
                 onUsage?.(reportedUsage);
               },
+              "onUsage",
             );
           },
         }));
@@ -182,8 +189,8 @@ export async function callProvider(ctx, {
           const emitEvent = ctx.emitEvent;
           emitEvent({ type: "recovered", round, attempt });
         }
-        for (const { event, callback } of attemptEvents) {
-          dispatchAttemptEvent(event, callback);
+        for (const { event, callback, observerChannel } of attemptEvents) {
+          dispatchAttemptEvent(event, callback, observerChannel);
         }
         return {
           response,

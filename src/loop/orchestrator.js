@@ -459,19 +459,44 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   diagnostics?: {error:(event:object)=>void|Promise<void>},
  *   runId?: string,
  *   resume?: boolean,
- *   onRound?: Function,
- *   onJudge?:(info:JudgeEvent) => void,
- *   onToolResult?: Function,
+ *   onRound?: (record:object) => void,      // 观察者（issue #173 PR-B）：抛错/rejected Promise 均被隔离
+ *   onJudge?:(info:JudgeEvent) => void,     // 观察者（issue #173 PR-B）：抛错被隔离
+ *   onToolResult?: (name:string, result:string, metadata?:object) => any,
+ *     // 改写钩子（非纯观察者）：返回值会替换工具结果。抛错/rejected Promise 被隔离，
+ *     // fallback 是【保留引擎原始执行结果】后继续跑——改写/脱敏逻辑必须在本 hook 内自防（issue #173 PR-B）
  *   onPersistenceError?: (error:Error) => void,
- *   onObserverError?: (error:Error) => void,
+ *   onObserverError?: (error:Error, context:{channel:string, runId?:string, ...}) => void,
+ *     // 统一观察者错账户（issue #173 PR-B）：第二参带出错通道与定位上下文。channel 恒存在，取值
+ *     // "onEvent"|"onRound"|"onToolResult"|"onJudge"|"onDelta"|"onReasoningDelta"|"onToolCall"|"onUsage"；
+ *     // 宿主传了 runId 时每条上报都带 runId（并行多 run 的宿主靠它归因）；其余字段按通道附送
+ *     // （type/round/toolName/method）。本回调同步抛错时退到 console，不影响 run
  *   signal?: AbortSignal,
  *   stream?: boolean,
- *   onDelta?: (chunk:string) => void,
- *   onReasoningDelta?: (chunk:string) => void,
- *   onToolCall?: (fragment:object) => void,
- *   onUsage?: (usage:object) => void,
- *   onEvent?: (event:LoopEvent) => void,
+ *   onDelta?: (chunk:string) => void,       // 观察者（issue #173 PR-B）：抛错被隔离
+ *   onReasoningDelta?: (chunk:string) => void, // 同上
+ *   onToolCall?: (fragment:object) => void, // 同上
+ *   onUsage?: (usage:object) => void,       // 同上
+ *   onEvent?: (event:LoopEvent) => void,    // 观察者（issue #173 PR-B）：抛错被隔离（启动期直调路径同口径）
  * }} options
+ *
+ * 宿主观察者回调的统一语义（issue #173 PR-B，行为放宽 = semver minor）：
+ *   1. 九个宿主观察者回调——八条通道 onEvent / onRound / onToolResult / onJudge / onDelta /
+ *      onReasoningDelta / onToolCall / onUsage，加上一条不承诺异步的错账户 onObserverError
+ *      自身（它炸了退到 console）——抛错后一律「记一笔、继续跑」：经
+ *      onObserverError(error, {channel, runId?, ...}) 报告，run 的 termination 不因观察者抛错
+ *      而改变（旧行为：onEvent/onRound/onToolResult 会杀 run、onJudge 静默吞）。onEvent 的两条
+ *      启动期直调诊断路径（model_metadata_missing / persistence_capability_degraded）同口径。
+ *   2. 抛错不是控制流。要终止 run 请 `signal.abort()`（抛出的错误带 #180 载荷），
+ *      或依靠引擎自身的治理/失败裁决；宿主不得依赖回调抛错来中止或降级 run。
+ *   3. 回调必须**同步返回**。async 回调的 rejected Promise 仅在被 await 的两个通道
+ *      （onRound、onToolResult）上承诺隔离；其余通道（含 onEvent）只接同步 throw，
+ *      开异步回调请自带 try/catch。
+ *   4. 观察者错误是 best-effort：不落持久化错误账本（`delivery_failure` 不覆盖它们），
+ *      宿主应自己计数 onObserverError；`onToolResult` 是数据改写钩子，其异常 fallback 为
+ *      保留原始结果（详见 docs/host-consumer-contract.md「Observer callback errors」）。
+ *   5. 不在这条通道里的宿主回调各有各的错误口径，别外推：`executeTool`（工具错误）、
+ *      `onPersistenceError`/`diagnostics.error`（持久化账本 + delivery_failure）、
+ *      `finalGuard`（核验状态）、`reflection.onReflection`（仍按未隔离处理，抛错杀 run）。
  * @returns {Promise<{
  *   finalText:string,
  *   messages:object[],
@@ -743,16 +768,31 @@ export async function runToolLoop(options) {
     });
     await reportPersistenceError(info.error, event);
   };
-  const reportObserverError = (error) => {
+  // issue #173 PR-B：观察者回调抛错的唯一记账口。九个观察者通道（onEvent / onRound /
+  // onToolResult / onJudge，以及流式 onDelta / onReasoningDelta / onToolCall / onUsage）的
+  // 宿主异常一律经此上报后**继续跑**，不再改写 run 的终局（要终止 run 请 signal.abort()）。
+  // context 至少带 {channel}（回调名）与定位所需的最小上下文（type/round/toolName），宿主据此
+  // 分流与计数。best-effort 语义不变：宿主 onObserverError 自己抛错时退到 console，绝不二次抛出。
+  const reportObserverError = (error, context = {}) => {
+    const channel = typeof context?.channel === "string" && context.channel !== ""
+      ? context.channel
+      : "unknown";
+    // runId 在记账口统一注入而不是各通道自己拼：宿主（touwaka / erix-station）并行跑多个 run，
+    // 拿不到 runId 的观察者错误无法归因。没传 runId 时不编造字段。
+    const detail = {
+      ...(runId === undefined ? {} : { runId }),
+      ...context,
+      channel,
+    };
     if (typeof onObserverError === "function") {
       try {
-        onObserverError(error);
+        onObserverError(error, detail);
         return;
       } catch (reportError) {
         console.error("Observer error reporter failed:", reportError);
       }
     }
-    console.error("Observer callback error:", error);
+    console.error("Observer callback error:", error, detail);
   };
   // issue #78：可选 capability（run snapshot / run-state）缺失时跳过对应持久化，
   // 只发一次诊断事件（不每轮刷屏）；run 正常执行，仅不支持中途 crash resume。
@@ -762,12 +802,22 @@ export async function runToolLoop(options) {
     skippedCapabilityMethods.add(method);
     // 直接用 onEvent（函数参数，任何时点可用）；emitEvent 的 const 定义在下方，
     // restoreResume 早于它执行（markRunState("running")），不能引用。
-    onEvent?.({
-      type: "persistence_capability_degraded",
-      runId,
-      method,
-      detail: `store does not implement ${method}; the corresponding persistence is skipped for this run`,
-    });
+    // issue #173 PR-B 边界③：这条直调路径绕过 emitEvent，因此隔离防护在此本地复刻一份，
+    // 口径与 emitEvent 完全一致（同一 reportObserverError、同一 channel:"onEvent" 上下文）。
+    try {
+      onEvent?.({
+        type: "persistence_capability_degraded",
+        runId,
+        method,
+        detail: `store does not implement ${method}; the corresponding persistence is skipped for this run`,
+      });
+    } catch (hostError) {
+      reportObserverError(hostError, {
+        channel: "onEvent",
+        type: "persistence_capability_degraded",
+        method,
+      });
+    }
   };
   // issue #182：预算元数据缺失时本 run 的压缩总开关不进入（budgetTokens 未定义 → overBudget 恒
   // false）、单轮聚合输出预算（#120）整体关闭、输出截断上限退回 4096，而此前全链路零告警
@@ -781,15 +831,25 @@ export async function runToolLoop(options) {
     modelMetadataNoticeSent = true;
     // detail 前三句是 issue #182 约定的固定原文（宿主可直接断言）；输出上限一句按实际解析值
     // 说真话——显式 outputHygiene.limit 或只带了 contextWindowTokens 时并不是 4096。
-    onEvent?.({
-      type: "model_metadata_missing",
-      runId,
-      detail: "contextWindowTokens/maxOutputTokens unavailable; compaction and aggregate output"
-        + " budget are disabled for this run;"
-        + (outputHygieneLimit === 4096
-          ? " output limit falls back to 4096"
-          : ` output limit resolves to ${outputHygieneLimit}`),
-    });
+    // issue #173 PR-B 边界③：同 notifyCapabilitySkipped，直调路径本地复刻 emitEvent 的隔离防护。
+    // 去重标记先置位：宿主抛错也视作「本 run 已发过」，保证事件恰好一条。
+    try {
+      onEvent?.({
+        type: "model_metadata_missing",
+        runId,
+        detail: "contextWindowTokens/maxOutputTokens unavailable; compaction and aggregate output"
+          + " budget are disabled for this run;"
+          + (outputHygieneLimit === 4096
+            ? " output limit falls back to 4096"
+            : ` output limit resolves to ${outputHygieneLimit}`),
+      });
+    } catch (hostError) {
+      // runId 由 reportObserverError 统一注入，此处不重复拼。
+      reportObserverError(hostError, {
+        channel: "onEvent",
+        type: "model_metadata_missing",
+      });
+    }
   };
   const persist = async (method, ...args) => {
     if (!persistenceRequired) return false;
@@ -978,23 +1038,13 @@ export async function runToolLoop(options) {
   }
   if (budgetTokens !== undefined) validateBudget(budgetTokens);
   // issue #182：预算推不出来且原因确实是元数据不齐（宿主自己给了 context.budgetTokens 时
-  // 压缩仍然启用，不该告警）——发一次性诊断事件。宿主回调在启动期抛错时，按 fail() 尾部
-  // 同一口径直接注解后抛出（不能直接调 fail：currentTerminationReason 尚未初始化，TDZ）：
-  // 保证抛出的错误仍带 termination/{usage,rounds,finalText}（#180 载荷恒成立；#173 现状：onEvent 抛错 fatal）。
+  // 压缩仍然启用，不该告警）——发一次性诊断事件。
+  // issue #173 PR-B 决策③：启动期这条直调 onEvent 路径不再是 run 的终止机制。原先「宿主回调
+  // 抛错 → 按 fail() 同口径注解终局后抛出（abort 优先于 failed）」的整段逻辑删除：抛错现在由
+  // notifyModelMetadataMissing 内部的 try/catch 吸收，经 reportObserverError(channel:"onEvent")
+  // 记账后 run 继续（要终止 run 请用 signal.abort()，载荷见 #180）。
   if (budgetTokens === undefined && !budgetMetadataComplete) {
-    try {
-      notifyModelMetadataMissing();
-    } catch (hostError) {
-      // 与 fail() 同口径：abort 信号优先于 failed（独立验收 #182 发现的边界：启动期
-      // 同时 abort + onEvent 抛错时，fail() 会判 aborted，这里不得硬编 failed）。
-      const startupReason = signal?.aborted ? "aborted" : "failed";
-      const startupPayload = readLoopPayload();
-      const startupTermination = withTerminationPayload(
-        withErrorCode(makeTermination(startupReason, terminationDetailForError(hostError)), hostError),
-        startupPayload,
-      );
-      throw annotateTermination(hostError, startupTermination, startupPayload);
-    }
+    notifyModelMetadataMissing();
   }
   // 单轮聚合输出预算（issue #32 #2）：口径统一写在 src/loop/aggregate-budget.js 顶部（估算 token、
   // 计入 stub 开销与 framing）。预算基准**复用**上面算出的 budgetTokens，不新引 contextWindowTokens
@@ -1499,7 +1549,19 @@ export async function runToolLoop(options) {
   let roundEventDeltas = [];
 
   const emitEvent = (event) => {
-    onEvent?.(event);
+    // issue #173 PR-B：onEvent 抛错从「杀 run」改为「记一笔、继续跑」，与流式观察者同构。
+    // 契约（docs/host-consumer-contract.md）：观察者抛错永不改变 run 的终局；要终止 run 用
+    // signal.abort()。回调必须同步返回——async 回调的 rejected Promise 不在本通道承诺范围
+    // （只有被 await 的 onRound/onToolResult 覆盖）。
+    try {
+      onEvent?.(event);
+    } catch (hostError) {
+      reportObserverError(hostError, {
+        channel: "onEvent",
+        ...(event?.type === undefined ? {} : { type: event.type }),
+        ...(event?.round === undefined ? {} : { round: event.round }),
+      });
+    }
   };
 
   const recordCompactionStat = (stat, round) => {
@@ -1520,8 +1582,14 @@ export async function runToolLoop(options) {
     judgeRecordCount += 1;
     try {
       onJudge({ ...judgeRecordCorrelation, ...info });
-    } catch {
-      // Observer failures must not affect the tool loop.
+    } catch (hostError) {
+      // issue #173 PR-B：原先是裸 `catch {}`（连 onObserverError 都不通知）。观察者抛错一律
+      // 记账：宿主自此能数出自己哪个回调在炸，run 仍照常收尾。
+      reportObserverError(hostError, {
+        channel: "onJudge",
+        ...(info?.round === undefined ? {} : { round: info.round }),
+        ...(info?.kind === undefined ? {} : { kind: info.kind }),
+      });
     }
   };
 
@@ -2144,6 +2212,9 @@ export async function runToolLoop(options) {
     toolSignal,
     signal,
     onToolResult,
+    // issue #173 PR-B：onToolResult 的异常 fallback（保留原始结果）要把错误记回同一个观察者
+    // 通道，故在此透传 reportObserverError（不新建平行机制）。
+    reportObserverError,
     persistRunSnapshot,
     hasRunSnapshotStore,
     toolStats,
@@ -3076,7 +3147,15 @@ export async function runToolLoop(options) {
     }
     const persisted = await persist("appendRound", runId, record);
     if (persisted) persistedTranscriptLength += record.messages.length;
-    if (onRound) await onRound(record);
+    if (onRound) {
+      // issue #173 PR-B：onRound 是被 await 的钩子，同步 throw 与 rejected Promise 都在此吸收。
+      // 轮次此刻已经落库，宿主回调失败不得改写 run 终局——记一笔后继续跑下一轮。
+      try {
+        await onRound(record);
+      } catch (hostError) {
+        reportObserverError(hostError, { channel: "onRound", round });
+      }
+    }
 
     executedToolIds.clear();
     snapshotResults.clear();

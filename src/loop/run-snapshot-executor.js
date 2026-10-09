@@ -265,18 +265,31 @@ export function createRunSnapshotExecutor(ctx) {
 
     if (ctx.onToolResult) {
       const onToolResult = ctx.onToolResult;
-      const rewritten = await onToolResult(
-        block.name,
-        execution.content,
-        execution.metadata,
-      );
-      if (rewritten !== undefined) {
-        const normalized = normalizeExecutionResult(rewritten, startedAt);
-        execution = {
-          ...normalized,
-          metadata: { ...execution.metadata, ...normalized.metadata },
-          success: execution.success && normalized.success,
-        };
+      // issue #173 PR-B 边界②：onToolResult 是**改写钩子**（返回值会替换工具结果），不是纯观察者。
+      // 业主定的异常 fallback：【保留原始执行结果 + reportObserverError】后 run 继续——宿主的改写/
+      // 脱敏逻辑一旦抛错，本轮送给模型的是引擎原始结果（不是部分改写），契约里已要求宿主在 hook 内
+      // 自防。ctx.reportObserverError 缺失（手工拼 ctx 的单测）时退到 console，不静默吞。
+      try {
+        const rewritten = await onToolResult(
+          block.name,
+          execution.content,
+          execution.metadata,
+        );
+        if (rewritten !== undefined) {
+          const normalized = normalizeExecutionResult(rewritten, startedAt);
+          execution = {
+            ...normalized,
+            metadata: { ...execution.metadata, ...normalized.metadata },
+            success: execution.success && normalized.success,
+          };
+        }
+      } catch (error) {
+        const context = { channel: "onToolResult", toolName: block.name, round };
+        if (typeof ctx.reportObserverError === "function") {
+          ctx.reportObserverError(error, context);
+        } else {
+          console.error("Observer callback error:", error, context);
+        }
       }
     }
 
