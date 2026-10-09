@@ -1005,8 +1005,8 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 
 返回对象包含：
 
-- `definitions`：`readFile` / `rg` / `grep` / `tree` / `writeFile` 五个 schema。
-  工具名与既有字段（`offset`/`limit`/`path`/`pattern`/`glob`/`is_regex`/
+- `definitions`：`readFile` / `searchText` / `rg` / `grep` / `tree` / `writeFile` 六个
+  schema。工具名与既有字段（`offset`/`limit`/`path`/`pattern`/`glob`/`is_regex`/
   `max_results`/`maxResults`/`depth`）保持不变，自带过 CLI 那份实现的宿主接上本
   工厂是零迁移——**但有一条行为口径要注意**：`rg` 的 `is_regex` 默认是 `true`（#184
   追加轮 A，与真实 `rg` 命令一致），而已退役的 CLI 那份实现把「不传 `is_regex`」当作
@@ -1069,6 +1069,50 @@ CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `e
 且不传任何谓词，所以 CLI 行为与以前一致，仍是「无边界」。`bin/` 不再持有第二套
 文件工具实现（issue #184）。
 
+### 搜索工具（issue #195）
+
+`searchText` 是唯一的搜索入口（Tier 2 host integration，注册路径与「文件工具注册」
+一致），`rg` 与 `grep` 现在它的**薄别名**。为什么要一个新名字：`rg` 与 `grep` 是我们
+自己写的纯 Node 实现（整文件工具里没有任何 `execFile`/`spawn`），却借了两个 CLI 命令的
+名字——**借来的名字会带来借来的先验**。模型看到 `rg` 就会写 `glob: "**/*.test.ts"`（这里
+的名称过滤从不跨 `/`）、先验地以为 `.gitignore` 生效（不生效）、把「没命中」读成「仓库里
+真没有」（其实可能整棵 `vendor` 被跳过）。最后一类正是 issue #184 干掉的那批静默撒谎，
+只是撒谎的主体从输出换成了**名字**。
+
+宿主可以依赖的契约面：
+
+- `mode` **必填且无默认值**——合法取值只有 `"literal"`（字面量）与 `"regex"`（JavaScript
+  正则）。没传或传了非法值会返回工具错误结果`错误：searchText 必须显式给出 mode …
+  （无默认值）`，绝不自己猜一个。这就是这个工具的存在理由：issue #184 不得不翻转一对
+  「`rg` 默认字面量 / `grep` 默认正则」的相反默认，而「默认 `literal`」只会把歧义留给
+  调用方。别名仍保留布尔逃生口：那里的 `is_regex=false` 就是 `mode: "literal"`（等价
+  `rg --fixed-strings` / `grep -F`），正则默认未动。
+- 名称过滤参数叫 `name_pattern`：它**只匹配文件名**、**从不跨 `/`**，所以 `**/*.ts`
+  这类模式一律不命中。它不再叫 `glob`——**只有子集能力就不该顶着完整能力的名字**。
+  `searchText` **不接受 `glob`**：传了会返回一错误结果并指向 `name_pattern`，而不是
+  静默忽略一个「看着能用」的键；`grep` 别名继续吃 `glob`（语义相同），因为它的入参
+  形状属 Stable。
+- `content` 是扁平的 `path:line:命中行` 形态，一行一条命中。两个别名保留各自的历史渲染
+  （`rg` 扁平、`grep` 按文件分组），所以**跳工具的不变式是「命中行正文」**：三个入口共跑
+  同一份实现体，连 500 字符行宽上限、`（无命中）` 口径与排除账都一起产生。契约套件逐字钉
+  住了这个等式（issue #195 硬判据）；宿主不得在别名上假定扁平形态去写解析器。
+- `searchText` 返回 `{ content, metadata }`。`metadata` 携带 `searchHits`、
+  `searchMatchedLines`、`searchFiles`、`searchLimit`、`searchOffset`、`searchTruncated`、
+  `searchNextOffset`（仅在截断时）与 `searchSkipped { vendorDirectories,
+  hiddenDirectories, largeFiles, binaryFiles, deniedPaths }`。这些字段**进 transcript、
+  不上 wire**：模型侧读的仍是 marker 文本（`[已跳过 …]`、`[命中过多，已按
+  max_results=N 截断]`、`（无命中）`），仍由单一 `toolMarker()` 函数产出（文案属
+  Experimental，issue #188）。需要稳定信号的宿主按 `metadata` 分支，**不要按 marker 子串
+  匹配**，也不要要求上面没列出的键。`offset` 用来续读被截断的结果：把
+  `metadata.searchNextOffset` 原样传回来即可。
+- 本轮弃用只是**告警**（issue #188：工具名与入参形状属 Stable，移除要等 major）。
+  `rg` 与 `grep` 会在结果尾部挂一行 `[已弃用 rg：它是 searchText 的薄别名，…]`。拿工具
+  输出做逐字相等比较的宿主会看到这一行——它是模型可见变更；CLI 系统提示的工具清单行与
+  `test/fixtures/cli-golden.json` 同理。
+- **没发生**的事（issue #195 R4）：没加 `-i`、没加 `-A`/`-B`/`-C` 上下文行、没加
+  `--type`、没加 `.gitignore` 感知。每一条都会与边界注入/输出预算/中止交叉（`-A`/`-B`
+  会顶破字节上限；读 `.gitignore` 本身要过 `allowRead`），所以上游要求先看 transcript
+  证据——模型到底写了哪些我们不支持的参数形状、因此误判了几次。
 ### 技能加载器注册（issue #197）
 
 技能包 loader 的规范实现是 `src/skills/loader.js`，经 `erix-agent/tools` 导出——

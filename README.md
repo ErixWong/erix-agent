@@ -723,9 +723,18 @@ The index is a cache, not the source of truth: resuming still requires a
 non-empty transcript for the session, and index write failures never affect
 the run itself.
 
-The built-in CLI tools are `readFile`, `rg`, `grep`, `tree`, `writeFile`, and
-`exec`. **Both** search tools (`rg` and `grep`) are pure-Node implementations,
-not the `rg`/`grep` binaries: the `is_regex` default is `true`, i.e. patterns are
+The built-in CLI tools are `readFile`, `searchText`, `rg`, `grep`, `tree`,
+`writeFile`, and `exec`. `searchText` is the single search entry point (issue
+#195): its `mode` is **required with no default** — `literal` matches the pattern
+as a fixed string, `regex` as a JavaScript regular expression, and a missing or
+unknown `mode` is an explicit error rather than a guess. Its name filter is
+`name_pattern`, which matches the **file name only and never crosses `/`** (so
+`**/*.ts` matches nothing). `rg` and `grep` are now **thin aliases** of it (both
+map to `mode` = `regex`, and `grep` keeps taking `glob` for the file-name-only
+filter); each appends one deprecation line to its result, while their tool names
+and input shapes keep working — removing them needs a major bump (issue #188).
+**All three** search tools are pure-Node implementations, not the `rg`/`grep`
+binaries: the aliases' `is_regex` default is `true`, i.e. patterns are
 regex (matching the real commands); pass `is_regex=false` for literal matching —
 the equivalent of `rg --fixed-strings` / `grep -F`. Each matched line is truncated
 to 500 characters by a single shared limit, `node_modules`/`dist`/`build`/

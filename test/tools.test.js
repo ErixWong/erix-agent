@@ -34,6 +34,7 @@ test("createCliTools exposes all builtin tools including the todo quartet", () =
       "grep",
       "readFile",
       "rg",
+      "searchText",
       "todo_add",
       "todo_clear",
       "todo_done",
@@ -48,7 +49,7 @@ test("createCliTools({ todo: false }) drops the todo quartet (issue #69)", async
   const { tools, executeTool } = createCliTools({ todo: false });
   assert.deepEqual(
     tools.map((tool) => tool.name).sort(),
-    ["exec", "grep", "readFile", "rg", "tree", "writeFile"],
+    ["exec", "grep", "readFile", "rg", "searchText", "tree", "writeFile"],
   );
   await assert.rejects(executeTool("todo_add", { text: "x" }), /未知工具/u);
 });
@@ -79,7 +80,37 @@ test("默认跳 vendor + 开关名写进了系统提示（#184：「告诉模型
     assert.match(prompt, /grep 递归搜索文件内容（默认正则，等价 grep -E；传 is_regex=false 按字面量，等价 grep -F/u);
     // 旧的「默认字面量」口径不得复活（模型读到旧口径就等于本轮白做）
     assert.doesNotMatch(prompt, /默认按字面量/u);
+    // issue #195：新入口与它的两个「已弃用」别名都必须让模型在清单行里读到（不是藏在描述里）
+    assert.match(prompt, /searchText 搜索文本文件/u);
+    assert.match(prompt, /mode 必填、无默认值：literal 按字面量、regex 按 JavaScript 正则/u);
+    assert.match(prompt, /name_pattern 只匹配文件名、不跨 \//u);
+    // 两个别名各挂一次弃用口径（rg 与 grep 都在清单行里点名继任入口）
+    assert.equal(
+      (prompt.match(/已弃用，请改用 searchText 并显式传 mode/g) ?? []).length,
+      2,
+      "rg 与 grep 都必须在工具清单行里被标为已弃用",
+    );
+    assert.match(prompt, /rg 递归搜索文本文件（[^；]*默认按正则匹配/u);
+    assert.match(prompt, /glob 文件名过滤（只匹配文件名、不跨 \//u);
   }
+});
+
+test("searchText 的 {content, metadata} 结果在 CLI 回显里看得见（#195）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "a.txt"), "needle here\n", "utf8");
+    const lines = [];
+    const echo = wrapExecuteTool(createCliTools({ cwd }).executeTool, { output: (line) => lines.push(line) });
+    const result = await echo("searchText", { pattern: "needle", mode: "regex" });
+    assert.equal(typeof result, "object", "库侧形状：{content, metadata}（引擎 normalizeExecutionResult 认这个形状）");
+    assert.match(result.content, /a\.txt:1:needle here/u);
+    assert.equal(result.metadata.searchHits, 1);
+    assert.match(lines.at(-1), /a\.txt:1:needle here/u, "回显必须打正文，不是 [object Object]");
+    assert.doesNotMatch(lines.at(-1), /\[object Object\]/u);
+    // 纯字符串结果（别名）不受影响
+    const alias = await echo("rg", { pattern: "needle" });
+    assert.equal(typeof alias, "string");
+    assert.match(alias, /已弃用/u);
+  });
 });
 
 test("CLI 文件工具完全来自库实现，且 exec/todo_* 行为不变（#184 分层）", async () => {
@@ -90,11 +121,15 @@ test("CLI 文件工具完全来自库实现，且 exec/todo_* 行为不变（#18
     await writeFile(join(cwd, "node_modules", "pkg", "i.js"), "needle vendor\n", "utf8");
     const { tools, executeTool } = createCliTools({ cwd });
 
-    // schema 名单与顺序不变（readFile/rg/grep/tree/writeFile 在前，exec 在后）
+    // schema 名单与顺序（文件工具在前、exec 在后；#195 在 rg 之前插入 searchText，其余位置不动）
     assert.deepEqual(
       tools.map((tool) => tool.name),
-      ["readFile", "rg", "grep", "tree", "writeFile", "exec", "todo_add", "todo_list", "todo_done", "todo_clear"],
+      ["readFile", "searchText", "rg", "grep", "tree", "writeFile", "exec", "todo_add", "todo_list", "todo_done", "todo_clear"],
     );
+    // 新工具的 schema 从库里一路可用（不是 CLI 自己另写一套）
+    const searchTextSchema = tools.find((tool) => tool.name === "searchText").inputSchema;
+    assert.deepEqual(searchTextSchema.required, ["pattern", "mode"]);
+    assert.ok(searchTextSchema.properties.name_pattern);
     // 库里新增的参数从 CLI 一路可用（不是 CLI 自己另写一套）
     assert.ok(tools.find((tool) => tool.name === "readFile").inputSchema.properties.max_bytes);
     assert.ok(tools.find((tool) => tool.name === "rg").inputSchema.properties.include_vendor);

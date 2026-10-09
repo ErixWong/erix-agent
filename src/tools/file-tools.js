@@ -141,10 +141,43 @@ function compileSearchPattern(pattern, { literal }) {
   }
 }
 
-/** glob → 仅文件名匹配的正则（只支持简单 `*` 通配，不跨目录分隔符）。 */
-function compileGlob(glob) {
-  if (typeof glob !== "string" || glob.trim() === "") return undefined;
-  return new RegExp(`^${glob.split("*").map(escapeRegExpLiteral).join(".*")}$`);
+/**
+ * `name_pattern` → 仅**文件名**匹配的正则（只支持简单 `*` 通配，**不跨目录分隔符**）。
+ *
+ * issue #195 R2：这个参数原先叫 `glob`，却只有「简单 `*` + 只匹配 basename」这一子集能力
+ * （`**\/*.test.js` 一类完整 glob 模式一律不命中）。顶着 glob 的名字带着一整套 ripgrep
+ * `--glob` 的先验，模型按先验写 `**\/*.ts` 就会静默 0 命中——#184 修的那批「静默撒谎」，
+ * 只是撒谎主体从输出换成了**参数名**。故 `searchText` 里它叫 `name_pattern`，且描述里写死
+ * 「只匹配文件名、不跨 `/`」；`grep` 别名为保持入参形状不变继续吃 `glob`（见 FILE_TOOL_DEFINITIONS）。
+ */
+function compileNamePattern(namePattern) {
+  if (typeof namePattern !== "string" || namePattern.trim() === "") return undefined;
+  return new RegExp(`^${namePattern.split("*").map(escapeRegExpLiteral).join(".*")}$`);
+}
+
+/**
+ * `searchText` 的 `mode` 取值集合（issue #195 R1）：**无默认值**，缺失与非法一律返回错误结果。
+ *
+ * 为什么不给默认：本工具的存在理由就是「入口名字不带先验，所以不给任何默认」——#184 之前
+ * `rg` 字面量 / `grep` 正则两个默认相反就是同一族缺陷，「默认 literal」只是把歧义留给调用方。
+ * `scripts/docs-drift-check.mjs` 的「searchText mode 必填」规则以这一行为锚点。
+ */
+const SEARCH_MODES = new Set(["literal", "regex"]);
+
+/** `mode` 缺失/非法的错误结果文本（**不回落默认**：回落就是本轮要修的谎）。 */
+function searchModeError(mode) {
+  const shown = mode === undefined ? "未提供" : truncateDisplayText(JSON.stringify(mode) ?? String(mode), 40);
+  return `错误：searchText 必须显式给出 mode，取值 ${[...SEARCH_MODES].join(" 或 ")}（无默认值）；实际：${shown}`;
+}
+
+/**
+ * `rg`/`grep` 别名的 `mode` 映射（issue #195 R3）：入参形状不变，继续吃 `is_regex`。
+ * 不传 `is_regex` = 正则（真实 `rg` / `grep -E` 的默认，也是 #184 追加轮 A 定下的口径），
+ * `is_regex === false` 才是字面量（`rg --fixed-strings` / `grep -F`）。
+ * `scripts/docs-drift-check.mjs` 的「rg 默认搜索模式为正则」规则以这一行为锚点。
+ */
+function aliasSearchMode(input) {
+  return input?.is_regex === false ? "literal" : "regex";
 }
 
 function normalizeFlag(value) {
@@ -202,7 +235,15 @@ export function toolMarker(kind, values = {}) {
       // 无命中统一口径：空串会让模型分不清「没搜到」与「搜了但被静音」
       return "（无命中）";
     case "searchTruncated":
-      return `[命中过多，已按 max_results=${values.limit} 截断]`;
+      // 规范入口 `searchText` 总带 `nextOffset`（模型可见承诺，见下方调用处注释）；
+      // 别名不传 `offset` 也不开 `emitMetadata` → 拿不到 `nextOffset`，输出逐字不变。
+      return values.nextOffset === undefined
+        ? `[命中过多，已按 max_results=${values.limit} 截断]`
+        : `[命中过多，已按 max_results=${values.limit} 截断；offset=${values.nextOffset} 继续]`;
+    case "deprecated":
+      // 别名弃用告警（issue #188 三层分级：工具名与入参形状属 Stable → 本轮只加告警不删）。
+      // ⚠ 文案里不得出现 `…`：既有的「未触顶的行不得带省略号」断言比对的是整段结果文本。
+      return `[已弃用 ${values.name}：它是 searchText 的薄别名，请改用 ${values.replacement}；${values.name} 将在后续 major 版本移除]`;
     case "treeEntryCap":
       return `[另有 ${values.remaining} 条未列出，条目上限 ${MAX_TREE_ENTRIES} 已达；缩小 path 或传 include_vendor=true 查看更多]`;
     case "treeDepthCap":
@@ -431,8 +472,47 @@ export const FILE_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: "searchText",
+    description: "Search text files for a pattern with an EXPLICIT match mode: `mode` is required and has no default, "
+      + "set mode=\"literal\" for fixed-string matching or mode=\"regex\" for JavaScript regular expressions. "
+      + "This tool is a pure-Node walk, not a borrowed CLI binary and it carries no capability from any tool name: "
+      + "no -i/-A/-B/-C/--type, .gitignore is NOT read, and name_pattern matches the FILE NAME only — it never crosses `/`, "
+      + "so `**/*.ts` style glob patterns do not work. "
+      + "node_modules/dist/build/target/vendor and dot-directories are skipped by default and reported at the end of the result. "
+      + "Hits are returned as `path:line:matched line`, one per line; a matched line is returned whole up to 500 characters "
+      + "and a longer line is cut to 500 plus a trailing `\u2026` \u2014 that width cap is this implementation's own output budget. "
+      + "Truncated results carry `offset=\u2026 \u7ee7\u7eed` for continuation; skipped entries and truncation are also reported in the "
+      + "structured result metadata (the model reads the marker text, not the fields).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern: { type: "string" },
+        mode: {
+          type: "string",
+          enum: ["literal", "regex"],
+          description: "Required, no default: \"literal\" = match the pattern as a fixed string, \"regex\" = JavaScript regular expression. A missing or unknown mode is an error; nothing is guessed.",
+        },
+        path: { type: "string" },
+        name_pattern: {
+          type: "string",
+          description: "Filter by FILE NAME only (simple `*` wildcard). It never matches a directory part and never crosses `/`: use `*.test.js`, not `**/*.test.js`.",
+        },
+        max_results: { type: "integer", description: "Default 50, hard cap 200." },
+        maxResults: { type: "integer", description: "Alias of max_results." },
+        offset: { type: "integer", description: "Skip this many hits before returning (default 0); a truncated result reports the offset to continue from." },
+        include_vendor: { type: "boolean", description: "Default false: skip node_modules/dist/build/target/vendor." },
+        include_hidden: { type: "boolean", description: "Default false: skip dot-directories such as .git." },
+      },
+      required: ["pattern", "mode"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "rg",
-    description: "Recursively search text files with a regular expression (the ripgrep command's own default). "
+    description: "Deprecated alias of searchText (issue #195): use searchText instead, passing mode explicitly. "
+      + "This alias keeps the borrowed command name and its priors; searchText states its match mode explicitly "
+      + "and names its file-name-only filter `name_pattern`. "
+      + "Recursively search text files with a regular expression (the ripgrep command's own default). "
       + "Set is_regex=false for literal matching, equivalent to `rg --fixed-strings`. "
       + "Pure-Node subset, not the ripgrep binary: no -i/-A/-B/--type, .gitignore is NOT read; "
       + "node_modules/dist/build/target/vendor and dot-directories are skipped by default and reported at the end of the result. "
@@ -459,7 +539,9 @@ export const FILE_TOOL_DEFINITIONS = [
   },
   {
     name: "grep",
-    description: "Search file contents with a regex or literal pattern, grouped by file. "
+    description: "Deprecated alias of searchText (issue #195): use searchText instead, passing mode explicitly. "
+      + "This alias keeps the `glob` name for the file-name-only filter, which never crosses `/`. "
+      + "Search file contents with a regex or literal pattern, grouped by file. "
       + "is_regex=true (the default) matches as a regular expression, equivalent to `grep -E`; is_regex=false matches the pattern literally, equivalent to `grep -F`. "
       + "Pure-Node subset, not the grep binary: JavaScript regex rather than BRE/ERE, no -i/-A/-B/--include, .gitignore is NOT read; "
       + "node_modules/dist/build/target/vendor and dot-directories are skipped by default and reported at the end of the result. "
@@ -471,7 +553,10 @@ export const FILE_TOOL_DEFINITIONS = [
       properties: {
         pattern: { type: "string" },
         path: { type: "string" },
-        glob: { type: "string" },
+        glob: {
+          type: "string",
+          description: "Matches the FILE NAME only (simple `*` wildcard): it never matches a directory part and never crosses `/`, so use `*.test.js` rather than `**/*.test.js`.",
+        },
         is_regex: {
           type: "boolean",
           description: "Default true: regex matching (grep -E). Set false for fixed-string literal matching (grep -F).",
@@ -639,29 +724,45 @@ export function createFileTools({
     parts.push(...fileReadMarkers(window, { start, count, maxBytes }));
     return parts.join("\n");
   };
-
-  const rg = async (input, context) => {
-    const { pattern, path: searchPath = "." } = input ?? {};
-    // rg 默认与真实命令一致：ripgrep 默认就是**正则**（字面量要 `--fixed-strings`），
-    // 本库的 grep 默认同样是正则——两个搜索工具默认相反才是反常（issue #184 追加轮 A）。
-    // 字面量逃生口 is_regex=false 走 escapeRegExpLiteral（即 rg --fixed-strings / grep -F）；
-    // 无效正则一律转工具错误结果，不抛。
-    const compiled = compileSearchPattern(pattern, { literal: input?.is_regex === false });
-    if (compiled.error !== undefined) return compiled.error;
-    const { expression } = compiled;
-    const includeVendor = normalizeFlag(input?.include_vendor);
-    const includeHidden = normalizeFlag(input?.include_hidden);
-    const resultLimit = searchResultLimit(input, 50);
+  /**
+   * 搜索的**唯一**实现体（issue #195 R1）：`searchText` 与它的两个薄别名 `rg`/`grep` 共跑这一份代码。
+   *
+   * 「别名等价」不是靠两处代码写得很像，而是靠**同一段代码**：命中行的取值、行宽截断、跳过账、
+   * 无命中口径、截断 marker 全部在这里产出一次，两种 `format` 只是同一个 `hits` 数组的两种排版。
+   *
+   * @param {object} options
+   * @param {RegExp} options.expression      已编译的模式（字面量还是正则由**调用方**定，这里不猜）
+   * @param {string} [options.namePattern]   仅匹配文件名的 `*` 通配（不跨 `/`）
+   * @param {"flat"|"grouped"} options.format flat = `文件:行号:正文`（rg 口径）/ grouped = 按文件分组（grep 口径）
+   * @param {number} [options.offset]        跳过前 N 条命中（只有 `searchText` 会传；别名固定 0 → 行为逐字不变）
+   * @param {boolean} [options.emitMetadata] 真则返回 `{content, metadata}`（引擎支持该形状，
+   *   见 src/loop/run-snapshot-executor.js:83-121），假则返回历史形状的纯字符串
+   */
+  const runSearch = async ({
+    expression,
+    searchPath = ".",
+    namePattern,
+    resultLimit,
+    offset = 0,
+    includeVendor,
+    includeHidden,
+    format,
+    emitMetadata,
+  }, context) => {
     const resolvedSearchPath = resolveToolPath(root, searchPath);
     if (!canRead(resolvedSearchPath)) return readDenied(resolvedSearchPath);
+    const nameExpression = compileNamePattern(namePattern);
     const account = createSkipAccount();
-    const results = [];
+    const hits = [];
+    const grouped = new Map();
+    let matched = 0;
 
     const searchFile = (filePath, stat) => {
       if (stat.size > MAX_FILE_BYTES) {
         account.largeFiles += 1;
         return;
       }
+      if (nameExpression !== undefined && !nameExpression.test(path.basename(filePath))) return;
       let bytes;
       try {
         bytes = readFileSync(filePath);
@@ -676,9 +777,17 @@ export function createFileTools({
       for (let index = 0; index < lines.length; index += 1) {
         expression.lastIndex = 0;
         if (!expression.test(lines[index])) continue;
-        // 行宽上限与 `grep` 共用同一个常量：两个搜索工具对同一个超长行必须给出同样长的命中行。
-        results.push(`${displayName(filePath)}:${index + 1}:${truncateDisplayText(lines[index], GREP_LINE_LIMIT)}`);
-        if (results.length >= resultLimit) return;
+        matched += 1;
+        // offset 只跳过**已命中的行**（不是字节、不是行号）；别名恒 0，故行为与历史逐字一致。
+        if (matched <= offset) continue;
+        // 行宽上限全库只有一个常量：同一个库里几个搜索工具对同一个超长行必须给出同样长的命中行。
+        const hit = { file: filePath, line: index + 1, text: truncateDisplayText(lines[index], GREP_LINE_LIMIT) };
+        hits.push(hit);
+        const bucket = grouped.get(filePath);
+        if (bucket === undefined) grouped.set(filePath, [hit]);
+        else bucket.push(hit);
+        // 触顶立即停遍历（#184 之后 `rg`/`grep` 的既有口径，逐字保持）。
+        if (hits.length >= resultLimit) return;
       }
     };
 
@@ -687,20 +796,116 @@ export function createFileTools({
       includeVendor,
       includeHidden,
       account,
-      isDone: () => results.length >= resultLimit,
+      isDone: () => hits.length >= resultLimit,
       onFile: (filePath, stat) => { searchFile(filePath, stat); },
     });
 
     const note = skipAccountMarker(account);
-    if (results.length === 0) return noMatchResult(note);
-    const lines = [...results];
-    if (results.length >= resultLimit) {
-      lines.push(toolMarker("searchTruncated", { limit: resultLimit }));
+    // 截断判据与历史逐字同口径：命中数 == 上限即报截断（#184 之后 rg 用 `results.length >= limit`、
+    // grep 用 `truncated || total >= limit`，两者等价，本轮不改语义）。
+    const reachedCap = hits.length >= resultLimit;
+    const metadata = {
+      // 结构化账目：**进 transcript、不上 wire**（模型侧唯一的通道仍是 marker 文本）。
+      searchHits: hits.length,
+      searchMatchedLines: matched,
+      searchFiles: grouped.size,
+      searchLimit: resultLimit,
+      searchOffset: offset,
+      searchTruncated: reachedCap,
+      ...(reachedCap ? { searchNextOffset: offset + hits.length } : {}),
+      searchSkipped: {
+        vendorDirectories: account.vendorDirectories,
+        hiddenDirectories: account.hiddenDirectories,
+        largeFiles: account.largeFiles,
+        binaryFiles: account.binaryFiles,
+        deniedPaths: account.deniedPaths,
+      },
+    };
+    const wrap = (content) => (emitMetadata ? { content, metadata } : content);
+    const truncationMarker = toolMarker("searchTruncated", {
+      limit: resultLimit,
+      // issue #195（主 agent 验收补漏）：CLI 提示词向模型承诺「截断时给出续读 offset」，那这条承诺
+      // 必须落在**模型可见**的 marker 上——`metadata` 进 transcript 但不上 wire，首查被截时模型
+      // 看不见 offset 只能猜个数。规范入口（`emitMetadata`）无论是否带 offset 都给；
+      // 别名不吃 offset，输出逐字不变（issue #188：别名不得被继任入口带跑）。
+      ...(emitMetadata || offset > 0 ? { nextOffset: offset + hits.length } : {}),
+    });
+
+    if (hits.length === 0) {
+      // 无命中统一口径（`rg` 曾返回空串，模型无法区分「没搜到」与「搜了但被静音」）
+      return wrap(noMatchResult(note));
     }
+    if (format === "grouped") {
+      const sections = [];
+      for (const [filePath, fileHits] of grouped) {
+        sections.push([displayName(filePath), ...fileHits.map((hit) => `${hit.line}: ${hit.text}`)].join("\n"));
+      }
+      if (reachedCap) sections.push(truncationMarker);
+      if (note !== undefined) sections.push(note);
+      return wrap(sections.join("\n\n"));
+    }
+    const lines = hits.map((hit) => `${displayName(hit.file)}:${hit.line}:${hit.text}`);
+    if (reachedCap) lines.push(truncationMarker);
     if (note !== undefined) lines.push(note);
-    return lines.join("\n");
+    return wrap(lines.join("\n"));
   };
 
+  /** 别名结果尾部挂一行弃用提示（issue #188：Stable 面本轮只加告警、不删）。 */
+  const withDeprecation = (result, name, replacement) => (
+    typeof result === "string"
+      ? `${result}\n${toolMarker("deprecated", { name, replacement })}`
+      : { ...result, content: `${result.content}\n${toolMarker("deprecated", { name, replacement })}` }
+  );
+
+  /**
+   * 单一搜索入口（issue #195）：名字**不借**任何 CLI 命令的先验，所以 `mode` 必填且无默认。
+   * 返回 `{ content, metadata }`——跳过账/截断/next_offset 同时有结构化字段（进 transcript、
+   * **不上 wire**，模型侧读的仍是 marker 文本）。
+   */
+  const searchText = async (input, context) => {
+    const { pattern, mode, path: searchPath = ".", name_pattern: namePattern } = input ?? {};
+    // `glob` 不接受、也不默默忽略：静默吞掉一个「看着能用」的参数，就是本轮要修的那个谎本身。
+    if (input !== null && typeof input === "object" && Object.hasOwn(input, "glob")) {
+      return "错误：searchText 不认识参数 glob：本实现的名称过滤只匹配文件名、不跨 `/`，请改传 name_pattern（且只支持简单 * 通配，不是完整 glob）";
+    }
+    if (!SEARCH_MODES.has(mode)) return searchModeError(mode);
+    if (typeof pattern !== "string" || pattern === "") {
+      return "错误：searchText 的 pattern 必须是非空字符串";
+    }
+    const compiled = compileSearchPattern(pattern, { literal: mode === "literal" });
+    if (compiled.error !== undefined) return compiled.error;
+    return runSearch({
+      expression: compiled.expression,
+      searchPath,
+      namePattern,
+      resultLimit: searchResultLimit(input, 50),
+      offset: normalizeNonNegativeInteger(input?.offset, 0),
+      includeVendor: normalizeFlag(input?.include_vendor),
+      includeHidden: normalizeFlag(input?.include_hidden),
+      format: "flat",
+      emitMetadata: true,
+    }, context);
+  };
+
+  /** `rg` 薄别名（issue #195 R3）：mode 由 `is_regex` 映射，输出形状逐字不变，尾部挂弃用行。 */
+  const rg = async (input, context) => {
+    const { pattern, path: searchPath = "." } = input ?? {};
+    // 别名默认与真实命令一致：ripgrep 默认就是**正则**（字面量要 `--fixed-strings`），
+    // 本库的 grep 默认同样是正则——两个搜索工具默认相反才是反常（issue #184 追加轮 A）。
+    const compiled = compileSearchPattern(pattern, { literal: aliasSearchMode(input) === "literal" });
+    if (compiled.error !== undefined) return compiled.error;
+    const result = await runSearch({
+      expression: compiled.expression,
+      searchPath,
+      resultLimit: searchResultLimit(input, 50),
+      includeVendor: normalizeFlag(input?.include_vendor),
+      includeHidden: normalizeFlag(input?.include_hidden),
+      format: "flat",
+    }, context);
+    return withDeprecation(result, "rg", 'searchText with mode="regex"');
+  };
+
+  /** `grep` 薄别名（issue #195 R3）：继续吃 `glob`（语义 = name_pattern），分组形状逐字不变。 */
   const grep = async (input, context) => {
     const {
       pattern,
@@ -711,77 +916,18 @@ export function createFileTools({
     if (typeof pattern !== "string" || pattern === "") {
       throw new TypeError("grep pattern must be a non-empty string");
     }
-    const resultLimit = searchResultLimit(input, 50);
     const compiled = compileSearchPattern(pattern, { literal: is_regex === false });
     if (compiled.error !== undefined) return compiled.error;
-    const { expression } = compiled;
-    const globExpression = compileGlob(glob);
-    const includeVendor = normalizeFlag(input?.include_vendor);
-    const includeHidden = normalizeFlag(input?.include_hidden);
-    const resolvedSearchPath = resolveToolPath(root, searchPath);
-    if (!canRead(resolvedSearchPath)) return readDenied(resolvedSearchPath);
-    const account = createSkipAccount();
-    const grouped = new Map();
-    let total = 0;
-    let truncated = false;
-
-    const searchFile = (filePath, stat) => {
-      if (stat.size > MAX_FILE_BYTES) {
-        account.largeFiles += 1;
-        return;
-      }
-      if (globExpression !== undefined && !globExpression.test(path.basename(filePath))) return;
-      let bytes;
-      try {
-        bytes = readFileSync(filePath);
-      } catch {
-        return;
-      }
-      if (bytes.includes(0)) {
-        account.binaryFiles += 1;
-        return;
-      }
-      const lines = splitLines(bytes.toString("utf8"));
-      let fileHits = grouped.get(filePath);
-      for (let index = 0; index < lines.length; index += 1) {
-        if (total >= resultLimit) {
-          truncated = true;
-          return;
-        }
-        expression.lastIndex = 0;
-        if (!expression.test(lines[index])) continue;
-        if (fileHits === undefined) {
-          fileHits = [];
-          grouped.set(filePath, fileHits);
-        }
-        fileHits.push(`${index + 1}: ${truncateDisplayText(lines[index], GREP_LINE_LIMIT)}`);
-        total += 1;
-      }
-    };
-
-    await collectFiles(resolvedSearchPath, {
-      signal: context?.signal,
-      includeVendor,
-      includeHidden,
-      account,
-      isDone: () => total >= resultLimit,
-      onFile: (filePath, stat) => { searchFile(filePath, stat); },
-    });
-
-    const note = skipAccountMarker(account);
-    if (grouped.size === 0) {
-      // 无命中统一口径（rg 以前返回空串，模型无法区分「没搜到」与「搜了但被静音」）
-      return noMatchResult(note);
-    }
-    const sections = [];
-    for (const [filePath, hits] of grouped) {
-      sections.push([displayName(filePath), ...hits].join("\n"));
-    }
-    if (truncated || total >= resultLimit) {
-      sections.push(toolMarker("searchTruncated", { limit: resultLimit }));
-    }
-    if (note !== undefined) sections.push(note);
-    return sections.join("\n\n");
+    const result = await runSearch({
+      expression: compiled.expression,
+      searchPath,
+      namePattern: glob,
+      resultLimit: searchResultLimit(input, 50),
+      includeVendor: normalizeFlag(input?.include_vendor),
+      includeHidden: normalizeFlag(input?.include_hidden),
+      format: "grouped",
+    }, context);
+    return withDeprecation(result, "grep", 'searchText with mode="regex" and name_pattern');
   };
 
   const tree = async (input, context) => {
@@ -883,7 +1029,7 @@ export function createFileTools({
     return Buffer.byteLength(content, "utf8");
   };
 
-  const executors = { readFile, rg, grep, tree, writeFile };
+  const executors = { readFile, searchText, rg, grep, tree, writeFile };
 
   const runExecutor = async (name, input, context) => {
     const executor = executors[name];

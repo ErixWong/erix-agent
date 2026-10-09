@@ -49,6 +49,9 @@ export const READONLY_INTERCEPT_TOOLS = new Set([
   "readFile",
   "tree",
   "rg",
+  // issue #195：`searchText` 是搜索的规范入口，`rg` 已经是它的别名。少了这一项就会出现
+  // 「别名走只读放行、继任入口被拦」的迁移陷阱——同一件事换个名字，run 的行为就变了。
+  "searchText",
   "note_read",
   "note_list",
 ]);
