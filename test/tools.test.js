@@ -95,6 +95,24 @@ test("默认跳 vendor + 开关名写进了系统提示（#184：「告诉模型
   }
 });
 
+test("searchText 的 {content, metadata} 结果在 CLI 回显里看得见（#195）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "a.txt"), "needle here\n", "utf8");
+    const lines = [];
+    const echo = wrapExecuteTool(createCliTools({ cwd }).executeTool, { output: (line) => lines.push(line) });
+    const result = await echo("searchText", { pattern: "needle", mode: "regex" });
+    assert.equal(typeof result, "object", "库侧形状：{content, metadata}（引擎 normalizeExecutionResult 认这个形状）");
+    assert.match(result.content, /a\.txt:1:needle here/u);
+    assert.equal(result.metadata.searchHits, 1);
+    assert.match(lines.at(-1), /a\.txt:1:needle here/u, "回显必须打正文，不是 [object Object]");
+    assert.doesNotMatch(lines.at(-1), /\[object Object\]/u);
+    // 纯字符串结果（别名）不受影响
+    const alias = await echo("rg", { pattern: "needle" });
+    assert.equal(typeof alias, "string");
+    assert.match(alias, /已弃用/u);
+  });
+});
+
 test("CLI 文件工具完全来自库实现，且 exec/todo_* 行为不变（#184 分层）", async () => {
   await withDirectory(async (cwd) => {
     await mkdir(join(cwd, "src"));

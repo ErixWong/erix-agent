@@ -393,7 +393,14 @@ function summarizeToolInput(name, input) {
 }
 
 function summarizeToolResult(name, result) {
-  const text = String(result ?? "");
+  // issue #195：`searchText` 按引擎支持的 `{content, metadata}` 形状返回（跳过账/截断走结构化
+  // 字段）。回显取 content，否则终端会打出 `[object Object]`——模型侧不受影响（引擎自己会归一），
+  // 但 CLI 是调试器，看不见搜索结果就等于没有。
+  const payload = result && typeof result === "object" && !Array.isArray(result)
+    && typeof result.content === "string"
+    ? result.content
+    : result;
+  const text = String(payload ?? "");
   // exec 输出可能是验证/回归脚本的多行结果，必须完整可见（对齐 exec 内部 4096 截断）
   const limit = name === "exec" ? TOOL_EXEC_RESULT_LIMIT : TOOL_RESULT_LIMIT;
   // exec 日志同用 head+tail：尾部报错/exit 比中段 filler 有价值（issue #32 #2）

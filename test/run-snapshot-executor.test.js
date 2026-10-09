@@ -146,3 +146,14 @@ test("createRunSnapshotExecutor reports post-execution snapshot failure after ru
     toolResults[0],
   );
 });
+
+test("只读放行集合含 searchText（issue #195：继任入口不得比 rg 别名更容易被拦）", async () => {
+  const { READONLY_INTERCEPT_TOOLS } = await import("../src/loop/run-snapshot-executor.js");
+  assert.ok(READONLY_INTERCEPT_TOOLS.has("rg"), "别名 rg 本来就在只读集合里");
+  assert.ok(
+    READONLY_INTERCEPT_TOOLS.has("searchText"),
+    "searchText 是 rg 的规范继任入口：同一件只读工作换个名字，run 的拦截行为不该变",
+  );
+  assert.equal(READONLY_INTERCEPT_TOOLS.has("writeFile"), false, "写工具不得进只读集合");
+  assert.equal(READONLY_INTERCEPT_TOOLS.has("exec"), false, "exec 有副作用，不属只读");
+});
