@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { makeTmp } from "./helpers/tmp.js";
 
 import {
   closeAllMcpServers,
@@ -24,7 +24,7 @@ const mockHttpServerPath = fileURLToPath(
 );
 
 async function withTempDir(callback) {
-  const dir = await mkdtemp(join(tmpdir(), "erix-mcp-test-"));
+  const dir = await makeTmp("erix-mcp-test-");
   try {
     return await callback(dir);
   } finally {

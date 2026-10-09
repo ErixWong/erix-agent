@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { makeTmp } from "./helpers/tmp.js";
 
 import {
   buildSkillTools,
@@ -14,7 +14,7 @@ import {
 } from "../bin/skills.js";
 
 async function withDirectory(callback) {
-  const directory = await mkdtemp(join(tmpdir(), "erix-skills-test-"));
+  const directory = await makeTmp("erix-skills-test-");
   try {
     return await callback(directory);
   } finally {

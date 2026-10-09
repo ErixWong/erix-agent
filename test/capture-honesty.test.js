@@ -3,13 +3,13 @@
 // （issue #67 PR 3：recordAutoCapture 一并删除，本条用 note_take 覆盖同一 writeNote 路径）
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { note_take } from "../src/tools/notes.js";
 import { runChat } from "../bin/cli.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 // issue #81：注入空 MCP 配置，避免 runChat 的 MCP 代理解析真实 ~/.erix/mcp.json。
 async function writeEmptyMcpConfig(dir) {
@@ -20,7 +20,7 @@ async function writeEmptyMcpConfig(dir) {
 }
 
 test("writeNote classification: storage fault throws, NotesStoreError stays invalid", async () => {
-  const notesDir = await mkdtemp(join(tmpdir(), "erix-capture-cls-"));
+  const notesDir = await makeTmp("erix-capture-cls-");
   try {
     const scope = { __erix: { runId: "classify-run", notesDir, notesStore: {
       write: async () => { throw new Error("EACCES: disk gone"); },
@@ -60,7 +60,7 @@ test("writeNote classification: storage fault throws, NotesStoreError stays inva
 });
 
 test("runChat finally: completeRun failure lands in completionErrors, main result intact", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-finally-test-"));
+  const dir = await makeTmp("erix-finally-test-");
   try {
     const notesStore = {
       write: async () => {},
@@ -105,7 +105,7 @@ test("runChat finally: completeRun failure lands in completionErrors, main resul
 });
 
 test("runChat finally: when the main result is an exception, completion errors ride on the error (#109 修正 4)", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-finally-throw-"));
+  const dir = await makeTmp("erix-finally-throw-");
   try {
     const notesStore = {
       write: async () => {},
@@ -159,7 +159,7 @@ test("transcript port failure keeps the fatal档位 and the same bill field shap
       purge: async () => ({ status: "found", scanned: 0, purged: 0 }),
   };
   const events = [];
-  const dir = await mkdtemp(join(tmpdir(), "erix-two-port-"));
+  const dir = await makeTmp("erix-two-port-");
   try {
     // transcript 端口：required 写失败 → 致命（终止 + 异常携带账单，#103 语义不变）
     const failingStore = createMemoryTranscriptStore();
