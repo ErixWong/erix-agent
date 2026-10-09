@@ -26,12 +26,17 @@
    **已撤销（2026-09，见下方 ADR-009 修订）：** 此参考实现已不再随库发布。
    解析后必须仍在 root 内（越界抛错）、写仅限 writable 子树、maskedPaths 拒读。
    这是两个项目都需要的纯逻辑，与"执行什么"无关，值得共享。
-2. **文件工具参考实现**（readFile/rg/tree/writeFile）——建在 jail 上，
+2. **文件工具参考实现**（readFile/rg/tree/writeFile/edit）——建在 jail 上，
    适合脚本/原型/低风险场景直接用；生产场景项目可抄可换。
    **修订（2026-10，issue #184）：「建在 jail 上」已不成立。** 这组工具已回到库里
    （`src/tools/file-tools.js`，以 `createFileTools` 从 `erix-agent/tools` 导出），但改为建在
    **宿主注入的 `allowRead`/`allowWrite` 谓词**上；库内不放 jail 默认、也不引入越界错误类型
    （见 ADR-009 修订记录 2026-10）。CLI 自己就是它的消费者。
+   **修订（2026-10，issue #191）：`edit` 加入这一组**，成为**第二个写工具** —— `{path, edits}`，
+   字节级精确匹配、每条 `oldText` 必须唯一命中、各条均按**原始内容**匹配，且 0 命中 / 多次命中 /
+   越界写 / 内容无变化都是**错误结果而非抛错**。因为它是写工具，judge 的默认 `writeToolNames` 随之
+   变为 `["writeFile", "edit"]`（单一真值：`src/reflection/judge.js` 的 `DEFAULT_WRITE_TOOL_NAMES`）；
+   显式传 `writeToolNames` 的宿主不受影响。
 3. **`recall` 工具**（用户点名内置）——建在 TranscriptStore 上：
 
 ```
