@@ -130,7 +130,7 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 
 ## 7. 本地运行环境事实
 
-- Relay：`api.ai.erix.vip/v1`；模型必须由用户配置（`contextWindow 131072`、`maxOutputTokens 32768` → 自动压缩预算 ~85k）。
+- Relay：`api.ai.erix.vip/v1`；模型必须由用户配置（`contextWindow 262144`、`maxOutputTokens 65536` → 自动压缩预算 ~170k）。`erix_run` 读的就是同一份 `slots.default`，不跟随 pi 当前模型。
 - 工具执行/验证：erix 工作使用 `node bin/cli.js chat`（本仓库），监督者监视 `/tmp/erix-*-log.txt` 以获取逐步输出。
 - erix 编码任务红线：每个文件只读一次（按 offset/limit 分段），长任务先用 `todo_add` 拆解，汇报前作出验证声明。
 

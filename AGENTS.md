@@ -142,7 +142,7 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 
 ## 7. Local environment facts
 
-- Relay: `api.ai.erix.vip/v1`; the model must be configured by the user (`contextWindow 131072`, `maxOutputTokens 32768` → automatic compaction budget ~85k).
+- Relay: `api.ai.erix.vip/v1`; the model must be configured by the user (`contextWindow 262144`, `maxOutputTokens 65536` → automatic compaction budget ~170k). This is the same file `erix_run` reads (`slots.default`); it does not follow pi's current model.
 - For tool execution/validation, use `node bin/cli.js chat` for erix work (this repository); the supervisor watches `/tmp/erix-*-log.txt` for step-by-step output.
 - Red lines for erix coding tasks: read each file only once (in offset/limit segments), break long tasks down with `todo_add` first, and make a verification declaration before reporting.
 
