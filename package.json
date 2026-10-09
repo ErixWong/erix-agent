@@ -9,6 +9,7 @@
   "bin": {
     "erix": "bin/cli.js"
   },
+  "types": "./src/index.d.ts",
   "files": [
     "src",
     "bin",
@@ -43,8 +44,14 @@
     "url": "git+https://github.com/ErixWong/erix-agent.git"
   },
   "exports": {
-    ".": "./src/index.js",
-    "./tools": "./src/tools/index.js",
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./tools": {
+      "types": "./src/tools/index.d.ts",
+      "default": "./src/tools/index.js"
+    },
     "./contract-tests": "./test/contract/index.js"
   },
   "scripts": {

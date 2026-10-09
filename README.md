@@ -299,7 +299,11 @@ handles legacy `function_call` streams.
 
 ## Engineering constraints
 
-- Zero runtime npm dependencies, pure ESM, Node 22+, and no build step.
+- Zero runtime npm dependencies, pure ESM, Node 22+, and no build step for the
+  shipped JavaScript. The only npm dependencies this repository has are
+  dev-only tooling (`typescript` + `@types/node`, issue #213): they exist to
+  generate the published `.d.ts` declarations and are never imported by `src/`
+  or `bin/`, where imports stay on `node:` built-ins and relative paths.
 - Tests use `node --test`; type information is expressed with JSDoc typedefs.
 - Documentation facts are machine-checked, so a stale README cannot pass CI
   silently: `npm run check:docs` compares version claims, the quoted
@@ -307,7 +311,8 @@ handles legacy `function_call` streams.
   whitelist of key defaults against `package.json` and the source, and aligns
   the [README_cn.md](README_cn.md) heading skeleton; `npm run check:docs-examples`
   executes the contract's JavaScript fences; `npm run check:pack-links` verifies
-  links inside packaged Markdown.
+  links inside packaged Markdown; `npm run check:types-build` asserts that the
+  published declarations can still be generated and cleans the artifacts up again.
 - The package is published as `erix-agent` on npm and hosted at
   `ErixWong/erix-agent` on GitHub.
 - Never commit tokens, API keys, or other credentials.
@@ -352,11 +357,37 @@ Its public `exports` are:
 
 ```json
 {
-  ".": "./src/index.js",
-  "./tools": "./src/tools/index.js",
+  ".": {
+    "types": "./src/index.d.ts",
+    "default": "./src/index.js"
+  },
+  "./tools": {
+    "types": "./src/tools/index.d.ts",
+    "default": "./src/tools/index.js"
+  },
   "./contract-tests": "./test/contract/index.js"
 }
 ```
+
+Type declarations ship with the package (issue #213): the top-level `types`
+field points at `./src/index.d.ts`, and the `.` and `./tools` entries carry a
+`types` condition. `./contract-tests` deliberately has **no** `types` key: its
+target lives under `test/`, outside the declaration graph, so `prepack` never
+emits a declaration for it and a `types` key would be a line in the manifest
+that is never true. Hosts importing that subpath get the standard untyped-module
+signal instead (measured: `TS7016 Could not find a declaration file for module
+'erix-agent/contract-tests'`), which is honest — pointing `types` at a file that
+does not exist is not (measured: `tsc` then resolves the JavaScript silently and
+reports nothing at all).
+
+Declarations are generated, never committed: `npm run types:build` writes them
+into `src/**/*.d.ts` (the `files` allowlist already ships `src`, so no allowlist
+change was needed), the `prepack` hook runs that same generator before
+`npm pack` / `npm publish` — and not when a consumer installs from the registry,
+which is why the tarball carries declarations the repository does not — and
+`npm run check:types-build` asserts generation plus the presence of
+`runToolLoop` / `createFileTools` in the emitted surface, then deletes the
+artifacts so the working tree stays clean.
 
 ## `runToolLoop` API
 

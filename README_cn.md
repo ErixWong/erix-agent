@@ -233,21 +233,42 @@ const assemblyPort = createAssemblyPort({
 
 ```json
 {
-  ".": "./src/index.js",
-  "./tools": "./src/tools/index.js",
+  ".": {
+    "types": "./src/index.d.ts",
+    "default": "./src/index.js"
+  },
+  "./tools": {
+    "types": "./src/tools/index.d.ts",
+    "default": "./src/tools/index.js"
+  },
   "./contract-tests": "./test/contract/index.js"
 }
 ```
 
+类型声明随包发布（issue #213）：顶层 `types` 指向 `./src/index.d.ts`，`.` 与 `./tools`
+两个子路径各带一个 `types` 条件。`./contract-tests` **刻意不带** `types` 键：它的目标落在
+`test/` 下，不在声明依赖图里，`prepack` 永远不为它产出声明，挂 `types` 就是清单里一句永远不成立的
+话。宿主 import 该子路径拿到的是标准的「无声明模块」信号（实测 `TS7016 Could not find a declaration
+file for module 'erix-agent/contract-tests'`），这是诚实的口径——而把 `types` 指向一个不存在的文件
+不是（实测：`tsc` 随后静默解析到 JavaScript，一个错都不报）。
+
+声明是生成物、不入库：`npm run types:build` 把它们写到 `src/**/*.d.ts`（`files` 白名单里
+本来就有 `src`，因此不用改白名单），`prepack` 钩子在 `npm pack` / `npm publish` 之前跑同一个
+生成器——消费者从 registry 安装时不跑，这正是「tarball 里有声明而仓库里没有」的原因——而
+`npm run check:types-build` 断言仍能生成、且产物里含 `runToolLoop` / `createFileTools`，
+跑完把生成物删掉以保持工作树干净。
+
 ## 工程约束
 
-- 零运行时 npm 依赖、纯 ESM、Node 22+，无构建步骤。
+- 零运行时 npm 依赖、纯 ESM、Node 22+，发布的 JavaScript 没有构建步骤。本仓库唯一的 npm
+  依赖是**仅 dev** 的工具链（`typescript` + `@types/node`，issue #213）：它们只为生成随包发布
+  的 `.d.ts` 声明而存在，`src/` 与 `bin/` 从不 import 它们（那里只允许 `node:` 内置与相对路径）。
 - 测试使用 `node --test`；类型信息通过 JSDoc typedef 表达。
 - 文档事实受机器校验，陈旧的 README 不可能静默过线：`npm run check:docs` 将版本声明、
   引用的 `files`/`exports` 清单、模块地图、文中路径与命令，以及关键默认值白名单逐个比对
   `package.json` 与源码，并对齐本文与 [README.md](README.md) 的标题骨架；
   `npm run check:docs-examples` 真实执行契约里的 js 围栏；`npm run check:pack-links` 检查随包
-  Markdown 的链接闭合。
+  Markdown 的链接闭合；`npm run check:types-build` 断言随包声明仍能从源码生成，跑完把生成物清掉。
 - 包以 `erix-agent` 发布到 npm，代码托管于 GitHub 的 `ErixWong/erix-agent`。
 - 永远不要提交 token、API key 或其他凭据。
 
