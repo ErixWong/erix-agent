@@ -18,7 +18,7 @@ import {
   createFileNotesStore,
   isNoteRecord,
 } from "../../src/store/notes.js";
-import { notesStoreContract } from "../contract/notes-store.js";
+import { notesStoreCasContract, notesStoreContract } from "../contract/notes-store.js";
 import * as notes from "../../src/tools/notes.js";
 
 async function makeTempDirectory() {
@@ -28,6 +28,89 @@ async function makeTempDirectory() {
 notesStoreContract("file notes", async () => {
   const dir = await makeTempDirectory();
   return createFileNotesStore({ dir });
+});
+
+// 可选 CAS 子套件（issue #183 裁决 2）：文件适配器不是 CAS store，但子套件的断言
+// 比一写者 LWW 弱（并发双写都成功也算兑现），所以这里一并注册：它同时证明这个
+// 新导出的子套件能接宿主实现跑绿（宿主侧漂移哨兵与上游自身回归共用一份断言）。
+notesStoreCasContract("file notes", async () => {
+  const dir = await makeTempDirectory();
+  return createFileNotesStore({ dir });
+});
+
+// ---------------------------------------------------------------------------
+// 文件适配器专属断言（issue #183 裁决 2 / 3B：从通用契约套件里移过来）
+//
+// 这两条只适用于内置文件适配器，不再是通用 NotesStore 契约：
+//   * 并发 LWW：一写者模型下两个并发读-改-写都不得报错（CAS 型 store 可以拒一个，
+//     所以通用套件已不再这么要求）；
+//   * 墓碑形态：文件适配器选的是「墓碑」而不是物理删除（通用套件只承诺可观察消失）。
+// ---------------------------------------------------------------------------
+
+test("file notes: concurrent same-key updates are last-write-wins (one-writer limitation)", async () => {
+  const root = await makeTempDirectory();
+  try {
+    const store = createFileNotesStore({ dir: root, clock: () => Date.UTC(2026, 8, 27) });
+    await store.write({
+      scope: "run", scopeRef: "lww-run", key: "answer",
+      record: makeRecord("answer", "lww-run"),
+    });
+    const base = await store.read({ scope: "run", scopeRef: "lww-run", key: "answer" });
+    const updates = ["left", "right"].map((content) => ({
+      ...base,
+      current: { ...base.current, content },
+      updated_at: `2026-09-15T00:00:0${content === "left" ? "1" : "2"}.000Z`,
+    }));
+    // 一写者模型不拒绝任何一个并发写：两个都必须成功。
+    await Promise.all(updates.map((record) => store.write({
+      scope: "run", scopeRef: "lww-run", key: "answer", record,
+    })));
+    const final = await store.read({ scope: "run", scopeRef: "lww-run", key: "answer" });
+    assert.ok(["left", "right"].includes(final.current.content));
+    assert.equal(final.key, "answer");
+    assert.equal(
+      isNoteRecord(final, { key: "answer", scopeRef: "lww-run" }),
+      true,
+      "并发后必须只剩一条合法记录，而不是写坏文件",
+    );
+    // scope 目录里只能有一条记录文件（没有半截 .tmp 残留被当成记录）。
+    const files = (await readdir(path.join(root, "run", "lww-run"))).filter((name) => name.endsWith(".json"));
+    assert.deepEqual(files, ["answer.json"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file notes: revoke leaves a revoked tombstone with revoked_at and revoke_reason", async () => {
+  const root = await makeTempDirectory();
+  try {
+    const store = createFileNotesStore({ dir: root, clock: () => Date.UTC(2026, 8, 27) });
+    await store.write({
+      scope: "run", scopeRef: "tombstone-run", key: "gone",
+      record: makeRecord("gone", "tombstone-run"),
+    });
+    assert.deepEqual(await store.revoke({
+      scope: "run", scopeRef: "tombstone-run", key: "gone", reason: "cleanup",
+    }), { status: "found", revoked: 1 });
+    const tombstone = await store.read({ scope: "run", scopeRef: "tombstone-run", key: "gone" });
+    assert.equal(tombstone.state, "revoked");
+    assert.equal(tombstone.revoked_at, new Date(Date.UTC(2026, 8, 27)).toISOString());
+    assert.equal(tombstone.revoke_reason, "cleanup");
+    // 已是墓碑 → unchanged（文件适配器不物理删除，所以不是 missing）。
+    assert.deepEqual(
+      await store.revoke({ scope: "run", scopeRef: "tombstone-run", key: "gone" }),
+      { status: "unchanged", revoked: 0 },
+    );
+    // 墓碑仍在盘上（可观察消失的沉淀形态，不是物理删除）。
+    assert.equal(
+      isNoteRecord(JSON.parse(await readFile(
+        path.join(root, "run", "tombstone-run", "gone.json"), "utf8",
+      )), { key: "gone", scopeRef: "tombstone-run" }),
+      true,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("file notes round-trips the existing record format without dropping fields", async () => {

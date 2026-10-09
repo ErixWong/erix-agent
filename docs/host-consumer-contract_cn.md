@@ -871,16 +871,45 @@ const records = await store.list({
 （ADR-018 D3 决策反转）。`purge` 无分页协议——一次调用全量扫描处理每个 scope
 （见 [notes 维护调度](#notes-维护调度0120)）。
 
+显式传入的 `limit` 先校验再钳制（`src/store/notes.js:398-405`，issue #183 第 5 组）：
+不是正 safe integer 的值——`0`、`-1`、`1.5`、`NaN`、`2**53`、字符串——在读取任何数据
+之前就抛 `TypeError`；而任何大于 200 的值被钳到 200，不是报错。契约套件现在用
+超过 200 条存量钉住这两半：默默把 `limit: 0` 归一化成 `1`、或对 `limit: 5000`
+返回 5000 条的宿主会变红。
+
 文件型 `NotesStore` 在适配器边界上对每个 `scopeRef` 做一次规范化。`../escape`、绝对
 路径、编码分隔符等不安全的 scope 引用会被映射为稳定的 `run-h-...` 目录；目录与持久化的
 `record.scopeRef` 使用同一个规范值。宿主与技能必须把原始逻辑 scope 引用交给适配器，
 不要预先规范化。已处于规范哈希形态的既有目录仍可读，并参与 list、complete、revoke、purge。
 
 文件适配器假定每个 scope/key 只有一个写入者。并发的读-改-写更新可能丢一次更新及其被
-取代的历史（last-write-wins）。需要并发更新的宿主必须在宿主边界串行化；适配器不提供
-锁或其他并发机制。`revoke`
+取代的历史（last-write-wins）。这条一写者规则是**这个适配器**的属性，不是端口的：
+拒绝并发同键写中落后一方的 store（比较-交换）是合法的 `NotesStore` 实现，随包契约
+套件已不再要求两个并发写都成功——last-write-wins 断言已搬到文件适配器自己的测试树，
+比较-交换宿主改跑可选的 `notesStoreCasContract` 子套件（见
+[契约测试套件](#契约测试套件issue-183)）。在文件适配器上需要并发更新的宿主必须在
+宿主边界串行化；适配器不提供锁或其他并发机制。`revoke`
 在 API 层再进一步：`expectedState` / `expectedUpdatedAt` 并发护栏让与其他写入方竞态的
 revoke 返回 `{ status: "unchanged" }`，而不是覆盖它没见过的记录。
+
+`revoke` 承诺的是记录**不再可被观察到**（issue #183 第 3 组，裁决 3B）。一次
+`{ status: "found", revoked: 1 }` 的结果之后，记录不得还能被当成 active 笔记读到：
+`read()` 要么返回一个 `state: "revoked"` 的墓碑，要么因为 store 已把记录直接删掉而返回
+`undefined`，两种形态都合法。不变的是护栏行为而不是存储形态：对不存在的 key 的
+revoke 答 `{ status: "missing", revoked: 0 }`，重复 revoke 不得再多加一次撤销（墓碑
+宿主答 `unchanged`，物理删除宿主答 `missing`）。「墓碑不可复活」从未是现行承诺——
+引擎里没有任何路径消费 `revoked` 态，所以 revoke 时物理删除的宿主不是较弱实现，
+宿主也不得把「行还在」读成一个保证。
+
+两种 scope 拓扑都合法且都在承重（issue #183 第 7 组）。**接口级多 scope 是硬能力**：
+每个请求自带 `scopeRef`，一个 store 实例服务多个 scope，而 `purge` 是唯一扫遍
+所有 scope 的方法（它忽略 `scopeRef`）。**实例级固定 scope 同样合法**：官方 assembler
+`createBuiltinNotesTools` 就是在创建期绑定一个逻辑 run scope（`src/tools/notes.js:627`）、
+全部返回视图复用该绑定，因此一个「每租户/expert 一个 store 实例、底层共享多 scope 数据库」
+的宿主与上游同形，不是偏航。要拿固定 scope 的宿主端口跑契约套件，适配点在 factory：交给套件一个能把
+请求里的 `scopeRef` 解析到该 scope 对应实例（按需创建即可）的 factory，而不是把
+这个字段丢掉——套件里那些同时点名两个 scope 的断言（`other-run`、规范化的
+`run-h-...` 形态）正好是丢弃 `scopeRef` 的 factory 会为之变红的那几条。
 
 记录时间字段在每次读取时兜底：缺 `updated_at` 回退 `created_at`，两者都缺用固定 epoch
 `1970-01-01T00:00:00.000Z`（适配器绝不替没写过的记录伪造"现在"）。
@@ -979,6 +1008,15 @@ active）整体删除**，空目录一并移除；未超期的 scope 整体豁�
 scope 目录数，`purged` 为删除的记录文件数）。可选 `before` 参数只能缩小范围
 （取更早的 cutoff，绝不放大删除窗口）。CLI 在 run 收尾后接着跑会话时钟清扫；
 嵌入式宿主自行调度 `purge()`。
+
+**上游不承诺记录级过期（issue #183 第 1 组）。** `expires_at` 是历史遗留字段：内置
+文件适配器从不读它，`purge` 只看 scope 时钟，也没有任何上游路径因为时间戳到期而
+把记录变得不可见。宿主完全可以自定保留/过期策略（TTL 列、每 run 限额、定时清扫），
+契约套件也不会往任何一个方向断言。不要把 `toolResultTtl` 当成 notes TTL：那个旋钮数
+的是 provider request-view 里折叠大工具结果的轮数（见
+[取回与 request-view 折叠](#取回与-request-view-折叠)），与笔记寿命无关。真正属于
+契约的生命周期义务只有 `complete`（把整个 scope 的 `active` 置成 `done`）与一个
+真的按自己的时钟删到期记录、并对不可解析的 `before` 报错的 `purge`。
 
 ### CLI 侧来源 guard
 
@@ -1285,12 +1323,14 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 ## 契约测试套件（issue #183）
 
 `erix-agent/contract-tests`（即 `./contract-tests` 子路径导出，`test/contract/index.js`）
-随包发布七个套件文件、共**八个**可复用的 `node:test` 注册函数（`execute-tool.js` 里有两个：
-现行形状与迁移形状）。每一个的签名都是 `xxxContract(label, factory)`：调用它即注册一批以
+随包发布七个套件文件、共**九个**可复用的 `node:test` 注册函数（`execute-tool.js` 里有两个：
+现行形状与迁移形状；`notes-store.js` 自 issue #183 起也有两个：通用套件与可选的 CAS
+子套件）。每一个的签名都是 `xxxContract(label, factory)`：调用它即注册一批以
 `label` 命名的断言，在 `node --test` 跑起来之前什么都不会执行。`npm run check:docs:strict`
 会对「被 `test/contract/index.js` 再导出、但 `files` 白名单漏掉」的套件直接失败（在普通的
-`npm run check:docs` 下它是 warn），因此随包集合不可能无声变小。八个里最新的是
-`terminationPayloadContract`（issue #180）：装在已发布的 0.17.0 上的宿主只有七个，不是八个。
+`npm run check:docs` 下它是 warn），因此随包集合不可能无声变小。九个里最新的是
+`notesStoreCasContract`（issue #183），其次是 `terminationPayloadContract`（issue #180）：
+装在已发布的 0.17.0 上的宿主只有七个，不是九个。
 
 ### 套件能证明什么、不能证明什么（issue #183）
 
@@ -1308,6 +1348,25 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
   断言当作一行 changelog 来读；为你自己发明出来的行为另留一套宿主所有的套件。为了让升级变绿
   而弱化一条随包的断言，等于丢掉这个套件携带的唯一信号（0.16.0 升级指南对「保真 + 保序」这一
   对断言说的是同一件事）。
+- **放宽也是一个信号。** 一次版本 bump 把原来红的套件变绿，意味着上游放宽了一个承诺
+  ——这同样要当 changelog 读，因为它往往就是自家适配器在等的那张许可证。issue #183 就是
+  这个形状：`revoke` 现在承诺的是「可观察消失」（墓碑**或**物理删除皆可），last-write-wins
+  并发断言从通用 notes 套件移到了文件适配器自己的测试里，比较-交换宿主新增了可选的
+  `notesStoreCasContract`。这几条不会让原本就能过的适配器变红，也不会反过来给宿主作保：
+  上游不再断言被放宽的那部分，所以那份保证（如果你需要）现在归你自己写测试。
+
+**套件里对记录做 `deepEqual` 的地方，那条断言是 JSON 值相等（issue #183 第 6 组）。**
+它可测，也有边界，两半都是承诺的一部分：
+
+- **JSON 值的每一个字段都必须回来**，不是白名单子集：上游不认识的字段（`extension`、
+  未来的元数据键）也必须原样往返；
+- **数组序是值的一部分**：`superseded`、`tags` 与 `current.content` 块必须逐元素同序回来；
+- **对象键序不承重**——只有键序不同的两条记录是相等的，宿主可以重序列化；
+- **JSON 不可表示的值不在承诺内**：`undefined` 成员、编码器会丢掉的值、`Date`/`BigInt`/`RegExp`
+  实例、函数、`NaN`/`Infinity`，以及共享/循环引用。一个值经 JSON 抵达 store，就按 JSON 形态比；
+  宿主自留这类值时必须在端口出口投影成 JSON 形态——这正是裁决对宿主自有元数据列（
+  `record_version`、`expires_at`）的要求：列留在 schema 里，从公共记录形状里去掉，
+  使「进去的形状」就是「出来的形状」。
 
 ### 标准用法（issue #183）
 
@@ -1317,11 +1376,13 @@ factory 必须**每次调用都交出一个干净的**实现 —— 每个断言
 多个套件会反复进入它：
 
 ```js
-import { notesStoreContract, transcriptStoreContract } from "erix-agent/contract-tests";
+import { notesStoreCasContract, notesStoreContract, transcriptStoreContract } from "erix-agent/contract-tests";
 import { createFileNotesStore, createMemoryTranscriptStore } from "erix-agent";
 
 transcriptStoreContract("my-host-store", () => createMemoryTranscriptStore());
 notesStoreContract("my-host-store", () => createFileNotesStore({ dir: notesDir }));
+// 比较-交换型 store 额外注册这个可选子套件：它只要求并发写至多一方失败、胜者可读
+notesStoreCasContract("my-host-store", () => createFileNotesStore({ dir: notesDir }));
 ```
 
 其余六个是同一个形状，只有第二个参数不同：
@@ -1330,6 +1391,7 @@ notesStoreContract("my-host-store", () => createFileNotesStore({ dir: notesDir }
 |---|---|---|
 | `transcriptStoreContract(label, createStore)` | factory | 一个干净的 `TranscriptStore`（必需层 `appendRound`/`load`；run snapshot、run-state 与 issue #157 探针这些方法在存在时会被检验） |
 | `notesStoreContract(label, createStore)` | factory | 一个干净的 `NotesStore`（write/read/list/complete/revoke/purge） |
+| `notesStoreCasContract(label, createStore)` | factory | 同一个 `NotesStore`，由比较-交换型宿主**额外**注册（issue #183）：并发那条断言容忍一方被拒，不再要求两写都落盘 |
 | `modelConfigProviderContract(label, setup)` | async setup | `{ provider, slot, expect: { defaultModel, slotModel, materializedKey } }`；provider 需要一个 `default` 槽加上 `slot`，且 `slot` 的 key 要能经间接引用被物化 |
 | `executeToolContract(label, createExecutor)` | factory | 你的 `executeTool` 函数（或 `{ executeTool }`） |
 | `executeToolMigrationContract(label, createExecutor)` | factory | 同一个执行器，针对已退役的位置参数调用形状做断言 |
@@ -1345,7 +1407,8 @@ notesStoreContract("my-host-store", () => createFileNotesStore({ dir: notesDir }
 | 套件 | 断言什么 | 你必须满足的部分 | 它顺带钉住的上游内部细节 |
 |---|---|---|---|
 | `transcript-store.js`（16 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、run snapshot 的 latest-only 覆盖写、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返，以及成对的探针层 | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍 |
-| `notes-store.js`（7 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、带 `expectedState`/`expectedUpdatedAt` guard 的 tombstone 语义，以及最后写赢并发（且最终必须只剩一条合法记录） | 端口面与记录/guard 语义。六项 notes 语义里哪些属上游硬性要求、哪些交宿主策略，仍在裁决中（issue #183 第 1 组）；今天这个套件编码的是上游的选择，所以在裁决落地前把这些行当作上游行为 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`）、LWW 的措辞（文档化的一写者限制）、保留期/purge 时机 |
+| `notes-store.js`（7 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、`limit` 阈值（存量超过 200：给了 limit 就钳到恰好 200，非法 limit 抛错），以及带 `expectedState`/`expectedUpdatedAt` guard 的 revoke 可观察消失 | 端口面与记录/guard 语义。issue #183 之后上游硬义务与宿主策略的分界已写死：端口只承诺「可观察消失」（墓碑**或**物理删除皆可）且不管记录过期，而一写者 last-write-wins 是文件适配器自己的事，已不在这里断言 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`、`/positive safe integer/`）、保留期/purge 时机 |
+| `notes-store.js` → `notesStoreCasContract`（1 条，可选；issue #183） | 并发同键写：至多一方失败，失败必须是抛错而不是静默丢弃，胜者必须是那条以完整形状可读的记录 | 只给比较-交换宿主跑，且是在 `notesStoreContract` 之外的**额外**一层 —— 这个子套件刻意比被移除的 last-write-wins 断言更弱，跑绿它对串行化写者一无所证 | 它顺便踩到的两个载荷内容（`left`/`right`），而不是任何冲突错误文案 |
 | `assembly-port.js`（4 条） | 端口能启动一个真实 loop 并跑完，`emit(type, payload)` 收到带 payload 的事件类型，显式的细粒度 `provider` 选项覆盖端口自带的 provider，缺少 `chat`/`chatStream` 的 provider 在启动时被 `createAssemblyPort` 与 `runToolLoop` 双双拒绝 | 你的端口所必需的适配器与它的 `emit` 接收端 | 优先级规则（显式选项胜过端口）、启动校验的错误文案 |
 | `execute-tool.js`（7 条）+ `executeToolMigrationContract`（2 条） | 你的执行器恰好收到一个结构化执行对象，且每种规范返回形态（`string`、`{content, metadata, success}`、遗留的 `{data}`、返回的 `Error`、抛出的 `Error`）都变成文档规定的 `tool_result` | 调用形状与返回形状。迁移套件还额外证明：裸的位置参数 `(name, input)` 执行器是被**拒绝**的，不是被静默支持 | 这些断言是通过 `runToolLoop` 的 provider 请求观测到的，而不是通过某个公开结果字段 |
 | `model-config-provider.js`（4 条） | `resolve()` → default 槽，`resolve(slot)` → 具名槽，未知槽 → 回落 default，以及 `apiKey` 间接引用物化（ADR-001） | 你的 provider 的槽位解析与 key 物化 | 没有任何引擎侧内容：它从不加载引擎 |

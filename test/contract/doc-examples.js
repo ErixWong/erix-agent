@@ -364,7 +364,8 @@ if (__storeLoads__.count !== 1) throw new Error(\`store.load 应被调用 1 次�
   },
   // fence #7（EN :1660，契约套件标准注入用法，issue #183）
   // 两层都真验：L2 靠 `erix-agent/contract-tests` 说明符重写到 test/contract/index.js（证明
-  // 发布的子路径入盘）；L3 把示例当宿主那样注册 23 条断言（transcript 16 + notes 7）并真的跑完
+  // 发布的子路径入盘）；L3 把示例当宿主那样注册 24 条断言（transcript 16 + notes 7 +
+  // notes CAS 子套件 1，issue #183）并真的跑完
   // ——node:test 任何一条红都会把子进程 exitCode 置 1，所以「绿」本身就是「套件能接宿主实现」的证据。
   // 主体里的 `notesDir` 是文档约定变量（宿主自己的 notes 目录），由 stubs 供一个真 tmpdir；
   // 完成性断言挂在 beforeExit（事件循环排空 = 套件跑完）上，核「notes 套件真的写到了注入的实现上」。

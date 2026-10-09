@@ -1077,6 +1077,14 @@ maintainer review of real usage (average ~2 notes per run, peak 9) judged
 pagination and version anchoring YAGNI for 0.12.0 (ADR-018 D3 reversal). `purge` has no pagination protocol — one call scans and processes every
 scope (see [Notes maintenance scheduling](#notes-maintenance-scheduling-0120)).
 
+An explicit `limit` is validated, then clamped (`src/store/notes.js:398-405`,
+issue #183 item 5): a value that is not a positive safe integer — `0`, `-1`,
+`1.5`, `NaN`, `2**53`, a string — throws `TypeError` before anything is read,
+while any value above 200 is clamped down to 200 instead of erroring. The
+contract suite now pins both halves against more than 200 stored records, so a
+host that silently coerces `limit: 0` to `1`, or that returns 5000 records for
+`limit: 5000`, goes red.
+
 The file-backed `NotesStore` canonicalizes each `scopeRef` exactly at the
 adapter boundary. Unsafe scope references such as `../escape`, absolute paths,
 and encoded separators are mapped to a stable `run-h-...` directory; the same
@@ -1087,12 +1095,47 @@ in canonical hashed form remain readable and participate in list, complete,
 revoke, and purge operations.
 
 The file adapter assumes one writer per scope/key. Concurrent read-modify-write
-updates can lose one update and its superseded history (last-write-wins).
-Hosts that need concurrent updates must serialize them at the host boundary;
+updates can lose one update and its superseded history (last-write-wins). This
+one-writer rule is a property of **this adapter**, not of the port: a store that
+rejects the losing side of a concurrent same-key write (compare-and-swap) is a
+legal `NotesStore` implementation, and the shipped contract suite no longer
+requires both concurrent writers to succeed — the last-write-wins assertion lives
+in the file adapter's own test tree, and a compare-and-swap host registers the
+optional `notesStoreCasContract` sub-suite instead (see
+[Contract test suites](#contract-test-suites-issue-183)). Hosts that need
+concurrent updates on the file adapter must serialize them at the host boundary;
 the adapter does not add a lock or another concurrency mechanism. `revoke`
 carries this one step further at the API level: an `expectedState` /
 `expectedUpdatedAt` guard makes a revoke that raced with another writer return
 `{ status: "unchanged" }` instead of overwriting a record it did not see.
+
+What `revoke` promises is that the record **stops being observable** (issue #183
+item 3, ruling B). After a `{ status: "found", revoked: 1 }` result a record must
+no longer be readable as an active note: `read()` either returns a
+`state: "revoked"` tombstone or returns `undefined` because the store deleted the
+record outright, and both shapes are legal. What stays fixed is the guard
+behaviour, not the storage form: a revoke against a key that is not there answers
+`{ status: "missing", revoked: 0 }`, and a repeat revoke never counts a second
+revocation (a tombstone store answers `unchanged`, a deleting store answers
+`missing`). "A tombstone can never be revived" was never a current promise —
+nothing in the engine consumes the `revoked` state, so a host that physically
+deletes on revoke is not weaker, and no host may read "the row is still there"
+as a guarantee.
+
+Two scope topologies are legal and both are load-bearing (issue #183 item 7).
+Interface-level multi-scope is a hard capability: every request carries its own
+`scopeRef`, one store instance serves many scopes, and `purge` is the only method
+that sweeps across them (it ignores `scopeRef`). Instance-level fixed scope is
+equally legal: the official assembler `createBuiltinNotesTools` binds one logical
+run scope at creation time (`src/tools/notes.js:627`) and every view reuses that
+binding, so a host that
+runs one store instance per tenant/expert against a shared multi-scope database
+matches the upstream shape rather than deviating from it. To run the contract
+suite against a fixed-scope host port, adapt at the factory: hand the suite a
+factory that resolves the requested `scopeRef` to the instance bound to that
+scope (create-on-demand is fine) instead of ignoring the field — assertions that
+name two scopes (`other-run`, the canonicalized `run-h-...` forms) are exactly
+the ones a factory that drops `scopeRef` will fail for the right reason.
 
 Record time fields are normalized on every read: a record missing `updated_at`
 falls back to `created_at`, and a record missing both gets the fixed
@@ -1217,6 +1260,19 @@ directories and `purged` counts deleted record files. The optional `before`
 parameter only ever narrows the window (an earlier cutoff; it can never
 enlarge what gets deleted). The CLI chains its session-clock sweep after run
 completion; embedded hosts schedule `purge()` themselves.
+
+**Upstream promises no record-level expiry (issue #183 item 1).** `expires_at`
+is a legacy field: the shipped file adapter never reads it, `purge` decides only
+from the scope clock, and no upstream path turns a record invisible because a
+timestamp elapsed. A host is free to run its own retention or expiry policy (a
+TTL column, a per-run quota, a scheduled sweep) and the contract suite does not
+assert one either way. Do not read `toolResultTtl` as a notes TTL: that knob
+counts rounds in the provider request view for folding large tool results (see
+[Retrieval and request-view folding](#retrieval-and-request-view-folding)) and
+has nothing to do with note lifetime. The one lifecycle obligation that *is*
+contractual is `complete` (flip `active` → `done` for the whole scope) and a
+`purge` that really deletes what its clock says is expired and rejects an
+unparseable `before`.
 
 ### CLI-side provenance guard
 
@@ -1619,15 +1675,17 @@ valid state on a later resume.
 ## Contract test suites (issue #183)
 
 `erix-agent/contract-tests` (the `./contract-tests` subpath export,
-`test/contract/index.js`) ships seven suite files exposing **eight** reusable
+`test/contract/index.js`) ships seven suite files exposing **nine** reusable
 `node:test` registration functions (`execute-tool.js` carries two: the current and
-the migration shape). Every one is shaped `xxxContract(label, factory)`: calling it
-registers assertions titled with `label`, and nothing executes until
+the migration shape; `notes-store.js` carries two since issue #183: the general
+suite and the optional CAS sub-suite). Every one is shaped `xxxContract(label, factory)`:
+calling it registers assertions titled with `label`, and nothing executes until
 `node --test` runs them. `npm run check:docs:strict` fails on any suite that
 `test/contract/index.js` re-exports but the packaged `files` list omits (it is a
 warn under the plain `npm run check:docs`), so the shipped set cannot shrink
-unnoticed. `terminationPayloadContract` is the newest of the eight (issue #180):
-a host on an installed 0.17.0 has seven, not eight.
+unnoticed. `notesStoreCasContract` is the newest of the nine (issue #183) and
+`terminationPayloadContract` is next (issue #180): a host on an installed 0.17.0
+has seven, not nine.
 
 ### What the suites prove, and what they cannot prove (issue #183)
 
@@ -1652,6 +1710,36 @@ and it cannot replace the host's own consistency tests:
   Weakening a shipped assertion to make an upgrade pass discards the only signal
   the suite carries (the 0.16.0 guide says the same thing for the fidelity and
   ordering pair).
+- A **relaxation is also a signal.** When a bump turns a previously red suite
+  green, upstream widened a promise — read that as a changelog line too, because
+  it is usually the licence your adapter was waiting for. Issue #183 is exactly
+  that shape: `revoke` now promises observable disappearance (a tombstone *or*
+  physical deletion), the last-write-wins concurrency assertion moved out of the
+  general notes suite into the file adapter's own tests, and a compare-and-swap
+  host gained the optional `notesStoreCasContract`. Nothing in that list makes an
+  adapter that already passed go red, and nothing in it certifies a host either:
+  the assertions that were relaxed stopped testing the relaxed-away behaviour
+  upstream, so the host-side guarantee (if you want one) is now yours.
+
+**Where a suite asserts `deepEqual` on a record, that assertion is JSON-value
+equality (issue #183 item 6).** It is testable and it is bounded, and both halves
+are part of the promise:
+
+- **every field of the JSON value comes back**, not a whitelisted subset: fields
+  upstream does not know about (`extension`, a future metadata key) must survive
+  the round trip exactly as written;
+- **array order is part of the value**: `superseded`, `tags`, and `current.content`
+  blocks come back element-for-element in the same order;
+- **object key order carries no meaning** — two records that differ only in key
+  order are equal, and a host is free to re-serialize;
+- **values JSON cannot express are outside the promise**: `undefined` members, a
+  value the JSON encoder drops, a `Date`/`BigInt`/`RegExp` instance, a function,
+  `NaN`/`Infinity`, or a shared/cyclic reference. A record that reached the store
+  through JSON is compared as JSON; a host that keeps such a value must project
+  it to a JSON form at the port exit, which is exactly what the ruling asks of
+  host-owned metadata columns (`record_version`, `expires_at`): keep them in the
+  schema, drop them from the public record shape so the shape that goes in is the
+  shape that comes out.
 
 ### Standard usage (issue #183)
 
@@ -1662,11 +1750,14 @@ them. The factory must hand out a **clean** implementation on every call — eac
 assertion group treats it as a fresh namespace and several suites re-enter it:
 
 ```js
-import { notesStoreContract, transcriptStoreContract } from "erix-agent/contract-tests";
+import { notesStoreCasContract, notesStoreContract, transcriptStoreContract } from "erix-agent/contract-tests";
 import { createFileNotesStore, createMemoryTranscriptStore } from "erix-agent";
 
 transcriptStoreContract("my-host-store", () => createMemoryTranscriptStore());
 notesStoreContract("my-host-store", () => createFileNotesStore({ dir: notesDir }));
+// optional sub-suite for a compare-and-swap store: it only requires at most one
+// concurrent writer to fail and the winner to stay readable
+notesStoreCasContract("my-host-store", () => createFileNotesStore({ dir: notesDir }));
 ```
 
 The same shape covers the other six; only the second argument differs:
@@ -1675,6 +1766,7 @@ The same shape covers the other six; only the second argument differs:
 |---|---|---|
 | `transcriptStoreContract(label, createStore)` | factory | a clean `TranscriptStore` (required tier `appendRound`/`load`; the run-snapshot, run-state, and issue #157 probe methods are exercised when present) |
 | `notesStoreContract(label, createStore)` | factory | a clean `NotesStore` (write/read/list/complete/revoke/purge) |
+| `notesStoreCasContract(label, createStore)` | factory | the same `NotesStore`, registered **in addition** by a compare-and-swap host (issue #183): the concurrency assertion tolerates one writer being rejected instead of requiring both writes to land |
 | `modelConfigProviderContract(label, setup)` | async setup | `{ provider, slot, expect: { defaultModel, slotModel, materializedKey } }`; the provider needs a `default` slot plus `slot`, whose key is reachable through an indirect reference |
 | `executeToolContract(label, createExecutor)` | factory | your `executeTool` function (or `{ executeTool }`) |
 | `executeToolMigrationContract(label, createExecutor)` | factory | the same executor, asserted against the retired positional call shape |
@@ -1690,7 +1782,8 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 | suite | what it asserts | yours to satisfy | upstream-internal detail it also pins |
 |---|---|---|---|
 | `transcript-store.js` (16 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-snapshot latest-only overwrite, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, and the paired probe tier | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance |
-| `notes-store.js` (7 tests) | port validation (`assertNotesStore`), malformed-record rejection before persistence, full record round-trip, scope isolation and explicit misses, unsafe-scope round-trip through lifecycle, tombstone semantics with `expectedState`/`expectedUpdatedAt` guards, and last-write-wins concurrency that must still leave one valid record | the port surface and the record/guard semantics. Which of the six notes semantics are upstream-mandated versus host policy is still being adjudicated (issue #183 item 1); today the suite encodes upstream's choices, so treat those rows as upstream behaviour until they are ruled on | the file-store-shaped error texts (`/valid NoteRecord/`, `/parseable date/`), the LWW wording (documented one-writer limitation), retention/purge timing |
+| `notes-store.js` (7 tests) | port validation (`assertNotesStore`), malformed-record rejection before persistence, full record round-trip, scope isolation and explicit misses, unsafe-scope round-trip through lifecycle, the `limit` threshold (more than 200 stored records: a given limit clamps to exactly 200, an illegal limit throws), and `revoke`'s observable disappearance with the `expectedState`/`expectedUpdatedAt` guards | the port surface and the record/guard semantics. Since issue #183 the split between upstream mandate and host policy is explicit: the port mandates observable disappearance (tombstone **or** physical delete) and leaves record expiry to the host, while the one-writer last-write-wins behaviour is the file adapter's own business and is no longer asserted here | the file-store-shaped error texts (`/valid NoteRecord/`, `/parseable date/`, `/positive safe integer/`), retention/purge timing |
+| `notes-store.js` → `notesStoreCasContract` (1 test, optional; issue #183) | concurrent same-key writers: at most one may fail, a failure must be a thrown error rather than a silent drop, and the winner is the record that stays readable in its full shape | compare-and-swap hosts only, and only in addition to `notesStoreContract` — this sub-suite is deliberately weaker than the retired last-write-wins assertion, so passing it says nothing about a store that serializes writers | the two payload contents it happens to exercise (`left`/`right`), not any conflict error text |
 | `assembly-port.js` (4 tests) | a port boots a real loop to completion, `emit(type, payload)` receives the event types with their payload, an explicit fine-grained `provider` option overrides the port's provider, and a provider missing `chat`/`chatStream` is rejected at startup by both `createAssemblyPort` and `runToolLoop` | your port's required adapters and its `emit` sink | the precedence rule (explicit option over port), the startup-validation error text |
 | `execute-tool.js` (7 tests) + `execute-tool-migration-contract` (2 tests) | your executor receives exactly one structured execution object, and each canonical return form (`string`, `{content, metadata, success}`, legacy `{data}`, returned `Error`, thrown `Error`) becomes the documented `tool_result` | the call shape and the return shapes. The migration suite additionally proves that a bare positional `(name, input)` executor is **rejected**, not silently supported | that the assertions are observed through `runToolLoop`'s provider request rather than through a public result field |
 | `model-config-provider.js` (4 tests) | `resolve()` → default slot, `resolve(slot)` → named slot, unknown slot → default fallback, and `apiKey` indirect-reference materialisation (ADR-001) | your provider's slot resolution and key materialisation | nothing engine-side: it never loads the engine |
