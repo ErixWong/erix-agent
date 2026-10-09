@@ -1308,11 +1308,17 @@ Defaults a host must know about, because they change what the model sees
   real flags: it is `rg --fixed-strings` / `grep -F`. An invalid regular
   expression is returned as the tool error result `错误：无效正则：…` — it never
   throws, unlike the real commands exiting non-zero;
-- `grep` truncates each matched line to 500 characters plus a trailing `…`
+- **both search tools truncate each matched line to the same 500 characters**
+  plus a trailing `…` — one shared limit, so `rg` and `grep` cannot drift apart
   (issue #184 round A: the limit used to be 200, which cut ordinary code lines
-  in half and made the model misread them). `rg` does not truncate lines at all,
-  so the two search tools differ here; the number is this implementation's
-  default, not an obligation on hosts;
+  in half and made the model misread them; and only `grep` truncated at all,
+  leaving the two search tools in one library with opposite behaviour). Real
+  `rg` / `grep` binaries do **not** truncate lines (verified: an 807 character
+  hit is echoed verbatim), so this cut is **this implementation's own output
+  budget** — a single long line (minified files routinely put hundreds of KB on
+  one line) could otherwise blow up one tool call. The number is this
+  implementation's default, not an obligation on hosts, and it is stated in both
+  tool descriptions;
 - an empty search result is `（无命中）`, never an empty string;
 - `tree` truncation always carries a marker with the remainder count and the
   parameter that would widen it;

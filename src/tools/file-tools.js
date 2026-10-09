@@ -43,8 +43,14 @@ export const GREP_MAX_RESULTS_HARD_CAP = 200;
 export const FILE_READ_MAX_BYTES_DEFAULT = 262_144; // 256 KiB；scripts/docs-drift-check.mjs 的真值锚点
 const FILE_READ_MAX_BYTES_MIN = 1_024;
 const FILE_READ_MAX_BYTES_CEILING = 4 * 1024 * 1024;
-// `grep` 命中行的截断上限：200 会把正常代码行截成半行，模型看到半行容易误判（#184 追加轮 A → 500）。
-const GREP_LINE_LIMIT = 500;
+// 搜索命中行的行宽上限：`grep` 与 `rg` **共用这一个数**（#184 追加轮 A 收口第三条：此前只有 `grep`
+// 截行、`rg` 原样输出，同一个库里两个搜索工具口径相反——与刚修掉的「两个工具默认值相反」同形状）。
+// 名字里的 GREP 是历史遗留（这个数最早只有 `grep` 在用），口径唯一，**不要再引入第二个常量**。
+// 上限语义：整行 ≤ 上限原样返回；> 上限截到上限 + 尾部一个 `…`。
+// 为什么保留截断：真实 `rg`/`grep` 命令**都不截行**（已实测 807 字符的命中行逐字节原样输出），
+// 所以这是我们**本实现自己的输出预算**，不是对宿主或对真实命令的模仿——一个超长行（minified
+// 文件常见：一行几百 KB）就能独自把一次工具调用撑爆。该偏离写进了两个工具的描述与契约文档。
+const GREP_LINE_LIMIT = 500; // 值不动：200 会把正常代码行截成半行，模型看到半行容易误判（#184 追加轮 A）
 const ABORT_CHECKPOINT_EVERY = 32;
 const READ_BLOCK_BYTES = 64 * 1024;
 // 结果尾部 marker 的字节预留：保证「单次返回不超过 max_bytes」对整段文本成立。
@@ -429,7 +435,10 @@ export const FILE_TOOL_DEFINITIONS = [
     description: "Recursively search text files with a regular expression (the ripgrep command's own default). "
       + "Set is_regex=false for literal matching, equivalent to `rg --fixed-strings`. "
       + "Pure-Node subset, not the ripgrep binary: no -i/-A/-B/--type, .gitignore is NOT read; "
-      + "node_modules/dist/build/target/vendor and dot-directories are skipped by default and reported at the end of the result.",
+      + "node_modules/dist/build/target/vendor and dot-directories are skipped by default and reported at the end of the result. "
+      + "A matched line is returned whole up to 500 characters; a longer line is cut to 500 plus a trailing `…` — that width cap is "
+      + "this implementation's own output budget (a single minified line can be hundreds of KB); the real `rg` command "
+      + "never truncates lines, and the cap is shared verbatim with grep.",
     inputSchema: {
       type: "object",
       properties: {
@@ -453,7 +462,10 @@ export const FILE_TOOL_DEFINITIONS = [
     description: "Search file contents with a regex or literal pattern, grouped by file. "
       + "is_regex=true (the default) matches as a regular expression, equivalent to `grep -E`; is_regex=false matches the pattern literally, equivalent to `grep -F`. "
       + "Pure-Node subset, not the grep binary: JavaScript regex rather than BRE/ERE, no -i/-A/-B/--include, .gitignore is NOT read; "
-      + "node_modules/dist/build/target/vendor and dot-directories are skipped by default and reported at the end of the result.",
+      + "node_modules/dist/build/target/vendor and dot-directories are skipped by default and reported at the end of the result. "
+      + "A matched line is returned whole up to 500 characters; a longer line is cut to 500 plus a trailing `…` — that width cap is "
+      + "this implementation's own output budget (a single minified line can be hundreds of KB); the real `grep` command "
+      + "never truncates lines, and the cap is shared verbatim with rg.",
     inputSchema: {
       type: "object",
       properties: {
@@ -664,7 +676,8 @@ export function createFileTools({
       for (let index = 0; index < lines.length; index += 1) {
         expression.lastIndex = 0;
         if (!expression.test(lines[index])) continue;
-        results.push(`${displayName(filePath)}:${index + 1}:${lines[index]}`);
+        // 行宽上限与 `grep` 共用同一个常量：两个搜索工具对同一个超长行必须给出同样长的命中行。
+        results.push(`${displayName(filePath)}:${index + 1}:${truncateDisplayText(lines[index], GREP_LINE_LIMIT)}`);
         if (results.length >= resultLimit) return;
       }
     };

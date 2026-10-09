@@ -64,12 +64,20 @@ test("rg 默认与真实命令一致：正则默认，is_regex=false 才等价 r
     assert.match(grep.description, /grep -F/u);
     assert.match(grep.inputSchema.properties.is_regex.description, /Default true/u);
 
+    // 行宽上限也靠描述落地（#184 追加轮 A 收口第三条）：两个工具都写明上限、都写明它是本实现的
+    // 输出预算而不是真实命令的行为，且两边描述同口径。
+    for (const definition of [rg, grep]) {
+      assert.match(definition.description, /whole up to 500 characters/u, `${definition.name} 描述必须写明行宽上限`);
+      assert.match(definition.description, /this implementation's own output budget/u, `${definition.name} 必须说明上限是本实现的默认值`);
+      assert.match(definition.description, /never truncates lines/u, `${definition.name} 必须说明真实命令不截行`);
+    }
+
     // grep 默认未动：同库两个搜索工具默认相反正是本轮要修掉的反常，现在两边都是正则
     assert.match(await executeTool("grep", { pattern: "a.b" }), /2: axb/u);
   });
 });
 
-test("grep 命中行截断上限是 500 字符（#184 追加轮 A：200 会把正常代码行截成半行，模型误判）", async () => {
+test("grep 命中行截断上限是 500 字符，rg 共用同一个数（#184 追加轮 A：200 会把正常代码行截成半行；收口第三条抹平 rg 不截行）", async () => {
   await withDirectory(async (cwd) => {
     await writeFile(join(cwd, "long.txt"), `needle ${"y".repeat(800)}\n`, "utf8");
     await writeFile(join(cwd, "normal.txt"), `needle ${"z".repeat(400)}\n`, "utf8"); // 407 字符：旧上限下只剩 200
@@ -84,8 +92,20 @@ test("grep 命中行截断上限是 500 字符（#184 追加轮 A：200 会把�
     assert.ok(normal.includes(`1: needle ${"z".repeat(400)}`), "407 字符的行在新上限下必须完整返回");
     assert.doesNotMatch(normal, /…/u);
 
-    // rg 根本不做出行截断（与 grep 不同口径，已列为残留点，别默默变成隐式契约）
-    assert.match(await executeTool("rg", { pattern: "needle", path: cwd }), new RegExp(`needle y{800}`, "u"));
+    // rg 现在与 grep 共用同一个上限（#184 追加轮 A 收口第三条）：807 字符的行也得截到 500 + `…`
+    const rgHit = (await executeTool("rg", { pattern: "needle", path: cwd }))
+      .split("\n").find((line) => line.startsWith("long.txt:1:"));
+    assert.equal(
+      rgHit.length,
+      "long.txt:1:".length + 500 + 1,
+      `rg 必须按同一个 500 上限截断（+11 前缀 +1 省略号），实得到 ${rgHit.length}`,
+    );
+    assert.ok(rgHit.endsWith("…"), "rg 截断也必须留省略号尾巴");
+    assert.doesNotMatch(
+      await executeTool("rg", { pattern: "needle", path: join(cwd, "normal.txt") }),
+      /…/u,
+      "rg：407 字符的行在新上限下必须完整返回、不得带省略号",
+    );
   });
 });
 

@@ -15,6 +15,8 @@
 //   * rg/grep 都默认按**正则**匹配（与真实 `rg` / `grep` 命令的默认一致，issue #184 追加轮 A），
 //     is_regex=false 是字面量逃生口（等价 `rg --fixed-strings` / `grep -F`），无效正则一律返回错误结果而非抛；
 //   * 无命中统一「（无命中）」；tree 截断必须带 marker + 剩余计数；
+//   * rg 与 grep 共用**同一个**命中行宽上限（500 字符 + `…`）：同一份长行 fixture 上两边命中行
+//     必须逐字相等（#184 追加轮 A 收口：此前只有 grep 截行，两个搜索工具口径相反）；
 //   * 遍历可被 context.signal 中止。
 //
 // 实现特有行为（宿主 jail 的具体谓词、CLI 终端回显）由实现方自行补测，不进契约。
@@ -342,6 +344,45 @@ export function fileToolsContract(label, { createFileTools }) {
       const grepLiteral = await tools.executeTool("grep", { pattern: "a.b", is_regex: false });
       assert.match(grepLiteral, /1: a\.b literal/u);
       assert.doesNotMatch(grepLiteral, /axb/u, "grep is_regex=false = grep -F：点号不是元字符");
+    });
+  });
+
+  test(`${label}: rg 与 grep 共用同一个命中行宽上限（同一份长行 fixture 上两边命中行必须一模一样）`, async () => {
+    await withDirectory(async (cwd) => {
+      // 本轮真正要钉的不变式只有一个：**两个搜索工具必须是同一个数**。
+      // 历史缺陷：`grep` 截行、`rg` 不截，同一个库里两个搜索工具口径相反（与刚修掉的
+      // 「两个工具默认值相反」同形状）。真实 `rg` / `grep` 命令**都不截行**（已实测 807 字符的
+      // 命中行逐字节原样输出），所以这里的截断是**本实现自己的输出预算**（一个 minified
+      // 超长行——一行几百 KB——能独自把一次工具调用撑爆），不是对真实命令行为的声明。
+      const longLine = `needle ${"y".repeat(800)}`; //   807 字符：> 上限，两边都得截
+      const normalLine = `needle ${"z".repeat(290)}`; // 297 字符：≤ 上限，两边都得整行返回
+      await writeFile(path.join(cwd, "long.txt"), `${longLine}\n`, "utf8");
+      await writeFile(path.join(cwd, "normal.txt"), `${normalLine}\n`, "utf8");
+      const tools = createFileTools({ cwd });
+
+      // 剥掉各工具自己的前缀（rg = `文件:行号:`，grep = `行号: `），只比命中行正文
+      const hitBody = async (name, file) => {
+        const output = await tools.executeTool(name, { pattern: "needle", path: path.join(cwd, file) });
+        const line = output.split("\n").find((entry) => entry.includes("needle "));
+        assert.ok(line !== undefined, `${name} 必须命中那一行：${output}`);
+        return line.slice(line.indexOf("needle "));
+      };
+
+      const rgLong = await hitBody("rg", "long.txt");
+      const grepLong = await hitBody("grep", "long.txt");
+      // ← 不变式本体：同一份长行上两边正文逐字相等（长度自然相等）
+      assert.equal(rgLong, grepLong, "rg 与 grep 的命中行必须一模一样（行宽上限口径唯一）");
+      assert.equal(rgLong.length, grepLong.length, "rg 与 grep 的命中行长度必须相等");
+      // 具体数也钉住（否则两边一起缩到 200 也能满足上面的等式）：500 正文 + 1 个省略号
+      assert.equal(rgLong.length, 501, `rg 必须按 500 + 省略号截断，实得到 ${rgLong.length}`);
+      assert.equal(grepLong.length, 501, `grep 必须按 500 + 省略号截断，实得到 ${grepLong.length}`);
+      assert.ok(rgLong.endsWith("…") && grepLong.endsWith("…"), "截断必须留省略号尾巴");
+
+      const rgNormal = await hitBody("rg", "normal.txt");
+      const grepNormal = await hitBody("grep", "normal.txt");
+      assert.equal(rgNormal, grepNormal, "未触顶的行两边都得整行返回");
+      assert.equal(rgNormal, normalLine, "297 字符的命中行不得被截断");
+      assert.doesNotMatch(`${rgNormal}${grepNormal}`, /…/u, "未触顶的行不得带省略号");
     });
   });
 
