@@ -111,20 +111,25 @@ test("discoverSkills gives the project directory priority for duplicate ids", as
   });
 });
 
+// issue #186：原来用 chmod(unreadable, 0o000) 造「不可扫的根」——root 持有 DAC_OVERRIDE，
+// stat/readdir 照样成功，于是「单根出错被隔离」这条分支在 root 下根本没被执行到（1 !== 1 只是症状）。
+// 换成与 uid 无关的失败源：技能根路径的**父段是一个普通文件**（`<文件>/skills`），
+// statSync/readdirSync 必然 ENOTDIR，root 与非 root 走同一条路径。
+// 两个走过的弯路（均不适用于本实现，写下来免得下次重试）：
+//   · 根路径处直接放普通文件 → discoverSkills 的 isDirectory() 返回 false → `continue`，不记错误，用例会变成空跑；
+//   · 指向不存在路径的 symlink → statSync 抛 ENOENT，同样被当作「根不存在」吞掉，不记错误。
 test("discoverSkills isolates a skill root scan error", async () => {
   await withDirectory(async (cwd) => {
-    const unreadable = join(cwd, "unreadable-skills");
-    await mkdir(unreadable);
-    const { chmod } = await import("node:fs/promises");
-    await chmod(unreadable, 0o000);
-    try {
-      const discovered = discoverSkills({ cwd, skillsDir: unreadable });
-      assert.deepEqual([...discovered], []);
-      assert.equal(discovered.errors.length, 1);
-      assert.equal(discovered.errors[0].dir, unreadable);
-    } finally {
-      await chmod(unreadable, 0o700);
-    }
+    const blocker = join(cwd, "skill-root-blocked-by-file");
+    await writeFile(blocker, "not a directory", "utf8");
+    const unscannable = join(blocker, "skills");
+
+    const discovered = discoverSkills({ cwd, skillsDir: unscannable });
+    assert.deepEqual([...discovered], []);
+    assert.equal(discovered.errors.length, 1);
+    assert.equal(discovered.errors[0].dir, unscannable);
+    // 钉住失败源本身：必须是 ENOTDIR（环境无关），不能靠权限位碰运。
+    assert.match(discovered.errors[0].error, /ENOTDIR/u);
   });
 });
 
