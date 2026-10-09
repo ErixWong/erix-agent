@@ -612,13 +612,26 @@ onEvent
 ```
 
 Streaming observers (`onDelta`, `onReasoningDelta`, `onToolCall`, and
-`onUsage`) report through `onObserverError` when an observer throws.
+`onUsage`) report through `onObserverError` when an observer throws — as do all
+the other observer callbacks (issue #173, detailed below).
 Persistence failures use `onPersistenceError`. `onEvent` receives structured
 events including `round_start`, `round_end`, `tool_use`, `tool_result`,
 `attempt`, `recovering`, `recovered`, `delta`, `reasoning_delta`, `tool_call`,
 `usage`, `forced_final`, `final_guard`, and
 `persistence_capability_degraded` (one shot per missing optional store
 capability).
+
+All nine observer callbacks above are error-isolated (issue #173): a throw in any
+of them is reported through `onObserverError(error, {channel, runId?, …})` and
+**the run continues** — it can no longer change `termination.reason`. Observer
+errors are best-effort and are not part of the persistence ledger, so a host must
+count `onObserverError` itself. To end a run from a callback, call
+`signal.abort()` (the thrown error carries the issue #180 payload); the callbacks
+must return synchronously — only the awaited `onRound` and `onToolResult` also
+absorb a rejected promise. `onToolResult` rewrites the tool result rather than
+merely observing it: on a throw the engine keeps its **original** result and
+reports, so redaction logic inside that hook must defend itself. Full contract:
+`docs/host-consumer-contract.md`, "Observer callback errors (issue #173)".
 
 ## CLI: `erix`
 

@@ -61,6 +61,88 @@ The older `{ data, success, ... }` shape and other duck-typed shapes are
 normalized permissively for compatibility, but are deprecated and must not be
 depended on.
 
+## Observer callback errors (issue #173)
+
+Nine host callbacks observe a run: the eight event channels `onEvent`, `onRound`,
+`onToolResult`, `onJudge`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`,
+plus the error account itself (`onObserverError`). **A throw in any of them is
+reported and the run continues** — one uniform consequence. Before this change the
+same fault had three different outcomes: a throwing `onEvent`, `onRound`, or
+`onToolResult` killed the run with `termination.reason: "failed"`, the streaming
+channels were reported through `onObserverError`, and `onJudge` disappeared into a
+bare `catch {}`.
+
+```text
+observer throws synchronously, or returns a rejected promise (onRound / onToolResult)
+  └─ reportObserverError(error, { channel, … })   src/loop/orchestrator.js:763-783
+       ├─ onObserverError(error, context)         the host account, called synchronously
+       └─ console.error("Observer callback error:", error, context)
+                                                  when no account is configured, or it threw
+```
+
+1. **The run keeps going.** No observer error can change `termination.reason`, the
+   returned result, or what was persisted. When `onRound` throws the round has
+   already been appended and the later rounds still run; when `onToolResult` throws
+   the tool result still reaches the model; after a throwing `onEvent` the engine
+   keeps emitting events (the stream no longer truncates at the first host failure).
+   The paths that can still end a run are the engine's own: see
+   "Termination decision table (issue #170)".
+2. **Every report names its channel.** `onObserverError(error, context)` receives a
+   plain object that always carries `channel` — the callback name, or `"unknown"` if
+   the engine ever reports without one — and always carries `runId` when the host
+   supplied the `runId` option, so a host running runs in parallel can attribute the
+   failure. The extra fields below are the complete set per channel and are additive;
+   a host must not require anything more:
+
+| `context.channel` | Extra fields | Engine guard |
+|---|---|---|
+| `onEvent` | `type`, plus `round` when the event carries one | `emitEvent` (`src/loop/orchestrator.js:1517-1531`) |
+| `onEvent` (startup diagnostics) | `type: "model_metadata_missing"`, or `type: "persistence_capability_degraded"` plus `method` | the local guards in `notifyCapabilitySkipped` / `notifyModelMetadataMissing` (`src/loop/orchestrator.js:847-900`), which call `onEvent` directly because they fire before `emitEvent` exists |
+| `onRound` | `round` | `src/loop/orchestrator.js:3122-3130` |
+| `onToolResult` | `toolName`, `round` | `src/loop/run-snapshot-executor.js:266-294` |
+| `onJudge` | `round`, `kind` | `emitJudge` (`src/loop/orchestrator.js:1544-1557`) |
+| `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage` | `round`, `type` (the streamed event type) | `dispatchAttemptEvent` (`src/loop/provider-runner.js:96-110`) |
+
+   The startup diagnostics keep their exactly-once-per-run guarantee even when the
+   host throws: the dedup marker is set before the callback runs.
+3. **Observer errors are best-effort and are accounted nowhere else.** They never
+   enter `result.unpersisted`, they produce no `delivery_failure` entry, and they are
+   not written into the run state. A host that needs the count keeps it from
+   `onObserverError` itself; a durable, persisted observer-error account is a
+   separate decision (issue #173 boundary accepted as-is).
+4. **The account itself must not throw.** If `onObserverError` throws, the engine
+   logs `Observer error reporter failed:` and then falls through to
+   `console.error("Observer callback error:", error, context)`. The run is unaffected
+   either way. Without a configured account the console line is the only signal, so a
+   production host must configure one and count it.
+5. **Throwing is not how a host stops a run.** Use `signal.abort()`: the loop then
+   throws the standard `aborted` shape with the issue #180 payload
+   (`error.usage` / `error.rounds` / `error.finalText`). A host that previously let a
+   throwing sink abort the run must migrate to the abort signal — the throw now only
+   reports.
+6. **Callbacks return synchronously.** Only `onRound` and `onToolResult` are awaited,
+   so only those two channels isolate a rejected promise as well as a synchronous
+   throw. On `onEvent`, `onJudge`, and the four streaming channels the engine catches
+   synchronous throws only: an `async` callback whose promise rejects later escapes as
+   an unhandled rejection in the host. Keep callbacks synchronous, or guard the async
+   work inside the callback.
+7. **`onToolResult` is a rewrite hook, not a pure observer.** Its return value
+   replaces the tool result (returning `undefined` keeps the engine result), so a
+   failure there has a data consequence: the fallback is the **original execution
+   result, unchanged** — never a partial rewrite, never an empty result — plus a
+   `channel: "onToolResult"` report carrying `toolName` and `round`. Hosts that
+   redact, truncate, or re-shape tool output inside this hook must defend that logic
+   themselves: a throwing redactor silently hands the un-redacted engine result to
+   the model.
+
+Nothing else is in this channel. `executeTool` errors become tool results,
+`onPersistenceError` and `diagnostics.error` report through the persistence ledger and
+`delivery_failure` (see "Persistence failure reporting"), `finalGuard` surfaces as
+`verification.status: "error"`, `reflection.onReflection` and the compaction hooks
+`onBeforeFold` / `onAfterFold` still let an uncaught throw reach `fail()`, and
+`todoStateProvider` / `semanticStateProvider` surface as `status: "error"` run-state
+sections. Do not extrapolate observer isolation to those callbacks.
+
 ## Provider request injection (issue #181)
 
 `createOpenAIProvider` and `createAnthropicProvider` accept two additional, fully
@@ -272,17 +354,17 @@ run; the only signal is the `model_metadata_missing` event named below.
 
 - The probe is a duck-type over that exact order and returns the **first**
   candidate that carries either field (`src/loop/budget.js:59-69`, called at
-  `src/loop/orchestrator.js:898-904`). Fields are **never merged across
+  `src/loop/orchestrator.js:958-964`). Fields are **never merged across
   candidates**: a slot with only `contextWindowTokens` plus a `modelMetadata`
   carrying `maxOutputTokens` derives no budget at all. Keep the pair in one
   object.
 - `modelConfig` must be a resolver (`{ resolve(slot?) }`). A plain config object
   passed as `modelConfig` is rejected at startup with
   `assembly port is missing methods: modelConfig.resolve`, because the option
-  name is read as a port whenever it is present (`src/loop/orchestrator.js:567-582`).
+  name is read as a port whenever it is present (`src/loop/orchestrator.js:592-607`).
   The resolved value — not the resolver — is what the probe reads.
 - Slot selection is per run: the slot name travels in `session.modelSlot`
-  (`src/loop/orchestrator.js:584-587`). Both built-in providers fall back to the
+  (`src/loop/orchestrator.js:609-612`). Both built-in providers fall back to the
   `default` slot for an unknown name, so per-run selection never fails a run
   that only misspelled a slot.
 - `createJsonFileModelConfigProvider` reads `{ "slots": { "<name>": { … } } }`
@@ -307,7 +389,7 @@ run; the only signal is the `model_metadata_missing` event named below.
 
 The loop's own `maxTokens`, `temperature`, and `topP` options are injected into
 every request and therefore **override** the same slot fields
-(`src/loop/provider-runner.js:125-127`, `src/providers/openai.js:51-55`).
+(`src/loop/provider-runner.js:128-130`, `src/providers/openai.js:51-55`).
 
 **Unknown slot fields are inert and safe.** The built-in providers copy the slot
 verbatim (`src/config/json-file.js:22-39`, `src/config/static.js:26-38`), and both
@@ -321,19 +403,19 @@ objects** only: an unknown *top-level* `runToolLoop` option still throws
 
 `budgetTokens = context.budgetTokens ?? computeBudget({ contextWindowTokens, maxOutputTokens })`
 with `computeBudget = contextWindowTokens - maxOutputTokens - max(2000, ceil(window × 0.1))`
-(`src/loop/orchestrator.js:924-933`, `src/compact/budget.js:9-33`).
+(`src/loop/orchestrator.js:984-993`, `src/compact/budget.js:9-33`).
 `budgetTokens` is the gate for context compaction, for the per-round aggregate
 output budget, and for the budget block in the request view. The output-truncation
 limit is a separate derivation: explicit `outputHygiene.limit` first, else
 `clamp(15% × contextWindowTokens, 8192, 100000)`, else `4096`
-(`src/loop/orchestrator.js:906-917`).
+(`src/loop/orchestrator.js:966-977`).
 
 | Condition at startup | Engine behavior |
 |---|---|
 | neither field found in any of the five candidates | **silent skip**: `budgetTokens` stays `undefined`, compaction and the aggregate output budget stay off, and exactly **one** `model_metadata_missing` event is emitted |
 | fields found but malformed (non-integer, string, window ≤ 0, `maxOutputTokens` < 0) or too small (derived budget ≤ 0) | `computeBudget` **throws `invalid_budget`** before the first provider call |
 | host supplies `context.budgetTokens` | derivation is bypassed entirely — compaction is on whatever that value enables, and **no** event is emitted whatever the probe found; a non-positive / non-integer value throws `invalid_budget` from `validateBudget` |
-| host supplies `context.strategy` | the strategy is asked with `budgetTokens` as-is, so a configured strategy can gate compaction without any metadata (`src/loop/orchestrator.js:2129-2132`); note the built-in sliding-window strategy compares against that value and therefore never fires on `undefined` (`src/compact/sliding-window.js:34-36`) |
+| host supplies `context.strategy` | the strategy is asked with `budgetTokens` as-is, so a configured strategy can gate compaction without any metadata (`src/loop/orchestrator.js:2200-2203`); note the built-in sliding-window strategy compares against that value and therefore never fires on `undefined` (`src/compact/sliding-window.js:34-36`) |
 
 Both `invalid_budget` shapes are **pre-execution** throws: the run lifecycle has
 not begun, so the thrown error carries no `termination`, `usage`, `rounds`, or
@@ -381,9 +463,10 @@ host's assertion point for its own assembly. A host that expects compaction
 asserts the event is **absent**; a host that intentionally runs uncompacted
 asserts it is present exactly once. `detail` also names the output limit it
 resolved to, so the same assertion catches "my window never reached the
-truncation sizing". A throwing `onEvent` on this startup event is fatal and is
-reported with the standard `failed` / `aborted` termination shape
-(`src/loop/orchestrator.js:938-952`).
+truncation sizing". Assert it **before** starting, or abort after assembly: a
+throwing `onEvent` on this startup event is no longer a rejection mechanism, it is
+reported through `onObserverError` and the run continues
+(`src/loop/orchestrator.js:876-900`; see "Observer callback errors (issue #173)").
 
 ### Multi-model slot assembly (issue #182)
 
@@ -430,7 +513,14 @@ const modelConfig = createJsonFileModelConfigProvider({ path: configPath });
 const modelSlot = run.triage ? "triage" : undefined;
 const slot = await modelConfig.resolve(modelSlot);
 
+// Pre-flight assertion, taken before the run exists. Throwing inside a callback is
+// only reported now (issue #173), so "do not run without metadata" is decided here.
+if (slot.contextWindowTokens === undefined || slot.maxOutputTokens === undefined) {
+  throw new Error("slot carries no window metadata: compaction is off for this run");
+}
+
 const events = [];
+const controller = new AbortController();
 const result = await runToolLoop({
   provider: createOpenAIProvider(slot),  // request params: model / max_tokens / temperature come from the slot
   modelConfig,                           // budget metadata: re-resolved through session.modelSlot
@@ -439,15 +529,16 @@ const result = await runToolLoop({
   executeTool,
   maxRounds: 8,
   persistence: "none",
+  signal: controller.signal,
   onEvent: (event) => {
     events.push(event.type);
-    if (event.type === "model_metadata_missing") {
-      throw new Error("slot carries no window metadata: compaction is off for this run");
-    }
+    // Still a supported escape hatch after assembly: the only way a callback ends a run
+    // is the abort signal, never a throw (issue #173).
+    if (event.type === "model_metadata_missing") controller.abort();
   },
 });
 
-result.termination.reason; // "end_turn" — and the assertion above proves the budget was derived
+result.termination.reason; // "end_turn" — the pre-flight check above is what proves the budget was derived
 ```
 
 The engine does not switch models mid-run: the host builds the provider from the
@@ -599,7 +690,7 @@ shape, value, or meaning, and a host that ignores them behaves exactly as before
 | Field | Present on | Contract |
 |---|---|---|
 | `termination.errorCode` | `result.termination` / `error.termination` when `reason === "failed"` | Root-cause class of the failure. The engine passes through the classification the error already carries (`KitError.code`, e.g. `timeout`, `rate_limited`, `auth`, `server`, `checkpoint_failed`) and falls back to `"unknown"` when the error carries none — it never invents or re-derives a code. No other reason gains the field. A host decision table can therefore branch on `errorCode` instead of parsing `termination.detail`. |
-| `error.usage`, `error.rounds`, `error.finalText` | every error thrown after the run lifecycle has begun (the terminal `fail()` path and the startup-diagnostic path) | The accumulated usage at the throw point — literally the same object `result.usage` would have carried, including `cacheRead`/`cacheWrite` — plus the round counter and the partial final text (`""` when nothing was produced). When nothing had accumulated these are **zero values, not absent fields**: `{ input_tokens: 0, output_tokens: 0 }`, `0`, `""`. Pre-execution validation errors (unknown/malformed option `TypeError`s, assembly failures, `modelConfig.resolve` rejections) are thrown before a run exists and carry none of these fields. |
+| `error.usage`, `error.rounds`, `error.finalText` | every error thrown after the run lifecycle has begun — i.e. the terminal `fail()` path. Issue #173 deleted the second producer (the startup-diagnostic annotation), so `fail()` is the only one | The accumulated usage at the throw point — literally the same object `result.usage` would have carried, including `cacheRead`/`cacheWrite` — plus the round counter and the partial final text (`""` when nothing was produced). When nothing had accumulated these are **zero values, not absent fields**: `{ input_tokens: 0, output_tokens: 0 }`, `0`, `""`. Pre-execution validation errors (unknown/malformed option `TypeError`s, assembly failures, `modelConfig.resolve` rejections) are thrown before a run exists and carry none of these fields; neither does a host observer throw, which no longer throws at all (see "Observer callback errors (issue #173)"). |
 | `termination.usage`, `termination.rounds`, `termination.partial` | `error.termination` when `reason === "aborted"` | The same values as on the error object (`termination.usage === error.usage`), with `partial: true` marking the text as a partial draft rather than a final answer. |
 
 The abort payload exists because a run the user stopped really did spend tokens.
@@ -670,7 +761,7 @@ field, but only one of them can win a given run: the mechanisms are ordered and
 mutually exclusive. Line references are the implementation truth; if code and
 table disagree, the code is right and this table is a bug.
 
-Nine reasons are enumerable on the return path (`src/loop/orchestrator.js:468`);
+Nine reasons are enumerable on the return path (`src/loop/orchestrator.js:493`);
 `persistence_failed` is a tenth that only ever appears on the throw path, so it
 is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 `continuation_exhausted`, `stall`, and `final_guard_unverified`
@@ -678,16 +769,16 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 
 | `termination.reason` | Triggering mechanism (file:line) | Position in the precedence chain | Host switch | Recommended host action |
 |---|---|---|---|---|
-| `end_turn` | governance stop `completion` (`src/reflection/governor.js:111-113`) or the fall-through stop `complete` (`src/reflection/governor.js:126-128`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:93-100`). Inputs: `shouldContinue` (`src/loop/orchestrator.js:2668-2669`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:2671-2674`, `2676-2730`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js:2866-2873`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js:1019-1023`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js:1363`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
-| `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:2866-2873`, `isEndTurn` at `2574`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js:979-993`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js:979-982`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
-| `no_tool` | governance stop `noTool` (`src/reflection/governor.js:114-117`), gated by `noToolRound` (`src/loop/orchestrator.js:2742-2746`) and a streak `>= maxNoToolRounds`, default 3 (`src/loop/orchestrator.js:1364-1366`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
-| `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2607-2621`), streak accumulation (`src/loop/orchestrator.js:2658-2665`), stop at `src/reflection/governor.js:66-69` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`src/loop/orchestrator.js:1348-1359`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
-| `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`src/loop/orchestrator.js:2567-2568`, loop at `2530`); governance stop `cap` (`src/reflection/governor.js:62-64` / `136-138`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:95`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`src/loop/orchestrator.js:1367-1369`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
-| `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:150-152`); (b) the round loop simply runs out (`src/loop/orchestrator.js:2490`, tail handling at `3072-3090`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`src/loop/orchestrator.js:1034-1049`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
-| `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3024-3037`), revision limit (`3039-3052`), or the budget-exhaustion tail (`3077-3090`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js:3013-3016`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1385-1387`); `finalGuardMaxRetries` moves the revision limit (default 2, `src/loop/orchestrator.js:1377-1380`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
-| `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:845-895`; classification at `847-848` and `867-872`, annotation at `887-894`) | overrides failure classification on the throw path — the signal is checked first, including in the startup-diagnostic path (`src/loop/orchestrator.js:938-951`) | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
-| `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:845-895`, loop catch at `3068-3070`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js:675-686`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `unknown` → inspect `termination.detail` |
-| `persistence_failed` | same `fail()` path, selected when the error carries persistence info (`src/loop/orchestrator.js:867-872`), which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js:880-886`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
+| `end_turn` | governance stop `completion` (`src/reflection/governor.js:111-113`) or the fall-through stop `complete` (`src/reflection/governor.js:126-128`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:93-100`). Inputs: `shouldContinue` (`src/loop/orchestrator.js:2739-2740`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:2742-2745`, `2747-2801`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js:2937-2944`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js:1069-1073`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js:1413`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
+| `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:2937-2944`, `isEndTurn` at `2645`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js:1029-1043`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js:1029-1032`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
+| `no_tool` | governance stop `noTool` (`src/reflection/governor.js:114-117`), gated by `noToolRound` (`src/loop/orchestrator.js:2813-2817`) and a streak `>= maxNoToolRounds`, default 3 (`src/loop/orchestrator.js:1414-1416`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
+| `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2678-2692`), streak accumulation (`src/loop/orchestrator.js:2729-2736`), stop at `src/reflection/governor.js:66-69` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`src/loop/orchestrator.js:1398-1409`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
+| `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`src/loop/orchestrator.js:2638-2639`, loop at `2601`); governance stop `cap` (`src/reflection/governor.js:62-64` / `136-138`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:95`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`src/loop/orchestrator.js:1417-1419`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
+| `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:150-152`); (b) the round loop simply runs out (`src/loop/orchestrator.js:2561`, tail handling at `3151-3169`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`src/loop/orchestrator.js:1084-1099`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
+| `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3103-3116`), revision limit (`3118-3131`), or the budget-exhaustion tail (`3156-3169`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js:3092-3095`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1435-1437`); `finalGuardMaxRetries` moves the revision limit (default 2, `src/loop/orchestrator.js:1427-1430`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
+| `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:905-955`; classification at `907-908` and `927-932`, annotation at `947-954`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
+| `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:905-955`, loop catch at `3147-3149`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js:700-711`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `unknown` → inspect `termination.detail` |
+| `persistence_failed` | same `fail()` path, selected when the error carries persistence info (`src/loop/orchestrator.js:927-932`), which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js:940-946`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
 
 ### Verification status and CLI exit codes
 
@@ -696,14 +787,14 @@ come back `unverified`, and a `max_rounds_cap` / `stall` /
 `continuation_exhausted` can only ever end up `skipped` or `error` — with a guard
 configured, a `verified` verdict is not available to them, because a guard
 `accept` on those three reasons still terminates as `final_guard_unverified`
-(`src/loop/orchestrator.js:3024-3037`). The CLI mapping is
+(`src/loop/orchestrator.js:3103-3116`). The CLI mapping is
 `exitCodeForVerification` (`bin/cli.js:1015-1022`):
 
 | `verification.status` | Meaning | `verification.reason` seen in practice | CLI exit code |
 |---|---|---|---|
 | `verified` | the configured guard accepted this final answer | — (no reason field) | `0` |
-| `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js:1385-1387`); CLI guard `no_capture_evidence` / `no_extractable_candidates` (`bin/final-guard.js:86,89`) | `4` |
-| `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js:3025-3029`), `max_retries` (`3041-3045`) | `2` |
+| `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js:1435-1437`); CLI guard `no_capture_evidence` / `no_extractable_candidates` (`bin/final-guard.js:86,89`) | `4` |
+| `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js:3104-3108`), `max_retries` (`3120-3124`) | `2` |
 | `error` | the guard threw, decided invalidly, or timed out (fail-open for availability, never `verified`) | `timeout` or `error` (`src/loop/termination.js:173-176`) | `3` |
 
 `exitCodeForVerification` returns `0` for any other status, including a missing
@@ -715,7 +806,7 @@ verification outcome.
 ### Mechanism precedence and mutual exclusion
 
 Within one round, exactly one mechanism gets to decide, in this order
-(`src/loop/orchestrator.js:2866-2891`, `src/reflection/governor.js:59-129`,
+(`src/loop/orchestrator.js:2937-2962`, `src/reflection/governor.js:59-129`,
 `src/loop/termination.js:93-100`):
 
 1. **token-continuation boundary** — repeated `max_tokens` responses set
@@ -728,21 +819,21 @@ Within one round, exactly one mechanism gets to decide, in this order
    repeated-error nudges on purpose, so a low-priority nudge cannot starve a
    genuine loop into `max_rounds_cap`.
 3. **wrapup declaration** — a `done:true` envelope suppresses continuation and
-   raises `completionSignalDetected` (`src/loop/orchestrator.js:2668-2674`),
+   raises `completionSignalDetected` (`src/loop/orchestrator.js:2739-2745`),
    which both produces the `completion` stop (`src/reflection/governor.js:111-113`)
-   and makes `noToolRound` false (`src/loop/orchestrator.js:2742-2746`). Declared
+   and makes `noToolRound` false (`src/loop/orchestrator.js:2813-2817`). Declared
    completion and `no_tool` are therefore mutually exclusive.
 4. **completion keyword fallback** — the same signal with no parseable envelope
    comes from `completion.signals` matching the final text
-   (`src/loop/orchestrator.js:2672-2674`), or from the LLM normalizer when an
-   end-turn round produced no envelope at all (`2676-2730`, opt-in via
+   (`src/loop/orchestrator.js:2743-2745`), or from the LLM normalizer when an
+   end-turn round produced no envelope at all (`2747-2801`, opt-in via
    `reflection.wrapupNormalize` / `ERIX_WRAPUP_NORMALIZE=1`).
 5. **`no_tool` stop** — reachable only when nothing declared completion and the
-   round produced no tool call (`src/loop/orchestrator.js:2742-2746`).
+   round produced no tool call (`src/loop/orchestrator.js:2813-2817`).
 6. **round judge end-turn evaluation** — `judge_done` is evaluated *before* the
    governor (2866-2873), so it outranks 2-5 in the round it fires; it requires
    `isEndTurn`, i.e. `stopReason === "end_turn"` with no tool use
-   (`src/loop/orchestrator.js:2574`). A tool round can therefore never produce
+   (`src/loop/orchestrator.js:2645`). A tool round can therefore never produce
    `judge_done`, and a `max_tokens` round can never produce both `judge_done`
    and `continuation_exhausted` (the mapping prefers `judge_done` anyway,
    `src/loop/termination.js:94`).
@@ -751,13 +842,13 @@ Within one round, exactly one mechanism gets to decide, in this order
    (`src/loop/termination.js:203-256`), then `finalGuard` may accept, skip,
    revise, or fail. A `revise` verdict is not terminal: it injects a user
    message and governance starts over for that round
-   (`src/loop/orchestrator.js:3039-3061`). Revision retries are bounded by
-   `finalGuardMaxRetries` (default 2, `src/loop/orchestrator.js:1377-1380`),
+   (`src/loop/orchestrator.js:3118-3140`). Revision retries are bounded by
+   `finalGuardMaxRetries` (default 2, `src/loop/orchestrator.js:1427-1430`),
    and the guard's own timeout defaults to 30 s
-   (`src/loop/orchestrator.js:1381-1383`).
+   (`src/loop/orchestrator.js:1431-1433`).
 8. **`fail()` classification** — any throw at any point replaces all of the
    above with `aborted` (signal set) or `failed` / `persistence_failed`
-   (`src/loop/orchestrator.js:845-895`).
+   (`src/loop/orchestrator.js:905-955`).
 
 ## Reusable normalization primitives
 

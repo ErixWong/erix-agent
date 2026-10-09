@@ -15,6 +15,7 @@
 
 ### Changed
 
+- 宿主观察者回调抛错后果统一为「记一笔错、继续跑」（issue #173 PR-B，行为放宽 = semver minor）：九个观察者通道的宿主回调抛错，原先三档后果（onEvent/onRound/onToolResult **杀 run**、onDelta 等流式通道隔离、onJudge 静默吞）现统一为：经 `onObserverError`（现携带 `{channel, ...}` 上下文）报告后 **run 照常继续**。三条边界：① 旧「throw 拒绝 run」契约示例（#182 装配自检）改为预检查/`signal.abort` 姿势，要终止 run 用 abort（抛错带 #180 全载荷）；② `onToolResult` 是改写钩子非纯观察者，异常 fallback = **保留原始结果** + 上报，改写/脱敏逻辑须在 hook 内自防；③ 启动期直调路径（`persistence_capability_degraded`/`model_metadata_missing`）纳入同一隔离通道，其旧「startup throw fatal」注解逻辑删除。回调须同步返回（仅被 await 的 onRound/onToolResult 承诺隔离 rejected Promise）；观察者错误 best-effort 无持久化账本，宿主应计数 onObserverError。双宿主（touwaka/erix-station）消费者审计：零迁移成本，无一家用回调抛错做控制流。
 - token 估算热路径优化（issue #172，零行为变化）：`estimateTokens` 加 ASCII 快路径（实测 5.3×，结果**逐字节同值**，仓库内复刻旧实现 80k+ 码点/fuzz 比对）；`compactBeforeRound` 删 3 对纯重复全量估算（每轮 8→5 次）；`trimGovernorHistory` O(n²) 线性化（resume 灌历史场景实测 391×）。每轮估算 CPU 实测 302ms → 37ms（−87.8%）。
 
 ### Fixed

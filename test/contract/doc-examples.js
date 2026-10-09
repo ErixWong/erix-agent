@@ -240,7 +240,9 @@ globalThis.fetch = async (url, options) => {
 };
 `,
     epilogue: `
-// 「本 run 没发 model_metadata_missing」由示例自身的 onEvent 断言把守：事件一出现就抛错。
+// 「本 run 没发 model_metadata_missing」现在由示例自身的启动前预检把守（issue #173 后
+// onEvent 抛错不再是拒 run 的机制；示例改成装配后 abort，abort 真发生则整个 run 抛错）。
+// 这里只能看 stub 作用域的量（示例体跑在函数里，局部量不外泄）。
 // 这里只能看 stub 作用域的量（示例体跑在函数里，局部量不外泄）。
 if (__requests__.length !== 1) throw new Error(\`provider 应发起 1 次请求，实际 \${__requests__.length} 次\`);
 const __body__ = JSON.parse(__requests__[0]?.options?.body ?? "{}");
