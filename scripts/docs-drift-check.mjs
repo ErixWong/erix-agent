@@ -265,6 +265,16 @@ const DEFAULT_RULES = [
     must: ([days]) => [new RegExp(`(?:default|默认)\\s*${days}\\s*(?:days|天)`, "i")],
     hint: "契约里 ERIX_NOTES_RETENTION_MS 的默认天数",
   },
+  {
+    // issue #184：readFile 有界读的默认上限只在契约文档里写了一次，
+    // 没机器校验时改源码默认值不会让 check:docs 变红。
+    id: "readFile max_bytes 默认值",
+    src: "src/tools/file-tools.js",
+    srcRe: /FILE_READ_MAX_BYTES_DEFAULT = ([\d_]+)/,
+    docs: ["docs/host-consumer-contract.md", "docs/host-consumer-contract_cn.md"],
+    must: ([v]) => [new RegExp(`max_bytes[\\s\\S]{0,200}?${bt(v)}`)],
+    hint: "契约里 readFile 单次返回字节上限（ERIX_FILE_READ_MAX_BYTES）的默认值",
+  },
 ];
 
 for (const rule of DEFAULT_RULES) {
