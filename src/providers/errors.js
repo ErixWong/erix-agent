@@ -83,6 +83,25 @@ export class KitError extends Error {
   }
 }
 
+/**
+ * Classify a non-2xx provider response into a `KitError`.
+ *
+ * Status → `code` map (issue #179 A12-A added the last three rows):
+ * 408 → `timeout`, 429 → `rate_limited`, 401/403 → `auth`, 500..599 → `server`,
+ * 400/422 → `invalid_request`, 404 → `not_found`, 409 → `conflict`,
+ * every other status → `unknown`.
+ *
+ * The added codes are a **host-visible value-surface extension** (semver minor):
+ * `classifyHttpError` is a public export, and `code` also reaches hosts through
+ * `termination.errorCode` (issue #176). `retryable` is unchanged — none of the
+ * three new codes joins `RETRYABLE_CODES`, so they stay non-retryable exactly as
+ * `unknown` was. Hosts that branch on `"unknown"` will now see the new codes.
+ *
+ * @param {number} status
+ * @param {any} bodyText
+ * @param {{phase?:string, elapsedMs?:number}} [opts]
+ * @returns {KitError}
+ */
 export function classifyHttpError(status, bodyText, opts = {}) {
   let code = "unknown";
   if (status === 408) {
@@ -93,6 +112,12 @@ export function classifyHttpError(status, bodyText, opts = {}) {
     code = "auth";
   } else if (status >= 500 && status <= 599) {
     code = "server";
+  } else if (status === 400 || status === 422) {
+    code = "invalid_request";
+  } else if (status === 404) {
+    code = "not_found";
+  } else if (status === 409) {
+    code = "conflict";
   }
 
   return new KitError(code, upstreamErrorMessage(bodyText), {
