@@ -182,6 +182,7 @@ src/
     task-brief.js                  Task brief selection
     abort.js                       Abort-signal helpers
     block-helpers.js               Block access helpers
+    judge-record.js                Judge record correlation (model identity, run outcome)
   providers/
     anthropic.js                   Anthropic provider and streaming
     errors.js                      Provider errors and classification
@@ -508,7 +509,18 @@ is capped at 1,024 tokens with `reasoning_effort: "none"`, and raw judge output
 is written to `judge.log`. The final budget round forces a no-tools request.
 
 `onJudge` receives round and interception decisions, including `judge_done`,
-`nudge`, `continue`, `executed`, `blocked`, and `degraded` actions. The loop
+`nudge`, `continue`, `executed`, `blocked`, and `degraded` actions. Every record
+also carries `runId` plus the `model` the run actually used when that decision was
+made (and `judgeModel` when the judge ran on a different evaluator model); a value
+the engine cannot resolve from run options / provider configuration is **absent**
+rather than guessed. At the terminal boundary the loop emits one additive
+`run_outcome` event on `onEvent`
+(`{type, runId, model, rounds, judgeRecordCount, termination, verification}`)
+instead of rewriting the decisions that already streamed out, and `chat` appends
+that record into the same `judge.log` — so per-model judge metrics (blocked rate /
+false-block rate / extend ROI) are a `runId` join, not an archaeology pass.
+Field shapes and the additive-only stability promise are spelled out in
+`docs/host-consumer-contract.md`. The loop
 does not treat a judge as a host-level completion certificate; hosts still
 decide whether to consume the result.
 
@@ -655,8 +667,13 @@ The shared CLI flags are:
 - `--compact-budget <tokens>` overrides the automatic compaction budget.
 - `--tools <comma-separated names>` is a hard capability whitelist for both
   `chat` and `repl`; unknown names warn, and an empty filtered set is an error.
-- `--judge-log <path>` appends redacted round/interception judge decisions
-  as JSONL in `chat`.
+- `--judge-log <path>` appends judge decisions (round + interception) as JSONL
+  in `chat`, each carrying `runId` and the resolved `model`, plus one terminal
+  `run_outcome` record for the run (that record is written even when the judge was off:
+  it is the run terminal record, not a decision, and it is what makes per-model run
+  accounting possible without a second archive). Default location is
+  `<archive dir>/judge.log`; unset fields mean "could not resolve", never a
+  placeholder. The archive is written verbatim (redaction was retired in #55).
 
 ### Session continuation
 

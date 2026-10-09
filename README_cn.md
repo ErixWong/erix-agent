@@ -138,6 +138,7 @@ src/
     task-brief.js                  任务简报选取
     abort.js                       中止信号辅助函数
     block-helpers.js               block 访问辅助函数
+    judge-record.js                judge 记录关联字段（模型标识、run 级 outcome 汇总）
   providers/
     anthropic.js                   Anthropic provider 与流式处理
     errors.js                       provider 错误与分类
@@ -363,7 +364,7 @@ Judge 拦截使用 6,000 token 的会话预算；round judge 最多输出 1,024 
 并设置 `reasoning_effort: "none"`，原始 judge 输出写入 `judge.log`。
 最终预算轮次强制发送不带工具的请求。
 
-`onJudge` 接收轮次和拦截决策，包括 `judge_done`、`nudge`、`continue`、`executed`、`blocked` 和 `degraded` 操作。循环不会把 judge 当作宿主级完成证书；宿主仍需决定是否消费结果。
+`onJudge` 接收轮次和拦截决策，包括 `judge_done`、`nudge`、`continue`、`executed`、`blocked` 和 `degraded` 操作。每条记录额外带 `runId`，以及被评决策发生时 run **实际使用**的 `model`（judge 走另一个 evaluator 模型时再带 `judgeModel`）；从 run 选项 / provider 配置里探不到的值一律**缺省**，不写占位值。到终局时，循环在 `onEvent` 上追加一条 additive 的 `run_outcome` 事件（`{type, runId, model, rounds, judgeRecordCount, termination, verification}`），而不是回头改写已流出的决策记录；`chat` 会把这条汇总追写到同一份 `judge.log`——因此 per-model 的 judge 指标（blocked 率 / 误拦率 / extend ROI）只是一次 `runId` join，不再是人工考古。字段形状与 additive-only 的稳定性承诺写在 `docs/host-consumer-contract_cn.md`。循环不会把 judge 当作宿主级完成证书；宿主仍需决定是否消费结果。
 
 ### 工具、上下文、存储与压缩
 
@@ -430,7 +431,7 @@ erix mcp [--config <path>]
 - `--idle-timeout <seconds>` 在没有进展后中止；`chat` 默认为 300，`repl` 默认为 0（禁用）。
 - `--compact-budget <tokens>` 覆盖自动压缩预算。
 - `--tools <逗号分隔名称>` 是 `chat` 和 `repl` 的硬能力白名单；未知名称会告警，过滤后为空会报错。
-- `--judge-log <path>` 在 `chat` 中以 JSONL 追加经过脱敏的轮次/judge 拦截决策。
+- `--judge-log <path>` 在 `chat` 中以 JSONL 追加轮次/judge 拦截决策，每条带 `runId` 与解析出的 `model`，末尾再追加一条 run 级 `run_outcome` 汇总记录（这条终局记录即使 judge 关闭也会写——它是 run 的终局记录而非决策，有了它就不必为了 per-model 记账再开第二份档案）；默认落 `<归档目录>/judge.log`，探不到的字段缺省而非写占位值；档案原样落盘（脱敏已于 #55 退役）。
 
 ### 会话接续
 

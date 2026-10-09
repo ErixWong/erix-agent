@@ -403,6 +403,7 @@ test("round judge emits an onJudge decision event", async () => {
   });
 
   assert.deepEqual(events, [{
+    model: "fake-model",
     round: 1,
     kind: "round",
     decision: judgeDecision,
@@ -1286,6 +1287,7 @@ test("near-limit interception feeds an extension decision back into the governor
   assert.match(prompt, /预算事实：当前预算轮 r=4\/5；扩轮次数 0\/1/);
   assert.match(prompt, /"extend":true\|false/);
   assert.deepEqual(events[0], {
+    model: "fake-model",
     round: 4,
     kind: "round",
     tool: {
@@ -1552,6 +1554,7 @@ test("transparent interception emits an executed onJudge event when approved", a
   });
 
   assert.deepEqual(events, [{
+    model: "fake-model",
     kind: "intercept",
     tool: { id: "second", name: "writeFile", input: { path: "result.txt", content: "42" } },
     decision,
@@ -1599,6 +1602,7 @@ test("transparent interception emits a blocked onJudge event when denied", async
 
   assert.deepEqual(executed, [1]);
   assert.deepEqual(events, [{
+    model: "fake-model",
     kind: "intercept",
     tool: { id: "second", name: "work", input: { step: 2 } },
     decision,
@@ -1660,6 +1664,7 @@ test("transparent interception executes on-track calls even when the judge repor
   assert.doesNotMatch(toolResultText, /审计拦截/);
   // judge 事件仍可区分放行：action=executed + passThrough=on_track
   assert.deepEqual(events, [{
+    model: "fake-model",
     kind: "intercept",
     tool: { id: "second", name: "writeFile", input: { path: "result.txt", content: "42" } },
     decision,
@@ -1712,6 +1717,7 @@ test("transparent interception still blocks done:false calls marked off-track", 
     .map((block) => String(block.content)).join("\n");
   assert.match(auditText, /【审计拦截】方向可能偏/);
   assert.deepEqual(events, [{
+    model: "fake-model",
     kind: "intercept",
     tool: { id: "second", name: "work", input: { step: 2 } },
     decision,
@@ -1745,6 +1751,7 @@ test("transparent interception emits degraded when the judge fails", async () =>
   });
 
   assert.deepEqual(events, [{
+    model: "fake-model",
     kind: "intercept",
     tool: { id: "second", name: "work", input: { step: 2 } },
     decision: null,
@@ -1884,6 +1891,7 @@ test("round judge decision event carries the call usage for transcript accountin
   });
 
   assert.deepEqual(events, [{
+    model: "fake-model",
     round: 1,
     kind: "round",
     decision: {
@@ -1924,6 +1932,7 @@ test("round judge parse failure still reports usage on the degraded event (revie
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
   assert.deepEqual(events, [{
+    model: "fake-model",
     round: 1,
     kind: "round",
     decision: null,
@@ -1966,6 +1975,7 @@ test("intercept judge parse failure still reports usage on the degraded event (r
   });
 
   assert.deepEqual(events, [{
+    model: "fake-model",
     kind: "intercept",
     tool: { id: "second", name: "work", input: { step: 2 } },
     decision: null,
@@ -2015,6 +2025,7 @@ test("intercept judge event carries usage and omits it on timeout (issue #33 B)"
   });
 
   assert.deepEqual(events, [{
+    model: "fake-model",
     kind: "intercept",
     tool: { id: "second", name: "work", input: { step: 2 } },
     decision: {
@@ -2063,6 +2074,7 @@ test("intercept judge event carries usage and omits it on timeout (issue #33 B)"
   });
 
   assert.deepEqual(timeoutEvents, [{
+    model: "fake-model",
     kind: "intercept",
     tool: { id: "second", name: "work", input: { step: 2 } },
     decision: null,
@@ -2137,12 +2149,14 @@ test("readonly tools pass through interception even when off-track, exec stays b
   assert.equal(execResult.executionStatus, "intercepted");
 
   assert.deepEqual(events, [{
+    model: "fake-model",
     kind: "intercept",
     tool: { id: "second", name: "exec", input: { command: "rm -rf build" } },
     decision: decisionExec,
     action: "blocked",
     raw: JSON.stringify(decisionExec),
   }, {
+    model: "fake-model",
     kind: "intercept",
     tool: { id: "fourth", name: "readFile", input: { path: "src/c.js" } },
     decision: decisionRead,
@@ -2196,6 +2210,7 @@ test("readonly pass-through also applies to uncertain direction", async () => {
 
   assert.deepEqual(executed, ["nonce", "anchor"]);
   assert.deepEqual(events, [{
+    model: "fake-model",
     kind: "intercept",
     tool: { id: "second", name: "note_read", input: { key: "anchor" } },
     decision,

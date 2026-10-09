@@ -583,6 +583,50 @@ nested `usage` field. Whether to re-run, alert, or merely bill is the host's
 decision (see the termination-reason list under "Final-answer verification"
 and the run state section).
 
+## Judge record correlation and run outcome (issue #165)
+
+Judge decisions are consumed off `onJudge` (the CLI appends them to `judge.log`;
+a host may append them anywhere). Two additive fields make those records
+groupable per model, and one additive event makes them joinable to a terminal
+outcome. No existing field changes name, shape, or meaning, and a host that
+ignores all three behaves exactly as before.
+
+| Field | Present on | Contract |
+|---|---|---|
+| `runId` | every `onJudge` record and the `run_outcome` event | The run id the host passed to `runToolLoop`; it is the join key between the streamed decisions and the terminal record. When the host passed no `runId` the field is **absent** — the engine does not synthesize one. |
+| `model` | every `onJudge` record and the `run_outcome` event | The model the run actually used when the judged decision was made, resolved from run options / provider configuration. Probe order matches `modelMetadataFor()` (`modelConfig` → `modelMetadata` → `model` → `provider` → `context`), key order `model` → `model_name` (same as provider construction), first hit wins and candidates are **not** merged. Never hardcoded. When no candidate yields a non-empty name the field is **absent**: writing `"unknown"` would make "no model configured" indistinguishable from a model literally named `unknown`. |
+| `judgeModel` | `onJudge` records, only when the judge ran on a different evaluator model | Lets per-model calibration distinguish the evaluated model from the model evaluating it. Absent when the judge shares the run's model. |
+| `run_outcome` event | `onEvent`, exactly once per run — including runs where the judge never ran | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`. Emitted on the success path after persistence settles, and on the throwing path from `fail()`; a latch guarantees exactly one per run. `termination` / `verification` are copies of what `runToolLoop` returned (or what `fail()` built). |
+
+Why a separate terminal record instead of writing the outcome back into the
+decision records: judge records stream out while the run is still executing and
+the outcome is only known at the end, so rewriting a run's already-emitted
+records would break the append-only semantics of a JSONL log a host may already
+be consuming. Correlation is therefore a **join**: every decision record carries
+`runId`, the terminal record carries the outcome. Discriminator: a decision
+record has `kind` (`round` / `intercept`); the terminal record has
+`type: "run_outcome"` and carries neither `kind` nor `action`, so hosts that
+count or filter decisions by `kind` / `action` are unaffected. `judgeRecordCount`
+lets a host detect dropped lines: it equals the number of records the run handed
+to `onJudge`.
+Resume semantics: one `run_outcome` per `runToolLoop` invocation. A resumed run reuses
+its `runId`, so a `runId` may legitimately carry several terminal records — take the last
+one as the current outcome, or key on `(runId, ts)` when you need every attempt.
+
+`run_outcome` is a new event type on the existing `onEvent` stream (additive
+event type = semver minor); no new callback was introduced, because the `onJudge`
+payload means "one judge decision" and pushing a terminal verdict into it would
+silently skew hosts that count decisions. One deliberate asymmetry: unlike other
+events (a host `onEvent` throwing mid-round is fatal, see issue #173), a throw
+from this single terminal event is swallowed — an audit record must not turn a
+finished run into `failed`.
+
+Field stability: the record shape is a host consumption surface, so fields are
+additive only — new optional fields may appear, existing ones are never renamed,
+retyped, or removed within a major version. The archive stays a debug/analysis
+surface, not a completion certificate: the loop still does not certify
+completion (see "Final-answer verification").
+
 ## Termination decision table (issue #170)
 
 A host should be able to decide what to do with a terminal outcome without

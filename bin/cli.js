@@ -723,24 +723,37 @@ async function runChatWithNotes({
     notesStore,
     store,
   );
-  // judge 决策日志默认跟随 run 归档（与工具捕获同目录）；--judge-log / ERIX_JUDGE_LOG 可覆盖
+  // judge 决策日志默认跟随 run 归档（与工具捕获同目录）；--judge-log / ERIX_JUDGE_LOG 可覆盖。
+  // issue #165：注入路径与默认路径共用下面同一个写入器 appendJudgeLogRecord，两类记录
+  // （judge 决策 + run 级 outcome 汇总）因此逐字段同形，不存在“走默认路径才多字段”的分叉。
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG ?? path.join(archiveDir, "judge.log");
   let judgeLogWriteFailed = false;
   // judge-log 为同信任域全量审计档案（与 run JSONL/工具捕获同目录，本就明文）：
   // 原始 info 原样落盘，不做脱敏——脱敏是 token hub 职责（ADR-009 信任模型）
-  const onJudge = judgeLogPath
-    ? (info) => {
+  const appendJudgeLogRecord = judgeLogPath
+    ? (record) => {
       if (judgeLogWriteFailed) return;
       try {
         appendFileSync(
           judgeLogPath,
-          `${JSON.stringify({ ts: new Date().toISOString(), ...info })}\n`,
+          `${JSON.stringify({ ts: new Date().toISOString(), ...record })}\n`,
           "utf8",
         );
       } catch (error) {
         judgeLogWriteFailed = true;
         console.error(`Judge log write failed: ${error?.message ?? String(error)}`);
       }
+    }
+    : undefined;
+  const onJudge = appendJudgeLogRecord;
+  // issue #165：run 终局的 `run_outcome` 汇总记录也落同一个 judge.log，使「judge 决策 ↔ run
+  // 终局」在同一文件内按 runId join（per-model 校准指标不需第二条档案）。只挑这一条，其余事件
+  // 不抄进 judge.log。引擎现状「宿主 onEvent 抛错是 fatal 的」（#173），而写入器内部已吞错，
+  // 不会把已跑完的 run 带成 failed。
+  const onEvent = appendJudgeLogRecord
+    ? (event) => {
+      if (event?.type !== "run_outcome") return;
+      appendJudgeLogRecord(event);
     }
     : undefined;
 
@@ -836,6 +849,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       console.log(`[round ${info.round}]${info.folded ? "（含折叠）" : ""}`);
     },
     onJudge,
+    onEvent,
   };
 
   let loopResult;

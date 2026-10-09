@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #165 judge 记录关联字段与 run 级 outcome 汇总事件；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -472,6 +472,36 @@ abort 载荷的存在理由：用户点「停止」的 run 真的花了 token。
 `aborted` 仍然意味着「循环抛错」——本次改动不把 abort 变成正常返回，正常返回路径也不会
 多出 `errorCode`、`partial` 或嵌套 `usage` 字段。要不要重跑、要不要告警、怎么记账，仍然是
 宿主的决策（reason 枚举见下文「终答核验」，终态另见运行状态一节）。
+
+## judge 记录关联字段与 run 级 outcome（issue #165）
+
+judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log`，宿主可落任意去处）。
+两个 additive 字段让这些记录能按模型分组，一个 additive 事件让它们能与终局 join。
+既有字段名称、形状、语义一律不动，完全不读这三个新字段的宿主行为与之前一致。
+
+| 字段 | 出现在 | 契约 |
+|---|---|---|
+| `runId` | 每条 `onJudge` 记录与 `run_outcome` 事件 | 宿主传给 `runToolLoop` 的 run 标识，也是流式决策与终局记录之间的 join 键。宿主没传 `runId` 时该字段**缺省**——引擎不自己编一个。 |
+| `model` | 每条 `onJudge` 记录与 `run_outcome` 事件 | 被评决策发生时 run **实际使用**的模型标识，从 run 选项 / provider 配置解析。探测顺序与 `modelMetadataFor()` 一致（`modelConfig` → `modelMetadata` → `model` → `provider` → `context`），键顺序 `model` → `model_name`（与 provider 构造侧同口径），首个命中且**不合并**。绝不硬编码。任一候选都探不到非空名字时该字段**缺省**：写 `"unknown"` 会让「没配模型」与「真有个叫 unknown 的模型」在账面上无法区分。 |
+| `judgeModel` | `onJudge` 记录，仅当 judge 走了与 run 不同的 evaluator 模型 | 让 per-model 校准能区分「被评的模型」与「评它的模型」。judge 与 run 同模型时缺省。 |
+| `run_outcome` 事件 | `onEvent`，一次 run 恰好一条——judge 从未运行的 run 同样发 | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`。成功路径在持久化落地后发，抛错路径在 `fail()` 里发；去重门保证一个 run 恰好一条。`termination` / `verification` 是 `runToolLoop` 返回值（或 `fail()` 构造出的终局）的副本。 |
+
+为什么是一条独立的终局记录，而不是把 outcome 回写进决策记录：judge 记录是 run 还在跑时
+就流出、outcome 到终局才知道，回头改写已发出的记录会破掉 JSONL 的 append-only 语义（宿主
+可能已在消费）。因此关联方式是 **join**：每条决策记录带 `runId`，终局记录带 outcome。
+判别键：决策记录带 `kind`（`round` / `intercept`）；终局记录带 `type: "run_outcome"` 且
+**不带** `kind` 与 `action`，故按 `kind` / `action` 计数或过滤决策的宿主代码不受影响。
+`judgeRecordCount` 可让宿主发现掉行：它等于本 run 交给 `onJudge` 的记录条数。
+续跑语义：一次 `runToolLoop` 调用发一条 `run_outcome`。续跑复用同一个 `runId`，因此一个 `runId`
+可能合法地带着多条终局记录——取最后一条作为当前终局，需要逐次尝试时按 `(runId, ts)` 作键。
+
+`run_outcome` 是既有 `onEvent` 流上的新增事件类型（additive 事件类型 = semver minor）；
+没有引入新回调，因为 `onJudge` 的 payload 语义是「一条 judge 决策」，把终局裁决塞进去会让
+按决策计数的宿主静默跑偏。一处刻意不同：与其他事件不同（轮次中宿主 `onEvent` 抛错是 fatal 的，
+见 issue #173），这一个终局事件的宿主抛错被吞掉——审计记录不得把已跑完的 run 变成 `failed`。
+
+字段稳定性：记录形状是宿主消费面，因此字段只 additive 演进——只会新增可选字段，同一主版本内
+不重命名、不改型、不删字段。该档案仍是 debug/分析面，不是完成证书：循环依旧不仲裁完成（见「终答核验」）。
 
 ## 终止裁决决策表（issue #170）
 

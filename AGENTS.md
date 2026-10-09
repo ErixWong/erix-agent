@@ -138,6 +138,7 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 ```
 
 - **Judge logs have a fixed home**: `transcripts/outputs/<runId>/judge.log`, same directory and lifecycle as the transcript/tool captures; supervisors should inspect judge behavior here instead of relying on `/tmp` redirection.
+- **judge.log record shape (#165, additive)**: every decision record carries `runId` + the `model` the run actually used (plus `judgeModel` when the judge ran on a different evaluator model; unresolved values are omitted, never guessed), and the last line of every run is a `run_outcome` summary record (`termination` + `verification`) appended rather than written back. Per-model calibration metrics (blocked rate / false-block rate / extend ROI) are a `runId` join over these two record kinds.
 
 ## 7. Local environment facts
 

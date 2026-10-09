@@ -293,7 +293,19 @@ export function createTerminationManager(ctx) {
           : "succeeded";
       const markRunState = ctx.markRunState;
       await markRunState(state);
-      return makeResult(reason, detail, error);
+      const result = makeResult(reason, detail, error);
+      // issue #165：终局追加一条 run 级 outcome 汇总记录（方案 ①：append-only，**不回写**
+      // 已流出的 judge 决策记录，宿主按 `runId` join）。放在 markRunState **之后**：持久化
+      // 失败时走 catch → ctx.fail()，由它发唯一一条终局记录（发射口有去重门，不会双发）。
+      const emitRunOutcome = ctx.emitRunOutcome;
+      if (typeof emitRunOutcome === "function") {
+        emitRunOutcome({
+          rounds: result.rounds,
+          termination: result.termination,
+          verification: result.verification,
+        });
+      }
+      return result;
     } catch (error) {
       return ctx.fail(error);
     }

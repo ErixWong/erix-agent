@@ -55,6 +55,9 @@ test("restores a round snapshot and flushes only the successful attempt events",
     "attempt",
     "recovered",
     "round_end",
+    // issue #165：run 终局追加一条 `run_outcome` 汇总记录（走既有 onEvent 通道，additive），
+    // 既有事件顺序不变。
+    "run_outcome",
   ]);
 });
 

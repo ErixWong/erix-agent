@@ -56,6 +56,12 @@ import {
 } from "./termination.js";
 import { createErrorLedger } from "./error-ledger.js";
 import {
+  judgeRecordFields,
+  resolveModelName,
+  resolveRunModelName,
+  runOutcomeRecord,
+} from "./judge-record.js";
+import {
   cloneState,
   isApiInputOverBudget,
   modelMetadataFor,
@@ -332,7 +338,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -359,7 +365,12 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * @property {{done:boolean, confidence:number, reason:string, evidence:string}|null} [decision]
  * @property {"judge_done"|"nudge"|"continue"|"executed"|"blocked"|"degraded"} action
  * @property {"timeout"|"error"|"parse"} [error]
- */
+ * @property {string} [runId] issue #165（additive）：宿主传入的 run 标识，用于与本 run 的
+ *   `run_outcome` 事件 join；宿主没给 `runId` 时该字段缺省（不写假值）。
+ * @property {string} [model] issue #165（additive）：被评决策发生时 run 实际使用的模型标识，
+ *   由 run 选项 / provider 配置解析而来（`src/loop/judge-record.js`）；探不到则缺省。
+ * @property {string} [judgeModel] issue #165（additive）：仅当 judge 走了与 run 不同的
+ *   evaluator 模型时出现（校准指标要能区分被评模型与评它的模型）。 */
 
 /**
  * Run the minimum tool-calling loop against an injected provider.
@@ -842,6 +853,33 @@ export async function runToolLoop(options) {
     rounds: 0,
     finalText: "",
   });
+  // issue #165：judge 记录的关联字段（runId + 模型标识）与 run 级 outcome 汇总。
+  // 沿用 #180 `readLoopPayload` 的可变槽位手法：模型名要等 provider/模型配置与 reflection 段
+  // 解析完才可得（下方 `judgeRecordCorrelation` 在那里接管），`verification` 则到累计量声明区才存
+  // 在（早退 catch 时还在 TDZ），所以未就绪时一律「不写字段」而非写假值。
+  let judgeRecordCorrelation = judgeRecordFields({ runId });
+  let verificationReader = () => undefined;
+  let judgeRecordCount = 0;
+  let runOutcomeEmitted = false;
+  // run 级 outcome 汇总走既有 onEvent 通道（新增事件类型 `run_outcome`，不新增回调）：
+  // `onJudge` 的 payload 语义是「一条 judge 决策」，把终局裁决塞进去会让宿主按决策计数/过滤
+  // 的代码静默跑偏。宿主回调抛错此处**吞掉**（与 `emitEvent` 现状「onEvent 抛错 fatal」不同）：
+  // 这条记录是审计面，不能让已跑完的 run 因为宿主日志失败而变成 `failed`。
+  const emitRunOutcome = (outcome) => {
+    if (typeof onEvent !== "function" || runOutcomeEmitted) return;
+    runOutcomeEmitted = true;
+    try {
+      const verification = outcome?.verification ?? verificationReader();
+      onEvent(runOutcomeRecord({
+        ...judgeRecordCorrelation,
+        ...outcome,
+        judgeRecordCount,
+        ...(verification === undefined ? {} : { verification }),
+      }));
+    } catch {
+      // 观测面失败不得改变终局（与 emitJudge 的静默吞掉口径一致）。
+    }
+  };
   const fail = async (error) => {
     let finalError = error;
     const originalPersistence = persistenceInfoFor(error);
@@ -893,6 +931,12 @@ export async function runToolLoop(options) {
       withTerminationPayload(termination, loopPayload),
       loopPayload,
     );
+    // issue #165：抛错终局（aborted/failed/persistence_failed）同样留一条 run 级 outcome 记录——
+    // 没终局的 run 在 per-model 账面上会被当成「没跑过」。
+    emitRunOutcome({
+      rounds: loopPayload.rounds,
+      termination,
+    });
     throw annotated;
   };
   const metadata = modelMetadataFor({
@@ -1024,6 +1068,21 @@ export async function runToolLoop(options) {
   // 归一化 evaluator：复用 judge/provider 配置（无 judge 时主 provider），供 wrapup LLM 归一化用
   const judgeConfig = effectiveReflection?.judge;
   const wrapupEvaluator = judgeConfig?.provider ?? judgeConfig?.evaluator ?? provider;
+  // issue #165：接管 judge 记录的关联字段——每个 judge 决策（round / intercept / degraded，
+  // 含 run-snapshot-executor 里的拦截决策）都经下方 `emitJudge` 这个唯一收口打上 runId 与
+  // 模型标识。模型名一律从 run 选项/provider 配置探（`judge-record.js`），探不到就不写字段；
+  // judge 走独立 evaluator 时额外写 `judgeModel`，与 run 同名时不写（无冗余字段）。
+  judgeRecordCorrelation = judgeRecordFields({
+    runId,
+    model: resolveRunModelName({
+      modelConfig: resolvedModelConfig,
+      modelMetadata,
+      model,
+      provider,
+      context,
+    }),
+    judgeModel: resolveModelName(judgeConfig?.provider ?? judgeConfig?.evaluator),
+  });
   // wrapup LLM 归一化（默认关闭：保持既有纯文本轮行为与旧测试兼容）。
   // 开启：ERIX_WRAPUP_NORMALIZE=1 或 reflection.wrapupNormalize===true。
   // benchmark/harness 场景应开启——找不到 JSON（含空文本）就该归一化。
@@ -1385,6 +1444,9 @@ export async function runToolLoop(options) {
   let verification = typeof finalGuard !== "function"
     ? { status: "skipped", reason: "no_final_guard" }
     : { status: "unverified", reason: "pending" };
+  // issue #165：verification 已进入作用域，接管读取器（在此之前的早退 fail() 读到 undefined
+  // → run_outcome 记录不带 verification 字段，而不是写一个假状态）。
+  verificationReader = () => verification;
   const guardMetrics = {
     verified: 0,
     skipped: 0,
@@ -1413,8 +1475,11 @@ export async function runToolLoop(options) {
 
   const emitJudge = (info) => {
     if (typeof onJudge !== "function") return;
+    // issue #165（additive）：先铺关联字段再铺决策字段——既有字段名与语义一律不动，
+    // 只增 runId/model/judgeModel（探不到时字段缺省）；旧宿主按原字段读，行为不变。
+    judgeRecordCount += 1;
     try {
-      onJudge(info);
+      onJudge({ ...judgeRecordCorrelation, ...info });
     } catch {
       // Observer failures must not affect the tool loop.
     }
@@ -1856,6 +1921,8 @@ export async function runToolLoop(options) {
     refreshRunState,
     markRunState,
     fail,
+    // issue #165：终局汇总记录的发射口（实现在上方 fail 附近，自己吞宿主回调抛错）。
+    emitRunOutcome,
     errorLedger,
     get messages() {
       return messages;

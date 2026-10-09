@@ -931,6 +931,184 @@ test("judge log defaults into the run archive directory", async () => {
     const defaultLog = join(dir, "outputs", "judgelog-default", "judge.log");
     const content = readFileSync(defaultLog, "utf8");
     assert.ok(content.includes('"round"'), "默认 judge.log 应存在且含 round 记录");
+    // issue #165（additive）：默认路径同样带关联字段与终局汇总（与注入路径同形状）。
+    const records = readJudgeLog(defaultLog);
+    const decisions = records.filter((record) => record.kind !== undefined);
+    assert.ok(decisions.length > 0, "应有 judge 决策记录");
+    for (const record of decisions) {
+      assert.equal(record.runId, "judgelog-default");
+      assert.equal(record.model, "fake-model");
+    }
+    assert.deepEqual(records.at(-1).type, "run_outcome", "末条必为 run 级 outcome 汇总");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── issue #165：judge.log 记录形状（模型标识 + run 级 outcome 关联）───────────────────
+
+function readJudgeLog(file) {
+  return readFileSync(file, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+const judgeDoneResponse = () => ({
+  content: [{
+    type: "text",
+    text: JSON.stringify({
+      done: true,
+      confidence: 0.9,
+      reason: "ok",
+      evidence: "done",
+      direction: "on_track",
+    }),
+  }],
+  stopReason: "end_turn",
+});
+
+// 同一套脚本与配置跑一次 run（注入 judgeLog 与走默认归档路径只差一个参数），
+// 用于比较两条路径落盘的记录形状。
+async function runJudgeChat({ dir, session, judgeLog, provider, judge, config }) {
+  await runChat({
+    prompt: "finish",
+    session,
+    dir,
+    notesDir: join(dir, `notes-${session}`),
+    skillsDir: join(dir, "skills"),
+    configPath: await writeEmptyMcpConfig(dir),
+    provider,
+    config,
+    maxRounds: 1,
+    idleTimeout: 0,
+    toolOutput: () => {},
+    ...(judgeLog === undefined ? {} : { judgeLog }),
+    reflection: { enabled: true, roundJudge: true, judge: { provider: judge } },
+  });
+}
+
+test("judge.log carries runId + model per decision and a run-level outcome record (#165)", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-judgelog-shape-"));
+  const judgeLogPath = join(dir, "judge.log");
+  try {
+    await runJudgeChat({
+      dir,
+      session: "judgelog-shape",
+      judgeLog: judgeLogPath,
+      provider: createFakeProvider([
+        { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+      ]),
+      judge: createFakeProvider([judgeDoneResponse()]),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+    });
+
+    const records = readJudgeLog(judgeLogPath);
+    const decisions = records.filter((record) => record.kind !== undefined);
+    const outcomes = records.filter((record) => record.type === "run_outcome");
+
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0].kind, "round");
+    assert.equal(decisions[0].action, "judge_done", "旧字段照旧（additive）");
+    assert.equal(decisions[0].runId, "judgelog-shape");
+    assert.equal(decisions[0].model, "fake-model");
+    assert.ok(!("judgeModel" in decisions[0]), "judge 与 run 同模型时不写冗余字段");
+
+    // outcome 汇总：一次 run 恰好一条，且是末条（append-only，不回头改写）。
+    assert.equal(outcomes.length, 1);
+    assert.equal(records.at(-1), outcomes[0]);
+    assert.equal(outcomes[0].runId, "judgelog-shape");
+    assert.equal(outcomes[0].model, "fake-model");
+    assert.equal(outcomes[0].termination.reason, "judge_done");
+    assert.ok(outcomes[0].verification.status, "终局 verification.status 必在");
+    assert.equal(outcomes[0].judgeRecordCount, decisions.length);
+    assert.equal(outcomes[0].rounds, 1);
+    // 两类记录同构的 ts 前缀（同一个写入器）。
+    for (const record of records) {
+      assert.ok(Number.isFinite(Date.parse(record.ts)), `每条记录带 ts：${JSON.stringify(record)}`);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("injected --judge-log path and default archive path write identical record shapes (#165)", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-judgelog-parity-"));
+  const injectedPath = join(dir, "injected-judge.log");
+  try {
+    await runJudgeChat({
+      dir,
+      session: "judgelog-injected",
+      judgeLog: injectedPath,
+      provider: createFakeProvider([
+        { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+      ]),
+      judge: createFakeProvider([judgeDoneResponse()]),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+    });
+    await runJudgeChat({
+      dir,
+      session: "judgelog-default-path",
+      provider: createFakeProvider([
+        { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+      ]),
+      judge: createFakeProvider([judgeDoneResponse()]),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+    });
+
+    const injected = readJudgeLog(injectedPath);
+    const fallback = readJudgeLog(join(dir, "outputs", "judgelog-default-path", "judge.log"));
+    assert.ok(injected.length > 1 && fallback.length > 1);
+    // 键集合逐条一致（同一个写入器，不存在“走默认路径才多字段”的分叉）。
+    assert.deepEqual(
+      injected.map((record) => Object.keys(record).sort()),
+      fallback.map((record) => Object.keys(record).sort()),
+    );
+    // 除 ts 与 run 标识外，outcome 汇总逐字段相同。
+    const strip = (record) => {
+      const { ts, runId, ...rest } = record;
+      return rest;
+    };
+    assert.deepEqual(
+      strip(injected.find((record) => record.type === "run_outcome")),
+      strip(fallback.find((record) => record.type === "run_outcome")),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("judge.log omits the model field instead of writing a placeholder (#165)", async () => {
+  const dir = await mkdtemp(join("/tmp", "erix-judgelog-nomodel-"));
+  const judgeLogPath = join(dir, "judge.log");
+  try {
+    const provider = createFakeProvider([
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]);
+    delete provider.model;
+    const judge = createFakeProvider([judgeDoneResponse()]);
+    delete judge.model;
+
+    await runJudgeChat({
+      dir,
+      session: "judgelog-nomodel",
+      judgeLog: judgeLogPath,
+      provider,
+      judge,
+      // 宿主没给模型名：既不写 provider 探不到的值，也不写 "unknown" 之类的假值。
+      config: { maxOutputTokens: 1000 },
+    });
+
+    const records = readJudgeLog(judgeLogPath);
+    assert.ok(records.length > 1);
+    for (const record of records) {
+      assert.ok(!("model" in record), `不该写假模型名：${JSON.stringify(record)}`);
+      assert.ok(!("judgeModel" in record));
+      assert.equal(record.runId, "judgelog-nomodel", "runId 照旧在");
+    }
+    assert.ok(records.some((record) => record.kind !== undefined));
+    assert.ok(records.some((record) => record.type === "run_outcome"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

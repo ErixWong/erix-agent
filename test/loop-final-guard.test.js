@@ -6,6 +6,10 @@ import { validateMessages } from "../src/messages/rounds.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
+// issue #165：run 终局现在多出一条 `run_outcome` 汇总事件（append-only 追加，不改写既有事件），
+// 故本文件不再用 events.at(-1) 取末条 final_guard——按类型筛，语义与断言意图一致。
+const finalGuardEvents = (events) => events.filter((event) => event.type === "final_guard");
+
 test("finalGuard accept preserves normal completion", async () => {
   const events = [];
   let payload;
@@ -30,7 +34,7 @@ test("finalGuard accept preserves normal completion", async () => {
   assert.equal(payload.round, 1);
   assert.equal(payload.rounds, 1);
   assert.equal(payload.termination.reason, "end_turn");
-  assert.equal(events.at(-1).action, "accept");
+  assert.equal(finalGuardEvents(events).at(-1).action, "accept");
 });
 
 test("disabled finalGuard returns skipped and is never treated as verified", async () => {
@@ -123,7 +127,7 @@ test("finalGuard fail-closes after the retry limit without rewriting finalText",
   assert.equal(result.finalText, "unsafe-3");
   assert.equal(result.rounds, 3);
   assert.equal(events.filter((event) => event.action === "revise").length, 3);
-  assert.deepEqual(events.at(-1), {
+  assert.deepEqual(finalGuardEvents(events).at(-1), {
     type: "final_guard",
     round: 3,
     action: "degraded",
@@ -155,7 +159,7 @@ test("finalGuard errors fail open and emit an error event", async () => {
   assert.deepEqual(result.termination, { reason: "end_turn" });
   assert.equal(result.verification.status, "error");
   assert.equal(result.verification.reason, "error");
-  assert.deepEqual(events.at(-1), {
+  assert.deepEqual(finalGuardEvents(events).at(-1), {
     type: "final_guard",
     round: 1,
     action: "error",
@@ -182,7 +186,7 @@ test("finalGuard timeout is observable and returns an error verification", async
 
   assert.equal(result.verification.status, "error");
   assert.equal(result.verification.reason, "timeout");
-  assert.equal(events.at(-1).reason, "timeout");
+  assert.equal(finalGuardEvents(events).at(-1).reason, "timeout");
   assert.equal(await store.loadRunStateStatus("guard-timeout-state"), "guard_error");
 });
 
