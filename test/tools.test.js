@@ -255,11 +255,13 @@ test("grep skips node_modules, .git, hidden directories, and oversized files", a
   });
 });
 
-test("grep glob filters file names and truncates long lines", async () => {
+test("grep glob filters file names and truncates long lines at 500 chars (200 → 500，#184 追加轮 A)", async () => {
   await withDirectory(async (cwd) => {
     await writeFile(join(cwd, "a.js"), "needle js\n", "utf8");
     await writeFile(join(cwd, "b.txt"), "needle txt\n", "utf8");
-    await writeFile(join(cwd, "long.js"), `needle ${"y".repeat(500)}\n`, "utf8");
+    await writeFile(join(cwd, "long.js"), `needle ${"y".repeat(800)}\n`, "utf8");
+    // 297 字符：旧的 200 上限会把它截成半行（本轮要修的就是这个），新上限下必须整行返回
+    await writeFile(join(cwd, "normal.js"), `needle ${"z".repeat(290)}\n`, "utf8");
     const { executeTool } = createCliTools({ cwd });
 
     const byGlob = await executeTool("grep", { pattern: "needle", path: cwd, glob: "*.js" });
@@ -268,7 +270,16 @@ test("grep glob filters file names and truncates long lines", async () => {
 
     const longLine = await executeTool("grep", { pattern: "needle", path: cwd, glob: "long.js" });
     const hitLine = longLine.split("\n").find((line) => line.startsWith("1: "));
-    assert.ok(hitLine.length <= 4 + 200 + 1, `命中行应截断到 200 字符：${hitLine.length}`);
+    // 恰 500 字符正文 + 1 个省略号 + 3 个前缀字符（"1: "）；旧的 200 上限会是 204
+    assert.equal(hitLine.length, 3 + 500 + 1, `命中行必须按 500 字符截断，实得到 ${hitLine.length}`);
+    assert.ok(hitLine.endsWith("…"), "截断必须留省略号尾巴");
+
+    const normal = await executeTool("grep", { pattern: "needle", path: cwd, glob: "normal.js" });
+    assert.ok(
+      normal.includes(`1: needle ${"z".repeat(290)}`),
+      "297 字符的正常行不得再被截断（这就是 200 → 500 的理由）",
+    );
+    assert.doesNotMatch(normal, /…/u, "未触顶的行不得带省略号");
   });
 });
 

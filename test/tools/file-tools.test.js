@@ -69,6 +69,26 @@ test("rg 默认与真实命令一致：正则默认，is_regex=false 才等价 r
   });
 });
 
+test("grep 命中行截断上限是 500 字符（#184 追加轮 A：200 会把正常代码行截成半行，模型误判）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "long.txt"), `needle ${"y".repeat(800)}\n`, "utf8");
+    await writeFile(join(cwd, "normal.txt"), `needle ${"z".repeat(400)}\n`, "utf8"); // 407 字符：旧上限下只剩 200
+    const { executeTool } = createFileTools({ cwd });
+
+    const hit = (await executeTool("grep", { pattern: "needle", path: cwd, glob: "long.txt" }))
+      .split("\n").find((line) => line.startsWith("1: "));
+    assert.equal(hit.length, 3 + 500 + 1, `必须按 500 字符截断（+3 前缀 +1 省略号），实得到 ${hit.length}`);
+    assert.ok(hit.endsWith("…"), "截断必须留省略号尾巴");
+
+    const normal = await executeTool("grep", { pattern: "needle", path: cwd, glob: "normal.txt" });
+    assert.ok(normal.includes(`1: needle ${"z".repeat(400)}`), "407 字符的行在新上限下必须完整返回");
+    assert.doesNotMatch(normal, /…/u);
+
+    // rg 根本不做出行截断（与 grep 不同口径，已列为残留点，别默默变成隐式契约）
+    assert.match(await executeTool("rg", { pattern: "needle", path: cwd }), new RegExp(`needle y{800}`, "u"));
+  });
+});
+
 test("allowRead/allowWrite 非函数是装配错误，直接 TypeError", () => {
   assert.throws(() => createFileTools({ cwd: process.cwd(), allowRead: true }), TypeError);
   assert.throws(() => createFileTools({ cwd: process.cwd(), allowWrite: "no" }), TypeError);

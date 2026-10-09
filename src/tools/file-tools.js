@@ -43,7 +43,8 @@ export const GREP_MAX_RESULTS_HARD_CAP = 200;
 export const FILE_READ_MAX_BYTES_DEFAULT = 262_144; // 256 KiB；scripts/docs-drift-check.mjs 的真值锚点
 const FILE_READ_MAX_BYTES_MIN = 1_024;
 const FILE_READ_MAX_BYTES_CEILING = 4 * 1024 * 1024;
-const GREP_LINE_LIMIT = 200;
+// `grep` 命中行的截断上限：200 会把正常代码行截成半行，模型看到半行容易误判（#184 追加轮 A → 500）。
+const GREP_LINE_LIMIT = 500;
 const ABORT_CHECKPOINT_EVERY = 32;
 const READ_BLOCK_BYTES = 64 * 1024;
 // 结果尾部 marker 的字节预留：保证「单次返回不超过 max_bytes」对整段文本成立。
