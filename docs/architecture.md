@@ -181,9 +181,11 @@ Messages serialization and content-block SSE parsing. Both return
 
 Provider failures are represented by `KitError`. HTTP status classification
 maps 408 to `timeout`, 429 to `rate_limited`, 401/403 to `auth`, 5xx to
-`server`, and other statuses to `unknown`. Fetch and abort failures are
-classified separately, and the error carries `retryable` plus available
-status, phase, and elapsed-time metadata.
+`server`, 400/422 to `invalid_request`, 404 to `not_found`, and 409 to
+`conflict` (issue #179; the three added codes are non-retryable, exactly like
+the `unknown` they replaced), and every other status to `unknown`. Fetch and
+abort failures are classified separately, and the error carries `retryable`
+plus available status, phase, and elapsed-time metadata.
 
 ### 3.2 `runToolLoop`
 

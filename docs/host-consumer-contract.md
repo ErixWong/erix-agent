@@ -192,6 +192,48 @@ which order it is probed, and when the loop emits the one-shot
 `model_metadata_missing` diagnostic event are all specified in "Model metadata
 and budget derivation (issue #182)" below (issue #182).
 
+## HTTP error classification (issue #179)
+
+A non-2xx provider response becomes a `KitError` built by `classifyHttpError`
+(`src/providers/errors.js:105-129`), which the package root re-exports
+(`src/index.js:2`). Its `code` is host-visible, and it reaches a host a second
+time as `termination.errorCode` (issue #176, see "Termination payload" below).
+The mapping:
+
+| HTTP status | `KitError.code` | `retryable` |
+|---|---|---|
+| 408 | `timeout` | `true` |
+| 429 | `rate_limited` | `true` |
+| 401 / 403 | `auth` | `false` |
+| 500-599 | `server` | `true` |
+| 400 / 422 | `invalid_request` | `false` |
+| 404 | `not_found` | `false` |
+| 409 | `conflict` | `false` |
+| any other status, or no status | `unknown` | `false` |
+
+Two facts are the whole contract here:
+
+- **Only the `code` string widened.** `invalid_request`, `not_found`, and
+  `conflict` are new values (issue #179: value-surface extension = semver minor);
+  before them 400 / 404 / 409 / 422 all reported `unknown`. `retryable` moved for
+  no status — all four were, and remain, non-retryable — `KitError` gained no
+  field and lost none, and every pre-existing row above is untouched, so the
+  retry path still repeats exactly the `retryable === true` set (see
+  "Retry budget (issue #183)").
+- **`"unknown"` is not a dead value.** It stays the fallback for every status the
+  table does not name — 402, 405, 410, 413, 415, 418, 499, 600, or a missing
+  status — so a host's `unknown` branch still exists; it just no longer catches
+  those four statuses. A host that branched on `code === "unknown"` (or on
+  `termination.errorCode === "unknown"`) to mean "bad request / wrong model name"
+  must widen that branch to the three new codes; a `default` branch that treats
+  anything unclassified as `unknown` needs no change.
+
+The 500-599 row is a numeric range comparison, so a non-numeric `status` that
+coerces into that range (e.g. the string `"500"`) still lands on `server`;
+every other row matches by strict equality. The transport fact itself is
+separate from the classification: `error.status` keeps the raw number and is
+what a host should read when it wants the number rather than the class.
+
 ## Retry budget (issue #183)
 
 **Not configured means not retried.** `retry` defaults to `false`
@@ -230,11 +272,12 @@ Only errors marked `retryable === true` are retried
 (`src/loop/provider-runner.js:219`). That set is `KitError.code` ∈
 `timeout`, `rate_limited`, `server`, `disconnect`
 (`src/providers/errors.js:1,14-16`), HTTP 408/429/5xx through
-`classifyHttpError` (`:86-99`), retryable transport failures through
-`classifyFetchException` (`:141-172`, decided by
-`isRetryableNetworkException` `:123-132`), and an assistant message that carries no
+`classifyHttpError` (`:105-129`), retryable transport failures through
+`classifyFetchException` (`:166-198`, decided by
+`isRetryableNetworkException` `:148-157`), and an assistant message that carries no
 text, tool call, or reasoning (`src/messages/canonical.js:448-454`).
-Everything else — `auth`, `aborted`, a `TypeError` from option validation, a
+Everything else — `auth`, `aborted`, the 4xx classes `invalid_request`,
+`not_found`, and `conflict` (issue #179), a `TypeError` from option validation, a
 host store bug — is rethrown on first sight.
 
 ### One option, two independent loops
@@ -808,7 +851,7 @@ shape, value, or meaning, and a host that ignores them behaves exactly as before
 
 | Field | Present on | Contract |
 |---|---|---|
-| `termination.errorCode` | `result.termination` / `error.termination` when `reason === "failed"` | Root-cause class of the failure. The engine passes through the classification the error already carries (`KitError.code`, e.g. `timeout`, `rate_limited`, `auth`, `server`, `checkpoint_failed`) and falls back to `"unknown"` when the error carries none — it never invents or re-derives a code. No other reason gains the field. A host decision table can therefore branch on `errorCode` instead of parsing `termination.detail`. |
+| `termination.errorCode` | `result.termination` / `error.termination` when `reason === "failed"` | Root-cause class of the failure. The engine passes through the classification the error already carries (`KitError.code`, e.g. `timeout`, `rate_limited`, `auth`, `server`, `checkpoint_failed`) and falls back to `"unknown"` when the error carries none — it never invents or re-derives a code. No other reason gains the field. A host decision table can therefore branch on `errorCode` instead of parsing `termination.detail`. Provider HTTP failures contribute the `classifyHttpError` value set, so since issue #179 a rejected request surfaces here as `invalid_request`, `not_found`, or `conflict` where it used to surface as `unknown` (see "HTTP error classification (issue #179)"). |
 | `error.usage`, `error.rounds`, `error.finalText` | every error thrown after the run lifecycle has begun — i.e. the terminal `fail()` path. Issue #173 deleted the second producer (the startup-diagnostic annotation), so `fail()` is the only one | The accumulated usage at the throw point — literally the same object `result.usage` would have carried, including `cacheRead`/`cacheWrite` — plus the round counter and the partial final text (`""` when nothing was produced). When nothing had accumulated these are **zero values, not absent fields**: `{ input_tokens: 0, output_tokens: 0 }`, `0`, `""`. Pre-execution validation errors (unknown/malformed option `TypeError`s, assembly failures, `modelConfig.resolve` rejections) are thrown before a run exists and carry none of these fields; neither does a host observer throw, which no longer throws at all (see "Observer callback errors (issue #173)"). |
 | `termination.usage`, `termination.rounds`, `termination.partial` | `error.termination` when `reason === "aborted"` | The same values as on the error object (`termination.usage === error.usage`), with `partial: true` marking the text as a partial draft rather than a final answer. |
 
@@ -896,7 +939,7 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 | `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:150-152`); (b) the round loop simply runs out (`src/loop/orchestrator.js:2561`, tail handling at `3151-3169`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`src/loop/orchestrator.js:1084-1099`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
 | `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3103-3116`), revision limit (`3118-3131`), or the budget-exhaustion tail (`3156-3169`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js:3092-3095`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1435-1437`); `finalGuardMaxRetries` moves the revision limit (default 2, `src/loop/orchestrator.js:1427-1430`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
 | `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:905-955`; classification at `907-908` and `927-932`, annotation at `947-954`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
-| `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:905-955`, loop catch at `3147-3149`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js:700-711`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `unknown` → inspect `termination.detail` |
+| `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:905-955`, loop catch at `3147-3149`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js:700-711`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `invalid_request` / `not_found` / `conflict` (issue #179) → fix the request, the model name, or the colliding resource — re-sending the same payload cannot help; `unknown` → inspect `termination.detail` |
 | `persistence_failed` | same `fail()` path, selected when the error carries persistence info (`src/loop/orchestrator.js:927-932`), which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js:940-946`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
 
 ### Verification status and CLI exit codes

@@ -153,7 +153,7 @@ createAnthropicProvider({
 
 `chatStream` 会发出请求中提供的可选 `onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage` 和 `onEvent` 回调。OpenAI 适配器使用 chat/completions 序列化和 SSE 解析；Anthropic 适配器使用 Messages 序列化和 content-block SSE 解析。两者都以规范形式返回 `ChatResponse`。
 
-提供器失败表示为 `KitError`。HTTP 状态分类将 408 映射为 `timeout`，429 映射为 `rate_limited`，401/403 映射为 `auth`，5xx 映射为 `server`，其他状态映射为 `unknown`。Fetch 和 abort 失败分别分类，错误中还带有可用的 `retryable` 以及 status、phase 和 elapsed-time 元数据。
+提供器失败表示为 `KitError`。HTTP 状态分类将 408 映射为 `timeout`，429 映射为 `rate_limited`，401/403 映射为 `auth`，5xx 映射为 `server`，400/422 映射为 `invalid_request`，404 映射为 `not_found`，409 映射为 `conflict`（issue #179；三个新增 code 与它们所取代的 `unknown` 一样不可重试），其余状态映射为 `unknown`。Fetch 和 abort 失败分别分类，错误中还带有可用的 `retryable` 以及 status、phase 和 elapsed-time 元数据。
 
 ### 3.2 `runToolLoop`
 
