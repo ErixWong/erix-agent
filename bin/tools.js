@@ -13,6 +13,10 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 
+// 文件工具（readFile/rg/grep/tree/writeFile）的规范实现在 src/tools/file-tools.js，CLI 反过来 import 它
+// （issue #184：ADR-005 第二层，先例 src/tools/notes.js）。bin/ 只做装配与呈现。
+import { createFileTools, truncateDisplayText } from "../src/tools/file-tools.js";
+
 // ---------------------------------------------------------------------------
 // notes 会话时钟维护（ADR-018 D7）：CLI/REPL 作为宿主在收尾时清理过期笔记
 // scope——笔记寿命 = 会话寿命 + ERIX_NOTES_RETENTION_MS（默认 30 天）尸检期。
@@ -75,12 +79,7 @@ export function purgeInactiveNoteScopes({ notesDir, sessionActivityFile }) {
   return { scanned, purged };
 }
 
-const MAX_FILE_BYTES = 1024 * 1024;
-const MAX_TREE_ENTRIES = 500;
 const OUTPUT_LIMIT = 4096;
-// grep：单行命中内容展示上限 / max_results 硬上限（2026-09-20 基准：防爆炸输出拖慢主循环）
-const GREP_LINE_LIMIT = 200;
-const GREP_MAX_RESULTS_HARD_CAP = 200;
 // 尾部保留比例（截断时）：结局（报错 / exit / 汇总）留在尾部可见
 const TRUNCATE_TAIL_SHARE = 0.25;
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
@@ -109,22 +108,6 @@ export function getCommandTimeoutMs(command) {
     : INSTALL_EXEC_TIMEOUT_MS;
 }
 
-function normalizeNonNegativeInteger(value, fallback) {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.max(0, Math.floor(value));
-}
-
-function escapeRegExpLiteral(text) {
-  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function splitLines(text) {
-  if (text === "") return [];
-  const lines = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  return lines;
-}
-
 function normalizeSchema(schema) {
   const result = { ...schema };
   if (result.inputSchema === undefined && result.input_schema !== undefined) {
@@ -134,76 +117,9 @@ function normalizeSchema(schema) {
   return result;
 }
 
+// CLI 自有工具 schema：文件工具五件套的 schema 跟着实现住在 src/tools/file-tools.js（issue #184），
+// 这里只留 exec（ADR-005 红线：库不自带会执行的工具）与 todo_*（CLI 会话状态 ~/.erix/todos/）。
 const schemas = [
-  {
-    name: "readFile",
-    description: "Read a text file by line range.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: { type: "string" },
-        offset: { type: "integer" },
-        limit: { type: "integer" },
-      },
-      required: ["path"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "rg",
-    description: "Recursively search text files with a regular expression.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        pattern: { type: "string" },
-        path: { type: "string" },
-        maxResults: { type: "integer" },
-      },
-      required: ["pattern"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "grep",
-    description: "Search file contents with a regex or literal pattern, grouped by file.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        pattern: { type: "string" },
-        path: { type: "string" },
-        glob: { type: "string" },
-        is_regex: { type: "boolean" },
-        max_results: { type: "integer" },
-      },
-      required: ["pattern"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "tree",
-    description: "List a directory tree.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: { type: "string" },
-        depth: { type: "integer" },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "writeFile",
-    description: "Write UTF-8 text to any path.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: { type: "string" },
-        content: { type: "string" },
-      },
-      required: ["path", "content"],
-      additionalProperties: false,
-    },
-  },
   {
     name: "exec",
     description: "Execute any shell command and return its output.",
@@ -268,9 +184,14 @@ const schemas = [
 // --no-todo / ERIX_NO_TODO=1 时 todo 段整体消失（工具清单行后缀 + 工具纪律行的 todo 分句），
 // 基础段自身是完整句子（工具清单行以「输出。」收尾）。默认路径拼接结果与拆分前逐字节一致。
 const CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD =
-  "可用工具：readFile 读取文本文件（支持行范围），rg 用正则递归搜索文本文件，grep 递归搜索文件内容（支持 glob 文件名过滤、字面量/正则模式，结果按文件分组），tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出";
+  "可用工具：readFile 读取文本文件（支持行范围与 max_bytes 上限），rg 递归搜索文本文件（默认按字面量匹配，传 is_regex=true 走正则），grep 递归搜索文件内容（支持 glob 文件名过滤、字面量/正则模式，结果按文件分组），tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出";
 
-// todo 段①：工具清单行的 todo 后缀（含句号，接在基础段 HEAD 之后）
+// issue #184（ADR-010：默认去噪必须可撤销）：「跳了什么 + 怎么撤销」必须进提示词——
+// 模型不知道被排除就无从发起取回。排除账同时写在工具结果尾部。
+const CLI_TOOLS_SYSTEM_PROMPT_VENDOR =
+  "\n搜索与目录类工具（rg/grep/tree）默认跳过 node_modules、dist、build、target、vendor 与 . 开头的目录（结果尾部会回报跳过数量）；要一起搜传 include_vendor=true、include_hidden=true";
+
+// todo 段①：工具清单行的 todo 后缀（含句号，接在基础段 HEAD 之后）；vendor 段接其后
 const CLI_TOOLS_SYSTEM_PROMPT_TODO_TOOLS =
   "，todo_add 添加待办任务、todo_list 列出待办、todo_done 标记完成、todo_clear 清空（均返回可读文本，数据存 ~/.erix/todos/ 按工作目录隔离）。";
 
@@ -303,6 +224,8 @@ const CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL =
 export const CLI_TOOLS_SYSTEM_PROMPT =
   CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD
   + CLI_TOOLS_SYSTEM_PROMPT_TODO_TOOLS
+  + CLI_TOOLS_SYSTEM_PROMPT_VENDOR
+  + "。"
   + CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE
   + CLI_TOOLS_SYSTEM_PROMPT_TODO_DISCIPLINE
   + CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL;
@@ -333,7 +256,7 @@ export function buildCliToolsSystemPrompt({ todo = true } = {}) {
   // ADR-015：ResourceStore 退出模型视野——所有宿主形态同一份提示词，不提 opaque 工件/路径。
   // issue #69：todo=false 时拼接无 todo 段的基础提示（--no-todo / ERIX_NO_TODO）。
   if (todo === false) {
-    return `${CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD}。${CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE}${CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL}`;
+    return `${CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD}。${CLI_TOOLS_SYSTEM_PROMPT_VENDOR}。${CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE}${CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL}`;
   }
   return CLI_TOOLS_SYSTEM_PROMPT;
 }
@@ -345,24 +268,6 @@ export function buildArchiveNotice(archiveDir) {
 
 
 
-
-function resolveToolPath(root, value) {
-  return path.resolve(root, value);
-}
-
-function expandHomePath(value) {
-  if (value === "~") return homedir();
-  if (typeof value === "string" && value.startsWith("~/")) {
-    return path.resolve(homedir(), value.slice(2));
-  }
-  return value;
-}
-
-function normalizeToolInput(input) {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
-  if (typeof input.path !== "string") return input;
-  return { ...input, path: expandHomePath(input.path) };
-}
 
 function isBackgroundCommand(command) {
   return command.trim().endsWith("&");
@@ -455,12 +360,6 @@ const TOOL_RESULT_LIMIT = 200;
 const TOOL_EXEC_RESULT_LIMIT = 4096;
 const TOOL_FIELD_LIMIT = 80;
 
-function truncateDisplayText(value, limit) {
-  const text = String(value ?? "");
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}…`;
-}
-
 function summarizeToolInput(name, input) {
   if (
     input
@@ -524,7 +423,13 @@ export function wrapExecuteTool(
     const name = structured ? firstArg.name : firstArg;
     const input = structured ? firstArg.input : positionalInput;
     const context = structured
-      ? { ...(firstArg.context ?? {}), toolUseId: firstArg.id }
+      ? {
+        ...(firstArg.context ?? {}),
+        toolUseId: firstArg.id,
+        // issue #184：引擎把 signal 放在结构化参数的**顶层**（src/loop/run-snapshot-executor.js:244），
+        // 这里不并进来就是「signal 在 CLI 侧被丢的第一次」——工具拿不到中止信号。
+        ...(firstArg.signal === undefined ? {} : { signal: firstArg.signal }),
+      }
       : positionalContext;
     output(`→ ${name}: ${summarizeToolInput(name, input)}`);
     try {
@@ -559,256 +464,10 @@ export function createCliTools({
   // lastToolMetadata 仅存工具名（元数据通道收窄）。
   let lastToolMetadata;
 
-  async function readFile({ path: filePath, offset = 0, limit = 200 }) {
-    const text = readFileSync(resolveToolPath(root, filePath), "utf8");
-    const lines = splitLines(text);
-    const start = normalizeNonNegativeInteger(offset, 0);
-    const count = normalizeNonNegativeInteger(limit, 200);
-    const selected = lines
-      .slice(start, start + count)
-      .map((line, index) => `${start + index + 1}: ${line}`);
-
-    if (start + count < lines.length) {
-      selected.push(`[共 ${lines.length} 行，offset=${start + count} 继续]`);
-    }
-    return selected.join("\n");
-  }
-
-  async function rg({ pattern, path: searchPath = ".", maxResults = 50 }) {
-    const expression = new RegExp(String(pattern));
-    const resultLimit = normalizeNonNegativeInteger(maxResults, 50);
-    const resolvedSearchPath = resolveToolPath(root, searchPath);
-    const displayBase = root;
-    const results = [];
-    const visitedDirectories = new Set();
-
-    const displayName = (filePath) => {
-      const relative = path.relative(displayBase, filePath);
-      return (relative || path.basename(filePath)).split(path.sep).join("/");
-    };
-
-    const searchFile = (filePath, stat) => {
-      if (results.length >= resultLimit || stat.size > MAX_FILE_BYTES) return;
-      const bytes = readFileSync(filePath);
-      if (bytes.includes(0)) return;
-      const lines = splitLines(bytes.toString("utf8"));
-      for (let index = 0; index < lines.length; index += 1) {
-        expression.lastIndex = 0;
-        if (!expression.test(lines[index])) continue;
-        results.push(`${displayName(filePath)}:${index + 1}:${lines[index]}`);
-        if (results.length >= resultLimit) return;
-      }
-    };
-
-    const visit = (currentPath) => {
-      if (results.length >= resultLimit) return;
-      let stat;
-      try {
-        stat = statSync(currentPath);
-      } catch {
-        return; // 无法 stat 的路径（悬空 symlink、权限受限等）直接跳过
-      }
-      if (stat.isFile()) {
-        searchFile(currentPath, stat);
-        return;
-      }
-      if (!stat.isDirectory() || visitedDirectories.has(currentPath)) return;
-      visitedDirectories.add(currentPath);
-
-      let entries;
-      try {
-        entries = readdirSync(currentPath, { withFileTypes: true })
-          .sort((left, right) => left.name.localeCompare(right.name));
-      } catch {
-        return; // 目录不可读时跳过
-      }
-      for (const entry of entries) {
-        if (results.length >= resultLimit) return;
-        if (entry.isSymbolicLink()) continue; // 跳过 symlink，避免跟随到特殊文件/死链
-        visit(path.join(currentPath, entry.name));
-      }
-    };
-
-    visit(resolvedSearchPath);
-    return results.join("\n");
-  }
-
-  async function grep({
-    pattern,
-    path: searchPath = ".",
-    glob,
-    is_regex = true,
-    max_results = 50,
-  }) {
-    if (typeof pattern !== "string" || pattern === "") {
-      throw new TypeError("grep pattern must be a non-empty string");
-    }
-    // max_results 硬上限 200：防爆输出（2026-09-20 基准：无上限搜索曾单次返回数千行）
-    const resultLimit = Math.min(
-      Math.max(1, normalizeNonNegativeInteger(max_results, 50)),
-      GREP_MAX_RESULTS_HARD_CAP,
-    );
-    let expression;
-    try {
-      expression = is_regex === false
-        ? new RegExp(escapeRegExpLiteral(pattern))
-        : new RegExp(String(pattern));
-    } catch {
-      return `错误：无效正则：${truncateDisplayText(pattern, 80)}`;
-    }
-    // glob 只支持简单 * 通配（文件名匹配，不跨目录分隔符）
-    let globExpression;
-    if (typeof glob === "string" && glob.trim() !== "") {
-      globExpression = new RegExp(`^${glob.split("*").map(escapeRegExpLiteral).join(".*")}$`);
-    }
-
-    const resolvedSearchPath = resolveToolPath(root, searchPath);
-    const displayBase = root;
-    const visitedDirectories = new Set();
-    const grouped = new Map();
-    let total = 0;
-    let truncated = false;
-
-    const displayName = (filePath) => {
-      const relative = path.relative(displayBase, filePath);
-      return (relative || path.basename(filePath)).split(path.sep).join("/");
-    };
-
-    const searchFile = (filePath, stat) => {
-      if (total >= resultLimit || stat.size > MAX_FILE_BYTES) return;
-      if (globExpression !== undefined && !globExpression.test(path.basename(filePath))) return;
-      let bytes;
-      try {
-        bytes = readFileSync(filePath);
-      } catch {
-        return;
-      }
-      if (bytes.includes(0)) return; // 二进制文件跳过
-      const lines = splitLines(bytes.toString("utf8"));
-      let fileHits = grouped.get(filePath);
-      for (let index = 0; index < lines.length; index += 1) {
-        if (total >= resultLimit) {
-          truncated = true;
-          return;
-        }
-        expression.lastIndex = 0;
-        if (!expression.test(lines[index])) continue;
-        if (fileHits === undefined) {
-          fileHits = [];
-          grouped.set(filePath, fileHits);
-        }
-        fileHits.push(`${index + 1}: ${truncateDisplayText(lines[index], GREP_LINE_LIMIT)}`);
-        total += 1;
-      }
-    };
-
-    const visit = (currentPath) => {
-      if (total >= resultLimit) return;
-      let stat;
-      try {
-        stat = statSync(currentPath);
-      } catch {
-        return; // 悬空 symlink / 权限受限：跳过
-      }
-      if (stat.isFile()) {
-        searchFile(currentPath, stat);
-        return;
-      }
-      if (!stat.isDirectory() || visitedDirectories.has(currentPath)) return;
-      visitedDirectories.add(currentPath);
-
-      let entries;
-      try {
-        entries = readdirSync(currentPath, { withFileTypes: true })
-          .sort((left, right) => left.name.localeCompare(right.name));
-      } catch {
-        return;
-      }
-      for (const entry of entries) {
-        if (total >= resultLimit) return;
-        if (entry.isSymbolicLink()) continue;
-        // 跳过 node_modules/.git 及隐藏目录（纯 node 递归 walk，不依赖外部 rg）
-        if (entry.isDirectory()
-          && (entry.name === "node_modules"
-            || entry.name === ".git"
-            || entry.name.startsWith("."))) {
-          continue;
-        }
-        visit(path.join(currentPath, entry.name));
-      }
-    };
-
-    visit(resolvedSearchPath);
-
-    const sections = [];
-    for (const [filePath, hits] of grouped) {
-      sections.push([displayName(filePath), ...hits].join("\n"));
-    }
-    if (truncated || total >= resultLimit) {
-      sections.push(`[命中过多，已按 max_results=${resultLimit} 截断]`);
-    }
-    if (sections.length === 0) return "（无命中）";
-    return sections.join("\n\n");
-  }
-
-  async function tree({ path: treePath = ".", depth = 3 }) {
-    const resolvedTreePath = resolveToolPath(root, treePath);
-    const maxDepth = normalizeNonNegativeInteger(depth, 3);
-    const rootStat = statSync(resolvedTreePath);
-    const rootLabel = treePath === "." ? "." : path.basename(resolvedTreePath);
-    const lines = [rootLabel + (rootStat.isDirectory() ? "/" : "")];
-    const visitedDirectories = new Set();
-    let entries = 1;
-
-    const visit = (currentPath, currentDepth) => {
-      if (entries >= MAX_TREE_ENTRIES || currentDepth >= maxDepth) return;
-      let stat;
-      try {
-        stat = statSync(currentPath);
-      } catch {
-        return;
-      }
-      if (!stat.isDirectory()) return;
-      if (visitedDirectories.has(currentPath)) return;
-      visitedDirectories.add(currentPath);
-
-      let children;
-      try {
-        children = readdirSync(currentPath, { withFileTypes: true })
-          .sort((left, right) => left.name.localeCompare(right.name));
-      } catch {
-        return;
-      }
-      for (const child of children) {
-        if (entries >= MAX_TREE_ENTRIES) return;
-        const childPath = path.join(currentPath, child.name);
-        let childStat;
-        try {
-          childStat = statSync(childPath);
-        } catch {
-          continue; // 无法 stat 的条目（悬空 symlink 等）跳过
-        }
-        lines.push(`${"  ".repeat(currentDepth + 1)}${child.name}${childStat.isDirectory() ? "/" : ""}`);
-        entries += 1;
-        if (childStat.isDirectory()) visit(childPath, currentDepth + 1);
-      }
-    };
-
-    if (rootStat.isDirectory()) {
-      visit(resolvedTreePath, 0);
-    }
-    return lines.join("\n");
-  }
-
-  async function writeFile({ path: filePath, content }) {
-    if (typeof content !== "string") {
-      throw new TypeError("writeFile content must be a string");
-    }
-    const target = resolveToolPath(root, filePath);
-    mkdirSync(path.dirname(target), { recursive: true });
-    writeFileSync(target, content, "utf8");
-    return Buffer.byteLength(content, "utf8");
-  }
+  // 文件工具五件套（readFile/rg/grep/tree/writeFile）不再在 CLI 里各写一份：直接用
+  // src/tools/file-tools.js 的规范实现（issue #184）。边界谓词不传 = 默认 () => true，
+  // 与 CLI 历史行为一致（本地信任域，不做 containment；ADR-009 牢笼归宿主）。
+  const fileTools = createFileTools({ cwd: root });
 
   // ---- todo 内置工具（issue #65：自 ~/.erix/skills/todo/skill.mjs 移植）----
   // 数据文件定位与格式与原 skill 完全一致：~/.erix/todos/<basename>-<hash8>.json
@@ -887,13 +546,12 @@ export function createCliTools({
   }
 
   const executors = {
-    readFile,
-    rg,
-    grep,
-    tree,
-    writeFile,
-    exec: (input) => executeExecCommand(input, root),
+    exec: (input, context) => executeExecCommand(input, root),
   };
+  // 文件工具名以库里的 definitions 为准，避免两处名单漂移。
+  for (const { name } of fileTools.definitions) {
+    executors[name] = (input, context) => fileTools.executors(name, input, context);
+  }
   // issue #69：--no-todo / ERIX_NO_TODO=1 时 todo 四工具不注册（schemas 同步过滤，见 return）。
   if (todoEnabled) {
     executors.todo_add = todoAdd;
@@ -907,15 +565,15 @@ export function createCliTools({
     if (typeof executor !== "function") {
       throw new Error(`未知工具：${name}`);
     }
-    const normalizedInput = normalizeToolInput(input);
     lastToolMetadata = { name };
     // ADR-016：重跑值错配风险由提示语承担，引擎不做幂等分类/重跑检测/捕值。
-    const result = await executor(normalizedInput);
-    return result;
+    // issue #184：以前这里连 context 都不传（signal 在 CLI 侧被丢的第二次），
+    // 库里的遍历/有界读就拿不到中止信号；`~` 展开也已随实现下库。
+    return executor(input, context);
   }
 
   return {
-    tools: schemas
+    tools: [...fileTools.definitions, ...schemas]
       .filter((schema) => todoEnabled || !TODO_TOOL_NAMES.has(schema.name))
       .map((schema) => structuredClone(schema)),
     executeTool,

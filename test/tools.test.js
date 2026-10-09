@@ -57,12 +57,105 @@ test("buildCliToolsSystemPrompt({ todo: false }) removes all todo mentions (issu
   const disabled = buildCliToolsSystemPrompt({ todo: false });
   assert.doesNotMatch(disabled, /todo/i);
   // 基础段自身完整：工具清单行句号收尾、规划 bullet 保留、notes 纪律不受影响
-  assert.match(disabled, /执行 shell 命令并返回输出。\n\n\[你的处境\]/u);
+  // （#184：工具清单行后面插了一句 vendor 默认 + 开关名）
+  assert.match(disabled, /执行 shell 命令并返回输出。\n搜索与目录类工具/u);
+  assert.match(disabled, /include_vendor=true、include_hidden=true。\n\n\[你的处境\]/u);
   assert.match(disabled, /复杂任务先规划并逐步执行\n/u);
   assert.match(disabled, /note_take/u);
   // 默认路径与导出常量逐字节一致（golden 锁定）
   assert.equal(buildCliToolsSystemPrompt(), CLI_TOOLS_SYSTEM_PROMPT);
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /todo_add 添加待办任务/u);
+});
+
+test("默认跳 vendor + 开关名写进了系统提示（#184：「告诉模型」是本轮核心要求）", () => {
+  for (const prompt of [CLI_TOOLS_SYSTEM_PROMPT, buildCliToolsSystemPrompt({ todo: false })]) {
+    assert.match(prompt, /默认跳过 node_modules、dist、build、target、vendor/u);
+    assert.match(prompt, /\. 开头的目录/u);
+    assert.match(prompt, /include_vendor=true、include_hidden=true/u);
+    assert.match(prompt, /结果尾部会回报跳过数量/u);
+    // rg 的正则硬化也必须让模型知道（默认字面量）
+    assert.match(prompt, /默认按字面量匹配，传 is_regex=true/u);
+  }
+});
+
+test("CLI 文件工具完全来自库实现，且 exec/todo_* 行为不变（#184 分层）", async () => {
+  await withDirectory(async (cwd) => {
+    await mkdir(join(cwd, "src"));
+    await writeFile(join(cwd, "src", "a.js"), "needle\n", "utf8");
+    await mkdir(join(cwd, "node_modules", "pkg"), { recursive: true });
+    await writeFile(join(cwd, "node_modules", "pkg", "i.js"), "needle vendor\n", "utf8");
+    const { tools, executeTool } = createCliTools({ cwd });
+
+    // schema 名单与顺序不变（readFile/rg/grep/tree/writeFile 在前，exec 在后）
+    assert.deepEqual(
+      tools.map((tool) => tool.name),
+      ["readFile", "rg", "grep", "tree", "writeFile", "exec", "todo_add", "todo_list", "todo_done", "todo_clear"],
+    );
+    // 库里新增的参数从 CLI 一路可用（不是 CLI 自己另写一套）
+    assert.ok(tools.find((tool) => tool.name === "readFile").inputSchema.properties.max_bytes);
+    assert.ok(tools.find((tool) => tool.name === "rg").inputSchema.properties.include_vendor);
+
+    // 排除账 + 无命中口径从 CLI 可见
+    const skipped = await executeTool("grep", { pattern: "needle" });
+    assert.match(skipped, /已跳过/u);
+    assert.match(skipped, /include_vendor=true/u);
+    // 无命中同样统一口径，且排除账一起给出（不是空串）
+    assert.match(
+      await executeTool("rg", { pattern: "nothing-here" }),
+      /^（无命中）\n\[已跳过 /u,
+    );
+    // exec 不受影响（ADR-005：不下库）
+    assert.equal(await executeTool("exec", { command: "printf ok" }), "ok");
+  });
+});
+
+test("signal 不再被丢：wrapExecuteTool 把顶层 signal 并入 context（#184）", async () => {
+  let seen;
+  const executeTool = wrapExecuteTool(
+    async (_name, _input, context) => {
+      seen = context;
+      return "ok";
+    },
+    { output: () => {} },
+  );
+  const controller = new AbortController();
+
+  await executeTool({
+    id: "toolu_1",
+    name: "tree",
+    input: { path: "." },
+    context: { round: 4 },
+    signal: controller.signal,
+  });
+
+  assert.equal(seen.signal, controller.signal, "引擎放在顶层的 signal 必须并入 context");
+  assert.equal(seen.toolUseId, "toolu_1");
+  assert.equal(seen.round, 4);
+
+  // 没有 signal 时不得凭空造出 signal 字段（形状与历史一致）
+  await executeTool({ id: "toolu_2", name: "tree", input: {}, context: { round: 5 } });
+  assert.equal("signal" in seen, false);
+});
+
+test("signal 不再被丢：createCliTools.executeTool 把 context 透传给 executor（#184）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "a.txt"), "needle\n", "utf8");
+    const { executeTool } = createCliTools({ cwd });
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      executeTool("rg", { pattern: "needle" }, { signal: controller.signal }),
+      (error) => error?.name === "AbortError",
+      "context 没透传的话，库里的中止检查永远看不到 signal",
+    );
+    await assert.rejects(
+      executeTool("tree", { path: "." }, { signal: controller.signal }),
+      (error) => error?.name === "AbortError",
+    );
+    // 无 signal 路径行为不变
+    assert.match(await executeTool("rg", { pattern: "needle" }), /a\.txt:1:needle/);
+  });
 });
 
 test("grep finds matches grouped by file with line numbers", async () => {
