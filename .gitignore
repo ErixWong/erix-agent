@@ -6,3 +6,9 @@ logs/
 
 # 任务工作目录（实验记录、原始产物，不入库）
 docs/tasks/
+
+# npm lockfile 不入库（仓库历史上没有 lockfile；加它属于另一个决定，见 issue #213）
+package-lock.json
+
+# 声明产物由 prepack/types:build 生成，不提交（避免生成物与源码漂移，见 issue #213）
+src/**/*.d.ts

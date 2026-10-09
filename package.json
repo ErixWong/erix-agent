@@ -50,11 +50,18 @@
   "scripts": {
     "test": "node --test",
     "check": "node --check src/index.js",
+    "types:build": "node scripts/build-types.mjs",
+    "check:types-build": "node scripts/build-types.mjs --check",
+    "prepack": "node scripts/build-types.mjs",
     "check:docs": "node scripts/docs-drift-check.mjs && node scripts/docs-sync-check.mjs",
     "check:docs:strict": "node scripts/docs-drift-check.mjs --strict",
     "check:docs-examples": "node --test test/contract/doc-examples.test.js",
     "check:pack-links": "node scripts/pack-link-check.mjs",
     "check:tests": "node scripts/test-hygiene-check.mjs"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  }
 }
