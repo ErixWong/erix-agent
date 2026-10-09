@@ -1064,6 +1064,15 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 **不会**同时出现可读值与裸字节数——同一件事给两个数，模型对不上账。阈值本身在本文与
 `metadata` 里仍写裸数字，那里没有第二份数字互相打脸。
 
+**这两个辅助函数的导出面限定。** `formatSize()` 与 `toolMarker()` 是
+`src/tools/file-tools.js` 的**模块级导出**——上面那段描述的是模块内部，不是公共 API。
+它们**不在公共 `exports` 面**上：`package.json` 只映射 `.` / `./tools` /
+`./contract-tests`（无深路径），`erix-agent/tools` 的 barrel 也没把它们转出，因此
+把本包当依赖安装的宿主**当前拿不到**这两个函数。需要同样渲染请自行实现；把它们转进
+`erix-agent/tools` 是后续可选动作（additive minor），在那之前本段任何一句都不构成
+导入承诺——而且 marker 文案本身仍属 Experimental（见上文），宿主应读结构化的
+`metadata` 字段而不是解析 marker 文本。
+
 宿主必须知道的默认值，因为它们会改变模型看到的东西（ADR-010：默认去噪只有在可撤销
 时才是合法的）：
 

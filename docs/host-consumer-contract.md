@@ -1335,6 +1335,17 @@ to the raw byte count — two numbers for one quantity is a ledger the model can
 Thresholds stay raw in this document and in `metadata`, where there is no second copy
 to contradict them.
 
+**Export-surface caveat for these two helpers.** `formatSize()` and `toolMarker()`
+are **module-level exports of `src/tools/file-tools.js`** — the wording above
+describes the module, not a public API. They are **not on the public `exports`
+surface**: `package.json` maps only `.` / `./tools` / `./contract-tests` (no deep
+path), and the `erix-agent/tools` barrel does not re-export them either, so a host
+consuming the npm package **cannot import them today**. Render the same values
+yourself if you need them; promoting the two helpers onto `erix-agent/tools` is a
+possible follow-up (an additive minor), and until then nothing in this paragraph
+is an import promise — and the marker wording itself remains Experimental (see
+above), so read the structured `metadata` fields instead of parsing marker text.
+
 Defaults a host must know about, because they change what the model sees
 (ADR-010: default denoising is legal only while it stays revocable):
 
