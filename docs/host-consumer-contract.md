@@ -1253,8 +1253,8 @@ wrapping `executeTool` from the outside.
 
 The returned object contains:
 
-- `definitions` — the five `readFile` / `rg` / `grep` / `tree` / `writeFile`
-  schemas. Tool names and existing input fields (`offset`/`limit`/`path`/
+- `definitions` — the six `readFile` / `searchText` / `rg` / `grep` / `tree` /
+  `writeFile` schemas. Tool names and existing input fields (`offset`/`limit`/`path`/
   `pattern`/`glob`/`is_regex`/`max_results`/`maxResults`/`depth`) are unchanged,
   so registering this factory is a zero-migration change for a host that already
   shipped the CLI's copies — **with one behavioural caveat**: `rg`'s `is_regex`
@@ -1342,6 +1342,70 @@ The CLI keeps only assembly and presentation: `bin/tools.js` imports this module
 adds `exec` and `todo_*`, and passes no predicates, so CLI behaviour stays
 "no boundary" exactly as before. `bin/` no longer owns a second copy of the file
 tools (issue #184).
+
+### Search tool (issue #195)
+
+`searchText` is the single search entry point (Tier 2 host integration, same
+registration path as `File tool registration`); `rg` and `grep` are now **thin
+aliases** of it. Why a new name: `rg` and `grep` are our own pure-Node
+implementations (no `execFile`/`spawn` anywhere), yet they borrow two CLI command
+names — and a borrowed name carries borrowed priors. A model that sees `rg`
+writes `glob: "**/*.test.ts"` (the name filter here never crosses `/`), assumes
+`.gitignore` is honoured (it is not), and reads "no hits" as "absent from the
+repository" when a whole `vendor` tree may have been skipped. That last class is
+the silent-lying class issue #184 removed; only the liar changed from the output
+to the **name**.
+
+What a host can code against:
+
+- `mode` is **required** and has **no default** — the only legal values are
+  `"literal"` (fixed string) and `"regex"` (JavaScript regular expression). A
+  missing or unknown `mode` returns the tool error result
+  `错误：searchText 必须显式给出 mode … （无默认值）` and never falls back to a
+  guess. That is the point of the tool: issue #184 had to reverse an
+  `rg`-defaults-to-literal / `grep`-defaults-to-regex pair of opposite defaults,
+  and "default to `literal`" would only move the ambiguity to the caller. Note
+  the aliases keep the boolean escape hatch instead: `is_regex=false` is
+  `mode: "literal"` there (`rg --fixed-strings` / `grep -F`), with the regex
+  default unchanged.
+- the name filter is `name_pattern`: it matches the **file name only** and
+  **never crosses `/`**, so `**/*.ts`-style patterns match nothing. It is no
+  longer called `glob` because a subset capability must not wear the full
+  capability's name. `searchText` **does not accept `glob`** — passing it returns
+  an error result pointing at `name_pattern` rather than silently ignoring a
+  plausible-looking key; the `grep` alias keeps taking `glob` (same semantics)
+  because its input shape is Stable.
+- `content` is the flat `path:line:matched line` form, one hit per line. The
+  aliases keep their own historical renderings (`rg` flat, `grep` grouped by
+  file), so the cross-tool invariant is the **matched-line body**: one shared
+  implementation produces it for all three entry points, including the
+  500-character line-width cap, the `（无命中）` no-match text and the exclusion
+  account. The contract suite pins this verbatim equality (issue #195 hard
+  criterion); hosts must not build a parser that assumes the flat form on the
+  aliases.
+- `searchText` returns `{ content, metadata }`. `metadata` carries
+  `searchHits`, `searchMatchedLines`, `searchFiles`, `searchLimit`,
+  `searchOffset`, `searchTruncated`, `searchNextOffset` (only when truncated) and
+  `searchSkipped { vendorDirectories, hiddenDirectories, largeFiles, binaryFiles,
+  deniedPaths }`. These fields go **into the transcript, not onto the wire**: the
+  model still reads the marker text (`[已跳过 …]`,
+  `[命中过多，已按 max_results=N 截断]`, `（无命中）`), produced only by the single
+  `toolMarker()` function (Experimental wording, issue #188). Hosts that need a
+  stable signal branch on `metadata`, never on a marker substring, and must not
+  require keys beyond the list above. `offset` continues a truncated search: pass
+  `metadata.searchNextOffset` back in.
+- alias deprecation is a **warning only** in this round (issue #188: tool names
+  and input shapes are Stable, so removal needs a major bump). `rg` and `grep`
+  append one line at the end of the result,
+  `[已弃用 rg：它是 searchText 的薄别名，…]`. Hosts comparing tool output with
+  exact string equality will see that line — it is a model-visible change, as is
+  the CLI system prompt's tool-list line and `test/fixtures/cli-golden.json`.
+- what did **not** happen (issue #195 R4): no `-i`, no `-A`/`-B`/`-C` context
+  lines, no `--type`, no `.gitignore` support. Each of those crosses the
+  boundary-injection, output-budget and abort paths (`-A`/`-B` breaks the byte
+  bound; reading `.gitignore` must itself pass `allowRead`), so they wait for
+  transcript evidence about which unsupported parameter shapes the model actually
+  writes.
 
 ### Notes maintenance scheduling (0.12.0)
 

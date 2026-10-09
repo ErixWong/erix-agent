@@ -287,15 +287,49 @@ const DEFAULT_RULES = [
   {
     // #184 追加轮 A：默认按正则（与真实 rg/grep 一致）。锚点取**行为**而不是描述文案：
     // 把默认翻回字面量会让这条抽不到真值 → check:docs 变红，逼着同步四处文档。
+    // #195 起别名把 mode 映射抽成了 aliasSearchMode()（searchText 与两个别名共跑一份实现体），
+    // 锚点跟着改成那个映射的**真值行**：把 `is_regex === false` 改成正向判定，这里立刻变红。
     id: "rg 默认搜索模式为正则",
     src: "src/tools/file-tools.js",
-    srcRe: /compileSearchPattern\(pattern, \{ literal: input\?\.is_regex === (false) \}\)/,
+    srcRe: /function aliasSearchMode\(input\) \{[\s\S]{0,120}?input\?\.is_regex === (false) \? "(literal)" : "(regex)"/,
     docs: [README_EN, README_CN, "docs/host-consumer-contract.md", "docs/host-consumer-contract_cn.md"],
-    must: () => [
-      new RegExp("is_regex[\\s\\S]{0,300}(?:regular expression|regex|正则)", "i"),
-      new RegExp("is_regex[\\s\\S]{0,300}(?:literal|字面量)", "i"),
+    must: ([, literalMode, regexMode]) => [
+      new RegExp(`is_regex[\\s\\S]{0,300}(?:regular expression|regex|${esc(regexMode)}|正则)`, "i"),
+      new RegExp(`is_regex[\\s\\S]{0,300}(?:literal|${esc(literalMode)}|字面量)`, "i"),
     ],
     hint: "rg 默认正则是真实命令的口径；`is_regex=false` 才是字面量（rg --fixed-strings / grep -F），两处都要写",
+  },
+  {
+    // issue #195 R1：`searchText` 的 `mode` **必填且无默认值**。锚点取源码里的取值集合
+    // （行为真值，不是描述文案）：加/删一个取值，或文档偷偷写「默认 literal」，都会变红。
+    id: "searchText mode 必填且无默认值",
+    src: "src/tools/file-tools.js",
+    srcRe: /const SEARCH_MODES = new Set\(\["(literal)", "(regex)"\]\)/,
+    docs: [README_EN, README_CN, "docs/host-consumer-contract.md", "docs/host-consumer-contract_cn.md"],
+    must: ([literalMode, regexMode]) => [
+      new RegExp(`mode[\\s\\S]{0,320}(?:required|必填)`, "i"),
+      new RegExp(`mode[\\s\\S]{0,320}(?:no default|\\u65e0\\u9ed8\\u8ba4\\u503c)`, "i"),
+      new RegExp(`mode[\\s\\S]{0,320}?${esc(literalMode)}`, "i"),
+      new RegExp(`mode[\\s\\S]{0,320}?${esc(regexMode)}`, "i"),
+    ],
+    // 「mode 默认 literal」就是本轮要修的谎，不许在文档里复活
+    mustNot: [/mode[`"']?\s*(?:defaults to|默认(?:为|是))\s*`?(?:literal|regex)/i],
+    hint: "searchText 的 mode 必填、无默认值（取值字面量来自源码 SEARCH_MODES）；中英四处都要写「必填 + 无默认 + 两个取值」",
+  },
+  {
+    // issue #195 R2：名称过滤参数只有「匹配 basename」这一子集能力，所以它叫 name_pattern。
+    // 锚点取**匹配对象**（path.basename 的那一处调用）而不是文案：把过滤改成整路径匹配 → 变红，
+    // 逼着同步「只匹配文件名、不跨 /」这条口径（否则参数名又开始撒谎）。
+    id: "name_pattern 只匹配文件名（不跨 /）",
+    src: "src/tools/file-tools.js",
+    srcRe: /nameExpression\.test\(path\.(basename)\(filePath\)\)/,
+    docs: [README_EN, README_CN, "docs/host-consumer-contract.md", "docs/host-consumer-contract_cn.md"],
+    must: ([target]) => [
+      new RegExp(`name_pattern[\\s\\S]{0,300}(?:${target}|file name|\\u6587\\u4ef6\\u540d)`, "i"),
+      new RegExp(`name_pattern[\\s\\S]{0,300}(?:never crosses|\\u4e0d\\u8de8)`, "i"),
+    ],
+    mustNot: [/name_pattern[\s\S]{0,120}?(?:full glob|\\u5b8c\\u6574 glob|\*\*\/\*\.\w+\s*(?:works|\\u751f\\u6548))/i],
+    hint: "name_pattern 只匹配 basename、不跨 `/`；`**/*.ts` 一类完整 glob 不工作（锚点 = path.basename 那一处）",
   },
 ];
 
