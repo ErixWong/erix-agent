@@ -33,6 +33,18 @@ import path from "node:path";
 const READ_MAX_BYTES_DEFAULT = 262_144;
 const TREE_ENTRY_LIMIT = 500;
 
+// issue #195：`rg`/`grep` 现在是薄别名，结果尾部挂一行弃用提示。需要**逐字**比对的断言
+// 先剥掉那一行（它属于「告警」通道，不属于搜索语义），其余断言照旧看全文。
+const DEPRECATION_LINE = /^\[已弃用 (?:rg|grep)：[^\n]*\]$/mu;
+const withoutDeprecation = (output) => String(output ?? "")
+  .split("\n")
+  .filter((line) => !DEPRECATION_LINE.test(line))
+  .join("\n");
+/** `searchText` 返回 `{content, metadata}`，别名返回字符串；统一取 content 文本。 */
+const contentOf = (result) => (result && typeof result === "object" && !Array.isArray(result) ? result.content : result);
+/** 取结果里的 metadata（别名/纯字符串结果没有 → undefined）。 */
+const metadataOf = (result) => (result && typeof result === "object" && !Array.isArray(result) ? result.metadata : undefined);
+
 async function withDirectory(callback) {
   const directory = await mkdtemp(path.join(tmpdir(), "erix-file-tools-contract-"));
   try {
@@ -48,16 +60,33 @@ async function withDirectory(callback) {
  *   => { definitions: object[], executeTool: Function } }} deps 待验实现
  */
 export function fileToolsContract(label, { createFileTools }) {
-  test(`${label}: 导出五个文件工具的 definitions`, () => {
+  test(`${label}: 导出六个文件工具的 definitions（#195 新增 searchText）`, () => {
     const tools = createFileTools({ cwd: process.cwd() });
     assert.deepEqual(
       tools.definitions.map((definition) => definition.name).sort(),
-      ["grep", "readFile", "rg", "tree", "writeFile"],
+      ["grep", "readFile", "rg", "searchText", "tree", "writeFile"],
     );
     for (const definition of tools.definitions) {
       assert.ok(definition.inputSchema, `${definition.name} 必须有 inputSchema`);
       assert.equal(definition.inputSchema.additionalProperties, false);
     }
+  });
+
+  test(`${label}: searchText 的 mode 是必填枚举（无默认值），name_pattern 顶掉 glob`, () => {
+    const tools = createFileTools({ cwd: process.cwd() });
+    const searchText = tools.definitions.find((definition) => definition.name === "searchText");
+    // 「无默认」靠 schema 的 required + enum 落地：漏传 mode 是 schema 错误，不是回落某个模式
+    assert.deepEqual(searchText.inputSchema.required, ["pattern", "mode"]);
+    assert.deepEqual(searchText.inputSchema.properties.mode.enum, ["literal", "regex"]);
+    // R2：只匹配文件名的参数不得顶著 glob 的名字
+    assert.ok(searchText.inputSchema.properties.name_pattern, "参数名必须是 name_pattern");
+    assert.equal(searchText.inputSchema.properties.glob, undefined, "searchText 不得再接受 glob");
+    assert.match(searchText.inputSchema.properties.name_pattern.description, /FILE NAME only/iu);
+    assert.match(searchText.inputSchema.properties.name_pattern.description, /never crosses `\/`|never crosses \//iu);
+    // 名字不借 CLI 先验 → 能力面偏离必须写进描述（模型只读得到描述与 marker 文本）
+    assert.match(searchText.description, /\.gitignore is NOT read/u);
+    assert.match(searchText.description, /no -i\/?-B|--type/u);
+    assert.match(searchText.description, /pure-Node/iu);
   });
 
   test(`${label}: executeTool 两种调用形态都可用`, async () => {
@@ -238,8 +267,10 @@ export function fileToolsContract(label, { createFileTools }) {
     await withDirectory(async (cwd) => {
       await writeFile(path.join(cwd, "a.txt"), "alpha\n", "utf8");
       const tools = createFileTools({ cwd });
-      assert.equal(await tools.executeTool("rg", { pattern: "nope-not-here" }), "（无命中）");
-      assert.equal(await tools.executeTool("grep", { pattern: "nope-not-here" }), "（无命中）");
+      assert.equal(withoutDeprecation(await tools.executeTool("rg", { pattern: "nope-not-here" })), "（无命中）");
+      assert.equal(withoutDeprecation(await tools.executeTool("grep", { pattern: "nope-not-here" })), "（无命中）");
+      // #195：规范入口同样统一口径，且排除账与截断另有结构化字段（进 transcript、不上 wire）
+      assert.equal(contentOf(await tools.executeTool("searchText", { pattern: "nope-not-here", mode: "literal" })), "（无命中）");
     });
   });
 
@@ -330,12 +361,12 @@ export function fileToolsContract(label, { createFileTools }) {
       assert.match(literalAlternation, /code\.js:3:foo\|bar pipeline/u);
       // 正则里 `\.` 是转义：默认（正则）下命中真点号那行；字面量下搜的是含反斜杠的原文 → 无命中
       assert.match(await tools.executeTool("rg", { pattern: "a\\.b" }), /code\.js:1:a\.b literal/u);
-      assert.equal(await tools.executeTool("rg", { pattern: "a\\.b", is_regex: false }), "（无命中）");
+      assert.equal(withoutDeprecation(await tools.executeTool("rg", { pattern: "a\\.b", is_regex: false })), "（无命中）");
       // 默认正则：「(」是非法正则 → 错误结果而不是抛（此前默认字面量时无命中）
       assert.match(await tools.executeTool("rg", { pattern: "(" }), /^错误：无效正则/u);
       assert.match(await tools.executeTool("rg", { pattern: "(", is_regex: true }), /^错误：无效正则/u);
       // 字面量逃生口下「(」不是元字符，也不是非法模式 → 无命中
-      assert.equal(await tools.executeTool("rg", { pattern: "(", is_regex: false }), "（无命中）");
+      assert.equal(withoutDeprecation(await tools.executeTool("rg", { pattern: "(", is_regex: false })), "（无命中）");
       assert.match(await tools.executeTool("grep", { pattern: "(" }), /^错误：无效正则/u);
       // grep 的正则默认值与本轮前一致（is_regex 默认 true），且字面量逃生口（grep -F）照用
       const grepRegex = await tools.executeTool("grep", { pattern: "a.b" });
@@ -393,6 +424,169 @@ export function fileToolsContract(label, { createFileTools }) {
       assert.equal(bytes, Buffer.byteLength("你好", "utf8"));
       assert.equal(await readFile(path.join(cwd, "nested", "deep", "中文.txt"), "utf8"), "你好");
       await assert.rejects(tools.executeTool("readFile", { path: "missing.txt" }));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // issue #195：单一搜索入口 searchText（mode 显式、无先验）+ rg/grep 薄别名
+  // -------------------------------------------------------------------------
+
+  test(`${label}: searchText 的 mode 两种各钉一条，非法/缺失一律显式报错而不是回落默认`, async () => {
+    await withDirectory(async (cwd) => {
+      // 同一份 fixture：`a.b` 按正则同时命中 "a.b" 与 "axb"，按字面量只命中字面 "a.b" 那一行。
+      await writeFile(
+        path.join(cwd, "code.js"),
+        "a.b literal\naxb literal\nfoo|bar pipeline\nfoo alone\nbar alone\n",
+        "utf8",
+      );
+      const tools = createFileTools({ cwd });
+      const hits = (result) => contentOf(result)
+        .split("\n")
+        .filter((line) => line.startsWith("code.js:"))
+        .map((line) => line.slice("code.js:".length));
+
+      const asRegex = await tools.executeTool("searchText", { pattern: "a.b", mode: "regex" });
+      assert.deepEqual(hits(asRegex), ["1:a.b literal", "2:axb literal"], "mode=regex 按正则：点号是元字符");
+      const asLiteral = await tools.executeTool("searchText", { pattern: "a.b", mode: "literal" });
+      assert.deepEqual(hits(asLiteral), ["1:a.b literal"], "mode=literal 按字面量：点号不是元字符");
+      // 交替写法再钉一次（两种模式的差异不是偶然）：正则 3 行 / 字面量 1 行
+      assert.equal(hits(await tools.executeTool("searchText", { pattern: "foo|bar", mode: "regex" })).length, 3);
+      assert.equal(hits(await tools.executeTool("searchText", { pattern: "foo|bar", mode: "literal" })).length, 1);
+
+      // 非法 mode：**显式报错**，不得回落任何一个默认（回落就是把歧义留给调用方）
+      for (const mode of ["fixed", "LITERAL", "", null, 0, true, ["regex"]]) {
+        const output = contentOf(await tools.executeTool("searchText", { pattern: "a.b", mode }));
+        assert.match(output, /^错误：/u, `非法 mode ${JSON.stringify(mode)} 必须报错：${output}`);
+        assert.match(output, /mode/u);
+        assert.doesNotMatch(output, /a\.b literal/u, `非法 mode ${JSON.stringify(mode)} 不得回落成命中结果`);
+      }
+      // 缺失 mode 同样报错（这就是「无默认」的可断言形式）
+      assert.match(contentOf(await tools.executeTool("searchText", { pattern: "a.b" })), /^错误：/u);
+      assert.doesNotMatch(contentOf(await tools.executeTool("searchText", { pattern: "a.b" })), /axb/u,
+        "不传 mode 不得默默当成正则");
+      assert.match(contentOf(await tools.executeTool("searchText", { pattern: "a.b" })), /无默认值/u);
+      // 非法正则（mode=regex）仍走 #184 的错误结果口径，不抱
+      assert.match(contentOf(await tools.executeTool("searchText", { pattern: "(", mode: "regex" })), /^错误：无效正则/u);
+      // mode=literal 下「(」不是元字符也不是非法模式
+      assert.equal(contentOf(await tools.executeTool("searchText", { pattern: "(", mode: "literal" })), "（无命中）");
+    });
+  });
+
+  test(`${label}: name_pattern 只匹配文件名、不跨 /；传 glob 直接报参数错（不静默忽略）`, async () => {
+    await withDirectory(async (cwd) => {
+      await writeFile(path.join(cwd, "app.js"), "needle app\n", "utf8");
+      await mkdir(path.join(cwd, "src", "nested"), { recursive: true });
+      await writeFile(path.join(cwd, "src", "nested", "deep.js"), "needle nested\n", "utf8");
+      await writeFile(path.join(cwd, "notes.txt"), "needle text\n", "utf8");
+      const tools = createFileTools({ cwd });
+
+      const filtered = await tools.executeTool("searchText", { pattern: "needle", mode: "regex", name_pattern: "*.js" });
+      assert.match(filtered.content, /app\.js/u);
+      assert.match(filtered.content, /nested\/deep\.js/u, "只匹配 basename，所以任意层级的 .js 都能中");
+      assert.doesNotMatch(filtered.content, /notes\.txt/u);
+
+      // R2 要钉的就是这个：完整 glob 写法在本实现里**不工作**（名字已经因此改名）
+      const globStyle = await tools.executeTool("searchText", { pattern: "needle", mode: "regex", name_pattern: "**/*.js" });
+      assert.equal(contentOf(globStyle), "（无命中）", `**/*.js 不跨 /，必须无命中：${contentOf(globStyle)}`);
+
+      // glob 这个键在 searchText 里不存在：报错而不是静默忽略（静默忽略 = 同一个谎的另一面）
+      const rejected = await tools.executeTool("searchText", { pattern: "needle", mode: "regex", glob: "*.js" });
+      assert.match(contentOf(rejected), /^错误：/u);
+      assert.match(contentOf(rejected), /glob/u);
+      assert.match(contentOf(rejected), /name_pattern/u, "错误文本必须给出可执行的下一步");
+
+      // grep 别名继续吃 glob（入参形状不变），语义就是 name_pattern
+      assert.match(withoutDeprecation(await tools.executeTool("grep", { pattern: "needle", glob: "*.js" })), /app\.js/u);
+    });
+  });
+
+  test(`${label}: 别名等价性硬判据——同一 fixture 上 searchText(mode:regex)/rg/grep 的命中正文逐字相等`, async () => {
+    await withDirectory(async (cwd) => {
+      // 造三个样本：一个超宽行（验证行宽上限同口径）、一个普通行、一个多命中文件
+      const longLine = `needle ${"y".repeat(800)}`;      // 807 字符 > 500：三家都得截
+      const normalLine = `needle ${"z".repeat(290)}`;    // 297 字符 ≤ 500：三家都得整行
+      await writeFile(path.join(cwd, "long.txt"), `${longLine}\n`, "utf8");
+      await writeFile(path.join(cwd, "normal.txt"), `${normalLine}\nlong.txt more needle tail\n`, "utf8");
+      await writeFile(path.join(cwd, "vendor.js"), `needle ${"w".repeat(120)}\n`, "utf8");
+      const tools = createFileTools({ cwd });
+
+      // 剥掉三家各自的前缀（searchText/rg = `文件:行号:`，grep = 分组头 + `行号: `），只比命中行正文
+      const hitBodies = async (run) => {
+        const output = withoutDeprecation(contentOf(await run()));
+        const bodies = [];
+        for (const line of output.split("\n")) {
+          const at = line.indexOf("needle ");
+          if (line.trimEnd().endsWith("tail")) continue;
+          if (at === -1) continue;
+          bodies.push(line.slice(at));
+        }
+        return bodies;
+      };
+
+      const viaSearchText = await hitBodies(() => tools.executeTool("searchText", { pattern: "needle", mode: "regex" }));
+      const viaRg = await hitBodies(() => tools.executeTool("rg", { pattern: "needle" }));
+      const viaGrep = await hitBodies(() => tools.executeTool("grep", { pattern: "needle" }));
+
+      assert.ok(viaSearchText.length >= 3, `fixture 没造出足够命中：${JSON.stringify(viaSearchText)}`);
+      assert.deepEqual(viaRg, viaSearchText, "rg 别名的命中正文必须与 searchText(mode:regex) 逐字相等");
+      assert.deepEqual(viaGrep, viaSearchText, "grep 别名的命中正文必须与 searchText(mode:regex) 逐字相等");
+      // 具体数也钉住：三家共用的就是 500 + 一个省略号（否则一起缩到 200 也能满足上面的等式）
+      assert.equal(viaSearchText[0].length, 501, `超宽行必须按 500 + 省略号截断，实得到 ${viaSearchText[0].length}`);
+      assert.ok(viaSearchText[0].endsWith("…"));
+      assert.ok(viaSearchText.includes(normalLine), "未触顶的行三家都整行返回");
+
+      // 字面量口径也只在一处：mode=literal 与两个别名的 is_regex=false 逐字同果
+      const literalBodies = await hitBodies(() => tools.executeTool("searchText", { pattern: "needle y{20}", mode: "literal" }));
+      assert.deepEqual(literalBodies, [], "字面量下 `needle y{20}` 不是重复量词，不命中任何行");
+
+      // 弃用告警只属于别名，不属于规范入口；且不改变命中正文
+      const rgOutput = contentOf(await tools.executeTool("rg", { pattern: "needle" }));
+      const grepOutput = contentOf(await tools.executeTool("grep", { pattern: "needle" }));
+      assert.match(rgOutput, DEPRECATION_LINE, "rg 必须挂弃用提示行");
+      assert.match(grepOutput, DEPRECATION_LINE, "grep 必须挂弃用提示行");
+      assert.match(rgOutput, /searchText/u, "弃用提示必须点名继任入口");
+      assert.doesNotMatch(viaSearchText.join("\n"), /已弃用/u, "searchText 自己不应带弃用告警");
+      assert.equal(withoutDeprecation(rgOutput).split("\n").length, contentOf(await tools.executeTool("searchText", { pattern: "needle", mode: "regex" })).split("\n").length,
+        "除去弃用行后 rg 与 searchText 的行数必须一致");
+      assert.equal(withoutDeprecation(grepOutput).includes("normal.txt"), true);
+    });
+  });
+
+  test(`${label}: searchText 的跳过账/截断/next_offset 同时走结构化 metadata（模型侧仍读 marker）`, async () => {
+    await withDirectory(async (cwd) => {
+      await mkdir(path.join(cwd, "node_modules", "x"), { recursive: true });
+      await mkdir(path.join(cwd, ".git"), { recursive: true });
+      await writeFile(path.join(cwd, "node_modules", "x", "index.js"), "needle vendor\n", "utf8");
+      await writeFile(path.join(cwd, ".git", "config.txt"), "needle git\n", "utf8");
+      await writeFile(path.join(cwd, "app.js"), "needle app\n", "utf8");
+      await writeFile(path.join(cwd, "hits.txt"), `${Array.from({ length: 7 }, (_, i) => `hit ${i}`).join("\n")}\n`, "utf8");
+      const tools = createFileTools({ cwd });
+
+      const skipped = await tools.executeTool("searchText", { pattern: "needle", mode: "regex" });
+      assert.match(skipped.content, /已跳过/u, "marker 仍是模型侧的通道");
+      assert.equal(skipped.metadata.searchSkipped.vendorDirectories, 1);
+      assert.equal(skipped.metadata.searchSkipped.hiddenDirectories, 1);
+      assert.equal(skipped.metadata.searchHits, 1);
+      assert.equal(skipped.metadata.searchTruncated, false);
+      assert.equal(skipped.metadata.searchNextOffset, undefined, "未截断就不该给 next_offset");
+
+      const capped = await tools.executeTool("searchText", { pattern: "hit", mode: "literal", max_results: 3 });
+      assert.match(capped.content, /max_results=3 截断/u);
+      assert.equal(capped.metadata.searchTruncated, true);
+      assert.equal(capped.metadata.searchHits, 3);
+      assert.equal(capped.metadata.searchNextOffset, 3, "next_offset 必须是可续读的偏移");
+
+      // offset 续读：next_offset 传回去能拿到剩下那批（截断可撤销，ADR-010）
+      const next = await tools.executeTool("searchText", { pattern: "hit", mode: "literal", max_results: 3, offset: capped.metadata.searchNextOffset });
+      assert.match(next.content, /hit 3/u, `offset 续读必须拿到后半段：${next.content}`);
+      assert.equal(next.metadata.searchOffset, 3);
+      assert.match(next.content, /offset=6 继续/u, "带 offset 的调用要给出下一个续读偏移");
+
+      // vendor 取回仍可逆：include_vendor/include_hidden 与 marker 里的开关名一致
+      const all = await tools.executeTool("searchText", { pattern: "needle", mode: "regex", include_vendor: true, include_hidden: true });
+      assert.match(all.content, /needle vendor/u);
+      assert.match(all.content, /needle git/u);
+      assert.equal(all.metadata.searchSkipped.vendorDirectories, 0);
     });
   });
 }

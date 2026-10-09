@@ -180,16 +180,27 @@ const schemas = [
   },
 ].map(normalizeSchema);
 
+// issue #195：工具清单行新增 `searchText` 并把 `rg`/`grep` 标为已弃用——这是**模型可见面**变更
+// （`test/fixtures/cli-golden.json` 内嵌整段提示词，golden 随之变更；这是刻意的，
+// 不允许为了 golden 不变而把新工具藏进描述文字）。
+
 // CLI 系统提示拆成「基础段 + todo 段」（issue #69）：
 // --no-todo / ERIX_NO_TODO=1 时 todo 段整体消失（工具清单行后缀 + 工具纪律行的 todo 分句），
 // 基础段自身是完整句子（工具清单行以「输出。」收尾）。默认路径拼接结果与拆分前逐字节一致。
 const CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD =
-  "可用工具：readFile 读取文本文件（支持行范围与 max_bytes 上限），rg 递归搜索文本文件（默认按正则匹配，与 rg 命令一致；传 is_regex=false 按字面量匹配，等价 rg --fixed-strings），grep 递归搜索文件内容（默认正则，等价 grep -E；传 is_regex=false 按字面量，等价 grep -F；支持 glob 文件名过滤，结果按文件分组），tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出";
+  "可用工具：readFile 读取文本文件（支持行范围与 max_bytes 上限），" +
+  "searchText 搜索文本文件（mode 必填、无默认值：literal 按字面量、regex 按 JavaScript 正则；" +
+  "name_pattern 只匹配文件名、不跨 /；命中按「文件:行号:命中行」返回；截断时给出续读 offset），" +
+  "rg 递归搜索文本文件（默认按正则匹配，与 rg 命令一致；传 is_regex=false 按字面量匹配，等价 rg --fixed-strings；" +
+  "已弃用，请改用 searchText 并显式传 mode），" +
+  "grep 递归搜索文件内容（默认正则，等价 grep -E；传 is_regex=false 按字面量，等价 grep -F；" +
+  "支持 glob 文件名过滤（只匹配文件名、不跨 /），结果按文件分组；已弃用，请改用 searchText 并显式传 mode），" +
+  "tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出";
 
 // issue #184（ADR-010：默认去噪必须可撤销）：「跳了什么 + 怎么撤销」必须进提示词——
 // 模型不知道被排除就无从发起取回。排除账同时写在工具结果尾部。
 const CLI_TOOLS_SYSTEM_PROMPT_VENDOR =
-  "\n搜索与目录类工具（rg/grep/tree）默认跳过 node_modules、dist、build、target、vendor 与 . 开头的目录（结果尾部会回报跳过数量）；要一起搜传 include_vendor=true、include_hidden=true";
+  "\n搜索与目录类工具（searchText/rg/grep/tree）默认跳过 node_modules、dist、build、target、vendor 与 . 开头的目录（结果尾部会回报跳过数量）；要一起搜传 include_vendor=true、include_hidden=true";
 
 // todo 段①：工具清单行的 todo 后缀（含句号，接在基础段 HEAD 之后）；vendor 段接其后
 const CLI_TOOLS_SYSTEM_PROMPT_TODO_TOOLS =
