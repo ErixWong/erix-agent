@@ -73,8 +73,12 @@ test("默认跳 vendor + 开关名写进了系统提示（#184：「告诉模型
     assert.match(prompt, /\. 开头的目录/u);
     assert.match(prompt, /include_vendor=true、include_hidden=true/u);
     assert.match(prompt, /结果尾部会回报跳过数量/u);
-    // rg 的正则硬化也必须让模型知道（默认字面量）
-    assert.match(prompt, /默认按字面量匹配，传 is_regex=true/u);
+    // rg 的默认口径也必须让模型知道：正则默认（与真实 rg 一致）+ 字面量逃生口的真实旗标名
+    assert.match(prompt, /默认按正则匹配，与 rg 命令一致/u);
+    assert.match(prompt, /is_regex=false 按字面量匹配，等价 rg --fixed-strings/u);
+    assert.match(prompt, /grep 递归搜索文件内容（默认正则，等价 grep -E；传 is_regex=false 按字面量，等价 grep -F/u);
+    // 旧的「默认字面量」口径不得复活（模型读到旧口径就等于本轮白做）
+    assert.doesNotMatch(prompt, /默认按字面量/u);
   }
 });
 

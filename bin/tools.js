@@ -184,7 +184,7 @@ const schemas = [
 // --no-todo / ERIX_NO_TODO=1 时 todo 段整体消失（工具清单行后缀 + 工具纪律行的 todo 分句），
 // 基础段自身是完整句子（工具清单行以「输出。」收尾）。默认路径拼接结果与拆分前逐字节一致。
 const CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD =
-  "可用工具：readFile 读取文本文件（支持行范围与 max_bytes 上限），rg 递归搜索文本文件（默认按字面量匹配，传 is_regex=true 走正则），grep 递归搜索文件内容（支持 glob 文件名过滤、字面量/正则模式，结果按文件分组），tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出";
+  "可用工具：readFile 读取文本文件（支持行范围与 max_bytes 上限），rg 递归搜索文本文件（默认按正则匹配，与 rg 命令一致；传 is_regex=false 按字面量匹配，等价 rg --fixed-strings），grep 递归搜索文件内容（默认正则，等价 grep -E；传 is_regex=false 按字面量，等价 grep -F；支持 glob 文件名过滤，结果按文件分组），tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出";
 
 // issue #184（ADR-010：默认去噪必须可撤销）：「跳了什么 + 怎么撤销」必须进提示词——
 // 模型不知道被排除就无从发起取回。排除账同时写在工具结果尾部。

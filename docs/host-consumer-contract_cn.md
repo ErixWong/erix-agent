@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -1008,8 +1008,10 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 - `definitions`：`readFile` / `rg` / `grep` / `tree` / `writeFile` 五个 schema。
   工具名与既有字段（`offset`/`limit`/`path`/`pattern`/`glob`/`is_regex`/
   `max_results`/`maxResults`/`depth`）保持不变，自带过 CLI 那份实现的宿主接上本
-  工厂是零迁移；新参数一律 snake_case，两个搜索工具都同时接受 `max_results` 与
-  `maxResults` 两种上限写法；
+  工厂是零迁移——**但有一条行为口径要注意**：`rg` 的 `is_regex` 默认是 `true`（#184
+  追加轮 A，与真实 `rg` 命令一致），而已退役的 CLI 那份实现把「不传 `is_regex`」当作
+  字面量，携那个默认的宿主会看到不同的命中结果（见下面的默认值清单）；新参数一律
+  snake_case，两个搜索工具都同时接受 `max_results` 与 `maxResults` 两种上限写法；
 - `executeTool({id, name, input, context, signal})`：与 `runToolLoop` /
   run-snapshot-executor 调用约定对齐的结构化视图（同时保留位置形态
   `executeTool(name, input, context)` 以兼容现有调用方）。放在**顶层**的 `signal`
@@ -1039,11 +1041,23 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 - `rg` / `grep` / `tree` 默认跳过 `node_modules`、`dist`、`build`、`target`、
   `vendor` 与 `.` 开头的目录（含 `.git`），除非传 `include_vendor=true` /
   `include_hidden=true`；结果尾部会带跳过数量，以及能撤销它们的开关名；
+- **两个搜索工具都默认按正则匹配**（`rg` 与 `grep` 一致，也是真实 `rg` / `grep`
+  命令自己的默认；#184 追加轮 A 推翻了此前「`rg` 默认字面量」的选择——同一库里两个
+  搜索工具默认相反才是本轮修掉的反常）。`is_regex=false` 是字面量逃生口，按真实旗标
+  命名：等价 `rg --fixed-strings` / `grep -F`。非法正则返回工具错误结果
+  `错误：无效正则：…`，**绝不抛异常**（真实命令是非零退出）；
 - 空命中结果是 `（无命中）`，不再是空串；
 - `tree` 截断永远带 marker，并给出剩余计数与能放宽它的参数；
-- `readFile` 有界：单次最多返回 `max_bytes` 个 UTF-8 字节（默认 `262144`，可用
+- `readFile` 有界：单次返回不超过 `max_bytes` 个 UTF-8 字节（默认 `262144`，可用
   `ERIX_FILE_READ_MAX_BYTES` 覆盖，钳到 1024-4194304），行窗口按块扫行 + 早停，
   不再把整个文件读进内存。
+
+**搜索是纯 Node 子集，不是 `rg` / `grep` 二进制**（issue #184）。只有默认值与逃生口命名
+跟真实命令一致，能力面故意不一致：没有 `-i`、没有 `-A`/`-B` 上下文行、没有 `--type`/
+`--include`，模式是 JavaScript 正则（ripgrep 内置的是另一套正则引擎，GNU `grep` 默认是
+BRE，都不是这里用的 JavaScript flavor），**完全不读 `.gitignore`**，vendor 排除是一份硬
+编码清单（`node_modules`/`dist`/`build`/`target`/`vendor`），以结果尾部的排除账回报，而不
+是 ripgrep 那套 ignore 文件遍历。宿主不得把自己的模型或用户误导成「这就是 ripgrep 二进制」。
 
 CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `exec` 与 `todo_*`，
 且不传任何谓词，所以 CLI 行为与以前一致，仍是「无边界」。`bin/` 不再持有第二套

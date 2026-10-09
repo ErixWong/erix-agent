@@ -1,6 +1,7 @@
 // src/tools/file-tools.js 的实现侧测试（issue #184）
 // 契约面走通用套件 fileToolsContract；这里只补「库自己的口径」：
-// 默认无边界（ADR-009 牢笼归宿主）、env 三件套、无 signal 不让出、大文件有界读不回退成整文件读。
+// 默认无边界（ADR-009 牢笼归宿主）、env 三件套、无 signal 不让出、大文件有界读不回退成整文件读、
+// rg/grep 默认正则与真实命令同口径（#184 追加轮 A，含 schema 描述真值）。
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -35,6 +36,36 @@ test("库默认不做 containment：cwd 之外的路径照样可读可写（ADR-
       assert.match(await executeTool("tree", { path: outside, depth: 1 }), /notes\.txt/u);
       assert.equal(await executeTool("writeFile", { path: join(outside, "w.txt"), content: "ok" }), 2);
     });
+  });
+});
+
+test("rg 默认与真实命令一致：正则默认，is_regex=false 才等价 rg --fixed-strings（#184 追加轮 A）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "s.txt"), "a.b\naxb\nfoo|bar\n", "utf8");
+    const { executeTool, definitions } = createFileTools({ cwd });
+    const hits = (output) => output.split("\n").filter((line) => line.startsWith("s.txt:"));
+
+    // 默认（不传 is_regex）= 正则，与 `rg` 二进制自己的默认一致
+    assert.deepEqual(hits(await executeTool("rg", { pattern: "a.b" })), ["s.txt:1:a.b", "s.txt:2:axb"]);
+    // 显式 is_regex=true 与默认逐字一致 → 默认值真的就是 true
+    assert.equal(await executeTool("rg", { pattern: "a.b", is_regex: true }), await executeTool("rg", { pattern: "a.b" }));
+    // 逃生口 is_regex=false 才收窄到字面量（= rg --fixed-strings / grep -F）
+    assert.deepEqual(hits(await executeTool("rg", { pattern: "a.b", is_regex: false })), ["s.txt:1:a.b"]);
+    assert.deepEqual(hits(await executeTool("rg", { pattern: "foo|bar", is_regex: false })), ["s.txt:3:foo|bar"]);
+
+    // 默认口径靠 schema 描述落地：正则默认 + 真实旗标名 + 与真实命令的能力差异
+    const rg = definitions.find((definition) => definition.name === "rg");
+    assert.match(rg.description, /regular expression/u);
+    assert.match(rg.description, /--fixed-strings/u);
+    assert.match(rg.description, /\.gitignore is NOT read/u);
+    assert.match(rg.inputSchema.properties.is_regex.description, /Default true/u);
+    const grep = definitions.find((definition) => definition.name === "grep");
+    assert.match(grep.description, /grep -E/u);
+    assert.match(grep.description, /grep -F/u);
+    assert.match(grep.inputSchema.properties.is_regex.description, /Default true/u);
+
+    // grep 默认未动：同库两个搜索工具默认相反正是本轮要修掉的反常，现在两边都是正则
+    assert.match(await executeTool("grep", { pattern: "a.b" }), /2: axb/u);
   });
 });
 

@@ -12,6 +12,8 @@
 //   * allowRead/allowWrite 以**绝对路径**被调用，越界返回「错误：…」文本结果而非抛；
 //   * readFile 单次返回不超过 max_bytes（默认 262144）；
 //   * vendor 目录默认跳过且结果尾部带排除账，include_vendor=true 可撤销；
+//   * rg/grep 都默认按**正则**匹配（与真实 `rg` / `grep` 命令的默认一致，issue #184 追加轮 A），
+//     is_regex=false 是字面量逃生口（等价 `rg --fixed-strings` / `grep -F`），无效正则一律返回错误结果而非抛；
 //   * 无命中统一「（无命中）」；tree 截断必须带 marker + 剩余计数；
 //   * 遍历可被 context.signal 中止。
 //
@@ -302,27 +304,44 @@ export function fileToolsContract(label, { createFileTools }) {
     });
   });
 
-  test(`${label}: rg 默认字面量、is_regex=true 走正则、无效正则返回错误结果`, async () => {
+  test(`${label}: rg 默认正则（与真实 rg 一致）、is_regex=false 走字面量、无效正则返回错误结果`, async () => {
     await withDirectory(async (cwd) => {
-      await writeFile(path.join(cwd, "code.js"), "a.b literal\n", "utf8");
+      // 同一份 fixture 上并排钉住两种模式：`a.b` 按正则同时命中 "a.b" 与 "axb"，
+      // 按字面量只命中含字面 "a.b" 的那一行；`foo|bar` 同理（正则 3 行 vs 字面量 1 行）。
+      const fixture = "a.b literal\naxb literal\nfoo|bar pipeline\nfoo alone\nbar alone\n";
+      await writeFile(path.join(cwd, "code.js"), fixture, "utf8");
       const tools = createFileTools({ cwd });
+      const hits = (output) => output.split("\n").filter((line) => line.startsWith("code.js:")).length;
 
-      assert.match(await tools.executeTool("rg", { pattern: "a.b" }), /1:a\.b/u);
-      // 字面量模式不会把 `\.` 当转义：搜索的是含反斜杠的原文，本行不匹配 → 证明两种模式真的分叉
-      assert.equal(
-        await tools.executeTool("rg", { pattern: "a\\.b" }),
-        "（无命中）",
-      );
-      assert.match(
-        await tools.executeTool("rg", { pattern: "a\\.b", is_regex: true }),
-        /1:a\.b/u,
-      );
-      // 默认字面量：「(」不是正则元字符，转义后是合法模式 → 无命中而不是抛/无效正则
-      assert.equal(await tools.executeTool("rg", { pattern: "(" }), "（无命中）");
+      // 默认（不传 is_regex）= 正则，与 ripgrep 的真实默认、以及本库 grep 的默认同口径
+      const defaultRegex = await tools.executeTool("rg", { pattern: "a.b" });
+      assert.match(defaultRegex, /code\.js:1:a\.b literal/u);
+      assert.match(defaultRegex, /code\.js:2:axb literal/u, "默认必须是正则：a.b 也得命中 axb");
+      // 同一份 fixture、同一个模式，is_regex=false 按字面量：不得命中 axb
+      const literal = await tools.executeTool("rg", { pattern: "a.b", is_regex: false });
+      assert.match(literal, /code\.js:1:a\.b literal/u);
+      assert.doesNotMatch(literal, /axb/u, "is_regex=false 必须按字面量：点号不是元字符");
+      // 交替写法再钉一次：正则 3 行 vs 字面量 1 行
+      assert.equal(hits(await tools.executeTool("rg", { pattern: "foo|bar" })), 3, "默认正则：foo|bar 命中三行");
+      const literalAlternation = await tools.executeTool("rg", { pattern: "foo|bar", is_regex: false });
+      assert.equal(hits(literalAlternation), 1, "is_regex=false：只命中含字面 foo|bar 的那一行");
+      assert.match(literalAlternation, /code\.js:3:foo\|bar pipeline/u);
+      // 正则里 `\.` 是转义：默认（正则）下命中真点号那行；字面量下搜的是含反斜杠的原文 → 无命中
+      assert.match(await tools.executeTool("rg", { pattern: "a\\.b" }), /code\.js:1:a\.b literal/u);
+      assert.equal(await tools.executeTool("rg", { pattern: "a\\.b", is_regex: false }), "（无命中）");
+      // 默认正则：「(」是非法正则 → 错误结果而不是抛（此前默认字面量时无命中）
+      assert.match(await tools.executeTool("rg", { pattern: "(" }), /^错误：无效正则/u);
       assert.match(await tools.executeTool("rg", { pattern: "(", is_regex: true }), /^错误：无效正则/u);
+      // 字面量逃生口下「(」不是元字符，也不是非法模式 → 无命中
+      assert.equal(await tools.executeTool("rg", { pattern: "(", is_regex: false }), "（无命中）");
       assert.match(await tools.executeTool("grep", { pattern: "(" }), /^错误：无效正则/u);
-      // grep 的正则默认值保持不变（is_regex 默认 true）
-      assert.match(await tools.executeTool("grep", { pattern: "a.b" }), /1: a\.b literal/u);
+      // grep 的正则默认值与本轮前一致（is_regex 默认 true），且字面量逃生口（grep -F）照用
+      const grepRegex = await tools.executeTool("grep", { pattern: "a.b" });
+      assert.match(grepRegex, /1: a\.b literal/u);
+      assert.match(grepRegex, /2: axb literal/u, "grep 默认仍是正则");
+      const grepLiteral = await tools.executeTool("grep", { pattern: "a.b", is_regex: false });
+      assert.match(grepLiteral, /1: a\.b literal/u);
+      assert.doesNotMatch(grepLiteral, /axb/u, "grep is_regex=false = grep -F：点号不是元字符");
     });
   });
 

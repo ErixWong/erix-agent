@@ -425,9 +425,10 @@ export const FILE_TOOL_DEFINITIONS = [
   },
   {
     name: "rg",
-    description: "Recursively search text files. Patterns match literally unless is_regex=true. "
-      + "Skips node_modules/dist/build/target/vendor and dot-directories unless include_vendor/include_hidden=true; "
-      + "skip counts are reported at the end of the result.",
+    description: "Recursively search text files with a regular expression (the ripgrep command's own default). "
+      + "Set is_regex=false for literal matching, equivalent to `rg --fixed-strings`. "
+      + "Pure-Node subset, not the ripgrep binary: no -i/-A/-B/--type, .gitignore is NOT read; "
+      + "node_modules/dist/build/target/vendor and dot-directories are skipped by default and reported at the end of the result.",
     inputSchema: {
       type: "object",
       properties: {
@@ -435,7 +436,10 @@ export const FILE_TOOL_DEFINITIONS = [
         path: { type: "string" },
         maxResults: { type: "integer" },
         max_results: { type: "integer", description: "Alias of maxResults (default 50, hard cap 200)." },
-        is_regex: { type: "boolean", description: "Default false: treat pattern as a literal string." },
+        is_regex: {
+          type: "boolean",
+          description: "Default true: the pattern is a regular expression (matches ripgrep and matches this library's grep). Set false for fixed-string literal matching (rg --fixed-strings).",
+        },
         include_vendor: { type: "boolean", description: "Default false: skip node_modules/dist/build/target/vendor." },
         include_hidden: { type: "boolean", description: "Default false: skip dot-directories such as .git." },
       },
@@ -446,15 +450,19 @@ export const FILE_TOOL_DEFINITIONS = [
   {
     name: "grep",
     description: "Search file contents with a regex or literal pattern, grouped by file. "
-      + "Skips node_modules/dist/build/target/vendor and dot-directories unless include_vendor/include_hidden=true; "
-      + "skip counts are reported at the end of the result.",
+      + "is_regex=true (the default) matches as a regular expression, equivalent to `grep -E`; is_regex=false matches the pattern literally, equivalent to `grep -F`. "
+      + "Pure-Node subset, not the grep binary: JavaScript regex rather than BRE/ERE, no -i/-A/-B/--include, .gitignore is NOT read; "
+      + "node_modules/dist/build/target/vendor and dot-directories are skipped by default and reported at the end of the result.",
     inputSchema: {
       type: "object",
       properties: {
         pattern: { type: "string" },
         path: { type: "string" },
         glob: { type: "string" },
-        is_regex: { type: "boolean" },
+        is_regex: {
+          type: "boolean",
+          description: "Default true: regex matching (grep -E). Set false for fixed-string literal matching (grep -F).",
+        },
         max_results: { type: "integer" },
         maxResults: { type: "integer", description: "Alias of max_results (default 50, hard cap 200)." },
         include_vendor: { type: "boolean", description: "Default false: skip node_modules/dist/build/target/vendor." },
@@ -621,8 +629,11 @@ export function createFileTools({
 
   const rg = async (input, context) => {
     const { pattern, path: searchPath = "." } = input ?? {};
-    // rg 正则硬化：默认按**字面量**匹配（is_regex=true 才走正则）；无效正则转工具错误结果。
-    const compiled = compileSearchPattern(pattern, { literal: input?.is_regex !== true });
+    // rg 默认与真实命令一致：ripgrep 默认就是**正则**（字面量要 `--fixed-strings`），
+    // 本库的 grep 默认同样是正则——两个搜索工具默认相反才是反常（issue #184 追加轮 A）。
+    // 字面量逃生口 is_regex=false 走 escapeRegExpLiteral（即 rg --fixed-strings / grep -F）；
+    // 无效正则一律转工具错误结果，不抛。
+    const compiled = compileSearchPattern(pattern, { literal: input?.is_regex === false });
     if (compiled.error !== undefined) return compiled.error;
     const { expression } = compiled;
     const includeVendor = normalizeFlag(input?.include_vendor);

@@ -1257,7 +1257,11 @@ The returned object contains:
   schemas. Tool names and existing input fields (`offset`/`limit`/`path`/
   `pattern`/`glob`/`is_regex`/`max_results`/`maxResults`/`depth`) are unchanged,
   so registering this factory is a zero-migration change for a host that already
-  shipped the CLI's copies; new parameters are snake_case, and both search-limit
+  shipped the CLI's copies — **with one behavioural caveat**: `rg`'s `is_regex`
+  defaults to `true` (issue #184 round A, aligned with the real `rg` command),
+  whereas the CLI's retired copy treated an omitted `is_regex` as a literal
+  match, so a host that carried that default will see different hits (see the
+  defaults list below); new parameters are snake_case, and both search-limit
   spellings (`max_results` and `maxResults`) are accepted by both search tools;
 - `executeTool({id, name, input, context, signal})` — the structured view that
   matches the `runToolLoop` / run-snapshot-executor calling convention (the
@@ -1297,6 +1301,13 @@ Defaults a host must know about, because they change what the model sees
   `vendor` and dot-directories (`.git` included) unless `include_vendor=true`
   / `include_hidden=true`, and state the skipped counts at the end of the
   result together with the switch names that undo them;
+- **both search tools default to regex matching** (`rg` and `grep` alike, which
+  is what the real `rg` / `grep` commands do; issue #184 round A reversed an
+  earlier `rg`-defaults-to-literal choice that made the two tools in one library
+  disagree). `is_regex=false` is the literal escape hatch and is named after the
+  real flags: it is `rg --fixed-strings` / `grep -F`. An invalid regular
+  expression is returned as the tool error result `错误：无效正则：…` — it never
+  throws, unlike the real commands exiting non-zero;
 - an empty search result is `（无命中）`, never an empty string;
 - `tree` truncation always carries a marker with the remainder count and the
   parameter that would widen it;
@@ -1304,6 +1315,17 @@ Defaults a host must know about, because they change what the model sees
   (default `262144`, overridable through `ERIX_FILE_READ_MAX_BYTES`, clamped to
   1024–4194304) and scans lines block-by-block with early stop instead of
   reading the whole file into memory.
+
+**Search is a pure-Node subset, not the `rg` / `grep` binary** (issue #184). The
+default and the escape-hatch naming follow the real commands; the capability
+surface deliberately does not: no `-i`, no `-A`/`-B` context lines, no
+`--type`/`--include`, patterns are JavaScript regular expressions (ripgrep embeds
+a different regex engine, and GNU `grep` defaults to BRE rather than the
+JavaScript flavour used here), **`.gitignore` is not read at all**, and the
+vendor exclusion is a hard-coded list (`node_modules`/`dist`/`build`/`target`/
+`vendor`) reported as an exclusion account at the end of the result instead of
+ripgrep's ignore-file walk. A host must not describe these tools as "the ripgrep
+binary" to its model or its users.
 
 The CLI keeps only assembly and presentation: `bin/tools.js` imports this module,
 adds `exec` and `todo_*`, and passes no predicates, so CLI behaviour stays
