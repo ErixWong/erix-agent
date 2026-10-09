@@ -268,7 +268,7 @@ test("cancels and releases an Anthropic reader after a stream failure", async ()
   assert.equal(released, true);
 });
 
-test("classifies timeout, rate limit, auth, server, and network errors", async (t) => {
+test("classifies timeout, rate limit, auth, server, 4xx client, network, and unmapped errors", async (t) => {
   const abortError = new Error("aborted");
   abortError.name = "AbortError";
   const cases = [
@@ -292,6 +292,58 @@ test("classifies timeout, rate limit, auth, server, and network errors", async (
       retryable: true,
     },
     {
+      // issue #179 A12-A：4xx 客户端错不再落 "unknown"，且 retryable 保持 false
+      name: "invalid request",
+      script: [{
+        status: 400,
+        json: { type: "error", error: { type: "invalid_request_error", message: "Invalid request" } },
+      }],
+      code: "invalid_request",
+      retryable: false,
+      status: 400,
+    },
+    {
+      name: "unprocessable entity",
+      script: [{
+        status: 422,
+        json: { type: "error", error: { type: "invalid_request_error", message: "Schema rejected" } },
+      }],
+      code: "invalid_request",
+      retryable: false,
+      status: 422,
+    },
+    {
+      name: "not found",
+      script: [{
+        status: 404,
+        json: { type: "error", error: { type: "not_found_error", message: "model: gpt-x not found" } },
+      }],
+      code: "not_found",
+      retryable: false,
+      status: 404,
+    },
+    {
+      name: "conflict",
+      script: [{
+        status: 409,
+        json: { type: "error", error: { type: "conflict_error", message: "Already exists" } },
+      }],
+      code: "conflict",
+      retryable: false,
+      status: 409,
+    },
+    {
+      // 守门用例：新增分类不得把 else 分支吞掉——未列出的状态码仍落 "unknown"
+      name: "unmapped status stays unknown",
+      script: [{
+        status: 418,
+        json: { type: "error", error: { type: "api_error", message: "I am a teapot" } },
+      }],
+      code: "unknown",
+      retryable: false,
+      status: 418,
+    },
+    {
       name: "network",
       script: [{ throw: new TypeError("fetch failed") }],
       code: "network",
@@ -308,6 +360,9 @@ test("classifies timeout, rate limit, auth, server, and network errors", async (
           assert.ok(err instanceof KitError);
           assert.equal(err.code, errorCase.code);
           assert.equal(err.retryable, errorCase.retryable);
+          if (errorCase.status !== undefined) {
+            assert.equal(err.status, errorCase.status, "status must stay on the error");
+          }
           return true;
         },
       );
@@ -323,7 +378,8 @@ test("passes through error bodies for non-2xx and 2xx error responses", async ()
   await assert.rejects(
     non2xx.provider.chat({ system: "", messages: [], maxTokens: 32 }),
     (err) => {
-      assert.equal(err.code, "unknown");
+      // issue #179 A12-A：400 此前落 "unknown"，现在是 "invalid_request"（message/status 未动）
+      assert.equal(err.code, "invalid_request");
       assert.equal(err.message, "Invalid request");
       assert.equal(err.status, 400);
       return true;
