@@ -1,325 +1,55 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+// CLI 侧的技能装配层（issue #197）：实现已进库（`src/skills/loader.js`），
+// 本文件只做两件事——
+//   1. 注入 CLI 自己的内置技能目录（`<package>/skills`，层级在这里算，因为 `bin/` 的层级
+//      是 CLI 的事实，不是库的事实）；
+//   2. re-export 库符号，让 `bin/cli.js` / `bin/repl.js` / `scripts/` 的 import 零改动。
+//
+// 库内**不猜**内置目录（见 loader 头部注释）：`bundledDir` 是显式选项，调用方不传就不参与
+// 发现。CLI 必须逐字保持历史行为，所以这里把默认值补回 `../skills`。
+
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
-import { createToolRegistry } from "../src/tools/registry.js";
+import {
+  buildSkillTools as libraryBuildSkillTools,
+  discoverSkills as libraryDiscoverSkills,
+  loadAllSkills as libraryLoadAllSkills,
+  skillDirectories as librarySkillDirectories,
+} from "../src/skills/loader.js";
 
-const DEFAULT_ENTRYPOINT = "skill.mjs";
-const BUNDLED_SKILLS_DIRECTORY = path.resolve(
+export const BUNDLED_SKILLS_DIRECTORY = path.resolve(
   fileURLToPath(new URL("../skills/", import.meta.url)),
 );
 
-function isDirectory(directory) {
-  try {
-    return statSync(directory).isDirectory();
-  } catch (error) {
-    if (error?.code === "ENOENT") return false;
-    throw error;
-  }
-}
+export {
+  loadSkill,
+  warnBuiltinToolConflicts,
+} from "../src/skills/loader.js";
 
-function errorMessage(error) {
-  return error?.message ?? String(error);
-}
-
-function normalizeRoot(directory) {
-  return path.resolve(String(directory));
-}
-
-function assertEntrypoint(root, entrypoint) {
-  if (typeof entrypoint !== "string" || entrypoint.trim() === "") {
-    throw new Error("技能 entrypoint 必须是非空相对路径");
-  }
-  if (path.isAbsolute(entrypoint)) {
-    throw new Error(`技能 entrypoint 必须是相对路径：${entrypoint}`);
-  }
-
-  const normalized = path.normalize(entrypoint);
-  if (normalized === ".." || normalized.startsWith(`..${path.sep}`)) {
-    throw new Error(`技能 entrypoint 逃逸技能目录：${entrypoint}`);
-  }
-
-  const entrypointPath = path.resolve(root, normalized);
-  if (!existsSync(entrypointPath)) {
-    throw new Error(`技能 entrypoint 不存在：${entrypoint}`);
-  }
-  return normalized;
-}
-
-function validateTools(tools) {
-  if (!Array.isArray(tools)) {
-    throw new Error("技能 tools 必须是数组");
-  }
-  if (tools.length === 0) {
-    throw new Error("技能 tools 不能为空");
-  }
-
-  const names = new Set();
-  for (const [index, tool] of tools.entries()) {
-    if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
-      throw new Error(`技能 tools[${index}] 必须是对象`);
-    }
-    if (typeof tool.name !== "string" || tool.name.trim() === "") {
-      throw new Error(`技能 tools[${index}].name 必须是非空字符串`);
-    }
-    if (names.has(tool.name)) {
-      throw new Error(`技能工具名称重复：${tool.name}`);
-    }
-    names.add(tool.name);
-
-    if (
-      !Object.prototype.hasOwnProperty.call(tool, "inputSchema")
-      || !tool.inputSchema
-      || typeof tool.inputSchema !== "object"
-      || Array.isArray(tool.inputSchema)
-    ) {
-      throw new Error(`技能 tools[${index}].inputSchema 必须存在且为对象`);
-    }
-    if (tool.description !== undefined && typeof tool.description !== "string") {
-      throw new Error(`技能 tools[${index}].description 必须是字符串`);
-    }
-  }
-  return tools;
-}
-
-function validateDefinition(definition, root) {
-  if (!definition || typeof definition !== "object" || Array.isArray(definition)) {
-    throw new Error("技能定义必须是对象");
-  }
-  if (definition.schema_version !== 1) {
-    throw new Error(`不支持的技能 schema_version：${definition.schema_version}`);
-  }
-  if (!definition.skill || typeof definition.skill !== "object" || Array.isArray(definition.skill)) {
-    throw new Error("技能定义必须包含 skill 对象");
-  }
-
-  const skillId = definition.skill.id;
-  if (typeof skillId !== "string" || skillId.trim() === "") {
-    throw new Error("技能 skill.id 必须是非空字符串");
-  }
-  const entrypoint = assertEntrypoint(root, definition.skill.entrypoint);
-  const tools = validateTools(definition.tools);
-  return { skillId, entrypoint, tools };
-}
-
-async function importSkillModule(root, entrypoint = DEFAULT_ENTRYPOINT) {
-  const validatedEntrypoint = assertEntrypoint(root, entrypoint);
-  const modulePath = path.join(root, validatedEntrypoint);
-  if (!existsSync(modulePath)) {
-    throw new Error(`技能入口文件不存在：${validatedEntrypoint}`);
-  }
-  return import(pathToFileURL(modulePath).href);
-}
-
-async function loadSkillWithModule(dir) {
-  const root = normalizeRoot(dir);
-  const descriptorModule = await importSkillModule(root);
-
-  if (typeof descriptorModule.getSkillDefinition === "function") {
-    const definition = await descriptorModule.getSkillDefinition();
-    const loaded = validateDefinition(definition, root);
-    const skillModule = loaded.entrypoint === DEFAULT_ENTRYPOINT
-      ? descriptorModule
-      : await importSkillModule(root, loaded.entrypoint);
-    return { ...loaded, module: skillModule };
-  }
-
-  if (typeof descriptorModule.getTools === "function") {
-    const tools = validateTools(await descriptorModule.getTools());
-    return {
-      skillId: path.basename(root),
-      entrypoint: DEFAULT_ENTRYPOINT,
-      tools,
-      module: descriptorModule,
-    };
-  }
-
-  throw new Error("技能模块必须导出 getSkillDefinition() 或 getTools()");
-}
-
-/**
- * Return the existing global and project skill directories.
- *
- * `skillsDir` is an explicit single-directory override used by the CLI.
- */
 export function skillDirectories({
-  home = homedir(),
-  cwd = process.cwd(),
-  skillsDir,
+  bundledDir = BUNDLED_SKILLS_DIRECTORY,
+  ...options
 } = {}) {
-  const candidates = skillsDir === undefined
-    ? [
-      path.join(normalizeRoot(home), ".erix", "skills"),
-      path.join(normalizeRoot(cwd), ".erix", "skills"),
-      BUNDLED_SKILLS_DIRECTORY,
-    ]
-    : [path.resolve(normalizeRoot(cwd), String(skillsDir))];
-
-  return [...new Set(candidates.map(normalizeRoot))].filter(isDirectory);
+  return librarySkillDirectories({ ...options, bundledDir });
 }
 
-/**
- * Discover first-level skill directories. Project entries replace global
- * entries with the same directory id.
- */
-export function discoverSkills({ home, cwd, skillsDir } = {}) {
-  const discovered = new Map();
-  const errors = [];
-  const candidates = skillsDir === undefined
-    ? [
-      BUNDLED_SKILLS_DIRECTORY,
-      path.join(normalizeRoot(home ?? homedir()), ".erix", "skills"),
-      path.join(normalizeRoot(cwd ?? process.cwd()), ".erix", "skills"),
-    ]
-    : [path.resolve(normalizeRoot(cwd ?? process.cwd()), String(skillsDir))];
-
-  for (const directory of [...new Set(candidates.map(normalizeRoot))]) {
-    let entries;
-    try {
-      if (!isDirectory(directory)) continue;
-      entries = readdirSync(directory, { withFileTypes: true });
-    } catch (error) {
-      errors.push({
-        skillId: path.basename(directory),
-        dir: directory,
-        error: errorMessage(error),
-      });
-      continue;
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        discovered.set(entry.name, {
-          dir: path.join(directory, entry.name),
-          id: entry.name,
-        });
-      }
-    }
-  }
-  const result = [...discovered.values()];
-  Object.defineProperty(result, "errors", {
-    value: errors,
-    enumerable: false,
-  });
-  return result;
+export function discoverSkills({
+  bundledDir = BUNDLED_SKILLS_DIRECTORY,
+  ...options
+} = {}) {
+  return libraryDiscoverSkills({ ...options, bundledDir });
 }
 
-export async function loadSkill(dir) {
-  const loaded = await loadSkillWithModule(dir);
-  return {
-    skillId: loaded.skillId,
-    entrypoint: loaded.entrypoint,
-    tools: loaded.tools,
-  };
-}
-
-export async function loadAllSkills({ home, cwd, skillsDir } = {}) {
-  const skills = [];
-  const errors = [];
-  const discovered = discoverSkills({ home, cwd, skillsDir });
-  errors.push(...(discovered.errors ?? []));
-  for (const candidate of discovered) {
-    try {
-      const loaded = await loadSkill(candidate.dir);
-      skills.push({
-        skillId: loaded.skillId,
-        entrypoint: loaded.entrypoint,
-        tools: loaded.tools,
-        dir: candidate.dir,
-      });
-    } catch (error) {
-      errors.push({
-        skillId: candidate.id,
-        dir: candidate.dir,
-        error: errorMessage(error),
-      });
-    }
-  }
-  return { skills, errors };
-}
-
-/**
- * 同名冲突一次性告警（issue #65）：builtin 优先，skill 版本被 buildSkillTools 以
- * 「工具名冲突」错误跳过。chat/repl 装配路径各调用一次，多个冲突合并为一行。
- */
-export function warnBuiltinToolConflicts(errors, { warn = (msg) => console.error(msg) } = {}) {
-  const conflicts = (Array.isArray(errors) ? errors : []).filter((item) => (
-    item && typeof item.error === "string" && item.error.startsWith("工具名冲突：")
-  ));
-  if (conflicts.length === 0) return;
-  const details = conflicts
-    .map((item) => `${item.skillId}（${item.error.slice("工具名冲突：".length)}）`)
-    .join("；");
-  warn(`提示：skill 工具与内置工具同名，已采用内置实现，skill 版本已忽略：${details}`);
+export function loadAllSkills({
+  bundledDir = BUNDLED_SKILLS_DIRECTORY,
+  ...options
+} = {}) {
+  return libraryLoadAllSkills({ ...options, bundledDir });
 }
 
 export async function buildSkillTools({
-  home,
-  cwd,
-  skillsDir,
-  excludeSkillIds = [],
-  builtinNames = [],
+  bundledDir = BUNDLED_SKILLS_DIRECTORY,
+  ...options
 } = {}) {
-  const loaded = await loadAllSkills({ home, cwd, skillsDir });
-  const errors = [...loaded.errors];
-  const builtinNameSet = new Set(
-    builtinNames instanceof Set
-      ? builtinNames
-      : Array.isArray(builtinNames) ? builtinNames : [],
-  );
-  const usedNames = new Set(builtinNameSet);
-  const schemas = [];
-  const executors = {};
-  const excludedSkills = new Set(excludeSkillIds);
-
-  for (const skill of loaded.skills) {
-    if (excludedSkills.has(skill.skillId)) continue;
-    const conflictNames = skill.tools
-      .map((tool) => tool.name)
-      .filter((name) => usedNames.has(name));
-    if (conflictNames.length > 0) {
-      errors.push({
-        skillId: skill.skillId,
-        dir: skill.dir,
-        error: `工具名冲突：${conflictNames.join("、")}`,
-      });
-      continue;
-    }
-
-    let skillModule;
-    try {
-      skillModule = await importSkillModule(skill.dir, skill.entrypoint);
-    } catch (error) {
-      errors.push({
-        skillId: skill.skillId,
-        dir: skill.dir,
-        error: errorMessage(error),
-      });
-      continue;
-    }
-    const missingExecutors = skill.tools
-      .map((tool) => tool.name)
-      .filter((name) => typeof skillModule[name] !== "function");
-    if (missingExecutors.length > 0) {
-      errors.push({
-        skillId: skill.skillId,
-        dir: skill.dir,
-        error: `技能模块缺少工具执行函数：${missingExecutors.join("、")}`,
-      });
-      continue;
-    }
-
-    for (const tool of skill.tools) {
-      usedNames.add(tool.name);
-      schemas.push(tool);
-      executors[tool.name] = (input, context) => skillModule[tool.name](input, context);
-    }
-  }
-
-  const registry = createToolRegistry({ executors, schemas });
-  return {
-    tools: schemas,
-    executeTool: registry.executeTool,
-    errors,
-  };
+  return libraryBuildSkillTools({ ...options, bundledDir });
 }
