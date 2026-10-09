@@ -1241,8 +1241,11 @@ copy; portable integrations should use the npm package entry point.
 ### File tool registration
 
 The canonical file tool implementation is `src/tools/file-tools.js`. A headless
-host can call `createFileTools({ cwd, allowRead, allowWrite })` from the package
-root or from `erix-agent/tools` (Tier 2 host integration). The library ships no
+host can call `createFileTools({ cwd, allowRead, allowWrite })` **only** from the
+`erix-agent/tools` subpath: it is **not** exported from the package root (ADR-005
+Layer Two — "it is not part of the main export"; `package.json` `exports` maps
+only `.` / `./tools` / `./contract-tests`, no deep path), which is the Tier 2
+host integration. The library ships no
 jail: the two predicates are the whole boundary surface, and both default to
 `() => true`, which reproduces the historical `path.resolve(cwd, value)`
 behaviour exactly — no containment, no safety promise (ADR-009 keeps the cage on

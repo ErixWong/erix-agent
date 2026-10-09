@@ -995,9 +995,11 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 
 ### 文件工具注册
 
-文件工具的规范实现是 `src/tools/file-tools.js`。无头宿主可以从包根，也可以从
-`erix-agent/tools` 调用 `createFileTools({ cwd, allowRead, allowWrite })`
-（Tier 2 host integration）。库不带牢笼：两个谓词就是边界的全部，默认都是
+文件工具的规范实现是 `src/tools/file-tools.js`。无头宿主**只能**从 `erix-agent/tools`
+子路径调用 `createFileTools({ cwd, allowRead, allowWrite })`——它**不**从包根导出
+（ADR-005 第二层：「不属于主导出，只能经显式 `import … from "erix-agent/tools"`」；
+`package.json` 的 `exports` 只有 `.` / `./tools` / `./contract-tests`，无深路径），
+这就是 Tier 2 host integration。库不带牢笼：两个谓词就是边界的全部，默认都是
 `() => true`，与历史 `path.resolve(cwd, value)` 行为完全一致（不做 containment、
 不做安全承诺；ADR-009 把牢笼留给宿主）。路径归一由库自己做，喂给谓词的是
 **绝对路径**，而且是在遍历中**逐条**判定；这个逐条挂钩正是宿主在外面包一层
