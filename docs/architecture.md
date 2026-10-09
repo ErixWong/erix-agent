@@ -656,10 +656,16 @@ are responsible for their own input validation.
 
 The static and JSON-file providers select `sel.set` or `default`. The
 composite provider merges schemas by name in provider order. The
-`erix-agent/tools` subpath exports the tool registry and tool providers. These
-are opt-in helpers, not an implicit tool set installed into `runToolLoop`
-(the former path-jail and file-tools helpers were removed in the 0.5.1 window;
-per ADR-009 the library provides no security boundary). Model-facing retrieval
+`erix-agent/tools` subpath exports the tool registry, the tool providers, the
+canonical file tools (`src/tools/file-tools.js`, issue #184) and the skill-package
+loader (`src/skills/loader.js`, issue #197). These are opt-in helpers, not an
+implicit tool set installed into `runToolLoop`, and none of them is on the package
+root export. Two history facts that are easy to collapse into one wrong sentence:
+the jail helpers (`JailError` / `createJail`) together with the `createFileTools`
+of that day were deleted in the **0.6.0** breaking window (commit `a8cd193`; 0.5.1
+was the last release that carried them), and `createFileTools` came back in
+**0.18.0** as the canonical implementation named above. The jail never came back —
+per ADR-009 the library provides no security boundary. Model-facing retrieval
 is note-first: use `note_list` followed by `note_read`; there is no transcript
 transcript retrieval API; recall adapters were retired in 0.8.0.
 
@@ -721,7 +727,10 @@ src/
 │   ├── judge.js              # Objective timeline and judge parsing
 │   ├── l0.js                 # Objective tool-result facts and summary parsing
 │   └── wrapup.js             # End-of-turn JSON parsing and normalization
+├── skills/
+│   └── loader.js             # Skill-package discovery, validation, assembly (issue #197)
 └── tools/
+    ├── file-tools.js         # Canonical file tools: readFile/searchText/rg/grep/tree/edit/writeFile (issue #184)
     ├── index.js              # erix-agent/tools subpath exports
     ├── notes.js              # createBuiltinNotesTools assembler (executors/executeTool/lifecycle/semanticStateProvider)
     ├── providers.js          # Static, JSON-file, and composite ToolProvider
@@ -729,8 +738,10 @@ src/
 ```
 
 The root export is `src/index.js`; the optional reference tools are exported
-through the `erix-agent/tools` subpath. The current tree intentionally has no
-`src/providers/index.js`.
+through the `erix-agent/tools` subpath — `createFileTools` and the skills-loader
+symbols included, and the root export carries neither of them. The current tree
+intentionally has no `src/providers/index.js`, and `src/skills/` ships
+`loader.js` only (no `src/skills/index.js`, and no `./skills` subpath export).
 
 ## 5. Invariants
 

@@ -453,7 +453,7 @@ createCompositeToolProvider({ providers })
 
 执行器映射是由代码拥有的能力集合。`ToolProvider` 选择 schema，并可以覆盖描述和约束，但不能引入注册表中不存在的执行器。对于此类 schema，`resolveTools` 会以 `KitError("tool_unknown_executor", ...)` 失败。注册表执行会在调用执行器前校验 `required`、属性 `type` 和 `maxLength`；无效输入会变成错误字符串，不会到达执行器。不使用 `createToolRegistry` 的直接 `runToolLoop` 调用方须负责自己的输入校验。
 
-static 和 JSON-file 提供器选择 `sel.set` 或 `default`。composite 提供器按提供器顺序以名称合并 schema。`erix-agent/tools` 子路径导出工具注册表和工具 provider。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集（原有的 path-jail 与 file-tools 助手已在 0.5.1 窗口移除；按 ADR-009，本库不提供安全边界）。模型侧取回采用 note-first：先使用 `note_list`，再使用 `note_read`；transcript recall API 已在 0.8.0 退役。
+static 和 JSON-file 提供器选择 `sel.set` 或 `default`。composite 提供器按提供器顺序以名称合并 schema。`erix-agent/tools` 子路径导出工具注册表、工具 provider、文件工具规范实现（`src/tools/file-tools.js`，issue #184）与技能包 loader（`src/skills/loader.js`，issue #197）。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集，而且它们都不在包根导出面上。两条历史事实很容易被并成一句错话：牢笼助手（`JailError` / `createJail`）与当时的 `createFileTools` 是在 **0.6.0** 破坏窗口删除的（commit `a8cd193`；0.5.1 是最后一个还带着它们的版本），而 `createFileTools` 在 **0.18.0** 以上面那个规范实现回来了；牢笼则彻底没回来——按 ADR-009，本库不提供安全边界。模型侧取回采用 note-first：先使用 `note_list`，再使用 `note_read`；transcript recall API 已在 0.8.0 退役。
 
 ## 4. 源码布局
 
@@ -513,14 +513,17 @@ src/
 │   ├── judge.js              # 客观时间线与 judge 解析
 │   ├── l0.js                 # 客观工具结果事实与摘要解析
 │   └── wrapup.js             # 回合结束 JSON 解析与规范化
+├── skills/
+│   └── loader.js             # 技能包发现 / 校验 / 装配（issue #197）
 └── tools/
+    ├── file-tools.js         # 文件工具规范实现：readFile/searchText/rg/grep/tree/edit/writeFile（issue #184）
     ├── index.js               # erix-agent/tools 子路径导出
     ├── notes.js               # createBuiltinNotesTools 装配器（executors/executeTool/lifecycle/semanticStateProvider）
     ├── providers.js           # static、JSON-file 和 composite ToolProvider
     └── registry.js             # 由代码拥有的执行器/schema 注册表
 ```
 
-根导出是 `src/index.js`；可选的参考工具通过 `erix-agent/tools` 子路径导出。当前目录树特意不包含 `src/providers/index.js`。
+根导出是 `src/index.js`；可选的参考工具通过 `erix-agent/tools` 子路径导出——`createFileTools` 与技能 loader 符号都在其中，而包根两个都不带。当前目录树特意不包含 `src/providers/index.js`；`src/skills/` 只发 `loader.js`（没有 `src/skills/index.js`，也没有 `./skills` 子路径导出）。
 
 ## 5. 不变量
 
