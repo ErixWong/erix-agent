@@ -16,6 +16,7 @@ import { tryParseWrapupJson, normalizeWrapupWithLlm } from "../reflection/wrapup
 import {
   buildJudgePrompt,
   buildTimeline,
+  DEFAULT_WRITE_TOOL_NAMES,
   INTERCEPT_CONVERSATION_TOKENS,
   parseJudgeDecision,
   renderConversation,
@@ -413,7 +414,11 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *                     // incremental in arrival order: results keep declaration order and ids, nothing is
  *                     // rewritten after its run snapshot, so snapshot/resume semantics are unchanged.
  *                     // The layer is off when budgetTokens is absent or outputHygiene is false.
- *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to ["writeFile"].
+ *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to
+ *                     // ["writeFile", "edit"] (DEFAULT_WRITE_TOOL_NAMES in src/reflection/judge.js — the single
+ *                     // truth shared by this default, the normalizeToolNameSet fallback below, and the judge
+ *                     // timeline; issue #191 added `edit`). An explicit host value always wins: it replaces the
+ *                     // default outright and is never merged with it.
  *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
  *     => Promise<string|{content:any, metadata?:object, success?:boolean}|Error>,
@@ -547,7 +552,7 @@ export async function runToolLoop(options) {
     initialMessages,
     tools = [],
     outputHygiene,
-    writeToolNames = ["writeFile"],
+    writeToolNames = DEFAULT_WRITE_TOOL_NAMES,
     writeToolPathKeys = ["path", "file_path"],
     executeTool,
     replayPolicy = "always-replay",
@@ -1020,7 +1025,7 @@ export async function runToolLoop(options) {
   const outputHygieneLimit = outputHygieneExplicitLimit ?? (outputHygieneWindowTokens === undefined
     ? 4096
     : Math.min(100000, Math.max(8192, Math.floor(outputHygieneWindowTokens * 0.15))));
-  const resolvedWriteToolNames = normalizeToolNameSet(writeToolNames, ["writeFile"]);
+  const resolvedWriteToolNames = normalizeToolNameSet(writeToolNames, DEFAULT_WRITE_TOOL_NAMES);
   const resolvedWriteToolPathKeys = Array.isArray(writeToolPathKeys)
     ? writeToolPathKeys.filter((key) => typeof key === "string" && key.trim() !== "")
     : ["path", "file_path"];

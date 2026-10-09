@@ -72,6 +72,17 @@ function jsonCandidates(text) {
 }
 
 /**
+ * judge 的默认写工具集（issue #191）。
+ *
+ * 为什么只有一处：`writeToolNames` 的默认值在三个地方被读到（本文件的 timeline 回退、
+ * `orchestrator.js` 的参数默认值、`normalizeToolNameSet` 的回退），此前它们是三份相同的字面量——
+ * 新增一个写工具时漏改任一处，judge 的 `filesWritten` 就会**静默少报**（不是错报，是“没看见”）。
+ * 共享常量后只有一个可改点；`scripts/docs-drift-check.mjs` 的默认值锚点也从这里抽真值。
+ * 宿主显式传入时仍以宿主为准（本常量只做缺省）。
+ */
+export const DEFAULT_WRITE_TOOL_NAMES = ["writeFile", "edit"];
+
+/**
  * Extract a compact index from the messages added in a round.
  * Tool output is deliberately omitted because the full conversation is the
  * authoritative source; the timeline only helps the judge locate tool work.
@@ -82,7 +93,7 @@ export function buildTimeline(messages, roundStart = 0, options = {}) {
     : [];
   const writeToolNames = options.writeToolNames instanceof Set
     ? options.writeToolNames
-    : new Set(Array.isArray(options.writeToolNames) ? options.writeToolNames : ["writeFile"]);
+    : new Set(Array.isArray(options.writeToolNames) ? options.writeToolNames : DEFAULT_WRITE_TOOL_NAMES);
   const writeToolPathKeys = Array.isArray(options.writeToolPathKeys)
     ? options.writeToolPathKeys
     : ["path", "file_path"];

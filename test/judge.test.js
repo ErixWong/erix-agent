@@ -57,6 +57,23 @@ test("buildTimeline extracts tool arguments and result statuses", () => {
   });
 });
 
+test("buildTimeline 的默认写工具集认 edit（参数摘要取 path，issue #191）", () => {
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "task" }] },
+    {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "edit-1", name: "edit", input: { path: "gates.txt", edits: [{ oldText: "a", newText: "b" }] } },
+      ],
+    },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "edit-1", content: "已编辑 gates.txt：1 处替换" }] },
+  ];
+
+  assert.deepEqual(buildTimeline(messages, 1).toolCalls, [
+    { name: "edit", arg: "gates.txt", status: "ok" },
+  ], "不传 writeToolNames 时 edit 也必须被当成写工具，摘要取它的 path 而不是整包 edits");
+});
+
 test("buildJudgePrompt includes the recent timeline, files, and errors", () => {
   const prompt = buildJudgePrompt(
     "generate gates",
@@ -189,6 +206,63 @@ test("counts configured write tools and extracts file_path for judge filesWritte
 
   const prompt = judge.requests[0].messages[0].content[0].text;
   assert.match(prompt, /custom\.txt\(R1\)/);
+});
+
+test("默认写工具集把 edit 计入 judge 的 filesWritten（issue #191）", async () => {
+  // edit 是第二个写工具：漏进默认集时 judge 会**静默看不见**这次写入（不是错报，是没看见），
+  // 所以默认集本身要有断言，不能只靠「宿主记得显式传」。
+  const provider = createFakeProvider([
+    toolResponse("edit-1", "edit", { path: "touched.txt", edits: [{ oldText: "a", newText: "b" }] }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: true, confidence: 1, reason: "done", evidence: "written" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "edit one file",
+    executeTool: async () => "已编辑 touched.txt：1 处替换",
+    maxRounds: 2,
+    completion: false,
+    reflection: {
+      enabled: true,
+      judgeIntercept: false,
+      maxExtensions: 0,
+      judge: { provider: judge },
+    },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  assert.match(prompt, /touched\.txt\(R1\)/, `edit 的 path 必须进 judge 的文件足迹：${prompt}`);
+});
+
+test("宿主显式传 writeToolNames 时整体替换默认集，edit 不再算写工具（issue #191）", async () => {
+  const provider = createFakeProvider([
+    toolResponse("edit-1", "edit", { path: "touched.txt", edits: [{ oldText: "a", newText: "b" }] }),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({ done: true, confidence: 1, reason: "done", evidence: "done" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "edit one file",
+    executeTool: async () => "已编辑 touched.txt：1 处替换",
+    maxRounds: 2,
+    completion: false,
+    writeToolNames: ["fs_write"],
+    reflection: {
+      enabled: true,
+      judgeIntercept: false,
+      maxExtensions: 0,
+      judge: { provider: judge },
+    },
+  });
+
+  const prompt = judge.requests[0].messages[0].content[0].text;
+  assert.doesNotMatch(prompt, /touched\.txt\(R1\)/, "默认集是缺省值，不得与宿主显式集合合并");
 });
 
 test("loop keeps at most the latest 50 distinct written files for the judge", async () => {
