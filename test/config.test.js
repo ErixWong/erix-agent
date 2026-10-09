@@ -296,7 +296,7 @@ test("buildCompactionContext prioritizes an explicit budget", () => {
   }, 8000);
 
   assert.equal(context.budgetTokens, 8000);
-  assert.equal(context.strategy.name, "fold-statistical");
+  assert.equal(context.strategy, "fold-statistical");
   assert.equal(context.protectedMessage({ role: "user", content: "task" }), true);
   assert.equal(context.protectedMessage({
     role: "user",
@@ -311,7 +311,7 @@ test("buildCompactionContext computes a budget from the context window", () => {
   });
 
   assert.equal(context.budgetTokens, 16000);
-  assert.equal(context.strategy.name, "fold-statistical");
+  assert.equal(context.strategy, "fold-statistical");
 });
 
 test("buildCompactionContext is disabled without a context window", () => {
@@ -328,7 +328,7 @@ test("buildCompactionContext keeps recovery hints optional", () => {
   }, 8000, "archive hint");
 
   assert.equal(context.recoveryHint, "archive hint");
-  assert.equal(context.strategy.name, "fold-statistical");
+  assert.equal(context.strategy, "fold-statistical");
   assert.equal(
     buildCompactionContext({ maxOutputTokens: 2000 }, undefined),
     undefined,

@@ -1,5 +1,7 @@
 import { KitError } from "../providers/errors.js";
 import { computeBudget } from "../compact/budget.js";
+import { createProviderSummarizer } from "../compact/provider-summarizer.js";
+import { resolveCompactionStrategy } from "../compact/strategy-resolution.js";
 import { createSlidingWindowStrategy } from "../compact/sliding-window.js";
 import { mergeFoldNavigationRecords } from "../compact/fold-statistical.js";
 import {
@@ -440,7 +442,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   finalGuardMaxRetries?: number,
  *   finalGuardTimeoutMs?: number, // Defaults to 30000; non-positive values use the default.
  *   maxTokenContinuations?: number,
- *   context?: {strategy?: object, budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
+ *   context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // strategy accepts a strategy object or a built-in name (#167); task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
  *   todoStateProvider?:(payload:{runId?:string,rounds:number})=>object|Promise<object>,
  *   semanticStateProvider?:(payload:{runId?:string,state:object,previous?:object})=>{text:string,version:number}|Promise<{text:string,version:number}>,
  *   modelConfig?: {contextWindowTokens?:number, maxOutputTokens?:number},
@@ -998,12 +1000,50 @@ export async function runToolLoop(options) {
   // 计入 stub 开销与 framing）。预算基准**复用**上面算出的 budgetTokens，不新引 contextWindowTokens
   // 第二套口径；budgetTokens 不存在（宿主无窗口配置）或 outputHygiene 被 opt-out 时聚合层整体关闭。
   const aggregateBudgetTokens = outputHygieneEnabled ? budgetTokens : undefined;
+  // issue #167 方案 C：`context.strategy` 允许内置策略名字符串。名字形态时引擎注入默认
+  // summarizer = 本 run 的主力 provider（宿主不再需要自己写调模型的胶水）。用法记账走
+  // addUsage（trackLatest:false，与 wrapup judge 同口径：并入 run 总账但不污染压缩判断用的
+  // latestApiInputTokens），并转发宿主 onUsage；这次调用在轮次循环之外，故天然不计轮次/stall。
+  // 闭包引用后文才声明的 awaitWithAbort/addUsage：只在压缩触发时才被调用，无 TDZ 风险。
+  const compactionSummarizer = createProviderSummarizer({
+    chat: async (request) => {
+      if (typeof provider?.chat !== "function" && typeof provider?.chatStream !== "function") {
+        throw new TypeError("fold-llm default summarizer requires a provider with chat/chatStream");
+      }
+      const summarizerRequest = {
+        ...request,
+        signal,
+        ...(maxTokens === undefined ? {} : { maxTokens }),
+      };
+      const response = await awaitWithAbort(
+        typeof provider.chat === "function"
+          ? provider.chat(summarizerRequest)
+          : provider.chatStream({ ...summarizerRequest, onDelta: () => {} }),
+      );
+      addUsage(response, undefined, { trackLatest: false });
+      return response;
+    },
+    ...(onUsage === undefined ? {} : { onUsage }),
+  });
   // main 的 ADR-016 退役了 resourceStore 端口——compactionContext 不再拼它（两侧语义合并）
+  // 名字在启动期一次性解析成实例（未知名字/非法类型 → 启动期 TypeError）；对象形态原样
+  // 透传（同一引用），下游 configuredStrategy 通道零改动。名字形态额外吃 context 级的
+  // recoveryHint/stubFor（对象形态这两个字段依旧由宿主自己在策略对象上给，语义不变）。
+  const resolvedContextStrategy = context?.strategy === undefined
+    ? undefined
+    : resolveCompactionStrategy(context.strategy, {
+      options: {
+        ...(context.recoveryHint === undefined ? {} : { recoveryHint: context.recoveryHint }),
+        ...(context.stubFor === undefined ? {} : { stubFor: context.stubFor }),
+      },
+      foldLlmOptions: { summarizer: compactionSummarizer },
+    });
   const compactionContext = context === undefined && budgetTokens === undefined
     ? undefined
     : {
         ...(context ?? {}),
         ...(budgetTokens === undefined ? {} : { budgetTokens }),
+        ...(resolvedContextStrategy === undefined ? {} : { strategy: resolvedContextStrategy }),
       };
   const baseToolContext = {
     ...toolContextFor({

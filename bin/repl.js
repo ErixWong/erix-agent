@@ -21,7 +21,7 @@ import {
 } from "../src/index.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
 import { safeRunId } from "../src/store/file.js";
-import { buildCompactionContext, loadCliConfig } from "./config.js";
+import { buildCompactionContext, loadCliConfig, normalizeCompactionOption } from "./config.js";
 import {
   buildCaptureRecoveryHint,
   buildCaptureStub,
@@ -182,6 +182,7 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
       || argument === "--config"
       || argument === "--skills-dir"
       || argument === "--compact-budget"
+      || argument === "--compaction"
       || argument === "--max-rounds"
       || argument === "--idle-timeout"
       || argument === "--tools"
@@ -207,6 +208,13 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
         options.skillsDir = rawValue;
       } else if (argument === "--compact-budget") {
         options.compactBudget = parseIntegerOption(argument, rawValue, 0);
+      } else if (argument === "--compaction") {
+        if (rawValue.trim() === "") usageError("--compaction 不能为空");
+        try {
+          options.compaction = normalizeCompactionOption(rawValue);
+        } catch (error) {
+          usageError(`--compaction：${error?.message ?? String(error)}`);
+        }
       } else if (argument === "--max-rounds") {
         options.maxRounds = parseIntegerOption(argument, rawValue, 1);
       } else if (argument === "--tools") {
@@ -398,7 +406,11 @@ export async function runRepl(argv, io = {}) {
     store,
   } = assemblyRoot;
   const storedRecords = await store.load(options.session);
-  const config = io.config ?? await loadCliConfig({ configPath: options.configPath });
+  const baseConfig = io.config ?? await loadCliConfig({ configPath: options.configPath });
+  // --compaction 覆盖 config.compaction（名字以字符串形态继续下传，实例化交给引擎）
+  const config = options.compaction === undefined
+    ? baseConfig
+    : { ...baseConfig, compaction: options.compaction };
   const providerFactory = io.providerFactory
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
   const cliTools = createCliTools({ cwd, todo: !todoDisabled });

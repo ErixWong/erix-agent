@@ -4,12 +4,47 @@ import { join } from "node:path";
 
 import { createJsonFileModelConfigProvider } from "../src/config/json-file.js";
 import {
+  BUILTIN_COMPACTION_STRATEGY_NAMES,
   computeBudget,
-  createFoldStatisticalStrategy,
+  isBuiltinCompactionStrategyName,
 } from "../src/index.js";
 import { isRealUser } from "../src/compact/helpers.js";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
+// issue #167：默认仍为 fold-statistical（零额外模型调用），fold-llm 需用户显式选择
+export const DEFAULT_COMPACTION_STRATEGY = "fold-statistical";
+
+/**
+ * CLI 旗标形态的校验：不合法名字直接报错（带合法值列表），而非默默回到默认值。
+ * @param {string} rawValue
+ * @returns {string} 规范化后的策略名
+ */
+export function normalizeCompactionOption(rawValue) {
+  const value = typeof rawValue === "string" ? rawValue.trim() : "";
+  if (value === "" || !isBuiltinCompactionStrategyName(value)) {
+    throw new Error(
+      `未知的压缩策略：${JSON.stringify(rawValue)}；可选值：${BUILTIN_COMPACTION_STRATEGY_NAMES.join(" | ")}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * CLI/config 的压缩策略名解析（#167）：`--compaction` > config.compaction > 默认值。
+ * 名字以**字符串**形式向下传递，由引擎解析并（对 fold-llm）注入默认 summarizer——
+ * CLI 因此不需要自己写调模型的胶水。
+ */
+export function resolveCompactionStrategyName(value) {
+  if (value === undefined || value === null) return DEFAULT_COMPACTION_STRATEGY;
+  const name = typeof value === "string" ? value.trim() : "";
+  if (name === "" || !isBuiltinCompactionStrategyName(name)) {
+    throw new Error(
+      `未知压缩策略：${JSON.stringify(value)}。可选值：${BUILTIN_COMPACTION_STRATEGY_NAMES.join(" | ")}`
+      + `（默认：${DEFAULT_COMPACTION_STRATEGY}）`,
+    );
+  }
+  return name;
+}
 
 export function defaultConfigPath() {
   const xdgConfigHome = process.env.XDG_CONFIG_HOME?.trim();
@@ -62,6 +97,10 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
     parsePositiveInteger(fileConfig.maxOutputTokens)
     ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const contextWindowTokens = parsePositiveInteger(fileConfig.contextWindowTokens);
+  // issue #167：config 字段 compaction（非法值在 load 期就报错，带合法值列表）
+  const compaction = fileConfig.compaction === undefined
+    ? undefined
+    : resolveCompactionStrategyName(fileConfig.compaction);
   const missing = [];
 
   if (!endpoint) missing.push("LLM_KIT_ENDPOINT");
@@ -98,49 +137,51 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
     ...modelOptions,
     maxOutputTokens,
     contextWindowTokens,
+    ...(compaction === undefined ? {} : { compaction }),
   };
 }
 
-function withRecoveryHint(context, recoveryHint, stubFor) {
-  if (
-    (typeof recoveryHint !== "string" || recoveryHint.trim() === "")
-    && typeof recoveryHint !== "function"
-    && typeof stubFor !== "function"
-  ) {
-    return context;
-  }
-  if (context === undefined) return {
-    ...(recoveryHint === undefined ? {} : { recoveryHint }),
-    ...(stubFor === undefined ? {} : { stubFor }),
-  };
-  return {
-    ...context,
-    ...(recoveryHint === undefined ? {} : { recoveryHint }),
-    ...(stubFor === undefined ? {} : { stubFor }),
-    strategy: createFoldStatisticalStrategy({
+function withRecoveryHint(context, strategyName, recoveryHint, stubFor) {
+  if (context === undefined) {
+    if (
+      (typeof recoveryHint !== "string" || recoveryHint.trim() === "")
+      && typeof recoveryHint !== "function"
+      && typeof stubFor !== "function"
+    ) {
+      return undefined;
+    }
+    // 无预算但宿主/CLI 给了恢复提示：保持旧行为（只带提示，不启用压缩）
+    return {
       ...(recoveryHint === undefined ? {} : { recoveryHint }),
       ...(stubFor === undefined ? {} : { stubFor }),
-    }),
+    };
+  }
+  return {
+    ...context,
+    strategy: strategyName,
+    ...(recoveryHint === undefined ? {} : { recoveryHint }),
+    ...(stubFor === undefined ? {} : { stubFor }),
   };
 }
 
 export function buildCompactionContext(config, explicitBudget, recoveryHint, stubFor) {
+  const strategyName = resolveCompactionStrategyName(config?.compaction);
   if (explicitBudget !== undefined) {
     return withRecoveryHint({
-      strategy: createFoldStatisticalStrategy(),
       budgetTokens: explicitBudget,
       protectedMessage: isRealUser,
-    }, recoveryHint, stubFor);
+    }, strategyName, recoveryHint, stubFor);
   }
-  if (!config.contextWindowTokens) return withRecoveryHint(undefined, recoveryHint, stubFor);
+  if (!config.contextWindowTokens) {
+    return withRecoveryHint(undefined, strategyName, recoveryHint, stubFor);
+  }
 
   const budget = computeBudget({
     contextWindowTokens: config.contextWindowTokens,
     maxOutputTokens: config.maxOutputTokens ?? 65536,
   });
   return withRecoveryHint({
-    strategy: createFoldStatisticalStrategy(),
     budgetTokens: budget,
     protectedMessage: isRealUser,
-  }, recoveryHint, stubFor);
+  }, strategyName, recoveryHint, stubFor);
 }

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   DEFAULT_REFLECTION_MIN_ROUNDS,
+  BUILTIN_COMPACTION_STRATEGY_NAMES,
   appendUserTurn,
   createBuiltinNotesTools,
   createOpenAIProvider,
@@ -14,7 +15,7 @@ import {
   runToolLoop,
 } from "../src/index.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
-import { buildCompactionContext, loadCliConfig } from "./config.js";
+import { buildCompactionContext, loadCliConfig, normalizeCompactionOption } from "./config.js";
 import {
   closeAllMcpServers,
   createMcpProxyTool,
@@ -53,8 +54,8 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--no-todo] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--no-todo] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
@@ -75,6 +76,9 @@ const HELP_TEXT = `用法：
   --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL（默认：<归档目录>/judge.log）
   --error-log <path>   将持久化错误事件追加写入 JSONL（默认仅 stderr；也可用 ERIX_ERROR_LOG）
   --tools <名1,名2>    工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
+  --compaction <名>   上下文压缩策略：${BUILTIN_COMPACTION_STRATEGY_NAMES.join(" | ")}（默认：fold-statistical）。
+                      ⚠ fold-llm 每次压缩会**多一次主力模型调用**（输入为被折叠的老轮次），其 usage
+                      已计入本次 run 总账；也可用 config 字段 compaction 固定（旗标优先）。
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -99,6 +103,7 @@ const HELP_TEXT = `用法：
   MCP 配置默认读取当前目录 .mcp.json 或 ~/.erix/mcp.json。
   slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。
   slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。
+  slots.default.compaction 可固定压缩策略（sliding-window / fold-statistical / fold-llm，默认 fold-statistical）；--compaction 可覆盖。
 
 退出码：
   0  成功（开了 --final-guard 时为 verified）
@@ -159,6 +164,17 @@ function parseReflectionOption(rawValue) {
     usageError("--reflection 必须是 on 或 off");
   }
   return rawValue === "on";
+}
+
+// issue #167：--compaction 只收内置策略名；非法名字直接报 usage 错误（带合法值列表）
+function parseCompactionOption(name, rawValue) {
+  if (rawValue.trim() === "") usageError(`${name} 不能为空`);
+  try {
+    return normalizeCompactionOption(rawValue);
+  } catch (error) {
+    usageError(`${name}：${error?.message ?? String(error)}`);
+  }
+  return undefined;
 }
 
 function resolveMaxRounds(maxRounds) {
@@ -311,6 +327,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       || argument === "--session"
       || argument === "--dir"
       || argument === "--compact-budget"
+      || argument === "--compaction"
       || argument === "--max-rounds"
       || argument === "--reflection"
       || argument === "--timeout"
@@ -331,6 +348,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
           || argument === "--session"
           || argument === "--dir"
           || argument === "--reflection"
+          || argument === "--compaction"
           || argument === "--judge-log"
           || argument === "--error-log"
           || argument === "--tools")
@@ -354,6 +372,8 @@ export function parseChatArgs(args, cwd = process.cwd()) {
         options.dir = rawValue;
       } else if (argument === "--compact-budget") {
         options.compactBudget = parseIntegerOption(argument, rawValue, 0);
+      } else if (argument === "--compaction") {
+        options.compaction = parseCompactionOption(argument, rawValue);
       } else if (argument === "--max-rounds") {
         options.maxRounds = parseIntegerOption(argument, rawValue, 1);
       } else if (argument === "--reflection") {
@@ -587,6 +607,7 @@ async function runChatWithNotes({
   configPath,
   skillsDir,
   compactBudget,
+  compaction,
   maxRounds,
   reflection,
   finalGuard,
@@ -615,7 +636,11 @@ async function runChatWithNotes({
   const cwd = process.cwd();
   const runId = _notesRunId ?? session ?? defaultSessionId(cwd, { unique: true });
   const explicitSession = sessionExplicit ?? session !== undefined;
-  const config = configOverride ?? await loadCliConfig({ configPath });
+  const loadedConfig = configOverride ?? await loadCliConfig({ configPath });
+  // --compaction 覆盖 config.compaction（名字仍往下传字符串，引擎负责实例化）
+  const config = compaction === undefined
+    ? loadedConfig
+    : { ...loadedConfig, compaction };
   const maxTokens = config.maxOutputTokens;
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new CliError("chat 需要提供 prompt，例如：erix chat \"你好\"");
