@@ -271,6 +271,8 @@ const assemblyPort = createAssemblyPort({
   "docs/host-upgrade-guide-0.15.0.md",
   "docs/host-upgrade-guide-0.16.0.md",
   "docs/host-upgrade-guide-0.17.0.md",
+  "docs/host-upgrade-guide-0.18.0.md",
+  "docs/host-upgrade-guide-0.18.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -490,7 +492,8 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - [docs/testing_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing_cn.md) - 测试策略与行为指标
 - [docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md) - 关于核验、note-first 取回、provenance 和重跑的宿主消费者契约；内含终止裁决决策表（逐 reason 的触发机制、优先级位置、宿主开关、推荐动作）与模型元数据 / 预算推导字段契约及多模型槽位装配示例
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0 破坏窗口迁移步骤（英文）
-- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - 最新的破坏窗口迁移指南（英文）；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`
+- [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) / [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md) - 最新的宿主迁移指南（中英成对）：judge 的 `writeToolNames` 默认值、七项文件工具清单、`rg`/`grep` 的弃用提示行、属 Experimental 的 marker 文案、以及 `erix-agent/tools` 导入路径；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`（随包清单见上文）
+- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - 上一个破坏窗口迁移指南：成对可选快路径探针（英文）
 - [docs/host-upgrade-guide-v030_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/host-upgrade-guide-v030_cn.md) - 面向 `touwaka` / `app_container` 的宿主升级指南与 v0.3.x 行为
 - [docs/maintenance-policy_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/maintenance-policy_cn.md) - 维护策略与内部替换/止损标准
 - [docs/research/](https://github.com/ErixWong/erix-agent/tree/main/docs/research) - 调研报告（仅中文）
@@ -501,7 +504,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.18.0**（2026-10-09）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)。
 
-- **v0.18.0 (2026-10-09)**：宿主集成面专场——观察者回调从此杀不掉 run（九通道一律经 `onObserverError` 记账后继续，终止 run 走 `signal.abort()`，抛出的错误携带 `usage`/`rounds`/`finalText`）；failed 终局携带 `termination.errorCode`；`context.strategy` 可按名选内置策略（`"fold-llm"` 开箱自带主力 provider summarizer，每次压缩多一次调用、usage 计入总账）；新增一次性 `model_metadata_missing` 与终局 `run_outcome` 事件，judge 记录增补 `model` 归因；provider 新增 `defaultHeaders`/`extraBody` 注入口；token 估算热路径优化（逐字节同值，每轮估算 CPU 约 −88%）。0.17 宿主零必改升级，全量清单见 CHANGELOG。
+- **v0.18.0 (2026-10-09)**：宿主集成面专场——观察者回调从此杀不掉 run（九通道一律经 `onObserverError` 记账后继续，终止 run 走 `signal.abort()`，抛出的错误携带 `usage`/`rounds`/`finalText`）；failed 终局携带 `termination.errorCode`；`context.strategy` 可按名选内置策略（`"fold-llm"` 开箱自带主力 provider summarizer，每次压缩多一次调用、usage 计入总账）；新增一次性 `model_metadata_missing` 与终局 `run_outcome` 事件，judge 记录增补 `model` 归因；provider 新增 `defaultHeaders`/`extraBody` 注入口；token 估算热路径优化（逐字节同值，每轮估算 CPU 约 −88%）。0.17 宿主无必改的 API 适配，但三种宿主习惯各需要查一次——judge 的 `writeToolNames`（显式传是整体替换，`edit` 不会被并入）、被钉死的文件工具名清单（现为七项）、以及对 `rg`/`grep` 输出的逐字匹配（每次调用尾部多一行弃用提示）：见 [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md)，全量清单见 CHANGELOG。
 - **v0.17.0 (2026-10-08)**：`appendUserTurn` 新增成对可选快路径探针 `loadByDedupKey`/`loadMaxRound`（DB 宿主预写 user 轮不再每轮全量读），契约文档的 js 围栏改为可执行测试（`npm run check:docs-examples`）。
 - **v0.15.0–v0.16.0 (2026-10-07/08)**：「transcript 即真相」的宿主侧接口——读侧 `projectTranscriptForDisplay`、写侧 `appendUserTurn`（多轮续跑契约）、投影稳定 `key`，以及 store 保真义务（保留完整 `RoundRecord`、同轮记录按追加顺序 `load()`）。
 - **v0.14.0 (2026-10-03)**：run-state 终态改由 `markRunState`/`loadRunStateStatus` 承载（latest-only 快照不再写 `state`）、工具可声明 `replay: "safe"|"unsafe"` 并配合 `replayPolicy`、新增可选 partial 落盘，删除 `src/loop.js` 转发 shim。

@@ -333,6 +333,8 @@ quoted blocks below against it):
   "docs/host-upgrade-guide-0.15.0.md",
   "docs/host-upgrade-guide-0.16.0.md",
   "docs/host-upgrade-guide-0.17.0.md",
+  "docs/host-upgrade-guide-0.18.0.md",
+  "docs/host-upgrade-guide-0.18.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -831,9 +833,14 @@ library-level controls
 - [docs/testing.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing.md) - test strategy and behavior metrics
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
-- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - latest
-  breaking-window guide; each later breaking window ships its own
+- [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) - latest
+  host-facing migration guide: the judge's `writeToolNames` default, the seven-entry
+  file-tool list, the `rg`/`grep` deprecation line, the Experimental marker wording,
+  and the `erix-agent/tools` import path (a Chinese counterpart ships alongside it:
+  `docs/host-upgrade-guide-0.18.0_cn.md`). Each later breaking window ships its own
   `docs/host-upgrade-guide-<version>.md` (the packaged set is listed above)
+- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - previous
+  breaking-window guide (the paired fast-path store probes)
 - [docs/host-consumer-contract.md](docs/host-consumer-contract.md) - host
   consumer contract for verification, note-first retrieval, provenance, and reruns;
   includes the termination decision table (per-reason mechanism, precedence, host
@@ -866,9 +873,13 @@ migration steps remain in
   one-shot `model_metadata_missing` and terminal `run_outcome` events plus
   `model` attribution in judge records; provider `defaultHeaders`/`extraBody`
   injection; and a byte-identical token-estimation hot-path speedup
-  (~−88% per-round estimation CPU). Hosts on 0.17 upgrade with no required
-  code changes; see `docs/host-upgrade-guide-0.17.0.md` predecessor notes and
-  the CHANGELOG for the full list.
+  (~−88% per-round estimation CPU). Hosts on 0.17 need **no API change**, but three
+  host habits each need one check: the judge's `writeToolNames` (explicit lists are
+  replaced wholesale, `edit` is not merged in), a pinned file-tool name list (now
+  seven entries), and verbatim matching of `rg`/`grep` output (a deprecation line is
+  appended on every call). See
+  [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md); the
+  CHANGELOG carries the full list.
 - **v0.17.0 (2026-10-08)**: `appendUserTurn` gains the paired
   `loadByDedupKey`/`loadMaxRound` fast path (a DB-backed store no longer reads
   the whole transcript per pre-write), and contract code fences became
