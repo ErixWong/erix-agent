@@ -3,6 +3,9 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
 ## [Unreleased]
+### docs
+
+- `docs/harness-comparison/` 的 pi 对比基线 **0.84.2 → 1.1.0**（issue #190，纯文档：零代码、零版本号变化、正文一字未改）：按 `docs/maintenance-policy.md`「快照类文档不重写、只追加修订注」的惯例，在 `README.md`、`01-pi-agent.md`（新增 §7）、`06-cross-comparison.md`（新增 §7）、`07-takeaways-and-open-questions.md`（新增 §6）的**文末追加有边界的修订小节**，正文保留 0.84.2 快照与全部 `dist/...:行号` 引用作为「我们曾经这么认为」的留痕，新基线只在修订小节声明。只更正两条已证实过期的事实（MCP 已内置、`tool_search` 已内置且**默认关闭**；证据一律取 `earendil-works/pi` tag `v1.1.0` 源码仓的 `packages/...`，与正文的 npm 产物路径分开标注）；会话中途 system message 写成 1.1.0 的**新增能力**而非「我们错了」，`before_agent_start` 返回 `systemPrompt` 即整体替换本轮 prompt 的窄表述按上游 `docs/extensions.md:103` 原文保留；`pi-agent-core` 拆分标为**范围外信息**（§0 已声明不在分析范围）；观察者隔离的本仓原结论仍成立（上游 `packages/agent/src/agent.ts` 的 listener 循环无 try/catch，抛错以 `stopReason:"error"` 终止 run），但补上两侧限定——pi 侧只能停在「原语层」（harness `src/core/extensions/runner.ts` 是逐 handler 包 catch 的），本仓侧经 `onObserverError` 的记账是**内存记账、非持久账本**且仅被 `await` 的 `onRound`/`onToolResult` 承诺隔离异步 rejection。**不新建英文版**：本目录历史上就无中英对，`scripts/docs-sync-check.mjs` 只校验 `host-consumer-contract` 那一对，新造即无人校验的孤儿。`02`/`03`/`04`/`05`/`08` 与其余四家（touwaka / codex / hermes / erix）的数字一个没动。
 
 ## [0.18.0] - 2026-10-09
 ### Added
