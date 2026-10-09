@@ -15,6 +15,17 @@ export {
   MAX_TREE_ENTRIES,
   GREP_MAX_RESULTS_HARD_CAP,
 } from "./file-tools.js";
+// 技能包 loader（issue #197）：机制进库，公开导出并入本子路径（**不新增 `./skills` 子路径**，
+// 打包面不扩）。内置技能目录由调用方显式传 `bundledDir`，库内不猜路径；CLI 的
+// `bin/skills.js` 只做装配（注入 `<package>/skills`）与 re-export。
+export {
+  skillDirectories,
+  discoverSkills,
+  loadSkill,
+  loadAllSkills,
+  buildSkillTools,
+  warnBuiltinToolConflicts,
+} from "../skills/loader.js";
 export {
   createBuiltinNotesTools,
   completeRun,

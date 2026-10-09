@@ -180,6 +180,8 @@ src/
     judge.js                        objective timeline 与 judge prompt/response 解析
     l0.js                           objective facts 与摘要解析
     wrapup.js                       wrap-up 协议解析与规范化
+  skills/
+    loader.js                         技能包发现 / 校验 / 装配（issue #197）
   text/
     label.js                        note/findings label 归一化
   tools/
@@ -190,7 +192,9 @@ src/
     registry.js                     工具 schema 与 executor registry
 ```
 
-`src/index.js` 导出 provider、规范消息转换、token 与压缩辅助函数、transcript store、run-state 辅助函数、宿主展示投影（`projectTranscriptForDisplay`）、多轮预写辅助函数（`appendUserTurn`）、配置 provider、`runToolLoop` 以及 reflection 辅助函数。可选的 `erix-agent/tools` 子路径导出工具 registry 和 provider 辅助函数；模型侧取回采用 note-first（`note_list` → `note_read`）。
+`src/index.js` 导出 provider、规范消息转换、token 与压缩辅助函数、transcript store、run-state 辅助函数、宿主展示投影（`projectTranscriptForDisplay`）、多轮预写辅助函数（`appendUserTurn`）、配置 provider、`runToolLoop` 以及 reflection 辅助函数。可选的 `erix-agent/tools` 子路径导出工具 registry 和 provider 辅助函数、文件与 notes 的规范工厂，
+以及技能包 loader（`discoverSkills` / `loadSkill` / `buildSkillTools`，issue #197——内置技能
+目录由调用方以 `bundledDir` 传入，库内不按自身文件层级猜路径）；模型侧取回采用 note-first（`note_list` → `note_read`）。
 
 ## 宿主端口与错误账本
 
@@ -274,6 +278,7 @@ const assemblyPort = createAssemblyPort({
   "test/contract/index.js",
   "test/contract/model-config-provider.js",
   "test/contract/notes-store.js",
+  "test/contract/skills-loader.js",
   "test/contract/termination-payload.js",
   "test/contract/transcript-store.js"
 ]
