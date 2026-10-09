@@ -450,9 +450,15 @@ for (const rel of [README_EN, README_CN]) {
   if (!exportsBlock) {
     warn(`pkg-block: ${rel} 没有可解析的 \`exports\` JSON 围栏（无法与 package.json 比对）`);
   } else {
+    // issue #213：`exports` 的每个子路径现在是条件对象（`{types, default}`）而不是字符串，
+    // 所以这里做**结构化**比较（键排序后的深度比较），否则 `{}` 与 `{}` 用 `===` 永远不等。
+    const canonical = (v) => JSON.stringify(v, (_k, val) =>
+      (val && typeof val === "object" && !Array.isArray(val))
+        ? Object.fromEntries(Object.keys(val).sort().map((k) => [k, val[k]]))
+        : val);
     const keys = Object.keys(PKG.exports).sort();
     const docKeys = Object.keys(exportsBlock).sort();
-    const same = keys.length === docKeys.length && keys.every((k, i) => docKeys[i] === k && exportsBlock[k] === PKG.exports[k]);
+    const same = keys.length === docKeys.length && keys.every((k, i) => docKeys[i] === k && canonical(exportsBlock[k]) === canonical(PKG.exports[k]));
     if (!same) {
       err(`pkg-block: ${rel} 的 exports 清单与 package.json 不一致：文档 ${JSON.stringify(exportsBlock)} vs package.json ${JSON.stringify(PKG.exports)}`);
     } else {

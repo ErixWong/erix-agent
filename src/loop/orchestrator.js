@@ -393,32 +393,11 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   system?: string,
  *   cacheStablePrefix?: boolean, // Marks the stable system and first user prefix boundaries by default.
  *   wrapup?: boolean, // Controls instruction injection, JSON parsing, finalText replacement, and LLM normalization.
- *                   // Defaults to true (omit = enabled). ERIX_NO_WRAPUP_INSTRUCTION=1 env overrides even an
- *                   // explicit wrapup:true — either off disables the whole protocol.
  *   initialUserMessage?: string,
  *   initialMessages?: object[],
  *   tools?: object[],
- *   outputHygiene?: false | { limit?: number }, // Engine-side output hygiene (ADR-015): tool results larger
- *                     // than limit characters are archived in full into the round record
- *                     // (toolOutputs) and stubbed in the context view. Requires a
- *                     // transcript store (the archive lives in the record). Defaults to enabled when a
- *                     // store is present; pass false to opt out. Default limit: 15% of the host-provided
- *                     // contextWindowTokens clamped to [8192, 100000], else 4096; an explicit limit wins.
- *                     //
- *                     // A second, round-level layer (issue #32 #2) chains onto the per-result limit:
- *                     // the combined inline cost of one round's tool results is capped at
- *                     // clamp(0.30 x budgetTokens, 16000, 200000) **estimated tokens** (estimateTokens,
- *                     // stub text and per-result framing included; intercepted control results excluded,
- *                     // failed results counted). Budget base is the engine's existing budgetTokens
- *                     // (computeBudget / context.budgetTokens) — no second window source. Admission is
- *                     // incremental in arrival order: results keep declaration order and ids, nothing is
- *                     // rewritten after its run snapshot, so snapshot/resume semantics are unchanged.
- *                     // The layer is off when budgetTokens is absent or outputHygiene is false.
- *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten; defaults to
- *                     // ["writeFile", "edit"] (DEFAULT_WRITE_TOOL_NAMES in src/reflection/judge.js — the single
- *                     // truth shared by this default, the normalizeToolNameSet fallback below, and the judge
- *                     // timeline; issue #191 added `edit`). An explicit host value always wins: it replaces the
- *                     // default outright and is never merged with it.
+ *   outputHygiene?: false | { limit?: number }, // Engine-side output hygiene (ADR-015); see `outputHygiene` below.
+ *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten.
  *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
  *     => Promise<string|{content:any, metadata?:object, success?:boolean}|Error>,
@@ -438,8 +417,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *     maxExtensions?:number, maxRoundsCap?:number, format?:"json"|"text",
  *     judge?:{provider?:object,evaluator?:object},
  *     onReflection?:(info:{round:number, decision:object, extendedTo:number}) => void}|false,
- *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false, // Defaults to
- *                   // {window:4, mode:"consecutive"}; ERIX_STALL_MODE overrides the mode unless false.
+ *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false, // Defaults to consecutive mode.
  *   retry?: {attempts?:number, backoffBaseMs?:number, backoffMaxMs?:number,
  *     sleepImpl?:(ms:number)=>Promise<void>}|false,
  *   completion?: {signals?:string[], maxNoToolRounds?:number}|false,
@@ -459,7 +437,6 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   store?: {appendRound?: Function, load?:Function, // required pair (issue #78)
  *     saveRunSnapshot?:Function, loadLatestRunSnapshot?:Function, // optional run-snapshot capability
  *     markRunState?:Function, saveRunState?:Function, loadRunState?:Function}, // optional run-state capability
- *     // Deprecated aliases still honoured at runtime: saveCheckpoint/appendCheckpoint/loadLatestCheckpoint.
  *   persistence?:"none"|"required", // Defaults to required with a store and none without one.
  *   diagnostics?: {error:(event:object)=>void|Promise<void>},
  *   runId?: string,
@@ -467,14 +444,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   onRound?: (record:object) => void,      // 观察者（issue #173 PR-B）：抛错/rejected Promise 均被隔离
  *   onJudge?:(info:JudgeEvent) => void,     // 观察者（issue #173 PR-B）：抛错被隔离
  *   onToolResult?: (name:string, result:string, metadata?:object) => any,
- *     // 改写钩子（非纯观察者）：返回值会替换工具结果。抛错/rejected Promise 被隔离，
- *     // fallback 是【保留引擎原始执行结果】后继续跑——改写/脱敏逻辑必须在本 hook 内自防（issue #173 PR-B）
  *   onPersistenceError?: (error:Error) => void,
- *   onObserverError?: (error:Error, context:{channel:string, runId?:string, ...}) => void,
- *     // 统一观察者错账户（issue #173 PR-B）：第二参带出错通道与定位上下文。channel 恒存在，取值
- *     // "onEvent"|"onRound"|"onToolResult"|"onJudge"|"onDelta"|"onReasoningDelta"|"onToolCall"|"onUsage"；
- *     // 宿主传了 runId 时每条上报都带 runId（并行多 run 的宿主靠它归因）；其余字段按通道附送
- *     // （type/round/toolName/method）。本回调同步抛错时退到 console，不影响 run
+ *   onObserverError?: (error:Error, context:{channel:string, runId?:string, type?:string, round?:number, toolName?:string, method?:string}) => void,
  *   signal?: AbortSignal,
  *   stream?: boolean,
  *   onDelta?: (chunk:string) => void,       // 观察者（issue #173 PR-B）：抛错被隔离
@@ -483,6 +454,58 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   onUsage?: (usage:object) => void,       // 同上
  *   onEvent?: (event:LoopEvent) => void,    // 观察者（issue #173 PR-B）：抛错被隔离（启动期直调路径同口径）
  * }} options
+ *
+ * Per-option notes (behaviour defaults and boundaries). These are prose, deliberately
+ * **outside** the `{{ … }}` type literal: TypeScript's JSDoc type parser rejects a
+ * standalone `//` line inside an inline object type and silently degrades the whole
+ * `options` parameter to `any` (issue #213 R4 — this exact silent fallback is what
+ * left the single most host-facing type of the package untyped). A trailing `//` on a
+ * property line is safe; a comment line of its own is not. Grouped by the option.
+ *
+ * `wrapup`:
+ *   Defaults to true (omit = enabled). ERIX_NO_WRAPUP_INSTRUCTION=1 env overrides even an
+ *   explicit wrapup:true — either off disables the whole protocol.
+ *
+ * `outputHygiene`:
+ *   When enabled, tool results larger than `limit` characters are archived in full into
+ *   the round record
+ *   (toolOutputs) and stubbed in the context view. Requires a
+ *   transcript store (the archive lives in the record). Defaults to enabled when a
+ *   store is present; pass false to opt out. Default limit: 15% of the host-provided
+ *   contextWindowTokens clamped to [8192, 100000], else 4096; an explicit limit wins.
+ *
+ *   A second, round-level layer (issue #32 #2) chains onto the per-result limit:
+ *   the combined inline cost of one round's tool results is capped at
+ *   clamp(0.30 x budgetTokens, 16000, 200000) **estimated tokens** (estimateTokens,
+ *   stub text and per-result framing included; intercepted control results excluded,
+ *   failed results counted). Budget base is the engine's existing budgetTokens
+ *   (computeBudget / context.budgetTokens) — no second window source. Admission is
+ *   incremental in arrival order: results keep declaration order and ids, nothing is
+ *   rewritten after its run snapshot, so snapshot/resume semantics are unchanged.
+ *   The layer is off when budgetTokens is absent or outputHygiene is false.
+ *
+ * `writeToolNames`:
+ *   Defaults to ["writeFile", "edit"] (DEFAULT_WRITE_TOOL_NAMES in src/reflection/judge.js — the single
+ *   truth shared by this default, the normalizeToolNameSet fallback below, and the judge
+ *   timeline; issue #191 added `edit`). An explicit host value always wins: it replaces the
+ *   default outright and is never merged with it.
+ *
+ * `stallDetection`:
+ *   {window:4, mode:"consecutive"} (the entire window must hold the same signature);
+ *   ERIX_STALL_MODE overrides the mode unless the option is explicitly false.
+ *
+ * `store`:
+ *   Deprecated aliases still honoured at runtime: saveCheckpoint/appendCheckpoint/loadLatestCheckpoint.
+ *
+ * `onToolResult`:
+ *   改写钩子（非纯观察者）：返回值会替换工具结果。抛错/rejected Promise 被隔离，
+ *   fallback 是【保留引擎原始执行结果】后继续跑——改写/脱敏逻辑必须在本 hook 内自防（issue #173 PR-B）
+ *
+ * `onObserverError`:
+ *   统一观察者错账户（issue #173 PR-B）：第二参带出错通道与定位上下文。channel 恒存在，取值
+ *   "onEvent"|"onRound"|"onToolResult"|"onJudge"|"onDelta"|"onReasoningDelta"|"onToolCall"|"onUsage"；
+ *   宿主传了 runId 时每条上报都带 runId（并行多 run 的宿主靠它归因）；其余字段按通道附送
+ *   （type/round/toolName/method）。本回调同步抛错时退到 console，不影响 run
  *
  * 宿主观察者回调的统一语义（issue #173 PR-B，行为放宽 = semver minor）：
  *   1. 九个宿主观察者回调——八条通道 onEvent / onRound / onToolResult / onJudge / onDelta /
@@ -508,7 +531,14 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   transcript:object[],
  *   rounds:number,
  *   truncated:boolean,
- *   termination:{reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"judge_done"|"continuation_exhausted"|"final_guard_unverified"|"aborted"|"failed", detail?:string},
+ *   termination:{
+ *     reason:"end_turn"|"no_tool"|"stall"|"max_rounds_cap"|"judge_done"|"continuation_exhausted"|"final_guard_unverified"|"aborted"|"failed",
+ *     detail?:string,
+ *     errorCode?:string,   // issue #176：仅 reason==="failed" 携带（根因 KitError.code，探不到则 "unknown"）
+ *     usage?:object,       // issue #180：仅 reason==="aborted" 携带，与抛出的 error.usage 同一个对象
+ *     rounds?:number,      // issue #180：仅 reason==="aborted" 携带
+ *     partial?:boolean     // issue #180：reason==="aborted" 时恒为 true
+ *   },
  *   verification:{status:"verified"|"unverified"|"skipped"|"error", reason?:string, detail?:string},
  *   runState?:object,
  *   usage:{input_tokens:number, output_tokens:number, cacheRead?:number, cacheWrite?:number},
