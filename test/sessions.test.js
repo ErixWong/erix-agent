@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -19,9 +19,10 @@ import {
   truncateFirstUserText,
   upsertSessionIndex,
 } from "../bin/sessions.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 function makeHome() {
-  return mkdtemp(join("/tmp", "erix-sessions-test-"));
+  return makeTmp("erix-sessions-test-");
 }
 
 function makeInteractiveInput() {
