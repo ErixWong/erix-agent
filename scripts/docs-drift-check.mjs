@@ -275,6 +275,28 @@ const DEFAULT_RULES = [
     must: ([v]) => [new RegExp(`max_bytes[\\s\\S]{0,200}?${bt(v)}`)],
     hint: "契约里 readFile 单次返回字节上限（ERIX_FILE_READ_MAX_BYTES）的默认值",
   },
+  {
+    // #184 追加轮 A：rg 与 grep 共用同一个命中行宽上限，全库只有源码这一处定义。
+    id: "搜索命中行宽上限",
+    src: "src/tools/file-tools.js",
+    srcRe: /const GREP_LINE_LIMIT = (\d+);/,
+    docs: [README_EN, README_CN, "docs/host-consumer-contract.md", "docs/host-consumer-contract_cn.md"],
+    must: ([v]) => [new RegExp(`(?:${v} characters|${v} 字符|\`${v}\`)`)],
+    hint: "两个搜索工具共用的命中行截断上限（README 与契约中英都按源码真值写；历史上是 200，#184 提到 500）",
+  },
+  {
+    // #184 追加轮 A：默认按正则（与真实 rg/grep 一致）。锚点取**行为**而不是描述文案：
+    // 把默认翻回字面量会让这条抽不到真值 → check:docs 变红，逼着同步四处文档。
+    id: "rg 默认搜索模式为正则",
+    src: "src/tools/file-tools.js",
+    srcRe: /compileSearchPattern\(pattern, \{ literal: input\?\.is_regex === (false) \}\)/,
+    docs: [README_EN, README_CN, "docs/host-consumer-contract.md", "docs/host-consumer-contract_cn.md"],
+    must: () => [
+      new RegExp("is_regex[\\s\\S]{0,300}(?:regular expression|regex|正则)", "i"),
+      new RegExp("is_regex[\\s\\S]{0,300}(?:literal|字面量)", "i"),
+    ],
+    hint: "rg 默认正则是真实命令的口径；`is_regex=false` 才是字面量（rg --fixed-strings / grep -F），两处都要写",
+  },
 ];
 
 for (const rule of DEFAULT_RULES) {
