@@ -93,3 +93,26 @@
 | tw 的用户画像「存而不用」是有意还是遗漏 | 代码事实明确（未注入 prompt），意图未知 |
 | 五家的压缩成功率 / 失败率 / 重试成本 | 只有 hm 有完整的反抖动状态机，说明「压缩失败」很贵；但无实测数据 |
 | 本对比全部基于静态代码阅读，**未跑运行时实验** | 阈值触发行为、缓存命中率、召回质量均待实测 |
+
+---
+
+## 6. 修订注（2026-10-10，#190）：pi 基线 1.1.0 下受影响的结论
+
+**基线声明**：pi 一侧基线自本注起为 **`@earendil-works/pi-coding-agent` 1.1.0**（`earendil-works/pi` tag `v1.1.0`；下表 `packages/...` 指该 tag 源码仓，不是正文引用的 0.84.2 npm 产物）。上面 §1~§5 **照抄未改**；本注只同步真正依赖被更正事实（「pi 不内置 MCP」「pi 无内置 tool search」，逐条证据见 [01 §7](01-pi-agent.md)）的两条结论。
+
+**受影响、已同步的两条**
+
+1. **§2 决策树 Q3（工具池多大）**：
+   - 「10~40 个且单轮只用几个 → 工具搜索 + 三级清单退化（hm）或 `ToolExposure` 六值（cx）」——**pi 1.1.0 现在也落在这一档**：内置 `tool_search`（默认关闭，`--tools` / `"defaultTools": ["+tool_search"]` 打开），BM25 排序、默认 8 条（`packages/coding-agent/docs/cli.md:151,155-156,182`、`packages/coding-agent/src/extensions/tool-search/tool.ts:1-8,20`）。
+   - 「来自多个 MCP server → 单代理工具收敛（ex），或 `mcp__server__tool` + 搜索（cx/hm）」——共识补进 **pi**（server 工具固定注册为 `mcp__<server>__<tool>`，`docs/mcp.md:191`），并新增**第四条路线 `codemode`**（默认 exposure：不向模型声明，改由模型写脚本调注入的 `tools.*`，只有脚本输出回模型，`docs/codemode.md:3-7`）。选它的场景是「脚本要把多次调用编排 / 过滤后再给模型」，而不是「想少一份 schema」——后者 ex 的单代理工具更省。
+   - 同段「< 10 个 → 全量注入（pi）」**不动**：1.1.0 默认仍只启用 `read/bash/edit/write`（`docs/cli.md:128`）。
+2. **§1 第 10 项（工具面渐进披露的引擎支持）里「抄谁 = cx / hm / pi」中 pi 那一格**：pi 从「扩展自己写 loader」升级为「内置 loader，默认关，加载结果按分支记进 transcript」。要抄的具体三件：BM25 排序器与 `tool_search`/`searchTools()` 同源复用、`DEFAULT_TOOL_SEARCH_LIMIT = 8`、**「加载即记进 transcript，跨 `/tree`、resume、fork 存活」**（`packages/coding-agent/src/extensions/tool-search/tool.ts:1-8`）。本项「先补 schema token 计量与告警、再谈机制」的建议不变，ADR-008 的取舍不变。
+
+**顺带复核的一条开放问题**：§5 表首行「`retainedTail` 在本包 `dist/` 中不存在」——本注在 tag `v1.1.0` 上复核（`git grep retainedTail v1.1.0` 零命中，源码与文档都没有），**判定保持「未确认」不翻案**，但记下「到 1.1.0 仍未出现」这个新 datum，避免下一个人重做这次检索。
+
+**明确没有同步的地方（以及为什么）**
+
+- §1 P0/P1/P2 各条引用的具体数字（本项目 4096、hm 的 50000 字符 / 清单预算、cx 的 8 KB / 64 KB、tw 的阈值等）与 §3 反模式清单：来源在 hm / cx / tw / ex 一侧，与 pi 基线无关，一个都没动。
+- §3 第 7 条「压缩后的提示语只告知状态、不给出动作」里引用的 pi `sed` 命令：#190 没复核 1.1.0 的截断提示语，不动（不是「已核实仍成立」，是「本单没看」）。
+- §4 实验 1~3 与本项目自身机制有关，不动。实验 4（`--agent erix|pi` 对照）与 §1 第 13 项拿 pi 当对照组：**结论不变**（本单零实测，没跑任何 bench），只补一句口径——本注之后跑对照必须显式钉住 pi 版本，否则跨 1.0.0 的两次结果不可比。
+- §2 Q1/Q2/Q4/Q5、§5 其余各行：与这两条事实无关。

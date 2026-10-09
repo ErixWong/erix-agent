@@ -214,6 +214,7 @@ pi 的「折叠」有两条机制：**compaction**（上下文超限或 `/compac
 
 - 0.84.2 的依据那句「It intentionally does not include built-in MCP」（正文引 `docs/usage.md:304`）**已经从文档里消失**：本机 1.0.0 npm 包的 `docs/usage.md` 全文 94 行、`intentionally` 零命中；1.1.0 的对应口径变成 `packages/coding-agent/README.md:19`——「skips features like sub-agents and plan mode」，**跳过清单里已经没有 MCP**。
 - 1.1.0 的内置形态：`packages/coding-agent/docs/mcp.md:1-3`（经 stdio 或 streamable HTTP 连 MCP server，把其 tools 与 resources 交给模型）、`:31`（配置在 `~/.pi/agent/mcp.json` 与项目 `.pi/mcp.json`，项目层要过 trust）、`:100`（会话启动即后台连接所有 enabled server；只有 `direct` 工具会在首个 prompt 前最多等 10 s）、`:189-198`（exposure 四值 `codemode`（默认）/ `deferred` / `direct` / `hidden`）。
+- 上游自己的用词更直接：`packages/coding-agent/CHANGELOG.md:65`（`[1.0.4]` 段："Added `--no-mcp` to disable the **built-in MCP support** for one run"）、`docs/cli.md:197`（`-ne` 下仍可用 `-e builtin:mcp` 只留「built-in MCP support」）。
 - 所谓「codemode 形态」：模型写一段 JavaScript，跑在 **QuickJS 沙箱**里（无 Node API、无文件系统、无网络、无定时器），只能通过被注入的 `tools.*` 与 `models` 触达外界，且**只有脚本输出回到模型**（`packages/coding-agent/docs/codemode.md:3-7`）。工具侧 exposure 五值见 `packages/coding-agent/docs/extensions.md:155-160`。
 - **连带推翻**：§4「**未找到**任何工具名命名空间规范（如 `mcp__server__tool`）」不再成立——1.1.0 把每个 server 工具固定注册成 `mcp__<server>__<tool>`（`docs/mcp.md:191`）。registry 的「同名覆盖」语义本注未重核，但「无命名空间约定」这句已作废，`06` §4.2 的「`mcp__server__tool` 是事实共识（cx/hm）」据此改写。
 
@@ -234,10 +235,10 @@ pi 的「折叠」有两条机制：**compaction**（上下文超限或 `/compac
 
 ### 7.3 观察者隔离：原结论成立，但两侧口径都要限定
 
-- **pi 原语层仍然没有隔离**：`packages/agent/src/agent.ts:604-611` 的 `processEvents()` 尾部就是 `for (const listener of this.listeners) { await listener(event, signal); }`，**无 try/catch**；监听器抛错冒泡到 `runWithLifecycle()` 的 catch（`:521-524`），交 `handleRunFailure()` 产一条 `stopReason: "aborted" | "error"` 的失败消息（`:531-543`）终止本次 run。**所以「pi 1.1 已在观察者隔离上追平」不成立，本仓结论在原语层依然成立。**
-- 但口径只能停在「原语层」：harness 的扩展派发层是**逐个 handler** 包 catch 并走 `emitError` 错误通道（`packages/coding-agent/src/core/extensions/runner.ts:1047-1058`），所以反过来写成「pi 整体无兜底」也不成立。
-- **本仓侧要收紧的限定**（免得反向夸大）：八个事件通道的宿主异常经 `reportObserverError`（`src/loop/orchestrator.js:781-799`）记账后继续，但该函数唯一的动作是**同步调用宿主的 `onObserverError`**（它自己再抛就退到 `console.error`）——不写 run state、不进 `result.unpersisted`、不产 `delivery_failure`。即：这是**内存记账，不是持久账本**；要计数得宿主自己从 `onObserverError` 攒，durable 账本仍是未做的决定（`docs/host-consumer-contract.md`「Observer callback errors」第 3 条）。
-- **隔离强度分两档，不是「八通道一律」**：只有被 `await` 的 `onRound`（`src/loop/orchestrator.js:3155-3163`）与 `onToolResult`（`src/loop/run-snapshot-executor.js:273-297`，失败时保留引擎原始结果）同时覆盖同步 throw 与 rejected Promise；其余六通道只覆盖**同步 throw**，async 回调的 rejection 不在承诺范围（`emitEvent` 的注释就是这个口径，`src/loop/orchestrator.js:1556-1570`）。
+- **pi 原语层仍然没有隔离**：`packages/agent/src/agent.ts:609-611`（`processEvents()`（`:565`）尾部就是 `for (const listener of this.listeners) { await listener(event, signal); }`，**无 try/catch**）；监听器抛错冒泡到 `runWithLifecycle()` 的 catch（`:525-526`），交 `handleRunFailure()` 产一条 `stopReason: "aborted" | "error"` 的失败消息（`:532,540`）终止本次 run。**所以「pi 1.1 已在观察者隔离上追平」不成立，本仓结论在原语层依然成立。**
+- 但口径只能停在「原语层」：harness 的扩展派发层是**逐个 handler** 包 catch 并走 `emitError` 错误通道（`packages/coding-agent/src/core/extensions/runner.ts:1046-1058`），所以反过来写成「pi 整体无兜底」也不成立。
+- **本仓侧要收紧的限定**（免得反向夸大）：八个事件通道的宿主异常经 `reportObserverError`（`src/loop/orchestrator.js:781-801`）记账后继续，但该函数唯一的动作是**同步调用宿主的 `onObserverError`**（它自己再抛就退到 `console.error`）——不写 run state、不进 `result.unpersisted`、不产 `delivery_failure`。即：这是**内存记账，不是持久账本**；要计数得宿主自己从 `onObserverError` 攒，durable 账本仍是未做的决定（`docs/host-consumer-contract.md:108`「Observer callback errors」第 3 条）。
+- **隔离强度分两档，不是「八通道一律」**：只有被 `await` 的 `onRound`（`src/loop/orchestrator.js:3155-3163`）与 `onToolResult`（`src/loop/run-snapshot-executor.js:275-296`，失败时保留引擎原始结果）同时覆盖同步 throw 与 rejected Promise；其余六通道只覆盖**同步 throw**，async 回调的 rejection 不在承诺范围（`emitEvent` 的守卫与这条口径写在注释里，`src/loop/orchestrator.js:1556-1570`，注释见 `:1559-1560`）。
 
 ### 7.4 范围外信息 + 本注明确没有改的东西
 

@@ -320,3 +320,29 @@
 - **精确标识的保真**：只有 hm 用正则锚点索引正面解决；其余依赖摘要模型复述。
 - **多轮压缩的语义漂移**：pi 用「第二次起用 UPDATE 模板（PRESERVE all existing information）」，ex 用 marker 合并，hm 用「上一份摘要作为 Previous Summary Snapshot」；tw 三套机制并存时没有统一保证。
 - **「模型不按提示召回」**：hm 用 Tool Search 清单暴露了这个现象（模型宁愿用可见工具绕过），但五家都没有「强制召回」手段，只能靠提示语强度。
+
+---
+
+## 7. 修订注（2026-10-10，#190）：pi 基线 1.1.0 下受影响的结论
+
+**范围声明**：本文 pi 基线自本注起为 **`@earendil-works/pi-coding-agent` 1.1.0**（`earendil-works/pi` tag `v1.1.0`；下表 `packages/...` 一律指该 tag 的源码仓，与正文引的 0.84.2 npm 产物 `dist/...` 不是一套路径）。上面 §1~§6 的表格与正文**照抄未改**，pi 列是 0.84.2 的快照留痕；本注只同步**真正依赖被更正事实**（「pi 不内置 MCP」「pi 无内置 tool search」，逐条证据见 [01 §7](01-pi-agent.md)）的结论，不做整表重刷。
+
+**受影响、已同步的六处**
+
+| 位置 | 正文口径（0.84.2，保留） | 1.1.0 修订 | 证据 |
+|---|---|---|---|
+| §4.1 pi 行「延迟加载 / 工具搜索」列 | 「官方支持但**引擎不在本包**：扩展自己写 loader」 | 内置 `tool_search`（**默认关闭**）+ 内置 `codemode`，BM25 排序引擎就在本包 | `packages/coding-agent/docs/cli.md:151,155-156,182`、`packages/coding-agent/src/extensions/tool-search/tool.ts:1-8,20` |
+| §4.1 要点第 2 条 | pi 的解法是「全量默认 + 扩展自选」 | 改为「全量默认 + **内置可选 loader（默认关）**」；三种解法各自适用面的判断不变，只是 pi 不再要求使用者自己写 loader | 同上 |
+| §4.2 pi 行 | 「**无内置 MCP**，只能写扩展；**无命名空间约定**」 | MCP 已内置（stdio / streamable HTTP，交 tools 与 resources）；server 工具固定注册为 `mcp__<server>__<tool>`；另有 exposure 四值 `codemode`（默认）/`deferred`/`direct`/`hidden` | `packages/coding-agent/docs/mcp.md:1-3,31,100,189-198,191`、`docs/codemode.md:3-7` |
+| §4.2 要点句 | 「`mcp__server__tool` 是事实共识（cx/hm）」 | 共识扩到 **cx / hm / pi**（pi 同为双下划线）；并且 pi 的 `codemode` 是**第四条路线**——既不是逐个暴露 schema，也不是单代理工具，而是「模型写脚本调注入的 `tools.*`，只有脚本输出回模型」，与 ex 的单代理工具在「不给每个 MCP 工具一份 schema」这个目标上同族、机制不同 | `packages/coding-agent/docs/mcp.md:191`、`docs/codemode.md:3-7` |
+| §6.1 pi 的一句话画像 | 「没有 MCP / 长期记忆 / 沙箱」 | 「没有」只有**长期记忆与沙箱**成立；MCP 在 1.1.0 已内置。「极简内核 + 全扩展化」要限定成「**默认工具面**极简」——1.1.0 把 MCP + `codemode` + `tool_search` 三件内置了（后两者默认关闭）。「截断提示语质量全场第一」本单未复核，不动 | 沙箱：`SECURITY.md:50`（"the Pi coding agent intentionally does not have a sandbox"）；长期记忆：`git grep -il "long-term memory\|MEMORY.md" v1.1.0 -- packages/coding-agent/docs` 零命中（**文档级抽查**，不等于 §5 整节已复核）；MCP：同上 |
+| §6.2 分水岭 2 的**理由** | pi 档位在「中」，理由是「只在结构变化时重建 prompt」 | **档位不动（仍「中」）**，只补理由：1.1.0 另有「会话中途 system 消息 / 尾部 delta」这条**不破坏前缀缓存**的注入通道，所以「想要缓存就只能整段替换 prompt」不再成立 | `packages/ai/README.md:1572-1575,1601`、`packages/coding-agent/docs/mcp.md:202` |
+
+**明确没有同步的地方（以及为什么）**
+
+- §6.3 ex 行「召回是引擎内置…**不像 cx 要开 feature、pi 要模型自己 grep**」：这句依赖的是 pi 的**召回方式**（compaction + session JSONL + `PI_SESSION_FILE`），#190 没复核 1.1.0 的 compaction / 召回，因此不改——不是「已核实仍成立」，是「本单没看」。
+- §6.3 ex 行「差距：… 无工具搜索」：主语是 **ex**，与 pi 基线无关，不动。
+- §1 上下文构造、§2 工具输出截断（2000 行 / 50KB / `GREP_MAX_LINE_LENGTH`）、§3 折叠与召回、§5 per-user 记忆里的所有 pi 数字与机制：#190 判定过期清单里没有它们，一律保持 0.84.2 口径。
+- 「工具定义 token 预算」这一列的 pi / ex 值（「未找到」）：否定命题的复核需要独立一轮，#190 未判定过期。
+- §6.2 分水岭 1 与 3、§6.4 共同难题：与这两条事实无关。
+- **其余四家（tw / cx / hm / ex）的一切数字一个都没动**：本单是 pi 基线刷新，连带改无关数字正是这轮要避免的事。
