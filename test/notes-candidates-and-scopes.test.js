@@ -11,6 +11,7 @@ import {
   readFile,
   readdir,
   rm,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -199,6 +200,30 @@ async function runQuietChat({ transcriptsDir, notesDir, session }) {
 
 const DAY = 24 * 60 * 60 * 1000;
 
+// issue #186：chmod 造的「不可删 / 不可扫」不是通用夹具——root 持 DAC_OVERRIDE，部分挂载（vfat/
+// 某些 fuse）干脆不强制权限位。所以探针而不是硬编码 getuid()：只用来判定「权限夹具在本环境是否
+// 真造得出失败」，主形态一律走与 uid 无关的失败源，不会出现「root 下把真缺陷一并 skip 掉」。
+let permissionsEnforced;
+async function filePermissionsAreEnforced() {
+  if (permissionsEnforced !== undefined) return permissionsEnforced;
+  const probeRoot = await mkdtemp(path.join(tmpdir(), "erix-perms-probe-"));
+  try {
+    const probeDir = path.join(probeRoot, "readonly");
+    await mkdir(probeDir, { recursive: true });
+    await chmod(probeDir, 0o500);
+    try {
+      await writeFile(path.join(probeDir, "blocked"), "x", "utf8");
+      permissionsEnforced = false; // 写得动：DAC 没在拦（root 或挂载不强制）
+    } catch {
+      permissionsEnforced = true; // EACCES/EPERM：权限位真生效
+    }
+    await chmod(probeDir, 0o700);
+  } finally {
+    await rm(probeRoot, { recursive: true, force: true });
+  }
+  return permissionsEnforced;
+}
+
 async function seedDeadScope(notesDir, scopeRef) {
   const store = createFileNotesStore({ dir: notesDir });
   await store.write({
@@ -345,9 +370,61 @@ test("concurrent runChat calls keep explicit note scopes isolated", async () => 
   });
 });
 
-// 验收回归（P1）：清扫路径的失败必须静默——只读/被占用的 scope 目录让 rmSync 抛错
-// 时，不得覆盖 CLI 主异常/结果，也不得让 REPL saveAndFinish reject。
+// 验收回归（P1）：清扫路径的失败必须静默——scope 目录扫不动 / 删不掉时，不得覆盖 CLI
+// 主异常/结果，也不得让 REPL saveAndFinish reject。
+// issue #186：失败源不再靠 chmod 制造（root 持 DAC_OVERRIDE → root 下 rmSync 会成功，「吞错」分支
+// 根本没跑到）。改用与调用者 uid 无关的必然失败：该 scope 没有会话活动文件，purge 回退到
+// 「取笔记文件最大 mtime」时对目录内条目 statSync，而条目是一个指向不存在路径的 symlink → ENOENT。
+// 同时补上原来缺的「可继续」半边：同一轮里另一个判死且可删的 scope 必须真的被清掉。
 test("purgeInactiveNoteScopes silently skips an undeletable scope directory", async () => {
+    await withTempDirectory(async (directory) => {
+      const transcriptsDir = path.join(directory, "transcripts");
+      const notesDir = path.join(directory, "notes");
+      await mkdir(transcriptsDir, { recursive: true });
+      // 扫不动的 scope：无 transcript（走笔记 mtime 回退）+ 悬空 symlink（statSync 必然 ENOENT）。
+      await seedDeadScope(notesDir, "stuck-run");
+      await symlink(
+        path.join(notesDir, "run", "stuck-run", "gone.json"),
+        path.join(notesDir, "run", "stuck-run", "orphan.json"),
+      );
+      // 对照组：transcript 40 天无活动 → 判死且删得掉，用来证明失败不中断后续清扫。
+      await seedDeadScope(notesDir, "dead-run");
+      await writeFile(path.join(transcriptsDir, "dead-run.jsonl"), "{}\n", "utf8");
+      const stale = new Date(Date.now() - 40 * DAY);
+      await utimes(path.join(transcriptsDir, "dead-run.jsonl"), stale, stale);
+
+      const skippedLines = [];
+      const originalConsoleError = console.error;
+      let result;
+      let thrown = null;
+      try {
+        console.error = (message) => { skippedLines.push(String(message)); };
+        result = purgeInactiveNoteScopes({
+          notesDir,
+          sessionActivityFile: (scopeRef) => path.join(transcriptsDir, `${scopeRef}.jsonl`),
+        });
+      } catch (error) {
+        thrown = error;
+      } finally {
+        console.error = originalConsoleError;
+      }
+      assert.equal(thrown, null, "purging must never throw");
+      assert.equal(result.scanned, 2);
+      assert.equal(result.purged, 1, "undeletable scope is skipped, not counted as purged");
+      // 跳过的必须是被卡住的那个，可删的那个已被清扫（= 失败后确实继续扫下一个）。
+      assert.deepEqual(await readdir(path.join(notesDir, "run")), ["stuck-run"]);
+      // 留痕本身也是契约的一部分：没有这条日志，「purged 少了 1」无法区分「跳过」与「根本没扫到」。
+      assert.equal(skippedLines.filter((line) => line.includes("stuck-run")).length, 1);
+    });
+  });
+
+// 上一条的补充：只读目录让 rmSync 自己抛错（EACCES）这个具体形态。它只在文件系统真的强制
+// DAC 时造得出失败（root 持 DAC_OVERRIDE、部分挂载不强制权限位），故显式 skip 而不是假绿。
+// 主形态（上面那条）已与 uid 无关，所以本条 skip 不会把产品真缺陷一起掩盖。
+test("purgeInactiveNoteScopes silently skips a read-only scope directory when DAC is enforced", async (t) => {
+    if (!(await filePermissionsAreEnforced())) {
+      return t.skip("本环境的权限位造不出「删不掉」（root 持 DAC_OVERRIDE 或挂载不强制 DAC）");
+    }
     await withTempDirectory(async (directory) => {
       const transcriptsDir = path.join(directory, "transcripts");
       const notesDir = path.join(directory, "notes");
@@ -369,34 +446,46 @@ test("purgeInactiveNoteScopes silently skips an undeletable scope directory", as
         });
       } catch (error) {
         thrown = error;
+      } finally {
+        // 恢复写权限，保证外层临时目录可以清理。
+        await chmod(scopeDir, 0o700);
       }
       assert.equal(thrown, null, "purging must never throw");
       assert.equal(result.scanned, 1);
       assert.equal(result.purged, 0, "undeletable scope is skipped, not counted as purged");
-      // 恢复写权限，保证外层临时目录可以清理。
-      await chmod(scopeDir, 0o700);
+      assert.deepEqual(await readdir(scopeDir), ["remnant.json"], "跳过而非半删");
     });
   });
 
+// issue #186：同样把「删不掉」改成与 uid 无关的形态（无 transcript 的 scope + 悬空 symlink），
+// 并补上「CLI 收尾的清扫没被失败打断」：同一轮里另一个判死 scope 必须真被清掉。
 test("CLI runChat completes normally when the dead scope cannot be deleted", async () => {
     await withTempDirectory(async (directory) => {
       const transcriptsDir = path.join(directory, "transcripts");
       const notesDir = path.join(directory, "notes");
       await mkdir(transcriptsDir, { recursive: true });
+      // 卡住的 scope：无 transcript → 回退到笔记 mtime 探测，目录里的悬空 symlink 让 statSync 必然 ENOENT。
       await seedDeadScope(notesDir, "stuck-run");
-      await writeFile(path.join(transcriptsDir, "stuck-run.jsonl"), "{}\n", "utf8");
+      await symlink(
+        path.join(notesDir, "run", "stuck-run", "gone.json"),
+        path.join(notesDir, "run", "stuck-run", "orphan.json"),
+      );
+      // 对照组：判死且可删 → 必须被清掉，证明失败后清扫继续跑。
+      await seedDeadScope(notesDir, "dead-run");
+      await writeFile(path.join(transcriptsDir, "dead-run.jsonl"), "{}\n", "utf8");
       const stale = new Date(Date.now() - 40 * DAY);
-      await utimes(path.join(transcriptsDir, "stuck-run.jsonl"), stale, stale);
+      await utimes(path.join(transcriptsDir, "dead-run.jsonl"), stale, stale);
       const scopeDir = path.join(notesDir, "run", "stuck-run");
-      await chmod(scopeDir, 0o500);
-      try {
-        // runChat 正常 resolve：清扫失败只 console.error 留痕，不覆盖主异常/结果。
-        await runQuietChat({ transcriptsDir, notesDir, session: "live-run" });
-        // 只读 scope 依旧原样（跳过而非半删）。
-        const entries = await readdir(scopeDir);
-        assert.deepEqual(entries, ["remnant.json"]);
-      } finally {
-        await chmod(scopeDir, 0o700);
-      }
+
+      // runChat 正常 resolve：清扫失败只 console.error 留痕，不覆盖主异常/结果。
+      await runQuietChat({ transcriptsDir, notesDir, session: "live-run" });
+      // 卡住的 scope 依旧原样（跳过而非半删）。
+      assert.deepEqual(
+        (await readdir(scopeDir)).sort(),
+        ["orphan.json", "remnant.json"],
+        "undeletable scope must stay untouched",
+      );
+      // 同一轮的另一个判死 scope 已被清掉（= CLI 收尾没因前面的失败而中断）。
+      await assert.rejects(readdir(path.join(notesDir, "run", "dead-run")));
     });
   });

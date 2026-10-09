@@ -184,6 +184,8 @@ test/
 ## 6. 跨领域约定
 
 - **单元测试不调用外部服务。** 协议测试使用 `test/helpers/mock-fetch.js`；循环测试使用 `test/helpers/fake-provider.js`。MCP 覆盖使用仓库根目录 `fixtures/` 中的本地 server。
+- **测试不得依赖调用者的特权级别。** 用 `chmod 0o000`/`0o500` 造的「扫不到 / 删不掉」目录，对持有 `DAC_OVERRIDE` 的 uid（容器里的 root）不报错，于是被测的「吞掉错误」分支根本没被执行到，红出来的断言只是症状。改用与 uid 无关的失败源制造失败——把路径分量中本应是目录的那一段换成普通文件（`ENOTDIR`）、指向不存在目标的 symlink（`ENOENT`）、或成环的 symlink（`ELOOP`）——让特权与非特权跑同一条路径。`t.skip()` 是兜底而非首选，且必须写明原因。
+- **测试不得依赖外部二进制。** 不是声明依赖的二进制（例如 `git`）在 slim 镜像与多数 CI 镜像里都不存在；缺失就探测出来并带原因 skip，同时用测试自己写出的夹具把契约本身常驻跑住（见 `test/codewrite.test.js` 的 exec 夹具用例）。「装个二进制就好」不算修法。
 - **对确定性行为使用确定性断言。** 预算计算、统计折叠、`enforce-size`、run-state 渲染、TTL 折叠、note 行为以及 provenance 行为都必须精确断言。不要为本质上可变的 LLM 输出做 snapshot。
 - **主动覆盖失败路径。** 错误分类、可重试性、abort、畸形数据、持久化失败、过期或被篡改的 cursor、无效工具输入以及 fail-closed 行为，都是套件的一部分，而不是事后补充。
 - **保持测试状态隔离。** 触及 `~/.erix`、`~/.pi`、环境变量、sessions 或 MCP 配置的测试必须注入 `home`、`cwd`、临时目录，或恢复环境，避免使用真实用户的配置。
