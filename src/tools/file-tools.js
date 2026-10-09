@@ -55,6 +55,11 @@ const ABORT_CHECKPOINT_EVERY = 32;
 const READ_BLOCK_BYTES = 64 * 1024;
 // 结果尾部 marker 的字节预留：保证「单次返回不超过 max_bytes」对整段文本成立。
 const READ_MARKER_RESERVE = 512;
+// 「下一步」子句的统一前缀（issue #196 R1）：所有截断 marker 都以它收尾，措辞只在这里定义一次
+// （与「marker 文案只在 toolMarker 里」是同一条纪律）。scripts/docs-drift-check.mjs 的锚点取
+// **这一行的真值**：改前缀 = 模型可见的承诺变了 → 检查变红 → 必须同步中英契约文档两处。
+// ⚠ 子句里允许出现的工具名只有 `readFile` / `searchText`（理由见 toolMarker 的文档注释）。
+const NEXT_STEP_CLAUSE = "下一步：";
 const VENDOR_DIRECTORIES = new Set(["node_modules", "dist", "build", "target", "vendor"]);
 
 // ---------------------------------------------------------------------------
@@ -86,6 +91,43 @@ function normalizeNonNegativeInteger(value, fallback) {
 
 function escapeRegExpLiteral(text) {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 字节数 → 人类可读（issue #196 R2）。标签按 issue 规格写 `KB`/`MB`，**基数是 1024**
+ * （与 `MAX_FILE_BYTES` 那处的 `MiB` 标签同基数、不同字面，别混进同一段文本）。
+ *
+ * - `< 1024`            → `NNNB`
+ * - 整 KB（可被 1024 整除）→ `NNNKB`（无空格）
+ * - 非整除              → 按 KB 四舍五入到整数（`1536` → `2KB`）
+ * - `>= 1024*1024`      → 一位小数 `x.yMB`（`1572864` → `1.5MB`、`262144` → `256KB`）
+ * - `>= 1GB` / `>= 1TB` → 同规则继续晋级 `x.yGB` / `x.yTB`（追加轮 R6：原先 1e12 会吐
+ *   `953674.3MB`——六位数单位等于没单位，模型读不出「这是几十 GB 的日志」这个量级）
+ * 四舍五入进位到 1024KB 时晋级 MB（`1048575` → `1.0MB`），免得产出「1024KB」这种看着像 bug 的值；
+ * MB→GB、GB→TB 用同一条判据（**按渲染后的值**判，不是按原值），所以 `1073741823` → `1.0GB`
+ * 而不是 `1024.0MB`。
+ * 非有限值/负数按 0 处理：marker 是给模型读的事实，不额外开异常通道。
+ *
+ * ⚠ **同一段结果文本里不得同时出现人类可读值与裸字节数**（issue #196 R2）：两个数说的是同一件事，
+ * 模型会对不上账。阈值本身在文档与 `metadata` 里仍写裸数字（那里没有并排的第二份数）。
+ *
+ * @param {number} bytes
+ * @returns {string}
+ */
+export function formatSize(bytes) {
+  const raw = Number(bytes);
+  const value = Number.isFinite(raw) ? Math.max(0, Math.round(raw)) : 0;
+  if (value < 1024) return `${value}B`;
+  if (value < 1024 * 1024) {
+    const kb = Math.round(value / 1024);
+    if (kb < 1024) return `${kb}KB`; // 整除时 Math.round 是恒等 → 天然满足「整 KB → NNNKB」
+  }
+  // 晋级判据统一是「**渲染后**的值到没到 1024」：到就换上一档，永远不产出 1024.0MB / 1024.0GB。
+  const mb = value / (1024 * 1024);
+  if (Number(mb.toFixed(1)) < 1024) return `${mb.toFixed(1)}MB`;
+  const gb = mb / 1024;
+  if (Number(gb.toFixed(1)) < 1024) return `${gb.toFixed(1)}GB`;
+  return `${(gb / 1024).toFixed(1)}TB`;
 }
 
 export function truncateDisplayText(value, limit) {
@@ -209,6 +251,14 @@ function createSkipAccount() {
  * marker 文案属 **Experimental**（改文案/加字段只动这一处 + 同步契约测试）；
  * `allowRead`/`allowWrite` 的形状与「false → 返回错误结果而不抛」属 **Stable**（issue #188）。
  *
+ * 「下一步」措辞统一为 `；下一步：<工具名> 传 <参数>=<本次真值>`（issue #196 R1）：只报状态不给
+ * 出口的 marker 等于让模型自己猜取回方式，而 `metadata` 不上 wire，模型读得到的只有这段文本。
+ *
+ * ⚠ **文案里只允许出现本模块自己的工具名（`readFile` / `searchText`），不得写 `exec`/`sed`/`awk`。**
+ * issue #196 原文举例提到过「用 exec/sed 取回完整行」，本收紧相对原文一步：`exec` 属 CLI 装配层
+ * （`bin/tools.js`）而不是本库（ADR-005 把「会执行的工具」挡在库外），库不能假设宿主装了它，
+ * 否则就是给模型开一张兜不了现的支票（照做只会拿到「未知工具」），而 marker 是模型唯一的通道。
+ *
  * @param {"skipped"|"noMatch"|"searchTruncated"|"treeEntryCap"|"treeDepthCap"
  *   |"readBytesCap"|"readMoreLines"|"readNotScanned"|"readLineTruncated"} kind
  * @param {Record<string, unknown>} [values] 语义值（计数、上限、offset）
@@ -234,12 +284,18 @@ export function toolMarker(kind, values = {}) {
     case "noMatch":
       // 无命中统一口径：空串会让模型分不清「没搜到」与「搜了但被静音」
       return "（无命中）";
-    case "searchTruncated":
-      // 规范入口 `searchText` 总带 `nextOffset`（模型可见承诺，见下方调用处注释）；
-      // 别名不传 `offset` 也不开 `emitMetadata` → 拿不到 `nextOffset`，输出逐字不变。
-      return values.nextOffset === undefined
-        ? `[命中过多，已按 max_results=${values.limit} 截断]`
-        : `[命中过多，已按 max_results=${values.limit} 截断；offset=${values.nextOffset} 继续]`;
+    case "searchTruncated": {
+      // 规范入口与两个薄别名**共用同一个数**（#196 追加轮 R5 主 agent 裁决）：`nextOffset` =
+      // 调用方传入的 offset + 本次实际返回的命中条数，与 `metadata.searchNextOffset` 同源，
+      // 不在这里另算一套。别名**不接受** offset 入参（#188：入参形状属 Stable），但「不吃入参」
+      // 不是「把真值藏起来」的理由——模型照抄这个数到 `searchText` 上就能续读，不给就得自己数命中行。
+      // 两侧文案差异只剩「改用 …」前缀与「（本别名不接受 offset）」这句限定，数字同源。
+      // （#196 前这里是不带任何出口的纯状态文本；#188 的「别名不得被继任入口带跑」约束的是命中行、
+      //  分组形状与 `max_results` 数字，三者仍逐字不变。）
+      return values.alias === true
+        ? `[命中过多，已按 max_results=${values.limit} 截断；${NEXT_STEP_CLAUSE}改用 searchText 传 offset=${values.nextOffset} 继续（本别名不接受 offset）]`
+        : `[命中过多，已按 max_results=${values.limit} 截断；${NEXT_STEP_CLAUSE}searchText 传 offset=${values.nextOffset} 继续]`;
+    }
     case "deprecated":
       // 别名弃用告警（issue #188 三层分级：工具名与入参形状属 Stable → 本轮只加告警不删）。
       // ⚠ 文案里不得出现 `…`：既有的「未触顶的行不得带省略号」断言比对的是整段结果文本。
@@ -249,16 +305,31 @@ export function toolMarker(kind, values = {}) {
     case "treeDepthCap":
       return `[另有 ${values.remaining} 个目录未展开，depth=${values.depth} 已到上限；传 depth=${values.depth + 2} 或 include_vendor=true 查看更多]`;
     case "readBytesCap": {
+      // 字节数走 formatSize（#196 R2）：这段文本里不再出现裸字节数。
+      // ⚠ 措辞**不得声称内容完整**（#196 追加轮 R4）：触顶时最后一条物理行可能只回了一半、甚至
+      //   整行没回来，而这里的 `offset` 语义固定是「下一个未读整行」——被裁那行的剩余部分不在它覆盖
+      //   范围内，那是紧随其后的 readLineTruncated 的职责（它带的是那条**自己的** offset）。
+      //   两条 marker 的先后顺序就是这里的职责顺序，别合并成一条模糊承诺。
       const total = values.total === undefined ? "" : `，共 ${values.total} 行`;
-      return `[本次返回已达 max_bytes=${values.maxBytes} 字节上限${total}；offset=${values.offset} 继续]`;
+      return `[本次返回已达 max_bytes=${formatSize(values.maxBytes)} 上限${total}；${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset} 继续]`;
     }
     case "readMoreLines":
-      // 历史 marker 逐字保留（模型侧唯一的通道就是文本）
-      return `[共 ${values.total} 行，offset=${values.offset} 继续]`;
+      // 行窗口没读满就报总数与续读 offset（#196 R1.1）：两个数都是本次调用的真值
+      // （总行数来自扫到 EOF，offset = start + limit），模型照抄即可续读。
+      return `[共 ${values.total} 行，剩余 ${values.total - values.offset} 行；${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset} 继续]`;
     case "readNotScanned":
-      return `[文件 ${values.size} 字节 > max_bytes=${values.maxBytes}，行窗口之后的内容未读取；offset=${values.offset} 继续]`;
-    case "readLineTruncated":
-      return `[单行超过 max_bytes=${values.maxBytes}，超长部分已截断]`;
+      return `[文件 ${formatSize(values.size)} > max_bytes=${formatSize(values.maxBytes)}，行窗口之后的内容未读取；${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset} 继续]`;
+    case "readLineTruncated": {
+      // #196 R1.2：此前只说「超长部分已截断」，模型没有任何可执行的取回出口。
+      // 这里给的全是本次调用的真值：文件显示路径、被截首条的**行号**与它的 0-based `offset`、
+      // 截断行数、文件真实大小（决定 max_bytes 要提多高）。路径只出现一次、且截到 120 字符：
+      // 整段结果受 `max_bytes - READ_MARKER_RESERVE` 约束，marker 变长要走 512 字节的预留额度。
+      const where = truncateDisplayText(String(values.path ?? ""), 120);
+      const extra = values.count > 1 ? `，另有 ${values.count - 1} 行同样被截断` : "";
+      return `[单行超过 max_bytes=${formatSize(values.maxBytes)}，已截断 ${values.count} 行：首条第 ${values.line} 行${extra}`
+        + `（文件 ${where}，${formatSize(values.size)}）；`
+        + `${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset}, limit=1 并提高 max_bytes]`;
+    }
     default:
       throw new TypeError(`unknown tool marker kind: ${kind}`);
   }
@@ -335,6 +406,10 @@ function fitByteBudget(text, budget) {
  * - 文件 ≤ max_bytes：扫到 EOF，行号与 `[共 N 行，offset=… 继续]` marker 与历史逐字节一致。
  * - 文件 > max_bytes：行窗口取满即早停（不再读之后的字节），marker 诚实说明「之后未读取」。
  * - 单个物理行超过 max_bytes：截断成一行并回报，其余内容丢到下一个换行（防单行 OOM）。
+ * - 同一条超宽行**没跨块**（整行落在一个读块内）时走的是「整行放不下剩余额度」那条路：它一个字节
+ *   都没进结果，后果与半行相同——所以只要单行本身超内容预算（`limit=1` 也救不回来）就同样记进
+ *   `truncatedLines`（#196 追加轮 R4）。普通短行被额度截住不记：它靠 `readBytesCap` 的 offset
+ *   续读就能拿回，报成「单行超过 max_bytes」是另一条谎。
  */
 function readLineWindow(absolutePath, { start, count, maxBytes }) {
   const size = statSync(absolutePath).size;
@@ -350,6 +425,9 @@ function readLineWindow(absolutePath, { start, count, maxBytes }) {
   let totalLines; // 只有扫到 EOF 才已知
   let contentCapped = false;
   let lineTruncated = false;
+  // 被截断的**行号**（1-based，按出现顺序）：#196 R1.2 的可执行出口要带真实行号与 offset，
+  // 只留一个布尔值就说不清「是哪一行」。
+  const truncatedLines = [];
   let skippingToNewline = false;
 
   const acceptLine = (line, { mayTruncate = false } = {}) => {
@@ -362,6 +440,14 @@ function readLineWindow(absolutePath, { start, count, maxBytes }) {
     let bytes = Buffer.byteLength(formatted, "utf8") + separator;
     if (contentBytes + bytes > contentBudget) {
       if (!mayTruncate) {
+        // 整行装不进剩余额度 → 触顶。只有「这一行本身就超内容预算」（换 limit=1 也放不下，
+        // 即真正的超宽行）才记行号：readLineWindow 只在跨块截断分支采 truncatedLines，
+        // 整行落在单个读块内的超宽行就会从这里漏掉，模型照 readBytesCap 的 offset 续读
+        // 永远跳过它（#196 追加轮 R4）。
+        if (Buffer.byteLength(formatted, "utf8") > contentBudget) {
+          truncatedLines.push(index + 1);
+          lineTruncated = true;
+        }
         contentCapped = true;
         return false;
       }
@@ -410,6 +496,8 @@ function readLineWindow(absolutePath, { start, count, maxBytes }) {
         // 余下内容丢到下一个换行（内存上限 = 一个块 + 一个残段，不会随文件大小增长）
         const inWindow = lineIndex >= start && lineIndex < start + count && !contentCapped;
         if (inWindow) {
+          // 行号必须在 acceptLine 之前取：它会把 lineIndex 推进掉。
+          truncatedLines.push(lineIndex + 1);
           acceptLine(pending, { mayTruncate: true });
           lineTruncated = true;
         } else {
@@ -425,10 +513,10 @@ function readLineWindow(absolutePath, { start, count, maxBytes }) {
     closeSync(fd);
   }
 
-  return { selected, totalLines, contentCapped, lineTruncated, size };
+  return { selected, totalLines, contentCapped, lineTruncated, truncatedLines, size };
 }
 
-function fileReadMarkers(window, { start, count, maxBytes }) {
+function fileReadMarkers(window, { start, count, maxBytes, displayPath }) {
   const markers = [];
   const nextOffset = start + window.selected.length;
   if (window.contentCapped) {
@@ -444,7 +532,18 @@ function fileReadMarkers(window, { start, count, maxBytes }) {
       offset: nextOffset,
     }));
   }
-  if (window.lineTruncated) markers.push(toolMarker("readLineTruncated", { maxBytes }));
+  if (window.lineTruncated) {
+    // 超宽行的出口必须带**本次调用**的真值（路径 + 行号 + 该行 offset），否则模型无从续读（#196 R1.2）。
+    const lines = window.truncatedLines ?? [];
+    markers.push(toolMarker("readLineTruncated", {
+      maxBytes,
+      size: window.size,
+      path: displayPath,
+      count: lines.length > 0 ? lines.length : 1,
+      line: lines[0] ?? start + 1,
+      offset: lines.length > 0 ? lines[0] - 1 : start,
+    }));
+  }
   return markers;
 }
 
@@ -721,7 +820,7 @@ export function createFileTools({
 
     const window = readLineWindow(target, { start, count, maxBytes });
     const parts = [...window.selected];
-    parts.push(...fileReadMarkers(window, { start, count, maxBytes }));
+    parts.push(...fileReadMarkers(window, { start, count, maxBytes, displayPath: displayName(target) }));
     return parts.join("\n");
   };
   /**
@@ -737,6 +836,8 @@ export function createFileTools({
    * @param {number} [options.offset]        跳过前 N 条命中（只有 `searchText` 会传；别名固定 0 → 行为逐字不变）
    * @param {boolean} [options.emitMetadata] 真则返回 `{content, metadata}`（引擎支持该形状，
    *   见 src/loop/run-snapshot-executor.js:83-121），假则返回历史形状的纯字符串
+   * @param {boolean} [options.alias]  调用方是薄别名（`rg`/`grep`）：它们**不接受** `offset`，
+   *   但截断 marker 仍要给本次的真值，只有措辞不同（#196 追加轮 R5）
    */
   const runSearch = async ({
     expression,
@@ -748,6 +849,7 @@ export function createFileTools({
     includeHidden,
     format,
     emitMetadata,
+    alias = false,
   }, context) => {
     const resolvedSearchPath = resolveToolPath(root, searchPath);
     if (!canRead(resolvedSearchPath)) return readDenied(resolvedSearchPath);
@@ -826,9 +928,13 @@ export function createFileTools({
       limit: resultLimit,
       // issue #195（主 agent 验收补漏）：CLI 提示词向模型承诺「截断时给出续读 offset」，那这条承诺
       // 必须落在**模型可见**的 marker 上——`metadata` 进 transcript 但不上 wire，首查被截时模型
-      // 看不见 offset 只能猜个数。规范入口（`emitMetadata`）无论是否带 offset 都给；
-      // 别名不吃 offset，输出逐字不变（issue #188：别名不得被继任入口带跑）。
-      ...(emitMetadata || offset > 0 ? { nextOffset: offset + hits.length } : {}),
+      // 看不见 offset 只能猜个数。
+      // 追加轮 R5：这个数**三个入口都给**，且与上面的 `searchNextOffset` 是同一个表达式（别名固定
+      // offset=0，所以它就是把「本次返回的命中条数」原样报出来）。区别只在措辞：规范入口说「传
+      // offset=N 继续」（它吃这个参数），别名说「改用 searchText 传 offset=N 继续（本别名不接受
+      // offset）」（#188 的别名口径是不改**入参形状**与命中行正文，不是把真值藏掉）。
+      nextOffset: offset + hits.length,
+      alias,
     });
 
     if (hits.length === 0) {
@@ -901,6 +1007,7 @@ export function createFileTools({
       includeVendor: normalizeFlag(input?.include_vendor),
       includeHidden: normalizeFlag(input?.include_hidden),
       format: "flat",
+      alias: true,
     }, context);
     return withDeprecation(result, "rg", 'searchText with mode="regex"');
   };
@@ -926,6 +1033,7 @@ export function createFileTools({
       includeVendor: normalizeFlag(input?.include_vendor),
       includeHidden: normalizeFlag(input?.include_hidden),
       format: "grouped",
+      alias: true,
     }, context);
     return withDeprecation(result, "grep", 'searchText with mode="regex" and name_pattern');
   };
