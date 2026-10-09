@@ -2,7 +2,7 @@
 
 > Chinese version: [requirements_cn.md](requirements_cn.md)
 
-This document was first drafted on 2026-08-29 and has been reconciled with the implementation shipped in version 0.17.0. It describes the library's actual scope and APIs, not an unqualified list of future plans.
+This document was first drafted on 2026-08-29 and has been reconciled with the implementation shipped in version 0.18.0. It describes the library's actual scope and APIs, not an unqualified list of future plans.
 
 ## 1. Consumer context and pain points
 
@@ -88,7 +88,7 @@ The library boundary ends at the lifecycle of one agent task: start, run, stop, 
 
 ## 4. Phasing and implementation status
 
-The original phase plan is reconciled below with what exists in package version 0.17.0. “Delivered” describes repository code; consumer migrations and real-provider benchmark runs remain external acceptance work.
+The original phase plan is reconciled below with what exists in package version 0.18.0. “Delivered” describes repository code; consumer migrations and real-provider benchmark runs remain external acceptance work.
 
 | Version | Scope | Acceptance/status |
 |---|---|---|
@@ -98,7 +98,7 @@ The original phase plan is reconciled below with what exists in package version 
 | **v0.3.x–v0.4.x — delivered** | Checkpoint/resume hardening and the optional reflection layer in `src/reflection/`: governor decisions, L0 facts, wrap-up parsing/normalization, round judge, transparent tool interception, direction hints, and `finalGuard`/verification hooks | The loop exposes these behaviors through `reflection`, `onJudge`, `finalGuard`, and returned termination/verification data. Reflection is automatically enabled for `maxRounds >= 16` unless explicitly disabled. |
 | **v0.5.0–v0.7.x — superseded** | Earlier archive/retrieval experiments, deterministic run state, fold navigation records, and resume-safe state persistence | The release history records these changes; the current public surface is the note-first workflow and request-view TTL folding introduced in 0.8.0. |
 | **v0.8.0 — delivered** | Note-first retrieval (`note_list` → `note_read`), request-view tool-result TTL folding, retryable empty assistant responses, CLI `--tools` capability allowlists, the pure-node `grep` tool, language-aware system-prompt instructions, and efficient judge/final-round behavior | `ERIX_TOOL_RESULT_TTL` defaults to `2` (`0` disables folding), `ERIX_TOOL_RESULT_FOLD_MIN_TOKENS` defaults to `4000`, and `ERIX_RETRY_ATTEMPTS` overrides the CLI retry count. Intercept budget is 6,000 tokens, round-judge output is capped at 1,024 with no reasoning effort, raw judge output is retained, and final budget rounds send no tools. |
-| **v0.9.0–v0.17.0 — current** | Judge-owned round extension, the notes stack on a host-side `NotesStore` under a single retention knob, run-snapshot naming and `TranscriptStore` capability tiers, the run-state terminal-status channel (`markRunState`/`loadRunStateStatus`), tool `replay` declarations with `replayPolicy`, optional partial persistence, the transcript-as-truth host surface (`projectTranscriptForDisplay`, `appendUserTurn`), executable contract examples, and the documentation/packaging checks | The public surface is described by `README.md` and `docs/host-consumer-contract.md`, locked by `node --test` plus `erix-agent/contract-tests`, and versioned release by release in `CHANGELOG.md`. `npm run check:docs` keeps the documented version, defaults, and file lists aligned with the source. Consumer migrations remain host-side acceptance work. |
+| **v0.9.0–v0.18.0 — current** | Judge-owned round extension, the notes stack on a host-side `NotesStore` under a single retention knob, run-snapshot naming and `TranscriptStore` capability tiers, the run-state terminal-status channel (`markRunState`/`loadRunStateStatus`), tool `replay` declarations with `replayPolicy`, optional partial persistence, the transcript-as-truth host surface (`projectTranscriptForDisplay`, `appendUserTurn`), executable contract examples, and the documentation/packaging checks | The public surface is described by `README.md` and `docs/host-consumer-contract.md`, locked by `node --test` plus `erix-agent/contract-tests`, and versioned release by release in `CHANGELOG.md`. `npm run check:docs` keeps the documented version, defaults, and file lists aligned with the source. Consumer migrations remain host-side acceptance work. |
 | **v1.0 candidate — not shipped** | A touwaka migration, initially limited to token utilities and the history compactor, with the full `AgentLoop` migration left as a separate decision | No touwaka migration is part of this repository at the current release. Consumer-side regression and behavior checks must be run by the host project. |
 | **v2 candidate — deferred** | Cold-loop distillation plus L3 fact injection for the context-shaping idea, and native Gemini support if a future provider-layer reassessment justifies it | No `psyche` or Gemini-native provider is present in `src/` at the current release. This remains separately scoped work. |
 

@@ -824,12 +824,25 @@ library-level controls
 
 The authoritative version is the `version` field of
 [`package.json`](package.json), and `npm run check:docs` verifies the release
-line below against it. Current release: **v0.17.0** (2026-10-08). The complete,
+line below against it. Current release: **v0.18.0** (2026-10-09). The complete,
 authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
 only the releases that changed how a host consumes the runtime. The 0.6.0
 migration steps remain in
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
+- **v0.18.0 (2026-10-09)**: the host-integration release — observer callbacks
+  can no longer kill a run (all nine channels report through `onObserverError`
+  and the run continues; terminating is `signal.abort()`'s job, and thrown
+  errors now carry `usage`/`rounds`/`finalText`); failed terminations carry
+  `termination.errorCode`; `context.strategy` accepts built-in strategy names
+  (`"fold-llm"` ships an engine-default summarizer on the run's main provider,
+  cost is one extra call per compaction and its usage is accounted);
+  one-shot `model_metadata_missing` and terminal `run_outcome` events plus
+  `model` attribution in judge records; provider `defaultHeaders`/`extraBody`
+  injection; and a byte-identical token-estimation hot-path speedup
+  (~−88% per-round estimation CPU). Hosts on 0.17 upgrade with no required
+  code changes; see `docs/host-upgrade-guide-0.17.0.md` predecessor notes and
+  the CHANGELOG for the full list.
 - **v0.17.0 (2026-10-08)**: `appendUserTurn` gains the paired
   `loadByDedupKey`/`loadMaxRound` fast path (a DB-backed store no longer reads
   the whole transcript per pre-write), and contract code fences became

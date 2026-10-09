@@ -247,7 +247,7 @@ const assemblyPort = createAssemblyPort({
 - 永远不要提交 token、API key 或其他凭据。
 
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段（`npm run check:docs` 会校验本文的
-发布行）。当前发布版本：**v0.17.0**。下面引用的 `files` 清单以 `package.json` 为权威：
+发布行）。当前发布版本：**v0.18.0**。下面引用的 `files` 清单以 `package.json` 为权威：
 
 ```json
 [
@@ -491,9 +491,10 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 ## 状态与版本历史
 
-权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.17.0**（2026-10-08）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
+权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.18.0**（2026-10-09）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)。
 
+- **v0.18.0 (2026-10-09)**：宿主集成面专场——观察者回调从此杀不掉 run（九通道一律经 `onObserverError` 记账后继续，终止 run 走 `signal.abort()`，抛出的错误携带 `usage`/`rounds`/`finalText`）；failed 终局携带 `termination.errorCode`；`context.strategy` 可按名选内置策略（`"fold-llm"` 开箱自带主力 provider summarizer，每次压缩多一次调用、usage 计入总账）；新增一次性 `model_metadata_missing` 与终局 `run_outcome` 事件，judge 记录增补 `model` 归因；provider 新增 `defaultHeaders`/`extraBody` 注入口；token 估算热路径优化（逐字节同值，每轮估算 CPU 约 −88%）。0.17 宿主零必改升级，全量清单见 CHANGELOG。
 - **v0.17.0 (2026-10-08)**：`appendUserTurn` 新增成对可选快路径探针 `loadByDedupKey`/`loadMaxRound`（DB 宿主预写 user 轮不再每轮全量读），契约文档的 js 围栏改为可执行测试（`npm run check:docs-examples`）。
 - **v0.15.0–v0.16.0 (2026-10-07/08)**：「transcript 即真相」的宿主侧接口——读侧 `projectTranscriptForDisplay`、写侧 `appendUserTurn`（多轮续跑契约）、投影稳定 `key`，以及 store 保真义务（保留完整 `RoundRecord`、同轮记录按追加顺序 `load()`）。
 - **v0.14.0 (2026-10-03)**：run-state 终态改由 `markRunState`/`loadRunStateStatus` 承载（latest-only 快照不再写 `state`）、工具可声明 `replay: "safe"|"unsafe"` 并配合 `replayPolicy`、新增可选 partial 落盘，删除 `src/loop.js` 转发 shim。

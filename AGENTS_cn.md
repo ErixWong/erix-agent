@@ -66,7 +66,7 @@ scripts/          # 实验脚本和结果
 - 必须移除 `private`（否则 403）；使用 node 脚本编辑 JSON，不要用 sed 删除一行（否则尾部逗号会破坏 JSON）。
 - `files`: `["src", "bin", "skills", "README.md", "CHANGELOG.md", "docs/host-consumer-contract.md", "test/contract", "LICENSE"]` — 发布前使用 `npm publish --dry-run` 检查 tarball。
 - `repository.url` 使用 `git+https://...` 格式（或运行 `npm pkg fix`）。
-- 当前版本：`0.17.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
+- 当前版本：`0.18.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
 
 ### npm 2026 政策变化（TOTP 停止 + bypass token 限制）
 - ❌ 不再支持新的 TOTP 注册（`enable-2fa` 返回 404）。

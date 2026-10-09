@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-09
+
 ### Added
 
 - `context.strategy` 接受内置策略名字符串，`fold-llm` 开箱自带 summarizer（issue #167，方案 C，additive / semver minor）：`context.strategy` 除策略对象外还可写 `"sliding-window" | "fold-statistical" | "fold-llm"`（**对象形式行为逐字不变**：同一引用透传，引擎不重写注入的对象，手工 `createFoldLlmStrategy` 缺 `summarizer` 仍按它自己的构造期 `TypeError` 失败；未知名字 / 空串 / 既非字符串也非对象的值在**首次 provider 调用前**抛 `TypeError` 并列出合法值）。名字在启动期一次性解析成实例（`src/compact/strategy-resolution.js`，接入点 `src/loop/orchestrator.js:988-1003`），下游 `configuredStrategy` 通道零改动；名字形态额外接上 context 级 `recoveryHint`/`stubFor`。名字解析出 `fold-llm` 且未注入 summarizer 时，引擎注入默认 summarizer = **本 run 的主力 provider**（`src/compact/provider-summarizer.js`：一次无工具补全，输入 = `SUMMARIZER_PROMPT_GUIDE` + 被折叠消息确定性序列化 + 被折叠轮次范围）。⚠ 成本：每次压缩多一次主力模型调用（体量约等于被折叠的老轮次），因此 `fold-llm` 只能显式选用。记账：该调用的 usage 走与 wrapup judge 同口径的 `addUsage(…, {trackLatest:false})`（`src/loop/orchestrator.js:979`）并入 `result.usage`/`error.usage`，并转发宿主 `onUsage`，但**不推 `rounds`**、不参与 stall、不更新压缩判断用的 `latestApiInputTokens`；reject/throw/空文本一律降级到既有统计摘要（下一轮上下文带 `[fold-llm 摘要失败…]` 标记），run 不因此中途死亡。手动注入对象仍为覆盖通道（可接便宜模型；该形态引擎不记账）。CLI 同步补 `--compaction <name>`（chat/repl）与 `slots.default.compaction` 字段（旗标优先），**默认 `fold-statistical` 不变**；非法名字直接报 usage 错误而不是默默回落。根导出新增 `BUILTIN_COMPACTION_STRATEGIES`/`BUILTIN_COMPACTION_STRATEGY_NAMES`/`isBuiltinCompactionStrategyName`/`resolveCompactionStrategy`/`createProviderSummarizer`/`serializeFoldedMessages`。
