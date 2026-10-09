@@ -192,6 +192,125 @@ which order it is probed, and when the loop emits the one-shot
 `model_metadata_missing` diagnostic event are all specified in "Model metadata
 and budget derivation (issue #182)" below (issue #182).
 
+## Retry budget (issue #183)
+
+**Not configured means not retried.** `retry` defaults to `false`
+(`src/loop/orchestrator.js:566`), and in that state the engine issues exactly
+one provider attempt per round and one write per store call. A host that wants
+retrying has to ask for it, and a host that does not ask must not assume a
+provider call is ever repeated. This section is the whole rule set; the
+termination side of it is the `failed` row of "Termination decision table
+(issue #170)".
+
+### Derived values
+
+Only an **object** turns retrying on: `retryOptions = retry && typeof retry ===
+"object" ? retry : null` (`src/loop/orchestrator.js:713`), so `retry: true` is
+*not* "enable retrying" — it is identical to leaving the option out.
+
+| input | effective value | derivation |
+|---|---|---|
+| `retry` omitted / `false` / `true` | `retryAttempts = 0`, no retry path at all | `:713-715` |
+| `retry: {}` | `retryAttempts = 2` → 3 provider calls per round at most | `Number.isInteger(attempts) ? Math.max(0, attempts) : 2` (`:714-718`) |
+| `retry: { attempts: n }` | `Math.max(0, n)` for an **integer** `n` | `:716-717` |
+| `retry: { attempts: 2.5 }` / `{ attempts: "2" }` | silently `2` — the non-integer value is discarded, never validated | `:716`, fallback `:718` |
+| `retry: { attempts: -1 }` | `0` (clamped, not rejected) | `:717` |
+| `retry.backoffBaseMs` | `1500` when absent or non-finite; negatives clamp to `0` | `:719-721` |
+| `retry.backoffMaxMs` | `10000` when absent or non-finite; negatives clamp to `0` | `:722-724` |
+| `retry.sleepImpl` | `defaultSleep` (`src/loop/abort.js:16`); a host value is called as `sleepImpl(delay, signal)` | `:725`, `:885`, `:1636-1641` |
+
+The wait before retry *n* (0-based) is `Math.min(backoffBaseMs * 2 ** n,
+backoffMaxMs)` in both loops (`src/loop/provider-runner.js:246-249`,
+`src/loop/orchestrator.js:881-884`). Sleeping is abort-aware: the run's signal
+is passed to `sleepImpl` and raced by `waitForRetry`
+(`src/loop/orchestrator.js:1636-1641`), so `signal.abort()` during a backoff
+wait throws the standard `aborted` shape with the issue #180 payload.
+
+Only errors marked `retryable === true` are retried
+(`src/loop/provider-runner.js:219`). That set is `KitError.code` ∈
+`timeout`, `rate_limited`, `server`, `disconnect`
+(`src/providers/errors.js:1,14-16`), HTTP 408/429/5xx through
+`classifyHttpError` (`:86-99`), retryable transport failures through
+`classifyFetchException` (`:141-172`, decided by
+`isRetryableNetworkException` `:123-132`), and an assistant message that carries no
+text, tool call, or reasoning (`src/messages/canonical.js:448-454`).
+Everything else — `auth`, `aborted`, a `TypeError` from option validation, a
+host store bug — is rethrown on first sight.
+
+### One option, two independent loops
+
+The same three numbers feed two loops with **separate counters**. They do not
+multiply, and a host must not model them as one global attempt budget:
+
+| loop | coordinate | gate | budget |
+|---|---|---|---|
+| per-round provider call | `src/loop/provider-runner.js:33-263` (`callProvider`) | `retryOptions !== null` **and** `error.retryable === true` (`:219`) | `retryAttempts + 1` provider calls **per round**; a run therefore tops out at `maxRounds × (retryAttempts + 1)` |
+| persistence store write | `src/loop/orchestrator.js:872-888` | the same numbers, no `retryable` gate | `retryAttempts + 1` writes **per store call**, independent of the provider loop |
+
+A persistence retry never re-issues a provider call, and a provider retry never
+re-writes a record. `retry: { attempts: 0 }` and `retry: false` are
+observationally equal: one provider call, one store write, no `recovering`
+event, and `maxAttempts: 1` on the `attempt` event.
+
+### What this budget does not cover
+
+Do not extrapolate it to the rest of the engine:
+
+- **Tools are never retried.** A failed `executeTool` becomes a `tool_result`
+  with `is_error`; re-running is the host's call (see "Tool replay policy
+  (issue #139)", which is about resume, not retry).
+- **Out-of-round completions get one attempt each**: the wrap-up call
+  (`src/loop/termination.js:234`), the wrap-up/`judge` text normalizer
+  (`src/reflection/wrapup.js:132-135`), and the `fold-llm` default summarizer
+  (`src/loop/orchestrator.js:1063-1073`). None of them consumes this budget.
+- **The run itself is never retried.** Whole-run rerun/requeue policy belongs to
+  the host (ADR-012), and `maxTokenContinuations` (default `3`) and
+  `finalGuardMaxRetries` are separate budgets: the first continues a response
+  truncated by `max_tokens`, the second re-asks the final-answer guard. Neither
+  is an error-retry budget, and neither is affected by `retry`.
+
+### Streaming: same budget, one behaviour change to know about
+
+There is **no second stream-retry counter**. For a `stream: true` run the loop
+above *is* the stream recovery: `recovering` /
+`recovered` are its event surface, and a failed attempt is rolled back to the
+pre-attempt snapshot before re-requesting the whole completion
+(`src/loop/provider-runner.js:224-243`).
+
+- `DEFAULT_STREAM_RECOVERY_MAX_ATTEMPTS` is **not an identifier in this
+  package** (grep-verified). A `2` quoted as its value is the `retryAttempts`
+  fallback at `src/loop/orchestrator.js:714-718`. The CLI's own `2` comes from
+  `ERIX_RETRY_ATTEMPTS` (`bin/cli.js:828-836`), which the CLI passes as
+  `retry: { attempts: … }`; the **library** default stays `false`, so copying
+  CLI behaviour into a host is how this number gets misattributed.
+- `partialPersistence` is durability, not retry: it commits the partial text of
+  a dying attempt (`onPartialAttemptEnd({ retrying: true })`,
+  `src/loop/orchestrator.js:1919-1933`) and adds no attempt of its own.
+- **Side effect worth asserting in your own tests:** with `retryAttempts > 0`
+  the streamed observer callbacks are buffered per attempt and dispatched only
+  once that attempt succeeds
+  (`src/loop/provider-runner.js:111-117`, flush at `:192-194`), so
+  `onDelta`/`onReasoningDelta`/`onToolCall`/`onUsage` arrive in one burst at
+  attempt end instead of incrementally. With `retry: false` (or
+  `attempts: 0`) they dispatch as they arrive
+  (`src/loop/provider-runner.js:112-115`). Enabling retry therefore changes
+  your rendering cadence; that is upstream behaviour, not a host bug.
+
+### Host-assertable observation points
+
+| want to pin down | channel you can assert on |
+|---|---|
+| provider attempts per round | the `attempt` event `{ type, round, attempt, maxAttempts }` (`src/loop/provider-runner.js:86-91`); `maxAttempts === retryAttempts + 1`, so a host can assert the cap without knowing the option value |
+| a retry actually happened | the `recovering` event (`src/loop/provider-runner.js:252-258`); `recovered` marks the attempt that succeeded after one (`:188-191`, `:203-206`) |
+| the backoff schedule, without wall-clock cost | inject `retry.sleepImpl` and record every `delay` — the count is the number of retries taken, and the recorded values pin the `min(base × 2ⁿ, max)` formula |
+| no N×M provider amplification | your provider wrapper's own request counter, asserted against the `attempt` events and against `maxRounds × (retryAttempts + 1)` |
+| store-write retries | **no per-attempt event exists.** The only signal is the terminal `persistence_error` report after the loop is exhausted (`src/loop/orchestrator.js:889-896`); wrap your own store methods to count attempts, which is currently the only way to prove the store-side loop ran at all |
+
+Leftover (issue #183): the run result carries no aggregate attempt/retry
+counter, so a per-run total has to be assembled from events by the host. A
+durable retry counter is **not** promised today; treat `attempt` / `recovering`
+/ `recovered` and `retry.sleepImpl` as the only supported observation points.
+
 ## AssemblyPort
 
 Hosts that assemble a complete run can provide one validated composition root
@@ -1496,3 +1615,96 @@ state is normal and is not the same as a present but invalid state.
 `stateAvailability` is a diagnostic observation from the current resume attempt;
 it is retained in persisted state but does not by itself reject a structurally
 valid state on a later resume.
+
+## Contract test suites (issue #183)
+
+`erix-agent/contract-tests` (the `./contract-tests` subpath export,
+`test/contract/index.js`) ships seven suite files exposing **eight** reusable
+`node:test` registration functions (`execute-tool.js` carries two: the current and
+the migration shape). Every one is shaped `xxxContract(label, factory)`: calling it
+registers assertions titled with `label`, and nothing executes until
+`node --test` runs them. `npm run check:docs:strict` fails on any suite that
+`test/contract/index.js` re-exports but the packaged `files` list omits (it is a
+warn under the plain `npm run check:docs`), so the shipped set cannot shrink
+unnoticed. `terminationPayloadContract` is the newest of the eight (issue #180):
+a host on an installed 0.17.0 has seven, not eight.
+
+### What the suites prove, and what they cannot prove (issue #183)
+
+**A suite asserts the behaviour of the upstream implementation at the version
+you installed.** Its value is a **drift sentinel for engine upgrades**: when you
+bump `erix-agent`, re-run the suites against your own adapters and a red
+assertion names the contract that moved. It is **not** a host conformance test,
+and it cannot replace the host's own consistency tests:
+
+- A suite pins only the assertions upstream actually wrote. Semantics your
+  implementation adds, omits, or reinterprets *beyond* upstream's surface are
+  invisible to it — nothing asserts what upstream never exercises.
+- touwaka's evidence: deliberately changing its transcript store into a semantic
+  upstream does not have left every shipped suite **green**. The suite did not
+  disagree with the change because the change was outside its field of view.
+- The same asymmetry cuts the other way: a green suite says nothing about your
+  schema, your migration, your connection handling, or your cleanup. Those are
+  adapter tests and stay yours (this is the standing rule in each suite header).
+- So wire them as a **sentinel, not a gate on your own semantics**: run them on
+  every engine version bump and treat a red assertion as a changelog line; keep
+  a separate host-owned suite for the behaviour your implementation invented.
+  Weakening a shipped assertion to make an upgrade pass discards the only signal
+  the suite carries (the 0.16.0 guide says the same thing for the fidelity and
+  ordering pair).
+
+### Standard usage (issue #183)
+
+Inject your implementation as the factory argument; `label` is the prefix of
+every generated test title, so use one stable name per adapter. The suites are
+registration-only, so an ordinary `node --test` run of your test tree executes
+them. The factory must hand out a **clean** implementation on every call — each
+assertion group treats it as a fresh namespace and several suites re-enter it:
+
+```js
+import { notesStoreContract, transcriptStoreContract } from "erix-agent/contract-tests";
+import { createFileNotesStore, createMemoryTranscriptStore } from "erix-agent";
+
+transcriptStoreContract("my-host-store", () => createMemoryTranscriptStore());
+notesStoreContract("my-host-store", () => createFileNotesStore({ dir: notesDir }));
+```
+
+The same shape covers the other six; only the second argument differs:
+
+| suite | second argument | what the factory must hand back |
+|---|---|---|
+| `transcriptStoreContract(label, createStore)` | factory | a clean `TranscriptStore` (required tier `appendRound`/`load`; the run-snapshot, run-state, and issue #157 probe methods are exercised when present) |
+| `notesStoreContract(label, createStore)` | factory | a clean `NotesStore` (write/read/list/complete/revoke/purge) |
+| `modelConfigProviderContract(label, setup)` | async setup | `{ provider, slot, expect: { defaultModel, slotModel, materializedKey } }`; the provider needs a `default` slot plus `slot`, whose key is reachable through an indirect reference |
+| `executeToolContract(label, createExecutor)` | factory | your `executeTool` function (or `{ executeTool }`) |
+| `executeToolMigrationContract(label, createExecutor)` | factory | the same executor, asserted against the retired positional call shape |
+| `assemblyPortContract(label, createPort)` | factory | your `AssemblyPort` object; the suite starts a real `runToolLoop` on it |
+| `engineApiContract(label, getEntry)` | factory | the **package entry namespace**, i.e. `() => import("erix-agent")` — it asserts exported engine API, not your code |
+| `terminationPayloadContract(label, getEntry)` | factory | the same entry namespace (`{ runToolLoop }`); it brings its own provider stub |
+
+### Suite inventory (issue #183)
+
+"Harness" is what the suite runs against: your factory (host-side) or the
+packaged engine (upstream-side, i.e. a pure drift sentinel).
+
+| suite | what it asserts | yours to satisfy | upstream-internal detail it also pins |
+|---|---|---|---|
+| `transcript-store.js` (16 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-snapshot latest-only overwrite, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, and the paired probe tier | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance |
+| `notes-store.js` (7 tests) | port validation (`assertNotesStore`), malformed-record rejection before persistence, full record round-trip, scope isolation and explicit misses, unsafe-scope round-trip through lifecycle, tombstone semantics with `expectedState`/`expectedUpdatedAt` guards, and last-write-wins concurrency that must still leave one valid record | the port surface and the record/guard semantics. Which of the six notes semantics are upstream-mandated versus host policy is still being adjudicated (issue #183 item 1); today the suite encodes upstream's choices, so treat those rows as upstream behaviour until they are ruled on | the file-store-shaped error texts (`/valid NoteRecord/`, `/parseable date/`), the LWW wording (documented one-writer limitation), retention/purge timing |
+| `assembly-port.js` (4 tests) | a port boots a real loop to completion, `emit(type, payload)` receives the event types with their payload, an explicit fine-grained `provider` option overrides the port's provider, and a provider missing `chat`/`chatStream` is rejected at startup by both `createAssemblyPort` and `runToolLoop` | your port's required adapters and its `emit` sink | the precedence rule (explicit option over port), the startup-validation error text |
+| `execute-tool.js` (7 tests) + `execute-tool-migration-contract` (2 tests) | your executor receives exactly one structured execution object, and each canonical return form (`string`, `{content, metadata, success}`, legacy `{data}`, returned `Error`, thrown `Error`) becomes the documented `tool_result` | the call shape and the return shapes. The migration suite additionally proves that a bare positional `(name, input)` executor is **rejected**, not silently supported | that the assertions are observed through `runToolLoop`'s provider request rather than through a public result field |
+| `model-config-provider.js` (4 tests) | `resolve()` → default slot, `resolve(slot)` → named slot, unknown slot → default fallback, and `apiKey` indirect-reference materialisation (ADR-001) | your provider's slot resolution and key materialisation | nothing engine-side: it never loads the engine |
+| `engine-api.js` (2 tests) | the package entry exports `appendUserTurn` and `projectTranscriptForDisplay` as functions, and `appendUserTurn` completes one pre-write against a minimal store stub (including the `dedupKey`/`roundKey` shape and that the pre-write feeds the display projection) | nothing — this is an entry-surface sentinel; it goes red when an upstream bump renames or drops engine API | the exact pre-write record shape (`round: 0`, `dedupKey`, `roundKey`, `ts`) |
+| `termination-payload.js` (4 tests) | a `failed` terminal outcome carries `termination.errorCode` (classification passthrough, `unknown` fallback), an abort throws with `usage`/`rounds`/`finalText` and `termination.partial`, cumulative usage is attributed per round, and the success path keeps its old shape (no `errorCode`/`partial`/`usage` appearing out of nowhere) | nothing directly — it is your host-side decision table's regression net (issue #170 / #176 / #180) | the stubbed provider script, the zero-vs-missing-field rule for `usage` |
+
+### Wiring rule for hosts
+
+- Run every host-side suite (transcript store, notes store, model config
+  provider, execute tool, assembly port) from your own test tree with your real
+  adapter, on each engine bump, before the release-acceptance run.
+- Add the entry-level sentinels (`engineApiContract`,
+  `terminationPayloadContract`) once; they cost two registrations and catch the
+  "upstream renamed something I forgot to grep" class.
+- Keep host-invented behaviour in host-owned tests. If a shipped suite disagrees
+  with a host requirement, file it (issue tracker) rather than forking the
+  suite: the fork loses the sentinel.

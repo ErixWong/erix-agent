@@ -1,7 +1,9 @@
 // 契约文档示例可执行性检查 harness（issue #158）。
 // 从 docs/host-consumer-contract.md 提取 ```js 围栏，做三层验证：
 //   L1 语法：文档约定归一化后包进 (async () => {...})()，用 node:vm 编译（不执行）；
-//   L2 链接：把 `from "erix-agent"` 重写为 src/index.js 的 file:// URL，写临时 .mjs
+//   L2 链接：把 `from "erix-agent"` 重写为 src/index.js 的 file:// URL、
+//            `from "erix-agent/contract-tests"` 重写为 test/contract/index.js 的
+//            file:// URL（两个说明符与 package.json exports 一一对应），写临时 .mjs
 //            动态 import（示例体包进未调用函数，只验证真实符号可链接）；
 //   L3 执行：同 L2 但真正执行示例体；对未 import 却引用真实符号/上下文的围栏，
 //            前置注入 preamble（真实符号 + 最小 stub），独立子进程 spawnSync 跑，
@@ -25,11 +27,16 @@ export const REPO_ROOT = resolve(HERE, "..", "..");
 export const EN_DOC = join(REPO_ROOT, "docs", "host-consumer-contract.md");
 export const CN_DOC = join(REPO_ROOT, "docs", "host-consumer-contract_cn.md");
 export const INDEX_URL = pathToFileURL(join(REPO_ROOT, "src", "index.js")).href;
+// 契约套件的发布形态就是 package.json exports["./contract-tests"]；文档里「宿主注入
+// 自己的实现跑契约套件」的示例必须按宿主看到的那个说明符导入，所以该说明符也要能被三层验证解析。
+export const CONTRACT_TESTS_URL = pathToFileURL(
+  join(REPO_ROOT, "test", "contract", "index.js"),
+).href;
 export const FAKE_PROVIDER_URL = pathToFileURL(
   join(REPO_ROOT, "test", "helpers", "fake-provider.js"),
 ).href;
 
-export const EXPECTED_JS_FENCE_COUNT = 7;
+export const EXPECTED_JS_FENCE_COUNT = 8;
 export const L3_TIMEOUT_MS = 15000;
 
 /** 提取 markdown 中所有 ```js 围栏 → [{ line, code }]（line 为围栏起始行号，1-based）。 */
@@ -59,7 +66,9 @@ export function stripDocConvention(code) {
 }
 
 function rewriteErixSpecifier(specifier) {
-  return specifier === "erix-agent" ? INDEX_URL : specifier;
+  if (specifier === "erix-agent") return INDEX_URL;
+  if (specifier === "erix-agent/contract-tests") return CONTRACT_TESTS_URL;
+  return specifier;
 }
 
 const TOP_LEVEL_IMPORT_RE = /^import\s+(?:\{[^}]*\}|\*\s+as\s+\w+|\w+)\s+from\s+["']([^"']+)["'];?\s*$/;
@@ -351,6 +360,29 @@ const store = { async load() {
 `,
     epilogue: `
 if (__storeLoads__.count !== 1) throw new Error(\`store.load 应被调用 1 次，实际 \${__storeLoads__.count} 次\`);
+`,
+  },
+  // fence #7（EN :1660，契约套件标准注入用法，issue #183）
+  // 两层都真验：L2 靠 `erix-agent/contract-tests` 说明符重写到 test/contract/index.js（证明
+  // 发布的子路径入盘）；L3 把示例当宿主那样注册 23 条断言（transcript 16 + notes 7）并真的跑完
+  // ——node:test 任何一条红都会把子进程 exitCode 置 1，所以「绿」本身就是「套件能接宿主实现」的证据。
+  // 主体里的 `notesDir` 是文档约定变量（宿主自己的 notes 目录），由 stubs 供一个真 tmpdir；
+  // 完成性断言挂在 beforeExit（事件循环排空 = 套件跑完）上，核「notes 套件真的写到了注入的实现上」。
+  {
+    linkImports: [],
+    stubs: `
+import { mkdtempSync, rmSync, readdirSync } from "node:fs";
+import { tmpdir as __osTmpdir } from "node:os";
+import { join as __join } from "node:path";
+const notesDir = mkdtempSync(__join(__osTmpdir(), "doc-example-contract-"));
+`,
+    epilogue: `
+process.on("beforeExit", () => {
+  if (readdirSync(notesDir, { recursive: true }).length === 0) {
+    throw new Error("注入的 NotesStore 未被写过：契约套件没有真的打到宿主实现上");
+  }
+  rmSync(notesDir, { recursive: true, force: true });
+});
 `,
   },
 ];

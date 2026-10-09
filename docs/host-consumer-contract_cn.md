@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -155,6 +155,110 @@ await provider.chat({ messages });
 预算元数据是另一份契约：模型 slot 能携带哪些字段、按什么顺序被探测、loop 何时发出一次性的
 `model_metadata_missing` 诊断事件，全部在下文「模型元数据与预算推导（issue #182）」里定义
 （issue #182）。
+
+## 重试预算（issue #183）
+
+**不配置就是不重试。** `retry` 默认 `false`（`src/loop/orchestrator.js:566`），在该状态下
+引擎每轮**恰好**发一次 provider 调用、每次 store 调用**恰好**写一次。想要重试的宿主必须显式
+要求；没要求的宿主不得假设一次 provider 调用会被重发。本节就是完整规则集；它的终局一面是
+下文「终止裁决决策表（issue #170）」里的 `failed` 行。
+
+### 派生值
+
+只有**对象**才会打开重试：`retryOptions = retry && typeof retry === "object" ? retry : null`
+（`src/loop/orchestrator.js:713`），所以 `retry: true` **不是**「启用重试」——它与完全不写
+该选项完全等价。
+
+| 输入 | 生效值 | 推导 |
+|---|---|---|
+| `retry` 缺省 / `false` / `true` | `retryAttempts = 0`，完全没有重试路径 | `:713-715` |
+| `retry: {}` | `retryAttempts = 2` → 每轮最多 3 次 provider 调用 | `Number.isInteger(attempts) ? Math.max(0, attempts) : 2`（`:714-718`） |
+| `retry: { attempts: n }` | **整数** `n` 取 `Math.max(0, n)` | `:716-717` |
+| `retry: { attempts: 2.5 }` / `{ attempts: "2" }` | 静默变 `2` —— 非整数值被丢弃，从不校验 | `:716`，回落 `:718` |
+| `retry: { attempts: -1 }` | `0`（夹取，不报错） | `:717` |
+| `retry.backoffBaseMs` | 缺省或非有限值时 `1500`；负数夹到 `0` | `:719-721` |
+| `retry.backoffMaxMs` | 缺省或非有限值时 `10000`；负数夹到 `0` | `:722-724` |
+| `retry.sleepImpl` | `defaultSleep`（`src/loop/abort.js:16`）；宿主传值按 `sleepImpl(delay, signal)` 调用 | `:725`、`:885`、`:1636-1641` |
+
+第 *n* 次重试（0 起始）前的等待在两条循环里都是
+`Math.min(backoffBaseMs * 2 ** n, backoffMaxMs)`
+（`src/loop/provider-runner.js:246-249`、`src/loop/orchestrator.js:881-884`）。睡眠是
+可中断的：run 的 signal 会传给 `sleepImpl` 并被 `waitForRetry` 竞争
+（`src/loop/orchestrator.js:1636-1641`），因此在退避等待期间 `signal.abort()` 抛出的是
+标准的 `aborted` 形状，携带 issue #180 的载荷。
+
+只有被标为 `retryable === true` 的错误才会被重试
+（`src/loop/provider-runner.js:219`）。该集合是 `KitError.code` ∈ `timeout`、
+`rate_limited`、`server`、`disconnect`（`src/providers/errors.js:1,14-16`），经
+`classifyHttpError` 得知的 HTTP 408/429/5xx（`:86-99`），经 `classifyFetchException`
+得知的可重试传输失败（`:141-172`，由 `isRetryableNetworkException` `:123-132` 判定），
+以及一条既无文本、也无工具调用、也无推理的 assistant 消息
+（`src/messages/canonical.js:448-454`）。其余一切 —— `auth`、`aborted`、选项校验抛的
+`TypeError`、宿主 store 的 bug —— 首次见到就原样重抛。
+
+### 一个选项，两条独立循环
+
+同样三个数字喂给两条**计数器相互独立**的循环。它们不会相乘，宿主不得把它们建模成一个
+全局尝试预算：
+
+| 循环 | 坐标 | 门槛 | 预算 |
+|---|---|---|---|
+| 每轮 provider 调用 | `src/loop/provider-runner.js:33-263`（`callProvider`） | `retryOptions !== null` **且** `error.retryable === true`（`:219`） | **每轮** `retryAttempts + 1` 次 provider 调用；一个 run 因此封顶于 `maxRounds × (retryAttempts + 1)` |
+| 持久化 store 写入 | `src/loop/orchestrator.js:872-888` | 同一组数字，**没有** `retryable` 门槛 | **每次 store 调用** `retryAttempts + 1` 次写入，与 provider 循环无关 |
+
+持久化重试绝不会重发 provider 调用，provider 重试也绝不会重写记录。
+`retry: { attempts: 0 }` 与 `retry: false` 在观测上等价：一次 provider 调用、一次 store
+写入、没有 `recovering` 事件，且 `attempt` 事件上 `maxAttempts: 1`。
+
+### 这条预算不覆盖什么
+
+不要把它外推到引擎其余部分：
+
+- **工具从不重试。** 失败的 `executeTool` 变成一条 `is_error` 的 `tool_result`；要不要
+  重跑是宿主的决定（见「工具重放策略（issue #139）」，那一节说的是 resume，不是重试）。
+- **轮外补全各只有一次尝试**：收尾调用（`src/loop/termination.js:234`）、收尾/`judge`
+  文本归一化器（`src/reflection/wrapup.js:132-135`）、以及 `fold-llm` 默认 summarizer
+  （`src/loop/orchestrator.js:1063-1073`）。它们都不消耗本预算。
+- **run 本身从不重试。** 整 run 重跑/重排队策略属于宿主（ADR-012），而
+  `maxTokenContinuations`（默认 `3`）与 `finalGuardMaxRetries` 是另外的预算：前者续写被
+  `max_tokens` 截断的响应，后者重新询问终答 guard。两者都不是错误重试预算，也不受
+  `retry` 影响。
+
+### 流式：同一份预算，一处需要知道的行为变化
+
+**不存在第二个流重试计数器**。对 `stream: true` 的 run 而言，上面那条循环*就是*流恢复：
+`recovering` / `recovered` 是它的事件面，失败的尝试会先回滚到尝试前快照，再重新请求
+整个补全（`src/loop/provider-runner.js:224-243`）。
+
+- `DEFAULT_STREAM_RECOVERY_MAX_ATTEMPTS` **不是本包里的标识符**（grep 证真）。被当作它的
+  值引用的那个 `2`，其实是 `src/loop/orchestrator.js:714-718` 的 `retryAttempts` 回落值。
+  CLI 自己的那个 `2` 来自 `ERIX_RETRY_ATTEMPTS`（`bin/cli.js:828-836`），CLI 把它作为
+  `retry: { attempts: … }` 传下；**库**默认仍是 `false`，所以「把 CLI 行为抄进宿主」正是
+  这个数字被误归因的方式。
+- `partialPersistence` 是持久性而非重试：它提交一个将死尝试的部分文本
+  （`onPartialAttemptEnd({ retrying: true })`，`src/loop/orchestrator.js:1919-1933`），
+  不额外增加任何尝试。
+- **值得在你自己的测试里断言的一个副作用：**当 `retryAttempts > 0` 时，流式观察者回调会
+  按尝试缓存，只在该尝试成功后才-次派发
+  （`src/loop/provider-runner.js:111-117`，在 `:192-194` 冲刷），于是
+  `onDelta`/`onReasoningDelta`/`onToolCall`/`onUsage` 是在尝试末尾一次到达而非逐段到达。
+  `retry: false`（或 `attempts: 0`）时它们逐段到达
+  （`src/loop/provider-runner.js:112-115`）。因此启用重试会改变你的渲染节奏；这是上游
+  行为，不是宿主 bug。
+
+### 宿主可断言的观测点
+
+| 想钉住什么 | 可断言的通道 |
+|---|---|
+| 每轮 provider 尝试数 | `attempt` 事件 `{ type, round, attempt, maxAttempts }`（`src/loop/provider-runner.js:86-91`）；`maxAttempts === retryAttempts + 1`，所以宿主无需知道选项值就能断言这个上限 |
+| 重试真的发生了 | `recovering` 事件（`src/loop/provider-runner.js:252-258`）；`recovered` 标记重试后成功的那一次（`:188-191`、`:203-206`） |
+| 退避时序，且不付墙钟代价 | 注入 `retry.sleepImpl` 并记录每一个 `delay` —— 条数就是实际发生的重试次数，记录到的值能钉死 `min(base × 2ⁿ, max)` 公式 |
+| 没有 N×M 的 provider 放大 | 你自己的 provider 包装的请求计数器，对着 `attempt` 事件对、也对着 `maxRounds × (retryAttempts + 1)` 断言 |
+| store 写入重试 | **不存在逐尝试事件。** 唯一信号是两条循环走完后的终局 `persistence_error` 上报（`src/loop/orchestrator.js:889-896`）；包上你自己的 store 方法计数，这是目前唯一能证明 store 侧循环跑过的办法 |
+
+遗留（issue #183）：运行结果不携带聚合的尝试/重试计数，因此每 run 总量得宿主自己从事件
+里拼。今天**不承诺**可持久化的重试计数器；请把 `attempt` / `recovering` / `recovered` 与
+`retry.sleepImpl` 当作受支持的观测点全集。
 
 ## AssemblyPort
 
@@ -1177,3 +1281,82 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 在的持久化状态是正常的，不等同于“存在但无效”。
 `stateAvailability` 是本次 resume 的诊断观测结果，会随 state 保留用于诊断，但不会仅因该标记
 而拒绝下一次 resume 时结构仍然有效的 state。
+
+## 契约测试套件（issue #183）
+
+`erix-agent/contract-tests`（即 `./contract-tests` 子路径导出，`test/contract/index.js`）
+随包发布七个套件文件、共**八个**可复用的 `node:test` 注册函数（`execute-tool.js` 里有两个：
+现行形状与迁移形状）。每一个的签名都是 `xxxContract(label, factory)`：调用它即注册一批以
+`label` 命名的断言，在 `node --test` 跑起来之前什么都不会执行。`npm run check:docs:strict`
+会对「被 `test/contract/index.js` 再导出、但 `files` 白名单漏掉」的套件直接失败（在普通的
+`npm run check:docs` 下它是 warn），因此随包集合不可能无声变小。八个里最新的是
+`terminationPayloadContract`（issue #180）：装在已发布的 0.17.0 上的宿主只有七个，不是八个。
+
+### 套件能证明什么、不能证明什么（issue #183）
+
+**一个套件断言的是「你安装的那个版本上，上游实现的行为」。** 它的价值是**引擎升级的漂移
+哨兵**：当你 bump `erix-agent` 版本时，对着你自己的适配器重跑这些套件，一条变红的断言就
+指名了哪个契约动了。它**不是**宿主一致性测试，也替代不了宿主自己的一致性测试：
+
+- 一个套件只钉住上游**真正写过**的那些断言。你的实现游走在上游表面*之外*的语义 —— 无论是
+  新增、省略还是重新解释 —— 对它都是不可见的：上游从不触碰的东西，没有任何东西在断言它。
+- touwaka 的实证：把它的 transcript store 故意改成上游并不具备的一种语义，随包的套件**照样
+  全绿**。套件没有对这个改动提出异议，是因为改动就在它的视野之外。
+- 同一个不对称也反向成立：套件全绿，对你的 schema、你的迁移、你的连接管理、你的清理机制
+  一无所知。那些属于适配器测试，归你负责（这条规则写在各套件的头部注释里）。
+- 所以把它们接成**哨兵，而不是你自己语义的门禁**：每次引擎版本 bump 都跑一遍，把一条变红的
+  断言当作一行 changelog 来读；为你自己发明出来的行为另留一套宿主所有的套件。为了让升级变绿
+  而弱化一条随包的断言，等于丢掉这个套件携带的唯一信号（0.16.0 升级指南对「保真 + 保序」这一
+  对断言说的是同一件事）。
+
+### 标准用法（issue #183）
+
+把你的实现作为 factory 参数注入；`label` 是生成的每条测试标题的前缀，所以每个适配器用一个
+稳定的名字。这些套件只做注册，因此对你自己的测试树跑一次普通的 `node --test` 就会执行它们。
+factory 必须**每次调用都交出一个干净的**实现 —— 每个断言组都把它当作一个全新命名空间，且
+多个套件会反复进入它：
+
+```js
+import { notesStoreContract, transcriptStoreContract } from "erix-agent/contract-tests";
+import { createFileNotesStore, createMemoryTranscriptStore } from "erix-agent";
+
+transcriptStoreContract("my-host-store", () => createMemoryTranscriptStore());
+notesStoreContract("my-host-store", () => createFileNotesStore({ dir: notesDir }));
+```
+
+其余六个是同一个形状，只有第二个参数不同：
+
+| 套件 | 第二个参数 | factory 必须交回什么 |
+|---|---|---|
+| `transcriptStoreContract(label, createStore)` | factory | 一个干净的 `TranscriptStore`（必需层 `appendRound`/`load`；run snapshot、run-state 与 issue #157 探针这些方法在存在时会被检验） |
+| `notesStoreContract(label, createStore)` | factory | 一个干净的 `NotesStore`（write/read/list/complete/revoke/purge） |
+| `modelConfigProviderContract(label, setup)` | async setup | `{ provider, slot, expect: { defaultModel, slotModel, materializedKey } }`；provider 需要一个 `default` 槽加上 `slot`，且 `slot` 的 key 要能经间接引用被物化 |
+| `executeToolContract(label, createExecutor)` | factory | 你的 `executeTool` 函数（或 `{ executeTool }`） |
+| `executeToolMigrationContract(label, createExecutor)` | factory | 同一个执行器，针对已退役的位置参数调用形状做断言 |
+| `assemblyPortContract(label, createPort)` | factory | 你的 `AssemblyPort` 对象；套件会在它之上启动一个真实的 `runToolLoop` |
+| `engineApiContract(label, getEntry)` | factory | **包入口命名空间**，即 `() => import("erix-agent")` —— 它断言的是导出的引擎 API，不是你的代码 |
+| `terminationPayloadContract(label, getEntry)` | factory | 同一个入口命名空间（`{ runToolLoop }`）；它自带 provider 桩 |
+
+### 套件清单（issue #183）
+
+「harness」指该套件跑在什么上面：你的 factory（宿主侧），还是打包的引擎（上游侧，即纯漂移
+哨兵）。
+
+| 套件 | 断言什么 | 你必须满足的部分 | 它顺带钉住的上游内部细节 |
+|---|---|---|---|
+| `transcript-store.js`（16 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、run snapshot 的 latest-only 覆盖写、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返，以及成对的探针层 | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍 |
+| `notes-store.js`（7 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、带 `expectedState`/`expectedUpdatedAt` guard 的 tombstone 语义，以及最后写赢并发（且最终必须只剩一条合法记录） | 端口面与记录/guard 语义。六项 notes 语义里哪些属上游硬性要求、哪些交宿主策略，仍在裁决中（issue #183 第 1 组）；今天这个套件编码的是上游的选择，所以在裁决落地前把这些行当作上游行为 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`）、LWW 的措辞（文档化的一写者限制）、保留期/purge 时机 |
+| `assembly-port.js`（4 条） | 端口能启动一个真实 loop 并跑完，`emit(type, payload)` 收到带 payload 的事件类型，显式的细粒度 `provider` 选项覆盖端口自带的 provider，缺少 `chat`/`chatStream` 的 provider 在启动时被 `createAssemblyPort` 与 `runToolLoop` 双双拒绝 | 你的端口所必需的适配器与它的 `emit` 接收端 | 优先级规则（显式选项胜过端口）、启动校验的错误文案 |
+| `execute-tool.js`（7 条）+ `executeToolMigrationContract`（2 条） | 你的执行器恰好收到一个结构化执行对象，且每种规范返回形态（`string`、`{content, metadata, success}`、遗留的 `{data}`、返回的 `Error`、抛出的 `Error`）都变成文档规定的 `tool_result` | 调用形状与返回形状。迁移套件还额外证明：裸的位置参数 `(name, input)` 执行器是被**拒绝**的，不是被静默支持 | 这些断言是通过 `runToolLoop` 的 provider 请求观测到的，而不是通过某个公开结果字段 |
+| `model-config-provider.js`（4 条） | `resolve()` → default 槽，`resolve(slot)` → 具名槽，未知槽 → 回落 default，以及 `apiKey` 间接引用物化（ADR-001） | 你的 provider 的槽位解析与 key 物化 | 没有任何引擎侧内容：它从不加载引擎 |
+| `engine-api.js`（2 条） | 包入口把 `appendUserTurn` 与 `projectTranscriptForDisplay` 导出为函数，且 `appendUserTurn` 在一个最小 store stub 上完成一次预写（含 `dedupKey`/`roundKey` 形状，以及这次预写能喂给展示投影） | 无 —— 这是入口面的哨兵；上游某次 bump 重命名或删掉引擎 API 时它会变红 | 预写记录的确切形状（`round: 0`、`dedupKey`、`roundKey`、`ts`） |
+| `termination-payload.js`（4 条） | `failed` 终局携带 `termination.errorCode`（分类透传、`unknown` 回落），abort 抛错携带 `usage`/`rounds`/`finalText` 与 `termination.partial`，累计 usage 按轮归属，成功路径保持旧形状（不会凭空冒出 `errorCode`/`partial`/`usage`） | 不直接对应 —— 它是你宿主侧裁决表的回归网（issue #170 / #176 / #180） | 被打桩的 provider 脚本、`usage` 的「零值 vs 缺字段」规则 |
+
+### 宿主接线规则
+
+- 在你的自己的测试树里，用真实适配器，在每次引擎 bump 之后、发布验收之前，跑完所有宿主侧
+  套件（transcript store、notes store、model config provider、execute tool、assembly port）。
+- 把入口级哨兵（`engineApiContract`、`terminationPayloadContract`）接一次即可；成本是两次
+  注册，换来的是接住「上游重命名了我忘记 grep 的东西」这一类事故。
+- 宿主自己发明的行为留在宿主所有的测试里。如果某个随包套件与一条宿主需求冲突，提 issue
+  反馈，而不是 fork 套件：fork 掉就丢掉了哨兵。
