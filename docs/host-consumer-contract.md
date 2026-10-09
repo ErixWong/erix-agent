@@ -1397,7 +1397,7 @@ can itself be cut off by the model's own output budget — `continuation_exhaust
 is a first-class terminal reason in this library. `edit` moves the cost of "change
 a small span" from file-size to diff-size.
 
-```text
+```js
 import { createFileTools } from "erix-agent/tools";
 
 const fileTools = createFileTools({ cwd, allowWrite: (absolutePath) => absolutePath === expectedPath });
@@ -1409,14 +1409,11 @@ const edited = await fileTools.executeTool({
   context: {},
 });
 
+// 越界写：allowWrite false 走的是与 writeFile 同一份错误结果，不抛、不落盘
 const denied = await createFileTools({ cwd, allowWrite: () => false })
   .executeTool({ id: "toolu_edit_2", name: "edit", input: { path: "a.js", edits: [{ oldText: "const a = 2;", newText: "const a = 3;" }] }, context: {} });
 ```
 
-<!-- 过渡状态（issue #191 未完项）：本例暂用 text 围栏而不是 js。契约文档的 js 围栏会被
-test/contract/doc-examples.js 逐条做 L1/L2/L3 可执行验证，并按**围栏顺序**索引 FENCE_PREAMBLES、
-再断言中英两份文档的 js 围栏数量相等；中文契约节与对应 preamble 尚未落地，此时把它标成 js
-会让数量断言与 preamble 双双错位。补中文节时一并改回 js 并同步 preamble。 -->
 
 What a host can code against:
 

@@ -32,11 +32,15 @@ export const INDEX_URL = pathToFileURL(join(REPO_ROOT, "src", "index.js")).href;
 export const CONTRACT_TESTS_URL = pathToFileURL(
   join(REPO_ROOT, "test", "contract", "index.js"),
 ).href;
+// issue #191：`createFileTools` 的宿主入口是 `erix-agent/tools` 子路径（包根不导出它），
+// 所以文档里「宿主注册文件工具」的示例必须按这个说明符导入；三层验证也要能解析它，
+// 否则示例只能写成 text 围栏（那就没人验证它跑得通）。
+export const TOOLS_URL = pathToFileURL(join(REPO_ROOT, "src", "tools", "index.js")).href;
 export const FAKE_PROVIDER_URL = pathToFileURL(
   join(REPO_ROOT, "test", "helpers", "fake-provider.js"),
 ).href;
 
-export const EXPECTED_JS_FENCE_COUNT = 8;
+export const EXPECTED_JS_FENCE_COUNT = 9;
 export const L3_TIMEOUT_MS = 15000;
 
 /** 提取 markdown 中所有 ```js 围栏 → [{ line, code }]（line 为围栏起始行号，1-based）。 */
@@ -68,6 +72,7 @@ export function stripDocConvention(code) {
 function rewriteErixSpecifier(specifier) {
   if (specifier === "erix-agent") return INDEX_URL;
   if (specifier === "erix-agent/contract-tests") return CONTRACT_TESTS_URL;
+  if (specifier === "erix-agent/tools") return TOOLS_URL;
   return specifier;
 }
 
@@ -339,7 +344,44 @@ if (readdirSync(__notesDir__).length === 0) throw new Error("note_take 未在 tm
 rmSync(__notesDir__, { recursive: true, force: true });
 `,
   },
-  // fence #6（EN :1127，projectTranscriptForDisplay 展示投影）
+  // fence #6（EN「File edit tool `edit`」节：edit 的写边界与越界错误结果，issue #191）
+  {
+    linkImports: [],
+    stubs: `
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir as __osTmpdir } from "node:os";
+import { join as __join } from "node:path";
+// 示例体里 cwd/expectedPath 是宿主侧的自由标识符：这里给一份真实临时目录 + 真实文件，
+// 于是 allowWrite 的等值谓词比对的是**绝对路径真值**，不是桩里的假路径。
+const __editDir__ = mkdtempSync(__join(__osTmpdir(), "doc-example-edit-"));
+const cwd = __editDir__;
+const expectedPath = __join(__editDir__, "a.js");
+writeFileSync(expectedPath, "const a = 1;\\n", "utf8");
+`,
+    epilogue: `
+// 示例体被包进 async 函数，里面的 const 在 epilogue 里看不见 → 只验盘上事实：
+// 第 1 条必须真的落盘，第 2 条（allowWrite false）必须**没**落盘。
+const __after__ = readFileSync(expectedPath, "utf8");
+if (__after__ !== "const a = 2;\\n") {
+  throw new Error(\`edit 结果不符：第 1 条要写成 "const a = 2;"、第 2 条越界不得写，实际 \${JSON.stringify(__after__)}\`);
+}
+// 再用同一条线验一次结果形状：命中时首行是「已编辑 <显示路径>」，其后是 unified 风格 diff。
+const __again__ = String(await (await import(${JSON.stringify(TOOLS_URL)})).createFileTools({ cwd })
+  .executeTool({ id: "doc-example-edit-3", name: "edit", input: { path: "a.js", edits: [{ oldText: "const a = 2;", newText: "const a = 22;" }] }, context: {} }));
+if (!__again__.startsWith("已编辑 a.js")) throw new Error(\`edit 结果首行形态不对：\${__again__.slice(0, 120)}\`);
+if (!__again__.includes("--- a/a.js") || !__again__.includes("@@ -")) {
+  throw new Error(\`edit 结果必须自带短 diff（文件头 + @@ 段）：\${__again__.slice(0, 200)}\`);
+}
+// 0 命中是错误结果而不是 throw，且必须给出下一步。
+const __miss__ = String(await (await import(${JSON.stringify(TOOLS_URL)})).createFileTools({ cwd })
+  .executeTool({ id: "doc-example-edit-4", name: "edit", input: { path: "a.js", edits: [{ oldText: "no such text", newText: "x" }] }, context: {} }));
+if (!__miss__.startsWith("错误：") || !__miss__.includes("readFile")) {
+  throw new Error(\`0 命中必须是「错误：」开头并给出 readFile 下一步：\${__miss__.slice(0, 160)}\`);
+}
+rmSync(__editDir__, { recursive: true, force: true });
+`,
+  },
+  // fence #7（EN :1127，projectTranscriptForDisplay 展示投影）
   {
     linkImports: [],
     stubs: `
@@ -362,7 +404,7 @@ const store = { async load() {
 if (__storeLoads__.count !== 1) throw new Error(\`store.load 应被调用 1 次，实际 \${__storeLoads__.count} 次\`);
 `,
   },
-  // fence #7（EN :1660，契约套件标准注入用法，issue #183）
+  // fence #8（EN :1660，契约套件标准注入用法，issue #183）
   // 两层都真验：L2 靠 `erix-agent/contract-tests` 说明符重写到 test/contract/index.js（证明
   // 发布的子路径入盘）；L3 把示例当宿主那样注册 24 条断言（transcript 16 + notes 7 +
   // notes CAS 子套件 1，issue #183）并真的跑完

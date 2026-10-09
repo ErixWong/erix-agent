@@ -1101,6 +1101,62 @@ CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `e
 且不传任何谓词，所以 CLI 行为与以前一致，仍是「无边界」。`bin/` 不再持有第二套
 文件工具实现（issue #184）。
 
+### 文件编辑工具 `edit`（issue #191）
+
+`edit` 是同一个 `definitions` 数组、同一个 `executeTool` 入口里的**第二个写工具**——
+已经按上面「文件工具注册」接线的宿主，零额外接线就拿到它。它存在的理由：工具面此前
+只有 `writeFile{path, content}`，改三行就得重打整份文件（`src/loop/orchestrator.js`
+3277 行 ≈ 33k 输出 token），而这次整写本身还可能被模型自己的输出预算切断——
+`continuation_exhausted` 在本库是一等的终止原因。`edit` 把「改一小段」的成本从
+整文件量级降到 diff 量级。
+
+```js
+import { createFileTools } from "erix-agent/tools";
+
+const fileTools = createFileTools({ cwd, allowWrite: (absolutePath) => absolutePath === expectedPath });
+
+const edited = await fileTools.executeTool({
+  id: "toolu_edit_1",
+  name: "edit",
+  input: { path: "a.js", edits: [{ oldText: "const a = 1;", newText: "const a = 2;" }] },
+  context: {},
+});
+
+// 越界写：allowWrite false 走的是与 writeFile 同一份错误结果，不抛、不落盘
+const denied = await createFileTools({ cwd, allowWrite: () => false })
+  .executeTool({ id: "toolu_edit_2", name: "edit", input: { path: "a.js", edits: [{ oldText: "const a = 2;", newText: "const a = 3;" }] }, context: {} });
+```
+
+宿主可以依赖的事实：
+
+| 面 | 契约 |
+| --- | --- |
+| 入参 | `{ path, edits }`。`edits` 只收三种形状、且只收这三种：`[{oldText, newText}]`、单个 `{oldText, newText}` 对象、或上面两种的 JSON 字符串。其余形状（非法 JSON、`oldText`/`newText` 不是字符串、空列表）一律错误结果。收这三种形状是归一**形状**，从不猜意图 |
+| 匹配 | 逐字节精确。`oldText` 必须与文件里某段文本逐字符相等，空白与缩进也算。**没有模糊兜底**：不做 NFKC 折叠、不做弯引号折叠、不做行尾空白容忍 |
+| 唯一性 | 每条 `oldText` 必须命中且仅命中一次。0 次与 `N>1` 次都是错误结果；`N>1` 的文案会报出到底几处，以及前两处的行号 |
+| 独立性 | 每条 `oldText` 都对**原文**匹配，而不是对同一次调用里前几条改完的中间态匹配；各条命中区间不得重叠 |
+| 原子性 | 全部通过校验才写入。没有部分落盘，且「全部无变化」也是错误结果（`未做任何修改…`），不是静默成功 |
+| 写边界 | `allowWrite(absolutePath)`——与 `writeFile` 同一个谓词，且在读任何内容之前判定。越界是错误结果、绝不抛，文件保持原有字节 |
+| 行尾 | BOM 保留；行尾里含 CRLF 的文件在 LF 空间里匹配、按 CRLF 写回。因此混合行尾的文件写回时会被归一到 CRLF——结果首行会写 `CRLF 行尾已保留`，而不是把这件事藏起来 |
+| 结果 | 一行摘要（`已编辑 <path>，替换 N 处，首个变更行 N，写入 N 字节`，按实际情况追加 BOM/CRLF 说明），随后是 3 行上下文的 unified 风格 diff，按编辑区间分组，上限 8 段 / 200 行。被截断时追加一条带剩余计数与 `readFile` 下一步的截断 marker（ADR-010：去噪必须可撤销） |
+| diff 保真度 | 这个 diff 是**自证凭证，不是补丁**：hunk 按编辑区间切、取整行边界并剪公共前后缀，因此它可能比最小 LCS diff **多**报变更行（绝不会少报），并且不承诺 `git apply` 可用。要逐字节确认请用 `readFile` |
+| 护栏 | 目标超过 4 MiB、单次超过 64 条、含 NUL 的（二进制）文件、目录、不存在的路径，全部返回错误结果并给出下一步（新建走 `writeFile`，回读走 `readFile`） |
+| judge | `edit` 在默认 `writeToolNames`（`["writeFile", "edit"]`）里，因此宿主不配置也能让它的 `path` 进入 judge 的 `filesWritten`。宿主显式传入的 `writeToolNames` 是**整体替换**那个默认值——绝不与它合并 |
+
+**为什么本轮不做模糊兜底。** pi 的 `edit` 带 NFKC 归一、弯引号折叠与行尾空白容忍，
+那是它的 transcript **踩坑之后**加的：模型从 `readFile` 回显里抄错一个字符就 0 命中。
+本库没有这类 transcript 证据（与 issue #195 R4 把 `-i`/`-A`/`.gitignore` 挡在
+`searchText` 门外是同一条规则：没证据就别扩面），而兜底会把模型唯一能自证的信号
+——`0 命中`，一个它可以据此行动的错误结果——换成「静默改到了另一个位置」。这正是
+issue #184/#195 一路在收的那类静默撒谎。具体算账：一个看着像但错的模糊命中要一整轮
+往返才能发现，一次精确匹配落空只花一次重试。日后要加兜底是 additive 的（它只放宽
+匹配面，从不收窄），所以这里没有任何单向门。
+
+给工具副作用分类的宿主（写日志、权限确认、TUI 的写入标记、重放策略）必须把 `edit`
+当**写**：它的 `path` 参数长得和 `readFile` 一样，一份只把 `writeFile` 记成写工具的
+名单会漏报每一次编辑。退役前的 `bin/tools.js` 工具面从来没有过这件事，而 CLI 现在把
+`edit` 列进了工具清单行——这正是本次发布 `test/fixtures/cli-golden.json` 变更的原因。
+
 ### 搜索工具（issue #195）
 
 `searchText` 是唯一的搜索入口（Tier 2 host integration，注册路径与「文件工具注册」
