@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #197 技能加载器注册（`bundledDir` 归调用方、库内不猜层级、内置 < 全局 < 项目的优先级、不阻塞且可枚举的 `{skillId, dir, error}` 失败形状、产出即 `ToolSchema`、无新沙箱）与 `skillsLoaderContract` 套件；#184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-10（已同步 #179 HTTP 状态码分类（`invalid_request`/`not_found`/`conflict` 三个新 code 与取值表、`retryable` 与重试面逐字不变、未列出的状态码仍落 `unknown`）；#197 技能加载器注册（`bundledDir` 归调用方、库内不猜层级、内置 < 全局 < 项目的优先级、不阻塞且可枚举的 `{skillId, dir, error}` 失败形状、产出即 `ToolSchema`、无新沙箱）与 `skillsLoaderContract` 套件；#184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -156,6 +156,42 @@ await provider.chat({ messages });
 `model_metadata_missing` 诊断事件，全部在下文「模型元数据与预算推导（issue #182）」里定义
 （issue #182）。
 
+## HTTP 状态码分类（issue #179）
+
+非 2xx 的 provider 响应会变成由 `classifyHttpError`
+（`src/providers/errors.js:105-129`）造出的 `KitError`，包根把它再导出
+（`src/index.js:2`）。它的 `code` 是宿主可见的，并且会经 `termination.errorCode`
+第二次抵达宿主（issue #176，见下文「终局载荷」）。映射如下：
+
+| HTTP 状态码 | `KitError.code` | `retryable` |
+|---|---|---|
+| 408 | `timeout` | `true` |
+| 429 | `rate_limited` | `true` |
+| 401 / 403 | `auth` | `false` |
+| 500-599 | `server` | `true` |
+| 400 / 422 | `invalid_request` | `false` |
+| 404 | `not_found` | `false` |
+| 409 | `conflict` | `false` |
+| 其余任意状态码，或没有状态码 | `unknown` | `false` |
+
+本节的契约就两条：
+
+- **只有 `code` 这个字符串变宽了。** `invalid_request`、`not_found`、`conflict`
+  是新增取值（issue #179：取值面扩展 = semver minor）；在此之前 400 / 404 / 409 /
+  422 一律报 `unknown`。任何状态码的 `retryable` 都没动——这四个原本就不可重试、
+  现在仍不可重试——`KitError` 既没加字段也没删字段，上表既有的每一行原样未动，
+  因此重试路径依旧只重发 `retryable === true` 那一组（见下文「重试预算（issue #183）」）。
+- **`"unknown"` 没有变成死值。** 表里没写到的状态码——402、405、410、413、415、
+  418、499、600，或压根没有 status——继续落 `unknown`，所以宿主的 `unknown` 分支
+  依然存在，只是不再兜住那四个状态码。按 `code === "unknown"`（或
+  `termination.errorCode === "unknown"`）来表达「请求不合法 / 模型名写错」的宿主，
+  必须把那条分支扩到这三个新 code；一条把未分类一律当 `unknown` 的 `default`
+  分支无需改动。
+
+500-599 那一行是数值区间比较，所以会强转进该区间的非数字 `status`（例如字符串
+`"500"`）仍落 `server`；其余每一行都按严格相等匹配。传输层事实本身与分类是两件事：
+`error.status` 始终保留原始数字，想要数字而不是类别的宿主该读它。
+
 ## 重试预算（issue #183）
 
 **不配置就是不重试。** `retry` 默认 `false`（`src/loop/orchestrator.js:566`），在该状态下
@@ -190,10 +226,11 @@ await provider.chat({ messages });
 只有被标为 `retryable === true` 的错误才会被重试
 （`src/loop/provider-runner.js:219`）。该集合是 `KitError.code` ∈ `timeout`、
 `rate_limited`、`server`、`disconnect`（`src/providers/errors.js:1,14-16`），经
-`classifyHttpError` 得知的 HTTP 408/429/5xx（`:86-99`），经 `classifyFetchException`
-得知的可重试传输失败（`:141-172`，由 `isRetryableNetworkException` `:123-132` 判定），
+`classifyHttpError` 得知的 HTTP 408/429/5xx（`:105-129`），经 `classifyFetchException`
+得知的可重试传输失败（`:166-198`，由 `isRetryableNetworkException` `:148-157` 判定），
 以及一条既无文本、也无工具调用、也无推理的 assistant 消息
-（`src/messages/canonical.js:448-454`）。其余一切 —— `auth`、`aborted`、选项校验抛的
+（`src/messages/canonical.js:448-454`）。其余一切 —— `auth`、`aborted`、
+`invalid_request`/`not_found`/`conflict` 这三个 4xx 分类（issue #179）、选项校验抛的
 `TypeError`、宿主 store 的 bug —— 首次见到就原样重抛。
 
 ### 一个选项，两条独立循环
@@ -659,7 +696,7 @@ additive：既有字段不变形状、不变值、不变语义，忽略它们的
 
 | 字段 | 出现在 | 契约 |
 |---|---|---|
-| `termination.errorCode` | `result.termination` / `error.termination` 且 `reason === "failed"` 时 | 失败的根因分类。引擎只透传错误**已有**的分类字段（`KitError.code`，如 `timeout`、`rate_limited`、`auth`、`server`、`checkpoint_failed`），没带分类时回落 `"unknown"`——绝不自己发明或重新归因。其他 reason 不得多出该字段。宿主裁决表因此可以直接按 `errorCode` 分流，而不是解析 `termination.detail` 字符串。 |
+| `termination.errorCode` | `result.termination` / `error.termination` 且 `reason === "failed"` 时 | 失败的根因分类。引擎只透传错误**已有**的分类字段（`KitError.code`，如 `timeout`、`rate_limited`、`auth`、`server`、`checkpoint_failed`），没带分类时回落 `"unknown"`——绝不自己发明或重新归因。其他 reason 不得多出该字段。宿主裁决表因此可以直接按 `errorCode` 分流，而不是解析 `termination.detail` 字符串。provider 的 HTTP 失败交出的是 `classifyHttpError` 的取值集，所以 issue #179 之后一个被拒的请求会在这里以 `invalid_request`、`not_found` 或 `conflict` 出现，而不像以前那样以 `unknown` 出现（见「HTTP 状态码分类（issue #179）」）。 |
 | `error.usage`、`error.rounds`、`error.finalText` | 运行生命周期开始之后抛出的每一个错误——即终局 `fail()` 路径；issue #173 删掉了第二个生产者（启动期诊断注解），因此 `fail()` 是唯一来源 | 抛错时刻的累计用量——就是 `result.usage` 本会携带的**同一个对象**（含 `cacheRead`/`cacheWrite`）——外加轮号与已产出的部分终稿（无产出时为 `""`）。尚未产生任何累计时，这些字段是**零值而不是缺字段**：`{ input_tokens: 0, output_tokens: 0 }`、`0`、`""`。运行开始前的校验错误（未知/非法选项 `TypeError`、装配失败、`modelConfig.resolve` 拒绝）时尚不存在 run，不携带这些字段；宿主观察者抛错也不携带了——它现在根本不会抛错（见「观察者回调抛错（issue #173）」）。 |
 | `termination.usage`、`termination.rounds`、`termination.partial` | `error.termination` 且 `reason === "aborted"` 时 | 与错误对象上的量同口径（`termination.usage === error.usage`），`partial: true` 表示这是部分稿而非终稿。 |
 
@@ -725,7 +762,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `max_rounds_cap` | (a) 治理层 stop `cap`：接近上限且不允许扩轮（`src/reflection/governor.js:150-152`）；(b) 轮循环自然跑完（`src/loop/orchestrator.js:2561`，收尾在 `3151-3169`） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`src/loop/orchestrator.js:1084-1099`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
 | `final_guard_unverified` | 配了 `finalGuard` 且它没能认证：不可续跑降级（`src/loop/orchestrator.js:3103-3116`）、修订次数触顶（`3118-3131`）、或轮循环跑完的收尾（`3156-3169`）。只对 6 个 guard 适用 reason 生效（`src/loop/termination.js:14-21`），且仅当 `finalGuard` 是函数（`src/loop/orchestrator.js:3092-3095`） | 严格位于 stop 之后的**后阶段**：它替换 reason，不介入轮内治理 | 整体不传 `finalGuard`（此时 `verification` 为 `skipped` / `no_final_guard`，`src/loop/orchestrator.js:1435-1437`）；`finalGuardMaxRetries` 调修订上限（默认 2，`src/loop/orchestrator.js:1427-1430`） | **不得当已验事实消费**：`verification.status === "unverified"`（`non_continuable` / `max_retries`）。转人工复核或测试系统 |
 | `aborted` | 终局 `fail()` 路径且宿主 signal 已 abort（`src/loop/orchestrator.js:905-955`；分类在 907-908 与 927-932，注解在 947-954） | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的 |
-| `failed` | run 生命周期内抛出的任意错误，经 `fail()`（`src/loop/orchestrator.js:905-955`，循环 catch 在 `3147-3149`），并透传 `termination.errorCode`（`src/loop/termination.js:43-57`）；宿主观察者抛错不再是它的来源之一（issue #173） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js:700-711`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`unknown` → 转去查 `termination.detail` |
+| `failed` | run 生命周期内抛出的任意错误，经 `fail()`（`src/loop/orchestrator.js:905-955`，循环 catch 在 `3147-3149`），并透传 `termination.errorCode`（`src/loop/termination.js:43-57`）；宿主观察者抛错不再是它的来源之一（issue #173） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js:700-711`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`invalid_request` / `not_found` / `conflict`（issue #179）→ 去修请求体、模型名或冲突的资源，重发同一份 payload 帮不上忙；`unknown` → 转去查 `termination.detail` |
 | `persistence_failed` | 同一个 `fail()` 路径，在错误携带持久化信息时被选中（`src/loop/orchestrator.js:927-932`），并额外挂上 `operation` / `phase` / `sideEffect`（`src/loop/orchestrator.js:940-946`） | 替换 `failed`，不会反向发生；不带 `errorCode`（该字段为 `failed` 专属） | `persistence:"none"` 直接移除 transcript 写入路径；可选 store 能力是降级而非失败（见能力分级） | **告警**：副作用被跟踪过，所以这是完整性信号（ADR-013），不是重试候选 |
 
 ### 核验状态与 CLI 退出码
