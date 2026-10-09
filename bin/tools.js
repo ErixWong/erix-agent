@@ -195,7 +195,9 @@ const CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD =
   "已弃用，请改用 searchText 并显式传 mode），" +
   "grep 递归搜索文件内容（默认正则，等价 grep -E；传 is_regex=false 按字面量，等价 grep -F；" +
   "支持 glob 文件名过滤（只匹配文件名、不跨 /），结果按文件分组；已弃用，请改用 searchText 并显式传 mode），" +
-  "tree 列出目录树，writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出";
+  "tree 列出目录树，edit 对已存在的文件做精确文本替换（edits 是 [{oldText, newText}]，"
+  + "oldText 要与原文逐字符相等且恰好命中 1 次，0 次或多处都是错误结果并告知下一步；不做模糊兜底；返回短 diff），"
+  + "writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出";
 
 // issue #184（ADR-010：默认去噪必须可撤销）：「跳了什么 + 怎么撤销」必须进提示词——
 // 模型不知道被排除就无从发起取回。排除账同时写在工具结果尾部。
@@ -376,7 +378,7 @@ function summarizeToolInput(name, input) {
     input
     && typeof input === "object"
     && !Array.isArray(input)
-    && (name === "exec" || name === "readFile" || name === "writeFile")
+    && (name === "exec" || name === "readFile" || name === "writeFile" || name === "edit")
   ) {
     const primaryField = name === "exec" ? "command" : "path";
     if (typeof input[primaryField] === "string") {

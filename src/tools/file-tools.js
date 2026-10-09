@@ -38,6 +38,23 @@ import { throwIfAborted } from "../loop/abort.js";
 // 搜索类工具的单文件读取上限（超过即跳过并计入排除账）。
 export const MAX_FILE_BYTES = 1024 * 1024;
 export const MAX_TREE_ENTRIES = 500;
+// `edit` 整文件载入的字节上限（issue #191）：匹配必须对着原文做，所以 edit 天生要读整份文件；
+// 这个上限只挡「一次调用把几百 MB 读进内存再回显」，不改变小文件的行为（与 readFile 的
+// 有界读同一个防 OOM 口径）。超限返回错误结果并给出下一步，不抛、不静默截断。
+export const EDIT_MAX_FILE_BYTES = 4 * 1024 * 1024;
+// `edit` 的 diff 输出预算（issue #191）：diff 是「让模型不必回读就能自证」的**最小凭证**，
+// 不是整文件回显——一次编辑回显几千行，等于把 #191 要省下来的输出预算原地花回去。
+export const EDIT_DIFF_CONTEXT_LINES = 3;
+export const EDIT_DIFF_MAX_LINES = 200;
+export const EDIT_DIFF_MAX_CHUNKS = 8;
+// 报错里回显 `oldText` 开头的长度：够模型认出「我刚才传的是哪一条」，又不至于把整段回显回去。
+export const EDIT_OLDTEXT_PREVIEW_CHARS = 80;
+// 多处命中时数到几个就收（只服务错误文案里的「到底几处」）：到了这个量级肯定是「满文件都是」，
+// 继续数完几百万次不改变结论，只烧时间。
+export const EDIT_HIT_COUNT_CAP = 100;
+// 单次调用最多几条 edit：每条都要对原文扫一遍（未命中时是 O(文件长 × 条数)），所以要有硬顶。
+// 64 是参考 pi 的 maxEditItems（本仓没 transcript 证据说模型会一次发上百条）。
+export const EDIT_MAX_EDITS = 64;
 // 搜索上限硬顶：防爆输出（2026-09-20 基准：无上限搜索曾单次返回数千行拖慢主循环）。
 export const GREP_MAX_RESULTS_HARD_CAP = 200;
 export const FILE_READ_MAX_BYTES_DEFAULT = 262_144; // 256 KiB；scripts/docs-drift-check.mjs 的真值锚点
@@ -259,6 +276,9 @@ export function toolMarker(kind, values = {}) {
       return `[文件 ${values.size} 字节 > max_bytes=${values.maxBytes}，行窗口之后的内容未读取；offset=${values.offset} 继续]`;
     case "readLineTruncated":
       return `[单行超过 max_bytes=${values.maxBytes}，超长部分已截断]`;
+    case "editDiffTruncated":
+      // edit 的 diff 预算 marker（issue #191）：截断必须可撤销 + 给出取回方式（ADR-010）。
+      return `[diff 已截断：另有 ${values.remaining} 处变更未显示，diff 行数上限 ${values.limit} 已达；要看完整内容用 readFile ${truncateDisplayText(values.path, 200)}]`;
     default:
       throw new TypeError(`unknown tool marker kind: ${kind}`);
   }
@@ -324,6 +344,177 @@ function fitByteBudget(text, budget) {
     else high = middle - 1;
   }
   return `${text.slice(0, low).replace(/[\uD800-\uDBFF]$/u, "")}…`;
+}
+
+/** 偏移量在文本里的 0-based 行号（不拆行→不分配数组，只数换行符）。 */
+function lineAt(text, offset) {
+  const stop = Math.min(Math.max(0, offset), text.length);
+  let line = 0;
+  for (let index = 0; index < stop; index += 1) {
+    if (text[index] === "\n") line += 1;
+  }
+  return line;
+}
+
+/** 数一段文本里的换行符个数（`edit` 的行号递推用；不分配数组）。 */
+function countNewlines(text) {
+  let count = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "\n") count += 1;
+  }
+  return count;
+}
+
+/** 形状描述只用于错误文案：让模型知道它传的是什么，不回显大块内容。 */
+function describeInputShape(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `数组（${value.length} 项）`;
+  if (typeof value === "object") return "对象";
+  if (typeof value === "string") return `字符串 ${JSON.stringify(truncateDisplayText(value, 40))}`;
+  return typeof value;
+}
+
+/**
+ * `edits` 入参归一（issue #191）：数组 / 单个对象 / 它们的 JSON 字符串三种形状都收。
+ *
+ * 这不是「猜意图」而是「收形状」：三种形状能无歧义地解出同一张操作列表；解不出来
+ * （非法 JSON、非字符串字段）就返回错误结果文案，**不抛**。
+ *
+ * @returns {Array<{oldText: string, newText: string}> | string} 数组或错误文本
+ */
+function parseEditOperations(raw) {
+  let value = raw;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (text === "") {
+      return "错误：edit 的 edits 传的是空字符串：要 [{oldText, newText}]（也可传单条对象或它们的 JSON 字符串）";
+    }
+    try {
+      value = JSON.parse(text);
+    } catch {
+      return `错误：edit 的 edits 是字符串但不是合法 JSON：${JSON.stringify(truncateDisplayText(text, 60))}；`
+        + "传数组本身（不要多包一层引号），或确保它是合法 JSON：[{\"oldText\":\"…\",\"newText\":\"…\"}]";
+    }
+  }
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) value = [value];
+  if (!Array.isArray(value)) {
+    return `错误：edit 的 edits 形状不认识（收到 ${describeInputShape(raw)}）：要 [{oldText, newText}]、`
+      + "单个 {oldText, newText} 对象，或它们的 JSON 字符串";
+  }
+  const operations = [];
+  for (const [position, entry] of value.entries()) {
+    const ordinal = position + 1;
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return `错误：edit 第 ${ordinal} 条不是对象（收到 ${describeInputShape(entry)}）：每条要 {oldText, newText} 两个字符串字段`;
+    }
+    const { oldText, newText } = entry;
+    if (typeof oldText !== "string") {
+      return `错误：edit 第 ${ordinal} 条的 oldText 不是字符串（收到 ${describeInputShape(oldText)}）：它是要逐字匹配的原文片段`;
+    }
+    if (typeof newText !== "string") {
+      return `错误：edit 第 ${ordinal} 条的 newText 不是字符串（收到 ${describeInputShape(newText)}）：删除文本就显式传空串 ""`;
+    }
+    operations.push({ oldText, newText });
+  }
+  return operations;
+}
+
+/**
+ * `edit` 的短 unified diff（issue #191）：**每个编辑区间一个 hunk**，带 3 行上下文，有行预算。
+ *
+ * 它不是 `diff -u` 的最小化 LCS diff：本工具的语义就是「这一整段被换掉了」，所以两侧
+ * 取整行 + 剪公共前缀/后缀，宁可把变更写得比最小 diff **大**，也不写小（小 = 漏报变更）。
+ * 目的只有一个：模型不必回读就能自证改对了地方。
+ */
+function renderEditDiff(source, next, spans, label) {
+  const oldLines = splitLines(source);
+  const newLines = splitLines(next);
+  const context = EDIT_DIFF_CONTEXT_LINES;
+
+  // 1) 区间 → 行区间，并剪公共前缀/后缀（剪完可能空——那条 edit 未改行内容）。
+  const blocks = [];
+  for (const span of spans) {
+    let oldFrom = span.oldStartLine;
+    let oldTo = span.oldEndLine;
+    let newFrom = span.newStartLine;
+    let newTo = span.newEndLine;
+    while (oldFrom <= oldTo && newFrom <= newTo && oldLines[oldFrom] === newLines[newFrom]) {
+      oldFrom += 1;
+      newFrom += 1;
+    }
+    while (oldFrom <= oldTo && newFrom <= newTo && oldLines[oldTo] === newLines[newTo]) {
+      oldTo -= 1;
+      newTo -= 1;
+    }
+    if (oldFrom > oldTo && newFrom > newTo) continue; // 纯插入/纯删除保留；完全无差异则丢弃
+    blocks.push({ oldFrom, oldTo, newFrom, newTo });
+  }
+  if (blocks.length === 0) return [];
+
+  // 2) 相邻区间归并成 hunk（上下文相接就合，避免同一行被两个 hunk 重复回显）。
+  const hunks = [];
+  for (const block of blocks) {
+    const previous = hunks.at(-1);
+    if (previous !== undefined && block.oldFrom - previous.oldTo <= context * 2 + 1) {
+      previous.oldTo = block.oldTo;
+      previous.newTo = block.newTo;
+      previous.blocks.push(block);
+      continue;
+    }
+    hunks.push({ oldFrom: block.oldFrom, oldTo: block.oldTo, newFrom: block.newFrom, newTo: block.newTo, blocks: [block] });
+  }
+
+  // 3) 渲染（带全局行预算，截断带 marker：去噪可撑销，ADR-010）。
+  const lines = [];
+  lines.push(`--- a/${truncateDisplayText(label, 200)}`);
+  lines.push(`+++ b/${truncateDisplayText(label, 200)}`);
+  let emitted = 0;
+  for (const [index, hunk] of hunks.entries()) {
+    if (hunks.length > EDIT_DIFF_MAX_CHUNKS && index >= EDIT_DIFF_MAX_CHUNKS) {
+      lines.push(toolMarker("editDiffTruncated", {
+        remaining: hunks.length - index,
+        limit: EDIT_DIFF_MAX_CHUNKS,
+        path: label,
+      }));
+      break;
+    }
+    const delta = hunk.newFrom - hunk.oldFrom;
+    const from = Math.max(0, hunk.oldFrom - context);
+    const to = Math.min(oldLines.length - 1, hunk.oldTo + context);
+    const oldCount = Math.max(0, to - from + 1);
+    const removedCount = Math.max(0, hunk.oldTo - hunk.oldFrom + 1);
+    const addedCount = Math.max(0, hunk.newTo - hunk.newFrom + 1);
+    const newCount = oldCount - removedCount + addedCount;
+    const header = `@@ -${from + 1},${oldCount} +${from + 1 + delta},${newCount} @@`;
+    const body = [];
+    let cursor = from;
+    for (const block of hunk.blocks) {
+      while (cursor < block.oldFrom && cursor <= to) {
+        body.push(` ${oldLines[cursor] ?? ""}`);
+        cursor += 1;
+      }
+      while (cursor <= block.oldTo && cursor <= to) {
+        body.push(`-${oldLines[cursor] ?? ""}`);
+        cursor += 1;
+      }
+      for (let line = block.newFrom; line <= block.newTo; line += 1) body.push(`+${newLines[line] ?? ""}`);
+    }
+    while (cursor <= to) {
+      body.push(` ${oldLines[cursor] ?? ""}`);
+      cursor += 1;
+    }
+    if (emitted + body.length + 1 > EDIT_DIFF_MAX_LINES) {
+      lines.push(toolMarker("editDiffTruncated", {
+        remaining: hunks.length - index,
+        limit: EDIT_DIFF_MAX_LINES,
+        path: label,
+      }));
+      break;
+    }
+    lines.push(header, ...body);
+    emitted += body.length + 1;
+  }
+  return lines;
 }
 
 /**
@@ -582,6 +773,42 @@ export const FILE_TOOL_DEFINITIONS = [
         include_vendor: { type: "boolean", description: "Default false: skip node_modules/dist/build/target/vendor." },
         include_hidden: { type: "boolean", description: "Default false: skip dot-directories such as .git." },
       },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "edit",
+    description: "Apply exact-match text replacements to one file (issue #191): edits is a list of {oldText, newText}, "
+      + "and a single such object or the whole list as a JSON string is accepted too (models emit all three shapes). "
+      + "EXACT matching only — oldText must equal a span of the file byte for byte, whitespace and indentation included: "
+      + "there is NO fuzzy fallback (no NFKC folding, no curly-quote folding, no trailing-whitespace tolerance), so one "
+      + "wrong character in oldText is an error result rather than a silent near miss. Every oldText is matched against "
+      + "the ORIGINAL file content, not against the result of earlier edits, and must match exactly once: 0 matches and "
+      + "2+ matches are both error results that name the edit and say what to do next (re-read the file / add context so "
+      + "the match is unique). Matched ranges must not overlap. BOM and CRLF are preserved: a uniformly CRLF file is "
+      + "matched in LF space and written back as CRLF, a BOM is kept, and mixed line endings are matched verbatim. "
+      + "A denied write (allowWrite false) and every other failure are returned as an error result, never thrown. "
+      + "The result is a short unified diff with 3 context lines plus the first changed line, so the change can be "
+      + "verified without re-reading the file; the diff is capped and says so when it is capped.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        edits: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              oldText: { type: "string", description: "Exact span of the ORIGINAL file to replace; must occur exactly once." },
+              newText: { type: "string", description: "Replacement text; an empty string deletes the matched span." },
+            },
+            required: ["oldText", "newText"],
+            additionalProperties: false,
+          },
+          description: "Ordered replacement list. Also accepted: a single {oldText, newText} object, or this array as a JSON string.",
+        },
+      },
+      required: ["path", "edits"],
       additionalProperties: false,
     },
   },
@@ -1017,6 +1244,192 @@ export function createFileTools({
     return lines.join("\n");
   };
 
+  /**
+   * `edit`：定点编辑（exact-match 多点替换，issue #191）。
+   *
+   * 存在理由：工具面此前只有 `writeFile{path, content}`，改 3 行也得重打整份文件——
+   * `src/loop/orchestrator.js`（3277 行）≈ 33k 输出 token，还容易被自己的输出预算切断
+   * （`continuation_exhausted` 是本库一等的终止原因）。本工具把「改一小段」的成本从整文件
+   * 降到 diff 量级，并同口径把写边界、错误形状、可中止口径与 `writeFile` 对齐。
+   *
+   * 口径（写进契约中英两节，不要只信注释）：
+   *   * 所有 `oldText` 都对**原始**内容匹配（不是逐条累加后的中间状态）——所以下一条的
+   *     匹配位置不受上一条改写影响，“先插后删”这类写法不会隐式靠顺序碰运气；
+   *   * 每条必须**命中且仅命中 1 次**（0 次与 >1 次都是错误结果），且各条命中区间**不得重叠**；
+   *   * **只做精确匹配**：模糊兜底（NFKC 归一、弯引号折叠、行尾空白容忍）**本轮不做**。
+   *     理由：那是 pi 在真实 transcript 里踩坑之后加的补丁，本库现在**没有 transcript 证据**
+   *     说明模型会写出 NFKC 不等的 oldText；而模糊兜底本身会把「没命中」这唯一可自证的
+   *     信号换成「静默改到了另一个位置」——#184/#195 整轮在修的正是这类猜。错一个字符就
+   *     报错、并在错误里告诉模型下一步，比猜一个位置便宜得多（与 #195 R4「没证据就别扩面」同口径）；
+   *   * BOM 与行尾保留：匹配前剥 BOM、把 CRLF 归一为 LF；写回时按**原文件的行尾风格**还原。
+   *     归一只在写回时统一还原（不做“逐行保留”），所以混合行尾文件会被归一到主导行尾——
+   *     这一点写进了契约与工具描述，不当隐藏行为；
+   *   * 错误一律是**返回错误结果**（`错误：…` 文本）而不是 throw，跟 `writeFile`/`searchText` 一致；
+   *   * 返回短 unified diff + 首个变更行，让模型不必回读就能自证（diff 有行预算，截断带 marker）。
+   *
+   * @param {{path: string, edits: Array<{oldText: string, newText: string}> | object | string}} input
+   */
+  const edit = async (input) => {
+    const filePath = input?.path;
+    if (typeof filePath !== "string" || filePath.trim() === "") {
+      return `错误：edit 的 path 必须是非空字符串（收到 ${describeInputShape(filePath)}）：给一个已存在的文件路径（相对路径按工具根目录解析）`;
+    }
+    const target = resolveToolPath(root, filePath);
+    // 写边界：与 `writeFile` 逐字一致的谓词与错误结果（越界不报异常，不落盘）。
+    if (!canWrite(target)) return writeDenied(target);
+    const label = displayName(target);
+
+    const parsed = parseEditOperations(input?.edits);
+    if (typeof parsed === "string") return parsed;
+    if (parsed.length === 0) {
+      return "错误：edit 的 edits 是空数组（全部无变化）：至少给一条 {oldText, newText}；先 readFile 确认要改的那段原文"
+        + "（整文件重写请改用 writeFile）";
+    }
+    if (parsed.length > EDIT_MAX_EDITS) {
+      return `错误：edit 一次收了 ${parsed.length} 条，超过单次上限 ${EDIT_MAX_EDITS} 条：分几次调用（每次 ≤ ${EDIT_MAX_EDITS} 条），`
+        + "或改动这么分散时先确认是不是直接用 writeFile 整写更便宜";
+    }
+
+    // 先 stat 再读：不先 stat 就要先把整个文件读进内存才发现它超限（几百 MB 的误用会直接 OOM，
+    // 与 readFile 的有界读同一个防 OOM 口径）。
+    let size = null;
+    try {
+      size = statSync(target).size;
+    } catch (error) {
+      const code = error?.code ?? error?.name ?? "读取失败";
+      return `错误：edit 读不到 ${truncateDisplayText(label, 200)}（${code}）：`
+        + "edit 只改已存在的文件，新建请用 writeFile；路径不确定时用 tree 或 searchText 先定位";
+    }
+    if (size > EDIT_MAX_FILE_BYTES) {
+      return `错误：${truncateDisplayText(label, 200)} 是 ${size} 字节，超过 edit 的整文件载入上限 ${EDIT_MAX_FILE_BYTES} 字节：`
+        + "edit 要对原文做整文件匹配，不适用这种体量；先用 readFile 分段确认内容，再评估是否用 writeFile 整写";
+    }
+    let raw;
+    try {
+      raw = readFileSync(target);
+    } catch (error) {
+      return `错误：edit 读不到 ${truncateDisplayText(label, 200)}（${error?.code ?? error?.name ?? "读取失败"}）：`
+        + "edit 只改已存在的常规文件（目录不可编辑）；新建文件请用 writeFile";
+    }
+    if (raw.includes(0)) {
+      return `错误：${truncateDisplayText(label, 200)} 含 NUL 字节（二进制文件）：edit 只做 UTF-8 文本的精确匹配`;
+    }
+
+    const decoded = raw.toString("utf8");
+    const hadBom = decoded.charCodeAt(0) === 0xfeff;
+    const body = hadBom ? decoded.slice(1) : decoded;
+    // 行尾归一只为匹配服务；写回时按主导行尾还原（见上方口径注释）。
+    const hadCrlf = body.includes("\r\n");
+    const source = hadCrlf ? body.replaceAll("\r\n", "\n") : body;
+
+    // 1) 逐条在**原文**上定位并定唯一性（全部验证完才写入，任何一条错都不落盘）。
+    const located = [];
+    for (const [position, operation] of parsed.entries()) {
+      const ordinal = position + 1;
+      const needle = hadCrlf ? operation.oldText.replaceAll("\r\n", "\n") : operation.oldText;
+      if (needle === "") {
+        return `错误：edit 第 ${ordinal} 条的 oldText 是空串：空串无法定位，请给出要替换的具体文本（删除就把它连行一起放进 oldText）`;
+      }
+      const hits = [];
+      // 数完所有命中（不只「有没有第二处」）：错误文案要报出到底几处，模型才能决定是加上下文还是换目标。
+      // 上限 EDIT_HIT_COUNT_CAP：到了这个量级肯先不是「差一点」的问题，不必在 4 MiB 里数完几百万次。
+      for (let at = source.indexOf(needle); at !== -1; at = source.indexOf(needle, at + needle.length)) {
+        hits.push(at);
+        if (hits.length >= EDIT_HIT_COUNT_CAP) break;
+      }
+      if (hits.length === 0) {
+        return `错误：edit 第 ${ordinal} 条没命中：${truncateDisplayText(label, 200)} 里没有逐字符相等的这段文本`
+          + `（匹配是精确的，空白与缩进也算，且不做 NFKC/弯引号/行尾空白兜底）。`
+          + `oldText 开头：${JSON.stringify(truncateDisplayText(operation.oldText, EDIT_OLDTEXT_PREVIEW_CHARS))}。`
+          + `下一步：用 readFile 取回这段原文再逐字复制（注意行尾风格${hadCrlf ? "：本文件用 CRLF" : ""}）`;
+      }
+      if (hits.length > 1) {
+        return `错误：edit 第 ${ordinal} 条命中了 ${hits.length}${hits.length >= EDIT_HIT_COUNT_CAP ? "+" : ""} 处（要求恰好 1 处）：`
+          + `${truncateDisplayText(label, 200)} 里这段文本不唯一，前两处在第 ${lineAt(source, hits[0]) + 1}、${lineAt(source, hits[1]) + 1} 行。`
+          + `oldText 开头：${JSON.stringify(truncateDisplayText(operation.oldText, EDIT_OLDTEXT_PREVIEW_CHARS))}。`
+          + `下一步：加上下文（多带前后几行，或带上唯一的变量名/注释）使匹配唯一。`;
+      }
+      located.push({
+        ordinal,
+        start: hits[0],
+        end: hits[0] + needle.length,
+        newText: hadCrlf ? operation.newText.replaceAll("\r\n", "\n") : operation.newText,
+      });
+    }
+
+    // 2) 重叠判定：按起点排序后相邻区间不得相交（对原文匹配，重叠就是两条在抢同一段文本）。
+    const ordered = located.slice().sort((left, right) => left.start - right.start || left.ordinal - right.ordinal);
+    for (let position = 1; position < ordered.length; position += 1) {
+      const previous = ordered[position - 1];
+      if (ordered[position].start < previous.end) {
+        return `错误：edit 第 ${previous.ordinal} 条与第 ${ordered[position].ordinal} 条命中的文本重叠`
+          + `（第 ${previous.ordinal} 条在第 ${lineAt(source, previous.start) + 1} 行附近，第 ${ordered[position].ordinal} 条从第 `
+          + `${lineAt(source, ordered[position].start) + 1} 行开始）：多条 edit 必须各自覆盖不重叠的片段。`
+          + `下一步：把这两条合并成一条，或缩窄其中一条的 oldText。`;
+      }
+    }
+
+    // 3) 应用（按位置从前往后拼，待定位的位置始终是原文坐标），同时逐条记下新旧行区间。
+    //    行号用递增计数得出（而不是每条重新 lineAt）：大文件里 lineAt 是 O(n)，每条重扫就是 O(n·条数)。
+    let next = "";
+    let cursor = 0;
+    let oldLine = 0;
+    let newLine = 0;
+    const spans = [];
+    for (const operation of ordered) {
+      const before = source.slice(cursor, operation.start);
+      const replacement = operation.newText;
+      oldLine += countNewlines(before);
+      newLine += countNewlines(before);
+      const oldSpan = source.slice(operation.start, operation.end);
+      const oldStartLine = oldLine;
+      const newStartLine = newLine;
+      next += before + replacement;
+      spans.push({
+        oldStartLine,
+        oldEndLine: oldStartLine + countNewlines(oldSpan.slice(0, Math.max(0, oldSpan.length - 1))),
+        newStartLine,
+        // 空 newText（纯删除）占 0 行：用 newStartLine-1 表示「无新行」，让 diff 只出 `-` 行。
+        newEndLine: replacement.length === 0 ? newStartLine - 1 : newStartLine + countNewlines(replacement.slice(0, replacement.length - 1)),
+      });
+      oldLine += countNewlines(oldSpan);
+      newLine += countNewlines(replacement);
+      cursor = operation.end;
+    }
+    next += source.slice(cursor);
+
+    const noopCount = ordered.filter((operation) => operation.newText === source.slice(operation.start, operation.end)).length;
+    if (next === source) {
+      return `错误：未做任何修改：${truncateDisplayText(label, 200)} 未被写回——${noopCount > 0
+        ? `${noopCount}/${ordered.length} 条 edit 的 newText 与命中的原文逐字相同`
+        : "应用结果与原文件逐字相同"}。`
+        + "下一步：若这段内容已是想要的结果，无需重写；否则用 readFile 确认当前内容后重新给 oldText/newText";
+    }
+
+    // 4) 写回：还原 BOM 与原文件的行尾风格（不做逐行保留，口径已写进描述与契约）。
+    let rendered = next;
+    if (hadCrlf) rendered = rendered.replaceAll("\n", "\r\n");
+    if (hadBom) rendered = `\uFEFF${rendered}`;
+    try {
+      writeFileSync(target, rendered, "utf8");
+    } catch (error) {
+      return `错误：edit 写入 ${truncateDisplayText(label, 200)} 失败（${error?.code ?? error?.name ?? "写入失败"}）：`
+        + "文件未被本次调用改动，确认路径可写后重试";
+    }
+
+    const firstChangedLine = spans[0].oldStartLine + 1;
+    const notes = [
+      `已编辑 ${truncateDisplayText(label, 200)}`,
+      `替换 ${ordered.length - noopCount} 处`,
+      noopCount > 0 ? `无变化 ${noopCount} 处` : null,
+      `首个变更行 ${firstChangedLine}`,
+      `写入 ${Buffer.byteLength(rendered, "utf8")} 字节`,
+      hadBom ? "BOM 已保留" : null,
+      hadCrlf ? "CRLF 行尾已保留" : null,
+    ].filter(Boolean).join("，");
+    return [notes, ...renderEditDiff(source, next, spans, label)].join("\n");
+  };
+
   const writeFile = async (input) => {
     const { path: filePath, content } = input ?? {};
     if (typeof content !== "string") {
@@ -1029,7 +1442,7 @@ export function createFileTools({
     return Buffer.byteLength(content, "utf8");
   };
 
-  const executors = { readFile, searchText, rg, grep, tree, writeFile };
+  const executors = { readFile, searchText, rg, grep, tree, edit, writeFile };
 
   const runExecutor = async (name, input, context) => {
     const executor = executors[name];
