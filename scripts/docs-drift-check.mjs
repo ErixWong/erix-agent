@@ -342,6 +342,45 @@ const DEFAULT_RULES = [
     mustNot: [/name_pattern[\s\S]{0,120}?(?:full glob|\\u5b8c\\u6574 glob|\*\*\/\*\.\w+\s*(?:works|\\u751f\\u6548))/i],
     hint: "name_pattern 只匹配 basename、不跨 `/`；`**/*.ts` 一类完整 glob 不工作（锚点 = path.basename 那一处）",
   },
+  {
+    // issue #196 R1：截断 marker 必须给得出「下一步」。锚点取源码里那个**统一子句前缀**
+    // （`NEXT_STEP_CLAUSE`，措辞的唯一来源）而不是文档文案：改前缀 = 模型可见承诺变了 → 本检查变红，
+    // 逼着同步中英两处；文档把出口偷偷写成 `exec`/`sed`（本库没有的工具）也接不住这条锚点。
+    id: "截断 marker 的「下一步」子句与允许点名的工具",
+    src: "src/tools/file-tools.js",
+    srcRe: /const NEXT_STEP_CLAUSE = "([^"]+)";/,
+    docs: ["docs/host-consumer-contract.md", "docs/host-consumer-contract_cn.md"],
+    must: ([clause]) => [
+      new RegExp(esc(clause)),
+      // 收紧条款：出口只能点名本模块的两个工具，并且文档要写明 `exec` 属 CLI 装配层
+      new RegExp(`readFile[\\s\\S]{0,200}?searchText`),
+      new RegExp(`exec[\\s\\S]{0,200}(?:belongs to the CLI|属 CLI 装配层)`, "i"),
+    ],
+    hint: "marker 的「下一步」子句（真值 = 源码 NEXT_STEP_CLAUSE）、只许点名 readFile/searchText、以及「exec 属 CLI 装配层所以不得进 marker」这条收紧，中英两处都要写",
+  },
+  {
+    // issue #196 R2：结果文本里的字节数走 formatSize。锚点取源码真值：默认上限 262144 经
+    // `/ 1024` 推导出的可读值（当前 256KB）+ 单位字面量 KB/MB/GB/TB。改默认值或改单位 → 变红。
+    // ⚠ 追加轮 R6 加了 GB/TB 两档，这里必须**逐档**抽字面量：只写死 KB/MB 的话，加档（或把
+    //   新档写成 GB 以外的字面）文档与检查面都会静默失效——检查面漏掉一档等于那一档没有契约。
+    id: "marker 字节数的可读单位（formatSize）",
+    src: "src/tools/file-tools.js",
+    srcRe: /export const FILE_READ_MAX_BYTES_DEFAULT = ([\d_]+);[\s\S]*?return `\$\{kb\}(KB)`;[\s\S]*?toFixed\(1\)\}(MB)`;[\s\S]*?toFixed\(1\)\}(GB)`;[\s\S]*?toFixed\(1\)\}(TB)`;/,
+    docs: ["docs/host-consumer-contract.md", "docs/host-consumer-contract_cn.md"],
+    must: ([raw, unitKB, unitMB, unitGB, unitTB]) => {
+      const kb = Number(String(raw).replace(/_/g, "")) / 1024;
+      return [
+        new RegExp("formatSize"),
+        new RegExp(`${kb}${esc(unitKB)}`),
+        new RegExp(esc(unitMB)),
+        new RegExp(esc(unitGB)),
+        new RegExp(esc(unitTB)),
+        new RegExp("1024 基数|1024 base"),
+        new RegExp("裸字节数|raw byte count"),
+      ];
+    },
+    hint: "契约里要写：导出名 formatSize、默认上限的可读形式（由源码 262144/1024 推导）、KB/MB/GB/TB 四档单位与 1024 基数、以及「可读值不与裸字节数并存」",
+  },
 ];
 
 for (const rule of DEFAULT_RULES) {
