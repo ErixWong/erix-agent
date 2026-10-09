@@ -91,6 +91,42 @@ engineApiContract("my-host-bundle", () => import("erix-agent"));
 It locks the package entry exports and the minimal pre-write behaviour of
 `appendUserTurn`.
 
+## 5. Self-check commands for this release (issue #183)
+
+The requirements here are API-level, not schema-level, so the self-check is a
+code probe rather than a SQL statement. Each block is copy-pasteable after
+replacing the module path:
+
+```bash
+# the two new entry exports must be functions (not undefined after a bad bump)
+node -e "import('erix-agent').then((m) => console.log(
+  ['appendUserTurn', 'projectTranscriptForDisplay'].map((k) => [k, typeof m[k]),
+));"
+
+# the store surface appendUserTurn depends on; an empty array is the pass
+node -e "import('./your-store.js').then(async (m) => {
+  const store = await m.createStore();
+  console.log(['appendRound', 'load'].filter((k) => typeof store[k] !== 'function'));
+});"
+
+# load() must return an array for an unknown key — a null/undefined return now
+# makes appendUserTurn throw TypeError (see §1)
+node -e "import('./your-store.js').then(async (m) => {
+  const store = await m.createStore();
+  const rows = await store.load('probe-run-does-not-exist');
+  console.log(Array.isArray(rows) ? 'array' : typeof rows);
+});"
+```
+
+Checklist item 2 keeps host-side anchor columns (session id, sequence number,
+attachments, run attribution) beside the transcript. Those are host-owned
+optional columns: verify them with
+`SHOW COLUMNS FROM your_table LIKE 'seq'` (or the
+`INFORMATION_SCHEMA.COLUMNS` form in
+[host-upgrade-guide-0.17.0.md](host-upgrade-guide-0.17.0.md) §4) rather than
+assuming they exist, and land any addition on both the new-install baseline and
+the upgrade migration (0.17.0 guide §5).
+
 ## Checklist
 
 1. Replace hand-rolled `:input:` pre-writes with `appendUserTurn` (keep calling

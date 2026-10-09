@@ -29,6 +29,31 @@ Adapt the column names to the host schema and persist an append sequence. Do
 not rely on a database execution plan, primary-key scan order, or incidental
 row layout to preserve insertion order.
 
+Both halves of that sentence are host-side schema facts, so check them instead
+of assuming — substitute your own table/column names:
+
+```sql
+-- the persisted append sequence must actually exist
+SHOW COLUMNS FROM transcript_records LIKE 'append_seq';
+
+-- and the ORDER BY above must be index-covered, not a per-load sort
+SHOW INDEX FROM transcript_records;
+
+-- fidelity of the stored object: a rebuild-from-whitelist schema shows up as
+-- "no column can hold an unknown field" — a whole-record document column here
+SELECT COLUMN_NAME, DATA_TYPE
+  FROM INFORMATION_SCHEMA.COLUMNS
+ WHERE TABLE_NAME = 'transcript_records'
+   AND DATA_TYPE IN ('json', 'jsonb', 'longtext', 'mediumtext', 'text');
+```
+
+An empty `SHOW COLUMNS` set is the common finding: the guide's example column
+name is a shape, not a statement about your database. `"Empty set"` means this
+release requires you to add the column — see
+[host-upgrade-guide-0.17.0.md](host-upgrade-guide-0.17.0.md) §4 ("the engine
+emits X" ≠ "your table has X") and §5 (land it on both the new-install baseline
+and the upgrade migration).
+
 ### Additive display projection fields
 
 `projectTranscriptForDisplay(records)` now includes a turn-level `key` and a
@@ -89,3 +114,17 @@ Confirm that it:
 
 Then run the host test suite and inspect the display projection without
 assuming its generated `key` values are persistent IDs.
+
+## 5. Where these requirements must land (issue #183)
+
+Two obligations this release does not state for you:
+
+1. **Per-field self-check.** Run the `SHOW COLUMNS` / `INFORMATION_SCHEMA`
+   commands in §1 against the database you are about to upgrade; do not infer
+   from this guide that a column exists.
+2. **Both install paths.** If your host provisions an empty database through a
+   baseline initializer and migrates an existing one through an upgrade script,
+   the new column/index must be written into **both** — a migration that only
+   lives in the upgrade path is unreachable for every fresh install (touwaka
+   hit exactly this; see
+   [host-upgrade-guide-0.17.0.md](host-upgrade-guide-0.17.0.md) §5).

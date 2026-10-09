@@ -144,3 +144,43 @@ instead of silently persisting nothing.
    together with `stream: true`.
 5. Run your host test suite; `node --test` on the engine is green
    (944 pass / 0 fail / 5 skipped at release).
+
+## 7. Self-check commands for this release (issue #183)
+
+This release moves data between host-side channels, and the new reader is the
+one piece the engine will never validate for you. Verify it rather than
+assuming your adapter has it:
+
+```bash
+# loadRunStateStatus is deliberately NOT part of RUN_STATE_STORE_METHODS:
+# a store that lacks it produces no warning at all, so probe it explicitly.
+node -e "import('./your-store.js').then(async (m) => {
+  const store = await m.createStore();
+  console.log(['appendRound', 'load', 'saveRunState', 'loadRunState', 'markRunState',
+               'loadRunStateStatus'].filter((k) => typeof store[k] !== 'function'));
+});"
+
+# old terminal-status reads must be gone from your source
+grep -rn "loadRunState(.*)?\\.state\\|loadRunState(.*)\\.state" src/ bin/
+
+# the two removed exports must not be imported any more
+grep -rn "looksLikeCredential\\|normalizedLabel" src/ bin/
+```
+
+If your host keeps the terminal status in a column rather than a file, the
+column is host-owned: check it with
+
+```sql
+SHOW COLUMNS FROM your_runs LIKE 'status';
+```
+
+and land it on **both** the new-install baseline and the upgrade migration — a
+status column added only to the migration path is missing on every fresh
+install, where `loadRunStateStatus` then silently returns `undefined` (see
+[host-upgrade-guide-0.17.0.md](host-upgrade-guide-0.17.0.md) §4 and §5).
+
+`partialPersistence` (§5.2) carries its own self-check: boot once with
+`partialPersistence: { intervalMs: 1000 }` and `stream` unset and require the
+startup `TypeError` (`partialPersistence requires stream: true`). No error means
+the option was dropped before it reached the engine — a host-side wiring bug,
+not an engine bug.
