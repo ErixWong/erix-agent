@@ -201,6 +201,8 @@ src/
     enforce-size.js                Field-size enforcement
     fold-llm.js                    LLM-assisted folding strategy
     fold-statistical.js            Statistical folding and navigation records
+    provider-summarizer.js         Default fold-llm summarizer backed by the run provider
+    strategy-resolution.js         Built-in strategy name resolution for context.strategy
     anchors.js                     Mechanical anchor extraction (paths/SHAs/issues/URLs/errors)
     fold-fidelity.js               Verbatim user-input quotes and reverse-signal detection
     helpers.js                     Shared folding, protection, stub, and hook helpers
@@ -533,7 +535,12 @@ decide whether to consume the result.
   deprecated.
 - `context` is optional and defaults to `undefined`; when supplied, it
   accepts `strategy`, `budgetTokens`, `keepRounds`, `toolContext`, and
-  `task`. When `budgetTokens` is absent, the loop derives it from
+  `task`. `strategy` takes either a strategy object or one of the built-in
+  names `"sliding-window" | "fold-statistical" | "fold-llm"` (issue #167); an
+  unknown name or other type raises a `TypeError` at run startup, and the
+  `fold-llm` name makes the engine summarize with this run's own provider (one
+  extra tool-free completion per compaction, billed into `result.usage` and
+  visible through `onUsage`). When `budgetTokens` is absent, the loop derives it from
   `contextWindowTokens` and `maxOutputTokens` found in `modelConfig`,
   `modelMetadata`, `model`, `provider`, or `context`. Compaction keeps six
   rounds by default when a strategy is active. A task brief takes precedence
@@ -623,7 +630,7 @@ headless runtime's product interface.
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>
 erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
@@ -665,6 +672,10 @@ The shared CLI flags are:
 - `--idle-timeout <seconds>` aborts after no progress; it defaults to 300
   for `chat` and 0 (disabled) for `repl`.
 - `--compact-budget <tokens>` overrides the automatic compaction budget.
+- `--compaction <name>` selects the compaction strategy
+  (`sliding-window | fold-statistical | fold-llm`, default `fold-statistical`, or the
+  `slots.default.compaction` config field). `fold-llm` costs one extra main-model call
+  per compaction.
 - `--tools <comma-separated names>` is a hard capability whitelist for both
   `chat` and `repl`; unknown names warn, and an empty filtered set is an error.
 - `--judge-log <path>` appends judge decisions (round + interception) as JSONL

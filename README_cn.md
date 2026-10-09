@@ -157,6 +157,8 @@ src/
     enforce-size.js                 字段大小限制
     fold-llm.js                     LLM 辅助的折叠策略
     fold-statistical.js             统计折叠与导航记录
+    provider-summarizer.js          用本 run provider 的 fold-llm 默认 summarizer
+    strategy-resolution.js          context.strategy 内置策略名解析
     anchors.js                      机械锚点抽取（路径/SHA/issue/URL/错误行）
     fold-fidelity.js                用户输入逐字引用与反向信号检测
     helpers.js                      共享的折叠、保护、stub 与 hook 辅助函数
@@ -369,7 +371,7 @@ Judge 拦截使用 6,000 token 的会话预算；round judge 最多输出 1,024 
 ### 工具、上下文、存储与压缩
 
 - `executeTool` 只接收结构化对象 `({ id, name, input, context, signal })`。三种规范返回形态是 `string`、`{ content, metadata?, success? }` 和 `Error`；旧的 `{ data, success, ... }` 及其他 duck-typed 形状仍会宽容归一化，但已弃用，不应依赖。
-- `context` 可选，默认为 `undefined`；提供时接受 `strategy`、`budgetTokens`、`keepRounds`、`toolContext` 和 `task`。没有 `budgetTokens` 时，循环会从 `modelConfig`、`modelMetadata`、`model`、`provider` 或 `context` 中的 `contextWindowTokens` 和 `maxOutputTokens` 推导。策略启用时，压缩默认保留六轮。任务 brief 的优先级依次为：显式 `task`、`context.task`，然后是入口 transcript 中最后一条 user message。
+- `context` 可选，默认为 `undefined`；提供时接受 `strategy`、`budgetTokens`、`keepRounds`、`toolContext` 和 `task`。`strategy` 可以是策略对象，也可以是内置策略名 `"sliding-window" | "fold-statistical" | "fold-llm"`（issue #167）：未知名字或其他类型会在 run 启动期抛 `TypeError`；`fold-llm` 名字形态下引擎会用**本 run 的主力 provider**做摘要（每次压缩多一次无工具补全，usage 已计入 `result.usage` 并通过 `onUsage` 暴露）。没有 `budgetTokens` 时，循环会从 `modelConfig`、`modelMetadata`、`model`、`provider` 或 `context` 中的 `contextWindowTokens` 和 `maxOutputTokens` 推导。策略启用时，压缩默认保留六轮。任务 brief 的优先级依次为：显式 `task`、`context.task`，然后是入口 transcript 中最后一条 user message。
 - 压缩支持 `summaryRole`、`recoveryHint`、`protectedMessage`、`stripHistoricalImages`、`onBeforeFold`、`onAfterFold` 和 `stubFor`。如果 protected set 本身无法放入预算，protected messages 可能降级；结果会记录 `compactionStats[].protectedDowngraded`。单个无法放入预算的 protected message 会产生 `invalid_budget`。
 - `stubFor(message)` hook 可以为折叠后的工具结果保留有界、非秘密 stub（**全部** tool_result，不再有可重放性标记子集——ADR-016）。CLI 的 stub 限制为 200 个字符，最多包含三个安全的 `label=value` fact。折叠导航记录是形如 `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }` 的仅地址记录，最多 10 个 artifact、400 个字符。它们不是语义搜索，也不是 provenance 证明。
 - tool-result TTL 折叠独立于上下文压缩，只改变 provider request view；checkpoint 保留完整工具结果文本。`toolResultTtl` 默认为 `2` 轮（`0` 表示禁用），`toolResultFoldMinTokens` 默认为估算的 `4000` token。`age === ttl - 1` 的 warning round 会要求模型使用 `note_take`；折叠占位符包含 navigation digest，并在适用的 JSON 中包含 JSON skeleton。`note_*`、todo、错误和显式保护的结果不会折叠。
@@ -406,7 +408,7 @@ onEvent
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>
 erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
@@ -430,6 +432,7 @@ erix mcp [--config <path>]
 - `--timeout <ms>` 为 `chat` 提供软任务截止时间；它会推动循环进入 wrap-up，而不是强制杀死进程。
 - `--idle-timeout <seconds>` 在没有进展后中止；`chat` 默认为 300，`repl` 默认为 0（禁用）。
 - `--compact-budget <tokens>` 覆盖自动压缩预算。
+- `--compaction <名>` 选择压缩策略（`sliding-window | fold-statistical | fold-llm`，默认 `fold-statistical`；也可用 `slots.default.compaction` 固定）。`fold-llm` 每次压缩多一次主力模型调用。
 - `--tools <逗号分隔名称>` 是 `chat` 和 `repl` 的硬能力白名单；未知名称会告警，过滤后为空会报错。
 - `--judge-log <path>` 在 `chat` 中以 JSONL 追加轮次/judge 拦截决策，每条带 `runId` 与解析出的 `model`，末尾再追加一条 run 级 `run_outcome` 汇总记录（这条终局记录即使 judge 关闭也会写——它是 run 的终局记录而非决策，有了它就不必为了 per-model 记账再开第二份档案）；默认落 `<归档目录>/judge.log`，探不到的字段缺省而非写占位值；档案原样落盘（脱敏已于 #55 退役）。
 

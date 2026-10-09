@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #165 judge 记录关联字段与 run 级 outcome 汇总事件；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-09（已同步 #165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -281,6 +281,30 @@ slot 里的同名字段（`src/loop/provider-runner.js:125-127`、`src/providers
 两种 `invalid_budget` 都是**运行前**抛错：运行生命周期尚未开始，抛出的错误不带
 `termination`、`usage`、`rounds`、`finalText`（边界见「终局载荷（issue #176 / #180）」
 里的范围声明）。
+
+### 压缩策略选择（issue #167）
+
+`context.strategy` 既接受策略**对象**（语义逐字不变），也接受内置**名字**
+`"sliding-window" | "fold-statistical" | "fold-llm"`。名字在 **run 启动期一次性**解析成宿主自己
+也能构造出的那个实例（`src/compact/strategy-resolution.js`，接入点 `src/loop/orchestrator.js:988-1003`），
+因此下游 configuredStrategy 通道零改动。未知名字、空字符串、以及既不是字符串也不是对象的值，
+都会在**首次 provider 调用前**抛 `TypeError` 并列出合法值——与上面同一种「运行前」抛错形状
+（不带 `termination`/`usage`/`rounds`/`finalText`）。名字形态的策略还会接上 context 级的
+`recoveryHint` 与 `stubFor`；对象形态依旧由宿主自己设在对象上，引擎绝不重写注入的对象——
+手工 `createFoldLlmStrategy` 但缺 `summarizer` 时，仍按它自己的构造期 `TypeError` 失败。
+
+`fold-llm` 名字形态会注入一个复用**本 run 主力 provider** 的默认 summarizer
+（`src/compact/provider-summarizer.js`）：每次压缩一次无工具补全，输入是
+`SUMMARIZER_PROMPT_GUIDE` + 被折叠消息的确定性序列化 + 被折叠轮次范围。成本与记账属于契约：
+
+- **每次压缩多一次主力模型调用**，输入体量约等于被折叠的老轮次。因此 `fold-llm` 只能显式选用；
+  默认 everywhere 仍是 `fold-statistical`（库层未配策略时仍为 `sliding-window`）。
+- 它的 usage 走与其他辅助调用同一的 `addUsage` 路径并入 run 总账（`src/loop/orchestrator.js:979`，
+  `trackLatest: false`），并通过 `onUsage` 上报，因此 `result.usage` / `error.usage` 是完整的。这次调用
+  **不推 `rounds`**、不参与 stall 检测、也不更新后续压缩判断用的 `latestApiInputTokens` / `latestApiEstimatedTokens`。
+- summarizer reject / throw / 返回空文本时，与注入式 summarizer 一样降级到统计摘要（下一轮上下文里
+  会出现 `[fold-llm 摘要失败…]` 标记）。摘要失败不会杀死 run。
+- 自己注入策略对象仍是覆盖通道（比如把 summarizer 接成便宜模型）。该形态下引擎**不**为摘要记账——由宿主自己算。
 
 ### 装配自检断言点
 

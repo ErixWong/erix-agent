@@ -339,6 +339,41 @@ Both `invalid_budget` shapes are **pre-execution** throws: the run lifecycle has
 not begun, so the thrown error carries no `termination`, `usage`, `rounds`, or
 `finalText` (see the scope note in "Termination payload (issue #176 / #180)").
 
+### Compaction strategy selection (issue #167)
+
+`context.strategy` accepts a strategy **object** (semantics unchanged, byte for byte) or
+one of the built-in **names** `"sliding-window" | "fold-statistical" | "fold-llm"`.
+A name is resolved **once at run startup** into the same object the host would have
+built (`src/compact/strategy-resolution.js`, wired at
+`src/loop/orchestrator.js:988-1003`), so the downstream configured-strategy channel is
+untouched. An unknown name, a blank string, or a value that is neither a string nor an
+object throws a `TypeError` listing the legal values **before the first provider call**
+— same pre-execution throw shape as above (no `termination`/`usage`/`rounds`/`finalText`).
+A name-resolved strategy also picks up context-level `recoveryHint` and `stubFor`;
+object-form hosts keep setting those on the object, and the engine never rewrites an
+injected object — a hand-built `createFoldLlmStrategy` object still fails with its own
+constructor `TypeError` when its `summarizer` is missing.
+
+The `fold-llm` name injects a default summarizer that reuses **this run's provider**
+(`src/compact/provider-summarizer.js`): one tool-free completion per compaction whose
+input is `SUMMARIZER_PROMPT_GUIDE` plus a deterministic serialization of the folded
+messages and the folded round range. Its cost and accounting are part of the contract:
+
+- **One extra call on the run's main model per compaction**, with an input roughly the
+  size of the folded rounds. `fold-llm` is therefore opt-in; `fold-statistical` remains
+  the default everywhere (library default stays `sliding-window` when no strategy is set).
+- Its usage is merged into the run aggregate through the same `addUsage` path as other
+  auxiliary calls (`src/loop/orchestrator.js:979`, `trackLatest: false`) and is also
+  reported through `onUsage`, so `result.usage` / `error.usage` are complete. The call
+  does **not** advance `rounds`, does not feed stall detection, and does not update the
+  `latestApiInputTokens` / `latestApiEstimatedTokens` used by later compaction decisions.
+- A rejected, throwing, or empty-text summary answer degrades to the statistical summary
+  exactly like an injected summarizer (the `[fold-llm 摘要失败…]` marker then appears in
+  the next round's context). A failed summary never kills the run.
+- Injecting your own strategy object stays the override channel (e.g. a summarizer on a
+  cheaper model). In that form the engine books **no** usage for the summary call — the
+  host accounts for it.
+
 ### Assembly self-check assertion
 
 `model_metadata_missing` (`{type, runId, detail}`, at most one per run) is the

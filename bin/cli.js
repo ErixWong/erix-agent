@@ -77,7 +77,7 @@ const HELP_TEXT = `用法：
   --error-log <path>   将持久化错误事件追加写入 JSONL（默认仅 stderr；也可用 ERIX_ERROR_LOG）
   --tools <名1,名2>    工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
   --compaction <名>   上下文压缩策略：${BUILTIN_COMPACTION_STRATEGY_NAMES.join(" | ")}（默认：fold-statistical）。
-                      ⚠ fold-llm 每次压缩会**多一次主力模型调用**（输入为被折叠的老轮次），其 usage
+                      ⚠ fold-llm 每次压缩会多一次主力模型调用（输入为被折叠的老轮次），其 usage
                       已计入本次 run 总账；也可用 config 字段 compaction 固定（旗标优先）。
 
 环境变量：
