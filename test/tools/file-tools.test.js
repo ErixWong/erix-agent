@@ -4,10 +4,10 @@
 // rg/grep 默认正则与真实命令同口径（#184 追加轮 A，含 schema 描述真值）。
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setImmediate as immediate } from "node:timers";
+import { makeTmp } from "../helpers/tmp.js";
 
 import {
   createFileTools,
@@ -17,7 +17,7 @@ import {
 import { fileToolsContract } from "../contract/file-tools.js";
 
 async function withDirectory(callback) {
-  const directory = await mkdtemp(join(tmpdir(), "erix-file-tools-"));
+  const directory = await makeTmp("erix-file-tools-");
   try {
     return await callback(directory);
   } finally {

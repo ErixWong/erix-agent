@@ -4,13 +4,13 @@
 // tool_result 是可读字符串。HOME 指向临时目录，不触碰真实 ~/.erix/todos/。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join, basename } from "node:path";
 
 import { runChat } from "../../bin/cli.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 // issue #81：注入空 MCP 配置，避免 runChat 的 MCP 代理解析真实 ~/.erix/mcp.json。
 async function writeEmptyMcpConfig(dir) {
@@ -20,7 +20,7 @@ async function writeEmptyMcpConfig(dir) {
 }
 
 test("runChat 装配后内置 todo_add/todo_list 返回可读字符串（裸环境无 todo skill）", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-todo-integration-"));
+  const dir = await makeTmp("erix-todo-integration-");
   const home = join(dir, "home");
   const previousHome = process.env.HOME;
   process.env.HOME = home;

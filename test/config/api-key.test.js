@@ -1,14 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { resolveApiKey } from "../../src/config/api-key.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 test("resolves direct, environment, and trimmed file keys in precedence order", async () => {
   const envName = `ERIX_LLM_KIT_KEY_${process.pid}`;
-  const directory = await mkdtemp(join(tmpdir(), "erix-llm-kit-"));
+  const directory = await makeTmp("erix-llm-kit-");
   const file = join(directory, "api-key");
   const previous = process.env[envName];
 
@@ -33,7 +33,7 @@ test("resolves direct, environment, and trimmed file keys in precedence order", 
 });
 
 test("apiKeyFile validates paths and warns without rejecting readable files", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "erix-llm-kit-api-key-validation-"));
+  const directory = await makeTmp("erix-llm-kit-api-key-validation-");
   const file = join(directory, "api-key");
   const originalError = console.error;
   const warnings = [];

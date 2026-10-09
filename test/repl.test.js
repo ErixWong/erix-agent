@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -185,7 +185,7 @@ test("parseCommand marks unknown commands", () => {
 });
 
 test("saveSession and loadSession round-trip messages", async () => {
-  const parent = await mkdtemp(join(tmpdir(), "erix-repl-test-"));
+  const parent = await makeTmp("erix-repl-test-");
   const dir = join(parent, "sessions");
   try {
     const messages = [
@@ -203,7 +203,7 @@ test("saveSession and loadSession round-trip messages", async () => {
 });
 
 test("session paths map traversal IDs inside the session directory", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-repl-path-test-"));
+  const dir = await makeTmp("erix-repl-path-test-");
   const session = "../../erix-repl-path-target";
   try {
     assert.equal(sessionPath(dir, session), join(
@@ -219,7 +219,7 @@ test("session paths map traversal IDs inside the session directory", async () =>
 });
 
 test("saveSession replaces the archive atomically without leaving temporary files", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-repl-atomic-test-"));
+  const dir = await makeTmp("erix-repl-atomic-test-");
   try {
     await saveSession(dir, "atomic", [{ version: 1 }]);
     const path = sessionPath(dir, "atomic");
@@ -239,7 +239,7 @@ test("saveSession replaces the archive atomically without leaving temporary file
 });
 
 test("loadSession returns an empty array for a missing file", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-repl-test-"));
+  const dir = await makeTmp("erix-repl-test-");
   try {
     assert.deepEqual(await loadSession(dir, "missing"), []);
   } finally {
@@ -248,7 +248,7 @@ test("loadSession returns an empty array for a missing file", async () => {
 });
 
 test("runRepl aborts the active loop on SIGINT and keeps readline open", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-repl-sigint-test-"));
+  const dir = await makeTmp("erix-repl-sigint-test-");
   const input = new PassThrough();
   input.isTTY = true;
   const output = new PassThrough();
@@ -303,7 +303,7 @@ test("runRepl aborts the active loop on SIGINT and keeps readline open", async (
 });
 
 test("runRepl resumes from the transcript store without an engine-owned retrieval tool", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-repl-store-test-"));
+  const dir = await makeTmp("erix-repl-store-test-");
   const input = new PassThrough();
   input.isTTY = true;
   const output = new PassThrough();
@@ -391,7 +391,7 @@ test("runRepl injects archive status at fold time instead of into loop context",
 });
 
 test("CLI assembly root provides transcript and notes stores", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-assembly-root-test-"));
+  const dir = await makeTmp("erix-assembly-root-test-");
   try {
     const root = createCliAssemblyRoot({
       dir,
@@ -485,7 +485,7 @@ test("runRepl reports a damaged MCP config instead of treating it as absent", as
 });
 
 test("runRepl preserves new input when resuming an aborted tool", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-repl-abort-test-"));
+  const dir = await makeTmp("erix-repl-abort-test-");
   const session = "repl-abort";
   const store = createFileTranscriptStore({ dir });
   const controller = new AbortController();
@@ -550,7 +550,7 @@ test("runRepl preserves new input when resuming an aborted tool", async () => {
 });
 
 test("chat artifacts resume in REPL and pass the final guard", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-assembly-e2e-test-"));
+  const dir = await makeTmp("erix-assembly-e2e-test-");
   const notesDir = join(dir, "notes");
   const input = new PassThrough();
   input.isTTY = true;

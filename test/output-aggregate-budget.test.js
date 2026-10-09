@@ -6,14 +6,14 @@
 // 失败结果保留 is_error + 错误片段、下一轮请求看到的是替换后 stub。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { estimateTokens } from "../src/tokens.js";
+import { makeTmp } from "./helpers/tmp.js";
 import {
   AGGREGATE_FRAMING_TOKENS,
   computeAggregateBudgetTokens,
@@ -236,7 +236,7 @@ test("CJK + emoji round trip: archived text remains byte-identical", async () =>
 });
 
 test("file store: aggregated archive is byte-identical", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "erix-agg-file-"));
+  const dir = await makeTmp("erix-agg-file-");
   try {
     const store = createFileTranscriptStore({ dir });
     const marker = "文件通道尾部锚点🔎";

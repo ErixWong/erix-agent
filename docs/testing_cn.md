@@ -30,6 +30,7 @@ modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }))
 3. **Canonical round fixtures**（`test/fixtures/rounds-fixtures.mjs`）提供具有代表性的纯文本、单工具、多工具和混合多轮对话，供消息转换和压缩测试使用。
 4. **本地 MCP fixtures** 位于仓库根目录的 `fixtures/` 目录：`fixtures/mock-mcp-server.mjs` 和 `fixtures/mock-mcp-http-server.mjs`。它们是供 `test/mcp.test.js` 使用的可执行 stdio 和 HTTP server。请将这些 server 保持在 `test/` 之外：`node --test` 会发现 test tree 下的文件，将长驻 fixture server 当作测试文件执行可能导致测试运行挂起。`test/fixtures/` 下的数据 fixture 由测试导入，并不是 server 入口。
 5. **契约 helpers**（`test/contract/index.js`、`test/contract/transcript-store.js`、`test/contract/model-config-provider.js`、`test/contract/assembly-port.js`、`test/contract/execute-tool.js` 和 `test/contract/notes-store.js`）定义宿主端口的共享断言。内置的 memory/file store 和 config provider 会在各自测试中注册这些契约。
+6. **临时目录 helper**（`test/helpers/tmp.js`）提供 `makeTmp(prefix)`（尊重 `TMPDIR`、兜底建父目录、`after()` 注册清理）：测试临时目录一律走它、不焊死 `/tmp`，基路径不可写时以具名错误 `TMPDIR_NOT_WRITABLE` 一次性失败（机器守卫：`npm run check:tests`，即 `scripts/test-hygiene-check.mjs`）。
 
 完整的、已跟踪的 `test/` tree 如下：
 
