@@ -575,6 +575,13 @@ export function fileToolsContract(label, { createFileTools }) {
       assert.equal(capped.metadata.searchTruncated, true);
       assert.equal(capped.metadata.searchHits, 3);
       assert.equal(capped.metadata.searchNextOffset, 3, "next_offset 必须是可续读的偏移");
+      // issue #195（主 agent 验收补漏）：提示词承诺「截断时给出续读 offset」——首查（不传 offset）
+      // 被截时也必须给得出，不能只住在不进 wire 的 metadata 里。
+      assert.match(capped.content, /offset=3 继续/u, `规范入口首查被截的 marker 必须自带续读 offset：${capped.content}`);
+      // 别名输出逐字不变（issue #188）：它们不吃 offset，marker 不得被继任入口带跑。
+      const rgCapped = await tools.executeTool("rg", { pattern: "hit", max_results: 3 });
+      assert.match(rgCapped, /max_results=3 截断\]/u);
+      assert.doesNotMatch(rgCapped, /offset=\d+ 继续/u, "别名不吃 offset，marker 里不该出现续读偏移");
 
       // offset 续读：next_offset 传回去能拿到剩下那批（截断可撤销，ADR-010）
       const next = await tools.executeTool("searchText", { pattern: "hit", mode: "literal", max_results: 3, offset: capped.metadata.searchNextOffset });

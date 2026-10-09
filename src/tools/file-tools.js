@@ -235,7 +235,8 @@ export function toolMarker(kind, values = {}) {
       // 无命中统一口径：空串会让模型分不清「没搜到」与「搜了但被静音」
       return "（无命中）";
     case "searchTruncated":
-      // `nextOffset` 只有带 `offset` 分页的调用才有（别名不传 offset，输出逐字不变）。
+      // 规范入口 `searchText` 总带 `nextOffset`（模型可见承诺，见下方调用处注释）；
+      // 别名不传 `offset` 也不开 `emitMetadata` → 拿不到 `nextOffset`，输出逐字不变。
       return values.nextOffset === undefined
         ? `[命中过多，已按 max_results=${values.limit} 截断]`
         : `[命中过多，已按 max_results=${values.limit} 截断；offset=${values.nextOffset} 继续]`;
@@ -823,7 +824,11 @@ export function createFileTools({
     const wrap = (content) => (emitMetadata ? { content, metadata } : content);
     const truncationMarker = toolMarker("searchTruncated", {
       limit: resultLimit,
-      ...(offset > 0 ? { nextOffset: offset + hits.length } : {}),
+      // issue #195（主 agent 验收补漏）：CLI 提示词向模型承诺「截断时给出续读 offset」，那这条承诺
+      // 必须落在**模型可见**的 marker 上——`metadata` 进 transcript 但不上 wire，首查被截时模型
+      // 看不见 offset 只能猜个数。规范入口（`emitMetadata`）无论是否带 offset 都给；
+      // 别名不吃 offset，输出逐字不变（issue #188：别名不得被继任入口带跑）。
+      ...(emitMetadata || offset > 0 ? { nextOffset: offset + hits.length } : {}),
     });
 
     if (hits.length === 0) {
