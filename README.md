@@ -229,7 +229,7 @@ src/
   text/
     label.js                       Note/findings label normalization
   tools/
-    file-tools.js                  Canonical file tools: readFile/rg/grep/tree/writeFile
+    file-tools.js                  Canonical file tools: readFile/searchText/rg/grep/tree/edit/writeFile
     index.js                       Optional tools subpath exports
     notes.js                       Host-side notes tools
     providers.js                   Tool-provider adapters
@@ -725,7 +725,7 @@ The index is a cache, not the source of truth: resuming still requires a
 non-empty transcript for the session, and index write failures never affect
 the run itself.
 
-The built-in CLI tools are `readFile`, `searchText`, `rg`, `grep`, `tree`,
+The built-in CLI tools are `readFile`, `searchText`, `rg`, `grep`, `tree`, `edit`,
 `writeFile`, and `exec`. `searchText` is the single search entry point (issue
 #195): its `mode` is **required with no default** — `literal` matches the pattern
 as a fixed string, `regex` as a JavaScript regular expression, and a missing or
