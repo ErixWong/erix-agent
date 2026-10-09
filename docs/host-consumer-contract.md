@@ -1343,6 +1343,75 @@ adds `exec` and `todo_*`, and passes no predicates, so CLI behaviour stays
 "no boundary" exactly as before. `bin/` no longer owns a second copy of the file
 tools (issue #184).
 
+### Skills loader registration (issue #197)
+
+The canonical skill-package loader is `src/skills/loader.js`, exported from
+`erix-agent/tools` — deliberately **not** a new `./skills` subpath: the packaged
+surface is unchanged, and a host that already reads `./tools` needs no second
+import-map entry. `bin/skills.js` is assembly plus re-export only (its one job is
+supplying the CLI's own bundled skill root), so `erix skills` and the REPL
+`/skills` command behave exactly as they did before the move.
+
+The surface is six functions:
+
+- `skillDirectories({ home, cwd, skillsDir, bundledDir })` — the skill roots that
+  exist, ordered user-global, project-local, bundled;
+- `discoverSkills({ home, cwd, skillsDir, bundledDir })` — first-level skill
+  directories as `[{ id, dir }]`, with a non-enumerable `errors` array attached;
+- `loadSkill(dir)` / `loadAllSkills(options)` — validate one skill directory /
+  everything that was discovered;
+- `buildSkillTools({ home, cwd, skillsDir, bundledDir, excludeSkillIds, builtinNames })`
+  — the assembled `{ tools, executeTool, errors }` triple, `errors` also carrying
+  everything that got skipped;
+- `warnBuiltinToolConflicts(errors, { warn })` — the CLI's one-line notice for
+  same-name collisions.
+
+**`bundledDir` is the option a host must understand.** The bundled skill root is
+**caller-owned**: the library never derives it from its own file location, and an
+omitted `bundledDir` means no bundled root participates in discovery at all —
+only `<home>/.erix/skills` and `<cwd>/.erix/skills` are consulted. The reason is
+concrete rather than stylistic: the retired `bin/skills.js` copy spelled the path
+as `../skills` relative to `import.meta.url`, which happened to land on
+`<package>/skills` while the file lived in `bin/`, lands one level off from
+`src/skills/`, and lands somewhere else again for a host that resolves the
+package out of `node_modules`. A wrong guess **fails silently** — the bundled
+skills simply stop being discovered — which is why the parameter is the contract,
+not a convenience. The CLI passes its own `<package>/skills`; a host passes its
+own, or passes nothing and gets user and project skills only.
+
+Precedence is fixed: a bundled skill loses a same-id contest to a user-global
+skill, and a user-global skill loses to a project-local one (scan order
+bundled → global → project, later entries replace earlier ones). `skillsDir` is
+the single-directory override (the CLI's `--skills-dir`): when it is present only
+that directory is scanned, and a relative value resolves against `cwd`.
+
+**Discovery and validation never block, and every failure is enumerable.**
+`loadSkill` throws for one directory (an unsupported `schema_version`, an
+entrypoint that is absolute or escapes the skill root, empty / duplicate /
+malformed `tools`, a module exporting neither `getSkillDefinition()` nor
+`getTools()`), and `loadAllSkills` / `buildSkillTools` turn each throw into one
+`{ skillId, dir, error }` record — `error` is a string, the skill is skipped **as
+a whole** (no partial tool set survives), and every other skill under the same
+root still assembles. A skill whose tool name collides with one of
+`builtinNames` is reported the same way and skipped instead of silently
+overriding the built-in tool. Hosts may code against the record shape and the
+"skip the whole skill" rule; they must not code against the wording of those
+error strings.
+
+`buildSkillTools` returns the library's own `ToolSchema` list handed to
+`createToolRegistry`, so registry input validation is live on skill tools: a
+missing `required` field or a wrongly typed property comes back as the registry's
+`Tool <name> …` text, an unregistered name comes back as `Unknown tool: <name>`,
+and nothing throws. Skill modules are imported **in process, with the host's
+privileges** — the library adds no sandbox (ADR-008, and ADR-009 keeps the cage
+on the host side), so `excludeSkillIds` and `builtinNames` are policy inputs, not
+a security boundary.
+
+`skillsLoaderContract(label, { discoverSkills, loadSkill, buildSkillTools })` in
+`erix-agent/contract-tests` asserts the parameterised bundled root, the
+precedence order, the non-blocking enumerable `errors` shape, and the
+`ToolSchema` output shape for whichever implementation a host wires in.
+
 ### Notes maintenance scheduling (0.12.0)
 
 The root rule is the **session clock** (ADR-018 D7): note lifetime = session
@@ -1780,7 +1849,7 @@ valid state on a later resume.
 ## Contract test suites (issue #183)
 
 `erix-agent/contract-tests` (the `./contract-tests` subpath export,
-`test/contract/index.js`) ships seven suite files exposing **nine** reusable
+`test/contract/index.js`) ships nine suite files exposing **eleven** reusable
 `node:test` registration functions (`execute-tool.js` carries two: the current and
 the migration shape; `notes-store.js` carries two since issue #183: the general
 suite and the optional CAS sub-suite). Every one is shaped `xxxContract(label, factory)`:
@@ -1788,9 +1857,9 @@ calling it registers assertions titled with `label`, and nothing executes until
 `node --test` runs them. `npm run check:docs:strict` fails on any suite that
 `test/contract/index.js` re-exports but the packaged `files` list omits (it is a
 warn under the plain `npm run check:docs`), so the shipped set cannot shrink
-unnoticed. `notesStoreCasContract` is the newest of the nine (issue #183) and
-`terminationPayloadContract` is next (issue #180): a host on an installed 0.17.0
-has seven, not nine.
+unnoticed. `skillsLoaderContract` is the newest of the eleven (issue #197) and
+`fileToolsContract` is next (issue #184): a host on an installed 0.18.0
+has nine, not eleven.
 
 ### What the suites prove, and what they cannot prove (issue #183)
 
@@ -1878,6 +1947,7 @@ The same shape covers the other six; only the second argument differs:
 | `assemblyPortContract(label, createPort)` | factory | your `AssemblyPort` object; the suite starts a real `runToolLoop` on it |
 | `engineApiContract(label, getEntry)` | factory | the **package entry namespace**, i.e. `() => import("erix-agent")` — it asserts exported engine API, not your code |
 | `terminationPayloadContract(label, getEntry)` | factory | the same entry namespace (`{ runToolLoop }`); it brings its own provider stub |
+| `skillsLoaderContract(label, { discoverSkills, loadSkill, buildSkillTools })` | three functions, not a factory | the skill-package loader a host wires in; it asserts the caller-owned `bundledDir`, the bundled → global → project precedence, the non-blocking `{skillId, dir, error}` failure shape, and the `ToolSchema` output shape |
 
 ### Suite inventory (issue #183)
 
