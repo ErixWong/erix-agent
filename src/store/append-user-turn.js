@@ -1,6 +1,22 @@
 import { randomUUID } from "node:crypto";
 
 /**
+ * loadMaxRound 派生源校验（issue #157 快路径）：null/undefined/负数 → 0
+ * （与全量路径 Math.max(0, 安全整数 round…) 的空 store/异常语义一致）；
+ * 非 number 且非 null/undefined、或非安全整数（1.5/NaN/Infinity）→ TypeError。
+ */
+async function maxRoundFromProbe(store, key) {
+  const probed = await store.loadMaxRound(key);
+  if (probed === null || probed === undefined) return 0;
+  if (typeof probed !== "number" || !Number.isSafeInteger(probed)) {
+    throw new TypeError(
+      "appendUserTurn: store contract violation — loadMaxRound(key) must resolve to a safe integer, null, or undefined",
+    );
+  }
+  return Math.max(0, probed);
+}
+
+/**
  * Pre-write a user turn into a transcript store (upstream issue #97, write side
  * of the multi-turn resume contract in docs/host-consumer-contract.md).
  *
@@ -18,18 +34,27 @@ import { randomUUID } from "node:crypto";
  * - Record shape: { round, messages: [{ role: "user", content: [{ type:
  *   "text", text }] }], dedupKey, roundKey: dedupKey, ts } with `ts` as an
  *   ISO-8601 string (matches every existing transcript writer).
+ * - 成对可选快路径探针（issue #157，宿主 DB store 用）：`loadByDedupKey` 与
+ *   `loadMaxRound` 两者都是函数时 appendUserTurn 走点查快路径——先算 dedupKey →
+ *   loadByDedupKey 命中即返回（不调 loadMaxRound、不调 load）；未命中才 loadMaxRound
+ *   派生 round → appendRound。快路径全程**不调用 store.load**。缺任一方法则回退现行为
+ *   （全量 load），成对生效、缺一如缺二。返回形状违约抛 TypeError。
+ *   内置 file store 不实现（点查对 JSONL 无意义，#160 已优化）。
+ * - `written: true` 表示本次调用执行了 appendRound；不保证并发去重场景下实际落盘
+ *   （store 可能吞掉并发重复写）。同 key 的追加应由宿主串行（或在宿主事务内）发起。
+ *
+ * ⚠ 两个坑（issue #213 R4 实测，都是**静默**退化）：
+ *   1. 本块必须紧贴 `export async function appendUserTurn`——它曾经孤悬在
+ *      `maxRoundFromProbe` 的文档块之上，导致 appendUserTurn 在 `.d.ts` 里全是推断值
+ *      （`store: any`、`round: any`）而编译一个错也不报；
+ *   2. 下面两个内联类型字面量里不得出现**独占一行的 `//` 注释**（TypeScript 的 JSDoc
+ *      类型解析器直接放弃整个参数类型），行尾 `//` 才安全。
  *
  * @param {{
  *   load: (key:string) => Promise<object[]>,
  *   appendRound: (key:string, record:object) => Promise<unknown>,
- *   // 成对可选快路径探针（issue #157，宿主 DB store 用）：两者都是函数时
- *   appendUserTurn 走点查快路径——先算 dedupKey → loadByDedupKey 命中即返回
- *   （不调 loadMaxRound、不调 load）；未命中才 loadMaxRound 派生 round →
- *   appendRound。快路径全程**不调用 store.load**。缺任一方法则回退现行为
- *   （全量 load），成对生效、缺一如缺二。返回形状违约抛 TypeError。
- *   内置 file store 不实现（点查对 JSONL 无意义，#160 已优化）。
- *   loadByDedupKey?: (key:string, dedupKey:string) => Promise<object|null|undefined>,
- *   loadMaxRound?: (key:string) => Promise<number|null|undefined>
+ *   loadByDedupKey?: (key:string, dedupKey:string) => Promise<object|null|undefined>, // 可选快路径探针，issue #157
+ *   loadMaxRound?: (key:string) => Promise<number|null|undefined>                      // 与上者成对生效
  * }} store
  * @param {{
  *   key: string,               // transcript key (runId / session id)
@@ -41,28 +66,10 @@ import { randomUUID } from "node:crypto";
  *   key: string,
  *   dedupKey: string,
  *   round: number,
- *   written: boolean,      // true 表示本次调用执行了 appendRound；不保证并发去重
- *                          // 场景下实际落盘（store 可能吞掉并发重复写）。同 key 的
- *                          // 追加应由宿主串行（或在宿主事务内）发起。
+ *   written: boolean,      // true = 本次调用执行了 appendRound（见上文「并发去重」条）
  *   record?: object        // existing record when written === false
  * }>}
  */
-/**
- * loadMaxRound 派生源校验（issue #157 快路径）：null/undefined/负数 → 0
- * （与全量路径 Math.max(0, 安全整数 round…) 的空 store/异常语义一致）；
- * 非 number 且非 null/undefined、或非安全整数（1.5/NaN/Infinity）→ TypeError。
- */
-async function maxRoundFromProbe(store, key) {
-  const probed = await store.loadMaxRound(key);
-  if (probed === null || probed === undefined) return 0;
-  if (typeof probed !== "number" || !Number.isSafeInteger(probed)) {
-    throw new TypeError(
-      "appendUserTurn: store contract violation — loadMaxRound(key) must resolve to a safe integer, null, or undefined",
-    );
-  }
-  return Math.max(0, probed);
-}
-
 export async function appendUserTurn(store, { key, text, messageId, ts } = {}) {
   if (store === null || typeof store !== "object"
     || typeof store.load !== "function"
