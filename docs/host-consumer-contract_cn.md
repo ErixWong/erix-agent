@@ -1029,11 +1029,27 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 
 **marker 字面量属 Experimental**（issue #188 三层分级，可在任意 minor 变）。所有
 「跳过 / 截断 / 空命中」字符串：`[已跳过 …]` 排除账、`[另有 N 条未列出 …]` 与
-`[另有 N 个目录未展开 …]` 两个 tree marker、`[共 N 行，offset=… 继续]`，以及空命中
+`[另有 N 个目录未展开 …]` 两个 tree marker、
+`[共 N 行，剩余 M 行；下一步：readFile 传 offset=K 继续]`，以及空命中
 的 `（无命中）`，全部由 `src/tools/file-tools.js` 里**单一** marker 生成函数产出
 （executor 只传语义值，不各自拼带方括号的字符串）。这正是文案能只改一处、而不是
 改五个调用点的原因。需要稳定信号的宿主只能按拿到的工具结果分支，不得按 marker
 子串匹配。
+
+**截断 marker 必须给出一条可执行的出口**（issue #196 R1）。只报告「已经截断了」是半件事：
+搜索的 `metadata` 进 transcript 但**不上 wire**，marker 文本是模型唯一读得到的通道，
+一条没有出口的 marker 等于让模型自己猜那个数。所以每一处读/搜截断的 marker 都以
+`；下一步：<工具> 传 <参数>=<值>` 收尾，带的是**本次调用**的真值——行窗口或 `max_bytes`
+触顶后下一次 `readFile` 该传的 `offset`、超宽行的**行号加文件路径**、命中截断后的续读
+`offset`。marker 里允许出现的工具名只有本模块自己的（`readFile` / `searchText`）：
+`exec` 属 CLI 装配层（`bin/tools.js`），ADR-005 把「会执行东西的工具」挡在库外，写进去
+就是给模型开一张本库兑不了现的支票——这一条相对 issue 原文是收紧。
+
+**结果文本里的字节数一律人类可读**（issue #196 R2）。`formatSize()`（与 `toolMarker()`
+同文件、由 `src/tools/file-tools.js` 导出）按 1024 基数渲染 `B`/`KB`/`MB`
+（`262144` → `256KB`、`1572864` → `1.5MB`、`1536` → `2KB`），并且同一段结果文本里
+**不会**同时出现可读值与裸字节数——同一件事给两个数，模型对不上账。阈值本身在本文与
+`metadata` 里仍写裸数字，那里没有第二份数字互相打脸。
 
 宿主必须知道的默认值，因为它们会改变模型看到的东西（ADR-010：默认去噪只有在可撤销
 时才是合法的）：
@@ -1056,7 +1072,13 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 - `tree` 截断永远带 marker，并给出剩余计数与能放宽它的参数；
 - `readFile` 有界：单次返回不超过 `max_bytes` 个 UTF-8 字节（默认 `262144`，可用
   `ERIX_FILE_READ_MAX_BYTES` 覆盖，钳到 1024-4194304），行窗口按块扫行 + 早停，
-  不再把整个文件读进内存。
+  不再把整个文件读进内存；
+- 每条截断 marker 都以「可执行的下一步」收尾，带的是**本次调用**的真值（续读要传的
+  `readFile` `offset`、被截那行的行号与文件路径、或搜索的续读 `offset`），且只允许点名
+  `readFile` 或 `searchText`——`exec` 是 CLI 自己的工具，不属于库（issue #196 R1）；
+- 结果文本里的字节数一律人类可读（`B`/`KB`/`MB`，1024 基数，走 `formatSize`），
+  可读值与裸字节数不在同一段结果文本里并存（issue #196 R2）；裸的默认值继续留在本文
+  与 `metadata` 里。
 
 **搜索是纯 Node 子集，不是 `rg` / `grep` 二进制**（issue #184）。只有默认值与逃生口命名
 跟真实命令一致，能力面故意不一致：没有 `-i`、没有 `-A`/`-B` 上下文行、没有 `--type`/
@@ -1101,7 +1123,8 @@ CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `e
   `searchNextOffset`（仅在截断时）与 `searchSkipped { vendorDirectories,
   hiddenDirectories, largeFiles, binaryFiles, deniedPaths }`。这些字段**进 transcript、
   不上 wire**：模型侧读的仍是 marker 文本（`[已跳过 …]`、`[命中过多，已按
-  max_results=N 截断]`、`（无命中）`），仍由单一 `toolMarker()` 函数产出（文案属
+  max_results=N 截断；下一步：searchText 传 offset=N 继续]`、`（无命中）`），
+  仍由单一 `toolMarker()` 函数产出（文案属
   Experimental，issue #188）。需要稳定信号的宿主按 `metadata` 分支，**不要按 marker 子串
   匹配**，也不要要求上面没列出的键。`offset` 用来续读被截断的结果：把
   `metadata.searchNextOffset` 原样传回来即可。

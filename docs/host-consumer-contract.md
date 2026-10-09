@@ -1287,12 +1287,34 @@ wording of those error texts.
 **Marker literals are Experimental** (issue #188 three-tier classification, may
 change in any minor release). Every "skipped / truncated / no-match" string — the
 `[已跳过 …]` exclusion account, the `[另有 N 条未列出 …]` and
-`[另有 N 个目录未展开 …]` tree markers, `[共 N 行，offset=… 继续]`, and the
+`[另有 N 个目录未展开 …]` tree markers,
+`[共 N 行，剩余 M 行；下一步：readFile 传 offset=K 继续]`, and the
 `（无命中）` no-match result — is produced by a single marker function inside
 `src/tools/file-tools.js` (the executors pass semantic values, they never build
 bracketed strings themselves), which is why the wording can move without touching
 five call sites. A host that needs a stable signal must branch on the tool
 result it receives, not on a marker substring.
+
+**A truncation marker must name an executable way out** (issue #196 R1). Reporting
+that something was cut is only half the job: search `metadata` goes to the transcript
+but never onto the wire, so the marker text is the only channel the model can read,
+and a marker without an exit leaves it guessing a number. Every read/search
+truncation marker therefore ends with a `；下一步：<tool> 传 <参数>=<值>` clause
+carrying **this call's** values — the `offset` to hand the next `readFile` after a
+line-window or `max_bytes` cut, the truncated line's **line number plus file path**
+for an over-wide line, and the continuation `offset` after a capped search. The tool
+names a marker may use are limited to this module's own (`readFile` / `searchText`):
+`exec` belongs to the CLI assembly layer (`bin/tools.js`) and ADR-005 keeps
+"executes something" out of the library, so naming it would hand the model a cheque
+this library cannot cash — a tightening relative to the original issue text.
+
+**Byte quantities inside a result are human-readable** (issue #196 R2).
+`formatSize()`, exported next to `toolMarker()` from `src/tools/file-tools.js`,
+renders `B` / `KB` / `MB` on a 1024 base (`262144` → `256KB`, `1572864` → `1.5MB`,
+`1536` → `2KB`), and a result never shows the human-readable value next to the raw
+byte count — two numbers for one quantity is a ledger the model cannot reconcile.
+Thresholds stay raw in this document and in `metadata`, where there is no second copy
+to contradict them.
 
 Defaults a host must know about, because they change what the model sees
 (ADR-010: default denoising is legal only while it stays revocable):
@@ -1325,7 +1347,14 @@ Defaults a host must know about, because they change what the model sees
 - `readFile` is bounded: one call returns at most `max_bytes` UTF-8 bytes
   (default `262144`, overridable through `ERIX_FILE_READ_MAX_BYTES`, clamped to
   1024–4194304) and scans lines block-by-block with early stop instead of
-  reading the whole file into memory.
+  reading the whole file into memory;
+- every truncation marker ends with an executable next step carrying **this call's**
+  values (the `readFile` `offset` to continue from, the truncated line's number and
+  file path, or the search continuation `offset`), and it may only name `readFile`
+  or `searchText` — `exec` is the CLI's own tool, not the library's (issue #196 R1);
+- byte quantities inside a result are human-readable (`B`/`KB`/`MB`, 1024 base, via
+  `formatSize`), and the human-readable value and the raw byte count never appear in
+  the same result text (issue #196 R2); the raw defaults stay here and in `metadata`.
 
 **Search is a pure-Node subset, not the `rg` / `grep` binary** (issue #184). The
 default and the escape-hatch naming follow the real commands; the capability
@@ -1389,7 +1418,8 @@ What a host can code against:
   `searchSkipped { vendorDirectories, hiddenDirectories, largeFiles, binaryFiles,
   deniedPaths }`. These fields go **into the transcript, not onto the wire**: the
   model still reads the marker text (`[已跳过 …]`,
-  `[命中过多，已按 max_results=N 截断]`, `（无命中）`), produced only by the single
+  `[命中过多，已按 max_results=N 截断；下一步：searchText 传 offset=N 继续]`,
+  `（无命中）`), produced only by the single
   `toolMarker()` function (Experimental wording, issue #188). Hosts that need a
   stable signal branch on `metadata`, never on a marker substring, and must not
   require keys beyond the list above. `offset` continues a truncated search: pass

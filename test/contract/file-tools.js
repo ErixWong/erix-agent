@@ -189,7 +189,10 @@ export function fileToolsContract(label, { createFileTools }) {
         `显式 max_bytes 必须封顶：${Buffer.byteLength(capped, "utf8")} > 4096`,
       );
       assert.match(capped, /^1: line 0 /u, "行号格式保持不变");
-      assert.match(capped, /max_bytes=4096/u, "触顶必须回报");
+      // issue #196 R2：marker 里的字节数改走可读单位（同一文本里不再出现裸字节数），
+      // 所以这里钉的是**同一个上限的可读形式**，触顶回报本身不许丢。
+      assert.match(capped, /max_bytes=4KB/u, "触顶必须回报（可读单位）");
+      assert.doesNotMatch(capped, /(?<![\d.])4096(?!\d)/u, "人类可读值与裸字节数不得同时出现（#196 R2）");
 
       const defaulted = await tools.executeTool("readFile", { path: "big.txt", limit: 10_000 });
       assert.ok(
@@ -211,7 +214,9 @@ export function fileToolsContract(label, { createFileTools }) {
       const first = await tools.executeTool("readFile", { path: "small.txt", limit: 5 });
       assert.equal(
         first,
-        "1: row 0\n2: row 1\n3: row 2\n4: row 3\n5: row 4\n[共 12 行，offset=5 继续]",
+        // #196 R1.1：marker 从「只报状态」升级为「给出下一步」，字面量随之变（刻意）。
+        // 行号与「共 N 行」的口径不变，新增的是「剩余行数 + readFile 传 offset=N」。
+        "1: row 0\n2: row 1\n3: row 2\n4: row 3\n5: row 4\n[共 12 行，剩余 7 行；下一步：readFile 传 offset=5 继续]",
       );
       assert.equal(await tools.executeTool("readFile", { path: "small.txt" }), lines
         .map((line, index) => `${index + 1}: ${line}`)
@@ -580,7 +585,9 @@ export function fileToolsContract(label, { createFileTools }) {
       assert.match(capped.content, /offset=3 继续/u, `规范入口首查被截的 marker 必须自带续读 offset：${capped.content}`);
       // 别名输出逐字不变（issue #188）：它们不吃 offset，marker 不得被继任入口带跑。
       const rgCapped = await tools.executeTool("rg", { pattern: "hit", max_results: 3 });
-      assert.match(rgCapped, /max_results=3 截断\]/u);
+      // #196 R1.3：别名的截断 marker 尾部补了「改用 searchText 传 offset 续读」的出口，
+      // 所以不再以 `截断]` 收尾；`offset=\d+ 继续` 那条断言仍守着「别名不吃 offset」。
+      assert.match(rgCapped, /max_results=3 截断/u);
       assert.doesNotMatch(rgCapped, /offset=\d+ 继续/u, "别名不吃 offset，marker 里不该出现续读偏移");
 
       // offset 续读：next_offset 传回去能拿到剩下那批（截断可撤销，ADR-010）
@@ -594,6 +601,107 @@ export function fileToolsContract(label, { createFileTools }) {
       assert.match(all.content, /needle vendor/u);
       assert.match(all.content, /needle git/u);
       assert.equal(all.metadata.searchSkipped.vendorDirectories, 0);
+    });
+  });
+
+  // issue #196 R1：三类截断（行数续读 / 字节上限 / 单行超宽 / 搜索命中）都必须给出
+  // **可执行的下一步**，而且里面的数字与路径是**本次调用的真值**。
+  // 钉「不是模板」的办法：同一条断言跑在两份不同 fixture 上（不同 path / 不同 limit /
+  // 不同 max_bytes / 不同 max_results），值必须跟着调用变；模板占位在这里必然过不了。
+  // ⚠ 同时钉住「marker 里只许出现本模块的 readFile / searchText」——`exec` 属 CLI 装配层
+  //   （bin/tools.js），库不能假设宿主有它（这条相对 issue #196 原文是收紧）。
+  test(`${label}: 截断 marker 给得出可执行的下一步，且真值随调用变化（#196 R1）`, async () => {
+    await withDirectory(async (cwd) => {
+      await writeFile(path.join(cwd, "alpha.txt"), `${Array.from({ length: 12 }, (_, i) => `a ${i}`).join("\n")}\n`, "utf8");
+      await writeFile(path.join(cwd, "beta-longer-name.txt"), `${Array.from({ length: 30 }, (_, i) => `b ${i}`).join("\n")}\n`, "utf8");
+      await writeFile(path.join(cwd, "big.txt"), `${Array.from({ length: 3_000 }, (_, i) => `line ${i} ${"x".repeat(90)}`).join("\n")}\n`, "utf8");
+      // 超宽行的「截断」分支只在跨块扫描时触发（单块内读到 EOF 就直接走行窗口封顶），
+      // 所以 fixture 必须超过一个读块（64 KiB）才走得到 readLineTruncated。
+      await writeFile(path.join(cwd, "wide-one.txt"), `first\n${"w".repeat(200_000)}\nlast\n`, "utf8");
+      await mkdir(path.join(cwd, "sub"), { recursive: true });
+      await writeFile(path.join(cwd, "sub", "wide-two.txt"), `p1\np2\n${"z".repeat(200_000)}\nlast\n`, "utf8");
+      await writeFile(path.join(cwd, "needles.txt"), `${Array.from({ length: 40 }, (_, i) => `needle ${i}`).join("\n")}\n`, "utf8");
+      const tools = createFileTools({ cwd });
+      // 一次调用可能同时挂多条 marker（例：超宽行既触行宽也触字节上限），按语义挑那一条比。
+      const markerWith = (output, pattern) => String(contentOf(output) ?? "")
+        .split("\n")
+        .find((line) => pattern.test(line)) ?? "";
+      const nextStepCount = (output) => String(contentOf(output) ?? "")
+        .split("\n")
+        .filter((line) => line.includes("下一步：")).length;
+      const offsetOf = (marker) => Number(marker.match(/offset=(\d+)/u)?.[1]);
+
+      // 1) 行数续读（readMoreLines）：总行数与续读 offset 都跟着本次 limit / 文件走
+      const rows5 = markerWith(await tools.executeTool("readFile", { path: "alpha.txt", limit: 5 }), /共 \d+ 行/u);
+      const rows7 = markerWith(await tools.executeTool("readFile", { path: "beta-longer-name.txt", limit: 7 }), /共 \d+ 行/u);
+      assert.match(rows5, /readFile 传 offset=5/u, `出口必须点明工具名与本次 offset：${rows5}`);
+      assert.match(rows7, /readFile 传 offset=7/u, rows7);
+      assert.match(rows5, /共 12 行/u);
+      assert.match(rows7, /共 30 行/u);
+      assert.notEqual(rows5, rows7, "两份 fixture 的 marker 逐字相同 → 给的是模板而不是真值");
+
+      // 2) 字节上限（readBytesCap）：offset 必须落在本次返回之后，上限跟着本次 max_bytes
+      const cap4 = contentOf(await tools.executeTool("readFile", { path: "big.txt", max_bytes: 4_096 }));
+      const cap8 = contentOf(await tools.executeTool("readFile", { path: "big.txt", max_bytes: 8_192 }));
+      const cap4Marker = markerWith(cap4, /本次返回已达/u);
+      const cap8Marker = markerWith(cap8, /本次返回已达/u);
+      assert.match(cap4Marker, /readFile 传 offset=\d+ 继续/u, cap4Marker);
+      assert.match(cap4Marker, /max_bytes=4KB/u, "上限必须是本次生效值");
+      assert.match(cap8Marker, /max_bytes=8KB/u, cap8Marker);
+      assert.ok(offsetOf(cap8Marker) > offsetOf(cap4Marker), "更宽的额度必须给出更靠后的续读 offset（真值随调用变）");
+      assert.ok(Buffer.byteLength(cap4, "utf8") <= 4_096, "补长 marker 后仍不得突破 max_bytes");
+      assert.ok(Buffer.byteLength(cap8, "utf8") <= 8_192);
+
+      // 3) 单行超宽（readLineTruncated）：行号 + 文件路径 + 该行自己的 0-based offset
+      const wideOneRaw = await tools.executeTool("readFile", { path: "wide-one.txt", limit: 2, max_bytes: 4_096 });
+      const wideOne = markerWith(wideOneRaw, /单行超过/u);
+      const wideTwoRaw = await tools.executeTool("readFile", { path: path.join("sub", "wide-two.txt"), limit: 3, max_bytes: 4_096 });
+      const wideTwo = markerWith(wideTwoRaw, /单行超过/u);
+      assert.match(wideOne, /wide-one\.txt/u, `必须带本次的文件路径：${wideOne}`);
+      assert.match(wideTwo, /wide-two\.txt/u, wideTwo);
+      assert.match(wideOne, /第 2 行/u, `必须带被截那行的真实行号：${wideOne}`);
+      assert.match(wideTwo, /第 3 行/u, wideTwo);
+      assert.equal(offsetOf(wideOne), 1, "给的 offset 必须就是该行行号减 1（readFile 的 0-based 行偏移）");
+      assert.equal(offsetOf(wideTwo), 2);
+      assert.match(wideOne, /readFile 传 offset=/u, "出口只能是本模块的 readFile");
+      assert.ok(Buffer.byteLength(wideOneRaw, "utf8") <= 4_096, "带路径的 marker 仍要守住 max_bytes");
+      // 超宽行往往同时触字节上限：两条 marker 各自都得带出口，不许一条哑着（#196 R1.2）
+      assert.equal(nextStepCount(wideOneRaw), 2, `触顶 + 超宽两条 marker 都要有下一步：${wideOneRaw.split("\n").slice(-2).join(" / ")}`);
+
+      // 4) 搜索命中截断（searchTruncated）：续读 offset 跟着 max_results 变
+      const search3Raw = await tools.executeTool("searchText", { pattern: "needle", mode: "literal", max_results: 3 });
+      const search3 = markerWith(search3Raw, /命中过多/u);
+      const search5 = markerWith(await tools.executeTool("searchText", { pattern: "needle", mode: "literal", max_results: 5 }), /命中过多/u);
+      assert.match(search3, /searchText 传 offset=3 继续/u, search3);
+      assert.match(search5, /searchText 传 offset=5 继续/u, search5);
+      // 别名不吃 offset → 出口把模型指向规范入口，且不凭空造一个数字 offset（#188 别名口径）
+      const aliasCapped = withoutDeprecation(await tools.executeTool("grep", { pattern: "needle", max_results: 4 }));
+      assert.match(aliasCapped, /下一步[^\n]*searchText/u, `别名也要有出口，且只能指向 searchText：${aliasCapped}`);
+      assert.doesNotMatch(aliasCapped, /offset=\d+/u, "别名不接受 offset，marker 里不该出现数字偏移");
+
+      // 收紧条款：marker 里不得出现本模块没有的工具名（宿主可能根本没装 exec）
+      for (const marker of [rows5, rows7, cap4Marker, cap8Marker, wideOne, wideTwo, search3, search5, aliasCapped]) {
+        assert.doesNotMatch(marker, /\b(?:exec|sed|awk|cat|head|tail|shell)\b/u, `marker 只能提 readFile / searchText：${marker}`);
+      }
+    });
+  });
+
+  // issue #196 R2：marker 里的字节数必须是可读单位，且**不与裸字节数在同一段结果文本里并存**
+  //（两个数说的是同一件事，模型会对不上账）。阈值本身在文档与 metadata 里仍写裸数字。
+  test(`${label}: marker 的字节数用可读单位，且不与裸字节数并存（#196 R2）`, async () => {
+    await withDirectory(async (cwd) => {
+      await writeFile(path.join(cwd, "big.txt"), `${Array.from({ length: 3_000 }, (_, i) => `line ${i} ${"x".repeat(90)}`).join("\n")}\n`, "utf8");
+      const tools = createFileTools({ cwd });
+
+      const capped = String(await tools.executeTool("readFile", { path: "big.txt", max_bytes: 4_096 }));
+      assert.match(capped, /\d+(?:\.\d+)?(?:B|KB|MB)\b/u, `字节数要写成可读单位：${capped.slice(-200)}`);
+      assert.doesNotMatch(capped, /(?<![\d.])4096(?!\d)/u, "可读值与裸字节数不得同时出现");
+
+      // 未扫到 EOF 的那条 marker 同时带文件大小与上限：两边都必须是可读单位
+      const notScanned = String(await tools.executeTool("readFile", { path: "big.txt", limit: 1, max_bytes: 1_024 }));
+      assert.match(notScanned, /max_bytes=1KB/u, notScanned);
+      assert.doesNotMatch(notScanned, /(?<![\d.])1024(?!\d)/u, notScanned);
+      assert.match(notScanned, /文件 \d+(?:\.\d+)?(?:KB|MB) > /u, `文件大小也要可读单位：${notScanned}`);
     });
   });
 }

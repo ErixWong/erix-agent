@@ -4,7 +4,7 @@
 // rg/grep 默认正则与真实命令同口径（#184 追加轮 A，含 schema 描述真值）。
 import assert from "node:assert/strict";
 import test from "node:test";
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setImmediate as immediate } from "node:timers";
 import { makeTmp } from "../helpers/tmp.js";
@@ -12,6 +12,7 @@ import { makeTmp } from "../helpers/tmp.js";
 import {
   createFileTools,
   resolveFileReadMaxBytes,
+  formatSize,
   FILE_READ_MAX_BYTES_DEFAULT,
 } from "../../src/tools/file-tools.js";
 import { fileToolsContract } from "../contract/file-tools.js";
@@ -196,5 +197,54 @@ test("有 signal 时遍历周期让出，中途可被中止（同步遍历不卡
     const running = executeTool("rg", { pattern: "needle" }, { signal: controller.signal });
     await assert.rejects(running, (error) => error?.name === "AbortError");
     assert.ok(yielded, "有 signal 时每 32 个条目必须让出一次事件循环");
+  });
+});
+
+// issue #196 R2：字节数人类可读。单位标签按 issue 规格写 KB/MB，基数是 1024。
+test("formatSize：边界表（<1KB / 整 KB / 跨 MB / 非整除 / 舍入进位 / 非法值）", () => {
+  const cases = [
+    [0, "0B"],                                  // 零不是「0KB」
+    [1, "1B"],
+    [512, "512B"],                               // <1024 原样带 B
+    [1023, "1023B"],                             // 边界内侧仍走 B
+    [1024, "1KB"],                               // 整 KB 无空格
+    [2048, "2KB"],
+    [3072, "3KB"],                               // 3 × 1024 整除
+    [1536, "2KB"],                               // 非整除 → 按 KB 四舍五入（1.5 → 2）
+    [1535, "1KB"],                               // 1.499KB → 舍到 1KB（四舍五入按整数比）
+    [1025, "1KB"],                               // 刚过 1KB 不写成 1025B 的 KB 版
+    [262_144, "256KB"],                          // readFile 的默认上限（可读形式）
+    [1_048_575, "1.0MB"],                        // 1024KB 进位 → 晋级 MB，不产出「1024KB」
+    [1_048_576, "1.0MB"],                        // 恰好 1MB → 一位小数
+    [1_572_864, "1.5MB"],                        // 跨 MB 保留一位小数
+    [2_621_440, "2.5MB"],
+    [4_194_304, "4.0MB"],                        // max_bytes 硬顶 4MiB 的可读形式
+    [-5, "0B"],                                  // 非法值不 producing 负数
+    [Number.NaN, "0B"],
+    [Number.POSITIVE_INFINITY, "0B"],
+  ];
+  for (const [bytes, expected] of cases) {
+    assert.equal(formatSize(bytes), expected, `formatSize(${bytes})`);
+  }
+  // 结果里绝不会出现空格分隔的单位，也不会同时给两份数（模型对账只用一个数）
+  for (const [bytes] of cases) {
+    assert.doesNotMatch(formatSize(bytes), /\s/u, `formatSize(${bytes}) 单位不得带空格`);
+  }
+  // 真值随调用变化：不同上限必须给不同可读值（模板占位过不了这条）
+  assert.notEqual(formatSize(4_096), formatSize(8_192));
+  assert.equal(formatSize(FILE_READ_MAX_BYTES_DEFAULT), "256KB");
+});
+
+test("readFile 的 marker 不带裸字节数，且长路径下仍守住 max_bytes（#196 R2 预算侧）", async () => {
+  await withDirectory(async (cwd) => {
+    const deep = join(cwd, "a-very-long-directory-name-for-marker-budget-probing", "nested");
+    await mkdir(deep, { recursive: true });
+    const longName = `${"wide".repeat(30)}.txt`;
+    await writeFile(join(deep, longName), `${"q".repeat(200_000)}\nlast\n`, "utf8");
+    const { executeTool } = createFileTools({ cwd });
+    const output = await executeTool("readFile", { path: join("a-very-long-directory-name-for-marker-budget-probing", "nested", longName), limit: 2, max_bytes: 4_096 });
+    assert.ok(Buffer.byteLength(output, "utf8") <= 4_096, `marker 变长后仍不得突破上限：${Buffer.byteLength(output, "utf8")}`);
+    assert.match(output, /单行超过/u);
+    assert.doesNotMatch(output, /(?<![\d.])4096(?!\d)/u);
   });
 });
