@@ -52,7 +52,8 @@ const NON_TTY_MESSAGE =
 
 const REPL_HELP_TEXT = `REPL 用法：
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]
-  --session <id>        会话 ID（默认按工作目录自动派生）
+  --session <id>        会话 ID（默认按工作目录自动派生）。repl 里它是**命名**：新名字直接开新会话；
+                      注意 chat 的 --session 是续跑入口，id 不存在会报错（issue #168）
   --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
                         run 作用域笔记按 session 隔离；相同 --session 会共享笔记，
                         --dir 只影响 transcript，不改变笔记作用域

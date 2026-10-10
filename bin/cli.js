@@ -57,9 +57,14 @@ const HELP_TEXT = `用法：
   （无参数直接进入交互式模式，等同 erix repl）
 
   --stream              流式输出模型文本
-  --session <id>        会话 ID（默认按工作目录自动派生）
-  -c, --continue       接续当前目录最近一次的会话（等价 --session <最近id>，与 --session 互斥）
-  -r                   交互式会话选择器（需 TTY；非交互环境请改用 -c 或 --session）
+  --session <id>        会话 ID。chat 里它是**续跑入口**：该 id 没有非空 transcript 时报错退出
+                      （exit 1），不再静默开新会话；不带 --session 才是新建（issue #168）
+  -c, --continue       接续当前目录最近一次的会话（现扫 transcripts 目录，与 --session 互斥）
+  -r                   交互式会话选择器，列出**本目录**可续跑的会话（需 TTY；非交互环境请改用
+                      -c 或 --session <完整 id>）
+                      ⚠ 会话发现无状态文件：能按目录筛选靠文件名里的 <目录名>-<sha256(cwd)[:8]>
+                      前缀；名字不合此形状的 id（自取的名字、目录名含空格/中文而被哈希成 run-h-*）
+                      在 -c/-r 里看不见，但仍可用 --session <完整 id> 恢复
   --dir <path>          Transcript 存档目录（chat 默认：~/.erix/transcripts）
   --max-rounds <n>      工具循环最大轮数（默认：64，可用 ERIX_MAX_ROUNDS 覆盖）
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 16 时启用，见 DEFAULT_REFLECTION_MIN_ROUNDS）
@@ -103,6 +108,7 @@ const HELP_TEXT = `用法：
 
 退出码：
   0  成功（开了 --final-guard 时为 verified）
+  1  用法错误 / 会话不存在（--session 或 -c 找不到可续跑的 transcript）
   2  终稿核验未通过（unverified）
   3  核验过程出错（error）
   4  核验未执行（skipped：没有归档输出或归档里无可核验值）`;
