@@ -59,6 +59,7 @@ scripts/          # 实验脚本和结果
 | `node --check <file>` | 语法安全检查 |
 | `npm run check:docs` | 文档漂移检查（`scripts/docs-drift-check.mjs`：版本声明、README 引用的 `files`/`exports` 清单、模块地图、文中路径与命令、从 `src/` 直抽的 14 条关键默认值、中英 README 标题骸架）+ 中英契约标题结构对齐 |
 | `npm run check:docs:strict` | 同上，但把告警升级为失败 |
+| `node scripts/docs-drift-check.mjs --self-test` | 清单/枚举/单位类锚点的反向证自测（issue #210）：改文档一处声明 → 红、改源码真值 → 红、都不改 → 绿；变异没落上去也算失败（#210 R2） |
 | `npm run check:docs-examples` | 真实执行 `docs/host-consumer-contract.md` 里的 js 围栏（issue #158） |
 | `npm run check:pack-links` | 随包 Markdown 的链接闭合检查 |
 | `npm run types:build` | 把随包发布的 `.d.ts` 生成到 `src/**/*.d.ts` 并保留（issue #213；`prepack` 钩子跑的是同一个脚本） |
@@ -73,6 +74,7 @@ scripts/          # 实验脚本和结果
   **内联 `@param {{ … }}` 类型字面量里独占一行的 `//` 注释**，以及**没有紧贴被文档化声明的文档块**。
   宿主可见签名要紧的时候，去读生成的 `.d.ts`，而不是源码里的注释。
 - 文档规则（issue #164）：改 `README*.md`、`docs/requirements*.md`、任何默认值或 `files`/`exports` 清单时，必须保证 `npm run check:docs` 绿。该检查直接从 `package.json` 与 `src/` 取真值，因此文档无法静默漂移；「当前版本」声明的规范写法写在 `scripts/docs-drift-check.mjs` 顶部注释里。中英文文档成对同步（见 `AGENTS_cn.md` 对应小节）。
+- 锚点粒度（issue #210）：**不要默认「文档里删一处提及就会红」**——多数锚点是*存在性*级的（`defaults` 全组、`modulemap`、`paths`：它们只问「那个文件里有没有这个字符串」，所以从同一句里删掉一处额外提及仍然绿）。只有这些是*逐处*级的（每个声明点单独比对，缺 / 多 / 改名都红）：`version` 的当前版本声明、README 的 `files`/`exports` 围栏（与 `package.json` **双向对称**比对——文档里改名或删键也会红，不只是多写才红），以及清单/枚举/单位类锚点（文件工具清单、CLI 工具清单、vendor 跳过目录、`formatSize` 的单位档位与每一条 `` `字节数` → `可读值` `` 示例映射、内置压缩策略名）。这些锚点还会对账**中英两侧的声明点处数**，接住「把某一侧的整句声明删掉」这一类。每条逐处锚点的反向证都固化在 `node scripts/docs-drift-check.mjs --self-test` 里；改了 `scripts/docs-drift-check.mjs` 就要跑一次。每个锚点属于哪一级、以及剩下那些为何**没**升级，写在脚本头部注释里。
 
 ## 4. npm 发布指南（已根据 2026-08 政策验证）
 

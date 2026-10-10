@@ -61,6 +61,7 @@ scripts/          # experiment scripts and results
 | `node --check <file>` | Syntax safety check |
 | `npm run check:docs` | Documentation drift check (`scripts/docs-drift-check.mjs`: version claims, quoted `files`/`exports` lists, module map, referenced paths/commands, 14 key defaults read out of the source, EN/CN README skeleton) plus the EN/CN contract heading sync |
 | `npm run check:docs:strict` | Same check, promoting its warnings to failures |
+| `node scripts/docs-drift-check.mjs --self-test` | Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one doc claim → red, change the source truth → red, change nothing → green; a mutation that stops applying also fails (issue #210 R2) |
 | `npm run check:docs-examples` | Executes the JavaScript fences in `docs/host-consumer-contract.md` (issue #158) |
 | `npm run check:pack-links` | Link closure inside packaged Markdown |
 | `npm run types:build` | Generate the published `.d.ts` into `src/**/*.d.ts` and keep them (issue #213; the `prepack` hook runs the same script) |
@@ -79,6 +80,17 @@ scripts/          # experiment scripts and results
   `package.json` and `src/`, so docs cannot silently drift; the required phrasing for
   "current version" claims is documented in the header comment of `scripts/docs-drift-check.mjs`.
   Chinese/English document pairs stay in sync (see `AGENTS_cn.md`).
+- Anchor granularity (issue #210): **do not assume "delete one mention in the docs turns red"** — most anchors are
+  *existence-level* (the whole `defaults` group, `modulemap`, `paths`: they ask "is this string present in that file",
+  so deleting one extra mention of the same value stays green). Only these are *per-occurrence* (each declaration site
+  is compared on its own, so missing / extra / renamed members all go red): the `version` claims, the README
+  `files`/`exports` fences — compared **bidirectionally** with `package.json`, so renaming or dropping a key in the doc
+  is red, not just adding one — and the list/unit/enum anchors (file-tool list, CLI tool list, vendor skip directories,
+  `formatSize` unit tiers plus every `` `bytes` → `rendered` `` example claim, built-in compaction strategy names).
+  Those anchors also reconcile the **number of declaration sites between the EN and the CN doc**, which is what catches
+  "someone deleted the whole sentence on one side". Every per-occurrence rule carries its reverse proof in
+  `node scripts/docs-drift-check.mjs --self-test`; run it after touching `scripts/docs-drift-check.mjs`. The level of
+  every anchor, and why the remaining ones were *not* upgraded, is listed in the header comment of that script.
 
 ## 4. npm publishing guide (verified against the 2026-08 policy)
 
