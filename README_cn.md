@@ -470,7 +470,14 @@ erix mcp [--config <path>]
 
 ### 会话接续
 
-`chat` 可以接续之前的会话，而不是每次新建。`-c`/`--continue` 接续当前工作目录最近一次的会话；`-r` 打开交互式选择器列出已记录的会话（最近的在前，每行显示时间、目录和首条 prompt 预览）。两者解析后与显式 `--session <id>` 走同一条路径，显式 `--session <id>` 优先级最高——与 `-c` 或 `-r` 同时使用会直接报参数错误。会话发现依赖 `~/.erix/sessions.json` 索引：每次 `chat`/`repl` 运行后自动维护，上限 500 条；文件缺失或损坏时自动扫描 transcripts 目录重建。索引只是缓存不是真相：接续仍以该会话存在非空 transcript 为准，索引写入失败绝不影响运行本身。
+`chat` 可以接续之前的会话，而不是每次新建。`-c`/`--continue` 接续**当前工作目录**最近一次的会话；`-r` 对同一份「本目录」列表打开交互式选择器（最近的在前，每行显示时间、完整会话 id 和首条 prompt 预览）。两者解析后与显式 `--session <id>` 走同一条路径——与 `-c` 或 `-r` 同时使用会直接报参数错误。
+
+会话发现是**无状态**的：不再有会话索引。两个旗标都现场扫 `~/.erix/transcripts/`（实测真实 home 里 414 个 transcript 相关文件，全量 `readdir + stat` 只要 **29.7 ms**），而「这条 transcript 属于哪个目录」直接从文件名读出来——派生会话 id 恒以 `<目录名>-<sha256(绝对路径) 前 8 位>` 开头，所以按目录筛选不需要任何持久状态。这条哈希式自此是**行为契约**：`-c` 的按目录语义建立在它上面，`test/session-scan.test.js` 把它与 `bin/repl.js`、`src/tools/notes.js` 两处实现一起钉住（issue #168）。
+
+两个必须知道的后果：
+
+- **显式 `--session <id>` 必须存在。** 该 id 没有非空 transcript 时，`chat` 现在非零退出并给出可操作提示，而不再静默用这个名字开新会话（旧行为一个字的提示都不给，还多落一份 transcript）。给新会话命名在 `repl` 里照旧正常——`repl` 的 `--session` 是命名旗标。
+- **看不见 ≠ 恢复不了。** 只有形如上面派生式的 id 才对 `-c`/`-r` 可见。你自己取的名字，以及目录名含 `[A-Za-z0-9._-]` 之外字符（空格、中文）因而文件名被哈希成 `run-h-*` 的那些，都不会出现在列表里——但它们都仍可用 `--session <完整 id>` 恢复，那条路径只要求存在非空 transcript。
 
 内置 CLI 工具为 `readFile`、`searchText`、`rg`、`grep`、`tree`、`edit`、`writeFile` 和 `exec`。`searchText` 是唯一的搜索入口（issue #195）：它的 `mode` **必填且无默认值**——`literal` 按字面量匹配、`regex` 按 JavaScript 正则匹配，没传或传了非法 `mode` 都是显式报错而不是猜一个。它的名称过滤参数叫 `name_pattern`，**只匹配文件名、不跨 `/`**（所以 `**/*.ts` 一律不命中）。`rg` 与 `grep` 现在是它的**薄别名**（两者都映射到 `mode` = `regex`，`grep` 继续吃 `glob` 作为文件名过滤），各自在结果尾部挂一行弃用提示，而工具名与入参形状照用——移除它们要等 major bump（issue #188）。**三个**搜索工具都是纯 Node 实现，不是 `rg`/`grep` 二进制：别名的 `is_regex` 默认 `true`，即默认走正则（与真实命令一致）；传 `is_regex=false` 走字面量，等价 `rg --fixed-strings` / `grep -F`。每条命中行按**同一个**共享上限截到 500 字符，默认跳过 `node_modules`/`dist`/`build`/`target`/`vendor` 与 `.` 开头的目录（结果尾部回报跳过数量；**不读** `.gitignore`），并有 200 条硬结果上限。`readFile` 在字节上限内有界读取（默认 `262144`，可用 `ERIX_FILE_READ_MAX_BYTES` 覆盖）。工具操作任意路径和命令；checkpoint 保留完整结果，而 TTL 折叠只缩减 provider request view。没有可重放性分类、重跑检测或重跑告知：重复命令正常执行并返回新输出（ADR-016）。需要早期精确值时使用 note-first 顺序 `note_list` → `note_read`，不要依赖记忆。系统提示要求内部思考使用 English，面向用户的输出遵循用户语言。
 
@@ -490,8 +497,8 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 ~/.erix/
   config.json
   mcp.json
-  sessions.json                会话索引（缓存；自动维护、损坏自动重建）
-  session-meta.json            会话索引的 cwd 归属
+  sessions.json                已退役（issue #168）：不再读写，可安全删除
+  session-meta.json            已退役（issue #168）：不再读写，可安全删除
   transcripts/
     <safeRunId>.jsonl
     <safeRunId>.snapshot.json
@@ -529,7 +536,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - **v0.17.0 (2026-10-08)**：`appendUserTurn` 新增成对可选快路径探针 `loadByDedupKey`/`loadMaxRound`（DB 宿主预写 user 轮不再每轮全量读），契约文档的 js 围栏改为可执行测试（`npm run check:docs-examples`）。
 - **v0.15.0–v0.16.0 (2026-10-07/08)**：「transcript 即真相」的宿主侧接口——读侧 `projectTranscriptForDisplay`、写侧 `appendUserTurn`（多轮续跑契约）、投影稳定 `key`，以及 store 保真义务（保留完整 `RoundRecord`、同轮记录按追加顺序 `load()`）。
 - **v0.14.0 (2026-10-03)**：run-state 终态改由 `markRunState`/`loadRunStateStatus` 承载（latest-only 快照不再写 `state`）、工具可声明 `replay: "safe"|"unsafe"` 并配合 `replayPolicy`、新增可选 partial 落盘，删除 `src/loop.js` 转发 shim。
-- **v0.13.0 (2026-09-30)**：run snapshot 更名与 `TranscriptStore` capability 分级公开，CLI 会话索引（`~/.erix/sessions.json`）。
+- **v0.13.0 (2026-09-30)**：run snapshot 更名与 `TranscriptStore` capability 分级公开，CLI 会话索引（`~/.erix/sessions.json`，已于 #168 退役成无状态扫描）。
 - **v0.11.0–v0.12.0 (2026-09-26/27)**：notes 迁到宿主侧 `NotesStore` 并收敛为单一保留期旋钮（`ERIX_NOTES_RETENTION_MS`），`createBuiltinNotesTools()` 收敛为 6 键 canonical API（退役 bundled notes skill shim）。
 - **v0.9.0 (2026-09-22)**：扩轮决策统一归 judge——nearLimit 时 end-turn judge 与工具拦截审计必须返回 `extend`/`extendReason`/`plan`；批准的 `extend: true` 提升有效轮数预算（拦截路径补上了「模型从不 end_turn」的盲区）。删除 legacy nearLimit reflection 路径：`reflection.triggerRound` 移除，`reflection_stop` 当前无触发路径。长任务不再「未评估即撞 `max_rounds_cap`」。
 - **v0.8.0 (2026-09-21)**：recall 适配器和有界 transcript 取回退役；模型侧改为 note-first（`note_list` → `note_read`）。新增 request-view 工具结果 TTL 折叠、可重试的空 assistant 消息、CLI 工具白名单、纯 Node `grep` 工具和按语言输出指令。

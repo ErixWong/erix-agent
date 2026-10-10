@@ -7,8 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { createHash, randomUUID } from "node:crypto";
-import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -31,8 +30,8 @@ import {
   closeAllMcpServers,
   createMcpProxyTool,
 } from "./mcp.js";
+import { sessionScanPrefix } from "./session-scan.js";
 import { buildSkillTools, warnBuiltinToolConflicts } from "./skills.js";
-import { recordChatSession } from "./sessions.js";
 import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
@@ -53,7 +52,8 @@ const NON_TTY_MESSAGE =
 
 const REPL_HELP_TEXT = `REPL 用法：
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]
-  --session <id>        会话 ID（默认按工作目录自动派生）
+  --session <id>        会话 ID（默认按工作目录自动派生）。repl 里它是**命名**：新名字直接开新会话；
+                      注意 chat 的 --session 是续跑入口，id 不存在会报错（issue #168）
   --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
                         run 作用域笔记按 session 隔离；相同 --session 会共享笔记，
                         --dir 只影响 transcript，不改变笔记作用域
@@ -151,11 +151,12 @@ function createIdleTimeout(seconds) {
   };
 }
 
+// issue #168 T2：目录哈希式只有 bin/session-scan.js 一份实现——`-c` 的「按本目录」语义
+// 直接依赖它（`src/index.js` 未因此新增任何导出，库的公共导出面一字未动）。
+// `src/tools/notes.js` 的 currentScopeRef 仍是同式的第二份（库层不能反向 import bin/），
+// 由 test/session-scan.test.js 的哈希契约用例钉住两者一致。
 export function defaultSessionId(cwd, { unique = false } = {}) {
-  const normalizedCwd = path.resolve(String(cwd));
-  const baseName = path.basename(normalizedCwd) || "root";
-  const hash8 = createHash("sha256").update(normalizedCwd).digest("hex").slice(0, 8);
-  const stableId = `${baseName}-${hash8}`;
+  const stableId = sessionScanPrefix(cwd);
   return unique ? `${stableId}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}` : stableId;
 }
 
@@ -757,11 +758,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           );
         }
         await saveSession(sessionDir, options.session, messages);
-        // issue #75：本轮真实产出 transcript 后 upsert 会话索引（缓存，失败静默）——
-        // 无 transcript 的会话没有可续内容，不入索引（与 chat 行为一致）。
-        if (existsSync(join(options.dir, `${safeRunId(options.session)}.jsonl`))) {
-          await recordChatSession({ home, sessionId: options.session, cwd, prompt: line });
-        }
+        // issue #168 T2：不再 upsert 会话索引——transcript 文件本身就是可续跑名单，
+        // `-c`/`-r` 由 bin/session-scan.js 现扫现算（见 bin/session-scan.js 头注释）。
       } catch (error) {
         if (idle?.timedOut()) throw new IdleTimeoutError(options.idleTimeout);
         throw error;

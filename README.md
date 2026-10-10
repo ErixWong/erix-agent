@@ -745,18 +745,36 @@ The shared CLI flags are:
 ### Session continuation
 
 `chat` can resume a previous session instead of starting a new one.
-`-c`/`--continue` picks the most recent session recorded for the current
-working directory; `-r` opens an interactive picker listing recorded
-sessions (most recent first, each row showing timestamp, directory, and a
-preview of the first prompt). Both resolve to the same path as an explicit
-`--session <id>`, which takes precedence — combining `--session` with `-c`
-or `-r` is a usage error. Session discovery is backed by
-`~/.erix/sessions.json`, an index maintained automatically after each
-`chat`/`repl` run and capped at 500 entries; when the file is missing or
-corrupt it is rebuilt automatically by scanning the transcripts directory.
-The index is a cache, not the source of truth: resuming still requires a
-non-empty transcript for the session, and index write failures never affect
-the run itself.
+`-c`/`--continue` picks the most recent session **of the current working
+directory**; `-r` opens an interactive picker over that same per-directory
+list (most recent first, each row showing the timestamp, the full session
+id, and a preview of the first prompt). Both resolve to the same path as an
+explicit `--session <id>` — combining `--session` with `-c` or `-r` is a
+usage error.
+
+Discovery is **stateless**: there is no session index any more. Both flags
+scan `~/.erix/transcripts/` on the spot (a measured `readdir` + `stat` of a
+real home with 414 transcript-related files costs **29.7 ms**), and
+"which directory does this transcript belong to" is read straight out of
+the file name: a derived session id always starts with
+`<directory-name>-<first 8 hex of sha256(absolute path)>`, so filtering by
+directory needs no persisted state. That hash is therefore a **behavioral
+contract** — the per-directory meaning of `-c` rests on it, and a test pins
+it against both `bin/repl.js` and `src/tools/notes.js` (issue #168).
+
+Two consequences to know:
+
+- **An explicit `--session <id>` must exist.** If it has no non-empty
+  transcript, `chat` now exits non-zero with an actionable message instead
+  of silently starting a new session under that name (the old behaviour
+  printed nothing and created a second transcript). Naming a brand-new
+  session is still normal in `repl`, whose `--session` is a naming flag.
+- **Invisible is not unrecoverable.** Only ids shaped like the derived form
+  above are visible to `-c`/`-r`. Ids you chose yourself, and directories
+  whose name contains characters outside `[A-Za-z0-9._-]` (spaces, CJK)
+  whose file names get hashed to `run-h-*`, never show up in the list — but
+  they all remain resumable with `--session <full id>`, which only requires
+  a non-empty transcript.
 
 The built-in CLI tools are `readFile`, `searchText`, `rg`, `grep`, `tree`, `edit`,
 `writeFile`, and `exec`. `searchText` is the single search entry point (issue
@@ -830,8 +848,8 @@ MCP configuration is read from the current directory's `.mcp.json` or
 ~/.erix/
   config.json
   mcp.json
-  sessions.json                session index (cache; auto-maintained, auto-rebuilt)
-  session-meta.json            cwd ownership for the session index
+  sessions.json                RETIRED (issue #168): no longer read or written; safe to delete
+  session-meta.json            RETIRED (issue #168): no longer read or written; safe to delete
   transcripts/
     <safeRunId>.jsonl
     <safeRunId>.snapshot.json
@@ -927,7 +945,7 @@ migration steps remain in
   forwarding shim is removed.
 - **v0.13.0 (2026-09-30)**: run-snapshot renames plus the published
   `TranscriptStore` capability tiers, and the CLI session index
-  (`~/.erix/sessions.json`).
+  (`~/.erix/sessions.json`, retired statelessly in #168).
 - **v0.11.0–v0.12.0 (2026-09-26/27)**: notes move behind the host-side
   `NotesStore` with a single retention knob (`ERIX_NOTES_RETENTION_MS`), and
   `createBuiltinNotesTools()` converges on the 6-key canonical API (the bundled
