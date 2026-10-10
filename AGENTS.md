@@ -66,6 +66,7 @@ scripts/          # experiment scripts and results
 | `npm run check:pack-links` | Link closure inside packaged Markdown |
 | `npm run types:build` | Generate the published `.d.ts` into `src/**/*.d.ts` and keep them (issue #213; the `prepack` hook runs the same script) |
 | `npm run check:types-build` | Assertion gate: `tsc` exit 0 / declaration count > 0 / `src/index.d.ts` contains `runToolLoop` / `src/tools/index.d.ts` contains `createFileTools`, then delete the artifacts (issue #213; needs `npm install --include=dev`) |
+| `npm run check:types` | `--checkJs` **ratchet**: counts the type errors reachable from `src/index.js` and fails if the total exceeds the baseline constant **218** in `scripts/type-check-ratchet.mjs` (issue #214; ratchet = never up, going down is a pass with a "you may lower the baseline to N" hint). **Delete the generated `src/**/*.d.ts` first** — see the `--checkJs` ratchet rule below. `-- --with-tools` widens it to the `./tools` entry (baseline 261) |
 | `node bin/cli.js ...` | Run the CLI locally (no installation required) |
 
 - Test isolation rule: tests involving `~/.erix` or `~/.pi` must inject `home`/`cwd` parameters (the skills/mcp/config tests provide precedents), to avoid contaminating real user configuration.
@@ -75,6 +76,37 @@ scripts/          # experiment scripts and results
   Two JSDoc shapes silently degrade a parameter to `any` (no compile error, discovered only by reading the emitted `.d.ts`, both fixed in
   #213 R4): a **standalone `//` line inside an inline `@param {{ … }}` type literal**, and a **doc block that is not the comment directly
   above its declaration**. When a host-facing signature matters, read the generated `.d.ts`, not the source comment.
+- `--checkJs` ratchet rule (issue #214): `npm run check:types` does **not** aim for zero errors — 218 of them
+  (29 files) are accepted debt. What it guarantees is **never up**: the total is compared against the
+  `BASELINE_ROOT = 218` constant in `scripts/type-check-ratchet.mjs` (measured 2026-10-10 on the post-#213 tree
+  with `typescript@5.9.3` + `@types/node@22.20.5`; the 226 in the issue body reproduces on the pre-#213 tree
+  `bc3ad02`, which is why the committed number is 218 and not 226). **Which half to pay down first**: 190 of
+  the 218 sit in files a host can actually reach (the type-reference closure of the published `src/index.d.ts`
+  and `src/tools/index.d.ts`, 40 files — same size as the `export … from` closure from the two entry modules);
+  the other 28 sit in 9 implementation-only modules no host can name (`run-snapshot-executor` 8, `compact/pipeline` 5,
+  `error-ledger` 3, `providers/timeout` 3, and 5 more at 1-2 each). Admission rules for the whitelist:
+  - **New files must open `// @ts-check` on line 1.** It is a declaration of intent, not the scope control:
+    `--checkJs` plus `src/index.js` already pulls the whole import graph — `--listFiles` measures **55 files under
+    `src/`** reached from that one entry, **29 of them carrying errors** — so picking "just the public entry" as
+    the input file narrows nothing; the whitelist has to be per-file, which is exactly what #214 R2 asks for.
+  - **Touching a file whose error count can go down is a drive-by opportunity** (the #179 pattern: fold it into
+    the PR that is already in that file, never a standalone ticket). When the total drops, lower the baseline
+    constant in a **separate commit** and say which file lost how many errors — the value of a ratchet is that
+    the number only shrinks.
+  - ⚠ **Delete the generated declarations before running it.** tsc resolves `./x.js` to a sibling `x.d.ts` first,
+    so after `npm run types:build`/`prepack` the ratchet would be checking declarations instead of
+    implementations: measured on one tree, **218 errors** with no `.d.ts` present, **0 errors** with the 60
+    declarations present (`--skipLibCheck` skips declaration files), **87 errors all pointing at `.d.ts`** if
+    `--skipLibCheck` is dropped. "0 errors < baseline" would be a **false green**, so the script hard-fails on
+    stale `src/**/*.d.ts` (the repository commits zero `.d.ts`, so their presence always means generated).
+    Fix: `find src -name '*.d.ts' -delete` — they are git-ignored and regenerable.
+  - Known hole, deliberately left open by the spec: the second public entry `src/tools/index.js` pulls in
+    `src/tools/file-tools.js` (27 errors) and `src/skills/loader.js` (16), which the package-root graph never
+    reaches, so new errors there are **not** caught by the default gate. `npm run check:types -- --with-tools`
+    gates the union (baseline **261** / 31 files) and is the cheap way to tighten this later.
+  - Toolchain allowance (issue #213, restated here for #214): `typescript` + `@types/node` may stay dev-only —
+    the zero-runtime-dependency red line constrains what `src/`/`bin/` import (`node:` builtins + relative
+    paths), and this gate adds no dependency either (only `node:` builtins, no tsconfig, no new tool).
 - Documentation rule (issue #164): any change to `README*.md`, `docs/requirements*.md`, a default value, or the
   `files`/`exports` list must keep `npm run check:docs` green. The check reads ground truth from
   `package.json` and `src/`, so docs cannot silently drift; the required phrasing for
