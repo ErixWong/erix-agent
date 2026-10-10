@@ -12,3 +12,6 @@ package-lock.json
 
 # 声明产物由 prepack/types:build 生成，不提交（避免生成物与源码漂移，见 issue #213）
 src/**/*.d.ts
+
+# 发布时误提交的临时产物（v0.18.0，2026-10-09）
+suggestions.zip
