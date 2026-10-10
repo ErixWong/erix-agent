@@ -669,6 +669,17 @@ async function runChatWithNotes({
     store,
   } = assemblyRoot;
   const existingRecords = await store.load(runId);
+  // issue #168 M1：显式 `--session <id>` 是会话恢复的唯一入口，id 打错时不能静默开新会话——
+  // 静默新建会让用户以为在续跑旧会话（实测 0 行提示）。判定用「显式传入的 sessionExplicit」
+  // 而不是 `explicitSession` 兜底值：宿主/测试直接给 `session` 而不带该旗标时，命名一个新会话
+  // 是正常用法（repl 同理），不在本单收缩范围。
+  if (sessionExplicit === true && existingRecords.length === 0) {
+    throw new CliError(
+      `会话不存在：${runId}（${dir} 下没有它的非空 transcript）。`
+      + `\n可用 erix chat -r 列出本目录可续跑的会话，或 --session <完整 id> 传完整 id；`
+      + `不带 --session 则是新建会话（默认 id 形如 <目录名>-<sha256(目录)[:8]>-<随机后缀>）。`,
+    );
+  }
   const resume = explicitSession && existingRecords.length > 0;
   if (resume) {
     // issue #97：预写入 user 轮收敛为引擎能力 appendUserTurn（round 推导、

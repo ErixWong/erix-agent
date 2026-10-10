@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -720,6 +720,63 @@ test("file transcript preserves folded payload", async () => {
     const records = await store.load("fold-file");
     assert.ok(records.some((record) => Array.isArray(record.foldedPayload)));
     assert.match(JSON.stringify(records), /fold-me/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("chat --session <不存在的 id> 报错退出而不是静默开新会话（issue #168 M1）", async () => {
+  const dir = await makeTmp("erix-cli-missing-session-test-");
+  try {
+    const config = { model: "fake-model", maxOutputTokens: 1000 };
+    const configPath = await writeEmptyMcpConfig(dir);
+    const provider = createFakeProvider([{ content: [{ type: "text", text: "should not run" }] }]);
+    await assert.rejects(
+      () => runChat({
+        prompt: "resume-me",
+        session: "typoed-session-id",
+        // 只有 CLI 真实传入 `--session` 时才是「用户显式要求续跑」；
+        // 不带该旗标时给 session 命名一个新会话仍是正常用法。
+        sessionExplicit: true,
+        dir,
+        notesDir: join(dir, "notes"),
+        skillsDir: join(dir, "skills"),
+        configPath,
+        provider,
+        config,
+        maxRounds: 1,
+        idleTimeout: 0,
+      }),
+      /会话不存在：typoed-session-id/,
+    );
+    // 不跑 provider，也不落新 transcript
+    assert.equal(provider.requests.length, 0);
+    const transcripts = (await readdir(dir)).filter((name) => name.endsWith(".jsonl"));
+    assert.deepEqual(transcripts, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("chat 用 --session 命名新会话时（未声明 sessionExplicit）仍照旧新建", async () => {
+  // M1 的报错门只给「显式 --session」；宿主/测试给 session 而不带旗标时不得变红。
+  const dir = await makeTmp("erix-cli-named-session-test-");
+  try {
+    const config = { model: "fake-model", maxOutputTokens: 1000 };
+    const configPath = await writeEmptyMcpConfig(dir);
+    await runChat({
+      prompt: "name-a-fresh-run",
+      session: "fresh-named-run",
+      dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
+      provider: createFakeProvider([{ content: [{ type: "text", text: "ok" }] }]),
+      config,
+      maxRounds: 1,
+      idleTimeout: 0,
+    });
+    assert.ok(existsSync(join(dir, "fresh-named-run.jsonl")));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
