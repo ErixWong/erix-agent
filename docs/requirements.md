@@ -36,6 +36,7 @@ The library boundary ends at the lifecycle of one agent task: start, run, stop, 
 - ❌ Do not choose a database engine or own a consumer project's database schema. Consumers implement the adapter contract on their side.
 - ❌ Do not become a “mini pi”. Consumers that need a complete interactive agent should use pi itself or its SDK rather than expanding this package into one.
 - ❌ Do not ship the planned `psyche` compaction strategy in the shipped runtime. Its context-shaping idea remains a future, conversation-oriented design candidate rather than a current implementation.
+- ❌ Do not adopt the OpenAI Responses API (`/v1/responses`) as a third protocol, including cross-round `reasoning` item carry-over. Ruled out of scope in issue #189 (2026-10-10): carrying `reasoning` items across rounds is the host's multi-turn orchestration, which lies beyond this package's single-task lifecycle boundary (the closing paragraph of §2 Goals), so it is deliberately **not** the “third non-OpenAI-compatible native protocol” that triggers the AI SDK migration under `docs/maintenance-policy.md` → Technical Replacement Trigger Conditions rule 1 (see the 2026-10-10 revision note appended there, which defines that trigger as a **non-OpenAI-family vendor** protocol). This is a scope decision, not a missing capability: a host that needs cross-round reasoning items for OpenAI reasoning models uses its own relay or adapter.
 
 ## 3. Functional requirements
 
