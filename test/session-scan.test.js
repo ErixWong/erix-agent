@@ -165,3 +165,59 @@ test("truncateFirstUserText collapses whitespace and caps at 80 chars", () => {
 test("defaultTranscriptsDir 落在 <home>/.erix/transcripts", () => {
   assert.equal(defaultTranscriptsDir(HOME), join(HOME, ".erix", "transcripts"));
 });
+
+test("sessionScanPrefix 就是 <目录名>-<sha256(绝对路径)[:8]>（行为契约，-c 依赖它）", () => {
+  // 独立重算一遍公式：实现与文档/其它模块漂移时这里先红
+  const expected = (cwd) => {
+    const base = cwd.split("/").filter(Boolean).pop() ?? "root";
+    return `${base}-${createHash("sha256").update(cwd).digest("hex").slice(0, 8)}`;
+  };
+  assert.equal(sessionScanPrefix(DIR_A), expected(DIR_A));
+  assert.equal(sessionScanPrefix(DIR_B), expected(DIR_B));
+  // 尾斜杠与相对路径按 path.resolve 归一后同值
+  assert.equal(sessionScanPrefix(`${DIR_A}/`), sessionScanPrefix(DIR_A));
+  // 根目录的目录名是空串 → "root"
+  assert.ok(sessionScanPrefix("/").startsWith("root-"));
+  // 不同目录必然不同前缀（按目录筛选的地基）
+  assert.notEqual(sessionScanPrefix(DIR_A), sessionScanPrefix(DIR_B));
+});
+
+test("sessionScanPrefix 与 bin/repl.js / src/tools/notes.js 的实现一致（哈希式是契约）", async () => {
+  // bin/repl.js：stable id 必须逐字等于前缀，unique id 必须以前缀 + "-" 开头
+  assert.equal(defaultSessionId(DIR_A), sessionScanPrefix(DIR_A));
+  assert.ok(defaultSessionId(DIR_A, { unique: true }).startsWith(`${sessionScanPrefix(DIR_A)}-`));
+  // src/tools/notes.js 的 currentScopeRef 是同式的第二份实现（库层不能反向 import bin/）。
+  // 这里用它的公开行为取真值：不注入 runId 时，semanticStateProvider 的 scopeRef 就是它算的。
+  const { createBuiltinNotesTools } = await import("../src/tools/notes.js");
+  const captured = [];
+  const stubStore = {
+    read: async () => null,
+    write: async () => ({}),
+    list: async (request) => {
+      captured.push(request.scopeRef);
+      return [];
+    },
+    complete: async () => ({}),
+    revoke: async () => ({}),
+    purge: async () => ({ removed: 0 }),
+  };
+  const notes = createBuiltinNotesTools({ notesStore: stubStore });
+  await notes.semanticStateProvider({});
+  assert.deepEqual(captured, [sessionScanPrefix(process.cwd())]);
+});
+
+test("哈希式只有一份实现，且没有扩大库的公共导出面（issue #168 红线）", async () => {
+  const { readFileSync } = await import("node:fs");
+  const replSource = readFileSync(new URL("../bin/repl.js", import.meta.url), "utf8");
+  // bin/repl.js 必须复用 sessionScanPrefix，而不是再抄一份哈希式（抄第二份就等着漂移）
+  assert.match(replSource, /import \{ sessionScanPrefix \} from "\.\/session-scan\.js"/);
+  assert.doesNotMatch(replSource, /createHash\("sha256"\)[\s\S]{0,80}slice\(0, 8\)/);
+
+  // src/index.js 不许因为本单新增导出（-c 的实现全在 bin/，库面一字不动）
+  const publicSurface = await import("../src/index.js");
+  for (const symbol of ["sessionScanPrefix", "belongsToCwd", "scanSessions", "readFirstUserText"]) {
+    assert.equal(publicSurface[symbol], undefined, `src/index.js 多了导出 ${symbol}`);
+  }
+  const indexSource = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  assert.doesNotMatch(indexSource, /session-scan|sessionScanPrefix/);
+});

@@ -7,8 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { createHash, randomUUID } from "node:crypto";
-import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -31,6 +30,7 @@ import {
   closeAllMcpServers,
   createMcpProxyTool,
 } from "./mcp.js";
+import { sessionScanPrefix } from "./session-scan.js";
 import { buildSkillTools, warnBuiltinToolConflicts } from "./skills.js";
 import {
   buildArchiveNotice,
@@ -150,11 +150,12 @@ function createIdleTimeout(seconds) {
   };
 }
 
+// issue #168 T2：目录哈希式只有 bin/session-scan.js 一份实现——`-c` 的「按本目录」语义
+// 直接依赖它（`src/index.js` 未因此新增任何导出，库的公共导出面一字未动）。
+// `src/tools/notes.js` 的 currentScopeRef 仍是同式的第二份（库层不能反向 import bin/），
+// 由 test/session-scan.test.js 的哈希契约用例钉住两者一致。
 export function defaultSessionId(cwd, { unique = false } = {}) {
-  const normalizedCwd = path.resolve(String(cwd));
-  const baseName = path.basename(normalizedCwd) || "root";
-  const hash8 = createHash("sha256").update(normalizedCwd).digest("hex").slice(0, 8);
-  const stableId = `${baseName}-${hash8}`;
+  const stableId = sessionScanPrefix(cwd);
   return unique ? `${stableId}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}` : stableId;
 }
 
