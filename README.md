@@ -169,6 +169,7 @@ src/
   tokens.js                        Conservative token estimation
   loop/                            # orchestration core
     orchestrator.js                runToolLoop main loop
+    option-normalization.js        runToolLoop option whitelist, unknown-key suggestion, merge
     provider-runner.js             Provider call, retry, and snapshot rollback
     run-snapshot-executor.js       Pre/post tool checkpoints and aggregate gate
     budget.js                      Budget validation and state cloning helpers

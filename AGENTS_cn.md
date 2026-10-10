@@ -26,10 +26,10 @@ src/
 ├── assembly-validators.js  # 端口/选项校验共享实现（内部模块）
 ├── run-state.js
 ├── tokens.js
-├── loop/          # 编排核心：orchestrator（runToolLoop）、provider-runner、
-│                  # run-snapshot-executor、budget、aggregate-budget、termination、
-│                  # resume-manager、error-ledger、messages、reflection、task-brief、abort、
-│                  # block-helpers、tool-result-ttl
+├── loop/          # 编排核心：orchestrator（runToolLoop）、option-normalization、
+│                  # provider-runner、run-snapshot-executor、budget、aggregate-budget、
+│                  # termination、resume-manager、error-ledger、messages、reflection、
+│                  # task-brief、abort、block-helpers、tool-result-ttl
 ├── compact/       # 上下文压缩：budget、pipeline、sliding-window、fold-statistical、
 │                  # fold-llm、anchors、fold-fidelity、enforce-size、helpers
 ├── config/        # 配置适配器

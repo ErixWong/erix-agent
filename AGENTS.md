@@ -27,10 +27,10 @@ src/
 ├── assembly-validators.js  # shared port/option validators (internal)
 ├── run-state.js
 ├── tokens.js
-├── loop/          # orchestration core: orchestrator (runToolLoop), provider-runner,
-│                  # run-snapshot-executor, budget, aggregate-budget, termination,
-│                  # resume-manager, error-ledger, messages, reflection, task-brief, abort,
-│                  # block-helpers, tool-result-ttl
+├── loop/          # orchestration core: orchestrator (runToolLoop), option-normalization,
+│                  # provider-runner, run-snapshot-executor, budget, aggregate-budget,
+│                  # termination, resume-manager, error-ledger, messages, reflection,
+│                  # task-brief, abort, block-helpers, tool-result-ttl
 ├── compact/       # context compaction: budget, pipeline, sliding-window, fold-statistical,
 │                  # fold-llm, anchors, fold-fidelity, enforce-size, helpers
 ├── config/        # configuration adapters
