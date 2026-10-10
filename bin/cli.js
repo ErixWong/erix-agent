@@ -41,11 +41,7 @@ import {
   purgeInactiveNoteScopes,
   wrapExecuteTool,
 } from "./tools.js";
-import {
-  recordChatSession,
-  resolveChatSessionSelection,
-} from "./sessions.js";
-import { safeRunId } from "../src/store/file.js";
+import { resolveChatSessionSelection } from "./sessions.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
 
 const DEFAULT_MAX_ROUNDS = 64;
@@ -1036,27 +1032,13 @@ async function main(args) {
     },
   );
   if (selection.cancelled === true) return;
-  // 索引只收录真实产生过 transcript 的会话（resume 的前提是 store.load 非空，
-  // 无 transcript 的条目只会遮蔽真正可续的会话）。
-  const transcriptPath = join(chatArgs.dir, `${safeRunId(selection.session)}.jsonl`);
-  let result;
-  try {
-    result = await runChat({
-      ...chatArgs,
-      session: selection.session,
-      sessionExplicit: selection.sessionExplicit,
-    });
-  } finally {
-    // issue #75：会话索引是缓存不是真相——记录失败静默，绝不影响主流程
-    if (existsSync(transcriptPath)) {
-      await recordChatSession({
-        home: homedir(),
-        sessionId: selection.session,
-        cwd: process.cwd(),
-        prompt: chatArgs.prompt,
-      });
-    }
-  }
+  // issue #168 T2：会话发现不再有索引——`-c`/`-r` 的候选由 bin/session-scan.js 现算，
+  // 跑完也不再 upsert 任何状态文件（transcript 本身就是名单）。
+  const result = await runChat({
+    ...chatArgs,
+    session: selection.session,
+    sessionExplicit: selection.sessionExplicit,
+  });
   const verificationExitCode = exitCodeForVerification(result?.verification);
   if (verificationExitCode !== 0) process.exitCode = verificationExitCode;
   return result;

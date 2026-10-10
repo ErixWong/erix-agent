@@ -32,7 +32,6 @@ import {
   createMcpProxyTool,
 } from "./mcp.js";
 import { buildSkillTools, warnBuiltinToolConflicts } from "./skills.js";
-import { recordChatSession } from "./sessions.js";
 import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
@@ -757,11 +756,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           );
         }
         await saveSession(sessionDir, options.session, messages);
-        // issue #75：本轮真实产出 transcript 后 upsert 会话索引（缓存，失败静默）——
-        // 无 transcript 的会话没有可续内容，不入索引（与 chat 行为一致）。
-        if (existsSync(join(options.dir, `${safeRunId(options.session)}.jsonl`))) {
-          await recordChatSession({ home, sessionId: options.session, cwd, prompt: line });
-        }
+        // issue #168 T2：不再 upsert 会话索引——transcript 文件本身就是可续跑名单，
+        // `-c`/`-r` 由 bin/session-scan.js 现扫现算（见 bin/session-scan.js 头注释）。
       } catch (error) {
         if (idle?.timedOut()) throw new IdleTimeoutError(options.idleTimeout);
         throw error;
