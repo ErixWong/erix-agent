@@ -644,7 +644,29 @@ export async function runToolLoop(options) {
     ? Math.max(0, retryOptions.backoffMaxMs)
     : 10000;
   const sleepImpl = retryOptions?.sleepImpl ?? defaultSleep;
-  let toolExecutedThisRound = false;
+  // issue #177 刀5：runToolLoop 可变状态收口对象（闭包 `let` → 显式状态对象，分组迁入）。
+  // 初值与语义与原 `let` 逐字一致（`foldedThrough` 原初值就是数字 `0`，不是 `false`）：
+  // 【A 轮次记账 + 一次性去重标记】`rounds` / `foldedThrough`（原 :1235 / :1237，双计数器口径
+  //   见下方 issue #32 #8 原注释；与仍留在闭包里的 `budgetRounds` 是两个不同语义，**没有**合并）、
+  //   `modelMetadataNoticeSent` / `runOutcomeEmitted`（#182 / #165 去重标记，原 :749 / :846）。
+  // 【B 本轮进度 / stall 判定】`toolExecutedThisRound`（原 :647）、`hadToolUse`（原 :1488，
+  //   初值由 `hasToolUseInMessages(messages)` 现算，求值点仍留在原声明处，见下方那条赋值）、
+  //   `stallStreak` / `lastStallSignature`（原 :1175 / :1176）。
+  // 声明点取本组已迁入符号里最早的**可读点**之前（原 `toolExecutedThisRound` 的声明处）：
+  // 后到的四个符号在原声明点之前没有任何语句能读到（逐符号 `rg` 核过），把它们从 TDZ 变成
+  // 已初始化不改变可观察行为；其余声明（含 `emitEvent` 在 `notifyModelMetadataMissing` 下方
+  // 这个次序）一行没动。
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any }} */
+  const runLoopState = {
+    rounds: 0,
+    foldedThrough: 0,
+    modelMetadataNoticeSent: false,
+    runOutcomeEmitted: false,
+    toolExecutedThisRound: false,
+    hadToolUse: false,
+    stallStreak: 0,
+    lastStallSignature: null,
+  };
   const errorLedger = createErrorLedger();
 
   const reportPersistenceError = async (error, event) => {
@@ -746,21 +768,7 @@ export async function runToolLoop(options) {
   // 把压缩关掉了」；去重与直调 onEvent?.() 的风格照抄上方 notifyCapabilitySkipped（同样绕开
   // 定义在下方的 emitEvent，本事件在启动期预算推导段触发，引用会踩 TDZ），每 run 最多一条。
   // 同理，detail 引用的 outputHygieneLimit 也在下方声明：本函数的唯一调用点在它之后，更早调用会踩 TDZ。
-  // issue #177 刀5：runToolLoop 可变状态收口对象。第一组收「轮次记账 + 一次性去重标记」四格，
-  // 初值与语义与原 `let` 逐字一致（`foldedThrough` 原初值就是数字 `0`，不是 `false`）：
-  // - `rounds` / `foldedThrough`：原 `let rounds` / `let foldedThrough`（双计数器口径见下方
-  //   issue #32 #8 原注释；与仍留在闭包里的 `budgetRounds` 是两个不同语义，**没有**合并）。
-  // - `modelMetadataNoticeSent` / `runOutcomeEmitted`：原同名 `let`（#182 / #165 的去重标记）。
-  // 声明点取四者里最早的原声明位置（原 :749）：更早处没有任何语句能读到这些字段，TDZ 行为不变；
-  // `notifyModelMetadataMissing` 体内直调 `onEvent?.()` 而不用下方的 `emitEvent`（定义在下方），
-  // 这个相对次序一行没动。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean }} */
-  const runLoopState = {
-    rounds: 0,
-    foldedThrough: 0,
-    modelMetadataNoticeSent: false,
-    runOutcomeEmitted: false,
-  };
+  // `modelMetadataNoticeSent`（#182 去重标记）已迁入上方 `runLoopState`（issue #177 刀5-A）。
   const notifyModelMetadataMissing = () => {
     if (runLoopState.modelMetadataNoticeSent) return;
     runLoopState.modelMetadataNoticeSent = true;
@@ -800,7 +808,7 @@ export async function runToolLoop(options) {
           ? "checkpoint_after_tool"
           : "checkpoint_before_tool";
     const sideEffect = method === "appendRound"
-      ? (toolExecutedThisRound ? "executed_uncommitted" : "not_started")
+      ? (runLoopState.toolExecutedThisRound ? "executed_uncommitted" : "not_started")
       : phase === "checkpoint_after_tool"
         ? "executed_uncommitted"
         : "not_started";
@@ -1172,8 +1180,7 @@ export async function runToolLoop(options) {
     }
     governorState.filesWritten = kept.reverse();
   };
-  let stallStreak = 0;
-  let lastStallSignature = null;
+  // `stallStreak` / `lastStallSignature` 已迁入 `runLoopState`（issue #177 刀5-B）。
   const startedAt = Date.now();
   const configuredDeadline = Number.isFinite(deadlineMs) && deadlineMs > 0
     ? deadlineMs
@@ -1485,7 +1492,9 @@ export async function runToolLoop(options) {
     unverified: 0,
     guard_error: 0,
   };
-  let hadToolUse = hasToolUseInMessages(messages);
+  // `hadToolUse` 已迁入 `runLoopState`（刀5-B）：初值仍在本行原来声明处现算（求值点/副作用不变），
+  // 之前没有任何语句读它，所以只是把存储位置换成状态对象的一格。
+  runLoopState.hadToolUse = hasToolUseInMessages(messages);
   let roundStopReason;
   let roundEventDeltas = [];
 
@@ -2174,7 +2183,7 @@ export async function runToolLoop(options) {
       return messages;
     },
     markToolExecuted() {
-      toolExecutedThisRound = true;
+      runLoopState.toolExecutedThisRound = true;
     },
     get lowBudgetPrompted() {
       return lowBudgetPrompted;
@@ -2399,7 +2408,7 @@ export async function runToolLoop(options) {
       messages = compactedMessages;
       latestApiInputTokens = undefined;
       latestApiEstimatedTokens = undefined;
-      hadToolUse = hadToolUse || hasToolUseInMessages(messages);
+      runLoopState.hadToolUse = runLoopState.hadToolUse || hasToolUseInMessages(messages);
       if (foldedRoundRange?.to !== undefined) {
         runLoopState.foldedThrough = Math.max(runLoopState.foldedThrough, foldedRoundRange.to);
       }
@@ -2611,7 +2620,7 @@ export async function runToolLoop(options) {
     // 这样预算提示 / 剩余轮数在工具执行期读到的就是正确值
     budgetRounds += 1;
     const round = runLoopState.rounds + 1;
-    toolExecutedThisRound = false;
+    runLoopState.toolExecutedThisRound = false;
     interceptJudgeDecision = undefined;
     roundEventDeltas = [];
     roundStopReason = undefined;
@@ -2712,7 +2721,7 @@ export async function runToolLoop(options) {
     }
 
     if (hasToolUse(content)) {
-      hadToolUse = true;
+      runLoopState.hadToolUse = true;
       governorState.noToolStreak = 0;
     }
 
@@ -2775,13 +2784,13 @@ export async function runToolLoop(options) {
     }
     // streak 只累积 stalled 命中；出现不同签名（模型转向）才清零
     if (stallSuspicion) {
-      stallStreak += 1;
-      lastStallSignature = stallSignature;
-    } else if (lastStallSignature !== null && lastSignatureThisRound !== null
-      && lastSignatureThisRound !== lastStallSignature) {
+      runLoopState.stallStreak += 1;
+      runLoopState.lastStallSignature = stallSignature;
+    } else if (runLoopState.lastStallSignature !== null && lastSignatureThisRound !== null
+      && lastSignatureThisRound !== runLoopState.lastStallSignature) {
       // 本轮调用了与上次 stalled 不同的签名 → 模型转向，清零
-      stallStreak = 0;
-      lastStallSignature = null;
+      runLoopState.stallStreak = 0;
+      runLoopState.lastStallSignature = null;
     }
 
     let shouldContinue = response?.stopReason === "tool_use"
@@ -2861,7 +2870,7 @@ export async function runToolLoop(options) {
     const noToolRound = !hasToolUse(content)
       && completionEnabled
       && !completionSignalDetected
-      && hadToolUse;
+      && runLoopState.hadToolUse;
     if (hasToolUse(content)) {
       governorState.noToolStreak = 0;
     } else if (noToolRound) {
@@ -2902,7 +2911,7 @@ export async function runToolLoop(options) {
       completionSignalDetected,
       continuationExhausted,
       stallSuspicion,
-      stallStreak,
+      stallStreak: runLoopState.stallStreak,
       wrapUpNudged: governorState.wrapUpNudged,
       nearLimit: budgetRounds >= Math.floor(governorState.effectiveMaxRounds * 0.8),
       extensionCount: governorState.extensionCount,
@@ -3100,7 +3109,7 @@ export async function runToolLoop(options) {
 
     executedToolIds.clear();
     snapshotResults.clear();
-    toolExecutedThisRound = false;
+    runLoopState.toolExecutedThisRound = false;
     emitEvent({
       type: "round_end",
       round,
