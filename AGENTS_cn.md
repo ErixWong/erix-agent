@@ -64,7 +64,7 @@ scripts/          # 实验脚本和结果
 | `npm run check:pack-links` | 随包 Markdown 的链接闭合检查 |
 | `npm run types:build` | 把随包发布的 `.d.ts` 生成到 `src/**/*.d.ts` 并保留（issue #213；`prepack` 钩子跑的是同一个脚本） |
 | `npm run check:types-build` | 断言式门禁：`tsc` exit 0 / 声明文件数 > 0 / `src/index.d.ts` 含 `runToolLoop` / `src/tools/index.d.ts` 含 `createFileTools`，跑完删掉生成物（issue #213；需要先 `npm install --include=dev`） |
-| `npm run check:types` | `--checkJs` **棘轮**：统计从 `src/index.js` 可达的类型错误总数，超过 `scripts/type-check-ratchet.mjs` 里写死的基线常量 **218** 就失败（issue #214；棘轮 = 只减不增，低于基线仍通过并提示「可下调至 N」）。**跑之前先删掉生成的 `src/**/*.d.ts`**——见下面「`--checkJs` 棘轮规则」。加 `-- --with-tools` 可把范围扩到 `./tools` 入口（基线 261） |
+| `npm run check:types` | `--checkJs` **棘轮**：统计从 `src/index.js` 可达的类型错误总数，超过 `scripts/type-check-ratchet.mjs` 里写死的基线常量 **217** 就失败（issue #214；棘轮 = 只减不增，低于基线仍通过并提示「可下调至 N」）。**跑之前先删掉生成的 `src/**/*.d.ts`**——见下面「`--checkJs` 棘轮规则」。加 `-- --with-tools` 可把范围扩到 `./tools` 入口（基线 261，自 #214 起未复测） |
 | `node bin/cli.js ...` | 本地运行 CLI（无需安装） |
 
 - 测试隔离规则：涉及 `~/.erix` 或 `~/.pi` 的测试必须注入 `home`/`cwd` 参数（skills/mcp/config 测试提供了先例），以免污染真实用户配置。
@@ -76,8 +76,8 @@ scripts/          # 实验脚本和结果
   宿主可见签名要紧的时候，去读生成的 `.d.ts`，而不是源码里的注释。
 - 文档规则（issue #164）：改 `README*.md`、`docs/requirements*.md`、任何默认值或 `files`/`exports` 清单时，必须保证 `npm run check:docs` 绿。该检查直接从 `package.json` 与 `src/` 取真值，因此文档无法静默漂移；「当前版本」声明的规范写法写在 `scripts/docs-drift-check.mjs` 顶部注释里。中英文文档成对同步（见 `AGENTS_cn.md` 对应小节）。
 - 锚点粒度（issue #210）：**不要默认「文档里删一处提及就会红」**——多数锚点是*存在性*级的（`defaults` 全组、`modulemap`、`paths`：它们只问「那个文件里有没有这个字符串」，所以从同一句里删掉一处额外提及仍然绿）。只有这些是*逐处*级的（每个声明点单独比对，缺 / 多 / 改名都红）：`version` 的当前版本声明、README 的 `files`/`exports` 围栏（与 `package.json` **双向对称**比对——文档里改名或删键也会红，不只是多写才红），以及清单/枚举/单位类锚点（文件工具清单、CLI 工具清单、vendor 跳过目录、`formatSize` 的单位档位与每一条 `` `字节数` → `可读值` `` 示例映射、内置压缩策略名）。这些锚点还会对账**中英两侧的声明点处数**，接住「把某一侧的整句声明删掉」这一类。每条逐处锚点的反向证都固化在 `node scripts/docs-drift-check.mjs --self-test` 里；改了 `scripts/docs-drift-check.mjs` 就要跑一次。每个锚点属于哪一级、以及剩下那些为何**没**升级，写在脚本头部注释里。
-- `--checkJs` 棘轮规则（issue #214）：`npm run check:types` **不追求清零**——218 个错（涉 29 个文件）是已接受的债。
-  它保证的是**只减不增**：总数与 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 218` 常量比较（2026-10-10 在
+- `--checkJs` 棘轮规则（issue #214）：`npm run check:types` **不追求清零**——217 个错（涉 29 个文件）是已接受的债（#214 首测是 218，issue #177 刀 1 给 `src/loop/orchestrator.js` 还掉 1 个）。
+  它保证的是**只减不增**：总数与 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 217` 常量比较（2026-10-10 在
   #213 之后的树上实测，环境 `typescript@5.9.3` + `@types/node@22.20.5`；issue 正文里的 226 在 #213 之前的树
   `bc3ad02` 上逐字复现，这正是入库值是 218 而不是 226 的原因）。**先还哪一半**：218 个里有 190 个落在**宿主真的能碰到的公共面**
   上（从两个入口沿 `export … from` 可达、与从生成的 `src/index.d.ts`/`src/tools/index.d.ts` 沿类型引用可达，两种独立量法

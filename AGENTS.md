@@ -66,7 +66,7 @@ scripts/          # experiment scripts and results
 | `npm run check:pack-links` | Link closure inside packaged Markdown |
 | `npm run types:build` | Generate the published `.d.ts` into `src/**/*.d.ts` and keep them (issue #213; the `prepack` hook runs the same script) |
 | `npm run check:types-build` | Assertion gate: `tsc` exit 0 / declaration count > 0 / `src/index.d.ts` contains `runToolLoop` / `src/tools/index.d.ts` contains `createFileTools`, then delete the artifacts (issue #213; needs `npm install --include=dev`) |
-| `npm run check:types` | `--checkJs` **ratchet**: counts the type errors reachable from `src/index.js` and fails if the total exceeds the baseline constant **218** in `scripts/type-check-ratchet.mjs` (issue #214; ratchet = never up, going down is a pass with a "you may lower the baseline to N" hint). **Delete the generated `src/**/*.d.ts` first** — see the `--checkJs` ratchet rule below. `-- --with-tools` widens it to the `./tools` entry (baseline 261) |
+| `npm run check:types` | `--checkJs` **ratchet**: counts the type errors reachable from `src/index.js` and fails if the total exceeds the baseline constant **217** in `scripts/type-check-ratchet.mjs` (issue #214; ratchet = never up, going down is a pass with a "you may lower the baseline to N" hint). **Delete the generated `src/**/*.d.ts` first** — see the `--checkJs` ratchet rule below. `-- --with-tools` widens it to the `./tools` entry (baseline 261, not re-measured since #214) |
 | `node bin/cli.js ...` | Run the CLI locally (no installation required) |
 
 - Test isolation rule: tests involving `~/.erix` or `~/.pi` must inject `home`/`cwd` parameters (the skills/mcp/config tests provide precedents), to avoid contaminating real user configuration.
@@ -76,9 +76,10 @@ scripts/          # experiment scripts and results
   Two JSDoc shapes silently degrade a parameter to `any` (no compile error, discovered only by reading the emitted `.d.ts`, both fixed in
   #213 R4): a **standalone `//` line inside an inline `@param {{ … }}` type literal**, and a **doc block that is not the comment directly
   above its declaration**. When a host-facing signature matters, read the generated `.d.ts`, not the source comment.
-- `--checkJs` ratchet rule (issue #214): `npm run check:types` does **not** aim for zero errors — 218 of them
-  (29 files) are accepted debt. What it guarantees is **never up**: the total is compared against the
-  `BASELINE_ROOT = 218` constant in `scripts/type-check-ratchet.mjs` (measured 2026-10-10 on the post-#213 tree
+- `--checkJs` ratchet rule (issue #214): `npm run check:types` does **not** aim for zero errors — 217 of them
+  (29 files) are accepted debt (the #214 measurement was 218; issue #177 knife 1 took one off
+  `src/loop/orchestrator.js` by annotating `resumeRunSnapshot`). What it guarantees is **never up**: the total is compared against the
+  `BASELINE_ROOT = 217` constant in `scripts/type-check-ratchet.mjs` (measured 2026-10-10 on the post-#213 tree
   with `typescript@5.9.3` + `@types/node@22.20.5`; the 226 in the issue body reproduces on the pre-#213 tree
   `bc3ad02`, which is why the committed number is 218 and not 226). **Which half to pay down first**: 190 of
   the 218 sit in files a host can actually reach (the type-reference closure of the published `src/index.d.ts`
