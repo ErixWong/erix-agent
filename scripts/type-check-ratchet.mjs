@@ -34,7 +34,7 @@
 //     **必须在装了 devDependencies 的环境里跑**（`tsc` 取不到时下面直接给指路报错，不堆栈）。
 //
 // 用法：
-//   npm run check:types                       # 默认：包根入口 src/index.js，基线 218
+//   npm run check:types                       # 默认：包根入口 src/index.js，基线 217
 //   npm run check:types -- --with-tools       # 连 erix-agent/tools 入口一起卡，基线 261
 //   node scripts/type-check-ratchet.mjs --verbose                   # 额外打印每文件、每错误码分布
 //   node scripts/type-check-ratchet.mjs --show-errors 20            # 额外打印前 20 条错误定位（定位新错用）
@@ -72,7 +72,12 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   3×TS1131 与 TS8024/TS1003 消失、TS2739 1→2）。所以下面的数是**当前树**的实测值，不是抄来的。
 // 下调基线的规矩：把常量改成 `npm run check:types` 打印的「可下调至 N」，**单独一次提交**，提交信息里带上
 //   是哪个文件减了多少错——棘轮的全部价值在「这个数只会变小」，别把它当噪声随手调回去。
-const BASELINE_ROOT = 218;
+// 下调记录：**218 → 217**（issue #177 刀 1，2026-10-10）——`src/loop/orchestrator.js` **18 → 17**（减 1）：
+//   选项规范化外提后给 `resumeRunSnapshot` 补了一行 `@type`（纯注释），消除一处
+//   `Property 'round' does not exist on type 'never'`（TS2339）——那个变量的值只经 setter 由
+//   `restoreResume` 赋值，控制流分析看不见。新增的 `src/loop/option-normalization.js`（首行 `// @ts-check`）
+//   自身贡献 **0** 个错。`--with-tools` 一档的 261 未重测，故不动。
+const BASELINE_ROOT = 217;
 
 // `--with-tools` 的基线：把第二个公共入口 `src/tools/index.js` 也喂给 tsc 后的并集。
 // 复现命令（逐字）：

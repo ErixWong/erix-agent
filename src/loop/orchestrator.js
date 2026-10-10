@@ -90,11 +90,11 @@ import {
 } from "./tool-result-ttl.js";
 import { createRunSnapshotExecutor } from "./run-snapshot-executor.js";
 import { restoreResume } from "./resume-manager.js";
-import { assemblyPortOptions } from "../assembly.js";
 import {
   collectLoopCapabilitiesMissing,
   validateTranscriptStore,
 } from "../assembly-validators.js";
+import { normalizeRunToolLoopOptions } from "./option-normalization.js";
 
 export { parseReflectionDecision };
 
@@ -170,98 +170,6 @@ export function trimGovernorHistory(state, tokenLimit = GOVERNOR_HISTORY_TOKEN_L
     state.l0Facts.splice(0, dropped);
   }
   return dropped;
-}
-
-const RUN_TOOL_LOOP_OPTION_NAMES = [
-  "assemblyPort",
-  "provider",
-  "system",
-  "cacheStablePrefix",
-  "wrapup",
-  "initialUserMessage",
-  "initialMessages",
-  "tools",
-  "outputHygiene",
-  "writeToolNames",
-  "writeToolPathKeys",
-  "executeTool",
-  "replayPolicy",
-  "partialPersistence",
-  "maxRounds",
-  "cacheCapable",
-  "toolResultTtl",
-  "toolResultFoldMinTokens",
-  "maxTokens",
-  "temperature",
-  "topP",
-  "timeoutMs",
-  "deadlineMs",
-  "reflection",
-  "stallDetection",
-  "retry",
-  "completion",
-  "finalGuard",
-  "finalGuardMaxRetries",
-  "finalGuardTimeoutMs",
-  "maxTokenContinuations",
-  "context",
-  "todoStateProvider",
-  "semanticStateProvider",
-  "modelConfig",
-  "modelMetadata",
-  "model",
-  "expert",
-  "user",
-  "task",
-  "session",
-  "requestId",
-  "toolContext",
-  "store",
-  "persistence",
-  "runId",
-  "resume",
-  "onRound",
-  "onJudge",
-  "onToolResult",
-  "onPersistenceError",
-  "diagnostics",
-  "onObserverError",
-  "signal",
-  "stream",
-  "onDelta",
-  "onReasoningDelta",
-  "onToolCall",
-  "onUsage",
-  "onEvent",
-];
-const RUN_TOOL_LOOP_OPTION_SET = new Set(RUN_TOOL_LOOP_OPTION_NAMES);
-
-function levenshteinDistance(left, right) {
-  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
-  for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
-    const current = [leftIndex + 1];
-    for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
-      current.push(Math.min(
-        current[rightIndex] + 1,
-        previous[rightIndex + 1] + 1,
-        previous[rightIndex] + (left[leftIndex] === right[rightIndex] ? 0 : 1),
-      ));
-    }
-    for (let index = 0; index < current.length; index += 1) previous[index] = current[index];
-  }
-  return previous[right.length];
-}
-
-function optionSuggestion(unknownName) {
-  let best;
-  for (const optionName of RUN_TOOL_LOOP_OPTION_NAMES) {
-    const distance = levenshteinDistance(unknownName, optionName);
-    if (best === undefined || distance < best.distance) {
-      best = { name: optionName, distance };
-    }
-  }
-  const threshold = Math.max(2, Math.floor(unknownName.length / 3));
-  return best?.distance <= threshold ? best.name : undefined;
 }
 
 function persistenceInfoFor(error) {
@@ -546,32 +454,10 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * }>}
  */
 export async function runToolLoop(options) {
-  if (options === null || typeof options !== "object" || Array.isArray(options)) {
-    throw new TypeError("runToolLoop options must be an object");
-  }
-  for (const optionName of Object.keys(options)) {
-    if (!RUN_TOOL_LOOP_OPTION_SET.has(optionName)) {
-      const suggestion = optionSuggestion(optionName);
-      throw new TypeError(
-        `unknown runToolLoop option: ${JSON.stringify(optionName)}`
-        + (suggestion ? ` (did you mean ${JSON.stringify(suggestion)}?)` : ""),
-      );
-    }
-  }
-
-  const { assemblyPort, ...explicitOptions } = options;
-  const assembledOptions = assemblyPort === undefined
-    ? {}
-    : await assemblyPortOptions(
-      assemblyPort,
-      explicitOptions.modelConfig === undefined
-        ? {}
-        : { modelConfig: explicitOptions.modelConfig },
-    );
-  const effectiveOptions = { ...assembledOptions };
-  for (const [key, value] of Object.entries(explicitOptions)) {
-    if (value !== undefined) effectiveOptions[key] = value;
-  }
+  // 选项规范化（形状/未知键白名单 + 未知键建议 + assemblyPort 合并）已外提到
+  // src/loop/option-normalization.js（issue #177 刀1）；检查次序不变：
+  // 形状检查 → 未知键检查 → assemblyPortOptions → 显式值合并（`!== undefined` 才覆盖）。
+  const { assemblyPort, explicitOptions, effectiveOptions } = await normalizeRunToolLoopOptions(options);
 
   const {
     provider,
@@ -1349,6 +1235,11 @@ export async function runToolLoop(options) {
   let rounds = 0;
   let budgetRounds = 0;
   let foldedThrough = 0;
+  // 类型注解只为喂给 `--checkJs`（#214 棘轮），零运行时影响：这个值只由 `restoreResume` 经下方
+  // `set resumeRunSnapshot` 赋值，控制流分析看不见那条赋值，就把变量当成 `undefined`，于是
+  // `if (resumeRunSnapshot && …)` 里的 `resumeRunSnapshot.round` 报 TS2339（… on type 'never'）。
+  // snapshot 的形状由宿主 store 决定，这里不假装精确。
+  /** @type {Record<string, any>|undefined} */
   let resumeRunSnapshot;
   let resumePendingTools = [];
   let resumeTailMessages = [];
