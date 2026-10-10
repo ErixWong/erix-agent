@@ -746,10 +746,24 @@ export async function runToolLoop(options) {
   // 把压缩关掉了」；去重与直调 onEvent?.() 的风格照抄上方 notifyCapabilitySkipped（同样绕开
   // 定义在下方的 emitEvent，本事件在启动期预算推导段触发，引用会踩 TDZ），每 run 最多一条。
   // 同理，detail 引用的 outputHygieneLimit 也在下方声明：本函数的唯一调用点在它之后，更早调用会踩 TDZ。
-  let modelMetadataNoticeSent = false;
+  // issue #177 刀5：runToolLoop 可变状态收口对象。第一组收「轮次记账 + 一次性去重标记」四格，
+  // 初值与语义与原 `let` 逐字一致（`foldedThrough` 原初值就是数字 `0`，不是 `false`）：
+  // - `rounds` / `foldedThrough`：原 `let rounds` / `let foldedThrough`（双计数器口径见下方
+  //   issue #32 #8 原注释；与仍留在闭包里的 `budgetRounds` 是两个不同语义，**没有**合并）。
+  // - `modelMetadataNoticeSent` / `runOutcomeEmitted`：原同名 `let`（#182 / #165 的去重标记）。
+  // 声明点取四者里最早的原声明位置（原 :749）：更早处没有任何语句能读到这些字段，TDZ 行为不变；
+  // `notifyModelMetadataMissing` 体内直调 `onEvent?.()` 而不用下方的 `emitEvent`（定义在下方），
+  // 这个相对次序一行没动。
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean }} */
+  const runLoopState = {
+    rounds: 0,
+    foldedThrough: 0,
+    modelMetadataNoticeSent: false,
+    runOutcomeEmitted: false,
+  };
   const notifyModelMetadataMissing = () => {
-    if (modelMetadataNoticeSent) return;
-    modelMetadataNoticeSent = true;
+    if (runLoopState.modelMetadataNoticeSent) return;
+    runLoopState.modelMetadataNoticeSent = true;
     // detail 前三句是 issue #182 约定的固定原文（宿主可直接断言）；输出上限一句按实际解析值
     // 说真话——显式 outputHygiene.limit 或只带了 contextWindowTokens 时并不是 4096。
     // issue #173 PR-B 边界③：同 notifyCapabilitySkipped，直调路径本地复刻 emitEvent 的隔离防护。
@@ -843,14 +857,14 @@ export async function runToolLoop(options) {
   let judgeRecordCorrelation = judgeRecordFields({ runId });
   let verificationReader = () => undefined;
   let judgeRecordCount = 0;
-  let runOutcomeEmitted = false;
+  // `runOutcomeEmitted`（#165 去重标记）已迁入上方 `runLoopState`（issue #177 刀5）。
   // run 级 outcome 汇总走既有 onEvent 通道（新增事件类型 `run_outcome`，不新增回调）：
   // `onJudge` 的 payload 语义是「一条 judge 决策」，把终局裁决塞进去会让宿主按决策计数/过滤
   // 的代码静默跑偏。宿主回调抛错经 reportObserverError 记账（#173 PR-B 统一口径：一切观察者
   // 抛错都上报、都不改变终局——这条是审计面记录，run 已跑完，宿主日志失败不会让它变 `failed`）。
   const emitRunOutcome = (outcome) => {
-    if (typeof onEvent !== "function" || runOutcomeEmitted) return;
-    runOutcomeEmitted = true;
+    if (typeof onEvent !== "function" || runLoopState.runOutcomeEmitted) return;
+    runLoopState.runOutcomeEmitted = true;
     try {
       const verification = outcome?.verification ?? verificationReader();
       onEvent(runOutcomeRecord({
@@ -1232,9 +1246,10 @@ export async function runToolLoop(options) {
   //   直接被 max_rounds_cap 强制收尾）。用于主循环条件 / `remainingRounds` /
   //   budget hint / reflection `nearLimit` / memory-loss 阈值。
   // 契约：非 resume 单段调用两者数值恒等（都从 0 起、同步自增）。
-  let rounds = 0;
+  // `rounds`（身份轮号）已迁入 `runLoopState.rounds`（issue #177 刀5）；下方口径注释仍然成立。
+  // `budgetRounds` 是**另一个**计数器（本次调用的预算消耗），本组未动。
   let budgetRounds = 0;
-  let foldedThrough = 0;
+  // `foldedThrough` 已迁入 `runLoopState.foldedThrough`（issue #177 刀5）。
   // 类型注解只为喂给 `--checkJs`（#214 棘轮），零运行时影响：这个值只由 `restoreResume` 经下方
   // `set resumeRunSnapshot` 赋值，控制流分析看不见那条赋值，就把变量当成 `undefined`，于是
   // `if (resumeRunSnapshot && …)` 里的 `resumeRunSnapshot.round` 报 TS2339（… on type 'never'）。
@@ -1291,16 +1306,16 @@ export async function runToolLoop(options) {
     },
     messageRounds,
     get rounds() {
-      return rounds;
+      return runLoopState.rounds;
     },
     set rounds(value) {
-      rounds = value;
+      runLoopState.rounds = value;
     },
     get foldedThrough() {
-      return foldedThrough;
+      return runLoopState.foldedThrough;
     },
     set foldedThrough(value) {
-      foldedThrough = value;
+      runLoopState.foldedThrough = value;
     },
     get resumeRunSnapshot() {
       return resumeRunSnapshot;
@@ -1445,7 +1460,7 @@ export async function runToolLoop(options) {
   let finalText = "";
   // issue #180：累计量就绪，接管 fail() 的载荷读取器（闭包在调用时读实值，含逐轮累加的
   // cacheRead/cacheWrite；usage 与 makeResult 交出的是同一个对象）。
-  readLoopPayload = () => ({ usage, rounds, finalText });
+  readLoopPayload = () => ({ usage, rounds: runLoopState.rounds, finalText });
   let declaredFindings;
   let forcedFinal = false;
   let lastAssistantContent = [];
@@ -1866,7 +1881,7 @@ export async function runToolLoop(options) {
   } = {}) => {
     if (typeof todoStateProvider === "function") {
       try {
-        todoState = await todoStateProvider({ runId, rounds });
+        todoState = await todoStateProvider({ runId, rounds: runLoopState.rounds });
       } catch (error) {
         todoState = {
           status: "error",
@@ -1877,7 +1892,7 @@ export async function runToolLoop(options) {
     const deterministic = createDeterministicRunState({
       runId,
       stateVersion: runStateVersion,
-      rounds,
+      rounds: runLoopState.rounds,
       runRounds: budgetRounds,
       maxRounds: governorState.effectiveMaxRounds,
       lowBudgetPrompted,
@@ -1974,7 +1989,7 @@ export async function runToolLoop(options) {
       declaredFindings = value;
     },
     get rounds() {
-      return rounds;
+      return runLoopState.rounds;
     },
     get lastAssistantContent() {
       return lastAssistantContent;
@@ -2215,11 +2230,11 @@ export async function runToolLoop(options) {
       const known = group.messages
         .map((message) => messageRounds.get(message))
         .find((roundNumber) => Number.isSafeInteger(roundNumber) && roundNumber > 0);
-      return known ?? foldedThrough + index + 1;
+      return known ?? runLoopState.foldedThrough + index + 1;
     });
   };
 
-  const compactBeforeRound = async (round = rounds + 1) => {
+  const compactBeforeRound = async (round = runLoopState.rounds + 1) => {
     normalizeMessages(messages);
     const configuredStrategy = compactionContext?.strategy;
     // API input usage is per request; keep the aggregate for billing output.
@@ -2261,7 +2276,7 @@ export async function runToolLoop(options) {
         value: roundNumbersForMessages(messages),
         enumerable: false,
       });
-      if (foldedThrough > 0) compactOptions.roundOffset = foldedThrough;
+      if (runLoopState.foldedThrough > 0) compactOptions.roundOffset = runLoopState.foldedThrough;
       Object.defineProperty(compactOptions, "onLayer", {
         enumerable: false,
         value: ({
@@ -2326,7 +2341,7 @@ export async function runToolLoop(options) {
           protectedMessage: compactionContext.protectedMessage,
           stripHistoricalImages: compactionContext.stripHistoricalImages,
           stubFor: compactionContext.stubFor,
-          roundOffset: foldedThrough,
+          roundOffset: runLoopState.foldedThrough,
           roundNumbers: roundNumbersForMessages(compactedMessages),
         });
         compactedMessages = fallback.messages;
@@ -2386,7 +2401,7 @@ export async function runToolLoop(options) {
       latestApiEstimatedTokens = undefined;
       hadToolUse = hadToolUse || hasToolUseInMessages(messages);
       if (foldedRoundRange?.to !== undefined) {
-        foldedThrough = Math.max(foldedThrough, foldedRoundRange.to);
+        runLoopState.foldedThrough = Math.max(runLoopState.foldedThrough, foldedRoundRange.to);
       }
       if (
         foldedRounds > 0
@@ -2488,7 +2503,7 @@ export async function runToolLoop(options) {
       for (const [index, resumePendingTool] of resumePendingTools.entries()) {
         const resumedToolUse = { ...resumePendingTool };
         delete resumedToolUse.replay;
-        emitEvent({ type: "tool_use", round: rounds, toolUse: cloneState(resumedToolUse) });
+        emitEvent({ type: "tool_use", round: runLoopState.rounds, toolUse: cloneState(resumedToolUse) });
         if (replayPolicy === "per-tool-declaration" && resumePendingTool.replay !== "safe") {
           const existingToolResult = messages
             .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
@@ -2526,24 +2541,24 @@ export async function runToolLoop(options) {
           emitEvent({
             type: "tool_replay_decision_required",
             runId,
-            round: rounds,
+            round: runLoopState.rounds,
             toolUseId: resumePendingTool.id,
             toolName: resumePendingTool.name,
             replay: "unsafe",
             requiresHostDecision: true,
             partialOutputAvailable: partialOutput.length > 0,
           });
-          emitEvent({ type: "tool_result", round: rounds, toolResult: cloneState(toolResult) });
+          emitEvent({ type: "tool_result", round: runLoopState.rounds, toolResult: cloneState(toolResult) });
           continue;
         }
         await executeToolWithIntercept(
           resumedToolUse,
-          rounds,
+          runLoopState.rounds,
           resumedToolResults,
           resumePendingTools.slice(index),
         );
       }
-      appendToolResultsToTranscript(resumedToolResults, rounds);
+      appendToolResultsToTranscript(resumedToolResults, runLoopState.rounds);
       // resume 路径也 flush 方向提示（与主循环一致，限 2 条；独立 user text 消息）
       if (pendingDirectionHints.length > 0) {
         const hints = pendingDirectionHints.length > 2
@@ -2555,7 +2570,7 @@ export async function runToolLoop(options) {
           content: hints.map((text) => ({ type: "text", text })),
         };
         messages.push(hintMessage);
-        if (rounds !== undefined) messageRounds.set(hintMessage, rounds);
+        if (runLoopState.rounds !== undefined) messageRounds.set(hintMessage, runLoopState.rounds);
         pendingDirectionHints.length = 0;
       }
       resumePendingTools = [];
@@ -2595,7 +2610,7 @@ export async function runToolLoop(options) {
     // 轮预算在进入本轮时自增（与既有 `round` 语义对齐：budgetRounds === 本轮序号），
     // 这样预算提示 / 剩余轮数在工具执行期读到的就是正确值
     budgetRounds += 1;
-    const round = rounds + 1;
+    const round = runLoopState.rounds + 1;
     toolExecutedThisRound = false;
     interceptJudgeDecision = undefined;
     roundEventDeltas = [];
@@ -2793,7 +2808,7 @@ export async function runToolLoop(options) {
             role: "user",
             content: [{ type: "text", text: `【归一化】判断 agent 是否完成任务。
 任务目标：${taskBrief || "（未提供）"}
-已运行轮数：${rounds}
+已运行轮数：${runLoopState.rounds}
 本轮 agent 最终输出（可能为空）：${JSON.stringify(responseText).slice(0, 2000)}
 若 agent 已给出明确结论/产物就绪则 done=true；若它在工作中途停下/放弃则判断产出是否可判定，可判定则 done=true 否则 done=false。
 只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果","findings":{"label":"value"}}。findings 只做搬运：value 必须逐字摘自本轮 agent 原文（原样复制，不得改写/规整/补全/翻译，包括引号与标点）；原文里抄不到的值的就省略该条，宁可少写。` }],
@@ -2854,7 +2869,7 @@ export async function runToolLoop(options) {
     }
 
     // 身份轮号自增（非 resume 单段调用 budgetRounds 与 rounds 恒等；resume 后 rounds 领先）
-    rounds = round;
+    runLoopState.rounds = round;
     const currentRoundMessages = messages.slice(roundStart);
     const currentL0 = extractL0Facts(currentRoundMessages, {
       seenErrors: governorState.errorSeen,
@@ -3142,7 +3157,7 @@ export async function runToolLoop(options) {
           };
           emitEvent({
             type: "final_guard",
-            round: rounds,
+            round: runLoopState.rounds,
             action: "degraded",
             reason: "non_continuable",
           });
@@ -3157,7 +3172,7 @@ export async function runToolLoop(options) {
             };
             emitEvent({
               type: "final_guard",
-              round: rounds,
+              round: runLoopState.rounds,
               action: "degraded",
               reason: "max_retries",
             });
@@ -3195,7 +3210,7 @@ export async function runToolLoop(options) {
   };
   emitEvent({
     type: "final_guard",
-    round: rounds,
+    round: runLoopState.rounds,
     action: "degraded",
     reason: "non_continuable",
   });
