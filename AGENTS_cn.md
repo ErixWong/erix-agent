@@ -45,7 +45,9 @@ src/
 bin/              # CLI（验证器/调试器）：cli.js（入口/chat）、repl.js（TUI）、tools.js（内置工具 + 提示词）、skills.js（只是 src/skills/loader.js 的薄装配）、mcp.js、config.js、final-guard-support.js、final-guard.js、guard-metrics.js
 test/             # 单元测试（node --test），包含 compact/、providers/、tools/、config/、messages/、contract/、helpers/、fixtures/、integration/ 以及顶层测试文件
 fixtures/         # 测试夹具（mock MCP 服务器）——⚠️ mock MCP 服务器不得放在 test/ 下（node --test 会运行 test/ 下的所有文件，可能卡住）
-examples/         # 示例（skills/ 示例、演示和基准）
+examples/         # 可运行示例（exec-demo.js 及其默认跳过的 e2e 测试）、示例技能包（skills/）、pi 扩展
+                  # （pi-extension/）、溯源复现用例，以及仓内的 memory-benchmark.js。
+                  # 本仓没有 examples/benchmarks/ 目录：能力基准在独立仓 `erix-bench`
 docs/             # 设计文档、ADR 决策记录、研究和任务文档
 skills/           # skill 定义
 scripts/          # 实验脚本和结果

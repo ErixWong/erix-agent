@@ -95,6 +95,7 @@
   - **反向证固化（R2）**：新增 `node scripts/docs-drift-check.mjs --self-test`（不加 npm 脚本，不改 `package.json`）：25 例内存变异 + 1 例对照，逐例断言「改→红且点到具体成员名/覆盖到应有的文件」、对照组绿；**变异没落上也算失败**（否则文档改了而变异体过期，自测会默默空跑）。每次改这个脚本都要跑一次。
   - **锚点粒度写进文档（R3）**：脚本头部新增「锚点粒度」段，逐类标注存在性级 / 逐处级 / 中英对账级，并列出未升级条目的理由；`AGENTS.md` 与 `AGENTS_cn.md` 中英成对补同口径（命令表新增自测一行 + 「锚点粒度」一条），明写「不要默认『文档删一处提及就会红』」。
   - **实测**：`npm run check:docs`、`npm run check:docs:strict`（无告警）、`npm run check:pack-links`、`node scripts/docs-drift-check.mjs --self-test` 全绿，`--verbose` 的核对项 42 → 47；全量 `node --test` 仍 **1307 / 1301 pass / 0 fail / 6 skipped**（逐字不变，本单零代码与零测试改动）。**残留（不是全绿）**：`defaults` 全组与 `paths`/`modulemap` 仍是存在性/单向锚点；清单检测靠「命中 ≥⌈真值×0.75⌉ 个成员」的判据，所以一份清单**同时删 ≥25% 成员**会静默放行（删 1 处必红）；`SEARCH_MODES` 等枚举仍是「每档文档至少一处」。逐条清单见 issue #210 的交付报告。**版本号未动**（`package.json` 仍 `0.18.0`，本条留在 `[Unreleased]`）。
+- **`AGENTS.md` / `AGENTS_cn.md` 模块地图里的 `examples/` 一行改写成实际内容**（issue #245 第 2 件，**纯文档、零代码**）：原写法只说「skills/ 示例、演示和基准」，其中「基准」在本仓不成立——实测 `find . -maxdepth 2 -iname '*benchmark*'` 只有 `examples/memory-benchmark.js` 与它的测试，**没有 `examples/benchmarks/` 目录**，能力基准在独立仓 `erix-bench`（`README.md` 的 benchmark 章节早就是这样写的）。现按目录实况列出：可运行示例 `exec-demo.js` 及其默认跳过的 e2e 测试、示例技能包 `skills/`、pi 扩展 `pi-extension/`、溯源复现用例，以及仓内的 `memory-benchmark.js`，并明写「没有 `examples/benchmarks/` 目录、基准在 `erix-bench` 仓」。中英两份成对同步（`docs/requirements*.md` 对 `examples/` 的描述本就准确，未动）。
 
 ## [0.18.0] - 2026-10-09
 ### Added
