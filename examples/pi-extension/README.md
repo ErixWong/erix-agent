@@ -50,7 +50,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 ### 让扩展找到 erix-agent 库
 
 内层 run 需要 `runToolLoop` / `createOpenAIProvider` / `createJsonFileModelConfigProvider` /
-`createMemoryTranscriptStore`，以及内置工具装配 `bin/tools.js`。装载顺序（写死在 core 里）：
+`createMemoryTranscriptStore`（要落盘还要 `createFileTranscriptStore`），以及内置工具装配 `bin/tools.js`。装载顺序（写死在 core 里）：
 
 1. **`ERIX_AGENT_LIB`** 指向本仓检出：目录（自动补 `src/index.js`）或直接指 `src/index.js`。
    ```bash
@@ -74,6 +74,58 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `strategy` | | 引擎缺省 | 压缩策略内置名字：`sliding-window` \| `fold-statistical` \| `fold-llm`（交给引擎在启动期实例化，见 `docs/host-consumer-contract.md`「Compaction strategy selection」） |
 | `timeoutMs` | | `600000`（10 分钟） | 硬超时，1000..21600000。到点 `abort` 内层 run 并在返回里标注 `timeout: true` |
 | `model` | | 槽位里的 model | 覆盖 `slots.default` 的模型名（endpoint / apiKey 仍走该槽位） |
+| `sessionDir` | | 不落盘 | **过程落盘目录**（绝对路径，`~` 会展开；不存在则递归创建）。给了它就把内层 transcript 落到 `<sessionDir>/<runId>.jsonl`、judge 决策落到 `<sessionDir>/outputs/<runId>/judge.log`，并在返回的 `artifacts` 里给出真路径。坏目录（指到文件 / 不可写）归一成 `bad_params` 终局 |
+| `transcript` | | — | `sessionDir` 的同义写法：`"file"` → 缺省目录 `~/.erix/transcripts`；其它非空串按目录路径处理；`"memory"` / `"none"` / `"off"` → 显式不落盘。两个都给时 `sessionDir` 赢 |
+| `maxExtensions` | | 引擎缺省 `2` | 扩轮上限，直传引擎 `reflection.maxExtensions`。**`0` 是有效值 = 关掉扩轮**（引擎侧是 `>= 0` 判断，所以本层不能用「正整数」卡它）。非法值（负数 / 小数 / 非数字 / >1000）归 `bad_params` |
+| `maxRoundsCap` | | 引擎缺省 `256` | 扩轮后的总轮数硬顶，直传 `reflection.maxRoundsCap`（正整数；引擎会抬到不低于 `maxRounds`）。上限 100000 |
+| `extensionStep` | | 引擎缺省 `max(8, ⌊maxRounds/2⌋)` | 每次扩轮加的轮数，直传 `reflection.extensionStep`（正整数，上限 10000） |
+
+> ⚠ **三个扩轮参数只在 judge 真的跑了时才生效**：引擎只在 `nearLimit` 且 judge 给了布尔 `extend` 时才读它们，
+> 而本层的 judge 闸门是「`maxRounds ≥ 16` 自动开，`ERIX_NO_REFLECTION=1` 关」（与 #207 之前逐字一致）。
+> 闸门关着时三个参数**整体不下发**，返回里 `diagnostics.reflection.enabled` 是 `false`、
+> 模型可见文本里会多一行「扩轮参数未生效」——本层不顺手替你打开 judge（那会改变成本）。
+> 另：`maxRounds` 的 1..100 是**入参校验上限**，不是引擎的总轮数上限（扩轮后由 `maxRoundsCap` 说话）。
+
+## 过程落盘与审计面（issue #207）
+
+**缺省一个字节也不写**：不传 `sessionDir` 时内层 store 仍是 `createMemoryTranscriptStore()`，
+既不建目录也不接 judge 观察者（与 0.18 及之前逐字一致）。给了目录才换成库的
+`createFileTranscriptStore({ dir })`（从包根导出取，不新造落盘管道；宿主注入的
+`deps.createStore` 仍然优先）。目录布局照仓库 `AGENTS.md` §6：
+
+```
+<sessionDir>/
+├── <runId>.jsonl                    # 每轮记录（含 judge 决策字段、runState、工具输出归档）
+├── <runId>.state.json / .snapshot.json / .status.json   # 引擎自己的 run-state / 快照 / 状态
+└── outputs/<runId>/
+    └── judge.log                    # judge 决策 JSONL + 末行 run_outcome 终局汇总
+```
+
+- **`judge.log` 的位置与 CLI 默认一致**（`transcripts/outputs/<runId>/judge.log`）。CLI 那对
+  `--judge-log` / `ERIX_JUDGE_LOG` 覆盖**本层不读**：宿主环境里一个无关的 CLI 变量不该把
+  `erix_run` 的审计面搬到别处去，位置只由 `sessionDir` 决定。
+- **记录形状**（照 `AGENTS.md` §6 / 契约「Judge record」）：每条带 `runId` + 实际 `model`（judge 走了
+  别的评估模型时还有 `judgeModel`），引擎给的字段一个不改、不补占位值；末行是 `run_outcome` 汇总
+  （`termination` + `verification`，append 而非回写）。写入器额外加**一条**判别键 `extendDecision`：
+
+  | `extendDecision` | 含义 |
+  |---|---|
+  | `"yes"` | judge 说了扩（`decision.extend === true`） |
+  | `"no"` | judge **明确**说不扩（`extend === false`，引擎 action `decline_extend`） |
+  | `"missing"` | judge **没给** `extend` 字段 → 治理层 fail-closed 不扩 |
+  | `"invalid"` | 字段在但不是布尔值（引擎解析层不该出现，留作哨兵） |
+
+  这条是为 #207 的原始缺口立的：「judge 说不扩」与「judge 没答所以被 fail-closed 挡住」是两件
+  不同的事实（前者是模型的决定，后者是模型没回答），而在原生 JSONL 里前者是 `"extend": false`、
+  后者是**缺键**，只读日志的人很容易把它们看成同一件。`decision: null`（parse 失败的 degraded）与
+  `run_outcome` 汇总记录**不写**该键。
+- **路径怎么算的**：`<runId>` 文件名片段由 `safeRunIdForFile()` 算，与引擎 `src/store/file.js`
+  的 `safeRunId()` 逐字同式（该符号没从包根导出，本层零依赖红线只能照抄），同式性由测试拿
+  **真引擎函数**逐字符对账钉住——算错就等于往返回里报一个不存在的路径。
+- **写不进去不改变终局**：judge.log 建目录 / append 失败只记一次 `diagnostics.persistenceErrors`
+  （`channel: "judgeLog"`）并停止后续审计行；已跑完的 run 不会因审计面失败变 `failed`。
+- 落盘不等于可续跑：`runToolLoop` 的 `resume` 通道（R2）是另一张单，本层现在**不接**，
+  所以 `resumable` 恒 `false`。
 
 ## 模型配置
 
@@ -113,7 +165,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
   默认关可以避免污染用户 `~/.erix`、也避免并行 run 互相踩台账。要开就在 core 调用处传 `todo: true`
   （工具层未开参数，避免默认形态带副作用）。
 - 工具结果进模型视野前按 head+tail 截断到 4096 字符（复用 `bin/tools.js` 的 `truncateResult`）；
-  引擎侧的 `outputHygiene` 也在（transcript 用 `createMemoryTranscriptStore()`，纯内存、不落盘）。
+  引擎侧的 `outputHygiene` 也在。transcript 缺省用 `createMemoryTranscriptStore()`（**纯内存、不落盘**），
+  传了 `sessionDir` / `transcript:"file"` 才换成 `createFileTranscriptStore()`——见下一节。
 - `exec` 由 `bin/tools.js` 自己带超时（`ERIX_EXEC_TIMEOUT_MS`，普通命令 120s / 安装编译类 300s），
   它**不吃 abort signal**：erix_run 被取消时，正在跑的 `exec` 会跑到自己的超时为止。
 - 没有 `note_*` 工具、没有 skills、没有 MCP：最小内置工具集，行为可预期。
@@ -131,8 +184,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 ## 返回结构
 
-`content` 是交回模型的文本（终稿 + 一行终局摘要 + 一行 diagnostics），`details` / `structuredContent`
-是同一份结构化载荷：
+`content` 是交回模型的文本（终稿 + 一行终局摘要 + 一行 diagnostics + 一行决策事实），
+`details` / `structuredContent` 是同一份结构化载荷：
 
 ```jsonc
 {
@@ -144,6 +197,14 @@ pi --extension ./examples/pi-extension/erix-run.ts
   "termination": { "reason": "end_turn", "errorCode": "…(仅 failed)", "detail": "…" },
   "timeout": false,
   "aborted": false,
+  // ↓ #207 R4：决策事实
+  "artifacts": {
+    "transcriptPath": "/home/eric/.erix/transcripts/erix-run-….jsonl",  // 未落盘 / 没写出这个文件 → null
+    "judgeLogPath": "/home/eric/.erix/transcripts/outputs/erix-run-…/judge.log",
+  },
+  "extensionCount": 0,                     // 本次真扩了几轮（从引擎 reflection.onReflection 数出来）
+  "maxExtensions": 0,                      // 本次生效的扩轮上限：judge 没开就是 0；开着且未传参 = 引擎缺省 2
+  "resumable": false,                      // 终局能不能续跑：R2 未落地，本单一律 false
   "diagnostics": {
     "observerErrors": { "count": 0, "samples": [] },
     "modelMetadataMissing": null,
@@ -151,10 +212,22 @@ pi --extension ./examples/pi-extension/erix-run.ts
     "compaction": { "events": 0, "compactedRounds": 0, "foldedRounds": 0 },
     "model": "deepseek-flash", "configPath": "…", "cwd": "…",
     "libSource": "ERIX_AGENT_LIB=…", "strategy": "sliding-window",
-    "runId": "…", "maxRounds": 8, "timeoutMs": 300000, "elapsedMs": 6276
+    "runId": "…", "maxRounds": 8, "timeoutMs": 300000, "elapsedMs": 6276,
+    "sessionDir": "/home/eric/.erix/transcripts",   // 未落盘时 null
+    "reflection": { "enabled": false, "requested": {}, "maxExtensions": 0 }
   }
 }
 ```
+
+**`artifacts` 宁给 `null` 也不猜路径**：只有「传了 `sessionDir`」且「该文件此刻真在盘上」才给路径。
+未落盘、装配期就失败、`judge.log` 一行也没写过（连 `run_outcome` 都没发出）都是 `null`；
+宿主自己注入 `createStore` 时本层不知道它把东西写到哪，也给 `null`。
+
+**`extensionCount` / `maxExtensions` 的口径**：前者是引擎**真的执行了扩轮**的次数（唯一可靠入口是
+`reflection.onReflection`，它在 `governorState.extensionCount += 1` 旁边被调），后者是**生效上限**：
+judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引擎缺省 `2`（这个 2 是引用引擎默认值，
+本层**不把它下发**，不传就是引擎自己定）。**`resumable` 是能力声明而不是状态**：#207 R2 的
+`resume` 通道落地前恒 `false`（常量 `RESUMABLE`）——落盘不等于能续跑。
 
 `termination.reason` 一律是**引擎给的**（`end_turn` / `judge_done` / `no_tool` / `stall` /
 `max_rounds_cap` / `continuation_exhausted` / `final_guard_unverified` / `aborted` / `failed` /
@@ -171,14 +244,23 @@ pi --extension ./examples/pi-extension/erix-run.ts
 `model_metadata_missing` / `persistence_error` / `recovering` / `final_guard` / `run_outcome`）
 经 `formatLoopEvent` 压成一行，走 pi 的 `onUpdate` 进度通道（节流 150ms，窗口保留最后 12 行，
 终局强制刷一次）。观察者一律自防：进度通道抛错只计入 `diagnostics.observerErrors`，绝不反打内层 run。
+落盘模式还会多两行：启动时的「落盘：transcript=… judgeLog=…」与每次扩轮的
+「↻ 扩轮 n/N：round r → 上限 M」。
 
 ## 成本提示
 
 - **一次 `erix_run` = 一次完整多轮 run**：每轮一次主力模型调用，外加治理/压缩的辅助调用。上面的
   冒烟样本（4 轮、改一行代码）实测 ↑6003 / ↓396 tokens、6.3s。
+- **judge 自身也有成本**：开 judge（`maxRounds ≥ 16`）后每个 end_turn 轮多一次评估调用；工具透传
+  审计（intercept）也按频率抽样的 judge 调用。要压住扩轮的花费就 `maxExtensions: 0`（一次也不扩），
+  要控住总量就同时传 `maxRoundsCap` / `extensionStep`（扩轮后的总轮数硬顶与步长）。
 - **`fold-llm` 每压缩一次多花一次主力模型调用**（输入约等于被折叠轮次的大小，见契约「Compaction
   strategy selection」）。默认用 `fold-statistical`/`sliding-window` 更省。
-- `maxRounds ≥ 16` 会自动开 judge（每轮 end_turn 一次评估 + 可能的扩轮），`ERIX_NO_REFLECTION=1` 关。
+- **`maxRounds ≥ 16` 会自动开 judge**（每轮 end_turn 一次评估 + 可能的扩轮），`ERIX_NO_REFLECTION=1` 关。
+  开着的 run 可以用 `maxExtensions` / `maxRoundsCap` / `extensionStep` 调扩轮形状（直传引擎
+  `reflection:{…}`，**本层不改引擎默认值**：不传就一个键都不写）；`maxExtensions: 0` 是「一次也不许扩」。
+  ⚠ 这三个参数在 judge 没开的 run 里**不生效**（会被整体不下发，`diagnostics.reflection.enabled:false`
+  + 模型文本里一行「扩轮参数未生效」），本单不为了它们擅自把 judge 打开（那会多花模型调用）。
 - 收尾用 `completion.signals`（中文完成词表，与 `bin/cli.js` 同一份）+ system prompt 里的
   「首行写「任务已完成」」提前收口，否则模型纯文本收尾会白烧到 `no_tool`（默认 3 轮无工具才停）。
 - `wrapup: false`：对话型宿主不收 JSON 信封，终稿就是模型原文。
@@ -194,7 +276,7 @@ ERIX_PI_SMOKE=1 node --test test/examples/erix-run-core.smoke.test.js   # 真机
 
 - 冒烟默认跳过（`npm test` 必须离线可重复）；`ERIX_PI_SMOKE=1` 才打真 relay，用 `~/.erix/config.json`
   真配置、在 `mkdtemp` 的临时目录里修一个注入的小 bug，断言「`node check.js` 打印 OK + 载荷形状正确 +
-  `model_metadata_missing` 不出现」。
+  `model_metadata_missing` 不出现」；它同时跑一次 `sessionDir` 落盘，断言 `artifacts` 里的路径真在盘上。
 - `erix-run-pi-load.test.js` 在找不到已安装的 `@earendil-works/pi-coding-agent` 时整条跳过；
   指路变量：`PI_CODING_AGENT_ROOT=<pi-coding-agent 安装目录>`。
 

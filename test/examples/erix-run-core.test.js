@@ -8,13 +8,14 @@
 // 外加：lib 装载回退顺序、超时标注、载荷格式化。
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { createMemoryTranscriptStore, createJsonFileModelConfigProvider, runToolLoop } from "../../src/index.js";
+import { createMemoryTranscriptStore, createFileTranscriptStore, createJsonFileModelConfigProvider, runToolLoop } from "../../src/index.js";
+import { safeRunId } from "../../src/store/file.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
 
@@ -54,6 +55,8 @@ function fakeLib(overrides = {}) {
     index: {
       runToolLoop,
       createMemoryTranscriptStore,
+      // #207 R3：落盘要拿这个造文件 store；fakeDeps 默认不传 sessionDir，所以不会被调到。
+      createFileTranscriptStore,
       createJsonFileModelConfigProvider,
       createOpenAIProvider: (config) => ({ ...config, chat: async () => ({ content: [], stopReason: "end_turn" }) }),
     },
@@ -517,6 +520,521 @@ test("runErixRun：装配期失败（库缺失 / 配置缺失）不抛给调用�
   const badParams = await core.runErixRun({ task: "", cwd: "relative" }, { env: {}, home: "/tmp/fake-home" });
   assert.equal(badParams.ok, false);
   assert.equal(badParams.error.code, "bad_params");
+});
+
+/** 组装一个「不注入 store」的 deps：#207 R3 的落盘路径必须走真 createFileTranscriptStore。 */
+function makeDepsWithoutStore({ provider, lib = fakeLib(), slot = fakeSlot(), captured, extra = {} }) {
+  return {
+    env: {},
+    home: "/tmp/fake-home",
+    now: () => 1_700_000_000_000,
+    loadLib: async () => lib,
+    loadSlot: async () => slot,
+    createProvider: () => provider,
+    createAssembly: () => ({ tools: [], executeTool: async () => "tool-ok" }),
+    runLoop: (options) => {
+      if (captured) captured.options = options;
+      return runToolLoop(options);
+    },
+    ...extra,
+  };
+}
+
+const TWO_ROUND_SCRIPT = [
+  {
+    content: [{ type: "tool_use", id: "c1", name: "exec", input: { command: "node -e 1" } }],
+    stopReason: "tool_use",
+    usage: { input_tokens: 7, output_tokens: 2 },
+  },
+  { content: [{ type: "text", text: "任务已完成：落了盘" }], stopReason: "end_turn", usage: { input_tokens: 3, output_tokens: 1 } },
+];
+
+test("#207 R3：safeRunIdForFile 与引擎 safeRunId 逐字同式（算错就是报一个不存在的路径）", () => {
+  for (const runId of [
+    "run-1",
+    "erix-run-2026-10-11T13-30-00-000Z-a1b2c3",
+    "a.b.c",
+    ".hidden",
+    ".",
+    "..",
+    "run-h-abc",
+    "with space",
+    "中文目录",
+    "a/b",
+    "a\\b",
+    "",
+    "a\"b",
+  ]) {
+    assert.equal(core.safeRunIdForFile(runId), safeRunId(runId), `safeRunId 分叉：${JSON.stringify(runId)}`);
+  }
+  // 本层自己生成的 runId 必然落在「可读不哈希」那一支，否则产物路径会变成 run-h-*
+  assert.match(core.safeRunIdForFile("erix-run-2026-10-11T13-30-00-000Z-a1b2c3"), /^erix-run-/u);
+});
+
+test("#207 R3：sessionDir / transcript 参数解析（缺省不落盘、file 同义、~ 展开、相对路径 bad_params）", () => {
+  const home = tempDir("erix-run-home-");
+  // 不传 = 纯内存（现有默认语义）
+  assert.equal("sessionDir" in core.parseRunParams({ task: "t", cwd: "/tmp" }, { home }), false);
+  assert.equal("sessionDir" in core.parseRunParams({ task: "t", cwd: "/tmp", transcript: "" }, { home }), false);
+  // 显式「不落盘」别名
+  for (const alias of ["memory", "none", "off", "MEMORY"]) {
+    assert.equal("sessionDir" in core.parseRunParams({ task: "t", cwd: "/tmp", transcript: alias }, { home }), false);
+  }
+  // transcript:"file" 的同义写法 → 缺省目录与 AGENTS.md §6 布局一致
+  assert.equal(
+    core.parseRunParams({ task: "t", cwd: "/tmp", transcript: "file" }, { home }).sessionDir,
+    path.join(home, ".erix", "transcripts"),
+  );
+  // sessionDir：~ 展开 + 绝对路径直用；两个都给时 sessionDir 赢
+  assert.equal(
+    core.parseRunParams({ task: "t", cwd: "/tmp", sessionDir: "~/sessions" }, { home }).sessionDir,
+    path.join(home, "sessions"),
+  );
+  assert.equal(
+    core.parseRunParams({ task: "t", cwd: "/tmp", sessionDir: "/srv/logs", transcript: "file" }, { home }).sessionDir,
+    "/srv/logs",
+  );
+  // 相对路径直接 bad_params（与 cwd 同口径）
+  assert.throws(
+    () => core.parseRunParams({ task: "t", cwd: "/tmp", sessionDir: "logs/relative" }, { home }),
+    (error) => error.code === "bad_params" && /sessionDir/u.test(error.message),
+  );
+});
+
+test("#207 R3：不传 sessionDir 时一个字节也不落盘（内存行为逐字不变）", async () => {
+  const home = tempDir("erix-run-home-");
+  const fileStoreCalls = [];
+  const lib = fakeLib();
+  lib.index.createFileTranscriptStore = (input) => {
+    fileStoreCalls.push(input);
+    throw new Error("纯内存模式下不得碰文件 store");
+  };
+  const captured = {};
+  const payload = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 6 },
+    { ...makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT), lib, captured }), home },
+  );
+
+  assert.equal(payload.ok, true, `run 必须跑完：${JSON.stringify(payload.termination)}`);
+  assert.deepEqual(fileStoreCalls, [], "没给 sessionDir 就不能去造文件 store");
+  assert.equal(typeof captured.options.store.appendRound, "function");
+  assert.equal(captured.options.onJudge, undefined, "不落盘时不接 judge 观察者");
+  assert.deepEqual(readdirSync(home), [], "缺省路径不能在注入的 home 下建任何东西（不污染 ~/.erix）");
+  assert.equal(existsSync(path.join(home, ".erix")), false);
+});
+
+test("#207 R3：传 sessionDir 时 transcript 真落盘（文件 store，路径由 sessionDir+runId 推出）", async () => {
+  const dir = tempDir("erix-run-session-");
+  const sessionDir = path.join(dir, "nested", "transcripts");
+  const captured = {};
+  const payload = await core.runErixRun(
+    { task: "落个盘", cwd: repoRoot, maxRounds: 6, sessionDir },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT), captured }),
+  );
+
+  assert.equal(payload.ok, true, JSON.stringify(payload.termination));
+  assert.equal(typeof captured.options.onJudge, "function", "落盘时必须接上 judge 写入器");
+  const runId = payload.diagnostics.runId;
+  const transcriptPath = path.join(sessionDir, `${runId}.jsonl`);
+  assert.equal(existsSync(transcriptPath), true, `transcript 应在 ${transcriptPath}`);
+  const records = readFileSync(transcriptPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  // round 0 是引擎开跑前预落的用户轮（resume 锚点），模型轮从 1 开始
+  assert.deepEqual(records.map((record) => record.round), [0, 1, 2]);
+  assert.match(JSON.stringify(records.at(-1).response.content), /落了盘/u);
+  // 落盘只跟 sessionDir 有关，不往 cwd / home 里渗
+  assert.deepEqual(readdirSync(dir), ["nested"]);
+  // 未落盘与落盘的差：同一个 deps 不传 sessionDir 时目录根本不会被建
+  const untouched = tempDir("erix-run-memory-");
+  await core.runErixRun(
+    { task: "t", cwd: repoRoot },
+    { ...makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }), home: untouched },
+  );
+  assert.deepEqual(readdirSync(untouched), []);
+});
+
+test("#207 R3：sessionDir 指到一个已存在的文件 → 归一成 bad_params 终局，不抛给调用方", async () => {
+  const dir = tempDir("erix-run-bad-dir-");
+  const blocker = path.join(dir, "not-a-dir");
+  writeFileSync(blocker, "x", "utf8");
+  const payload = await core.runErixRun(
+    { task: "t", cwd: repoRoot, sessionDir: blocker },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }),
+  );
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error.code, "bad_params");
+  assert.match(payload.error.message, /sessionDir/u);
+  assert.equal(payload.termination.reason, "failed");
+});
+
+test("#207 R3：judge 决策与 run_outcome 落进 <sessionDir>/outputs/<runId>/judge.log（形状能分辨「不扩」 vs「缺字段」）", async () => {
+  const sessionDir = tempDir("erix-run-judge-");
+  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, sessionDir }, {
+    env: {},
+    home: "/tmp/fake-home",
+    now: () => 1_700_000_000_000,
+    loadLib: async () => fakeLib(),
+    loadSlot: async () => fakeSlot(),
+    createProvider: () => createFakeProvider([]),
+    createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
+    runLoop: async (options) => {
+      // 三种引擎真实会发的形状：明确不扩 / 没给 extend 字段（fail-closed）/ parse 失败
+      options.onJudge({
+        round: 3, kind: "round", action: "decline_extend", runId: options.runId, model: "slot-model",
+        decision: { done: false, confidence: 0.5, reason: "", evidence: "", extend: false, extendReason: "够了" },
+      });
+      options.onJudge({
+        round: 4, kind: "round", action: "nudge", runId: options.runId, model: "slot-model",
+        decision: { done: false, confidence: 0.5, reason: "", evidence: "" },
+      });
+      options.onJudge({
+        round: 5, kind: "round", action: "degraded", error: "parse", decision: null,
+        runId: options.runId, model: "slot-model",
+      });
+      options.onEvent({
+        type: "run_outcome", runId: options.runId, model: "slot-model", rounds: 5, judgeRecordCount: 3,
+        termination: { reason: "max_rounds_cap" }, verification: { status: "skipped" },
+      });
+      return {
+        finalText: "任务已完成", rounds: 5,
+        usage: { input_tokens: 1, output_tokens: 1 }, termination: { reason: "max_rounds_cap" },
+      };
+    },
+  });
+
+  const runId = payload.diagnostics.runId;
+  const judgeLogPath = path.join(sessionDir, "outputs", runId, "judge.log");
+  assert.equal(existsSync(judgeLogPath), true, `judge.log 应在 ${judgeLogPath}`);
+  const lines = readFileSync(judgeLogPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 4, "三条决策 + 末行 run_outcome 汇总");
+  for (const line of lines) {
+    assert.equal(line.runId, runId, "每条带 runId（AGENTS.md §6）");
+    assert.equal(line.model, "slot-model", "每条带实际 model");
+    assert.equal(line.ts, "2023-11-14T22:13:20.000Z");
+  }
+  assert.equal(lines.at(-1).type, "run_outcome");
+  assert.equal("kind" in lines.at(-1), false, "汇总记录不得伪装成决策记录（契约的判别键）");
+  assert.equal(lines.at(-1).termination.reason, "max_rounds_cap");
+  assert.equal(lines[0].extendDecision, "no");
+  assert.equal(lines[0].decision.extend, false, "引擎原字段一字不动");
+  assert.equal(lines[1].extendDecision, "missing");
+  assert.equal("extend" in lines[1].decision, false, "「缺字段」不能被写入器掩盖成 false");
+  assert.equal("extendDecision" in lines[2], false, "degraded（decision:null）不写判别键");
+});
+
+test("#207 R3：judge.log 写不进去只记账，不把已跑完的 run 带成 failed", async () => {
+  const dir = tempDir("erix-run-judge-broken-");
+  const sessionDir = path.join(dir, "transcripts");
+  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, sessionDir }, {
+    env: {},
+    home: "/tmp/fake-home",
+    now: () => 1_700_000_000_000,
+    loadLib: async () => fakeLib(),
+    loadSlot: async () => fakeSlot(),
+    createProvider: () => createFakeProvider([]),
+    createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
+    runLoop: async (options) => {
+      // outputs/<runId>/judge.log 位置上站了一个**目录** → append 必炸（ENOTDIR/EISDIR）
+      mkdirSync(path.join(sessionDir, "outputs", options.runId, "judge.log"), { recursive: true });
+      options.onJudge({ round: 1, kind: "round", decision: { done: true, confidence: 1 }, runId: options.runId });
+      return {
+        finalText: "ok", rounds: 1, usage: { input_tokens: 1, output_tokens: 1 },
+        termination: { reason: "end_turn" },
+      };
+    },
+  });
+
+  assert.equal(payload.ok, true, "审计面写失败不得改变终局");
+  assert.equal(payload.diagnostics.persistenceErrors.count, 1);
+  assert.equal(payload.diagnostics.persistenceErrors.samples[0].channel, "judgeLog");
+});
+
+test("#207 R4：artifacts / extensionCount / maxExtensions / resumable（不落盘时 null，不编造路径）", async () => {
+  // ① 纯内存：两个路径都是 null（而不是“猜一个”），resumable 本单一律 false
+  const memory = await core.runErixRun(
+    { task: "t", cwd: repoRoot },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }),
+  );
+  assert.equal(memory.ok, true);
+  assert.deepEqual(memory.artifacts, { transcriptPath: null, judgeLogPath: null });
+  assert.equal(memory.extensionCount, 0);
+  assert.equal(memory.maxExtensions, 0, "judge 没开启 = 根本没有扩轮额度");
+  assert.equal(memory.resumable, false, "R2 未落地，不得声称可续跑");
+  assert.equal(core.RESUMABLE, false);
+  // 不落盘也不往 diagnostics 里撒谎
+  assert.equal(memory.diagnostics.sessionDir, null);
+  assert.deepEqual(memory.diagnostics.reflection, {
+    enabled: false, requested: {}, maxExtensions: 0,
+  });
+
+  // ② 落盘：两个路径都是真文件，且等于由 runId 推出来的那个（不是硬编码）
+  const sessionDir = tempDir("erix-run-artifacts-");
+  const persisted = await core.runErixRun(
+    { task: "t", cwd: repoRoot, sessionDir },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }),
+  );
+  assert.equal(persisted.ok, true);
+  const runId = persisted.diagnostics.runId;
+  assert.equal(
+    persisted.artifacts.transcriptPath,
+    path.join(sessionDir, `${runId}.jsonl`),
+    "transcriptPath 必须由 sessionDir + runId 推出",
+  );
+  assert.equal(
+    persisted.artifacts.judgeLogPath,
+    path.join(sessionDir, "outputs", runId, "judge.log"),
+    "judgeLogPath 必须由 sessionDir + runId 推出（AGENTS.md §6 布局）",
+  );
+  for (const value of [persisted.artifacts.transcriptPath, persisted.artifacts.judgeLogPath]) {
+    assert.equal(typeof value, "string");
+    assert.equal(existsSync(value), true, `artifacts 里的路径必须在盘上：${value}`);
+  }
+  assert.equal(persisted.diagnostics.sessionDir, sessionDir);
+});
+
+test("#207 R4：judge 没跑过（judge.log 未建）时 judgeLogPath 仍是 null，不拿目录当一个产物", async () => {
+  const sessionDir = tempDir("erix-run-nojudge-");
+  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, sessionDir }, {
+    env: {},
+    home: "/tmp/fake-home",
+    now: () => 1_700_000_000_000,
+    loadLib: async () => fakeLib(),
+    loadSlot: async () => fakeSlot(),
+    createProvider: () => createFakeProvider([]),
+    createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
+    runLoop: async () => { throw new Error("引擎在发出任何 judge / run_outcome 之前就炸了"); },
+  });
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error.message, "引擎在发出任何 judge / run_outcome 之前就炸了");
+  assert.equal(payload.artifacts.judgeLogPath, null, "没落过盘就没有路径");
+  assert.equal(payload.artifacts.transcriptPath, null, "fake runLoop 没写任何轮记录");
+  assert.equal(payload.resumable, false);
+  assert.equal(payload.extensionCount, 0);
+});
+
+test("#207 R4：扩轮余量是从引擎回调里数出来的，不是字面量", async () => {
+  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, maxRounds: 20, maxExtensions: 3 }, {
+    env: {},
+    home: "/tmp/fake-home",
+    now: () => 1_700_000_000_000,
+    loadLib: async () => fakeLib(),
+    loadSlot: async () => fakeSlot(),
+    createProvider: () => createFakeProvider([]),
+    createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
+    runLoop: async (options) => {
+      // 引擎只在真的扩了轮时调 reflection.onReflection
+      options.reflection.onReflection({ round: 16, decision: { extend: true }, extendedTo: 28 });
+      options.reflection.onReflection({ round: 28, decision: { extend: true }, extendedTo: 40 });
+      return {
+        finalText: "任务已完成", rounds: 40,
+        usage: { input_tokens: 2, output_tokens: 2 }, termination: { reason: "end_turn" },
+      };
+    },
+  });
+  assert.equal(payload.extensionCount, 2, "扩了几轮就报几轮");
+  assert.equal(payload.maxExtensions, 3, "maxExtensions 是生效上限，不是已用次数");
+  assert.equal(payload.resumable, false);
+});
+
+test("#207 R4：formatPayloadForModel 把决策事实也交给模型（artifacts / 扩轮余量 / resumable）", () => {
+  const withFacts = core.formatPayloadForModel({
+    finalText: "ok", rounds: 3, usage: { input_tokens: 1, output_tokens: 1 },
+    termination: { reason: "end_turn" },
+    artifacts: { transcriptPath: "/srv/logs/run-1.jsonl", judgeLogPath: "/srv/logs/outputs/run-1/judge.log" },
+    extensionCount: 1, maxExtensions: 2, resumable: false,
+    diagnostics: { observerErrors: { count: 0 }, persistenceErrors: { count: 0 }, compaction: {} },
+  });
+  assert.match(withFacts, /\[facts\] transcript=\/srv\/logs\/run-1\.jsonl/u);
+  assert.match(withFacts, /judgeLog=\/srv\/logs\/outputs\/run-1\/judge\.log/u);
+  assert.match(withFacts, /extensions=1\/2/u);
+  assert.match(withFacts, /resumable=false/u);
+  // 未落盘时给 none，不编一个看起来真的路径
+  const bare = core.formatPayloadForModel({
+    finalText: "ok", rounds: 1, usage: {}, termination: { reason: "end_turn" },
+  });
+  assert.match(bare, /\[facts\] transcript=none judgeLog=none extensions=0\/0 resumable=false/u);
+  // 传了扩轮参数但 judge 没开 → 明说没生效
+  const inert = core.formatPayloadForModel({
+    finalText: "ok", termination: { reason: "end_turn" }, usage: {},
+    diagnostics: { reflection: { enabled: false, requested: { maxExtensions: 5 }, maxExtensions: 0 } },
+  });
+  assert.match(inert, /扩轮参数未生效/u);
+  assert.match(inert, /"maxExtensions":5/u);
+});
+
+test("#207 R1：maxExtensions 允许 0（引擎是 >=0 判断，0 = 关掉扩轮是有效配置），其余两个是正整数", () => {
+  const tuned = core.parseRunParams({
+    task: "t", cwd: "/tmp", maxExtensions: 0, maxRoundsCap: 24, extensionStep: 2,
+  });
+  assert.equal(tuned.maxExtensions, 0, "0 必须原样保留，不能被当「没传」回落");
+  assert.equal(tuned.maxRoundsCap, 24);
+  assert.equal(tuned.extensionStep, 2);
+  // 不传 = 不往 reflection 里写这三个键（引擎默认值一个不动）
+  const bare = core.parseRunParams({ task: "t", cwd: "/tmp" });
+  for (const key of core.EXTENSION_PARAM_NAMES) {
+    assert.equal(key in bare, false, `不传时不得凭空出现 ${key}`);
+  }
+  // 非法值一律 bad_params（抛在 parse 层，由 runErixRun 归一成终局）
+  for (const raw of [
+    { maxExtensions: -1 },
+    { maxExtensions: 1.5 },
+    { maxExtensions: "abc" },
+    { maxExtensions: core.MAX_MAX_EXTENSIONS + 1 },
+    { maxRoundsCap: 0 },
+    { maxRoundsCap: -2 },
+    { extensionStep: 0 },
+    { extensionStep: Number.MAX_SAFE_INTEGER + 10 },
+  ]) {
+    assert.throws(
+      () => core.parseRunParams({ task: "t", cwd: "/tmp", ...raw }),
+      (error) => error.code === "bad_params" && error.name === "ErixRunError",
+      `应当 bad_params：${JSON.stringify(raw)}`,
+    );
+  }
+});
+
+test("#207 R1：三个扩轮参数直传引擎 reflection（含 maxExtensions:0），judge 闸门关着时整体不下发并如实报", async () => {
+  const captured = {};
+  const zero = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 20, maxExtensions: 0, maxRoundsCap: 24, extensionStep: 2 },
+    makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
+  );
+  assert.deepEqual(
+    Object.keys(captured.options.reflection).sort(),
+    ["enabled", "extensionStep", "maxExtensions", "maxRoundsCap", "onReflection"],
+  );
+  assert.equal(captured.options.reflection.maxExtensions, 0, "0 必须真的传给引擎");
+  assert.equal(captured.options.reflection.maxRoundsCap, 24);
+  assert.equal(captured.options.reflection.extensionStep, 2);
+  assert.equal(zero.maxExtensions, 0);
+  assert.deepEqual(zero.diagnostics.reflection, {
+    enabled: true,
+    requested: { maxExtensions: 0, maxRoundsCap: 24, extensionStep: 2 },
+    maxExtensions: 0,
+  });
+
+  // 不传 → reflection 里只有 enabled + onReflection，引擎默认值一个不覆盖
+  const untouched = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 20 },
+    makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
+  );
+  assert.deepEqual(Object.keys(untouched ? captured.options.reflection : {}), ["enabled", "onReflection"]);
+  assert.equal(captured.options.reflection.maxExtensions, undefined, "未传不得替引擎填默认值");
+  assert.equal(untouched.maxExtensions, core.ENGINE_DEFAULT_MAX_EXTENSIONS, "返回面报的是生效上限（引擎缺省 2）");
+
+  // 闸门关着（maxRounds < 16）→ 三个参数整体不下发，但 diagnostics/模型文本里要说清「没生效」
+  const gated = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxExtensions: 5 },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT), captured }),
+  );
+  assert.equal(captured.options.reflection, false);
+  assert.equal(gated.maxExtensions, 0);
+  assert.deepEqual(gated.diagnostics.reflection.requested, { maxExtensions: 5 });
+  assert.match(core.formatPayloadForModel(gated), /扩轮参数未生效/u);
+
+  // ERIX_NO_REFLECTION=1 仍优先（与改动前同口径）
+  await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 20, maxExtensions: 1 },
+    makeDepsWithoutStore({
+      provider: createFakeProvider([]), captured, extra: { env: { ERIX_NO_REFLECTION: "1" } },
+    }),
+  );
+  assert.equal(captured.options.reflection, false, "ERIX_NO_REFLECTION=1 依旧把整个 reflection 关掉");
+});
+
+test("#207 R1：非法扩轮参数在 runErixRun 里归一成 bad_params 终局（不抛异常、不跑模型）", async () => {
+  let providerCalls = 0;
+  const provider = {
+    async chat() { providerCalls += 1; return { content: [], stopReason: "end_turn" }; },
+  };
+  for (const raw of [{ maxExtensions: -1 }, { maxRoundsCap: 0 }, { extensionStep: -3 }]) {
+    const payload = await core.runErixRun(
+      { task: "t", cwd: repoRoot, ...raw },
+      makeDepsWithoutStore({ provider }),
+    );
+    assert.equal(payload.ok, false);
+    assert.equal(payload.error.code, "bad_params", JSON.stringify(raw));
+    assert.equal(payload.error.stage, "assembly");
+    assert.equal(payload.termination.reason, "failed");
+    assert.equal(payload.artifacts.transcriptPath, null);
+    assert.equal(payload.resumable, false);
+  }
+  assert.equal(providerCalls, 0, "参数不合法就不该花模型钱");
+});
+
+test("#207 R1：真引擎实测 maxExtensions=0 真的关掉扩轮，maxExtensions=1 真的扩了轮（离线 fake provider）", async () => {
+  // 不传 sessionDir，只看终局：同一个 provider 脚本，唯一变量是 maxExtensions。
+  const runWith = async (maxExtensions) => {
+    const state = { mainCalls: 0, judgePrompts: [] };
+    const provider = {
+      protocol: "fake",
+      model: "fake-model",
+      async chat(request) {
+        const prompt = request?.messages?.[0]?.content?.[0]?.text ?? "";
+        if (prompt.includes('"done":true|false') || prompt.includes("extend=true")) {
+          state.judgePrompts.push(prompt);
+          const usedOne = prompt.includes("扩轮次数 1/");
+          const decision = !prompt.includes("nearLimit 扩轮评估窗口")
+            // 未进扩轮窗口：不回答 extend（引擎 fail-closed 不扩）
+            ? { done: false, confidence: 0.4, reason: "还有活", evidence: "e", direction: "on_track" }
+            : usedOne
+              ? { done: true, confidence: 0.9, reason: "做完了", evidence: "e" }
+              : { done: false, confidence: 0.5, reason: "没做完", evidence: "e", direction: "on_track", extend: true, extendReason: "上限不够", plan: "继续" };
+          return {
+            content: [{ type: "text", text: JSON.stringify(decision) }],
+            stopReason: "end_turn",
+            usage: { input_tokens: 100, output_tokens: 10 },
+          };
+        }
+        state.mainCalls += 1;
+        // 前 15 轮工具有动作，第 16 轮起只出文本（不带完成词，让治理层而非 completion 词表说话）
+        return state.mainCalls <= 15
+          ? {
+            // 命令每轮不同：重复命令会被治理层当成打转（stall），会在扩轮评估之前就收口
+            content: [{ type: "tool_use", id: `c${state.mainCalls}`, name: "exec", input: { command: `node -e ${state.mainCalls}` } }],
+            stopReason: "tool_use",
+            usage: { input_tokens: 50, output_tokens: 5 },
+          }
+          : {
+            content: [{ type: "text", text: "还没收尾，再看一眼日志" }],
+            stopReason: "end_turn",
+            usage: { input_tokens: 50, output_tokens: 5 },
+          };
+      },
+    };
+    const payload = await core.runErixRun(
+      { task: "扩轮实测", cwd: repoRoot, maxRounds: 16, maxExtensions, extensionStep: 2, maxRoundsCap: 18 },
+      makeDepsWithoutStore({
+        provider,
+        // 内层工具集要真含 exec（否则 tool_use 会被当未知工具，治理层提前收口，测不到扩轮）
+        extra: { createAssembly: () => ({ tools: [{ name: "exec", description: "exec", input_schema: {} }], executeTool: async () => "ok" }) },
+      }),
+    );
+    return { payload, state };
+  };
+
+  const blocked = await runWith(0);
+  assert.ok(
+    blocked.state.judgePrompts.some((prompt) => prompt.includes("扩轮次数 0/0")),
+    "maxExtensions=0 必须出现在引擎真的 judge prompt 里（预算行），否则就是没传到",
+  );
+  assert.equal(blocked.payload.extensionCount, 0, "0 = 一次也不能扩");
+  assert.equal(blocked.payload.rounds, 16, "没扩轮就停在原上限");
+  assert.equal(blocked.payload.termination.reason, "max_rounds_cap");
+
+  const extended = await runWith(1);
+  assert.ok(
+    extended.state.judgePrompts.some((prompt) => prompt.includes("扩轮次数 0/1")),
+    "maxExtensions=1 同样要出现在真 judge prompt 里",
+  );
+  assert.ok(
+    extended.state.judgePrompts.some((prompt) => prompt.includes("扩轮次数 1/")),
+    "扩轮后引擎应当把已用次数记给 judge",
+  );
+  assert.equal(extended.payload.extensionCount, 1, "扩了一次，extensionCount 从 onReflection 数出来");
+  assert.equal(extended.payload.maxExtensions, 1);
+  assert.equal(extended.payload.rounds, 17, "16 + extensionStep 2 封顶到 18，judge 在 17 轮判完");
+  assert.equal(extended.payload.termination.reason, "judge_done");
+  assert.equal(extended.payload.ok, true);
 });
 
 test("formatPayloadForModel / toPiUsage：交回模型的文本与 pi 用量形状", () => {

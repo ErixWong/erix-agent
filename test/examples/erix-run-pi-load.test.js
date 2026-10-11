@@ -77,6 +77,22 @@ test("pi 装载器能加载 erix-run.ts 并注册 erix_run（离线，不触网�
   assert.equal(schema.properties.maxRounds.minimum, 1);
   assert.equal(typeof schema.properties.timeoutMs.maximum, "number");
   assert.equal(typeof definition.outputSchema, "object", "结构化结果要有 outputSchema");
+  // #207：新增的参数面（**maxExtensions 的最低值是 0**，不是 1）
+  assert.equal(schema.properties.sessionDir.type, "string");
+  assert.equal(schema.properties.transcript.type, "string");
+  assert.equal(schema.properties.maxExtensions.minimum, 0, "0 = 关掉扩轮是有效配置，schema 不能卡成正整数");
+  assert.equal(schema.properties.maxRoundsCap.minimum, 1);
+  assert.equal(schema.properties.extensionStep.minimum, 1);
+  for (const key of ["sessionDir", "transcript", "maxExtensions", "maxRoundsCap", "extensionStep"]) {
+    assert.equal(schema.properties[key].description.length > 20, true, `${key} 要给模型看得见的说明`);
+  }
+  // #207 R4：返回面形状（artifacts 可空，但不允许缺）
+  assert.deepEqual(
+    Object.keys(definition.outputSchema.properties).sort(),
+    ["aborted", "artifacts", "diagnostics", "extensionCount", "finalText", "maxExtensions", "ok",
+      "resumable", "rounds", "termination", "timeout", "truncated", "usage"],
+  );
+  assert.equal("artifacts" in definition.outputSchema.properties, true);
 
   // execute() 的失败路径：参数不合法时返回 isError 结果（docs：failure that still carries data 用 isError，别抛）
   const updates = [];
@@ -95,6 +111,11 @@ test("pi 装载器能加载 erix-run.ts 并注册 erix_run（离线，不触网�
   assert.equal(result.structuredContent?.error?.code, "bad_cwd");
   assert.equal(result.structuredContent?.termination?.reason, "failed");
   assert.deepEqual(result.structuredContent?.usage, { input_tokens: 0, output_tokens: 0 });
+  // #207 R4：装配期失败也要带齐决策事实（字段形状恒成立，未落盘就是 null）
+  assert.deepEqual(result.structuredContent?.artifacts, { transcriptPath: null, judgeLogPath: null });
+  assert.equal(result.structuredContent?.extensionCount, 0);
+  assert.equal(result.structuredContent?.maxExtensions, 0);
+  assert.equal(result.structuredContent?.resumable, false);
   assert.ok(updates.length >= 1, "进度通道（onUpdate）至少要收到终局播报");
   assert.equal("usage" in result, false, "没有真实模型用量时不编造 usage");
 
