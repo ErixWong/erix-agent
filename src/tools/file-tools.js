@@ -147,6 +147,13 @@ export function formatSize(bytes) {
   return `${(gb / 1024).toFixed(1)}TB`;
 }
 
+/**
+ * 截断**展示用**文本（不是截断文件内容）：超过 `limit` 就砍到 `limit` 并补 `…`。
+ *
+ * @param {unknown} value 任意值，按 `String(value ?? "")` 取值
+ * @param {number} limit 保留的字符数（UTF-16 码元，不是字节）
+ * @returns {string}
+ */
 export function truncateDisplayText(value, limit) {
   const text = String(value ?? "");
   if (text.length <= limit) return text;
@@ -941,13 +948,94 @@ function assertPredicate(predicate, label) {
 }
 
 /**
+ * 工具 schema 的 JSON Schema 节点。字段就是 `FILE_TOOL_DEFINITIONS` 里实际出现过的那些：
+ * `type` / `description` / `properties` / `required` / `additionalProperties` / `items` / `enum`
+ * （`edit` 的 `edits` 用到嵌套 `items`，所以本节点递归一层）。
+ *
+ * @typedef {object} FileToolJsonSchemaNode
+ * @property {string} type
+ * @property {string} [description]
+ * @property {Record<string, FileToolJsonSchemaNode>} [properties]
+ * @property {string[]} [required]
+ * @property {boolean} [additionalProperties]
+ * @property {FileToolJsonSchemaNode} [items]
+ * @property {string[]} [enum]
+ */
+
+/**
+ * `FILE_TOOL_DEFINITIONS` 的元素形状，也是 `createFileTools().definitions` 的元素形状：
+ * 每一条**恰好**三个字段 `name` / `description` / `inputSchema`（入参 schema 的键是 `inputSchema`
+ * 而不是 `parameters`，与 `src/messages/canonical.js` 的 `ToolSchema` 同口径）。
+ * `runToolLoop({ tools })` 把元素声明成 `object[]`，本形状是它的子类型，直接传即可。
+ *
+ * @typedef {object} FileToolDefinition
+ * @property {string} name 工具名：schema 与执行器唯一的对应键
+ * @property {string} description 给模型看的工具说明
+ * @property {FileToolJsonSchemaNode} inputSchema 入参 JSON Schema
+ */
+
+/**
+ * `runToolLoop` 交给 `executeTool` 的结构化入参，形状以引擎调用点为准
+ * （`src/loop/run-snapshot-executor.js` 里 `executeTool(structuredOptions)` 传的那五个键）。
+ * 除 `name`（选执行器）外都写成可选：引擎每次五个全给，但 CLI 与宿主给子集也是合法调用。
+ * 必须能被 `{id:string, name:string, input:object, context:object, signal:AbortSignal}`
+ * 反向塞进来 —— 那是 `src/loop/orchestrator.js` 里 `executeTool` 参数的声明。
+ *
+ * @typedef {object} FileToolExecution
+ * @property {string} name 工具名
+ * @property {string} [id] 本次工具调用的 id（实现并入 `context.toolUseId`）
+ * @property {object} [input] 模型给的入参对象，逐工具校验在实现里
+ * @property {object} [context] 引擎注入的上下文（含 `round` 等）
+ * @property {AbortSignal} [signal] 顶层中止信号（实现并入 `context.signal`，否则遍历拿不到）
+ */
+
+/**
+ * `executeTool` 的结果，与 `runToolLoop` 的 `executeTool` 返回声明逐字对齐：纯字符串、带
+ * `content` 的对象、或 `Error`，引擎侧 `normalizeExecutionResult` 三种都吃。
+ *
+ * @typedef {string|Error|{content:string, metadata?:object, success?:boolean}} FileToolExecutionResult
+ */
+
+/**
+ * 执行器层的原始结果 = 上面的契约再加一个 `number`：`writeFile` 交出的是写入字节数，
+ * `searchText`/`rg`/`grep` 在 `emit_metadata` 下交出 `{ content, metadata }`。`number` 只在
+ * `executors` 这一层如实存在 —— `executeTool` 的结构化签名取 `runToolLoop` 的契约口径
+ * （字节数走这条路时由引擎渲染成文本），要拿字节数请读 `executors` 的返回值。
+ *
+ * @typedef {FileToolExecutionResult|number} FileToolExecutorResult
+ */
+
+/**
+ * `executeTool` 的对外形状：交叉类型即 TS 重载。**结构化形态在前** —— 它是 `runToolLoop` 的
+ * `executeTool` 契约，也是宿主把 `./tools` 与主入口配对的唯一面；位置形态是 CLI 的历史形态
+ * （`bin/tools.js`、`bin/cli.js`、`bin/repl.js` 都按 `executeTool(name, input, context)` 调）。
+ *
+ * @typedef {(options:FileToolExecution) => Promise<FileToolExecutionResult>} FileToolExecuteToolStructured
+ * @typedef {(name:string, input?:object, context?:object) => Promise<FileToolExecutorResult>} FileToolExecuteToolPositional
+ * @typedef {FileToolExecuteToolStructured & FileToolExecuteToolPositional} FileToolExecuteTool
+ */
+
+/**
+ * `executors` 的**实际**形状：`createFileTools()` 交出来的不是执行器 map（那份是私有的），
+ * 而是一个调用入口 `(name, input, context) => …`；未知工具名抛错。
+ *
+ * @typedef {(name:string, input?:object, context?:object) => Promise<FileToolExecutorResult>} FileToolExecutors
+ */
+
+/**
+ * 实现体的形状（两个形态共用同一份代码，所以实现比对外形状宽）：`firstArg` 可以是结构化对象，也可以是工具名。
+ *
+ * @typedef {(firstArg:FileToolExecution|string, positionalInput?:object, positionalContext?:object) => Promise<FileToolExecutorResult>} FileToolExecuteToolImpl
+ */
+
+/**
  * 创建文件工具集（规范实现，root 与 `erix-agent/tools` 双导出）。
  *
  * @param {object} [options]
  * @param {string} [options.cwd] 相对路径的解析根（默认进程 cwd；测试与宿主必须显式注入）
  * @param {(absolutePath: string) => boolean} [options.allowRead]  读边界谓词，默认恒 true；库以**绝对路径**逐条调用
  * @param {(absolutePath: string) => boolean} [options.allowWrite] 写边界谓词，默认恒 true
- * @returns {{ definitions: object[], executeTool: Function, executors: object }}
+ * @returns {{ definitions: FileToolDefinition[], executeTool: FileToolExecuteTool, executors: FileToolExecutors }}
  */
 export function createFileTools({
   cwd = process.cwd(),
@@ -1565,6 +1653,7 @@ export function createFileTools({
   // 结构化形态：兼容 runToolLoop / run-snapshot-executor 的
   // executeTool({id, name, input, context, signal})（signal 在顶层，必须并入 context，
   // 否则库里的遍历拿不到中止信号）；同时保留位置形态 executeTool(name, input, context)。
+  /** @type {FileToolExecuteToolImpl} */
   const executeTool = async (firstArg, positionalInput, positionalContext) => {
     const structured = firstArg
       && typeof firstArg === "object"
@@ -1581,7 +1670,10 @@ export function createFileTools({
 
   return {
     definitions: FILE_TOOL_DEFINITIONS.map((definition) => structuredClone(definition)),
-    executeTool,
+    // 声明类型取 FileToolExecuteTool（结构化形态 = runToolLoop 的 executeTool 契约）。
+    // writeFile 的字节数是 number，它只在 executors 那一层如实声明；这里交给 runToolLoop 的
+    // 面按引擎契约口径收窄（引擎 normalizeExecutionResult 同样吃 number），故有一处显式 cast。
+    executeTool: /** @type {FileToolExecuteTool} */ (executeTool),
     executors: (name, input, context) => runExecutor(name, input, context),
   };
 }
