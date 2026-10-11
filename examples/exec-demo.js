@@ -34,6 +34,23 @@ export async function loadRelayConfig() {
   };
 }
 
+/**
+ * 由 relay 配置构造 provider（issue #245 第 3 件）。
+ *
+ * `maxOutputTokens` 必须真的进到 provider 构造参数里：不传它，relay 就没有输出上限，
+ * 真实 LLM e2e 的单轮输出量（以及跑多久）不可控。provider 工厂可注入，
+ * 是为了能在**不联网**的条件下断言这个参数确实传到了构造函数上（默认仍是 createOpenAIProvider）。
+ */
+export function createProviderFromConfig(cfg, createProvider = createOpenAIProvider) {
+  return createProvider({
+    endpoint: cfg.endpoint,
+    apiKey: cfg.apiKey,
+    model: cfg.model,
+    maxOutputTokens: cfg.maxOutputTokens,
+    timeoutMs: 120_000,
+  });
+}
+
 // ---- 调用方安全层（示范：白名单 + 超时 + 截断，生产场景应更严）----
 
 const EXEC_WHITELIST = new Set(["ls", "pwd", "echo", "date", "uname", "head", "cat", "wc", "find", "git"]);
@@ -76,9 +93,7 @@ async function executeTool({ name, input }) {
 /** 跑一次 demo，返回 loop 结果（测试与 CLI 共用）。opts.compactBudgetTokens 设小预算可强制触发 fold-statistical 压缩 */
 export async function runExecDemo(task = "查看当前目录有哪些文件，并简要总结这个项目", opts = {}) {
   const cfg = await loadRelayConfig();
-  const provider = createOpenAIProvider({
-    endpoint: cfg.endpoint, apiKey: cfg.apiKey, model: cfg.model, timeoutMs: 120_000,
-  });
+  const provider = createProviderFromConfig(cfg);
   const store = createMemoryTranscriptStore();
   const runId = `exec-demo-${Date.now()}`;
 
