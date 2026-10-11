@@ -669,7 +669,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -753,6 +753,18 @@ export async function runToolLoop(options) {
     lowBudgetPrompted: false,
     toolErrorCount: 0,
     runSnapshotFailureCount: 0,
+    // 【E 轮内量（四）】`currentTerminationReason`（原 :1213）——**有初值**的格子，初值 `"running"` 逐字
+    //   原样搬（它是 run-state `termination.reason` 的起点，也是「本次 run 还没结束」这个语义的唯一表示）。
+    //   ⚠ 两处写在 `fail()` 里，位置**早于**原声明点（原 :941 / :965，声明在原 :1213）：迁移前它们读的就是
+    //   那个尚未执行的 `let`，靠的是「`fail()` 的调用点全部晚于声明」。TDZ 复证（当前行号，别引用旧刀结论）：
+    //   `fail(` 的调用点只有 `:1528`（`restoreResume` 的早退 catch）与 `:3298`（主 try/catch），跨文件两处是
+    //   `resume-manager.js:272`（经 `restoreResume` 实参，`await restoreResume({...})` 在 `:1366`）与
+    //   `termination.js:310` 的 `ctx.fail(...)`（`terminationManager` 在 `:2130` 才建出来）——全部晚于本状态
+    //   对象的声明点（`:673`），也晚于原 `let` 的声明点 ⇒ 任何可观察时点读到的值不变，提先初始化不可观察；
+    //   搬进 `:673` 的对象之后，`fail()` 里的两次写反而**不再有** TDZ 暴露面。
+    //   ⚠ run-state 的导出键名是 `terminationReason:`（与符号名不同名），只改值；`terminationContext` 上
+    //   `get/set currentTerminationReason` 是唯一一对访问器（`get currentRunState` 那种「只有 get」的形状这里没有）。
+    currentTerminationReason: "running",
   };
   const errorLedger = createErrorLedger();
 
@@ -976,7 +988,7 @@ export async function runToolLoop(options) {
     let finalError = error;
     const originalPersistence = persistenceInfoFor(error);
     const initialReason = signal?.aborted ? "aborted" : "failed";
-    currentTerminationReason = initialReason;
+    runLoopState.currentTerminationReason = initialReason;
     if (!originalPersistence && runLoopState.currentRunState?.deterministic) {
       runLoopState.currentRunState.deterministic.termination = { reason: initialReason };
       runLoopState.currentRunState.rendered = renderRunState(runLoopState.currentRunState);
@@ -1000,7 +1012,7 @@ export async function runToolLoop(options) {
       : persistenceFailure === undefined
         ? "failed"
         : "persistence_failed";
-    currentTerminationReason = reason;
+    runLoopState.currentTerminationReason = reason;
     // issue #176：reason === "failed" 时把根因分类（error.code，无则 unknown）一并交出，
     // 宿主无需解析 detail 字符串就能按根因分流（#170 裁决表的数据面）。
     const termination = withErrorCode(
@@ -1247,7 +1259,7 @@ export async function runToolLoop(options) {
   //   已迁入 `runLoopState`（issue #177 刀5-D）。
   // `ttlInjectArmed` / `ttlInjectConsumed` / `lowBudgetInjectFired`
   //   已迁入 `runLoopState`（issue #177 刀5-E）。
-  let currentTerminationReason = "running";
+  // `currentTerminationReason` 已迁入 `runLoopState`（issue #177 刀5-E）。
   const compactionStats = [];
   const trimFilesWritten = () => {
     const seen = new Set();
@@ -1989,7 +2001,7 @@ export async function runToolLoop(options) {
       todo: runLoopState.todoState,
       foldedRounds: runLoopState.foldedRoundCount,
       navigationRecords: runLoopState.navigationRecordCount,
-      terminationReason: currentTerminationReason,
+      terminationReason: runLoopState.currentTerminationReason,
       toolErrorCount: runLoopState.toolErrorCount,
       // 键名保持旧名 checkpointFailureCount（issue #83）：它是 createDeterministicRunState 的
       // 导出选项键，且其值以 `errors.checkpoint` 落盘、渲染进模型可见的 run-state 文本行——
@@ -2109,10 +2121,10 @@ export async function runToolLoop(options) {
       return runLoopState.currentRunState;
     },
     get currentTerminationReason() {
-      return currentTerminationReason;
+      return runLoopState.currentTerminationReason;
     },
     set currentTerminationReason(value) {
-      currentTerminationReason = value;
+      runLoopState.currentTerminationReason = value;
     },
   };
   const terminationManager = createTerminationManager(terminationContext);
