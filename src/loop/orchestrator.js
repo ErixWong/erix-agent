@@ -669,7 +669,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -703,6 +703,18 @@ export async function runToolLoop(options) {
     //   9 行 / 6 行，全部在声明之后），提先初始化不可观察。
     runStateVersion: 0,
     runStateAvailability: { status: "available" },
+    // 【D run-state 可用性（续）】`todoState`（原 :1195）、`semanticState`（原 :1196）、`currentRunState`
+    //   （原 :1192）——三个**无初值**的格子：原 `let X;` 的初值就是 `undefined`，此处显式写 `undefined`，
+    //   不拿 `null`/`0` 假冒——“provider 还从未被调用过”与“调用了但返回 null”在多处判定上是两种语义：
+    //   `termination.js:272` 的 `ctx.currentRunState === undefined` 决定终局载荷是否携 `runState`，
+    //   `semanticState` 的 `if (semanticState && …)` 假值短路、`todoState` 的 `todo:` 字段在
+    //   `createDeterministicRunState` 里对 `undefined` 与 `null` 的渲染也不同。
+    //   `currentRunState` 的 TDZ：原 :1192 声明，但 `fail()`（原 :917 定义的闭包）在原 :922-926 就读取它；
+    //   逐行核过 `fail(` 的**调用点**只有原 :1462 与 :3230，两者都晚于 :1192（`fail` 是本函数私有闭包，
+    //   不可能被外部提前调），故在「任何可观察时点」读到的仍是 `undefined`，提先初始化不可观察。
+    todoState: undefined,
+    semanticState: undefined,
+    currentRunState: undefined,
   };
   const errorLedger = createErrorLedger();
 
@@ -927,11 +939,11 @@ export async function runToolLoop(options) {
     const originalPersistence = persistenceInfoFor(error);
     const initialReason = signal?.aborted ? "aborted" : "failed";
     currentTerminationReason = initialReason;
-    if (!originalPersistence && currentRunState?.deterministic) {
-      currentRunState.deterministic.termination = { reason: initialReason };
-      currentRunState.rendered = renderRunState(currentRunState);
+    if (!originalPersistence && runLoopState.currentRunState?.deterministic) {
+      runLoopState.currentRunState.deterministic.termination = { reason: initialReason };
+      runLoopState.currentRunState.rendered = renderRunState(runLoopState.currentRunState);
       try {
-        await persist("saveRunState", runId, currentRunState);
+        await persist("saveRunState", runId, runLoopState.currentRunState);
       } catch (persistenceError) {
         finalError = persistenceError;
       }
@@ -1193,14 +1205,12 @@ export async function runToolLoop(options) {
   let navigationRecordCount = 0;
   let toolErrorCount = 0;
   let runSnapshotFailureCount = 0;
-  // `runStateVersion` / `runStateAvailability` 已迁入 `runLoopState`（issue #177 刀5-D）。
+  // `runStateVersion` / `runStateAvailability` / `currentRunState` / `todoState` / `semanticState`
+  //   已迁入 `runLoopState`（issue #177 刀5-D）。
   let ttlInjectArmed = false;
   let ttlInjectConsumed = false;
   let lowBudgetInjectFired = false;
-  let currentRunState;
   let currentTerminationReason = "running";
-  let todoState;
-  let semanticState;
   const compactionStats = [];
   const trimFilesWritten = () => {
     const seen = new Set();
@@ -1314,10 +1324,10 @@ export async function runToolLoop(options) {
     // 缺失时走与 persist 守卫同一的单条去重诊断通道。
     notifyCapabilitySkipped,
     get currentRunState() {
-      return currentRunState;
+      return runLoopState.currentRunState;
     },
     set currentRunState(value) {
-      currentRunState = value;
+      runLoopState.currentRunState = value;
     },
     get runStateAvailability() {
       return runLoopState.runStateAvailability;
@@ -1435,10 +1445,10 @@ export async function runToolLoop(options) {
       runSnapshotFailureCount = value;
     },
     get semanticState() {
-      return semanticState;
+      return runLoopState.semanticState;
     },
     set semanticState(value) {
-      semanticState = value;
+      runLoopState.semanticState = value;
     },
     get compactionStats() {
       return compactionStats;
@@ -1447,10 +1457,10 @@ export async function runToolLoop(options) {
       compactionStats.splice(0, compactionStats.length, ...(Array.isArray(value) ? value : []));
     },
     get todoState() {
-      return todoState;
+      return runLoopState.todoState;
     },
     set todoState(value) {
-      todoState = value;
+      runLoopState.todoState = value;
     },
     get judgeInterceptCount() {
       return judgeInterceptCount;
@@ -1922,9 +1932,9 @@ export async function runToolLoop(options) {
   } = {}) => {
     if (typeof todoStateProvider === "function") {
       try {
-        todoState = await todoStateProvider({ runId, rounds: runLoopState.rounds });
+        runLoopState.todoState = await todoStateProvider({ runId, rounds: runLoopState.rounds });
       } catch (error) {
-        todoState = {
+        runLoopState.todoState = {
           status: "error",
           detail: String(error?.message ?? error).slice(0, 80),
         };
@@ -1939,7 +1949,7 @@ export async function runToolLoop(options) {
       lowBudgetPrompted,
       toolStats,
       filesWritten: governorState.filesWritten,
-      todo: todoState,
+      todo: runLoopState.todoState,
       foldedRounds: foldedRoundCount,
       navigationRecords: navigationRecordCount,
       terminationReason: currentTerminationReason,
@@ -1956,11 +1966,11 @@ export async function runToolLoop(options) {
         const provided = await semanticStateProvider({
           runId,
           state: deterministic,
-          previous: semanticState,
+          previous: runLoopState.semanticState,
         });
-        if (provided !== undefined) semanticState = provided;
+        if (provided !== undefined) runLoopState.semanticState = provided;
       } catch (error) {
-        semanticState = {
+        runLoopState.semanticState = {
           status: "error",
           text: "",
           semanticStateVersion: runLoopState.runStateVersion,
@@ -1968,23 +1978,25 @@ export async function runToolLoop(options) {
         };
       }
     } else if (
-      semanticState
-      && semanticState.semanticStateVersion !== undefined
-      && semanticState.semanticStateVersion !== runLoopState.runStateVersion
+      runLoopState.semanticState
+      && runLoopState.semanticState.semanticStateVersion !== undefined
+      && runLoopState.semanticState.semanticStateVersion !== runLoopState.runStateVersion
     ) {
-      semanticState = {
-        ...semanticState,
+      runLoopState.semanticState = {
+        ...runLoopState.semanticState,
         status: "stale",
       };
     }
-    currentRunState = withSemanticRunState({
+    runLoopState.currentRunState = withSemanticRunState({
       ...deterministic,
       stateAvailability: { ...runLoopState.runStateAvailability },
-    }, semanticState);
-    currentRunState.rendered = renderRunState(currentRunState);
-    if (inject) messages = upsertRunStateInMessages(messages, currentRunState.rendered);
-    await persist("saveRunState", runId, currentRunState);
-    return currentRunState;
+    }, runLoopState.semanticState);
+    runLoopState.currentRunState.rendered = renderRunState(runLoopState.currentRunState);
+    if (inject) {
+      messages = upsertRunStateInMessages(messages, runLoopState.currentRunState.rendered);
+    }
+    await persist("saveRunState", runId, runLoopState.currentRunState);
+    return runLoopState.currentRunState;
   };
 
   const terminationContext = {
@@ -2057,7 +2069,7 @@ export async function runToolLoop(options) {
       verification = value;
     },
     get currentRunState() {
-      return currentRunState;
+      return runLoopState.currentRunState;
     },
     get currentTerminationReason() {
       return currentTerminationReason;
