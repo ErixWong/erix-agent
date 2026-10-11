@@ -805,14 +805,14 @@ export async function runToolLoop(options) {
     judgeRecordCount: 0,
     // 【F-2 治理开关】`roundJudgeEnabled`（原 :1202）、`roundJudgeFailures`（原 :1209）、
     //   `wrapupNormalizationEnabled`（原 :1256）——三格都是**运行期可关断**的治理开关与其失败计数：
-    //   roundJudge 连续失败到 `roundJudgeFailureLimit`（const，原 :1205，**不是**本格的一分子）就
-    //   永久关断（`:3064`/`:3110` 两处 `= false`），wrapup LLM 归一化失败一次就关断（`:2981`），
-    //   `roundJudgeFailures` 在 judge 判成功后复位为 `0`（`:3078`）——三处写点都是真行为，不是死存储。
-    //   ⚠ `roundJudgeEnabled` / `wrapupNormalizationEnabled` 的**初值不在这里**：它们读 `:1200` 的
-    //   `const reflectionEnabled`、`:1230` 的 `const wrapupEnabled` 与 `:1195` 的 `effectiveReflection`，
+    //   roundJudge 连续失败到 `roundJudgeFailureLimit`（const，现 :1236，**不是**本格的一分子）就
+    //   永久关断（`:3100`/`:3146` 两处 `= false`），wrapup LLM 归一化失败一次就关断（`:3017`），
+    //   `roundJudgeFailures` 在 judge 判成功后复位为 `0`（`:3114`）——三处写点都是真行为，不是死存储。
+    //   ⚠ `roundJudgeEnabled` / `wrapupNormalizationEnabled` 的**初值不在这里**：它们读 `:1227` 的
+    //   `const reflectionEnabled`、`:1263` 的 `const wrapupEnabled` 与 `:1222` 的 `effectiveReflection`，
     //   这三个 const 全部声明在**本字面量之后** ⇒ 把初值提进来不是「不可观察」而是 **TDZ
     //   `ReferenceError` 直接抛错**。故走 `hadToolUse` 先例：此处只放**占位 `false`**，真值在原声明
-    //   位置（`:1202` / `:1256`）赋值，赋值点仍早于各自的全文件首读点（`:3056` / `:2939`）。
+    //   位置（现 `:1233` / `:1292`）赋值，赋值点仍早于各自的全文件首读点（`:3092` / `:2975`）。
     //   `roundJudgeFailures` 的初值是常量 `0`，无 TDZ 问题，逐字原搬进字面量。
     roundJudgeEnabled: false,
     roundJudgeFailures: 0,
@@ -820,7 +820,7 @@ export async function runToolLoop(options) {
     // 【F-2 双 ctx 拦截记账】`judgeInterceptCount`（原 :1228，初值是常量 `0` ⇒ 直接进字面量，无 TDZ）
     //   与 `interceptJudgeDecision`（原 :1229，**无初值** ⇒ 显式写 `undefined`）。
     //   这两格在 orchestrator 内**没有任何裸读写点**，全部经**两个 ctx 对象上的四枚访问器**
-    //   （`restoreResume` 入参 ctx 一对 + `runSnapshotContext` 一对）被跳文件读写：
+    //   （`restoreResume` 入参 ctx 一对，现 `:1585`–`:1596`；`runSnapshotContext` 一对，现 `:2376`–`:2387`）被跳文件读写：
     //   `run-snapshot-executor.js` 的 `:377` 读（`>= ctx.judgeIntervalRound`）、`:379` `+= 1`、
     //   `:416` 与 `:516` 复位 `= 0`、`:424` 判 `ctx.interceptJudgeDecision === undefined`、
     //   `:425` 写入 decision；`resume-manager.js:227` 用已执行工具数给计数播种。
@@ -1227,9 +1227,9 @@ export async function runToolLoop(options) {
   const reflectionEnabled = resolvedReflectionOption === true
     || (effectiveReflection !== undefined && effectiveReflection.enabled !== false);
   // `roundJudgeEnabled` 已迁入 `runLoopState`（issue #177 刀5 F-2）：初值**必须**留在本处原声明点
-  // 现算——它读上面 `:1200` 的 `const reflectionEnabled` 与 `:1195` 的 `effectiveReflection`，两者都
-  // 晚于状态对象字面量（`:673`–`:806`），提先进字面量就是 TDZ `ReferenceError`（工单 §3.1）。
-  // 字面量里的 `false` 只是占位；真值在此赋值，且早于全文件首读点（`:3056`），求值点/副作用不变。
+  // 现算——它读上面 `:1227` 的 `const reflectionEnabled` 与 `:1222` 的 `effectiveReflection`，两者都
+  // 晚于状态对象字面量（`:673`–`:833`），提先进字面量就是 TDZ `ReferenceError`（工单 §3.1）。
+  // 字面量里的 `false` 只是占位；真值在此赋值，且早于全文件首读点（`:3092`），求值点/副作用不变。
   runLoopState.roundJudgeEnabled = reflectionEnabled
     && effectiveReflection?.roundJudge !== false
     && process.env.ERIX_NO_ROUND_JUDGE?.trim() !== "1";
@@ -1238,7 +1238,7 @@ export async function runToolLoop(options) {
     ? effectiveReflection.judgeFailureLimit
     : 3;
   // `roundJudgeFailures` 已迁入 `runLoopState`（issue #177 刀5 F-2）：初值是常量 `0`，直接写进
-  // 状态对象字面量（无 TDZ 问题）；`+= 1` 与 `= 0` 复位在 `:3063`/`:3109`/`:3078`。
+  // 状态对象字面量（无 TDZ 问题）；`+= 1` 与 `= 0` 复位在 `:3099`/`:3145`/`:3114`。
   // 透明拦截审计开关：与 roundJudge 正交（roundJudge:false 只关 end_turn 评估，审计可独立关）
   const judgeInterceptEnabled = reflectionEnabled
     && effectiveReflection?.judgeIntercept !== false;
@@ -1258,8 +1258,8 @@ export async function runToolLoop(options) {
     : 30_000;
   const judgeInterceptConversationTokens = INTERCEPT_CONVERSATION_TOKENS;
   // `judgeInterceptCount` / `interceptJudgeDecision` 已迁入 `runLoopState`（issue #177 刀5 F-2）：
-  // 前者初值是常量 `0`、后者无初值（`undefined`），两格都已在状态对象字面量里建行；本处原本两行
-  // `let` 删除后，四个访问器（下方两处 ctx）与两处裸读写点全部改读格子，键名/形状一字未动。
+  // 前者初值是常量 `0`、后者无初值（`undefined`），两格都已在状态对象字面量里建行（`:831`/`:832`）；本处原本两行
+  // `let` 删除后，四个访问器（`:1585`–`:1596` 与 `:2376`–`:2387`）与两处裸读写点全部改读格子，键名/形状一字未动。
   const wrapupEnabled = wrapup !== false
     && process.env.ERIX_NO_WRAPUP_INSTRUCTION?.trim() !== "1";
   const mainSystem = wrapupEnabled
@@ -1287,8 +1287,8 @@ export async function runToolLoop(options) {
   // 开启：ERIX_WRAPUP_NORMALIZE=1 或 reflection.wrapupNormalize===true。
   // benchmark/harness 场景应开启——找不到 JSON（含空文本）就该归一化。
   // `wrapupNormalizationEnabled` 已迁入 `runLoopState`（issue #177 刀5 F-2）：同 `roundJudgeEnabled`，
-  // 初值读上面 `:1230` 的 `const wrapupEnabled`（晚于状态对象字面量）⇒ 提先是 TDZ，故字面量放占位
-  // `false`、真值留在本处原声明点赋值，仍早于首读点 `:2939`。
+  // 初值读上面 `:1263` 的 `const wrapupEnabled`（晚于状态对象字面量）⇒ 提先是 TDZ，故字面量放占位
+  // `false`、真值留在本处原声明点赋值，仍早于首读点 `:2975`。
   runLoopState.wrapupNormalizationEnabled = wrapupEnabled && (
     process.env.ERIX_WRAPUP_NORMALIZE?.trim() === "1"
       || effectiveReflection?.wrapupNormalize === true

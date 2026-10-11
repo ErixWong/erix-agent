@@ -9,7 +9,7 @@ import { createFakeProvider } from "./helpers/fake-provider.js";
 //   · `roundJudgeEnabled`（原 :1202）——end_turn 轮 judge 的总开关，连续失败到上限就地关断；
 //   · `roundJudgeFailures`（原 :1209）——它的连续失败计数，判成功即复位；
 //   · `wrapupNormalizationEnabled`（原 :1256）——wrapup LLM 归一化开关，失败一次就地关断。
-// 这三格的形状是「**初值要在原声明处现算**（读 `:1229` 的 `reflectionEnabled` 与 `:1266` 的 `wrapupEnabled`，早于它们是 TDZ）
+// 这三格的形状是「**初值要在原声明处现算**（读 `:1227` 的 `reflectionEnabled` 与 `:1263` 的 `wrapupEnabled`，早于它们是 TDZ）
 // + **运行期被写坏一次就永久关断**」，于是每格都有两条必须各自钉死的路径：
 //   · 初值侧：占位 `false` 有没有被原位赋值覆盖（覆盖不到 ⇒ 整条 judge / 归一化路径静默消失）；
 //     初值表达式的每一个合取项（`reflectionEnabled` / `roundJudge !== false` / 两个 env /
@@ -66,7 +66,7 @@ async function runEndTurnJudge({ reflectionBase, env, judgeScript }) {
 
 // —— roundJudgeEnabled：初值侧（占位 false 必须被原声明处的赋值覆盖）——
 
-test("F-2 roundJudgeEnabled 初值：开着的格子让 end_turn 轮走 judge_done（读侧 :3095 拿到的是真值而非占位 false）", async () => {
+test("F-2 roundJudgeEnabled 初值：开着的格子让 end_turn 轮走 judge_done（读侧 :3092 拿到的是真值而非占位 false）", async () => {
   const judge = createFakeProvider([judgeJson(ON_TRACK)]);
   const provider = createFakeProvider([textEndTurn("最终答案")]);
   const records = [];
@@ -248,7 +248,7 @@ test("F-2 wrapupNormalizationEnabled 初值：默认关闭 ⇒ 非 JSON 的 end_
   assert.equal(provider.requests.length, 4, "主 provider 只跑了 1 个工具轮 + 3 个 end_turn 轮");
 });
 
-test("F-2 wrapupNormalizationEnabled 初值：ERIX_WRAPUP_NORMALIZE=1 打开格子（读侧 :2978 拿到真值，逐轮都调）", async () => {
+test("F-2 wrapupNormalizationEnabled 初值：ERIX_WRAPUP_NORMALIZE=1 打开格子（读侧 :2975 拿到真值，逐轮都调）", async () => {
   const { result, normalizer } = await runNormalizeCase({
     env: "1",
     reflectionBase: {},

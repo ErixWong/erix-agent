@@ -1,8 +1,8 @@
 "use strict";
 
 // 为什么存在：F-2 把两枚治理开关的**初值**留在原声明位置赋值，是因为它们的初值表达式读的
-// `:1229` `const reflectionEnabled` / `:1266` 的 `const wrapupEnabled` / `:1224` 的
-// `const effectiveReflection` 全在状态对象字面量（`:673`–`:835`）**之后** —— 把初值提进字面量是
+// `:1227` `const reflectionEnabled` / `:1263` 的 `const wrapupEnabled` / `:1222` 的
+// `const effectiveReflection` 全在状态对象字面量（`:673`–`:833`）**之后** —— 把初值提进字面量是
 // 同步 TDZ `ReferenceError`，不是「取值一致所以不可观察」（这一点与 D / F-1 四格相反）。
 // 而「占位 `false` 有没有被覆盖」在关闭配置下**行为上是等价的**（两边都是 `false`），
 // 纯行为用例抓不到「占位写错」或「覆盖行被删」，所以本文件除了行为侧一条，另加一条**源码时序断言**：
