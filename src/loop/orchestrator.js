@@ -669,7 +669,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -817,6 +817,19 @@ export async function runToolLoop(options) {
     roundJudgeEnabled: false,
     roundJudgeFailures: 0,
     wrapupNormalizationEnabled: false,
+    // 【F-2 双 ctx 拦截记账】`judgeInterceptCount`（原 :1228，初值是常量 `0` ⇒ 直接进字面量，无 TDZ）
+    //   与 `interceptJudgeDecision`（原 :1229，**无初值** ⇒ 显式写 `undefined`）。
+    //   这两格在 orchestrator 内**没有任何裸读写点**，全部经**两个 ctx 对象上的四枚访问器**
+    //   （`restoreResume` 入参 ctx 一对 + `runSnapshotContext` 一对）被跳文件读写：
+    //   `run-snapshot-executor.js` 的 `:377` 读（`>= ctx.judgeIntervalRound`）、`:379` `+= 1`、
+    //   `:416` 与 `:516` 复位 `= 0`、`:424` 判 `ctx.interceptJudgeDecision === undefined`、
+    //   `:425` 写入 decision；`resume-manager.js:227` 用已执行工具数给计数播种。
+    //   ⚠ `interceptJudgeDecision` 的 `undefined` **本身就是语义**：`:424` 那一判是「本轮尚未
+    //   拦到扩轮决策」的跳文件判据，不能拿 `null` / `{}` 假冒初值（那会让扩轮决策被丢弃）。
+    //   ⚠ 四枚访问器一对都不许删、不许只改一半：只委托一处，另一对会在原 `let` 被删后踩
+    //   `ReferenceError`（静默断链，不是红测试）。
+    judgeInterceptCount: 0,
+    interceptJudgeDecision: undefined,
   };
   const errorLedger = createErrorLedger();
 
@@ -1244,8 +1257,9 @@ export async function runToolLoop(options) {
     ? effectiveReflection.judgeInterceptTimeoutMs
     : 30_000;
   const judgeInterceptConversationTokens = INTERCEPT_CONVERSATION_TOKENS;
-  let judgeInterceptCount = 0;
-  let interceptJudgeDecision;
+  // `judgeInterceptCount` / `interceptJudgeDecision` 已迁入 `runLoopState`（issue #177 刀5 F-2）：
+  // 前者初值是常量 `0`、后者无初值（`undefined`），两格都已在状态对象字面量里建行；本处原本两行
+  // `let` 删除后，四个访问器（下方两处 ctx）与两处裸读写点全部改读格子，键名/形状一字未动。
   const wrapupEnabled = wrapup !== false
     && process.env.ERIX_NO_WRAPUP_INSTRUCTION?.trim() !== "1";
   const mainSystem = wrapupEnabled
@@ -1569,16 +1583,16 @@ export async function runToolLoop(options) {
       runLoopState.todoState = value;
     },
     get judgeInterceptCount() {
-      return judgeInterceptCount;
+      return runLoopState.judgeInterceptCount;
     },
     set judgeInterceptCount(value) {
-      judgeInterceptCount = value;
+      runLoopState.judgeInterceptCount = value;
     },
     get interceptJudgeDecision() {
-      return interceptJudgeDecision;
+      return runLoopState.interceptJudgeDecision;
     },
     set interceptJudgeDecision(value) {
-      interceptJudgeDecision = value;
+      runLoopState.interceptJudgeDecision = value;
     },
     });
   } catch (error) {
@@ -2360,16 +2374,16 @@ export async function runToolLoop(options) {
       runLoopState.lastPersistenceFailure = value;
     },
     get judgeInterceptCount() {
-      return judgeInterceptCount;
+      return runLoopState.judgeInterceptCount;
     },
     set judgeInterceptCount(value) {
-      judgeInterceptCount = value;
+      runLoopState.judgeInterceptCount = value;
     },
     get interceptJudgeDecision() {
-      return interceptJudgeDecision;
+      return runLoopState.interceptJudgeDecision;
     },
     set interceptJudgeDecision(value) {
-      interceptJudgeDecision = value;
+      runLoopState.interceptJudgeDecision = value;
     },
     executedToolIds,
     snapshotResults,
@@ -2771,7 +2785,7 @@ export async function runToolLoop(options) {
     budgetRounds += 1;
     const round = runLoopState.rounds + 1;
     runLoopState.toolExecutedThisRound = false;
-    interceptJudgeDecision = undefined;
+    runLoopState.interceptJudgeDecision = undefined;
     roundEventDeltas = [];
     roundStopReason = undefined;
     let stallSuspicion = false;
@@ -3072,7 +3086,7 @@ export async function runToolLoop(options) {
       elapsedMs: elapsedMs(),
       remainingMs: remainingMs(),
     };
-    let judgeDecision = interceptJudgeDecision;
+    let judgeDecision = runLoopState.interceptJudgeDecision;
     let judgeUsage;
     // end_turn 轮完整评估；工具中途审计的 nearLimit 扩轮决策已由拦截器回传。
     if (runLoopState.roundJudgeEnabled && isEndTurn) {
