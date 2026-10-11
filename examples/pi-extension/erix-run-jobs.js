@@ -15,7 +15,7 @@
 // ⚠ 后台 run **与扩展同进程**（pi-subagents 也没为每个子任务 spawn 子进程）：pi 进程退出或
 // `/reload` 会杀掉在跑的后台 run。跨重启恢复不属于本单（那是 #207 R2 + run-state store）。
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -168,17 +168,42 @@ export function statusFilePath({ sessionDir, runId }) {
   return path.join(path.dirname(judgeLogPath), "status.json");
 }
 
-/** 写 `status.json`：同目录 tmp + rename（读者永远看不到半截文件）。写不进去只回报错误。 */
-export function writeStatusFile({ sessionDir, runId, view, now = () => Date.now() }) {
+/**
+ * 写 `status.json`：**同目录 tmp + rename 的原子写**（读者永远看不到半截文件）。写不进去只回报错误。
+ *
+ * `deps` 是测试注入缝（照 `erix-run-core.js` 的 `deps.createStore` 风格，#237 R4）：
+ * `mkdirSync` / `writeFileSync` / `renameSync` / `unlinkSync` 都可换；没注入时就是真 fs，
+ * 行为与注入前逐字一致。**没这条缝时「原子写」一条测试都钉不住**（主 agent 实测：把它
+ * 退化成「直接写同名文件」，全量测试零红）。
+ *
+ * 写中途失败时的三条保证（由 test/examples/erix-run-async.test.js 的 #237 R4 四条钉住）：
+ *   1. **旧文件内容不被破坏**：renamed 没成功就没人动过 `status.json`；
+ *   2. **不留 `.tmp-` 残留**：半截临时文件在 catch 里清掉；
+ *   3. **不抛**：错误以 `{path, error}` 回报，由 `persistStatus` 放进 `job.statusWriteError`
+ *      → 经 `jobView` 进查询视图与 `details`（模型看得见「这次没落盘」），不把派工/查询面带崩。
+ *
+ * @param {{sessionDir?:string|null, runId:string, view:object, now?:()=>number}} input
+ * @param {{mkdirSync?:Function, writeFileSync?:Function, renameSync?:Function, unlinkSync?:Function}} [deps]
+ */
+export function writeStatusFile({ sessionDir, runId, view, now = () => Date.now() }, deps = {}) {
+  const mkdir = deps.mkdirSync ?? mkdirSync;
+  const writeFile = deps.writeFileSync ?? writeFileSync;
+  const rename = deps.renameSync ?? renameSync;
+  const unlink = deps.unlinkSync ?? unlinkSync;
   const file = statusFilePath({ sessionDir, runId });
   if (file === undefined) return { path: undefined, error: undefined };
+  let tmp;
   try {
-    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    const tmp = `${file}.tmp-${process.pid}-${now().toString(36)}`;
-    writeFileSync(tmp, `${JSON.stringify(view, null, 2)}\n`, "utf8");
-    renameSync(tmp, file);
+    mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    tmp = `${file}.tmp-${process.pid}-${now().toString(36)}`;
+    writeFile(tmp, `${JSON.stringify(view, null, 2)}\n`, "utf8");
+    rename(tmp, file);
     return { path: file, error: undefined };
   } catch (error) {
+    // 半截临时文件不能留在盘上：读者只该看到 `status.json` 这一个名字。
+    if (tmp !== undefined) {
+      try { unlink(tmp); } catch { /* 清不掉也只能作罢：旧 status.json 已经保住了 */ }
+    }
     return { path: file, error: textOf(error?.message ?? error) };
   }
 }
@@ -263,7 +288,8 @@ export function handleOf(job) {
  *   home?:string, env?:NodeJS.ProcessEnv, now?:()=>number,
  *   runJob?:(params:object, opts:{signal:AbortSignal, onProgress?:(line:string)=>void, runId:string})=>Promise<any>,
  *   notify?:(job:object, content:string, opts:{triggersTurn:boolean, outcome:string})=>unknown,
- *   sendRegistry?:object, registry?:object, deps?:object,
+ *   sendRegistry?:object, registry?:object,
+ *   deps?:object,   // 透传给 core.runErixRun 与 writeStatusFile（后者的 fs 注入缝见 #237 R4）,
  * }} [options]
  */
 export function createAsyncRuntime(options = {}) {
@@ -287,7 +313,8 @@ export function createAsyncRuntime(options = {}) {
   const notify = options.notify ?? (() => true);
 
   const persistStatus = (job) => {
-    const written = writeStatusFile({ sessionDir: job.sessionDir, runId: job.runId, view: jobView(job, { now }), now });
+    // `deps` 一路传到落盘（#237 R4 的注入缝）：没注入时 writeStatusFile 用的就是真 fs。
+    const written = writeStatusFile({ sessionDir: job.sessionDir, runId: job.runId, view: jobView(job, { now }), now }, deps);
     job.statusPath = written.path ?? job.statusPath;
     if (written.error !== undefined) job.statusWriteError = written.error;
     return job.statusPath;

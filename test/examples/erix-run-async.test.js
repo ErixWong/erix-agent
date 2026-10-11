@@ -696,7 +696,7 @@ test("#237 R4：rename 失败时旧 status.json 不被破坏、不留 .tmp- 残�
     "写中途失败绝不能破坏旧文件（读者要么看到旧的完整内容，要么看到新的完整内容）",
   );
   assert.match(readFileSync(first.path, "utf8"), /"old"/u);
-  assert.notMatch(readFileSync(first.path, "utf8"), /"new"/u);
+  assert.doesNotMatch(readFileSync(first.path, "utf8"), /"new"/u);
   assert.deepEqual(
     readdirSync(path.dirname(first.path)),
     ["status.json"],
