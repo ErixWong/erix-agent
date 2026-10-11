@@ -669,7 +669,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -737,6 +737,22 @@ export async function runToolLoop(options) {
     //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：7 / 7 行，全部在声明之后），提先初始化不可观察。
     foldedRoundCount: 0,
     navigationRecordCount: 0,
+    // 【E 轮内量（三）】`lowBudgetPrompted`（原 :1203）、`toolErrorCount`（原 :1206）、
+    //   `runSnapshotFailureCount`（原 :1207）——三个**有初值**的格子，初值逐字原样搬（`false` /
+    //   `0` / `0`）。这三格是**同一符号挂在两个不同 ctx 对象上各一对 get/set**的形状：
+    //   `restoreResume` 的 ctx（`resume-manager.js` 写：`ctx.lowBudgetPrompted = false` 等三处）与
+    //   `runSnapshotContext`（`run-snapshot-executor.js` 读写：`ctx.toolErrorCount += 1`、
+    //   `ctx.runSnapshotFailureCount += 1`、`ctx.lowBudgetPrompted = true`）——**两个对象都改了**，
+    //   漏一个就是「一个 ctx 读到格子、另一个读到已死的闭包变量」。访问器形状一律没动
+    //   （六对 get/set 全部只改函数体，没有补、没有删、没有合并）。
+    //   ⚠ 对象简写陷阱两处（`toolResultFold` 里的 `lowBudgetPrompted,` 与 run-state 调用里的
+    //   `lowBudgetPrompted,` / `toolErrorCount,`）已改成 `键: runLoopState.符号`，键名一字未动；
+    //   `runSnapshotFailureCount` 的导出键名是**旧名** `checkpointFailureCount`（issue #83），只改值。
+    //   TDZ：原声明点（:1203/:1206/:1207）就是这三个符号的全文件首次出现（逐符号
+    //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：11 / 10 / 10 行，全部在声明之后），提先初始化不可观察。
+    lowBudgetPrompted: false,
+    toolErrorCount: 0,
+    runSnapshotFailureCount: 0,
   };
   const errorLedger = createErrorLedger();
 
@@ -1222,11 +1238,11 @@ export async function runToolLoop(options) {
     filesWritten: [],
   };
   const toolStats = new Map();
-  let lowBudgetPrompted = false;
+  // `lowBudgetPrompted` 已迁入 `runLoopState`（issue #177 刀5-E）。
   // `foldedRoundCount` / `navigationRecordCount`
   //   已迁入 `runLoopState`（issue #177 刀5-E）。
-  let toolErrorCount = 0;
-  let runSnapshotFailureCount = 0;
+  // `toolErrorCount` / `runSnapshotFailureCount`
+  //   已迁入 `runLoopState`（issue #177 刀5-E）。
   // `runStateVersion` / `runStateAvailability` / `currentRunState` / `todoState` / `semanticState`
   //   已迁入 `runLoopState`（issue #177 刀5-D）。
   // `ttlInjectArmed` / `ttlInjectConsumed` / `lowBudgetInjectFired`
@@ -1436,10 +1452,10 @@ export async function runToolLoop(options) {
     addGovernorHistory,
     trimFilesWritten,
     get lowBudgetPrompted() {
-      return lowBudgetPrompted;
+      return runLoopState.lowBudgetPrompted;
     },
     set lowBudgetPrompted(value) {
-      lowBudgetPrompted = value;
+      runLoopState.lowBudgetPrompted = value;
     },
     get foldedRoundCount() {
       return runLoopState.foldedRoundCount;
@@ -1454,16 +1470,16 @@ export async function runToolLoop(options) {
       runLoopState.navigationRecordCount = value;
     },
     get toolErrorCount() {
-      return toolErrorCount;
+      return runLoopState.toolErrorCount;
     },
     set toolErrorCount(value) {
-      toolErrorCount = value;
+      runLoopState.toolErrorCount = value;
     },
     get runSnapshotFailureCount() {
-      return runSnapshotFailureCount;
+      return runLoopState.runSnapshotFailureCount;
     },
     set runSnapshotFailureCount(value) {
-      runSnapshotFailureCount = value;
+      runLoopState.runSnapshotFailureCount = value;
     },
     get semanticState() {
       return runLoopState.semanticState;
@@ -1710,7 +1726,7 @@ export async function runToolLoop(options) {
       if (!ttlLayer?.shouldSchedule({
         budgetRounds,
         effectiveMaxRounds: governorState.effectiveMaxRounds,
-        lowBudgetPrompted,
+        lowBudgetPrompted: runLoopState.lowBudgetPrompted,
       })) return null;
       return { ttl: resolvedToolResultTtl, minTokens: toolResultFoldMinTokens };
     },
@@ -1967,18 +1983,18 @@ export async function runToolLoop(options) {
       rounds: runLoopState.rounds,
       runRounds: budgetRounds,
       maxRounds: governorState.effectiveMaxRounds,
-      lowBudgetPrompted,
+      lowBudgetPrompted: runLoopState.lowBudgetPrompted,
       toolStats,
       filesWritten: governorState.filesWritten,
       todo: runLoopState.todoState,
       foldedRounds: runLoopState.foldedRoundCount,
       navigationRecords: runLoopState.navigationRecordCount,
       terminationReason: currentTerminationReason,
-      toolErrorCount,
+      toolErrorCount: runLoopState.toolErrorCount,
       // 键名保持旧名 checkpointFailureCount（issue #83）：它是 createDeterministicRunState 的
       // 导出选项键，且其值以 `errors.checkpoint` 落盘、渲染进模型可见的 run-state 文本行——
       // 三处均属宿主/持久化契约，改名是破坏性变更，故此处只改引擎内部变量名、不改键名。
-      checkpointFailureCount: runSnapshotFailureCount,
+      checkpointFailureCount: runLoopState.runSnapshotFailureCount,
       unpersisted: errorLedger.toUnpersisted(),
       compactionStats,
     });
@@ -2251,22 +2267,22 @@ export async function runToolLoop(options) {
       runLoopState.toolExecutedThisRound = true;
     },
     get lowBudgetPrompted() {
-      return lowBudgetPrompted;
+      return runLoopState.lowBudgetPrompted;
     },
     set lowBudgetPrompted(value) {
-      lowBudgetPrompted = value;
+      runLoopState.lowBudgetPrompted = value;
     },
     get toolErrorCount() {
-      return toolErrorCount;
+      return runLoopState.toolErrorCount;
     },
     set toolErrorCount(value) {
-      toolErrorCount = value;
+      runLoopState.toolErrorCount = value;
     },
     get runSnapshotFailureCount() {
-      return runSnapshotFailureCount;
+      return runLoopState.runSnapshotFailureCount;
     },
     set runSnapshotFailureCount(value) {
-      runSnapshotFailureCount = value;
+      runLoopState.runSnapshotFailureCount = value;
     },
     get lastPersistenceFailure() {
       return runLoopState.lastPersistenceFailure;
