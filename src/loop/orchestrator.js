@@ -661,7 +661,11 @@ export async function runToolLoop(options) {
   //   初值是数字 `0`）。本组**只加格子**：扁平放置、不套子对象，【A】【B】的格子一行没动。
   // TDZ：这四个符号在原声明点（:1266/:1267/:1269/:1270）之前没有任何语句能读到（逐符号 `rg` 核过，
   //   原声明点就是它们在文件里的首次出现），把它们从 TDZ 变成已初始化不改变可观察行为。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number }} */
+  // 【C resume 尾队列（续）】`resumeTranscriptStart`（原 :1268）与 `lastPersistenceFailure`（原 :1273）
+  //   ——两个**无初值**的格子，原 `let X;` 就是 `undefined`，故新格子显式写 `undefined`（不拿 `null`/`0`
+  //   假冒初值：“未发生过”与“发生过但为空”在 `!== undefined` 判定上是两种语义，见 :2595 与 :1819）。
+  //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -676,6 +680,9 @@ export async function runToolLoop(options) {
     resumeTailMessages: [],
     resumeRunSnapshotMessages: [],
     persistedTranscriptLength: 0,
+    // 【C resume 尾队列（续）】无初值格子：原 `let X;` 的初值就是 undefined，逐字保住。
+    resumeTranscriptStart: undefined,
+    lastPersistenceFailure: undefined,
   };
   const errorLedger = createErrorLedger();
 
@@ -1269,16 +1276,15 @@ export async function runToolLoop(options) {
   // `foldedThrough` 已迁入 `runLoopState.foldedThrough`（issue #177 刀5）。
   // 【C 组第1刀】`resumePendingTools` / `resumeTailMessages` / `resumeRunSnapshotMessages` /
   //   `persistedTranscriptLength` 已迁入 `runLoopState`（issue #177 刀5 C 组，格子在状态对象末尾）。
+  // 【C 组第2刀】`resumeTranscriptStart`（原 :1268）/ `lastPersistenceFailure`（原 :1273）同上。
   // 类型注解只为喂给 `--checkJs`（#214 棘轮），零运行时影响：这个值只由 `restoreResume` 经下方
   // `set resumeRunSnapshot` 赋值，控制流分析看不见那条赋值，就把变量当成 `undefined`，于是
   // `if (resumeRunSnapshot && …)` 里的 `resumeRunSnapshot.round` 报 TS2339（… on type 'never'）。
   // snapshot 的形状由宿主 store 决定，这里不假装精确。
   /** @type {Record<string, any>|undefined} */
   let resumeRunSnapshot;
-  let resumeTranscriptStart;
   const resumeExecutedToolIds = new Set();
   const resumeRunSnapshotResults = new Map();
-  let lastPersistenceFailure;
   try {
     await restoreResume({
     resume,
@@ -1351,10 +1357,10 @@ export async function runToolLoop(options) {
       runLoopState.resumeTailMessages = value;
     },
     get resumeTranscriptStart() {
-      return resumeTranscriptStart;
+      return runLoopState.resumeTranscriptStart;
     },
     set resumeTranscriptStart(value) {
-      resumeTranscriptStart = value;
+      runLoopState.resumeTranscriptStart = value;
     },
     get resumeRunSnapshotMessages() {
       return runLoopState.resumeRunSnapshotMessages;
@@ -1748,7 +1754,7 @@ export async function runToolLoop(options) {
     partialText,
     partialRound,
   }) => {
-    lastPersistenceFailure = undefined;
+    runLoopState.lastPersistenceFailure = undefined;
     const method = snapshotSaveMethod;
     if (method === undefined) {
       // 无快照能力：单条诊断（Set 去重，不每轮刷屏），工具照常执行。
@@ -1784,7 +1790,7 @@ export async function runToolLoop(options) {
       });
     } catch (error) {
       if (persistenceInfoFor(error) !== undefined) {
-        lastPersistenceFailure = error;
+        runLoopState.lastPersistenceFailure = error;
         return false;
       }
       throw error;
@@ -1816,7 +1822,7 @@ export async function runToolLoop(options) {
             partialText,
             partialRound: attempt.round,
           });
-          if (lastPersistenceFailure !== undefined) throw lastPersistenceFailure;
+          if (runLoopState.lastPersistenceFailure !== undefined) throw runLoopState.lastPersistenceFailure;
           attempt.persistedText = partialText;
         } catch (error) {
           attempt.failure = error;
@@ -1884,7 +1890,7 @@ export async function runToolLoop(options) {
         if (attempt.failure !== undefined) throw attempt.failure;
         if (retrying && attempt.persistedText !== undefined) {
           await persistRunSnapshot({ round, status: "pending" });
-          if (lastPersistenceFailure !== undefined) throw lastPersistenceFailure;
+          if (runLoopState.lastPersistenceFailure !== undefined) throw runLoopState.lastPersistenceFailure;
         }
       } finally {
         if (partialAttempt === attempt) partialAttempt = undefined;
@@ -2212,10 +2218,10 @@ export async function runToolLoop(options) {
       runSnapshotFailureCount = value;
     },
     get lastPersistenceFailure() {
-      return lastPersistenceFailure;
+      return runLoopState.lastPersistenceFailure;
     },
     set lastPersistenceFailure(value) {
-      lastPersistenceFailure = value;
+      runLoopState.lastPersistenceFailure = value;
     },
     get judgeInterceptCount() {
       return judgeInterceptCount;
@@ -2592,8 +2598,8 @@ export async function runToolLoop(options) {
       }
       runLoopState.resumePendingTools = [];
     }
-    if (resumeRunSnapshot && resumeTranscriptStart !== undefined) {
-      const resumeRecordMessages = messages.slice(resumeTranscriptStart);
+    if (resumeRunSnapshot && runLoopState.resumeTranscriptStart !== undefined) {
+      const resumeRecordMessages = messages.slice(runLoopState.resumeTranscriptStart);
       const resumeMessagesToPersist = [
         ...runLoopState.resumeRunSnapshotMessages,
         ...resumeRecordMessages,
@@ -2616,7 +2622,7 @@ export async function runToolLoop(options) {
         ts: new Date().toISOString(),
       });
       if (persisted) runLoopState.persistedTranscriptLength += resumeMessagesToPersist.length;
-      resumeTranscriptStart = undefined;
+      runLoopState.resumeTranscriptStart = undefined;
       runLoopState.resumeRunSnapshotMessages = [];
     }
     appendResumeTailMessages();
