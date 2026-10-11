@@ -348,8 +348,16 @@ test("exec-demo：真实 LLM 多轮工具调用", { skip: !E2E && "设 LLM_KIT_E
   assert.ok(toolResults.length >= 1, "transcript 应含 tool_result");
   assert.ok(toolResults.every((b) => !b.is_error), `工具调用不应全部出错: ${toolResults[0]?.content}`);
 
-  const recalled = await store.recall(runId, undefined, undefined, "exec");
-  assert.ok(recalled.includes("exec"), "recall 能检索到 exec 调用足迹");
+  // 「exec 工具调用足迹存在」用现役 API 表达：直接看已加载 transcript 里的 tool_use 块
+  // （recall 适配器已在 0.8.0 契约中退役，memory store 不再提供该方法）
+  const calledTools = new Set(
+    transcript.flatMap((r) => r.messages)
+      .flatMap((m) => (typeof m.content === "string" ? [] : m.content))
+      .filter((b) => b.type === "tool_use")
+      .map((b) => b.name),
+  );
+  assert.ok(calledTools.has("exec"),
+    `transcript 的 tool_use 应含 exec 调用足迹，实际调用：${[...calledTools].join(",") || "（无）"}`);
 });
 
 test("exec-demo：小预算强制触发 fold-statistical 压缩", { skip: !E2E && "设 LLM_KIT_E2E=1", timeout: 300_000 }, async () => {
