@@ -43,6 +43,12 @@ export const DEFAULT_SESSION_DIR_SEGMENTS = Object.freeze([".erix", "transcripts
  * （下发就改了引擎默认），只在返回面里如实报「本次生效的扩轮上限」时引用。
  */
 export const ENGINE_DEFAULT_MAX_EXTENSIONS = 2;
+/** #207 R1：三个扩轮参数的入参校验上界（下界见 parseRunParams：maxExtensions 允许 0）。 */
+export const MAX_MAX_EXTENSIONS = 1_000;
+export const MAX_MAX_ROUNDS_CAP = 100_000;
+export const MAX_EXTENSION_STEP = 10_000;
+/** #207 R1：下发给引擎 `reflection:{…}` 的扩轮参数名单（也是 diagnostics 里 `requested` 的键）。 */
+export const EXTENSION_PARAM_NAMES = Object.freeze(["maxExtensions", "maxRoundsCap", "extensionStep"]);
 /**
  * 本层能不能续跑（#207 R4）。**只有 R2（`resume` 通道，另单）落地后才能翻成 true**；
  * 在 R2 之前声称可续跑就是假事实，所以这里是一个具名常量而不是一处字面量。
@@ -110,6 +116,30 @@ function positiveInt(value, fallback, { min, max, name }) {
       "bad_params",
       `${name} 必须在 ${min}..${max} 之间，收到 ${parsed}`,
     );
+  }
+  return parsed;
+}
+
+/**
+ * 扩轮参数的整数校验（#207 R1）。非法值一律 `bad_params`（不抖给调用方：
+ * `runErixRun` 会把 `ErixRunError` 归一成 `ok:false` 的终局载荷）。
+ *
+ * `zeroAllowed` 只影响文案，不影响判定（判定靠 `min`）：`maxExtensions` 的下界是 0，
+ * **不能改用上面的 `positiveInt`**——引擎对它是 `>= 0` 判断（`src/loop/orchestrator.js` 的
+ * `reflectionMaxExtensions`），`0` = 「关掉扩轮」是一个有效配置，不是「没传」。
+ */
+function intParam(value, { min, max, name, zeroAllowed = false }) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < min) {
+    throw new ErixRunError(
+      "bad_params",
+      `${name} 必须是 ≥ ${min} 的整数`
+      + (zeroAllowed ? "（0 是有效值，意思是「关掉扩轮」）" : "")
+      + `，收到 ${JSON.stringify(value)}`,
+    );
+  }
+  if (parsed > max) {
+    throw new ErixRunError("bad_params", `${name} 不能超过 ${max}，收到 ${parsed}`);
   }
   return parsed;
 }
@@ -271,9 +301,10 @@ export function resolveArtifacts({ transcriptPath, judgeLogPath }) {
  * 工具参数 → 归一化参数。抛 `ErixRunError("bad_params")`。
  *
  * @param {{task?:unknown, cwd?:unknown, maxRounds?:unknown, strategy?:unknown, timeoutMs?:unknown, model?:unknown,
- *   sessionDir?:unknown, transcript?:unknown}} raw
+ *   sessionDir?:unknown, transcript?:unknown, maxExtensions?:unknown, maxRoundsCap?:unknown, extensionStep?:unknown}} raw
  * @param {{home?:string}} [options]
- * @returns {{task:string, cwd:string, maxRounds:number, strategy?:string, timeoutMs:number, model?:string, sessionDir?:string}}
+ * @returns {{task:string, cwd:string, maxRounds:number, strategy?:string, timeoutMs:number, model?:string,
+ *   sessionDir?:string, maxExtensions?:number, maxRoundsCap?:number, extensionStep?:number}}
  */
 export function parseRunParams(raw = {}, { home = homedir() } = {}) {
   const task = textOf(raw?.task).trim();
@@ -331,6 +362,25 @@ export function parseRunParams(raw = {}, { home = homedir() } = {}) {
 
   const sessionDir = parseSessionDir(raw, { home });
   if (sessionDir !== undefined) params.sessionDir = sessionDir;
+
+  // #207 R1：扩轮三参数。**maxExtensions 允许 0**（引擎是 `>= 0` 判断，0 = 关掉扩轮），
+  // 所以它走 nonNegativeInt 而不是现成的 positiveInt；另两个引擎要求正整数（0 会被引擎
+  // 当成「没传」静默回落，那才是真的把用户意图吞掉）。
+  if (raw?.maxExtensions !== undefined && raw?.maxExtensions !== null && raw?.maxExtensions !== "") {
+    params.maxExtensions = intParam(raw.maxExtensions, {
+      min: 0, max: MAX_MAX_EXTENSIONS, name: "maxExtensions", zeroAllowed: true,
+    });
+  }
+  if (raw?.maxRoundsCap !== undefined && raw?.maxRoundsCap !== null && raw?.maxRoundsCap !== "") {
+    params.maxRoundsCap = intParam(raw.maxRoundsCap, {
+      min: 1, max: MAX_MAX_ROUNDS_CAP, name: "maxRoundsCap",
+    });
+  }
+  if (raw?.extensionStep !== undefined && raw?.extensionStep !== null && raw?.extensionStep !== "") {
+    params.extensionStep = intParam(raw.extensionStep, {
+      min: 1, max: MAX_EXTENSION_STEP, name: "extensionStep",
+    });
+  }
 
   return /** @type {any} */ (params);
 }
@@ -959,7 +1009,7 @@ function buildDiagnostics(input, source) {
     maxRounds: context.maxRounds,
     timeoutMs: context.timeoutMs,
     elapsedMs: context.elapsedMs,
-    // #207 R3/R4：落盘位置与扩轮闸门。
+    // #207 R3/R4：落盘位置与扩轮闸门（requested = 宿主传了什么，enabled=false 就是没生效）。
     sessionDir: context.sessionDir ?? null,
     reflection: context.reflection ?? null,
   };
@@ -1125,13 +1175,31 @@ export async function runErixRun(rawParams = {}, deps = {}) {
     }, params.timeoutMs);
 
     const runLoop = deps.runLoop ?? libIndex.runToolLoop;
+    // #207 R1：三个扩轮参数直传引擎 `reflection:{…}`，**不碰引擎默认值**（不传就是引擎自己的）。
+    // 它们只在 judge 真的跑了时才生效（引擎仅在 nearLimit + judge 给了布尔 `extend` 时读它们，
+    // 见 src/loop/orchestrator.js 的 `reflectionExtensionStep` / `reflectionMaxExtensions` /
+    // `reflectionMaxRoundsCap` 与 src/reflection/governor.js 的 `extensionAllowed`）。
+    const requestedExtensions = {};
+    for (const key of EXTENSION_PARAM_NAMES) {
+      if (params[key] !== undefined) requestedExtensions[key] = params[key];
+    }
     // judge 开启闸门与改动前逐字一致（ERIX_NO_REFLECTION=1 优先，否则 maxRounds ≥ 16 自动开）。
+    // 闸门关着时三个参数**整体不下发**，并在 diagnostics.reflection 里如实写「没生效」，
+    // 不默默假称传了（本单只打通管道，不把「顺手改开 judge」的成本变化塞进来）。
     const reflectionEnabled = env.ERIX_NO_REFLECTION?.trim() !== "1" && params.maxRounds >= 16;
-    maxExtensions = reflectionEnabled ? ENGINE_DEFAULT_MAX_EXTENSIONS : 0;
-    context.reflection = { enabled: reflectionEnabled, maxExtensions };
+    maxExtensions = reflectionEnabled
+      ? (params.maxExtensions ?? ENGINE_DEFAULT_MAX_EXTENSIONS)
+      : 0;
+    context.reflection = {
+      enabled: reflectionEnabled,
+      requested: requestedExtensions,
+      // 生效上限：未传时是引擎缺省（ ENGINE_DEFAULT_MAX_EXTENSIONS，不是本层下发的默认值）。
+      maxExtensions,
+    };
     const reflection = reflectionEnabled
       ? {
         enabled: true,
+        ...requestedExtensions,
         // 扩轮计数的唯一可靠入口：引擎只在真的执行了 extend / extend+redirect 时调它
         // （src/loop/orchestrator.js 里紧接 governorState.extensionCount += 1）。
         // ⚠ 它不在隔离名单里（契约「reflection.onReflection 仍按未隔离处理，抛错杀 run」），
@@ -1289,6 +1357,12 @@ export function formatPayloadForModel(payload, { limit = 20_000 } = {}) {
     + ` extensions=${payload?.extensionCount ?? 0}/${payload?.maxExtensions ?? 0}`
     + ` resumable=${payload?.resumable === true}`
     + (payload?.resumable === true ? "" : "（本层未接 resume，终局不可续跑）"));
+  const reflection = diagnostics?.reflection;
+  if (reflection && reflection.enabled === false && Object.keys(reflection.requested ?? {}).length > 0) {
+    // 传了扩轮参数但 judge 闸门没开 → 明说它没生效，别假称传了。
+    lines.push(`  ↳ 扩轮参数未生效（judge 未开启，需 maxRounds ≥ 16 或去掉 ERIX_NO_REFLECTION）：`
+      + JSON.stringify(reflection.requested));
+  }
   if (payload?.error?.message) {
     lines.push(`[error] ${payload.error.code ?? payload.error.name ?? "Error"}: ${payload.error.message}`);
   }

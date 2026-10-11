@@ -762,7 +762,9 @@ test("#207 R4：artifacts / extensionCount / maxExtensions / resumable（不落�
   assert.equal(core.RESUMABLE, false);
   // 不落盘也不往 diagnostics 里撒谎
   assert.equal(memory.diagnostics.sessionDir, null);
-  assert.deepEqual(memory.diagnostics.reflection, { enabled: false, maxExtensions: 0 });
+  assert.deepEqual(memory.diagnostics.reflection, {
+    enabled: false, requested: {}, maxExtensions: 0,
+  });
 
   // ② 落盘：两个路径都是真文件，且等于由 runId 推出来的那个（不是硬编码）
   const sessionDir = tempDir("erix-run-artifacts-");
@@ -810,7 +812,7 @@ test("#207 R4：judge 没跑过（judge.log 未建）时 judgeLogPath 仍是 nul
 });
 
 test("#207 R4：扩轮余量是从引擎回调里数出来的，不是字面量", async () => {
-  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, maxRounds: 20 }, {
+  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, maxRounds: 20, maxExtensions: 3 }, {
     env: {},
     home: "/tmp/fake-home",
     now: () => 1_700_000_000_000,
@@ -829,7 +831,7 @@ test("#207 R4：扩轮余量是从引擎回调里数出来的，不是字面量"
     },
   });
   assert.equal(payload.extensionCount, 2, "扩了几轮就报几轮");
-  assert.equal(payload.maxExtensions, core.ENGINE_DEFAULT_MAX_EXTENSIONS, "未传时生效上限就是引擎缺省");
+  assert.equal(payload.maxExtensions, 3, "maxExtensions 是生效上限，不是已用次数");
   assert.equal(payload.resumable, false);
 });
 
@@ -850,6 +852,189 @@ test("#207 R4：formatPayloadForModel 把决策事实也交给模型（artifacts
     finalText: "ok", rounds: 1, usage: {}, termination: { reason: "end_turn" },
   });
   assert.match(bare, /\[facts\] transcript=none judgeLog=none extensions=0\/0 resumable=false/u);
+  // 传了扩轮参数但 judge 没开 → 明说没生效
+  const inert = core.formatPayloadForModel({
+    finalText: "ok", termination: { reason: "end_turn" }, usage: {},
+    diagnostics: { reflection: { enabled: false, requested: { maxExtensions: 5 }, maxExtensions: 0 } },
+  });
+  assert.match(inert, /扩轮参数未生效/u);
+  assert.match(inert, /"maxExtensions":5/u);
+});
+
+test("#207 R1：maxExtensions 允许 0（引擎是 >=0 判断，0 = 关掉扩轮是有效配置），其余两个是正整数", () => {
+  const tuned = core.parseRunParams({
+    task: "t", cwd: "/tmp", maxExtensions: 0, maxRoundsCap: 24, extensionStep: 2,
+  });
+  assert.equal(tuned.maxExtensions, 0, "0 必须原样保留，不能被当「没传」回落");
+  assert.equal(tuned.maxRoundsCap, 24);
+  assert.equal(tuned.extensionStep, 2);
+  // 不传 = 不往 reflection 里写这三个键（引擎默认值一个不动）
+  const bare = core.parseRunParams({ task: "t", cwd: "/tmp" });
+  for (const key of core.EXTENSION_PARAM_NAMES) {
+    assert.equal(key in bare, false, `不传时不得凭空出现 ${key}`);
+  }
+  // 非法值一律 bad_params（抛在 parse 层，由 runErixRun 归一成终局）
+  for (const raw of [
+    { maxExtensions: -1 },
+    { maxExtensions: 1.5 },
+    { maxExtensions: "abc" },
+    { maxExtensions: core.MAX_MAX_EXTENSIONS + 1 },
+    { maxRoundsCap: 0 },
+    { maxRoundsCap: -2 },
+    { extensionStep: 0 },
+    { extensionStep: Number.MAX_SAFE_INTEGER + 10 },
+  ]) {
+    assert.throws(
+      () => core.parseRunParams({ task: "t", cwd: "/tmp", ...raw }),
+      (error) => error.code === "bad_params" && error.name === "ErixRunError",
+      `应当 bad_params：${JSON.stringify(raw)}`,
+    );
+  }
+});
+
+test("#207 R1：三个扩轮参数直传引擎 reflection（含 maxExtensions:0），judge 闸门关着时整体不下发并如实报", async () => {
+  const captured = {};
+  const zero = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 20, maxExtensions: 0, maxRoundsCap: 24, extensionStep: 2 },
+    makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
+  );
+  assert.deepEqual(
+    Object.keys(captured.options.reflection).sort(),
+    ["enabled", "extensionStep", "maxExtensions", "maxRoundsCap", "onReflection"],
+  );
+  assert.equal(captured.options.reflection.maxExtensions, 0, "0 必须真的传给引擎");
+  assert.equal(captured.options.reflection.maxRoundsCap, 24);
+  assert.equal(captured.options.reflection.extensionStep, 2);
+  assert.equal(zero.maxExtensions, 0);
+  assert.deepEqual(zero.diagnostics.reflection, {
+    enabled: true,
+    requested: { maxExtensions: 0, maxRoundsCap: 24, extensionStep: 2 },
+    maxExtensions: 0,
+  });
+
+  // 不传 → reflection 里只有 enabled + onReflection，引擎默认值一个不覆盖
+  const untouched = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 20 },
+    makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
+  );
+  assert.deepEqual(Object.keys(untouched ? captured.options.reflection : {}), ["enabled", "onReflection"]);
+  assert.equal(captured.options.reflection.maxExtensions, undefined, "未传不得替引擎填默认值");
+  assert.equal(untouched.maxExtensions, core.ENGINE_DEFAULT_MAX_EXTENSIONS, "返回面报的是生效上限（引擎缺省 2）");
+
+  // 闸门关着（maxRounds < 16）→ 三个参数整体不下发，但 diagnostics/模型文本里要说清「没生效」
+  const gated = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxExtensions: 5 },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT), captured }),
+  );
+  assert.equal(captured.options.reflection, false);
+  assert.equal(gated.maxExtensions, 0);
+  assert.deepEqual(gated.diagnostics.reflection.requested, { maxExtensions: 5 });
+  assert.match(core.formatPayloadForModel(gated), /扩轮参数未生效/u);
+
+  // ERIX_NO_REFLECTION=1 仍优先（与改动前同口径）
+  await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 20, maxExtensions: 1 },
+    makeDepsWithoutStore({
+      provider: createFakeProvider([]), captured, extra: { env: { ERIX_NO_REFLECTION: "1" } },
+    }),
+  );
+  assert.equal(captured.options.reflection, false, "ERIX_NO_REFLECTION=1 依旧把整个 reflection 关掉");
+});
+
+test("#207 R1：非法扩轮参数在 runErixRun 里归一成 bad_params 终局（不抛异常、不跑模型）", async () => {
+  let providerCalls = 0;
+  const provider = {
+    async chat() { providerCalls += 1; return { content: [], stopReason: "end_turn" }; },
+  };
+  for (const raw of [{ maxExtensions: -1 }, { maxRoundsCap: 0 }, { extensionStep: -3 }]) {
+    const payload = await core.runErixRun(
+      { task: "t", cwd: repoRoot, ...raw },
+      makeDepsWithoutStore({ provider }),
+    );
+    assert.equal(payload.ok, false);
+    assert.equal(payload.error.code, "bad_params", JSON.stringify(raw));
+    assert.equal(payload.error.stage, "assembly");
+    assert.equal(payload.termination.reason, "failed");
+    assert.equal(payload.artifacts.transcriptPath, null);
+    assert.equal(payload.resumable, false);
+  }
+  assert.equal(providerCalls, 0, "参数不合法就不该花模型钱");
+});
+
+test("#207 R1：真引擎实测 maxExtensions=0 真的关掉扩轮，maxExtensions=1 真的扩了轮（离线 fake provider）", async () => {
+  // 不传 sessionDir，只看终局：同一个 provider 脚本，唯一变量是 maxExtensions。
+  const runWith = async (maxExtensions) => {
+    const state = { mainCalls: 0, judgePrompts: [] };
+    const provider = {
+      protocol: "fake",
+      model: "fake-model",
+      async chat(request) {
+        const prompt = request?.messages?.[0]?.content?.[0]?.text ?? "";
+        if (prompt.includes('"done":true|false') || prompt.includes("extend=true")) {
+          state.judgePrompts.push(prompt);
+          const usedOne = prompt.includes("扩轮次数 1/");
+          const decision = !prompt.includes("nearLimit 扩轮评估窗口")
+            // 未进扩轮窗口：不回答 extend（引擎 fail-closed 不扩）
+            ? { done: false, confidence: 0.4, reason: "还有活", evidence: "e", direction: "on_track" }
+            : usedOne
+              ? { done: true, confidence: 0.9, reason: "做完了", evidence: "e" }
+              : { done: false, confidence: 0.5, reason: "没做完", evidence: "e", direction: "on_track", extend: true, extendReason: "上限不够", plan: "继续" };
+          return {
+            content: [{ type: "text", text: JSON.stringify(decision) }],
+            stopReason: "end_turn",
+            usage: { input_tokens: 100, output_tokens: 10 },
+          };
+        }
+        state.mainCalls += 1;
+        // 前 15 轮工具有动作，第 16 轮起只出文本（不带完成词，让治理层而非 completion 词表说话）
+        return state.mainCalls <= 15
+          ? {
+            // 命令每轮不同：重复命令会被治理层当成打转（stall），会在扩轮评估之前就收口
+            content: [{ type: "tool_use", id: `c${state.mainCalls}`, name: "exec", input: { command: `node -e ${state.mainCalls}` } }],
+            stopReason: "tool_use",
+            usage: { input_tokens: 50, output_tokens: 5 },
+          }
+          : {
+            content: [{ type: "text", text: "还没收尾，再看一眼日志" }],
+            stopReason: "end_turn",
+            usage: { input_tokens: 50, output_tokens: 5 },
+          };
+      },
+    };
+    const payload = await core.runErixRun(
+      { task: "扩轮实测", cwd: repoRoot, maxRounds: 16, maxExtensions, extensionStep: 2, maxRoundsCap: 18 },
+      makeDepsWithoutStore({
+        provider,
+        // 内层工具集要真含 exec（否则 tool_use 会被当未知工具，治理层提前收口，测不到扩轮）
+        extra: { createAssembly: () => ({ tools: [{ name: "exec", description: "exec", input_schema: {} }], executeTool: async () => "ok" }) },
+      }),
+    );
+    return { payload, state };
+  };
+
+  const blocked = await runWith(0);
+  assert.ok(
+    blocked.state.judgePrompts.some((prompt) => prompt.includes("扩轮次数 0/0")),
+    "maxExtensions=0 必须出现在引擎真的 judge prompt 里（预算行），否则就是没传到",
+  );
+  assert.equal(blocked.payload.extensionCount, 0, "0 = 一次也不能扩");
+  assert.equal(blocked.payload.rounds, 16, "没扩轮就停在原上限");
+  assert.equal(blocked.payload.termination.reason, "max_rounds_cap");
+
+  const extended = await runWith(1);
+  assert.ok(
+    extended.state.judgePrompts.some((prompt) => prompt.includes("扩轮次数 0/1")),
+    "maxExtensions=1 同样要出现在真 judge prompt 里",
+  );
+  assert.ok(
+    extended.state.judgePrompts.some((prompt) => prompt.includes("扩轮次数 1/")),
+    "扩轮后引擎应当把已用次数记给 judge",
+  );
+  assert.equal(extended.payload.extensionCount, 1, "扩了一次，extensionCount 从 onReflection 数出来");
+  assert.equal(extended.payload.maxExtensions, 1);
+  assert.equal(extended.payload.rounds, 17, "16 + extensionStep 2 封顶到 18，judge 在 17 轮判完");
+  assert.equal(extended.payload.termination.reason, "judge_done");
+  assert.equal(extended.payload.ok, true);
 });
 
 test("formatPayloadForModel / toPiUsage：交回模型的文本与 pi 用量形状", () => {
