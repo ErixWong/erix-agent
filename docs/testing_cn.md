@@ -13,7 +13,7 @@
 | 单元测试与本地集成测试 | `npm test`（`node --test`） | 仓库的 test tree；无需外部 LLM 或网络服务 | 每次提交前；套件必须全绿 |
 | 语法检查 | `npm run check`（`node --check src/index.js`） | 当前由 `check` script 配置的命令 | 作为工程 sanity check |
 | 单个测试文件 | `node --test test/loop.test.js` | 聚焦某一区域时，将路径替换为任意单个测试文件 | 聚焦开发期间 |
-| 可选的真实 relay E2E | `LLM_KIT_E2E=1 node --test examples/*.test.mjs` | `examples/exec-demo.test.mjs`、`examples/memory-benchmark.test.mjs` 和 `examples/provenance-repro.test.mjs`；只有设置 `LLM_KIT_E2E=1` 才会运行，否则跳过 | 手动里程碑或发布验收 |
+| 可选的真实 relay E2E | `LLM_KIT_E2E=1 node --test examples/*.test.mjs` | `examples/exec-demo.test.mjs`、`examples/memory-benchmark.test.mjs` 和 `examples/provenance-repro.test.mjs`；只有设置 `LLM_KIT_E2E=1` 才会运行，否则跳过。provider 槽位与模型 id 按 `LLM_KIT_RELAY_PROVIDER`、`LLM_KIT_RELAY_URL` 或 `LLM_KIT_MODEL` 解析（或 `~/.pi/agent/models.json` 只有一个槽位时直接用它），两者都不写死 | 手动里程碑或发布验收 |
 
 package 将 `./contract-tests` 导出定义为 `./test/contract/index.js`。契约测试是供消费者提供的适配器注册的可复用 `node:test`，不是 `package.json` 中的独立命令。消费者适配器测试导入公共入口并调用相应契约：
 

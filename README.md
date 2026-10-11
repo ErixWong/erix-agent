@@ -989,6 +989,18 @@ The tests require a configured model. The model is resolved from
 configuration fails instead of silently selecting another model. The release
 record should identify the actual model used.
 
+The examples read their relay configuration from pi's
+`~/.pi/agent/models.json` and hardcode neither a provider slot name nor a model
+name. The provider slot is resolved in this order: `LLM_KIT_RELAY_PROVIDER`
+(slot name), `LLM_KIT_RELAY_URL` (matched against `baseUrl`, same-origin with
+trailing slashes normalized), `LLM_KIT_MODEL` (the slot whose model list
+contains that id), then a single-slot configuration used as is; otherwise the
+run fails by listing the candidate slots with their base URLs and model lists.
+The model is `LLM_KIT_MODEL` when set; otherwise it is the first entry of the
+declared demo preference list that the matched slot actually offers, and an
+empty intersection fails rather than silently selecting a model the slot does
+not declare.
+
 The notes experiment scripts likewise take the model from `--model`,
 `ERIX_EXPERIMENT_MODEL`, or `--config`/`~/.erix/config.json` in that order.
 They provide a cost preview, default to dry-run without `--yes`, default to

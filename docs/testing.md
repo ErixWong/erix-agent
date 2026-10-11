@@ -13,7 +13,7 @@ The test suite is dependency-free: it uses `node:test` and `node:assert/strict`,
 | Unit and local integration tests | `npm test` (`node --test`) | The repository test tree; no external LLM or network service is required | Before every commit; the suite must be green |
 | Syntax check | `npm run check` (`node --check src/index.js`) | The command currently configured by the `check` script | As an engineering sanity check |
 | One test file | `node --test test/loop.test.js` | Replace the path with any individual test file when focusing on one area | During focused development |
-| Optional real-relay E2E | `LLM_KIT_E2E=1 node --test examples/*.test.mjs` | `examples/exec-demo.test.mjs`, `examples/memory-benchmark.test.mjs`, and `examples/provenance-repro.test.mjs`; these are skipped unless `LLM_KIT_E2E=1` is set | Manual milestone or release validation |
+| Optional real-relay E2E | `LLM_KIT_E2E=1 node --test examples/*.test.mjs` | `examples/exec-demo.test.mjs`, `examples/memory-benchmark.test.mjs`, and `examples/provenance-repro.test.mjs`; these are skipped unless `LLM_KIT_E2E=1` is set. The provider slot and model id are resolved from `LLM_KIT_RELAY_PROVIDER`, `LLM_KIT_RELAY_URL`, or `LLM_KIT_MODEL` (or a single-slot `~/.pi/agent/models.json`); neither is hardcoded | Manual milestone or release validation |
 
 The package defines the `./contract-tests` export as `./test/contract/index.js`. Contract tests are reusable `node:test` registrations for consumer-provided adapters; they are not a separate command in `package.json`. A consumer adapter test imports the public entry point and invokes the relevant contract:
 
