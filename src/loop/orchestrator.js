@@ -656,7 +656,20 @@ export async function runToolLoop(options) {
   // 后到的四个符号在原声明点之前没有任何语句能读到（逐符号 `rg` 核过），把它们从 TDZ 变成
   // 已初始化不改变可观察行为；其余声明（含 `emitEvent` 在 `notifyModelMetadataMissing` 下方
   // 这个次序）一行没动。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any }} */
+  // 【C resume 尾队列】`resumePendingTools` / `resumeTailMessages` / `resumeRunSnapshotMessages`
+  //   （原 :1266 / :1267 / :1269，初值都是空数组 `[]`）与 `persistedTranscriptLength`（原 :1270，
+  //   初值是数字 `0`）。本组**只加格子**：扁平放置、不套子对象，【A】【B】的格子一行没动。
+  // TDZ：这四个符号在原声明点（:1266/:1267/:1269/:1270）之前没有任何语句能读到（逐符号 `rg` 核过，
+  //   原声明点就是它们在文件里的首次出现），把它们从 TDZ 变成已初始化不改变可观察行为。
+  // 【C resume 尾队列（续）】`resumeTranscriptStart`（原 :1268）与 `lastPersistenceFailure`（原 :1273）
+  //   ——两个**无初值**的格子，原 `let X;` 就是 `undefined`，故新格子显式写 `undefined`（不拿 `null`/`0`
+  //   假冒初值：“未发生过”与“发生过但为空”在 `!== undefined` 判定上是两种语义——resume 续写守卫
+  //   （`runLoopState.resumeTranscriptStart !== undefined`）与 partialPersistence 的两处抛出点
+  //   （`runLoopState.lastPersistenceFailure !== undefined`）全部依赖这个区分）。
+  //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
+  // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
+  //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -666,6 +679,22 @@ export async function runToolLoop(options) {
     hadToolUse: false,
     stallStreak: 0,
     lastStallSignature: null,
+    // 【C resume 尾队列】（初值与语义与原闭包 `let` 逐字一致）
+    resumePendingTools: [],
+    resumeTailMessages: [],
+    resumeRunSnapshotMessages: [],
+    persistedTranscriptLength: 0,
+    // 【C resume 尾队列（续）】无初值格子：原 `let X;` 的初值就是 undefined，逐字保住。
+    resumeTranscriptStart: undefined,
+    lastPersistenceFailure: undefined,
+    // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值 → undefined）。
+    // 下面这行注解是原 :1264 那行**逐字搬过来的**（issue #177 刀1 加的，只为喂给 `--checkJs`（#214
+    // 棘轮），零运行时影响）：这个值只由 `restoreResume` 经 `set resumeRunSnapshot` 访问器赋值，
+    // 控制流分析看不见那条赋值，丢了注解就把这个格子当成 `undefined`，于是
+    // `if (resumeRunSnapshot && …)` 里的 `resumeRunSnapshot.round` 退回 TS2339（… on type 'never'）、
+    // 棘轮立刻红。snapshot 的形状由宿主 store 决定，这里不假装精确。
+    /** @type {Record<string, any>|undefined} */
+    resumeRunSnapshot: undefined,
   };
   const errorLedger = createErrorLedger();
 
@@ -1257,20 +1286,16 @@ export async function runToolLoop(options) {
   // `budgetRounds` 是**另一个**计数器（本次调用的预算消耗），本组未动。
   let budgetRounds = 0;
   // `foldedThrough` 已迁入 `runLoopState.foldedThrough`（issue #177 刀5）。
-  // 类型注解只为喂给 `--checkJs`（#214 棘轮），零运行时影响：这个值只由 `restoreResume` 经下方
-  // `set resumeRunSnapshot` 赋值，控制流分析看不见那条赋值，就把变量当成 `undefined`，于是
-  // `if (resumeRunSnapshot && …)` 里的 `resumeRunSnapshot.round` 报 TS2339（… on type 'never'）。
-  // snapshot 的形状由宿主 store 决定，这里不假装精确。
-  /** @type {Record<string, any>|undefined} */
-  let resumeRunSnapshot;
-  let resumePendingTools = [];
-  let resumeTailMessages = [];
-  let resumeTranscriptStart;
-  let resumeRunSnapshotMessages = [];
-  let persistedTranscriptLength = 0;
+  // 【C 组第1刀】`resumePendingTools` / `resumeTailMessages` / `resumeRunSnapshotMessages` /
+  //   `persistedTranscriptLength` 已迁入 `runLoopState`（issue #177 刀5 C 组，格子在状态对象末尾）。
+  // 【C 组第2刀】`resumeTranscriptStart`（原 :1268）/ `lastPersistenceFailure`（原 :1273）同上。
+  // 【C 组第3刀】`resumeRunSnapshot`（原 :1265）也已迁入 `runLoopState.resumeRunSnapshot`，它的
+  //   `@type {Record<string, any>|undefined}` 注解（原 :1264，issue #177 刀1 为喂 `--checkJs` #214 棘轮
+  //   而加，零运行时影响）**随字段逐字搬到状态对象那一格上**：这个值只由 `restoreResume` 经
+  //   `set resumeRunSnapshot` 访问器赋值，控制流分析看不见那条赋值，注解丢了 `resumeRunSnapshot.round`
+  //   就会退回 TS2339（… on type 'never'）——本组唯一一行类型注解，一行也没删。
   const resumeExecutedToolIds = new Set();
   const resumeRunSnapshotResults = new Map();
-  let lastPersistenceFailure;
   try {
     await restoreResume({
     resume,
@@ -1325,40 +1350,40 @@ export async function runToolLoop(options) {
       runLoopState.foldedThrough = value;
     },
     get resumeRunSnapshot() {
-      return resumeRunSnapshot;
+      return runLoopState.resumeRunSnapshot;
     },
     set resumeRunSnapshot(value) {
-      resumeRunSnapshot = value;
+      runLoopState.resumeRunSnapshot = value;
     },
     get resumePendingTools() {
-      return resumePendingTools;
+      return runLoopState.resumePendingTools;
     },
     set resumePendingTools(value) {
-      resumePendingTools = value;
+      runLoopState.resumePendingTools = value;
     },
     get resumeTailMessages() {
-      return resumeTailMessages;
+      return runLoopState.resumeTailMessages;
     },
     set resumeTailMessages(value) {
-      resumeTailMessages = value;
+      runLoopState.resumeTailMessages = value;
     },
     get resumeTranscriptStart() {
-      return resumeTranscriptStart;
+      return runLoopState.resumeTranscriptStart;
     },
     set resumeTranscriptStart(value) {
-      resumeTranscriptStart = value;
+      runLoopState.resumeTranscriptStart = value;
     },
     get resumeRunSnapshotMessages() {
-      return resumeRunSnapshotMessages;
+      return runLoopState.resumeRunSnapshotMessages;
     },
     set resumeRunSnapshotMessages(value) {
-      resumeRunSnapshotMessages = value;
+      runLoopState.resumeRunSnapshotMessages = value;
     },
     get persistedTranscriptLength() {
-      return persistedTranscriptLength;
+      return runLoopState.persistedTranscriptLength;
     },
     set persistedTranscriptLength(value) {
-      persistedTranscriptLength = value;
+      runLoopState.persistedTranscriptLength = value;
     },
     resumeExecutedToolIds,
     resumeRunSnapshotResults,
@@ -1713,7 +1738,7 @@ export async function runToolLoop(options) {
         : undefined;
   const hasRunSnapshotStore = persistenceRequired && snapshotSaveMethod !== undefined;
   const replayForToolUse = (toolUse) => {
-    const resumedToolUse = resumePendingTools.find((candidate) => (
+    const resumedToolUse = runLoopState.resumePendingTools.find((candidate) => (
       candidate?.id === toolUse?.id
       && candidate?.name === toolUse?.name
     ));
@@ -1740,7 +1765,7 @@ export async function runToolLoop(options) {
     partialText,
     partialRound,
   }) => {
-    lastPersistenceFailure = undefined;
+    runLoopState.lastPersistenceFailure = undefined;
     const method = snapshotSaveMethod;
     if (method === undefined) {
       // 无快照能力：单条诊断（Set 去重，不每轮刷屏），工具照常执行。
@@ -1762,7 +1787,7 @@ export async function runToolLoop(options) {
         toolUse: cloneState(snapshotPendingToolUse),
         pendingToolUses: cloneState(snapshotPendingToolUses),
         messages: cloneState(messagesOverride ?? messages),
-        persistedTranscriptLength,
+        persistedTranscriptLength: runLoopState.persistedTranscriptLength,
         executedToolIds: [...executedToolIds],
         toolResults: toolResults.map((toolResult) => ({
           toolUseId: toolResult.tool_use_id,
@@ -1776,7 +1801,7 @@ export async function runToolLoop(options) {
       });
     } catch (error) {
       if (persistenceInfoFor(error) !== undefined) {
-        lastPersistenceFailure = error;
+        runLoopState.lastPersistenceFailure = error;
         return false;
       }
       throw error;
@@ -1808,7 +1833,7 @@ export async function runToolLoop(options) {
             partialText,
             partialRound: attempt.round,
           });
-          if (lastPersistenceFailure !== undefined) throw lastPersistenceFailure;
+          if (runLoopState.lastPersistenceFailure !== undefined) throw runLoopState.lastPersistenceFailure;
           attempt.persistedText = partialText;
         } catch (error) {
           attempt.failure = error;
@@ -1876,7 +1901,7 @@ export async function runToolLoop(options) {
         if (attempt.failure !== undefined) throw attempt.failure;
         if (retrying && attempt.persistedText !== undefined) {
           await persistRunSnapshot({ round, status: "pending" });
-          if (lastPersistenceFailure !== undefined) throw lastPersistenceFailure;
+          if (runLoopState.lastPersistenceFailure !== undefined) throw runLoopState.lastPersistenceFailure;
         }
       } finally {
         if (partialAttempt === attempt) partialAttempt = undefined;
@@ -2204,10 +2229,10 @@ export async function runToolLoop(options) {
       runSnapshotFailureCount = value;
     },
     get lastPersistenceFailure() {
-      return lastPersistenceFailure;
+      return runLoopState.lastPersistenceFailure;
     },
     set lastPersistenceFailure(value) {
-      lastPersistenceFailure = value;
+      runLoopState.lastPersistenceFailure = value;
     },
     get judgeInterceptCount() {
       return judgeInterceptCount;
@@ -2491,12 +2516,12 @@ export async function runToolLoop(options) {
   };
 
   const appendResumeTailMessages = () => {
-    for (const entry of resumeTailMessages) {
+    for (const entry of runLoopState.resumeTailMessages) {
       const message = cloneState(entry.message);
       messages.push(message);
       messageRounds.set(message, entry.round);
     }
-    resumeTailMessages = [];
+    runLoopState.resumeTailMessages = [];
   };
 
   try {
@@ -2507,9 +2532,9 @@ export async function runToolLoop(options) {
     ttlInjectConsumed = false;
     lowBudgetInjectFired = false;
     throwIfAborted(signal);
-    if (resumePendingTools.length > 0) {
+    if (runLoopState.resumePendingTools.length > 0) {
       const resumedToolResults = [];
-      for (const [index, resumePendingTool] of resumePendingTools.entries()) {
+      for (const [index, resumePendingTool] of runLoopState.resumePendingTools.entries()) {
         const resumedToolUse = { ...resumePendingTool };
         delete resumedToolUse.replay;
         emitEvent({ type: "tool_use", round: runLoopState.rounds, toolUse: cloneState(resumedToolUse) });
@@ -2564,7 +2589,7 @@ export async function runToolLoop(options) {
           resumedToolUse,
           runLoopState.rounds,
           resumedToolResults,
-          resumePendingTools.slice(index),
+          runLoopState.resumePendingTools.slice(index),
         );
       }
       appendToolResultsToTranscript(resumedToolResults, runLoopState.rounds);
@@ -2582,34 +2607,34 @@ export async function runToolLoop(options) {
         if (runLoopState.rounds !== undefined) messageRounds.set(hintMessage, runLoopState.rounds);
         pendingDirectionHints.length = 0;
       }
-      resumePendingTools = [];
+      runLoopState.resumePendingTools = [];
     }
-    if (resumeRunSnapshot && resumeTranscriptStart !== undefined) {
-      const resumeRecordMessages = messages.slice(resumeTranscriptStart);
+    if (runLoopState.resumeRunSnapshot && runLoopState.resumeTranscriptStart !== undefined) {
+      const resumeRecordMessages = messages.slice(runLoopState.resumeTranscriptStart);
       const resumeMessagesToPersist = [
-        ...resumeRunSnapshotMessages,
+        ...runLoopState.resumeRunSnapshotMessages,
         ...resumeRecordMessages,
       ];
       const persisted = await persist("appendRound", runId, {
-        round: resumeRunSnapshot.round,
-        roundKey: `${String(runId)}:round:${String(resumeRunSnapshot.round)}`,
+        round: runLoopState.resumeRunSnapshot.round,
+        roundKey: `${String(runId)}:round:${String(runLoopState.resumeRunSnapshot.round)}`,
         // 引擎命名空间：宿主可能已用默认键 `${runId}:round:N` 写入自己的行（追问/历史种子），
         // 同键会被 appendRound 去重 → 续接轮（含补跑工具结果）落盘被静默丢弃，
         // transcript 只剩宿主那条近空行（issue #32 #8）。`:resume` 幂等，重启重跑不重复写。
-        dedupKey: `${String(runId)}:engine:round:${String(resumeRunSnapshot.round)}:resume`,
+        dedupKey: `${String(runId)}:engine:round:${String(runLoopState.resumeRunSnapshot.round)}:resume`,
         messages: cloneState(resumeMessagesToPersist),
-        ...(archivedOutputs.some((entry) => entry.round === resumeRunSnapshot.round)
+        ...(archivedOutputs.some((entry) => entry.round === runLoopState.resumeRunSnapshot.round)
           ? {
             toolOutputs: archivedOutputs
-              .filter((entry) => entry.round === resumeRunSnapshot.round)
+              .filter((entry) => entry.round === runLoopState.resumeRunSnapshot.round)
               .map(({ toolUseId, name, content }) => ({ toolUseId, name, content })),
           }
           : {}),
         ts: new Date().toISOString(),
       });
-      if (persisted) persistedTranscriptLength += resumeMessagesToPersist.length;
-      resumeTranscriptStart = undefined;
-      resumeRunSnapshotMessages = [];
+      if (persisted) runLoopState.persistedTranscriptLength += resumeMessagesToPersist.length;
+      runLoopState.resumeTranscriptStart = undefined;
+      runLoopState.resumeRunSnapshotMessages = [];
     }
     appendResumeTailMessages();
 
@@ -3096,7 +3121,7 @@ export async function runToolLoop(options) {
       }
     }
     const persisted = await persist("appendRound", runId, record);
-    if (persisted) persistedTranscriptLength += record.messages.length;
+    if (persisted) runLoopState.persistedTranscriptLength += record.messages.length;
     if (onRound) {
       // issue #173 PR-B：onRound 是被 await 的钩子，同步 throw 与 rejected Promise 都在此吸收。
       // 轮次此刻已经落库，宿主回调失败不得改写 run 终局——记一笔后继续跑下一轮。
