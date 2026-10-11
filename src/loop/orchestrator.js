@@ -669,7 +669,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -695,6 +695,14 @@ export async function runToolLoop(options) {
     // 棘轮立刻红。snapshot 的形状由宿主 store 决定，这里不假装精确。
     /** @type {Record<string, any>|undefined} */
     resumeRunSnapshot: undefined,
+    // 【D run-state 可用性】`runStateVersion`（原 :1188）与 `runStateAvailability`（原 :1193）——
+    //   两个**有初值**的格子，初值逐字原样搬（`0` 与 `{ status: "available" }`）：版本号的起点决定
+    //   落盘 run-state 的 `stateVersion` 与 semantic stale 判定基准，availability 的起点决定「未发生
+    //   校验失败」时渲染出的 `stateAvailability.status`，两者都是可观察行为，不做任何「顺手归一」。
+    //   TDZ：原声明点（:1188/:1193）就是这两个符号的全文件首次出现（逐符号 `rg -n '\b<符号>\b'` 数过：
+    //   9 行 / 6 行，全部在声明之后），提先初始化不可观察。
+    runStateVersion: 0,
+    runStateAvailability: { status: "available" },
   };
   const errorLedger = createErrorLedger();
 
@@ -1185,12 +1193,11 @@ export async function runToolLoop(options) {
   let navigationRecordCount = 0;
   let toolErrorCount = 0;
   let runSnapshotFailureCount = 0;
-  let runStateVersion = 0;
+  // `runStateVersion` / `runStateAvailability` 已迁入 `runLoopState`（issue #177 刀5-D）。
   let ttlInjectArmed = false;
   let ttlInjectConsumed = false;
   let lowBudgetInjectFired = false;
   let currentRunState;
-  let runStateAvailability = { status: "available" };
   let currentTerminationReason = "running";
   let todoState;
   let semanticState;
@@ -1313,16 +1320,16 @@ export async function runToolLoop(options) {
       currentRunState = value;
     },
     get runStateAvailability() {
-      return runStateAvailability;
+      return runLoopState.runStateAvailability;
     },
     set runStateAvailability(value) {
-      runStateAvailability = value;
+      runLoopState.runStateAvailability = value;
     },
     get runStateVersion() {
-      return runStateVersion;
+      return runLoopState.runStateVersion;
     },
     set runStateVersion(value) {
-      runStateVersion = value;
+      runLoopState.runStateVersion = value;
     },
     get messages() {
       return messages;
@@ -1925,7 +1932,7 @@ export async function runToolLoop(options) {
     }
     const deterministic = createDeterministicRunState({
       runId,
-      stateVersion: runStateVersion,
+      stateVersion: runLoopState.runStateVersion,
       rounds: runLoopState.rounds,
       runRounds: budgetRounds,
       maxRounds: governorState.effectiveMaxRounds,
@@ -1956,14 +1963,14 @@ export async function runToolLoop(options) {
         semanticState = {
           status: "error",
           text: "",
-          semanticStateVersion: runStateVersion,
+          semanticStateVersion: runLoopState.runStateVersion,
           detail: String(error?.message ?? error).slice(0, 80),
         };
       }
     } else if (
       semanticState
       && semanticState.semanticStateVersion !== undefined
-      && semanticState.semanticStateVersion !== runStateVersion
+      && semanticState.semanticStateVersion !== runLoopState.runStateVersion
     ) {
       semanticState = {
         ...semanticState,
@@ -1972,7 +1979,7 @@ export async function runToolLoop(options) {
     }
     currentRunState = withSemanticRunState({
       ...deterministic,
-      stateAvailability: { ...runStateAvailability },
+      stateAvailability: { ...runLoopState.runStateAvailability },
     }, semanticState);
     currentRunState.rendered = renderRunState(currentRunState);
     if (inject) messages = upsertRunStateInMessages(messages, currentRunState.rendered);
@@ -2469,7 +2476,7 @@ export async function runToolLoop(options) {
     // 折叠轮优先把新鲜状态持久挂到摘要块（通道 A）；只有没有持久挂载时，
     // 才追加请求视图尾部（通道 B），避免同一轮同时产生两个 run-state 块。
     if (persistInject || requestInject) {
-      runStateVersion += 1;
+      runLoopState.runStateVersion += 1;
       if (requestInject && ttlInjectArmed) {
         // TTL 首折和低预算门各只消费一次，避免每轮改写破坏前缀缓存。
         ttlInjectArmed = false;
