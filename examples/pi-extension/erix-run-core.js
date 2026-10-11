@@ -223,6 +223,24 @@ export function judgeLogRecord(record, now = () => Date.now()) {
 }
 
 /**
+ * 一个 run 的两个产物路径（#234：从 `createRunPersistence` 里提出来给异步层复用）。
+ *
+ * 布局只在这里定一处：`<dir>/<safeRunId>.jsonl` 与 `<dir>/outputs/<safeRunId>/judge.log`
+ * （照 AGENTS.md §6，judge.log 位置与 CLI 默认一致）。异步层的 `status.json` 取 judge.log 的
+ * 同目录，所以不会出现第二套布局。
+ *
+ * @param {{sessionDir:string, runId:string}} input
+ * @returns {{transcriptPath:string, judgeLogPath:string}}
+ */
+export function artifactPaths({ sessionDir, runId }) {
+  const safeId = safeRunIdForFile(runId);
+  return {
+    transcriptPath: path.join(sessionDir, `${safeId}.jsonl`),
+    judgeLogPath: path.join(sessionDir, "outputs", safeId, "judge.log"),
+  };
+}
+
+/**
  * 一次 run 的落盘面（#207 R3）：transcript 文件 store + judge.log 写入器 + 两个产物路径。
  *
  * 目录布局照 AGENTS.md §6：`<dir>/<runId>.jsonl` 与 `<dir>/outputs/<runId>/judge.log`
@@ -247,9 +265,7 @@ export function createRunPersistence({
       + "检查 ERIX_AGENT_LIB 指向的检出是否太旧）",
     );
   }
-  const safeId = safeRunIdForFile(runId);
-  const transcriptPath = path.join(sessionDir, `${safeId}.jsonl`);
-  const judgeLogPath = path.join(sessionDir, "outputs", safeId, "judge.log");
+  const { transcriptPath, judgeLogPath } = artifactPaths({ sessionDir, runId });
   try {
     // 装配期就把目录建出来：坏路径在这里报 bad_params，而不是等到引擎落盘时变成半截 run。
     mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
@@ -1019,8 +1035,16 @@ function buildDiagnostics(input, source) {
   return diagnostics;
 }
 
-function newRunId(now) {
+function newRunIdFromClock(now) {
   return `erix-run-${new Date(now()).toISOString().replaceAll(":", "-")}-${randomBytes(3).toString("hex")}`;
+}
+
+/**
+ * runId 的唯一来源（#234：异步分支要在**起 run 之前**就拿到 id 当句柄，不能等到终局才从
+ * diagnostics 里摸）。同步路径不传 `deps.runId`，行为与改动前逐字一致。
+ */
+export function newRunId(now = () => Date.now()) {
+  return newRunIdFromClock(now);
 }
 
 /**
@@ -1127,7 +1151,7 @@ export async function runErixRun(rawParams = {}, deps = {}) {
         if (info?.phase === "start") progress(`→ ${info.name} ${preview(info.input)}`);
       } })
       : createInnerTools({ lib, cwd: params.cwd });
-    const runId = newRunId(now);
+    const runId = deps.runId ?? newRunId(now);
     context.runId = runId;
 
     // 工具调用的进度不从这里发：引擎的 tool_use / tool_result 事件已覆盖同一事件，
