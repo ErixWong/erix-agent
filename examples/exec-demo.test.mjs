@@ -315,9 +315,13 @@ test("loadRelayConfig：models.json 可读且不含硬编码凭据", { skip: !E2
         assert.ok((providers[name]?.models ?? []).some((m) => m.id === cfg.model),
           `解析出的模型 ${cfg.model} 必须在 provider ${name} 的 models 列表里`);
       } catch (error) {
-        // 唯一合法失败形态：该槽位的模型列表与 demo 偏好无交集，且错误信息列出可用模型
-        assertListsCandidates(error.message, { names: [] });
-        assert.match(error.message, /LLM_KIT_MODEL/u);
+        // 唯一合法失败形态：该槽位的模型列表与 demo 偏好无交集（真实环境里常见），
+        // 此时必须列出该槽位的可用模型并指路 LLM_KIT_MODEL，而不是拖回一个写死名字。
+        const available = (providers[name]?.models ?? []).map((m) => m.id);
+        assert.match(error.message, /demo 偏好表/u, `真实槽位 ${name} 只允许「偏好无交集」这一种失败：${error.message}`);
+        assert.ok(available.every((id) => error.message.includes(id)),
+          `错误信息应列出 ${name} 的可用模型：${error.message}`);
+        assert.match(error.message, /LLM_KIT_MODEL/u, "错误信息要指路 LLM_KIT_MODEL");
       }
     }
   } finally {
