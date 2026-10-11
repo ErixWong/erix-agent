@@ -558,6 +558,8 @@ LLM_KIT_E2E=1 node --test examples/*.test.mjs
 
 测试需要已配置的模型。模型按 `slots.default.model`、`LLM_KIT_MODEL` 或 `ERIX_DEFAULT_MODEL` 的顺序解析；缺少配置时会失败，而不是静默选择其他模型。发布记录应标明实际使用的模型。
 
+示例从 pi 的 `~/.pi/agent/models.json` 读 relay 配置，既不写死 provider 槽位名，也不写死模型名。provider 槽位按以下顺序解析：`LLM_KIT_RELAY_PROVIDER`（槽位名）、`LLM_KIT_RELAY_URL`（与 `baseUrl` 同源匹配，比较前规范化尾部斜杠）、`LLM_KIT_MODEL`（模型列表含该 id 的槽位），其次只有一个槽位时直接用它；否则运行失败并列出候选槽位及其 baseUrl 与模型列表。模型在 `LLM_KIT_MODEL` 设了时直接采用；否则取声明的 demo 偏好表里该槽位真正提供的第一项，交集为空则失败，而不是静默选择一个槽位并未声明的模型。
+
 Notes 实验脚本同样按 `--model`、`ERIX_EXPERIMENT_MODEL` 或 `--config`/`~/.erix/config.json` 的顺序获取模型。它们提供成本预览；不带 `--yes` 时默认为 dry-run；默认 `--max-calls 40`；模型调用失败后立即停止，而不是切换模型。
 
 ## 基准验证（erix-bench / Terminal-Bench archive）
