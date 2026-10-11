@@ -8,7 +8,7 @@
 // 机制出处：docs/tasks/active/261010-13-erix-run-async/analysis.md（照 pi-subagents 的逐行实现）
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -624,4 +624,125 @@ test("#234 R6：status.json 的 artifacts 沿用 core 的 resolveArtifacts 口�
   assert.equal(disk.termination, null, "内层还没给出终局时不替引擎发明 termination.reason");
   assert.equal(disk.timeout, true, "看门狗致因要如实标在盘上");
   assert.ok(runtime.registry.size >= 0);
+});
+
+// ---------------------------------------------------------------------------
+// #237 R4：`status.json` 的 tmp + rename 原子写（折带的 #234 遗留）
+//
+// 为什么单独一节：主 agent 实测把 `writeStatusFile` 的「写 `.tmp-` 再 rename」退化成
+// 「直接 `writeFileSync(最终路径)`」，**全量测试零红** —— 原子写当时没有任何覆盖。
+// 下面三条把「先写临时文件、再 rename」这条**顺序**钉住，并补上「写中途失败」的三条后果
+// （旧内容不被破坏 / 不留 `.tmp-` 残留 / 错误进 `statusWriteError` 而不抛）。
+// 注入缝照 `erix-run-core.js` 的 `deps.createStore` 风格：`writeStatusFile(input, deps)`，
+// deps 可换 `mkdirSync` / `writeFileSync` / `renameSync` / `unlinkSync`；`createAsyncRuntime({deps})`
+// 把它透传给内部每一次 `persistStatus`。
+// ---------------------------------------------------------------------------
+
+test("#237 R4：writeStatusFile 必须先写 .tmp- 再 rename（退化成直接写同名文件必须变红）", () => {
+  const sessionDir = tempDir("erix-run-atomic-");
+  const runId = "erix-run-atomic-1";
+  const file = statusFilePath({ sessionDir, runId });
+  const calls = [];
+  const written = writeStatusFile(
+    { sessionDir, runId, view: { runId, status: "running" }, now: () => 1_700_000_000_000 },
+    {
+      writeFileSync: (p, data, enc) => { calls.push(["write", p]); writeFileSync(p, data, enc); },
+      renameSync: (from, to) => { calls.push(["rename", from, to]); renameSync(from, to); },
+    },
+  );
+
+  assert.equal(written.error, undefined);
+  assert.equal(written.path, file);
+  assert.deepEqual(
+    calls.map((entry) => entry[0]),
+    ["write", "rename"],
+    "顺序必须是「写临时文件 → rename」；少一步 rename（直接写同名）就不是原子写",
+  );
+  const tmp = calls[0][1];
+  assert.notEqual(tmp, file, "写入的目标不能就是最终文件本身");
+  assert.match(path.basename(tmp), /^status\.json\.tmp-/, `临时文件名要认得出来，实测 ${tmp}`);
+  assert.deepEqual(calls[1].slice(1), [tmp, file], "rename 必须把那个临时文件搬到最终路径");
+  assert.equal(
+    readFileSync(file, "utf8"),
+    `${JSON.stringify({ runId, status: "running" }, null, 2)}\n`,
+    "rename 之后盘上内容就是那个视图",
+  );
+  assert.deepEqual(
+    readdirSync(path.dirname(file)).filter((name) => name.includes(".tmp-")),
+    [],
+    "成功路径也不能留 .tmp- 残留",
+  );
+});
+
+test("#237 R4：rename 失败时旧 status.json 不被破坏、不留 .tmp- 残留、错误被回报而不是抛出", () => {
+  const sessionDir = tempDir("erix-run-atomic-rename-fail-");
+  const runId = "erix-run-atomic-rename-fail";
+  const first = writeStatusFile({ sessionDir, runId, view: { runId, status: "running", marker: "old" } });
+  assert.equal(first.error, undefined);
+  const before = readFileSync(first.path, "utf8");
+  assert.match(before, /"old"/u);
+
+  const second = writeStatusFile(
+    { sessionDir, runId, view: { runId, status: "completed", marker: "new" } },
+    { renameSync: () => { throw new Error("EXDEV: cross-device link not permitted"); } },
+  );
+
+  assert.equal(typeof second.error, "string", "写失败要回报错误，不能抛出去打断调用方");
+  assert.match(second.error, /EXDEV/u);
+  assert.equal(second.path, first.path);
+  assert.equal(
+    readFileSync(first.path, "utf8"),
+    before,
+    "写中途失败绝不能破坏旧文件（读者要么看到旧的完整内容，要么看到新的完整内容）",
+  );
+  assert.match(readFileSync(first.path, "utf8"), /"old"/u);
+  assert.notMatch(readFileSync(first.path, "utf8"), /"new"/u);
+  assert.deepEqual(
+    readdirSync(path.dirname(first.path)),
+    ["status.json"],
+    `中途失败必须把半截 .tmp- 清掉，实测目录：${readdirSync(path.dirname(first.path)).join(", ")}`,
+  );
+});
+
+test("#237 R4：写临时文件中途抛错（半截文件已在盘上）同样要清干净并回报错误", () => {
+  const sessionDir = tempDir("erix-run-atomic-write-fail-");
+  const runId = "erix-run-atomic-write-fail";
+  const first = writeStatusFile({ sessionDir, runId, view: { runId, status: "running", marker: "old" } });
+  const before = readFileSync(first.path, "utf8");
+
+  const second = writeStatusFile(
+    { sessionDir, runId, view: { runId, status: "failed", marker: "new" } },
+    {
+      // 真写一半再抛：模拟磁盘写了一半就 ENOSPC
+      writeFileSync: (p, data) => { writeFileSync(p, String(data).slice(0, 12), "utf8"); throw new Error("ENOSPC: no space left on device"); },
+    },
+  );
+
+  assert.match(second.error ?? "", /ENOSPC/u);
+  assert.equal(readFileSync(first.path, "utf8"), before, "旧文件原样");
+  assert.deepEqual(
+    readdirSync(path.dirname(first.path)),
+    ["status.json"],
+    `半截临时文件不能留在盘上，实测：${readdirSync(path.dirname(first.path)).join(", ")}`,
+  );
+});
+
+test("#237 R4：status.json 写失败不打断派工，错误经 job.statusWriteError 进查询视图（不抛）", async () => {
+  const sessionDir = tempDir("erix-run-atomic-runtime-");
+  const job = gatedJob();
+  const { runtime, registry } = makeRuntime({
+    job: job.job,
+    extra: { deps: { writeFileSync: () => { throw new Error("EROFS: read-only file system"); } } },
+  });
+
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
+  assert.equal(handle.statusPath, statusFilePath({ sessionDir, runId: handle.runId }), "写失败不改变落点");
+  const running = runtime.act({ action: "status", runId: handle.runId });
+  assert.equal(running.view.status, "running", "派工照常进行（写盘失败不是内层 run 的失败）");
+  assert.match(running.view.statusWriteError ?? "", /EROFS/u, "写失败要成为可机读事实，别让查询侧以为落盘成功");
+
+  job.release();
+  await waitUntil(() => registry.get(handle.runId).status === "completed", { label: "completed despite write failure" });
+  assert.match(registry.get(handle.runId).statusWriteError, /EROFS/u);
+  assert.equal(existsSync(handle.statusPath), false, "写不进去就是没有这个文件（不假装落盘成功）");
 });
