@@ -1074,3 +1074,127 @@ test("formatPayloadForModel / toPiUsage：交回模型的文本与 pi 用量形�
   assert.equal(core.toPiUsage(undefined), undefined);
   assert.equal(existsSync(path.join(repoRoot, "examples", "pi-extension", "erix-run-core.js")), true);
 });
+
+// ---------------------------------------------------------------------------
+// #234 R0（前置补测）：主 agent 变异实测出两处覆盖缺口，这里把安全网织上。
+// 两条断言都刻意钉**字面值**而不是回读同一个常量：回读常量的断言在常量被改错时永远绿，
+// 等于没测（反向证见 WORK-REPORT-234.md）。
+// ---------------------------------------------------------------------------
+
+test("#234 R0：judge 开着但没传 maxExtensions 时生效上限 = 引擎缺省 2（钉字面值 + 与引擎 prompt 对账）", async () => {
+  assert.equal(core.ENGINE_DEFAULT_MAX_EXTENSIONS, 2, "引擎缺省被改就得重新核对 src/loop/orchestrator.js 的 reflectionMaxExtensions");
+
+  // (a) 装配层：闸门开着、三个扩轮参数一个不传 → 生效上限是字面 2，且**不往下发**（不覆盖引擎默认）
+  const captured = {};
+  const reported = await core.runErixRun({ task: "t", cwd: repoRoot, maxRounds: 20 }, {
+    ...makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
+    home: mkdtempSync(path.join(tmpdir(), "erix-run-r0-home-")),
+  });
+  assert.equal(captured.options.reflection.maxExtensions, undefined, "未传就不得替引擎填默认值");
+  assert.equal(
+    reported.maxExtensions,
+    2,
+    "生效上限 = 引擎缺省 2（把 ENGINE_DEFAULT_MAX_EXTENSIONS 改成 0 必须在这里变红）",
+  );
+  assert.deepEqual(reported.diagnostics.reflection, { enabled: true, requested: {}, maxExtensions: 2 });
+
+  // (b) 引擎侧：与 #207 那条 0/1 vs 1/1 用例同一脚本形状，唯一变量是「不传 maxExtensions」。
+  //     judge prompt 的预算行必须写 0/2 —— 钉的是**引擎自己的**缺省，与 (a) 合起来才是一致性
+  //     对账，而不是「本层引用一个自己编的常量」。
+  const state = { mainCalls: 0, judgePrompts: [], nearLimitAsks: 0 };
+  const provider = {
+    protocol: "fake",
+    model: "fake-model",
+    async chat(request) {
+      const prompt = request?.messages?.[0]?.content?.[0]?.text ?? "";
+      if (prompt.includes('"done":true|false') || prompt.includes("extend=true")) {
+        state.judgePrompts.push(prompt);
+        const nearLimit = prompt.includes("nearLimit 扩轮评估窗口");
+        if (nearLimit) state.nearLimitAsks += 1;
+        // 第一次进扩轮窗口要求扩；之后再问就收（与 #207 那条 0/1 vs 1/1 用例同一脚本形状）
+        const decision = !nearLimit
+          ? { done: false, confidence: 0.4, reason: "还有活", evidence: "e", direction: "on_track" }
+          : state.nearLimitAsks === 1
+            ? { done: false, confidence: 0.5, reason: "没做完", evidence: "e", direction: "on_track", extend: true, extendReason: "上限不够", plan: "继续" }
+            : { done: true, confidence: 0.9, reason: "做完了", evidence: "e" };
+        return {
+          content: [{ type: "text", text: JSON.stringify(decision) }],
+          stopReason: "end_turn",
+          usage: { input_tokens: 100, output_tokens: 10 },
+        };
+      }
+      state.mainCalls += 1;
+      return state.mainCalls <= 15
+        ? {
+          content: [{ type: "tool_use", id: `c${state.mainCalls}`, name: "exec", input: { command: `node -e ${state.mainCalls}` } }],
+          stopReason: "tool_use",
+          usage: { input_tokens: 50, output_tokens: 5 },
+        }
+        : {
+          content: [{ type: "text", text: "还没收尾，再看一眼日志" }],
+          stopReason: "end_turn",
+          usage: { input_tokens: 50, output_tokens: 5 },
+        };
+    },
+  };
+  const engineSide = await core.runErixRun(
+    { task: "扩轮缺省实测", cwd: repoRoot, maxRounds: 16, extensionStep: 2, maxRoundsCap: 18 },
+    makeDepsWithoutStore({
+      provider,
+      // 内层工具集要真含 exec，否则 tool_use 被当未知工具、治理层在扩轮评估之前就收口
+      extra: { createAssembly: () => ({ tools: [{ name: "exec", description: "exec", input_schema: {} }], executeTool: async () => "ok" }) },
+    }),
+  );
+  // home 用 /tmp/fake-home（字符串占位，从不落盘）：这两条用例都不碰真实 ~/.erix
+  assert.ok(
+    state.judgePrompts.some((prompt) => prompt.includes("扩轮次数 0/2")),
+    `引擎自己的缺省就是 2，judge prompt 的预算行必须写 0/2；实际：`
+    + JSON.stringify(state.judgePrompts.map((p) => (p.match(/扩轮次数 \S+/gu) ?? ["?"])[0])),
+  );
+  assert.equal(engineSide.maxExtensions, 2, "引擎用缺省 2 时返回面也必须报 2");
+  assert.equal(engineSide.extensionCount, 1, "第一次进扩轮窗口要求扩 → 真的扩了");
+  assert.equal(engineSide.termination.reason, "judge_done");
+});
+
+test("#234 R0：reflection.onReflection 里注入抛错不得杀 run（契约：它不在观察者隔离名单里）", async () => {
+  // 改动前没有任何测试往这条回调里注入过抛错，那条 try/catch 是纯文档承诺。
+  // 引擎侧事实：onReflection 只在真的执行了 extend / extend+redirect 时被调，且**不在**
+  // docs/host-consumer-contract.md 的观察者隔离名单里 → 抛出去就是杀 run，本层必须自防。
+  const seen = [];
+  const escaped = [];
+  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, maxRounds: 20, maxExtensions: 2 }, {
+    ...makeDepsWithoutStore({ provider: createFakeProvider([]) }),
+    runLoop: async (options) => {
+      // 四个探针：正常 / info 的 getter 抛（模板求值在 try 之内）/ 缺参数 / null
+      for (const info of [
+        { round: 16, extendedTo: 28 },
+        { get round() { throw new Error("info.round exploded"); } },
+        undefined,
+        null,
+      ]) {
+        try {
+          options.reflection.onReflection(info);
+        } catch (error) {
+          escaped.push(error?.message ?? String(error));
+        }
+      }
+      return {
+        finalText: "任务已完成", rounds: 28,
+        usage: { input_tokens: 2, output_tokens: 2 }, termination: { reason: "end_turn" },
+      };
+    },
+    onProgress: (line) => seen.push(line),
+  });
+
+  assert.deepEqual(escaped, [], "onReflection 必须一句抛错都不漏出去（漏出去就是杀 run）");
+  assert.equal(payload.ok, true, "观察者抛错不得改变终局");
+  assert.equal(payload.termination.reason, "end_turn");
+  assert.equal(payload.extensionCount, 4, "四次调用都算扩轮：计数不能被播报抛错带走");
+  const lines = seen.join("\n");
+  assert.match(lines, /↻ 扩轮 1\/2：round 16 → 上限 28/u, "进度播报本身也要发出去");
+  // 计数在播报**之前**（钉 try 里的次序）：第一行不能是 0/2
+  assert.doesNotMatch(lines, /↻ 扩轮 0\/2/u, "计数必须先于播报，否则抛错那次就丢了一轮计数");
+  // 抛错那次只丢它自己那一行播报：第 2 次调用把 round getter 抛掉了 → 直接跳到 3/2
+  assert.doesNotMatch(lines, /↻ 扩轮 2\/2/u, "抛错那次不该有播报行");
+  assert.match(lines, /↻ 扩轮 3\/2/u, "抛错那次仍然计了数（所以第三次报的是 3/2）");
+});
