@@ -12,11 +12,11 @@
 //   - 观察者（onEvent 等）在 0.18 之后是安全的（抛错经 onObserverError 上报、不改
 //     termination），本层仍接 onObserverError 并计数进 diagnostics。
 
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 /** erix-agent 库入口（目录或文件）的环境变量。 */
 export const LIB_ENV = "ERIX_AGENT_LIB";
@@ -29,6 +29,29 @@ export const MAX_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 /** 缺省内层轮数预算（与 erix runToolLoop 缺省一致）。 */
 export const DEFAULT_MAX_ROUNDS = 8;
 export const MAX_MAX_ROUNDS = 100;
+/**
+ * 落盘（issue #207 R3）：`transcript` 参数的两个同义写法与「不落盘」别名。
+ * 缺省（两个参数都不传）= 纯内存，与 0.18 及之前的行为逐字一致。
+ */
+export const TRANSCRIPT_ALIAS_FILE = "file";
+export const TRANSCRIPT_ALIASES_MEMORY = Object.freeze(["memory", "none", "off"]);
+/** `transcript:"file"` 且没给目录时的缺省落点：`<home>/.erix/transcripts`（AGENTS.md §6 的本地布局）。 */
+export const DEFAULT_SESSION_DIR_SEGMENTS = Object.freeze([".erix", "transcripts"]);
+/**
+ * 引擎侧 `reflection.maxExtensions` 的缺省值（`src/loop/orchestrator.js` 的
+ * `reflectionMaxExtensions` 在字段缺失/非法时回落 2）。本层**不把它当默认值下发**
+ * （下发就改了引擎默认），只在返回面里如实报「本次生效的扩轮上限」时引用。
+ */
+export const ENGINE_DEFAULT_MAX_EXTENSIONS = 2;
+/** #207 R1：三个扩轮参数的入参校验上界（下界见 parseRunParams：maxExtensions 允许 0）。 */
+export const MAX_MAX_EXTENSIONS = 1_000;
+export const MAX_MAX_ROUNDS_CAP = 100_000;
+export const MAX_EXTENSION_STEP = 10_000;
+/**
+ * 本层能不能续跑（#207 R4）。**只有 R2（`resume` 通道，另单）落地后才能翻成 true**；
+ * 在 R2 之前声称可续跑就是假事实，所以这里是一个具名常量而不是一处字面量。
+ */
+export const RESUMABLE = false;
 /** provider 单次请求/流的超时（对齐 bin/cli.js 的 300s，非 run 级超时）。 */
 export const PROVIDER_TIMEOUT_MS = 300_000;
 /**
@@ -95,6 +118,26 @@ function positiveInt(value, fallback, { min, max, name }) {
   return parsed;
 }
 
+/**
+ * 非负整数校验（#207 R1）：`maxExtensions` 专用。**不能改用上面的 `positiveInt`**——
+ * 引擎对它是 `>= 0` 判断（`src/loop/orchestrator.js` 的 `reflectionMaxExtensions`），
+ * `0` = 「关掉扩轮」是一个有效配置，不是「没传」。非法值一律 `bad_params`（不抛给调用方，
+ * `runErixRun` 会把 `ErixRunError` 归一成 `ok:false` 终局载荷）。
+ */
+function nonNegativeInt(value, { min, max, name }) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < min) {
+    throw new ErixRunError(
+      "bad_params",
+      `${name} 必须是 ≥ ${min} 的整数（0 是有效值，意思是「关掉扩轮」），收到 ${JSON.stringify(value)}`,
+    );
+  }
+  if (parsed > max) {
+    throw new ErixRunError("bad_params", `${name} 不能超过 ${max}，收到 ${parsed}`);
+  }
+  return parsed;
+}
+
 /** 展开 `~` 前缀，与 bin/tools.js 的工具路径口径一致。 */
 export function expandUserPath(value, { home = homedir() } = {}) {
   const raw = String(value ?? "");
@@ -112,12 +155,149 @@ export function defaultConfigPath({ env = process.env, home = homedir() } = {}) 
   return path.join(home, ".erix", "config.json");
 }
 
+/** 引擎 safeRunId 的保留前缀（见 src/store/file.js）。 */
+const HASHED_RUN_ID_PREFIX = "run-h-";
+
+/**
+ * transcript 文件名的安全化形式——**与引擎 `src/store/file.js` 的 `safeRunId()` 逐字同式**。
+ *
+ * 为什么要照抄而不是拿：那个符号没从包根 `src/index.js` 导出（包根只导出
+ * `createFileTranscriptStore`），而本层的零依赖红线只允许「`node:` 内置 + 相对路径 +
+ * libIndex 导出」，深路径 import `src/store/file.js` 在只装了 npm 包时解不到。
+ * 路径算错 = 报给宿主的 artifacts 是一个不存在的路径（= 编造），所以同式性由
+ * `test/examples/erix-run-core.test.js` 拿**真引擎函数**逐字符对账钉住。
+ */
+export function safeRunIdForFile(runId) {
+  const value = String(runId);
+  if (/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(value)
+    && value !== "." && value !== ".."
+    && !value.startsWith(HASHED_RUN_ID_PREFIX)) {
+    return value;
+  }
+  const digest = createHash("sha256").update(value).digest("hex").slice(0, 24);
+  return `${HASHED_RUN_ID_PREFIX}${digest}`;
+}
+
+/**
+ * judge 记录里的「扩轮字段判别键」（#207 R3）。
+ *
+ * 引擎把「judge 没给 `extend` 字段」表达成**缺字段**（`src/reflection/judge.js` 的
+ * `parseJudgeDecision` 只在 `extend !== undefined` 时才写键，`src/loop/orchestrator.js` 的
+ * `emitJudge` 同样条件展开），而缺字段在治理层等价于「不扩」（fail-closed）。
+ * 两种事实的**因果不同**（模型拒扩 vs 模型没回答），只读 JSONL 的人很容易把它们看成同一件。
+ * 所以下一条显式判别键（additive，引擎自己的字段一个不改）：
+ *   - `"yes"`     —— judge 说了扩（`extend: true`）
+ *   - `"no"`      —— judge 明确说不扩（`extend: false`，引擎 action `decline_extend`）
+ *   - `"missing"` —— judge **没给** `extend` 字段 → 治理层 fail-closed 不扩
+ *   - `"invalid"` —— 字段在但不是布尔值（引擎解析层不该出现，留作哨兵）
+ * 没有 `decision` 对象的记录（`decision: null` 的 degraded / `run_outcome` 汇总）**不写该字段**。
+ */
+export function extendDecisionOf(record) {
+  const decision = record?.decision;
+  if (decision === null || typeof decision !== "object" || Array.isArray(decision)) return undefined;
+  if (!("extend" in decision)) return "missing";
+  if (decision.extend === true) return "yes";
+  if (decision.extend === false) return "no";
+  return "invalid";
+}
+
+/**
+ * judge.log 一行的形状（#207 R3）：与 `bin/cli.js` 的 `appendJudgeLogRecord` 同构
+ * （`ts` 在前 + 引擎记录原样），额外多一条 `extendDecision` 判别键。
+ * 「原样」是红线：引擎记录里的 `runId` / `model` / `judgeModel` / `kind` / `action` /
+ * `decision.extend` 缺省语义一律不动（AGENTS.md §6 与 host-consumer-contract「Judge record」）。
+ */
+export function judgeLogRecord(record, now = () => Date.now()) {
+  const extendDecision = extendDecisionOf(record);
+  return {
+    ts: new Date(now()).toISOString(),
+    ...(record ?? {}),
+    ...(extendDecision === undefined ? {} : { extendDecision }),
+  };
+}
+
+/**
+ * 一次 run 的落盘面（#207 R3）：transcript 文件 store + judge.log 写入器 + 两个产物路径。
+ *
+ * 目录布局照 AGENTS.md §6：`<dir>/<runId>.jsonl` 与 `<dir>/outputs/<runId>/judge.log`
+ * （judge.log 的位置**与 CLI 默认一致**，`--judge-log`/`ERIX_JUDGE_LOG` 那对覆盖变量是 CLI 的，
+ * 本层不读，避免宿主环境里一个无关变量就把 erix_run 的审计面搬到别处）。
+ *
+ * @param {{libIndex:any, sessionDir?:string, runId:string, now?:()=>number, onWriteError?:(error:unknown)=>void}} input
+ * @returns {{store:object, transcriptPath:string|undefined, judgeLogPath:string|undefined,
+ *   appendJudgeLogRecord:((record:object)=>void)|undefined}}
+ */
+export function createRunPersistence({
+  libIndex, sessionDir, runId, now = () => Date.now(), onWriteError,
+}) {
+  if (sessionDir === undefined || sessionDir === null || sessionDir === "") {
+    // 不传参数 = 现有纯内存行为逐字不变（既不建目录也不建写入器）。
+    return { store: libIndex.createMemoryTranscriptStore(), transcriptPath: undefined, judgeLogPath: undefined, appendJudgeLogRecord: undefined };
+  }
+  if (typeof libIndex?.createFileTranscriptStore !== "function") {
+    throw new ErixRunError(
+      "lib_missing",
+      "要落盘就需要 erix-agent 入口导出 createFileTranscriptStore（包根 src/index.js 在 0.18 已有；"
+      + "检查 ERIX_AGENT_LIB 指向的检出是否太旧）",
+    );
+  }
+  const safeId = safeRunIdForFile(runId);
+  const transcriptPath = path.join(sessionDir, `${safeId}.jsonl`);
+  const judgeLogPath = path.join(sessionDir, "outputs", safeId, "judge.log");
+  try {
+    // 装配期就把目录建出来：坏路径在这里报 bad_params，而不是等到引擎落盘时变成半截 run。
+    mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw new ErixRunError(
+      "bad_params",
+      `sessionDir 不可用：${sessionDir}（${error?.code ?? error?.message ?? String(error)}）`,
+      { cause: error },
+    );
+  }
+
+  let broken = false;
+  let archiveReady = false;
+  const appendJudgeLogRecord = (record) => {
+    if (broken) return;
+    try {
+      if (!archiveReady) {
+        mkdirSync(path.dirname(judgeLogPath), { recursive: true, mode: 0o700 });
+        archiveReady = true;
+      }
+      appendFileSync(judgeLogPath, `${JSON.stringify(judgeLogRecord(record, now))}\n`, "utf8");
+    } catch (error) {
+      // 审计面写不进去不能反打已跑完的 run（与 bin/cli.js 同口径）：只记一次错、后续静默。
+      broken = true;
+      onWriteError?.(error);
+    }
+  };
+
+  return {
+    store: libIndex.createFileTranscriptStore({ dir: sessionDir }),
+    transcriptPath,
+    judgeLogPath,
+    appendJudgeLogRecord,
+  };
+}
+
+/**
+ * 产物路径只在**文件真在盘上**时才报（#207 R4：宁给 null 也不猜路径）。
+ * 未落盘、run 在第一轮之前就失败、judge 一次没跑（judge.log 没建）一律 `null`。
+ */
+export function resolveArtifacts({ transcriptPath, judgeLogPath }) {
+  return {
+    transcriptPath: transcriptPath !== undefined && existsSync(transcriptPath) ? transcriptPath : null,
+    judgeLogPath: judgeLogPath !== undefined && existsSync(judgeLogPath) ? judgeLogPath : null,
+  };
+}
+
 /**
  * 工具参数 → 归一化参数。抛 `ErixRunError("bad_params")`。
  *
- * @param {{task?:unknown, cwd?:unknown, maxRounds?:unknown, strategy?:unknown, timeoutMs?:unknown, model?:unknown}} raw
+ * @param {{task?:unknown, cwd?:unknown, maxRounds?:unknown, strategy?:unknown, timeoutMs?:unknown, model?:unknown,
+ *   sessionDir?:unknown, transcript?:unknown}} raw
  * @param {{home?:string}} [options]
- * @returns {{task:string, cwd:string, maxRounds:number, strategy?:string, timeoutMs:number, model?:string}}
+ * @returns {{task:string, cwd:string, maxRounds:number, strategy?:string, timeoutMs:number, model?:string, sessionDir?:string}}
  */
 export function parseRunParams(raw = {}, { home = homedir() } = {}) {
   const task = textOf(raw?.task).trim();
@@ -173,7 +353,43 @@ export function parseRunParams(raw = {}, { home = homedir() } = {}) {
     params.model = name;
   }
 
+  const sessionDir = parseSessionDir(raw, { home });
+  if (sessionDir !== undefined) params.sessionDir = sessionDir;
+
   return /** @type {any} */ (params);
+}
+
+/**
+ * `sessionDir` / `transcript` 两参数的归一化（#207 R3）。
+ *
+ * - `sessionDir`（首选）：`~` 会展开；**必须是绝对路径**（与 `cwd` 同口径：相对路径会随宿主
+ *   工作目录漂移，落盘位置不该依赖它）。不存在则在建 store 时递归创建。
+ * - `transcript`（同义写法）：`"file"` → 缺省目录 `<home>/.erix/transcripts`；其它非空串按目录
+ *   路径处理；`"memory"|"none"|"off"` → 显式不落盘。
+ * - 两个都给时 `sessionDir` 赢；都不给 → `undefined` = 纯内存（现有默认行为逐字不变）。
+ *
+ * @param {any} raw
+ * @param {{home:string}} options
+ * @returns {string|undefined}
+ */
+function parseSessionDir(raw, { home }) {
+  const explicit = textOf(raw?.sessionDir).trim();
+  const alias = textOf(raw?.transcript).trim();
+  const spec = explicit !== "" ? explicit : alias;
+  if (spec === "") return undefined;
+  if (TRANSCRIPT_ALIASES_MEMORY.includes(spec.toLowerCase())) return undefined;
+  if (spec === TRANSCRIPT_ALIAS_FILE) {
+    return path.join(home, ...DEFAULT_SESSION_DIR_SEGMENTS);
+  }
+  const dir = expandUserPath(spec, { home });
+  if (!path.isAbsolute(dir)) {
+    throw new ErixRunError(
+      "bad_params",
+      `sessionDir 必须是绝对路径（或 ${TRANSCRIPT_ALIAS_FILE}），收到 ${JSON.stringify(spec)}`
+      + "（相对路径会随 pi 的工作目录漂移）",
+    );
+  }
+  return dir;
 }
 
 /**
@@ -555,6 +771,7 @@ export function formatLoopEvent(event) {
  *   onEvent?: (event:object)=>void,
  *   onObserverError?: (error:Error, context:object)=>void,
  *   onPersistenceError?: (error:Error)=>void,
+ *   onJudge?: (record:object)=>void,
  *   onProgress?: (line:string)=>void,
  *   diagnostics?: {error:(event:object)=>void},
  *   reflection?: object|false,
@@ -564,7 +781,7 @@ export function formatLoopEvent(event) {
 export function buildLoopOptions(input) {
   const {
     params, slot, provider, tools, store, signal, runId,
-    system, onEvent, onObserverError, onPersistenceError, diagnostics,
+    system, onEvent, onObserverError, onPersistenceError, onJudge, diagnostics,
     reflection,
   } = input;
 
@@ -593,6 +810,7 @@ export function buildLoopOptions(input) {
     ...(onEvent === undefined ? {} : { onEvent }),
     ...(onObserverError === undefined ? {} : { onObserverError }),
     ...(onPersistenceError === undefined ? {} : { onPersistenceError }),
+    ...(onJudge === undefined ? {} : { onJudge }),
     ...(diagnostics === undefined ? {} : { diagnostics }),
   };
 
@@ -844,19 +1062,42 @@ export async function runErixRun(rawParams = {}, deps = {}) {
         if (info?.phase === "start") progress(`→ ${info.name} ${preview(info.input)}`);
       } })
       : createInnerTools({ lib, cwd: params.cwd });
-    // 工具调用的进度不从这里发：引擎的 tool_use / tool_result 事件已覆盖同一事件，
-    // 两处都报会在 pi 的进度窗口里出现重复行。
-    const store = deps.createStore
-      ? deps.createStore()
-      : libIndex.createMemoryTranscriptStore();
-
     const runId = newRunId(now);
     context.runId = runId;
+
+    // 工具调用的进度不从这里发：引擎的 tool_use / tool_result 事件已覆盖同一事件，
+    // 两处都报会在 pi 的进度窗口里出现重复行。
+    // #207 R3：内层 store 的唯一注入缝仍是 deps.createStore（没新造管道）；没注入时按
+    // sessionDir 选文件 store 或内存 store（不传 = 纯内存，与改动前逐字一致）。
+    const persistence = deps.createStore
+      ? {
+        store: deps.createStore(),
+        transcriptPath: undefined,
+        judgeLogPath: undefined,
+        appendJudgeLogRecord: undefined,
+      }
+      : createRunPersistence({
+        libIndex,
+        sessionDir: params.sessionDir,
+        runId,
+        now,
+        onWriteError: (error) => {
+          persistenceErrors.push({ channel: "judgeLog", message: textOf(error?.message ?? error) });
+          progress(`⚠ judge.log 写入失败，后续审计行不再写：${preview(error?.message ?? error)}`);
+        },
+      });
+    const store = persistence.store;
+    const appendJudgeLogRecord = persistence.appendJudgeLogRecord;
+    context.sessionDir = params.sessionDir;
+
     progress(
       `erix_run 启动：model=${context.model ?? "?"} cwd=${params.cwd} maxRounds=${params.maxRounds}`
       + ` strategy=${params.strategy ?? "（未配置，走引擎缺省）"} timeoutMs=${params.timeoutMs}`
       + `（lib: ${context.libSource}）`,
     );
+    if (params.sessionDir !== undefined) {
+      progress(`落盘：transcript=${persistence.transcriptPath} judgeLog=${persistence.judgeLogPath}`);
+    }
 
     timer = setTimeout(() => {
       timedOut = true;
@@ -883,12 +1124,21 @@ export async function runErixRun(rawParams = {}, deps = {}) {
           if (event?.type === "model_metadata_missing") {
             metadataEvents.push({ detail: event.detail });
           }
+          // #207 R3：run 终局汇总也落进同一个 judge.log（照 bin/cli.js：只抄这一条，
+          // 其余事件不抄），AGENTS.md §6「末行 run_outcome 汇总」就靠它。写入器内部吞错，
+          // 不会把已跑完的 run 带成 failed。
+          if (appendJudgeLogRecord !== undefined && event?.type === "run_outcome") {
+            appendJudgeLogRecord(event);
+          }
           const line = formatLoopEvent(event);
           if (line !== undefined) progress(line);
         } catch (observerError) {
           recordObserverError(observerError, { channel: "onEvent", type: event?.type });
         }
       },
+      // #207 R3：每条 judge 决策原样落盘（+ ts 与 extendDecision 判别键）。
+      // 不落盘时不传这个观察者，引擎行为与改动前逐字一致。
+      onJudge: appendJudgeLogRecord,
       onObserverError: recordObserverError,
       onPersistenceError: (error) => {
         persistenceErrors.push({ channel: "onPersistenceError", message: textOf(error?.message ?? error) });

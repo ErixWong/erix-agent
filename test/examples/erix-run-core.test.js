@@ -8,13 +8,14 @@
 // 外加：lib 装载回退顺序、超时标注、载荷格式化。
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { createMemoryTranscriptStore, createJsonFileModelConfigProvider, runToolLoop } from "../../src/index.js";
+import { createMemoryTranscriptStore, createFileTranscriptStore, createJsonFileModelConfigProvider, runToolLoop } from "../../src/index.js";
+import { safeRunId } from "../../src/store/file.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
 
@@ -54,6 +55,8 @@ function fakeLib(overrides = {}) {
     index: {
       runToolLoop,
       createMemoryTranscriptStore,
+      // #207 R3：落盘要拿这个造文件 store；fakeDeps 默认不传 sessionDir，所以不会被调到。
+      createFileTranscriptStore,
       createJsonFileModelConfigProvider,
       createOpenAIProvider: (config) => ({ ...config, chat: async () => ({ content: [], stopReason: "end_turn" }) }),
     },
@@ -517,6 +520,232 @@ test("runErixRun：装配期失败（库缺失 / 配置缺失）不抛给调用�
   const badParams = await core.runErixRun({ task: "", cwd: "relative" }, { env: {}, home: "/tmp/fake-home" });
   assert.equal(badParams.ok, false);
   assert.equal(badParams.error.code, "bad_params");
+});
+
+/** 组装一个「不注入 store」的 deps：#207 R3 的落盘路径必须走真 createFileTranscriptStore。 */
+function makeDepsWithoutStore({ provider, lib = fakeLib(), slot = fakeSlot(), captured, extra = {} }) {
+  return {
+    env: {},
+    home: "/tmp/fake-home",
+    now: () => 1_700_000_000_000,
+    loadLib: async () => lib,
+    loadSlot: async () => slot,
+    createProvider: () => provider,
+    createAssembly: () => ({ tools: [], executeTool: async () => "tool-ok" }),
+    runLoop: (options) => {
+      if (captured) captured.options = options;
+      return runToolLoop(options);
+    },
+    ...extra,
+  };
+}
+
+const TWO_ROUND_SCRIPT = [
+  {
+    content: [{ type: "tool_use", id: "c1", name: "exec", input: { command: "node -e 1" } }],
+    stopReason: "tool_use",
+    usage: { input_tokens: 7, output_tokens: 2 },
+  },
+  { content: [{ type: "text", text: "任务已完成：落了盘" }], stopReason: "end_turn", usage: { input_tokens: 3, output_tokens: 1 } },
+];
+
+test("#207 R3：safeRunIdForFile 与引擎 safeRunId 逐字同式（算错就是报一个不存在的路径）", () => {
+  for (const runId of [
+    "run-1",
+    "erix-run-2026-10-11T13-30-00-000Z-a1b2c3",
+    "a.b.c",
+    ".hidden",
+    ".",
+    "..",
+    "run-h-abc",
+    "with space",
+    "中文目录",
+    "a/b",
+    "a\\b",
+    "",
+    "a\"b",
+  ]) {
+    assert.equal(core.safeRunIdForFile(runId), safeRunId(runId), `safeRunId 分叉：${JSON.stringify(runId)}`);
+  }
+  // 本层自己生成的 runId 必然落在「可读不哈希」那一支，否则产物路径会变成 run-h-*
+  assert.match(core.safeRunIdForFile("erix-run-2026-10-11T13-30-00-000Z-a1b2c3"), /^erix-run-/u);
+});
+
+test("#207 R3：sessionDir / transcript 参数解析（缺省不落盘、file 同义、~ 展开、相对路径 bad_params）", () => {
+  const home = tempDir("erix-run-home-");
+  // 不传 = 纯内存（现有默认语义）
+  assert.equal("sessionDir" in core.parseRunParams({ task: "t", cwd: "/tmp" }, { home }), false);
+  assert.equal("sessionDir" in core.parseRunParams({ task: "t", cwd: "/tmp", transcript: "" }, { home }), false);
+  // 显式「不落盘」别名
+  for (const alias of ["memory", "none", "off", "MEMORY"]) {
+    assert.equal("sessionDir" in core.parseRunParams({ task: "t", cwd: "/tmp", transcript: alias }, { home }), false);
+  }
+  // transcript:"file" 的同义写法 → 缺省目录与 AGENTS.md §6 布局一致
+  assert.equal(
+    core.parseRunParams({ task: "t", cwd: "/tmp", transcript: "file" }, { home }).sessionDir,
+    path.join(home, ".erix", "transcripts"),
+  );
+  // sessionDir：~ 展开 + 绝对路径直用；两个都给时 sessionDir 赢
+  assert.equal(
+    core.parseRunParams({ task: "t", cwd: "/tmp", sessionDir: "~/sessions" }, { home }).sessionDir,
+    path.join(home, "sessions"),
+  );
+  assert.equal(
+    core.parseRunParams({ task: "t", cwd: "/tmp", sessionDir: "/srv/logs", transcript: "file" }, { home }).sessionDir,
+    "/srv/logs",
+  );
+  // 相对路径直接 bad_params（与 cwd 同口径）
+  assert.throws(
+    () => core.parseRunParams({ task: "t", cwd: "/tmp", sessionDir: "logs/relative" }, { home }),
+    (error) => error.code === "bad_params" && /sessionDir/u.test(error.message),
+  );
+});
+
+test("#207 R3：不传 sessionDir 时一个字节也不落盘（内存行为逐字不变）", async () => {
+  const home = tempDir("erix-run-home-");
+  const fileStoreCalls = [];
+  const lib = fakeLib();
+  lib.index.createFileTranscriptStore = (input) => {
+    fileStoreCalls.push(input);
+    throw new Error("纯内存模式下不得碰文件 store");
+  };
+  const captured = {};
+  const payload = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 6 },
+    { ...makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT), lib, captured }), home },
+  );
+
+  assert.equal(payload.ok, true, `run 必须跑完：${JSON.stringify(payload.termination)}`);
+  assert.deepEqual(fileStoreCalls, [], "没给 sessionDir 就不能去造文件 store");
+  assert.equal(typeof captured.options.store.appendRound, "function");
+  assert.equal(captured.options.onJudge, undefined, "不落盘时不接 judge 观察者");
+  assert.deepEqual(readdirSync(home), [], "缺省路径不能在注入的 home 下建任何东西（不污染 ~/.erix）");
+  assert.equal(existsSync(path.join(home, ".erix")), false);
+});
+
+test("#207 R3：传 sessionDir 时 transcript 真落盘（文件 store，路径由 sessionDir+runId 推出）", async () => {
+  const dir = tempDir("erix-run-session-");
+  const sessionDir = path.join(dir, "nested", "transcripts");
+  const captured = {};
+  const payload = await core.runErixRun(
+    { task: "落个盘", cwd: repoRoot, maxRounds: 6, sessionDir },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT), captured }),
+  );
+
+  assert.equal(payload.ok, true, JSON.stringify(payload.termination));
+  assert.equal(typeof captured.options.onJudge, "function", "落盘时必须接上 judge 写入器");
+  const runId = payload.diagnostics.runId;
+  const transcriptPath = path.join(sessionDir, `${runId}.jsonl`);
+  assert.equal(existsSync(transcriptPath), true, `transcript 应在 ${transcriptPath}`);
+  const records = readFileSync(transcriptPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  // round 0 是引擎开跑前预落的用户轮（resume 锚点），模型轮从 1 开始
+  assert.deepEqual(records.map((record) => record.round), [0, 1, 2]);
+  assert.match(JSON.stringify(records.at(-1).response.content), /落了盘/u);
+  // 落盘只跟 sessionDir 有关，不往 cwd / home 里渗
+  assert.deepEqual(readdirSync(dir), ["nested"]);
+  // 未落盘与落盘的差：同一个 deps 不传 sessionDir 时目录根本不会被建
+  const untouched = tempDir("erix-run-memory-");
+  await core.runErixRun(
+    { task: "t", cwd: repoRoot },
+    { ...makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }), home: untouched },
+  );
+  assert.deepEqual(readdirSync(untouched), []);
+});
+
+test("#207 R3：sessionDir 指到一个已存在的文件 → 归一成 bad_params 终局，不抛给调用方", async () => {
+  const dir = tempDir("erix-run-bad-dir-");
+  const blocker = path.join(dir, "not-a-dir");
+  writeFileSync(blocker, "x", "utf8");
+  const payload = await core.runErixRun(
+    { task: "t", cwd: repoRoot, sessionDir: blocker },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }),
+  );
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error.code, "bad_params");
+  assert.match(payload.error.message, /sessionDir/u);
+  assert.equal(payload.termination.reason, "failed");
+});
+
+test("#207 R3：judge 决策与 run_outcome 落进 <sessionDir>/outputs/<runId>/judge.log（形状能分辨「不扩」 vs「缺字段」）", async () => {
+  const sessionDir = tempDir("erix-run-judge-");
+  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, sessionDir }, {
+    env: {},
+    home: "/tmp/fake-home",
+    now: () => 1_700_000_000_000,
+    loadLib: async () => fakeLib(),
+    loadSlot: async () => fakeSlot(),
+    createProvider: () => createFakeProvider([]),
+    createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
+    runLoop: async (options) => {
+      // 三种引擎真实会发的形状：明确不扩 / 没给 extend 字段（fail-closed）/ parse 失败
+      options.onJudge({
+        round: 3, kind: "round", action: "decline_extend", runId: options.runId, model: "slot-model",
+        decision: { done: false, confidence: 0.5, reason: "", evidence: "", extend: false, extendReason: "够了" },
+      });
+      options.onJudge({
+        round: 4, kind: "round", action: "nudge", runId: options.runId, model: "slot-model",
+        decision: { done: false, confidence: 0.5, reason: "", evidence: "" },
+      });
+      options.onJudge({
+        round: 5, kind: "round", action: "degraded", error: "parse", decision: null,
+        runId: options.runId, model: "slot-model",
+      });
+      options.onEvent({
+        type: "run_outcome", runId: options.runId, model: "slot-model", rounds: 5, judgeRecordCount: 3,
+        termination: { reason: "max_rounds_cap" }, verification: { status: "skipped" },
+      });
+      return {
+        finalText: "任务已完成", rounds: 5,
+        usage: { input_tokens: 1, output_tokens: 1 }, termination: { reason: "max_rounds_cap" },
+      };
+    },
+  });
+
+  const runId = payload.diagnostics.runId;
+  const judgeLogPath = path.join(sessionDir, "outputs", runId, "judge.log");
+  assert.equal(existsSync(judgeLogPath), true, `judge.log 应在 ${judgeLogPath}`);
+  const lines = readFileSync(judgeLogPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 4, "三条决策 + 末行 run_outcome 汇总");
+  for (const line of lines) {
+    assert.equal(line.runId, runId, "每条带 runId（AGENTS.md §6）");
+    assert.equal(line.model, "slot-model", "每条带实际 model");
+    assert.equal(line.ts, "2023-11-14T22:13:20.000Z");
+  }
+  assert.equal(lines.at(-1).type, "run_outcome");
+  assert.equal("kind" in lines.at(-1), false, "汇总记录不得伪装成决策记录（契约的判别键）");
+  assert.equal(lines.at(-1).termination.reason, "max_rounds_cap");
+  assert.equal(lines[0].extendDecision, "no");
+  assert.equal(lines[0].decision.extend, false, "引擎原字段一字不动");
+  assert.equal(lines[1].extendDecision, "missing");
+  assert.equal("extend" in lines[1].decision, false, "「缺字段」不能被写入器掩盖成 false");
+  assert.equal("extendDecision" in lines[2], false, "degraded（decision:null）不写判别键");
+});
+
+test("#207 R3：judge.log 写不进去只记账，不把已跑完的 run 带成 failed", async () => {
+  const dir = tempDir("erix-run-judge-broken-");
+  const sessionDir = path.join(dir, "transcripts");
+  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, sessionDir }, {
+    env: {},
+    home: "/tmp/fake-home",
+    now: () => 1_700_000_000_000,
+    loadLib: async () => fakeLib(),
+    loadSlot: async () => fakeSlot(),
+    createProvider: () => createFakeProvider([]),
+    createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
+    runLoop: async (options) => {
+      // outputs/<runId>/judge.log 位置上站了一个**目录** → append 必炸（ENOTDIR/EISDIR）
+      mkdirSync(path.join(sessionDir, "outputs", options.runId, "judge.log"), { recursive: true });
+      options.onJudge({ round: 1, kind: "round", decision: { done: true, confidence: 1 }, runId: options.runId });
+      return {
+        finalText: "ok", rounds: 1, usage: { input_tokens: 1, output_tokens: 1 },
+        termination: { reason: "end_turn" },
+      };
+    },
+  });
+
+  assert.equal(payload.ok, true, "审计面写失败不得改变终局");
+  assert.equal(payload.diagnostics.persistenceErrors.count, 1);
+  assert.equal(payload.diagnostics.persistenceErrors.samples[0].channel, "judgeLog");
 });
 
 test("formatPayloadForModel / toPiUsage：交回模型的文本与 pi 用量形状", () => {
