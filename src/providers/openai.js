@@ -107,6 +107,62 @@ function abortReason(signal) {
   return error;
 }
 
+/**
+ * Create an OpenAI-protocol provider.
+ *
+ * The parameter type below mirrors **every key the destructuring pattern
+ * accepts**, because this declaration is the host-facing type surface in the
+ * published package: a degenerate inferred signature silently hid all but the
+ * defaulted keys and made valid host calls (endpoint / apiKey / model, the
+ * model_name alias, any timeout alias) fail type checking (#213). Required
+ * identity keys stay required; every alias and pass-through key stays
+ * optional — defaults are applied inside the factory, not in the type.
+ *
+ * @param {{
+ *   endpoint:string,
+ *   apiKey:string,
+ *   model:string,
+ *   model_name?:string,
+ *   fetchImpl?:typeof fetch,
+ *   transport?:((options:Record<string,unknown>) => Record<string,unknown>|undefined)|object,
+ *   contextWindowTokens?:number,
+ *   timeoutMs?:number,
+ *   timeout?:number|Record<string,unknown>,
+ *   requestTimeoutMs?:number,
+ *   request_timeout_ms?:number,
+ *   requestTimeout?:number,
+ *   firstByteTimeoutMs?:number,
+ *   first_byte_timeout_ms?:number,
+ *   firstByteTimeout?:number,
+ *   streamIdleTimeoutMs?:number,
+ *   stream_idle_timeout_ms?:number,
+ *   streamIdleTimeout?:number,
+ *   streamTotalTimeoutMs?:number,
+ *   stream_total_timeout_ms?:number,
+ *   streamTotalTimeout?:number,
+ *   timeouts?:Record<string,number>,
+ *   clock?:(()=>number)|object,
+ *   maxTokens?:number,
+ *   maxOutputTokens?:number,
+ *   temperature?:number,
+ *   topP?:number,
+ *   thinking?:unknown,
+ *   reasoning?:unknown,
+ *   reasoning_effort?:string,
+ *   enable_thinking?:boolean,
+ *   chat_template_kwargs?:Record<string,unknown>,
+ *   providerOptions?:Record<string,unknown>,
+ *   frequency_penalty?:number,
+ *   presence_penalty?:number,
+ *   response_format?:unknown,
+ *   protocol?:string,
+ *   model_type?:string,
+ *   supports_reasoning?:boolean,
+ *   thinking_format?:unknown,
+ *   defaultHeaders?:Record<string,string|number|boolean|null|undefined>,
+ *   extraBody?:Record<string,unknown>,
+ * }} options provider construction options
+ */
 export function createOpenAIProvider({
   endpoint,
   apiKey,
