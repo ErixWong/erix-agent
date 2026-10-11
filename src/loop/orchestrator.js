@@ -669,7 +669,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -765,6 +765,44 @@ export async function runToolLoop(options) {
     //   ⚠ run-state 的导出键名是 `terminationReason:`（与符号名不同名），只改值；`terminationContext` 上
     //   `get/set currentTerminationReason` 是唯一一对访问器（`get currentRunState` 那种「只有 get」的形状这里没有）。
     currentTerminationReason: "running",
+    // 【F-1 治理记账（M1）】`readLoopPayload`（原 :955）与 `verificationReader`（原 :965）——
+    //   两个**函数型**格子，即 issue #180 / #165 的「可变槽位」手法：`fail()`（调用点 `:1563`
+    //   与 `:3333`）里 `:1563` 这一次（`restoreResume` 的 catch）**早于**两处接管赋值（`:1596` /
+    //   `:1613`），必须读到**默认桩**
+    //   ——`usage` 全 0 / `rounds: 0` / `finalText: ""`，以及 `verificationReader()` 返回
+    //   `undefined`（于是 `emitRunOutcome` 的条件展开 `:1016` 不写 `verification` 字段）。⇒ 初值
+    //   **不许**写成 `undefined`：源码里**没有** `typeof readLoopPayload === "function"` 这类守卫
+    //   （`grep` 现在唯一的一行命中就是本注释自己），`:1067` / `:1011` 是**裸调用**，格子非
+    //   函数就是 TypeError；也不许照抄 `termination.js` 的 `typeof … === "function"` 风格。
+    //   ⚠ 一律「属性 + 箭头函数」，**不是方法简写**——`test/loop-callback-this.test.js` 钉住
+    //   「loop 回调以 `this === undefined` 调用」，方法简写会把 this 绑到这个状态对象上。
+    //   ⚠ 接管闭包读 `runLoopState.rounds`（`:1596`）：本组是第一个「格子的值引用同一状态对象
+    //   其它格」的形状（A–E 无先例）；读发生在**调用时**，那时 `:673` 早已初始化完，无 TDZ。
+    //   TDZ：原声明点（`:955` / `:965`）就是这两个符号的全文件首次出现（逐符号
+    //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：4 / 3 行，全部落在声明之后），提先初始化不可观察。
+    readLoopPayload: () => ({
+      usage: { input_tokens: 0, output_tokens: 0 },
+      rounds: 0,
+      finalText: "",
+    }),
+    verificationReader: () => undefined,
+    // 【F-1 治理记账（M2）】`judgeRecordCorrelation`（原 :982）与 `judgeRecordCount`（原 :983）。
+    //   `judgeRecordCorrelation`（issue #165）同样是**晚接管**格子：初值是纯函数
+    //   `judgeRecordFields({ runId })`（`judge-record.js`，只铺 runId、探不到模型就不写字段），
+    //   模型名要等 provider/模型配置与 reflection 段解析完才可得 ⇒ 接管赋值仍在原位置（`:1242`）。
+    //   初值可提先：`runId` 在 `:507` 解构、全文件**无任何再赋值**（`grep -nE "runId *=[^=]"` 空），
+    //   `judgeRecordFields` 是 `:62` 的 import ⇒ 在 `:673` 求值与在原声明点求值**取到同一个值**。
+    //   ⚠ 两处**展开读点**（`emitRunOutcome` 的 `...runLoopState.judgeRecordCorrelation` 与
+    //   `emitJudge` 的 `{ ...runLoopState.judgeRecordCorrelation, ...info }`）同样是读点，
+    //   不许漏——展开不是属性访问，看着像但它是一整格的浅拷贝。
+    //   `judgeRecordCount`：初值 `0` 逐字原搬；⚠ `emitRunOutcome` 里原先是**对象简写**
+    //   `judgeRecordCount,`，加前缀会**改键名** ⇒ 必须写成 `judgeRecordCount: runLoopState.judgeRecordCount`；
+    //   `+= 1` 留在 `emitJudge` 内 `typeof onJudge !== "function"` 早退**之后**的原分支里
+    //   （宿主没挂 `onJudge` 就不计数——这条计数口径是 run_outcome 的公开字段）。
+    //   TDZ：原声明点（`:982` / `:983`）就是这两个符号的全文件首次出现（逐符号
+    //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：3 / 3 行，全部落在声明之后），提先初始化不可观察。
+    judgeRecordCorrelation: judgeRecordFields({ runId }),
+    judgeRecordCount: 0,
   };
   const errorLedger = createErrorLedger();
 
@@ -952,18 +990,15 @@ export async function runToolLoop(options) {
   // issue #180（方案 A）：抛错路径的终局载荷来源。fail() 在累计量声明之前也可能被调用
   // （ctx 构建的早退 catch，那时 usage/finalText 还在 TDZ），所以这里用可变槽位持有读取器，
   // 累计量就绪后由下方赋值接管；未接管前按「无用量 = 0」交付，保证字段形状恒成立。
-  let readLoopPayload = () => ({
-    usage: { input_tokens: 0, output_tokens: 0 },
-    rounds: 0,
-    finalText: "",
-  });
+  // `readLoopPayload`（原 :955）与 `verificationReader`（原 :965）这两个可变槽位已迁入上方
+  // `runLoopState`（issue #177 刀5 F-1）：默认桩在 `:673` 的字面量里，接管赋值仍留在原位置
+  // （`usage`/`finalText` 就绪处与 `verification` 就绪处），早退 fail() 读到的仍是默认桩。
   // issue #165：judge 记录的关联字段（runId + 模型标识）与 run 级 outcome 汇总。
   // 沿用 #180 `readLoopPayload` 的可变槽位手法：模型名要等 provider/模型配置与 reflection 段
   // 解析完才可得（下方 `judgeRecordCorrelation` 在那里接管），`verification` 则到累计量声明区才存
   // 在（早退 catch 时还在 TDZ），所以未就绪时一律「不写字段」而非写假值。
-  let judgeRecordCorrelation = judgeRecordFields({ runId });
-  let verificationReader = () => undefined;
-  let judgeRecordCount = 0;
+  // `judgeRecordCorrelation`（原 :982）与 `judgeRecordCount`（原 :983）已迁入上方 `runLoopState`
+  // （issue #177 刀5 F-1）：默认值在 `:673` 的字面量里，接管赋值仍留在下方原位置（`:1242`）。
   // `runOutcomeEmitted`（#165 去重标记）已迁入上方 `runLoopState`（issue #177 刀5）。
   // run 级 outcome 汇总走既有 onEvent 通道（新增事件类型 `run_outcome`，不新增回调）：
   // `onJudge` 的 payload 语义是「一条 judge 决策」，把终局裁决塞进去会让宿主按决策计数/过滤
@@ -973,11 +1008,11 @@ export async function runToolLoop(options) {
     if (typeof onEvent !== "function" || runLoopState.runOutcomeEmitted) return;
     runLoopState.runOutcomeEmitted = true;
     try {
-      const verification = outcome?.verification ?? verificationReader();
+      const verification = outcome?.verification ?? runLoopState.verificationReader();
       onEvent(runOutcomeRecord({
-        ...judgeRecordCorrelation,
+        ...runLoopState.judgeRecordCorrelation,
         ...outcome,
-        judgeRecordCount,
+        judgeRecordCount: runLoopState.judgeRecordCount,
         ...(verification === undefined ? {} : { verification }),
       }));
     } catch (hostError) {
@@ -1029,7 +1064,7 @@ export async function runToolLoop(options) {
     // issue #180（方案 A）：抛错也要带已累计量——「停止」的 run 在宿主账面上不再是 0。
     // 语义不变：abort 仍然抛错，只是同一个错误对象上多了 usage/rounds/finalText，
     // aborted 时 termination 里同步 {usage, rounds, partial:true}。
-    const loopPayload = readLoopPayload();
+    const loopPayload = runLoopState.readLoopPayload();
     const annotated = annotateTermination(
       finalError,
       withTerminationPayload(termination, loopPayload),
@@ -1204,7 +1239,7 @@ export async function runToolLoop(options) {
   // 含 run-snapshot-executor 里的拦截决策）都经下方 `emitJudge` 这个唯一收口打上 runId 与
   // 模型标识。模型名一律从 run 选项/provider 配置探（`judge-record.js`），探不到就不写字段；
   // judge 走独立 evaluator 时额外写 `judgeModel`，与 run 同名时不写（无冗余字段）。
-  judgeRecordCorrelation = judgeRecordFields({
+  runLoopState.judgeRecordCorrelation = judgeRecordFields({
     runId,
     model: resolveRunModelName({
       modelConfig: resolvedModelConfig,
@@ -1558,7 +1593,7 @@ export async function runToolLoop(options) {
   let finalText = "";
   // issue #180：累计量就绪，接管 fail() 的载荷读取器（闭包在调用时读实值，含逐轮累加的
   // cacheRead/cacheWrite；usage 与 makeResult 交出的是同一个对象）。
-  readLoopPayload = () => ({ usage, rounds: runLoopState.rounds, finalText });
+  runLoopState.readLoopPayload = () => ({ usage, rounds: runLoopState.rounds, finalText });
   let declaredFindings;
   let forcedFinal = false;
   let lastAssistantContent = [];
@@ -1575,7 +1610,7 @@ export async function runToolLoop(options) {
     : { status: "unverified", reason: "pending" };
   // issue #165：verification 已进入作用域，接管读取器（在此之前的早退 fail() 读到 undefined
   // → run_outcome 记录不带 verification 字段，而不是写一个假状态）。
-  verificationReader = () => verification;
+  runLoopState.verificationReader = () => verification;
   const guardMetrics = {
     verified: 0,
     skipped: 0,
@@ -1620,9 +1655,9 @@ export async function runToolLoop(options) {
     if (typeof onJudge !== "function") return;
     // issue #165（additive）：先铺关联字段再铺决策字段——既有字段名与语义一律不动，
     // 只增 runId/model/judgeModel（探不到时字段缺省）；旧宿主按原字段读，行为不变。
-    judgeRecordCount += 1;
+    runLoopState.judgeRecordCount += 1;
     try {
-      onJudge({ ...judgeRecordCorrelation, ...info });
+      onJudge({ ...runLoopState.judgeRecordCorrelation, ...info });
     } catch (hostError) {
       // issue #173 PR-B：原先是裸 `catch {}`（连 onObserverError 都不通知）。观察者抛错一律
       // 记账：宿主自此能数出自己哪个回调在炸，run 仍照常收尾。
