@@ -63,6 +63,7 @@ export function decideRoundAction(signals = {}) {
     return { kind: "stop", value: "cap", truncated: true };
   }
   // stall 超限 stop 优先于 wrapUp/repeatedError nudge（否则被低优先级 nudge 无限阻塞退化 max_rounds_cap）
+  // stop 必须先于 nudge 判定，故此处只留一处 stall 停止分支：再往 nudge 之后补同条件分支必然不可达。
   if (numberOr(signals.stallStreak) >= STALL_STREAK_LIMIT
     && signals.stallSuspicion === true) {
     return { kind: "stop", value: "stall", truncated: true };
@@ -103,10 +104,6 @@ export function decideRoundAction(signals = {}) {
       resetNoToolStreak: true,
       continue: true,
     };
-  }
-  if (numberOr(signals.stallStreak) >= STALL_STREAK_LIMIT
-    && signals.stallSuspicion === true) {
-    return { kind: "stop", value: "stall", truncated: true };
   }
   if (signals.completionSignalDetected === true && signals.shouldContinue === false) {
     return { kind: "stop", value: "completion", truncated: false };

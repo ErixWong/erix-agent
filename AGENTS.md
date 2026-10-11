@@ -47,7 +47,10 @@ src/
 bin/              # CLI (validator/debugger): cli.js (entry/chat), repl.js (TUI), tools.js (built-in tools + prompts), skills.js (thin assembly over src/skills/loader.js), mcp.js, config.js, final-guard-support.js, final-guard.js, guard-metrics.js
 test/             # unit tests (node --test), with compact/, providers/, tools/, config/, messages/, contract/, helpers/, fixtures/, integration/, and top-level test files
 fixtures/         # test fixtures (mock MCP servers) — ⚠️ mock MCP servers must not be put under test/ (node --test runs all files under test and can hang)
-examples/         # examples (skills/ examples, demos, and benchmarks)
+examples/         # runnable demos (exec-demo.js + its gated e2e test), sample skill packs (skills/), the pi
+                  # extension (pi-extension/), provenance reproduction, and the in-repo memory-benchmark.js.
+                  # There is NO examples/benchmarks/ directory: capability benchmarks live in the separate
+                  # `erix-bench` repository
 docs/             # design documents, ADR decision records, research, and task documents
 skills/           # skill definitions
 scripts/          # experiment scripts and results
