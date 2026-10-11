@@ -748,6 +748,110 @@ test("#207 R3：judge.log 写不进去只记账，不把已跑完的 run 带成 
   assert.equal(payload.diagnostics.persistenceErrors.samples[0].channel, "judgeLog");
 });
 
+test("#207 R4：artifacts / extensionCount / maxExtensions / resumable（不落盘时 null，不编造路径）", async () => {
+  // ① 纯内存：两个路径都是 null（而不是“猜一个”），resumable 本单一律 false
+  const memory = await core.runErixRun(
+    { task: "t", cwd: repoRoot },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }),
+  );
+  assert.equal(memory.ok, true);
+  assert.deepEqual(memory.artifacts, { transcriptPath: null, judgeLogPath: null });
+  assert.equal(memory.extensionCount, 0);
+  assert.equal(memory.maxExtensions, 0, "judge 没开启 = 根本没有扩轮额度");
+  assert.equal(memory.resumable, false, "R2 未落地，不得声称可续跑");
+  assert.equal(core.RESUMABLE, false);
+  // 不落盘也不往 diagnostics 里撒谎
+  assert.equal(memory.diagnostics.sessionDir, null);
+  assert.deepEqual(memory.diagnostics.reflection, { enabled: false, maxExtensions: 0 });
+
+  // ② 落盘：两个路径都是真文件，且等于由 runId 推出来的那个（不是硬编码）
+  const sessionDir = tempDir("erix-run-artifacts-");
+  const persisted = await core.runErixRun(
+    { task: "t", cwd: repoRoot, sessionDir },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }),
+  );
+  assert.equal(persisted.ok, true);
+  const runId = persisted.diagnostics.runId;
+  assert.equal(
+    persisted.artifacts.transcriptPath,
+    path.join(sessionDir, `${runId}.jsonl`),
+    "transcriptPath 必须由 sessionDir + runId 推出",
+  );
+  assert.equal(
+    persisted.artifacts.judgeLogPath,
+    path.join(sessionDir, "outputs", runId, "judge.log"),
+    "judgeLogPath 必须由 sessionDir + runId 推出（AGENTS.md §6 布局）",
+  );
+  for (const value of [persisted.artifacts.transcriptPath, persisted.artifacts.judgeLogPath]) {
+    assert.equal(typeof value, "string");
+    assert.equal(existsSync(value), true, `artifacts 里的路径必须在盘上：${value}`);
+  }
+  assert.equal(persisted.diagnostics.sessionDir, sessionDir);
+});
+
+test("#207 R4：judge 没跑过（judge.log 未建）时 judgeLogPath 仍是 null，不拿目录当一个产物", async () => {
+  const sessionDir = tempDir("erix-run-nojudge-");
+  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, sessionDir }, {
+    env: {},
+    home: "/tmp/fake-home",
+    now: () => 1_700_000_000_000,
+    loadLib: async () => fakeLib(),
+    loadSlot: async () => fakeSlot(),
+    createProvider: () => createFakeProvider([]),
+    createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
+    runLoop: async () => { throw new Error("引擎在发出任何 judge / run_outcome 之前就炸了"); },
+  });
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error.message, "引擎在发出任何 judge / run_outcome 之前就炸了");
+  assert.equal(payload.artifacts.judgeLogPath, null, "没落过盘就没有路径");
+  assert.equal(payload.artifacts.transcriptPath, null, "fake runLoop 没写任何轮记录");
+  assert.equal(payload.resumable, false);
+  assert.equal(payload.extensionCount, 0);
+});
+
+test("#207 R4：扩轮余量是从引擎回调里数出来的，不是字面量", async () => {
+  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, maxRounds: 20 }, {
+    env: {},
+    home: "/tmp/fake-home",
+    now: () => 1_700_000_000_000,
+    loadLib: async () => fakeLib(),
+    loadSlot: async () => fakeSlot(),
+    createProvider: () => createFakeProvider([]),
+    createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
+    runLoop: async (options) => {
+      // 引擎只在真的扩了轮时调 reflection.onReflection
+      options.reflection.onReflection({ round: 16, decision: { extend: true }, extendedTo: 28 });
+      options.reflection.onReflection({ round: 28, decision: { extend: true }, extendedTo: 40 });
+      return {
+        finalText: "任务已完成", rounds: 40,
+        usage: { input_tokens: 2, output_tokens: 2 }, termination: { reason: "end_turn" },
+      };
+    },
+  });
+  assert.equal(payload.extensionCount, 2, "扩了几轮就报几轮");
+  assert.equal(payload.maxExtensions, core.ENGINE_DEFAULT_MAX_EXTENSIONS, "未传时生效上限就是引擎缺省");
+  assert.equal(payload.resumable, false);
+});
+
+test("#207 R4：formatPayloadForModel 把决策事实也交给模型（artifacts / 扩轮余量 / resumable）", () => {
+  const withFacts = core.formatPayloadForModel({
+    finalText: "ok", rounds: 3, usage: { input_tokens: 1, output_tokens: 1 },
+    termination: { reason: "end_turn" },
+    artifacts: { transcriptPath: "/srv/logs/run-1.jsonl", judgeLogPath: "/srv/logs/outputs/run-1/judge.log" },
+    extensionCount: 1, maxExtensions: 2, resumable: false,
+    diagnostics: { observerErrors: { count: 0 }, persistenceErrors: { count: 0 }, compaction: {} },
+  });
+  assert.match(withFacts, /\[facts\] transcript=\/srv\/logs\/run-1\.jsonl/u);
+  assert.match(withFacts, /judgeLog=\/srv\/logs\/outputs\/run-1\/judge\.log/u);
+  assert.match(withFacts, /extensions=1\/2/u);
+  assert.match(withFacts, /resumable=false/u);
+  // 未落盘时给 none，不编一个看起来真的路径
+  const bare = core.formatPayloadForModel({
+    finalText: "ok", rounds: 1, usage: {}, termination: { reason: "end_turn" },
+  });
+  assert.match(bare, /\[facts\] transcript=none judgeLog=none extensions=0\/0 resumable=false/u);
+});
+
 test("formatPayloadForModel / toPiUsage：交回模型的文本与 pi 用量形状", () => {
   const payload = core.buildSuccessPayload({
     finalText: "改好了，测试通过",

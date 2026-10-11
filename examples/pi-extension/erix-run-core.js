@@ -43,10 +43,6 @@ export const DEFAULT_SESSION_DIR_SEGMENTS = Object.freeze([".erix", "transcripts
  * （下发就改了引擎默认），只在返回面里如实报「本次生效的扩轮上限」时引用。
  */
 export const ENGINE_DEFAULT_MAX_EXTENSIONS = 2;
-/** #207 R1：三个扩轮参数的入参校验上界（下界见 parseRunParams：maxExtensions 允许 0）。 */
-export const MAX_MAX_EXTENSIONS = 1_000;
-export const MAX_MAX_ROUNDS_CAP = 100_000;
-export const MAX_EXTENSION_STEP = 10_000;
 /**
  * 本层能不能续跑（#207 R4）。**只有 R2（`resume` 通道，另单）落地后才能翻成 true**；
  * 在 R2 之前声称可续跑就是假事实，所以这里是一个具名常量而不是一处字面量。
@@ -114,26 +110,6 @@ function positiveInt(value, fallback, { min, max, name }) {
       "bad_params",
       `${name} 必须在 ${min}..${max} 之间，收到 ${parsed}`,
     );
-  }
-  return parsed;
-}
-
-/**
- * 非负整数校验（#207 R1）：`maxExtensions` 专用。**不能改用上面的 `positiveInt`**——
- * 引擎对它是 `>= 0` 判断（`src/loop/orchestrator.js` 的 `reflectionMaxExtensions`），
- * `0` = 「关掉扩轮」是一个有效配置，不是「没传」。非法值一律 `bad_params`（不抛给调用方，
- * `runErixRun` 会把 `ErixRunError` 归一成 `ok:false` 终局载荷）。
- */
-function nonNegativeInt(value, { min, max, name }) {
-  const parsed = typeof value === "number" ? value : Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < min) {
-    throw new ErixRunError(
-      "bad_params",
-      `${name} 必须是 ≥ ${min} 的整数（0 是有效值，意思是「关掉扩轮」），收到 ${JSON.stringify(value)}`,
-    );
-  }
-  if (parsed > max) {
-    throw new ErixRunError("bad_params", `${name} 不能超过 ${max}，收到 ${parsed}`);
   }
   return parsed;
 }
@@ -868,6 +844,34 @@ function sampleList(items) {
  * @param {{timeout:boolean, aborted:boolean, observerErrors:any[], metadataEvents:any[],
  *   ledgerErrors:any[], context:object}} input
  */
+/**
+ * 决策事实（#207 R4）：三个载荷出口共用的字段组，保证成功/抛错两条终路形状不分叉。
+ *
+ * - `artifacts`：**未落盘就是 `null`**，绝不猜路径（见 `resolveArtifacts`）。
+ * - `extensionCount` / `maxExtensions`：本次 run 用了几次扩轮 / 生效上限是多少（0 = 根本没开）。
+ * - `resumable`：读 `RESUMABLE` 常量（#207 R2 未落地前恒 `false`）。
+ */
+function decisionFacts(input) {
+  const artifacts = input?.artifacts ?? { transcriptPath: null, judgeLogPath: null };
+  return {
+    artifacts: {
+      transcriptPath: typeof artifacts.transcriptPath === "string" ? artifacts.transcriptPath : null,
+      judgeLogPath: typeof artifacts.judgeLogPath === "string" ? artifacts.judgeLogPath : null,
+    },
+    extensionCount: Number.isSafeInteger(input?.extensionCount) ? input.extensionCount : 0,
+    maxExtensions: Number.isSafeInteger(input?.maxExtensions) ? input.maxExtensions : 0,
+    resumable: input?.resumable === true,
+  };
+}
+
+/**
+ * 正常返回 → 结构化载荷。
+ *
+ * @param {any} result runToolLoop 的返回值
+ * @param {{timeout:boolean, aborted:boolean, observerErrors:any[], metadataEvents:any[],
+ *   ledgerErrors:any[], context:object, artifacts?:object, extensionCount?:number,
+ *   maxExtensions?:number, resumable?:boolean}} input
+ */
 export function buildSuccessPayload(result, input) {
   const termination = result?.termination ?? { reason: "failed", detail: "engine returned no termination" };
   return {
@@ -882,6 +886,7 @@ export function buildSuccessPayload(result, input) {
     verification: result?.verification ?? undefined,
     timeout: input.timeout === true,
     aborted: input.aborted === true,
+    ...decisionFacts(input),
     diagnostics: buildDiagnostics(input, result),
   };
 }
@@ -914,6 +919,7 @@ export function buildErrorPayload(error, input) {
     verification: error?.verification,
     timeout: input.timeout === true,
     aborted,
+    ...decisionFacts(input),
     error: {
       name: error?.name ?? "Error",
       message: textOf(error?.message ?? error),
@@ -953,6 +959,9 @@ function buildDiagnostics(input, source) {
     maxRounds: context.maxRounds,
     timeoutMs: context.timeoutMs,
     elapsedMs: context.elapsedMs,
+    // #207 R3/R4：落盘位置与扩轮闸门。
+    sessionDir: context.sessionDir ?? null,
+    reflection: context.reflection ?? null,
   };
   if (typeof source?.termination?.errorCode === "string") {
     diagnostics.errorCode = source.termination.errorCode;
@@ -1014,6 +1023,12 @@ export async function runErixRun(rawParams = {}, deps = {}) {
   const controller = new AbortController();
   let timedOut = false;
   let cancelled = false;
+  // #207 R2/R4：落盘面与扩轮余量。两个变量都要活到 catch 分支（装配期就失败的 run
+  // 也要能把 artifacts 如实报成 null，而不是缺字段）。
+  /** @type {{transcriptPath?:string, judgeLogPath?:string}|null} */
+  let persistence = null;
+  let extensionCount = 0;
+  let maxExtensions = 0;
   const relayCancel = () => {
     cancelled = true;
     controller.abort(new Error("erix_run 被调用方取消"));
@@ -1069,7 +1084,7 @@ export async function runErixRun(rawParams = {}, deps = {}) {
     // 两处都报会在 pi 的进度窗口里出现重复行。
     // #207 R3：内层 store 的唯一注入缝仍是 deps.createStore（没新造管道）；没注入时按
     // sessionDir 选文件 store 或内存 store（不传 = 纯内存，与改动前逐字一致）。
-    const persistence = deps.createStore
+    const runPersistence = deps.createStore
       ? {
         store: deps.createStore(),
         transcriptPath: undefined,
@@ -1086,9 +1101,13 @@ export async function runErixRun(rawParams = {}, deps = {}) {
           progress(`⚠ judge.log 写入失败，后续审计行不再写：${preview(error?.message ?? error)}`);
         },
       });
-    const store = persistence.store;
-    const appendJudgeLogRecord = persistence.appendJudgeLogRecord;
+    const store = runPersistence.store;
+    const appendJudgeLogRecord = runPersistence.appendJudgeLogRecord;
     context.sessionDir = params.sessionDir;
+    persistence = {
+      transcriptPath: runPersistence.transcriptPath,
+      judgeLogPath: runPersistence.judgeLogPath,
+    };
 
     progress(
       `erix_run 启动：model=${context.model ?? "?"} cwd=${params.cwd} maxRounds=${params.maxRounds}`
@@ -1096,7 +1115,7 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       + `（lib: ${context.libSource}）`,
     );
     if (params.sessionDir !== undefined) {
-      progress(`落盘：transcript=${persistence.transcriptPath} judgeLog=${persistence.judgeLogPath}`);
+      progress(`落盘：transcript=${runPersistence.transcriptPath} judgeLog=${runPersistence.judgeLogPath}`);
     }
 
     timer = setTimeout(() => {
@@ -1106,6 +1125,31 @@ export async function runErixRun(rawParams = {}, deps = {}) {
     }, params.timeoutMs);
 
     const runLoop = deps.runLoop ?? libIndex.runToolLoop;
+    // judge 开启闸门与改动前逐字一致（ERIX_NO_REFLECTION=1 优先，否则 maxRounds ≥ 16 自动开）。
+    const reflectionEnabled = env.ERIX_NO_REFLECTION?.trim() !== "1" && params.maxRounds >= 16;
+    maxExtensions = reflectionEnabled ? ENGINE_DEFAULT_MAX_EXTENSIONS : 0;
+    context.reflection = { enabled: reflectionEnabled, maxExtensions };
+    const reflection = reflectionEnabled
+      ? {
+        enabled: true,
+        // 扩轮计数的唯一可靠入口：引擎只在真的执行了 extend / extend+redirect 时调它
+        // （src/loop/orchestrator.js 里紧接 governorState.extensionCount += 1）。
+        // ⚠ 它不在隔离名单里（契约「reflection.onReflection 仍按未隔离处理，抛错杀 run」），
+        // 所以这个回调必须自防到一句 throw 也不会漏出去。
+        onReflection: (info) => {
+          try {
+            extensionCount += 1;
+            progress(
+              `↻ 扩轮 ${extensionCount}/${maxExtensions}：round ${info?.round ?? "?"}`
+              + ` → 上限 ${info?.extendedTo ?? "?"}`,
+            );
+          } catch {
+            // 计数与进度都不允许把 run 带死
+          }
+        },
+      }
+      : false;
+
     const options = buildLoopOptions({
       params,
       slot,
@@ -1153,9 +1197,7 @@ export async function runErixRun(rawParams = {}, deps = {}) {
           });
         },
       },
-      reflection: env.ERIX_NO_REFLECTION?.trim() === "1"
-        ? false
-        : (params.maxRounds >= 16 ? { enabled: true } : false),
+      reflection,
     });
 
     const result = await runLoop(options);
@@ -1168,6 +1210,10 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       ledgerErrors,
       persistenceErrors,
       context,
+      artifacts: resolveArtifacts(persistence),
+      extensionCount,
+      maxExtensions,
+      resumable: RESUMABLE,
     });
     progress(
       `erix_run 结束：termination=${payload.termination.reason}`
@@ -1184,6 +1230,10 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       ledgerErrors,
       persistenceErrors,
       context,
+      artifacts: resolveArtifacts(persistence ?? {}),
+      extensionCount,
+      maxExtensions,
+      resumable: RESUMABLE,
     });
     progress(
       `erix_run 终局（抛错路径）：${payload.termination.reason}`
@@ -1232,6 +1282,13 @@ export function formatPayloadForModel(payload, { limit = 20_000 } = {}) {
       lines.push(`  ↳ ${diagnostics.modelMetadataMissing.detail}`);
     }
   }
+  // #207 R4：把决策事实也给模型看（它才能自己决定「去读 transcript」还是「直接重跑」）。
+  const artifacts = payload?.artifacts;
+  lines.push(`[facts] transcript=${artifacts?.transcriptPath ?? "none"}`
+    + ` judgeLog=${artifacts?.judgeLogPath ?? "none"}`
+    + ` extensions=${payload?.extensionCount ?? 0}/${payload?.maxExtensions ?? 0}`
+    + ` resumable=${payload?.resumable === true}`
+    + (payload?.resumable === true ? "" : "（本层未接 resume，终局不可续跑）"));
   if (payload?.error?.message) {
     lines.push(`[error] ${payload.error.code ?? payload.error.name ?? "Error"}: ${payload.error.message}`);
   }
