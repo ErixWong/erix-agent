@@ -669,7 +669,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -726,6 +726,17 @@ export async function runToolLoop(options) {
     ttlInjectArmed: false,
     ttlInjectConsumed: false,
     lowBudgetInjectFired: false,
+    // 【E 轮内量（续）】`foldedRoundCount`（原 :1204）与 `navigationRecordCount`（原 :1205）——两个
+    //   **有初值**的累计计数器，初值逐字原样搬（都是 `0`）：它们的值经 `createDeterministicRunState` 的
+    //   `foldedRounds:` / `navigationRecords:` 两个键落盘并渲染进模型可见的 run-state 文本，起点不是装饰。
+    //   ⚠ 两个**跨符号近名陷阱**原样保住：① 写入点 `+= foldedRounds` 里的 `foldedRounds` 是当轮折叠数的
+    //   局部量，与本格 `foldedRoundCount` 是两个符号；② `navigationRecord`（局部量）与本格只差后缀。
+    //   ⚠ 对象键名 `foldedRounds:` / `navigationRecords:` 与符号名**不同名**（是 run-state 的导出选项键，
+    //   宿主/持久化契约），只改值、不改键。访问器只有一对（`restoreResume` 的 ctx 对象），形状原样。
+    //   TDZ：原声明点（:1204/:1205）就是这两个符号的全文件首次出现（逐符号
+    //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：7 / 7 行，全部在声明之后），提先初始化不可观察。
+    foldedRoundCount: 0,
+    navigationRecordCount: 0,
   };
   const errorLedger = createErrorLedger();
 
@@ -1212,8 +1223,8 @@ export async function runToolLoop(options) {
   };
   const toolStats = new Map();
   let lowBudgetPrompted = false;
-  let foldedRoundCount = 0;
-  let navigationRecordCount = 0;
+  // `foldedRoundCount` / `navigationRecordCount`
+  //   已迁入 `runLoopState`（issue #177 刀5-E）。
   let toolErrorCount = 0;
   let runSnapshotFailureCount = 0;
   // `runStateVersion` / `runStateAvailability` / `currentRunState` / `todoState` / `semanticState`
@@ -1431,16 +1442,16 @@ export async function runToolLoop(options) {
       lowBudgetPrompted = value;
     },
     get foldedRoundCount() {
-      return foldedRoundCount;
+      return runLoopState.foldedRoundCount;
     },
     set foldedRoundCount(value) {
-      foldedRoundCount = value;
+      runLoopState.foldedRoundCount = value;
     },
     get navigationRecordCount() {
-      return navigationRecordCount;
+      return runLoopState.navigationRecordCount;
     },
     set navigationRecordCount(value) {
-      navigationRecordCount = value;
+      runLoopState.navigationRecordCount = value;
     },
     get toolErrorCount() {
       return toolErrorCount;
@@ -1960,8 +1971,8 @@ export async function runToolLoop(options) {
       toolStats,
       filesWritten: governorState.filesWritten,
       todo: runLoopState.todoState,
-      foldedRounds: foldedRoundCount,
-      navigationRecords: navigationRecordCount,
+      foldedRounds: runLoopState.foldedRoundCount,
+      navigationRecords: runLoopState.navigationRecordCount,
       terminationReason: currentTerminationReason,
       toolErrorCount,
       // 键名保持旧名 checkpointFailureCount（issue #83）：它是 createDeterministicRunState 的
@@ -2471,8 +2482,8 @@ export async function runToolLoop(options) {
         || foldedRoundRange !== undefined
         || navigationRecord !== undefined
       ) {
-        foldedRoundCount += foldedRounds;
-        if (navigationRecord !== undefined) navigationRecordCount += 1;
+        runLoopState.foldedRoundCount += foldedRounds;
+        if (navigationRecord !== undefined) runLoopState.navigationRecordCount += 1;
       }
       const compactionStat = {
         compacted,
