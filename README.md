@@ -184,6 +184,7 @@ src/
     abort.js                       Abort-signal helpers
     block-helpers.js               Block access helpers
     judge-record.js                Judge record correlation (model identity, run outcome)
+    state-view.js                  Live-reference state view factory for the loop state (#246, not wired yet)
   providers/
     anthropic.js                   Anthropic provider and streaming
     errors.js                      Provider errors and classification
