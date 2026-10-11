@@ -29,6 +29,10 @@ import { Type } from "typebox";
 import {
   DEFAULT_MAX_ROUNDS,
   DEFAULT_TIMEOUT_MS,
+  ENGINE_DEFAULT_MAX_EXTENSIONS,
+  MAX_EXTENSION_STEP,
+  MAX_MAX_EXTENSIONS,
+  MAX_MAX_ROUNDS_CAP,
   MAX_MAX_ROUNDS,
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
@@ -77,6 +81,46 @@ const parameters = Type.Object({
       description: "覆盖 ~/.erix/config.json slots.default 里的 model 名（endpoint/apiKey 仍走该槽位）。",
     }),
   ),
+  sessionDir: Type.Optional(
+    Type.String({
+      description:
+        "过程落盘目录（已存在的或可创建的绝对路径，~ 前缀会展开）：给定了就把内层 transcript 落到 "
+        + "<sessionDir>/<runId>.jsonl、judge 决策与终局汇总落到 <sessionDir>/outputs/<runId>/judge.log，"
+        + `并在返回的 artifacts 里给出真路径。不传 = 纯内存、不落盘（缺省）。也可写 transcript:"file" 走缺省目录 ~/.erix/transcripts。`,
+    }),
+  ),
+  transcript: Type.Optional(
+    Type.String({
+      description:
+        'sessionDir 的同义写法："file" = 用缺省目录 ~/.erix/transcripts；其它非空串按目录路径处理；'
+        + '"memory"/"none"/"off" = 显式不落盘。两个都给时 sessionDir 赢。',
+    }),
+  ),
+  maxExtensions: Type.Optional(
+    Type.Integer({
+      minimum: 0,
+      maximum: MAX_MAX_EXTENSIONS,
+      description:
+        `扩轮上限，直传引擎 reflection.maxExtensions。只在 judge 开启时生效（maxRounds ≥ 16，且未设 ERIX_NO_REFLECTION=1）；`
+        + `**0 是有效值，意思是「关掉扩轮」**；不传则用引擎缺省 ${ENGINE_DEFAULT_MAX_EXTENSIONS}。`,
+    }),
+  ),
+  maxRoundsCap: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      maximum: MAX_MAX_ROUNDS_CAP,
+      description:
+        "扩轮后的总轮数硬顶，直传引擎 reflection.maxRoundsCap（正整数；引擎会抬到不低于 maxRounds，不传则用引擎缺省 256）。",
+    }),
+  ),
+  extensionStep: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      maximum: MAX_EXTENSION_STEP,
+      description:
+        "每次扩轮加的轮数，直传引擎 reflection.extensionStep（正整数；不传则用引擎缺省 max(8, ⌊maxRounds/2⌋)）。",
+    }),
+  ),
 });
 
 const usageSchema = Type.Object({
@@ -93,6 +137,12 @@ const terminationSchema = Type.Object({
   errorCode: Type.Optional(Type.String()),
 });
 
+const artifactsSchema = Type.Object({
+  // 未落盘（没传 sessionDir）或文件没真写出来时是 null，不是编造的路径。
+  transcriptPath: Type.Union([Type.String(), Type.Null()]),
+  judgeLogPath: Type.Union([Type.String(), Type.Null()]),
+});
+
 const payloadSchema = Type.Object({
   ok: Type.Boolean(),
   finalText: Type.String(),
@@ -102,6 +152,11 @@ const payloadSchema = Type.Object({
   termination: terminationSchema,
   timeout: Type.Boolean(),
   aborted: Type.Boolean(),
+  // issue #207 R4：决策事实。
+  artifacts: artifactsSchema,
+  extensionCount: Type.Integer(),
+  maxExtensions: Type.Integer(),
+  resumable: Type.Boolean(),
   diagnostics: Type.Optional(Type.Unknown()),
 });
 
@@ -111,14 +166,17 @@ export const erixRunTool = defineTool({
   description:
     "把一个自包含的编码任务交给内嵌的 erix-agent headless 运行时执行：它会在给定目录里跑完整的"
     + "多轮工具循环（readFile/rg/grep/tree/writeFile/exec），自己读写文件并执行命令。"
-    + "返回结构化终局 {finalText, rounds, usage, termination, diagnostics, timeout}；"
+    + "返回结构化终局 {finalText, rounds, usage, termination, artifacts, extensionCount, maxExtensions, resumable, diagnostics, timeout}；"
     + "termination.reason 是引擎裁决（end_turn/judge_done/no_tool/stall/max_rounds_cap/aborted/failed…），"
-    + "失败时读 termination.errorCode 再决定重试。每次调用都是一次完整多轮 run，成本不低。",
+    + "失败时读 termination.errorCode 再决定重试；artifacts 给出过程产物（transcript / judge.log）的真路径，未落盘为 null。"
+    + "每次调用都是一次完整多轮 run，成本不低。",
   promptSnippet: "把自包含的编码子任务交给内嵌 erix-agent 多轮执行（需要绝对 cwd）",
   promptGuidelines: [
     "erix_run 的 cwd 必须是绝对路径，task 必须自包含（内层 run 看不到本次会话历史）。",
     "erix_run 每次调用都是一次完整多轮 run（多次模型调用）；只在任务确实需要多轮自主执行时用。",
     "erix_run 返回 ok:false 时先读 termination.reason / termination.errorCode / diagnostics 再决定下一步，别盲目重跑。",
+    "要过期内审内层过程时传 sessionDir：返回的 artifacts.transcriptPath / artifacts.judgeLogPath 是真路径（null = 本次没落盘）。",
+    "erix_run 的终局不可续跑（resumable 恒 false）；要重试就重跑一次，别期待 resume。扩轮只在 maxRounds ≥ 16 开了 judge 后才会发生。",
   ],
   parameters,
   outputSchema: payloadSchema,

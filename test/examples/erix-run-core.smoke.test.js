@@ -16,7 +16,6 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-
 import * as core from "../../examples/pi-extension/erix-run-core.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -59,6 +58,8 @@ test(`真机冒烟：core 级 erix_run 修好临时目录里的 bug（配置 ${c
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, "sum.js"), BUGGY, "utf8");
   writeFileSync(path.join(dir, "check.js"), CHECK, "utf8");
+  // #207 R3/R4：同时自证一次真落盘（transcript / judge.log 与返回里的 artifacts 对得上）
+  const sessionDir = path.join(dir, "sessions");
 
   // 前置条件：bug 确实在（check.js 现在必然失败）
   assert.throws(() => execFileSync("node", ["check.js"], { cwd: dir, encoding: "utf8" }));
@@ -71,6 +72,7 @@ test(`真机冒烟：core 级 erix_run 修好临时目录里的 bug（配置 ${c
       maxRounds: 8,
       strategy: "sliding-window",
       timeoutMs: 5 * 60 * 1000,
+      sessionDir,
     },
     {
       env: { ...process.env, ERIX_AGENT_LIB: repoRoot },
@@ -83,10 +85,22 @@ test(`真机冒烟：core 级 erix_run 修好临时目录里的 bug（配置 ${c
   console.log("--- erix_run smoke: progress ---\n" + progressLines.join("\n"));
   console.log("--- erix_run smoke: payload ---\n" + JSON.stringify(payload, null, 2));
   console.log("--- erix_run smoke: model-facing text ---\n" + core.formatPayloadForModel(payload));
+  console.log("--- erix_run smoke: sessionDir ---\n" + JSON.stringify(payload.artifacts));
 
-  for (const field of ["ok", "finalText", "rounds", "truncated", "usage", "termination", "timeout", "aborted", "diagnostics"]) {
+  for (const field of [
+    "ok", "finalText", "rounds", "truncated", "usage", "termination", "timeout", "aborted",
+    "artifacts", "extensionCount", "maxExtensions", "resumable", "diagnostics",
+  ]) {
     assert.ok(field in payload, `载荷缺少字段 ${field}`);
   }
+  // #207 R3：传了 sessionDir 就必须真落了盘，且 artifacts 报的就是那个文件
+  assert.equal(typeof payload.artifacts.transcriptPath, "string", "传了 sessionDir 就不能报 null");
+  assert.equal(existsSync(payload.artifacts.transcriptPath), true);
+  assert.equal(payload.artifacts.transcriptPath.startsWith(sessionDir), true);
+  assert.equal(payload.diagnostics.sessionDir, sessionDir);
+  assert.equal(payload.resumable, false);
+  assert.equal(typeof payload.extensionCount, "number");
+  assert.equal(typeof payload.maxExtensions, "number");
   assert.equal(typeof payload.finalText, "string");
   assert.ok(payload.finalText.length > 0, "finalText 不能为空");
   assert.equal(typeof payload.rounds, "number");
