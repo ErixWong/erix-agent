@@ -34,6 +34,7 @@ import {
   formatCrashResult,
   formatSyncResult,
 } from "../../examples/pi-extension/erix-run-format.js";
+import { assertMachineReadableResult, findLivePath } from "../helpers/plain-data.js";
 
 function tempDir(prefix = "erix-run-details-") {
   return mkdtempSync(path.join(tmpdir(), prefix));
@@ -48,63 +49,8 @@ async function waitUntil(predicate, { timeoutMs = 3_000, stepMs = 5, label = "co
 }
 
 // ---------------------------------------------------------------------------
-// 独立实现的「活对象」扫描器（**故意不 import 生产代码里的那一份**）
+// 判据来自 test/helpers/plain-data.js（**独立实现**，不回读生产码的守卫）
 // ---------------------------------------------------------------------------
-
-/**
- * 递归找出一棵树里第一处「宿主序列化不了 / 序列化出来是废话」的值，返回它的路径与理由。
- * 允许：string / number / boolean / null / undefined / plain object / array。
- * 拒绝：function / symbol / bigint / **非 plain 的对象（类实例：Promise、AbortController、
- * Timeout、Date…）** / 循环引用。
- */
-function findLivePath(value, where = "$", stack = new Set()) {
-  if (value === null || value === undefined) return undefined;
-  const type = typeof value;
-  if (type === "function" || type === "symbol" || type === "bigint") return `${where}: ${type}`;
-  if (type === "string" || type === "number" || type === "boolean") return undefined;
-  if (type !== "object") return `${where}: ${type}`;
-  if (stack.has(value)) return `${where}: circular`;
-  stack.add(value);
-  let hit;
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i += 1) {
-      hit = findLivePath(value[i], `${where}[${i}]`, stack);
-      if (hit !== undefined) break;
-    }
-  } else {
-    const proto = Object.getPrototypeOf(value);
-    if (proto !== Object.prototype && proto !== null) {
-      hit = `${where}: 非 plain 对象（${value?.constructor?.name ?? "?"}）`;
-    } else {
-      for (const key of Object.keys(value)) {
-        hit = findLivePath(value[key], `${where}.${key}`, stack);
-        if (hit !== undefined) break;
-      }
-    }
-  }
-  stack.delete(value);
-  return hit;
-}
-
-/** 一条工具结果是否「宿主可以安全落盘/转发」：文本面非空 + details 全是 plain 数据 + 序列化不抛。 */
-function assertMachineReadable(result, label) {
-  assert.ok(result !== null && typeof result === "object", `${label}: 必须返回一个结果对象`);
-  assert.ok(Array.isArray(result.content) && result.content[0]?.type === "text", `${label}: content[0] 必须是 text`);
-  assert.equal(
-    typeof result.content[0].text === "string" && result.content[0].text.trim() !== "",
-    true,
-    `${label}: 文本面不能是空的`,
-  );
-  const live = findLivePath(result.details);
-  assert.equal(live, undefined, `${label}: details 里不许有活对象/循环引用，实测 ${live}`);
-  assert.doesNotThrow(() => JSON.stringify(result.details), `${label}: JSON.stringify(details) 不能抛`);
-  assert.doesNotThrow(() => JSON.stringify(result), `${label}: 整个 AgentToolResult 不能抛`);
-  assert.doesNotThrow(() => JSON.stringify(result.content), `${label}: content 不能抛`);
-  if (result.structuredContent !== undefined) {
-    assert.equal(findLivePath(result.structuredContent), undefined, `${label}: structuredContent 里不许有活对象`);
-    assert.doesNotThrow(() => JSON.stringify(result.structuredContent), `${label}: JSON.stringify(structuredContent) 不能抛`);
-  }
-}
 
 /** 从真 runtime 拿到一条 `kind:"started"` 的真实 outcome（内层 run 是可控的假 run）。 */
 function okPayload(extra = {}) {
@@ -175,23 +121,23 @@ test("#237 R2：全部返回路径（started/status/result/list/cancel/unknown-r
     ["crashed", { kind: "crashed", message: "boom" }],
   ];
   for (const [label, outcome] of cases) {
-    assertMachineReadable(formatAsyncResult(outcome), `路径 ${label}`);
+    assertMachineReadableResult(formatAsyncResult(outcome), `路径 ${label}`);
   }
 
   // cancel（活跃 run → cancelled:true）
   const cancel = runtime.act({ action: "cancel", runId });
   assert.equal(cancel.kind, "cancel");
-  assertMachineReadable(formatAsyncResult(cancel), "路径 cancel(已取消)");
+  assertMachineReadableResult(formatAsyncResult(cancel), "路径 cancel(已取消)");
 
   // 放行 → 内层终局 → result 路径
   job.release();
   await waitUntil(() => runtime.registry.get(runId).payload !== undefined, { label: "settled" });
-  assertMachineReadable(formatAsyncResult(runtime.act({ action: "result", runId })), "路径 result");
+  assertMachineReadableResult(formatAsyncResult(runtime.act({ action: "result", runId })), "路径 result");
   // 已结束的 run 再取消 → 「无需取消」是另一条形状
-  assertMachineReadable(formatAsyncResult(runtime.act({ action: "cancel", runId })), "路径 cancel(已结束)");
+  assertMachineReadableResult(formatAsyncResult(runtime.act({ action: "cancel", runId })), "路径 cancel(已结束)");
   // 空注册表的 list（`jobs: []` 也要能序列化，且文本非空）
   const empty = makeRuntime({ job: job.job });
-  assertMachineReadable(formatAsyncResult(empty.runtime.act({ action: "list" })), "路径 list(空表)");
+  assertMachineReadableResult(formatAsyncResult(empty.runtime.act({ action: "list" })), "路径 list(空表)");
 });
 
 // ---------------------------------------------------------------------------
@@ -214,7 +160,7 @@ test("#237 R1/R2：async 派工 —— jobs 层返回值本身不带活对象，
 
   // ② 工具结果面：details 只有 {kind, handle}，形状钉死
   const result = formatAsyncResult(outcome);
-  assertMachineReadable(result, "started");
+  assertMachineReadableResult(result, "started");
   assert.deepEqual(Object.keys(result.details).sort(), ["handle", "kind"]);
   assert.equal(result.details.kind, "started");
   assert.deepEqual(result.details.handle, outcome.handle);
@@ -237,7 +183,7 @@ test("#237 R2：status / result 的 details 只有 {kind, source, view}，view �
 
   await waitUntil(() => registry.get(handle.runId).status === "running", { label: "running" });
   const statusResult = formatAsyncResult(runtime.act({ action: "status", runId: handle.runId }));
-  assertMachineReadable(statusResult, "status");
+  assertMachineReadableResult(statusResult, "status");
   assert.deepEqual(Object.keys(statusResult.details).sort(), ["kind", "source", "view"]);
   assert.equal(statusResult.details.kind, "status");
   assert.equal(statusResult.details.source, "memory");
@@ -248,14 +194,16 @@ test("#237 R2：status / result 的 details 只有 {kind, source, view}，view �
   await waitUntil(() => registry.get(handle.runId).status === "completed", { label: "completed" });
   const resultOutcome = runtime.act({ action: "result", runId: handle.runId });
   const resultResult = formatAsyncResult(resultOutcome);
-  assertMachineReadable(resultResult, "result");
+  assertMachineReadableResult(resultResult, "result");
   assert.deepEqual(Object.keys(resultResult.details).sort(), ["kind", "source", "view"]);
   assert.equal(resultResult.details.kind, "result");
   assert.equal(resultResult.details.view.status, "completed");
   assert.equal(resultResult.details.view.termination.reason, "end_turn");
   assert.deepEqual(resultResult.details.view.usage, { input_tokens: 11, output_tokens: 4 });
-  // result 的文本面要带上终稿（组装细节没被顺手删掉）
-  assert.match(resultResult.content[0].text, /任务已完成/u);
+  // 文本面要把四件套播报出来（组装细节不许被顺手删掉）。
+  // ⚠ 这里不断言 `finalText`：查询视图 `jobView` 从来不含 `finalText`（见报告「发现的文档漂移」）。
+  assert.match(resultResult.content[0].text, /termination=end_turn/u);
+  assert.match(resultResult.content[0].text, /↑11\/↓4/u);
 });
 
 test("#237 R2：list 的 details 是 {kind, jobs, active}，表里每行都必须是 plain 数据", async () => {
@@ -266,7 +214,7 @@ test("#237 R2：list 的 details 是 {kind, jobs, active}，表里每行都必�
   runtime.start({ task: "b", cwd: sessionDir, sessionDir, async: true, quiet: true });
 
   const result = formatAsyncResult(runtime.act({ action: "list" }));
-  assertMachineReadable(result, "list");
+  assertMachineReadableResult(result, "list");
   assert.deepEqual(Object.keys(result.details).sort(), ["active", "jobs", "kind"]);
   assert.equal(result.details.kind, "list");
   assert.equal(result.details.active, 2);
@@ -285,14 +233,14 @@ test("#237 R2：unknown-run / error 的小对象可序列化且报 isError", asy
   const { runtime } = makeRuntime({ job: gatedJob().job });
 
   const unknown = formatAsyncResult(runtime.act({ action: "status", runId: "ghost-237" }));
-  assertMachineReadable(unknown, "unknown-run");
+  assertMachineReadableResult(unknown, "unknown-run");
   assert.deepEqual(Object.keys(unknown.details).sort(), ["kind", "message", "runId"]);
   assert.equal(unknown.details.kind, "unknown-run");
   assert.equal(unknown.details.runId, "ghost-237");
   assert.equal(unknown.isError, true, "查不存在的 run 要让模型看得见");
 
   const badParams = formatAsyncResult(runtime.act({ action: "status" }));
-  assertMachineReadable(badParams, "error(bad_params)");
+  assertMachineReadableResult(badParams, "error(bad_params)");
   assert.deepEqual(Object.keys(badParams.details).sort(), ["code", "kind", "message"]);
   assert.equal(badParams.details.code, "bad_params");
   assert.equal(badParams.isError, true);
@@ -300,7 +248,7 @@ test("#237 R2：unknown-run / error 的小对象可序列化且报 isError", asy
 
 test("#237 R2：crashed（扩展内部异常）的小对象可序列化", () => {
   const result = formatCrashResult("Cannot read properties of undefined");
-  assertMachineReadable(result, "crashed");
+  assertMachineReadableResult(result, "crashed");
   assert.deepEqual(Object.keys(result.details).sort(), ["crashed", "error"]);
   assert.equal(result.details.crashed, true);
   assert.equal(result.details.error, "Cannot read properties of undefined");
@@ -316,7 +264,7 @@ test("#237 R1/R2：同步终局的 details / structuredContent 可序列化且�
   const payload = okPayload({ diagnostics: { observerErrors: { count: 0, samples: [] }, runId: "r-1" } });
   const result = formatSyncResult(payload);
 
-  assertMachineReadable(result, "sync");
+  assertMachineReadableResult(result, "sync");
   assert.deepEqual(result.details, payload, "details 必须还是那份结构化载荷（组装不许改形状）");
   assert.deepEqual(result.structuredContent, payload, "structuredContent 与 details 同源");
   assert.equal(result.isError, undefined, "ok:true 不报 isError");
@@ -328,12 +276,12 @@ test("#237 R1/R2：同步终局的 details / structuredContent 可序列化且�
 
   // 失败终局：isError 仍然要报（形状不变，只是多一个 isError 键）
   const failed = formatSyncResult(okPayload({ ok: false, termination: { reason: "failed", errorCode: "unknown" } }));
-  assertMachineReadable(failed, "sync(failed)");
+  assertMachineReadableResult(failed, "sync(failed)");
   assert.equal(failed.isError, true);
 
   // 用户取消不算工具失败（那是人的决定）
   const aborted = formatSyncResult(okPayload({ ok: false, aborted: true, termination: { reason: "aborted" } }));
-  assertMachineReadable(aborted, "sync(aborted)");
+  assertMachineReadableResult(aborted, "sync(aborted)");
   assert.notEqual(aborted.isError, true);
 
   // 抛错路径的载荷里 error 是 plain 对象（jobs 层组装的），也不能被当成活对象
@@ -342,7 +290,7 @@ test("#237 R1/R2：同步终局的 details / structuredContent 可序列化且�
     termination: { reason: "failed", detail: "boom", errorCode: "unknown" },
     error: { name: "Error", message: "boom" },
   }));
-  assertMachineReadable(thrown, "sync(throw)");
+  assertMachineReadableResult(thrown, "sync(throw)");
   assert.deepEqual(thrown.details.error, { name: "Error", message: "boom" });
 });
 

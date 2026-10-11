@@ -424,7 +424,12 @@ export function createAsyncRuntime(options = {}) {
       )
       .catch(() => { /* notify/落盘链上的最后兜底：任何异常都不许冒到 pi */ });
 
-    return { kind: "started", handle: handleOf(job), job };
+    return { kind: "started", handle: handleOf(job) };
+    // ⚠ **不把 `job` 一并交出去**（#237）：`job` 是活对象（AbortController / `setTimeout` 句柄
+    //   / 未结算 promise，内部还有循环引用）。以前这里返回 `{kind, handle, job}`，而
+    //   `erix-run.ts` 把整个 outcome 当 `details` 交给宿主 → pi 序列化 details 时抛
+    //   `Converting circular structure to JSON` → 白烧一轮 auto-retry。`job` 只留在本模块
+    //   内部（注册表 / 闭包）用；可机读面一律走 `handleOf` / `jobView` 的纯数据视图。
   };
 
   /** 同步分支：行为与 #207 逐字一致（`async` 不传就走这里）。 */

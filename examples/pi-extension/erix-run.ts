@@ -46,14 +46,17 @@ import {
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
   STRATEGY_NAMES,
-  formatPayloadForModel,
-  toPiUsage,
 } from "./erix-run-core.js";
 import {
   createAsyncRuntime,
   globalAsyncJobRegistry,
   globalCompletionSendRegistry,
 } from "./erix-run-jobs.js";
+import {
+  formatAsyncResult,
+  formatCrashResult,
+  formatSyncResult,
+} from "./erix-run-format.js";
 import { createParentWake } from "./erix-run-parent-wake.js";
 
 /** 进度窗口保留的行数（onUpdate 的 partial 结果整体替换上一次显示）。 */
@@ -280,14 +283,8 @@ export const erixRunTool = defineTool({
       });
     } catch (error) {
       // 兜底：core/jobs 设计上不抛，真抛了也不能把 pi 带崩。
-      return {
-        content: [{
-          type: "text",
-          text: `erix_run 内部异常：${error instanceof Error ? error.message : String(error)}`,
-        }],
-        details: { crashed: true },
-        isError: true,
-      };
+      // details 只放纯数据（#237：宿主序列化 details 时会抛 Converting circular structure to JSON）。
+      return formatCrashResult(error instanceof Error ? error.message : String(error));
     }
 
     if (outcome?.kind !== "sync") {
@@ -297,17 +294,8 @@ export const erixRunTool = defineTool({
     const payload = outcome.payload;
     flush(true);
 
-    const result: AgentToolResult<unknown> = {
-      content: [{ type: "text", text: formatPayloadForModel(payload) }],
-      details: payload,
-      structuredContent: payload,
-    };
-    // 用户主动取消不算工具失败（那是人的决定）；其余非采纳终局报成 isError，让模型看得见。
-    if (payload.ok !== true && payload.aborted !== true) {
-      result.isError = true;
-    }
-    const usage = toPiUsage(payload.usage);
-    if (usage !== undefined) result.usage = usage;
+    const result: AgentToolResult<unknown> = formatSyncResult(payload);
+    // 用户主动取消不算工具失败、非采纳终局报 isError：判定在 formatSyncResult 里（与 details 同处）。
     return result;
   },
 });
@@ -354,72 +342,11 @@ function asyncRuntime() {
   return runtime;
 }
 
-/** `action` / 句柄结果 → AgentToolResult（可机读数据在 details，文本面在 content）。 */
-function formatAsyncResult(outcome: any): AgentToolResult<unknown> {
-  const kind = outcome?.kind ?? "error";
-  const view = outcome?.view;
-  const lines: string[] = [];
-  let isError = false;
-  if (kind === "started") {
-    const handle = outcome.handle;
-    lines.push(
-      `已派工（async:true，主会话不阻塞）：runId=${handle.runId} status=${handle.status}`,
-      `cwd=${handle.cwd} model=${handle.model ?? "（配置槽位的模型）"} maxRounds=${handle.maxRounds}`
-      + ` timeoutMs=${handle.timeoutMs} quiet=${handle.quiet}`,
-      handle.sessionDir === null
-        ? "sessionDir=（未落盘：查不到跨 /reload 的状态）"
-        : `status.json=${handle.statusPath}`,
-      "查进度/取终局：erix_run(action:\"status\"|\"result\", runId=…)；取消：action:\"cancel\"。"
-      + "后台 run 与 pi 同进程，pi 退出或 /reload 会杀掉它。",
-    );
-  } else if (kind === "list") {
-    lines.push(`erix_run 注册表：${outcome.jobs.length} 个 run（活跃 ${outcome.active} 个）`);
-    for (const job of outcome.jobs) {
-      lines.push(
-        `- ${job.runId} ${job.status} rounds=${job.rounds}`
-        + ` termination=${job.termination?.reason ?? "-"} cwd=${job.cwd ?? "?"}`,
-      );
-    }
-    if (outcome.jobs.length === 0) lines.push("（本进程还没有派过工；内存注册表不跨进程重启）");
-  } else if (kind === "cancel") {
-    lines.push(outcome.cancelled === true
-      ? `已请求取消 run ${view?.runId}：signal 已打进内层 run，终局记成 aborted。`
-      : `run ${view?.runId} 无需取消（当前状态 ${view?.status}）。${outcome.message ?? ""}`);
-  } else if (kind === "unknown-run" || kind === "error") {
-    isError = true;
-    lines.push(`erix_run action 失败（${outcome.code ?? "unknown-run"}）：${outcome.message ?? ""}`);
-  } else {
-    // status / result
-    lines.push(
-      `run ${view?.runId} status=${view?.status} source=${outcome.source}`,
-      `termination=${view?.termination?.reason ?? "（还没终局）"}`
-      + ` ok=${view?.ok ?? "-"} rounds=${view?.rounds ?? 0} truncated=${view?.truncated === true}`
-      + ` timeout=${view?.timeout === true} aborted=${view?.aborted === true}`
-      + ` usage=↑${view?.usage?.input_tokens ?? 0}/↓${view?.usage?.output_tokens ?? 0}`,
-      `artifacts transcript=${view?.artifacts?.transcriptPath ?? "none"}`
-      + ` judgeLog=${view?.artifacts?.judgeLogPath ?? "none"}`
-      + ` extensions=${view?.extensionCount ?? 0}/${view?.maxExtensions ?? 0} resumable=${view?.resumable === true}`,
-      `cwd=${view?.cwd ?? "?"} sessionDir=${view?.sessionDir ?? "none"} statusPath=${view?.statusPath ?? "none"}`,
-    );
-    if (typeof view?.finalText === "string" && view.finalText !== "" && kind === "result") {
-      lines.push("", view.finalText.slice(0, 4_000));
-    }
-    if (Array.isArray(view?.progressTail) && view.progressTail.length > 0) {
-      lines.push("", "…最近进度：", ...view.progressTail.slice(-6));
-    }
-    if (view?.error?.message) lines.push(`[error] ${view.error.message}`);
-    // 查一个「已结束的失败 run」是数据不是调用失败，但让模型看得见它没过：与同步面同口径。
-    if (kind === "result" && view?.ok === false) isError = true;
-  }
-  const result: AgentToolResult<unknown> = {
-    content: [{ type: "text", text: lines.join("\n") }],
-    details: outcome,
-  };
-  if (isError) result.isError = true;
-  const usage = toPiUsage(view?.usage);
-  if (usage !== undefined) result.usage = usage;
-  return result;
-}
+/**
+ * `action` / 句柄结果 / 同步终局 → `AgentToolResult` 的组装已搬到 `./erix-run-format.js`（#237）：
+ * 那里不 import pi，所以每一条返回路径的「details 必须可 JSON 序列化」能被 `node --test` 离线钉住
+ * （→ test/examples/erix-run-details.test.js）。本文件只负责接线。
+ */
 
 export default function (pi: ExtensionAPI) {
   // 工厂里不起定时器/监听器（生命周期规则）：定时器由 job 在真正派工时创建。
