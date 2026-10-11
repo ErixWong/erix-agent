@@ -113,7 +113,7 @@ scripts/          # 实验脚本和结果
   `exports["./contract-tests"]` **刻意不带** `types`（其目标在 `test/` 下，不在声明依赖图里）。声明由 `prepack` 钩子生成，
   因此干净检出里一个 `.d.ts` 都没有——`npm publish --dry-run` 应列出约 60 个 `.d.ts`（0.18.0 实测：打包体积 +约 44 kB、
   解包 +约 139 kB）；`npm run check:types-build` 就是「还能不能生成」的门禁。
-- 当前版本：`0.18.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
+- 当前版本：`0.19.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
 
 ### npm 2026 政策变化（TOTP 停止 + bypass token 限制）
 - ❌ 不再支持新的 TOTP 注册（`enable-2fa` 返回 404）。

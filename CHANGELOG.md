@@ -3,6 +3,8 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
 ## [Unreleased]
+
+## [0.19.0] - 2026-10-12
 ### Added
 
 - 随包发布 `.d.ts` 类型面（issue #213，**宿主可见的类型面新增 = semver minor**，不是纯内部改动：TypeScript 宿主此前从 npm 包拿不到任何声明，现在包根与 `erix-agent/tools` 都有类型；**零运行时依赖，`--checkJs` 不在本单**）：
