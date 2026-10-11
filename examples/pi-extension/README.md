@@ -11,15 +11,18 @@
 
 | 文件 | 作用 |
 |---|---|
-| `erix-run.ts` | pi 扩展本体：`defineTool` 注册 `erix_run`、参数 schema、分流（同步 / 异步派工 / `action` 查询）、进度通道（`onUpdate`）、结果形状（`content` / `details` / `structuredContent` / `isError` / `usage`）、完成通知投递与生命周期接线 |
+| `erix-run.ts` | pi 扩展本体：`defineTool` 注册 `erix_run`、参数 schema、分流（同步 / 异步派工 / `action` 查询）、进度通道（`onUpdate`）、完成通知投递与生命周期接线。**结果形状不在这里**（→ `erix-run-format.js`） |
 | `erix-run-core.js` | 纯逻辑：库装载、配置装配、`runToolLoop` 选项装配、事件→进度、终局载荷组装。**不 import pi**，`node --test` 可测 |
-| `erix-run-jobs.js` | **异步执行层（issue #234）**：job 注册表 + `status.json` 落盘 + 立即返回句柄 + `action` 面（`status`/`result`/`list`/`cancel`）+ run 级超时看门狗 + 完成投递去重注册表 + 唤醒策略。同样**不 import pi** |
+| `erix-run-format.js` | **结果形状层（issue #237）**：`outcome` / 同步载荷 → `AgentToolResult`（`content` / `details` / `structuredContent` / `isError` / `usage`）。按 `kind` 组装 `details`，只放纯数据，**`details` 必须可 JSON 序列化**这条由它保证。同样**不 import pi**，`node --test` 可测 |
+| `erix-run-jobs.js` | **异步执行层（issue #234）**：job 注册表 + `status.json` 落盘（tmp + rename 原子写，写失败开 `deps` 注入缝，#237 R4）+ 立即返回句柄 + `action` 面（`status`/`result`/`list`/`cancel`）+ run 级超时看门狗 + 完成投递去重注册表 + 唤醒策略。同样**不 import pi** |
 | `erix-run-parent-wake.js` | 唤醒父会话的双分支（idle 真触发 / 忙时追加 + `deliverAs:"steer"` 排队）+ `WAKE_PENDING_MS` pending 窗口 + `Symbol.for` WeakMap（`/reload` 不丢）。逐条照 `pi-subagents` 的 `shared/parent-wake.js`，**不 import pi** |
 | `index.ts` | 目录形态的入口（pi 把「含 `index.ts` 的子目录」当成一条扩展加载） |
 | `../../test/examples/erix-run-core.test.js` | core 单测（fake provider / 注入 fake lib，全离线） |
 | `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略、`shutdown` 幂等 |
 | `../../test/examples/erix-run-core.smoke.test.js` | 真机冒烟（一次真 relay 调用，默认跳过） |
-| `../../test/examples/erix-run-pi-load.test.js` | 用 **pi 自己的装载器**（jiti + 虚拟模块）加载 `.ts`，断言注册成功、失败路径不抛错 |
+| `../../test/examples/erix-run-pi-load.test.js` | 用 **pi 自己的装载器**（jiti + 虚拟模块）加载 `.ts`，断言注册成功、失败路径不抛错；#237 之后还拿**真 `execute()`** 把每条返回路径的 `details` 序列化一遍 |
+| `../../test/examples/erix-run-details.test.js` | **#237 R2：`details` 必须可 JSON 序列化**。对 `started` / `status` / `result` / `list` / `cancel` / `unknown-run` / `error` / `crashed` + **同步终局**逐条断言 `JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（无函数 / 定时器 / promise / 循环引用），并把每个 `kind` 的键集合钉死 |
+| `../../test/examples/plain-data.js` | 测试侧**独立实现**的「活对象」扫描器与 `assertMachineReadableResult`（故意不回读生产码的守卫，否则两边错在一起就是自证） |
 
 ## 安装
 
@@ -150,6 +153,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
 ```
 
 可机读数据在 `AgentToolResult.details`（照 `pi-subagents` 的 `result.details.progress` 口径），
+**且 `details` 必须是可 JSON 序列化的纯数据**——宿主（pi）会把它序列化进会话记录 / 转发给订阅者，
+一旦里面混了活对象，序列化一抛就白烧一轮 auto-retry（见「返回结构」节里的
+「`details` 必须可 JSON 序列化（issue #237）」）。
 `outputSchema` / `structuredContent` **仍只描述同步终局面**——异步面塑进同一个 schema 就得把
 13 个字段全改 optional，把「同步终局一定有四件套」这条承诺改软，不值得。
 `model` 是宿主请求的覆盖值；没传就是 `null`（= 用配置槽位的模型），不编一个名字。
@@ -157,10 +163,21 @@ pi --extension ./examples/pi-extension/erix-run.ts
 ### 2. job 注册表与 `status.json`
 
 内存 Map（状态机 `queued` / `running` / `completed` / `failed` / `aborted`）**并落盘**：
-`<sessionDir>/outputs/<safeRunId>/status.json`（tmp + rename 原子写）。选这个落点的理由：
+`<sessionDir>/outputs/<safeRunId>/status.json`（**tmp + rename 原子写**：先写同目录的
+`status.json.tmp-<pid>-<时间>`，再 `rename` 到最终名，读者永远看不到半截文件）。选这个落点的理由：
 它就在 #207 的 `judge.log` **旁边同一棵树**，不新造布局；而工单给的另一个候选
 `<sessionDir>/<runId>.status.json` **已被引擎占用**（实测内容 `{"runId":…, "status":"succeeded", "ts":…}`，
 106 B，真机 `ls -R` 可直接看到），放那里就是两个写者撞一个文件。
+
+**写中途失败的三条保证（#237 R4）**：① **旧文件内容不被破坏**（`rename` 没成功就没人动过
+`status.json`，读者要么看到旧的完整内容、要么看到新的完整内容）；② **不留 `.tmp-` 残留**
+（半截临时文件在 `catch` 里 `unlink`）；③ **不抛**——错误以 `{path, error}` 回报，放进
+`job.statusWriteError` → 经 `jobView` 进查询视图与 `details`，模型文本面也多一行
+`[status.json 写入失败] …`。所以「写不进去」不会把派工/查询面带崩，但也不会被谎报成落盘成功。
+这层原本**零测试覆盖**（把它退化成直接写同名文件，全量测试零红），现在拿
+`writeStatusFile(input, deps)` 的注入缝（照 `deps.createStore` 风格；`deps` 可换 `mkdirSync` /
+`writeFileSync` / `renameSync` / `unlinkSync`，`createAsyncRuntime({deps})` 一路透传）钉在
+`test/examples/erix-run-async.test.js` 的 #237 R4 四条上。
 
 内容包含**终局四件套**（`termination.reason` / `truncated` / `rounds` / `usage`）+ `artifacts`
 （**沿用 core 的 `resolveArtifacts` 口径**，宁给 `null` 不猜路径，不另写一份）+ 运行时事实
@@ -172,7 +189,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `action` | 需要 `runId` | 返回 |
 |---|---|---|
 | `status` | ✅ | 当前状态 + 终局四件套 + `artifacts` + 进度尾巴 |
-| `result` | ✅ | 同上，额外带 `finalText` 前 4000 字；查一个已失败的 run 仍算「数据」，但报 `isError` 让模型看得见 |
+| `result` | ✅ | 同上（四件套 + `artifacts` + `progressTail`）；查一个已失败的 run 仍算「数据」，但报 `isError` 让模型看得见。⚠ **不含 `finalText`**：查询视图 `jobView`（= `status.json` 的内容）从来就没人填过它（#237 发现的文档漂移，已改口径），要终稿看完成通知里的摘要或同步面返回 |
 | `list` | | 本进程已知 run 的摘要表 + 活跃数 |
 | `cancel` | ✅ | 把 `signal` 打进内层 `runToolLoop`，终局 `aborted`（已结束的 run 报「无需取消」，不假装成功） |
 
@@ -232,10 +249,35 @@ pi --extension ./examples/pi-extension/erix-run.ts
 且 `status.json` 同步变 `aborted`。事件总数 4 条（第三条完成通知落在 pending 窗口内 → 不重复排 steer；
 迟到的真终局被去重注册表挡住 → 不二次投递）。
 
-⚠ **诚实边界**：以上是在脚本 harness 里跑的（真装载器 + 真 `execute()` + 真模型 run，但 pi 传输层是桩）。
-它证明的是「扩展确实以正确参数调了 `pi.sendMessage` / `pi.sendUserMessage`」。**在交互式 TUI 里
-`agent_settled` 之后这条 steer 能不能真的把父会话叫醒，本环境无人值守，未实测**（需主 agent 真机
-`/reload` 后看一次，已列入下面「待实测清单」第 6 条）。忙分支与 pending 窗口则是**单元级桩验证**。
+⚠ **诚实边界**：上表是在脚本 harness 里跑的（真装载器 + 真 `execute()` + 真模型 run，但 pi 传输层是桩）。
+它证明的是「扩展确实以正确参数调了 `pi.sendMessage` / `pi.sendUserMessage`」，**并不能证明父会话真被唤醒**。
+后来拿真 pi 进程（`--mode rpc`）跑了一次，那个问题的答案见下面第 6 条（已实测）。
+忙分支与 pending 窗口仍是**单元级桩验证**。
+
+### 真进程 rpc e2e（#237 复核：唤醒仍生效 + `auto_retry` 已消失）
+
+上表的 harness 把 pi 传输层做成桩，所以「settle 后能不能真唤醒」当时算未实测。真跑方式：
+真 `pi --mode rpc` 常驻进程 + 真扩展（工作树的 `examples/pi-extension/index.ts`）+ 真模型 run，
+脚本与事件流归档在 `docs/tasks/active/261010-13-erix-run-async/`（`e2e-wake.mjs` / `e2e-wake-events.txt`）。
+本轮（#237 修完）的关键时间戳：
+
+| 时刻 | 事件 |
+|---|---|
+| `T+001218ms` | 外层 `prompt` 受理，`agent_start`（第一轮） |
+| `T+007415ms` → `T+007427ms` | 第一次 `erix_run` 调用被 schema 拒（模型传了 `action:""`，enum 不收空串），当场返 Validation 错 |
+| `T+010210ms` → `T+010299ms` | 第二次调用（不传 `action`）**工具执行共 89ms 就回了句柄**（主会话没被 4 轮的 inner run 堵住） |
+| `T+013955ms` | **第一轮 `agent_end`（settle）**，此刻盘上仍是 `running/rounds=0` |
+| `T+025992ms` | **`agent_start`（第二轮 = 被唤醒）**，距 settle `12_037ms` |
+| `T+027957ms` | 第二轮自己调 `erix_run(action:"result", runId=…)` 取回终局 |
+| `T+030012ms` | 内层 `status.json` 从 `running` 走到 `completed/rounds=4` |
+| `T+034255ms` | 第二轮 `agent_end`（它读到了 `termination=end_turn`） |
+
+全程 `auto_retry` 事件数 **0**（#234 那一版在 `T+004759ms` 就有一条 `auto_retry_start`，
+`errorMessage="Converting circular structure to JSON"`，占了一个 `agent_start`/`agent_end` 对）。
+这就是 `details` 可序列化修好了的直接证据。
+边界：**以上是 `--mode rpc` 下验的**（无 UI，事件流可直接读）；**交互式 TUI 界面层未逐字验**
+（消息渲染、`customType:"erix-run-notify"` 的显示效果）。另：跟跑工作树扩展时要加 `--no-extensions`
+（只关自动发现，显式 `--extension` 仍生效），否则安装副本也被加载，两个 `erix_run` 撞名 pi 直接退。
 
 ## 模型配置
 
@@ -300,6 +342,38 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 `content` 是交回模型的文本（终稿 + 一行终局摘要 + 一行 diagnostics + 一行决策事实），
 `details` / `structuredContent` 是同一份结构化载荷：
+
+### `details` 必须可 JSON 序列化（issue #237）
+
+**硬规矩**：`AgentToolResult.details`（以及同步面的 `structuredContent`）只能是
+**可 JSON 序列化的纯数据**：plain object / array / string / number / boolean / `null`。
+不会有函数、定时器句柄、`AbortController`/`AbortSignal`、未结算的 promise，也不会有循环引用。
+为什么是硬规矩而不是风格问题：宿主会把 `details` 序列化进会话记录 / 转发给订阅者，
+一抛就是 `Converting circular structure to JSON` —— 在真进程里它表现为**白烧一轮 auto-retry**
+（可机读面当场作废，而单测当时全绿）。这条规矩由 `erix-run-format.js` 保证（逐 `kind` 组装，
+不把 `outcome` 原样交出去）、由 `test/examples/erix-run-details.test.js` 与
+`test/examples/erix-run-pi-load.test.js`（真装载器）钉住。
+
+每个 `kind` 的 `details` 形状（**钉死**，多出东西就算测试红）：
+
+| 路径 | `details` |
+|---|---|
+| `async:true` 派工 | `{ kind: "started", handle }` |
+| `action:"status"` | `{ kind: "status", source, view }`（`source` = `memory` \| `disk`） |
+| `action:"result"` | `{ kind: "result", source, view }` |
+| `action:"list"` | `{ kind: "list", jobs, active }` |
+| `action:"cancel"` | `{ kind: "cancel", cancelled, view[, message] }` |
+| 查不存在的 run | `{ kind: "unknown-run", runId, message }`（报 `isError`） |
+| `action` 参数不对 | `{ kind: "error", code, message }`（报 `isError`） |
+| 扩展内部异常 | `{ crashed: true, error }`（报 `isError`） |
+| **同步终局**（缺省路径） | `details` === `structuredContent` === core 组装的那份终局载荷（下面那份） |
+
+`view` / `handle` / `jobs` 都是 `erix-run-jobs.js` 里 `jobView` / `handleOf` 组的**纯数据视图**；
+活的 job 对象（controller / 定时器 / promise）**只留在 jobs 层内部**，不进返回值。
+万一上游哪天还是把活对象混了进来，`detailsForHost` 守卫会把 `details` **退化成**
+`{ kind, detailsDropped: true, dropReason: "$.view.controller: 非 plain 对象（AbortController）" }`
+而不是让宿主抛——宁可少给数据，不可带崩宿主；看到 `detailsDropped` 就该当缺陷查。
+下面那份同步终局载荷（`details` 与 `structuredContent` 是**同一个引用**）：
 
 ```jsonc
 {
@@ -387,7 +461,7 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
 ## 测试
 
 ```bash
-node --test test/examples/*.test.js                                   # 离线：core 单测 + 异步面 + pi 装载自证
+node --test test/examples/*.test.js                                   # 离线：core 单测 + 异步面 + details 形状 + pi 装载自证
 ERIX_PI_SMOKE=1 node --test test/examples/erix-run-core.smoke.test.js   # 真机冒烟（一次真调用）
 ```
 
@@ -400,6 +474,16 @@ ERIX_PI_SMOKE=1 node --test test/examples/erix-run-core.smoke.test.js   # 真机
   `runToolLoop`），`cwd` / `home` / `sessionDir` 一律临时目录 —— 不碰真实 `~/.erix`（跑完
   `find ~/.erix -newermt '-25 minutes'` 应为空）。看门狗那两条用 `timeoutMs = MIN_TIMEOUT_MS`（1s），
   所是整个文件比纯静态用例多花约 2s。
+- `erix-run-details.test.js`（**#237 R2**）也全离线：把形状层（`erix-run-format.js`）的**每一条返回路径**
+  跑一遍——`JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（拿
+  `test/examples/plain-data.js` 里**独立实现**的扫描器判，不回读生产码的守卫）、每个 `kind` 的键集合钉死。
+  它能杀什么：把活对象 `job` 塞回返回值（即 #237 的原始缺陷形式）它就红。
+- `erix-run-async.test.js` 里的 **#237 R4** 四条钉 `status.json` 的 tmp + rename 原子写（顺序、
+  旧内容不被破坏、不留 `.tmp-` 残留、错误进 `statusWriteError` 而不抛）；注入缝是
+  `writeStatusFile(input, deps)` 与 `createAsyncRuntime({deps})`。
+- `erix-run-pi-load.test.js` 除了装载自证，#237 之后还拿**真 `execute()`** 把 `started` / `status` /
+  `cancel` / `result` / `list` / `unknown-run` / `error` / 同步失败八条路径的 `details` 各序列化一次
+  （内层库指到不存在的路径 → 后台 run 秒回 `lib_missing`，不触网、不花模型钱）。
 
 ## 待主 agent `/reload` 实测的清单
 
@@ -417,9 +501,14 @@ ERIX_PI_SMOKE=1 node --test test/examples/erix-run-core.smoke.test.js   # 真机
    参数与结果形状。
 5. **`exposure` / `defaultActive`**：当前是缺省 `direct` + 注册即激活。若希望它默认不声明给模型
    （按需 `pi.setActiveTools()` 再开），要确认 `/reload` 后 `pi.getAllTools()` 的可见行为。
-6. **（#234）`agent_settled` 之后异步通知能不能真唤醒父会话**：双分支代码逐字照 `pi-subagents`，
-   并在真装载器 + 真 `execute()` + 真模型 run 的 harness 里实测到「`pi.sendMessage(msg,
-   {triggerTurn:false})` + `pi.sendUserMessage("erix_run updates above.", {deliverAs:"steer"})` 确实被调用」，
-   但 pi 的传输层在 harness 里是桩。**交互式 TUI 里收到通知后是否真起一轮、以及 `customType:
-   "erix-run-notify"` 的显示效果**（本扩展没注册 renderer），需要 `/reload` 后派一单看一眼；
-   如果没醒来，就按「未唤醒，需轮询」处理（`action:"status"` 已是可用入口），并把这条改成已知限制。
+6. **（#234 → #237 已实测）`agent_settled` 之后异步通知能不能真唤醒父会话**：✅ **已实测（`pi --mode rpc` 真进程）**。
+   真常驻进程 + 真扩展 + 真模型 run：第一轮 `agent_end`（settle）在 `T+013955ms`（此刻内层 `status.json` 仍是
+   `running/rounds=0`）→ **`T+025992ms` 真的又起了一轮 `agent_start`（距 settle 12 037ms）**→ 第二轮自己调
+   `erix_run(action:"result", runId=…)` 取回终局四件套（`T+027957ms`），内层 `status.json` 在 `T+030012ms`
+   从 `running` 走到 `completed/rounds=4`。事件流归档在同目录
+   `docs/tasks/active/261010-13-erix-run-async/e2e-wake-events.txt`，时刻表与本单复核结果见上面
+   「真进程 rpc e2e」那张表。
+   ⚠ **边界（写清）**：验的是 **rpc 模式**（事件流可直读）；**交互式 TUI 界面层未逐字验**——具体是
+   `customType: "erix-run-notify"` 在界面上渲染成什么样（本扩展没注册 renderer，预期按普通消息显示）与
+   steer 在 TUI 里的排队表现。唤醒本身（「能不能再起一轮」）已不再是问号；如果 TUI 里真有显示差异，
+   `action:"status"` / `action:"result"` 仍是可用入口。

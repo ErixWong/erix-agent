@@ -7,13 +7,14 @@
 //   PI_CODING_AGENT_ROOT → 常见全局安装路径 → import.meta.resolve("@earendil-works/pi-coding-agent")
 
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { STRATEGY_NAMES } from "../../examples/pi-extension/erix-run-core.js";
+import { assertMachineReadableResult } from "./plain-data.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const extensionPath = path.join(here, "..", "..", "examples", "pi-extension", "erix-run.ts");
@@ -175,4 +176,72 @@ test("pi 装载器能加载 erix-run.ts 并注册 erix_run（离线，不触网�
   const dirTools = loadedDir.extensions[0].tools;
   const dirNames = dirTools instanceof Map ? [...dirTools.keys()] : Object.keys(dirTools ?? {});
   assert.deepEqual(dirNames, ["erix_run"], "index.ts 入口不得把 erix_run 注册两次");
+});
+
+// ---------------------------------------------------------------------------
+// #237：真装载器 + 真 `execute()` 下，**每一条返回路径**交出去的 details 都必须可序列化。
+// 上面的离线用例测的是形状层（erix-run-format.js）；这一条测的是**接线**：
+// execute() 把 outcome 交给 details / structuredContent 的那几行本身。
+// 缺陷原文是 pi 在真进程里序列化 details 时抛 `Converting circular structure to JSON`，
+// 而活对象 `job`（AbortController / 定时器 / 未结算 promise）就藏在派工返回值里。
+// 内层库指到一个不存在的路径 → 后台 run 立刻以 lib_missing 终局（离线、不花模型钱）。
+// ---------------------------------------------------------------------------
+
+test("#237：execute() 每条返回路径的 details 都可 JSON 序列化（真装载器 + 真 execute）", {
+  skip: piRoot === undefined ? "找不到已安装的 @earendil-works/pi-coding-agent（设 PI_CODING_AGENT_ROOT 指向安装目录）" : false,
+}, async () => {
+  const previousLib = process.env.ERIX_AGENT_LIB;
+  process.env.ERIX_AGENT_LIB = path.join(tmpdir(), "no-such-erix-agent-lib-237");
+  try {
+    const loader = await import(new URL("dist/core/extensions/loader.js", `file://${piRoot}/`).href);
+    const loaded = await loader.loadExtensions([extensionPath], process.cwd(), undefined, loader.createExtensionRuntime());
+    assert.deepEqual(loaded.errors ?? [], []);
+    const entry = loaded.extensions[0].tools.get("erix_run");
+    const definition = entry?.definition ?? entry;
+
+    const work = mkdtempSync(path.join(tmpdir(), "erix-run-details-pi-"));
+    const sess = mkdtempSync(path.join(tmpdir(), "erix-run-details-pi-sess-"));
+    const ctx = {
+      signal: undefined, cwd: process.cwd(), mode: "rpc", hasUI: false,
+      isIdle: () => true, sessionManager: { getSessionId: () => "t-237" },
+    };
+    const call = (id, params) => definition.execute(id, params, new AbortController().signal, undefined, ctx);
+
+    const cases = [];
+    const started = await call("p-started", {
+      task: "t", cwd: work, sessionDir: sess, async: true, timeoutMs: 1_000, maxRounds: 2,
+    });
+    cases.push(["started(async:true)", started]);
+    const runId = started.details?.handle?.runId;
+    assert.equal(typeof runId, "string", "派工必须回句柄，details.handle.runId 是可机读的 runId");
+    assert.deepEqual(Object.keys(started.details).sort(), ["handle", "kind"], "details 只有 {kind, handle}，没有活对象 job");
+    assert.equal("job" in started.details, false, "#237 的原始缺陷就是 details 里混进了 job");
+
+    cases.push(["status", await call("p-status", { action: "status", runId })]);
+    cases.push(["cancel", await call("p-cancel", { action: "cancel", runId })]);
+    cases.push(["result", await call("p-result", { action: "result", runId })]);
+    cases.push(["list", await call("p-list", { action: "list" })]);
+    cases.push(["unknown-run", await call("p-ghost", { action: "status", runId: "ghost-237" })]);
+    cases.push(["error(bad_params)", await call("p-badparams", { action: "status" })]);
+    cases.push(["sync(装配期失败)", await call("p-sync", { task: "t", cwd: path.join(tmpdir(), "no-such-dir-237-sync") })]);
+
+    for (const [label, result] of cases) {
+      assertMachineReadableResult(result, `pi execute(): ${label}`);
+      // 异步面（句柄与 action 结果）的 details 必须带 kind；同步面的 details 就是 #207 那份
+      // 终局载荷（有 outputSchema / structuredContent，本来就没有 kind），别拿异步面的形状卡它。
+      if (result.structuredContent === undefined && result.details?.crashed !== true) {
+        assert.equal(typeof result.details?.kind, "string", `${label}: details.kind 必须是字符串`);
+      }
+      assert.equal("job" in (result.details ?? {}), false, `${label}: details 里不许出现 job`);
+    }
+
+    // 取消这条 run 之后必须走到终局（后台 run 与扩展同进程，别把它留成 running）
+    const settled = await call("p-final", { action: "status", runId });
+    assert.equal(settled.details?.view?.status, "aborted", `取消后状态必须是 aborted，实测 ${settled.details?.view?.status}`);
+    if (previousLib === undefined) delete process.env.ERIX_AGENT_LIB;
+    else process.env.ERIX_AGENT_LIB = previousLib;
+  } finally {
+    if (previousLib === undefined) delete process.env.ERIX_AGENT_LIB;
+    else process.env.ERIX_AGENT_LIB = previousLib;
+  }
 });
