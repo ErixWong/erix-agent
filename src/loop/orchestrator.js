@@ -669,7 +669,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -803,6 +803,20 @@ export async function runToolLoop(options) {
     //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：3 / 3 行，全部落在声明之后），提先初始化不可观察。
     judgeRecordCorrelation: judgeRecordFields({ runId }),
     judgeRecordCount: 0,
+    // 【F-2 治理开关】`roundJudgeEnabled`（原 :1202）、`roundJudgeFailures`（原 :1209）、
+    //   `wrapupNormalizationEnabled`（原 :1256）——三格都是**运行期可关断**的治理开关与其失败计数：
+    //   roundJudge 连续失败到 `roundJudgeFailureLimit`（const，原 :1205，**不是**本格的一分子）就
+    //   永久关断（`:3064`/`:3110` 两处 `= false`），wrapup LLM 归一化失败一次就关断（`:2981`），
+    //   `roundJudgeFailures` 在 judge 判成功后复位为 `0`（`:3078`）——三处写点都是真行为，不是死存储。
+    //   ⚠ `roundJudgeEnabled` / `wrapupNormalizationEnabled` 的**初值不在这里**：它们读 `:1200` 的
+    //   `const reflectionEnabled`、`:1230` 的 `const wrapupEnabled` 与 `:1195` 的 `effectiveReflection`，
+    //   这三个 const 全部声明在**本字面量之后** ⇒ 把初值提进来不是「不可观察」而是 **TDZ
+    //   `ReferenceError` 直接抛错**。故走 `hadToolUse` 先例：此处只放**占位 `false`**，真值在原声明
+    //   位置（`:1202` / `:1256`）赋值，赋值点仍早于各自的全文件首读点（`:3056` / `:2939`）。
+    //   `roundJudgeFailures` 的初值是常量 `0`，无 TDZ 问题，逐字原搬进字面量。
+    roundJudgeEnabled: false,
+    roundJudgeFailures: 0,
+    wrapupNormalizationEnabled: false,
   };
   const errorLedger = createErrorLedger();
 
@@ -1199,14 +1213,19 @@ export async function runToolLoop(options) {
       : undefined;
   const reflectionEnabled = resolvedReflectionOption === true
     || (effectiveReflection !== undefined && effectiveReflection.enabled !== false);
-  let roundJudgeEnabled = reflectionEnabled
+  // `roundJudgeEnabled` 已迁入 `runLoopState`（issue #177 刀5 F-2）：初值**必须**留在本处原声明点
+  // 现算——它读上面 `:1200` 的 `const reflectionEnabled` 与 `:1195` 的 `effectiveReflection`，两者都
+  // 晚于状态对象字面量（`:673`–`:806`），提先进字面量就是 TDZ `ReferenceError`（工单 §3.1）。
+  // 字面量里的 `false` 只是占位；真值在此赋值，且早于全文件首读点（`:3056`），求值点/副作用不变。
+  runLoopState.roundJudgeEnabled = reflectionEnabled
     && effectiveReflection?.roundJudge !== false
     && process.env.ERIX_NO_ROUND_JUDGE?.trim() !== "1";
   const roundJudgeFailureLimit = Number.isSafeInteger(effectiveReflection?.judgeFailureLimit)
     && effectiveReflection.judgeFailureLimit > 0
     ? effectiveReflection.judgeFailureLimit
     : 3;
-  let roundJudgeFailures = 0;
+  // `roundJudgeFailures` 已迁入 `runLoopState`（issue #177 刀5 F-2）：初值是常量 `0`，直接写进
+  // 状态对象字面量（无 TDZ 问题）；`+= 1` 与 `= 0` 复位在 `:3063`/`:3109`/`:3078`。
   // 透明拦截审计开关：与 roundJudge 正交（roundJudge:false 只关 end_turn 评估，审计可独立关）
   const judgeInterceptEnabled = reflectionEnabled
     && effectiveReflection?.judgeIntercept !== false;
@@ -1253,7 +1272,10 @@ export async function runToolLoop(options) {
   // wrapup LLM 归一化（默认关闭：保持既有纯文本轮行为与旧测试兼容）。
   // 开启：ERIX_WRAPUP_NORMALIZE=1 或 reflection.wrapupNormalize===true。
   // benchmark/harness 场景应开启——找不到 JSON（含空文本）就该归一化。
-  let wrapupNormalizationEnabled = wrapupEnabled && (
+  // `wrapupNormalizationEnabled` 已迁入 `runLoopState`（issue #177 刀5 F-2）：同 `roundJudgeEnabled`，
+  // 初值读上面 `:1230` 的 `const wrapupEnabled`（晚于状态对象字面量）⇒ 提先是 TDZ，故字面量放占位
+  // `false`、真值留在本处原声明点赋值，仍早于首读点 `:2939`。
+  runLoopState.wrapupNormalizationEnabled = wrapupEnabled && (
     process.env.ERIX_WRAPUP_NORMALIZE?.trim() === "1"
       || effectiveReflection?.wrapupNormalize === true
   );
@@ -2936,7 +2958,7 @@ export async function runToolLoop(options) {
       wrapupJson === null
       && response?.stopReason === "end_turn"
       && !hasToolUse(content)
-      && wrapupNormalizationEnabled
+      && runLoopState.wrapupNormalizationEnabled
     ) {
       try {
         const requestForJudge = {
@@ -2978,7 +3000,7 @@ export async function runToolLoop(options) {
           }
         } else {
           // 归一化失败：关闭开关，避免每轮都烧 token
-          wrapupNormalizationEnabled = false;
+          runLoopState.wrapupNormalizationEnabled = false;
         }
       } catch {
         // 归一化失败降级：走现有 noToolStreak/completion 兑底，不崩 loop
@@ -3053,15 +3075,15 @@ export async function runToolLoop(options) {
     let judgeDecision = interceptJudgeDecision;
     let judgeUsage;
     // end_turn 轮完整评估；工具中途审计的 nearLimit 扩轮决策已由拦截器回传。
-    if (roundJudgeEnabled && isEndTurn) {
+    if (runLoopState.roundJudgeEnabled && isEndTurn) {
       try {
         const judged = await callRoundJudge(round, currentL0);
         judgeDecision = judged.decision;
         judgeUsage = judged.usage;
         const judgeRaw = judged.raw;
         if (judgeDecision === null) {
-          roundJudgeFailures += 1;
-          if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
+          runLoopState.roundJudgeFailures += 1;
+          if (runLoopState.roundJudgeFailures >= roundJudgeFailureLimit) runLoopState.roundJudgeEnabled = false;
           emitJudge({
             round,
             kind: "round",
@@ -3075,7 +3097,7 @@ export async function runToolLoop(options) {
             ...(typeof judgeRaw === "string" && judgeRaw !== "" ? { raw: judgeRaw } : {}),
           });
         } else {
-          roundJudgeFailures = 0;
+          runLoopState.roundJudgeFailures = 0;
           const extensionAction = judgeDecision.extend === true
             ? (judgeDecision.direction === "off_track" ? "extend+redirect" : "extend")
             : judgeDecision.extend === false
@@ -3106,8 +3128,8 @@ export async function runToolLoop(options) {
         }
       } catch (error) {
         if (signal?.aborted) throwIfAborted(signal);
-        roundJudgeFailures += 1;
-        if (roundJudgeFailures >= roundJudgeFailureLimit) roundJudgeEnabled = false;
+        runLoopState.roundJudgeFailures += 1;
+        if (runLoopState.roundJudgeFailures >= roundJudgeFailureLimit) runLoopState.roundJudgeEnabled = false;
         emitJudge({
           round,
           kind: "round",
