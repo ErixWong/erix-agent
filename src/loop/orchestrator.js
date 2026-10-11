@@ -766,17 +766,17 @@ export async function runToolLoop(options) {
     //   `get/set currentTerminationReason` 是唯一一对访问器（`get currentRunState` 那种「只有 get」的形状这里没有）。
     currentTerminationReason: "running",
     // 【F-1 治理记账（M1）】`readLoopPayload`（原 :955）与 `verificationReader`（原 :965）——
-    //   两个**函数型**格子，即 issue #180 / #165 的「可变槽位」手法：`fail()`（调用点 `:1562`
-    //   与 `:3332`）里 `:1562` 这一次（`restoreResume` 的 catch）**早于**两处接管赋值（`:1595` /
-    //   `:1612`），必须读到**默认桩**
+    //   两个**函数型**格子，即 issue #180 / #165 的「可变槽位」手法：`fail()`（调用点 `:1563`
+    //   与 `:3333`）里 `:1563` 这一次（`restoreResume` 的 catch）**早于**两处接管赋值（`:1596` /
+    //   `:1613`），必须读到**默认桩**
     //   ——`usage` 全 0 / `rounds: 0` / `finalText: ""`，以及 `verificationReader()` 返回
-    //   `undefined`（于是 `emitRunOutcome` 的条件展开 `:998` 不写 `verification` 字段）。⇒ 初值
+    //   `undefined`（于是 `emitRunOutcome` 的条件展开 `:1016` 不写 `verification` 字段）。⇒ 初值
     //   **不许**写成 `undefined`：源码里**没有** `typeof readLoopPayload === "function"` 这类守卫
-    //   （`grep` 现在唯一的一行命中就是本注释自己），`:1049` / `:993` 是**裸调用**，格子非
+    //   （`grep` 现在唯一的一行命中就是本注释自己），`:1067` / `:1011` 是**裸调用**，格子非
     //   函数就是 TypeError；也不许照抄 `termination.js` 的 `typeof … === "function"` 风格。
     //   ⚠ 一律「属性 + 箭头函数」，**不是方法简写**——`test/loop-callback-this.test.js` 钉住
     //   「loop 回调以 `this === undefined` 调用」，方法简写会把 this 绑到这个状态对象上。
-    //   ⚠ 接管闭包读 `runLoopState.rounds`（`:1595`）：本组是第一个「格子的值引用同一状态对象
+    //   ⚠ 接管闭包读 `runLoopState.rounds`（`:1596`）：本组是第一个「格子的值引用同一状态对象
     //   其它格」的形状（A–E 无先例）；读发生在**调用时**，那时 `:673` 早已初始化完，无 TDZ。
     //   TDZ：原声明点（`:955` / `:965`）就是这两个符号的全文件首次出现（逐符号
     //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：4 / 3 行，全部落在声明之后），提先初始化不可观察。
@@ -789,7 +789,7 @@ export async function runToolLoop(options) {
     // 【F-1 治理记账（M2）】`judgeRecordCorrelation`（原 :982）与 `judgeRecordCount`（原 :983）。
     //   `judgeRecordCorrelation`（issue #165）同样是**晚接管**格子：初值是纯函数
     //   `judgeRecordFields({ runId })`（`judge-record.js`，只铺 runId、探不到模型就不写字段），
-    //   模型名要等 provider/模型配置与 reflection 段解析完才可得 ⇒ 接管赋值仍在原位置（`:1241`）。
+    //   模型名要等 provider/模型配置与 reflection 段解析完才可得 ⇒ 接管赋值仍在原位置（`:1242`）。
     //   初值可提先：`runId` 在 `:507` 解构、全文件**无任何再赋值**（`grep -nE "runId *=[^=]"` 空），
     //   `judgeRecordFields` 是 `:62` 的 import ⇒ 在 `:673` 求值与在原声明点求值**取到同一个值**。
     //   ⚠ 两处**展开读点**（`emitRunOutcome` 的 `...runLoopState.judgeRecordCorrelation` 与
@@ -998,7 +998,7 @@ export async function runToolLoop(options) {
   // 解析完才可得（下方 `judgeRecordCorrelation` 在那里接管），`verification` 则到累计量声明区才存
   // 在（早退 catch 时还在 TDZ），所以未就绪时一律「不写字段」而非写假值。
   // `judgeRecordCorrelation`（原 :982）与 `judgeRecordCount`（原 :983）已迁入上方 `runLoopState`
-  // （issue #177 刀5 F-1）：默认值在 `:673` 的字面量里，接管赋值仍留在下方原位置（`:1241`）。
+  // （issue #177 刀5 F-1）：默认值在 `:673` 的字面量里，接管赋值仍留在下方原位置（`:1242`）。
   // `runOutcomeEmitted`（#165 去重标记）已迁入上方 `runLoopState`（issue #177 刀5）。
   // run 级 outcome 汇总走既有 onEvent 通道（新增事件类型 `run_outcome`，不新增回调）：
   // `onJudge` 的 payload 语义是「一条 judge 决策」，把终局裁决塞进去会让宿主按决策计数/过滤
