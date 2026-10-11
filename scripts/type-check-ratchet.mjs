@@ -24,18 +24,18 @@
 //      实测都是这件事）。所以准入规则里的 `// @ts-check` 只是**声明这份文件愿意被检查**，真正的范围是 import 图。
 //   2. ⚠ **反过来，`src/index.js` 也不是全部**：`erix-agent/tools` 那条公共入口有**两个文件不在包根的 import
 //      图里**（`src/tools/file-tools.js`、`src/skills/loader.js`），它们的新错默认**卡不住**。见下面的
-//      `--with-tools` 与 `BASELINE_WITH_TOOLS`（实测两入口并集 = 261 个 / 31 文件，比单入口多 43 个）。
+//      `--with-tools` 与 `BASELINE_WITH_TOOLS`（实测两入口并集 = 185 个 / 31 文件，比单入口多 43 个：27 + 16）。
 //   3. ⚠ **`src/**/*.d.ts` 生成物在场时，本检查会静默变成空跑**（实测，见下面的「陈旧声明守卫」）：#213 的
 //      `types:build` 把声明**生成到 `src/` 里**，而 tsc 解析 `./x.js` 时**优先命中同目录的 `x.d.ts`**，于是
-//      被检查的是声明而不是实现——60 个 `.d.ts` 在场时同一条命令报 **0 个错**（`--skipLibCheck` 跳过声明文件），
-//      去掉 `--skipLibCheck` 则报 **87 个错且全部落在 `.d.ts` 上**。两个都不是我们要量的数，而
+//      被检查的是声明而不是实现——当前树上 61 个 `.d.ts` 在场时同一条命令报 **0 个错**（`--skipLibCheck` 跳过声明文件），
+//      去掉 `--skipLibCheck` 则报 **13 个错且全部落在 `.d.ts` 上**。两个都不是我们要量的数，而
 //      「0 < 基线」在这里是**假绿**，所以守卫直接变红而不是放行。
 //   · 另：未装 `@types/node` 时错误数会**变多**（`TS2580`/`TS2307` 一类「缺 node 类型」），不是变干净；本门禁
 //     **必须在装了 devDependencies 的环境里跑**（`tsc` 取不到时下面直接给指路报错，不堆栈）。
 //
 // 用法：
-//   npm run check:types                       # 默认：包根入口 src/index.js，基线 217
-//   npm run check:types -- --with-tools       # 连 erix-agent/tools 入口一起卡，基线 261
+//   npm run check:types                       # 默认：包根入口 src/index.js，基线 142
+//   npm run check:types -- --with-tools       # 连 erix-agent/tools 入口一起卡，基线 185
 //   node scripts/type-check-ratchet.mjs --verbose                   # 额外打印每文件、每错误码分布
 //   node scripts/type-check-ratchet.mjs --show-errors 20            # 额外打印前 20 条错误定位（定位新错用）
 //   node scripts/type-check-ratchet.mjs --baseline                  # 只打印基线常量与复现命令
@@ -76,19 +76,33 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   选项规范化外提后给 `resumeRunSnapshot` 补了一行 `@type`（纯注释），消除一处
 //   `Property 'round' does not exist on type 'never'`（TS2339）——那个变量的值只经 setter 由
 //   `restoreResume` 赋值，控制流分析看不见。新增的 `src/loop/option-normalization.js`（首行 `// @ts-check`）
-//   自身贡献 **0** 个错。`--with-tools` 一档的 261 未重测，故不动。
-const BASELINE_ROOT = 217;
+//   自身贡献 **0** 个错。`--with-tools` 一档的 261 未重测，故不动（那一档因此悄悄多背了 1 个，见下面）。
+// 下调记录：**217 → 142**（PR #249 = issue #213 的「两个 provider 工厂补全宿主参数类型」，2026-10-11 实测于 `59f3a72`）
+//   ——这 75 个**全部**来自那两个工厂文件：`src/providers/openai.js` **46 → 7**（减 39）、
+//   `src/providers/anthropic.js` **45 → 9**（减 36）。改前对照树 `8f83375` 用 `git archive` 取到空目录、同一对
+//   tsc/@types 跑同一条命令 = **217 个 / 29 文件**（与常量逐字相同），改后逐文件对比：**其余 27 个文件的计数
+//   一字未动**，也没有文件进出错误集合（29 个带错文件一个不多一个不少）。错误码分布随之从
+//   TS2339×180/TS2322×3/TS2739×2 变成 TS2339×103/TS2322×4/TS2739×3：减掉的 77 个 TS2339 与新增的 2 个
+//   （`openai.js` 一个 TS2739、`anthropic.js` 一个 TS2322）**全部落在这两个文件里**——42 键类型字面量把
+//   「参数退化成 `any`」换成真类型之后，两处调用点**第一次真的被检查了**：这是补类型的代价，不是新债。
+//   现在最集中的文件：`src/store/notes.js` 27、`src/loop/orchestrator.js` 17、`src/run-state.js` 10、
+//   `src/display/projection.js` 9、`src/providers/anthropic.js` 9。**上面那段 218/190/28 的分布是 218 时代的
+//   历史记录**；当前口径：**宿主可达的公共面 114 个 / 20 个文件**，宿主点不到名的纯实现内部文件 **28 个 / 9 个
+//   文件**（就是上面列的那 9 个，一个没少——两个工厂本来就在公共面里，所以这次收益全落在公共面那半边）。
+const BASELINE_ROOT = 142;
 
 // `--with-tools` 的基线：把第二个公共入口 `src/tools/index.js` 也喂给 tsc 后的并集。
 // 复现命令（逐字）：
 //   node node_modules/typescript/bin/tsc --noEmit --allowJs --checkJs --target es2023 \
 //     --module nodenext --moduleResolution nodenext --skipLibCheck src/index.js src/tools/index.js
-// 实测：**261 个错 / 31 个文件** = 单入口的 218 个，加上只有 `./tools` 才拉进来的
+// 实测（2026-10-11，`59f3a72`）：**185 个错 / 31 个文件** = 单入口的 142 个，加上只有 `./tools` 才拉进来的
 //   `src/tools/file-tools.js` 27 个与 `src/skills/loader.js` 16 个（两个都是宿主直接可见的导出实现，
-//   `createFileTools` / `discoverSkills` 那一族）。为什么默认不带它：#214 正文给的口径就是 `src/index.js`，
+//   `createFileTools` / `discoverSkills` 那一族；这两个计数自 #214 起一字未动）。#214 时代入库的是 **261**，
+//   而它**从来没跟着 #177 刀 1 复测过**：同一对 tsc/@types 在改前树 `8f83375` 实测这一档是 **260**，
+//   于是 261 → 185 的 76 个 = #249 的 75 个 + #177 欠下的那 1 个（教训：下调基线要**两档一起复测**）。为什么默认不带它：#214 正文给的口径就是 `src/index.js`，
 //   默认值必须与规格逐字一致；但它**是**真实盲区，所以这里留一条可随时收紧的通道（收紧=把默认入口加上并
-//   把基线换成 261，属 #214 之后的收紧动作，不要拿它当「反正卡不住」的理由）。
-const BASELINE_WITH_TOOLS = 261;
+//   把基线换成 185，属 #214 之后的收紧动作，不要拿它当「反正卡不住」的理由）。
+const BASELINE_WITH_TOOLS = 185;
 
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");
@@ -120,7 +134,7 @@ const MODE = WITH_TOOLS ? "含 ./tools 入口" : "包根入口";
 
 if (argv.includes("--baseline")) {
   console.log(
-    `check:types: 基线 = ${BASELINE} 个 --checkJs 错误（${MODE}；issue #214，2026-10-10 实测）\n`
+    `check:types: 基线 = ${BASELINE} 个 --checkJs 错误（${MODE}；issue #214 棘轮，2026-10-11 实测）\n`
     + `  两档基线：包根入口 ${BASELINE_ROOT}（默认）/ 含 ./tools 入口 ${BASELINE_WITH_TOOLS}（加 --with-tools）\n`
     + `  复现命令：node node_modules/typescript/bin/tsc ${TSC_ARGS.join(" ")}`,
   );
@@ -173,8 +187,8 @@ if (stale.n > 0) {
     `发现 src/ 下有 ${stale.n} 个 .d.ts 生成物（例：${stale.sample.join("、")}）——它们是 #213 的 `
     + "`types:build`/`prepack` 产物（仓库提交了 0 个 `.d.ts`，所以存在即可判定为生成物）。\n"
     + "  它们会让本门禁**静默量错东西**：tsc 解析 `./x.js` 时优先命中同目录的 `x.d.ts`，于是被检查的是声明而不是实现。\n"
-    + "  实测（2026-10-10，同一棵工作树、同一条命令）：`.d.ts` 不在场 = **218 个错**；60 个 `.d.ts` 在场 = **0 个错**\n"
-    + "    （`--skipLibCheck` 直接跳过声明文件）；再把 `--skipLibCheck` 去掉 = **87 个错且全落在 `.d.ts` 上**。\n"
+    + "  实测（2026-10-11 在当前树上复测，同一棵工作树、同一条命令）：`.d.ts` 不在场 = **142 个错**；61 个 `.d.ts` 在场 = **0 个错**\n"
+    + "    （`--skipLibCheck` 直接跳过声明文件）；再把 `--skipLibCheck` 去掉 = **13 个错且全落在 `.d.ts` 上**。\n"
     + "    三种读法里只有第一种是要卡的数，「0 个错」是**假绿**。\n"
     + "  清掉再生成（生成物不入库、随时可重建）：`find src -name '*.d.ts' -delete`\n"
     + "    （PowerShell：`Get-ChildItem src -Recurse -Filter *.d.ts | Remove-Item`）\n"
@@ -284,7 +298,7 @@ if (total > BASELINE) {
   const top = files.slice(0, 5).map(([f, n]) => `${f} ${n}`).join("、");
   console.error(
     `check:types: 失败 — 实测 ${summary}${detail()}\n`
-    + `  基线 ${BASELINE}（issue #214，2026-10-10 实测，${MODE}），**超出 ${total - BASELINE} 个**。\n`
+    + `  基线 ${BASELINE}（issue #214 棘轮，2026-10-11 实测，${MODE}），**超出 ${total - BASELINE} 个**。\n`
     + `  最多的文件：${top}\n`
     + "  怎么修：\n"
     + "    · 定位新错：`node scripts/type-check-ratchet.mjs --show-errors 40`；或改动前后各跑一次 `--verbose` 对比每文件计数；\n"
