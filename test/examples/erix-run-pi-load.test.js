@@ -14,7 +14,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { STRATEGY_NAMES } from "../../examples/pi-extension/erix-run-core.js";
-import { assertMachineReadableResult } from "../helpers/plain-data.js";
+import { assertMachineReadableResult } from "./plain-data.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const extensionPath = path.join(here, "..", "..", "examples", "pi-extension", "erix-run.ts");

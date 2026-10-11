@@ -34,7 +34,7 @@ import {
   formatCrashResult,
   formatSyncResult,
 } from "../../examples/pi-extension/erix-run-format.js";
-import { assertMachineReadableResult, findLivePath } from "../helpers/plain-data.js";
+import { assertMachineReadableResult, findLivePath } from "./plain-data.js";
 
 function tempDir(prefix = "erix-run-details-") {
   return mkdtempSync(path.join(tmpdir(), prefix));
@@ -49,7 +49,7 @@ async function waitUntil(predicate, { timeoutMs = 3_000, stepMs = 5, label = "co
 }
 
 // ---------------------------------------------------------------------------
-// 判据来自 test/helpers/plain-data.js（**独立实现**，不回读生产码的守卫）
+// 判据来自 ./plain-data.js（**独立实现**，不回读生产码的守卫）
 // ---------------------------------------------------------------------------
 
 /** 从真 runtime 拿到一条 `kind:"started"` 的真实 outcome（内层 run 是可控的假 run）。 */

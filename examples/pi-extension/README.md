@@ -22,7 +22,7 @@
 | `../../test/examples/erix-run-core.smoke.test.js` | 真机冒烟（一次真 relay 调用，默认跳过） |
 | `../../test/examples/erix-run-pi-load.test.js` | 用 **pi 自己的装载器**（jiti + 虚拟模块）加载 `.ts`，断言注册成功、失败路径不抛错；#237 之后还拿**真 `execute()`** 把每条返回路径的 `details` 序列化一遍 |
 | `../../test/examples/erix-run-details.test.js` | **#237 R2：`details` 必须可 JSON 序列化**。对 `started` / `status` / `result` / `list` / `cancel` / `unknown-run` / `error` / `crashed` + **同步终局**逐条断言 `JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（无函数 / 定时器 / promise / 循环引用），并把每个 `kind` 的键集合钉死 |
-| `../../test/helpers/plain-data.js` | 测试侧**独立实现**的「活对象」扫描器与 `assertMachineReadableResult`（故意不回读生产码的守卫，否则两边错在一起就是自证） |
+| `../../test/examples/plain-data.js` | 测试侧**独立实现**的「活对象」扫描器与 `assertMachineReadableResult`（故意不回读生产码的守卫，否则两边错在一起就是自证） |
 
 ## 安装
 
@@ -476,7 +476,7 @@ ERIX_PI_SMOKE=1 node --test test/examples/erix-run-core.smoke.test.js   # 真机
   所是整个文件比纯静态用例多花约 2s。
 - `erix-run-details.test.js`（**#237 R2**）也全离线：把形状层（`erix-run-format.js`）的**每一条返回路径**
   跑一遍——`JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（拿
-  `test/helpers/plain-data.js` 里**独立实现**的扫描器判，不回读生产码的守卫）、每个 `kind` 的键集合钉死。
+  `test/examples/plain-data.js` 里**独立实现**的扫描器判，不回读生产码的守卫）、每个 `kind` 的键集合钉死。
   它能杀什么：把活对象 `job` 塞回返回值（即 #237 的原始缺陷形式）它就红。
 - `erix-run-async.test.js` 里的 **#237 R4** 四条钉 `status.json` 的 tmp + rename 原子写（顺序、
   旧内容不被破坏、不留 `.tmp-` 残留、错误进 `statusWriteError` 而不抛）；注入缝是

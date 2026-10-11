@@ -1,5 +1,9 @@
 // 「可机读面必须是纯数据」的**测试侧**判据（issue #237）。
 //
+// 为什么放在 `test/examples/`而不是 `test/helpers/`：#237 的改动面红线只圈了
+// `examples/pi-extension/**`、`test/examples/**`、`CHANGELOG.md`，这个 helper 是判据不是产品代码，
+// 没必要为它越界（`node --test` 把 `test/` 下每个 .js 当测试文件，放哪里都一样只计一个文件项）。
+//
 // 为什么自己写一份而不用 `erix-run-format.js` 的 `isPlainJsonData`：那条断言要防的就是
 // 「生产代码的守卫自己判错了」。测试拿独立实现的扫描器判，才不会和生产码一起错在一起。
 //
