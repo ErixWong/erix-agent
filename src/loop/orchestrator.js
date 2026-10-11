@@ -669,7 +669,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -715,6 +715,17 @@ export async function runToolLoop(options) {
     todoState: undefined,
     semanticState: undefined,
     currentRunState: undefined,
+    // 【E 轮内量】`ttlInjectArmed`（原 :1210）、`ttlInjectConsumed`（原 :1211）、`lowBudgetInjectFired`
+    //   （原 :1212）——三个**有初值**的格子，初值逐字原样搬（三个都是 `false`），不做任何「顺手归一」：
+    //   它们是 TTL 首折注入（通道 B）与低预算注入的「各只消费一次」旗标，起点若是 `true` 就等于
+    //   首轮直接宣称「已消费过」，本次 run 的 run-state 注入形状整段消失，属可观察行为。
+    //   三格都**没有任何 ctx 访问器**（纯闭包状态：写者只有 `recordCompactionLayer` 回调、注入判定
+    //   分支与 resume 后的重置段，读者只有注入判定表达式），故本组只改读写点前缀、无访问器形状问题。
+    //   TDZ：原声明点（:1210/:1211/:1212）就是这三个符号的全文件首次出现（逐符号
+    //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：6 / 4 / 5 行，全部落在声明之后），提先初始化不可观察。
+    ttlInjectArmed: false,
+    ttlInjectConsumed: false,
+    lowBudgetInjectFired: false,
   };
   const errorLedger = createErrorLedger();
 
@@ -1207,9 +1218,8 @@ export async function runToolLoop(options) {
   let runSnapshotFailureCount = 0;
   // `runStateVersion` / `runStateAvailability` / `currentRunState` / `todoState` / `semanticState`
   //   已迁入 `runLoopState`（issue #177 刀5-D）。
-  let ttlInjectArmed = false;
-  let ttlInjectConsumed = false;
-  let lowBudgetInjectFired = false;
+  // `ttlInjectArmed` / `ttlInjectConsumed` / `lowBudgetInjectFired`
+  //   已迁入 `runLoopState`（issue #177 刀5-E）。
   let currentTerminationReason = "running";
   const compactionStats = [];
   const trimFilesWritten = () => {
@@ -1661,9 +1671,9 @@ export async function runToolLoop(options) {
         layerId === "ttl"
         && Number.isFinite(triggered)
         && triggered > 0
-        && !ttlInjectConsumed
+        && !runLoopState.ttlInjectConsumed
       ) {
-        ttlInjectArmed = true;
+        runLoopState.ttlInjectArmed = true;
       }
       const layers = createEmptyCompactionLayers();
       observeCompactionLayer(layers, layerId, {
@@ -2484,18 +2494,18 @@ export async function runToolLoop(options) {
     const isLowBudget = remainingRounds <= 2;
     const persistInject = foldedStateChanged;
     const requestInject = !persistInject
-      && (ttlInjectArmed || (isLowBudget && !lowBudgetInjectFired));
+      && (runLoopState.ttlInjectArmed || (isLowBudget && !runLoopState.lowBudgetInjectFired));
     // 折叠轮优先把新鲜状态持久挂到摘要块（通道 A）；只有没有持久挂载时，
     // 才追加请求视图尾部（通道 B），避免同一轮同时产生两个 run-state 块。
     if (persistInject || requestInject) {
       runLoopState.runStateVersion += 1;
-      if (requestInject && ttlInjectArmed) {
+      if (requestInject && runLoopState.ttlInjectArmed) {
         // TTL 首折和低预算门各只消费一次，避免每轮改写破坏前缀缓存。
-        ttlInjectArmed = false;
-        ttlInjectConsumed = true;
+        runLoopState.ttlInjectArmed = false;
+        runLoopState.ttlInjectConsumed = true;
       }
-      if (requestInject && isLowBudget && !lowBudgetInjectFired) {
-        lowBudgetInjectFired = true;
+      if (requestInject && isLowBudget && !runLoopState.lowBudgetInjectFired) {
+        runLoopState.lowBudgetInjectFired = true;
       }
     }
     const runState = (
@@ -2547,9 +2557,9 @@ export async function runToolLoop(options) {
     await refreshRunState();
     // resume 后注入旗标按本次 run 重置；后续 TTL 折叠/低预算会重新注入请求视图，
     // 无需把 run-state 写入 run snapshot 或持久 transcript。
-    ttlInjectArmed = false;
-    ttlInjectConsumed = false;
-    lowBudgetInjectFired = false;
+    runLoopState.ttlInjectArmed = false;
+    runLoopState.ttlInjectConsumed = false;
+    runLoopState.lowBudgetInjectFired = false;
     throwIfAborted(signal);
     if (runLoopState.resumePendingTools.length > 0) {
       const resumedToolResults = [];
