@@ -663,7 +663,9 @@ export async function runToolLoop(options) {
   //   原声明点就是它们在文件里的首次出现），把它们从 TDZ 变成已初始化不改变可观察行为。
   // 【C resume 尾队列（续）】`resumeTranscriptStart`（原 :1268）与 `lastPersistenceFailure`（原 :1273）
   //   ——两个**无初值**的格子，原 `let X;` 就是 `undefined`，故新格子显式写 `undefined`（不拿 `null`/`0`
-  //   假冒初值：“未发生过”与“发生过但为空”在 `!== undefined` 判定上是两种语义，见 :2595 与 :1819）。
+  //   假冒初值：“未发生过”与“发生过但为空”在 `!== undefined` 判定上是两种语义——resume 续写守卫
+  //   （`runLoopState.resumeTranscriptStart !== undefined`）与 partialPersistence 的两处抛出点
+  //   （`runLoopState.lastPersistenceFailure !== undefined`）全部依赖这个区分）。
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
