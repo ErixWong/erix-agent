@@ -178,17 +178,26 @@ function parseAcceptedFlags() {
 }
 
 /**
- * 「已退役」名单**从 CHANGELOG 现推**：取写明退役/删除/移除的那几行里出现的反引号旗标，
- * 再要求它当前不在接受集合里（在就说明没退役）。这样新增退役条目不需要改守卫，也抄不出假名字。
+ * 「已退役」名单**从 CHANGELOG 现推**，不手抄：要求**退役动词与反引号旗标相邻**（同一小句内，
+ * 中间不超过 12 个非句读字符），而不是「整行提过退役就算」——CHANGELOG 的条目常常一整段写在
+ * 一行里，按整行算会把别家工具的旗标也算成 erix 退役旗标（实测：tsc 的 `--checkJs` 就在一条
+ * 写了「待退役选项」的长行里）。再要求它当前不在接受集合里（在就说明没退役）。
+ * 这样新增退役条目不需要改守卫，也抄不出假名字。实测口径下推出的唯一条目是 `--notes-ledger`
+ * （CHANGELOG：「移除 `--notes-ledger`、`ERIX_NOTES_LEDGER` …」，issue #74）。
+ * ⚠ 这里曾写成 `` `(^[A-Za-z]…)` ``：那个 `^` 是**锚点**而不是字面量，正则永远碰不到，
+ * 名单静默恒空——下面那条非空断言就是为了让这种死法当天变红。
  */
 function deriveRetiredFlags(accepted) {
   const changelog = readFileSync(resolve(ROOT, "CHANGELOG.md"), "utf8");
   const out = [];
   for (const line of changelog.split(/\r?\n/)) {
     if (!/退役|删除|移除/.test(line)) continue;
-    for (const m of line.matchAll(/`(^[A-Za-z][A-Za-z0-9-]{1,})`/g)) {
-      if (!accepted.has(m[1]) && !out.some((e) => e.flag === m[1])) {
-        out.push({ flag: m[1], evidence: line.trim().slice(0, 120) });
+    // 两种词序都认：「移除 `--x`」与「`--x` 已删除」
+    const re = /(?:移除|退役|删除|去掉)[^。；，\n]{0,12}?`(--[A-Za-z][A-Za-z0-9-]{1,})`|`(--[A-Za-z][A-Za-z0-9-]{1,})`[^。；，\n]{0,12}?(?:被|已)?(?:移除|退役|删除)/g;
+    for (const m of line.matchAll(re)) {
+      const flag = m[1] ?? m[2];
+      if (!accepted.has(flag) && !out.some((e) => e.flag === flag)) {
+        out.push({ flag, evidence: line.trim().slice(0, 120) });
       }
     }
   }
@@ -219,7 +228,17 @@ function flagMentions({ rel, abs }, accepted, retired) {
     for (const m of line.matchAll(/(^|[\s"'`=])((?:--)[A-Za-z][A-Za-z0-9-]{1,})/g)) {
       const flag = m[2];
       if (accepted.has(flag)) { mentioned.push({ flag, rel, line: index + 1, status: "accepted" }); continue; }
-      if (retired.some((e) => e.flag === flag)) { mentioned.push({ flag, rel, line: index + 1, status: "retired" }); continue; }
+      if (retired.some((e) => e.flag === flag)) {
+        // 退役旗标**只在文档里豁免**：docs / README 提历史叙述是正当的；examples/ 的 erix 命令行上
+        // 再出现退役旗标就是「示例没跟上」，那正是本规则要抓的东西（工单反向证 3）。
+        if (isDoc) {
+          mentioned.push({ flag, rel, line: index + 1, status: "retired" });
+          continue;
+        }
+        mentioned.push({ flag, rel, line: index + 1, status: "unknown" });
+        unknown.push({ flag, rel, line: index + 1, text: line.trim().slice(0, 160), retiredInDocs: true });
+        continue;
+      }
       if (EXEMPT_UNKNOWN_FILES.some((e) => e.file === rel)) {
         mentioned.push({ flag, rel, line: index + 1, status: "exempted" });
         continue;
@@ -452,8 +471,14 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
       assert.ok(!accepted.has(entry.flag), `${entry.flag} 在 bin/cli.js 里还存在，说明它没退役`);
       assert.ok(!acceptedSrc.includes(entry.flag), `${entry.flag} 仍在 bin/cli.js 文本里（含 --help 文案）`);
     }
-    // 反向证：本单落地的口径下 CHANGELOG 推出的名单形状必须可核对（条目数写进报告，不硬断非空，
-    // 否则「今天恰好没有可证明退役的旗标」会把一条好规则变成假红）
+    // 名单必须非空：CHANGELOG 里现成有「移除 `--notes-ledger`」（issue #74），所以推出 0 条
+    // 不是「今天恰好没东西退役」，而是**推导器自己是死的**（实测：本单曾把退役正则写成带 `^`
+    // 锚点的形式，命中永远为 0，名单静默恒空而全量依旧绿）。这条断言就是补那个坑。
+    assert.ok(
+      retired.length >= 1,
+      `从 CHANGELOG 推出的退役旗标名单为空（接受集合 ${accepted.size} 个），推导器可能已死：`
+      + "核对 deriveRetiredFlags 的动词邻接口径与 CHANGELOG 里的「移除 `--旗标`」写法",
+    );
     for (const entry of retired) {
       assert.match(entry.flag, /^--[A-Za-z][A-Za-z0-9-]{1,}$/);
     }
