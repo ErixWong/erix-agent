@@ -342,6 +342,8 @@ quoted blocks below against it):
   "docs/host-upgrade-guide-0.17.0.md",
   "docs/host-upgrade-guide-0.18.0.md",
   "docs/host-upgrade-guide-0.18.0_cn.md",
+  "docs/host-upgrade-guide-0.19.0.md",
+  "docs/host-upgrade-guide-0.19.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -771,6 +773,11 @@ Two consequences to know:
   of silently starting a new session under that name (the old behaviour
   printed nothing and created a second transcript). Naming a brand-new
   session is still normal in `repl`, whose `--session` is a naming flag.
+  The way out: leave `--session` off to start a new session, use
+  `-c`/`--continue` for this directory's most recent run, run `erix chat -r`
+  to list what is resumable (interactive picker, TTY only — there is no
+  `--resume` flag), and give `--session` the **full** id, which is the
+  transcript file name minus `.jsonl`.
 - **Invisible is not unrecoverable.** Only ids shaped like the derived form
   above are visible to `-c`/`-r`. Ids you chose yourself, and directories
   whose name contains characters outside `[A-Za-z0-9._-]` (spaces, CJK)
@@ -884,7 +891,12 @@ library-level controls
 - [docs/testing.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing.md) - test strategy and behavior metrics
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
-- [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) - latest
+- [docs/host-upgrade-guide-0.19.0.md](docs/host-upgrade-guide-0.19.0.md) - latest
+  host-facing migration guide: the `chat --session <id>` exit and the way out of it, the
+  4xx error codes that no longer collapse into `unknown`, and the packaged `.d.ts` type
+  surface (a Chinese counterpart ships alongside it:
+  `docs/host-upgrade-guide-0.19.0_cn.md`)
+- [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) - previous
   host-facing migration guide: the judge's `writeToolNames` default, the seven-entry
   file-tool list, the `rg`/`grep` deprecation line, the Experimental marker wording,
   and the `erix-agent/tools` import path (a Chinese counterpart ships alongside it:
