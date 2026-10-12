@@ -260,6 +260,13 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 `npm run check:types-build` 断言仍能生成、且产物里含 `runToolLoop` / `createFileTools`，
 跑完把生成物删掉以保持工作树干净。
 
+发布包本身由一条命令验收（issue #257 T5）：`npm run check:release` 先打包并断言 tarball 的形状（声明文件在、
+当前版本的中英两份升级指南都在、随包的 `test/contract/` 文件一个不少、`files` 白名单之外没有杂物——Markdown
+链接闭合仍归 `npm run check:pack-links`，不在这里重写），再把这份 tarball 装进一个一次性临时项目，用**装好的包**
+跑随包契约套件，用 `tsc --strict --skipLibCheck` 编译一个真 TypeScript 宿主（退 0，且未知的 `runToolLoop` option
+键必须被 `TS2353` 拒掉——这就是「类型面不是 `any`」的证据）并把编译产物真跑一遍，最后拿本地假上游冒烟装好的
+命令行。它全程离线（一次性 npm cache 与 userconfig、假 `HOME`）、跑完把临时目录和生成的声明一并清掉，红的时候点名第几步。
+
 ## 工程约束
 
 - 零运行时 npm 依赖、纯 ESM、Node 22+，发布的 JavaScript 没有构建步骤。本仓库唯一的 npm
