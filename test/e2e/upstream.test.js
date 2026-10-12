@@ -1,7 +1,7 @@
 // 真上游 HTTP 端到端层（issue #257 T1）。
 //
 // 与 test/providers/*.test.js 的**相反**做法：这里**不注入 fetchImpl**，用真的
-// `createOpenAIProvider` / `createAnthropicProvider` 打 `test/fixtures/upstream.mjs`
+// `createOpenAIProvider` / `createAnthropicProvider` 打 `fixtures/upstream.mjs`
 // 起的真 `http.createServer`，于是 SSE 分帧、跨包切片、半截流、真 HTTP 状态码与
 // 首字节超时都是**真 socket 上发生的事**，而不是测试自己写的假 fetch 的形状。
 //
@@ -19,7 +19,7 @@ import {
   sseOpenAI,
   sseResponse,
   textResponse,
-} from "../fixtures/upstream.mjs";
+} from "../../fixtures/upstream.mjs";
 import { createAnthropicProvider } from "../../src/providers/anthropic.js";
 import { createOpenAIProvider } from "../../src/providers/openai.js";
 import { runToolLoop } from "../../src/loop/orchestrator.js";
