@@ -215,6 +215,30 @@ function deriveRetiredFlags(accepted) {
 const ERIX_COMMAND_RE = /(^|[\s`$>"'|])erix(\s|$|[`"'])/i;
 const ARGV_CONTEXT_RE = /\b(argv|args|spawnSync|spawn\(|execFile|execFileSync|runCli|command|push)\b/;
 
+/**
+ * 否定句里的旗标**不是**「声称 erix 接受这个旗标」。实测误报就是这一类：
+ * `README_cn.md` 与 `docs/host-upgrade-guide-0.19.0*.md` 都写着「**没有 `--resume` 这个旗标**」
+ * （英文版「there is **no `--resume` flag**」），同一行里又出现 `erix chat -r`，所以光靠
+ * 「整行要有 erix 词」拦不住——不拦就得给整个 README_cn.md 开豁免，那太贵。
+ * 口径：只看旗标**前 24 个字符**，去掉 markdown 强调符/引号/空白后，必须以否定词收尾
+ * （中文：没有/不存在/并非/不是/不再有/不含/无；英文整词：no/not/never/without）。
+ * 故意只往回看、不往后看：「用 --x 而不是 --y」这类句子中后面的 --y 才是真实意图的反面，
+ * 而它前面没有否定词→依旧计红，方向是**偏严**。
+ */
+const NEGATION_TAIL_RE = /(?:没有|不存在|并非|不是|不再有|不含|无|(?:^|[\s,，。;；:!?])(?:no|not|never|without))\s*$/u;
+
+function isNegatedMention(line, flagStart) {
+  // 只抹 markdown 强调符与引号（**没有 ` → 没有），空白要留着当英文否定词的词界
+  const window = line.slice(Math.max(0, flagStart - 24), flagStart).replace(/[*_`"]/g, "");
+  return NEGATION_TAIL_RE.test(window);
+}
+
+/** 测试用：拿「整行 + 旗标」直接问口径（下标自己找，免得用例里写死位置）。 */
+function negationProbe(line, flag) {
+  const at = line.indexOf(flag);
+  return at >= 0 && isNegatedMention(line, at);
+}
+
 function flagMentions({ rel, abs }, accepted, retired) {
   const mentioned = [];
   const unknown = [];
@@ -227,6 +251,10 @@ function flagMentions({ rel, abs }, accepted, retired) {
     if (isDoc && !erixLine) return;
     for (const m of line.matchAll(/(^|[\s"'`=])((?:--)[A-Za-z][A-Za-z0-9-]{1,})/g)) {
       const flag = m[2];
+      if (isNegatedMention(line, m.index + m[1].length)) {
+        mentioned.push({ flag, rel, line: index + 1, status: "negated" });
+        continue;
+      }
       if (accepted.has(flag)) { mentioned.push({ flag, rel, line: index + 1, status: "accepted" }); continue; }
       if (retired.some((e) => e.flag === flag)) {
         // 退役旗标**只在文档里豁免**：docs / README 提历史叙述是正当的；examples/ 的 erix 命令行上
@@ -292,6 +320,12 @@ function runErix(home, args) {
   });
 }
 
+/** 工单口径是 `README*`：根目录全部 README 开头的 markdown 都扫（`README.md` 与 `README_cn.md`）——
+ * 只写死 `README.md` 会把中文那份的整批命令行整段放掉，而它同样会被人复制去跑。 */
+function readmeEntries() {
+  return readdirSync(ROOT).filter((name) => /^README[^/]*\.md$/i.test(name)).sort();
+}
+
 // ---------------------------------------------------------------------------
 
 describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => {
@@ -303,7 +337,7 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
   before(() => {
     accepted = parseAcceptedFlags();
     retired = deriveRetiredFlags(accepted);
-    for (const file of listScannable(new Set([...CODE_EXTS, ".md"]), "examples", "docs", "README.md")) {
+    for (const file of listScannable(new Set([...CODE_EXTS, ".md"]), "examples", "docs", ...readmeEntries())) {
       const scan = flagMentions(file, accepted, retired);
       mentions.push(...scan.mentioned);
       unknown.push(...scan.unknown);
@@ -423,6 +457,16 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
     for (const flag of ["--help", "--version", "--config", "--session", "--max-rounds", "--tools"]) {
       assert.ok(accepted.has(flag), `接受集合里没有 ${flag}：解析方式失效，规则 3 不可信`);
     }
+    // 否定句口径的对照（本轮实测误报就出在这一类）：说「没有这个旗标」不算声称接受，
+    // 而正面写 erix 用这个旗标必须仍算——否则这条豁免会把真问题全放掉。
+    assert.equal(
+      negationProbe("要看有哪些能续用 `erix chat -r`（需 TTY，**没有 `--resume` 这个旗标**）", "--resume"),
+      true,
+      "中文否定句没被认出：README_cn.md / docs 的那批「没有 --resume 这个旗标」会变成天天误报",
+    );
+    assert.equal(negationProbe("there is **no `--resume` flag**, see erix chat -r", "--resume"), true);
+    assert.equal(negationProbe("erix chat --resume <id> 续会话", "--resume"), false, "正面用法被否定句口径误放行");
+    assert.equal(negationProbe("`erix chat --resume` 已废弃", "--resume"), false, "「已废弃」不在否定词表里，应当仍计工单口径的未知旗标");
   });
 
   it("规则 3：挂在 erix 命令行上的旗标必须被 bin/cli.js 接受", () => {
@@ -459,7 +503,14 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
       );
     }
     const hitDirs = new Set(mentions.map((m) => m.rel.split("/")[0]));
-    for (const want of ["docs", "README.md"]) {
+    // README 这一面不能空转：中文那份同样有人群复制（本轮实测 README_cn.md 有命中）
+    for (const name of readmeEntries()) {
+      assert.ok(
+        mentions.some((m) => m.rel === name),
+        `旗标扫描在 ${name} 上零命中（当前命中：${[...hitDirs].join(", ")}）：口径被改窄`,
+      );
+    }
+    for (const want of ["docs"]) {
       assert.ok(hitDirs.has(want), `旗标扫描在 ${want} 上零命中（当前命中：${[...hitDirs].join(", ")}）：口径被改窄`);
     }
   });
