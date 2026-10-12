@@ -87,7 +87,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `extensionStep` | | 引擎缺省 `max(8, ⌊maxRounds/2⌋)` | 每次扩轮加的轮数，直传 `reflection.extensionStep`（正整数，上限 10000） |
 | `async` | | `false` | **#234：`true` = 派工即返回句柄**（主会话不阻塞），内层 run 在同进程后台跑，终局经通知回到本会话。缺省 `false` = 原有同步语义逐字不变。句柄形状：`{runId, status:"running", cwd, model, maxRounds, timeoutMs, sessionDir, statusPath, quiet}` |
 | `quiet` | | `false` | 只在 `async:true` 时有意义：**成功的完成不唤醒**父会话（只落 `status.json`），失败 / 中止仍然唤醒。一次派一批切片时用它免得把主会话打断成筛子 |
-| `action` | | — | `status`（当前状态 + 终局四件套）\| `result`（完整终局：四件套 + `artifacts`）\| `list`（本进程已知 run 的摘要表）\| `cancel`（把 `signal` 打进内层，终局记成 `aborted`）。`status`/`result`/`cancel` 要带 `runId` |
+| `action` | | — | `status`（当前状态 + 终局四件套）\| `result`（完整终局：四件套 + `artifacts` + **终稿正文 `finalText`**，#261）\| `list`（本进程已知 run 的摘要表）\| `cancel`（把 `signal` 打进内层，终局记成 `aborted`）。`status`/`result`/`cancel` 要带 `runId` |
 | `runId` | | — | `action` 要操作的 run id（就是 `async:true` 返回句柄里的 `runId`）|
 
 > ⚠ **三个扩轮参数只在 judge 真的跑了时才生效**：引擎只在 `nearLimit` 且 judge 给了布尔 `extend` 时才读它们，
@@ -188,8 +188,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 | `action` | 需要 `runId` | 返回 |
 |---|---|---|
-| `status` | ✅ | 当前状态 + 终局四件套 + `artifacts` + 进度尾巴 |
-| `result` | ✅ | 同上（四件套 + `artifacts` + `progressTail`）；查一个已失败的 run 仍算「数据」，但报 `isError` 让模型看得见。⚠ **不含 `finalText`**：查询视图 `jobView`（= `status.json` 的内容）从来就没人填过它（#237 发现的文档漂移，已改口径），要终稿看完成通知里的摘要或同步面返回 |
+| `status` | ✅ | 当前状态 + 终局四件套 + `artifacts` + `finalText`（#261：与 `result` 同一个 `jobView`，因此 `status.json` 里也带终稿）+ 进度尾巴 |
+| `result` | ✅ | 同上（四件套 + `artifacts` + `progressTail`）**再加终稿正文 `view.finalText`**，且文本面直接附上正文（显示层截到 4000 字；终稿为空时文本里明说「终稿为空」，别让宿主以为只是没刷屏）；查一个已失败的 run 仍算「数据」，但报 `isError` 让模型看得见。⚠ **#261 之前这一支取不到终稿**：`jobView`（= `status.json` 的内容）从不填 `finalText`，而 `erix-run-format.js` 里那一支的条件是 `typeof view?.finalText === "string"` —— 字段根本不存在，条件永不成立（死分支），于是完成通知把宿主引导到 `result`、`result` 却给不出正文（没传 `sessionDir` 时连 `artifacts` 两项都是 `null`） |
 | `list` | | 本进程已知 run 的摘要表 + 活跃数 |
 | `cancel` | ✅ | 把 `signal` 打进内层 `runToolLoop`，终局 `aborted`（已结束的 run 报「无需取消」，不假装成功） |
 
@@ -318,12 +318,45 @@ pi --extension ./examples/pi-extension/erix-run.ts
 - **`todo` 默认关**：`todo_*` 四件套把状态写在 `~/.erix/todos/<cwd-hash>.json`。erix_run 是嵌套执行，
   默认关可以避免污染用户 `~/.erix`、也避免并行 run 互相踩台账。要开就在 core 调用处传 `todo: true`
   （工具层未开参数，避免默认形态带副作用）。
-- 工具结果进模型视野前按 head+tail 截断到 4096 字符（复用 `bin/tools.js` 的 `truncateResult`）；
-  引擎侧的 `outputHygiene` 也在。transcript 缺省用 `createMemoryTranscriptStore()`（**纯内存、不落盘**），
-  传了 `sessionDir` / `transcript:"file"` 才换成 `createFileTranscriptStore()`——见下一节。
+- **工具结果原样进模型视野，本层不再截断**（issue 261013 R1，**推翻此前「对所有工具一律 head+tail 截到
+  4096 字符」的口径**）：体积护栏本来就在引擎手里——`outputHygiene`（ADR-015：超限把**原文**归档进
+  round record 的 `toolOutputs`，模型只见 stub + 指针，内容随时可取回；给了 `contextWindowTokens` 时
+  单次上限是 `min(100000, max(8192, 窗口×15%))`，262144 窗口 = 39,321 字符）+ `aggregate-budget`
+  （单轮合计）+ `exec` 自己的 `maxBuffer` 硬顶。宿主先在下游截到 4KB 就把这三层**整个架空**
+  （归档分支从未触发），而且是就地销毁：按字符 head+tail 会切在行中间，`readFile` 的
+  「整行 + offset 续读」契约当场失效（实测：请求 `offset=0,limit=200` 拿到 1-66 + 182-200，
+  中段约 115 行静默消失，模型连补 5 轮回补取证）。transcript 缺省用 `createMemoryTranscriptStore()`
+  （**纯内存、不落盘**），传了 `sessionDir` / `transcript:"file"` 才换成 `createFileTranscriptStore()`——见下一节。
 - `exec` 由 `bin/tools.js` 自己带超时（`ERIX_EXEC_TIMEOUT_MS`，普通命令 120s / 安装编译类 300s），
   它**不吃 abort signal**：erix_run 被取消时，正在跑的 `exec` 会跑到自己的超时为止。
-- 没有 `note_*` 工具、没有 skills、没有 MCP：最小内置工具集，行为可预期。
+- **`note_*` 四件套已接入**（issue 261013 R2）：`note_take` / `note_read` / `note_list` / `note_forget`
+  走引擎公共导出 `createBuiltinNotesTools`（照 `bin/cli.js` 的用法，不是本层自写）。为什么必须接：
+  R1 之后引擎的结果 TTL 折叠第一次真会触发，而它的预警文案写着「请现在用 `note_take` 记录要点」、
+  占位符写着「先用 `note_list` 查找，再用 `note_read` 读取」——文案点名的工具得真在场。
+  落点**跟着 `sessionDir` 走**（`<sessionDir>/notes/run/<runId>/`，与 transcript / judge.log 同根）；
+  不传 `sessionDir` 则走**内存 store**（本层自带的 `createMemoryNotesStore()`），**缺省不污染 `~/.erix`**
+  ——引擎的 `resolveNotesDir()` 缺省是 `~/.erix/notes`，直用会污染用户目录且并行 run 共抢一个 scope。
+- 没有 skills、没有 MCP：最小内置工具集，行为可预期。
+
+## 边界：不得依赖 `bin/`（已知缺口，本单只立规则）
+
+**现状**：内层工具面里的 `exec`（以及 `buildCliToolsSystemPrompt`）**只能**从 `bin/tools.js` 拿——
+`src/tools/index.js` 的公共导出只有 registry / file-tools / notes / skills loader，
+`grep 'name: "exec"' src/` 为空；而 `bin/` 在 `AGENTS.md` §1 里被定位为「验证器/调试器，不是产品重点」。
+于是宿主想给内层 run 一个能跑命令的工具，就只能 `import <libRoot>/bin/tools.js`
+（`erix-run-core.js` 里那一处硬编码，也是 `lib_missing` 报错里「找不到内置工具装配」的来源）。
+
+**为什么这是缺口**：`bin/` 不在契约面里（`docs/host-consumer-contract*.md` 只承诺 `src/` 导出），
+装配函数名/参数名/结果格式都不算公开面，改了不算 break；而 `examples/**` 会被别的宿主抄去当模板，
+等于把「产品路径上的代码骑在验证器代码上」传下去。
+
+**两条出路**（任选其一，**都要另开单**，本单没动公共导出）：
+1. 把 `exec` 提到 `src/tools/` 公共面（additive / minor）——同时要补 `test/contract/` 契约与中英契约文档；
+2. 宿主自己实现 `exec`（`node:child_process` + 自己的超时与缓冲上限），`erix_run` 那侧只靠
+   `deps.createAssembly` 注入工具装配，不再 import `bin/`。
+
+在两条都没落地前，**新增对 `bin/` 的依赖都要先补 `src/` 公共面**（同一口径也写进了
+`AGENTS.md` / `AGENTS_cn.md`）。
 
 ## 取消与超时
 
@@ -370,6 +403,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 `view` / `handle` / `jobs` 都是 `erix-run-jobs.js` 里 `jobView` / `handleOf` 组的**纯数据视图**；
 活的 job 对象（controller / 定时器 / promise）**只留在 jobs 层内部**，不进返回值。
+视图里的 `finalText`（#261）是**原样透传、不在视图层截断**（单一真值：4000 字是 `erix-run-format.js`
+的显示层口径），而且**只有 `result` 会把它打进文本**（`status` 只给可机读面，轮询不必每次重读一篇报告）；
+还没终局 / 载荷没带它是 `""` 而不是缺字段（与四件套的零值形状同口径）。
 万一上游哪天还是把活对象混了进来，`detailsForHost` 守卫会把 `details` **退化成**
 `{ kind, detailsDropped: true, dropReason: "$.view.controller: 非 plain 对象（AbortController）" }`
 而不是让宿主抛——宁可少给数据，不可带崩宿主；看到 `detailsDropped` 就该当缺陷查。
@@ -474,6 +510,11 @@ ERIX_PI_SMOKE=1 node --test test/examples/erix-run-core.smoke.test.js   # 真机
   `runToolLoop`），`cwd` / `home` / `sessionDir` 一律临时目录 —— 不碰真实 `~/.erix`（跑完
   `find ~/.erix -newermt '-25 minutes'` 应为空）。看门狗那两条用 `timeoutMs = MIN_TIMEOUT_MS`（1s），
   所是整个文件比纯静态用例多花约 2s。
+- `erix-run-readchain.test.js`（**issue 261013**）也全离线（真 `src/index.js` + 真 `bin/tools.js` + 临时 cwd）：
+  钉住「宿主层不截工具结果」（>4,096 字符的 `readFile`/`exec` 结果逐字等于工具原样输出、中段哨兵在场）、
+  「`note_*` 四件在内层工具面里且真可执行」、以及「**不传 `sessionDir` 时真实 `~/.erix` 不得多出文件**」
+  （只**读** home 做前后对比）与「`readFile` 的续读 marker 带 `formatSize` 形态的文件大小」。
+  反向证入口：把截断加回 `executeTool` → 前两条当场红；把 `createInnerNotesTools` 的注册拆掉 → notes 那三条红。
 - `erix-run-details.test.js`（**#237 R2**）也全离线：把形状层（`erix-run-format.js`）的**每一条返回路径**
   跑一遍——`JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（拿
   `test/examples/plain-data.js` 里**独立实现**的扫描器判，不回读生产码的守卫）、每个 `kind` 的键集合钉死。

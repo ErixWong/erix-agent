@@ -35,6 +35,7 @@ import {
   WAKE_PENDING_MS,
   createParentWake,
 } from "../../examples/pi-extension/erix-run-parent-wake.js";
+import { formatAsyncResult } from "../../examples/pi-extension/erix-run-format.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -745,4 +746,111 @@ test("#237 R4：status.json 写失败不打断派工，错误经 job.statusWrite
   await waitUntil(() => registry.get(handle.runId).status === "completed", { label: "completed despite write failure" });
   assert.match(registry.get(handle.runId).statusWriteError, /EROFS/u);
   assert.equal(existsSync(handle.statusPath), false, "写不进去就是没有这个文件（不假装落盘成功）");
+});
+
+// ---------------------------------------------------------------------------
+// issue #261：终稿正文进查询视图（jobView）→ `action:"result"` 文本 + `status.json`。
+// 修之前视图里没有 `finalText`：format.js 里那一支 `typeof view?.finalText === "string"` 永不
+// 成立（死分支），派工跑完几十轮后宿主既拿不到正文、也读不到盘上的正文。
+// 全部离线：假 runJob 产出可控 finalText，cwd/home/sessionDir 一律临时目录。
+// ---------------------------------------------------------------------------
+
+const FINAL_TEXT = "任务已完成：R1 落地了\n验证：node --test 全绿\nfindings={\"nonce\":\"x-261\"}";
+
+/** 派一条会成功结束的异步 run，等它终局（内层 run 是可控假 run）。 */
+async function settledRun({ payload = {}, prefix = "erix-run-finaltext" } = {}) {
+  const sessionDir = tempDir(`${prefix}-`);
+  const sent = [];
+  const job = gatedJob({ payload });
+  const { runtime, registry } = makeRuntime({ job: job.job, sent });
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
+  job.release();
+  await waitUntil(() => registry.get(handle.runId).status === "completed", { label: "finaltext run completed" });
+  return { runtime, registry, sent, sessionDir, runId: handle.runId };
+}
+
+function textOf(result) {
+  return result.content[0].text;
+}
+
+test("#261 R4①：异步 run 跑完后 action:\"result\" 的返回文本含终稿正文（此前是死分支）", async () => {
+  const { runtime, runId } = await settledRun({ payload: { finalText: FINAL_TEXT } });
+
+  const outcome = runtime.act({ action: "result", runId });
+  assert.equal(outcome.kind, "result");
+  assert.equal(outcome.view.finalText, FINAL_TEXT, "视图必须原样透传终稿（不截断、不缺字段）");
+
+  const text = textOf(formatAsyncResult(outcome));
+  assert.ok(text.includes("R1 落地了"), `result 文本必须带交付物正文，实测：${text}`);
+  assert.ok(text.includes(FINAL_TEXT), "正文整段在场（短文本不该被切）");
+  assert.doesNotMatch(text, /终稿为空/u, "有正文时不该冒「终稿为空」");
+});
+
+test("#261 R4②：status.json（复用同一 jobView，不另写拼装）里含同一份终稿", async () => {
+  const { runId, sessionDir } = await settledRun({ payload: { finalText: FINAL_TEXT } });
+
+  const file = statusFilePath({ sessionDir, runId });
+  assert.ok(existsSync(file), `status.json 应落在 ${file}`);
+  const raw = readFileSync(file, "utf8");
+  assert.ok(raw.includes("R1 落地了"), "盘上的状态文件同样要带终稿（派工没传 sessionDir 之外的场景）");
+  assert.equal(JSON.parse(raw).finalText, FINAL_TEXT, "status.json 的 finalText 与视图同一份值");
+
+  // 盘上兜底查询（内存注册表之外的那条 lookup 分支）也是同一形状
+  const fromDisk = JSON.parse(raw);
+  assert.equal(typeof fromDisk.finalText, "string");
+});
+
+test("#261 R4③：还没终局时 jobView.finalText === \"\"（字段恒在场，不是缺字段）", async () => {
+  const sessionDir = tempDir("erix-run-finaltext-running-");
+  const job = gatedJob();
+  const { runtime, registry } = makeRuntime({ job: job.job, sent: [] });
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
+
+  const running = jobView(registry.get(handle.runId));
+  assert.ok("finalText" in running, "字段必须恒在场（查询侧不必分两种形状解析）");
+  assert.equal(running.finalText, "", "未终局给空串而不是 undefined");
+  assert.equal(runtime.act({ action: "status", runId: handle.runId }).view.finalText, "");
+
+  // 载荷没带 finalText 的终局（抛错归一化那类）同样给 ""
+  assert.equal(jobView({ runId: "r-261", status: "failed", payload: { ok: false } }).finalText, "");
+  assert.equal(jobView({ runId: "r-261", status: "failed", payload: { ok: false, finalText: null } }).finalText, "");
+
+  job.release();
+  await waitUntil(() => registry.get(handle.runId).status === "completed", { label: "released" });
+});
+
+test("#261 R4④：带终稿之后 details 与视图仍可 JSON.stringify（守 #237 R1：纯数据）", async () => {
+  const { runtime, registry, runId } = await settledRun({ payload: { finalText: FINAL_TEXT } });
+
+  const details = formatAsyncResult(runtime.act({ action: "result", runId })).details;
+  const roundTripped = JSON.parse(JSON.stringify(details));
+  assert.equal(roundTripped.kind, "result");
+  assert.equal(roundTripped.view.finalText, FINAL_TEXT, "JSON 往返之后终稿原样");
+  assert.equal(roundTripped.detailsDropped, undefined, "不能因为多了字符串就触发守卫退化");
+
+  const viewJson = JSON.stringify(jobView(registry.get(runId)));
+  assert.ok(viewJson.includes("R1 落地了"), "视图本身也是纯数据，直接序列化得动");
+});
+
+test("#261 R1/R3：视图层不截断，显示层保持 4000 字截断口径", async () => {
+  const long = "长".repeat(4_500);
+  const { runtime, registry, runId } = await settledRun({ payload: { finalText: long } });
+
+  const view = jobView(registry.get(runId));
+  assert.equal(view.finalText.length, 4_500, "jobView 原样透传，不在视图层切（单一真值）");
+
+  const text = textOf(formatAsyncResult(runtime.act({ action: "result", runId })));
+  assert.ok(text.includes("长".repeat(4_000)), "显示层仍给出前 4000 字");
+  assert.ok(!text.includes("长".repeat(4_001)), "显示层 4000 字口径不许变宽");
+});
+
+test("#261 R3：终稿为空时 result 文本明说「终稿为空」，别让宿主以为被截断", async () => {
+  const { runtime, runId } = await settledRun({ payload: { finalText: "" } });
+  const text = textOf(formatAsyncResult(runtime.act({ action: "result", runId })));
+  assert.match(text, /终稿为空/u, `空终稿要写明，实测：${text}`);
+  assert.match(text, /不是被 4000 字截断/u);
+
+  // 载荷干脆没有 finalText 键（老形状）也必须走到这条明说分支
+  const noKey = await settledRun({ payload: { finalText: undefined }, prefix: "erix-run-finaltext-nokey" });
+  assert.match(textOf(formatAsyncResult(noKey.runtime.act({ action: "result", runId: noKey.runId }))), /终稿为空/u);
 });

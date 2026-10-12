@@ -217,8 +217,14 @@ export function formatAsyncResult(outcome) {
       + ` extensions=${view?.extensionCount ?? 0}/${view?.maxExtensions ?? 0} resumable=${view?.resumable === true}`,
       `cwd=${view?.cwd ?? "?"} sessionDir=${view?.sessionDir ?? "none"} statusPath=${view?.statusPath ?? "none"}`,
     );
-    if (typeof view?.finalText === "string" && view.finalText !== "" && kind === "result") {
-      lines.push("", view.finalText.slice(0, 4_000));
+    if (kind === "result") {
+      // #261：终稿正文进 result 文本。视图层不截断（单一真值），**显示层 4000 字的口径保持不变**；
+      // 终稿为空时**明说**「终稿为空」：只给几行状态会把「本来没正文」遮成「看起来像被截断了」。
+      if (typeof view?.finalText === "string" && view.finalText !== "") {
+        lines.push("", view.finalText.slice(0, 4_000));
+      } else {
+        lines.push("", "（终稿为空：内层 run 没交回任何正文 —— 不是被 4000 字截断，是本来就没有。）");
+      }
     }
     if (Array.isArray(view?.progressTail) && view.progressTail.length > 0) {
       lines.push("", "…最近进度：", ...view.progressTail.slice(-6));

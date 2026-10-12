@@ -340,7 +340,11 @@ export function toolMarker(kind, values = {}) {
     case "readMoreLines":
       // 行窗口没读满就报总数与续读 offset（#196 R1.1）：两个数都是本次调用的真值
       // （总行数来自扫到 EOF，offset = start + limit），模型照抄即可续读。
-      return `[共 ${values.total} 行，剩余 ${values.total - values.offset} 行；${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset} 继续]`;
+      // issue 261013 R3.4：再补**文件真实大小**（`readLineWindow` 开头 statSync 的现成真值，
+      // 零额外 IO）——模型要判断「剩下的额度够不够一次读完」，只看行数估不出体积；
+      // 走 formatSize，不得在这里出现裸字节数（#196 R2 的「同一结果里不并排两份数」）。
+      // `values` 是 Record<string, unknown>：进 formatSize 前显式成数（不吃 --checkJs 的新错）。
+      return `[共 ${values.total} 行（文件 ${formatSize(Number(values.size))}），剩余 ${values.total - values.offset} 行；${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset} 继续]`;
     case "readNotScanned":
       return `[文件 ${formatSize(values.size)} > max_bytes=${formatSize(values.maxBytes)}，行窗口之后的内容未读取；${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset} 继续]`;
     case "readLineTruncated": {
@@ -724,7 +728,11 @@ function fileReadMarkers(window, { start, count, maxBytes, displayPath }) {
     markers.push(toolMarker("readBytesCap", { maxBytes, total: window.totalLines, offset: nextOffset }));
   } else if (window.totalLines !== undefined) {
     if (start + count < window.totalLines) {
-      markers.push(toolMarker("readMoreLines", { total: window.totalLines, offset: start + count }));
+      markers.push(toolMarker("readMoreLines", {
+        total: window.totalLines,
+        offset: start + count,
+        size: window.size,
+      }));
     }
   } else {
     markers.push(toolMarker("readNotScanned", {
@@ -755,16 +763,32 @@ function fileReadMarkers(window, { start, count, maxBytes, displayPath }) {
 export const FILE_TOOL_DEFINITIONS = [
   {
     name: "readFile",
-    description: "Read a text file by line range.",
+    // 额度事实只活在这一段文字里：模型看不到实现，只能靠它决定一次要多少（issue 261013 R3）。
+    // 只写无状态的静态事实（默认值/单位换算），不引入「首次读某文件才提示」这类跨调用状态。
+    description: "Read a text file by line range. "
+      + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
+      + "`limit` is a **line count**, default 200. "
+      + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) — on typical source lines that budget is "
+      + "~3,000-6,000 lines, far more than a single `limit` will ask for, so the byte cap is rarely what stops you. "
+      + "Token budget of the default window, using the engine estimator (~3.5 characters per token for non-CJK, ~1.5 for CJK, \u00d71.15 margin): "
+      + "200 lines \u2248 a few hundred to ~2,500 tokens depending on line width and language. "
+      + "Estimate the budget first and ask for it **in one call** \u2014 when unsure take more (e.g. `limit=1000`) rather than "
+      + "conservatively paging 200 lines at a time. Whatever is withheld is reported by a marker that carries the exact `offset` to continue from.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string" },
-        offset: { type: "integer" },
-        limit: { type: "integer" },
+        offset: {
+          type: "integer",
+          description: "0-based index of the first line to return (default 0). Result line numbers are 1-based: to continue after the last line shown as `200:`, pass offset=200.",
+        },
+        limit: {
+          type: "integer",
+          description: "Number of lines to return (default 200). Non-finite/negative values are normalized to the default/0.",
+        },
         max_bytes: {
           type: "integer",
-          description: "Maximum UTF-8 bytes returned per call (default 262144, clamped to 1024-4194304).",
+          description: "Maximum UTF-8 bytes returned per call (default 262144 = 256KB). Values outside 1024-4194304, or non-integers, are NOT clamped to the bounds \u2014 they are ignored and the default is used.",
         },
       },
       required: ["path"],

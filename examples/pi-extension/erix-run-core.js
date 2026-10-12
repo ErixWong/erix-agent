@@ -65,8 +65,6 @@ export const STRATEGY_NAMES = Object.freeze([
   "fold-statistical",
   "fold-llm",
 ]);
-/** 内置工具结果送回模型视野前的字符上限（head+tail，复用 bin/tools.js 的 truncateResult）。 */
-export const TOOL_RESULT_LIMIT = 4_096;
 /** diagnostics 里各类样本的保留条数。 */
 const SAMPLE_LIMIT = 10;
 
@@ -689,14 +687,171 @@ export function createProviderForSlot(lib, slot, { timeoutMs = PROVIDER_TIMEOUT_
 }
 
 /**
+ * 最小的**内存** NotesStore（端口 = write/read/list/complete/revoke/purge，见 src/store/notes.js
+ * 的 assertNotesStore）。为什么需要它：引擎只给了文件 store，而文件 store 缺省落在
+ * `resolveNotesDir()` = `~/.erix/notes`——erix_run 的内层 run 不传 `sessionDir` 时本来就是
+ * 「纯内存 run」（transcript 也是内存的），笔记单独去写真实 home 会污染用户目录，
+ * 且多个并发 run 会共用同一 scope 目录。所以：**无 sessionDir → 内存 store**。
+ *
+ * 语义与文件 store 对齐的地方：不给 limit 就返回全部匹配记录、给了钳到 200、
+ * `complete` 只动 active、`revoke` 带并发护栏（不符就 unchanged）、返回值形状同字面值。
+ * 不实现 filters.tag/source 以外的奇技（引擎侧只靠 state + sort）。
+ */
+export function createMemoryNotesStore() {
+  /** @type {Map<string, object>} */
+  const records = new Map();
+  const slot = (scopeRef, key) => `${scopeRef}\u0000${key}`;
+  const clone = (value) => (value === undefined ? undefined : structuredClone(value));
+  const updatedMs = (record) => Date.parse(record?.updated_at ?? "") || 0;
+  const relevanceOf = (record) => (Number.isFinite(record?.relevance) ? record.relevance : 0);
+  const SORTS = {
+    relevance: (a, b) => (relevanceOf(b) - relevanceOf(a)) || (updatedMs(b) - updatedMs(a))
+      || String(a?.key ?? "").localeCompare(String(b?.key ?? "")),
+    pinned_updated: (a, b) => ((b?.pinned === true ? 1 : 0) - (a?.pinned === true ? 1 : 0))
+      || (updatedMs(b) - updatedMs(a)) || String(a?.key ?? "").localeCompare(String(b?.key ?? "")),
+  };
+  const matches = (record, filters = {}) => {
+    if (filters.state !== undefined) {
+      const states = Array.isArray(filters.state) ? filters.state : [filters.state];
+      if (!states.includes(record.state)) return false;
+    }
+    if (filters.tag !== undefined && !(record.tags ?? []).includes(filters.tag)) return false;
+    if (filters.minRelevance !== undefined && relevanceOf(record) < filters.minRelevance) return false;
+    return true;
+  };
+  const scopeOf = (request) => {
+    const scopeRef = request?.scopeRef;
+    if (typeof scopeRef !== "string" || scopeRef.trim() === "") {
+      throw new TypeError("NotesStore scopeRef must be a non-empty string");
+    }
+    if (request.scope !== undefined && request.scope !== "run") {
+      throw new TypeError("NotesStore supports only run scope");
+    }
+    return scopeRef;
+  };
+
+  const store = {
+    async write(request = {}) {
+      const scopeRef = scopeOf(request);
+      if (typeof request.key !== "string" || request.key.length === 0) {
+        throw new TypeError("NotesStore key must be a non-empty string");
+      }
+      records.set(slot(scopeRef, request.key), clone({ ...request.record, scopeRef }));
+    },
+    async read(request = {}) {
+      const scopeRef = scopeOf(request);
+      if (typeof request.key !== "string" || request.key.length === 0) {
+        throw new TypeError("NotesStore key must be a non-empty string");
+      }
+      return clone(records.get(slot(scopeRef, request.key)));
+    },
+    async list(request = {}) {
+      const scopeRef = scopeOf(request);
+      const sort = request.sort === undefined ? "relevance" : request.sort;
+      if (!Object.hasOwn(SORTS, sort)) {
+        throw new TypeError('NotesStore sort must be "relevance" or "pinned_updated"');
+      }
+      const items = [...records.values()]
+        .filter((record) => record.scopeRef === scopeRef && matches(record, request.filters ?? {}))
+        .sort(SORTS[sort])
+        .map(clone);
+      // 同文件 store：不给 limit = 全部；给了钳到 200（不是报错）。
+      if (request.limit === undefined) return items;
+      if (!Number.isSafeInteger(request.limit) || request.limit < 1) {
+        throw new TypeError("NotesStore limit must be a positive safe integer");
+      }
+      return items.slice(0, Math.min(request.limit, 200));
+    },
+    async complete(request = {}) {
+      const scopeRef = scopeOf(request);
+      let completed = 0;
+      for (const [id, record] of records) {
+        if (record.scopeRef !== scopeRef || record.state !== "active") continue;
+        records.set(id, clone({ ...record, state: "done", updated_at: new Date().toISOString() }));
+        completed += 1;
+      }
+      return { status: "found", completed };
+    },
+    async revoke(request = {}) {
+      const scopeRef = scopeOf(request);
+      if (typeof request.key !== "string" || request.key.length === 0) {
+        throw new TypeError("NotesStore key must be a non-empty string");
+      }
+      const id = slot(scopeRef, request.key);
+      const current = records.get(id);
+      if (current === undefined) return { status: "missing", revoked: 0 };
+      if (current.state === "revoked") return { status: "unchanged", revoked: 0 };
+      if (request.expectedState !== undefined && current.state !== request.expectedState) {
+        return { status: "unchanged", revoked: 0 };
+      }
+      if (request.expectedUpdatedAt !== undefined && current.updated_at !== request.expectedUpdatedAt) {
+        return { status: "unchanged", revoked: 0 };
+      }
+      records.set(id, clone({ ...current, state: "revoked", updated_at: new Date().toISOString() }));
+      return { status: "found", revoked: 1 };
+    },
+    async purge() {
+      const purged = records.size;
+      records.clear();
+      return { status: "found", scanned: purged, purged };
+    },
+  };
+  return store;
+}
+
+/**
+ * notes 四件套的内层装配（引擎公共导出 `createBuiltinNotesTools`，参 bin/cli.js 的用法）。
+ *
+ * 为什么必须接：R1 之后结果不再被宿主截到 4KB，引擎的 TTL 预警（src/loop/tool-result-ttl.js
+ * 「请现在用 note_take 记录要点」）与折叠占位符（「先用 note_list 查找，再用 note_read 读取」）
+ * **第一次真正会触发**——文案点名的工具在内层工具面里必须真存在，否则是给模型开一张
+ * 兜不了现的支票。
+ *
+ * 落点纪律：跟着 `sessionDir` 走（`<sessionDir>/notes`，与 transcript/judge.log 同根）；
+ * 不传 sessionDir → 内存 store，**绝不写 `~/.erix`**。
+ *
+ * @param {{lib:any, runId?:string, sessionDir?:string, notesStore?:object}} input
+ * @returns {object|undefined} assembler（无 createBuiltinNotesTools 导出时降级为 undefined）
+ */
+export function createInnerNotesTools({ lib, runId, sessionDir, notesStore }) {
+  const libIndex = lib?.index ?? lib;
+  if (typeof libIndex?.createBuiltinNotesTools !== "function") return undefined;
+  if (notesStore === undefined && sessionDir === undefined) {
+    // 无 sessionDir：纯内存，不走 resolveNotesDir 的 ~/.erix/notes 缺省。
+    return libIndex.createBuiltinNotesTools({ runId, notesStore: createMemoryNotesStore() });
+  }
+  if (notesStore !== undefined) {
+    return libIndex.createBuiltinNotesTools({ runId, notesStore });
+  }
+  const notesDir = path.join(sessionDir, "notes");
+  if (typeof libIndex.createFileNotesStore !== "function") return undefined;
+  return libIndex.createBuiltinNotesTools({
+    runId,
+    notesDir,
+    notesStore: libIndex.createFileNotesStore({ dir: notesDir }),
+  });
+}
+
+/**
  * 内层工具集：复用 bin/tools.js 的同一装配函数 `createCliTools`
  * （readFile/rg/grep/tree/writeFile/exec，todo 四件套默认关，见 README）。
+ *
+ * ⚠ **本层不得对工具结果做任何截断**（issue #261 系列修复，见 README「宿主层不再截结果」）：
+ * 1. 引擎已有归档语义——`outputHygiene`（ADR-015）在结果超限时把**原文**归档进 round record 的
+ *    `toolOutputs`，模型只看到 stub + 指针，内容随时可取回；`aggregate-budget` 再管单轮合计；
+ *    exec 自带 maxBuffer 硬顶。宿主先在下游截到几 KB，就把这三层整个架空（归档分支从未触发）。
+ * 2. 宿主截断是**就地销毁**：head+tail 按字符 slice 会切在行中间，`readFile` 承诺的
+ *    「整行 + offset 续读」契约当场失效（实测：请求 offset=0,limit=200 拿到 1-66 + 182-200，
+ *    中段约 115 行静默消失，模型连补 5 轮）。bin/tools.js 的分工注释本就写着 readFile 不经截断。
  *
  * @param {{
  *   lib: any,
  *   cwd: string,
  *   todo?: boolean,
- *   resultLimit?: number,
+ *   runId?: string,
+ *   sessionDir?: string,
+ *   notesStore?: object,
+ *   notes?: boolean,
  *   onToolEvent?: (info:{phase:string, name:string, input?:object, chars?:number, isError?:boolean}) => void,
  * }} input
  * @returns {{tools:object[], executeTool:(options:object)=>Promise<string>}}
@@ -705,13 +860,21 @@ export function createInnerTools({
   lib,
   cwd,
   todo = false,
-  resultLimit = TOOL_RESULT_LIMIT,
+  runId,
+  sessionDir,
+  notesStore,
+  notes = true,
   onToolEvent,
 }) {
   const cliTools = lib.binTools.createCliTools({ cwd, todo });
-  const truncate = typeof lib.binTools.truncateResult === "function"
-    ? (text) => lib.binTools.truncateResult(text)
-    : (text) => text;
+  // note_* 不在 bin/tools.js 里（它属于 src/ 公共面），在本层拼上，见 createInnerNotesTools。
+  const notesAssembler = notes === false
+    ? undefined
+    : createInnerNotesTools({ lib, runId, sessionDir, notesStore });
+  const notesToolNames = new Set(notesAssembler?.definitions?.map((tool) => tool.name) ?? []);
+  const tools = notesAssembler === undefined
+    ? cliTools.tools
+    : [...cliTools.tools, ...notesAssembler.definitions];
 
   async function executeTool(execution = {}) {
     const name = typeof execution === "object" ? execution.name : execution;
@@ -719,23 +882,26 @@ export function createInnerTools({
     onToolEvent?.({ phase: "start", name, input });
     try {
       // bin/tools.js 的 executor 只吃 input（context/signal 不参与执行，exec 自带
-      // ERIX_EXEC_TIMEOUT_MS 超时），所以这里只做结果截断与进度留痕。
-      const raw = await cliTools.executeTool(name, input, {
-        ...(execution.context ?? {}),
-        toolUseId: execution.id,
-        signal: execution.signal,
-      });
+      // ERIX_EXEC_TIMEOUT_MS 超时）。结果**原样返回**，理由见 createInnerTools 的注释：
+      // 体积护栏是引擎 outputHygiene + aggregate-budget + exec maxBuffer 的职责，不是这里的。
+      // note_* 走引擎的 notes assembler（同一个 (name, input, context) 位置参数形状）。
+      const raw = await (notesToolNames.has(name) ? notesAssembler.executors : cliTools.executeTool)(
+        name, input, {
+          ...(execution.context ?? {}),
+          toolUseId: execution.id,
+          signal: execution.signal,
+        },
+      );
       const text = typeof raw === "string" ? raw : String(raw ?? "");
-      const clipped = text.length > resultLimit ? truncate(text) : text;
       onToolEvent?.({ phase: "end", name, chars: text.length, isError: /^\s*错误[：:]/u.test(text) });
-      return clipped;
+      return text;
     } catch (error) {
       onToolEvent?.({ phase: "error", name, isError: true });
       throw error;
     }
   }
 
-  return { tools: cliTools.tools, executeTool, cliTools };
+  return { tools, executeTool, cliTools, notes: notesAssembler };
 }
 
 /** 内层 system prompt：复用 bin/tools.js 的工具提示词装配（与 CLI 同一口径）。 */
@@ -1146,13 +1312,14 @@ export async function runErixRun(rawParams = {}, deps = {}) {
     const provider = deps.createProvider
       ? deps.createProvider(libIndex, slot)
       : createProviderForSlot(libIndex, slot);
-    const tools = deps.createAssembly
-      ? deps.createAssembly({ lib: libIndex, cwd: params.cwd, onToolEvent: (info) => {
-        if (info?.phase === "start") progress(`→ ${info.name} ${preview(info.input)}`);
-      } })
-      : createInnerTools({ lib, cwd: params.cwd });
+    // runId 先算：notes 的 scope（notesDir 下的 run/<scopeRef>/）与 transcript 同一身份。
     const runId = deps.runId ?? newRunId(now);
     context.runId = runId;
+    const tools = deps.createAssembly
+      ? deps.createAssembly({ lib: libIndex, cwd: params.cwd, runId, sessionDir: params.sessionDir, onToolEvent: (info) => {
+        if (info?.phase === "start") progress(`→ ${info.name} ${preview(info.input)}`);
+      } })
+      : createInnerTools({ lib, cwd: params.cwd, runId, sessionDir: params.sessionDir });
 
     // 工具调用的进度不从这里发：引擎的 tool_use / tool_result 事件已覆盖同一事件，
     // 两处都报会在 pi 的进度窗口里出现重复行。

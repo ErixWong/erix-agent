@@ -346,11 +346,45 @@ export function fileToolsContract(label, { createFileTools }) {
         first,
         // #196 R1.1：marker 从「只报状态」升级为「给出下一步」，字面量随之变（刻意）。
         // 行号与「共 N 行」的口径不变，新增的是「剩余行数 + readFile 传 offset=N」。
-        "1: row 0\n2: row 1\n3: row 2\n4: row 3\n5: row 4\n[共 12 行，剩余 7 行；下一步：readFile 传 offset=5 继续]",
+        // issue 261013 R3.4：再新增**文件真实大小**（12 行小文件 = 74B，走 formatSize 的 B 档）：
+        // 模型要据此估「剩下的额度够不够一次读完」，只看行数估不出体积。
+        "1: row 0\n2: row 1\n3: row 2\n4: row 3\n5: row 4\n[共 12 行（文件 74B），剩余 7 行；下一步：readFile 传 offset=5 继续]",
       );
       assert.equal(await tools.executeTool("readFile", { path: "small.txt" }), lines
         .map((line, index) => `${index + 1}: ${line}`)
         .join("\n"));
+    });
+  });
+
+  test(`${label}: readFile 的描述把「读取额度」写成模型读得到的事实（issue 261013 R3）`, () => {
+    const tools = createFileTools({ cwd: process.cwd() });
+    const readFileTool = tools.definitions.find((definition) => definition.name === "readFile");
+    // 额度只能从描述里拿：不写就等于让模型自己猜，猜的结果是保守分批 + 反复回补。
+    assert.match(readFileTool.description, /line range/u);
+    assert.match(readFileTool.description, /0-based/u, "offset 的基必须写清（结果里的行号是 1-based）");
+    assert.match(readFileTool.description, /default 200/u, "limit 默认值必须写进描述");
+    assert.match(readFileTool.description, /262144/u, "单次字节上限默认值必须写进描述");
+    assert.match(readFileTool.description, /one call/iu, "「一次要够」的口径必须在场");
+    // 描述里对模型说的话不得与实现相反：parseIntEnv 对越界/非法是**退回默认**，不是钳边。
+    assert.match(readFileTool.inputSchema.properties.max_bytes.description, /default 262144/u);
+    assert.match(readFileTool.inputSchema.properties.max_bytes.description, /NOT clamped/u);
+    assert.doesNotMatch(readFileTool.inputSchema.properties.max_bytes.description, /clamped to 1024-4194304/u);
+    // offset / limit 也得有 description（此前只有 path 与 max_bytes 有）。
+    assert.match(readFileTool.inputSchema.properties.offset.description, /0-based/u);
+    assert.match(readFileTool.inputSchema.properties.limit.description, /default 200/u);
+  });
+
+  test(`${label}: readFile 的续读 marker 带文件真实大小（可读单位，不出现裸字节数）`, async () => {
+    await withDirectory(async (cwd) => {
+      const rows = Array.from({ length: 40 }, (_, index) => `line ${index} ${"x".repeat(40)}`)
+        .join("\n");
+      await writeFile(path.join(cwd, "sized.txt"), `${rows}\n`, "utf8");
+      const tools = createFileTools({ cwd });
+      const output = await tools.executeTool("readFile", { path: "sized.txt", limit: 5 });
+      const marker = String(output).split("\n").find((line) => line.includes("共 40 行")) ?? "";
+      assert.match(marker, /文件 \d+(B|KB|MB|GB|TB)/u, `marker 必须带 formatSize 形态的大小：${marker}`);
+      assert.doesNotMatch(marker, /\d+B/u, "不得出现裸字节数（#196 R2：同一结果不并排两份数）");
+      assert.match(marker, /readFile 传 offset=5 继续/u, marker);
     });
   });
 

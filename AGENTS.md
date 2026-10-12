@@ -11,6 +11,7 @@ Project-specific rules; shared/global conventions live in `~/projects/AGENTS.md`
 - Product form = **headless agent**: the `runToolLoop` single-task lifecycle (start/run/stop/resume/event stream), with execution (`executeTool`) injected by the host; the **boundary ends at a single task lifecycle**; multi-role orchestration/arbitration/retry scheduling is the host's responsibility and is not absorbed into the library.
 - **The CLI (`bin/`) is a validator/debugger, not the focus**: interactive TUI + the `chat` one-shot entry point (which can serve as a bench entry point); capability validation uses the erix-bench headless harness (container driver + scorer, comparing `--agent erix|pi`), while the interactive repl tests only human-agent collaboration.
 - Relationship with pi: **pi = interactive agent (human in the loop); erix = headless agent (unattended, host-scheduled) — complementary, not competing**.
+- **Known boundary gap: `erix_run` (`examples/pi-extension`) depends on `bin/tools.js`** to get `exec` and the tool-prompt assembly, because `exec` has never been promoted into the public `src/` surface (`grep 'name: "exec"' src/` is empty). Since `bin/` is a validator/debugger rather than a contract surface, any **new** dependency on `bin/` must first promote the capability into `src/` (or the host implements the tool itself) — see `examples/pi-extension/README.md`, section “边界：不得依赖 bin/”.
 - Security layering (ADR-009): the agent does not build in security; **the user of it is responsible** (local = trust domain; embedded containers are isolated by the host).
 - Red lines: **zero npm dependencies** (only import node: built-ins + relative paths), pure ESM, Node 22+, and never commit key/token.
   The red line constrains **imports, not the toolchain**: `typescript` + `@types/node` are devDependencies by user authorization
@@ -220,7 +221,7 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 
 - Relay: `api.ai.erix.vip/v1`; the model must be configured by the user (`contextWindow 262144`, `maxOutputTokens 65536` → automatic compaction budget ~170k). This is the same file `erix_run` reads (`slots.default`); it does not follow pi's current model.
 - For tool execution/validation, use `node bin/cli.js chat` for erix work (this repository); the supervisor watches `/tmp/erix-*-log.txt` for step-by-step output.
-- Red lines for erix coding tasks: read each file only once (in offset/limit segments), break long tasks down with `todo_add` first, and make a verification declaration before reporting.
+- Red lines for erix coding tasks: **estimate the read budget before reading and take it in one call** (the `readFile` tool description already carries the budget facts: default line count, per-call byte cap, and the token conversion) instead of conservatively paging small segments, break long tasks down with `todo_add` first, and make a verification declaration before reporting.
 
 ## 8. Model and cost discipline
 

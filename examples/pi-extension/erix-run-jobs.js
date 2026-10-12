@@ -252,6 +252,11 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     usage: payload?.usage ?? { input_tokens: 0, output_tokens: 0 },
     timeout: payload?.timeout === true || job.timedOut === true,
     aborted: payload?.aborted === true || job.status === "aborted",
+    // —— 终稿正文（#261）：**原样透传，视图层不截断**（单一真值：显示层 format.js 才有 4000 字口径）。
+    //    载荷没带 / 还没终局时给 "" 而不是 undefined —— 与本文件「未终局时给 null/零值形状，
+    //    字段不缺」同口径，查询侧不必分两种形状。缺了这个字段时 format.js 的 result 正文支是
+    //    死分支、status.json 里也没有交付物正文。
+    finalText: typeof payload?.finalText === "string" ? payload.finalText : "",
     // —— #207 R4 的决策事实（同一个 resolveArtifacts 口径）
     artifacts: {
       transcriptPath: typeof artifacts?.transcriptPath === "string" ? artifacts.transcriptPath : null,

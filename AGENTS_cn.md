@@ -11,6 +11,7 @@
 - 产品形态 = **无头 agent**：`runToolLoop` 单任务生命周期（start/run/stop/resume/event stream），执行（`executeTool`）由宿主注入；**边界止于单个任务生命周期**；多角色编排/仲裁/重试调度由宿主负责，不纳入库中。
 - **CLI (`bin/`) 是验证器/调试器，不是重点**：交互式 TUI + `chat` 单次入口（可作为 bench 入口）；能力验证使用 erix-bench 无头 harness（容器驱动 + 判分器，对比 `--agent erix|pi`），而交互式 repl 仅测试人机协作。
 - 与 pi 的关系：**pi = 交互式 agent（人在环）；erix = 无头 agent（无人值守、宿主调度）——互补而非竞争**。
+- **已知边界缺口：`erix_run`（`examples/pi-extension`）为拿 `exec` 与工具提示词装配而依赖 `bin/tools.js`**——因为 `exec` 从未进入 `src/` 公共面（`grep 'name: "exec"' src/` 为空）。既然 `bin/` 是验证器/调试器而不是契约面，**新增**对 `bin/` 的依赖必须先把能力提到 `src/` 公共面（或由宿主自己实现那个工具）——见 `examples/pi-extension/README.md` 的「边界：不得依赖 `bin/`」一节。
 - 安全分层（ADR-009）：agent 不内置安全；**使用者负责**（本地 = 信任域；嵌入式容器由宿主隔离）。
 - 红线：**零 npm 依赖**（只导入 node: 内置模块 + 相对路径），纯 ESM、Node 22+，绝不提交 key/token。
   这条红线约束的是**import，不是工具链**：`typescript` + `@types/node` 是经用户授权的 devDependency（issue #213，发布 `.d.ts` 类型面），
@@ -180,7 +181,7 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 
 - Relay：`api.ai.erix.vip/v1`；模型必须由用户配置（`contextWindow 262144`、`maxOutputTokens 65536` → 自动压缩预算 ~170k）。`erix_run` 读的就是同一份 `slots.default`，不跟随 pi 当前模型。
 - 工具执行/验证：erix 工作使用 `node bin/cli.js chat`（本仓库），监督者监视 `/tmp/erix-*-log.txt` 以获取逐步输出。
-- erix 编码任务红线：每个文件只读一次（按 offset/limit 分段），长任务先用 `todo_add` 拆解，汇报前作出验证声明。
+- erix 编码任务红线：**读文件前先估额度、一次要够**（工具描述里已写好额度事实：默认行数、单次字节上限与 token 换算），而不是保守地小步分段读；长任务先用 `todo_add` 拆解，汇报前作出验证声明。
 
 ## 8. 模型与成本纪律
 
