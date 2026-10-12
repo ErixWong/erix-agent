@@ -42,6 +42,12 @@ const RECORD = {
 //      型宿主改跑下面的可选子套件 `notesStoreCasContract`。
 //   3. limit（裁决 5 上游半边）：>200 条记录时断言「给了 limit 就钳到 200」，
 //      并按 `src/store/notes.js` 的 `normalizeListRequest` 实际语义拒绝非法 limit。
+//
+// issue #265 补盲（只加端口 typedef 已承诺的行为）：filters.state 空数组/
+// filters.source 非法值必须抛 TypeError；revoke 传 reason 时，墓碑形态必须能看到
+// revoked_at 与 revoke_reason；purge 的 scanned 是 scope 数而非记录数，且 before
+// 只能缩小删除窗口。⚠ 本套件是发布面（`./contract-tests`）：这四条会让语义更宽的
+// 宿主 adapter 在升级后冒新失败——那是漂移哨兵该报的警，不是套件的误报。
 // ---------------------------------------------------------------------------
 
 /**
@@ -225,8 +231,9 @@ export function notesStoreContract(label, createStore) {
     }
   });
 
-  // 裁决 3B：契约只承诺「可观察地消失」——墓碑形态与物理删除形态都算兑现。
-  // expectedState / expectedUpdatedAt 并发护栏与 missing 哨兵语义原样保留。
+    // 裁决 3B：契约只承诺「可观察地消失」——墓碑形态与物理删除形态都算兑现。
+    // expectedState / expectedUpdatedAt 并发护栏与 missing 哨兵语义原样保留。
+    // （issue #265：若套件再往「必须墓碑」方向加断言，先重读上面第 1 条边界。）
   test(`${label}: revoke makes the record observably disappear (guards preserved)`, async () => {
     const store = await createStore();
     assertNotesStore(store);
@@ -294,6 +301,67 @@ export function notesStoreContract(label, createStore) {
     assert.ok(
       repeated.status === "unchanged" || repeated.status === "missing",
       `重复 revoke 必须是 unchanged（墓碑）或 missing（物理删除），实际 ${repeated.status}`,
+    );
+    // issue #265 补盲：端口 typedef 写了 `reason?: string` 与 `revoked_at?`，
+    // 墓碑形态下这两者必须可观察（物理删除形态 after===undefined，字段天然
+    // 不可见，跳过）。手抄版曾丢 reason、不写 revoked_at，在这里变红。
+    if (after !== undefined) {
+      assert.ok(
+        typeof after.revoked_at === "string" && Number.isFinite(Date.parse(after.revoked_at)),
+        `revoke 成功的墓碑必须写可解析的 revoked_at，实际 ${String(after.revoked_at)}`,
+      );
+      assert.equal(after.revoke_reason, "test", "revoke 的 reason 必须落盘可见（revoke_reason）");
+    }
+  });
+
+  // issue #265 补盲：typedef 写了 `filters?: {state?: ..., source?: "agent"|"auto", ...}`，
+  // 非法值必须抛 TypeError 而不是静默不过滤/过滤成空——「空数组 = 全不过滤」与
+  // 「过滤成空」是两个相反的语义，静默的适配器会把宿主的清理循环带沟里。
+  test(`${label}: list rejects an empty state array and an unknown source filter`, async () => {
+    const store = await createStore();
+    assertNotesStore(store);
+    await assert.rejects(
+      store.list({ scope: "run", scopeRef: "contract-filter-run", filters: { state: [] } }),
+      (error) => error instanceof TypeError && /filters\.state/u.test(error.message),
+      "空 filters.state 数组必须抛 TypeError（空数组既不是全不过滤也不是静默清空）",
+    );
+    await assert.rejects(
+      store.list({ scope: "run", scopeRef: "contract-filter-run", filters: { source: "bogus" } }),
+      (error) => error instanceof TypeError && /filters\.source/u.test(error.message),
+      "filters.source 只认 agent/auto，非法值必须抛 TypeError",
+    );
+  });
+
+  // issue #265 补盲：typedef 写了 `purge: ... => Promise<{status:"found", scanned, purged}>`
+  // 且注释口径是 scanned = 扫描的 scope 数、purge 无视 scopeRef 全量清扫、保留期内
+  // 刚写的 scope 整本豁免、before 只能缩小窗口。手抄版曾 scanned=记录数且把刚写的
+  // 记录全清光，在这里变红。
+  test(`${label}: purge scans scopes (not records), exempts fresh scopes, before only shrinks`, async () => {
+    const store = await createStore();
+    assertNotesStore(store);
+    const put = (scopeRef, key) => store.write({
+      scope: "run", scopeRef, key, record: { ...RECORD, key, scopeRef },
+    });
+    await put("contract-purge-a", "a1");
+    await put("contract-purge-a", "a2");
+    await put("contract-purge-b", "b1");
+    const swept = await store.purge({ scope: "run" });
+    assert.equal(swept.status, "found");
+    assert.equal(swept.scanned, 2, "scanned = 扫描的 scope 数，不是记录数");
+    assert.equal(swept.purged, 0, "保留期内刚写入的 scope 整本豁免，一条不删");
+    // before 只能缩小删除窗口（取更早的 cutoff），绝不放大：一个 10 年前的 before
+    // 把一切都豁免，而不是「按 before 全清」。
+    const tenYearsAgo = new Date(Date.now() - 10 * 365 * 24 * 60 * 60 * 1000).toISOString();
+    const narrowed = await store.purge({ before: tenYearsAgo });
+    assert.equal(narrowed.purged, 0, "更早的 before 只能更保守，不得删得更多");
+    assert.equal(
+      (await store.list({ scope: "run", scopeRef: "contract-purge-a" })).length,
+      2,
+      "豁免的 scope 记录必须原样可读",
+    );
+    assert.equal(
+      (await store.list({ scope: "run", scopeRef: "contract-purge-b" })).length,
+      1,
     );
   });
 }

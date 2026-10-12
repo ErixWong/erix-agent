@@ -49,6 +49,7 @@ export {
   createFileNotesStore,
   isNoteRecord,
 } from "./store/notes.js";
+export { createMemoryNotesStore } from "./store/notes-memory.js";
 export {
   createBuiltinNotesTools,
   MAX_CONTENT_LENGTH,

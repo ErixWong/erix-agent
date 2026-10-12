@@ -2128,6 +2128,16 @@ and it cannot replace the host's own consistency tests:
   adapter that already passed go red, and nothing in it certifies a host either:
   the assertions that were relaxed stopped testing the relaxed-away behaviour
   upstream, so the host-side guarantee (if you want one) is now yours.
+- A **tightening is the mirror case (issue #265).** The notes suite gained four
+  assertions for behaviour the port typedef had already promised but the suite
+  never exercised: an empty `filters.state` array and an unknown `filters.source`
+  must throw `TypeError`, a visible revoke tombstone must carry `revoked_at` and
+  `revoke_reason`, and `purge` must count scopes (not records) in `scanned` while
+  `before` only shrinks the deletion window. They were added after the engine's
+  own hand-ported in-memory adapter measured red on the suite — so a host adapter
+  that silently ignored one of these behaviours will see **new failures** on the
+  next engine bump. That is the sentinel reporting drift, not a new promise
+  invented at suite level: every one of the four was already in the typedef.
 
 **Where a suite asserts `deepEqual` on a record, that assertion is JSON-value
 equality (issue #183 item 6).** It is testable and it is bounded, and both halves
@@ -2159,14 +2169,27 @@ assertion group treats it as a fresh namespace and several suites re-enter it:
 
 ```js
 import { notesStoreCasContract, notesStoreContract, transcriptStoreContract } from "erix-agent/contract-tests";
-import { createFileNotesStore, createMemoryTranscriptStore } from "erix-agent";
+import { createFileNotesStore, createMemoryNotesStore, createMemoryTranscriptStore } from "erix-agent";
 
 transcriptStoreContract("my-host-store", () => createMemoryTranscriptStore());
-notesStoreContract("my-host-store", () => createFileNotesStore({ dir: notesDir }));
+// "clean on every call": hand out a fresh namespace per factory call — here a
+// fresh subdirectory under the host's notes root
+notesStoreContract("my-host-store", () => createFileNotesStore({ dir: mkdtempSync(notesDir + "/general-") }));
+// the engine ships an in-memory NotesStore adapter since issue #265: register the
+// same suite under a second label — the shape a host adapter is held to as well
+notesStoreContract("my-memory-adapter", () => createMemoryNotesStore());
 // optional sub-suite for a compare-and-swap store: it only requires at most one
 // concurrent writer to fail and the winner to stay readable
-notesStoreCasContract("my-host-store", () => createFileNotesStore({ dir: notesDir }));
+notesStoreCasContract("my-host-store", () => createFileNotesStore({ dir: mkdtempSync(notesDir + "/cas-") }));
 ```
+
+Since issue #265 the engine itself ships two NotesStore adapters — the file one
+(`createFileNotesStore`) and an in-memory one (`createMemoryNotesStore`) — and
+both run against this same suite in-repo, table-driven, under distinct labels.
+They share a single implementation of the port semantics
+(`src/store/notes-port.js`, internal, not exported): a host writing a third
+adapter is held to exactly the same bar and gets the same failures for the same
+omissions.
 
 The same shape covers the other six; only the second argument differs:
 
@@ -2191,7 +2214,7 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 | suite | what it asserts | yours to satisfy | upstream-internal detail it also pins |
 |---|---|---|---|
 | `transcript-store.js` (16 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-snapshot latest-only overwrite, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, and the paired probe tier | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance |
-| `notes-store.js` (7 tests) | port validation (`assertNotesStore`), malformed-record rejection before persistence, full record round-trip, scope isolation and explicit misses, unsafe-scope round-trip through lifecycle, the `limit` threshold (more than 200 stored records: a given limit clamps to exactly 200, an illegal limit throws), and `revoke`'s observable disappearance with the `expectedState`/`expectedUpdatedAt` guards | the port surface and the record/guard semantics. Since issue #183 the split between upstream mandate and host policy is explicit: the port mandates observable disappearance (tombstone **or** physical delete) and leaves record expiry to the host, while the one-writer last-write-wins behaviour is the file adapter's own business and is no longer asserted here | the file-store-shaped error texts (`/valid NoteRecord/`, `/parseable date/`, `/positive safe integer/`), retention/purge timing |
+| `notes-store.js` (9 tests) | port validation (`assertNotesStore`), malformed-record rejection before persistence, full record round-trip, scope isolation and explicit misses, unsafe-scope round-trip through lifecycle, the `limit` threshold (more than 200 stored records: a given limit clamps to exactly 200, an illegal limit throws), `revoke`'s observable disappearance with the `expectedState`/`expectedUpdatedAt` guards, and — since issue #265 — rejection of an empty `filters.state` array and an unknown `filters.source`, `revoked_at`/`revoke_reason` visible on a revoke tombstone, and `purge` scanning scopes (not records) with `before` only shrinking the window | the port surface and the record/guard semantics. Since issue #183 the split between upstream mandate and host policy is explicit: the port mandates observable disappearance (tombstone **or** physical delete) and leaves record expiry to the host, while the one-writer last-write-wins behaviour is the file adapter's own business and is no longer asserted here. The #265 additions only assert typedef-promised behaviour, but they are new assertions on a published surface: a host adapter that ignored one of them goes red after the bump | the file-store-shaped error texts (`/valid NoteRecord/`, `/parseable date/`, `/positive safe integer/`, `/filters\.state/`, `/filters\.source/`), retention/purge timing |
 | `notes-store.js` → `notesStoreCasContract` (1 test, optional; issue #183) | concurrent same-key writers: at most one may fail, a failure must be a thrown error rather than a silent drop, and the winner is the record that stays readable in its full shape | compare-and-swap hosts only, and only in addition to `notesStoreContract` — this sub-suite is deliberately weaker than the retired last-write-wins assertion, so passing it says nothing about a store that serializes writers | the two payload contents it happens to exercise (`left`/`right`), not any conflict error text |
 | `assembly-port.js` (4 tests) | a port boots a real loop to completion, `emit(type, payload)` receives the event types with their payload, an explicit fine-grained `provider` option overrides the port's provider, and a provider missing `chat`/`chatStream` is rejected at startup by both `createAssemblyPort` and `runToolLoop` | your port's required adapters and its `emit` sink | the precedence rule (explicit option over port), the startup-validation error text |
 | `execute-tool.js` (7 tests) + `execute-tool-migration-contract` (2 tests) | your executor receives exactly one structured execution object, and each canonical return form (`string`, `{content, metadata, success}`, legacy `{data}`, returned `Error`, thrown `Error`) becomes the documented `tool_result` | the call shape and the return shapes. The migration suite additionally proves that a bare positional `(name, input)` executor is **rejected**, not silently supported | that the assertions are observed through `runToolLoop`'s provider request rather than through a public result field |

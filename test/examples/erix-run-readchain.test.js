@@ -160,7 +160,14 @@ test("R2：传了 sessionDir 时 notes 落在 <sessionDir>/notes 之下（与 tr
   );
 });
 
-test("R2：内存 notes store 满足 NotesStore 端口（引擎会 assertNotesStore）", async () => {
+test("R2：内存 notes store 用的是引擎导出（#265 删了本层手抄），且满足 NotesStore 端口", async () => {
+  // 手抄实现已删：本层导出必须**就是**引擎导出（同一函数对象），不再是平行实现。
+  assert.equal(typeof libIndex.createMemoryNotesStore, "function", "前提：引擎导出在位");
+  assert.equal(
+    core.createMemoryNotesStore,
+    libIndex.createMemoryNotesStore,
+    "仓内布局下 core 的导出必须是引擎导出本身（手抄版被删的证据）",
+  );
   const store = core.createMemoryNotesStore();
   assert.doesNotThrow(() => libIndex.assertNotesStore(store));
   await store.write({
@@ -178,6 +185,36 @@ test("R2：内存 notes store 满足 NotesStore 端口（引擎会 assertNotesSt
   assert.equal((await store.complete({ scope: "run", scopeRef: "s1" })).completed, 1);
   assert.equal((await store.list({ scope: "run", scopeRef: "s1", filters: { state: "active" } })).length, 0);
   assert.deepEqual(await store.list({ scope: "run", scopeRef: "other" }), [], "scope 之间必须隔离");
+  // 引擎语义（手抄版量不通的两条，这里必须通）：端口语义在 src/store/notes-port.js
+  // 只有一份，两个 adapter 共用——记录校验与保留期豁免都不得静默放宽。
+  await assert.rejects(
+    store.write({ scope: "run", scopeRef: "s1", key: "bad", record: { key: "bad", current: "not-an-object" } }),
+    /valid NoteRecord/u,
+  );
+  assert.equal((await store.purge({ scope: "run" })).purged, 0, "刚写入的 scope 豁免保留期");
+});
+
+test("R2：无 sessionDir 时真注入到 createBuiltinNotesTools 的就是引擎内存 store（spy 捕获）", async () => {
+  let captured;
+  const spyLib = {
+    ...realLib(),
+    index: {
+      ...libIndex,
+      createBuiltinNotesTools: (options) => {
+        captured = options.notesStore;
+        return libIndex.createBuiltinNotesTools(options);
+      },
+    },
+  };
+  const tools = core.createInnerTools({ lib: spyLib, cwd: tempDir(), runId: "r2-spy" });
+  assert.ok(tools, "前提：工具装配成功");
+  assert.ok(captured, "前提：无 sessionDir 时确实注入了 notesStore");
+  assert.doesNotThrow(() => libIndex.assertNotesStore(captured));
+  // 端口语义也必须是引擎那一份：非法 filter 抛 TypeError（手抄版静默不过滤）。
+  await assert.rejects(
+    captured.list({ scope: "run", scopeRef: "spy", filters: { state: [] } }),
+    (error) => error instanceof TypeError && /filters\.state/u.test(error.message),
+  );
 });
 
 // ---------------------------------------------------------------------------

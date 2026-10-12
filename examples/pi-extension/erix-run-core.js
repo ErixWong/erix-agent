@@ -687,117 +687,28 @@ export function createProviderForSlot(lib, slot, { timeoutMs = PROVIDER_TIMEOUT_
 }
 
 /**
- * 最小的**内存** NotesStore（端口 = write/read/list/complete/revoke/purge，见 src/store/notes.js
- * 的 assertNotesStore）。为什么需要它：引擎只给了文件 store，而文件 store 缺省落在
- * `resolveNotesDir()` = `~/.erix/notes`——erix_run 的内层 run 不传 `sessionDir` 时本来就是
- * 「纯内存 run」（transcript 也是内存的），笔记单独去写真实 home 会污染用户目录，
- * 且多个并发 run 会共用同一 scope 目录。所以：**无 sessionDir → 内存 store**。
+ * NotesStore 的**内存**适配器：issue #265 之后实现归引擎——
+ * `src/store/notes-memory.js`，与文件适配器共用 `src/store/notes-port.js` 那份端口
+ * 语义（记录校验、scopeRef 规范化、list filters/sort/limit、revoke 字段写入、purge
+ * 的 before/保留期/scanned），并由 `test/contract/notes-store.js` 同一套契约套件
+ * 按 label table-driven 各跑一遍。本层原先约 100 行的手抄实现已删——它只被
+ * `assertNotesStore`（查方法不查语义）量过，从没被契约量过，量一次就红 2 条
+ * （记录完全不校验、purge 的「刚写入 scope 豁免保留期」被忽略）。
  *
- * 语义与文件 store 对齐的地方：不给 limit 就返回全部匹配记录、给了钳到 200、
- * `complete` 只动 active、`revoke` 带并发护栏（不符就 unchanged）、返回值形状同字面值。
- * 不实现 filters.tag/source 以外的奇技（引擎侧只靠 state + sort）。
+ * 转发方式：`createInnerNotesTools` 优先取注入 lib 的 `libIndex.createMemoryNotesStore`
+ * （与 lib 同版本）；本导出直接取本仓 `src/index.js` 的同一函数对象（相对路径动态
+ * import，仓库布局下即引擎导出本身）。README 的部署是 `cp -r` 出去，那里
+ * `../../src/index.js` 解不到 → 本导出不存在（undefined），装配路径仍走 libIndex，不受影响。
  */
-export function createMemoryNotesStore() {
-  /** @type {Map<string, object>} */
-  const records = new Map();
-  const slot = (scopeRef, key) => `${scopeRef}\u0000${key}`;
-  const clone = (value) => (value === undefined ? undefined : structuredClone(value));
-  const updatedMs = (record) => Date.parse(record?.updated_at ?? "") || 0;
-  const relevanceOf = (record) => (Number.isFinite(record?.relevance) ? record.relevance : 0);
-  const SORTS = {
-    relevance: (a, b) => (relevanceOf(b) - relevanceOf(a)) || (updatedMs(b) - updatedMs(a))
-      || String(a?.key ?? "").localeCompare(String(b?.key ?? "")),
-    pinned_updated: (a, b) => ((b?.pinned === true ? 1 : 0) - (a?.pinned === true ? 1 : 0))
-      || (updatedMs(b) - updatedMs(a)) || String(a?.key ?? "").localeCompare(String(b?.key ?? "")),
-  };
-  const matches = (record, filters = {}) => {
-    if (filters.state !== undefined) {
-      const states = Array.isArray(filters.state) ? filters.state : [filters.state];
-      if (!states.includes(record.state)) return false;
-    }
-    if (filters.tag !== undefined && !(record.tags ?? []).includes(filters.tag)) return false;
-    if (filters.minRelevance !== undefined && relevanceOf(record) < filters.minRelevance) return false;
-    return true;
-  };
-  const scopeOf = (request) => {
-    const scopeRef = request?.scopeRef;
-    if (typeof scopeRef !== "string" || scopeRef.trim() === "") {
-      throw new TypeError("NotesStore scopeRef must be a non-empty string");
-    }
-    if (request.scope !== undefined && request.scope !== "run") {
-      throw new TypeError("NotesStore supports only run scope");
-    }
-    return scopeRef;
-  };
-
-  const store = {
-    async write(request = {}) {
-      const scopeRef = scopeOf(request);
-      if (typeof request.key !== "string" || request.key.length === 0) {
-        throw new TypeError("NotesStore key must be a non-empty string");
-      }
-      records.set(slot(scopeRef, request.key), clone({ ...request.record, scopeRef }));
-    },
-    async read(request = {}) {
-      const scopeRef = scopeOf(request);
-      if (typeof request.key !== "string" || request.key.length === 0) {
-        throw new TypeError("NotesStore key must be a non-empty string");
-      }
-      return clone(records.get(slot(scopeRef, request.key)));
-    },
-    async list(request = {}) {
-      const scopeRef = scopeOf(request);
-      const sort = request.sort === undefined ? "relevance" : request.sort;
-      if (!Object.hasOwn(SORTS, sort)) {
-        throw new TypeError('NotesStore sort must be "relevance" or "pinned_updated"');
-      }
-      const items = [...records.values()]
-        .filter((record) => record.scopeRef === scopeRef && matches(record, request.filters ?? {}))
-        .sort(SORTS[sort])
-        .map(clone);
-      // 同文件 store：不给 limit = 全部；给了钳到 200（不是报错）。
-      if (request.limit === undefined) return items;
-      if (!Number.isSafeInteger(request.limit) || request.limit < 1) {
-        throw new TypeError("NotesStore limit must be a positive safe integer");
-      }
-      return items.slice(0, Math.min(request.limit, 200));
-    },
-    async complete(request = {}) {
-      const scopeRef = scopeOf(request);
-      let completed = 0;
-      for (const [id, record] of records) {
-        if (record.scopeRef !== scopeRef || record.state !== "active") continue;
-        records.set(id, clone({ ...record, state: "done", updated_at: new Date().toISOString() }));
-        completed += 1;
-      }
-      return { status: "found", completed };
-    },
-    async revoke(request = {}) {
-      const scopeRef = scopeOf(request);
-      if (typeof request.key !== "string" || request.key.length === 0) {
-        throw new TypeError("NotesStore key must be a non-empty string");
-      }
-      const id = slot(scopeRef, request.key);
-      const current = records.get(id);
-      if (current === undefined) return { status: "missing", revoked: 0 };
-      if (current.state === "revoked") return { status: "unchanged", revoked: 0 };
-      if (request.expectedState !== undefined && current.state !== request.expectedState) {
-        return { status: "unchanged", revoked: 0 };
-      }
-      if (request.expectedUpdatedAt !== undefined && current.updated_at !== request.expectedUpdatedAt) {
-        return { status: "unchanged", revoked: 0 };
-      }
-      records.set(id, clone({ ...current, state: "revoked", updated_at: new Date().toISOString() }));
-      return { status: "found", revoked: 1 };
-    },
-    async purge() {
-      const purged = records.size;
-      records.clear();
-      return { status: "found", scanned: purged, purged };
-    },
-  };
-  return store;
+let engineCreateMemoryNotesStore;
+try {
+  ({ createMemoryNotesStore: engineCreateMemoryNotesStore } = await import(
+    new URL("../../src/index.js", import.meta.url).href
+  ));
+} catch {
+  engineCreateMemoryNotesStore = undefined;
 }
+export const createMemoryNotesStore = engineCreateMemoryNotesStore;
 
 /**
  * notes 四件套的内层装配（引擎公共导出 `createBuiltinNotesTools`，参 bin/cli.js 的用法）。
@@ -808,7 +719,8 @@ export function createMemoryNotesStore() {
  * 兜不了现的支票。
  *
  * 落点纪律：跟着 `sessionDir` 走（`<sessionDir>/notes`，与 transcript/judge.log 同根）；
- * 不传 sessionDir → 内存 store，**绝不写 `~/.erix`**。
+ * 不传 sessionDir → 引擎的内存 store（#265，`createMemoryNotesStore` 导出），
+ * **绝不写 `~/.erix`**。
  *
  * @param {{lib:any, runId?:string, sessionDir?:string, notesStore?:object}} input
  * @returns {object|undefined} assembler（无 createBuiltinNotesTools 导出时降级为 undefined）
@@ -818,7 +730,13 @@ export function createInnerNotesTools({ lib, runId, sessionDir, notesStore }) {
   if (typeof libIndex?.createBuiltinNotesTools !== "function") return undefined;
   if (notesStore === undefined && sessionDir === undefined) {
     // 无 sessionDir：纯内存，不走 resolveNotesDir 的 ~/.erix/notes 缺省。
-    return libIndex.createBuiltinNotesTools({ runId, notesStore: createMemoryNotesStore() });
+    // #265：实现归引擎。优先用注入 lib 自带的导出（与 lib 同版本，含只装了
+    // npm 包的部署）；lib 太旧没有它时退到本模块对仓内 src/index.js 的转发。
+    const factory = typeof libIndex.createMemoryNotesStore === "function"
+      ? libIndex.createMemoryNotesStore
+      : createMemoryNotesStore;
+    if (typeof factory !== "function") return undefined;
+    return libIndex.createBuiltinNotesTools({ runId, notesStore: factory() });
   }
   if (notesStore !== undefined) {
     return libIndex.createBuiltinNotesTools({ runId, notesStore });

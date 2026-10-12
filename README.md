@@ -213,6 +213,8 @@ src/
     file.js                        JSONL transcript, checkpoint, and state store
     memory.js                      In-process transcript, checkpoint, and state store
     notes.js                       Host-side notes store
+    notes-memory.js                In-process NotesStore adapter (shares src/store/notes-port.js)
+    notes-port.js                  Shared NotesStore port semantics (internal)
     append-user-turn.js            Pre-written user turn for the multi-turn resume contract
   config/
     api-key.js                     API-key materialization

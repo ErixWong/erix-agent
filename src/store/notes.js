@@ -1,3 +1,9 @@
+// NotesStore 的内置 JSON 文件适配器（介质层）。端口语义（记录校验、scopeRef
+// 规范化、list 的 filters/sort/limit、revoke 字段写入、purge 的 before/保留期/
+// scanned）自 issue #265 起与内存适配器共用 src/store/notes-port.js 那一份实现；
+// 本文件只保留文件介质特有物：路径/symlink 防护/0o700/文件名 sanitize/mtime 时钟。
+// 公共符号（NotesStoreError/assertNotesStore/isNoteRecord/normalizeNoteRecord）
+// 在这里原样再导出——src/tools/notes.js、src/index.js、test/** 与文档钉的引用点不变。
 import {
   chmod,
   lstat,
@@ -9,22 +15,45 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
-const HASHED_ID_PREFIX = "run-h-";
+import {
+  LIST_SORTS,
+  NotesStoreError,
+  applyComplete,
+  applyRevokeFields,
+  assertRequest,
+  digest,
+  isNoteRecord,
+  isScopeExempt,
+  matchesListFilters,
+  normalizeListRequest,
+  normalizeNoteRecord,
+  prepareWriteRecord,
+  purgeCutoff,
+  revokeGuard,
+  safeId,
+} from "./notes-port.js";
+
+export {
+  NotesStoreError,
+  assertNotesStore,
+  isNoteRecord,
+  normalizeNoteRecord,
+} from "./notes-port.js";
+
 const HASHED_KEY_PREFIX = "note-h-";
-const HASHED_ID_PATTERN = /^run-h-[0-9a-f]{24}$/u;
+const SAFE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
 // 统一保留期（ADR-018 D7）：单时钟一律枪毙——任何记录 updated_at 早于
 // now - retention 即被 purge 物理删除，无论 state（active/done/revoked）。
 // 状态字段只服务模型可见性（note_list 默认 active）与语义标签，与清理无关。
 // 复活窗口 = 最后写入后 30 天；健康任务长期不写某条笔记的理论误杀已被维护者
-// 显式接受。默认 30 天。
-const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_SUPERSEDED = 3;
-const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
-const SAFE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
-const STATES = new Set(["active", "done", "revoked"]);
+// 显式接受。默认 30 天。读取/env 语义在 src/store/notes-port.js 的 retentionMs()。
+// ⚠ 声明留在本文件：scripts/docs-drift-check.mjs 的「notes 统一保留期」默认值
+// 锚点按 srcRe 在本文件里抽真值（docs-drift 脚本不在 #265 改动面内）。
+export const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * A complete persisted notes record. The adapter deliberately preserves
@@ -68,119 +97,12 @@ const STATES = new Set(["active", "done", "revoked"]);
  * }} NotesStore
  */
 
-export class NotesStoreError extends Error {
-  constructor(message, code = "invalid_record") {
-    super(message);
-    this.name = "NotesStoreError";
-    this.code = code;
-  }
-}
-
-function digest(value) {
-  return createHash("sha256").update(String(value)).digest("hex").slice(0, 24);
-}
-
-function safeId(value) {
-  const text = String(value);
-  if (HASHED_ID_PATTERN.test(text)) return text;
-  return SAFE_ID_PATTERN.test(text)
-    && text !== "." && text !== ".." && !text.startsWith(HASHED_ID_PREFIX)
-    ? text
-    : `${HASHED_ID_PREFIX}${digest(text)}`;
-}
-
 function safeKey(value) {
   const text = String(value);
   return SAFE_KEY_PATTERN.test(text)
     && text !== "." && text !== ".." && !text.startsWith(HASHED_KEY_PREFIX)
     ? text
     : `${HASHED_KEY_PREFIX}${digest(text)}`;
-}
-
-function assertRequest(request, { keyRequired = false, scopeRefRequired = true } = {}) {
-  if (!request || typeof request !== "object" || Array.isArray(request)) {
-    throw new TypeError("NotesStore request must be an object");
-  }
-  if (request.scope !== undefined && request.scope !== "run") {
-    throw new TypeError("NotesStore supports only run scope");
-  }
-  if (
-    (scopeRefRequired || request.scopeRef !== undefined)
-    && (typeof request.scopeRef !== "string" || request.scopeRef.trim() === "")
-  ) {
-    throw new TypeError("NotesStore scopeRef must be a non-empty string");
-  }
-  if (keyRequired && (typeof request.key !== "string" || request.key.length === 0)) {
-    throw new TypeError("NotesStore key must be a non-empty string");
-  }
-}
-
-/**
- * Validate a persisted record before an adapter accepts it.
- *
- * @param {unknown} record
- * @param {{key?: string, scopeRef?: string}} [expected] expected scopeRef is canonical
- * @returns {record is NoteRecord}
- */
-export function isNoteRecord(record, expected = {}) {
-  return Boolean(
-    record
-      && typeof record === "object"
-      && !Array.isArray(record)
-      && typeof record.key === "string"
-      && (expected.key === undefined || record.key === expected.key)
-      && record.scope === "run"
-      && typeof record.scopeRef === "string"
-      && (expected.scopeRef === undefined || record.scopeRef === expected.scopeRef)
-      && record.current
-      && typeof record.current === "object"
-      && !Array.isArray(record.current)
-      && Array.isArray(record.superseded)
-      && record.superseded.length <= MAX_SUPERSEDED
-      && record.superseded.every((entry) => (
-        entry && typeof entry === "object" && !Array.isArray(entry) && entry.invalid === true
-      ))
-      && Number.isSafeInteger(record.folded)
-      && record.folded >= 0
-      && STATES.has(record.state)
-      && Array.isArray(record.tags)
-      && record.tags.every((tag) => typeof tag === "string"),
-  );
-}
-
-const FALLBACK_TIMESTAMP = "1970-01-01T00:00:00.000Z";
-
-function isoTimestamp(value, fallback) {
-  if (typeof value !== "string") return fallback;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : fallback;
-}
-
-/**
- * Normalize a validated NoteRecord's time fields (issue #67 PR 2，PR 3 前置）：
- * updated_at 有效则标准化为 ISO；缺失/非法回退有效 created_at；两者都缺/非法
- * 用固定 epoch（不用当前时间伪造）。其余字段（含未知扩展字段）原样保留。
- * normalize 不洗白非法记录——调用方必须先经 isNoteRecord 严格校验。
- *
- * @param {unknown} record
- * @param {{key?: string, scopeRef?: string}} [expected]
- * @returns {unknown} record（时间字段已补齐）或原样返回的非法记录
- */
-export function normalizeNoteRecord(record, expected = {}) {
-  if (!isNoteRecord(record, expected)) return record;
-  const created = isoTimestamp(record.created_at, FALLBACK_TIMESTAMP);
-  const updated = isoTimestamp(record.updated_at, created);
-  if (record.created_at === created && record.updated_at === updated) return record;
-  return { ...record, created_at: created, updated_at: updated };
-}
-
-export function assertNotesStore(store) {
-  const required = ["write", "read", "list", "complete", "revoke", "purge"];
-  const missing = required.filter((method) => typeof store?.[method] !== "function");
-  if (missing.length > 0) {
-    throw new TypeError(`NotesStore missing required method(s): ${missing.join(", ")}`);
-  }
-  return store;
 }
 
 function notesRootDirectory(dir) {
@@ -291,127 +213,6 @@ async function listFiles(directory) {
     .map((entry) => path.join(directory, entry.name));
 }
 
-function configuredMs(name) {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === "") return undefined;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-}
-
-// 统一保留期（ADR-018 D7）：单旋钮。ERIX_NOTES_RETENTION_MS 为唯一权威变量；
-// ERIX_NOTES_GRACE_MS 是 0.11.0 发布过的 deprecated alias（两者并存以新变量
-// 为准）。ERIX_NOTES_DONE_GRACE_MS / ERIX_NOTES_TOMBSTONE_RETENTION_MS 从未随
-// 0.12.0 发布，直接消失，无兼容包袱（审计 F 项）。
-function retentionMs() {
-  return configuredMs("ERIX_NOTES_RETENTION_MS")
-    ?? configuredMs("ERIX_NOTES_GRACE_MS")
-    ?? DEFAULT_RETENTION_MS;
-}
-
-// ---------------------------------------------------------------------------
-// list() 请求规整：limit 钳制（给了才生效，最大 200；不给 = 全部匹配记录）、
-// filters、sort。无 revision/游标协议——单 run 实测量级（平均约 2 条、峰值
-// 9 条）下翻页与版本锚是 YAGNI（维护者复盘，ADR-018 D3 决策反转）。
-// ---------------------------------------------------------------------------
-
-function normalizeListFilters(filters) {
-  if (filters === undefined || filters === null) return {};
-  if (typeof filters !== "object" || Array.isArray(filters)) {
-    throw new TypeError("NotesStore filters must be an object");
-  }
-  const normalized = {};
-  if (filters.state !== undefined) {
-    const states = Array.isArray(filters.state) ? filters.state : [filters.state];
-    if (states.length === 0 || states.some((state) => !STATES.has(state))) {
-      throw new TypeError('NotesStore filters.state must be "active", "done", "revoked" or an array of them');
-    }
-    normalized.state = new Set(states);
-  }
-  if (filters.tag !== undefined) {
-    if (typeof filters.tag !== "string") throw new TypeError("NotesStore filters.tag must be a string");
-    normalized.tag = filters.tag;
-  }
-  if (filters.source !== undefined) {
-    if (filters.source !== "agent" && filters.source !== "auto") {
-      throw new TypeError('NotesStore filters.source must be "agent" or "auto"');
-    }
-    normalized.source = filters.source;
-  }
-  if (filters.minRelevance !== undefined) {
-    if (!Number.isFinite(filters.minRelevance)
-      || filters.minRelevance < 0
-      || filters.minRelevance > 1) {
-      throw new TypeError("NotesStore filters.minRelevance must be a number between 0 and 1");
-    }
-    normalized.minRelevance = filters.minRelevance;
-  }
-  return normalized;
-}
-
-function matchesListFilters(record, filters) {
-  if (filters.state !== undefined && !filters.state.has(record.state)) return false;
-  if (filters.tag !== undefined && !record.tags.includes(filters.tag)) return false;
-  const source = record.current?.provenance?.source === "auto" ? "auto" : "agent";
-  if (filters.source !== undefined && source !== filters.source) return false;
-  const relevance = Number.isFinite(record.relevance) ? record.relevance : 0.5;
-  if (filters.minRelevance !== undefined && relevance < filters.minRelevance) return false;
-  return true;
-}
-
-function relevanceOf(record) {
-  return Number.isFinite(record.relevance) ? record.relevance : 0.5;
-}
-
-function updatedAtMs(record) {
-  const ms = Date.parse(record.updated_at);
-  return Number.isFinite(ms) ? ms : undefined;
-}
-
-function compareKeyAsc(left, right) {
-  return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
-}
-
-// 排序全部用稳定比较（key ASC 兜底），不依赖 localeCompare；非字符串/非法
-// updated_at 走 normalize 兜底为合法 ISO，这里再防御一层（非法值排最后）。
-function compareUpdatedDesc(left, right) {
-  const leftMs = updatedAtMs(left);
-  const rightMs = updatedAtMs(right);
-  if (leftMs === rightMs) return 0;
-  if (leftMs === undefined) return 1;
-  if (rightMs === undefined) return -1;
-  return rightMs - leftMs;
-}
-
-const LIST_SORTS = {
-  relevance: (left, right) => (
-    (relevanceOf(right) - relevanceOf(left))
-    || compareUpdatedDesc(left, right)
-    || compareKeyAsc(left, right)
-  ),
-  pinned_updated: (left, right) => (
-    ((right.pinned === true ? 1 : 0) - (left.pinned === true ? 1 : 0))
-    || compareUpdatedDesc(left, right)
-    || compareKeyAsc(left, right)
-  ),
-};
-
-function normalizeListRequest(request) {
-  let limit;
-  if (request.limit !== undefined) {
-    if (!Number.isSafeInteger(request.limit) || request.limit < 1) {
-      throw new TypeError("NotesStore limit must be a positive safe integer");
-    }
-    // 超过 200 钳制到 200（不是报错）；不给 limit = 返回全部匹配记录。
-    limit = Math.min(request.limit, 200);
-  }
-  const filters = normalizeListFilters(request.filters);
-  const sort = request.sort === undefined ? "relevance" : request.sort;
-  if (!Object.hasOwn(LIST_SORTS, sort)) {
-    throw new TypeError('NotesStore sort must be "relevance" or "pinned_updated"');
-  }
-  return { limit, filters, sort };
-}
-
 /**
  * Create the built-in JSON file adapter for NotesStore.
  *
@@ -431,17 +232,8 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
     async write(request) {
       assertRequest(request, { keyRequired: true });
       const scopeRef = requestScope(request);
-      const record = request.record
-        && typeof request.record === "object"
-        && !Array.isArray(request.record)
-        ? { ...request.record, scopeRef }
-        : request.record;
-      if (!isNoteRecord(record, {
-        key: request.key,
-        scopeRef,
-      })) {
-        throw new TypeError("NotesStore write requires a valid NoteRecord");
-      }
+      // 记录校验 + canonical scopeRef 覆盖：与内存版共用 prepareWriteRecord（#265）。
+      const record = prepareWriteRecord(request, scopeRef);
       await writeRecord(root, scopeRef, record);
     },
 
@@ -499,11 +291,7 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
           scope: "run",
           scopeRef,
           key: current.key,
-          record: {
-            ...current,
-            state: "done",
-            updated_at: new Date(clock()).toISOString(),
-          },
+          record: applyComplete(current, new Date(clock()).toISOString()),
         });
         completed += 1;
       }
@@ -514,31 +302,16 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
       assertRequest(request, { keyRequired: true });
       const scopeRef = requestScope(request);
       const current = await store.read({ scope: "run", scopeRef, key: request.key });
-      if (!current) return { status: "missing", revoked: 0 };
-      if (current.state === "revoked") return { status: "unchanged", revoked: 0 };
-      // expectedState/expectedUpdatedAt 是并发护栏：检查后被他人改写过的
-      // 记录一律 unchanged，不得覆盖（防并发误撤销）。
-      if (request.expectedState !== undefined && current.state !== request.expectedState) {
-        return { status: "unchanged", revoked: 0 };
-      }
-      if (
-        request.expectedUpdatedAt !== undefined
-        && current.updated_at !== request.expectedUpdatedAt
-      ) {
-        return { status: "unchanged", revoked: 0 };
-      }
+      // missing/unchanged 哨兵与 expectedState/expectedUpdatedAt 并发护栏与内存版
+      // 共用 revokeGuard（#265）。
+      const blocked = revokeGuard(current, request);
+      if (blocked !== undefined) return blocked;
       const timestamp = new Date(clock()).toISOString();
       await store.write({
         scope: "run",
         scopeRef,
         key: current.key,
-        record: {
-          ...current,
-          state: "revoked",
-          revoked_at: timestamp,
-          updated_at: timestamp,
-          ...(request.reason === undefined ? {} : { revoke_reason: request.reason }),
-        },
+        record: applyRevokeFields(current, { reason: request.reason, timestamp }),
       });
       return { status: "found", revoked: 1 };
     },
@@ -551,18 +324,12 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
       // 其中很老的笔记——会话活着，笔记本整体保留）。「复活即续命」：
       // 复活后任意写入刷新整个 scope 的时钟。purge 纯 mtime 比较，不读记录
       // 内容；state 只服务模型可见性与语义标签，与清理无关。
-      // before 只能缩小范围（取更早的 cutoff，绝不放大删除窗口）。
+      // before 只能缩小范围（取更早的 cutoff，绝不放大删除窗口）——与内存版
+      // 共用 purgeCutoff/isScopeExempt（#265），本处只留「文件 mtime 当时钟」
+      // 这层介质事实。
       // 无 limit/cursor 分页（ADR-018 D8，审计 C 项）：一次调用全量处理。
       // purge 对整个 run 根全量清扫：不给 scopeRef，传了也忽略（不分 scope）。
-      assertRequest(request, { scopeRefRequired: false });
-      let beforeMs;
-      if (request.before !== undefined) {
-        beforeMs = Date.parse(request.before);
-        if (!Number.isFinite(beforeMs)) {
-          throw new TypeError("NotesStore purge before must be a parseable date string");
-        }
-      }
-      const cutoff = Math.min(beforeMs ?? Number.POSITIVE_INFINITY, clock() - retentionMs());
+      const cutoff = purgeCutoff(request, clock);
       const runDirectory = path.join(root, "run");
       let scopeDirs;
       try {
@@ -600,7 +367,7 @@ export function createFileNotesStore({ dir, clock = () => Date.now() }) {
           continue;
         }
         // 整本豁免：scope 内最新写入仍在保留期内。
-        if (lastWriteMs >= cutoff) continue;
+        if (isScopeExempt(lastWriteMs, cutoff)) continue;
         for (const file of files) {
           await unlink(file);
           purged += 1;

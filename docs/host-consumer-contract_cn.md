@@ -1662,6 +1662,13 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
   并发断言从通用 notes 套件移到了文件适配器自己的测试里，比较-交换宿主新增了可选的
   `notesStoreCasContract`。这几条不会让原本就能过的适配器变红，也不会反过来给宿主作保：
   上游不再断言被放宽的那部分，所以那份保证（如果你需要）现在归你自己写测试。
+- **收紧是它的镜像（issue #265）。** notes 套件新增 4 条断言，钉的全是端口 typedef
+  早已写明、套件却从未碰过的行为：空 `filters.state` 数组与非法 `filters.source` 必须
+  抛 `TypeError`；可见的 revoke 墓碑必须带 `revoked_at` 与 `revoke_reason`；`purge` 的
+  `scanned` 是 scope 数而非记录数，且 `before` 只能缩小删除窗口。它们的起因就是引擎
+  自己的手抄内存适配器被这套套件量红——所以曾静默忽略这些行为的宿主适配器，下次
+  升级时会看到**新失败**：那是哨兵在报漂移，不是套件层面凭空新增的承诺——这 4 条
+  在 typedef 里早就写着。
 
 **套件里对记录做 `deepEqual` 的地方，那条断言是 JSON 值相等（issue #183 第 6 组）。**
 它可测，也有边界，两半都是承诺的一部分：
@@ -1685,13 +1692,23 @@ factory 必须**每次调用都交出一个干净的**实现 —— 每个断言
 
 ```js
 import { notesStoreCasContract, notesStoreContract, transcriptStoreContract } from "erix-agent/contract-tests";
-import { createFileNotesStore, createMemoryTranscriptStore } from "erix-agent";
+import { createFileNotesStore, createMemoryNotesStore, createMemoryTranscriptStore } from "erix-agent";
 
 transcriptStoreContract("my-host-store", () => createMemoryTranscriptStore());
-notesStoreContract("my-host-store", () => createFileNotesStore({ dir: notesDir }));
+// 「每次调用都交出干净的实现」：factory 每调用一次给一个全新命名空间——这里用
+// notes 根目录下的全新子目录
+notesStoreContract("my-host-store", () => createFileNotesStore({ dir: mkdtempSync(notesDir + "/general-") }));
+// 引擎自 issue #265 起自带内存版 NotesStore 适配器：同一个套件、第二个 label 再注册
+// 一遍——宿主自家适配器受的就是这把尺
+notesStoreContract("my-memory-adapter", () => createMemoryNotesStore());
 // 比较-交换型 store 额外注册这个可选子套件：它只要求并发写至多一方失败、胜者可读
-notesStoreCasContract("my-host-store", () => createFileNotesStore({ dir: notesDir }));
+notesStoreCasContract("my-host-store", () => createFileNotesStore({ dir: mkdtempSync(notesDir + "/cas-") }));
 ```
+
+issue #265 之后引擎自己就带两个 NotesStore 适配器——文件版（`createFileNotesStore`）
+与内存版（`createMemoryNotesStore`）——两者在仓内都是对着这同一套套件、以不同 label
+table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/store/notes-port.js`，
+内部模块、不发公共面）：宿主写第三份适配器，受的是同一把尺，漏了哪条就冒同样的红。
 
 其余六个是同一个形状，只有第二个参数不同：
 
@@ -1716,7 +1733,7 @@ notesStoreCasContract("my-host-store", () => createFileNotesStore({ dir: notesDi
 | 套件 | 断言什么 | 你必须满足的部分 | 它顺带钉住的上游内部细节 |
 |---|---|---|---|
 | `transcript-store.js`（16 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、run snapshot 的 latest-only 覆盖写、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返，以及成对的探针层 | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍 |
-| `notes-store.js`（7 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、`limit` 阈值（存量超过 200：给了 limit 就钳到恰好 200，非法 limit 抛错），以及带 `expectedState`/`expectedUpdatedAt` guard 的 revoke 可观察消失 | 端口面与记录/guard 语义。issue #183 之后上游硬义务与宿主策略的分界已写死：端口只承诺「可观察消失」（墓碑**或**物理删除皆可）且不管记录过期，而一写者 last-write-wins 是文件适配器自己的事，已不在这里断言 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`、`/positive safe integer/`）、保留期/purge 时机 |
+| `notes-store.js`（9 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、`limit` 阈值（存量超过 200：给了 limit 就钳到恰好 200，非法 limit 抛错）、带 `expectedState`/`expectedUpdatedAt` guard 的 revoke 可观察消失，以及 issue #265 新增：空 `filters.state` 数组与非法 `filters.source` 必须拒、revoke 墓碑上 `revoked_at`/`revoke_reason` 可见、`purge` 的 `scanned` 是 scope 数且 `before` 只能缩小窗口 | 端口面与记录/guard 语义。issue #183 之后上游硬义务与宿主策略的分界已写死：端口只承诺「可观察消失」（墓碑**或**物理删除皆可）且不管记录过期，而一写者 last-write-wins 是文件适配器自己的事，已不在这里断言。#265 新增只断言 typedef 早已承诺的行为，但它们是发布面上的新断言：宿主适配器曾静默忽略其中任何一条，升级后就会冒新红 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`、`/positive safe integer/`、`/filters\.state/`、`/filters\.source/`）、保留期/purge 时机 |
 | `notes-store.js` → `notesStoreCasContract`（1 条，可选；issue #183） | 并发同键写：至多一方失败，失败必须是抛错而不是静默丢弃，胜者必须是那条以完整形状可读的记录 | 只给比较-交换宿主跑，且是在 `notesStoreContract` 之外的**额外**一层 —— 这个子套件刻意比被移除的 last-write-wins 断言更弱，跑绿它对串行化写者一无所证 | 它顺便踩到的两个载荷内容（`left`/`right`），而不是任何冲突错误文案 |
 | `assembly-port.js`（4 条） | 端口能启动一个真实 loop 并跑完，`emit(type, payload)` 收到带 payload 的事件类型，显式的细粒度 `provider` 选项覆盖端口自带的 provider，缺少 `chat`/`chatStream` 的 provider 在启动时被 `createAssemblyPort` 与 `runToolLoop` 双双拒绝 | 你的端口所必需的适配器与它的 `emit` 接收端 | 优先级规则（显式选项胜过端口）、启动校验的错误文案 |
 | `execute-tool.js`（7 条）+ `executeToolMigrationContract`（2 条） | 你的执行器恰好收到一个结构化执行对象，且每种规范返回形态（`string`、`{content, metadata, success}`、遗留的 `{data}`、返回的 `Error`、抛出的 `Error`）都变成文档规定的 `tool_result` | 调用形状与返回形状。迁移套件还额外证明：裸的位置参数 `(name, input)` 执行器是被**拒绝**的，不是被静默支持 | 这些断言是通过 `runToolLoop` 的 provider 请求观测到的，而不是通过某个公开结果字段 |
