@@ -1,19 +1,27 @@
 // erix_run 的异步执行层（issue #234）：job 注册表 + `status.json` 落盘 + 立即返回句柄 +
 // `action` 查询/取消面 + run 级超时看门狗 + 完成投递去重。
 //
-// 机制来源（docs/tasks/active/261010-13-erix-run-async/analysis.md，逐条带行号）：
-//   - 立即返回句柄 + 内存注册表（`state.asyncJobs`）：pi-subagents `extension/index.js:138-139,284`
-//   - 状态落盘 `<dir>/status.json`：pi-subagents `shared/utils.js:126`（本层落点见 `statusFilePath`）
-//   - 唤醒策略 `!(quiet && completed)`：pi-subagents `runs/background/notify.js:226`
-//   - 投递去重（TTL + 容量上限）：pi-subagents `runs/background/notify.js:371`
-//   - 超时定时器归 run 级、不在工具调用里：pi-subagents `watchdog/runtime.js`（本层只取
-//     「到点 abort + 把终局写成 aborted」这一小片，不抄整套看门狗）
+// 机制参考（本文件**不 import** pi-subagents，所以下面不是「照搬代码」而是「从哪个位置取了什么主意」；
+// 逐条上游行号 + 本层落点的完整对照见 docs/research/2026-10-13-pi-subagents-async-attribution.md）：
+//   - 立即返回句柄 + 进程内 job 注册表：pi-subagents `extension/index.js:284`（`asyncJobs: new Map()`）、
+//     `runs/background/async-job-tracker.js:770,893`（`asyncJobs.set` 登记）、
+//     `runs/background/async-execution.js:1440,2011`（不等内层跑完就返回，`details` 带 runId/asyncId 当句柄）
+//   - 状态落盘 `<dir>/status.json`：pi-subagents `shared/utils.js:126`（本层落点见 `statusFilePath`，但路径
+//     不跟它的 `asyncDir`，且 tmp + rename 原子写是本层自己加的）
+//   - 唤醒策略 `!(quiet && completed)`：pi-subagents `runs/background/notify.js:226-227`
+//   - 投递去重（TTL + 容量上限）：pi-subagents `runs/background/notify.js:371`（两个常量 `:19-20`，
+//     本层 `:38-39` 逐字同值）
+//   - 超时定时器归 run 级、不在工具调用里：上游是把 `timeoutMs`/`deadlineAt` 交给那个独立 runner 进程
+//     （`runs/background/async-execution.js:1211,1440,1647`）；`watchdog/runtime.js` 是 review/settle 的大循环，
+//     本层只取「到点 abort + 把终局写成 aborted」这一小片，不抄整套看门狗
 //
 // 与 pi 的接线（`pi.sendMessage` / `ctx.isIdle()` / `session_start`）全在 erix-run.ts 与
 // erix-run-parent-wake.js 里；**本文件不 import pi**，所以 `node --test` 可以直接加载它。
 //
-// ⚠ 后台 run **与扩展同进程**（pi-subagents 也没为每个子任务 spawn 子进程）：pi 进程退出或
-// `/reload` 会杀掉在跑的后台 run。跨重启恢复不属于本单（那是 #207 R2 + run-state store）。
+// ⚠ 后台 run **与扩展同进程**——这是**本单自己的选择**，不是学 pi-subagents：上游**每个**后台 run 都
+// `spawn` 一个独立 runner 进程（`runs/background/async-execution.js:4` 导入 `spawn`、`spawnRunner` 定义在 `:385`、
+// `:484` 真调用，调用点 `:1255` / `:1800`；旧注释说它「也没为每个子任务 spawn」是假的，#269 已改）。
+// 代价：pi 进程退出或 `/reload` 会杀掉在跑的后台 run，不会自动续跑。跨重启恢复不属于本单（那是 #207 R2 + run-state store）。
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";

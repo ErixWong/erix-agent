@@ -1,6 +1,6 @@
-// erix_run 的「唤醒父会话」（issue #234）：逐条搬 pi-subagents `src/shared/parent-wake.js`
-// （全文 40 行，见 docs/tasks/active/261010-13-erix-run-async/analysis.md §2），只改了单号、
-// 文本常量与 `Symbol.for` 键名，**分支结构一条没动**。
+// erix_run 的「唤醒父会话」（issue #234）：**逐分支对照** pi-subagents `src/shared/parent-wake.js`
+// （全文 46 行，含末尾 sourceMappingURL 行；逐行对照见 docs/research/2026-10-13-pi-subagents-async-attribution.md §2），
+// 只改了单号、文本常量与 `Symbol.for` 键名，**分支结构一条没动**（上游没有的只有下面那个 `peekReservation`）。
 //
 // 为什么必须双分支（都是上游踩过的坑）：
 //   - `pi.sendMessage(msg, {triggerTurn:true})` 只有在父会话 **idle** 时才真的触发一轮；

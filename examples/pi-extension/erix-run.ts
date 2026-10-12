@@ -22,7 +22,8 @@
  *     ctx.isIdle() types.d.ts:236；生命周期 pi.on("session_start"|"agent_start"|"session_shutdown")
  *     types.d.ts:1165/1184/1172（SessionStartEvent.reason 含 "reload"、SessionShutdownEvent 同）
  *   - 机制出处（为什么是双分支 + pending 窗口 + 去重）：
- *     docs/tasks/active/261010-13-erix-run-async/analysis.md（照 pi-subagents 的逐行实现）
+ *     docs/research/2026-10-13-pi-subagents-async-attribution.md（逐条带 pi-subagents 行号的对照与两侧落点；
+ *     本扩展**不 import** pi-subagents，所以是「参考其 UX / 策略自行实现」，不是逐行照搬）
  * 待实测项（README 有清单）：onUpdate 在 RPC/print 模式下的可见性、structuredContent 是否被二次校验。
  */
 

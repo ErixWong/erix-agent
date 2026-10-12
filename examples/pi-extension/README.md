@@ -15,7 +15,7 @@
 | `erix-run-core.js` | 纯逻辑：库装载、配置装配、`runToolLoop` 选项装配、事件→进度、终局载荷组装。**不 import pi**，`node --test` 可测 |
 | `erix-run-format.js` | **结果形状层（issue #237）**：`outcome` / 同步载荷 → `AgentToolResult`（`content` / `details` / `structuredContent` / `isError` / `usage`）。按 `kind` 组装 `details`，只放纯数据，**`details` 必须可 JSON 序列化**这条由它保证。同样**不 import pi**，`node --test` 可测 |
 | `erix-run-jobs.js` | **异步执行层（issue #234）**：job 注册表 + `status.json` 落盘（tmp + rename 原子写，写失败开 `deps` 注入缝，#237 R4）+ 立即返回句柄 + `action` 面（`status`/`result`/`list`/`cancel`）+ run 级超时看门狗 + 完成投递去重注册表 + 唤醒策略。同样**不 import pi** |
-| `erix-run-parent-wake.js` | 唤醒父会话的双分支（idle 真触发 / 忙时追加 + `deliverAs:"steer"` 排队）+ `WAKE_PENDING_MS` pending 窗口 + `Symbol.for` WeakMap（`/reload` 不丢）。逐条照 `pi-subagents` 的 `shared/parent-wake.js`，**不 import pi** |
+| `erix-run-parent-wake.js` | 唤醒父会话的双分支（idle 真触发 / 忙时追加 + `deliverAs:"steer"` 排队）+ `WAKE_PENDING_MS` pending 窗口 + `Symbol.for` WeakMap（`/reload` 不丢）。**逐分支对照** `pi-subagents` 的 `src/shared/parent-wake.js`（全文 46 行，分支结构一一对应，另多一个测试用的 `peekReservation`），**不 import pi** |
 | `index.ts` | 目录形态的入口（pi 把「含 `index.ts` 的子目录」当成一条扩展加载） |
 | `../../test/examples/erix-run-core.test.js` | core 单测（fake provider / 注入 fake lib，全离线） |
 | `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略、`shutdown` 幂等 |
@@ -140,7 +140,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
 ## 异步执行：派工即返回句柄（issue #234）
 
 `async: true` 把「一次完整多轮 run」从「堵住主会话的工具调用」变成「派工 + 句柄 + 完成通知」。
-六条机制逐条照 `pi-subagents` 的真实实现搬（出处：`docs/tasks/active/261010-13-erix-run-async/analysis.md`）。
+六条机制**参考** `pi-subagents` 的 UX / 策略，实现由本扩展自己写（本扩展**不 import** 它，所以「逐行照搬」在本仓无法自证；
+逐条带上游行号的对照见 `docs/research/2026-10-13-pi-subagents-async-attribution.md`）。唯一一处**实质分歧**是进程模型（见下面「6. 限制」）。
 
 ### 1. 立即返回句柄
 
@@ -152,7 +153,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
   "statusPath": "/tmp/234-e2e/outputs/<runId>/status.json", "quiet": false }
 ```
 
-可机读数据在 `AgentToolResult.details`（照 `pi-subagents` 的 `result.details.progress` 口径），
+可机读数据在 `AgentToolResult.details`（照 `pi-subagents` 的 `result.details.progress` 口径——上游 `extension/index.js:137-141`
+就是读 `result.details?.progress?.some(e => e.status === "running")` 判「还在跑」的），
 **且 `details` 必须是可 JSON 序列化的纯数据**——宿主（pi）会把它序列化进会话记录 / 转发给订阅者，
 一旦里面混了活对象，序列化一抛就白烧一轮 auto-retry（见「返回结构」节里的
 「`details` 必须可 JSON 序列化（issue #237）」）。
@@ -221,8 +223,12 @@ pi --extension ./examples/pi-extension/erix-run.ts
 ### 6. 限制（写死，不要猜）
 
 - **后台 run 与扩展同进程**：pi 进程退出 / 扩展 `/reload` 会杀掉它（`status.json` 只留下最后一个已知状态，
-  **不会自动续跑**）。`pi-subagents` 也没为每个子任务 spawn 子进程（全仓唯一 `spawnSync` 在
-  `herdr-pi-bridge.js:1`，是另一件事），所以本单**同样不引入子进程 / IPC**。
+  **不会自动续跑**）。⚠ 这**不是** `pi-subagents` 的做法：上游**每个**后台 run 都 `spawn` 一个独立 runner 进程
+  （`src/runs/background/async-execution.js:4` 导入 `spawn`，`spawnRunner` 定义在 `:385`，`:484` 真调用，调用点 `:1255` / `:1800`）。
+  所以「同进程 + 不起子进程 / IPC」是**本单自己的选择**而不是跟上游——理由与代价见
+  `docs/research/2026-10-13-pi-subagents-async-attribution.md` §6（旧版本这里写的「`pi-subagents` 也没为每个子任务
+  spawn 子进程（全仓唯一 `spawnSync` 在 `herdr-pi-bridge.js:1`）」是假的，#269 已改：上游 `spawnSync` 有十来处，
+  但都是 git / ssh 辅助调用，跟跑子任务无关）。
 - **跨重启恢复不属于本单**（那是 #207 R2 + run-state store 的地盘），`resumable` 仍恒 `false`。
 - 内存注册表**不跨进程重启**；要跨 `/reload` 可查就必须传 `sessionDir`。
 - `async:true` 时，派工这次工具调用自己的 `signal` **不接**到后台 run（它在 `execute()` 返回时就失效了）；

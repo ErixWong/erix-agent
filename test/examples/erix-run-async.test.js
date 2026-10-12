@@ -5,7 +5,7 @@
 // 全部离线：内层 run 走注入的 runJob（或假 lib + 假 provider 的真 runToolLoop），
 // cwd/home/sessionDir 一律注入临时目录 —— 不碰真实 ~/.erix，不触网。
 //
-// 机制出处：docs/tasks/active/261010-13-erix-run-async/analysis.md（照 pi-subagents 的逐行实现）
+// 机制出处：docs/research/2026-10-13-pi-subagents-async-attribution.md（照 pi-subagents 的逐行实现）
 
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
