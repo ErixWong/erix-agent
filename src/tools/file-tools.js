@@ -765,13 +765,21 @@ export const FILE_TOOL_DEFINITIONS = [
     name: "readFile",
     // 额度事实只活在这一段文字里：模型看不到实现，只能靠它决定一次要多少（issue 261013 R3）。
     // 只写无状态的静态事实（默认值/单位换算），不引入「首次读某文件才提示」这类跨调用状态。
+    // issue #267：token 那三个档是**复测值**，不是估的——口径 `estimateTokens(前 200 行)`，样本写死在
+    // `test/tools/file-tools.test.js`：150（`bin/guard-metrics.js`，稀疏短行）/ 2,493（`bin/sessions.js`，
+    // 工单样本的中位）/ 4,539（**本文件**，密中文注释 = CJK 密度上限，也是全包 83 个 `src/`+`bin/`+`examples/`
+    // `.js` 同一测法的最大值）。旧文案只写「~2,500」，正好压在中位数上、把 1.8× 的尾巴藏了。
+    // 复测命令与全量清扫结果见 CHANGELOG 的 #267 条目；`test/tools/file-tools.test.js` 会拿上面三个写死的
+    // 样本当场复测，并把测得的数**夹在描述声称的档位里**（把档位改小就红），所以这段文字不能随手改小。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
       + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) — on typical source lines that budget is "
       + "~3,000-6,000 lines, far more than a single `limit` will ask for, so the byte cap is rarely what stops you. "
-      + "Token budget of the default window, using the engine estimator (~3.5 characters per token for non-CJK, ~1.5 for CJK, \u00d71.15 margin): "
-      + "200 lines \u2248 a few hundred to ~2,500 tokens depending on line width and language. "
+      + "Token budget of the default window, measured with the engine estimator (~3.5 characters per token for non-CJK, "
+      + "~1.5 for CJK, \u00d71.15 margin) on the first 200 lines of real source files shipped here: ~150 tokens where lines "
+      + "are short and sparse, ~2,500 on typical source, and ~4,500 where lines are wide, comments are dense or the text "
+      + "is CJK \u2014 budget the tail, not the typical case. "
       + "Estimate the budget first and ask for it **in one call** \u2014 when unsure take more (e.g. `limit=1000`) rather than "
       + "conservatively paging 200 lines at a time. Whatever is withheld is reported by a marker that carries the exact `offset` to continue from.",
     inputSchema: {

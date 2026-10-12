@@ -1336,7 +1336,10 @@ wording of those error texts.
 change in any minor release). Every "skipped / truncated / no-match" string — the
 `[已跳过 …]` exclusion account, the `[另有 N 条未列出 …]` and
 `[另有 N 个目录未展开 …]` tree markers,
-`[共 N 行，剩余 M 行；下一步：readFile 传 offset=K 继续]`, and the
+`[共 N 行（文件 <size>），剩余 M 行；下一步：readFile 传 offset=K 继续]` (the `<size>` segment is
+that file's real size rendered by `formatSize()` — issue #267 added it, because a line count on its own
+cannot answer "will what is left fit in one more call"; inside one result it never sits next to a raw
+byte count), and the
 `（无命中）` no-match result — is produced by a single marker function inside
 `src/tools/file-tools.js` (the executors pass semantic values, they never build
 bracketed strings themselves), which is why the wording can move without touching

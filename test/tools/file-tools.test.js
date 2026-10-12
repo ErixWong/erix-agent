@@ -5,17 +5,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdir, readFile as readFilePromise, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setImmediate as immediate } from "node:timers";
+import { fileURLToPath } from "node:url";
 import { makeTmp } from "../helpers/tmp.js";
 
 import {
   createFileTools,
   resolveFileReadMaxBytes,
   formatSize,
+  toolMarker,
   FILE_READ_MAX_BYTES_DEFAULT,
+  FILE_TOOL_DEFINITIONS,
 } from "../../src/tools/file-tools.js";
+import { estimateTokens } from "../../src/tokens.js";
 import { fileToolsContract } from "../contract/file-tools.js";
+
+const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 async function withDirectory(callback) {
   const directory = await makeTmp("erix-file-tools-");
@@ -392,4 +399,87 @@ test("readFile 的 marker 不带裸字节数，且长路径下仍守住 max_byte
     assert.match(output, /单行超过/u);
     assert.doesNotMatch(output, /(?<![\d.])4096(?!\d)/u);
   });
+});
+
+// ---------------------------------------------------------------------------
+// issue #267：`readFile` 的两条「额度事实」必须是复测值、且中英契约文档与源码同源。
+// 两条钉的都是**事实本身**而不是措辞：数字没复测就改 → 红；文档退回旧字面 → 红。
+// ---------------------------------------------------------------------------
+
+// 样本是**写死的三个真实文件**（工单硬约束：不许用 `find … | head -14` 这类会随仓库新增文件漂移的
+// 隐式样本）。测法与工单给的复现命令逐字同口径：`estimateTokens(文件前 200 行)`。
+// `measured` 是 2026-10-13 主 agent 与本单各自独立复测的同一个数（下面第一条把它也钉住）。
+const READ_TOKEN_SAMPLES = [
+  { role: "sparse", file: "bin/guard-metrics.js", measured: 150 },
+  { role: "typical", file: "bin/sessions.js", measured: 2_493 },
+  { role: "dense", file: "src/tools/file-tools.js", measured: 4_539 },
+];
+
+function measureReadWindowTokens(rel) {
+  assert.ok(existsSync(join(REPO_ROOT, rel)), `写死的样本文件不在了：${rel}（改名/删除请同步本测试）`);
+  return estimateTokens(readFileSync(join(REPO_ROOT, rel), "utf8").split("\n").slice(0, 200).join("\n"));
+}
+
+test("readFile 描述的 token 三档与当场复测一致（#267：旧文案只写 ~2,500，正是中位数，尾巴差 1.8×）", () => {
+  const description = FILE_TOOL_DEFINITIONS.find((definition) => definition.name === "readFile").description;
+  const claim = description.match(
+    /first 200 lines of real source files shipped here: ~([\d,]+) tokens[\s\S]{0,120}?~([\d,]+) on typical source, and ~([\d,]+) where lines/u,
+  );
+  assert.ok(claim, "描述不再按「sparse / typical / dense 三档」给 token 额度 → 本测试的解析面失效。"
+    + "改句式可以，但必须同步本测试，不许让这条断言静默变成永真。");
+  const [sparseClaim, typicalClaim, denseClaim] = claim.slice(1).map((v) => Number(v.replace(/,/g, "")));
+  const measured = READ_TOKEN_SAMPLES.map((sample) => ({ ...sample, tokens: measureReadWindowTokens(sample.file) }));
+  const got = Object.fromEntries(measured.map((m) => [m.role, m.tokens]));
+
+  // 0) 写进描述/源码注释/CHANGELOG 的那三个数本身也不许漂（>10% 就要三处一起改）
+  for (const m of measured) {
+    assert.ok(Math.abs(m.tokens - m.measured) <= m.measured * 0.1,
+      `${m.file} 前 200 行实测 ${m.tokens}，与记录值 ${m.measured} 差超过 10% → 额度事实漂移：`
+        + "复测后把描述、src/tools/file-tools.js 的注释、CHANGELOG 的 #267 条目一起改");
+  }
+  // 1) 三档必须由小到大（把尾巴那一档改成比典型值还小 → 这条与第 3 条同时红）
+  assert.ok(sparseClaim < typicalClaim && typicalClaim < denseClaim,
+    `描述声称的三档必须由小到大，实测给的是 ${sparseClaim} / ${typicalClaim} / ${denseClaim}`);
+  // 2) 每一档都得落进当场测得的那个样本（反向证②：把档位改成 ~100 这类偏小的数，这里必红）
+  assert.ok(got.sparse <= sparseClaim * 1.1,
+    `稀疏档声称 ~${sparseClaim} tokens，${READ_TOKEN_SAMPLES[0].file} 实测 ${got.sparse}，描述在夸大下限`);
+  assert.ok(Math.abs(got.typical - typicalClaim) <= typicalClaim * 0.05,
+    `典型档声称 ~${typicalClaim} tokens，${READ_TOKEN_SAMPLES[1].file}（复现样本的中位）实测 ${got.typical}`);
+  assert.ok(got.dense <= denseClaim * 1.05,
+    `密实档（尾巴上限）声称 ~${denseClaim} tokens，${READ_TOKEN_SAMPLES[2].file} 实测 ${got.dense} —— `
+      + "描述又低估了尾巴，这正是 issue #267 要修的那条谎");
+  // 3) 「有尾巴」这件事本身必须为真：否则三档是编出来的，旧写法（只报中位数）也就算不出错
+  assert.ok(got.dense >= got.typical * 1.5,
+    `实测尾巴（${got.dense}）没比典型值（${got.typical}）高到 1.5×，描述里的散布不成立`);
+});
+
+// #264 把 marker 加了 `（文件 …）` 段，但两份契约文档当时禁改、停在旧字面（CHANGELOG 的 #264 条目
+// 已写明「待另单同步」）。`check:docs` 不钉这条字面量（它钉的是 NEXT_STEP_CLAUSE 与 formatSize 档位），
+// 所以这里补上「文档说的 == 源码产出的」：文档用占位符，实例化后必须逐字等于 toolMarker 的产出。
+// 反向证①：任一侧改回旧字面 → 该侧当场红。
+const CONTRACT_DOCS = ["docs/host-consumer-contract.md", "docs/host-consumer-contract_cn.md"];
+
+test("中英契约文档引用的 readMoreLines marker 字面与源码产出同源（#267）", () => {
+  const produced = toolMarker("readMoreLines", { total: 12, offset: 5, size: 74 });
+  assert.equal(produced, "[共 12 行（文件 74B），剩余 7 行；下一步：readFile 传 offset=5 继续]",
+    "源码真值变了：test/contract/file-tools.js 的字面断言与两份契约文档必须跟着改（本条先红提醒三处同源）");
+  const counts = [];
+  for (const doc of CONTRACT_DOCS) {
+    const text = readFileSync(join(REPO_ROOT, doc), "utf8");
+    const claimed = [...text.matchAll(/\[共 N 行[^\]]*\]/gu)].map((m) => m[0]);
+    assert.ok(claimed.length > 0,
+      `${doc}: 找不到「[共 N 行 …」的 marker 字面（被删或改了占位写法 → 本检查面失效，请同步本测试）`);
+    for (const literal of claimed) {
+      const instantiated = literal
+        .replace("N 行", "12 行")
+        .replace("<size>", formatSize(74))
+        .replace("M 行", "7 行")
+        .replace("offset=K", "offset=5");
+      assert.equal(instantiated, produced, `${doc}: 文档字面与 toolMarker 产出不同源（占位符语义也在这条里钉住）`);
+      assert.doesNotMatch(literal, /(?<![\d.])\d+B/u,
+        `${doc}: marker 字面里不得出现裸字节数（#196 R2：同一结果不并排两份数）`);
+    }
+    counts.push(claimed.length);
+  }
+  assert.equal(counts[0], counts[1], `中英引用处数不齐：EN ${counts[0]} vs CN ${counts[1]}（marker 字面必须成对同步）`);
 });

@@ -365,6 +365,21 @@ export function fileToolsContract(label, { createFileTools }) {
     assert.match(readFileTool.description, /default 200/u, "limit 默认值必须写进描述");
     assert.match(readFileTool.description, /262144/u, "单次字节上限默认值必须写进描述");
     assert.match(readFileTool.description, /one call/iu, "「一次要够」的口径必须在场");
+    // issue #267：额度事实不许只给一个数。旧描述写「~2,500 tokens」，而 2,500 正是实测**中位数**：
+    // 密注释 / 宽行 / 中文的窗口实测能到 4,539（尾巴 1.8×）。只报典型值就是让模型拿中位数当上限。
+    // ⚠ 本单新增的是**结构**要求（必须给散布），具体数字由 `test/tools/file-tools.test.js` 用
+    //   三个写死的真实文件当场复测钉住——宿主不必复刻那份测量，但它的描述也得给得出两档。
+    // 取「从 Token budget 那一句起到描述末尾」而不是「到第一个句号」：后者会在宿主自己写的
+    // 「e.g.」上提前截断→没数字→假红；向前扫到结尾只会**多**数几个数（宁可松，不可假红）。
+    const budgetTail = readFileTool.description.match(/Token budget[\s\S]*/u)?.[0] ?? "";
+    assert.ok(budgetTail, "描述必须仍有一段在讲默认窗口（200 行）的 token 额度");
+    const figures = [...budgetTail.matchAll(/~([\d][\d,]*)/gu)]
+      .map((match) => Number(match[1].replace(/,/g, "")))
+      .filter((value) => value >= 100); // 滤掉估算器常数（~3.5 / ~1.5 字符每 token）
+    assert.ok(figures.length >= 2,
+      `token 额度必须至少给两档（典型 + 尾巴），只给一个数就是拿中位数冒充上限：${budgetTail.slice(0, 200)}`);
+    assert.ok(Math.max(...figures) >= Math.min(...figures) * 1.5,
+      `两档之间必须体现真实散布（尾巴 ≥1.5× 低档）：${figures.join(" / ")}`);
     // 描述里对模型说的话不得与实现相反：parseIntEnv 对越界/非法是**退回默认**，不是钳边。
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /default 262144/u);
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /NOT clamped/u);

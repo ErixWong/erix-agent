@@ -1070,7 +1070,9 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 **marker 字面量属 Experimental**（issue #188 三层分级，可在任意 minor 变）。所有
 「跳过 / 截断 / 空命中」字符串：`[已跳过 …]` 排除账、`[另有 N 条未列出 …]` 与
 `[另有 N 个目录未展开 …]` 两个 tree marker、
-`[共 N 行，剩余 M 行；下一步：readFile 传 offset=K 继续]`，以及空命中
+`[共 N 行（文件 <size>），剩余 M 行；下一步：readFile 传 offset=K 继续]`（`<size>` 段是
+`formatSize()` 渲染出的该文件真实大小——issue #267 补上它，是因为只看行数答不了「剩下的内容能不能
+一次读完」；同一段结果里它不会与裸字节数并排出现），以及空命中
 的 `（无命中）`，全部由 `src/tools/file-tools.js` 里**单一** marker 生成函数产出
 （executor 只传语义值，不各自拼带方括号的字符串）。这正是文案能只改一处、而不是
 改五个调用点的原因。需要稳定信号的宿主只能按拿到的工具结果分支，不得按 marker
