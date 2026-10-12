@@ -11,9 +11,11 @@
 //    （`bin/config.js` 的 `defaultConfigPath`：`XDG_CONFIG_HOME` 优先，所以子进程环境里必须删掉
 //    `XDG_CONFIG_HOME`，否则会读宿主用户的真实配置）。绝不允许写真实 `~/.erix`——「成功一条」
 //    那条用例反查真实 HOME 里有没有出现本 run 的目录哈希，把这条规矩也钉住。
+//    配置文件的**形状**不在本文件里造：拿 `fixtures/config-shape.mjs`（issue #257 T3）。
 // 2. **slot 里的端点字段名是 `endpoint`，不是 `baseUrl`**（`bin/config.js` 只读 `fileConfig.endpoint`，
 //    `src/config/json-file.js` 原样透传 slot）。写成 `baseUrl` 的失败形状是 exit 1 +
-//    「缺少环境变量：LLM_KIT_ENDPOINT」，一条请求也不会发出去。
+//    「缺少环境变量：LLM_KIT_ENDPOINT」，一条请求也不会发出去。该键名现在由构造器
+//    `upstreamFields()` 给出，写反了整套用例会红（不再靠注释守）。
 // 3. **不联网**：模型端点是 `fixtures/upstream.mjs` 的真 socket 夹具（绑 `127.0.0.1:0`）。
 //    每条跑模型的用例都断言上游真的收到了请求（`requestCount` / `waitForRequests`）——
 //    否则「绿了但根本没发请求」看不出来。
@@ -21,7 +23,7 @@
 //    所以进出都保存并清理代理变量，子进程环境里也一律删掉。
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { after, describe, it } from "node:test";
@@ -36,6 +38,7 @@ import {
   sseOpenAI,
   sseResponse,
 } from "../fixtures/upstream.mjs";
+import { upstreamFields, writeConfigHome } from "../fixtures/config-shape.mjs";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CLI_PATH = join(REPO_ROOT, "bin", "cli.js");
@@ -117,12 +120,17 @@ function runCliOnce({ args, home, cwd, env = {} }) {
 }
 
 function writeCliConfig(home, baseUrl) {
-  const configPath = join(home, ".erix", "config.json");
-  // 端点字段名必须是 endpoint（见文件头纪律 2）；model 走 slot，不用环境变量，
-  // 这样「配置来自假 HOME」这件事本身也是被测路径。
-  writeFileSync(configPath, JSON.stringify({
-    slots: { default: { endpoint: baseUrl, apiKey: "t2-test-key", model: "t2-model" } },
-  }), "utf8");
+  // 形状不在这儿造：拿 `fixtures/config-shape.mjs`（全仓唯一一份真配置形状），
+  // 上游 URL 填进哪个键由 `upstreamFields()` 定（形状 A 是 `endpoint`）。
+  // model 走 slot，不用环境变量，这样「配置来自假 HOME」这件事本身也是被测路径。
+  writeConfigHome({
+    dir: home,
+    erix: {
+      ...upstreamFields(baseUrl).erixSlot,
+      apiKey: "t2-test-key",
+      model: "t2-model",
+    },
+  });
 }
 
 /**
