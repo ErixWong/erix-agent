@@ -393,6 +393,19 @@ which is why the tarball carries declarations the repository does not — and
 `runToolLoop` / `createFileTools` in the emitted surface, then deletes the
 artifacts so the working tree stays clean.
 
+The release artifact is verified by one command (issue #257 T5): `npm run
+check:release` packs the tarball and asserts its shape (declarations present,
+both current-version upgrade guides, the shipped `test/contract/` files, nothing
+outside the `files` allowlist — Markdown link closure stays with
+`npm run check:pack-links`), installs that tarball into a throwaway temporary
+project, runs the shipped contract suites **through the installed package**,
+compiles a real TypeScript host with `tsc --strict --skipLibCheck` (exit 0, and
+an unknown `runToolLoop` option key must be rejected with `TS2353` — proof the
+type surface is not `any`) and runs the compiled output, then smokes the
+installed CLI against a local scripted upstream. It stays offline (throwaway npm
+cache and userconfig, fake `HOME`), deletes its temporary tree and the generated
+declarations again, and names the failing step when it goes red.
+
 ## `runToolLoop` API
 
 The core entry point is:
