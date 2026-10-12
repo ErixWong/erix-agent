@@ -833,6 +833,54 @@ export function createInnerNotesTools({ lib, runId, sessionDir, notesStore }) {
 }
 
 /**
+ * #266：内层 notes 的收尾收口（`lifecycle.onRunComplete`，把 run scope 的 active 笔记 → done）。
+ *
+ * 为什么必须由本层来调：assembler 是在 `createInnerTools` 里装配的（返回值的 `notes` 字段），
+ * 而端口注释（src/tools/notes.js 的 lifecycle）写明 **purge 与 active orphan 清理是宿主职责**，
+ * 钩子本身只做 `completeRun`。erix_run 就是内层 notes 的宿主：收尾不接上，
+ * `<sessionDir>/notes/run/<runId>/` 里的记录**永远停在 active**，而 `note_list` 默认只列 active
+ * （src/tools/notes.js:382），事后翻档案完全看不出这条 run 已经收口。
+ *
+ * 三条纪律（姿势照 bin/cli.js:935-946 的同一段收尾）：
+ * 1. **只在 notes 真被装配时调**：`deps.createAssembly` 给的自定义装配没有 `notes` 字段时直接跳过
+ *    （存在判定，不硬取属性，绝不 TypeError）；
+ * 2. **收尾绝不改变终局**：钩子抛错、或返回 `errors[]` 非空，都只写进 `diagnostics.notesLifecycle`
+ *    留痕；终局的 `ok` / `termination` / `usage` 一字不动（收尾失败不等于任务失败）；
+ * 3. **不顺手加 purge**：`purge` 是无视 scopeRef 的全量清扫（src/store/notes.js 的 typedef），
+ *    在内层加它需要单独论证，本单只接 `onRunComplete`。
+ *
+ * @param {{lifecycle?: {onRunComplete?: (input?: object) => Promise<{completed?: {completed?: number}, errors?: Array<{operation?: string, error?: any}>}>}}|undefined} notesAssembler
+ * @param {{progress?: (line:string)=>void}} [hooks]
+ * @returns {Promise<{attempted: boolean, completed: number, errors: Array<{operation: string, message: string}>}>}
+ */
+async function completeInnerNotes(notesAssembler, { progress } = {}) {
+  const onRunComplete = notesAssembler?.lifecycle?.onRunComplete;
+  if (typeof onRunComplete !== "function") {
+    return { attempted: false, completed: 0, errors: [] };
+  }
+  const errors = [];
+  let completed = 0;
+  try {
+    const outcome = await onRunComplete();
+    completed = Number.isFinite(outcome?.completed?.completed) ? outcome.completed.completed : 0;
+    // 钩子把 store 层的失败收集在 errors[] 里返回（不抛），这里逐条转成可 JSON 化的留痕。
+    for (const failure of outcome?.errors ?? []) {
+      errors.push({
+        operation: textOf(failure?.operation ?? "notes_complete_run"),
+        message: textOf(failure?.error?.message ?? failure?.error ?? failure),
+      });
+    }
+  } catch (error) {
+    // 收尾自身失败不得掩盖主结果：吞掉异常，只留痕（与 bin/cli.js 的 completionErrors 同一语义）。
+    errors.push({ operation: "notes_lifecycle", message: textOf(error?.message ?? error) });
+  }
+  for (const failure of errors) {
+    progress?.(`⚠ notes 收尾失败（${failure.operation}）：${failure.message}——不影响本次终局，仅留痕`);
+  }
+  return { attempted: true, completed, errors };
+}
+
+/**
  * 内层工具集：复用 bin/tools.js 的同一装配函数 `createCliTools`
  * （readFile/rg/grep/tree/writeFile/exec，todo 四件套默认关，见 README）。
  *
@@ -1269,6 +1317,12 @@ export async function runErixRun(rawParams = {}, deps = {}) {
   let persistence = null;
   let extensionCount = 0;
   let maxExtensions = 0;
+  // #266：两个都要活到 finally——装配发生在 try 里（`tools.notes`），而收口发生在公共收尾；
+  // 异常路径的 payload 同样在 catch 里构造完才进 finally，所以收尾留痕只能靠这个引用补上。
+  /** @type {any} */
+  let notesAssembler;
+  /** @type {object|undefined} */
+  let terminalPayload;
   const relayCancel = () => {
     cancelled = true;
     controller.abort(new Error("erix_run 被调用方取消"));
@@ -1320,6 +1374,9 @@ export async function runErixRun(rawParams = {}, deps = {}) {
         if (info?.phase === "start") progress(`→ ${info.name} ${preview(info.input)}`);
       } })
       : createInnerTools({ lib, cwd: params.cwd, runId, sessionDir: params.sessionDir });
+    // #266：自定义装配（deps.createAssembly）可以根本没有 notes 字段，甚至返回 undefined——
+    // 只做存在判定，后续 completeInnerNotes 对非函数一律跳过（不硬取属性，不会 TypeError）。
+    notesAssembler = tools?.notes;
 
     // 工具调用的进度不从这里发：引擎的 tool_use / tool_result 事件已覆盖同一事件，
     // 两处都报会在 pi 的进度窗口里出现重复行。
@@ -1478,6 +1535,7 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       `erix_run 结束：termination=${payload.termination.reason}`
       + ` rounds=${payload.rounds} ↑${payload.usage?.input_tokens ?? 0}/↓${payload.usage?.output_tokens ?? 0}`,
     );
+    terminalPayload = payload;
     return payload;
   } catch (error) {
     context.elapsedMs = now() - startedAt;
@@ -1499,11 +1557,29 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       + ` code=${payload.error?.code ?? "?"} timeout=${payload.timeout}`
       + ` usage=↑${payload.usage?.input_tokens ?? 0}/↓${payload.usage?.output_tokens ?? 0}`,
     );
+    terminalPayload = payload;
     return payload;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     if (userSignal !== undefined && userSignal !== null) {
       userSignal.removeEventListener?.("abort", relayCancel);
+    }
+    // #266：两种终局都在这一处收口（成功 return / 抛错 / timeout 到点 / aborted / 内层抛错）。
+    // 放 finally 而不是两个出口各写一遍，是为了让它们共用同一条收口路径。
+    // 收尾失败只把留痕挂到已构造好的 payload.diagnostics.notesLifecycle，**不改** ok/termination/usage；
+    // 选 diagnostics 而不是新增顶层字段或 finalText：它与其他宿主自查通道（observerErrors /
+    // persistenceErrors / ledgerErrors）同类，且 finalText 是模型输出、不能塞运维噪声。
+    try {
+      const notesCompletion = await completeInnerNotes(notesAssembler, { progress });
+      if (terminalPayload !== undefined && notesCompletion.attempted) {
+        terminalPayload.diagnostics = {
+          ...(terminalPayload.diagnostics ?? {}),
+          notesLifecycle: notesCompletion,
+        };
+      }
+    } catch (completionError) {
+      // 兜底：收尾路径本身绝不允许改写已定局的返回值（finally 里的 await 也能抖住交付）。
+      progress(`⚠ notes 收尾留痕失败：${preview(completionError?.message ?? completionError)}`);
     }
   }
 }
@@ -1536,9 +1612,17 @@ export function formatPayloadForModel(payload, { limit = 20_000 } = {}) {
       + ` compaction=${diagnostics.compaction?.compactedRounds ?? 0}/${diagnostics.compaction?.events ?? 0}`
       + ` observerErrors=${diagnostics.observerErrors?.count ?? 0}`
       + ` persistenceErrors=${diagnostics.persistenceErrors?.count ?? 0}`
-      + ` model_metadata_missing=${diagnostics.modelMetadataMissing ? "YES" : "no"}`);
+      + ` model_metadata_missing=${diagnostics.modelMetadataMissing ? "YES" : "no"}`
+      // #266：notes 收口结果（只有真装配了 notes 才有这一行）；收尾失败不改终局，但要让宿主看见。
+      + (diagnostics.notesLifecycle
+        ? ` notesClosed=${diagnostics.notesLifecycle.completed ?? 0}`
+          + `/errors=${diagnostics.notesLifecycle.errors?.length ?? 0}`
+        : ""));
     if (diagnostics.modelMetadataMissing?.detail) {
       lines.push(`  ↳ ${diagnostics.modelMetadataMissing.detail}`);
+    }
+    for (const failure of diagnostics.notesLifecycle?.errors ?? []) {
+      lines.push(`  ↳ notes 收尾失败（${failure?.operation ?? "?"}）：${failure?.message ?? ""}（不影响终局）`);
     }
   }
   // #207 R4：把决策事实也给模型看（它才能自己决定「去读 transcript」还是「直接重跑」）。

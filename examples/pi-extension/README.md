@@ -438,10 +438,22 @@ pi --extension ./examples/pi-extension/erix-run.ts
     "libSource": "ERIX_AGENT_LIB=…", "strategy": "sliding-window",
     "runId": "…", "maxRounds": 8, "timeoutMs": 300000, "elapsedMs": 6276,
     "sessionDir": "/home/eric/.erix/transcripts",   // 未落盘时 null
-    "reflection": { "enabled": false, "requested": {}, "maxExtensions": 0 }
+    "reflection": { "enabled": false, "requested": {}, "maxExtensions": 0 },
+    "notesLifecycle": { "attempted": true, "completed": 1, "errors": [] }
+      // #266：未装配 notes（如自定义 createAssembly 不给 notes）时整个键不存在
   }
 }
 ```
+
+**`notesLifecycle` 是「收尾只留痕、不改终局」的存证（#266）**：run 终局时本层在公共收尾
+`finally` 里调引擎 notes assembler 的 `lifecycle.onRunComplete`（只做 `completeRun`：把本 run scope
+的 `active` 笔记收为 `done`），所以传了 `sessionDir` 的 run 事后翻 `<sessionDir>/notes/run/<runId>/`
+能看出已收口（`note_list` 默认只列 `active`）。**成功、抛错、`timeoutMs` 到点、`aborted` 四种终局
+共用这一条收口路径**；未传 `sessionDir` 时走内存 store，收口照样跑（不落盘）。钩子抛错或返回
+`errors[]` 非空时，终局的 `ok` / `termination` / `usage` **一字不动**：错误逐条转成
+`{operation, message}` 只写进本字段（与 `observerErrors` 同类），同时进度通道与 `[diagnostics]` 行
+（`notesClosed=<完成数>/errors=<错误数>`）各留一行——收尾失败不等于任务失败，也不进 `finalText`。
+本层**不调 `purge`**：它是无视 `scopeRef` 的全量清扫，属宿主策略（`src/tools/notes.js` 的端口注释同此）。
 
 **`artifacts` 宁给 `null` 也不猜路径**：只有「传了 `sessionDir`」且「该文件此刻真在盘上」才给路径。
 未落盘、装配期就失败、`judge.log` 一行也没写过（连 `run_outcome` 都没发出）都是 `null`；
