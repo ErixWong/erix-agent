@@ -11,7 +11,7 @@ import {
   multipleToolCallsRound,
   pureTextConversation,
   singleToolCallRound,
-} from "../fixtures/rounds-fixtures.mjs";
+} from "../../fixtures/rounds-fixtures.mjs";
 
 test("serializes system and string content, including an empty conversation", () => {
   assert.deepEqual(canonicalToOpenAIMessages("", []), []);

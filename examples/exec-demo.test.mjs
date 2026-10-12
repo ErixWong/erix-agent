@@ -12,6 +12,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createScriptedUpstream, jsonResponse } from "../fixtures/upstream.mjs";
+import { HISTORIC_RELAY_PROVIDER_SLOT } from "../fixtures/config-shape.mjs";
 import {
   DEMO_MODEL_PREFERENCES,
   createProviderFromConfig,
@@ -428,12 +429,14 @@ function assertNoHardcodedProviderOrModel(src) {
   assert.doesNotMatch(
     src,
     /providers\[\s*["'`]/u,
-    '不得用字面量下标取 provider 槽位（providers["my-relay"] 这类）',
+    // 事故名从 fixtures/config-shape.mjs 的常量拿：全仓只有那一份文件把这个名字拼出来，
+    // 本仓的静态守卫（test/static-guards.test.js 规则 1）就是按「不许出现字面槽位名」扫的。
+    `不得用字面量下标取 provider 槽位（providers["${HISTORIC_RELAY_PROVIDER_SLOT}"] 这类）`,
   );
   assert.doesNotMatch(
     src,
-    /["']my-relay["']/u,
-    "my-relay 只是某台机器上的槽位名，不许出现在源码里",
+    new RegExp(`["']${HISTORIC_RELAY_PROVIDER_SLOT}["']`, "u"),
+    `${HISTORIC_RELAY_PROVIDER_SLOT} 只是某台机器上的槽位名，不许出现在源码里`,
   );
   // 写死的模型名回落（`model: process.env.LLM_KIT_MODEL ?? "kimi-for-coding"`）违反 AGENTS.md §8
   assert.doesNotMatch(
