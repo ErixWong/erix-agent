@@ -296,6 +296,8 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
   "docs/host-upgrade-guide-0.17.0.md",
   "docs/host-upgrade-guide-0.18.0.md",
   "docs/host-upgrade-guide-0.18.0_cn.md",
+  "docs/host-upgrade-guide-0.19.0.md",
+  "docs/host-upgrade-guide-0.19.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -478,7 +480,7 @@ erix mcp [--config <path>]
 
 两个必须知道的后果：
 
-- **显式 `--session <id>` 必须存在。** 该 id 没有非空 transcript 时，`chat` 现在非零退出并给出可操作提示，而不再静默用这个名字开新会话（旧行为一个字的提示都不给，还多落一份 transcript）。给新会话命名在 `repl` 里照旧正常——`repl` 的 `--session` 是命名旗标。
+- **显式 `--session <id>` 必须存在。** 该 id 没有非空 transcript 时，`chat` 现在非零退出并给出可操作提示，而不再静默用这个名字开新会话（旧行为一个字的提示都不给，还多落一份 transcript）。给新会话命名在 `repl` 里照旧正常——`repl` 的 `--session` 是命名旗标。出路（`erix --help` 与那条报错文案里就是这么写的）：要**新建**就干脆不带 `--session`（不带才是新建）；要续**本目录最近一次**用 `-c`/`--continue`；要看有哪些能续用 `erix chat -r`（交互式选择器，需 TTY，**没有 `--resume` 这个旗标**，非交互环境改用 `-c` 或 `--session <完整 id>`）；`--session` 传**完整 id**（transcript 文件名去掉 `.jsonl`）。
 - **看不见 ≠ 恢复不了。** 只有形如上面派生式的 id 才对 `-c`/`-r` 可见。你自己取的名字，以及目录名含 `[A-Za-z0-9._-]` 之外字符（空格、中文）因而文件名被哈希成 `run-h-*` 的那些，都不会出现在列表里——但它们都仍可用 `--session <完整 id>` 恢复，那条路径只要求存在非空 transcript。
 
 内置 CLI 工具为 `readFile`、`searchText`、`rg`、`grep`、`tree`、`edit`、`writeFile` 和 `exec`。`searchText` 是唯一的搜索入口（issue #195）：它的 `mode` **必填且无默认值**——`literal` 按字面量匹配、`regex` 按 JavaScript 正则匹配，没传或传了非法 `mode` 都是显式报错而不是猜一个。它的名称过滤参数叫 `name_pattern`，**只匹配文件名、不跨 `/`**（所以 `**/*.ts` 一律不命中）。`rg` 与 `grep` 现在是它的**薄别名**（两者都映射到 `mode` = `regex`，`grep` 继续吃 `glob` 作为文件名过滤），各自在结果尾部挂一行弃用提示，而工具名与入参形状照用——移除它们要等 major bump（issue #188）。**三个**搜索工具都是纯 Node 实现，不是 `rg`/`grep` 二进制：别名的 `is_regex` 默认 `true`，即默认走正则（与真实命令一致）；传 `is_regex=false` 走字面量，等价 `rg --fixed-strings` / `grep -F`。每条命中行按**同一个**共享上限截到 500 字符，默认跳过 `node_modules`/`dist`/`build`/`target`/`vendor` 与 `.` 开头的目录（结果尾部回报跳过数量；**不读** `.gitignore`），并有 200 条硬结果上限。`readFile` 在字节上限内有界读取（默认 `262144`，可用 `ERIX_FILE_READ_MAX_BYTES` 覆盖）。工具操作任意路径和命令；checkpoint 保留完整结果，而 TTL 折叠只缩减 provider request view。没有可重放性分类、重跑检测或重跑告知：重复命令正常执行并返回新输出（ADR-016）。需要早期精确值时使用 note-first 顺序 `note_list` → `note_read`，不要依赖记忆。系统提示要求内部思考使用 English，面向用户的输出遵循用户语言。
@@ -522,7 +524,8 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - [docs/testing_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing_cn.md) - 测试策略与行为指标
 - [docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md) - 关于核验、note-first 取回、provenance 和重跑的宿主消费者契约；内含终止裁决决策表（逐 reason 的触发机制、优先级位置、宿主开关、推荐动作）与模型元数据 / 预算推导字段契约及多模型槽位装配示例
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0 破坏窗口迁移步骤（英文）
-- [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) / [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md) - 最新的宿主迁移指南（中英成对）：judge 的 `writeToolNames` 默认值、七项文件工具清单、`rg`/`grep` 的弃用提示行、属 Experimental 的 marker 文案、以及 `erix-agent/tools` 导入路径；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`（随包清单见上文）
+- [docs/host-upgrade-guide-0.19.0.md](docs/host-upgrade-guide-0.19.0.md) / [docs/host-upgrade-guide-0.19.0_cn.md](docs/host-upgrade-guide-0.19.0_cn.md) - 最新的宿主迁移指南（中英成对）：`chat --session <id>` 的报错退出与它的四条出路、不再一律落 `unknown` 的 4xx `code` 取值、以及随包 `.d.ts` 的类型面
+- [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) / [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md) - 上一个破坏窗口的宿主迁移指南（中英成对）：judge 的 `writeToolNames` 默认值、七项文件工具清单、`rg`/`grep` 的弃用提示行、属 Experimental 的 marker 文案、以及 `erix-agent/tools` 导入路径；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`（随包清单见上文）
 - [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - 上一个破坏窗口迁移指南：成对可选快路径探针（英文）
 - [docs/host-upgrade-guide-v030_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/host-upgrade-guide-v030_cn.md) - 面向 `touwaka` / `app_container` 的宿主升级指南与 v0.3.x 行为
 - [docs/maintenance-policy_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/maintenance-policy_cn.md) - 维护策略与内部替换/止损标准
