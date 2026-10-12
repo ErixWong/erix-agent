@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { createSlidingWindowStrategy } from "../../src/compact/sliding-window.js";
 import { estimateMessageTokens } from "../../src/tokens.js";
-import { multiRoundMixedConversation } from "../fixtures/rounds-fixtures.mjs";
+import { multiRoundMixedConversation } from "../../fixtures/rounds-fixtures.mjs";
 
 test("compacts whole old rounds and preserves the head and recent rounds", async () => {
   const strategy = createSlidingWindowStrategy();

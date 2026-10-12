@@ -7,7 +7,7 @@ import {
   multiRoundMixedConversation,
   multipleToolCallsRound,
   pureTextConversation,
-} from "../fixtures/rounds-fixtures.mjs";
+} from "../../fixtures/rounds-fixtures.mjs";
 
 test("keeps the first real user in the protected head", () => {
   const result = groupIntoRounds([
