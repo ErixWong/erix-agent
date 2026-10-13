@@ -21,6 +21,7 @@ import {
   runToolLoop,
 } from "../../src/index.js";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
+import * as jobsApi from "../../examples/pi-extension/erix-run-jobs.js";
 import {
   COMPLETION_SEND_TTL_MS,
   createAsyncJobRegistry,
@@ -35,9 +36,13 @@ import {
   WAKE_PENDING_MS,
   createParentWake,
 } from "../../examples/pi-extension/erix-run-parent-wake.js";
+import { createFakeProvider } from "../helpers/fake-provider.js";
 import { formatAsyncResult } from "../../examples/pi-extension/erix-run-format.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/** 同步结果的字段全集（测试侧从 jobs 导出的派生表取，① 那条断言负责验它没骗人）。 */
+const SYNC_FIELDS = jobsApi.SYNC_RESULT_FIELDS;
 
 function tempDir(prefix = "erix-run-async-") {
   return mkdtempSync(path.join(tmpdir(), prefix));
@@ -758,14 +763,14 @@ test("#237 R4：status.json 写失败不打断派工，错误经 job.statusWrite
 const FINAL_TEXT = "任务已完成：R1 落地了\n验证：node --test 全绿\nfindings={\"nonce\":\"x-261\"}";
 
 /** 派一条会成功结束的异步 run，等它终局（内层 run 是可控假 run）。 */
-async function settledRun({ payload = {}, prefix = "erix-run-finaltext" } = {}) {
+async function settledRun({ payload = {}, prefix = "erix-run-finaltext", outcome = "completed" } = {}) {
   const sessionDir = tempDir(`${prefix}-`);
   const sent = [];
   const job = gatedJob({ payload });
   const { runtime, registry } = makeRuntime({ job: job.job, sent });
   const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
   job.release();
-  await waitUntil(() => registry.get(handle.runId).status === "completed", { label: "finaltext run completed" });
+  await waitUntil(() => registry.get(handle.runId).status === outcome, { label: `${prefix} ${outcome}` });
   return { runtime, registry, sent, sessionDir, runId: handle.runId };
 }
 
@@ -853,4 +858,237 @@ test("#261 R3：终稿为空时 result 文本明说「终稿为空」，别让�
   // 载荷干脆没有 finalText 键（老形状）也必须走到这条明说分支
   const noKey = await settledRun({ payload: { finalText: undefined }, prefix: "erix-run-finaltext-nokey" });
   assert.match(textOf(formatAsyncResult(noKey.runtime.act({ action: "result", runId: noKey.runId }))), /终稿为空/u);
+});
+
+// ---------------------------------------------------------------------------
+// issue #276：**异步投影视图必须覆盖同步结果的每个字段**。
+//
+// 缺陷原文：`runJob` 的返回（= 同步面的终局载荷，`erix-run-core.js` 的
+// `buildSuccessPayload`/`buildErrorPayload` 产出）里有 `diagnostics`，工具描述也向模型承诺了
+// （`erix-run.ts`：返回形状含 `diagnostics`、「ok:false 先读 termination.errorCode / diagnostics」），
+// 但 `jobView` 是**手抄**投影，`diagnostics` 没抄进去 → `action:"result"` / `action:"status"` /
+// `status.json` 三处全都没有它（`status.json` 是 `/reload`、pi 重启后唯一残留）。
+// 同型缺陷已第二例（A3/`d14f0f7`：`status.json` 缺 `runId`/`sessionDir`），两次都没有断言看守。
+//
+// 复现用的是**真同步终局**（离线 `core.runErixRun` + 假 lib/假 provider，不打 LLM），
+// 不是手搓夹具：否则「同步面有、异步面没有」这句话就只是夹具之间对账。
+// ---------------------------------------------------------------------------
+
+/** `runErixRun` 的离线装配（照 test/examples/erix-run-core.test.js 的 fakeDeps 口径）。 */
+function offlineFakeLib() {
+  return {
+    source: "fake://lib",
+    libEntry: "/fake/src/index.js",
+    binToolsEntry: "/fake/bin/tools.js",
+    index: {
+      runToolLoop,
+      createMemoryTranscriptStore,
+      createFileTranscriptStore,
+      createJsonFileModelConfigProvider,
+      createOpenAIProvider: (config) => ({ ...config, chat: async () => ({ content: [], stopReason: "end_turn" }) }),
+    },
+    binTools: {
+      buildCliToolsSystemPrompt: () => "TOOLS",
+      createCliTools: () => ({ tools: [], executeTool: async () => "unused", truncateResult: (t) => t }),
+      truncateResult: (text) => text,
+    },
+  };
+}
+
+/** 真跑一次 `core.runErixRun`（假 provider，离线）拿**真同步终局载荷**——异步面的真值源就是它。 */
+async function offlineSyncPayload({ sessionDir } = {}) {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "任务已完成：修好了 a.js" }], stopReason: "end_turn", usage: { input_tokens: 5, output_tokens: 3 } },
+  ]);
+  return core.runErixRun(
+    { task: "修 bug", cwd: repoRoot, maxRounds: 4, strategy: "sliding-window", ...(sessionDir === undefined ? {} : { sessionDir }) },
+    {
+      env: {},
+      home: tempDir("erix-run-276-home-"),
+      now: () => 1_700_000_000_000,
+      loadLib: async () => offlineFakeLib(),
+      loadSlot: async () => ({ slot: { endpoint: "https://relay.example/v1", model: "slot-model", apiKey: "k", contextWindowTokens: 200_000, maxOutputTokens: 4_096 }, configPath: "/tmp/fake-erix-config.json" }),
+      createProvider: () => provider,
+      createAssembly: () => ({ tools: [], executeTool: async () => "tool-ok" }),
+      createStore: () => createMemoryTranscriptStore(),
+      runLoop: (options) => runToolLoop(options),
+    },
+  );
+}
+
+/** 视图缺了同步结果里的哪些键（undefined 值的键也算「在场」——它与同步面同形）。 */
+function missingSyncFields(syncPayload, view) {
+  return Object.keys(syncPayload).filter((field) => view === undefined || !(field in view));
+}
+
+/**
+ * 盘上比较的口径：`JSON.stringify` 会把值为 `undefined` 的键**整个丢掉**（同步面自己也不例外，
+ * 比如 `verification: undefined`），所以盘上那一处只能拿「JSON 里看得见的键」对账。
+ */
+function jsonKeys(value) {
+  return Object.keys(JSON.parse(JSON.stringify(value)));
+}
+
+test("#276 复现：同一个 run 的同步终局有 diagnostics，异步视图此前整键丢失", async () => {
+  const syncPayload = await offlineSyncPayload({ sessionDir: tempDir("erix-run-276-syncdir-") });
+
+  // 真值源自己先自证：同步面确实有 diagnostics / termination（工具描述承诺的就是它）
+  assert.ok("diagnostics" in syncPayload, "同步面（runJob 的返回）必须有 diagnostics");
+  assert.equal(typeof syncPayload.diagnostics.model, "string", "diagnostics 得有实际内容，不是空壳");
+
+  const { runtime, runId, sessionDir } = await settledRun({ payload: syncPayload, prefix: "erix-run-276-repro" });
+
+  const resultView = runtime.act({ action: "result", runId }).view;
+  assert.deepEqual(missingSyncFields(syncPayload, resultView), [], "action:\"result\" 的视图不许缺同步结果里的任何键");
+  assert.deepEqual(resultView.diagnostics, syncPayload.diagnostics, "diagnostics 必须整块同形");
+  assert.deepEqual(resultView.termination, syncPayload.termination, "termination 必须整块同形（含 errorCode）");
+
+  const statusView = runtime.act({ action: "status", runId }).view;
+  assert.deepEqual(statusView.diagnostics, syncPayload.diagnostics, "action:\"status\" 与 result 是同一个 jobView，也必须带");
+
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId }), "utf8"));
+  assert.deepEqual(missingSyncFields(Object.fromEntries(jsonKeys(syncPayload).map((k) => [k, syncPayload[k]])), disk), [],
+    "status.json 落盘后回读也不许缺键（只比 JSON 看得见的键：值为 undefined 的键同步面自己也不落盘）");
+  assert.deepEqual(disk.diagnostics, syncPayload.diagnostics, "status.json 是 /reload 后唯一残留，必须带 diagnostics");
+});
+
+test("#276 复现（抛错终局）：error 载荷的 diagnostics 同样不许丢", async () => {
+  const syncPayload = await offlineSyncPayload();
+  const failed = { ...syncPayload, ok: false, termination: { reason: "failed", detail: "boom", errorCode: "provider_error" } };
+
+  const { runtime, runId } = await settledRun({ payload: failed, prefix: "erix-run-276-failed", outcome: "failed" });
+  const view = runtime.act({ action: "result", runId }).view;
+
+  assert.deepEqual(view.diagnostics, failed.diagnostics);
+  assert.equal(view.diagnostics.model, "slot-model");
+  assert.equal(view.termination.errorCode, "provider_error", "「ok:false 先读 termination.errorCode」这条指导依赖的字段");
+  assert.deepEqual(missingSyncFields(failed, view), [], "抛错终局也不许缺键");
+
+  const text = textOf(formatAsyncResult(runtime.act({ action: "result", runId })));
+  assert.match(text, /modelMetadataMissing|diagnostics/u, "result 文本面也要把 diagnostics 的自查结论播报出来（模型读的是文本）");
+});
+
+test("#276 复现：#266 的 notesLifecycle 是 diagnostics 的子键，因此也一并丢了", async () => {
+  const syncPayload = await offlineSyncPayload({ sessionDir: tempDir("erix-run-276-notesdir-") });
+  const withNotes = { ...syncPayload, diagnostics: { ...syncPayload.diagnostics, notesLifecycle: { attempted: true, completed: 1, errors: [] } } };
+
+  const { runtime, runId, sessionDir } = await settledRun({ payload: withNotes, prefix: "erix-run-276-notes" });
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId }), "utf8"));
+
+  assert.deepEqual(disk.diagnostics?.notesLifecycle, { attempted: true, completed: 1, errors: [] },
+    "主 agent 实测盘上没有 notesLifecycle：它挂在 diagnostics 下面，父键丢了它就一起丢");
+});
+
+// ---------------------------------------------------------------------------
+// #276 R2：**结构看守**——「异步视图覆盖同步结果的每个字段」是一条可断言的性质，
+// 不是「这次记得把 diagnostics 加上」的一次性补丁。
+//
+// 三层（缺任何一个，同类静默都会回来；A3/`d14f0f7` 缺 `runId`/`sessionDir` 与本单
+// 缺 `diagnostics` 是同一条病因：`jobView` 是手抄投影，而 `runJob` 的返回才是真值源）：
+//   1. **派生**：`SYNC_RESULT_FIELDS` 在装载期从 core 的两个载荷构造器探出来（不是手抄清单），
+//      所以上游加字段 → 这张表当场变长；
+//   2. **口径表覆盖派生表**：`UNPROJECTED_SYNC_FIELDS` 恒为空——非空就是「有字段没定投影口径」；
+//   3. **覆盖断言 + 穿透**：同步结果里出现的每个键，在 `action:"result"` / `action:"status"` /
+//      `status.json` 三处都必须出现（含一个**本层根本不认识的假字段**）——把视图改回手抄
+//      白名单，第 3 条必红（反向证②）。
+// ---------------------------------------------------------------------------
+
+/** 测试侧**独立**探一次同步字段表（不回读 jobs 的常量，否则就是自证）。 */
+function truthSourceFields() {
+  const probeInput = {
+    timeout: false,
+    aborted: false,
+    observerErrors: [],
+    metadataEvents: [],
+    ledgerErrors: [],
+    persistenceErrors: [],
+    context: {},
+  };
+  const fields = new Set([
+    ...Object.keys(core.buildSuccessPayload({}, probeInput)),
+    ...Object.keys(core.buildErrorPayload(new Error("truth probe"), probeInput)),
+  ]);
+  return [...fields].sort();
+}
+
+test("#276 R2①：字段表是从真值源**派生**的，不是手抄清单（上游加字段当场进表）", () => {
+  const truth = truthSourceFields();
+  assert.deepEqual([...jobsApi.SYNC_RESULT_FIELDS].sort(), truth,
+    "jobs 的字段表必须逐字等于 core 两个载荷构造器的键集——不相等就是手抄没跟上");
+  // 现场示范「加一个同步字段不需要改异步层」：探针多吐一个键，表就得多一个（反向证②的前提）。
+  assert.ok(truth.includes("diagnostics"), "探到的字段集自身得含 diagnostics（否则本节的断言 ① 是空转）");
+});
+
+test("#276 R2②：UNPROJECTED_SYNC_FIELDS 恒为空（有字段没定投影口径就红）", () => {
+  assert.deepEqual([...jobsApi.UNPROJECTED_SYNC_FIELDS], [],
+    `这些同步字段没在 TERMINAL_FIELD_SHAPES 里登记口径：${jobsApi.UNPROJECTED_SYNC_FIELDS.join(",")}`);
+});
+
+test("#276 R2③：同步结果里出现的每个键，三处异步面都得有（含一个本层不认识的假字段）", async () => {
+  // `brandNewFieldFromUpstream` 模拟「上游新加了一个同步字段而异步层没改一行」：
+  // 派生式视图要自动带上它；手抄白名单在这里必红（反向证②）。
+  const payloadWithNewField = {
+    ...P_OK,
+    diagnostics: { observerErrors: { count: 0, samples: [] }, model: "slot-model", compaction: { events: 0 } },
+    brandNewFieldFromUpstream: { addedBy: "core", value: 42 },
+  };
+  const { runtime, runId, sessionDir } = await settledRun({ payload: payloadWithNewField, prefix: "erix-run-276-coverage" });
+
+  const places = {
+    "action:result": runtime.act({ action: "result", runId }).view,
+    "action:status": runtime.act({ action: "status", runId }).view,
+    "status.json": JSON.parse(readFileSync(statusFilePath({ sessionDir, runId }), "utf8")),
+  };
+  for (const [label, view] of Object.entries(places)) {
+    assert.deepEqual(missingSyncFields(payloadWithNewField, view), [], `${label} 缺同步结果的键`);
+    assert.deepEqual(view.brandNewFieldFromUpstream, { addedBy: "core", value: 42 },
+      `${label}：本层不认识的字段也不许静默丢（派生式视图的地板）`);
+    assert.deepEqual(view.diagnostics, payloadWithNewField.diagnostics, `${label}：diagnostics 整块同形`);
+  }
+  // 三处之间也必须同形（共用一个 jobView，不存在第二份拼装）。比之前两边都过一次 JSON，
+  // 否则「内存里有 `error: undefined` / 盘上没这个键」会假报不同形（JSON.stringify 本来就不落 undefined）。
+  const throughJson = (value) => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(places["status.json"], throughJson(places["action:status"]), "status.json 与 status 视图同形");
+  assert.deepEqual(throughJson(places["action:result"]), throughJson(places["action:status"]),
+    "result 与 status 是同一个 jobView：JSON 口径下逐字同形");
+  for (const field of ["termination", "diagnostics", "artifacts", "usage"]) {
+    assert.deepEqual(places["action:result"][field], places["status.json"][field], `三处同形：${field}`);
+  }
+});
+
+test("#276 R2④：还没终局时同步字段也恒在场（零值形状，查询侧不必分两种形状）", async () => {
+  const sessionDir = tempDir("erix-run-276-preterminal-");
+  const job = gatedJob();
+  const { runtime, registry } = makeRuntime({ job: job.job, sent: [] });
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
+
+  const running = jobView(registry.get(handle.runId));
+  assert.deepEqual(missingSyncFields(Object.fromEntries(SYNC_FIELDS.map((field) => [field, null])), running), [],
+    "未终局的视图也得带全同步字段（本单修前就缺 diagnostics/verification 两个）");
+  assert.equal(running.diagnostics, null, "未终局不替 core 发明一份 diagnostics");
+  assert.equal(running.verification, null);
+
+  job.release();
+  await waitUntil(() => registry.get(handle.runId).status === "completed");
+});
+
+test("#276 R2⑤：刻意只给子集的两个视图要钉死，并在 README 写明理由", async () => {
+  const sessionDir = tempDir("erix-run-276-subset-");
+  const job = gatedJob();
+  const { runtime } = makeRuntime({ job: job.job, sent: [] });
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
+
+  // 派工句柄与 list 摘要行是**终局面之外**的刻意子集（字段少 = 设计），键集合钉死。
+  assert.deepEqual(Object.keys(handle).sort(), ["cwd", "maxRounds", "model", "quiet", "runId", "sessionDir", "status", "statusPath", "timeoutMs"]);
+  const summaryKeys = Object.keys(runtime.act({ action: "list" }).jobs[0]).sort();
+  assert.ok(!summaryKeys.includes("diagnostics"), "list 是摘要表，不搬 diagnostics（撑爆上下文）");
+
+  // 而这两个子集不能反过来被当成「异步面本来就是子集」的借口：README 必须写明它们是子集、
+  // 而终局视图不是（本单选的是全覆盖，所以 syncOnlyFields 为空）。
+  const readme = readFileSync(path.join(repoRoot, "examples", "pi-extension", "README.md"), "utf8");
+  assert.match(readme, /syncOnlyFields/u, "README 要显式写 syncOnlyFields（哪些字段只在同步面有）");
+  assert.match(readme, /handleOf[^"]{0,400}刻意/u, "README 要写明 handleOf / list 是刻意子集");
+
+  job.release();
+  await waitUntil(() => runtime.act({ action: "list" }).active === 0);
 });

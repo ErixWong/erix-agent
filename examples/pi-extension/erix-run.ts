@@ -162,7 +162,7 @@ const parameters = Type.Object({
   action: Type.Optional(
     StringEnum([...ACTIONS], {
       description:
-        "查询/控制已派工的 run：status=当前状态与终局四件套；result=完整终局（四件套 + artifacts）；"
+        "查询/控制已派工的 run：status=当前状态与终局四件套；result=完整终局（四件套 + artifacts + diagnostics）；"
         + "list=本进程已知 run 的摘要表；cancel=把 signal 打进内层 run、终局记成 aborted。"
         + "status/result/cancel 要带 runId（list 不用）。",
     }),
@@ -239,6 +239,9 @@ export const erixRunTool = defineTool({
     "要「派工即返回、不阻塞主会话」就传 async:true 并带上 sessionDir，拿住返回的 runId；之后用 action:\"status\" 查进度、action:\"result\" 取终局四件套 + artifacts、action:\"cancel\" 取消（终局记成 aborted）。",
     "async:true 的后台 run 与 pi 同进程：pi 退出或 /reload 会杀掉它，status.json 只留下最后一个已知状态（不会自动续跑）。一次派一批且不想被打断时传 quiet:true（成功的完成不唤醒你，失败/中止仍然唤醒）。",
     "收到 [erix_run <runId>] 的完成通知后，用 action:\"result\" 取完整终局再决定下一步；别只凭通知里的一行摘要下结论。",
+    // #276：异步终局视图（status/result/status.json）与同步返回同形（含 diagnostics），所以上面那条
+    // 「ok:false 先读 termination.errorCode / diagnostics」在异步面同样成立——别拿「那是同步面的字段」当借口。
+    "erix_run 的异步终局视图与同步返回同形（syncOnlyFields 为空）：action:\"status\"/\"result\" 与 <sessionDir>/outputs/<runId>/status.json 都带 diagnostics（含 notesLifecycle），/reload 后从盘上读也一样。",
   ],
   parameters,
   outputSchema: payloadSchema,

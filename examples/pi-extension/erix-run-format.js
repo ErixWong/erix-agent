@@ -23,6 +23,28 @@ import { formatPayloadForModel, toPiUsage } from "./erix-run-core.js";
 /** 守卫兜底时 `details` 的判别键（宿主/模型看到它就该知道「这轮的可机读面被丢了」）。 */
 export const DETAILS_DROPPED_KEY = "detailsDropped";
 
+/**
+ * `diagnostics` → 一行模型可读的自查摘要（#276）。
+ *
+ * 口径拄 `erix-run-core.js` 的 `formatPayloadForModel`（同步面本来就在打这一行），但只留
+ * 「宿主能据此做决定」的那几项；`diagnostics` 不在场（未终局、或注入的 runJob 没给）时返回
+ * `undefined`，调用方直接不拼这一行——不拿一行「全是问号」冒充信息。
+ */
+function diagnosticsLineOf(diagnostics) {
+  if (diagnostics === null || typeof diagnostics !== "object") return undefined;
+  return `[diagnostics] model=${diagnostics.model ?? "?"}`
+    + ` strategy=${diagnostics.strategy ?? "engine default"}`
+    + ` compaction=${diagnostics.compaction?.compactedRounds ?? 0}/${diagnostics.compaction?.events ?? 0}`
+    + ` observerErrors=${diagnostics.observerErrors?.count ?? 0}`
+    + ` persistenceErrors=${diagnostics.persistenceErrors?.count ?? 0}`
+    + ` ledgerErrors=${diagnostics.ledgerErrors?.count ?? 0}`
+    + ` modelMetadataMissing=${diagnostics.modelMetadataMissing ? "YES" : "no"}`
+    + (diagnostics.errorCode ? ` errorCode=${diagnostics.errorCode}` : "")
+    + (diagnostics.notesLifecycle
+      ? ` notesClosed=${diagnostics.notesLifecycle.completed ?? 0}/errors=${diagnostics.notesLifecycle.errors?.length ?? 0}`
+      : "");
+}
+
 function ctorNameOf(value) {
   try {
     return value?.constructor?.name ?? "?";
@@ -209,6 +231,7 @@ export function formatAsyncResult(outcome) {
     lines.push(
       `run ${view?.runId} status=${view?.status} source=${outcome?.source}`,
       `termination=${view?.termination?.reason ?? "（还没终局）"}`
+      + (view?.termination?.errorCode ? ` errorCode=${view.termination.errorCode}` : "")
       + ` ok=${view?.ok ?? "-"} rounds=${view?.rounds ?? 0} truncated=${view?.truncated === true}`
       + ` timeout=${view?.timeout === true} aborted=${view?.aborted === true}`
       + ` usage=↑${view?.usage?.input_tokens ?? 0}/↓${view?.usage?.output_tokens ?? 0}`,
@@ -217,6 +240,14 @@ export function formatAsyncResult(outcome) {
       + ` extensions=${view?.extensionCount ?? 0}/${view?.maxExtensions ?? 0} resumable=${view?.resumable === true}`,
       `cwd=${view?.cwd ?? "?"} sessionDir=${view?.sessionDir ?? "none"} statusPath=${view?.statusPath ?? "none"}`,
     );
+    // #276：异步文本面也得把 diagnostics 的自查结论报出来。工具描述写着「ok:false 先读
+    // termination.errorCode / diagnostics」，而模型读的是**文本**——视图里带上了但文本不报，
+    // 对模型等于还是没给（同步面 `formatPayloadForModel` 本来就有这一行，口径照它）。
+    const diagnosticsLine = diagnosticsLineOf(view?.diagnostics);
+    if (diagnosticsLine !== undefined) lines.push(diagnosticsLine);
+    for (const failure of view?.diagnostics?.notesLifecycle?.errors ?? []) {
+      lines.push(`  ↳ notes 收尾失败（${failure?.operation ?? "?"}）：${failure?.message ?? ""}（不影响终局）`);
+    }
     if (kind === "result") {
       // #261：终稿正文进 result 文本。视图层不截断（单一真值），**显示层 4000 字的口径保持不变**；
       // 终稿为空时**明说**「终稿为空」：只给几行状态会把「本来没正文」遮成「看起来像被截断了」。

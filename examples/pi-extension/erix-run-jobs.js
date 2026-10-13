@@ -29,6 +29,8 @@ import path from "node:path";
 
 import {
   artifactPaths,
+  buildErrorPayload,
+  buildSuccessPayload,
   newRunId,
   parseRunParams,
   resolveArtifacts,
@@ -229,16 +231,117 @@ export function readStatusFile({ sessionDir, runId }) {
 }
 
 /**
+ * 同步终局结果的**字段表**（#276 的结构修法：不再手抄）。
+ *
+ * 这张清单是在**模块装载期**从 core 的两个载荷构造器（`runJob` 返回值的唯一产地，
+ * `erix-run-core.js` 的 `buildSuccessPayload`/`buildErrorPayload`）**现场探出来**的：
+ * 上游新加一个同步字段，这张表当场变长，`jobView` 跟着把它投到 `action:"result"` /
+ * `action:"status"` / `status.json` 三处——「抄漏」在结构上不会再发生（#276 与 A3/`d14f0f7`
+ * 都是手抄投影拄漏，两次都没人守）。
+ *
+ * 两个构造器都是纯函数（不碰 fs / 网络），拿最小探针各跑一次是零成本的；两条出口都要探，
+ * 因为抛错载荷多一个 `error`。探不动（上游改了签名）时不在装载期抛，只让
+ * `UNPROJECTED_SYNC_FIELDS` 与测试报红。
+ *
+ * @returns {string[]}
+ */
+function probeSyncResultFields() {
+  const probeInput = {
+    timeout: false,
+    aborted: false,
+    observerErrors: [],
+    metadataEvents: [],
+    ledgerErrors: [],
+    persistenceErrors: [],
+    context: {},
+  };
+  /** @type {Set<string>} */
+  const fields = new Set();
+  for (const [build, source] of [[buildSuccessPayload, {}], [buildErrorPayload, new Error("#276 probe")]]) {
+    try {
+      const payload = build(source, probeInput);
+      for (const field of Object.keys(payload ?? {})) fields.add(field);
+    } catch { /* 探不动就少一个字段：由 UNPROJECTED_SYNC_FIELDS / #276 断言报红，不拖垮扩展 */ }
+  }
+  return [...fields];
+}
+
+/** 视图必须覆盖的同步字段全集（**派生值**，不是手抄清单）。 */
+export const SYNC_RESULT_FIELDS = Object.freeze(probeSyncResultFields());
+
+/**
+ * 终局事实的**逐字段口径表**：只回答「这个字段怎么投（含未终局时的零值形状）」，
+ * **不回答「有哪些字段」**（后者由 `SYNC_RESULT_FIELDS` 定）——所以加字段只需要在一处登记口径，
+ * 而口径没登记也不会丢数据（走 `projectUnknownField`），只是 `UNPROJECTED_SYNC_FIELDS` 非空报红。
+ */
+const TERMINAL_FIELD_SHAPES = {
+  ok: (payload) => payload?.ok ?? null,
+  finalText: (payload) => (typeof payload?.finalText === "string" ? payload.finalText : ""),
+  rounds: (payload) => payload?.rounds ?? 0,
+  truncated: (payload) => payload?.truncated ?? false,
+  usage: (payload) => payload?.usage ?? { input_tokens: 0, output_tokens: 0 },
+  termination: (payload) => payload?.termination ?? null,
+  verification: (payload) => payload?.verification ?? null,
+  timeout: (payload, job) => payload?.timeout === true || job?.timedOut === true,
+  aborted: (payload, job) => payload?.aborted === true || job?.status === "aborted",
+  // 沿用 core 的 `resolveArtifacts` 口径（宁给 `null` 不猜路径），不在视图里另写一份。
+  artifacts: (payload, job) => {
+    const artifacts = payload?.artifacts ?? resolveArtifacts(job?.persistence ?? {});
+    return {
+      transcriptPath: typeof artifacts?.transcriptPath === "string" ? artifacts.transcriptPath : null,
+      judgeLogPath: typeof artifacts?.judgeLogPath === "string" ? artifacts.judgeLogPath : null,
+    };
+  },
+  extensionCount: (payload) => payload?.extensionCount ?? 0,
+  maxExtensions: (payload) => payload?.maxExtensions ?? 0,
+  resumable: (payload) => payload?.resumable === true,
+  // #276 的主角。#266 的 `notesLifecycle` 就在它下面，所以三处下游（status/result/status.json）一起活。
+  diagnostics: (payload) => payload?.diagnostics ?? null,
+  error: (payload, job) => payload?.error
+    ?? (job?.cancelReason === undefined ? undefined : { name: "AbortError", message: job.cancelReason }),
+};
+
+/** 探到的同步字段里本层还没定投影口径的那些——恒为空才算健康，非空即缺陷（#276 的看守）。 */
+export const UNPROJECTED_SYNC_FIELDS = Object.freeze(
+  SYNC_RESULT_FIELDS.filter((field) => TERMINAL_FIELD_SHAPES[field] === undefined),
+);
+
+/**
+ * 同步终局载荷 → 视图的终局事实块：字段集 = `SYNC_RESULT_FIELDS` ∪ 载荷自带的键。
+ * 还没终局（没载荷）时字段仍然恒在场（与 #261 的 `finalText: ""` 同口径，查询侧不必分两种形状）。
+ */
+function projectTerminalFacts(job) {
+  const payload = job?.payload;
+  /** @type {Record<string, any>} */
+  const facts = {};
+  for (const field of SYNC_RESULT_FIELDS) {
+    const shape = TERMINAL_FIELD_SHAPES[field];
+    // 没登记口径的字段：**原样透传、缺位给 null，绝不静默丢**（地板）。
+    facts[field] = shape === undefined ? (payload?.[field] ?? null) : shape(payload, job);
+  }
+  // 真值源比探针多知道的字段（宿主自己注入的 runJob、或装载期没探到的新字段）也不许丢。
+  for (const field of Object.keys(payload ?? {})) {
+    if (facts[field] === undefined) facts[field] = payload[field];
+  }
+  return facts;
+}
+
+/**
  * job → 可序列化视图（也是 `status.json` 的内容）。
  *
- * **终局四件套 + #207 R4 的 `artifacts` 恒在场**（`action:"result"` 与盘上文件同一个形状）：
+ * **形状主张（#276）**：终局视图 = **同步终局结果的每一个字段**（由 `projectTerminalFacts` 从
+ * core 的载荷构造器派生，不手抄）**再加** job 自己的运行时事实。所以 `action:"result"` /
+ * `action:"status"` / `status.json` 三处与同步返回同形（`diagnostics` 整块、`termination` 完整形状），
+ * 而三处本来就共用这一个 `jobView`，不存在第二份拼装。
+ * 刻意只给子集的是**另外两个视图**（都不是终局面）：`handleOf`（派工即返回的句柄）与
+ * `action:"list"` 的摘要行——两者的键集合均有测试钉死，README「异步执行」一节写了理由。
+ *
  * 四件套 = `termination.reason` / `truncated` / `rounds` / `usage`；`artifacts` 走 core 的
  * `resolveArtifacts`（**同一份 `existsSync` 口径**，不在这里另写一遍「宁给 null 不猜路径」）。
  */
 export function jobView(job, { now = () => Date.now() } = {}) {
-  const payload = job?.payload;
-  const artifacts = payload?.artifacts ?? resolveArtifacts(job?.persistence ?? {});
   return {
+    // —— job 自己的运行时事实（异步面独有，同步返回里没有）
     runId: job.runId,
     status: job.status,
     cwd: job.cwd,
@@ -252,34 +355,22 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     startedAt: job.startedAt ?? null,
     finishedAt: job.finishedAt ?? null,
     elapsedMs: job.startedAt === undefined ? null : (job.finishedAt ?? now()) - job.startedAt,
-    // —— 终局四件套（未终局时给 null/零值形状，字段不缺，省得查询侧分两种形状解析）
-    ok: payload?.ok ?? null,
-    termination: payload?.termination ?? null,
-    truncated: payload?.truncated ?? false,
-    rounds: payload?.rounds ?? 0,
-    usage: payload?.usage ?? { input_tokens: 0, output_tokens: 0 },
-    timeout: payload?.timeout === true || job.timedOut === true,
-    aborted: payload?.aborted === true || job.status === "aborted",
-    // —— 终稿正文（#261）：**原样透传，视图层不截断**（单一真值：显示层 format.js 才有 4000 字口径）。
-    //    载荷没带 / 还没终局时给 "" 而不是 undefined —— 与本文件「未终局时给 null/零值形状，
-    //    字段不缺」同口径，查询侧不必分两种形状。缺了这个字段时 format.js 的 result 正文支是
-    //    死分支、status.json 里也没有交付物正文。
-    finalText: typeof payload?.finalText === "string" ? payload.finalText : "",
-    // —— #207 R4 的决策事实（同一个 resolveArtifacts 口径）
-    artifacts: {
-      transcriptPath: typeof artifacts?.transcriptPath === "string" ? artifacts.transcriptPath : null,
-      judgeLogPath: typeof artifacts?.judgeLogPath === "string" ? artifacts.judgeLogPath : null,
-    },
-    extensionCount: payload?.extensionCount ?? 0,
-    maxExtensions: payload?.maxExtensions ?? 0,
-    resumable: payload?.resumable === true,
-    error: payload?.error ?? (job.cancelReason === undefined ? undefined : { name: "AbortError", message: job.cancelReason }),
+    // —— 同步终局面：字段集从真值源派生，一个不拾（#276：`diagnostics` 就是这么丢的）
+    ...projectTerminalFacts(job),
+    // —— 异步面独有：落盘与进度
     statusWriteError: job.statusWriteError,
     progressTail: (job.progress ?? []).slice(-10),
   };
 }
 
-/** 立即返回的句柄（工单 R1/机制 1 的形状）。 */
+/**
+ * 立即返回的句柄（工单 R1/机制 1 的形状）。
+ *
+ * **它是刻意的子集（9 键），本单没动它的语义**（#276）：派工那一刻四件套还不存在，句柄只负责
+ * 让宿主拿住 `runId` 去查。它**不是**终局面，所以不能拿它的字段少当「异步视图本来就可以缺字段」
+ * 的借口（终局视图的覆盖规矩在 `jobView` 上面，`syncOnlyFields` 为空）。键集合由
+ * `#234 R1` / `#237 R2` / `#276 R2⑤` 钉死。
+ */
 export function handleOf(job) {
   return {
     runId: job.runId,

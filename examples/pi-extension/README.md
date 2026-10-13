@@ -18,10 +18,10 @@
 | `erix-run-parent-wake.js` | 唤醒父会话的双分支（idle 真触发 / 忙时追加 + `deliverAs:"steer"` 排队）+ `WAKE_PENDING_MS` pending 窗口 + `Symbol.for` WeakMap（`/reload` 不丢）。**逐分支对照** `pi-subagents` 的 `src/shared/parent-wake.js`（全文 46 行，分支结构一一对应，另多一个测试用的 `peekReservation`），**不 import pi** |
 | `index.ts` | 目录形态的入口（pi 把「含 `index.ts` 的子目录」当成一条扩展加载） |
 | `../../test/examples/erix-run-core.test.js` | core 单测（fake provider / 注入 fake lib，全离线） |
-| `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略、`shutdown` 幂等 |
+| `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略、`shutdown` 幂等；**#276 八条**钉住「异步终局视图覆盖同步结果的每个字段」（字段表从 core 载荷构造器派生、`UNPROJECTED_SYNC_FIELDS` 恒空、`result`/`status`/`status.json` 三处同形、未终局零值形状、句柄/摘要子集钉死） |
 | `../../test/examples/erix-run-core.smoke.test.js` | 真机冒烟（一次真 relay 调用，默认跳过） |
 | `../../test/examples/erix-run-pi-load.test.js` | 用 **pi 自己的装载器**（jiti + 虚拟模块）加载 `.ts`，断言注册成功、失败路径不抛错；#237 之后还拿**真 `execute()`** 把每条返回路径的 `details` 序列化一遍 |
-| `../../test/examples/erix-run-details.test.js` | **#237 R2：`details` 必须可 JSON 序列化**。对 `started` / `status` / `result` / `list` / `cancel` / `unknown-run` / `error` / `crashed` + **同步终局**逐条断言 `JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（无函数 / 定时器 / promise / 循环引用），并把每个 `kind` 的键集合钉死 |
+| `../../test/examples/erix-run-details.test.js` | **#237 R2：`details` 必须可 JSON 序列化**。对 `started` / `status` / `result` / `list` / `cancel` / `unknown-run` / `error` / `crashed` + **同步终局**逐条断言 `JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（+#276：视图带了嵌套 `diagnostics`/`verification` 后仍不触发 `detailsDropped`，失败终局的文本面要点名 `termination.errorCode`）（无函数 / 定时器 / promise / 循环引用），并把每个 `kind` 的键集合钉死 |
 | `../../test/examples/plain-data.js` | 测试侧**独立实现**的「活对象」扫描器与 `assertMachineReadableResult`（故意不回读生产码的守卫，否则两边错在一起就是自证） |
 
 ## 安装
@@ -186,12 +186,42 @@ pi --extension ./examples/pi-extension/erix-run.ts
 （`cwd` / `sessionDir` / `timeout` / `aborted` / `progressTail`）。内层还没给出终局时
 `termination` 是 `null`——本层不替引擎发明一个 `reason`。没传 `sessionDir` 的异步 run 只有内存表（查不到跨 `/reload`）。
 
+#### 终局视图的字段覆盖：`syncOnlyFields` 是空集（issue #276）
+
+**主张**：`jobView`（= `action:"status"` = `action:"result"` = `status.json` 的内容，四处共用一个函数）
+携带**同步返回的每一个字段**，再加 job 自己的运行时事实。所以下面那份「同步终局载荷」的字段清单
+在异步面**逐字成立**（包括 `diagnostics` 整块与 `termination.errorCode`）；
+**`syncOnlyFields`（只在同步面有、异步面没的字段）= `[]`，一个也没有。**
+
+这不是「这次记得把 `diagnostics` 加上」，而是结构上不依靠「记得」：
+
+| 层 | 在哪 | 它保证什么 |
+|---|---|---|
+| 字段表 `SYNC_RESULT_FIELDS` | `erix-run-jobs.js`，**装载期从 core 的 `buildSuccessPayload`/`buildErrorPayload` 现场探出来** | 上游新加一个同步字段 → 这张表当场变长，异步视图跟着投（字段表不是手抄清单） |
+| 口径表 `TERMINAL_FIELD_SHAPES` | 同上，只定「这个字段怎么投 / 未终局时的零值形状」 | 口径没登记也不丢数据（未登记字段原样透传，缺位给 `null`），但 `UNPROJECTED_SYNC_FIELDS` 会变非空 |
+| 看守 | `test/examples/erix-run-async.test.js` 的 #276 五条 | 字段表 == core 构造器的键集；`UNPROJECTED_SYNC_FIELDS` 恒空；同步结果里出现的每个键在 `result`/`status`/`status.json` **三处**都出现（含一个本层不认识的假字段）；未终局时字段也恒在场 |
+
+为什么修这个而不是只补一个字段：`jobView` 以前是**手抄**投影，而 `runJob` 的返回才是真值源，
+同一条病因已经静默过两次——A3（`d14f0f7`：`status.json` 缺 `runId`/`sessionDir`）与 #276
+（缺 `diagnostics`，连带 #266 的 `notesLifecycle`；而 `erix-run.ts` 的返回形状与「`ok:false` 先读
+`termination.errorCode` / `diagnostics`」那条指导都在向模型承诺它存在）。`status.json` 是
+`/reload`、pi 重启后**唯一残留**，所以它丢的字段等于永久丢。
+
+**刻意只给子集的两个视图（它们不是终局面，与 `syncOnlyFields` 无关）**：
+
+| 视图 | 字段 | 为什么刻意少 |
+|---|---|---|
+| `handleOf`（`async:true` 派工即返回的句柄，**刻意子集**） | 9 个：`runId`/`status`/`cwd`/`model`/`maxRounds`/`timeoutMs`/`sessionDir`/`statusPath`/`quiet` | 派工时**还没有终局**，四件套还不存在；句柄的目的是拿住 `runId` 去查，不是给结果。本单**没动它的语义** |
+| `action:"list"` 的摘要行 | 12 个（`runId`/`status`/`cwd`/`model`/`rounds`/`termination`/`ok`/`createdAt`/`finishedAt`/`elapsedMs`/`sessionDir`/`statusPath`） | 一张表列完所有 run，`diagnostics`/`finalText` 会把上下文撑爆；细节走 `status`/`result` |
+
+两者的键集合都有测试钉死（`#234 R1` / `#234 R2` / `#237 R2` / `#276 R2⑤`），改它们必须是有意识的决定。
+
 ### 3. `action` 面：为什么是同一个工具加参数
 
 | `action` | 需要 `runId` | 返回 |
 |---|---|---|
-| `status` | ✅ | 当前状态 + 终局四件套 + `artifacts` + `finalText`（#261：与 `result` 同一个 `jobView`，因此 `status.json` 里也带终稿）+ 进度尾巴 |
-| `result` | ✅ | 同上（四件套 + `artifacts` + `progressTail`）**再加终稿正文 `view.finalText`**，且文本面直接附上正文（显示层截到 4000 字；终稿为空时文本里明说「终稿为空」，别让宿主以为只是没刷屏）；查一个已失败的 run 仍算「数据」，但报 `isError` 让模型看得见。⚠ **#261 之前这一支取不到终稿**：`jobView`（= `status.json` 的内容）从不填 `finalText`，而 `erix-run-format.js` 里那一支的条件是 `typeof view?.finalText === "string"` —— 字段根本不存在，条件永不成立（死分支），于是完成通知把宿主引导到 `result`、`result` 却给不出正文（没传 `sessionDir` 时连 `artifacts` 两项都是 `null`） |
+| `status` | ✅ | 当前状态 + **同步终局结果的每个字段**（#276：与 `result` 同一个 `jobView`，含四件套 / `artifacts` / `finalText` / `diagnostics`）+ 进度尾巴 |
+| `result` | ✅ | 同上（四件套 + `artifacts` + `diagnostics` + `progressTail`）**再加终稿正文 `view.finalText`**，且文本面直接附上正文（显示层截到 4000 字；终稿为空时文本里明说「终稿为空」，别让宿主以为只是没刷屏）；查一个已失败的 run 仍算「数据」，但报 `isError` 让模型看得见。⚠ **#261 之前这一支取不到终稿**：`jobView`（= `status.json` 的内容）从不填 `finalText`，而 `erix-run-format.js` 里那一支的条件是 `typeof view?.finalText === "string"` —— 字段根本不存在，条件永不成立（死分支），于是完成通知把宿主引导到 `result`、`result` 却给不出正文（没传 `sessionDir` 时连 `artifacts` 两项都是 `null`）。⚠ **#276 之前这一支也没有 `diagnostics`**（手抄投影拄漏，连带 #266 的 `notesLifecycle`），而工具描述一直告诉模型「`ok:false` 先读 `termination.errorCode` / `diagnostics`」 |
 | `list` | | 本进程已知 run 的摘要表 + 活跃数 |
 | `cancel` | ✅ | 把 `signal` 打进内层 `runToolLoop`，终局 `aborted`（已结束的 run 报「无需取消」，不假装成功） |
 
@@ -409,13 +439,16 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 `view` / `handle` / `jobs` 都是 `erix-run-jobs.js` 里 `jobView` / `handleOf` 组的**纯数据视图**；
 活的 job 对象（controller / 定时器 / promise）**只留在 jobs 层内部**，不进返回值。
+**三者不是一回事（#276）**：`view` 是**终局面**，携带上面那份同步载荷的每一个字段
+（`syncOnlyFields` 为空，含 `diagnostics`）；而 `handle` 与 `jobs` 行是**刻意子集**（理由见「异步
+执行」那一节的表）。拿 `handle`/`list` 的存在当「异步面本来就是子集」的借口，就是 #276 发生的原因。
 视图里的 `finalText`（#261）是**原样透传、不在视图层截断**（单一真值：4000 字是 `erix-run-format.js`
 的显示层口径），而且**只有 `result` 会把它打进文本**（`status` 只给可机读面，轮询不必每次重读一篇报告）；
 还没终局 / 载荷没带它是 `""` 而不是缺字段（与四件套的零值形状同口径）。
 万一上游哪天还是把活对象混了进来，`detailsForHost` 守卫会把 `details` **退化成**
 `{ kind, detailsDropped: true, dropReason: "$.view.controller: 非 plain 对象（AbortController）" }`
 而不是让宿主抛——宁可少给数据，不可带崩宿主；看到 `detailsDropped` 就该当缺陷查。
-下面那份同步终局载荷（`details` 与 `structuredContent` 是**同一个引用**）：
+下面那份同步终局载荷（`details` 与 `structuredContent` 是**同一个引用**）。**这份清单同时也是异步终局视图的清单**（#276：`syncOnlyFields` 为空——`status` / `result` / `status.json` 三处逐字携带下面的一切，含 `diagnostics`）：
 
 ```jsonc
 {
@@ -435,6 +468,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
   "extensionCount": 0,                     // 本次真扩了几轮（从引擎 reflection.onReflection 数出来）
   "maxExtensions": 0,                      // 本次生效的扩轮上限：judge 没开就是 0；开着且未传参 = 引擎缺省 2
   "resumable": false,                      // 终局能不能续跑：R2 未落地，本单一律 false
+  "verification": { "status": "skipped" },  // 引擎的验证结论（来自 runToolLoop 的返回）；没给时是 undefined，JSON 里不落盘
   "diagnostics": {
     "observerErrors": { "count": 0, "samples": [] },
     "modelMetadataMissing": null,
@@ -537,6 +571,9 @@ ERIX_PI_SMOKE=1 node --test test/examples/erix-run-core.smoke.test.js   # 真机
   跑一遍——`JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（拿
   `test/examples/plain-data.js` 里**独立实现**的扫描器判，不回读生产码的守卫）、每个 `kind` 的键集合钉死。
   它能杀什么：把活对象 `job` 塞回返回值（即 #237 的原始缺陷形式）它就红。
+  **#276 另补 2 条**：终局视图加了嵌套的 `diagnostics` / `verification` 之后 `status`/`result` 两条路径仍须
+  机读（不触发 `detailsDropped` 退化），且失败终局的 `details` 与**文本面**都点名 `termination.errorCode`
+  （工具描述让模型「先读 `termination.errorCode` / `diagnostics`」，而模型读的是文本）。
 - `erix-run-async.test.js` 里的 **#237 R4** 四条钉 `status.json` 的 tmp + rename 原子写（顺序、
   旧内容不被破坏、不留 `.tmp-` 残留、错误进 `statusWriteError` 而不抛）；注入缝是
   `writeStatusFile(input, deps)` 与 `createAsyncRuntime({deps})`。

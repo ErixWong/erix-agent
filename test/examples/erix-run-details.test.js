@@ -326,3 +326,74 @@ test("#237 R2：守卫 —— view 里混进活对象时 details 退化而不是
   clearTimeout(polluted.view.timer);
   job.release();
 });
+
+// ---------------------------------------------------------------------------
+// issue #276：终局视图现在带 `diagnostics`（嵌套对象 + 数组 + 可能含 null），
+// 它必须仍然是 #237 意义上的纯数据——否则 `details` 会整块退化成 `detailsDropped`，
+// 模型看到的可机读面反而更少。这一节把「加了 diagnostics 之后每条路径仍机读」钉住。
+// ---------------------------------------------------------------------------
+
+/** 载荷形态照 core 的真实 `diagnostics`（嵌套 + 数组 + null + 数字，全部 JSON 可见）。 */
+function payloadWithDiagnostics(extra = {}) {
+  return okPayload({
+    diagnostics: {
+      observerErrors: { count: 1, samples: [{ channel: "onProgress", message: "onUpdate exploded" }] },
+      modelMetadataMissing: null,
+      ledgerErrors: { count: 0, samples: [] },
+      persistenceErrors: { count: 0, samples: [] },
+      compaction: { events: 3, compactedRounds: 1, foldedRounds: 2 },
+      model: "slot-model",
+      configPath: "/fake/erix-config.json",
+      strategy: "sliding-window",
+      runId: "erix-run-276",
+      maxRounds: 8,
+      timeoutMs: 600_000,
+      elapsedMs: 1_234,
+      sessionDir: null,
+      reflection: { enabled: false, requested: {}, maxExtensions: 0 },
+      notesLifecycle: { attempted: true, completed: 1, errors: [] },
+    },
+    verification: { status: "skipped" },
+    ...extra,
+  });
+}
+
+test("#276：details 里的 view 现在带 diagnostics/verification，且仍是可序列化的纯数据", async () => {
+  const job = gatedJob({ payload: payloadWithDiagnostics() });
+  const { runtime, registry } = makeRuntime({ job: job.job });
+  const sessionDir = tempDir("erix-run-details-diagnostics-");
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
+  job.release();
+  await waitUntil(() => registry.get(handle.runId).status === "completed", { label: "completed" });
+
+  for (const kind of ["status", "result"]) {
+    const outcome = runtime.act({ action: kind, runId: handle.runId });
+    const result = formatAsyncResult(outcome);
+    assertMachineReadableResult(result, `路径 ${kind}（带 diagnostics）`);
+    assert.equal(result.details.detailsDropped, undefined, "diagnostics 是纯数据，不该触发守卫退化");
+    assert.equal(result.details.view.diagnostics.model, "slot-model", `${kind}: details 里要给模型看到 diagnostics`);
+    assert.deepEqual(result.details.view.diagnostics.notesLifecycle, { attempted: true, completed: 1, errors: [] });
+    assert.deepEqual(result.details.view.verification, { status: "skipped" });
+    // 文本面（模型真正读的那一面）也得报 diagnostics 与 errorCode——视图里有、文本不报 = 模型没拿到
+    assert.match(result.content[0].text, /\[diagnostics\] model=slot-model/u, `${kind}: 文本面要报 diagnostics`);
+    assert.match(result.content[0].text, /modelMetadataMissing=no/u);
+    assert.match(result.content[0].text, /notesClosed=1\/errors=0/u);
+  }
+});
+
+test("#276：失败终局的 details/文本把 errorCode 报到（工具描述让模型「先读 termination.errorCode / diagnostics」）", async () => {
+  const job = gatedJob({ payload: payloadWithDiagnostics({
+    ok: false,
+    termination: { reason: "failed", detail: "upstream 502", errorCode: "provider_error" },
+  }) });
+  const { runtime, registry } = makeRuntime({ job: job.job });
+  const sessionDir = tempDir("erix-run-details-failed-");
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
+  job.release();
+  await waitUntil(() => registry.get(handle.runId).status === "failed", { label: "failed" });
+
+  const result = formatAsyncResult(runtime.act({ action: "result", runId: handle.runId }));
+  assert.equal(result.isError, true, "非采纳终局要报 isError（既有口径）");
+  assert.equal(result.details.view.termination.errorCode, "provider_error", "errorCode 不能被视图层削掉");
+  assert.match(result.content[0].text, /termination=failed errorCode=provider_error/u, `文本面要点名 errorCode，实测：${result.content[0].text}`);
+});
