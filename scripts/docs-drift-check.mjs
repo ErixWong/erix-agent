@@ -500,6 +500,52 @@ for (const rule of DEFAULT_RULES) {
 //     那句话刻意只列文件/搜索工具 + `exec`。所以这里用 `contains` 模式（真值必须全覆盖 + 额外成员
 //     必须是源码里真存在的工具名），而不是硬造一个「CLI 工具全集」当真值。
 //   · 数值型 defaults 条目：同 §检查面 的说明——散文句式多变，强行钉句式会得到一个措辞绑架器。
+//
+// ── #279 的病历（与上面同一份口径：谁有病、为什么不逐例重写）─────────────────────────
+// 病：`--self-test` 若干用例的 overlay 是「在某文档里把一个文件名改个名」，写法是 JS 的
+//   `t.replace("X.mjs", …)` —— **只换文本里第一次出现**。而「第一次出现在哪」取决于文档措辞：
+//   任何人在同一文档更靠前的位置**用散文提一句同一个名字**（带反引号就会被提取成引用），那一枪
+//   就打在未被裁决的那一处上。实证三次（#278 收尾 3 红、#280 收尾 2 红——两条形状不同：一条
+//   「红了但没点该点的名」、一条「**改了但没红**」= 自测报出假 fail-open 警报），两次都得靠
+//   「把那个名字从散文里去掉」才恢复——那正是让人放宽期望的溃败入口。
+// 治（选定：按提取结果定点打靶）：`mutateRef(from, to)` 用**与主检查同一套提取逻辑**
+//   （`extractRefOccurrences` 的 `spans`）定位「提取值 == from」的全部出现，逐处定点替换。
+//   · 为什么不是「只改第一次出现」的定点版：主检查按**值去重**（`candidatePaths` 的 `out` 一个值只留
+//     一条），改一处而别处还剩着同一个值 → 提取集没变 → 该红的不红（假 fail-open）。所以「那一处」
+//     在本检查的语义下就是「该值的全部出现」，必须一次打全。
+//   · 为什么不是裸 `replaceAll`：`"repro-circular-details.mjs"` 是 `docs/tasks/…/repro-circular-details.mjs`
+//     这个**另一个引用值**的子串，裸替换会顺手打死不相干的登记，期望只能跟着改（措辞绑架）。
+//   · 为什么不是注入提取结果集（issue 说的「最稳」）：注入会让**文本与提取结果对不上**——同一行写着
+//     A、检查按 B 判，而「同行写了 `docs/tasks/`」「同地声明」这些判据读的就是行文本，那个状态任何真
+//     文档都造不出来，验收时没人能重现。定点替换只改文本，不制造假状态。
+//   · 防「空跑假绿」：一个 span 都没命中（靶串已从文档消失 / 本来就不是被提取的引用）就**原样返回**，
+//     由 `runSelfTest` 既有的「变异没落到 X 上」判据报红；另加了期望强度校（能匹配空串的期望 = 永真）。
+// 清单（本单前共 56 例，其中「在某文档里替换一个文件名/路径」的共 **15 例 / 18 个 overlay**，本轮全改成 `mutateRef`）：
+//   ① examples/pi-extension/README 的 `erix-run-core.js` 改名（该值在本仓提取面里有 4 处，旧写法只打 1 处）
+//   ② 根 README 引用的 docs/architecture.md 改名（提取值是 URL 尾段，旧写法靠人手工挑靶串）
+//   ③ 白名单不是整目录豁免：CHANGELOG 里已登记的 `repro-circular-details.mjs` 改一个字（#278 首次现场）
+//   ④ 同地声明就能放行（对照）：2026-09-26 那篇的 REPORT.md → PLAN.md
+//   ⑤ 上面那例的反向证：把「（本地，不入库）」删掉（同一行里的文件名变异 + 散文变异两刀）
+//   ⑥ 白名单条目变空转：`e2e-wake.mjs` 在三份文档里的同名提及全改掉
+//   ⑦ #280：空树形下把已登记裸名改成未登记假名（`e2e-wake-cloneQ.mjs`）
+//   ⑧ #278-P2：改坏**已登记**的裸名 `repro-circular-details.mjs`
+//   ⑨ #278-P3：改坏**未登记**的裸名 `e2e-wake.mjs`
+//   ⑩ 跳仓对照文档的裸名不被裁决（对照）：codex 篇的 `MEMORY.md` 改名（该值 5 处）
+//   ⑪ #269 原型：`debug.routes.js` 改成凭空无近邻的 `zz-nonexistent-evidence.md`（唯一把**行号钉在
+//      期望里**的一例：`（第 118 行）`——只要有人在那行上面加一句散文它就红，而那正是本单的病；
+//      改成断言「必须点名一个行号」（`第 \d+ 行`）而不是某个固定地址，不是放宽：两者都要求报出行号）
+//   ⑫ 跳仓点名清单不许烂着：harness-comparison/README 的 `MEMORY.md` 全改成实物名（原本就是 `replaceAll`，
+//      仍是「按子串」而非「按提取值」，一并改成定点）
+//   ⑬ 登记表反向校扩到裸名（#278 第 4 件）：CHANGELOG 与 research 篇的裸名全改成真实路径（#280 现场）
+//   ⑭ 近邻判据不跟跳仓豁免一起免：02-touwaka 篇把 `README.md` 换成本仓实物名改坏尾缀
+//   ⑮ 简称登记也要反向校（#278 第五类）：CHANGELOG 里的 `format.js` 简称改成实物路径（原本已是 `replaceAll`，
+//      仍是按子串而非按提取值，一并改成定点）
+//   没改的 41 例（README/package.json 的 exports・files 围栏、清单/单位/标记/默认值锚点、棘轮基线句式、
+//   `.gitignore` 文本、#280 的树形口子那两例）：它们的靶不是「一个文件名」，不存在抢枪问题
+//   （围栏/句式类靶的唯一性由各自的提取器保证；树形例根本不碰文本）。
+// 另外新增两例把本单的病钉住（见 SELF_TEST_CASES 里标着「#279」那两条）：散文提一句已登记的裸名，
+//   既要「门禁仍绿」，也要「变异仍打在真正被提取到的那一处」——前者单独存在时修前也是绿的，
+//   所以本单的修前红证据靠后者（它在修前就是 #280 那条「改了但没红」的假 fail-open）。
 
 /** `--self-test` 用：把某个文件的文本换成内存副本（不落盘、不动工作树）。 */
 const OVERLAY = new Map();
@@ -1466,11 +1512,17 @@ function resolveRef(p, docRel, ign) {
   return { tried: clean, rule: ign.ruleFor(clean) };
 }
 
-function candidatePaths(rel) {
+/** 提取一份文本里「主检查真正会拿去裁决的引用」。**#279 附带产物 `spans`**：每一处被提取到的引用在文本里的
+ * 字符区间，且区间只覆盖**归一化之后的那个值**（`raw` 的头尾被剥掉的 URL 前缀 / `#锚点` / `:行号` / 末尾标点
+ * 都不算进来——归一化只做头尾裁剪，所以值一定是 raw 的连续子串，区间好定位）。
+ * `--self-test` 的变异打靶就落在这些区间上（见 `refSweep`）：这样「打在哪一处」由**提取逻辑**决定，
+ * 不再由「文本里第一次出现在哪」决定——后者会让任何人的一句散文抢走那一枪（见 SELF_TEST_CASES 上方的 #279 清单）。 */
+function extractRefOccurrences(text) {
   const out = new Map(); // 去重保留首次出现位置，报错要能点名行
+  const spans = [];      // #279：全部出现（不去重），供自测定点变异用
   const commands = [];
-  const text = textOf(rel);
-  const push = (raw, line) => {
+  let lineStart = 0;
+  const push = (raw, line, at) => {
     let p = raw;
     const url = p.match(/^https?:\/\/[^/]+\/(?:ErixWong\/erix-agent)?\/?(?:blob|tree)\/main\/(.+)$/);
     if (url) p = url[1];
@@ -1486,19 +1538,27 @@ function candidatePaths(rel) {
     if (/[*<>|"'{}\[\]()=]/.test(p)) return; // glob 与占位符
     if (!/\.(?:js|mjs|json|md|ts|sh|log)$|\/$/.test(p)) return; // 只核对像路径的东西
     if (!out.has(p)) out.set(p, line);
+    const head = url ? raw.indexOf(url[1]) : 0;   // 值在 raw 里的起点（URL 形式取捕获组那段）
+    spans.push({ p, start: lineStart + at + head, end: lineStart + at + head + p.length });
   };
   text.split("\n").forEach((line, i) => {
-    for (const m of line.matchAll(/\]\(([^)\s]+)\)/g)) push(m[1], i + 1);
-    for (const m of line.matchAll(/`([^`\s]+)`/g)) push(m[1], i + 1);
+    for (const m of line.matchAll(/\]\(([^)\s]+)\)/g)) push(m[1], i + 1, m.index + m[0].lastIndexOf(m[1]));
+    for (const m of line.matchAll(/`([^`\s]+)`/g)) push(m[1], i + 1, m.index + m[0].lastIndexOf(m[1]));
     for (const m of line.matchAll(/(?:^|\s)(?:LLM_KIT_E2E=1\s+)?node\s+([\w./-]+\.(?:mjs|js))/g)) {
       commands.push({ kind: "file", value: m[1], line: i + 1 });
     }
-    for (const m of line.matchAll(/(?:^|[\s(（:：、，|《])((?:\.\.\/)*docs\/tasks\/[\w.\-\/]+)/g)) push(m[1], i + 1); // #273：纯文本里写的任务档案路径也是引用
+    for (const m of line.matchAll(/(?:^|[\s(（:：、，|《])((?:\.\.\/)*docs\/tasks\/[\w.\-\/]+)/g)) push(m[1], i + 1, m.index + m[0].lastIndexOf(m[1])); // #273：纯文本里写的任务档案路径也是引用
     for (const m of line.matchAll(/npm run ([\w:.-]+)/g)) {
       commands.push({ kind: "script", value: m[1], line: i + 1 });
     }
+    lineStart += line.length + 1;
   });
-  return { refs: [...out.entries()].map(([p, line]) => ({ p, line })), commands };
+  return { refs: [...out.entries()].map(([p, line]) => ({ p, line })), commands, spans };
+}
+
+/** 按文档提取（检查面用；`rel` 走 `textOf`，所以 `--self-test` 的内存副本一样被同一套逻辑扫）。 */
+function candidatePaths(rel) {
+  return extractRefOccurrences(textOf(rel));
 }
 
 /** 把一处解不到的引用归到四类里；解得出结论就返回 null。 */
@@ -1866,6 +1926,37 @@ for (const n of collectAnchorErrors.notes ?? []) note(n);
 // 每条规则至少两例：改文档一处 → 必须红；改源码/清单一侧 → 必须红；都不改（对照）→ 必须绿。
 // 变异没落上去也算失败——否则规则改了而变异体过期，自测会默默变成空跑。
 const SELF_TEST = process.argv.includes("--self-test");
+
+/** #279：在文档**第一处 `## ` 标题之前**插一句散文（= 「在文档靠前位置提一句某个名字」）。 */
+function mentionInProse(sentence) {
+  return (t) => {
+    const m = /^## /m.exec(t);
+    if (!m) return t;
+    return t.slice(0, m.index) + sentence + "\n\n" + t.slice(m.index);
+  };
+}
+
+/** #279：自测的「位置无关」打靶器。把「在某文档里把一个引用改个名」这刀从
+ *  「文本第一次出现」改成「主检查提取到的那一（几）处」：用与主检查同一套提取逻辑
+ *  （`extractRefOccurrences` 的 `spans`）定位**提取值恰为 `from`** 的全部出现，逐处定点换成 `to`。
+ *  理由、病历与用例清单写在文件头 §2.5 「#279 的病历」那一块（与 #210「其余锚点为何没升级」同位）。
+ *  · 一处都没命中就**原样返回** → `runSelfTest` 既有的「变异没落到 X 上」判据会报红，不给空跑假绿留门。
+ *  · `opts.mention`：变异前先在文档靠前插一句散文——这正是本单要钉住的形状（提一句不能抢枪）。 */
+function mutateRef(from, to, opts = {}) {
+  return (text) => {
+    let t = opts.mention ? mentionInProse(opts.mention)(text) : text;
+    const seen = new Set();
+    const hits = extractRefOccurrences(t).spans
+      .filter((s) => s.p === from)
+      .filter((s) => !seen.has(`${s.start}:${s.end}`) && seen.add(`${s.start}:${s.end}`))
+      .sort((a, b) => b.start - a.start);
+    if (!hits.length) return text;
+    for (const s of hits) t = t.slice(0, s.start) + to + t.slice(s.end);
+    if (extractRefOccurrences(t).spans.some((s) => s.p === from)) return text;   // 该值还剩着 → 这一枪没打全，同样算没落上
+    return t;
+  };
+}
+
 const SELF_TEST_CASES = [
   // —— pkg-block / exports：#210 报的四种破坏，**前两种修前是绿的** ——
   {
@@ -2046,34 +2137,47 @@ const SELF_TEST_CASES = [
   // —— paths：覆盖面与四类裁决（issue #273）——
   {
     label: "把 examples/pi-extension/README.md 里的同目录文件 `erix-run-core.js` 改个名（修前 exit 0）",
-    overlay: { [PI_EXT_README]: (t) => t.replace("`erix-run-core.js`", "`erix-run-coreX.js`") },
+    overlay: { [PI_EXT_README]: mutateRef("erix-run-core.js", "erix-run-coreX.js") },   // #279：该值在本份文档里被提取到 4 处，全部定点换名
     expect: [/paths: examples\/pi-extension\/README\.md[\s\S]*`erix-run-coreX\.js`（第 \d+ 行）：本仓不存在/],
     expectFiles: [PI_EXT_README],
   },
   {
     label: "把根 README 引用的 docs/architecture.md 改名（既有行为不退化）",
-    overlay: { [README_EN]: (t) => t.replace("blob/main/docs/architecture.md", "blob/main/docs/architectureX.md") },
+    overlay: { [README_EN]: mutateRef("docs/architecture.md", "docs/architectureX.md") },   // #279：提取值是 URL 尾段，靶子由提取器定，不再靠人手工挑靶串
     // 变异要落在**真正被核对的那个引用**上：这行是 `[docs/architecture.md](https://…/blob/main/docs/architecture.md)`，
     // 只改链接文字动不了提取出的 href（URL 会被改写成仓内路径），所以上一版是“变异没接上检查面”而非锚点绿。
+    // 上一版靠把靶串写成 `blob/main/…` 来手工避开链接文字（换一句措辞就失效）；#279 后 `mutateRef` 直接按
+    // 提取值定位，链接文字天然不会被误伤——「打在哪」不再取决于靶串怎么写。
     expect: [/paths: README\.md[\s\S]*docs\/architectureX\.md/],
     expectFiles: [README_EN],
   },
   {
     label: "白名单不是整目录豁免：把已登记的 CHANGELOG 任务档案名改一个字 → 红",
-    overlay: { "CHANGELOG.md": (t) => t.replace("repro-circular-details.mjs", "repro-circular-detailsX.mjs") },
-    expect: [/archive-refs: CHANGELOG\.md[\s\S]*repro-circular-detailsX\.mjs[\s\S]*指向任务档案/],
+    overlay: { "CHANGELOG.md": mutateRef("repro-circular-details.mjs", "repro-circular-detailsX.mjs") },   // #278 首次现场：旧写法只换第一次出现，散文提一句就抢枪
+    // #279：报错的**措辞分支**取决于「被报告的那一行自己有没有写 `docs/tasks/`」（#273 定的口径），而报告
+    // 的行 = 该值的**第一处出现**——散文里先提一句就会换掉那一行，于是旧期望「指向任务档案」会被无关措辞
+    // 打断（#278 首次现场就是这条「红了但没点该点的名」）。期望钉的是**裁决**：点名改名后的引用、必须带行号、
+    // 必须归到 LOCAL_ARCHIVE_REFS 那条口径上（两支措辞都满足）；不再钉某一支的措辞。不是放宽：仍然要点名到名字与行号。
+    expect: [
+      /archive-refs: CHANGELOG\.md[\s\S]*`repro-circular-detailsX\.mjs`（第 \d+ 行）/,
+      /repro-circular-detailsX\.mjs[\s\S]*LOCAL_ARCHIVE_REFS/,
+    ],
     expectFiles: ["CHANGELOG.md"],
   },
   {
     label: "就地声明就能放行（对照）：把已登记的 REPORT.md 换成没登记的 PLAN.md，同行仍写「本地，不入库」",
-    overlay: { "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": (t) => t.replace("REPORT.md", "PLAN.md") },
+    overlay: { "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": mutateRef(
+      "docs/tasks/done/260926-strategy-variance-benchmark/REPORT.md",
+      "docs/tasks/done/260926-strategy-variance-benchmark/PLAN.md") },   // #279：按提取值（整条路径）打靶，不拿子串去碰
     expectGreen: true,
   },
   {
     label: "把那句「（本地，不入库）」删掉 → 同一处立刻红（证明上一例的绿来自声明，不是恒绿）",
     overlay: {
       "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": (t) =>
-        t.replace("REPORT.md", "PLAN.md").replace("任务文档（本地，不入库）：", "任务文档："),
+        mutateRef("docs/tasks/done/260926-strategy-variance-benchmark/REPORT.md",
+          "docs/tasks/done/260926-strategy-variance-benchmark/PLAN.md")(
+          t.replace("任务文档（本地，不入库）：", "任务文档：")),   // #279：文件名那一刀改成定点打靶，散文那一刀原样
     },
     expect: [/archive-refs: docs\/research\/2026-09-26[\s\S]*PLAN\.md[\s\S]*没在引用处写明|archive-refs: docs\/research\/2026-09-26[\s\S]*PLAN\.md[\s\S]*没写「本机/],
   },
@@ -2092,9 +2196,9 @@ const SELF_TEST_CASES = [
     overlay: {
       // #273 把 archive 类的三级解析接上后，CHANGELOG:89 的裸名提及也算一处真实引用；只下掉一处只会
       // 让那一处红，要证「登记空转」得把两处都下掉。
-      [PI_EXT_README]: (t) => t.replace("`e2e-wake.mjs`", "`e2e-wake-v2.mjs`"),
-      "CHANGELOG.md": (t) => t.replace("`e2e-wake.mjs`", "`e2e-wake-v2.mjs`"),
-      "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t.replace("`e2e-wake.mjs`", "`e2e-wake-v2.mjs`"),
+      [PI_EXT_README]: mutateRef("e2e-wake.mjs", "e2e-wake-v2.mjs"),
+      "CHANGELOG.md": mutateRef("e2e-wake.mjs", "e2e-wake-v2.mjs"),
+      "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("e2e-wake.mjs", "e2e-wake-v2.mjs"),   // #279：三份文档各自按提取值定点，不再拿反引号靶串去猜第一次出现在哪
     },
     expect: [/白名单条目 `e2e-wake\.mjs` 没有一处引用真正用到它/],
   },
@@ -2113,7 +2217,7 @@ const SELF_TEST_CASES = [
     // 「本机档案默认按声明放行」很容易被糊成「干脆整类不裁决」——这条就是抓它的：树形一样是空的，
     // 但引用改成了既未登记、也解不到的假名，必须照样红并点名那处引用（与上一例共用同一个树形口子）。
     simulateAbsentTaskArchive: true,
-    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t.replace("`e2e-wake.mjs`", "`e2e-wake-cloneQ.mjs`") },
+    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("e2e-wake.mjs", "e2e-wake-cloneQ.mjs") },
     expect: [/archive-refs: docs\/research\/2026-10-13[\s\S]*`e2e-wake-cloneQ\.mjs`（第 \d+ 行）[\s\S]*本仓不存在/],
     expectFiles: ["docs/research/2026-10-13-pi-subagents-async-attribution.md"],
   },
@@ -2121,7 +2225,7 @@ const SELF_TEST_CASES = [
   // —— bare-names：无斜杠裸名的通用裁决 + 近邻判据（issue #278；下面四条修前**全是 exit 0**）——
   {
     label: "#278-P2 改坏**已登记**的裸名（`repro-circular-details.mjs` 多个 Q）→ 红（修前 exit 0：脱离登记就静默放行）",
-    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t.replace("`repro-circular-details.mjs`", "`repro-circular-detailsQ.mjs`") },
+    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("repro-circular-details.mjs", "repro-circular-detailsQ.mjs") },
     expect: [
       /archive-refs: docs\/research\/2026-10-13[\s\S]*`repro-circular-detailsQ\.mjs`（第 \d+ 行）/,
       /↳ 它跟本仓实物只差一点：docs\/tasks\/active\/261010-13-erix-run-async\/repro-circular-details\.mjs/,
@@ -2130,7 +2234,7 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#278-P3 改坏**未登记**的裸名（`e2e-wake.mjs` 多个 Q）→ 红（修前 exit 0：它本来连被检资格都没有）",
-    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t.replace("`e2e-wake.mjs`", "`e2e-wakeQ.mjs`") },
+    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("e2e-wake.mjs", "e2e-wakeQ.mjs") },
     expect: [
       /archive-refs: docs\/research\/2026-10-13[\s\S]*`e2e-wakeQ\.mjs`（第 \d+ 行）[\s\S]*本仓不存在/,
       /↳ 它跟本仓实物只差一点：docs\/tasks\/active\/261010-13-erix-run-async\/e2e-wake\.mjs（比实物名字干多写了 “Q”）/,
@@ -2142,20 +2246,22 @@ const SELF_TEST_CASES = [
     // #278 裁定的另一面：跳仓/宿主对照文档（CROSS_REPO_DOCS 逐份点名那批）的裸名指的不是本仓实物，
     // 不该被拖进裁决面——这一例就是防「把 79 处跳仓引用用另一种方式再吃回来」。近邻判据不在此列，
     // 所以变异选 `MEMORY.md`（5 字干，低于 NEAR_STEM_MIN=8，不会误判成本仓实物改名）。
-    overlay: { "docs/harness-comparison/03-codex.md": (t) => t.replace("`MEMORY.md`", "`MEMORYX.md`") },
+    overlay: { "docs/harness-comparison/03-codex.md": mutateRef("MEMORY.md", "MEMORYX.md") },   // #279：该值在这篇里有 5 处，全部定点换名（仍全绿才叫「跳仓裸名不被裁决」）
     expectGreen: true,
   },
   {
     label: "#269 原型：裁决清单内新写一个**凭空、无近邻**的裸名（`analysis.md` 形状）→ 红（这是近邻判据拓不到的那一半）",
-    overlay: { "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": (t) => t.replace("`debug.routes.js`", "`zz-nonexistent-evidence.md`") },
-    expect: [/archive-refs: docs\/research\/2026-09-26[\s\S]*`zz-nonexistent-evidence\.md`（第 118 行）[\s\S]*本仓不存在/],
+    overlay: { "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": mutateRef("debug.routes.js", "zz-nonexistent-evidence.md") },
+    // #279：期望不再钉「第 118 行」这个**地址**——它钉的是「报错必须给出行号」；写死行号时，只要有人
+    // 在那行以上加一句散文（哪怕提的是不相干的名字）这一例就会红，而那恰好就是本单要修的病。
+    expect: [/archive-refs: docs\/research\/2026-09-26[\s\S]*`zz-nonexistent-evidence\.md`（第 \d+ 行）[\s\S]*本仓不存在/],
     expectFiles: ["docs/research/2026-09-26-strategy-variance-and-cache-economics.md"],
   },
   {
     label: "跳仓点名清单也不许烂着：那份文档已没一处裸名引用要用豁免 → 销账红（反向校）",
     // docs/harness-comparison/README.md 里需要豁免的裸名就是 `MEMORY.md` 两处；全改成能解析的实物名后，
     // 这条逐份点名的豁免就成了空条目 → 必须红（否则清单会默默堆着没人用的条目）。
-    overlay: { "docs/harness-comparison/README.md": (t) => t.replaceAll("`MEMORY.md`", "`AGENTS.md`") },
+    overlay: { "docs/harness-comparison/README.md": mutateRef("MEMORY.md", "AGENTS.md") },   // #279：原本就是 replaceAll，但它是「按子串」而不是「按提取值」，一并改成定点
     expect: [/bare-names: 跳仓点名清单里的 `docs\/harness-comparison\/README\.md` 现在没有一处裸名引用用上它/],
   },
   {
@@ -2163,8 +2269,8 @@ const SELF_TEST_CASES = [
     // 两条引用（CHANGELOG 与 research 篇）全改成能解析的路径后，这条**无斜杠**登记就没人用了；
     // 反向校必须抓得住（#273 只对带斜杠条目做到了这件事）。
     overlay: {
-      "CHANGELOG.md": (t) => t.replace("`repro-circular-details.mjs`", "`docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs`"),
-      "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t.replace("`repro-circular-details.mjs`", "`docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs`"),
+      "CHANGELOG.md": mutateRef("repro-circular-details.mjs", "docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs"),
+      "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("repro-circular-details.mjs", "docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs"),   // #279：#280 现场——旧写法只换第一处，散文提一句就抢枪 → 该红的不红
     },
     expect: [/白名单条目 `repro-circular-details\.mjs` 没有一处引用真正用到它/],
   },
@@ -2172,13 +2278,38 @@ const SELF_TEST_CASES = [
     label: "近邻判据**不**跟跳仓豁免一起免：跳仓文档里把本仓实物名改坏一个尾缀 → 仍红",
     // 防的是反向滑坡：「这份文档在讲别的仓库」不等于本仓实物在它就是绿的。拿 `README.md`（能解析）
     // 换成 `erix-run-coreX.js`（本仓有 erix-run-core.js，只差一个 X），必须靠近邻判据抓红。
-    overlay: { "docs/harness-comparison/02-touwaka.md": (t) => t.replace("`README.md` 全文", "`erix-run-coreX.js` 全文") },
+    overlay: { "docs/harness-comparison/02-touwaka.md": mutateRef("README.md", "erix-run-coreX.js") },   // #279：按提取值打靶（该值这篇里 2 处），不再拿「`README.md` 全文」这整串措辞当靶
     expect: [/archive-refs: docs\/harness-comparison\/02-touwaka\.md[\s\S]*`erix-run-coreX\.js`（第 \d+ 行）[\s\S]*examples\/pi-extension\/erix-run-core\.js/],
   },
   {
     label: "简称登记也要反向校（#278 新增第五类）：CHANGELOG 里的 `format.js` 简称改成实物路径后，简称条目就该销账",
-    overlay: { "CHANGELOG.md": (t) => t.replaceAll("`format.js`", "`examples/pi-extension/erix-run-format.js`") },
+    overlay: { "CHANGELOG.md": mutateRef("format.js", "examples/pi-extension/erix-run-format.js") },   // #279：同上，从「反引号 + 子串 replaceAll」改成按提取值定点
     expect: [/白名单条目 `format\.js` 没有一处引用真正用到它/],
+  },
+
+  // —— #279：在文档里「提一句同一个文件名」不许抢走变异的那一枪（打靶位置无关）——
+  // 三次现场（#278 收尾 3 红、#280 收尾 2 红）全部指向同一个名字：别人只是**在散文里提了一句**
+  // `repro-circular-details.mjs`，旧变异体（`t.replace("X.mjs", …)` 只换第一次出现）的那一枪就打在
+  // 那句散文上——真正的引用一个字没动 → 「该红的不红」，还被自测报成 `改了但没红（锚点仍是 fail-open）`
+  // 这个**假警报**（同一份树上 `check:docs` 明明 exit 0）。下面两条把这个形状钉住：第 1 条**修前就是红的**
+  // （#280 那条「改了但没红」），第 2 条修前也绿——它钉的是「提一句」这个动作本身绝不该让门禁红；
+  // 修前真正红的是**同树的其它用例**（拿 `git show HEAD:` 取出的修前脚本跑同一棵树：2/57 红，见 CHANGELOG #279）。
+  {
+    label: "#279 提一句不许抢枪：CHANGELOG 靠前散文先提一句已登记的裸名，再把两份文档里的裸名引用改成真实路径 → 销账红必须照样在（修前：散文那一处才是第一次出现 → 该红的不红）",
+    overlay: {
+      // mention 就是把「提一句」那个动作放进自测：插在第一处 `## ` 标题之前，比任何真引用都早。
+      "CHANGELOG.md": mutateRef("repro-circular-details.mjs",
+        "docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs",
+        { mention: "自测探针（#279）：这里只是在散文里提一句那个已登记的任务档案裸名 `repro-circular-details.mjs`。" }),
+      "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("repro-circular-details.mjs",
+        "docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs"),
+    },
+    expect: [/白名单条目 `repro-circular-details\.mjs` 没有一处引用真正用到它/],
+  },
+  {
+    label: "#279 提一句本身不该让门禁红（对照）：只在 CHANGELOG 靠前插那句散文、什么也不改 → 必须 0 错（名字已登记，门禁不该因为一个名字被提到就改口）",
+    overlay: { "CHANGELOG.md": mentionInProse("自测探针（#279）：这里只是在散文里提一句那个已登记的任务档案裸名 `repro-circular-details.mjs`。") },
+    expectGreen: true,
   },
 
   // —— baseline：AGENTS 的棘轮当前值 ↔ 棘轮常量（issue #274）——
@@ -2225,10 +2356,31 @@ const SELF_TEST_CASES = [
   },
 ];
 
+/** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
+ *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
+const MIN_SELF_TEST_CASES = 58;
+
 function runSelfTest() {
   const run = () => collectAllDrift();
   const failures = [];
   const passed = [];
+  // #279：**期望自己也要被看守**。「把期望放宽」就是本单要防的那个溃败方向，所以先静态校一遍：
+  //   · 能匹配**空串**的期望（`.*/^/[\s\S]*/x*`）等于没有断言——拿它「永真」糊过一例就当场报红；
+  //   · 既不是放行证（expectGreen）又没写 expect / expectFiles 的一例 = 整例被跳过；
+  //   · 用例数低于下限 = 有用例被删。
+  // 三刀都在跑变异**之前**报，以免「先全绿了再看」。变异未落上则由循环里的 `after === before` 报。
+  if (SELF_TEST_CASES.length < MIN_SELF_TEST_CASES) {
+    failures.push(`用例数被削：现在 ${SELF_TEST_CASES.length} 例，下限 ${MIN_SELF_TEST_CASES} 例——删用例 / 整例跳过不算修好`);
+  }
+  for (const [i, c] of SELF_TEST_CASES.entries()) {
+    const who = c.label ?? `第 ${i + 1} 例`;
+    for (const re of c.expect ?? []) {
+      if (re.test("")) failures.push(`${who}：期望被削弱——正则 ${re} 连空串都匹配，等于没有断言（不许拿「永真」糊过这一例）`);
+    }
+    if (!c.expectGreen && !(c.expect ?? []).length && !(c.expectFiles ?? []).length) {
+      failures.push(`${who}：期望被削弱——既不是放行证（expectGreen）也没写 expect / expectFiles，等于整例被跳过`);
+    }
+  }
   const control = run();
   if (control.length) {
     failures.push(`对照组（源码与文档都不改）本该 0 错，实测 ${control.length} 处：\n      ${control.join("\n      ")}`);
