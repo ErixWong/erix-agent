@@ -384,7 +384,8 @@ export function fileToolsContract(label, { createFileTools }) {
     // 按本仓 83 个真实 `.js` 折算实际是 4,387 / 中位 7,290 / 9,772（旧上限 6,000 低估 1.63×，连实测中位数都没盖住）；
     // 而区间对宿主也没意义（平均行长一变就失效）。
     // 所以这里只卡结构：要给出「÷ 平均行字节数」的口径，且要声明给出的数是测出来的。具体数字由
-    // `test/tools/file-tools.test.js` 用 83 个写死路径当场复测钉住（宿主不必复刻那份测量）。
+    // `test/tools/file-tools.test.js` 钉住（#271 的 83 个写死路径；#275 后断言改成只钉 fewest/median/most/self
+    // 四个角色锚点 + 与盘上**单向包含**，不再与全树清单 `deepEqual`，也不再把本仓文件总数写回描述。宿主不必复刻那份测量）。
     assert.match(readFileTool.description, /bytes per line/iu,
       "字节额度要给换算口径：行数 = max_bytes ÷ 平均行字节数（issue #271：给公式而不是区间）");
     assert.match(readFileTool.description, /measured/iu,

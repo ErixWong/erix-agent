@@ -771,15 +771,20 @@ export const FILE_TOOL_DEFINITIONS = [
     // `.js` 同一测法的最大值）。旧文案只写「~2,500」，正好压在中位数上、把 1.8× 的尾巴藏了。
     // 复测命令与全量清扫结果见 CHANGELOG 的 #267 条目；`test/tools/file-tools.test.js` 会拿上面三个写死的
     // 样本当场复测，并把测得的数**夹在描述声称的档位里**（把档位改小就红），所以这段文字不能随手改小。
+    // issue #275：这一段**不再声称本仓有多少个 `.js`**（旧文案写「the 83 `.js` files shipped here」、
+    // 「not one of the 83 …」）。理由：①宿主读的是自己的树，本仓文件数对它没有意义；②那个总数一旦写死，
+    // 任何人新增一个 `.js` 都会红在 `test/tools/file-tools.test.js` 上（与 readFile 行为无关的税）。
+    // 保留的是**换算式 + 三个档位（fewest / median / most）+ CJK 锚点**：档位仍是本仓口径的实测样本，
+    // 由测试里那 4 个角色文件（fewest / median / most / self）当场复测钉住，改坏数字仍然当场红。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
       + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) — the budget is counted in BYTES, so how many "
       + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
-      + "and fold that for the file in hand, instead of assuming a line count. Measured that way on the 83 `.js` files shipped "
-      + "here at the default budget — fewest 4,387 lines (59.8 bytes/line, the widest lines), median 7,290 (36.0), most 9,772 "
-      + "(26.8): not one of the 83 falls below 3,000, and 69 of them take over 6,000 in a single call. Wide lines cut this "
-      + "proportionally and CJK cuts hardest (3 UTF-8 bytes per character): the 4,387 floor IS the most CJK-dense file here "
+      + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
+      + "at the default budget (this codebase, not your tree) \u2014 fewest 4,387 lines "
+      + "(59.8 bytes/line, the widest lines), median 7,290 (36.0), most 9,772 (26.8). Wide lines cut this proportionally "
+      + "and CJK cuts hardest (3 UTF-8 bytes per character): the 4,387 floor IS the most CJK-dense file in that sample "
       + "(`src/loop/state-view.js`, 37% of its bytes are CJK), and this tool's own source fits 5,029. Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "

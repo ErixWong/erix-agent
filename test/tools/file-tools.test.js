@@ -502,8 +502,11 @@ test("中英契约文档引用的 readMoreLines marker 字面与源码产出同�
 // `~4,000` 的错法（没测过的东西不许编区间）。
 // ---------------------------------------------------------------------------
 
-// 样本是写死的 83 个路径（工单硬约束：不许 `find … | head -14` 这类随仓库新增文件漂移的隐式样本）。
-// 「盘上枚举 == 本清单」那条断言把清单完整性钉住：新增/删除 `.js` 就当场红，描述里的统计不会静默失真。
+// 样本是写死的 83 个路径（#271 的工单硬约束：不许 `find … | head -14` 这类随仓库新增文件漂移的隐式样本）。
+// #275：清单与盘上**不再逐条对齐**。旧的 `assert.deepEqual(盘上枚举, 本清单)` + `length === 83` 是给全仓加的税：
+// 任何人新增一个 `src/*.js` 都会红在本文件上，而本文件测的是 readFile 的额度事实。现在耦合方向是**单向**的：
+// 清单里的路径必须仍在盘上（删/改名样本文件 = 测过的数失效，必须红），盘上**多出**文件不算失效——
+// 描述里给的是「本仓口径的实测样本」，不是「本仓共有多少个 `.js`」（那个总数对读自己树的宿主也没意义）。
 const READ_LINE_CAPACITY_SAMPLE = [
   "src/assembly-validators.js", "src/assembly.js", "src/compact/anchors.js", "src/compact/budget.js",
   "src/compact/enforce-size.js", "src/compact/fold-fidelity.js", "src/compact/fold-llm.js", "src/compact/fold-statistical.js",
@@ -563,6 +566,8 @@ function measureReadLineCapacity(rel) {
   };
 }
 
+// 全仓扫描（src/bin/examples 下的 `*.js`）。#275 后它**不再与写死清单逐条对齐**，
+// 只用来跑单调性质与信息性输出（见下面那条「加一个文件不该红」的测试）。
 function listShippedSourceFiles() {
   const found = [];
   const walk = (dir) => {
@@ -582,12 +587,14 @@ function assertClose(actual, expected, tolerance, label) {
     + ` 超出 ±${(tolerance * 100).toFixed(1)}% → 事实漂移：复测后把 readFile 描述、本测试的记录值、CHANGELOG 的 #271 条目一起改`);
 }
 
-test("readFile 行数容量样本清单与盘上同源，四个档位的记录值未漂移（#271：数不许静默过期）", () => {
-  assert.equal(READ_LINE_CAPACITY_SAMPLE.length, 83,
-    "样本清单条数不再是 83 → 描述里「the 83 `.js` files shipped here」与本清单要一起改");
-  assert.deepEqual(listShippedSourceFiles(), [...READ_LINE_CAPACITY_SAMPLE].sort(),
-    "盘上 src/bin/examples 的 *.js 与本清单不齐（有人新增/删除了文件）→ 描述里 4,387 / 7,290 / 9,772 / 69 的统计基础已失效："
-    + "按 measureReadLineCapacity 的口径复测后，把 readFile 描述、本清单、CHANGELOG 的 #271 条目一起改");
+test("readFile 行数容量的四个锚点档位未漂移，样本清单仍盘上可寻（#271：数不许静默过期；#275：不再与全树钉死）", () => {
+  // #275：旧的 `length === 83` 与 `deepEqual(盘上枚举, 本清单)` 已删（那是给全仓加的税）。
+  // 剩下的耦合是**单向包含**：样本文件被删/改名就当场红，盘上新增多出文件不红。
+  const onDisk = new Set(listShippedSourceFiles());
+  const missing = READ_LINE_CAPACITY_SAMPLE.filter((rel) => !onDisk.has(rel));
+  assert.deepEqual(missing, [],
+    `写死的样本文件在盘上找不到了：${missing.join(", ")} → 按 measureReadLineCapacity 的口径复测后，`
+    + "把 readFile 描述、本清单、CHANGELOG 的 #271 条目一起改（新增文件不会走到这条：盘上多出东西不算失效）");
   for (const { file, recorded } of READ_LINE_CAPACITY_ROLES) {
     const got = measureReadLineCapacity(file);
     assertClose(got.bytes, recorded.bytes, 0.02, `${file} 字节数（#271 记录值）`);
@@ -597,7 +604,9 @@ test("readFile 行数容量样本清单与盘上同源，四个档位的记录�
       `${file} 的 CJK 字节占比从 ${(recorded.cjkShare * 100).toFixed(1)}% 变成 ${(got.cjkShare * 100).toFixed(1)}%`
       + " → 描述里 CJK 那半句（含 37% 这个数）要重测");
   }
-  // 描述里「4,387 那一档就是本仓 CJK 最密的文件」这句话的两个前提
+  // 描述里「4,387 那一档就是本仓 CJK 最密的文件」这句话的两个前提。
+  // ⚠ 口径是**写死清单**而不是全树枚举：新增文件不会把这两个极值拉下马（那正是 #275 要的）；
+  //   全树上的单调性质另有一条不断言条数的测试在 `readFile 行容量：全仓扫描只留单调性质` 里看。
   const rows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
   const densest = rows.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
   const fewest = rows.reduce((a, b) => (b.capacity < a.capacity ? b : a));
@@ -622,14 +631,18 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
     + "改句式可以，但必须同步本测试，不许让这条断言静默变成永真。");
   const [fewestClaim, fewestBplClaim, medianClaim, medianBplClaim, mostClaim, mostBplClaim] = tiers.slice(1)
     .map((value) => Number(value.replace(/,/g, "")));
-  const spread = description.match(
-    /not one of the ([\d,]+) falls below ([\d,]+), and ([\d,]+) of them take over ([\d,]+) in a single call/u,
-  );
-  assert.ok(spread, "描述不再给出「样本数 / 从不下穿的下界 / 高于某一档的文件个数」→ 解析面失效（同步本测试）");
-  const [countClaim, neverBelowClaim, aboveCountClaim, aboveThresholdClaim] = spread.slice(1)
-    .map((value) => Number(value.replace(/,/g, "")));
+  // #275：模型可见面**不再声称文件条数**。旧句式「Measured that way on the 83 `.js` files shipped here …
+  // not one of the 83 falls below 3,000, and 69 of them take over 6,000」里那三个总量（83 / 0 of 83 / 69 of 83）
+  // 随仓库演化必然过期，对读自己树的宿主也没有意义；写在那里就等于给全仓加一道与 readFile 无关的税。
+  // 下面三条反向证让「有人又把总量写回描述」当场红。
+  assert.doesNotMatch(description, /\b[\d,]+ `?\.js`? files\b/u,
+    "描述又开头声称「本仓有多少个 `.js`」（#271 旧文案的 the 83 `.js` files）：本仓文件总数不是 readFile 的事实，别写回模型可见面");
+  assert.doesNotMatch(description, /not one of the [\d,]+ falls below/u,
+    "描述又给了「N 个文件从不下穿某一档」这种依赖全仓条数的总量（#275 已删，要回去就连带把统计根子钉回来）");
+  assert.doesNotMatch(description, /[\d,]+ of them take over/u,
+    "描述又给了「多少个文件一次能装超过某一档」这种依赖全仓条数的总量（#275 已删，同上）");
   const cjk = description.match(
-    /the ([\d,]+) floor IS the most CJK-dense file here \(`([^`]+)`, (\d+)% of its bytes are CJK\), and this tool's own source fits ([\d,]+)/u,
+    /the ([\d,]+) floor IS the most CJK-dense file in that sample \(`([^`]+)`, (\d+)% of its bytes are CJK\), and this tool's own source fits ([\d,]+)/u,
   );
   assert.ok(cjk, "描述不再给出 CJK 锚点（哪个文件、CJK 字节占比、本工具自身源码能装多少行）→ 解析面失效（同步本测试）");
   const floorRepeatClaim = Number(cjk[1].replace(/,/g, ""));
@@ -650,12 +663,18 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
   // 1) 声称的三个档位必须由小到大，且与当场实测同档（旧文案 3,000 / — / 6,000 在这里必红）
   assert.ok(fewestClaim < medianClaim && medianClaim < mostClaim,
     `描述声称的档位必须由小到大，实际是 ${fewestClaim} / ${medianClaim} / ${mostClaim}`);
-  assert.equal(countClaim, READ_LINE_CAPACITY_SAMPLE.length, "描述声称的样本数与本清单条数不齐");
   assert.equal(floorRepeatClaim, fewestClaim, "同一句里 floor 出现两次却不同值");
   assert.equal(floorFileClaim, READ_LINE_CAPACITY_ROLES[0].file, "描述点名的 CJK 锚点文件与角色清单不齐");
   assertClose(fewestClaim, measuredFewest, 0.02, "描述声称的「一次最少装多少行」");
   assertClose(medianClaim, measuredMedian, 0.02, "描述声称的中位行数容量");
   assertClose(mostClaim, measuredMost, 0.01, "描述声称的「一次最多装多少行」");
+  // 1b) #275：三个档位还必须逐个对上**那 4 个锚点文件**的当场实测（不靠全树分布也算得出同一个结论）。
+  //     这就是「把声称数字改坏就红」的反向证（本单实跑）：上限 9,772 改成 6,000 → 红「档位必须由小到大」；
+  //     改成不打乱大小的 8,000 → 红 ±1% 容差那条（「实测/基准 9772，另一次 8000，差 18.13%」）；要让 1b) 也喂饱，
+  //     只能把那个数字改回 9,772 本身（它的 bytes/line 与 2) 的自洽也只允许这一个值）。
+  assertClose(fewestClaim, byRole.fewest.capacity, 0.02, `描述声称的 fewest 档 == ${byRole.fewest.rel} 当场实测`);
+  assertClose(medianClaim, byRole.median.capacity, 0.02, `描述声称的 median 档 == ${byRole.median.rel} 当场实测`);
+  assertClose(mostClaim, byRole.most.capacity, 0.01, `描述声称的 most 档 == ${byRole.most.rel} 当场实测`);
 
   // 2) 每档配的 bytes/line 必须真是那个文件的均行字节，且与声称行数在公式下自洽
   assertClose(fewestBplClaim, byRole.fewest.bytesPerLine, 0.01, "fewest 档声称的平均行字节");
@@ -665,21 +684,19 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
     assertClose(lines, Math.floor(FILE_READ_MAX_BYTES_DEFAULT / bpl), 0.05, `描述内部自洽（${label}：行数应等于 max_bytes ÷ 它自己给的 bytes/line）`);
   }
 
-  // 3) 「从不下穿 3,000」与「69 个高于 6,000」必须由清单当场重算得出
-  assert.ok(neverBelowClaim <= measuredFewest && neverBelowClaim >= measuredFewest * 0.6,
-    `描述说「83 个文件从不下穿 ${neverBelowClaim}」，实测下界是 ${measuredFewest}：这条要么夸大要么又把下界压得太低`);
-  assert.equal(aboveCountClaim, rows.filter((row) => row.capacity > aboveThresholdClaim).length,
-    `描述声称 ${aboveCountClaim} 个文件一次能装超过 ${aboveThresholdClaim} 行，清单当场重算不是这个数`);
-
-  // 4) 反低估的事实本身（就算有人重写句式，这三条也留住旧文案犯的错）
-  assert.ok(measuredFewest > aboveThresholdClaim * 0.5,
-    `连「装得最少」的文件都只有 ${measuredFewest} 行了？低于 ${aboveThresholdClaim} 的一半 → 描述那档「保守分批」的口径要重估`);
-  assert.ok(measuredMedian > aboveThresholdClaim,
-    `实测中位行数容量 ${measuredMedian} 没有超过 ${aboveThresholdClaim}：旧上限重新成立了，描述与本测试的口径都要重谈`);
+  // 3) #275：描述里不再有「样本数 / 多少个高于某档」这两个总量，于是那一段历史声称（#264 旧文案
+  //    `~3,000-6,000 lines`）以**测试内常量**留档：实测中位必须仍盖过旧上限、实测下界必须仍远高于它的一半，
+  //    否则「保守分批」那个旧口径重新成立，描述的整段换算要重谈。这个事实不依赖任何文件条数。
+  const LEGACY_UNMEASURED_CEILING = 6_000; // #264 旧文案的上限（当时没人复测）
+  const LEGACY_UNMEASURED_FLOOR = 3_000;   // #264 旧文案的下界
+  assert.ok(LEGACY_UNMEASURED_FLOOR < measuredFewest,
+    `旧下界 ${LEGACY_UNMEASURED_FLOOR} 重新变得可信（实测下界只有 ${measuredFewest}）→ #271 的结论要重测`);
+  assert.ok(measuredMedian > LEGACY_UNMEASURED_CEILING,
+    `实测中位行数容量 ${measuredMedian} 没有超过 ${LEGACY_UNMEASURED_CEILING}：旧上限重新成立了，描述与本测试的口径都要重谈`);
   assert.ok(rows.every((row) => row.capacity >= measuredFewest && row.capacity <= measuredMost),
     "清单内的极值不自洽（重算逻辑被改坏）");
 
-  // 5) CJK：本仓实测支持「CJK 让行数按比例下降」这句话；但描述不许给没测过的 CJK 区间
+  // 4) CJK：本仓实测支持「CJK 让行数按比例下降」这句话；但描述不许给没测过的 CJK 区间
   const densest = rows.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
   assertClose(cjkPercentClaim, densest.cjkShare * 100, 0.05, "描述声称的 CJK 字节占比");
   assertClose(selfCapacityClaim, byRole.self.capacity, 0.01, "描述声称的「本工具自己的源码一次能装多少行」");
@@ -687,4 +704,38 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
     `描述说 CJK 会按比例压低行数，但 ${byRole.self.rel}（CJK ${(byRole.self.cjkShare * 100).toFixed(1)}%）实测 ${byRole.self.capacity} 行，不低于中位 ${measuredMedian}`);
   assert.doesNotMatch(description, /~[\d,]+ lines[^.]*CJK|CJK[^.]*~[\d,]+ lines/u,
     "描述给 CJK 编了一个行数区间——本仓只测过上面那一个 CJK 锚点，没测过的东西写「按公式自行折算」（#267 的 `~4,000` 教训）");
+});
+
+// ---------------------------------------------------------------------------
+// issue #275：全仓扫描（src/bin/examples 下的 `*.js`）从「钉死条数」降级为**只断单调性质 + 信息性输出**。
+// 它保留的价值是「描述里 4,387 floor / 37% CJK 那两句有没有被新文件推翻」；它**不再**因为
+// 「有人新增了一个普通的 `.js`」而红——旧写法 `assert.deepEqual(盘上枚举, 写死清单)` 正是在这里给全仓加税：
+// 红的是一个测 readFile 额度的文件，而改的人往往不知道为什么红。
+// 单调性说明：下面两条的阈值都是**松的**（旧文案的 3,000 / 样本条数），普通新增（平均行字节不超过约 87B）
+// 不可能会碍它们；只有真的把描述里的声称变成谎话时才会红。
+// ---------------------------------------------------------------------------
+
+test("readFile 行数容量：全仓扫描只留单调性质与信息性输出，新增一个文件不得变红（#275）", () => {
+  const scanned = listShippedSourceFiles().map(measureReadLineCapacity);
+  // 单调性质 1：盘上能找到的文件不少于写死样本（新增只会变大；跌到比样本还少才是真信号）。
+  assert.ok(scanned.length >= READ_LINE_CAPACITY_SAMPLE.length,
+    `盘上 ${READ_LINE_CAPACITY_DIRS.join("/")} 的 *.js 只剩 ${scanned.length} 个，比 #271 的写死样本（${READ_LINE_CAPACITY_SAMPLE.length}）还少`
+    + " → 有样本文件被删除，描述里的档位要重测（新增不会走到这条）");
+  // 单调性质 2：全树实测下界仍不得跌进 #264 旧文案那档（阈值取旧下界 3,000 而不是声称的 4,387，就是为了让新增宽容件不红）。
+  const fewest = scanned.reduce((a, b) => (b.capacity < a.capacity ? b : a));
+  const densest = scanned.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
+  assert.ok(fewest.capacity > 3_000,
+    `${fewest.rel} 一次只能装 ${fewest.capacity} 行（均行 ${fewest.bytesPerLine.toFixed(1)}B），已跌进旧文案的 3,000 那档`
+    + " → 描述里「fewest 4,387」这个 floor 已被新文件推翻，要按 measureReadLineCapacity 重测并改描述");
+  // 信息性输出（不断言）：本仓当前分布、极值落在哪两个文件上、描述点名的锚点是否仍站得住。
+  console.log("#275 read-line capacity sweep:", JSON.stringify({
+    scanned: scanned.length,
+    pinnedSample: READ_LINE_CAPACITY_SAMPLE.length,
+    fewest: { file: fewest.rel, capacity: fewest.capacity, bytesPerLine: Number(fewest.bytesPerLine.toFixed(2)) },
+    densest: { file: densest.rel, cjkShare: Number((densest.cjkShare * 100).toFixed(1)) },
+    anchorsStillHold: {
+      fewestIsThePinnedOne: fewest.rel === READ_LINE_CAPACITY_ROLES[0].file,
+      densestIsThePinnedOne: densest.rel === READ_LINE_CAPACITY_ROLES[0].file,
+    },
+  }));
 });
