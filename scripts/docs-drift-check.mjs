@@ -1210,6 +1210,15 @@ const EXPECTED_ABSENT_PATHS = new Map([
   ["judge.log", "引擎写入 transcripts/outputs/<runId>/ 的运行产物名，不是仓库文件"],
   ["erix-state/judge.log", "2026-09 基准证据里的宿主侧路径，不在本仓库"],
   ["status.json", "erix_run 在宿主 sessionDir 下写的 job 状态文件名，不是仓库文件"],
+  ["analysis.md", "#269 复盘：这条引用本身就是「不存在的文件」，CHANGELOG:102 在讲它为什么不存在（#278 把它纳进裸名裁决后必须登记）"],
+  ["session-meta.json", "宿主 `~/.erix/session-meta.json`（#168 停读停写的会话归属状态文件），CHANGELOG:158 讲的是宿主侧行为"],
+  ["models.json", "宿主 `~/.pi/agent/models.json`（provider 槽位配置），CHANGELOG:200-201 的 e2e 根因在宿主配置里"],
+  ["recall.js", "CLI recall 工具的文件名（f26ea47 已移除，CHANGELOG:889 记的就是移除）"],
+  ["nonce.json", "复验脚本临时写的 nonce 文件名（docs/research/2026-09-13-notes-why.md:1468 的 CLI 复验口径），不是仓库文件"],
+  ["2026-10-09-architecture-review.md", "运行时输出文件名（任务单写的日期），落地到仓库时改名成 docs/design/2026-10-08-architecture-review.md，所以这个名字本仓不存在"],
+  ["transcript.json", "erix run 写进宿主输出目录的 transcript 文件名（host-upgrade-guide-v030 中英 :94/:99 讲的是宿主怎么读它），不是仓库文件"],
+  ["checkpoint-executor.js", "0.x 时代的 `src/loop/checkpoint-executor.js`（ADR-015 之后已拆掉），docs/design/2026-09-17:25 写当时落点时引的；文档在讲历史，所以登记"],
+  ["console.log", "CHANGELOG:22 写的是 JS 调用形式 `console.log(...)`，不是文件路径——它被 .gitignore 的 `*.log` 顺手接住了，所以必须在这里写清它不是路径，而不是假装不存在"],
 ]);
 /** ② 引用的是**另一个仓库/宿主安装物/文档里举的示意名**（写清归属或凭什么不是路径）。 */
 const EXTERNAL_REPO_PATHS = new Map([
@@ -1223,6 +1232,16 @@ const EXTERNAL_REPO_PATHS = new Map([
   ["sync-erix-mirror.sh", "宿主侧 cron 脚本（AGENTS 「上游同步」一节讲的是宿主仓库，不在本仓）"],
   ["./x.js", "AGENTS 讲 `// @ts-check` 与 `.d.ts` 解析规则时举的**示意文件名**（中英同一处），不是仓库路径"],
   ["x.d.ts", "AGENTS 讲 `.d.ts` 伴生声明时举的**示意文件名**（与 `./x.js` 同处），不是仓库路径"],
+  // —— 以下是 #278 把「无斜杠裸名」纳进裁决面后暴露的上游/宿主裸名引用（逐条写归属）——
+  ["parent-wake.js", "上游 pi-subagents 的 `src/shared/parent-wake.js`（CHANGELOG:105 与 docs/research/2026-10-13:121 都用裸名指它）；本层同名物是 `erix-run-parent-wake.js`"],
+  ["notify.js", "上游 pi-subagents 的唤醒侧文件（CHANGELOG:144、docs/research/2026-10-13:82 引它的常量行号 `notify.js:19`）"],
+  ["async-execution.js", "上游 pi-subagents 的 `src/runs/background/async-execution.js`（docs/research/2026-10-13:119 用裸名引它的 `spawn` 行）"],
+  ["debug.routes.js", "宿主 touwaka 仓的 Express 路由文件（docs/research/2026-09-26:118 的人工对质源码结论）"],
+  ["expert.routes.js", "宿主 touwaka 仓的 Express 路由文件（同上，同一行第二条结论）"],
+  ["init-database.js", "宿主 touwaka 仓的建表脚本（docs/host-upgrade-guide-0.17.0.md:193 与 CHANGELOG:260 的迁移对照）"],
+  ["upgrade-database.js", "宿主 touwaka 仓的迁移脚本（docs/host-upgrade-guide-0.17.0.md:194 与 CHANGELOG:260）"],
+  ["llm-context-budget.md", "宿主 touwaka 仓里的设计档案（docs/requirements 中英 :12 引它 §7「not changed this cycle」），本仓不镜像"],
+  ["skill.mjs", "技能目录的**约定入口名**（ADR-008 / docs/decisions/014 / harness-comparison 中英讲的是约定，不是某个具体文件）；本仓实物是 examples/skills/getTime/skill.mjs 与 examples/skills/todo/skill.mjs 两个，拿裸名指它俩属于约定名不是路径"],
 ]);
 /** ③ 生成物：由命令产出、被 .gitignore 忽略，仓库里没有是预期的。**模式**级条目（一文件一条会造出
  *  63 条同义自述），但每条都带 why 并与 .gitignore 互校：匹配了模式却不被忽略 → 红。 */
@@ -1230,6 +1249,16 @@ const GENERATED_ARTIFACT_REFS = [
   { re: /^(?:\.\.?\/)?src\/[\w./-]*\.d\.ts$/, why: "`npm run types:build` / `prepack` 生成的公共面声明产物（.gitignore 的 `src/**/*.d.ts`）；仓库不提交是 #213 的既定选择" },
   { re: /^(?:\.\.?\/)?package-lock\.json$/, why: "本仓历史上没有 lockfile，加它属于另一个决定（.gitignore 里写了 issue #213）" },
 ];
+/** ⑤ 文档里的**简称/歧义名**：作者用短名指本仓某个真实存在的文件（`format.js` 指 `erix-run-format.js`、
+ *  `notes.js` 在 CHANGELOG 里指 `src/store/notes.js`）。与 ①②③④ 的区别是它既不是路径也不是外物，
+ *  而是「同一实物的另一个名字」（或本仓多个同名文件里的某一个），所以每条必须给出实物，并被**双向校**：
+ *  简称没被任何引用用到 → 红；实物现在解不到了（改名/删了）→ 红。 */
+const SHORTHAND_REFS = new Map([
+  ["format.js", { real: ["examples/pi-extension/erix-run-format.js"], why: "CHANGELOG:92-93 讲 #276 死分支时对 `erix-run-format.js` 的简称（历史条目不改写，故登记简称↔实物对应关系）" }],
+  ["core.js", { real: ["examples/pi-extension/erix-run-core.js"], why: "CHANGELOG:146 讲 #234 异步面时对 `erix-run-core.js` 的简称（同上）" }],
+  ["notes.js", { real: ["src/store/notes.js", "src/tools/notes.js"], why: "CHANGELOG:42 讲 #270 公共闭包计数时的简称；本仓确实有两个 `notes.js`，拿裸名指它俩的全体（歧义必须写清，历史条目不改写故登记）" }],
+  ["anthropic.js", { real: ["src/providers/anthropic.js"], why: "CHANGELOG:180 与 docs/design/2026-10-08:28 讲类型错误分布时对 `src/providers/anthropic.js` 的简称（同段的 `src/messages/anthropic.js` 是另一个同名文件，裸名指前者）" }],
+]);
 /** 被忽略的**目录规则**必须逐条分类（#273：不许默认当没事）。两类语义不同：
  *   · install-tree / build-output / runtime / worktree：目录内容根本不是仓库内容（安装位置、构建产物、
  *     运行日志、本机工作副本），引用它们不构成「克隆后死链」；
@@ -1256,6 +1285,78 @@ const LOCAL_ARCHIVE_REFS = new Map([
   ["docs/tasks/active/task-20260830-touwaka-full-integration/BRANCH.md", "docs/harness-comparison/05:62 的 git 注入对照引用的是本机档案行号（#273 点名的两条历史样本之一；另一条 docs/research/2026-09-26 的 REPORT.md 已就地写「本地，不入库」而直接放行）。本轮禁改 docs/**，下轮在那行补上「本机档案、不入库」后请删本条"],
 ]);
 const LOCAL_ARCHIVE_DECLARATION = /本机|本地|不入库|未入库|不提交|未提交|未跟踪|never committed|not committed|untracked|gitignore|忽略|归档/i;
+
+/* ────────────────────────────────────────────────────────────────────────────────
+ * #278：无斜杠的**裸文件名**引用（`repro-circular-details.mjs`、`e2e-wake.mjs`）
+ * 修前：这类引用只有在「拼写恰好对 + 已在 LOCAL_ARCHIVE_REFS 登记」的那一瞬间才被看守——
+ *   改坏拼写 → 脱离登记表 → 通用提取不认无斜杠名 → 静默放行（#273 那个「整目录豁免」换了个形式）。
+ *   主 agent 的三个探针：删登记 → exit 1；改坏**已登记**裸名 → exit 0；改坏**未登记**裸名 → exit 0。
+ *
+ * 量与分类（在 HEAD ca6ed55 上实测，脚本 `--bare-census` 可复现；后人不要只信注释）：
+ *   全仓已跟踪 .md 里「无斜杠 + 带扩展名 + 解不到 + 未登记未声明」的裸名引用共 **105 处 / 58 个唯一名**，其中
+ *     · 跳仓引用（正文在讲另一个仓库/宿主安装物，如 MEMORY.md / output-accumulator.js / init-database.js）： **79 处**，全部落在下面 CROSS_REPO_DOCS 那 10 份文档里；
+ *     · 本仓档案/历史简称/运行期产物名（analysis.md / format.js / session-meta.json / e2e-wake.mjs 这类）： **26 处**，落在 CHANGELOG 与 docs/{research,design} 里。
+ *   所以裁决面按**文档**切：CROSS_REPO_DOCS 里的裸名不裁决（那本不是本仓路径，逐名登记 79 次只会造出 40 条会腐朽的白名单）；
+ *   其余文档（PATH_DOCS + 本仓 research/design + 根 CHANGELOG）的裸名全部走同一套四类裁决。
+ *   CROSS_REPO_DOCS 是**逐份点名**（无目录通配）+ 一句理由 + 反向校（不再有任何引用用到它 → 红）；条目数超 12 需上报。
+ * ──────────────────────────────────────────────────────────────────────────────── */
+
+/** 「像个文件」闸（裸名专用）：无斜杠 + 名字干以字母数字开头且 ≥ 4 字符 + 扩展名在已知集合里。
+ *  拦掉的全是**不是引用**的东西：`.js` / `.d.ts`（扩展名残片，名字干为空或以 `.` 开头）、
+ *  `_cn.md`（文件名后缀片段）、`gen.sh`（3 字干，太短，拿它当实物近邻只会假红）、
+ *  `details`（无扩展名）、`scratch/`（带斜杠，走目录规则）。宁可少拦，不可把真引用挡在门外。 */
+const BARE_FILE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*\.(?:js|mjs|cjs|ts|mts|tsx|json|md|sh|log|txt|ya?ml|py|zip|lock|diff)$/;
+const BARE_STEM_MIN = 4;   // 「像个文件」闸的名字干最短长度
+/** 近邻判据另开一个更高的门槛：**名字干 ≥ 8 字符才启用**。`index.js` / `skill.mjs` / `judge.log`
+ *  这类 5 字干的词是「约定入口名 / 常见词」，它们跟本仓任何同字干的实物都能配一对，
+ *  拿它们当「被改坏的实物名」必然假红；而真实的改名事故（`repro-circular-details` 20 字、
+ *  `e2e-wake` 8 字）名字干都够长。这条常数写死，不做可调的模糊阈值。 */
+const NEAR_STEM_MIN = 8;
+
+/** 近邻判据（只抓「把本仓实物的名字改坏了一个尾巴」这一形状，不调模糊阈值）：
+ *  去扩展名后的 basename 与本仓某实物（**含被 .gitignore 忽略的实物**，如 docs/tasks/ 下的实测件）的
+ *  同名干满足以下之一——全仓生效（包括跳仓文档）：
+ *    ① 完全相等（换了扩展名，如 `e2e-wake.mjs` → `e2e-wake.md`）；
+ *    ② 互为前缀且长出来的那段 ≤ 3 个字符（`repro-circular-details` → `...X` / `...-v2` 这种改名）。
+ *  **区分大小写**：`MEMORY.md` ↔ `src/store/memory.js` 不是改名，拿大小写折叠去比会把
+ *  harness-comparison 里的跳仓名全部误红（实测 20 处假红）。 */
+function bareNameNearest(p, ign) {
+  const stemOf = (x) => path.posix.basename(x).replace(/\.[^.]+$/, "");
+  const c = stemOf(p);
+  if (c.length < NEAR_STEM_MIN) return [];
+  const { tracked, ignored } = repoFiles(ign);
+  const base = path.posix.basename(p);
+  const out = [];
+  for (const f of [...tracked, ...ignored]) {
+    const s = stemOf(f);
+    if (s.length < NEAR_STEM_MIN) continue;
+    //  basename 一字不差地存在 → 那是「同名歧义」而不是「改坏了名字」，走歧义那条报，不算近邻。
+    if (path.posix.basename(f) === base) continue;
+    if (s === c) out.push(`${f}（同名字干、只换了扩展名）`);
+    else if (c.startsWith(s) && c.length - s.length <= 3) out.push(`${f}（比实物名字干多写了 “${c.slice(s.length)}”）`);
+    else if (s.startsWith(c) && s.length - c.length <= 3) out.push(`${f}（比实物名字干少了 “${s.slice(c.length)}”）`);
+  }
+  return [...new Set(out)];
+}
+
+/** 无斜杠裸名走通用四类裁决的文档（= 已跟踪 .md 减去 CROSS_REPO_DOCS）。新增文档默认纳面，
+ *  要豁免只能进 CROSS_REPO_DOCS 点名写理由——不允许默默放行。 */
+const BARE_NAME_ADJUDICATED = true;   // 开关只为了 self-test 里能跑「扩面前后」对比，不是豁免开关
+
+/** 跳仓/宿主对照文档：**逐份**点名（禁止目录通配）+ 一句理由。这里的裸名不裁决（它们指的不是本仓实物），
+ *  但条目本身被反向校：这份文档里已经没有任何裸名需要被豁免 → 红（防条目烂在那里）。 */
+const CROSS_REPO_DOCS = new Map([
+  ["docs/harness-comparison/01-pi-agent.md", "整篇在拆上游 pi 发行包的 dist/ 与源码，裸名是它的文件（output-accumulator.js、bash-executor.js…）"],
+  ["docs/harness-comparison/02-touwaka.md", "整篇在拆宿主 touwaka 仓，裸名是它的源码文件（full-organizer.js、skill-runner.js…）"],
+  ["docs/harness-comparison/03-codex.md", "整篇在拆上游 codex CLI，裸名是它的记忆目录产物（memory_summary.md、MEMORY.md…）"],
+  ["docs/harness-comparison/04-hermes-agent.md", "整篇在拆上游 hermes-agent，裸名是它的指令文件与记忆文件（CLAUDE.md、USER.md…）"],
+  ["docs/harness-comparison/06-cross-comparison.md", "五方横向对照表，裸名来自被对照的各仓，不指本仓实物"],
+  ["docs/harness-comparison/07-takeaways-and-open-questions.md", "结论页引用的是被对照仓自己的档案（如 tw 自己补的 chat-memory-boundaries.md）"],
+  ["docs/harness-comparison/08-runtime-erix-battery.md", "沙箱脚本清单（/tmp/erix-battery 下的 gen.sh 等），不是仓内文件"],
+  ["docs/harness-comparison/README.md", "对照系列的导读页，结论里提的 MEMORY.md 属于被对照的各仓"],
+  ["docs/eval/2026-09-18-erix-060-real-project-eval.md", "对宿主 touwaka 快照做运行时评估的记录，裸名是被评项目自己的文件（utils-id.test.js、message.controller.js…）"],
+  ["docs/suggestions/03-cli-edit-tool.md", "建议稿引用的是上游 pi 仓 packages/coding-agent/src/core/tools/ 下的参考设计（edit-diff.ts）"],
+]);
 
 /** 极简 .gitignore 匹配（零依赖，只支持注释、`目录/`、`*.ext`、`**`、裸名——本仓那 9 条全在这个子集里）。
  *  取反 `!` 不在子集里：碰到就报错，而不是默默当没忽略（宁可假红，不要假绿）。 */
@@ -1385,6 +1486,14 @@ const passAs = (key) => { REF_CLASS_HITS.add(key); return null; };
 function classifyAbsent(p, docRel, line, ign, res = {}) {
   if (EXPECTED_ABSENT_PATHS.has(p)) return passAs(`absent:${p}`);
   if (EXTERNAL_REPO_PATHS.has(p)) return passAs(`external:${p}`);
+  const short = SHORTHAND_REFS.get(p);
+  if (short) {
+    // 简称本身不校 .gitignore（它不是生成物也不是本机档案），但它指向的实物必须还在：
+    // 实物被改名/删了而简称没跟着改 → 这条登记就是在给未来的漂移留后门。
+    return existsSync(path.join(ROOT, short.real[0]))
+      ? passAs(`shorthand:${p}`)
+      : `登记为 ${short.real.join(" / ")} 的简称（${short.why}），但 ${short.real[0]} 现在解不到了——实物已改名或已删，请连简称一起改（简称↔实物必须同生同死）`;
+  }
   const probe = res.ignoredPath ?? p.replace(/^\.\.?\//, "");
   const gen = GENERATED_ARTIFACT_REFS.find((g) => g.re.test(p));
   if (gen) {
@@ -1479,11 +1588,14 @@ function collectPathErrors() {
     }
     notes.push(`paths: ${rel} 核对 ${refs.length} 个路径引用（其中 ${resolvedByDoc} 个靠文档同目录、${resolvedByBase} 个靠唯一同名解析）、${commands.length} 个命令；白名单判定 ${excused} 处`);
   }
-  // 本机档案那一类**不限 PATH_DOCS**，全仓已跟踪 Markdown 都跑（#273 点名的两条历史样本就在
+  // 本机档案与**无斜杠裸名**两类都**不限 PATH_DOCS**，全仓已跟踪 Markdown 都跑（#273 点名的两条历史样本就在
   // docs/harness-comparison/05 与 docs/research/2026-09-26 里，而那两份文档不适宜整体纳入
   // paths 覆盖面：docs/design/2026-10-08 实测 57 处引用里 46 处、docs/harness-comparison/01 的
   // 42 处里 32 处引用的是**别的仓库**的文件树，整体纳入就得整片豁免，等于没扩）。
-  // 代价很轻：全仓指向被忽略**目录**的引用共 9 处，其中 4 处已经就地声明了「本地/不入库/gitignore」。
+  // #278 把「无斜杠裸名」也接进这一轮：带斜杠的引用维持原口径（上面的理由仍成立），
+  // 但裸名要么能解析、要么有四类登记/就地声明，否则红——不再默默放行。豁免按**文档**逐份点名
+  // （CROSS_REPO_DOCS），不允许目录通配；近邻判据则不分文档全仓生效。
+  const bareCensus = { seen: 0, adjudicated: 0, excused: 0, red: 0, crossRepoSkipped: 0, nearRed: 0 };
   for (const docRel of repoFiles(ign).tracked.filter((f) => f.endsWith(".md") && !PATH_DOCS.includes(f))) {
     const rel = docRel;
     const { refs } = candidatePaths(rel);
@@ -1495,21 +1607,52 @@ function collectPathErrors() {
       // 上一版读的是 r.ignored，而 resolveRef 返的字段叫 ignoredPath → 永远 undefined，
       // 于是「解到被忽略目录」的引用全部静默 continue（本类锚点实际从未跑过），这里一并接上。
       if (!rule || !rule.pattern.endsWith("/")) {
-        // 解不到且没分类时，原本直接 continue（= 默默放行）。但**引用所在行自己就在讲任务档案目录**
-        // （写了 docs/tasks/…）时，这一处就是在引本机档案：已登记的档案名被改一个字就同时弄坏了登记
-        // 与引用，必须报（#273：白名单不是整目录豁免）。
+        // 解不到且没分类时，原本直接 continue（= 默默放行）。#278 后的口径：
+        //   · 「像个文件」的无斜杠裸名 → 先跑近邻判据（全仓），再走四类裁决（除非整份文档已点名豁免）；
+        //   · 同行自己就写了 docs/tasks/… 的引用 → 依旧当本机档案报（#273：白名单不是整目录豁免）；
+        //   · 其余（带斜杠的解不到引用）→ 维持原状，不在本锚点覆盖面内。
         const lineText = textOf(rel).split("\n")[line - 1] ?? "";
         // 只拿「像个文件」的引用当档案引用：CHANGELOG 里 `scratch/` 这种目录/规则名也在同一行出现，
         // 不卡这一刀就会把目录名当成被改名的本机档案（假红）。
         const looksLikeFile = /\.[A-Za-z0-9]+$/.test(p.replace(/\/+$/, ""));
-        if (!looksLikeFile || !/(^|[^-\w])docs\/tasks\//.test(lineText)) continue;
-        const stem = (s2) => s2.replace(/\.[^.]+$/, "");   // 去扩展名后比前缀：改名（加/删一个字符）必然落在同一前缀里
-        const twin = [...LOCAL_ARCHIVE_REFS.keys()].find((k) => k !== p
-          && (stem(path.posix.basename(k)).startsWith(stem(path.posix.basename(p)))
-            || stem(path.posix.basename(p)).startsWith(stem(path.posix.basename(k)))));
-        bad.push(`\`${p}\`（第 ${line} 行）：指向任务档案（同一行写了 \`docs/tasks/…\`，该目录整目录不入库），`
-          + `但这个名字仓库里解不到、也不在 LOCAL_ARCHIVE_REFS 登记里`
-          + (twin ? `——与已登记的 \`${twin}\` 只差一个字符：登记与引用必须一起改` : ""));
+        const bare = !p.includes("/") && BARE_FILE_RE.test(p) && BARE_NAME_ADJUDICATED;
+        const mentionsTaskArchive = /(^|[^-\w])docs\/tasks\//.test(lineText);
+        if (looksLikeFile && mentionsTaskArchive) {
+          // 引用行自己就在讲任务档案 → 无论有无斜杠都按「本机档案」判（#273 定的口径，措辞不变）。
+          const stem = (s2) => s2.replace(/\.[^.]+$/, "");   // 去扩展名后比前缀：改名（加/删一个字符）必然落在同一前缀里
+          const twin = [...LOCAL_ARCHIVE_REFS.keys()].find((k) => k !== p
+            && (stem(path.posix.basename(k)).startsWith(stem(path.posix.basename(p)))
+              || stem(path.posix.basename(p)).startsWith(stem(path.posix.basename(k)))));
+          bad.push(`\`${p}\`（第 ${line} 行）：指向任务档案（同一行写了 \`docs/tasks/…\`，该目录整目录不入库），`
+            + `但这个名字仓库里解不到、也不在 LOCAL_ARCHIVE_REFS 登记里`
+            + (twin ? `——与已登记的 \`${twin}\` 只差一个字符：登记与引用必须一起改` : "")
+            + (bareNameNearest(p, ign).length ? `；它跟本仓实物也只差一点：${bareNameNearest(p, ign).slice(0, 3).join(" / ")}` : ""));
+          if (bare) { bareCensus.seen += 1; bareCensus.red += 1; }
+          continue;
+        }
+        if (!bare) continue;   // 带斜杠又没在任务档案行里的解不到引用 → 不在本锚点覆盖面内（维持 #273 原口径）
+        bareCensus.seen += 1;
+        // 先跑四类裁决（能解析 / 已登记 / 就地声明就放行）。顺序很重要：已登记的裸名
+        // （judge.log、status.json）必须先看登记，否则会被近邻判据误伤。
+        const why = classifyAbsent(p, rel, line, ign, r);
+        bareCensus.adjudicated += 1;
+        if (why === null) { excusedArchive += 1; bareCensus.excused += 1; continue; }
+        const near = bareNameNearest(p, ign);
+        const crossRepo = CROSS_REPO_DOCS.get(rel) ?? null;
+        // 跳仓对照文档：通篇在讲另一个仓库，解不到又不像本仓实名的裸名不裁决（但条目被反向校）。
+        // 近邻判据**不豁免**——把本仓真实存在的档案名改坏一个尾巴，在哪份文档里都该红。
+        if (crossRepo && !near.length) {
+          REF_CLASS_HITS.add(`crossrepo-doc:${rel}`);
+          bareCensus.crossRepoSkipped += 1;
+          continue;
+        }
+        bareCensus.red += 1;
+        if (crossRepo) bareCensus.nearRed += 1;
+        // ③ 同名字干有实物 → 红字额外点名「它像哪个实物」；同名多命中（歧义）也点名候选实物。
+        const hint = near.length
+          ? `它跟本仓实物只差一点：${near.slice(0, 3).join(" / ")}——若本意就是那个文件，把裸名改成它的真实路径（改名要连引用一起改）`
+          : (r.ambiguous ? `本仓有 ${r.ambiguous.length} 个同名文件（${r.ambiguous.join(", ")}），裸名到底指哪个要写清（歧义不算解析成功）` : "");
+        bad.push(`\`${p}\`（第 ${line} 行）：${why}${hint ? `\n      ↳ ${hint}` : ""}${crossRepo ? "（这份文档已逐份点名豁免非实名的裸名引用，但近邻判据不豁免）" : ""}`);
         continue;
       }
       const why = classifyAbsent(p, rel, line, ign, r);
@@ -1517,18 +1660,27 @@ function collectPathErrors() {
       bad.push(`\`${p}\`（第 ${line} 行）：${why}`);
     }
     if (bad.length) {
-      out.push(`archive-refs: ${rel} 引用了克隆后不存在的本机档案（${bad.length} 处）：\n      ${bad.join("\n      ")}`);
+      out.push(`archive-refs: ${rel} 引用了克隆后不存在的本机档案或无法裁决的裸文件名（${bad.length} 处）：\n      ${bad.join("\n      ")}`);
     }
   }
   notes.push(`archive-refs: 全仓非入口文档里指向被忽略目录的引用已全部裁决（白名单/就地声明共 ${excusedArchive} 处）`);
+  notes.push(`bare-names: 无斜杠裸名裁决面——需裁决 ${bareCensus.adjudicated}（放行 ${bareCensus.excused}、红 ${bareCensus.red}，其中近邻判据 ${bareCensus.nearRed}）、`
+    + `跳仓文档点名豁免 ${bareCensus.crossRepoSkipped} 处（${CROSS_REPO_DOCS.size} 份逐份点名的文档，无目录通配）`);
   // 白名单也要校：没人引用的条目就是「为不存在的引用留后门」，同样算检查面腐坏。
-  const tables = [["absent", EXPECTED_ABSENT_PATHS], ["external", EXTERNAL_REPO_PATHS], ["archive", LOCAL_ARCHIVE_REFS]];
+  const tables = [["absent", EXPECTED_ABSENT_PATHS], ["external", EXTERNAL_REPO_PATHS], ["archive", LOCAL_ARCHIVE_REFS], ["shorthand", SHORTHAND_REFS]];
   for (const [tag, table] of tables) {
     for (const p of table.keys()) {
       if (REF_CLASS_HITS.has(`${tag}:${p}`)) continue;
       out.push(`paths: 白名单条目 \`${p}\` 没有一处引用真正用到它——要么它现在已能直接解析到（那就该删），`
         + `要么被检文档（${PATH_DOCS.join(", ")} + 全仓 .md）里已没人引用它；留着就是给未来的漂移留后门`);
     }
+  }
+  // #278：逐份点名的跳仓文档也要反向校—4 份文档里已经没有任何需要豁免的裸名（或文档已改名/删了）
+  // 就该销账，否则豁免清单会默许烂下去（跟白名单条目同病）。
+  for (const d of CROSS_REPO_DOCS.keys()) {
+    if (REF_CLASS_HITS.has(`crossrepo-doc:${d}`)) continue;
+    out.push(`bare-names: 跳仓点名清单里的 \`${d}\` 现在没有一处裸名引用用上它——文档已改名/删了，或里面的裸名引用已被逐条裁决；`
+      + `请删这条豁免（逐份点名的清单不许有没人用的条目）`);
   }
   for (const g of GENERATED_ARTIFACT_REFS) {
     if (!REF_CLASS_HITS.has(`generated:${g.re.source}`)) {
@@ -1864,6 +2016,69 @@ const SELF_TEST_CASES = [
       "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t.replace("`e2e-wake.mjs`", "`e2e-wake-v2.mjs`"),
     },
     expect: [/白名单条目 `e2e-wake\.mjs` 没有一处引用真正用到它/],
+  },
+
+  // —— bare-names：无斜杠裸名的通用裁决 + 近邻判据（issue #278；下面四条修前**全是 exit 0**）——
+  {
+    label: "#278-P2 改坏**已登记**的裸名（`repro-circular-details.mjs` 多个 Q）→ 红（修前 exit 0：脱离登记就静默放行）",
+    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t.replace("`repro-circular-details.mjs`", "`repro-circular-detailsQ.mjs`") },
+    expect: [
+      /archive-refs: docs\/research\/2026-10-13[\s\S]*`repro-circular-detailsQ\.mjs`（第 \d+ 行）/,
+      /↳ 它跟本仓实物只差一点：docs\/tasks\/active\/261010-13-erix-run-async\/repro-circular-details\.mjs/,
+    ],
+    expectFiles: ["docs/research/2026-10-13-pi-subagents-async-attribution.md"],
+  },
+  {
+    label: "#278-P3 改坏**未登记**的裸名（`e2e-wake.mjs` 多个 Q）→ 红（修前 exit 0：它本来连被检资格都没有）",
+    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t.replace("`e2e-wake.mjs`", "`e2e-wakeQ.mjs`") },
+    expect: [
+      /archive-refs: docs\/research\/2026-10-13[\s\S]*`e2e-wakeQ\.mjs`（第 \d+ 行）[\s\S]*本仓不存在/,
+      /↳ 它跟本仓实物只差一点：docs\/tasks\/active\/261010-13-erix-run-async\/e2e-wake\.mjs（比实物名字干多写了 “Q”）/,
+    ],
+    expectFiles: ["docs/research/2026-10-13-pi-subagents-async-attribution.md"],
+  },
+  {
+    label: "跳仓对照文档里的裸名不被裁决（对照）：把 codex 篇的 `MEMORY.md` 改个名必须仍然绿",
+    // #278 裁定的另一面：跳仓/宿主对照文档（CROSS_REPO_DOCS 逐份点名那批）的裸名指的不是本仓实物，
+    // 不该被拖进裁决面——这一例就是防「把 79 处跳仓引用用另一种方式再吃回来」。近邻判据不在此列，
+    // 所以变异选 `MEMORY.md`（5 字干，低于 NEAR_STEM_MIN=8，不会误判成本仓实物改名）。
+    overlay: { "docs/harness-comparison/03-codex.md": (t) => t.replace("`MEMORY.md`", "`MEMORYX.md`") },
+    expectGreen: true,
+  },
+  {
+    label: "#269 原型：裁决清单内新写一个**凭空、无近邻**的裸名（`analysis.md` 形状）→ 红（这是近邻判据拓不到的那一半）",
+    overlay: { "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": (t) => t.replace("`debug.routes.js`", "`zz-nonexistent-evidence.md`") },
+    expect: [/archive-refs: docs\/research\/2026-09-26[\s\S]*`zz-nonexistent-evidence\.md`（第 118 行）[\s\S]*本仓不存在/],
+    expectFiles: ["docs/research/2026-09-26-strategy-variance-and-cache-economics.md"],
+  },
+  {
+    label: "跳仓点名清单也不许烂着：那份文档已没一处裸名引用要用豁免 → 销账红（反向校）",
+    // docs/harness-comparison/README.md 里需要豁免的裸名就是 `MEMORY.md` 两处；全改成能解析的实物名后，
+    // 这条逐份点名的豁免就成了空条目 → 必须红（否则清单会默默堆着没人用的条目）。
+    overlay: { "docs/harness-comparison/README.md": (t) => t.replaceAll("`MEMORY.md`", "`AGENTS.md`") },
+    expect: [/bare-names: 跳仓点名清单里的 `docs\/harness-comparison\/README\.md` 现在没有一处裸名引用用上它/],
+  },
+  {
+    label: "登记表反向校扩到裸名（#278 第 4 件）：本仓文档里已没人引用已登记的裸名 `repro-circular-details.mjs` → 销账红",
+    // 两条引用（CHANGELOG 与 research 篇）全改成能解析的路径后，这条**无斜杠**登记就没人用了；
+    // 反向校必须抓得住（#273 只对带斜杠条目做到了这件事）。
+    overlay: {
+      "CHANGELOG.md": (t) => t.replace("`repro-circular-details.mjs`", "`docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs`"),
+      "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t.replace("`repro-circular-details.mjs`", "`docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs`"),
+    },
+    expect: [/白名单条目 `repro-circular-details\.mjs` 没有一处引用真正用到它/],
+  },
+  {
+    label: "近邻判据**不**跟跳仓豁免一起免：跳仓文档里把本仓实物名改坏一个尾缀 → 仍红",
+    // 防的是反向滑坡：「这份文档在讲别的仓库」不等于本仓实物在它就是绿的。拿 `README.md`（能解析）
+    // 换成 `erix-run-coreX.js`（本仓有 erix-run-core.js，只差一个 X），必须靠近邻判据抓红。
+    overlay: { "docs/harness-comparison/02-touwaka.md": (t) => t.replace("`README.md` 全文", "`erix-run-coreX.js` 全文") },
+    expect: [/archive-refs: docs\/harness-comparison\/02-touwaka\.md[\s\S]*`erix-run-coreX\.js`（第 \d+ 行）[\s\S]*examples\/pi-extension\/erix-run-core\.js/],
+  },
+  {
+    label: "简称登记也要反向校（#278 新增第五类）：CHANGELOG 里的 `format.js` 简称改成实物路径后，简称条目就该销账",
+    overlay: { "CHANGELOG.md": (t) => t.replaceAll("`format.js`", "`examples/pi-extension/erix-run-format.js`") },
+    expect: [/白名单条目 `format\.js` 没有一处引用真正用到它/],
   },
 
   // —— baseline：AGENTS 的棘轮当前值 ↔ 棘轮常量（issue #274）——

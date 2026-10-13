@@ -23,6 +23,8 @@ parent-wake——上游那份只有 46 行、逻辑全在一个工厂函数里�
 
 同目录另有三份当时的实测件（`e2e-wake.mjs` 真 relay 唤醒脚本、`e2e-wake-events.txt` 事件流、
 `repro-circular-details.mjs` `details` 循环引用复现）——它们是 #234/#237 的实测证据，本文件只补机制对照。
+这三份都是**本机档案、未入库**（实物在 `docs/tasks/active/261010-13-erix-run-async/`，该目录被 `.gitignore` 整体忽略），
+克隆后按名字去仓库里找是找不到的。
 
 ## 1. 立即返回句柄 + 进程内 job 注册表
 
