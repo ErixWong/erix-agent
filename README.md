@@ -953,9 +953,13 @@ migration steps remain in
   "fix the request, do not retry" arm); the CLI's `chat --session <id>` exits with an
   error when that id has no non-empty transcript instead of silently starting a fresh
   session, and the session index state file is retired (`-c`/`-r` scan transcripts
-  live). Internal: `runToolLoop` option normalization moved into its own module and
-  the orchestrator's closure state was consolidated into one state object (pure
-  moves, no runtime change); a dev-only `--checkJs` ratchet gate
+  live). Internal: two scoped refactors inside `runToolLoop` — option normalization
+  extracted verbatim into `src/loop/option-normalization.js`, and the loop's closure
+  `let`s folded into one `runLoopState` object literal; audited line by line against
+  v0.18.0 with zero residual lines and no observable behavior change (the new
+  `src/loop/state-view.js` is not yet imported anywhere and is *not* that state object;
+  the `#213` JSDoc restructuring that shipped in the same window is outside this claim);
+  a dev-only `--checkJs` ratchet gate
   `npm run check:types` is part of the repo checks. Folded into this same release on
   2026-10-13 (additive only — a host needs no code change): `src/index.js` now exports
   `createMemoryNotesStore`; the pi extension `erix_run` returns the complete final text
