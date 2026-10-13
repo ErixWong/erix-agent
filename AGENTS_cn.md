@@ -62,7 +62,7 @@ scripts/          # 实验脚本和结果
 | `node --check <file>` | 语法安全检查 |
 | `npm run check:docs` | 文档漂移检查（`scripts/docs-drift-check.mjs`：版本声明、README 引用的 `files`/`exports` 清单、模块地图、文中路径与命令、从 `src/` 直抽的 14 条关键默认值、中英 README 标题骸架）+ 中英契约标题结构对齐 |
 | `npm run check:docs:strict` | 同上，但把告警升级为失败 |
-| `node scripts/docs-drift-check.mjs --self-test` | 清单/枚举/单位类锚点的反向证自测（issue #210）：改文档一处声明 → 红、改源码真值 → 红、都不改 → 绿；变异没落上去也算失败（#210 R2） |
+| `node scripts/docs-drift-check.mjs --self-test` | 清单/枚举/单位类锚点的反向证自测（issue #210）：改文档一处声明 → 红、改源码真值 → 红、都不改 → 绿；变异没落上去也算失败（#210 R2） **必须在开发树里跑**：在没有 `docs/tasks/`（被 `.gitignore` 忽略、从不入库的本机任务档案目录）的检出里，其中 3 例是**已知假红**（它们的期望要点名只存在于开发机的近邻文件）——issue #281 已记录并有意暂不处理，不是回归。 |
 | `npm run check:docs-examples` | 真实执行 `docs/host-consumer-contract.md` 里的 js 围栏（issue #158） |
 | `npm run check:pack-links` | 随包 Markdown 的链接闭合检查 |
 | `npm run check:release` | 把发版前那条手工验证变成一条命令（issue #257 T5）：按顺序五步，红就点名第几步——`npm pack` → 断言 tarball（声明文件数 > 0、当前版本的中英两份升级指南都在、随包的 `test/contract/` 文件一个不少、`files` 白名单之外没有杂物；Markdown 链接闭合**交给** `check:pack-links`，不在这里重写）→ 把 tarball 装进一个一次性临时项目并断言 `import("erix-agent")`/`import("erix-agent/tools")` → 用**装好的包**跑随包契约套件 → 用 `tsc --strict --skipLibCheck` 编译一个真 TypeScript 宿主（退 0，且未知的 `runToolLoop` option 键**必须**报 `TS2353`）并把编译产物真跑一遍 → 拿本地假上游冒烟装好的 `erix` CLI（`--version` 等于 `package.json`；一次成功的 `chat` 退 **4**，因为不开 `--final-guard` 时核验是 `skipped`；`--session` 不存在退 1）。离线（`npm --offline` + 一次性 cache/userconfig + 假 `HOME`）、跑完自清、约 15 秒 |

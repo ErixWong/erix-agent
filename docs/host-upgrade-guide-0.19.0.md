@@ -169,6 +169,45 @@ npx tsc --noEmit --skipLibCheck --listFiles | grep -c 'erix-agent/.*\.d\.ts'
 - [ ] TS host compiled before and after; each new error was read as a call-site bug, not squashed.
 - [ ] `--skipLibCheck` is still on.
 
+## 6. Everything else folded into 0.19.0 on 2026-10-13 — **no host action**
+
+This release was cut on 2026-10-12 but never published; a further 16 changes landed on
+2026-10-13 and were folded into the same version instead of opening 0.20.0. **All of them
+are additive or internal fixes: nothing here requires a call-site change.**
+
+- **`src/index.js` exports `createMemoryNotesStore`.** An in-memory `NotesStore` shipped by
+  the engine, built on the same port as the file and CLI stores (`src/store/notes-port.js`),
+  so all three answer the same contract suite. Use it when a run's notes should live only
+  for the run (tests, disposable sandboxes, one-shot hosts with no scratch directory).
+- **The `erix_run` pi extension returns the complete final text.** The host-side truncation
+  layer is deleted: a long `finalText` and the `artifacts` paths (`transcriptPath`,
+  `judgeLogPath`) arrive intact instead of being cut off mid-report.
+- **`erix_run`'s async `action: "result"` can actually retrieve `finalText` again**, and its
+  async terminal view now carries `diagnostics` too — so a background run is answerable from
+  disk after a host restart, not only through the live handle.
+- **`erix_run`'s `outputSchema` now declares `verification` and `error` (13 keys → 15).**
+  The engine's own verification verdict reaches the model and the host for the first time.
+  Read it as a verdict about the *answer*, not as acceptance: **only `verified` may be
+  consumed as a verified fact**; `skipped` is what you get when no final guard ran, and it
+  is not a failure.
+- **`erix_run`'s file-read tool description carries measured budget facts** (a conversion
+  formula plus this repository's own re-measured line capacity), so the model can decide how
+  many lines to read instead of guessing; the wording no longer claims a file count for this
+  repository.
+
+**Two facts about `erix_run` worth knowing before you adopt it:** it is **not part of the npm
+tarball** (`examples/` is outside `files`) — adoption today means copying
+`examples/pi-extension/` into `~/.pi/agent/extensions/erix-run/` — and it **carries this
+package's version number rather than its own**, because it is developed in lockstep with the
+engine and loads that engine by package name. There is currently no version stamp inside the
+installed directory, so "which build is installed" is answered by comparing file hashes.
+
+**For contributors to this repository:** `node scripts/docs-drift-check.mjs --self-test`
+must be run in the development tree. In a checkout without the git-ignored local archive
+directory, 3 of its cases are known false reds (their expectations name neighbouring files
+that only exist on a development machine) — tracked and deliberately deferred, see
+`AGENTS.md`.
+
 Prior guides in this series:
 [0.18.0](host-upgrade-guide-0.18.0.md),
 [0.17.0](host-upgrade-guide-0.17.0.md),

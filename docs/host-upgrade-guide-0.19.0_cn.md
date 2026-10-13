@@ -154,6 +154,33 @@ npx tsc --noEmit --skipLibCheck --listFiles | grep -c 'erix-agent/.*\.d\.ts'
 - [ ] TS 宿主升级前后各编译过一次；每个新错误都被当调用点的问题读过，而不是被压掉。
 - [ ] `--skipLibCheck` 仍开着。
 
+## 6. 2026-10-13 并入 0.19.0 的其他变化 —— **宿主无需任何动作**
+
+本版在 2026-10-12 定版但**当时并未发布**；2026-10-13 又落了 16 项改动，**并入同一版而不是另开
+0.20.0**。这些改动**全是 additive 或内部修复：没有任何一处需要改调用点。**
+
+- **`src/index.js` 导出 `createMemoryNotesStore`。** 引擎自带的内存 `NotesStore`，与文件版、CLI 版跑
+  在同一份端口语义上（`src/store/notes-port.js`），三者一起过同一套契约测。适用于“笔记只活这一个 run”
+  的场景（测试、一次性沙箱、没有可写目录的单发宿主）。
+- **`erix_run` 交回完整终稿正文。** 宿主层截断已整体删除：长 `finalText` 与 `artifacts` 路径
+  （`transcriptPath`、`judgeLogPath`）完整到手，不再报到一半被切掉。
+- **`erix_run` 异步 `action: "result"` 从此真能取到 `finalText`**，异步终局视图也带上了 `diagnostics`
+  ——后台 run 在宿主重启之后仍能从盘上回答，不只能靠那个活句柄。
+- **`erix_run` 的 `outputSchema` 补上 `verification` 与 `error`（13 键 → 15 键）。** 引擎自己的验证结论
+  首次能到模型和宿主手上。请把它读成“**对这份答案的自评**”，而不是“验收”：**只有 `verified` 可当已验证
+  事实消费**；`skipped` 是没跑 final guard 的结果，**不是失败**。
+- **`erix_run` 的文件读取工具描述带上了实测额度事实**（一条换算式 + 本仓自己复测的行数容量），模型可以自己
+  算出“这一轮该读多少行”，不再靠猜；措辞也不再声称本仓有多少个文件。
+
+**采用 `erix_run` 前该知道的两件事**：它**不在 npm tarball 里**（`examples/` 不在 `files` 内），今天能用的
+分发方式就是**把 `examples/pi-extension/` 拷到 `~/.pi/agent/extensions/erix-run/`**；它**不独立编号，而是随
+本包同一版本号**——因为它跟引擎锁步开发、并且按包名加载那个引擎。安装目录里目前**没有版本痕迹**，所以
+“装的是哪一版”今天只能靠文件哈希比对回答。
+
+**给本仓贡献者的一句话**：`node scripts/docs-drift-check.mjs --self-test` **必须在开发树里跑**。在没有那个被
+ `.gitignore` 忽略的本机档案目录的检出里，它会有 3 例**已知假红**（它们的期望要点名只存在于开发机上的近邻
+文件）——已记录并有意暂不处理，口径见 `AGENTS.md`。
+
 本系列较早的指南：[0.18.0](host-upgrade-guide-0.18.0_cn.md)、
 [0.17.0](host-upgrade-guide-0.17.0.md)、
 [0.16.0](host-upgrade-guide-0.16.0.md)、
