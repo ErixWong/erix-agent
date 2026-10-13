@@ -1389,10 +1389,18 @@ function gitignoreMatcher(text) {
 /** 未被忽略的仓库文件清单（惰性建一次；`walk()` 从根递归会钻到 node_modules，所以自带剪枝）。 */
 /** 全仓文件清单（惰性建一次，键是 .gitignore 的规则集合）。分两份：未忽略的（= 克隆后仍在的）
  *  与被忽略的（= 只有本机有的）。被忽略目录照常下钻（要认得 e2e-wake.mjs 这种「裸名指向档案」），
- *  但安装位置与工作副本剪掉（node_modules/ 与 .worktrees/ 里是一整份别的仓库，钻进去又慢又脏）。 */
+ *  但安装位置与工作副本剪掉（node_modules/ 与 .worktrees/ 里是一整份别的仓库，钻进去又慢又脏）。
+ *
+ * `SIM_ABSENT_TASK_ARCHIVE`（#280，只给 `--self-test` 用，**不是豁免开关**）：把「本机根本没有任务档案
+ * 目录」这一**树形**模拟出来 = 全新 clone / CI / 一次性沙箱。实物只从两个地方渗进裁决——`resolveRef`
+ * 的裸名同名索引与 `bareNameNearest` 的实物清单——两处都读这份清单的 `ignored` 那一半，所以在这里
+ * 把 task-archive 类目录下的文件摘掉就等于「那个目录整目录不在」。声明一侧（.gitignore 规则、就地声明、
+ * 登记表）一个字都不动：要证的正是「裁决只依赖声明时，有实物与没实物两种树形必须给同一个结论」。
+ * 缓存键必须带上它，否则同一个进程里两种树形会互相吃到对方的缓存。 */
+let SIM_ABSENT_TASK_ARCHIVE = false;
 let repoFilesCache = null;
 function repoFiles(ign) {
-  const key = ign.rules.map((r) => r.pattern).join("\n");
+  const key = `${SIM_ABSENT_TASK_ARCHIVE ? "no-archive|" : ""}${ign.rules.map((r) => r.pattern).join("\n")}`;
   if (repoFilesCache && repoFilesCache.key === key) return repoFilesCache;
   const tracked = [];
   const ignored = [];
@@ -1411,8 +1419,24 @@ function repoFiles(ign) {
       else (underIgnored || ign.ruleFor(rel) ? ignored : tracked).push(rel);
     }
   })("", false);
-  repoFilesCache = { key, tracked, ignored };
+  const ignoredHere = SIM_ABSENT_TASK_ARCHIVE
+    ? ignored.filter((f) => !isUnderTaskArchive(ign, f))
+    : ignored;
+  repoFilesCache = { key, tracked, ignored: ignoredHere, simDropped: ignored.length - ignoredHere.length };
   return repoFilesCache;
+}
+
+/** 引用行与登记表都要问「这个名字是不是落在 task-archive 目录下」——与 repoFiles 的 SIM 过滤共用一份定义。 */
+function isUnderTaskArchive(ign, rel) {
+  const rule = ign.ruleFor(rel);
+  return !!rule && IGNORED_DIR_CLASSES.get(rule.pattern)?.kind === "task-archive";
+}
+/** 本机是否真的有 task-archive 类目录：用来区分「树形口子没落地（空跑，假绿）」与
+ *  「这棵树本来就没有那个目录（在全新 clone 里跑自测）」——后者里树形例退化成对照，不算失败。 */
+function taskArchiveDirPresent(ign) {
+  return [...IGNORED_DIR_CLASSES.entries()]
+    .filter(([, c]) => c.kind === "task-archive")
+    .some(([dir]) => existsSync(path.join(ROOT, dir)));
 }
 
 /** 三级解析：仓库根 → 文档同目录 → 全仓唯一同名。同名只认**唯一**命中（歧义不算解析成功，
@@ -1480,10 +1504,37 @@ function candidatePaths(rel) {
 /** 把一处解不到的引用归到四类里；解得出结论就返回 null。 */
 /** 分类台账：每条白名单被哪一处引用用到过，都在这里留痕；收尾时反查「登记了却没一处用上」的条目。 */
 const REF_CLASS_HITS = new Set();
+/** 台账之二（#280）：某条登记**被哪一处引用提到过**——在裁决**之前**记，与「那一处能不能放行」无关。
+ *  「白名单条目空转」回答的是「登记表里有没有没人用的条目」，不回答「引用能不能裁决」。
+ *  修前反向校只读 REF_CLASS_HITS，于是同一处引用一旦被判红，这里就**再补一条**「没有一处引用真正用到它」
+ *  ——引用明明在，只是那一轮没放行；两条错误互相打脸，还把真问题（那处引用为什么红）淹成噪声。
+ *  两张台账分开记：反向校「条目空转」只认这张（存不存在引用），放行证据才认那张（裁决结果）。 */
+const REF_REFERRING_HITS = new Set();
+let LAST_IGN = null;            // #280：collectPathErrors 用过的 .gitignore 规则（自测的树形例子要拿）
 const passAs = (key) => { REF_CLASS_HITS.add(key); return null; };
+/** 四张白名单登记表（反向校与「谁在用这条登记」共用一份定义，别再各处抄一遍） */
+const WHITE_LIST_TABLES = [
+  ["absent", EXPECTED_ABSENT_PATHS], ["external", EXTERNAL_REPO_PATHS],
+  ["archive", LOCAL_ARCHIVE_REFS], ["shorthand", SHORTHAND_REFS],
+];
+
+/** #280：「本机档案」这一类**只按声明裁决**（就地声明或 LOCAL_ARCHIVE_REFS 逐条登记），
+ *  不得要求实物在被 .gitignore 忽略的那个目录里解得到。修前把「实物解得到」当成放行的前提，
+ *  于是这条门禁的绿隐含依赖「检查机上恰好有 docs/tasks/」——同一提交在**全新 clone / CI / 一次性沙箱**
+ *  里必然红（与 #268「上一次运行的副作用决定门禁输出」同族的门禁不可复现）。
+ *  实物解得到时**顺带加固**（核到就加固）：解到被忽略目录下 = 已核实；解到**未忽略**的实物 = 它已入库，
+ *  「本机档案」的定义失效 → 红（这条与实物在不在无关，三种树形同判）。核不到实物（整目录不在本机）
+ *  → 不影响结论，按声明放行。返回 { ok, verified, why }。 */
+function localArchiveVerdict(p, ign, res = {}) {
+  const probe = res.ignoredPath ?? p.replace(/^\.\.?\//, "");
+  if (res.ignoredPath || ign.ruleFor(probe)) return { ok: true, verified: !!res.ignoredPath };
+  if (res.resolved) return { ok: false, why: `它现在仓库里解得到实物 ${res.resolved}（没被 .gitignore 忽略）` };
+  return { ok: true, verified: false };
+}
 
 /** 把一处解不到的引用归到四类里；能放行就返回 null，否则返回「为什么不放行」。 */
 function classifyAbsent(p, docRel, line, ign, res = {}) {
+  for (const [tag, table] of WHITE_LIST_TABLES) if (table.has(p)) REF_REFERRING_HITS.add(`${tag}:${p}`);
   if (EXPECTED_ABSENT_PATHS.has(p)) return passAs(`absent:${p}`);
   if (EXTERNAL_REPO_PATHS.has(p)) return passAs(`external:${p}`);
   const short = SHORTHAND_REFS.get(p);
@@ -1502,10 +1553,13 @@ function classifyAbsent(p, docRel, line, ign, res = {}) {
       : `白名单把它归为生成物（${gen.why}），但 .gitignore 并不忽略 ${probe}——生成物的定义已失效`;
   }
   if (LOCAL_ARCHIVE_REFS.has(p)) {
-    return ign.ruleFor(probe)
+    // #280：登记本身就是「这档案在本机、故意不入库」的声明，不得再拿「实物解不到」当反证——
+    // 全新 clone 里根本没有 docs/tasks/。能核到实物就加固，核不到不影响结论（见 localArchiveVerdict）。
+    const v = localArchiveVerdict(p, ign, res);
+    return v.ok
       ? passAs(`archive:${p}`)
       : `登记为本机档案（${LOCAL_ARCHIVE_REFS.get(p)}），但 .gitignore 并不忽略 ${probe}——`
-        + `它已入库或分类变了，请删掉这条登记（本机档案的定义已失效）`;
+        + `它已入库或分类变了，请删掉这条登记（本机档案的定义已失效）：${v.why}`;
   }
   const rule = res.rule ?? ign.ruleFor(probe);
   if (rule) {
@@ -1539,6 +1593,7 @@ function collectPathErrors() {
   const out = [];
   const notes = [];
   const ign = gitignoreMatcher(textOf(".gitignore"));
+  LAST_IGN = ign;   // #280：`--self-test` 的树形例子要靠它拿到同一份 .gitignore 规则（见 runSelfTest）
   for (const u of ign.unsupported) {
     out.push(`paths: .gitignore:${u.line} 用了取反规则 \`${u.pattern}\`，本脚本的极简匹配器不认——`
       + `要么改 .gitignore，要么在这里支持取反（不能默默把它当没忽略）`);
@@ -1552,6 +1607,7 @@ function collectPathErrors() {
       + `被忽略目录里的引用要不要放行，得由分类决定，不许默默放行新目录`);
   }
   REF_CLASS_HITS.clear();
+  REF_REFERRING_HITS.clear();
   let excusedArchive = 0;
   for (const rel of PATH_DOCS) {
     const { refs, commands } = candidatePaths(rel);
@@ -1618,6 +1674,15 @@ function collectPathErrors() {
         const bare = !p.includes("/") && BARE_FILE_RE.test(p) && BARE_NAME_ADJUDICATED;
         const mentionsTaskArchive = /(^|[^-\w])docs\/tasks\//.test(lineText);
         if (looksLikeFile && mentionsTaskArchive) {
+          // #280：这一支过去**不问登记也不问声明**，直接判红。于是「已登记的裸名」在没有 docs/tasks/ 的
+          // 树形里会被说成「也不在 LOCAL_ARCHIVE_REFS 登记里」（它明明登记着），并连带把白名单反向校
+          // 打成「条目空转」。现在先走同一套四类裁决：已登记/已就地声明 → 按声明放行（实物核到就加固，
+          // 核不到不影响结论）；只有**既未登记又未声明**的才继续拿下面那句点名（措辞与 #273 一致）。
+          if (classifyAbsent(p, rel, line, ign, r) === null) {
+            excusedArchive += 1;
+            if (bare) { bareCensus.seen += 1; bareCensus.adjudicated += 1; bareCensus.excused += 1; }
+            continue;
+          }
           // 引用行自己就在讲任务档案 → 无论有无斜杠都按「本机档案」判（#273 定的口径，措辞不变）。
           const stem = (s2) => s2.replace(/\.[^.]+$/, "");   // 去扩展名后比前缀：改名（加/删一个字符）必然落在同一前缀里
           const twin = [...LOCAL_ARCHIVE_REFS.keys()].find((k) => k !== p
@@ -1667,10 +1732,14 @@ function collectPathErrors() {
   notes.push(`bare-names: 无斜杠裸名裁决面——需裁决 ${bareCensus.adjudicated}（放行 ${bareCensus.excused}、红 ${bareCensus.red}，其中近邻判据 ${bareCensus.nearRed}）、`
     + `跳仓文档点名豁免 ${bareCensus.crossRepoSkipped} 处（${CROSS_REPO_DOCS.size} 份逐份点名的文档，无目录通配）`);
   // 白名单也要校：没人引用的条目就是「为不存在的引用留后门」，同样算检查面腐坏。
-  const tables = [["absent", EXPECTED_ABSENT_PATHS], ["external", EXTERNAL_REPO_PATHS], ["archive", LOCAL_ARCHIVE_REFS], ["shorthand", SHORTHAND_REFS]];
+  const tables = WHITE_LIST_TABLES;
   for (const [tag, table] of tables) {
     for (const p of table.keys()) {
-      if (REF_CLASS_HITS.has(`${tag}:${p}`)) continue;
+      const hitKey = `${tag}:${p}`;
+      if (REF_CLASS_HITS.has(hitKey)) continue;
+      // #280：与「引用能否裁决」解耦——这条引用**存在**、只是那一轮没能放行，那条红已经点名了它；
+      // 这里不许再补一句「没有一处引用真正用到它」（引用明明在，只是未放行）。两条一起报只会互相打脸。
+      if (REF_REFERRING_HITS.has(hitKey)) continue;
       out.push(`paths: 白名单条目 \`${p}\` 没有一处引用真正用到它——要么它现在已能直接解析到（那就该删），`
         + `要么被检文档（${PATH_DOCS.join(", ")} + 全仓 .md）里已没人引用它；留着就是给未来的漂移留后门`);
     }
@@ -1689,11 +1758,19 @@ function collectPathErrors() {
   }
   // 登记表自己也要被 .gitignore 校：「本机档案」的定义就是「被忽略目录里的档案」，目录不再忽略
   // 它就该销账（#273：分类真的读 .gitignore，不是只写在注释里）。
+  let archiveUnverifiable = 0;
   for (const [p, why] of LOCAL_ARCHIVE_REFS) {
     // 登记可能是裸名（examples README 同句举的脚本名），先走同一套三级解析再问 .gitignore。
     const res = resolveRef(p, PI_EXT_README, ign);
-    const rule = res.ignoredPath ? res.rule : ign.ruleFor(p.replace(/^\.\.?\//, ""));
-    if (rule && IGNORED_DIR_CLASSES.get(rule.pattern)?.kind === "task-archive") continue;
+    // #280：登记表自己的反向校也**不得依赖实物存在**。裸名在 .gitignore 里根本无从校（`docs/tasks/` 是
+    // 目录规则，裸名不带目录），旧实现只认「实物解到 task-archive 目录下」，于是同一提交在全新 clone 里
+    // 会把每一条裸名登记都判成「登记已失效」。现在能判红的只剩「解到了未忽略的实物」（= 已入库），
+    // 那条与本机有没有那个目录无关，在任意树形上同判。
+    const v = localArchiveVerdict(p, ign, res);
+    if (v.ok) {
+      if (!v.verified) archiveUnverifiable += 1;   // 核不到实物（树形里没有 task-archive 目录）：按声明放行
+      continue;
+    }
     // 逐份点名「谁在拿这条登记当护身符」：登记失效 = 那些引用同时失去裁决依据（#273：分类真的读 .gitignore）。
     const bn = path.posix.basename(p);
     const refDocs = [...PATH_DOCS, ...repoFiles(ign).tracked.filter((f) => f.endsWith(".md") && !PATH_DOCS.includes(f))]
@@ -1702,6 +1779,10 @@ function collectPathErrors() {
       out.push(`archive-refs: ${d} 登记的 \`${p}\` 登记为本机档案（${why}），但 .gitignore 并不忽略它`
         + `——本机档案的定义就是「被 task-archive 目录忽略的本机文件」，登记已失效，请删登记或改 .gitignore`);
     }
+  }
+  if (archiveUnverifiable) {
+    notes.push(`archive-refs: ${archiveUnverifiable} 条本机档案登记在当前树形里核不到实物（没有 docs/tasks/ 的树形：全新 clone / CI / 一次性沙箱）`
+      + `——按声明放行（#280：这类裁决不得依赖实物存在，否则门禁在克隆机上永远红）`);
   }
   const dirClsUsed = [...REF_CLASS_HITS].filter((k) => k.startsWith("dircls:"));
   notes.push(`paths: 被忽略目录的分类被用到的有 ${dirClsUsed.length ? dirClsUsed.map((k) => k.slice(7)).join(", ") : "（无）"}`);
@@ -2018,6 +2099,25 @@ const SELF_TEST_CASES = [
     expect: [/白名单条目 `e2e-wake\.mjs` 没有一处引用真正用到它/],
   },
 
+  // —— #280：门禁不得隐含依赖「检查机上恰好有被 .gitignore 忽略的 docs/tasks/」（修前全新 clone 必红）——
+  {
+    label: "#280 树形对照：本机没有 docs/tasks/（全新 clone / CI / 一次性沙箱）时，本机档案类必须整片绿",
+    // 修前：同一提交在 `git archive HEAD` 解出来的树里 check:docs exit 1（10 条）、工作树里 exit 0——
+    // 「本机档案」的裁决把「实物在 docs/tasks/ 下解得到」当成了放行前提。这一例把那棵树的形状钉进自测：
+    // 声明一侧（登记表 / 就地声明 / .gitignore 规则）一个字没动，只把实物从清单里摘掉，必须仍 0 错。
+    simulateAbsentTaskArchive: true,
+    expectGreen: true,
+  },
+  {
+    label: "#280 上一例的绿不是「整类不裁决」：同一空树形里把已登记裸名改成未登记的假名 → 仍红",
+    // 「本机档案默认按声明放行」很容易被糊成「干脆整类不裁决」——这条就是抓它的：树形一样是空的，
+    // 但引用改成了既未登记、也解不到的假名，必须照样红并点名那处引用（与上一例共用同一个树形口子）。
+    simulateAbsentTaskArchive: true,
+    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t.replace("`e2e-wake.mjs`", "`e2e-wake-cloneQ.mjs`") },
+    expect: [/archive-refs: docs\/research\/2026-10-13[\s\S]*`e2e-wake-cloneQ\.mjs`（第 \d+ 行）[\s\S]*本仓不存在/],
+    expectFiles: ["docs/research/2026-10-13-pi-subagents-async-attribution.md"],
+  },
+
   // —— bare-names：无斜杠裸名的通用裁决 + 近邻判据（issue #278；下面四条修前**全是 exit 0**）——
   {
     label: "#278-P2 改坏**已登记**的裸名（`repro-circular-details.mjs` 多个 Q）→ 红（修前 exit 0：脱离登记就静默放行）",
@@ -2137,7 +2237,7 @@ function runSelfTest() {
   }
   for (const c of SELF_TEST_CASES) {
     let ok = true;
-    for (const [rel, mutate] of Object.entries(c.overlay)) {
+    for (const [rel, mutate] of Object.entries(c.overlay ?? {})) {   // #280：纯树形例可以不带 overlay
       const before = read(rel);
       const after = mutate(before);
       if (after === before) {
@@ -2148,8 +2248,23 @@ function runSelfTest() {
       OVERLAY.set(rel, after);
     }
     if (!ok) { OVERLAY.clear(); continue; }
-    const errs = run();
-    OVERLAY.clear();
+    // #280：有的锚点要测的不是文件**文本**而是**树形**（本机有没有那个被 .gitignore 忽略的任务档案目录）。
+    // 树形用 SIM_ABSENT_TASK_ARCHIVE 这个口子模拟（只影响实物清单，声明一侧一律不动），跑完必须还原。
+    const simSaved = SIM_ABSENT_TASK_ARCHIVE;
+    SIM_ABSENT_TASK_ARCHIVE = !!c.simulateAbsentTaskArchive;
+    let errs = [];
+    let simDropped = -1;
+    try {
+      errs = run();
+      simDropped = LAST_IGN ? repoFiles(LAST_IGN).simDropped : 0;
+    } finally { SIM_ABSENT_TASK_ARCHIVE = simSaved; OVERLAY.clear(); }
+    // #279 的教训：「变异没落上」的空跑会交出一条假的绿。树形口子也一样——本机确实有任务档案实物、
+    // 却一个都没从清单里摘掉，就是 SIM_ABSENT_TASK_ARCHIVE 没接进 repoFiles。本机本来就没那个目录
+    // （在全新 clone 里跑自测）时这一例退化成对照，不算失败。
+    if (c.simulateAbsentTaskArchive && LAST_IGN && taskArchiveDirPresent(LAST_IGN) && simDropped === 0) {
+      failures.push(`${c.label}：树形口子没落上（说要模拟「没有 docs/tasks/」，但实物清单一条都没摘掉）`);
+      continue;
+    }
     if (c.expectGreen) {
       if (errs.length) {
         failures.push(`${c.label}：变异之后本该绿（这条是在证「白名单/就地声明真的在放行」），实测 ${errs.length} 处红：\n      ${errs.join("\n      ")}`);
