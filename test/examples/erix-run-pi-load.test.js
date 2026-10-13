@@ -14,6 +14,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { STRATEGY_NAMES } from "../../examples/pi-extension/erix-run-core.js";
+import { SYNC_RESULT_FIELDS } from "../../examples/pi-extension/erix-run-jobs.js";
 import { assertMachineReadableResult } from "./plain-data.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -102,14 +103,44 @@ test("pi 装载器能加载 erix-run.ts 并注册 erix_run（离线，不触网�
   }
   // #234：outputSchema 仍只描述同步终局面（异步句柄与 action 结果的可机读数据在 details）
   assert.equal("kind" in (definition.outputSchema.properties ?? {}), false,
-    "异步面不能把同步终局的 13 个字段改软");
-  // #207 R4：返回面形状（artifacts 可空，但不允许缺）
+    "异步面不能把同步终局的 15 个字段（#277 后含 verification/error）改软");
+  // —— issue #277 的锚点（主看守，先跑）：把「真值源派生的字段表」与「已发布的 outputSchema 承诺」绑在一起。
+  // 方向 = SYNC_RESULT_FIELDS ⊆ schema.properties 的键（schema 是承诺的下限，视图允许额外给运行时事实）：
+  //   ① 从 schema 删一个键 → 本锚点红；② 真值源（core 的两个载荷构造器）加一个字段而 schema 不补 → 也红。
+  // 为什么必须是**派生值**而不是又一份写死清单：#276 之前两个面都是手抄，#276 只修了异步视图，
+  // 本单修的是 schema——只钉一份写死的键清单，下次上游加字段仍然会逐处漏。
+  assert.deepEqual(
+    [...SYNC_RESULT_FIELDS].sort(),
+    [...SYNC_RESULT_FIELDS].filter((field) => field in (definition.outputSchema.properties ?? {})).sort(),
+    `这些同步终局字段真值源在返、异步视图在投，而 outputSchema 没声明（按 schema 读的宿主看不见它们）：`
+    + SYNC_RESULT_FIELDS
+      .filter((field) => !(field in (definition.outputSchema.properties ?? {})))
+      .join(","),
+  );
+  // #207 R4：返回面形状（artifacts 可空，但不允许缺）。
+  // #277：下面这份写死清单是上面那条锚点的**镜像**（13 键 → 15 键：补 `verification`、`error`）；
+  // 它还能钉住另一个方向——schema 多声明一个真值源不返的键时，锚点不红、它红。
   assert.deepEqual(
     Object.keys(definition.outputSchema.properties).sort(),
-    ["aborted", "artifacts", "diagnostics", "extensionCount", "finalText", "maxExtensions", "ok",
-      "resumable", "rounds", "termination", "timeout", "truncated", "usage"],
+    ["aborted", "artifacts", "diagnostics", "error", "extensionCount", "finalText", "maxExtensions",
+      "ok", "resumable", "rounds", "termination", "timeout", "truncated", "usage", "verification"],
   );
   assert.equal("artifacts" in definition.outputSchema.properties, true);
+
+  // #277：新补的两键形状——都是 Optional（error 只在抛错路径、verification 在早退路径可以是 undefined），
+  // 已有键的必填性一字未动（additive）。
+  const outProps = definition.outputSchema.properties;
+  const outRequired = definition.outputSchema.required ?? [];
+  for (const field of ["verification", "error"]) {
+    assert.equal(field in outProps, true, `#277：${field} 必须在 outputSchema 里`);
+    assert.equal(outRequired.includes(field), false, `#277：${field} 是 Optional，不能把缺省语义改软`);
+  }
+  assert.equal(outProps.verification.properties.status.type, "string");
+  assert.deepEqual(Object.keys(outProps.error.properties).sort(), ["code", "message", "name", "stage"]);
+  for (const field of ["ok", "finalText", "rounds", "truncated", "usage", "termination",
+    "timeout", "aborted", "artifacts", "extensionCount", "maxExtensions", "resumable"]) {
+    assert.equal(outRequired.includes(field), true, `#277 只许加键：${field} 的必填性不得被改软`);
+  }
 
   // execute() 的失败路径：参数不合法时返回 isError 结果（docs：failure that still carries data 用 isError，别抛）
   const updates = [];

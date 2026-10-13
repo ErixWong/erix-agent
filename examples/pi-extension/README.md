@@ -159,7 +159,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
 一旦里面混了活对象，序列化一抛就白烧一轮 auto-retry（见「返回结构」节里的
 「`details` 必须可 JSON 序列化（issue #237）」）。
 `outputSchema` / `structuredContent` **仍只描述同步终局面**——异步面塑进同一个 schema 就得把
-13 个字段全改 optional，把「同步终局一定有四件套」这条承诺改软，不值得。
+同步终局的那 15 个字段（#277 起含 `verification` 与错误路径的 `error`）全改 optional，把「同步终局一定有四件套」这条承诺改软，不值得。
+而「异步视图的字段 ⊆ `outputSchema` 声明的字段」这条包含关系本身由 `test/examples/erix-run-pi-load.test.js`
+的锚点守（它回读 `SYNC_RESULT_FIELDS` 那个派生值，不是第三份手抄清单）：上游加一个同步字段而 schema 不补，当场红。
 `model` 是宿主请求的覆盖值；没传就是 `null`（= 用配置槽位的模型），不编一个名字。
 
 ### 2. job 注册表与 `status.json`
@@ -469,6 +471,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
   "maxExtensions": 0,                      // 本次生效的扩轮上限：judge 没开就是 0；开着且未传参 = 引擎缺省 2
   "resumable": false,                      // 终局能不能续跑：R2 未落地，本单一律 false
   "verification": { "status": "skipped" },  // 引擎的验证结论（来自 runToolLoop 的返回）；没给时是 undefined，JSON 里不落盘
+  "error": { "name": "Error", "message": "…", "code": "…", "stage": "…" },  // **只在抛错路径**：成功载荷里没这个键（#277：两个面都真会返它，schema 已声明）
   "diagnostics": {
     "observerErrors": { "count": 0, "samples": [] },
     "modelMetadataMissing": null,

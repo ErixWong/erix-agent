@@ -192,6 +192,37 @@ const artifactsSchema = Type.Object({
   judgeLogPath: Type.Union([Type.String(), Type.Null()]),
 });
 
+/**
+ * 引擎的验证结论（issue #277：此前只在真值源里、schema 没声明，模型按 schema 读就看不见它）。
+ * 形状 = `runToolLoop` 返回的 `verification`（`src/loop/termination.js:271` 处组装：
+ * `{...ctx.verification, metrics: {...ctx.guardMetrics}}`），口径见
+ * `docs/host-consumer-contract.md`「Final-answer verification」。
+ * `status` 是**字符串而不是 enum**：契约现有四值（`verified`/`skipped`/`unverified`/`error`），
+ * 但引擎加第五个值时不该让这条已发布承诺反过来变成「视图比 schema 多」的新漂移（本单修的就是这个方向）。
+ */
+const verificationSchema = Type.Object({
+  status: Type.String({
+    description:
+      "引擎对最终答案的验证结论：verified / skipped / unverified / error（缺 finalGuard 时是 skipped + reason=no_final_guard）。"
+      + "end_turn 不是交付证明——只有 verified 才可当已验证事实消费。",
+  }),
+  reason: Type.Optional(Type.String()),
+  detail: Type.Optional(Type.String()),
+  // 引擎的 guardMetrics 计数（verified/skipped/revised/unverified/guard_error），键集随引擎演进，故用 Record。
+  metrics: Type.Optional(Type.Record(Type.String(), Type.Number())),
+});
+
+/**
+ * 抛错路径的结构化错误（issue #277：`buildErrorPayload` 一直在给，schema 从来没声明）。
+ * 只在**错误路径**出现，成功载荷里没有这个键——所以它是 Optional，而不是「改软」。
+ */
+const errorPayloadSchema = Type.Object({
+  name: Type.String(),
+  message: Type.String(),
+  code: Type.Optional(Type.String()),
+  stage: Type.Optional(Type.String()),
+});
+
 const payloadSchema = Type.Object({
   ok: Type.Boolean(),
   finalText: Type.String(),
@@ -199,6 +230,12 @@ const payloadSchema = Type.Object({
   truncated: Type.Boolean(),
   usage: usageSchema,
   termination: terminationSchema,
+  // issue #277：这两个键真值源（core 的 `buildSuccessPayload`/`buildErrorPayload`）一直在给，
+  // 异步视图（#276 起从真值源派生）也一直在投，而 schema 漏声明 → 按 schema 读的宿主会看不见。
+  // 两个都是 Optional：`verification` 在早退路径上可以是 undefined（JSON 里不落这个键），
+  // `error` 只在抛错路径出现——声明在场不等于把缺省语义改软。
+  verification: Type.Optional(verificationSchema),
+  error: Type.Optional(errorPayloadSchema),
   timeout: Type.Boolean(),
   aborted: Type.Boolean(),
   // issue #207 R4：决策事实。
@@ -210,11 +247,15 @@ const payloadSchema = Type.Object({
 });
 
 /**
- * 本工具的 `outputSchema` 只描述**同步终局面**（#207/#234 之后的现状，形状与 #207 逐字相同）。
+ * 本工具的 `outputSchema` 只描述**同步终局面**（#207 定的形状；#234 只加了异步面与参数面，
+ * #277 在上面补了真值源一直在给的 `verification` 与 `error`——additive，已有键一字未动）。
  * 异步派工句柄与 `action` 查询结果的可机读数据放在 `AgentToolResult.details` 里
  * （照 pi-subagents 的 `result.details.progress` 口径），文本面在 `content`。
- * 理由：MCP 的 outputSchema 根节点得是 object，把异步面塞进同一个 schema 要么把 13 个字段
+ * 理由：MCP 的 outputSchema 根节点得是 object，把异步面塞进同一个 schema 要么把同步终局的字段
  * 全改 optional（把「同步终局一定有四件套」这条承诺改软），要么上 Union（未验证 pi 会不会二次校验）。
+ * issue #277：同步终局面本身是 **15 个键**（含 `verification` 与错误路径的 `error`）——数字写在这里
+ * 会过期，真正的看守是 `test/examples/erix-run-pi-load.test.js` 那条「`SYNC_RESULT_FIELDS` ⊆
+ * `outputSchema.properties` 的键」锚点（真值源加字段而 schema 不补 → 当场红）。
  */
 
 export const erixRunTool = defineTool({
@@ -223,9 +264,9 @@ export const erixRunTool = defineTool({
   description:
     "把一个自包含的编码任务交给内嵌的 erix-agent headless 运行时执行：它会在给定目录里跑完整的"
     + "多轮工具循环（readFile/rg/grep/tree/writeFile/exec），自己读写文件并执行命令。"
-    + "返回结构化终局 {finalText, rounds, usage, termination, artifacts, extensionCount, maxExtensions, resumable, diagnostics, timeout}；"
+    + "返回结构化终局 {finalText, rounds, usage, termination, verification, artifacts, extensionCount, maxExtensions, resumable, diagnostics, timeout}；"
     + "termination.reason 是引擎裁决（end_turn/judge_done/no_tool/stall/max_rounds_cap/aborted/failed…），"
-    + "失败时读 termination.errorCode 再决定重试；artifacts 给出过程产物（transcript / judge.log）的真路径，未落盘为 null。"
+    + "失败时读 termination.errorCode 再决定重试；verification.status 是引擎对最终答案的验证结论（只有 verified 可当已验证事实，end_turn 本身不是）；artifacts 给出过程产物（transcript / judge.log）的真路径，未落盘为 null。"
     + "async:true 时立即返回句柄 {runId,status,cwd,model,maxRounds,sessionDir,statusPath}（主会话不阻塞），"
     + "之后用 action:\"status\"/\"result\"/\"list\"/\"cancel\" 查与控；完成时终局摘要会作为通知回到本会话。"
     + "每次调用都是一次完整多轮 run，成本不低。",
@@ -234,6 +275,7 @@ export const erixRunTool = defineTool({
     "erix_run 的 cwd 必须是绝对路径，task 必须自包含（内层 run 看不到本次会话历史）。",
     "erix_run 每次调用都是一次完整多轮 run（多次模型调用）；只在任务确实需要多轮自主执行时用。",
     "erix_run 返回 ok:false 时先读 termination.reason / termination.errorCode / diagnostics 再决定下一步，别盲目重跑。",
+    "erix_run 的 verification.status 是引擎的验证结论（verified/skipped/unverified/error）：只有 verified 才可当已验证事实消费；缺 finalGuard 时恒为 skipped，end_turn 本身不是交付证明。",
     "要过期内审内层过程时传 sessionDir：返回的 artifacts.transcriptPath / artifacts.judgeLogPath 是真路径（null = 本次没落盘）。",
     "erix_run 的终局不可续跑（resumable 恒 false）；要重试就重跑一次，别期待 resume。扩轮只在 maxRounds ≥ 16 开了 judge 后才会发生。",
     "要「派工即返回、不阻塞主会话」就传 async:true 并带上 sessionDir，拿住返回的 runId；之后用 action:\"status\" 查进度、action:\"result\" 取终局四件套 + artifacts、action:\"cancel\" 取消（终局记成 aborted）。",
