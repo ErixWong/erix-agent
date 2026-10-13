@@ -347,6 +347,38 @@ pi --extension ./examples/pi-extension/erix-run.ts
   会带引擎的 `model_metadata_missing` detail（装配自查断言点）。
 - 缺 `endpoint` / `model` / key → `config_invalid`；文件不存在 → `config_missing`（消息里带路径）。
 
+### 思考档（reasoning effort）：工具参数口子里没有，**配置槽位里一行就能设**（主 agent 2026-10-13 抓包实测）
+
+本扩展的**工具参数面没有思考档**（`erix-run.ts` 的参数清单里不含 `thinking` / `reasoning_effort`），
+但**配置槽位里任意额外键会一路透传到请求体**——三处都是摊平、**没有白名单**：
+
+| 环节 | 位置 | 行为 |
+|---|---|---|
+| 读配置文件 | `src/config/json-file.js:39` | `return { ...config }` |
+| erix_run 读槽位 | `erix-run-core.js:639` | `const resolved = { ...slot }` |
+| 造 provider | `erix-run-core.js:679` | `createOpenAIProvider({ ...slot, … })`，而 `src/providers/openai.js` 具名收 `thinking` / `reasoning_effort` / `enable_thinking` / `thinking_format` |
+
+```json
+{
+  "slots": {
+    "default": {
+      "endpoint": "https://<relay>/v1",
+      "model": "<模型名>",
+      "apiKey": "sk-…",
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 65536,
+      "reasoning_effort": "medium"
+    }
+  }
+}
+```
+
+- **可选值只有四个**：`xhigh` / `medium` / `low` / `none`（逐个打真请求实测）。**不写 = 服务端默认 = `xhigh`**（relay 的 400 文案原文就写着 `Supported types are xhigh (default), medium, and low`）。
+- **写错不是静默忽略，是整单硬失败**：`high` / `minimal` / `auto` 被 **400 拒**，抛的是 `KitError code=invalid_request status=400 `**`retryable=false`**——因为不可重试，本扩展传的 `retry: { attempts: 2 }`（`erix-run-core.js:980`）**根本不触发**，**第 1 轮就死单**。
+- **与 pi 侧的对应关系**（同一个 relay，解释了两边为什么可比）：pi 的 `models.json` 里 `thinkingLevelMap: {"high":"xhigh","max":null,"xhigh":null}` —— pi 的 high 上线就是 `xhigh`，medium/low 原样透传（relay 认这两个）。**所以「pi 的 high」与「erix 不设」是同一档**，不是两档。
+- **代价参考**（pi 侧会话日志的 usage，两张同规模单）：`xhigh` 平均 **671** reasoning token/请求、单次请求中位 **12.5s**；`medium` 平均 **294**、中位 **8.9s**。**要不要降是宿主的选择，本扩展不代替你定。**
+
+
 ## 内层工具集
 
 **复用本仓 CLI 的同一装配函数** `bin/tools.js` 的 `createCliTools({ cwd, todo })`（不复制实现）：
