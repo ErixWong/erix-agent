@@ -17,11 +17,24 @@
 //                 （issue #210：缺键/多键/改名/写重都红，并点名差在哪个键）；
 //                 test/contract/index.js 再导出的套件必须真的在 npm files 白名单里
 //   4. modulemap  src/ 下每个 .js 都必须出现在中英 README 的模块地图里
-//   5. paths      README 引用的仓库内路径与 node <file> / npm run <script> 命令必须存在
-//   6. skeleton   中英 README 标题数量与层级骨架必须一致（做法参考 docs-sync-check.mjs，更轻）
+//   5. paths      中英 README + 中英契约 + `examples/pi-extension/README.md` + 中英 AGENTS 里引用的
+//                 仓库内路径，以及 `node <file>` / `npm run <script>` 命令，必须存在（issue #273：
+//                 覆盖面从「两个根 README」扩到「宿主/使用者真的会照着找文件的那批入口文档」）。
+//                 解析按 仓库根 → 文档同目录 → 唯一同名文件 三级；解析不到的按**四类**裁决（见下方
+//                 「引用裁决分类」），**没一个能整目录/整前缀豁免**
+//   6. skeleton   中英 README 标题数量与层级骨架必须一致（做法参考 docs-sync-check.mjs，更轻）；
+//                 `AGENTS.md` / `AGENTS_cn.md` 这一对同样纳入（issue #274 附带项）
 //   7. anchors    「清单/枚举/单位」类锚点升级为**逐处一致 + 双向对称**（issue #210 R1）：
 //                 文件工具清单、CLI 工具清单、vendor 跳过目录、formatSize 单位档位与它的
 //                 示例映射、内置压缩策略名——每一处声明单独与源码真值比，另加中英声明点处数对账
+//   8. markers    marker **字面量**同源（issue #272）：契约中英引用的 `toolMarker("readMoreLines")`
+//                 输出串，必须逐字等于从 `src/tools/file-tools.js` 的模板 + `NEXT_STEP_CLAUSE` 渲染
+//                 出来的那份（文档占位符 `N`/`M`/`K`/`<size>` 与插值表达式的对应表就写在规则里，
+//                 模板里出现**未登记的插值**会直接红）；逐处比对，另加中英引用处数对账
+//   9. baseline   `AGENTS*.md` 里声称的 `--checkJs` 棘轮**当前值**（issue #274）：与
+//                 `scripts/type-check-ratchet.mjs` 的 `BASELINE_ROOT` / `BASELINE_WITH_TOOLS` 逐处比，
+//                 额外核「`164 = 121 + 27 + 16`」这类分解式的算术闭合（首项必须 = 包根基线、
+//                 总和必须 = 并集基线），中英句式处数成对
 //
 // 锚点粒度（issue #210 R3：**别把「存在性」锚点误当成「文档里删一处提及就会红」**）：
 //   · 存在性（每档被检查文档至少命中一次即可；同一句里删掉额外一处提及不会红）：
@@ -29,8 +42,10 @@
 //       modulemap（只查 src→文档 方向：地图多写文件不会红）、paths（只查文档→仓库 方向）
 //   · 逐处一致（每一处声明都单独比，缺/多/改名/写重都红）：
 //       version 的「当前版本」声明与「不得高于 package.json」的全量版本号扫描、
-//       pkg-block 的 files/exports（双向对称）、anchors 的清单/枚举/单位规则
-//   · 中英对账（比的是处数与数量级）：skeleton 的标题数与层级序列、anchors 的声明点处数
+//       pkg-block 的 files/exports（双向对称）、anchors 的清单/枚举/单位规则、
+//       markers 的 marker 字面量（#272）、baseline 的棘轮当前值（#274）
+//   · 中英对账（比的是处数与数量级）：skeleton 的标题数与层级序列（README **与** AGENTS 两对）、
+//       anchors 的声明点处数、markers 的引用处数、baseline 的句式处数
 //   未升级成逐处一致的条目，理由逐条写在对应规则的注释里（#210「不能机械化的写明为什么」）：
 //   数值型 defaults 条目在文档里的句式是散文级的多种写法，强行套「声明句式正则」会把门禁
 //   变成对措辞的绑架（改一次措辞就红，且红了也不知道是真漂移还是措辞漂移）；它们的
@@ -73,6 +88,10 @@ const REQ_EN = "docs/requirements.md";
 const REQ_CN = "docs/requirements_cn.md";
 const CONTRACT_EN = "docs/host-consumer-contract.md";
 const CONTRACT_CN = "docs/host-consumer-contract_cn.md";
+const AGENTS_EN = "AGENTS.md";
+const AGENTS_CN = "AGENTS_cn.md";
+const PI_EXT_README = "examples/pi-extension/README.md";
+const RATCHET_SRC = "scripts/type-check-ratchet.mjs";
 
 function read(rel) {
   return readFileSync(path.join(ROOT, rel), "utf8");
@@ -449,6 +468,21 @@ for (const rule of DEFAULT_RULES) {
 // 「抽不到真值就报错」（#164 口径）保留：源码形状变了 → error；文档里一处声明都抽不到 → error
 // （检查面失效本身就是漂移）。
 //
+// 下面这份「新增为什么值得升级到逐处」与紧接的「没升级」记录是对称的两份（#210 R3 的口径是
+// 「没升级的必须写理由」，不是「升级了的不用写理由」）：
+//   · markers（#272）：真值是源码里的**一个 template literal**，文档写的是它的占位符实例化形式
+//     （`N`/`M`/`K`/`<size>`），两侧都是定长字符串，逐字比对不会变成措辞绑架（那正是数值型 defaults
+//     不敢升级的理由，这里不存在）。实证代价：把 EN 契约里的 `（文件 <size>）` 段删掉后，`check:docs`
+//     与 `check:docs:strict` 都还是 exit 0，只有 #267 加的**源码↔文档**测试会红——而文档是宿主
+//     唯一读得到的面，那个测试又不进任何门禁。
+//   · baseline（#274）：AGENTS 里那两个基线数是 `scripts/type-check-ratchet.mjs` 里两个常量的**复述**，
+//     复述句式可枚举（`BASELINE_ROOT = N`、「基线常量 **N**」、「基线 **N** / 31 个文件」、「= 121 + 27 + 16」），
+//     分解式还能自证算术。实证代价：#265 的 CHANGELOG 条目把棘轮写成开发中途的 `142→138 / 185→181`
+//     （落树终局是 121 / 164），当时随提交留下了；#270 手工改了中英共 11 处当前值，全靠人逐字读。
+//   · paths（#273）：覆盖面本身就是检查面。同一条不存在的仓内路径写进根 README 会 exit 1，写进
+//     `examples/pi-extension/README.md` 却 exit 0（那个文件里一整段「已验证」叙述引用的测试文件名
+//     全部无人校）——规则有效而覆盖面漏了，是比「规则本身弱」更便宜的一种修。
+//
 // 「声明点」的判据（诚实的边界，别当成真值）：一处清单声明 = 反引号/双引号包住的 token，用 `/`、
 // `|`、`,`、`;`、`、` 或 `与`/`和`/`and` 这类连接符连成的序列，**或**单个反引号里的 `a | b | c`
 // 取值串；并且它命中的真值成员数 ≥ ⌈|真值|×0.75⌉。阈值是判据：它把「`rg` / `grep` / `tree` 顺带
@@ -781,6 +815,242 @@ function collectAnchorErrors() {
   return out;
 }
 
+// ── 2.6 marker **字面量**同源（issue #272）───────────────────────────────────
+// #267 只修了「源码模板 + NEXT_STEP_CLAUSE 不许被改形」（test/tools/file-tools.test.js），
+// 没修「**文档引用的字面必须等于那份模板**」。后果：把 EN 契约里的 `（文件 <size>）` 段删掉，
+// check:docs 与 check:docs:strict 都还是 exit 0。本规则把那一层接上：
+//   真值侧 = toolMarker() 里 `case "readMoreLines"` 的 template literal + `NEXT_STEP_CLAUSE` 常量；
+//   文档侧 = 形如 `[共 …]` 的那一处引用。两侧都是定长字符串，逐字比。
+// 文档写的是模板的**占位符实例化**（它不能替模型填数），所以两边不会全等；对应关系就是下面
+// 那张 `placeholders` 表。**模板里出现未登记的插值 → 直接红**（源码给 marker 加了新值，而文档
+// 与本脚本都还不知道），而不是默默用旧字面去比。
+const MARKER_LITERAL_RULES = [
+  {
+    id: "readMoreLines marker 字面（契约中英引用）",
+    src: "src/tools/file-tools.js",
+    kind: "readMoreLines",
+    docs: [CONTRACT_EN, CONTRACT_CN],
+    placeholders: [
+      ["values.total - values.offset", "M"],
+      ["formatSize(Number(values.size))", "<size>"],
+      ["values.total", "N"],
+      ["values.offset", "K"],
+    ],
+  },
+];
+
+/** 把源码模板渲染成「文档应该写的那份字面」。 */
+function renderMarkerDocLiteral(srcText, rule) {
+  const clause = srcText.match(/const NEXT_STEP_CLAUSE = "([^"]+)";/)?.[1];
+  if (!clause) return { error: `在 ${rule.src} 里抽不到 NEXT_STEP_CLAUSE——#267 钉下的字面已不存在` };
+  const tplSrc = `case "${rule.kind}":(?:(?!\\bcase\\b)[\\s\\S])*?return\\s*` + "`([^`]*)`" + `;`;
+  const tpl = srcText.match(new RegExp(tplSrc))?.[1];
+  if (!tpl) return { error: `在 ${rule.src} 里抽不到 toolMarker("${rule.kind}") 的模板（case 分支或 return 写法变了）——本规则检查面失效` };
+  let out = "";
+  let rest = tpl;
+  const unmapped = [];
+  while (rest.length) {
+    const m = rest.match(/\$\{([^}]*)\}/);
+    if (!m) { out += rest; break; }
+    out += rest.slice(0, m.index);
+    const expr = m[1].trim();
+    if (expr === "NEXT_STEP_CLAUSE") {
+      out += clause;
+    } else {
+      const hit = rule.placeholders.find(([e]) => e.replace(/\s+/g, " ") === expr.replace(/\s+/g, " "));
+      if (!hit) { unmapped.push(expr); out += `⟨${expr}⟩`; }
+      else out += hit[1];
+    }
+    rest = rest.slice(m.index + m[0].length);
+  }
+  if (unmapped.length) {
+    return { error: `模板里有未登记的插值 \${${unmapped.join("} 与 \${")}}：源码给 marker 加了新值，`
+      + `请把文档占位符与本脚本 placeholders 表一起补上（否则检查面会拿旧字面去比新真值）` };
+  }
+  return { literal: out, lead: tpl.slice(0, tpl.indexOf("${")) };
+}
+
+function collectMarkerLiteralErrors() {
+  const out = [];
+  const notes = [];
+  for (const rule of MARKER_LITERAL_RULES) {
+    const truth = renderMarkerDocLiteral(textOf(rule.src), rule);
+    if (truth.error) {
+      out.push(`markers/${rule.id}: ${truth.error}`);
+      continue;
+    }
+    // 「一处文档引用」的判据：模板首个静态段开头（这里是 `[共 `）、到下一个 `]` 为止的串。
+    // 不拿整份字面去找（文档写错就找不到了，那恰好是要报的情形），拿**开头**找。
+    const claimRe = new RegExp(`${esc(truth.lead)}[^\\]\\n]*\\]`, "gu");
+    const counts = {};
+    for (const rel of rule.docs) {
+      const src = textOf(rel);
+      const claims = [...src.matchAll(new RegExp(claimRe.source, claimRe.flags))];
+      counts[rel] = claims.length;
+      if (!claims.length) {
+        out.push(`markers/${rule.id}: ${rel} 找不到以 \`${truth.lead}\` 开头的 marker 字面引用——检查面在该文件已失效`
+          + `（真值：${JSON.stringify(truth.literal)}）`);
+        continue;
+      }
+      for (const c of claims) {
+        if (c[0] === truth.literal) continue;
+        out.push(`markers/${rule.id}: ${rel}:${lineOf(src, c.index)} 引用的是 ${JSON.stringify(c[0])}，`
+          + `但按 ${rule.src} 的 toolMarker("${rule.kind}") 模板 + NEXT_STEP_CLAUSE 渲染出来是 ${JSON.stringify(truth.literal)}`
+          + `（「${snippetOf(src, c.index)}」）；\n      占位符对应：${rule.placeholders.map(([e, p]) => `${p} = \${${e}}`).join("、")}、`
+          + `；「下一步：」= \${NEXT_STEP_CLAUSE}`);
+      }
+    }
+    assertPairCensus(out, { rule: `markers/${rule.id}`, counts, docs: rule.docs });
+    notes.push(`markers/${rule.id}: 中英共 ${Object.values(counts).reduce((a, b) => a + b, 0)} 处引用，逐字等于 ${rule.src} 渲染出的那份字面`
+      + `（${JSON.stringify(truth.literal)}）`);
+  }
+  collectMarkerLiteralErrors.notes = notes;
+  return out;
+}
+
+// ── 2.7 `--checkJs` 棘轮**当前值** ↔ 棘轮常量（issue #274，只做最省的那一档）──────
+// 真值 = scripts/type-check-ratchet.mjs 里的两个常量；文档侧 = AGENTS 中英里**复述这两个数**的句式。
+// 本单**没做**的那两档（代价不对等，写在这里不为完成率造活）：
+//   · 真跑 tsc 核 `--listFiles` 的文件数（31 files 那一句）：要 spawn tsc，而 check:docs 是文档门禁里
+//     跑得最勤的一条（每次文档改动），为此把 check:docs 变成十秒级不值得；棘轮自己会校文件数。
+//   · 生成声明文件数（63）：那要跑 types:build，同样的理由。
+// 「历史值不误伤」是这规则的命门：AGENTS 里同时存在 142/185/218/226/261 这些**已退役的**基线值
+// （#251/#255/#265 那几段在讲棘轮降下来的过程），所以句式必须钉到「常量名 / 基线词」上，
+// 而不是「抽一个四位数」；#265 那条就把棘轮写成开发中途的 142→138 / 185→181。
+const BASELINE_CLAIM_RULES = [
+  {
+    id: "常量写法 `BASELINE_ROOT = N`",
+    tier: "root",
+    required: true,
+    claims: [
+      { rel: AGENTS_EN, re: /BASELINE_ROOT\s*=\s*(\d+)/g },
+      { rel: AGENTS_CN, re: /BASELINE_ROOT\s*=\s*(\d+)/g },
+    ],
+  },
+  {
+    id: "「基线常量 / baseline constant」声明",
+    tier: "root",
+    required: true,
+    claims: [
+      { rel: AGENTS_EN, re: /baseline constant\s*\*\*(\d+)\*\*/g },
+      { rel: AGENTS_CN, re: /基线常量\s*\*\*(\d+)\*\*/g },
+    ],
+  },
+  {
+    id: "「已接受的债 N 个错」声明",
+    tier: "root",
+    required: true,
+    claims: [
+      { rel: AGENTS_EN, re: /errors — (\d+) of them/g },
+      { rel: AGENTS_CN, re: /——(\d+) 个错/g },
+    ],
+  },
+  {
+    id: "「公共面 93 里的总数」声明",
+    tier: "root",
+    required: true,
+    claims: [
+      { rel: AGENTS_EN, re: /\d+ of the (\d+)/g },
+      { rel: AGENTS_CN, re: /(\d+) 个里有/g },
+    ],
+  },
+  {
+    id: "「无 `.d.ts` 时的错误数」声明",
+    tier: "root",
+    required: true,
+    claims: [
+      { rel: AGENTS_EN, re: /\*\*(\d+) errors?\*\*\s+with\s+none\s+present/g },
+      { rel: AGENTS_CN, re: /无\s*`\.d\.ts`\s*=\s*(\d+)\s*个错/g },
+    ],
+  },
+  {
+    id: "并集基线的分解式 `= A + B + C`",
+    tier: "sum",
+    required: true,
+    claims: [
+      { rel: AGENTS_EN, re: /= (\d+) \+ (\d+) \+ (\d+)/g },
+      { rel: AGENTS_CN, re: /= (\d+) \+ (\d+) \+ (\d+)/g },
+    ],
+  },
+  {
+    id: "「基线 **N** / 31 个文件」声明",
+    tier: "withTools",
+    required: true,
+    claims: [
+      { rel: AGENTS_EN, re: /baseline\s+\*\*(\d+)\*\*\s*\/\s*31\s*files/g },
+      { rel: AGENTS_CN, re: /基线\s*\*\*(\d+)\*\*\s*\/\s*31\s*个文件/g },
+    ],
+  },
+  {
+    // 当前文档里没这种写法（两侧都是 0 处）；出现了就必须对，但不因为「没写」而红。
+    id: "常量写法 `BASELINE_WITH_TOOLS = N`",
+    tier: "withTools",
+    required: false,
+    claims: [
+      { rel: AGENTS_EN, re: /BASELINE_WITH_TOOLS\s*=\s*(\d+)/g },
+      { rel: AGENTS_CN, re: /BASELINE_WITH_TOOLS\s*=\s*(\d+)/g },
+    ],
+  },
+];
+
+/** 从棘轮脚本里抽两个基线常量（抽不到就是检查面失效，#164 口径）。 */
+function ratchetBaselines(srcText) {
+  const root = srcText.match(/^\s*const BASELINE_ROOT = (\d+);/m)?.[1];
+  const withTools = srcText.match(/^\s*const BASELINE_WITH_TOOLS = (\d+);/m)?.[1];
+  return { root, withTools };
+}
+
+function collectBaselineClaimErrors() {
+  const out = [];
+  const notes = [];
+  const truth = ratchetBaselines(textOf(RATCHET_SRC));
+  if (!truth.root || !truth.withTools) {
+    return [`baseline: 在 ${RATCHET_SRC} 里抽不到 BASELINE_ROOT / BASELINE_WITH_TOOLS 常量——`
+      + `棘轮改名或改写法了，本规则会静默失效，请同步这里（#164：抽不到真值就报错）`];
+  }
+  if (Number(truth.root) > Number(truth.withTools)) {
+    out.push(`baseline: ${RATCHET_SRC} 自己的两个常量就不自洽：BASELINE_ROOT ${truth.root} > BASELINE_WITH_TOOLS ${truth.withTools}`);
+  }
+  const wantOf = (tier) => (tier === "root" ? truth.root : tier === "withTools" ? truth.withTools : null);
+  const nameOf = (tier) => (tier === "sum" ? null : tier === "root" ? "BASELINE_ROOT" : "BASELINE_WITH_TOOLS");
+  let total = 0;
+  for (const rule of BASELINE_CLAIM_RULES) {
+    const counts = {};
+    for (const { rel, re } of rule.claims) {
+      const src = textOf(rel);
+      const m = [...src.matchAll(new RegExp(re.source, re.flags))];
+      counts[rel] = m.length;
+      if (!m.length && rule.required) {
+        out.push(`baseline/${rule.id}: ${rel} 里一处都抽不到——该声明被整句删了或改了形，检查面在这份文档已失效`
+          + `（真值：${nameOf(rule.tier) ?? "分解式"} = ${wantOf(rule.tier) ?? `${truth.root} + … = ${truth.withTools}`}）`);
+        continue;
+      }
+      for (const c of m) {
+        total += 1;
+        const at = `${rel}:${lineOf(src, c.index)}`;
+        const why = rule.tier === "sum"
+          ? (() => {
+            const [a, b, cc] = c.slice(1).map(Number);
+            if (a !== Number(truth.root)) return `首项 \`${a}\` 应等于 ${RATCHET_SRC} 的 BASELINE_ROOT（${truth.root}）`;
+            if (a + b + cc !== Number(truth.withTools)) return `分解式 ${a} + ${b} + ${cc} = ${a + b + cc}，不等于 BASELINE_WITH_TOOLS（${truth.withTools}）`;
+            return null;
+          })()
+          : (c[1] === wantOf(rule.tier) ? null : `声称 ${c[1]}，但 ${RATCHET_SRC} 的 ${nameOf(rule.tier)} 是 ${wantOf(rule.tier)}`);
+        if (why) {
+          out.push(`baseline/${rule.id}: ${at} ${why}。\n      棘轮基线的唯一真值在 ${RATCHET_SRC}：改常量就要同时改文档，`
+            + `改文档就只能改成常量那个值（历史值 142/185/218/226/261 属于「已降下来」的叙述，不该出现在这些当前值句式里）；`
+            + `\n      「${snippetOf(src, c.index)}」`);
+        }
+      }
+    }
+    assertPairCensus(out, { rule: `baseline/${rule.id}`, counts, docs: rule.claims.map((c) => c.rel) });
+  }
+  notes.push(`baseline: AGENTS 中英共 ${total} 处当前值声明（含分解式算术闭合）全部等于 ${RATCHET_SRC} 的 `
+    + `BASELINE_ROOT=${truth.root} / BASELINE_WITH_TOOLS=${truth.withTools}`);
+  collectBaselineClaimErrors.notes = notes;
+  return out;
+}
+
 // ── 3. README 引用的 package.json 清单（files / exports）────────────────────────
 // issue #210 的**主修项**：这块原先是 fail-open 的——围栏定位靠真值键（`b["./tools"]`、
 // `b.includes("src")`），文档把 `"./tools"` 改名或整个删掉时块就找不到了，于是退化成一条 warn
@@ -921,70 +1191,378 @@ for (const rel of [README_EN, README_CN]) {
   }
 }
 
-// ── 5. README 引用的路径与命令 ────────────────────────────────────────────────
-// 历史上真实存在过、但按文意必须保留的字面路径（退役说明、宿主侧证据路径）。
-const EXPECTED_ABSENT_PATHS = new Set([
-  "skills/notes/skill.mjs", // v0.11.0 已退役的兼容 shim，README 在讲「已删除」
-  "src/loop.js", // v0.14.0 已删除的转发 shim，README 在讲迁移
-  "judge.log", // 引擎写入 transcripts/outputs/<runId>/ 的运行产物名，不是仓库文件
-  "erix-state/judge.log", // 2026-09 基准证据里的宿主侧路径，不在本仓库
+// ── 5. 文档引用的路径与命令（覆盖面 + 三级解析 + 四类裁决，issue #273）──────────
+// 修前两处都窄：
+//   · 覆盖面：同一条不存在的仓内路径写进 README.md 会 exit 1，写进 examples/pi-extension/README.md
+//     却 exit 0。
+//   · 判据：只有「仓库根下存在吗」一级。examples 版 README 里 `erix-run.ts`（同目录文件）、
+//     `../../test/examples/plain-data.js`（相对路径）、`erix-run-core.test.js`（裸文件名）这类
+//     **真引用**一律解析不到，于是真引用与死引用在它眼里没区别。
+/** paths 的覆盖面（#273）：使用者与宿主会照着找文件的那批入口文档。 */
+const PATH_DOCS = [README_EN, README_CN, PI_EXT_README, CONTRACT_EN, CONTRACT_CN, AGENTS_EN, AGENTS_CN];
+
+// 引用裁决分类（四类，**没一类能整目录/整前缀豁免**；每条白名单必须写理由）。
+// 白名单条目还会被反向校：没人引用、或分类与 .gitignore 不再自洽 → 红，所以条目不会烂在那里。
+/** ① 本仓曾有这个路径（或只是运行期产物名），文档在讲「已退役/迁移/宿主侧证据」。 */
+const EXPECTED_ABSENT_PATHS = new Map([
+  ["skills/notes/skill.mjs", "v0.11.0 已退役的兼容 shim，README 在讲「已删除」"],
+  ["src/loop.js", "v0.14.0 已删除的转发 shim，README 在讲迁移"],
+  ["judge.log", "引擎写入 transcripts/outputs/<runId>/ 的运行产物名，不是仓库文件"],
+  ["erix-state/judge.log", "2026-09 基准证据里的宿主侧路径，不在本仓库"],
+  ["status.json", "erix_run 在宿主 sessionDir 下写的 job 状态文件名，不是仓库文件"],
+]);
+/** ② 引用的是**另一个仓库/宿主安装物/文档里举的示意名**（写清归属或凭什么不是路径）。 */
+const EXTERNAL_REPO_PATHS = new Map([
+  ["src/shared/parent-wake.js", "上游 pi-subagents 仓内的路径（#269 逐分支对照的证据行号就在那个子模块里），本仓没有同名文件"],
+  ["src/runs/background/async-execution.js", "上游 pi-subagents 仓内的路径（#269 对照的等待循环本体）"],
+  ["dist/core/extensions/virtual-modules.js", "上游 pi 发行包的编译产物（#246 写 host-consumer-contract 时读的就是它）"],
+  ["dist/core/extensions/loader.js", "上游 pi 发行包的编译产物（同上）"],
+  ["docs/extensions.md", "pi 自己的官方文档（本仓不镜像）"],
+  ["examples/extensions/shutdown-command.ts", "pi 仓的扩展示例（本仓不镜像）"],
+  ["herdr-pi-bridge.js", "宿主侧桥接脚本（#247 写对照时引用的宿主文件）"],
+  ["sync-erix-mirror.sh", "宿主侧 cron 脚本（AGENTS 「上游同步」一节讲的是宿主仓库，不在本仓）"],
+  ["./x.js", "AGENTS 讲 `// @ts-check` 与 `.d.ts` 解析规则时举的**示意文件名**（中英同一处），不是仓库路径"],
+  ["x.d.ts", "AGENTS 讲 `.d.ts` 伴生声明时举的**示意文件名**（与 `./x.js` 同处），不是仓库路径"],
+]);
+/** ③ 生成物：由命令产出、被 .gitignore 忽略，仓库里没有是预期的。**模式**级条目（一文件一条会造出
+ *  63 条同义自述），但每条都带 why 并与 .gitignore 互校：匹配了模式却不被忽略 → 红。 */
+const GENERATED_ARTIFACT_REFS = [
+  { re: /^(?:\.\.?\/)?src\/[\w./-]*\.d\.ts$/, why: "`npm run types:build` / `prepack` 生成的公共面声明产物（.gitignore 的 `src/**/*.d.ts`）；仓库不提交是 #213 的既定选择" },
+  { re: /^(?:\.\.?\/)?package-lock\.json$/, why: "本仓历史上没有 lockfile，加它属于另一个决定（.gitignore 里写了 issue #213）" },
+];
+/** 被忽略的**目录规则**必须逐条分类（#273：不许默认当没事）。两类语义不同：
+ *   · install-tree / build-output / runtime / worktree：目录内容根本不是仓库内容（安装位置、构建产物、
+ *     运行日志、本机工作副本），引用它们不构成「克隆后死链」；
+ *   · task-archive：`docs/tasks/` 存的是主 agent 的写作现场，**看起来像**仓内文档却整目录不入库，
+ *     克隆后就是死引用——所以只有这一类要求**逐条**证据（就地声明或 LOCAL_ARCHIVE_REFS 逐条理由），
+ *     其余三类按目录规则整体放行，但都必须在表里写明为什么。
+ * .gitignore 里出现新的目录型规则而未登记 → 直接红（而不是默默放行）。 */
+const IGNORED_DIR_CLASSES = new Map([
+  ["node_modules/", { kind: "install-tree", why: "宿主侧安装位置，不是仓库内容" }],
+  ["dist/", { kind: "build-output", why: "examples 的构建产物目录" }],
+  ["logs/", { kind: "runtime", why: "运行日志目录" }],
+  [".worktrees/", { kind: "worktree", why: "并行任务的本机工作副本（#184 引入）" }],
+  ["docs/tasks/", { kind: "task-archive", why: "主 agent 的任务工作目录：整目录不入库，#162 定了口径，#273 把它纳进检查面" }],
 ]);
 
+/** ④ 本机档案：指向被 .gitignore 忽略的**目录**（本仓只有 `docs/tasks/`：主 agent 的任务工作目录）。
+ *  首选判据是「就地声明」：引用所在行或紧邻上一行写了「本机/本地/不入库/未入库/未跟踪/gitignore/忽略/归档」
+ *  之类的话 → 算已声明（docs/research/2026-09-26-* 的「任务文档（本地，不入库）」就是这种写法，
+ *  #162 那轮已经定了这个口径）。声明不了的（禁改面与 CHANGELOG 历史条目）逐条登记 + 理由。 */
+const LOCAL_ARCHIVE_REFS = new Map([
+  ["e2e-wake.mjs", "examples/pi-extension/README.md 写「归档在 docs/tasks/active/261010-13-erix-run-async/」时同句举的本机脚本名（禁改面，且同句只说了「归档」）"],
+  ["docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs", "CHANGELOG:169（#234 条目）把复现脚本指向任务档案；历史条目不改写，逐条登记"],
+  ["repro-circular-details.mjs", "CHANGELOG:89 与 docs/research/2026-10-13-pi-subagents-async-attribution.md:25 同句举的**裸名**复现脚本，实物在 docs/tasks/active/261010-13-erix-run-async/（#273 把 archive 类的三级解析接上后新暴露的两处引用；本轮禁改 docs/** 也不改 CHANGELOG 历史条目，故逐条登记）"],
+  ["docs/tasks/active/task-20260830-touwaka-full-integration/BRANCH.md", "docs/harness-comparison/05:62 的 git 注入对照引用的是本机档案行号（#273 点名的两条历史样本之一；另一条 docs/research/2026-09-26 的 REPORT.md 已就地写「本地，不入库」而直接放行）。本轮禁改 docs/**，下轮在那行补上「本机档案、不入库」后请删本条"],
+]);
+const LOCAL_ARCHIVE_DECLARATION = /本机|本地|不入库|未入库|不提交|未提交|未跟踪|never committed|not committed|untracked|gitignore|忽略|归档/i;
+
+/** 极简 .gitignore 匹配（零依赖，只支持注释、`目录/`、`*.ext`、`**`、裸名——本仓那 9 条全在这个子集里）。
+ *  取反 `!` 不在子集里：碰到就报错，而不是默默当没忽略（宁可假红，不要假绿）。 */
+function compileIgnoreRule(pattern) {
+  const dirOnly = pattern.endsWith("/");
+  const p = pattern.replace(/\/+$/, "");
+  const anchored = p.includes("/");
+  const body = p
+    .split("/")
+    .map((seg) => (seg === "**" ? ".*" : seg.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")))
+    .join("/")
+    .replace(/\/\.\*\//g, "/(?:.*/)?"); // `a/**/b` 允许 `**` 匹配零段（git 语义）
+  return new RegExp(`^${anchored ? "" : "(?:.*/)?"}${body}${dirOnly ? "/.*$" : "(?:/.*)?$"}`);
+}
+
+function gitignoreMatcher(text) {
+  const rules = [];
+  const unsupported = [];
+  text.split(/\r?\n/).forEach((line, i) => {
+    const raw = line.trim();
+    if (!raw || raw.startsWith("#")) return;
+    if (raw.startsWith("!")) { unsupported.push({ pattern: raw, line: i + 1 }); return; }
+    rules.push({ pattern: raw, line: i + 1, re: compileIgnoreRule(raw) });
+  });
+  // 后写的规则覆盖先写的（与 git 同口径）
+  const ruleFor = (rel) => rules.filter((r) => r.re.test(rel)).at(-1) ?? null;
+  return { ruleFor, unsupported, rules };
+}
+
+/** 未被忽略的仓库文件清单（惰性建一次；`walk()` 从根递归会钻到 node_modules，所以自带剪枝）。 */
+/** 全仓文件清单（惰性建一次，键是 .gitignore 的规则集合）。分两份：未忽略的（= 克隆后仍在的）
+ *  与被忽略的（= 只有本机有的）。被忽略目录照常下钻（要认得 e2e-wake.mjs 这种「裸名指向档案」），
+ *  但安装位置与工作副本剪掉（node_modules/ 与 .worktrees/ 里是一整份别的仓库，钻进去又慢又脏）。 */
+let repoFilesCache = null;
+function repoFiles(ign) {
+  const key = ign.rules.map((r) => r.pattern).join("\n");
+  if (repoFilesCache && repoFilesCache.key === key) return repoFilesCache;
+  const tracked = [];
+  const ignored = [];
+  const skipDir = (rel) => {
+    const rule = ign.ruleFor(`${rel}/`);
+    if (!rule) return false;
+    const cls = IGNORED_DIR_CLASSES.get(rule.pattern);
+    return !cls || cls.kind === "install-tree" || cls.kind === "worktree";
+  };
+  (function down(dir, underIgnored) {
+    for (const name of readdirSync(path.join(ROOT, dir || "."))) {
+      if (name === ".git" || name === "node_modules") continue;
+      const rel = dir ? `${dir}/${name}` : name;
+      if (skipDir(rel)) continue;
+      if (statSync(path.join(ROOT, rel)).isDirectory()) down(rel, underIgnored || !!ign.ruleFor(`${rel}/`));
+      else (underIgnored || ign.ruleFor(rel) ? ignored : tracked).push(rel);
+    }
+  })("", false);
+  repoFilesCache = { key, tracked, ignored };
+  return repoFilesCache;
+}
+
+/** 三级解析：仓库根 → 文档同目录 → 全仓唯一同名。同名只认**唯一**命中（歧义不算解析成功，
+ *  要写清路径）；先查未忽略文件（克隆后仍在的那批），再查被忽略的（解到就走「忽略类」裁决）。
+ *  解不到时把命中的 .gitignore 规则一并带出，供分类使用。 */
+function resolveRef(p, docRel, ign) {
+  const fromDoc = p.startsWith("./") || p.startsWith("../");
+  const clean = p.replace(/^\.\//, "");
+  const docDir = path.posix.dirname(docRel);
+  const cands = fromDoc
+    ? [path.posix.normalize(path.posix.join(docDir, p))]
+    : [clean, path.posix.normalize(path.posix.join(docDir, clean))];
+  for (const c of cands) {
+    const rule = ign.ruleFor(c);
+    if (rule) return { ignoredPath: c, rule };
+    if (existsSync(path.join(ROOT, c))) return { resolved: c, via: c === clean ? "仓库根" : "文档同目录" };
+  }
+  if (!clean.includes("/")) {
+    const idx = repoFiles(ign);
+    const hits = idx.tracked.filter((f) => path.posix.basename(f) === clean);
+    if (hits.length === 1) return { resolved: hits[0], via: "全仓唯一同名" };
+    if (hits.length > 1) return { ambiguous: hits };
+    const local = idx.ignored.filter((f) => path.posix.basename(f) === clean);
+    if (local.length === 1) return { ignoredPath: local[0], rule: ign.ruleFor(local[0]) };
+    if (local.length > 1) return { ambiguous: local };
+  }
+  return { tried: clean, rule: ign.ruleFor(clean) };
+}
+
 function candidatePaths(rel) {
-  const out = new Set();
-  const text = read(rel);
-  // markdown 链接目标 + 行内代码里的路径
-  for (const m of text.matchAll(/\]\(([^)\s]+)\)/g)) out.add(m[1]);
-  for (const m of text.matchAll(/`([^`\s]+)`/g)) out.add(m[1]);
-  // `node <path>` / `npm run <script>`
+  const out = new Map(); // 去重保留首次出现位置，报错要能点名行
   const commands = [];
-  for (const m of text.matchAll(/(?:^|\s)(?:LLM_KIT_E2E=1\s+)?node\s+([\w./-]+\.(?:mjs|js))/g)) {
-    commands.push({ kind: "file", value: m[1] });
-  }
-  for (const m of text.matchAll(/npm run ([\w:.-]+)/g)) {
-    commands.push({ kind: "script", value: m[1] });
-  }
-  const paths = [];
-  for (const raw of out) {
+  const text = textOf(rel);
+  const push = (raw, line) => {
     let p = raw;
     const url = p.match(/^https?:\/\/[^/]+\/(?:ErixWong\/erix-agent)?\/?(?:blob|tree)\/main\/(.+)$/);
     if (url) p = url[1];
-    else if (/^https?:/.test(p)) continue;
-    p = p.replace(/#.*$/, "");
-    if (!p || p.startsWith("#")) continue;
-    if (/^[~$]/.test(p)) continue; // 用户目录（~/.erix）与环境变量形式（$XDG_CONFIG_HOME）不属于本仓库
-    if (p.startsWith(".")) continue; // .mcp.json / .erix/skills/ 这类宿主侧配置目录
-    if (/[*<>|]/.test(p)) continue; // glob 与占位符
-    if (!/\.(?:js|mjs|json|md|ts|sh|log|mjs)$|\/$/.test(p)) continue; // 只核对像路径的东西
-    paths.push(p);
-  }
-  return { paths, commands };
+    else if (/^https?:/.test(p)) return;
+    if (/^[~$]/.test(p)) return; // 用户目录（~/.erix）与环境变量形式（$XDG_CONFIG_HOME）不属于本仓库
+    if (p.includes("\\") || (p.startsWith("/") && p.endsWith("/"))) return; // 正则字面量（`/valid NoteRecord/`）不是路径
+    if (p.includes("://")) return; // 自定义 URL scheme（`app://skills/skill.mjs`）
+    p = p.replace(/#.*$/, "").replace(/:\d+(?::\d+)?$/, "").replace(/[).,;:;,]+$/, "");
+    if (!p || p.startsWith("#")) return;
+    if (!p.startsWith("./") && !p.startsWith("../")) {
+      if (p.startsWith(".")) return; // .mcp.json / .erix/skills/ 这类宿主侧配置目录
+    }
+    if (/[*<>|"'{}\[\]()=]/.test(p)) return; // glob 与占位符
+    if (!/\.(?:js|mjs|json|md|ts|sh|log)$|\/$/.test(p)) return; // 只核对像路径的东西
+    if (!out.has(p)) out.set(p, line);
+  };
+  text.split("\n").forEach((line, i) => {
+    for (const m of line.matchAll(/\]\(([^)\s]+)\)/g)) push(m[1], i + 1);
+    for (const m of line.matchAll(/`([^`\s]+)`/g)) push(m[1], i + 1);
+    for (const m of line.matchAll(/(?:^|\s)(?:LLM_KIT_E2E=1\s+)?node\s+([\w./-]+\.(?:mjs|js))/g)) {
+      commands.push({ kind: "file", value: m[1], line: i + 1 });
+    }
+    for (const m of line.matchAll(/(?:^|[\s(（:：、，|《])((?:\.\.\/)*docs\/tasks\/[\w.\-\/]+)/g)) push(m[1], i + 1); // #273：纯文本里写的任务档案路径也是引用
+    for (const m of line.matchAll(/npm run ([\w:.-]+)/g)) {
+      commands.push({ kind: "script", value: m[1], line: i + 1 });
+    }
+  });
+  return { refs: [...out.entries()].map(([p, line]) => ({ p, line })), commands };
 }
 
-for (const rel of [README_EN, README_CN]) {
-  const { paths, commands } = candidatePaths(rel);
-  const bad = [];
-  for (const p of paths) {
-    if (EXPECTED_ABSENT_PATHS.has(p)) continue;
-    if (!existsSync(path.join(ROOT, p))) bad.push(p);
+/** 把一处解不到的引用归到四类里；解得出结论就返回 null。 */
+/** 分类台账：每条白名单被哪一处引用用到过，都在这里留痕；收尾时反查「登记了却没一处用上」的条目。 */
+const REF_CLASS_HITS = new Set();
+const passAs = (key) => { REF_CLASS_HITS.add(key); return null; };
+
+/** 把一处解不到的引用归到四类里；能放行就返回 null，否则返回「为什么不放行」。 */
+function classifyAbsent(p, docRel, line, ign, res = {}) {
+  if (EXPECTED_ABSENT_PATHS.has(p)) return passAs(`absent:${p}`);
+  if (EXTERNAL_REPO_PATHS.has(p)) return passAs(`external:${p}`);
+  const probe = res.ignoredPath ?? p.replace(/^\.\.?\//, "");
+  const gen = GENERATED_ARTIFACT_REFS.find((g) => g.re.test(p));
+  if (gen) {
+    return ign.ruleFor(probe)
+      ? passAs(`generated:${gen.re.source}`)
+      : `白名单把它归为生成物（${gen.why}），但 .gitignore 并不忽略 ${probe}——生成物的定义已失效`;
   }
-  const badCommands = commands.filter((c) =>
-    c.kind === "file"
-      ? !existsSync(path.join(ROOT, c.value))
-      : !(PKG.scripts ?? {})[c.value],
-  );
-  if (bad.length) {
-    err(`paths: ${rel} 引用了仓库里不存在的文件：${bad.join(", ")}（确属历史事实就加进 EXPECTED_ABSENT_PATHS 并注明原因）`);
+  if (LOCAL_ARCHIVE_REFS.has(p)) {
+    return ign.ruleFor(probe)
+      ? passAs(`archive:${p}`)
+      : `登记为本机档案（${LOCAL_ARCHIVE_REFS.get(p)}），但 .gitignore 并不忽略 ${probe}——`
+        + `它已入库或分类变了，请删掉这条登记（本机档案的定义已失效）`;
   }
-  if (badCommands.length) {
-    err(`paths: ${rel} 引用的命令不可执行：${badCommands.map((c) => (c.kind === "file" ? `node ${c.value}` : `npm run ${c.value}`)).join(", ")}`);
+  const rule = res.rule ?? ign.ruleFor(probe);
+  if (rule) {
+    if (!rule.pattern.endsWith("/")) {
+      return `指向被 .gitignore 忽略的路径（.gitignore:${rule.line} \`${rule.pattern}\`），但这条规则没被分类——`
+        + `去 IGNORED_DIR_CLASSES（目录型）或 GENERATED_ARTIFACT_REFS（生成物）里给它一个名字与理由，别默默放行`;
+    }
+    const dirCls = IGNORED_DIR_CLASSES.get(rule.pattern);
+    if (!dirCls) {
+      return `指向被 .gitignore 忽略的目录（.gitignore:${rule.line} \`${rule.pattern}\`），但这条目录规则没在 IGNORED_DIR_CLASSES 里分类`;
+    }
+    if (dirCls.kind !== "task-archive") {
+      // 安装位置 / 构建产物 / 日志 / 工作副本：目录内容本身就不是仓库内容
+      REF_CLASS_HITS.add(`dircls:${rule.pattern}`);
+      return null;
+    }
+    // 「就地声明」只算**引用所在那一行**（不是上一行）：上一行常常是另一条目里顺手带出的
+    // 「归档/忽略」字样，拿它放行就等于整目录豁免（#273：白名单不是整目录豁免）。
+    const ctx = textOf(docRel).split("\n")[line - 1] ?? "";
+    if (LOCAL_ARCHIVE_DECLARATION.test(ctx)) return null;
+    return `指向任务档案（.gitignore:${rule.line} \`${rule.pattern}\` = ${dirCls.why}，实指 ${probe}），`
+      + `但引用处没写「本机/本地/不入库/未跟踪/归档」这类声明，也没在 LOCAL_ARCHIVE_REFS 里逐条登记`
+      + `（克隆后就是死引用；#162 定的口径：要么就地声明，要么逐条写理由，不许整目录豁免）`;
   }
-  note(`paths: ${rel} 核对 ${new Set(paths).size} 个路径、${commands.length} 个命令（${[...new Set(commands.map((c) => (c.kind === "file" ? `node ${c.value}` : `npm run ${c.value}`)))].join(", ")}）`);
+  return `本仓不存在（仓库根 / ${docRel} 同目录 / 全仓唯一同名 三级都解不到），也不属于四类里的任何一类`
+    + `——要么改对路径，要么按类登记并写理由（EXPECTED_ABSENT_PATHS / EXTERNAL_REPO_PATHS / `
+    + `GENERATED_ARTIFACT_REFS / LOCAL_ARCHIVE_REFS）`;
 }
 
-// ── 6. 中英 README 标题骨架 ───────────────────────────────────────────────────
+function collectPathErrors() {
+  const out = [];
+  const notes = [];
+  const ign = gitignoreMatcher(textOf(".gitignore"));
+  for (const u of ign.unsupported) {
+    out.push(`paths: .gitignore:${u.line} 用了取反规则 \`${u.pattern}\`，本脚本的极简匹配器不认——`
+      + `要么改 .gitignore，要么在这里支持取反（不能默默把它当没忽略）`);
+  }
+  // .gitignore 的**目录型规则**必须逐条分类（#273：新增一条目录规则不许默默放行）。这里不能只看
+  // 「当前有文件被它忽略」：新建的 scratch/ 目录里还没文件时就完全不报，那条规则等于静默上线。
+  for (const r of ign.rules.filter((x) => x.pattern.endsWith("/"))) {
+    if (IGNORED_DIR_CLASSES.has(r.pattern)) continue;
+    out.push(`paths: .gitignore:${r.line} 的目录规则 \`${r.pattern}\` 没在 IGNORED_DIR_CLASSES 里分类`
+      + `（install-tree / build-output / runtime / worktree / task-archive 五选一 + 写明理由）——`
+      + `被忽略目录里的引用要不要放行，得由分类决定，不许默默放行新目录`);
+  }
+  REF_CLASS_HITS.clear();
+  let excusedArchive = 0;
+  for (const rel of PATH_DOCS) {
+    const { refs, commands } = candidatePaths(rel);
+    const bad = [];
+    let resolvedByDoc = 0;
+    let resolvedByBase = 0;
+    let excused = 0;
+    for (const { p, line } of refs) {
+      const r = resolveRef(p, rel, ign);
+      if (r.resolved) {
+        if (r.via === "文档同目录") resolvedByDoc += 1;
+        if (r.via === "全仓唯一同名") resolvedByBase += 1;
+        continue;
+      }
+      const why = classifyAbsent(p, rel, line, ign, r);
+      if (why === null) {
+        excused += 1;
+        continue;
+      }
+      if (r.ambiguous) {
+        bad.push(`\`${p}\`（第 ${line} 行）：本仓有 ${r.ambiguous.length} 个同名文件（${r.ambiguous.join(", ")}），`
+          + `裸文件名到底指哪个写清（歧义不算解析成功）`);
+        continue;
+      }
+      bad.push(`\`${p}\`（第 ${line} 行）：${why}`);
+    }
+    const badCommands = commands.filter((c) =>
+      c.kind === "file" ? !existsSync(path.join(ROOT, c.value)) : !(PKG.scripts ?? {})[c.value]);
+    if (bad.length) {
+      out.push(`paths: ${rel} 引用了无法裁决的仓库内路径（${bad.length} 处）：\n      ${bad.join("\n      ")}`);
+    }
+    if (badCommands.length) {
+      out.push(`paths: ${rel} 引用的命令不可执行：${badCommands.map((c) => `第 ${c.line} 行 \`${c.kind === "file" ? `node ${c.value}` : `npm run ${c.value}`}\``).join(", ")}`);
+    }
+    notes.push(`paths: ${rel} 核对 ${refs.length} 个路径引用（其中 ${resolvedByDoc} 个靠文档同目录、${resolvedByBase} 个靠唯一同名解析）、${commands.length} 个命令；白名单判定 ${excused} 处`);
+  }
+  // 本机档案那一类**不限 PATH_DOCS**，全仓已跟踪 Markdown 都跑（#273 点名的两条历史样本就在
+  // docs/harness-comparison/05 与 docs/research/2026-09-26 里，而那两份文档不适宜整体纳入
+  // paths 覆盖面：docs/design/2026-10-08 实测 57 处引用里 46 处、docs/harness-comparison/01 的
+  // 42 处里 32 处引用的是**别的仓库**的文件树，整体纳入就得整片豁免，等于没扩）。
+  // 代价很轻：全仓指向被忽略**目录**的引用共 9 处，其中 4 处已经就地声明了「本地/不入库/gitignore」。
+  for (const docRel of repoFiles(ign).tracked.filter((f) => f.endsWith(".md") && !PATH_DOCS.includes(f))) {
+    const rel = docRel;
+    const { refs } = candidatePaths(rel);
+    const bad = [];
+    for (const { p, line } of refs) {
+      const r = resolveRef(p, rel, ign);
+      if (r.resolved) continue;
+      const rule = r.ignoredPath ? r.rule : ign.ruleFor(p.replace(/^\.\.?\//, ""));
+      // 上一版读的是 r.ignored，而 resolveRef 返的字段叫 ignoredPath → 永远 undefined，
+      // 于是「解到被忽略目录」的引用全部静默 continue（本类锚点实际从未跑过），这里一并接上。
+      if (!rule || !rule.pattern.endsWith("/")) {
+        // 解不到且没分类时，原本直接 continue（= 默默放行）。但**引用所在行自己就在讲任务档案目录**
+        // （写了 docs/tasks/…）时，这一处就是在引本机档案：已登记的档案名被改一个字就同时弄坏了登记
+        // 与引用，必须报（#273：白名单不是整目录豁免）。
+        const lineText = textOf(rel).split("\n")[line - 1] ?? "";
+        // 只拿「像个文件」的引用当档案引用：CHANGELOG 里 `scratch/` 这种目录/规则名也在同一行出现，
+        // 不卡这一刀就会把目录名当成被改名的本机档案（假红）。
+        const looksLikeFile = /\.[A-Za-z0-9]+$/.test(p.replace(/\/+$/, ""));
+        if (!looksLikeFile || !/(^|[^-\w])docs\/tasks\//.test(lineText)) continue;
+        const stem = (s2) => s2.replace(/\.[^.]+$/, "");   // 去扩展名后比前缀：改名（加/删一个字符）必然落在同一前缀里
+        const twin = [...LOCAL_ARCHIVE_REFS.keys()].find((k) => k !== p
+          && (stem(path.posix.basename(k)).startsWith(stem(path.posix.basename(p)))
+            || stem(path.posix.basename(p)).startsWith(stem(path.posix.basename(k)))));
+        bad.push(`\`${p}\`（第 ${line} 行）：指向任务档案（同一行写了 \`docs/tasks/…\`，该目录整目录不入库），`
+          + `但这个名字仓库里解不到、也不在 LOCAL_ARCHIVE_REFS 登记里`
+          + (twin ? `——与已登记的 \`${twin}\` 只差一个字符：登记与引用必须一起改` : ""));
+        continue;
+      }
+      const why = classifyAbsent(p, rel, line, ign, r);
+      if (why === null) { excusedArchive += 1; continue; }
+      bad.push(`\`${p}\`（第 ${line} 行）：${why}`);
+    }
+    if (bad.length) {
+      out.push(`archive-refs: ${rel} 引用了克隆后不存在的本机档案（${bad.length} 处）：\n      ${bad.join("\n      ")}`);
+    }
+  }
+  notes.push(`archive-refs: 全仓非入口文档里指向被忽略目录的引用已全部裁决（白名单/就地声明共 ${excusedArchive} 处）`);
+  // 白名单也要校：没人引用的条目就是「为不存在的引用留后门」，同样算检查面腐坏。
+  const tables = [["absent", EXPECTED_ABSENT_PATHS], ["external", EXTERNAL_REPO_PATHS], ["archive", LOCAL_ARCHIVE_REFS]];
+  for (const [tag, table] of tables) {
+    for (const p of table.keys()) {
+      if (REF_CLASS_HITS.has(`${tag}:${p}`)) continue;
+      out.push(`paths: 白名单条目 \`${p}\` 没有一处引用真正用到它——要么它现在已能直接解析到（那就该删），`
+        + `要么被检文档（${PATH_DOCS.join(", ")} + 全仓 .md）里已没人引用它；留着就是给未来的漂移留后门`);
+    }
+  }
+  for (const g of GENERATED_ARTIFACT_REFS) {
+    if (!REF_CLASS_HITS.has(`generated:${g.re.source}`)) {
+      notes.push(`paths: 生成物条目 /${g.re.source}/ 当前没被用到（覆盖面内没有这类引用），保留是为了不让 *.d.ts 变红`);
+    }
+  }
+  // 登记表自己也要被 .gitignore 校：「本机档案」的定义就是「被忽略目录里的档案」，目录不再忽略
+  // 它就该销账（#273：分类真的读 .gitignore，不是只写在注释里）。
+  for (const [p, why] of LOCAL_ARCHIVE_REFS) {
+    // 登记可能是裸名（examples README 同句举的脚本名），先走同一套三级解析再问 .gitignore。
+    const res = resolveRef(p, PI_EXT_README, ign);
+    const rule = res.ignoredPath ? res.rule : ign.ruleFor(p.replace(/^\.\.?\//, ""));
+    if (rule && IGNORED_DIR_CLASSES.get(rule.pattern)?.kind === "task-archive") continue;
+    // 逐份点名「谁在拿这条登记当护身符」：登记失效 = 那些引用同时失去裁决依据（#273：分类真的读 .gitignore）。
+    const bn = path.posix.basename(p);
+    const refDocs = [...PATH_DOCS, ...repoFiles(ign).tracked.filter((f) => f.endsWith(".md") && !PATH_DOCS.includes(f))]
+      .filter((d) => { const t = textOf(d); return t.includes(p) || t.includes(bn); });
+    for (const d of (refDocs.length ? refDocs : ["（无文档引用）"])) {
+      out.push(`archive-refs: ${d} 登记的 \`${p}\` 登记为本机档案（${why}），但 .gitignore 并不忽略它`
+        + `——本机档案的定义就是「被 task-archive 目录忽略的本机文件」，登记已失效，请删登记或改 .gitignore`);
+    }
+  }
+  const dirClsUsed = [...REF_CLASS_HITS].filter((k) => k.startsWith("dircls:"));
+  notes.push(`paths: 被忽略目录的分类被用到的有 ${dirClsUsed.length ? dirClsUsed.map((k) => k.slice(7)).join(", ") : "（无）"}`);
+  collectPathErrors.notes = notes;
+  return out;
+}
+
+for (const e of collectPathErrors()) err(e);
+for (const n of collectPathErrors.notes ?? []) note(n);
+
+// ── 6. 中英标题骨架（README 一对，AGENTS 一对；issue #274 的附带项把 AGENTS 也纳入）────────
 function headingLevels(rel) {
-  return read(rel)
+  return textOf(rel)
     .split("\n")
     .reduce((acc, line, i) => {
       const m = line.match(/^(#{1,6})\s+(.*)/);
@@ -993,31 +1571,57 @@ function headingLevels(rel) {
     }, []);
 }
 
-const enH = headingLevels(README_EN);
-const cnH = headingLevels(README_CN);
 const seq = (hs) => hs.map((h) => h.level).join(",");
-if (enH.length !== cnH.length) {
-  err(`skeleton: 中英 README 标题总数不齐：EN ${enH.length} vs CN ${cnH.length}`);
+
+/** 一对中英文档的骨架对账（数量、层级序列、逐级数量）。*/
+function collectSkeletonErrors(label, enRel, cnRel) {
+  const out = [];
+  const enH = headingLevels(enRel);
+  const cnH = headingLevels(cnRel);
+  if (enH.length !== cnH.length) {
+    out.push(`skeleton: ${label} 标题总数不齐：EN ${enH.length} vs CN ${cnH.length}`);
+  }
+  if (seq(enH) !== seq(cnH)) {
+    const i = [...seq(enH), "..."].findIndex((v, idx) => v !== [...seq(cnH), "..."][idx]);
+    const at = Math.min(i, enH.length - 1, cnH.length - 1);
+    out.push(
+      `skeleton: ${label} 标题层级序列不齐（第 ${i + 1} 个标题起）：EN「${enH[at]?.title ?? "无"}」(L${enH[at]?.line ?? "-"}) vs CN「${cnH[at]?.title ?? "无"}」(L${cnH[at]?.line ?? "-"})；`
+      + `\n    EN ${seq(enH)}\n    CN ${seq(cnH)}`,
+    );
+  }
+  for (const level of new Set([...enH.map((h) => h.level), ...cnH.map((h) => h.level)])) {
+    const ne = enH.filter((h) => h.level === level).length;
+    const nc = cnH.filter((h) => h.level === level).length;
+    if (ne !== nc) out.push(`skeleton: ${label} h${level} 数量不齐：EN ${ne} vs CN ${nc}`);
+  }
+  collectSkeletonErrors.notes = [`skeleton: ${label} 标题骨架一致（${enH.length} 个标题，层级序列相同）`];
+  return out;
 }
-if (seq(enH) !== seq(cnH)) {
-  const i = [...seq(enH), "..."].findIndex((v, idx) => v !== [...seq(cnH), "..."][idx]);
-  const at = Math.min(i, enH.length - 1, cnH.length - 1);
-  err(
-    `skeleton: 中英 README 标题层级序列不齐（第 ${i + 1} 个标题起）：EN「${enH[at]?.title ?? "无"}」(L${enH[at]?.line ?? "-"}) vs CN「${cnH[at]?.title ?? "无"}」(L${cnH[at]?.line ?? "-"})；`
-    + `\n    EN ${seq(enH)}\n    CN ${seq(cnH)}`,
-  );
+
+const SKELETON_PAIRS = [
+  ["中英 README", README_EN, README_CN],
+  ["中英 AGENTS", AGENTS_EN, AGENTS_CN],
+];
+
+function collectAllDrift() {
+  const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
+    ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors()];
+  for (const [, en, cn] of SKELETON_PAIRS) out.push(...collectSkeletonErrors(en === README_EN ? "中英 README" : "中英 AGENTS", en, cn));
+  return out;
 }
-for (const level of new Set([...enH.map((h) => h.level), ...cnH.map((h) => h.level)])) {
-  const ne = enH.filter((h) => h.level === level).length;
-  const nc = cnH.filter((h) => h.level === level).length;
-  if (ne !== nc) err(`skeleton: h${level} 数量不齐：EN ${ne} vs CN ${nc}`);
-}
-if (!errors.some((e) => e.startsWith("skeleton:"))) {
-  note(`skeleton: 中英 README 标题骨架一致（${enH.length} 个标题，层级序列相同）`);
+
+for (const [label, en, cn] of SKELETON_PAIRS) {
+  const errs = collectSkeletonErrors(label, en, cn);
+  errs.forEach((e) => err(e));
+  if (!errs.length) note(collectSkeletonErrors.notes.join(""));
 }
 
 // ── 输出 ─────────────────────────────────────────────────────────────────────
-// ── 7. 跑清单/单位类锚点与 package.json 清单比对（逐处一致 + 双向对称）────────────
+// ── 7. 跑清单/单位类锚点、marker 字面、棘轮当前值与 package.json 清单比对 ────────
+for (const e of collectMarkerLiteralErrors()) err(e);
+for (const n of collectMarkerLiteralErrors.notes ?? []) note(n);
+for (const e of collectBaselineClaimErrors()) err(e);
+for (const n of collectBaselineClaimErrors.notes ?? []) note(n);
 const pkgBlock = checkPkgBlocks();
 pkgBlock.errors.forEach((e) => err(e));
 pkgBlock.warnings.forEach((w) => warn(w));
@@ -1169,10 +1773,145 @@ const SELF_TEST_CASES = [
     expect: [/写成 `1\.5MB`.*复算是 `1\.50MB`/],
     expectFiles: [CONTRACT_EN, CONTRACT_CN],
   },
+
+  // —— markers：marker 字面量与源码模板同源（issue #272；下面 4 例修前**全是 exit 0**）——
+  {
+    label: "契约 EN 把 marker 的 `（文件 <size>）` 段删掉（修前 exit 0）",
+    overlay: { [CONTRACT_EN]: (t) => t.replace("[共 N 行（文件 <size>），剩余 M 行", "[共 N 行，剩余 M 行") },
+    expect: [/markers\/readMoreLines.*host-consumer-contract\.md:\d+ 引用的是 "\[共 N 行，剩余 M 行/, /渲染出来是 "\[共 N 行（文件 <size>）/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "契约 CN 把续读占位符 `offset=K` 写成 `offset=N`（修前 exit 0）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("readFile 传 offset=K 继续", "readFile 传 offset=N 继续") },
+    expect: [/markers\/readMoreLines.*host-consumer-contract_cn\.md:\d+ 引用的是 .*offset=N 继续.*，但按 src\/tools\/file-tools\.js/],
+  },
+  {
+    label: "源码模板把「剩余」改成「还剩」→ 中英两处引用同时红",
+    overlay: { "src/tools/file-tools.js": (t) => t.replace("剩余 ${values.total - values.offset}", "还剩 ${values.total - values.offset}") },
+    // 逐处比对，每一处（EN 与 CN）单独成一条 error；期望两份都要被点名（[\s\S] 是因为 error 文本里带换行）
+    expect: [/渲染出来是 "\[共 N 行（文件 <size>），还剩 M 行/, /markers\/readMoreLines marker 字面（契约中英引用）: docs\/host-consumer-contract(_cn)?\.md:\d+ 引用的是 .*但按 src\/tools\/file-tools\.js/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+  {
+    label: "源码 NEXT_STEP_CLAUSE 改文案 → 中英两处引用同时红（#267 只钉住了源码侧形状，没管文档）",
+    overlay: { "src/tools/file-tools.js": (t) => t.replace('const NEXT_STEP_CLAUSE = "下一步：";', 'const NEXT_STEP_CLAUSE = "接着：";') },
+    expect: [/渲染出来是 .*接着：readFile 传 offset=K/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+  {
+    label: "源码给 marker 模板加一个未登记的插值 → 红并点名未登记（不许拿旧字面比新真值）",
+    overlay: { "src/tools/file-tools.js": (t) => t.replace("剩余 ${values.total - values.offset} 行", "剩余 ${values.total - values.offset} 行（从 ${values.offset + 1} 行起）") },
+    expect: [/模板里有未登记的插值 .*values\.offset \+ 1/],
+  },
+  {
+    label: "把 CN 契约那一处引用整段删掉 → 检查面失效 + 中英处数不齐",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("`[共 N 行（文件 <size>），剩余 M 行；下一步：readFile 传 offset=K 继续]`", "上面那张截断标记表里的续读提示") },
+    expect: [/找不到以 `\[共 ` 开头的 marker 字面引用/, /声明点处数中英不齐：.* 1 处 vs .* 0 处/],
+  },
+
+  // —— paths：覆盖面与四类裁决（issue #273）——
+  {
+    label: "把 examples/pi-extension/README.md 里的同目录文件 `erix-run-core.js` 改个名（修前 exit 0）",
+    overlay: { [PI_EXT_README]: (t) => t.replace("`erix-run-core.js`", "`erix-run-coreX.js`") },
+    expect: [/paths: examples\/pi-extension\/README\.md[\s\S]*`erix-run-coreX\.js`（第 \d+ 行）：本仓不存在/],
+    expectFiles: [PI_EXT_README],
+  },
+  {
+    label: "把根 README 引用的 docs/architecture.md 改名（既有行为不退化）",
+    overlay: { [README_EN]: (t) => t.replace("blob/main/docs/architecture.md", "blob/main/docs/architectureX.md") },
+    // 变异要落在**真正被核对的那个引用**上：这行是 `[docs/architecture.md](https://…/blob/main/docs/architecture.md)`，
+    // 只改链接文字动不了提取出的 href（URL 会被改写成仓内路径），所以上一版是“变异没接上检查面”而非锚点绿。
+    expect: [/paths: README\.md[\s\S]*docs\/architectureX\.md/],
+    expectFiles: [README_EN],
+  },
+  {
+    label: "白名单不是整目录豁免：把已登记的 CHANGELOG 任务档案名改一个字 → 红",
+    overlay: { "CHANGELOG.md": (t) => t.replace("repro-circular-details.mjs", "repro-circular-detailsX.mjs") },
+    expect: [/archive-refs: CHANGELOG\.md[\s\S]*repro-circular-detailsX\.mjs[\s\S]*指向任务档案/],
+    expectFiles: ["CHANGELOG.md"],
+  },
+  {
+    label: "就地声明就能放行（对照）：把已登记的 REPORT.md 换成没登记的 PLAN.md，同行仍写「本地，不入库」",
+    overlay: { "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": (t) => t.replace("REPORT.md", "PLAN.md") },
+    expectGreen: true,
+  },
+  {
+    label: "把那句「（本地，不入库）」删掉 → 同一处立刻红（证明上一例的绿来自声明，不是恒绿）",
+    overlay: {
+      "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": (t) =>
+        t.replace("REPORT.md", "PLAN.md").replace("任务文档（本地，不入库）：", "任务文档："),
+    },
+    expect: [/archive-refs: docs\/research\/2026-09-26[\s\S]*PLAN\.md[\s\S]*没在引用处写明|archive-refs: docs\/research\/2026-09-26[\s\S]*PLAN\.md[\s\S]*没写「本机/],
+  },
+  {
+    label: "分类真的读 .gitignore：把 docs/tasks/ 从 .gitignore 里去掉 → 本机档案登记与放行全部失效",
+    overlay: { ".gitignore": (t) => t.replace("docs/tasks/\n", "") },
+    expect: [/登记为本机档案.*但 \.gitignore 并不忽略/, /archive-refs: CHANGELOG\.md|paths: examples\/pi-extension\/README\.md/],
+  },
+  {
+    label: ".gitignore 新增一条没分类的目录规则 → 红（不许默默放行新目录）",
+    overlay: { ".gitignore": (t) => t.replace("docs/tasks/\n", "docs/tasks/\nscratch/\n") },
+    expect: [/没在 IGNORED_DIR_CLASSES 里分类|没有一处引用真正用到它/],
+  },
+  {
+    label: "白名单条目变空转：两处引用（examples README 与 CHANGELOG 的同名提及）全改掉 → 该登记被判失效",
+    overlay: {
+      // #273 把 archive 类的三级解析接上后，CHANGELOG:89 的裸名提及也算一处真实引用；只下掉一处只会
+      // 让那一处红，要证「登记空转」得把两处都下掉。
+      [PI_EXT_README]: (t) => t.replace("`e2e-wake.mjs`", "`e2e-wake-v2.mjs`"),
+      "CHANGELOG.md": (t) => t.replace("`e2e-wake.mjs`", "`e2e-wake-v2.mjs`"),
+      "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t.replace("`e2e-wake.mjs`", "`e2e-wake-v2.mjs`"),
+    },
+    expect: [/白名单条目 `e2e-wake\.mjs` 没有一处引用真正用到它/],
+  },
+
+  // —— baseline：AGENTS 的棘轮当前值 ↔ 棘轮常量（issue #274）——
+  {
+    label: "AGENTS EN 把基线写成 142（#265 当年留在 CHANGELOG 的那种开发中途值）（修前 exit 0）",
+    overlay: { [AGENTS_EN]: (t) => t.replace("baseline constant **121**", "baseline constant **142**") },
+    expect: [/baseline\/「基线常量 \/ baseline constant」声明: AGENTS\.md:\d+ 声称 142，但 scripts\/type-check-ratchet\.mjs 的 BASELINE_ROOT 是 121/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "AGENTS CN 把常量写法写成 120 → 点名 AGENTS_cn.md",
+    overlay: { [AGENTS_CN]: (t) => t.replace("BASELINE_ROOT = 121", "BASELINE_ROOT = 120") },
+    expect: [/baseline\/常量写法 `BASELINE_ROOT = N`: AGENTS_cn\.md:\d+ 声称 120，但 .* BASELINE_ROOT 是 121/],
+    expectFiles: [AGENTS_CN],
+  },
+  {
+    label: "棘轮常量自己降 1 → 中英两侧的当前值句式全红",
+    overlay: { [RATCHET_SRC]: (t) => t.replace("const BASELINE_ROOT = 121;", "const BASELINE_ROOT = 120;") },
+    expect: [/BASELINE_ROOT 是 120/],
+    expectFiles: [AGENTS_EN, AGENTS_CN],
+  },
+  {
+    label: "CN 的分解式写成 121 + 27 + 15 → 算术不闭合就红",
+    overlay: { [AGENTS_CN]: (t) => t.replace("= 121 + 27 + 16", "= 121 + 27 + 15") },
+    expect: [/分解式 121 \+ 27 \+ 15 = 163，不等于 BASELINE_WITH_TOOLS（164）/],
+    expectFiles: [AGENTS_CN],
+  },
+  {
+    label: "EN 少写一处「基线 **164** / 31 files」→ 中英句式处数不齐",
+    overlay: { [AGENTS_EN]: (t) => t.replace("baseline **164** / 31 files = 121 + 27 + 16", "the 164-error baseline spread over 31 files (= 121 + 27 + 16)") },
+    expect: [/baseline\/「基线 \*\*N\*\* \/ 31 个文件」声明: 声明点处数中英不齐：AGENTS\.md 1 处 vs AGENTS_cn\.md 2 处/],
+  },
+  {
+    label: "历史值不被误伤（对照）：CN 叙述里的 142 改成 143 必须仍然绿",
+    overlay: { [AGENTS_CN]: (t) => t.replace("**无 `.d.ts` 在场 = 142 个错**", "**无 `.d.ts` 在场 = 143 个错**") },
+    expectGreen: true,
+  },
+  {
+    label: "AGENTS 中英标题骨架缺一边（#274 附带项：AGENTS 也纳入骨架对账）",
+    overlay: { [AGENTS_CN]: (t) => t.replace("## 3. 开发命令", "#### 3. 开发命令") },
+    // 变异必须只落在 CN 一侧（EN 写的是 "3. Development commands"）：两边都有的标题字串拿去变异会同时
+    // 改掉两份文档，骨架差异被抹平 → 反向证自身失效（#274）。
+    expect: [/skeleton: 中英 AGENTS/],
+  },
 ];
 
 function runSelfTest() {
-  const run = () => [...collectAnchorErrors(), ...checkPkgBlocks().errors];
+  const run = () => collectAllDrift();
   const failures = [];
   const passed = [];
   const control = run();
@@ -1196,6 +1935,14 @@ function runSelfTest() {
     if (!ok) { OVERLAY.clear(); continue; }
     const errs = run();
     OVERLAY.clear();
+    if (c.expectGreen) {
+      if (errs.length) {
+        failures.push(`${c.label}：变异之后本该绿（这条是在证「白名单/就地声明真的在放行」），实测 ${errs.length} 处红：\n      ${errs.join("\n      ")}`);
+      } else {
+        passed.push(`${c.label} → 仍然 0 错（放行分支有效，不是恒绿）`);
+      }
+      continue;
+    }
     const missed = (c.expect ?? []).filter((re) => !errs.some((e) => re.test(e)));
     const missedFiles = (c.expectFiles ?? []).filter((rel) => !errs.some((e) => e.includes(rel)));
     if (!errs.length) failures.push(`${c.label}：改了但没红（锚点仍是 fail-open）`);
@@ -1207,14 +1954,14 @@ function runSelfTest() {
       passed.push(`${c.label} → ${errs.length} 处红（已点名）`);
     }
   }
-  console.log(`docs-drift-check --self-test：清单/单位类锚点的反向证（改→红、不改→绿，变异未落上也算失败）`);
+  console.log(`docs-drift-check --self-test：全部锚点的反向证（改→红、不改→绿、放行分支变异→绿；变异未落上也算失败）`);
   for (const p of passed) console.log(`  ✓ ${p}`);
   for (const f of failures) console.log(`  ✗ ${f}`);
   if (failures.length) {
     console.log(`docs-drift-check --self-test: 失败 — ${failures.length}/${SELF_TEST_CASES.length + 1} 例未达预期`);
     process.exit(1);
   }
-  console.log(`docs-drift-check --self-test: OK — ${SELF_TEST_CASES.length} 例反向证全部按预期变红，对照组绿`);
+  console.log(`docs-drift-check --self-test: OK — ${SELF_TEST_CASES.length} 例反向证/放行证全部按预期，对照组绿`);
 }
 
 if (SELF_TEST) {
