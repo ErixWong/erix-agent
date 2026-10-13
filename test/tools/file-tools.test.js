@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdir, readFile as readFilePromise, rm, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setImmediate as immediate } from "node:timers";
 import { fileURLToPath } from "node:url";
@@ -482,4 +482,209 @@ test("中英契约文档引用的 readMoreLines marker 字面与源码产出同�
     counts.push(claimed.length);
   }
   assert.equal(counts[0], counts[1], `中英引用处数不齐：EN ${counts[0]} vs CN ${counts[1]}（marker 字面必须成对同步）`);
+});
+
+// ---------------------------------------------------------------------------
+// issue #271：`readFile` 描述里「一次能装多少行」必须是复测值，而且必须**给换算式**。
+// 旧文案 `~3,000-6,000 lines` 是 #264 那批描述留下的、`#267` 的 worker 明确声明「未复测、一字未改」的第二个数。
+// 本仓 83 个真实 `.js` 按平均行长折算（口径见 measureReadLineCapacity）：装得最少的一档 4,387 行、中位 7,290 行、
+// 装得最多 9,772 行；**0 个文件低于 3,000、69 个高于 6,000** —— 那句区间整段下移（下限 4,387÷3,000=1.46×、
+// 上限 9,772÷6,000=1.63×，而旧上限连实测**中位数** 7,290 都没盖住），代价是模型在该一次
+// 要够的时候保守分批（正是 #264 治的那个病的反向表现）。所以这里钉的是「模型一次能要多少」这个事实本身。
+//
+// 口径：一次能装的行数 = floor(FILE_READ_MAX_BYTES_DEFAULT ÷ 平均行字节数)，平均行字节数 = 文件字节数 ÷ 物理行数
+// （wc -l 口径；每行的 `\n` 已经计在字节里，所以**不再另加 1**）。
+// ⚠ 与工单给的 4,411 / 7,120 / 9,954 差 <3%：主 agent 先按 `split("\n").length`（末尾空行也被算成一行）求平均、
+//   再 `+1` 计换行，等于把换行计了两次；本测试用的是 bytes ÷ 行数这个物理分母。方向与结论不变（两种口径都是低估 2×）。
+//
+// CJK：**只测了本仓**。本仓 CJK 字节占比最高的文件恰好就是「装得最少」的那一个（`src/loop/state-view.js`，37%），
+// 所以描述只给换算式 + 这一个实测锚点，**没有**给「CJK 文件一般装多少行」的区间——那正是 #267 里被实测推翻的
+// `~4,000` 的错法（没测过的东西不许编区间）。
+// ---------------------------------------------------------------------------
+
+// 样本是写死的 83 个路径（工单硬约束：不许 `find … | head -14` 这类随仓库新增文件漂移的隐式样本）。
+// 「盘上枚举 == 本清单」那条断言把清单完整性钉住：新增/删除 `.js` 就当场红，描述里的统计不会静默失真。
+const READ_LINE_CAPACITY_SAMPLE = [
+  "src/assembly-validators.js", "src/assembly.js", "src/compact/anchors.js", "src/compact/budget.js",
+  "src/compact/enforce-size.js", "src/compact/fold-fidelity.js", "src/compact/fold-llm.js", "src/compact/fold-statistical.js",
+  "src/compact/helpers.js", "src/compact/pipeline.js", "src/compact/provider-summarizer.js", "src/compact/sliding-window.js", "src/compact/strategy-resolution.js",
+  "src/config/api-key.js", "src/config/env.js", "src/config/json-file.js", "src/config/static.js",
+  "src/display/projection.js", "src/index.js", "src/loop/abort.js", "src/loop/aggregate-budget.js",
+  "src/loop/block-helpers.js", "src/loop/budget.js", "src/loop/error-ledger.js", "src/loop/judge-record.js",
+  "src/loop/messages.js", "src/loop/option-normalization.js", "src/loop/orchestrator.js", "src/loop/provider-runner.js",
+  "src/loop/reflection.js", "src/loop/resume-manager.js", "src/loop/run-snapshot-executor.js", "src/loop/state-view.js",
+  "src/loop/task-brief.js", "src/loop/termination.js", "src/loop/tool-result-ttl.js", "src/messages/anthropic.js",
+  "src/messages/canonical.js", "src/messages/openai-normalization.js", "src/messages/rounds.js", "src/providers/anthropic.js",
+  "src/providers/errors.js", "src/providers/http-shared.js", "src/providers/openai.js", "src/providers/payload.js",
+  "src/providers/timeout.js", "src/reflection/governor.js", "src/reflection/judge.js", "src/reflection/l0.js",
+  "src/reflection/wrapup.js", "src/run-state.js", "src/skills/loader.js", "src/store/append-user-turn.js",
+  "src/store/file.js", "src/store/memory.js", "src/store/notes-memory.js", "src/store/notes-port.js",
+  "src/store/notes.js", "src/text/label.js", "src/tokens.js", "src/tools/file-tools.js",
+  "src/tools/index.js", "src/tools/notes.js", "src/tools/providers.js", "src/tools/registry.js",
+  "bin/assembly-root.js", "bin/cli.js", "bin/config.js", "bin/final-guard-support.js",
+  "bin/final-guard.js", "bin/guard-metrics.js", "bin/mcp.js", "bin/repl.js",
+  "bin/session-scan.js", "bin/sessions.js", "bin/skills.js", "bin/tools.js",
+  "examples/exec-demo.js", "examples/memory-benchmark.js", "examples/pi-extension/erix-run-core.js", "examples/pi-extension/erix-run-format.js",
+  "examples/pi-extension/erix-run-jobs.js", "examples/pi-extension/erix-run-parent-wake.js",
+];
+
+// 描述点名的四个角色文件（fewest / median / most + CJK 锚点即本工具自己的源码）。
+// `recorded` 是 2026-10-13 本单在本棵树上实测的值；下面第一条把它也钉住（漂了就要三处一起改）。
+const READ_LINE_CAPACITY_ROLES = [
+  { role: "fewest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
+  { role: "median", file: "src/loop/termination.js", recorded: { bytes: 11_471, lines: 319, bytesPerLine: 35.9592, capacity: 7_290, cjkShare: 0.0902 } },
+  { role: "most", file: "bin/guard-metrics.js", recorded: { bytes: 456, lines: 17, bytesPerLine: 26.8235, capacity: 9_772, cjkShare: 0 } },
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 89_537, lines: 1_718, bytesPerLine: 52.117, capacity: 5_029, cjkShare: 0.2492 } },
+];
+
+const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];
+const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+// 口径就写在这里：平均行字节数 = 文件字节数 ÷ 物理行数（每行的 \n 已含在字节里，不再 +1）。
+function measureReadLineCapacity(rel) {
+  const abs = join(REPO_ROOT, rel);
+  assert.ok(existsSync(abs), `写死的样本文件不在了：${rel}（改名/删除请同步本测试与 readFile 描述里的数）`);
+  const content = readFileSync(abs, "utf8");
+  const bytes = Buffer.byteLength(content, "utf8");
+  const newlines = (content.match(/\n/gu) ?? []).length;
+  const lines = content.endsWith("\n") ? newlines : newlines + 1;
+  const bytesPerLine = bytes / lines;
+  let cjkBytes = 0;
+  for (const char of content) {
+    if (CJK_CHAR.test(char)) cjkBytes += Buffer.byteLength(char, "utf8");
+  }
+  return {
+    rel,
+    bytes,
+    lines,
+    bytesPerLine,
+    cjkShare: bytes === 0 ? 0 : cjkBytes / bytes,
+    capacity: Math.floor(FILE_READ_MAX_BYTES_DEFAULT / bytesPerLine),
+  };
+}
+
+function listShippedSourceFiles() {
+  const found = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(join(REPO_ROOT, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(rel);
+      else if (entry.isFile() && entry.name.endsWith(".js")) found.push(rel);
+    }
+  };
+  for (const dir of READ_LINE_CAPACITY_DIRS) walk(dir);
+  return found.sort();
+}
+
+function assertClose(actual, expected, tolerance, label) {
+  assert.ok(Math.abs(actual - expected) <= Math.abs(expected) * tolerance,
+    `${label}：实测/基准 ${expected}，另一次 ${actual}，差 ${(Math.abs(actual - expected) / Math.abs(expected) * 100).toFixed(2)}%`
+    + ` 超出 ±${(tolerance * 100).toFixed(1)}% → 事实漂移：复测后把 readFile 描述、本测试的记录值、CHANGELOG 的 #271 条目一起改`);
+}
+
+test("readFile 行数容量样本清单与盘上同源，四个档位的记录值未漂移（#271：数不许静默过期）", () => {
+  assert.equal(READ_LINE_CAPACITY_SAMPLE.length, 83,
+    "样本清单条数不再是 83 → 描述里「the 83 `.js` files shipped here」与本清单要一起改");
+  assert.deepEqual(listShippedSourceFiles(), [...READ_LINE_CAPACITY_SAMPLE].sort(),
+    "盘上 src/bin/examples 的 *.js 与本清单不齐（有人新增/删除了文件）→ 描述里 4,387 / 7,290 / 9,772 / 69 的统计基础已失效："
+    + "按 measureReadLineCapacity 的口径复测后，把 readFile 描述、本清单、CHANGELOG 的 #271 条目一起改");
+  for (const { file, recorded } of READ_LINE_CAPACITY_ROLES) {
+    const got = measureReadLineCapacity(file);
+    assertClose(got.bytes, recorded.bytes, 0.02, `${file} 字节数（#271 记录值）`);
+    assertClose(got.lines, recorded.lines, 0.02, `${file} 行数（#271 记录值）`);
+    assertClose(got.capacity, recorded.capacity, 0.02, `${file} 一次能装的行数（#271 记录值）`);
+    assert.ok(Math.abs(got.cjkShare - recorded.cjkShare) <= 0.02,
+      `${file} 的 CJK 字节占比从 ${(recorded.cjkShare * 100).toFixed(1)}% 变成 ${(got.cjkShare * 100).toFixed(1)}%`
+      + " → 描述里 CJK 那半句（含 37% 这个数）要重测");
+  }
+  // 描述里「4,387 那一档就是本仓 CJK 最密的文件」这句话的两个前提
+  const rows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
+  const densest = rows.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
+  const fewest = rows.reduce((a, b) => (b.capacity < a.capacity ? b : a));
+  assert.equal(densest.rel, READ_LINE_CAPACITY_ROLES[0].file,
+    `CJK 最密的文件已不是 ${READ_LINE_CAPACITY_ROLES[0].file}（现在是 ${densest.rel}，占比 ${(densest.cjkShare * 100).toFixed(1)}%）`);
+  assert.equal(fewest.rel, READ_LINE_CAPACITY_ROLES[0].file,
+    `「一次装得最少」的文件已不是 ${READ_LINE_CAPACITY_ROLES[0].file}（现在是 ${fewest.rel}，${fewest.capacity} 行）→ floor 数字要重测`);
+});
+
+test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,000-6,000 lines` 上限低估 1.6×）", () => {
+  const description = FILE_TOOL_DEFINITIONS.find((definition) => definition.name === "readFile").description;
+  assert.doesNotMatch(description, /~3,000-6,000/u, "未复测的旧区间 `~3,000-6,000 lines` 又回来了（issue #271 要修的正是它）");
+  assert.match(description, /max_bytes ÷ average bytes per line/u,
+    "字节额度必须给**换算式**（#271 期望修法 1：给公式而不是区间）");
+  assert.match(description, /far more than a single `limit` will ask for/u,
+    "「字节上限远大于一次 limit 会要的量」这条行为指导必须在场（#264/#271 共同要治的保守分批）");
+
+  const tiers = description.match(
+    /fewest ([\d,]+) lines \(([\d.]+) bytes\/line[^)]*\), median ([\d,]+) \(([\d.]+)\), most ([\d,]+) \(([\d.]+)\)/u,
+  );
+  assert.ok(tiers, "描述不再按「fewest / median / most + 各自 bytes/line」给行数容量 → 本测试的解析面失效。"
+    + "改句式可以，但必须同步本测试，不许让这条断言静默变成永真。");
+  const [fewestClaim, fewestBplClaim, medianClaim, medianBplClaim, mostClaim, mostBplClaim] = tiers.slice(1)
+    .map((value) => Number(value.replace(/,/g, "")));
+  const spread = description.match(
+    /not one of the ([\d,]+) falls below ([\d,]+), and ([\d,]+) of them take over ([\d,]+) in a single call/u,
+  );
+  assert.ok(spread, "描述不再给出「样本数 / 从不下穿的下界 / 高于某一档的文件个数」→ 解析面失效（同步本测试）");
+  const [countClaim, neverBelowClaim, aboveCountClaim, aboveThresholdClaim] = spread.slice(1)
+    .map((value) => Number(value.replace(/,/g, "")));
+  const cjk = description.match(
+    /the ([\d,]+) floor IS the most CJK-dense file here \(`([^`]+)`, (\d+)% of its bytes are CJK\), and this tool's own source fits ([\d,]+)/u,
+  );
+  assert.ok(cjk, "描述不再给出 CJK 锚点（哪个文件、CJK 字节占比、本工具自身源码能装多少行）→ 解析面失效（同步本测试）");
+  const floorRepeatClaim = Number(cjk[1].replace(/,/g, ""));
+  const floorFileClaim = cjk[2];
+  const cjkPercentClaim = Number(cjk[3]);
+  const selfCapacityClaim = Number(cjk[4].replace(/,/g, ""));
+
+  // 当场复测（写死路径，同一口径）
+  const rows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
+  const byRole = Object.fromEntries(READ_LINE_CAPACITY_ROLES.map(({ role, file }) => [role, measureReadLineCapacity(file)]));
+  const caps = rows.map((row) => row.capacity).sort((a, b) => a - b);
+  const measuredFewest = caps[0];
+  const measuredMost = caps[caps.length - 1];
+  const measuredMedian = caps.length % 2 === 1
+    ? caps[(caps.length - 1) / 2]
+    : (caps[caps.length / 2 - 1] + caps[caps.length / 2]) / 2;
+
+  // 1) 声称的三个档位必须由小到大，且与当场实测同档（旧文案 3,000 / — / 6,000 在这里必红）
+  assert.ok(fewestClaim < medianClaim && medianClaim < mostClaim,
+    `描述声称的档位必须由小到大，实际是 ${fewestClaim} / ${medianClaim} / ${mostClaim}`);
+  assert.equal(countClaim, READ_LINE_CAPACITY_SAMPLE.length, "描述声称的样本数与本清单条数不齐");
+  assert.equal(floorRepeatClaim, fewestClaim, "同一句里 floor 出现两次却不同值");
+  assert.equal(floorFileClaim, READ_LINE_CAPACITY_ROLES[0].file, "描述点名的 CJK 锚点文件与角色清单不齐");
+  assertClose(fewestClaim, measuredFewest, 0.02, "描述声称的「一次最少装多少行」");
+  assertClose(medianClaim, measuredMedian, 0.02, "描述声称的中位行数容量");
+  assertClose(mostClaim, measuredMost, 0.01, "描述声称的「一次最多装多少行」");
+
+  // 2) 每档配的 bytes/line 必须真是那个文件的均行字节，且与声称行数在公式下自洽
+  assertClose(fewestBplClaim, byRole.fewest.bytesPerLine, 0.01, "fewest 档声称的平均行字节");
+  assertClose(medianBplClaim, byRole.median.bytesPerLine, 0.01, "median 档声称的平均行字节");
+  assertClose(mostBplClaim, byRole.most.bytesPerLine, 0.01, "most 档声称的平均行字节");
+  for (const [label, lines, bpl] of [["fewest", fewestClaim, fewestBplClaim], ["median", medianClaim, medianBplClaim], ["most", mostClaim, mostBplClaim]]) {
+    assertClose(lines, Math.floor(FILE_READ_MAX_BYTES_DEFAULT / bpl), 0.05, `描述内部自洽（${label}：行数应等于 max_bytes ÷ 它自己给的 bytes/line）`);
+  }
+
+  // 3) 「从不下穿 3,000」与「69 个高于 6,000」必须由清单当场重算得出
+  assert.ok(neverBelowClaim <= measuredFewest && neverBelowClaim >= measuredFewest * 0.6,
+    `描述说「83 个文件从不下穿 ${neverBelowClaim}」，实测下界是 ${measuredFewest}：这条要么夸大要么又把下界压得太低`);
+  assert.equal(aboveCountClaim, rows.filter((row) => row.capacity > aboveThresholdClaim).length,
+    `描述声称 ${aboveCountClaim} 个文件一次能装超过 ${aboveThresholdClaim} 行，清单当场重算不是这个数`);
+
+  // 4) 反低估的事实本身（就算有人重写句式，这三条也留住旧文案犯的错）
+  assert.ok(measuredFewest > aboveThresholdClaim * 0.5,
+    `连「装得最少」的文件都只有 ${measuredFewest} 行了？低于 ${aboveThresholdClaim} 的一半 → 描述那档「保守分批」的口径要重估`);
+  assert.ok(measuredMedian > aboveThresholdClaim,
+    `实测中位行数容量 ${measuredMedian} 没有超过 ${aboveThresholdClaim}：旧上限重新成立了，描述与本测试的口径都要重谈`);
+  assert.ok(rows.every((row) => row.capacity >= measuredFewest && row.capacity <= measuredMost),
+    "清单内的极值不自洽（重算逻辑被改坏）");
+
+  // 5) CJK：本仓实测支持「CJK 让行数按比例下降」这句话；但描述不许给没测过的 CJK 区间
+  const densest = rows.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
+  assertClose(cjkPercentClaim, densest.cjkShare * 100, 0.05, "描述声称的 CJK 字节占比");
+  assertClose(selfCapacityClaim, byRole.self.capacity, 0.01, "描述声称的「本工具自己的源码一次能装多少行」");
+  assert.ok(byRole.self.capacity < measuredMedian,
+    `描述说 CJK 会按比例压低行数，但 ${byRole.self.rel}（CJK ${(byRole.self.cjkShare * 100).toFixed(1)}%）实测 ${byRole.self.capacity} 行，不低于中位 ${measuredMedian}`);
+  assert.doesNotMatch(description, /~[\d,]+ lines[^.]*CJK|CJK[^.]*~[\d,]+ lines/u,
+    "描述给 CJK 编了一个行数区间——本仓只测过上面那一个 CJK 锚点，没测过的东西写「按公式自行折算」（#267 的 `~4,000` 教训）");
 });
