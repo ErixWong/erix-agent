@@ -2052,7 +2052,7 @@ addressed as `erix.<field>`: `toolCallKey` / `round` / `durationMs` / `execution
 |---|---|---|---|
 | `type`, `tool_use_id`, `content` | protocol | always | `tool_use_id` is the provider pairing key: the engine reads it and never rewrites it (`groupIntoRounds`/`validateMessages` and run-snapshot replay lookups depend on it). |
 | `is_error` | protocol | only error/interrupted results | Wire field, top level by design. |
-| `erix.toolCallKey` | engine | every `tool_use` the engine accepts, and every result built from one | Cross-channel identity: one allocation per accepted call, carried by the first recognisable stream fragment, the `tool_use` block (and therefore the persisted block and the `tool_use` event clone), the `tool_result`, and the projection. Resume and replay **reuse** the persisted value; a value is never regenerated for a call that already had one. A provider pairing id is **not** an identity and is not guaranteed unique inside a run (per-round index prefixes, or the `call_legacy` fallback for malformed responses), so the same id reappearing in a later round is a **new call** and gets a new key: a key is inherited only where the call is confirmed to be the same one — the replay window of the current round, or the one pending call restored from the crash site. |
+| `erix.toolCallKey` | engine | every `tool_use` the engine accepts, and every result built from one | Cross-channel identity: one allocation per accepted call, carried by the first recognisable stream fragment, the `tool_use` block (and therefore the persisted block and the `tool_use` event clone), the `tool_result`, and the projection. Resume and replay **reuse** the persisted value; a value is never regenerated for a call that already had one. A provider pairing id is **not** an identity and is not guaranteed unique inside a run (per-round index prefixes, or the `call_legacy` fallback for malformed responses), so the same id reappearing in a later round is a **new call** and gets a new key: a key is inherited only where the call is confirmed to be the same one — the replay window of the current round, or the one pending call restored from the crash site. **Pre-contract records stay keyless on both ends** (see the carve-out below). |
 | `erix.round` | engine | the call actually executed | The **execution** round. It is not the event envelope’s `round` (the delivery round), and the two are deliberately not merged. |
 | `erix.durationMs` | engine | the executor promise settled or rejected | Milliseconds from “immediately before the executor is invoked” to “that promise settled or rejected”. |
 | `erix.executionStatus` | engine | special states only | `intercepted` / `interrupted`. |
@@ -2127,6 +2127,25 @@ same `metadata` — two clones of one object. `content` is not part of the equat
 may rewrite it), event envelopes and stream deltas never enter the record, folding never
 flows back into an earlier event, and when a run aborts or the append fails the record may
 simply be missing — the engine never invents a record to make the equation hold.
+
+### Carve-out: replaying a record written before this contract
+
+A run snapshot written before the fact contract carries no `erix` at all. Replaying such a
+record is the one case where **both ends of one call legitimately have no `toolCallKey`**:
+the engine replays the recorded result verbatim (it never rewrites a stored fact) and, for
+that round, deliberately does **not** claim a key for the paired `tool_use` block either.
+Missing on both ends is the truthful state — inventing a key would leave the `tool_use` end
+carrying an identity the `tool_result` end does not have, which is worse than both being
+absent, because a host could then not tell which side to trust. Concretely:
+
+- the engine fabricates nothing: no `erix` object, no top-level `toolCallKey`, nothing
+  derived from the pairing id;
+- a host must therefore treat `toolCallKey` as **optional per call, not optional per
+  version**: a run that resumes from a pre-contract checkpoint can intermit keyless facts
+  with keyed ones, and must key its own card by the pairing id for the keyless ones;
+- calls accepted after the upgrade are unaffected — they always carry a key on both ends.
+
+This is asserted by `test/contract/tool-result-envelope.js` ("复放升级前的已记录结果").
 
 ## onEvent tool event field list (issue #284 / #285)
 

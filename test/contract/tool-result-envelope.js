@@ -468,6 +468,70 @@ export function toolResultEnvelopeContract(label, getEntry) {
     );
   });
 
+  // ── 升级前写入的记录被复放：身份两端一致地缺失，不许凭空造一个 ───────────────────
+  test(`${label}: 复放升级前的已记录结果 ⇒ tool_use 与 tool_result 两端都没有 toolCallKey`, async () => {
+    const { runToolLoop, createMemoryTranscriptStore } = await entry();
+    const store = createMemoryTranscriptStore();
+    const runId = "contract-replay-pre-contract-record";
+    // 升级前（0.19 及更早）写下的 run snapshot：结果与块里都**没有 `erix`** —— 那时还没有这套字段。
+    const recorded = {
+      type: "tool_result",
+      tool_use_id: "old-1",
+      content: "recorded before the fact contract existed",
+      erixRound: 2,
+    };
+    await store.appendRound(runId, { round: 0, messages: [{ role: "user", content: "task" }] });
+    await store.saveCheckpoint(runId, {
+      round: 2,
+      pendingToolUses: [{ type: "tool_use", id: "old-1", name: "work", input: {} }],
+      messages: [
+        { role: "user", content: "task" },
+        { role: "assistant", content: [{ type: "tool_use", id: "old-1", name: "work", input: {} }] },
+      ],
+      executedToolIds: ["old-1"],
+      toolResults: [{ toolUseId: "old-1", toolResult: recorded }],
+    });
+
+    let calls = 0;
+    const events = [];
+    await runToolLoop({
+      provider: scriptedProvider([toolRound("old-1"), DONE]),
+      resume: true,
+      store,
+      runId,
+      completion: false,
+      executeTool: async () => {
+        calls += 1;
+        return "must not execute again";
+      },
+      onEvent: (event) => events.push(event),
+    });
+
+    assert.equal(calls, 0, "复放路径不得二次执行 executor");
+    const replayed = eventsOfType(events, "tool_result").map((event) => event.toolResult)
+      .find((fact) => fact.tool_use_id === "old-1");
+    assert.ok(replayed, "应发出复放的 tool_result 事件");
+    assert.equal(replayed.content, "recorded before the fact contract existed");
+    assert.equal(replayed.erix, undefined, "复放旧记录时不得给它补出引擎命名空间");
+    assert.equal(replayed.toolCallKey, undefined, "顶层也不许凭空冒出一个身份键");
+
+    const replayedUse = eventsOfType(events, "tool_use").map((event) => event.toolUse)
+      .find((block) => block.id === "old-1");
+    assert.ok(replayedUse, "应发出本轮的 tool_use 事件");
+    assert.equal(replayedUse.erix, undefined,
+      "本轮的 tool_use 也**不认领**新 key：两端一致地缺失，胜过一端有一端没有");
+    assert.equal(replayedUse.id, "old-1", "provider 配对键照旧未改");
+
+    // 线 B：落盘的块也没被凭空造出身份（事件里没有、记录里也不许有）。
+    const persisted = blocksOfMessages(
+      (await store.load(runId)).flatMap((record) => record.messages ?? []), "tool_use",
+    ).filter((block) => block.id === "old-1");
+    assert.ok(persisted.length >= 1, "线 B 必须有这条 tool_use 块");
+    for (const block of persisted) {
+      assert.equal(block.erix, undefined, `落盘块被凭空造出了身份：${JSON.stringify(block.erix)}`);
+    }
+  });
+
   // ── judge 拦截：未执行 ⇒ 没有 round、没有 durationMs ──────────────────────────
   test(`${label}: judge 拦截的事实没有 round 与 durationMs（未执行 = 未知，不是 0）`, async () => {
     const judge = judgeProvider([{

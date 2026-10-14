@@ -1619,7 +1619,7 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 |---|---|---|---|
 | `type`、`tool_use_id`、`content` | 协议 | 总是 | `tool_use_id` 是 provider 的配对键：引擎只读它、永不改写它（`groupIntoRounds`/`validateMessages` 的配对校验与 run snapshot 的复放查找都依赖它）。 |
 | `is_error` | 协议 | 仅错误/中断结果 | wire 字段，按设计就在顶层。 |
-| `erix.toolCallKey` | 引擎 | 每一个被引擎接受的 `tool_use`，以及由它构造出的结果 | 跳通道身份：一次被接受的调用只分配一次，从第一个可识别的流式片段开始，一路带到 `tool_use` 块（因此也在持久化块与 `tool_use` 事件克隆上）、`tool_result` 与投影。resume 与复放**沿用**已落盘的值，已有身份的调用绝不重生成。但 provider 的配对 id **不是身份**，也不保证 run 内唯一（轮内 index 前缀，或畸形响应兜底成 `call_legacy`），所以下一轮再出现同一个 id 就是**一次新调用**，会拿到新 key：只有被确认为同一次调用时才继承 —— 本轮的复放窗口，或从崩溃现场恢复回来的那一条 pending 调用。 |
+| `erix.toolCallKey` | 引擎 | 每一个被引擎接受的 `tool_use`，以及由它构造出的结果 | 跳通道身份：一次被接受的调用只分配一次，从第一个可识别的流式片段开始，一路带到 `tool_use` 块（因此也在持久化块与 `tool_use` 事件克隆上）、`tool_result` 与投影。resume 与复放**沿用**已落盘的值，已有身份的调用绝不重生成。但 provider 的配对 id **不是身份**，也不保证 run 内唯一（轮内 index 前缀，或畸形响应兜底成 `call_legacy`），所以下一轮再出现同一个 id 就是**一次新调用**，会拿到新 key：只有被确认为同一次调用时才继承 —— 本轮的复放窗口，或从崩溃现场恢复回来的那一条 pending 调用。**升级前写下的记录复放时两端都缺身份**（见下面那条 carve-out）。 |
 | `erix.round` | 引擎 | 调用真的执行了 | **执行轮**。它不是事件 envelope 的 `round`（交付轮），两者刻意不合并。 |
 | `erix.durationMs` | 引擎 | executor 的 promise settle 或 reject 了 | 从「调用 executor 前」到「该 promise settle/reject」的毫秒数。 |
 | `erix.executionStatus` | 引擎 | 仅特殊状态 | `intercepted` / `interrupted`。 |
@@ -1682,6 +1682,22 @@ T1 是 additive。旧的顶层键一律照写不动，现有宿主可以一边�
 同一个对象的两个克隆。`content` 不在等式里（折叠可能改它），事件 envelope 与增量永不
 进入记录，折叠也不会倒灌成更早的事件；run 被中止或 append 失败时记录可以就是没有——
 引擎从不为了把等式捽圆而发明一条记录。
+
+### carve-out：复放升级前写下的记录
+
+升级前写下的 run snapshot 里根本没有 `erix`。复放这样一条记录，是同一次调用的**两端都
+没有 `toolCallKey` 的唯一合法情形**：引擎原样复放那条已记录的结果（它从不回写已落盘的
+事实），并且这一轮**也不给配对的 `tool_use` 块认领** key。两端都缺才是诚实的状态——
+凭空造一个 key 会让 `tool_use` 端带着一个 `tool_result` 端没有的身份，比两端都缺更糟，
+因为宿主于是无从判断该信哪一端。具体说：
+
+- 引擎什么都不伪造：不造 `erix` 对象、不造顶层 `toolCallKey`，也不从配对 id 推出一个；
+- 宿主因此必须把 `toolCallKey` 看成**逐调用可选，而不是逐版本可选**：从升级前的检查点
+  续跑的 run 会把「无身份的 fact」与「有身份的 fact」混着交出来，无身份那几条请按配对 id
+  建自己的卡；
+- 升级之后被接受的调用不受影响——两端一定带同一个 key。
+
+`test/contract/tool-result-envelope.js`（「复放升级前的已记录结果」那条）钉住了这个行为。
 
 ## onEvent 工具事件字段清单（issue #284 / #285）
 
