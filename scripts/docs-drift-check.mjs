@@ -2741,7 +2741,7 @@ const SELF_TEST_CASES = [
   },
   {
     label: "契约 EN 把「保留顶层键名」那段整段删掉（只改文档：该文件的检查面失效必须当场红，不靠中英处数）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace(/^`metadata` and `erix` are \*\*reserved[\s\S]*?not this one's\.\n/m, "") },
+    overlay: { [CONTRACT_EN]: (t) => t.replace(/^`metadata` and `erix` are \*\*reserved[\s\S]*?no longer reach those fields\.\n/m, "") },
     expect: [/docs\/host-consumer-contract\.md 找不到保留键名的声明/],
     expectFiles: [CONTRACT_EN],
   },
@@ -2758,6 +2758,15 @@ const SELF_TEST_CASES = [
     expectFiles: [CONTRACT_EN, CONTRACT_CN],
   },
 
+  {
+    // T2 把这张表从「双写对照表」改成**退役名单**（多了一条 `success`），所以「少一行」必须红：
+    // 只删不改的退役条目最容易在文档里被漏掉，而漏掉就等于宿主不知道要迁移什么。
+    label: "契约 EN 的退役名单少写 `success` 那一行（只改文档：T2 新增的那条退役名被漏掉）",
+    overlay: { [CONTRACT_EN]: (t) => t.replace("| `success` | `erix.success` |\n", "") },
+    expect: [/legacy 别名表: docs\/host-consumer-contract\.md.*缺 旧顶层键 "success"/,
+      /alias: 声明点处数中英不齐：docs\/host-consumer-contract\.md 3 处 vs docs\/host-consumer-contract_cn\.md 4 处/],
+    expectFiles: [CONTRACT_EN],
+  },
   {
     label: "常量把 legacy 别名的新归属改名 → 中英两侧的别名表同时红",
     overlay: { "src/tool-fact.js": (t) => t.replace('duration: "erix.durationMs",', 'duration: "erix.elapsedMs",') },

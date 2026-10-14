@@ -11,6 +11,8 @@ const BIG = "x".repeat(20_000); // ~6600 估算 tokens，高于默认 4000 门�
 function conversation({
   resultContent = BIG,
   erixRound = 1,
+  erix,
+  omitErixRound = false,
   toolName = "scan",
   input = { path: "src/a.js", offset: 0, limit: 100 },
   extraResultFields = {},
@@ -27,7 +29,9 @@ function conversation({
         type: "tool_result",
         tool_use_id: "call-1",
         content: resultContent,
-        ...(erixRound === undefined ? {} : { erixRound }),
+        // omitErixRound = 「真的没这个键」；erixRound: null = 「键在但值不是数」（旧 checkpoint 那一类）。
+        ...(omitErixRound || erixRound === undefined ? {} : { erixRound }),
+        ...(erix === undefined ? {} : { erix }),
         ...extraResultFields,
       }],
     },
@@ -161,6 +165,56 @@ test("缺失 erixRound 的结果保守不折（旧 checkpoint 恢复场景）", 
   const messages = conversation({ erixRound: null });
   const view = foldToolResultsForRequest(messages, { currentRound: 9, ttl: 1 });
   assert.equal(view, messages);
+});
+
+// —— 年龄标记的读路径（工单 261014 T2 §2.1）——
+// 本单的方向是「先改读、后停写」：引擎停写顶层 `erixRound` 之后，年龄判据只能从 `erix.round` 拿到。
+// 这三例是那个顺序的反向锁：如果读路径改回 `block.erixRound`，前两例立即红（而不是默默不折）。
+
+test("反向锁：只有 erix.round（没有顶层 erixRound）的结果仍按年龄折叠", () => {
+  // 停写后引擎发出的真实形状。
+  const messages = conversation({ omitErixRound: true, erix: { round: 1 } });
+  assert.equal(Object.hasOwn(messages[2].content[0], "erixRound"), false,
+    "本例必须真的不带顶层年龄标记，否则等于没测回退链的另一头");
+  const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  assert.match(resultBlock(view).content, /【已折叠·TTL】/,
+    "只带 erix.round 就必须仍能折叠；读路径只认 erixRound 时这里是静默不折");
+  // 年龄口径与顶层旧字段完全一致：age 未达 ttl 不折，预警轮照样触发。
+  assert.equal(foldToolResultsForRequest(messages, { currentRound: 1, ttl: 2 }), messages);
+  assert.match(
+    resultBlock(foldToolResultsForRequest(messages, { currentRound: 2, ttl: 2 })).content,
+    /【TTL 预警】/,
+  );
+});
+
+test("反向锁：两个年龄标记都在且不相等时，以 erix.round 为准（旧记录只有顶层时回退）", () => {
+  // erix.round=5 而顶层 erixRound=1：按 erix.round 算 age=1（预警轮），按旧字段算 age=5（早该折叠）。
+  const both = conversation({ erixRound: 1, erix: { round: 5 } });
+  const view = foldToolResultsForRequest(both, { currentRound: 6, ttl: 2 });
+  assert.match(resultBlock(view).content, /【TTL 预警】此结果下一轮将折叠为句柄/);
+  assert.ok(!resultBlock(view).content.includes("【已折叠·TTL】"),
+    "取错了源就会直接折叠（age=5）而不是预警轮（age=1）");
+  // 升级前落盘的记录（只有顶层）仍然读得到：不折叠就违反「回退保留一代」。
+  const legacyOnly = conversation({ erixRound: 1 });
+  assert.match(
+    resultBlock(foldToolResultsForRequest(legacyOnly, { currentRound: 9, ttl: 2 })).content,
+    /【已折叠·TTL】/,
+  );
+});
+
+test("折叠占位符里的轮号用的是生效的那一个（erix.round 优先）", () => {
+  const messages = conversation({ erixRound: 1, erix: { round: 7 } });
+  const view = foldToolResultsForRequest(messages, { currentRound: 9, ttl: 2 });
+  assert.match(resultBlock(view).content, /r7 读取/, `实测占位符：${resultBlock(view).content}`);
+  assert.ok(!resultBlock(view).content.includes("r1 读取"), "不得把被盖掉的旧轮号放进占位符");
+  // 自定义 hint 拿到同一个值（三条读路径共用一个年龄判据）。
+  let seen = null;
+  foldToolResultsForRequest(messages, {
+    currentRound: 9,
+    ttl: 2,
+    retrievalHint: ({ round }) => { seen = round; return "h"; },
+  });
+  assert.equal(seen, 7);
 });
 
 test("ttl=0 或 minTokens<=0 为 no-op（返回原引用）", () => {

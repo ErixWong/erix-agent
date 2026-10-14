@@ -2,7 +2,7 @@
 //
 // 本套件钉的是**引擎产出的 tool_result / tool_use 事实形状**，不是宿主适配器：
 //   · 字段归属：协议字段在顶层（`type`/`tool_use_id`/`content`，条件 `is_error`）、引擎事实只在
-//     `erix.*`、宿主扩展在 `metadata.*`（双写期旧的顶层摊平键仍在，见下面的双写断言）；
+//     `erix.*`、宿主扩展只在 `metadata.*`（工单 261014 T2 之后**顶层不再有任何摊平键**）；
 //   · `TOOL_RESULT_CONTRACT` 是这三条归属的唯一真相，期望字段集合**由常量生成**：字段名只能
 //     来自 `contract.engine.fields`、且必须在常量里声明了 `stages` 含 `result`（`expectedEngineFields`），
 //     常量被削掉一个字段本套件立即红，而不是文档与测试各自再抄一份清单。**唯一的例外**是
@@ -10,7 +10,7 @@
 //     文件末尾另有一条「常量里的每个字段都被断言过」的覆盖对账。
 //   · 存在性矩阵（工单 §5）：成功 / 失败 / judge 拦截 / resume 中断重放 / 已完成结果复放 /
 //     未 settle 即中止，逐情形断言，并含反向断言（拦截与中断**没有** durationMs、复放**不重算**、
-//     宿主同名键既在顶层也在 `metadata`、provider `id` 未被改写）；
+//     宿主同名键**只在** `metadata` 而不在顶层、退役名单里的顶层旧名一个也不得再出现、provider `id` 未被改写）；
 //   · `durationMs` 缺失 = unknown，**不是 0**。
 //
 // 用法（宿主拿到的是包入口命名空间，与 `engineApiContract` 同一形状）：
@@ -175,8 +175,12 @@ export function toolResultEnvelopeContract(label, getEntry) {
     for (const name of written) assertedEngineFields.add(name);
     return registered.filter((name) => written.includes(name)).sort();
   };
-  /** 一次「真的执行过」的结果应当带的字段（拦截 / 中断那两条另算，见各自用例）。 */
-  const EXECUTED_RESULT_FIELDS = ["toolCallKey", "round", "durationMs"];
+  /** 一次「真的执行过」的结果应当带的字段（拦截 / 中断那两条另算，见各自用例）。
+   *  T2 起 `success` 属于这一行：executed 结果一律写，不再取决于宿主声明没声明。 */
+  const EXECUTED_RESULT_FIELDS = ["toolCallKey", "round", "durationMs", "success"];
+  /** 退役名单里「executed 结果上不得再出现」的顶层旧名（对应 `TOOL_RESULT_CONTRACT.legacy.aliases`）。
+   *  写死而不从常量推：从常量推就钉不住「常量改了、写入侧还在写」。 */
+  const RETIRED_TOP_LEVEL_KEYS = ["erixRound", "duration", "executionStatus", "success"];
 
   /** 逐情形跑一次 runToolLoop，交回事件流、provider 请求、store 记录三侧的观测点。 */
   async function runCase(executeTool, { script = [toolRound("call-1"), DONE], options = {} } = {}) {
@@ -218,25 +222,25 @@ export function toolResultEnvelopeContract(label, getEntry) {
 
   // ── §5 存在性矩阵：成功与失败的全部返回形态 ──────────────────────────────────
   const SUCCESS_FORMS = [
-    { name: "string", executor: async () => "plain text", isError: false, declared: false },
-    { name: "number", executor: async () => 42, isError: false, declared: false },
+    { name: "string", executor: async () => "plain text", isError: false, success: true },
+    { name: "number", executor: async () => 42, isError: false, success: true },
     {
       name: "{content,metadata}",
       executor: async () => ({ content: "structured", metadata: { searchHits: 3 }, success: true }),
       isError: false,
-      declared: true,
+      success: true,
     },
     {
       name: "legacy {data}",
       executor: async () => ({ data: "legacy payload", success: true, toolMessageId: "m-1" }),
       isError: false,
-      declared: true,
+      success: true,
     },
     {
       name: "returned Error",
       executor: async () => new Error("executor said no"),
       isError: true,
-      declared: false,
+      success: false,
     },
     {
       name: "thrown non-abort",
@@ -244,12 +248,12 @@ export function toolResultEnvelopeContract(label, getEntry) {
         throw new Error("executor threw");
       },
       isError: true,
-      declared: false,
+      success: false,
     },
   ];
 
   for (const form of SUCCESS_FORMS) {
-    test(`${label}: 返回形态 ${form.name} —— toolCallKey/round/durationMs 齐全，is_error=${form.isError}`, async () => {
+    test(`${label}: 返回形态 ${form.name} —— toolCallKey/round/durationMs/success 齐全，is_error=${form.isError}`, async () => {
       const { toolResultFacts, toolUseFacts } = await runCase(form.executor);
       assert.equal(toolResultFacts.length, 1);
       const fact = toolResultFacts[0];
@@ -260,19 +264,26 @@ export function toolResultEnvelopeContract(label, getEntry) {
       }
       assert.equal(fact.is_error, form.isError ? true : undefined);
 
-      // 引擎事实只在 erix.*，且字段集合恰为矩阵这一行（executor 没声明 success 就不写第四件）
+      // 引擎事实只在 erix.*，且字段集合恰为矩阵这一行（T2 起 `success` 一律写，不再看宿主声明）
       assert.deepEqual(
         Object.keys(fact.erix).sort(),
-        expectedEngineFields(...EXECUTED_RESULT_FIELDS, ...(form.declared ? ["success"] : [])),
+        expectedEngineFields(...EXECUTED_RESULT_FIELDS),
       );
       assert.match(fact.erix.toolCallKey, TOOL_CALL_KEY_PATTERN);
       assert.equal(fact.erix.round, 1);
       assert.equal(typeof fact.erix.durationMs, "number");
       assert.ok(Number.isFinite(fact.erix.durationMs) && fact.erix.durationMs >= 0);
       assert.equal(fact.erix.executionStatus, undefined);
-      // 引擎事实不出现在顶层（顶层只剩双写期的旧字段）
-      assert.equal(fact.toolCallKey, undefined);
-      assert.equal(fact.durationMs, undefined);
+      assert.equal(fact.erix.success, form.success,
+        "erix.success 一律写，取值就是旧顶层那个表达式归一化后的布尔");
+      // 引擎事实不出现在顶层；顶层也不得再出现退役名单里的任何一个旧名（停写的定义就是这一条）。
+      for (const key of ["toolCallKey", "round", "durationMs", "success"]) {
+        assert.equal(Object.hasOwn(fact, key), false,
+          `顶层不得再出现 \`${key}\`（引擎事实只在 \`${contract.engine.ns}.*\`）：${JSON.stringify(fact)}`);
+      }
+      for (const key of RETIRED_TOP_LEVEL_KEYS) {
+        assert.equal(Object.hasOwn(fact, key), false, `退役的顶层旧名 \`${key}\` 又回到写入了`);
+      }
       // provider 配对键未被改写
       assert.equal(fact.tool_use_id, "call-1");
       assert.equal(toolUseFacts[0].id, "call-1");
@@ -281,18 +292,23 @@ export function toolResultEnvelopeContract(label, getEntry) {
     });
   }
 
-  // ── 双写期：宿主键既在顶层（旧）也在 metadata（新），引擎写的键不进 metadata ──
-  test(`${label}: 双写期宿主扩展键既在顶层也在 metadata，且 metadata 里没有引擎写的键`, async () => {
+  // ── 停写后：宿主键只在 `metadata`（顶层摊平已退役），引擎写的键不进 metadata ──
+  test(`${label}: 宿主扩展键只在 metadata、顶层不得再出现摊平键，且 metadata 里没有引擎写的键`, async () => {
     const { provider, toolResultFacts, records } = await runCase(
       async () => ({ content: "structured", metadata: { artifactStatus: "ok" }, success: true }),
     );
     const fact = toolResultFacts[0];
-    assert.equal(fact.artifactStatus, "ok", "双写期顶层摊平键必须照写（T2 才停）");
     assert.deepEqual(fact.metadata, { artifactStatus: "ok" },
       "metadata.* 只装宿主自己给的键：引擎写的 duration/success 不许漏进宿主命名空间");
-    assert.equal(typeof fact.duration, "number", "旧的顶层 duration 仍按原口径写（结构化路径含 hook 耗时）");
-    assert.equal(fact.success, true, "旧的顶层 success 仍按原口径写");
-    assert.equal(fact.erix.success, true, "executor 显式声明过 → erix.success 写引擎判定后的布尔值");
+    // 下面三条是 T1 那三条「双写期照写」的**反向**（断言方向反了等于没改）。
+    assert.equal(Object.hasOwn(fact, "artifactStatus"), false,
+      "宿主摊平键不得再出现在顶层（值在 metadata.artifactStatus）");
+    assert.equal(Object.hasOwn(fact, "duration"), false,
+      "顶层 duration 已退役，耗时只在 erix.durationMs");
+    assert.equal(Object.hasOwn(fact, "success"), false,
+      "顶层 success 已退役，成败只在 erix.success");
+    assert.equal(typeof fact.erix.durationMs, "number");
+    assert.equal(fact.erix.success, true, "erix.success 写引擎判定后的布尔值");
 
     // 线 A ↔ 线 B：已提交的调用，事件里的事实与落盘 block 逐字段相等（同一对象的两个克隆）
     const persisted = blocksOfMessages(records.flatMap((record) => record.messages ?? []), "tool_result");
@@ -327,43 +343,83 @@ export function toolResultEnvelopeContract(label, getEntry) {
       "宿主那两个同名键必须原样留在宿主命名空间里，一个都不丢");
     assert.deepEqual(fact.metadata.metadata, { hits: 3 }, "宿主自己的 metadata 键不得被吃掉");
     assert.equal(fact.metadata.erix, "mine", "宿主自己的 erix 键不得被引擎命名空间吃掉");
-    assert.equal(fact.artifactStatus, "ok", "普通宿主键的双写摊平不受影响（T2 才停）");
+    assert.equal(Object.hasOwn(fact, "artifactStatus"), false,
+      "普通宿主键同样只在 metadata：顶层不再有摊平路径，保留键也就没有可被盖的东西");
     assert.equal(fact.erix.toolCallKey !== undefined, true, "引擎命名空间里仍是引擎事实");
     assert.equal(fact.erix.artifactStatus, undefined, "宿主键不得漏进引擎命名空间");
   });
 
-  test(`${label}: 构造器直接调用时，保留键要么是命名空间要么不存在，绝不会是宿主的摊平值`, async () => {
+  test(`${label}: 构造器直接调用时，顶层只剩协议字段与两个命名空间（双写入参已退役）`, async () => {
     const { buildToolResultFact, TOOL_RESULT_CONTRACT: constant } = await entry();
-    // ① 两个命名空间都写出来的常见形状：同名宿主键必须让位，非保留的旧顶层键照写。
+    // ① 两个命名空间都写出来的常见形状：除协议字段外只有这两个键。
     const both = buildToolResultFact({
       toolUseId: "k-1",
       content: "body",
       hostMetadata: { artifactStatus: "ok" },
-      legacyTopLevel: { metadata: "host-owned", erix: "host-owned", erixRound: 4 },
       engine: { toolCallKey: "tc_1234567890ab", round: 4 },
     });
-    assert.equal(both.erixRound, 4, "非保留的旧顶层键照写（additive 双写不动）");
+    assert.deepEqual(
+      Object.keys(both).sort(),
+      ["content", "erix", "metadata", "tool_use_id", "type"],
+      `引擎写出的块的顶层键集合就是「协议字段 + 两个命名空间」：${JSON.stringify(Object.keys(both))}`,
+    );
     assert.deepEqual(both.erix, { toolCallKey: "tc_1234567890ab", round: 4 },
       "顶层 erix 只属于引擎命名空间");
     assert.deepEqual(both.metadata, { artifactStatus: "ok" }, "顶层 metadata 只属于宿主命名空间");
 
-    // ② 命名空间**没内容可写**的形状——这才是保留键过滤真正起作用的地方：修前摊平值会留在
-    // 顶层，于是宿主自己的字符串冒充了引擎命名空间（`erix: "host-owned"` 长得像一个事实）。
-    const bare = buildToolResultFact({
+    // ② 双写入参已是退役通道：再传一个 `legacyTopLevel` 也必须被忽略（写入路径整条删掉了，
+    //    不是「传了但被过滤」）——否则旧顶层键会在某个调用点默默复活。
+    const retiredInput = {
       content: "body",
-      legacyTopLevel: { metadata: "host-owned", erix: "host-owned", artifactStatus: "ok" },
-    });
-    assert.equal(bare.artifactStatus, "ok", "非保留键照写");
+      legacyTopLevel: { metadata: "host-owned", erix: "host-owned", artifactStatus: "ok", erixRound: 4 },
+    };
+    const bare = buildToolResultFact(retiredInput);
+    assert.equal(Object.hasOwn(bare, "artifactStatus"), false, "退役入参不得再往顶层写任何键");
+    assert.equal(Object.hasOwn(bare, "erixRound"), false, "年龄标记只能由 engine.round 产生");
     assert.equal(Object.hasOwn(bare, constant.engine.ns), false,
       `没有引擎事实时顶层不该出现 \`${constant.engine.ns}\`，更不该是宿主的摊平值：${JSON.stringify(bare[constant.engine.ns])}`);
     assert.equal(Object.hasOwn(bare, constant.host.ns), false,
       `没有宿主扩展时顶层不该出现 \`${constant.host.ns}\`，更不该是宿主的摊平值：${JSON.stringify(bare[constant.host.ns])}`);
+    // 宿主的同名扩展走命名空间才留得住（保留键名从「被过滤」变成「天然只住这里」）。
+    const namespaced = buildToolResultFact({
+      content: "body",
+      hostMetadata: { metadata: "host-owned", erix: "host-owned" },
+    });
+    assert.deepEqual(namespaced.metadata, { metadata: "host-owned", erix: "host-owned" });
+    assert.equal(Object.hasOwn(namespaced, constant.engine.ns), false,
+      "宿主那个叫 erix 的扩展不会冒充引擎命名空间：没有引擎事实就没有该键");
   });
 
-  test(`${label}: 未显式声明 success 时不写 erix.success（输入/输出不对称）`, async () => {
+  test(`${label}: 退役名单的内容与语义（常量不再写、旧记录一代内仍可读）`, async () => {
+    const { TOOL_RESULT_CONTRACT: constant } = await entry();
+    // 名单内容：四个顶层旧名 + 一条塔平占位（`success` 是 T2 新登记的一条）。
+    assert.deepEqual(constant.legacy.aliases, {
+      erixRound: "erix.round",
+      duration: "erix.durationMs",
+      executionStatus: "erix.executionStatus",
+      success: "erix.success",
+      "<host key>@top level": "metadata.<host key>",
+    });
+    // 语义：引擎不再写它们（所以下面两个旧字段名不得出现在 engine.fields 里），
+    // 而退役节奏仍写在常量里（文档锦定与契约套件都读它）。
+    assert.equal(constant.legacy.written, false, "名单的语义就是「不再写」，该由常量自己说出来");
+    assert.equal(constant.legacy.retireAt.includes("minor"), true,
+      "退役窗口必须仍然写在常量里");
+    assert.equal(constant.legacy.readWindow.includes("一代"), true,
+      "旧记录一代内可读这条承诺也要写在常量里");
+    for (const retired of ["erixRound", "duration"]) {
+      assert.equal(Object.hasOwn(constant.engine.fields, retired), false,
+        `${retired} 是退役名，不是引擎字段`);
+    }
+  });
+
+  test(`${label}: 未显式声明 success 也写 erix.success（T2 取消条件，一律写）`, async () => {
     const { toolResultFacts } = await runCase(async () => ({ content: "no verdict" }));
-    assert.equal(toolResultFacts[0].erix.success, undefined);
-    assert.equal(toolResultFacts[0].is_error, undefined);
+    const fact = toolResultFacts[0];
+    assert.equal(fact.erix.success, true,
+      "没声明就是引擎判定为成功：顶层停写后这是成败的唯一出口，缺键会被读成「不知道」");
+    assert.equal(fact.is_error, undefined);
+    assert.equal(Object.hasOwn(fact, "success"), false, "顶层旧键不得再写");
   });
 
   test(`${label}: 显式 success:false 同时写 erix.success 与顶层 is_error`, async () => {
@@ -711,7 +767,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
       },
     );
     assert.deepEqual(executed, ["a1"], "第二次调用应被拦截（写工具不放行）");
-    const intercepted = toolResultFacts.find((fact) => fact.executionStatus === "intercepted");
+    const intercepted = toolResultFacts.find((fact) => fact.erix?.executionStatus === "intercepted");
     assert.ok(intercepted, `应有一条 intercepted 事实，实际：${JSON.stringify(toolResultFacts)}`);
     assert.deepEqual(
       Object.keys(intercepted.erix).sort(),
@@ -721,9 +777,15 @@ export function toolResultEnvelopeContract(label, getEntry) {
     assert.equal(intercepted.erix.executionStatus, "intercepted");
     assert.equal(intercepted.erix.round, undefined, "拦截未执行，不该伪造成交轮");
     assert.equal(intercepted.erix.durationMs, undefined, "拦截未执行，耗时是未知而不是 0");
+    assert.equal(intercepted.erix.success, undefined, "未执行就没有成败可言：不得为「一律写」编一个 true");
     assert.equal(intercepted.is_error, undefined);
-    assert.equal(intercepted.executionStatus, "intercepted", "双写期顶层旧键照写");
-    assert.equal(intercepted.erixRound, undefined);
+    // 顶层旧键已退役（T1 时这一条的方向是「顶层旧键照写」，已反转）。
+    for (const key of RETIRED_TOP_LEVEL_KEYS) {
+      assert.equal(Object.hasOwn(intercepted, key), false,
+        `拦截事实的顶层不得再出现退役旧名 \`${key}\`：${JSON.stringify(intercepted)}`);
+    }
+    assert.deepEqual(Object.keys(intercepted).sort(), ["content", "erix", "tool_use_id", "type"],
+      "拦截块的顶层只剩协议字段与引擎命名空间（本例没有宿主扩展，连 metadata 也不该有）");
   });
 
   // ── resume 的 unsafe 中断重放：有身份、无耗时 ─────────────────────────────────
@@ -773,7 +835,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
     assert.equal(resumedToolUse.erix.toolCallKey, "tc_deadbeefcafe",
       "旧快照块上的身份键必须沿用，不重生成");
     const interrupted = eventsOfType(events, "tool_result").map((event) => event.toolResult)
-      .find((fact) => fact.executionStatus === "interrupted");
+      .find((fact) => fact.erix?.executionStatus === "interrupted");
     assert.ok(interrupted, "unsafe 调用应产出 interrupted 的 tool_result");
     assert.deepEqual(
       Object.keys(interrupted.erix).sort(),
@@ -784,7 +846,12 @@ export function toolResultEnvelopeContract(label, getEntry) {
     assert.equal(interrupted.is_error, true);
     assert.equal(interrupted.erix.durationMs, undefined, "重放没跑过，耗时不得伪造");
     assert.equal(interrupted.erix.round, undefined);
-    assert.equal(interrupted.executionStatus, "interrupted", "双写期顶层旧键照写");
+    assert.equal(interrupted.erix.success, undefined, "没跑过的重放不写成败");
+    // 顶层旧键已退役（同样是从「双写期照写」反转过来的）。
+    for (const key of RETIRED_TOP_LEVEL_KEYS) {
+      assert.equal(Object.hasOwn(interrupted, key), false,
+        `中断重放事实的顶层不得再出现 \`${key}\`：${JSON.stringify(interrupted)}`);
+    }
 
     const records = await store.load(runId);
     const persisted = blocksOfMessages(records.flatMap((record) => record.messages ?? []), "tool_result")
@@ -848,8 +915,10 @@ export function toolResultEnvelopeContract(label, getEntry) {
     assert.equal(fact.content, "rewritten");
     assert.ok(fact.erix.durationMs < 50,
       `erix.durationMs 只该覆盖 executor settle（实测 ${fact.erix.durationMs}ms，hook 自旋了 60ms）`);
-    assert.ok(typeof fact.duration === "number" && fact.duration >= 50,
-      `双写期的旧顶层 duration 保持历史口径（含 hook 耗时，实测 ${fact.duration}ms）`);
+    // 旧顶层 `duration` 曾在结构化路径上把 hook 耗时算进去（两个口径故意不相等）；T2 停写后顶层
+    // 已没有该键，所以本条钉的是「只剩一个耗时口径」，不再是「旧口径保持不动」。
+    assert.equal(Object.hasOwn(fact, "duration"), false,
+      `顶层 duration 已退役：实测 ${JSON.stringify(fact.duration)}`);
   });
 
   // ── 覆盖对账（**必须声明在本文件最后**：它读的是前面每条用例跑过时登记下来的字段名）────

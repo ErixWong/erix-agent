@@ -62,9 +62,15 @@ test("structured executeTool receives context and returns tool metadata", async 
 
   const result = provider.requests[1].messages.at(-1).content[0];
   assert.equal(result.content, "found");
-  assert.equal(result.success, true);
-  assert.equal(result.toolMessageId, "message-1");
-  assert.equal(typeof result.duration, "number");
+  // 停写后（工单 261014 T2）：这三个旧顶层摊平键全部迁到了命名空间里。
+  //   · 宿主扩展（toolMessageId）→ `metadata.*`；
+  //   · 引擎的成败 → `erix.success`；耗时 → `erix.durationMs`。
+  assert.equal(result.metadata.toolMessageId, "message-1");
+  assert.equal(result.erix.success, true);
+  assert.equal(typeof result.erix.durationMs, "number");
+  for (const retired of ["success", "toolMessageId", "duration", "erixRound"]) {
+    assert.equal(Object.hasOwn(result, retired), false, `顶层不得再出现退役旧名 \`${retired}\``);
+  }
 });
 
 test("structured executeTool supports destructured tool fields", async () => {

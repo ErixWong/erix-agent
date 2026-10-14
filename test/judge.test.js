@@ -1730,7 +1730,8 @@ test("transparent interception executes on-track calls even when the judge repor
   const secondResult = result.transcript.flatMap((message) => message.content ?? [])
     .find((block) => block.tool_use_id === "second");
   assert.equal(secondResult.content, "ok");
-  assert.equal(secondResult.executionStatus, undefined);
+  // 执行状态只住 `erix.executionStatus`（工单 261014 T2 停写顶层旧同名键）。
+  assert.equal(secondResult.erix?.executionStatus, undefined);
   // 无【审计拦截】文本注入
   const toolResultText = result.transcript.flatMap((message) => message.content ?? [])
     .filter((block) => block?.type === "tool_result")
@@ -2216,11 +2217,12 @@ test("readonly tools pass through interception even when off-track, exec stays b
   const readResult = result.transcript.flatMap((message) => message.content ?? [])
     .find((block) => block.tool_use_id === "fourth");
   assert.equal(readResult.content, "ok");
-  assert.equal(readResult.executionStatus, undefined);
+  assert.equal(readResult.erix?.executionStatus, undefined);
   const execResult = result.transcript.flatMap((message) => message.content ?? [])
     .find((block) => block.tool_use_id === "second");
   assert.match(String(execResult.content), /【审计拦截】方向可能偏/u);
-  assert.equal(execResult.executionStatus, "intercepted");
+  assert.equal(execResult.erix?.executionStatus, "intercepted");
+  assert.equal(Object.hasOwn(execResult, "executionStatus"), false, "顶层旧键已退役");
 
   assert.deepEqual(events, [{
     model: "fake-model",

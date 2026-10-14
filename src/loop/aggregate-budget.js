@@ -147,9 +147,12 @@ export function createRoundAggregateGate({
       0,
     );
     const results = listRoundResults();
-    // intercept 控制性结果不计入（原调用未执行，不是「输出」）
+    // intercept 控制性结果不计入（原调用未执行，不是「输出」）。
+    // 读路径（工单 261014 T2）：停写后这个状态只住在 `erix.executionStatus`，顶层旧同名键只
+    // 在升级前的记录里 —— 只读顶层会让拦截结果**默默开始计入本轮聚合预算**（无报错的过归档）。
+    const executionStatusOf = (result) => result?.erix?.executionStatus ?? result?.executionStatus;
     const countedResults = results.filter(
-      (result) => result?.executionStatus !== "intercepted",
+      (result) => executionStatusOf(result) !== "intercepted",
     );
     const inlineTokens = countedResults
       .reduce((total, result) => total + estimateInlineCost(result?.content), 0);
@@ -179,7 +182,7 @@ export function createRoundAggregateGate({
     if (alreadyStubbed) {
       // 已经超预算且结果已是 stub → 不可再替换。全部 stub 化即终止（不许反复替换）。
       const everyPreviousStubbed = results.every((result) => (
-        result?.executionStatus === "intercepted"
+        executionStatusOf(result) === "intercepted"
         || archivedIds.has(result?.tool_use_id)
         || unrecoverableIds.has(result?.tool_use_id)
       ));

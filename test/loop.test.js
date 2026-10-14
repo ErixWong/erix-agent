@@ -70,14 +70,14 @@ test("feeds tool results back to the provider on the next round", async () => {
 
   assert.equal(result.finalText, "found");
   assert.equal(provider.requests.length, 2);
-  // 事实面：双写期顶层旧字段一字未动（工单 261014 T1），引擎事实在 `erix.*`。
+  // 事实面（工单 261014 T2 停写后）：顶层只剩协议字段，引擎事实全在 `erix.*`。
   // 整条消息仍整块 deepEqual（只摘掉两个非确定的引擎事实），而不是挑字段比对。
   const fedBackMessage = structuredClone(provider.requests[1].messages.at(-1));
   const fedBack = fedBackMessage.content[0];
   assert.match(fedBack.erix.toolCallKey, /^tc_[0-9a-f]{12}$/u);
   assert.equal(typeof fedBack.erix.durationMs, "number"); // issue #285：字符串返回形态也有耗时
-  // 没声明过 success 就不写（输入/输出不对称，工单 §6.2）——用键集合钉住，不靠「挑字段」看不见。
-  assert.deepEqual(Object.keys(fedBack.erix).sort(), ["durationMs", "round", "toolCallKey"]);
+  // 年龄标记现在只住 `erix.round`；`success` 一律写（§4：顶层停写后它是成败的唯一出口）。
+  assert.deepEqual(Object.keys(fedBack.erix).sort(), ["durationMs", "round", "success", "toolCallKey"]);
   delete fedBack.erix.toolCallKey;
   delete fedBack.erix.durationMs;
   assert.deepEqual(fedBackMessage, {
@@ -86,8 +86,7 @@ test("feeds tool results back to the provider on the next round", async () => {
       type: "tool_result",
       tool_use_id: "call-1",
       content: "lookup:x",
-      erixRound: 1, // issue #35 年龄标记（TTL 折叠按创建轮判定）
-      erix: { round: 1 },
+      erix: { round: 1, success: true },   // issue #35 年龄标记 = erix.round
     }],
   });
 });
@@ -259,21 +258,20 @@ test("feeds executeTool errors back as is_error and continues", async () => {
   });
 
   assert.equal(result.finalText, "recovered");
-  // 同样是整块 deepEqual：摘掉两个非确定的引擎事实后，顶层旧字段（含 `is_error`）逐字对账。
+  // 同样是整块 deepEqual：摘掉两个非确定的引擎事实后，剩下的形状逐字对账。
   const errorResult = structuredClone(provider.requests[1].messages.at(-1).content[0]);
   assert.match(errorResult.erix.toolCallKey, /^tc_[0-9a-f]{12}$/u);
   // 抛错也是 settle：耗时是事实，不是只有成功才有（issue #285）。
   assert.equal(typeof errorResult.erix.durationMs, "number");
-  assert.deepEqual(Object.keys(errorResult.erix).sort(), ["durationMs", "round", "toolCallKey"]);
+  assert.deepEqual(Object.keys(errorResult.erix).sort(), ["durationMs", "round", "success", "toolCallKey"]);
   delete errorResult.erix.toolCallKey;
   delete errorResult.erix.durationMs;
   assert.deepEqual(errorResult, {
     type: "tool_result",
     tool_use_id: "bad",
     content: "permission denied",
-    is_error: true,
-    erixRound: 1, // issue #35 年龄标记
-    erix: { round: 1 },
+    is_error: true,          // wire 字段，按设计在顶层
+    erix: { round: 1, success: false },   // 年龄标记与成败都在 erix.*
   });
 });
 
