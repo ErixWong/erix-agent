@@ -13,7 +13,8 @@
 // T1 是 additive 双写期；**T2（工单 261014）结束双写**：引擎不再写顶层摊平的宿主键，也不再写顶层
 // `erixRound` / `duration` / `executionStatus` / `success`。那是 BREAKING，进 CHANGELOG 的
 // `Changed (BREAKING)`；退役名单与「旧记录一代内仍可读」的口径写在 `TOOL_RESULT_CONTRACT.legacy`。
-// 读路径只剩三处（TTL 折叠 / 投影 / 续跑复放），它们只负责旧记录，不再负责引擎自己刚写的块。
+// 写侧只剩协议字段 + `metadata.*` + `erix.*`；读侧仍承认顶层旧名一代，共七处（`erix` 优先、顶层回退）：
+// TTL 折叠、投影、续跑复放、单轮聚合预算、judge 时间线与对话渲染、L0 客观事实、`hasSuccessfulToolResult`。
 //
 // 零依赖红线：只用 `node:` 内置 + 相对路径。
 
@@ -112,7 +113,7 @@ export const TOOL_RESULT_CONTRACT = deepFreeze({
       "<host key>@top level": "metadata.<host key>",
     },
     written: false,
-    readWindow: "旧记录一代内仍可读（上面那三处读路径）",
+    readWindow: "旧记录一代内仍可读（上面那七处读路径，见 docs/host-consumer-contract 的退役一节）",
     retireAt: "下一个 minor（CHANGELOG 挂 Changed（BREAKING））",
   },
 });
