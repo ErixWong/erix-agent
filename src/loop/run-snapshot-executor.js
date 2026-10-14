@@ -78,18 +78,18 @@ export function createRunSnapshotExecutor(ctx) {
   // 终止态事件每轮只报一次（诊断用；不参与判定，故无恢复语义）
   const aggregateTerminalRounds = new Set();
   // executor 返回形态 → 执行结果。三个通道的分工（工单 §6.2 的输入/输出不对称）：
-  //   · `metadata`       —— T1 双写期的顶层摊平源，**含引擎自己写的 `duration`/`success`**，
-  //                          口径与改动前逐字相同（顶层旧字段不许动）；
+  //   · `metadata`       —— 送给 `onToolResult` 改写钩子的那份扩展（历史上也是顶层摊平源），
+  //                          含引擎自己写的 `duration`/`success`，口径与改动前逐字相同；
   //   · `hostMetadata`   —— 只装 executor 自己给的扩展键（引擎的 duration/success 不在里面），
   //                          事实面把它写进 `metadata.*` 命名空间；
-  //   · `hostDeclaredSuccess` —— executor 是否**显式**声明过 success（决定 `erix.success` 写不写）。
+  //   · `success`       —— 引擎归一化后的成败布尔（工单 261014 T2 §4：顶层停写后它就是
+  //                          `erix.success` 的唯一出口，所以**一律写**，不再看宿主声明没声明）。
   const normalizeExecutionResult = (value, startedAt) => {
     if (value instanceof Error) {
       return {
         content: toolResultContent(value.message ?? value),
         metadata: {},
         hostMetadata: {},
-        hostDeclaredSuccess: false,
         success: false,
       };
     }
@@ -115,8 +115,6 @@ export function createRunSnapshotExecutor(ctx) {
         content: toolResultContent(value.content),
         metadata,
         hostMetadata,
-        hostDeclaredSuccess: declaredTopLevel
-          || Object.prototype.hasOwnProperty.call(hostMetadata, "success"),
         success: success !== false,
       };
     }
@@ -126,7 +124,6 @@ export function createRunSnapshotExecutor(ctx) {
         content: toolResultContent(value),
         metadata: {},
         hostMetadata: {},
-        hostDeclaredSuccess: false,
         success: true,
       };
     }
@@ -142,7 +139,6 @@ export function createRunSnapshotExecutor(ctx) {
       content: toolResultContent(structured.data),
       metadata,
       hostMetadata,
-      hostDeclaredSuccess: Object.prototype.hasOwnProperty.call(structured, "success"),
       success: metadata.success !== false,
     };
   };
@@ -297,7 +293,6 @@ export function createRunSnapshotExecutor(ctx) {
         content: String(error?.message ?? error),
         metadata: {},
         hostMetadata: {},
-        hostDeclaredSuccess: false,
         success: false,
       };
     }
@@ -321,8 +316,6 @@ export function createRunSnapshotExecutor(ctx) {
             ...normalized,
             metadata: { ...execution.metadata, ...normalized.metadata },
             hostMetadata: { ...execution.hostMetadata, ...normalized.hostMetadata },
-            hostDeclaredSuccess: Boolean(execution.hostDeclaredSuccess)
-              || Boolean(normalized.hostDeclaredSuccess),
             success: execution.success && normalized.success,
           };
         }
@@ -388,9 +381,11 @@ export function createRunSnapshotExecutor(ctx) {
           : undefined,
         round: Number.isFinite(round) ? round : undefined,
         durationMs,
-        // 只有 executor（或 onToolResult 改写钩子）显式声明过才写：引擎推导出的 false 已经
-        // 由 `is_error` 表达，再写一份 success 会把「模型没回答」与「模型回答了失败」混成一件事。
-        success: execution.hostDeclaredSuccess === true ? execution.success : undefined,
+        // 一律写（工单 261014 T2 §4 的主裁定）：顶层 `success` 停写后，这就是「引擎归一化后的
+        // 成败」的唯一出口。取值就是旧顶层那个字段的同一表达式（`success !== false`），语义零变化。
+        // 旧口径「只在宿主显式声明时才写」在停写后会成为一个新坑：宿主再也没法区分「成功」与
+        // 「未声明」。引擎推导出的 false 仍然同时反映在 `is_error` 上（两者不矛盾：一个是事实，一个是 wire）。
+        success: execution.success,
       },
     });
     // 预算催收尾追加在**双写包之后**（与改动前逐字同口径：宿主摊平的同名 `content` 键仍然优先）。
