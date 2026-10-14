@@ -301,6 +301,65 @@ export function toolResultEnvelopeContract(label, getEntry) {
     assert.equal(fedBackToolResult(provider, "call-1").erix.toolCallKey, fact.erix.toolCallKey);
   });
 
+  // ── 保留键名：宿主自有键不得吃掉命名空间那两个顶层键 ────────────────────────────
+  test(`${label}: 宿主自有键恰好叫 metadata / erix 时，命名空间不被吃掉（保留键由常量登记）`, async () => {
+    const { TOOL_RESULT_CONTRACT: constant } = await entry();
+    // 保留键名是常量里登记的事实，不是套件手抄的清单。
+    assert.deepEqual([...constant.reserved.topLevelKeys].sort(), ["erix", "metadata"]);
+    assert.deepEqual(
+      [...constant.reserved.topLevelKeys].sort(),
+      [constant.engine.ns, constant.host.ns].sort(),
+      "保留键名就是那两个命名空间名本身，两处必须同源",
+    );
+
+    // 走完整链路：executor 交回来的扩展里就有这两个要命的名字。
+    const { toolResultFacts } = await runCase(
+      async () => ({
+        content: "structured",
+        metadata: { metadata: { hits: 3 }, erix: "mine", artifactStatus: "ok" },
+        success: true,
+      }),
+    );
+    const fact = toolResultFacts[0];
+    // 顶层那两个键是命名空间，不是宿主自己的值（修前：双写包先写、命名空间再盖，值在顶层消失）。
+    assert.equal(typeof fact.erix, "object", "顶层 erix 必须是引擎命名空间");
+    assert.deepEqual(Object.keys(fact.metadata).sort(), ["artifactStatus", "erix", "metadata"],
+      "宿主那两个同名键必须原样留在宿主命名空间里，一个都不丢");
+    assert.deepEqual(fact.metadata.metadata, { hits: 3 }, "宿主自己的 metadata 键不得被吃掉");
+    assert.equal(fact.metadata.erix, "mine", "宿主自己的 erix 键不得被引擎命名空间吃掉");
+    assert.equal(fact.artifactStatus, "ok", "普通宿主键的双写摊平不受影响（T2 才停）");
+    assert.equal(fact.erix.toolCallKey !== undefined, true, "引擎命名空间里仍是引擎事实");
+    assert.equal(fact.erix.artifactStatus, undefined, "宿主键不得漏进引擎命名空间");
+  });
+
+  test(`${label}: 构造器直接调用时，保留键要么是命名空间要么不存在，绝不会是宿主的摊平值`, async () => {
+    const { buildToolResultFact, TOOL_RESULT_CONTRACT: constant } = await entry();
+    // ① 两个命名空间都写出来的常见形状：同名宿主键必须让位，非保留的旧顶层键照写。
+    const both = buildToolResultFact({
+      toolUseId: "k-1",
+      content: "body",
+      hostMetadata: { artifactStatus: "ok" },
+      legacyTopLevel: { metadata: "host-owned", erix: "host-owned", erixRound: 4 },
+      engine: { toolCallKey: "tc_1234567890ab", round: 4 },
+    });
+    assert.equal(both.erixRound, 4, "非保留的旧顶层键照写（additive 双写不动）");
+    assert.deepEqual(both.erix, { toolCallKey: "tc_1234567890ab", round: 4 },
+      "顶层 erix 只属于引擎命名空间");
+    assert.deepEqual(both.metadata, { artifactStatus: "ok" }, "顶层 metadata 只属于宿主命名空间");
+
+    // ② 命名空间**没内容可写**的形状——这才是保留键过滤真正起作用的地方：修前摊平值会留在
+    // 顶层，于是宿主自己的字符串冒充了引擎命名空间（`erix: "host-owned"` 长得像一个事实）。
+    const bare = buildToolResultFact({
+      content: "body",
+      legacyTopLevel: { metadata: "host-owned", erix: "host-owned", artifactStatus: "ok" },
+    });
+    assert.equal(bare.artifactStatus, "ok", "非保留键照写");
+    assert.equal(Object.hasOwn(bare, constant.engine.ns), false,
+      `没有引擎事实时顶层不该出现 \`${constant.engine.ns}\`，更不该是宿主的摊平值：${JSON.stringify(bare[constant.engine.ns])}`);
+    assert.equal(Object.hasOwn(bare, constant.host.ns), false,
+      `没有宿主扩展时顶层不该出现 \`${constant.host.ns}\`，更不该是宿主的摊平值：${JSON.stringify(bare[constant.host.ns])}`);
+  });
+
   test(`${label}: 未显式声明 success 时不写 erix.success（输入/输出不对称）`, async () => {
     const { toolResultFacts } = await runCase(async () => ({ content: "no verdict" }));
     assert.equal(toolResultFacts[0].erix.success, undefined);

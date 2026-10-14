@@ -1600,9 +1600,15 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 三条硬规则：
 
 1. 宿主扩展只能写进 `metadata`；引擎不会读出它们去覆盖引擎事实；
-2. 引擎事实只能写进 `erix`；构造器最后才写该命名空间，因此摊平到顶层的宿主键盖不掉它
-   （`erix` 是保留键：双写期内宿主自己的同名 `erix` 键会输）；
+2. 引擎事实只能写进 `erix`；构造器最后才写该命名空间，因此摊平到顶层的宿主键盖不掉它；
 3. `is_error` 留在顶层——它是 wire 字段（Anthropic 请求构造器会发出去），不是命名空间成员。
+
+`metadata` 与 `erix` 是**保留的顶层键名**，登记在 `TOOL_RESULT_CONTRACT.reserved.topLevelKeys`
+里，双写摊平时会跳过它们。不跳过的话，宿主那个恰好同名的扩展键会先被写到顶层、一条语句
+之后就被自己的命名空间盖掉——活下来什么取决于写入顺序而不是归属。值不会丢：它留在宿主
+命名空间里，在 `metadata.metadata` / `metadata.erix` 取得到。**刻意不**保留的是 `type`、
+`tool_use_id`、`content`、`is_error`——宿主用这几个名字当键仍然会覆盖那个协议字段，与本契约
+之前一模一样（旧代码就是把扁平 map 摊在最后）；要不要收紧它是退役那一单的决定，不是这一单的。
 
 构造器从不把 `metadata` 摊平到顶层。`erix` 与 `metadata` 都不会发给 provider：两个协议
 转换器都按显式字段清单序列化 `tool_result`，所这两个命名空间都是 `onWire: false`。输出

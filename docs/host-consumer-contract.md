@@ -2030,10 +2030,19 @@ Three hard rules:
 1. host extensions may only be written into `metadata`; the engine never reads them out
    again to overwrite an engine fact;
 2. engine facts may only be written into `erix`; the constructor writes that namespace
-   last, so a host key flattened onto the top level cannot overwrite it (`erix` is a
-   reserved key: inside the dual-write window a host key literally named `erix` loses);
+   last, so a host key flattened onto the top level cannot overwrite it;
 3. `is_error` stays at the top level — it is a wire field (the Anthropic request builder
    emits it), not a namespace member.
+
+`metadata` and `erix` are **reserved top-level key names**, registered as
+`TOOL_RESULT_CONTRACT.reserved.topLevelKeys`, and the dual-write flattening skips them.
+Without that skip a host extension carrying one of those names would be written to the top
+level and overwritten by its namespace a statement later, so what survived would depend on
+write order rather than on ownership. The value is not lost: it stays readable inside the
+host namespace, at `metadata.metadata` / `metadata.erix`. Deliberately **not** reserved:
+`type`, `tool_use_id`, `content`, `is_error` — a host key spelled like one of those still
+overwrites the protocol field, exactly as it did before this contract (the old code spread
+the flat map last); tightening that is the retirement change's decision, not this one's.
 
 The constructor never spreads `metadata` onto the top level. Nothing in `erix` or
 `metadata` is sent to the provider: both protocol converters serialise `tool_result` from

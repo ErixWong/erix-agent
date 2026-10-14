@@ -780,6 +780,10 @@ function toolFactTruth(src) {
   const conditional = conditionalBlock
     ? [...conditionalBlock.matchAll(/^      ([A-Za-z][A-Za-z0-9_]*): "/gm)].map((m) => m[1])
     : null;
+  const reservedBlock = obj.match(/\n  reserved: \{([\s\S]*?)\n  \},/)?.[1];
+  const reservedKeys = reservedBlock
+    ? [...(reservedBlock.match(/\n    topLevelKeys: \[([^\]]*)\]/)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1])
+    : null;
   const aliasBlock = legacyBlock.match(/\n    aliases: \{([\s\S]*?)\n    \},/)?.[1];
   const aliases = aliasBlock
     ? [...aliasBlock.matchAll(/^      (?:("[^"]+")|([A-Za-z][A-Za-z0-9_]*)): "([^"]+)"/gm)]
@@ -792,6 +796,7 @@ function toolFactTruth(src) {
     engineFields,
     required,
     conditional,
+    reservedKeys,
     aliases,
     placeholderAlias: (() => {
       const m = legacyBlock.match(/^      "([^"]*<[^>]+>[^"]*)":\s*"([^"]+)"/m);   // "<host key>@top level": "metadata.<host key>"
@@ -871,6 +876,26 @@ function hostFlattenAliasRows(src, hostNs) {
     if (m) rows.push({ to: m[1], line: i + 1, snippet: lines[i].trim().slice(0, 90) });
   }
   return rows;
+}
+
+/**
+ * 保留键名的声明面（工单 261014 T1-fix 第 5 项）：按空行切段，段里既出现「保留 / reserved」
+ * 这个说法、又用反引号点名词条里的键名，才算一处声明。只数「提到过这个名字」不算——
+ * `metadata` / `erix` 在文档里到处都是，那样这条锚点会恒绿。
+ */
+function reservedKeyDeclarations(src, reservedKeys) {
+  const out = [];
+  let cursor = 0;
+  for (const paragraph of src.split(/\n\s*\n/)) {
+    const at = src.indexOf(paragraph, cursor);
+    cursor = at < 0 ? cursor : at + paragraph.length;
+    if (!/(保留|reserved)/i.test(paragraph)) continue;
+    const tokens = [...paragraph.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+    const named = tokens.filter((token) => reservedKeys.includes(token));
+    if (!named.length) continue;      // 说了一句「保留」但没点名任何保留键，不算一处声明
+    out.push({ line: lineOf(src, at), snippet: paragraph.trim().slice(0, 90), tokens: named });
+  }
+  return out;
 }
 
 /** 命名空间前缀拆名：`erix.round` → {ns:"erix", field:"round"}；不带点的归为 ns:null。 */
@@ -1019,13 +1044,34 @@ function runToolFactRule(rule, out, notesOut) {
           + `（常量里有这条占位别名，文档侧必须有对应的描述行；只写两格反引号的形式不算，那个位置上没有字面键名）`);
       }
     }
+
+    // ⑥ 保留键名（`legacyTopLevel` 摊平时被跳过的顶层键，工单 261014 T1-fix 第 5 项）：
+    //    两侧文档都必须把「哪几个键名是保留的」说出口——少一个键名，宿主就会以为自己那个
+    //    恰好同名的键被吃了却查不到原因；多一个键名，就是文档在承诺源码没做的事。
+    const reservedDecls = reservedKeyDeclarations(src, t.reservedKeys);
+    if (rel === rule.docs[0] && JSON.stringify([...t.reservedKeys].sort()) !== JSON.stringify([t.hostNs, t.engineNs].sort())) {
+      out.push(`${ruleId}: ${TOOL_FACT_SRC} 自相矛盾——保留键名登记的是 ${t.reservedKeys.join(" / ")}，`
+        + `但命名空间名是 ${t.hostNs} / ${t.engineNs}。保留的**就是**那两个命名空间本身，`
+        + `两处不同源就说明有人只改了一处（构造器的过滤走的是登记那一份）`);
+    }
+    if (!reservedDecls.length) {
+      out.push(`${ruleId}: ${rel} 找不到保留键名的声明（既要出现「保留 / reserved」这个说法，又要用反引号点名`
+        + ` ${t.reservedKeys.map((k) => "`" + k + "`").join(" / ")}）——检查面在该文件已失效`);
+    }
+    assertSymmetric(out, {
+      rule: `${ruleId} 保留键名`,
+      where: `${rel}${reservedDecls.length ? `:${reservedDecls[0].line} 起的 ${reservedDecls.length} 段` : ""}`,
+      truth: t.reservedKeys,
+      doc: [...new Set(reservedDecls.flatMap((d) => d.tokens.filter((x) => t.reservedKeys.includes(x))))],
+      kind: "保留键名",
+    });
   }
 
   for (const [face, c] of Object.entries(counts)) {
     assertPairCensus(out, { rule: `${ruleId} ${face}`, counts: c, docs: rule.docs });
   }
   notesOut.push(`anchors: 「${rule.id}」真值 = ${t.engineNs}{${t.engineFields.join(", ")}} + 协议[${protocolExpect.join(", ")}]`
-    + ` + 宿主 ${t.hostNs} + 别名[${t.aliases.map((a) => a.from).join(", ")}]（${TOOL_FACT_SRC}），`
+    + ` + 宿主 ${t.hostNs} + 别名[${t.aliases.map((a) => a.from).join(", ")}] + 保留键[${t.reservedKeys.join(", ")}]（${TOOL_FACT_SRC}），`
     + `声明面 ${JSON.stringify(counts)}（${rule.docs.join(" / ")}）`);
 }
 
@@ -2693,6 +2739,25 @@ const SELF_TEST_CASES = [
     expect: [/协议字段行.*缺 协议字段 "cursor"/],
     expectFiles: [CONTRACT_EN, CONTRACT_CN],
   },
+  {
+    label: "契约 EN 把「保留顶层键名」那段整段删掉（只改文档：该文件的检查面失效必须当场红，不靠中英处数）",
+    overlay: { [CONTRACT_EN]: (t) => t.replace(/^`metadata` and `erix` are \*\*reserved[\s\S]*?not this one's\.\n/m, "") },
+    expect: [/docs\/host-consumer-contract\.md 找不到保留键名的声明/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "契约 CN 的保留键名那段少写一个 `erix`（只改文档、少一个键名也是漂移）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("`metadata` 与 `erix` 是**保留的顶层键名**", "`metadata` 是**保留的顶层键名**") },
+    expect: [/保留键名: docs\/host-consumer-contract_cn\.md.*缺 保留键名 "erix"/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "常量只改保留键名的登记、不改命名空间名（erix → engine）→ 源码自洽 + 中英文档同时红",
+    overlay: { [TOOL_FACT_SRC]: (t) => t.replace('topLevelKeys: ["metadata", "erix"]', 'topLevelKeys: ["metadata", "engine"]') },
+    expect: [/自相矛盾——保留键名登记的是 metadata \/ engine/, /缺 保留键名 "engine"/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+
   {
     label: "常量把 legacy 别名的新归属改名 → 中英两侧的别名表同时红",
     overlay: { "src/tool-fact.js": (t) => t.replace('duration: "erix.durationMs",', 'duration: "erix.elapsedMs",') },

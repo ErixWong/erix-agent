@@ -83,6 +83,17 @@ export const TOOL_RESULT_CONTRACT = deepFreeze({
     ns: "metadata",
     rule: "宿主只能写这里，引擎不得读出后覆盖引擎事实",
   },
+  /**
+   * 顶层保留键名（工单 261014 T1-fix 第 5 项）：这两个名字**就是命名空间本身**，永远由构造器
+   * 写。双写包（`legacyTopLevel`）里与它们同名的宿主键一律**不落到顶层**——否则宿主自有键会先
+   * 占位、再被命名空间盖掉，值在顶层静默消失。值不丢：它一直在 `metadata.<键>` 里。
+   * 注意**不包含** `type` / `tool_use_id` / `content` / `is_error`：那四个协议字段被宿主摊平键
+   * 覆盖是 12968ee 就有的 parity（`...execution.metadata` 摊在最后），收紧它属 T2 的账。
+   */
+  reserved: {
+    topLevelKeys: ["metadata", "erix"],
+    rule: "构造器独占这两个顶层键；双写包里的同名项被过滤，宿主值只在 metadata.<键> 里可取",
+  },
   legacy: {
     aliases: {
       erixRound: "erix.round",
@@ -105,6 +116,14 @@ export const TOOL_FACT_HOST_NS = TOOL_RESULT_CONTRACT.host.ns;
  * @type {Record<string, { owner: string, stages: readonly string[], resumeStable: boolean, onWire: boolean }>}
  */
 const ENGINE_FIELDS = /** @type {any} */ (TOOL_RESULT_CONTRACT.engine.fields);
+
+/** 顶层保留键名（同样从常量派生；构造器用它过滤双写包，见 `buildToolResultFact`）。 */
+const RESERVED_TOP_LEVEL_KEYS = Object.freeze(
+  /** @type {readonly string[]} */ (TOOL_RESULT_CONTRACT.reserved.topLevelKeys),
+);
+
+/** 保留键名的集合视图（模块级一次构造，不在每次构造事实时重算）。 */
+const reservedGuard = new Set(RESERVED_TOP_LEVEL_KEYS);
 
 /** 引擎身份键的随机源：`node:crypto` 的 6 字节 hex（无第三方 id 生成器）。 */
 export function allocateToolCallKey() {
@@ -267,9 +286,14 @@ export function buildToolResultFact(input = {}) {
   // T1 双写（工单 §7）：旧的顶层宿主摊平键与 `erixRound`/`duration`/顶层 `executionStatus`
   // 一律照写不动。**摊平动作发生在调用点**（调用点显式给出 legacyTopLevel），构造器本身
   // 永远不把 `metadata` 的内容铺到顶层。
+  // 例外是保留键名（`TOOL_RESULT_CONTRACT.reserved.topLevelKeys`，工单 T1-fix 第 5 项）：宿主
+  // 若有一个自有键恰好叫 `metadata` 或 `erix`，先写到顶层就会被下面的命名空间盖掉——那是
+  // 一个「看写入顺序才知道结果」的静默丢值。这里显式跳过，让「保留键归构造器」成为一个决定
+  // 而不是巧合；宿主的值仍然取得到，在 `metadata.<键>` 里。
   if (input.legacyTopLevel) {
     for (const [key, value] of Object.entries(input.legacyTopLevel)) {
-      if (value !== undefined) fact[key] = value;
+      if (value === undefined || reservedGuard.has(key)) continue;
+      fact[key] = value;
     }
   }
   const hostMetadata = input.hostMetadata;
