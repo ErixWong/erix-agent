@@ -1588,6 +1588,121 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 有损。宿主必须自证保真，例如针对自身 schema 与未知字段运行并扩展
 `test/contract/transcript-store.js` 中的断言。
 
+## 工具事实与字段归属（issue #284 / #285）
+
+引擎产出的每一条 `tool_result` 都是一个**事实对象**，只在一个构造点产生：
+`src/tool-fact.js` 的 `buildToolResultFact()`，与下面的常量一起从包根导出。「谁拥有哪个
+字段」本身是一个导出常量 `TOOL_RESULT_CONTRACT`，由**三方消费同一份**：构造器按它写路径，
+`test/contract/tool-result-envelope.js` 从它生成期望字段集合，`check:docs` 锚点把本节下面
+这份字段清单与它**双向**比成员（并核对中英两侧的声明点处数）。因此任何一个引擎字段改名
+或新增，另外两方会立即变红，而不是各说各话。
+
+三条硬规则：
+
+1. 宿主扩展只能写进 `metadata`；引擎不会读出它们去覆盖引擎事实；
+2. 引擎事实只能写进 `erix`；构造器最后才写该命名空间，因此摊平到顶层的宿主键盖不掉它
+   （`erix` 是保留键：双写期内宿主自己的同名 `erix` 键会输）；
+3. `is_error` 留在顶层——它是 wire 字段（Anthropic 请求构造器会发出去），不是命名空间成员。
+
+构造器从不把 `metadata` 摊平到顶层。`erix` 与 `metadata` 都不会发给 provider：两个协议
+转换器都按显式字段清单序列化 `tool_result`，所这两个命名空间都是 `onWire: false`。输出
+卫生、单轮聚合、折叠三层只替换 `content`，事实字段原样存活。
+
+### 字段清单（与 `TOOL_RESULT_CONTRACT` 锚定）
+
+协议必需字段是 `type` / `tool_use_id` / `content`。条件协议字段只有一个，就是 `is_error`：
+仅在结果为错误中断时存在。引擎命名空间恰好五个字段，每一个都以 `erix.<字段>` 寻址：
+`toolCallKey` / `round` / `durationMs` / `executionStatus` / `success`。宿主命名空间就一个
+键，内容就是 executor 交回来的扩展。
+
+| 字段 | 拥有者 | 写入时机 | 含义 |
+|---|---|---|---|
+| `type`、`tool_use_id`、`content` | 协议 | 总是 | `tool_use_id` 是 provider 的配对键：引擎只读它、永不改写它（`groupIntoRounds`/`validateMessages` 的配对校验与 run snapshot 的复放查找都依赖它）。 |
+| `is_error` | 协议 | 仅错误/中断结果 | wire 字段，按设计就在顶层。 |
+| `erix.toolCallKey` | 引擎 | 每一个被引擎接受的 `tool_use`，以及由它构造出的结果 | 跳通道身份：一次被接受的调用只分配一次，从第一个可识别的流式片段开始，一路带到 `tool_use` 块（因此也在持久化块与 `tool_use` 事件克隆上）、`tool_result` 与投影。resume 与复放**沿用**已落盘的值，已有身份的调用绝不重生成。 |
+| `erix.round` | 引擎 | 调用真的执行了 | **执行轮**。它不是事件 envelope 的 `round`（交付轮），两者刻意不合并。 |
+| `erix.durationMs` | 引擎 | executor 的 promise settle 或 reject 了 | 从「调用 executor 前」到「该 promise settle/reject」的毫秒数。 |
+| `erix.executionStatus` | 引擎 | 仅特殊状态 | `intercepted` / `interrupted`。 |
+| `erix.success` | 引擎 | 仅当 executor（或 `onToolResult` 改写钩子）显式声明过 | 引擎归一化后的布尔值。 |
+| `metadata.*` | 宿主 | executor 返了扩展就有 | 宿主唯一可写的命名空间。 |
+
+### durationMs 在 executor settle 时刻捕获，缺失就是未知
+
+`durationMs` 只覆盖一个区间：从「调用 executor 前」到「该 promise settle 或 reject」。它
+**不含** `onToolResult` 改写、输出卫生与单轮聚合预算。`durationMs` 缺失意味着 **未知，
+不是 0**：根本没跑的调用（judge 拦截）、被当作中断重放的 unsafe 调用、以及 executor 尚未
+settle 就被中止的调用都没有耗时字段，而 `?? 0` 会把「我们不知道」渲染成「它瞬间完成」。
+executor 的六种返回形态（`string`、`number`、`{content, metadata}`、遗留的 `{data}`、
+返回的 `Error`、抛出的非 abort 异常）都带耗时，因为「报错前跑了 40ms」也是一件事实。
+
+这是一次**口径收紧**，不是逐字重导：旧顶层 `duration` 键保持历史行为，即只有当该钩子返回
+**结构化**对象时才会把 `onToolResult` 的耗时算进去。双写期内，两个数字在那条路径上会
+合法地不相等，要读的是 `erix.durationMs`。
+
+### 双写，以及下一个 minor 退役什么
+
+T1 是 additive。旧的顶层键一律照写不动，现有宿主可以一边跑一边迁移：
+
+| 旧顶层键 | 新归属 |
+|---|---|
+| `erixRound` | `erix.round` |
+| `duration` | `erix.durationMs` |
+| `executionStatus` | `erix.executionStatus` |
+| 摊平到顶层的任意宿主键 | `metadata.<宿主键>` |
+
+`TOOL_RESULT_CONTRACT.legacy` 里就写着这张别名表与承诺窗口：双写持续一个 minor，旧键在
+下一个 minor 退役，并在 CHANGELOG 挂 `Changed（BREAKING）`。今天只读 `erix.*` / `metadata.*`
+就是向前兼容的选择；`test/contract/execute-tool.js` 仍会断言顶层那个摊平键，而那条断言
+预期会在退役那一单里改成 `metadata`。
+
+### 存在性矩阵
+
+这张矩阵就是 `test/contract/tool-result-envelope.js` 的验收表：每一行都有对应断言，外加
+反向断言（拦截没有耗时、复放不重算、宿主同名键既在顶层也在 `metadata`、provider `id` 未被
+改写）。
+
+| 情形 | erix.toolCallKey | erix.round | erix.durationMs | is_error | erix.executionStatus | B 里有记录 |
+|---|---|---|---|---|---|---|
+| 成功（string / number / 结构化 / 遗留四形态-pass） | 有 | 有 | 有 | 无 | 无 | 有 |
+| 失败（返回 Error / 抛非 abort 异常） | 有 | 有 | 有 | 有 | 无 | 有 |
+| judge 拦截 | 有 | 无 | 无——从未执行 | 无 | intercepted | 有 |
+| resume 里的 unsafe 中断重放 | 有，沿用落盘值 | 无 | 无 | 有 | interrupted | 有 |
+| 已完成结果的复放 | 有，同一个值 | 原值 | 原值，不重算 | 原值 | 原值 | 复用原记录 |
+| executor 未 settle 就中止 | tool_use 上有 | 无 | 无 | 无 | 无 | 可能没有 |
+
+`erix.success` 刻意不是矩阵的一列：输入侧是 executor 的返回形状（`{content, success:false}`，
+并保留历史的 `value.success ?? metadata.success` 兼容读），输出侧是归一化后的布尔值，
+仅当宿主真的表过态才写。宿主无法靠写 `metadata.success` 去操控执行结果。
+
+### 实时事件流与 transcript 之间的那一条等式
+
+`tool_use` / `tool_result` 事件在 `RoundRecord` 存在之前就发出了，所以事件流不是从记录
+派生的。只承诺一条相等：对于已提交的调用，事件里的事实与记录里存下的块必须带同一个
+`toolCallKey`、同一个配对 id、同一个 `is_error`、同一套 `erix.*` 与同一份 `metadata`——
+同一个对象的两个克隆。`content` 不在等式里（折叠可能改它），事件 envelope 与增量永不
+进入记录，折叠也不会倒灌成更早的事件；run 被中止或 append 失败时记录可以就是没有——
+引擎从不为了把等式捽圆而发明一条记录。
+
+## onEvent 工具事件字段清单（issue #284 / #285）
+
+`onEvent` 是结构化事件的单一通道；下面列出引擎循环发出的与工具相关的事件类型，以及每个
+事件携带的载荷字段，这样宿主不必猜「哪个身份键在哪个位置」。下面的字段名是载荷键，不是
+`erix` 路径：`toolUse` 与 `toolResult` 就是事实对象的克隆，所以上一节的一切都能从它们取到。
+
+| 事件类型 | 载荷字段 | 说明 |
+|---|---|---|
+| `tool_use` | round, toolUse | 每个被接受的调用恰好一条；发出时身份键已挂在块上，因此引擎接受的调用里 `toolUse.erix.toolCallKey` 必在。 |
+| `tool_result` | round, toolResult | 就是上面说的事实克隆。`round` 是**交付轮**：复放时它完全可能不同于事实里的执行轮。 |
+| `tool_replay_decision_required` | runId, round, toolUseId, toolName, replay, requiresHostDecision, partialOutputAvailable | 在配对的那条 interrupted 结果**之前**发出。本单它仍只带 provider 配对键：把身份键也加进来不在本工单范围内，目前请按 `toolUseId` 关联两者。 |
+| `tool_output_aggregate` | round, toolUseId, name, action, reason, budgetTokens, inlineTokens, costTokens, projectedTokens, contentLength, archivedBytes | 单轮输出预算。`projectedTokens` 只出现在准入路径，`archivedBytes` 只出现在归档/不可恢复路径；该事件只讲 content 体量，从不携带事实字段。 |
+
+流式片段**不是** `onEvent` 事件：引擎循环把片段交给 `onToolCall` 回调，那里的 fragment 保持
+历史形状（`index`、可选 `id`、可选 `name`、可选 `argumentsDelta`），现在额外带一个
+`toolCallKey`——与被接受的 `tool_use` 块同一个值，从第一个可识别片段起就一致。宿主直接
+调用 provider 时，provider 可以额外向它被交给的 `onEvent` 回调发自己的 `tool_call` 事件；
+引擎循环不注入那个回调，所以一次普通的 `runToolLoop` 一个 `tool_call` 也不发，随包套件
+钉住了这个事实。
+
 ## 宿主展示投影
 
 transcript 就是模型上下文真相：`RoundRecord` 为回放保持字节保真，同时携带模型面对的

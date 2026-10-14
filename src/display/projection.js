@@ -15,7 +15,8 @@ import { FOLD_SUMMARY_MARKER } from "../compact/fold-statistical.js";
  *   text: string,
  *   blocks: object[],
  *   toolCalls?: { key:string, name:string, id?:string, argsSummary?:string,
- *     resultPreview?:string, isError?:boolean, executionStatus?:string }[],
+ *     resultPreview?:string, isError?:boolean, executionStatus?:string,
+ *     toolCallKey?:string, durationMs?:number }[],
  *   reasoning?: string,
  *   folded?: boolean,
  *   round?: number,
@@ -136,9 +137,15 @@ function toolCallsOf(blocks) {
     .filter((block) => isObject(block) && block.type === "tool_use")
     .map((block) => {
       const argsSummary = summarizeArgs(block.input);
+      // 引擎身份键（工单 261014 T1 / issue #284）：与配对结果块的 `erix.toolCallKey` 同值，
+      // 跳 resume/replay 不重生。它与位置型 `key` 是两件事：`key` 仍是投影局部展示键。
+      const toolCallKey = typeof block.erix?.toolCallKey === "string" && block.erix.toolCallKey !== ""
+        ? block.erix.toolCallKey
+        : undefined;
       return {
         name: String(block.name ?? ""),
         ...(block.id === undefined ? {} : { id: String(block.id) }),
+        ...(toolCallKey === undefined ? {} : { toolCallKey }),
         ...(argsSummary === undefined ? {} : { argsSummary }),
       };
     });
@@ -152,11 +159,21 @@ function toolResultsOf(messages) {
       if (!isObject(block) || block.type !== "tool_result") continue;
       if (typeof block.tool_use_id !== "string") continue;
       const preview = truncated(toolResultText(block), MAX_RESULT_PREVIEW);
+      // 白名单合并（契约里已钉住）：不显式取值就看不见，所以引擎命名空间里那两个新字段必须点名取。
+      const erix = isObject(block.erix) ? block.erix : undefined;
+      const executionStatus = typeof block.executionStatus === "string"
+        ? block.executionStatus
+        : (typeof erix?.executionStatus === "string" ? erix.executionStatus : undefined);
       results.set(block.tool_use_id, {
         ...(preview === "" ? {} : { resultPreview: preview }),
         ...(block.is_error === undefined ? {} : { isError: block.is_error === true }),
-        ...(typeof block.executionStatus === "string"
-          ? { executionStatus: block.executionStatus }
+        ...(executionStatus === undefined ? {} : { executionStatus }),
+        ...(typeof erix?.toolCallKey === "string" && erix.toolCallKey !== ""
+          ? { toolCallKey: erix.toolCallKey }
+          : {}),
+        // `durationMs` 缺失 = 未知，**不是 0**（未执行 / 中断重放 / 未 settle 都没有该字段）。
+        ...(typeof erix?.durationMs === "number" && Number.isFinite(erix.durationMs)
+          ? { durationMs: erix.durationMs }
           : {}),
       });
     }
@@ -416,7 +433,13 @@ function projectRecord(record, recordIndex) {
   for (const entry of entries) {
     for (const call of entry.toolCalls ?? []) {
       const result = call.id === undefined ? undefined : results.get(call.id);
-      if (result !== undefined) Object.assign(call, result);
+      if (result === undefined) continue;
+      // 身份键以调用块自己的值为准，结果侧只在块上缺位时补位（其余展示字段照旧由结果覆盖）：
+      // 同一个调用在两条线上本应同一个值，真不同那就是摊平输入，不能让结果侧悄悄改写调用侧。
+      const merged = typeof call.toolCallKey === "string" && call.toolCallKey !== ""
+        ? { ...result, toolCallKey: call.toolCallKey }
+        : result;
+      Object.assign(call, merged);
     }
   }
 

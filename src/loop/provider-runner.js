@@ -80,6 +80,8 @@ export async function callProvider(ctx, {
     };
 
     const attempt = retryIndex + 1;
+    // 新 attempt = 新一批 provider id：身份键注册表同步换新（上一轮被丢弃的调用不与本轮共用 key）。
+    ctx.beginToolCallAttempt?.();
     const attemptEvents = [];
     let attemptUsage;
     const emitEvent = ctx.emitEvent;
@@ -159,14 +161,22 @@ export async function callProvider(ctx, {
             },
             "onReasoningDelta",
           ),
-          onToolCall: (fragment) => queueEvent(
-            { type: "tool_call", ...fragment },
-            () => {
-              const onToolCall = ctx.onToolCall;
-              onToolCall?.(fragment);
-            },
-            "onToolCall",
-          ),
+          onToolCall: (rawFragment) => {
+            // 跳通道身份键（工单 261014 T1 / issue #284）：宿主在流式阶段就能建卡，
+            // 且 `tool_use` 事件到达时是同一张卡—— fragment 上的 key 与块上的 `erix.toolCallKey` 同值。
+            const toolCallKey = ctx.toolCallKeyForFragment?.(rawFragment);
+            const fragment = toolCallKey === undefined
+              ? rawFragment
+              : { ...rawFragment, toolCallKey };
+            queueEvent(
+              { type: "tool_call", ...fragment },
+              () => {
+                const onToolCall = ctx.onToolCall;
+                onToolCall?.(fragment);
+              },
+              "onToolCall",
+            );
+          },
           onUsage: (reportedUsage) => {
             attemptUsage = reportedUsage;
             queueEvent(

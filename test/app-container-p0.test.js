@@ -231,7 +231,13 @@ test("includes the canonical response summary in onRound records", async () => {
   });
 
   assert.equal(records.length, 2);
-  assert.deepEqual(records[0].response, {
+  // `tool_use` 块上多了一个引擎身份键 `erix.toolCallKey`（工单 261014 T1 / issue #284：
+  // 同一调用的身份从流式片段一路带到块、结果、事件与投影，provider `id` 不改写）；
+  // 其余字段逐字对账，不放宽。
+  const round0Response = structuredClone(records[0].response);
+  assert.match(round0Response.content[1].erix.toolCallKey, /^tc_[0-9a-f]{12}$/u);
+  delete round0Response.content[1].erix;
+  assert.deepEqual(round0Response, {
     content: [
       { type: "text", text: "plan" },
       { type: "tool_use", id: "call-1", name: "write", input: { path: "x" } },

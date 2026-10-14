@@ -89,12 +89,22 @@ export function executeToolContract(label, createExecutor) {
 
   test(`${label}: string return becomes a successful tool_result`, async () => {
     const { provider } = await runExecutor(async () => "string result");
-    assert.deepEqual(toolResultFrom(provider), {
-      type: "tool_result",
-      tool_use_id: "contract-tool-1",
-      content: "string result",
-      erixRound: 1, // issue #35 TTL 折叠年龄标记
-    });
+    const toolResult = toolResultFrom(provider);
+    // 双写期（工单 261014 T1）：旧顶层字段一字未动，引擎事实在 `erix.*` 并行新增。
+    assert.deepEqual(
+      {
+        type: toolResult.type,
+        tool_use_id: toolResult.tool_use_id,
+        content: toolResult.content,
+        erixRound: toolResult.erixRound,
+      },
+      {
+        type: "tool_result",
+        tool_use_id: "contract-tool-1",
+        content: "string result",
+        erixRound: 1, // issue #35 TTL 折叠年龄标记
+      },
+    );
   });
 
   test(`${label}: structured return preserves content, metadata, and success`, async () => {

@@ -70,15 +70,31 @@ test("feeds tool results back to the provider on the next round", async () => {
 
   assert.equal(result.finalText, "found");
   assert.equal(provider.requests.length, 2);
-  assert.deepEqual(provider.requests[1].messages.at(-1), {
-    role: "user",
-    content: [{
-      type: "tool_result",
-      tool_use_id: "call-1",
-      content: "lookup:x",
-      erixRound: 1, // issue #35 年龄标记（TTL 折叠按创建轮判定）
-    }],
-  });
+  // 事实面：双写期顶层旧字段一字未动（工单 261014 T1），引擎事实在 `erix.*`。
+  const fedBack = provider.requests[1].messages.at(-1).content[0];
+  assert.deepEqual(
+    {
+      role: provider.requests[1].messages.at(-1).role,
+      content: [{
+        type: fedBack.type,
+        tool_use_id: fedBack.tool_use_id,
+        content: fedBack.content,
+        erixRound: fedBack.erixRound,
+      }],
+    },
+    {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "call-1",
+        content: "lookup:x",
+        erixRound: 1, // issue #35 年龄标记（TTL 折叠按创建轮判定）
+      }],
+    },
+  );
+  assert.equal(fedBack.erix.round, 1);
+  assert.equal(typeof fedBack.erix.durationMs, "number"); // issue #285：字符串返回形态也有耗时
+  assert.equal(fedBack.erix.success, undefined); // 没声明过 success 就不写（输入/输出不对称）
 });
 
 test("returns truncated after maxRounds", async () => {
@@ -248,13 +264,25 @@ test("feeds executeTool errors back as is_error and continues", async () => {
   });
 
   assert.equal(result.finalText, "recovered");
-  assert.deepEqual(provider.requests[1].messages.at(-1).content[0], {
-    type: "tool_result",
-    tool_use_id: "bad",
-    content: "permission denied",
-    is_error: true,
-    erixRound: 1, // issue #35 年龄标记
-  });
+  const errorResult = provider.requests[1].messages.at(-1).content[0];
+  assert.deepEqual(
+    {
+      type: errorResult.type,
+      tool_use_id: errorResult.tool_use_id,
+      content: errorResult.content,
+      is_error: errorResult.is_error,
+      erixRound: errorResult.erixRound,
+    },
+    {
+      type: "tool_result",
+      tool_use_id: "bad",
+      content: "permission denied",
+      is_error: true,
+      erixRound: 1, // issue #35 年龄标记
+    },
+  );
+  // 抛错也是 settle：耗时是事实，不是只有成功才有（issue #285）。
+  assert.equal(typeof errorResult.erix.durationMs, "number");
 });
 
 test("onToolResult can rewrite a result before it is fed back", async () => {

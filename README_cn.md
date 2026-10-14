@@ -316,6 +316,7 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
   "test/contract/notes-store.js",
   "test/contract/skills-loader.js",
   "test/contract/termination-payload.js",
+  "test/contract/tool-result-envelope.js",
   "test/contract/transcript-store.js"
 ]
 ```
