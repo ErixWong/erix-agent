@@ -263,7 +263,9 @@ export function foldToolResultsForRequest(messages, {
       // 读路径见 `readRoundMarker`：`erix.round` 优先，顶层 `erixRound` 只作旧记录回退（T2 §2.1）。
       const createdRound = readRoundMarker(block);
       if (!Number.isFinite(createdRound)) continue;
-      const age = currentRound - createdRound;
+      // 上面的 `Number.isFinite` 已经排掉 undefined / 非数字，这里只是把 narrowing 交给类型检查器
+      // （`readRoundMarker` 的返回故意是 `unknown`：旧记录里这个位置可能是什么东西）。
+      const age = currentRound - /** @type {number} */ (createdRound);
       const text = typeof block.content === "string"
         ? block.content
         : String(block.content ?? "");
