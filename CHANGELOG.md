@@ -2,7 +2,7 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
-## [Unreleased]
+## [Unreleased]（发版时归入 **0.20.0**；本单不动 `package.json` 的版本号，仍 `0.19.0`）
 
 ### Added
 
@@ -14,6 +14,18 @@
   - **工装**：契约文档 `js` 围栏 9 → 10——`test/contract/doc-examples.js` 的 `EXPECTED_JS_FENCE_COUNT` 与 `FENCE_PREAMBLES` 同步（新条目插到 #3，其后七条重编号；顺便把靠 EN 行号定位的四条过时注释改成靠节名，那四个行号本来已经飘了）。新围栏的 **L3 epilogue 是一条主动哨兵**：出厂文件工具一旦真的自带 `replay` 标注，L3 立即变红并指路「本节『一个都没标』的声称过期」（工具数量、只读候选集那五个工具名、「工厂返回的是共享对象」三事也一起钉住）——那是本节唯一能被机器看住的那一半。**反向证已做**：给 `src/tools/file-tools.js` 的 `readFile` 定义临时挂上 `replay: "safe"`（`cp` 备份还原，不用 `git checkout`）⇒ `L3 执行 [#4]` **立即变红**，报的就是那句指路文案；还原后 `git status` 对 `src/` 无残留、复跑 exit 0。
   - **零生产改动**（`src/`、`bin/`、`package.json`、版本号一字未动），门禁实测：`node --test` **1579 / 1574 pass / 0 fail / 5 skipped**、`check:docs-examples` **33 / 33**（含 CN/EN 围栏骨架逐行一致）、`check:docs`（漂移面 58 项对齐 + 中英契约 59 节标题骨架对齐）、`check:docs:strict`、`check:pack-links`、`check:tests` 逐个 exit 0。⚠ 表格形状是刻意的：每行至少一个不带反引号的单元格，否则 `docs-drift-check` 的「文件工具清单」逐处锚点会把 markdown 表格列当成一份清单声明（`isListGap` 把 `|` 认成分隔符，一旦某行被串够 6 个工具名就按逐处对称卡）。
 
+
+### Changed
+
+- **工具事实面：`tool_result` 从「引擎注入字段与宿主自有 metadata 挤在同一层」改成 `erix.*` / `metadata` 双命名空间，字段归属提升为导出常量 `TOOL_RESULT_CONTRACT`**（工单 261014 T1，上游 issue #284 跨通道身份 / #285 耗时全形态。**additive**：旧顶层字段一字未动，现有宿主不必改代码；唯一的行为变更是下面「口径收紧」那一条）。
+  - **① 新增什么**：`src/tool-fact.js`（随包导出）——`buildToolResultFact()` 是引擎侧唯一的 `tool_result` 构造点，`TOOL_RESULT_CONTRACT` 是「谁拥有哪个字段」的唯一真相。引擎事实只落 `erix.*`（`toolCallKey` / `round` / `durationMs` / `executionStatus` / `success`），宿主 executor 返的扩展只落 `metadata.*`，`is_error` 按设计留在顶层（Anthropic wire 字段，`src/messages/anthropic.js` 会发）。**构造器从不把 `metadata` 摊平到顶层**——那就是病根：旧 `run-snapshot-executor.js` 的 `...execution.metadata` 让同类缺陷已经出现四次（`erixRound`、`is_error`、`duration`、#284 的身份）。两个命名空间都不上 wire：两个协议转换器都按显式字段清单序列化 `tool_result`，输出卫生/聚合/折叠三层只替换 `content`，事实字段原样存活。
+  - **`toolCallKey`（#284）**：一次被接受的调用只分配一次，从第一个可识别的 `onToolCall` 流式片段一路带到 `tool_use` 块、`tool_result`、`onEvent` 事件克隆与投影；resume 与 run-snapshot 复放**沿用已落盘的值**，已有身份的调用绝不重生成。provider `id` / `tool_use_id` 是协议配对键，引擎**只读、永不改写**。
+  - **双写期承诺**（写在 `TOOL_RESULT_CONTRACT.legacy` 里）：旧顶层 `erixRound` / `duration` / `executionStatus` 与**被摊平到顶层的宿主键**继续照写**一个 minor**，退役发生在下一个 minor（届时挂 `Changed（BREAKING）`，`test/contract/execute-tool.js` 那条顶层摊平键断言同步改成 `metadata.artifactStatus`）。向前兼容的读法是**今天就只读 `erix.*` / `metadata.*`**。`erix` 是保留键：双写期内宿主自己的同名 `erix` 键会输（引擎命名空间最后写）。
+  - **② 口径收紧（只对结构化路径）**：`erix.durationMs` 只覆盖一个区间——**从「调用 executor 前」到「该 promise settle 或 reject」，捕获一次**，**不含** `onToolResult` 改写、输出卫生与单轮聚合预算。旧顶层 `duration` 保持历史行为不动，而那个行为本身不自洽：**只有当 `onToolResult` 返回结构化对象时**，第二次 `normalizeExecutionResult` 才会把 hook 耗时算进去，hook 返回字符串时又不含。⇒ 双写期内两个数字**在那条路径上会合法地不相等**，要读的是 `erix.durationMs`；这是本单唯一一处行为变更，也是它挂 `Changed` 而不是纯 `Added` 的原因。另一句必读：**`durationMs` 缺失 = 未知，不是 0**——judge 拦截（从未执行）、unsafe 中断的重放、executor 未 settle 就被中止三种情形**没有该字段**，宿主 `?? 0` 会把「我们不知道」渲染成「它瞬间完成」。六种 executor返回形态（`string` / `number` / `{content, metadata}` / 遗留 `{data}` / 返回的 `Error` / 抛出的非 abort 异常）都带耗时，因为「报错前跑了 40ms」同样是一件事实。
+  - **③ 投影新增两字段（non-breaking）**：`createDisplayProjection` 的 `toolCalls[]` 条目多 `toolCallKey`（耐久身份键，与投影局部展示键 `key` 是两件事——`key` 的含义一字未动）与 `durationMs`；**两者在旧记录上直接缺省而不被合成**（#284 之前写的记录没有身份键，宁缺不造）。`toolResultsOf()` 是白名单合并，新字段必须显式取。
+  - **防复发的第三条边**：`npm run check:docs` 新增锚点——契约中英里声明 `erix` 字段归属的**五个面**（散文清单、字段归属表、「恰好五个字段」数量声明、存在性矩阵表头、legacy 别名表）逐面与该常量**双向**比成员（字段改名 / 新增 / 命名空间改名都会让中英两侧同时变红，命名空间名 `engine.ns` / `host.ns` 本身也是真值），`--self-test` 的反向证同步从 58 例抬到 **70 例**（下限常量一并上调，只许涨不许降）。契约文档：`docs/host-consumer-contract.md` “Tool result fact and field ownership (issue #284 / #285)” 与 `docs/host-consumer-contract_cn.md` 「工具事实与字段归属（issue #284 / #285）」（**中英成对**：EN 五个子节 “The field lists (anchored against `TOOL_RESULT_CONTRACT`)” / “`durationMs` is measured at executor settle, and absent means unknown” / “Dual write, and what retires next minor” / “Existence matrix” / “The one equation between the live event stream and the transcript”，CN 逐节对应「字段清单（与 `TOOL_RESULT_CONTRACT` 锚定）」「durationMs 在 executor settle 时刻捕获，缺失就是未知」「双写，以及下一个 minor 退役什么」「存在性矩阵」「实时事件流与 transcript 之间的那一条等式」；另各加一节 onEvent 工具事件字段清单，中英同位；`docs-sync-check` 逐节核对两份的标题骨架）。
+  - **零 npm 依赖 / 纯 ESM / 不碰的部分**：`TranscriptStore` 方法签名与 `RoundRecord` 顶层形状不变；新契约套件 `test/contract/tool-result-envelope.js`（随包，已进 `files` 与 `test/contract/index.js`）零网络、零本机依赖、不依赖仓库树形。本单**不含**：S2（事件从记录派生）、#282（终局 `aborted` 优先级）、#283（中止部分产出可见性），以及停写旧扁平字段的 T2（`erixRound` / `duration` / 顶层摊平键的退役）。
+  - **门禁实测**（逐条 exit 0）：`node --test` **1597 / 1592 pass / 0 fail / 5 skipped**、改动文件 `node --check`、`check:docs`（漂移面 59 项对齐 + 中英契约 66 节标题骨架）、`check:docs:strict`、`check:pack-links`、`check:types` **实测 121 = 基线 121**（新增的 `src/tool-fact.js` 首行 `// @ts-check`、自身贡献 0 错）、`check:docs-examples`、`check:tests`、`docs-drift-check --self-test` **70 例全过 + 对照组绿**。**版本号未动**（`package.json` 仍 `0.19.0`，发版时统一 bump 到 0.20.0）。
 
 ## [0.19.0] - 2026-10-13
 

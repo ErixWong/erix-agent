@@ -603,10 +603,24 @@ test("resumes a partial tool-result message without dropping text or breaking pa
   });
 
   const toolResultMessage = provider.requests[0].messages[2];
-  assert.deepEqual(toolResultMessage.content, [
+  // 引擎事实在 `erix.*`（工单 261014 T1）：本例测的是「合并不丢文本、配对不破坏」，
+  // 逐字段的存在性矩阵见 test/contract/tool-result-envelope.js。
+  const mergedBlocks = toolResultMessage.content.map((block) => {
+    const { erix, ...rest } = block;
+    return { ...rest, ...(erix === undefined ? {} : { __erixKeys: Object.keys(erix).sort() }) };
+  });
+  assert.deepEqual(mergedBlocks, [
     { type: "tool_result", tool_use_id: "a", content: "done-a" },
     { type: "text", text: "keep this text" },
-    { type: "tool_result", tool_use_id: "b", content: "done-b", erixRound: 1 },
+    {
+      type: "tool_result",
+      tool_use_id: "b",
+      content: "done-b",
+      erixRound: 1,
+      // 续跑重放的已完成结果同样带全引擎事实：身份键沿用旧快照块上的值（旧快照没有则当场补一个），
+      // round + settle 时刻的 durationMs 不重算。
+      __erixKeys: ["durationMs", "round", "toolCallKey"],
+    },
   ]);
 });
 

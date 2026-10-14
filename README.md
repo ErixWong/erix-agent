@@ -167,6 +167,7 @@ src/
   assembly-validators.js           Shared port/option validators (internal)
   run-state.js                     Bounded deterministic and semantic run state
   tokens.js                        Conservative token estimation
+  tool-fact.js                     Tool-result fact contract: single builder + owner constant
   loop/                            # orchestration core
     orchestrator.js                runToolLoop main loop
     option-normalization.js        runToolLoop option whitelist, unknown-key suggestion, merge
@@ -355,6 +356,7 @@ quoted blocks below against it):
   "test/contract/notes-store.js",
   "test/contract/skills-loader.js",
   "test/contract/termination-payload.js",
+  "test/contract/tool-result-envelope.js",
   "test/contract/transcript-store.js"
 ]
 ```

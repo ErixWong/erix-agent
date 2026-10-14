@@ -19,6 +19,15 @@ export {
   createAnthropicStreamAssembler,
 } from "./messages/anthropic.js";
 export { groupIntoRounds, validateMessages } from "./messages/rounds.js";
+// 工具事实契约面（工单 261014 T1）：宿主与契约测试都要能 import 到同一份字段归属常量。
+export {
+  TOOL_RESULT_CONTRACT,
+  TOOL_FACT_ENGINE_NS,
+  TOOL_FACT_HOST_NS,
+  buildToolResultFact,
+  allocateToolCallKey,
+  ensureToolCallKeyOnBlock,
+} from "./tool-fact.js";
 export {
   estimateTokens,
   estimateMessageTokens,

@@ -9,3 +9,4 @@ export { engineApiContract } from "./engine-api.js";
 export { terminationPayloadContract } from "./termination-payload.js";
 export { fileToolsContract } from "./file-tools.js";
 export { skillsLoaderContract } from "./skills-loader.js";
+export { toolResultEnvelopeContract } from "./tool-result-envelope.js";

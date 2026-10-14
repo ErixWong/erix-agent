@@ -123,6 +123,7 @@ src/
   assembly-validators.js           端口/选项校验共享实现（内部模块）
   run-state.js                     有界的确定性与语义运行状态
   tokens.js                        保守的 token 估算
+  tool-fact.js                     工具事实契约面（单一构造器 + 字段归属常量）
   loop/                            # 编排核心
     orchestrator.js                runToolLoop 主循环
     option-normalization.js        runToolLoop 选项白名单、未知键建议与选项合并
@@ -316,6 +317,7 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
   "test/contract/notes-store.js",
   "test/contract/skills-loader.js",
   "test/contract/termination-payload.js",
+  "test/contract/tool-result-envelope.js",
   "test/contract/transcript-store.js"
 ]
 ```

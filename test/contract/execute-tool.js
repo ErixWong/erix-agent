@@ -89,11 +89,22 @@ export function executeToolContract(label, createExecutor) {
 
   test(`${label}: string return becomes a successful tool_result`, async () => {
     const { provider } = await runExecutor(async () => "string result");
-    assert.deepEqual(toolResultFrom(provider), {
+    const toolResult = toolResultFrom(provider);
+    // 双写期（工单 261014 T1）：旧顶层字段一字未动，引擎事实在 `erix.*` 并行新增。
+    // 整块形状仍逐字对账（**不放宽成挑字段**）：先把两个非确定值（身份键、settle 耗时）
+    // 摘出来单独断言，剩下的整块 deepEqual —— 于是「顶层凭空多一个键」照样红。
+    const { erix, ...topLevel } = structuredClone(toolResult);
+    assert.match(erix.toolCallKey, /^tc_[0-9a-f]{12}$/u);
+    assert.equal(typeof erix.durationMs, "number");
+    assert.deepEqual(Object.keys(erix).sort(), ["durationMs", "round", "toolCallKey"]);
+    delete erix.toolCallKey;
+    delete erix.durationMs;
+    assert.deepEqual({ ...topLevel, erix }, {
       type: "tool_result",
       tool_use_id: "contract-tool-1",
       content: "string result",
       erixRound: 1, // issue #35 TTL 折叠年龄标记
+      erix: { round: 1 },
     });
   });
 

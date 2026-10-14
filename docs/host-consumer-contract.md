@@ -2014,6 +2014,171 @@ these fallbacks do not detect or report store loss. Hosts are responsible for
 proving fidelity, for example by running and extending the assertions in
 `test/contract/transcript-store.js` for their own schema and unknown fields.
 
+## Tool result fact and field ownership (issue #284 / #285)
+
+Every `tool_result` the engine produces is one **fact object** built at a single
+construction point: `buildToolResultFact()` in `src/tool-fact.js`, re-exported from the
+package root together with the constant below. “Who owns which field” is itself a
+published constant, `TOOL_RESULT_CONTRACT`, and three parties consume that one copy: the
+constructor writes its paths from it, `test/contract/tool-result-envelope.js` generates
+its expected field sets from it, and the `check:docs` anchors compare the field lists of
+this section against it in both directions (including the EN/CN statement counts). Add or
+rename an engine field anywhere and the other two go red instead of quietly disagreeing.
+
+Three hard rules:
+
+1. host extensions may only be written into `metadata`; the engine never reads them out
+   again to overwrite an engine fact;
+2. engine facts may only be written into `erix`; the constructor writes that namespace
+   last, so a host key flattened onto the top level cannot overwrite it;
+3. `is_error` stays at the top level — it is a wire field (the Anthropic request builder
+   emits it), not a namespace member.
+
+`metadata` and `erix` are **reserved top-level key names**, registered as
+`TOOL_RESULT_CONTRACT.reserved.topLevelKeys`, and the dual-write flattening skips them.
+Without that skip a host extension carrying one of those names would be written to the top
+level and overwritten by its namespace a statement later, so what survived would depend on
+write order rather than on ownership. The value is not lost: it stays readable inside the
+host namespace, at `metadata.metadata` / `metadata.erix`. Deliberately **not** reserved:
+`type`, `tool_use_id`, `content`, `is_error` — a host key spelled like one of those still
+overwrites the protocol field, exactly as it did before this contract (the old code spread
+the flat map last); tightening that is the retirement change's decision, not this one's.
+
+The constructor never spreads `metadata` onto the top level. Nothing in `erix` or
+`metadata` is sent to the provider: both protocol converters serialise `tool_result` from
+an explicit field list, so the two namespaces are `onWire: false`. The output-hygiene,
+aggregation and fold layers only ever replace `content`; the fact fields survive them.
+
+### The field lists (anchored against `TOOL_RESULT_CONTRACT`)
+
+The required protocol fields are `type` / `tool_use_id` / `content`. There is exactly one
+conditional protocol field, and it is `is_error`: present only when the result is an
+error or an interruption. The engine namespace has exactly five fields, every one of them
+addressed as `erix.<field>`: `toolCallKey` / `round` / `durationMs` / `executionStatus` /
+`success`. The host namespace is a single key holding whatever the executor returned.
+
+| Field | Owner | Written when | Meaning |
+|---|---|---|---|
+| `type`, `tool_use_id`, `content` | protocol | always | `tool_use_id` is the provider pairing key: the engine reads it and never rewrites it (`groupIntoRounds`/`validateMessages` and run-snapshot replay lookups depend on it). |
+| `is_error` | protocol | only error/interrupted results | Wire field, top level by design. |
+| `erix.toolCallKey` | engine | every `tool_use` the engine accepts, and every result built from one | Cross-channel identity: one allocation per accepted call, carried by the first recognisable stream fragment, the `tool_use` block (and therefore the persisted block and the `tool_use` event clone), the `tool_result`, and the projection. Resume and replay **reuse** the persisted value; a value is never regenerated for a call that already had one. A provider pairing id is **not** an identity and is not guaranteed unique inside a run (per-round index prefixes, or the `call_legacy` fallback for malformed responses), so the same id reappearing in a later round is a **new call** and gets a new key: a key is inherited only where the call is confirmed to be the same one — the replay window of the current round, or the one pending call restored from the crash site. **Pre-contract records stay keyless on both ends** (see the carve-out below). |
+| `erix.round` | engine | the call actually executed | The **execution** round. It is not the event envelope’s `round` (the delivery round), and the two are deliberately not merged. |
+| `erix.durationMs` | engine | the executor promise settled or rejected | Milliseconds from “immediately before the executor is invoked” to “that promise settled or rejected”. |
+| `erix.executionStatus` | engine | special states only | `intercepted` / `interrupted`. |
+| `erix.success` | engine | only when the executor (or the `onToolResult` rewrite hook) declared one | The engine-normalised boolean. |
+| `metadata.*` | host | whenever the executor returned extensions | The only namespace a host may write. |
+
+### `durationMs` is measured at executor settle, and absent means unknown
+
+`durationMs` covers exactly one interval: from immediately before the executor is invoked
+to the moment that promise settles or rejects. It deliberately **excludes** the
+`onToolResult` rewrite, output hygiene, and the per-round aggregation budget. A missing
+`durationMs` means **unknown — not 0**: a call that never ran (judge interception), an
+unsafe call replayed as interrupted, and a call aborted before its executor settled all
+report no duration, and rendering `?? 0` turns “we do not know” into “it was instant”.
+All six executor return forms (`string`, `number`, `{content, metadata}`, the legacy
+`{data}` shape, a returned `Error`, and a thrown non-abort error) carry a duration,
+because “it threw after 40 ms” is a fact too.
+
+This is a tightened definition on one path, not a byte-identical re-derivation: the
+legacy top-level `duration` key keeps its historical behaviour, which included the
+`onToolResult` rewrite time **only** when that hook returned a structured object. During
+the dual-write window the two numbers therefore legitimately differ on that path, and
+`erix.durationMs` is the one to read.
+
+### Dual write, and what retires next minor
+
+T1 is additive. Every legacy top-level key keeps being written exactly as before, so an
+existing host keeps working while it moves:
+
+| Legacy top-level key | New home |
+|---|---|
+| `erixRound` | `erix.round` |
+| `duration` | `erix.durationMs` |
+| `executionStatus` | `erix.executionStatus` |
+| any host key flattened to the top level | `metadata.<host key>` |
+
+`TOOL_RESULT_CONTRACT.legacy` carries that alias table plus the promised window: the
+dual write lasts one minor and the legacy keys are retired in the next one, recorded as
+`Changed (BREAKING)`. Reading only `erix.*` / `metadata.*` today is the forward-compatible
+choice; `test/contract/execute-tool.js` still asserts the flattened host key at the top
+level, and that assertion is expected to move to `metadata` in the retirement change.
+
+### Existence matrix
+
+The matrix is the acceptance table of `test/contract/tool-result-envelope.js`: one row per
+row below, plus the reverse assertions (interception carries no duration, replay never
+recomputes, a host key is present both at the top level and in `metadata`, and the
+provider `id` is never rewritten).
+
+| Case | erix.toolCallKey | erix.round | erix.durationMs | is_error | erix.executionStatus | record in B |
+|---|---|---|---|---|---|---|
+| success (string / number / structured / legacy all behave the same) | yes | yes | yes | absent | absent | yes |
+| failure (returned Error / thrown non-abort) | yes | yes | yes | yes | absent | yes |
+| judge interception | yes | absent | absent — never executed | absent | intercepted | yes |
+| resume replay of an unsafe interruption | yes, the persisted value | absent | absent | yes | interrupted | yes |
+| replay of an already-completed result | yes, same value | original value | original value, never recomputed | original value | original value | reuses the original record |
+| abort before the executor settles | present on the tool_use | absent | absent | absent | absent | may be absent |
+
+`erix.success` is not a matrix column on purpose: the input side is the executor’s return
+shape (`{content, success:false}`, with the historical `value.success ?? metadata.success`
+compatibility read), while the output side is the normalised boolean in `erix.success`,
+written only when the host actually declared a verdict. A host cannot steer the execution
+result by writing `metadata.success`.
+
+### The one equation between the live event stream and the transcript
+
+`tool_use` / `tool_result` events are emitted before the `RoundRecord` exists, so the
+event stream is not derived from the record. Exactly one equality is promised: for a call
+that was committed, the fact in the event and the block stored in the record carry the
+same `toolCallKey`, the same pairing id, the same `is_error`, the same `erix.*`, and the
+same `metadata` — two clones of one object. `content` is not part of the equation (a fold
+may rewrite it), event envelopes and stream deltas never enter the record, folding never
+flows back into an earlier event, and when a run aborts or the append fails the record may
+simply be missing — the engine never invents a record to make the equation hold.
+
+### Carve-out: replaying a record written before this contract
+
+A run snapshot written before the fact contract carries no `erix` at all. Replaying such a
+record is the one case where **both ends of one call legitimately have no `toolCallKey`**:
+the engine replays the recorded result verbatim (it never rewrites a stored fact) and, for
+that round, deliberately does **not** claim a key for the paired `tool_use` block either.
+Missing on both ends is the truthful state — inventing a key would leave the `tool_use` end
+carrying an identity the `tool_result` end does not have, which is worse than both being
+absent, because a host could then not tell which side to trust. Concretely:
+
+- the engine fabricates nothing: no `erix` object, no top-level `toolCallKey`, nothing
+  derived from the pairing id;
+- a host must therefore treat `toolCallKey` as **optional per call, not optional per
+  version**: a run that resumes from a pre-contract checkpoint can intermit keyless facts
+  with keyed ones, and must key its own card by the pairing id for the keyless ones;
+- calls accepted after the upgrade are unaffected — they always carry a key on both ends.
+
+This is asserted by `test/contract/tool-result-envelope.js` ("复放升级前的已记录结果").
+
+## onEvent tool event field list (issue #284 / #285)
+
+`onEvent` is one channel for structured events; the tool-related event types the loop
+emits, and the payload fields each one carries, are listed here so a host does not have to
+guess which identity field is where. Field names below are payload keys, not `erix` paths:
+`toolUse` and `toolResult` are clones of the fact objects, so everything in the previous
+section is reachable through them.
+
+| Event type | Payload fields | Notes |
+|---|---|---|
+| `tool_use` | round, toolUse | Emitted once per accepted call, after the identity key has been attached to the block, so `toolUse.erix.toolCallKey` is always present for engine-accepted calls. |
+| `tool_result` | round, toolResult | The fact clone described above. `round` is the delivery round: during a replay it can legitimately differ from the fact’s execution round. |
+| `tool_replay_decision_required` | runId, round, toolUseId, toolName, replay, requiresHostDecision, partialOutputAvailable | Emitted immediately **before** the paired interrupted result. It still carries only the provider pairing key: adding the identity key here was out of scope for this ticket, so correlate the two by `toolUseId` for now. |
+| `tool_output_aggregate` | round, toolUseId, name, action, reason, budgetTokens, inlineTokens, costTokens, projectedTokens, contentLength, archivedBytes | The per-round output budget. `projectedTokens` appears on the admission path and `archivedBytes` on the archive/unrecoverable paths; this event is about content size and never carries fact fields. |
+
+Stream fragments are **not** an `onEvent` event: the engine loop delivers them through the
+`onToolCall` callback, whose fragment keeps its historical shape (`index`, optional `id`,
+optional `name`, optional `argumentsDelta`) and now also carries `toolCallKey` — the same
+value the accepted `tool_use` block will carry, starting from the first recognisable
+fragment. A provider invoked directly by a host can additionally emit its own `tool_call`
+events to the `onEvent` callback it was handed; the loop does not inject that callback, so
+an ordinary `runToolLoop` run emits none, and the shipped suite pins that fact.
+
 ## Host display projection
 
 The transcript is the model-context truth: `RoundRecord` is byte-faithful for
@@ -2051,17 +2216,19 @@ input array can change keys, and key stability across different input arrays
 is not guaranteed.
 
 `toolCalls` is an array of summaries with this public shape:
-`{ key, name, id?, argsSummary?, resultPreview?, isError?, executionStatus? }`.
+`{ key, name, id?, toolCallKey?, argsSummary?, resultPreview?, isError?, executionStatus?, durationMs? }`.
 
 | Field | Meaning |
 |---|---|
-| `key` | Non-empty host-rendering identity for this tool call, derived from its turn key and position; it is not the provider's tool-use ID. |
+| `key` | Non-empty host-rendering identity for this tool call, derived from its turn key and position; it is not the provider's tool-use ID and not the engine's identity key. |
 | `name` | Tool name as supplied by the provider, or an empty string when absent. |
 | `id?` | Provider-supplied `tool_use.id`, stringified when present and omitted when absent; it remains the result-association ID, while `blocks[].id` passes through unchanged. |
+| `toolCallKey?` | Engine identity key of this call (issue #284): taken from the `tool_use` block’s engine namespace, and from the paired result when the block does not carry one. Unlike `key` it is durable — stable across filtering, slicing, re-projection, and resume — so it is the field to key a host-side card on. Omitted for records written before issue #284, never synthesised. |
 | `argsSummary?` | Bounded, one-line summary of the tool input, omitted when there is nothing to summarize. |
 | `resultPreview?` | Bounded preview of the associated tool result, omitted when no non-empty result text is available. |
 | `isError?` | Whether the associated result explicitly marks an error; omitted when no error flag is present. |
-| `executionStatus?` | String execution status supplied by the associated result, omitted otherwise. |
+| `executionStatus?` | String execution status supplied by the associated result (top-level key first, falling back to the engine namespace when absent), omitted otherwise. |
+| `durationMs?` | Executor settle duration of the paired result (issue #285), copied verbatim from the engine namespace. Omitted when the result has none — interception, interruption, and a call aborted before settling all lack it, and `0` would be a lie. |
 
 Within a record, results are indexed by `tool_use_id` in message order; when
 multiple `tool_result` blocks reuse an ID, the last result wins. Every tool
@@ -2228,7 +2395,7 @@ valid state on a later resume.
 ## Contract test suites (issue #183)
 
 `erix-agent/contract-tests` (the `./contract-tests` subpath export,
-`test/contract/index.js`) ships nine suite files exposing **eleven** reusable
+`test/contract/index.js`) ships ten suite files exposing **twelve** reusable
 `node:test` registration functions (`execute-tool.js` carries two: the current and
 the migration shape; `notes-store.js` carries two since issue #183: the general
 suite and the optional CAS sub-suite). Every one is shaped `xxxContract(label, factory)`:
@@ -2236,9 +2403,10 @@ calling it registers assertions titled with `label`, and nothing executes until
 `node --test` runs them. `npm run check:docs:strict` fails on any suite that
 `test/contract/index.js` re-exports but the packaged `files` list omits (it is a
 warn under the plain `npm run check:docs`), so the shipped set cannot shrink
-unnoticed. `skillsLoaderContract` is the newest of the eleven (issue #197) and
-`fileToolsContract` is next (issue #184): a host on an installed 0.18.0
-has nine, not eleven.
+unnoticed. `toolResultEnvelopeContract` is the newest of the twelve (issue #284 / #285),
+`skillsLoaderContract` is next (issue #197) and `fileToolsContract` follows
+(issue #184): a host on an installed 0.18.0
+has nine, not twelve.
 
 ### What the suites prove, and what they cannot prove (issue #183)
 
@@ -2336,7 +2504,7 @@ They share a single implementation of the port semantics
 adapter is held to exactly the same bar and gets the same failures for the same
 omissions.
 
-The same shape covers the other six; only the second argument differs:
+The same shape covers the rest; only the second argument differs:
 
 | suite | second argument | what the factory must hand back |
 |---|---|---|
@@ -2350,6 +2518,7 @@ The same shape covers the other six; only the second argument differs:
 | `engineApiContract(label, getEntry)` | factory | the **package entry namespace**, i.e. `() => import("erix-agent")` — it asserts exported engine API, not your code |
 | `terminationPayloadContract(label, getEntry)` | factory | the same entry namespace (`{ runToolLoop }`); it brings its own provider stub |
 | `skillsLoaderContract(label, { discoverSkills, loadSkill, buildSkillTools })` | three functions, not a factory | the skill-package loader a host wires in; it asserts the caller-owned `bundledDir`, the bundled → global → project precedence, the non-blocking `{skillId, dir, error}` failure shape, and the `ToolSchema` output shape |
+| `toolResultEnvelopeContract(label, getEntry)` | factory | the same entry namespace (`{ runToolLoop, createMemoryTranscriptStore, projectTranscriptForDisplay, TOOL_RESULT_CONTRACT }`); it brings its own provider stubs and asserts the engine’s own tool-fact output, so it is a sentinel rather than a host conformance test |
 
 ### Suite inventory (issue #183)
 
@@ -2366,6 +2535,7 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 | `model-config-provider.js` (4 tests) | `resolve()` → default slot, `resolve(slot)` → named slot, unknown slot → default fallback, and `apiKey` indirect-reference materialisation (ADR-001) | your provider's slot resolution and key materialisation | nothing engine-side: it never loads the engine |
 | `engine-api.js` (2 tests) | the package entry exports `appendUserTurn` and `projectTranscriptForDisplay` as functions, and `appendUserTurn` completes one pre-write against a minimal store stub (including the `dedupKey`/`roundKey` shape and that the pre-write feeds the display projection) | nothing — this is an entry-surface sentinel; it goes red when an upstream bump renames or drops engine API | the exact pre-write record shape (`round: 0`, `dedupKey`, `roundKey`, `ts`) |
 | `termination-payload.js` (4 tests) | a `failed` terminal outcome carries `termination.errorCode` (classification passthrough, `unknown` fallback), an abort throws with `usage`/`rounds`/`finalText` and `termination.partial`, cumulative usage is attributed per round, and the success path keeps its old shape (no `errorCode`/`partial`/`usage` appearing out of nowhere) | nothing directly — it is your host-side decision table's regression net (issue #170 / #176 / #180) | the stubbed provider script, the zero-vs-missing-field rule for `usage` |
+| `tool-result-envelope.js` (17 tests) | the field ownership of every `tool_result` the engine builds, asserted against `TOOL_RESULT_CONTRACT` itself: the protocol fields stay at the top level, engine facts only appear under `erix`, host extensions appear under `metadata` (and, during the dual-write window, also flattened at the top level), all six executor return forms carry `toolCallKey`/`round`/`durationMs`, interception and interrupted replay carry **no** `durationMs` and no `round`, a replayed completed result is returned with its original values (`durationMs` never recomputed, the executor never re-invoked), the stream fragment, the `tool_use` block, the `tool_result` and the projection all carry one identity key, the provider pairing id is never rewritten, and the projection omits `toolCallKey`/`durationMs` for pre-issue-#284 records instead of inventing them | nothing — the fact surface is engine-owned, so this is a pure drift sentinel (it also fails if the constant itself is trimmed) | the stubbed provider/judge scripts and the run-snapshot shapes it hand-writes, the `tc_` key format, the fact that the loop forwards no `tool_call` event to `onEvent` |
 
 ### Wiring rule for hosts
 
@@ -2373,7 +2543,8 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
   provider, execute tool, assembly port) from your own test tree with your real
   adapter, on each engine bump, before the release-acceptance run.
 - Add the entry-level sentinels (`engineApiContract`,
-  `terminationPayloadContract`) once; they cost two registrations and catch the
+  `terminationPayloadContract`, `toolResultEnvelopeContract`) once; they cost three
+  registrations and catch the
   "upstream renamed something I forgot to grep" class.
 - Keep host-invented behaviour in host-owned tests. If a shipped suite disagrees
   with a host requirement, file it (issue tracker) rather than forking the

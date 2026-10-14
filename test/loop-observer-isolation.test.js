@@ -389,7 +389,13 @@ test("pr-b #173: a throwing onToolCall is isolated and names its own channel", a
 
   assert.equal(result.finalText, "done");
   assert.deepEqual(result.termination, { reason: "end_turn" });
-  assert.deepEqual(fragments, [{ id: "call-1", name: "work", input: {} }]);
+  // 跳通道身份键（工单 261014 T1 / issue #284）：流式片段带上了与 tool_use 块同值的 key，
+  // 其余字段与改动前逐字相同——整块 deepEqual（摘掉非确定的 key 后），不放宽成挑字段。
+  assert.equal(fragments.length, 1);
+  const fragment = structuredClone(fragments[0]);
+  assert.match(fragment.toolCallKey, /^tc_[0-9a-f]{12}$/u);
+  delete fragment.toolCallKey;
+  assert.deepEqual(fragment, { id: "call-1", name: "work", input: {} });
   assert.deepEqual(observers.messages, ["host onToolCall blew up"]);
   assert.deepEqual(observers.contexts, [{
     channel: "onToolCall",

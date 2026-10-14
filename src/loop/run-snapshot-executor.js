@@ -15,6 +15,7 @@ import {
   toolResultData,
 } from "./messages.js";
 import { directionHintText } from "./reflection.js";
+import { buildToolResultFact } from "../tool-fact.js";
 import {
   aggregateStubText,
   aggregateUnrecoverableStubText,
@@ -76,11 +77,19 @@ export function createRunSnapshotExecutor(ctx) {
   });
   // 终止态事件每轮只报一次（诊断用；不参与判定，故无恢复语义）
   const aggregateTerminalRounds = new Set();
+  // executor 返回形态 → 执行结果。三个通道的分工（工单 §6.2 的输入/输出不对称）：
+  //   · `metadata`       —— T1 双写期的顶层摊平源，**含引擎自己写的 `duration`/`success`**，
+  //                          口径与改动前逐字相同（顶层旧字段不许动）；
+  //   · `hostMetadata`   —— 只装 executor 自己给的扩展键（引擎的 duration/success 不在里面），
+  //                          事实面把它写进 `metadata.*` 命名空间；
+  //   · `hostDeclaredSuccess` —— executor 是否**显式**声明过 success（决定 `erix.success` 写不写）。
   const normalizeExecutionResult = (value, startedAt) => {
     if (value instanceof Error) {
       return {
         content: toolResultContent(value.message ?? value),
         metadata: {},
+        hostMetadata: {},
+        hostDeclaredSuccess: false,
         success: false,
       };
     }
@@ -90,12 +99,14 @@ export function createRunSnapshotExecutor(ctx) {
       && !Array.isArray(value)
       && Object.prototype.hasOwnProperty.call(value, "content")
     ) {
-      const metadata = value.metadata
+      const hostMetadata = value.metadata
         && typeof value.metadata === "object"
         && !Array.isArray(value.metadata)
         ? { ...value.metadata }
         : {};
-      if (Object.prototype.hasOwnProperty.call(value, "success")) {
+      const metadata = { ...hostMetadata };
+      const declaredTopLevel = Object.prototype.hasOwnProperty.call(value, "success");
+      if (declaredTopLevel) {
         metadata.success = value.success;
       }
       const success = value.success ?? metadata.success ?? true;
@@ -103,23 +114,35 @@ export function createRunSnapshotExecutor(ctx) {
       return {
         content: toolResultContent(value.content),
         metadata,
+        hostMetadata,
+        hostDeclaredSuccess: declaredTopLevel
+          || Object.prototype.hasOwnProperty.call(hostMetadata, "success"),
         success: success !== false,
       };
     }
     const structured = toolResultData(value);
     if (structured === undefined) {
-      return { content: toolResultContent(value), metadata: {}, success: true };
+      return {
+        content: toolResultContent(value),
+        metadata: {},
+        hostMetadata: {},
+        hostDeclaredSuccess: false,
+        success: true,
+      };
     }
-    const metadata = Object.fromEntries(
+    const hostMetadata = Object.fromEntries(
       Object.entries(structured).filter(([key]) => (
-        !["data", "type", "tool_use_id", "content"].includes(key)
+        !["data", "type", "tool_use_id", "content", "success"].includes(key)
       )),
     );
+    const metadata = { ...hostMetadata };
     metadata.success = structured.success ?? true;
     metadata.duration = Date.now() - startedAt;
     return {
       content: toolResultContent(structured.data),
       metadata,
+      hostMetadata,
+      hostDeclaredSuccess: Object.prototype.hasOwnProperty.call(structured, "success"),
       success: metadata.success !== false,
     };
   };
@@ -241,6 +264,11 @@ export function createRunSnapshotExecutor(ctx) {
     const startedAt = Date.now();
     let execution;
     let isError = false;
+    // 引擎事实 `erix.durationMs` 的口径（工单 §6.1，本单把它钉成「settle 时刻捕获一次」）：
+    // 从「调用 executor 前」计到「该 promise settle/reject」，**不含** onToolResult 改写、输出卫生与
+    // 单轮聚合。旧顶层 `duration` 仍由 normalizeExecutionResult 计算（结构化路径含 hook 耗时），
+    // 双写期一字未动 —— 于是两者在结构化路径上**故意**不相等，见 CHANGELOG 的 Changed 条目。
+    let durationMs;
     try {
       const structuredOptions = {
         id: block.id,
@@ -254,13 +282,22 @@ export function createRunSnapshotExecutor(ctx) {
       const result = await awaitWithAbort(
         Promise.resolve().then(() => executeTool(structuredOptions)),
       );
+      // `Math.max(0, …)`：`Date.now()` 是墙钟，NTP 校时/手动改时可回拨，于是差值可能为负。
+      // 负的「耗时」不是一个可解释的事实，而下游只过 `Number.isFinite`（投影）会照收。
+      // 顶层旧 `duration` 保持原口径不动（双写期 parity，T2 停写），只有引擎事实 `erix.durationMs` 夹住。
+      durationMs = Math.max(0, Date.now() - startedAt);
       execution = normalizeExecutionResult(result, startedAt);
     } catch (error) {
+      // 抛错（非 abort）同样是「settle」：耗时是一个事实，不是只有成功才有。
+      // abort 分支在下面直接抛出 —— 没有结果就没有事实，`durationMs` 随之缺省（宁缺不造）。
+      durationMs = Math.max(0, Date.now() - startedAt);   // 同上：墙钟回拨不得造出负耗时
       if (ctx.signal?.aborted) throwIfAborted(ctx.signal);
       isError = true;
       execution = {
         content: String(error?.message ?? error),
         metadata: {},
+        hostMetadata: {},
+        hostDeclaredSuccess: false,
         success: false,
       };
     }
@@ -283,6 +320,9 @@ export function createRunSnapshotExecutor(ctx) {
           execution = {
             ...normalized,
             metadata: { ...execution.metadata, ...normalized.metadata },
+            hostMetadata: { ...execution.hostMetadata, ...normalized.hostMetadata },
+            hostDeclaredSuccess: Boolean(execution.hostDeclaredSuccess)
+              || Boolean(normalized.hostDeclaredSuccess),
             success: execution.success && normalized.success,
           };
         }
@@ -325,23 +365,40 @@ export function createRunSnapshotExecutor(ctx) {
       execution,
       isError || execution.success === false,
     );
-    const toolResult = {
-      type: "tool_result",
-      tool_use_id: block.id,
-      content: execution.content,
-      ...execution.metadata,
-    };
+    const failed = isError || execution.success === false;
     // 年龄标记（issue #35）：TTL 折叠按创建轮判定。附加字段穿过
-    // cloneState/协议转换（wire 上被 canonicalToOpenAI 丢弃）/validateMessages 均安全，
+    // cloneState/协议转换（wire 上被 canonicalToOpenAI/Anthropic 丢弃）/validateMessages 均安全，
     // run snapshot persist/restore 后仍在（resume-manager 经 cloneState 原样带回）。
-    if (Number.isFinite(round)) toolResult.erixRound = round;
-    if (isError || execution.success === false) {
+    const legacyTopLevel = {
+      ...execution.metadata,
+      ...(Number.isFinite(round) ? { erixRound: round } : {}),
+    };
+    const budgetHint = budgetHintFor();
+    const toolResult = buildToolResultFact({
+      toolUseId: block.id,
+      content: execution.content,
+      isError: failed,
+      hostMetadata: execution.hostMetadata,
+      legacyTopLevel,
+      engine: {
+        // 身份键由调用点（orchestrator 的接受点 / resume 路径）在调用被接受时分配一次；
+        // 这里只搬运，绝不重新分配 —— 否则线 A 与线 B 会各拿一个 key。
+        toolCallKey: typeof block?.erix?.toolCallKey === "string"
+          ? block.erix.toolCallKey
+          : undefined,
+        round: Number.isFinite(round) ? round : undefined,
+        durationMs,
+        // 只有 executor（或 onToolResult 改写钩子）显式声明过才写：引擎推导出的 false 已经
+        // 由 `is_error` 表达，再写一份 success 会把「模型没回答」与「模型回答了失败」混成一件事。
+        success: execution.hostDeclaredSuccess === true ? execution.success : undefined,
+      },
+    });
+    // 预算催收尾追加在**双写包之后**（与改动前逐字同口径：宿主摊平的同名 `content` 键仍然优先）。
+    if (budgetHint) toolResult.content = `${toolResult.content}\n${budgetHint}`;
+    if (failed) {
       toolStat.failures += 1;
       ctx.toolErrorCount += 1;
     }
-    const budgetHint = budgetHintFor();
-    if (budgetHint) toolResult.content = `${toolResult.content}\n${budgetHint}`;
-    if (isError || execution.success === false) toolResult.is_error = true;
     toolResults.push(toolResult);
     if (block.id !== undefined) ctx.executedToolIds.add(block.id);
     ctx.snapshotResults.set(block.id, toolResult);
@@ -524,14 +581,23 @@ export function createRunSnapshotExecutor(ctx) {
       decision.directionReason,
     );
     if (directionHint) pendingDirectionHints.push(directionHint);
-    const toolResult = {
-      type: "tool_result",
-      tool_use_id: block.id,
-      executionStatus: "intercepted",
-      content: `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。`,
-    };
+    const interceptedContent = `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。`;
     const budgetHint = budgetHintFor();
-    if (budgetHint) toolResult.content = `${toolResult.content}\n${budgetHint}`;
+    // 被拦截的调用**从未执行**：既不写 `erix.round` 也不写 `erix.durationMs`（工单 §5 存在性矩阵，
+    // 「缺失 = unknown，不是 0」）。顶层旧 `executionStatus` 属双写包，照写不动（T2 停写）。
+    const toolResult = buildToolResultFact({
+      toolUseId: block.id,
+      content: budgetHint
+        ? `${interceptedContent}\n${budgetHint}`
+        : interceptedContent,
+      legacyTopLevel: { executionStatus: "intercepted" },
+      engine: {
+        toolCallKey: typeof block?.erix?.toolCallKey === "string"
+          ? block.erix.toolCallKey
+          : undefined,
+        executionStatus: "intercepted",
+      },
+    });
     if (block.id !== undefined) ctx.snapshotResults.set(block.id, toolResult);
     toolResults.push(toolResult);
     const overriddenMessages = [

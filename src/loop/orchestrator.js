@@ -89,6 +89,11 @@ import {
   TOOL_RESULT_TTL_DEFAULT,
 } from "./tool-result-ttl.js";
 import { createRunSnapshotExecutor } from "./run-snapshot-executor.js";
+import {
+  buildToolResultFact,
+  createToolCallKeyRegistry,
+  ensureToolCallKeyOnBlock,
+} from "../tool-fact.js";
 import { restoreResume } from "./resume-manager.js";
 import {
   collectLoopCapabilitiesMissing,
@@ -1751,6 +1756,67 @@ export async function runToolLoop(options) {
     throwIfAborted(signal);
   };
 
+  // 跳通道身份键（工单 261014 T1 / issue #284）：一次调用只分配一次，同值从「第一个可识别的
+  // 流式片段」一路带到 tool_use 块、onToolCall fragment、tool_result、事件与投影。
+  // 一个 provider attempt 一具注册表：被重试丢弃的那次 attempt 不该与真正执行的那次共用身份；
+  // 而 resume/run snapshot 复放的块带着旧值回来，`ensureToolCallKeyOnBlock` 只复用不重生。
+  // provider `id` / `tool_use_id` 是协议配对键（`src/messages/rounds.js` 的配对校验、快照复放
+  // 查找都靠它），本单只读它、绝不改写它。
+  let toolCallKeys = createToolCallKeyRegistry();
+  const beginToolCallAttempt = () => {
+    toolCallKeys = createToolCallKeyRegistry();
+  };
+  // 新调用（含 resume 里那条尚未产结果的 pending 调用）的认领：块上已带的值优先（那是同一次
+  // 调用的复放把旧值带回来了），本 attempt 的流式片段已绑过的值其次，最后才现场分配。
+  const claimToolCallKey = (block, confirmedReplay) => {
+    const known = toolCallKeys.peek(block);
+    if (known !== undefined) return known;
+    return toolCallKeys.claimForBlock(block, confirmedReplay);
+  };
+  // resume 崩溃现场里那条**尚未产出结果**的 pending 调用：上下文（含 snapshot.messages 带回的
+  // 历史）里同 id、且**没有配对 tool_result** 的那个 tool_use 块就是它本人，它的 key 就是要沿用
+  // 的旧值（工单 261014 T1-fix 第 1 项明列的两个确认继承路之一）。已配过结果的同 id 旧块一律
+  // 排除 —— 那正是 provider id 跳轮重复时会串号的那一类，所以这里不是「按 id 扫历史」。
+  // 确认不到（升级前的旧快照，两端都没有该字段）则交回调用点现场分配：本轮的 tool_use 与
+  // 它的 interrupted 结果共用同一个新值，两端仍然一致。
+  const crashSitePendingKey = (
+    /** @type {any} */ block,
+  ) => {
+    const id = typeof block?.id === "string" && block.id !== "" ? block.id : undefined;
+    if (id === undefined) return undefined;
+    let answered = false;
+    let pending;
+    for (const message of messages) {
+      for (const candidate of (Array.isArray(message?.content) ? message.content : [])) {
+        if (candidate?.tool_use_id === id && candidate?.type === "tool_result") answered = true;
+        if (candidate?.type === "tool_use" && candidate?.id === id
+          && typeof candidate?.erix?.toolCallKey === "string"
+          && candidate.erix.toolCallKey !== "") pending = candidate.erix.toolCallKey;
+      }
+    }
+    return answered ? undefined : pending;
+  };
+  // `toolCallKey` 的继承**只认「能确认是同一次调用的复放」**（工单 261014 T1-fix 第 1、2 项）：
+  //   · 块上已带值 —— `claimToolCallKey` 的 `peek` 那条路；
+  //   · 本轮复放窗口 `snapshotResults` 命中（与下面 `:2985` 那条复放分支同一份数据、同一个键），
+  //     此时这次调用的身份**就是那条已记录结果里的身份**。
+  // 绝不按 provider `id` 扫历史消息继承：provider 的 tool-call id **不保证 run 内唯一**（轮内
+  // index 前缀，或畸形响应兜底成常量 `call_legacy`，见 issue #284），扫历史等于把串号从 `id`
+  // 原样搬进 `toolCallKey`；`12968ee` 的复放也只按 `snapshotResults` 取，没有「扫历史」这一路。
+  // id 仍是协议配对键：只读，不改写，也不拼进 key。
+  // 返回 `null` = **本轮不认领任何 key**：复放的记录是升级前写入的（没有 `erix.toolCallKey`），
+  // 于是 `tool_use` 与 `tool_result` **两端一致地缺失**——给老记录补一个 key 会比两端都缺更糟
+  //（一端有身份、另一端没有，宿主无法判断该信谁），见契约《The field lists》。
+  const acceptedToolCallKey = (
+    /** @type {any} */ block,
+    /** @type {any} */ recordedToolResult,
+  ) => {
+    if (recordedToolResult === undefined) return claimToolCallKey(block);
+    const recorded = recordedToolResult?.erix?.toolCallKey;
+    return typeof recorded === "string" && recorded !== "" ? recorded : null;
+  };
+  const toolCallKeyForFragment = (fragment) => toolCallKeys.keyForFragment(fragment);
+
   const providerContext = {
     provider,
     mainSystem,
@@ -1765,6 +1831,11 @@ export async function runToolLoop(options) {
     onReasoningDelta,
     onToolCall,
     onUsage,
+    // 流式片段身份键（跳通道同一 key）：attempt 开始时换一具新注册表，每个 fragment 取（或分配）
+    // 一个 key；宿主在流式阶段建的卡因此能在 tool_use 到达时接上同一张卡。
+    beginToolCallAttempt,
+    toolCallKeyForFragment,
+    claimToolCallKey,
     retryOptions,
     retryAttempts,
     backoffBaseMs,
@@ -2676,6 +2747,12 @@ export async function runToolLoop(options) {
       for (const [index, resumePendingTool] of runLoopState.resumePendingTools.entries()) {
         const resumedToolUse = { ...resumePendingTool };
         delete resumedToolUse.replay;
+        // 续跑复放的调用：旧快照里带回来的 key 一律沿用（不重生）；只有改动前就落盘的旧快照
+        // （根本没有该字段）才现场补一个，让中断的 tool_result 与后续处置仍然能归到同一张卡。
+        const resumedToolCallKey = ensureToolCallKeyOnBlock(
+          resumedToolUse,
+          claimToolCallKey(resumedToolUse, crashSitePendingKey(resumedToolUse)),
+        );
         emitEvent({ type: "tool_use", round: runLoopState.rounds, toolUse: cloneState(resumedToolUse) });
         if (replayPolicy === "per-tool-declaration" && resumePendingTool.replay !== "safe") {
           const existingToolResult = messages
@@ -2694,21 +2771,35 @@ export async function runToolLoop(options) {
               && outputs.indexOf(content) === outputIndex
             ))
             .join("\n\n");
-          const toolResult = {
-            type: "tool_result",
-            tool_use_id: resumePendingTool.id,
+          // 中断重放的事实同样只由构造器产生（工单 §5）：`is_error` 在顶层（wire），
+          // `executionStatus: "interrupted"` 同时进双写包的顶层旧键与 `erix.*`；
+          // **不写 `erix.round` 也不写 `erix.durationMs`**——本次重放没跑过，耗时是未知而不是 0。
+          const toolResult = buildToolResultFact({
+            toolUseId: resumePendingTool.id,
             content: "The previous execution was interrupted before its outcome could be recorded. "
               + "This unsafe tool was not replayed; the host must decide whether to retry it."
               + (typeof partialOutput === "string" && partialOutput.length > 0
                 ? `\n\nPreviously captured partial output:\n${partialOutput}`
                 : ""),
-            is_error: true,
-            executionStatus: "interrupted",
-          };
+            isError: true,
+            legacyTopLevel: { executionStatus: "interrupted" },
+            engine: {
+              toolCallKey: resumedToolCallKey,
+              executionStatus: "interrupted",
+            },
+          });
           if (existingToolResult) {
             existingToolResult.content = toolResult.content;
             existingToolResult.is_error = true;
             existingToolResult.executionStatus = "interrupted";
+            // 那个块现在代表的是「没跑完」这件新事实，不是丢失那次 attempt 的已完成结果：
+            // 整块 `erix` 换成本次重放的事实（沿用同一个身份键，丢掉属于旧 attempt 的耗时与轮号）。
+            existingToolResult.erix = {
+              ...(typeof resumedToolCallKey === "string" && resumedToolCallKey !== ""
+                ? { toolCallKey: resumedToolCallKey }
+                : {}),
+              executionStatus: "interrupted",
+            };
           }
           resumedToolResults.push(toolResult);
           emitEvent({
@@ -2894,6 +2985,14 @@ export async function runToolLoop(options) {
       const pendingToolUses = content.filter((candidate) => candidate?.type === "tool_use");
       for (const block of content) {
         if (block?.type !== "tool_use") continue;
+        // 复放判定**先于**身份键认领（工单 261014 T1-fix 第 1、2 项）：本轮要走复放的话，
+        // 这次调用的身份就是那条已记录结果里的身份，而不是现分配的一个新值。
+        const recordedToolResult = snapshotResults.get(block.id);
+        const acceptedKey = acceptedToolCallKey(block, recordedToolResult);
+        // 调用被接受时认领身份键（就地挂到块上：assistant.content 与 RoundRecord.response.content
+        // 是同一引用，所以持久化块、事事件克隆、投影拿到的都是同一个值）。`acceptedKey === null`
+        // 是「复放升级前的旧记录」：两端一致地缺失，所以下面既不认领也不删块上已有的值。
+        if (acceptedKey !== null) ensureToolCallKeyOnBlock(block, acceptedKey);
         emitEvent({ type: "tool_use", round, toolUse: cloneState(block) });
 
         const signature = `${block.name}${JSON.stringify(block.input)}`;
@@ -2913,7 +3012,6 @@ export async function runToolLoop(options) {
           if (recentSignatures.length > stallWindow) recentSignatures.shift();
         }
 
-        const recordedToolResult = snapshotResults.get(block.id);
         const toolResult = executedToolIds.has(block.id) && recordedToolResult !== undefined
           ? cloneState(recordedToolResult)
           : await executeToolWithIntercept(

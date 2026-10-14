@@ -35,6 +35,13 @@
 //                 `scripts/type-check-ratchet.mjs` 的 `BASELINE_ROOT` / `BASELINE_WITH_TOOLS` 逐处比，
 //                 额外核「`164 = 121 + 27 + 16`」这类分解式的算术闭合（首项必须 = 包根基线、
 //                 总和必须 = 并集基线），中英句式处数成对
+//  10. toolfact   工具事实契约面（工单 261014 T1，#284 / #285）：契约中英里声明 `erix` 字段
+//                 归属的**五个声明面**（散文清单、字段归属表、「恰好 N 个字段」数量声明、
+//                 存在性矩阵表头、legacy 别名表）逐面与 `src/tool-fact.js` 导出的
+//                 `TOOL_RESULT_CONTRACT` **双向**比成员；命名空间名（engine.ns / host.ns）、
+//                 协议必需/条件字段、别名的新归属同属真值；每面另加中英声明点处数对账。
+//                 这一条就是「同一个事实第三处自说自话」的防线：字段改名/新增/退役不再
+//                 只红契约测试，文档也会同时红
 //
 // 锚点粒度（issue #210 R3：**别把「存在性」锚点误当成「文档里删一处提及就会红」**）：
 //   · 存在性（每档被检查文档至少命中一次即可；同一句里删掉额外一处提及不会红）：
@@ -43,9 +50,11 @@
 //   · 逐处一致（每一处声明都单独比，缺/多/改名/写重都红）：
 //       version 的「当前版本」声明与「不得高于 package.json」的全量版本号扫描、
 //       pkg-block 的 files/exports（双向对称）、anchors 的清单/枚举/单位规则、
-//       markers 的 marker 字面量（#272）、baseline 的棘轮当前值（#274）
+//       markers 的 marker 字面量（#272）、baseline 的棘轮当前值（#274）、
+//       toolfact 的五个字段声明面（工单 261014，与 TOOL_RESULT_CONTRACT 双向对称）
 //   · 中英对账（比的是处数与数量级）：skeleton 的标题数与层级序列（README **与** AGENTS 两对）、
-//       anchors 的声明点处数、markers 的引用处数、baseline 的句式处数
+//       anchors 的声明点处数、markers 的引用处数、baseline 的句式处数、
+//       toolfact 每一面的声明点处数
 //   未升级成逐处一致的条目，理由逐条写在对应规则的注释里（#210「不能机械化的写明为什么」）：
 //   数值型 defaults 条目在文档里的句式是散文级的多种写法，强行套「声明句式正则」会把门禁
 //   变成对措辞的绑架（改一次措辞就红，且红了也不知道是真漂移还是措辞漂移）；它们的
@@ -92,6 +101,8 @@ const AGENTS_EN = "AGENTS.md";
 const AGENTS_CN = "AGENTS_cn.md";
 const PI_EXT_README = "examples/pi-extension/README.md";
 const RATCHET_SRC = "scripts/type-check-ratchet.mjs";
+/** 工具事实契约常量的真值出处（工单 261014 T1）。 */
+const TOOL_FACT_SRC = "src/tool-fact.js";
 
 function read(rel) {
   return readFileSync(path.join(ROOT, rel), "utf8");
@@ -730,6 +741,340 @@ function arrowByteClaims(src) {
     .map((m) => ({ raw: Number(m[1]), claimed: `${m[2]}${m[3]}`, line: lineOf(src, m.index), snippet: snippetOf(src, m.index) }));
 }
 
+// ── 2.5.2 工具事实契约面：契约文档的字段清单 ↔ `TOOL_RESULT_CONTRACT` 常量（工单 261014 T1）───
+// 病根（#284 / #285）：同一个事实的「谁拥有哪个字段」在构造器、文档、契约测试三处各写一份。
+// 修法是把它写成导出常量，本规则接上其中「文档 ↔ 常量」那条边：**双向**比成员。
+// 真值从 `src/tool-fact.js` 的**源码文本**抽（不 import）：门禁要在没有生成物、没有
+// node_modules 的树里能跑，且必须能吃 `--self-test` 的内存副本（OVERLAY）。
+// 声明面有五个（都在中英两份契约里各自存一份，所以下面逐面做中英处数对账）：
+//   ① 散文清单「以 `erix.<field>` 寻址：`a` / `b` / …」
+//   ② 字段归属表（第一格是字段、第二格是 Owner）——含命名空间名本身
+//   ③ 「exactly five fields / 恰好五个字段」这类数量声明
+//   ④ 存在性矩阵的表头列名
+//   ⑤ legacy 别名表（旧顶层键 → 新归属）
+// ④ 的期望集是「引擎字段减去 `success`」：矩阵刻意不给 `success` 开列（契约里就写了理由：
+// 它是输入/输出不对称的那个），所以下面写成显式常量而不是从常量推；新增一个引擎字段仍必须
+// 同时多一列，否则就是「缺」红。
+
+const CN_NUMERALS = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10, 两: 2 };
+const EN_NUMERALS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+
+/** 从 `src/tool-fact.js` 的源码抽 `TOOL_RESULT_CONTRACT` 的真值；抽不到就 null（→ error）。 */
+function toolFactTruth(src) {
+  const obj = src.match(/export const TOOL_RESULT_CONTRACT = deepFreeze\(\{([\s\S]*?)\n\}\)/)?.[1];
+  if (!obj) return null;
+  const engineBlock = obj.match(/\n  engine: \{([\s\S]*?)\n  \},/)?.[1];
+  const hostBlock = obj.match(/\n  host: \{([\s\S]*?)\n  \},/)?.[1];
+  const protocolBlock = obj.match(/\n  protocol: \{([\s\S]*?)\n  \},/)?.[1];
+  const legacyBlock = obj.match(/\n  legacy: \{([\s\S]*?)\n  \},/)?.[1];
+  if (!engineBlock || !hostBlock || !protocolBlock || !legacyBlock) return null;
+  const fieldsBlock = engineBlock.match(/\n    fields: \{([\s\S]*)$/)?.[1];
+  const engineFields = fieldsBlock
+    ? [...fieldsBlock.matchAll(/^      ([A-Za-z][A-Za-z0-9_]*): \{$/gm)].map((m) => m[1])
+    : null;
+  const requiredBlock = protocolBlock.match(/\n    required: \[([^\]]*)\]/)?.[1];
+  const required = requiredBlock
+    ? [...requiredBlock.matchAll(/"([^"]+)"/g)].map((m) => m[1])
+    : null;
+  const conditionalBlock = protocolBlock.match(/\n    conditional: \{([\s\S]*?)\n    \},/)?.[1];
+  const conditional = conditionalBlock
+    ? [...conditionalBlock.matchAll(/^      ([A-Za-z][A-Za-z0-9_]*): "/gm)].map((m) => m[1])
+    : null;
+  const reservedBlock = obj.match(/\n  reserved: \{([\s\S]*?)\n  \},/)?.[1];
+  const reservedKeys = reservedBlock
+    ? [...(reservedBlock.match(/\n    topLevelKeys: \[([^\]]*)\]/)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1])
+    : null;
+  const aliasBlock = legacyBlock.match(/\n    aliases: \{([\s\S]*?)\n    \},/)?.[1];
+  const aliases = aliasBlock
+    ? [...aliasBlock.matchAll(/^      (?:("[^"]+")|([A-Za-z][A-Za-z0-9_]*)): "([^"]+)"/gm)]
+      .map((m) => ({ from: m[1] ? m[1].slice(1, -1) : m[2], to: m[3] }))
+      .filter((a) => /^[A-Za-z][A-Za-z0-9_]*$/.test(a.from))   // 塔平宿主键那条是占位名，单独校
+    : null;
+  const out = {
+    engineNs: engineBlock.match(/\bns: "([^"]+)"/)?.[1],
+    hostNs: hostBlock.match(/\bns: "([^"]+)"/)?.[1],
+    engineFields,
+    required,
+    conditional,
+    reservedKeys,
+    aliases,
+    placeholderAlias: (() => {
+      const m = legacyBlock.match(/^      "([^"]*<[^>]+>[^"]*)":\s*"([^"]+)"/m);   // "<host key>@top level": "metadata.<host key>"
+      return m ? m[2] : null;
+    })(),
+  };
+  const missing = Object.entries(out).filter(([, v]) => v === null || v === undefined || (Array.isArray(v) && !v.length));
+  return missing.length ? { __incomplete: missing.map(([k]) => k).join("、"), ...out } : out;
+}
+
+/** 文档表格行：第一格里的反引号 token 就是声明的成员，第二格是拥有者。 */
+function tableRowsByOwner(src, owners) {
+  const rows = [];
+  const lines = src.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.startsWith("| `")) continue;
+    const cells = line.replace(/^\|\s*/, "").replace(/\s*\|$/, "").split(/\s*\|\s*/);
+    const owner = (cells[1] ?? "").replace(/[*_`]/g, "").trim().toLowerCase();
+    if (!owners.includes(owner)) continue;
+    rows.push({
+      line: i + 1,
+      snippet: line.trim().slice(0, 90),
+      tokens: [...(cells[0] ?? "").matchAll(/`([^`]+)`/g)].map((m) => m[1]),
+    });
+  }
+  return rows;
+}
+
+/** 「exactly five fields / 恰好五个字段」这类数量声明（中英各自一份句式，数字用词表展开）。 */
+function engineFieldCountClaims(src) {
+  const out = [];
+  for (const m of src.matchAll(/(?:exactly|恰好)\s*([A-Za-z]+|[\u4e00-\u9fff])\s*(?:fields\b|个字段)/g)) {
+    const word = m[1].toLowerCase();
+    const n = EN_NUMERALS[word] ?? CN_NUMERALS[m[1]];
+    out.push({ word: m[1], n, line: lineOf(src, m.index), snippet: snippetOf(src, m.index) });
+  }
+  return out;
+}
+
+/** 存在性矩阵的表头（第一格是「Case / 情形」那行）里的 `<ns>.<字段>` 列名（命名空间名也从常量拿）。 */
+function existenceMatrixColumns(src, nsList) {
+  const out = [];
+  const lines = src.split("\n");
+  const re = /\b([A-Za-z][A-Za-z0-9_]*)\.([A-Za-z][A-Za-z0-9_]*)\b/g;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!/^\|\s*(?:Case|情形)\s*\|/i.test(line)) continue;
+    const cols = [];
+    const foreign = [];
+    for (const m of line.matchAll(re)) {
+      if (m[1] === nsList.engineNs || m[1] === nsList.hostNs) cols.push({ ns: m[1], field: m[2] });
+      else foreign.push(`${m[1]}.${m[2]}`);
+    }
+    out.push({ cols, foreign, line: i + 1, snippet: line.trim().slice(0, 90) });
+  }
+  return out;
+}
+
+/** legacy 别名表：两格都是反引号 token 的行（「旧顶层键 | 新归属」）。 */
+function legacyAliasRows(src) {
+  const rows = [];
+  const lines = src.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*$/);
+    if (m) rows.push({ from: m[1], to: m[2], line: i + 1, snippet: lines[i].trim() });
+  }
+  return rows;
+}
+
+/** 别名表里「塔平宿主键」那一行：第一格是散文（占位键没有字面名），第二格是 `ns.<占位>`。 */
+function hostFlattenAliasRows(src, hostNs) {
+  const rows = [];
+  const lines = src.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(new RegExp("^\\|[^|`]*\\|\\s*`(" + esc(hostNs) + "\\.<[^>]+>)`\\s*\\|\\s*$"));
+    if (m) rows.push({ to: m[1], line: i + 1, snippet: lines[i].trim().slice(0, 90) });
+  }
+  return rows;
+}
+
+/**
+ * 保留键名的声明面（工单 261014 T1-fix 第 5 项）：按空行切段，段里既出现「保留 / reserved」
+ * 这个说法、又用反引号点名词条里的键名，才算一处声明。只数「提到过这个名字」不算——
+ * `metadata` / `erix` 在文档里到处都是，那样这条锚点会恒绿。
+ */
+function reservedKeyDeclarations(src, reservedKeys) {
+  const out = [];
+  let cursor = 0;
+  for (const paragraph of src.split(/\n\s*\n/)) {
+    const at = src.indexOf(paragraph, cursor);
+    cursor = at < 0 ? cursor : at + paragraph.length;
+    if (!/(保留|reserved)/i.test(paragraph)) continue;
+    const tokens = [...paragraph.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+    const named = tokens.filter((token) => reservedKeys.includes(token));
+    if (!named.length) continue;      // 说了一句「保留」但没点名任何保留键，不算一处声明
+    out.push({ line: lineOf(src, at), snippet: paragraph.trim().slice(0, 90), tokens: named });
+  }
+  return out;
+}
+
+/** 命名空间前缀拆名：`erix.round` → {ns:"erix", field:"round"}；不带点的归为 ns:null。 */
+function splitNs(token) {
+  const i = token.indexOf(".");
+  return i < 0 ? { ns: null, field: token } : { ns: token.slice(0, i), field: token.slice(i + 1) };
+}
+
+/**
+ * 工具事实契约锚点的跑法（与 formatSize 那条同构：一个规则、多层断言）。
+ * 每一面都是「逐处 + 双向」，另加中英声明点处数对账。
+ */
+function runToolFactRule(rule, out, notesOut) {
+  const t = toolFactTruth(textOf(TOOL_FACT_SRC));
+  const ruleId = `anchors/${rule.id}`;
+  if (!t || t.__incomplete) {
+    out.push(`${ruleId}: 在 ${TOOL_FACT_SRC} 里抽不全 TOOL_RESULT_CONTRACT 的真值`
+      + `（缺：${t?.__incomplete ?? "整块常量"}）——源码形状变了，请同步更新本脚本（否则检查面静默失效）`);
+    return;
+  }
+  // ④ 的期望集（写死的理由见本块顶部注释）：矩阵不给 `success` 开列。
+  const matrixExpect = t.engineFields.filter((f) => f !== "success");
+  const protocolExpect = [...t.required, ...t.conditional];
+  const counts = { list: {}, rows: {}, count: {}, matrix: {}, alias: {} };
+  for (const rel of rule.docs) {
+    const src = textOf(rel);
+
+    // ① 散文清单
+    const lists = detectListClaims(src, { truth: t.engineFields });
+    counts.list[rel] = lists.length;
+    if (!lists.length) {
+      out.push(`${ruleId}: ${rel} 找不到引擎字段清单声明（「以 \`${t.engineNs}.<field>\` 寻址：a / b / …」那一句）`
+        + "——检查面在该文件已失效（要么把声明补回来，要么把它移出本规则的 docs）");
+    }
+    for (const c of lists) {
+      assertSymmetric(out, {
+        rule: `${ruleId} 字段清单`, where: `${rel}:${c.line}「${c.snippet}」`,
+        truth: t.engineFields, doc: c.tokens, kind: rule.kind,
+      });
+    }
+
+    // ② 字段归属表（engine / protocol / host 三类拥有者各自双向比）
+    const engRows = tableRowsByOwner(src, ["engine", "引擎"]);
+    const proRows = tableRowsByOwner(src, ["protocol", "协议"]);
+    const hostRows = tableRowsByOwner(src, ["host", "宿主"]);
+    counts.rows[rel] = engRows.length + proRows.length + hostRows.length;
+    if (!engRows.length || !proRows.length || !hostRows.length) {
+      out.push(`${ruleId}: ${rel} 的字段归属表不齐（engine ${engRows.length} 行 / protocol ${proRows.length} 行 / host ${hostRows.length} 行）`
+        + "——Owner 列是这张表的锦定，被改掉就是检查面失效而不是「没声明」");
+    }
+    const declaredEngine = [];
+    for (const r of engRows) {
+      for (const tok of r.tokens) {
+        const { ns, field } = splitNs(tok);
+        if (ns !== t.engineNs) {
+          out.push(`${ruleId}: ${rel}:${r.line}「${r.snippet}」把引擎字段写成 \`${tok}\`，而 ${TOOL_FACT_SRC} 的`
+            + ` TOOL_RESULT_CONTRACT.engine.ns 是 "${t.engineNs}"（命名空间名就是那个值，文档得跟着改）`);
+          continue;
+        }
+        declaredEngine.push(field);
+      }
+    }
+    if (engRows.length) {
+      assertSymmetric(out, {
+        rule: `${ruleId} 字段归属表`, where: `${rel}:${engRows[0].line} 起的 ${engRows.length} 行`,
+        truth: t.engineFields, doc: declaredEngine, kind: "引擎字段行",
+      });
+    }
+    const declaredProtocol = proRows.flatMap((r) => r.tokens.filter((x) => !x.includes(".")));
+    if (proRows.length) {
+      assertSymmetric(out, {
+        rule: `${ruleId} 协议字段行`, where: `${rel}:${proRows[0].line} 起的 ${proRows.length} 行`,
+        truth: protocolExpect, doc: declaredProtocol, kind: "协议字段",
+      });
+    }
+    for (const r of hostRows) {
+      for (const tok of r.tokens) {
+        if (splitNs(tok).ns !== t.hostNs) {
+          out.push(`${ruleId}: ${rel}:${r.line}「${r.snippet}」把宿主命名空间写成 \`${tok}\`，而`
+            + ` TOOL_RESULT_CONTRACT.host.ns 是 "${t.hostNs}"`);
+        }
+      }
+    }
+
+    // ③ 数量声明
+    const nums = engineFieldCountClaims(src);
+    counts.count[rel] = nums.length;
+    if (!nums.length) {
+      out.push(`${ruleId}: ${rel} 找不到「exactly N fields / 恰好 N 个字段」这类数量声明——检查面在该文件已失效`);
+    }
+    for (const c of nums) {
+      if (c.n === undefined) {
+        out.push(`${ruleId}: ${rel}:${c.line}「${c.snippet}」的数量词「${c.word}」不在词表里（词表外就是静默放行，补词表）`);
+      } else if (c.n !== t.engineFields.length) {
+        out.push(`${ruleId}: ${rel}:${c.line}「${c.snippet}」声称引擎命名空间有「${c.word}」个字段，而`
+          + ` ${TOOL_FACT_SRC} 的 TOOL_RESULT_CONTRACT.engine.fields 是 ${t.engineFields.length} 个`
+          + `（${t.engineFields.join("、")}）`);
+      }
+    }
+
+    // ④ 存在性矩阵表头
+    const matrices = existenceMatrixColumns(src, { engineNs: t.engineNs, hostNs: t.hostNs });
+    counts.matrix[rel] = matrices.length;
+    if (!matrices.length) {
+      out.push(`${ruleId}: ${rel} 找不到存在性矩阵的表头行（「| Case | … |」/「| 情形 | … |」）——检查面在该文件已失效`);
+    }
+    for (const m of matrices) {
+      for (const f of m.foreign) {
+        out.push(`${ruleId}: ${rel}:${m.line}「${m.snippet}」的列 \`${f}\` 用的命名空间`
+          + `既不是 TOOL_RESULT_CONTRACT.engine.ns（${t.engineNs}）也不是 host.ns（${t.hostNs}）`
+          + "——命名空间名与字段名一样，是常量里的事实");
+      }
+      assertSymmetric(out, {
+        rule: `${ruleId} 存在性矩阵列`, where: `${rel}:${m.line}「${m.snippet}」`,
+        truth: matrixExpect,
+        doc: m.cols.filter((c) => c.ns === t.engineNs).map((c) => c.field),
+        kind: "矩阵列（引擎字段减去刻意不开列的 success）",
+      });
+    }
+
+    // ⑤ legacy 别名表
+    const aliasRows = legacyAliasRows(src);
+    counts.alias[rel] = aliasRows.length;
+    if (!aliasRows.length) {
+      out.push(`${ruleId}: ${rel} 找不到 legacy 别名表行（「| \`旧顶层键\` | \`新归属\` |」）——检查面在该文件已失效`);
+    }
+    assertSymmetric(out, {
+      rule: `${ruleId} legacy 别名表`, where: `${rel}${aliasRows.length ? `:${aliasRows[0].line} 起的 ${aliasRows.length} 行` : ""}`,
+      truth: t.aliases.map((a) => a.from), doc: aliasRows.map((r) => r.from), kind: "旧顶层键",
+    });
+    for (const r of aliasRows) {
+      const want = t.aliases.find((a) => a.from === r.from);
+      if (want && r.to !== want.to) {
+        out.push(`${ruleId}: ${rel}:${r.line}「${r.snippet}」把 \`${r.from}\` 的新归属写成 \`${r.to}\`，而常量里的别名是 \`${want.to}\``);
+      }
+      if (!want && !r.to.includes("<")) {
+        out.push(`${ruleId}: ${rel}:${r.line}「${r.snippet}」的旧顶层键 \`${r.from}\` 在常量里没有对应别名条目`
+          + `（已登记：${t.aliases.map((a) => a.from).join("、")}）`);
+      }
+    }
+    if (t.placeholderAlias) {
+      const ph = t.placeholderAlias.replace(/<[^>]+>/g, "");   // "metadata.<host key>" → "metadata."
+      const flatRows = hostFlattenAliasRows(src, t.hostNs);
+      if (!flatRows.some((r) => r.to.startsWith(ph))) {
+        out.push(`${ruleId}: ${rel} 的别名表里没有「塔平宿主键 → \`${t.placeholderAlias}\`」那一行`
+          + `（常量里有这条占位别名，文档侧必须有对应的描述行；只写两格反引号的形式不算，那个位置上没有字面键名）`);
+      }
+    }
+
+    // ⑥ 保留键名（`legacyTopLevel` 摊平时被跳过的顶层键，工单 261014 T1-fix 第 5 项）：
+    //    两侧文档都必须把「哪几个键名是保留的」说出口——少一个键名，宿主就会以为自己那个
+    //    恰好同名的键被吃了却查不到原因；多一个键名，就是文档在承诺源码没做的事。
+    const reservedDecls = reservedKeyDeclarations(src, t.reservedKeys);
+    if (rel === rule.docs[0] && JSON.stringify([...t.reservedKeys].sort()) !== JSON.stringify([t.hostNs, t.engineNs].sort())) {
+      out.push(`${ruleId}: ${TOOL_FACT_SRC} 自相矛盾——保留键名登记的是 ${t.reservedKeys.join(" / ")}，`
+        + `但命名空间名是 ${t.hostNs} / ${t.engineNs}。保留的**就是**那两个命名空间本身，`
+        + `两处不同源就说明有人只改了一处（构造器的过滤走的是登记那一份）`);
+    }
+    if (!reservedDecls.length) {
+      out.push(`${ruleId}: ${rel} 找不到保留键名的声明（既要出现「保留 / reserved」这个说法，又要用反引号点名`
+        + ` ${t.reservedKeys.map((k) => "`" + k + "`").join(" / ")}）——检查面在该文件已失效`);
+    }
+    assertSymmetric(out, {
+      rule: `${ruleId} 保留键名`,
+      where: `${rel}${reservedDecls.length ? `:${reservedDecls[0].line} 起的 ${reservedDecls.length} 段` : ""}`,
+      truth: t.reservedKeys,
+      doc: [...new Set(reservedDecls.flatMap((d) => d.tokens.filter((x) => t.reservedKeys.includes(x))))],
+      kind: "保留键名",
+    });
+  }
+
+  for (const [face, c] of Object.entries(counts)) {
+    assertPairCensus(out, { rule: `${ruleId} ${face}`, counts: c, docs: rule.docs });
+  }
+  notesOut.push(`anchors: 「${rule.id}」真值 = ${t.engineNs}{${t.engineFields.join(", ")}} + 协议[${protocolExpect.join(", ")}]`
+    + ` + 宿主 ${t.hostNs} + 别名[${t.aliases.map((a) => a.from).join(", ")}] + 保留键[${t.reservedKeys.join(", ")}]（${TOOL_FACT_SRC}），`
+    + `声明面 ${JSON.stringify(counts)}（${rule.docs.join(" / ")}）`);
+}
+
 /**
  * 每条锚点的形状：{ id, src（真值出处）, truth(srcText)→string[], docs（中英成对排列）,
  *   mode/allowExtra/pipeOnly, 可选 run() 覆盖默认跑法 }
@@ -768,6 +1113,17 @@ const ANCHOR_RULES = [
     truth: truthStrategyNames,
     docs: [README_EN, README_CN, CONTRACT_EN, CONTRACT_CN],
     pipeOnly: true,   // 只认 `a | b | c` 取值串：这样 3 值枚举删 1 个必红，而「两种折叠策略（A 与 B）」不误判
+  },
+  {
+    // 工单 261014 T1（#284 / #285）：契约文档的 erix 字段清单 ↔ `TOOL_RESULT_CONTRACT` 常量。
+    // 跑法整条自定义（见 runToolFactRule）：一份常量有**五个**声明面（引擎字段、命名空间名、
+    // 协议必需字段、条件字段、legacy 别名表），不是单一一张清单。
+    id: "工具事实字段清单（契约中英 ↔ TOOL_RESULT_CONTRACT）",
+    kind: "引擎字段",
+    src: TOOL_FACT_SRC,
+    truth: (src) => toolFactTruth(src)?.engineFields ?? null,
+    docs: [CONTRACT_EN, CONTRACT_CN],
+    run: runToolFactRule,
   },
   {
     id: "单位档位与示例映射（formatSize）",
@@ -2312,6 +2668,103 @@ const SELF_TEST_CASES = [
     expectGreen: true,
   },
 
+  // —— 工具事实契约面：契约文档的字段清单 ↔ TOOL_RESULT_CONTRACT（工单 261014 T1）——
+  // 四种形状都钉住：只改文档→红、只改常量→红（中英两侧都红）、删掉整句→红、
+  // 「变异没打上」→红（runSelfTest 的 `after === before` 判据，#210 R2 口径）。
+  {
+    label: "契约 EN 的引擎字段清单删一处 `durationMs`（只改文档）",
+    overlay: { [CONTRACT_EN]: (t) => t.replace("`toolCallKey` / `round` / `durationMs` / `executionStatus` /", "`toolCallKey` / `round` / `executionStatus` /") },
+    expect: [/字段清单: docs\/host-consumer-contract\.md:\d+.*缺 引擎字段 "durationMs"/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "契约 CN 的引擎字段清单把 `success` 改名成 `ok`（只改文档、改名不是「删」）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("`executionStatus` / `success`。", "`executionStatus` / `ok`。") },
+    expect: [/host-consumer-contract_cn\.md.*缺 引擎字段 "success"/, /多出真值里没有的 引擎字段 "ok"/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "契约 EN 把「exactly five fields」那句整句改成不含清单的话（删掉整句 → 检查面失效 + 中英处数不齐）",
+    overlay: { [CONTRACT_EN]: (t) => t.replace(
+      "The engine namespace has exactly five fields, every one of them\naddressed as `erix.<field>`: `toolCallKey` / `round` / `durationMs` / `executionStatus` /\n`success`.",
+      "The engine namespace is a namespace addressed per field.") },
+    expect: [/找不到引擎字段清单声明/, /声明点处数中英不齐：docs\/host-consumer-contract\.md 0 处 vs docs\/host-consumer-contract_cn\.md 1 处/],
+  },
+  {
+    label: "契约 EN 把「exactly five fields」改成 six（数量声明也是事实，不靠清单接）",
+    overlay: { [CONTRACT_EN]: (t) => t.replace("exactly five fields", "exactly six fields") },
+    expect: [/声称引擎命名空间有「six」个字段.*engine\.fields 是 5 个/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "契约 EN 的存在性矩阵表头把 `erix.durationMs` 改名 → 矩阵列单独红",
+    overlay: { [CONTRACT_EN]: (t) => t.replace("| Case | erix.toolCallKey | erix.round | erix.durationMs |", "| Case | erix.toolCallKey | erix.round | erix.elapsedMs |") },
+    expect: [/存在性矩阵列: docs\/host-consumer-contract\.md:\d+.*缺 矩阵列.*"durationMs"/, /多出真值里没有的 矩阵列.*"elapsedMs"/],
+  },
+  {
+    label: "契约 CN 的字段归属表把引擎命名空间写成 `engine.toolCallKey` → 命名空间名不一致就红",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("| `erix.toolCallKey` | 引擎 |", "| `engine.toolCallKey` | 引擎 |") },
+    expect: [/把引擎字段写成 `engine\.toolCallKey`.*engine\.ns 是 "erix"/, /缺 引擎字段行 "toolCallKey"/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "契约 CN 的 legacy 别名表把 `duration` 的新归属写成 `erix.elapsedMs` → 别名值与常量不齐",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("| `duration` | `erix.durationMs` |", "| `duration` | `erix.elapsedMs` |") },
+    expect: [/把 `duration` 的新归属写成 `erix\.elapsedMs`.*常量里的别名是 `erix\.durationMs`/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "常量里新增一个引擎字段 → 中英两侧同时红（清单缺、表缺、数量也不对）",
+    overlay: { "src/tool-fact.js": (t) => t.replace(
+      "    fields: {\n      toolCallKey: {",
+      "    fields: {\n      zzzExtra: {\n        owner: \"engine\",\n        stages: [\"result\"],\n        resumeStable: true,\n        onWire: false,\n      },\n      toolCallKey: {") },
+    expect: [/缺 引擎字段 "zzzExtra"/, /缺 引擎字段行 "zzzExtra"/, /声称引擎命名空间有「five」个字段.*是 6 个/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+  {
+    label: "常量里删掉一个引擎字段（success）→ 中英两侧「文档多写了」必须红",
+    overlay: { "src/tool-fact.js": (t) => t.replace(/      success: \{\n[\s\S]*?\n      \},\n/, "") },
+    expect: [/多出真值里没有的 引擎字段 "success"/, /多出真值里没有的 引擎字段行 "success"/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+  {
+    label: "常量把 engine.ns 改名（erix → engine）→ 中英两侧的 `erix.*` 声明全红",
+    overlay: { "src/tool-fact.js": (t) => t.replace('    ns: "erix",', '    ns: "engine",') },
+    expect: [/engine\.ns 是 "engine"/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+  {
+    label: "常量给协议必需字段加一项 → 中英两侧的协议字段行同时红",
+    overlay: { "src/tool-fact.js": (t) => t.replace('required: ["type", "tool_use_id", "content"],', 'required: ["type", "tool_use_id", "content", "cursor"],') },
+    expect: [/协议字段行.*缺 协议字段 "cursor"/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+  {
+    label: "契约 EN 把「保留顶层键名」那段整段删掉（只改文档：该文件的检查面失效必须当场红，不靠中英处数）",
+    overlay: { [CONTRACT_EN]: (t) => t.replace(/^`metadata` and `erix` are \*\*reserved[\s\S]*?not this one's\.\n/m, "") },
+    expect: [/docs\/host-consumer-contract\.md 找不到保留键名的声明/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "契约 CN 的保留键名那段少写一个 `erix`（只改文档、少一个键名也是漂移）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("`metadata` 与 `erix` 是**保留的顶层键名**", "`metadata` 是**保留的顶层键名**") },
+    expect: [/保留键名: docs\/host-consumer-contract_cn\.md.*缺 保留键名 "erix"/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "常量只改保留键名的登记、不改命名空间名（erix → engine）→ 源码自洽 + 中英文档同时红",
+    overlay: { [TOOL_FACT_SRC]: (t) => t.replace('topLevelKeys: ["metadata", "erix"]', 'topLevelKeys: ["metadata", "engine"]') },
+    expect: [/自相矛盾——保留键名登记的是 metadata \/ engine/, /缺 保留键名 "engine"/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+
+  {
+    label: "常量把 legacy 别名的新归属改名 → 中英两侧的别名表同时红",
+    overlay: { "src/tool-fact.js": (t) => t.replace('duration: "erix.durationMs",', 'duration: "erix.elapsedMs",') },
+    expect: [/常量里的别名是 `erix\.elapsedMs`/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+
   // —— baseline：AGENTS 的棘轮当前值 ↔ 棘轮常量（issue #274）——
   {
     label: "AGENTS EN 把基线写成 142（#265 当年留在 CHANGELOG 的那种开发中途值）（修前 exit 0）",
@@ -2358,7 +2811,7 @@ const SELF_TEST_CASES = [
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 58;
+const MIN_SELF_TEST_CASES = 70;
 
 function runSelfTest() {
   const run = () => collectAllDrift();
