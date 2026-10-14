@@ -358,6 +358,9 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 可用的已捕获输出。引擎发出可选的 `tool_replay_decision_required` 事件，带 run/tool 的
 ID 与 `requiresHostDecision: true`。任何后续处置决策归宿主；引擎不会调度或重试该工具。
 
+出厂工具针对这条规则**实际标了什么**，以及宿主切到 `"per-tool-declaration"` 的接线清单，
+记在本节末尾的「出厂工具的 replay 标注现状与切换清单（issue #139）」。
+
 `saveRunState`/`loadRunState` 管理每个 run 的单份 latest-only 结构化快照，不保留版本历史。
 新写入的快照不再持久化 `state` 键；`markRunState` 通过独立通道写终态。宿主需要读取终态时，
 应使用可选的 `loadRunStateStatus`（返回终态字符串，`Promise<string | undefined>`；形状见上方
@@ -407,6 +410,120 @@ model-config、session 与 required 持久化 fail-fast 校验。`persistence: "
 
 库内 `createAssemblyPort` 是参考装配实现，不做任何 I/O。CLI 继续使用它自己的文件型
 provider、工具与 transcript 适配器，因此没有宿主需要一次性迁移到该端口。
+
+### 出厂工具的 replay 标注现状与切换清单（issue #139）
+
+上一小节是规则。本小节记录**出厂工具今天实际标了什么**——宿主从包外看不见这个，而它
+直接决定切换的代价。现状是：**一个都没标**——在 `src/tools` 与 `bin/tools.js` 里搜这个
+字段一无所获，唯一读它的两处是启动校验（`src/loop/orchestrator.js:583-587`）与解析器
+（`src/loop/orchestrator.js:1877-1889`）。
+
+| 工具 | 出厂入口 | 今天标了 `replay` 吗 | `per-tool-declaration` 下的续跑行为 | 副作用类别 |
+| --- | --- | --- | --- | --- |
+| `readFile` | `erix-agent/tools` | 没标 | 不重放 → interrupted | 无 |
+| `searchText` | 同上 | 没标 | 不重放 → interrupted | 无 |
+| `rg` | 同上 | 没标 | 不重放 → interrupted | 无（已弃用别名） |
+| `grep` | 同上 | 没标 | 不重放 → interrupted | 无（已弃用别名） |
+| `tree` | 同上 | 没标 | 不重放 → interrupted | 无 |
+| `edit` | 同上 | 没标 | 不重放 → interrupted | 写文件 |
+| `writeFile` | 同上 | 没标 | 不重放 → interrupted | 写文件 |
+| `note_read` | 包根与 `erix-agent/tools` | 没标 | 不重放 → interrupted | 无 |
+| `note_list` | 同上 | 没标 | 不重放 → interrupted | 无 |
+| `note_take` | 同上 | 没标 | 不重放 → interrupted | 写一条笔记记录 |
+| `note_forget` | 同上 | 没标 | 不重放 → interrupted | 作废一条笔记记录 |
+| `exec` | CLI 装配层，不是发布的 API 入口（issue #194） | 没标 | 不重放 → interrupted | 任意 |
+| `todo_list` | CLI 装配层 | 没标 | 不重放 → interrupted | 无 |
+| `todo_add` | CLI 装配层 | 没标 | 不重放 → interrupted | 写按工作目录隔离的 todo 文件 |
+| `todo_done` | CLI 装配层 | 没标 | 不重放 → interrupted | 写按工作目录隔离的 todo 文件 |
+| `todo_clear` | CLI 装配层 | 没标 | 不重放 → interrupted | 写按工作目录隔离的 todo 文件 |
+| 技能包工具（工具名由各包自定） | `erix-agent/tools` | 没标——加载器不添加该字段 | 不重放 → interrupted | 取决于包自带的 executor |
+| CLI 那个唯一的 MCP 代理工具 | CLI 装配层 | 没标 | 不重放 → interrupted | 取决于被代理的 server 工具 |
+
+**默认取向：没标就是 `unsafe`，而整支出厂工具队都是没标的。**所以不打标注就打开
+`"per-tool-declaration"`，等于把**每一次**续跑的**每一个**挂起调用都当成 unsafe——
+连纯读类工具也一样回来一条 `interrupted` 错误结果，与 `exec` 完全同形。引擎不做任何
+推断：它不看工具名，不看 executor，也不看 `writeToolNames`（该选项只喂 judge 的
+filesWritten 计数器，`src/loop/orchestrator.js:1127`）。挂起条目里没记录该字段的旧快照
+同样按这个方向解析（`docs/host-upgrade-guide-0.14.0.md`）。
+
+**为什么库一个都不标。**重放声明描述的是 **executor**，不是 schema，而这些工厂发出去的
+是 schema：`definitions` 数组是普通对象，宿主可以把它路由给自己选的任何 executor（沙箱化
+的读、同时写审计行的 edit、只入队的 writeFile）。把 `safe` 烧进库里等于替别人的 executor
+作保，所以标注住在拥有 `executeTool` 的那一方——与 ADR-009 把 `allowRead` / `allowWrite`
+作为全部边界面的分工一致。在出厂默认落地之前，**标注是宿主侧的活**，上表的副作用类别
+列就是那个将来默认值的形状（只读工具默认 safe，其余 unsafe）。技能包是唯一已经可以由
+作者自己标的地方：`buildSkillTools` 将每个包的 tool 条目原样透传
+（`src/skills/loader.js:344-348`；它的校验只要求 `name` 与 `inputSchema`，
+`src/skills/loader.js:72-100`），所以包自己标了就会被尊重。MCP 桥接是另一个地方——
+库内没有 MCP 层（ADR-005），自己接 server 的宿主拿到的是它自己构造的工具条目，就该逐
+server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那个 MCP 代理工具正是这个形状）
+带不动一句全量判定，那里诚实的答案是 `unsafe`。
+
+**切换清单。**
+
+1. **按你真正接上去的 executor 判定，而不是按工具名。**本地普通读是 `safe` 候选；同一个
+   名字被代理到远程沙箱、按次计费、或穿过一个审计 sink 写入就不是。把只读工具标 `safe`
+   附带一个语义注意：重放发生在之后，结果反映的是重放时刻的世界状态，不是中止时刻的。
+2. **给你传进去的 definitions 打标注。**工厂不代打，且每次调用都返回其 schema 的一份全新
+   `structuredClone`，所以改返回值是安全的：
+
+   ```js
+   import { createFileTools } from "erix-agent/tools";
+
+   const WRITE_TOOLS = new Set(["edit", "writeFile"]);
+   const fileTools = createFileTools({ cwd: process.cwd() });
+   const tools = fileTools.definitions.map((definition) => ({
+     ...definition,
+     replay: WRITE_TOOLS.has(definition.name) ? "unsafe" : "safe",
+   }));
+   if (tools.find((tool) => tool.name === "readFile").replay !== "safe") {
+     throw new Error("replay labelling did not survive the factory clone");
+   }
+   ```
+
+3. **显式选择，并知道它在哪里生效。**`replayPolicy` 仍默认 `"always-replay"`。传
+   `"per-tool-declaration"` 作为 `runToolLoop` 选项，或作为 AssemblyPort `policy` 里的同名
+   键（`src/assembly.js` 已列入白名单，`test/contract/assembly-port.test.js:47-53` 断言）。该
+   策略**只**在续跑路径上被读取（`src/loop/orchestrator.js:2680`）：`resume: false`，或
+   store 不具备 run snapshot 能力时，根本没有挂起队列，该选项是空的。
+4. **让新事件类型过白名单。**若宿主按 `type` 字符串集合过滤 `onEvent`，就**必须**加上
+   `tool_replay_decision_required`，否则信号会被静默丢弃而其他一切看起来健康：模型
+   反正会收到那条 interrupted 的 `tool_result`，run 照旧往下跑，只剩下宿主那一半——
+   知道“欠一个处置决定”——消失。引擎对每个被跳过的挂起调用发**一**条，紧跟在其配对的
+   `tool_result` 事件**之前**，载荷为
+   `{ type, runId, round, toolUseId, toolName, replay: "unsafe", requiresHostDecision: true,
+   partialOutputAvailable }`（`src/loop/orchestrator.js:2714-2723`）。README 里那份事件枚举是
+   示意（“including …”）而不是白名单，照拄进 `Set` 的宿主需要重新拄一次。
+5. **正确读结果形状。**结果带 `is_error: true` 与 `executionStatus: "interrupted"`。如果
+   消息里已经存在该调用 id 的 `tool_result` 块，引擎会**原地重写那个块**
+   （`src/loop/orchestrator.js:2708-2712`）而不是追加第二条，所以差量比对消息的宿主必须
+   预期一处变更而不是新增。`executionStatus` 会进入 display 投影
+   （`src/display/projection.js:158-160`），且此后这条 interrupted 结果就是普通的本轮文本：
+   只有 `intercepted` 结果被排除在聚合预算计数之外（`src/loop/aggregate-budget.js:150-153`）。
+6. **处理部分输出。**`partialOutputAvailable` 说明有没有找到可展示的内容；为 true 时结果
+   文本以 `Previously captured partial output:` 段结尾，内容由中止那轮已归档的输出加上
+   已经记录过的结果内容去重拼成（`src/loop/orchestrator.js:2687-2704`）。
+7. **不指望重试，也不指望重新挂起。**被跳过调用的 id **不会**进 `executedToolIds`，引擎
+   不调度任何东西，run 带着模型看到的一条错误继续。后续处置——问用户、携带宿主自己的
+   指令再续一次、或放弃这次调用——归宿主，而且是一个每个 `toolUseId` 最多只做一次的
+   决定。
+8. **先把在跑的 run 排干，并校好 store 的保真度。**声明在写快照那一刻被冻结进每个挂起
+   条目，所以切换之前写的快照里没有该字段，续跑时一律解析为 unsafe：在跑 run 的每个
+   挂起调用（连只读类在内）都会变成一次 interrupted 决定。不把快照未知字段原样带回来的
+   store 会丢掉记录下来的意图，解析器于是回落到**当前**的 `tools` 数组
+   （`src/loop/orchestrator.js:1877-1889`）；随包发布的 `transcriptStoreContract` 已经会带回
+   一条带 `replay: "unsafe"` 的挂起条目并做深比较（`test/contract/transcript-store.js:124-142`），
+   所以能跑过该套件的宿主 store 会保留这个字段（另见「Store 保真要求」）。
+9. **知道 fail-fast 在哪。**两个字面量以外的 `replay` 取值，以及未知的 `replayPolicy`，都在
+   第一次 provider 调用前抛 `TypeError`（`src/loop/orchestrator.js:550-551` 与 `:583-587`）——
+   写错是启动就碎，不是在续跑路径上默默分错类。
+10. **声明对模型与事件流都不可见。**该键从 provider 工具清单里被剔掉
+    （`src/loop/orchestrator.js:623-632`），并从续跑路径的 `tool_use` 载荷里被删除
+    （`src/loop/orchestrator.js:2678`），所以想展示“这个标了 safe”的宿主只能从自己的
+    `tools` 数组里读，不能从事件里读。
+
+**尚未锁定。**`docs-drift-check` 没有哪条规则会去读工具源码里该标注的存在与否，所以本表
+两个方向都可能默默飘：将来出厂侧真标了，与这一小节必须在同一个 PR 里。
 
 ## 模型元数据与预算推导（issue #182）
 

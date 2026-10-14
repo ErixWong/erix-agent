@@ -4,7 +4,16 @@
 
 ## [Unreleased]
 
-（暂无未发布条目。）
+### Added
+
+- 中英契约文档新增一节**出厂工具的 `replay` 标注现状表与切换清单**（`docs/host-consumer-contract.md` “Factory tool replay declarations and the switch-over checklist (issue #139)” / `docs/host-consumer-contract_cn.md` 「出厂工具的 `replay` 标注现状与切换清单（issue #139）」，**中英成对**；另在原「Tool replay policy (issue #139)」节末各加一句指向本节的前向引用）。**谁提的**：宿主只能自己 grep 源码才知道出厂工具全都没标 `replay`——而按契约「未标即 unsafe」，那意味着切到 `per-tool-declaration` 后**每一个挂起调用**都会变成 `interrupted`。本节把这件事从源码里挖出来写成文档事实：
+  - **取证到行**：出厂工具**一个都没标**（搜 `src/tools` 与 CLI 工具层零命中），全仓唯一读该键的两处是启动校验 `src/loop/orchestrator.js:583-587` 与解析器 `:1877-1889`；引擎也**不做任何推断**——不看工具名、不看 executor、也不看 `writeToolNames`（后者只喂 judge 的 filesWritten 计数，`:1127`）。
+  - **18 行现状表**（工具 / 出厂入口 / 今天标了没 / 切换后的行为 / 副作用类别）：库内 7 个文件工具、4 个 `note_*` 工具、CLI 侧 `exec` 与 `todo_*`、技能包工具、CLI 那个唯一的 MCP 代理工具全入表；并写明两处**可以由作者自己标**的位置——技能包（`buildSkillTools` 原样透传条目，`src/skills/loader.js:344-348`；校验只要求 `name` 与 `inputSchema`，`:72-100`）与宿主自己的 MCP 接接器（库内无 MCP 层，ADR-005）。
+  - **10 条接线清单**：按真正接上去的 executor 判定而非按工具名（并点名只读工具标 safe 的语义注意：重放发生在上次中止**之后**，拿到的是重放时刻的世界状态）；宿主自己给 `definitions` 打标注（工厂每次返回 `structuredClone`，所以改它不污染别人）；opt-in 的两个入口（`runToolLoop` 选项与 AssemblyPort `policy` 同名键）与**它只在续跑路径被读**（`:2680`；`resume: false` 或 store 无快照能力时该选项是空的）；**事件类型白名单必须放行 `tool_replay_decision_required`**——漏放的后果写成宿主看得懂的形式：模型照样收到 interrupted 的 `tool_result`、run 照跑，**只有「欠一个处置决定」那一半静默消失**（载荷逐字段列出，发在配对 `tool_result` **之前**，`:2714-2723`；README 那份事件枚举是示意不是白名单）；结果形状与「已存在同 id 的 `tool_result` 块会被**原地重写**而不是追加第二条」（`:2708-2712`）、部分输出（`partialOutputAvailable` 与拼接来源，`:2687-2704`）、不重试也不重新挂起（id 不进 `executedToolIds`）；切换前排干在跑的 run 与 store 保真度（旧快照无该字段一律 unsafe；随包 `transcriptStoreContract` 已经带回一条带 `replay: "unsafe"` 的挂起条目并深比较，`test/contract/transcript-store.js:124-142`——跑得过该套件的宿主 store 就保留它）；两个字面量以外取值 fail-fast（`:550-551`）；声明对模型与事件流都不可见（provider 工具清单剔除 `:623-632`，续跑 `tool_use` 载荷删除 `:2678`）。
+  - **同时写清库欠的那一半**：重放声明描述的是 **executor 而不是 schema**，工厂发的是 schema，所以上来就烧 `safe` 等于替别人的 executor 作保（与 ADR-009 把 `allowRead`/`allowWrite` 作为全部边界面的分工同一条），在那之前**标注是宿主侧的活**；并自觉声明**本表目前没有 `docs-drift-check` 锚点看守**（没有规则去读工具源码里该标注的存在与否），两侧必须同一个 PR 里改。
+  - **工装**：契约文档 `js` 围栏 9 → 10——`test/contract/doc-examples.js` 的 `EXPECTED_JS_FENCE_COUNT` 与 `FENCE_PREAMBLES` 同步（新条目插到 #3，其后七条重编号；顺便把靠 EN 行号定位的四条过时注释改成靠节名，那四个行号本来已经飘了）。新围栏的 **L3 epilogue 是一条主动哨兵**：出厂文件工具一旦真的自带 `replay` 标注，L3 立即变红并指路「本节『一个都没标』的声称过期」（工具数量、只读候选集那五个工具名、「工厂返回的是共享对象」三事也一起钉住）——那是本节唯一能被机器看住的那一半。**反向证已做**：给 `src/tools/file-tools.js` 的 `readFile` 定义临时挂上 `replay: "safe"`（`cp` 备份还原，不用 `git checkout`）⇒ `L3 执行 [#4]` **立即变红**，报的就是那句指路文案；还原后 `git status` 对 `src/` 无残留、复跑 exit 0。
+  - **零生产改动**（`src/`、`bin/`、`package.json`、版本号一字未动），门禁实测：`node --test` **1579 / 1574 pass / 0 fail / 5 skipped**、`check:docs-examples` **33 / 33**（含 CN/EN 围栏骨架逐行一致）、`check:docs`（漂移面 58 项对齐 + 中英契约 59 节标题骨架对齐）、`check:docs:strict`、`check:pack-links`、`check:tests` 逐个 exit 0。⚠ 表格形状是刻意的：每行至少一个不带反引号的单元格，否则 `docs-drift-check` 的「文件工具清单」逐处锚点会把 markdown 表格列当成一份清单声明（`isListGap` 把 `|` 认成分隔符，一旦某行被串够 6 个工具名就按逐处对称卡）。
+
 
 ## [0.19.0] - 2026-10-13
 

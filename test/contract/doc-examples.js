@@ -12,8 +12,8 @@
 //
 // 文档约定说明：契约文档用 TS 风格 `prop?,` 标注可选字段（如 `store?,`），这不是
 // 合法 JS；本 harness 在三层验证前统一剥离该标记（正则见 stripDocConvention）。
-// 另：fence :388 与 fence :1127 含顶层 `import ... from "erix-agent"`，L1 将其改写为
-// `const { ... } = await import(...)` 以便 vm.Script 编译。
+// 另：部分围栏自带顶层 `import ... from "erix-agent"`（含 "erix-agent/tools"），L1 会将其
+// 改写为 `const { ... } = await import(...)` 以便 vm.Script 编译。
 
 import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -40,7 +40,7 @@ export const FAKE_PROVIDER_URL = pathToFileURL(
   join(REPO_ROOT, "test", "helpers", "fake-provider.js"),
 ).href;
 
-export const EXPECTED_JS_FENCE_COUNT = 9;
+export const EXPECTED_JS_FENCE_COUNT = 10;
 export const L3_TIMEOUT_MS = 15000;
 
 /** 提取 markdown 中所有 ```js 围栏 → [{ line, code }]（line 为围栏起始行号，1-based）。 */
@@ -202,7 +202,29 @@ const emit = () => {};
 if (provider.requests.length < 1) throw new Error("runToolLoop 未发起任何 provider 调用（示例体没跑到底）");
 `,
   },
-  // fence #3（EN :388，多模型槽位装配 + 预算元数据自检，issue #182）
+  // fence #3（EN「Factory tool replay declarations and the switch-over checklist」节：
+  // 出厂工具不标 replay，宿主自己给 definitions 打标注，issue #139）
+  // 本围栏自带顶层 import（erix-agent/tools 子路径）；工厂是纯函数，无需任何桩。
+  {
+    linkImports: [],
+    stubs: ``,
+    epilogue: `
+const __defs__ = createFileTools({ cwd: process.cwd() }).definitions;
+if (__defs__.length !== 7) throw new Error(\`文件工具数量漂移（示例假设 7 个，实际 \${__defs__.length}）\`);
+if (__defs__.some((tool) => tool.replay !== undefined)) {
+  throw new Error("出厂文件工具已自带 replay 标注——本节「一个都没标」的声称过期，必须同步本小节（issue #139）");
+}
+if (createFileTools({ cwd: process.cwd() }).definitions[0] === __defs__[0]) {
+  throw new Error("definitions 不是每次调用的新副本——宿主打标注会改到共享对象");
+}
+const __write__ = new Set(["edit", "writeFile"]);
+const __safe__ = __defs__.filter((tool) => !__write__.has(tool.name)).map((tool) => tool.name).sort().join(",");
+if (__safe__ !== "grep,readFile,rg,searchText,tree") {
+  throw new Error(\`只读候选集合漂移：\${__safe__}（本节的表与示例假设的是这五个工具名）\`);
+}
+`,
+  },
+  // fence #4（多模型槽位装配 + 预算元数据自检，issue #182）
   // 本围栏自带顶层 import：真文件 provider + 真 openai provider + 真 runToolLoop 全链路
   // 执行，只把磁盘（tmpdir 里的 config.json）与网络（fetch 桩）接桩。
   {
@@ -277,7 +299,7 @@ if (!__body__.messages || !Array.isArray(__body__.messages)) throw new Error("�
 rmSync(__slotsDir__, { recursive: true, force: true });
 `,
   },
-  // fence #4（EN :772，store.list 返回 plain array）
+  // fence #5（store.list 返回 plain array）
   {
     linkImports: [],
     stubs: `
@@ -293,7 +315,7 @@ if (__listQueries__.length !== 1) throw new Error(\`store.list 应被调用 1 �
 if (__listQueries__[0]?.scope !== "run") throw new Error("store.list 查询 scope 应为 \\"run\\"");
 `,
   },
-  // fence #5（EN :854，createBuiltinNotesTools 接线）
+  // fence #6（createBuiltinNotesTools 接线）
   {
     linkImports: [
       `import { createBuiltinNotesTools } from ${JSON.stringify(INDEX_URL)};`,
@@ -344,7 +366,7 @@ if (readdirSync(__notesDir__).length === 0) throw new Error("note_take 未在 tm
 rmSync(__notesDir__, { recursive: true, force: true });
 `,
   },
-  // fence #6（EN「File edit tool `edit`」节：edit 的写边界与越界错误结果，issue #191）
+  // fence #7（EN「File edit tool `edit`」节：edit 的写边界与越界错误结果，issue #191）
   {
     linkImports: [],
     stubs: `
@@ -381,7 +403,7 @@ if (!__miss__.startsWith("错误：") || !__miss__.includes("readFile")) {
 rmSync(__editDir__, { recursive: true, force: true });
 `,
   },
-  // fence #7（EN :1127，projectTranscriptForDisplay 展示投影）
+  // fence #8（projectTranscriptForDisplay 展示投影）
   {
     linkImports: [],
     stubs: `
@@ -404,7 +426,7 @@ const store = { async load() {
 if (__storeLoads__.count !== 1) throw new Error(\`store.load 应被调用 1 次，实际 \${__storeLoads__.count} 次\`);
 `,
   },
-  // fence #8（EN :1660，契约套件标准注入用法，issue #183）
+  // fence #9（契约套件标准注入用法，issue #183）
   // 两层都真验：L2 靠 `erix-agent/contract-tests` 说明符重写到 test/contract/index.js（证明
   // 发布的子路径入盘）；L3 把示例当宿主那样注册 24 条断言（transcript 16 + notes 7 +
   // notes CAS 子套件 1，issue #183）并真的跑完

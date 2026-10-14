@@ -425,6 +425,11 @@ emits the optional `tool_replay_decision_required` event with the run/tool IDs
 and `requiresHostDecision: true`. The host owns any follow-up decision; the
 engine does not schedule or retry the tool.
 
+What the factory-shipped tools actually declare against this rule, and the
+checklist for switching a host onto `"per-tool-declaration"`, are recorded in
+"Factory tool replay declarations and the switch-over checklist (issue #139)"
+at the end of this section.
+
 `saveRunState`/`loadRunState` manage one latest-only structured snapshot per
 run, not a history of versions. New snapshots do not persist a `state` key;
 `markRunState` writes terminal status through a separate channel. Hosts that
@@ -493,6 +498,143 @@ The library's `createAssemblyPort` is the reference assembly implementation;
 it performs no I/O. The CLI continues to use its existing file-backed
 provider, tool, and transcript adapters, so no host needs to adopt the port
 in one migration.
+
+### Factory tool replay declarations and the switch-over checklist (issue #139)
+
+The subsection above is the rule. This one records **what the shipped tools actually
+declare against it today**, because a host cannot see that from outside the package and
+it decides what switching costs. The state is: **nothing declares `replay`** — a search
+for the field under `src/tools` and `bin/tools.js` returns nothing, and the only readers
+of the key are the startup validator (`src/loop/orchestrator.js:583-587`) and the resolver
+(`src/loop/orchestrator.js:1877-1889`).
+
+| Tool | Ships from | Declares `replay` today | Behaviour on resume under `per-tool-declaration` | Side effect class |
+| --- | --- | --- | --- | --- |
+| `readFile` | `erix-agent/tools` | no | not replayed → interrupted | none |
+| `searchText` | same | no | not replayed → interrupted | none |
+| `rg` | same | no | not replayed → interrupted | none (deprecated alias) |
+| `grep` | same | no | not replayed → interrupted | none (deprecated alias) |
+| `tree` | same | no | not replayed → interrupted | none |
+| `edit` | same | no | not replayed → interrupted | writes a file |
+| `writeFile` | same | no | not replayed → interrupted | writes a file |
+| `note_read` | package root and `erix-agent/tools` | no | not replayed → interrupted | none |
+| `note_list` | same | no | not replayed → interrupted | none |
+| `note_take` | same | no | not replayed → interrupted | writes a note record |
+| `note_forget` | same | no | not replayed → interrupted | revokes a note record |
+| `exec` | the CLI assembly layer, not a published API entry (issue #194) | no | not replayed → interrupted | arbitrary |
+| `todo_list` | the CLI assembly layer | no | not replayed → interrupted | none |
+| `todo_add` | the CLI assembly layer | no | not replayed → interrupted | writes the per-cwd todo file |
+| `todo_done` | the CLI assembly layer | no | not replayed → interrupted | writes the per-cwd todo file |
+| `todo_clear` | the CLI assembly layer | no | not replayed → interrupted | writes the per-cwd todo file |
+| skill-pack tools (names chosen by each pack) | `erix-agent/tools` | no — the loader adds no such field | not replayed → interrupted | whatever the pack's own executor does |
+| the CLI's single MCP proxy tool | the CLI assembly layer | no | not replayed → interrupted | whatever the proxied server tool does |
+
+**Default orientation: absent means `unsafe`, and the entire factory fleet is absent.**
+Turning `"per-tool-declaration"` on without labelling anything therefore marks **every**
+pending call unsafe on **every** resume — including the pure reads, which come back as an
+`interrupted` error result exactly like `exec` does. The engine infers nothing: it does
+not look at the tool name, at the executor, or at `writeToolNames` (that option only feeds
+the judge's filesWritten counter, `src/loop/orchestrator.js:1127`). Snapshots whose
+pending entries carry no recorded field resolve the same way
+(`docs/host-upgrade-guide-0.14.0.md`).
+
+**Why the library annotates nothing.** A replay claim describes the **executor**, not the
+schema, and these factories hand out schemas: the `definitions` arrays are plain objects
+that a host may route to whatever executor it likes (a sandboxed read, an `edit` that also
+writes an audit row, a `writeFile` that only enqueues). Baking `safe` into a library would
+be a claim about somebody else's executor, so the annotation lives with whoever owns
+`executeTool` — the same ADR-009 division that leaves `allowRead` / `allowWrite` as the
+whole boundary surface. Until a factory-side default lands, **labelling is host-side
+work**, and the Side effect class column above is the shape of that future default
+(read-only tools safe, everything else unsafe). A skill pack is the one place the
+annotation is already the author's to make: `buildSkillTools` passes each pack's tool entry
+through unchanged (`src/skills/loader.js:344-348`; its validator requires only `name` and
+`inputSchema`, `src/skills/loader.js:72-100`), so a pack that declares the field gets it
+honoured. An MCP bridge is the other place — the library has no MCP layer (ADR-005), so a
+host bridging servers builds its own tool entries and decides per server and per tool;
+one proxy tool standing in for many executors (the CLI's own MCP proxy tool is exactly
+that shape) cannot carry a single blanket verdict, and `unsafe` is the honest answer there.
+
+**Switch-over checklist.**
+
+1. **Decide per executor you actually wire, not per tool name.** A plain local read is a
+   `safe` candidate; the same name proxied to a remote sandbox, metered per call, or
+   writing through an audit sink is not. Marking a read `safe` carries one semantic
+   caveat: the replay happens later, so the result reflects the state of the world at
+   replay time, not at interruption time.
+2. **Label the definitions you pass in.** The factories ship none, and each call returns a
+   fresh `structuredClone` of its schemas, so mutating the result is safe:
+
+   ```js
+   import { createFileTools } from "erix-agent/tools";
+
+   const WRITE_TOOLS = new Set(["edit", "writeFile"]);
+   const fileTools = createFileTools({ cwd: process.cwd() });
+   const tools = fileTools.definitions.map((definition) => ({
+     ...definition,
+     replay: WRITE_TOOLS.has(definition.name) ? "unsafe" : "safe",
+   }));
+   if (tools.find((tool) => tool.name === "readFile").replay !== "safe") {
+     throw new Error("replay labelling did not survive the factory clone");
+   }
+   ```
+
+3. **Opt in explicitly, and know where the option applies.** `replayPolicy` still defaults
+   to `"always-replay"`. Pass `"per-tool-declaration"` as a `runToolLoop` option, or as the
+   AssemblyPort `policy` key of the same name (whitelisted in `src/assembly.js`, asserted
+   by `test/contract/assembly-port.test.js:47-53`). The policy is consulted **only** on the
+   resume path (`src/loop/orchestrator.js:2680`): with `resume: false`, or with a store
+   that has no run-snapshot capability, there is no pending list and the option is inert.
+4. **Let the new event type through the whitelist.** A host that filters `onEvent` on a set
+   of `type` strings **must** add `tool_replay_decision_required`, or the signal is
+   silently dropped while everything else still looks healthy: the model receives the
+   interrupted `tool_result` regardless, so the run proceeds and only the host's half —
+   knowing a decision is owed — disappears. The engine emits one event per skipped pending
+   call, immediately **before** the paired `tool_result` event, with
+   `{ type, runId, round, toolUseId, toolName, replay: "unsafe", requiresHostDecision: true,
+   partialOutputAvailable }` (`src/loop/orchestrator.js:2714-2723`). The README's event
+   enumeration is illustrative ("including …"), not a whitelist, so a host that copied it
+   into a `Set` has to re-copy it.
+5. **Read the result shape correctly.** The result carries `is_error: true` and
+   `executionStatus: "interrupted"`. If a `tool_result` block for that call id was already
+   present in the messages, the engine **rewrites that block in place**
+   (`src/loop/orchestrator.js:2708-2712`) instead of appending a second one, so a host that
+   diffs messages must expect a mutation rather than an addition. `executionStatus` rides
+   into the display projection (`src/display/projection.js:158-160`), and afterwards the
+   interrupted result is ordinary round text: only `intercepted` results are excluded from
+   the aggregate-budget count (`src/loop/aggregate-budget.js:150-153`).
+6. **Handle the partial output.** `partialOutputAvailable` says whether anything was found;
+   when it is true the result text ends with a `Previously captured partial output:`
+   section, assembled from the interrupted round's archived output plus any already-recorded
+   result content, deduplicated (`src/loop/orchestrator.js:2687-2704`).
+7. **Expect no retry and no re-pending.** The skipped call's id is **not** added to
+   `executedToolIds`, the engine schedules nothing, and the run continues with the model
+   looking at an error. The follow-up — ask the user, resume again carrying your own
+   instruction, or drop the call — is the host's, and it is a decision the host should make
+   at most once per `toolUseId`.
+8. **Drain in-flight runs, and check store fidelity.** The declaration is frozen into each
+   pending entry when the snapshot is written, so a snapshot written before the switch
+   carries none and resolves unsafe on resume: every pending call of an in-flight run,
+   including its reads, becomes an interrupted decision. A store that does not round-trip
+   unknown snapshot fields loses the recorded intent and the resolver then falls back to
+   the **current** `tools` array (`src/loop/orchestrator.js:1877-1889`); the shipped
+   `transcriptStoreContract` already round-trips a pending entry carrying
+   `replay: "unsafe"` and deep-compares it (`test/contract/transcript-store.js:124-142`),
+   so a host store that passes that suite keeps the field (see also "Store fidelity
+   requirements").
+9. **Know the fail-fast.** A `replay` value other than the two literals, and an unknown
+   `replayPolicy`, throw `TypeError` before the first provider call
+   (`src/loop/orchestrator.js:550-551` and `:583-587`) — a typo is a startup crash, never a
+   silent misclassification on the resume path.
+10. **The declaration is invisible to the model and to the stream.** The key is stripped
+    from the provider tool list (`src/loop/orchestrator.js:623-632`) and deleted from the
+    resume-path `tool_use` payload (`src/loop/orchestrator.js:2678`), so a host that wants
+    to display "this one was labelled safe" reads it from its own `tools` array, not from
+    an event.
+
+**Not anchored yet.** No `docs-drift-check` rule reads the presence or absence of the
+annotation in the tool sources, so this table can drift silently in either direction: a
+future factory-side labelling change and this subsection must ship in the same PR.
 
 ## Model metadata and budget derivation (issue #182)
 
