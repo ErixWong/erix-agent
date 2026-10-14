@@ -161,9 +161,12 @@ function toolResultsOf(messages) {
       const preview = truncated(toolResultText(block), MAX_RESULT_PREVIEW);
       // 白名单合并（契约里已钉住）：不显式取值就看不见，所以引擎命名空间里那两个新字段必须点名取。
       const erix = isObject(block.erix) ? block.erix : undefined;
-      const executionStatus = typeof block.executionStatus === "string"
-        ? block.executionStatus
-        : (typeof erix?.executionStatus === "string" ? erix.executionStatus : undefined);
+      // 优先级（工单 261014 T2 §2.2）：**`erix` 优先，顶层只作旧记录回退**。T1 双写期这里是
+      // 顶层优先（两边同值时看不出来），停写后顶层只会出现在升级前落盘的记录上——那种记录
+      // 本来就没有 `erix`，回退仍然服务得到；而两值不相等时该信引擎命名空间那一份。
+      const executionStatus = typeof erix?.executionStatus === "string"
+        ? erix.executionStatus
+        : (typeof block.executionStatus === "string" ? block.executionStatus : undefined);
       results.set(block.tool_use_id, {
         ...(preview === "" ? {} : { resultPreview: preview }),
         ...(block.is_error === undefined ? {} : { isError: block.is_error === true }),

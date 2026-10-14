@@ -74,6 +74,28 @@ test("tool result preview is attached to the matching tool call", () => {
   assert.equal(entries.filter((entry) => entry.role === "user").length, 0);
 });
 
+// 执行状态的取值优先级（工单 261014 T2 §2.2）：`erix` 优先，顶层只作升级前记录的回退。
+// T1 双写期这里是顶层优先，两边同值时看不出来；停写之后两值会分开，所以这条必须在停写前钉住。
+test("executionStatus prefers erix.executionStatus and falls back to the top level for legacy records", () => {
+  const project = (resultBlockExtra) => projectTranscriptForDisplay([{
+    round: 2,
+    messages: [
+      { role: "assistant", content: [{ type: "tool_use", id: "a", name: "exec", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "x", ...resultBlockExtra }] },
+    ],
+  }])[0].toolCalls[0];
+
+  // 两值不一致：取 erix 那一份（修前：取顶层那一份 → 本例会红）。
+  assert.equal(project({ executionStatus: "intercepted", erix: { executionStatus: "interrupted" } }).executionStatus,
+    "interrupted");
+  // 只有引擎命名空间（停写后的形状）。
+  assert.equal(project({ erix: { executionStatus: "interrupted" } }).executionStatus, "interrupted");
+  // 只有顶层（0.19 及更早的落盘记录）：回退仍然服务得到。
+  assert.equal(project({ executionStatus: "intercepted" }).executionStatus, "intercepted");
+  // 两边都没有：字段缺省，而不是被造一个出来。
+  assert.equal(project({}).executionStatus, undefined);
+});
+
 test("reasoning blocks are projected into the reasoning field, never into text", () => {
   const entries = projectTranscriptForDisplay([{
     round: 1,
