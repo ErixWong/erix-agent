@@ -282,12 +282,15 @@ export function createRunSnapshotExecutor(ctx) {
       const result = await awaitWithAbort(
         Promise.resolve().then(() => executeTool(structuredOptions)),
       );
-      durationMs = Date.now() - startedAt;
+      // `Math.max(0, …)`：`Date.now()` 是墙钟，NTP 校时/手动改时可回拨，于是差值可能为负。
+      // 负的「耗时」不是一个可解释的事实，而下游只过 `Number.isFinite`（投影）会照收。
+      // 顶层旧 `duration` 保持原口径不动（双写期 parity，T2 停写），只有引擎事实 `erix.durationMs` 夹住。
+      durationMs = Math.max(0, Date.now() - startedAt);
       execution = normalizeExecutionResult(result, startedAt);
     } catch (error) {
       // 抛错（非 abort）同样是「settle」：耗时是一个事实，不是只有成功才有。
       // abort 分支在下面直接抛出 —— 没有结果就没有事实，`durationMs` 随之缺省（宁缺不造）。
-      durationMs = Date.now() - startedAt;
+      durationMs = Math.max(0, Date.now() - startedAt);   // 同上：墙钟回拨不得造出负耗时
       if (ctx.signal?.aborted) throwIfAborted(ctx.signal);
       isError = true;
       execution = {

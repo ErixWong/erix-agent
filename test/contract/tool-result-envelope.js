@@ -356,6 +356,72 @@ export function toolResultEnvelopeContract(label, getEntry) {
     assert.deepEqual(eventsOfType(events, "tool_call"), []);
   });
 
+  // ── executor 未 settle 就中止：存在性矩阵的最后一行（不许用假记录补等式）──────────
+  test(`${label}: executor 未 settle 就 abort ⇒ tool_use 带身份键，一条 tool_result 也没有`, async () => {
+    const { runToolLoop, createMemoryTranscriptStore } = await entry();
+    const controller = new AbortController();
+    const events = [];
+    const store = createMemoryTranscriptStore();
+    const runId = "contract-abort-before-settle";
+    let executorEntered = false;
+
+    await assert.rejects(
+      runToolLoop({
+        provider: scriptedProvider([toolRound("hang-1"), DONE]),
+        store,
+        runId,
+        completion: false,
+        signal: controller.signal,
+        executeTool: async () => {
+          executorEntered = true;
+          // 宿主在工具还在跑的时候就按了停止：executor 这一辈子不会 settle。
+          controller.abort(new Error("host stopped the run mid-tool"));
+          return new Promise(() => {});
+        },
+        onEvent: (event) => events.push(event),
+      }),
+      (error) => {
+        assert.equal(error.termination.reason, "aborted");
+        return true;
+      },
+    );
+
+    assert.ok(executorEntered, "本例必须真的走进 executor，否则等于什么都没测");
+    const toolUses = eventsOfType(events, "tool_use").map((event) => event.toolUse);
+    assert.equal(toolUses.length, 1, "tool_use 事件在中止前已经发出（身份键先于结果存在）");
+    assert.match(toolUses[0].erix.toolCallKey, TOOL_CALL_KEY_PATTERN);
+    assert.deepEqual(eventsOfType(events, "tool_result"), [],
+      "没有结果就没有事实：中止不得让引擎发出一条编出来的 tool_result");
+    const persisted = blocksOfMessages(
+      (await store.load(runId)).flatMap((record) => record.messages ?? []), "tool_result",
+    );
+    assert.deepEqual(persisted, [], "线 B 这一轮可以就是没有记录，引擎不得为补齐等式而发明记录");
+    assert.deepEqual(eventsOfType(events, "round_end"), [], "本轮没有跑完，不得发 round_end");
+  });
+
+  test(`${label}: 墙钟回拨不得造出负的 erix.durationMs（夹到 0，缺失才是未知）`, async () => {
+    const realNow = Date.now;
+    // executor 一旦开跑就把时钟拨回 5 秒（模拟 NTP 校时/手动改时），于是「settle 时刻 - 起始时刻」
+    // 是一个负数。引擎事实必须夹到 0：**负的耗时不是一个可解释的事实**，而缺失另有含义（未知）。
+    const rewind = () => { Date.now = () => realNow() - 5000; };
+    try {
+      const { toolResultFacts } = await runCase(
+        async () => {
+          rewind();
+          return "clock rewound mid-execution";
+        },
+        { options: { onEvent: (event) => { if (event.type === "tool_result") Date.now = realNow; } } },
+      );
+      const fact = toolResultFacts[0];
+      assert.equal(typeof fact.erix.durationMs, "number");
+      assert.ok(Number.isInteger(fact.erix.durationMs) && fact.erix.durationMs >= 0,
+        `erix.durationMs 必须非负，实测 ${fact.erix.durationMs}`);
+      assert.equal(fact.erix.durationMs, 0, `夹到 0 才对，实测 ${fact.erix.durationMs}`);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   // ── 跨轮复用同一个 provider id：那是**两次调用**，不是同一次 ─────────────────────
   // provider 的 tool-call id **不保证 run 内唯一**（轮内 index 前缀，或畸形响应兜底成常量
   // `call_legacy`，issue #284）。所以「按 id 扫历史消息继承 key」会把上一轮那张卡的身份发给
