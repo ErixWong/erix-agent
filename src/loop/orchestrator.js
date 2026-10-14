@@ -2795,6 +2795,18 @@ export async function runToolLoop(options) {
             // 而本块现在说的是「没跑完」这件新事实，所以下面整块换 `erix` 时顺手把它扫掉，
             // 不给读路径留两份互相矛盾的事实（投影已改成 `erix` 优先，不扫也只是冗余）。
             delete existingToolResult.executionStatus;
+            // 同一条理由适用于**旧 attempt 的成败与耗时**（PR #288 审阅实证）：本块的 `erix` 已换成
+            // 「没跑完」，而 `judge.js:128` / `l0.js:50,68` 的读路径是 `erix.success ?? block.success`。
+            // 引擎口径下「中断」不带 `success`（成败未知），所以新 `erix` 里没有这个字段——缺字段就会
+            // **回退到升级前那块上过期的一次成败**，judge 于是把一次没跑完的调用算成成功。
+            // 删掉它，让「未知」真的是未知（而不是回退出一个 `true`）。
+            delete existingToolResult.success;
+            // 耗时同理：本 attempt 没有耗时这件事实（`erix.durationMs` 刻意不写），留着旧值只是
+            // 一句迟早会被某个新读路径捡走的废话（今天投影只读 `erix.durationMs`，所以它是惰性的）。
+            delete existingToolResult.duration;
+            // **不扫**顶层 `erixRound`：它是升级前记录的**创建轮**，`readRoundMarker` 在 `erix.round`
+            // 缺席时正是回退到它算年龄的；扫掉 = 这条记录永不参与 TTL 折叠（静默退化）。
+            // 也**不扫**宿主摊平键：那是宿主自己的数据，不承载引擎事实，清扫不由引擎代行。
             // 那个块现在代表的是「没跑完」这件新事实，不是丢失那次 attempt 的已完成结果：
             // 整块 `erix` 换成本次重放的事实（沿用同一个身份键，丢掉属于旧 attempt 的耗时与轮号）。
             existingToolResult.erix = {

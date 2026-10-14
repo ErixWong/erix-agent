@@ -556,6 +556,71 @@ test("per-tool replay policy interrupts unsafe tools and exposes saved partial o
   assert.match(modelResult.content, /partial response already persisted/u);
 });
 
+test("升级前记录被中断重放时，不得把过期 attempt 的成败留给 judge 的回退链（PR #288 审阅）", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "resume-legacy-keys";
+  const toolUse = { type: "tool_use", id: "legacy-call", name: "unsafe_work", input: {} };
+  await store.appendRound(runId, { round: 0, messages: [textMessage("resume carefully")] });
+  await store.saveRunSnapshot(runId, {
+    round: 1,
+    status: "pending",
+    pendingToolUses: [{ ...toolUse, replay: "unsafe" }],
+    messages: [
+      textMessage("resume carefully"),
+      { role: "assistant", content: [toolUse] },
+      {
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: "legacy-call",
+          content: "partial from the lost attempt",
+          // 升级前落盘的形状：顶层既有引擎旧同名键，也有宿主摊平键。
+          erixRound: 0,
+          executionStatus: "ok",
+          success: true,
+          duration: 900,
+          artifactStatus: "done",
+        }],
+      },
+    ],
+    executedToolIds: [],
+    toolResults: [],
+    toolOutputs: [],
+  });
+
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const result = await runToolLoop({
+    provider,
+    resume: true,
+    completion: false,
+    replayPolicy: "per-tool-declaration",
+    tools: [{ name: "unsafe_work", inputSchema: { type: "object" }, replay: "unsafe" }],
+    store,
+    runId,
+    executeTool: async () => "must not run",
+  });
+
+  const forBlock = (messages) => messages
+    .flatMap((message) => message.content ?? [])
+    .find((block) => block.type === "tool_result" && block.tool_use_id === "legacy-call");
+  for (const [label, messages] of [["落盘侧", result.messages], ["递给模型", provider.requests[0].messages]]) {
+    const block = forBlock(messages);
+    assert.equal(block.erix.executionStatus, "interrupted", `${label}：新事实住在 erix`);
+    assert.equal(Object.hasOwn(block.erix, "success"), false, `${label}：中断不编造成败`);
+    for (const retired of ["executionStatus", "success", "duration"]) {
+      assert.equal(Object.hasOwn(block, retired), false, `${label}：过期 attempt 的顶层 ${retired} 必须被扫掉`);
+    }
+    // 钉住真正的危害点：judge.js:128 / l0.js:50,68 就是这个表达式——它必须是 undefined（未知），
+    // 而不是回退出上一次 attempt 的 true。
+    assert.equal(block.erix?.success ?? block.success, undefined, `${label}：judge 的成败回退链不得拿到过期值`);
+    // 但创建轮不能跟着扫：readRoundMarker 在 erix.round 缺席时正是回退到它算年龄的。
+    assert.equal(block.erixRound, 0, `${label}：erixRound 是 TTL 的年龄来源，扫掉=这条记录永不折叠`);
+    assert.equal(block.artifactStatus, "done", `${label}：宿主摊平键不承载引擎事实，不由引擎代扫`);
+  }
+});
+
 test("resumes a partial tool-result message without dropping text or breaking pairing", async () => {
   const store = createMemoryTranscriptStore();
   const runId = "resume-mixed-tool-result";
