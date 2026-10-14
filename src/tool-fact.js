@@ -173,7 +173,9 @@ export function createToolCallKeyRegistry(
 
   /**
    * 不分配地查一下这个块是否已有身份：块上已写（resume / 复放带回的旧值）或本 attempt 的流式
-   * 片段已绑过。顺手把块上的旧值绑到 provider id 上，于是同一个 id 再被发一次也是同一个 key。
+   * 片段已绑过。顺手把块上的旧值绑到 provider id 上，于是同一个 attempt 里同一个 id 再被发一次
+   * 也是同一个 key。**跳轮不在这里继承**：provider id 不保证 run 内唯一（issue #284），跳轮的
+   * 继承只能由调用点拿「本轮已记录的结果」确认（orchestrator 的 `acceptedToolCallKey`）。
    * @param {{ id?: unknown, erix?: { toolCallKey?: unknown } }} block
    * @returns {string | undefined}
    */
@@ -192,17 +194,22 @@ export function createToolCallKeyRegistry(
     peek,
     /**
      * 调用被接受时（`tool_use` 块进上下文）认领 key：块上已有就复用（resume / 复放带回旧值），
-     * 否则按 provider id 取流式阶段已分配的值，再否则用调用点交回的**已提交事实里的旧值**
-     * （同一个 id 被模型再发一次时不得换身份），最后才现场分配。
+     * 本 attempt 的流式片段已绑过就沿用，否则现场分配。**没有「按 provider id 扫历史」那一路**
+     *（工单 261014 T1-fix 第 1 项）：新一轮的新调用即使与上一轮同名 id 也必须拿到新身份，
+     * 否则只是把串号从 `id` 搬进 `toolCallKey`。
      * @param {{ id?: unknown }} block
-     * @param {string} [preferred] 已提交事实里的旧值
+     * @param {string} [confirmedReplay] 由**调用点确认是同一次调用**的旧值。目前只有一路：
+     *   resume 崩溃现场里那条尚未产出结果的 pending 调用（同 id、且**没有配对 tool_result**
+     *   的那个块就是它本人）。它不是「按 id 扫历史」：已配过结果的同 id 旧块已被排除掉。
      * @returns {string}
      */
-    claimForBlock(block, preferred) {
+    claimForBlock(block, confirmedReplay) {
       const known = peek(block);
       if (known !== undefined) return known;
       const id = typeof block?.id === "string" && block.id !== "" ? block.id : undefined;
-      const key = typeof preferred === "string" && preferred !== "" ? preferred : allocate();
+      const key = typeof confirmedReplay === "string" && confirmedReplay !== ""
+        ? confirmedReplay
+        : allocate();
       bind(id, key);
       return key;
     },

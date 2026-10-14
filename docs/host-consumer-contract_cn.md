@@ -1619,7 +1619,7 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 |---|---|---|---|
 | `type`、`tool_use_id`、`content` | 协议 | 总是 | `tool_use_id` 是 provider 的配对键：引擎只读它、永不改写它（`groupIntoRounds`/`validateMessages` 的配对校验与 run snapshot 的复放查找都依赖它）。 |
 | `is_error` | 协议 | 仅错误/中断结果 | wire 字段，按设计就在顶层。 |
-| `erix.toolCallKey` | 引擎 | 每一个被引擎接受的 `tool_use`，以及由它构造出的结果 | 跳通道身份：一次被接受的调用只分配一次，从第一个可识别的流式片段开始，一路带到 `tool_use` 块（因此也在持久化块与 `tool_use` 事件克隆上）、`tool_result` 与投影。resume 与复放**沿用**已落盘的值，已有身份的调用绝不重生成。 |
+| `erix.toolCallKey` | 引擎 | 每一个被引擎接受的 `tool_use`，以及由它构造出的结果 | 跳通道身份：一次被接受的调用只分配一次，从第一个可识别的流式片段开始，一路带到 `tool_use` 块（因此也在持久化块与 `tool_use` 事件克隆上）、`tool_result` 与投影。resume 与复放**沿用**已落盘的值，已有身份的调用绝不重生成。但 provider 的配对 id **不是身份**，也不保证 run 内唯一（轮内 index 前缀，或畸形响应兜底成 `call_legacy`），所以下一轮再出现同一个 id 就是**一次新调用**，会拿到新 key：只有被确认为同一次调用时才继承 —— 本轮的复放窗口，或从崩溃现场恢复回来的那一条 pending 调用。 |
 | `erix.round` | 引擎 | 调用真的执行了 | **执行轮**。它不是事件 envelope 的 `round`（交付轮），两者刻意不合并。 |
 | `erix.durationMs` | 引擎 | executor 的 promise settle 或 reject 了 | 从「调用 executor 前」到「该 promise settle/reject」的毫秒数。 |
 | `erix.executionStatus` | 引擎 | 仅特殊状态 | `intercepted` / `interrupted`。 |

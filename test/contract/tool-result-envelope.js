@@ -324,6 +324,81 @@ export function toolResultEnvelopeContract(label, getEntry) {
     assert.deepEqual(eventsOfType(events, "tool_call"), []);
   });
 
+  // ── 跨轮复用同一个 provider id：那是**两次调用**，不是同一次 ─────────────────────
+  // provider 的 tool-call id **不保证 run 内唯一**（轮内 index 前缀，或畸形响应兜底成常量
+  // `call_legacy`，issue #284）。所以「按 id 扫历史消息继承 key」会把上一轮那张卡的身份发给
+  // 本轮的新调用——串号只是从 `id` 搬进 `toolCallKey`。下面两条钉住：新调用必须拿到新身份，
+  // 而 provider 的配对键（`id` / `tool_use_id`）一个字符都不动，仍然逐轮配得上对。
+  test(`${label}: 连续两轮同 provider id ⇒ 两次调用各有各的 toolCallKey（配对 id 未改写）`, async () => {
+    const executed = [];
+    const { records, toolUseFacts, toolResultFacts } = await runCase(
+      async ({ id, name }) => {
+        executed.push(`${name}:${id}`);
+        return "ok";
+      },
+      {
+        // 同一个 id `call_0_dup`（OpenAI 那种「轮内 index 前缀」跨轮重复的真实形状），
+        // 换工具名只为绕开 stalled 判定，与本条断言无关。
+        script: [toolRound("call_0_dup", "work_first"), toolRound("call_0_dup", "work_second"), DONE],
+      },
+    );
+    assert.deepEqual(executed, ["work_first:call_0_dup", "work_second:call_0_dup"],
+      "两次都必须真的执行：新一轮的同 id 调用不得被当成上一轮的复放吞掉");
+    assert.equal(toolUseFacts.length, 2);
+    assert.equal(toolResultFacts.length, 2);
+    const keys = toolUseFacts.map((fact) => fact.erix.toolCallKey);
+    for (const key of keys) assert.match(key, TOOL_CALL_KEY_PATTERN);
+    assert.equal(new Set(keys).size, 2,
+      `跨轮同名 id 是两次不同的调用，必须各有各的身份，实际两次都是 ${keys[0]}`);
+    // 反向：provider 的配对键未被改写，也未被拼进 key（key 的形状里不含 id）。
+    assert.deepEqual(toolUseFacts.map((fact) => fact.id), ["call_0_dup", "call_0_dup"]);
+    assert.deepEqual(toolResultFacts.map((fact) => fact.tool_use_id), ["call_0_dup", "call_0_dup"]);
+    assert.equal(/call_0_dup/u.test(keys[0]), false, "key 不得由 provider id 派生");
+    // 线 A 内部：每条 tool_result 带回**自己那一次**调用的身份，且不串到另一条上。
+    assert.deepEqual(toolResultFacts.map((fact) => fact.erix.toolCallKey), keys);
+    assert.deepEqual(toolResultFacts.map((fact) => fact.erix.round), [1, 2]);
+    // 线 A ↔ 线 B：落盘的两个块带着同一对身份键。
+    assert.deepEqual(
+      blocksOfMessages(records.flatMap((record) => record.messages ?? []), "tool_use")
+        .map((block) => block.erix?.toolCallKey),
+      keys,
+    );
+  });
+
+  test(`${label}: provider 不给 id（call_legacy 兜底）时，跨轮两次调用也各有各的身份`, async () => {
+    const { openAIResponseToCanonical } = await entry();
+    // **真走兜底路径**，不是手抄一个同名字符串：legacy `function_call` 形态没有 id，规范化后
+    // 落到常量 `call_legacy`（`src/messages/canonical.js` 的 `legacyFunctionCall.id ?? "call_legacy"`，
+    // 流式侧同源：`src/messages/openai-normalization.js` 的 `slots[0]?.id ?? "call_legacy"`）。
+    const legacyRound = (name) => {
+      const canonical = openAIResponseToCanonical({
+        choices: [{
+          message: { function_call: { name, arguments: JSON.stringify({ n: 1 }) } },
+          finish_reason: "function_call",
+        }],
+      });
+      assert.deepEqual(canonical.content.map((block) => block.id), ["call_legacy"],
+        "本例必须真的落到兜底常量上，否则等于没测那条路径");
+      assert.equal(canonical.stopReason, "tool_use");
+      return canonical;
+    };
+    const executed = [];
+    const { toolUseFacts, toolResultFacts } = await runCase(
+      async ({ id, name }) => {
+        executed.push(`${name}:${id}`);
+        return "ok";
+      },
+      { script: [legacyRound("legacy_first"), legacyRound("legacy_second"), DONE] },
+    );
+    assert.deepEqual(executed, ["legacy_first:call_legacy", "legacy_second:call_legacy"]);
+    const keys = toolUseFacts.map((fact) => fact.erix.toolCallKey);
+    assert.equal(new Set(keys).size, 2,
+      `兜底常量 call_legacy 不是身份：两轮各得一个 key，实际 ${keys.join(" / ")}`);
+    assert.deepEqual(toolResultFacts.map((fact) => fact.tool_use_id), ["call_legacy", "call_legacy"],
+      "配对键仍是那个兜底常量本身（未被改写、未被拼接）");
+    assert.deepEqual(toolResultFacts.map((fact) => fact.erix.toolCallKey), keys);
+  });
+
   // ── 已完成结果的复放：原值不重算 ─────────────────────────────────────────────
   test(`${label}: 已完成结果复放沿用原 erix 值（durationMs 不重算、executor 不再被调）`, async () => {
     const { runToolLoop, createMemoryTranscriptStore } = await entry();
