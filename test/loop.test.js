@@ -71,30 +71,25 @@ test("feeds tool results back to the provider on the next round", async () => {
   assert.equal(result.finalText, "found");
   assert.equal(provider.requests.length, 2);
   // 事实面：双写期顶层旧字段一字未动（工单 261014 T1），引擎事实在 `erix.*`。
-  const fedBack = provider.requests[1].messages.at(-1).content[0];
-  assert.deepEqual(
-    {
-      role: provider.requests[1].messages.at(-1).role,
-      content: [{
-        type: fedBack.type,
-        tool_use_id: fedBack.tool_use_id,
-        content: fedBack.content,
-        erixRound: fedBack.erixRound,
-      }],
-    },
-    {
-      role: "user",
-      content: [{
-        type: "tool_result",
-        tool_use_id: "call-1",
-        content: "lookup:x",
-        erixRound: 1, // issue #35 年龄标记（TTL 折叠按创建轮判定）
-      }],
-    },
-  );
-  assert.equal(fedBack.erix.round, 1);
+  // 整条消息仍整块 deepEqual（只摘掉两个非确定的引擎事实），而不是挑字段比对。
+  const fedBackMessage = structuredClone(provider.requests[1].messages.at(-1));
+  const fedBack = fedBackMessage.content[0];
+  assert.match(fedBack.erix.toolCallKey, /^tc_[0-9a-f]{12}$/u);
   assert.equal(typeof fedBack.erix.durationMs, "number"); // issue #285：字符串返回形态也有耗时
-  assert.equal(fedBack.erix.success, undefined); // 没声明过 success 就不写（输入/输出不对称）
+  // 没声明过 success 就不写（输入/输出不对称，工单 §6.2）——用键集合钉住，不靠「挑字段」看不见。
+  assert.deepEqual(Object.keys(fedBack.erix).sort(), ["durationMs", "round", "toolCallKey"]);
+  delete fedBack.erix.toolCallKey;
+  delete fedBack.erix.durationMs;
+  assert.deepEqual(fedBackMessage, {
+    role: "user",
+    content: [{
+      type: "tool_result",
+      tool_use_id: "call-1",
+      content: "lookup:x",
+      erixRound: 1, // issue #35 年龄标记（TTL 折叠按创建轮判定）
+      erix: { round: 1 },
+    }],
+  });
 });
 
 test("returns truncated after maxRounds", async () => {
@@ -264,25 +259,22 @@ test("feeds executeTool errors back as is_error and continues", async () => {
   });
 
   assert.equal(result.finalText, "recovered");
-  const errorResult = provider.requests[1].messages.at(-1).content[0];
-  assert.deepEqual(
-    {
-      type: errorResult.type,
-      tool_use_id: errorResult.tool_use_id,
-      content: errorResult.content,
-      is_error: errorResult.is_error,
-      erixRound: errorResult.erixRound,
-    },
-    {
-      type: "tool_result",
-      tool_use_id: "bad",
-      content: "permission denied",
-      is_error: true,
-      erixRound: 1, // issue #35 年龄标记
-    },
-  );
+  // 同样是整块 deepEqual：摘掉两个非确定的引擎事实后，顶层旧字段（含 `is_error`）逐字对账。
+  const errorResult = structuredClone(provider.requests[1].messages.at(-1).content[0]);
+  assert.match(errorResult.erix.toolCallKey, /^tc_[0-9a-f]{12}$/u);
   // 抛错也是 settle：耗时是事实，不是只有成功才有（issue #285）。
   assert.equal(typeof errorResult.erix.durationMs, "number");
+  assert.deepEqual(Object.keys(errorResult.erix).sort(), ["durationMs", "round", "toolCallKey"]);
+  delete errorResult.erix.toolCallKey;
+  delete errorResult.erix.durationMs;
+  assert.deepEqual(errorResult, {
+    type: "tool_result",
+    tool_use_id: "bad",
+    content: "permission denied",
+    is_error: true,
+    erixRound: 1, // issue #35 年龄标记
+    erix: { round: 1 },
+  });
 });
 
 test("onToolResult can rewrite a result before it is fed back", async () => {
