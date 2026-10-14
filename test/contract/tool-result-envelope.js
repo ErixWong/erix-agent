@@ -3,8 +3,11 @@
 // 本套件钉的是**引擎产出的 tool_result / tool_use 事实形状**，不是宿主适配器：
 //   · 字段归属：协议字段在顶层（`type`/`tool_use_id`/`content`，条件 `is_error`）、引擎事实只在
 //     `erix.*`、宿主扩展在 `metadata.*`（双写期旧的顶层摊平键仍在，见下面的双写断言）；
-//   · `TOOL_RESULT_CONTRACT` 是这三条归属的唯一真相，期望字段集合**由常量生成**（常量被削掉一个
-//     字段，本套件立即红，而不是文档与测试各自再抄一份清单）；
+//   · `TOOL_RESULT_CONTRACT` 是这三条归属的唯一真相，期望字段集合**由常量生成**：字段名只能
+//     来自 `contract.engine.fields`、且必须在常量里声明了 `stages` 含 `result`（`expectedEngineFields`），
+//     常量被削掉一个字段本套件立即红，而不是文档与测试各自再抄一份清单。**唯一的例外**是
+//     `PINNED_ENGINE_FIELDS` 那一条——它的职责恰恰是钉常量自身，故显式分开命名并注释；
+//     文件末尾另有一条「常量里的每个字段都被断言过」的覆盖对账。
 //   · 存在性矩阵（工单 §5）：成功 / 失败 / judge 拦截 / resume 中断重放 / 已完成结果复放 /
 //     未 settle 即中止，逐情形断言，并含反向断言（拦截与中断**没有** durationMs、复放**不重算**、
 //     宿主同名键既在顶层也在 `metadata`、provider `id` 未被改写）；
@@ -129,10 +132,10 @@ export function toolResultEnvelopeContract(label, getEntry) {
       "is_error 必须作为条件协议字段登记（它在顶层，不在任何命名空间里）");
     assert.equal(constant.engine.ns, "erix");
     assert.equal(constant.host.ns, "metadata");
-    assert.deepEqual(
-      Object.keys(constant.engine.fields).sort(),
-      ["durationMs", "executionStatus", "round", "success", "toolCallKey"],
-    );
+    // `PINNED_ENGINE_FIELDS` 是本套件里**唯一一处**故意不从常量派生的字段名清单：它的职责就是
+    // 钉住常量自身被削/被改名（派生自它的断言在「常量少了字段、而构造器还在写」时才会红，
+    // 派生自身钉不住常量）。其余期望字段集合一律走 `expectedEngineFields()`。
+    assert.deepEqual(Object.keys(constant.engine.fields).sort(), PINNED_ENGINE_FIELDS);
     for (const [name, spec] of Object.entries(constant.engine.fields)) {
       assert.equal(spec.owner, "engine", `${name} 的 owner 必须是 engine`);
       assert.equal(spec.onWire, false, `${name} 不得上 wire`);
@@ -144,7 +147,36 @@ export function toolResultEnvelopeContract(label, getEntry) {
       "旧顶层字段的退役节奏必须写在常量里（T2 的 Changed（BREAKING）依据）");
   });
 
-  const expectedEngineFields = (...extra) => ["durationMs", "round", "toolCallKey", ...extra].sort();
+  /**
+   * 常量自身的期望形状（**故意**手写的例外，故与下面的派生器分开命名）：这条断言的职责是
+   * 在「常量被削字段 / 字段被改名」时立刻红——那份清单如果从常量派生就永远追不上被削的常量。
+   */
+  const PINNED_ENGINE_FIELDS = ["durationMs", "executionStatus", "round", "success", "toolCallKey"];
+  /** 本套件逐情形声明过的字段名（用来反向证明「常量里的每个字段都被断言过」）。 */
+  const assertedEngineFields = new Set();
+  /**
+   * 期望的 `erix` 字段集合——**由 `TOOL_RESULT_CONTRACT` 生成**（这一刀的全部意义就是常量、
+   * 构造器、文档锚点与本套件四方同源，所以这里不写第二份清单）：
+   *   · 字段名只能来自 `contract.engine.fields`——用例引用一个常量里没有的名字 ⇒ 立刻红；
+   *   · 每个字段还必须在常量里声明了 `stages` 含 `"result"`，否则它根本不该出现在 tool_result 上；
+   *   · 返回的集合按常量的成员顺序生成，用例只声明「这一情形写了哪几件」，不声明清单。
+   * 于是：常量削掉一个字段而构造器还在写 ⇒ 下面的集合对不上；常量新增字段而没人断言它 ⇒
+   * 文件末尾那条覆盖对账红。
+   */
+  const expectedEngineFields = (...written) => {
+    const registered = Object.keys(contract.engine.fields);
+    const unregistered = written.filter((name) => !registered.includes(name));
+    assert.deepEqual(unregistered, [],
+      `用例声明了常量里没登记的引擎字段名：${unregistered.join(" / ")}（期望集合只能来自 TOOL_RESULT_CONTRACT）`);
+    const offResultStage = written
+      .filter((name) => !contract.engine.fields[name].stages.includes("result"));
+    assert.deepEqual(offResultStage, [],
+      `这些字段在常量里的 stages 不含 "result"，不该出现在 tool_result 的 erix 上：${offResultStage.join(" / ")}`);
+    for (const name of written) assertedEngineFields.add(name);
+    return registered.filter((name) => written.includes(name)).sort();
+  };
+  /** 一次「真的执行过」的结果应当带的字段（拦截 / 中断那两条另算，见各自用例）。 */
+  const EXECUTED_RESULT_FIELDS = ["toolCallKey", "round", "durationMs"];
 
   /** 逐情形跑一次 runToolLoop，交回事件流、provider 请求、store 记录三侧的观测点。 */
   async function runCase(executeTool, { script = [toolRound("call-1"), DONE], options = {} } = {}) {
@@ -231,7 +263,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
       // 引擎事实只在 erix.*，且字段集合恰为矩阵这一行（executor 没声明 success 就不写第四件）
       assert.deepEqual(
         Object.keys(fact.erix).sort(),
-        expectedEngineFields(...(form.declared ? ["success"] : [])),
+        expectedEngineFields(...EXECUTED_RESULT_FIELDS, ...(form.declared ? ["success"] : [])),
       );
       assert.match(fact.erix.toolCallKey, TOOL_CALL_KEY_PATTERN);
       assert.equal(fact.erix.round, 1);
@@ -556,7 +588,11 @@ export function toolResultEnvelopeContract(label, getEntry) {
     assert.deepEqual(executed, ["a1"], "第二次调用应被拦截（写工具不放行）");
     const intercepted = toolResultFacts.find((fact) => fact.executionStatus === "intercepted");
     assert.ok(intercepted, `应有一条 intercepted 事实，实际：${JSON.stringify(toolResultFacts)}`);
-    assert.deepEqual(Object.keys(intercepted.erix).sort(), ["executionStatus", "toolCallKey"]);
+    assert.deepEqual(
+      Object.keys(intercepted.erix).sort(),
+      expectedEngineFields("toolCallKey", "executionStatus"),
+      "拦截只该带身份键与状态两件事（round/durationMs 未执行 = 未知）",
+    );
     assert.equal(intercepted.erix.executionStatus, "intercepted");
     assert.equal(intercepted.erix.round, undefined, "拦截未执行，不该伪造成交轮");
     assert.equal(intercepted.erix.durationMs, undefined, "拦截未执行，耗时是未知而不是 0");
@@ -614,7 +650,11 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const interrupted = eventsOfType(events, "tool_result").map((event) => event.toolResult)
       .find((fact) => fact.executionStatus === "interrupted");
     assert.ok(interrupted, "unsafe 调用应产出 interrupted 的 tool_result");
-    assert.deepEqual(Object.keys(interrupted.erix).sort(), ["executionStatus", "toolCallKey"]);
+    assert.deepEqual(
+      Object.keys(interrupted.erix).sort(),
+      expectedEngineFields("toolCallKey", "executionStatus"),
+      "中断重放只该带身份键与状态两件事（本轮没跑过）",
+    );
     assert.equal(interrupted.erix.toolCallKey, "tc_deadbeefcafe");
     assert.equal(interrupted.is_error, true);
     assert.equal(interrupted.erix.durationMs, undefined, "重放没跑过，耗时不得伪造");
@@ -685,5 +725,21 @@ export function toolResultEnvelopeContract(label, getEntry) {
       `erix.durationMs 只该覆盖 executor settle（实测 ${fact.erix.durationMs}ms，hook 自旋了 60ms）`);
     assert.ok(typeof fact.duration === "number" && fact.duration >= 50,
       `双写期的旧顶层 duration 保持历史口径（含 hook 耗时，实测 ${fact.duration}ms）`);
+  });
+
+  // ── 覆盖对账（**必须声明在本文件最后**：它读的是前面每条用例跑过时登记下来的字段名）────
+  // 有了它，「往常量里加一个引擎字段但没人断言它」不会静默过关；反方向（常量削字段而构造器
+  // 还在写）由各情形的集合对账兜住，「用例引用常量外的名字」由 `expectedEngineFields` 兜住。
+  test(`${label}: 常量登记的每个引擎字段都被某条期望集合断言过`, async () => {
+    await entry();
+    assert.deepEqual(
+      Object.keys(contract.engine.fields).sort(),
+      [...assertedEngineFields].sort(),
+      `常量与本套件的断言覆盖面不齐（常量多出：${
+        Object.keys(contract.engine.fields).filter((n) => !assertedEngineFields.has(n)).join(" / ")
+      }；套件多出：${
+        [...assertedEngineFields].filter((n) => !Object.hasOwn(contract.engine.fields, n)).join(" / ")
+      }）`,
+    );
   });
 }
