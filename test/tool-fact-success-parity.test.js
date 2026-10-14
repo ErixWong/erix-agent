@@ -174,10 +174,12 @@ for (const entry of MIGRATION_TABLE) {
       "executed 结果一律写 erix.success：顶层停写后它是成败的唯一出口");
     // wire 侧的 is_error 口径不许被这次改动带动。
     assert.equal(fact.is_error, entry.expectIsError ? true : undefined);
-    // 逐形态等价：旧顶层键（双写期仍在）必须逐字等于手算出来的那个旧值。
-    // 停写的 commit 会把这一句换成「顶层不得再出现该键」（值已改由上面那条守）。
-    assert.deepEqual(fact.success, entry.legacyTopLevelSuccess,
-      `旧顶层 success 必须等于旧表达式的值（手算值 ${JSON.stringify(entry.legacyTopLevelSuccess)}）`);
+    // 退役的那一半：旧顶层键必须真的没了，值只能从新家读到。
+    // （上面那句 `expectedSuccess` 与下表 `legacyTopLevelSuccess` 的关系就是「迁移等价」本体：
+    //   新家的值 == 旧表达式会算出的值；旧键从「等于手算旧值」换成「不得出现」就是这一刀。）
+    assert.equal(fact.success, undefined,
+      `顶层 success 已退役，值只能在 erix.success 读（旧顶层本应是 ${
+        JSON.stringify(entry.legacyTopLevelSuccess)}）：实测 ${JSON.stringify(fact.success)}`);
   });
 }
 

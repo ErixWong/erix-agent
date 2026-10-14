@@ -262,8 +262,9 @@ export function createRunSnapshotExecutor(ctx) {
     let isError = false;
     // 引擎事实 `erix.durationMs` 的口径（工单 §6.1，本单把它钉成「settle 时刻捕获一次」）：
     // 从「调用 executor 前」计到「该 promise settle/reject」，**不含** onToolResult 改写、输出卫生与
-    // 单轮聚合。旧顶层 `duration` 仍由 normalizeExecutionResult 计算（结构化路径含 hook 耗时），
-    // 双写期一字未动 —— 于是两者在结构化路径上**故意**不相等，见 CHANGELOG 的 Changed 条目。
+    // 单轮聚合。旧顶层 `duration` 曾在结构化路径上含 hook 耗时（两者故意不相等），T2 停写后
+    // 那个旧键已退役，现在只有一个耗时：`erix.durationMs`。它仍然只经 normalizeExecutionResult 的
+    // `metadata.duration` 进入 `onToolResult` 钩子（钩子的入参形状没动）。
     let durationMs;
     try {
       const structuredOptions = {
@@ -280,7 +281,7 @@ export function createRunSnapshotExecutor(ctx) {
       );
       // `Math.max(0, …)`：`Date.now()` 是墙钟，NTP 校时/手动改时可回拨，于是差值可能为负。
       // 负的「耗时」不是一个可解释的事实，而下游只过 `Number.isFinite`（投影）会照收。
-      // 顶层旧 `duration` 保持原口径不动（双写期 parity，T2 停写），只有引擎事实 `erix.durationMs` 夹住。
+      // 只有引擎事实 `erix.durationMs` 被夹住（顶层旧 `duration` 已在 T2 退役，不再有第二个口径要兼顾）。
       durationMs = Math.max(0, Date.now() - startedAt);
       execution = normalizeExecutionResult(result, startedAt);
     } catch (error) {
@@ -359,20 +360,15 @@ export function createRunSnapshotExecutor(ctx) {
       isError || execution.success === false,
     );
     const failed = isError || execution.success === false;
-    // 年龄标记（issue #35）：TTL 折叠按创建轮判定。附加字段穿过
-    // cloneState/协议转换（wire 上被 canonicalToOpenAI/Anthropic 丢弃）/validateMessages 均安全，
-    // run snapshot persist/restore 后仍在（resume-manager 经 cloneState 原样带回）。
-    const legacyTopLevel = {
-      ...execution.metadata,
-      ...(Number.isFinite(round) ? { erixRound: round } : {}),
-    };
+    // 年龄标记（issue #35）：TTL 折叠按创建轮判定，现在只住在 `erix.round` 上（T2 停写了顶层
+    // `erixRound`）。附加字段穿过 cloneState/协议转换（wire 上被 canonicalToOpenAI/Anthropic 丢弃）
+    // /validateMessages 均安全，run snapshot persist/restore 后仍在（resume-manager 原样带回）。
     const budgetHint = budgetHintFor();
     const toolResult = buildToolResultFact({
       toolUseId: block.id,
       content: execution.content,
       isError: failed,
       hostMetadata: execution.hostMetadata,
-      legacyTopLevel,
       engine: {
         // 身份键由调用点（orchestrator 的接受点 / resume 路径）在调用被接受时分配一次；
         // 这里只搬运，绝不重新分配 —— 否则线 A 与线 B 会各拿一个 key。
@@ -388,7 +384,8 @@ export function createRunSnapshotExecutor(ctx) {
         success: execution.success,
       },
     });
-    // 预算催收尾追加在**双写包之后**（与改动前逐字同口径：宿主摊平的同名 `content` 键仍然优先）。
+    // 预算催收尾追加在**事实构造之后**（旧顶层摊平时宿主的同名 `content` 键会抢先生效，停写后
+    // 只剩这一条顺序：催收尾始终追在正文后面）。
     if (budgetHint) toolResult.content = `${toolResult.content}\n${budgetHint}`;
     if (failed) {
       toolStat.failures += 1;
@@ -579,13 +576,12 @@ export function createRunSnapshotExecutor(ctx) {
     const interceptedContent = `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。`;
     const budgetHint = budgetHintFor();
     // 被拦截的调用**从未执行**：既不写 `erix.round` 也不写 `erix.durationMs`（工单 §5 存在性矩阵，
-    // 「缺失 = unknown，不是 0」）。顶层旧 `executionStatus` 属双写包，照写不动（T2 停写）。
+    // 「缺失 = unknown，不是 0」），也不写 `erix.success`（没跑过就没有成败可言）。
     const toolResult = buildToolResultFact({
       toolUseId: block.id,
       content: budgetHint
         ? `${interceptedContent}\n${budgetHint}`
         : interceptedContent,
-      legacyTopLevel: { executionStatus: "intercepted" },
       engine: {
         toolCallKey: typeof block?.erix?.toolCallKey === "string"
           ? block.erix.toolCallKey

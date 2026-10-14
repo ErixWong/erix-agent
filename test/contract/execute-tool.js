@@ -90,21 +90,23 @@ export function executeToolContract(label, createExecutor) {
   test(`${label}: string return becomes a successful tool_result`, async () => {
     const { provider } = await runExecutor(async () => "string result");
     const toolResult = toolResultFrom(provider);
-    // 双写期（工单 261014 T1）：旧顶层字段一字未动，引擎事实在 `erix.*` 并行新增。
+    // 停写后（工单 261014 T2）：引擎写出的块只剩**协议字段 + `metadata.*` + `erix.*`**。
     // 整块形状仍逐字对账（**不放宽成挑字段**）：先把两个非确定值（身份键、settle 耗时）
-    // 摘出来单独断言，剩下的整块 deepEqual —— 于是「顶层凭空多一个键」照样红。
+    // 摘出来单独断言，剩下的整块 deepEqual —— 于是「顶层凭空多一个键」（例如旧 `erixRound`
+    // 被某个调用点默默补回来）照样红。
     const { erix, ...topLevel } = structuredClone(toolResult);
     assert.match(erix.toolCallKey, /^tc_[0-9a-f]{12}$/u);
     assert.equal(typeof erix.durationMs, "number");
-    assert.deepEqual(Object.keys(erix).sort(), ["durationMs", "round", "toolCallKey"]);
+    assert.deepEqual(Object.keys(erix).sort(), ["durationMs", "round", "success", "toolCallKey"]);
     delete erix.toolCallKey;
     delete erix.durationMs;
     assert.deepEqual({ ...topLevel, erix }, {
       type: "tool_result",
       tool_use_id: "contract-tool-1",
       content: "string result",
-      erixRound: 1, // issue #35 TTL 折叠年龄标记
-      erix: { round: 1 },
+      // 年龄标记现在只住在 `erix.round`（旧顶层 `erixRound` 已退役）；
+      // `success` 一律写（T2 §4：顶层停写后它是成败的唯一出口）。
+      erix: { round: 1, success: true },
     });
   });
 
@@ -114,10 +116,15 @@ export function executeToolContract(label, createExecutor) {
       metadata: { artifactStatus: "ok" },
       success: true,
     }));
-    assert.equal(toolResultFrom(provider).content, "structured result");
-    assert.equal(toolResultFrom(provider).artifactStatus, "ok");
-    assert.equal(toolResultFrom(provider).success, true);
-    assert.equal(toolResultFrom(provider).is_error, undefined);
+    const toolResult = toolResultFrom(provider);
+    assert.equal(toolResult.content, "structured result");
+    // 宿主扩展的唯一家是 `metadata.*`（旧顶层摊平已退役：这条断言的方向就是 T2 反转的那一条）。
+    assert.equal(toolResult.metadata.artifactStatus, "ok");
+    assert.equal(Object.hasOwn(toolResult, "artifactStatus"), false,
+      "顶层不得再出现宿主摊平键");
+    assert.equal(toolResult.erix.success, true);
+    assert.equal(toolResult.success, undefined, "顶层 success 已退役");
+    assert.equal(toolResult.is_error, undefined);
   });
 
   test(`${label}: legacy data result remains normalized`, async () => {
@@ -126,9 +133,13 @@ export function executeToolContract(label, createExecutor) {
       success: true,
       toolMessageId: "legacy-message",
     }));
-    assert.equal(toolResultFrom(provider).content, "legacy result");
-    assert.equal(toolResultFrom(provider).success, true);
-    assert.equal(toolResultFrom(provider).toolMessageId, "legacy-message");
+    const toolResult = toolResultFrom(provider);
+    assert.equal(toolResult.content, "legacy result");
+    assert.equal(toolResult.erix.success, true);
+    assert.equal(toolResult.metadata.toolMessageId, "legacy-message",
+      "遗留形态的额外键同样只进 metadata.*");
+    assert.equal(Object.hasOwn(toolResult, "toolMessageId"), false, "顶层不得再出现该宿主键");
+    assert.equal(toolResult.success, undefined, "顶层 success 已退役");
   });
 
   test(`${label}: returned Error becomes an error tool_result`, async () => {

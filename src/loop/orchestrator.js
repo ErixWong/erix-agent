@@ -2771,8 +2771,8 @@ export async function runToolLoop(options) {
               && outputs.indexOf(content) === outputIndex
             ))
             .join("\n\n");
-          // 中断重放的事实同样只由构造器产生（工单 §5）：`is_error` 在顶层（wire），
-          // `executionStatus: "interrupted"` 同时进双写包的顶层旧键与 `erix.*`；
+          // 中断重放的事实同样只由构造器产生（工单 §5）：`is_error` 在顶层（wire 字段），
+          // `executionStatus: "interrupted"` 只进 `erix.*`（T2 停写后顶层不再有旧同名键）；
           // **不写 `erix.round` 也不写 `erix.durationMs`**——本次重放没跑过，耗时是未知而不是 0。
           const toolResult = buildToolResultFact({
             toolUseId: resumePendingTool.id,
@@ -2782,7 +2782,6 @@ export async function runToolLoop(options) {
                 ? `\n\nPreviously captured partial output:\n${partialOutput}`
                 : ""),
             isError: true,
-            legacyTopLevel: { executionStatus: "interrupted" },
             engine: {
               toolCallKey: resumedToolCallKey,
               executionStatus: "interrupted",
@@ -2791,7 +2790,11 @@ export async function runToolLoop(options) {
           if (existingToolResult) {
             existingToolResult.content = toolResult.content;
             existingToolResult.is_error = true;
-            existingToolResult.executionStatus = "interrupted";
+            // 就地改写也只能写引擎命名空间（工单 261014 T2 §2.3）：顶层那个旧名已退役。
+            // 升级前的块可能带着一个**过期**的顶层 `executionStatus`（旧 attempt 的状态），
+            // 而本块现在说的是「没跑完」这件新事实，所以下面整块换 `erix` 时顺手把它扫掉，
+            // 不给读路径留两份互相矛盾的事实（投影已改成 `erix` 优先，不扫也只是冗余）。
+            delete existingToolResult.executionStatus;
             // 那个块现在代表的是「没跑完」这件新事实，不是丢失那次 attempt 的已完成结果：
             // 整块 `erix` 换成本次重放的事实（沿用同一个身份键，丢掉属于旧 attempt 的耗时与轮号）。
             existingToolResult.erix = {

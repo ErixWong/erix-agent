@@ -236,6 +236,24 @@ test("includes the canonical response summary in onRound records", async () => {
   // 其余字段逐字对账，不放宽。
   const round0Response = structuredClone(records[0].response);
   assert.match(round0Response.content[1].erix.toolCallKey, /^tc_[0-9a-f]{12}$/u);
+  // T1 留的缺口（工单 261014 §5）：旧版本只匹配 key 的形状就把整块 `erix` 删掉，于是
+  // 「块里多写了一件事实」与「值写错了」都看不见。先钉住块上 `erix` 的字段集合，再拿
+  // 配对结果的 **值** 对账（停写后结果块只有 `erix.*`，没有顶层旧键）。
+  assert.deepEqual(Object.keys(round0Response.content[1].erix).sort(), ["toolCallKey"],
+    "tool_use 块上只该有身份键（轮号与耗时属于结果的事实）");
+  const pairedResult = provider.requests[1].messages
+    .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
+    .find((block) => block?.type === "tool_result" && block.tool_use_id === "call-1");
+  assert.equal(pairedResult.erix.toolCallKey, round0Response.content[1].erix.toolCallKey,
+    "同一次调用的结果沿用同一个身份键（值对账，不是只看形状）");
+  assert.equal(pairedResult.erix.round, 1);
+  assert.equal(pairedResult.erix.success, true);
+  assert.equal(typeof pairedResult.erix.durationMs, "number");
+  assert.deepEqual(
+    Object.keys(pairedResult).filter((key) => !["type", "tool_use_id", "content"].includes(key)).sort(),
+    ["erix"],
+    "停写后结果块的顶层除了协议字段就只剩 `erix`（旧 `erixRound` 之类不得再现身）",
+  );
   delete round0Response.content[1].erix;
   assert.deepEqual(round0Response, {
     content: [

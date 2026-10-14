@@ -10,9 +10,10 @@
 //      构造器（按它写路径）、`scripts/docs-drift-check.mjs`（契约文档的字段清单与该常量双向比成员）、
 //      `test/contract/tool-result-envelope.js`（从常量生成期望字段集合）。
 //
-// T1 是 **additive 双写期**（工单 §7）：旧的顶层键（`erixRound` / `duration` / 顶层 `executionStatus` /
-// 宿主摊平键）一律照写不动，`erix.*` 与 `metadata.*` 是并行新增。停写旧字段是下一张单（T2，
-// Changed（BREAKING）），退役口径写在 `TOOL_RESULT_CONTRACT.legacy`。
+// T1 是 additive 双写期；**T2（工单 261014）结束双写**：引擎不再写顶层摊平的宿主键，也不再写顶层
+// `erixRound` / `duration` / `executionStatus` / `success`。那是 BREAKING，进 CHANGELOG 的
+// `Changed (BREAKING)`；退役名单与「旧记录一代内仍可读」的口径写在 `TOOL_RESULT_CONTRACT.legacy`。
+// 读路径只剩三处（TTL 折叠 / 投影 / 续跑复放），它们只负责旧记录，不再负责引擎自己刚写的块。
 //
 // 零依赖红线：只用 `node:` 内置 + 相对路径。
 
@@ -76,6 +77,8 @@ export const TOOL_RESULT_CONTRACT = deepFreeze({
         stages: ["result"],
         resumeStable: true,
         onWire: false,
+        writtenFor: "every executed result",
+        note: "T2 起一律写：顶层 success 停写后它是成败的唯一出口，「宿主声明过才写」会把「成功」与「未声明」压成同一件事",
       },
     },
   },
@@ -84,24 +87,32 @@ export const TOOL_RESULT_CONTRACT = deepFreeze({
     rule: "宿主只能写这里，引擎不得读出后覆盖引擎事实",
   },
   /**
-   * 顶层保留键名（工单 261014 T1-fix 第 5 项）：这两个名字**就是命名空间本身**，永远由构造器
-   * 写。双写包（`legacyTopLevel`）里与它们同名的宿主键一律**不落到顶层**——否则宿主自有键会先
-   * 占位、再被命名空间盖掉，值在顶层静默消失。值不丢：它一直在 `metadata.<键>` 里。
-   * 注意**不包含** `type` / `tool_use_id` / `content` / `is_error`：那四个协议字段被宿主摊平键
-   * 覆盖是 12968ee 就有的 parity（`...execution.metadata` 摊在最后），收紧它属 T2 的账。
+   * 顶层保留键名（工单 261014 T1-fix 第 5 项，T2 停写后仍然成立）：这两个名字**就是命名空间本身**，
+   * 永远由构造器写。宿主自有的同名键只能住在 `metadata.<键>` 里（`metadata.metadata` / `metadata.erix`）——
+   * 停写后顶层已没有摊平路径，所以这不再是一个「看写入顺序才知道结果」的静默丢值，而是一句干净的归属声明。
+   * 注意**不包含** `type` / `tool_use_id` / `content` / `is_error`：那四个协议字段被宿主键覆盖与否是另一件
+   * 事（工单 261014 §7 明写本刀**不**把它们纳入保留键，收紧另案）。
    */
   reserved: {
     topLevelKeys: ["metadata", "erix"],
-    rule: "构造器独占这两个顶层键；双写包里的同名项被过滤，宿主值只在 metadata.<键> 里可取",
+    rule: "构造器独占这两个顶层键；宿主的同名扩展只在 metadata.<键> 里可取",
   },
+  /**
+   * **退役名单**（T2 起不再是「双写对照表」）：这些顶层名引擎**已经不再写**，
+   * 但升级前落盘的旧记录（run snapshot / transcript）里可能仍有 —— 读路径保留一代，
+   * 共三处：`src/loop/tool-result-ttl.js`（年龄标记）、`src/display/projection.js`（执行状态）、
+   * `src/loop/orchestrator.js` 的续跑复放（原值直接带回，不重算也不补写）。
+   */
   legacy: {
     aliases: {
       erixRound: "erix.round",
       duration: "erix.durationMs",
       executionStatus: "erix.executionStatus",
+      success: "erix.success",
       "<host key>@top level": "metadata.<host key>",
     },
-    dualWrite: "一个 minor",
+    written: false,
+    readWindow: "旧记录一代内仍可读（上面那三处读路径）",
     retireAt: "下一个 minor（CHANGELOG 挂 Changed（BREAKING））",
   },
 });
@@ -117,13 +128,10 @@ export const TOOL_FACT_HOST_NS = TOOL_RESULT_CONTRACT.host.ns;
  */
 const ENGINE_FIELDS = /** @type {any} */ (TOOL_RESULT_CONTRACT.engine.fields);
 
-/** 顶层保留键名（同样从常量派生；构造器用它过滤双写包，见 `buildToolResultFact`）。 */
-const RESERVED_TOP_LEVEL_KEYS = Object.freeze(
-  /** @type {readonly string[]} */ (TOOL_RESULT_CONTRACT.reserved.topLevelKeys),
-);
+// T2 停写之后，构造器不再有「把键铺到顶层」这条路径，所以 `TOOL_RESULT_CONTRACT.reserved.topLevelKeys`
+// 不再需要一个运行时过滤器：顶层的 `metadata` / `erix` 天然只能由下面的命名空间写入产生。
+// 常量仍然**登记**它们（契约中英两侧的「保留键名」声明由它锚定，改名就红）。
 
-/** 保留键名的集合视图（模块级一次构造，不在每次构造事实时重算）。 */
-const reservedGuard = new Set(RESERVED_TOP_LEVEL_KEYS);
 
 /** 引擎身份键的随机源：`node:crypto` 的 6 字节 hex（无第三方 id 生成器）。 */
 export function allocateToolCallKey() {
@@ -261,9 +269,9 @@ export function ensureToolCallKeyOnBlock(block, assigned) {
 /**
  * 构造一个 canonical `tool_result` **事实**（唯一构造点）。
  *
- * 写入顺序 = 优先级顺序（后写覆盖先写）：`type`/`tool_use_id`/`content` → T1 双写包
- * （`legacyTopLevel`，T2 删）→ `metadata`（宿主命名空间）→ `is_error`（wire）→ `erix`（引擎命名空间）。
- * 引擎命名空间排在最后，所以宿主摊平上来的同名键**不会**盖掉引擎事实。
+ * 写入顺序 = 优先级顺序（后写覆盖先写）：`type`/`tool_use_id`/`content` → `metadata`（宿主命名空间）
+ * → `is_error`（wire）→ `erix`（引擎命名空间）。除此之外**一个顶层键也不写**：T1 的 `legacyTopLevel`
+ * 双写包到 T2 整条删除（工单 261014 §3），所以引擎写出的块只剩协议字段 + `metadata.*` + `erix.*`。
  * `content` 是协议必需字段（模型可见文本），调用点必须给；`input` 只在测试里允许缺省。
  *
  * @param {{
@@ -272,7 +280,6 @@ export function ensureToolCallKeyOnBlock(block, assigned) {
  *   isError?: boolean,
  *   hostMetadata?: Record<string, unknown>,
  *   engine?: Record<string, unknown>,
- *   legacyTopLevel?: Record<string, unknown>,
  * }} [input]
  * @returns {Record<string, any>}
  */
@@ -283,19 +290,8 @@ export function buildToolResultFact(input = {}) {
     ...(input.toolUseId === undefined ? {} : { tool_use_id: input.toolUseId }),
     content: input.content,
   };
-  // T1 双写（工单 §7）：旧的顶层宿主摊平键与 `erixRound`/`duration`/顶层 `executionStatus`
-  // 一律照写不动。**摊平动作发生在调用点**（调用点显式给出 legacyTopLevel），构造器本身
-  // 永远不把 `metadata` 的内容铺到顶层。
-  // 例外是保留键名（`TOOL_RESULT_CONTRACT.reserved.topLevelKeys`，工单 T1-fix 第 5 项）：宿主
-  // 若有一个自有键恰好叫 `metadata` 或 `erix`，先写到顶层就会被下面的命名空间盖掉——那是
-  // 一个「看写入顺序才知道结果」的静默丢值。这里显式跳过，让「保留键归构造器」成为一个决定
-  // 而不是巧合；宿主的值仍然取得到，在 `metadata.<键>` 里。
-  if (input.legacyTopLevel) {
-    for (const [key, value] of Object.entries(input.legacyTopLevel)) {
-      if (value === undefined || reservedGuard.has(key)) continue;
-      fact[key] = value;
-    }
-  }
+  // T2 停写：顶层不再有双写包（旧形状里只有协议字段 + 两个命名空间）。宿主的扩展只能落在
+  // `metadata.<键>`，因此保留键名（`metadata` / `erix`）也不再需要过滤器——没有摊平路径就没有覆盖。
   const hostMetadata = input.hostMetadata;
   if (hostMetadata && Object.keys(hostMetadata).length > 0) {
     fact[TOOL_FACT_HOST_NS] = { ...hostMetadata };

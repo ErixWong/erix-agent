@@ -536,7 +536,9 @@ test("per-tool replay policy interrupts unsafe tools and exposes saved partial o
   const interruptedResult = result.messages
     .flatMap((message) => message.content ?? [])
     .find((block) => block.type === "tool_result" && block.tool_use_id === "unsafe-call");
-  assert.equal(interruptedResult.executionStatus, "interrupted");
+  // 执行状态只住在 `erix.executionStatus`（工单 261014 T2 停写了顶层旧同名键）。
+  assert.equal(interruptedResult.erix.executionStatus, "interrupted");
+  assert.equal(Object.hasOwn(interruptedResult, "executionStatus"), false, "顶层旧键已退役");
   assert.equal(interruptedResult.is_error, true);
   assert.match(interruptedResult.content, /was not replayed/u);
   assert.match(interruptedResult.content, /captured output before interruption/u);
@@ -548,7 +550,8 @@ test("per-tool replay policy interrupts unsafe tools and exposes saved partial o
   const modelResult = provider.requests[0].messages
     .flatMap((message) => message.content ?? [])
     .find((block) => block.type === "tool_result" && block.tool_use_id === "unsafe-call");
-  assert.equal(modelResult.executionStatus, "interrupted");
+  assert.equal(modelResult.erix.executionStatus, "interrupted");
+  assert.equal(Object.hasOwn(modelResult, "executionStatus"), false, "递给模型的那一份同样不再有顶层旧键");
   assert.match(modelResult.content, /captured output before interruption/u);
   assert.match(modelResult.content, /partial response already persisted/u);
 });
@@ -603,8 +606,12 @@ test("resumes a partial tool-result message without dropping text or breaking pa
   });
 
   const toolResultMessage = provider.requests[0].messages[2];
-  // 引擎事实在 `erix.*`（工单 261014 T1）：本例测的是「合并不丢文本、配对不破坏」，
+  // 引擎事实在 `erix.*`（工单 261014 T2）：本例测的是「合并不丢文本、配对不破坏」，
   // 逐字段的存在性矩阵见 test/contract/tool-result-envelope.js。
+  // T1 留的缺口：旧版只对账**键名**（`__erixKeys`），于是 `erix` 里装错值也看不出来；
+  // 下面在保留整块对账的同时，对 `erix` 的**值**也断言（身份键沿用、轮号与耗时不重算）。
+  const replayedErix = toolResultMessage.content
+    .find((block) => block.type === "tool_result" && block.tool_use_id === "b")?.erix;
   const mergedBlocks = toolResultMessage.content.map((block) => {
     const { erix, ...rest } = block;
     return { ...rest, ...(erix === undefined ? {} : { __erixKeys: Object.keys(erix).sort() }) };
@@ -616,12 +623,20 @@ test("resumes a partial tool-result message without dropping text or breaking pa
       type: "tool_result",
       tool_use_id: "b",
       content: "done-b",
-      erixRound: 1,
-      // 续跑重放的已完成结果同样带全引擎事实：身份键沿用旧快照块上的值（旧快照没有则当场补一个），
-      // round + settle 时刻的 durationMs 不重算。
-      __erixKeys: ["durationMs", "round", "toolCallKey"],
+      // 年龄标记只住 erix.round（顶层 erixRound 已退役），且不再多一个顶层摊平键。
+      __erixKeys: ["durationMs", "round", "success", "toolCallKey"],
     },
   ]);
+  // 值对账（而不是只看键名）：`b` 是续跑本轮**真的执行了**的那一个，所以四个事实都要真对得上值。
+  assert.equal(replayedErix.round, 1, "erix.round 是执行轮（续跑从 checkpoint 的 round 1 继续）");
+  assert.equal(typeof replayedErix.durationMs, "number");
+  assert.ok(Number.isFinite(replayedErix.durationMs) && replayedErix.durationMs >= 0,
+    `耗时必须是个可解释的非负数，实测 ${replayedErix.durationMs}`);
+  assert.match(replayedErix.toolCallKey, /^tc_[0-9a-f]{12}$/u, "身份键沿用同一次调用的值");
+  assert.equal(replayedErix.success, true, "executor 没声明成败时一律写下归一化后的 true");
+  // 宿主自己写下的 checkpoint 里那两条 `tool_use` 没有身份键（本例是手摆的崩溃现场），
+  // 所以这里只钉结果侧的 key 形状；跨通道同值那件事由 test/contract/tool-result-envelope.js 负责。
+  assert.equal(new Set([replayedErix.toolCallKey]).size, 1);
 });
 
 test("does not merge a tool result whose id belongs to another assistant call", async () => {

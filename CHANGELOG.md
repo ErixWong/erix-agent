@@ -4,6 +4,15 @@
 
 ## [Unreleased]（发版时归入 **0.20.0**；本单不动 `package.json` 的版本号，仍 `0.19.0`）
 
+### Changed (BREAKING)
+
+- **工具事实：顶层摊平字段停写，结束 issue #284 T1 承诺的一个 minor 双写期。** `buildToolResultFact()` 的 `legacyTopLevel` 入参与「宿主扩展摊平到顶层」那一段一起删掉，引擎产出的 `tool_result` 从此**恰好**是协议字段（`type` / `tool_use_id` / `content`，错误与中断结果再加 `is_error`）+ `metadata.*` + `erix.*`。退役名单（`TOOL_RESULT_CONTRACT.legacy` 现在写的就是这张表，不再是双写对照表）：`erixRound` → `erix.round`、`duration` → `erix.durationMs`、`executionStatus` → `erix.executionStatus`、`success` → `erix.success`、摊平到顶层的任意宿主键 → `metadata.<宿主键>`。**读侧仍留一代**：升级前落盘的记录里这些名字可能还在，所有读路径已改成引擎命名空间优先、顶层只作旧记录回退 —— TTL 折叠（`src/loop/tool-result-ttl.js`）、投影（`src/display/projection.js`）、续跑复放（`src/loop/orchestrator.js`，原样带回，不重算也不补写）、单轮聚合预算的「拦截不是输出」（`src/loop/aggregate-budget.js`）、judge 时间线与对话渲染（`src/reflection/judge.js`）、L0 客观事实（`src/reflection/l0.js`）、`hasSuccessfulToolResult`（`src/loop/messages.js`）。三条主读路径都是反向锁：先造「只有顶层旧名」的旧记录证回退确实生效，再造「两侧不相等」的记录证优先级确实翻了（`test/tool-result-ttl.test.js`、`test/display/projection.test.js`、`test/tool-fact-legacy-read-paths.test.js`）。
+  - **顺带修掉一个静默错误**：`aggregateAppliedOutputChars` 过去按顶层 `block.executionStatus === "intercepted"` 排除拦截，而那个键**从来没被写过**（旧代码只把它塞进 `legacyTopLevel` 这个输入里，构造器从不读它）——「拦截不计入输出」此前实际不生效。现在两侧都读，新记录与 T1 时期落盘的旧记录同样受保护。
+  - **`erix.success` 改为无条件写**（`success !== false`，与退役前顶层 `success` 同一个表达式）。它过去只在宿主 / `onToolResult` 钩子真的表过态时才写；顶层那个键没了以后还按条件写，宿主就分不清「成功」与「没表过态」，等于把 #234 那类误判重新引进来。等价性由 `test/tool-fact-success-parity.test.js` 钉住：15 条硬编码真值（六种 executor 返回形状 × 成功与失败，含 `success: 0` 归一化成 `true` 这条既有语义），两侧各自写死期望值、不是互抄。
+  - 副作用一处：宿主扩展里写作 `content` 或 `is_error` 的键过去会盖掉同名协议字段（旧代码把扁平 map 摊在最后），现在它只存在于 `metadata.content` / `metadata.is_error`，盖不动了。`type` / `tool_use_id` / `content` / `is_error` **仍未**登记进 `reserved.topLevelKeys`（这一刀不改那份登记，要不要收紧是另一个决定）；`metadata` 与 `erix` 则由「被过滤器跳过」变成构造器**独占**。
+  - 验收面：`test/contract/tool-result-envelope.js` 里三条「两侧都有」的双写断言反转为只允许命名空间一侧，并新增一条反向哨兵 —— 顶层出现退役名单里的任何一个名字就红（含一个**完全自定义**的 `metadata` / `erix` 宿主：它的同名扩展键必须既不出现在顶层、也不变成协议字段）。`scripts/docs-drift-check.mjs --self-test` 加一例「契约 EN 的退役名单漏写 `success` 就红」（74 → 75 例，仍 ≥ `MIN_SELF_TEST_CASES`）。
+  - **版本号本刀不动**（`package.json` 仍 0.19.0），发布与版本号推进归 T4。中英契约与 `TOOL_RESULT_CONTRACT` 的对账由 `check:docs` 的 alias 别名表锚点承担（退役名单与常量逐键相等）。
+
 ### Added
 
 - 中英契约文档新增一节**出厂工具的 `replay` 标注现状表与切换清单**（`docs/host-consumer-contract.md` “Factory tool replay declarations and the switch-over checklist (issue #139)” / `docs/host-consumer-contract_cn.md` 「出厂工具的 `replay` 标注现状与切换清单（issue #139）」，**中英成对**；另在原「Tool replay policy (issue #139)」节末各加一句指向本节的前向引用）。**谁提的**：宿主只能自己 grep 源码才知道出厂工具全都没标 `replay`——而按契约「未标即 unsafe」，那意味着切到 `per-tool-declaration` 后**每一个挂起调用**都会变成 `interrupted`。本节把这件事从源码里挖出来写成文档事实：

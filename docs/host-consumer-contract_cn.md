@@ -1604,13 +1604,17 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 3. `is_error` 留在顶层——它是 wire 字段（Anthropic 请求构造器会发出去），不是命名空间成员。
 
 `metadata` 与 `erix` 是**保留的顶层键名**，登记在 `TOOL_RESULT_CONTRACT.reserved.topLevelKeys`
-里，双写摊平时会跳过它们。不跳过的话，宿主那个恰好同名的扩展键会先被写到顶层、一条语句
-之后就被自己的命名空间盖掉——活下来什么取决于写入顺序而不是归属。值不会丢：它留在宿主
-命名空间里，在 `metadata.metadata` / `metadata.erix` 取得到。**刻意不**保留的是 `type`、
-`tool_use_id`、`content`、`is_error`——宿主用这几个名字当键仍然会覆盖那个协议字段，与本契约
-之前一模一样（旧代码就是把扁平 map 摊在最后）；要不要收紧它是退役那一单的决定，不是这一单的。
+里。下面那张退役表之后已经**没有摊平这一步**了，所以这两个名字是构造器**独占**的（不再是
+「被过滤器跳过」）：宿主那个恰好同名的扩展键只能住在宿主命名空间里，在
+`metadata.metadata` / `metadata.erix` 取得到。退役之前它确实会先被写到顶层、一条语句之后
+就被自己的命名空间盖掉——活下来什么取决于写入顺序而不是归属。**刻意不**登记为保留键的是
+`type`、`tool_use_id`、`content`、`is_error`，这一刀**没改**这份登记（要不要收紧它是另一个
+决定，不是这一刀的）。但顺带的变化值得知道：宿主键被摊到顶层的那段时期里，一个写作
+`content` 或 `is_error` 的扩展键真的会盖掉协议字段；现在宿主扩展再也没有通往顶层的路，
+也就再盖不动了。
 
-构造器从不把 `metadata` 摊平到顶层。`erix` 与 `metadata` 都不会发给 provider：两个协议
+构造器从不把 `metadata` 摊平到顶层，而这一刀之后它**一个别的顶层键也不写**：引擎产出的
+`tool_result` 恰好就是协议字段 + `metadata.*` + `erix.*`。`erix` 与 `metadata` 都不会发给 provider：两个协议
 转换器都按显式字段清单序列化 `tool_result`，所这两个命名空间都是 `onWire: false`。输出
 卫生、单轮聚合、折叠三层只替换 `content`，事实字段原样存活。
 
@@ -1629,7 +1633,7 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 | `erix.round` | 引擎 | 调用真的执行了 | **执行轮**。它不是事件 envelope 的 `round`（交付轮），两者刻意不合并。 |
 | `erix.durationMs` | 引擎 | executor 的 promise settle 或 reject 了 | 从「调用 executor 前」到「该 promise settle/reject」的毫秒数。 |
 | `erix.executionStatus` | 引擎 | 仅特殊状态 | `intercepted` / `interrupted`。 |
-| `erix.success` | 引擎 | 仅当 executor（或 `onToolResult` 改写钩子）显式声明过 | 引擎归一化后的布尔值。 |
+| `erix.success` | 引擎 | executor 的 promise settle 过的每一条结果 | 引擎归一化后的布尔值（`success !== false`）。顶层 `success` 退役后它就**无条件写**：顶层没了以后还按「宿主声明过才写」，宿主就分不清「成功」与「没表过态」。根本没跑的调用（judge 拦截、中断重放）没有成败可言，因此也没有该字段。 |
 | `metadata.*` | 宿主 | executor 返了扩展就有 | 宿主唯一可写的命名空间。 |
 
 ### durationMs 在 executor settle 时刻捕获，缺失就是未知
@@ -1641,31 +1645,49 @@ settle 就被中止的调用都没有耗时字段，而 `?? 0` 会把「我们�
 executor 的六种返回形态（`string`、`number`、`{content, metadata}`、遗留的 `{data}`、
 返回的 `Error`、抛出的非 abort 异常）都带耗时，因为「报错前跑了 40ms」也是一件事实。
 
-这是一次**口径收紧**，不是逐字重导：旧顶层 `duration` 键保持历史行为，即只有当该钩子返回
-**结构化**对象时才会把 `onToolResult` 的耗时算进去。双写期内，两个数字在那条路径上会
-合法地不相等，要读的是 `erix.durationMs`。
+这曾是一次**口径收紧**：旧顶层 `duration` 键保持历史行为，即只有当该钩子返回**结构化**
+对象时才会把 `onToolResult` 的耗时算进去，所以双写期内两个数字在那条路径上会合法地不相等。
+那个顶层键现在已退役，`erix.durationMs` 是引擎发布的唯一耗时——一个测量、一个口径，
+不再需要对着两个数字调和。
 
-### 双写，以及下一个 minor 退役什么
+### 双写结束时的退役名单，以及旧记录一代内可读
 
-T1 是 additive。旧的顶层键一律照写不动，现有宿主可以一边跑一边迁移：
+T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀。引擎**不再写**下面这些顶层名，
+所以还在读它们的宿主必须迁移（CHANGELOG 挂 `Changed（BREAKING）`）：
 
-| 旧顶层键 | 新归属 |
+| 退役的顶层名 | 新归属 |
 |---|---|
 | `erixRound` | `erix.round` |
 | `duration` | `erix.durationMs` |
 | `executionStatus` | `erix.executionStatus` |
+| `success` | `erix.success` |
 | 摊平到顶层的任意宿主键 | `metadata.<宿主键>` |
 
-`TOOL_RESULT_CONTRACT.legacy` 里就写着这张别名表与承诺窗口：双写持续一个 minor，旧键在
-下一个 minor 退役，并在 CHANGELOG 挂 `Changed（BREAKING）`。今天只读 `erix.*` / `metadata.*`
-就是向前兼容的选择；`test/contract/execute-tool.js` 仍会断言顶层那个摊平键，而那条断言
-预期会在退役那一单里改成 `metadata`。
+两件事要分清：
+
+1. **写入已停。** `buildToolResultFact()` 里那条摊平路径整个删掉了，所以退役名不可能从哪个
+   调用点默默回来。引擎产出的 `tool_result` 恰好带 `type` / `tool_use_id` / `content`
+   （错误与中断结果另带 `is_error`）、`metadata.*`、`erix.*`。写作 `content` 或 `is_error` 的
+   宿主扩展键也再也盖不动协议字段了，它的家在 `metadata.content` / `metadata.is_error`。
+2. **读侧仍留一代。** 升级前落盘的记录里可能仍带着这些名字，而所有读路径都是**引擎命名空间优先、
+   顶层只作旧记录回退**：TTL 折叠（`src/loop/tool-result-ttl.js`，年龄标记）、投影
+   （`src/display/projection.js`，执行状态）、续跑复放（`src/loop/orchestrator.js`，原样带回
+   已记录的那一块，不重算也不补写）、单轮聚合预算（`src/loop/aggregate-budget.js`，
+   「拦截不是输出」）、judge 的时间线与对话渲染（`src/reflection/judge.js`）、L0 客观事实
+   （`src/reflection/l0.js`）、以及 `hasSuccessfulToolResult`（`src/loop/messages.js`）。
+   `TOOL_RESULT_CONTRACT.legacy` 写着同一张表，外加 `written: false` 与上面这个读窗口——
+   也就是说「什么退役了」由常量说，不靠散文。
+
+这一刀里唯一一处**新增信息**而不是搬家的事：`erix.success` 对每一条 executor settle 过的结果
+都写，不再只看宿主声明没声明。取值仍是退役前顶层那个表达式（`success !== false`），所以宿主
+原来依赖的语义一点没变；`success: 0` 过去会以裸值 `0` 出现在顶层，而 `erix.success` 从 T1 起
+就是归一化后的 `true`——那个归一化不是这一刀新加的。
 
 ### 存在性矩阵
 
 这张矩阵就是 `test/contract/tool-result-envelope.js` 的验收表：每一行都有对应断言，外加
-反向断言（拦截没有耗时、复放不重算、宿主同名键既在顶层也在 `metadata`、provider `id` 未被
-改写）。
+反向断言（拦截没有耗时、复放不重算、宿主同名键**只在** `metadata` 而绝不在顶层、退役名单里
+的顶层旧名一个都不许再出现、provider `id` 未被改写）。
 
 | 情形 | erix.toolCallKey | erix.round | erix.durationMs | is_error | erix.executionStatus | B 里有记录 |
 |---|---|---|---|---|---|---|
@@ -1678,7 +1700,7 @@ T1 是 additive。旧的顶层键一律照写不动，现有宿主可以一边�
 
 `erix.success` 刻意不是矩阵的一列：输入侧是 executor 的返回形状（`{content, success:false}`，
 并保留历史的 `value.success ?? metadata.success` 兼容读），输出侧是归一化后的布尔值，
-仅当宿主真的表过态才写。宿主无法靠写 `metadata.success` 去操控执行结果。
+对每一条 executor settle 过的结果都写。宿主无法靠写 `metadata.success` 去操控执行结果。
 
 ### 实时事件流与 transcript 之间的那一条等式
 

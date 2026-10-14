@@ -2035,16 +2035,22 @@ Three hard rules:
    emits it), not a namespace member.
 
 `metadata` and `erix` are **reserved top-level key names**, registered as
-`TOOL_RESULT_CONTRACT.reserved.topLevelKeys`, and the dual-write flattening skips them.
-Without that skip a host extension carrying one of those names would be written to the top
-level and overwritten by its namespace a statement later, so what survived would depend on
-write order rather than on ownership. The value is not lost: it stays readable inside the
-host namespace, at `metadata.metadata` / `metadata.erix`. Deliberately **not** reserved:
-`type`, `tool_use_id`, `content`, `is_error` — a host key spelled like one of those still
-overwrites the protocol field, exactly as it did before this contract (the old code spread
-the flat map last); tightening that is the retirement change's decision, not this one's.
+`TOOL_RESULT_CONTRACT.reserved.topLevelKeys`. Since the retirement below there is no
+flattening step left, so those two names are the constructor's outright rather than
+"skipped by a filter": a host extension carrying one of them can only ever live inside the
+host namespace, readable at `metadata.metadata` / `metadata.erix`. Before the retirement the
+same-name key used to be written to the top level and then overwritten by its namespace one
+statement later, so what survived depended on write order rather than on ownership. The
+other four top-level names — `type`, `tool_use_id`, `content`, `is_error` — are **not**
+registered as reserved, and this change deliberately does not change that registration (that
+tightening is a separate decision, not this one's). What *did* change as a side effect is
+worth knowing: while host keys were flattened onto the top level, a host extension spelled
+`content` or `is_error` overwrote the protocol field; host extensions now have no path to the
+top level at all, so they can no longer reach those fields.
 
-The constructor never spreads `metadata` onto the top level. Nothing in `erix` or
+The constructor never spreads `metadata` onto the top level, and since this change it writes
+**no other top-level key at all**: an engine-built `tool_result` contains exactly the
+protocol fields plus `metadata.*` plus `erix.*`. Nothing in `erix` or
 `metadata` is sent to the provider: both protocol converters serialise `tool_result` from
 an explicit field list, so the two namespaces are `onWire: false`. The output-hygiene,
 aggregation and fold layers only ever replace `content`; the fact fields survive them.
@@ -2065,7 +2071,7 @@ addressed as `erix.<field>`: `toolCallKey` / `round` / `durationMs` / `execution
 | `erix.round` | engine | the call actually executed | The **execution** round. It is not the event envelope’s `round` (the delivery round), and the two are deliberately not merged. |
 | `erix.durationMs` | engine | the executor promise settled or rejected | Milliseconds from “immediately before the executor is invoked” to “that promise settled or rejected”. |
 | `erix.executionStatus` | engine | special states only | `intercepted` / `interrupted`. |
-| `erix.success` | engine | only when the executor (or the `onToolResult` rewrite hook) declared one | The engine-normalised boolean. |
+| `erix.success` | engine | every result whose executor settled | The engine-normalised boolean (`success !== false`). Written unconditionally since the retirement of the top-level `success` key: with the top level gone, writing it only when the host declared a verdict would make "succeeded" and "no verdict declared" indistinguishable. A call that never ran (judge interception, interrupted replay) has no verdict and therefore no field. |
 | `metadata.*` | host | whenever the executor returned extensions | The only namespace a host may write. |
 
 ### `durationMs` is measured at executor settle, and absent means unknown
@@ -2080,36 +2086,59 @@ All six executor return forms (`string`, `number`, `{content, metadata}`, the le
 `{data}` shape, a returned `Error`, and a thrown non-abort error) carry a duration,
 because “it threw after 40 ms” is a fact too.
 
-This is a tightened definition on one path, not a byte-identical re-derivation: the
-legacy top-level `duration` key keeps its historical behaviour, which included the
-`onToolResult` rewrite time **only** when that hook returned a structured object. During
-the dual-write window the two numbers therefore legitimately differ on that path, and
-`erix.durationMs` is the one to read.
+This is a tightened definition on one path, and the retirement closed the gap: the legacy
+top-level `duration` key used to keep its historical behaviour, which included the
+`onToolResult` rewrite time **only** when that hook returned a structured object, so during
+the dual-write window the two numbers legitimately differed on that path. That top-level key
+is retired now, so `erix.durationMs` is the only duration the engine publishes — one
+measurement, one口径, no pair of numbers to reconcile.
 
-### Dual write, and what retires next minor
+### What retired with the end of the dual write
 
-T1 is additive. Every legacy top-level key keeps being written exactly as before, so an
-existing host keeps working while it moves:
+T1 promised one minor of dual writing; this is the change that ends it. The engine **no
+longer writes** any of these top-level names, so a host still reading them has to move
+(recorded as `Changed (BREAKING)`):
 
-| Legacy top-level key | New home |
+| Retired top-level name | New home |
 |---|---|
 | `erixRound` | `erix.round` |
 | `duration` | `erix.durationMs` |
 | `executionStatus` | `erix.executionStatus` |
+| `success` | `erix.success` |
 | any host key flattened to the top level | `metadata.<host key>` |
 
-`TOOL_RESULT_CONTRACT.legacy` carries that alias table plus the promised window: the
-dual write lasts one minor and the legacy keys are retired in the next one, recorded as
-`Changed (BREAKING)`. Reading only `erix.*` / `metadata.*` today is the forward-compatible
-choice; `test/contract/execute-tool.js` still asserts the flattened host key at the top
-level, and that assertion is expected to move to `metadata` in the retirement change.
+Two halves to keep straight:
+
+1. **Writes stopped.** `buildToolResultFact()` has no flattening parameter left, so a retired
+   name cannot come back from any call site. An engine-built `tool_result` carries exactly
+   `type` / `tool_use_id` / `content` (plus `is_error` for error and interrupted results),
+   `metadata.*`, and `erix.*`. A host extension spelled `content` or `is_error` can no longer
+   overwrite a protocol field either; it is readable at `metadata.content` / `metadata.is_error`.
+2. **Reads stay for one generation.** Records written before this upgrade may still carry
+   those names, and every reader prefers `erix` and falls back to the top level: the TTL fold
+   (`src/loop/tool-result-ttl.js`, the age marker), the display projection
+   (`src/display/projection.js`, execution status), the resume replay path
+   (`src/loop/orchestrator.js`, which returns the recorded block as it is instead of
+   recomputing or back-filling), the per-round aggregate budget (`src/loop/aggregate-budget.js`,
+   “an interception is not output”), the judge timeline and conversation renderer
+   (`src/reflection/judge.js`), the L0 objective facts (`src/reflection/l0.js`), and
+   `hasSuccessfulToolResult` (`src/loop/messages.js`). `TOOL_RESULT_CONTRACT.legacy` carries
+   the same list with `written: false` and that read window, so the constant — not prose —
+   is what says what is retired.
+
+The one place where this change **adds** information instead of moving it: `erix.success` is
+written for every result whose executor settled, not only when the host declared a verdict.
+Its value is the same expression the retired top-level key used (`success !== false`), so
+nothing a host relied on changed meaning; `success: 0` used to reach the top level as the raw
+`0`, while `erix.success` has been the normalised `true` since T1 — that normalisation is not
+new here.
 
 ### Existence matrix
 
 The matrix is the acceptance table of `test/contract/tool-result-envelope.js`: one row per
 row below, plus the reverse assertions (interception carries no duration, replay never
-recomputes, a host key is present both at the top level and in `metadata`, and the
-provider `id` is never rewritten).
+recomputes, a host key is present **only** in `metadata` and never at the top level, none of
+the retired top-level names reappears anywhere, and the provider `id` is never rewritten).
 
 | Case | erix.toolCallKey | erix.round | erix.durationMs | is_error | erix.executionStatus | record in B |
 |---|---|---|---|---|---|---|
@@ -2123,7 +2152,7 @@ provider `id` is never rewritten).
 `erix.success` is not a matrix column on purpose: the input side is the executor’s return
 shape (`{content, success:false}`, with the historical `value.success ?? metadata.success`
 compatibility read), while the output side is the normalised boolean in `erix.success`,
-written only when the host actually declared a verdict. A host cannot steer the execution
+written for every result whose executor settled. A host cannot steer the execution
 result by writing `metadata.success`.
 
 ### The one equation between the live event stream and the transcript
@@ -2535,7 +2564,7 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 | `model-config-provider.js` (4 tests) | `resolve()` → default slot, `resolve(slot)` → named slot, unknown slot → default fallback, and `apiKey` indirect-reference materialisation (ADR-001) | your provider's slot resolution and key materialisation | nothing engine-side: it never loads the engine |
 | `engine-api.js` (2 tests) | the package entry exports `appendUserTurn` and `projectTranscriptForDisplay` as functions, and `appendUserTurn` completes one pre-write against a minimal store stub (including the `dedupKey`/`roundKey` shape and that the pre-write feeds the display projection) | nothing — this is an entry-surface sentinel; it goes red when an upstream bump renames or drops engine API | the exact pre-write record shape (`round: 0`, `dedupKey`, `roundKey`, `ts`) |
 | `termination-payload.js` (4 tests) | a `failed` terminal outcome carries `termination.errorCode` (classification passthrough, `unknown` fallback), an abort throws with `usage`/`rounds`/`finalText` and `termination.partial`, cumulative usage is attributed per round, and the success path keeps its old shape (no `errorCode`/`partial`/`usage` appearing out of nowhere) | nothing directly — it is your host-side decision table's regression net (issue #170 / #176 / #180) | the stubbed provider script, the zero-vs-missing-field rule for `usage` |
-| `tool-result-envelope.js` (17 tests) | the field ownership of every `tool_result` the engine builds, asserted against `TOOL_RESULT_CONTRACT` itself: the protocol fields stay at the top level, engine facts only appear under `erix`, host extensions appear under `metadata` (and, during the dual-write window, also flattened at the top level), all six executor return forms carry `toolCallKey`/`round`/`durationMs`, interception and interrupted replay carry **no** `durationMs` and no `round`, a replayed completed result is returned with its original values (`durationMs` never recomputed, the executor never re-invoked), the stream fragment, the `tool_use` block, the `tool_result` and the projection all carry one identity key, the provider pairing id is never rewritten, and the projection omits `toolCallKey`/`durationMs` for pre-issue-#284 records instead of inventing them | nothing — the fact surface is engine-owned, so this is a pure drift sentinel (it also fails if the constant itself is trimmed) | the stubbed provider/judge scripts and the run-snapshot shapes it hand-writes, the `tc_` key format, the fact that the loop forwards no `tool_call` event to `onEvent` |
+| `tool-result-envelope.js` (26 tests) | the field ownership of every `tool_result` the engine builds, asserted against `TOOL_RESULT_CONTRACT` itself: the protocol fields stay at the top level, engine facts only appear under `erix`, host extensions appear only under `metadata` (no host key is flattened to the top level any more, and none of the retired top-level names may reappear), all six executor return forms carry `toolCallKey`/`round`/`durationMs`, interception and interrupted replay carry **no** `durationMs` and no `round`, a replayed completed result is returned with its original values (`durationMs` never recomputed, the executor never re-invoked), the stream fragment, the `tool_use` block, the `tool_result` and the projection all carry one identity key, the provider pairing id is never rewritten, and the projection omits `toolCallKey`/`durationMs` for pre-issue-#284 records instead of inventing them | nothing — the fact surface is engine-owned, so this is a pure drift sentinel (it also fails if the constant itself is trimmed) | the stubbed provider/judge scripts and the run-snapshot shapes it hand-writes, the `tc_` key format, the fact that the loop forwards no `tool_call` event to `onEvent` |
 
 ### Wiring rule for hosts
 
