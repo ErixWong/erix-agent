@@ -11,6 +11,7 @@
   - **`erix.success` 改为无条件写**（`success !== false`，与退役前顶层 `success` 同一个表达式）。它过去只在宿主 / `onToolResult` 钩子真的表过态时才写；顶层那个键没了以后还按条件写，宿主就分不清「成功」与「没表过态」，等于把 #234 那类误判重新引进来。等价性由 `test/tool-fact-success-parity.test.js` 钉住：15 条硬编码真值（六种 executor 返回形状 × 成功与失败，含 `success: 0` 归一化成 `true` 这条既有语义），两侧各自写死期望值、不是互抄。
   - 副作用一处：宿主扩展里写作 `content` 或 `is_error` 的键过去会盖掉同名协议字段（旧代码把扁平 map 摊在最后），现在它只存在于 `metadata.content` / `metadata.is_error`，盖不动了。`type` / `tool_use_id` / `content` / `is_error` **仍未**登记进 `reserved.topLevelKeys`（这一刀不改那份登记，要不要收紧是另一个决定）；`metadata` 与 `erix` 则由「被过滤器跳过」变成构造器**独占**。
   - 验收面：`test/contract/tool-result-envelope.js` 里三条「两侧都有」的双写断言反转为只允许命名空间一侧，并新增一条反向哨兵 —— 顶层出现退役名单里的任何一个名字就红（含一个**完全自定义**的 `metadata` / `erix` 宿主：它的同名扩展键必须既不出现在顶层、也不变成协议字段）。`scripts/docs-drift-check.mjs --self-test` 加一例「契约 EN 的退役名单漏写 `success` 就红」（74 → 75 例，仍 ≥ `MIN_SELF_TEST_CASES`）。
+  - **随宿主运行的契约套件语义也变了**：`test/contract/execute-tool.js` 过去断言宿主摊平键住在顶层（`toolResult.artifactStatus === "ok"`），现在断言它只在 `metadata.artifactStatus`、且顶层**不得**再出现该键。宿主跑这套随包契约时若仍按旧形状断言会红——这是本刀预期的行为变化，不是套件坏了。
   - **版本号本刀不动**（`package.json` 仍 0.19.0），发布与版本号推进归 T4。中英契约与 `TOOL_RESULT_CONTRACT` 的对账由 `check:docs` 的 alias 别名表锚点承担（退役名单与常量逐键相等）。
 
 ### Added

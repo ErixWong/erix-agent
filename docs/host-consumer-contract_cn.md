@@ -1700,7 +1700,11 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 
 `erix.success` 刻意不是矩阵的一列：输入侧是 executor 的返回形状（`{content, success:false}`，
 并保留历史的 `value.success ?? metadata.success` 兼容读），输出侧是归一化后的布尔值，
-对每一条 executor settle 过的结果都写。宿主无法靠写 `metadata.success` 去操控执行结果。
+对每一条 executor settle 过的结果都写。两侧不得混为一谈：executor 的**返回值**里带
+`metadata.success` **确实**参与上面的归一化（就是上文那个历史兼容读），所以 executor 仍可以
+靠它报失败；但宿主往一条**已经生成的** `tool_result` 里（在 `metadata.*` 内）写
+`metadata.success` 只改变记录本身——`erix.success` 是引擎在 settle 时写的，**永不**从
+`metadata.*` 反推。
 
 ### 实时事件流与 transcript 之间的那一条等式
 

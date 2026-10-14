@@ -2152,8 +2152,12 @@ the retired top-level names reappears anywhere, and the provider `id` is never r
 `erix.success` is not a matrix column on purpose: the input side is the executor’s return
 shape (`{content, success:false}`, with the historical `value.success ?? metadata.success`
 compatibility read), while the output side is the normalised boolean in `erix.success`,
-written for every result whose executor settled. A host cannot steer the execution
-result by writing `metadata.success`.
+written for every result whose executor settled. The two sides must not be confused: an
+**executor return** carrying `metadata.success` does participate in that normalisation (it is
+the historical compatibility read above), so an executor can still report failure that way;
+but a **host** that writes `metadata.success` into an already-produced `tool_result` (inside
+`metadata.*`) changes only the record — `erix.success` is written by the engine at settle time
+and is never re-derived from `metadata.*`.
 
 ### The one equation between the live event stream and the transcript
 
