@@ -186,13 +186,27 @@ function shouldNeverFold(block, toolName) {
 }
 
 /**
+ * 年龄标记的读路径（工单 261014 T2 §2.1）：**`erix.round` 优先，顶层 `erixRound` 只作旧记录回退**。
+ *
+ * 顺序是硬的：本模块先改成读 `erix.round`，引擎才允许停写顶层 `erixRound`（T2 第 3 节）。
+ * 反过来的话停写就是**静默失效**——`Number.isFinite(undefined)` 永远假，每个块都 `continue`，
+ * 旧结果再也折不掉，而没有任何一处会报错。回退保留一代：升级前落盘的 run snapshot 仍按年龄折叠。
+ *
+ * @param {any} block canonical `tool_result` 块
+ * @returns {unknown} 创建轮号（可能是 undefined / 非数字，由调用处过 `Number.isFinite`）
+ */
+function readRoundMarker(block) {
+  return block.erix?.round ?? block.erixRound;
+}
+
+/**
  * 构建请求级折叠视图：年龄达标且体积达标的 tool_result 替换为占位符，
  * 保留 type/tool_use_id/工具名配对（OpenAI 协议要求 tool_use 必有配对结果）。
  *
  * @param {Array<object>} messages canonical messages（不改原数组/原块）
  * @param {object} options
  * @param {number} options.currentRound 即将执行的轮号
- * @param {number} [options.ttl=2] 存活轮数：currentRound - erixRound >= ttl 时折叠
+ * @param {number} [options.ttl=2] 存活轮数：currentRound - 创建轮 >= ttl 时折叠（创建轮读 `erix.round`，旧记录回退顶层 `erixRound`）
  * @param {number} [options.minTokens=4000] 低于此估算 tokens 的结果永不折叠
  * @param {(info:object)=>string} [options.retrievalHint] 自定义取回提示文本生成
  * @param {{foldedCount?: number, warnedCount?: number, tokensBefore?: number, tokensAfter?: number}} [options.stats]
@@ -246,8 +260,10 @@ export function foldToolResultsForRequest(messages, {
       const toolName = String(call.name ?? "");
       if (shouldNeverFold(block, toolName)) continue;
       // 年龄标记缺失（旧 run snapshot 恢复的结果）→ 保守不折。
-      if (!Number.isFinite(block.erixRound)) continue;
-      const age = currentRound - block.erixRound;
+      // 读路径见 `readRoundMarker`：`erix.round` 优先，顶层 `erixRound` 只作旧记录回退（T2 §2.1）。
+      const createdRound = readRoundMarker(block);
+      if (!Number.isFinite(createdRound)) continue;
+      const age = currentRound - createdRound;
       const text = typeof block.content === "string"
         ? block.content
         : String(block.content ?? "");
@@ -272,17 +288,17 @@ export function foldToolResultsForRequest(messages, {
 
       const inputSummary = summarizeToolCall(call.name, call.input);
       const hint = typeof retrievalHint === "function"
-        ? retrievalHint({ name: toolName, inputSummary, tokens, round: block.erixRound })
+        ? retrievalHint({ name: toolName, inputSummary, tokens, round: createdRound })
         : defaultRetrievalHint({
           name: toolName,
           inputSummary,
           tokens,
-          round: block.erixRound,
+          round: createdRound,
         });
       const contentSummary = buildFoldPlaceholder({
         inputSummary,
         tokens,
-        round: block.erixRound,
+        round: createdRound,
         hint,
         text,
         skeleton: jsonSkeleton(text),
