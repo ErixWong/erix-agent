@@ -43,7 +43,11 @@ export function extractL0Facts(messages, state = { seenErrors: new Map() }) {
   const seen = new Set();
   let errorRepeat = 0;
   for (const result of results) {
-    const isError = result?.is_error === true || result?.success === false;
+    // 读路径（工单 261014 T2）：成败现在住在 `erix.success`，顶层旧同名键只作升级前记录的回退。
+    // （引擎写出的块里 `success:false` 总是同时带 `is_error`，所以只读 `is_error` 对新块不会错；
+    //   但旧记录里曾出现过「只有 success:false 没有 is_error」的形状，两边都读才是零变化。）
+    const isError = result?.is_error === true
+      || (result?.erix?.success ?? result?.success) === false;
     if (!isError) continue;
     const fullText = errorEvidenceText(result.content);
     const text = fullText.slice(0, 500);
@@ -60,7 +64,8 @@ export function extractL0Facts(messages, state = { seenErrors: new Map() }) {
 
   const fact = {
     exitOk: results.length > 0 && results.every((result) => (
-      result?.is_error !== true && result?.success !== false
+      result?.is_error !== true
+      && (result?.erix?.success ?? result?.success) !== false
     )),
   };
   if (errors.length > 0) {

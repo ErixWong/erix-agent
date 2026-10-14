@@ -117,6 +117,7 @@ export function hasSuccessfulToolResult(messages) {
   return messages.some((message) => blocksFor(message?.content).some((block) => (
     block?.type === "tool_result"
       && block?.is_error !== true
-      && block?.success !== false
+      // 读路径（工单 261014 T2）：成败住在 `erix.success`，顶层旧同名键只作旧记录回退。
+      && (block?.erix?.success ?? block?.success) !== false
   )));
 }

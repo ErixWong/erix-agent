@@ -124,13 +124,15 @@ export function buildTimeline(messages, roundStart = 0, options = {}) {
       } else if (block?.type === "tool_result") {
         if (block.tool_use_id !== undefined) {
           const result = textFromContent(block.content);
-          const intercepted = block.executionStatus === "intercepted"
+          // 读路径（工单 261014 T2）：状态与成败现在住在 `erix.*`，顶层旧同名键只作升级前记录的回退。
+          const success = block.erix?.success ?? block.success;
+          const intercepted = (block.erix?.executionStatus ?? block.executionStatus) === "intercepted"
             || result.startsWith("【审计拦截】");
           statusById.set(
             block.tool_use_id,
             intercepted
               ? "intercepted"
-              : block.is_error === true || block.success === false
+              : block.is_error === true || success === false
                 ? "error"
                 : "ok",
           );
@@ -321,7 +323,8 @@ export function renderConversation(messages, { maxTokens = JUDGE_CONVERSATION_TO
         text = `### ${role} 计划调用工具 ${String(block?.name ?? "")}${status}\n入参：${jsonish(block?.input)}`;
       } else if (type === "tool_result") {
         const body = resultContentText(block?.content);
-        const intercepted = block?.executionStatus === "intercepted"
+        // 同上：`erix` 优先，顶层旧同名键只作旧记录回退。
+        const intercepted = (block?.erix?.executionStatus ?? block?.executionStatus) === "intercepted"
           || body.startsWith("【审计拦截】");
         const label = intercepted
           ? "控制事件（该工具调用未执行）"
