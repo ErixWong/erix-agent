@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-15（已同步 #220 「成功返回的四种顶层形态」（readFile/edit→string、writeFile→number、searchText→{content,metadata} 逐个钉 typeof，加 `classifyFileToolResult` 判别式与 default:assertNever 用法）；#282 「终局前的增值调用在中止时的行为」（aborted 永远优先于 judge_done / final_guard_*：已中止则跳过整次 judge 调用、judge 在飞时立即中断、judge 已返回但终局未定也必须抛 aborted 并保留 #180 载荷）；#283 「中止后事实的真相分布」（β 裁决：不为被中止的进行中轮补写 RoundRecord；`partial:true` 只指终局载荷不指 transcript；六行渠道对照表）；#179 HTTP 状态码分类（`invalid_request`/`not_found`/`conflict` 三个新 code 与取值表、`retryable` 与重试面逐字不变、未列出的状态码仍落 `unknown`）；#197 技能加载器注册（`bundledDir` 归调用方、库内不猜层级、内置 < 全局 < 项目的优先级、不阻塞且可枚举的 `{skillId, dir, error}` 失败形状、产出即 `ToolSchema`、无新沙箱）与 `skillsLoaderContract` 套件；#184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-16（已同步 #307 「统一入口 `parseModelJson`」（三态失败可分 / 失败不带 value / 无 repair / topOnly 两档 / requireKeys 是 any-of 键存在性 / 四处迁移裁决表）与 #305 「Reflection 决策解析」；#220 「成功返回的四种顶层形态」（readFile/edit→string、writeFile→number、searchText→{content,metadata} 逐个钉 typeof，加 `classifyFileToolResult` 判别式与 default:assertNever 用法）；#282 「终局前的增值调用在中止时的行为」（aborted 永远优先于 judge_done / final_guard_*：已中止则跳过整次 judge 调用、judge 在飞时立即中断、judge 已返回但终局未定也必须抛 aborted 并保留 #180 载荷）；#283 「中止后事实的真相分布」（β 裁决：不为被中止的进行中轮补写 RoundRecord；`partial:true` 只指终局载荷不指 transcript；六行渠道对照表）；#179 HTTP 状态码分类（`invalid_request`/`not_found`/`conflict` 三个新 code 与取值表、`retryable` 与重试面逐字不变、未列出的状态码仍落 `unknown`）；#197 技能加载器注册（`bundledDir` 归调用方、库内不猜层级、内置 < 全局 < 项目的优先级、不阻塞且可枚举的 `{skillId, dir, error}` 失败形状、产出即 `ToolSchema`、无新沙箱）与 `skillsLoaderContract` 套件；#184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -1022,9 +1022,79 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 
 两处邻居**有意不动**：兜底路径的 `reason` 截断口径保持 `value.slice(0, 200)`
 （UTF-16 码元），尽管 `truncate`（`src/reflection/judge.js`）用 `Array.from` 按码点计数
-—— 统一它会改动宿主可见的值；轮次 judge 也保留它自己的「每个 `{` 起扫一次」
-（`src/reflection/judge.js`），外层未闭合时它返回的是内层残片。把它改成只认顶层对象
-属于行为变更，需要自己的工单。
+—— 统一它会改动宿主可见的值；轮次 judge（`parseJudgeDecision`，`src/reflection/judge.js`）
+也照样从**每个** `{` 起扫一次，外层未闭合时返回的仍是内层残片。issue #307 只是把那份扫描
+搬进 `parseModelJson`（`src/text/parse-model-json.js`）当作它的 `topOnly: false` 档 ——
+行为逐字相同 —— 改这个裁决本身归 issue #309。
+
+## 统一入口 `parseModelJson`（issue #307）
+
+`parseModelJson`（`src/text/parse-model-json.js`）是本包从模型文本里抠 JSON 的**唯一公共
+入口**。在这之前，四处地方各干这件事、对「对象到哪里结束」给出四种答案；其中两处（reflection
+解析器与轮次 judge）现在都由这一个入口供给。它从包根（`src/index.js`）导出，并被
+`engineApiContract` 覆盖。
+
+```js
+import { parseModelJson } from "erix-agent";
+
+// parseModelJson(text, { topOnly = true, requireKeys = null } = {}) ->
+//   { ok: true, value, via: "json", candidates } | { ok: false, error, candidates }
+const hit = parseModelJson('reasoning {"done":true,"confidence":1} trailing prose');
+if (hit.ok) {
+  // hit.value — JSON.parse 的直接产物（字段校验归调用方），
+  // hit.via — 字面量 "json"，hit.candidates — 按出现顺序的全部平衡切片
+} else {
+  // hit.error — "no_candidate" | "unparsable" | "shape_mismatch"；这一支没有 `value` 键
+}
+
+const unparsable = parseModelJson('{"a":,}');
+const shapeMismatch = parseModelJson('{"confidence":0.5}', { requireKeys: ["done"] });
+const noCandidate = parseModelJson('{"a":1');   // 外层未闭合：什么都不产，也不补括号
+
+if (hit.ok !== true || hit.via !== "json" || hit.value.done !== true) throw new Error("example input must hit");
+if (unparsable.error !== "unparsable" || shapeMismatch.error !== "shape_mismatch"
+  || noCandidate.error !== "no_candidate") throw new Error("the three failure kinds must stay distinguishable");
+if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate) {
+  throw new Error("a miss carries no value key, not even value: undefined");
+}
+```
+
+失败是**三态**判定，因为三种原因需要宿主做三件不同的事（换提示词 / 认了它没按 JSON 回答 /
+去补那个缺的字段）：
+
+| `error` | 什么时候出现 |
+|---|---|
+| `no_candidate` | 扫描件一个候选都没产 —— 纯散文，或花括号始终不配对 |
+| `unparsable` | 有候选，但 `JSON.parse` 全部抛错（例：`{"a":,}`） |
+| `shape_mismatch` | 有候选解析成功，但没有一个满足 `requireKeys` |
+
+**没有 repair。** 不补闭合括号、不删尾逗号、不改值：解析不了的候选就是落选（本文档的
+「归一化器只许搬运」章程）。失败结果里**没有** `value` 键 —— 不是 `value: undefined` ——
+于是 `if (!result.ok)` 之后手里真的什么都没有，也不会把一次失败的解析误当成「模型回了个空对象」。
+
+`candidates` 恒为**完整**扫描结果（按出现顺序，含未胜出的候选），所以调用方可以在它之上
+跑自己那份更严的逐候选校验 —— `parseJudgeDecision`（`src/reflection/judge.js`）正是靠这一
+点在自己不再持有扫描器的情况下保持行为不变。
+
+**两档扫描，仍然只有一份文件。** `topOnly` 缺省 `true`：只有括号深度归零的对象才是候选，
+外层未闭合时什么都不产。`topOnly: false` 从**每个** `{` 起扫一次，于是外层未闭合时会先产
+内层残片；这一档只为让 `parseJudgeDecision`（`src/reflection/judge.js`）复用同一份扫描而
+**行为零变更**而存在（改那个裁决归 issue #309）。
+
+`requireKeys` 判的是键**存在性**且是 any-of —— 候选至少含有列出键中的一个即合格 —— 且从不
+看值类型。这与 `jsonCandidates`（`src/text/json-candidates.js`）的分工一致：扫描共享，结论
+归调用方。空数组或 `null` 表示「不做形状校验」。
+
+四处各自去了哪里、为什么：
+
+| 位置 | 裁决 | 理由 |
+|---|---|---|
+| `parseReflectionDecision`（`src/loop/reflection.js`） | **已迁**（缺省档 + `requireKeys` = 六个决策键） | 行为与 issue #306 发布的版本逐字相同；对拍用例拿它和那份实现的副本比，覆盖已知形状加 3000 条确定性随机输入 |
+| `parseJudgeDecision`（`src/reflection/judge.js`） | 扫描器换成公共入口的 `topOnly: false`，**它自己的逐候选循环留着** | judge 必须跳过「能解析但不合格」的候选（`done` 不是字面布尔、`confidence` 不在 [0,1]）再试下一个；公共入口只返回单个 `value`，直接拿它当结论会把「跳过这个候选」变成「整次解析失败」 |
+| `tryParseWrapupJson`（`src/reflection/wrapup.js`） | **未迁**，仍直接调 `jsonCandidates` | 它的门槛比键存在性严（`done` 必须字面布尔；出现 `action`/`note` 就把对象退回内联 L1 路径），而且同样必须「跳过并续试」。跳过是承重的：`{"done":"true"}{"done":true}` 必须返回第二个。内层的 `{"done":…}` 不得绕过那条 mandatory-done 守卫（issue #30 follow-up），所以这里的扫描继续保持只认顶层 |
+| `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`（`src/compact/fold-statistical.js`） | **不在本单** | 两者都不是「在模型散文里找 JSON」：L0 取的是引擎要求模型写的 `<erix-summary>` 标签，折叠摘要读的是**引擎自己**写下的 `导航记录：{…}` 行并且 fail-closed 到 `undefined`。去掉标签 / 行锚定会放宽它们接受的形状 —— 那是行为变更，不是去重 |
+
+## 可复用的归一化原语
 
 ## 可复用的归一化原语
 

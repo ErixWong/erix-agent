@@ -2295,3 +2295,132 @@ test("readonly pass-through also applies to uncertain direction", async () => {
     raw: JSON.stringify(decision),
   }]);
 });
+
+// --- issue #307：judge 的候选扫描改由公共入口提供，语义必须一字不变（C2 对拍） ---
+
+/**
+ * 迁移前的 `parseJudgeDecision` 对照件（main `9021d74` 的 `src/reflection/judge.js` 逐字搬来，
+ * 含它自己那份「从每个 `{` 起扫一次」的私有扫描）。
+ * 它存在的唯一理由：证明「改成复用 `parseModelJson` 的 `topOnly:false` 档」没有动过任何语义——
+ * 包括那个已知不合口味的行为（外层未闭合时返回**内层残片**，issue #309 才改）。
+ */
+function legacyJsonCandidates(text) {
+  const value = String(text ?? "");
+  const candidates = [];
+  for (let start = 0; start < value.length; start += 1) {
+    if (value[start] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < value.length; index += 1) {
+      const character = value[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === "\"") inString = false;
+        continue;
+      }
+      if (character === "\"") inString = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          candidates.push(value.slice(start, index + 1));
+          break;
+        }
+      }
+    }
+  }
+  return candidates;
+}
+
+function legacyParseJudgeDecision(text) {
+  for (const candidate of legacyJsonCandidates(text)) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      if (typeof parsed.done !== "boolean") continue;
+      if (!Number.isFinite(parsed.confidence) || parsed.confidence < 0 || parsed.confidence > 1) continue;
+      if (parsed.reason !== undefined && typeof parsed.reason !== "string") continue;
+      if (parsed.evidence !== undefined && typeof parsed.evidence !== "string") continue;
+      if (parsed.extend !== undefined && typeof parsed.extend !== "boolean") continue;
+      if (parsed.extendReason !== undefined && typeof parsed.extendReason !== "string") continue;
+      if (parsed.plan !== undefined && typeof parsed.plan !== "string") continue;
+      const decision = {
+        done: parsed.done,
+        confidence: parsed.confidence,
+        reason: String(parsed.reason ?? ""),
+        evidence: String(parsed.evidence ?? ""),
+        direction: parsed.direction === "on_track" || parsed.direction === "uncertain"
+          || parsed.direction === "off_track" ? parsed.direction : undefined,
+        directionReason: typeof parsed.directionReason === "string" ? parsed.directionReason : "",
+      };
+      if (parsed.extend !== undefined) decision.extend = parsed.extend;
+      if (parsed.extendReason !== undefined) decision.extendReason = parsed.extendReason;
+      if (parsed.plan !== undefined) decision.plan = parsed.plan;
+      return decision;
+    } catch {
+      // Try the next balanced object in surrounding provider text.
+    }
+  }
+  return null;
+}
+
+test("parseJudgeDecision: 外层未闭合 + 内层闭合 ⇒ 照样返回内层决策（every-start 没被动，#309 哨兵）", () => {
+  assert.deepEqual(
+    parseJudgeDecision('{"outer":{"done":true,"confidence":0.5,"reason":"内层残片"}'),
+    {
+      done: true,
+      confidence: 0.5,
+      reason: "内层残片",
+      evidence: "",
+      direction: undefined,
+      directionReason: "",
+    },
+  );
+  // 同上，但第一个不合格候选必须被跳过、继续试下一个（公共入口的单个 value 表达不了这条）
+  assert.deepEqual(
+    parseJudgeDecision('{"done":"true","confidence":1}{"done":true,"confidence":0.9}'),
+    {
+      done: true,
+      confidence: 0.9,
+      reason: "",
+      evidence: "",
+      direction: undefined,
+      directionReason: "",
+    },
+  );
+});
+
+test("parseJudgeDecision 与迁移前逐字对拍：已知形状 + 确定性随机语料 0 差异（C2）", () => {
+  const known = [
+    '```json\n{"done":true,"confidence":0.9,"reason":"完成","evidence":"测试通过"}\n```',
+    '评审结果：{"done":false,"confidence":0.2,"reason":"缺文件","evidence":"无 gates","direction":"off_track","directionReason":"反复调试同一实现"}',
+    "不是 JSON",
+    '{"done":"true","confidence":1}',
+    '{"done":true,"confidence":0.8,"direction":"sideways","directionReason":42}',
+    '{"outer":{"done":true,"confidence":0.5,"reason":"内层残片"}',
+    '{"done":true,"confidence":1,"plan":"带 {占位} 的尾话"}',
+    '{"a":1}{"done":true,"confidence":0}',
+    "", null,
+  ];
+  const atoms = ['{', '}', '"', '\\', '{"done":true,"confidence":0.5}', '{"done":"true","confidence":2}',
+    '{"outer":{"done":false,"confidence":0.1}', '{"a":,}', "散文", "```json", "```", " ", "\n",
+    '{"confidence":0.4,"done":true,"extend":true,"plan":"p"}', '{"reason":"a\\"}b","done":true,"confidence":0}'];
+  let seed = 30516307;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const random = [];
+  for (let i = 0; i < 3000; i += 1) {
+    const len = 1 + Math.floor(rnd() * 6);
+    let s = "";
+    for (let k = 0; k < len; k += 1) s += atoms[Math.floor(rnd() * atoms.length)];
+    random.push(s);
+  }
+  for (const input of [...known, ...random]) {
+    assert.deepEqual(
+      parseJudgeDecision(input),
+      legacyParseJudgeDecision(input),
+      `迁移前后同输入必须同输出，输入：${JSON.stringify(input)}`,
+    );
+  }
+});

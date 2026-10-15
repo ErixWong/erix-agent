@@ -93,7 +93,7 @@ scripts/          # 实验脚本和结果
   抽不到真值不许静默放行）。**字符串值**（终止原因、provider 错误码）是唯一弱一档的形态，只在
   `scripts/docs-drift-check.mjs` 的 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的那 4 个文件里被接受。 裸行号棘轮的唯一键是 (文档, 目标文件, 行区间)，**不含文档自己的行号**——于是把
   `` `符号`（`路径:1517-1531`） `` 改写成不带括号/链接的裸 `路径:1517-1531`，棘轮那个数一字不变，而符号校验整条消失。
-  因此 `symbols` 自带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 27`（今天实测 27 组唯一 (符号, 文件) / 50 处，
+  因此 `symbols` 自带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 32`（2026-10-16 在 #307 之后实测 32 组唯一 (符号, 文件) / 70 处，
   `--verbose` 可复核）：掉到下限以下就红——那是「锚点在退化」被抓住，不是棘轮上升——超过它则收到「请把下限升上去」的提示。
   两个数都是从脚本自身文本里读回来的，这正是 `--self-test` 能证明它们真的是锁的原因。
   *`symbol-anchor-span`*（#286 第二刀 T-b1a）是上面那条的**逐处**搭档：符号锚点**自带行号区间**时
@@ -150,7 +150,7 @@ scripts/          # 实验脚本和结果
 - `repository.url` 使用 `git+https://...` 格式（或运行 `npm pkg fix`）。
 - 类型面（issue #213）：顶层 `types` 指向 `./src/index.d.ts`，`exports["."]` 与 `exports["./tools"]` 各带对应的 `types` 条件；
   `exports["./contract-tests"]` **刻意不带** `types`（其目标在 `test/` 下，不在声明依赖图里）。声明由 `prepack` 钩子生成，
-  因此干净检出里一个 `.d.ts` 都没有——`npm publish --dry-run` 应列出 **66** 个 `.d.ts`（2026-10-15 在 #292 之后的干净树上实测：
+  因此干净检出里一个 `.d.ts` 都没有——`npm publish --dry-run` 应列出 **67** 个 `.d.ts`（2026-10-16 在 #307 之后的树上实测：#307 新增 `src/text/parse-model-json.js` 使 66 → 67；此前 2026-10-15 在 #292 之后的干净树上实测：
   `npm pack --dry-run --json` 列出整整 65 个；历史值：0.20.0 的 tarball 是 64 个、0.19.0 时代是 63 个；打包体积 +约 44 kB、
   解包 +约 139 kB，是 0.18.0 上实测的）；`npm run check:types-build` 就是「还能不能生成」的门禁。
 - 当前版本：`0.20.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。

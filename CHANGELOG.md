@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`parseModelJson`（`src/text/parse-model-json.js`，新增文件）—— 本包「从模型文本里抠 JSON」的唯一公共入口（issue #307）。** 形状：`parseModelJson(text, { topOnly = true, requireKeys = null } = {})` → `{ok:true, value, via:"json", candidates}` 或 `{ok:false, error, candidates}`。
+  - **三态失败可分**：`no_candidate`（扫描件一个候选都没产）/ `unparsable`（有候选但 `JSON.parse` 全抛，例 `{"a":,}`）/ `shape_mismatch`（解析成功却没有一个候选满足 `requireKeys`）；失败结果里**没有** `value` 键（不是 `value: undefined`），`if (!result.ok)` 之后手里真的什么都没有。**没有任何 repair**：不补闭合括号、不删尾逗号、不改值（「归一化器只许搬运」章程）。
+  - **两档扫描、仍只一份文件**：`topOnly` 缺省 `true` 只认顶层平衡对象（外层未闭合什么都不产）；`topOnly:false` 从每个 `{` 起扫一次（外层未闭合先产内层残片）——这一档只为让 `parseJudgeDecision`（`src/reflection/judge.js`）复用同一份扫描而**行为零变更**，改那个裁决归 issue #309。`requireKeys` 是键存在性的 any-of 判定，不看值类型；空数组 / `null` = 不做形状校验。`candidates` 恒为完整扫描结果，调用方可以在它之上跑自己那份更严的逐候选校验。
+  - 公共类型面产出**可收窄的判别联合**（生成的 `src/text/parse-model-json.d.ts` 里同时有 `ok: true` 与 `ok: false` 两个字面量，不是退化成 `any`），并加进 `scripts/build-types.mjs` 的断言面（`src/index.d.ts#parseModelJson`）。从包根（`src/index.js`）导出，`engineApiContract` 覆盖。零 npm 运行时依赖不变。
+  - 四处「抠 JSON」的迁移裁决：`parseReflectionDecision`（`src/loop/reflection.js`）**已迁**且与 #306 逐字等价（对拍用例：已知形状 + 3000 条确定性随机输入 0 差异）；`parseJudgeDecision` 复用扫描件（`topOnly:false`）但保留自己的逐候选循环；`tryParseWrapupJson`（`src/reflection/wrapup.js`）**不迁**并写明理由（它的门槛比键存在性严且必须跳过并续试）；`src/reflection/l0.js` 与 `src/compact/fold-statistical.js` 不属于同一类问题（前者取引擎要求模型写的标签，后者读引擎自己写下的行并 fail-closed）。契约新增「统一入口 `parseModelJson`」中英成对小节。
+
 ### Fixed
 
 - **`parseReflectionDecision`（`src/loop/reflection.js`）不再把模型明确写下的布尔值静默翻向（issue #305）。** 病根：它用贪婪 `/\{[\s\S]*\}/` 抠 JSON，于是**尾话里的一对花括号**（散文里的 `{plan}` 占位符、```` ```json ```` 围栏后跟一句说明、并列的两个顶层对象）会让抠出来的一坨解析不了；`JSON.parse` 抛错后 `catch` 直接 fall through 到关键词兜底，而兜底跑在**含 JSON 自身的整段文本**上——匹配到的是 `"continue"` / `"stalled"` 这些**键名**，于是 `"continue": false` 回来变成 `continueFlag: true`、`progress` 一起丢失。实测四种形状今天就坏（issue 原形状、围栏＋带括号尾话、并列两个顶层对象、外层未闭合＋内层完整）。
