@@ -255,7 +255,21 @@ test("erix_run 真机 e2e：真 run 的终局四件套 + transcript 新形状 + 
       assert.ok(lines.length >= 1, "judge.log 不能是空文件");
       const last = JSON.parse(lines.at(-1));
       assert.equal(last.type, "run_outcome", `末行应是 run_outcome 汇总，实际 ${last.type}`);
-      assert.equal(last?.termination?.reason ?? payload.termination.reason, payload.termination.reason);
+      // PR #289 断言强度 2：修前是 `last?.termination?.reason ?? payload.termination.reason`——
+      // `run_outcome` 行**缺** termination/verification 时会回退到 payload 自己蒙过去（日志里
+      // 什么都没写也算绿）。下面一律直接打末行字段：「没写」就是红。
+      assert.ok(Object.hasOwn(last, "termination"),
+        `run_outcome 末行缺 termination 字段（不许回退到载荷兼过）：实际键=${Object.keys(last).join(",")}`);
+      assert.ok(ENGINE_TERMINATIONS.includes(last.termination?.reason),
+        `末行 termination.reason 不是引擎给的原因：${JSON.stringify(last.termination)}`);
+      assert.equal(last.termination.reason, payload.termination.reason,
+        `末行 termination.reason 与载荷不一致：日志=${last.termination.reason} 载荷=${payload.termination.reason}`);
+      assert.ok(Object.hasOwn(last, "verification"),
+        `run_outcome 末行缺 verification 字段（终局裁决不能只留一半）：实际键=${Object.keys(last).join(",")}`);
+      assert.equal(last.verification.status, payload.verification.status,
+        `末行 verification.status 与载荷不一致：日志=${last.verification.status} 载荷=${payload.verification.status}`);
+      assert.equal(last.verification.status, "skipped",
+        "erix_run 不开 finalGuard ⇒ 日志里的 verification 状态也必须是 skipped（与 E4 同口径）");
     });
 
     // —— transcript 里 tool_result 的字段面（工单第 3 项第 3 条）——
