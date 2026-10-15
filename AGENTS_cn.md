@@ -82,6 +82,23 @@ scripts/          # 实验脚本和结果
   宿主可见签名要紧的时候，去读生成的 `.d.ts`，而不是源码里的注释。
 - 文档规则（issue #164）：改 `README*.md`、`docs/requirements*.md`、任何默认值或 `files`/`exports` 清单时，必须保证 `npm run check:docs` 绿。该检查直接从 `package.json` 与 `src/` 取真值，因此文档无法静默漂移；「当前版本」声明的规范写法写在 `scripts/docs-drift-check.mjs` 顶部注释里。中英文文档成对同步（见 `AGENTS_cn.md` 对应小节）。
 - 锚点粒度（issue #210）：**不要默认「文档里删一处提及就会红」**——多数锚点是*存在性*级的（`defaults` 全组、`modulemap`、`paths`：它们只问「那个文件里有没有这个字符串」，所以从同一句里删掉一处额外提及仍然绿）。只有这些是*逐处*级的（每个声明点单独比对，缺 / 多 / 改名都红）：`version` 的当前版本声明、README 的 `files`/`exports` 围栏（与 `package.json` **双向对称**比对——文档里改名或删键也会红，不只是多写才红），以及清单/枚举/单位类锚点（文件工具清单、CLI 工具清单、vendor 跳过目录、`formatSize` 的单位档位与每一条 `` `字节数` → `可读值` `` 示例映射、内置压缩策略名）。这些锚点还会对账**中英两侧的声明点处数**，接住「把某一侧的整句声明删掉」这一类。每条逐处锚点的反向证都固化在 `node scripts/docs-drift-check.mjs --self-test` 里；改了 `scripts/docs-drift-check.mjs` 就要跑一次。每个锚点属于哪一级、以及剩下那些为何**没**升级，写在脚本头部注释里。
+- 文档行号锚点（issue #286，第一批 T-a）：文档不得依赖**裸行号**。`paths` 过去在解析引用时会把 `:1234` 剥掉，
+  于是只校到「文件在不在」——行号漂到别的函数、甚至漂出文件末尾都照样绿（契约曾把 `src/store/notes.js` 的 limit
+  校验指到第 398 行，而那个文件只有 383 行）。现在两条锚点钉住这件事，两条都接进了 `--self-test`：
+  *`symbol-anchor`* 是**逐处**级的：每一处 `` `符号`（`路径`） `` 或 `[符号](路径)` 形式的引用，都必须在**那个文件里**
+  抽到该符号的真实声明（`function` / `class` / `const|let|var` 绑定 / 解构 / 再导出 / 方法 / 对象键 / `process.env.X`）。
+  找不到符号就红，报错会点名该文件里**实际存在的相近符号**；一个文件里连一条声明都抽不到同样算红（#164 口径：
+  抽不到真值不许静默放行）。**字符串值**（终止原因、provider 错误码）是唯一弱一档的形态，只在
+  `scripts/docs-drift-check.mjs` 的 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的那 4 个文件里被接受。
+  *`bare-lines`* 是**只减不增的棘轮**：`src/**.js:N` / `:N-M` 形态的裸行号引用，按唯一 (文档, 目标文件, 行区间) 计数，
+  不得超过同一份脚本里的 `BARE_LINE_REF_BASELINE = 244`。这个数可以复核：`node scripts/docs-drift-check.mjs --verbose`
+  会打出实测「248 唯一区间 − 4 处声明式豁免 = 244」。豁免走 `BARE_LINE_EXEMPTIONS`，**条目 + 引用行就地声明**双条件
+  缺一不可，没被任何引用用到的条目本身也会红（与 #286 已落在 `test/static-guards.test.js` 的双条件同口径）。
+  行号越界是**错误**，不是观察项。覆盖面是宿主真会读的 20 份文档：两份 README、中英 AGENTS、中英契约，加上
+  **全部** `docs/host-upgrade-guide*.md`（按目录实扫，新指南一落地就自动在面内）。`CHANGELOG.md` 明确**不参与**：
+  它的行号记的是「发版那一刻为真」的事实，改掉等于伪造历史（与 #278 的简称登记表同一套理由）。
+  第一批 T-a 只做基建与棘轮——剩下这 244 处要由后续批次替换成符号锚点，而「把基线常量降下来并在提交信息里写理由」
+  就是「确实少了一些」唯一可核对的写法。
 - `--checkJs` 棘轮规则（issue #214）：`npm run check:types` **不追求清零**——119 个错（涉 29 个文件）是已接受的债（#214 首测是 218，issue #177 刀 1 给 `src/loop/orchestrator.js` 还掉 1 个；PR #249（即 #213 的两个 provider 工厂 JSDoc）又还掉 75 个，**全部落在那两个工厂文件**：`src/providers/openai.js` 46 → 7、`src/providers/anthropic.js` 45 → 9，其余 27 个带错文件一个没动；issue #265 把 `src/store/notes.js` 的端口语义抽进两个新模块后又还掉 21 个，**同样全部落在那一个文件**：`src/store/notes.js` 27 → 6，两个首行 `// @ts-check` 的新模块（`src/store/notes-port.js`、`src/store/notes-memory.js`）各自贡献 0 个，其余 28 个带错文件一个没动——逐文件对账用的是 `git archive` 取出的 `7354fab^` 对照树，它在同一条命令下逐字复现 142 / 185）。
   它保证的是**只减不增**：总数与 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 119` 常量比较（2026-10-15 在
   当前树上复测，环境 `typescript@5.9.3` + `@types/node@22.20.5`，**两档在同一笔提交里一起下调**；issue 正文里的 226 在 #213 之前的树
