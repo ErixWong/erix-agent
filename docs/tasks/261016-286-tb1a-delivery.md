@@ -1,7 +1,7 @@
 # 261016-286-tb1a 交付报告 — issue #286 T-b 第一刀 · 前半（判据 + 契约错位清零）
 
 - 分支 `feat-261016-02-286-tb1a`，基线 `main` = `ec3728f`。
-- 完整 diff：`git diff main > /tmp/286-tb1a-final.diff`（**754 行**；6 个文件：`scripts/docs-drift-check.mjs` `docs/host-consumer-contract.md` `docs/host-consumer-contract_cn.md` `test/docs-anchor-ratchet.test.js` `AGENTS.md` `AGENTS_cn.md`，另 `CHANGELOG.md`）。
+- 完整 diff：`git diff main > /tmp/286-tb1a-final.diff`（**918 行 / 8 个文件 / +442 −89**：`scripts/docs-drift-check.mjs` `docs/host-consumer-contract.md` `docs/host-consumer-contract_cn.md` `test/docs-anchor-ratchet.test.js` `AGENTS.md` `AGENTS_cn.md` `CHANGELOG.md`，以及本报告自己）。
 - 版本仍 `0.20.0`；`src/` `bin/` `package.json` `files`/`exports`/`.gitignore` 一字未动。
 
 ## 1. 提交序列
