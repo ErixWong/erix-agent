@@ -1551,33 +1551,42 @@ const SYMBOL_DECL_PATTERNS = [
   [/^\s*(?:public\s+|private\s+|protected\s+|readonly\s+)*([A-Za-z_$][\w$]*)\s*:\s*(?![=:])/, "对象键/类字段"],
 ];
 
-const FILE_LINE_CACHE = new Map();   // rel → 拆行后的数组（按「文本身份」失效，见 `fileLines()`）
+/* 文件文本的进程内缓存（#286 T-a）。`--self-test` 要跑 85 轮全量检查，每轮都重新读一遍
+ * orchestrator.js（350KB）× 244 处引用，会把一条文档门禁拖到分钟级——那是「太慢所以会被跳过」的形状。
+ * 口径：
+ *   · 被 `--self-test` overlay 改过的文件**每次现读**（来源不同就必须重来，绝不吃缓存）；
+ *   · 没被 overlay 的文件在本进程里只读一次——本脚本从头到尾是只读的，不存在自己改盘的路径；
+ *   · 拆行与派生表（符号声明表、字面量集合）挂在同一条记录上，随文本一起失效——`--self-test` 会跑
+ *     85 轮全量检查，每轮都把 350KB 的 `src/loop/orchestrator.js` 重拆一遍是把文档门禁拖到分钟级的错地方。
+ * 早先的版本拿「长度 + 首尾 32 字」当文本身份，`src/a/b.js:12` → `src/a/c.js:12` 这种**等长**变异
+ * 会命中旧缓存，自测里直接假绿（改了却不红）——所以身份判据必须是「是否被 overlay 覆盖」。 */
+const FILE_LINE_CACHE = new Map();   // rel → { text, lines, decls, literals }
 
-/** 读一个仓内文件的行数组（走 `textOf`，所以 `--self-test` 的内存副本同样生效）；不存在返 null。
- *  缓存按 rel + 文本长度 + 首尾 32 字，避免 76 轮自测里反复拆同一份 350KB 源码。 */
-function fileLines(rel) {
+function fileRecord(rel) {
+  const overlaid = OVERLAY.has(rel);
+  const hit = FILE_LINE_CACHE.get(rel);
+  if (hit && hit.overlaid === overlaid && (!overlaid || hit.text === textOf(rel))) return hit;
   let text;
   try { text = textOf(rel); } catch { return null; }
-  // 缓存键必须是**全文本身**：#286 T-a 现场——早先的版本用「长度 + 首尾 32 字」当身份，于是
-  // `src/a/b.js:12` → `src/a/c.js:12` 这种等长变异命中了旧缓存，自测里那一例假绿（改了却不红）。
-  const hit = FILE_LINE_CACHE.get(rel);
-  if (hit && hit.text === text) return hit.lines;
-  const lines = text.split("\n");
-  FILE_LINE_CACHE.set(rel, { text, lines });
-  return lines;
+  const rec = { text, overlaid, lines: text.split("\n"), decls: null, literals: null };
+  FILE_LINE_CACHE.set(rel, rec);
+  return rec;
 }
 
-/** 文件的真实行数（末尾换行不是一行——`wc -l` 同口径，越界判据用它）。 */
+/** 文件的真实行数（末尾换行不是一行——`wc -l` 同口径，越界判据用它）；不存在返 null。 */
 function fileLineCount(rel) {
-  const lines = fileLines(rel);
-  if (!lines) return null;
-  return lines.length > 1 && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+  const rec = fileRecord(rel);
+  if (!rec) return null;
+  const n = rec.lines.length;
+  return n > 1 && rec.lines[n - 1] === "" ? n - 1 : n;
 }
 
 function symbolDeclarations(rel) {
-  const lines = fileLines(rel);
+  const rec = fileRecord(rel);
+  const lines = rec?.lines ?? null;
+  if (!lines) return new Map();
+  if (rec.decls) return rec.decls;
   const out = new Map();
-  if (!lines) return out;
   lines.forEach((line, i) => {
     for (const [re, kind] of SYMBOL_DECL_PATTERNS) {
       const m = line.match(re);
@@ -1593,18 +1602,22 @@ function symbolDeclarations(rel) {
       if (!out.has(m[1])) out.set(m[1], { line: i + 1, kind: "环境变量读取处" });
     }
   });
+  rec.decls = out;
   return out;
 }
 
 /** 「具名字面量成员」那一档的真理：文件里出现过的字符串字面量内容（`"judge_done"` → `judge_done`）。
  *  只认整段字面量，不做「行里有这个词」那种宽判据。 */
 function valueLiterals(rel) {
-  const lines = fileLines(rel);
+  const rec = fileRecord(rel);
+  const lines = rec?.lines ?? null;
+  if (!lines) return new Set();
+  if (rec.literals) return rec.literals;
   const out = new Set();
-  if (!lines) return out;
   for (const line of lines) {
     for (const m of line.matchAll(/(["'])([A-Za-z_$][\w$]*)\1/g)) out.add(m[2]);
   }
+  rec.literals = out;
   return out;
 }
 
@@ -1675,9 +1688,9 @@ function symbolAnchorsInText(text, doc) {
 function symbolAnchorOccurrences(docs) {
   const found = [];
   for (const rel of docs) {
-    let text;
-    try { text = textOf(rel); } catch { continue; }
-    found.push(...symbolAnchorsInText(text, rel));
+    const rec = fileRecord(rel);
+    if (!rec) continue;
+    found.push(...symbolAnchorsInText(rec.text, rel));
   }
   return found;
 }
@@ -1697,7 +1710,7 @@ function mutateSymbolAnchor(sym, filePath, to) {
 
 /** R1 判据：符号在被引文件里确有声明（或落在点名文件的「具名字面量成员」档）。 */
 function symbolAnchorVerdict(sym, rel) {
-  const lines = fileLines(rel);
+  const lines = fileRecord(rel)?.lines ?? null;
   if (!lines) return { ok: false, missing: true };
   const decls = symbolDeclarations(rel);
   if (decls.size === 0) {
@@ -1771,9 +1784,8 @@ const BARE_LINE_REF_BASELINE = 244;
  *  能把这个常量临时改小来证「它真的是锁」：调低到低于实测值必须红，改回来必须绿）。
  *  读不到（常量被删/改格式）= 检查面失效 → 返 null，调用侧按 #164 口径报红，不静默放行。 */
 function bareLineBaseline() {
-  let text;
-  try { text = textOf("scripts/docs-drift-check.mjs"); } catch { return null; }
-  const m = text.match(/^const BARE_LINE_REF_BASELINE = (\d+);/m);
+  const rec = fileRecord("scripts/docs-drift-check.mjs");
+  const m = rec?.text.match(/^const BARE_LINE_REF_BASELINE = (\d+);/m);
   return m ? Number(m[1]) : null;
 }
 
@@ -1826,9 +1838,9 @@ function collectBareLineRefErrors() {
   const exemptHits = new Set();
   let occurrences = 0;
   for (const rel of docs) {
-    const lines = fileLines(rel);
-    if (!lines) continue;
-    lines.forEach((line, i) => {
+    const rec = fileRecord(rel);
+    if (!rec) continue;
+    rec.lines.forEach((line, i) => {
       BARE_LINE_RE.lastIndex = 0;
       for (const m of line.matchAll(BARE_LINE_RE)) {
         occurrences += 1;
@@ -1844,7 +1856,7 @@ function collectBareLineRefErrors() {
   }
   // R3 越界必红（工单 #286 T-a：不是观察项）
   for (const u of unique.values()) {
-    const v = bareLineExemptionVerdict({ doc: u.doc, target: u.target, lineText: (fileLines(u.doc) ?? [])[u.line - 1] ?? "" });
+    const v = bareLineExemptionVerdict({ doc: u.doc, target: u.target, lineText: (fileRecord(u.doc)?.lines ?? [])[u.line - 1] ?? "" });
     if (v.exempt) continue;
     const count = fileLineCount(u.target);
     if (count === null) continue;              // 目标文件不存在：由 symbol-anchor / paths 那一条点名，这里不重复报
