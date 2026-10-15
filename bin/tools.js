@@ -15,7 +15,12 @@ import path from "node:path";
 
 // 文件工具（readFile/rg/grep/tree/writeFile）的规范实现在 src/tools/file-tools.js，CLI 反过来 import 它
 // （issue #184：ADR-005 第二层，先例 src/tools/notes.js）。bin/ 只做装配与呈现。
-import { createFileTools, truncateDisplayText } from "../src/tools/file-tools.js";
+import { createFileTools, FILE_TOOL_DEFINITIONS, truncateDisplayText } from "../src/tools/file-tools.js";
+
+// todo 四件套的名字（issue #69：--no-todo / ERIX_NO_TODO=1 时整体不注册）。
+// 住在 `schemas` 之前：注册面单一来源 `cliToolDefinitions` 与提示词装配都要用它，而后者在
+// 模块初始化期就要算出 `CLI_TOOLS_SYSTEM_PROMPT`（const 的 TDZ 不允许往后放）。
+export const TODO_TOOL_NAMES = new Set(["todo_add", "todo_list", "todo_done", "todo_clear"]);
 
 // ---------------------------------------------------------------------------
 // notes 会话时钟维护（ADR-018 D7）：CLI/REPL 作为宿主在收尾时清理过期笔记
@@ -187,26 +192,128 @@ const schemas = [
 // CLI 系统提示拆成「基础段 + todo 段」（issue #69）：
 // --no-todo / ERIX_NO_TODO=1 时 todo 段整体消失（工具清单行后缀 + 工具纪律行的 todo 分句），
 // 基础段自身是完整句子（工具清单行以「输出。」收尾）。默认路径拼接结果与拆分前逐字节一致。
-const CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD =
-  "可用工具：readFile 读取文本文件（支持行范围与 max_bytes 上限），" +
-  "searchText 搜索文本文件（mode 必填、无默认值：literal 按字面量、regex 按 JavaScript 正则；" +
-  "name_pattern 只匹配文件名、不跨 /；命中按「文件:行号:命中行」返回；截断时给出续读 offset），" +
-  "rg 递归搜索文本文件（默认按正则匹配，与 rg 命令一致；传 is_regex=false 按字面量匹配，等价 rg --fixed-strings；" +
-  "已弃用，请改用 searchText 并显式传 mode），" +
-  "grep 递归搜索文件内容（默认正则，等价 grep -E；传 is_regex=false 按字面量，等价 grep -F；" +
-  "支持 glob 文件名过滤（只匹配文件名、不跨 /），结果按文件分组；已弃用，请改用 searchText 并显式传 mode），" +
-  "tree 列出目录树，edit 对已存在的文件做精确文本替换（edits 是 [{oldText, newText}]，"
-  + "oldText 要与原文逐字符相等且恰好命中 1 次，0 次或多处都是错误结果并告知下一步；不做模糊兜底；返回短 diff），"
-  + "writeFile 写入 UTF-8 文本，exec 执行 shell 命令并返回输出";
+// issue #312(b) R2：清单行（原 `CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD` 与 todo 后缀两个手抄常量）
+// 已改成「遍历注册面 ＋ 查短语表」生成，逐字节等价；下面只留**不是清单**的那几段文案。
 
-// issue #184（ADR-010：默认去噪必须可撤销）：「跳了什么 + 怎么撤销」必须进提示词——
+// ---------------------------------------------------------------------------
+// 工具清单单一来源（issue #312(b) R2）：清单行**不再手抄**，由「遍历注册面 definitions ＋ 每个名字查短语表」生成。
+//   · 注册面（`cliToolDefinitions`）= 名字的单一来源 ⇒「注册面 ⊆ 提示词」在结构上成立（漏列不可能）；
+//   · 短语表（`CLI_TOOL_PROMPT_PHRASES`）= 文案的单一来源 ⇒ 表里出现注册面没有的名字 ⇒ build 时抛错
+//     （「提示词 ⊆ 注册面」，治陈旧手抄：删一个工具却忘了删文案，以前是静默的，现在红）。
+// 注册面上有名字而短语表没有 ⇒ 同样抛错：宁可炸，也不要在模型视野里静默少一个工具。
+// 硬约束：**输出逐字节不变**（`test/fixtures/cli-golden.json` 不重烤就是这条的判据，issue #195 的
+// 「新增 searchText / 标弃用 rg·grep」仍然要求清单行点名，文案一个字没动）。
+// ---------------------------------------------------------------------------
+
+/** 工具清单行的分段样式：base 段用「，」分隔；todo 段另起一段（「、」分隔 + 组级注释）。 */
+const CLI_TOOL_PROMPT_GROUPS = {
+  base: { lead: "可用工具：", join: "，" },
+  todo: {
+    lead: "，",
+    join: "、",
+    // 组级注释（不是某个工具自己的话术），接在 todo 段末尾；todo_* 四件套同一条数据通路，故合并说。
+    note: "（均返回可读文本，数据存 ~/.erix/todos/ 按工作目录隔离）",
+  },
+};
+
+/**
+ * 短语表：工具名 → 清单行里那一句。**只放文案，不放名单**——名单来自注册面。
+ * 每个 key 必须在注册面上（否则 `buildCliToolsSystemPrompt` 抛错），反之注册面上的名字
+ * 也必须在这里有一句（同上），两侧都由 `assertPromptPhraseTableMatches` 在 build 期双向核对。
+ */
+export const CLI_TOOL_PROMPT_PHRASES = {
+  readFile: { group: "base", phrase: "readFile 读取文本文件（支持行范围与 max_bytes 上限）" },
+  searchText: {
+    group: "base",
+    phrase: "searchText 搜索文本文件（mode 必填、无默认值：literal 按字面量、regex 按 JavaScript 正则；"
+      + "name_pattern 只匹配文件名、不跨 /；命中按「文件:行号:命中行」返回；截断时给出续读 offset）",
+  },
+  rg: {
+    group: "base",
+    phrase: "rg 递归搜索文本文件（默认按正则匹配，与 rg 命令一致；传 is_regex=false 按字面量匹配，等价 rg --fixed-strings；"
+      + "已弃用，请改用 searchText 并显式传 mode）",
+  },
+  grep: {
+    group: "base",
+    phrase: "grep 递归搜索文件内容（默认正则，等价 grep -E；传 is_regex=false 按字面量，等价 grep -F；"
+      + "支持 glob 文件名过滤（只匹配文件名、不跨 /），结果按文件分组；已弃用，请改用 searchText 并显式传 mode）",
+  },
+  tree: { group: "base", phrase: "tree 列出目录树" },
+  edit: {
+    group: "base",
+    phrase: "edit 对已存在的文件做精确文本替换（edits 是 [{oldText, newText}]，"
+      + "oldText 要与原文逐字符相等且恰好命中 1 次，0 次或多处都是错误结果并告知下一步；不做模糊兜底；返回短 diff）",
+  },
+  writeFile: { group: "base", phrase: "writeFile 写入 UTF-8 文本" },
+  exec: { group: "base", phrase: "exec 执行 shell 命令并返回输出" },
+  todo_add: { group: "todo", phrase: "todo_add 添加待办任务" },
+  todo_list: { group: "todo", phrase: "todo_list 列出待办" },
+  todo_done: { group: "todo", phrase: "todo_done 标记完成" },
+  todo_clear: { group: "todo", phrase: "todo_clear 清空" },
+};
+
+/**
+ * 注册面的单一来源（issue #312(b) R2）：`createCliTools` 的 `tools` 与提示词清单行都从这里来，
+ * 于是一处改、两处同变。文件工具的 definitions 与 `src/tools/file-tools.js` 的 `FILE_TOOL_DEFINITIONS`
+ * 同一数组（`createFileTools` 只是 structuredClone 它），这里直接取原数组：清单行为此不需要 cwd。
+ */
+export function cliToolDefinitions({ todo = true } = {}) {
+  const todoEnabled = todo !== false;
+  return [...FILE_TOOL_DEFINITIONS, ...schemas]
+    .filter((schema) => todoEnabled || !TODO_TOOL_NAMES.has(schema.name));
+}
+
+/**
+ * 双向核对（装配期，不是文本扫描）：短语表的 key 集合 ⇄ 注册面的 name 集合。
+ * 两侧任一方向不吻合都抛错——这就是「注册面 ⊆ 提示词」（漏列）与「提示词 ⊆ 注册面」（陈旧手抄）。
+ */
+/**
+ * 双向核对（装配期，不是文本扫描）：短语表的 key 集合 ⇄ 注册面的 name 集合。
+ * 两侧任一方向不吻合都抛错——这就是「注册面 ⊆ 提示词」（漏列）与「提示词 ⊆ 注册面」（陈旧手抄）。
+ * `fullNames` = **全量注册面**（todo=true 那份）：短语表是静态表，todo=false 只是本轮少拼一段，
+ * 不能拿它当「陈旧」的依据（否则 todo_* 四条会被误报成手抄残留）。
+ */
+function assertPromptPhraseTableMatches(names, { phrases = CLI_TOOL_PROMPT_PHRASES, fullNames = names } = {}) {
+  const registered = new Set(names);
+  const stale = Object.keys(phrases).filter((name) => !new Set(fullNames).has(name));
+  if (stale.length > 0) {
+    throw new Error(`工具清单短语表里有注册面没有的名字：${stale.join("、")}`
+      + "（提示词 ⊄ 注册面：删了工具却留着文案；要么把名字加回注册面，要么删掉这条短语）");
+  }
+  const missing = [...registered].filter((name) => phrases[name] === undefined);
+  if (missing.length > 0) {
+    throw new Error(`注册面上的工具没有清单文案：${missing.join("、")}`
+      + "（注册面 ⊄ 提示词：宁可抛错，也不要在模型视野里静默少一个工具）");
+  }
+}
+
+/** 工具清单行：遍历注册面顺序，按分段样式取短语拼接，以「。」收尾（基础段自身是完整句子，issue #69）。 */
+function buildCliToolsToolListLine(names, { phrases = CLI_TOOL_PROMPT_PHRASES } = {}) {
+  const segments = [];
+  let current = null;
+  for (const name of names) {
+    const entry = phrases[name];
+    const style = CLI_TOOL_PROMPT_GROUPS[entry.group];
+    if (style === undefined) {
+      throw new Error(`工具清单短语表里 "${name}" 的 group "${entry.group}" 不是已知分段`);
+    }
+    if (current?.group !== entry.group) {
+      current = { group: entry.group, parts: [], style };
+      segments.push(current);
+    }
+    current.parts.push(entry.phrase);
+  }
+  let line = "";
+  for (const segment of segments) {
+    line += segment.style.lead + segment.parts.join(segment.style.join) + (segment.style.note ?? "");
+  }
+  return `${line}。`;
+}
+
+// ADR-010：「跳了什么 + 怎么撤销」必须进提示词——
 // 模型不知道被排除就无从发起取回。排除账同时写在工具结果尾部。
 const CLI_TOOLS_SYSTEM_PROMPT_VENDOR =
   "\n搜索与目录类工具（searchText/rg/grep/tree）默认跳过 node_modules、dist、build、target、vendor 与 . 开头的目录（结果尾部会回报跳过数量）；要一起搜传 include_vendor=true、include_hidden=true";
-
-// todo 段①：工具清单行的 todo 后缀（含句号，接在基础段 HEAD 之后）；vendor 段接其后
-const CLI_TOOLS_SYSTEM_PROMPT_TODO_TOOLS =
-  "，todo_add 添加待办任务、todo_list 列出待办、todo_done 标记完成、todo_clear 清空（均返回可读文本，数据存 ~/.erix/todos/ 按工作目录隔离）。";
 
 const CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE =
   `
@@ -234,14 +341,11 @@ const CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL =
 - 不要主动读取密钥、凭据或 .env 文件；只用本次工具返回明确给出的来源
 - 任务完成后直接汇报结果，默认使用中文`;
 
-export const CLI_TOOLS_SYSTEM_PROMPT =
-  CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD
-  + CLI_TOOLS_SYSTEM_PROMPT_TODO_TOOLS
-  + CLI_TOOLS_SYSTEM_PROMPT_VENDOR
-  + "。"
-  + CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE
-  + CLI_TOOLS_SYSTEM_PROMPT_TODO_DISCIPLINE
-  + CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL;
+/** 默认（含 todo）注册面上的工具名顺序 = 清单行顺序（issue #312(b)：单一来源）。 */
+const CLI_TOOL_NAMES = cliToolDefinitions().map((schema) => schema.name);
+const CLI_TOOL_NAMES_NO_TODO = cliToolDefinitions({ todo: false }).map((schema) => schema.name);
+
+export const CLI_TOOLS_SYSTEM_PROMPT = buildCliToolsSystemPrompt();
 
 /**
  * --tools 白名单过滤（chat/repl 共用）：对组合后的工具集做 allowlist。
@@ -265,13 +369,33 @@ export function filterToolsByAllowlist(tools, allowlist, { onUnknown } = {}) {
   return filtered;
 }
 
-export function buildCliToolsSystemPrompt({ todo = true } = {}) {
+/**
+ * 拼 CLI 系统提示（工具清单行由注册面生成，其余段落是固定文案）。
+ *
+ * @param {string[]} [input.names] 注册面上的工具名（缺省用真注册面）；测试拿它做变异反证而不动源码。
+ * @param {object} [input.phrases] 短语表（缺省 `CLI_TOOL_PROMPT_PHRASES`）。
+ * @param {string[]} [input.fullNames] 「陈旧」核对的基准集（缺省 = todo=true 的全量注册面）。
+ */
+export function buildCliToolsSystemPrompt({
+  todo = true,
+  names,
+  phrases = CLI_TOOL_PROMPT_PHRASES,
+  fullNames,
+} = {}) {
   // ADR-015：ResourceStore 退出模型视野——所有宿主形态同一份提示词，不提 opaque 工件/路径。
   // issue #69：todo=false 时拼接无 todo 段的基础提示（--no-todo / ERIX_NO_TODO）。
-  if (todo === false) {
-    return `${CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD}。${CLI_TOOLS_SYSTEM_PROMPT_VENDOR}。${CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE}${CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL}`;
-  }
-  return CLI_TOOLS_SYSTEM_PROMPT;
+  // issue #312(b) R2：清单行由注册面生成（不再手抄），其余段落照旧拼接，输出逐字节不变。
+  const todoEnabled = todo !== false;
+  const effectiveNames = names ?? (todoEnabled ? CLI_TOOL_NAMES : CLI_TOOL_NAMES_NO_TODO);
+  const effectiveFull = fullNames ?? (names ?? CLI_TOOL_NAMES);
+  assertPromptPhraseTableMatches(effectiveNames, { phrases, fullNames: effectiveFull });
+  const list = buildCliToolsToolListLine(effectiveNames, { phrases, fullNames: effectiveFull });
+  return list
+    + CLI_TOOLS_SYSTEM_PROMPT_VENDOR
+    + "。"
+    + CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE
+    + (todoEnabled ? CLI_TOOLS_SYSTEM_PROMPT_TODO_DISCIPLINE : "")
+    + CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL;
 }
 
 export function buildArchiveNotice(archiveDir) {
@@ -472,8 +596,6 @@ function normalizeCommand(command) {
 }
 
 
-const TODO_TOOL_NAMES = new Set(["todo_add", "todo_list", "todo_done", "todo_clear"]);
-
 export function createCliTools({
   cwd = process.cwd(),
   todo = true,
@@ -593,9 +715,9 @@ export function createCliTools({
   }
 
   return {
-    tools: [...fileTools.definitions, ...schemas]
-      .filter((schema) => todoEnabled || !TODO_TOOL_NAMES.has(schema.name))
-      .map((schema) => structuredClone(schema)),
+    // issue #312(b) R2：名字清单走单一来源 `cliToolDefinitions`（与提示词同源）；实现与
+    // executor 仍来自 `createFileTools`，这里的 structuredClone 保留（对外形状不得共享引用）。
+    tools: cliToolDefinitions({ todo: todoEnabled }).map((schema) => structuredClone(schema)),
     executeTool,
     getLastToolMetadata: () => lastToolMetadata,
     truncateResult,

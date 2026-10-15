@@ -4,6 +4,36 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **工具清单不再四处手抄，且两侧都有装配期断言（issue #312(b)，宿主侧方案 (b)，不动公共面）。** 病根：
+  `bin/tools.js` 的清单行（`CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD` + todo 后缀）与宿主兜底文案
+  （`examples/pi-extension/erix-run-core.js` 的「可用工具：readFile/rg/grep/tree/writeFile/exec」）
+  都是手抄的，而 `test/tools.test.js` 又把提示词短语**第四次**抄进测试——于是「注册面上有、文案里没有」
+  与「文案里有、注册面上没有」两侧全部无人守：`searchText` 与 `edit` 早已在宿主的兜底名单外，
+  从注册面摘掉 `edit` 也不会有任何测试变红，而 `note_forget` 被注册进工具面却从未到过模型眼前。
+  - 修法：`bin/tools.js` 新增注册面单一来源 `cliToolDefinitions({ todo })`（`createCliTools().tools`
+    与提示词清单行同源于它）与文案单一来源 `CLI_TOOL_PROMPT_PHRASES`（名字 → 那一句），清单行改为
+    「遍历注册面 ＋ 逐名查表」生成；`buildCliToolsSystemPrompt` 在 build 期双向核对两集合：
+    短语表里有注册面没有的名字 ⇒ 抛错（治陈旧手抄），注册面有名字而表里没文案 ⇒ 抛错（拒静默漏列）。
+    **输出逐字节不变**：`test/fixtures/cli-golden.json` 一字未改（`todo=true` / `todo=false` /
+    `CLI_TOOLS_SYSTEM_PROMPT` 三份输出与改动前逐字节相同）。
+  - 宿主侧：兜底文案删除，改为遍历**实际注册数组**生成（`buildSystemPrompt` 新增 `tools` 入参，
+    `buildLoopOptions` 与 `runErixRun` 把真正交给 `runToolLoop` 的那个数组递进去），文案引用引擎导出的
+    那张表而不复制第二份；拿不到注册面 ⇒ `ErixRunError(tool_list_unavailable)`，不再静默退成六件套。
+    另导出 `assertToolListMatchesRegistered`：清单行里写到的工具名必须 ⊆ 实际 `tools` 数组
+    （典型红：引擎清单带 `todo_*` 而宿主拿到的 `tools` 被 `--no-todo` 滤掉了）。
+  - **`note_*` 四件套进宿主清单（R3 选 (i)，不选白名单）**：`createInnerTools` 本来就把
+    `note_take/note_list/note_read/note_forget` 拼进了 `tools`，而引擎散文只提到前三个（`note_forget`
+    连散文都没有）——只拿白名单等于把「模型能叫、却没被告知存在」写成合法。现在宿主补一行
+    「本工具面另注册：…」，四件全部可见；引擎提示词文案（golden 钉着）未动，只动宿主文案。
+  - 测试侧：`test/tools.test.js` 那批短语断言改为引用 `CLI_TOOL_PROMPT_PHRASES`（第四处手抄消除），
+    并新增兜底文案自身的快照 golden（`test/fixtures/inner-tool-list-golden.json`，以前为零）。
+    新增 `test/examples/erix-run-tool-list.test.js` 钉双向反证 / `note_forget` 可见 / 兜底不静默。
+  - 不做：不动 `src/` 公共面（提升到 `erix-agent/tools` 归 issue #194）、不碰 `package.json` 的
+    `exports`/`files`、不碰 `budgetTokens`；也不声称「列全清单会提升 note 利用率」（该假设在本仓
+    `docs/research/2026-09-26-strategy-variance-and-cache-economics.md` 里已判未证实）。本单只治事实一致性。
+
 ## [0.21.0] - 2026-10-16
 
 ### Added

@@ -870,16 +870,136 @@ export function createInnerTools({
   return { tools, executeTool, cliTools, notes: notesAssembler };
 }
 
+/**
+ * 宿主自己拼进工具面的那批工具（`note_*`，由引擎 notes assembler 提供）的清单文案。
+ * 它不在 `bin/tools.js` 的注册面上，所以引擎侧短语表里没有它（issue #312(b) R3 选 (i)）。
+ *
+ * 为什么选 (i) 而不是白名单 (ii)：这 4 个名字确实被 `createInnerTools` 拼进了交给 `runToolLoop`
+ * 的 `tools`，白名单只是把「模型能叫、却没被告知存在」写成合法，而事实一致性正是本单要治的东西；
+ * 而宿主文案没有 golden 钉（全仓就这一处），改它零成本。引擎散文只提到 note_take/list/read、
+ * 偏偏漏了 note_forget，恰好是「靠散文兼容靠不住」的现成证据。
+ */
+export const HOST_REGISTERED_TOOL_PHRASES = {
+  note_take: "note_take 记下后面还要用的具体值/决定",
+  note_list: "note_list 列出已记笔记的 key",
+  note_read: "note_read 按 key 读回笔记",
+  note_forget: "note_forget 撤销一条笔记",
+};
+
+/** 从实际注册数组取名字（顺序即注册顺序；没有名字就交回空数组，由调用方决定怎么硬失败）。 */
+function registeredToolNames(tools) {
+  return (Array.isArray(tools) ? tools : [])
+    .map((tool) => (typeof tool?.name === "string" ? tool.name : undefined))
+    .filter((name) => typeof name === "string" && name !== "");
+}
+
+/**
+ * 合一张短语表：引擎侧 `bin/tools.js` 导出的 `CLI_TOOL_PROMPT_PHRASES`（只引用，不手抄）
+ * ＋ 宿主自己注册的 note_*。没拿到引擎表（旧 lib / 测试桩）时只覆盖 note_*，其余名字会在
+ * `buildToolListLine` 里因「查不到文案」而显式抛错，而不是退一份旧名单。
+ */
+function resolveToolPhrases(lib) {
+  const merged = { ...HOST_REGISTERED_TOOL_PHRASES };
+  const enginePhrases = lib?.binTools?.CLI_TOOL_PROMPT_PHRASES;
+  if (enginePhrases !== null && typeof enginePhrases === "object") {
+    for (const [name, entry] of Object.entries(enginePhrases)) {
+      merged[name] = typeof entry === "string" ? entry : entry?.phrase;
+    }
+  }
+  return merged;
+}
+
+/**
+ * 由**实际注册数组**生成工具清单行（issue #312(b) R1：这里曾是「readFile/rg/grep/tree/writeFile/exec」
+ * 的手抄，已经少列了 `searchText` 与 `edit`）。名单 = 遍历注册数组 ⇒「注册面 ⊆ 清单」在构造上
+ * 不可能漏列；文案 = 查短语表（引擎表优先，只引用不手抄），查不到就退到**裸工具名**——
+ * 宁可写得干，也不能静默丢一个工具。名字空集 ⇒ 抛错（拿不到注册面就不拼清单）。
+ */
+export function buildToolListLine({ tools, phrases = {}, lead = "可用工具：" } = {}) {
+  const names = registeredToolNames(tools);
+  if (names.length === 0) {
+    throw new ErixRunError(
+      "tool_list_unavailable",
+      "生成工具清单行时拿不到实际注册面（tools 空或不可用）——手抄兜底已删，不许静默退成另一份名单",
+    );
+  }
+  return `${lead}${names.map((name) => phrases[name] ?? name).join("、")}。`;
+}
+
+/**
+ * 装配期双向断言的第三句（issue #312(b) R3）：**提示词里出现的工具名 ⊆ 实际交给 `runToolLoop`
+ * 的那个 `tools` 数组**（含 `createInnerTools` 在 `:841-843` 拼进去的 `note_*`）。
+ *
+ * 名字不是靠「把清单行按标点切开」抽的（那样会被文案里的顿号与括号骗到），而是只拿**清单行**
+ * （以「可用工具：」/「本工具面另注册：」开头的两段）去比一张**有界候选集**（引擎短语表的 key
+ * ∪ 宿主 note_* 表）。散文段（引擎提示词的 [你的处境] / [工具纪律] 里提到 note_take/note_read）
+ * **不**算登记：散文段提及 ≠ 清单登记（issue #312(b) R3 的注脚），否则 `notes:false` 的宿主会
+ * 因引擎自己的散文而红，而那不是它能修的。
+ */
+export function assertToolListMatchesRegistered({ prompt, tools, universe } = {}) {
+  const candidates = [...new Set([
+    ...(Array.isArray(universe) ? universe : []),
+    ...Object.keys(HOST_REGISTERED_TOOL_PHRASES),
+  ])];
+  const registered = new Set(registeredToolNames(tools));
+  const listLines = [...String(prompt ?? "").matchAll(/(?:可用工具|本工具面另注册)：[^\n]*/gu)]
+    .map((match) => match[0]);
+  const ghosts = candidates.filter((name) => !registered.has(name)
+    && listLines.some((line) => mentionsToolName(line, name)));
+  if (ghosts.length > 0) {
+    throw new ErixRunError(
+      "tool_list_unavailable",
+      `提示词清单里写了工具面里未注册的工具：${ghosts.join("、")}（提示词 ⊄ 注册面；常见成因：清单与 tools 的 todo/notes 开关不一致）`,
+    );
+  }
+  return ghosts;
+}
+
+/** 整词匹配（工具名都是 ASCII 标识符）：避开把 `note_read` 算进 `note_reader` 这种误伤。 */
+function mentionsToolName(text, name) {
+  return new RegExp(`(^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}([^A-Za-z0-9_]|$)`, "u")
+    .test(text);
+}
+
 /** 内层 system prompt：复用 bin/tools.js 的工具提示词装配（与 CLI 同一口径）。 */
-export function buildSystemPrompt({ lib, cwd, todo = false }) {
-  const base = typeof lib.binTools.buildCliToolsSystemPrompt === "function"
+export function buildSystemPrompt({ lib, cwd, todo = false, tools } = {}) {
+  // 兜底不再手抄名单（R1）：能拿到引擎装配就用它；否则用**实际注册数组**生成（优先用调用方
+  // 传进来的 `tools`——那正是交给 runToolLoop 的那一个；拿不到则现场调 `createCliTools`）。
+  // 两者都拿不到 ⇒ `buildToolListLine` 抛错（C4：不许出现「少两个工具的名单」）。
+  const registered = tools ?? (typeof lib?.binTools?.createCliTools === "function"
+    ? lib.binTools.createCliTools({ cwd, todo }).tools
+    : undefined);
+  const hostNames = registeredToolNames(registered);
+  // 引擎清单只认 bin/ 的注册面；宿主自己拼的 note_* 靠本层补一行（R3 选 (i)），
+  // 否则 note_forget 连名字都不会到模型眼前。
+  const extras = hostNames.filter((name) => HOST_REGISTERED_TOOL_PHRASES[name] !== undefined);
+  const base = typeof lib?.binTools?.buildCliToolsSystemPrompt === "function"
     ? lib.binTools.buildCliToolsSystemPrompt({ todo })
-    : "可用工具：readFile/rg/grep/tree/writeFile/exec。";
-  return `你是被 pi 调度的 erix 编码助手，工作目录 ${cwd}。${base}`
-    + "\n\n交付规则：直接在工作目录里改文件（writeFile/readFile/exec），"
+    : buildToolListLine({ tools: registered, phrases: resolveToolPhrases(lib) });
+  const hostGenerated = typeof lib?.binTools?.buildCliToolsSystemPrompt !== "function";
+  const supplement = extras.length === 0
+    ? ""
+    : `\n\n本工具面另注册：${extras.map((name) => HOST_REGISTERED_TOOL_PHRASES[name]).join("、")}。`;
+  const prompt = `你是被 pi 调度的 erix 编码助手，工作目录 ${cwd}。${base}`
+    + supplement
+    + "\n\n交付规则：直接在工作目录里改文件（清单里的写类工具都能用），"
     + "收尾只写简短摘要——改了什么、为什么、如何验证；不要粘贴大段代码或文件全文。"
     + "\n\n任务完成时首行写「任务已完成」，再接摘要。"
     + "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
+  // 装配期断言（R3 第三条）。作用域只到**本层自己写进清单的名字**：
+  //   · 引擎给了 base ⇒ 引擎清单已由 `bin/tools.js` 在 build 期钉过「提示词 ⊆ 注册面」，而宿主这一层
+  //     拿到的可能是 `deps.createAssembly` 的自定义工具面（#266 允许它长得什么都不像），
+  //     拿引擎名单去要求它是假红；本层只对 note_* 补行负责。
+  //   · 本层自己生成清单 ⇒ 整行都是本层写的，全部纳入。
+  // 全量严格版（拿引擎短语表当候选集）导给了测试，见 `assertToolListMatchesRegistered`。
+  if (hostNames.length > 0) {
+    assertToolListMatchesRegistered({
+      prompt,
+      tools: registered,
+      universe: hostGenerated ? Object.keys(resolveToolPhrases(lib)) : Object.keys(HOST_REGISTERED_TOOL_PHRASES),
+    });
+  }
+  return prompt;
 }
 
 function preview(value, limit = 120) {
@@ -968,7 +1088,7 @@ export function buildLoopOptions(input) {
   /** @type {Record<string, unknown>} */
   const options = {
     provider,
-    system: system ?? buildSystemPrompt({ lib: { binTools: {} }, cwd: params.cwd }),
+    system: system ?? buildSystemPrompt({ lib: { binTools: {} }, cwd: params.cwd, tools: tools.tools }),
     initialUserMessage: params.task,
     // 契约「#1.3 硬注意」/task 选项：判官/收尾的简报取显式 task，多轮宿主必须显式传。
     task: params.task,
@@ -1596,7 +1716,7 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       runId,
       system: lib.binTools === undefined
         ? undefined
-        : buildSystemPrompt({ lib, cwd: params.cwd }),
+        : buildSystemPrompt({ lib, cwd: params.cwd, tools: tools.tools }),
       // 观察者必须自带防护：0.18 起引擎会隔离抛错并经 onObserverError 报告，但进度通道
       // （pi 的 onUpdate）在引擎直调路径上仍可能同步抛错。
       onEvent: (event) => {
