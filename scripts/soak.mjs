@@ -1118,6 +1118,10 @@ async function main() {
       threw: abortInfo.threw,
     };
     // 阻断：没触发就是**脚本自己的配置问题**，不能让引擎背锅（旧版在这里把没发生的中止报成 #282 复现）。
+    // 但没触发的**根因**要分开写清楚：触发点不可达（脚本配置） vs 上游在触发点之前就挂了（不是脚本的锅）。
+    const unfiredDiagnosis = abortFired ? null : (abortInfo.threw
+      ? `中止 run 在触发点之前就抛错收口（reason=${abortedReason ?? "?"}，tool_result 落地 ${abortCounter.toolResults}/${trigger.at}）：上游或引擎提前失败，本阶段本次没被覆盖`
+      : `中止 run 自然收口于 ${abortedReason ?? "?"}（tool_result 落地 ${abortCounter.toolResults}/${trigger.at}）：触发点没踩到`);
     ledger.check("abort-actually-fired", abortFired, {
       coverage: abortStage.coverage,
       trigger,
@@ -1127,6 +1131,8 @@ async function main() {
       threw: abortInfo.threw,
       // 抛错分支的轮数在 error.termination.rounds 上（issue #180），非抛分支在 res.rounds 上。
       rounds: abortInfo.rounds ?? abortInfo.termination?.rounds ?? null,
+      ...(unfiredDiagnosis ? { unfiredDiagnosis } : {}),
+      ...(abortFired ? {} : { upstreamMessage: abortInfo.message ?? null, upstreamCode: abortInfo.code ?? null }),
       note: "只有真的中止过，下面的引擎断言才有意义；没触发时它们一律记 coverage:\"not-exercised\" 的非阻断观察",
     });
     if (abortFired) {
