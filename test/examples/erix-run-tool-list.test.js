@@ -102,12 +102,6 @@ test("C3 选 (i)：note_* 四个名字都进宿主清单，note_forget 可见（
 });
 
 test("C3 第三条：清单写了未注册的工具 ⇒ 装配期抛错（引擎清单有 todo_* 而 tools 被 --no-todo 滤掉）", () => {
-  const ghostLib = {
-    binTools: {
-      buildCliToolsSystemPrompt: () => binTools.buildCliToolsSystemPrompt({ todo: true }),
-      CLI_TOOL_PROMPT_PHRASES: binTools.CLI_TOOL_PROMPT_PHRASES,
-    },
-  };
   const tools = binTools.createCliTools({ cwd: "/nonexistent-cwd", todo: false }).tools;
   assert.throws(
     () => core.assertToolListMatchesRegistered({
@@ -123,7 +117,6 @@ test("C3 第三条：清单写了未注册的工具 ⇒ 装配期抛错（引擎
     tools: binTools.createCliTools({ cwd: "/nonexistent-cwd", todo: true }).tools,
     universe: Object.keys(binTools.CLI_TOOL_PROMPT_PHRASES),
   }), []);
-  void ghostLib;
 });
 
 test("C4 「有 createCliTools、无 buildCliToolsSystemPrompt」走生成路径：列全 8 个，不退六件套", () => {

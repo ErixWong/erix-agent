@@ -288,7 +288,7 @@ function assertPromptPhraseTableMatches(names, { phrases = CLI_TOOL_PROMPT_PHRAS
 }
 
 /** 工具清单行：遍历注册面顺序，按分段样式取短语拼接，以「。」收尾（基础段自身是完整句子，issue #69）。 */
-function buildCliToolsToolListLine(names, { phrases = CLI_TOOL_PROMPT_PHRASES, fullNames = names } = {}) {
+function buildCliToolsToolListLine(names, { phrases = CLI_TOOL_PROMPT_PHRASES } = {}) {
   const segments = [];
   let current = null;
   for (const name of names) {
@@ -397,8 +397,6 @@ export function buildCliToolsSystemPrompt({
     + (todoEnabled ? CLI_TOOLS_SYSTEM_PROMPT_TODO_DISCIPLINE : "")
     + CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL;
 }
-
-export { assertPromptPhraseTableMatches };
 
 export function buildArchiveNotice(archiveDir) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
