@@ -1158,6 +1158,20 @@ export const COMPACTION_LAYER_ROLES = Object.freeze([
 ]);
 
 /**
+ * #313 追加（主 agent 实测定调）：汇总读的是**哪一个** `compactionStats`。
+ *
+ * 本层读的是 **run 返回值（或抛错载荷）上那份全量 `compactionStats`**（`buildDiagnostics` 从
+ * `source.compactionStats` 取），不是 `<runId>.state.json` 里那份。后者写盘前要过
+ * `normalizeCompactionStats(value, limit = 32)`（`src/compact/pipeline.js`）的 `value.slice(-limit)`
+ * 截尾（调用点 `src/run-state.js` 的 `createDeterministicRunState`），>32 轮的 run 上「去 state.json 数削减账」
+ * 会静默少算前面那些轮（截尾本身已另开 **issue #315**，本单不修它）。字段名毫无提示，所以终局面
+ * 自带这一份源声明（`layers.source` / `layers.truncationNote`，并渲染进文本）。
+ */
+export const COMPACTION_STATS_SOURCE = "runResult.compactionStats";
+export const COMPACTION_STATS_TRUNCATION_NOTE =
+  "state.json 的 deterministic.compactionStats 经 normalizeCompactionStats(value, limit=32) 截尾到最后 32 条（issue #315）；>32 轮的 run 拿它当源会静默少算";
+
+/**
  * 把每轮 `compactionStats[].layers` 折成**每个层 id** 的 triggered / tokensSaved 总和。
  *
  * 数据来源（不推算、不冒充）：引擎在 `createCompactionStat`（`src/compact/pipeline.js`）里给
@@ -1210,7 +1224,10 @@ export function summarizeCompactionLayers(compactionStats) {
   const unattributed = Object.entries(byLayerId)
     .filter(([layerId]) => !attributed.has(layerId))
     .map(([layerId, totals]) => ({ layerId, ...totals }));
-  return { roundsObserved, tokensBeforePeak, byLayerId, roles, unattributed };
+  return { roundsObserved, tokensBeforePeak, byLayerId, roles, unattributed,
+    // #313 追加：自报数据源（本层读 run 返回值那份全量统计；state.json 那份会截尾 32 条）。
+    source: COMPACTION_STATS_SOURCE,
+    truncationNote: COMPACTION_STATS_TRUNCATION_NOTE };
 }
 
 /**
@@ -1223,7 +1240,9 @@ export function summarizeCompactionLayers(compactionStats) {
 export function formatCompactionLayerSummary(summary) {
   const layers = summary ?? summarizeCompactionLayers([]);
   if (!(layers.roundsObserved > 0)) {
-    return "分层削减=unknown（拿到的 compactionStats 条目没有 layers 字段）";
+    return "分层削减=unknown（拿到的 compactionStats 条目没有 layers 字段）"
+      + `\n  ↳ 来源 ${layers.source ?? COMPACTION_STATS_SOURCE}（全量）`
+      + `；若改读 state.json：${layers.truncationNote ?? COMPACTION_STATS_TRUNCATION_NOTE}`;
   }
   const rows = layers.roles.map((role) => `  ↳ ${role.label}（${role.layerIds.join("+") || "本 run 未出现"}）`
     + `=${role.triggered} 次/${role.tokensSaved} tok`);
@@ -1231,6 +1250,9 @@ export function formatCompactionLayerSummary(summary) {
     rows.push(`  ↳ ${extra.layerId}（未归组层 id）=${extra.triggered} 次/${extra.tokensSaved} tok`);
   }
   rows.push(`  ↳ 分层观测=${layers.roundsObserved} 条评估条目，tokensBefore 峰值 ${layers.tokensBeforePeak}`);
+  // #313 追加：自报数据源，并声明「若改读 state.json 则只覆盖最后 32 条」。
+  rows.push(`  ↳ 来源 ${layers.source ?? COMPACTION_STATS_SOURCE}（全量）`
+    + `；若改读 state.json：${layers.truncationNote ?? COMPACTION_STATS_TRUNCATION_NOTE}`);
   return rows.join("\n");
 }
 

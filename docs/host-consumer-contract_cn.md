@@ -2120,6 +2120,8 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 | `diagnostics.modelMetadataMissingEvents.count` | `onEvent` 收到的 `model_metadata_missing` 事件 | 事件数。既有的 `modelMetadataMissing` 标志含义与取值不变 |
 | `diagnostics.notes.observed` / `diagnostics.modelMetadataMissingEvents.observed` | 是否真的进入了内层循环 | `false` ⇒ 文本渲染 `unknown`：装配期就失败的 run 一个事件也没产生，「没事件」不等于「没调用」 |
 
+| `diagnostics.compaction.layers.source` / `.truncationNote` | `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE`（`examples/pi-extension/erix-run-core.js`） | 汇总读的是**哪一份** `compactionStats`：run 返回值（或抛错载荷）上那份**全量**。而 `<runId>.state.json` 里那份要经 `normalizeCompactionStats(value, limit = 32)`（`src/compact/pipeline.js`）截尾（调用点 `createDeterministicRunState`（`src/run-state.js`）），即 `value.slice(-limit)` 只留**最后 32 条** —— >32 轮的 run 去那个文件数削减账会静默少算（已另开 **issue #315**，本小节不改它的行为） |
+
 `formatCompactionLayerSummary`（`examples/pi-extension/erix-run-core.js`）把四个归组逐行渲染，
 上面那个事故 run 现在读起来是：
 
@@ -2130,6 +2132,7 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
   ↳ 输出钳制（enforceSize）=0 次/0 tok
   ↳ 折叠锚点（anchors）=0 次/0 tok
   ↳ 分层观测=2 条评估条目，tokensBefore 峰值 130000
+  ↳ 来源 runResult.compactionStats（全量）；若改读 state.json：state.json 的 deterministic.compactionStats 经 normalizeCompactionStats(value, limit=32) 截尾到最后 32 条（issue #315）；>32 轮的 run 拿它当源会静默少算
   ↳ notes 写=2/读=2 ｜ note_take=2 note_read=1 note_list=1 ｜ 来源 onEvent:tool_use
 ```
 
@@ -2140,6 +2143,8 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 - `unknown` 是「没测到」而不是 `0`：计数源不存在时本层就渲染 `unknown`，绝不拿相邻字段推一个数。
 - 不要拿不在 `COMPACTION_LAYER_IDS`（`src/compact/pipeline.js`）里的层名做匹配：上面四个归组
   点名的都是引擎的真 id，新增的层会出现在 `layers.unattributed` 里。
+- 终局面会自报数据源（`layers.source`）：请从 run 返回值上读这份账；如果宿主改为重读
+  `<runId>.state.json`，它拿到的是一个**最后 32 条**的窗口，不能当成全 run 的削减总量报出去。
 
 ## 契约测试套件（issue #183）
 

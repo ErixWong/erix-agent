@@ -2663,6 +2663,8 @@ what they were before this section exists.
 | `diagnostics.modelMetadataMissingEvents.count` | the `model_metadata_missing` events received by `onEvent` | event count. The pre-existing `modelMetadataMissing` flag keeps its own meaning and value |
 | `diagnostics.notes.observed` / `diagnostics.modelMetadataMissingEvents.observed` | set when the inner loop was entered | `false` ⇒ the text renders `unknown`. A run that failed during assembly produced no event at all, and "no events" is not "zero calls" |
 
+| `diagnostics.compaction.layers.source` / `.truncationNote` | `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE` (`examples/pi-extension/erix-run-core.js`) | which `compactionStats` the summary read: the **full** array on the run result (or the throw payload). The copy in `<runId>.state.json` goes through `normalizeCompactionStats(value, limit = 32)` (`src/compact/pipeline.js`) from `createDeterministicRunState` (`src/run-state.js`), i.e. `value.slice(-limit)` keeps only the **last 32** entries — on a run longer than 32 rounds counting off that file silently under-counts (tracked as issue #315; not changed by this section) |
+
 `formatCompactionLayerSummary` (`examples/pi-extension/erix-run-core.js`) renders the buckets one
 per line, so the accident run above now reads:
 
@@ -2673,6 +2675,7 @@ per line, so the accident run above now reads:
   ↳ 输出钳制（enforceSize）=0 次/0 tok
   ↳ 折叠锚点（anchors）=0 次/0 tok
   ↳ 分层观测=2 条评估条目，tokensBefore 峰值 130000
+  ↳ 来源 runResult.compactionStats（全量）；若改读 state.json：state.json 的 deterministic.compactionStats 经 normalizeCompactionStats(value, limit=32) 截尾到最后 32 条（issue #315）；>32 轮的 run 拿它当源会静默少算
   ↳ notes 写=2/读=2 ｜ note_take=2 note_read=1 note_list=1 ｜ 来源 onEvent:tool_use
 ```
 
@@ -2684,6 +2687,9 @@ Host rules:
   a counter did not exist, and it never estimates a number out of a neighbouring field.
 - Do not match on layer ids that are not in `COMPACTION_LAYER_IDS` (`src/compact/pipeline.js`):
   the buckets above name engine ids, and anything new shows up in `layers.unattributed`.
+- The final face reports its own data source (`layers.source`). Read it off the run result; if a
+  host instead re-reads `<runId>.state.json`, it is reading a **last-32** window and must not
+  present the totals as whole-run savings.
 
 ## Contract test suites (issue #183)
 

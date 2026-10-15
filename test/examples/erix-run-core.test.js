@@ -1260,6 +1260,13 @@ test("#313 C1：foldedRounds=0 但 ttl 层真削减过 ⇒ 结构与文本里都
   assert.match(text, /tokensBefore 峰值 130000/u);
   // 那个比数不许再被当成结论读
   assert.match(text, /compaction=0\/2（=compactedRounds\/events，不等于「压缩没生效」）/u);
+
+  // #313 追加：终局面自报数据源——汇总读的是 run 返回值那份全量 compactionStats，
+  // 而 state.json 那份被 normalizeCompactionStats(value, limit=32) 截尾（issue #315，本单不修）。
+  assert.equal(summary.source, core.COMPACTION_STATS_SOURCE);
+  assert.match(summary.truncationNote, /normalizeCompactionStats\(value, limit=32\)/u);
+  assert.match(summary.truncationNote, /最后 32 条/u);
+  assert.match(text, /↳ 来源 runResult\.compactionStats（全量）；若改读 state\.json：/u);
 });
 
 test("#313 R1：引擎新增的未知层 id 进 unattributed 并单独渲染，不会被归组表吞掉", () => {
@@ -1290,6 +1297,8 @@ test("#313 R1/R3：拿不到分层与事件流（老条目 / 装配期就失败�
   assert.match(text, /分层削减=unknown（拿到的 compactionStats 条目没有 layers 字段）/u);
   assert.match(text, /notes 写\/读=unknown\/unknown（事件流未建立，没有 tool_use 可数）/u);
   assert.match(text, /model_metadata_missing=no events=unknown/u);
+  // 数据源声明与「有没有 layers」无关，unknown 分支也要自报
+  assert.match(text, /unknown（拿到的 compactionStats 条目没有 layers 字段）\n  ↳ 来源 runResult\.compactionStats（全量）/u);
 });
 
 test("#313 R3：notes 写/读与 model_metadata_missing 事件数从**事件流**取，并进终局面文本", async () => {
