@@ -63,6 +63,7 @@
     "test": "node --test",
     "soak": "node scripts/soak.mjs",
     "check": "node --check src/index.js",
+    "check:syntax": "node scripts/syntax-check.mjs",
     "types:build": "node scripts/build-types.mjs",
     "check:types": "node scripts/type-check-ratchet.mjs",
     "check:types-build": "node scripts/build-types.mjs --check",
