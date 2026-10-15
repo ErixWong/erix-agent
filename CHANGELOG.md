@@ -2,8 +2,19 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [Unreleased]
+
+### Fixed
+
+- **极小 `context.budgetTokens` 不再把发给上游的 `messages` 压成空数组（issue #292）。** 病根：预算小到连一条消息都装不下时，压缩的 safety 层（`safeTruncateMessages` 的逐条删除循环）会从头删掉未保护的消息，把**唯一的 user 轮连同整个列表**一起删空；TTL 折叠同样只作用在请求视图上，没有任何一层对「发给上游的 messages 里还有没有 user 轮」负责。真上游（OpenAI 兼容 relay）对此回 `400 invalid_request`「No user query found in messages」，整个 run 直接 `failed`——即**小预算配置从「能跑」退化成「必然失败」**。
+  - 修法是不变量而不是调参：新增 `src/loop/request-user-view.js`（`ensureUserTurnView`），在**视图定稿处**执行「`messages` 非空且至少一条真 user 轮」——请求侧是 `src/loop/provider-runner.js`（TTL 折叠与 run-state 追加之后、`request` 组装之前，`chat` 与 `chatStream` 共用同一个 `request` 对象，两条通道一次覆盖），持久侧是压缩结果写回 `messages` 之前（否则视图定稿处已经没有可回补的源）。退让顺序：原样 → 从**未折叠 / 未压缩**的视图里保底保留**最新**一条 user 轮（含它必需的 assistant 配对）→ 放弃本次折叠改用未折叠视图 → 不可回补；每一步都过 `validateMessages(..., { allowPendingToolUse: false })`，不产生孤儿 `tool_result` 或缺结果的 `tool_use`。
+  - **不是「预算小就整体不压缩」**：健康预算下压缩行为一字未变（对照用例断言 `compactionStats.compacted` 仍为真、确有 `foldedRounds > 0` 且 `tokensAfter < tokensBefore`）。
+  - **评审 R1 修正：守卫不得改动尾部 pending `tool_use`。** 「本来就合规就原样放行」那一格原先用 `validateMessages(view, { allowPendingToolUse: false })` 判，于是**尾部带 pending `tool_use` 的合法视图被判非法**，走到追加那一支：摘掉尾巴 + 补一条**复制的** user 轮（`user:text, assistant:tool_use` ⇒ `user:text, user:text`）。这一条**与极小预算无关**，`max_tokens` 续写与尾部是 pending 的续跑都是该形状。现在放行格与「放弃折叠」格（原样返回源视图）都按**容忍尾部 pending**判，续写/续跑形状在放行格就返回且**不记任何守卫动作**；要追加纯文本 user 轮的候选分支仍按不容忍 pending 判（追加前必须摘尾巴，那是它存在的理由）。引擎里以 `allowPendingToolUse: true` 调 provider 的只有 max_tokens 续写一处。
+  - 可观测信号（**仓内字段，additive**）：守卫生效那一次的压缩统计里多两个键 `userTurnGuard`（`"preserved_latest_user_turn"` \| `"abandoned_fold"`）与 `userTurnGuardChannel`（`chat` \| `chatStream` \| `persisted`），与既有 `protectedDowngraded` 同口径——**只在真的发生时才出现**，既有宿主读取形状不变；对外契约文案待下一个文档单补齐。
+
 ## [0.20.0] - 2026-10-15
 
+- **`--checkJs` 棘轮两档同时下调：`BASELINE_ROOT` 121 → **119**、`BASELINE_WITH_TOOLS` 164 → **162**（**纯门禁 + 文档单，与上面 #292 的修复同分支不同提交**）：少掉的 2 条**全部落在同一个文件** `src/compact/pipeline.js`（5 → 3，来自 #292 给 `createCompactionStat` 补的 JSDoc 类型面），其余 28 个带错文件**一字未动**（逐文件对比 main 与本分支的 tsc 输出实测）。可及/不可及份额随之重算：**可及 93（不变）+ 宿主不可及 26 = 119**——因为 `src/compact/pipeline.js` 本就落在「宿主叫不出名字」那一半（原先那 28 条里它占 5）。顺带修正一条已漂的当前值：`npm pack --dry-run` 现在列 **65** 个 `.d.ts`（0.20.0 tarball 是 64，0.19.0 时代是 63），中英 AGENTS 与门禁头注释三处同步。**评审 R2 收尾**：`scripts/type-check-ratchet.mjs` 自己的注释里还留着旧当前值（用法行写「基线 121 / 基线 164」、陈旧声明守卫写「当前树 `39e96f1`… 63 个 / 121 个错」、头注释写「当前树上 63 个 `.d.ts`」），`AGENTS_cn.md` 两处与英文不成对（把 2026-10-15 的数字挂在 2026-10-13 的日期下、且 63 没标历史值），`AGENTS.md` 还残留一句改写后没删干净的断头句（句中出现不带日期的「with the 63 present」）。现在口径统一：**当前值句式一律带 119 / 162 / 65 + 2026-10-15**，保留的 121 / 164 / 142 / 185 / 61 / 63 / 64 一律显式写成历史值并带各自日期，中英成对；只改数字与日期、不动句式形状（`check:docs` 的 baseline 锚点族抽的就是这些句式）。`node scripts/docs-drift-check.mjs --self-test` 仍 **3/75**（issue #281 的树外假红，基点同数）。
 ### Changed (BREAKING)
 
 - **工具事实：顶层摊平字段停写，结束 issue #284 T1 承诺的一个 minor 双写期。** `buildToolResultFact()` 的 `legacyTopLevel` 入参与「宿主扩展摊平到顶层」那一段一起删掉，引擎产出的 `tool_result` 从此**恰好**是协议字段（`type` / `tool_use_id` / `content`，错误与中断结果再加 `is_error`）+ `metadata.*` + `erix.*`。退役名单（`TOOL_RESULT_CONTRACT.legacy` 现在写的就是这张表，不再是双写对照表）：`erixRound` → `erix.round`、`duration` → `erix.durationMs`、`executionStatus` → `erix.executionStatus`、`success` → `erix.success`、摊平到顶层的任意宿主键 → `metadata.<宿主键>`。**读侧仍留一代**：升级前落盘的记录里这些名字可能还在，所有读路径已改成引擎命名空间优先、顶层只作旧记录回退 —— TTL 折叠（`src/loop/tool-result-ttl.js`）、投影（`src/display/projection.js`）、续跑复放（`src/loop/orchestrator.js`，原样带回，不重算也不补写）、单轮聚合预算的「拦截不是输出」（`src/loop/aggregate-budget.js`）、judge 时间线与对话渲染（`src/reflection/judge.js`）、L0 客观事实（`src/reflection/l0.js`）、`hasSuccessfulToolResult`（`src/loop/messages.js`）。三条主读路径都是反向锁：先造「只有顶层旧名」的旧记录证回退确实生效，再造「两侧不相等」的记录证优先级确实翻了（`test/tool-result-ttl.test.js`、`test/display/projection.test.js`、`test/tool-fact-legacy-read-paths.test.js`）。

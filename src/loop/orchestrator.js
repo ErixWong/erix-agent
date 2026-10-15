@@ -76,6 +76,7 @@ import {
 } from "./budget.js";
 import { abortError, defaultSleep, throwIfAborted } from "./abort.js";
 import { callProvider as runProvider } from "./provider-runner.js";
+import { ensureUserTurnView, isUserTurnGuardAction } from "./request-user-view.js";
 import {
   createCompactionStat,
   createEmptyCompactionLayers,
@@ -455,7 +456,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   verification:{status:"verified"|"unverified"|"skipped"|"error", reason?:string, detail?:string},
  *   runState?:object,
  *   usage:{input_tokens:number, output_tokens:number, cacheRead?:number, cacheWrite?:number},
- *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number, layers:object}[]
+ *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number, layers:object, userTurnGuard?:string, userTurnGuardChannel?:string}[]
  * }>}
  */
 export async function runToolLoop(options) {
@@ -1841,6 +1842,23 @@ export async function runToolLoop(options) {
     backoffBaseMs,
     backoffMaxMs,
     emitEvent,
+    // issue #292（additive 仓内可观测信号）：请求视图定稿处的 user 轮守卫生效过一次，
+    // 就记一条带 userTurnGuard 的压缩统计（并走同一条 compaction 事件通道）。
+    recordUserTurnGuard: ({
+      round,
+      action,
+      channel,
+      tokensBefore,
+      tokensAfter,
+    }) => {
+      recordCompactionStat({
+        tokensBefore,
+        tokensAfter,
+        layers: createEmptyCompactionLayers(),
+        userTurnGuard: action,
+        userTurnGuardChannel: channel,
+      }, round);
+    },
     recordCompactionLayer: async ({
       layerId,
       round,
@@ -2498,6 +2516,10 @@ export async function runToolLoop(options) {
     let foldedRounds = 0;
     let compacted = false;
     let protectedDowngraded = 0;
+    // issue #292 可观测信号（additive，只在守卫真的生效时出现）：
+    // "preserved_latest_user_turn" | "abandoned_fold" | "unrecoverable"
+    let userTurnGuard;
+    let userTurnGuardChannel;
     if (strategyRequestsCompaction || overBudget) {
       const [budgetFallbackLayer, safetyFallbackLayer] = getCompactionFallbackChain();
       const strategy = strategyRequestsCompaction
@@ -2640,6 +2662,17 @@ export async function runToolLoop(options) {
           tokensAfter,
         });
       }
+      // issue #292 不变量 I1 的另一半：压缩不许把持久列表里唯一的 user 轮删光。
+      // 写回前在「持久视图定稿处」校一遍，回补来源是压缩前的 messages；
+      // 不这么做的后果就是真上游那一枪：视图定稿处已经没有任何可回补的源。
+      const compactionUserTurnGuard = {};
+      const guardedMessages = ensureUserTurnView(compactedMessages, messages, compactionUserTurnGuard);
+      if (isUserTurnGuardAction(compactionUserTurnGuard.action)) {
+        compactedMessages = guardedMessages;
+        tokensAfter = estimateMessageTokens(compactedMessages);
+        userTurnGuard = compactionUserTurnGuard.action;
+        userTurnGuardChannel = "persisted";
+      }
       messages = compactedMessages;
       latestApiInputTokens = undefined;
       latestApiEstimatedTokens = undefined;
@@ -2665,6 +2698,7 @@ export async function runToolLoop(options) {
       recordCompactionStat({
         ...compactionStat,
         protectedDowngraded,
+        ...(userTurnGuard === undefined ? {} : { userTurnGuard, userTurnGuardChannel }),
       }, round);
     }
     const foldedStateChanged = foldedRounds > 0
