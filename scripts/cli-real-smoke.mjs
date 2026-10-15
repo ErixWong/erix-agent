@@ -395,9 +395,15 @@ async function main() {
     assert(cliResult.status === EXIT_NOT_VERIFIED,
       `退出码 ${cliResult.status}，期望 ${EXIT_NOT_VERIFIED}`);
   });
-  check("C2 真上游真的回了要求的内容（固定标记在 stdout 里）", () => {
-    assert(cliResult.stdout.includes(MARKER), `stdout 里没有 ${MARKER}`);
-  });
+  // 「真打了模型」的硬判据在 C4（输出 token > 0）。这里只核**终稿可读**：固定标记是否照抄是模型自由
+  // （实测 22k token 前缀、3 轮真跑也会不照抄），拿它判红会把门禁跑成随机假红（issue #284 收尾实测）。
+  check("C2 真上游回了可读终稿（固定标记只作旁证，缺失不判红）", () => {
+    const text = cliResult.stdout.trim();
+    assert(text.length >= 20, `stdout 太短，不像真上游回的终稿：${JSON.stringify(text.slice(0, 120))}`);
+    if (!text.includes(MARKER)) {
+      log(`旁证缺失（不判红）：stdout 没照抄 ${MARKER}；真上游的硬判据是 C4 的输出 token`);
+    }
+  }, `stdout ${cliResult.stdout.trim().length} 字符，标记${cliResult.stdout.includes(MARKER) ? "在场" : "未照抄（旁证缺失）"}`);
 
   // ⑤ transcript 字段面（与 examples/tool-fact-e2e.test.mjs 的第 3/4 条同形）
   const { TOOL_RESULT_CONTRACT: contract } = await import(pathToFileURL(join(installedRoot, "src", "index.js")).href);
