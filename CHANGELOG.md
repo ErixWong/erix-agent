@@ -11,6 +11,31 @@
   - **不是「预算小就整体不压缩」**：健康预算下压缩行为一字未变（对照用例断言 `compactionStats.compacted` 仍为真、确有 `foldedRounds > 0` 且 `tokensAfter < tokensBefore`）。
   - **评审 R1 修正：守卫不得改动尾部 pending `tool_use`。** 「本来就合规就原样放行」那一格原先用 `validateMessages(view, { allowPendingToolUse: false })` 判，于是**尾部带 pending `tool_use` 的合法视图被判非法**，走到追加那一支：摘掉尾巴 + 补一条**复制的** user 轮（`user:text, assistant:tool_use` ⇒ `user:text, user:text`）。这一条**与极小预算无关**，`max_tokens` 续写与尾部是 pending 的续跑都是该形状。现在放行格与「放弃折叠」格（原样返回源视图）都按**容忍尾部 pending**判，续写/续跑形状在放行格就返回且**不记任何守卫动作**；要追加纯文本 user 轮的候选分支仍按不容忍 pending 判（追加前必须摘尾巴，那是它存在的理由）。引擎里以 `allowPendingToolUse: true` 调 provider 的只有 max_tokens 续写一处。
   - 可观测信号（**仓内字段，additive**）：守卫生效那一次的压缩统计里多两个键 `userTurnGuard`（`"preserved_latest_user_turn"` \| `"abandoned_fold"`）与 `userTurnGuardChannel`（`chat` \| `chatStream` \| `persisted`），与既有 `protectedDowngraded` 同口径——**只在真的发生时才出现**，既有宿主读取形状不变；对外契约文案待下一个文档单补齐。
+### Chore
+
+- **文档锚点基建第一批（issue #286 · 工单 T-a）：新增「符号 + 文件」声明校验与**裸行号只减不增的棘轮**——本批只做基建与棘轮，**不做批量替换**。** 病根：`scripts/docs-drift-check.mjs` 的 `paths` 锚点在解析 `path:line` 引用时会主动剥掉行号（`p.replace(/:\d+(?::\d+)?$/, "")`），只校「文件存在吗」⇒ 行号漂到别的代码段、甚至漂出文件末尾，门禁全绿无人报警。本批把「还剩多少」钉成一个可核对且只降不升的数，并把已确证的错改掉：
+  - **`symbols` 锚点（逐处，#210 R1/R2 口径）**：文档里 `` `SYM`（`path`） `` 与 markdown 链接形态（方括号紧跟圆括号）的引用，必须在**被引文件里**抽到该符号的声明。支持的形态：`function` / `class` / `const|let|var` 绑定 / 解构绑定 / 再导出 / 方法 / 对象键与类字段 / `process.env.X` 环境变量读取处；找不到 ⇒ 红并点名该文件里**实际存在的相近符号**（前缀 / 子串 / 编辑距离 ≤2）；一个文件连一条声明都抽不到同样算红（#164「抽不到真值就报错」）。唯一弱一档的「具名字面量成员」（终止原因 / provider 错误码这类字符串值）只在逐份点名并写明理由的 4 个文件里放行（`SYMBOL_VALUE_MEMBERSHIP`）。JS 字面量（`true` / `false` / `null` / `undefined` / `NaN` / `Infinity`）不算符号，逐个点名排除。这条锚点另带**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 24`（现测唯一 (符号, 文件) 组数；`--verbose` 可复核）：
+    裸行号棘轮的唯一键不含文档自己的行号，所以「把符号锚点退化成裸行号」在棘轮那一侧一字不变——只有这条下限会红（评审 R1）。
+  - **`bare-lines` 棘轮（只减不增，与 `check:types` 的 `BASELINE_ROOT` 同构）**：`src/**.js:N` / `:N-M` 按唯一 (文档, 目标文件, 行区间) 计数，基线常量 `BARE_LINE_REF_BASELINE = 244`；超了红并提示「可以把基线降到 N」，低于基线算过但催你降。**越界行号是 error**，不再是观察项。覆盖面 = 宿主会读的 20 份文档（README / AGENTS / 中英契约各两份 + 按目录实扫的**全部** `docs/host-upgrade-guide*.md`，新指南落地即自动纳面）；`CHANGELOG.md` **不进棘轮面**（历史条目写的是当时那份代码的行号，改掉等于伪造历史，与 #278 对简称「只登记不改写」同口径）。实测口径可复核：`node scripts/docs-drift-check.mjs --verbose` 打出 248 唯一区间 / 279 次出现，减去 4 处声明式豁免 = **244**。豁免沿用 #286 已落在 `test/static-guards.test.js` 的**条目 + 引用行就地声明**双条件（`BARE_LINE_EXEMPTIONS`，缺一不可，条目空转即红），不另造一套。
+  - **行号判据补齐（评审 R3）**：除越界外还管**下界**（行号必须 ≥ 1——`path:0` 在越界判据里永远不算越界，等于免检口）
+    与**目标文件不存在**（从前 `bare-lines` 遇到不存在的目标就 `continue`，于是「文件改名/被删 + 文档还留着行号」静默放行；
+    现在一律红，只有 `BARE_LINE_EXEMPTIONS` 里逐条登记理由的 4 处示例/外仓路径例外）。反向证各一条进 `--self-test`。
+  - **覆盖面份数下限（评审 R2）**：`REF_SCAN_DOCS_MINIMUM = 20`（6 份点名文档 + 当前实扫到的 14 份升级指南），
+    测试侧 `test/docs-anchor-ratchet.test.js` 另硬编码那 14 个文件名做对照——按目录实扫的口径下，把某份指南改名到
+    不匹配 `^host-upgrade-guide.*\.md$` 会让脚本与测试**一起**少一份而数字仍然相等（静默缩面）。
+  - **符号锚点只增不减的下限（评审 R1）**：`SYMBOL_ANCHOR_MIN_UNIQUE = 24`。裸行号棘轮的唯一键不含文档自己的行号，
+    所以「把 `SYM`（`path:N`）退化成裸 `path:N`」在棘轮那一侧一字不变、符号校验整条消失——只有这条下限会红。
+  - **豁免的「就地声明」判据收紧成三信号 AND（评审 R4）**：从前对整行做 OR 匹配——同一行只要还剩着一句 `for example`
+    之类的附带措辞就算声明成立。现在必须 ① 表里点名这一条（文档 + 占位路径）② 引用行里确实写着那个占位路径
+    ③ 同一行还有就地声明词；条目自己再过一道配置校（声明词若能匹配空串 = 这一侧恒真，或带 `g`/`y` 标志让
+    `.test()` 有状态 ⇒ 红）。现存 4 条豁免在新判据下全部仍然成立：`--verbose` 仍是「声明式豁免 4 处」、棘轮 244 一字未变。
+  - **顺手改正 2 处已确证的越界**（本批唯一的文档替换）：中英契约把 `limit` 的「先校验再钳制」指到 `src/store/notes.js:398-405`，而该文件只有 383 行；真身在 `normalizeListRequest`（`src/store/notes-port.js:246-253`），两处已按真值改写。
+  - **剩余存量精确数字（给 T-b/T-c 派单）**：**244 处**唯一 (文档, 目标文件, 行区间)，分布 = 契约 EN **121** / 契约 CN **121** / `docs/host-upgrade-guide-0.17.0.md` **2**覆盖面本身另有下限 `REF_SCAN_DOCS_MINIMUM = 20`（6 份点名文档 + 当前实扫到的 14 份升级指南），
+    测试侧 `test/docs-anchor-ratchet.test.js` 再硬编码一份那 14 个文件名做对照——按目录实扫的口径下，
+    「把某份指南改名到不匹配 `^host-upgrade-guide.*\.md$`」会让脚本与测试一起少一份而数字仍相等（静默缩面，评审 R2）。
+    替换方向：把裸行号换成「符号 + 文件」锚点，换完实测数会下降，**降基线常量并在提交信息里写理由**就是「确实少了一些」唯一可核对的写法。
+  - **反向证**：`--self-test` 75 → **85 例**（新增 10 条：改文档符号名→红、改真值符号名→红、合法符号锚点→绿、新增一处合法裸行号→红、基线调到 243→红、调回 244→绿、行号越界→红、豁免双条件两侧各一例→红、`expectMutateMiss` 变异器空转→判红）。`runSelfTest` 另加元检查：符号锚点提取器抽到 0 处 = 全节反向证空跑；用例下限 70 → 80。顺带修掉 `fileLines()` 缓存键用「长度 + 首尾 32 字」当文本身份造成的假绿（等长变异会命中旧缓存）。
+  - **门禁实测**：`check:docs` 与 `check:docs:strict` exit 0（漂移面 62 项对齐）；`node scripts/docs-drift-check.mjs --self-test` = **3/85**（与基点同为 3 例，全部是 #281 的开发树假红，**本批不新增红**）。`src/`、`bin/`、`examples/`、`package.json` 与版本号一字未动。
 
 ## [0.20.0] - 2026-10-15
 

@@ -42,6 +42,38 @@
 //                 协议必需/条件字段、别名的新归属同属真值；每面另加中英声明点处数对账。
 //                 这一条就是「同一个事实第三处自说自话」的防线：字段改名/新增/退役不再
 //                 只红契约测试，文档也会同时红
+//  11. symbols    符号锚点（issue #286 T-a）：文档里「符号 + 文件」形态的引用（`` `SYM`（`src/x.js`） `` 与
+//                 markdown 链接两种形态）必须能在被引文件里抽到该符号的**声明**。支持的声明形态：
+//                 `function` / `class` / `const|let|var` 绑定 / 解构绑定 / 再导出 / 方法 / 对象键与类字段 /
+//                 `process.env.X` 环境变量读取处。逐处校（每一处单独比），找不到就红并点名该文件里**实际存在的
+//                 相近符号名**（前缀 / 子串 / 编辑距离 ≤2）；一个文件里连一条声明都抽不到同样算红
+//                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
+//                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
+//                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 24`（现测唯一 (符号, 文件) 组数）：
+//                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
+//                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
+//  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
+//                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 244`，超了红
+//                 （并提示「可以把基线降到 N」），低于基线算过但会催你降。**越界行号是 error**，不是观察项。
+//                 覆盖面 = 宿主会读的 20 份文档：README{,_cn} / AGENTS{,_cn} / host-consumer-contract{,_cn}
+//                 + `docs/host-upgrade-guide*.md` 全部（按目录实扫，新指南落地即自动纳面）。
+//                 正则 `src\/[A-Za-z0-9_./-]+\.js:(\d+)(?:-(\d+))?`；工单口径实测 248 唯一区间 / 279 次出现
+//                 （跑 `--verbose` 复核，别只信注释），减去 `BARE_LINE_EXEMPTIONS` 的 4 处示例/外仓路径 ⇒ 244。
+//                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM = 20`（6 份点名 + 14 份实扫指南）：按目录实扫
+//                 意味着「把某份指南改名到不匹配模式」会让脚本与测试侧一起少一份而数字仍相等 ⇒ 静默缩面，
+//                 这条下限与测试侧硬编码的 14 份清单就是那道报警（#286 T-a 返工 R2）。
+//                 豁免是**三信号 AND**（① 表里点名这一条 ② 引用行含那个占位路径 ③ 同一行有就地声明词）：
+//                 评审 R4 把从前的整行 OR 收紧——同一行只剩一句 `for example` 之类的附带措辞不算声明。
+//                 条目自己还要过配置校 `bareLineExemptionEntryErrors()`：声明词若能匹配空串（这一侧恒真）
+//                 或带 g/y 标志（`.test()` 有状态、判据不可复现）就是错误。同一家族口径沿用 #286 已落在
+//                 `test/static-guards.test.js` 的 `LOCAL_ARCHIVE_DIRS` + `LOCAL_ARCHIVE_DECLARATION`，
+//                 条目没被任何引用用到就红。
+//                 越界之外还管**下界**（行号必须 ≥ 1：`path:0` 在越界判据里永远不算越界 = 免检口）与
+//                 **目标文件不存在**（从前是 continue 静默跳过，现在一律红，只有上面 4 条登记过的示例/外仓
+//                 路径例外）——评审 R3 的两条。
+//                 `CHANGELOG.md` **不进棘轮面**：历史条目写的是**当时**那份代码的行号，改掉等于伪造历史
+//                 （与 #278 对简称「只登记不改写」同口径）；那些行号仍由 `paths` 校文件存在性，只是不进这个数。
 //
 // 锚点粒度（issue #210 R3：**别把「存在性」锚点误当成「文档里删一处提及就会红」**）：
 //   · 存在性（每档被检查文档至少命中一次即可；同一句里删掉额外一处提及不会红）：
@@ -51,7 +83,10 @@
 //       version 的「当前版本」声明与「不得高于 package.json」的全量版本号扫描、
 //       pkg-block 的 files/exports（双向对称）、anchors 的清单/枚举/单位规则、
 //       markers 的 marker 字面量（#272）、baseline 的棘轮当前值（#274）、
-//       toolfact 的五个字段声明面（工单 261014，与 TOOL_RESULT_CONTRACT 双向对称）
+//       toolfact 的五个字段声明面（工单 261014，与 TOOL_RESULT_CONTRACT 双向对称）、
+//       symbols 的「符号 + 文件」锚点（#286 T-a：每一处都要在被引文件里抽到该符号的声明）
+//   · 只减不增的棘轮（比的是「还剩多少」：新增即红，变少则必须降基线并写理由）：
+//       bare-lines 的裸行号引用数（#286 T-a，基线 244，与 `check:types` 的 BASELINE_ROOT 同构）
 //   · 中英对账（比的是处数与数量级）：skeleton 的标题数与层级序列（README **与** AGENTS 两对）、
 //       anchors 的声明点处数、markers 的引用处数、baseline 的句式处数、
 //       toolfact 每一面的声明点处数
@@ -1453,6 +1488,550 @@ function collectBaselineClaimErrors() {
   return out;
 }
 
+// ── 2.8 锚点粒度升级（issue #286 T-a：B 方案第一批 = 符号锚点 + 裸行号棘轮）─────────
+// 病根（#286，已确证，不重新论证）：`paths` 那条锚点在解析 `path:line` 引用时**主动剥掉行号**
+// （`extractRefOccurrences` 里的 `p.replace(/:\d+(?::\d+)?$/, "")`），只校「文件存在吗」。
+// ⇒ 行号漂到别的代码段、甚至漂出文件末尾，门禁全绿无人报警。确凿样本：契约说 `emitEvent` 在
+// `src/loop/orchestrator.js:1517-1531`，真身在 1660 一带；`docs/host-consumer-contract.md` 与
+// `_cn.md` 各有一处 `src/store/notes.js:398-405`，而该文件只有 383 行（越界）。
+//
+// 本节两条锚点（T-a 只做这两条，**不做批量替换**；存量裸行号的替换归 T-b/T-c）：
+//   · 2.8.1 symbol-anchor：「符号 + 文件」形态的引用必须能在被引文件里抽到该符号的**声明**
+//     （R1，issue #210 的逐处一致口径：每一处单独校，找不到就红并点名相近符号；抽不到真值也红）。
+//   · 2.8.2 bare-lines：`path:N` / `path:N-M` 形态的**裸行号引用**只减不增（R2 棘轮 + R3 越界必红）。
+//
+// 覆盖面与正则（工单 #286 T-a 的口径，脚本自己会数——别只信注释，跑 `--verbose` 看 note）：
+//   覆盖面 = 宿主会读的 20 份文档：README{,_cn}.md、AGENTS{,_cn}.md、docs/host-consumer-contract{,_cn}.md
+//     这 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部 14 份（按目录**实扫**：新增一份指南就自动纳面，
+//     不存在「新文档漏在覆盖面外」的形状）。
+//   正则 = BARE_LINE_RE（工单口径写的是 `src/**.js:N[-M]`；这里把前缀面放宽到 src|bin|scripts|test|docs|
+//     examples|fixtures，因为 `bin/cli.js:88` 这类行号同样会漂，窄到 src/ 等于给未来的漂移留门）。
+//     按工单那条只算 src/**.js 的口径实测：唯一 (文档,目标文件,行区间) **248** / 总出现 **279**
+//     （契约 CN 138、契约 EN 137、0.17.0 指南 2、v030 指南中英各 1）；减去 4 处声明式豁免 ⇒ 棘轮基线 **244**。
+//     放宽前缀后的实测数在 `--verbose` 的 note 里，基线常量的注释里也写了怎么复现。
+//   `CHANGELOG.md` **不参与**：历史条目描述的是**当时**那份代码的行号，把它们改掉等于伪造历史
+//     （同口径先例：#278 对 CHANGELOG 里的简称只登记不改写、#273 对历史条目逐条登记）。CHANGELOG 里
+//     确实还有裸行号，它们仍由 `paths`（文件存在性）那条看守，只是不进棘轮面。
+//
+// 为什么 symbol-anchor **不做中英处数对账**（#210 R1 对逐处规则还额外要求中英对账，这里写明不做的理由）：
+//   符号锚点的两侧数量**本来就不等**——契约 CN 的终止原因表比 EN 多写了几处机制说明，而 14 份升级指南里
+//   有 8 份根本没有中文版。硬对账会逼着人为了凑数改措辞（#210 R3 警惕的「对措辞的绑架」）。
+//   本条是**逐处真值**：每一处 (符号, 文件) 都单独与源码比，改错符号名/删掉声明都红；
+//   处数只在 `--verbose` 里报，不做判据。真正的中英对账留给 T-b/T-c（存量被替换成符号锚点时，
+//   中英两侧必须同步替换，那时数量才具备可比性）。
+
+/** #286 T-a：覆盖面清单里被硬编码的那几份（升级指南按目录实扫，见 `refScanDocs()`）。 */
+const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT_EN, CONTRACT_CN];
+
+/** #286 返工 R2：覆盖面份数的**下限**。病根：覆盖面是「6 份硬编码 + 按 `^host-upgrade-guide.*\.md$` 实扫」，
+ *  于是有人把某份指南改名到不再匹配那个模式（或把它挪出 `docs/`），脚本与测试侧的 glob **一起少一份**，
+ *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前 14 份的清单做对照，这里再钉一道份数下限。
+ *  下限取 20（= 6 份硬编码 + 14 份指南）；新增指南让份数往上走，改名/删除想绿就必须同时动这两处。 */
+const REF_SCAN_DOCS_MINIMUM = 20;
+
+/** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟「某份指南改名到不匹配模式」。 */
+let SIM_RENAMED_GUIDE = null;
+let LAST_SCAN_DOC_COUNT = -1;   // 自测据此判断树形口子有没有真的落上（#279 的「变异没落上」同一条纪律）
+
+/** 覆盖面：宿主会读的 20 份文档 = 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部（实扫，新增指南自动纳面）。 */
+function refScanDocs() {
+  const guides = readdirSync(path.join(ROOT, "docs"))
+    .filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
+    .map((f) => `docs/${f}`)
+    .filter((f) => f !== SIM_RENAMED_GUIDE)
+    .sort();
+  const docs = [...SYMBOL_DOCS_STATIC, ...guides];
+  LAST_SCAN_DOC_COUNT = docs.length;
+  return docs;
+}
+
+/** 从脚本自身文本里读覆盖面下限（自测能调它证锁）；抽不到返 null。 */
+function refScanDocsMinimum() {
+  const rec = fileRecord("scripts/docs-drift-check.mjs");
+  const m = rec?.text.match(/^const REF_SCAN_DOCS_MINIMUM = (\d+);/m);
+  return m ? Number(m[1]) : null;
+}
+
+/** 覆盖面自己也要被看守（#286 返工 R2）：份数下限 + 清单里点名却读不到的文档。 */
+function collectRefScanCoverageErrors() {
+  const out = [];
+  const notes = [];
+  const docs = refScanDocs();
+  const minimum = refScanDocsMinimum();
+  if (minimum === null) {
+    out.push("ref-scan: 从 scripts/docs-drift-check.mjs 自己的文本里抽不到 `const REF_SCAN_DOCS_MINIMUM = <数字>;`——"
+      + "覆盖面下限被删或改了写法（#164 口径：抽不到真值就报错，不许静默放行）");
+  } else if (docs.length < minimum) {
+    out.push(`ref-scan: 「符号锚点 + 裸行号棘轮」的覆盖面只剩 ${docs.length} 份文档，低于下限 **${minimum}** 份——`
+      + `覆盖面是按 \`^host-upgrade-guide.*\.md$\` 实扫的，**把某份文档改名/移走就会静默缩面**（脚本和测试侧的 glob 一起少一份，`
+      + `两边数字仍然相等）。要么把文档改回来，要么在提交信息里写明为什么覆盖面变小并把下限改成 ${docs.length}`
+      + `（测试 test/docs-anchor-ratchet.test.js 里还硬编码了一份指南清单，两处必须一起改）`);
+  }
+  const unreadable = docs.filter((d) => fileRecord(d) === null);
+  if (unreadable.length) {
+    out.push(`ref-scan: 覆盖面清单里点名了却读不到的文档：${unreadable.join(", ")}——`
+      + `硬编码那 6 份（README/AGENTS/契约中英）被改名或删除时，检查面会静默少一份，必须同步清单`);
+  }
+  notes.push(`ref-scan: 覆盖面 ${docs.length} 份文档（6 份硬编码 + ${docs.length - SYMBOL_DOCS_STATIC.length} 份按目录实扫的升级指南），下限 ${minimum}`);
+  collectRefScanCoverageErrors.notes = notes;
+  return out;
+}
+
+/** 行内代码形态的标识符（不是路径：干掉带 `/` 与 `.` 的东西）。 */
+const INLINE_SYMBOL_RE = /`([A-Za-z_$][\w$]*)`/g;
+
+/** **不是符号**的 JavaScript 字面量：它们出现在「值」的位置上，文档写 ``retry` 默认 `false`（`src/…`）``
+ *  说的是「默认值长在哪个文件」，拿声明判据去问必然假红（`false` 在 orchestrator.js 里出现 102 次，
+ *  却没有一条是声明）。这一档必须**逐个点名**，不许扩成正则去吞别的东西。 */
+const SYMBOL_NOT_SYMBOL = new Set(["true", "false", "null", "undefined", "NaN", "Infinity"]);
+
+/** 允许「具名字面量成员」当真理的引用文件（**逐份点名 + 写理由**）：这一档比声明弱一档，
+ *  开给的是「文档在讲一个**字符串值**（终止原因 / 错误码），而该值就定义在被引文件里」的形状
+ *  （`judge_done`、`provider_config`、`non_continuable`…）。逐文件点名而不是全仓开：
+ *  全仓开等于把「同名字符串」当成通行票，#286 的病根正是这种宽进。条目空转 → 红。 */
+const SYMBOL_VALUE_MEMBERSHIP = new Map([
+  ["src/loop/orchestrator.js", "契约的终止原因表在这一列写「该 reason 由哪段代码产出」，被引符号里有相当一部分是 reason 字符串本身（`judge_done` / `no_final_guard` / `non_continuable`），不是变量名"],
+  ["src/loop/termination.js", "同上：reason → errorCode 的映射表（`max_rounds_cap` 一类）在本文件里以字面量成员存在"],
+  ["src/reflection/governor.js", "治理层的 stop 值（`completion` / `complete` / `noTool` / `cap`）是返回值字符串，契约表引的就是这些值"],
+  ["src/providers/errors.js", "provider 错误码（`provider_config` 一类）以字符串成员定义"],
+]);
+
+/** 抽符号声明：逐行按「行首形态」匹配，返回 Map 名字 → 首次声明处。支持的形态就列在这里，
+ *  报告与 AGENTS 的锚点分级段用同一份口径（够用即可，不做完整 AST——本仓零依赖，不引解析器）。 */
+const SYMBOL_DECL_PATTERNS = [
+  [/^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/, "function"],
+  [/^\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)/, "class"],
+  [/^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/, "binding"],
+  [/^\s*(?:export\s+)?(?:const|let|var)\s+\{([^}]*)\}\s*=/, "解构绑定"],
+  [/^\s*(?:export\s+)?(?:const|let|var)\s+\[([^\]]*)\]\s*=/, "解构绑定"],
+  [/^\s*(?:export\s+)?\{([^}]*)\}\s*(?:;|$)/, "再导出"],
+  [/^\s*(?:static\s+|get\s+|set\s+|async\s+|\*)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*$/, "方法"],
+  [/^\s*(?:public\s+|private\s+|protected\s+|readonly\s+)*([A-Za-z_$][\w$]*)\s*:\s*(?![=:])/, "对象键/类字段"],
+];
+
+/* 文件文本的进程内缓存（#286 T-a）。`--self-test` 要跑 85 轮全量检查，每轮都重新读一遍
+ * orchestrator.js（350KB）× 244 处引用，会把一条文档门禁拖到分钟级——那是「太慢所以会被跳过」的形状。
+ * 口径：
+ *   · 被 `--self-test` overlay 改过的文件**每次现读**（来源不同就必须重来，绝不吃缓存）；
+ *   · 没被 overlay 的文件在本进程里只读一次——本脚本从头到尾是只读的，不存在自己改盘的路径；
+ *   · 拆行与派生表（符号声明表、字面量集合）挂在同一条记录上，随文本一起失效——`--self-test` 会跑
+ *     85 轮全量检查，每轮都把 350KB 的 `src/loop/orchestrator.js` 重拆一遍是把文档门禁拖到分钟级的错地方。
+ * 早先的版本拿「长度 + 首尾 32 字」当文本身份，`src/a/b.js:12` → `src/a/c.js:12` 这种**等长**变异
+ * 会命中旧缓存，自测里直接假绿（改了却不红）——所以身份判据必须是「是否被 overlay 覆盖」。 */
+const FILE_LINE_CACHE = new Map();   // rel → { text, lines, decls, literals }
+
+function fileRecord(rel) {
+  const overlaid = OVERLAY.has(rel);
+  const hit = FILE_LINE_CACHE.get(rel);
+  if (hit && hit.overlaid === overlaid && (!overlaid || hit.text === textOf(rel))) return hit;
+  let text;
+  try { text = textOf(rel); } catch { return null; }
+  const rec = { text, overlaid, lines: text.split("\n"), decls: null, literals: null };
+  FILE_LINE_CACHE.set(rel, rec);
+  return rec;
+}
+
+/** 文件的真实行数（末尾换行不是一行——`wc -l` 同口径，越界判据用它）；不存在返 null。 */
+function fileLineCount(rel) {
+  const rec = fileRecord(rel);
+  if (!rec) return null;
+  const n = rec.lines.length;
+  return n > 1 && rec.lines[n - 1] === "" ? n - 1 : n;
+}
+
+function symbolDeclarations(rel) {
+  const rec = fileRecord(rel);
+  const lines = rec?.lines ?? null;
+  if (!lines) return new Map();
+  if (rec.decls) return rec.decls;
+  const out = new Map();
+  lines.forEach((line, i) => {
+    for (const [re, kind] of SYMBOL_DECL_PATTERNS) {
+      const m = line.match(re);
+      if (!m) continue;
+      const names = kind === "解构绑定" || kind === "再导出"
+        ? m[1].split(",").map((p) => p.trim().split(/\s+as\s+/).pop().trim()).filter((n) => /^[A-Za-z_$][\w$]*$/.test(n))
+        : [m[1]];
+      for (const n of names) if (n && !out.has(n)) out.set(n, { line: i + 1, kind });
+    }
+    // 环境变量：`process.env.ERIX_RETRY_ATTEMPTS` 被读的那一行就是它在 CLI 里的「定义处」（契约里
+    // `ERIX_RETRY_ATTEMPTS`（`bin/cli.js:…`）引的就是它），不是声明语句，但同属「该文件里确有这个符号」。
+    for (const m of line.matchAll(/process\.env\.([A-Z][A-Z0-9_]{2,})/g)) {
+      if (!out.has(m[1])) out.set(m[1], { line: i + 1, kind: "环境变量读取处" });
+    }
+  });
+  rec.decls = out;
+  return out;
+}
+
+/** 「具名字面量成员」那一档的真理：文件里出现过的字符串字面量内容（`"judge_done"` → `judge_done`）。
+ *  只认整段字面量，不做「行里有这个词」那种宽判据。 */
+function valueLiterals(rel) {
+  const rec = fileRecord(rel);
+  const lines = rec?.lines ?? null;
+  if (!lines) return new Set();
+  if (rec.literals) return rec.literals;
+  const out = new Set();
+  for (const line of lines) {
+    for (const m of line.matchAll(/(["'])([A-Za-z_$][\w$]*)\1/g)) out.add(m[2]);
+  }
+  rec.literals = out;
+  return out;
+}
+
+function editDistance(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j += 1) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+/** 找不到符号时点名「该文件里实际存在相近符号名」（#210/#286 口径：报错要能指路）。
+ *  判据：互为前缀、互为子串、或编辑距离 ≤ 2（大小写折叠后）。最多报 5 个，按接近程度排。 */
+function nearestSymbols(sym, decls) {
+  const low = sym.toLowerCase();
+  const scored = [];
+  for (const [name, d] of decls) {
+    const n = name.toLowerCase();
+    let score = null;
+    if (n === low) continue;
+    if (n.startsWith(low) || low.startsWith(n)) score = 0;
+    else if (n.includes(low) || low.includes(n)) score = 1;
+    else if (editDistance(n, low) <= 2) score = 2;
+    if (score !== null) scored.push({ score, text: `${name}（${d.kind} @ ${d.line}）` });
+  }
+  return scored.sort((a, b) => a.score - b.score || a.text.localeCompare(b.text)).slice(0, 5).map((s) => s.text);
+}
+
+/** 「符号 + 文件」的两种形态（`SYM`（`path`）与 markdown 链接）。提成模块级常量，是因为自测的
+ *  打靶器 `mutateSymbolAnchor()` 必须与主检查用**同一套**提取逻辑（#279 的口径：打靶由提取逻辑定）。 */
+const SYMBOL_ANCHOR_FORMS = [
+  // `SYM`（`path`） / `SYM` (`path`) —— 全角半角括号都接，允许中间一个空格。
+  // 允许带 :N / :N-M 行号后缀：带行号的「符号 + 文件」仍然是符号锚点（符号部分照校），
+  // 行号部分则同时进 2.8.2 的裸行号棘轮——一条写法被两条锚点分别看守，互不掩盖。
+  { re: /`([A-Za-z_$][\w$]*)`\s*[（(]\s*`([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(?::\d+(?:-\d+)?)?`\s*[)）]/g, kind: "括号并列" },
+  // [SYM](path) / [`SYM`](./path#anchor)
+  { re: /\[`?([A-Za-z_$][\w$]*)`?\]\(\.?\/?([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(?:#[^)]*)?\)/g, kind: "markdown 链接" },
+];
+
+/** 抽一份**文本**里的符号锚点，带 span（字符区间只覆盖**符号名本身**），供自测定点变异。 */
+function symbolAnchorsInText(text, doc) {
+  const found = [];
+  let lineStart = 0;
+  for (const [i, line] of text.split("\n").entries()) {
+    for (const [fi, f] of SYMBOL_ANCHOR_FORMS.entries()) {
+      f.re.lastIndex = 0;
+      for (const m of line.matchAll(f.re)) {
+        const sym = m[1];
+        if (SYMBOL_NOT_SYMBOL.has(sym)) continue;          // JavaScript 字面量不是符号（见上面名单的理由）
+        if (m[2].endsWith(".d.ts")) continue;              // 生成物声明文件不入库（#213），拿它当被引文件必然假红
+        const lead = fi === 0 ? 1 : 1 + (m[0][1] === "`" ? 1 : 0);   // 前导的 `[` 与可选反引号
+        found.push({
+          doc, line: i + 1, sym, file: m[2], form: f.kind,
+          start: lineStart + m.index + lead, end: lineStart + m.index + lead + sym.length,
+        });
+      }
+    }
+    lineStart += line.length + 1;
+  }
+  return found;
+}
+
+/** 抽覆盖面里的符号锚点（按文档走 `textOf`，所以 `--self-test` 的内存副本被同一套逻辑扫）。
+ *  返回每一处出现（不去重，逐处报）；报错时按 (符号, 文件) 归并成一条，点名所有引用处。 */
+function symbolAnchorOccurrences(docs) {
+  const found = [];
+  for (const rel of docs) {
+    const rec = fileRecord(rel);
+    if (!rec) continue;
+    found.push(...symbolAnchorsInText(rec.text, rel));
+  }
+  return found;
+}
+
+/** #286 T-a 自测的打靶器：把「符号 = `sym`、被引文件 = `filePath`」的**全部**锚点处的符号名换成 `to`。
+ *  一处都没命中、或换完还剩着 → 原样返回，`runSelfTest` 的「变异没落上」判据就会报红（不给空跑假绿留门）。 */
+function mutateSymbolAnchor(sym, filePath, to) {
+  return (text) => {
+    const hit = (t) => symbolAnchorsInText(t, "probe").filter((a) => a.sym === sym && a.file === filePath);
+    const hits = hit(text).sort((a, b) => b.start - a.start);
+    if (!hits.length) return text;
+    let t = text;
+    for (const h of hits) t = t.slice(0, h.start) + to + t.slice(h.end);
+    return hit(t).length ? text : t;     // 该锚点还剩着 → 这一枪没打全，同样算没落上
+  };
+}
+
+/** R1 判据：符号在被引文件里确有声明（或落在点名文件的「具名字面量成员」档）。 */
+function symbolAnchorVerdict(sym, rel) {
+  const lines = fileRecord(rel)?.lines ?? null;
+  if (!lines) return { ok: false, missing: true };
+  const decls = symbolDeclarations(rel);
+  if (decls.size === 0) {
+    return { ok: false, failure: true, why: "从被引文件里**抽不到任何符号声明**——检查面在该文件上失效（#164 口径：抽不到真值就报错，不许静默放行）" };
+  }
+  const hit = decls.get(sym);
+  if (hit) return { ok: true, tier: `${hit.kind} @ ${hit.line}` };
+  if (SYMBOL_VALUE_MEMBERSHIP.has(rel) && valueLiterals(rel).has(sym)) return { ok: true, tier: "具名字面量成员（点名文件一档）" };
+  const near = nearestSymbols(sym, decls);
+  return { ok: false, near, why: `该文件里没有 \`${sym}\` 的声明（支持的形态：function / class / const|let|var 绑定 / 解构绑定 / 再导出 / 方法 / 对象键、类字段 / process.env.X 环境变量读取处）` };
+}
+
+/** 符号锚点的**只增不减下限**（#286 T-a 返工 R1）。为什么必须有它：裸行号棘轮的唯一键是
+ *  (文档, 目标文件, 行区间)，**不含文档行号**——于是把
+ *  \`emitEvent\`（\`src/loop/orchestrator.js:1517-1531\`） 改写成不带括号、不带链接的裸
+ *  \`src/loop/orchestrator.js:1517-1531\`，棘轮那一侧的计数**一字不变**（照旧绿），而符号声明校验
+ *  整条消失。没有这条下限，#286 后面几刀就能「一边把裸行号换成符号锚点、一边偷偷退回去」而全程全绿。
+ *  与 `BARE_LINE_REF_BASELINE` 同构：生效值从脚本**自身文本**里读（自测能把它调高来证它真的是锁）。
+ *  现测值 = 我自己那条 note 打出来的 24 组 / 44 处（`--verbose` 可复核）。
+ *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
+const SYMBOL_ANCHOR_MIN_UNIQUE = 24;
+
+/** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
+function symbolAnchorMinUnique() {
+  const rec = fileRecord("scripts/docs-drift-check.mjs");
+  const m = rec?.text.match(/^const SYMBOL_ANCHOR_MIN_UNIQUE = (\d+);/m);
+  return m ? Number(m[1]) : null;
+}
+
+function collectSymbolAnchorErrors() {
+  const out = [];
+  const notes = [];
+  const docs = refScanDocs();
+  const occurrences = symbolAnchorOccurrences(docs);
+  const groups = new Map();
+  for (const o of occurrences) {
+    const key = `${o.sym}|${o.file}`;
+    if (!groups.has(key)) groups.set(key, { ...o, sites: [] });
+    groups.get(key).sites.push(`${o.doc}:${o.line}`);
+  }
+  let literalTier = 0;
+  let truthFailure = 0;
+  const kindCensus = {};   // 报告「实际支持的声明形态里，语料真的用到了哪几种」——别只让注释自称支持
+  for (const g of groups.values()) {
+    const v = symbolAnchorVerdict(g.sym, g.file);
+    if (v.ok) {
+      if (v.tier.startsWith("具名字面量")) literalTier += 1;
+      const kind = v.tier.split(" @ ")[0];
+      kindCensus[kind] = (kindCensus[kind] ?? 0) + 1;
+      continue;
+    }
+    if (v.missing) {
+      out.push(`symbol-anchor: ${g.sites.join(", ")} 引用 \`${g.sym}\`（\`${g.file}\`），但 ${g.file} 在本仓不存在——`
+        + `符号锚点的真理在被引文件里，文件没了这条锚点就是死的（改路径或删锚点，不许留）`);
+      continue;
+    }
+    if (v.failure) {
+      truthFailure += 1;
+      out.push(`symbol-anchor: ${g.sites.join(", ")} 引用 \`${g.sym}\`（\`${g.file}\`），${v.why}`);
+      continue;
+    }
+    out.push(`symbol-anchor: ${g.sites.join(", ")} 引用 \`${g.sym}\`（\`${g.file}\`，${g.form}），${v.why}${v.near?.length ? `\n      ↳ ${g.file} 里实际存在的相近符号：${v.near.join(" / ")}` : ""}`);
+  }
+  // 返工 R1：符号锚点的只增不减下限。低于下限 = 有人把符号锚点**退化成裸行号**（棘轮看不见那种退化）。
+  const minUnique = symbolAnchorMinUnique();
+  if (minUnique === null) {
+    out.push("symbol-anchor: 从 scripts/docs-drift-check.mjs 自己的文本里抽不到 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;`——"
+      + "下限常量被删或改了写法，这条锚点失效（#164 口径：抽不到真值就报错，不许静默放行）");
+  } else if (groups.size < minUnique) {
+    out.push(`symbol-anchor: 覆盖面里唯一 (符号, 文件) 只剩 ${groups.size} 组，低于下限 **${minUnique}** 组——符号锚点在**退化成裸行号**：`
+      + `把 \`SYM\`（\`path:N\`） 改成不带括号/链接的裸 \`path:N\`，裸行号棘轮的计数一字不变（它的唯一键里没有文档行号），`
+      + `只有这条下限会红（#286 T-a 返工 R1）。要么把符号锚点补回来，要么在提交信息里写明**新增**了什么并把常量升到 ${groups.size}`);
+  } else if (groups.size > minUnique) {
+    notes.push(`symbol-anchor: 实测 ${groups.size} 组 > 下限 ${minUnique} 组——符号锚点在变多（好方向），`
+      + `请把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 ${groups.size}，否则下限就在空转`);
+  }
+  const byFile = {};
+  for (const o of occurrences) byFile[o.doc] = (byFile[o.doc] ?? 0) + 1;
+  notes.push(`symbol-anchor: 覆盖面 ${docs.length} 份文档里「符号 + 文件」锚点 ${occurrences.length} 处（唯一 (符号, 文件) ${groups.size} 组：${Object.entries(byFile).map(([d, n]) => `${d} ${n}`).join("、") || "（无）"}）；` + `其中「具名字面量成员」一档 ${literalTier} 组（引用文件已逐份点名，见 SYMBOL_VALUE_MEMBERSHIP）、抽不到真值 ${truthFailure} 组；`
+    + `命中的声明形态：${Object.entries(kindCensus).map(([k, n]) => `${k} ${n}`).join("、") || "（无）"}`);
+  collectSymbolAnchorErrors.notes = notes;
+  return out;
+}
+
+// ── 2.8.2 裸行号棘轮（issue #286 T-a：#286 B 方案第一批，**只减不增**）───────────
+// 病根：`paths` 那条锚点在解析 `path:line` 时**主动剥掉行号**（`extractRefOccurrences` 里的
+// `p.replace(/:\d+(?::\d+)?$/, "")`），只校文件是否存在 ⇒ 行号漂到别的代码段、甚至漂出文件末尾，
+// 门禁全绿无人报警。确凿样本（#286）：契约说 `emitEvent` 在 `src/loop/orchestrator.js:1517-1531`，
+// 真身在 1660 一带；中英契约各一处 `src/store/notes.js:398-405` 而该文件只有 383 行（越界）。
+// 本单**不做批量替换**（那是 T-b/T-c）：先把「还剩多少」钉成一个只减不增的数，
+// 再把已经确证的 2 处越界改掉。T-b/T-c 把存量换成符号锚点后，实测数会往下走，
+// 那时降基线必须写理由（与本仓 `check:types` 的 `BASELINE_ROOT` 同构）。
+/** 裸行号引用（`path:N` / `path:N-M`）的正则；覆盖面与 2.8.1 同一批文档（同一份理由）。
+ *  实测值不靠注释：`--verbose` 会把「唯一区间数 / 出现次数 / 豁免数」打进 note（工单口径的三个数是
+ *  248 / 279 / 基线 244，note 里应该逐字对得上）。非 `src/` 前缀（`bin/cli.js:88`、`test/x.js:9`）
+ *  同样会漂，但本批把覆盖面钉在工单那条正则上，扩前缀归 T-b（扩时要重新登记基线）。
+ *  唯一 (文档, 目标文件, 行区间) 与工单口径可复现：脚本自己数出来的数在下面那条 note 里，别只信注释。 */
+const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
+/** 棘轮基线（工单 #286 T-a 口径）：唯一 (文档, 目标文件, 行区间) 实测 248，减去 4 处声明式豁免 ⇒ **244**。
+ *  降它必须写理由；抬它必须写「为什么这次允许变差」。**不许悄悄抬**（同 `check:types` 棘轮的纪律）。
+ *  写法必须保持 `const BARE_LINE_REF_BASELINE = <数字>;` 一行（自测的「调低就红」用例要能改这个数）。 */
+const BARE_LINE_REF_BASELINE = 244;
+
+/** 棘轮生效值：从**本脚本自己的文本**里读 `BARE_LINE_REF_BASELINE`（走 `textOf`，所以 `--self-test`
+ *  能把这个常量临时改小来证「它真的是锁」：调低到低于实测值必须红，改回来必须绿）。
+ *  读不到（常量被删/改格式）= 检查面失效 → 返 null，调用侧按 #164 口径报红，不静默放行。 */
+function bareLineBaseline() {
+  const rec = fileRecord("scripts/docs-drift-check.mjs");
+  const m = rec?.text.match(/^const BARE_LINE_REF_BASELINE = (\d+);/m);
+  return m ? Number(m[1]) : null;
+}
+
+/** 声明式豁免（**条目 + 就地声明**双条件，缺一个不放行；命中要计数，条目空转就红）。
+ *  沿用 #286 已落在 `test/static-guards.test.js` 的 `LOCAL_ARCHIVE_DIRS` + `LOCAL_ARCHIVE_DECLARATION` 口径，
+ *  不另造一套。这里能进来的只有「目标文件本来就不存在」的示例/外仓路径：4 处，全部逐条点名。
+ *  判据函数 `bareLineExemptionVerdict()` 是纯函数，反向证直接拿它问。 */
+const BARE_LINE_EXEMPTIONS = [
+  {
+    doc: "docs/host-consumer-contract.md",
+    target: "src/a/b.js",
+    decl: /…|示例|示意|举例|例如|for example|placeholder|虚构/,   // 引用行末尾的 `…` 就是「这是格式样例里的占位值」的声明
+    why: "契约的折叠摘要一节举的**锚点索引格式样例**（`src/a/b.js:12` 是本仓不存在的示意路径，同行还有 `shas: 1ed3f35, …`），不是引用；就地声明 = 行末的省略号占位符",
+  },
+  {
+    doc: "docs/host-consumer-contract_cn.md",
+    target: "src/a/b.js",
+    decl: /…|示例|示意|举例|例如|for example|placeholder|虚构/,
+    why: "同 EN 侧：CN 契约同一处举的示例锚点，中英成对，条目也必须成对",
+  },
+  {
+    doc: "docs/host-upgrade-guide-v030.md",
+    target: "src/pi/runner.js",
+    decl: /apps\/worker\/|app_container/,      // 引用行写的就是宿主仓的**完整路径** `apps/worker/src/pi/runner.js:50`，不是本仓根相对路径
+    why: "宿主 app_container 仓的调用点（原文写全路径 apps/worker/src/pi/runner.js:50），不是本仓文件；就地声明 = 行里带着外仓根 apps/worker/",
+  },
+  {
+    doc: "docs/host-upgrade-guide-v030_cn.md",
+    target: "src/pi/runner.js",
+    decl: /apps\/worker\/|app_container/,           // 与 EN 侧同一段（中文句子，但路径字面量同样写全）
+    why: "同 EN 侧：0.2.0 指南的宿主基线配置段，指的是 app_container 仓自己的调用点",
+  },
+];
+
+/** 纯函数判据（#286 口径 + 返工 R4 收紧）：**三个信号缺一不放行**
+ *   ① 表里有这一条（按 文档 + 目标路径 点名，无通配）；
+ *   ② 引用行里**确实写着那个占位路径**（`lineText.includes(entry.target)`）——从前少了这一条，
+ *      于是「同一行里还剩着一句 for example」这类附带措辞就能把声明这一侧糊过去（评审 R4）；
+ *   ③ 引用行里还有「示例/示意/外仓根」这类就地声明词。
+ *  ②③ 必须落在**同一行**：现存的 4 条豁免全部天然同行，而「紧邻行也算」只会把判据重新放软
+ *  （#273 早写过：上一行常常是另一条目里顺手带出的字样）。
+ *  条目自己还要过 `bareLineExemptionEntryErrors()` 的配置校（声明词不许匹配空串、不许带 g 标志）。
+ *  也试过把「引用原文」整条钉死（连示例里的行号一起 pin），放弃：那会让 T-b 改一个示例数字都得回来动登记表，
+ *  这里要的是「占位路径 + 声明词同时在场」这条下限，不是把文档文本冻住。 */
+function bareLineExemptionVerdict({ doc, target, lineText }) {
+  const entry = BARE_LINE_EXEMPTIONS.find((e) => e.doc === doc && e.target === target);
+  if (entry === undefined) return { exempt: false, why: "没有对应的豁免条目" };
+  if (!lineText.includes(entry.target)) {
+    return { exempt: false, why: `引用行里没有豁免条目指向的占位路径 ${entry.target}（评审 R4：光有声明词不算声明）`, entry };
+  }
+  if (!entry.decl.test(lineText)) {
+    return { exempt: false, why: "引用行没有「示例/示意/宿主仓根」这类就地声明词", entry };
+  }
+  return { exempt: true, entry };
+}
+
+/** 豁免表自己的配置校（评审 R4）：声明词若能匹配空串 = 这一侧恒真，双条件退化成单条件；
+ *  带 `g`/`y` 标志的 `.test()` 有状态，同一行问两次会给出不同答案（判据不可复现）。两种都点名。 */
+function bareLineExemptionEntryErrors() {
+  const out = [];
+  for (const e of BARE_LINE_EXEMPTIONS) {
+    if (!(e.decl instanceof RegExp)) {
+      out.push(`bare-lines: 豁免条目 ${e.target}（${e.doc}）的 decl 不是正则——就地声明判据无法执行`);
+      continue;
+    }
+    if (e.decl.global || e.decl.sticky) {
+      out.push(`bare-lines: 豁免条目 ${e.target}（${e.doc}）的 decl 带 g/y 标志——test() 有状态，`
+        + `同一行问两次会得到不同答案，判据不可复现`);
+    }
+    e.decl.lastIndex = 0;
+    if (e.decl.test("")) {
+      out.push(`bare-lines: 豁免条目 ${e.target}（${e.doc}）的 decl 能匹配空串（${String(e.decl)}）——`
+        + `「就地声明」这一侧恒真，双条件退化成了单条件（评审 R4），换一个真的判据`);
+    }
+  }
+  return out;
+}
+
+function collectBareLineRefErrors() {
+  const out = [];
+  const notes = [];
+  const docs = refScanDocs();
+  const unique = new Map();   // `${doc}|${target}|${from}-${to}` → { doc, line, target, from, to }
+  const exemptHits = new Set();
+  let occurrences = 0;
+  for (const rel of docs) {
+    const rec = fileRecord(rel);
+    if (!rec) continue;
+    rec.lines.forEach((line, i) => {
+      BARE_LINE_RE.lastIndex = 0;
+      for (const m of line.matchAll(BARE_LINE_RE)) {
+        occurrences += 1;
+        const target = `src/${m[1]}`;
+        const from = Number(m[2]);
+        const to = m[3] ? Number(m[3]) : null;
+        const key = `${rel}|${target}|${from}-${to}`;
+        if (!unique.has(key)) unique.set(key, { doc: rel, line: i + 1, target, from, to });
+        const v = bareLineExemptionVerdict({ doc: rel, target, lineText: line });
+        if (v.exempt) exemptHits.add(`${rel}|${target}`);
+      }
+    });
+  }
+  // R3 越界必红（工单 #286 T-a：不是观察项）
+  for (const u of unique.values()) {
+    const v = bareLineExemptionVerdict({ doc: u.doc, target: u.target, lineText: (fileRecord(u.doc)?.lines ?? [])[u.line - 1] ?? "" });
+    if (v.exempt) continue;
+    // 返工 R3（下界）：`path:0` 在越界判据里永远「不越界」，等于给自己开了个免检口；负数写法同理。
+    if (u.from < 1 || (u.to !== null && u.to < 1)) {
+      out.push(`bare-lines: ${u.doc}:${u.line} 引用 ${u.target}:${u.from}${u.to !== null ? `-${u.to}` : ""} 的行号不合法——`
+        + `行号必须 **≥ 1**（0 与负数是手写行号的典型笔误，而 \`:0\` 在越界判据里永远不算越界，等于免检）`);
+    }
+    const count = fileLineCount(u.target);
+    if (count === null) {
+      // 返工 R3（不存在）：这一族从前是**跳过**——于是「目标文件改名/被删 + 文档里还留着行号」静默放行，
+      // 而 `paths` 那条只覆盖 README/AGENTS/契约/examples，14 份升级指南里的裸引用没人管。
+      // 现在一律红，只有 BARE_LINE_EXEMPTIONS 里逐条登记的示例/外仓路径例外（它们本来就是虚构路径）。
+      out.push(`bare-lines: ${u.doc}:${u.line} 引用 ${u.target}:${u.from}${u.to !== null ? `-${u.to}` : ""}，`
+        + `但 ${u.target} 在本仓不存在——裸行号没有可核对的真值（改路径或删引用；示例/外仓路径要在 `
+        + `BARE_LINE_EXEMPTIONS 里逐条登记理由，不许默默放行）`);
+      continue;
+    }
+    const hi = Math.max(u.from, u.to ?? 0);
+    if (hi > count) {
+      out.push(`bare-lines: ${u.doc}:${u.line} 引用 ${u.target}:${u.from}${u.to ? `-${u.to}` : ""}，但该文件只有 ${count} 行——` + `行号已越界（#286 的裸行号漂移就是这种形状：门禁过去把行号剥掉只看文件在不在，所以全绿）`);
+    } else if (u.to !== null && u.to < u.from) {
+      out.push(`bare-lines: ${u.doc}:${u.line} 引用 ${u.target}:${u.from}-${u.to} 的区间是反的（结尾小于开头）`);
+    }
+  }
+  out.push(...bareLineExemptionEntryErrors());   // 评审 R4：条目自己也要被校（声明词不许恒真、不许有状态）
+  // 豁免条目反向校：条目没被任何一处引用用上 = 给未来的漂移留后门（同 #273/#278 的白名单口径）
+  for (const e of BARE_LINE_EXEMPTIONS) {
+    if (!exemptHits.has(`${e.doc}|${e.target}`)) {
+      out.push(`bare-lines: 豁免条目 \`${e.target}\`（${e.doc}）没有一处引用真正用到它——要么引用已改对/已删，` + `要么就地声明那句话被改掉了；留着就是给未来的裸行号留后门（条目 + 声明双条件，缺一不可）`);
+    }
+  }
+  // 棘轮：只减不增。基线从脚本自己的文本里读（`bareLineBaseline()`），自测才能拿「改小就红」证它是锁。
+  const baseline = bareLineBaseline();
+  if (baseline === null) {
+    out.push("bare-lines: 从 scripts/docs-drift-check.mjs 自己的文本里抽不到 `const BARE_LINE_REF_BASELINE = <数字>;`——"
+      + "棘轮常量被删或改了写法，棘轮失效（#164 口径：抽不到真值就报错，不许静默放行）");
+  }
+  const measured = unique.size - exemptHits.size;
+  const docsSeen = {};
+  for (const u of unique.values()) docsSeen[u.doc] = (docsSeen[u.doc] ?? 0) + 1;
+  if (baseline !== null && measured > baseline) {
+    out.push(`bare-lines: 裸行号引用（唯一 (文档,目标文件,行区间)）实测 **${measured}** 处，超过棘轮基线 **${baseline}** 处——` + `新增裸行号\u8981么改成「符号 + 文件」锚点（#286 B 方案），要么写明「这次确实允许变差」并把基线改成 ${measured}。` + `分布：${Object.entries(docsSeen).sort((a, b) => b[1] - a[1]).map(([d, n]) => `${d} ${n}`).join("、")}`);
+  } else if (baseline !== null && measured < baseline) {
+    notes.push(`bare-lines: 实测 ${measured} 处 < 基线 ${baseline} 处——存量在变少，请把 BARE_LINE_REF_BASELINE 降到 ${measured}（降基线要写理由，棘轮不许空转）`);
+  }
+  notes.push(`bare-lines: 覆盖面 ${docs.length} 份文档里裸行号引用 ${occurrences} 次出现 / 唯一 (文档,目标文件,行区间) ${unique.size} 处，` + `其中声明式豁免 ${exemptHits.size} 处（${BARE_LINE_EXEMPTIONS.length} 条条目）⇒ 棘轮口径实测 **${measured}** vs 基线 ${baseline}`);
+  collectBareLineRefErrors.notes = notes;
+  return out;
+}
+
 // ── 3. README 引用的 package.json 清单（files / exports）────────────────────────
 // issue #210 的**主修项**：这块原先是 fail-open 的——围栏定位靠真值键（`b["./tools"]`、
 // `b.includes("src")`），文档把 `"./tools"` 改名或整个删掉时块就找不到了，于是退化成一条 warn
@@ -2254,7 +2833,8 @@ const SKELETON_PAIRS = [
 
 function collectAllDrift() {
   const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
-    ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors()];
+    ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors(),
+    ...collectSymbolAnchorErrors(), ...collectBareLineRefErrors(), ...collectRefScanCoverageErrors()];
   for (const [, en, cn] of SKELETON_PAIRS) out.push(...collectSkeletonErrors(en === README_EN ? "中英 README" : "中英 AGENTS", en, cn));
   return out;
 }
@@ -2267,6 +2847,12 @@ for (const [label, en, cn] of SKELETON_PAIRS) {
 
 // ── 输出 ─────────────────────────────────────────────────────────────────────
 // ── 7. 跑清单/单位类锚点、marker 字面、棘轮当前值与 package.json 清单比对 ────────
+for (const e of collectRefScanCoverageErrors()) err(e);
+for (const n of collectRefScanCoverageErrors.notes ?? []) note(n);
+for (const e of collectSymbolAnchorErrors()) err(e);
+for (const n of collectSymbolAnchorErrors.notes ?? []) note(n);
+for (const e of collectBareLineRefErrors()) err(e);
+for (const n of collectBareLineRefErrors.notes ?? []) note(n);
 for (const e of collectMarkerLiteralErrors()) err(e);
 for (const n of collectMarkerLiteralErrors.notes ?? []) note(n);
 for (const e of collectBaselineClaimErrors()) err(e);
@@ -2823,11 +3409,137 @@ const SELF_TEST_CASES = [
     // 改掉两份文档，骨架差异被抹平 → 反向证自身失效（#274）。
     expect: [/skeleton: 中英 AGENTS/],
   },
+
+  // —— 符号锚点与裸行号棘轮（issue #286 T-a：R1/R2/R3 的反向证，#210 R2 口径四条齐全）——
+  // ① 只改文档（符号名改错）→ 红；② 只改真值（源码里给符号改名）→ 红；③ 新增裸行号 → 红；
+  // ④ 行号越界 → 红；⑤ 变异没打上 → 红（`expectMutateMiss`，见 `runSelfTest`）；
+  // 外加「合法锚点必须绿」「基线调回必须绿」两条放行证，证明这些锚点不是恒红。
+  {
+    label: "#286 符号锚点：契约 CN 把 `emitEvent` 改成 `emitEventProbe`（只改文档，修前门禁全绿）",
+    overlay: { [CONTRACT_CN]: mutateSymbolAnchor("emitEvent", "src/loop/orchestrator.js", "emitEventProbe") },
+    expect: [/symbol-anchor: docs\/host-consumer-contract_cn\.md:84 引用 `emitEventProbe`（`src\/loop\/orchestrator\.js`/,
+      /实际存在的相近符号：.*emitEvent/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#286 符号锚点：把真值一侧的 `defaultSleep` 改名（只改源码，中英引用同时红）",
+    overlay: { "src/loop/abort.js": (t) => t.replace("export function defaultSleep(", "export function defaultSleepRenamed(") },
+    expect: [/symbol-anchor: .*引用 `defaultSleep`（`src\/loop\/abort\.js`/, /实际存在的相近符号：.*defaultSleepRenamed/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#286 符号锚点不是恒红（对照）：在 AGENTS EN 加一处**合法**符号锚点 → 必须 0 错",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#286）：`defaultSleep`（`src/loop/abort.js`）是一处合法的「符号 + 文件」锚点。") },
+    expectGreen: true,
+  },
+  {
+    label: "#286 棘轮：在 AGENTS EN 临时多写一处**合法**裸行号 `src/loop/termination.js:12` → 红（新增就红，越界都没有）",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#286）：这里临时多写一处合法裸行号引用 `src/loop/termination.js:12`。") },
+    expect: [/bare-lines: 裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/, /AGENTS\.md 1/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#286 棘轮下限：把 BARE_LINE_REF_BASELINE 调到 243 → 必须红（证明这个数真是锁，不是装饰）",
+    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const BARE_LINE_REF_BASELINE = 244;", "const BARE_LINE_REF_BASELINE = 243;") },
+    expect: [/实测 \*\*244\*\* 处，超过棘轮基线 \*\*243\*\*/, /把基线改成 244/],
+  },
+  {
+    label: "#286 棘轮下限的反向证：常量调回 244（只加一句尾注释、数值不变）→ 必须 0 错",
+    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const BARE_LINE_REF_BASELINE = 244;", "const BARE_LINE_REF_BASELINE = 244;   // self-test 复原探针") },
+    expectGreen: true,
+  },
+  {
+    label: "#286 越界必红：CN 契约的 termination.js:93-100 改成 99999-100（唯一区间数不变 → 只有越界这条红）",
+    overlay: { [CONTRACT_CN]: (t) => t.split("src/loop/termination.js:93-100").join("src/loop/termination.js:99999-100") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:99999-100，但该文件只有 \d+ 行/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#286 豁免双条件（就地声明那一侧）：去掉 v030 EN 的外仓根 apps/worker/ → 既不再放行（245）又留下空转条目",
+    overlay: { "docs/host-upgrade-guide-v030.md": (t) => t.replace("apps/worker/src/pi/runner.js:50", "src/pi/runner.js:50") },
+    expect: [/实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/,
+      /豁免条目 `src\/pi\/runner\.js`（docs\/host-upgrade-guide-v030\.md）没有一处引用真正用到它/],
+  },
+  {
+    label: "#286 豁免双条件（条目那一侧）：CN 契约的示例路径改成没登记的 src/a/c.js:12 → 没有条目就不放行",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("paths: src/a/b.js:12", "paths: src/a/c.js:12") },
+    expect: [/实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/,
+      /豁免条目 `src\/a\/b\.js`（docs\/host-consumer-contract_cn\.md）没有一处引用真正用到它/],
+  },
+  {
+    label: "#286 变异器空转证：靶子（不存在的符号名）打不上时，runSelfTest 必须判这一例「变异没落上」而不是假绿",
+    overlay: { [CONTRACT_EN]: mutateSymbolAnchor("zzProbeNoSuchSymbol", "src/loop/orchestrator.js", "anything") },
+    expectMutateMiss: true,
+  },
+
+  // —— 返工 R1（评审阻断项）：符号锚点的**只增不减下限**。病根：裸行号棘轮的唯一键不含文档行号，
+  // 所以「把符号锚点换成裸行号」这种**退化**在棘轮那一侧一字不变，没有下限就没人报警。
+  {
+    label: "#286 返工 R1：把中英契约的 `defaultSleep`（`src/loop/abort.js:16`）一起退化成裸行号 ⇒ 棘轮一字不变，只有符号下限红（23 < 24）",
+    // 退化前后那一处 `src/loop/abort.js:16` 都还在文档里（棘轮的唯一键不含**文档行号**），所以裸行号侧
+    // 一个数都不变——这正是本条下限存在的理由。两侧一起退化是因为 (符号, 文件) 是按全局去重的：
+    // `defaultSleep` 中英各一处（CN:217 / EN:262），只退一侧不会掉组，只退一侧看不见评审那条形状。
+    overlay: {
+      [CONTRACT_CN]: (t) => t.replace("`defaultSleep`（`src/loop/abort.js:16`）", "`src/loop/abort.js:16`"),
+      [CONTRACT_EN]: (t) => t.replace("`defaultSleep` (`src/loop/abort.js:16`)", "`src/loop/abort.js:16`"),
+    },
+    expect: [/symbol-anchor: 覆盖面里唯一 \(符号, 文件\) 只剩 23 组，低于下限 \*\*24\*\* 组/, /退化成裸行号/,
+      /棘轮的计数一字不变|裸行号棘轮的计数一字不变/],
+  },
+  {
+    label: "#286 返工 R1 的另一侧：把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 25（实测仍是 24）⇒ 必须红，证明这个数是读出来的、不是装饰",
+    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const SYMBOL_ANCHOR_MIN_UNIQUE = 24;", "const SYMBOL_ANCHOR_MIN_UNIQUE = 25;") },
+    expect: [/唯一 \(符号, 文件\) 只剩 24 组，低于下限 \*\*25\*\* 组/],
+  },
+
+  // —— 返工 R2（评审阻断项）：覆盖面会因为改名而**静默缩面**。脚本按
+  // `^host-upgrade-guide.*\.md$` 实扫、测试侧用同一个 glob ⇒ 改一份名字就两边一起少一份，照样绿。
+  // 树形口子 `SIM_RENAMED_GUIDE` 只影响清单、不动任何文本（与 #280 的 SIM_ABSENT_TASK_ARCHIVE 同款纪律，
+  // 并且同样要证「口子真的落上了」，见 runSelfTest 里的覆盖面份数比对）。
+  {
+    label: "#286 返工 R2：模拟一份升级指南改名到不匹配实扫模式 ⇒ 覆盖面 19 < 20 必须红（改名 = 静默缩面，两边 glob 一起少）",
+    simulateRenamedGuide: "docs/host-upgrade-guide-0.16.0.md",
+    expect: [/ref-scan: 「符号锚点 \+ 裸行号棘轮」的覆盖面只剩 19 份文档，低于下限 \*\*20\*\* 份/,
+      /静默缩面/, /test\/docs-anchor-ratchet\.test\.js/],
+  },
+
+  // —— 返工 R3（评审低危但便宜）：行号**下界**与「目标文件不存在」的口径。
+  // 前者从前是漏洞：`:0-1` 的结尾 1 永远不超过文件行数 ⇒ 零条红（主 agent 注入实测过）。
+  // 后者从前是 `continue`：目标文件不存在就跳过，于是「文件改名/被删 + 还留着行号」静默放行。
+  {
+    label: "#286 返工 R3 下界：把 CN 契约的 notes-port.js:246-253 写成 :0-1 ⇒ 必须红（从前零条红，`:0` 在越界判据里永远不越界）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("src/store/notes-port.js:246-253", "src/store/notes-port.js:0-1") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/store\/notes-port\.js:0-1 的行号不合法——行号必须 \*\*≥ 1\*\*/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#286 返工 R3 不存在：把 CN 契约的一处目标改成 src/loop/__no_such_probe__.js ⇒ 必须红（从前是 continue 静默跳过）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:93-100", "src/loop/__no_such_probe__.js:93-100") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/__no_such_probe__\.js:93-100，但 .*在本仓不存在——裸行号没有可核对的真值/],
+    expectFiles: [CONTRACT_CN],
+  },
+
+  // —— 返工 R4（评审低危）：豁免的「就地声明」从前是整行 OR 匹配——同一行只要还剩着 `for example`
+  // 之类的附带措辞就算声明成立。收紧成 **同一行同时含占位路径与声明词**（AND），并给条目自己加配置校。
+  {
+    label: "#286 返工 R4：把某条豁免的 decl 临时换成 /.*/（恒真）⇒ 双条件退化成单条件，必须被配置校抓住",
+    // 为什么走「配置口子」而不是 overlay：overlay 只改**文本**，改不动运行时那份 BARE_LINE_EXEMPTIONS 对象；
+    // 数值常量能靠 fileRecord 读自身文本来证，正则判据不行，所以要一个和 SIM_ABSENT_TASK_ARCHIVE 同款的
+    // 运行时口子，并且同样要证「口子真的落上」（找不到条目就判自测自身失效）。
+    simulateLooseDecl: { doc: "docs/host-upgrade-guide-v030.md", target: "src/pi/runner.js" },
+    expect: [/豁免条目 src\/pi\/runner\.js（docs\/host-upgrade-guide-v030\.md）的 decl 能匹配空串（\/\.\*\/）——/,
+      /「就地声明」这一侧恒真，双条件退化成了单条件/],
+  },
+  {
+    label: "#286 返工 R4 的放行证：在 CN 契约里插一行无关散文 ⇒ 现有 4 条豁免在 AND 判据下全部仍然成立（零条红）",
+    overlay: { [CONTRACT_CN]: mentionInProse("自测探针（#286 返工 R4）：这里只是在文档靠前插一句散文，什么引用都没动。") },
+    expectGreen: true,
+  },
 ];
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 70;
+const MIN_SELF_TEST_CASES = 90;   // #286 T-a 返工 R1-R4 之后共 92 例（下限留 2 例余量给并行分支，见上：别按当天条数写死）
 
 function runSelfTest() {
   const run = () => collectAllDrift();
@@ -2841,12 +3553,18 @@ function runSelfTest() {
   if (SELF_TEST_CASES.length < MIN_SELF_TEST_CASES) {
     failures.push(`用例数被削：现在 ${SELF_TEST_CASES.length} 例，下限 ${MIN_SELF_TEST_CASES} 例——删用例 / 整例跳过不算修好`);
   }
+  // #286 T-a：提取器自己也有一处「空转就能全绿」的形状——覆盖面或提取正则被改坏时，符号锚点会抽到
+  // 0 处，于是本节所有反向证同时变成空跑。先问一句，别等用例自己变绿。
+  if (!symbolAnchorOccurrences(refScanDocs()).length) {
+    failures.push("symbol-anchor: 覆盖面里抽到 0 处「符号 + 文件」锚点——提取逻辑或覆盖面被改坏，"
+      + "本节全部符号锚点反向证都在空跑（抽不到真值就报错，#164 口径）");
+  }
   for (const [i, c] of SELF_TEST_CASES.entries()) {
     const who = c.label ?? `第 ${i + 1} 例`;
     for (const re of c.expect ?? []) {
       if (re.test("")) failures.push(`${who}：期望被削弱——正则 ${re} 连空串都匹配，等于没有断言（不许拿「永真」糊过这一例）`);
     }
-    if (!c.expectGreen && !(c.expect ?? []).length && !(c.expectFiles ?? []).length) {
+    if (!c.expectGreen && !c.expectMutateMiss && !(c.expect ?? []).length && !(c.expectFiles ?? []).length) {
       failures.push(`${who}：期望被削弱——既不是放行证（expectGreen）也没写 expect / expectFiles，等于整例被跳过`);
     }
   }
@@ -2858,30 +3576,63 @@ function runSelfTest() {
   }
   for (const c of SELF_TEST_CASES) {
     let ok = true;
+    let missedOn = null;   // #286 T-a：变异没打上的那一处（`expectMutateMiss` 用例等的就是它）
     for (const [rel, mutate] of Object.entries(c.overlay ?? {})) {   // #280：纯树形例可以不带 overlay
       const before = read(rel);
       const after = mutate(before);
-      if (after === before) {
-        failures.push(`${c.label}：变异没落到 ${rel} 上（反向证自身失效：脚本里的变异体已与文档/源码脱节）`);
-        ok = false;
-        break;
-      }
+      if (after === before) { missedOn = rel; break; }
       OVERLAY.set(rel, after);
     }
-    if (!ok) { OVERLAY.clear(); continue; }
+    if (missedOn !== null) {
+      OVERLAY.clear();
+      if (c.expectMutateMiss) {
+        passed.push(`${c.label} → 变异确实没落上（${missedOn}），「变异器空转也算失败」这条判据在生效`);
+      } else {
+        failures.push(`${c.label}：变异没落到 ${missedOn} 上（反向证自身失效：脚本里的变异体已与文档/源码脱节）`);
+      }
+      continue;
+    }
+    if (c.expectMutateMiss) {
+      OVERLAY.clear();
+      failures.push(`${c.label}：这一例要的就是「变异打不上」，结果打上了——靶子已存在于文档，换一个不存在的靶子`);
+      continue;
+    }
     // #280：有的锚点要测的不是文件**文本**而是**树形**（本机有没有那个被 .gitignore 忽略的任务档案目录）。
     // 树形用 SIM_ABSENT_TASK_ARCHIVE 这个口子模拟（只影响实物清单，声明一侧一律不动），跑完必须还原。
     const simSaved = SIM_ABSENT_TASK_ARCHIVE;
     SIM_ABSENT_TASK_ARCHIVE = !!c.simulateAbsentTaskArchive;
+    const guideSaved = SIM_RENAMED_GUIDE;                       // #286 返工 R2：覆盖面缩面的树形口子
+    SIM_RENAMED_GUIDE = c.simulateRenamedGuide ?? null;
+    const scanCountBefore = LAST_SCAN_DOC_COUNT;
+    let looseDeclSaved = null;                                  // #286 返工 R4：豁免判据的配置口子
+    if (c.simulateLooseDecl) {
+      const target = BARE_LINE_EXEMPTIONS.find((x) => x.doc === c.simulateLooseDecl.doc && x.target === c.simulateLooseDecl.target);
+      if (!target) {
+        OVERLAY.clear(); SIM_RENAMED_GUIDE = guideSaved;
+        failures.push(`${c.label}：配置口子没落上（豁免表里找不到 ${c.simulateLooseDecl.doc} / ${c.simulateLooseDecl.target}）`);
+        continue;
+      }
+      looseDeclSaved = [target, target.decl];
+      target.decl = /.*/;
+    }
     let errs = [];
     let simDropped = -1;
     try {
       errs = run();
       simDropped = LAST_IGN ? repoFiles(LAST_IGN).simDropped : 0;
-    } finally { SIM_ABSENT_TASK_ARCHIVE = simSaved; OVERLAY.clear(); }
+    } finally {
+      SIM_ABSENT_TASK_ARCHIVE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
+      if (looseDeclSaved) looseDeclSaved[0].decl = looseDeclSaved[1];   // 判据必须还原，别把探针留在表里
+      OVERLAY.clear();
+    }
     // #279 的教训：「变异没落上」的空跑会交出一条假的绿。树形口子也一样——本机确实有任务档案实物、
     // 却一个都没从清单里摘掉，就是 SIM_ABSENT_TASK_ARCHIVE 没接进 repoFiles。本机本来就没那个目录
     // （在全新 clone 里跑自测）时这一例退化成对照，不算失败。
+    // #286 返工 R2：树形口子也要证「真的落上了」——说要模拟一份指南改名，覆盖面份数却没变就是没接进 refScanDocs。
+    if (c.simulateRenamedGuide && LAST_SCAN_DOC_COUNT > 0 && LAST_SCAN_DOC_COUNT === scanCountBefore) {
+      failures.push(`${c.label}：覆盖面树形口子没落上（说要模拟 \`c.simulateRenamedGuide\` 改名，但 refScanDocs() 的份数没变）`);
+      continue;
+    }
     if (c.simulateAbsentTaskArchive && LAST_IGN && taskArchiveDirPresent(LAST_IGN) && simDropped === 0) {
       failures.push(`${c.label}：树形口子没落上（说要模拟「没有 docs/tasks/」，但实物清单一条都没摘掉）`);
       continue;

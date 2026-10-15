@@ -150,6 +150,41 @@ scripts/          # experiment scripts and results
   "someone deleted the whole sentence on one side". Every per-occurrence rule carries its reverse proof in
   `node scripts/docs-drift-check.mjs --self-test`; run it after touching `scripts/docs-drift-check.mjs`. The level of
   every anchor, and why the remaining ones were *not* upgraded, is listed in the header comment of that script.
+- Doc line anchors (issue #286, first batch T-a): docs must not lean on **bare line numbers**. `paths` used to strip
+  `:1234` before resolving a reference, so only the file was ever checked — a line number that drifted into another
+  function, or past the end of the file, stayed green (the contract pointed at line 398 of `src/store/notes.js`, a file that is 383 lines long). Two anchors now hold that line, both wired into `--self-test`:
+  *`symbol-anchor`* is *per-occurrence*: every `` `symbol` (`path`) `` or `[symbol](path)` reference must find a real
+  declaration of that symbol **in that file** (`function` / `class` / `const|let|var` binding / destructuring /
+  re-export / method / object key / `process.env.X`). A missing symbol is red and the message names the nearest
+  symbols actually declared there; a file from which no declaration can be extracted at all is red too (#164:
+  no silent pass when ground truth cannot be read). Named string *values* — termination reasons, provider error
+  codes — are the one weaker tier and are accepted only in the four files listed with a reason in
+  `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs`. Because the bare-line ratchet keys on
+  (document, target file, line range) — **never on the doc's own line number** — rewriting
+  `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 24` (groups
+  measured today: 24 unique (symbol, file) pairs over 44 occurrences, reproducible via `--verbose`): dropping below it is
+  red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
+  Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
+  *`bare-lines`* is a *ratchet (only down)*: `src/**.js:N` / `:N-M` references, counted as unique
+  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 244` in that same script. The number
+  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 248 measured minus 4 declaratively exempted
+  example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
+  declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
+  nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty
+  string (or carries a `g` flag, making `.test()` stateful) is itself an error — same dual-condition family as #286's
+  `test/static-guards.test.js`). An out-of-range line number is an
+  error, not an observation. Scope is the 20 documents a host actually reads: the two READMEs, both AGENTS files, both
+  contract files, plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
+  covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that
+  pattern shrinks the coverage in the script **and** in the test that mirrors the same glob, so both numbers still
+  agree: `REF_SCAN_DOCS_MINIMUM = 20` is the floor (6 pinned documents + the 14 guides found today), and
+  `test/docs-anchor-ratchet.test.js` keeps its own pinned list of those 14 file names. Renaming or adding a guide is
+  red until both places are updated. `CHANGELOG.md` is deliberately out of scope: its line numbers record what was true at
+  release time, and rewriting them would fake history (same reasoning as the #278 shorthand register).
+  Batch T-a only builds the infrastructure and the ratchet — the 244 existing sites still have to be converted to
+  symbol anchors by the follow-up batches, and *lowering* that constant (with a reason in the commit message) is what
+  "we removed some" has to look like.
 
 ## 4. npm publishing guide (verified against the 2026-08 policy)
 
