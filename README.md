@@ -989,7 +989,10 @@ migration steps remain in
   the `#213` JSDoc restructuring that shipped in the same window is outside this claim);
   a dev-only `--checkJs` ratchet gate
   `npm run check:types` is part of the repo checks. Folded into this same release on
-  2026-10-13 (additive only — a host needs no code change): `src/index.js` now exports
+  2026-10-13 (additive — no call-site change, though two of them are host-observable strings
+  and comments: the `readFile` continuation marker gained the file size, and `runToolLoop`'s
+  return typedef moved from one line to a multi-line block — see that guide's section 6,
+  issue #293): `src/index.js` now exports
   `createMemoryNotesStore`; the pi extension `erix_run` returns the complete final text
   (the host-side truncation layer is gone), its async `action: "result"` can actually
   retrieve `finalText`, its `outputSchema` now declares `verification` and `error` so the
