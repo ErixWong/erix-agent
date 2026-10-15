@@ -1,5 +1,5 @@
 import { numberOr } from "./budget.js";
-import { jsonCandidates } from "../text/json-candidates.js";
+import { parseModelJson } from "../text/parse-model-json.js";
 
 export const WRAPUP_INSTRUCTION = `任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：
 {"done":true,"summary":"任务总结","output":"给用户的结果"}
@@ -49,10 +49,16 @@ const REFLECTION_DECISION_KEYS = [
 /**
  * 把 reflection 模型输出解析成决策对象。
  *
- * JSON 路径走 `jsonCandidates`（`src/text/json-candidates.js`）的**顶层平衡扫描**：
- * 只在括号深度归零处切候选，未闭合的外层不产候选，于是不会把内层残片当决策、也不会被
- * 尾话里的 `{plan}` 带着整坨解析失败（issue #305：解析一失败就落到关键词兜底，
- * 把模型明确写的 `"continue": false` 翻成 `continueFlag: true`）。
+ * JSON 路径走公共入口 `parseModelJson`（`src/text/parse-model-json.js`），传
+ * `requireKeys: REFLECTION_DECISION_KEYS`（**任一键**在场即算形状合格）：扫描仍是
+ * `jsonCandidates` 的**顶层平衡扫描**（`topOnly` 默认 `true`），未闭合的外层不产候选，
+ * 于是不会把内层残片当决策、也不会被尾话里的 `{plan}` 带着整坨解析失败（issue #305：
+ * 解析一失败就落到关键词兜底，把模型明确写的 `"continue": false` 翻成 `continueFlag: true`）。
+ *
+ * 迁移前后**行为逐字等价**（issue #307 R2）：解析不了的候选跳过、解析成功却一个已知键
+ * 都不含的候选也跳过（灰区按散文兜底，issue #305 R2 裁决），两者都由 `parseModelJson`
+ * 的「逐个候选试、不合格就试下一个」承担；`unparsable` 与 `shape_mismatch` 在这里
+ * 汇成同一条出路（关键词兜底），与原先落到循环末尾完全一致。
  *
  * `via` 只声明来源（`"json"` = 来自可解析的顶层对象；`"prose_fallback"` = 关键词兜底），
  * **不**暗示 schema 已校验：六字段全部可缺省带默认，半集是合法输入。
@@ -62,18 +68,9 @@ const REFLECTION_DECISION_KEYS = [
  */
 export function parseReflectionDecision(text) {
   const value = String(text ?? "");
-  for (const candidate of jsonCandidates(value)) {
-    /** @type {Record<string, unknown>} */
-    let parsed;
-    try {
-      parsed = JSON.parse(candidate);
-    } catch {
-      continue; // 这个顶层候选不是合法 JSON，试下一个
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-    // 顶层对象解析成功却搬运不出任何决策字段 —— 按散文兜底处理（issue #305 R2 灰区裁决），
-    // 此时关键词兜底才贴近现状语义。
-    if (!REFLECTION_DECISION_KEYS.some((key) => Object.prototype.hasOwnProperty.call(parsed, key))) continue;
+  const result = parseModelJson(value, { requireKeys: REFLECTION_DECISION_KEYS });
+  if (result.ok) {
+    const parsed = /** @type {Record<string, unknown>} */ (result.value);
     return {
       progress: numberOr(parsed.progress),
       stalled: parsed.stalled === true,
@@ -85,6 +82,8 @@ export function parseReflectionDecision(text) {
     };
   }
 
+  // 三种失败（no_candidate / unparsable / shape_mismatch）在这里不分叉，一律走关键词兜底：
+  // 与 issue #306 的循环末尾出口逐字相同（`reason` 仍是整段文本的 slice(0, 200)）。
   return {
     progress: undefined,
     stalled: /打转|重复|无进展|stalled/i.test(value),

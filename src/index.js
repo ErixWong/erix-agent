@@ -90,6 +90,7 @@ export {
 export { createProviderSummarizer, serializeFoldedMessages } from "./compact/provider-summarizer.js";
 export { runToolLoop } from "./loop/orchestrator.js";
 export { parseReflectionDecision } from "./loop/reflection.js";
+export { parseModelJson } from "./text/parse-model-json.js";
 export { tryParseWrapupJson, normalizeWrapupWithLlm } from "./reflection/wrapup.js";
 export {
   buildTimeline,

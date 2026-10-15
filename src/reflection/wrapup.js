@@ -56,6 +56,21 @@ function normalizeFindings(value) {
 /**
  * Parse the end-of-turn JSON protocol while tolerating markdown fences and
  * incidental text around the first JSON object.
+ *
+ * **不经 `parseModelJson`（issue #307 R2 裁定：不迁）**，理由三条：
+ *
+ * 1. 它是**逐候选拒绝**的：已解析的候选仍可能被 `normalizedWrapup` 打回 `null`
+ *    （带 `action`/`note` 的内联 L1 对象、`done` 不是布尔、`summary`/`output` 类型不对），
+ *    然后继续试下一个候选；而 `parseModelJson` 的 `value` 语义是「第一个可解析且形状
+ *    合格的候选」，拿到手后再拒就会与它自己的返回不一致，只能忽略 `value` 重扫一遍。
+ * 2. `requireKeys` 只查**键在场**、不查类型与**排除键**（`action`/`note` 在场即拒），
+ *    把本函数能表达的形状收窄不了多少。
+ * 3. 迁移只能省下一行 `for` ，代价是给一个已发布行为面加一层间接。
+ *
+ * 因此本文件继续直接调 `jsonCandidates`（顶层平衡扫描）。**内层对象不当候选**这件事
+ * 依旧由它保证：宿主 JSON 里的嵌套对象（`{"summary":...,"meta":{"done":true}}`）不得
+ * 被当成 wrap-up 候选——否则那个**内层 `{done,...}` 会绕过 mandatory-done 守卫**
+ * （issue #30 follow-up，口径写在 `src/text/json-candidates.js` 与本仓 wrapup 用例里）。
  */
 export function tryParseWrapupJson(text) {
   for (const candidate of jsonCandidates(text)) {
