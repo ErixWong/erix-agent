@@ -7,7 +7,7 @@
 // 用法：ERIX_E2E_REAL=1 node --test examples/tool-fact-e2e.test.mjs
 // 闸门 / 配置解析 / 模型名来源共用 examples/e2e-real-gate.mjs：
 //   `ERIX_E2E_REAL=1` 才跑；缺省 skip，且 **gate 缺失 / 配置不存在 / JSON 坏了 / 缺字段 /
-//   端点不可达** 五类原因分别报（不许一律「skipped」）；模型从 `slots.default` 解析
+//   凭据引用解不出值（变量未设·文件不存在·值为空）/ 端点不可达** 分别报（不许一律「skipped」）；模型从 `slots.default` 解析
 //   （`ERIX_E2E_CONFIG=<path>` 可覆盖路径），源码里不出现任何模型名。
 // 不污染真实 ~/.erix：store 一律 `mkdtemp`，工作目录也是 `mkdtemp`。
 // 零依赖红线：只用 node: 内置 + 相对路径；纯 ESM。
@@ -152,13 +152,19 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     return;
   }
   const providerFields = {
-    endpoint: gate.slot.endpoint ?? gate.slot.baseUrl,
-    apiKey: gate.slot.apiKey,
+    // 闸门已把 `endpoint`/`baseUrl` 归一（gate.endpoint）、把凭据引用解成**实际值**（gate.apiKey）：
+    // 传给 createOpenAIProvider 的必须是解析后的真实值，不是变量名/文件路径（PR #289 阻断 1 的配套：
+    // src/providers/openai.js 只认 apiKey，传引用名就是起跑即报 apiKey 必填）。
+    endpoint: gate.endpoint,
+    apiKey: gate.apiKey,
     model: gate.slot.model,
     contextWindowTokens: gate.slot.contextWindowTokens,
     maxOutputTokens: gate.slot.maxOutputTokens,
   };
-  assert.ok(providerFields.apiKey, "闸门已确认凭据在场");
+  assert.ok(
+    typeof providerFields.apiKey === "string" && providerFields.apiKey.trim() !== "",
+    "闸门 ok 就等于凭据**真实值**在场（引用名不算）：这里拿到空值就是闸门退弱了",
+  );
   console.log(`[2] model=${gate.model} endpoint=${printableEndpoint(gate.endpoint)} config=${gate.configPath}`);
 
   /** 逐条 PASS/FAIL 打点：报告要贴的就是这张表，一条红不掩盖其余结果 */
