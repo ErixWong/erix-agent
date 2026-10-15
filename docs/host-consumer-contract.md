@@ -1639,6 +1639,36 @@ adds `exec` and `todo_*`, and passes no predicates, so CLI behaviour stays
 "no boundary" exactly as before. `bin/` no longer owns a second copy of the file
 tools (issue #184).
 
+### Success result shapes (issue #220)
+
+`createFileTools().executeTool()` returns a **successful** result in four different
+top-level shapes. Those shapes are contract, not implementation detail: the packaged
+`fileToolsContract` suite asserts the `typeof` of each one (and the `kind` returned by the
+discriminator below), so flattening, wrapping, or "unifying" any of them fails the suite
+instead of landing silently on a host's UI.
+
+| Tool | Top-level shape on success | What it carries | `classifyFileToolResult().kind` |
+|---|---|---|---|
+| `readFile` | `string` | numbered lines; truncation and skip accounts are appended as trailing marker lines | `text` |
+| `edit` | `string` | one summary line plus a unified diff | `text` |
+| `writeFile` | `number` | bytes written — a real number, so `0` is a valid success value | `bytes` |
+| `searchText` | `object` with exactly `content` and `metadata` | `content` is the hit text; `metadata` holds the structured account (truncation / skips / caps) | `content-metadata` |
+
+Rules a host can code against:
+
+- **Pin the shape with `classifyFileToolResult`, exported from `erix-agent/tools` — not with
+  string containment.** It returns `{ kind, text, bytes, metadata }`, where `kind` is the
+  discriminated union `"text" | "bytes" | "content-metadata" | "unknown"`. Switch on `kind`
+  and close the switch with `default: assertNever(kind)`: when the engine adds a fifth shape,
+  the host's own compile fails at that `default` instead of the UI rendering `[object Object]`.
+- `typeof result === "string"` is **not** a success test: error results are strings too
+  (`"错误：…"`), the same top-level shape as `readFile`. Separate them by the error prefix,
+  never by shape.
+- A bare `number` result is exactly why `if (!result)` is a bug: `writeFile` returning `0`
+  means "wrote an empty file successfully".
+- The suite's `contentOf` / `metadataOf` helpers remain as migration readers for hosts that
+  still normalise by hand. They are readers, not the contract — the assertions above are.
+
 ### File edit tool `edit` (issue #191)
 
 `edit` is the **second write tool** in the same `definitions` array and the same

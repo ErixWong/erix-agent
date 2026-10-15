@@ -29,6 +29,10 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+// issue #220：契约从「怎么把四种形态读成正文」升级为「把四种形态逐个钉住」。
+// 判别式由库导出（不在套件里推字符串），宿主侧 switch 的 default 分支才能靠它编译期钉死。
+import { classifyFileToolResult } from "../../src/tools/file-tools.js";
+
 // 契约文档 docs/host-consumer-contract.md「File tool registration」声明的默认值。
 const READ_MAX_BYTES_DEFAULT = 262_144;
 const TREE_ENTRY_LIMIT = 500;
@@ -968,6 +972,44 @@ export function fileToolsContract(label, { createFileTools }) {
       assert.match(notScanned, /max_bytes=1KB/u, notScanned);
       assert.doesNotMatch(notScanned, /(?<![\d.])1024(?!\d)/u, notScanned);
       assert.match(notScanned, /文件 \d+(?:\.\d+)?(?:KB|MB|GB|TB) > /u, `文件大小也要可读单位：${notScanned}`);
+    });
+  });
+
+  // issue #220：四种成功返回形态逐个钉住（中英契约表 docs/host-consumer-contract.md
+  // 「Success result shapes (issue #220)」逐字对齐）。此前全套件对 `typeof` 的引用只有
+  // contentOf/metadataOf 两个兼容 helper，任何一侧改动顶层形态都不会被契约抓到。
+  test(`${label}: 四种成功返回形态的顶层 typeof 逐个钉死（issue #220）`, async () => {
+    await withDirectory(async (cwd) => {
+      await writeFile(path.join(cwd, "a.txt"), "alpha\n", "utf8");
+      const tools = createFileTools({ cwd });
+
+      const read = await tools.executeTool("readFile", { path: "a.txt" });
+      const edited = await tools.executeTool("edit", { path: "a.txt", edits: [{ oldText: "alpha", newText: "omega" }] });
+      const written = await tools.executeTool("writeFile", { path: "b.txt", content: "beta\n" });
+      const searched = await tools.executeTool("searchText", { pattern: "beta", mode: "literal" });
+
+      assert.equal(typeof read, "string", `readFile 成功必须返回 string，实得 ${typeof read}`);
+      assert.equal(typeof edited, "string", `edit 成功必须返回 string，实得 ${typeof edited}`);
+      assert.equal(typeof written, "number", `writeFile 成功必须返回 number（写入字节数），实得 ${typeof written}`);
+      assert.equal(written, 5, "writeFile 的 number 就是字节数");
+      assert.equal(typeof searched, "object", `searchText 成功必须返回对象，实得 ${typeof searched}`);
+      assert.ok(searched !== null && !Array.isArray(searched), "searchText 的结果必须是普通对象");
+      assert.deepEqual(Object.keys(searched).sort(), ["content", "metadata"],
+        `searchText 的顶层键必须只包含 content 与 metadata，实得 ${Object.keys(searched).join(",")}`);
+      assert.equal(typeof searched.content, "string");
+
+      // 判别式与形态逐一对应：宿主 switch 的四个 case + default（assertNever）就拿这个。
+      assert.equal(classifyFileToolResult(read).kind, "text");
+      assert.equal(classifyFileToolResult(edited).kind, "text");
+      assert.equal(classifyFileToolResult(written).kind, "bytes");
+      assert.equal(classifyFileToolResult(written).bytes, 5);
+      assert.equal(classifyFileToolResult(searched).kind, "content-metadata");
+      assert.equal(classifyFileToolResult(searched).text, searched.content);
+      assert.ok(classifyFileToolResult(searched).metadata !== undefined,
+        "searchText 的 metadata 必须能被取到（截断/跳过账住在里面）");
+      // 未知形态必须落到判别式的 unknown，而不是静默归入某一种
+      assert.equal(classifyFileToolResult(undefined).kind, "unknown");
+      assert.equal(classifyFileToolResult({ metadata: {} }).kind, "unknown");
     });
   });
 }

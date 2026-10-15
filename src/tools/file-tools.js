@@ -1721,3 +1721,26 @@ export function createFileTools({
     executors: (name, input, context) => runExecutor(name, input, context),
   };
 }
+
+/**
+ * issue #220 返回形态判别式；表与语义见宿主契约。
+ * @typedef {"text" | "bytes" | "content-metadata" | "unknown"} FileToolResultKind
+ * @param {unknown} value
+ * @returns {{ kind: FileToolResultKind, text: string, bytes: number | undefined, metadata: object | undefined }}
+ */
+export function classifyFileToolResult(value) {
+  const none = { bytes: undefined, metadata: undefined };
+  if (typeof value === "string") return { kind: "text", text: value, ...none };
+  if (typeof value === "number" && Number.isFinite(value)) return { kind: "bytes", text: String(value), bytes: value, metadata: undefined };
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const record = /** @type {Record<string, unknown>} */ (value);
+    if (typeof record.content === "string") {
+      const metadata = record.metadata;
+      return {
+        kind: "content-metadata", text: record.content, ...none,
+        ...(metadata !== null && typeof metadata === "object" ? { metadata: /** @type {object} */ (metadata) } : {}),
+      };
+    }
+  }
+  return { kind: "unknown", text: value === undefined ? "" : String(value), ...none };
+}

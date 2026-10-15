@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-15（已同步 #282 「终局前的增值调用在中止时的行为」（aborted 永远优先于 judge_done / final_guard_*：已中止则跳过整次 judge 调用、judge 在飞时立即中断、judge 已返回但终局未定也必须抛 aborted 并保留 #180 载荷）；#283 「中止后事实的真相分布」（β 裁决：不为被中止的进行中轮补写 RoundRecord；`partial:true` 只指终局载荷不指 transcript；六行渠道对照表）；#179 HTTP 状态码分类（`invalid_request`/`not_found`/`conflict` 三个新 code 与取值表、`retryable` 与重试面逐字不变、未列出的状态码仍落 `unknown`）；#197 技能加载器注册（`bundledDir` 归调用方、库内不猜层级、内置 < 全局 < 项目的优先级、不阻塞且可枚举的 `{skillId, dir, error}` 失败形状、产出即 `ToolSchema`、无新沙箱）与 `skillsLoaderContract` 套件；#184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-15（已同步 #220 「成功返回的四种顶层形态」（readFile/edit→string、writeFile→number、searchText→{content,metadata} 逐个钉 typeof，加 `classifyFileToolResult` 判别式与 default:assertNever 用法）；#282 「终局前的增值调用在中止时的行为」（aborted 永远优先于 judge_done / final_guard_*：已中止则跳过整次 judge 调用、judge 在飞时立即中断、judge 已返回但终局未定也必须抛 aborted 并保留 #180 载荷）；#283 「中止后事实的真相分布」（β 裁决：不为被中止的进行中轮补写 RoundRecord；`partial:true` 只指终局载荷不指 transcript；六行渠道对照表）；#179 HTTP 状态码分类（`invalid_request`/`not_found`/`conflict` 三个新 code 与取值表、`retryable` 与重试面逐字不变、未列出的状态码仍落 `unknown`）；#197 技能加载器注册（`bundledDir` 归调用方、库内不猜层级、内置 < 全局 < 项目的优先级、不阻塞且可枚举的 `{skillId, dir, error}` 失败形状、产出即 `ToolSchema`、无新沙箱）与 `skillsLoaderContract` 套件；#184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -1311,6 +1311,34 @@ BRE，都不是这里用的 JavaScript flavor），**完全不读 `.gitignore`**
 CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `exec` 与 `todo_*`，
 且不传任何谓词，所以 CLI 行为与以前一致，仍是「无边界」。`bin/` 不再持有第二套
 文件工具实现（issue #184）。
+
+### 成功返回的四种顶层形态（issue #220）
+
+`createFileTools().executeTool()` 的**成功**返回值有四种互不相同的顶层形态。这些形态是契约，
+不是实现细节：随包的 `fileToolsContract` 套件逐个断言它们的 `typeof`（以及下面那个判别式
+返回的 `kind`），以以下列任何一种改动都会把套件跑红，而不是静悄悄落到宿主界面上：把四种
+摊平、包一层、或「统一成一种」。
+
+| 工具 | 成功时的顶层形态 | 里面装的是什么 | `classifyFileToolResult().kind` |
+|---|---|---|---|
+| `readFile` | `string` | 带行号的正文；截断与跳过账以尾部 marker 行追加 | `text` |
+| `edit` | `string` | 一行摘要 + unified diff | `text` |
+| `writeFile` | `number` | 写入字节数——是真正的数字，所以 `0` 是合法的成功值 | `bytes` |
+| `searchText` | `object`，顶层键恰好是 `content` 与 `metadata` | `content` 是命中正文，`metadata` 携带结构化账（截断 / 跳过 / 上限） | `content-metadata` |
+
+宿主可以程着写的规则：
+
+- **用 `erix-agent/tools` 导出的 `classifyFileToolResult` 钉形态，而不是用字符串包含去猜。**
+  它返回 `{ kind, text, bytes, metadata }`，其中 `kind` 是判别联合
+  `"text" | "bytes" | "content-metadata" | "unknown"`。宿主按 `kind` 分支，并在 `default` 里
+  `assertNever(kind)`：引擎日后新增第五种形态时，是宿主自己的编译在那个 `default` 上报错，
+  而不是界面渲染出 `[object Object]`。
+- `typeof result === "string"` **不是**成败判据：错误结果也是字符串（前缀 `"错误："`），
+  顶层形态与 `readFile` 一致。区分两者只看错误前缀，绝不看形态。
+- 裸 `number` 正是 `if (!result)` 这个写法出错的原因：`writeFile` 返回 `0` 的意思是
+  「写入空文件成功」。
+- 套件里的 `contentOf` / `metadataOf` 仍作为过渡期读取子保留给手工收敛的宿主。它们是读取子，
+  不是契约——上面那些断言才是。
 
 ### 文件编辑工具 `edit`（issue #191）
 
