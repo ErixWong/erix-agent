@@ -1921,12 +1921,13 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  新增成对的「Reflection 决策解析」小节，按本单红线用**符号锚点**引用 `parseReflectionDecision`
  *  （`src/loop/reflection.js`）与 `jsonCandidates`（`src/text/json-candidates.js`）、`truncate`
  *  （`src/reflection/judge.js`）——锚点在变多，是这条下限想看见的方向。
- *  升下限的理由（工单 261016-307 发版准备 R4，32 → **34**，+2 组 / 70 → 84 处）：`docs/host-upgrade-guide-0.21.0.md`
+ *  升下限的理由（工单 261016-307 发版准备 R4，32 → **35**，+3 组 / 70 → 86 处）：`docs/host-upgrade-guide-0.21.0.md`
  *  与 `_cn.md` 成对落地，按同一红线全部用符号锚点引用 `parseModelJson`（`src/text/parse-model-json.js`）、
  *  `jsonCandidates`（`src/text/json-candidates.js`）、`ensureUserTurnView` / `isUserTurnGuardAction`
  *  （`src/loop/request-user-view.js`）、`parseReflectionDecision`（`src/loop/reflection.js`）、
- *  `safeTruncateMessages`（`src/loop/budget.js`）、`validateMessages`（`src/messages/rounds.js`）等——
- *  `--verbose` 实测 34 组 / 84 处。
+ *  `safeTruncateMessages`（`src/loop/budget.js`）、`validateMessages`（`src/messages/rounds.js`），外加 #293 那一刀
+ *  在 0.19.0 中英指南里补的 `readFile`（`src/tools/file-tools.js`）与 `runToolLoop`（`src/loop/orchestrator.js`）——
+ *  `--verbose` 实测 35 组 / 86 处。
  *  升下限的理由（工单 261016-307 / issue #307，27 → **32**，+5 组 / 50 → 70 处）：中英契约成对新增
  *  「统一入口 `parseModelJson`」小节，按同一红线全部用**符号锚点**引用 `parseModelJson`
  *  （`src/text/parse-model-json.js`）、`tryParseWrapupJson`（`src/reflection/wrapup.js`）、
@@ -1934,7 +1935,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  （`src/compact/fold-statistical.js`），并把「轮次 judge 保留自己的扫描」那句已经腐烂的引用改成
  *  指向 `parseJudgeDecision`（`src/reflection/judge.js`）——`--verbose` 实测 32 组 / 70 处。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 34;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 35;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
@@ -3704,9 +3705,9 @@ const SELF_TEST_CASES = [
   // 树形口子 `SIM_RENAMED_GUIDE` 只影响清单、不动任何文本（与 #280 的 SIM_ABSENT_TASK_ARCHIVE 同款纪律，
   // 并且同样要证「口子真的落上了」，见 runSelfTest 里的覆盖面份数比对）。
   {
-    label: "#286 返工 R2：模拟一份升级指南改名到不匹配实扫模式 ⇒ 覆盖面 19 < 20 必须红（改名 = 静默缩面，两边 glob 一起少）",
+    label: `#286 返工 R2：模拟一份升级指南改名到不匹配实扫模式 ⇒ 覆盖面 ${REF_SCAN_DOCS_MINIMUM - 1} < ${REF_SCAN_DOCS_MINIMUM} 必须红（改名 = 静默缩面，两边 glob 一起少）`,
     simulateRenamedGuide: "docs/host-upgrade-guide-0.16.0.md",
-    expect: [/ref-scan: 「符号锚点 \+ 裸行号棘轮」的覆盖面只剩 19 份文档，低于下限 \*\*20\*\* 份/,
+    expect: [new RegExp(`ref-scan: 「符号锚点 \\+ 裸行号棘轮」的覆盖面只剩 ${REF_SCAN_DOCS_MINIMUM - 1} 份文档，低于下限 \\*\\*${REF_SCAN_DOCS_MINIMUM}\\*\\* 份`),
       /静默缩面/, /test\/docs-anchor-ratchet\.test\.js/],
   },
 
