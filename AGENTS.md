@@ -164,10 +164,11 @@ scripts/          # experiment scripts and results
   `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs`. Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 53` (groups
-  measured today: 53 unique (symbol, file) pairs over 122 occurrences, raised from 32 when the 0.21.0 guide pair
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 63` (groups
+  measured today: 63 unique (symbol, file) pairs over 165 occurrences, raised from 32 when the 0.21.0 guide pair
   landed, again for the #293 fixes to the 0.19.0 guide, again to 45 when #313's contract section merged on top
-  of them, and again to 53 when #314's host-side guard section landed as a pair, reproducible via `--verbose`): dropping below it is
+  of them, again to 53 when #314's host-side guard section landed as a pair, and again to 63 when the 0.21.0 guide
+  pair grew the #313 / #314 / #312(b) host sections during the 0.21.0 fold-in (工单 261016-021), reproducible via `--verbose`): dropping below it is
   red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
   Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
   *`symbol-anchor-span`* (#286 batch T-b1a) is the *per-occurrence* companion of the rule above: when a symbol anchor
