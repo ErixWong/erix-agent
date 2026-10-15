@@ -8,7 +8,8 @@
 //      确实在抽到东西——拿一次真实的 `--verbose` 输出问，不拿脚本注释当证据；
 //   ③ 覆盖面里**任何一处** `src/**.js:N[-M]` 都不许超过目标文件的真实行数，判据在测试侧另实现一遍
 //      （不靠被检脚本自证）；工单点名的 `src/store/notes.js:398-405` 两处越界必须已经指向真身；
-//   ④ 反向证不许被整批删掉，豁免条目与「具名字面量成员」那一档必须条条带理由。
+//   ④ 反向证不许被整批删掉，豁免条目与「具名字面量成员」那一档必须条条带理由；
+//  ⑤ #286 T-b1a：符号锚点**自带区间**与声明处相交的存量必须为 0，且这条判据是逐处过的（不是抽样）。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -69,13 +70,27 @@ test("#286 棘轮基线常量与 AGENTS 中英两侧声称的数一致（口径�
   const script = read("scripts/docs-drift-check.mjs");
   const baseline = script.match(/^const BARE_LINE_REF_BASELINE = (\d+);/m)?.[1];
   assert.ok(baseline, "脚本里抽不到 `const BARE_LINE_REF_BASELINE = <数字>;`——棘轮常量被删或改了写法");
-  assert.equal(Number(baseline), 244, "工单 #286 T-a 的基线是 244；改这个数必须在提交信息里写理由");
+  assert.ok(Number(baseline) <= 244, `棘轮只能降不能抬：工单 #286 T-a 登记的是 244，现在是 ${baseline}——抬上去要在提交信息里写「这次允许变差」的理由`);
   for (const doc of ["AGENTS.md", "AGENTS_cn.md"]) {
     const claims = [...read(doc).matchAll(/BARE_LINE_REF_BASELINE\s*=\s*(\d+)/g)].map((m) => m[1]);
     assert.ok(claims.length >= 1, `${doc} 没写 BARE_LINE_REF_BASELINE——中英成对义务要求两侧都写（工单 R4）`);
     assert.deepEqual([...new Set(claims)], [baseline],
       `${doc} 声称的基线与脚本常量不一致：${claims.join(" / ")} vs ${baseline}`);
   }
+});
+
+/** #286 T-b1a R1：符号锚点自带的区间必须与该符号在被引文件里的**声明处相交**。
+ *  为什么这条要钉在测试侧：判据本身在 `--self-test` 里有四条反向证，但那些证只证明「判据会红」；
+ *  这里要的是另一件事——**存量真的为 0**，且这条判据是**逐处**过的（自带区间数 = 相交 + 不相交，
+ *  差一个数就说明有锚点根本没被过问，即抽样）。拿一次真实的 `--verbose` 输出问，不拿注释当证据。 */
+test("#286 T-b1a 符号锚点自带区间与声明处相交：--verbose 的 note 必须是「不相交 0 处」且逐处覆盖", () => {
+  const out = execFileSync(process.execPath, [join(ROOT, "scripts", "docs-drift-check.mjs"), "--verbose"], { encoding: "utf8" });
+  const span = out.match(/symbol-anchor-span: 覆盖面 (\d+) 处符号锚点里自带区间 (\d+) 处：相交 (\d+) 处 \/ 不相交 (\d+) 处/);
+  assert.ok(span, `--verbose 里没有「区间相交」那条 note——判据被删或改了措辞（测试侧的匹配也要同步）：\n${out.slice(0, 400)}`);
+  assert.equal(Number(span[3]) + Number(span[4]), Number(span[2]),
+    `自带区间 ${span[2]} 处 ≠ 相交 ${span[3]} + 不相交 ${span[4]} ⇒ 有锚点没被这条判据过问（那是抽样，不是逐处）`);
+  assert.equal(Number(span[4]), 0, `还有 ${span[4]} 处符号锚点的自带区间与声明处不相交（#286 的裸行号漂移）——删区间或把区间改正到声明行`);
+  assert.ok(Number(span[2]) > 0, "一处带区间的符号锚点都抽不到 = 提取逻辑被改坏，这条判据在空跑");
 });
 
 test("#286 棘轮实测值恰好等于基线，符号锚点确实在抽东西（拿 --verbose 的真实输出问）", () => {

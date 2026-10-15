@@ -54,7 +54,7 @@
 //                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
-//                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 244`，超了红
+//                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 232`，超了红
 //                 （并提示「可以把基线降到 N」），低于基线算过但会催你降。**越界行号是 error**，不是观察项。
 //                 覆盖面 = 宿主会读的 20 份文档：README{,_cn} / AGENTS{,_cn} / host-consumer-contract{,_cn}
 //                 + `docs/host-upgrade-guide*.md` 全部（按目录实扫，新指南落地即自动纳面）。
@@ -86,7 +86,7 @@
 //       toolfact 的五个字段声明面（工单 261014，与 TOOL_RESULT_CONTRACT 双向对称）、
 //       symbols 的「符号 + 文件」锚点（#286 T-a：每一处都要在被引文件里抽到该符号的声明）
 //   · 只减不增的棘轮（比的是「还剩多少」：新增即红，变少则必须降基线并写理由）：
-//       bare-lines 的裸行号引用数（#286 T-a，基线 244，与 `check:types` 的 BASELINE_ROOT 同构）
+//       bare-lines 的裸行号引用数（#286 T-a 起，现基线 232，与 `check:types` 的 BASELINE_ROOT 同构）
 //   · 中英对账（比的是处数与数量级）：skeleton 的标题数与层级序列（README **与** AGENTS 两对）、
 //       anchors 的声明点处数、markers 的引用处数、baseline 的句式处数、
 //       toolfact 每一面的声明点处数
@@ -1506,8 +1506,9 @@ function collectBaselineClaimErrors() {
 //     不存在「新文档漏在覆盖面外」的形状）。
 //   正则 = BARE_LINE_RE（工单口径写的是 `src/**.js:N[-M]`；这里把前缀面放宽到 src|bin|scripts|test|docs|
 //     examples|fixtures，因为 `bin/cli.js:88` 这类行号同样会漂，窄到 src/ 等于给未来的漂移留门）。
-//     按工单那条只算 src/**.js 的口径实测：唯一 (文档,目标文件,行区间) **248** / 总出现 **279**
-//     （契约 CN 138、契约 EN 137、0.17.0 指南 2、v030 指南中英各 1）；减去 4 处声明式豁免 ⇒ 棘轮基线 **244**。
+//     按工单那条只算 src/**.js 的口径实测：唯一 (文档,目标文件,行区间) **236** / 总出现 **271**
+//     （T-b1a 之前是 248 / 279；契约那两大段锚点族被符号化 + 合并重复区间后降到这里。减去 4 处声明式
+//     豁免 ⇒ 棘轮基线 **232**，降基线的逐条理由就写在下面 `BARE_LINE_REF_BASELINE` 的注释里。）
 //     放宽前缀后的实测数在 `--verbose` 的 note 里，基线常量的注释里也写了怎么复现。
 //   `CHANGELOG.md` **不参与**：历史条目描述的是**当时**那份代码的行号，把它们改掉等于伪造历史
 //     （同口径先例：#278 对 CHANGELOG 里的简称只登记不改写、#273 对历史条目逐条登记）。CHANGELOG 里
@@ -1610,7 +1611,7 @@ const SYMBOL_DECL_PATTERNS = [
 ];
 
 /* 文件文本的进程内缓存（#286 T-a）。`--self-test` 要跑 85 轮全量检查，每轮都重新读一遍
- * orchestrator.js（350KB）× 244 处引用，会把一条文档门禁拖到分钟级——那是「太慢所以会被跳过」的形状。
+ * orchestrator.js（350KB）× 两百多处引用，会把一条文档门禁拖到分钟级——那是「太慢所以会被跳过」的形状。
  * 口径：
  *   · 被 `--self-test` overlay 改过的文件**每次现读**（来源不同就必须重来，绝不吃缓存）；
  *   · 没被 overlay 的文件在本进程里只读一次——本脚本从头到尾是只读的，不存在自己改盘的路径；
@@ -1645,6 +1646,14 @@ function symbolDeclarations(rel) {
   if (!lines) return new Map();
   if (rec.decls) return rec.decls;
   const out = new Map();
+  const all = new Map();        // #286 T-b1a R1：同一个名字在多处的全部声明位（区间相交判据要用全部）
+  rec.declsAll = all;
+  const push = (n, i, kind) => {
+    if (!n) return;
+    if (!out.has(n)) out.set(n, { line: i + 1, kind });
+    if (!all.has(n)) all.set(n, []);
+    all.get(n).push({ line: i + 1, kind });
+  };
   lines.forEach((line, i) => {
     for (const [re, kind] of SYMBOL_DECL_PATTERNS) {
       const m = line.match(re);
@@ -1652,12 +1661,14 @@ function symbolDeclarations(rel) {
       const names = kind === "解构绑定" || kind === "再导出"
         ? m[1].split(",").map((p) => p.trim().split(/\s+as\s+/).pop().trim()).filter((n) => /^[A-Za-z_$][\w$]*$/.test(n))
         : [m[1]];
-      for (const n of names) if (n && !out.has(n)) out.set(n, { line: i + 1, kind });
+      for (const n of names) push(n, i, kind);
     }
     // 环境变量：`process.env.ERIX_RETRY_ATTEMPTS` 被读的那一行就是它在 CLI 里的「定义处」（契约里
     // `ERIX_RETRY_ATTEMPTS`（`bin/cli.js:…`）引的就是它），不是声明语句，但同属「该文件里确有这个符号」。
     for (const m of line.matchAll(/process\.env\.([A-Z][A-Z0-9_]{2,})/g)) {
       if (!out.has(m[1])) out.set(m[1], { line: i + 1, kind: "环境变量读取处" });
+      if (!all.has(m[1])) all.set(m[1], []);
+      all.get(m[1]).push({ line: i + 1, kind: "环境变量读取处" });
     }
   });
   rec.decls = out;
@@ -1672,9 +1683,15 @@ function valueLiterals(rel) {
   if (!lines) return new Set();
   if (rec.literals) return rec.literals;
   const out = new Set();
-  for (const line of lines) {
-    for (const m of line.matchAll(/(["'])([A-Za-z_$][\w$]*)\1/g)) out.add(m[2]);
-  }
+  const byName = new Map();       // #286 T-b1a R1：具名字面量的出现行（区间相交判据在弱档上用的真值位）
+  lines.forEach((line, i) => {
+    for (const m of line.matchAll(/(["'])([A-Za-z_$][\w$]*)\1/g)) {
+      out.add(m[2]);
+      if (!byName.has(m[2])) byName.set(m[2], []);
+      byName.get(m[2]).push(i + 1);
+    }
+  });
+  rec.literalLines = byName;
   rec.literals = out;
   return out;
 }
@@ -1709,14 +1726,26 @@ function nearestSymbols(sym, decls) {
 
 /** 「符号 + 文件」的两种形态（`SYM`（`path`）与 markdown 链接）。提成模块级常量，是因为自测的
  *  打靶器 `mutateSymbolAnchor()` 必须与主检查用**同一套**提取逻辑（#279 的口径：打靶由提取逻辑定）。 */
+/* #286 T-b1a R1：把 `:N` / `:N-M` 提成**独立捕获组**（原先是 `(?::\d+(?:-\d+)?)?` 的非捕获尾巴）。
+ * 不捕获就看不见「这条符号锚点自带区间」，那条「区间必须与声明处相交」的判据（本节末）就无从下手。 */
 const SYMBOL_ANCHOR_FORMS = [
   // `SYM`（`path`） / `SYM` (`path`) —— 全角半角括号都接，允许中间一个空格。
   // 允许带 :N / :N-M 行号后缀：带行号的「符号 + 文件」仍然是符号锚点（符号部分照校），
   // 行号部分则同时进 2.8.2 的裸行号棘轮——一条写法被两条锚点分别看守，互不掩盖。
-  { re: /`([A-Za-z_$][\w$]*)`\s*[（(]\s*`([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(?::\d+(?:-\d+)?)?`\s*[)）]/g, kind: "括号并列" },
+  { re: /`([A-Za-z_$][\w$]*)`\s*[（(]\s*`([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(:\d+(?:-\d+)?)?`\s*[)）]/g, kind: "括号并列" },
   // [SYM](path) / [`SYM`](./path#anchor)
   { re: /\[`?([A-Za-z_$][\w$]*)`?\]\(\.?\/?([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(?:#[^)]*)?\)/g, kind: "markdown 链接" },
 ];
+
+/** 从锚点尾巴 `:N` / `:N-M` 里抽出区间；没有区间后缀返 null（**本判据对它不适用**，见节末理由）。 */
+function anchorSpan(span) {
+  if (!span) return null;
+  const m = span.match(/^:(\d+)(?:-(\d+))?$/);
+  if (!m) return null;
+  const a = Number(m[1]);
+  const b = m[2] ? Number(m[2]) : null;
+  return { from: a, to: b, lo: Math.min(a, b ?? a), hi: Math.max(a, b ?? a) };
+}
 
 /** 抽一份**文本**里的符号锚点，带 span（字符区间只覆盖**符号名本身**），供自测定点变异。 */
 function symbolAnchorsInText(text, doc) {
@@ -1730,8 +1759,9 @@ function symbolAnchorsInText(text, doc) {
         if (SYMBOL_NOT_SYMBOL.has(sym)) continue;          // JavaScript 字面量不是符号（见上面名单的理由）
         if (m[2].endsWith(".d.ts")) continue;              // 生成物声明文件不入库（#213），拿它当被引文件必然假红
         const lead = fi === 0 ? 1 : 1 + (m[0][1] === "`" ? 1 : 0);   // 前导的 `[` 与可选反引号
+        const span = anchorSpan(m[3] ?? null);
         found.push({
-          doc, line: i + 1, sym, file: m[2], form: f.kind,
+          doc, line: i + 1, sym, file: m[2], form: f.kind, span,
           start: lineStart + m.index + lead, end: lineStart + m.index + lead + sym.length,
         });
       }
@@ -1781,6 +1811,103 @@ function symbolAnchorVerdict(sym, rel) {
   return { ok: false, near, why: `该文件里没有 \`${sym}\` 的声明（支持的形态：function / class / const|let|var 绑定 / 解构绑定 / 再导出 / 方法 / 对象键、类字段 / process.env.X 环境变量读取处）` };
 }
 
+/* ── 2.8.1b 符号锚点自带的区间必须与声明处相交（issue #286 T-b1a R1）─────────────
+ * 病根（#286）：`paths` 在解析 `path:line` 时把行号剥掉只校文件存在 ⇒ 行号漂到哪都绿。
+ * 上面的 `symbols` 只回答「这个文件里到底有没有这个符号」，于是
+ *   \`emitEvent\`（\`src/loop/orchestrator.js:1517-1531\`）
+ * 这种「**符号对、区间错**」的写法一路全绿——而契约里这类条目占自带区间锚点的一半以上
+ * （主 agent 独立复算：37 处带区间的锚点里 17 处不相交 = 46%，见工单 261016-286-tb1a §1）。样本：
+ *   `emitEvent` 声明在 1669，文档写 1517-1531；`emitJudge` 在 1696，写 1544-1557；
+ *   `sideEffect` 在 194，写 940-946；`completionSignalDetected` 在 3121，写 2739-2745。
+ * 判据：区间 `[lo, hi]` 必须覆盖该符号在被引文件里的**至少一处真值位**（`lo <= p <= hi`）。
+ *   · 取「全部」声明位而不是首处：`sideEffect` 这类名字在 orchestrator.js 里合法地出现在多处
+ *     （194 的归一化与 1091 的 `fail()` 现场），只问首处会把说真话的那条判成假红；
+ *   · 弱档（`SYMBOL_VALUE_MEMBERSHIP` 那 4 份点名文件里的字符串值）用「该字面量在文件里的出现行」
+ *     当真值位——那一档承认的本来就是「值就定义在这里」，拿声明行去问必然假红；
+ *   · **抽不到任何真值位 ⇒ 红**（#164：抽不到真值不许静默放行）。但同一处的 `symbols` 已经因为
+ *     「该文件里没有这个符号」红了，这里不重复报（同一条根因交两条红会把自测的点名判据搅混），
+ *     只在 note 里计数；
+ *   · 不适用：不带区间的符号锚点（\`SYM\`（\`path\`））。那是**本刀首选的修法**——行号会漂而
+ *     `symbols` 不需要它，删区间还会让裸行号棘轮合法下降（「确实少了一些」唯一可核对的写法）。 */
+
+/** 一个符号在被引文件里的全部真值位（强档：全部声明位 + 环境变量读取处；弱档：具名字面量出现行）。 */
+function symbolTruthPositions(sym, rel) {
+  const rec = fileRecord(rel);
+  if (!rec) return { tier: "missing", positions: [] };
+  const first = symbolDeclarations(rel);              // 副作用：填好 rec.declsAll（全部声明位）
+  const strong = rec.declsAll?.get(sym) ?? [];
+  if (strong.length) return { tier: strong[0].kind, positions: strong.map((p) => p.line) };
+  if (first.size === 0) return { tier: "抽不到任何声明", positions: [] };
+  if (SYMBOL_VALUE_MEMBERSHIP.has(rel)) {
+    valueLiterals(rel);                               // 副作用：填好 rec.literalLines
+    const lines = rec.literalLines?.get(sym) ?? [];
+    if (lines.length) return { tier: "具名字面量成员", positions: lines };
+  }
+  return { tier: "none", positions: [] };
+}
+
+/** 逐处判据：带区间的符号锚点 ⇒ 区间必须与真值位相交。不带区间返 null（不适用）。 */
+function symbolAnchorSpanVerdict(o) {
+  if (!o.span) return null;
+  if (!fileRecord(o.file)) return { skip: true };    // 文件不存在：由 `symbols` 的「锚点是死的」那条点名
+  const t = symbolTruthPositions(o.sym, o.file);
+  if (!t.positions.length) return { noTruth: true, tier: t.tier };
+  const hit = t.positions.filter((p) => p >= o.span.lo && p <= o.span.hi);
+  if (hit.length) return { ok: true, tier: t.tier, hit };
+  return { ok: false, tier: t.tier, truth: t.positions.slice(0, 6), total: t.positions.length };
+}
+
+/** #286 T-b1a R1 的逐处反向证靶子：把「符号 = `sym`」那一处锚点的**区间后缀**换成 `to`（`:N` / `:N-M` 整段）。
+ *  与 `mutateSymbolAnchor` 同款纪律：打不上就原样返回，`runSelfTest` 的「变异没落上」会报红。 */
+function mutateSymbolAnchorSpan(sym, filePath, to) {
+  return (text) => {
+    let hits = 0;
+    // 捕获组的边界要数清楚：`sep` 这一组**已经含**路径前的那个反引号，闭合反引号是模式里的字面量（没进组）。
+    // 早先重写时多补了一个反引号，变异结果成了 `path:94-100` 前面两个反引号 ⇒ 锚点整条解体（符号下限掉一组），
+    // 于是这一例报的是「别的红」而不是本判据的红——#279 说的「变异器自己坏掉」就是这个形状。
+    const out = text.replace(/`([A-Za-z_$][\w$]*)`(\s*[（(]\s*`)([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(:\d+(?:-\d+)?)?`(\s*[)）])/g,
+      (whole, s, sep, p, span, tail) => {
+        if (s !== sym || p !== filePath || !span) return whole;
+        hits += 1;
+        return "`" + s + "`" + sep + p + to + "`" + tail;
+      });
+    return hits ? out : text;      // 一处都没打上 → 原样返回 → 「变异没落上」报红
+  };
+}
+
+function collectSymbolAnchorSpanErrors(occurrences) {
+  const out = [];
+  const notes = [];
+  const all = occurrences ?? symbolAnchorOccurrences(refScanDocs());
+  const withSpan = all.filter((o) => o.span);
+  const grouped = new Map();     // 同一条「符号 + 区间」在多处出现归并成一条红（与 symbol-anchor 同口径）
+  let intersect = 0;
+  let disjoint = 0;
+  let noTruth = 0;
+  for (const o of withSpan) {
+    const v = symbolAnchorSpanVerdict(o);
+    if (v?.skip) continue;
+    if (v?.noTruth) { noTruth += 1; continue; }    // 同处已被 `symbols` 报红，不重复报
+    const key = `${o.sym}|${o.file}|${o.span.from}-${o.span.to ?? ""}`;
+    if (!grouped.has(key)) grouped.set(key, { sym: o.sym, file: o.file, span: o.span, v, sites: [] });
+    grouped.get(key).sites.push(`${o.doc}:${o.line}`);
+    if (v.ok) intersect += 1;
+    else disjoint += 1;
+  }
+  for (const g of grouped.values()) {
+    if (g.v.ok) continue;
+    out.push(`symbol-anchor-span: ${g.sites.join(", ")} 引用 \`${g.sym}\`（\`${g.file}:${g.span.from}${g.span.to != null ? `-${g.span.to}` : ""}\`），`
+      + `但自带区间 [${g.span.lo}, ${g.span.hi}] 与 \`${g.sym}\` 在 ${g.file} 里的**声明处不相交**——真值位在 `
+      + `${g.v.truth.join(" / ")}${g.v.total > g.v.truth.length ? ` 等 ${g.v.total} 处` : ""}（真值形态 ${g.v.tier}）。`
+      + "\`#286\` 的裸行号漂移就是这形状：符号对、区间错，而 `paths` 会把行号剥掉只看文件在不在 ⇒ 全绿。"
+      + `修法二选一：① 删掉区间只留 \`${g.sym}\`（\`${g.file}\`）——首选，行号会漂而符号判据不需要它；② 把区间改成真的覆盖声明行`);
+  }
+  notes.push(`symbol-anchor-span: 覆盖面 ${all.length} 处符号锚点里自带区间 ${withSpan.length} 处：相交 ${intersect} 处 / 不相交 ${disjoint} 处`
+    + `（另 ${noTruth} 处抽不到真值位，同处已由 symbol-anchor 报红）；不带区间的 ${all.length - withSpan.length} 处本判据不适用`);
+  collectSymbolAnchorSpanErrors.notes = notes;
+  return out;
+}
+
 /** 符号锚点的**只增不减下限**（#286 T-a 返工 R1）。为什么必须有它：裸行号棘轮的唯一键是
  *  (文档, 目标文件, 行区间)，**不含文档行号**——于是把
  *  \`emitEvent\`（\`src/loop/orchestrator.js:1517-1531\`） 改写成不带括号、不带链接的裸
@@ -1803,6 +1930,8 @@ function collectSymbolAnchorErrors() {
   const notes = [];
   const docs = refScanDocs();
   const occurrences = symbolAnchorOccurrences(docs);
+  out.push(...collectSymbolAnchorSpanErrors(occurrences));   // 2.8.1b：自带区间的相交校（#286 T-b1a R1）
+  notes.push(...collectSymbolAnchorSpanErrors.notes ?? []);
   const groups = new Map();
   for (const o of occurrences) {
     const key = `${o.sym}|${o.file}`;
@@ -1863,14 +1992,19 @@ function collectSymbolAnchorErrors() {
 // 那时降基线必须写理由（与本仓 `check:types` 的 `BASELINE_ROOT` 同构）。
 /** 裸行号引用（`path:N` / `path:N-M`）的正则；覆盖面与 2.8.1 同一批文档（同一份理由）。
  *  实测值不靠注释：`--verbose` 会把「唯一区间数 / 出现次数 / 豁免数」打进 note（工单口径的三个数是
- *  248 / 279 / 基线 244，note 里应该逐字对得上）。非 `src/` 前缀（`bin/cli.js:88`、`test/x.js:9`）
+ *  现在的数在 note 里，基线常量的注释里写了它是怎么从 248 降到 232 的。非 `src/` 前缀（`bin/cli.js:88`、`test/x.js:9`）
  *  同样会漂，但本批把覆盖面钉在工单那条正则上，扩前缀归 T-b（扩时要重新登记基线）。
  *  唯一 (文档, 目标文件, 行区间) 与工单口径可复现：脚本自己数出来的数在下面那条 note 里，别只信注释。 */
 const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
-/** 棘轮基线（工单 #286 T-a 口径）：唯一 (文档, 目标文件, 行区间) 实测 248，减去 4 处声明式豁免 ⇒ **244**。
+/** 棘轮基线：唯一 (文档, 目标文件, 行区间) 实测 236，减去 4 处声明式豁免 ⇒ **232**。
  *  降它必须写理由；抬它必须写「为什么这次允许变差」。**不许悄悄抬**（同 `check:types` 棘轮的纪律）。
+ *  降基线的理由（#286 T-b1a，244 → **232**，降 12）：契约 EN/CN 的 `src/loop/orchestrator.js` 锚点族按新判据
+ *  「区间必须与声明处相交」逐条改绿——4 处**删掉区间**（`emitEvent` 1517-1531、`emitJudge` 1544-1557、
+ *  `shouldContinue` 2739-2740、`dispatchAttemptEvent` provider-runner 96-110；中英各一份 ⇒ 8 个唯一键），
+ *  另有 2 个唯一键是**三条不同写法指向同一段真身**（2739-2745 / 2742-2745 / 2743-2745 全部是
+ *  `completionSignalDetected` 的声明处 3121-3125）合并成一条 ⇒ 每份文档再降 2 处。
  *  写法必须保持 `const BARE_LINE_REF_BASELINE = <数字>;` 一行（自测的「调低就红」用例要能改这个数）。 */
-const BARE_LINE_REF_BASELINE = 244;
+const BARE_LINE_REF_BASELINE = 232;
 
 /** 棘轮生效值：从**本脚本自己的文本**里读 `BARE_LINE_REF_BASELINE`（走 `textOf`，所以 `--self-test`
  *  能把这个常量临时改小来证「它真的是锁」：调低到低于实测值必须红，改回来必须绿）。
@@ -2867,6 +3001,12 @@ for (const n of collectAnchorErrors.notes ?? []) note(n);
 // ── 8. 反向证自测（issue #210 R2：把反向证固化在脚本里，不靠一次性手工实验）──────
 // 每条规则至少两例：改文档一处 → 必须红；改源码/清单一侧 → 必须红；都不改（对照）→ 必须绿。
 // 变异没落上去也算失败——否则规则改了而变异体过期，自测会默默变成空跑。
+/** 「实测 **N** 处，超过棘轮基线 **M** 处」的正则（#286 棘轮反向证用）。写成函数而不是手写转义：
+ *  这句话里半角/全角括号混排，手写转义配错一次就是一个 SyntaxError（本单真踩过）。 */
+const ratchetOverBaseline = (measured, baseline) => new RegExp(
+  `bare-lines: 裸行号引用（唯一 \\(文档,目标文件,行区间\\)）实测 \\*\\*${measured}\\*\\* 处，超过棘轮基线 \\*\\*${baseline}\\*\\*`,
+);
+
 const SELF_TEST = process.argv.includes("--self-test");
 
 /** #279：在文档**第一处 `## ` 标题之前**插一句散文（= 「在文档靠前位置提一句某个名字」）。 */
@@ -3435,17 +3575,21 @@ const SELF_TEST_CASES = [
   {
     label: "#286 棘轮：在 AGENTS EN 临时多写一处**合法**裸行号 `src/loop/termination.js:12` → 红（新增就红，越界都没有）",
     overlay: { [AGENTS_EN]: mentionInProse("自测探针（#286）：这里临时多写一处合法裸行号引用 `src/loop/termination.js:12`。") },
-    expect: [/bare-lines: 裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/, /AGENTS\.md 1/],
+    expect: [ratchetOverBaseline(BARE_LINE_REF_BASELINE + 1, BARE_LINE_REF_BASELINE), /AGENTS\.md 1/],
     expectFiles: [AGENTS_EN],
   },
   {
-    label: "#286 棘轮下限：把 BARE_LINE_REF_BASELINE 调到 243 → 必须红（证明这个数真是锁，不是装饰）",
-    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const BARE_LINE_REF_BASELINE = 244;", "const BARE_LINE_REF_BASELINE = 243;") },
-    expect: [/实测 \*\*244\*\* 处，超过棘轮基线 \*\*243\*\*/, /把基线改成 244/],
+    label: `#286 棘轮下限：把 BARE_LINE_REF_BASELINE 调到 ${BARE_LINE_REF_BASELINE - 1} → 必须红（证明这个数真是锁，不是装饰）`,
+    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace(
+      `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE};`,
+      `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE - 1};`) },
+    expect: [/实测 \*\*232\*\* 处，超过棘轮基线 \*\*231\*\*/, /把基线改成 232/],
   },
   {
-    label: "#286 棘轮下限的反向证：常量调回 244（只加一句尾注释、数值不变）→ 必须 0 错",
-    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const BARE_LINE_REF_BASELINE = 244;", "const BARE_LINE_REF_BASELINE = 244;   // self-test 复原探针") },
+    label: `#286 棘轮下限的反向证：常量调回 ${BARE_LINE_REF_BASELINE}（只加一句尾注释、数值不变）→ 必须 0 错`,
+    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace(
+      `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE};`,
+      `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE};   // self-test 复原探针`) },
     expectGreen: true,
   },
   {
@@ -3457,19 +3601,50 @@ const SELF_TEST_CASES = [
   {
     label: "#286 豁免双条件（就地声明那一侧）：去掉 v030 EN 的外仓根 apps/worker/ → 既不再放行（245）又留下空转条目",
     overlay: { "docs/host-upgrade-guide-v030.md": (t) => t.replace("apps/worker/src/pi/runner.js:50", "src/pi/runner.js:50") },
-    expect: [/实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/,
+    expect: [ratchetOverBaseline(BARE_LINE_REF_BASELINE + 1, BARE_LINE_REF_BASELINE),
       /豁免条目 `src\/pi\/runner\.js`（docs\/host-upgrade-guide-v030\.md）没有一处引用真正用到它/],
   },
   {
     label: "#286 豁免双条件（条目那一侧）：CN 契约的示例路径改成没登记的 src/a/c.js:12 → 没有条目就不放行",
     overlay: { [CONTRACT_CN]: (t) => t.replace("paths: src/a/b.js:12", "paths: src/a/c.js:12") },
-    expect: [/实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/,
+    expect: [ratchetOverBaseline(BARE_LINE_REF_BASELINE + 1, BARE_LINE_REF_BASELINE),
       /豁免条目 `src\/a\/b\.js`（docs\/host-consumer-contract_cn\.md）没有一处引用真正用到它/],
   },
   {
     label: "#286 变异器空转证：靶子（不存在的符号名）打不上时，runSelfTest 必须判这一例「变异没落上」而不是假绿",
     overlay: { [CONTRACT_EN]: mutateSymbolAnchor("zzProbeNoSuchSymbol", "src/loop/orchestrator.js", "anything") },
     expectMutateMiss: true,
+  },
+
+  // —— #286 T-b1a R1：符号锚点**自带区间**必须与声明处相交（2.8.1b）。逐处反向证四条：
+  //    改窄区间 → 红、区间整段挪走 → 红、删掉区间 → 绿（本判据对不带区间的锚点不适用）、
+  //    弱档（具名字面量）也真的按「该字面量的出现行」判 → 改窄到不含出现行就红。
+  //  四条都用 `mutateSymbolAnchorSpan`（与主检查同一套提取逻辑，#279 口径：打靶由提取逻辑定）。
+  {
+    label: "#286 T-b1a 区间相交：把 `terminationReasonForAction`（termination.js:93-100）改窄成 94-100 ⇒ 声明在 93，红",
+    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("terminationReasonForAction", "src/loop/termination.js", ":94-100") },
+    expect: [/symbol-anchor-span: .*引用 `terminationReasonForAction`（`src\/loop\/termination\.js:94-100`）/,
+      /声明处不相交/, /真值位在 93/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#286 T-b1a 区间相交：把 `defaultSleep`（abort.js:16）整段挪到 :30（不越界、符号也在）⇒ 只有相交这条红",
+    overlay: { [CONTRACT_CN]: mutateSymbolAnchorSpan("defaultSleep", "src/loop/abort.js", ":30") },
+    expect: [/symbol-anchor-span: docs\/host-consumer-contract_cn\.md:\d+ 引用 `defaultSleep`（`src\/loop\/abort\.js:30`）/,
+      /真值位在 16/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#286 T-b1a 区间相交的放行证：删掉 `no_final_guard` 的区间（只留符号 + 文件）⇒ 本判据不适用，必须 0 错",
+    overlay: { [CONTRACT_CN]: mutateSymbolAnchorSpan("no_final_guard", "src/loop/orchestrator.js", "") },
+    expectGreen: true,
+  },
+  {
+    label: "#286 T-b1a 弱档真值位：把 `judge_done`（orchestrator.js:3318-3326）改窄到 3318-3323 ⇒ 字面量在 3324，红（弱档也真按出现行判）",
+    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("judge_done", "src/loop/orchestrator.js", ":3318-3323") },
+    expect: [/symbol-anchor-span: .*引用 `judge_done`（`src\/loop\/orchestrator\.js:3318-3323`）/,
+      /真值形态 具名字面量成员/],
+    expectFiles: [CONTRACT_EN],
   },
 
   // —— 返工 R1（评审阻断项）：符号锚点的**只增不减下限**。病根：裸行号棘轮的唯一键不含文档行号，
@@ -3539,7 +3714,7 @@ const SELF_TEST_CASES = [
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 90;   // #286 T-a 返工 R1-R4 之后共 92 例（下限留 2 例余量给并行分支，见上：别按当天条数写死）
+const MIN_SELF_TEST_CASES = 94;   // #286 T-b1a R1 之后共 96 例（下限留 2 例余量给并行分支，见上：别按当天条数写死）
 
 function runSelfTest() {
   const run = () => collectAllDrift();
