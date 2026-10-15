@@ -1,0 +1,93 @@
+# issue #187：最小 CI —— node 22/24 矩阵 + 全量语法检查 + 本地门禁全套。
+# 口径来自工单 docs/tasks/261016-min-ci.md（issue #187 那份提案写于「零依赖 + 1154 用例」的年代，已过期）：
+#   - 仓库**故意没有 lockfile**（`package-lock.json` 被 .gitignore），所以是 `npm install --include=dev`，
+#     不是 `npm ci`（后者会直接报 "can only install with an existing package lock"）。
+#   - devDependencies 确实存在（`typescript` + `@types/node`，issue #213 授权，只为产 `.d.ts`）：
+#     `check:types` / `check:types-build` / `check:pack-links` / `check:release` 缺 `tsc` 会 exit 1，
+#     所以「零依赖不需要装」这一条不能再照抄。
+#   - `npm run soak` 需要真实 relay 配置与 key ⇒ **不进 CI**。
+#   - 不加缓存、不加 Windows/macOS（首版求简单；后者的前置 #185/#186 未做）。
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # 手工重跑入口（也是本单验收 C2 的验证通道）
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "${{ matrix.node }}"
+
+      # 没有 lockfile ⇒ npm install（不是 npm ci）。依赖只有 2 个 dev 包，故不配缓存。
+      - name: Install dev dependencies (no lockfile in this repo by design)
+        run: npm install --include=dev
+
+      # issue #187：全量语法检查（旧的 `npm run check` 只看 src/index.js 一个文件，bin/ 语法错不会红）
+      - name: Syntax check (all tracked .js/.mjs/.cjs)
+        run: npm run check:syntax
+
+      - name: Test suite
+        run: npm test
+
+      - name: Documentation drift check
+        run: npm run check:docs
+
+      # 阻塞（issue #187 原本写 continue-on-error 先观察，今天它已经是绿的 ⇒ 直接当阻塞门禁）
+      - name: Documentation drift check (strict)
+        run: npm run check:docs:strict
+
+      - name: Doc example fences
+        run: npm run check:docs-examples
+
+      - name: Packaged markdown link closure
+        run: npm run check:pack-links
+
+      - name: Test hygiene guard
+        run: npm run check:tests
+
+      # --checkJs 棘轮（issue #214）：基线 119 / --with-tools 162，只减不增。
+      # 干净 checkout 里没有生成的 src/**/*.d.ts；若残留会让棘轮脚本自己硬失败（假绿防线）。
+      - name: Type-error ratchet
+        run: npm run check:types
+
+      - name: Declaration build assertion
+        run: npm run check:types-build
+
+      # 闸门（ERIX_E2E_REAL=1）在 CI 里是关着的 ⇒ 这条 exit 0 并打印分类原因：
+      # 它验的是「装好的 CLI 打真上游」这套自检装置本身没坏，不代表真上游可用。
+      - name: Gated real-upstream CLI smoke (gate closed in CI)
+        run: npm run check:cli-real
+
+      # 离线、自清洁、约 15 s，但矩阵里跑两遍纯浪费 ⇒ 只在 node 22 跑一次
+      - name: Release check (offline pack → install → contract suites → tsc --strict → CLI smoke)
+        if: matrix.node == 22
+        run: npm run check:release
+
+      # continue-on-error 的理由（issue #281）：--self-test 的三条用例期望点名 `docs/tasks/` 下的
+      # 近邻文件，而那个目录被 .gitignore 整目录忽略、任何干净克隆里都不存在 ⇒ 在 CI 这种干净检出里
+      # **预期红 3 条**（`#280 .gitignore`、`#278-P2`、`#278-P3`）。所以它只能观测、不能阻塞。
+      # ⚠ 红集合必须是这 3 条：变多就是新回归，要按回归查，不是「又红了」。
+      - name: docs-drift-check self-test (observational; 3 known false reds on a clean clone, issue #281)
+        continue-on-error: true
+        run: node scripts/docs-drift-check.mjs --self-test
