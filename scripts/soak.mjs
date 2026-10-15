@@ -83,11 +83,23 @@ function parseCli() {
 
 // 模型/端点/凭据全部来自 config 的 slots.<name>；源码里不出现任何模型名。
 function resolveConfigPath() {
+  const home = process.env.HOME ?? os.homedir();
+  // 显式指定的路径**不回落**（指错了就该错，不能静默跑到另一个配置上）。
   const explicit = process.env.ERIX_E2E_CONFIG ?? process.env.ERIX_CONFIG_PATH;
-  if (explicit) return explicit;
-  const xdg = process.env.XDG_CONFIG_HOME
-    || path.join(process.env.HOME ?? os.homedir(), ".config");
-  return path.join(xdg, "erix", "config.json");
+  if (explicit) {
+    if (!existsSync(explicit)) {
+      throw new Error(`ERIX_E2E_CONFIG/ERIX_CONFIG_PATH 指向的文件不存在：${explicit}`);
+    }
+    return explicit;
+  }
+  // 回落链：XDG → erix 的真实家目录（AGENTS §6：~/.erix/config.json）。前一版只试 XDG，
+  // 于是本机（配置在 ~/.erix）跑 `--provider real` 直接报「未找到模型配置」。
+  const xdg = process.env.XDG_CONFIG_HOME || path.join(home, ".config");
+  const candidates = [path.join(xdg, "erix", "config.json"), path.join(home, ".erix", "config.json")];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error(`未找到模型配置文件（依次试过：${candidates.join(" , ")}；可用 ERIX_E2E_CONFIG 指定）`);
 }
 
 function readSlotConfig(slotName) {
