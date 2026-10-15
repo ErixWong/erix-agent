@@ -288,7 +288,7 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 - 永远不要提交 token、API key 或其他凭据。
 
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段（`npm run check:docs` 会校验本文的
-发布行）。当前发布版本：**v0.20.0**。下面引用的 `files` 清单以 `package.json` 为权威：
+发布行）。当前发布版本：**v0.21.0**。下面引用的 `files` 清单以 `package.json` 为权威：
 
 ```json
 [
@@ -313,6 +313,8 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
   "docs/host-upgrade-guide-0.19.0_cn.md",
   "docs/host-upgrade-guide-0.20.0.md",
   "docs/host-upgrade-guide-0.20.0_cn.md",
+  "docs/host-upgrade-guide-0.21.0.md",
+  "docs/host-upgrade-guide-0.21.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -550,11 +552,12 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 ## 状态与版本历史
 
-权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.20.0**（2026-10-15）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
+权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.21.0**（2026-10-16）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)。
 
+- **v0.21.0 (2026-10-16)**：模型 JSON 专场——`parseModelJson`（`src/text/parse-model-json.js`，从包根导出）成为「从模型文本里抠 JSON」的唯一入口：失败三态可分（`no_candidate` / `unparsable` / `shape_mismatch`）、失败结果**不带** `value` 键、**没有任何 repair**、`topOnly` 两档扫描。`parseReflectionDecision` 不再把模型明确写下的布尔值翻向（贪婪花括号正则换成顶层平衡扫描），返回体新增 `via: "json" | "prose_fallback"`（随包声明里是字面量联合）。把 `context.budgetTokens` 配得很小的宿主从此不再收到 `400 No user query found in messages`：发给上游的请求视图始终保留一条真 user 轮（run 就是能跑了；守卫真生效时才多出两个 additive 的 `compactionStats` 键）。本版**没有任何一处会打断调用点**。迁移见 [docs/host-upgrade-guide-0.21.0.md](docs/host-upgrade-guide-0.21.0.md)。
 - **v0.20.0 (2026-10-15)**：工具事实专场——引擎拥有的每一条 `tool_result` 事实从此只落 `erix.*` 命名空间（`toolCallKey` / `round` / `durationMs` / `executionStatus` / `success`），宿主扩展只落 `metadata.*`；顶层摊平别名（`erixRound`、`duration`、`executionStatus`、`success`，以及过去被摊到顶层的任意宿主键）**停写**，升级前落盘的记录保留**一代读兼容**。「停止」从此压过 end-turn judge 与 final guard（终局 `reason` 是 `aborted`，不再是 `judge_done`），且 `termination.partial: true` 只担保终局载荷、对 store 不作断言（issue #283，裁决 = β）。`createFileTools().executeTool()` 的四种成功形态由随包契约套件逐工具钉死，并新增从 `erix-agent/tools` 导出的判别式 `classifyFileToolResult`。迁移见 [docs/host-upgrade-guide-0.20.0.md](docs/host-upgrade-guide-0.20.0.md)。
-- **v0.19.0 (2026-10-13)**：随包类型面专场——npm 包从此携带包根与 `erix-agent/tools` 的 `.d.ts` 声明（`package.json` 新增顶层 `types`，这两个 `exports` 各加 `types` 条件；声明由 `prepack` 钩子生成、不入库，干净检出里一个都没有、tarball 里有；`exports["./contract-tests"]` 刻意不带 `types`）；`classifyHttpError` 补上 400/422 → `invalid_request`、404 → `not_found`、409 → `conflict`，不再落 `unknown`（既有映射、`retryable` 取值与重试行为逐字未动——按 `code === "unknown"` 分支的宿主需把新 code 列进「改请求而不是重试」的分支）；CLI 的 `chat --session <id>` 在该 id 没有非空 transcript 时报错退出（此前是静默新开会话），会话索引状态文件退役，`-c`/`-r` 改为现扫现算。内部：`runToolLoop` 内的两项**限定范围**重构——选项规范化整块逐字外提到 `src/loop/option-normalization.js`、循环闭包 `let` 折成单个 `runLoopState` 对象字面量；已对 v0.18.0 逐行对账，**残留 0 行、无可观察行为变化**（新增的 `src/loop/state-view.js` 目前没有任何文件 import，它**不是**上面那个统一状态对象；同窗口的 `#213` JSDoc 大重组不在本条声称范围内），仓库新增仅 dev 的 `--checkJs` 棘轮门禁 `npm run check:types`。2026-10-13 并入同一版的改动**全是 additive（宿主不必改代码）**：`src/index.js` 新增导出 `createMemoryNotesStore`；pi extension `erix_run` 交回**完整**终稿正文（宿主层截断已删）、异步 `action: "result"` 从此真能取到 `finalText`、其 `outputSchema` 补声明 `verification` 与 `error`（引擎自己的验证结论首次能到宿主手上）、文件读取工具描述带上实测额度事实。`erix_run` 与本包**同一版本号**，且**不进 tarball**。全量清单见 CHANGELOG。
+- **v0.19.0 (2026-10-13)**：随包类型面专场——npm 包从此携带包根与 `erix-agent/tools` 的 `.d.ts` 声明（`package.json` 新增顶层 `types`，这两个 `exports` 各加 `types` 条件；声明由 `prepack` 钩子生成、不入库，干净检出里一个都没有、tarball 里有；`exports["./contract-tests"]` 刻意不带 `types`）；`classifyHttpError` 补上 400/422 → `invalid_request`、404 → `not_found`、409 → `conflict`，不再落 `unknown`（既有映射、`retryable` 取值与重试行为逐字未动——按 `code === "unknown"` 分支的宿主需把新 code 列进「改请求而不是重试」的分支）；CLI 的 `chat --session <id>` 在该 id 没有非空 transcript 时报错退出（此前是静默新开会话），会话索引状态文件退役，`-c`/`-r` 改为现扫现算。内部：`runToolLoop` 内的两项**限定范围**重构——选项规范化整块逐字外提到 `src/loop/option-normalization.js`、循环闭包 `let` 折成单个 `runLoopState` 对象字面量；已对 v0.18.0 逐行对账，**残留 0 行、无可观察行为变化**（新增的 `src/loop/state-view.js` 目前没有任何文件 import，它**不是**上面那个统一状态对象；同窗口的 `#213` JSDoc 大重组不在本条声称范围内），仓库新增仅 dev 的 `--checkJs` 棘轮门禁 `npm run check:types`。2026-10-13 并入同一版的改动**是 additive（不必改调用点），但其中两处宿主可观测**（`readFile` 续读 marker 新增了文件大小、`runToolLoop` 返回值的 typedef 由单行改成多行块——见该指南第 6 节与 issue #293）：`src/index.js` 新增导出 `createMemoryNotesStore`；pi extension `erix_run` 交回**完整**终稿正文（宿主层截断已删）、异步 `action: "result"` 从此真能取到 `finalText`、其 `outputSchema` 补声明 `verification` 与 `error`（引擎自己的验证结论首次能到宿主手上）、文件读取工具描述带上实测额度事实。`erix_run` 与本包**同一版本号**，且**不进 tarball**。全量清单见 CHANGELOG。
 - **v0.18.0 (2026-10-09)**：宿主集成面专场——观察者回调从此杀不掉 run（九通道一律经 `onObserverError` 记账后继续，终止 run 走 `signal.abort()`，抛出的错误携带 `usage`/`rounds`/`finalText`）；failed 终局携带 `termination.errorCode`；`context.strategy` 可按名选内置策略（`"fold-llm"` 开箱自带主力 provider summarizer，每次压缩多一次调用、usage 计入总账）；新增一次性 `model_metadata_missing` 与终局 `run_outcome` 事件，judge 记录增补 `model` 归因；provider 新增 `defaultHeaders`/`extraBody` 注入口；token 估算热路径优化（逐字节同值，每轮估算 CPU 约 −88%）。0.17 宿主无必改的 API 适配，但三种宿主习惯各需要查一次——judge 的 `writeToolNames`（显式传是整体替换，`edit` 不会被并入）、被钉死的文件工具名清单（现为七项）、以及对 `rg`/`grep` 输出的逐字匹配（每次调用尾部多一行弃用提示）：见 [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md)，全量清单见 CHANGELOG。
 - **v0.17.0 (2026-10-08)**：`appendUserTurn` 新增成对可选快路径探针 `loadByDedupKey`/`loadMaxRound`（DB 宿主预写 user 轮不再每轮全量读），契约文档的 js 围栏改为可执行测试（`npm run check:docs-examples`）。
 - **v0.15.0–v0.16.0 (2026-10-07/08)**：「transcript 即真相」的宿主侧接口——读侧 `projectTranscriptForDisplay`、写侧 `appendUserTurn`（多轮续跑契约）、投影稳定 `key`，以及 store 保真义务（保留完整 `RoundRecord`、同轮记录按追加顺序 `load()`）。

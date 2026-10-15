@@ -352,6 +352,8 @@ quoted blocks below against it):
   "docs/host-upgrade-guide-0.19.0_cn.md",
   "docs/host-upgrade-guide-0.20.0.md",
   "docs/host-upgrade-guide-0.20.0_cn.md",
+  "docs/host-upgrade-guide-0.21.0.md",
+  "docs/host-upgrade-guide-0.21.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -942,12 +944,21 @@ library-level controls
 
 The authoritative version is the `version` field of
 [`package.json`](package.json), and `npm run check:docs` verifies the release
-line below against it. Current release: **v0.20.0** (2026-10-15). The complete,
+line below against it. Current release: **v0.21.0** (2026-10-16). The complete,
 authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
 only the releases that changed how a host consumes the runtime. The 0.6.0
 migration steps remain in
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
+- **v0.21.0 (2026-10-16)**: the model-JSON release — `parseModelJson` (from `src/text/parse-model-json.js`, exported
+  at the package root) becomes the one way to dig a JSON object out of model text: a three-way failure verdict
+  (`no_candidate` / `unparsable` / `shape_mismatch`), **no** `value` key on a miss, no repair of any kind, and two
+  scan profiles behind `topOnly`. `parseReflectionDecision` no longer inverts the booleans the model wrote (its
+  greedy brace regex is now a top-level balanced scan) and its result gained `via: "json" | "prose_fallback"`, a
+  literal union in the shipped declarations. Hosts that set a tiny `context.budgetTokens` stop getting
+  `400 No user query found in messages`: the request view now always keeps a real user turn (the run simply runs;
+  two additive `compactionStats` keys appear only when the guard fires). Nothing here breaks a call site.
+  Migration: [docs/host-upgrade-guide-0.21.0.md](docs/host-upgrade-guide-0.21.0.md).
 - **v0.20.0 (2026-10-15)**: the tool-fact release — every engine-owned tool-result fact now lives in
   the `erix.*` namespace (`toolCallKey` / `round` / `durationMs` / `executionStatus` / `success`) and host
   extensions only in `metadata.*`; the flattened top-level aliases (`erixRound`, `duration`, `executionStatus`,
@@ -978,7 +989,10 @@ migration steps remain in
   the `#213` JSDoc restructuring that shipped in the same window is outside this claim);
   a dev-only `--checkJs` ratchet gate
   `npm run check:types` is part of the repo checks. Folded into this same release on
-  2026-10-13 (additive only — a host needs no code change): `src/index.js` now exports
+  2026-10-13 (additive — no call-site change, though two of them are host-observable strings
+  and comments: the `readFile` continuation marker gained the file size, and `runToolLoop`'s
+  return typedef moved from one line to a multi-line block — see that guide's section 6,
+  issue #293): `src/index.js` now exports
   `createMemoryNotesStore`; the pi extension `erix_run` returns the complete final text
   (the host-side truncation layer is gone), its async `action: "result"` can actually
   retrieve `finalText`, its `outputSchema` now declares `verification` and `error` so the
