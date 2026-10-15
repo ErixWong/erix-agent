@@ -2295,3 +2295,117 @@ test("readonly pass-through also applies to uncertain direction", async () => {
     raw: JSON.stringify(decision),
   }]);
 });
+
+// --- issue #307 C2：judge 迁移到 parseModelJson(topOnly:false) 的行为对拍 ---
+
+/**
+ * 迁移前（main 9021d74）的 judge 解析实现，**逐字搬进测试**当对拍参照物：
+ * 每个 `{` 各起一次扫描（every-start），本地校验，返回第一个通过的候选或 null。
+ * 只要 parseJudgeDecision 的语义被动过一个字符，本表就会红。
+ */
+function legacyParseJudgeDecision(text) {
+  const value = String(text ?? "");
+  const candidates = [];
+  for (let start = 0; start < value.length; start += 1) {
+    if (value[start] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < value.length; index += 1) {
+      const character = value[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === "\"") inString = false;
+        continue;
+      }
+      if (character === "\"") inString = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          candidates.push(value.slice(start, index + 1));
+          break;
+        }
+      }
+    }
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      if (typeof parsed.done !== "boolean") continue;
+      if (!Number.isFinite(parsed.confidence) || parsed.confidence < 0 || parsed.confidence > 1) continue;
+      if (parsed.reason !== undefined && typeof parsed.reason !== "string") continue;
+      if (parsed.evidence !== undefined && typeof parsed.evidence !== "string") continue;
+      if (parsed.extend !== undefined && typeof parsed.extend !== "boolean") continue;
+      if (parsed.extendReason !== undefined && typeof parsed.extendReason !== "string") continue;
+      if (parsed.plan !== undefined && typeof parsed.plan !== "string") continue;
+      const decision = {
+        done: parsed.done,
+        confidence: parsed.confidence,
+        reason: String(parsed.reason ?? ""),
+        evidence: String(parsed.evidence ?? ""),
+        direction: parsed.direction === "on_track"
+          || parsed.direction === "uncertain"
+          || parsed.direction === "off_track"
+          ? parsed.direction
+          : undefined,
+        directionReason: typeof parsed.directionReason === "string" ? parsed.directionReason : "",
+      };
+      if (parsed.extend !== undefined) decision.extend = parsed.extend;
+      if (parsed.extendReason !== undefined) decision.extendReason = parsed.extendReason;
+      if (parsed.plan !== undefined) decision.plan = parsed.plan;
+      return decision;
+    } catch {
+      // 试下一个候选
+    }
+  }
+  return null;
+}
+
+test("parseJudgeDecision: 外层未闭合 + 内层闭合 ⇒ 仍把内层残片当决策返回（#307 C2 哨兵）", () => {
+  // 这条钉的是 every-start **现状语义**（issue #309 才改）：外层 `{"outer":` 没闭合时，
+  // 顶层扫描不产候选，every-start 却会把内层 `{"done":true,...}` 当第一个合法候选返回。
+  // 若有人把 judge 换成 topOnly:true / 公共件的默认扫描，本条立刻红（会变成 null）。
+  assert.deepEqual(
+    parseJudgeDecision('{"outer":{"done":true,"confidence":0.5,"reason":"内层残片"}'),
+    {
+      done: true,
+      confidence: 0.5,
+      reason: "内层残片",
+      evidence: "",
+      direction: undefined,
+      directionReason: "",
+    },
+  );
+});
+
+test("parseJudgeDecision 与迁移前实现逐字对拍：同一语料同输入同输出（#307 C2）", () => {
+  const corpus = [
+    "",
+    "不是 JSON",
+    "```json\n{\"done\":true,\"confidence\":0.9,\"reason\":\"完成\",\"evidence\":\"测试通过\"}\n```",
+    "评审结果：{\"done\":false,\"confidence\":0.2,\"direction\":\"off_track\",\"directionReason\":\"反复调试\"}",
+    "{\"done\":\"true\",\"confidence\":1}",
+    "{\"done\":false,\"confidence\":0.5,\"extend\":\"true\"}",
+    "{\"done\":true,\"confidence\":1.5}",
+    "{\"done\":true,\"confidence\":0.8,\"direction\":\"sideways\",\"directionReason\":42}",
+    "{\"outer\":{\"done\":true,\"confidence\":0.5,\"reason\":\"内层残片\"}",
+    "{\"a\":{\"done\":true,\"confidence\":0.4}}{\"done\":false,\"confidence\":0}",
+    "前文 { 未闭合 后面 {\"done\":true,\"confidence\":1}",
+    "文本里 {\"x\":{\"y\":{\"done\":true,\"confidence\":1}} 多层未闭合",
+    "{\"nested\":{\"x\":\"{y}\"},\"done\":true,\"confidence\":0.3}",
+    "{\"done\":true,\"confidence\":0.3} 尾话 {plan}",
+    "{\"done\":true,\"confidence\":0.5,\"reason\":\"值里有 \\\" 与 } 两个字符\"}",
+    "{\"a\":,}",
+    "{\"a\":,}{\"done\":true,\"confidence\":0}",
+  ];
+  for (const input of corpus) {
+    assert.deepEqual(
+      parseJudgeDecision(input),
+      legacyParseJudgeDecision(input),
+      `对拍不一致：${JSON.stringify(input)}`,
+    );
+  }
+});
