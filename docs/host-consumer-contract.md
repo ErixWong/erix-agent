@@ -1035,9 +1035,14 @@ channel (see "Judge record correlation and run outcome (issue #165)"), so a host
 
 ### Where the facts live after an abort (issue #283)
 
-An aborted run leaves **no transcript record of the round that was in flight**: the
-engine commits a round only when `appendRound` succeeds, and a round interrupted before
-that commit is not retroactively written. This is a deliberate decision (issue #283,
+An aborted run leaves **no transcript record that the engine wrote for the round that was
+in flight**: the engine commits a round only when `appendRound` succeeds, and a round
+interrupted before that commit is not retroactively written. One exception, stated so it is
+not mistaken for a guarantee: `persist()` checks the signal **before** it calls the store
+(`src/loop/orchestrator.js`, the retry loop opens with `throwIfAborted(signal)`), so an
+`appendRound` that was already in flight when the abort landed can still commit. Treat the
+in-flight round as having no record, and never as a count you can reconcile against.
+This is a deliberate decision (issue #283,
 option β), not an oversight — an interrupted round has no stable round key, its tool_use
 blocks may have no `tool_result` pair (which would make the transcript unreplayable for
 the resume contract), and writing a half round would silently change what `rounds` counts.
@@ -1051,16 +1056,18 @@ holds each fact:
 | Fact the host wants to show after an abort | Channel that holds it | Guaranteed? |
 |---|---|---|
 | Rounds the run had already finished | `RoundRecord` entries in the transcript store (written by `appendRound`) | yes — abort never rewrites or deletes committed rounds |
-| Text/thinking already streamed in the interrupted round | run-snapshot channel, i.e. `partialPersistence:{intervalMs}` with `stream:true` | only if the host enabled it, and at most `intervalMs` stale; without it the in-flight round is **absent** |
-| The partial final text itself | `error.finalText` (and `termination.partial`), issue #180 | yes — `""` when nothing had been produced |
+| Text already streamed in the interrupted round — **reasoning / thinking deltas never enter this channel** | run-snapshot channel, i.e. `partialPersistence:{intervalMs}` with `stream:true` | **best effort, may be missing entirely.** Only the *latest committed* partial **text** is there: a commit needs a delta of `minBytes` and the interval timer to fire, the timer is cleared when the attempt ends without flushing what is still buffered, and an abort does not force a flush. When it does exist it is at most `intervalMs` stale. Without the option the in-flight round has no snapshot at all (see the in-flight `appendRound` caveat above for the one exception) |
+| The partial final text itself | `error.finalText` (and `termination.partial`), issue #180 | yes — `""` when nothing had been produced; **this is the only guaranteed partial-text channel** |
 | What the stopped run actually cost | `error.usage` / `termination.usage`, `error.rounds` / `termination.rounds` | yes — same objects the normal return would have carried |
 | The last judge verdict before the stop | judge-record channel (`onJudge` callback / `judge.log`), issue #165 | present when the judge actually ran; absent when the abort skipped it (see the table above) |
-| The interrupted round as a transcript record | **nowhere** | no — the engine deliberately does not write an `interrupted` round (β) |
+| The interrupted round as a transcript record | **nowhere the host can rely on** | no — the engine deliberately does not write an `interrupted` round (β); only an `appendRound` that happened to be in flight can land, and it is not a channel you can plan around |
 
 Two consequences for hosts, both pinned by this section: a host that wants the partial
-text on screen must turn on `partialPersistence` or read `error.finalText`; and a host
-must not treat "`partial: true` but zero `RoundRecord` for that round" as a persistence
-bug — that is the documented shape of an abort without partial persistence.
+text on screen must read `error.finalText` — that is the guaranteed channel — while
+`partialPersistence` buys a best-effort snapshot of the *committed* partial text only (no
+reasoning, possibly nothing at all, up to `intervalMs` stale); and a host must not treat
+"`partial: true` but zero `RoundRecord` for that round" as a persistence bug — that is the
+documented shape of an abort without partial persistence.
 
 ## Judge record correlation and run outcome (issue #165)
 

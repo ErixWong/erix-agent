@@ -848,8 +848,12 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
 
 ### 中止后事实的真相分布（issue #283）
 
-被中止的 run **不会为正在进行的那一轮留下任何 transcript 记录**：引擎只在 `appendRound`
-成功时提交轮次，而在此之前被中断的轮次不会被追溯补写。这是明意的裁决（issue #283，
+被中止的 run **不会为正在进行的那一轮留下任何由引擎写下的 transcript 记录**：引擎只在 `appendRound`
+成功时提交轮次，而在此之前被中断的轮次不会被追溯补写。一个例外在这里说清、以免被当成保证：
+`persist()` 是在**调用 store 之前**查信号的（`src/loop/orchestrator.js`，重试循环以
+`throwIfAborted(signal)` 开头），所以中止落下时**已经在途**的那次 `appendRound` 仍可能落地。
+把进行中那一轮当作“没有记录”来读，也不要拿它当一个能对账的计数。
+这是明意的裁决（issue #283，
 取 β），不是 oversight——中止轮没有稳定的轮键，它的 tool_use 块可能没有配对的 `tool_result`
 （那会让 transcript 在续跑契约上不可重放），而且补写半轮会惘然改变 `rounds` 的计数口径。
 
@@ -861,15 +865,16 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
 | 中止后宿主想展示的事实 | 持有它的渠道 | 是否保证 |
 |---|---|---|
 | run 已经跑完的轮次 | transcript store 里的 `RoundRecord`（`appendRound` 写入） | 保证——中止从不改写或删除已提交轮 |
-| 中止轮里已经流出过的 text/thinking | run-snapshot 渠道，即 `partialPersistence:{intervalMs}` 配合 `stream:true` | 只在宿主开了它时成立，且最多陈旧 `intervalMs`；不开则进行中轮**根本不存在** |
-| 部分终稿文本本身 | `error.finalText`（以及 `termination.partial`），issue #180 | 保证——无产出时为 `""` |
+| 中止轮里已经流出过的文本——**reasoning / thinking 增量从来不进这个渠道** | run-snapshot 渠道，即 `partialPersistence:{intervalMs}` 配合 `stream:true` | **尽力而为，可能根本什么都没有。**里面只有*已提交的*那一份部分**文本**：一次提交需要一个 `minBytes` 的增量并且间隔定时器真的触发，而 attempt 结束时定时器会被清掉、缓冲区里剩下的东西不赶出去，中止也不强制 flush。存在时最多陈旧 `intervalMs`。不开则进行中轮根本快照都没有（唯一例外就是上面的在途 `appendRound`） |
+| 部分终稿文本本身 | `error.finalText`（以及 `termination.partial`），issue #180 | 保证——无产出时为 `""`；**这是唯一有保证的部分文本渠道** |
 | 被停掉的 run 到底花了多少 | `error.usage` / `termination.usage`、`error.rounds` / `termination.rounds` | 保证——与正常返回本会携带的是同一个对象 |
 | 中止前最后一次 judge 裁决 | judge 记录渠道（`onJudge` 回调 / `judge.log`），issue #165 | judge 真跑过就有；被中止跳过时没有（见上表） |
-| 进行中那一轮的 transcript 记录 | **哪里都没有** | 不保证——引擎故意不补写 `interrupted` 轮（β） |
+| 进行中那一轮的 transcript 记录 | **没有宿主能依赖的渠道** | 不保证——引擎故意不补写 `interrupted` 轮（β）；只有恰好已在途的那次 `appendRound` 可能落地，而它不是一条可以安排预期的渠道 |
 
-对宿主的两个推论，均以本节为准：想要屏幕上有部分文本，要么开 `partialPersistence`，要么读
-`error.finalText`；且宿主不得把「`partial: true` 但该轮在 store 里 0 条 `RoundRecord`」当成
-持久化 bug——那就是未开部分持久化时中止的既定形状。
+对宿主的两个推论，均以本节为准：想要屏幕上有部分文本，宿主必须读 `error.finalText`——那才是
+有保证的渠道——而 `partialPersistence` 买的是一份尽力而为的*已提交*部分文本快照（不含 reasoning，
+可能什么都没有，最多陈旧 `intervalMs`）；且宿主不得把「`partial: true` 但该轮在 store 里 0 条
+`RoundRecord`」当成持久化 bug——那就是未开部分持久化时中止的既定形状。
 
 ## judge 记录关联字段与 run 级 outcome（issue #165）
 
