@@ -1,3 +1,5 @@
+import { jsonCandidates } from "../text/json-candidates.js";
+
 function blocksFor(content) {
   if (typeof content === "string") return [{ type: "text", text: content }];
   return Array.isArray(content) ? content : [];
@@ -50,38 +52,6 @@ function normalizeFindings(value) {
   return count > 0 ? findings : undefined;
 }
 
-function* jsonCandidates(text) {
-  // Single pass that only yields top-level balanced objects. Nested objects
-  // inside a host JSON (e.g. {"summary":...,"meta":{"done":true}}) must not
-  // be scanned as wrap-up candidates — an inner {done,...} would otherwise
-  // bypass the mandatory-done guard (issue #30 follow-up).
-  const value = String(text ?? "");
-  let candidateStart = -1;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < value.length; index += 1) {
-    const character = value[index];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === "\"") inString = false;
-      continue;
-    }
-    if (character === "\"") {
-      inString = true;
-    } else if (character === "{") {
-      if (depth === 0) candidateStart = index;
-      depth += 1;
-    } else if (character === "}") {
-      if (depth > 0) depth -= 1;
-      if (depth === 0 && candidateStart >= 0) {
-        yield value.slice(candidateStart, index + 1);
-        candidateStart = -1;
-      }
-    }
-  }
-}
 
 /**
  * Parse the end-of-turn JSON protocol while tolerating markdown fences and
