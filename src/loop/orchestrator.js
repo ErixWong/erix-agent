@@ -3506,23 +3506,26 @@ export async function runToolLoop(options) {
 
   // issue #292（必修 1 · 路径 B）：出圈收尾原先整段落在 `} catch (error) { await fail(error); }` **之外**，
   // 两个后果：
-  //   1. 收尾期间的两次 await（`forceFinalIfNeeded` 里那一次 `awaitWithAbort(provider.chat(...))`、
-  //      以及 `callFinalGuard`）在被中止时抛出的 AbortError **没人接**，会裸抛出 runRunLoop——全仓
-  //      只有 `fail()`（:1100）会 `annotateTermination`，所以宿主拿到的是一个没有 `termination`
-  //      载荷的原始错误（#180 的 {usage, rounds, partial:true} 全缺）；
-  //   2. 收尾期间才置位的 abort（典型：宿主在 finalGuard 回调里点停止，而 guard 正常返回了）根本
-  //      没人查，照样返回 max_rounds_cap。
-  // 现在：收尾前先查一次，两次 await 之后各再查一次，并把整段包进 try 交给 fail() 收口。
+  //   1. 收尾里的 await（`forceFinalIfNeeded` 内那一次 `awaitWithAbort(provider.chat(...))`、以及
+  //      `callFinalGuard`）在被中止时抛出的 AbortError **没人接**，会裸抛出 runRunLoop——全仓只有
+  //      `fail()`（:1100）会 `annotateTermination`，所以宿主拿到的是一个没有 `termination` 载荷的
+  //      原始错误（#180 的 {usage, rounds, partial:true} 全缺）。abort **不需要**在这里另加检查：
+  //      `awaitWithAbort` 进门先 `throwIfAborted`、`callFinalGuard` 的 `catch` 里也有
+  //      `throwIfAborted(ctx.signal)`（src/loop/termination.js），中止在 await 边界上一定会抛；
+  //      本层只负责接住它并交给 `fail()`。（在两次 await 之后各加一次检查已经做过变异证：删了
+  //      **无一条测试变红** ⇒ 那是死守卫，没加。）
+  //   2. 收尾**不经过任何 await** 就能返回的那一格（`ERIX_NO_FORCED_FINAL=1` / `hasFinalDraft()` ⇒
+  //      `forceFinalIfNeeded` 直接空转，且没挂 `finalGuard`）里，刚出的圈完全没查过 signal ⇒
+  //      照样返回 max_rounds_cap。下面那一次 `throwIfAborted` 钉的就是这一格（变异证：删掉它 ⇒
+  //      「收尾里没有任何 await 可守」那条测试红）。
   // 行为变化只一处：宿主收尾回调（forceFinalizer / finalGuard）自己抛错原先会冒出整次调用，
   // 现在降级成 `reason:"failed"` 的终局（带 errorCode，根因探不到则为 unknown），与仓内
   // 「宿主回调错误不杀 run」的统一口径一致（docs/host-consumer-contract*.md）。
   try {
     throwIfAborted(signal);
     await forceFinalIfNeeded("max_rounds_cap");
-    throwIfAborted(signal);
     if (typeof finalGuard !== "function") return finish("max_rounds_cap");
     const guardDecision = await callFinalGuard("max_rounds_cap");
-    throwIfAborted(signal);
     if (guardDecision.action === "error") return finish("max_rounds_cap");
     if (guardDecision.action === "skip") return finish("max_rounds_cap");
     guardMetrics.unverified += 1;

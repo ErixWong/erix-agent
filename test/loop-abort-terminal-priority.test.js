@@ -280,3 +280,71 @@ test("abort during the forced-final call of the cap finalization carries the #18
   assert.ok(error?.usage?.input_tokens > 0, `#180 载荷：usage 必须在（实际 ${JSON.stringify(error?.usage)}）`);
   assert.equal(error?.termination?.usage, error?.usage, "termination.usage 与 error.usage 同一个对象");
 });
+
+// ── issue #292 路径 B 的第三面：中止落在**最后一个预算轮的尾巴**里（onRound 之后、收尾之前）──────
+// 圈顶的检查已经管不到它（本轮就是最后一轮，不会再进圈），收尾前那次检查才是唯一守门人。
+// 改前：这条 run 无 store（`persist()` 因此不做 abort 检查），于是**正常返回** max_rounds_cap。
+test("abort in the tail of the last budget round terminates as aborted before the cap finalization (issue #292 收尾前)", async () => {
+  const controller = new AbortController();
+  const provider = createFakeProvider([
+    { times: 2, content: [{ type: "tool_use", id: "work", name: "work", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "text", text: FINAL_TEXT }], stopReason: "end_turn" },
+  ]);
+
+  const error = await settle(runToolLoop({
+    provider,
+    initialUserMessage: "continue",
+    executeTool: async () => "worked",
+    maxRounds: 2,
+    completion: false,
+    stallDetection: false,
+    signal: controller.signal,
+    // 第二轮（= 最后一个预算轮）的记录已经落定，宿主在此按下停止
+    onRound: (record) => {
+      if (record.round === 2) controller.abort(new Error("user stop at the last round"));
+    },
+  }));
+
+  assert.ok(error, "最后一轮尾巴上的中止也必须抛错，不能返回 max_rounds_cap");
+  assert.equal(error?.termination?.reason, "aborted");
+  assert.notEqual(error?.termination?.reason, "max_rounds_cap");
+  assert.equal(error?.termination?.partial, true);
+  assert.equal(error?.termination?.rounds, 2, "已跑完的两轮必须照常计入账单");
+});
+
+// ── issue #292 路径 B 的第四面：收尾**不经过任何 await** 就能返回的那一格（变异证的靶子）──────────
+// 关掉强制收尾（`ERIX_NO_FORCED_FINAL=1`）后，cap 收尾里 `forceFinalIfNeeded` 直接空转、也没有
+// finalGuard ⇒ 出圈到 `finish("max_rounds_cap")` 之间没有任何 await，`awaitWithAbort` 那道自带的
+// abort 检查根本不会被走到。删掉收尾前那次 `throwIfAborted` 就正好丢掉这条 run（已实测变异红）。
+test("abort reaching the cap finalization with no value-added call left still terminates as aborted (issue #292 收尾无 await 那格)", async () => {
+  const controller = new AbortController();
+  const provider = createFakeProvider([
+    { times: 2, content: [{ type: "tool_use", id: "work", name: "work", input: {} }], stopReason: "tool_use" },
+  ]);
+  const previous = process.env.ERIX_NO_FORCED_FINAL;
+  process.env.ERIX_NO_FORCED_FINAL = "1";
+  let error;
+  try {
+    error = await settle(runToolLoop({
+      provider,
+      initialUserMessage: "continue",
+      executeTool: async () => "worked",
+      maxRounds: 2,
+      completion: false,
+      stallDetection: false,
+      signal: controller.signal,
+      onRound: (record) => {
+        if (record.round === 2) controller.abort(new Error("user stop before finalization"));
+      },
+    }));
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_NO_FORCED_FINAL;
+    else process.env.ERIX_NO_FORCED_FINAL = previous;
+  }
+
+  assert.ok(error, "收尾里没有任何 await 可守时，也必须以 aborted 收口");
+  assert.equal(error?.termination?.reason, "aborted");
+  assert.notEqual(error?.termination?.reason, "max_rounds_cap");
+  assert.equal(error?.termination?.partial, true);
+  assert.equal(provider.requests.length, 2, "关掉强制收尾后不得再多打一次模型请求");
+});
