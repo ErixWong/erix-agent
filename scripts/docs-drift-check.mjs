@@ -50,6 +50,9 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 24`（现测唯一 (符号, 文件) 组数）：
+//                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
+//                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
 //                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 244`，超了红
 //                 （并提示「可以把基线降到 N」），低于基线算过但会催你降。**越界行号是 error**，不是观察项。
@@ -1723,6 +1726,23 @@ function symbolAnchorVerdict(sym, rel) {
   return { ok: false, near, why: `该文件里没有 \`${sym}\` 的声明（支持的形态：function / class / const|let|var 绑定 / 解构绑定 / 再导出 / 方法 / 对象键、类字段 / process.env.X 环境变量读取处）` };
 }
 
+/** 符号锚点的**只增不减下限**（#286 T-a 返工 R1）。为什么必须有它：裸行号棘轮的唯一键是
+ *  (文档, 目标文件, 行区间)，**不含文档行号**——于是把
+ *  \`emitEvent\`（\`src/loop/orchestrator.js:1517-1531\`） 改写成不带括号、不带链接的裸
+ *  \`src/loop/orchestrator.js:1517-1531\`，棘轮那一侧的计数**一字不变**（照旧绿），而符号声明校验
+ *  整条消失。没有这条下限，#286 后面几刀就能「一边把裸行号换成符号锚点、一边偷偷退回去」而全程全绿。
+ *  与 `BARE_LINE_REF_BASELINE` 同构：生效值从脚本**自身文本**里读（自测能把它调高来证它真的是锁）。
+ *  现测值 = 我自己那条 note 打出来的 24 组 / 44 处（`--verbose` 可复核）。
+ *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
+const SYMBOL_ANCHOR_MIN_UNIQUE = 24;
+
+/** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
+function symbolAnchorMinUnique() {
+  const rec = fileRecord("scripts/docs-drift-check.mjs");
+  const m = rec?.text.match(/^const SYMBOL_ANCHOR_MIN_UNIQUE = (\d+);/m);
+  return m ? Number(m[1]) : null;
+}
+
 function collectSymbolAnchorErrors() {
   const out = [];
   const notes = [];
@@ -1756,6 +1776,19 @@ function collectSymbolAnchorErrors() {
       continue;
     }
     out.push(`symbol-anchor: ${g.sites.join(", ")} 引用 \`${g.sym}\`（\`${g.file}\`，${g.form}），${v.why}${v.near?.length ? `\n      ↳ ${g.file} 里实际存在的相近符号：${v.near.join(" / ")}` : ""}`);
+  }
+  // 返工 R1：符号锚点的只增不减下限。低于下限 = 有人把符号锚点**退化成裸行号**（棘轮看不见那种退化）。
+  const minUnique = symbolAnchorMinUnique();
+  if (minUnique === null) {
+    out.push("symbol-anchor: 从 scripts/docs-drift-check.mjs 自己的文本里抽不到 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;`——"
+      + "下限常量被删或改了写法，这条锚点失效（#164 口径：抽不到真值就报错，不许静默放行）");
+  } else if (groups.size < minUnique) {
+    out.push(`symbol-anchor: 覆盖面里唯一 (符号, 文件) 只剩 ${groups.size} 组，低于下限 **${minUnique}** 组——符号锚点在**退化成裸行号**：`
+      + `把 \`SYM\`（\`path:N\`） 改成不带括号/链接的裸 \`path:N\`，裸行号棘轮的计数一字不变（它的唯一键里没有文档行号），`
+      + `只有这条下限会红（#286 T-a 返工 R1）。要么把符号锚点补回来，要么在提交信息里写明**新增**了什么并把常量升到 ${groups.size}`);
+  } else if (groups.size > minUnique) {
+    notes.push(`symbol-anchor: 实测 ${groups.size} 组 > 下限 ${minUnique} 组——符号锚点在变多（好方向），`
+      + `请把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 ${groups.size}，否则下限就在空转`);
   }
   const byFile = {};
   for (const o of occurrences) byFile[o.doc] = (byFile[o.doc] ?? 0) + 1;
@@ -3332,6 +3365,26 @@ const SELF_TEST_CASES = [
     label: "#286 变异器空转证：靶子（不存在的符号名）打不上时，runSelfTest 必须判这一例「变异没落上」而不是假绿",
     overlay: { [CONTRACT_EN]: mutateSymbolAnchor("zzProbeNoSuchSymbol", "src/loop/orchestrator.js", "anything") },
     expectMutateMiss: true,
+  },
+
+  // —— 返工 R1（评审阻断项）：符号锚点的**只增不减下限**。病根：裸行号棘轮的唯一键不含文档行号，
+  // 所以「把符号锚点换成裸行号」这种**退化**在棘轮那一侧一字不变，没有下限就没人报警。
+  {
+    label: "#286 返工 R1：把中英契约的 `defaultSleep`（`src/loop/abort.js:16`）一起退化成裸行号 ⇒ 棘轮一字不变，只有符号下限红（23 < 24）",
+    // 退化前后那一处 `src/loop/abort.js:16` 都还在文档里（棘轮的唯一键不含**文档行号**），所以裸行号侧
+    // 一个数都不变——这正是本条下限存在的理由。两侧一起退化是因为 (符号, 文件) 是按全局去重的：
+    // `defaultSleep` 中英各一处（CN:217 / EN:262），只退一侧不会掉组，只退一侧看不见评审那条形状。
+    overlay: {
+      [CONTRACT_CN]: (t) => t.replace("`defaultSleep`（`src/loop/abort.js:16`）", "`src/loop/abort.js:16`"),
+      [CONTRACT_EN]: (t) => t.replace("`defaultSleep` (`src/loop/abort.js:16`)", "`src/loop/abort.js:16`"),
+    },
+    expect: [/symbol-anchor: 覆盖面里唯一 \(符号, 文件\) 只剩 23 组，低于下限 \*\*24\*\* 组/, /退化成裸行号/,
+      /棘轮的计数一字不变|裸行号棘轮的计数一字不变/],
+  },
+  {
+    label: "#286 返工 R1 的另一侧：把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 25（实测仍是 24）⇒ 必须红，证明这个数是读出来的、不是装饰",
+    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const SYMBOL_ANCHOR_MIN_UNIQUE = 24;", "const SYMBOL_ANCHOR_MIN_UNIQUE = 25;") },
+    expect: [/唯一 \(符号, 文件\) 只剩 24 组，低于下限 \*\*25\*\* 组/],
   },
 ];
 
