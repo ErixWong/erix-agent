@@ -92,19 +92,44 @@ export function latestUserRound(messages) {
   return [copyMessage(user)];
 }
 
+function passesValidate(messages, allowPendingToolUse) {
+  try {
+    validateMessages(messages, { allowPendingToolUse });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
+ * 「原样放行」那一格用的判据：**容忍尾部 pending `tool_use`**（评审 R1）。
+ *
+ * `max_tokens` 续写（`orchestrator.js` 里唯一以 `allowPendingToolUse: true` 调 provider 的那处）与
+ * 「尾部是 pending tool_use 的续跑」送进来的视图本来就合法，只是最后一条 assistant 的 `tool_use`
+ * 还没有结果。按 `false` 判会把它误判成非法，进而摘掉尾巴 + 追加一条**复制的** user 轮
+ * （复现探针：`user:text, assistant:tool_use` ⇒ `user:text, user:text`）。这与极小预算无关。
+ *
+ * @param {CanonicalMessage[]} messages
+ * @returns {boolean}
+ */
+function isPassableview(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return false;
+  if (!hasUserTurn(messages)) return false;
+  return passesValidate(messages, true);
+}
+
+/**
+ * 「要追加一条纯文本 user 轮」的候选分支用的判据：**不容忍 pending `tool_use`**。
+ * 追加前必须先摘掉尾部悬空的 tool_use（`withoutTrailingPendingToolUse`），这正是它存在的理由；
+ * 这里放宽就会把悬空的 tool_use 与后补的 user 轮同时留在视图里，配对直接非法。
+ *
  * @param {CanonicalMessage[]} messages
  * @returns {boolean}
  */
 function isLegalView(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return false;
   if (!hasUserTurn(messages)) return false;
-  try {
-    validateMessages(messages, { allowPendingToolUse: false });
-    return true;
-  } catch {
-    return false;
-  }
+  return passesValidate(messages, false);
 }
 
 /**
@@ -136,7 +161,9 @@ function withoutTrailingPendingToolUse(messages) {
  */
 export function ensureUserTurnView(view, source, stats = {}) {
   const current = Array.isArray(view) ? view : [];
-  if (isLegalView(current)) return current;
+  // 原样放行按「容忍尾部 pending tool_use」判（见 isPassableview 的注释）；
+  // 放行时不写 stats.action——守卫什么都没做，就不该留下可观测信号。
+  if (isPassableview(current)) return current;
 
   const fallbackSource = Array.isArray(source) ? source : [];
   const round = latestUserRound(fallbackSource);
@@ -153,7 +180,10 @@ export function ensureUserTurnView(view, source, stats = {}) {
     }
   }
 
-  if (isLegalView(fallbackSource)) {
+  // 放弃折叠这一格是**原样返回源视图**（不追加任何东西），所以它和放行那一格一样
+  // 容忍尾部 pending tool_use：按 false 判只会让本来能用的源视图被拒掉，一路掉进
+  // unrecoverable，把「有源可用」误报成「无药可救」。
+  if (isPassableview(fallbackSource)) {
     stats.action = "abandoned_fold";
     return fallbackSource.map((message) => copyMessage(message));
   }
