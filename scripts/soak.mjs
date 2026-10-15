@@ -527,13 +527,25 @@ async function main() {
       missingFieldTally,
       missingSamples,
     });
-  ledger.check("contract-tool-result-erix-execution-status-present",
-    toolResults.length > 0 && executionStatusPresent === toolResults.length, {
+  // 契约真相：`erix.executionStatus` **只在特殊状态出现**（docs/host-consumer-contract.md:2073「special states only」、
+  // _cn.md:1635「仅特殊状态」；引擎写入点 src/loop/orchestrator.js:2787 / :2816 与 src/loop/run-snapshot-executor.js:589）。
+  // 「每个结果块都该带 executionStatus」是**错的断言**（本脚本前一版就这么错过，错因在主 agent 的工单）。
+  const SPECIAL_EXECUTION_STATUS = ["intercepted", "interrupted"];
+  const unexpectedStatus = [];
+  for (const { block } of diskBlocks) {
+    const value = block?.erix?.executionStatus;
+    if (value !== undefined && !SPECIAL_EXECUTION_STATUS.includes(value)) {
+      unexpectedStatus.push({ value, block: summarizeBlock(block) });
+    }
+  }
+  ledger.check("contract-execution-status-special-states-only",
+    toolResults.length > 0 && unexpectedStatus.length === 0, {
       toolResultBlocks: toolResults.length,
       withExecutionStatus: executionStatusPresent,
-      note: "契约把 erix.executionStatus 列为 result 阶段字段（src/tool-fact.js:69-75），"
-        + "引擎只在非 ok 状态写（src/loop/orchestrator.js:2787 / :2816）——成功结果块上没有该字段",
-    }, { blocking: false, knownIssue: "引擎与契约口径不一致（只报不修）" });
+      withoutExecutionStatus: toolResults.length - executionStatusPresent,
+      allowed: SPECIAL_EXECUTION_STATUS,
+      unexpectedStatus,
+    });
 
   const RETIRED_TOP_LEVEL = ["erixRound", "duration", "executionStatus", "success"];
   const retiredHits = [];
@@ -760,22 +772,24 @@ async function main() {
 
   // ---------- 引擎缺陷探针（只观察不改）
   const defects = [];
+  // 未知选项必须被拒（白名单见 src/loop/option-normalization.js:36-97）。文档里的 `governor` 全部是
+  // src/reflection/governor.js 的**代码引用**，不是 runToolLoop 选项名——探针的正解是「必须拒」，
+  // 不是「文档漂移」（本脚本前一版把它报成漂移，是假阳性）。
   const governorProbe = await probeRunToolLoopOption("governor");
-  if (!governorProbe.accepted) {
+  ledger.check("unknown-run-tool-loop-option-rejected", governorProbe.accepted === false, {
+    probedOption: "governor",
+    accepted: governorProbe.accepted,
+    evidence: governorProbe.evidence,
+  });
+  if (toolResults.length > 0) {
     defects.push({
-      id: "doc-option-governor-unknown",
-      kind: "文档与引擎选项面漂移",
-      where: "src/loop/option-normalization.js:36-97（选项白名单） vs "
-        + "docs/host-consumer-contract.md（governor 选项条目）",
-      evidence: governorProbe.evidence,
-    });
-  }
-  if (toolResults.length > 0 && executionStatusPresent < toolResults.length) {
-    defects.push({
-      id: "erix-execution-status-not-written-for-ok",
-      kind: "契约与落盘不一致",
-      where: "src/tool-fact.js:69-75（erix.executionStatus 列为 result 阶段字段） vs "
-        + "src/loop/orchestrator.js:2787 / :2816（只在 interrupted/stale/intercepted 写）",
+      id: "tool-fact-constant-missing-execution-status-presence-condition",
+      kind: "常量面缺条件（文档已写对）",
+      severity: "minor",
+      where: "src/tool-fact.js:70-75（engine.executionStatus 的字段元数据**没标存在条件**）vs "
+        + "docs/host-consumer-contract.md:2073 / _cn.md:1635（已写「仅特殊状态 intercepted/interrupted」）",
+      why: "宿主只读 TOOL_RESULT_CONTRACT（随包发布）时看不出该字段是条件存在的，会按「每个块都有」写代码（本脚本工单就中了这个招）",
+      blocking: false,
       evidence: { toolResultBlocks: toolResults.length, withExecutionStatus: executionStatusPresent },
     });
   }
