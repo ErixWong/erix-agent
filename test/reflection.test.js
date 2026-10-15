@@ -452,6 +452,16 @@ test("parseReflectionDecision: 值内同时含转义引号与右花括时仍按�
   assert.equal(decision.stalled, true);
 });
 
+test("parseReflectionDecision: 首个顶层候选不含已知键时跳过它、试下一个候选（R1 灰区 continue 语义）", () => {
+  // 本条钉的是 src/loop/reflection.js 灰区分支的 `continue`，不是 `break`：
+  // 改成 break（首个候选不含已知键就立刻落兜底）必须红——via 会退成 prose_fallback，
+  // continueFlag 会由关键词在整段文本上匹配到 "continue" 而翻成 true。
+  const decision = parseReflectionDecision('{"foo":1}{"stalled":true}');
+  assert.equal(decision.via, "json");
+  assert.equal(decision.stalled, true);
+  assert.equal(decision.continueFlag, false);
+});
+
 test("parseReflectionDecision: 顶层对象可解析但六字段一个都不含 ⇒ 按 prose_fallback 处理（R2 灰区）", () => {
   const decision = parseReflectionDecision('{"foo":1}\n这段值得继续做下去。');
   assert.equal(decision.via, "prose_fallback");

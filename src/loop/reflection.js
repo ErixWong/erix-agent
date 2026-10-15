@@ -28,6 +28,25 @@ const REFLECTION_DECISION_KEYS = [
 ];
 
 /**
+ * reflection 决策对象（issue #305 起带 `via` 来源标记）。
+ *
+ * `via` 是**字面量联合**而不是 `string`：宿主拿到的是可收窄的两个取值，
+ * `"json"` = 值来自可解析的顶层对象、`"prose_fallback"` = 值来自关键词兜底。
+ * 它只声明来源，**不**暗示 schema 已校验（六字段全部可缺省带默认）。
+ * 注（#213 记录的两个静默退化成 any 的形状）：本注释紧贴自己的 typedef 声明，
+ * 且类型字面量里没有夹独立 `//` 行。
+ *
+ * @typedef {object} ReflectionDecision
+ * @property {number | undefined} progress 有限数；模型没写或不是有限数时 undefined
+ * @property {boolean} stalled 只有字面 `stalled: true` 才是 true
+ * @property {boolean} continueFlag 只有字面 `continue: true` 才是 true
+ * @property {string} stallPattern
+ * @property {string} reason
+ * @property {string} plan
+ * @property {"json" | "prose_fallback"} via 来源标记
+ */
+
+/**
  * 把 reflection 模型输出解析成决策对象。
  *
  * JSON 路径走 `jsonCandidates`（`src/text/json-candidates.js`）的**顶层平衡扫描**：
@@ -39,6 +58,7 @@ const REFLECTION_DECISION_KEYS = [
  * **不**暗示 schema 已校验：六字段全部可缺省带默认，半集是合法输入。
  *
  * @param {string} text
+ * @returns {ReflectionDecision}
  */
 export function parseReflectionDecision(text) {
   const value = String(text ?? "");
