@@ -1,5 +1,6 @@
 import { extractL0Facts } from "./l0.js";
 import { estimateTokens } from "../tokens.js";
+import { parseModelJson } from "../text/parse-model-json.js";
 
 const MAX_COMMAND_LENGTH = 40;
 
@@ -39,36 +40,6 @@ function summarizeArgument(name, input, { writeToolNames, writeToolPathKeys } = 
   } catch {
     return "";
   }
-}
-
-function jsonCandidates(text) {
-  const value = String(text ?? "");
-  const candidates = [];
-  for (let start = 0; start < value.length; start += 1) {
-    if (value[start] !== "{") continue;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let index = start; index < value.length; index += 1) {
-      const character = value[index];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (character === "\\") escaped = true;
-        else if (character === "\"") inString = false;
-        continue;
-      }
-      if (character === "\"") inString = true;
-      else if (character === "{") depth += 1;
-      else if (character === "}") {
-        depth -= 1;
-        if (depth === 0) {
-          candidates.push(value.slice(start, index + 1));
-          break;
-        }
-      }
-    }
-  }
-  return candidates;
 }
 
 /**
@@ -438,9 +409,20 @@ ${decisionSchema}`;
 
 /**
  * Parse a judge response while tolerating code fences and incidental prose.
+ *
+ * 候选扫描从本刀的私有 `jsonCandidates` 改成复用公共入口 `parseModelJson`（issue #307），
+ * 并显式传 `topOnly: false` —— 那正是本文件原来那一档「每个 `{` 起扫一次」，
+ * **语义一字未改**：外层对象未闭合时照样先拿到内层残片（实测
+ * `{"outer":{"done":true,"confidence":0.5,"reason":"..."}` 仍返回那个内层决策），
+ * 把它改成只认顶层对象是行为变更，留给 issue #309。
+ *
+ * 为什么只用它的 `candidates` 而不用它的 `value`：本函数的门槛比 `requireKeys` 的键存在性
+ * 判定严（`done` 必须是字面布尔、`confidence` 必须是 [0,1] 的有限数……），而**不合格时必须
+ * 继续试下一个候选**；公共入口只返回单个 `value`，拿它就等于把「跳过这个候选」改成
+ * 「整次失败」——那是行为变更，不在本单范围。
  */
 export function parseJudgeDecision(text) {
-  for (const candidate of jsonCandidates(text)) {
+  for (const candidate of parseModelJson(text, { topOnly: false }).candidates) {
     try {
       const parsed = JSON.parse(candidate);
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) continue;

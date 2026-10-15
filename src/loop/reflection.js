@@ -1,5 +1,5 @@
 import { numberOr } from "./budget.js";
-import { jsonCandidates } from "../text/json-candidates.js";
+import { parseModelJson } from "../text/parse-model-json.js";
 
 export const WRAPUP_INSTRUCTION = `任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：
 {"done":true,"summary":"任务总结","output":"给用户的结果"}
@@ -49,10 +49,14 @@ const REFLECTION_DECISION_KEYS = [
 /**
  * 把 reflection 模型输出解析成决策对象。
  *
- * JSON 路径走 `jsonCandidates`（`src/text/json-candidates.js`）的**顶层平衡扫描**：
- * 只在括号深度归零处切候选，未闭合的外层不产候选，于是不会把内层残片当决策、也不会被
- * 尾话里的 `{plan}` 带着整坨解析失败（issue #305：解析一失败就落到关键词兜底，
- * 把模型明确写的 `"continue": false` 翻成 `continueFlag: true`）。
+ * JSON 抠取走公共入口 `parseModelJson`（`src/text/parse-model-json.js`）的**顶层平衡扫描**
+ * （`topOnly` 缺省即顶层档）：只在括号深度归零处切候选，未闭合的外层不产候选，于是不会把
+ * 内层残片当决策、也不会被尾话里的 `{plan}` 带着整坨解析失败（issue #305：解析一失败就落到
+ * 关键词兜底，把模型明确写的 `"continue": false` 翻成 `continueFlag: true`）。
+ * 迁移到公共入口是 issue #307 的事，**行为与 #306 逐字等价**：
+ * `requireKeys` 传的就是下面这六个键（any-of —— 六字段全部可缺省，含其一即算决策对象；
+ * 一个都不含的顶层对象什么都搬运不过来，按散文兜底，issue #305 R2 灰区裁决），
+ * 于是「解析失败 → 下一个候选」「形状不合格 → 下一个候选」「全不合格 → 兜底」三条路径原样保留。
  *
  * `via` 只声明来源（`"json"` = 来自可解析的顶层对象；`"prose_fallback"` = 关键词兜底），
  * **不**暗示 schema 已校验：六字段全部可缺省带默认，半集是合法输入。
@@ -62,18 +66,9 @@ const REFLECTION_DECISION_KEYS = [
  */
 export function parseReflectionDecision(text) {
   const value = String(text ?? "");
-  for (const candidate of jsonCandidates(value)) {
-    /** @type {Record<string, unknown>} */
-    let parsed;
-    try {
-      parsed = JSON.parse(candidate);
-    } catch {
-      continue; // 这个顶层候选不是合法 JSON，试下一个
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-    // 顶层对象解析成功却搬运不出任何决策字段 —— 按散文兜底处理（issue #305 R2 灰区裁决），
-    // 此时关键词兜底才贴近现状语义。
-    if (!REFLECTION_DECISION_KEYS.some((key) => Object.prototype.hasOwnProperty.call(parsed, key))) continue;
+  const scanned = parseModelJson(value, { requireKeys: REFLECTION_DECISION_KEYS });
+  if (scanned.ok) {
+    const parsed = scanned.value;
     return {
       progress: numberOr(parsed.progress),
       stalled: parsed.stalled === true,
