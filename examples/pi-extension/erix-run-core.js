@@ -883,7 +883,7 @@ export const HOST_REGISTERED_TOOL_PHRASES = {
   note_take: "note_take 记下后面还要用的具体值/决定",
   note_list: "note_list 列出已记笔记的 key",
   note_read: "note_read 按 key 读回笔记",
-  note_forget: "note_forget 撑销一条笔记",
+  note_forget: "note_forget 撤销一条笔记",
 };
 
 /** 从实际注册数组取名字（顺序即注册顺序；没有名字就交回空数组，由调用方决定怎么硬失败）。 */
