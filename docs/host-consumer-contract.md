@@ -2636,6 +2636,55 @@ state is normal and is not the same as a present but invalid state.
 it is retained in persisted state but does not by itself reject a structurally
 valid state on a later resume.
 
+## erix_run final face: per-layer compaction and notes counters (issue #313)
+
+The engine has reported per-layer compaction for every round all along: each `compactionStats`
+entry carries a `layers` map keyed by the real layer ids derived from `COMPACTION_LAYER_IDS`
+(`src/compact/pipeline.js`), filled by `observeCompactionLayer` (`src/compact/pipeline.js`) at
+the loop's observation points and normalized by `createCompactionStat` (`src/compact/pipeline.js`).
+The `erix_run` host extension used to fold those entries into three scalars and drop the map, so
+a run whose `ttl` layer folded 69 tool results and saved 650,581 tokens still printed
+`compaction=0/1` and was read as "compaction did nothing". `buildDiagnostics`
+(`examples/pi-extension/erix-run-core.js`) now keeps the layers and the notes counters in the
+final face. **Additive only**: the meaning and the values of `compacted` and `foldedRounds` are
+unchanged, and `diagnostics.compaction.events` / `.compactedRounds` / `.foldedRounds` are exactly
+what they were before this section exists.
+
+| Final-face field | Real source | Meaning |
+| --- | --- | --- |
+| `diagnostics.compaction.events` / `.compactedRounds` / `.foldedRounds` | the `compactionStats` array | unchanged since before #313. The pair printed as `compaction=<compactedRounds>/<events>` is **not** "compaction had no effect" |
+| `diagnostics.compaction.layers.roundsObserved` | stats entries that carry a `layers` object | how many round entries were actually evaluated for layers; `0` makes the text render `unknown` rather than "saved nothing" |
+| `diagnostics.compaction.layers.tokensBeforePeak` | the maximum `tokensBefore` over those entries | the largest pre-compaction context the run reached |
+| `diagnostics.compaction.layers.byLayerId.<id>` | `summarizeCompactionLayers` (`examples/pi-extension/erix-run-core.js`) summing `layers.<id>` across entries | `{triggered, tokensSaved}` per **engine-declared layer id**; this layer never invents or renames an id |
+| `diagnostics.compaction.layers.roles[]` | `COMPACTION_LAYER_ROLES` (`examples/pi-extension/erix-run-core.js`) | the separately named buckets the text renders: `wholeRoundFold` (`slidingWindow`+`foldStatistical`+`foldLlm`), `ttlResultFold` (`ttl`), `outputClamp` (`enforceSize`), `foldFidelity` (`anchors`) |
+| `diagnostics.compaction.layers.unattributed[]` | layer ids present in the data that no bucket names | forward-compatibility rail: a layer the engine adds later is still rendered, it cannot be swallowed by the bucket table |
+| `diagnostics.notes.writes` / `.reads` / `.byName` / `.unclassified` | `countNoteToolEvent` (`examples/pi-extension/erix-run-core.js`) counting `tool_use` events off `onEvent` | write = `note_take` / `note_forget` (both move the store), read = `note_read` / `note_list`; an unrecognized `note_*` name goes only into `byName` / `unclassified` and is never folded into those two numbers |
+| `diagnostics.notes.source` | `NOTE_COUNT_SOURCE` (`examples/pi-extension/erix-run-core.js`) | always `onEvent:tool_use`: the counters read the event stream, they are not computed out of some other field |
+| `diagnostics.modelMetadataMissingEvents.count` | the `model_metadata_missing` events received by `onEvent` | event count. The pre-existing `modelMetadataMissing` flag keeps its own meaning and value |
+| `diagnostics.notes.observed` / `diagnostics.modelMetadataMissingEvents.observed` | set when the inner loop was entered | `false` ⇒ the text renders `unknown`. A run that failed during assembly produced no event at all, and "no events" is not "zero calls" |
+
+`formatCompactionLayerSummary` (`examples/pi-extension/erix-run-core.js`) renders the buckets one
+per line, so the accident run above now reads:
+
+```text
+[diagnostics] model=… compaction=0/2（=compactedRounds/events，不等于「压缩没生效」） … model_metadata_missing=YES events=1
+  ↳ 整轮折叠（slidingWindow+foldStatistical+foldLlm）=0 次/0 tok
+  ↳ 逐条TTL削减（ttl）=69 次/650581 tok
+  ↳ 输出钳制（enforceSize）=0 次/0 tok
+  ↳ 折叠锚点（anchors）=0 次/0 tok
+  ↳ 分层观测=2 条评估条目，tokensBefore 峰值 130000
+  ↳ notes 写=2/读=2 ｜ note_take=2 note_read=1 note_list=1 ｜ 来源 onEvent:tool_use
+```
+
+Host rules:
+
+- Read layer savings from `layers.byLayerId` / `layers.roles`, never off `compacted` /
+  `compactedRounds`: a run with `foldedRounds = 0` can still carry the whole savings in `ttl`.
+- Treat `unknown` as "not measured", not as `0`; the extension renders it whenever the source of
+  a counter did not exist, and it never estimates a number out of a neighbouring field.
+- Do not match on layer ids that are not in `COMPACTION_LAYER_IDS` (`src/compact/pipeline.js`):
+  the buckets above name engine ids, and anything new shows up in `layers.unattributed`.
+
 ## Contract test suites (issue #183)
 
 `erix-agent/contract-tests` (the `./contract-tests` subpath export,
