@@ -197,6 +197,34 @@ test("T3 #292 对照：健康预算（1200）下压缩必须照常发生，且�
     views.some((view) => JSON.stringify(view.messages).length < seededTokens),
     "至少一次请求的视图必须小于未压缩历史（压缩确实作用在发给上游的视图上）",
   );
+
+  // 同一判据也压到极小档：守卫不许是「预算太小就整体不压缩」那种治标实现。
+  // 变异证「预算 < N 就跳过压缩」必须在这里变红，而不是只在 1200 档变红。
+  const tinyViews = [];
+  const tinyProvider = createStrictUpstream(TOOL_CALL_SCRIPT, { views: tinyViews });
+  const tiny = await runToolLoop(toolLoopOptions({
+    budgetTokens: 8,
+    stream: false,
+    provider: tinyProvider,
+    initialMessages: seededHistory(),
+  }));
+  assert.equal(tiny.termination.reason, "end_turn");
+  assert.ok(
+    tiny.compactionStats.length > 0,
+    "极小预算档位也必须继续压缩（「预算小就不压缩」= 治标，本用例专门抓它）",
+  );
+  assert.ok(
+    tiny.compactionStats.some((stat) => stat.compacted === true || stat.foldedRounds > 0),
+    `极小预算档位必须仍有压缩发生的证据，实际 ${JSON.stringify(tiny.compactionStats)}`,
+  );
+  assert.ok(
+    tiny.compactionStats.some((stat) => stat.userTurnGuard !== undefined),
+    "守卫生效必须留下可观测信号（compactionStats.userTurnGuard）",
+  );
+  assert.ok(
+    tinyViews.every((view) => JSON.stringify(view.messages).length < seededTokens),
+    "极小档发给上游的视图必须仍然被压小过（守卫只回补一条 user 轮，不是把整段历史发出去）",
+  );
 });
 
 test("T2 #292 保底必须保留「最新」那条 user 轮，且视图配对合法", async () => {
