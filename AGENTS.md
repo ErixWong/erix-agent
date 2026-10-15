@@ -164,8 +164,9 @@ scripts/          # experiment scripts and results
   `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs`. Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 32` (groups
-  measured today: 32 unique (symbol, file) pairs over 70 occurrences, reproducible via `--verbose`): dropping below it is
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 34` (groups
+  measured today: 34 unique (symbol, file) pairs over 84 occurrences, raised from 32 when the 0.21.0 guide pair
+  landed, reproducible via `--verbose`): dropping below it is
   red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
   Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
   *`symbol-anchor-span`* (#286 batch T-b1a) is the *per-occurrence* companion of the rule above: when a symbol anchor
@@ -185,12 +186,13 @@ scripts/          # experiment scripts and results
   nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty
   string (or carries a `g` flag, making `.test()` stateful) is itself an error — same dual-condition family as #286's
   `test/static-guards.test.js`). An out-of-range line number is an
-  error, not an observation. Scope is the 20 documents a host actually reads: the two READMEs, both AGENTS files, both
+  error, not an observation. Scope is the 22 documents a host actually reads: the two READMEs, both AGENTS files, both
   contract files, plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
   covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that
   pattern shrinks the coverage in the script **and** in the test that mirrors the same glob, so both numbers still
-  agree: `REF_SCAN_DOCS_MINIMUM = 20` is the floor (6 pinned documents + the 14 guides found today), and
-  `test/docs-anchor-ratchet.test.js` keeps its own pinned list of those 14 file names. Renaming or adding a guide is
+  agree: `REF_SCAN_DOCS_MINIMUM = 22` is the floor (6 pinned documents + the 16 guides found today, raised from 20
+  when the 0.21.0 guide pair landed), and `test/docs-anchor-ratchet.test.js` keeps its own pinned list of those 16
+  file names. Renaming or adding a guide is
   red until both places are updated. `CHANGELOG.md` is deliberately out of scope: its line numbers record what was true at
   release time, and rewriting them would fake history (same reasoning as the #278 shorthand register).
   Batch T-a built the infrastructure and the ratchet; batch T-b1a converted the contract's

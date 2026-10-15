@@ -56,13 +56,13 @@
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
 //                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 232`，超了红
 //                 （并提示「可以把基线降到 N」），低于基线算过但会催你降。**越界行号是 error**，不是观察项。
-//                 覆盖面 = 宿主会读的 20 份文档：README{,_cn} / AGENTS{,_cn} / host-consumer-contract{,_cn}
+//                 覆盖面 = 宿主会读的 22 份文档：README{,_cn} / AGENTS{,_cn} / host-consumer-contract{,_cn}
 //                 + `docs/host-upgrade-guide*.md` 全部（按目录实扫，新指南落地即自动纳面）。
 //                 正则 `src\/[A-Za-z0-9_./-]+\.js:(\d+)(?:-(\d+))?`；工单口径实测 248 唯一区间 / 279 次出现
 //                 （跑 `--verbose` 复核，别只信注释），减去 `BARE_LINE_EXEMPTIONS` 的 4 处示例/外仓路径 ⇒ 244。
-//                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM = 20`（6 份点名 + 14 份实扫指南）：按目录实扫
-//                 意味着「把某份指南改名到不匹配模式」会让脚本与测试侧一起少一份而数字仍相等 ⇒ 静默缩面，
-//                 这条下限与测试侧硬编码的 14 份清单就是那道报警（#286 T-a 返工 R2）。
+//                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM = 22`（6 份点名 + 16 份实扫指南，工单 261016-307
+//                 的 R4 把 20 抬到 22）：按目录实扫意味着「把某份指南改名到不匹配模式」会让脚本与测试侧一起
+//                 少一份而数字仍相等 ⇒ 静默缩面，这条下限与测试侧硬编码的 16 份清单就是那道报警（#286 T-a R2）。
 //                 豁免是**三信号 AND**（① 表里点名这一条 ② 引用行含那个占位路径 ③ 同一行有就地声明词）：
 //                 评审 R4 把从前的整行 OR 收紧——同一行只剩一句 `for example` 之类的附带措辞不算声明。
 //                 条目自己还要过配置校 `bareLineExemptionEntryErrors()`：声明词若能匹配空串（这一侧恒真）
@@ -1501,9 +1501,9 @@ function collectBaselineClaimErrors() {
 //   · 2.8.2 bare-lines：`path:N` / `path:N-M` 形态的**裸行号引用**只减不增（R2 棘轮 + R3 越界必红）。
 //
 // 覆盖面与正则（工单 #286 T-a 的口径，脚本自己会数——别只信注释，跑 `--verbose` 看 note）：
-//   覆盖面 = 宿主会读的 20 份文档：README{,_cn}.md、AGENTS{,_cn}.md、docs/host-consumer-contract{,_cn}.md
-//     这 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部 14 份（按目录**实扫**：新增一份指南就自动纳面，
-//     不存在「新文档漏在覆盖面外」的形状）。
+//   覆盖面 = 宿主会读的 22 份文档：README{,_cn}.md、AGENTS{,_cn}.md、docs/host-consumer-contract{,_cn}.md
+//     这 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部 16 份（按目录**实扫**：新增一份指南就自动纳面，
+//     不存在「新文档漏在覆盖面外」的形状；0.21.0 那一对落地即 14 → 16）。
 //   正则 = BARE_LINE_RE（工单口径写的是 `src/**.js:N[-M]`；这里把前缀面放宽到 src|bin|scripts|test|docs|
 //     examples|fixtures，因为 `bin/cli.js:88` 这类行号同样会漂，窄到 src/ 等于给未来的漂移留门）。
 //     按工单那条只算 src/**.js 的口径实测：唯一 (文档,目标文件,行区间) **236** / 总出现 **271**
@@ -1526,15 +1526,17 @@ const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT
 
 /** #286 返工 R2：覆盖面份数的**下限**。病根：覆盖面是「6 份硬编码 + 按 `^host-upgrade-guide.*\.md$` 实扫」，
  *  于是有人把某份指南改名到不再匹配那个模式（或把它挪出 `docs/`），脚本与测试侧的 glob **一起少一份**，
- *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前 14 份的清单做对照，这里再钉一道份数下限。
- *  下限取 20（= 6 份硬编码 + 14 份指南）；新增指南让份数往上走，改名/删除想绿就必须同时动这两处。 */
-const REF_SCAN_DOCS_MINIMUM = 20;
+ *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前 16 份的清单做对照，这里再钉一道份数下限。
+ *  下限取 22（= 6 份硬编码 + 16 份指南）；新增指南让份数往上走，改名/删除想绿就必须同时动这两处。
+ *  抬下限的理由（工单 261016-307 / 发版准备 R4，20 → **22**）：0.21.0 的中英两份升级指南落地，
+ *  `--verbose` 实测覆盖面 20 → 22（6 份硬编码 + 16 份实扫指南）。写法必须保持这一行不变形（自测要改这个数）。 */
+const REF_SCAN_DOCS_MINIMUM = 22;
 
 /** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟「某份指南改名到不匹配模式」。 */
 let SIM_RENAMED_GUIDE = null;
 let LAST_SCAN_DOC_COUNT = -1;   // 自测据此判断树形口子有没有真的落上（#279 的「变异没落上」同一条纪律）
 
-/** 覆盖面：宿主会读的 20 份文档 = 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部（实扫，新增指南自动纳面）。 */
+/** 覆盖面：宿主会读的 22 份文档 = 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部（实扫，新增指南自动纳面）。 */
 function refScanDocs() {
   const guides = readdirSync(path.join(ROOT, "docs"))
     .filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
@@ -1919,6 +1921,12 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  新增成对的「Reflection 决策解析」小节，按本单红线用**符号锚点**引用 `parseReflectionDecision`
  *  （`src/loop/reflection.js`）与 `jsonCandidates`（`src/text/json-candidates.js`）、`truncate`
  *  （`src/reflection/judge.js`）——锚点在变多，是这条下限想看见的方向。
+ *  升下限的理由（工单 261016-307 发版准备 R4，32 → **34**，+2 组 / 70 → 84 处）：`docs/host-upgrade-guide-0.21.0.md`
+ *  与 `_cn.md` 成对落地，按同一红线全部用符号锚点引用 `parseModelJson`（`src/text/parse-model-json.js`）、
+ *  `jsonCandidates`（`src/text/json-candidates.js`）、`ensureUserTurnView` / `isUserTurnGuardAction`
+ *  （`src/loop/request-user-view.js`）、`parseReflectionDecision`（`src/loop/reflection.js`）、
+ *  `safeTruncateMessages`（`src/loop/budget.js`）、`validateMessages`（`src/messages/rounds.js`）等——
+ *  `--verbose` 实测 34 组 / 84 处。
  *  升下限的理由（工单 261016-307 / issue #307，27 → **32**，+5 组 / 50 → 70 处）：中英契约成对新增
  *  「统一入口 `parseModelJson`」小节，按同一红线全部用**符号锚点**引用 `parseModelJson`
  *  （`src/text/parse-model-json.js`）、`tryParseWrapupJson`（`src/reflection/wrapup.js`）、
@@ -1926,7 +1934,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  （`src/compact/fold-statistical.js`），并把「轮次 judge 保留自己的扫描」那句已经腐烂的引用改成
  *  指向 `parseJudgeDecision`（`src/reflection/judge.js`）——`--verbose` 实测 32 组 / 70 处。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 32;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 34;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
