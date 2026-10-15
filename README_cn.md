@@ -189,6 +189,7 @@ src/
   skills/
     loader.js                         技能包发现 / 校验 / 装配（issue #197）
   text/
+    json-candidates.js              顶层平衡 JSON 对象扫描（wrapup 与 reflection 共用）
     label.js                        note/findings label 归一化
   tools/
     file-tools.js                    文件工具规范实现：readFile/searchText/rg/grep/tree/edit/writeFile

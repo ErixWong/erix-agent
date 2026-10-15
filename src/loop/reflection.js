@@ -1,4 +1,5 @@
 import { numberOr } from "./budget.js";
+import { jsonCandidates } from "../text/json-candidates.js";
 
 export const WRAPUP_INSTRUCTION = `任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：
 {"done":true,"summary":"任务总结","output":"给用户的结果"}
@@ -22,24 +23,66 @@ export function directionHintText(direction, directionReason) {
   return `（附方向提示：${reason} —— 当前路线可能偏，可考虑换思路/方法）`;
 }
 
+const REFLECTION_DECISION_KEYS = [
+  "progress", "stalled", "continue", "stallPattern", "reason", "plan",
+];
+
+/**
+ * reflection 决策对象（issue #305 起带 `via` 来源标记）。
+ *
+ * `via` 是**字面量联合**而不是 `string`：宿主拿到的是可收窄的两个取值，
+ * `"json"` = 值来自可解析的顶层对象、`"prose_fallback"` = 值来自关键词兜底。
+ * 它只声明来源，**不**暗示 schema 已校验（六字段全部可缺省带默认）。
+ * 注（#213 记录的两个静默退化成 any 的形状）：本注释紧贴自己的 typedef 声明，
+ * 且类型字面量里没有夹独立 `//` 行。
+ *
+ * @typedef {object} ReflectionDecision
+ * @property {number | undefined} progress 有限数；模型没写或不是有限数时 undefined
+ * @property {boolean} stalled 只有字面 `stalled: true` 才是 true
+ * @property {boolean} continueFlag 只有字面 `continue: true` 才是 true
+ * @property {string} stallPattern
+ * @property {string} reason
+ * @property {string} plan
+ * @property {"json" | "prose_fallback"} via 来源标记
+ */
+
+/**
+ * 把 reflection 模型输出解析成决策对象。
+ *
+ * JSON 路径走 `jsonCandidates`（`src/text/json-candidates.js`）的**顶层平衡扫描**：
+ * 只在括号深度归零处切候选，未闭合的外层不产候选，于是不会把内层残片当决策、也不会被
+ * 尾话里的 `{plan}` 带着整坨解析失败（issue #305：解析一失败就落到关键词兜底，
+ * 把模型明确写的 `"continue": false` 翻成 `continueFlag: true`）。
+ *
+ * `via` 只声明来源（`"json"` = 来自可解析的顶层对象；`"prose_fallback"` = 关键词兜底），
+ * **不**暗示 schema 已校验：六字段全部可缺省带默认，半集是合法输入。
+ *
+ * @param {string} text
+ * @returns {ReflectionDecision}
+ */
 export function parseReflectionDecision(text) {
   const value = String(text ?? "");
-  const jsonMatch = value.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
+  for (const candidate of jsonCandidates(value)) {
+    /** @type {Record<string, unknown>} */
+    let parsed;
     try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      return {
-        progress: numberOr(parsed.progress),
-        stalled: parsed.stalled === true,
-        continueFlag: parsed.continue === true || parsed["continue"] === true,
-        stallPattern: String(parsed.stallPattern ?? ""),
-        reason: String(parsed.reason ?? ""),
-        plan: String(parsed.plan ?? ""),
-      };
+      parsed = JSON.parse(candidate);
     } catch {
-      // Fall through to the text interpretation below.
+      continue; // 这个顶层候选不是合法 JSON，试下一个
     }
-
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+    // 顶层对象解析成功却搬运不出任何决策字段 —— 按散文兜底处理（issue #305 R2 灰区裁决），
+    // 此时关键词兜底才贴近现状语义。
+    if (!REFLECTION_DECISION_KEYS.some((key) => Object.prototype.hasOwnProperty.call(parsed, key))) continue;
+    return {
+      progress: numberOr(parsed.progress),
+      stalled: parsed.stalled === true,
+      continueFlag: parsed.continue === true,
+      stallPattern: String(parsed.stallPattern ?? ""),
+      reason: String(parsed.reason ?? ""),
+      plan: String(parsed.plan ?? ""),
+      via: "json",
+    };
   }
 
   return {
@@ -50,5 +93,6 @@ export function parseReflectionDecision(text) {
     stallPattern: "",
     reason: value.slice(0, 200),
     plan: "",
+    via: "prose_fallback",
   };
 }

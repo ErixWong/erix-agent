@@ -233,6 +233,7 @@ src/
   skills/
     loader.js                        Skill-package discovery, validation, assembly (issue #197)
   text/
+    json-candidates.js               Top-level balanced JSON object scan (shared by wrapup and reflection)
     label.js                       Note/findings label normalization
   tools/
     file-tools.js                  Canonical file tools: readFile/searchText/rg/grep/tree/edit/writeFile

@@ -42,6 +42,7 @@ test("parseReflectionDecision accepts JSON, markdown JSON, and text fallback", (
       stallPattern: "",
       reason: "有新产物",
       plan: "运行测试",
+      via: "json",
     },
   );
   assert.equal(
@@ -57,6 +58,7 @@ test("parseReflectionDecision accepts JSON, markdown JSON, and text fallback", (
       stallPattern: "",
       reason: "最近一直重复尝试，停止吧",
       plan: "",
+      via: "prose_fallback",
     },
   );
 });
@@ -391,4 +393,85 @@ test("continuation exhaustion stops before reflection can extend", async () => {
   });
   assert.equal(result.truncated, true);
   assert.equal(provider.requests.length, 2);
+});
+
+// --- issue #305：顶层平衡扫描 + via 来源标记（工单 261016-305 C1/C2/C4 用例） ---
+
+test("parseReflectionDecision: issue 原形状（JSON + 尾话带 {plan}）不再翻转 continue=false（C1）", () => {
+  const decision = parseReflectionDecision(
+    '{"progress":3,"stalled":true,"continue":false,"stallPattern":"反复读同一文件","reason":"在打转","plan":"改用 grep"}\n'
+    + "以上是我的判断，把 {plan} 里的下一步做完就行。",
+  );
+  assert.equal(decision.via, "json");
+  assert.equal(decision.continueFlag, false);
+  assert.equal(decision.progress, 3);
+  assert.equal(decision.stalled, true);
+});
+
+test("parseReflectionDecision: ```json 围栏 + 尾话带 {plan} 时 stalled/continue 双双保持 false（C2）", () => {
+  const decision = parseReflectionDecision(
+    "```json\n{\"progress\":8,\"stalled\":false,\"continue\":false,\"reason\":\"有新方向\",\"plan\":\"跑测试\"}\n```\n好的，按 {plan} 继续推进。",
+  );
+  assert.equal(decision.via, "json");
+  assert.equal(decision.stalled, false);
+  assert.equal(decision.continueFlag, false);
+  assert.equal(decision.progress, 8);
+});
+
+test("parseReflectionDecision: 并列两个顶层对象时第一个胜出，第二个不污染（C2）", () => {
+  const decision = parseReflectionDecision(
+    '{"stalled":false,"continue":false}\n{"progress":5,"stalled":true,"continue":true,"reason":"第二个"}',
+  );
+  assert.equal(decision.via, "json");
+  assert.equal(decision.stalled, false);
+  assert.equal(decision.continueFlag, false);
+  assert.equal(decision.progress, undefined);
+});
+
+test("parseReflectionDecision: 外层未闭合 + 内层完整 ⇒ prose_fallback，不返回内层残片（C2 哨兵）", () => {
+  const decision = parseReflectionDecision(
+    '{"outer":{"progress":3,"stalled":false,"continue":true,"reason":"内层残片"}',
+  );
+  assert.equal(decision.via, "prose_fallback");
+  assert.equal(decision.progress, undefined);
+});
+
+test("parseReflectionDecision: 值内同时含转义引号与右花括时仍按完整对象解析（C4-③ 判别用例）", () => {
+  // 两个要素必须同时在场：只含 } 或只含 \" 的用例今天就绿，没有判别力。
+  const payload = JSON.stringify({
+    progress: 4,
+    stalled: true,
+    continue: false,
+    reason: '值里有 \" 与 } 两个字符',
+  });
+  assert.ok(payload.includes('\\"') && payload.includes("} 两个字符"));
+  const decision = parseReflectionDecision(payload);
+  assert.equal(decision.via, "json");
+  assert.equal(decision.progress, 4);
+  assert.equal(decision.continueFlag, false);
+  assert.equal(decision.stalled, true);
+});
+
+test("parseReflectionDecision: 首个顶层候选不含已知键时跳过它、试下一个候选（R1 灰区 continue 语义）", () => {
+  // 本条钉的是 src/loop/reflection.js 灰区分支的 `continue`，不是 `break`：
+  // 改成 break（首个候选不含已知键就立刻落兜底）必须红——via 会退成 prose_fallback，
+  // continueFlag 会由关键词在整段文本上匹配到 "continue" 而翻成 true。
+  const decision = parseReflectionDecision('{"foo":1}{"stalled":true}');
+  assert.equal(decision.via, "json");
+  assert.equal(decision.stalled, true);
+  assert.equal(decision.continueFlag, false);
+});
+
+test("parseReflectionDecision: 顶层对象可解析但六字段一个都不含 ⇒ 按 prose_fallback 处理（R2 灰区）", () => {
+  const decision = parseReflectionDecision('{"foo":1}\n这段值得继续做下去。');
+  assert.equal(decision.via, "prose_fallback");
+  assert.equal(decision.progress, undefined);
+  assert.equal(decision.continueFlag, true);
+});
+
+test("parseReflectionDecision: 纯散文走 prose_fallback，关键词行为逐字不变（C5）", () => {
+  const decision = parseReflectionDecision("这个方向值得继续，先不判停");
+  assert.equal(decision.via, "prose_fallback");
+  assert.equal(decision.stalled, false);
+  assert.equal(decision.continueFlag, true);
 });

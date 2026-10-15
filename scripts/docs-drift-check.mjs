@@ -1914,9 +1914,13 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  \`src/loop/orchestrator.js:1517-1531\`，棘轮那一侧的计数**一字不变**（照旧绿），而符号声明校验
  *  整条消失。没有这条下限，#286 后面几刀就能「一边把裸行号换成符号锚点、一边偷偷退回去」而全程全绿。
  *  与 `BARE_LINE_REF_BASELINE` 同构：生效值从脚本**自身文本**里读（自测能把它调高来证它真的是锁）。
- *  现测值 = 我自己那条 note 打出来的 24 组 / 44 处（`--verbose` 可复核）。
+ *  现测值 = 我自己那条 note 打出来的唯一 (符号, 文件) 组数 / 处数（`--verbose` 可复核）。
+ *  升下限的理由（工单 261016-305 / issue #305，24 → **27**，+3 组 / 44 → 50 处）：中英《宿主消费者契约》
+ *  新增成对的「Reflection 决策解析」小节，按本单红线用**符号锚点**引用 `parseReflectionDecision`
+ *  （`src/loop/reflection.js`）与 `jsonCandidates`（`src/text/json-candidates.js`）、`truncate`
+ *  （`src/reflection/judge.js`）——锚点在变多，是这条下限想看见的方向。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 24;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 27;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
@@ -2010,8 +2014,13 @@ const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
  *  `maxNoToolRounds` / `budgetRounds` / `continuationExhausted` / `errorHashes` / `termination` /
  *  `judge_done`），中英同一条目同时改（各 17 处）。
  *  保留 16 条区间（每份文档同一批：7 条符号锚点自带区间 + 9 条范围性事实），逐条理由见
- *  `docs/delivery/261016-286-tb1b-delivery.md`。 */
-const BARE_LINE_REF_BASELINE = 144;
+ *  `docs/delivery/261016-286-tb1b-delivery.md`。
+ *  降基线的理由（工单 261016-305 / issue #305，144 → **142**，降 2）：把 `jsonCandidates` 从
+ *  `src/reflection/wrapup.js` 提取到 `src/text/json-candidates.js` 之后，该文件少了 30 行，中英契约里
+ *  那条指向收尾/`judge` 文本归一化器的 `src/reflection/wrapup.js:132-135` **越界**（文件只剩 106 行），
+ *  两条引用各改成不带区间的符号锚点 `normalizeWrapupWithLlm`（`src/reflection/wrapup.js`）
+ *  ⇒ 每份文档各降 1 个唯一区间（`--verbose` 实测 146 唯一区间 − 4 处声明式豁免 = 142）。 */
+const BARE_LINE_REF_BASELINE = 142;
 
 /** 棘轮生效值：从**本脚本自己的文本**里读 `BARE_LINE_REF_BASELINE`（走 `textOf`，所以 `--self-test`
  *  能把这个常量临时改小来证「它真的是锁」：调低到低于实测值必须红，改回来必须绿）。
@@ -3667,13 +3676,13 @@ const SELF_TEST_CASES = [
       [CONTRACT_CN]: (t) => t.replace("`defaultSleep`（`src/loop/abort.js:16`）", "`src/loop/abort.js:16`"),
       [CONTRACT_EN]: (t) => t.replace("`defaultSleep` (`src/loop/abort.js:16`)", "`src/loop/abort.js:16`"),
     },
-    expect: [/symbol-anchor: 覆盖面里唯一 \(符号, 文件\) 只剩 23 组，低于下限 \*\*24\*\* 组/, /退化成裸行号/,
+    expect: [new RegExp(`symbol-anchor: 覆盖面里唯一 \\(符号, 文件\\) 只剩 ${SYMBOL_ANCHOR_MIN_UNIQUE - 1} 组，低于下限 \\*\\*${SYMBOL_ANCHOR_MIN_UNIQUE}\\*\\* 组`), /退化成裸行号/,
       /棘轮的计数一字不变|裸行号棘轮的计数一字不变/],
   },
   {
-    label: "#286 返工 R1 的另一侧：把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 25（实测仍是 24）⇒ 必须红，证明这个数是读出来的、不是装饰",
-    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const SYMBOL_ANCHOR_MIN_UNIQUE = 24;", "const SYMBOL_ANCHOR_MIN_UNIQUE = 25;") },
-    expect: [/唯一 \(符号, 文件\) 只剩 24 组，低于下限 \*\*25\*\* 组/],
+    label: `#286 返工 R1 的另一侧：把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 ${SYMBOL_ANCHOR_MIN_UNIQUE + 1}（实测仍是 ${SYMBOL_ANCHOR_MIN_UNIQUE}）⇒ 必须红，证明这个数是读出来的、不是装饰`,
+    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace(`const SYMBOL_ANCHOR_MIN_UNIQUE = ${SYMBOL_ANCHOR_MIN_UNIQUE};`, `const SYMBOL_ANCHOR_MIN_UNIQUE = ${SYMBOL_ANCHOR_MIN_UNIQUE + 1};`) },
+    expect: [new RegExp(`唯一 \\(符号, 文件\\) 只剩 ${SYMBOL_ANCHOR_MIN_UNIQUE} 组，低于下限 \\*\\*${SYMBOL_ANCHOR_MIN_UNIQUE + 1}\\*\\* 组`)],
   },
 
   // —— 返工 R2（评审阻断项）：覆盖面会因为改名而**静默缩面**。脚本按

@@ -304,7 +304,7 @@ Do not extrapolate it to the rest of the engine:
   (issue #139)", which is about resume, not retry).
 - **Out-of-round completions get one attempt each**: the wrap-up call
   (`src/loop/termination.js:234`), the wrap-up/`judge` text normalizer
-  (`src/reflection/wrapup.js:132-135`), and the `fold-llm` default summarizer
+  (`normalizeWrapupWithLlm` at `src/reflection/wrapup.js`), and the `fold-llm` default summarizer
   (`finalPersistence` at `src/loop/orchestrator.js`). None of them consumes this budget.
 - **The run itself is never retried.** Whole-run rerun/requeue policy belongs to
   the host (ADR-012), and `maxTokenContinuations` (default `3`) and
@@ -1209,6 +1209,54 @@ Within one round, exactly one mechanism gets to decide, in this order
 8. **`fail()` classification** — any throw at any point replaces all of the
    above with `aborted` (signal set) or `failed` / `persistence_failed`
    (`src/loop/orchestrator.js:1055-1113`).
+
+## Reflection decision parsing (issue #305)
+
+`parseReflectionDecision`（`src/loop/reflection.js`）turns one reflection model
+answer into the decision object the governor acts on. It is a host-visible API:
+the engine re-exports it from the package root（`src/index.js`）and from
+`src/loop/orchestrator.js`, while the engine itself never calls it.
+
+**JSON extraction is a top-level balanced scan**, not a greedy regex. The scan
+lives in one shared place — `jsonCandidates`（`src/text/json-candidates.js`）,
+extracted verbatim from the wrap-up parser (`tryParseWrapupJson`,
+`src/reflection/wrapup.js`), which keeps its previous behavior word for word —
+so the two model-JSON parsers in this package no longer disagree about where an
+object ends. The scan is string- and escape-aware, yields **only** objects whose
+brace depth returns to zero, and yields **nothing** for an object left unclosed.
+
+| Field | Value | When the model omitted it |
+|---|---|---|
+| `progress` | finite number from `progress` | `undefined` |
+| `stalled` | `true` only for a literal `stalled: true` | `false` |
+| `continueFlag` | `true` only for a literal `continue: true` | `false` |
+| `stallPattern` / `reason` / `plan` | `String(...)` of the field | `""` |
+| `via` | `"json"` or `"prose_fallback"` | always present |
+
+`via` names the **source** of the values, not a schema verdict: `"json"` means
+the values came from a parsable top-level object, `"prose_fallback"` means they
+came from keyword matching over the whole text. Every one of the six fields is
+optional, so a half-populated object such as `{"progress":3}` is a legal
+decision and stays on the `"json"` path. One deliberate exception: when a
+top-level object parses but carries **none** of
+`progress`/`stalled`/`continue`/`stallPattern`/`reason`/`plan`, there is nothing
+to carry over and the result is reported as `"prose_fallback"`.
+
+Before this fix the extraction was the greedy `/{[\s\S]*}/`, so a trailing
+sentence containing a brace pair (a `{plan}` placeholder in prose, a fenced
+answer followed by a remark, or two sibling objects) produced one
+non-parsable blob; `JSON.parse` threw, and the keyword fallback ran over the
+whole text **including the JSON itself** — which matched the key names and
+silently inverted the booleans the model had just written
+(`"continue": false` came back as `continueFlag: true`).
+
+Two neighbors are **intentionally unchanged**: the fallback's `reason`
+truncation stays `value.slice(0, 200)` (UTF-16 code units), even though
+`truncate`（`src/reflection/judge.js`）counts code points with `Array.from` —
+unifying them would change a host-visible value; and the round judge keeps its
+own every-start-brace scan（`src/reflection/judge.js`）, which returns an inner
+fragment when the outer object is unclosed. Switching that to top-level-only is
+a behavior change and needs its own ticket.
 
 ## Reusable normalization primitives
 
