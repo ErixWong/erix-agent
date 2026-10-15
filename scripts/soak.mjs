@@ -505,17 +505,28 @@ function createRequestViewProbe(upstream, resultOrigins) {
       });
     }
     // 协议转换仍然跑（它是转换不坏的证据），但它**不再是配对断言的通过条件**。
+    // 出错后计数与错误分开存（requests 不会因覆盖而变 NaN），ok=false 粘住不回头。
     try {
       canonicalToOpenAIMessages("soak", view);
       probe.conversion.openai.requests += 1;
     } catch (error) {
-      probe.conversion.openai = { ok: false, error: String(error?.message ?? error), code: error?.code };
+      probe.conversion.openai = {
+        ok: false,
+        requests: probe.conversion.openai.requests,
+        error: String(error?.message ?? error),
+        code: error?.code,
+      };
     }
     try {
       canonicalToAnthropicRequest({ system: "soak", messages: view, tools: [SOAK_TOOL], maxTokens: 1024 });
       probe.conversion.anthropic.requests += 1;
     } catch (error) {
-      probe.conversion.anthropic = { ok: false, error: String(error?.message ?? error), code: error?.code };
+      probe.conversion.anthropic = {
+        ok: false,
+        requests: probe.conversion.anthropic.requests,
+        error: String(error?.message ?? error),
+        code: error?.code,
+      };
     }
   };
 
@@ -818,7 +829,8 @@ async function main() {
       && probe.tokensBefore > probe.tokensAfter
       && probe.foldedSamples.length > 0
       && ageOkSamples.length === probe.foldedSamples.length, {
-      toolResultTtlOption: TOOL_RESULT_TTL,
+      // 报**真正传给引擎的那个值**（不是常量名）：变异时它必须跟着变，否则证据会说谎。
+      toolResultTtlOption: common.toolResultTtl,
       engineTtlLayerEvents: counter.ttlFolds.length,
       engineTtlFoldedResults: ttlEngineFolded,
       engineTtlTokensSaved: ttlEngineTokensSaved,
