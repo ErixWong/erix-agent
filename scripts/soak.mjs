@@ -9,6 +9,18 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
+// 中止/重试路径上，被抛弃的 in-flight 请求可能在 run 已经收口之后才拒绝。Node 22 默认
+// `--unhandled-rejections=throw` 会**直接把进程打死**（真机 soak 实测：abort 之后报告根本没写出来）。
+// 这里先接住并记进报告：soak 的职责是测量它，不是被它杀掉。
+const unhandledRejections = [];
+process.on("unhandledRejection", (error) => {
+  unhandledRejections.push({
+    message: String(error?.message ?? error),
+    code: error?.code,
+    reason: error?.termination?.reason,
+  });
+});
+
 import {
   createAnthropicProvider,
   createFileTranscriptStore,
@@ -789,6 +801,26 @@ async function main() {
 
   // ---------- 引擎缺陷探针（只观察不改）
   const defects = [];
+  // 被抛弃的请求拒绝（宿主可见）：真机曾以「进程被打死 + 报告没写出」的形式出现。
+  ledger.check("no-unhandled-rejection-during-abort", unhandledRejections.length === 0, {
+    count: unhandledRejections.length,
+    samples: unhandledRejections.slice(0, 3),
+    note: "非阻断观察项：真因在引擎（provider-runner.js:212 → providers/openai.js:378 → providers/errors.js:174），本单只报不修",
+  }, { blocking: false });
+  if (unhandledRejections.length > 0) {
+    defects.push({
+      id: "abandoned-request-rejection-unhandled",
+      kind: "宿主可见的 unhandledRejection（能把进程打死）",
+      severity: "major",
+      where: "src/loop/provider-runner.js:212 → src/providers/openai.js:378 → src/providers/errors.js:174"
+        + "（中止后 in-flight 请求的拒绝没人接）",
+      why: "Node 22 默认 --unhandled-rejections=throw；宿主若在 abort 后自己还活着只是运气（或装了 handler）。"
+        + "最小复现（本地永不响应的 HTTP + 真 createOpenAIProvider + 中途 abort）**不重现**，"
+        + "说明触发面比「abort + in-flight」更窄（真机是 rounds=12/compact-every=4/abort-at=6 的长跑组合）",
+      blocking: false,
+      evidence: unhandledRejections,
+    });
+  }
   // 未知选项必须被拒（白名单见 src/loop/option-normalization.js:36-97）。文档里的 `governor` 全部是
   // src/reflection/governor.js 的**代码引用**，不是 runToolLoop 选项名——探针的正解是「必须拒」，
   // 不是「文档漂移」（本脚本前一版把它报成漂移，是假阳性）。
@@ -861,6 +893,7 @@ async function main() {
       observedNonBlocking: ledger.assertions.filter((a) => !a.pass && !a.blocking).length,
     },
     engineDefects: defects,
+    unhandledRejections,
   };
   await writeFile(cli.out, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 
