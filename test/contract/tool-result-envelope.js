@@ -429,6 +429,44 @@ export function toolResultEnvelopeContract(label, getEntry) {
     assert.equal(typeof toolResultFacts[0].erix.durationMs, "number");
   });
 
+  // issue #286（0.20.0 追加）：`erix.executionStatus` 是**条件存在**字段。引擎行为不变，但常量面
+  // 以前没标这个存在条件 → 只读 `TOOL_RESULT_CONTRACT` 的宿主会按「每个结果块都有」写代码。
+  test(`${label}: erix.executionStatus 只在特殊状态存在，常量面登记了存在条件（issue #286）`, async () => {
+    const { buildToolResultFact, TOOL_RESULT_CONTRACT: constant } = await entry();
+    const spec = constant.engine.fields.executionStatus;
+    assert.equal(spec.writtenFor, "special states only",
+      "常量必须标出存在条件，否则只读常量的消费者会把它当恒存在字段");
+    assert.deepEqual(spec.presentValues, ["intercepted", "interrupted"]);
+
+    // 普通结果块：**无条件**断言它不存在（不是「有就查」）
+    const plain = buildToolResultFact({
+      toolUseId: "k-1",
+      content: "body",
+      engine: { toolCallKey: "tc_1234567890ab", round: 1, success: true },
+    });
+    assert.equal(Object.hasOwn(plain.erix, "executionStatus"), false,
+      `普通结果块不该带 executionStatus：${JSON.stringify(plain.erix)}`);
+    assert.equal(plain.erix.executionStatus, undefined);
+
+    // 端到端：真跑一轮的普通成功 / 失败结果都不带（失败也不是特殊状态）
+    const { toolResultFacts: okFacts } = await runCase(async () => ({ content: "done", success: true }));
+    assert.equal(Object.hasOwn(okFacts[0].erix, "executionStatus"), false,
+      `引擎只在 resume 改写与审计拦截时写它：${JSON.stringify(okFacts[0].erix)}`);
+    const { toolResultFacts: badFacts } = await runCase(async () => ({ content: "nope", success: false }));
+    assert.equal(Object.hasOwn(badFacts[0].erix, "executionStatus"), false);
+
+    // 特殊状态：逐值钉住「等于对应值」
+    for (const status of spec.presentValues) {
+      const special = buildToolResultFact({
+        toolUseId: "k-2",
+        content: "body",
+        engine: { toolCallKey: "tc_1234567890ab", round: 2, executionStatus: status },
+      });
+      assert.equal(special.erix.executionStatus, status, `${status} 必须原值写进 erix 命名空间`);
+      assert.equal(Object.hasOwn(special, "executionStatus"), false, "旧顶层摊平路径不得复活");
+    }
+  });
+
   // ── 跨通道身份：onToolCall fragment → tool_use → tool_result 同一个值 ────────
   test(`${label}: 流式片段的 toolCallKey 与 tool_use / tool_result 同值，原有片段字段不动`, async () => {
     const { runToolLoop, createMemoryTranscriptStore } = await entry();

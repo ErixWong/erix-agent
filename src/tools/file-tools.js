@@ -1721,3 +1721,33 @@ export function createFileTools({
     executors: (name, input, context) => runExecutor(name, input, context),
   };
 }
+
+/**
+ * issue #220 返回形态判别式；表与语义见宿主契约。返回类型是**按 `kind` 关联的判别联合**，
+ * 而不是一支 `kind` 为宽 union 的对象：后者会让 `bytes` 在任何一支都是 `number | undefined`，
+ * 宿主在 `kind === "bytes"` 里仍得自己断言。各支的存在性与下方实现逐字对应，纯类型注释。
+ * @typedef {"text" | "bytes" | "content-metadata" | "unknown"} FileToolResultKind
+ * @typedef {{kind:"text", text:string, bytes:undefined, metadata:undefined}} FileToolTextResult
+ * @typedef {{kind:"bytes", text:string, bytes:number, metadata:undefined}} FileToolBytesResult
+ * @typedef {{kind:"content-metadata", text:string, bytes:undefined, metadata?:object}} FileToolContentMetadataResult
+ * @typedef {{kind:"unknown", text:string, bytes:undefined, metadata:undefined}} FileToolUnknownResult
+ * @typedef {FileToolTextResult|FileToolBytesResult|FileToolContentMetadataResult|FileToolUnknownResult} FileToolResult
+ * @param {unknown} value
+ * @returns {FileToolResult}
+ */
+export function classifyFileToolResult(value) {
+  const none = { bytes: undefined, metadata: undefined };
+  if (typeof value === "string") return { kind: "text", text: value, ...none };
+  if (typeof value === "number" && Number.isFinite(value)) return { kind: "bytes", text: String(value), bytes: value, metadata: undefined };
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const record = /** @type {Record<string, unknown>} */ (value);
+    if (typeof record.content === "string") {
+      const metadata = record.metadata;
+      return {
+        kind: "content-metadata", text: record.content, ...none,
+        ...(metadata !== null && typeof metadata === "object" ? { metadata: /** @type {object} */ (metadata) } : {}),
+      };
+    }
+  }
+  return { kind: "unknown", text: value === undefined ? "" : String(value), ...none };
+}

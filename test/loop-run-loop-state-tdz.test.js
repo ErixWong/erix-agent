@@ -71,7 +71,9 @@ test("F-2 时序（源码侧）：两格初值是占位，真值赋值既不能�
     "wrapupNormalizationEnabled 的真值赋值必须留在 wrapupEnabled 声明之后（占位 + 原位赋真值）");
 
   // ③ 真值赋值在两处全文件首读点**之前**（晚了首读拿到的就是占位）。
-  const readRoundJudge = lineOf("if (runLoopState.roundJudgeEnabled && isEndTurn) {");
+  // 锚点只取**前缀**：issue #282 在这条首读点上追加了 `&& !signal?.aborted`（已中止就不发起 judge），
+  // 逐字比整行会让这条 TDZ 门把「加了中止守卫」误报成「时序被动过」；前缀足够定位唯一首读点。
+  const readRoundJudge = lineOf("if (runLoopState.roundJudgeEnabled && isEndTurn");
   const readWrapup = lineOf("&& runLoopState.wrapupNormalizationEnabled");
   assert.ok(assignRoundJudge < readRoundJudge, "真值赋值不能晚于 roundJudgeEnabled 的读点");
   assert.ok(assignWrapup < readWrapup, "真值赋值不能晚于 wrapupNormalizationEnabled 的读点");

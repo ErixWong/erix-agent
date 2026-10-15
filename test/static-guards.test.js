@@ -17,7 +17,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { before, describe, it } from "node:test";
 
@@ -113,6 +113,33 @@ const SLOT_NAME_EXEMPTIONS = Object.freeze([
   // 表留着是为了「下次真需要豁免时必须点名文件 + 写理由」，下面的僵尸检查会保证
   // 它不会慢慢长成一堆整类放行。
 ]);
+
+/**
+ * 规则 3 的「本机档案类」豁免（issue #286 的一小半）。病根：本守卫的 `walk()` 不认
+ * `.gitignore`，而 `EXEMPT_UNKNOWN_FILES` 只按**精确文件名**放行——`docs/tasks/` 里的
+ * 交付报告（整目录不入库）一旦写下「当时在那台机器上跑过的 `erix … --某旗标`」，
+ * 就会被规则 3 当成「文档声称 erix 接受这个旗标」而红；而逐文件点名在这种目录里没有
+ * 意义（档案名每单都变）。口径：按**目录前缀 + 同句或文件头的档案声明**双条件放行，
+ * 与 scripts/docs-drift-check.mjs 的 `IGNORED_DIR_CLASSES["docs/tasks/"]` /
+ * `LOCAL_ARCHIVE_DECLARATION` 同一思路。既不放开整棵 docs/，也不允许只靠目录名静默放行。
+ */
+const LOCAL_ARCHIVE_DIRS = Object.freeze([
+  {
+    prefix: "docs/tasks/",
+    reason: "交付档案目录：.gitignore 的目录型规则（#162 定口径、#273 纳入漂移检查面），里面的 erix 命令行是当时那台机器上的实录，不是「erix 接受该旗标」的声称",
+  },
+]);
+const LOCAL_ARCHIVE_DECLARATION = /本机|本地|不入库|未入库|不提交|未提交|未跟踪|never committed|not committed|untracked|gitignore|忽略|归档|交付报告|工单|实录/i;
+
+/** 纯函数口径（反向证直接拿它问）：两个信号缺任何一个都不放行。 */
+function localArchiveVerdict({ rel, line = "", header = "" }) {
+  const entry = LOCAL_ARCHIVE_DIRS.find((e) => rel.startsWith(e.prefix));
+  if (entry === undefined) return { exempt: false, why: "不在本机档案目录里" };
+  if (LOCAL_ARCHIVE_DECLARATION.test(line) || LOCAL_ARCHIVE_DECLARATION.test(header)) {
+    return { exempt: true, why: entry.reason };
+  }
+  return { exempt: false, why: "同句与文件头都没有「本机/归档/不入库」这类声明" };
+}
 
 /**
  * 规则 3 的「已知不是 erix 旗标」豁免：同样只按**确切文件名**放行，逐条带理由，不允许 glob/目录。
@@ -242,8 +269,12 @@ function negationProbe(line, flag) {
 function flagMentions({ rel, abs }, accepted, retired) {
   const mentioned = [];
   const unknown = [];
+  const localArchive = [];
   const isDoc = extOf(rel) === ".md";
-  readLines(abs).forEach((line, index) => {
+  // 本机档案类的「文件头声明」信号：只看前 15 行（档案目录里的报告会把「本机不入库」写在开头）
+  const allLines = readLines(abs);
+  const header = allLines.slice(0, 15).join("\n");
+  allLines.forEach((line, index) => {
     if (isCommentLine(line)) return;
     const erixLine = ERIX_COMMAND_RE.test(line);
     if (!erixLine && !(isDoc || !isDoc)) return;
@@ -271,11 +302,16 @@ function flagMentions({ rel, abs }, accepted, retired) {
         mentioned.push({ flag, rel, line: index + 1, status: "exempted" });
         continue;
       }
+      if (isDoc && localArchiveVerdict({ rel, line, header }).exempt) {
+        mentioned.push({ flag, rel, line: index + 1, status: "local-archive" });
+        localArchive.push({ flag, rel, line: index + 1 });
+        continue;
+      }
       mentioned.push({ flag, rel, line: index + 1, status: "unknown" });
       unknown.push({ flag, rel, line: index + 1, text: line.trim().slice(0, 160) });
     }
   });
-  return { mentioned, unknown };
+  return { mentioned, unknown, localArchive };
 }
 
 // ---------------------------------------------------------------------------
@@ -333,14 +369,17 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
   let retired = [];
   let mentions = [];
   let unknown = [];
+  let localArchive = [];
 
   before(() => {
     accepted = parseAcceptedFlags();
     retired = deriveRetiredFlags(accepted);
+    localArchive = [];
     for (const file of listScannable(new Set([...CODE_EXTS, ".md"]), "examples", "docs", ...readmeEntries())) {
       const scan = flagMentions(file, accepted, retired);
       mentions.push(...scan.mentioned);
       unknown.push(...scan.unknown);
+      localArchive.push(...(scan.localArchive ?? []));
     }
   });
 
@@ -477,6 +516,45 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
       + "要么文档/示例跑在了实现前面。本规则**没有**手抄白名单，只有从 CHANGELOG 推出的退役名单：\n  "
       + unknown.map((u) => `${u.rel}:${u.line} ${u.flag}`).join("\n  "),
     );
+  });
+
+  it("规则 3 的本机档案类豁免：目录 + 声明双条件，缺一即红（issue #286 的一小半，自带反向证）", () => {
+    for (const entry of LOCAL_ARCHIVE_DIRS) {
+      assert.ok(entry.prefix.endsWith("/"), `本机档案类必须按目录放行，不许退回逐文件点名：${entry.prefix}`);
+      assert.ok(entry.reason.trim().length >= 20, `${entry.prefix} 的豁免理由太短`);
+    }
+    // 口径本体（纯函数）：两个信号缺任何一个都不放行
+    assert.equal(localArchiveVerdict({ rel: "docs/tasks/x.md", line: "交付报告（本机不入库）：erix chat --unknown-probe-261015" }).exempt, true);
+    assert.equal(localArchiveVerdict({ rel: "docs/tasks/x.md", line: "erix chat --unknown-probe-261015" }).exempt, false,
+      "档案目录里没有档案声明就放行 = 整目录被静默吞掉（正是本单要堵的形状）");
+    assert.equal(localArchiveVerdict({ rel: "docs/host-consumer-contract.md", line: "交付报告（本机不入库）：erix chat --unknown-probe-261015" }).exempt, false,
+      "非档案目录不得靠措辞逃逸");
+
+    // 端到端反向证：在 docs/tasks/ 真的落两个临时文件走一遍扫描口径，用完即删（不留在树里）
+    const dir = resolve(ROOT, "docs/tasks");
+    const made = [];
+    const probe = (name, body) => {
+      const abs = join(dir, name);
+      const rel = relative(ROOT, abs).split("\\").join("/");
+      made.push(abs);
+      writeFileSync(abs, body, "utf8");
+      return flagMentions({ rel, abs }, accepted, retired);
+    };
+    try {
+      mkdirSync(dir, { recursive: true });
+      const declared = probe("261015-03-proof-declared.md",
+        "# 交付报告（本机，不入库）\n\n实测命令 `erix` 的守卫跑法：node scripts/docs-drift-check.mjs --self-probe-261015\n");
+      assert.equal(declared.unknown.length, 0, `带档案声明的交付档案不该算工单：${JSON.stringify(declared.unknown)}`);
+      assert.equal(declared.localArchive.length, 1, "豁免必须留下可数的命中，否则僵尸豁免会放掉以后的真问题");
+      const undeclared = probe("261015-03-proof-undeclared.md",
+        "# 随手记\n\n实测命令 `erix` 的守卫跑法：node scripts/docs-drift-check.mjs --self-probe-261015\n");
+      assert.equal(undeclared.unknown.length, 1, "反向证：档案声明缺失时必须仍然红");
+      assert.equal(undeclared.localArchive.length, 0);
+      // 反向证不靠环境里恰好有档案文件：本轮真实扫描面里若有档案目录命中，也必须是 local-archive 而非 unknown
+      assert.ok(localArchive.every((h) => h.rel.startsWith("docs/tasks/")), JSON.stringify(localArchive));
+    } finally {
+      for (const abs of made) rmSync(abs, { force: true });
+    }
   });
 
   it("规则 3 的扫描面不是空转（覆盖数掉了说明口径被改窄到看不见东西）", () => {

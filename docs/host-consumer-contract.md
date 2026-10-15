@@ -1013,6 +1013,62 @@ nested `usage` field. Whether to re-run, alert, or merely bill is the host's
 decision (see the termination-reason list under "Final-answer verification"
 and the run state section).
 
+### Value-added calls before the terminal decision (issue #282)
+
+The round judge and the final guard are *value-added* calls sitting between the last
+model round and the terminal decision. Each costs a real provider round trip, and
+neither of them may overwrite a user abort. The rule is one line, and since issue #282
+it is enforced at the terminal decision itself instead of being patched in at each call
+site: **`aborted` outranks `judge_done` and `final_guard_*`**.
+
+| Scenario | Engine behaviour | What the host sees |
+|---|---|---|
+| `signal.abort()` was already set when the end-turn judge would start | the judge call is **skipped entirely** — the entry guard is `roundJudgeEnabled && isEndTurn && !signal?.aborted` in `src/loop/orchestrator.js` | one fewer model request than before issue #282, and stop latency drops from one LLM round trip to immediate |
+| abort while the judge request is in flight | the judge call is interrupted and the abort error reaches `fail()` | `reason: "aborted"` carrying the issue #180 payload |
+| abort after the judge returned, before the terminal reason is derived | the terminal `stop` branch checks the signal first (`throwIfAborted(signal)` at its head) and throws instead of returning the judge's verdict | `reason: "aborted"` plus `{usage, rounds, partial:true}` — **never** `judge_done` |
+| abort while `finalGuard` runs | the same checkpoint immediately before `finish(reason)` re-checks the signal | `reason: "aborted"`, never `final_guard_unverified` |
+
+Text the model already produced is not lost by the abort: it stays on `error.finalText`
+(issue #180). When the judge did run, its verdict is still recorded on the judge-record
+channel (see "Judge record correlation and run outcome (issue #165)"), so a host can tell
+"the judge considered the work done" apart from "the user let the run finish".
+
+### Where the facts live after an abort (issue #283)
+
+An aborted run leaves **no transcript record that the engine wrote for the round that was
+in flight**: the engine commits a round only when `appendRound` succeeds, and a round
+interrupted before that commit is not retroactively written. One exception, stated so it is
+not mistaken for a guarantee: `persist()` checks the signal **before** it calls the store
+(`src/loop/orchestrator.js`, the retry loop opens with `throwIfAborted(signal)`), so an
+`appendRound` that was already in flight when the abort landed can still commit. Treat the
+in-flight round as having no record, and never as a count you can reconcile against.
+This is a deliberate decision (issue #283,
+option β), not an oversight — an interrupted round has no stable round key, its tool_use
+blocks may have no `tool_result` pair (which would make the transcript unreplayable for
+the resume contract), and writing a half round would silently change what `rounds` counts.
+
+Therefore `termination.partial: true` means **the payload**, not the transcript: it
+asserts that the caught error carries the partial facts (`error.finalText`,
+`error.usage`, `error.rounds`, mirrored into `termination`), and it asserts nothing about
+the store. A host that renders "what already happened" must read the channel that actually
+holds each fact:
+
+| Fact the host wants to show after an abort | Channel that holds it | Guaranteed? |
+|---|---|---|
+| Rounds the run had already finished | `RoundRecord` entries in the transcript store (written by `appendRound`) | yes — abort never rewrites or deletes committed rounds |
+| Text already streamed in the interrupted round — **reasoning / thinking deltas never enter this channel** | run-snapshot channel, i.e. `partialPersistence:{intervalMs}` with `stream:true` | **best effort, may be missing entirely.** Only the *latest committed* partial **text** is there: a commit needs a delta of `minBytes` and the interval timer to fire, the timer is cleared when the attempt ends without flushing what is still buffered, and an abort does not force a flush. When it does exist it is at most `intervalMs` stale. Without the option the in-flight round has no snapshot at all (see the in-flight `appendRound` caveat above for the one exception) |
+| The partial final text itself | `error.finalText` (and `termination.partial`), issue #180 | yes — `""` when nothing had been produced; **this is the only guaranteed partial-text channel** |
+| What the stopped run actually cost | `error.usage` / `termination.usage`, `error.rounds` / `termination.rounds` | yes — same objects the normal return would have carried |
+| The last judge verdict before the stop | judge-record channel (`onJudge` callback / `judge.log`), issue #165 | present when the judge actually ran; absent when the abort skipped it (see the table above) |
+| The interrupted round as a transcript record | **nowhere the host can rely on** | no — the engine deliberately does not write an `interrupted` round (β); only an `appendRound` that happened to be in flight can land, and it is not a channel you can plan around |
+
+Two consequences for hosts, both pinned by this section: a host that wants the partial
+text on screen must read `error.finalText` — that is the guaranteed channel — while
+`partialPersistence` buys a best-effort snapshot of the *committed* partial text only (no
+reasoning, possibly nothing at all, up to `intervalMs` stale); and a host must not treat
+"`partial: true` but zero `RoundRecord` for that round" as a persistence bug — that is the
+documented shape of an abort without partial persistence.
+
 ## Judge record correlation and run outcome (issue #165)
 
 Judge decisions are consumed off `onJudge` (the CLI appends them to `judge.log`;
@@ -1080,7 +1136,7 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 | `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`src/loop/orchestrator.js:2638-2639`, loop at `2601`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:95`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`src/loop/orchestrator.js:1417-1419`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
 | `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:147-149`); (b) the round loop simply runs out (`src/loop/orchestrator.js:2561`, tail handling at `3151-3169`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`src/loop/orchestrator.js:1084-1099`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
 | `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3103-3116`), revision limit (`3118-3131`), or the budget-exhaustion tail (`3156-3169`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js:3092-3095`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1435-1437`); `finalGuardMaxRetries` moves the revision limit (default 2, `src/loop/orchestrator.js:1427-1430`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
-| `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:905-955`; classification at `907-908` and `927-932`, annotation at `947-954`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
+| `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:905-955`; classification at `907-908` and `927-932`, annotation at `947-954`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
 | `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:905-955`, loop catch at `3147-3149`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js:700-711`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `invalid_request` / `not_found` / `conflict` (issue #179) → fix the request, the model name, or the colliding resource — re-sending the same payload cannot help; `unknown` → inspect `termination.detail` |
 | `persistence_failed` | same `fail()` path, selected when the error carries persistence info (`src/loop/orchestrator.js:927-932`), which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js:940-946`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
 
@@ -1590,6 +1646,36 @@ adds `exec` and `todo_*`, and passes no predicates, so CLI behaviour stays
 "no boundary" exactly as before. `bin/` no longer owns a second copy of the file
 tools (issue #184).
 
+### Success result shapes (issue #220)
+
+`createFileTools().executeTool()` returns a **successful** result in four different
+top-level shapes. Those shapes are contract, not implementation detail: the packaged
+`fileToolsContract` suite asserts the `typeof` of each one (and the `kind` returned by the
+discriminator below), so flattening, wrapping, or "unifying" any of them fails the suite
+instead of landing silently on a host's UI.
+
+| Tool | Top-level shape on success | What it carries | `classifyFileToolResult().kind` |
+|---|---|---|---|
+| `readFile` | `string` | numbered lines; truncation and skip accounts are appended as trailing marker lines | `text` |
+| `edit` | `string` | one summary line plus a unified diff | `text` |
+| `writeFile` | `number` | bytes written — a real number, so `0` is a valid success value | `bytes` |
+| `searchText` | `object` with exactly `content` and `metadata` | `content` is the hit text; `metadata` holds the structured account (truncation / skips / caps) | `content-metadata` |
+
+Rules a host can code against:
+
+- **Pin the shape with `classifyFileToolResult`, exported from `erix-agent/tools` — not with
+  string containment.** It returns `{ kind, text, bytes, metadata }`, where `kind` is the
+  discriminated union `"text" | "bytes" | "content-metadata" | "unknown"`. Switch on `kind`
+  and close the switch with `default: assertNever(kind)`: when the engine adds a fifth shape,
+  the host's own compile fails at that `default` instead of the UI rendering `[object Object]`.
+- `typeof result === "string"` is **not** a success test: error results are strings too
+  (`"错误：…"`), the same top-level shape as `readFile`. Separate them by the error prefix,
+  never by shape.
+- A bare `number` result is exactly why `if (!result)` is a bug: `writeFile` returning `0`
+  means "wrote an empty file successfully".
+- The suite's `contentOf` / `metadataOf` helpers remain as migration readers for hosts that
+  still normalise by hand. They are readers, not the contract — the assertions above are.
+
 ### File edit tool `edit` (issue #191)
 
 `edit` is the **second write tool** in the same `definitions` array and the same
@@ -2070,7 +2156,7 @@ addressed as `erix.<field>`: `toolCallKey` / `round` / `durationMs` / `execution
 | `erix.toolCallKey` | engine | every `tool_use` the engine accepts, and every result built from one | Cross-channel identity: one allocation per accepted call, carried by the first recognisable stream fragment, the `tool_use` block (and therefore the persisted block and the `tool_use` event clone), the `tool_result`, and the projection. Resume and replay **reuse** the persisted value; a value is never regenerated for a call that already had one. A provider pairing id is **not** an identity and is not guaranteed unique inside a run (per-round index prefixes, or the `call_legacy` fallback for malformed responses), so the same id reappearing in a later round is a **new call** and gets a new key: a key is inherited only where the call is confirmed to be the same one — the replay window of the current round, or the one pending call restored from the crash site. **Pre-contract records stay keyless on both ends** (see the carve-out below). |
 | `erix.round` | engine | the call actually executed | The **execution** round. It is not the event envelope’s `round` (the delivery round), and the two are deliberately not merged. |
 | `erix.durationMs` | engine | the executor promise settled or rejected | Milliseconds from “immediately before the executor is invoked” to “that promise settled or rejected”. |
-| `erix.executionStatus` | engine | special states only | `intercepted` / `interrupted`. |
+| `erix.executionStatus` | engine | special states only | `intercepted` / `interrupted`. The existence condition is machine-readable as well: `TOOL_RESULT_CONTRACT.engine.fields.executionStatus` carries `writtenFor: "special states only"` plus `presentValues` (`src/tool-fact.js`), so a host that reads only the constant must not assume the field exists on every result block (issue #286). |
 | `erix.success` | engine | every result whose executor settled | The engine-normalised boolean (`success !== false`). Written unconditionally since the retirement of the top-level `success` key: with the top level gone, writing it only when the host declared a verdict would make "succeeded" and "no verdict declared" indistinguishable. A call that never ran (judge interception, interrupted replay) has no verdict and therefore no field. |
 | `metadata.*` | host | whenever the executor returned extensions | The only namespace a host may write. |
 

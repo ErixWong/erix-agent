@@ -1,7 +1,7 @@
 # 宿主消费者契约
 
 > 英文版：[host-consumer-contract.md](host-consumer-contract.md)
-> 同步基线：host-consumer-contract.md @ 2026-10-10（已同步 #179 HTTP 状态码分类（`invalid_request`/`not_found`/`conflict` 三个新 code 与取值表、`retryable` 与重试面逐字不变、未列出的状态码仍落 `unknown`）；#197 技能加载器注册（`bundledDir` 归调用方、库内不猜层级、内置 < 全局 < 项目的优先级、不阻塞且可枚举的 `{skillId, dir, error}` 失败形状、产出即 `ToolSchema`、无新沙箱）与 `skillsLoaderContract` 套件；#184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
+> 同步基线：host-consumer-contract.md @ 2026-10-15（已同步 #220 「成功返回的四种顶层形态」（readFile/edit→string、writeFile→number、searchText→{content,metadata} 逐个钉 typeof，加 `classifyFileToolResult` 判别式与 default:assertNever 用法）；#282 「终局前的增值调用在中止时的行为」（aborted 永远优先于 judge_done / final_guard_*：已中止则跳过整次 judge 调用、judge 在飞时立即中断、judge 已返回但终局未定也必须抛 aborted 并保留 #180 载荷）；#283 「中止后事实的真相分布」（β 裁决：不为被中止的进行中轮补写 RoundRecord；`partial:true` 只指终局载荷不指 transcript；六行渠道对照表）；#179 HTTP 状态码分类（`invalid_request`/`not_found`/`conflict` 三个新 code 与取值表、`retryable` 与重试面逐字不变、未列出的状态码仍落 `unknown`）；#197 技能加载器注册（`bundledDir` 归调用方、库内不猜层级、内置 < 全局 < 项目的优先级、不阻塞且可枚举的 `{skillId, dir, error}` 失败形状、产出即 `ToolSchema`、无新沙箱）与 `skillsLoaderContract` 套件；#184 文件工具注册（`allowRead`/`allowWrite` 谓词与「false → 错误结果而不抛」属 Stable、marker 字面量属 Experimental → #188 三层分级；追加轮 A：`rg` 默认翻回**正则**与真实命令一致、`is_regex=false` = `rg --fixed-strings`/`grep -F`、不读 `.gitignore` 与硬编码 vendor 跳过的偏离声明）；#165 judge 记录关联字段与 run 级 outcome 汇总事件；#167 压缩策略选择（`context.strategy` 名字|对象、fold-llm 默认 summarizer 的成本与 usage 记账）；#170 终止裁决决策表；#182 模型元数据与预算推导 + 多模型槽位装配示例与一次性 `model_metadata_missing` 诊断事件；#181 provider 请求注入口 defaultHeaders/extraBody；#173 观察者回调抛错统一隔离；#183 重试预算（`retry` 默认 false / 两条独立循环 / 不覆盖清单 / 可断言观测点）与契约测试套件定位（漂移哨兵≠宿主一致性测试、标准注入用法、套件清单）；#157 appendUserTurn 成对可选快路径探针；0.16.0 宿主保真、同轮保序契约与升级指南指针）
 
 本文定义 `erix-agent` 的宿主集成边界。引擎维护可审计的运行事实；工具权限、归档策略、
 重试/重跑策略以及最终消费决策归宿主。责任边界见
@@ -828,6 +828,54 @@ abort 载荷的存在理由：用户点「停止」的 run 真的花了 token。
 多出 `errorCode`、`partial` 或嵌套 `usage` 字段。要不要重跑、要不要告警、怎么记账，仍然是
 宿主的决策（reason 枚举见下文「终答核验」，终态另见运行状态一节）。
 
+### 终局前的增值调用在中止时的行为（issue #282）
+
+end-turn judge 与 finalGuard 都是卡在「最后一轮模型回答」与「终局判定」之间的**增值调用**：
+每一个都实打实地烧一次 provider 往返，而且它们都没有资格覆盖用户的中止。规则只有一句话，
+issue #282 之后它收口在终局判定本身，而不是在每个调用点各补一个洞：
+**`aborted` 永远优先于 `judge_done` 与 `final_guard_*`**。
+
+| 场景 | 引擎行为 | 宿主看到什么 |
+|---|---|---|
+| end-turn judge 将要发起时 `signal.abort()` 已置位 | 整次 judge 调用被**直接跳过**——入口守卫是 `src/loop/orchestrator.js` 里的 `roundJudgeEnabled && isEndTurn && !signal?.aborted` | 比 issue #282 之前少一次模型请求，停止体感延迟从「一次 LLM 往返」降到「立即」 |
+| judge 请求在飞期间中止 | judge 调用被中断，abort 错误抵达 `fail()` | `reason: "aborted"` 并携带 issue #180 载荷 |
+| judge 已返回、终局 reason 尚未推导时中止 | 终局 `stop` 分支先查信号（分支入口的 `throwIfAborted(signal)`），宁可抛错也不把 judge 的结论当终态 | `reason: "aborted"` 加 `{usage, rounds, partial:true}`——**绝不是** `judge_done` |
+| finalGuard 执行期间中止 | `finish(reason)` 之前的同一个检查点再查一次信号 | `reason: "aborted"`，绝不会是 `final_guard_unverified` |
+
+模型已产出的文本不会因中止而丢：它仍在 `error.finalText` 上（issue #180）。judge 真的跑过时，
+它的结论仍会记到 judge 记录渠道（见「judge 记录关联与 run 级 outcome（issue #165）」），
+因此宿主能区分「judge 认为已交付」与「用户让它跑完的」。
+
+### 中止后事实的真相分布（issue #283）
+
+被中止的 run **不会为正在进行的那一轮留下任何由引擎写下的 transcript 记录**：引擎只在 `appendRound`
+成功时提交轮次，而在此之前被中断的轮次不会被追溯补写。一个例外在这里说清、以免被当成保证：
+`persist()` 是在**调用 store 之前**查信号的（`src/loop/orchestrator.js`，重试循环以
+`throwIfAborted(signal)` 开头），所以中止落下时**已经在途**的那次 `appendRound` 仍可能落地。
+把进行中那一轮当作“没有记录”来读，也不要拿它当一个能对账的计数。
+这是明意的裁决（issue #283，
+取 β），不是 oversight——中止轮没有稳定的轮键，它的 tool_use 块可能没有配对的 `tool_result`
+（那会让 transcript 在续跑契约上不可重放），而且补写半轮会惘然改变 `rounds` 的计数口径。
+
+因此 `termination.partial: true` 指的是**载荷**，不是 transcript：它断言接住的那个错误对象
+携带了部分事实（`error.finalText`、`error.usage`、`error.rounds`，并同口径镜像进
+`termination`），对 store 不作任何断言。宿主若要把「已经发生过什么」呈现出来，必须去拿
+真正持有该事实的那个渠道：
+
+| 中止后宿主想展示的事实 | 持有它的渠道 | 是否保证 |
+|---|---|---|
+| run 已经跑完的轮次 | transcript store 里的 `RoundRecord`（`appendRound` 写入） | 保证——中止从不改写或删除已提交轮 |
+| 中止轮里已经流出过的文本——**reasoning / thinking 增量从来不进这个渠道** | run-snapshot 渠道，即 `partialPersistence:{intervalMs}` 配合 `stream:true` | **尽力而为，可能根本什么都没有。**里面只有*已提交的*那一份部分**文本**：一次提交需要一个 `minBytes` 的增量并且间隔定时器真的触发，而 attempt 结束时定时器会被清掉、缓冲区里剩下的东西不赶出去，中止也不强制 flush。存在时最多陈旧 `intervalMs`。不开则进行中轮根本快照都没有（唯一例外就是上面的在途 `appendRound`） |
+| 部分终稿文本本身 | `error.finalText`（以及 `termination.partial`），issue #180 | 保证——无产出时为 `""`；**这是唯一有保证的部分文本渠道** |
+| 被停掉的 run 到底花了多少 | `error.usage` / `termination.usage`、`error.rounds` / `termination.rounds` | 保证——与正常返回本会携带的是同一个对象 |
+| 中止前最后一次 judge 裁决 | judge 记录渠道（`onJudge` 回调 / `judge.log`），issue #165 | judge 真跑过就有；被中止跳过时没有（见上表） |
+| 进行中那一轮的 transcript 记录 | **没有宿主能依赖的渠道** | 不保证——引擎故意不补写 `interrupted` 轮（β）；只有恰好已在途的那次 `appendRound` 可能落地，而它不是一条可以安排预期的渠道 |
+
+对宿主的两个推论，均以本节为准：想要屏幕上有部分文本，宿主必须读 `error.finalText`——那才是
+有保证的渠道——而 `partialPersistence` 买的是一份尽力而为的*已提交*部分文本快照（不含 reasoning，
+可能什么都没有，最多陈旧 `intervalMs`）；且宿主不得把「`partial: true` 但该轮在 store 里 0 条
+`RoundRecord`」当成持久化 bug——那就是未开部分持久化时中止的既定形状。
+
 ## judge 记录关联字段与 run 级 outcome（issue #165）
 
 judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log`，宿主可落任意去处）。
@@ -878,7 +926,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`src/loop/orchestrator.js:2638-2639`，循环在 2601）；治理层 stop `cap`（`src/reflection/governor.js:62-64` / `133-135`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:95`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`src/loop/orchestrator.js:1417-1419`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
 | `max_rounds_cap` | (a) 治理层 stop `cap`：接近上限且不允许扩轮（`src/reflection/governor.js:147-149`）；(b) 轮循环自然跑完（`src/loop/orchestrator.js:2561`，收尾在 `3151-3169`） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`src/loop/orchestrator.js:1084-1099`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
 | `final_guard_unverified` | 配了 `finalGuard` 且它没能认证：不可续跑降级（`src/loop/orchestrator.js:3103-3116`）、修订次数触顶（`3118-3131`）、或轮循环跑完的收尾（`3156-3169`）。只对 6 个 guard 适用 reason 生效（`src/loop/termination.js:14-21`），且仅当 `finalGuard` 是函数（`src/loop/orchestrator.js:3092-3095`） | 严格位于 stop 之后的**后阶段**：它替换 reason，不介入轮内治理 | 整体不传 `finalGuard`（此时 `verification` 为 `skipped` / `no_final_guard`，`src/loop/orchestrator.js:1435-1437`）；`finalGuardMaxRetries` 调修订上限（默认 2，`src/loop/orchestrator.js:1427-1430`） | **不得当已验事实消费**：`verification.status === "unverified"`（`non_continuable` / `max_retries`）。转人工复核或测试系统 |
-| `aborted` | 终局 `fail()` 路径且宿主 signal 已 abort（`src/loop/orchestrator.js:905-955`；分类在 907-908 与 927-932，注解在 947-954） | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的 |
+| `aborted` | 终局 `fail()` 路径且宿主 signal 已 abort（`src/loop/orchestrator.js:905-955`；分类在 907-908 与 927-932，注解在 947-954） | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效。issue #282 之后，同一个检查也跑到终局 `stop` 分支的入口以及 `finish(reason)` 之前，因此「终局前的增值调用」（end-turn judge / finalGuard）再也不能把用户的中止改写成 `judge_done` 或 `final_guard_unverified`——见「终局前的增值调用在中止时的行为（issue #282）」 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的 |
 | `failed` | run 生命周期内抛出的任意错误，经 `fail()`（`src/loop/orchestrator.js:905-955`，循环 catch 在 `3147-3149`），并透传 `termination.errorCode`（`src/loop/termination.js:43-57`）；宿主观察者抛错不再是它的来源之一（issue #173） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js:700-711`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`invalid_request` / `not_found` / `conflict`（issue #179）→ 去修请求体、模型名或冲突的资源，重发同一份 payload 帮不上忙；`unknown` → 转去查 `termination.detail` |
 | `persistence_failed` | 同一个 `fail()` 路径，在错误携带持久化信息时被选中（`src/loop/orchestrator.js:927-932`），并额外挂上 `operation` / `phase` / `sideEffect`（`src/loop/orchestrator.js:940-946`） | 替换 `failed`，不会反向发生；不带 `errorCode`（该字段为 `failed` 专属） | `persistence:"none"` 直接移除 transcript 写入路径；可选 store 能力是降级而非失败（见能力分级） | **告警**：副作用被跟踪过，所以这是完整性信号（ADR-013），不是重试候选 |
 
@@ -1269,6 +1317,34 @@ CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `e
 且不传任何谓词，所以 CLI 行为与以前一致，仍是「无边界」。`bin/` 不再持有第二套
 文件工具实现（issue #184）。
 
+### 成功返回的四种顶层形态（issue #220）
+
+`createFileTools().executeTool()` 的**成功**返回值有四种互不相同的顶层形态。这些形态是契约，
+不是实现细节：随包的 `fileToolsContract` 套件逐个断言它们的 `typeof`（以及下面那个判别式
+返回的 `kind`），以以下列任何一种改动都会把套件跑红，而不是静悄悄落到宿主界面上：把四种
+摊平、包一层、或「统一成一种」。
+
+| 工具 | 成功时的顶层形态 | 里面装的是什么 | `classifyFileToolResult().kind` |
+|---|---|---|---|
+| `readFile` | `string` | 带行号的正文；截断与跳过账以尾部 marker 行追加 | `text` |
+| `edit` | `string` | 一行摘要 + unified diff | `text` |
+| `writeFile` | `number` | 写入字节数——是真正的数字，所以 `0` 是合法的成功值 | `bytes` |
+| `searchText` | `object`，顶层键恰好是 `content` 与 `metadata` | `content` 是命中正文，`metadata` 携带结构化账（截断 / 跳过 / 上限） | `content-metadata` |
+
+宿主可以程着写的规则：
+
+- **用 `erix-agent/tools` 导出的 `classifyFileToolResult` 钉形态，而不是用字符串包含去猜。**
+  它返回 `{ kind, text, bytes, metadata }`，其中 `kind` 是判别联合
+  `"text" | "bytes" | "content-metadata" | "unknown"`。宿主按 `kind` 分支，并在 `default` 里
+  `assertNever(kind)`：引擎日后新增第五种形态时，是宿主自己的编译在那个 `default` 上报错，
+  而不是界面渲染出 `[object Object]`。
+- `typeof result === "string"` **不是**成败判据：错误结果也是字符串（前缀 `"错误："`），
+  顶层形态与 `readFile` 一致。区分两者只看错误前缀，绝不看形态。
+- 裸 `number` 正是 `if (!result)` 这个写法出错的原因：`writeFile` 返回 `0` 的意思是
+  「写入空文件成功」。
+- 套件里的 `contentOf` / `metadataOf` 仍作为过渡期读取子保留给手工收敛的宿主。它们是读取子，
+  不是契约——上面那些断言才是。
+
 ### 文件编辑工具 `edit`（issue #191）
 
 `edit` 是同一个 `definitions` 数组、同一个 `executeTool` 入口里的**第二个写工具**——
@@ -1632,7 +1708,7 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 | `erix.toolCallKey` | 引擎 | 每一个被引擎接受的 `tool_use`，以及由它构造出的结果 | 跳通道身份：一次被接受的调用只分配一次，从第一个可识别的流式片段开始，一路带到 `tool_use` 块（因此也在持久化块与 `tool_use` 事件克隆上）、`tool_result` 与投影。resume 与复放**沿用**已落盘的值，已有身份的调用绝不重生成。但 provider 的配对 id **不是身份**，也不保证 run 内唯一（轮内 index 前缀，或畸形响应兜底成 `call_legacy`），所以下一轮再出现同一个 id 就是**一次新调用**，会拿到新 key：只有被确认为同一次调用时才继承 —— 本轮的复放窗口，或从崩溃现场恢复回来的那一条 pending 调用。**升级前写下的记录复放时两端都缺身份**（见下面那条 carve-out）。 |
 | `erix.round` | 引擎 | 调用真的执行了 | **执行轮**。它不是事件 envelope 的 `round`（交付轮），两者刻意不合并。 |
 | `erix.durationMs` | 引擎 | executor 的 promise settle 或 reject 了 | 从「调用 executor 前」到「该 promise settle/reject」的毫秒数。 |
-| `erix.executionStatus` | 引擎 | 仅特殊状态 | `intercepted` / `interrupted`。 |
+| `erix.executionStatus` | 引擎 | 仅特殊状态 | `intercepted` / `interrupted`。这个存在条件同样机器可读：`TOOL_RESULT_CONTRACT.engine.fields.executionStatus` 携 `writtenFor: "special states only"` 与 `presentValues`（`src/tool-fact.js`），因此只读常量的宿主不得假设每个结果块上都有这个字段（issue #286）。 |
 | `erix.success` | 引擎 | executor 的 promise settle 过的每一条结果 | 引擎归一化后的布尔值（`success !== false`）。顶层 `success` 退役后它就**无条件写**：顶层没了以后还按「宿主声明过才写」，宿主就分不清「成功」与「没表过态」。根本没跑的调用（judge 拦截、中断重放）没有成败可言，因此也没有该字段。 |
 | `metadata.*` | 宿主 | executor 返了扩展就有 | 宿主唯一可写的命名空间。 |
 
