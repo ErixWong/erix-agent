@@ -64,7 +64,7 @@ executeTool({ id, name, input, context, signal })
 
 ```text
 观察者同步抛错，或返回 rejected Promise（onRound / onToolResult）
-  └─ reportObserverError(error, { channel, … })   src/loop/orchestrator.js:763-783
+  └─ reportObserverError(error, { channel, … })   src/loop/orchestrator.js:889-896
        ├─ onObserverError(error, context)         宿主错账户，同步调用
        └─ console.error("Observer callback error:", error, context)
                                                   未配置错账户、或错账户自己抛错时

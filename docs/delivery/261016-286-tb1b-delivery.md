@@ -21,7 +21,7 @@
 | `docs/host-consumer-contract_cn.md` | 60 | 16 | −44 |
 | 合计（棘轮口径的唯一 (文档,目标,区间) 三元组） | 120 | 32 | **−88** |
 
-orchestrator 族**区间条目本身**（不区分文档）：62 种 → 15 种。写法一律从 `` `path:N-M` `` 变成
+orchestrator 族**区间条目本身**（不区分文档）：62 种 → **16 种**。写法一律从 `` `path:N-M` `` 变成
 `` `符号名` at `path` ``（EN）/ `` `符号名`，`path` ``（CN）：能定到真名的把真名写进句子，
 定不到真名的（纯叙述位置）只留 `` `path` ``。
 **条目级改动次数**：EN 与 CN 各 **45 处**（章节一 27 + 章节二 18，成对同时改）；上表的 −44 是**唯一区间数**
@@ -34,32 +34,35 @@ orchestrator 族**区间条目本身**（不区分文档）：62 种 → 15 种�
 `maxNoToolRounds` `forcedFinal` `roundEventDeltas` `stateAvailability` `guardedMessages`
 `compactionStat` `isLowBudget` `isEndTurn` `budgetRounds` `continuationExhausted` `judge_done`。
 
-## 3. 保留区间清单（主 agent 逐条复算用；`真值位` 由判据自己算）
+## 3. 保留区间清单（**16 条**，主 agent 逐条复算用）
 
 保留 = 条目讲的是**范围 / 数据流 / 调用点集合 / 范围性负事实**，行号是信息本体（工单 §2 结局 b）。
-EN 与 CN 是同一批条目（同一目标 + 同一区间），下表只列一次；`真值位` = 该符号在
-`src/loop/orchestrator.js` 里的真声明处或具名字面量出现行。
+EN 与 CN 是同一批条目（同一目标 + 同一区间），下表只列一次；`真值位` 全部用
+`scripts/docs-drift-check.mjs` 里那套提取器（`symbolDeclarations` + `valueLiterals`）从
+`src/loop/orchestrator.js` 现算，不是抄文档。
 
-| 条目符号 | 目标:区间 | 真值形态 | 真值位 | 保留理由 |
-|---|---|---|---|---|
-| `notifyModelMetadataMissing` | `:913-966` | binding | 942（同段另有 `notifyCapabilitySkipped`@913）| 条目讲启动诊断这一族通知**在哪个函数里发出**，区间是那两段发信体 |
-| `completionSignalDetected` | `:3121-3125` | binding | 3121 | 复述检测顺序/条件（wrapup 信封 / `completion.signals` 文本 / LLM 归一化三路），是范围性事实 |
-| `noToolRound` | `:3192-3195` | binding | 3192 | 复述该标志的置位条件（`completion:false` 令其恒假 → `no_tool` 不可达），区间就是那四行 if 体 |
-| `sideEffect` | `:1090-1095` | 对象键/类字段 | 1094（同段 `operation`@1092 / `phase`@1093）| 「哪几类 stop reason 被标成有副作用」的数据流 |
-| `no_final_guard` | `:1650-1652` | 具名字面量成员 | 1651 | 弱档：条目要的是这个 reason 在 guard 判定的哪一行被写出 |
-| `non_continuable` | `:3492-3496` | 具名字面量成员 | 3494 | 同上：`unverified` 那一支的分支体 |
-| `judge_done` | `:3318-3326` | 具名字面量成员 | 3324（另有 283/449/3298）| round judge 判 `done:true` 的落点（机制优先级第 1 条）|
-| `fail()` 终局路径 | `:1055-1113` | binding | 1055 | `aborted` / `failed` 两行共用同一段真身：分类 → 载荷标注 → 抛出，跨函数数据流 |
-| `shouldContinue` 决策块 | `:3118-3140` | binding | 3118 | 「一轮里谁有权威、修订重试如何有界」的整块判据，不是单符号 |
-| 非可续 stop 分支 | `:3490-3503` | （区间内含 `status`@3493 / `reason`@3494 / `detail`@3495）| 3493-3500 | `final_guard_unverified` 的产出分支体，条目在讲「哪些 stop 落到这一支」|
-| stall 签名窗口 | `:2678-2692` | binding | 2691（`compactionStat` 邻近，窗口体在内）| 「相同 tool-call 签名落在检测窗口内」是窗口范围事实 |
-| stall 连击累计 | `:2729-2736` | binding | 2733 / 2734 | 连击计数累加点，条目在讲累计而非单行 |
-| 持久化 store 重试循环 | `:872-888` | binding | 872-880（`operation` / `phase` / `sideEffect` / `error` / `fatal`）| 「每次 store 调用 `retryAttempts + 1` 次写入」的循环体 |
-| 工具装配层 | `:1877-1889` | binding | 1877（`layers`）| 「provider 工具表由几层装配而成」是调用点集合 |
-| round judge 决策块 | `:3318-3344` | 具名字面量成员 | 3324 | 机制优先级一节的整块判据 |
+| # | 区间 | 区间内的真值位（现算） | 保留理由 |
+|---|---|---|---|
+| 1 | `:872-888` | `port`@872 / `operation`@873 / `phase`@876 / `sideEffect`@878 / `error`@879 / `fatal`@880（对象键）| 「每次 store 调用 `retryAttempts + 1` 次写入」的**持久化重试循环体**，条目在数循环而不是问某个符号在哪 |
+| 2 | `:889-896` | `reportObserverError`@889（binding）/ `channel`@890 / `detail`@895 | 观察者抛错包络的定义体。**本刀改正**：调用树图原先指 `:763-783`，那段其实是 `runLoopState` 的字面量（`currentTerminationReason` 等），真定义在 889 |
+| 3 | `:913-966` | `notifyCapabilitySkipped`@913 / `notifyModelMetadataMissing`@942（binding），字面量 `model_metadata_missing`@951/963、`persistence_capability_degraded`@922/930 | 条目讲启动诊断这一族通知**在哪个函数里发出**、payload 的 `type` 从哪来；符号锚点自带区间，`symbol-anchor-span` 已判相交 |
+| 4 | `:1055-1113` | `fail`@1055（binding）、`aborted`@1058/1072/1079、`persistence_failed`@1082、`failed`@1058/1081 | `aborted` 与 `failed` 两行**共用同一段真身**：分类 → 载荷标注 → 抛出，跨函数数据流；两处引用同一区间，只算一个唯一键 |
+| 5 | `:1077-1082` | `persistenceFailure`@1077 / `reason`@1078（binding），`persistence_failed`@1082 | `persistence_failed` 的选取条件（错误里带 persistence 信息），条目在讲分支判据 |
+| 6 | `:1090-1095` | `if`@1090、`operation`@1092 / `phase`@1093 / `sideEffect`@1094（对象键）| 「哪几类 stop reason 被标成有副作用」的数据流；`sideEffect` 锚点自带区间，已过相交判据 |
+| 7 | `:1650-1652` | `verification`@1650（binding）、字面量 `no_final_guard`@1651、`skipped`@1651 | 弱档：条目要的是这个 reason 在 guard 判定的哪一行被写出（`skipped` 那一格）|
+| 8 | `:1877-1889` | `layers`@1877（binding）| 「provider 工具表由几层装配而成」是**调用点集合**，条目正文明确写了「the **current** `tools` array」 |
+| 9 | `:2678-2692` | `if`@2680、`compactionStat`@2691 | 「相同 tool-call 签名落在检测窗口内」是**窗口范围**事实 |
+| 10 | `:2729-2736` | `semantic`@2733 / `inject`@2734（对象键）| stall 连击计数的累计点，条目在讲累计而非单行 |
+| 11 | `:3118-3140` | `shouldContinue`@3118（binding）、`end_turn`@3131 | 「一轮里谁有权威、修订重试如何有界」的整块判据（机制优先级第 4 条引用它）|
+| 12 | `:3121-3125` | `completionSignalDetected`@3121（binding）| 复述检测顺序/条件（wrapup 信封 / `completion.signals` 文本 / LLM 归一化三路）；符号锚点自带区间 |
+| 13 | `:3192-3195` | `noToolRound`@3192（binding）| 该标志的置位条件（`completion:false` 令其恒假 → `no_tool` **不可达**，范围性负事实）|
+| 14 | `:3318-3326` | 字面量 `judge_done`@3324、`kind`@3323 / `value`@3324 / `truncated`@3325 | 弱档：round judge 判 `done:true` 的落点（机制优先级第 1 条）|
+| 15 | `:3490-3503` | `status`@3493 / `reason`@3494 / `detail`@3495、`final_guard_unverified`@3503、`non_continuable`@3494 | `final_guard_unverified` 的产出分支体，条目在讲「哪些 stop 落到这一支」|
+| 16 | `:3492-3496` | `unverified`@3493 / `non_continuable`@3494 | `verification.status = unverified` 的 reason 来源（`non_continuable` 锚点自带区间）|
 
-**没有一条是「删了符号锚点」**：符号锚点组数 24 → 24（未掉），带区间的符号锚点仍是 30 处、
-`symbol-anchor-span` 的「不相交 0 处」保持不变（保留的 7 条锚点区间全部与真值位相交）。
+**没有删过一枚符号锚点**：符号锚点组数 **24 → 24**（`SYMBOL_ANCHOR_MIN_UNIQUE` 的下限没碰），
+带区间的符号锚点仍是 30 处、`symbol-anchor-span` 的「**不相交 0 处**」保持不变——
+上面 3/6/7/12/13/14/16 这 7 条就是锚点自带区间的那批，全部与真值位相交。
 
 ## 4. 判据原文（C1 / C2 / C3）
 

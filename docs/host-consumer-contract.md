@@ -74,7 +74,7 @@ bare `catch {}`.
 
 ```text
 observer throws synchronously, or returns a rejected promise (onRound / onToolResult)
-  └─ reportObserverError(error, { channel, … })   src/loop/orchestrator.js:763-783
+  └─ reportObserverError(error, { channel, … })   src/loop/orchestrator.js:889-896
        ├─ onObserverError(error, context)         the host account, called synchronously
        └─ console.error("Observer callback error:", error, context)
                                                   when no account is configured, or it threw

@@ -2009,7 +2009,7 @@ const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
  *  剩余的 orchestrator 区间同样按结局 (a) 删区间 + 写进真名（`runToolLoop` / `messageRounds` /
  *  `maxNoToolRounds` / `budgetRounds` / `continuationExhausted` / `errorHashes` / `termination` /
  *  `judge_done`），中英同一条目同时改（各 17 处）。
- *  保留 15 条区间（每份文档同一批：7 条符号锚点自带区间 + 8 条范围性事实），逐条理由见
+ *  保留 16 条区间（每份文档同一批：7 条符号锚点自带区间 + 9 条范围性事实），逐条理由见
  *  `docs/delivery/261016-286-tb1b-delivery.md`。 */
 const BARE_LINE_REF_BASELINE = 144;
 
