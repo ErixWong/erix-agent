@@ -51,9 +51,23 @@ const PROXY_VARS = [
   "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
   "NO_PROXY", "no_proxy", "NODE_USE_ENV_PROXY",
 ];
-/** 真配置槽位里要复制进临时配置的键（凭据只进临时文件）。 */
+/**
+ * 真配置槽位里要**原样**复制进临时配置的键（凭据只进临时文件）。
+ *
+ * 两个刻意不在名单里的键（PR #289 断言强度 4，理由写在代码里而不是只写在注释里）：
+ * - `baseUrl`：闸门**接受** `baseUrl` 形式的端点（库层 provider 两种都认，见
+ *   `examples/e2e-real-gate.mjs`），但形状 A（`~/.erix/config.json`）里
+ *   `bin/config.js#loadCliConfig` **只读 `endpoint`**，`fixtures/config-shape.mjs` 的允许键集合
+ *   里也没有 `baseUrl`（写进去直接抛错）⇒ 原样复制会把 baseUrl 静默丢掉，CLI 起跑即报
+ *   「缺少环境变量 LLM_KIT_ENDPOINT」。这里选「**转成 endpoint 写入**」（下面直接写
+ *   `gate.endpoint`，它已是闸门归一后的 endpoint ?? baseUrl）；另一种修法「闸门干脆不接受
+ *   baseUrl」也能修，但会让库层 e2e 在只用 baseUrl 的机器上无谓 skip，而端点归一本来就是闸门职责。
+ * - `apiKeyEnv` / `apiKeyFile`：写**解析后的真实值** `gate.apiKey`。引用形式在假 HOME 里会坏：
+ *   `fakeHomeEnv` 会清掉 `MODEL_CONFIG_ENV_NAMES`（含 `LLM_KIT_API_KEY`）以免宿主真配置盖掉假配置，
+ *   于是 `apiKeyEnv` 指向的变量在子进程里恰恰不存在 ⇒ 又一次「闸门说 ok、装后冒烟跑不起来」。
+ */
 const SLOT_KEYS_TO_COPY = [
-  "protocol", "endpoint", "apiKey", "apiKeyEnv", "apiKeyFile",
+  "protocol", "endpoint", "apiKey",
   "contextWindowTokens", "maxOutputTokens", "compaction",
 ];
 /** 终稿里必须出现的固定标记（证明真上游回了我们要求的内容，而不是只跑了个流程）。 */
@@ -339,6 +353,12 @@ async function main() {
   for (const key of SLOT_KEYS_TO_COPY) {
     if (gate.slot[key] !== undefined) copiedSlot[key] = gate.slot[key];
   }
+  // 端点与凭据一律写**闸门解析后的值**（不是引用名、不是 baseUrl）：理由见 SLOT_KEYS_TO_COPY。
+  copiedSlot.endpoint = gate.endpoint;
+  copiedSlot.apiKey = gate.apiKey;
+  assert(typeof copiedSlot.endpoint === "string" && copiedSlot.endpoint !== ""
+    && typeof copiedSlot.apiKey === "string" && copiedSlot.apiKey !== "",
+  "临时配置必须带上解析后的端点与凭据（否则 baseUrl/引用形式的真配置在假 HOME 里会瞎掉）");
   // `writeConfigHome` 吃的就是「槽位字段」本身（它内部才包 `slots.default`），不要先包一层。
   const { configPath } = writeConfigHome({ dir: home, erix: copiedSlot });
   assert(configPath !== undefined && existsSync(configPath), "假 HOME 的配置没写出来");
