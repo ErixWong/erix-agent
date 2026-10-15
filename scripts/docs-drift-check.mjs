@@ -2003,8 +2003,15 @@ const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
  *  `shouldContinue` 2739-2740、`dispatchAttemptEvent` provider-runner 96-110；中英各一份 ⇒ 8 个唯一键），
  *  另有 2 个唯一键是**三条不同写法指向同一段真身**（2739-2745 / 2742-2745 / 2743-2745 全部是
  *  `completionSignalDetected` 的声明处 3121-3125）合并成一条 ⇒ 每份文档再降 2 处。
- *  写法必须保持 `const BARE_LINE_REF_BASELINE = <数字>;` 一行（自测的「调低就红」用例要能改这个数）。 */
-const BARE_LINE_REF_BASELINE = 232;
+ *  写法必须保持 `const BARE_LINE_REF_BASELINE = <数字>;` 一行（自测的「调低就红」用例要能改这个数）。
+ *
+ *  降基线的理由（#286 **T-b1b**，178 → **144**，本刀累计 232 → 144、降 88）：终止裁决决策表及其后三节里
+ *  剩余的 orchestrator 区间同样按结局 (a) 删区间 + 写进真名（`runToolLoop` / `messageRounds` /
+ *  `maxNoToolRounds` / `budgetRounds` / `continuationExhausted` / `errorHashes` / `termination` /
+ *  `judge_done`），中英同一条目同时改（各 17 处）。
+ *  保留 16 条区间（每份文档同一批：7 条符号锚点自带区间 + 9 条范围性事实），逐条理由见
+ *  `docs/delivery/261016-286-tb1b-delivery.md`。 */
+const BARE_LINE_REF_BASELINE = 144;
 
 /** 棘轮生效值：从**本脚本自己的文本**里读 `BARE_LINE_REF_BASELINE`（走 `textOf`，所以 `--self-test`
  *  能把这个常量临时改小来证「它真的是锁」：调低到低于实测值必须红，改回来必须绿）。
@@ -3583,7 +3590,8 @@ const SELF_TEST_CASES = [
     overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace(
       `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE};`,
       `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE - 1};`) },
-    expect: [/实测 \*\*232\*\* 处，超过棘轮基线 \*\*231\*\*/, /把基线改成 232/],
+    expect: [ratchetOverBaseline(BARE_LINE_REF_BASELINE, BARE_LINE_REF_BASELINE - 1),
+      new RegExp(`把基线改成 ${BARE_LINE_REF_BASELINE}`)],
   },
   {
     label: `#286 棘轮下限的反向证：常量调回 ${BARE_LINE_REF_BASELINE}（只加一句尾注释、数值不变）→ 必须 0 错`,

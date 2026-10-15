@@ -103,8 +103,8 @@ scripts/          # 实验脚本和结果
   看不见。合法修法两条：**删掉区间**（`` `符号`（`路径`） ``，首选：行号会漂，`symbols` 从来不需要它），或把区间挪到真的
   覆盖声明处。不带区间的锚点不在本判据范围内，这也正是「删区间」能让下面那道棘轮合法下降的原因。
   *`bare-lines`* 是**只减不增的棘轮**：`src/**.js:N` / `:N-M` 形态的裸行号引用，按唯一 (文档, 目标文件, 行区间) 计数，
-  不得超过同一份脚本里的 `BARE_LINE_REF_BASELINE = 232`。这个数可以复核：`node scripts/docs-drift-check.mjs --verbose`
-  会打出实测「236 唯一区间 − 4 处声明式豁免 = 232」。豁免走 `BARE_LINE_EXEMPTIONS`，**三个信号缺一不放行**（评审 R4 把从前的整行 OR 收紧成 AND）：
+  不得超过同一份脚本里的 `BARE_LINE_REF_BASELINE = 144`。这个数可以复核：`node scripts/docs-drift-check.mjs --verbose`
+  会打出实测「148 唯一区间 − 4 处声明式豁免 = 144」。豁免走 `BARE_LINE_EXEMPTIONS`，**三个信号缺一不放行**（评审 R4 把从前的整行 OR 收紧成 AND）：
   ① 表里点名这一条（文档 + 占位路径）；② 引用行里确实写着那个占位路径；③ 同一行还有「示例/示意/宿主仓根」
   这类就地声明词——同一行剩着一句 `for example` 之类的附带措辞不算声明。条目自己还要过配置校（声明词若能
   匹配空串 = 这一侧恒真、或带 `g` 标志让 `.test()` 变有状态 ⇒ 红）；没被任何引用用到的条目本身也会红
@@ -115,8 +115,8 @@ scripts/          # 实验脚本和结果
   所以有 `REF_SCAN_DOCS_MINIMUM = 20` 这道下限（6 份点名文档 + 当前实扫到的 14 份指南），并且
   `test/docs-anchor-ratchet.test.js` 里另硬编码了那 14 个文件名做对照：改名或新增指南，两处不同步就红。`CHANGELOG.md` 明确**不参与**：
   它的行号记的是「发版那一刻为真」的事实，改掉等于伪造历史（与 #278 的简称登记表同一套理由）。
-  第一批 T-a 做的是基建与棘轮；第二批 T-b1a 把契约里 `src/loop/orchestrator.js` 那一族改绿（中英同一个 PR），基线从 244 降到 232。剩下这些条目仍要由后续批次替换成符号锚点，而「把基线常量降下来并在提交信息里写理由」
-  就是「确实少了一些」唯一可核对的写法。
+  第一批 T-a 做的是基建与棘轮；第二批 T-b1a 把契约里**自带区间的符号锚点**那一族改绿（中英同一个 PR），基线从 244 降到 232；第三批 T-b1b 收尾同一族——两份契约里剩下的裸 `src/loop/orchestrator.js:N[-M]` 条目要么**删掉区间**（首选，并把真声明处的符号名写进句子：`resolvedModelConfig` / `reportObserverError` / `persist` / `isEndTurn` 等），要么作为**范围性事实**保留并把区间对过代码，基线从 232 降到 144。剩下的 `provider-runner.js` / `termination.js` / `governor.js` 三族属 T-b2，而「把基线常量降下来并在提交信息里写理由」
+  仍然是「确实少了一些」唯一可核对的写法。
 - `--checkJs` 棘轮规则（issue #214）：`npm run check:types` **不追求清零**——119 个错（涉 29 个文件）是已接受的债（#214 首测是 218，issue #177 刀 1 给 `src/loop/orchestrator.js` 还掉 1 个；PR #249（即 #213 的两个 provider 工厂 JSDoc）又还掉 75 个，**全部落在那两个工厂文件**：`src/providers/openai.js` 46 → 7、`src/providers/anthropic.js` 45 → 9，其余 27 个带错文件一个没动；issue #265 把 `src/store/notes.js` 的端口语义抽进两个新模块后又还掉 21 个，**同样全部落在那一个文件**：`src/store/notes.js` 27 → 6，两个首行 `// @ts-check` 的新模块（`src/store/notes-port.js`、`src/store/notes-memory.js`）各自贡献 0 个，其余 28 个带错文件一个没动——逐文件对账用的是 `git archive` 取出的 `7354fab^` 对照树，它在同一条命令下逐字复现 142 / 185）。
   它保证的是**只减不增**：总数与 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 119` 常量比较（2026-10-15 在
   当前树上复测，环境 `typescript@5.9.3` + `@types/node@22.20.5`，**两档在同一笔提交里一起下调**；issue 正文里的 226 在 #213 之前的树

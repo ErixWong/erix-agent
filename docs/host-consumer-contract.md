@@ -74,7 +74,7 @@ bare `catch {}`.
 
 ```text
 observer throws synchronously, or returns a rejected promise (onRound / onToolResult)
-  └─ reportObserverError(error, { channel, … })   src/loop/orchestrator.js:763-783
+  └─ reportObserverError(error, { channel, … })   src/loop/orchestrator.js:889-896
        ├─ onObserverError(error, context)         the host account, called synchronously
        └─ console.error("Observer callback error:", error, context)
                                                   when no account is configured, or it threw
@@ -98,7 +98,7 @@ observer throws synchronously, or returns a rejected promise (onRound / onToolRe
 |---|---|---|
 | `onEvent` | `type`, plus `round` when the event carries one | `emitEvent` (`src/loop/orchestrator.js`) |
 | `onEvent` (startup diagnostics) | `type: "model_metadata_missing"`, or `type: "persistence_capability_degraded"` plus `method` | the local guards in `notifyCapabilitySkipped` / `notifyModelMetadataMissing` (`src/loop/orchestrator.js:913-966`), which call `onEvent` directly because they fire before `emitEvent` exists |
-| `onRound` | `round` | `src/loop/orchestrator.js:3122-3130` |
+| `onRound` | `round` | `src/loop/orchestrator.js` |
 | `onToolResult` | `toolName`, `round` | `src/loop/run-snapshot-executor.js:266-294` |
 | `onJudge` | `round`, `kind` | `emitJudge` (`src/loop/orchestrator.js`) |
 | `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage` | `round`, `type` (the streamed event type) | `dispatchAttemptEvent` (`src/loop/provider-runner.js`) |
@@ -237,7 +237,7 @@ what a host should read when it wants the number rather than the class.
 ## Retry budget (issue #183)
 
 **Not configured means not retried.** `retry` defaults to `false`
-(`src/loop/orchestrator.js:566`), and in that state the engine issues exactly
+(`resolvedModelConfig` at `src/loop/orchestrator.js`), and in that state the engine issues exactly
 one provider attempt per round and one write per store call. A host that wants
 retrying has to ask for it, and a host that does not ask must not assume a
 provider call is ever repeated. This section is the whole rule set; the
@@ -247,7 +247,7 @@ termination side of it is the `failed` row of "Termination decision table
 ### Derived values
 
 Only an **object** turns retrying on: `retryOptions = retry && typeof retry ===
-"object" ? retry : null` (`src/loop/orchestrator.js:713`), so `retry: true` is
+"object" ? retry : null` (`runStateAvailability` at `src/loop/orchestrator.js`), so `retry: true` is
 *not* "enable retrying" — it is identical to leaving the option out.
 
 | input | effective value | derivation |
@@ -263,9 +263,9 @@ Only an **object** turns retrying on: `retryOptions = retry && typeof retry ===
 
 The wait before retry *n* (0-based) is `Math.min(backoffBaseMs * 2 ** n,
 backoffMaxMs)` in both loops (`src/loop/provider-runner.js:246-249`,
-`src/loop/orchestrator.js:881-884`). Sleeping is abort-aware: the run's signal
+`src/loop/orchestrator.js`). Sleeping is abort-aware: the run's signal
 is passed to `sleepImpl` and raced by `waitForRetry`
-(`src/loop/orchestrator.js:1636-1641`), so `signal.abort()` during a backoff
+(`forcedFinal` at `src/loop/orchestrator.js`), so `signal.abort()` during a backoff
 wait throws the standard `aborted` shape with the issue #180 payload.
 
 Only errors marked `retryable === true` are retried
@@ -305,7 +305,7 @@ Do not extrapolate it to the rest of the engine:
 - **Out-of-round completions get one attempt each**: the wrap-up call
   (`src/loop/termination.js:234`), the wrap-up/`judge` text normalizer
   (`src/reflection/wrapup.js:132-135`), and the `fold-llm` default summarizer
-  (`src/loop/orchestrator.js:1063-1073`). None of them consumes this budget.
+  (`finalPersistence` at `src/loop/orchestrator.js`). None of them consumes this budget.
 - **The run itself is never retried.** Whole-run rerun/requeue policy belongs to
   the host (ADR-012), and `maxTokenContinuations` (default `3`) and
   `finalGuardMaxRetries` are separate budgets: the first continues a response
@@ -322,13 +322,13 @@ pre-attempt snapshot before re-requesting the whole completion
 
 - `DEFAULT_STREAM_RECOVERY_MAX_ATTEMPTS` is **not an identifier in this
   package** (grep-verified). A `2` quoted as its value is the `retryAttempts`
-  fallback at `src/loop/orchestrator.js:714-718`. The CLI's own `2` comes from
+  fallback at `src/loop/orchestrator.js`. The CLI's own `2` comes from
   `ERIX_RETRY_ATTEMPTS` (`bin/cli.js:841-848`), which the CLI passes as
   `retry: { attempts: … }`; the **library** default stays `false`, so copying
   CLI behaviour into a host is how this number gets misattributed.
 - `partialPersistence` is durability, not retry: it commits the partial text of
   a dying attempt (`onPartialAttemptEnd({ retrying: true })`,
-  `src/loop/orchestrator.js:1919-1933`) and adds no attempt of its own.
+  `roundEventDeltas` at `src/loop/orchestrator.js`) and adds no attempt of its own.
 - **Side effect worth asserting in your own tests:** with `retryAttempts > 0`
   the streamed observer callbacks are buffered per attempt and dispatched only
   once that attempt succeeds
@@ -347,7 +347,7 @@ pre-attempt snapshot before re-requesting the whole completion
 | a retry actually happened | the `recovering` event (`src/loop/provider-runner.js:252-258`); `recovered` marks the attempt that succeeded after one (`:188-191`, `:203-206`) |
 | the backoff schedule, without wall-clock cost | inject `retry.sleepImpl` and record every `delay` — the count is the number of retries taken, and the recorded values pin the `min(base × 2ⁿ, max)` formula |
 | no N×M provider amplification | your provider wrapper's own request counter, asserted against the `attempt` events and against `maxRounds × (retryAttempts + 1)` |
-| store-write retries | **no per-attempt event exists.** The only signal is the terminal `persistence_error` report after the loop is exhausted (`src/loop/orchestrator.js:889-896`); wrap your own store methods to count attempts, which is currently the only way to prove the store-side loop ran at all |
+| store-write retries | **no per-attempt event exists.** The only signal is the terminal `persistence_error` report after the loop is exhausted (`reportObserverError` at `src/loop/orchestrator.js`); wrap your own store methods to count attempts, which is currently the only way to prove the store-side loop ran at all |
 
 Leftover (issue #183): the run result carries no aggregate attempt/retry
 counter, so a per-run total has to be assembled from events by the host. A
@@ -505,7 +505,7 @@ The subsection above is the rule. This one records **what the shipped tools actu
 declare against it today**, because a host cannot see that from outside the package and
 it decides what switching costs. The state is: **nothing declares `replay`** — a search
 for the field under `src/tools` and `bin/tools.js` returns nothing, and the only readers
-of the key are the startup validator (`src/loop/orchestrator.js:583-587`) and the resolver
+of the key are the startup validator (`partialPersistenceConfig` at `src/loop/orchestrator.js`) and the resolver
 (`src/loop/orchestrator.js:1877-1889`).
 
 | Tool | Ships from | Declares `replay` today | Behaviour on resume under `per-tool-declaration` | Side effect class |
@@ -534,7 +534,7 @@ Turning `"per-tool-declaration"` on without labelling anything therefore marks *
 pending call unsafe on **every** resume — including the pure reads, which come back as an
 `interrupted` error result exactly like `exec` does. The engine infers nothing: it does
 not look at the tool name, at the executor, or at `writeToolNames` (that option only feeds
-the judge's filesWritten counter, `src/loop/orchestrator.js:1127`). Snapshots whose
+the judge's filesWritten counter, `src/loop/orchestrator.js`). Snapshots whose
 pending entries carry no recorded field resolve the same way
 (`docs/host-upgrade-guide-0.14.0.md`).
 
@@ -583,7 +583,7 @@ that shape) cannot carry a single blanket verdict, and `unsafe` is the honest an
    to `"always-replay"`. Pass `"per-tool-declaration"` as a `runToolLoop` option, or as the
    AssemblyPort `policy` key of the same name (whitelisted in `src/assembly.js`, asserted
    by `test/contract/assembly-port.test.js:47-53`). The policy is consulted **only** on the
-   resume path (`src/loop/orchestrator.js:2680`): with `resume: false`, or with a store
+   resume path (`guardedMessages` at `src/loop/orchestrator.js`): with `resume: false`, or with a store
    that has no run-snapshot capability, there is no pending list and the option is inert.
 4. **Let the new event type through the whitelist.** A host that filters `onEvent` on a set
    of `type` strings **must** add `tool_replay_decision_required`, or the signal is
@@ -592,13 +592,13 @@ that shape) cannot carry a single blanket verdict, and `unsafe` is the honest an
    knowing a decision is owed — disappears. The engine emits one event per skipped pending
    call, immediately **before** the paired `tool_result` event, with
    `{ type, runId, round, toolUseId, toolName, replay: "unsafe", requiresHostDecision: true,
-   partialOutputAvailable }` (`src/loop/orchestrator.js:2714-2723`). The README's event
+   partialOutputAvailable }` (`src/loop/orchestrator.js`). The README's event
    enumeration is illustrative ("including …"), not a whitelist, so a host that copied it
    into a `Set` has to re-copy it.
 5. **Read the result shape correctly.** The result carries `is_error: true` and
    `executionStatus: "interrupted"`. If a `tool_result` block for that call id was already
    present in the messages, the engine **rewrites that block in place**
-   (`src/loop/orchestrator.js:2708-2712`) instead of appending a second one, so a host that
+   (`isLowBudget` at `src/loop/orchestrator.js`) instead of appending a second one, so a host that
    diffs messages must expect a mutation rather than an addition. `executionStatus` rides
    into the display projection (`src/display/projection.js:158-160`), and afterwards the
    interrupted result is ordinary round text: only `intercepted` results are excluded from
@@ -606,7 +606,7 @@ that shape) cannot carry a single blanket verdict, and `unsafe` is the honest an
 6. **Handle the partial output.** `partialOutputAvailable` says whether anything was found;
    when it is true the result text ends with a `Previously captured partial output:`
    section, assembled from the interrupted round's archived output plus any already-recorded
-   result content, deduplicated (`src/loop/orchestrator.js:2687-2704`).
+   result content, deduplicated (`compactionStat` at `src/loop/orchestrator.js`).
 7. **Expect no retry and no re-pending.** The skipped call's id is **not** added to
    `executedToolIds`, the engine schedules nothing, and the run continues with the model
    looking at an error. The follow-up — ask the user, resume again carrying your own
@@ -624,11 +624,11 @@ that shape) cannot carry a single blanket verdict, and `unsafe` is the honest an
    requirements").
 9. **Know the fail-fast.** A `replay` value other than the two literals, and an unknown
    `replayPolicy`, throw `TypeError` before the first provider call
-   (`src/loop/orchestrator.js:550-551` and `:583-587`) — a typo is a startup crash, never a
+   (`hasExplicitModelConfigOverride` at `src/loop/orchestrator.js` and `:583-587`) — a typo is a startup crash, never a
    silent misclassification on the resume path.
 10. **The declaration is invisible to the model and to the stream.** The key is stripped
-    from the provider tool list (`src/loop/orchestrator.js:623-632`) and deleted from the
-    resume-path `tool_use` payload (`src/loop/orchestrator.js:2678`), so a host that wants
+    from the provider tool list (`hasReplayDeclarations` at `src/loop/orchestrator.js`) and deleted from the
+    resume-path `tool_use` payload (`guardedMessages` at `src/loop/orchestrator.js`), so a host that wants
     to display "this one was labelled safe" reads it from its own `tools` array, not from
     an event.
 
@@ -658,17 +658,17 @@ run; the only signal is the `model_metadata_missing` event named below.
 
 - The probe is a duck-type over that exact order and returns the **first**
   candidate that carries either field (`src/loop/budget.js:59-69`, called at
-  `src/loop/orchestrator.js:958-964`). Fields are **never merged across
+  `notifyModelMetadataMissing` at `src/loop/orchestrator.js`). Fields are **never merged across
   candidates**: a slot with only `contextWindowTokens` plus a `modelMetadata`
   carrying `maxOutputTokens` derives no budget at all. Keep the pair in one
   object.
 - `modelConfig` must be a resolver (`{ resolve(slot?) }`). A plain config object
   passed as `modelConfig` is rejected at startup with
   `assembly port is missing methods: modelConfig.resolve`, because the option
-  name is read as a port whenever it is present (`src/loop/orchestrator.js:592-607`).
+  name is read as a port whenever it is present (`persistenceMode` at `src/loop/orchestrator.js`).
   The resolved value — not the resolver — is what the probe reads.
 - Slot selection is per run: the slot name travels in `session.modelSlot`
-  (`src/loop/orchestrator.js:609-612`). Both built-in providers fall back to the
+  (`persistenceMode` at `src/loop/orchestrator.js`). Both built-in providers fall back to the
   `default` slot for an unknown name, so per-run selection never fails a run
   that only misspelled a slot.
 - `createJsonFileModelConfigProvider` reads `{ "slots": { "<name>": { … } } }`
@@ -707,19 +707,19 @@ objects** only: an unknown *top-level* `runToolLoop` option still throws
 
 `budgetTokens = context.budgetTokens ?? computeBudget({ contextWindowTokens, maxOutputTokens })`
 with `computeBudget = contextWindowTokens - maxOutputTokens - max(2000, ceil(window × 0.1))`
-(`src/loop/orchestrator.js:984-993`, `src/compact/budget.js:9-33`).
+(`persist` at `src/loop/orchestrator.js`, `src/compact/budget.js:9-33`).
 `budgetTokens` is the gate for context compaction, for the per-round aggregate
 output budget, and for the budget block in the request view. The output-truncation
 limit is a separate derivation: explicit `outputHygiene.limit` first, else
 `clamp(15% × contextWindowTokens, 8192, 100000)`, else `4096`
-(`src/loop/orchestrator.js:966-977`).
+(`persist` at `src/loop/orchestrator.js`).
 
 | Condition at startup | Engine behavior |
 |---|---|
 | neither field found in any of the five candidates | **silent skip**: `budgetTokens` stays `undefined`, compaction and the aggregate output budget stay off, and exactly **one** `model_metadata_missing` event is emitted |
 | fields found but malformed (non-integer, string, window ≤ 0, `maxOutputTokens` < 0) or too small (derived budget ≤ 0) | `computeBudget` **throws `invalid_budget`** before the first provider call |
 | host supplies `context.budgetTokens` | derivation is bypassed entirely — compaction is on whatever that value enables, and **no** event is emitted whatever the probe found; a non-positive / non-integer value throws `invalid_budget` from `validateBudget` |
-| host supplies `context.strategy` | the strategy is asked with `budgetTokens` as-is, so a configured strategy can gate compaction without any metadata (`src/loop/orchestrator.js:2200-2203`); note the built-in sliding-window strategy compares against that value and therefore never fires on `undefined` (`src/compact/sliding-window.js:34-36`) |
+| host supplies `context.strategy` | the strategy is asked with `budgetTokens` as-is, so a configured strategy can gate compaction without any metadata (`stateAvailability` at `src/loop/orchestrator.js`); note the built-in sliding-window strategy compares against that value and therefore never fires on `undefined` (`src/compact/sliding-window.js:34-36`) |
 
 Both `invalid_budget` shapes are **pre-execution** throws: the run lifecycle has
 not begun, so the thrown error carries no `termination`, `usage`, `rounds`, or
@@ -731,7 +731,7 @@ not begun, so the thrown error carries no `termination`, `usage`, `rounds`, or
 one of the built-in **names** `"sliding-window" | "fold-statistical" | "fold-llm"`.
 A name is resolved **once at run startup** into the same object the host would have
 built (`src/compact/strategy-resolution.js`, wired at
-`src/loop/orchestrator.js:988-1003`), so the downstream configured-strategy channel is
+`src/loop/orchestrator.js`), so the downstream configured-strategy channel is
 untouched. An unknown name, a blank string, or a value that is neither a string nor an
 object throws a `TypeError` listing the legal values **before the first provider call**
 — same pre-execution throw shape as above (no `termination`/`usage`/`rounds`/`finalText`).
@@ -749,7 +749,7 @@ messages and the folded round range. Its cost and accounting are part of the con
   size of the folded rounds. `fold-llm` is therefore opt-in; `fold-statistical` remains
   the default everywhere (library default stays `sliding-window` when no strategy is set).
 - Its usage is merged into the run aggregate through the same `addUsage` path as other
-  auxiliary calls (`src/loop/orchestrator.js:979`, `trackLatest: false`) and is also
+  auxiliary calls (`persist` at `src/loop/orchestrator.js`, `trackLatest: false`) and is also
   reported through `onUsage`, so `result.usage` / `error.usage` are complete. The call
   does **not** advance `rounds`, does not feed stall detection, and does not update the
   `latestApiInputTokens` / `latestApiEstimatedTokens` used by later compaction decisions.
@@ -770,7 +770,7 @@ resolved to, so the same assertion catches "my window never reached the
 truncation sizing". Assert it **before** starting, or abort after assembly: a
 throwing `onEvent` on this startup event is no longer a rejection mechanism, it is
 reported through `onObserverError` and the run continues
-(`src/loop/orchestrator.js:876-900`; see "Observer callback errors (issue #173)").
+(`reportObserverError` at `src/loop/orchestrator.js`; see "Observer callback errors (issue #173)").
 
 ### Multi-model slot assembly (issue #182)
 
@@ -1121,7 +1121,7 @@ field, but only one of them can win a given run: the mechanisms are ordered and
 mutually exclusive. Line references are the implementation truth; if code and
 table disagree, the code is right and this table is a bug.
 
-Nine reasons are enumerable on the return path (`src/loop/orchestrator.js:493`);
+Nine reasons are enumerable on the return path (`runToolLoop` at `src/loop/orchestrator.js`);
 `persistence_failed` is a tenth that only ever appears on the throw path, so it
 is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 `continuation_exhausted`, `stall`, and `final_guard_unverified`
@@ -1129,15 +1129,15 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 
 | `termination.reason` | Triggering mechanism (file:line) | Position in the precedence chain | Host switch | Recommended host action |
 |---|---|---|---|---|
-| `end_turn` | governance stop `completion` (`src/reflection/governor.js:108-110`) or the fall-through stop `complete` (`src/reflection/governor.js:123-125`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:93-100`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3121-3125`, `3126-3180`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js:3318-3326`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js:1269`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js:1628`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
-| `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3318-3326`, `isEndTurn` at `3017`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js:1029-1043`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js:1029-1032`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
-| `no_tool` | governance stop `noTool` (`src/reflection/governor.js:111-114`), gated by `noToolRound` (`src/loop/orchestrator.js:3192-3195`) and a streak `>= maxNoToolRounds`, default 3 (`src/loop/orchestrator.js:1629-1631`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
-| `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2678-2692`), streak accumulation (`src/loop/orchestrator.js:2729-2736`), stop at `src/reflection/governor.js:67-70` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`src/loop/orchestrator.js:1398-1409`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
-| `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`src/loop/orchestrator.js:2638-2639`, loop at `2601`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:93-98`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`src/loop/orchestrator.js:1417-1419`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
-| `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:147-149`); (b) the round loop simply runs out (`src/loop/orchestrator.js:2561`, tail handling at `3151-3169`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`src/loop/orchestrator.js:1084-1099`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
-| `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3490-3503`), revision limit (`3505-3520`), or the budget-exhaustion tail (`3558-3578`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js:3479-3482`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1650-1652`); `finalGuardMaxRetries` moves the revision limit (default 2, `src/loop/orchestrator.js:1427-1430`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
+| `end_turn` | governance stop `completion` (`src/reflection/governor.js:108-110`) or the fall-through stop `complete` (`src/reflection/governor.js:123-125`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:93-100`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3121-3125`, `3126-3180`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js:3318-3326`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
+| `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3318-3326`, `isEndTurn` at `3017`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
+| `no_tool` | governance stop `noTool` (`src/reflection/governor.js:111-114`), gated by `noToolRound` (`src/loop/orchestrator.js:3192-3195`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
+| `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2678-2692`), streak accumulation (`src/loop/orchestrator.js:2729-2736`), stop at `src/reflection/governor.js:67-70` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`errorHashes` at `src/loop/orchestrator.js`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
+| `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2601`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:93-98`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
+| `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:147-149`); (b) the round loop simply runs out (`runToolLoop` at `src/loop/orchestrator.js`, tail handling at `3151-3169`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`termination` at `src/loop/orchestrator.js`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
+| `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3490-3503`), revision limit (`3505-3520`), or the budget-exhaustion tail (`3558-3578`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1650-1652`); `finalGuardMaxRetries` moves the revision limit (default 2, `budgetRounds` at `src/loop/orchestrator.js`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
 | `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:1055-1113`; classification at `1058` and `1077-1082`, annotation at `1100-1105`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
-| `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:1055-1113`, loop catch at `3537-3541`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js:700-711`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `invalid_request` / `not_found` / `conflict` (issue #179) → fix the request, the model name, or the colliding resource — re-sending the same payload cannot help; `unknown` → inspect `termination.detail` |
+| `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:1055-1113`, loop catch at `3537-3541`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `invalid_request` / `not_found` / `conflict` (issue #179) → fix the request, the model name, or the colliding resource — re-sending the same payload cannot help; `unknown` → inspect `termination.detail` |
 | `persistence_failed` | same `fail()` path, selected when the error carries persistence info (`src/loop/orchestrator.js:1077-1082`), which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js:1090-1095`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
 
 ### Verification status and CLI exit codes
@@ -1166,7 +1166,7 @@ verification outcome.
 ### Mechanism precedence and mutual exclusion
 
 Within one round, exactly one mechanism gets to decide, in this order
-(`src/loop/orchestrator.js:3318-3344`, `src/reflection/governor.js:59-126`,
+(`judge_done` at `src/loop/orchestrator.js`, `src/reflection/governor.js:59-126`,
 `src/loop/termination.js:93-100`):
 
 1. **token-continuation boundary** — repeated `max_tokens` responses set
@@ -1193,7 +1193,7 @@ Within one round, exactly one mechanism gets to decide, in this order
 6. **round judge end-turn evaluation** — `judge_done` is evaluated *before* the
    governor (3253-3262), so it outranks 2-5 in the round it fires; it requires
    `isEndTurn`, i.e. `stopReason === "end_turn"` with no tool use
-   (`src/loop/orchestrator.js:3017`). A tool round can therefore never produce
+   (`src/loop/orchestrator.js`). A tool round can therefore never produce
    `judge_done`, and a `max_tokens` round can never produce both `judge_done`
    and `continuation_exhausted` (the mapping prefers `judge_done` anyway,
    `src/loop/termination.js:94`).
@@ -1203,9 +1203,9 @@ Within one round, exactly one mechanism gets to decide, in this order
    revise, or fail. A `revise` verdict is not terminal: it injects a user
    message and governance starts over for that round
    (`src/loop/orchestrator.js:3118-3140`). Revision retries are bounded by
-   `finalGuardMaxRetries` (default 2, `src/loop/orchestrator.js:1427-1430`),
+   `finalGuardMaxRetries` (default 2, `budgetRounds` at `src/loop/orchestrator.js`),
    and the guard's own timeout defaults to 30 s
-   (`src/loop/orchestrator.js:1431-1433`).
+   (`budgetRounds` at `src/loop/orchestrator.js`).
 8. **`fail()` classification** — any throw at any point replaces all of the
    above with `aborted` (signal set) or `failed` / `persistence_failed`
    (`src/loop/orchestrator.js:1055-1113`).
