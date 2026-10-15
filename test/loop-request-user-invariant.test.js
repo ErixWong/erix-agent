@@ -337,3 +337,147 @@ test("T5 #292 守卫本体的退让顺序与配对合法性（请求视图那一
   assert.equal(hopelessStats.action, "unrecoverable");
   assert.equal(hopeless.length, 1);
 });
+
+test("T6 #292-R1 尾部带 pending tool_use 的合法视图必须原样放行（不复制 user、不摘尾巴、不记动作）", () => {
+  // max_tokens 续写（orchestrator 的 callProvider({allowPendingToolUse:true})）与
+  // 「尾部是 pending tool_use 的续跑」都是这个形状：它本来就合法，守卫一个字都不该改。
+  const pendingView = [
+    { role: "user", content: [{ type: "text", text: "start" }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "call-1", name: "readFile", input: { path: "a" } }] },
+  ];
+  const stats = {};
+  const out = ensureUserTurnView(structuredClone(pendingView), structuredClone(pendingView), stats);
+
+  assert.deepEqual(out, pendingView, "原样放行：逐条逐字段相等，user 不许被复制，pending tool_use 不许被摘掉");
+  assert.equal(out.filter((message) => message.role === "user").length, 1, "user 轮必须恰好 1 条");
+  assert.equal(
+    out.at(-1)?.content?.some((block) => block?.type === "tool_use"),
+    true,
+    "尾部那条 pending tool_use 必须还在",
+  );
+  assert.equal(stats.action, undefined, "真没做事就必须静默，不许记任何守卫动作");
+  assert.equal(isUserTurnGuardAction(stats.action), false);
+});
+
+test("T7 #292-R1 max_tokens 续写的第二个请求必须还是「1 条 user 轮 + 尾部 pending tool_use」", async () => {
+  // 场景照 test/loop-v020.test.js 的「allows a truncated tool response to request its continuation」，
+  // 但那条只断言请求次数与终稿文本，没看第二个请求的 messages，所以 R1 的形状漂移没被拦住。
+  const requests = [];
+  const provider = {
+    async chat(request) {
+      requests.push(structuredClone(request.messages));
+      if (requests.length === 1) {
+        return {
+          content: [{ type: "tool_use", id: "call-1", name: "work", input: {} }],
+          stopReason: "max_tokens",
+        };
+      }
+      return { content: [{ type: "text", text: "continued" }], stopReason: "end_turn" };
+    },
+  };
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "start",
+    executeTool: async () => "unused",
+    completion: false,
+  });
+
+  assert.equal(requests.length, 2);
+  assert.equal(result.finalText, "continued");
+
+  const second = requests[1];
+  assert.equal(
+    second.filter((message) => message.role === "user").length,
+    1,
+    `续写请求里 user 轮必须恰好 1 条，实际形状 ${JSON.stringify(second.map((m) => `${m.role}:${JSON.stringify((m.content ?? []).map((b) => b.type))}`))}`,
+  );
+  assert.equal(
+    second.at(-1)?.role === "assistant"
+      && second.at(-1).content.some((block) => block?.type === "tool_use" && block.id === "call-1"),
+    true,
+    "续写请求的尾部必须还是那条 partial 的 assistant tool_use（守卫不许摘尾巴再补一条复制的 user 轮）",
+  );
+  assert.deepEqual(
+    second.map((message) => message.role),
+    ["user", "assistant"],
+  );
+});
+
+// T8：续跑侧的回归锁（不是先红后绿的复现锁）。
+// 事实：引擎里只有一个地方以 `allowPendingToolUse: true` 调 provider（grep
+// `allowPendingToolUse: true` 只命中 orchestrator 的 max_tokens 续写那一处，由 T7 覆盖）；
+// 续跑路径会先把 pending 工具重放/中断成 tool_result 再请求上游，所以续跑的第一个请求
+// 尾部本来就不是 pending。本用例把这件事钉住：守卫上线后，续跑请求里每条 assistant
+// tool_use 都必须仍在、且尾部仍是配好的 tool_result——守卫不许在那里摘尾巴或复制 user 轮。
+test("T8 #292-R1 续跑的第一个请求必须保住历史里的每条 tool_use（守卫不在续跑路径上动刀）", async () => {
+  const { createMemoryTranscriptStore } = await import("../src/store/memory.js");
+  const store = createMemoryTranscriptStore();
+  const controller = new AbortController();
+  const firstProvider = createStrictUpstream([
+    {
+      content: [
+        { type: "tool_use", id: "r1", name: "pad", input: { step: 1 } },
+        { type: "tool_use", id: "r2", name: "pad", input: { step: 2 } },
+      ],
+      stopReason: "tool_use",
+    },
+  ]);
+
+  await assert.rejects(
+    runToolLoop({
+      provider: firstProvider,
+      initialUserMessage: "run two tools",
+      tools: [{ name: "pad", description: "d", inputSchema: { type: "object", properties: {} } }],
+      executeTool: async ({ id }) => {
+        if (id === "r2") controller.abort();
+        return `done-${id}`;
+      },
+      maxRounds: 2,
+      completion: false,
+      stallDetection: false,
+      store,
+      runId: "i292-resume-tail",
+      signal: controller.signal,
+    }),
+    /abort/i,
+  );
+
+  const resumedViews = [];
+  const resumedProvider = createStrictUpstream([
+    { content: [{ type: "text", text: "resumed-done" }], stopReason: "end_turn" },
+  ], { views: resumedViews });
+  const result = await runToolLoop({
+    provider: resumedProvider,
+    resume: true,
+    completion: false,
+    stallDetection: false,
+    store,
+    runId: "i292-resume-tail",
+    tools: [{ name: "pad", description: "d", inputSchema: { type: "object", properties: {} } }],
+    executeTool: async ({ id }) => `resumed-${id}`,
+  });
+
+  assert.equal(result.termination.reason, "end_turn");
+  assert.equal(resumedViews.length, 1, "续跑必须只发一次上游请求");
+  const blocks = resumedViews[0].messages
+    .flatMap((message) => (Array.isArray(message.content) ? message.content : []));
+  assert.deepEqual(
+    blocks.filter((block) => block?.type === "tool_use").map((block) => block.id),
+    ["r1", "r2"],
+    "续跑请求里两条 tool_use 必须都在（守卫不许摘掉它们）",
+  );
+  assert.deepEqual(
+    blocks.filter((block) => block?.type === "tool_result").map((block) => block.tool_use_id),
+    ["r1", "r2"],
+    "每条 tool_use 必须仍配着结果",
+  );
+  assert.equal(
+    resumedViews[0].messages.filter((message) => message.role === "user"
+      && (Array.isArray(message.content) ? message.content : [])
+        .some((block) => block?.type === "text" && /^run two tools$/u.test(String(block.text ?? ""))))
+      .length,
+    1,
+    "初始那条 user 轮必须只有一份（守卫不许复制 user 轮）",
+  );
+});
