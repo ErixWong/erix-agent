@@ -88,6 +88,11 @@ jobs:
       # 近邻文件，而那个目录被 .gitignore 整目录忽略、任何干净克隆里都不存在 ⇒ 在 CI 这种干净检出里
       # **预期红 3 条**（`#280 .gitignore`、`#278-P2`、`#278-P3`）。所以它只能观测、不能阻塞。
       # ⚠ 红集合必须是这 3 条：变多就是新回归，要按回归查，不是「又红了」。
+      # 已踩过的坑（本单实测）：如果红数是 **5**（多出 `#280 树形对照` 两条「树形口子没落上」），
+      # 不是新回归，而是树里出现了一个**空的** `docs/tasks/`：`taskArchiveDirPresent()` 变真而
+      # `simDropped === 0` ⇒ 那两条的变异落不上。来源就是本行前面 `npm test` 里的
+      # `test/static-guards.test.js` 端到端探针（它 mkdir 那个目录）——它在 #187 之前只删自己写的文件、
+      # 把空目录留在干净树里，于是把这一行从 3 条抬到 5 条；现在它自己 `rmdirSync` 回去并带反向证。
       - name: docs-drift-check self-test (observational; 3 known false reds on a clean clone, issue #281)
         continue-on-error: true
         run: node scripts/docs-drift-check.mjs --self-test

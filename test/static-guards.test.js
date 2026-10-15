@@ -17,7 +17,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { before, describe, it } from "node:test";
 
@@ -533,6 +533,13 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
     // 端到端反向证：在 docs/tasks/ 真的落两个临时文件走一遍扫描口径，用完即删（不留在树里）
     const dir = resolve(ROOT, "docs/tasks");
     const made = [];
+    // ⚠ 「用完即删」必须把**目录本身**也算进去：干净检出（CI / 全新 clone）里这个目录本来不存在，
+    // 下面的 `mkdirSync(…, { recursive: true })` 会把它**造**出来。以前只删自己写的两个文件，空目录留在树里，
+    // 于是同一棵树里稍后跑的 `docs-drift-check --self-test` 看到「docs/tasks/ 在场但里面一条实物都没有」：
+    // `taskArchiveDirPresent()` 为真而 `simDropped === 0` ⇒ #280 那两条「树形对照」用例的变异落不上
+    // 而报「树形口子没落上」⇒ 自测红数从 3 抬到 **5**（CI 里就是这么被抬上去的；同属 issue #281 那一族的假红）。
+    // 修法只有一条：谁造的目录谁删。开发树里该目录本来就在（且里面有实物）⇒ dirWasAbsent=false，一律不碰。
+    const dirWasAbsent = !existsSync(dir);
     const probe = (name, body) => {
       const abs = join(dir, name);
       const rel = relative(ROOT, abs).split("\\").join("/");
@@ -554,6 +561,15 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
       assert.ok(localArchive.every((h) => h.rel.startsWith("docs/tasks/")), JSON.stringify(localArchive));
     } finally {
       for (const abs of made) rmSync(abs, { force: true });
+      // rmdirSync（不是 rmSync recursive）：只能删空目录，因而不可能误删开发树里有实物的任务档案。
+      if (dirWasAbsent) {
+        try { rmdirSync(dir); } catch { /* 非空 = 里面有别人的东西，不碰 */ }
+      }
+    }
+    // 反向证（只在干净树里可从）：把上面那行 rmdirSync 删掉就必须红——空目录留在仓树里不只难看，
+    // 它会改变同树里其它门禁的行为（上面那段注释）。
+    if (dirWasAbsent && existsSync(dir)) {
+      assert.fail(`探针在干净树里造的 ${relative(ROOT, dir)}/ 没跟着探针一起消失，会把同树里跑的 docs-drift-check --self-test 从 3 条红抬到 5 条`);
     }
   });
 
