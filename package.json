@@ -59,6 +59,7 @@
   },
   "scripts": {
     "test": "node --test",
+    "soak": "node scripts/soak.mjs",
     "check": "node --check src/index.js",
     "types:build": "node scripts/build-types.mjs",
     "check:types": "node scripts/type-check-ratchet.mjs",
