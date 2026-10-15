@@ -50,16 +50,18 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 53`（现测唯一 (符号, 文件) 组数）：
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 63`（现测 63 组 / 165 处）：
 //                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
-//                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 232`，超了红
+//                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 142`（现值；
+//                 232 / 244 是 #286 T-b1a 与 T-a 落地时的旧值，别把历史数当现值），超了红
 //                 （并提示「可以把基线降到 N」），低于基线算过但会催你降。**越界行号是 error**，不是观察项。
 //                 覆盖面 = 宿主会读的 22 份文档：README{,_cn} / AGENTS{,_cn} / host-consumer-contract{,_cn}
 //                 + `docs/host-upgrade-guide*.md` 全部（按目录实扫，新指南落地即自动纳面）。
-//                 正则 `src\/[A-Za-z0-9_./-]+\.js:(\d+)(?:-(\d+))?`；工单口径实测 248 唯一区间 / 279 次出现
-//                 （跑 `--verbose` 复核，别只信注释），减去 `BARE_LINE_EXEMPTIONS` 的 4 处示例/外仓路径 ⇒ 244。
+//                 正则 `src\/[A-Za-z0-9_./-]+\.js:(\d+)(?:-(\d+))?`；#286 T-a 落地时该口径实测 248 唯一区间 /
+//                 279 次出现，减去 `BARE_LINE_EXEMPTIONS` 的 4 处示例/外仓路径 ⇒ 当时基线 244（**历史值**；
+//                 现值一律跑 `--verbose` 复核，别只信注释）。
 //                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM = 22`（6 份点名 + 16 份实扫指南，工单 261016-307
 //                 的 R4 把 20 抬到 22）：按目录实扫意味着「把某份指南改名到不匹配模式」会让脚本与测试侧一起
 //                 少一份而数字仍相等 ⇒ 静默缩面，这条下限与测试侧硬编码的 16 份清单就是那道报警（#286 T-a R2）。
@@ -1504,12 +1506,17 @@ function collectBaselineClaimErrors() {
 //   覆盖面 = 宿主会读的 22 份文档：README{,_cn}.md、AGENTS{,_cn}.md、docs/host-consumer-contract{,_cn}.md
 //     这 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部 16 份（按目录**实扫**：新增一份指南就自动纳面，
 //     不存在「新文档漏在覆盖面外」的形状；0.21.0 那一对落地即 14 → 16）。
-//   正则 = BARE_LINE_RE（工单口径写的是 `src/**.js:N[-M]`；这里把前缀面放宽到 src|bin|scripts|test|docs|
-//     examples|fixtures，因为 `bin/cli.js:88` 这类行号同样会漂，窄到 src/ 等于给未来的漂移留门）。
+//   正则 = BARE_LINE_RE：**实现面只算 `src/**.js:N[-M]`**（就是工单那条口径）。这段注释以前写「前缀面
+//     放宽到 src|bin|scripts|test|docs|examples|fixtures」——**那一步从未落地**：现正则只匹配 `src/`，
+//     于是 `bin/cli.js:841-848` 这类行号根本不进棘轮（`bin/final-guard.js:86`、`test/contract/…:124-142`
+//     同理）。同一批 22 份文档现算的对照：只算 `src/` = 179 次出现 / 146 唯一（减 4 处豁免 ⇒ **142 = 基线**）；
+//     真按那七个前缀放宽 = 191 次 / 158 唯一，差额 12 处全在 `bin/` 与 `test/` 上。放宽前缀会抬高棘轮
+//     口径（要连基线一起重算），归独立的一刀，不在本单里偷偷做。
 //     按工单那条只算 src/**.js 的口径实测：唯一 (文档,目标文件,行区间) **236** / 总出现 **271**
 //     （T-b1a 之前是 248 / 279；契约那两大段锚点族被符号化 + 合并重复区间后降到这里。减去 4 处声明式
-//     豁免 ⇒ 棘轮基线 **232**，降基线的逐条理由就写在下面 `BARE_LINE_REF_BASELINE` 的注释里。）
-//     放宽前缀后的实测数在 `--verbose` 的 note 里，基线常量的注释里也写了怎么复现。
+//     豁免 ⇒ 当时的棘轮基线 **232**——那是 T-b1a 落点，**不是现值**（现值 142，见下面常量的注释），
+//     每一刀降基线的逐条理由就写在 `BARE_LINE_REF_BASELINE` 的注释里。）
+//     `--verbose` 的 note 打的是**现实现**（只算 `src/`）那两个数，基线常量的注释里写了怎么复现。
 //   `CHANGELOG.md` **不参与**：历史条目描述的是**当时**那份代码的行号，把它们改掉等于伪造历史
 //     （同口径先例：#278 对 CHANGELOG 里的简称只登记不改写、#273 对历史条目逐条登记）。CHANGELOG 里
 //     确实还有裸行号，它们仍由 `paths`（文件存在性）那条看守，只是不进棘轮面。
@@ -1938,8 +1945,26 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `--verbose` 实测 **42 组 / 91 处**（契约 EN 45 / CN 44 + 两份 0.19 指南各 1），于是下限升到 42
  *  （不升就是**假绿**：#286 返工 R1 的两例自测会因「实测 ≫ 下限」而 fail-open，干净 clone 的
  *  红集从预期的 3 例变成 5 例）。
+ *  升下限的理由（工单 261016-021 归版收尾 R3，53 → **63**，+10 组 / 122 → 165 处）：
+ *  `docs/host-upgrade-guide-0.21.0.md` 与 `_cn.md` 成对补上 #313 / #314 / #312(b) 三节（EN 8 → 30 处、
+ *  CN 6 → 27 处），全部用符号锚点引用宿主扩展与引擎的真声明——
+ *  `summarizeCompactionLayers` / `formatCompactionLayerSummary` / `buildDiagnostics` /
+ *  `countNoteToolEvent` / `COMPACTION_LAYER_ROLES` / `NOTE_COUNT_SOURCE` /
+ *  `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE` / `parseRunParams` /
+ *  `buildLoopOptions` / `buildSystemPrompt` / `buildToolListLine` /
+ *  `assertToolListMatchesRegistered` / `HOST_REGISTERED_TOOL_PHRASES`
+ *  （均 `examples/pi-extension/erix-run-core.js`）、`inspectFinalDraft` 一族的
+ *  `FINAL_DRAFT_SECTIONS` / `FINAL_DRAFT_PROMPT` / `FINAL_GUARD_TIMEOUT_MS` /
+ *  `FINAL_GUARD_WORST_CASE_MS` / `collectToolResultText`
+ *  （`examples/pi-extension/erix-run-final-guard.js`）、`cliToolDefinitions` /
+ *  `CLI_TOOL_PROMPT_PHRASES` / `buildCliToolsSystemPrompt`（`bin/tools.js`）、
+ *  `COMPACTION_LAYER_IDS` / `observeCompactionLayer` / `createCompactionStat` /
+ *  `normalizeCompactionStats`（`src/compact/pipeline.js`）、`createDeterministicRunState`
+ *  （`src/run-state.js`）、`guardMetrics` / `remainingMs`（`src/loop/orchestrator.js`）、
+ *  `FINAL_GUARD_TERMINATION_REASONS`（`src/loop/termination.js`）——`--verbose` 实测 **63 组 / 165 处**，
+ *  裸行号棘轮不受影响（同一刀 `--verbose` 实测仍是 146 唯一区间 − 4 处豁免 = 142 = 基线）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 53;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 63;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
