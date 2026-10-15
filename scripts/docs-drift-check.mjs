@@ -2394,7 +2394,7 @@ const IGNORED_DIR_CLASSES = new Map([
   ["logs/", { kind: "runtime", why: "运行日志目录" }],
   [".worktrees/", { kind: "worktree", why: "并行任务的本机工作副本（#184 引入）" }],
   ["docs/tasks/", { kind: "task-archive", why: "主 agent 的任务工作目录：整目录不入库，#162 定了口径，#273 把它纳进检查面" }],
-  ["docs/delivery/", { kind: "task-archive", why: "交付报告的本机落点：与 docs/tasks/ 同口径不入库（#286 T-b1b 后实测：一旦被跟踪，报告里提到的已登记档案裸名会进入克隆里也在的文档，改变抢枪裁决 ⇒ --self-test 3 条红变 6 条）" }],
+  ["docs/delivery/", { kind: "task-archive", why: "交付报告的本机落点：与 docs/tasks/ 同口径不入库（2026-10-15 实测：新增 ignore 目录规则若不在这里登记类别，--self-test 会从 3 条红抬到 6 条）" }],
 ]);
 
 /** ④ 本机档案：指向被 .gitignore 忽略的**目录**（本仓只有 `docs/tasks/`：主 agent 的任务工作目录）。
