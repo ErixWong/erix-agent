@@ -2,7 +2,7 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
-## [Unreleased]（发版时归入 **0.20.0**；本单不动 `package.json` 的版本号，仍 `0.19.0`）
+## [0.20.0] - 2026-10-15
 
 ### Changed (BREAKING)
 

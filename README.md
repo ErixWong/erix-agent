@@ -939,12 +939,22 @@ library-level controls
 
 The authoritative version is the `version` field of
 [`package.json`](package.json), and `npm run check:docs` verifies the release
-line below against it. Current release: **v0.19.0** (2026-10-13). The complete,
+line below against it. Current release: **v0.20.0** (2026-10-15). The complete,
 authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
 only the releases that changed how a host consumes the runtime. The 0.6.0
 migration steps remain in
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
+- **v0.20.0 (2026-10-15)**: the tool-fact release — every engine-owned tool-result fact now lives in
+  the `erix.*` namespace (`toolCallKey` / `round` / `durationMs` / `executionStatus` / `success`) and host
+  extensions only in `metadata.*`; the flattened top-level aliases (`erixRound`, `duration`, `executionStatus`,
+  `success`, and any host key that used to be spread onto the top level) **stop being written**, with one
+  generation of read compatibility kept for records written before the upgrade. A stop now outranks the
+  end-turn judge and the final guard (the terminal reason is `aborted`, not `judge_done`), and
+  `termination.partial: true` describes the terminal payload, not the store (issue #283, ruling = β). The four
+  success shapes of `createFileTools().executeTool()` are pinned by the packaged contract suite, together with
+  the new `classifyFileToolResult` discriminator exported from `erix-agent/tools`.
+  Migration: [docs/host-upgrade-guide-0.20.0.md](docs/host-upgrade-guide-0.20.0.md).
 - **v0.19.0 (2026-10-13)**: the published-type-surface release — the npm package now
   ships `.d.ts` declarations for the package root and `erix-agent/tools` (top-level
   `types` in `package.json`, plus `types` conditions on those two `exports`; the
