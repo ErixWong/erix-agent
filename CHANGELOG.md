@@ -17,6 +17,14 @@
   - **`symbols` 锚点（逐处，#210 R1/R2 口径）**：文档里 `` `SYM`（`path`） `` 与 markdown 链接形态（方括号紧跟圆括号）的引用，必须在**被引文件里**抽到该符号的声明。支持的形态：`function` / `class` / `const|let|var` 绑定 / 解构绑定 / 再导出 / 方法 / 对象键与类字段 / `process.env.X` 环境变量读取处；找不到 ⇒ 红并点名该文件里**实际存在的相近符号**（前缀 / 子串 / 编辑距离 ≤2）；一个文件连一条声明都抽不到同样算红（#164「抽不到真值就报错」）。唯一弱一档的「具名字面量成员」（终止原因 / provider 错误码这类字符串值）只在逐份点名并写明理由的 4 个文件里放行（`SYMBOL_VALUE_MEMBERSHIP`）。JS 字面量（`true` / `false` / `null` / `undefined` / `NaN` / `Infinity`）不算符号，逐个点名排除。这条锚点另带**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 24`（现测唯一 (符号, 文件) 组数；`--verbose` 可复核）：
     裸行号棘轮的唯一键不含文档自己的行号，所以「把符号锚点退化成裸行号」在棘轮那一侧一字不变——只有这条下限会红（评审 R1）。
   - **`bare-lines` 棘轮（只减不增，与 `check:types` 的 `BASELINE_ROOT` 同构）**：`src/**.js:N` / `:N-M` 按唯一 (文档, 目标文件, 行区间) 计数，基线常量 `BARE_LINE_REF_BASELINE = 244`；超了红并提示「可以把基线降到 N」，低于基线算过但催你降。**越界行号是 error**，不再是观察项。覆盖面 = 宿主会读的 20 份文档（README / AGENTS / 中英契约各两份 + 按目录实扫的**全部** `docs/host-upgrade-guide*.md`，新指南落地即自动纳面）；`CHANGELOG.md` **不进棘轮面**（历史条目写的是当时那份代码的行号，改掉等于伪造历史，与 #278 对简称「只登记不改写」同口径）。实测口径可复核：`node scripts/docs-drift-check.mjs --verbose` 打出 248 唯一区间 / 279 次出现，减去 4 处声明式豁免 = **244**。豁免沿用 #286 已落在 `test/static-guards.test.js` 的**条目 + 引用行就地声明**双条件（`BARE_LINE_EXEMPTIONS`，缺一不可，条目空转即红），不另造一套。
+  - **行号判据补齐（评审 R3）**：除越界外还管**下界**（行号必须 ≥ 1——`path:0` 在越界判据里永远不算越界，等于免检口）
+    与**目标文件不存在**（从前 `bare-lines` 遇到不存在的目标就 `continue`，于是「文件改名/被删 + 文档还留着行号」静默放行；
+    现在一律红，只有 `BARE_LINE_EXEMPTIONS` 里逐条登记理由的 4 处示例/外仓路径例外）。反向证各一条进 `--self-test`。
+  - **覆盖面份数下限（评审 R2）**：`REF_SCAN_DOCS_MINIMUM = 20`（6 份点名文档 + 当前实扫到的 14 份升级指南），
+    测试侧 `test/docs-anchor-ratchet.test.js` 另硬编码那 14 个文件名做对照——按目录实扫的口径下，把某份指南改名到
+    不匹配 `^host-upgrade-guide.*\.md$` 会让脚本与测试**一起**少一份而数字仍然相等（静默缩面）。
+  - **符号锚点只增不减的下限（评审 R1）**：`SYMBOL_ANCHOR_MIN_UNIQUE = 24`。裸行号棘轮的唯一键不含文档自己的行号，
+    所以「把 `SYM`（`path:N`）退化成裸 `path:N`」在棘轮那一侧一字不变、符号校验整条消失——只有这条下限会红。
   - **顺手改正 2 处已确证的越界**（本批唯一的文档替换）：中英契约把 `limit` 的「先校验再钳制」指到 `src/store/notes.js:398-405`，而该文件只有 383 行；真身在 `normalizeListRequest`（`src/store/notes-port.js:246-253`），两处已按真值改写。
   - **剩余存量精确数字（给 T-b/T-c 派单）**：**244 处**唯一 (文档, 目标文件, 行区间)，分布 = 契约 EN **121** / 契约 CN **121** / `docs/host-upgrade-guide-0.17.0.md` **2**覆盖面本身另有下限 `REF_SCAN_DOCS_MINIMUM = 20`（6 份点名文档 + 当前实扫到的 14 份升级指南），
     测试侧 `test/docs-anchor-ratchet.test.js` 再硬编码一份那 14 个文件名做对照——按目录实扫的口径下，

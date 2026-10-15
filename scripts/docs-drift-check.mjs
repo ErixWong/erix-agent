@@ -65,6 +65,9 @@
 //                 这条下限与测试侧硬编码的 14 份清单就是那道报警（#286 T-a 返工 R2）。
 //                 豁免是**条目 + 引用行就地声明**双条件（与 #286 已落在 `test/static-guards.test.js` 的
 //                 `LOCAL_ARCHIVE_DIRS` + `LOCAL_ARCHIVE_DECLARATION` 同口径），条目没被任何引用用到就红。
+//                 越界之外还管**下界**（行号必须 ≥ 1：`path:0` 在越界判据里永远不算越界 = 免检口）与
+//                 **目标文件不存在**（从前是 continue 静默跳过，现在一律红，只有上面 4 条登记过的示例/外仓
+//                 路径例外）——评审 R3 的两条。
 //                 `CHANGELOG.md` **不进棘轮面**：历史条目写的是**当时**那份代码的行号，改掉等于伪造历史
 //                 （与 #278 对简称「只登记不改写」同口径）；那些行号仍由 `paths` 校文件存在性，只是不进这个数。
 //
@@ -1943,8 +1946,21 @@ function collectBareLineRefErrors() {
   for (const u of unique.values()) {
     const v = bareLineExemptionVerdict({ doc: u.doc, target: u.target, lineText: (fileRecord(u.doc)?.lines ?? [])[u.line - 1] ?? "" });
     if (v.exempt) continue;
+    // 返工 R3（下界）：`path:0` 在越界判据里永远「不越界」，等于给自己开了个免检口；负数写法同理。
+    if (u.from < 1 || (u.to !== null && u.to < 1)) {
+      out.push(`bare-lines: ${u.doc}:${u.line} 引用 ${u.target}:${u.from}${u.to !== null ? `-${u.to}` : ""} 的行号不合法——`
+        + `行号必须 **≥ 1**（0 与负数是手写行号的典型笔误，而 \`:0\` 在越界判据里永远不算越界，等于免检）`);
+    }
     const count = fileLineCount(u.target);
-    if (count === null) continue;              // 目标文件不存在：由 symbol-anchor / paths 那一条点名，这里不重复报
+    if (count === null) {
+      // 返工 R3（不存在）：这一族从前是**跳过**——于是「目标文件改名/被删 + 文档里还留着行号」静默放行，
+      // 而 `paths` 那条只覆盖 README/AGENTS/契约/examples，14 份升级指南里的裸引用没人管。
+      // 现在一律红，只有 BARE_LINE_EXEMPTIONS 里逐条登记的示例/外仓路径例外（它们本来就是虚构路径）。
+      out.push(`bare-lines: ${u.doc}:${u.line} 引用 ${u.target}:${u.from}${u.to !== null ? `-${u.to}` : ""}，`
+        + `但 ${u.target} 在本仓不存在——裸行号没有可核对的真值（改路径或删引用；示例/外仓路径要在 `
+        + `BARE_LINE_EXEMPTIONS 里逐条登记理由，不许默默放行）`);
+      continue;
+    }
     const hi = Math.max(u.from, u.to ?? 0);
     if (hi > count) {
       out.push(`bare-lines: ${u.doc}:${u.line} 引用 ${u.target}:${u.from}${u.to ? `-${u.to}` : ""}，但该文件只有 ${count} 行——` + `行号已越界（#286 的裸行号漂移就是这种形状：门禁过去把行号剥掉只看文件在不在，所以全绿）`);
@@ -3446,6 +3462,22 @@ const SELF_TEST_CASES = [
     simulateRenamedGuide: "docs/host-upgrade-guide-0.16.0.md",
     expect: [/ref-scan: 「符号锚点 \+ 裸行号棘轮」的覆盖面只剩 19 份文档，低于下限 \*\*20\*\* 份/,
       /静默缩面/, /test\/docs-anchor-ratchet\.test\.js/],
+  },
+
+  // —— 返工 R3（评审低危但便宜）：行号**下界**与「目标文件不存在」的口径。
+  // 前者从前是漏洞：`:0-1` 的结尾 1 永远不超过文件行数 ⇒ 零条红（主 agent 注入实测过）。
+  // 后者从前是 `continue`：目标文件不存在就跳过，于是「文件改名/被删 + 还留着行号」静默放行。
+  {
+    label: "#286 返工 R3 下界：把 CN 契约的 notes-port.js:246-253 写成 :0-1 ⇒ 必须红（从前零条红，`:0` 在越界判据里永远不越界）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("src/store/notes-port.js:246-253", "src/store/notes-port.js:0-1") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/store\/notes-port\.js:0-1 的行号不合法——行号必须 \*\*≥ 1\*\*/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#286 返工 R3 不存在：把 CN 契约的一处目标改成 src/loop/__no_such_probe__.js ⇒ 必须红（从前是 continue 静默跳过）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:93-100", "src/loop/__no_such_probe__.js:93-100") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/__no_such_probe__\.js:93-100，但 .*在本仓不存在——裸行号没有可核对的真值/],
+    expectFiles: [CONTRACT_CN],
   },
 ];
 
