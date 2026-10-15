@@ -1150,6 +1150,37 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 等事实。任务是否完成、交付物是否满足要求、能否自动进入下游，仍由宿主、测试系统或人工
 审核决定。
 
+### 宿主侧的 guard 接线与截止线余量（issue #314）
+
+pi 宿主扩展（`examples/pi-extension/erix-run-core.js`）带一个 `finalGuard` 开关，**默认关**。
+开关关着时，扩展交给 `runToolLoop` 的 options 里**根本没有 `finalGuard` 这个键**（而不是一个值为
+`undefined` 的键），所以 `verification` 仍是 `{ status: "skipped", reason: "no_final_guard" }`，
+`end_turn` 依旧是一个声称而不是一个证明。传 `finalGuard: true` 时，循环才会拿到回调，并拿到一个
+**显式给小的** `finalGuardTimeoutMs`（`FINAL_GUARD_TIMEOUT_MS`（`examples/pi-extension/erix-run-final-guard.js`）= 10000），
+而不是依赖引擎默认的 30000。
+
+这个超时必须显式给，理由在 guard 所处的位置：引擎只在**轮边界**查 run 截止线
+（`remainingMs`（`src/loop/orchestrator.js`）），stop 判定 → guard 调用之间**没有** deadline 检查；
+而骑在循环之上的宿主自己还有一根硬 abort 定时器（`runErixRun`（`examples/pi-extension/erix-run-core.js`））。
+靠引擎默认值时，一次 guard 调用 + 最多 `finalGuardMaxRetries` 次 revise 可以等 `3 × 30000` ms
+——全部落在宿主定时器早已过期**之后**：token 花了，结论被自己的 abort 抢掉。所以扩展同时做两件事：
+把单次等待预算压低，并把硬 abort 往后挪 `FINAL_GUARD_WORST_CASE_MS`（`examples/pi-extension/erix-run-final-guard.js`，= 3 × 10000 ms），
+而下发给引擎的 run 截止线**不动**（不拿它掩盖额外开销）。
+
+开启的最坏成本：**最多 2 个额外模型往返**（引擎 `finalGuardMaxRetries` 默认 2）+ **最多 3 次
+guard 等待**（每次上限是 `finalGuardTimeoutMs`）。成本落在宿主载荷的 `diagnostics.finalGuard`
+（调用次数 / 累计墙钟 / `reviseRounds` / 声明与对不上的基点 / 派生结论提醒），与压缩、notes 两层
+平级；引擎自己的计数仍在 `verification.metrics` 上（`guardMetrics`（`src/loop/orchestrator.js`））。
+宿主不得把自己的计数当成引擎的，所以两边各带一个 `source` 字段。
+
+扩展的谓词（`inspectFinalDraft`（`examples/pi-extension/erix-run-final-guard.js`））故意做得很窄：
+终稿四段（`FINAL_DRAFT_SECTIONS`（`examples/pi-extension/erix-run-final-guard.js`），段名槽位也只在开关打开时
+才写进系统提示词），外加**一个**硬闸——「基点」段声明的每个字面值必须在**本次** run 的
+`tool_result` 块里逐字出现（`collectToolResultText`（`examples/pi-extension/erix-run-final-guard.js`））。
+其余（比值、百分比、「总计」类）只提醒不拦。声明的基点对不上时，**任何分支都不 accept**：
+重试用尽后循环以 `final_guard_unverified` 收尾，`verification.status` 为 `unverified`（`max_retries`）——
+这是 fail-closed 规矩过了，不是答案过了。
+
 ### NotesStore 接口、作用域与写契约（0.12.0）
 
 `NotesStore` 端口有六个必需方法：

@@ -35,13 +35,15 @@ export const FINAL_GUARD_TIMEOUT_MS = 10_000;
 /** 引擎侧 `finalGuardMaxRetries` 的默认值（本层**不下发**，只照抄用于算最坏开销）。 */
 export const ENGINE_FINAL_GUARD_MAX_RETRIES = 2;
 
+/** guard 最多被叫几次（1 次原判 + `finalGuardMaxRetries` 次 revise）。 */
+const FINAL_GUARD_MAX_CALLS = 1 + ENGINE_FINAL_GUARD_MAX_RETRIES;
+
 /**
  * 开启 finalGuard 的**最坏额外开销**：guard 最多被叫 `1 + maxRetries` 次（每次上限
  * `finalGuardTimeoutMs`），外加 ≤2 轮 revise 的模型往返。宿主据此把自己的硬 abort
  * 往后挪，否则就是坑 ①（见 `FINAL_GUARD_TIMEOUT_MS` 的注释）。
  */
-export const FINAL_GUARD_WORST_CASE_MS
-  = (1 + ENGINE_FINAL_GUARD_MAX_RETRIES) * FINAL_GUARD_TIMEOUT_MS;
+export const FINAL_GUARD_WORST_CASE_MS = FINAL_GUARD_MAX_CALLS * FINAL_GUARD_TIMEOUT_MS;
 
 /** 每段要模型写什么（提示词里的槽位说明；段名才是 guard 的判定对象）。 */
 const SECTION_HINTS = {
@@ -263,7 +265,7 @@ export function createFinalGuardTally({ finalGuardTimeoutMs = FINAL_GUARD_TIMEOU
     declaredBases: [],
     untraceableBases: [],
     finalGuardTimeoutMs: timeoutMs,
-    worstCaseExtraMs: (1 + ENGINE_FINAL_GUARD_MAX_RETRIES) * timeoutMs,
+    worstCaseExtraMs: FINAL_GUARD_MAX_CALLS * timeoutMs,
     source: "host finalGuard wrapper (erix-run-final-guard.js)",
   };
 }
