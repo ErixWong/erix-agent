@@ -376,17 +376,31 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
       executedToolIds: ["legacy-1"],
       toolResults: [legacyBlock],
     });
-    const outC = await runToolLoop({
-      provider: createOpenAIProvider(providerFields),
-      resume: true,
-      initialUserMessage: "用 searchText 搜 needle，然后一句话回答命中几次。",
-      task: "继续旧会话",
-      tools: TOOLS,
-      executeTool: makeExecutor(dirC),
-      store: storeC,
-      runId: runIdC,
-      maxRounds: 4,
-    });
+    // resume 后的新调用靠模型自愿调工具——真模型有权利直接根据历史作答（实测会偶尔发生）。
+    // 那不会改变本场景的契约判据（旧块不回写 / TTL 按旧名折叠 / 投影一代回退），但会让
+    // 「新块用新形状」这条**没有主语**。工单不许把它断弱成「有就查」，所以这里：
+    // ① 把任务写成不许直接作答；② 首轮没产生新调用就再推一轮 resume（同 store、同 runId），
+    //    最多两次；两次都没有 = 真的坏了，F9a 照样红。
+    const resumePrompt = (attempt) => `第 ${attempt} 次要求：必须调用 searchText 工具在文件里搜 needle（`
+      + "不许根据上面已有的历史结果直接作答），然后一句话回答命中几次。";
+    let outC = null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      outC = await runToolLoop({
+        provider: createOpenAIProvider(providerFields),
+        resume: true,
+        initialUserMessage: resumePrompt(attempt),
+        task: "继续旧会话（必须真的调一次工具）",
+        tools: TOOLS,
+        executeTool: makeExecutor(dirC),
+        store: storeC,
+        runId: runIdC,
+        maxRounds: 4,
+      });
+      const freshSoFar = blocksOf(collapseHistory(await storeC.load(runIdC)), "tool_result")
+        .filter((block) => block?.tool_use_id !== "legacy-1");
+      if (freshSoFar.length > 0) break;
+      console.log(`[2] resume 第 ${attempt} 轮没产生新调用（termination=${outC?.termination?.reason}），再推一轮`);
+    }
     const recordsC = await storeC.load(runIdC);
     const historyC = collapseHistory(recordsC);
     const resultsC = blocksOf(historyC, "tool_result");
