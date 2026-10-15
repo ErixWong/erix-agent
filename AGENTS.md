@@ -178,8 +178,8 @@ scripts/          # experiment scripts and results
   `symbols` never needed them) or move it onto the declaration. Anchors *without* a range are outside this rule,
   which is also why dropping ranges makes the ratchet below go down legitimately.
   *`bare-lines`* is a *ratchet (only down)*: `src/**.js:N` / `:N-M` references, counted as unique
-  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 232` in that same script. The number
-  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 236 measured minus 4 declaratively exempted
+  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 144` in that same script. The number
+  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 148 measured minus 4 declaratively exempted
   example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
   declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
   nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty
@@ -194,9 +194,13 @@ scripts/          # experiment scripts and results
   red until both places are updated. `CHANGELOG.md` is deliberately out of scope: its line numbers record what was true at
   release time, and rewriting them would fake history (same reasoning as the #278 shorthand register).
   Batch T-a built the infrastructure and the ratchet; batch T-b1a converted the contract's
-  `src/loop/orchestrator.js` family (EN + CN in the same PR) and took the baseline from 244 down to 232. The remaining sites still have to be converted to
-  symbol anchors by the follow-up batches, and *lowering* that constant (with a reason in the commit message) is what
-  "we removed some" has to look like.
+  `src/loop/orchestrator.js` anchors that carry their own range (EN + CN in the same PR) and took the baseline from
+  244 down to 232; batch T-b1b finished that family — every remaining bare `src/loop/orchestrator.js:N[-M]` in both
+  contract files either lost its range (the preferred fix, with the real declaration name written into the sentence:
+  `resolvedModelConfig`, `reportObserverError`, `persist`, `isEndTurn`, …) or stayed as a *range fact* whose range was
+  checked against the code — taking the baseline from 232 down to 144. The sites left in `provider-runner.js` /
+  `termination.js` / `governor.js` belong to batch T-b2, and *lowering* that constant (with a reason in the commit
+  message) remains what "we removed some" has to look like.
 
 ## 4. npm publishing guide (verified against the 2026-08 policy)
 

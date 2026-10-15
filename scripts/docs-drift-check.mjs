@@ -3590,7 +3590,8 @@ const SELF_TEST_CASES = [
     overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace(
       `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE};`,
       `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE - 1};`) },
-    expect: [/实测 \*\*232\*\* 处，超过棘轮基线 \*\*231\*\*/, /把基线改成 232/],
+    expect: [ratchetOverBaseline(BARE_LINE_REF_BASELINE, BARE_LINE_REF_BASELINE - 1),
+      new RegExp(`把基线改成 ${BARE_LINE_REF_BASELINE}`)],
   },
   {
     label: `#286 棘轮下限的反向证：常量调回 ${BARE_LINE_REF_BASELINE}（只加一句尾注释、数值不变）→ 必须 0 错`,
