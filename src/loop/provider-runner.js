@@ -3,6 +3,7 @@ import { normalizeMessages } from "./messages.js";
 import { throwIfAborted } from "./abort.js";
 import { validateMessages } from "../messages/rounds.js";
 import { foldToolResultsForRequest } from "./tool-result-ttl.js";
+import { ensureUserTurnView } from "./request-user-view.js";
 import { appendRunStateToRequestView } from "../run-state.js";
 
 function isRecord(value) {
@@ -59,6 +60,20 @@ export async function callProvider(ctx, {
     // run-state 只追加到本次请求视图，保留前缀以实现零缓存失效。
     requestMessages = appendRunStateToRequestView(requestMessages, requestStateBlock);
     const estimateMessageTokens = ctx.estimateMessageTokens;
+    // issue #292 不变量 I1（请求视图定稿处，chat 与 chatStream 共用下面的 request 对象）：
+    // 折叠 / run-state 追加之后、组装 request 之前校验「非空且至少一条真 user 轮」，
+    // 回补来源是未折叠的 ctx.messages。放在折叠策略内部只能管住那一层，管不住这里。
+    const userTurnGuard = {};
+    requestMessages = ensureUserTurnView(requestMessages, ctx.messages, userTurnGuard);
+    if (userTurnGuard.action !== undefined && userTurnGuard.action !== "unrecoverable") {
+      ctx.recordUserTurnGuard?.({
+        round,
+        action: userTurnGuard.action,
+        channel: ctx.stream === true ? "chatStream" : "chat",
+        tokensBefore: estimateMessageTokens(ctx.messages),
+        tokensAfter: estimateMessageTokens(requestMessages),
+      });
+    }
     const requestEstimatedTokens = estimateMessageTokens(requestMessages);
     if (ttlStats.foldedCount > 0) {
       await ctx.recordCompactionLayer?.({

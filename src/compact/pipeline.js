@@ -139,6 +139,11 @@ export function createCompactionStat({
   tokensBefore = 0,
   tokensAfter = tokensBefore,
   protectedDowngraded = 0,
+  // issue #292（additive）：请求视图 / 持久列表定稿处的 user 轮守卫生效时的动作
+  // （"preserved_latest_user_turn" | "abandoned_fold"）与所在侧（chat/chatStream/persisted）。
+  // 与 protectedDowngraded 同一口径：只在真的发生时才出现，既有宿主的读取形状不变。
+  userTurnGuard,
+  userTurnGuardChannel,
   layers,
 } = {}) {
   const stat = {
@@ -156,6 +161,12 @@ export function createCompactionStat({
   if (Number.isSafeInteger(protectedDowngraded) && protectedDowngraded > 0) {
     stat.protectedDowngraded = protectedDowngraded;
   }
+  if (typeof userTurnGuard === "string" && userTurnGuard !== "") {
+    stat.userTurnGuard = userTurnGuard;
+    if (typeof userTurnGuardChannel === "string" && userTurnGuardChannel !== "") {
+      stat.userTurnGuardChannel = userTurnGuardChannel;
+    }
+  }
   return stat;
 }
 
@@ -167,6 +178,8 @@ export function normalizeCompactionStats(value, limit = 32) {
     tokensBefore: entry?.tokensBefore,
     tokensAfter: entry?.tokensAfter,
     protectedDowngraded: entry?.protectedDowngraded,
+    userTurnGuard: entry?.userTurnGuard,
+    userTurnGuardChannel: entry?.userTurnGuardChannel,
     layers: Object.fromEntries(COMPACTION_LAYER_IDS.map((id) => {
       const layerStats = entry?.layers?.[id];
       return [id, {
