@@ -1,10 +1,24 @@
 # Changelog
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
-
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-16
+
 ### Added
+
+- **`parseModelJson`（`src/text/parse-model-json.js`，新增文件）—— 本包「从模型文本里抠 JSON」的唯一公共入口（issue #307）。** 形状：`parseModelJson(text, { topOnly = true, requireKeys = null } = {})` → `{ok:true, value, via:"json", candidates}` 或 `{ok:false, error, candidates}`。
+  - **三态失败可分**：`no_candidate`（扫描件一个候选都没产）/ `unparsable`（有候选但 `JSON.parse` 全抛，例 `{"a":,}`）/ `shape_mismatch`（解析成功却没有一个候选满足 `requireKeys`）；失败结果里**没有** `value` 键（不是 `value: undefined`），`if (!result.ok)` 之后手里真的什么都没有。**没有任何 repair**：不补闭合括号、不删尾逗号、不改值（「归一化器只许搬运」章程）。
+  - **两档扫描、仍只一份文件**：`topOnly` 缺省 `true` 只认顶层平衡对象（外层未闭合什么都不产）；`topOnly:false` 从每个 `{` 起扫一次（外层未闭合先产内层残片）——这一档只为让 `parseJudgeDecision`（`src/reflection/judge.js`）复用同一份扫描而**行为零变更**，改那个裁决归 issue #309。`requireKeys` 是键存在性的 any-of 判定，不看值类型；空数组 / `null` = 不做形状校验。`candidates` 恒为完整扫描结果，调用方可以在它之上跑自己那份更严的逐候选校验。
+  - 公共类型面产出**可收窄的判别联合**（生成的 `src/text/parse-model-json.d.ts` 里同时有 `ok: true` 与 `ok: false` 两个字面量，不是退化成 `any`），并加进 `scripts/build-types.mjs` 的断言面（`src/index.d.ts#parseModelJson`）。从包根（`src/index.js`）导出，`engineApiContract` 覆盖。零 npm 运行时依赖不变。
+  - 四处「抠 JSON」的迁移裁决：`parseReflectionDecision`（`src/loop/reflection.js`）**已迁**且与 #306 逐字等价（对拍用例：已知形状 + 3000 条确定性随机输入 0 差异）；`parseJudgeDecision` 复用扫描件（`topOnly:false`）但保留自己的逐候选循环；`tryParseWrapupJson`（`src/reflection/wrapup.js`）**不迁**并写明理由（它的门槛比键存在性严且必须跳过并续试）；`src/reflection/l0.js` 与 `src/compact/fold-statistical.js` 不属于同一类问题（前者取引擎要求模型写的标签，后者读引擎自己写下的行并 fail-closed）。契约新增「统一入口 `parseModelJson`」中英成对小节。
+
+- **`erix_run` 的终局面补上分层削减与 notes 计数，并拆掉 `compacted` 的歧义（issue #313，PR #317：只加可观测性，不改判定语义）。** 引擎每轮都报了分层压缩账：每条 `compactionStats` 条目带一个以引擎真层 id（`COMPACTION_LAYER_IDS`（`src/compact/pipeline.js`））为键的 `layers` 映射，由 `observeCompactionLayer`（`src/compact/pipeline.js`）在循环的观测点填、`createCompactionStat`（`src/compact/pipeline.js`）归一。宿主扩展此前把这些条目折成三个标量并把那张映射丢掉，于是**一次 `ttl` 层折叠了 69 条工具结果、省下 650,581 tok 的 run 仍然打成 `compaction=0/1`，被读成「压缩没生效」**。
+  - 终局面新增（全部 additive）：`diagnostics.compaction.layers`（`roundsObserved` / `tokensBeforePeak` / 逐层 `byLayerId.<id>.triggered|tokensSaved` / 具名桶 `roles[]` / 无人具名的 `unattributed[]`）、`diagnostics.notes`（`writes` / `reads` / `byName` / `unclassified` / `source`）、`diagnostics.modelMetadataMissingEvents`（`count` / `observed`）。汇总与渲染全在宿主扩展层：`summarizeCompactionLayers` / `formatCompactionLayerSummary` / `countNoteToolEvent` / `buildDiagnostics`（`examples/pi-extension/erix-run-core.js`），归组表 `COMPACTION_LAYER_ROLES` 与计数来源标记 `NOTE_COUNT_SOURCE` 同处具名声明；**引擎 `src/` 一字未改**。
+  - **`compacted: false` / `foldedRounds: 0` 不等于「没有削减」**：这两个值的语义与取值一字未动，`diagnostics.compaction.events` / `.compactedRounds` / `.foldedRounds` 与 #313 之前逐字相同，分层收益只准从 `layers` 读。拿不到源数据时渲染 `unknown` 而不是 `0`（装配期就失败的 run 一条事件都没产生过，「没有事件」不是「零次调用」）；引擎将来新增的层 id 落进 `unattributed[]`，不会被归组表吞掉。
+  - 汇总读的是 **run 返回值（或抛错载荷）上那份全量 `compactionStats`**，并由终局面自报数据源（`COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE`（`examples/pi-extension/erix-run-core.js`）→ `layers.source` / `layers.truncationNote`）：`<runId>.state.json` 那份写盘前经 `normalizeCompactionStats(value, limit = 32)`（`src/compact/pipeline.js`，调用点 `createDeterministicRunState`（`src/run-state.js`））的 `value.slice(-limit)` 截尾，>32 轮的 run 拿它数账会静默少算（**截尾行为本身归 issue #315，本条不修**）。
+  - 契约中英同一提交成对补「erix_run final face: per-layer compaction and notes counters」一节（字段表含每个字段的真来源 + 渲染样例 + 三条宿主读取约束）；离线用例 4 条（`test/examples/erix-run-core.test.js`：`foldedRounds = 0` 时 `ttl` 层收益必须可见、未知层 id 进 `unattributed`、拿不到源渲染 `unknown`、notes 与 `model_metadata_missing` 计数取自事件流）。
+
 
 - **`erix_run` 可以显式开终稿核验 `finalGuard`（issue #314，默认关）。** 引擎侧的 `finalGuard` 早就在
   （`FINAL_GUARD_TERMINATION_REASONS`（`src/loop/termination.js`）与 `finalGuardMaxRetries` /
@@ -30,6 +44,17 @@
     跑真 `runToolLoop`），真机 e2e 只**加**一条「显式开启 ⇒ `verification` 不再是 `skipped`」。
 
 ### Fixed
+
+- **`parseReflectionDecision`（`src/loop/reflection.js`）不再把模型明确写下的布尔值静默翻向（issue #305）。** 病根：它用贪婪 `/\{[\s\S]*\}/` 抠 JSON，于是**尾话里的一对花括号**（散文里的 `{plan}` 占位符、```` ```json ```` 围栏后跟一句说明、并列的两个顶层对象）会让抠出来的一坨解析不了；`JSON.parse` 抛错后 `catch` 直接 fall through 到关键词兜底，而兜底跑在**含 JSON 自身的整段文本**上——匹配到的是 `"continue"` / `"stalled"` 这些**键名**，于是 `"continue": false` 回来变成 `continueFlag: true`、`progress` 一起丢失。实测四种形状今天就坏（issue 原形状、围栏＋带括号尾话、并列两个顶层对象、外层未闭合＋内层完整）。
+  - 修法：换成**顶层平衡扫描** `jsonCandidates`（`src/text/json-candidates.js`，新增文件），感知字符串与转义、只在括号深度归零处切候选、未闭合的外层不产候选。该件由 `tryParseWrapupJson`（`src/reflection/wrapup.js`）自带的同一份生成器**逐字提取**而来（wrapup 改为 import，行为逐字不变），于是包内两个模型 JSON 解析器不再各持一套抠取逻辑。**共享的只有扫描，不共享校验**：judge（`src/reflection/judge.js`）的必填布尔式校验与「每个 `{` 起扫一次」的语义本刀一字未动（后者在外层未闭合时会返回内层残片，改成只认顶层属于行为变更，需另开单）。
+  - **宿主可见的新增字段（additive）**：返回体多一个 `via`，`"json"` = 来自可解析的顶层对象、`"prose_fallback"` = 关键词兜底；类型面收成字面量联合 `"json" | "prose_fallback"`（`ReflectionDecision` typedef，生成的公共声明里不是 `string`），宿主可直接收窄；它只声明来源，**不**暗示 schema 已校验。六字段全部可缺省带默认，`{"progress":3}` 这样的半集仍走 `"json"`；唯一刻意例外是顶层对象可解析却六个决策键一个都不含 ⇒ 按 `prose_fallback` 上报。`progress`/`stalled`/`continueFlag` 的语义只增字段不改义，纯散文关键词行为逐字保留；`reason` 的 `slice(0, 200)`（UTF-16 码元）与 judge 的码点截断口径**有意不统一**（统一会改宿主可见值）。
+  - 顺带清掉 `continueFlag` 里 `parsed.continue === true || parsed["continue"] === true` 的恒等重复（同一个键的两种写法）。契约新增「Reflection 决策解析」中英成对小节；`test/contract/engine-api.js` 补一条包入口面断言（守住 `src/index.js` → `orchestrator.js` 这条此前无人守的 re-export 链）。零 npm 运行时依赖不变。
+
+- **极小 `context.budgetTokens` 不再把发给上游的 `messages` 压成空数组（issue #292）。** 病根：预算小到连一条消息都装不下时，压缩的 safety 层（`safeTruncateMessages` 的逐条删除循环）会从头删掉未保护的消息，把**唯一的 user 轮连同整个列表**一起删空；TTL 折叠同样只作用在请求视图上，没有任何一层对「发给上游的 messages 里还有没有 user 轮」负责。真上游（OpenAI 兼容 relay）对此回 `400 invalid_request`「No user query found in messages」，整个 run 直接 `failed`——即**小预算配置从「能跑」退化成「必然失败」**。
+  - 修法是不变量而不是调参：新增 `src/loop/request-user-view.js`（`ensureUserTurnView`），在**视图定稿处**执行「`messages` 非空且至少一条真 user 轮」——请求侧是 `src/loop/provider-runner.js`（TTL 折叠与 run-state 追加之后、`request` 组装之前，`chat` 与 `chatStream` 共用同一个 `request` 对象，两条通道一次覆盖），持久侧是压缩结果写回 `messages` 之前（否则视图定稿处已经没有可回补的源）。退让顺序：原样 → 从**未折叠 / 未压缩**的视图里保底保留**最新**一条 user 轮（含它必需的 assistant 配对）→ 放弃本次折叠改用未折叠视图 → 不可回补；每一步都过 `validateMessages(..., { allowPendingToolUse: false })`，不产生孤儿 `tool_result` 或缺结果的 `tool_use`。
+  - **不是「预算小就整体不压缩」**：健康预算下压缩行为一字未变（对照用例断言 `compactionStats.compacted` 仍为真、确有 `foldedRounds > 0` 且 `tokensAfter < tokensBefore`）。
+  - **评审 R1 修正：守卫不得改动尾部 pending `tool_use`。** 「本来就合规就原样放行」那一格原先用 `validateMessages(view, { allowPendingToolUse: false })` 判，于是**尾部带 pending `tool_use` 的合法视图被判非法**，走到追加那一支：摘掉尾巴 + 补一条**复制的** user 轮（`user:text, assistant:tool_use` ⇒ `user:text, user:text`）。这一条**与极小预算无关**，`max_tokens` 续写与尾部是 pending 的续跑都是该形状。现在放行格与「放弃折叠」格（原样返回源视图）都按**容忍尾部 pending**判，续写/续跑形状在放行格就返回且**不记任何守卫动作**；要追加纯文本 user 轮的候选分支仍按不容忍 pending 判（追加前必须摘尾巴，那是它存在的理由）。引擎里以 `allowPendingToolUse: true` 调 provider 的只有 max_tokens 续写一处。
+  - 可观测信号（**仓内字段，additive**）：守卫生效那一次的压缩统计里多两个键 `userTurnGuard`（`"preserved_latest_user_turn"` \| `"abandoned_fold"`）与 `userTurnGuardChannel`（`chat` \| `chatStream` \| `persisted`），与既有 `protectedDowngraded` 同口径——**只在真的发生时才出现**，既有宿主读取形状不变；对外契约文案待下一个文档单补齐。
 
 - **工具清单不再四处手抄，且两侧都有装配期断言（issue #312(b)，宿主侧方案 (b)，不动公共面）。** 病根：
   `bin/tools.js` 的清单行（`CLI_TOOLS_SYSTEM_PROMPT_BASE_HEAD` + todo 后缀）与宿主兜底文案
@@ -59,31 +84,9 @@
     `exports`/`files`、不碰 `budgetTokens`；也不声称「列全清单会提升 note 利用率」（该假设在本仓
     `docs/research/2026-09-26-strategy-variance-and-cache-economics.md` 里已判未证实）。本单只治事实一致性。
 
-## [0.21.0] - 2026-10-16
-
-### Added
-
-- **`parseModelJson`（`src/text/parse-model-json.js`，新增文件）—— 本包「从模型文本里抠 JSON」的唯一公共入口（issue #307）。** 形状：`parseModelJson(text, { topOnly = true, requireKeys = null } = {})` → `{ok:true, value, via:"json", candidates}` 或 `{ok:false, error, candidates}`。
-  - **三态失败可分**：`no_candidate`（扫描件一个候选都没产）/ `unparsable`（有候选但 `JSON.parse` 全抛，例 `{"a":,}`）/ `shape_mismatch`（解析成功却没有一个候选满足 `requireKeys`）；失败结果里**没有** `value` 键（不是 `value: undefined`），`if (!result.ok)` 之后手里真的什么都没有。**没有任何 repair**：不补闭合括号、不删尾逗号、不改值（「归一化器只许搬运」章程）。
-  - **两档扫描、仍只一份文件**：`topOnly` 缺省 `true` 只认顶层平衡对象（外层未闭合什么都不产）；`topOnly:false` 从每个 `{` 起扫一次（外层未闭合先产内层残片）——这一档只为让 `parseJudgeDecision`（`src/reflection/judge.js`）复用同一份扫描而**行为零变更**，改那个裁决归 issue #309。`requireKeys` 是键存在性的 any-of 判定，不看值类型；空数组 / `null` = 不做形状校验。`candidates` 恒为完整扫描结果，调用方可以在它之上跑自己那份更严的逐候选校验。
-  - 公共类型面产出**可收窄的判别联合**（生成的 `src/text/parse-model-json.d.ts` 里同时有 `ok: true` 与 `ok: false` 两个字面量，不是退化成 `any`），并加进 `scripts/build-types.mjs` 的断言面（`src/index.d.ts#parseModelJson`）。从包根（`src/index.js`）导出，`engineApiContract` 覆盖。零 npm 运行时依赖不变。
-  - 四处「抠 JSON」的迁移裁决：`parseReflectionDecision`（`src/loop/reflection.js`）**已迁**且与 #306 逐字等价（对拍用例：已知形状 + 3000 条确定性随机输入 0 差异）；`parseJudgeDecision` 复用扫描件（`topOnly:false`）但保留自己的逐候选循环；`tryParseWrapupJson`（`src/reflection/wrapup.js`）**不迁**并写明理由（它的门槛比键存在性严且必须跳过并续试）；`src/reflection/l0.js` 与 `src/compact/fold-statistical.js` 不属于同一类问题（前者取引擎要求模型写的标签，后者读引擎自己写下的行并 fail-closed）。契约新增「统一入口 `parseModelJson`」中英成对小节。
-
-### Fixed
-
-- **`parseReflectionDecision`（`src/loop/reflection.js`）不再把模型明确写下的布尔值静默翻向（issue #305）。** 病根：它用贪婪 `/\{[\s\S]*\}/` 抠 JSON，于是**尾话里的一对花括号**（散文里的 `{plan}` 占位符、```` ```json ```` 围栏后跟一句说明、并列的两个顶层对象）会让抠出来的一坨解析不了；`JSON.parse` 抛错后 `catch` 直接 fall through 到关键词兜底，而兜底跑在**含 JSON 自身的整段文本**上——匹配到的是 `"continue"` / `"stalled"` 这些**键名**，于是 `"continue": false` 回来变成 `continueFlag: true`、`progress` 一起丢失。实测四种形状今天就坏（issue 原形状、围栏＋带括号尾话、并列两个顶层对象、外层未闭合＋内层完整）。
-  - 修法：换成**顶层平衡扫描** `jsonCandidates`（`src/text/json-candidates.js`，新增文件），感知字符串与转义、只在括号深度归零处切候选、未闭合的外层不产候选。该件由 `tryParseWrapupJson`（`src/reflection/wrapup.js`）自带的同一份生成器**逐字提取**而来（wrapup 改为 import，行为逐字不变），于是包内两个模型 JSON 解析器不再各持一套抠取逻辑。**共享的只有扫描，不共享校验**：judge（`src/reflection/judge.js`）的必填布尔式校验与「每个 `{` 起扫一次」的语义本刀一字未动（后者在外层未闭合时会返回内层残片，改成只认顶层属于行为变更，需另开单）。
-  - **宿主可见的新增字段（additive）**：返回体多一个 `via`，`"json"` = 来自可解析的顶层对象、`"prose_fallback"` = 关键词兜底；类型面收成字面量联合 `"json" | "prose_fallback"`（`ReflectionDecision` typedef，生成的公共声明里不是 `string`），宿主可直接收窄；它只声明来源，**不**暗示 schema 已校验。六字段全部可缺省带默认，`{"progress":3}` 这样的半集仍走 `"json"`；唯一刻意例外是顶层对象可解析却六个决策键一个都不含 ⇒ 按 `prose_fallback` 上报。`progress`/`stalled`/`continueFlag` 的语义只增字段不改义，纯散文关键词行为逐字保留；`reason` 的 `slice(0, 200)`（UTF-16 码元）与 judge 的码点截断口径**有意不统一**（统一会改宿主可见值）。
-  - 顺带清掉 `continueFlag` 里 `parsed.continue === true || parsed["continue"] === true` 的恒等重复（同一个键的两种写法）。契约新增「Reflection 决策解析」中英成对小节；`test/contract/engine-api.js` 补一条包入口面断言（守住 `src/index.js` → `orchestrator.js` 这条此前无人守的 re-export 链）。零 npm 运行时依赖不变。
-
-- **极小 `context.budgetTokens` 不再把发给上游的 `messages` 压成空数组（issue #292）。** 病根：预算小到连一条消息都装不下时，压缩的 safety 层（`safeTruncateMessages` 的逐条删除循环）会从头删掉未保护的消息，把**唯一的 user 轮连同整个列表**一起删空；TTL 折叠同样只作用在请求视图上，没有任何一层对「发给上游的 messages 里还有没有 user 轮」负责。真上游（OpenAI 兼容 relay）对此回 `400 invalid_request`「No user query found in messages」，整个 run 直接 `failed`——即**小预算配置从「能跑」退化成「必然失败」**。
-  - 修法是不变量而不是调参：新增 `src/loop/request-user-view.js`（`ensureUserTurnView`），在**视图定稿处**执行「`messages` 非空且至少一条真 user 轮」——请求侧是 `src/loop/provider-runner.js`（TTL 折叠与 run-state 追加之后、`request` 组装之前，`chat` 与 `chatStream` 共用同一个 `request` 对象，两条通道一次覆盖），持久侧是压缩结果写回 `messages` 之前（否则视图定稿处已经没有可回补的源）。退让顺序：原样 → 从**未折叠 / 未压缩**的视图里保底保留**最新**一条 user 轮（含它必需的 assistant 配对）→ 放弃本次折叠改用未折叠视图 → 不可回补；每一步都过 `validateMessages(..., { allowPendingToolUse: false })`，不产生孤儿 `tool_result` 或缺结果的 `tool_use`。
-  - **不是「预算小就整体不压缩」**：健康预算下压缩行为一字未变（对照用例断言 `compactionStats.compacted` 仍为真、确有 `foldedRounds > 0` 且 `tokensAfter < tokensBefore`）。
-  - **评审 R1 修正：守卫不得改动尾部 pending `tool_use`。** 「本来就合规就原样放行」那一格原先用 `validateMessages(view, { allowPendingToolUse: false })` 判，于是**尾部带 pending `tool_use` 的合法视图被判非法**，走到追加那一支：摘掉尾巴 + 补一条**复制的** user 轮（`user:text, assistant:tool_use` ⇒ `user:text, user:text`）。这一条**与极小预算无关**，`max_tokens` 续写与尾部是 pending 的续跑都是该形状。现在放行格与「放弃折叠」格（原样返回源视图）都按**容忍尾部 pending**判，续写/续跑形状在放行格就返回且**不记任何守卫动作**；要追加纯文本 user 轮的候选分支仍按不容忍 pending 判（追加前必须摘尾巴，那是它存在的理由）。引擎里以 `allowPendingToolUse: true` 调 provider 的只有 max_tokens 续写一处。
-  - 可观测信号（**仓内字段，additive**）：守卫生效那一次的压缩统计里多两个键 `userTurnGuard`（`"preserved_latest_user_turn"` \| `"abandoned_fold"`）与 `userTurnGuardChannel`（`chat` \| `chatStream` \| `persisted`），与既有 `protectedDowngraded` 同口径——**只在真的发生时才出现**，既有宿主读取形状不变；对外契约文案待下一个文档单补齐。
 ### Documentation
 
-- **新增 0.21.0 宿主升级指南中英成对（`docs/host-upgrade-guide-0.21.0.md` + `_cn.md`），并随包发布（工单 261016-307 的 R1/R2）。** 三处宿主可见变更逐条给「要不要动作」：#305 的布尔翻转修复与 `via` 来源标记、#307 的新公共入口 `parseModelJson`、#292 的 user 轮不变量守卫（只减少上游 `400`）；#286 的文档锚点纪律按「宿主无感」单列一节。两份全部使用**符号锚点**，零裸行号（新指南落在裸行号棘轮的扫描面内）。
+- **新增 0.21.0 宿主升级指南中英成对（`docs/host-upgrade-guide-0.21.0.md` + `_cn.md`），并随包发布（工单 261016-307 的 R1/R2）。** 逐条给「要不要动作」，覆盖的宿主可见变更点名为：#305 的布尔翻转修复与 `via` 来源标记、#307 的新公共入口 `parseModelJson`、#292 的 user 轮不变量守卫（只减少上游 `400`），归版时按同一骨架补上 #313 的 `erix_run` 终局面分层削减与 notes 计数、#314 的 `finalGuard`（默认关）与终稿四段格式、#312(b) 的工具清单兜底口径；#286 的文档锚点纪律按「宿主无感」单列一节。两份全部使用**符号锚点**，零裸行号（新指南落在裸行号棘轮的扫描面内）。
 - **按 issue #293 修正 0.19.0 指南 §6 的「宿主无需任何动作」**：那批 2026-10-13 并入的改动里有两处**宿主可观测**却没有点名——`readFile` 续读 marker 的文案新增「（文件 N B）」，以及 `runToolLoop` 返回值的 JSDoc typedef 由单行改成多行块（被宿主当机器可读面解析的那段注释，版式就是它的表面）。中英同节同步改掉，并把「无需任何动作」降级成「无需改调用点，但有两处会被逐字断言看到的文案/版式变化」；README 中英的 v0.19.0 条目里那句「全是 additive（宿主不必改代码）」按同一口径补上这两处点名。
 
 ### Chore
