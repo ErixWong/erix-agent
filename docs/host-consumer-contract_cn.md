@@ -1073,7 +1073,7 @@ const records = await store.list({
 （ADR-018 D3 决策反转）。`purge` 无分页协议——一次调用全量扫描处理每个 scope
 （见 [notes 维护调度](#notes-维护调度0120)）。
 
-显式传入的 `limit` 先校验再钳制（`src/store/notes.js:398-405`，issue #183 第 5 组）：
+显式传入的 `limit` 先校验再钳制（`src/store/notes-port.js:246-253`，issue #183 第 5 组）：
 不是正 safe integer 的值——`0`、`-1`、`1.5`、`NaN`、`2**53`、字符串——在读取任何数据
 之前就抛 `TypeError`；而任何大于 200 的值被钳到 200，不是报错。契约套件现在用
 超过 200 条存量钉住这两半：默默把 `limit: 0` 归一化成 `1`、或对 `limit: 5000`

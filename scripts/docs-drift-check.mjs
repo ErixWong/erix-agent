@@ -1453,6 +1453,379 @@ function collectBaselineClaimErrors() {
   return out;
 }
 
+// ── 2.8 锚点粒度升级（issue #286 T-a：B 方案第一批 = 符号锚点 + 裸行号棘轮）─────────
+// 病根（#286，已确证，不重新论证）：`paths` 那条锚点在解析 `path:line` 引用时**主动剥掉行号**
+// （`extractRefOccurrences` 里的 `p.replace(/:\d+(?::\d+)?$/, "")`），只校「文件存在吗」。
+// ⇒ 行号漂到别的代码段、甚至漂出文件末尾，门禁全绿无人报警。确凿样本：契约说 `emitEvent` 在
+// `src/loop/orchestrator.js:1517-1531`，真身在 1660 一带；`docs/host-consumer-contract.md` 与
+// `_cn.md` 各有一处 `src/store/notes.js:398-405`，而该文件只有 383 行（越界）。
+//
+// 本节两条锚点（T-a 只做这两条，**不做批量替换**；存量裸行号的替换归 T-b/T-c）：
+//   · 2.8.1 symbol-anchor：「符号 + 文件」形态的引用必须能在被引文件里抽到该符号的**声明**
+//     （R1，issue #210 的逐处一致口径：每一处单独校，找不到就红并点名相近符号；抽不到真值也红）。
+//   · 2.8.2 bare-lines：`path:N` / `path:N-M` 形态的**裸行号引用**只减不增（R2 棘轮 + R3 越界必红）。
+//
+// 覆盖面与正则（工单 #286 T-a 的口径，脚本自己会数——别只信注释，跑 `--verbose` 看 note）：
+//   覆盖面 = 宿主会读的 20 份文档：README{,_cn}.md、AGENTS{,_cn}.md、docs/host-consumer-contract{,_cn}.md
+//     这 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部 14 份（按目录**实扫**：新增一份指南就自动纳面，
+//     不存在「新文档漏在覆盖面外」的形状）。
+//   正则 = BARE_LINE_RE（工单口径写的是 `src/**.js:N[-M]`；这里把前缀面放宽到 src|bin|scripts|test|docs|
+//     examples|fixtures，因为 `bin/cli.js:88` 这类行号同样会漂，窄到 src/ 等于给未来的漂移留门）。
+//     按工单那条只算 src/**.js 的口径实测：唯一 (文档,目标文件,行区间) **248** / 总出现 **279**
+//     （契约 CN 138、契约 EN 137、0.17.0 指南 2、v030 指南中英各 1）；减去 4 处声明式豁免 ⇒ 棘轮基线 **244**。
+//     放宽前缀后的实测数在 `--verbose` 的 note 里，基线常量的注释里也写了怎么复现。
+//   `CHANGELOG.md` **不参与**：历史条目描述的是**当时**那份代码的行号，把它们改掉等于伪造历史
+//     （同口径先例：#278 对 CHANGELOG 里的简称只登记不改写、#273 对历史条目逐条登记）。CHANGELOG 里
+//     确实还有裸行号，它们仍由 `paths`（文件存在性）那条看守，只是不进棘轮面。
+//
+// 为什么 symbol-anchor **不做中英处数对账**（#210 R1 对逐处规则还额外要求中英对账，这里写明不做的理由）：
+//   符号锚点的两侧数量**本来就不等**——契约 CN 的终止原因表比 EN 多写了几处机制说明，而 14 份升级指南里
+//   有 8 份根本没有中文版。硬对账会逼着人为了凑数改措辞（#210 R3 警惕的「对措辞的绑架」）。
+//   本条是**逐处真值**：每一处 (符号, 文件) 都单独与源码比，改错符号名/删掉声明都红；
+//   处数只在 `--verbose` 里报，不做判据。真正的中英对账留给 T-b/T-c（存量被替换成符号锚点时，
+//   中英两侧必须同步替换，那时数量才具备可比性）。
+
+/** #286 T-a：覆盖面清单里被硬编码的那几份（升级指南按目录实扫，见 `refScanDocs()`）。 */
+const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT_EN, CONTRACT_CN];
+
+/** 覆盖面：宿主会读的 20 份文档 = 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部（实扫，新增指南自动纳面）。 */
+function refScanDocs() {
+  const guides = readdirSync(path.join(ROOT, "docs"))
+    .filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
+    .map((f) => `docs/${f}`)
+    .sort();
+  return [...SYMBOL_DOCS_STATIC, ...guides];
+}
+
+/** 行内代码形态的标识符（不是路径：干掉带 `/` 与 `.` 的东西）。 */
+const INLINE_SYMBOL_RE = /`([A-Za-z_$][\w$]*)`/g;
+
+/** **不是符号**的 JavaScript 字面量：它们出现在「值」的位置上，文档写 ``retry` 默认 `false`（`src/…`）``
+ *  说的是「默认值长在哪个文件」，拿声明判据去问必然假红（`false` 在 orchestrator.js 里出现 102 次，
+ *  却没有一条是声明）。这一档必须**逐个点名**，不许扩成正则去吞别的东西。 */
+const SYMBOL_NOT_SYMBOL = new Set(["true", "false", "null", "undefined", "NaN", "Infinity"]);
+
+/** 允许「具名字面量成员」当真理的引用文件（**逐份点名 + 写理由**）：这一档比声明弱一档，
+ *  开给的是「文档在讲一个**字符串值**（终止原因 / 错误码），而该值就定义在被引文件里」的形状
+ *  （`judge_done`、`provider_config`、`non_continuable`…）。逐文件点名而不是全仓开：
+ *  全仓开等于把「同名字符串」当成通行票，#286 的病根正是这种宽进。条目空转 → 红。 */
+const SYMBOL_VALUE_MEMBERSHIP = new Map([
+  ["src/loop/orchestrator.js", "契约的终止原因表在这一列写「该 reason 由哪段代码产出」，被引符号里有相当一部分是 reason 字符串本身（`judge_done` / `no_final_guard` / `non_continuable`），不是变量名"],
+  ["src/loop/termination.js", "同上：reason → errorCode 的映射表（`max_rounds_cap` 一类）在本文件里以字面量成员存在"],
+  ["src/reflection/governor.js", "治理层的 stop 值（`completion` / `complete` / `noTool` / `cap`）是返回值字符串，契约表引的就是这些值"],
+  ["src/providers/errors.js", "provider 错误码（`provider_config` 一类）以字符串成员定义"],
+]);
+
+/** 抽符号声明：逐行按「行首形态」匹配，返回 Map 名字 → 首次声明处。支持的形态就列在这里，
+ *  报告与 AGENTS 的锚点分级段用同一份口径（够用即可，不做完整 AST——本仓零依赖，不引解析器）。 */
+const SYMBOL_DECL_PATTERNS = [
+  [/^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/, "function"],
+  [/^\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)/, "class"],
+  [/^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/, "binding"],
+  [/^\s*(?:export\s+)?(?:const|let|var)\s+\{([^}]*)\}\s*=/, "解构绑定"],
+  [/^\s*(?:export\s+)?(?:const|let|var)\s+\[([^\]]*)\]\s*=/, "解构绑定"],
+  [/^\s*(?:export\s+)?\{([^}]*)\}\s*(?:;|$)/, "再导出"],
+  [/^\s*(?:static\s+|get\s+|set\s+|async\s+|\*)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*$/, "方法"],
+  [/^\s*(?:public\s+|private\s+|protected\s+|readonly\s+)*([A-Za-z_$][\w$]*)\s*:\s*(?![=:])/, "对象键/类字段"],
+];
+
+const FILE_LINE_CACHE = new Map();   // rel → 拆行后的数组（按「文本身份」失效，见 `fileLines()`）
+
+/** 读一个仓内文件的行数组（走 `textOf`，所以 `--self-test` 的内存副本同样生效）；不存在返 null。
+ *  缓存按 rel + 文本长度 + 首尾 32 字，避免 76 轮自测里反复拆同一份 350KB 源码。 */
+function fileLines(rel) {
+  let text;
+  try { text = textOf(rel); } catch { return null; }
+  const id = `${text.length}:${text.slice(0, 32)}:${text.slice(-32)}`;
+  const hit = FILE_LINE_CACHE.get(rel);
+  if (hit && hit.id === id) return hit.lines;
+  const lines = text.split("\n");
+  FILE_LINE_CACHE.set(rel, { id, lines });
+  return lines;
+}
+
+/** 文件的真实行数（末尾换行不是一行——`wc -l` 同口径，越界判据用它）。 */
+function fileLineCount(rel) {
+  const lines = fileLines(rel);
+  if (!lines) return null;
+  return lines.length > 1 && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+}
+
+function symbolDeclarations(rel) {
+  const lines = fileLines(rel);
+  const out = new Map();
+  if (!lines) return out;
+  lines.forEach((line, i) => {
+    for (const [re, kind] of SYMBOL_DECL_PATTERNS) {
+      const m = line.match(re);
+      if (!m) continue;
+      const names = kind === "解构绑定" || kind === "再导出"
+        ? m[1].split(",").map((p) => p.trim().split(/\s+as\s+/).pop().trim()).filter((n) => /^[A-Za-z_$][\w$]*$/.test(n))
+        : [m[1]];
+      for (const n of names) if (n && !out.has(n)) out.set(n, { line: i + 1, kind });
+    }
+    // 环境变量：`process.env.ERIX_RETRY_ATTEMPTS` 被读的那一行就是它在 CLI 里的「定义处」（契约里
+    // `ERIX_RETRY_ATTEMPTS`（`bin/cli.js:…`）引的就是它），不是声明语句，但同属「该文件里确有这个符号」。
+    for (const m of line.matchAll(/process\.env\.([A-Z][A-Z0-9_]{2,})/g)) {
+      if (!out.has(m[1])) out.set(m[1], { line: i + 1, kind: "环境变量读取处" });
+    }
+  });
+  return out;
+}
+
+/** 「具名字面量成员」那一档的真理：文件里出现过的字符串字面量内容（`"judge_done"` → `judge_done`）。
+ *  只认整段字面量，不做「行里有这个词」那种宽判据。 */
+function valueLiterals(rel) {
+  const lines = fileLines(rel);
+  const out = new Set();
+  if (!lines) return out;
+  for (const line of lines) {
+    for (const m of line.matchAll(/(["'])([A-Za-z_$][\w$]*)\1/g)) out.add(m[2]);
+  }
+  return out;
+}
+
+function editDistance(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j += 1) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+/** 找不到符号时点名「该文件里实际存在相近符号名」（#210/#286 口径：报错要能指路）。
+ *  判据：互为前缀、互为子串、或编辑距离 ≤ 2（大小写折叠后）。最多报 5 个，按接近程度排。 */
+function nearestSymbols(sym, decls) {
+  const low = sym.toLowerCase();
+  const scored = [];
+  for (const [name, d] of decls) {
+    const n = name.toLowerCase();
+    let score = null;
+    if (n === low) continue;
+    if (n.startsWith(low) || low.startsWith(n)) score = 0;
+    else if (n.includes(low) || low.includes(n)) score = 1;
+    else if (editDistance(n, low) <= 2) score = 2;
+    if (score !== null) scored.push({ score, text: `${name}（${d.kind} @ ${d.line}）` });
+  }
+  return scored.sort((a, b) => a.score - b.score || a.text.localeCompare(b.text)).slice(0, 5).map((s) => s.text);
+}
+
+/** 抽「符号 + 文件」锚点：`SYM`（`src/x.js`）与 markdown 链接 [SYM](src/x.js)；同行紧邻形态也接。
+ *  返回每一处出现（不去重，逐处报），去重在报错时按 (符号, 文件) 归并。 */
+function symbolAnchorOccurrences(docs) {
+  const found = [];
+  const forms = [
+    // `SYM`（`path`） / `SYM` (\`path\`) —— 全角半角括号都接，允许中间一个空格
+    { re: /`([A-Za-z_$][\w$]*)`\s*[（(]\s*`([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(?::\d+(?:-\d+)?)?`\s*[)）]/g, kind: "括号并列" },   // 允许带 :N / :N-M 行号后缀：符号部分照校，行号部分同时进 2.8.2 的棘轮
+    // [SYM](path) / [`SYM`](./path#anchor)
+    { re: /\[`?([A-Za-z_$][\w$]*)`?\]\(\.?\/?([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(?:#[^)]*)?\)/g, kind: "markdown 链接" },
+  ];
+  for (const rel of docs) {
+    const lines = fileLines(rel);
+    if (!lines) continue;
+    lines.forEach((line, i) => {
+      for (const f of forms) {
+        f.re.lastIndex = 0;
+        for (const m of line.matchAll(f.re)) {
+          const sym = m[1];
+          if (SYMBOL_NOT_SYMBOL.has(sym)) continue;          // JavaScript 字面量不是符号（见上面名单的理由）
+          if (m[2].endsWith(".d.ts")) continue;              // 生成物声明文件不入库（#213），拿它当被引文件必然假红
+          found.push({ doc: rel, line: i + 1, sym, file: m[2], form: f.kind });
+        }
+      }
+    });
+  }
+  return found;
+}
+
+/** R1 判据：符号在被引文件里确有声明（或落在点名文件的「具名字面量成员」档）。 */
+function symbolAnchorVerdict(sym, rel) {
+  const lines = fileLines(rel);
+  if (!lines) return { ok: false, missing: true };
+  const decls = symbolDeclarations(rel);
+  if (decls.size === 0) {
+    return { ok: false, failure: true, why: "从被引文件里**抽不到任何符号声明**——检查面在该文件上失效（#164 口径：抽不到真值就报错，不许静默放行）" };
+  }
+  const hit = decls.get(sym);
+  if (hit) return { ok: true, tier: `${hit.kind} @ ${hit.line}` };
+  if (SYMBOL_VALUE_MEMBERSHIP.has(rel) && valueLiterals(rel).has(sym)) return { ok: true, tier: "具名字面量成员（点名文件一档）" };
+  const near = nearestSymbols(sym, decls);
+  return { ok: false, near, why: `该文件里没有 \`${sym}\` 的声明（支持的形态：function / class / const|let|var 绑定 / 解构绑定 / 再导出 / 方法 / 对象键、类字段 / process.env.X 环境变量读取处）` };
+}
+
+function collectSymbolAnchorErrors() {
+  const out = [];
+  const notes = [];
+  const docs = refScanDocs();
+  const occurrences = symbolAnchorOccurrences(docs);
+  const groups = new Map();
+  for (const o of occurrences) {
+    const key = `${o.sym}|${o.file}`;
+    if (!groups.has(key)) groups.set(key, { ...o, sites: [] });
+    groups.get(key).sites.push(`${o.doc}:${o.line}`);
+  }
+  let literalTier = 0;
+  let truthFailure = 0;
+  for (const g of groups.values()) {
+    const v = symbolAnchorVerdict(g.sym, g.file);
+    if (v.ok) {
+      if (v.tier.startsWith("具名字面量")) literalTier += 1;
+      continue;
+    }
+    if (v.missing) {
+      out.push(`symbol-anchor: ${g.sites.join(", ")} 引用 \`${g.sym}\`（\`${g.file}\`），但 ${g.file} 在本仓不存在——`
+        + `符号锚点的真理在被引文件里，文件没了这条锚点就是死的（改路径或删锚点，不许留）`);
+      continue;
+    }
+    if (v.failure) {
+      truthFailure += 1;
+      out.push(`symbol-anchor: ${g.sites.join(", ")} 引用 \`${g.sym}\`（\`${g.file}\`），${v.why}`);
+      continue;
+    }
+    out.push(`symbol-anchor: ${g.sites.join(", ")} 引用 \`${g.sym}\`（\`${g.file}\`，${g.form}），${v.why}${v.near?.length ? `\n      ↳ ${g.file} 里实际存在的相近符号：${v.near.join(" / ")}` : ""}`);
+  }
+  const byFile = {};
+  for (const o of occurrences) byFile[o.doc] = (byFile[o.doc] ?? 0) + 1;
+  notes.push(`symbol-anchor: 覆盖面 ${docs.length} 份文档里「符号 + 文件」锚点 ${occurrences.length} 处（唯一 (符号, 文件) ${groups.size} 组：${Object.entries(byFile).map(([d, n]) => `${d} ${n}`).join("、") || "（无）"}）；` + `其中「具名字面量成员」一档 ${literalTier} 组（引用文件已逐份点名，见 SYMBOL_VALUE_MEMBERSHIP）、抽不到真值 ${truthFailure} 组`);
+  collectSymbolAnchorErrors.notes = notes;
+  return out;
+}
+
+// ── 2.8.2 裸行号棘轮（issue #286 T-a：#286 B 方案第一批，**只减不增**）───────────
+// 病根：`paths` 那条锚点在解析 `path:line` 时**主动剥掉行号**（`extractRefOccurrences` 里的
+// `p.replace(/:\d+(?::\d+)?$/, "")`），只校文件是否存在 ⇒ 行号漂到别的代码段、甚至漂出文件末尾，
+// 门禁全绿无人报警。确凿样本（#286）：契约说 `emitEvent` 在 `src/loop/orchestrator.js:1517-1531`，
+// 真身在 1660 一带；中英契约各一处 `src/store/notes.js:398-405` 而该文件只有 383 行（越界）。
+// 本单**不做批量替换**（那是 T-b/T-c）：先把「还剩多少」钉成一个只减不增的数，
+// 再把已经确证的 2 处越界改掉。T-b/T-c 把存量换成符号锚点后，实测数会往下走，
+// 那时降基线必须写理由（与本仓 `check:types` 的 `BASELINE_ROOT` 同构）。
+/** 裸行号引用（`path:N` / `path:N-M`）的正则；覆盖面与 2.8.1 同一批文档（同一份理由）。
+ *  实测值不靠注释：`--verbose` 会把「唯一区间数 / 出现次数 / 豁免数」打进 note（工单口径的三个数是
+ *  248 / 279 / 基线 244，note 里应该逐字对得上）。非 `src/` 前缀（`bin/cli.js:88`、`test/x.js:9`）
+ *  同样会漂，但本批把覆盖面钉在工单那条正则上，扩前缀归 T-b（扩时要重新登记基线）。
+ *  唯一 (文档, 目标文件, 行区间) 与工单口径可复现：脚本自己数出来的数在下面那条 note 里，别只信注释。 */
+const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
+/** 棘轮基线（工单 #286 T-a 口径）：唯一 (文档, 目标文件, 行区间) 实测 248，减去 4 处声明式豁免 ⇒ **244**。
+ *  降它必须写理由；抬它必须写「为什么这次允许变差」。**不许悄悄抬**（同 `check:types` 棘轮的纪律）。
+ *  写法必须保持 `const BARE_LINE_REF_BASELINE = <数字>;` 一行（自测的「调低就红」用例要能改这个数）。 */
+const BARE_LINE_REF_BASELINE = 244;
+
+/** 棘轮生效值：从**本脚本自己的文本**里读 `BARE_LINE_REF_BASELINE`（走 `textOf`，所以 `--self-test`
+ *  能把这个常量临时改小来证「它真的是锁」：调低到低于实测值必须红，改回来必须绿）。
+ *  读不到（常量被删/改格式）= 检查面失效 → 返 null，调用侧按 #164 口径报红，不静默放行。 */
+function bareLineBaseline() {
+  let text;
+  try { text = textOf("scripts/docs-drift-check.mjs"); } catch { return null; }
+  const m = text.match(/^const BARE_LINE_REF_BASELINE = (\d+);/m);
+  return m ? Number(m[1]) : null;
+}
+
+/** 声明式豁免（**条目 + 就地声明**双条件，缺一个不放行；命中要计数，条目空转就红）。
+ *  沿用 #286 已落在 `test/static-guards.test.js` 的 `LOCAL_ARCHIVE_DIRS` + `LOCAL_ARCHIVE_DECLARATION` 口径，
+ *  不另造一套。这里能进来的只有「目标文件本来就不存在」的示例/外仓路径：4 处，全部逐条点名。
+ *  判据函数 `bareLineExemptionVerdict()` 是纯函数，反向证直接拿它问。 */
+const BARE_LINE_EXEMPTIONS = [
+  {
+    doc: "docs/host-consumer-contract.md",
+    target: "src/a/b.js",
+    decl: /…|示例|示意|举例|例如|for example|placeholder|虚构/,   // 引用行末尾的 `…` 就是「这是格式样例里的占位值」的声明
+    why: "契约的折叠摘要一节举的**锚点索引格式样例**（`src/a/b.js:12` 是本仓不存在的示意路径，同行还有 `shas: 1ed3f35, …`），不是引用；就地声明 = 行末的省略号占位符",
+  },
+  {
+    doc: "docs/host-consumer-contract_cn.md",
+    target: "src/a/b.js",
+    decl: /…|示例|示意|举例|例如|for example|placeholder|虚构/,
+    why: "同 EN 侧：CN 契约同一处举的示例锚点，中英成对，条目也必须成对",
+  },
+  {
+    doc: "docs/host-upgrade-guide-v030.md",
+    target: "src/pi/runner.js",
+    decl: /apps\/worker\/|app_container/,      // 引用行写的就是宿主仓的**完整路径** `apps/worker/src/pi/runner.js:50`，不是本仓根相对路径
+    why: "宿主 app_container 仓的调用点（原文写全路径 apps/worker/src/pi/runner.js:50），不是本仓文件；就地声明 = 行里带着外仓根 apps/worker/",
+  },
+  {
+    doc: "docs/host-upgrade-guide-v030_cn.md",
+    target: "src/pi/runner.js",
+    decl: /apps\/worker\/|app_container/,           // 与 EN 侧同一段（中文句子，但路径字面量同样写全）
+    why: "同 EN 侧：0.2.0 指南的宿主基线配置段，指的是 app_container 仓自己的调用点",
+  },
+];
+
+/** 纯函数判据（#286 口径：条目与声明缺一不可，缺任何一个都不放行）。 */
+function bareLineExemptionVerdict({ doc, target, lineText }) {
+  const entry = BARE_LINE_EXEMPTIONS.find((e) => e.doc === doc && e.target === target);
+  if (entry === undefined) return { exempt: false, why: "没有对应的豁免条目" };
+  if (!entry.decl.test(lineText)) {
+    return { exempt: false, why: "引用行没有「示例/示意/宿主」这类就地声明", entry };
+  }
+  return { exempt: true, entry };
+}
+
+function collectBareLineRefErrors() {
+  const out = [];
+  const notes = [];
+  const docs = refScanDocs();
+  const unique = new Map();   // `${doc}|${target}|${from}-${to}` → { doc, line, target, from, to }
+  const exemptHits = new Set();
+  let occurrences = 0;
+  for (const rel of docs) {
+    const lines = fileLines(rel);
+    if (!lines) continue;
+    lines.forEach((line, i) => {
+      BARE_LINE_RE.lastIndex = 0;
+      for (const m of line.matchAll(BARE_LINE_RE)) {
+        occurrences += 1;
+        const target = `src/${m[1]}`;
+        const from = Number(m[2]);
+        const to = m[3] ? Number(m[3]) : null;
+        const key = `${rel}|${target}|${from}-${to}`;
+        if (!unique.has(key)) unique.set(key, { doc: rel, line: i + 1, target, from, to });
+        const v = bareLineExemptionVerdict({ doc: rel, target, lineText: line });
+        if (v.exempt) exemptHits.add(`${rel}|${target}`);
+      }
+    });
+  }
+  // R3 越界必红（工单 #286 T-a：不是观察项）
+  for (const u of unique.values()) {
+    const v = bareLineExemptionVerdict({ doc: u.doc, target: u.target, lineText: (fileLines(u.doc) ?? [])[u.line - 1] ?? "" });
+    if (v.exempt) continue;
+    const count = fileLineCount(u.target);
+    if (count === null) continue;              // 目标文件不存在：由 symbol-anchor / paths 那一条点名，这里不重复报
+    const hi = Math.max(u.from, u.to ?? 0);
+    if (hi > count) {
+      out.push(`bare-lines: ${u.doc}:${u.line} 引用 ${u.target}:${u.from}${u.to ? `-${u.to}` : ""}，但该文件只有 ${count} 行——` + `行号已越界（#286 的裸行号漂移就是这种形状：门禁过去把行号剥掉只看文件在不在，所以全绿）`);
+    } else if (u.to !== null && u.to < u.from) {
+      out.push(`bare-lines: ${u.doc}:${u.line} 引用 ${u.target}:${u.from}-${u.to} 的区间是反的（结尾小于开头）`);
+    }
+  }
+  // 豁免条目反向校：条目没被任何一处引用用上 = 给未来的漂移留后门（同 #273/#278 的白名单口径）
+  for (const e of BARE_LINE_EXEMPTIONS) {
+    if (!exemptHits.has(`${e.doc}|${e.target}`)) {
+      out.push(`bare-lines: 豁免条目 \`${e.target}\`（${e.doc}）没有一处引用真正用到它——要么引用已改对/已删，` + `要么就地声明那句话被改掉了；留着就是给未来的裸行号留后门（条目 + 声明双条件，缺一不可）`);
+    }
+  }
+  // 棘轮：只减不增。基线从脚本自己的文本里读（`bareLineBaseline()`），自测才能拿「改小就红」证它是锁。
+  const baseline = bareLineBaseline();
+  if (baseline === null) {
+    out.push("bare-lines: 从 scripts/docs-drift-check.mjs 自己的文本里抽不到 `const BARE_LINE_REF_BASELINE = <数字>;`——"
+      + "棘轮常量被删或改了写法，棘轮失效（#164 口径：抽不到真值就报错，不许静默放行）");
+  }
+  const measured = unique.size - exemptHits.size;
+  const docsSeen = {};
+  for (const u of unique.values()) docsSeen[u.doc] = (docsSeen[u.doc] ?? 0) + 1;
+  if (baseline !== null && measured > baseline) {
+    out.push(`bare-lines: 裸行号引用（唯一 (文档,目标文件,行区间)）实测 **${measured}** 处，超过棘轮基线 **${baseline}** 处——` + `新增裸行号\u8981么改成「符号 + 文件」锚点（#286 B 方案），要么写明「这次确实允许变差」并把基线改成 ${measured}。` + `分布：${Object.entries(docsSeen).sort((a, b) => b[1] - a[1]).map(([d, n]) => `${d} ${n}`).join("、")}`);
+  } else if (baseline !== null && measured < baseline) {
+    notes.push(`bare-lines: 实测 ${measured} 处 < 基线 ${baseline} 处——存量在变少，请把 BARE_LINE_REF_BASELINE 降到 ${measured}（降基线要写理由，棘轮不许空转）`);
+  }
+  notes.push(`bare-lines: 覆盖面 ${docs.length} 份文档里裸行号引用 ${occurrences} 次出现 / 唯一 (文档,目标文件,行区间) ${unique.size} 处，` + `其中声明式豁免 ${exemptHits.size} 处（${BARE_LINE_EXEMPTIONS.length} 条条目）⇒ 棘轮口径实测 **${measured}** vs 基线 ${baseline}`);
+  collectBareLineRefErrors.notes = notes;
+  return out;
+}
+
 // ── 3. README 引用的 package.json 清单（files / exports）────────────────────────
 // issue #210 的**主修项**：这块原先是 fail-open 的——围栏定位靠真值键（`b["./tools"]`、
 // `b.includes("src")`），文档把 `"./tools"` 改名或整个删掉时块就找不到了，于是退化成一条 warn
@@ -2254,7 +2627,8 @@ const SKELETON_PAIRS = [
 
 function collectAllDrift() {
   const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
-    ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors()];
+    ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors(),
+    ...collectSymbolAnchorErrors(), ...collectBareLineRefErrors()];
   for (const [, en, cn] of SKELETON_PAIRS) out.push(...collectSkeletonErrors(en === README_EN ? "中英 README" : "中英 AGENTS", en, cn));
   return out;
 }
@@ -2267,6 +2641,10 @@ for (const [label, en, cn] of SKELETON_PAIRS) {
 
 // ── 输出 ─────────────────────────────────────────────────────────────────────
 // ── 7. 跑清单/单位类锚点、marker 字面、棘轮当前值与 package.json 清单比对 ────────
+for (const e of collectSymbolAnchorErrors()) err(e);
+for (const n of collectSymbolAnchorErrors.notes ?? []) note(n);
+for (const e of collectBareLineRefErrors()) err(e);
+for (const n of collectBareLineRefErrors.notes ?? []) note(n);
 for (const e of collectMarkerLiteralErrors()) err(e);
 for (const n of collectMarkerLiteralErrors.notes ?? []) note(n);
 for (const e of collectBaselineClaimErrors()) err(e);

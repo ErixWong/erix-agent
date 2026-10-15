@@ -1318,7 +1318,7 @@ maintainer review of real usage (average ~2 notes per run, peak 9) judged
 pagination and version anchoring YAGNI for 0.12.0 (ADR-018 D3 reversal). `purge` has no pagination protocol — one call scans and processes every
 scope (see [Notes maintenance scheduling](#notes-maintenance-scheduling-0120)).
 
-An explicit `limit` is validated, then clamped (`src/store/notes.js:398-405`,
+An explicit `limit` is validated, then clamped (`src/store/notes-port.js:246-253`,
 issue #183 item 5): a value that is not a positive safe integer — `0`, `-1`,
 `1.5`, `NaN`, `2**53`, a string — throws `TypeError` before anything is read,
 while any value above 200 is clamped down to 200 instead of erroring. The
