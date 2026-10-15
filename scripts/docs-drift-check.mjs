@@ -1919,8 +1919,14 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  新增成对的「Reflection 决策解析」小节，按本单红线用**符号锚点**引用 `parseReflectionDecision`
  *  （`src/loop/reflection.js`）与 `jsonCandidates`（`src/text/json-candidates.js`）、`truncate`
  *  （`src/reflection/judge.js`）——锚点在变多，是这条下限想看见的方向。
+ *  升下限的理由（工单 261016-307 / issue #307，27 → **32**，+5 组 / 50 → 70 处）：中英契约成对新增
+ *  「统一入口 `parseModelJson`」小节，按同一红线全部用**符号锚点**引用 `parseModelJson`
+ *  （`src/text/parse-model-json.js`）、`tryParseWrapupJson`（`src/reflection/wrapup.js`）、
+ *  `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`
+ *  （`src/compact/fold-statistical.js`），并把「轮次 judge 保留自己的扫描」那句已经腐烂的引用改成
+ *  指向 `parseJudgeDecision`（`src/reflection/judge.js`）——`--verbose` 实测 32 组 / 70 处。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 27;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 32;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

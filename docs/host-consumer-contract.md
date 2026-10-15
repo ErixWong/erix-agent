@@ -1253,10 +1253,68 @@ silently inverted the booleans the model had just written
 Two neighbors are **intentionally unchanged**: the fallback's `reason`
 truncation stays `value.slice(0, 200)` (UTF-16 code units), even though
 `truncate`（`src/reflection/judge.js`）counts code points with `Array.from` —
-unifying them would change a host-visible value; and the round judge keeps its
-own every-start-brace scan（`src/reflection/judge.js`）, which returns an inner
-fragment when the outer object is unclosed. Switching that to top-level-only is
-a behavior change and needs its own ticket.
+unifying them would change a host-visible value; and the round judge
+（`parseJudgeDecision`，`src/reflection/judge.js`）still scans from **every** `{`, so an
+unclosed outer object still yields its inner fragment. Issue #307 only moved that scan
+into `parseModelJson`（`src/text/parse-model-json.js`）as its `topOnly: false` profile —
+behavior word for word identical — and issue #309 owns changing the verdict itself.
+
+## Unified model-JSON entry point `parseModelJson` (issue #307)
+
+`parseModelJson`（`src/text/parse-model-json.js`）is the single public way this package
+digs a JSON object out of model text. Before it, four places did that job with four
+different answers to "where does the object end"; two of them (the reflection parser and
+the round judge) are now served by this one entry point. It is exported from the package
+root（`src/index.js`）and is covered by `engineApiContract`.
+
+```text
+parseModelJson(text, { topOnly = true, requireKeys = null } = {}) ->
+  | { ok: true,  value, via: "json", candidates }   // first parseable + shape-conforming candidate
+  | { ok: false, error, candidates }                // note: no `value` key at all
+```
+
+The failure is a **three-way** verdict, because the three causes need three host
+reactions (send the model a different prompt / accept that it never answered in JSON /
+ask for the missing field):
+
+| `error` | when it fires |
+|---|---|
+| `no_candidate` | the scan produced nothing — prose only, or braces that never balance |
+| `unparsable` | candidates exist but every `JSON.parse` threw (e.g. `{"a":,}`) |
+| `shape_mismatch` | something parsed, but no candidate satisfies `requireKeys` |
+
+**There is no repair.** No closing brace is appended, no trailing comma is dropped, no
+value is rewritten: a candidate that does not parse simply loses (the "normalizers may
+only carry things across" charter in this document). A failure result carries **no**
+`value` key — not `value: undefined` — so `if (!result.ok)` really leaves you holding
+nothing, and a failed parse can't be mistaken for "the model answered with an empty object".
+
+`candidates` is always the **complete** scan output in order of appearance (losing
+candidates included), so a caller can re-run its own stricter per-candidate validator on
+it — that is exactly how `parseJudgeDecision`（`src/reflection/judge.js`）keeps its
+behavior while no longer owning a scanner.
+
+**Two profiles, still one file.** `topOnly` defaults to `true`: only objects whose brace
+depth returns to zero are candidates, and an unclosed outer object yields nothing.
+`topOnly: false` scans from **every** `{`, so an unclosed outer object yields its inner
+fragment first; that profile exists only so `parseJudgeDecision`（`src/reflection/judge.js`）
+can share the scan with **zero** behavior change (issue #309 owns changing that verdict).
+
+`requireKeys` is any-of key **presence** — a candidate passes if it holds at least one of
+the listed keys — and it never looks at value types. That is the same division of labour
+as `jsonCandidates`（`src/text/json-candidates.js`）: the scan is shared, the verdict is the
+caller's. An empty array or `null` means "no shape check".
+
+Where the four sites went, and why:
+
+| site | verdict | reason |
+|---|---|---|
+| `parseReflectionDecision`（`src/loop/reflection.js`） | **migrated** (default profile + `requireKeys` = the six decision keys) | behavior is word-for-word what issue #306 shipped; the differential test compares it against a copy of that implementation over the known shapes plus 3000 deterministic random inputs |
+| `parseJudgeDecision`（`src/reflection/judge.js`） | scanner replaced by the entry point with `topOnly: false`; **its own candidate loop stays** | judge must skip a parseable-but-invalid candidate (`done` not a literal boolean, `confidence` outside [0,1]) and try the next one; the entry point returns a single `value`, so using it as the verdict would turn "skip this candidate" into "the whole parse failed" |
+| `tryParseWrapupJson`（`src/reflection/wrapup.js`） | **not migrated**, still calls `jsonCandidates` directly | its guard is stricter than key presence (`done` must be a literal boolean; `action`/`note` sends the object back to the inline-L1 path) and it must also skip-and-continue. Skipping is load-bearing: `{"done":"true"}{"done":true}` has to return the second object. The inner `{"done":…}` must not bypass that mandatory-done guard（issue #30 follow-up）, which is why the scan stays top-level-only here |
+| `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`（`src/compact/fold-statistical.js`） | **out of scope** | neither is "find JSON in model prose": L0 lifts a `<erix-summary>` tag the engine told the model to emit, and the fold summary reads a `导航记录：{…}` line the **engine itself** wrote, failing closed to `undefined`. Dropping the tag / the line anchor would widen what they accept — a behavior change, not a deduplication |
+
+## Reusable normalization primitives
 
 ## Reusable normalization primitives
 
