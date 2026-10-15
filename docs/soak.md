@@ -64,6 +64,8 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
   - `abort-termination-reason-is-aborted`（非阻断，已知缺陷 #282）与 `abort-error-carries-usage-rounds-partial`
     （阻断）**只在真的触发过时才判**；没触发时两条都报 `coverage: "not-exercised"` 并计入非阻断观察——
     「脚本没中止成」是脚本的配置问题（由 `abort-actually-fired` 承担红），不能拿它算引擎缺陷。
+    没触发的**根因**另写进 `unfiredDiagnosis`：触发点没踩到（脚本配置）还是上游在触发点之前就报错收口
+    （本阶段本次没被覆盖，附 `upstreamMessage` / `upstreamCode`）——后者不该让人误读成「soak 又扑空了」。
   - 触发过之后：必须抛标准错误（`termination.reason === "aborted"` 且带 `usage`/`rounds`/`partial`）；
     实际观察到的终局 `reason` 另记进 `abortObservedReason`（issue #282 的第一手数据）。
   - **`issue282Rewritten` 是需要 abort 真触发才成立的结论**：只有 `abortFired === true` 且观察到的终局
