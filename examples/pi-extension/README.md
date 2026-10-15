@@ -381,9 +381,18 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 ## 内层工具集
 
-**复用本仓 CLI 的同一装配函数** `bin/tools.js` 的 `createCliTools({ cwd, todo })`（不复制实现）：
-`readFile` / `rg` / `grep` / `tree` / `writeFile` / `exec`。system prompt 也复用
-`buildCliToolsSystemPrompt()`，再叠加「交付物落盘 + 收尾只写摘要 + 首行写「任务已完成」」。
+**复用本仓 CLI 的同一装配函数** `bin/tools.js` 的 `createCliTools({ cwd, todo })`（不复制实现）。
+system prompt 也复用 `buildCliToolsSystemPrompt()`，再叠加「交付物落盘 + 收尾只写摘要 + 首行写「任务已完成」」。
+
+**工具清单只有一份来源**（issue #312(b)）：清单行由遍历注册面生成，文案住在 `bin/tools.js` 导出的
+`CLI_TOOL_PROMPT_PHRASES` 里，本层不抄第二份名单。因此：
+
+- 引擎装配缺席时的兜底不再是手抄名单，而是遍历**实际注册数组**生成（`buildSystemPrompt({ tools })`，
+  调用方递进去的就是交给 `runToolLoop` 的那个数组）；两个来源都拿不到 ⇒ `ErixRunError`
+  `tool_list_unavailable`，**不**退成一份更短的名单（旧兜底就少列了 `searchText` 与 `edit`）。
+- `note_*` 四件套由本层补一行「本工具面另注册：…」写进提示词（引擎清单只认 `bin/` 的注册面，
+  而它的散文只提到其中三个）。装配期还有一条 `assertToolListMatchesRegistered`：清单里写到的名字
+  必须真在 `tools` 数组里。
 
 - **`todo` 默认关**：`todo_*` 四件套把状态写在 `~/.erix/todos/<cwd-hash>.json`。erix_run 是嵌套执行，
   默认关可以避免污染用户 `~/.erix`、也避免并行 run 互相踩台账。要开就在 core 调用处传 `todo: true`
