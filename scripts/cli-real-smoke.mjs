@@ -433,14 +433,39 @@ async function main() {
   // ⑥ 投影用**装好的包**跑（宿主 UI 的镜像也必须是新形状）
   const { projectTranscriptForDisplay } = await import(pathToFileURL(join(installedRoot, "src", "index.js")).href);
   const calls = projectTranscriptForDisplay(records).flatMap((card) => card?.toolCalls ?? []);
-  check("C7 装好的包投影的每条 toolCalls 带 toolCallKey，durationMs 只透真实值", () => {
+  // PR #289 断言强度 3：修前允许**所有**投影条目的 durationMs 都缺席，也不与落盘对账
+  // ⇒「投影根本不透耗时」与「透错了值」都查不出。现在逐条对照 transcript：
+  // 同一条 toolCallKey 的投影 durationMs 必须**等于**该结果块的 erix.durationMs（缺失也必须两边
+  // 同时缺失），并且至少一条 > 0（否则这条线仍是死的）。
+  const durationByKey = new Map();
+  for (const block of results) {
+    const key = block?.erix?.toolCallKey;
+    if (typeof key === "string") durationByKey.set(key, block?.erix?.durationMs);
+  }
+  check("C7 装好的包投影的每条 toolCalls 带 toolCallKey，durationMs 逐条等于落盘的 erix.durationMs", () => {
     assert(calls.length >= 2, `投影条目=${calls.length}`);
     assert(calls.every((call) => typeof call.toolCallKey === "string" && call.toolCallKey.startsWith("tc_")),
       JSON.stringify(calls.map((call) => call.toolCallKey)));
     assert(calls.every((call) => call.durationMs === undefined
       || (Number.isFinite(call.durationMs) && call.durationMs >= 0)),
     JSON.stringify(calls.map((call) => call.durationMs)));
-  }, JSON.stringify(calls.map((call) => ({ k: call.toolCallKey, d: call.durationMs, n: call.name }))));
+    const mismatch = [];
+    for (const call of calls) {
+      if (!durationByKey.has(call.toolCallKey)) {
+        mismatch.push(`${call.toolCallKey}: 落盘里没有这个身份键的结果块`);
+        continue;
+      }
+      if (call.durationMs !== durationByKey.get(call.toolCallKey)) {
+        mismatch.push(`${call.toolCallKey}: 投影=${String(call.durationMs)}`
+          + ` 落盘=${String(durationByKey.get(call.toolCallKey))}`);
+      }
+    }
+    assertDeepEqual(mismatch, [], "投影与落盘的耗时逐条对不上");
+    assert(calls.some((call) => Number.isFinite(call.durationMs) && call.durationMs > 0),
+      `投影里至少一条必须带真实非 0 耗时（全缺席 = 投影这条耗时线是死的）：`
+      + JSON.stringify(calls.map((call) => call.durationMs)));
+  }, JSON.stringify(calls.map((call) => ({ k: call.toolCallKey, d: call.durationMs, n: call.name })))
+    + `｜落盘侧=${JSON.stringify([...durationByKey.entries()])}`);
 
   // ⑧ 真实 HOME 没被污染（对账对象 = **闸门实际选中的那份配置**，PR #289 阻断 2）
   //
