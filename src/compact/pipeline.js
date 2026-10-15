@@ -133,6 +133,28 @@ export function observeCompactionLayer(
   return layers;
 }
 
+/**
+ * @param {{
+ *   compacted?: boolean,
+ *   foldedRounds?: number,
+ *   tokensBefore?: number,
+ *   tokensAfter?: number,
+ *   protectedDowngraded?: number,
+ *   userTurnGuard?: string,
+ *   userTurnGuardChannel?: string,
+ *   layers?: Record<string, { triggered: number, tokensSaved: number }>
+ * }} [input]
+ * @returns {{
+ *   compacted: boolean,
+ *   foldedRounds: number,
+ *   tokensBefore: number,
+ *   tokensAfter: number,
+ *   layers: Record<string, { triggered: number, tokensSaved: number }>,
+ *   protectedDowngraded?: number,
+ *   userTurnGuard?: string,
+ *   userTurnGuardChannel?: string
+ * }}
+ */
 export function createCompactionStat({
   compacted = false,
   foldedRounds = 0,

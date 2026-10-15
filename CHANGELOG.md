@@ -2,6 +2,15 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 
+## [Unreleased]
+
+### Fixed
+
+- **极小 `context.budgetTokens` 不再把发给上游的 `messages` 压成空数组（issue #292）。** 病根：预算小到连一条消息都装不下时，压缩的 safety 层（`safeTruncateMessages` 的逐条删除循环）会从头删掉未保护的消息，把**唯一的 user 轮连同整个列表**一起删空；TTL 折叠同样只作用在请求视图上，没有任何一层对「发给上游的 messages 里还有没有 user 轮」负责。真上游（OpenAI 兼容 relay）对此回 `400 invalid_request`「No user query found in messages」，整个 run 直接 `failed`——即**小预算配置从「能跑」退化成「必然失败」**。
+  - 修法是不变量而不是调参：新增 `src/loop/request-user-view.js`（`ensureUserTurnView`），在**视图定稿处**执行「`messages` 非空且至少一条真 user 轮」——请求侧是 `src/loop/provider-runner.js`（TTL 折叠与 run-state 追加之后、`request` 组装之前，`chat` 与 `chatStream` 共用同一个 `request` 对象，两条通道一次覆盖），持久侧是压缩结果写回 `messages` 之前（否则视图定稿处已经没有可回补的源）。退让顺序：原样 → 从**未折叠 / 未压缩**的视图里保底保留**最新**一条 user 轮（含它必需的 assistant 配对）→ 放弃本次折叠改用未折叠视图 → 不可回补；每一步都过 `validateMessages(..., { allowPendingToolUse: false })`，不产生孤儿 `tool_result` 或缺结果的 `tool_use`。
+  - **不是「预算小就整体不压缩」**：健康预算下压缩行为一字未变（对照用例断言 `compactionStats.compacted` 仍为真、确有 `foldedRounds > 0` 且 `tokensAfter < tokensBefore`）。
+  - 可观测信号（**仓内字段，additive**）：守卫生效那一次的压缩统计里多两个键 `userTurnGuard`（`"preserved_latest_user_turn"` \| `"abandoned_fold"`）与 `userTurnGuardChannel`（`chat` \| `chatStream` \| `persisted`），与既有 `protectedDowngraded` 同口径——**只在真的发生时才出现**，既有宿主读取形状不变；对外契约文案待下一个文档单补齐。
+
 ## [0.20.0] - 2026-10-15
 
 ### Changed (BREAKING)

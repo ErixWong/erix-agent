@@ -364,7 +364,14 @@ test("keeps the configured keepRounds when only API usage is over budget", async
   });
 
   assert.deepEqual(keepRounds, [6, 6]);
-  assert.deepEqual(provider.requests[1].messages, []);
+  // issue #292：策略返回空数组时，视图定稿处的 user 轮守卫会把**最新**那条 user 轮回补进视图
+  // （空 messages 真上游直接 400「No user query found in messages」）。
+  // 这里断言的是「回补了哪一条」而不是旧的「空数组」形状——空数组正是被修掉的缺陷形状。
+  assert.deepEqual(provider.requests[1].messages, [{
+    role: "user",
+    content: [{ type: "text", text: "start" }],
+    cacheBoundary: true,
+  }]);
 });
 
 test("does not compact when per-request input fits budget and local context fits", async () => {

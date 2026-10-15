@@ -243,7 +243,10 @@ test("C3 折叠数为 0 且策略返回新数组：新数组直接成为内部�
   const spy = spyStrategy({
     compactOnCall: 2,
     compactImpl: (messages) => {
-      produced = messages.slice(1);
+      // issue #292 之后：压缩产物若把唯一的 user 轮弄丢了，写回时会被 user 轮守卫回补
+      // （新容器换掉策略那个数组），本用例测的是**容器身份**而不是丢轮修复，
+      // 所以样本换成「同样元素的新数组」（slice() 与 slice(1) 一样是新容器）。
+      produced = messages.slice();
       return { messages: produced, compacted: true, foldedRounds: 0 };
     },
   });
@@ -262,7 +265,8 @@ test("C4 折叠数 >0 时还要再换一次容器：run-state 注入只换容器
   const spy = spyStrategy({
     compactOnCall: 2,
     compactImpl: (messages) => {
-      produced = messages.slice(1);
+      // 同上（issue #292）：留一个仍然合法的压缩产物，专门测容器身份。
+      produced = messages.slice();
       return {
         messages: produced,
         compacted: true,

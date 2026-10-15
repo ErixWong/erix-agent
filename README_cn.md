@@ -132,6 +132,7 @@ src/
     budget.js                      预算校验与状态克隆辅助函数
     aggregate-budget.js            单轮聚合输出闸门
     tool-result-ttl.js             旧工具结果的 request-view TTL 折叠
+    request-user-view.js           视图定稿处不变量：发给上游/写回的视图不得没有 user 轮（issue #292）
     termination.js                 终态归类
     resume-manager.js              断点恢复与 run-state 应用
     error-ledger.js                重复错误记账
