@@ -155,11 +155,11 @@ test("once aborted, the end-turn judge must not issue another model call (issue 
   assert.equal(harness.modelCallCount(), 1, "整次 run 的模型请求次数必须是 1（issue #282 改前为 2）");
 });
 
-// ── issue #292 路径 A：judge 判 `done:false` → nudge → continue，这条圈底完全绕过 #282 的两处守卫 ──
+// ── issue #282 漏网面 · 路径 A：judge 判 `done:false` → nudge → continue，这条圈底完全绕过 #282 的两处守卫 ──
 // 改前：宿主在「judge 已返回、终局未定」的窗口里点停止，只要 judge 给的是 done:false，循环就不看
 // signal 地继续跑——**再多烧一次主模型调用**，最后由出圈的 cap 收尾伪装成轮数耗尽返回
 // max_rounds_cap（连 #180 的抛错语义都没有）。
-test("abort in the judge nudge window terminates as aborted and issues no further main-model call (issue #292 路径 A)", async () => {
+test("abort in the judge nudge window terminates as aborted and issues no further main-model call (issue #282 漏网面 · 路径 A)", async () => {
   const controller = new AbortController();
   const harness = makeHarness({
     // judge 说「还没完」⇒ 治理器给 nudge（continue），而不是 stop
@@ -200,10 +200,10 @@ test("abort in the judge nudge window terminates as aborted and issues no furthe
   assert.equal(harness.judgeCalls.length, 1, "中止后也不得再发起 judge 调用");
 });
 
-// ── issue #292 路径 B：循环**自然耗尽**后的 cap 收尾整段原先在 try/catch 之外 ────────────────
+// ── issue #282 漏网面 · 路径 B：循环**自然耗尽**后的 cap 收尾整段原先在 try/catch 之外 ────────────────
 // 中止落在收尾的 finalGuard 里（宿主点停止 → guard 正常返回）：改前既不查 signal，也拿不到 error，
 // 终局照原样是 final_guard_unverified / max_rounds_cap，且**不抛错**。
-test("abort inside the post-loop max_rounds_cap finalization terminates as aborted (issue #292 路径 B)", async () => {
+test("abort inside the post-loop max_rounds_cap finalization terminates as aborted (issue #282 漏网面 · 路径 B)", async () => {
   const controller = new AbortController();
   // 两轮都调工具 ⇒ 轮数自然耗尽（第三轮是 cap 收尾的 forced final）
   const provider = createFakeProvider([
@@ -235,10 +235,10 @@ test("abort inside the post-loop max_rounds_cap finalization terminates as abort
   assert.equal(guardCalls, 1, "中止确实落在 cap 收尾的 finalGuard 里（否则本测试没测到这段）");
 });
 
-// ── issue #292 路径 B 的第二面：中止落在 cap 收尾的**模型调用**里 ⇒ 抛出的错误也必须带 #180 载荷 ──
+// ── issue #282 漏网面 · 路径 B 的第二面：中止落在 cap 收尾的**模型调用**里 ⇒ 抛出的错误也必须带 #180 载荷 ──
 // 改前：这段在 try/catch 之外，`awaitWithAbort` 抛出的 AbortError 裸冒出整次调用（全仓只有 `fail()`
 // 会 annotateTermination），宿主拿到的是一个没有 `termination` / `usage` / `rounds` 的原始错误。
-test("abort during the forced-final call of the cap finalization carries the #180 termination payload (issue #292 路径 B 反向)", async () => {
+test("abort during the forced-final call of the cap finalization carries the #180 termination payload (issue #282 漏网面 · 路径 B 反向)", async () => {
   const controller = new AbortController();
   const requests = [];
   const provider = {
@@ -281,10 +281,10 @@ test("abort during the forced-final call of the cap finalization carries the #18
   assert.equal(error?.termination?.usage, error?.usage, "termination.usage 与 error.usage 同一个对象");
 });
 
-// ── issue #292 路径 B 的第三面：中止落在**最后一个预算轮的尾巴**里（onRound 之后、收尾之前）──────
+// ── issue #282 漏网面 · 路径 B 的第三面：中止落在**最后一个预算轮的尾巴**里（onRound 之后、收尾之前）──────
 // 圈顶的检查已经管不到它（本轮就是最后一轮，不会再进圈），收尾前那次检查才是唯一守门人。
 // 改前：这条 run 无 store（`persist()` 因此不做 abort 检查），于是**正常返回** max_rounds_cap。
-test("abort in the tail of the last budget round terminates as aborted before the cap finalization (issue #292 收尾前)", async () => {
+test("abort in the tail of the last budget round terminates as aborted before the cap finalization (issue #282 漏网面 · 收尾前)", async () => {
   const controller = new AbortController();
   const provider = createFakeProvider([
     { times: 2, content: [{ type: "tool_use", id: "work", name: "work", input: {} }], stopReason: "tool_use" },
@@ -312,11 +312,11 @@ test("abort in the tail of the last budget round terminates as aborted before th
   assert.equal(error?.termination?.rounds, 2, "已跑完的两轮必须照常计入账单");
 });
 
-// ── issue #292 路径 B 的第四面：收尾**不经过任何 await** 就能返回的那一格（变异证的靶子）──────────
+// ── issue #282 漏网面 · 路径 B 的第四面：收尾**不经过任何 await** 就能返回的那一格（变异证的靶子）──────────
 // 关掉强制收尾（`ERIX_NO_FORCED_FINAL=1`）后，cap 收尾里 `forceFinalIfNeeded` 直接空转、也没有
 // finalGuard ⇒ 出圈到 `finish("max_rounds_cap")` 之间没有任何 await，`awaitWithAbort` 那道自带的
 // abort 检查根本不会被走到。删掉收尾前那次 `throwIfAborted` 就正好丢掉这条 run（已实测变异红）。
-test("abort reaching the cap finalization with no value-added call left still terminates as aborted (issue #292 收尾无 await 那格)", async () => {
+test("abort reaching the cap finalization with no value-added call left still terminates as aborted (issue #282 漏网面 · 收尾无 await 那格)", async () => {
   const controller = new AbortController();
   const provider = createFakeProvider([
     { times: 2, content: [{ type: "tool_use", id: "work", name: "work", input: {} }], stopReason: "tool_use" },

@@ -2,8 +2,8 @@
 
 This guide covers the changes a host has to **act on** in 0.20.0. Two families: the storage
 side (T1/T2, issues #284 / #285 — the field namespace inside a stored tool result, plus the
-CLI exit code and packaging facts that ride along with them) and the abort side (issues #282
-/ #292 / #283 — what a stopped run means and what it leaves behind), plus one pinned shape
+CLI exit code and packaging facts that ride along with them) and the abort side (issues #282 and
+its follow-up, and #283 — what a stopped run means and what it leaves behind), plus one pinned shape
 change (issue #220). `CHANGELOG.md` remains the complete list; if a section below does not
 describe your code path, that section is a no-op for you.
 
@@ -22,7 +22,7 @@ runtime dependencies, is still pure ESM, and still requires Node 22.
 | --- | --- | --- |
 | Tool result facts now live in `erix.*` / `metadata.*`; the flattened top-level names are retired (T1/T2, issues #284 / #285) | reads `block.erixRound`, `block.duration`, `block.executionStatus`, `block.success`, or its own flattened extension key off a result block written by 0.20.0 | 2 |
 | Old records stay readable for one generation, with the engine namespace winning | relies on the top-level legacy names being *gone*, or relies on the top-level names winning when both sides are present | 3 |
-| `aborted` now outranks `judge_done` and `final_guard_unverified` at the terminal decision, on every path that can reach a terminal decision (issues #282, #292) | treats "no exception, reason `judge_done`" as proof the run was not stopped | 4 |
+| `aborted` now outranks `judge_done` and `final_guard_unverified` at the terminal decision, on every path that can reach a terminal decision (issue #282 and its follow-up) | treats "no exception, reason `judge_done`" as proof the run was not stopped | 4 |
 | An aborted run writes **no** transcript record for the round that was in flight, and `termination.partial` describes the payload, not the store (issue #283, ruling = β) | reads "partial results" out of the transcript store, or files a bug when a stopped run has zero records for its last round | 5 |
 | The four success return shapes of `createFileTools().executeTool()` are pinned by the packaged contract suite (issue #220) | nothing breaks; hosts gain a discriminator instead of a hand-written shape-guessing layer | 6 |
 | `TOOL_RESULT_CONTRACT` now records the **existence condition** of `erix.executionStatus` (issue #286 follow-up); the engine behaviour itself is unchanged | a host read only the constant and assumed every result block carries `erix.executionStatus` | 7 |
@@ -124,7 +124,7 @@ objective facts, and `hasSuccessfulToolResult`. Consequences you can rely on:
   count as output" had silently stopped working. Both spellings are read now, which also
   protects records written during the T1 dual-write period.
 
-## 4. A stop beats the round judge and the final guard (issues #282, #292)
+## 4. A stop beats the round judge and the final guard (issue #282 and its follow-up)
 
 Before this release, the terminal `stop` branch derived `termination.reason` from the
 governance action and never looked at `signal.aborted`. Two consequences, both measured on
@@ -149,8 +149,8 @@ on the caught error (`error.termination`, plus `error.usage` / `error.rounds` /
 end-turn judge would have started issues **1 model request** — the judge call is skipped
 outright, so the stop takes effect immediately instead of after one LLM round trip.
 
-Issue #292 closed the two windows that #282 missed, and they were the two that a host under
-real load hits most: a judge verdict of `done: false` selects a **nudge**, which `continue`s
+The follow-up to #282 closed the two windows that #282 missed — the two a host under real
+load hits most: a judge verdict of `done: false` selects a **nudge**, which `continue`s
 without ever entering the `stop` branch (so the loop ran one more main-model round and then
 reported `max_rounds_cap` for a run the user had stopped), and the post-loop round-budget
 finalization sat **outside** the loop's `try`/`catch`, so an abort landing during that
@@ -289,7 +289,7 @@ suites via `erix-agent/contract-tests`.
 2. `grep -rn "<your own extension key>" <your host>` — a key you put on a result block must be
    read from `metadata.*`, and `durationMs` absence must not be collapsed into `0` (section 2).
 3. `grep -rn "judge_done" <your host>` — every hit must be reachable only when
-   `signal.aborted` was not set (issues #282 / #292, section 4).
+   `signal.aborted` was not set (issue #282 及其漏网补口, section 4).
 4. `grep -rn "partial" <your host>` — anywhere that reads `termination.partial` must read
    `error.finalText` for the text, not the transcript store (issue #283, section 5).
 5. `grep -rn "typeof result\|String(result)\|\[object Object\]" <your host>` — replace ad-hoc

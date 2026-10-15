@@ -2,7 +2,7 @@
 
 这本指南只写宿主**需要动手**的变更，共两族加一条：存储侧（T1/T2，issue #284 / #285——
 落盘的 tool result 里的字段命名空间，以及随它一起发布的 CLI 退出码与打包事实）、中止侧
-（issue #282 / #292 / #283——「停止」意味着什么、它留下了什么），外加一条被钉住的形态契约
+（issue #282 及其漏网补口 / #283——「停止」意味着什么、它留下了什么），外加一条被钉住的形态契约
 （issue #220）。完整清单仍在 `CHANGELOG.md`；下面某一节没写到你的代码路径，那一节对你就是
 空操作。
 
@@ -19,7 +19,7 @@ Node 22。
 | --- | --- | --- |
 | 工具事实改住 `erix.*` / `metadata.*`；被摊平的顶层名字退役（T1/T2，issue #284 / #285） | 从 0.20.0 写出的结果块上读 `block.erixRound`、`block.duration`、`block.executionStatus`、`block.success`，或读自己被摊平到顶层的扩展键 | 2 |
 | 旧记录保留一代的读兼容，且引擎命名空间优先 | 依赖顶层旧名字**已经消失**，或依赖两侧都在时顶层名字说话算数 | 3 |
-| 终局裁决处 `aborted` 压过 `judge_done` 与 `final_guard_unverified`，凡是能走到终局的通路都算（issue #282、#292） | 把「没抛异常、reason 是 `judge_done`」当成「这个 run 没被停过」的证据 | 4 |
+| 终局裁决处 `aborted` 压过 `judge_done` 与 `final_guard_unverified`，凡是能走到终局的通路都算（issue #282 及其漏网补口） | 把「没抛异常、reason 是 `judge_done`」当成「这个 run 没被停过」的证据 | 4 |
 | 被中止的 run 不为进行中的那一轮写 transcript 记录，且 `termination.partial` 说的是载荷而不是 store（issue #283，裁决 = β） | 从 transcript store 里读「部分结果」，或者看到被停掉的 run 最后一轮 0 条记录就去报 bug | 5 |
 | `createFileTools().executeTool()` 的四种成功返回形态由随包契约套件钉住（issue #220） | 不会坏；宿主得到一个判别式，可以删掉自己那层猜形态的代码 | 6 |
 | `TOOL_RESULT_CONTRACT` 补记 `erix.executionStatus` 的**存在条件**（issue #286 追加项）；引擎行为本身没变 | 只读了那份常量，就假设每个结果块都带 `erix.executionStatus` | 7 |
@@ -106,7 +106,7 @@ unsafe 重放被中止、executor 尚未 settle 就被中止。写 `?? 0` 等于
   输出，而那个键**从来没被写过**，于是「拦截不计入输出」实际上早就失效了。现在两侧都读，
   T1 双写期内写下的记录同样受保护。
 
-## 4. 「停止」压过 round judge 与 finalGuard（issue #282、#292）
+## 4. 「停止」压过 round judge 与 finalGuard（issue #282 及其漏网补口）
 
 本版本之前，终局的 `stop` 分支只从治理动作推导 `termination.reason`，全程不看
 `signal.aborted`。两个后果，都是在 `test/loop-abort-terminal-priority.test.js` 的假
@@ -128,7 +128,7 @@ provider 脚手架上实测出来的：
 `error.finalText`）；而信号在 end-turn judge 本该启动时就已经中止的 run，只发 **1 次模型
 请求**——judge 调用整次跳过，于是停止立刻生效，而不是等一个 LLM 往返。
 
-issue #292 补上的是 #282 漏掉的两个窗口，而且是真实负载下宿主最常撞的那两个：judge 判
+issue #282 的漏网面 补上的是 #282 漏掉的两个窗口，而且是真实负载下宿主最常撞的那两个：judge 判
 `done: false` 时选的是 **nudge**，它直接 `continue`，根本不进 `stop` 分支（于是循环又跑了
 一轮主模型调用，最后把一个用户早已停掉的 run 报成 `max_rounds_cap`）；循环结束后的轮数预算
 收尾整段落在循环的 `try`/`catch` **之外**，中止落在那段收尾里时，要么以裸 `AbortError`
@@ -256,7 +256,7 @@ switch (fact.kind) {
 2. `grep -rn "<你自己的扩展键>" <你的宿主>` ——你放在结果块上的键必须从 `metadata.*` 读，而
    `durationMs` 的缺席不得被塌缩成 `0`（第 2 节）。
 3. `grep -rn "judge_done" <你的宿主>` ——每个命中都只能在 `signal.aborted` 未置位时才可达
-   （issue #282 / #292，第 4 节）。
+   （issue #282 及其漏网补口，第 4 节）。
 4. `grep -rn "partial" <你的宿主>` ——任何读 `termination.partial` 的地方，文本都要去
    `error.finalText` 读，而不是读 transcript store（issue #283，第 5 节）。
 5. `grep -rn "typeof result\|String(result)\|\[object Object\]" <你的宿主>` ——用

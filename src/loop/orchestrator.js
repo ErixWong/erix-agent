@@ -2886,7 +2886,7 @@ export async function runToolLoop(options) {
     // 预算条件用 budgetRounds（本次 runToolLoop 的消耗），不是身份轮号 rounds：
     // resume 续接时 rounds 已到顶，用它当预算会导致续接轮一次进不了循环。
     while (budgetRounds < governorState.effectiveMaxRounds) {
-    // issue #292（必修 1 · 路径 A）：圈顶先查一次中止。**进圈条件**只看轮数、不看 signal，而圈底
+    // PR #291 必修 1（issue #282 的漏网面 · 路径 A）：圈顶先查一次中止。**进圈条件**只看轮数、不看 signal，而圈底
     // （judge 的 nudge/continue、以及 persist + onRound + governor 收尾那一大段 await）里一个 abort
     // 检查都没有 ⇒ #282 只在 `action.kind === "stop"` 分支入口与最后一次 finish 前补的两处
     // `throwIfAborted`，管不到「judge 判 done:false → nudge → continue」这条路：宿主在 judge 已返回、
@@ -3504,7 +3504,7 @@ export async function runToolLoop(options) {
     await fail(error);
   }
 
-  // issue #292（必修 1 · 路径 B）：出圈收尾原先整段落在 `} catch (error) { await fail(error); }` **之外**，
+  // PR #291 必修 1（issue #282 的漏网面 · 路径 B）：出圈收尾原先整段落在 `} catch (error) { await fail(error); }` **之外**，
   // 两个后果：
   //   1. 收尾里的 await（`forceFinalIfNeeded` 内那一次 `awaitWithAbort(provider.chat(...))`、以及
   //      `callFinalGuard`）在被中止时抛出的 AbortError **没人接**，会裸抛出 runRunLoop——全仓只有
