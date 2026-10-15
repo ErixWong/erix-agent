@@ -50,7 +50,7 @@ function messagesWith(text) {
     { role: "user", content: [{ type: "text", text: "任务正文" }] },
     {
       role: "assistant",
-      content: [{ type: "tool_use", id: "t1", name: "exec", input: { command: "git rev-parse --short HEAD" } }],
+      content: [{ type: "tool_use", id: "t1", name: "exec", input: { command: "git rev-parse HEAD" } }],
     },
     {
       role: "user",

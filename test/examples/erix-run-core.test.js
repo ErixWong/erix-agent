@@ -21,6 +21,11 @@ import { COMPACTION_LAYER_IDS, createEmptyCompactionLayers, observeCompactionLay
 import { safeRunId } from "../../src/store/file.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
+import {
+  ENGINE_FINAL_GUARD_MAX_RETRIES,
+  FINAL_DRAFT_SECTIONS,
+  FINAL_GUARD_TIMEOUT_MS,
+} from "../../examples/pi-extension/erix-run-final-guard.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -1341,4 +1346,144 @@ test("#313 R3：notes 写/读与 model_metadata_missing 事件数从**事件流*
   assert.match(text, /notes 写=2\/读=2（未归类 note_\* 1）/u);
   assert.match(text, /note_take=1/u);
   assert.match(text, /model_metadata_missing=YES events=1/u);
+});
+
+// ---------------------------------------------------------------------------
+// #314：erix_run 接 finalGuard（默认关、显式开）。全部离线（fake provider +
+// 注入的谓词），不打模型；引擎的终局裁决走真 `runToolLoop`（本单**一字没改**引擎）。
+// ---------------------------------------------------------------------------
+
+const DRAFT_END_TURN = {
+  content: [{ type: "text", text: "任务已完成\n\n## 取证边界\nx\n\n## 基点\ny\n\n## 结论\nz\n\n## 未验证\n无" }],
+  stopReason: "end_turn",
+  usage: { input_tokens: 3, output_tokens: 2 },
+};
+const acceptAll = () => ({ action: "accept" });
+const reviseAlways = () => ({ action: "revise", message: "缺 ## 基点，请补齐" });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("#314 R1：默认关 ⇒ 透传给引擎的 options 里一个 finalGuard 键都没有，verification 仍是 skipped", async () => {
+  const captured = {};
+  const payload = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 4 },
+    makeDeps({ provider: createFakeProvider([DRAFT_END_TURN]), captured }),
+  );
+  // 「默认不透传」必须是**结构上**的不透传，不是「传了个 undefined」
+  assert.ok(!("finalGuard" in captured.options), JSON.stringify(Object.keys(captured.options)));
+  assert.ok(!("finalGuardTimeoutMs" in captured.options), "默认关时连超时都不该下发");
+  assert.equal(payload.termination.reason, "end_turn");
+  assert.equal(payload.verification.status, "skipped", JSON.stringify(payload.verification));
+  assert.equal(payload.verification.reason, "no_final_guard");
+  // 引擎的 guardMetrics 也在 verification 上（本层不重抄它，宿主面另记自己的墙钟成本）
+  assert.deepEqual(payload.verification.metrics, {
+    verified: 0, skipped: 0, revised: 0, unverified: 0, guard_error: 0,
+  });
+  // 观测面：没开启也要有一行如实的话（而不是缺字段），且终局面文本不假称已通过
+  assert.equal(payload.diagnostics.finalGuard.enabled, false);
+  assert.equal(payload.diagnostics.finalGuard.calls, 0);
+  const text = core.formatPayloadForModel(payload);
+  assert.match(text, /finalGuard=disabled/u);
+  assert.doesNotMatch(text, /finalGuard calls=/u);
+  assert.doesNotMatch(captured.options.system, /## 基点/u, "默认关时提示词一个字节都不许多");
+});
+
+test("#314 R1：显式开启 ⇒ 透传回调 + 显式的小 finalGuardTimeoutMs，引擎侧真的落到 verified", async () => {
+  const captured = {};
+  const payload = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 4, finalGuard: true },
+    makeDeps({
+      provider: createFakeProvider([DRAFT_END_TURN]),
+      captured,
+      extra: { finalGuardInspect: acceptAll },
+    }),
+  );
+  assert.equal(typeof captured.options.finalGuard, "function");
+  assert.equal(captured.options.finalGuardTimeoutMs, FINAL_GUARD_TIMEOUT_MS);
+  assert.ok(FINAL_GUARD_TIMEOUT_MS < 30_000, "别靠引擎默认的 30s（坑 ①）");
+  assert.equal(payload.verification.status, "verified", JSON.stringify(payload.verification));
+  assert.equal(payload.diagnostics.finalGuard.enabled, true);
+  assert.equal(payload.diagnostics.finalGuard.calls, 1);
+  assert.equal(payload.diagnostics.finalGuard.reviseRounds, 0);
+  // 开启时提示词才写四段槽位（段名与 guard 的 `FINAL_DRAFT_SECTIONS` 同源，一处改两处生效）
+  for (const section of FINAL_DRAFT_SECTIONS) {
+    assert.ok(captured.options.system.includes(section), `提示词缺槽位 ${section}`);
+  }
+});
+
+test("#314 R1：finalGuardTimeoutMs 可显式覆盖（调用方想更紧就自己给）", async () => {
+  const captured = {};
+  await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 3, finalGuard: true, finalGuardTimeoutMs: 1_234 },
+    makeDeps({
+      provider: createFakeProvider([DRAFT_END_TURN]),
+      captured,
+      extra: { finalGuardInspect: acceptAll },
+    }),
+  );
+  assert.equal(captured.options.finalGuardTimeoutMs, 1_234);
+});
+
+test("#314 坑①：guard 的等待晚于 run 截止线，宿主硬 abort 必须留余量（否则钱花了拿不到 verified）", async () => {
+  // run 截止线 1s，谓词要跑 1.2s：引擎在轮边界**之后**才叫 guard，stop 判定 → guard 之间
+  // 没有 deadline 检查，所以这 1.2s 全落在「宿主说了算」的窗口里。本层那根 setTimeout 若
+  // 仍卡在 params.timeoutMs=1000，就会在谓词跑完前 abort ⇒ payload 是 aborted、verification
+  // 拿不到 verified（钱花了）。开启时把硬 abort 往后挪 FINAL_GUARD_WORST_CASE_MS 才不会红。
+  const slowInspect = async () => {
+    await sleep(1_200);
+    return acceptAll();
+  };
+  const payload = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 3, timeoutMs: 1_000, finalGuard: true },
+    makeDeps({
+      provider: createFakeProvider([DRAFT_END_TURN]),
+      extra: { finalGuardInspect: slowInspect },
+    }),
+  );
+  assert.equal(payload.timeout, false, `宿主自己把核验掐死了：${JSON.stringify(payload.termination)}`);
+  assert.equal(payload.aborted, false, JSON.stringify(payload.termination));
+  assert.ok(payload.verification, `verification 整块都没了（被硬 abort 抢掉）：${JSON.stringify(payload.termination)}`);
+  assert.equal(payload.verification.status, "verified", JSON.stringify(payload.verification));
+});
+
+test("#314 C3：重试用尽 ⇒ 终局 unverified（不是 verified），成本与 revise 轮数都进 diagnostics", async () => {
+  const captured = {};
+  const payload = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 6, finalGuard: true },
+    makeDeps({
+      provider: createFakeProvider([{ ...DRAFT_END_TURN, times: 6 }]),
+      captured,
+      extra: { finalGuardInspect: reviseAlways },
+    }),
+  );
+  assert.equal(payload.termination.reason, "final_guard_unverified", JSON.stringify(payload.termination));
+  assert.equal(payload.verification.status, "unverified");
+  assert.equal(payload.verification.reason, "max_retries");
+  // 引擎 finalGuardMaxRetries 默认 2 ⇒ guard 被叫 1 + 2 = 3 次，一次也没 accept
+  assert.equal(payload.diagnostics.finalGuard.calls, 3);
+  assert.equal(payload.diagnostics.finalGuard.reviseRounds, 3);
+  assert.equal(payload.diagnostics.finalGuard.accepted, 0);
+  assert.equal(payload.diagnostics.finalGuard.reviseRounds <= 1 + ENGINE_FINAL_GUARD_MAX_RETRIES, true);
+  assert.equal(payload.diagnostics.finalGuard.worstCaseExtraMs, 3 * FINAL_GUARD_TIMEOUT_MS);
+  const text = core.formatPayloadForModel(payload);
+  assert.match(text, /finalGuard calls=3/u);
+  assert.match(text, /revise=3\/2/u);
+  assert.match(text, /verification=unverified\/max_retries/u);
+});
+
+test("#314 R1：finalGuard 只认真布尔；没开启时传超时是 bad_params（不静默吞掉用户意图）", () => {
+  for (const value of ["true", 1, "yes", {}]) {
+    assert.throws(
+      () => core.parseRunParams({ task: "t", cwd: "/tmp", finalGuard: value }),
+      (error) => error.code === "bad_params",
+      `finalGuard=${JSON.stringify(value)} 该报错`,
+    );
+  }
+  assert.deepEqual(core.parseRunParams({ task: "t", cwd: "/tmp", finalGuard: false }), {
+    task: "t", cwd: "/tmp", maxRounds: core.DEFAULT_MAX_ROUNDS, timeoutMs: core.DEFAULT_TIMEOUT_MS,
+  }, "finalGuard:false 必须与「没传」逐字同形（默认路径零变化）");
+  assert.equal(core.parseRunParams({ task: "t", cwd: "/tmp", finalGuard: true }).finalGuard, true);
+  assert.throws(
+    () => core.parseRunParams({ task: "t", cwd: "/tmp", finalGuardTimeoutMs: 5_000 }),
+    (error) => error.code === "bad_params" && /只在 finalGuard: true 时有意义/u.test(error.message),
+  );
 });

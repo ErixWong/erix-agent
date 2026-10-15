@@ -49,6 +49,10 @@ import {
   STRATEGY_NAMES,
 } from "./erix-run-core.js";
 import {
+  FINAL_GUARD_TIMEOUT_MS,
+  FINAL_GUARD_WORST_CASE_MS,
+} from "./erix-run-final-guard.js";
+import {
   createAsyncRuntime,
   globalAsyncJobRegistry,
   globalCompletionSendRegistry,
@@ -103,6 +107,28 @@ const parameters = Type.Object({
   model: Type.Optional(
     Type.String({
       description: "覆盖 ~/.erix/config.json slots.default 里的 model 名（endpoint/apiKey 仍走该槽位）。",
+    }),
+  ),
+  finalGuard: Type.Optional(
+    Type.Boolean({
+      description:
+        "**默认关**：终稿核验（finalGuard）。开启时才向 runToolLoop 透传 finalGuard 回调，"
+        + "终局 verification 才可能是 verified（默认关时恒 skipped ⇒ end_turn 不是交付证明）。\n"
+        + "代价与约束：最坏多 ≤2 个模型往返（引擎 finalGuardMaxRetries 默认 2）+ 最多 3 次 guard 等待；\n"
+        + `本层因此**显式**下发 finalGuardTimeoutMs=${FINAL_GUARD_TIMEOUT_MS}（而不是引擎默认的 30_000）：\n`
+        + "引擎只在轮边界查截止时间，stop 判定 → guard 之间没有 deadline 检查，默认 30s × 3 会被\n"
+        + "本层自己那根挂在 timeoutMs 上的硬 abort 掉 ⇒ 钱花了却拿不到 verified。开启时本层把硬 abort\n"
+        + `往后挪 ${FINAL_GUARD_WORST_CASE_MS}ms（= 3 × ${FINAL_GUARD_TIMEOUT_MS}），run 自身截止线不变。\n`
+        + "开启后终稿要依次写 ## 取证边界 / ## 基点 / ## 结论 / ## 未验证（提示词里会同步要求），\n"
+        + "其中「## 基点」声明的字面值必须在本次工具返回里逐字找得到（唯一的硬闸，对不上就 revise）。",
+    }),
+  ),
+  finalGuardTimeoutMs: Type.Optional(
+    Type.Integer({
+      minimum: 200,
+      maximum: 600_000,
+      description:
+        `单次 guard 等待上限（毫秒），默认 ${FINAL_GUARD_TIMEOUT_MS}；只在 finalGuard: true 时有意义（没开启时传了会报 bad_params）。`,
     }),
   ),
   sessionDir: Type.Optional(
