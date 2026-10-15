@@ -169,8 +169,11 @@ scripts/          # experiment scripts and results
   *`bare-lines`* is a *ratchet (only down)*: `src/**.js:N` / `:N-M` references, counted as unique
   (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 244` in that same script. The number
   is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 248 measured minus 4 declaratively exempted
-  example / host-repo paths (`BARE_LINE_EXEMPTIONS`, entry **and** in-place declaration required, an entry nobody uses
-  goes red — the same dual condition #286 landed in `test/static-guards.test.js`). An out-of-range line number is an
+  example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
+  declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
+  nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty
+  string (or carries a `g` flag, making `.test()` stateful) is itself an error — same dual-condition family as #286's
+  `test/static-guards.test.js`). An out-of-range line number is an
   error, not an observation. Scope is the 20 documents a host actually reads: the two READMEs, both AGENTS files, both
   contract files, plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
   covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that

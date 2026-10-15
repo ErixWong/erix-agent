@@ -63,8 +63,12 @@
 //                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM = 20`（6 份点名 + 14 份实扫指南）：按目录实扫
 //                 意味着「把某份指南改名到不匹配模式」会让脚本与测试侧一起少一份而数字仍相等 ⇒ 静默缩面，
 //                 这条下限与测试侧硬编码的 14 份清单就是那道报警（#286 T-a 返工 R2）。
-//                 豁免是**条目 + 引用行就地声明**双条件（与 #286 已落在 `test/static-guards.test.js` 的
-//                 `LOCAL_ARCHIVE_DIRS` + `LOCAL_ARCHIVE_DECLARATION` 同口径），条目没被任何引用用到就红。
+//                 豁免是**三信号 AND**（① 表里点名这一条 ② 引用行含那个占位路径 ③ 同一行有就地声明词）：
+//                 评审 R4 把从前的整行 OR 收紧——同一行只剩一句 `for example` 之类的附带措辞不算声明。
+//                 条目自己还要过配置校 `bareLineExemptionEntryErrors()`：声明词若能匹配空串（这一侧恒真）
+//                 或带 g/y 标志（`.test()` 有状态、判据不可复现）就是错误。同一家族口径沿用 #286 已落在
+//                 `test/static-guards.test.js` 的 `LOCAL_ARCHIVE_DIRS` + `LOCAL_ARCHIVE_DECLARATION`，
+//                 条目没被任何引用用到就红。
 //                 越界之外还管**下界**（行号必须 ≥ 1：`path:0` 在越界判据里永远不算越界 = 免检口）与
 //                 **目标文件不存在**（从前是 continue 静默跳过，现在一律红，只有上面 4 条登记过的示例/外仓
 //                 路径例外）——评审 R3 的两条。
@@ -1908,14 +1912,48 @@ const BARE_LINE_EXEMPTIONS = [
   },
 ];
 
-/** 纯函数判据（#286 口径：条目与声明缺一不可，缺任何一个都不放行）。 */
+/** 纯函数判据（#286 口径 + 返工 R4 收紧）：**三个信号缺一不放行**
+ *   ① 表里有这一条（按 文档 + 目标路径 点名，无通配）；
+ *   ② 引用行里**确实写着那个占位路径**（`lineText.includes(entry.target)`）——从前少了这一条，
+ *      于是「同一行里还剩着一句 for example」这类附带措辞就能把声明这一侧糊过去（评审 R4）；
+ *   ③ 引用行里还有「示例/示意/外仓根」这类就地声明词。
+ *  ②③ 必须落在**同一行**：现存的 4 条豁免全部天然同行，而「紧邻行也算」只会把判据重新放软
+ *  （#273 早写过：上一行常常是另一条目里顺手带出的字样）。
+ *  条目自己还要过 `bareLineExemptionEntryErrors()` 的配置校（声明词不许匹配空串、不许带 g 标志）。
+ *  也试过把「引用原文」整条钉死（连示例里的行号一起 pin），放弃：那会让 T-b 改一个示例数字都得回来动登记表，
+ *  这里要的是「占位路径 + 声明词同时在场」这条下限，不是把文档文本冻住。 */
 function bareLineExemptionVerdict({ doc, target, lineText }) {
   const entry = BARE_LINE_EXEMPTIONS.find((e) => e.doc === doc && e.target === target);
   if (entry === undefined) return { exempt: false, why: "没有对应的豁免条目" };
+  if (!lineText.includes(entry.target)) {
+    return { exempt: false, why: `引用行里没有豁免条目指向的占位路径 ${entry.target}（评审 R4：光有声明词不算声明）`, entry };
+  }
   if (!entry.decl.test(lineText)) {
-    return { exempt: false, why: "引用行没有「示例/示意/宿主」这类就地声明", entry };
+    return { exempt: false, why: "引用行没有「示例/示意/宿主仓根」这类就地声明词", entry };
   }
   return { exempt: true, entry };
+}
+
+/** 豁免表自己的配置校（评审 R4）：声明词若能匹配空串 = 这一侧恒真，双条件退化成单条件；
+ *  带 `g`/`y` 标志的 `.test()` 有状态，同一行问两次会给出不同答案（判据不可复现）。两种都点名。 */
+function bareLineExemptionEntryErrors() {
+  const out = [];
+  for (const e of BARE_LINE_EXEMPTIONS) {
+    if (!(e.decl instanceof RegExp)) {
+      out.push(`bare-lines: 豁免条目 ${e.target}（${e.doc}）的 decl 不是正则——就地声明判据无法执行`);
+      continue;
+    }
+    if (e.decl.global || e.decl.sticky) {
+      out.push(`bare-lines: 豁免条目 ${e.target}（${e.doc}）的 decl 带 g/y 标志——test() 有状态，`
+        + `同一行问两次会得到不同答案，判据不可复现`);
+    }
+    e.decl.lastIndex = 0;
+    if (e.decl.test("")) {
+      out.push(`bare-lines: 豁免条目 ${e.target}（${e.doc}）的 decl 能匹配空串（${String(e.decl)}）——`
+        + `「就地声明」这一侧恒真，双条件退化成了单条件（评审 R4），换一个真的判据`);
+    }
+  }
+  return out;
 }
 
 function collectBareLineRefErrors() {
@@ -1968,6 +2006,7 @@ function collectBareLineRefErrors() {
       out.push(`bare-lines: ${u.doc}:${u.line} 引用 ${u.target}:${u.from}-${u.to} 的区间是反的（结尾小于开头）`);
     }
   }
+  out.push(...bareLineExemptionEntryErrors());   // 评审 R4：条目自己也要被校（声明词不许恒真、不许有状态）
   // 豁免条目反向校：条目没被任何一处引用用上 = 给未来的漂移留后门（同 #273/#278 的白名单口径）
   for (const e of BARE_LINE_EXEMPTIONS) {
     if (!exemptHits.has(`${e.doc}|${e.target}`)) {
@@ -3479,11 +3518,28 @@ const SELF_TEST_CASES = [
     expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/__no_such_probe__\.js:93-100，但 .*在本仓不存在——裸行号没有可核对的真值/],
     expectFiles: [CONTRACT_CN],
   },
+
+  // —— 返工 R4（评审低危）：豁免的「就地声明」从前是整行 OR 匹配——同一行只要还剩着 `for example`
+  // 之类的附带措辞就算声明成立。收紧成 **同一行同时含占位路径与声明词**（AND），并给条目自己加配置校。
+  {
+    label: "#286 返工 R4：把某条豁免的 decl 临时换成 /.*/（恒真）⇒ 双条件退化成单条件，必须被配置校抓住",
+    // 为什么走「配置口子」而不是 overlay：overlay 只改**文本**，改不动运行时那份 BARE_LINE_EXEMPTIONS 对象；
+    // 数值常量能靠 fileRecord 读自身文本来证，正则判据不行，所以要一个和 SIM_ABSENT_TASK_ARCHIVE 同款的
+    // 运行时口子，并且同样要证「口子真的落上」（找不到条目就判自测自身失效）。
+    simulateLooseDecl: { doc: "docs/host-upgrade-guide-v030.md", target: "src/pi/runner.js" },
+    expect: [/豁免条目 src\/pi\/runner\.js（docs\/host-upgrade-guide-v030\.md）的 decl 能匹配空串（\/\.\*\/）——/,
+      /「就地声明」这一侧恒真，双条件退化成了单条件/],
+  },
+  {
+    label: "#286 返工 R4 的放行证：在 CN 契约里插一行无关散文 ⇒ 现有 4 条豁免在 AND 判据下全部仍然成立（零条红）",
+    overlay: { [CONTRACT_CN]: mentionInProse("自测探针（#286 返工 R4）：这里只是在文档靠前插一句散文，什么引用都没动。") },
+    expectGreen: true,
+  },
 ];
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 80;   // #286 T-a 之后共 85 例（下限留 5 例余量给并行分支）
+const MIN_SELF_TEST_CASES = 90;   // #286 T-a 返工 R1-R4 之后共 92 例（下限留 2 例余量给并行分支，见上：别按当天条数写死）
 
 function runSelfTest() {
   const run = () => collectAllDrift();
@@ -3548,12 +3604,27 @@ function runSelfTest() {
     const guideSaved = SIM_RENAMED_GUIDE;                       // #286 返工 R2：覆盖面缩面的树形口子
     SIM_RENAMED_GUIDE = c.simulateRenamedGuide ?? null;
     const scanCountBefore = LAST_SCAN_DOC_COUNT;
+    let looseDeclSaved = null;                                  // #286 返工 R4：豁免判据的配置口子
+    if (c.simulateLooseDecl) {
+      const target = BARE_LINE_EXEMPTIONS.find((x) => x.doc === c.simulateLooseDecl.doc && x.target === c.simulateLooseDecl.target);
+      if (!target) {
+        OVERLAY.clear(); SIM_RENAMED_GUIDE = guideSaved;
+        failures.push(`${c.label}：配置口子没落上（豁免表里找不到 ${c.simulateLooseDecl.doc} / ${c.simulateLooseDecl.target}）`);
+        continue;
+      }
+      looseDeclSaved = [target, target.decl];
+      target.decl = /.*/;
+    }
     let errs = [];
     let simDropped = -1;
     try {
       errs = run();
       simDropped = LAST_IGN ? repoFiles(LAST_IGN).simDropped : 0;
-    } finally { SIM_ABSENT_TASK_ARCHIVE = simSaved; SIM_RENAMED_GUIDE = guideSaved; OVERLAY.clear(); }
+    } finally {
+      SIM_ABSENT_TASK_ARCHIVE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
+      if (looseDeclSaved) looseDeclSaved[0].decl = looseDeclSaved[1];   // 判据必须还原，别把探针留在表里
+      OVERLAY.clear();
+    }
     // #279 的教训：「变异没落上」的空跑会交出一条假的绿。树形口子也一样——本机确实有任务档案实物、
     // 却一个都没从清单里摘掉，就是 SIM_ABSENT_TASK_ARCHIVE 没接进 repoFiles。本机本来就没那个目录
     // （在全新 clone 里跑自测）时这一例退化成对照，不算失败。

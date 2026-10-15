@@ -127,7 +127,7 @@ test("#286 覆盖面里没有任何一处裸行号越界（工单点名的 notes
 test("#286 反向证不许被整批删掉，豁免条目必须条条带理由（条目 + 就地声明双条件）", () => {
   const script = read("scripts/docs-drift-check.mjs");
   const proofs = [...script.matchAll(/label: "#286 /g)].length;
-  assert.ok(proofs >= 10, `--self-test 里带 #286 的反向证只剩 ${proofs} 例（本批交付的是 10 例）——删用例不算修好`);
+  assert.ok(proofs >= 16, `--self-test 里带 #286 的反向证只剩 ${proofs} 例（评审返工后共 17 例）——删用例不算修好`);
   assert.ok(/expectMutateMiss: true/.test(script), "「变异没打上」那一例（expectMutateMiss）被删了——变异器空转就没人管了");
 
   const entries = [...script.matchAll(/target: "(src\/[^"]+)",/g)];
@@ -137,6 +137,13 @@ test("#286 反向证不许被整批删掉，豁免条目必须条条带理由（
   for (const m of script.matchAll(/target: "src\/[^"]+",\n\s*decl: (\/[^\n]+)/g)) {
     assert.ok(m[1].replace(/^\/|\/,?$/g, "").length > 5, `decl 太短，等于「有句话就算声明」：${m[1]}`);
   }
+  // 评审 R4：「就地声明」必须是 **同一行同时含占位路径与声明词**（AND），且条目自己要有配置校。
+  // 这两条是源码形状的反向锁：谁把它们改回 OR / 删掉校，这里就红。
+  assert.ok(/if \(!lineText\.includes\(entry\.target\)\)/.test(script),
+    "豁免判据少了「引用行必须含占位路径」这一刀（评审 R4：光有 for example 之类的附带措辞就能放行）");
+  assert.ok(/entry\.decl\.test\(lineText\)/.test(script), "豁免判据少了声明词那一刀（AND 的另一半）");
+  assert.ok(/function bareLineExemptionEntryErrors\(\)/.test(script) && /out\.push\(\.\.\.bareLineExemptionEntryErrors\(\)\)/.test(script),
+    "豁免条目的配置校（声明词不许匹配空串 / 不许带 g 标志）被删或没接进 collectBareLineRefErrors");
   // 「具名字面量成员」那一档的点名清单必须逐份带理由（全仓开这一档就等于把「同名字符串」当通行票）。
   const block = script.slice(
     script.indexOf("const SYMBOL_VALUE_MEMBERSHIP = new Map(["),
