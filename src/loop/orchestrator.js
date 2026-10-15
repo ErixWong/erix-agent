@@ -3202,7 +3202,10 @@ export async function runToolLoop(options) {
     let judgeDecision = runLoopState.interceptJudgeDecision;
     let judgeUsage;
     // end_turn 轮完整评估；工具中途审计的 nearLimit 扩轮决策已由拦截器回传。
-    if (runLoopState.roundJudgeEnabled && isEndTurn) {
+    // issue #282（期望 2）：**中止已置位就跳过整次 judge 调用**——judge 是「终局前的增值调用」，用户已按下
+    // 停止后再烧一次模型费用毫无收益（停止体感延迟从「一次 LLM 往返」降到「立即」）。跳过之后
+    // 终局仍由下方 stop 分支的 aborted 收口（裁决表：docs/termination-decision-table.md）。
+    if (runLoopState.roundJudgeEnabled && isEndTurn && !signal?.aborted) {
       try {
         const judged = await callRoundJudge(round, currentL0);
         judgeDecision = judged.decision;
@@ -3421,6 +3424,11 @@ export async function runToolLoop(options) {
       continue;
     }
     if (action.kind === "stop") {
+      // issue #282（期望 1）：终局裁决处**统一收口**「aborted 永远优先于 judge / finalGuard」——原先 reason
+      // 只由 action 推导、全程不看 signal ⇒ 用户在「judge 已返回、终局未定」的窗口里点停止，终态会被
+      // 改写成 judge_done，中止语义（partial / usage / rounds）全丢。在这里抛 AbortError 交给外层 catch
+      // → fail()：由它产出带 {usage, rounds, partial:true} 的 aborted 终局（#180 载荷语义不变）。
+      throwIfAborted(signal);
       const reason = terminationReasonForAction(action, continuationExhausted);
       await forceFinalIfNeeded(reason);
       if (
@@ -3474,6 +3482,9 @@ export async function runToolLoop(options) {
           continue;
         }
       }
+      // finalGuard 同样是「终局前的增值调用」：中止若落在它自己那一次调用里，也必须以 aborted 收口，
+      // 不得把用户的中止改写成 final_guard 给出的终态（issue #282 期望 3）。
+      throwIfAborted(signal);
       return finish(reason);
     }
     if (action.kind === "continue") continue;
