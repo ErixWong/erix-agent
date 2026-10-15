@@ -1034,10 +1034,29 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 解析器与轮次 judge）现在都由这一个入口供给。它从包根（`src/index.js`）导出，并被
 `engineApiContract` 覆盖。
 
-```text
-parseModelJson(text, { topOnly = true, requireKeys = null } = {}) ->
-  | { ok: true,  value, via: "json", candidates }   // 第一个「可解析且形状合格」的候选
-  | { ok: false, error, candidates }                // 注意：完全没有 `value` 键
+```js
+import { parseModelJson } from "erix-agent";
+
+// parseModelJson(text, { topOnly = true, requireKeys = null } = {}) ->
+//   { ok: true, value, via: "json", candidates } | { ok: false, error, candidates }
+const hit = parseModelJson('reasoning {"done":true,"confidence":1} trailing prose');
+if (hit.ok) {
+  // hit.value — JSON.parse 的直接产物（字段校验归调用方），
+  // hit.via — 字面量 "json"，hit.candidates — 按出现顺序的全部平衡切片
+} else {
+  // hit.error — "no_candidate" | "unparsable" | "shape_mismatch"；这一支没有 `value` 键
+}
+
+const unparsable = parseModelJson('{"a":,}');
+const shapeMismatch = parseModelJson('{"confidence":0.5}', { requireKeys: ["done"] });
+const noCandidate = parseModelJson('{"a":1');   // 外层未闭合：什么都不产，也不补括号
+
+if (hit.ok !== true || hit.via !== "json" || hit.value.done !== true) throw new Error("example input must hit");
+if (unparsable.error !== "unparsable" || shapeMismatch.error !== "shape_mismatch"
+  || noCandidate.error !== "no_candidate") throw new Error("the three failure kinds must stay distinguishable");
+if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate) {
+  throw new Error("a miss carries no value key, not even value: undefined");
+}
 ```
 
 失败是**三态**判定，因为三种原因需要宿主做三件不同的事（换提示词 / 认了它没按 JSON 回答 /

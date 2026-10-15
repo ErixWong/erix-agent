@@ -1267,10 +1267,29 @@ different answers to "where does the object end"; two of them (the reflection pa
 the round judge) are now served by this one entry point. It is exported from the package
 root（`src/index.js`）and is covered by `engineApiContract`.
 
-```text
-parseModelJson(text, { topOnly = true, requireKeys = null } = {}) ->
-  | { ok: true,  value, via: "json", candidates }   // first parseable + shape-conforming candidate
-  | { ok: false, error, candidates }                // note: no `value` key at all
+```js
+import { parseModelJson } from "erix-agent";
+
+// parseModelJson(text, { topOnly = true, requireKeys = null } = {}) ->
+//   { ok: true, value, via: "json", candidates } | { ok: false, error, candidates }
+const hit = parseModelJson('reasoning {"done":true,"confidence":1} trailing prose');
+if (hit.ok) {
+  // hit.value — the direct JSON.parse output (field validation stays with the caller),
+  // hit.via — the literal "json", hit.candidates — every balanced slice, in order of appearance
+} else {
+  // hit.error — "no_candidate" | "unparsable" | "shape_mismatch"; there is no `value` key here
+}
+
+const unparsable = parseModelJson('{"a":,}');
+const shapeMismatch = parseModelJson('{"confidence":0.5}', { requireKeys: ["done"] });
+const noCandidate = parseModelJson('{"a":1');   // unclosed outer object: no candidate, no repair
+
+if (hit.ok !== true || hit.via !== "json" || hit.value.done !== true) throw new Error("example input must hit");
+if (unparsable.error !== "unparsable" || shapeMismatch.error !== "shape_mismatch"
+  || noCandidate.error !== "no_candidate") throw new Error("the three failure kinds must stay distinguishable");
+if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate) {
+  throw new Error("a miss carries no value key, not even value: undefined");
+}
 ```
 
 The failure is a **three-way** verdict, because the three causes need three host
