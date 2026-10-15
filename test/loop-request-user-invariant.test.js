@@ -13,6 +13,11 @@ import assert from "node:assert/strict";
 // 真上游的失败面在 (400, 1200] 之间；离线估算系数不同，所以把同一档位的判据下推到 8。
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { validateMessages } from "../src/messages/rounds.js";
+import {
+  ensureUserTurnView,
+  hasUserTurn,
+  isUserTurnGuardAction,
+} from "../src/loop/request-user-view.js";
 
 const filler = (count, char) => char.repeat(count);
 
@@ -261,4 +266,74 @@ test("T2 #292 保底必须保留「最新」那条 user 轮，且视图配对合
       .filter((block) => block?.type === "tool_result");
     assert.equal(orphans.length, 0, "紧凑视图里不许有孤儿 tool_result");
   }
+});
+
+test("T5 #292 守卫本体的退让顺序与配对合法性（请求视图那一处的单元面）", async () => {
+  const source = [
+    { role: "user", content: [{ type: "text", text: "oldest" }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "u1", name: "pad", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "u1", content: "r1" }] },
+    { role: "user", content: [{ type: "text", text: "latest" }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "u2", name: "pad", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "u2", content: "r2" }] },
+  ];
+
+  // 1) 视图本来合规 → 原样返回（同一个引用，零行为变化）
+  const healthy = structuredClone(source);
+  assert.equal(ensureUserTurnView(healthy, source), healthy);
+
+  // 2) 视图非空但没有真 user 轮（只剩 tool_use / tool_result 那一对）→ 补最新的 user 轮
+  const stats = {};
+  const folded = [structuredClone(source[4]), structuredClone(source[5])];
+  const repaired = ensureUserTurnView(folded, source, stats);
+  assert.equal(stats.action, "preserved_latest_user_turn");
+  assert.equal(repaired.length, 3, "原有折叠视图留得住就留住，尾部补上最新的 user 轮");
+  assert.deepEqual(
+    repaired.map((message) => message.content[0].text ?? message.content[0].type),
+    ["tool_use", "tool_result", "latest"],
+  );
+  assert.doesNotThrow(() => validateMessages(repaired, { allowPendingToolUse: false }));
+
+  // 3) 视图为空列表（真上游那一枪的形状）→ 只剩最新的 user 轮
+  const emptyStats = {};
+  const fromEmpty = ensureUserTurnView([], source, emptyStats);
+  assert.equal(emptyStats.action, "preserved_latest_user_turn");
+  assert.deepEqual(fromEmpty.map((message) => message.content[0].text), ["latest"]);
+
+  // 4) 尾巴上挂着没有结果的 tool_use 时，追加必须不让它悬空
+  const danglingStats = {};
+  const dangling = ensureUserTurnView([structuredClone(source[4])], source, danglingStats);
+  assert.doesNotThrow(() => validateMessages(dangling, { allowPendingToolUse: false }));
+  assert.ok(hasUserTurn(dangling));
+
+  // 5) 带 tool_result 的那条 user 轮若正是最新的，回补必须连它的 assistant 配对一起带走
+  const pairedStats = {};
+  const pairedSource = [
+    { role: "user", content: [{ type: "text", text: "oldest" }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "u1", name: "pad", input: {} }] },
+    {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "u1", content: "r1" },
+        { type: "text", text: "latest-with-result" },
+      ],
+    },
+  ];
+  const paired = ensureUserTurnView([], pairedSource, pairedStats);
+  assert.equal(pairedStats.action, "preserved_latest_user_turn");
+  assert.equal(paired.length, 2, "必须连 assistant 的 tool_use 一起留下，否则 tool_result 变孤儿");
+  assert.deepEqual(paired.map((message) => message.role), ["assistant", "user"]);
+  assert.ok(hasUserTurn(paired));
+  assert.doesNotThrow(() => validateMessages(paired, { allowPendingToolUse: false }));
+  assert.equal(isUserTurnGuardAction(pairedStats.action), true);
+
+  // 6) 源里根本没有 user 轮可留 → 原样返回并标记 unrecoverable（不许假装修好了）
+  const hopelessStats = {};
+  const hopeless = ensureUserTurnView(
+    [{ role: "assistant", content: [{ type: "text", text: "orphan" }] }],
+    [{ role: "assistant", content: [{ type: "text", text: "orphan" }] }],
+    hopelessStats,
+  );
+  assert.equal(hopelessStats.action, "unrecoverable");
+  assert.equal(hopeless.length, 1);
 });
