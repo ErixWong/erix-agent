@@ -57,6 +57,9 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
   `validateMessages(view, {allowPendingToolUse:false})`（`src/messages/rounds.js:43`）零报错
   **且** `orphanResults === 0 && danglingUses === 0`；协议转换照跑，但它不再充当配对判据——
   两个转换器本身不校验配对，「转换没抛错」是空断言。
+- **常量面活锁**：`TOOL_RESULT_CONTRACT.engine.fields.executionStatus` 必须登记存在条件
+  （`writtenFor: "special states only"` + `presentValues: ["intercepted","interrupted"]`）。0.20.0（PR #291 R7）
+  之前这条是无条件报「常量缺条件」的观察项，常量补齐后就变成假阳性；现在它是断言——删掉或改错就红。
 - **abort**：先查**脚本自己有没有真的中止过**（`abort-actually-fired`，阻断项），再让引擎断言说话。
   - 触发点：默认在第 `min(ceil(rounds/2), 3)` 个**已落地的 `tool_result` 事件**之后立刻 abort；
     显式 `--abort-at n` 则改回**第 n 轮**触发（轮数语义；`n >= rounds` 照跑，不再静默当成「跳过」，

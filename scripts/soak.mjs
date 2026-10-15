@@ -21,6 +21,7 @@ import {
   KitError,
   projectTranscriptForDisplay,
   runToolLoop,
+  TOOL_RESULT_CONTRACT,
   validateMessages,
 } from "../src/index.js";
 
@@ -1357,13 +1358,25 @@ async function main() {
     accepted: governorProbe.accepted,
     evidence: governorProbe.evidence,
   });
-  if (toolResults.length > 0) {
+  // 常量面必须登记 `erix.executionStatus` 的存在条件（issue #286 追加项，已在 0.20.0 的 PR #291 R7 落地）。
+  // 前一版这里是**无条件**把「常量缺条件」推成引擎缺陷：0.20.0 之后常量已登记，那条观察项就变成假阳性。
+  // 现在改成活锁断言：谁把 `writtenFor` / `presentValues` 删掉或改错，soak 当场红。
+  const esFieldContract = TOOL_RESULT_CONTRACT?.engine?.fields?.executionStatus ?? {};
+  const presenceRecorded = esFieldContract.writtenFor === "special states only"
+    && Array.isArray(esFieldContract.presentValues)
+    && [...esFieldContract.presentValues].sort().join(",") === "intercepted,interrupted";
+  ledger.check("contract-constant-records-execution-status-presence", presenceRecorded, {
+    writtenFor: esFieldContract.writtenFor ?? null,
+    presentValues: esFieldContract.presentValues ?? null,
+    source: "TOOL_RESULT_CONTRACT.engine.fields.executionStatus（src/tool-fact.js）",
+  });
+  if (!presenceRecorded) {
     defects.push({
       id: "tool-fact-constant-missing-execution-status-presence-condition",
       kind: "常量面缺条件（文档已写对）",
       severity: "minor",
-      where: "src/tool-fact.js:70-75（engine.executionStatus 的字段元数据**没标存在条件**）vs "
-        + "docs/host-consumer-contract.md:2073 / _cn.md:1635（已写「仅特殊状态 intercepted/interrupted」）",
+      where: "TOOL_RESULT_CONTRACT.engine.fields.executionStatus 没标存在条件（字段元数据在 src/tool-fact.js）vs "
+        + "docs/host-consumer-contract.md / _cn.md 的字段表（已写「仅特殊状态 intercepted/interrupted」）",
       why: "宿主只读 TOOL_RESULT_CONTRACT（随包发布）时看不出该字段是条件存在的，会按「每个块都有」写代码（本脚本工单就中了这个招）",
       blocking: false,
       evidence: { toolResultBlocks: toolResults.length, withExecutionStatus: executionStatusPresent },

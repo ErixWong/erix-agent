@@ -52,6 +52,8 @@ const EXPECTED_ASSERTIONS = [
   "pairing-no-orphan-or-dangling-in-request-views",
   "no-unexpected-unhandled-rejection",
   "unknown-run-tool-loop-option-rejected",
+  // 0.20.0（PR #291 R7）之后常量已登记存在条件，这条从「无条件报缺欠」改成活锁断言，跑在最后
+  "contract-constant-records-execution-status-presence",
 ];
 
 function runSoak(args) {
