@@ -125,7 +125,12 @@ function createRealUpstream(slotName) {
   if (!endpoint || !model || !apiKey) {
     throw new Error(`slots.${slotName} 缺少 endpoint/model/apiKey（或 apiKeyEnv）其中之一`);
   }
-  const kind = String(slot.provider ?? slot.protocol ?? "anthropic").toLowerCase();
+  // 协议选择必须与引擎一致：**缺省 = openai**。bin/config.js:110-112 只是转发 `slots.protocol`
+  // （或环境变量），没写就不是 anthropic；本仓自己的 ~/.erix/config.json 也没这个字段。
+  // 前一版默认 anthropic → 本机（relay 只供 OpenAI 兼容路径）打出 POST /v1/messages → 404 Invalid URL，
+  // real 路径整段空转（rounds=0、↑0↓0，而断言会当成 9 条红）。
+  const kind = String(slot.protocol ?? process.env.ERIX_PROTOCOL ?? process.env.LLM_KIT_PROTOCOL
+    ?? slot.provider ?? "openai").toLowerCase();
   const common = {
     endpoint,
     apiKey,
@@ -135,9 +140,9 @@ function createRealUpstream(slotName) {
     ...(slot.maxOutputTokens ?? slot.maxTokens
       ? { maxOutputTokens: slot.maxOutputTokens ?? slot.maxTokens } : {}),
   };
-  const provider = kind.includes("openai")
-    ? createOpenAIProvider(common)
-    : createAnthropicProvider(common);
+  const provider = kind.includes("anthropic")
+    ? createAnthropicProvider(common)
+    : createOpenAIProvider(common);
   return {
     provider,
     // 预算元数据：real 用 config 里的窗口值（缺一个就推不出 budgetTokens，压缩整体不进）
