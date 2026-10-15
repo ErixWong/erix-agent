@@ -4,6 +4,31 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`erix_run` 可以显式开终稿核验 `finalGuard`（issue #314，默认关）。** 引擎侧的 `finalGuard` 早就在
+  （`FINAL_GUARD_TERMINATION_REASONS`（`src/loop/termination.js`）与 `finalGuardMaxRetries` /
+  `finalGuardTimeoutMs`（`src/loop/orchestrator.js`）），而宿主扩展从未透传——于是 `verification.status`
+  恒为 `skipped`，`end_turn` 被当成交付证明。
+  - 新增谓词层 `examples/pi-extension/erix-run-final-guard.js`：`inspectFinalDraft`（终稿四段存在性 +
+    **基点溯源 = 唯一硬闸**：「## 基点」声明的字面值必须在本次 `messages` 的 `tool_result` 里逐字找到，
+    找不到 / 没声明 / 谓词抛错一律 `revise`，**任何分支都不 accept**）与 `createFinalGuardVerify`
+    （次数 / 累计墙钟 / revise 轮数 / 无效决策）；比值、百分比、「总计」类只进 `ratioFlags` 提醒，不硬拒。
+  - `parseRunParams`（`examples/pi-extension/erix-run-core.js`）新增 `finalGuard`（只认真布尔 true）与
+    `finalGuardTimeoutMs`（默认 10000）；`buildLoopOptions`（`examples/pi-extension/erix-run-core.js`）仅在开启时
+    才写 `finalGuard` / `finalGuardTimeoutMs` 两个键 ⇒ **默认关时透传给 `runToolLoop` 的 options 一个字节都不多**，
+    三条既有的 `verification === "skipped"` 断言一字未改（CLI 面的退出码 4 断言也未动）。
+  - 成本接在 #313 那棵 `diagnostics` 树下（`diagnostics.finalGuard`）并渲染进终局面；没开启时是一行
+    `finalGuard=disabled`，不假称已通过。引擎自己的 `guardMetrics` 仍在 `verification.metrics`，两边各带 `source`。
+  - **两个坑（issue 原文没有，分析时实测出来的）**：① 引擎只在轮边界查截止线
+    （`remainingMs`（`src/loop/orchestrator.js`）），stop 判定 → guard 之间没有 deadline 检查，而本层的硬 abort
+    挂在 `params.timeoutMs` 上 ⇒ 靠引擎默认 `3 × 30s` 会被宿主自己掐死（钱花了拿不到 `verified`）；
+    现开启时显式下发小超时，并把硬 abort 往后挪 `FINAL_GUARD_WORST_CASE_MS`（= 3 × 10000ms）。
+    ② 谓词是异步的：包装器必须 await，否则一个 Promise 被当决策交给引擎 ⇒ `invalid decision` ⇒
+    `verification.status` 为 `error`（本次真踩到过，已有用例钉住）。
+  - 引擎一字未改；新增离线用例 29 条（含「重试用尽 ⇒ `final_guard_unverified` + `unverified/max_retries`」
+    跑真 `runToolLoop`），真机 e2e 只**加**一条「显式开启 ⇒ `verification` 不再是 `skipped`」。
+
 ### Fixed
 
 - **工具清单不再四处手抄，且两侧都有装配期断言（issue #312(b)，宿主侧方案 (b)，不动公共面）。** 病根：

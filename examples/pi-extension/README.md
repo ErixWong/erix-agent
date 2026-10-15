@@ -85,6 +85,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `maxExtensions` | | 引擎缺省 `2` | 扩轮上限，直传引擎 `reflection.maxExtensions`。**`0` 是有效值 = 关掉扩轮**（引擎侧是 `>= 0` 判断，所以本层不能用「正整数」卡它）。非法值（负数 / 小数 / 非数字 / >1000）归 `bad_params` |
 | `maxRoundsCap` | | 引擎缺省 `256` | 扩轮后的总轮数硬顶，直传 `reflection.maxRoundsCap`（正整数；引擎会抬到不低于 `maxRounds`）。上限 100000 |
 | `extensionStep` | | 引擎缺省 `max(8, ⌊maxRounds/2⌋)` | 每次扩轮加的轮数，直传 `reflection.extensionStep`（正整数，上限 10000） |
+| `finalGuard` | | **`false`** | **#314：终稿核验开关。`true` = 向 `runToolLoop` 透传 `finalGuard` 回调**，终局 `verification` 才可能是 `verified`；默认关 ⇒ 透传的 options 里连这个键都没有（不是写 `undefined`），`verification` 恒 `skipped`。只认真布尔：`"true"` / `1` 归 `bad_params`（详见下文「终稿核验 finalGuard」） |
+| `finalGuardTimeoutMs` | | `10000` | 单次 guard 等待上限（200..600000）；**只在 `finalGuard: true` 时有意义**，没开却传 ⇒ `bad_params`。**不靠引擎默认的 30000**，理由见下文坑 ① |
 | `async` | | `false` | **#234：`true` = 派工即返回句柄**（主会话不阻塞），内层 run 在同进程后台跑，终局经通知回到本会话。缺省 `false` = 原有同步语义逐字不变。句柄形状：`{runId, status:"running", cwd, model, maxRounds, timeoutMs, sessionDir, statusPath, quiet}` |
 | `quiet` | | `false` | 只在 `async:true` 时有意义：**成功的完成不唤醒**父会话（只落 `status.json`），失败 / 中止仍然唤醒。一次派一批切片时用它免得把主会话打断成筛子 |
 | `action` | | — | `status`（当前状态 + 终局四件套）\| `result`（完整终局：四件套 + `artifacts` + **终稿正文 `finalText`**，#261）\| `list`（本进程已知 run 的摘要表）\| `cancel`（把 `signal` 打进内层，终局记成 `aborted`）。`status`/`result`/`cancel` 要带 `runId` |
@@ -599,8 +601,52 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
 - 收尾用 `completion.signals`（中文完成词表，与 `bin/cli.js` 同一份）+ system prompt 里的
   「首行写「任务已完成」」提前收口，否则模型纯文本收尾会白烧到 `no_tool`（默认 3 轮无工具才停）。
 - `wrapup: false`：对话型宿主不收 JSON 信封，终稿就是模型原文。
-- 没有 `finalGuard`，所以 `verification.status` 恒为 `skipped` —— **`end_turn` 不是交付证明**，
-  验证要靠内层自己跑的 `exec`（或外层 pi 再跑一次测试）。
+- **终稿核验 `finalGuard` 默认关** ⇒ `verification.status` 恒为 `skipped` —— **`end_turn` 不是交付证明**，
+  验证要靠内层自己跑的 `exec`（或外层 pi 再跑一次测试）。**显式传 `finalGuard: true` 开启后才可能
+  `verified`**，代价：最坏多 **≤2 个模型往返**（被打回重写，引擎 `finalGuardMaxRetries` 默认 2）+ **≤3 次
+  guard 等待**（本层显式下发 `finalGuardTimeoutMs=10000`，不用引擎默认的 30000）。开启后的四段格式、
+  两个坑与成本口径见下文「终稿核验 finalGuard（issue #314，默认关）」与契约「Host-side guard wiring
+  and the deadline tail（issue #314）」。
+
+## 终稿核验 finalGuard（issue #314，默认关）
+
+一句话：**默认关 ⇒ 本扩展不声称任何交付证明；显式开启后拿到的 `verified` 也只证明一件事——终稿里
+声明的基点确实来自本次工具返回**。它不是「任务做对了」的盖章（引擎没有交付认证层，见
+`docs/host-consumer-contract_cn.md`「终答核验」）。
+
+谓词在 `erix-run-final-guard.js`，分层与工单一致（**不自加硬闸**）：
+
+1. **格式 / 存段（提示词与 guard 双写）**：开启时系统提示词多一段槽位要求，终稿必须依次含
+   `## 取证边界` / `## 基点` / `## 结论`（每条带「文件:行」）/ `## 未验证`；缺哪段就在 revise 文案里点名哪段。
+   默认关时提示词**一个字节不变**。
+2. **基点溯源 = 唯一硬闸**：从「## 基点」抠声明值（反引号包裹 / 裸 SHA / 版本号），只在**本次** `messages` 的
+   `tool_result` 文本里逐字找（十六进制忽大小写）。找不到 ⇒ `revise`；段里没声明值（写「无」）⇒ `revise`；
+   重试用尽 ⇒ `unverified`（`max_retries`）。**任何分支都不 accept**（fail closed）。assistant 自己复述过
+   一遍不算取证（只看 `tool_result`）。
+3. **比值 / 总量只提醒**：`1:N`、百分比、「总计」类进 `diagnostics.finalGuard.ratioFlags`，**不硬拒**。
+4. 「至少一条非文件系统探针」**不做**（一条 `date` 就能糊弄）。
+
+### 最坏开销与两个坑（为什么不能靠默认值）
+
+- **成本**：最坏多 **≤2 个模型往返** + **≤3 次 guard 等待**（每次 ≤ `finalGuardTimeoutMs`）。次数、累计墙钟、
+  revise 轮数都在 `diagnostics.finalGuard`（接在 #313 那棵树下，不另起顶层字段），终局面另起一行
+  `finalGuard calls=… 累计等待=…ms … verification=…`；没开启时那一行是 `finalGuard=disabled`，不假称已通过。
+  引擎自己的 `guardMetrics` 仍在 `verification.metrics`，两边各带 `source`，不拿宿主计数冒充引擎计数。
+- **坑 ①（宿主自己把核验掐死）**：引擎只在**轮边界**查截止时间（`orchestrator.js` 的 `remainingMs`），
+  stop 判定 → guard 之间**没有** deadline 检查；而本层那根 `setTimeout` 硬 abort 挂在 `params.timeoutMs` 上
+  （`runErixRun`）。靠引擎默认 `3 × 30s`，guard 等待全落在宿主定时器过期**之后** ⇒ **钱花了、`verified` 拿不到**。
+  处理：开启时**显式**下发 `finalGuardTimeoutMs=10000`，并把硬 abort 往后挪 `3 × 10000 = 30000ms`（下发给引擎的
+  run 截止线不动，不拿它掩盖开销）。回归用例：run 截止线 1s、谓词跑 1.2s ⇒ 仍须 `verified`。
+- **坑 ②（谓词是异步的）**：包装器必须 `await` 谓词，否则 Promise 被当成决策交给引擎 ⇒ `invalid decision`
+  ⇒ `verification.status` 是 `error`（本单真踩到过，有用例钉着）。
+
+### 红线：其它面一律没动
+
+- CLI 默认值不变：`erix chat` 不带 `--final-guard` 仍是 `skipped` + 退出码 4（`scripts/cli-real-smoke.mjs` 与
+  `scripts/release-check.mjs` 的断言一字未改）。
+- 引擎一字未改：`src/loop/termination.js`、`src/loop/orchestrator.js`（`finalGuardMaxRetries` 默认 2、
+  `finalGuardTimeoutMs` 默认 30000、`FINAL_GUARD_NON_CONTINUABLE_REASONS` 三个原因）。
+- 真机 e2e 默认段仍断 `skipped`，只**新增**一条「显式开启 ⇒ `verification` 不再是 `skipped`」（`ERIX_E2E_REAL=1` 才跑）。
 
 ## 测试
 

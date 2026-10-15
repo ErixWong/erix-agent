@@ -18,6 +18,17 @@ import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
 
+// #314：终稿核验（finalGuard）谓词层。本文件只做「开关 + 透传 + 成本计数」，
+// 谓词本体（四段存在性 / 基点溯源 / 派生结论提醒）在 erix-run-final-guard.js。
+import {
+  createFinalGuardTally,
+  createFinalGuardVerify,
+  FINAL_DRAFT_PROMPT,
+  FINAL_GUARD_TIMEOUT_MS,
+  FINAL_GUARD_WORST_CASE_MS,
+  summarizeFinalGuard,
+} from "./erix-run-final-guard.js";
+
 /** erix-agent 库入口（目录或文件）的环境变量。 */
 export const LIB_ENV = "ERIX_AGENT_LIB";
 /** 模型配置 JSON 文件路径的环境变量（缺省 XDG_CONFIG_HOME/erix/config.json → ~/.erix/config.json）。 */
@@ -376,6 +387,37 @@ export function parseRunParams(raw = {}, { home = homedir() } = {}) {
 
   const sessionDir = parseSessionDir(raw, { home });
   if (sessionDir !== undefined) params.sessionDir = sessionDir;
+
+  // #314 R1：终稿核验开关，**默认关**（不往下传 ⇒ 引擎 verification 恒 `skipped`，
+  // 现有断言一条不改）。只认**真布尔 true**：`"true"` / `1` 这类脏值直接报错，
+  // 静默当成「没开」就是把用户的核验意图吞掉。
+  const finalGuardRaw = raw?.finalGuard;
+  if (finalGuardRaw !== undefined && finalGuardRaw !== null && finalGuardRaw !== "") {
+    if (typeof finalGuardRaw !== "boolean") {
+      throw new ErixRunError(
+        "bad_params",
+        `finalGuard 只能是 true | false，收到 ${JSON.stringify(finalGuardRaw)}`,
+      );
+    }
+    if (finalGuardRaw) {
+      params.finalGuard = true;
+      // 坑 ①：guard 等待发生在 stop 判定之后，而引擎只在**轮边界**看截止时间
+      //（`src/loop/orchestrator.js` 的 `remainingMs()`），本层那根 `setTimeout` 硬 abort
+      // 却在 `params.timeoutMs` 上。所以开启时**显式**下发一个比引擎默认（30s）小得多的
+      // 等待上限，并把宿主硬 abort 往后挪 `FINAL_GUARD_WORST_CASE_MS`（见 runErixRun）。
+      params.finalGuardTimeoutMs = positiveInt(raw?.finalGuardTimeoutMs, FINAL_GUARD_TIMEOUT_MS, {
+        min: 200, max: 600_000, name: "finalGuardTimeoutMs",
+      });
+    }
+  }
+  // 没开启时 `finalGuardTimeoutMs` 是个无意义的悬空值，不能让它悄悄出现在 params 里。
+  if (params.finalGuard !== true && raw?.finalGuardTimeoutMs !== undefined
+    && raw?.finalGuardTimeoutMs !== null && raw?.finalGuardTimeoutMs !== "") {
+    throw new ErixRunError(
+      "bad_params",
+      "finalGuardTimeoutMs 只在 finalGuard: true 时有意义（没开启就别传，否则容易误以为在核验）",
+    );
+  }
 
   // #207 R1：扩轮三参数。**maxExtensions 允许 0**（引擎是 `>= 0` 判断，0 = 关掉扩轮），
   // 所以它走 nonNegativeInt 而不是现成的 positiveInt；另两个引擎要求正整数（0 会被引擎
@@ -962,7 +1004,7 @@ function mentionsToolName(text, name) {
 }
 
 /** 内层 system prompt：复用 bin/tools.js 的工具提示词装配（与 CLI 同一口径）。 */
-export function buildSystemPrompt({ lib, cwd, todo = false, tools } = {}) {
+export function buildSystemPrompt({ lib, cwd, todo = false, tools, finalDraft = false } = {}) {
   // 兜底不再手抄名单（R1）：能拿到引擎装配就用它；否则用**实际注册数组**生成（优先用调用方
   // 传进来的 `tools`——那正是交给 runToolLoop 的那一个；拿不到则现场调 `createCliTools`）。
   // 两者都拿不到 ⇒ `buildToolListLine` 抛错（C4：不许出现「少两个工具的名单」）。
@@ -985,6 +1027,10 @@ export function buildSystemPrompt({ lib, cwd, todo = false, tools } = {}) {
     + "\n\n交付规则：直接在工作目录里改文件（清单里的写类工具都能用），"
     + "收尾只写简短摘要——改了什么、为什么、如何验证；不要粘贴大段代码或文件全文。"
     + "\n\n任务完成时首行写「任务已完成」，再接摘要。"
+    // #314 R2：终稿四段的槽位只在**开了 finalGuard 时**写进提示词——默认关时提示词
+    // 一个字节不变（C6 的默认路径零行为变化），也不让模型去满足一个没人校验的格式。
+    // 文案与 guard 的段名常量同源：`FINAL_DRAFT_SECTIONS` / `FINAL_DRAFT_PROMPT`。
+    + (finalDraft === true ? FINAL_DRAFT_PROMPT : "")
     + "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
   // 装配期断言（R3 第三条）。作用域只到**本层自己写进清单的名字**：
   //   · 引擎给了 base ⇒ 引擎清单已由 `bin/tools.js` 在 build 期钉过「提示词 ⊆ 注册面」，而宿主这一层
@@ -1074,7 +1120,12 @@ export function formatLoopEvent(event) {
  *   onJudge?: (record:object)=>void,
  *   onProgress?: (line:string)=>void,
  *   diagnostics?: {error:(event:object)=>void},
+ *   diagnostics?: {error:(event:object)=>void},
  *   reflection?: object|false,
+ *   // #314 R1：终稿核验回调。引擎要的就是一个函数（载荷 `{finalText, findings, messages,
+ *   //   round, rounds, signal, termination}`，见 `src/loop/termination.js` 的 `callFinalGuard`）。
+ *   // **不传就是不透传** ⇒ 引擎侧 verification 保持 `skipped`。
+ *   finalGuard?: (payload:object)=>Promise<{action:string, message?:string, reason?:string}>,
  * }} input
  * @returns {object} runToolLoop 的 options 对象
  */
@@ -1082,7 +1133,7 @@ export function buildLoopOptions(input) {
   const {
     params, slot, provider, tools, store, signal, runId,
     system, onEvent, onObserverError, onPersistenceError, onJudge, diagnostics,
-    reflection,
+    reflection, finalGuard,
   } = input;
 
   /** @type {Record<string, unknown>} */
@@ -1112,6 +1163,13 @@ export function buildLoopOptions(input) {
     ...(onPersistenceError === undefined ? {} : { onPersistenceError }),
     ...(onJudge === undefined ? {} : { onJudge }),
     ...(diagnostics === undefined ? {} : { diagnostics }),
+    // #314 R1：只有调用方给了回调才下发这两个键（默认关时 options 对象上**一个字节都不多**，
+    // 这正是 C6「默认路径不回归」的硬约束）。`finalGuardTimeoutMs` 必须**显式给**：
+    // 引擎默认 30_000 × 最多 3 次等待（1 + 2 次 revise）会撑爆宿主自己那根硬 abort（坑 ①）。
+    ...(finalGuard === undefined ? {} : {
+      finalGuard,
+      finalGuardTimeoutMs: params.finalGuardTimeoutMs ?? FINAL_GUARD_TIMEOUT_MS,
+    }),
   };
 
   // #182：两个预算字段必须成对给（引擎跨候选不合并），缺任何一个都不如不给。
@@ -1478,6 +1536,16 @@ function buildDiagnostics(input, source) {
     // #207 R3/R4：落盘位置与扩轮闸门（requested = 宿主传了什么，enabled=false 就是没生效）。
     sessionDir: context.sessionDir ?? null,
     reflection: context.reflection ?? null,
+    // #314 R3：guard 的成本接在同一棵 diagnostics 树下（不另起顶层字段）。
+    // 未开启时也要留一行如实的话：默认关 ⇒ 引擎给的 verification 只能是 `skipped`。
+    finalGuard: input.finalGuardTally ?? {
+      enabled: false,
+      reason: "not requested（默认关；要核验就传 finalGuard: true）",
+      calls: 0,
+      elapsedMs: 0,
+      reviseRounds: 0,
+      source: "host finalGuard wrapper (erix-run-final-guard.js)",
+    },
   };
   if (typeof source?.termination?.errorCode === "string") {
     diagnostics.errorCode = source.termination.errorCode;
@@ -1563,6 +1631,11 @@ export async function runErixRun(rawParams = {}, deps = {}) {
   let notesAssembler;
   /** @type {object|undefined} */
   let terminalPayload;
+  // #314：guard 计数器要活到 catch（装配期就失败的 run 也要在 diagnostics 里如实写
+  // 「没开启」而不是缺一个字段），所以与 `notesAssembler` 同一层级声明。
+  /** @type {object|undefined} */
+  let finalGuardTally;
+  let finalGuardVerify;
   const relayCancel = () => {
     cancelled = true;
     controller.abort(new Error("erix_run 被调用方取消"));
@@ -1580,6 +1653,29 @@ export async function runErixRun(rawParams = {}, deps = {}) {
     context.strategy = params.strategy;
     context.maxRounds = params.maxRounds;
     context.timeoutMs = params.timeoutMs;
+
+    // #314 R1/R3：只有显式开了 finalGuard 才建计数器与回调；默认关 ⇒ 下面透传链上一个键都不多。
+    finalGuardTally = params.finalGuard === true
+      ? createFinalGuardTally({ finalGuardTimeoutMs: params.finalGuardTimeoutMs })
+      : undefined;
+    finalGuardVerify = finalGuardTally === undefined
+      ? undefined
+      : createFinalGuardVerify({
+        tally: finalGuardTally,
+        now,
+        // 测试缝：谓词可注入（与 deps.loadLib / deps.runLoop 同一条纪律），用来造「guard 很慢」
+        // 这种真时钟下不好复现的场景（坑 ① 的回归用例靠它）。
+        ...(deps.finalGuardInspect === undefined
+          ? {}
+          : { inspect: deps.finalGuardInspect }),
+      });
+    // 坑 ①：guard 的等待（最多 1 + 2 次 × `finalGuardTimeoutMs`）发生在 stop 判定之后，
+    // 而引擎只在**轮边界**查截止线（`src/loop/orchestrator.js` 的 `remainingMs()`），
+    // stop → guard 之间没有 deadline 检查。本层那根 `setTimeout` 硬 abort 若仍卡在
+    // `params.timeoutMs`，就会把「钱已花、正要把 verified 交出来」的 run 掐死（宿主自己
+    // 把核验抢掉）。以开启时把硬 abort 往后挪 `FINAL_GUARD_WORST_CASE_MS`（= 3 × 10s）；
+    // run 自身的截止线（下发给引擎的 `timeoutMs`）**不动**，不拿它去掩盖额外开销。
+    const guardHeadroomMs = finalGuardTally === undefined ? 0 : FINAL_GUARD_WORST_CASE_MS;
 
     const lib = deps.loadLib
       ? await deps.loadLib()
@@ -1650,6 +1746,10 @@ export async function runErixRun(rawParams = {}, deps = {}) {
     progress(
       `erix_run 启动：model=${context.model ?? "?"} cwd=${params.cwd} maxRounds=${params.maxRounds}`
       + ` strategy=${params.strategy ?? "（未配置，走引擎缺省）"} timeoutMs=${params.timeoutMs}`
+      // #314：开了 guard 就把「多给了多少硬 abort 余量」当面说出来，别让开销隐形。
+      + (guardHeadroomMs > 0
+        ? ` finalGuard=on（硬 abort 余量 +${guardHeadroomMs}ms，等待上限 ${params.finalGuardTimeoutMs}ms）`
+        : "")
       + `（lib: ${context.libSource}）`,
     );
     if (params.sessionDir !== undefined) {
@@ -1660,7 +1760,7 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       timedOut = true;
       progress(`⏱ 超时 ${params.timeoutMs}ms，abort 内层 run`);
       controller.abort(new Error(`erix_run 超时（${params.timeoutMs}ms）`));
-    }, params.timeoutMs);
+    }, params.timeoutMs + guardHeadroomMs);
 
     const runLoop = deps.runLoop ?? libIndex.runToolLoop;
     // #207 R1：三个扩轮参数直传引擎 `reflection:{…}`，**不碰引擎默认值**（不传就是引擎自己的）。
@@ -1716,7 +1816,14 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       runId,
       system: lib.binTools === undefined
         ? undefined
-        : buildSystemPrompt({ lib, cwd: params.cwd, tools: tools.tools }),
+        : buildSystemPrompt({
+          lib,
+          cwd: params.cwd,
+          tools: tools.tools,
+          finalDraft: params.finalGuard === true,
+        }),
+      // #314 R1：没开启时这个键不存在（不是 `undefined`），以免被当成「传了但空」。
+      ...(finalGuardVerify === undefined ? {} : { finalGuard: finalGuardVerify }),
       // 观察者必须自带防护：0.18 起引擎会隔离抛错并经 onObserverError 报告，但进度通道
       // （pi 的 onUpdate）在引擎直调路径上仍可能同步抛错。
       onEvent: (event) => {
@@ -1773,6 +1880,7 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       persistenceErrors,
       noteToolCalls,
       eventStreamObserved,
+      finalGuardTally,
       context,
       artifacts: resolveArtifacts(persistence),
       extensionCount,
@@ -1796,6 +1904,7 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       persistenceErrors,
       noteToolCalls,
       eventStreamObserved,
+      finalGuardTally,
       context,
       artifacts: resolveArtifacts(persistence ?? {}),
       extensionCount,
@@ -1881,6 +1990,11 @@ export function formatPayloadForModel(payload, { limit = 20_000 } = {}) {
     // #313 R1/R2/R3：分层削减分别命名分别渲染，再补 notes 写/读计数（同一来源纪律：取不到就 unknown）。
     lines.push(formatCompactionLayerSummary(diagnostics.compaction?.layers));
     lines.push(`  ↳ ${formatNoteTally(diagnostics.notes)}`);
+    // #314 R3：guard 的成本与结论（开启时是次数/累计等待/revise 轮数 + 本次 verification，
+    // 没开启时是一行 disabled，不说「已通过」）。
+    lines.push(`  ↳ ${summarizeFinalGuard(diagnostics.finalGuard)}`
+      + ` ｜ verification=${payload?.verification?.status ?? "n/a"}`
+      + `${payload?.verification?.reason ? `/${payload.verification.reason}` : ""}`);
     for (const failure of diagnostics.notesLifecycle?.errors ?? []) {
       lines.push(`  ↳ notes 收尾失败（${failure?.operation ?? "?"}）：${failure?.message ?? ""}（不影响终局）`);
     }

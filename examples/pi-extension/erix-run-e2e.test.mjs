@@ -325,3 +325,67 @@ test("erix_run 真机 e2e：真 run 的终局四件套 + transcript 新形状 + 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// #314 R1：显式开启 finalGuard ⇒ `verification` 不再是 `skipped`（**加法**用例）。
+// 上面 E4 那条（默认关 ⇒ 恒 `skipped`）原样保留，两条一起才说明「开关真的在开关」。
+// 只在真上游可用时跑；闸门关着 / 没配置 / 端点不可达一律 skip（不红）。
+// ---------------------------------------------------------------------------
+
+test("erix_run 真机：显式 finalGuard:true ⇒ verification 不再是 skipped，成本进 diagnostics", {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
+  if (!gate.ok) {
+    t.skip(`真上游不可用/闸门关：${formatSkip(gate)}`);
+    return;
+  }
+
+  const dir = mkdtempSync(path.join(tmpdir(), TMP_PREFIX.erixRun));
+  const progressLines = [];
+  try {
+    // 让内层「取一个只有本次 run 才有的值」当基点：exec 的时间戳必然出现在本次 tool_result 里，
+    // 于是谓词的硬闸有机会过；过不了也只会是 unverified，**不可能**是 skipped。
+    const payload = await core.runErixRun(
+      {
+        task: "用 exec 跑一次 `node -p process.pid`，把打印出来的数字**逐字**当成本次结论的基点。"
+          + "终稿必须依次写四段：## 取证边界 / ## 基点 / ## 结论 / ## 未验证（段名逐字照抄），"
+          + "「## 基点」里只写那个数字，「## 结论」里给一条带「文件:行」的结论。",
+        cwd: dir,
+        maxRounds: 5,
+        timeoutMs: 4 * 60 * 1000,
+        finalGuard: true,
+      },
+      {
+        env: {
+          ...process.env,
+          [core.LIB_ENV]: path.join(repoRoot, "src", "index.js"),
+          [core.CONFIG_PATH_ENV]: gate.configPath,
+        },
+        home: homedir(),
+        onProgress: (line) => progressLines.push(line),
+      },
+    );
+
+    console.log(`[314] termination=${JSON.stringify(payload.termination)} `
+      + `verification=${JSON.stringify(payload.verification)} `
+      + `finalGuard=${JSON.stringify(payload.diagnostics?.finalGuard)}`);
+
+    assert.notEqual(payload.verification?.status, "skipped",
+      `开了 finalGuard 还恒 skipped ⇒ 透传断了：${JSON.stringify(payload.verification)}`);
+    assert.ok(["verified", "unverified", "error"].includes(payload.verification?.status),
+      `状态必须是 guard 真裁出来的三态之一：${JSON.stringify(payload.verification)}`);
+    // 成本必须看得见（R3）：宿主计数 + 引擎 guardMetrics 两份都在，且各带来源
+    const guard = payload.diagnostics?.finalGuard;
+    assert.equal(guard?.enabled, true, JSON.stringify(guard));
+    assert.ok((guard?.calls ?? 0) >= 1, `guard 一次也没被叫到：${JSON.stringify(guard)}`);
+    assert.ok(typeof guard?.elapsedMs === "number", JSON.stringify(guard));
+    assert.match(guard.source, /erix-run-final-guard\.js/u, JSON.stringify(guard));
+    assert.ok(payload.verification.metrics, "引擎侧 guardMetrics 也该在（口径不同，两份都留）");
+    // 终局面里要读得到这一行（默认关时那一行是 disabled）
+    assert.match(core.formatPayloadForModel(payload), /finalGuard calls=\d+/u);
+    assert.match(progressLines.join("\n"), /finalGuard=on/u, "启动行要把余量与等待上限说出来");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

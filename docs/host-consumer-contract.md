@@ -1406,6 +1406,47 @@ whether the deliverable meets its requirements, and whether it may proceed
 automatically downstream remain decisions for the host, test system, or human
 review.
 
+### Host-side guard wiring and the deadline tail (issue #314)
+
+The pi host extension (`examples/pi-extension/erix-run-core.js`) carries a
+`finalGuard` switch. It is **off by default**: with the switch off, the
+extension hands `runToolLoop` an options object without a `finalGuard` key at
+all (not one holding `undefined`), so `verification` stays
+`{ status: "skipped", reason: "no_final_guard" }` and `end_turn` remains a claim
+rather than a proof. Pass `finalGuard: true` and the loop receives the callback
+plus an **explicitly small** `finalGuardTimeoutMs` (`FINAL_GUARD_TIMEOUT_MS`,
+10000) instead of relying on the engine default of 30000.
+
+The timeout has to be explicit because of where the guard sits. The engine only
+consults the run deadline at round boundaries (`remainingMs`（`src/loop/orchestrator.js`）); there is no deadline check between the stop
+decision and the guard call. A host sitting on top of the loop also owns a hard
+abort timer (`runErixRun`（`examples/pi-extension/erix-run-core.js`）). With the
+engine default, one guard call plus up to `finalGuardMaxRetries` revisions can
+wait `3 × 30000` ms *after* the host timer has already expired: the tokens are
+spent and the verdict is aborted away. The extension therefore both lowers the
+per-call budget (`FINAL_GUARD_TIMEOUT_MS`（`examples/pi-extension/erix-run-final-guard.js`）) and pushes its own hard abort later by
+`FINAL_GUARD_WORST_CASE_MS`（`examples/pi-extension/erix-run-final-guard.js`） (= 3 × 10000 ms), leaving the
+run deadline it hands to the engine untouched.
+
+Worst case cost of enabling it: **up to 2 extra model round trips** (the engine
+`finalGuardMaxRetries` default) plus **up to 3 guard waits** bounded by
+`finalGuardTimeoutMs`. Costs land in the host payload as
+`diagnostics.finalGuard` (calls / elapsed ms / `reviseRounds` / declared and
+untraceable bases / derived-conclusion reminders), next to the compaction and
+notes layers; the engine's own counters stay on `verification.metrics`
+(`guardMetrics`（`src/loop/orchestrator.js`）). A host must not read its own
+counters as the engine's, so both carry a `source` field.
+
+The extension's predicate (`inspectFinalDraft`（`examples/pi-extension/erix-run-final-guard.js`）) is deliberately narrow: a
+four-section terminal draft (`FINAL_DRAFT_SECTIONS`（`examples/pi-extension/erix-run-final-guard.js`）, also appended to the system
+prompt only when the switch is on), plus **one** hard gate — every literal
+declared under the base-section heading must appear verbatim in a
+`tool_result` block of *this* run (`collectToolResultText`（`examples/pi-extension/erix-run-final-guard.js`）). Anything else
+(ratios, percentages, "total" claims) is reported, never rejected. No branch
+returns `accept` when a declared base cannot be traced: at the retry limit the
+loop ends as `final_guard_unverified` with `verification.status` `unverified`
+(`max_retries`), which is a pass for the fail-closed rule, not for the answer.
+
 ### NotesStore interface, scope, and write contract (0.12.0)
 
 The `NotesStore` port has six required methods:

@@ -90,7 +90,16 @@ test("pi 装载器能加载 erix-run.ts 并注册 erix_run（离线，不触网�
   assert.equal(schema.properties.maxExtensions.minimum, 0, "0 = 关掉扩轮是有效配置，schema 不能卡成正整数");
   assert.equal(schema.properties.maxRoundsCap.minimum, 1);
   assert.equal(schema.properties.extensionStep.minimum, 1);
-  for (const key of ["sessionDir", "transcript", "maxExtensions", "maxRoundsCap", "extensionStep"]) {
+  // #314：终稿核验开关的参数面。**默认关**写在说明里（模型只有看到这一行才知道要显式开），
+  // 代价与超时约束也必须写在模型眼前，不然它会以为开启是免费的。
+  assert.equal(schema.properties.finalGuard.type, "boolean");
+  assert.equal(schema.properties.finalGuardTimeoutMs.minimum, 200);
+  assert.equal(schema.properties.finalGuardTimeoutMs.maximum, 600_000);
+  assert.match(schema.properties.finalGuard.description, /默认关/u);
+  assert.match(schema.properties.finalGuard.description, /≤2 个模型往返/u);
+  assert.match(schema.properties.finalGuardTimeoutMs.description, /只在 finalGuard: true 时有意义/u);
+  for (const key of ["sessionDir", "transcript", "maxExtensions", "maxRoundsCap", "extensionStep",
+    "finalGuard", "finalGuardTimeoutMs"]) {
     assert.equal(schema.properties[key].description.length > 20, true, `${key} 要给模型看得见的说明`);
   }
   // #234：异步与查询参数面
