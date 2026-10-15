@@ -1536,11 +1536,12 @@ const FILE_LINE_CACHE = new Map();   // rel → 拆行后的数组（按「文�
 function fileLines(rel) {
   let text;
   try { text = textOf(rel); } catch { return null; }
-  const id = `${text.length}:${text.slice(0, 32)}:${text.slice(-32)}`;
+  // 缓存键必须是**全文本身**：#286 T-a 现场——早先的版本用「长度 + 首尾 32 字」当身份，于是
+  // `src/a/b.js:12` → `src/a/c.js:12` 这种等长变异命中了旧缓存，自测里那一例假绿（改了却不红）。
   const hit = FILE_LINE_CACHE.get(rel);
-  if (hit && hit.id === id) return hit.lines;
+  if (hit && hit.text === text) return hit.lines;
   const lines = text.split("\n");
-  FILE_LINE_CACHE.set(rel, { id, lines });
+  FILE_LINE_CACHE.set(rel, { text, lines });
   return lines;
 }
 
@@ -1613,32 +1614,63 @@ function nearestSymbols(sym, decls) {
   return scored.sort((a, b) => a.score - b.score || a.text.localeCompare(b.text)).slice(0, 5).map((s) => s.text);
 }
 
-/** 抽「符号 + 文件」锚点：`SYM`（`src/x.js`）与 markdown 链接 [SYM](src/x.js)；同行紧邻形态也接。
- *  返回每一处出现（不去重，逐处报），去重在报错时按 (符号, 文件) 归并。 */
-function symbolAnchorOccurrences(docs) {
+/** 「符号 + 文件」的两种形态（`SYM`（`path`）与 markdown 链接）。提成模块级常量，是因为自测的
+ *  打靶器 `mutateSymbolAnchor()` 必须与主检查用**同一套**提取逻辑（#279 的口径：打靶由提取逻辑定）。 */
+const SYMBOL_ANCHOR_FORMS = [
+  // `SYM`（`path`） / `SYM` (`path`) —— 全角半角括号都接，允许中间一个空格。
+  // 允许带 :N / :N-M 行号后缀：带行号的「符号 + 文件」仍然是符号锚点（符号部分照校），
+  // 行号部分则同时进 2.8.2 的裸行号棘轮——一条写法被两条锚点分别看守，互不掩盖。
+  { re: /`([A-Za-z_$][\w$]*)`\s*[（(]\s*`([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(?::\d+(?:-\d+)?)?`\s*[)）]/g, kind: "括号并列" },
+  // [SYM](path) / [`SYM`](./path#anchor)
+  { re: /\[`?([A-Za-z_$][\w$]*)`?\]\(\.?\/?([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(?:#[^)]*)?\)/g, kind: "markdown 链接" },
+];
+
+/** 抽一份**文本**里的符号锚点，带 span（字符区间只覆盖**符号名本身**），供自测定点变异。 */
+function symbolAnchorsInText(text, doc) {
   const found = [];
-  const forms = [
-    // `SYM`（`path`） / `SYM` (\`path\`) —— 全角半角括号都接，允许中间一个空格
-    { re: /`([A-Za-z_$][\w$]*)`\s*[（(]\s*`([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(?::\d+(?:-\d+)?)?`\s*[)）]/g, kind: "括号并列" },   // 允许带 :N / :N-M 行号后缀：符号部分照校，行号部分同时进 2.8.2 的棘轮
-    // [SYM](path) / [`SYM`](./path#anchor)
-    { re: /\[`?([A-Za-z_$][\w$]*)`?\]\(\.?\/?([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(?:#[^)]*)?\)/g, kind: "markdown 链接" },
-  ];
-  for (const rel of docs) {
-    const lines = fileLines(rel);
-    if (!lines) continue;
-    lines.forEach((line, i) => {
-      for (const f of forms) {
-        f.re.lastIndex = 0;
-        for (const m of line.matchAll(f.re)) {
-          const sym = m[1];
-          if (SYMBOL_NOT_SYMBOL.has(sym)) continue;          // JavaScript 字面量不是符号（见上面名单的理由）
-          if (m[2].endsWith(".d.ts")) continue;              // 生成物声明文件不入库（#213），拿它当被引文件必然假红
-          found.push({ doc: rel, line: i + 1, sym, file: m[2], form: f.kind });
-        }
+  let lineStart = 0;
+  for (const [i, line] of text.split("\n").entries()) {
+    for (const [fi, f] of SYMBOL_ANCHOR_FORMS.entries()) {
+      f.re.lastIndex = 0;
+      for (const m of line.matchAll(f.re)) {
+        const sym = m[1];
+        if (SYMBOL_NOT_SYMBOL.has(sym)) continue;          // JavaScript 字面量不是符号（见上面名单的理由）
+        if (m[2].endsWith(".d.ts")) continue;              // 生成物声明文件不入库（#213），拿它当被引文件必然假红
+        const lead = fi === 0 ? 1 : 1 + (m[0][1] === "`" ? 1 : 0);   // 前导的 `[` 与可选反引号
+        found.push({
+          doc, line: i + 1, sym, file: m[2], form: f.kind,
+          start: lineStart + m.index + lead, end: lineStart + m.index + lead + sym.length,
+        });
       }
-    });
+    }
+    lineStart += line.length + 1;
   }
   return found;
+}
+
+/** 抽覆盖面里的符号锚点（按文档走 `textOf`，所以 `--self-test` 的内存副本被同一套逻辑扫）。
+ *  返回每一处出现（不去重，逐处报）；报错时按 (符号, 文件) 归并成一条，点名所有引用处。 */
+function symbolAnchorOccurrences(docs) {
+  const found = [];
+  for (const rel of docs) {
+    let text;
+    try { text = textOf(rel); } catch { continue; }
+    found.push(...symbolAnchorsInText(text, rel));
+  }
+  return found;
+}
+
+/** #286 T-a 自测的打靶器：把「符号 = `sym`、被引文件 = `filePath`」的**全部**锚点处的符号名换成 `to`。
+ *  一处都没命中、或换完还剩着 → 原样返回，`runSelfTest` 的「变异没落上」判据就会报红（不给空跑假绿留门）。 */
+function mutateSymbolAnchor(sym, filePath, to) {
+  return (text) => {
+    const hit = (t) => symbolAnchorsInText(t, "probe").filter((a) => a.sym === sym && a.file === filePath);
+    const hits = hit(text).sort((a, b) => b.start - a.start);
+    if (!hits.length) return text;
+    let t = text;
+    for (const h of hits) t = t.slice(0, h.start) + to + t.slice(h.end);
+    return hit(t).length ? text : t;     // 该锚点还剩着 → 这一枪没打全，同样算没落上
+  };
 }
 
 /** R1 判据：符号在被引文件里确有声明（或落在点名文件的「具名字面量成员」档）。 */
@@ -3201,11 +3233,73 @@ const SELF_TEST_CASES = [
     // 改掉两份文档，骨架差异被抹平 → 反向证自身失效（#274）。
     expect: [/skeleton: 中英 AGENTS/],
   },
+
+  // —— 符号锚点与裸行号棘轮（issue #286 T-a：R1/R2/R3 的反向证，#210 R2 口径四条齐全）——
+  // ① 只改文档（符号名改错）→ 红；② 只改真值（源码里给符号改名）→ 红；③ 新增裸行号 → 红；
+  // ④ 行号越界 → 红；⑤ 变异没打上 → 红（`expectMutateMiss`，见 `runSelfTest`）；
+  // 外加「合法锚点必须绿」「基线调回必须绿」两条放行证，证明这些锚点不是恒红。
+  {
+    label: "#286 符号锚点：契约 CN 把 `emitEvent` 改成 `emitEventProbe`（只改文档，修前门禁全绿）",
+    overlay: { [CONTRACT_CN]: mutateSymbolAnchor("emitEvent", "src/loop/orchestrator.js", "emitEventProbe") },
+    expect: [/symbol-anchor: docs\/host-consumer-contract_cn\.md:84 引用 `emitEventProbe`（`src\/loop\/orchestrator\.js`/,
+      /实际存在的相近符号：.*emitEvent/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#286 符号锚点：把真值一侧的 `defaultSleep` 改名（只改源码，中英引用同时红）",
+    overlay: { "src/loop/abort.js": (t) => t.replace("export function defaultSleep(", "export function defaultSleepRenamed(") },
+    expect: [/symbol-anchor: .*引用 `defaultSleep`（`src\/loop\/abort\.js`/, /实际存在的相近符号：.*defaultSleepRenamed/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#286 符号锚点不是恒红（对照）：在 AGENTS EN 加一处**合法**符号锚点 → 必须 0 错",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#286）：`defaultSleep`（`src/loop/abort.js`）是一处合法的「符号 + 文件」锚点。") },
+    expectGreen: true,
+  },
+  {
+    label: "#286 棘轮：在 AGENTS EN 临时多写一处**合法**裸行号 `src/loop/termination.js:12` → 红（新增就红，越界都没有）",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#286）：这里临时多写一处合法裸行号引用 `src/loop/termination.js:12`。") },
+    expect: [/bare-lines: 裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/, /AGENTS\.md 1/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#286 棘轮下限：把 BARE_LINE_REF_BASELINE 调到 243 → 必须红（证明这个数真是锁，不是装饰）",
+    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const BARE_LINE_REF_BASELINE = 244;", "const BARE_LINE_REF_BASELINE = 243;") },
+    expect: [/实测 \*\*244\*\* 处，超过棘轮基线 \*\*243\*\*/, /把基线改成 244/],
+  },
+  {
+    label: "#286 棘轮下限的反向证：常量调回 244（只加一句尾注释、数值不变）→ 必须 0 错",
+    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const BARE_LINE_REF_BASELINE = 244;", "const BARE_LINE_REF_BASELINE = 244;   // self-test 复原探针") },
+    expectGreen: true,
+  },
+  {
+    label: "#286 越界必红：CN 契约的 termination.js:93-100 改成 99999-100（唯一区间数不变 → 只有越界这条红）",
+    overlay: { [CONTRACT_CN]: (t) => t.split("src/loop/termination.js:93-100").join("src/loop/termination.js:99999-100") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:99999-100，但该文件只有 \d+ 行/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#286 豁免双条件（就地声明那一侧）：去掉 v030 EN 的外仓根 apps/worker/ → 既不再放行（245）又留下空转条目",
+    overlay: { "docs/host-upgrade-guide-v030.md": (t) => t.replace("apps/worker/src/pi/runner.js:50", "src/pi/runner.js:50") },
+    expect: [/实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/,
+      /豁免条目 `src\/pi\/runner\.js`（docs\/host-upgrade-guide-v030\.md）没有一处引用真正用到它/],
+  },
+  {
+    label: "#286 豁免双条件（条目那一侧）：CN 契约的示例路径改成没登记的 src/a/c.js:12 → 没有条目就不放行",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("paths: src/a/b.js:12", "paths: src/a/c.js:12") },
+    expect: [/实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/,
+      /豁免条目 `src\/a\/b\.js`（docs\/host-consumer-contract_cn\.md）没有一处引用真正用到它/],
+  },
+  {
+    label: "#286 变异器空转证：靶子（不存在的符号名）打不上时，runSelfTest 必须判这一例「变异没落上」而不是假绿",
+    overlay: { [CONTRACT_EN]: mutateSymbolAnchor("zzProbeNoSuchSymbol", "src/loop/orchestrator.js", "anything") },
+    expectMutateMiss: true,
+  },
 ];
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 70;
+const MIN_SELF_TEST_CASES = 80;   // #286 T-a 之后共 85 例（下限留 5 例余量给并行分支）
 
 function runSelfTest() {
   const run = () => collectAllDrift();
@@ -3219,12 +3313,18 @@ function runSelfTest() {
   if (SELF_TEST_CASES.length < MIN_SELF_TEST_CASES) {
     failures.push(`用例数被削：现在 ${SELF_TEST_CASES.length} 例，下限 ${MIN_SELF_TEST_CASES} 例——删用例 / 整例跳过不算修好`);
   }
+  // #286 T-a：提取器自己也有一处「空转就能全绿」的形状——覆盖面或提取正则被改坏时，符号锚点会抽到
+  // 0 处，于是本节所有反向证同时变成空跑。先问一句，别等用例自己变绿。
+  if (!symbolAnchorOccurrences(refScanDocs()).length) {
+    failures.push("symbol-anchor: 覆盖面里抽到 0 处「符号 + 文件」锚点——提取逻辑或覆盖面被改坏，"
+      + "本节全部符号锚点反向证都在空跑（抽不到真值就报错，#164 口径）");
+  }
   for (const [i, c] of SELF_TEST_CASES.entries()) {
     const who = c.label ?? `第 ${i + 1} 例`;
     for (const re of c.expect ?? []) {
       if (re.test("")) failures.push(`${who}：期望被削弱——正则 ${re} 连空串都匹配，等于没有断言（不许拿「永真」糊过这一例）`);
     }
-    if (!c.expectGreen && !(c.expect ?? []).length && !(c.expectFiles ?? []).length) {
+    if (!c.expectGreen && !c.expectMutateMiss && !(c.expect ?? []).length && !(c.expectFiles ?? []).length) {
       failures.push(`${who}：期望被削弱——既不是放行证（expectGreen）也没写 expect / expectFiles，等于整例被跳过`);
     }
   }
@@ -3236,17 +3336,27 @@ function runSelfTest() {
   }
   for (const c of SELF_TEST_CASES) {
     let ok = true;
+    let missedOn = null;   // #286 T-a：变异没打上的那一处（`expectMutateMiss` 用例等的就是它）
     for (const [rel, mutate] of Object.entries(c.overlay ?? {})) {   // #280：纯树形例可以不带 overlay
       const before = read(rel);
       const after = mutate(before);
-      if (after === before) {
-        failures.push(`${c.label}：变异没落到 ${rel} 上（反向证自身失效：脚本里的变异体已与文档/源码脱节）`);
-        ok = false;
-        break;
-      }
+      if (after === before) { missedOn = rel; break; }
       OVERLAY.set(rel, after);
     }
-    if (!ok) { OVERLAY.clear(); continue; }
+    if (missedOn !== null) {
+      OVERLAY.clear();
+      if (c.expectMutateMiss) {
+        passed.push(`${c.label} → 变异确实没落上（${missedOn}），「变异器空转也算失败」这条判据在生效`);
+      } else {
+        failures.push(`${c.label}：变异没落到 ${missedOn} 上（反向证自身失效：脚本里的变异体已与文档/源码脱节）`);
+      }
+      continue;
+    }
+    if (c.expectMutateMiss) {
+      OVERLAY.clear();
+      failures.push(`${c.label}：这一例要的就是「变异打不上」，结果打上了——靶子已存在于文档，换一个不存在的靶子`);
+      continue;
+    }
     // #280：有的锚点要测的不是文件**文本**而是**树形**（本机有没有那个被 .gitignore 忽略的任务档案目录）。
     // 树形用 SIM_ABSENT_TASK_ARCHIVE 这个口子模拟（只影响实物清单，声明一侧一律不动），跑完必须还原。
     const simSaved = SIM_ABSENT_TASK_ARCHIVE;
