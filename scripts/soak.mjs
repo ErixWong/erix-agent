@@ -960,4 +960,10 @@ function checkPairing(messages) {
   return out;
 }
 
-await main();
+// 入口：CLI 解析/配置读取类错误走干净的拒绝（不泄栈、非 0），不静默给退出码 0。
+try {
+  await main();
+} catch (error) {
+  process.stderr.write(`soak 失败：${String(error?.message ?? error)}\n${USAGE}`);
+  process.exitCode = 2;
+}
