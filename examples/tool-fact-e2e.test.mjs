@@ -216,13 +216,27 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
       assert.ok(persistedA.length >= 2, `落盘 tool_result=${persistedA.length}`);
     }, `tool_result=${persistedA.length}，tool_use=${persistedUsesA.length}，流式分片=${fragments.length}`);
 
-    // 第 1 条：两线同键（引擎的核心承诺）——按 tool_use_id 配对，事件流的 key == 落盘块的 key
+    // 第 1 条：两线同键（引擎的核心承诺）+ **双向数量/id 集合对账**（PR #289 断言强度 1）。
+    // 修前只要求事件流「至少一条」再逐个查 key ⇒「落盘 2 条、事件只发 1 条」（漏发）与
+    // 「同一次调用发两条结果」（重发）都照样绿。这里把⊇与⊆钉在一起：同数量、同 id 集合、两边都不重号。
     const keyByToolUseId = new Map();
     for (const block of persistedA) {
       if (typeof block?.erix?.toolCallKey === "string") keyByToolUseId.set(block.tool_use_id, block.erix.toolCallKey);
     }
-    check("F1 两线同键：onEvent 的 erix.toolCallKey == 落盘块的 erix.toolCallKey", () => {
+    /** 事件侧 / 落盘侧的 tool_use_id（落盘侧 = 真的执行过并落盘的调用，本场景是新 run，全是现役形状） */
+    const evIds = evResults.map((block) => block?.tool_use_id);
+    const persistedIds = persistedA.map((block) => block?.tool_use_id);
+    const duplicates = (ids) => [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
+    check("F1 两线同键 + 双向对账：事件侧与落盘侧同数量、同 tool_use_id 集合、不重号，key 逐条相等", () => {
       assert.ok(evResults.length > 0, "事件流里一个 tool_result 也没有");
+      // ⊇：落盘执行过的每一次调用，事件流必须都发过结果；⊆：事件流不许发落盘没有的结果。
+      assert.equal(evIds.length, persistedIds.length,
+        `数量不等（事件侧⊇落盘侧、又⊆落盘侧 ⇔ 同数量）：事件=${evIds.length} 落盘=${persistedIds.length}`);
+      assert.deepEqual(duplicates(evIds), [], `事件侧同一次调用发了多条结果（重发）：${duplicates(evIds).join(",")}`);
+      assert.deepEqual(duplicates(persistedIds), [], `落盘侧同一次调用落了多条结果：${duplicates(persistedIds).join(",")}`);
+      assert.deepEqual([...new Set(evIds)].sort(), [...new Set(persistedIds)].sort(),
+        `tool_use_id 集合不双向相等：只在事件侧=${evIds.filter((id) => !persistedIds.includes(id)).join(",") || "无"}`
+        + `｜只在落盘侧=${persistedIds.filter((id) => !evIds.includes(id)).join(",") || "无"}`);
       const problems = [];
       for (const block of evResults) {
         const key = block?.erix?.toolCallKey;
@@ -234,8 +248,16 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
           problems.push(`${block.tool_use_id}: 事件=${key} 落盘=${keyByToolUseId.get(block.tool_use_id)}`);
         }
       }
+      // 反方向：落盘每一块的身份键也必须真的等于事件侧发过的那一份（上面只遍历事件侧，漏发时查不到）。
+      for (const block of persistedA) {
+        const onEvent = evResults.find((e) => e?.tool_use_id === block?.tool_use_id)?.erix?.toolCallKey;
+        if (onEvent !== block?.erix?.toolCallKey) {
+          problems.push(`${block?.tool_use_id}: 落盘=${block?.erix?.toolCallKey} 事件=${onEvent}`);
+        }
+      }
       assert.deepEqual(problems, [], problems.join(" | "));
-    }, `${evResults.length} 次调用，块侧 key 集合=${new Set(keyByToolUseId.values()).size}`);
+    }, `事件=${evIds.length} 落盘=${persistedIds.length}，` 
+      + `块侧 key 集合=${new Set(keyByToolUseId.values()).size}`);
 
     // 第 2 条：流式分片上的身份键（只有真上游能覆盖这条分支——假 provider 不给分片）
     check("F2 流式 tool_call 分片带 toolCallKey，且每个值都在块侧 key 集合里", () => {
