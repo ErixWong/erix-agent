@@ -1736,10 +1736,13 @@ function collectSymbolAnchorErrors() {
   }
   let literalTier = 0;
   let truthFailure = 0;
+  const kindCensus = {};   // 报告「实际支持的声明形态里，语料真的用到了哪几种」——别只让注释自称支持
   for (const g of groups.values()) {
     const v = symbolAnchorVerdict(g.sym, g.file);
     if (v.ok) {
       if (v.tier.startsWith("具名字面量")) literalTier += 1;
+      const kind = v.tier.split(" @ ")[0];
+      kindCensus[kind] = (kindCensus[kind] ?? 0) + 1;
       continue;
     }
     if (v.missing) {
@@ -1756,7 +1759,8 @@ function collectSymbolAnchorErrors() {
   }
   const byFile = {};
   for (const o of occurrences) byFile[o.doc] = (byFile[o.doc] ?? 0) + 1;
-  notes.push(`symbol-anchor: 覆盖面 ${docs.length} 份文档里「符号 + 文件」锚点 ${occurrences.length} 处（唯一 (符号, 文件) ${groups.size} 组：${Object.entries(byFile).map(([d, n]) => `${d} ${n}`).join("、") || "（无）"}）；` + `其中「具名字面量成员」一档 ${literalTier} 组（引用文件已逐份点名，见 SYMBOL_VALUE_MEMBERSHIP）、抽不到真值 ${truthFailure} 组`);
+  notes.push(`symbol-anchor: 覆盖面 ${docs.length} 份文档里「符号 + 文件」锚点 ${occurrences.length} 处（唯一 (符号, 文件) ${groups.size} 组：${Object.entries(byFile).map(([d, n]) => `${d} ${n}`).join("、") || "（无）"}）；` + `其中「具名字面量成员」一档 ${literalTier} 组（引用文件已逐份点名，见 SYMBOL_VALUE_MEMBERSHIP）、抽不到真值 ${truthFailure} 组；`
+    + `命中的声明形态：${Object.entries(kindCensus).map(([k, n]) => `${k} ${n}`).join("、") || "（无）"}`);
   collectSymbolAnchorErrors.notes = notes;
   return out;
 }
