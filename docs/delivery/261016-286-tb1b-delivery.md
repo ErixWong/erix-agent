@@ -7,11 +7,16 @@
 
 | 提交 | 内容 | 该枚 commit 上 `check:docs` |
 |---|---|---|
-| `12f66cb` | 章节一：契约「观察者回调抛错 / 重试预算 / 配置解析 / 运行快照与工具 replay / 压缩预算」各节，EN+CN 各 27 处区间删除；`BARE_LINE_REF_BASELINE` 232 → **178** | exit 0（实测 178 == 基线 178）|
-| `7d103f1` | 章节二：终止裁决决策表（#170）+ 核验状态与退出码 + 机制优先级与互斥关系，EN+CN 各 18 处区间删除；基线 178 → **144** | exit 0（实测 144 == 基线 144）|
-| 本枚 | 本报告 + `CHANGELOG.md` `[Unreleased] ### Chore` | — |
+| `12f66cb` | 章节一：契约「观察者回调抛错 / 重试预算 / 配置解析 / 运行快照与工具 replay / 压缩预算」各节，EN+CN 各 27 处区间删除；`BARE_LINE_REF_BASELINE` 232 → **178** | `check:docs` exit 0（实测 178 == 基线 178）|
+| `7d103f1` | 章节二：终止裁决决策表（#170）+ 核验状态与退出码 + 机制优先级与互斥关系，EN+CN 各 18 处区间删除；基线 178 → **144** | `check:docs` exit 0（实测 144 == 基线 144）|
+| `1d4580d` | AGENTS 中英声称值同步 144 + 自测下限期望改成从常量推导 | `check:docs` / `--strict` exit 0、`docs-anchor-ratchet` 6/6 |
+| `cad85df` | 本报告 + `CHANGELOG.md` `[Unreleased] ### Chore` | exit 0（首跑曾红在 `archive-refs`：报告自己写了 `docs/tasks/active/…` 那条本机归档路径而没就地声明，改写后绿）|
+| `bf7e48e` | **补正**：调用树图里 `reportObserverError` 的区间 `763-783` → **`889-896`**（763-783 那段其实是 `runLoopState` 字面量）；§3 保留清单改成逐条现算的 **16 条** | 全量门禁见 §6 |
 
-每枚 commit 都是「文档 + 棘轮常量」同时落，单独 checkout 出来 `check:docs` 即绿（已逐枚跑过）。
+每枚 commit 都是「文档 + 棘轮常量」同时落，**逐枚实跑 `check:docs` 均 exit 0**。
+⚠ 但「AGENTS 声称值 == 脚本常量」那条钉子住在 `npm test`（`test/docs-anchor-ratchet.test.js`）而不是
+`check:docs`，它要到 `1d4580d` 才绿：`12f66cb` / `7d103f1` 单拿出去跑 `npm test` 会在那一条上红
+（其余 1667 条全绿）。全量 `npm test` fail=0 的是 `cad85df` 之后的树。
 
 ## 2. 结局 (a) 用掉的次数：改了多少条
 
