@@ -21,6 +21,16 @@ export function engineApiContract(label, getEntry) {
     assert.equal(typeof entry.projectTranscriptForDisplay, "function");
   });
 
+  test(`${label}: 包入口导出 parseReflectionDecision 且返回对象带 via 来源标记（issue #305）`, async () => {
+    const entry = await getEntry();
+    assert.equal(typeof entry.parseReflectionDecision, "function");
+    const fromJson = entry.parseReflectionDecision('{"progress":3,"stalled":true,"continue":false}');
+    assert.equal(fromJson.via, "json");
+    assert.equal(fromJson.continueFlag, false);
+    assert.equal(fromJson.progress, 3);
+    assert.equal(entry.parseReflectionDecision("一直在打转，放弃吧").via, "prose_fallback");
+  });
+
   test(`${label}: appendUserTurn 对最小 store stub 完成一次预写`, async () => {
     const entry = await getEntry();
     const records = [];

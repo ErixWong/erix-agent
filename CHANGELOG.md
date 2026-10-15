@@ -6,6 +6,11 @@
 
 ### Fixed
 
+- **`parseReflectionDecision`（`src/loop/reflection.js`）不再把模型明确写下的布尔值静默翻向（issue #305）。** 病根：它用贪婪 `/\{[\s\S]*\}/` 抠 JSON，于是**尾话里的一对花括号**（散文里的 `{plan}` 占位符、```` ```json ```` 围栏后跟一句说明、并列的两个顶层对象）会让抠出来的一坨解析不了；`JSON.parse` 抛错后 `catch` 直接 fall through 到关键词兜底，而兜底跑在**含 JSON 自身的整段文本**上——匹配到的是 `"continue"` / `"stalled"` 这些**键名**，于是 `"continue": false` 回来变成 `continueFlag: true`、`progress` 一起丢失。实测四种形状今天就坏（issue 原形状、围栏＋带括号尾话、并列两个顶层对象、外层未闭合＋内层完整）。
+  - 修法：换成**顶层平衡扫描** `jsonCandidates`（`src/text/json-candidates.js`，新增文件），感知字符串与转义、只在括号深度归零处切候选、未闭合的外层不产候选。该件由 `tryParseWrapupJson`（`src/reflection/wrapup.js`）自带的同一份生成器**逐字提取**而来（wrapup 改为 import，行为逐字不变），于是包内两个模型 JSON 解析器不再各持一套抠取逻辑。**共享的只有扫描，不共享校验**：judge（`src/reflection/judge.js`）的必填布尔式校验与「每个 `{` 起扫一次」的语义本刀一字未动（后者在外层未闭合时会返回内层残片，改成只认顶层属于行为变更，需另开单）。
+  - **宿主可见的新增字段（additive）**：返回体多一个 `via`，`"json"` = 来自可解析的顶层对象、`"prose_fallback"` = 关键词兜底；它只声明来源，**不**暗示 schema 已校验。六字段全部可缺省带默认，`{"progress":3}` 这样的半集仍走 `"json"`；唯一刻意例外是顶层对象可解析却六个决策键一个都不含 ⇒ 按 `prose_fallback` 上报。`progress`/`stalled`/`continueFlag` 的语义只增字段不改义，纯散文关键词行为逐字保留；`reason` 的 `slice(0, 200)`（UTF-16 码元）与 judge 的码点截断口径**有意不统一**（统一会改宿主可见值）。
+  - 顺带清掉 `continueFlag` 里 `parsed.continue === true || parsed["continue"] === true` 的恒等重复（同一个键的两种写法）。契约新增「Reflection 决策解析」中英成对小节；`test/contract/engine-api.js` 补一条包入口面断言（守住 `src/index.js` → `orchestrator.js` 这条此前无人守的 re-export 链）。零 npm 运行时依赖不变。
+
 - **极小 `context.budgetTokens` 不再把发给上游的 `messages` 压成空数组（issue #292）。** 病根：预算小到连一条消息都装不下时，压缩的 safety 层（`safeTruncateMessages` 的逐条删除循环）会从头删掉未保护的消息，把**唯一的 user 轮连同整个列表**一起删空；TTL 折叠同样只作用在请求视图上，没有任何一层对「发给上游的 messages 里还有没有 user 轮」负责。真上游（OpenAI 兼容 relay）对此回 `400 invalid_request`「No user query found in messages」，整个 run 直接 `failed`——即**小预算配置从「能跑」退化成「必然失败」**。
   - 修法是不变量而不是调参：新增 `src/loop/request-user-view.js`（`ensureUserTurnView`），在**视图定稿处**执行「`messages` 非空且至少一条真 user 轮」——请求侧是 `src/loop/provider-runner.js`（TTL 折叠与 run-state 追加之后、`request` 组装之前，`chat` 与 `chatStream` 共用同一个 `request` 对象，两条通道一次覆盖），持久侧是压缩结果写回 `messages` 之前（否则视图定稿处已经没有可回补的源）。退让顺序：原样 → 从**未折叠 / 未压缩**的视图里保底保留**最新**一条 user 轮（含它必需的 assistant 配对）→ 放弃本次折叠改用未折叠视图 → 不可回补；每一步都过 `validateMessages(..., { allowPendingToolUse: false })`，不产生孤儿 `tool_result` 或缺结果的 `tool_use`。
   - **不是「预算小就整体不压缩」**：健康预算下压缩行为一字未变（对照用例断言 `compactionStats.compacted` 仍为真、确有 `foldedRounds > 0` 且 `tokensAfter < tokensBefore`）。

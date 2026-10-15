@@ -254,7 +254,7 @@ await provider.chat({ messages });
 - **工具从不重试。** 失败的 `executeTool` 变成一条 `is_error` 的 `tool_result`；要不要
   重跑是宿主的决定（见「工具重放策略（issue #139）」，那一节说的是 resume，不是重试）。
 - **轮外补全各只有一次尝试**：收尾调用（`src/loop/termination.js:234`）、收尾/`judge`
-  文本归一化器（`src/reflection/wrapup.js:132-135`）、以及 `fold-llm` 默认 summarizer
+  文本归一化器（`normalizeWrapupWithLlm`，`src/reflection/wrapup.js`）、以及 `fold-llm` 默认 summarizer
   （`finalPersistence`，`src/loop/orchestrator.js`）。它们都不消耗本预算。
 - **run 本身从不重试。** 整 run 重跑/重排队策略属于宿主（ADR-012），而
   `maxTokenContinuations`（默认 `3`）与 `finalGuardMaxRetries` 是另外的预算：前者续写被
@@ -986,6 +986,45 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
    （`budgetRounds`，`src/loop/orchestrator.js`）。
 8. **`fail()` 分类**——任何时刻抛错都会用 `aborted`（信号已置）或 `failed` /
    `persistence_failed` 替换掉上面全部（`src/loop/orchestrator.js:1055-1113`）。
+
+## Reflection 决策解析（issue #305）
+
+`parseReflectionDecision`（`src/loop/reflection.js`）把 reflection 模型的一次回答
+解析成治理器要消费的决策对象。它是**宿主可见 API**：包入口（`src/index.js`）与
+`src/loop/orchestrator.js` 都把它再导出出去，而引擎自身从不调用它。
+
+**JSON 抠取用的是顶层平衡扫描**，不是贪婪正则。扫描只有一处实现 ——
+`jsonCandidates`（`src/text/json-candidates.js`），从收尾 JSON 解析器
+（`tryParseWrapupJson`，`src/reflection/wrapup.js`）逐字提取而来，后者的行为
+一字未改 —— 于是本包里两个「模型 JSON 解析器」不再对「对象到哪里结束」各持一说。
+该扫描感知字符串与转义，**只**产括号深度归零的对象，外层未闭合的对象**一个都不产**。
+
+| 字段 | 取值 | 模型没写这个字段时 |
+|---|---|---|
+| `progress` | 来自 `progress` 的有限数 | `undefined` |
+| `stalled` | 只有字面 `stalled: true` 才是 `true` | `false` |
+| `continueFlag` | 只有字面 `continue: true` 才是 `true` | `false` |
+| `stallPattern` / `reason` / `plan` | 该字段的 `String(...)` | `""` |
+| `via` | `"json"` 或 `"prose_fallback"` | 恒在 |
+
+`via` 声明的是取值**来源**，不是 schema 结论：`"json"` 表示值来自可解析的顶层对象，
+`"prose_fallback"` 表示值来自对整段文本的关键词匹配。六个字段**全部可缺省**，
+所以 `{"progress":3}` 这样的半集是合法决策，仍走 `"json"` 路径。只有一处刻意例外：
+顶层对象解析成功却**一个都不含**
+`progress`/`stalled`/`continue`/`stallPattern`/`reason`/`plan` 时，什么都搬运不过来，
+结果按 `"prose_fallback"` 上报。
+
+修好之前用的是贪婪 `/{[\s\S]*}/`：尾话里出现一对花括号（散文里的 `{plan}` 占位符、
+```` ```json ```` 围栏后面跟一句说明、或者并列的两个顶层对象）就会抠出一坨解析不了的东西；
+`JSON.parse` 抛错，关键词兜底便在**含 JSON 自身的**整段文本上匹配 —— 于是它匹配到的是
+那些键名，把模型刚刚明确写下的布尔值静默翻了个向（`"continue": false` 回来变成
+`continueFlag: true`）。
+
+两处邻居**有意不动**：兜底路径的 `reason` 截断口径保持 `value.slice(0, 200)`
+（UTF-16 码元），尽管 `truncate`（`src/reflection/judge.js`）用 `Array.from` 按码点计数
+—— 统一它会改动宿主可见的值；轮次 judge 也保留它自己的「每个 `{` 起扫一次」
+（`src/reflection/judge.js`），外层未闭合时它返回的是内层残片。把它改成只认顶层对象
+属于行为变更，需要自己的工单。
 
 ## 可复用的归一化原语
 
