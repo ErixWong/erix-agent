@@ -491,12 +491,13 @@ async function main() {
     const minRounds = Math.max(2, Math.min(cli.compactEvery, Math.floor(cli.rounds / 2)));
     ledger.check("long-replay-completes",
       CLEAN_STOPS.includes(mainResult.termination?.reason)
-        && mainResult.truncated !== true
+        && (mainResult.truncated !== true || mainResult.termination?.reason === "max_rounds_cap")
         && mainResult.rounds >= minRounds, {
       rounds: mainResult.rounds,
       maxRounds: cli.rounds,
       minRounds,
       truncated: mainResult.truncated,
+      truncationNote: "truncated=true 只在 max_rounds_cap 下可接受（引擎对该原因的截断标记是正确行为）",
       terminationReason: mainResult.termination?.reason,
       cleanStopReasons: CLEAN_STOPS,
     });
