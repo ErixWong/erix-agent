@@ -89,10 +89,11 @@ export function engineApiContract(label, getEntry) {
       via: "json",
       candidates: ['{"done":true}'],
     });
-    // topOnly 两档：内层残片只在 false 档出现（judge 靠它保持原有语义，issue #309）
-    assert.equal(entry.parseModelJson('{"outer":{"done":true}}').ok, false);
+    // topOnly 两档：外层未闭合时，内层残片只在 false 档出现（judge 靠它保持原有语义，issue #309）
+    assert.equal(entry.parseModelJson('{"outer":{"done":true}').ok, false);
+    assert.equal(entry.parseModelJson('{"outer":{"done":true}').error, "no_candidate");
     assert.deepEqual(
-      entry.parseModelJson('{"outer":{"done":true}}', { topOnly: false }).value,
+      entry.parseModelJson('{"outer":{"done":true}', { topOnly: false }).value,
       { done: true },
     );
   });
