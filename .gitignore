@@ -6,6 +6,8 @@ logs/
 
 # 任务工作目录（实验记录、原始产物，不入库）
 docs/tasks/
+# 交付报告同样是本机档案：一旦被跟踪进仓库，报告里提到的「已登记档案裸名」就会出现在克隆里也在的文档中，改变首次出现（抢枪）裁决 ⇒ --self-test 从 3 条红变 6 条（2026-10-15 实测）。
+docs/delivery/
 
 # npm lockfile 不入库（仓库历史上没有 lockfile；加它属于另一个决定，见 issue #213）
 package-lock.json
