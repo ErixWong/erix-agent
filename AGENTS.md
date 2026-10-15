@@ -173,7 +173,11 @@ scripts/          # experiment scripts and results
   goes red — the same dual condition #286 landed in `test/static-guards.test.js`). An out-of-range line number is an
   error, not an observation. Scope is the 20 documents a host actually reads: the two READMEs, both AGENTS files, both
   contract files, plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
-  covered the moment it exists). `CHANGELOG.md` is deliberately out of scope: its line numbers record what was true at
+  covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that
+  pattern shrinks the coverage in the script **and** in the test that mirrors the same glob, so both numbers still
+  agree: `REF_SCAN_DOCS_MINIMUM = 20` is the floor (6 pinned documents + the 14 guides found today), and
+  `test/docs-anchor-ratchet.test.js` keeps its own pinned list of those 14 file names. Renaming or adding a guide is
+  red until both places are updated. `CHANGELOG.md` is deliberately out of scope: its line numbers record what was true at
   release time, and rewriting them would fake history (same reasoning as the #278 shorthand register).
   Batch T-a only builds the infrastructure and the ratchet — the 244 existing sites still have to be converted to
   symbol anchors by the follow-up batches, and *lowering* that constant (with a reason in the commit message) is what

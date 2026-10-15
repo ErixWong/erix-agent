@@ -60,6 +60,9 @@
 //                 + `docs/host-upgrade-guide*.md` 全部（按目录实扫，新指南落地即自动纳面）。
 //                 正则 `src\/[A-Za-z0-9_./-]+\.js:(\d+)(?:-(\d+))?`；工单口径实测 248 唯一区间 / 279 次出现
 //                 （跑 `--verbose` 复核，别只信注释），减去 `BARE_LINE_EXEMPTIONS` 的 4 处示例/外仓路径 ⇒ 244。
+//                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM = 20`（6 份点名 + 14 份实扫指南）：按目录实扫
+//                 意味着「把某份指南改名到不匹配模式」会让脚本与测试侧一起少一份而数字仍相等 ⇒ 静默缩面，
+//                 这条下限与测试侧硬编码的 14 份清单就是那道报警（#286 T-a 返工 R2）。
 //                 豁免是**条目 + 引用行就地声明**双条件（与 #286 已落在 `test/static-guards.test.js` 的
 //                 `LOCAL_ARCHIVE_DIRS` + `LOCAL_ARCHIVE_DECLARATION` 同口径），条目没被任何引用用到就红。
 //                 `CHANGELOG.md` **不进棘轮面**：历史条目写的是**当时**那份代码的行号，改掉等于伪造历史
@@ -1513,13 +1516,58 @@ function collectBaselineClaimErrors() {
 /** #286 T-a：覆盖面清单里被硬编码的那几份（升级指南按目录实扫，见 `refScanDocs()`）。 */
 const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT_EN, CONTRACT_CN];
 
+/** #286 返工 R2：覆盖面份数的**下限**。病根：覆盖面是「6 份硬编码 + 按 `^host-upgrade-guide.*\.md$` 实扫」，
+ *  于是有人把某份指南改名到不再匹配那个模式（或把它挪出 `docs/`），脚本与测试侧的 glob **一起少一份**，
+ *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前 14 份的清单做对照，这里再钉一道份数下限。
+ *  下限取 20（= 6 份硬编码 + 14 份指南）；新增指南让份数往上走，改名/删除想绿就必须同时动这两处。 */
+const REF_SCAN_DOCS_MINIMUM = 20;
+
+/** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟「某份指南改名到不匹配模式」。 */
+let SIM_RENAMED_GUIDE = null;
+let LAST_SCAN_DOC_COUNT = -1;   // 自测据此判断树形口子有没有真的落上（#279 的「变异没落上」同一条纪律）
+
 /** 覆盖面：宿主会读的 20 份文档 = 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部（实扫，新增指南自动纳面）。 */
 function refScanDocs() {
   const guides = readdirSync(path.join(ROOT, "docs"))
     .filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
     .map((f) => `docs/${f}`)
+    .filter((f) => f !== SIM_RENAMED_GUIDE)
     .sort();
-  return [...SYMBOL_DOCS_STATIC, ...guides];
+  const docs = [...SYMBOL_DOCS_STATIC, ...guides];
+  LAST_SCAN_DOC_COUNT = docs.length;
+  return docs;
+}
+
+/** 从脚本自身文本里读覆盖面下限（自测能调它证锁）；抽不到返 null。 */
+function refScanDocsMinimum() {
+  const rec = fileRecord("scripts/docs-drift-check.mjs");
+  const m = rec?.text.match(/^const REF_SCAN_DOCS_MINIMUM = (\d+);/m);
+  return m ? Number(m[1]) : null;
+}
+
+/** 覆盖面自己也要被看守（#286 返工 R2）：份数下限 + 清单里点名却读不到的文档。 */
+function collectRefScanCoverageErrors() {
+  const out = [];
+  const notes = [];
+  const docs = refScanDocs();
+  const minimum = refScanDocsMinimum();
+  if (minimum === null) {
+    out.push("ref-scan: 从 scripts/docs-drift-check.mjs 自己的文本里抽不到 `const REF_SCAN_DOCS_MINIMUM = <数字>;`——"
+      + "覆盖面下限被删或改了写法（#164 口径：抽不到真值就报错，不许静默放行）");
+  } else if (docs.length < minimum) {
+    out.push(`ref-scan: 「符号锚点 + 裸行号棘轮」的覆盖面只剩 ${docs.length} 份文档，低于下限 **${minimum}** 份——`
+      + `覆盖面是按 \`^host-upgrade-guide.*\.md$\` 实扫的，**把某份文档改名/移走就会静默缩面**（脚本和测试侧的 glob 一起少一份，`
+      + `两边数字仍然相等）。要么把文档改回来，要么在提交信息里写明为什么覆盖面变小并把下限改成 ${docs.length}`
+      + `（测试 test/docs-anchor-ratchet.test.js 里还硬编码了一份指南清单，两处必须一起改）`);
+  }
+  const unreadable = docs.filter((d) => fileRecord(d) === null);
+  if (unreadable.length) {
+    out.push(`ref-scan: 覆盖面清单里点名了却读不到的文档：${unreadable.join(", ")}——`
+      + `硬编码那 6 份（README/AGENTS/契约中英）被改名或删除时，检查面会静默少一份，必须同步清单`);
+  }
+  notes.push(`ref-scan: 覆盖面 ${docs.length} 份文档（6 份硬编码 + ${docs.length - SYMBOL_DOCS_STATIC.length} 份按目录实扫的升级指南），下限 ${minimum}`);
+  collectRefScanCoverageErrors.notes = notes;
+  return out;
 }
 
 /** 行内代码形态的标识符（不是路径：干掉带 `/` 与 `.` 的东西）。 */
@@ -2731,7 +2779,7 @@ const SKELETON_PAIRS = [
 function collectAllDrift() {
   const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
     ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors(),
-    ...collectSymbolAnchorErrors(), ...collectBareLineRefErrors()];
+    ...collectSymbolAnchorErrors(), ...collectBareLineRefErrors(), ...collectRefScanCoverageErrors()];
   for (const [, en, cn] of SKELETON_PAIRS) out.push(...collectSkeletonErrors(en === README_EN ? "中英 README" : "中英 AGENTS", en, cn));
   return out;
 }
@@ -2744,6 +2792,8 @@ for (const [label, en, cn] of SKELETON_PAIRS) {
 
 // ── 输出 ─────────────────────────────────────────────────────────────────────
 // ── 7. 跑清单/单位类锚点、marker 字面、棘轮当前值与 package.json 清单比对 ────────
+for (const e of collectRefScanCoverageErrors()) err(e);
+for (const n of collectRefScanCoverageErrors.notes ?? []) note(n);
 for (const e of collectSymbolAnchorErrors()) err(e);
 for (const n of collectSymbolAnchorErrors.notes ?? []) note(n);
 for (const e of collectBareLineRefErrors()) err(e);
@@ -3386,6 +3436,17 @@ const SELF_TEST_CASES = [
     overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const SYMBOL_ANCHOR_MIN_UNIQUE = 24;", "const SYMBOL_ANCHOR_MIN_UNIQUE = 25;") },
     expect: [/唯一 \(符号, 文件\) 只剩 24 组，低于下限 \*\*25\*\* 组/],
   },
+
+  // —— 返工 R2（评审阻断项）：覆盖面会因为改名而**静默缩面**。脚本按
+  // `^host-upgrade-guide.*\.md$` 实扫、测试侧用同一个 glob ⇒ 改一份名字就两边一起少一份，照样绿。
+  // 树形口子 `SIM_RENAMED_GUIDE` 只影响清单、不动任何文本（与 #280 的 SIM_ABSENT_TASK_ARCHIVE 同款纪律，
+  // 并且同样要证「口子真的落上了」，见 runSelfTest 里的覆盖面份数比对）。
+  {
+    label: "#286 返工 R2：模拟一份升级指南改名到不匹配实扫模式 ⇒ 覆盖面 19 < 20 必须红（改名 = 静默缩面，两边 glob 一起少）",
+    simulateRenamedGuide: "docs/host-upgrade-guide-0.16.0.md",
+    expect: [/ref-scan: 「符号锚点 \+ 裸行号棘轮」的覆盖面只剩 19 份文档，低于下限 \*\*20\*\* 份/,
+      /静默缩面/, /test\/docs-anchor-ratchet\.test\.js/],
+  },
 ];
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
@@ -3452,15 +3513,23 @@ function runSelfTest() {
     // 树形用 SIM_ABSENT_TASK_ARCHIVE 这个口子模拟（只影响实物清单，声明一侧一律不动），跑完必须还原。
     const simSaved = SIM_ABSENT_TASK_ARCHIVE;
     SIM_ABSENT_TASK_ARCHIVE = !!c.simulateAbsentTaskArchive;
+    const guideSaved = SIM_RENAMED_GUIDE;                       // #286 返工 R2：覆盖面缩面的树形口子
+    SIM_RENAMED_GUIDE = c.simulateRenamedGuide ?? null;
+    const scanCountBefore = LAST_SCAN_DOC_COUNT;
     let errs = [];
     let simDropped = -1;
     try {
       errs = run();
       simDropped = LAST_IGN ? repoFiles(LAST_IGN).simDropped : 0;
-    } finally { SIM_ABSENT_TASK_ARCHIVE = simSaved; OVERLAY.clear(); }
+    } finally { SIM_ABSENT_TASK_ARCHIVE = simSaved; SIM_RENAMED_GUIDE = guideSaved; OVERLAY.clear(); }
     // #279 的教训：「变异没落上」的空跑会交出一条假的绿。树形口子也一样——本机确实有任务档案实物、
     // 却一个都没从清单里摘掉，就是 SIM_ABSENT_TASK_ARCHIVE 没接进 repoFiles。本机本来就没那个目录
     // （在全新 clone 里跑自测）时这一例退化成对照，不算失败。
+    // #286 返工 R2：树形口子也要证「真的落上了」——说要模拟一份指南改名，覆盖面份数却没变就是没接进 refScanDocs。
+    if (c.simulateRenamedGuide && LAST_SCAN_DOC_COUNT > 0 && LAST_SCAN_DOC_COUNT === scanCountBefore) {
+      failures.push(`${c.label}：覆盖面树形口子没落上（说要模拟 \`c.simulateRenamedGuide\` 改名，但 refScanDocs() 的份数没变）`);
+      continue;
+    }
     if (c.simulateAbsentTaskArchive && LAST_IGN && taskArchiveDirPresent(LAST_IGN) && simDropped === 0) {
       failures.push(`${c.label}：树形口子没落上（说要模拟「没有 docs/tasks/」，但实物清单一条都没摘掉）`);
       continue;
