@@ -1083,7 +1083,14 @@ async function main() {
           : {}),
       });
       // 非抛分支也带上**真实**的 abortedAtRound（外层变量）；null 就是没触发，不兑底。
-      abortInfo = { threw: false, termination: res.termination, rounds: res.rounds, abortedAtRound };
+      abortInfo = {
+        threw: false,
+        termination: res.termination,
+        rounds: res.rounds,
+        usage: res.usage,
+        // 真实的中止轮号（外层变量）；null 就是没触发，**不拿 cli.abortAt 兑底**。
+        abortedAtRound,
+      };
     } catch (error) {
       abortInfo = {
         threw: true,
@@ -1092,6 +1099,7 @@ async function main() {
         hasRounds: error?.termination?.rounds !== undefined,
         partial: error?.termination?.partial,
         rounds: error?.termination?.rounds,
+        usage: error?.termination?.usage,
         message: String(error?.message ?? error),
         code: error?.code,
         abortedAtRound,
@@ -1237,7 +1245,7 @@ async function main() {
     const specialWithSuccessFact = specialBlocks
       .filter(({ block }) => Object.hasOwn(block?.erix ?? {}, "success"));
     // 确定性场景（工单 #290 返工「无样本别当通过」）：`stale_attempt_result` 这个值**仓里 grep 不到**
-    // （src/ 只写 interrupted/intercepted），而 fake 的 abort 落在轮间、根本没有在飞调用，
+    // （src/ 只写 interrupted/intercepted），而 fake 的 abort 落在 tool_result 之后、根本没有在飞调用，
     // 所以旧断言的样本数永远 = 0——它是结构性空跑。这里另搭一个同构的确定性场景，
     // **读取面用仓里真代码**（judge.buildTimeline / l0.extractL0Facts，两边都从 src/index.js 导出），
     // 并带一个正控制样本：同样形状换成普通成功块时必须读成 ok——读面如果是死的，本断言就红。
@@ -1304,7 +1312,8 @@ async function main() {
     whitelistedSamples: whitelistedRejections.slice(0, 3),
     whitelist: "KitError 且 code===\"aborted\"（src/providers/errors.js:174 的分类路径产出）；"
       + "其余一律算阻断性 soak 缺陷（以前一律 blocking:false，会把脚本自己的 bug 全吞掉）",
-    fakeCoverageLimit: "fake 不产生 in-flight 网络拒绝（假上游同步返回、abort 落在轮间），"
+    fakeCoverageLimit: "fake 不产生 in-flight 网络拒绝（假上游同步返回，abort 落在 tool_result 之后、"
+      + "没有在飞请求），"
       + "所以本条在 fake 路径下近乎恒真；真实覆盖靠 --provider real 的长跑（带 abort-at）。",
   });
   if (whitelistedRejections.length > 0) {
@@ -1356,7 +1365,13 @@ async function main() {
   }
 
   // ---------- 报告
-  const usage = sumUsage([mainResult, resumeInfo?.usage ? { usage: resumeInfo.usage } : null]);
+  // 用量口径：abort 阶段的 run 也真的烧过 token（issue #180：aborted 的终局带 usage），
+  // 只加 main+resume 会让「主 run 提前失败 + abort 真的跑过」的真机报告报成 0/0。
+  const usage = sumUsage([
+    mainResult,
+    abortInfo?.usage ? { usage: abortInfo.usage } : null,
+    resumeInfo?.usage ? { usage: resumeInfo.usage } : null,
+  ]);
   const failing = ledger.assertions.filter((a) => !a.pass && a.blocking);
   const cleanupStore = usedTempStore && !cli.keepStore;
   const report = {
@@ -1370,6 +1385,11 @@ async function main() {
     provider: cli.provider,
     rounds: mainResult?.rounds ?? 0,
     usage,
+    usageParts: {
+      main: mainResult?.usage ?? null,
+      abort: abortInfo?.usage ?? null,
+      resume: resumeInfo?.usage ?? null,
+    },
     compactions: {
       compactionStats: mainResult?.compactionStats ?? [],
       compactionEvents: counter.compactions,
