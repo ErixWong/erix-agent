@@ -3,6 +3,11 @@
 //
 //   ERIX_E2E_REAL=1 npm run check:cli-real
 //
+//   ERIX_E2E_REAL=1 node scripts/cli-real-smoke.mjs --dry
+//     ↑ 只跑「真实 HOME / 选中配置」的污染对账（C8），不打包、不安装、不打模型。
+//       C8 有「默认路径」与「ERIX_E2E_CONFIG 覆盖」两个分支，`--dry` 就是让这两个分支能就地自证；
+//       **它不是发版门禁的跑法**（C1–C7 未跑），发版前复验仍走上面那条。
+//
 // 为什么还要这一条：`check:release` 的第 5 步（CLI 冒烟）打的是**本地假上游**，
 // 它证明的是「装好的包能跑通一次退出码/归档」，不证明「装好的包在真服务端 + 真模型
 // 的分片行为下仍然如此」。真 relay 的分片、真工具执行、真轮数节奏只有真上游能给
@@ -32,7 +37,9 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { fakeHomeEnv, writeConfigHome } from "../fixtures/config-shape.mjs";
-import { formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX } from "../examples/e2e-real-gate.mjs";
+import {
+  CONFIG_PATH_ENV, defaultConfigPath, formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX,
+} from "../examples/e2e-real-gate.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -51,6 +58,18 @@ const SLOT_KEYS_TO_COPY = [
 ];
 /** 终稿里必须出现的固定标记（证明真上游回了我们要求的内容，而不是只跑了个流程）。 */
 const MARKER = "T5-CLI-REAL-SMOKE-OK";
+/** `hashFileIfExists()` 对「文件不存在」的稳定编码（跟真实哈希同样是字符串，便于直接比）。 */
+const ABSENT = "（不存在）";
+/**
+ * `--dry`：闸门判 ok 后**不打包、不安装、不打模型**，只跑污染对账那一条（C8）。
+ *
+ * 为什么要有：C8 分「默认路径」与「`ERIX_E2E_CONFIG` 指到外部配置」两个分支，而只提供自定义
+ * 配置的环境（CI）里默认路径根本不存在——要验这个分支只能整条真跑（几分钟 + 真金）就没人会验。
+ * `--dry` 把「污染对账逻辑」与「CLI 真跑」解耦，让 C8 能就地自证（凭据可以是假的：一条请求也
+ * 不发，只探一次 TCP）。真跑路径（不带 `--dry`）行为一字不变；**`--dry` 不是发版门禁的跑法**
+ * （C1–C7 未跑）。
+ */
+const DRY_RUN = process.argv.slice(2).includes("--dry");
 
 const tmpRoot = mkdtempSync(join(tmpdir(), TMP_PREFIX.cliReal));
 const realHome = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
@@ -122,7 +141,7 @@ function snapshotDir(dir) {
 }
 
 function hashFileIfExists(file) {
-  return existsSync(file) ? createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 16) : "（不存在）";
+  return existsSync(file) ? createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 16) : ABSENT;
 }
 
 function listGeneratedDeclarations() {
@@ -167,6 +186,44 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+/**
+ * C8：真实 `~` 没被污染——对账的靶子必须是**闸门实际选中的那份配置**（PR #289 阻断 2）。
+ *
+ * 修前无条件要求真实 `~/.erix/config.json` 存在且哈希不变，但闸门支持 `ERIX_E2E_CONFIG` 把
+ * 配置指到外部（`examples/e2e-real-gate.mjs#defaultConfigPath`）⇒ 「只带一份自定义配置的 CI」
+ * 即使 CLI 真跑成功也会被判红。现在的口径：
+ * - 选中的配置（默认路径或被 `ERIX_E2E_CONFIG` 覆盖后的路径）：开跑前读得到 + 跑完哈希一致；
+ * - 用了覆盖时，默认路径**存在才**参与哈希对账（不存在不是失败，只是没东西可对）；
+ * - `~/.npmrc` 恒做哈希对账（子 npm 本可默认读它，与配置来源无关）。
+ * 断言文案里一律点名对的是哪个文件。
+ *
+ * @param {{ selectedConfigPath: string, selectedConfigBefore: string,
+ *   defaultConfig: string, usesConfigOverride: boolean }} target
+ */
+function checkHomePollution(target) {
+  const { selectedConfigPath, selectedConfigBefore, defaultConfig, usesConfigOverride } = target;
+  const source = usesConfigOverride
+    ? `${CONFIG_PATH_ENV} 指定的 ${selectedConfigPath}`
+    : `默认路径 ${selectedConfigPath}`;
+  check(`C8 真实 ~/.npmrc 与闸门选中的配置（${source}）前后一致（本脚本只碰临时目录）`, () => {
+    assert(hashFileIfExists(join(realHome, ".npmrc")) === npmrcBefore,
+      `~/.npmrc 内容变了（${npmrcBefore} → ${hashFileIfExists(join(realHome, ".npmrc"))}）`);
+    assert(selectedConfigBefore !== ABSENT,
+      `闸门选中的配置 ${selectedConfigPath} 开跑前就读不到——闸门 ok 与污染对账两边对不上`);
+    assert(hashFileIfExists(selectedConfigPath) === selectedConfigBefore,
+      `闸门选中的配置 ${selectedConfigPath} 被改写了`
+      + `（${selectedConfigBefore} → ${hashFileIfExists(selectedConfigPath)}）`);
+    if (usesConfigOverride && existsSync(defaultConfig)) {
+      assert(hashFileIfExists(defaultConfig) === erixConfigBefore,
+        `用了 ${CONFIG_PATH_ENV}，但默认配置 ${defaultConfig} 也被改写了`
+        + `（${erixConfigBefore} → ${hashFileIfExists(defaultConfig)}）`);
+    }
+  }, `覆盖=${usesConfigOverride ? "是" : "否"}`
+    + `｜选中=${selectedConfigPath}｜默认=${defaultConfig}`
+    + `${usesConfigOverride && !existsSync(defaultConfig) ? "（默认路径不存在，不参与对账）" : ""}`
+    + `｜~/.erix 快照：前=${erixDirBefore} 后=${snapshotDir(join(realHome, ".erix"))}`);
+}
+
 function assertDeepEqual(actual, expected, message) {
   const a = JSON.stringify(actual);
   const b = JSON.stringify(expected);
@@ -203,6 +260,33 @@ async function main() {
     return;
   }
   log(`闸门开：model=${gate.model} endpoint=${printableEndpoint(gate.endpoint)}`);
+
+  // 污染对账的靶子 = 闸门**实际选中**的那份配置（`ERIX_E2E_CONFIG` 可以把它指到仓外）。
+  // 基线必须在任何子进程（npm / CLI）起跑前取。
+  // 「默认路径」要拿**没有覆盖时的 env** 去问闸门（`defaultConfigPath` 自己就读 `ERIX_E2E_CONFIG`，
+  // 直接把 process.env 喂进去会得到「选中 == 默认」的假结论，覆盖分支永远走不到）。
+  const envWithoutOverride = { ...process.env };
+  delete envWithoutOverride[CONFIG_PATH_ENV];
+  const defaultConfig = defaultConfigPath({ env: envWithoutOverride, home: homedir() });
+  const pollutionTarget = {
+    selectedConfigPath: gate.configPath,
+    selectedConfigBefore: hashFileIfExists(gate.configPath),
+    defaultConfig,
+    usesConfigOverride: resolve(gate.configPath) !== resolve(defaultConfig),
+  };
+  log(`配置对账目标：${pollutionTarget.selectedConfigPath}（${pollutionTarget.usesConfigOverride
+    ? `${CONFIG_PATH_ENV} 覆盖，默认路径 ${defaultConfig}`
+    : "默认路径"}）`);
+
+  if (DRY_RUN) {
+    // 只跑污染对账：不 pack、不装、不打模型（一条请求也不发）。详见 `DRY_RUN` 的注释。
+    checkHomePollution(pollutionTarget);
+    notes.push("--dry：C1–C7 未跑（没打包、没安装、没打真上游），只验了 C8 的两个分支");
+    for (const note of notes) log(`备注：${note}`);
+    assertDeepEqual(failures, [], `失败的断言：${failures.join(", ")}`);
+    log(`--dry 全绿：C8 在对账目标 ${pollutionTarget.selectedConfigPath} 上通过`);
+    return;
+  }
 
   const npmEnv = childEnv({
     extra: {
@@ -358,22 +442,16 @@ async function main() {
     JSON.stringify(calls.map((call) => call.durationMs)));
   }, JSON.stringify(calls.map((call) => ({ k: call.toolCallKey, d: call.durationMs, n: call.name }))));
 
-  // ⑧ 真实 HOME 没被污染
+  // ⑧ 真实 HOME 没被污染（对账对象 = **闸门实际选中的那份配置**，PR #289 阻断 2）
   //
   // 与 `scripts/release-check.mjs` 的一个**有意识差异**：那边整棵 `~/.erix` 前后快照必须逐字相等。
   // 本单跑在开发者机器上，同时可能有其它 session 在往 `~/.erix/transcripts` 写东西（那些写入与本脚本无关，
   // 把它们算成本脚本的污染就是假红）。所以硬断言盯的是**本脚本能碰到的两个文件**：
-  // `~/.npmrc`（子 npm 本可默认读它）与 `~/.erix/config.json`（真配置本身）；整棵目录树的前后快照
-  // 作为备注输出，变了但非本脚本所为时可以人工判定。本脚本的子进程 HOME 全部指临时假 HOME，
-  // 不存在能写真实 `~/.erix` 的路径。
-  check("C8 真实 ~/.npmrc 与 ~/.erix/config.json 前后一致（本脚本只碰临时目录）", () => {
-    assert(hashFileIfExists(join(realHome, ".npmrc")) === npmrcBefore,
-      `~/.npmrc 内容变了（${npmrcBefore} → ${hashFileIfExists(join(realHome, ".npmrc"))}）`);
-    assert(hashFileIfExists(join(realHome, ".erix", "config.json")) === erixConfigBefore,
-      "真配置 ~/.erix/config.json 被改写了");
-    assert(hashFileIfExists(join(realHome, ".erix", "config.json")) !== "（不存在）",
-      "真配置本应在（不在就说明闸门与配置解析两边对不上）");
-  }, `~/.erix 快照：前=${erixDirBefore} 后=${snapshotDir(join(realHome, ".erix"))}`);
+  // `~/.npmrc`（子 npm 本可默认读它）与**闸门选中的那份配置**（默认路径，或 `ERIX_E2E_CONFIG` 指定的
+  // 外部文件：以前这里硬要求 `~/.erix/config.json` 存在，只给自定义配置的 CI 会假红）；整棵目录树的
+  // 前后快照作为备注输出，变了但非本脚本所为时可以人工判定。本脚本的子进程 HOME 全部指临时假 HOME，
+  // 不存在能写真实 `~/.erix` 的路径。分支细则见 `checkHomePollution()`。
+  checkHomePollution(pollutionTarget);
 
   for (const note of notes) log(`备注：${note}`);
   assertDeepEqual(failures, [], `失败的断言：${failures.join(", ")}`);
