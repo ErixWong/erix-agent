@@ -50,7 +50,7 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 24`（现测唯一 (符号, 文件) 组数）：
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 42`（现测唯一 (符号, 文件) 组数）：
 //                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
@@ -1925,8 +1925,12 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`
  *  （`src/compact/fold-statistical.js`），并把「轮次 judge 保留自己的扫描」那句已经腐烂的引用改成
  *  指向 `parseJudgeDecision`（`src/reflection/judge.js`）——`--verbose` 实测 32 组 / 70 处。
+ *  #313（工单 261016-313-obs）在契约中英新增「erix_run 终局面」一节，带进 10 组新锚点：
+ *  `--verbose` 实测 **42 组 / 91 处**（契约 EN 45 / CN 44 + 两份 0.19 指南各 1），于是下限升到 42
+ *  （不升就是**假绿**：#286 返工 R1 的两例自测会因「实测 ≫ 下限」而 fail-open，干净 clone 的
+ *  红集从预期的 3 例变成 5 例）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 32;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 42;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
