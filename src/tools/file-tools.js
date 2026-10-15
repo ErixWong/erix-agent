@@ -1723,10 +1723,17 @@ export function createFileTools({
 }
 
 /**
- * issue #220 返回形态判别式；表与语义见宿主契约。
+ * issue #220 返回形态判别式；表与语义见宿主契约。返回类型是**按 `kind` 关联的判别联合**，
+ * 而不是一支 `kind` 为宽 union 的对象：后者会让 `bytes` 在任何一支都是 `number | undefined`，
+ * 宿主在 `kind === "bytes"` 里仍得自己断言。各支的存在性与下方实现逐字对应，纯类型注释。
  * @typedef {"text" | "bytes" | "content-metadata" | "unknown"} FileToolResultKind
+ * @typedef {{kind:"text", text:string, bytes:undefined, metadata:undefined}} FileToolTextResult
+ * @typedef {{kind:"bytes", text:string, bytes:number, metadata:undefined}} FileToolBytesResult
+ * @typedef {{kind:"content-metadata", text:string, bytes:undefined, metadata?:object}} FileToolContentMetadataResult
+ * @typedef {{kind:"unknown", text:string, bytes:undefined, metadata:undefined}} FileToolUnknownResult
+ * @typedef {FileToolTextResult|FileToolBytesResult|FileToolContentMetadataResult|FileToolUnknownResult} FileToolResult
  * @param {unknown} value
- * @returns {{ kind: FileToolResultKind, text: string, bytes: number | undefined, metadata: object | undefined }}
+ * @returns {FileToolResult}
  */
 export function classifyFileToolResult(value) {
   const none = { bytes: undefined, metadata: undefined };

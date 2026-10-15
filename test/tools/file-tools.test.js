@@ -537,7 +537,13 @@ const READ_LINE_CAPACITY_ROLES = [
   { role: "fewest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   { role: "median", file: "src/loop/termination.js", recorded: { bytes: 11_471, lines: 319, bytesPerLine: 35.9592, capacity: 7_290, cjkShare: 0.0902 } },
   { role: "most", file: "bin/guard-metrics.js", recorded: { bytes: 456, lines: 17, bytesPerLine: 26.8235, capacity: 9_772, cjkShare: 0 } },
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 89_537, lines: 1_718, bytesPerLine: 52.117, capacity: 5_029, cjkShare: 0.2492 } },
+  // self 这一行在 PR #291 返工（必修 4）里重测过：`classifyFileToolResult` 的 JSDoc 改成按 `kind`
+  // 关联的判别联合（工单明说改它的 JSDoc 是允许的，生成的 `.d.ts` 里 `kind:"bytes"` 那一支的
+  // `bytes` 必须是 `number`），而本行原本记录的 89,537 字节与当时 1,718 行已经被此前几个单
+  // 顶到 ±2% 限的内侧只剩 11 字节——任何一次注释改动都会报「事实漂移」。按本测试自己给的
+  // 口径（`measureReadLineCapacity`）复测后更新；readFile 描述里点名的 `5,029` 仍在 ±1% 容差内，
+  // 未动模型可见面。
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 92_060, lines: 1_753, bytesPerLine: 52.516, capacity: 4_991, cjkShare: 0.2488 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];
