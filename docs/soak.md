@@ -59,7 +59,8 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
   两个转换器本身不校验配对，「转换没抛错」是空断言。
 - **abort**：先查**脚本自己有没有真的中止过**（`abort-actually-fired`，阻断项），再让引擎断言说话。
   - 触发点：默认在第 `min(ceil(rounds/2), 3)` 个**已落地的 `tool_result` 事件**之后立刻 abort；
-    显式 `--abort-at n` 则改回**第 n 轮**触发（轮数语义）。理由：真模型会在任意早的轮次自然
+    显式 `--abort-at n` 则改回**第 n 轮**触发（轮数语义；`n >= rounds` 照跑，不再静默当成「跳过」，
+    只有 `--abort-at 0` 才是跳过）。理由：真模型会在任意早的轮次自然
     `end_turn` / `judge_done`，按轮次触发永远可能扑空（实测 `--rounds 200 --abort-at 100` 的 run 第 7 轮就收口）。
   - `abort-termination-reason-is-aborted`（非阻断，已知缺陷 #282）与 `abort-error-carries-usage-rounds-partial`
     （阻断）**只在真的触发过时才判**；没触发时两条都报 `coverage: "not-exercised"` 并计入非阻断观察——
@@ -67,7 +68,9 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
     没触发的**根因**另写进 `unfiredDiagnosis`：触发点没踩到（脚本配置）还是上游在触发点之前就报错收口
     （本阶段本次没被覆盖，附 `upstreamMessage` / `upstreamCode`）——后者不该让人误读成「soak 又扑空了」。
   - 触发过之后：必须抛标准错误（`termination.reason === "aborted"` 且带 `usage`/`rounds`/`partial`）；
-    实际观察到的终局 `reason` 另记进 `abortObservedReason`（issue #282 的第一手数据）。
+    实际观察到的终局 `reason` 另记进 `abortObservedReason`（issue #282 的第一手数据）。abort 阶段真的烧过的
+    token 进 `usageParts.abort` 并计入报告总额（issue #180：aborted 的终局就带用量）——否则主 run
+    提前失败时，真机报告会谎报 0/0。
   - **`issue282Rewritten` 是需要 abort 真触发才成立的结论**：只有 `abortFired === true` 且观察到的终局
     `reason === "judge_done"` 时才允许为 `true`（字段面：`abortStage.{abortFired,abortedAtRound,naturalTermination,coverage}`，
     `coverage` 取 `abort-fired` / `not-exercised` / `stage-skipped`）。旧版非抛分支不带 `abortedAtRound`、
