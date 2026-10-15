@@ -485,11 +485,20 @@ async function main() {
       termination: mainError?.termination,
     });
   } else {
-    ledger.check("long-replay-completes", mainResult.rounds === cli.rounds, {
+    // 真模型**可以提前宣告完成**（end_turn / judge_done）——那不是缺陷。判据应是「干净收口 + 轮数够逼出压缩」，
+    // 不是「轮数必须等于 --rounds」（只有假上游会跑满；前一版把真模型的正常提前收尾判成了红）。
+    const CLEAN_STOPS = ["end_turn", "judge_done", "max_rounds_cap", "no_tool"];
+    const minRounds = Math.max(2, Math.min(cli.compactEvery, Math.floor(cli.rounds / 2)));
+    ledger.check("long-replay-completes",
+      CLEAN_STOPS.includes(mainResult.termination?.reason)
+        && mainResult.truncated !== true
+        && mainResult.rounds >= minRounds, {
       rounds: mainResult.rounds,
-      expected: cli.rounds,
+      maxRounds: cli.rounds,
+      minRounds,
       truncated: mainResult.truncated,
       terminationReason: mainResult.termination?.reason,
+      cleanStopReasons: CLEAN_STOPS,
     });
   }
   const observedCompactions = mainResult?.compactionStats?.filter((s) => s.compacted)?.length ?? 0;
