@@ -150,7 +150,7 @@ scripts/          # 实验脚本和结果
 - `repository.url` 使用 `git+https://...` 格式（或运行 `npm pkg fix`）。
 - 类型面（issue #213）：顶层 `types` 指向 `./src/index.d.ts`，`exports["."]` 与 `exports["./tools"]` 各带对应的 `types` 条件；
   `exports["./contract-tests"]` **刻意不带** `types`（其目标在 `test/` 下，不在声明依赖图里）。声明由 `prepack` 钩子生成，
-  因此干净检出里一个 `.d.ts` 都没有——`npm publish --dry-run` 应列出 **65** 个 `.d.ts`（2026-10-15 在 #292 之后的干净树上实测：
+  因此干净检出里一个 `.d.ts` 都没有——`npm publish --dry-run` 应列出 **66** 个 `.d.ts`（2026-10-15 在 #292 之后的干净树上实测：
   `npm pack --dry-run --json` 列出整整 65 个；历史值：0.20.0 的 tarball 是 64 个、0.19.0 时代是 63 个；打包体积 +约 44 kB、
   解包 +约 139 kB，是 0.18.0 上实测的）；`npm run check:types-build` 就是「还能不能生成」的门禁。
 - 当前版本：`0.20.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
