@@ -7,6 +7,7 @@ import { makeTmp } from "./helpers/tmp.js";
 
 import {
   buildCliToolsSystemPrompt,
+  CLI_TOOL_PROMPT_PHRASES,
   CLI_TOOLS_SYSTEM_PROMPT,
   createCliTools,
   getCommandTimeoutMs,
@@ -66,34 +67,41 @@ test("buildCliToolsSystemPrompt({ todo: false }) removes all todo mentions (issu
   assert.match(disabled, /note_take/u);
   // 默认路径与导出常量逐字节一致（golden 锁定）
   assert.equal(buildCliToolsSystemPrompt(), CLI_TOOLS_SYSTEM_PROMPT);
-  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /todo_add 添加待办任务/u);
+  assert.ok(CLI_TOOLS_SYSTEM_PROMPT.includes(CLI_TOOL_PROMPT_PHRASES.todo_add.phrase));
 });
 
 test("默认跳 vendor + 开关名写进了系统提示（#184：「告诉模型」是本轮核心要求）", () => {
+  // issue #312(b) R4：工具名文案不再在此处**第四次手抄**（以前把提示词短语重抄一遗：
+  // 删一个工具不会红，因为这里抄的那份还在）。现在一律从 `CLI_TOOL_PROMPT_PHRASES` 取原文：
+  // 这里只验「表里的原句逐字进了提示词」+「表本身口径没跑偏」，不再养第二份文案。
+  const phrase = (name) => CLI_TOOL_PROMPT_PHRASES[name].phrase;
+  const deprecatedNames = Object.keys(CLI_TOOL_PROMPT_PHRASES)
+    .filter((name) => CLI_TOOL_PROMPT_PHRASES[name].phrase.includes("已弃用，请改用 searchText 并显式传 mode"));
   for (const prompt of [CLI_TOOLS_SYSTEM_PROMPT, buildCliToolsSystemPrompt({ todo: false })]) {
     assert.match(prompt, /默认跳过 node_modules、dist、build、target、vendor/u);
     assert.match(prompt, /\. 开头的目录/u);
     assert.match(prompt, /include_vendor=true、include_hidden=true/u);
     assert.match(prompt, /结果尾部会回报跳过数量/u);
-    // rg 的默认口径也必须让模型知道：正则默认（与真实 rg 一致）+ 字面量逃生口的真实旗标名
-    assert.match(prompt, /默认按正则匹配，与 rg 命令一致/u);
-    assert.match(prompt, /is_regex=false 按字面量匹配，等价 rg --fixed-strings/u);
-    assert.match(prompt, /grep 递归搜索文件内容（默认正则，等价 grep -E；传 is_regex=false 按字面量，等价 grep -F/u);
+    // 清单行里的工具文案：表 ⇄ 提示词逐字对齐（rg/grep/searchText 是 #184/#195 改过的重点）
+    for (const name of ["readFile", "searchText", "rg", "grep", "tree", "edit", "writeFile", "exec"]) {
+      assert.ok(prompt.includes(phrase(name)), `清单行少了 ${name} 的文案（或表与提示词已不同源）`);
+    }
+    // rg/grep 的默认口径不得跑回旧世界（正则默认 vs 字面量逃生口都是模型要会用的旗标）
+    assert.match(phrase("rg"), /默认按正则匹配，与 rg 命令一致/u);
+    assert.match(phrase("rg"), /is_regex=false 按字面量匹配，等价 rg --fixed-strings/u);
+    assert.match(phrase("grep"), /默认正则，等价 grep -E；传 is_regex=false 按字面量，等价 grep -F/u);
     // 旧的「默认字面量」口径不得复活（模型读到旧口径就等于本轮白做）
     assert.doesNotMatch(prompt, /默认按字面量/u);
-    // issue #195：新入口与它的两个「已弃用」别名都必须让模型在清单行里读到（不是藏在描述里）
-    assert.match(prompt, /searchText 搜索文本文件/u);
-    assert.match(prompt, /mode 必填、无默认值：literal 按字面量、regex 按 JavaScript 正则/u);
-    assert.match(prompt, /name_pattern 只匹配文件名、不跨 \//u);
-    // 两个别名各挂一次弃用口径（rg 与 grep 都在清单行里点名继任入口）
-    assert.equal(
-      (prompt.match(/已弃用，请改用 searchText 并显式传 mode/g) ?? []).length,
-      2,
-      "rg 与 grep 都必须在工具清单行里被标为已弃用",
-    );
-    assert.match(prompt, /rg 递归搜索文本文件（[^；]*默认按正则匹配/u);
-    assert.match(prompt, /glob 文件名过滤（只匹配文件名、不跨 \//u);
+    // issue #195：新入口与它的两个「已弃用」别名都必须在清单行里（不是藏在描述里）
+    assert.match(phrase("searchText"), /mode 必填、无默认值：literal 按字面量、regex 按 JavaScript 正则/u);
+    assert.match(phrase("searchText"), /name_pattern 只匹配文件名、不跨 \//u);
+    assert.deepEqual(deprecatedNames, ["rg", "grep"], "被标弃用的应当只有 rg 与 grep");
+    assert.match(phrase("grep"), /glob 文件名过滤（只匹配文件名、不跨 \//u);
   }
+  // todo 段的工具后缀只在 todo=true 里出现（#69），并且也从表里取，不在此处重抄
+  assert.ok(CLI_TOOLS_SYSTEM_PROMPT.includes(phrase("todo_add")));
+  assert.ok(CLI_TOOLS_SYSTEM_PROMPT.includes(phrase("todo_clear")));
+  assert.doesNotMatch(buildCliToolsSystemPrompt({ todo: false }), /todo_add 添加待办任务/u);
 });
 
 test("searchText 的 {content, metadata} 结果在 CLI 回显里看得见（#195）", async () => {

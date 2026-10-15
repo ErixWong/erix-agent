@@ -289,7 +289,6 @@ function assertPromptPhraseTableMatches(names, { phrases = CLI_TOOL_PROMPT_PHRAS
 
 /** 工具清单行：遍历注册面顺序，按分段样式取短语拼接，以「。」收尾（基础段自身是完整句子，issue #69）。 */
 function buildCliToolsToolListLine(names, { phrases = CLI_TOOL_PROMPT_PHRASES, fullNames = names } = {}) {
-  assertPromptPhraseTableMatches(names, { phrases, fullNames });
   const segments = [];
   let current = null;
   for (const name of names) {
@@ -370,13 +369,27 @@ export function filterToolsByAllowlist(tools, allowlist, { onUnknown } = {}) {
   return filtered;
 }
 
-export function buildCliToolsSystemPrompt({ todo = true } = {}) {
+/**
+ * 拼 CLI 系统提示（工具清单行由注册面生成，其余段落是固定文案）。
+ *
+ * @param {string[]} [input.names] 注册面上的工具名（缺省用真注册面）；测试拿它做变异反证而不动源码。
+ * @param {object} [input.phrases] 短语表（缺省 `CLI_TOOL_PROMPT_PHRASES`）。
+ * @param {string[]} [input.fullNames] 「陈旧」核对的基准集（缺省 = todo=true 的全量注册面）。
+ */
+export function buildCliToolsSystemPrompt({
+  todo = true,
+  names,
+  phrases = CLI_TOOL_PROMPT_PHRASES,
+  fullNames,
+} = {}) {
   // ADR-015：ResourceStore 退出模型视野——所有宿主形态同一份提示词，不提 opaque 工件/路径。
   // issue #69：todo=false 时拼接无 todo 段的基础提示（--no-todo / ERIX_NO_TODO）。
   // issue #312(b) R2：清单行由注册面生成（不再手抄），其余段落照旧拼接，输出逐字节不变。
   const todoEnabled = todo !== false;
-  const list = buildCliToolsToolListLine(todoEnabled ? CLI_TOOL_NAMES : CLI_TOOL_NAMES_NO_TODO,
-    { fullNames: CLI_TOOL_NAMES });
+  const effectiveNames = names ?? (todoEnabled ? CLI_TOOL_NAMES : CLI_TOOL_NAMES_NO_TODO);
+  const effectiveFull = fullNames ?? (names ?? CLI_TOOL_NAMES);
+  assertPromptPhraseTableMatches(effectiveNames, { phrases, fullNames: effectiveFull });
+  const list = buildCliToolsToolListLine(effectiveNames, { phrases, fullNames: effectiveFull });
   return list
     + CLI_TOOLS_SYSTEM_PROMPT_VENDOR
     + "。"
@@ -384,6 +397,8 @@ export function buildCliToolsSystemPrompt({ todo = true } = {}) {
     + (todoEnabled ? CLI_TOOLS_SYSTEM_PROMPT_TODO_DISCIPLINE : "")
     + CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL;
 }
+
+export { assertPromptPhraseTableMatches };
 
 export function buildArchiveNotice(archiveDir) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
