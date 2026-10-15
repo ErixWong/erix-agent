@@ -169,11 +169,31 @@ npx tsc --noEmit --skipLibCheck --listFiles | grep -c 'erix-agent/.*\.d\.ts'
 - [ ] TS host compiled before and after; each new error was read as a call-site bug, not squashed.
 - [ ] `--skipLibCheck` is still on.
 
-## 6. Everything else folded into 0.19.0 on 2026-10-13 — **no host action**
+## 6. Everything else folded into 0.19.0 on 2026-10-13 — **no call-site change**, but two host-observable strings
 
 This release was cut on 2026-10-12 but never published; a further 16 changes landed on
-2026-10-13 and were folded into the same version instead of opening 0.20.0. **All of them
-are additive or internal fixes: nothing here requires a call-site change.**
+2026-10-13 and were folded into the same version instead of opening 0.20.0. **None of them
+requires a call-site change.** Two of them, however, are **observable** by a host that pins
+strings or comments byte-for-byte — this section used to file them under "no host action",
+which was too optimistic (issue #293, reported by a host that spent time ruling them out as
+regressions):
+
+- **The `readFile` continuation marker gained the file size.** `readFile`（`src/tools/file-tools.js`）
+  now answers `[共 3 行（文件 9B），剩余 K 行；…]` where it used to answer
+  `[共 3 行，剩余 K 行；…]`. Semantics unchanged; the **text** changed, and this text is sent to
+  the model. If your host pins this marker verbatim (outside `TOOL_RESULT_CONTRACT`, this is
+  practically the only other string surface hosts pin), that assertion goes red — fix the
+  expected string, do not relax the assertion.
+- **The JSDoc typedef of `runToolLoop`'s return value moved from one line to a multi-line
+  block** (`runToolLoop`, `src/loop/orchestrator.js`). Behaviour is identical — the nine
+  `termination.reason` values are the same set — but a host that **parses that comment** as a
+  machine-readable drift guard (e.g. extracting the `termination:{reason:"end_turn"|…}` typedef
+  and cross-checking it against its own constant) had to loosen its regex to tolerate the line
+  break and the JSDoc `*` gutter. Worth stating as a rule: **when a comment is referenced as a
+  truth source (like `TOOL_RESULT_CONTRACT` and the contract document are), its layout is part
+  of the host-observable surface, not a private detail.**
+
+Everything below in this section stays a genuine no-op for every host.
 
 - **`src/index.js` exports `createMemoryNotesStore`.** An in-memory `NotesStore` shipped by
   the engine, built on the same port as the file and CLI stores (`src/store/notes-port.js`),

@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-16
+
 ### Added
 
 - **`parseModelJson`（`src/text/parse-model-json.js`，新增文件）—— 本包「从模型文本里抠 JSON」的唯一公共入口（issue #307）。** 形状：`parseModelJson(text, { topOnly = true, requireKeys = null } = {})` → `{ok:true, value, via:"json", candidates}` 或 `{ok:false, error, candidates}`。
@@ -24,6 +26,11 @@
   - **不是「预算小就整体不压缩」**：健康预算下压缩行为一字未变（对照用例断言 `compactionStats.compacted` 仍为真、确有 `foldedRounds > 0` 且 `tokensAfter < tokensBefore`）。
   - **评审 R1 修正：守卫不得改动尾部 pending `tool_use`。** 「本来就合规就原样放行」那一格原先用 `validateMessages(view, { allowPendingToolUse: false })` 判，于是**尾部带 pending `tool_use` 的合法视图被判非法**，走到追加那一支：摘掉尾巴 + 补一条**复制的** user 轮（`user:text, assistant:tool_use` ⇒ `user:text, user:text`）。这一条**与极小预算无关**，`max_tokens` 续写与尾部是 pending 的续跑都是该形状。现在放行格与「放弃折叠」格（原样返回源视图）都按**容忍尾部 pending**判，续写/续跑形状在放行格就返回且**不记任何守卫动作**；要追加纯文本 user 轮的候选分支仍按不容忍 pending 判（追加前必须摘尾巴，那是它存在的理由）。引擎里以 `allowPendingToolUse: true` 调 provider 的只有 max_tokens 续写一处。
   - 可观测信号（**仓内字段，additive**）：守卫生效那一次的压缩统计里多两个键 `userTurnGuard`（`"preserved_latest_user_turn"` \| `"abandoned_fold"`）与 `userTurnGuardChannel`（`chat` \| `chatStream` \| `persisted`），与既有 `protectedDowngraded` 同口径——**只在真的发生时才出现**，既有宿主读取形状不变；对外契约文案待下一个文档单补齐。
+### Documentation
+
+- **新增 0.21.0 宿主升级指南中英成对（`docs/host-upgrade-guide-0.21.0.md` + `_cn.md`），并随包发布（工单 261016-307 的 R1/R2）。** 三处宿主可见变更逐条给「要不要动作」：#305 的布尔翻转修复与 `via` 来源标记、#307 的新公共入口 `parseModelJson`、#292 的 user 轮不变量守卫（只减少上游 `400`）；#286 的文档锚点纪律按「宿主无感」单列一节。两份全部使用**符号锚点**，零裸行号（新指南落在裸行号棘轮的扫描面内）。
+- **按 issue #293 修正 0.19.0 指南 §6 的「宿主无需任何动作」**：那批 2026-10-13 并入的改动里有两处**宿主可观测**却没有点名——`readFile` 续读 marker 的文案新增「（文件 N B）」，以及 `runToolLoop` 返回值的 JSDoc typedef 由单行改成多行块（被宿主当机器可读面解析的那段注释，版式就是它的表面）。中英同节同步改掉，并把「无需任何动作」降级成「无需改调用点，但有两处会被逐字断言看到的文案/版式变化」；README 中英的 v0.19.0 条目里那句「全是 additive（宿主不必改代码）」按同一口径补上这两处点名。
+
 ### Chore
 
 - **契约里 `src/loop/orchestrator.js` 族剩余的裸行号条目清零，`bare-lines` 棘轮 232 → 144（issue #286 · 工单 261016-286-tb1b，T-b 第一刀的下半）。** 上一刀只清了**自带区间的符号锚点**，剩下的 118 个唯一区间是**纯裸行号引用**（`` `src/loop/orchestrator.js:881-884` ``）：它们不进 `symbol-anchor-span`（那里没有符号），只被「不越界 + 棘轮」管着，于是「区间指向哪一段真身」依旧无人核对，而其中多处早在重构前就漂进了别的函数。
