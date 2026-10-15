@@ -1919,8 +1919,16 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  新增成对的「Reflection 决策解析」小节，按本单红线用**符号锚点**引用 `parseReflectionDecision`
  *  （`src/loop/reflection.js`）与 `jsonCandidates`（`src/text/json-candidates.js`）、`truncate`
  *  （`src/reflection/judge.js`）——锚点在变多，是这条下限想看见的方向。
+ *  升下限的理由（工单 261016-307 / issue #307，27 → **29**，+2 组 / 50 → 55 处）：中英《宿主消费者契约》
+ *  新增成对的「从模型文本抠 JSON 的公共入口（issue #307）」小节，同样按红线只用**符号锚点**引用
+ *  `parseJudgeDecision`（`src/reflection/judge.js`）与 `tryParseWrapupJson`（`src/reflection/wrapup.js`）
+ *  ——中英两侧共用同一组 (符号, 文件)，故计 2 组（`parseReflectionDecision`（`src/loop/reflection.js`）
+ *  早在 #305 就计过；`parseModelJson` 的新小节首句写成了带实参列表的 `` `parseModelJson(text, { … })` ``
+ *  形式，不在锚点正则的符号名形状里，故不新增组）。裸行号侧零新增（142 持平）。
+ *  不升它就会空转：本刀后实测 29 组 > 下限 27，而自测的「把两处 defaultSleep 锚点退化成裸行号」
+ *  需要「退化后跌破下限」才能红（29-2=27 < 29 才红，留在 27 就不红）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 27;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 29;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
