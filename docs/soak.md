@@ -18,8 +18,8 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
 ```
 
 参数：`--rounds <n>`（默认 200）、`--store <dir>`（默认临时目录）、`--out <file>`（默认
-`/tmp/soak-report.json`）、`--compact-every <n>`、`--abort-at <n>`、`--provider fake|real`（默认 real）、
-`--slot <name>`（默认 `default`）、`--keep-store`。`npm run soak` 等价于直接跑脚本。
+`/tmp/soak-report.json`）、`--compact-every <n>`、`--abort-at <n>`（中止阶段的开关与触发点，见下）、
+`--provider fake|real`（默认 real）、`--slot <name>`（默认 `default`）、`--keep-store`。`npm run soak` 等价于直接跑脚本。
 
 红线：**`--store` / `--out` 解析后若等于真实 `~/.erix` 或落在它之下，脚本干净拒绝（exit 2）并打印用法**，
 不会先把文件写进去再报错。默认清理脚本自己 `mkdtemp` 出来的临时 store；**显式 `--store` 指定的目录
@@ -57,8 +57,20 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
   `validateMessages(view, {allowPendingToolUse:false})`（`src/messages/rounds.js:43`）零报错
   **且** `orphanResults === 0 && danglingUses === 0`；协议转换照跑，但它不再充当配对判据——
   两个转换器本身不校验配对，「转换没抛错」是空断言。
-- **abort**：必须抛标准错误（`termination.reason === "aborted"` 且带 `usage`/`rounds`/`partial`）；
-  实际观察到的终局 `reason` 另记进 `abortObservedReason`（issue #282 的第一手数据）。
+- **abort**：先查**脚本自己有没有真的中止过**（`abort-actually-fired`，阻断项），再让引擎断言说话。
+  - 触发点：默认在第 `min(ceil(rounds/2), 3)` 个**已落地的 `tool_result` 事件**之后立刻 abort；
+    显式 `--abort-at n` 则改回**第 n 轮**触发（轮数语义）。理由：真模型会在任意早的轮次自然
+    `end_turn` / `judge_done`，按轮次触发永远可能扑空（实测 `--rounds 200 --abort-at 100` 的 run 第 7 轮就收口）。
+  - `abort-termination-reason-is-aborted`（非阻断，已知缺陷 #282）与 `abort-error-carries-usage-rounds-partial`
+    （阻断）**只在真的触发过时才判**；没触发时两条都报 `coverage: "not-exercised"` 并计入非阻断观察——
+    「脚本没中止成」是脚本的配置问题（由 `abort-actually-fired` 承担红），不能拿它算引擎缺陷。
+  - 触发过之后：必须抛标准错误（`termination.reason === "aborted"` 且带 `usage`/`rounds`/`partial`）；
+    实际观察到的终局 `reason` 另记进 `abortObservedReason`（issue #282 的第一手数据）。
+  - **`issue282Rewritten` 是需要 abort 真触发才成立的结论**：只有 `abortFired === true` 且观察到的终局
+    `reason === "judge_done"` 时才允许为 `true`（字段面：`abortStage.{abortFired,abortedAtRound,naturalTermination,coverage}`，
+    `coverage` 取 `abort-fired` / `not-exercised` / `stage-skipped`）。旧版非抛分支不带 `abortedAtRound`、
+    evidence 又用 `?? cli.abortAt` 兑底，于是「第 7 轮自然 judge_done、根本没中止」的 run 被报成
+    `abortedAtRound: 100` + `issue282Rewritten: true`——那是假阳性，不是 #282 的一手复现。
 - **resume**：续跑成功；历史块逐字节不被回写；新块新 `toolCallKey` 不撞历史；特殊状态块
   （引擎只写 `interrupted`/`intercepted`）不被 judge/L0 的读取面读成成功——这条自带一个确定性场景
   （形状照引擎写入点抄，读取面用仓里真函数 `buildTimeline` / `extractL0Facts`），并配一个「换成普通

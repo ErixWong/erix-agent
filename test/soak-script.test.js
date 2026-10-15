@@ -6,7 +6,9 @@
 //      于是「非阻断失败」能一路混过去）；
 //   2) 断言**数量与名单逐条相等**（清单是实现的契约，加一条不登记就红，防止静默减项）；
 //   3) 三方对账 / 契约事实 / TTL 折叠 / 请求视图配对**真的跑过**（证据值非 0，不是空跑）；
-//   4) --store/--out 不许落在真实 ~/.erix 下（红线），默认清理自建的临时 store。
+//   4) --store/--out 不许落在真实 ~/.erix 下（红线），默认清理自建的临时 store；
+//   5) abort 阶段**真的中止过**（工单 261015-02 小修：旧版把「没发生的中止」报成 #282 真机复现，
+//      因为非抛分支不带 abortedAtRound、evidence 又用 `?? cli.abortAt` 兑底）。
 // 轮数取 6：更少就压不出 TTL 折叠（引擎 TTL 层要求剩余轮数 > 2，src/compact/pipeline.js:21-27），
 // 而「压不出 TTL」正是本脚本存在的理由，所以这里必须给够，短跑会红（那是牙齿，不是抖动）。
 import test from "node:test";
@@ -39,6 +41,7 @@ const EXPECTED_ASSERTIONS = [
   "contract-projection-keysets-bidirectionally-equal",
   "contract-projection-durationms-equals-disk",
   "contract-projection-missing-duration-not-zero",
+  "abort-actually-fired",
   "abort-termination-reason-is-aborted",
   "abort-error-carries-usage-rounds-partial",
   "resume-run-succeeds",
@@ -102,8 +105,8 @@ test("soak 假上游：退出码 0 + 每条断言都过 + 断言名单逐条相�
 
   // 字段面：工单点名的每一项都要在
   for (const key of [
-    "usage", "rounds", "compactions", "abortObservedReason", "resume", "storeReconcile",
-    "assertions", "engineDefects", "ttl", "requestViews", "assertionManifest", "storeCleanup",
+    "usage", "rounds", "compactions", "abortObservedReason", "abortStage", "abortTrigger", "resume",
+    "storeReconcile", "assertions", "engineDefects", "ttl", "requestViews", "assertionManifest", "storeCleanup",
   ]) {
     assert.ok(key in report, `报告缺少字段 ${key}`);
   }
@@ -130,6 +133,28 @@ test("soak 假上游：退出码 0 + 每条断言都过 + 断言名单逐条相�
   assert.equal(report.abort.partial, true);
   assert.ok(report.resume && report.resume.ok === true, JSON.stringify(report.resume));
 
+  // (5) abort 阶段必须**真的触发过**：旧版非抛分支不带 abortedAtRound，evidence 又用 `?? cli.abortAt`
+  // 兑底，于是真机第 7 轮就 judge_done 收口（根本没中止）的 run 被报成「第 100 轮中止 + #282 复现」。
+  assert.equal(report.abortStage.abortFired, true,
+    `abort 必须真的触发过，evidence=${JSON.stringify(report.abortStage)}`);
+  assert.equal(report.abortStage.abortedAtRound, 3, "显式 --abort-at 3 ⇒ 第 3 轮触发");
+  assert.equal(report.abortStage.coverage, "abort-fired");
+  assert.equal(report.abortStage.naturalTermination, null, "触发过时 naturalTermination 不得拿中止终局冒充自然终局");
+  assert.equal(report.abortTrigger.mode, "round", "显式 --abort-at 保留轮数语义（--help 就是这么写的）");
+  const abortFiredAssertion = report.assertions.find((a) => a.name === "abort-actually-fired");
+  assert.ok(abortFiredAssertion, "缺少阻断断言 abort-actually-fired");
+  assert.equal(abortFiredAssertion.blocking, true, "没触发就是脚本配置问题，必须是阻断项");
+  for (const name of ["abort-termination-reason-is-aborted", "abort-error-carries-usage-rounds-partial"]) {
+    const assertion = report.assertions.find((a) => a.name === name);
+    assert.equal(assertion.evidence.coverage, "abort-fired",
+      `${name} 在真的中止过时才判，coverage 必须是 abort-fired`);
+  }
+  assert.equal(
+    report.assertions.find((a) => a.name === "abort-termination-reason-is-aborted").evidence.issue282Rewritten,
+    false,
+    "本路径观察到的是 aborted，不得把 #282 报成命中",
+  );
+
   // 三方对账：落盘行数 == store.load() 记录数；轮事件数 == 引擎轮记录数；且都非 0
   const reconcile = report.storeReconcile;
   assert.ok(reconcile.jsonlLines > 0);
@@ -140,6 +165,55 @@ test("soak 假上游：退出码 0 + 每条断言都过 + 断言名单逐条相�
   // 契约事实：key 唯一性/投影对账要有真实计数
   assert.ok(report.contract.toolUseBlocks > 0);
   assert.equal(report.contract.diskKeys, report.contract.projectionKeys);
+});
+
+test("soak abort：没真的触发时必须红，且不得把 #282 报成命中（旧版假阳性的回归面）", async () => {
+  // `--abort-at 9` 在 `--rounds 6` 的显式轮数触发下根本踩不到（旧版会静默当成「跳过」）。
+  // 它就是今天真机那份报告的形状：**没发生的中止**。
+  const dir = await makeTmp("soak-miss-");
+  const reportPath = path.join(dir, "miss-report.json");
+  const { code } = await runSoak([
+    "--provider", "fake", "--rounds", "6", "--abort-at", "9", "--compact-every", "2",
+    "--out", reportPath,
+  ]);
+  const report = JSON.parse(await readFile(reportPath, "utf8"));
+
+  assert.notEqual(code, 0, "没触发 = 脚本配置问题，必须非 0 退出");
+  assert.equal(report.totals.failedBlocking, 1,
+    JSON.stringify(report.assertions.filter((a) => !a.pass).map((a) => `${a.name}:blocking=${a.blocking}`)));
+  const byName = Object.fromEntries(report.assertions.map((a) => [a.name, a]));
+
+  assert.equal(byName["abort-actually-fired"].pass, false);
+  assert.equal(byName["abort-actually-fired"].blocking, true, "没触发不能让引擎背锅");
+  assert.equal(report.abortStage.abortFired, false);
+  assert.equal(report.abortStage.abortedAtRound, null, "不得拿 --abort-at 的值兑底成「第 n 轮中止」");
+  assert.equal(report.abortStage.coverage, "not-exercised");
+  assert.equal(report.abortStage.naturalTermination, "max_rounds_cap", "没触发时这才是自然终局");
+
+  // 两条引擎断言：未触发 → 不算引擎缺陷，但也不是「通过」，而是计入非阻断观察（沿用阶段 F 的 coverage 口径）
+  for (const name of ["abort-termination-reason-is-aborted", "abort-error-carries-usage-rounds-partial"]) {
+    assert.equal(byName[name].pass, false, `${name} 未触发不得算绿`);
+    assert.equal(byName[name].blocking, false, `${name} 未触发不能当阻断项（红由 abort-actually-fired 承担）`);
+    assert.equal(byName[name].evidence.coverage, "not-exercised");
+  }
+  assert.equal(byName["abort-termination-reason-is-aborted"].evidence.issue282Rewritten, false,
+    "#282 结论需要 abort 真触发才成立");
+  assert.equal(report.totals.observedNonBlocking, 2);
+});
+
+test("soak abort：缺省触发点按已落地的 tool_result 事件计数（真机跑不了的路径）", async () => {
+  const dir = await makeTmp("soak-default-trigger-");
+  const reportPath = path.join(dir, "default-trigger.json");
+  const { code } = await runSoak([
+    "--provider", "fake", "--rounds", "6", "--compact-every", "2", "--out", reportPath,
+  ]);
+  assert.equal(code, 0, "缺省事件触发必须真的中止成");
+  const report = JSON.parse(await readFile(reportPath, "utf8"));
+  assert.equal(report.abortTrigger.mode, "tool_result");
+  assert.equal(report.abortTrigger.at, 3, "缺省触发点 = min(ceil(rounds/2), 3)");
+  assert.equal(report.abortStage.abortFired, true);
+  assert.equal(report.abortStage.abortedAtRound, 3, "第 3 个 tool_result 落在第 3 轮");
+  assert.equal(report.abortObservedReason, "aborted");
 });
 
 test("soak CLI：非法 --provider 直接非 0 退出并给出可懂的拒绝", async () => {

@@ -61,7 +61,11 @@ const USAGE = `用法：node scripts/soak.mjs [--provider fake|real] [--rounds n
   --store         transcript store 目录（默认临时目录；**绝不写真实 ~/.erix**：落在它下面或等于它一律拒绝）
   --out           结构化 JSON 报告落盘路径（默认 /tmp/soak-report.json；同样不得落在真实 ~/.erix 下）
   --compact-every 每 n 轮逼一次强制压缩（把 budgetTokens 调到必然触发；默认 25）
-  --abort-at      第 n 轮中止（默认 rounds>=4 时取 ceil(rounds/2)，否则 0=跳过）
+  --abort-at      中止阶段开关与触发点（0=跳过；默认 rounds>=4 时启用，rounds<4 时跳过）：
+                  不给本参数 = 在**第 min(ceil(rounds/2),3) 个已落地的 tool_result 事件**之后立刻 abort
+                    （按事件触发：真模型会在任意早的轮次自然 end_turn/judge_done，按轮触发永远可能扑空）；
+                  显式 --abort-at n = 改回**第 n 轮**触发（轮数语义，n>=rounds 也照跑不静默跳过）；
+                    真没中止成时 abort-actually-fired 会判红，而不是把「没发生的中止」报成引擎缺陷
   --slot          real 路径读 config 的槽位名（默认 default）
   --keep-store    跑完**保留**临时 store 目录（默认真清理；显式 --store 指定的目录永远不动，
                   那是宿主自己的地盘，soak 只清理自己 mkdtemp 出来的那一个）
@@ -117,22 +121,39 @@ function parseCli() {
   if (provider !== "fake" && provider !== "real") {
     throw new Error('--provider 只接受 "fake" 或 "real"');
   }
-  const abortAt = values["abort-at"] === undefined
-    ? (rounds >= 4 ? Math.ceil(rounds / 2) : 0)
-    : Number.parseInt(values["abort-at"], 10);
-  if (values["abort-at"] !== undefined && (!Number.isInteger(abortAt) || abortAt < 0)) {
+  const abortAtExplicit = values["abort-at"] !== undefined;
+  const abortAt = abortAtExplicit
+    ? Number.parseInt(values["abort-at"], 10)
+    : (rounds >= 4 ? Math.ceil(rounds / 2) : 0);
+  if (abortAtExplicit && (!Number.isInteger(abortAt) || abortAt < 0)) {
     throw new Error("--abort-at 必须是 >=0 的整数");
   }
   // 归属校验放在解析阶段：干净拒绝（顶层 catch → exit 2 + USAGE），不是一句 ENOENT 也不是静默照跑。
   const store = values.store === undefined ? undefined : underRealErixHome(values.store, "--store");
   const out = underRealErixHome(values.out ?? "/tmp/soak-report.json", "--out");
+  // 中止触发点的形状（工单 261015-02 小修）：
+  // - **默认**（不给 --abort-at）：第 `min(abortAt, 3)` 个**已落地的 tool_result 事件**之后立刻 abort。
+  //   按事件而不是按轮：真模型会在任意早的轮次自然 `end_turn`/`judge_done`，「第 abortAt 轮」这种
+  //   轮数触发在大 rounds 下永远可能扑空（实测 `--rounds 200 --abort-at 100` 的那份报告第 7 轮就收口，
+  //   abort 从未发生，却被旧版的 `?? cli.abortAt` 兑底报成「第 100 轮中止 + #282 复现」）。
+  // - **显式 `--abort-at n`**：保留轮数语义（第 n 轮的 `onRound` 里 abort），给需要精确形状的宿主。
+  //   `n >= rounds` 不再静默当成「跳过」（那等于要验的东西根本没验），而是照跑；真没踩到就让
+  //   `abort-actually-fired` 判红。只有显式 `--abort-at 0` 才是跳过。
+  const effectiveAbortAt = abortAtExplicit ? abortAt : (abortAt >= rounds ? 0 : abortAt);
+  const abortTrigger = effectiveAbortAt === 0
+    ? { mode: "none", at: 0 }
+    : (abortAtExplicit
+      ? { mode: "round", at: effectiveAbortAt }
+      : { mode: "tool_result", at: Math.min(effectiveAbortAt, 3) });
   return {
     provider,
     rounds,
     store,
     out,
     compactEvery,
-    abortAt: abortAt >= rounds ? 0 : abortAt,
+    abortAt: effectiveAbortAt,
+    abortAtExplicit,
+    abortTrigger,
     slot: values.slot ?? "default",
     keepStore: values["keep-store"] === true,
   };
@@ -1000,18 +1021,42 @@ async function main() {
   const unfoldedFinalMessages = mainResult?.messages ?? [];
 
   // ---------- 阶段 E：中途 abort（观察 #282：reason 是否被写成 judge_done）
+  // 触发点（工单 261015-02 小修）：默认在第 min(abortAt,3) 个**已落地的 tool_result 事件**之后立刻 abort。
+  // 旧实现按「第 abortAt 轮」触发：真模型会在任意早的轮次自然 end_turn/judge_done，按轮次触发永远可能
+  // 扑空。实测 `--provider real --rounds 200 --abort-at 100` 那份报告里 run 第 7 轮就 judge_done 收口，
+  // abort **一次都没发生**，但 evidence 的兑底值 `?? cli.abortAt` 把它写成 `abortedAtRound: 100` +
+  // `issue282Rewritten: true` —— #282 被假阳性地宣告成「真机一手复现」。
+  // 所以本阶段的顺序是：**先确认 abort 真的触发过**（`abort-actually-fired`，阻断），再让引擎断言说话。
   let abortInfo;
   let abortRunId;
   let historyBeforeResume = null;
   let recordsBeforeResume = 0;
   let keysBeforeResume = [];
+  // 报告面的 abort 结论（字段形状固定：abortFired / abortedAtRound / naturalTermination / coverage）。
+  let abortStage = {
+    abortFired: false,
+    abortedAtRound: null,
+    naturalTermination: null,
+    coverage: "stage-skipped",
+    trigger: cli.abortTrigger,
+    observedReason: null,
+    threw: null,
+    note: "abort 阶段未运行（--abort-at 0 或 rounds < 4）：中止路径本次没被覆盖",
+  };
   if (cli.abortAt > 0) {
     if (cli.provider === "fake") upstream.setBudget(cli.rounds);
     abortRunId = `soak-abort-${Date.now().toString(36)}`;
     track.phase = "abort";
     const abortCounter = createEventCounter({ resultOrigins });
+    const onAbortEvent = onEventFor(abortCounter);
     const controller = new AbortController();
+    const trigger = cli.abortTrigger;
     let abortedAtRound = null;
+    const fireAbort = (round) => {
+      if (abortedAtRound !== null) return;
+      abortedAtRound = Number.isInteger(round) ? round : null;
+      controller.abort();
+    };
     try {
       const res = await runToolLoop({
         ...common,
@@ -1019,15 +1064,26 @@ async function main() {
         maxRounds: cli.rounds,
         initialUserMessage: "soak：abort 与 resume 观察",
         signal: controller.signal,
-        onEvent: onEventFor(abortCounter),
-        onRound: ({ round }) => {
-          if (round === cli.abortAt && abortedAtRound === null) {
-            abortedAtRound = round;
-            controller.abort();
+        // 事件计数触发：第 trigger.at 个 tool_result **落地后**立刻 abort（默认路径，真机跑不了）。
+        onEvent: (event) => {
+          onAbortEvent(event);
+          if (trigger.mode === "tool_result"
+            && event?.type === "tool_result"
+            && abortCounter.toolResults >= trigger.at) {
+            fireAbort(event?.round ?? abortCounter.currentRound);
           }
         },
+        // 轮次触发：只给显式 `--abort-at n`（宿主显式要这个形状时才用）。
+        ...(trigger.mode === "round"
+          ? {
+            onRound: ({ round }) => {
+              if (round === trigger.at) fireAbort(round);
+            },
+          }
+          : {}),
       });
-      abortInfo = { threw: false, termination: res.termination, rounds: res.rounds };
+      // 非抛分支也带上**真实**的 abortedAtRound（外层变量）；null 就是没触发，不兑底。
+      abortInfo = { threw: false, termination: res.termination, rounds: res.rounds, abortedAtRound };
     } catch (error) {
       abortInfo = {
         threw: true,
@@ -1035,20 +1091,63 @@ async function main() {
         hasUsage: error?.termination?.usage !== undefined,
         hasRounds: error?.termination?.rounds !== undefined,
         partial: error?.termination?.partial,
+        rounds: error?.termination?.rounds,
         message: String(error?.message ?? error),
         code: error?.code,
         abortedAtRound,
       };
     }
     const abortedReason = abortInfo.threw ? abortInfo.reason : abortInfo.termination?.reason;
-    ledger.check("abort-termination-reason-is-aborted", abortedReason === "aborted", {
+    const abortFired = abortInfo.abortedAtRound !== null && abortInfo.abortedAtRound !== undefined;
+    abortStage = {
+      abortFired,
+      abortedAtRound: abortInfo.abortedAtRound ?? null,
+      // 只有没触发时，这个 reason 才是「自然终局」；触发过它就是中止终局。
+      naturalTermination: abortFired ? null : (abortedReason ?? null),
+      coverage: abortFired ? "abort-fired" : "not-exercised",
+      trigger,
       observedReason: abortedReason ?? null,
-      issue282Rewritten: abortedReason === "judge_done",
-      abortedAtRound: abortInfo.abortedAtRound ?? cli.abortAt,
-    }, { blocking: false, knownIssue: "#282" });
-    ledger.check("abort-error-carries-usage-rounds-partial",
-      abortInfo.threw === true && abortInfo.hasUsage && abortInfo.hasRounds
-      && abortInfo.partial === true, { abortInfo });
+      threw: abortInfo.threw,
+    };
+    // 阻断：没触发就是**脚本自己的配置问题**，不能让引擎背锅（旧版在这里把没发生的中止报成 #282 复现）。
+    ledger.check("abort-actually-fired", abortFired, {
+      coverage: abortStage.coverage,
+      trigger,
+      abortedAtRound: abortStage.abortedAtRound,
+      naturalTermination: abortStage.naturalTermination,
+      toolResultsLanded: abortCounter.toolResults,
+      threw: abortInfo.threw,
+      // 抛错分支的轮数在 error.termination.rounds 上（issue #180），非抛分支在 res.rounds 上。
+      rounds: abortInfo.rounds ?? abortInfo.termination?.rounds ?? null,
+      note: "只有真的中止过，下面的引擎断言才有意义；没触发时它们一律记 coverage:\"not-exercised\" 的非阻断观察",
+    });
+    if (abortFired) {
+      ledger.check("abort-termination-reason-is-aborted", abortedReason === "aborted", {
+        coverage: "abort-fired",
+        observedReason: abortedReason ?? null,
+        // #282 结论只在 abort 真的触发过时成立（工单 261015-02 小修第 4 条）。
+        issue282Rewritten: abortedReason === "judge_done",
+        abortedAtRound: abortInfo.abortedAtRound,
+      }, { blocking: false, knownIssue: "#282" });
+      ledger.check("abort-error-carries-usage-rounds-partial",
+        abortInfo.threw === true && abortInfo.hasUsage && abortInfo.hasRounds
+        && abortInfo.partial === true, { coverage: "abort-fired", abortInfo });
+    } else {
+      // 沿用阶段 F 的 coverage 口径：没踩到执行面就不是「通过」，也不是引擎缺陷，而是**未覆盖**。
+      ledger.check("abort-termination-reason-is-aborted", false, {
+        coverage: "not-exercised",
+        whyNotJudged: "abort 从未触发（见阻断断言 abort-actually-fired），无法观察引擎会把中止写成什么 reason",
+        naturalTermination: abortStage.naturalTermination,
+        // 关键：没触发就**不得**宣告 #282（这就是旧版的假阳性）。
+        issue282Rewritten: false,
+        abortedAtRound: null,
+      }, { blocking: false });
+      ledger.check("abort-error-carries-usage-rounds-partial", false, {
+        coverage: "not-exercised",
+        whyNotJudged: "没有中止就没有「中止错误带 usage/rounds/partial」这回事",
+        abortInfo,
+      }, { blocking: false });
+    }
 
     // resume 前的历史快照：逐字节比对的基准
     const beforeJsonl = await countJsonlLines(storeDir, abortRunId);
@@ -1278,7 +1377,10 @@ async function main() {
       perRoundTokens,
     },
     abortRequested: cli.abortAt,
+    abortTrigger: cli.abortTrigger,
     abortObservedReason: abortInfo?.reason ?? abortInfo?.termination?.reason ?? null,
+    // abort 阶段的结论面（工单 261015-02 小修）：**issue282Rewritten 只在 abortFired 为真时才可能是 true**。
+    abortStage,
     abort: abortInfo ?? null,
     resume: resumeInfo ?? null,
     // TTL 与请求视图：这两块是返工后新增的「脚本真的压到了什么」的测量面。
