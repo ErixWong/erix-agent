@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { createFakeProvider } from "./helpers/fake-provider.js";
 
 // issue #282（0.20.0 发版阻断项）：终局裁决的 `stop` 分支原先**不看** `signal.aborted`。
 // 用户在「模型已给出最后一轮回答、end-turn judge 正在评估/已返回」的窗口里点停止，run 会
@@ -152,4 +153,130 @@ test("once aborted, the end-turn judge must not issue another model call (issue 
   assert.equal(harness.mainCalls.length, 1, "主模型只该被调用一次");
   assert.equal(harness.judgeCalls.length, 0, "中止后不得再发起 judge 模型调用（省一次模型费用）");
   assert.equal(harness.modelCallCount(), 1, "整次 run 的模型请求次数必须是 1（issue #282 改前为 2）");
+});
+
+// ── issue #292 路径 A：judge 判 `done:false` → nudge → continue，这条圈底完全绕过 #282 的两处守卫 ──
+// 改前：宿主在「judge 已返回、终局未定」的窗口里点停止，只要 judge 给的是 done:false，循环就不看
+// signal 地继续跑——**再多烧一次主模型调用**，最后由出圈的 cap 收尾伪装成轮数耗尽返回
+// max_rounds_cap（连 #180 的抛错语义都没有）。
+test("abort in the judge nudge window terminates as aborted and issues no further main-model call (issue #292 路径 A)", async () => {
+  const controller = new AbortController();
+  const harness = makeHarness({
+    // judge 说「还没完」⇒ 治理器给 nudge（continue），而不是 stop
+    judgeEvaluator: async () => ({
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          done: false,
+          confidence: 0.9,
+          reason: "还没有落盘证据",
+          evidence: "本轮没有 writeFile",
+          direction: "on_track",
+        }),
+      }],
+      stopReason: "end_turn",
+      usage: { input_tokens: 120, output_tokens: 24 },
+    }),
+  });
+
+  const error = await settle(runToolLoop({
+    provider: harness.provider,
+    initialUserMessage: "把活干完",
+    executeTool: async () => "unused",
+    reflection: harness.reflection,
+    signal: controller.signal,
+    maxRounds: 4,
+    stallDetection: false,
+    // onJudge 的调用点正好落在「judge 已返回、终局（nudge→continue）尚未执行」这一段
+    onJudge: () => controller.abort(new Error("user stop")),
+  }));
+
+  assert.ok(error, "nudge-continue 路径上的中止必须抛错（#180 语义），而不是安静地返回 max_rounds_cap");
+  assert.equal(error?.termination?.reason, "aborted");
+  assert.notEqual(error?.termination?.reason, "max_rounds_cap");
+  assert.equal(error?.termination?.partial, true, "aborted 终局必须带 partial 载荷旗子");
+  assert.ok(error?.termination?.usage, "aborted 终局必须带已发生的 usage（#180）");
+  assert.equal(harness.mainCalls.length, 1, "中止后不得再发起主模型调用（改前会跑到轮数耗尽）");
+  assert.equal(harness.judgeCalls.length, 1, "中止后也不得再发起 judge 调用");
+});
+
+// ── issue #292 路径 B：循环**自然耗尽**后的 cap 收尾整段原先在 try/catch 之外 ────────────────
+// 中止落在收尾的 finalGuard 里（宿主点停止 → guard 正常返回）：改前既不查 signal，也拿不到 error，
+// 终局照原样是 final_guard_unverified / max_rounds_cap，且**不抛错**。
+test("abort inside the post-loop max_rounds_cap finalization terminates as aborted (issue #292 路径 B)", async () => {
+  const controller = new AbortController();
+  // 两轮都调工具 ⇒ 轮数自然耗尽（第三轮是 cap 收尾的 forced final）
+  const provider = createFakeProvider([
+    { times: 2, content: [{ type: "tool_use", id: "work", name: "work", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "text", text: FINAL_TEXT }], stopReason: "end_turn" },
+  ]);
+  let guardCalls = 0;
+
+  const error = await settle(runToolLoop({
+    provider,
+    initialUserMessage: "continue",
+    executeTool: async () => "worked",
+    maxRounds: 2,
+    completion: false,
+    stallDetection: false,
+    signal: controller.signal,
+    finalGuard: async () => {
+      guardCalls += 1;
+      controller.abort(new Error("user stop during finalization"));
+      return { action: "accept" };
+    },
+  }));
+
+  assert.ok(error, "cap 收尾期间的中止必须抛错，不能返回一个正常终局");
+  assert.equal(error?.termination?.reason, "aborted");
+  assert.notEqual(error?.termination?.reason, "max_rounds_cap");
+  assert.notEqual(error?.termination?.reason, "final_guard_unverified");
+  assert.equal(error?.termination?.partial, true);
+  assert.equal(guardCalls, 1, "中止确实落在 cap 收尾的 finalGuard 里（否则本测试没测到这段）");
+});
+
+// ── issue #292 路径 B 的第二面：中止落在 cap 收尾的**模型调用**里 ⇒ 抛出的错误也必须带 #180 载荷 ──
+// 改前：这段在 try/catch 之外，`awaitWithAbort` 抛出的 AbortError 裸冒出整次调用（全仓只有 `fail()`
+// 会 annotateTermination），宿主拿到的是一个没有 `termination` / `usage` / `rounds` 的原始错误。
+test("abort during the forced-final call of the cap finalization carries the #180 termination payload (issue #292 路径 B 反向)", async () => {
+  const controller = new AbortController();
+  const requests = [];
+  const provider = {
+    protocol: "fake",
+    model: "fake-model",
+    requests,
+    async chat(request) {
+      requests.push(request);
+      // 第 3 次调用是 cap 收尾的 forced final：在那里按下停止，并让请求永悬 ⇒ 由 abort 抢输
+      if (requests.length === 3) {
+        controller.abort(new Error("user stop during forced final"));
+        return new Promise(() => {});
+      }
+      return {
+        content: [{ type: "tool_use", id: `work-${String(requests.length)}`, name: "work", input: {} }],
+        stopReason: "tool_use",
+        usage: { input_tokens: 100, output_tokens: 10 },
+      };
+    },
+    async chatStream(request) {
+      return this.chat(request);
+    },
+  };
+
+  const error = await settle(runToolLoop({
+    provider,
+    initialUserMessage: "continue",
+    executeTool: async () => "worked",
+    maxRounds: 2,
+    completion: false,
+    stallDetection: false,
+    signal: controller.signal,
+  }));
+
+  assert.ok(error, "收尾期间被中止必须抛错");
+  assert.equal(requests.length, 3, "确认中止确实落在 forced final 那一次模型调用里");
+  assert.equal(error?.termination?.reason, "aborted");
+  assert.equal(error?.termination?.partial, true, "#180 载荷：partial 必须在");
+  assert.ok(error?.usage?.input_tokens > 0, `#180 载荷：usage 必须在（实际 ${JSON.stringify(error?.usage)}）`);
+  assert.equal(error?.termination?.usage, error?.usage, "termination.usage 与 error.usage 同一个对象");
 });

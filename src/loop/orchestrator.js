@@ -2886,6 +2886,17 @@ export async function runToolLoop(options) {
     // 预算条件用 budgetRounds（本次 runToolLoop 的消耗），不是身份轮号 rounds：
     // resume 续接时 rounds 已到顶，用它当预算会导致续接轮一次进不了循环。
     while (budgetRounds < governorState.effectiveMaxRounds) {
+    // issue #292（必修 1 · 路径 A）：圈顶先查一次中止。**进圈条件**只看轮数、不看 signal，而圈底
+    // （judge 的 nudge/continue、以及 persist + onRound + governor 收尾那一大段 await）里一个 abort
+    // 检查都没有 ⇒ #282 只在 `action.kind === "stop"` 分支入口与最后一次 finish 前补的两处
+    // `throwIfAborted`，管不到「judge 判 done:false → nudge → continue」这条路：宿主在 judge 已返回、
+    // 终局未定的窗口里点停止，循环会**再多烧一次主模型调用**，最后由出圈的 cap 收尾伪装成轮数耗尽
+    // 返回 max_rounds_cap，#180 的 {usage, rounds, partial:true} 载荷全丢。放在圈顶（而非圈底）的
+    // 理由：本轮已经跑完的记录照旧落库（#283 β 的口径是「不追溯补写」，不是「该写的也不写」），
+    // 只是不再为它发起下一轮请求。它同时覆盖 nudge / extend / decideRoundAction 三条 continue 路径；
+    // 无 abort 时 throwIfAborted 是空操作，end_turn / judge_done / stall / no_tool / max_rounds_cap
+    // 在无中止时的返回形态一个字节都不动。
+    throwIfAborted(signal);
     // 轮预算在进入本轮时自增（与既有 `round` 语义对齐：budgetRounds === 本轮序号），
     // 这样预算提示 / 剩余轮数在工具执行期读到的就是正确值
     budgetRounds += 1;
@@ -3493,23 +3504,42 @@ export async function runToolLoop(options) {
     await fail(error);
   }
 
-  await forceFinalIfNeeded("max_rounds_cap");
-  if (typeof finalGuard !== "function") return finish("max_rounds_cap");
-  const guardDecision = await callFinalGuard("max_rounds_cap");
-  if (guardDecision.action === "error") return finish("max_rounds_cap");
-  if (guardDecision.action === "skip") return finish("max_rounds_cap");
-  guardMetrics.unverified += 1;
-  verification = {
-    ...verification,
-    status: "unverified",
-    reason: "non_continuable",
-    detail: "max_rounds_cap",
-  };
-  emitEvent({
-    type: "final_guard",
-    round: runLoopState.rounds,
-    action: "degraded",
-    reason: "non_continuable",
-  });
-  return finish("final_guard_unverified");
+  // issue #292（必修 1 · 路径 B）：出圈收尾原先整段落在 `} catch (error) { await fail(error); }` **之外**，
+  // 两个后果：
+  //   1. 收尾期间的两次 await（`forceFinalIfNeeded` 里那一次 `awaitWithAbort(provider.chat(...))`、
+  //      以及 `callFinalGuard`）在被中止时抛出的 AbortError **没人接**，会裸抛出 runRunLoop——全仓
+  //      只有 `fail()`（:1100）会 `annotateTermination`，所以宿主拿到的是一个没有 `termination`
+  //      载荷的原始错误（#180 的 {usage, rounds, partial:true} 全缺）；
+  //   2. 收尾期间才置位的 abort（典型：宿主在 finalGuard 回调里点停止，而 guard 正常返回了）根本
+  //      没人查，照样返回 max_rounds_cap。
+  // 现在：收尾前先查一次，两次 await 之后各再查一次，并把整段包进 try 交给 fail() 收口。
+  // 行为变化只一处：宿主收尾回调（forceFinalizer / finalGuard）自己抛错原先会冒出整次调用，
+  // 现在降级成 `reason:"failed"` 的终局（带 errorCode，根因探不到则为 unknown），与仓内
+  // 「宿主回调错误不杀 run」的统一口径一致（docs/host-consumer-contract*.md）。
+  try {
+    throwIfAborted(signal);
+    await forceFinalIfNeeded("max_rounds_cap");
+    throwIfAborted(signal);
+    if (typeof finalGuard !== "function") return finish("max_rounds_cap");
+    const guardDecision = await callFinalGuard("max_rounds_cap");
+    throwIfAborted(signal);
+    if (guardDecision.action === "error") return finish("max_rounds_cap");
+    if (guardDecision.action === "skip") return finish("max_rounds_cap");
+    guardMetrics.unverified += 1;
+    verification = {
+      ...verification,
+      status: "unverified",
+      reason: "non_continuable",
+      detail: "max_rounds_cap",
+    };
+    emitEvent({
+      type: "final_guard",
+      round: runLoopState.rounds,
+      action: "degraded",
+      reason: "non_continuable",
+    });
+    return finish("final_guard_unverified");
+  } catch (error) {
+    return await fail(error);
+  }
 }
