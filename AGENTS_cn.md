@@ -153,7 +153,7 @@ scripts/          # 实验脚本和结果
   因此干净检出里一个 `.d.ts` 都没有——`npm publish --dry-run` 应列出 **67** 个 `.d.ts`（2026-10-16 在 #307 之后的树上实测：#307 新增 `src/text/parse-model-json.js` 使 66 → 67；此前 2026-10-15 在 #292 之后的干净树上实测：
   `npm pack --dry-run --json` 列出整整 65 个；历史值：0.20.0 的 tarball 是 64 个、0.19.0 时代是 63 个；打包体积 +约 44 kB、
   解包 +约 139 kB，是 0.18.0 上实测的）；`npm run check:types-build` 就是「还能不能生成」的门禁。
-- 当前版本：`0.20.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
+- 当前版本：`0.21.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
 
 ### npm 2026 政策变化（TOTP 停止 + bypass token 限制）
 - ❌ 不再支持新的 TOTP 注册（`enable-2fa` 返回 404）。
