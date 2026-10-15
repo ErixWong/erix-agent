@@ -1134,6 +1134,184 @@ export function buildErrorPayload(error, input) {
   };
 }
 
+/**
+ * #313 R1/R2：终局面的分层削减汇总（**additive**，不改任何判定语义）。
+ *
+ * 层 id **一律取引擎声明里的真实 id**：`COMPACTION_LAYER_IDS`（`src/compact/pipeline.js`）由
+ * `COMPACTION_PIPELINE`（`src/compact/pipeline.js`）的 id 派生，当前是
+ * ttl / slidingWindow / foldStatistical / foldLlm / anchors / enforceSize；下面四个展示归组
+ * 的依据就是那份声明里的 `granularity` / `phase` 字段（whole-round → 整轮折叠，
+ * single-result → 逐条 TTL 削减，safety 阶段的 fields-and-messages → 输出钳制，
+ * fidelity → 折叠锚点/保真）。本表只做**展示归组**：不新增层、不重命名层、不参与判定。
+ * 数据里出现的**未知层 id** 一律进 `unattributed` 并单独渲染，绝不静默丢弃——引擎加层时
+ * 这里最坏是「归组名字还没起」，不会重演「数字被 compacted=false 盖掉」那次事故。
+ */
+export const COMPACTION_LAYER_ROLES = Object.freeze([
+  Object.freeze({
+    key: "wholeRoundFold",
+    label: "整轮折叠",
+    layerIds: Object.freeze(["slidingWindow", "foldStatistical", "foldLlm"]),
+  }),
+  Object.freeze({ key: "ttlResultFold", label: "逐条TTL削减", layerIds: Object.freeze(["ttl"]) }),
+  Object.freeze({ key: "outputClamp", label: "输出钳制", layerIds: Object.freeze(["enforceSize"]) }),
+  Object.freeze({ key: "foldFidelity", label: "折叠锚点", layerIds: Object.freeze(["anchors"]) }),
+]);
+
+/**
+ * #313 追加（主 agent 实测定调）：汇总读的是**哪一个** `compactionStats`。
+ *
+ * 本层读的是 **run 返回值（或抛错载荷）上那份全量 `compactionStats`**（`buildDiagnostics` 从
+ * `source.compactionStats` 取），不是 `<runId>.state.json` 里那份。后者写盘前要过
+ * `normalizeCompactionStats(value, limit = 32)`（`src/compact/pipeline.js`）的 `value.slice(-limit)`
+ * 截尾（调用点 `src/run-state.js` 的 `createDeterministicRunState`），>32 轮的 run 上「去 state.json 数削减账」
+ * 会静默少算前面那些轮（截尾本身已另开 **issue #315**，本单不修它）。字段名毫无提示，所以终局面
+ * 自带这一份源声明（`layers.source` / `layers.truncationNote`，并渲染进文本）。
+ */
+export const COMPACTION_STATS_SOURCE = "runResult.compactionStats";
+export const COMPACTION_STATS_TRUNCATION_NOTE =
+  "state.json 的 deterministic.compactionStats 经 normalizeCompactionStats(value, limit=32) 截尾到最后 32 条（issue #315）；>32 轮的 run 拿它当源会静默少算";
+
+/**
+ * 把每轮 `compactionStats[].layers` 折成**每个层 id** 的 triggered / tokensSaved 总和。
+ *
+ * 数据来源（不推算、不冒充）：引擎在 `createCompactionStat`（`src/compact/pipeline.js`）里给
+ * 每条统计都补齐全层 id（`createEmptyCompactionLayers`（`src/compact/pipeline.js`）），
+ * `src/loop/orchestrator.js` 的 5 处观测点用 `observeCompactionLayer`（`src/loop/orchestrator.js`）
+ * 写 triggered/tokensSaved，并把 `layers` 带进每轮 `compactionStats` 条目。这里只做求和：
+ * `roundsObserved` 是**带 layers 字段的条目数**（0 = 本次拿到的统计没有分层信息，渲染成 unknown），
+ * `tokensBeforePeak` 是所有条目 `tokensBefore` 的最大值（评估轮数与峰值就是工单 R1 要的两个数）。
+ *
+ * @param {Array<{tokensBefore?:number, layers?:Record<string,{triggered?:number,tokensSaved?:number}>}>} compactionStats
+ * @returns {{roundsObserved:number, tokensBeforePeak:number, byLayerId:Record<string,{triggered:number,tokensSaved:number}>, roles:Array<{key:string,label:string,layerIds:string[],triggered:number,tokensSaved:number}>, unattributed:Array<{layerId:string,triggered:number,tokensSaved:number}>}}
+ */
+export function summarizeCompactionLayers(compactionStats) {
+  const stats = Array.isArray(compactionStats) ? compactionStats : [];
+  /** @type {Record<string, {triggered:number, tokensSaved:number}>} */
+  const byLayerId = {};
+  let roundsObserved = 0;
+  let tokensBeforePeak = 0;
+  for (const stat of stats) {
+    const before = Number.isFinite(stat?.tokensBefore) ? stat.tokensBefore : 0;
+    if (before > tokensBeforePeak) tokensBeforePeak = before;
+    const layers = stat?.layers;
+    if (layers === null || typeof layers !== "object") continue;
+    roundsObserved += 1;
+    for (const [layerId, entry] of Object.entries(layers)) {
+      const acc = byLayerId[layerId] ??= { triggered: 0, tokensSaved: 0 };
+      const triggered = Number.isFinite(entry?.triggered) && entry.triggered > 0 ? entry.triggered : 0;
+      const tokensSaved = Number.isFinite(entry?.tokensSaved) && entry.tokensSaved > 0
+        ? Math.floor(entry.tokensSaved)
+        : 0;
+      acc.triggered += triggered;
+      acc.tokensSaved += tokensSaved;
+    }
+  }
+  const attributed = new Set();
+  const roles = COMPACTION_LAYER_ROLES.map((role) => {
+    const layerIds = role.layerIds.filter((layerId) => {
+      const hit = byLayerId[layerId] !== undefined;
+      if (hit) attributed.add(layerId);
+      return hit;
+    });
+    return {
+      key: role.key,
+      label: role.label,
+      layerIds,
+      triggered: layerIds.reduce((total, id) => total + byLayerId[id].triggered, 0),
+      tokensSaved: layerIds.reduce((total, id) => total + byLayerId[id].tokensSaved, 0),
+    };
+  });
+  const unattributed = Object.entries(byLayerId)
+    .filter(([layerId]) => !attributed.has(layerId))
+    .map(([layerId, totals]) => ({ layerId, ...totals }));
+  return { roundsObserved, tokensBeforePeak, byLayerId, roles, unattributed,
+    // #313 追加：自报数据源（本层读 run 返回值那份全量统计；state.json 那份会截尾 32 条）。
+    source: COMPACTION_STATS_SOURCE,
+    truncationNote: COMPACTION_STATS_TRUNCATION_NOTE };
+}
+
+/**
+ * 分层汇总 → 终局面文本（#313 R2：整轮折叠 / 逐条 TTL 削减 / 输出钳制**分别命名分别渲染**，
+ * 不许只留一个 `compacted` 式的布尔比数）。
+ *
+ * @param {ReturnType<typeof summarizeCompactionLayers>} [summary]
+ * @returns {string}
+ */
+export function formatCompactionLayerSummary(summary) {
+  const layers = summary ?? summarizeCompactionLayers([]);
+  if (!(layers.roundsObserved > 0)) {
+    return "分层削减=unknown（拿到的 compactionStats 条目没有 layers 字段）"
+      + `\n  ↳ 来源 ${layers.source ?? COMPACTION_STATS_SOURCE}（全量）`
+      + `；若改读 state.json：${layers.truncationNote ?? COMPACTION_STATS_TRUNCATION_NOTE}`;
+  }
+  const rows = layers.roles.map((role) => `  ↳ ${role.label}（${role.layerIds.join("+") || "本 run 未出现"}）`
+    + `=${role.triggered} 次/${role.tokensSaved} tok`);
+  for (const extra of layers.unattributed ?? []) {
+    rows.push(`  ↳ ${extra.layerId}（未归组层 id）=${extra.triggered} 次/${extra.tokensSaved} tok`);
+  }
+  rows.push(`  ↳ 分层观测=${layers.roundsObserved} 条评估条目，tokensBefore 峰值 ${layers.tokensBeforePeak}`);
+  // #313 追加：自报数据源，并声明「若改读 state.json 则只覆盖最后 32 条」。
+  rows.push(`  ↳ 来源 ${layers.source ?? COMPACTION_STATS_SOURCE}（全量）`
+    + `；若改读 state.json：${layers.truncationNote ?? COMPACTION_STATS_TRUNCATION_NOTE}`);
+  return rows.join("\n");
+}
+
+/**
+ * #313 R3：notes 工具调用计数的**唯一来源**声明。
+ *
+ * 计数从引擎事件流的 `tool_use` 事件取（`emitEvent`（`src/loop/orchestrator.js`）发的
+ * `{type:"tool_use", toolUse}`，本层 onEvent 本来就在收），**不是**从别的字段推算的。
+ * 工具名真值来自引擎的 notes assembler：`createBuiltinNotesTools`（`src/tools/notes.js`）
+ * 的定义表里只有 note_take / note_read / note_list / note_forget 四个：前两者动 store
+ * （note_take 写入、note_forget 留撤销墓碑）算「写」，后两者只读算「读」。出现了第四个名字之外的
+ * `note_*` 时它只进 `byName` 与 `unclassified`，**不**并进写/读两个数（宁可少算也不冒充）。
+ */
+export const NOTE_COUNT_SOURCE = "onEvent:tool_use";
+const NOTE_WRITE_TOOLS = Object.freeze(["note_take", "note_forget"]);
+const NOTE_READ_TOOLS = Object.freeze(["note_read", "note_list"]);
+
+/** notes 计数的初始形状（observed=false ⇒ 渲染 unknown，不假称 0）。 */
+export function createNoteCallTally() {
+  return {
+    observed: false,
+    source: NOTE_COUNT_SOURCE,
+    writes: 0,
+    reads: 0,
+    unclassified: 0,
+    byName: /** @type {Record<string, number>} */ ({}),
+  };
+}
+
+/**
+ * 把一个引擎事件里的 `tool_use` 记进 notes 计数（非 note_* 工具、非 tool_use 事件一律忽略）。
+ *
+ * @param {ReturnType<typeof createNoteCallTally>} tally
+ * @param {object} [event]
+ */
+export function countNoteToolEvent(tally, event) {
+  if (tally === undefined || tally === null || event?.type !== "tool_use") return tally;
+  const name = typeof event?.toolUse?.name === "string" ? event.toolUse.name : "";
+  if (!name.startsWith("note_")) return tally;
+  tally.byName[name] = (tally.byName[name] ?? 0) + 1;
+  if (NOTE_WRITE_TOOLS.includes(name)) tally.writes += 1;
+  else if (NOTE_READ_TOOLS.includes(name)) tally.reads += 1;
+  else tally.unclassified += 1;
+  return tally;
+}
+
+/** notes 计数 → 终局面文本；事件流没建立（run 没进循环）时如实渲染 unknown。 */
+function formatNoteTally(notes) {
+  if (notes === null || typeof notes !== "object" || notes.observed !== true) {
+    return "notes 写/读=unknown/unknown（事件流未建立，没有 tool_use 可数）";
+  }
+  const names = Object.entries(notes.byName ?? {})
+    .map(([name, count]) => `${name}=${count}`)
+    .join(" ");
+  return `notes 写=${notes.writes ?? 0}/读=${notes.reads ?? 0}`
+    + `${notes.unclassified ? `（未归类 note_* ${notes.unclassified}）` : ""}`
+    + `${names === "" ? "" : ` ｜ ${names}`} ｜ 来源 ${notes.source ?? NOTE_COUNT_SOURCE}`;
+}
+
 function buildDiagnostics(input, source) {
   const { context, observerErrors = [], metadataEvents = [], ledgerErrors = [] } = input;
   const compactionStats = Array.isArray(source?.compactionStats) ? source.compactionStats : [];
@@ -1147,12 +1325,26 @@ function buildDiagnostics(input, source) {
     ledgerErrors: sampleList(ledgerErrors),
     persistenceErrors: sampleList(input.persistenceErrors ?? []),
     compaction: {
+      // ⚠ 这三个字段的**含义与取值一律不动**（#313 R2：判定语义不变，additive only）：
+      //    compactedRounds 仍是「compacted===true 的条目数」，foldedRounds 仍是整轮折叠轮数总和。
+      //    事故现场（69 次 TTL 削减 / 650,581 tok 被 `compacted:false` 盖掉）由下面新增的
+      //    `layers` 承担，不是靠改这三个数。
       events: compactionStats.length,
       compactedRounds: compactionStats.filter((stat) => stat?.compacted === true).length,
       foldedRounds: compactionStats.reduce(
         (total, stat) => total + (Number.isFinite(stat?.foldedRounds) ? stat.foldedRounds : 0),
         0,
       ),
+      // #313 R1：分层削减（每个真实层 id 的 triggered / tokensSaved）+ 评估条目数 + tokensBefore 峰值。
+      layers: summarizeCompactionLayers(compactionStats),
+    },
+    // #313 R3：notes 写/读计数（来源：事件流 tool_use，见 `countNoteToolEvent` 的注释）与
+    // model_metadata_missing **事件数**（来源：onEvent 收到的该类型事件，一条都不落）。
+    notes: input.noteToolCalls ?? createNoteCallTally(),
+    modelMetadataMissingEvents: {
+      count: metadataEvents.length,
+      observed: input.eventStreamObserved === true,
+      source: `onEvent:${"model_metadata_missing"}`,
     },
     model: context.model,
     configPath: context.configPath,
@@ -1213,6 +1405,10 @@ export async function runErixRun(rawParams = {}, deps = {}) {
   const metadataEvents = [];
   const ledgerErrors = [];
   const persistenceErrors = [];
+  // #313 R3：notes 写/读计数的累加器（来源：事件流 tool_use）与「事件流是否建立」标记：
+  // 后者只为「没进循环 ⇒ 一个事件也没收」时把计数渲染成 unknown，而不是假称 0。
+  const noteToolCalls = createNoteCallTally();
+  let eventStreamObserved = false;
   /** @type {{model?:string, configPath?:string, cwd?:string, libSource?:string, strategy?:string, runId?:string, maxRounds?:number, timeoutMs?:number, elapsedMs?:number, metadataMissing?:object}} */
   const context = { cwd: textOf(rawParams?.cwd), strategy: textOf(rawParams?.strategy) || undefined };
 
@@ -1408,6 +1604,8 @@ export async function runErixRun(rawParams = {}, deps = {}) {
           if (event?.type === "model_metadata_missing") {
             metadataEvents.push({ detail: event.detail });
           }
+          // #313 R3：notes 写/读只从事件流的 tool_use 数（真来源，不拿 notesLifecycle 推算）。
+          countNoteToolEvent(noteToolCalls, event);
           // #207 R3：run 终局汇总也落进同一个 judge.log（照 bin/cli.js：只抄这一条，
           // 其余事件不抄），AGENTS.md §6「末行 run_outcome 汇总」就靠它。写入器内部吞错，
           // 不会把已跑完的 run 带成 failed。
@@ -1440,6 +1638,10 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       reflection,
     });
 
+    // 事件流从这一行起才存在（onEvent 只能收到 runToolLoop 里发的事）；装配期就报错的 run
+    // 一个 tool_use 也没收过，notes 计数就是 unknown，而不是假装「0 次调用」。
+    eventStreamObserved = true;
+    noteToolCalls.observed = true;
     const result = await runLoop(options);
     context.elapsedMs = now() - startedAt;
     const payload = buildSuccessPayload(result, {
@@ -1449,6 +1651,8 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       metadataEvents,
       ledgerErrors,
       persistenceErrors,
+      noteToolCalls,
+      eventStreamObserved,
       context,
       artifacts: resolveArtifacts(persistence),
       extensionCount,
@@ -1470,6 +1674,8 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       metadataEvents,
       ledgerErrors,
       persistenceErrors,
+      noteToolCalls,
+      eventStreamObserved,
       context,
       artifacts: resolveArtifacts(persistence ?? {}),
       extensionCount,
@@ -1534,9 +1740,16 @@ export function formatPayloadForModel(payload, { limit = 20_000 } = {}) {
     lines.push(`[diagnostics] model=${diagnostics.model ?? "?"}`
       + ` strategy=${diagnostics.strategy ?? "engine default"}`
       + ` compaction=${diagnostics.compaction?.compactedRounds ?? 0}/${diagnostics.compaction?.events ?? 0}`
+      // #313 R2：这一对比数就是 `compactedRounds`/`events`，**不是**「压缩有没有生效」：
+      // 整轮折叠 / 逐条 TTL 削减 / 输出钳制在下一段分开命名分别渲染（事故现场正是被它盖掉的）。
+      + `（=compactedRounds/events，不等于「压缩没生效」）`
       + ` observerErrors=${diagnostics.observerErrors?.count ?? 0}`
       + ` persistenceErrors=${diagnostics.persistenceErrors?.count ?? 0}`
       + ` model_metadata_missing=${diagnostics.modelMetadataMissing ? "YES" : "no"}`
+      // #313 R3：事件数只从 onEvent 收到的 model_metadata_missing 数（事件流未建立 ⇒ unknown）。
+      + ` events=${diagnostics.modelMetadataMissingEvents?.observed === true
+        ? diagnostics.modelMetadataMissingEvents?.count ?? 0
+        : "unknown"}`
       // #266：notes 收口结果（只有真装配了 notes 才有这一行）；收尾失败不改终局，但要让宿主看见。
       + (diagnostics.notesLifecycle
         ? ` notesClosed=${diagnostics.notesLifecycle.completed ?? 0}`
@@ -1545,6 +1758,9 @@ export function formatPayloadForModel(payload, { limit = 20_000 } = {}) {
     if (diagnostics.modelMetadataMissing?.detail) {
       lines.push(`  ↳ ${diagnostics.modelMetadataMissing.detail}`);
     }
+    // #313 R1/R2/R3：分层削减分别命名分别渲染，再补 notes 写/读计数（同一来源纪律：取不到就 unknown）。
+    lines.push(formatCompactionLayerSummary(diagnostics.compaction?.layers));
+    lines.push(`  ↳ ${formatNoteTally(diagnostics.notes)}`);
     for (const failure of diagnostics.notesLifecycle?.errors ?? []) {
       lines.push(`  ↳ notes 收尾失败（${failure?.operation ?? "?"}）：${failure?.message ?? ""}（不影响终局）`);
     }

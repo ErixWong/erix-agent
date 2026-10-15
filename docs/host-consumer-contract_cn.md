@@ -2095,6 +2095,57 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 `stateAvailability` 是本次 resume 的诊断观测结果，会随 state 保留用于诊断，但不会仅因该标记
 而拒绝下一次 resume 时结构仍然有效的 state。
 
+## erix_run 终局面：分层削减与 notes 计数（issue #313）
+
+引擎早就是逐轮报分层压缩的：每条 `compactionStats` 条目都带一个 `layers` 映射，键是
+`COMPACTION_LAYER_IDS`（`src/compact/pipeline.js`）从 `COMPACTION_PIPELINE` 派生出来的真实层 id，
+由循环里各观测点调 `observeCompactionLayer`（`src/compact/pipeline.js`）写入，再由
+`createCompactionStat`（`src/compact/pipeline.js`）归一。而 `erix_run` 这层宿主扩展过去会把整张表
+摺成三个数就丢弃，于是某条 `ttl` 层折叠 69 次、省下 650,581 tok 的 run 仍然只打出一个
+`compaction=0/1`，被读成「压缩没生效」。现在 `buildDiagnostics`
+（`examples/pi-extension/erix-run-core.js`）把分层与 notes 计数都留在终局面上。**只做增量**：
+`compacted` 与 `foldedRounds` 的含义与取值一律不动，`diagnostics.compaction.events` /
+`.compactedRounds` / `.foldedRounds` 与本小节存在之前逐字相同。
+
+| 终局面字段 | 真来源 | 含义 |
+| --- | --- | --- |
+| `diagnostics.compaction.events` / `.compactedRounds` / `.foldedRounds` | `compactionStats` 数组 | 自 #313 之前未变。文本里的 `compaction=<compactedRounds>/<events>` **不是**「压缩没生效」 |
+| `diagnostics.compaction.layers.roundsObserved` | 带 `layers` 字段的条目数 | 真正被评过分层轮数；为 `0` 时文本渲染 `unknown`，而不是报成「什也没省」 |
+| `diagnostics.compaction.layers.tokensBeforePeak` | 这些条目里 `tokensBefore` 的最大值 | 本次 run 达到过的最大压缩前上下文 |
+| `diagnostics.compaction.layers.byLayerId.<id>` | `summarizeCompactionLayers`（`examples/pi-extension/erix-run-core.js`）逐条累加 `layers.<id>` | **引擎声明的每个层 id** 的 `{triggered, tokensSaved}`；本层不自创、不改名 |
+| `diagnostics.compaction.layers.roles[]` | `COMPACTION_LAYER_ROLES`（`examples/pi-extension/erix-run-core.js`） | 文本里分开命名的四个归组：`wholeRoundFold`（`slidingWindow`+`foldStatistical`+`foldLlm`）、`ttlResultFold`（`ttl`）、`outputClamp`（`enforceSize`）、`foldFidelity`（`anchors`） |
+| `diagnostics.compaction.layers.unattributed[]` | 数据里出现、但没有任何归组点名的层 id | 前向兼容兼Rail：引擎以后新增的层一会被渲染出来，不会被归组表吞掉 |
+| `diagnostics.notes.writes` / `.reads` / `.byName` / `.unclassified` | `countNoteToolEvent`（`examples/pi-extension/erix-run-core.js`）数 `onEvent` 收到的 `tool_use` 事件 | 写 = `note_take` / `note_forget`（两者都动 store），读 = `note_read` / `note_list`；认不出的 `note_*` 名字只进 `byName` / `unclassified`，绝不并进这两个数 |
+| `diagnostics.notes.source` | `NOTE_COUNT_SOURCE`（`examples/pi-extension/erix-run-core.js`） | 恒为 `onEvent:tool_use`：计数是事件流的读数，不是从别的字段推出来的 |
+| `diagnostics.modelMetadataMissingEvents.count` | `onEvent` 收到的 `model_metadata_missing` 事件 | 事件数。既有的 `modelMetadataMissing` 标志含义与取值不变 |
+| `diagnostics.notes.observed` / `diagnostics.modelMetadataMissingEvents.observed` | 是否真的进入了内层循环 | `false` ⇒ 文本渲染 `unknown`：装配期就失败的 run 一个事件也没产生，「没事件」不等于「没调用」 |
+
+| `diagnostics.compaction.layers.source` / `.truncationNote` | `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE`（`examples/pi-extension/erix-run-core.js`） | 汇总读的是**哪一份** `compactionStats`：run 返回值（或抛错载荷）上那份**全量**。而 `<runId>.state.json` 里那份要经 `normalizeCompactionStats(value, limit = 32)`（`src/compact/pipeline.js`）截尾（调用点 `createDeterministicRunState`（`src/run-state.js`）），即 `value.slice(-limit)` 只留**最后 32 条** —— >32 轮的 run 去那个文件数削减账会静默少算（已另开 **issue #315**，本小节不改它的行为） |
+
+`formatCompactionLayerSummary`（`examples/pi-extension/erix-run-core.js`）把四个归组逐行渲染，
+上面那个事故 run 现在读起来是：
+
+```text
+[diagnostics] model=… compaction=0/2（=compactedRounds/events，不等于「压缩没生效」） … model_metadata_missing=YES events=1
+  ↳ 整轮折叠（slidingWindow+foldStatistical+foldLlm）=0 次/0 tok
+  ↳ 逐条TTL削减（ttl）=69 次/650581 tok
+  ↳ 输出钳制（enforceSize）=0 次/0 tok
+  ↳ 折叠锚点（anchors）=0 次/0 tok
+  ↳ 分层观测=2 条评估条目，tokensBefore 峰值 130000
+  ↳ 来源 runResult.compactionStats（全量）；若改读 state.json：state.json 的 deterministic.compactionStats 经 normalizeCompactionStats(value, limit=32) 截尾到最后 32 条（issue #315）；>32 轮的 run 拿它当源会静默少算
+  ↳ notes 写=2/读=2 ｜ note_take=2 note_read=1 note_list=1 ｜ 来源 onEvent:tool_use
+```
+
+宿主读取约束：
+
+- 分层收益只从 `layers.byLayerId` / `layers.roles` 读，**不要**拿 `compacted` /
+  `compactedRounds` 当结论：`foldedRounds = 0` 的 run 完全可能把全部收益都放在 `ttl` 上。
+- `unknown` 是「没测到」而不是 `0`：计数源不存在时本层就渲染 `unknown`，绝不拿相邻字段推一个数。
+- 不要拿不在 `COMPACTION_LAYER_IDS`（`src/compact/pipeline.js`）里的层名做匹配：上面四个归组
+  点名的都是引擎的真 id，新增的层会出现在 `layers.unattributed` 里。
+- 终局面会自报数据源（`layers.source`）：请从 run 返回值上读这份账；如果宿主改为重读
+  `<runId>.state.json`，它拿到的是一个**最后 32 条**的窗口，不能当成全 run 的削减总量报出去。
+
 ## 契约测试套件（issue #183）
 
 `erix-agent/contract-tests`（即 `./contract-tests` 子路径导出，`test/contract/index.js`）

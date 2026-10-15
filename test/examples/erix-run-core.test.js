@@ -15,6 +15,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { createMemoryTranscriptStore, createFileTranscriptStore, createJsonFileModelConfigProvider, runToolLoop } from "../../src/index.js";
+// #313：层 id 与观测器直取引擎声明（`COMPACTION_LAYER_IDS` 由 `COMPACTION_PIPELINE` 的 id 派生），
+// 单测用它钉住「终局面不许自创层名」。
+import { COMPACTION_LAYER_IDS, createEmptyCompactionLayers, observeCompactionLayer } from "../../src/compact/pipeline.js";
 import { safeRunId } from "../../src/store/file.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
@@ -1197,4 +1200,145 @@ test("#234 R0：reflection.onReflection 里注入抛错不得杀 run（契约：
   // 抛错那次只丢它自己那一行播报：第 2 次调用把 round getter 抛掉了 → 直接跳到 3/2
   assert.doesNotMatch(lines, /↻ 扩轮 2\/2/u, "抛错那次不该有播报行");
   assert.match(lines, /↻ 扩轮 3\/2/u, "抛错那次仍然计了数（所以第三次报的是 3/2）");
+});
+
+// ---------------------------------------------------------------------------
+// #313：erix_run 终局面暴露**分层削减**与 notes 计数（additive，判定语义一律不动）。
+// 事故现场：一条 run 里 `ttl` 层折叠 69 次、省下 650,581 tok，而终局面只有
+// `compaction=0/1` 这一对比数 ⇒ 宿主把它读成「压缩没生效」，整层收益在终局面上看不见。
+// 判据 C3：下面全部是**新增**用例，上面既有的 `compaction=1/1`、`model_metadata_missing=YES`
+// 等断言一条没改（`compacted` / `foldedRounds` 的含义与取值不变）。
+
+test("#313 C1：foldedRounds=0 但 ttl 层真削减过 ⇒ 结构与文本里都看得到该层的 triggered/tokensSaved", () => {
+  const layers = createEmptyCompactionLayers();
+  observeCompactionLayer(layers, "ttl", { triggered: 69, tokensBefore: 700_000, tokensAfter: 49_419 });
+  const payload = core.buildSuccessPayload({
+    finalText: "任务已完成",
+    rounds: 30,
+    usage: { input_tokens: 9, output_tokens: 9 },
+    termination: { reason: "end_turn" },
+    compactionStats: [
+      { compacted: false, foldedRounds: 0, tokensBefore: 120_000, tokensAfter: 118_000, layers },
+      { compacted: false, foldedRounds: 0, tokensBefore: 130_000, tokensAfter: 130_000, layers: createEmptyCompactionLayers() },
+    ],
+  }, {
+    timeout: false,
+    aborted: false,
+    observerErrors: [],
+    metadataEvents: [],
+    ledgerErrors: [],
+    context: { model: "m", cwd: "/w", runId: "r" },
+  });
+
+  // 判定语义不变：既有三个数还是原来那几个（additive 只在它们旁边加 layers）
+  const compaction = payload.diagnostics.compaction;
+  assert.equal(compaction.events, 2);
+  assert.equal(compaction.compactedRounds, 0);
+  assert.equal(compaction.foldedRounds, 0);
+
+  // R1：每个层 id 的 triggered/tokensSaved + 评估条目数 + tokensBefore 峰值
+  const summary = compaction.layers;
+  assert.equal(summary.byLayerId.ttl.triggered, 69);
+  assert.equal(summary.byLayerId.ttl.tokensSaved, 650_581);
+  assert.equal(summary.roundsObserved, 2);
+  assert.equal(summary.tokensBeforePeak, 130_000);
+  // 层 id 一律是引擎声明里的真值：既不自创，也不漏层
+  assert.deepEqual(Object.keys(summary.byLayerId).sort(), [...COMPACTION_LAYER_IDS].sort());
+  for (const role of summary.roles) {
+    assert.deepEqual(role.layerIds.filter((id) => COMPACTION_LAYER_IDS.includes(id)), role.layerIds,
+      `归组表出现了不在 COMPACTION_LAYER_IDS 里的层名：${role.key}`);
+  }
+  assert.equal(summary.roles.find((role) => role.key === "ttlResultFold").triggered, 69);
+  assert.equal(summary.roles.find((role) => role.key === "ttlResultFold").tokensSaved, 650_581);
+  assert.deepEqual(summary.unattributed, []);
+
+  // R2：整轮折叠 / 逐条 TTL 削减 / 输出钳制**分别命名分别渲染**
+  const text = core.formatPayloadForModel(payload);
+  assert.match(text, /逐条TTL削减（ttl）=69 次\/650581 tok/u);
+  assert.match(text, /整轮折叠（slidingWindow\+foldStatistical\+foldLlm）=0 次\/0 tok/u);
+  assert.match(text, /输出钳制（enforceSize）=0 次\/0 tok/u);
+  assert.match(text, /tokensBefore 峰值 130000/u);
+  // 那个比数不许再被当成结论读
+  assert.match(text, /compaction=0\/2（=compactedRounds\/events，不等于「压缩没生效」）/u);
+
+  // #313 追加：终局面自报数据源——汇总读的是 run 返回值那份全量 compactionStats，
+  // 而 state.json 那份被 normalizeCompactionStats(value, limit=32) 截尾（issue #315，本单不修）。
+  assert.equal(summary.source, core.COMPACTION_STATS_SOURCE);
+  assert.match(summary.truncationNote, /normalizeCompactionStats\(value, limit=32\)/u);
+  assert.match(summary.truncationNote, /最后 32 条/u);
+  assert.match(text, /↳ 来源 runResult\.compactionStats（全量）；若改读 state\.json：/u);
+});
+
+test("#313 R1：引擎新增的未知层 id 进 unattributed 并单独渲染，不会被归组表吞掉", () => {
+  const summary = core.summarizeCompactionLayers([
+    { compacted: false, foldedRounds: 0, tokensBefore: 10, tokensAfter: 5, layers: { futureLayer: { triggered: 3, tokensSaved: 42 } } },
+  ]);
+  assert.deepEqual(summary.unattributed, [{ layerId: "futureLayer", triggered: 3, tokensSaved: 42 }]);
+  assert.equal(summary.roles.find((role) => role.key === "ttlResultFold").triggered, 0);
+  assert.match(core.formatCompactionLayerSummary(summary), /futureLayer（未归组层 id）=3 次\/42 tok/u);
+});
+
+test("#313 R1/R3：拿不到分层与事件流（老条目 / 装配期就失败）时渲染 unknown，不假称 0", () => {
+  const payload = core.buildSuccessPayload({
+    finalText: "x",
+    rounds: 1,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    termination: { reason: "end_turn" },
+    // 0.19 及更早的条目形状：没有 layers 字段
+    compactionStats: [{ compacted: true, foldedRounds: 2, tokensBefore: 100, tokensAfter: 40 }],
+  }, {
+    timeout: false, aborted: false, observerErrors: [], metadataEvents: [], ledgerErrors: [], context: {},
+  });
+
+  assert.equal(payload.diagnostics.compaction.layers.roundsObserved, 0);
+  assert.equal(payload.diagnostics.notes.observed, false);
+  assert.equal(payload.diagnostics.modelMetadataMissingEvents.observed, false);
+  const text = core.formatPayloadForModel(payload);
+  assert.match(text, /分层削减=unknown（拿到的 compactionStats 条目没有 layers 字段）/u);
+  assert.match(text, /notes 写\/读=unknown\/unknown（事件流未建立，没有 tool_use 可数）/u);
+  assert.match(text, /model_metadata_missing=no events=unknown/u);
+  // 数据源声明与「有没有 layers」无关，unknown 分支也要自报
+  assert.match(text, /unknown（拿到的 compactionStats 条目没有 layers 字段）\n  ↳ 来源 runResult\.compactionStats（全量）/u);
+});
+
+test("#313 R3：notes 写/读与 model_metadata_missing 事件数从**事件流**取，并进终局面文本", async () => {
+  const payload = await core.runErixRun({ task: "t", cwd: repoRoot, maxRounds: 4 }, makeDeps({
+    provider: createFakeProvider([]),
+    captured: undefined,
+    extra: {
+      runLoop: async (options) => {
+        for (const event of [
+          { type: "model_metadata_missing", detail: "no window metadata" },
+          { type: "tool_use", toolUse: { name: "note_take" } },
+          { type: "tool_use", toolUse: { name: "note_list" } },
+          { type: "tool_use", toolUse: { name: "note_read" } },
+          { type: "tool_use", toolUse: { name: "note_forget" } },
+          { type: "tool_use", toolUse: { name: "readFile" } },
+          { type: "tool_use", toolUse: { name: "note_whatever_new" } },
+        ]) await options.onEvent(event);
+        return {
+          finalText: "任务已完成", rounds: 3,
+          usage: { input_tokens: 7, output_tokens: 3 }, termination: { reason: "end_turn" },
+          compactionStats: [],
+        };
+      },
+    },
+  }));
+
+  const notes = payload.diagnostics.notes;
+  assert.equal(notes.observed, true);
+  assert.equal(notes.source, core.NOTE_COUNT_SOURCE);
+  assert.equal(notes.writes, 2, "note_take 与 note_forget（留墓碑）都动 store ⇒ 记成写");
+  assert.equal(notes.reads, 2, "note_read 与 note_list 只读 ⇒ 记成读");
+  assert.equal(notes.unclassified, 1, "认不出的 note_* 只进 byName，不并进写/读两个数");
+  assert.deepEqual(notes.byName, {
+    note_take: 1, note_list: 1, note_read: 1, note_forget: 1, note_whatever_new: 1,
+  });
+  assert.deepEqual(payload.diagnostics.modelMetadataMissingEvents, {
+    count: 1, observed: true, source: "onEvent:model_metadata_missing",
+  });
+  const text = core.formatPayloadForModel(payload);
+  assert.match(text, /notes 写=2\/读=2（未归类 note_\* 1）/u);
+  assert.match(text, /note_take=1/u);
+  assert.match(text, /model_metadata_missing=YES events=1/u);
 });
