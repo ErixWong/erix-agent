@@ -154,7 +154,7 @@ scripts/          # experiment scripts and results
   every anchor, and why the remaining ones were *not* upgraded, is listed in the header comment of that script.
 - Doc line anchors (issue #286, first batch T-a): docs must not lean on **bare line numbers**. `paths` used to strip
   `:1234` before resolving a reference, so only the file was ever checked — a line number that drifted into another
-  function, or past the end of the file, stayed green (the contract pointed at line 398 of `src/store/notes.js`, a file that is 383 lines long). Two anchors now hold that line, both wired into `--self-test`:
+  function, or past the end of the file, stayed green (the contract pointed at line 398 of `src/store/notes.js`, a file that is 383 lines long). Three anchors now hold that line, all wired into `--self-test`:
   *`symbol-anchor`* is *per-occurrence*: every `` `symbol` (`path`) `` or `[symbol](path)` reference must find a real
   declaration of that symbol **in that file** (`function` / `class` / `const|let|var` binding / destructuring /
   re-export / method / object key / `process.env.X`). A missing symbol is red and the message names the nearest
@@ -168,9 +168,18 @@ scripts/          # experiment scripts and results
   measured today: 24 unique (symbol, file) pairs over 44 occurrences, reproducible via `--verbose`): dropping below it is
   red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
   Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
+  *`symbol-anchor-span`* (#286 batch T-b1a) is the *per-occurrence* companion of the rule above: when a symbol anchor
+  **carries a line range** — `` `symbol` (`path:1517-1531`) `` — that range must **intersect that symbol's own ground
+  truth in the referenced file** (`lo <= p <= hi`). Ground truth = every declaration site of the name (not only the
+  first: `sideEffect` legitimately appears both in the persistence normalizer and in `fail()`) plus, in the four
+  membership files, the lines where that named string value occurs. A range pointing elsewhere is exactly the #286
+  drift shape — symbol right, numbers wrong, invisible to the old `paths` anchor because it strips line numbers
+  before resolving. Two legal fixes: **drop the range** (`` `symbol` (`path`) ``, preferred: numbers drift and
+  `symbols` never needed them) or move it onto the declaration. Anchors *without* a range are outside this rule,
+  which is also why dropping ranges makes the ratchet below go down legitimately.
   *`bare-lines`* is a *ratchet (only down)*: `src/**.js:N` / `:N-M` references, counted as unique
-  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 244` in that same script. The number
-  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 248 measured minus 4 declaratively exempted
+  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 232` in that same script. The number
+  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 236 measured minus 4 declaratively exempted
   example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
   declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
   nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty
@@ -184,7 +193,8 @@ scripts/          # experiment scripts and results
   `test/docs-anchor-ratchet.test.js` keeps its own pinned list of those 14 file names. Renaming or adding a guide is
   red until both places are updated. `CHANGELOG.md` is deliberately out of scope: its line numbers record what was true at
   release time, and rewriting them would fake history (same reasoning as the #278 shorthand register).
-  Batch T-a only builds the infrastructure and the ratchet — the 244 existing sites still have to be converted to
+  Batch T-a built the infrastructure and the ratchet; batch T-b1a converted the contract's
+  `src/loop/orchestrator.js` family (EN + CN in the same PR) and took the baseline from 244 down to 232. The remaining sites still have to be converted to
   symbol anchors by the follow-up batches, and *lowering* that constant (with a reason in the commit message) is what
   "we removed some" has to look like.
 

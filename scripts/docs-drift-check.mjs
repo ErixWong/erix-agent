@@ -54,7 +54,7 @@
 //                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
-//                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 244`，超了红
+//                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 232`，超了红
 //                 （并提示「可以把基线降到 N」），低于基线算过但会催你降。**越界行号是 error**，不是观察项。
 //                 覆盖面 = 宿主会读的 20 份文档：README{,_cn} / AGENTS{,_cn} / host-consumer-contract{,_cn}
 //                 + `docs/host-upgrade-guide*.md` 全部（按目录实扫，新指南落地即自动纳面）。
@@ -86,7 +86,7 @@
 //       toolfact 的五个字段声明面（工单 261014，与 TOOL_RESULT_CONTRACT 双向对称）、
 //       symbols 的「符号 + 文件」锚点（#286 T-a：每一处都要在被引文件里抽到该符号的声明）
 //   · 只减不增的棘轮（比的是「还剩多少」：新增即红，变少则必须降基线并写理由）：
-//       bare-lines 的裸行号引用数（#286 T-a，基线 244，与 `check:types` 的 BASELINE_ROOT 同构）
+//       bare-lines 的裸行号引用数（#286 T-a 起，现基线 232，与 `check:types` 的 BASELINE_ROOT 同构）
 //   · 中英对账（比的是处数与数量级）：skeleton 的标题数与层级序列（README **与** AGENTS 两对）、
 //       anchors 的声明点处数、markers 的引用处数、baseline 的句式处数、
 //       toolfact 每一面的声明点处数
@@ -1506,8 +1506,9 @@ function collectBaselineClaimErrors() {
 //     不存在「新文档漏在覆盖面外」的形状）。
 //   正则 = BARE_LINE_RE（工单口径写的是 `src/**.js:N[-M]`；这里把前缀面放宽到 src|bin|scripts|test|docs|
 //     examples|fixtures，因为 `bin/cli.js:88` 这类行号同样会漂，窄到 src/ 等于给未来的漂移留门）。
-//     按工单那条只算 src/**.js 的口径实测：唯一 (文档,目标文件,行区间) **248** / 总出现 **279**
-//     （契约 CN 138、契约 EN 137、0.17.0 指南 2、v030 指南中英各 1）；减去 4 处声明式豁免 ⇒ 棘轮基线 **244**。
+//     按工单那条只算 src/**.js 的口径实测：唯一 (文档,目标文件,行区间) **236** / 总出现 **271**
+//     （T-b1a 之前是 248 / 279；契约那两大段锚点族被符号化 + 合并重复区间后降到这里。减去 4 处声明式
+//     豁免 ⇒ 棘轮基线 **232**，降基线的逐条理由就写在下面 `BARE_LINE_REF_BASELINE` 的注释里。）
 //     放宽前缀后的实测数在 `--verbose` 的 note 里，基线常量的注释里也写了怎么复现。
 //   `CHANGELOG.md` **不参与**：历史条目描述的是**当时**那份代码的行号，把它们改掉等于伪造历史
 //     （同口径先例：#278 对 CHANGELOG 里的简称只登记不改写、#273 对历史条目逐条登记）。CHANGELOG 里
@@ -1610,7 +1611,7 @@ const SYMBOL_DECL_PATTERNS = [
 ];
 
 /* 文件文本的进程内缓存（#286 T-a）。`--self-test` 要跑 85 轮全量检查，每轮都重新读一遍
- * orchestrator.js（350KB）× 244 处引用，会把一条文档门禁拖到分钟级——那是「太慢所以会被跳过」的形状。
+ * orchestrator.js（350KB）× 两百多处引用，会把一条文档门禁拖到分钟级——那是「太慢所以会被跳过」的形状。
  * 口径：
  *   · 被 `--self-test` overlay 改过的文件**每次现读**（来源不同就必须重来，绝不吃缓存）；
  *   · 没被 overlay 的文件在本进程里只读一次——本脚本从头到尾是只读的，不存在自己改盘的路径；
@@ -1861,11 +1862,14 @@ function symbolAnchorSpanVerdict(o) {
 function mutateSymbolAnchorSpan(sym, filePath, to) {
   return (text) => {
     let hits = 0;
+    // 捕获组的边界要数清楚：`sep` 这一组**已经含**路径前的那个反引号，闭合反引号是模式里的字面量（没进组）。
+    // 早先重写时多补了一个反引号，变异结果成了 `path:94-100` 前面两个反引号 ⇒ 锚点整条解体（符号下限掉一组），
+    // 于是这一例报的是「别的红」而不是本判据的红——#279 说的「变异器自己坏掉」就是这个形状。
     const out = text.replace(/`([A-Za-z_$][\w$]*)`(\s*[（(]\s*`)([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(:\d+(?:-\d+)?)?`(\s*[)）])/g,
       (whole, s, sep, p, span, tail) => {
         if (s !== sym || p !== filePath || !span) return whole;
         hits += 1;
-        return `\`${s}\`${sep}\`${p}${to}\`${tail}`;
+        return "`" + s + "`" + sep + p + to + "`" + tail;
       });
     return hits ? out : text;      // 一处都没打上 → 原样返回 → 「变异没落上」报红
   };
@@ -1988,14 +1992,19 @@ function collectSymbolAnchorErrors() {
 // 那时降基线必须写理由（与本仓 `check:types` 的 `BASELINE_ROOT` 同构）。
 /** 裸行号引用（`path:N` / `path:N-M`）的正则；覆盖面与 2.8.1 同一批文档（同一份理由）。
  *  实测值不靠注释：`--verbose` 会把「唯一区间数 / 出现次数 / 豁免数」打进 note（工单口径的三个数是
- *  248 / 279 / 基线 244，note 里应该逐字对得上）。非 `src/` 前缀（`bin/cli.js:88`、`test/x.js:9`）
+ *  现在的数在 note 里，基线常量的注释里写了它是怎么从 248 降到 232 的。非 `src/` 前缀（`bin/cli.js:88`、`test/x.js:9`）
  *  同样会漂，但本批把覆盖面钉在工单那条正则上，扩前缀归 T-b（扩时要重新登记基线）。
  *  唯一 (文档, 目标文件, 行区间) 与工单口径可复现：脚本自己数出来的数在下面那条 note 里，别只信注释。 */
 const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
-/** 棘轮基线（工单 #286 T-a 口径）：唯一 (文档, 目标文件, 行区间) 实测 248，减去 4 处声明式豁免 ⇒ **244**。
+/** 棘轮基线：唯一 (文档, 目标文件, 行区间) 实测 236，减去 4 处声明式豁免 ⇒ **232**。
  *  降它必须写理由；抬它必须写「为什么这次允许变差」。**不许悄悄抬**（同 `check:types` 棘轮的纪律）。
+ *  降基线的理由（#286 T-b1a，244 → **232**，降 12）：契约 EN/CN 的 `src/loop/orchestrator.js` 锚点族按新判据
+ *  「区间必须与声明处相交」逐条改绿——4 处**删掉区间**（`emitEvent` 1517-1531、`emitJudge` 1544-1557、
+ *  `shouldContinue` 2739-2740、`dispatchAttemptEvent` provider-runner 96-110；中英各一份 ⇒ 8 个唯一键），
+ *  另有 2 个唯一键是**三条不同写法指向同一段真身**（2739-2745 / 2742-2745 / 2743-2745 全部是
+ *  `completionSignalDetected` 的声明处 3121-3125）合并成一条 ⇒ 每份文档再降 2 处。
  *  写法必须保持 `const BARE_LINE_REF_BASELINE = <数字>;` 一行（自测的「调低就红」用例要能改这个数）。 */
-const BARE_LINE_REF_BASELINE = 244;
+const BARE_LINE_REF_BASELINE = 232;
 
 /** 棘轮生效值：从**本脚本自己的文本**里读 `BARE_LINE_REF_BASELINE`（走 `textOf`，所以 `--self-test`
  *  能把这个常量临时改小来证「它真的是锁」：调低到低于实测值必须红，改回来必须绿）。
@@ -2992,6 +3001,12 @@ for (const n of collectAnchorErrors.notes ?? []) note(n);
 // ── 8. 反向证自测（issue #210 R2：把反向证固化在脚本里，不靠一次性手工实验）──────
 // 每条规则至少两例：改文档一处 → 必须红；改源码/清单一侧 → 必须红；都不改（对照）→ 必须绿。
 // 变异没落上去也算失败——否则规则改了而变异体过期，自测会默默变成空跑。
+/** 「实测 **N** 处，超过棘轮基线 **M** 处」的正则（#286 棘轮反向证用）。写成函数而不是手写转义：
+ *  这句话里半角/全角括号混排，手写转义配错一次就是一个 SyntaxError（本单真踩过）。 */
+const ratchetOverBaseline = (measured, baseline) => new RegExp(
+  `bare-lines: 裸行号引用（唯一 \\(文档,目标文件,行区间\\)）实测 \\*\\*${measured}\\*\\* 处，超过棘轮基线 \\*\\*${baseline}\\*\\*`,
+);
+
 const SELF_TEST = process.argv.includes("--self-test");
 
 /** #279：在文档**第一处 `## ` 标题之前**插一句散文（= 「在文档靠前位置提一句某个名字」）。 */
@@ -3560,17 +3575,21 @@ const SELF_TEST_CASES = [
   {
     label: "#286 棘轮：在 AGENTS EN 临时多写一处**合法**裸行号 `src/loop/termination.js:12` → 红（新增就红，越界都没有）",
     overlay: { [AGENTS_EN]: mentionInProse("自测探针（#286）：这里临时多写一处合法裸行号引用 `src/loop/termination.js:12`。") },
-    expect: [/bare-lines: 裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/, /AGENTS\.md 1/],
+    expect: [ratchetOverBaseline(BARE_LINE_REF_BASELINE + 1, BARE_LINE_REF_BASELINE), /AGENTS\.md 1/],
     expectFiles: [AGENTS_EN],
   },
   {
-    label: "#286 棘轮下限：把 BARE_LINE_REF_BASELINE 调到 243 → 必须红（证明这个数真是锁，不是装饰）",
-    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const BARE_LINE_REF_BASELINE = 244;", "const BARE_LINE_REF_BASELINE = 243;") },
-    expect: [/实测 \*\*244\*\* 处，超过棘轮基线 \*\*243\*\*/, /把基线改成 244/],
+    label: `#286 棘轮下限：把 BARE_LINE_REF_BASELINE 调到 ${BARE_LINE_REF_BASELINE - 1} → 必须红（证明这个数真是锁，不是装饰）`,
+    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace(
+      `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE};`,
+      `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE - 1};`) },
+    expect: [/实测 \*\*232\*\* 处，超过棘轮基线 \*\*231\*\*/, /把基线改成 232/],
   },
   {
-    label: "#286 棘轮下限的反向证：常量调回 244（只加一句尾注释、数值不变）→ 必须 0 错",
-    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace("const BARE_LINE_REF_BASELINE = 244;", "const BARE_LINE_REF_BASELINE = 244;   // self-test 复原探针") },
+    label: `#286 棘轮下限的反向证：常量调回 ${BARE_LINE_REF_BASELINE}（只加一句尾注释、数值不变）→ 必须 0 错`,
+    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace(
+      `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE};`,
+      `const BARE_LINE_REF_BASELINE = ${BARE_LINE_REF_BASELINE};   // self-test 复原探针`) },
     expectGreen: true,
   },
   {
@@ -3582,19 +3601,50 @@ const SELF_TEST_CASES = [
   {
     label: "#286 豁免双条件（就地声明那一侧）：去掉 v030 EN 的外仓根 apps/worker/ → 既不再放行（245）又留下空转条目",
     overlay: { "docs/host-upgrade-guide-v030.md": (t) => t.replace("apps/worker/src/pi/runner.js:50", "src/pi/runner.js:50") },
-    expect: [/实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/,
+    expect: [ratchetOverBaseline(BARE_LINE_REF_BASELINE + 1, BARE_LINE_REF_BASELINE),
       /豁免条目 `src\/pi\/runner\.js`（docs\/host-upgrade-guide-v030\.md）没有一处引用真正用到它/],
   },
   {
     label: "#286 豁免双条件（条目那一侧）：CN 契约的示例路径改成没登记的 src/a/c.js:12 → 没有条目就不放行",
     overlay: { [CONTRACT_CN]: (t) => t.replace("paths: src/a/b.js:12", "paths: src/a/c.js:12") },
-    expect: [/实测 \*\*245\*\* 处，超过棘轮基线 \*\*244\*\*/,
+    expect: [ratchetOverBaseline(BARE_LINE_REF_BASELINE + 1, BARE_LINE_REF_BASELINE),
       /豁免条目 `src\/a\/b\.js`（docs\/host-consumer-contract_cn\.md）没有一处引用真正用到它/],
   },
   {
     label: "#286 变异器空转证：靶子（不存在的符号名）打不上时，runSelfTest 必须判这一例「变异没落上」而不是假绿",
     overlay: { [CONTRACT_EN]: mutateSymbolAnchor("zzProbeNoSuchSymbol", "src/loop/orchestrator.js", "anything") },
     expectMutateMiss: true,
+  },
+
+  // —— #286 T-b1a R1：符号锚点**自带区间**必须与声明处相交（2.8.1b）。逐处反向证四条：
+  //    改窄区间 → 红、区间整段挪走 → 红、删掉区间 → 绿（本判据对不带区间的锚点不适用）、
+  //    弱档（具名字面量）也真的按「该字面量的出现行」判 → 改窄到不含出现行就红。
+  //  四条都用 `mutateSymbolAnchorSpan`（与主检查同一套提取逻辑，#279 口径：打靶由提取逻辑定）。
+  {
+    label: "#286 T-b1a 区间相交：把 `terminationReasonForAction`（termination.js:93-100）改窄成 94-100 ⇒ 声明在 93，红",
+    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("terminationReasonForAction", "src/loop/termination.js", ":94-100") },
+    expect: [/symbol-anchor-span: .*引用 `terminationReasonForAction`（`src\/loop\/termination\.js:94-100`）/,
+      /声明处不相交/, /真值位在 93/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#286 T-b1a 区间相交：把 `defaultSleep`（abort.js:16）整段挪到 :30（不越界、符号也在）⇒ 只有相交这条红",
+    overlay: { [CONTRACT_CN]: mutateSymbolAnchorSpan("defaultSleep", "src/loop/abort.js", ":30") },
+    expect: [/symbol-anchor-span: docs\/host-consumer-contract_cn\.md:\d+ 引用 `defaultSleep`（`src\/loop\/abort\.js:30`）/,
+      /真值位在 16/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#286 T-b1a 区间相交的放行证：删掉 `no_final_guard` 的区间（只留符号 + 文件）⇒ 本判据不适用，必须 0 错",
+    overlay: { [CONTRACT_CN]: mutateSymbolAnchorSpan("no_final_guard", "src/loop/orchestrator.js", "") },
+    expectGreen: true,
+  },
+  {
+    label: "#286 T-b1a 弱档真值位：把 `judge_done`（orchestrator.js:3318-3326）改窄到 3318-3323 ⇒ 字面量在 3324，红（弱档也真按出现行判）",
+    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("judge_done", "src/loop/orchestrator.js", ":3318-3323") },
+    expect: [/symbol-anchor-span: .*引用 `judge_done`（`src\/loop\/orchestrator\.js:3318-3323`）/,
+      /真值形态 具名字面量成员/],
+    expectFiles: [CONTRACT_EN],
   },
 
   // —— 返工 R1（评审阻断项）：符号锚点的**只增不减下限**。病根：裸行号棘轮的唯一键不含文档行号，
@@ -3664,7 +3714,7 @@ const SELF_TEST_CASES = [
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 90;   // #286 T-a 返工 R1-R4 之后共 92 例（下限留 2 例余量给并行分支，见上：别按当天条数写死）
+const MIN_SELF_TEST_CASES = 94;   // #286 T-b1a R1 之后共 96 例（下限留 2 例余量给并行分支，见上：别按当天条数写死）
 
 function runSelfTest() {
   const run = () => collectAllDrift();
