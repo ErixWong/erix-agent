@@ -171,7 +171,8 @@ test("carries accumulated usage and rounds on the thrown abort error (issue #180
       maxRounds: 10,
       completion: false,
       stallDetection: false,
-      // 第 2 轮完整产出（响应已计入 usage、轮号已自增）后置 abort：第 3 轮进 provider 即被打断
+      // 第 2 轮完整产出（响应已计入 usage、轮号已自增）后置 abort：PR #291 必修 1 之后，圈顶的
+      // `throwIfAborted` 会在**发起第 3 次模型请求之前**就收口 ⇒ 永悬分支进不到（见下方 calls 断言）。
       onEvent: (event) => {
         if (event.type === "round_end" && event.round === 2) controller.abort(new Error("user stopped"));
       },
@@ -192,7 +193,10 @@ test("carries accumulated usage and rounds on the thrown abort error (issue #180
       return true;
     },
   );
-  assert.equal(calls, 3);
+  // issue #282 的漏网面（PR #291 必修 1）：中止一旦置位就**不再发起新的模型请求**（与 #282 判据 3「中止后不得再发 judge 调用」
+  // 同一条成本口径）。改前这里会是 3：第 3 轮照旧进 provider，在飞的那次请求被 abort 抢输；
+  // 现在圈顶先查 signal ⇒ 第 3 次请求根本不发生（#180 的 usage / rounds / partial 载荷一字不改）。
+  assert.equal(calls, 2);
 });
 
 test("annotates failed provider errors with a failed termination", async () => {

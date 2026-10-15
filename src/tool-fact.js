@@ -72,6 +72,10 @@ export const TOOL_RESULT_CONTRACT = deepFreeze({
         stages: ["result", "projection"],
         resumeStable: true,
         onWire: false,
+        // 存在条件（issue #286 追加：常量面以前不标这个，只读 TOOL_RESULT_CONTRACT 的宿主会按「每个结果块都有」写代码）
+        writtenFor: "special states only",
+        presentValues: ["intercepted", "interrupted"],
+        note: "只在特殊状态写：interrupted 来自 resume 改写（src/loop/orchestrator.js），intercepted 来自审计拦截（src/loop/run-snapshot-executor.js）；普通成功结果块上本字段不存在（undefined），不是空串也不是 ok 之类的占位值。",
       },
       success: {
         owner: "engine",
