@@ -83,7 +83,7 @@ executeTool({ id, name, input, context, signal })
 |---|---|---|
 | `onEvent` | `type`，事件自带 `round` 时再带 `round` | `emitEvent`（`src/loop/orchestrator.js`） |
 | `onEvent`（启动期诊断） | `type: "model_metadata_missing"`，或 `type: "persistence_capability_degraded"` 加 `method` | `notifyCapabilitySkipped` / `notifyModelMetadataMissing` 里的本地防护（`src/loop/orchestrator.js:913-966`）：这两条路径在 `emitEvent` 定义之前就触发，因此直调 `onEvent` |
-| `onRound` | `round` | `src/loop/orchestrator.js:3122-3130` |
+| `onRound` | `round` | `src/loop/orchestrator.js` |
 | `onToolResult` | `toolName`、`round` | `src/loop/run-snapshot-executor.js:266-294` |
 | `onJudge` | `round`、`kind` | `emitJudge`（`src/loop/orchestrator.js`） |
 | `onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage` | `round`、`type`（流式事件类型） | `dispatchAttemptEvent`（`src/loop/provider-runner.js`） |
@@ -194,7 +194,7 @@ await provider.chat({ messages });
 
 ## 重试预算（issue #183）
 
-**不配置就是不重试。** `retry` 默认 `false`（`src/loop/orchestrator.js:566`），在该状态下
+**不配置就是不重试。** `retry` 默认 `false`（`resolvedModelConfig`，`src/loop/orchestrator.js`），在该状态下
 引擎每轮**恰好**发一次 provider 调用、每次 store 调用**恰好**写一次。想要重试的宿主必须显式
 要求；没要求的宿主不得假设一次 provider 调用会被重发。本节就是完整规则集；它的终局一面是
 下文「终止裁决决策表（issue #170）」里的 `failed` 行。
@@ -202,7 +202,7 @@ await provider.chat({ messages });
 ### 派生值
 
 只有**对象**才会打开重试：`retryOptions = retry && typeof retry === "object" ? retry : null`
-（`src/loop/orchestrator.js:713`），所以 `retry: true` **不是**「启用重试」——它与完全不写
+（`runStateAvailability`，`src/loop/orchestrator.js`），所以 `retry: true` **不是**「启用重试」——它与完全不写
 该选项完全等价。
 
 | 输入 | 生效值 | 推导 |
@@ -218,9 +218,9 @@ await provider.chat({ messages });
 
 第 *n* 次重试（0 起始）前的等待在两条循环里都是
 `Math.min(backoffBaseMs * 2 ** n, backoffMaxMs)`
-（`src/loop/provider-runner.js:246-249`、`src/loop/orchestrator.js:881-884`）。睡眠是
+（`src/loop/provider-runner.js:246-249`、`src/loop/orchestrator.js`）。睡眠是
 可中断的：run 的 signal 会传给 `sleepImpl` 并被 `waitForRetry` 竞争
-（`src/loop/orchestrator.js:1636-1641`），因此在退避等待期间 `signal.abort()` 抛出的是
+（`forcedFinal`，`src/loop/orchestrator.js`），因此在退避等待期间 `signal.abort()` 抛出的是
 标准的 `aborted` 形状，携带 issue #180 的载荷。
 
 只有被标为 `retryable === true` 的错误才会被重试
@@ -255,7 +255,7 @@ await provider.chat({ messages });
   重跑是宿主的决定（见「工具重放策略（issue #139）」，那一节说的是 resume，不是重试）。
 - **轮外补全各只有一次尝试**：收尾调用（`src/loop/termination.js:234`）、收尾/`judge`
   文本归一化器（`src/reflection/wrapup.js:132-135`）、以及 `fold-llm` 默认 summarizer
-  （`src/loop/orchestrator.js:1063-1073`）。它们都不消耗本预算。
+  （`finalPersistence`，`src/loop/orchestrator.js`）。它们都不消耗本预算。
 - **run 本身从不重试。** 整 run 重跑/重排队策略属于宿主（ADR-012），而
   `maxTokenContinuations`（默认 `3`）与 `finalGuardMaxRetries` 是另外的预算：前者续写被
   `max_tokens` 截断的响应，后者重新询问终答 guard。两者都不是错误重试预算，也不受
@@ -268,12 +268,12 @@ await provider.chat({ messages });
 整个补全（`src/loop/provider-runner.js:224-243`）。
 
 - `DEFAULT_STREAM_RECOVERY_MAX_ATTEMPTS` **不是本包里的标识符**（grep 证真）。被当作它的
-  值引用的那个 `2`，其实是 `src/loop/orchestrator.js:714-718` 的 `retryAttempts` 回落值。
+  值引用的那个 `2`，其实是 `src/loop/orchestrator.js` 的 `retryAttempts` 回落值。
   CLI 自己的那个 `2` 来自 `ERIX_RETRY_ATTEMPTS`（`bin/cli.js:841-848`），CLI 把它作为
   `retry: { attempts: … }` 传下；**库**默认仍是 `false`，所以「把 CLI 行为抄进宿主」正是
   这个数字被误归因的方式。
 - `partialPersistence` 是持久性而非重试：它提交一个将死尝试的部分文本
-  （`onPartialAttemptEnd({ retrying: true })`，`src/loop/orchestrator.js:1919-1933`），
+  （`onPartialAttemptEnd({ retrying: true })`，`roundEventDeltas`，`src/loop/orchestrator.js`），
   不额外增加任何尝试。
 - **值得在你自己的测试里断言的一个副作用：**当 `retryAttempts > 0` 时，流式观察者回调会
   按尝试缓存，只在该尝试成功后才-次派发
@@ -291,7 +291,7 @@ await provider.chat({ messages });
 | 重试真的发生了 | `recovering` 事件（`src/loop/provider-runner.js:252-258`）；`recovered` 标记重试后成功的那一次（`:188-191`、`:203-206`） |
 | 退避时序，且不付墙钟代价 | 注入 `retry.sleepImpl` 并记录每一个 `delay` —— 条数就是实际发生的重试次数，记录到的值能钉死 `min(base × 2ⁿ, max)` 公式 |
 | 没有 N×M 的 provider 放大 | 你自己的 provider 包装的请求计数器，对着 `attempt` 事件对、也对着 `maxRounds × (retryAttempts + 1)` 断言 |
-| store 写入重试 | **不存在逐尝试事件。** 唯一信号是两条循环走完后的终局 `persistence_error` 上报（`src/loop/orchestrator.js:889-896`）；包上你自己的 store 方法计数，这是目前唯一能证明 store 侧循环跑过的办法 |
+| store 写入重试 | **不存在逐尝试事件。** 唯一信号是两条循环走完后的终局 `persistence_error` 上报（`reportObserverError`，`src/loop/orchestrator.js`）；包上你自己的 store 方法计数，这是目前唯一能证明 store 侧循环跑过的办法 |
 
 遗留（issue #183）：运行结果不携带聚合的尝试/重试计数，因此每 run 总量得宿主自己从事件
 里拼。今天**不承诺**可持久化的重试计数器；请把 `attempt` / `recovering` / `recovered` 与
@@ -415,7 +415,7 @@ provider、工具与 transcript 适配器，因此没有宿主需要一次性迁
 
 上一小节是规则。本小节记录**出厂工具今天实际标了什么**——宿主从包外看不见这个，而它
 直接决定切换的代价。现状是：**一个都没标**——在 `src/tools` 与 `bin/tools.js` 里搜这个
-字段一无所获，唯一读它的两处是启动校验（`src/loop/orchestrator.js:583-587`）与解析器
+字段一无所获，唯一读它的两处是启动校验（`partialPersistenceConfig`，`src/loop/orchestrator.js`）与解析器
 （`src/loop/orchestrator.js:1877-1889`）。
 
 | 工具 | 出厂入口 | 今天标了 `replay` 吗 | `per-tool-declaration` 下的续跑行为 | 副作用类别 |
@@ -443,7 +443,7 @@ provider、工具与 transcript 适配器，因此没有宿主需要一次性迁
 `"per-tool-declaration"`，等于把**每一次**续跑的**每一个**挂起调用都当成 unsafe——
 连纯读类工具也一样回来一条 `interrupted` 错误结果，与 `exec` 完全同形。引擎不做任何
 推断：它不看工具名，不看 executor，也不看 `writeToolNames`（该选项只喂 judge 的
-filesWritten 计数器，`src/loop/orchestrator.js:1127`）。挂起条目里没记录该字段的旧快照
+filesWritten 计数器，`src/loop/orchestrator.js`）。挂起条目里没记录该字段的旧快照
 同样按这个方向解析（`docs/host-upgrade-guide-0.14.0.md`）。
 
 **为什么库一个都不标。**重放声明描述的是 **executor**，不是 schema，而这些工厂发出去的
@@ -484,7 +484,7 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
 3. **显式选择，并知道它在哪里生效。**`replayPolicy` 仍默认 `"always-replay"`。传
    `"per-tool-declaration"` 作为 `runToolLoop` 选项，或作为 AssemblyPort `policy` 里的同名
    键（`src/assembly.js` 已列入白名单，`test/contract/assembly-port.test.js:47-53` 断言）。该
-   策略**只**在续跑路径上被读取（`src/loop/orchestrator.js:2680`）：`resume: false`，或
+   策略**只**在续跑路径上被读取（`guardedMessages`，`src/loop/orchestrator.js`）：`resume: false`，或
    store 不具备 run snapshot 能力时，根本没有挂起队列，该选项是空的。
 4. **让新事件类型过白名单。**若宿主按 `type` 字符串集合过滤 `onEvent`，就**必须**加上
    `tool_replay_decision_required`，否则信号会被静默丢弃而其他一切看起来健康：模型
@@ -492,17 +492,17 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
    知道“欠一个处置决定”——消失。引擎对每个被跳过的挂起调用发**一**条，紧跟在其配对的
    `tool_result` 事件**之前**，载荷为
    `{ type, runId, round, toolUseId, toolName, replay: "unsafe", requiresHostDecision: true,
-   partialOutputAvailable }`（`src/loop/orchestrator.js:2714-2723`）。README 里那份事件枚举是
+   partialOutputAvailable }`（`src/loop/orchestrator.js`）。README 里那份事件枚举是
    示意（“including …”）而不是白名单，照拄进 `Set` 的宿主需要重新拄一次。
 5. **正确读结果形状。**结果带 `is_error: true` 与 `executionStatus: "interrupted"`。如果
    消息里已经存在该调用 id 的 `tool_result` 块，引擎会**原地重写那个块**
-   （`src/loop/orchestrator.js:2708-2712`）而不是追加第二条，所以差量比对消息的宿主必须
+   （`isLowBudget`，`src/loop/orchestrator.js`）而不是追加第二条，所以差量比对消息的宿主必须
    预期一处变更而不是新增。`executionStatus` 会进入 display 投影
    （`src/display/projection.js:158-160`），且此后这条 interrupted 结果就是普通的本轮文本：
    只有 `intercepted` 结果被排除在聚合预算计数之外（`src/loop/aggregate-budget.js:150-153`）。
 6. **处理部分输出。**`partialOutputAvailable` 说明有没有找到可展示的内容；为 true 时结果
    文本以 `Previously captured partial output:` 段结尾，内容由中止那轮已归档的输出加上
-   已经记录过的结果内容去重拼成（`src/loop/orchestrator.js:2687-2704`）。
+   已经记录过的结果内容去重拼成（`compactionStat`，`src/loop/orchestrator.js`）。
 7. **不指望重试，也不指望重新挂起。**被跳过调用的 id **不会**进 `executedToolIds`，引擎
    不调度任何东西，run 带着模型看到的一条错误继续。后续处置——问用户、携带宿主自己的
    指令再续一次、或放弃这次调用——归宿主，而且是一个每个 `toolUseId` 最多只做一次的
@@ -515,11 +515,11 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
    一条带 `replay: "unsafe"` 的挂起条目并做深比较（`test/contract/transcript-store.js:124-142`），
    所以能跑过该套件的宿主 store 会保留这个字段（另见「Store 保真要求」）。
 9. **知道 fail-fast 在哪。**两个字面量以外的 `replay` 取值，以及未知的 `replayPolicy`，都在
-   第一次 provider 调用前抛 `TypeError`（`src/loop/orchestrator.js:550-551` 与 `:583-587`）——
+   第一次 provider 调用前抛 `TypeError`（`hasExplicitModelConfigOverride`，`src/loop/orchestrator.js` 与 `:583-587`）——
    写错是启动就碎，不是在续跑路径上默默分错类。
 10. **声明对模型与事件流都不可见。**该键从 provider 工具清单里被剔掉
-    （`src/loop/orchestrator.js:623-632`），并从续跑路径的 `tool_use` 载荷里被删除
-    （`src/loop/orchestrator.js:2678`），所以想展示“这个标了 safe”的宿主只能从自己的
+    （`hasReplayDeclarations`，`src/loop/orchestrator.js`），并从续跑路径的 `tool_use` 载荷里被删除
+    （`guardedMessages`，`src/loop/orchestrator.js`），所以想展示“这个标了 safe”的宿主只能从自己的
     `tools` 数组里读，不能从事件里读。
 
 **尚未锁定。**`docs-drift-check` 没有哪条规则会去读工具源码里该标注的存在与否，所以本表
@@ -544,15 +544,15 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
 | 5 | `context` | 压缩上下文选项 |
 
 - 探测按上述固定顺序 duck-type，返回**第一个**携带任一字段的候选
-  （`src/loop/budget.js:59-69`，调用点 `src/loop/orchestrator.js:958-964`）。
+  （`src/loop/budget.js:59-69`，调用点 `notifyModelMetadataMissing`，`src/loop/orchestrator.js`）。
   字段**从不跨候选合并**：slot 里只写 `contextWindowTokens`、`modelMetadata` 里只写
   `maxOutputTokens`，结果是什么预算也推不出来。这一对字段必须写在同一个对象里。
 - `modelConfig` 必须是解析器（`{ resolve(slot?) }`）。直接把普通配置对象当
   `modelConfig` 传会在启动期抛 `assembly port is missing methods:
   modelConfig.resolve`——因为这个选项名一出现就被当成端口读
-  （`src/loop/orchestrator.js:592-607`）。被探测的是**解析后的值**，不是解析器。
+  （`persistenceMode`，`src/loop/orchestrator.js`）。被探测的是**解析后的值**，不是解析器。
 - 槽位选择是 per-run 的：槽位名经 `session.modelSlot` 传入
-  （`src/loop/orchestrator.js:609-612`）。两个内置 provider 对不认识的槽位名都
+  （`persistenceMode`，`src/loop/orchestrator.js`）。两个内置 provider 对不认识的槽位名都
   回落到 `default` 槽，所以拼错槽位名不会让这个 run 失败。
 - `createJsonFileModelConfigProvider` 从 JSON 文件读
   `{ "slots": { "<name>": { … } } }`；`createStaticModelConfigProvider` 接内存里的同构形状。
@@ -588,18 +588,18 @@ slot 里的同名字段（`src/loop/provider-runner.js:128-130`、`src/providers
 
 `budgetTokens = context.budgetTokens ?? computeBudget({ contextWindowTokens, maxOutputTokens })`，
 其中 `computeBudget = contextWindowTokens - maxOutputTokens - max(2000, ceil(窗口 × 0.1))`
-（`src/loop/orchestrator.js:984-993`、`src/compact/budget.js:9-33`）。
+（`persist`，`src/loop/orchestrator.js`、`src/compact/budget.js:9-33`）。
 `budgetTokens` 是上下文压缩、单轮聚合输出预算、以及 request-view 预算块的总门。
 输出截断上限是另一套推导：先看显式 `outputHygiene.limit`，否则
 `clamp(15% × contextWindowTokens, 8192, 100000)`，否则 `4096`
-（`src/loop/orchestrator.js:966-977`）。
+（`persist`，`src/loop/orchestrator.js`）。
 
 | 启动时的条件 | 引擎行为 |
 |---|---|
 | 五个候选里两个字段都找不到 | **静默跳过**：`budgetTokens` 保持 `undefined`，压缩与聚合输出预算保持关，并且恰好发**一条** `model_metadata_missing` 事件 |
 | 字段找到了但值非法（非整数、字符串、窗口 ≤ 0、`maxOutputTokens` < 0）或窗口不够大（算出的预算 ≤ 0） | `computeBudget` 在首次 provider 调用前**抛 `invalid_budget`** |
 | 宿主自己给了 `context.budgetTokens` | 完全绕开推导——压缩是否启用只看这个值，且无论探测到什么**都不发**事件；非正 / 非整数值由 `validateBudget` 抛 `invalid_budget` |
-| 宿主给了 `context.strategy` | 策略被询问时会原样拿到 `budgetTokens`，所以配了策略就能在零元数据下自己门控压缩（`src/loop/orchestrator.js:2200-2203`）；注意内置 sliding-window 策略也是拿这个值去比，`undefined` 时永不触发（`src/compact/sliding-window.js:34-36`） |
+| 宿主给了 `context.strategy` | 策略被询问时会原样拿到 `budgetTokens`，所以配了策略就能在零元数据下自己门控压缩（`stateAvailability`，`src/loop/orchestrator.js`）；注意内置 sliding-window 策略也是拿这个值去比，`undefined` 时永不触发（`src/compact/sliding-window.js:34-36`） |
 
 两种 `invalid_budget` 都是**运行前**抛错：运行生命周期尚未开始，抛出的错误不带
 `termination`、`usage`、`rounds`、`finalText`（边界见「终局载荷（issue #176 / #180）」
@@ -609,7 +609,7 @@ slot 里的同名字段（`src/loop/provider-runner.js:128-130`、`src/providers
 
 `context.strategy` 既接受策略**对象**（语义逐字不变），也接受内置**名字**
 `"sliding-window" | "fold-statistical" | "fold-llm"`。名字在 **run 启动期一次性**解析成宿主自己
-也能构造出的那个实例（`src/compact/strategy-resolution.js`，接入点 `src/loop/orchestrator.js:988-1003`），
+也能构造出的那个实例（`src/compact/strategy-resolution.js`，接入点 `src/loop/orchestrator.js`），
 因此下游 configuredStrategy 通道零改动。未知名字、空字符串、以及既不是字符串也不是对象的值，
 都会在**首次 provider 调用前**抛 `TypeError` 并列出合法值——与上面同一种「运行前」抛错形状
 （不带 `termination`/`usage`/`rounds`/`finalText`）。名字形态的策略还会接上 context 级的
@@ -622,7 +622,7 @@ slot 里的同名字段（`src/loop/provider-runner.js:128-130`、`src/providers
 
 - **每次压缩多一次主力模型调用**，输入体量约等于被折叠的老轮次。因此 `fold-llm` 只能显式选用；
   默认 everywhere 仍是 `fold-statistical`（库层未配策略时仍为 `sliding-window`）。
-- 它的 usage 走与其他辅助调用同一的 `addUsage` 路径并入 run 总账（`src/loop/orchestrator.js:979`，
+- 它的 usage 走与其他辅助调用同一的 `addUsage` 路径并入 run 总账（`persist`，`src/loop/orchestrator.js`，
   `trackLatest: false`），并通过 `onUsage` 上报，因此 `result.usage` / `error.usage` 是完整的。这次调用
   **不推 `rounds`**、不参与 stall 检测、也不更新后续压缩判断用的 `latestApiInputTokens` / `latestApiEstimatedTokens`。
 - summarizer reject / throw / 返回空文本时，与注入式 summarizer 一样降级到统计摘要（下一轮上下文里
@@ -636,7 +636,7 @@ slot 里的同名字段（`src/loop/provider-runner.js:128-130`、`src/providers
 `detail` 还报出实际解析到的输出上限，所以同一个断言也能接住「我的窗口没参与输出截断上限的计算」。
 断言请在**启动之前**做，或者在装配后用 `signal.abort()`：这个启动期事件上 `onEvent` 抛错
 不再是「拒掉 run」的机制，而是经 `onObserverError` 上报后 run 继续
-（`src/loop/orchestrator.js:876-900`；见「观察者回调抛错（issue #173）」）。
+（`reportObserverError`，`src/loop/orchestrator.js`；见「观察者回调抛错（issue #173）」）。
 
 ### 多模型槽位装配示例（issue #182）
 
