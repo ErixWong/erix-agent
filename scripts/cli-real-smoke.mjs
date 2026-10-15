@@ -1,0 +1,519 @@
+#!/usr/bin/env node
+// 装后 CLI 打**真上游**（工单 docs/tasks/261015-e2e-harness.md 第 4 项，T5）。
+//
+//   ERIX_E2E_REAL=1 npm run check:cli-real
+//
+//   ERIX_E2E_REAL=1 node scripts/cli-real-smoke.mjs --dry
+//     ↑ 只跑「真实 HOME / 选中配置」的污染对账（C8），不打包、不安装、不打模型。
+//       C8 有「默认路径」与「ERIX_E2E_CONFIG 覆盖」两个分支，`--dry` 就是让这两个分支能就地自证；
+//       **它不是发版门禁的跑法**（C1–C7 未跑），发版前复验仍走上面那条。
+//
+// 为什么还要这一条：`check:release` 的第 5 步（CLI 冒烟）打的是**本地假上游**，
+// 它证明的是「装好的包能跑通一次退出码/归档」，不证明「装好的包在真服务端 + 真模型
+// 的分片行为下仍然如此」。真 relay 的分片、真工具执行、真轮数节奏只有真上游能给
+// （`examples/tool-fact-e2e.test.mjs` 覆盖的是**库 API**，这里是**装后的 CLI 二进制**）。
+//
+// 闸门与配置来源与两个 gate 测试共用 `examples/e2e-real-gate.mjs`：
+// `ERIX_E2E_REAL=1` 才跑，否则**退出码 0 + 分类说明**（gate 缺失 / 配置缺失 / JSON 坏了 /
+// 缺字段 / 端点不可达），真上游不许变成任何默认门禁的硬依赖。
+//
+// 隔离纪律（照 `scripts/release-check.mjs` 的先例）：
+// - `npm pack` / `npm i` 一律带一次性 `--cache` 与 `--userconfig`，子进程清掉 `npm_config_*`
+//   与代理变量（含 `NODE_USE_ENV_PROXY`）→ 真实 `~/.npmrc` 一个字节都不动（前后哈希对账）。
+// - 子进程 `HOME` 指到临时假 HOME，配置从真配置**复制**过来（凭据只在临时文件里，不落仓库）。
+// - transcript 走 `--dir <临时目录>`，笔记/待办关掉 → 真实 `~/.erix` 前后清单对账必须一致。
+// - `prepack` 会在仓库里生成 `src/**/*.d.ts`：跑之前不存在、跑完出现了的那些，一律删掉
+//   （残留会让 `npm run check:types` 假绿）。
+// - 临时目录 `mkdtemp(os.tmpdir())` + `finally` 与 `exit` 钩子双保险删除。
+//
+// 零依赖：只用 node: 内置 + 仓内相对路径（`fixtures/config-shape.mjs` 写配置形状）。
+
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
+import { fakeHomeEnv, writeConfigHome } from "../fixtures/config-shape.mjs";
+import {
+  CONFIG_PATH_ENV, defaultConfigPath, formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX,
+} from "../examples/e2e-real-gate.mjs";
+
+const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
+const PACKAGE_JSON = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+const PACKAGE_VERSION = String(PACKAGE_JSON.version);
+/** `bin/cli.js` 帮助里承诺的退出码（不是本脚本自创的期望）。 */
+const EXIT_NOT_VERIFIED = 4;
+const PROXY_VARS = [
+  "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
+  "NO_PROXY", "no_proxy", "NODE_USE_ENV_PROXY",
+];
+/**
+ * 真配置槽位里要**原样**复制进临时配置的键（凭据只进临时文件）。
+ *
+ * 两个刻意不在名单里的键（PR #289 断言强度 4，理由写在代码里而不是只写在注释里）：
+ * - `baseUrl`：闸门**接受** `baseUrl` 形式的端点（库层 provider 两种都认，见
+ *   `examples/e2e-real-gate.mjs`），但形状 A（`~/.erix/config.json`）里
+ *   `bin/config.js#loadCliConfig` **只读 `endpoint`**，`fixtures/config-shape.mjs` 的允许键集合
+ *   里也没有 `baseUrl`（写进去直接抛错）⇒ 原样复制会把 baseUrl 静默丢掉，CLI 起跑即报
+ *   「缺少环境变量 LLM_KIT_ENDPOINT」。这里选「**转成 endpoint 写入**」（下面直接写
+ *   `gate.endpoint`，它已是闸门归一后的 endpoint ?? baseUrl）；另一种修法「闸门干脆不接受
+ *   baseUrl」也能修，但会让库层 e2e 在只用 baseUrl 的机器上无谓 skip，而端点归一本来就是闸门职责。
+ * - `apiKeyEnv` / `apiKeyFile`：写**解析后的真实值** `gate.apiKey`。引用形式在假 HOME 里会坏：
+ *   `fakeHomeEnv` 会清掉 `MODEL_CONFIG_ENV_NAMES`（含 `LLM_KIT_API_KEY`）以免宿主真配置盖掉假配置，
+ *   于是 `apiKeyEnv` 指向的变量在子进程里恰恰不存在 ⇒ 又一次「闸门说 ok、装后冒烟跑不起来」。
+ */
+const SLOT_KEYS_TO_COPY = [
+  "protocol", "endpoint", "apiKey",
+  "contextWindowTokens", "maxOutputTokens", "compaction",
+];
+/** 终稿里必须出现的固定标记（证明真上游回了我们要求的内容，而不是只跑了个流程）。 */
+const MARKER = "T5-CLI-REAL-SMOKE-OK";
+/** `hashFileIfExists()` 对「文件不存在」的稳定编码（跟真实哈希同样是字符串，便于直接比）。 */
+const ABSENT = "（不存在）";
+/**
+ * `--dry`：闸门判 ok 后**不打包、不安装、不打模型**，只跑污染对账那一条（C8）。
+ *
+ * 为什么要有：C8 分「默认路径」与「`ERIX_E2E_CONFIG` 指到外部配置」两个分支，而只提供自定义
+ * 配置的环境（CI）里默认路径根本不存在——要验这个分支只能整条真跑（几分钟 + 真金）就没人会验。
+ * `--dry` 把「污染对账逻辑」与「CLI 真跑」解耦，让 C8 能就地自证（凭据可以是假的：一条请求也
+ * 不发，只探一次 TCP）。真跑路径（不带 `--dry`）行为一字不变；**`--dry` 不是发版门禁的跑法**
+ * （C1–C7 未跑）。
+ */
+const DRY_RUN = process.argv.slice(2).includes("--dry");
+
+const tmpRoot = mkdtempSync(join(tmpdir(), TMP_PREFIX.cliReal));
+const realHome = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
+/** @type {string[]} */ const notes = [];
+
+process.on("exit", () => {
+  cleanupGeneratedDeclarations();
+  rmSync(tmpRoot, { recursive: true, force: true });
+});
+
+function log(message) {
+  console.log(`[check:cli-real] ${message}`);
+}
+
+function run(command, args, { cwd, env, timeoutMs = 180_000, label } = {}) {
+  const result = spawnSync(command, args, {
+    cwd,
+    env,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const name = label ?? `${command} ${args.join(" ")}`;
+  if (result.error) {
+    return { status: -1, stdout: result.stdout ?? "", stderr: String(result.error.message), name };
+  }
+  return {
+    status: result.status ?? -1,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    timedOut: result.signal !== undefined && result.signal !== null,
+    name,
+  };
+}
+
+/** 子进程环境：清代理 + 清 npm 的配置外泄通道 + 可选假 HOME */
+function childEnv({ home, extra } = {}) {
+  const base = { ...process.env };
+  for (const name of PROXY_VARS) delete base[name];
+  for (const name of Object.keys(base)) {
+    if (/^npm_config_/u.test(name)) delete base[name];
+  }
+  const env = home ? fakeHomeEnv(base, { home }) : base;
+  for (const [name, value] of Object.entries(extra ?? {})) {
+    if (value === undefined) delete env[name];
+    else env[name] = String(value);
+  }
+  return env;
+}
+
+// —— 真实 HOME 的污染对账（与 release-check 同一口径）——
+
+function snapshotDir(dir) {
+  if (!existsSync(dir)) return `${dir}（不存在）`;
+  let count = 0;
+  let newest = 0;
+  const walk = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const full = join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else {
+        count += 1;
+        newest = Math.max(newest, statSync(full).mtimeMs);
+      }
+    }
+  };
+  walk(dir);
+  return `${count} 个文件，最新 mtime=${newest ? new Date(newest).toISOString() : "无"}`;
+}
+
+function hashFileIfExists(file) {
+  return existsSync(file) ? createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 16) : ABSENT;
+}
+
+function listGeneratedDeclarations() {
+  const out = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".d.ts")) out.push(full);
+    }
+  };
+  if (existsSync(join(ROOT, "src"))) walk(join(ROOT, "src"));
+  return out;
+}
+
+const declarationsBefore = new Set(listGeneratedDeclarations());
+const erixDirBefore = snapshotDir(join(realHome, ".erix"));
+const npmrcBefore = hashFileIfExists(join(realHome, ".npmrc"));
+const erixConfigBefore = hashFileIfExists(join(realHome, ".erix", "config.json"));
+
+function cleanupGeneratedDeclarations() {
+  for (const file of listGeneratedDeclarations()) {
+    if (!declarationsBefore.has(file)) rmSync(file, { force: true });
+  }
+}
+
+// —— 逐条打点的断言器（报告要贴的就是这张表）——
+
+/** @type {string[]} */ const failures = [];
+function check(id, fn, detail = "") {
+  try {
+    fn();
+    log(`PASS [4] ${id}${detail ? `  — ${detail}` : ""}`);
+  } catch (error) {
+    failures.push(id);
+    log(`FAIL [4] ${id}  — ${String(error?.message ?? error).split("\n")[0]}`
+      + (detail ? ` ｜ 现场：${detail}` : ""));
+  }
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+/**
+ * C8：真实 `~` 没被污染——对账的靶子必须是**闸门实际选中的那份配置**（PR #289 阻断 2）。
+ *
+ * 修前无条件要求真实 `~/.erix/config.json` 存在且哈希不变，但闸门支持 `ERIX_E2E_CONFIG` 把
+ * 配置指到外部（`examples/e2e-real-gate.mjs#defaultConfigPath`）⇒ 「只带一份自定义配置的 CI」
+ * 即使 CLI 真跑成功也会被判红。现在的口径：
+ * - 选中的配置（默认路径或被 `ERIX_E2E_CONFIG` 覆盖后的路径）：开跑前读得到 + 跑完哈希一致；
+ * - 用了覆盖时，默认路径**存在才**参与哈希对账（不存在不是失败，只是没东西可对）；
+ * - `~/.npmrc` 恒做哈希对账（子 npm 本可默认读它，与配置来源无关）。
+ * 断言文案里一律点名对的是哪个文件。
+ *
+ * @param {{ selectedConfigPath: string, selectedConfigBefore: string,
+ *   defaultConfig: string, usesConfigOverride: boolean }} target
+ */
+function checkHomePollution(target) {
+  const { selectedConfigPath, selectedConfigBefore, defaultConfig, usesConfigOverride } = target;
+  const source = usesConfigOverride
+    ? `${CONFIG_PATH_ENV} 指定的 ${selectedConfigPath}`
+    : `默认路径 ${selectedConfigPath}`;
+  check(`C8 真实 ~/.npmrc 与闸门选中的配置（${source}）前后一致（本脚本只碰临时目录）`, () => {
+    assert(hashFileIfExists(join(realHome, ".npmrc")) === npmrcBefore,
+      `~/.npmrc 内容变了（${npmrcBefore} → ${hashFileIfExists(join(realHome, ".npmrc"))}）`);
+    assert(selectedConfigBefore !== ABSENT,
+      `闸门选中的配置 ${selectedConfigPath} 开跑前就读不到——闸门 ok 与污染对账两边对不上`);
+    assert(hashFileIfExists(selectedConfigPath) === selectedConfigBefore,
+      `闸门选中的配置 ${selectedConfigPath} 被改写了`
+      + `（${selectedConfigBefore} → ${hashFileIfExists(selectedConfigPath)}）`);
+    if (usesConfigOverride && existsSync(defaultConfig)) {
+      assert(hashFileIfExists(defaultConfig) === erixConfigBefore,
+        `用了 ${CONFIG_PATH_ENV}，但默认配置 ${defaultConfig} 也被改写了`
+        + `（${erixConfigBefore} → ${hashFileIfExists(defaultConfig)}）`);
+    }
+  }, `覆盖=${usesConfigOverride ? "是" : "否"}`
+    + `｜选中=${selectedConfigPath}｜默认=${defaultConfig}`
+    + `${usesConfigOverride && !existsSync(defaultConfig) ? "（默认路径不存在，不参与对账）" : ""}`
+    + `｜~/.erix 快照：前=${erixDirBefore} 后=${snapshotDir(join(realHome, ".erix"))}`);
+}
+
+function assertDeepEqual(actual, expected, message) {
+  const a = JSON.stringify(actual);
+  const b = JSON.stringify(expected);
+  if (a !== b) throw new Error(`${message}：实际 ${a}，期望 ${b}`);
+}
+
+/** 只从消息数组取内容块（真机 e2e 的坑 ①：断言打在块本体上，不在整段 JSON 上找子串） */
+function blocksOf(messages, type) {
+  return (messages ?? [])
+    .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
+    .filter((block) => block?.type === type);
+}
+
+/** RoundRecord.messages 只存本轮新增消息（坑 ②）：按轮拼回完整历史 */
+function collapseHistory(records) {
+  const seen = new Set();
+  const history = [];
+  for (const record of [...records].sort((a, b) => (a?.round ?? 0) - (b?.round ?? 0))) {
+    for (const message of record?.messages ?? []) {
+      const fingerprint = JSON.stringify(message)?.slice(0, 400);
+      if (fingerprint === undefined || seen.has(fingerprint)) continue;
+      seen.add(fingerprint);
+      history.push(message);
+    }
+  }
+  return history;
+}
+
+async function main() {
+  const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
+  if (!gate.ok) {
+    log(`SKIP — ${formatSkip(gate)}`);
+    process.exitCode = 0;
+    return;
+  }
+  log(`闸门开：model=${gate.model} endpoint=${printableEndpoint(gate.endpoint)}`);
+
+  // 污染对账的靶子 = 闸门**实际选中**的那份配置（`ERIX_E2E_CONFIG` 可以把它指到仓外）。
+  // 基线必须在任何子进程（npm / CLI）起跑前取。
+  // 「默认路径」要拿**没有覆盖时的 env** 去问闸门（`defaultConfigPath` 自己就读 `ERIX_E2E_CONFIG`，
+  // 直接把 process.env 喂进去会得到「选中 == 默认」的假结论，覆盖分支永远走不到）。
+  const envWithoutOverride = { ...process.env };
+  delete envWithoutOverride[CONFIG_PATH_ENV];
+  const defaultConfig = defaultConfigPath({ env: envWithoutOverride, home: homedir() });
+  const pollutionTarget = {
+    selectedConfigPath: gate.configPath,
+    selectedConfigBefore: hashFileIfExists(gate.configPath),
+    defaultConfig,
+    usesConfigOverride: resolve(gate.configPath) !== resolve(defaultConfig),
+  };
+  log(`配置对账目标：${pollutionTarget.selectedConfigPath}（${pollutionTarget.usesConfigOverride
+    ? `${CONFIG_PATH_ENV} 覆盖，默认路径 ${defaultConfig}`
+    : "默认路径"}）`);
+
+  if (DRY_RUN) {
+    // 只跑污染对账：不 pack、不装、不打模型（一条请求也不发）。详见 `DRY_RUN` 的注释。
+    checkHomePollution(pollutionTarget);
+    notes.push("--dry：C1–C7 未跑（没打包、没安装、没打真上游），只验了 C8 的两个分支");
+    for (const note of notes) log(`备注：${note}`);
+    assertDeepEqual(failures, [], `失败的断言：${failures.join(", ")}`);
+    log(`--dry 全绿：C8 在对账目标 ${pollutionTarget.selectedConfigPath} 上通过`);
+    return;
+  }
+
+  const npmEnv = childEnv({
+    extra: {
+      npm_config_cache: join(tmpRoot, "npm-cache"),
+      npm_config_userconfig: join(tmpRoot, "npmrc"),
+      npm_config_audit: "false",
+      npm_config_fund: "false",
+    },
+  });
+  writeFileSync(join(tmpRoot, "npmrc"), "", "utf8");
+
+  // ① 打包（触发仓内 prepack 生成 .d.ts；跑完由 exit 钩子清理）
+  const packDir = join(tmpRoot, "pack");
+  mkdirSync(packDir, { recursive: true });
+  const pack = run(NPM, [
+    "pack", `--pack-destination=${packDir}`,
+    `--userconfig=${join(tmpRoot, "npmrc")}`, `--cache=${join(tmpRoot, "npm-cache")}`,
+  ], { cwd: ROOT, env: npmEnv, label: "npm pack", timeoutMs: 240_000 });
+  assert(pack.status === 0, `npm pack 退出码 ${pack.status}\n${pack.stderr.slice(-800)}`);
+  const tarballs = readdirSync(packDir).filter((name) => name.endsWith(".tgz"));
+  assert(tarballs.length === 1, `pack 目录里应有且只有 1 个 tgz，实际：${tarballs.join(",")}`);
+  const tarball = join(packDir, tarballs[0]);
+  notes.push(`tarball=${tarballs[0]}（${statSync(tarball).size} 字节）`);
+
+  // ② 装进一次性临时项目（--offline：装本地 tarball，不需要 npm 网络）
+  const hostDir = join(tmpRoot, "host");
+  mkdirSync(hostDir, { recursive: true });
+  writeFileSync(join(hostDir, "package.json"), JSON.stringify({
+    name: "t5-cli-real-host", private: true, type: "module",
+  }, null, 2), "utf8");
+  const install = run(NPM, [
+    "i", "--offline", "--no-audit", "--no-fund",
+    `--cache=${join(tmpRoot, "npm-cache")}`, `--userconfig=${join(tmpRoot, "npmrc")}`,
+    tarball,
+  ], { cwd: hostDir, env: npmEnv, label: "npm i <tarball>", timeoutMs: 240_000 });
+  assert(install.status === 0, `临时项目安装失败，退出码 ${install.status}\n${install.stderr.slice(-800)}`);
+  const installedRoot = join(hostDir, "node_modules", "erix-agent");
+  assert(existsSync(join(installedRoot, "package.json")), "装好的 erix-agent/package.json 不存在");
+  assertDeepEqual(
+    JSON.parse(readFileSync(join(installedRoot, "package.json"), "utf8")).version,
+    PACKAGE_VERSION,
+    "装好的包版本必须等于 package.json（版本号不许被本单动过）",
+  );
+  const erixBin = join(hostDir, "node_modules", ".bin", process.platform === "win32" ? "erix.cmd" : "erix");
+  assert(existsSync(erixBin), `装好的 CLI 入口不存在：${erixBin}`);
+
+  // ③ 假 HOME：配置从真配置**复制**（模型名不硬编码；凭据只进临时文件）
+  const home = join(tmpRoot, "home");
+  const copiedSlot = { model: gate.model };
+  for (const key of SLOT_KEYS_TO_COPY) {
+    if (gate.slot[key] !== undefined) copiedSlot[key] = gate.slot[key];
+  }
+  // 端点与凭据一律写**闸门解析后的值**（不是引用名、不是 baseUrl）：理由见 SLOT_KEYS_TO_COPY。
+  copiedSlot.endpoint = gate.endpoint;
+  copiedSlot.apiKey = gate.apiKey;
+  assert(typeof copiedSlot.endpoint === "string" && copiedSlot.endpoint !== ""
+    && typeof copiedSlot.apiKey === "string" && copiedSlot.apiKey !== "",
+  "临时配置必须带上解析后的端点与凭据（否则 baseUrl/引用形式的真配置在假 HOME 里会瞎掉）");
+  // `writeConfigHome` 吃的就是「槽位字段」本身（它内部才包 `slots.default`），不要先包一层。
+  const { configPath } = writeConfigHome({ dir: home, erix: copiedSlot });
+  assert(configPath !== undefined && existsSync(configPath), "假 HOME 的配置没写出来");
+  const env = childEnv({ home });
+
+  // ④ 用**装好的 erix**（不是 node bin/cli.js）打真上游，跑一个 ≥2 次工具的任务
+  const workDir = join(tmpRoot, "work");
+  mkdirSync(workDir, { recursive: true });
+  writeFileSync(join(workDir, "notes.md"), "T5 真机装后冒烟标记行：needle-in-a-haystack\n第二行没有关键字\n", "utf8");
+  const transcripts = join(tmpRoot, "transcripts");
+  const cliResult = run(erixBin, [
+    "chat",
+    [
+      "严格按顺序做三件事，每件事一次工具调用：",
+      "1) readFile 读 notes.md；",
+      "2) exec 运行 `node -p \"6*7\"`；",
+      `3) 最后一行只输出固定标记 ${MARKER}，并在它前面写上关键字出现的次数与上一步的数字。`,
+    ].join(" "),
+    "--config", configPath,
+    "--dir", transcripts,
+    "--max-rounds", "6",
+    "--reflection", "off",
+    "--no-notes",
+    "--no-todo",
+  ], { cwd: workDir, env, label: "erix chat（真上游）", timeoutMs: 420_000 });
+
+  log(`CLI 退出码=${cliResult.status}${cliResult.timedOut ? "（超时）" : ""}`);
+  log(`CLI stdout 尾部：\n${cliResult.stdout.slice(-1200).split("\n").map((l) => `      ${l}`).join("\n")}`);
+  if (cliResult.stderr.trim() !== "") {
+    log(`CLI stderr 尾部：${cliResult.stderr.slice(-400)}`);
+  }
+
+  check("C1 无 --final-guard 的成功 run 退出码是 4（verification=skipped 的承诺）", () => {
+    assert(cliResult.status === EXIT_NOT_VERIFIED,
+      `退出码 ${cliResult.status}，期望 ${EXIT_NOT_VERIFIED}`);
+  });
+  // 「真打了模型」的硬判据在 C4（输出 token > 0）。这里只核**终稿可读**：固定标记是否照抄是模型自由
+  // （实测 22k token 前缀、3 轮真跑也会不照抄），拿它判红会把门禁跑成随机假红（issue #284 收尾实测）。
+  check("C2 真上游回了可读终稿（固定标记只作旁证，缺失不判红）", () => {
+    const text = cliResult.stdout.trim();
+    assert(text.length >= 20, `stdout 太短，不像真上游回的终稿：${JSON.stringify(text.slice(0, 120))}`);
+    if (!text.includes(MARKER)) {
+      log(`旁证缺失（不判红）：stdout 没照抄 ${MARKER}；真上游的硬判据是 C4 的输出 token`);
+    }
+  }, `stdout ${cliResult.stdout.trim().length} 字符，标记${cliResult.stdout.includes(MARKER) ? "在场" : "未照抄（旁证缺失）"}`);
+
+  // ⑤ transcript 字段面（与 examples/tool-fact-e2e.test.mjs 的第 3/4 条同形）
+  const { TOOL_RESULT_CONTRACT: contract } = await import(pathToFileURL(join(installedRoot, "src", "index.js")).href);
+  const allowed = new Set([
+    ...contract.protocol.required, contract.engine.ns, contract.host.ns,
+    ...(contract.protocol.conditional?.is_error !== undefined ? ["is_error"] : []),
+  ]);
+  const retired = Object.keys(contract.legacy.aliases).filter((name) => !name.includes("@"));
+  const jsonlFiles = existsSync(transcripts)
+    ? readdirSync(transcripts).filter((name) => name.endsWith(".jsonl"))
+    : [];
+  check("C3 CLI 把 transcript 写进了 --dir 指的临时目录（真 ~/.erix 没被写）", () => {
+    assert(jsonlFiles.length >= 1, `--dir 目录下没有 jsonl：${jsonlFiles.join(",") || "无"}`);
+  });
+  const transcriptPath = join(transcripts, jsonlFiles[0] ?? "");
+  const records = jsonlFiles.length > 0
+    ? readFileSync(transcriptPath, "utf8").split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l))
+    : [];
+  const history = collapseHistory(records);
+  const results = blocksOf(history, "tool_result");
+  const durations = results.map((block) => block?.erix?.durationMs);
+  const usage = records.reduce((acc, record) => {
+    const u = record?.response?.usage ?? {};
+    acc.input += Number(u.input_tokens ?? u.prompt_tokens ?? 0);
+    acc.output += Number(u.output_tokens ?? u.completion_tokens ?? 0);
+    return acc;
+  }, { input: 0, output: 0 });
+
+  check("C4 装后的 CLI 真跑了 ≥2 次工具（不是空转）", () => {
+    assert(results.length >= 2, `落盘 tool_result=${results.length}，RoundRecord=${records.length}`);
+    assert(usage.input > 0 && usage.output > 0, `用量必须非零，实际 ${JSON.stringify(usage)}`);
+  }, `RoundRecord=${records.length}，↑${usage.input}/↓${usage.output}`);
+  check("C5 落盘 tool_result 顶层键集合 ⊆ 契约集合，退役名不在顶层", () => {
+    const problems = [];
+    for (const block of results) {
+      for (const key of Object.keys(block)) if (!allowed.has(key)) problems.push(`${block.tool_use_id}:${key}`);
+      for (const name of retired) if (Object.hasOwn(block, name)) problems.push(`${block.tool_use_id}:${name}`);
+    }
+    assertDeepEqual(problems, [], "顶层多出来的键");
+  }, `允许集合=[${[...allowed].sort().join(",")}]`);
+  check("C6 erix 事实面齐（tc_ 前缀 / round / durationMs ≥0 且至少一个 >0 / success 布尔）", () => {
+    for (const block of results) {
+      assert(typeof block?.erix?.toolCallKey === "string" && block.erix.toolCallKey.startsWith("tc_"),
+        `身份键缺失：${block?.tool_use_id}`);
+      assert(Number.isFinite(block?.erix?.round), `round 非有限：${block?.erix?.round}`);
+      assert(Number.isFinite(block?.erix?.durationMs) && block.erix.durationMs >= 0,
+        `durationMs 非有限/为负：${block?.erix?.durationMs}`);
+      assert(typeof block?.erix?.success === "boolean", "success 非布尔");
+    }
+    assert(durations.some((d) => d > 0), `真执行必须有非 0 耗时：${JSON.stringify(durations)}`);
+  }, JSON.stringify(durations));
+
+  // ⑥ 投影用**装好的包**跑（宿主 UI 的镜像也必须是新形状）
+  const { projectTranscriptForDisplay } = await import(pathToFileURL(join(installedRoot, "src", "index.js")).href);
+  const calls = projectTranscriptForDisplay(records).flatMap((card) => card?.toolCalls ?? []);
+  // PR #289 断言强度 3：修前允许**所有**投影条目的 durationMs 都缺席，也不与落盘对账
+  // ⇒「投影根本不透耗时」与「透错了值」都查不出。现在逐条对照 transcript：
+  // 同一条 toolCallKey 的投影 durationMs 必须**等于**该结果块的 erix.durationMs（缺失也必须两边
+  // 同时缺失），并且至少一条 > 0（否则这条线仍是死的）。
+  const durationByKey = new Map();
+  for (const block of results) {
+    const key = block?.erix?.toolCallKey;
+    if (typeof key === "string") durationByKey.set(key, block?.erix?.durationMs);
+  }
+  check("C7 装好的包投影的每条 toolCalls 带 toolCallKey，durationMs 逐条等于落盘的 erix.durationMs", () => {
+    assert(calls.length >= 2, `投影条目=${calls.length}`);
+    assert(calls.every((call) => typeof call.toolCallKey === "string" && call.toolCallKey.startsWith("tc_")),
+      JSON.stringify(calls.map((call) => call.toolCallKey)));
+    assert(calls.every((call) => call.durationMs === undefined
+      || (Number.isFinite(call.durationMs) && call.durationMs >= 0)),
+    JSON.stringify(calls.map((call) => call.durationMs)));
+    const mismatch = [];
+    for (const call of calls) {
+      if (!durationByKey.has(call.toolCallKey)) {
+        mismatch.push(`${call.toolCallKey}: 落盘里没有这个身份键的结果块`);
+        continue;
+      }
+      if (call.durationMs !== durationByKey.get(call.toolCallKey)) {
+        mismatch.push(`${call.toolCallKey}: 投影=${String(call.durationMs)}`
+          + ` 落盘=${String(durationByKey.get(call.toolCallKey))}`);
+      }
+    }
+    assertDeepEqual(mismatch, [], "投影与落盘的耗时逐条对不上");
+    assert(calls.some((call) => Number.isFinite(call.durationMs) && call.durationMs > 0),
+      `投影里至少一条必须带真实非 0 耗时（全缺席 = 投影这条耗时线是死的）：`
+      + JSON.stringify(calls.map((call) => call.durationMs)));
+  }, JSON.stringify(calls.map((call) => ({ k: call.toolCallKey, d: call.durationMs, n: call.name })))
+    + `｜落盘侧=${JSON.stringify([...durationByKey.entries()])}`);
+
+  // ⑧ 真实 HOME 没被污染（对账对象 = **闸门实际选中的那份配置**，PR #289 阻断 2）
+  //
+  // 与 `scripts/release-check.mjs` 的一个**有意识差异**：那边整棵 `~/.erix` 前后快照必须逐字相等。
+  // 本单跑在开发者机器上，同时可能有其它 session 在往 `~/.erix/transcripts` 写东西（那些写入与本脚本无关，
+  // 把它们算成本脚本的污染就是假红）。所以硬断言盯的是**本脚本能碰到的两个文件**：
+  // `~/.npmrc`（子 npm 本可默认读它）与**闸门选中的那份配置**（默认路径，或 `ERIX_E2E_CONFIG` 指定的
+  // 外部文件：以前这里硬要求 `~/.erix/config.json` 存在，只给自定义配置的 CI 会假红）；整棵目录树的
+  // 前后快照作为备注输出，变了但非本脚本所为时可以人工判定。本脚本的子进程 HOME 全部指临时假 HOME，
+  // 不存在能写真实 `~/.erix` 的路径。分支细则见 `checkHomePollution()`。
+  checkHomePollution(pollutionTarget);
+
+  for (const note of notes) log(`备注：${note}`);
+  assertDeepEqual(failures, [], `失败的断言：${failures.join(", ")}`);
+  log(`全绿：装后的 erix@${PACKAGE_VERSION} 打真上游（模型 ${gate.model}）退出码 4，`
+    + `工具 ${results.length} 次，↑${usage.input}/↓${usage.output}`);
+}
+
+main().then(() => {
+  // 失败靠 process.exitCode，不用 throw（throw 会把已经跑完的断言表埋在栈里）
+  if (failures.length > 0) process.exitCode = 1;
+}, (error) => {
+  log(`脚本自身失败：${error?.stack ?? error}`);
+  process.exitCode = 1;
+});

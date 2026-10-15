@@ -558,6 +558,18 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
 落盘模式还会多两行：启动时的「落盘：transcript=… judgeLog=…」与每次扩轮的
 「↻ 扩轮 n/N：round r → 上限 M」。
 
+**进度行里那截耗时的字段来源**（issue #284 / #285 收尾，工单 261015 T5）：`tool_result` 行的 `<n>ms`
+读的是 **`event.toolResult.erix.durationMs`**（引擎命名空间），顶层旧名 `duration` 只在读到
+「没写 `erix` 的旧记录 / 旧事件」时作**一代回退** —— 与仓内其余读路径同一口径（`erix` 优先、顶层只兜旧记录）。
+只写 `event.toolResult.duration` 在 T2 停写顶层摊平字段之后是一个**静默缺陷**（不报错，耗时的
+那一截直接消失），现由 `examples/pi-extension/erix-run-e2e.test.mjs` 钉住（其中**不联网那一段始终跑**，
+真机段 `ERIX_E2E_REAL=1` 再拿一次真进度行的证据）。
+
+⚠ **部署同步义务**：本目录是**源码**，宿主真正加载的是 `~/.pi/agent/extensions/erix-run/` 那份**安装副本**——
+改了这里不等于改了那里。每次改动都要把 `erix-run-core.js` / `erix-run-jobs.js` / `erix-run-format.js` /
+`index.ts` 同步过去并 `md5` 对账，随后在 pi 里 `/reload`（或重启 pi）。本仓不存「装了哪一版」的盘上痕迹，
+所以这一步漏了不会有任何东西变红。**部署动作由主 agent 执行，不在改动单内**（改动单只动 `examples/`）。
+
 **异步派工（`async:true`）没有 `onUpdate` 可刷**（那个工具调用早就返回了）：进度改由 job 自己缓存
 （上限 400 行），取回入口是 `action:"status"` / `action:"result"` 里的 `progressTail`（最后 10 行）。
 

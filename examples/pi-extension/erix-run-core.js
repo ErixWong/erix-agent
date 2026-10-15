@@ -904,7 +904,13 @@ export function formatLoopEvent(event) {
     case "tool_result": {
       const content = typeof event.toolResult?.content === "string" ? event.toolResult.content : "";
       const flag = event.toolResult?.is_error === true ? " [error]" : "";
-      const dur = Number.isFinite(event.toolResult?.duration) ? ` ${event.toolResult.duration}ms` : "";
+      // 耗时字段的现役名字是 `erix.durationMs`（issue #284/#285：0.20.0 T2 停写顶层摊平名）。
+      // 这里曾经读的是**退役名** `event.toolResult.duration`——T2 停写后它永远 undefined，
+      // 于是进度行**静默丢掉耗时**（不抛错、不报错，正是本仓一路在防的那一类腐化）。
+      // 口径与仓内其余读路径逐字一致（`src/display/projection.js`、`src/loop/tool-result-ttl.js`）：
+      // `erix.*` 优先，顶层旧名只作**一代读窗口**的回退（读 0.19 及更早落盘的历史块 / 老事件）。
+      const rawDuration = event.toolResult?.erix?.durationMs ?? event.toolResult?.duration;
+      const dur = Number.isFinite(rawDuration) ? ` ${rawDuration}ms` : "";
       return `← ${preview(content, 160) || "(空结果)"}${dur}${flag}`;
     }
     case "round_end":
