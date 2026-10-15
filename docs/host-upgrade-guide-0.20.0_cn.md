@@ -14,6 +14,7 @@
 | 终局裁决处 `aborted` 现在压过 `judge_done` 与 `final_guard_unverified`（issue #282） | 把「没抛异常、reason 是 `judge_done`」当成「这次 run 没被停止」的证据 | 2 |
 | 被中止的 run **不会**为进行中的那一轮写任何 transcript 记录，且 `termination.partial` 说的是载荷而不是 store（issue #283，裁决 = β） | 从 transcript store 里读「部分结果」，或看到被停掉的 run 最后一轮 0 条记录就报 bug | 3 |
 | `createFileTools().executeTool()` 的四种成功返回形态被随包契约套件钉住（issue #220） | 没有东西被打破；宿主拿到一个判别式，得以删掉自己那层猜形态的代码 | 4 |
+| `TOOL_RESULT_CONTRACT` 现在登记了 `erix.executionStatus` 的**存在条件**（issue #286 追加项）；引擎行为本身不变 | 只读了常量、就假设每个结果块都带 `erix.executionStatus` 的宿主 | 5 |
 
 ## 2. 「停止」压过 end-turn judge 与 finalGuard（issue #282）
 
@@ -111,7 +112,23 @@ switch (fact.kind) {
 [host-consumer-contract_cn.md](host-consumer-contract_cn.md)「成功返回的四种顶层形态
 （issue #220）」。
 
-## 5. 升级自查
+## 5. `erix.executionStatus` 只在特殊状态存在（issue #286 追加项）
+
+旧→新一行：**0.19 之前有宿主把顶层 `executionStatus` 当成恒存在 → 0.20.0 起它既不在顶层，也只在
+`erix.executionStatus` 的两种特殊状态下存在（`intercepted` 审计拦截、`interrupted` resume 改写）；
+普通成功与失败结果块上该字段不存在（`undefined`），不是空串、也不是 `ok` 之类的占位值。**
+
+| | 旧（0.19 的误读） | 新（0.20.0 钉住的事实） |
+| --- | --- | --- |
+| 位置 | 顶层 `executionStatus` | 只有 `erix.executionStatus`（顶层摊平键已退役） |
+| 存在性 | 被当成「每个结果块都有」 | 条件存在：仅 `intercepted` / `interrupted` 两种特殊状态 |
+| 机器可读的存在条件 | 常量里没有登记 | `TOOL_RESULT_CONTRACT.engine.fields.executionStatus.writtenFor === "special states only"` + `presentValues: ["intercepted", "interrupted"]`（`src/tool-fact.js`） |
+| 断言形状 | 「有就查」 | `Object.hasOwn(block.erix, "executionStatus") === false`（随包 `toolResultEnvelopeContract` 已无条件断言普通块上它不存在） |
+
+本项**引擎行为没变**，变的是常量面不再邀请那个误读。如果你的宿主靠「有没有这个键」来判「这块值不值得看」，
+请改成拿值与那两种特殊状态比。
+
+## 6. 升级自查
 
 1. `grep -rn "judge_done" <你的宿主>`——每一处命中都必须只在 `signal.aborted` 未置位时才可达
    （issue #282）。
@@ -122,7 +139,7 @@ switch (fact.kind) {
 4. 用随包套件跑一遍你的适配器（`erix-agent/contract-tests`）；`fileToolsContract` 里现在
    含那四条形态断言。
 
-## 6. 没有变的部分
+## 7. 没有变的部分
 
 没有选项或方法签名搬家；没有存储格式搬家；`end_turn` 仍是正常成功出口，未被停止的 run 照旧
 能拿到 `judge_done`。对终局对象做精确 `deepEqual` 的宿主不需要改动，除非它恰好走到了「judge

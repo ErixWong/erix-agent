@@ -17,6 +17,7 @@ requires Node 22.
 | `aborted` now outranks `judge_done` and `final_guard_unverified` at the terminal decision (issue #282) | treats "no exception, reason `judge_done`" as proof the run was not stopped | 2 |
 | An aborted run writes **no** transcript record for the round that was in flight, and `termination.partial` describes the payload, not the store (issue #283, ruling = β) | reads "partial results" out of the transcript store, or files a bug when a stopped run has zero records for its last round | 3 |
 | The four success return shapes of `createFileTools().executeTool()` are pinned by the packaged contract suite (issue #220) | nothing breaks; hosts gain a discriminator instead of a hand-written shape-guessing layer | 4 |
+| `TOOL_RESULT_CONTRACT` now records the **existence condition** of `erix.executionStatus` (issue #286 follow-up); the engine behaviour itself is unchanged | a host read only the constant and assumed every result block carries `erix.executionStatus` | 5 |
 
 ## 2. A stop beats the round judge and the final guard (issue #282)
 
@@ -122,7 +123,26 @@ Two traps this closes, both reported by a real host: `writeFile` returning `0` i
 too (same top-level shape as `readFile`). Full rule list:
 [host-consumer-contract.md](host-consumer-contract.md), "Success result shapes (issue #220)".
 
-## 5. Self-check
+## 5. `erix.executionStatus` exists only in special states (issue #286 follow-up)
+
+Old → new, in one line: **before 0.19 some hosts treated the top-level `executionStatus` as
+always present → as of 0.20.0 it is not at the top level at all, and inside `erix.*` it exists
+only in the two special states (`intercepted` = audit interception, `interrupted` = resume
+rewrite). On an ordinary success or failure result block the field is absent (`undefined`) —
+not an empty string, not an `ok` placeholder.**
+
+| | Old (the 0.19 misreading) | New (what is now pinned) |
+| --- | --- | --- |
+| Location | top-level `executionStatus` | only `erix.executionStatus` (the flattened top-level key is retired) |
+| Presence | read as "on every result block" | conditional: only the two special states `intercepted` / `interrupted` |
+| Machine-readable condition | not recorded anywhere | `TOOL_RESULT_CONTRACT.engine.fields.executionStatus.writtenFor === "special states only"` plus `presentValues: ["intercepted", "interrupted"]` (`src/tool-fact.js`) |
+| Assertion shape | "check it if it is there" | `Object.hasOwn(block.erix, "executionStatus") === false` (the packaged `toolResultEnvelopeContract` asserts the absence unconditionally on ordinary blocks) |
+
+Engine behaviour did not change here — what changed is that the constant面 no longer invites the wrong
+reading. If your host branches on "status present" to mean "this block is interesting", switch to
+comparing the value against the two special states.
+
+## 6. Self-check
 
 1. `grep -rn "judge_done" <your host>` — every hit must be reachable only when
    `signal.aborted` was not set (issue #282).
@@ -133,7 +153,7 @@ too (same top-level shape as `readFile`). Full rule list:
 4. Run the packaged suites against your adapters (`erix-agent/contract-tests`); the
    `fileToolsContract` suite now contains the four shape assertions.
 
-## 6. What did not change
+## 7. What did not change
 
 No option or method signature moved; no stored format moved; `end_turn` remains the normal
 success exit, and `judge_done` remains reachable for every run that was not stopped. Hosts
