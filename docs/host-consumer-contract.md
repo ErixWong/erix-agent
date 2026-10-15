@@ -1258,6 +1258,86 @@ own every-start-brace scan（`src/reflection/judge.js`）, which returns an inne
 fragment when the outer object is unclosed. Switching that to top-level-only is
 a behavior change and needs its own ticket.
 
+## Model-text JSON parsing entry point (issue #307)
+
+`parseModelJson(text, { topOnly, requireKeys })`（`src/text/parse-model-json.js`，
+re-exported from the package root（`src/index.js`））is the single public entry for
+"extract a JSON object out of model text". This package used to carry four such
+implementations — the top-level balanced scan（`src/text/json-candidates.js`）, the
+every-start brace scan inside `parseJudgeDecision`（`src/reflection/judge.js`）,
+the `<erix-summary>` tag extractor（`src/reflection/l0.js`）, and a line-anchored
+regex（`src/compact/fold-statistical.js`）. The first two families now share one
+callable surface; the last two are out of scope (see the note at the end).
+
+```js
+import { parseModelJson } from "erix-agent";
+
+const result = parseModelJson('reasoning text {"done":true,"confidence":1} trailing prose');
+if (result.ok) {
+  // result.value  — the direct JSON.parse output, unvalidated
+  // result.via    — the literal "json"
+  // result.candidates — every brace-balanced slice, in order of appearance
+} else {
+  // result.error  — "no_candidate" | "unparsable" | "shape_mismatch"
+  // there is no `value` key at all on this branch
+}
+```
+
+**Failure is three-way distinguishable**, and the precedence is
+`no_candidate` > `unparsable` > `shape_mismatch`:
+
+| `error` | Fact it reports | Example input |
+|---|---|---|
+| `"no_candidate"` | the text yields no brace-balanced object slice at all | `"plain prose"`, or `{"a":1` (unclosed, no inner object) |
+| `"unparsable"` | candidates exist, every `JSON.parse` throws | `{"a":,}` |
+| `"shape_mismatch"` | something parsed, but no candidate satisfies `requireKeys` | `{"confidence":0.5}` with `requireKeys: ["done"]` |
+
+A miss carries **no `value` key** (not `value: undefined`) and no `via`, so
+`"value" in result` narrows the union; `candidates` is returned on every branch,
+including the raw slices that failed to parse, so a host can diagnose what the
+model actually wrote. `value` is the untouched `JSON.parse` product — field
+validation, defaults and key renaming stay with the caller.
+
+**There is no repair.** No closing brace is appended, no value is rewritten, no
+normalization happens: `{"a":1` is `"no_candidate"`, not a patched `{a:1}`. This
+follows the "a normalizer may only carry values over" charter stated in
+`docs/host-consumer-contract_cn.md` — once repair is allowed, "what the model
+actually wrote" can no longer be recovered.
+
+`topOnly` (default `true`) selects the scan. `false` reproduces the round
+judge's every-start scan **verbatim** — one scan per `{`, so an unclosed outer
+object yields its **inner fragment** as a candidate. That is the current
+`parseJudgeDecision` behavior, kept as-is; tightening it is issue #309, not this
+change. `requireKeys` means **at least one** of the listed keys is present, not
+all of them: every reflection decision field is optional with a default (issue
+#305 — a half-populated object is a legal input), so requiring all keys would
+turn `{"progress":3}` into a failure.
+
+Migration verdicts, point by point: `parseReflectionDecision`
+（`src/loop/reflection.js`）**now calls this entry point** (passing the six
+decision keys as `requireKeys`) with behavior **word-for-word identical** to
+issue #306 — a differential test carries the pre-migration implementation
+verbatim into `test/reflection.test.js` and compares both over a corpus that
+includes the six #306 shapes. `parseJudgeDecision`（`src/reflection/judge.js`）
+**keeps its semantics unchanged**, reusing only the scanned `candidates` with
+`topOnly: false`; a sentinel test pins that an unclosed outer object still
+returns the inner-fragment decision. `tryParseWrapupJson`
+（`src/reflection/wrapup.js`）**stays on `jsonCandidates` directly**: it rejects
+candidates *after* parsing (an inline L1 object carrying `action`/`note`, a
+non-boolean `done`), while `requireKeys` checks key presence only — neither type
+checks nor excluded keys are expressible there, and the reasoning (plus the
+issue #30 follow-up note that an inner `{done,...}` would bypass the
+mandatory-done guard) is recorded in that function's own comment.
+`src/reflection/l0.js` and `src/compact/fold-statistical.js` are **not** the same
+class of thing: the first pulls facts out of a tagged region (no brace scanning,
+no JSON.parse of "the model's JSON object" as such), the second anchors on a
+line prefix and fails closed to `undefined` — neither is "extract a JSON object
+the model wrote".
+
+The public type is a **narrowable discriminated union**: after
+`npm run types:build`, `src/text/parse-model-json.d.ts` contains both the
+`ok: true` and the `ok: false` literals.
+
 ## Reusable normalization primitives
 
 Hosts that provide their own OpenAI-compatible transport can import these

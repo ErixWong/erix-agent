@@ -1026,6 +1026,70 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 （`src/reflection/judge.js`），外层未闭合时它返回的是内层残片。把它改成只认顶层对象
 属于行为变更，需要自己的工单。
 
+## 从模型文本抠 JSON 的公共入口（issue #307）
+
+`parseModelJson(text, { topOnly, requireKeys })`（`src/text/parse-model-json.js`，
+并由包根（`src/index.js`）再导出）是「从模型文本里抠一个 JSON 对象」的唯一公共入口。
+本包原本带四套这样的实现 —— 顶层平衡扫描（`src/text/json-candidates.js`）、
+`parseJudgeDecision` 里的「每个 `{` 起扫一次」扫描（`src/reflection/judge.js`）、
+`<erix-summary>` 标签提取（`src/reflection/l0.js`）、以及一个行锚定正则
+（`src/compact/fold-statistical.js`）。前两类现在共用这一个可调用面；后两类不在范围
+（原因见本节末）。
+
+```js
+import { parseModelJson } from "erix-agent";
+
+const result = parseModelJson('reasoning text {"done":true,"confidence":1} trailing prose');
+if (result.ok) {
+  // result.value  — JSON.parse 的直接产物，未做校验
+  // result.via    — 字面量 "json"
+  // result.candidates — 全部括号平衡切片，按出现顺序
+} else {
+  // result.error  — "no_candidate" | "unparsable" | "shape_mismatch"
+  // 这个分支上根本不存在 `value` 键
+}
+```
+
+**失败是三态可分的**，优先级为 `no_candidate` > `unparsable` > `shape_mismatch`：
+
+| `error` | 它陈述的事实 | 例输入 |
+|---|---|---|
+| `"no_candidate"` | 文本里一个括号平衡的对象切片都没有 | `"纯散文"`，或 `{"a":1`（未闭合且无内层对象） |
+| `"unparsable"` | 有候选，但 `JSON.parse` 全部抛错 | `{"a":,}` |
+| `"shape_mismatch"` | 有候选解析成功，但没有一个满足 `requireKeys` | `{"confidence":0.5}` 配 `requireKeys: ["done"]` |
+
+未命中时**不带 `value` 键**（不是 `value: undefined`）也不带 `via`，因此宿主可用
+`"value" in result` 收窄；`candidates` 每个分支都返回（含解析失败的原始切片），
+便于诊断模型到底写了什么。`value` 是未经触动的 `JSON.parse` 产物 —— 字段校验、
+默认值与字段改名都留给调用方。
+
+**没有 repair**：不补闭合括号、不改值、不做归一化 —— `{"a":1` 是 `"no_candidate"`，
+不是被补成 `{a:1}`。这跟本契约「归一化器只许搬运」的章程一致：一旦允许修补，
+「模型原本写了什么」就再也查不回来了。
+
+`topOnly`（默认 `true`）选扫描方式。`false` **逐字复刻**轮次 judge 现在的 every-start
+扫描（每个 `{` 各起扫一次，于是外层未闭合时会把**内层残片**当成候选）。那正是
+`parseJudgeDecision` 的现有行为，本刀原样保留；收紧它是 issue #309。`requireKeys`
+的意思是所列键**至少有一个**在场，不是全部：reflection 的决策字段全部可缺省带默认
+（issue #305 —— 半集是合法输入），要求全在会把 `{"progress":3}` 打成失败。
+
+逐点迁移裁定：`parseReflectionDecision`（`src/loop/reflection.js`）**已改走本入口**
+（把六个决策键作为 `requireKeys` 传入），行为与 issue #306 **逐字相同** ——
+对拍用例把迁移前实现逐字搬进 `test/reflection.test.js`，在同一份语料（含 #306
+那 6 个形状）上比对两边输出。`parseJudgeDecision`（`src/reflection/judge.js`）
+**语义一字未改**，只以 `topOnly: false` 复用扫出来的 `candidates`；一条哨兵用例钉住
+「外层未闭合仍返回内层残片决策」。`tryParseWrapupJson`（`src/reflection/wrapup.js`）
+**继续直接调 `jsonCandidates`**：它是在解析**之后**拒候选的（带 `action`/`note` 的内联
+L1 对象、`done` 不是布尔），而 `requireKeys` 只查键在场 —— 类型校验与排除键在那里
+都表达不了；三条理由（加上 issue #30 follow-up 的「内层 `{done,...}` 会绕过
+mandatory-done 守卫」）写在该函数自己的注释里。`src/reflection/l0.js` 与
+`src/compact/fold-statistical.js` **不属同一类**：前者从带标签的区域里抽事实
+（不扫括号，也不是对「模型写的 JSON 对象」调 JSON.parse），后者锚在行前缀上并且
+fail-closed 地返回 `undefined` —— 两者都不是「把模型写下的 JSON 对象抠出来」。
+
+公共类型是**可收窄的判别联合**：`npm run types:build` 之后，
+`src/text/parse-model-json.d.ts` 里能 `grep` 到 `ok: true` 与 `ok: false` 两个字面量。
+
 ## 可复用的归一化原语
 
 自带 OpenAI 兼容传输层的宿主可以从包根导入这些辅助函数。它们不做 I/O，也不调用模型：

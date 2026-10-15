@@ -190,6 +190,7 @@ src/
     loader.js                         技能包发现 / 校验 / 装配（issue #197）
   text/
     json-candidates.js              顶层平衡 JSON 对象扫描（wrapup 与 reflection 共用）
+    parse-model-json.js             从模型文本抠 JSON 的统一入口（三态失败、无 repair）
     label.js                        note/findings label 归一化
   tools/
     file-tools.js                    文件工具规范实现：readFile/searchText/rg/grep/tree/edit/writeFile

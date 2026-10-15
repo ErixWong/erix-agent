@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **新增公共入口 `parseModelJson(text, { topOnly, requireKeys })`（`src/text/parse-model-json.js`，新文件；`src/index.js` 导出，issue #307）。** 本仓原本有四套「从模型文本抠 JSON」的实现（`jsonCandidates` 的顶层平衡扫描、`parseJudgeDecision` 的 every-start 扫描、`<erix-summary>` 标签内提取、`fold-statistical.js` 的行锚定正则），本刀把前三类里同属「抠 JSON」的那一段收成一个可调用入口，并把**失败判据做成分叉的**：
+  - 命中 `{ ok: true, value, via: "json", candidates }`；未命中 `{ ok: false, error, candidates }`，`error` 三态**彼此可分**：`"no_candidate"`（一个平衡对象切片都没有）\| `"unparsable"`（有候选但 `JSON.parse` 全失败，例 `{"a":,}`）\| `"shape_mismatch"`（解析成功却不满足 `requireKeys`）。优先级 `no_candidate` > `unparsable` > `shape_mismatch`。
+  - **失败分支不带 `value` 键**（不是 `value: undefined`），也不带 `via`：宿主可用 `"value" in result` 收窄。`candidates` 在失败时照样返回（含解析失败的原始切片）供诊断。
+  - **没有 repair**：不补闭合括号、不改值、不做归一化（「归一化器只许搬运」章程）——`{"a":1` 是 `no_candidate`，不是被补成 `{a:1}`。
+  - `topOnly`（默认 `true`）：`false` 逐字复刻 judge 现在的 every-start（从**每个** `{` 各起扫一次，外层未闭合时会把**内层残片**当候选），是留给 issue #309 的口子。`requireKeys` 是**任一键在场**而不是全部（issue #305 已定：六字段可缺省带默认，半集是合法输入）。
+  - 类型面是**可收窄的判别联合**：`npm run types:build` 后 `src/text/parse-model-json.d.ts` 里能 grep 到 `ok: true` 与 `ok: false` 两个字面量（已避开 #213 记过的两种静默退化成 `any` 的形状）。
+  - **迁移（逐点裁定）**：`parseReflectionDecision`（`src/loop/reflection.js`）**已改走本入口**（传 `requireKeys` 为六个决策键），行为与 issue #306 **逐字等价**——`test/reflection.test.js` 原有 19 条一字未改语义，并新增一条把迁移前实现逐字搬进测试的**语料对拍**（含 #306 那 6 个形状）。`parseJudgeDecision`（`src/reflection/judge.js`）**语义一字未变**，只把扫描换成 `parseModelJson(text, { topOnly: false })` 的 `candidates`，「外层未闭合 ⇒ 仍返回内层残片决策」现状由新哨兵用例钉住。`tryParseWrapupJson`（`src/reflection/wrapup.js`）**不迁**（它是逐候选拒绝的，而 `requireKeys` 只查键在场、不查类型与排除键；理由三条写在该函数注释里，issue #30 follow-up 的 mandatory-done 守卫注释继续保留）。`src/reflection/l0.js` 与 `src/compact/fold-statistical.js` 不在本单（它们抠的不是「模型写的 JSON 对象」）。`test/contract/engine-api.js` 补包入口面断言，中英契约新增「Model-text JSON parsing」成对小节。零 npm 运行时依赖不变。
+
 ### Fixed
 
 - **`parseReflectionDecision`（`src/loop/reflection.js`）不再把模型明确写下的布尔值静默翻向（issue #305）。** 病根：它用贪婪 `/\{[\s\S]*\}/` 抠 JSON，于是**尾话里的一对花括号**（散文里的 `{plan}` 占位符、```` ```json ```` 围栏后跟一句说明、并列的两个顶层对象）会让抠出来的一坨解析不了；`JSON.parse` 抛错后 `catch` 直接 fall through 到关键词兜底，而兜底跑在**含 JSON 自身的整段文本**上——匹配到的是 `"continue"` / `"stalled"` 这些**键名**，于是 `"continue": false` 回来变成 `continueFlag: true`、`progress` 一起丢失。实测四种形状今天就坏（issue 原形状、围栏＋带括号尾话、并列两个顶层对象、外层未闭合＋内层完整）。

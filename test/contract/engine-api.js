@@ -31,6 +31,39 @@ export function engineApiContract(label, getEntry) {
     assert.equal(entry.parseReflectionDecision("一直在打转，放弃吧").via, "prose_fallback");
   });
 
+  test(`${label}: 包入口导出 parseModelJson，三态失败可分且失败不带 value（issue #307）`, async () => {
+    const entry = await getEntry();
+    assert.equal(typeof entry.parseModelJson, "function");
+
+    const hit = entry.parseModelJson('前置散文 {"done":true,"reason":"完成"} 尾话');
+    assert.equal(hit.ok, true);
+    assert.equal(hit.via, "json");
+    assert.deepEqual(hit.value, { done: true, reason: "完成" });
+    assert.deepEqual(hit.candidates, ['{"done":true,"reason":"完成"}']);
+
+    // 三态失败：一个候选都没有 / 有候选但全解析不了 / 解析成功却形状不合格。
+    assert.equal(entry.parseModelJson("纯散文没有花括号").error, "no_candidate");
+    assert.equal(entry.parseModelJson('{"a":,}').error, "unparsable");
+    assert.equal(entry.parseModelJson('{"confidence":0.5}', { requireKeys: ["done"] }).error, "shape_mismatch");
+    // 失败分支不带 value/via 键（宿主可以 `"value" in result` 收窄）。
+    for (const miss of [
+      entry.parseModelJson("纯散文没有花括号"),
+      entry.parseModelJson('{"a":,}'),
+      entry.parseModelJson('{"confidence":0.5}', { requireKeys: ["done"] }),
+    ]) {
+      assert.equal(miss.ok, false);
+      assert.ok(!("value" in miss));
+      assert.ok(!("via" in miss));
+    }
+    // 没有 repair：缺右花括不会被补一个 } 再解析。
+    assert.equal(entry.parseModelJson('{"a":1').ok, false);
+    // topOnly:false 复刻 every-start：外层未闭合时内层残片仍是候选。
+    assert.deepEqual(
+      entry.parseModelJson('{"outer":{"done":true}', { topOnly: false }).value,
+      { done: true },
+    );
+  });
+
   test(`${label}: appendUserTurn 对最小 store stub 完成一次预写`, async () => {
     const entry = await getEntry();
     const records = [];
