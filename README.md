@@ -347,6 +347,8 @@ quoted blocks below against it):
   "docs/host-upgrade-guide-0.18.0_cn.md",
   "docs/host-upgrade-guide-0.19.0.md",
   "docs/host-upgrade-guide-0.19.0_cn.md",
+  "docs/host-upgrade-guide-0.20.0.md",
+  "docs/host-upgrade-guide-0.20.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
