@@ -56,6 +56,16 @@ function normalizeFindings(value) {
 /**
  * Parse the end-of-turn JSON protocol while tolerating markdown fences and
  * incidental text around the first JSON object.
+ *
+ * **不迁**到公共入口 `parseModelJson`（`src/text/parse-model-json.js`，issue #307），
+ * 保留对 `jsonCandidates` 的直接调用，因为迁过去会改本函数的现有行为：本文件的形状门槛
+ * （`normalizedWrapup`：`done` 必须是字面布尔、出现 `action`/`note` 就退回内联 L1 路径、
+ * `summary`/`output` 必须是字符串）比 `requireKeys` 的键存在性判定严，而且**不合格时必须
+ * 继续试下一个候选**（例：`{"done":"true"}{"done":true}` 现在返回后者）；公共入口只返回
+ * 单个 `value`，拿它就得把「跳过这个候选」改成「整次失败」。扫描仍然只有一份实现。
+ *
+ * 只产**顶层平衡对象**的理由（issue #30 follow-up，必须继续成立）：宿主自己的结果 JSON
+ * 里嵌套一个 `{"done":true,...}` 时，内层残片否则会绕过上面的 mandatory-done 守卫。
  */
 export function tryParseWrapupJson(text) {
   for (const candidate of jsonCandidates(text)) {

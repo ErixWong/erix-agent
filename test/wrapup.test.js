@@ -5,6 +5,7 @@ import { normalizeWrapupWithLlm, tryParseWrapupJson } from "../src/reflection/wr
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { parseModelJson } from "../src/text/parse-model-json.js";
 
 test("tryParseWrapupJson parses a plain protocol object", () => {
   assert.deepEqual(
@@ -500,4 +501,26 @@ test("empty-text end_turn also triggers normalization (找不到 JSON 就该归�
     if (prev === undefined) delete process.env.ERIX_WRAPUP_NORMALIZE;
     else process.env.ERIX_WRAPUP_NORMALIZE = prev;
   }
+});
+
+// --- issue #307：`tryParseWrapupJson` **不迁**到公共入口，这里把「不迁的理由」钉成断言 ---
+
+test("tryParseWrapupJson 不迁 parseModelJson：不合格候选必须被跳过，而不是让整次解析失败（#307）", () => {
+  // 本文件的形状门槛（done 必须字面布尔 / 出现 action|note 就退回内联 L1）比 requireKeys 的
+  // 键存在性判定严，且**不合格要续试下一个**：公共入口只返回单个 value，迁过去就会
+  // 在这里返回 {"done":"true"} 而把行为改掉 —— 下面第二组断言就是这条差异的实据。
+  assert.deepEqual(tryParseWrapupJson('{"done":"true"}{"done":true}'), { done: true, summary: "", output: "" });
+  assert.deepEqual(tryParseWrapupJson('{"action":"implement","done":true}{"done":true,"summary":"s"}'), {
+    done: true,
+    summary: "s",
+    output: "",
+  });
+  assert.equal(tryParseWrapupJson('{"done":true,"action":"implement"}'), null);
+  // 内层 {"done":...} 不得绕过 mandatory-done 守卫（issue #30 follow-up，扫描只认顶层对象）
+  assert.equal(tryParseWrapupJson('{"summary":"host","metadata":{"done":true}}'), null);
+
+  // 差异实据：同一个输入走公共入口会在第一个候选停下（值还带着非法的字符串 done）
+  const viaEntry = parseModelJson('{"done":"true"}{"done":true}', { requireKeys: ["done"] });
+  assert.equal(viaEntry.ok, true);
+  assert.deepEqual(viaEntry.value, { done: "true" });
 });

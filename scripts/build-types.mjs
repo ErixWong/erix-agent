@@ -58,6 +58,7 @@ const TSC_FLAGS = [
 const REQUIRED_SYMBOLS = [
   ["src/index.d.ts", "runToolLoop"],
   ["src/index.d.ts", "createAssemblyPort"],
+  ["src/index.d.ts", "parseModelJson"],
   ["src/tools/index.d.ts", "createFileTools"],
 ];
 
