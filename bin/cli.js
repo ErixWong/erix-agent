@@ -1081,5 +1081,3 @@ if (
     await closeAllMcpServers();
   }
 }
-
-function ci187DeliberateSyntaxProbe( {
