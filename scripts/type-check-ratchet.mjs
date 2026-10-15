@@ -24,7 +24,7 @@
 //      实测都是这件事）。所以准入规则里的 `// @ts-check` 只是**声明这份文件愿意被检查**，真正的范围是 import 图。
 //   2. ⚠ **反过来，`src/index.js` 也不是全部**：`erix-agent/tools` 那条公共入口有**两个文件不在包根的 import
 //      图里**（`src/tools/file-tools.js`、`src/skills/loader.js`），它们的新错默认**卡不住**。见下面的
-//      `--with-tools` 与 `BASELINE_WITH_TOOLS`（实测两入口并集 = **164 个 / 31 文件**（2026-10-13 复测），比单入口多 43 个：27 + 16）。
+//      `--with-tools` 与 `BASELINE_WITH_TOOLS`（实测两入口并集 = **162 个 / 31 文件**（2026-10-15 复测；2026-10-13 那轮是 164），比单入口多 43 个：27 + 16）。
 //   3. ⚠ **`src/**/*.d.ts` 生成物在场时，本检查会静默变成空跑**（实测，见下面的「陈旧声明守卫」）：#213 的
 //      `types:build` 把声明**生成到 `src/` 里**，而 tsc 解析 `./x.js` 时**优先命中同目录的 `x.d.ts`**，于是
 //      被检查的是声明而不是实现——当前树上（2026-10-13 实测：`npm run types:build` 产出 **63** 个 `.d.ts`）63 个 `.d.ts` 在场时同一条命令报 **0 个错**（`--skipLibCheck` 跳过声明文件），
@@ -100,7 +100,7 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   按文件聚合 + 从两个入口的分类闭包（见 `AGENTS.md` 里同一条），而那 21 个全落在公共面那半边（`notes.js` 本来就在闭包里）。
 //   现在最集中的文件：`src/loop/orchestrator.js` 17、`src/run-state.js` 10、`src/display/projection.js` 9、
 //   `src/providers/anthropic.js` 9、`src/loop/run-snapshot-executor.js` 8（`--with-tools` 一档再加 `src/tools/file-tools.js` 27、`src/skills/loader.js` 16）。
-const BASELINE_ROOT = 121;
+const BASELINE_ROOT = 119;
 
 // `--with-tools` 的基线：把第二个公共入口 `src/tools/index.js` 也喂给 tsc 后的并集。
 // 复现命令（逐字）：
@@ -115,7 +115,7 @@ const BASELINE_ROOT = 121;
 //   于是 261 → 185 的 76 个 = #249 的 75 个 + #177 欠下的那 1 个（教训：下调基线要**两档一起复测**）。为什么默认不带它：#214 正文给的口径就是 `src/index.js`，
 //   默认值必须与规格逐字一致；但它**是**真实盲区，所以这里留一条可随时收紧的通道（收紧=把默认入口加上并
 //   把基线换成当前实测值，属 #214 之后的收紧动作，不要拿它当「反正卡不住」的理由）。
-const BASELINE_WITH_TOOLS = 164;
+const BASELINE_WITH_TOOLS = 162;
 
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");

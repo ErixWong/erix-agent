@@ -2313,6 +2313,13 @@ function mutateRef(from, to, opts = {}) {
   };
 }
 
+// 棘轮两档的当前真值**现读**棘轮脚本，不写死（issue #292 踩到的坑）：下面 5 条 baseline 反向证的变异串
+// 原先硬编码 121 / 164，基线一降到 119 / 162 就全部变成空操作，而 #210 R2 把「变异没打上」判成红 ——
+// 于是「下调常量 + 同步文档」这笔完全正常的提交会打红 5 条反向证。现读之后，以后再降基线不必回来改这里。
+const RATCHET_TRUTH = ratchetBaselines(textOf(RATCHET_SRC));
+const B_ROOT = Number(RATCHET_TRUTH.root);
+const B_WT = Number(RATCHET_TRUTH.withTools);
+
 const SELF_TEST_CASES = [
   // —— pkg-block / exports：#210 报的四种破坏，**前两种修前是绿的** ——
   {
@@ -2776,32 +2783,32 @@ const SELF_TEST_CASES = [
 
   // —— baseline：AGENTS 的棘轮当前值 ↔ 棘轮常量（issue #274）——
   {
-    label: "AGENTS EN 把基线写成 142（#265 当年留在 CHANGELOG 的那种开发中途值）（修前 exit 0）",
-    overlay: { [AGENTS_EN]: (t) => t.replace("baseline constant **121**", "baseline constant **142**") },
-    expect: [/baseline\/「基线常量 \/ baseline constant」声明: AGENTS\.md:\d+ 声称 142，但 scripts\/type-check-ratchet\.mjs 的 BASELINE_ROOT 是 121/],
+    label: `AGENTS EN 把基线写成 142（#265 当年留在 CHANGELOG 的那种开发中途值）（修前 exit 0）`,
+    overlay: { [AGENTS_EN]: (t) => t.replace(`baseline constant **${B_ROOT}**`, "baseline constant **142**") },
+    expect: [new RegExp(`baseline\\/「基线常量 \\/ baseline constant」声明: AGENTS\\.md:\\d+ 声称 142，但 scripts\\/type-check-ratchet\\.mjs 的 BASELINE_ROOT 是 ${B_ROOT}`)],
     expectFiles: [AGENTS_EN],
   },
   {
-    label: "AGENTS CN 把常量写法写成 120 → 点名 AGENTS_cn.md",
-    overlay: { [AGENTS_CN]: (t) => t.replace("BASELINE_ROOT = 121", "BASELINE_ROOT = 120") },
-    expect: [/baseline\/常量写法 `BASELINE_ROOT = N`: AGENTS_cn\.md:\d+ 声称 120，但 .* BASELINE_ROOT 是 121/],
+    label: `AGENTS CN 把常量写法写成 ${B_ROOT - 1} → 点名 AGENTS_cn.md`,
+    overlay: { [AGENTS_CN]: (t) => t.replace(`BASELINE_ROOT = ${B_ROOT}`, `BASELINE_ROOT = ${B_ROOT - 1}`) },
+    expect: [new RegExp(`baseline\\/常量写法 \`BASELINE_ROOT = N\`: AGENTS_cn\\.md:\\d+ 声称 ${B_ROOT - 1}，但 .* BASELINE_ROOT 是 ${B_ROOT}`)],
     expectFiles: [AGENTS_CN],
   },
   {
     label: "棘轮常量自己降 1 → 中英两侧的当前值句式全红",
-    overlay: { [RATCHET_SRC]: (t) => t.replace("const BASELINE_ROOT = 121;", "const BASELINE_ROOT = 120;") },
-    expect: [/BASELINE_ROOT 是 120/],
+    overlay: { [RATCHET_SRC]: (t) => t.replace(`const BASELINE_ROOT = ${B_ROOT};`, `const BASELINE_ROOT = ${B_ROOT - 1};`) },
+    expect: [new RegExp(`BASELINE_ROOT 是 ${B_ROOT - 1}`)],
     expectFiles: [AGENTS_EN, AGENTS_CN],
   },
   {
-    label: "CN 的分解式写成 121 + 27 + 15 → 算术不闭合就红",
-    overlay: { [AGENTS_CN]: (t) => t.replace("= 121 + 27 + 16", "= 121 + 27 + 15") },
-    expect: [/分解式 121 \+ 27 \+ 15 = 163，不等于 BASELINE_WITH_TOOLS（164）/],
+    label: `CN 的分解式写成 ${B_ROOT} + 27 + 15 → 算术不闭合就红`,
+    overlay: { [AGENTS_CN]: (t) => t.replace(`= ${B_ROOT} + 27 + 16`, `= ${B_ROOT} + 27 + 15`) },
+    expect: [new RegExp(`分解式 ${B_ROOT} \\+ 27 \\+ 15 = ${B_ROOT + 42}，不等于 BASELINE_WITH_TOOLS（${B_WT}）`)],
     expectFiles: [AGENTS_CN],
   },
   {
-    label: "EN 少写一处「基线 **164** / 31 files」→ 中英句式处数不齐",
-    overlay: { [AGENTS_EN]: (t) => t.replace("baseline **164** / 31 files = 121 + 27 + 16", "the 164-error baseline spread over 31 files (= 121 + 27 + 16)") },
+    label: `EN 少写一处「基线 **${B_WT}** / 31 files」→ 中英句式处数不齐`,
+    overlay: { [AGENTS_EN]: (t) => t.replace(`baseline **${B_WT}** / 31 files = ${B_ROOT} + 27 + 16`, `the ${B_WT}-error baseline spread over 31 files (= ${B_ROOT} + 27 + 16)`) },
     expect: [/baseline\/「基线 \*\*N\*\* \/ 31 个文件」声明: 声明点处数中英不齐：AGENTS\.md 1 处 vs AGENTS_cn\.md 2 处/],
   },
   {
