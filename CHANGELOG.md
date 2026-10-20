@@ -19,9 +19,18 @@
 
 - **实际喂给模型的折叠摘要与 TTL 降级结果成为账本里的事实，并且复用不重算（issue #326 开工顺序第 4 步）。** 病根：`fold-llm` 的摘要在 `compactBeforeRound` 里**现算现用**——它进了当次真实请求（模型看见了），却进不了任何一条 transcript 记录：轮记录只写 `messages.slice(roundStart)`，而 `roundStart` 取的是折叠**之后**的 `messages.length`，摘要消息永远落在它之前。探针实测（基线 `a3689a2`）：run1 调摘要 2 次、journal 里 0 条；崩溃恢复时**又调 3 次并拿到另一份摘要**（V2/V3）——每轮现算同时毁掉 prompt cache 命中与「模型当时看到了什么」的可解释性。TTL 降级同理：占位符进了请求，账本里只剩 `compactionStats` 的计数，「被降级成了什么」不可指认。
   - 新增 `src/compact/fold-summary-journal.js`（引擎侧内部模块，先例 `src/store/transcript-dedup.js`）：`foldSummaryFingerprint` 给「这次折叠喂给摘要器的输入」一个稳定身份（被折叠负载 + 轮区间，顺序即语义），`createFoldSummaryLedger` 提供 `remember` / `lookup` / `seedFromRecord`——**resume 时把已入账那份灌回复用账本，就是「不再重算」的实现点**。指纹口径与 store 的幂等判据同源但**判据不同**（那边排除 `round`/`ts`，这边必须含轮区间），故两份实现各自独立，不得互相「复用」掉语义。
-  - **不新增 record kind、不新增消息标记字段**：折叠摘要事实与 TTL 降级事实挂在轮记录的 `foldedSummary` / `ttlFacts` 字段上（宿主对未知字段保真，touwaka 已验证），事实行沿用引擎命名空间 `…:fold:<fp>` / `…:ttl:<fp>`，与 `:control:<slot>` 同一形状。TTL 事实带 `toolUseId / createdRound / tokens / tokensAfter / chars / fingerprint / placeholderHasTtlMark`，占位符必须自带可指认信息，不退化成「（内容已省略）」。**三个内置压缩策略的生成逻辑一字未改**，本刀只动「是否落账 + 是否复用」。
+  - **不新增 record kind、不新增消息标记字段**：折叠摘要事实与 TTL 降级事实挂在轮记录的 `foldedSummary` / `ttlDegradations` 字段上（宿主对未知字段保真，touwaka 已验证），事实行沿用引擎命名空间 `…:fold:<fp>` / `…:ttl:<fp>`，与 `:control:<slot>` 同一形状。TTL 事实带 `toolUseId / toolName / createdRound / tokens / tokensAfter / chars / contentFingerprint / placeholder`，占位符必须自带可指认信息，不退化成「（内容已省略）」。**三个内置压缩策略的生成逻辑一字未改**，本刀只动「是否落账 + 是否复用」。（字段名在 #326 第 5 步按真跑出来的 transcript 重核过：本条原本写的 `ttlFacts` 与 `fingerprint / placeholderHasTtlMark` 与代码不符，见下面第 5 步条目里的对账。）
   - 测试 `test/loop-persist-compaction-facts.test.js` 6 条（真 `runToolLoop` + fake provider + memory 与 file 两种内置 store，零真实 LLM）：摘要在 `load()` 里读得到（两种 store）、**折叠后中断 ⇒ resume 不再调 summarizer 且用的就是已入账那份**、同一 run 内重复折叠不重复调摘要器、TTL「被降级成了什么」读得到（两种 store）、没有 TTL 折叠时不误落该字段。
   - 文档：中英契约里两处因 `orchestrator.js` 行位移而漂移的符号锚点按 AGENTS 首选修法**删掉行区间**，裸行号棘轮随之下调 **140 → 138**（理由写在常量注释与提交信息里，AGENTS 中英同步）。
+
+- **内置 CLI 正确对待三类引擎事实行：预览不再空条目、不把引擎自说自话当正文、恢复消息数不再虚高（issue #326 开工顺序第 5 步，CLI 侧适配）。** 上面三步之后，`store.load()` 的**行数会多于轮数**且会出现 `messages` 为空的行，而 `bin/` 一行没适配。实测的四个坑（探针：真 `runToolLoop` + 内置 file store + fake provider，一份同时含 `fold` + `TTL` + `forced-final` 的账本，6 行 / 3 轮）：
+  - `readFirstUserText` **只看第一行 JSON** ⇒ 首行是 `:fold:` / `:ttl:` 事实行时预览是空串，`-r` picker 渲染成 `❯ 2026/10/21 04:23  hand-5a58ff8c  ` 这种**空条目**；同一函数又不跳 `meta.source === "judge-control"` ⇒ 首行是 `:control:` 行时会话标题直接变成「【Judge 评审意见】方向不对，请回到交付物」（引擎自说自话当正文）。
+  - `bin/repl.js` 的 `已恢复会话 X（N 条消息）` 用 `flatMap(record.messages ?? []).length` ⇒ 控制文本被算进正文（实测报 9 条，正文只有 8 条）。
+  - `messages` 缺失 / 为 `null` / 非 JSON 行的老账本**侥幸**不崩，但没有回归钉。
+- **修法全在 `bin/`，`src/` 一字未改**（工单红线，也无需反证）：`bin/session-scan.js` 新增只读判据 `ENGINE_NOTE_SOURCE` / `isEngineNoteMessage` / `messagesOfRecord` / `messagesOfRecords` / `conversationMessages`（与 `src/reflection/judge.js` 的 `renderConversation` 同一排除口径，两边不一致就会分裂出「judge 看不到的」与「用户看不到的」两套正文），`readFirstUserText` 改为**逐行扫到 64 KiB 窗口末尾**并跳过事实行与引擎提示（被窗口切断的尾行仍不猜），`bin/sessions.js` 预览取不到时给 `NO_PREVIEW_LABEL` 占位，`bin/repl.js` 的恢复行改用正文口径并单独说明「已隐藏 N 条引擎提示」。
+  - **刻意不改的两处语义**（都有用例钉住）：`scanSessions` 仍只做 `readdir + stat` ⇒ `-c` 只认 mtime，事实行不参与选择、不算时间、不增加候选；`bin/cli.js` 的 M1「会话不存在」判据仍用**行数** ⇒ 一份只有事实行的账本仍是可续跑的真会话（引擎 resume 靠这些行重建折叠/TTL 状态），改成「至少一条正文消息」是**假报错**。未新增 `--show-engine-notes` 类旗标（默认就是隐藏，避开 help / README 清单的逐处校对成本）。
+  - 测试：新增 `test/helpers/engine-fact-rows.js`（照抄引擎自己写的三种形状构造混合账本）与 9 条用例，分放在 `test/session-scan.test.js`（预览跳行/跳引擎提示/坏形状不崩/一个会话一个候选/`conversationMessages` 口径）、`test/sessions.test.js`（`-r` 无空条目与 `-c` 只认 mtime）、`test/repl.test.js`（恢复行的消息数）、`test/cli.test.js`（含事实行/只有事实行/缺 `messages` 老行的续跑路径）。先红后绿：实现前 7 条红。
+  - 对账：第 4 步的 CHANGELOG 条目把 TTL 事实字段写成 `ttlFacts` 与 `fingerprint / placeholderHasTtlMark`，与代码不符（真名：`ttlDegradations` 条目里的 `contentFingerprint` / `placeholder`），已就地修正那一行；工单表格里沿用的 `ttlFacts` 同样不准。契约本体未动（本刀只改 CLI 展示，无宿主可见 API 变化）。
 
 ## [0.21.0] - 2026-10-16
 

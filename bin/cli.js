@@ -675,6 +675,11 @@ async function runChatWithNotes({
   // 静默新建会让用户以为在续跑旧会话（实测 0 行提示）。判定用「显式传入的 sessionExplicit」
   // 而不是 `explicitSession` 兜底值：宿主/测试直接给 `session` 而不带该旗标时，命名一个新会话
   // 是正常用法（repl 同理），不在本单收缩范围。
+  // issue #326（wo-D）：这里的判据**故意仍是「行数」**而不是「正文条数」。账本里现在有三类
+  // 引擎事实行（`:control:` / `:fold:` / `:ttl:`），一份只有事实行的 transcript 也是真会话：
+  // 引擎 resume 正是靠这些行重建折叠/TTL 状态，`appendUserTurn` 会把新用户轮接上去（实测不崩）。
+  // 把它改成「至少一条正文消息」会让 `-c/--session` 对这种账本报「会话不存在」——假报错。
+  // 「多少条消息」的口径在 bin/session-scan.js#conversationMessages，别用这里的行数。
   if (sessionExplicit === true && existingRecords.length === 0) {
     throw new CliError(
       `会话不存在：${runId}（${dir} 下没有它的非空 transcript）。`

@@ -209,8 +209,10 @@ test("sessionScanPrefix 与 bin/repl.js / src/tools/notes.js 的实现一致（�
 test("哈希式只有一份实现，且没有扩大库的公共导出面（issue #168 红线）", async () => {
   const { readFileSync } = await import("node:fs");
   const replSource = readFileSync(new URL("../bin/repl.js", import.meta.url), "utf8");
-  // bin/repl.js 必须复用 sessionScanPrefix，而不是再抄一份哈希式（抄第二份就等着漂移）
-  assert.match(replSource, /import \{ sessionScanPrefix \} from "\.\/session-scan\.js"/);
+  // bin/repl.js 必须复用 sessionScanPrefix，而不是再抄一份哈希式（抄第二份就等着漂移）。
+  // 导入列表可以多名字/多行（#326 wo-D 起 repl 还从同一模块拿「正文口径」的读法），
+  // 所以断言只钉「sessionScanPrefix 的来路是 ./session-scan.js」这一件事。
+  assert.match(replSource, /import\s+\{[^}]*\bsessionScanPrefix\b[^}]*\}\s+from\s+"\.\/session-scan\.js"/us);
   assert.doesNotMatch(replSource, /createHash\("sha256"\)[\s\S]{0,80}slice\(0, 8\)/);
 
   // src/index.js 不许因为本单新增导出（-c 的实现全在 bin/，库面一字不动）

@@ -30,7 +30,11 @@ import {
   closeAllMcpServers,
   createMcpProxyTool,
 } from "./mcp.js";
-import { sessionScanPrefix } from "./session-scan.js";
+import {
+  conversationMessages,
+  messagesOfRecords,
+  sessionScanPrefix,
+} from "./session-scan.js";
 import { buildSkillTools, warnBuiltinToolConflicts } from "./skills.js";
 import {
   buildArchiveNotice,
@@ -458,14 +462,25 @@ export async function runRepl(argv, io = {}) {
       returnMetadata: true,
     },
   );
-  let messages = storedRecords.length > 0
-    ? storedRecords.flatMap((record) => record.messages ?? [])
-    : await loadSession(sessionDir, options.session);
+  // issue #326（wo-D）：账本里现在有三类**引擎事实行**（`:control:<slot>` / `:fold:<fp>` /
+  // `:ttl:<fp>`），一个轮可以对应多行 ⇒ 「行数 = 轮数 = 消息数」不成立。恢复行里的 N 一律用
+  // `conversationMessages`（正文口径），引擎自写的控制文本单独说一句，不静默吞掉。
+  // 老存档（`~/.erix/<id>.json`）是扁平消息数组，套成一行让同一堆判据只管一种形状。
+  const restoreRecords = storedRecords.length > 0
+    ? storedRecords
+    : [{ round: 0, messages: await loadSession(sessionDir, options.session) }];
+  let messages = messagesOfRecords(restoreRecords);
+  const bodyMessageCount = conversationMessages(restoreRecords).length;
+  const hiddenEngineNotes = messages.length - bodyMessageCount;
   let model = config.model;
   let usage = { input_tokens: 0, output_tokens: 0 };
 
   if (storedRecords.length > 0 || existsSync(archivePath)) {
-    writeLine(output, `已恢复会话 ${options.session}（${messages.length} 条消息）`);
+    writeLine(
+      output,
+      `已恢复会话 ${options.session}（${bodyMessageCount} 条消息`
+      + `${hiddenEngineNotes > 0 ? `，已隐藏 ${hiddenEngineNotes} 条引擎提示` : ""}）`,
+    );
   }
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({ todo: !todoDisabled })}`;
