@@ -342,3 +342,96 @@ async function scanForPicker(cwd, transcriptsDir) {
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+// ---------------------------------------------------------------------------
+// issue #326（wo-D）：`-r` 的预览行与 `-c` 的选择，遇到 #326 的三类引擎事实行之后
+// 必须保持「一个会话一行、预览是用户说过的第一句话、-c 只认 mtime」。
+// 改造前实测：预览只看第一行 ⇒ 首行是 `:fold:`/`:ttl:` 事实行时预览空着（picker 出现空条目）；
+// 首行是 `:control:` 行时预览直接是「【Judge 评审意见】…」（引擎自说自话当标题）。
+// ---------------------------------------------------------------------------
+
+test("#326-D -r 预览：事实行不产生空条目，也不把引擎自说自话当预览", async () => {
+  const { controlRow, foldRow, roundRow, ttlRow, userMessage, writeTranscript } = await import("./helpers/engine-fact-rows.js");
+  const { home, transcriptsDir } = await makeTranscripts();
+  const mixedId = idOf(DIR_PROJECT, "mixedfacts");
+  const notesId = idOf(DIR_PROJECT, "onlynotes");
+  const base = Date.parse("2026-01-01T00:00:00.000Z");
+  try {
+    // 混合会话：首行就是 fold 事实行（改造前预览 = 空串）
+    await writeTranscript(join(transcriptsDir, `${mixedId}.jsonl`), [
+      foldRow(mixedId, 1),
+      ttlRow(mixedId, 1),
+      controlRow(mixedId, 1),
+      roundRow(mixedId, 2, [userMessage("混合会话的真实用户轮")]),
+    ]);
+    await stamp(join(transcriptsDir, `${mixedId}.jsonl`), base + 60_000);
+    // 只有引擎提示的会话（改造前预览 = 「【Judge 评审意见】…」）
+    await writeTranscript(join(transcriptsDir, `${notesId}.jsonl`), [
+      controlRow(notesId, 1),
+      controlRow(notesId, 2, "guard-revise"),
+    ]);
+    await stamp(join(transcriptsDir, `${notesId}.jsonl`), base);
+
+    const input = makeInteractiveInput();
+    let rendered = "";
+    const output = new PassThrough();
+    output.on("data", (chunk) => { rendered += String(chunk); });
+    const selecting = resolveChatSessionSelection(
+      { resumePicker: true, dir: transcriptsDir },
+      { home, cwd: DIR_PROJECT, input, output },
+    );
+    await waitUntilRendered(() => rendered);
+    input.emit("data", Buffer.from("\r"));
+    assert.deepEqual(await selecting, { session: mixedId, sessionExplicit: true });
+
+    const rows = rendered.split("\n").filter((row) => /^(?:\u276f| ) \d{4}\//.test(row));
+    // 一个 transcript 一行（事实行不会被摊成多条候选）
+    assert.equal(rows.length, 2, `picker 必须一个会话一行，实测 ${JSON.stringify(rows)}`);
+    assert.match(rendered, /混合会话的真实用户轮/u, "首行是事实行时预览仍要取到真实用户文本");
+    assert.doesNotMatch(rendered, /Judge 评审意见|guard-revise|【/u, "引擎注入的控制文本不得出现在预览里");
+    // 真的没有用户文本时给占位，不得留一个空尾巴（改造前：行尾是空白）
+    const notesRow = rows.find((row) => row.includes(notesId));
+    assert.ok(notesRow !== undefined, `找不到 ${notesId} 的行：${JSON.stringify(rows)}`);
+    assert.match(notesRow, /（无用户文本）$/u, `预览为空时必须是占位而不是空白：${JSON.stringify(notesRow)}`);
+    assert.doesNotMatch(notesRow, /\s$/u, "行尾不得留空白（空白条目就是本单要修的观感）");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("#326-D -c 只认 mtime：事实行不参与选择、不算时间、不改变语义", async () => {
+  const { controlRow, foldRow, mixedFactRows, roundRow, ttlRow, userMessage, writeTranscript } = await import("./helpers/engine-fact-rows.js");
+  const { home, transcriptsDir } = await makeTranscripts();
+  const plainId = idOf(DIR_PROJECT, "plain");
+  const factId = idOf(DIR_PROJECT, "heavyfacts");
+  const base = Date.parse("2026-03-01T00:00:00.000Z");
+  try {
+    await writeTranscript(join(transcriptsDir, `${plainId}.jsonl`), [roundRow(plainId, 1, [userMessage("普通会话")])]);
+    await writeTranscript(join(transcriptsDir, `${factId}.jsonl`), mixedFactRows(factId));
+    await stamp(join(transcriptsDir, `${plainId}.jsonl`), base);
+    await stamp(join(transcriptsDir, `${factId}.jsonl`), base + 60_000);
+
+    // 事实行多的那份更新 ⇒ 选它（内容不参与判断）
+    assert.deepEqual(
+      await resolveChatSessionSelection({ continueSession: true, dir: transcriptsDir }, { home, cwd: DIR_PROJECT }),
+      { session: factId, sessionExplicit: true },
+    );
+    // 反过来：事实行多的那份更旧 ⇒ 选新的那份，行数再多也不能插队
+    await stamp(join(transcriptsDir, `${factId}.jsonl`), base);
+    await stamp(join(transcriptsDir, `${plainId}.jsonl`), base + 60_000);
+    assert.deepEqual(
+      await resolveChatSessionSelection({ continueSession: true, dir: transcriptsDir }, { home, cwd: DIR_PROJECT }),
+      { session: plainId, sessionExplicit: true },
+    );
+    // 只有事实行的 transcript 也算「非空 transcript」⇒ -c 仍可选它（不得误报「没有可接续的会话」）
+    const onlyFactsId = idOf(DIR_PROJECT, "onlyfacts");
+    await writeTranscript(join(transcriptsDir, `${onlyFactsId}.jsonl`), [foldRow(onlyFactsId, 2), ttlRow(onlyFactsId, 2), controlRow(onlyFactsId, 2)]);
+    await stamp(join(transcriptsDir, `${onlyFactsId}.jsonl`), base + 120_000);
+    assert.deepEqual(
+      await resolveChatSessionSelection({ continueSession: true, dir: transcriptsDir }, { home, cwd: DIR_PROJECT }),
+      { session: onlyFactsId, sessionExplicit: true },
+    );
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

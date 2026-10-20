@@ -221,3 +221,145 @@ test("哈希式只有一份实现，且没有扩大库的公共导出面（issue
   const indexSource = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
   assert.doesNotMatch(indexSource, /session-scan|sessionScanPrefix/);
 });
+
+// ---------------------------------------------------------------------------
+// issue #326（wo-D）：**账本里的三类「引擎事实行」**（`:control:<slot>` / `:fold:<fp>` / `:ttl:<fp>`）
+// 出现在 transcript 里之后，CLI 的发现层与预览必须把它们当账本元数据，而不是对话内容：
+//   - 预览不得因为首行是事实行就空着（实测改造前：`readFirstUserText` **只看第一行**）；
+//   - 预览不得把引擎自说自话（`meta.source === "judge-control"`）当会话正文（实测改造前会把
+//     「【Judge 评审意见】…」显示成会话标题）；
+//   - `messages` 缺失 / 为空数组 / 为 `null` 一律不得抛（老行与事实行都要兼容）。
+// 判据本身在 `src/`（本单不动），这里只钉 CLI 侧「怎么读」。
+// ---------------------------------------------------------------------------
+
+const mixedFactRowsHelper = () => import("./helpers/engine-fact-rows.js");
+
+test("#326-D 预览越过引擎事实行：首行是 fold/ttl 事实行也要给出真实用户文本", async () => {
+  const { controlRow, foldRow, roundRow, ttlRow, userMessage, writeTranscript } = await mixedFactRowsHelper();
+  const { transcriptsDir } = await makeTranscriptsDir();
+  const runId = "wo-d-preview-skips-facts";
+  const transcriptPath = join(transcriptsDir, `${runId}.jsonl`);
+  try {
+    await writeTranscript(transcriptPath, [
+      foldRow(runId, 2),
+      ttlRow(runId, 2),
+      controlRow(runId, 2),
+      roundRow(runId, 3, [userMessage("真实用户第一句")]),
+    ]);
+    assert.equal(
+      await readFirstUserText(transcriptPath),
+      "真实用户第一句",
+      "首行是 messages 为空数组的 fold 事实行时，预览不能空着——后面有真实用户轮",
+    );
+  } finally {
+    await rm(join(transcriptsDir, "..", ".."), { recursive: true, force: true });
+  }
+});
+
+test("#326-D 预览不把引擎自说自话（meta.source=judge-control）当正文", async () => {
+  const { controlRow, roundRow, userMessage, writeTranscript } = await mixedFactRowsHelper();
+  const { transcriptsDir } = await makeTranscriptsDir();
+  const runId = "wo-d-preview-skips-notes";
+  const transcriptPath = join(transcriptsDir, `${runId}.jsonl`);
+  try {
+    await writeTranscript(transcriptPath, [
+      controlRow(runId, 1),
+      roundRow(runId, 2, [userMessage("真实用户第一句")]),
+    ]);
+    const preview = await readFirstUserText(transcriptPath);
+    assert.equal(preview, "真实用户第一句", `改造前实测给出的是引擎注入文本：${JSON.stringify(preview)}`);
+    assert.doesNotMatch(preview, /Judge/u);
+
+    // 整份账本只有引擎提示 ⇒ 宁可不显示，也不把引擎自说自话当会话标题
+    const onlyNotes = join(transcriptsDir, "wo-d-only-engine-notes.jsonl");
+    await writeTranscript(onlyNotes, [controlRow(runId, 1), controlRow(runId, 2, "extend")]);
+    assert.equal(await readFirstUserText(onlyNotes), "");
+  } finally {
+    await rm(join(transcriptsDir, "..", ".."), { recursive: true, force: true });
+  }
+});
+
+test("#326-D 事实行的坏形状不崩：messages 缺失 / null / 空数组 / 非 JSON 行 / 空文件", async () => {
+  const { roundRow, userMessage, writeTranscript } = await mixedFactRowsHelper();
+  const { transcriptsDir } = await makeTranscriptsDir();
+  const runId = "wo-d-legacy-shapes";
+  const transcriptPath = join(transcriptsDir, `${runId}.jsonl`);
+  try {
+    // 事实行的三种真实形状（缺 `messages` 的老行、`messages: null`、`messages: []`）+ 一行垃圾
+    await writeFile(
+      transcriptPath,
+      [
+        JSON.stringify({ round: 1, dedupKey: `${runId}:engine:round:1:fold:aaaa` }),
+        "{ not json",
+        JSON.stringify({ round: 2, dedupKey: `${runId}:engine:round:2:ttl:bbbb`, messages: null }),
+        JSON.stringify(roundRow(runId, 3, [userMessage("坏形状之后的真实用户轮")])),
+      ].join("\n"),
+      "utf8",
+    );
+    assert.equal(await readFirstUserText(transcriptPath), "坏形状之后的真实用户轮");
+
+    // 只有坏形状（一行正文都没有）也要给空串，不抛
+    const junk = join(transcriptsDir, "wo-d-junk.jsonl");
+    await writeTranscript(junk, [{ round: 1, dedupKey: "x:engine:round:1:fold:aaaa", messages: null }]);
+    assert.equal(await readFirstUserText(junk), "");
+    const empty = join(transcriptsDir, "wo-d-empty.jsonl");
+    await writeFile(empty, "", "utf8");
+    assert.equal(await readFirstUserText(empty), "");
+  } finally {
+    await rm(join(transcriptsDir, "..", ".."), { recursive: true, force: true });
+  }
+});
+
+test("#326-D 事实行不增加扫描条目：一个 transcript 一个候选（行数 ≠ 会话数）", async () => {
+  const { mixedFactRows, writeTranscript } = await mixedFactRowsHelper();
+  const { transcriptsDir } = await makeTranscriptsDir();
+  const cwd = join(transcriptsDir, "wo-d-project");
+  const runId = sessionScanPrefix(cwd);
+  try {
+    await writeTranscript(join(transcriptsDir, `${runId}.jsonl`), mixedFactRows(runId));
+    const found = await scanSessions({ cwd, transcriptsDir });
+    assert.deepEqual(found.map((entry) => entry.sessionId), [runId]);
+    assert.equal(await resolveContinueSessionId({ cwd, transcriptsDir }), runId);
+  } finally {
+    await rm(join(transcriptsDir, "..", ".."), { recursive: true, force: true });
+  }
+});
+
+test("#326-D conversationMessages：事实行与引擎提示都不计入正文消息数（改造前实测 9 vs 8）", async () => {
+  const { assistantMessage, mixedFactRows, userMessage } = await mixedFactRowsHelper();
+  const { conversationMessages, isEngineNoteMessage } = await import("../bin/session-scan.js");
+  assert.equal(typeof conversationMessages, "function", "bin/session-scan.js 必须导出 conversationMessages");
+  assert.equal(typeof isEngineNoteMessage, "function", "bin/session-scan.js 必须导出 isEngineNoteMessage");
+
+  const runId = "wo-d-count";
+  const rows = mixedFactRows(runId);
+  // 前置：夹具里确实同时存在三类事实行（否则下面是空断言）
+  assert.ok(rows.some((row) => String(row.dedupKey).includes(":fold:")));
+  assert.ok(rows.some((row) => String(row.dedupKey).includes(":ttl:")));
+  assert.ok(rows.some((row) => String(row.dedupKey).includes(":control:")));
+
+  const flat = rows.flatMap((row) => row.messages ?? []);
+  const visible = conversationMessages(rows);
+  const bodyTexts = ["把三类事实行写进账本", "先看一眼", "继续", "收尾", "终稿正文"];
+  // 正文文本：引擎自写的两条控制文本（judge nudge + 强制收尾指令）不得在内，
+  // 但 forced-final 行里那条**终稿 assistant** 是正文，必须在内。
+  assert.deepEqual(
+    visible.flatMap((message) => (message.content ?? [])
+      .filter((block) => block?.type === "text")
+      .map((block) => block.text)),
+    bodyTexts,
+  );
+  // 消息数：事实行贡献 0（本来就没消息），引擎自说自话各扣 1 ⇒ 8 行消息只算 6 条正文
+  assert.equal(flat.length, 8, "夹具的展平消息数变了，下面的判据要跟着重测");
+  assert.equal(visible.length, 6, `改造前实测就是按 flat.length 报的（visible=${visible.length}，flat=${flat.length}）`);
+  assert.ok(visible.length < flat.length,
+    `正文数必须小于展平后的消息数（实测 visible=${visible.length} flat=${flat.length}），否则引擎自说自话被算成了正文`);
+  // 引擎自说自话：judge-control 消息一律判真；真实消息不误伤
+  assert.equal(isEngineNoteMessage({ role: "user", content: [], meta: { source: "judge-control" } }), true);
+  assert.equal(isEngineNoteMessage(userMessage("用户自己写的")), false);
+  assert.equal(isEngineNoteMessage(assistantMessage("模型写的")), false);
+  assert.equal(isEngineNoteMessage(undefined), false);
+  // 非数组入参不抛（宿主/老行传垃圾也要给空数组而不是崩）
+  assert.deepEqual(conversationMessages(undefined), []);
+  assert.deepEqual(conversationMessages([null, {}, { messages: null }]), []);
+});
