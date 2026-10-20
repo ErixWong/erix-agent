@@ -14,7 +14,7 @@ import {
   toolResultContent,
   toolResultData,
 } from "./messages.js";
-import { directionHintText } from "./reflection.js";
+import { JUDGE_DONE_CONFIDENCE_THRESHOLD, directionHintText, judgeDoneAdvisoryText } from "./reflection.js";
 import { buildToolResultFact } from "../tool-fact.js";
 import {
   aggregateStubText,
@@ -412,6 +412,18 @@ export function createRunSnapshotExecutor(ctx) {
   };
 
   const pendingDirectionHints = [];
+  // issue #322：达成 advisory 的**单槽**（不是队列，不计数）。同一轮多次 `done:true` 只留最后
+  // 一条（覆盖），投递面在 orchestrator 的两处 flush（正常 / resume）共用同一个 `flushJudgeDoneAdvisory`。
+  const pendingJudgeDoneAdvisory = { text: undefined };
+  // 中途审计判定「目标已达成」（`done === true` 且置信度过 `JUDGE_DONE_CONFIDENCE_THRESHOLD`）时
+  // 存下评审意见。开关关闭时本函数直接返回，`pendingJudgeDoneAdvisory` 永远为空 ⇒ 行为逐字节不变。
+  const offerJudgeDoneAdvisory = (decision) => {
+    if (ctx.judgeDoneAdvisoryEnabled !== true) return;
+    if (decision === undefined || decision === null) return;
+    if (decision.done !== true) return;
+    if (!(decision.confidence >= JUDGE_DONE_CONFIDENCE_THRESHOLD)) return;
+    pendingJudgeDoneAdvisory.text = judgeDoneAdvisoryText(decision.reason);
+  };
   const executeToolWithIntercept = async (
     block,
     round,
@@ -553,11 +565,13 @@ export function createRunSnapshotExecutor(ctx) {
 
     // on_track / readonly 放行的调用照常执行（judge 已给出方向判断，无需再打断）
     if (onTrackPassThrough || readOnlyPassThrough || decision?.done !== false) {
+      offerJudgeDoneAdvisory(decision);
       try {
         const toolResult = await executeToolBlock(block, round, toolResults, pendingToolUses);
         const directionHint = directionHintText(
           decision?.direction,
           decision?.directionReason,
+          ctx.judgeDoneAdvisoryEnabled === true,
         );
         if (directionHint) pendingDirectionHints.push(directionHint);
         return toolResult;
@@ -571,6 +585,7 @@ export function createRunSnapshotExecutor(ctx) {
     const directionHint = directionHintText(
       decision.direction,
       decision.directionReason,
+      ctx.judgeDoneAdvisoryEnabled === true,
     );
     if (directionHint) pendingDirectionHints.push(directionHint);
     const interceptedContent = `【审计拦截】方向可能偏: ${reason}/${evidence}。原工具调用未执行，请重新评估方向后继续。`;
@@ -626,5 +641,6 @@ export function createRunSnapshotExecutor(ctx) {
     executeToolBlock,
     executeToolWithIntercept,
     pendingDirectionHints,
+    pendingJudgeDoneAdvisory,
   };
 }
