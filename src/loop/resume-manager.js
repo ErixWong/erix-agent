@@ -76,6 +76,9 @@ export async function restoreResume(ctx) {
     try {
       const records = await ctx.store.load(ctx.runId);
       if (records.length === 0) throw new Error("resume: 无可恢复记录");
+      // issue #326（wo-C）：**恢复不得重算折叠摘要**——把已入账的那份灌回引擎的复用账本，
+      // 于是本次进程里同一折叠输入直接命中，不再调摘要器，也不会重复落账。
+      ctx.seedFoldSummaries?.(records);
       if (resolveRunStateSource(persistedRunStateResult) === "record") {
         const latestStateRecord = [...records].reverse().find((record) => (
           record?.runState && typeof record.runState === "object"
@@ -94,7 +97,12 @@ export async function restoreResume(ctx) {
         for (const message of record.messages ?? []) {
           ctx.messageRounds.set(message, record.round ?? 0);
         }
-        if ((record.round ?? 0) > 0) {
+        // issue #326（wo-C）：**引擎事实行不进治理历史**。`…:engine:round:<n>:fold:<fp>` /
+        // `…:ttl:<fp>` 这类补充记录带轮号但没有轮正文（`messages: []`），照旧走下面的分支就会给同一轮
+        // 追加一条 `summary: "missing"` 的历史条目，污染 judge 看到的轮次历史。
+        const isEngineFactRow = (record?.messages?.length ?? 0) === 0
+          && (record?.foldedSummary !== undefined || record?.ttlDegradations !== undefined);
+        if ((record.round ?? 0) > 0 && !isEngineFactRow) {
           const summary = record.summary ?? "missing";
           const l0facts = record.l0facts
             // 无 l0facts 的远古记录：用共享 errorSeen 重新提取（跨记录累计；

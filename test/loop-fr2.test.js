@@ -301,8 +301,16 @@ test("compacts context before the second round and records its payload and stats
   assert.equal(shouldCompactCalls.length, 2);
   assert.equal(shouldCompactCalls[0].budgetTokens, 99);
   assert.deepEqual(provider.requests[1].messages[0], replacement[0]);
-  assert.equal(records[2].folded, true);
-  assert.deepEqual(records[2].foldedPayload, foldedPayload);
+  // issue #326（wo-C）：折叠摘要事实行（`…:engine:round:<n>:fold:<fp>`，`messages: []`）与轮记录同轮并存，
+  // 于是「按数组下标取轮记录」不再稳定 ⇒ 这里改成按 dedupKey 取。事实行本身由
+  // test/loop-persist-compaction-facts.test.js 专门钉住。
+  const roundRecord = records.find((record) => record.dedupKey === "fr2:engine:round:2");
+  assert.ok(roundRecord !== undefined, `轮记录必须在（实测 ${JSON.stringify(records.map((record) => record.dedupKey))}）`);
+  assert.equal(roundRecord.folded, true);
+  assert.deepEqual(roundRecord.foldedPayload, foldedPayload);
+  const foldFactRow = records.find((record) => String(record.dedupKey ?? "").includes(":fold:"));
+  assert.ok(foldFactRow !== undefined, "折叠摘要事实行必须与轮记录同时存在");
+  assert.deepEqual(foldFactRow.messages, [], "事实行不带轮正文（宿主不得当正文渲染）");
   assert.deepEqual(result.compactionStats, [{
     compacted: true,
     foldedRounds: 1,
