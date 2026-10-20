@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -636,4 +636,82 @@ test("parseReplArgs accepts --compaction and rejects unknown strategy names (#16
   );
   assert.throws(() => parseReplArgs(["--compaction", " "]), /--compaction 不能为空/u);
   assert.throws(() => parseReplArgs(["--compaction"]), /--compaction 缺少数值/u);
+});
+
+// ---------------------------------------------------------------------------
+// issue #326（wo-D）：`已恢复会话 X（N 条消息）` 这个 N 以前是
+// `storedRecords.flatMap(record => record.messages ?? [])` 的长度——#326 之后账本里多了
+// 三类引擎事实行与带 `meta.source === "judge-control"` 的控制文本，那个数开始**虚高**
+// （改造前实测：真跑一份 fold + TTL + forced-final 的 transcript，报 9 条，正文其实只有 8 条）。// 现在 N 必须是「正文消息数」，被隐藏的引擎提示单独说明；`messages` 缺失/空数组不得崩。
+// ---------------------------------------------------------------------------
+
+async function runRestoreLine({ tag, session, rows }) {
+  const { writeTranscript } = await import("./helpers/engine-fact-rows.js");
+  const home = await makeTmp(`erix-repl-${tag}-`);
+  try {
+    const transcriptsDir = join(home, "transcripts");
+    await mkdir(transcriptsDir, { recursive: true });
+    await writeTranscript(join(transcriptsDir, `${session}.jsonl`), rows);
+    const mcpConfigPath = await writeEmptyMcpConfig(home);
+    const input = new PassThrough();
+    input.isTTY = true;
+    const output = new PassThrough();
+    let rendered = "";
+    output.on("data", (chunk) => { rendered += String(chunk); });
+    const run = runRepl(["--session", session, "--dir", transcriptsDir, "--config", mcpConfigPath], {
+      input,
+      output,
+      home,
+      notesDir: join(home, "notes"),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      providerFactory: () => ({}),
+      loop: async () => ({
+        finalText: "done",
+        messages: [],
+        rounds: 1,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        compactionStats: [],
+      }),
+    });
+    input.end("/exit\n");
+    await run;
+    return rendered;
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+}
+
+test("#326-D 恢复行的消息数不含引擎事实行与自说自话（改造前实测 9 vs 8）", async () => {
+  const { mixedFactRows } = await import("./helpers/engine-fact-rows.js");
+  const session = "wo-d-repl-facts";
+  const rows = mixedFactRows(session);
+  const flat = rows.flatMap((row) => row.messages ?? []).length;
+  const rendered = await runRestoreLine({ tag: "wo-d-facts", session, rows });
+
+  const line = rendered.split("\n").find((row) => row.includes("已恢复会话"));
+  assert.ok(line !== undefined, `没有恢复行：${JSON.stringify(rendered)}`);
+  // 夹具：8 条展平消息，其中 2 条是引擎自写的控制文本 ⇒ 正文 6 条
+  assert.equal(flat, 8, "夹具的展平消息数变了，下面的判据要跟着重测");
+  assert.match(line, /（6 条消息/u, `改造前这里报的是展平数 8：${JSON.stringify(line)}`);
+  assert.doesNotMatch(line, /（8 条消息/u);
+  assert.match(line, /2 条引擎提示/u, "被隐藏的引擎提示要单独说明，不能静默吞掉");
+});
+
+test("#326-D 只有事实行的账本：恢复行报 0 条正文而不崩", async () => {
+  const { controlRow, foldRow, ttlRow } = await import("./helpers/engine-fact-rows.js");
+  const session = "wo-d-repl-onlyfacts";
+  const rendered = await runRestoreLine({
+    tag: "wo-d-repl-only",
+    session,
+    rows: [
+      foldRow(session, 2),
+      ttlRow(session, 2),
+      { round: 3, roundKey: `${session}:round:3` }, // 老行：连 messages 字段都没有
+      controlRow(session, 3, "extend"),
+    ],
+  });
+  const line = rendered.split("\n").find((row) => row.includes("已恢复会话"));
+  assert.ok(line !== undefined, `没有恢复行：${JSON.stringify(rendered)}`);
+  assert.match(line, /（0 条消息/u);
+  assert.match(line, /1 条引擎提示/u);
 });

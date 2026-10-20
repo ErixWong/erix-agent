@@ -160,6 +160,7 @@ src/
     pipeline.js                     压缩流水线声明
     enforce-size.js                 字段大小限制
     fold-llm.js                     LLM 辅助的折叠策略
+    fold-summary-journal.js         折叠摘要事实账本：指纹、复用备忘、事实回读
     fold-statistical.js             统计折叠与导航记录
     provider-summarizer.js          用本 run provider 的 fold-llm 默认 summarizer
     strategy-resolution.js          context.strategy 内置策略名解析
@@ -174,6 +175,7 @@ src/
     notes-memory.js                 进程内 NotesStore 适配器（共用 src/store/notes-port.js）
     notes-port.js                   NotesStore 端口语义共享实现（内部模块）
     append-user-turn.js             多轮续跑契约的预写 user 轮
+    transcript-dedup.js             appendRound 去重的 payload 判据（内部模块）
   config/
     api-key.js                      API key 物化
     env.js                          基于环境变量的模型配置

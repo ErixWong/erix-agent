@@ -9,6 +9,8 @@
 //    提示模型趁全文在场用 note_take 记录要点（拷贝块后追加，绝不动原块）。
 // 2. 结构化导航摘要：折叠占位符内嵌确定性 digest（定义行签名 + 行号）。
 
+import { createHash } from "node:crypto";
+
 import { estimateTokens } from "../tokens.js";
 
 export const TOOL_RESULT_TTL_DEFAULT = 2;
@@ -209,8 +211,11 @@ function readRoundMarker(block) {
  * @param {number} [options.ttl=2] 存活轮数：currentRound - 创建轮 >= ttl 时折叠（创建轮读 `erix.round`，旧记录回退顶层 `erixRound`）
  * @param {number} [options.minTokens=4000] 低于此估算 tokens 的结果永不折叠
  * @param {(info:object)=>string} [options.retrievalHint] 自定义取回提示文本生成
- * @param {{foldedCount?: number, warnedCount?: number, tokensBefore?: number, tokensAfter?: number}} [options.stats]
- *   可选的可变统计出参；只报告实际折叠/预警，不改变请求视图语义
+ * @param {{foldedCount?: number, warnedCount?: number, tokensBefore?: number, tokensAfter?: number, degradations?: object[]}} [options.stats]
+ *   可选的可变统计出参；只报告实际折叠/预警，不改变请求视图语义。
+ *   `degradations`（issue #326 wo-C，additive，**只在真的折叠时出现**）：逐条降级事实，供引擎入账「这条工具结果被降级成了什么」
+ *   ——`{ toolUseId, toolName, toolCallKey, createdRound, tokens, tokensAfter, chars, contentFingerprint, placeholder }`；
+ *   `placeholder` 是逐字喂给模型的占位（自带原始体积/引用/导航 digest），绝不退化成「（内容已省略）」。
  * @returns {Array<object>} 折叠后的浅拷贝视图（无折叠时返回原数组引用）
  */
 export function foldToolResultsForRequest(messages, {
@@ -313,6 +318,21 @@ export function foldToolResultsForRequest(messages, {
         report.foldedCount += 1;
         report.tokensBefore += tokens;
         report.tokensAfter += estimateTokens(contentSummary);
+        // 只在**真的发生降级**时挂上（没折叠时 stats 的形状与改动前逐字一致，既有断言不受扰）。
+        if (!Array.isArray(report.degradations)) report.degradations = [];
+        report.degradations.push({
+          toolUseId: block.tool_use_id,
+          toolName,
+          ...(typeof block.erix?.toolCallKey === "string"
+            ? { toolCallKey: block.erix.toolCallKey }
+            : {}),
+          createdRound: createdRound,
+          tokens,
+          tokensAfter: estimateTokens(contentSummary),
+          chars: text.length,
+          contentFingerprint: `sha256:${createHash("sha256").update(text, "utf8").digest("hex").slice(0, 24)}`,
+          placeholder: contentSummary,
+        });
       }
     }
 

@@ -26,6 +26,7 @@ import {
 // picker 一次最多列出的条数：预览要逐个读 transcript 头部，给读取量一个上界；
 // 超出的都是更旧的会话，需要时用 `--session <完整 id>` 精确恢复。
 export const PICKER_LIMIT = 50;
+export const NO_PREVIEW_LABEL = "（无用户文本）"; // 预览取不到时的占位，不留空条目（#326 wo-D）
 
 class SessionSelectionError extends Error {
   constructor(message) {
@@ -93,7 +94,8 @@ function formatTimestamp(iso) {
 function formatRow(entry, selected) {
   const cursor = selected ? "❯" : " ";
   // 列表已按目录筛过，再列目录名没有信息量；列完整 id——选中后照抄就能 --session <完整 id>
-  return `${cursor} ${formatTimestamp(entry.updatedAt)}  ${entry.sessionId}  ${entry.firstUserText ?? ""}`;
+  // #326 之后「首行不是正文」是常态（事实行可插在任意一轮后），取不到就占位，不留空白条目
+  return `${cursor} ${formatTimestamp(entry.updatedAt)}  ${entry.sessionId}  ${entry.firstUserText || NO_PREVIEW_LABEL}`;
 }
 
 // 零依赖交互式 picker：readline emitKeypressEvents + raw mode。

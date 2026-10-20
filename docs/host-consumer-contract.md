@@ -876,20 +876,81 @@ A correct pre-written `RoundRecord` must satisfy:
   `initialMessages`/`initialUserMessage` without `resume` when no records
   exist yet, which is equivalent for the engine.
 - **dedupKey:** namespaced `"<key>:input:<suffix>"`, unique per turn. The
-  engine writes its own rows under `"<runId>:engine:round:<n>"` and
-  `"…:resume"`, so host `:input:` keys never collide with engine rows.
+  engine writes its own rows under `"<runId>:engine:round:<n>"`,
+  `"…:resume"` and `"…:control:<slot>"` (see the next bullet), so host
+  `:input:` keys never collide with engine rows.
+- **Engine control rows (issue #326):** text the engine injects into the model's
+  context **after** the current round record has already been written — the judge
+  advisory nudge, the extension continuation note, the final-guard revise note, and
+  the forced-final instruction together with its final assistant message — is
+  journaled **at the moment it is produced**, as an engine-namespace row keyed
+  `"<runId>:engine:round:<n>:control:<slot>"` (`slot` ∈ `judge-nudge` /
+  `extend` / `guard-revise` / `forced-final`). The row is an ordinary
+  `RoundRecord` whose `messages` are ordinary messages carrying `meta.source`
+  (the #323 marker): **no new record kind, no new message field**. Hosts therefore
+  observe more rows than there are rounds — a projection that renders per round
+  must key on `round` and deduplicate by `dedupKey`, and a UI that shows only
+  user/assistant body text keeps skipping `meta.source === "judge-control"` as it
+  already does. Replaying one slot is idempotent: a crash-rerun adds no second row,
+  and the row's `ts` drift does not turn the replay into a payload conflict (#326
+  dedup rule). Before this fix such text was visible to the model but absent from
+  `load()`, so after a restart the engine had no record of what it had told itself.
 - **Idempotency:** the store deduplicates by `dedupKey` (falling back to
-  `roundKey`), and crash-rerun judgement is by `dedupKey`: a repeated append
-  with the same `dedupKey` is a no-op, so a stable `dedupKey` (derived from a
-  host message id) makes the pre-write safely repeatable. This guarantee is
-  **sequential-rerun** semantics — crash-rerun or sequential retry by
-  `dedupKey`. Concurrent appends against the same key are not covered: the
+  `roundKey`, then to the store-generated `<runId>:round:<n>` key), and
+  crash-rerun judgement is by `dedupKey`: a repeated append with the same
+  `dedupKey` **and an unchanged payload** is a no-op, so a stable `dedupKey`
+  (derived from a host message id) makes the pre-write safely repeatable. This
+  guarantee is **sequential-rerun** semantics — crash-rerun or sequential retry
+  by `dedupKey`. Concurrent appends against the same key are not covered: the
   host should serialize appends per key (or issue them inside its receiving
-  transaction).
+  transaction). The resolved value of `appendRound` is not part of the
+  contract (the built-ins resolve to `undefined`); read the stored record back
+  with `load`, or take the `record` field `appendUserTurn` returns.
 - **Timing:** persist the user turn inside the transaction that accepts the
   user message (when the host decides the turn belongs to this run), not
   lazily after a worker picks the task up — a crash between acceptance and
   pre-write would otherwise lose the turn or duplicate it.
+
+### Same-key payload conflicts (issue #326)
+
+An `appendRound` whose key is already persisted is a no-op **only when the
+payload is that same record**. The same key carrying a different payload is an
+error: neither a silent overwrite nor a silent drop. Before issue #326 the
+built-in stores accepted that case silently — the second payload was discarded
+with no signal to the engine or the host — which is why a lost continuation
+row or a re-pre-written turn with changed text could never be observed.
+Both built-ins now reject it identically (`src/store/transcript-dedup.js` owns
+that decision, so the two stores cannot drift):
+
+- The thrown error carries a stable `code`, `dedup_payload_conflict`, so a host
+  can branch on it without an `instanceof` check. Its message names the `runId`,
+  the key, and both payload fingerprints (`sha256:<24 hex>`), plus the names of
+  the top-level fields that differ. The same values are exposed as properties
+  (`key`, `existingFingerprint`, `incomingFingerprint`, `differingFields`).
+- The rejection is inert: the stored record keeps its bytes and no new row is
+  appended. A later replay with the original payload is still idempotent.
+- Hosts that relied on the old behavior — same key, different payload, second
+  write silently ignored — now see this error. `runToolLoop` treats a throwing
+  store as a persistence failure (retry, then `persistence_failed`), so the
+  silent loss becomes a loud run failure instead of a transcript that quietly
+  lost a row.
+
+"Same payload" is a documented digest, not byte equality: `sha256` over the
+canonical JSON of the record, with object keys sorted at every level (field
+order is not semantics), array order preserved (message order **is** semantics),
+and `undefined`/function/symbol members dropped exactly like `JSON.stringify`
+does — that last part is what makes the in-process object and the line a
+JSONL store reads back fingerprint identically. Four **top-level** fields are
+removed first because they are the envelope, not the payload: `dedupKey` and
+`roundKey` (they are the key that just matched) plus `round` and `ts`
+(`appendUserTurn` derives `round` from the store's current maximum round and
+stamps `ts` with `new Date()`, so a crash-rerun of one stable `dedupKey`
+legitimately drifts on both). Treating that drift as a conflict would turn the
+"safely repeatable pre-write" promised above into an error, and the two failure
+directions are not symmetric: a false conflict is worse than a missed one. So
+the exclusion list is exactly those four names, nested `ts` values are payload,
+and everything else — `messages`, `response`, `foldedPayload`, `usage`,
+`runState`, and every host-owned unknown field — must match.
 
 ### Load order
 
@@ -1129,16 +1190,16 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 
 | `termination.reason` | Triggering mechanism (file:line) | Position in the precedence chain | Host switch | Recommended host action |
 |---|---|---|---|---|
-| `end_turn` | governance stop `completion` (`src/reflection/governor.js:108-110`) or the fall-through stop `complete` (`src/reflection/governor.js:123-125`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:93-100`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3159-3163`, `3164-3218`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js:3357-3365`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
+| `end_turn` | governance stop `completion` (`src/reflection/governor.js:108-110`) or the fall-through stop `complete` (`src/reflection/governor.js:123-125`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:93-100`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3159-3163`, `3164-3218`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
 | `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3357-3365`, `isEndTurn` at `3053`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
-| `no_tool` | governance stop `noTool` (`src/reflection/governor.js:111-114`), gated by `noToolRound` (`src/loop/orchestrator.js:3230-3233`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
+| `no_tool` | governance stop `noTool` (`src/reflection/governor.js:111-114`), gated by `noToolRound` (`src/loop/orchestrator.js`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
 | `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2712-2726`), streak accumulation (`src/loop/orchestrator.js:2763-2770`), stop at `src/reflection/governor.js:67-70` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`errorHashes` at `src/loop/orchestrator.js`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
 | `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:93-98`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
 | `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:147-149`); (b) the round loop simply runs out (`runToolLoop` at `src/loop/orchestrator.js`, tail handling at `3189-3207`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`termination` at `src/loop/orchestrator.js`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
 | `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3529-3542`), revision limit (`3544-3559`), or the budget-exhaustion tail (`3558-3578`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1663-1665`); `finalGuardMaxRetries` moves the revision limit (default 2, `budgetRounds` at `src/loop/orchestrator.js`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
 | `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:1058-1116`; classification at `1061` and `1080-1085`, annotation at `1103-1108`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
 | `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:1058-1116`, loop catch at `3576-3580`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `invalid_request` / `not_found` / `conflict` (issue #179) → fix the request, the model name, or the colliding resource — re-sending the same payload cannot help; `unknown` → inspect `termination.detail` |
-| `persistence_failed` | same `fail()` path, selected when the error carries persistence info (`src/loop/orchestrator.js:1080-1085`), which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js:1093-1098`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
+| `persistence_failed` | same `fail()` path, selected when the error carries persistence info (`src/loop/orchestrator.js:1080-1085`), which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
 
 ### Verification status and CLI exit codes
 
@@ -1153,8 +1214,8 @@ configured, a `verified` verdict is not available to them, because a guard
 | `verification.status` | Meaning | `verification.reason` seen in practice | CLI exit code |
 |---|---|---|---|
 | `verified` | the configured guard accepted this final answer | — (no reason field) | `0` |
-| `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js:1663-1665`); CLI guard `no_capture_evidence` / `no_extractable_candidates` (`bin/final-guard.js:86,89`) | `4` |
-| `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js:3531-3535`), `max_retries` (`3547-3551`) | `2` |
+| `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js`); CLI guard `no_capture_evidence` / `no_extractable_candidates` (`bin/final-guard.js:86,89`) | `4` |
+| `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js`), `max_retries` (`3547-3551`) | `2` |
 | `error` | the guard threw, decided invalidly, or timed out (fail-open for availability, never `verified`) | `timeout` or `error`, both resolved by `errorReason` (`src/loop/termination.js:173-176`) | `3` |
 
 `exitCodeForVerification` returns `0` for any other status, including a missing
@@ -1179,7 +1240,7 @@ Within one round, exactly one mechanism gets to decide, in this order
    repeated-error nudges on purpose, so a low-priority nudge cannot starve a
    genuine loop into `max_rounds_cap`.
 3. **wrapup declaration** — a `done:true` envelope suppresses continuation and
-   raises `completionSignalDetected` (`src/loop/orchestrator.js:3159-3163`),
+   raises `completionSignalDetected` (`src/loop/orchestrator.js`),
    which both produces the `completion` stop (`src/reflection/governor.js:108-110`)
    and makes `noToolRound` false (`src/loop/orchestrator.js:3230-3233`). Declared
    completion and `no_tool` are therefore mutually exclusive.
@@ -2917,7 +2978,7 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 
 | suite | what it asserts | yours to satisfy | upstream-internal detail it also pins |
 |---|---|---|---|
-| `transcript-store.js` (16 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-snapshot latest-only overwrite, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, and the paired probe tier | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance |
+| `transcript-store.js` (22 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-snapshot latest-only overwrite, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, the paired probe tier, and the same-key idempotency/conflict tier (issue #326: same payload replays — including drifted top-level `ts`/`round` and reordered fields — are no-ops, a differing payload rejects with `code` `dedup_payload_conflict`, array order and host-owned fields count as payload, and the fallback `roundKey`/`<runId>:round:<n>` keys are covered) | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance, the `dedup_payload_conflict` code |
 | `notes-store.js` (9 tests) | port validation (`assertNotesStore`), malformed-record rejection before persistence, full record round-trip, scope isolation and explicit misses, unsafe-scope round-trip through lifecycle, the `limit` threshold (more than 200 stored records: a given limit clamps to exactly 200, an illegal limit throws), `revoke`'s observable disappearance with the `expectedState`/`expectedUpdatedAt` guards, and — since issue #265 — rejection of an empty `filters.state` array and an unknown `filters.source`, `revoked_at`/`revoke_reason` visible on a revoke tombstone, and `purge` scanning scopes (not records) with `before` only shrinking the window | the port surface and the record/guard semantics. Since issue #183 the split between upstream mandate and host policy is explicit: the port mandates observable disappearance (tombstone **or** physical delete) and leaves record expiry to the host, while the one-writer last-write-wins behaviour is the file adapter's own business and is no longer asserted here. The #265 additions only assert typedef-promised behaviour, but they are new assertions on a published surface: a host adapter that ignored one of them goes red after the bump | the file-store-shaped error texts (`/valid NoteRecord/`, `/parseable date/`, `/positive safe integer/`, `/filters\.state/`, `/filters\.source/`), retention/purge timing |
 | `notes-store.js` → `notesStoreCasContract` (1 test, optional; issue #183) | concurrent same-key writers: at most one may fail, a failure must be a thrown error rather than a silent drop, and the winner is the record that stays readable in its full shape | compare-and-swap hosts only, and only in addition to `notesStoreContract` — this sub-suite is deliberately weaker than the retired last-write-wins assertion, so passing it says nothing about a store that serializes writers | the two payload contents it happens to exercise (`left`/`right`), not any conflict error text |
 | `assembly-port.js` (4 tests) | a port boots a real loop to completion, `emit(type, payload)` receives the event types with their payload, an explicit fine-grained `provider` option overrides the port's provider, and a provider missing `chat`/`chatStream` is rejected at startup by both `createAssemblyPort` and `runToolLoop` | your port's required adapters and its `emit` sink | the precedence rule (explicit option over port), the startup-validation error text |

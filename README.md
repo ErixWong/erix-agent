@@ -204,6 +204,7 @@ src/
     pipeline.js                    Canonical compaction pipeline declaration
     enforce-size.js                Field-size enforcement
     fold-llm.js                    LLM-assisted folding strategy
+    fold-summary-journal.js          Fold-summary fact ledger: fingerprint, reuse memo, journal read-back
     fold-statistical.js            Statistical folding and navigation records
     provider-summarizer.js         Default fold-llm summarizer backed by the run provider
     strategy-resolution.js         Built-in strategy name resolution for context.strategy
@@ -218,6 +219,7 @@ src/
     notes-memory.js                In-process NotesStore adapter (shares src/store/notes-port.js)
     notes-port.js                  Shared NotesStore port semantics (internal)
     append-user-turn.js            Pre-written user turn for the multi-turn resume contract
+    transcript-dedup.js            Shared appendRound dedup payload fingerprint (internal)
   config/
     api-key.js                     API-key materialization
     env.js                         Environment-backed model configuration

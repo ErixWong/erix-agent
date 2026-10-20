@@ -1318,3 +1318,125 @@ test("runChat keeps the default compaction strategy and forwards an explicit nam
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// issue #326（wo-D）：`-c/--session` 续跑一份**含引擎事实行**的账本。
+// CLI 侧的判据只有两处（`bin/cli.js` 的 `store.load(runId)` 长度：M1「会话不存在」与 `resume`），
+// 本单**刻意不改**它：只有事实行的账本也是真会话（引擎 resume 靠这些事实行重建折叠/TTL 状态），
+// 说「会话不存在」是假报错。这里钉住三件事：不崩、事实行不被改写或复制、用户轮仍照常入账。
+// ---------------------------------------------------------------------------
+
+async function resumeWithFactRows({ tag, rows, session }) {
+  const dir = await makeTmp(`erix-cli-${tag}-`);
+  const { writeTranscript } = await import("./helpers/engine-fact-rows.js");
+  try {
+    const configPath = await writeEmptyMcpConfig(dir);
+    await writeTranscript(join(dir, `${session}.jsonl`), rows);
+    const notesDir = join(dir, "notes");
+    const store = createFileTranscriptStore({ dir });
+    const provider = createFakeProvider([{ content: [{ type: "text", text: "续跑结论" }], stopReason: "end_turn" }]);
+    const result = await runChat({
+      prompt: "续跑的新问题",
+      session,
+      sessionExplicit: true,
+      dir,
+      notesDir,
+      skillsDir: join(dir, "skills"),
+      configPath,
+      provider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 1,
+      idleTimeout: 0,
+      toolOutput: () => {},
+      _assemblyRoot: {
+        archiveDir: join(dir, "outputs", session),
+        diagnostics: { error() {} },
+        notesDir,
+        notesStore: createFileNotesStore({ dir: notesDir }),
+        store,
+      },
+    });
+    return { result, provider, records: await store.load(session) };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("#326-D 续跑含三类事实行的账本：不崩、事实行原样保留、新用户轮恰有一条", async () => {
+  const { mixedFactRows } = await import("./helpers/engine-fact-rows.js");
+  const session = "wo-d-cli-resume";
+  const ledger = mixedFactRows(session);
+  const { result, provider, records } = await resumeWithFactRows({ tag: "wo-d-resume", rows: ledger, session });
+
+  assert.equal(result.finalText, "续跑结论");
+  assert.ok(provider.requests.length >= 1, "续跑必须真的打到模型");
+  const texts = (index) => (provider.requests[index]?.messages ?? []).flatMap((message) => (
+    (Array.isArray(message?.content) ? message.content : []).map((block) => String(block?.text ?? ""))
+  )).join("\n");
+  assert.match(texts(0), /把三类事实行写进账本/u, "既有正文必须在模型上下文里");
+  assert.match(texts(0), /续跑的新问题/u, "新一轮的用户问题必须在模型上下文里");
+
+  // 事实行一条不少、一条不多：CLI 不重写、不复制别人的行
+  // 原账本里每条事实行都还在、且只有一条（续跑自己新产生的事实行允许追加）
+  for (const row of factRowsOf(ledger)) {
+    assert.equal(
+      factRowsOf(records).filter((entry) => entry.dedupKey === row.dedupKey).length,
+      1,
+      `事实行 ${row.dedupKey} 必须原样在位一条`,
+    );
+  }
+  const foldKept = records.find((entry) => String(entry.dedupKey).includes(":fold:"));
+  assert.deepEqual(foldKept.foldedSummary, ledger.find((entry) => entry.foldedSummary).foldedSummary);
+  const ttlKept = records.find((entry) => String(entry.dedupKey).includes(":ttl:"));
+  assert.deepEqual(ttlKept.ttlDegradations, ledger.find((entry) => entry.ttlDegradations).ttlDegradations);
+  // 新写入的用户轮（宿主 `:input:` 命名空间）恰有一条，且不与引擎命名空间碰撞
+  const inputRows = records.filter((entry) => String(entry.dedupKey ?? "").includes(":input:"));
+  assert.equal(inputRows.length, 1, `实测 ${JSON.stringify(records.map((entry) => entry.dedupKey ?? entry.roundKey))}`);
+  assert.match(JSON.stringify(inputRows[0].messages), /续跑的新问题/u);
+});
+
+test("#326-D 只有事实行的账本仍算「会话存在」：M1 不误报，用户轮照常接上", async () => {
+  const { controlRow, foldRow, ttlRow } = await import("./helpers/engine-fact-rows.js");
+  const session = "wo-d-cli-only-facts";
+  const { result, provider, records } = await resumeWithFactRows({
+    tag: "wo-d-onlyfacts",
+    session,
+    rows: [foldRow(session, 2), ttlRow(session, 2), controlRow(session, 2, "extend")],
+  });
+
+  assert.equal(result.finalText, "续跑结论");
+  assert.match((provider.requests[0]?.messages ?? []).flatMap((message) => (
+    (Array.isArray(message?.content) ? message.content : []).map((block) => String(block?.text ?? ""))
+  )).join("\n"), /续跑的新问题/u);
+  assert.equal(records.filter((entry) => String(entry.dedupKey ?? "").includes(":input:")).length, 1);
+  assert.equal(factRowsOf(records).length, 3, "事实行既没被吞掉也没被复制");
+});
+
+// 事实行的独立口径（不依赖被测实现）：引擎命名空间里带槽位后缀的那几类
+// （`:fold:<fp>` / `:ttl:<fp>` / `:control:<slot>`）；引擎自己的轮记录 `<runId>:engine:round:<n>`
+// 没有槽位后缀，不算事实行。
+function isFactLedgerRow(record) {
+  return /:engine:round:\d+:(?:fold|ttl|control):/u.test(String(record?.dedupKey ?? ""));
+}
+
+function factRowsOf(records) {
+  return records.filter(isFactLedgerRow);
+}
+
+test("#326-D 账本里有 messages 缺失/为 null 的老行时续跑也不崩", async () => {
+  const { roundRow, userMessage } = await import("./helpers/engine-fact-rows.js");
+  const session = "wo-d-cli-legacy";
+  const rows = [
+    { round: 1, roundKey: `${session}:round:1` }, // 老行：完全没有 messages 字段
+    { round: 2, roundKey: `${session}:round:2`, messages: null },
+    roundRow(session, 3, [userMessage("老账本里的真实用户轮")]),
+  ];
+  const { result, records } = await resumeWithFactRows({ tag: "wo-d-legacy", rows, session });
+  assert.equal(result.finalText, "续跑结论");
+  // 三行老账本原样在位（`messages` 缺失/为 null 的行没被洗掉或复制）
+  assert.deepEqual(
+    records.slice(0, rows.length).map((entry) => entry.roundKey ?? entry.dedupKey),
+    rows.map((entry) => entry.roundKey ?? entry.dedupKey),
+  );
+  assert.ok(records.length > rows.length, "续跑至少要留下用户轮与引擎轮记录");
+});

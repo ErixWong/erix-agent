@@ -82,6 +82,8 @@ export async function callProvider(ctx, {
         triggered: ttlStats.foldedCount,
         tokensBefore: estimateMessageTokens(ctx.messages),
         tokensAfter: requestEstimatedTokens,
+        // issue #326（wo-C）：除了计数还要逐条上报「这条工具结果被降级成了什么」，由引擎随轮记录入账。
+        degradations: Array.isArray(ttlStats.degradations) ? ttlStats.degradations : [],
       });
     }
     const snapshot = {

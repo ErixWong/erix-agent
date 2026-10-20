@@ -91,6 +91,11 @@ import {
   TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
   TOOL_RESULT_TTL_DEFAULT,
 } from "./tool-result-ttl.js";
+import {
+  createFoldSummaryLedger,
+  foldSummaryFingerprint,
+  stableFingerprint,
+} from "../compact/fold-summary-journal.js";
 import { createRunSnapshotExecutor } from "./run-snapshot-executor.js";
 import {
   buildToolResultFact,
@@ -1188,6 +1193,31 @@ export async function runToolLoop(options) {
     },
     ...(onUsage === undefined ? {} : { onUsage }),
   });
+  // issue #326（wo-C）：**折叠摘要的「落账 + 复用」缝在引擎自产摘要这一处**（三档内置策略的生成
+  // 逻辑一字不动）。账本 = 折叠输入指纹 → 已经喂出去的那份摘要：
+  //   - 命中 ⇒ 直接返回，**不再调 provider**（同一 run 的后续折叠与 resume 都走这条路）；
+  //   - 未命中 ⇒ 真调一次，随即记账，由 `compactBeforeRound` 把它写成轮记录上的 `foldedSummary` 事实。
+  // 为什么缝在这里而不是策略里：策略的 `compact()` 内部自己调 summarizer，引擎只有在**注入的
+  // summarizer** 上才有确定性钩子；宿主自带的策略对象（自带 summarizer）由宿主自己负责重算，
+  // 引擎照旧把喂出去的摘要入账（可解释性不受影响）。见 docs/host-consumer-contract.md「折叠摘要与 TTL 降级事实」。
+  const foldSummaryLedger = createFoldSummaryLedger();
+  /** @type {{ fingerprint: string, summary: string, reused: boolean, roundRange?: any}|undefined} */
+  let lastFoldSummaryOutcome = undefined;
+  const reusableCompactionSummarizer = async (input = {}) => {
+    const fingerprint = foldSummaryFingerprint(input);
+    const reused = foldSummaryLedger.lookup(fingerprint);
+    const roundRangePart = input?.roundRange === undefined
+      ? {}
+      : { roundRange: input.roundRange };
+    if (reused !== undefined) {
+      lastFoldSummaryOutcome = { fingerprint, summary: reused, reused: true, ...roundRangePart };
+      return reused;
+    }
+    const summary = await compactionSummarizer(input);
+    foldSummaryLedger.remember(fingerprint, summary);
+    lastFoldSummaryOutcome = { fingerprint, summary, reused: false, ...roundRangePart };
+    return summary;
+  };
   // main 的 ADR-016 退役了 resourceStore 端口——compactionContext 不再拼它（两侧语义合并）
   // 名字在启动期一次性解析成实例（未知名字/非法类型 → 启动期 TypeError）；对象形态原样
   // 透传（同一引用），下游 configuredStrategy 通道零改动。名字形态额外吃 context 级的
@@ -1199,7 +1229,7 @@ export async function runToolLoop(options) {
         ...(context.recoveryHint === undefined ? {} : { recoveryHint: context.recoveryHint }),
         ...(context.stubFor === undefined ? {} : { stubFor: context.stubFor }),
       },
-      foldLlmOptions: { summarizer: compactionSummarizer },
+      foldLlmOptions: { summarizer: reusableCompactionSummarizer },
     });
   const compactionContext = context === undefined && budgetTokens === undefined
     ? undefined
@@ -1462,6 +1492,9 @@ export async function runToolLoop(options) {
     // issue #78 验收修正：resume 消费可选能力（loadRunState / snapshot loader）
     // 缺失时走与 persist 守卫同一的单条去重诊断通道。
     notifyCapabilitySkipped,
+    // issue #326（wo-C）：恢复时把**已入账的折叠摘要**灌回引擎的复用账本 ⇒ 同一折叠输入不再调摘要器。
+    // 写成「属性 + 箭头函数」（`test/loop-callback-this.test.js` 钉住的口径），不是方法简写。
+    seedFoldSummaries: (records) => foldSummaryLedger.seedFromRecords(records),
     get currentRunState() {
       return runLoopState.currentRunState;
     },
@@ -1706,6 +1739,22 @@ export async function runToolLoop(options) {
     return normalized;
   };
 
+  // issue #326（wo-C）：**TTL 降级事实的产生即入账**。`compactionStats.layers.ttl.triggered` 只有一个计数，
+  // 回答不了「这条工具结果被降级成了什么」⇒ provider-runner 每次 attempt 逐条上报，这里立刻写成引擎
+  // 命名空间的补充记录（`…:ttl:<fp>`）。生成策略未动：`foldToolResultsForRequest` 仍只改请求视图，
+  // `ctx.messages` 依旧存全文；同一 attempt 重试上报同一事实 ⇒ 同指纹同键 ⇒ 幂等（#326 第1步判据）。
+  const rememberTtlDegradations = async (roundNumber, degradations) => {
+    const byToolUseId = new Map();
+    for (const entry of Array.isArray(degradations) ? degradations : []) {
+      if (entry === null || typeof entry !== "object" || entry.toolUseId === undefined) continue;
+      byToolUseId.set(entry.toolUseId, entry);
+    }
+    if (byToolUseId.size === 0) return false;
+    return appendEngineFactToTranscript(roundNumber, "ttl", {
+      ttlDegradations: [...byToolUseId.values()],
+    });
+  };
+
   const emitJudge = (info) => {
     if (typeof onJudge !== "function") return;
     // issue #165（additive）：先铺关联字段再铺决策字段——既有字段名与语义一律不动，
@@ -1878,7 +1927,12 @@ export async function runToolLoop(options) {
       triggered,
       tokensBefore,
       tokensAfter,
+      degradations,
     }) => {
+      // issue #326（wo-C）：除了计数，还要把「这条工具结果被降级成了什么」逐条留事实（轮末入账）。
+      if (layerId === "ttl" && Array.isArray(degradations) && degradations.length > 0) {
+        await rememberTtlDegradations(round, degradations);
+      }
       if (
         layerId === "ttl"
         && Number.isFinite(triggered)
@@ -2045,6 +2099,58 @@ export async function runToolLoop(options) {
       }
       throw error;
     }
+  };
+
+  // issue #326（B1）：**引擎自产文本的「产生即入账」**。
+  // 轮记录只写 `messages.slice(roundStart)`，而 `roundStart` 在下一次进圈时重新取 `messages.length`
+  // （见上方圈顶）⇒ **轮记录落盘之后**才 push 进 `messages` 的引擎消息永远落不进任何一条记录：
+  // judge 评审意见（nudge）、扩轮续跑提示、finalGuard revise 意见、强制收尾指令与终稿 assistant。
+  // 后果是「模型见过、档案里没有」：`store.load()` 的原始记录里 0 条，追问/审计/resume 都读不到
+  // 引擎自己说过什么（探针实测 main 97bd957：messages 有、journal 无）。
+  // 这里给这批消息开一条**引擎命名空间的补充记录**，在产生的那一刻写入：
+  //   - 不新增 record kind、不新增消息标记字段：形状仍是既有 RoundRecord + 普通 message
+  //     （注入内容本身带 #323 的 `meta.source === "judge-control"`，本轮不新造 marker）；
+  //   - dedupKey 沿用 `:resume` 先例（引擎命名空间 + 轮号 + 槽位名）⇒ 宿主用默认键写过同行号的行
+  //     不会被去重丢掉，同轮同槽位重放幂等（崩溃后重跑不产生第二行）；
+  //   - 计入 `persistedTranscriptLength`：让 resume 快照锚点继续等于「journal 已落盘的消息总数」，
+  //     不再把这条已落盘的消息当成「快照里没存过」而重复入账。
+  const appendEngineMessagesToTranscript = async (produced, roundNumber, slot) => {
+    const messagesToJournal = Array.isArray(produced) ? produced : [produced];
+    if (messagesToJournal.length === 0) return false;
+    const persisted = await persist("appendRound", runId, {
+      round: roundNumber,
+      roundKey: `${String(runId)}:round:${String(roundNumber)}`,
+      dedupKey: `${String(runId)}:engine:round:${String(roundNumber)}:control:${String(slot)}`,
+      messages: cloneState(messagesToJournal),
+      ts: new Date().toISOString(),
+    });
+    if (persisted) runLoopState.persistedTranscriptLength += messagesToJournal.length;
+    return persisted;
+  };
+
+  // issue #326（wo-C）：**引擎自产「上下文事实」的产生即入账**——沿用上面同一先例的形状与命名空间风格
+  // （引擎命名空间 + 轮号 + 槽位名），只多一个**事实指纹**后缀：同一事实崩溃后重跑幂等，不同事实
+  // 换键 ⇒ 不会被 #326 第1步的「同 key 异 payload = 冲突」判据误伤（一轮里可能发生两次不同折叠）。
+  //
+  // 覆盖两类「模型见过、档案里没有」：
+  //   - `fold:<fp>`：本次折叠**实际喂给模型的那份摘要**（轮记录只写 `messages.slice(roundStart)`，
+  //     而 `roundStart` 取的是折叠**后**的长度 ⇒ 摘要消息永远不进任何轮记录；探针实测 journal 0 条）；
+  //   - `ttl:<fp>`：某条工具结果在请求视图里**被降级成了什么**（占位符逐字 + 原始体积 + 原文指纹）。
+  //
+  // 与 `:control:` 行的唯一差别：这类事实不是消息 ⇒ `messages: []`。不往 `messages` 里掺正文是因为
+  // `restoreResume()` 用 `records.flatMap(record.messages)` 重建上下文，掺进去就是把同一份正文恢复两遍；
+  // 也不计入 `persistedTranscriptLength`（那个计数按「已落盘消息数」口径，空行加 0）。
+  const appendEngineFactToTranscript = async (roundNumber, slot, facts) => {
+    const factFingerprint = stableFingerprint(facts ?? {});
+    const persisted = await persist("appendRound", runId, {
+      round: roundNumber,
+      roundKey: `${String(runId)}:round:${String(roundNumber)}`,
+      dedupKey: `${String(runId)}:engine:round:${String(roundNumber)}:${String(slot)}:${factFingerprint.slice("sha256:".length)}`,
+      messages: [],
+      ts: new Date().toISOString(),
+      ...(facts ?? {}),
+    });
+    return persisted;
   };
 
   if (partialPersistenceConfig !== undefined && hasRunSnapshotStore) {
@@ -2307,6 +2413,25 @@ export async function runToolLoop(options) {
     finish,
   } = terminationManager;
 
+  // issue #326（B1）：跑一次强制收尾，并把**它新产生的那几条消息**当场入账。
+  // `forceFinalIfNeeded`（src/loop/termination.js）往 `ctx.messages` 里 push 两条：【强制收尾】指令
+  //（纯文本 `judge-control`）与终稿 assistant。它只在「本轮记录已落盘之后」跑（`stop` 分支与出圈
+  // 收尾两条路都是），而轮记录写的是 `messages.slice(roundStart)`、`roundStart` 下一轮重新取值
+  // ⇒ 这两条不会出现在任何一条既有记录里：终稿是**终局正文**，宿主从 `store.load()` 里拼不出来。
+  // 为什么入账口放在调用点而不是 termination.js 内部：那个模块不持有 store、不碰 persist（journal
+  // 写入一直是 orchestrator 的职责面），而它又被 #271 的 readFile 行容量锚钉在 ±2% 内（HEAD 已用
+  // 到 +1.5%，再加不下一行注释）。代价：崩溃正好落在收尾那一次 provider 调用里时，这两条要等
+  // resume 重跑收尾时才会入账——那个窗口里本来也没有任何消息落盘（resume 靠 run snapshot 重建现场）。
+  const forceFinalAndJournal = async (reason) => {
+    const producedFrom = messages.length;
+    await forceFinalIfNeeded(reason);
+    await appendEngineMessagesToTranscript(
+      messages.slice(producedFrom),
+      runLoopState.rounds,
+      "forced-final",
+    );
+  };
+
   const callRoundJudge = async (round, currentL0, { timeoutMs, conversationBudgetTokens } = {}) => {
     const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
     const recentErrors = l0Facts
@@ -2532,6 +2657,8 @@ export async function runToolLoop(options) {
 
   const compactBeforeRound = async (round = runLoopState.rounds + 1) => {
     normalizeMessages(messages);
+    // 每次折叠前清空「引擎自产摘要现场」：只有本次 compact 真的调了摘要器才会重新赋值（#326 wo-C）。
+    lastFoldSummaryOutcome = undefined;
     const configuredStrategy = compactionContext?.strategy;
     // API input usage is per request; keep the aggregate for billing output.
     // 压缩判断：主用本地估算（真实上下文大小），API usage 辅助取单轮完整输入
@@ -2549,7 +2676,12 @@ export async function runToolLoop(options) {
     let navigationRecord;
     let foldedRounds = 0;
     let compacted = false;
+    /** @type {{ text: string, fingerprint: string, strategy: string, summary?: string, foldedRoundRange?: any }|undefined} */
+    let foldedSummaryFact = undefined;
     let protectedDowngraded = 0;
+    // issue #326 wo-C：折叠前的消息**引用集合**——用来认出折叠新造出来、实际喂给模型的那份摘要消息
+    // （折叠策略把摘要 prepend 进 head，而轮记录只写 `messages.slice(roundStart)`⇒它永远不入账）。
+    const preCompactionMessages = new Set();
     // issue #292 可观测信号（additive，只在守卫真的生效时出现）：
     // "preserved_latest_user_turn" | "abandoned_fold" | "unrecoverable"
     let userTurnGuard;
@@ -2601,6 +2733,7 @@ export async function runToolLoop(options) {
         if (compactionContext[key] !== undefined) compactOptions[key] = compactionContext[key];
       }
       const result = await strategy.compact(messages, compactOptions);
+      for (const message of messages) preCompactionMessages.add(message);
       if (!Array.isArray(result?.messages)) {
         throw new TypeError("Compaction strategy must return a messages array");
       }
@@ -2721,6 +2854,40 @@ export async function runToolLoop(options) {
       ) {
         runLoopState.foldedRoundCount += foldedRounds;
         if (navigationRecord !== undefined) runLoopState.navigationRecordCount += 1;
+      }
+      // issue #326（wo-C）：**实际喂出去的折叠摘要成为账本事实**。
+      // 识别口径用**对象身份**：折叠策略把摘要 prepend 进 head（新对象），于是「不在折叠前引用集合里」
+      // 的消息就是本次折叠造出来、确实进了请求的那份摘要。它走轮记录上的**独立事实字段**
+      // `foldedSummary`（不新增 record kind、不新增消息标记字段、不往 messages 里掺正文——
+      // 掺了就会被 resume 的 `records.flatMap(record.messages)` 恢复成两份正文）。
+      // 复用同一折叠不重复入账：指纹已由 `foldSummaryLedger` / 已入账事实判过 ⇒ 只记首条。
+      const fedSummaryText = messages
+        .filter((message) => !preCompactionMessages.has(message))
+        .map((message) => textFromBlocks(blocksFor(message?.content)))
+        .filter((summaryText) => summaryText !== "")
+        .join("\n\n");
+      const foldedFingerprint = lastFoldSummaryOutcome?.fingerprint
+        ?? foldSummaryFingerprint({
+          messages: foldedPayload,
+          roundRange: foldedRoundRange ?? null,
+        });
+      if (fedSummaryText !== "" && !foldSummaryLedger.journaled(foldedFingerprint)) {
+        foldSummaryLedger.markJournaled(foldedFingerprint);
+        foldedSummaryFact = {
+          text: fedSummaryText,
+          fingerprint: foldedFingerprint,
+          strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
+          ...(lastFoldSummaryOutcome === undefined
+            ? {}
+            : { summary: lastFoldSummaryOutcome.summary }),
+          ...(foldedRoundRange === undefined ? {} : { foldedRoundRange }),
+        };
+        // ⚠ 行上**不放**顶层 `foldedRoundRange`：resume 用它算 `foldedThrough`（`records.map(r => r.foldedRoundRange?.to)`），
+        // 事实行再带一份就会把同一区间数两遍（`loop-v020-rc` 的先例断言即此）。区间留在 `foldedSummary.foldedRoundRange` 里，
+        // 由轮记录那份承担「档案字段」的角色。也不放 `folded: true`：那个键的既有含义是「本条轮记录所在的轮被折过」。
+        await appendEngineFactToTranscript(round, "fold", {
+          foldedSummary: foldedSummaryFact,
+        });
       }
       const compactionStat = {
         compacted,
@@ -3489,6 +3656,8 @@ export async function runToolLoop(options) {
       };
       messages.push(continuationMessage);
       messageRounds.set(continuationMessage, round);
+      // issue #326（B1）：本轮记录已在上面落盘，这条评审意见不会被任何后续轮记录覆盖，当场入账。
+      await appendEngineMessagesToTranscript(continuationMessage, round, "judge-nudge");
       if (action.resetNoToolStreak) governorState.noToolStreak = 0;
       if (action.wrapUpNudged === true) governorState.wrapUpNudged = true;
       continue;
@@ -3507,6 +3676,8 @@ export async function runToolLoop(options) {
       };
       messages.push(continuationMessage);
       messageRounds.set(continuationMessage, round);
+      // issue #326（B1）：同 nudge——轮尾注入的续跑提示必须在产生的那一刻入账。
+      await appendEngineMessagesToTranscript(continuationMessage, round, "extend");
       continue;
     }
     if (action.kind === "stop") {
@@ -3516,7 +3687,7 @@ export async function runToolLoop(options) {
       // → fail()：由它产出带 {usage, rounds, partial:true} 的 aborted 终局（#180 载荷语义不变）。
       throwIfAborted(signal);
       const reason = terminationReasonForAction(action, continuationExhausted);
-      await forceFinalIfNeeded(reason);
+      await forceFinalAndJournal(reason);
       if (
         typeof finalGuard === "function"
         && FINAL_GUARD_TERMINATION_REASONS.has(reason)
@@ -3568,6 +3739,8 @@ export async function runToolLoop(options) {
           };
           messages.push(continuationMessage);
           messageRounds.set(continuationMessage, round);
+          // issue #326（B1）：finalGuard revise 的意见同样是轮记录落盘后才注入的引擎文本。
+          await appendEngineMessagesToTranscript(continuationMessage, round, "guard-revise");
           continue;
         }
       }
@@ -3601,7 +3774,7 @@ export async function runToolLoop(options) {
   // 「宿主回调错误不杀 run」的统一口径一致（docs/host-consumer-contract*.md）。
   try {
     throwIfAborted(signal);
-    await forceFinalIfNeeded("max_rounds_cap");
+    await forceFinalAndJournal("max_rounds_cap");
     if (typeof finalGuard !== "function") return finish("max_rounds_cap");
     const guardDecision = await callFinalGuard("max_rounds_cap");
     if (guardDecision.action === "error") return finish("max_rounds_cap");

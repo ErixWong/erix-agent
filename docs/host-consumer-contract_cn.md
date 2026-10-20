@@ -732,14 +732,55 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
   进它。空 `load` 结果是种子路径：在 round `0` 预写该轮；内置 CLI 则在没有既有记录
   时不带 `resume` 地传 `initialMessages`/`initialUserMessage`，对引擎而言等价。
 - **dedupKey：** 命名空间为 `"<key>:input:<suffix>"`，每轮唯一。引擎自身行写在
-  `"<runId>:engine:round:<n>"` 与 `"…:resume"` 下，宿主 `:input:` 键永不与引擎行碰撞。
-- **幂等性：** store 按 `dedupKey`（回落 `roundKey`）去重，崩溃重跑的判定依据是
-  `dedupKey`：同 `dedupKey` 的重复 append 是 no-op，因此稳定的 `dedupKey`（由宿主消
-  息 id 推导）使预写可安全重复。这个保证是**顺序重跑**语义——崩溃重跑或按
-  `dedupKey` 的顺序重试。同一 key 的并发追加不在保证范围内：宿主应按 key 串行发起
-  追加（或在接收事务内发起）。
+  `"<runId>:engine:round:<n>"`、`"…:resume"` 与 `"…:control:<slot>"`（见下一条）下，
+  宿主 `:input:` 键永不与引擎行碰撞。
+- **引擎控制行（issue #326）：** 引擎在当前轮记录**已经落盘之后**注入给模型的文本——judge 评审意见
+  nudge、扩轮续跑提示、finalGuard revise 意见、强制收尾指令及其终稿 assistant——在**产生的那一刻**
+  入账，写成引擎命名空间的一行，键为 `"<runId>:engine:round:<n>:control:<slot>"`（`slot` ∈
+  `judge-nudge` / `extend` / `guard-revise` / `forced-final`）。这一行就是普通 `RoundRecord`，
+  `messages` 里是带 `meta.source`（#323 标记）的普通消息：**没有新增 record kind，也没有新增消息字段**。
+  于是宿主看到的行数会多于轮数——按轮渲染的投影必须以 `round` 为键并按 `dedupKey` 去重；只展示
+  用户/assistant 正文的 UI 继续按现有做法跳过 `meta.source === "judge-control"` 即可。同一槽位重放
+  幂等：崩溃重跑不会多出行，且这一行的 `ts` 漂移不会把重放判成 payload 冲突（#326 去重规则）。
+  修之前这类文本是「模型见过、`load()` 里没有」，进程重启后引擎对自己说过什么零档案。
+- **幂等性：** store 按 `dedupKey`（回落 `roundKey`，两者都缺时回落 store 自造的
+  `<runId>:round:<n>`）去重，崩溃重跑的判定依据是 `dedupKey`：同 `dedupKey` **且
+  payload 未变**的重复 append 是 no-op，因此稳定的 `dedupKey`（由宿主消息 id 推
+  导）使预写可安全重复。这个保证是**顺序重跑**语义——崩溃重跑或按 `dedupKey` 的
+  顺序重试。同一 key 的并发追加不在保证范围内：宿主应按 key 串行发起
+  追加（或在接收事务内发起）。`appendRound` 的解析值不在契约里（内置实现解析为
+  `undefined`）；要拿既有记录请用 `load`，或取 `appendUserTurn` 回传的 `record` 字段。
 - **时机：** 在接受用户消息的事务内持久化该轮（当宿主决定该轮属于本 run 时），
   而不是懒到 worker 接手之后再写——否则接受与预写之间崩溃会丢失或重复该轮。
+
+### 同 key 异 payload 的冲突（issue #326）
+
+一次 `appendRound` 命中已存在的 key 时，**只有 payload 就是那条记录**才是 no-op。
+同 key 带不同 payload 是错误：既不静默覆盖，也不静默丢弃。issue #326 之前内置 store
+默默接受这种情形——第二次的 payload 被丢掉，引擎与宿主都拿不到任何信号——于是「续接轮
+被去重掉了」或「同一消息 id 换了正文」这类事实永远观察不到。现在两个内置 store 以完全
+相同的方式拒绝它（判据只有一份实现：`src/store/transcript-dedup.js`，两个 store 不
+可能各自漂）：
+
+- 抛出的错误带稳定 `code`：`dedup_payload_conflict`，宿主不需要 `instanceof` 也能
+  分流。消息里点名 `runId`、key、两份 payload 指纹（`sha256:<24 hex>`），以及顶层
+  差异字段名；同样的值也作为属性挂出（`key`、`existingFingerprint`、
+  `incomingFingerprint`、`differingFields`）。
+- 拒绝是惰性的：既有记录字节不动，也不落新行。之后拿原 payload 重放仍幂等。
+- 依赖旧行为（同 key 异 payload、第二次写被静默忽略）的宿主现在会看到这个错误。
+  `runToolLoop` 把抛错的 store 当作持久化失败（重试耗尽后 `persistence_failed`），
+  于是原本静默的丢失会变成显式的 run 失败，而不是一份悄悄少了一行的 transcript。
+
+「同 payload」指的是文档化的摘要，不是逐字节相等：对记录的规范化 JSON 取 `sha256`——
+对象键逐层排序（字段顺序不是语义）、数组保序（消息顺序**是**语义）、`undefined`/函数/
+symbol 成员按 `JSON.stringify` 的同样取舍丢掉——最后这一条正是「内存里的活对象」与
+「JSONL 读回来的同一行」能得到同一指纹的前提。先剥掉四个**顶层**字段，因为它们是信封
+不是 payload：`dedupKey` 与 `roundKey`（它们就是刚匹配上的那个 key），加上 `round` 与
+`ts`（`appendUserTurn` 的 `round` 取 store 现有最大 round、`ts` 取 `new Date()`，所以
+同一稳定 `dedupKey` 崩溃重跑时这两个必然漂）。把这种漂移当成冲突会把上面承诺的「预写
+可安全重复」变成抛错，而两个误判方向不对称：**误判成冲突比漏判更糟**。所以排除表就只
+有这四个名字，嵌套的 `ts` 算内容，其余一律算 payload：`messages`、`response`、
+`foldedPayload`、`usage`、`runState`，以及宿主自有的未知字段。
 
 ### load 返回顺序
 
@@ -921,14 +962,14 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 |---|---|---|---|---|
 | `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js:108-110`）或兜底 stop `complete`（`src/reflection/governor.js:123-125`），均由 `terminationReasonForAction` 映射（`src/loop/termination.js:93-100`）。输入：`shouldContinue`（`src/loop/orchestrator.js`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js:3159-3163`、`3164-3218`）） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`src/loop/orchestrator.js:3357-3365`） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
 | `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`src/loop/orchestrator.js:3357-3365`，`isEndTurn` 在 3053），映射在 `src/loop/termination.js:94` | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`src/loop/reflection.js:8`） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
-| `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js:111-114`），门在 `noToolRound`（`src/loop/orchestrator.js:3230-3233`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
+| `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js:111-114`），门在 `noToolRound`（`src/loop/orchestrator.js`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
 | `stall` | 同一工具调用签名在处理窗口内重复（`src/loop/orchestrator.js:2712-2726`）叠加 streak 累加（`src/loop/orchestrator.js:2763-2770`），stop 在 `src/reflection/governor.js:67-70`，`STALL_STREAK_LIMIT = 3`（`src/reflection/governor.js:3`），映射在 `src/loop/termination.js:97` | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死（`src/reflection/governor.js:65`） | `stallDetection:false` 使其**不可达**（`errorHashes`，`src/loop/orchestrator.js`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
 | `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2635）；治理层 stop `cap`（`src/reflection/governor.js:62-64` / `133-135`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:93-98`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
 | `max_rounds_cap` | (a) 治理层 stop `cap`：接近上限且不允许扩轮（`src/reflection/governor.js:147-149`）；(b) 轮循环自然跑完（`runToolLoop`，`src/loop/orchestrator.js`，收尾在 `3189-3207`） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`termination`，`src/loop/orchestrator.js`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
 | `final_guard_unverified` | 配了 `finalGuard` 且它没能认证：不可续跑降级（`src/loop/orchestrator.js:3529-3542`）、修订次数触顶（`3544-3559`）、或轮循环跑完的收尾（`3558-3578`）。只对 6 个 guard 适用 reason 生效（`src/loop/termination.js:14-21`），且仅当 `finalGuard` 是函数（`src/loop/orchestrator.js`） | 严格位于 stop 之后的**后阶段**：它替换 reason，不介入轮内治理 | 整体不传 `finalGuard`（此时 `verification` 为 `skipped` / `no_final_guard`，`src/loop/orchestrator.js:1663-1665`）；`finalGuardMaxRetries` 调修订上限（默认 2，`budgetRounds`，`src/loop/orchestrator.js`） | **不得当已验事实消费**：`verification.status === "unverified"`（`non_continuable` / `max_retries`）。转人工复核或测试系统 |
 | `aborted` | 终局 `fail()` 路径且宿主 signal 已 abort（`src/loop/orchestrator.js:1058-1116`；分类在 1061 与 1080-1085，注解在 1103-1108） | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效。issue #282 之后，同一个检查也跑到终局 `stop` 分支的入口以及 `finish(reason)` 之前，因此「终局前的增值调用」（end-turn judge / finalGuard）再也不能把用户的中止改写成 `judge_done` 或 `final_guard_unverified`——见「终局前的增值调用在中止时的行为（issue #282）」 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的 |
 | `failed` | run 生命周期内抛出的任意错误，经 `fail()`（`src/loop/orchestrator.js:1058-1116`，循环 catch 在 `3576-3580`），并透传 `termination.errorCode`（`src/loop/termination.js:43-57`）；宿主观察者抛错不再是它的来源之一（issue #173） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`invalid_request` / `not_found` / `conflict`（issue #179）→ 去修请求体、模型名或冲突的资源，重发同一份 payload 帮不上忙；`unknown` → 转去查 `termination.detail` |
-| `persistence_failed` | 同一个 `fail()` 路径，在错误携带持久化信息时被选中（`src/loop/orchestrator.js:1080-1085`），并额外挂上 `operation` / `phase` / `sideEffect`（`src/loop/orchestrator.js:1093-1098`） | 替换 `failed`，不会反向发生；不带 `errorCode`（该字段为 `failed` 专属） | `persistence:"none"` 直接移除 transcript 写入路径；可选 store 能力是降级而非失败（见能力分级） | **告警**：副作用被跟踪过，所以这是完整性信号（ADR-013），不是重试候选 |
+| `persistence_failed` | 同一个 `fail()` 路径，在错误携带持久化信息时被选中（`src/loop/orchestrator.js:1080-1085`），并额外挂上 `operation` / `phase` / `sideEffect`（`src/loop/orchestrator.js`） | 替换 `failed`，不会反向发生；不带 `errorCode`（该字段为 `failed` 专属） | `persistence:"none"` 直接移除 transcript 写入路径；可选 store 能力是降级而非失败（见能力分级） | **告警**：副作用被跟踪过，所以这是完整性信号（ADR-013），不是重试候选 |
 
 ### 核验状态与 CLI 退出码
 
@@ -941,8 +982,8 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 | `verification.status` | 含义 | 实际会看到的 `verification.reason` | CLI 退出码 |
 |---|---|---|---|
 | `verified` | 已配置的 guard 接受了一份终答 | —（无 reason 字段） | `0` |
-| `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js:1663-1665`）；CLI guard 的 `no_capture_evidence` / `no_extractable_candidates`（`bin/final-guard.js:86,89`） | `4` |
-| `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js:3531-3535`）、`max_retries`（`3547-3551`） | `2` |
+| `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js`）；CLI guard 的 `no_capture_evidence` / `no_extractable_candidates`（`bin/final-guard.js:86,89`） | `4` |
+| `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js`）、`max_retries`（`3547-3551`） | `2` |
 | `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`——两者都由 `errorReason`（`src/loop/termination.js:173-176`）决出 | `3` |
 
 `exitCodeForVerification` 对其他任何 status（包括根本没有 `verification` 对象）都返回
@@ -963,7 +1004,7 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 2. **stall stop**（`src/reflection/governor.js:67-70`）——故意高于收尾 nudge 与错误
    重复 nudge，以免真打转被低优先级 nudge 拖到退化成 `max_rounds_cap`。
 3. **wrapup 声明**——`done:true` 信封会压住 `shouldContinue` 并置上
-   `completionSignalDetected`（`src/loop/orchestrator.js:3159-3163`），这既产生
+   `completionSignalDetected`（`src/loop/orchestrator.js`），这既产生
    `completion` stop（`src/reflection/governor.js:108-110`），又使 `noToolRound`
    为假（`src/loop/orchestrator.js:3230-3233`）。**声明完成与 `no_tool` 因此互斥。**
 4. **completion 关键词兜底**——同样这个信号，在没解析出信封时来自
@@ -2318,7 +2359,7 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
 
 | 套件 | 断言什么 | 你必须满足的部分 | 它顺带钉住的上游内部细节 |
 |---|---|---|---|
-| `transcript-store.js`（16 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、run snapshot 的 latest-only 覆盖写、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返，以及成对的探针层 | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍 |
+| `transcript-store.js`（22 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、run snapshot 的 latest-only 覆盖写、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返、成对的探针层，以及同 key 的幂等/冲突层（issue #326：同 payload 重放（含顶层 `ts`/`round` 漂了、字段换了顺序）是 no-op，异 payload 以 `dedup_payload_conflict` 报冲突，数组顺序与宿主自有字段算 payload，`roundKey` 与 `<runId>:round:<n>` 回落键同受约束） | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍、`dedup_payload_conflict` 错误码 |
 | `notes-store.js`（9 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、`limit` 阈值（存量超过 200：给了 limit 就钳到恰好 200，非法 limit 抛错）、带 `expectedState`/`expectedUpdatedAt` guard 的 revoke 可观察消失，以及 issue #265 新增：空 `filters.state` 数组与非法 `filters.source` 必须拒、revoke 墓碑上 `revoked_at`/`revoke_reason` 可见、`purge` 的 `scanned` 是 scope 数且 `before` 只能缩小窗口 | 端口面与记录/guard 语义。issue #183 之后上游硬义务与宿主策略的分界已写死：端口只承诺「可观察消失」（墓碑**或**物理删除皆可）且不管记录过期，而一写者 last-write-wins 是文件适配器自己的事，已不在这里断言。#265 新增只断言 typedef 早已承诺的行为，但它们是发布面上的新断言：宿主适配器曾静默忽略其中任何一条，升级后就会冒新红 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`、`/positive safe integer/`、`/filters\.state/`、`/filters\.source/`）、保留期/purge 时机 |
 | `notes-store.js` → `notesStoreCasContract`（1 条，可选；issue #183） | 并发同键写：至多一方失败，失败必须是抛错而不是静默丢弃，胜者必须是那条以完整形状可读的记录 | 只给比较-交换宿主跑，且是在 `notesStoreContract` 之外的**额外**一层 —— 这个子套件刻意比被移除的 last-write-wins 断言更弱，跑绿它对串行化写者一无所证 | 它顺便踩到的两个载荷内容（`left`/`right`），而不是任何冲突错误文案 |
 | `assembly-port.js`（4 条） | 端口能启动一个真实 loop 并跑完，`emit(type, payload)` 收到带 payload 的事件类型，显式的细粒度 `provider` 选项覆盖端口自带的 provider，缺少 `chat`/`chatStream` 的 provider 在启动时被 `createAssemblyPort` 与 `runToolLoop` 双双拒绝 | 你的端口所必需的适配器与它的 `emit` 接收端 | 优先级规则（显式选项胜过端口）、启动校验的错误文案 |

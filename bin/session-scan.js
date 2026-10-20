@@ -112,11 +112,48 @@ export function truncateFirstUserText(text) {
     : value;
 }
 
+/**
+ * issue #326（wo-D）：**引擎自写文本的标记**（#323 已有的 `meta.source`）。
+ * 与 `src/reflection/judge.js` 的 `renderConversation` 排除同一口径：两边不一致就会分裂出
+ * 「judge 看不到的」与「用户看不到的」两套正文。引擎自写的控制文本**仍必须留在模型上下文里**
+ * （契约明说宿主不得删），只是不能当会话正文展示。
+ */
+export const ENGINE_NOTE_SOURCE = "judge-control";
+
+/** 这一条消息是引擎自说自话吗（judge nudge / extend / guard-revise / forced-final 指令）。 */
+export function isEngineNoteMessage(message) {
+  return message?.meta?.source === ENGINE_NOTE_SOURCE;
+}
+
+/**
+ * 这一行记录贡献了哪些消息。
+ * `messages` 缺失 / `null` / 不是数组一律当「这一行没有正文」——#326 的 `:fold:` / `:ttl:`
+ * 事实行本来就是 `messages: []`，老 transcript 里还有整个字段都没写的行，两者都不能抛。
+ */
+export function messagesOfRecord(record) {
+  return Array.isArray(record?.messages) ? record.messages : [];
+}
+
+/** 若干部记录展平成消息（行为不变的那部分：不过滤任何内容）。 */
+export function messagesOfRecords(records) {
+  if (!Array.isArray(records)) return [];
+  return records.flatMap((record) => messagesOfRecord(record));
+}
+
+/**
+ * 「会话正文」口径的消息：剔掉引擎自说自话。
+ * ⚠ **行数 ≠ 轮数 ≠ 消息数**（#326 之后一个轮可以对应多行）：按轮渲染的投影要按 `round`
+ * 聚合、按 `dedupKey` 去重（契约里的口径）；要「多少条消息」的宿主用本函数，别用 `records.length`。
+ */
+export function conversationMessages(records) {
+  return messagesOfRecords(records).filter((message) => !isEngineNoteMessage(message));
+}
+
 function firstUserTextOfRecord(record) {
-  const messages = record?.messages;
-  if (!Array.isArray(messages)) return undefined;
-  for (const message of messages) {
-    if (message?.role !== "user") continue;
+  for (const message of messagesOfRecord(record)) {
+    // 引擎注入的控制文本在账本里就是 `role: "user"`（契约：投影保留底层角色）⇒
+    // 不跳过的话 picker 会把「【Judge 评审意见】…」当成会话标题。
+    if (message?.role !== "user" || isEngineNoteMessage(message)) continue;
     for (const block of message.content ?? []) {
       if (block?.type === "text" && typeof block.text === "string" && block.text.trim() !== "") {
         return truncateFirstUserText(block.text);
@@ -127,8 +164,13 @@ function firstUserTextOfRecord(record) {
 }
 
 /**
- * picker 行预览：读 transcript 头部（上限 64 KiB）里第一条含 user 文本的记录。
+ * picker 行预览：从 transcript 头部（上限 64 KiB）里找**第一条真实用户文本**。
  * 只用于展示，**任何失败都返回空串**——预览缺一行不是错误，不值得让选择器打不开。
+ *
+ * issue #326（wo-D）：改造前只看第一行 JSON。三类引擎事实行会插在任意一轮后面，
+ * 而事实行的 `messages` 是空数组 ⇒ 「第一行不是正文」从不可能变成常见，picker 因此整片空条目
+ * （实测：首行是 `:fold:` 行时预览 = 空串）。现在逐行扫到窗口末尾，跳过事实行与引擎自说自话。
+ * 被 64 KiB 切断的**尾行不猜**（与改造前「首行没读完就不显示」同口径），半行 JSON 也不会被误读。
  */
 export async function readFirstUserText(transcriptPath) {
   let handle;
@@ -137,11 +179,22 @@ export async function readFirstUserText(transcriptPath) {
     const buffer = Buffer.alloc(PREVIEW_READ_BYTES);
     const { bytesRead } = await handle.read(buffer, 0, PREVIEW_READ_BYTES, 0);
     const text = buffer.subarray(0, bytesRead).toString("utf8");
-    const boundary = text.indexOf("\n");
-    // 首行没读完（或被 64 KiB 截断）就不猜：宁可不显示预览
-    const firstLine = boundary === -1 ? text : text.slice(0, boundary);
-    if (boundary === -1 && bytesRead >= PREVIEW_READ_BYTES) return "";
-    return firstUserTextOfRecord(JSON.parse(firstLine)) ?? "";
+    const lines = text.split("\n");
+    // 只有「读满了窗口」才说明尾行可能被切了一半 ⇒ 丢掉尾行不猜；
+    // 没读满 = 拿到的是整个文件，缺个结尾换行不算截断（改造前的判据就是这个）。
+    if (bytesRead >= PREVIEW_READ_BYTES && !text.endsWith("\n")) lines.pop();
+    for (const line of lines) {
+      if (line.trim() === "") continue;
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue; // 坏行跳过（改造前是直接给空串，一个好行都不再看）
+      }
+      const preview = firstUserTextOfRecord(record);
+      if (preview !== undefined) return preview;
+    }
+    return "";
   } catch {
     return "";
   } finally {

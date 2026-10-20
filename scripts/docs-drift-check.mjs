@@ -50,12 +50,12 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 63`（现测 63 组 / 165 处）：
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 67`（现测 67 组 / 173 处；#326 的 store 去重契约中英成对小节 +4 组）：
 //                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
-//                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 142`（现值；
-//                 232 / 244 是 #286 T-b1a 与 T-a 落地时的旧值，别把历史数当现值），超了红
+//                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 140`（现值；
+//                 142 / 232 / 244 是 #326 B1 删区间之前、#286 T-b1a 与 T-a 落地时的旧值，别把历史数当现值），超了红
 //                 （并提示「可以把基线降到 N」），低于基线算过但会催你降。**越界行号是 error**，不是观察项。
 //                 覆盖面 = 宿主会读的 22 份文档：README{,_cn} / AGENTS{,_cn} / host-consumer-contract{,_cn}
 //                 + `docs/host-upgrade-guide*.md` 全部（按目录实扫，新指南落地即自动纳面）。
@@ -1964,7 +1964,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `FINAL_GUARD_TERMINATION_REASONS`（`src/loop/termination.js`）——`--verbose` 实测 **63 组 / 165 处**，
  *  裸行号棘轮不受影响（同一刀 `--verbose` 实测仍是 146 唯一区间 − 4 处豁免 = 142 = 基线）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 63;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 67;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
@@ -2063,8 +2063,11 @@ const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
  *  `src/reflection/wrapup.js` 提取到 `src/text/json-candidates.js` 之后，该文件少了 30 行，中英契约里
  *  那条指向收尾/`judge` 文本归一化器的 `src/reflection/wrapup.js:132-135` **越界**（文件只剩 106 行），
  *  两条引用各改成不带区间的符号锚点 `normalizeWrapupWithLlm`（`src/reflection/wrapup.js`）
- *  ⇒ 每份文档各降 1 个唯一区间（`--verbose` 实测 146 唯一区间 − 4 处声明式豁免 = 142）。 */
-const BARE_LINE_REF_BASELINE = 142;
+ *  降基线的理由（issue #326 wo-C，140 → **138**，降 2）：折叠摘要事实行 / TTL 降级事实行要写进 `orchestrator.js`，
+ *  该文件行数一变，中英契约里两处**符号锚点自带区间**（`sideEffect` `1093-1098`、`no_final_guard` `1663-1665`）
+ *  就与声明处不相交了 —— 按本文件与 AGENTS 的首选修法**删掉区间只留符号**（符号判据不需要行号），
+ *  于是每处少一个唯一区间键。区间本身是错的（真值位在别处），删掉它同时消掉一处会漂移的假精度。 */
+const BARE_LINE_REF_BASELINE = 138;
 
 /** 棘轮生效值：从**本脚本自己的文本**里读 `BARE_LINE_REF_BASELINE`（走 `textOf`，所以 `--self-test`
  *  能把这个常量临时改小来证「它真的是锁」：调低到低于实测值必须红，改回来必须绿）。

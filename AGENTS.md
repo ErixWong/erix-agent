@@ -164,11 +164,11 @@ scripts/          # experiment scripts and results
   `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs`. Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 63` (groups
-  measured today: 63 unique (symbol, file) pairs over 165 occurrences, raised from 32 when the 0.21.0 guide pair
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 67` (groups
+  measured today: 67 unique (symbol, file) pairs over 173 occurrences, raised from 32 when the 0.21.0 guide pair
   landed, again for the #293 fixes to the 0.19.0 guide, again to 45 when #313's contract section merged on top
   of them, again to 53 when #314's host-side guard section landed as a pair, and again to 63 when the 0.21.0 guide
-  pair grew the #313 / #314 / #312(b) host sections during the 0.21.0 fold-in (工单 261016-021), reproducible via `--verbose`): dropping below it is
+  pair grew the #313 / #314 / #312(b) host sections during the 0.21.0 fold-in (工单 261016-021), reproducible via `--verbose`, and again to 67 when the #326 store-dedup contract section landed as an EN/CN pair): dropping below it is
   red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
   Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
   *`symbol-anchor-span`* (#286 batch T-b1a) is the *per-occurrence* companion of the rule above: when a symbol anchor
@@ -181,8 +181,8 @@ scripts/          # experiment scripts and results
   `symbols` never needed them) or move it onto the declaration. Anchors *without* a range are outside this rule,
   which is also why dropping ranges makes the ratchet below go down legitimately.
   *`bare-lines`* is a *ratchet (only down)*: `src/**.js:N` / `:N-M` references, counted as unique
-  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 142` in that same script. The number
-  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 146 measured minus 4 declaratively exempted
+  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 138` in that same script. The number
+  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 142 measured minus 4 declaratively exempted
   example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
   declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
   nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty
