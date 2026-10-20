@@ -36,12 +36,12 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
   （它是 prose 停滞被治理层撑住后的停局，见 `src/reflection/governor.js:112-113`）。
   **强制压缩**靠把 `context.budgetTokens` 调到几个轮次的量级逼出来（不指望自然触发）。
 - **TTL 折叠真的发生**（`ttl-fold-actually-applied`）：`toolResultTtl` 传给引擎的是**数字**
-  （`src/loop/orchestrator.js:321`；传对象会被 `src/loop/tool-result-ttl.js` 的 `!Number.isFinite(ttl)`
+  （`src/loop/orchestrator.js:323`；传对象会被 `src/loop/tool-result-ttl.js` 的 `!Number.isFinite(ttl)`
   原样退回消息，等于没开）。证据两路互证：引擎 TTL 层记账（折叠条数、省下的 token、发生在第几轮）+
   实际请求视图里看到的折叠占位符（被折块的 `erix.round` 与当时 `currentRound`、折叠前后 token）。
 - **三方对账**：`<runId>.jsonl` 行数 / `store.load()` 的 `RoundRecord` 数 / 事件流累计的 `round_end` 数。
   口径写在证据里：`jsonl 行数 = 引擎轮记录 + 1 条 seed 记录`。那条 seed 不是「`initialUserMessage` 自己占一行」：
-  `initialUserMessage` 只进内存消息（`src/loop/orchestrator.js:1412-1413`），轮记录写的是
+  `initialUserMessage` 只进内存消息（`src/loop/orchestrator.js:1425-1426`），轮记录写的是
   `messages.slice(roundStart)`（`:2904`）；seed 是**非 resume 分支专门归档的 `round=0` 记录**
   （`src/loop/resume-manager.js:274-289`，`dedupKey=<runId>:engine:round:0:seed`，无 `response`），
   为的是 ADR-002 的档案完整性。`round_end` 只等于引擎轮记录数（seed 不是轮）。

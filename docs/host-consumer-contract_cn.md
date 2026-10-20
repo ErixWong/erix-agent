@@ -64,7 +64,7 @@ executeTool({ id, name, input, context, signal })
 
 ```text
 观察者同步抛错，或返回 rejected Promise（onRound / onToolResult）
-  └─ reportObserverError(error, { channel, … })   src/loop/orchestrator.js:889-896
+  └─ reportObserverError(error, { channel, … })   src/loop/orchestrator.js:892-899
        ├─ onObserverError(error, context)         宿主错账户，同步调用
        └─ console.error("Observer callback error:", error, context)
                                                   未配置错账户、或错账户自己抛错时
@@ -82,7 +82,7 @@ executeTool({ id, name, input, context, signal })
 | `context.channel` | 额外字段 | 引擎防护点 |
 |---|---|---|
 | `onEvent` | `type`，事件自带 `round` 时再带 `round` | `emitEvent`（`src/loop/orchestrator.js`） |
-| `onEvent`（启动期诊断） | `type: "model_metadata_missing"`，或 `type: "persistence_capability_degraded"` 加 `method` | `notifyCapabilitySkipped` / `notifyModelMetadataMissing` 里的本地防护（`src/loop/orchestrator.js:913-966`）：这两条路径在 `emitEvent` 定义之前就触发，因此直调 `onEvent` |
+| `onEvent`（启动期诊断） | `type: "model_metadata_missing"`，或 `type: "persistence_capability_degraded"` 加 `method` | `notifyCapabilitySkipped` / `notifyModelMetadataMissing` 里的本地防护（`src/loop/orchestrator.js:916-969`）：这两条路径在 `emitEvent` 定义之前就触发，因此直调 `onEvent` |
 | `onRound` | `round` | `src/loop/orchestrator.js` |
 | `onToolResult` | `toolName`、`round` | `src/loop/run-snapshot-executor.js:266-294` |
 | `onJudge` | `round`、`kind` | `emitJudge`（`src/loop/orchestrator.js`） |
@@ -241,7 +241,7 @@ await provider.chat({ messages });
 | 循环 | 坐标 | 门槛 | 预算 |
 |---|---|---|---|
 | 每轮 provider 调用 | `src/loop/provider-runner.js:33-263`（`callProvider`） | `retryOptions !== null` **且** `error.retryable === true`（`:219`） | **每轮** `retryAttempts + 1` 次 provider 调用；一个 run 因此封顶于 `maxRounds × (retryAttempts + 1)` |
-| 持久化 store 写入 | `src/loop/orchestrator.js:872-888` | 同一组数字，**没有** `retryable` 门槛 | **每次 store 调用** `retryAttempts + 1` 次写入，与 provider 循环无关 |
+| 持久化 store 写入 | `src/loop/orchestrator.js:875-891` | 同一组数字，**没有** `retryable` 门槛 | **每次 store 调用** `retryAttempts + 1` 次写入，与 provider 循环无关 |
 
 持久化重试绝不会重发 provider 调用，provider 重试也绝不会重写记录。
 `retry: { attempts: 0 }` 与 `retry: false` 在观测上等价：一次 provider 调用、一次 store
@@ -416,7 +416,7 @@ provider、工具与 transcript 适配器，因此没有宿主需要一次性迁
 上一小节是规则。本小节记录**出厂工具今天实际标了什么**——宿主从包外看不见这个，而它
 直接决定切换的代价。现状是：**一个都没标**——在 `src/tools` 与 `bin/tools.js` 里搜这个
 字段一无所获，唯一读它的两处是启动校验（`partialPersistenceConfig`，`src/loop/orchestrator.js`）与解析器
-（`src/loop/orchestrator.js:1877-1889`）。
+（`src/loop/orchestrator.js:1890-1902`）。
 
 | 工具 | 出厂入口 | 今天标了 `replay` 吗 | `per-tool-declaration` 下的续跑行为 | 副作用类别 |
 | --- | --- | --- | --- | --- |
@@ -511,7 +511,7 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
    条目，所以切换之前写的快照里没有该字段，续跑时一律解析为 unsafe：在跑 run 的每个
    挂起调用（连只读类在内）都会变成一次 interrupted 决定。不把快照未知字段原样带回来的
    store 会丢掉记录下来的意图，解析器于是回落到**当前**的 `tools` 数组
-   （`src/loop/orchestrator.js:1877-1889`）；随包发布的 `transcriptStoreContract` 已经会带回
+   （`src/loop/orchestrator.js:1890-1902`）；随包发布的 `transcriptStoreContract` 已经会带回
    一条带 `replay: "unsafe"` 的挂起条目并做深比较（`test/contract/transcript-store.js:124-142`），
    所以能跑过该套件的宿主 store 会保留这个字段（另见「Store 保真要求」）。
 9. **知道 fail-fast 在哪。**两个字面量以外的 `replay` 取值，以及未知的 `replayPolicy`，都在
@@ -919,30 +919,30 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 
 | `termination.reason` | 触发机制（file:line） | 在优先级链中的位置 | 宿主开关 | 推荐宿主动作 |
 |---|---|---|---|---|
-| `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js:108-110`）或兜底 stop `complete`（`src/reflection/governor.js:123-125`），均由 `terminationReasonForAction` 映射（`src/loop/termination.js:93-100`）。输入：`shouldContinue`（`src/loop/orchestrator.js`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js:3121-3125`、`3126-3180`）） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`src/loop/orchestrator.js:3318-3326`） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
-| `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`src/loop/orchestrator.js:3318-3326`，`isEndTurn` 在 3017），映射在 `src/loop/termination.js:94` | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`src/loop/reflection.js:8`） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
-| `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js:111-114`），门在 `noToolRound`（`src/loop/orchestrator.js:3192-3195`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
-| `stall` | 同一工具调用签名在处理窗口内重复（`src/loop/orchestrator.js:2678-2692`）叠加 streak 累加（`src/loop/orchestrator.js:2729-2736`），stop 在 `src/reflection/governor.js:67-70`，`STALL_STREAK_LIMIT = 3`（`src/reflection/governor.js:3`），映射在 `src/loop/termination.js:97` | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死（`src/reflection/governor.js:65`） | `stallDetection:false` 使其**不可达**（`errorHashes`，`src/loop/orchestrator.js`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
-| `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2601）；治理层 stop `cap`（`src/reflection/governor.js:62-64` / `133-135`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:93-98`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
-| `max_rounds_cap` | (a) 治理层 stop `cap`：接近上限且不允许扩轮（`src/reflection/governor.js:147-149`）；(b) 轮循环自然跑完（`runToolLoop`，`src/loop/orchestrator.js`，收尾在 `3151-3169`） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`termination`，`src/loop/orchestrator.js`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
-| `final_guard_unverified` | 配了 `finalGuard` 且它没能认证：不可续跑降级（`src/loop/orchestrator.js:3490-3503`）、修订次数触顶（`3505-3520`）、或轮循环跑完的收尾（`3558-3578`）。只对 6 个 guard 适用 reason 生效（`src/loop/termination.js:14-21`），且仅当 `finalGuard` 是函数（`src/loop/orchestrator.js`） | 严格位于 stop 之后的**后阶段**：它替换 reason，不介入轮内治理 | 整体不传 `finalGuard`（此时 `verification` 为 `skipped` / `no_final_guard`，`src/loop/orchestrator.js:1650-1652`）；`finalGuardMaxRetries` 调修订上限（默认 2，`budgetRounds`，`src/loop/orchestrator.js`） | **不得当已验事实消费**：`verification.status === "unverified"`（`non_continuable` / `max_retries`）。转人工复核或测试系统 |
-| `aborted` | 终局 `fail()` 路径且宿主 signal 已 abort（`src/loop/orchestrator.js:1055-1113`；分类在 1058 与 1077-1082，注解在 1100-1105） | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效。issue #282 之后，同一个检查也跑到终局 `stop` 分支的入口以及 `finish(reason)` 之前，因此「终局前的增值调用」（end-turn judge / finalGuard）再也不能把用户的中止改写成 `judge_done` 或 `final_guard_unverified`——见「终局前的增值调用在中止时的行为（issue #282）」 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的 |
-| `failed` | run 生命周期内抛出的任意错误，经 `fail()`（`src/loop/orchestrator.js:1055-1113`，循环 catch 在 `3537-3541`），并透传 `termination.errorCode`（`src/loop/termination.js:43-57`）；宿主观察者抛错不再是它的来源之一（issue #173） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`invalid_request` / `not_found` / `conflict`（issue #179）→ 去修请求体、模型名或冲突的资源，重发同一份 payload 帮不上忙；`unknown` → 转去查 `termination.detail` |
-| `persistence_failed` | 同一个 `fail()` 路径，在错误携带持久化信息时被选中（`src/loop/orchestrator.js:1077-1082`），并额外挂上 `operation` / `phase` / `sideEffect`（`src/loop/orchestrator.js:1090-1095`） | 替换 `failed`，不会反向发生；不带 `errorCode`（该字段为 `failed` 专属） | `persistence:"none"` 直接移除 transcript 写入路径；可选 store 能力是降级而非失败（见能力分级） | **告警**：副作用被跟踪过，所以这是完整性信号（ADR-013），不是重试候选 |
+| `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js:108-110`）或兜底 stop `complete`（`src/reflection/governor.js:123-125`），均由 `terminationReasonForAction` 映射（`src/loop/termination.js:93-100`）。输入：`shouldContinue`（`src/loop/orchestrator.js`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js:3159-3163`、`3164-3218`）） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`src/loop/orchestrator.js:3357-3365`） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
+| `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`src/loop/orchestrator.js:3357-3365`，`isEndTurn` 在 3053），映射在 `src/loop/termination.js:94` | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`src/loop/reflection.js:8`） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
+| `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js:111-114`），门在 `noToolRound`（`src/loop/orchestrator.js:3230-3233`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
+| `stall` | 同一工具调用签名在处理窗口内重复（`src/loop/orchestrator.js:2712-2726`）叠加 streak 累加（`src/loop/orchestrator.js:2763-2770`），stop 在 `src/reflection/governor.js:67-70`，`STALL_STREAK_LIMIT = 3`（`src/reflection/governor.js:3`），映射在 `src/loop/termination.js:97` | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死（`src/reflection/governor.js:65`） | `stallDetection:false` 使其**不可达**（`errorHashes`，`src/loop/orchestrator.js`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
+| `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2635）；治理层 stop `cap`（`src/reflection/governor.js:62-64` / `133-135`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:93-98`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
+| `max_rounds_cap` | (a) 治理层 stop `cap`：接近上限且不允许扩轮（`src/reflection/governor.js:147-149`）；(b) 轮循环自然跑完（`runToolLoop`，`src/loop/orchestrator.js`，收尾在 `3189-3207`） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`termination`，`src/loop/orchestrator.js`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
+| `final_guard_unverified` | 配了 `finalGuard` 且它没能认证：不可续跑降级（`src/loop/orchestrator.js:3529-3542`）、修订次数触顶（`3544-3559`）、或轮循环跑完的收尾（`3558-3578`）。只对 6 个 guard 适用 reason 生效（`src/loop/termination.js:14-21`），且仅当 `finalGuard` 是函数（`src/loop/orchestrator.js`） | 严格位于 stop 之后的**后阶段**：它替换 reason，不介入轮内治理 | 整体不传 `finalGuard`（此时 `verification` 为 `skipped` / `no_final_guard`，`src/loop/orchestrator.js:1663-1665`）；`finalGuardMaxRetries` 调修订上限（默认 2，`budgetRounds`，`src/loop/orchestrator.js`） | **不得当已验事实消费**：`verification.status === "unverified"`（`non_continuable` / `max_retries`）。转人工复核或测试系统 |
+| `aborted` | 终局 `fail()` 路径且宿主 signal 已 abort（`src/loop/orchestrator.js:1058-1116`；分类在 1061 与 1080-1085，注解在 1103-1108） | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效。issue #282 之后，同一个检查也跑到终局 `stop` 分支的入口以及 `finish(reason)` 之前，因此「终局前的增值调用」（end-turn judge / finalGuard）再也不能把用户的中止改写成 `judge_done` 或 `final_guard_unverified`——见「终局前的增值调用在中止时的行为（issue #282）」 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的 |
+| `failed` | run 生命周期内抛出的任意错误，经 `fail()`（`src/loop/orchestrator.js:1058-1116`，循环 catch 在 `3576-3580`），并透传 `termination.errorCode`（`src/loop/termination.js:43-57`）；宿主观察者抛错不再是它的来源之一（issue #173） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`invalid_request` / `not_found` / `conflict`（issue #179）→ 去修请求体、模型名或冲突的资源，重发同一份 payload 帮不上忙；`unknown` → 转去查 `termination.detail` |
+| `persistence_failed` | 同一个 `fail()` 路径，在错误携带持久化信息时被选中（`src/loop/orchestrator.js:1080-1085`），并额外挂上 `operation` / `phase` / `sideEffect`（`src/loop/orchestrator.js:1093-1098`） | 替换 `failed`，不会反向发生；不带 `errorCode`（该字段为 `failed` 专属） | `persistence:"none"` 直接移除 transcript 写入路径；可选 store 能力是降级而非失败（见能力分级） | **告警**：副作用被跟踪过，所以这是完整性信号（ADR-013），不是重试候选 |
 
 ### 核验状态与 CLI 退出码
 
 核验结论与终局 reason 是两个独立的轴：`end_turn` 可以 `unverified`；而
 `max_rounds_cap` / `stall` / `continuation_exhausted` 只能以 `skipped` 或 `error`
 收尾——配了 guard 之后它们拿不到 `verified`，因为 guard 对这三个 reason 返回
-`accept` 也仍然以 `final_guard_unverified` 终局（`src/loop/orchestrator.js:3490-3503`）。
+`accept` 也仍然以 `final_guard_unverified` 终局（`src/loop/orchestrator.js:3529-3542`）。
 CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 
 | `verification.status` | 含义 | 实际会看到的 `verification.reason` | CLI 退出码 |
 |---|---|---|---|
 | `verified` | 已配置的 guard 接受了一份终答 | —（无 reason 字段） | `0` |
-| `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js:1650-1652`）；CLI guard 的 `no_capture_evidence` / `no_extractable_candidates`（`bin/final-guard.js:86,89`） | `4` |
-| `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js:3492-3496`）、`max_retries`（`3508-3512`） | `2` |
+| `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js:1663-1665`）；CLI guard 的 `no_capture_evidence` / `no_extractable_candidates`（`bin/final-guard.js:86,89`） | `4` |
+| `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js:3531-3535`）、`max_retries`（`3547-3551`） | `2` |
 | `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`——两者都由 `errorReason`（`src/loop/termination.js:173-176`）决出 | `3` |
 
 `exitCodeForVerification` 对其他任何 status（包括根本没有 `verification` 对象）都返回
@@ -963,17 +963,17 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 2. **stall stop**（`src/reflection/governor.js:67-70`）——故意高于收尾 nudge 与错误
    重复 nudge，以免真打转被低优先级 nudge 拖到退化成 `max_rounds_cap`。
 3. **wrapup 声明**——`done:true` 信封会压住 `shouldContinue` 并置上
-   `completionSignalDetected`（`src/loop/orchestrator.js:3121-3125`），这既产生
+   `completionSignalDetected`（`src/loop/orchestrator.js:3159-3163`），这既产生
    `completion` stop（`src/reflection/governor.js:108-110`），又使 `noToolRound`
-   为假（`src/loop/orchestrator.js:3192-3195`）。**声明完成与 `no_tool` 因此互斥。**
+   为假（`src/loop/orchestrator.js:3230-3233`）。**声明完成与 `no_tool` 因此互斥。**
 4. **completion 关键词兜底**——同样这个信号，在没解析出信封时来自
-   `completion.signals` 命中终答文本（`src/loop/orchestrator.js:3121-3125`），或来自
-   end-turn 轮完全拿不到 JSON 时的 LLM 归一化器（`3126-3180`，开关是
+   `completion.signals` 命中终答文本（`src/loop/orchestrator.js:3159-3163`），或来自
+   end-turn 轮完全拿不到 JSON 时的 LLM 归一化器（`3164-3218`，开关是
    `reflection.wrapupNormalize` / `ERIX_WRAPUP_NORMALIZE=1`）。
 5. **`no_tool` stop**——只在什么都没声明完成且本轮没调工具时可达
-   （`src/loop/orchestrator.js:3192-3195`）。
+   （`src/loop/orchestrator.js:3230-3233`）。
 6. **judge 的 end-turn 评估**——`judge_done` 在治理层**之前**被评估
-   （`src/loop/orchestrator.js:3318-3326`），因此在其生效的那一轮压过 2-5；它要求
+   （`src/loop/orchestrator.js:3357-3365`），因此在其生效的那一轮压过 2-5；它要求
    `isEndTurn`，即 `stopReason === "end_turn"` 且无工具调用
    （`src/loop/orchestrator.js`）。工具轮因此永远不可能产生 `judge_done`；
    `max_tokens` 轮也不可能同时产生 `judge_done` 与 `continuation_exhausted`
@@ -981,11 +981,42 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 7. **停止后验证**——stop reason 定下来后，三个不可续跑 reason 可能多一次强制收尾的
    provider 调用（`src/loop/termination.js:203-256`），然后 `finalGuard` 可以 accept /
    skip / revise / 失败。`revise` 不是终局：它注入一条用户消息，本轮治理重新开始
-   （`src/loop/orchestrator.js:3118-3140`）。修订重试次数受 `finalGuardMaxRetries`
+   （`src/loop/orchestrator.js:3156-3178`）。修订重试次数受 `finalGuardMaxRetries`
    约束（默认 2，`budgetRounds`，`src/loop/orchestrator.js`），guard 自身超时默认 30s
    （`budgetRounds`，`src/loop/orchestrator.js`）。
 8. **`fail()` 分类**——任何时刻抛错都会用 `aborted`（信号已置）或 `failed` /
-   `persistence_failed` 替换掉上面全部（`src/loop/orchestrator.js:1055-1113`）。
+   `persistence_failed` 替换掉上面全部（`src/loop/orchestrator.js:1058-1116`）。
+
+**中途「目标已达成」 advisory —— `reflection.judgeDoneAdvisory`（issue #322）。**
+透明拦截审计若判定 `done: true` 且 `confidence >= 0.7`，今天只有人能看到：
+`directionHintText`（`src/loop/reflection.js`）只对 `off_track` 产文本，那条 `reason`
+从未进过后续任何 provider 请求。开启该子键后（默认 `false`），这条判定会额外把评审意见
+回灌给**主模型**：由 `judgeDoneAdvisoryText`（`src/loop/reflection.js`）生成一条合成的
+`user` 文本消息，经 `offerJudgeDoneAdvisory`（`src/loop/run-snapshot-executor.js`）的**单槽**
+收下，由 `flushJudgeDoneAdvisory`（`src/loop/orchestrator.js`）在两个 flush 点（正常轮与
+resume）投递——同一套策略、同一个槽。宿主可见的保证：
+
+- 消息带 `meta.source: "judge-control"`，因此 `renderConversation`
+  （`src/reflection/judge.js`）继续把它排除在外：主模型读得到，judge 读不回自己的意见。
+  没有新增 marker 值，排除判据也没改成集合；
+- 它是**意见**：不拦任何工具调用、不提前结束任何一轮、不进 `tool_result`。开与关之间
+  `termination`、`tool_result` 事实链、usage、工具执行次数完全相同；判定达成后继续扫尾仍是
+  合法状态；
+- **单槽而非队列**：同一轮多次「达成」覆盖待投递文本而不是追加，因此没有每轮上限、没有合并
+  计数、也没有按 transcript 的终身额度；它刻意不进方向提示那条 FIFO，也不参与它的每轮 2 条合并；
+- judge 的 `reason` 截断到 200 字符、整条 advisory 截断到 400 字符
+  （`JUDGE_DONE_ADVISORY_REASON_LIMIT` / `JUDGE_DONE_ADVISORY_LIMIT`，`src/loop/reflection.js`）；
+  文案明写这条主张**未独立核验**，并要求「已满足就只做交付总结、不要新增工作；有缺项就只补必要项」，
+  绝不出现「已核验/已验证」；
+- 同一个子键同时门控 `directionHintText`（`src/loop/reflection.js`）里 `uncertain` 的**中性**文案：
+  关闭时 `uncertain` 依然一条方向提示都不产、provider 请求序列与不开本选项时**逐字相同**；开启后
+  `uncertain` 不再被说成「当前路线可能偏，可考虑换思路」（那句会诱导模型多做路线尝试）。
+  两种情况下 `off_track` 的文案与注入时机都不变；
+- 非布尔值在启动期抛 `TypeError: reflection.judgeDoneAdvisory must be a boolean`，且不新增任何
+  judge 调用；
+- 已知毛刺（本单刻意不修）：待投递的 advisory 不属于 run snapshot，因此若在一次 flush 发生之前
+  resume，这条意见会丢失。
+
 
 ## Reflection 决策解析（issue #305）
 

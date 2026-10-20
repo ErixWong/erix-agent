@@ -388,6 +388,7 @@ roundJudge
 judgeIntercept
 judgeIntervalRound
 judgeInterceptTimeoutMs
+judgeDoneAdvisory
 judgeFailureLimit
 extensionStep
 maxExtensions
@@ -404,6 +405,18 @@ onReflection
 - `judgeFailureLimit` 默认为 `3`；round judge 连续失败后，剩余运行期间会禁用 round judging。
 - `judgeIntervalRound` 为 `10`；完成这么多次真实工具执行后，下一次工具调用会在执行前独立审计。
 - `judgeInterceptTimeoutMs` 为 `30000`；拦截超时或 judge 失败时，会降级为执行原始工具。
+- `judgeDoneAdvisory` 默认为 `false`。开启后，透明拦截审计若判定 `done: true` 且
+  `confidence >= 0.7`（同一个共享常量 `JUDGE_DONE_CONFIDENCE_THRESHOLD`，见 `src/loop/reflection.js`），
+  会把这条评审意见同时回灌给**主模型**：一条合成的 `user` 文本消息，带
+  `meta.source: "judge-control"`——主模型看得见，judge 自己读不回（`src/reflection/judge.js` 的
+  `renderConversation` 按该 marker 排除）。它是**意见而非裁决**：绝不拦写工具、绝不提前终止
+  （主体完成但还有扫尾工作是合法状态）、不进 `tool_result`；投递面是**单槽**——同一轮第二次「达成」
+  覆盖前一条，而不是排队。`reason` 截断到 200 字符、整条 advisory 截断到 400 字符。同一个子键还同时
+  门控 `uncertain` 的**中性**方向提示文案（`src/loop/reflection.js` 的 `directionHintText`）：关闭时
+  `uncertain` 仍然一条方向提示都不产、请求序列与没开本选项时**逐字相同**；开启时才改用中性文案
+  （不再把「方向未定」说成「当前路线可能偏，可考虑换思路」）。非布尔值会在启动期抛
+  `TypeError: reflection.judgeDoneAdvisory must be a boolean`。待投递的 advisory 不进 run snapshot，
+  因此首次 flush 之前 resume 会丢掉它（已知毛刺）。
 - 当进入 `nearLimit`（`budgetRounds >= floor(effectiveMaxRounds * 0.8)`）时，
   end-turn judge 和下一次工具拦截审计都会收到当前预算与扩轮次数。Judge 还必须返回
   `extend`、`extendReason` 和 `plan`；允许 `extend: true` 会增加有效预算，
