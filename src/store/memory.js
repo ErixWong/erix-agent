@@ -1,4 +1,5 @@
 import { boundRunState } from "../run-state.js";
+import { dedupConflictError, payloadFingerprint, recordKey } from "./transcript-dedup.js";
 
 /**
  * @typedef {{
@@ -46,17 +47,31 @@ export function createMemoryTranscriptStore() {
   const runStates = new Map();
   const runStatuses = new Map();
 
-  const recordKey = (runId, record) => (
-    record?.dedupKey
-      ?? record?.roundKey
-      ?? `${String(runId)}:round:${String(record?.round)}`
-  );
-
   return {
+    /**
+     * 幂等/冲突语义（issue #326 事实①）：同 key 同 payload → 不重复写入（与历史一致，返回
+     * undefined）；同 key 异 payload → 抛 `TranscriptDedupConflictError`，既不覆盖也不静默丢弃。
+     * 判据与 file store 共用 `src/store/transcript-dedup.js`，两侧不得各抄一套。
+     */
     async appendRound(runId, record) {
       const records = transcripts.get(runId) ?? [];
       const key = recordKey(runId, record);
-      if (records.some((existing) => recordKey(runId, existing) === key)) return;
+      const existing = records.find((item) => recordKey(runId, item) === key);
+      if (existing !== undefined) {
+        const incomingFingerprint = payloadFingerprint(record);
+        const existingFingerprint = payloadFingerprint(existing);
+        if (existingFingerprint !== incomingFingerprint) {
+          throw dedupConflictError({
+            runId,
+            key,
+            existing,
+            incoming: record,
+            existingFingerprint,
+            incomingFingerprint,
+          });
+        }
+        return;
+      }
       records.push(copyRecord(record));
       transcripts.set(runId, records);
     },

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { boundRunState } from "../run-state.js";
+import { dedupConflictError, payloadFingerprint, recordKey } from "./transcript-dedup.js";
 
 const HASHED_RUN_ID_PREFIX = "run-h-";
 
@@ -58,12 +59,6 @@ function statePath(dir, runId) {
 
 function statusPath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.status.json`);
-}
-
-function recordKey(runId, record) {
-  return record?.dedupKey
-    ?? record?.roundKey
-    ?? `${String(runId)}:round:${String(record?.round)}`;
 }
 
 // issue #160：(size, mtimeMs) 新鲜度戳。文件缺失时 size/mtimeMs 均为 null。
@@ -163,6 +158,10 @@ async function repairTranscriptTail(path) {
  * fail-closed：中间损坏行照旧抛错）。仅当扫描前后戳一致才把重建结果落缓存；
  * 0 字节文件无记录，直接视为可信空集。
  *
+ * issue #326 事实①后这份缓存**仍然只存 key**（不存 payload 摘要）：缓存的职责只是
+ * 「这条 key 在不在」，而判 payload 要的是正文——正文在命中路径上现取（见
+ * `findRecordByKey`）。这样热路径一个字节不多花，也不会把陈旧的摘要当成事实。
+ *
  * @param {string} path
  * @param {string} runId
  * @param {{size:number|null, mtimeMs:number|null}} stamp 修复尾部后的当前戳
@@ -203,6 +202,33 @@ async function dedupKeysFor(path, runId, stamp, dedupCaches) {
   return entry;
 }
 
+/**
+ * 命中同 key 时取回既有记录正文（issue #326 事实①）：幂等缓存只记 key，判「同 payload 还是
+ * 异 payload」需要既有正文，所以**只在命中路径**上多跑一次流式扫（miss 路径照常 O(1)，
+ * #160 的优化不打折）。拿到的就是盘上那份——比对永远拿真实持久化结果做，不拿缓存副本，
+ * 这样缓存顶多把「有没有命中」判错，不会把 payload 内容判错。
+ *
+ * fail-closed 与 dedupKeysFor 同口径：中间损坏行照旧抛 malformed line。
+ *
+ * @param {string} path
+ * @param {string} runId
+ * @param {string} key
+ * @returns {Promise<any|undefined>} 没找到（缓存陈旧 / 外部改写过）时 undefined
+ */
+async function findRecordByKey(path, runId, key) {
+  try {
+    for await (const existing of readRecords(path)) {
+      if (existing !== null && recordKey(runId, existing) === key) return existing;
+    }
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(`Transcript contains a malformed line: ${path}`, { cause: error });
+    }
+    throw error;
+  }
+  return undefined;
+}
+
 async function appendRecord(path, runId, record, dedupCaches) {
   const handle = await open(path, "a+");
   try {
@@ -214,6 +240,24 @@ async function appendRecord(path, runId, record, dedupCaches) {
     const entry = await dedupKeysFor(path, runId, stamp, dedupCaches);
     const key = recordKey(runId, record);
     if (entry.keys.has(key)) {
+      // issue #326 事实①：命中同 key 不再直接丢弃来写的 payload。同 payload → 幂等 no-op
+      // （历史行为）；异 payload → 抛 TranscriptDedupConflictError，既不覆盖也不静默丢弃。
+      // 判据与 memory store 共用 src/store/transcript-dedup.js，两侧同一份实现。
+      const existing = await findRecordByKey(path, runId, key);
+      if (existing !== undefined) {
+        const existingFingerprint = payloadFingerprint(existing);
+        const incomingFingerprint = payloadFingerprint(record);
+        if (existingFingerprint !== incomingFingerprint) {
+          throw dedupConflictError({
+            runId,
+            key,
+            existing,
+            incoming: record,
+            existingFingerprint,
+            incomingFingerprint,
+          });
+        }
+      }
       return false;
     }
     await handle.write(`${JSON.stringify(record)}\n`, null, "utf8");
