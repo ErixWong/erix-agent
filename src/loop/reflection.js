@@ -8,6 +8,48 @@ export const WRAPUP_INSTRUCTION = `任务完成或需要给出结论时（不再
 
 export const DEFAULT_REFLECTION_MIN_ROUNDS = 16;
 
+/**
+ * Confidence threshold for a judge verdict that counts as "the goal looks achieved"
+ * (issue #322: it used to be an inline `0.7` written twice inside the orchestrator).
+ *
+ * One constant feeds three decisions, so no site may write a literal again:
+ *   - the `judge_done` stop gate in the orchestrator (the `action` computation on an end-turn round);
+ *   - the `emitJudge` `action` classification (`judge_done` / `nudge` / `continue`);
+ *   - the advisory gate in `judgeDoneAdvisoryText()`'s caller (`reflection.judgeDoneAdvisory`).
+ * The value itself is unchanged: this ticket only collapses two literals into one truth, and the
+ * judgement semantics stay byte-for-byte identical.
+ */
+export const JUDGE_DONE_CONFIDENCE_THRESHOLD = 0.7;
+
+/** Truncation width for the `reason` inside a done-advisory (issue #322, first of two caps). */
+export const JUDGE_DONE_ADVISORY_REASON_LIMIT = 200;
+/** Cap for the whole done-advisory line (issue #322: one opinion must never push the context out). */
+export const JUDGE_DONE_ADVISORY_LIMIT = 400;
+
+/**
+ * The **soft advisory** fed back to the main model when an interception audit says "goal achieved"
+ * (issue #322).
+ *
+ * It is an opinion, never a verdict, so the text must state three things at once:
+ *   1. this is the evaluator's judgement and it is **not independently verified** by the engine
+ *      (the words "已核验/已验证" are forbidden here on purpose);
+ *   2. if the requirement really is met, write the delivery summary and **do not add new work**;
+ *   3. if something is missing, **only fill in the necessary items** — finishing leftover work is a
+ *      legitimate state, nothing here stops the run early.
+ * `reason` is cut to `JUDGE_DONE_ADVISORY_REASON_LIMIT`, the whole line to `JUDGE_DONE_ADVISORY_LIMIT`.
+ *
+ * @param {unknown} reason the judge's own reason (optional; omitted when absent)
+ * @returns {string}
+ */
+export function judgeDoneAdvisoryText(reason) {
+  const detail = String(reason ?? "").trim().slice(0, JUDGE_DONE_ADVISORY_REASON_LIMIT);
+  const body = "评审认为本任务可能已达成原始目标——这是评审的主观判断，引擎未独立核验，"
+    + "请对照用户最初的要求自行确认；若确已满足，只需给出交付总结，不要新增工作；"
+    + "若仍有缺项，只补齐必要项后即可。"
+    + (detail ? `（评审理由：${detail}）` : "");
+  return `（附评审意见：${body}）`.slice(0, JUDGE_DONE_ADVISORY_LIMIT);
+}
+
 export function isLikelyWelcomeResponse(text) {
   const value = String(text ?? "").trim();
   return /^(?:你好|嗨|hello)\s*[!！,，。.]?\s*(?:我是|i\s*(?:am|'m))[\s\S]*(?:助手|assistant)/iu.test(value)
@@ -15,12 +57,37 @@ export function isLikelyWelcomeResponse(text) {
     || /请[\s\S]{0,10}(?:告诉|输入|描述)[\s\S]{0,10}(?:我)?[\s\S]{0,20}(?:做什么|任务|task)/iu.test(value);
 }
 
-export function directionHintText(direction, directionReason) {
-  if (direction !== "off_track") return "";
+/** Fallback body of the neutral `uncertain` hint when the judge gave no `directionReason` (issue #322). */
+const UNCERTAIN_HINT_FALLBACK = "评审未判定方向，也未判定已达成";
+
+/**
+ * The engine's direction-hint text for an audit decision (issue #322).
+ *
+ * `uncertainNeutral` (ticket ruling B): an `uncertain` verdict used to produce **no text at all**,
+ * so emitting the neutral wording unconditionally would silently change the request sequence of
+ * hosts that never opted into anything new. It is therefore gated on the same sub-key as the done
+ * advisory (`reflection.judgeDoneAdvisory`): off ⇒ `uncertain` keeps returning the empty string,
+ * byte-for-byte like before; on ⇒ it gets a neutral wording instead of the `off_track` phrasing
+ * ("当前路线可能偏，可考虑换思路"), which reads like an invitation to try another route. The
+ * `off_track` text, the `on_track` empty string, the interception rules and the extension logic are
+ * untouched either way — only this wording, and only behind the switch.
+ *
+ * @param {unknown} direction
+ * @param {unknown} directionReason
+ * @param {boolean} [uncertainNeutral] emit the neutral `uncertain` wording (default off)
+ * @returns {string}
+ */
+export function directionHintText(direction, directionReason, uncertainNeutral = false) {
   const reason = typeof directionReason === "string" && directionReason.trim()
     ? directionReason.trim().slice(0, 200)
-    : "当前路线可能偏";
-  return `（附方向提示：${reason} —— 当前路线可能偏，可考虑换思路/方法）`;
+    : "";
+  if (direction === "uncertain") {
+    return uncertainNeutral
+      ? `（附方向提示：${reason || UNCERTAIN_HINT_FALLBACK} —— 评审未判定当前路线偏离，无需为此换思路；按你的判断继续。）`
+      : "";
+  }
+  if (direction !== "off_track") return "";
+  return `（附方向提示：${reason || "当前路线可能偏"} —— 当前路线可能偏，可考虑换思路/方法）`;
 }
 
 const REFLECTION_DECISION_KEYS = [

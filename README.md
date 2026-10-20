@@ -541,6 +541,7 @@ roundJudge
 judgeIntercept
 judgeIntervalRound
 judgeInterceptTimeoutMs
+judgeDoneAdvisory
 judgeFailureLimit
 extensionStep
 maxExtensions
@@ -560,6 +561,25 @@ The defaults used by the loop are:
   next tool call is independently audited before execution.
 - `judgeInterceptTimeoutMs` is `30000`; an interception timeout or judge
   failure degrades to executing the original tool.
+- `judgeDoneAdvisory` defaults to `false`. When enabled, a transparent
+  interception audit that returns `done: true` with
+  `confidence >= 0.7` (one shared constant, `JUDGE_DONE_CONFIDENCE_THRESHOLD`
+  in `src/loop/reflection.js`) also feeds the review opinion back to the **main
+  model** as one synthetic `user` text message marked
+  `meta.source: "judge-control"` — visible to the model, never read back by the
+  judge itself (`renderConversation` in `src/reflection/judge.js`). It is an
+  opinion, not a verdict: it never blocks a tool call, never ends the run early
+  (finishing leftover work is a legitimate state), never enters `tool_result`,
+  and the pending slot is a single slot — a second "achieved" verdict in the
+  same round overwrites the first instead of queueing. The reason is truncated
+  to 200 characters and the whole advisory to 400. The same sub-key also gates
+  the neutral `uncertain` direction hint (`directionHintText` in
+  `src/loop/reflection.js`): with it off, an `uncertain` verdict still produces
+  no direction-hint text at all, and the request sequence stays byte-for-byte
+  identical to a run without this option. A non-boolean value throws
+  `TypeError: reflection.judgeDoneAdvisory must be a boolean` at startup. The
+  pending advisory is not carried in the run snapshot, so a resume before the
+  first flush drops it.
 - At `nearLimit` (`budgetRounds >= floor(effectiveMaxRounds * 0.8)`), both
   end-turn judging and the next interception audit receive the current budget
   and extension count. The judge must additionally return `extend`,

@@ -39,8 +39,10 @@ import {
 } from "./messages.js";
 import {
   DEFAULT_REFLECTION_MIN_ROUNDS,
+  JUDGE_DONE_CONFIDENCE_THRESHOLD,
   WRAPUP_INSTRUCTION,
   isLikelyWelcomeResponse,
+  judgeDoneAdvisoryText,
   parseReflectionDecision,
 } from "./reflection.js";
 import {
@@ -327,6 +329,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   deadlineMs?: number,
  *   reflection?: {enabled?:boolean, roundJudge?:boolean, judgeIntercept?:boolean,
  *     judgeIntervalRound?:number, judgeInterceptTimeoutMs?:number,
+ *     judgeDoneAdvisory?:boolean, // #322: feed an intercepted "goal looks achieved" verdict back to the main model as a soft advisory (default false, never blocks or stops)
  *     extensionStep?:number,
  *     maxExtensions?:number, maxRoundsCap?:number, format?:"json"|"text",
  *     judge?:{provider?:object,evaluator?:object},
@@ -1263,6 +1266,16 @@ export async function runToolLoop(options) {
     ? effectiveReflection.judgeInterceptTimeoutMs
     : 30_000;
   const judgeInterceptConversationTokens = INTERCEPT_CONVERSATION_TOKENS;
+  // issue #322：中途审计判定「目标已达成」时，把评审意见回灌给主模型的开关（默认关）。
+  // 非法值（非布尔）报错沿用本文件既有选项校验的形态：`TypeError` +
+  // `<父键>.<子键> must be a boolean`（同 `partialPersistence.minBytes must be a positive integer`
+  // 与 `assembly port session.resume must be a boolean` 两条既有文案）。
+  // 开关只控「多一条软提示」：不改判定、不拦写、不提前终止。
+  if (effectiveReflection?.judgeDoneAdvisory !== undefined
+    && typeof effectiveReflection.judgeDoneAdvisory !== "boolean") {
+    throw new TypeError("reflection.judgeDoneAdvisory must be a boolean");
+  }
+  const judgeDoneAdvisoryEnabled = effectiveReflection?.judgeDoneAdvisory === true;
   // `judgeInterceptCount` / `interceptJudgeDecision` 已迁入 `runLoopState`（issue #177 刀5 F-2）：
   // 前者初值是常量 `0`、后者无初值（`undefined`），两格都已在状态对象字面量里建行（`:831`/`:832`）；本处原本两行
   // `let` 删除后，四个访问器（`:1585`–`:1596` 与 `:2376`–`:2387`）与两处裸读写点全部改读格子，键名/形状一字未动。
@@ -2432,6 +2445,7 @@ export async function runToolLoop(options) {
     judgeIntervalRound,
     judgeInterceptTimeoutMs,
     judgeInterceptConversationTokens,
+    judgeDoneAdvisoryEnabled,
     get messages() {
       return messages;
     },
@@ -2484,7 +2498,27 @@ export async function runToolLoop(options) {
   const {
     executeToolWithIntercept,
     pendingDirectionHints,
+    pendingJudgeDoneAdvisory,
   } = runSnapshotExecutor;
+
+  // issue #322：达成 advisory 的**单槽**投递。正常 flush 与 resume flush 共用本函数，两处
+  // 策略逐字一致；它**不**并入 `pendingDirectionHints` 那条 FIFO（也不参与它的 `slice(0, 2)`
+  // 计数与「另有多次方向提示已合并」）。单槽天生消灭溢出：后到的达成意见覆盖先到的，
+  // 所以不需要条数上限 / 合并去重 / 终身额度。文案不进 `tool_result`（独立 user text 消息）。
+  const flushJudgeDoneAdvisory = (roundNumber) => {
+    const text = pendingJudgeDoneAdvisory.text;
+    if (typeof text !== "string" || text === "") return;
+    pendingJudgeDoneAdvisory.text = undefined;
+    const advisoryMessage = {
+      role: "user",
+      // issue #323 刚确认的机制：引擎控制文本打 `meta.source`，`renderConversation()` 按它排除，
+      // 于是主模型看得见、judge 读不回。不新增 marker 值，也不改排除判据。
+      meta: { source: "judge-control" },
+      content: [{ type: "text", text }],
+    };
+    messages.push(advisoryMessage);
+    if (roundNumber !== undefined) messageRounds.set(advisoryMessage, roundNumber);
+  };
 
   const roundNumbersForMessages = (currentMessages) => {
     const grouped = groupIntoRounds(currentMessages).rounds;
@@ -2886,6 +2920,8 @@ export async function runToolLoop(options) {
         if (runLoopState.rounds !== undefined) messageRounds.set(hintMessage, runLoopState.rounds);
         pendingDirectionHints.length = 0;
       }
+      // resume 路径同样投达成 advisory（与主循环同一个单槽策略，issue #322）
+      flushJudgeDoneAdvisory(runLoopState.rounds);
       runLoopState.resumePendingTools = [];
     }
     if (runLoopState.resumeRunSnapshot && runLoopState.resumeTranscriptStart !== undefined) {
@@ -3103,6 +3139,8 @@ export async function runToolLoop(options) {
         messageRounds.set(hintMessage, round);
         pendingDirectionHints.length = 0;
       }
+      // 达成 advisory 与方向提示同批发出，但走自己的单槽（issue #322）
+      flushJudgeDoneAdvisory(round);
     }
     // streak 只累积 stalled 命中；出现不同签名（模型转向）才清零
     if (stallSuspicion) {
@@ -3294,7 +3332,8 @@ export async function runToolLoop(options) {
                 : { extendReason: judgeDecision.extendReason }),
               ...(judgeDecision.plan === undefined ? {} : { plan: judgeDecision.plan }),
             },
-            action: judgeDecision.done === true && judgeDecision.confidence >= 0.7
+            action: judgeDecision.done === true
+              && judgeDecision.confidence >= JUDGE_DONE_CONFIDENCE_THRESHOLD
               ? "judge_done"
               : (extensionAction ?? (judgeDecision.done === false ? "nudge" : "continue")),
             ...(judgeUsage ? { usage: judgeUsage } : {}),
@@ -3317,7 +3356,7 @@ export async function runToolLoop(options) {
 
     let action;
     if (judgeDecision?.done === true
-      && judgeDecision.confidence >= 0.7
+      && judgeDecision.confidence >= JUDGE_DONE_CONFIDENCE_THRESHOLD
       && isEndTurn) {
       action = {
         kind: "stop",

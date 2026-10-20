@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { parseReflectionDecision } from "../src/loop/reflection.js";
@@ -672,4 +673,282 @@ test("#323 extend 续跑文本对主模型可见、但不进真实 judge 请求�
     "extend 续跑文本必须仍进主模型上下文",
   );
   assert.equal(continuation.meta?.source, "judge-control");
+});
+
+// --- issue #322：中途审计判定「目标已达成」时把评审意见回灌给主模型（单槽，默认关）---
+
+import { JUDGE_DONE_CONFIDENCE_THRESHOLD, directionHintText, judgeDoneAdvisoryText } from "../src/loop/reflection.js";
+
+const ADVISORY_MARK = "附评审意见";
+
+function judgeDoneResponse(confidence, reason = "已按用户要求改完并通过测试") {
+  return judgeResponse({
+    done: true,
+    confidence,
+    reason,
+    evidence: "写文件 + 测试通过",
+    direction: "on_track",
+    directionReason: "方向正确",
+  });
+}
+
+function toolResponseWithBlocks(round, count) {
+  return {
+    content: Array.from({ length: count }, (_value, index) => ({
+      type: "tool_use",
+      id: `t-${round}-${index}`,
+      name: `work-${round}-${index}`,
+      input: { round, index },
+    })),
+    stopReason: "tool_use",
+  };
+}
+
+/**
+ * 同一份 fixture 跑两遍：`advisory` 决定 `reflection.judgeDoneAdvisory` 开不开。
+ * `judgeScript` 可以传函数（按调用序号造脚本），便于「第二次审计换置信度」这类形状。
+ */
+async function runAdvisoryCase({ advisory, judgeScript, providerScript, maxRounds = 6 }) {
+  const provider = createFakeProvider(providerScript
+    ?? [
+      toolResponse(1),
+      toolResponse(2),
+      toolResponse(3),
+      { content: [{ type: "text", text: "最终结论" }], stopReason: "end_turn" },
+    ]);
+  const judge = createFakeProvider(typeof judgeScript === "function"
+    ? judgeScript()
+    : judgeScript ?? [judgeDoneResponse(0.7)]);
+  const executed = [];
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "把工单做完",
+    executeTool: async (input) => {
+      executed.push(input?.block?.id ?? input?.id ?? "tool");
+      return "ok";
+    },
+    maxRounds,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: false,
+      judgeIntercept: true,
+      judgeIntervalRound: 1,
+      ...(advisory === undefined ? {} : { judgeDoneAdvisory: advisory }),
+      judge: { provider: judge },
+    },
+  });
+  return { provider, judge, result, executed };
+}
+
+const mainRequestText = (request) => JSON.stringify(request.messages);
+// 同一份 fixture 跑两遍时 `erix.toolCallKey` 每次 run 都不同（它不是请求内容的真值），
+// `erix.durationMs` 是**墙钟耗时**（工具真跑了多久，同一台机器 0ms/1ms 会随 node 版本与负载变——
+// CI 上 node 24 就实测到同一 fixture 一边 0 一边 1，把「逐字不变」这条打成假红）。两者都不是
+// 「请求内容」的真值 ⇒ 逐字对账前归一化掉。其余字段一个都不许归一化（否则「逐字不变」就变成永真）。
+// advisory 是独立的 user text 消息，不带这两个字段 ⇒ 归一化不会把它抹掉（对面有专门的正向钉子）。
+const requestFingerprint = (request) => JSON.stringify(request)
+  .replace(/tc_[0-9a-f]{6,}/g, "tc_normalized")
+  .replace(/"durationMs":\d+/g, '"durationMs":0');
+const advisoryHits = (provider) => provider.requests
+  .filter((request) => mainRequestText(request).includes(ADVISORY_MARK))
+  .map((request) => request.messages.filter((message) => message?.meta?.source === "judge-control"
+    && JSON.stringify(message.content).includes(ADVISORY_MARK)));
+
+test("#322 共享阈值常量：0.7 只剩一处真值，orchestrator 不再写内联字面量", () => {
+  assert.equal(JUDGE_DONE_CONFIDENCE_THRESHOLD, 0.7);
+  const orchestratorSource = readFileSync(new URL("../src/loop/orchestrator.js", import.meta.url), "utf8");
+  assert.doesNotMatch(orchestratorSource, /confidence >= 0\.7/,
+    "两处 judge 门槛必须引用 JUDGE_DONE_CONFIDENCE_THRESHOLD（工单 §2.1）");
+  assert.equal(orchestratorSource.match(/JUDGE_DONE_CONFIDENCE_THRESHOLD/g).length >= 2, true,
+    "emitJudge 的 action 分类与 judge_done 终止门必须都引用同一个常量");
+});
+
+test("#322 advisory 文案：未独立核验 + 不要新增工作 + 只补必要项，禁词缺席，限幅生效", () => {
+  const text = judgeDoneAdvisoryText("评审给的理由");
+  assert.match(text, /未独立核验/);
+  assert.match(text, /不要新增工作/);
+  assert.match(text, /只补齐必要项/);
+  assert.doesNotMatch(text, /已核验|已验证/, "达成是评审的主观判断，不许被写成核验结论");
+  assert.equal(text.length <= 400, true);
+  const long = judgeDoneAdvisoryText("理".repeat(1_000));
+  assert.equal(long.length <= 400, true, "整条 advisory 必须 <=400 字符");
+  const reasonPart = long.match(/（评审理由：([^）]*)）/)[1];
+  assert.equal(reasonPart.length, 200, "reason 必须截到 200 字符");
+  assert.doesNotMatch(judgeDoneAdvisoryText(""), /（评审理由：/, "没有 reason 就不许留空括号");
+});
+
+test("#322 uncertain 方向提示：关闭时仍是空串（逐字不变），开启时才是中性文案", () => {
+  assert.equal(directionHintText("uncertain", "评审说还看不准"), "",
+    "关闭 judgeDoneAdvisory 时 uncertain 必须继续返回空串（工单 §2.2 的逐字不变，裁决 B）");
+  assert.equal(directionHintText("uncertain", ""), "");
+  const neutral = directionHintText("uncertain", "评审说还看不准", true);
+  assert.match(neutral, /^（附方向提示：评审说还看不准 —— /u);
+  assert.doesNotMatch(neutral, /当前路线可能偏|换思路\/方法/u,
+    "uncertain 不许被说成「路线可能偏」（会诱导模型多试路线）");
+  assert.equal(
+    directionHintText("off_track", "连续反复调试同一实现细节"),
+    "（附方向提示：连续反复调试同一实现细节 —— 当前路线可能偏，可考虑换思路/方法）",
+  );
+  assert.equal(directionHintText("on_track", "方向正确"), "");
+  assert.equal(directionHintText("on_track", "方向正确", true), "", "开启开关也不许让 on_track 产文本");
+  assert.equal(directionHintText("off_track", "连续反复调试同一实现细节", true),
+    "（附方向提示：连续反复调试同一实现细节 —— 当前路线可能偏，可考虑换思路/方法）",
+    "off_track 的文案不许随开关改变");
+});
+
+test("#322 开启且 done=true / confidence=0.7 ⇒ advisory 原文进下一次主模型请求；0.699 与解析失败 ⇒ 不进", async () => {
+  const hit = await runAdvisoryCase({ advisory: true, judgeScript: [judgeDoneResponse(0.7)] });
+  const hits = advisoryHits(hit.provider);
+  assert.equal(hits.length >= 1, true, "advisory 必须出现在达成审计之后的主模型请求里");
+  assert.equal(hits[0].length, 1, "一条达成意见必须是一条独立 user text 消息，不进 tool_result");
+  assert.equal(hits[0][0].content[0].text, judgeDoneAdvisoryText("已按用户要求改完并通过测试"));
+
+  const lowConf = await runAdvisoryCase({ advisory: true, judgeScript: [judgeDoneResponse(0.699)] });
+  assert.deepEqual(advisoryHits(lowConf.provider), [], "confidence=0.699 低于阈值，不许生成 advisory");
+
+  const unparsable = await runAdvisoryCase({
+    advisory: true,
+    judgeScript: [{ content: [{ type: "text", text: "评审什么也没说清楚" }] }],
+  });
+  assert.deepEqual(advisoryHits(unparsable.provider), [], "judge 解析失败必须降级，不许生成 advisory");
+});
+
+test("#322 advisory 对主模型可见、但不进真实 judge 请求（照 #323 的形状，摘掉 meta.source 必须红）", async () => {
+  // 4 个工具轮 + 每次工具都审计 ⇒ advisory 在某一轮末尾 flush 之后**还有**真实的 judge 调用，
+  // 「judge 读不回」这条断言才有判别力（否则摘掉 meta.source 也照样绿，反证不成立）。
+  const { provider, judge } = await runAdvisoryCase({
+    advisory: true,
+    providerScript: [
+      toolResponse(1), toolResponse(2), toolResponse(3), toolResponse(4),
+      { content: [{ type: "text", text: "最终结论" }], stopReason: "end_turn" },
+    ],
+    judgeScript: [
+      judgeDoneResponse(0.7, "达成理由探针 #322-advisory-probe"),
+      judgeDoneResponse(0.72, "第二次达成理由 #322-advisory-probe"),
+      judgeDoneResponse(0.74, "第三次达成理由 #322-advisory-probe"),
+    ],
+    maxRounds: 8,
+  });
+  assert.equal(judge.requests.length >= 2, true,
+    "advisory flush 之后必须还有至少一次真实 judge 调用，否则「judge 读不回」是空断言");
+  assert.ok(
+    provider.requests.some((request) => mainRequestText(request).includes("#322-advisory-probe")),
+    "advisory（含 reason）必须进主模型上下文",
+  );
+  for (const [index, request] of judge.requests.entries()) {
+    assert.ok(
+      !mainRequestText(request).includes(ADVISORY_MARK),
+      `第 ${index + 1} 次 judge 请求读回了 advisory 原文（renderConversation 的 judge-control 排除被改坏）`,
+    );
+    assert.ok(
+      !mainRequestText(request).includes("#322-advisory-probe"),
+      `第 ${index + 1} 次 judge 请求读回了 engine 控制文本`,
+    );
+  }
+});
+
+test("#322 单槽：同一轮多次 done=true 只投一条 advisory（覆盖，不追加、不计数）", async () => {
+  const { provider, judge } = await runAdvisoryCase({
+    advisory: true,
+    providerScript: [
+      toolResponseWithBlocks(1, 7),
+      { content: [{ type: "text", text: "最终结论" }], stopReason: "end_turn" },
+    ],
+    judgeScript: [
+      judgeDoneResponse(0.71, "第一次达成判定"),
+      judgeDoneResponse(0.81, "第二次达成判定"),
+    ],
+    maxRounds: 4,
+  });
+  assert.ok(judge.requests.length >= 2, "同一轮里必须真打过至少两次审计，才有「同轮多次达成」的形状");
+  const advisoryMessages = provider.requests.at(-1).messages
+    .filter((message) => message?.meta?.source === "judge-control"
+      && JSON.stringify(message.content).includes(ADVISORY_MARK));
+  assert.equal(advisoryMessages.length, 1, "单槽：同轮多次达成只留一条");
+  assert.equal(advisoryMessages[0].content.length, 1, "覆盖语义：不许把三条拼成一条多 block 消息");
+  assert.match(advisoryMessages[0].content[0].text, /第二次达成判定/, "后到的达成意见覆盖先到的");
+  assert.doesNotMatch(advisoryMessages[0].content[0].text, /第一次达成判定/);
+});
+
+test("#322 软提示不是硬停止：termination / tool_result / usage / 工具执行次数都不因 advisory 改变", async () => {
+  const script = () => [judgeDoneResponse(0.7), judgeDoneResponse(0.7)];
+  const on = await runAdvisoryCase({ advisory: true, judgeScript: script(), maxRounds: 8 });
+  const off = await runAdvisoryCase({ advisory: false, judgeScript: script(), maxRounds: 8 });
+  assert.equal(on.result.termination.reason, off.result.termination.reason);
+  assert.equal(on.result.termination.reason, "end_turn", "达成 advisory 不许把 run 改写成 judge_done");
+  assert.equal(on.result.rounds, off.result.rounds);
+  assert.deepEqual(on.result.usage, off.result.usage);
+  assert.equal(on.executed.length, off.executed.length);
+  assert.equal(on.executed.length, 3, "三次工具必须照跑（advisory 不拦写、不提前终止）");
+  const onResults = on.provider.requests.map((request) => request.messages
+    .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+    .filter((block) => block?.type === "tool_result").length);
+  const offResults = off.provider.requests.map((request) => request.messages
+    .flatMap((message) => Array.isArray(message.content) ? message.content : [])
+    .filter((block) => block?.type === "tool_result").length);
+  assert.deepEqual(onResults, offResults, "tool_result 事实链必须逐字不变");
+  assert.equal(advisoryHits(off.provider).length, 0, "关闭时一条 advisory 都不许出现");
+});
+
+test("#322 关闭时逐字不变：不开子键 与 显式 false 的 provider 请求序列完全一致", async () => {
+  const script = () => [judgeDoneResponse(0.9), judgeDoneResponse(0.9), judgeDoneResponse(0.9)];
+  const implicit = await runAdvisoryCase({ advisory: undefined, judgeScript: script() });
+  const explicit = await runAdvisoryCase({ advisory: false, judgeScript: script() });
+  assert.deepEqual(
+    explicit.provider.requests.map(requestFingerprint),
+    implicit.provider.requests.map(requestFingerprint),
+    "宿主不开子键 ⇒ 发给 provider 的请求序列必须逐字相同",
+  );
+  assert.equal(explicit.provider.requests.length, implicit.provider.requests.length);
+  assert.equal(
+    requestFingerprint({ messages: explicit.result.messages }),
+    requestFingerprint({ messages: implicit.result.messages }),
+    "宿主不开子键 ⇒ run 结果的消息序列必须逐字相同（除每次 run 都不同的 toolCallKey）",
+  );
+  assert.deepEqual(advisoryHits(explicit.provider), []);
+  assert.deepEqual(advisoryHits(implicit.provider), []);
+});
+
+test("#322 开启时 uncertain 才出中性提示；关闭时该注入点一个字节都不动（off_track 注入时机不变）", async () => {
+  const uncertainScript = () => [{
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        done: false, confidence: 0.6, reason: "看不准", evidence: "证据不足",
+        direction: "uncertain", directionReason: "证据不足",
+      }),
+    }],
+    stopReason: "end_turn",
+  }];
+  const off = await runAdvisoryCase({ advisory: false, judgeScript: uncertainScript() });
+  assert.equal(
+    off.provider.requests.some((request) => mainRequestText(request).includes("附方向提示")),
+    false,
+    "关闭时 uncertain 不得产生任何方向提示消息（逐字不变）",
+  );
+  const on = await runAdvisoryCase({ advisory: true, judgeScript: uncertainScript() });
+  const hint = on.provider.requests.at(-1).messages
+    .filter((message) => message?.meta?.source === "judge-control"
+      && JSON.stringify(message.content).includes("附方向提示"));
+  assert.equal(hint.length, 1, "开启后 uncertain 走中性文案，且仍是一条独立 user text 消息");
+  assert.doesNotMatch(hint[0].content[0].text, /当前路线可能偏/);
+  assert.equal(
+    on.executed.length - 1, off.executed.length - 1,
+    "中性文案不改变工具执行次数（拦截规则一个字没动）",
+  );
+});
+
+test("#322 非法值报错：reflection.judgeDoneAdvisory 非布尔 ⇒ 启动期 TypeError", async () => {
+  await assert.rejects(
+    runToolLoop({
+      provider: createFakeProvider([{ content: [{ type: "text", text: "x" }] }]),
+      initialUserMessage: "任务",
+      executeTool: async () => "ok",
+      maxRounds: 2,
+      reflection: { enabled: true, judgeDoneAdvisory: "yes" },
+    }),
+    (error) => error instanceof TypeError
+      && error.message === "reflection.judgeDoneAdvisory must be a boolean",
+  );
 });
