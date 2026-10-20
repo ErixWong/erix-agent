@@ -349,4 +349,136 @@ export function transcriptStoreContract(label, createStore) {
         `loadByDedupKey(${probe}) 与全量 load 的 ?? 判据结论不一致`);
     }
   });
+
+  // ---- issue #326 事实①：同 key 的幂等/冲突判据 -------------------------------------------
+  // 修前：`appendRound` 只看 key——同 key 带不同 payload 也被**静默接受**（第二次的正文既
+  // 不落盘也不报错，memory 侧 `records.some(...)` 直接 return、file 侧 `entry.keys.has(key)`
+  // 直接 return false）。修后：同 key + 同 payload → 幂等 no-op（与修前一致）；同 key + 异
+  // payload → 抛带 key 与两份 payload 指纹的冲突错（`code = "dedup_payload_conflict"`）。
+  // 两侧误判方向不是对称的：**把本来幂等的重放误判成冲突比漏判更糟**，所以下面把
+  // 「什么不算冲突」（字段顺序、顶层 ts/round）钉得比「什么算冲突」更死。
+  const dedupRecord = (overrides) => ({
+    round: 4,
+    ts: "2026-08-29T00:04:00.000Z",
+    dedupKey: "dedup-run:input:m1",
+    roundKey: "dedup-run:input:m1",
+    messages: [{ role: "user", content: [{ type: "text", text: "同一个输入轮" }] }],
+    ...overrides,
+  });
+  const isDedupConflict = (error) => error?.code === "dedup_payload_conflict"
+    && typeof error.key === "string" && error.key.length > 0
+    && /^sha256:[0-9a-f]{24}$/u.test(String(error.existingFingerprint))
+    && /^sha256:[0-9a-f]{24}$/u.test(String(error.incomingFingerprint))
+    && String(error.existingFingerprint) !== String(error.incomingFingerprint)
+    && String(error.message).includes(String(error.key));
+
+  test(`${label}: 同 dedupKey 重放同 payload 是幂等 no-op（字段顺序不算差异）`, async () => {
+    const store = await createStore();
+    const first = dedupRecord();
+    await store.appendRound("dedup-run", first);
+    // 逐字段同值但插入顺序不同（宿主/另一条代码路径重建同一条记录的真实形状）
+    await store.appendRound("dedup-run", {
+      messages: first.messages,
+      roundKey: first.roundKey,
+      dedupKey: first.dedupKey,
+      ts: first.ts,
+      round: first.round,
+    });
+
+    assert.deepEqual(await store.load("dedup-run"), [first]);
+  });
+
+  test(`${label}: 崩溃重跑形状（顶层 ts/round 漂了）仍判幂等，不得误判成冲突`, async () => {
+    const store = await createStore();
+    const first = dedupRecord();
+    await store.appendRound("dedup-run", first);
+    // appendUserTurn 重跑同一 messageId 时就是这形状：dedupKey 稳、正文稳，
+    // 但 ts = new Date() 而 round = store 现有最大 round，两个都会漂。误判成冲突
+    // 会把「可安全重复的预写」变成抛错，比静默丢弃更砸契约。
+    await store.appendRound("dedup-run", dedupRecord({
+      round: 9,
+      ts: "2026-09-01T00:00:00.000Z",
+    }));
+
+    const loaded = await store.load("dedup-run");
+    assert.equal(loaded.length, 1, "幂等重放不得落第二行");
+    assert.deepEqual(loaded[0], first, "先落的那条是事实，后到的只被当作重放");
+  });
+
+  test(`${label}: 同 dedupKey 异 payload 明确报冲突，既不覆盖也不静默丢弃`, async () => {
+    const store = await createStore();
+    const first = dedupRecord();
+    await store.appendRound("dedup-run", first);
+
+    await assert.rejects(
+      store.appendRound("dedup-run", dedupRecord({
+        messages: [{ role: "user", content: [{ type: "text", text: "同一 key 却写了另一段正文" }] }],
+      })),
+      (error) => isDedupConflict(error) && error.differingFields.includes("messages"),
+      "冲突错必须可判定：code + key + 两份 payload 指纹 + 差异字段",
+    );
+
+    // 不覆盖也不丢：盘上仍是原行，且原行内容一字未改
+    assert.deepEqual(await store.load("dedup-run"), [first]);
+    // 冲突不污染 store：同 payload 重放照旧幂等，新 key 照旧能写
+    await store.appendRound("dedup-run", dedupRecord());
+    await store.appendRound("dedup-run", dedupRecord({
+      dedupKey: "dedup-run:input:m2",
+      roundKey: "dedup-run:input:m2",
+    }));
+    assert.equal((await store.load("dedup-run")).length, 2);
+  });
+
+  test(`${label}: 数组顺序与嵌套字段是 payload 的一部分（顺序换了就是冲突）`, async () => {
+    const store = await createStore();
+    await store.appendRound("dedup-run", {
+      round: 5,
+      dedupKey: "dedup-run:engine:round:5",
+      messages: [
+        { role: "assistant", content: [{ type: "text", text: "先" }] },
+        { role: "user", content: [{ type: "text", text: "后" }] },
+      ],
+    });
+
+    await assert.rejects(
+      store.appendRound("dedup-run", {
+        round: 5,
+        dedupKey: "dedup-run:engine:round:5",
+        messages: [
+          { role: "user", content: [{ type: "text", text: "后" }] },
+          { role: "assistant", content: [{ type: "text", text: "先" }] },
+        ],
+      }),
+      isDedupConflict,
+      "消息顺序是语义，不得当作噪声归一掉",
+    );
+  });
+
+  test(`${label}: 宿主自有未知字段也算 payload（多一个字段就是冲突）`, async () => {
+    const store = await createStore();
+    await store.appendRound("dedup-run", dedupRecord());
+
+    await assert.rejects(
+      store.appendRound("dedup-run", dedupRecord({ hostLedger: { written: true } })),
+      (error) => isDedupConflict(error) && error.differingFields.includes("hostLedger"),
+    );
+  });
+
+  test(`${label}: 回落到 roundKey 与隐式 <runId>:round:<n> 键时判据一致`, async () => {
+    const store = await createStore();
+    // 只有 roundKey（dedupKey 缺失）——去重键回落到 roundKey，冲突判据不得退场
+    await store.appendRound("roundkey-run", { round: 2, roundKey: "roundkey-run:round:2", messages: ["a"] });
+    await assert.rejects(
+      store.appendRound("roundkey-run", { round: 2, roundKey: "roundkey-run:round:2", messages: ["b"] }),
+      (error) => isDedupConflict(error) && error.key === "roundkey-run:round:2",
+    );
+    // 两个键都缺失——store 自己造的 <runId>:round:<n> 同受约束
+    await store.appendRound("implicit-run", { round: 7, messages: [{ role: "user", content: [] }] });
+    await store.appendRound("implicit-run", { round: 7, messages: [{ role: "user", content: [] }] });
+    assert.equal((await store.load("implicit-run")).length, 1, "隐式键的同 payload 重放仍幂等");
+    await assert.rejects(
+      store.appendRound("implicit-run", { round: 7, messages: [{ role: "user", content: ["x"] }] }),
+      (error) => isDedupConflict(error) && error.key === "implicit-run:round:7",
+    );
+  });
 }

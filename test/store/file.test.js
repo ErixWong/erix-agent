@@ -367,7 +367,7 @@ test("file: appendRound 无 LF 尾部同 key 不重复写入（幂等）", async
   }
 });
 
-test("file: appendRound 按 dedupKey 幂等，重复轮次不重复写入", async () => {
+test("file: appendRound 按 dedupKey 幂等，同 payload 重放不重复写入", async () => {
   const root = await makeTempDir();
   try {
     const store = createFileTranscriptStore({ dir: root });
@@ -377,11 +377,49 @@ test("file: appendRound 按 dedupKey 幂等，重复轮次不重复写入", asyn
       messages: [{ role: "assistant", content: [{ type: "text", text: "once" }] }],
     };
     await store.appendRound("run", record);
+    // issue #326 事实①：同 key 的幂等重放只覆盖**同 payload**（这里连字段顺序都换了，
+    // 仍不得判冲突）；旧用例拿异 payload 当幂等样本，钉的是被修掉的静默丢弃。
     await store.appendRound("run", {
-      ...record,
-      messages: [{ role: "assistant", content: [{ type: "text", text: "duplicate" }] }],
+      messages: record.messages,
+      dedupKey: record.dedupKey,
+      round: record.round,
     });
 
+    assert.deepEqual(await store.load("run"), [record]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("file: appendRound 同 dedupKey 异 payload 明确报冲突（不覆盖、不静默丢、不落新行）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const record = {
+      round: 3,
+      dedupKey: "run:round:3",
+      messages: [{ role: "assistant", content: [{ type: "text", text: "once" }] }],
+    };
+    await store.appendRound("run", record);
+
+    await assert.rejects(
+      store.appendRound("run", {
+        ...record,
+        messages: [{ role: "assistant", content: [{ type: "text", text: "different" }] }],
+      }),
+      (error) => error.code === "dedup_payload_conflict"
+        && error.key === "run:round:3"
+        && /^sha256:[0-9a-f]{24}$/u.test(error.existingFingerprint)
+        && /^sha256:[0-9a-f]{24}$/u.test(error.incomingFingerprint)
+        && error.existingFingerprint !== error.incomingFingerprint
+        && error.differingFields.includes("messages"),
+    );
+
+    // 既没覆盖也没丢弃：盘上仍是那一条，且冲突后同 payload 重放照常幂等
+    assert.deepEqual(await store.load("run"), [record]);
+    const transcript = await readFile(join(root, "run.jsonl"), "utf8");
+    assert.equal(transcript.trim().split("\n").length, 1, "冲突那次不得往 journal 里落新行");
+    await store.appendRound("run", { ...record });
     assert.deepEqual(await store.load("run"), [record]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -546,12 +584,36 @@ test("file#160: 缓存预热后幂等仍成立（同 key 二次 append 仍只 1 
     await store.appendRound("run", record);
     // load 顺手填充缓存（issue #160 设计点 1），二次 append 走缓存命中路径
     await store.load("run");
-    await store.appendRound("run", { ...record, messages: [{ role: "user", content: [] }] });
+    await store.appendRound("run", { ...record });
     assert.deepEqual(await store.load("run"), [record]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("file#160+#326: 缓存命中路径上也报冲突（正文取盘上那份，不是缓存副本）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    const record = { round: 1, dedupKey: "run:input:m1", messages: [] };
+    await store.appendRound("run", record);
+    await store.load("run"); // 预热：下一次同 key append 走缓存命中路径
+    // 盘上那份被外部改写成正文不同的版本——冲突判定必须拿盘上内容比，而不是拿缓存里的旧值
+    await writeFile(
+      join(root, "run.jsonl"),
+      `${JSON.stringify({ ...record, messages: [{ role: "user", content: [] }] })}\n`,
+      "utf8",
+    );
+    await assert.rejects(store.appendRound("run", record), /dedup conflict/u);
+    assert.equal(errorLineCount(await readFile(join(root, "run.jsonl"), "utf8")), 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function errorLineCount(text) {
+  return text.trim().split("\n").length;
+}
 
 test("file#160: 跨实例写靠 (size,mtimeMs) 失效检测兜底（同 key no-op、新 key 正常落）", async () => {
   const root = await makeTempDir();
