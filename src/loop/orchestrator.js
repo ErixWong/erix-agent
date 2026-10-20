@@ -2047,6 +2047,33 @@ export async function runToolLoop(options) {
     }
   };
 
+  // issue #326（B1）：**引擎自产文本的「产生即入账」**。
+  // 轮记录只写 `messages.slice(roundStart)`，而 `roundStart` 在下一次进圈时重新取 `messages.length`
+  // （见上方圈顶）⇒ **轮记录落盘之后**才 push 进 `messages` 的引擎消息永远落不进任何一条记录：
+  // judge 评审意见（nudge）、扩轮续跑提示、finalGuard revise 意见、强制收尾指令与终稿 assistant。
+  // 后果是「模型见过、档案里没有」：`store.load()` 的原始记录里 0 条，追问/审计/resume 都读不到
+  // 引擎自己说过什么（探针实测 main 97bd957：messages 有、journal 无）。
+  // 这里给这批消息开一条**引擎命名空间的补充记录**，在产生的那一刻写入：
+  //   - 不新增 record kind、不新增消息标记字段：形状仍是既有 RoundRecord + 普通 message
+  //     （注入内容本身带 #323 的 `meta.source === "judge-control"`，本轮不新造 marker）；
+  //   - dedupKey 沿用 `:resume` 先例（引擎命名空间 + 轮号 + 槽位名）⇒ 宿主用默认键写过同行号的行
+  //     不会被去重丢掉，同轮同槽位重放幂等（崩溃后重跑不产生第二行）；
+  //   - 计入 `persistedTranscriptLength`：让 resume 快照锚点继续等于「journal 已落盘的消息总数」，
+  //     不再把这条已落盘的消息当成「快照里没存过」而重复入账。
+  const appendEngineMessagesToTranscript = async (produced, roundNumber, slot) => {
+    const messagesToJournal = Array.isArray(produced) ? produced : [produced];
+    if (messagesToJournal.length === 0) return false;
+    const persisted = await persist("appendRound", runId, {
+      round: roundNumber,
+      roundKey: `${String(runId)}:round:${String(roundNumber)}`,
+      dedupKey: `${String(runId)}:engine:round:${String(roundNumber)}:control:${String(slot)}`,
+      messages: cloneState(messagesToJournal),
+      ts: new Date().toISOString(),
+    });
+    if (persisted) runLoopState.persistedTranscriptLength += messagesToJournal.length;
+    return persisted;
+  };
+
   if (partialPersistenceConfig !== undefined && hasRunSnapshotStore) {
     const { intervalMs, minBytes } = partialPersistenceConfig;
     const maxTimerDelay = 2_147_483_647;
@@ -2306,6 +2333,25 @@ export async function runToolLoop(options) {
     forceFinalIfNeeded,
     finish,
   } = terminationManager;
+
+  // issue #326（B1）：跑一次强制收尾，并把**它新产生的那几条消息**当场入账。
+  // `forceFinalIfNeeded`（src/loop/termination.js）往 `ctx.messages` 里 push 两条：【强制收尾】指令
+  //（纯文本 `judge-control`）与终稿 assistant。它只在「本轮记录已落盘之后」跑（`stop` 分支与出圈
+  // 收尾两条路都是），而轮记录写的是 `messages.slice(roundStart)`、`roundStart` 下一轮重新取值
+  // ⇒ 这两条不会出现在任何一条既有记录里：终稿是**终局正文**，宿主从 `store.load()` 里拼不出来。
+  // 为什么入账口放在调用点而不是 termination.js 内部：那个模块不持有 store、不碰 persist（journal
+  // 写入一直是 orchestrator 的职责面），而它又被 #271 的 readFile 行容量锚钉在 ±2% 内（HEAD 已用
+  // 到 +1.5%，再加不下一行注释）。代价：崩溃正好落在收尾那一次 provider 调用里时，这两条要等
+  // resume 重跑收尾时才会入账——那个窗口里本来也没有任何消息落盘（resume 靠 run snapshot 重建现场）。
+  const forceFinalAndJournal = async (reason) => {
+    const producedFrom = messages.length;
+    await forceFinalIfNeeded(reason);
+    await appendEngineMessagesToTranscript(
+      messages.slice(producedFrom),
+      runLoopState.rounds,
+      "forced-final",
+    );
+  };
 
   const callRoundJudge = async (round, currentL0, { timeoutMs, conversationBudgetTokens } = {}) => {
     const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
@@ -3489,6 +3535,8 @@ export async function runToolLoop(options) {
       };
       messages.push(continuationMessage);
       messageRounds.set(continuationMessage, round);
+      // issue #326（B1）：本轮记录已在上面落盘，这条评审意见不会被任何后续轮记录覆盖，当场入账。
+      await appendEngineMessagesToTranscript(continuationMessage, round, "judge-nudge");
       if (action.resetNoToolStreak) governorState.noToolStreak = 0;
       if (action.wrapUpNudged === true) governorState.wrapUpNudged = true;
       continue;
@@ -3507,6 +3555,8 @@ export async function runToolLoop(options) {
       };
       messages.push(continuationMessage);
       messageRounds.set(continuationMessage, round);
+      // issue #326（B1）：同 nudge——轮尾注入的续跑提示必须在产生的那一刻入账。
+      await appendEngineMessagesToTranscript(continuationMessage, round, "extend");
       continue;
     }
     if (action.kind === "stop") {
@@ -3516,7 +3566,7 @@ export async function runToolLoop(options) {
       // → fail()：由它产出带 {usage, rounds, partial:true} 的 aborted 终局（#180 载荷语义不变）。
       throwIfAborted(signal);
       const reason = terminationReasonForAction(action, continuationExhausted);
-      await forceFinalIfNeeded(reason);
+      await forceFinalAndJournal(reason);
       if (
         typeof finalGuard === "function"
         && FINAL_GUARD_TERMINATION_REASONS.has(reason)
@@ -3568,6 +3618,8 @@ export async function runToolLoop(options) {
           };
           messages.push(continuationMessage);
           messageRounds.set(continuationMessage, round);
+          // issue #326（B1）：finalGuard revise 的意见同样是轮记录落盘后才注入的引擎文本。
+          await appendEngineMessagesToTranscript(continuationMessage, round, "guard-revise");
           continue;
         }
       }
@@ -3601,7 +3653,7 @@ export async function runToolLoop(options) {
   // 「宿主回调错误不杀 run」的统一口径一致（docs/host-consumer-contract*.md）。
   try {
     throwIfAborted(signal);
-    await forceFinalIfNeeded("max_rounds_cap");
+    await forceFinalAndJournal("max_rounds_cap");
     if (typeof finalGuard !== "function") return finish("max_rounds_cap");
     const guardDecision = await callFinalGuard("max_rounds_cap");
     if (guardDecision.action === "error") return finish("max_rounds_cap");

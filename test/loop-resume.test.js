@@ -1232,7 +1232,10 @@ test("resumed session gets its own round budget and persists the continuation ro
 
   // transcript 完整：追问在案、续接轮记录在案且含 response 文本，轮号递增不撞号
   const records = await store.load(runId);
-  assert.deepEqual(records.map((record) => record.round), [0, 1, 2, 2, 3, 4]);
+  // issue #326（B1）多出的那一条 round=2 是引擎的**强制收尾补充记录**（指令 + 终稿 assistant）：
+  // 它产生时 round 2 的轮记录早已落盘，不当场补一笔就永远不会进档案。
+  // 顺序：引擎轮记录 → 收尾补充记录（同轮号，独立 dedupKey）→ 宿主追问行 → 续接轮。
+  assert.deepEqual(records.map((record) => record.round), [0, 1, 2, 2, 2, 3, 4]);
   const flatMessages = records.flatMap((record) => record.messages ?? []);
   assert.equal(
     flatMessages.filter((message) => (
