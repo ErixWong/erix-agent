@@ -743,8 +743,13 @@ async function runAdvisoryCase({ advisory, judgeScript, providerScript, maxRound
 
 const mainRequestText = (request) => JSON.stringify(request.messages);
 // 同一份 fixture 跑两遍时 `erix.toolCallKey` 每次 run 都不同（它不是请求内容的真值），
-// 逐字对账前把它归一化掉；其余字段一个都不许归一化（否则「逐字不变」就变成永真）。
-const requestFingerprint = (request) => JSON.stringify(request).replace(/tc_[0-9a-f]{6,}/g, "tc_normalized");
+// `erix.durationMs` 是**墙钟耗时**（工具真跑了多久，同一台机器 0ms/1ms 会随 node 版本与负载变——
+// CI 上 node 24 就实测到同一 fixture 一边 0 一边 1，把「逐字不变」这条打成假红）。两者都不是
+// 「请求内容」的真值 ⇒ 逐字对账前归一化掉。其余字段一个都不许归一化（否则「逐字不变」就变成永真）。
+// advisory 是独立的 user text 消息，不带这两个字段 ⇒ 归一化不会把它抹掉（对面有专门的正向钉子）。
+const requestFingerprint = (request) => JSON.stringify(request)
+  .replace(/tc_[0-9a-f]{6,}/g, "tc_normalized")
+  .replace(/"durationMs":\d+/g, '"durationMs":0');
 const advisoryHits = (provider) => provider.requests
   .filter((request) => mainRequestText(request).includes(ADVISORY_MARK))
   .map((request) => request.messages.filter((message) => message?.meta?.source === "judge-control"
