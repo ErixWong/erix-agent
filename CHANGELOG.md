@@ -3,6 +3,15 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Fixed
+
+- **内置 store 的 `appendRound` 不再把「同 `dedupKey` 携不同 payload」静默接受（issue #326 开工顺序第 1 步；持久化真相模型审计只留下的四条事实里的①）。** 病根：幂等判据只看 key——`src/store/memory.js` 里是 `records.some((existing) => recordKey(runId, existing) === key)` 命中就 `return`，`src/store/file.js` 里是 `entry.keys.has(key)` 命中就 `return false`（那份 issue #160 的进程内缓存只有 `Set<key>`，本来就拿不出 payload）。于是第二次的 payload **既不落盘也不报错**：续接轮被同 key 去重掉了、同一消息 id 换了正文重预写，引擎与宿主都看不到任何信号。
+  - 修后的语义：**同 key + 同 payload** ⇒ 幂等 no-op（不重复写入，返回与旧行为一致——`appendRound` 仍是 `Promise<void>`，它不新增返回值）；**同 key + 异 payload** ⇒ 明确冲突：抛 `TranscriptDedupConflictError`，`code = "dedup_payload_conflict"`（可判定判据，没有 `instanceof` 也能分流，先例是 `NotesStoreError`，`src/store/notes-port.js`），消息与属性里都带 `runId`、key、两份 payload 指纹（`sha256:<24 hex>`）以及顶层差异字段名；**既不覆盖也不丢弃**——既有记录字节不动，也不往 journal 里落新行，事后拿原 payload 重放照旧幂等。
+  - **判据只有一份实现**：新增内部模块 `src/store/transcript-dedup.js`（`src/assembly-validators.js` / `src/store/notes-port.js` 同模式的「共享语义，不发公共面」），把去重键 `recordKey`（原本两个 store 各抄一份）与 payload 指纹、冲突错造错一起收在那里，两个内置 store 不可能各自漂。两个 store 都是**先确认命中、再拿真正文比对**：memory 侧用内存里那条，file 侧在命中路径上现扫（`findRecordByKey`）——比对永远拿真实持久化结果，不拿缓存副本，所以缓存只可能把「有没有命中」判错，不会把 payload 内容判错；代价是命中路径多一次流式扫（miss 热路径一个字节不多花，issue #160 的 O(1) 不打折）。
+  - **同 payload 的口径是文档化摘要，不是逐字节相等**：对记录的规范化 JSON 取 `sha256`（对象键逐层排序——字段顺序不是语义；数组保序——消息顺序**是**语义；`undefined`/函数/symbol 成员按 `JSON.stringify` 的同样取舍丢掉，这最后一条是「内存里的活对象」与「JSONL 读回来的同一行」同指纹的前提）。先剥掉四个**顶层**字段：`dedupKey`/`roundKey`（它们就是刚匹配上的那个 key）与 `round`/`ts`（`appendUserTurn` 的 `round` 取 store 现有最大 round、`ts` 取 `new Date()`，同一稳定 `dedupKey` 崩溃重跑时两个必然漂）。**误判方向不对称：把本来幂等的重放误判成冲突比漏判更糟**——那会把契约承诺的「预写可安全重复」变成抛错，所以排除表就只这四个名字，嵌套的 `ts` 算内容，其余（`messages`/`response`/`foldedPayload`/`usage`/`runState` 与宿主自有未知字段）一律算 payload。非 JSON 叶子走确定性兜底（`bigint` 记成十进制字面量、循环引用记成 `"[Circular]"`），不让幂等判定自己先抛。
+  - ⚠ **宿主可见的行为收紧：依赖旧静默覆盖（实际是静默丢弃）行为的宿主会看到新错误。** `runToolLoop` 把抛错的 store 当作持久化失败（重试耗尽后 `persistence_failed`），所以原本静默少一行会变成显式 run 失败；第三方 store 要跟上契约：随包的 `transcriptStoreContract`（`erix-agent/contract-tests`）多了 6 条同 key 幂等/冲突断言（16 → 22 条），其中包括「顶层 `ts`/`round` 漂了不得误判」与「`roundKey` / `<runId>:round:<n>` 回落键同受约束」。
+  - 文档：`docs/host-consumer-contract.md` 与中文版同一提交新增「Same-key payload conflicts / 同 key 异 payload 的冲突」成对小节（含口径与不对称理由）并修正「Idempotency / 幂等性」那条 bullet；随包契约套件清单行的条数与覆盖面同步。零 npm 运行时依赖不变，新增模块已在中英 README 模块地图登记。`src/loop/` 一字未改（本刀只动 store 与文档）。
+
 ## [0.21.0] - 2026-10-16
 
 ### Added

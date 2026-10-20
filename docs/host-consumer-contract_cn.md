@@ -733,13 +733,44 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
   时不带 `resume` 地传 `initialMessages`/`initialUserMessage`，对引擎而言等价。
 - **dedupKey：** 命名空间为 `"<key>:input:<suffix>"`，每轮唯一。引擎自身行写在
   `"<runId>:engine:round:<n>"` 与 `"…:resume"` 下，宿主 `:input:` 键永不与引擎行碰撞。
-- **幂等性：** store 按 `dedupKey`（回落 `roundKey`）去重，崩溃重跑的判定依据是
-  `dedupKey`：同 `dedupKey` 的重复 append 是 no-op，因此稳定的 `dedupKey`（由宿主消
-  息 id 推导）使预写可安全重复。这个保证是**顺序重跑**语义——崩溃重跑或按
-  `dedupKey` 的顺序重试。同一 key 的并发追加不在保证范围内：宿主应按 key 串行发起
-  追加（或在接收事务内发起）。
+- **幂等性：** store 按 `dedupKey`（回落 `roundKey`，两者都缺时回落 store 自造的
+  `<runId>:round:<n>`）去重，崩溃重跑的判定依据是 `dedupKey`：同 `dedupKey` **且
+  payload 未变**的重复 append 是 no-op，因此稳定的 `dedupKey`（由宿主消息 id 推
+  导）使预写可安全重复。这个保证是**顺序重跑**语义——崩溃重跑或按 `dedupKey` 的
+  顺序重试。同一 key 的并发追加不在保证范围内：宿主应按 key 串行发起
+  追加（或在接收事务内发起）。`appendRound` 的解析值不在契约里（内置实现解析为
+  `undefined`）；要拿既有记录请用 `load`，或取 `appendUserTurn` 回传的 `record` 字段。
 - **时机：** 在接受用户消息的事务内持久化该轮（当宿主决定该轮属于本 run 时），
   而不是懒到 worker 接手之后再写——否则接受与预写之间崩溃会丢失或重复该轮。
+
+### 同 key 异 payload 的冲突（issue #326）
+
+一次 `appendRound` 命中已存在的 key 时，**只有 payload 就是那条记录**才是 no-op。
+同 key 带不同 payload 是错误：既不静默覆盖，也不静默丢弃。issue #326 之前内置 store
+默默接受这种情形——第二次的 payload 被丢掉，引擎与宿主都拿不到任何信号——于是「续接轮
+被去重掉了」或「同一消息 id 换了正文」这类事实永远观察不到。现在两个内置 store 以完全
+相同的方式拒绝它（判据只有一份实现：`src/store/transcript-dedup.js`，两个 store 不
+可能各自漂）：
+
+- 抛出的错误带稳定 `code`：`dedup_payload_conflict`，宿主不需要 `instanceof` 也能
+  分流。消息里点名 `runId`、key、两份 payload 指纹（`sha256:<24 hex>`），以及顶层
+  差异字段名；同样的值也作为属性挂出（`key`、`existingFingerprint`、
+  `incomingFingerprint`、`differingFields`）。
+- 拒绝是惰性的：既有记录字节不动，也不落新行。之后拿原 payload 重放仍幂等。
+- 依赖旧行为（同 key 异 payload、第二次写被静默忽略）的宿主现在会看到这个错误。
+  `runToolLoop` 把抛错的 store 当作持久化失败（重试耗尽后 `persistence_failed`），
+  于是原本静默的丢失会变成显式的 run 失败，而不是一份悄悄少了一行的 transcript。
+
+「同 payload」指的是文档化的摘要，不是逐字节相等：对记录的规范化 JSON 取 `sha256`——
+对象键逐层排序（字段顺序不是语义）、数组保序（消息顺序**是**语义）、`undefined`/函数/
+symbol 成员按 `JSON.stringify` 的同样取舍丢掉——最后这一条正是「内存里的活对象」与
+「JSONL 读回来的同一行」能得到同一指纹的前提。先剥掉四个**顶层**字段，因为它们是信封
+不是 payload：`dedupKey` 与 `roundKey`（它们就是刚匹配上的那个 key），加上 `round` 与
+`ts`（`appendUserTurn` 的 `round` 取 store 现有最大 round、`ts` 取 `new Date()`，所以
+同一稳定 `dedupKey` 崩溃重跑时这两个必然漂）。把这种漂移当成冲突会把上面承诺的「预写
+可安全重复」变成抛错，而两个误判方向不对称：**误判成冲突比漏判更糟**。所以排除表就只
+有这四个名字，嵌套的 `ts` 算内容，其余一律算 payload：`messages`、`response`、
+`foldedPayload`、`usage`、`runState`，以及宿主自有的未知字段。
 
 ### load 返回顺序
 
@@ -2318,7 +2349,7 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
 
 | 套件 | 断言什么 | 你必须满足的部分 | 它顺带钉住的上游内部细节 |
 |---|---|---|---|
-| `transcript-store.js`（16 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、run snapshot 的 latest-only 覆盖写、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返，以及成对的探针层 | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍 |
+| `transcript-store.js`（22 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、run snapshot 的 latest-only 覆盖写、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返、成对的探针层，以及同 key 的幂等/冲突层（issue #326：同 payload 重放（含顶层 `ts`/`round` 漂了、字段换了顺序）是 no-op，异 payload 以 `dedup_payload_conflict` 报冲突，数组顺序与宿主自有字段算 payload，`roundKey` 与 `<runId>:round:<n>` 回落键同受约束） | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍、`dedup_payload_conflict` 错误码 |
 | `notes-store.js`（9 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、`limit` 阈值（存量超过 200：给了 limit 就钳到恰好 200，非法 limit 抛错）、带 `expectedState`/`expectedUpdatedAt` guard 的 revoke 可观察消失，以及 issue #265 新增：空 `filters.state` 数组与非法 `filters.source` 必须拒、revoke 墓碑上 `revoked_at`/`revoke_reason` 可见、`purge` 的 `scanned` 是 scope 数且 `before` 只能缩小窗口 | 端口面与记录/guard 语义。issue #183 之后上游硬义务与宿主策略的分界已写死：端口只承诺「可观察消失」（墓碑**或**物理删除皆可）且不管记录过期，而一写者 last-write-wins 是文件适配器自己的事，已不在这里断言。#265 新增只断言 typedef 早已承诺的行为，但它们是发布面上的新断言：宿主适配器曾静默忽略其中任何一条，升级后就会冒新红 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`、`/positive safe integer/`、`/filters\.state/`、`/filters\.source/`）、保留期/purge 时机 |
 | `notes-store.js` → `notesStoreCasContract`（1 条，可选；issue #183） | 并发同键写：至多一方失败，失败必须是抛错而不是静默丢弃，胜者必须是那条以完整形状可读的记录 | 只给比较-交换宿主跑，且是在 `notesStoreContract` 之外的**额外**一层 —— 这个子套件刻意比被移除的 last-write-wins 断言更弱，跑绿它对串行化写者一无所证 | 它顺便踩到的两个载荷内容（`left`/`right`），而不是任何冲突错误文案 |
 | `assembly-port.js`（4 条） | 端口能启动一个真实 loop 并跑完，`emit(type, payload)` 收到带 payload 的事件类型，显式的细粒度 `provider` 选项覆盖端口自带的 provider，缺少 `chat`/`chatStream` 的 provider 在启动时被 `createAssemblyPort` 与 `runToolLoop` 双双拒绝 | 你的端口所必需的适配器与它的 `emit` 接收端 | 优先级规则（显式选项胜过端口）、启动校验的错误文案 |

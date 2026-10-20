@@ -879,17 +879,61 @@ A correct pre-written `RoundRecord` must satisfy:
   engine writes its own rows under `"<runId>:engine:round:<n>"` and
   `"…:resume"`, so host `:input:` keys never collide with engine rows.
 - **Idempotency:** the store deduplicates by `dedupKey` (falling back to
-  `roundKey`), and crash-rerun judgement is by `dedupKey`: a repeated append
-  with the same `dedupKey` is a no-op, so a stable `dedupKey` (derived from a
-  host message id) makes the pre-write safely repeatable. This guarantee is
-  **sequential-rerun** semantics — crash-rerun or sequential retry by
-  `dedupKey`. Concurrent appends against the same key are not covered: the
+  `roundKey`, then to the store-generated `<runId>:round:<n>` key), and
+  crash-rerun judgement is by `dedupKey`: a repeated append with the same
+  `dedupKey` **and an unchanged payload** is a no-op, so a stable `dedupKey`
+  (derived from a host message id) makes the pre-write safely repeatable. This
+  guarantee is **sequential-rerun** semantics — crash-rerun or sequential retry
+  by `dedupKey`. Concurrent appends against the same key are not covered: the
   host should serialize appends per key (or issue them inside its receiving
-  transaction).
+  transaction). The resolved value of `appendRound` is not part of the
+  contract (the built-ins resolve to `undefined`); read the stored record back
+  with `load`, or take the `record` field `appendUserTurn` returns.
 - **Timing:** persist the user turn inside the transaction that accepts the
   user message (when the host decides the turn belongs to this run), not
   lazily after a worker picks the task up — a crash between acceptance and
   pre-write would otherwise lose the turn or duplicate it.
+
+### Same-key payload conflicts (issue #326)
+
+An `appendRound` whose key is already persisted is a no-op **only when the
+payload is that same record**. The same key carrying a different payload is an
+error: neither a silent overwrite nor a silent drop. Before issue #326 the
+built-in stores accepted that case silently — the second payload was discarded
+with no signal to the engine or the host — which is why a lost continuation
+row or a re-pre-written turn with changed text could never be observed.
+Both built-ins now reject it identically (`src/store/transcript-dedup.js` owns
+that decision, so the two stores cannot drift):
+
+- The thrown error carries a stable `code`, `dedup_payload_conflict`, so a host
+  can branch on it without an `instanceof` check. Its message names the `runId`,
+  the key, and both payload fingerprints (`sha256:<24 hex>`), plus the names of
+  the top-level fields that differ. The same values are exposed as properties
+  (`key`, `existingFingerprint`, `incomingFingerprint`, `differingFields`).
+- The rejection is inert: the stored record keeps its bytes and no new row is
+  appended. A later replay with the original payload is still idempotent.
+- Hosts that relied on the old behavior — same key, different payload, second
+  write silently ignored — now see this error. `runToolLoop` treats a throwing
+  store as a persistence failure (retry, then `persistence_failed`), so the
+  silent loss becomes a loud run failure instead of a transcript that quietly
+  lost a row.
+
+"Same payload" is a documented digest, not byte equality: `sha256` over the
+canonical JSON of the record, with object keys sorted at every level (field
+order is not semantics), array order preserved (message order **is** semantics),
+and `undefined`/function/symbol members dropped exactly like `JSON.stringify`
+does — that last part is what makes the in-process object and the line a
+JSONL store reads back fingerprint identically. Four **top-level** fields are
+removed first because they are the envelope, not the payload: `dedupKey` and
+`roundKey` (they are the key that just matched) plus `round` and `ts`
+(`appendUserTurn` derives `round` from the store's current maximum round and
+stamps `ts` with `new Date()`, so a crash-rerun of one stable `dedupKey`
+legitimately drifts on both). Treating that drift as a conflict would turn the
+"safely repeatable pre-write" promised above into an error, and the two failure
+directions are not symmetric: a false conflict is worse than a missed one. So
+the exclusion list is exactly those four names, nested `ts` values are payload,
+and everything else — `messages`, `response`, `foldedPayload`, `usage`,
+`runState`, and every host-owned unknown field — must match.
 
 ### Load order
 
@@ -2917,7 +2961,7 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 
 | suite | what it asserts | yours to satisfy | upstream-internal detail it also pins |
 |---|---|---|---|
-| `transcript-store.js` (16 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-snapshot latest-only overwrite, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, and the paired probe tier | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance |
+| `transcript-store.js` (22 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-snapshot latest-only overwrite, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, the paired probe tier, and the same-key idempotency/conflict tier (issue #326: same payload replays — including drifted top-level `ts`/`round` and reordered fields — are no-ops, a differing payload rejects with `code` `dedup_payload_conflict`, array order and host-owned fields count as payload, and the fallback `roundKey`/`<runId>:round:<n>` keys are covered) | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance, the `dedup_payload_conflict` code |
 | `notes-store.js` (9 tests) | port validation (`assertNotesStore`), malformed-record rejection before persistence, full record round-trip, scope isolation and explicit misses, unsafe-scope round-trip through lifecycle, the `limit` threshold (more than 200 stored records: a given limit clamps to exactly 200, an illegal limit throws), `revoke`'s observable disappearance with the `expectedState`/`expectedUpdatedAt` guards, and — since issue #265 — rejection of an empty `filters.state` array and an unknown `filters.source`, `revoked_at`/`revoke_reason` visible on a revoke tombstone, and `purge` scanning scopes (not records) with `before` only shrinking the window | the port surface and the record/guard semantics. Since issue #183 the split between upstream mandate and host policy is explicit: the port mandates observable disappearance (tombstone **or** physical delete) and leaves record expiry to the host, while the one-writer last-write-wins behaviour is the file adapter's own business and is no longer asserted here. The #265 additions only assert typedef-promised behaviour, but they are new assertions on a published surface: a host adapter that ignored one of them goes red after the bump | the file-store-shaped error texts (`/valid NoteRecord/`, `/parseable date/`, `/positive safe integer/`, `/filters\.state/`, `/filters\.source/`), retention/purge timing |
 | `notes-store.js` → `notesStoreCasContract` (1 test, optional; issue #183) | concurrent same-key writers: at most one may fail, a failure must be a thrown error rather than a silent drop, and the winner is the record that stays readable in its full shape | compare-and-swap hosts only, and only in addition to `notesStoreContract` — this sub-suite is deliberately weaker than the retired last-write-wins assertion, so passing it says nothing about a store that serializes writers | the two payload contents it happens to exercise (`left`/`right`), not any conflict error text |
 | `assembly-port.js` (4 tests) | a port boots a real loop to completion, `emit(type, payload)` receives the event types with their payload, an explicit fine-grained `provider` option overrides the port's provider, and a provider missing `chat`/`chatStream` is rejected at startup by both `createAssemblyPort` and `runToolLoop` | your port's required adapters and its `emit` sink | the precedence rule (explicit option over port), the startup-validation error text |
