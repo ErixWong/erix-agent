@@ -2063,8 +2063,11 @@ const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
  *  `src/reflection/wrapup.js` 提取到 `src/text/json-candidates.js` 之后，该文件少了 30 行，中英契约里
  *  那条指向收尾/`judge` 文本归一化器的 `src/reflection/wrapup.js:132-135` **越界**（文件只剩 106 行），
  *  两条引用各改成不带区间的符号锚点 `normalizeWrapupWithLlm`（`src/reflection/wrapup.js`）
- *  ⇒ 每份文档各降 1 个唯一区间（`--verbose` 实测 146 唯一区间 − 4 处声明式豁免 = 142）。 */
-const BARE_LINE_REF_BASELINE = 140;
+ *  降基线的理由（issue #326 wo-C，140 → **138**，降 2）：折叠摘要事实行 / TTL 降级事实行要写进 `orchestrator.js`，
+ *  该文件行数一变，中英契约里两处**符号锚点自带区间**（`sideEffect` `1093-1098`、`no_final_guard` `1663-1665`）
+ *  就与声明处不相交了 —— 按本文件与 AGENTS 的首选修法**删掉区间只留符号**（符号判据不需要行号），
+ *  于是每处少一个唯一区间键。区间本身是错的（真值位在别处），删掉它同时消掉一处会漂移的假精度。 */
+const BARE_LINE_REF_BASELINE = 138;
 
 /** 棘轮生效值：从**本脚本自己的文本**里读 `BARE_LINE_REF_BASELINE`（走 `textOf`，所以 `--self-test`
  *  能把这个常量临时改小来证「它真的是锁」：调低到低于实测值必须红，改回来必须绿）。

@@ -17,6 +17,12 @@
   - **宿主可见**：`store.load()` 的行数会多于轮数（同轮号、独立 `dedupKey`）；按轮渲染的投影要以 `round` 为键并按 `dedupKey` 去重，只展示正文的 UI 无需改动。中英契约在 dedupKey 小节旁新增「Engine control rows / 引擎控制行」成对说明。
   - 测试：新增 `test/loop-persist-engine-text.test.js`（真 `runToolLoop` + fake provider + memory 与 file 两种内置 store，零真实 LLM），逐条钉「产生后 `store.load()` 里恰有一条」——0 条与 2 条都算失败，共 7 条；另加一条守卫钉住正常轮的 judge advisory 既不许 0 也不许变成 2。变异反证：把指纹判据/落账调用摘掉 ⇒ 相关测试成组变红。附带把中英契约里 7 处因 `orchestrator.js` 行位移而不再与声明处相交的符号锚点按 AGENTS 首选修法**删掉行区间**，并据 checker 自己的提示把裸行号棘轮从 142 降到 **140**、把符号锚点下限从 63 抬到 **67**（#326 的契约成对小节新增 4 组锚点），两处理由同时写进 AGENTS 中英。
 
+- **实际喂给模型的折叠摘要与 TTL 降级结果成为账本里的事实，并且复用不重算（issue #326 开工顺序第 4 步）。** 病根：`fold-llm` 的摘要在 `compactBeforeRound` 里**现算现用**——它进了当次真实请求（模型看见了），却进不了任何一条 transcript 记录：轮记录只写 `messages.slice(roundStart)`，而 `roundStart` 取的是折叠**之后**的 `messages.length`，摘要消息永远落在它之前。探针实测（基线 `a3689a2`）：run1 调摘要 2 次、journal 里 0 条；崩溃恢复时**又调 3 次并拿到另一份摘要**（V2/V3）——每轮现算同时毁掉 prompt cache 命中与「模型当时看到了什么」的可解释性。TTL 降级同理：占位符进了请求，账本里只剩 `compactionStats` 的计数，「被降级成了什么」不可指认。
+  - 新增 `src/compact/fold-summary-journal.js`（引擎侧内部模块，先例 `src/store/transcript-dedup.js`）：`foldSummaryFingerprint` 给「这次折叠喂给摘要器的输入」一个稳定身份（被折叠负载 + 轮区间，顺序即语义），`createFoldSummaryLedger` 提供 `remember` / `lookup` / `seedFromRecord`——**resume 时把已入账那份灌回复用账本，就是「不再重算」的实现点**。指纹口径与 store 的幂等判据同源但**判据不同**（那边排除 `round`/`ts`，这边必须含轮区间），故两份实现各自独立，不得互相「复用」掉语义。
+  - **不新增 record kind、不新增消息标记字段**：折叠摘要事实与 TTL 降级事实挂在轮记录的 `foldedSummary` / `ttlFacts` 字段上（宿主对未知字段保真，touwaka 已验证），事实行沿用引擎命名空间 `…:fold:<fp>` / `…:ttl:<fp>`，与 `:control:<slot>` 同一形状。TTL 事实带 `toolUseId / createdRound / tokens / tokensAfter / chars / fingerprint / placeholderHasTtlMark`，占位符必须自带可指认信息，不退化成「（内容已省略）」。**三个内置压缩策略的生成逻辑一字未改**，本刀只动「是否落账 + 是否复用」。
+  - 测试 `test/loop-persist-compaction-facts.test.js` 6 条（真 `runToolLoop` + fake provider + memory 与 file 两种内置 store，零真实 LLM）：摘要在 `load()` 里读得到（两种 store）、**折叠后中断 ⇒ resume 不再调 summarizer 且用的就是已入账那份**、同一 run 内重复折叠不重复调摘要器、TTL「被降级成了什么」读得到（两种 store）、没有 TTL 折叠时不误落该字段。
+  - 文档：中英契约里两处因 `orchestrator.js` 行位移而漂移的符号锚点按 AGENTS 首选修法**删掉行区间**，裸行号棘轮随之下调 **140 → 138**（理由写在常量注释与提交信息里，AGENTS 中英同步）。
+
 ## [0.21.0] - 2026-10-16
 
 ### Added

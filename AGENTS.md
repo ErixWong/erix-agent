@@ -181,8 +181,8 @@ scripts/          # experiment scripts and results
   `symbols` never needed them) or move it onto the declaration. Anchors *without* a range are outside this rule,
   which is also why dropping ranges makes the ratchet below go down legitimately.
   *`bare-lines`* is a *ratchet (only down)*: `src/**.js:N` / `:N-M` references, counted as unique
-  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 140` in that same script. The number
-  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 144 measured minus 4 declaratively exempted
+  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 138` in that same script. The number
+  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 142 measured minus 4 declaratively exempted
   example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
   declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
   nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty

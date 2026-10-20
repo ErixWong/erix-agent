@@ -160,6 +160,7 @@ src/
     pipeline.js                     压缩流水线声明
     enforce-size.js                 字段大小限制
     fold-llm.js                     LLM 辅助的折叠策略
+    fold-summary-journal.js         折叠摘要事实账本：指纹、复用备忘、事实回读
     fold-statistical.js             统计折叠与导航记录
     provider-summarizer.js          用本 run provider 的 fold-llm 默认 summarizer
     strategy-resolution.js          context.strategy 内置策略名解析
