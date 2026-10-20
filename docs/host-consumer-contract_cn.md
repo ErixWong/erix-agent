@@ -732,7 +732,17 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
   进它。空 `load` 结果是种子路径：在 round `0` 预写该轮；内置 CLI 则在没有既有记录
   时不带 `resume` 地传 `initialMessages`/`initialUserMessage`，对引擎而言等价。
 - **dedupKey：** 命名空间为 `"<key>:input:<suffix>"`，每轮唯一。引擎自身行写在
-  `"<runId>:engine:round:<n>"` 与 `"…:resume"` 下，宿主 `:input:` 键永不与引擎行碰撞。
+  `"<runId>:engine:round:<n>"`、`"…:resume"` 与 `"…:control:<slot>"`（见下一条）下，
+  宿主 `:input:` 键永不与引擎行碰撞。
+- **引擎控制行（issue #326）：** 引擎在当前轮记录**已经落盘之后**注入给模型的文本——judge 评审意见
+  nudge、扩轮续跑提示、finalGuard revise 意见、强制收尾指令及其终稿 assistant——在**产生的那一刻**
+  入账，写成引擎命名空间的一行，键为 `"<runId>:engine:round:<n>:control:<slot>"`（`slot` ∈
+  `judge-nudge` / `extend` / `guard-revise` / `forced-final`）。这一行就是普通 `RoundRecord`，
+  `messages` 里是带 `meta.source`（#323 标记）的普通消息：**没有新增 record kind，也没有新增消息字段**。
+  于是宿主看到的行数会多于轮数——按轮渲染的投影必须以 `round` 为键并按 `dedupKey` 去重；只展示
+  用户/assistant 正文的 UI 继续按现有做法跳过 `meta.source === "judge-control"` 即可。同一槽位重放
+  幂等：崩溃重跑不会多出行，且这一行的 `ts` 漂移不会把重放判成 payload 冲突（#326 去重规则）。
+  修之前这类文本是「模型见过、`load()` 里没有」，进程重启后引擎对自己说过什么零档案。
 - **幂等性：** store 按 `dedupKey`（回落 `roundKey`，两者都缺时回落 store 自造的
   `<runId>:round:<n>`）去重，崩溃重跑的判定依据是 `dedupKey`：同 `dedupKey` **且
   payload 未变**的重复 append 是 no-op，因此稳定的 `dedupKey`（由宿主消息 id 推
@@ -952,7 +962,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 |---|---|---|---|---|
 | `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js:108-110`）或兜底 stop `complete`（`src/reflection/governor.js:123-125`），均由 `terminationReasonForAction` 映射（`src/loop/termination.js:93-100`）。输入：`shouldContinue`（`src/loop/orchestrator.js`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js:3159-3163`、`3164-3218`）） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`src/loop/orchestrator.js:3357-3365`） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
 | `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`src/loop/orchestrator.js:3357-3365`，`isEndTurn` 在 3053），映射在 `src/loop/termination.js:94` | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`src/loop/reflection.js:8`） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
-| `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js:111-114`），门在 `noToolRound`（`src/loop/orchestrator.js:3230-3233`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
+| `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js:111-114`），门在 `noToolRound`（`src/loop/orchestrator.js`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
 | `stall` | 同一工具调用签名在处理窗口内重复（`src/loop/orchestrator.js:2712-2726`）叠加 streak 累加（`src/loop/orchestrator.js:2763-2770`），stop 在 `src/reflection/governor.js:67-70`，`STALL_STREAK_LIMIT = 3`（`src/reflection/governor.js:3`），映射在 `src/loop/termination.js:97` | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死（`src/reflection/governor.js:65`） | `stallDetection:false` 使其**不可达**（`errorHashes`，`src/loop/orchestrator.js`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
 | `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2635）；治理层 stop `cap`（`src/reflection/governor.js:62-64` / `133-135`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:93-98`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
 | `max_rounds_cap` | (a) 治理层 stop `cap`：接近上限且不允许扩轮（`src/reflection/governor.js:147-149`）；(b) 轮循环自然跑完（`runToolLoop`，`src/loop/orchestrator.js`，收尾在 `3189-3207`） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`termination`，`src/loop/orchestrator.js`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
@@ -973,7 +983,7 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 |---|---|---|---|
 | `verified` | 已配置的 guard 接受了一份终答 | —（无 reason 字段） | `0` |
 | `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js:1663-1665`）；CLI guard 的 `no_capture_evidence` / `no_extractable_candidates`（`bin/final-guard.js:86,89`） | `4` |
-| `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js:3531-3535`）、`max_retries`（`3547-3551`） | `2` |
+| `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js`）、`max_retries`（`3547-3551`） | `2` |
 | `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`——两者都由 `errorReason`（`src/loop/termination.js:173-176`）决出 | `3` |
 
 `exitCodeForVerification` 对其他任何 status（包括根本没有 `verification` 对象）都返回
@@ -994,7 +1004,7 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 2. **stall stop**（`src/reflection/governor.js:67-70`）——故意高于收尾 nudge 与错误
    重复 nudge，以免真打转被低优先级 nudge 拖到退化成 `max_rounds_cap`。
 3. **wrapup 声明**——`done:true` 信封会压住 `shouldContinue` 并置上
-   `completionSignalDetected`（`src/loop/orchestrator.js:3159-3163`），这既产生
+   `completionSignalDetected`（`src/loop/orchestrator.js`），这既产生
    `completion` stop（`src/reflection/governor.js:108-110`），又使 `noToolRound`
    为假（`src/loop/orchestrator.js:3230-3233`）。**声明完成与 `no_tool` 因此互斥。**
 4. **completion 关键词兜底**——同样这个信号，在没解析出信封时来自

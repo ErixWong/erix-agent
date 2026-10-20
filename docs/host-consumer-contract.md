@@ -876,8 +876,25 @@ A correct pre-written `RoundRecord` must satisfy:
   `initialMessages`/`initialUserMessage` without `resume` when no records
   exist yet, which is equivalent for the engine.
 - **dedupKey:** namespaced `"<key>:input:<suffix>"`, unique per turn. The
-  engine writes its own rows under `"<runId>:engine:round:<n>"` and
-  `"…:resume"`, so host `:input:` keys never collide with engine rows.
+  engine writes its own rows under `"<runId>:engine:round:<n>"`,
+  `"…:resume"` and `"…:control:<slot>"` (see the next bullet), so host
+  `:input:` keys never collide with engine rows.
+- **Engine control rows (issue #326):** text the engine injects into the model's
+  context **after** the current round record has already been written — the judge
+  advisory nudge, the extension continuation note, the final-guard revise note, and
+  the forced-final instruction together with its final assistant message — is
+  journaled **at the moment it is produced**, as an engine-namespace row keyed
+  `"<runId>:engine:round:<n>:control:<slot>"` (`slot` ∈ `judge-nudge` /
+  `extend` / `guard-revise` / `forced-final`). The row is an ordinary
+  `RoundRecord` whose `messages` are ordinary messages carrying `meta.source`
+  (the #323 marker): **no new record kind, no new message field**. Hosts therefore
+  observe more rows than there are rounds — a projection that renders per round
+  must key on `round` and deduplicate by `dedupKey`, and a UI that shows only
+  user/assistant body text keeps skipping `meta.source === "judge-control"` as it
+  already does. Replaying one slot is idempotent: a crash-rerun adds no second row,
+  and the row's `ts` drift does not turn the replay into a payload conflict (#326
+  dedup rule). Before this fix such text was visible to the model but absent from
+  `load()`, so after a restart the engine had no record of what it had told itself.
 - **Idempotency:** the store deduplicates by `dedupKey` (falling back to
   `roundKey`, then to the store-generated `<runId>:round:<n>` key), and
   crash-rerun judgement is by `dedupKey`: a repeated append with the same
@@ -1173,9 +1190,9 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 
 | `termination.reason` | Triggering mechanism (file:line) | Position in the precedence chain | Host switch | Recommended host action |
 |---|---|---|---|---|
-| `end_turn` | governance stop `completion` (`src/reflection/governor.js:108-110`) or the fall-through stop `complete` (`src/reflection/governor.js:123-125`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:93-100`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3159-3163`, `3164-3218`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js:3357-3365`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
+| `end_turn` | governance stop `completion` (`src/reflection/governor.js:108-110`) or the fall-through stop `complete` (`src/reflection/governor.js:123-125`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:93-100`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3159-3163`, `3164-3218`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
 | `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3357-3365`, `isEndTurn` at `3053`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
-| `no_tool` | governance stop `noTool` (`src/reflection/governor.js:111-114`), gated by `noToolRound` (`src/loop/orchestrator.js:3230-3233`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
+| `no_tool` | governance stop `noTool` (`src/reflection/governor.js:111-114`), gated by `noToolRound` (`src/loop/orchestrator.js`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
 | `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2712-2726`), streak accumulation (`src/loop/orchestrator.js:2763-2770`), stop at `src/reflection/governor.js:67-70` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`errorHashes` at `src/loop/orchestrator.js`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
 | `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:93-98`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
 | `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:147-149`); (b) the round loop simply runs out (`runToolLoop` at `src/loop/orchestrator.js`, tail handling at `3189-3207`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`termination` at `src/loop/orchestrator.js`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
@@ -1198,7 +1215,7 @@ configured, a `verified` verdict is not available to them, because a guard
 |---|---|---|---|
 | `verified` | the configured guard accepted this final answer | — (no reason field) | `0` |
 | `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js:1663-1665`); CLI guard `no_capture_evidence` / `no_extractable_candidates` (`bin/final-guard.js:86,89`) | `4` |
-| `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js:3531-3535`), `max_retries` (`3547-3551`) | `2` |
+| `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js`), `max_retries` (`3547-3551`) | `2` |
 | `error` | the guard threw, decided invalidly, or timed out (fail-open for availability, never `verified`) | `timeout` or `error`, both resolved by `errorReason` (`src/loop/termination.js:173-176`) | `3` |
 
 `exitCodeForVerification` returns `0` for any other status, including a missing
@@ -1223,7 +1240,7 @@ Within one round, exactly one mechanism gets to decide, in this order
    repeated-error nudges on purpose, so a low-priority nudge cannot starve a
    genuine loop into `max_rounds_cap`.
 3. **wrapup declaration** — a `done:true` envelope suppresses continuation and
-   raises `completionSignalDetected` (`src/loop/orchestrator.js:3159-3163`),
+   raises `completionSignalDetected` (`src/loop/orchestrator.js`),
    which both produces the `completion` stop (`src/reflection/governor.js:108-110`)
    and makes `noToolRound` false (`src/loop/orchestrator.js:3230-3233`). Declared
    completion and `no_tool` are therefore mutually exclusive.

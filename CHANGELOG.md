@@ -12,6 +12,11 @@
   - ⚠ **宿主可见的行为收紧：依赖旧静默覆盖（实际是静默丢弃）行为的宿主会看到新错误。** `runToolLoop` 把抛错的 store 当作持久化失败（重试耗尽后 `persistence_failed`），所以原本静默少一行会变成显式 run 失败；第三方 store 要跟上契约：随包的 `transcriptStoreContract`（`erix-agent/contract-tests`）多了 6 条同 key 幂等/冲突断言（16 → 22 条），其中包括「顶层 `ts`/`round` 漂了不得误判」与「`roundKey` / `<runId>:round:<n>` 回落键同受约束」。
   - 文档：`docs/host-consumer-contract.md` 与中文版同一提交新增「Same-key payload conflicts / 同 key 异 payload 的冲突」成对小节（含口径与不对称理由）并修正「Idempotency / 幂等性」那条 bullet；随包契约套件清单行的条数与覆盖面同步。零 npm 运行时依赖不变，新增模块已在中英 README 模块地图登记。`src/loop/` 一字未改（本刀只动 store 与文档）。
 
+- **引擎自产文本「产生即入账」（issue #326 开工顺序第 3 步）。** 病根：轮记录只写 `messages.slice(roundStart)`，而 `roundStart` 在下一次进圈时重新取 `messages.length` ⇒ **轮记录落盘之后**才 push 进 `messages` 的引擎文本永远落不进任何一条记录：judge 评审意见（nudge）、扩轮续跑提示、finalGuard revise 意见、强制收尾指令与它的终稿 assistant。后果是「模型见过、档案里没有」——`store.load()` 的原始记录里 0 条，追问、审计与 resume 都读不到引擎自己说过什么（探针实测 main `97bd957`：messages 有、journal 无；终稿尤其严重，它是终局正文，宿主从档案里拼不出来）。
+  - 修法沿用引擎命名空间的先例（`:resume` 行同一形状）：新增 `appendEngineMessagesToTranscript`，在产生的那一刻写一条引擎补充记录，`dedupKey = <runId>:engine:round:<n>:control:<slot>`（`slot` ∈ `judge-nudge` / `extend` / `guard-revise` / `forced-final`）；**不新增 record kind、不新增消息标记字段**（注入内容本身带 #323 的 `meta.source === "judge-control"`），并计入 `persistedTranscriptLength`，让 resume 快照锚点继续等于「journal 已落盘的消息总数」，不会把已落盘的消息当成没存过而重复入账。入账口开在 `orchestrator.js` 的调用点（`forceFinalAndJournal`）而不是 `termination.js` 内部：后者不持有 store、不碰 persist，journal 写入一直是 orchestrator 的职责面。
+  - **宿主可见**：`store.load()` 的行数会多于轮数（同轮号、独立 `dedupKey`）；按轮渲染的投影要以 `round` 为键并按 `dedupKey` 去重，只展示正文的 UI 无需改动。中英契约在 dedupKey 小节旁新增「Engine control rows / 引擎控制行」成对说明。
+  - 测试：新增 `test/loop-persist-engine-text.test.js`（真 `runToolLoop` + fake provider + memory 与 file 两种内置 store，零真实 LLM），逐条钉「产生后 `store.load()` 里恰有一条」——0 条与 2 条都算失败，共 7 条；另加一条守卫钉住正常轮的 judge advisory 既不许 0 也不许变成 2。变异反证：把指纹判据/落账调用摘掉 ⇒ 相关测试成组变红。附带把中英契约里 7 处因 `orchestrator.js` 行位移而不再与声明处相交的符号锚点按 AGENTS 首选修法**删掉行区间**，并据 checker 自己的提示把裸行号棘轮从 142 降到 **140**、把符号锚点下限从 63 抬到 **67**（#326 的契约成对小节新增 4 组锚点），两处理由同时写进 AGENTS 中英。
+
 ## [0.21.0] - 2026-10-16
 
 ### Added
