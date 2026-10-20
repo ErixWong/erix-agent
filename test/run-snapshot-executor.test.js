@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { KitError } from "../src/providers/errors.js";
+import { renderConversation } from "../src/reflection/judge.js";
 import { createRunSnapshotExecutor } from "../src/loop/run-snapshot-executor.js";
 
 const TOOL_BLOCK = {
@@ -156,4 +157,54 @@ test("只读放行集合含 searchText（issue #195：继任入口不得比 rg �
   );
   assert.equal(READONLY_INTERCEPT_TOOLS.has("writeFile"), false, "写工具不得进只读集合");
   assert.equal(READONLY_INTERCEPT_TOOLS.has("exec"), false, "exec 有副作用，不属只读");
+});
+
+test("#323 blocked 分支落快照的方向提示带 judge-control marker：主模型侧仍在消息里、judge 输入排除，tool_result 事实不受影响", async () => {
+  const blockedTool = {
+    type: "tool_use",
+    id: "call-blocked-1",
+    name: "writeFile",
+    input: { path: "src/a.js" },
+  };
+  const harness = createHarness();
+  Object.assign(harness.ctx, {
+    judgeInterceptEnabled: true,
+    judgeInterceptCount: 1,
+    judgeIntervalRound: 1,
+    emitJudge: () => {},
+    callRoundJudge: async () => ({
+      decision: {
+        done: false,
+        confidence: 0.9,
+        reason: "写文件超出任务范围",
+        evidence: "目标只要求读",
+        direction: "off_track",
+        directionReason: "先核对任务边界再动手 #323-hint-probe",
+      },
+    }),
+  });
+
+  const toolResults = [];
+  await harness.executor.executeToolWithIntercept(blockedTool, 3, toolResults, [blockedTool]);
+
+  const interceptedSnapshot = harness.persistenceCalls.find(
+    (call) => call.status === "intercepted",
+  );
+  assert.ok(interceptedSnapshot, "blocked 路径必须落一条 intercepted 快照");
+  const overridden = interceptedSnapshot.messagesOverride;
+  const hintMessage = overridden.find(
+    (message) => JSON.stringify(message).includes("#323-hint-probe"),
+  );
+  assert.ok(hintMessage, "方向提示必须仍写进快照消息（resume 后主模型可见）");
+  // tool_result 里的「被拦未执行」是事实，必须仍进 judge 输入。
+  assert.ok(
+    toolResults.some((result) => JSON.stringify(result).includes("【审计拦截】")),
+  );
+  const rendered = renderConversation(overridden);
+  assert.ok(
+    !rendered.includes("#323-hint-probe"),
+    "judge 输入不得含方向提示原文（摘掉 meta.source marker 本断言必须变红）",
+  );
+  assert.match(rendered, /【审计拦截】|控制事件/u, "被拦事实必须仍进 judge 输入");
+  assert.equal(hintMessage.meta?.source, "judge-control");
 });

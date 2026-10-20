@@ -615,3 +615,61 @@ test("parseReflectionDecision 与 #306 实现逐字对拍：已知形状 + 确�
     );
   }
 });
+
+test("#323 extend 续跑文本对主模型可见、但不进真实 judge 请求（防自读回）", async () => {
+  const provider = createFakeProvider([
+    ...Array.from({ length: 7 }, (_value, index) => toolResponse(index + 1)),
+    { content: [{ type: "text", text: "阶段结论" }], stopReason: "end_turn" },
+    ...Array.from({ length: 3 }, (_value, index) => toolResponse(index + 9)),
+    { content: [{ type: "text", text: "最终结论" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    judgeResponse({
+      done: false,
+      confidence: 0.8,
+      reason: "仍有价值",
+      evidence: "还有验证工作",
+      direction: "on_track",
+      extend: true,
+      extendReason: "当前上限不足 #323-extend-probe",
+      plan: "做X",
+    }),
+    judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已验证" }),
+  ]);
+
+  await runToolLoop({
+    provider,
+    initialUserMessage: "完成一个重要任务",
+    executeTool: async () => "ok",
+    maxRounds: 10,
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: true,
+      judgeIntercept: false,
+      extensionStep: 2,
+      maxExtensions: 1,
+      maxRoundsCap: 12,
+      judge: { provider: judge },
+    },
+  });
+
+  // 引擎注入的 extend 续跑文本原文（含 extendReason 探针）。
+  const continuation = provider.requests[8].messages.at(-1);
+  const continuationText = continuation.content[0].text;
+  assert.match(continuationText, /#323-extend-probe/);
+  // 真实 judge 请求（扩轮之后发生的第 2 次调用）不得读回该控制文本原文。
+  assert.equal(judge.requests.length, 2, "扩轮后必须真打过第 2 次 judge，否则反证不成立");
+  assert.ok(
+    !judge.requests[1].messages[0].content[0].text.includes("#323-extend-probe"),
+    "judge 输入不得含 extend 续跑文本（摘掉 meta.source marker 本断言必须变红）",
+  );
+  // 主模型侧仍可见：扩轮之后的主请求历史里始终带着这条续跑文本。
+  assert.ok(
+    provider.requests.at(-1).messages.some(
+      (message) => JSON.stringify(message).includes("#323-extend-probe"),
+    ),
+    "extend 续跑文本必须仍进主模型上下文",
+  );
+  assert.equal(continuation.meta?.source, "judge-control");
+});
