@@ -3462,6 +3462,8 @@ export async function runToolLoop(options) {
       governorState.extensionCount += 1;
       const continuationMessage = {
         role: "user",
+        // issue #323：引擎自写的续跑控制文本，打 marker 防 judge 自读回（主模型仍可见）。
+        meta: { source: "judge-control" },
         content: [{ type: "text", text: action.text }],
       };
       messages.push(continuationMessage);
@@ -3520,6 +3522,9 @@ export async function runToolLoop(options) {
           finalGuardRetries += 1;
           const continuationMessage = {
             role: "user",
+            // issue #323：finalGuard revise 的 message 是引擎注入的控制文本，打 marker 防 judge
+            // 自读回（主模型仍可见）。
+            meta: { source: "judge-control" },
             content: [{ type: "text", text: guardDecision.message }],
           };
           messages.push(continuationMessage);

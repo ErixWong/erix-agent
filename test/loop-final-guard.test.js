@@ -74,8 +74,10 @@ test("finalGuard revision is injected as a paired-safe user text message", async
   assert.equal(result.finalText, "verified");
   assert.equal(result.verification.status, "verified");
   const continuation = provider.requests[1].messages.at(-1);
+  // issue #323：续跑消息是引擎控制文本，带 judge-control marker（主模型侧仍完整可见）。
   assert.deepEqual(continuation, {
     role: "user",
+    meta: { source: "judge-control" },
     content: [{ type: "text", text: "请先核实原始值" }],
   });
   validateMessages(result.messages);
@@ -359,4 +361,49 @@ test("abort during finalGuard propagates the abort", async () => {
     assert.equal(error.finalText, "done");
     return true;
   });
+});
+
+test("#323 finalGuard revise 的 message 对主模型可见、但不进真实 judge 请求（防自读回）", async () => {
+  const provider = createFakeProvider([
+    { content: [{ type: "text", text: "unverified" }], stopReason: "end_turn" },
+    { content: [{ type: "text", text: "verified" }], stopReason: "end_turn" },
+  ]);
+  const judge = createFakeProvider([
+    { content: [{ type: "text", text: '{"done":true,"confidence":0.9,"reason":"完成","evidence":"已验证"}' }], stopReason: "end_turn" },
+    { content: [{ type: "text", text: '{"done":true,"confidence":0.9,"reason":"完成","evidence":"已验证"}' }], stopReason: "end_turn" },
+  ]);
+  let calls = 0;
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "hello",
+    executeTool: async () => "unused",
+    completion: false,
+    reflection: {
+      enabled: true,
+      roundJudge: true,
+      judgeIntercept: false,
+      judge: { provider: judge },
+    },
+    finalGuard: async () => {
+      calls += 1;
+      return calls === 1
+        ? { action: "revise", message: "请先核实原始值 #323-marker-probe" }
+        : { action: "accept" };
+    },
+  });
+
+  assert.equal(result.finalText, "verified");
+  assert.equal(judge.requests.length, 2, "revise 后第 2 轮必须真打过 judge，否则反证不成立");
+  // 主模型侧仍可见：revise 注入后，下一轮主请求带着这条控制文本（且带 marker）。
+  const injected = provider.requests[1].messages.find(
+    (message) => JSON.stringify(message).includes("#323-marker-probe"),
+  );
+  assert.ok(injected, "finalGuard revise 的 message 必须仍进主模型上下文");
+  // 真实 judge 请求（第 2 次调用，revise 注入之后发生）不得读回该控制文本原文。
+  const judgePrompt = judge.requests[1].messages[0].content[0].text;
+  assert.ok(
+    !judgePrompt.includes("#323-marker-probe"),
+    "judge 输入不得含 finalGuard revise 控制文本（摘掉 meta.source marker 本断言必须变红）",
+  );
+  assert.equal(injected.meta?.source, "judge-control");
 });

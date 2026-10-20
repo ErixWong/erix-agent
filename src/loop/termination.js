@@ -210,6 +210,8 @@ export function createTerminationManager(ctx) {
 
     const instruction = {
       role: "user",
+      // issue #323：强制收尾指令是引擎自写的控制文本，打 marker 防 judge 自读回（主模型仍可见）。
+      meta: { source: "judge-control" },
       content: [{
         type: "text",
         text: `【强制收尾】循环因 ${reason} 结束。禁止调用任何工具；请立即给出最终结论，或明确声明不可恢复。`,

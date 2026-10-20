@@ -2072,9 +2072,15 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 
 - 每个非用户撰写轮次都带 `meta.synthetic: true`；真实用户与 assistant 轮带
   `meta.synthetic: false`。
-- transcript 带标记时 `meta.source` 标明注入方：`judge-control`（round-judge 方向提示与
-  续跑催促）、`audit-intercept`（重复命令拦截文本）、`system`、`fold-summary`（折叠横幅）、
+- transcript 带标记时 `meta.source` 标明注入方：`judge-control`（引擎自写的控制文本：
+  round-judge 方向提示与续跑催促、extend / extend+redirect 续跑文本、`finalGuard` 的
+  `revise` 消息、强制收尾指令，以及 blocked 拦截路径写进快照的方向提示——issue #323）、
+  `audit-intercept`（重复命令拦截文本）、`system`、`fold-summary`（折叠横幅）、
   `wrapup`，或 `textPreview`（assistant 轮的旧版预览兜底）。
+- `judge-control` 消息仍留在模型可见的会话里（主模型必须仍能看到它们）；它们只被排除在
+  judge 自己的输入之外，排除点是评审模块里的会话渲染 `renderConversation`（与上文
+  `judge-control` 排除说明同一模块）。宿主不得以该排除为由把它们从 transcript 或上下文里
+  删掉。
 - `message.meta.source` 是引擎保留字段：投影把**任何非空字符串**值判为 synthetic。宿主不得
   在其中存放普通来源信息，否则真实消息也会被误分类。
 - 只有投影通过匹配已配置的文本前缀来判断合成消息时，才会添加

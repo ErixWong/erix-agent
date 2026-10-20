@@ -2601,9 +2601,17 @@ labels them:
 - `meta.synthetic: true` for every non-user-authored turn; real user and
   assistant turns carry `meta.synthetic: false`.
 - `meta.source` names the injector when the transcript carries the marker: `judge-control`
-  (round-judge direction hints and continuation nudges), `audit-intercept`
+  (engine-authored control text: round-judge direction hints and continuation nudges, the
+  extend / extend+redirect continuation text, the `finalGuard` `revise` message, the
+  forced-wrap-up instruction, and the direction hint written into the snapshot by the
+  blocked intercept path — issue #323), `audit-intercept`
   (repeated-command intercept text), `system`, `fold-summary` (the fold banner),
   `wrapup`, or `textPreview` (legacy preview fallback for the assistant turn).
+- `judge-control` messages stay in the model-visible conversation (the main model must
+  still see them); they are excluded only from the judge's own input, via the judge
+  module's conversation rendering (`renderConversation`, same module as the
+  `judge-control` exclusion documented above). Hosts must not delete them from
+  transcript or context on the basis of that exclusion.
 - `message.meta.source` is engine-reserved: the projection treats **any
   non-empty string** value as synthetic. Hosts must not store ordinary source
   information there, because that would misclassify a real message.

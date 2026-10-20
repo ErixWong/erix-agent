@@ -598,6 +598,9 @@ export function createRunSnapshotExecutor(ctx) {
     if (pendingDirectionHints.length > 0) {
       overriddenMessages.push({
         role: "user",
+        // issue #323：blocked 路径落快照的方向提示是 judge 自己的控制意见，打 marker 防二次
+        // resume 后被 judge 当普通用户输入读回（主模型侧仍可见；tool_result 事实不受影响）。
+        meta: { source: "judge-control" },
         content: pendingDirectionHints.map((text) => ({ type: "text", text })),
       });
     }

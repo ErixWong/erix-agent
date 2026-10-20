@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { renderConversation } from "../src/reflection/judge.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createDeterministicRunState } from "../src/run-state.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
@@ -1412,4 +1413,43 @@ test("resume with a stale snapshot (loader present, round behind transcript) doe
     [],
     `loader 存在时不得误发能力降级诊断，实际：${degraded.map((event) => event.method).join(",")}`,
   );
+});
+
+test("#323 强制收尾指令对主模型可见、但不进 judge 输入（renderConversation 产物）", async () => {
+  const provider = createFakeProvider([
+    {
+      content: [{ type: "tool_use", id: "ff-1", name: "work", input: { step: 1 } }],
+      stopReason: "tool_use",
+    },
+    {
+      content: [{ type: "tool_use", id: "ff-2", name: "work", input: { step: 2 } }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "forced-final-draft" }], stopReason: "end_turn" },
+  ]);
+
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "cap this run",
+    executeTool: async () => "ok",
+    maxRounds: 2,
+    completion: false,
+  });
+
+  assert.equal(result.termination.reason, "max_rounds_cap");
+  // 主模型侧仍可见：强制收尾那次真实模型请求里，最后一条 user 就是【强制收尾】指令原文。
+  const forcedRequest = provider.requests.at(-1);
+  const instruction = forcedRequest.messages.at(-1);
+  assert.match(instruction.content[0].text, /【强制收尾】/);
+  assert.ok(
+    result.messages.some((message) => JSON.stringify(message).includes("【强制收尾】")),
+    "指令必须留在主消息链（主模型/宿主可见），只是不进 judge 输入",
+  );
+  // 真实 judge 输入口径（renderConversation 产物）不得出现该控制文本原文。
+  const rendered = renderConversation(result.messages);
+  assert.ok(
+    !rendered.includes("【强制收尾】"),
+    "judge 输入不得含强制收尾指令（摘掉 meta.source marker 本断言必须变红）",
+  );
+  assert.equal(instruction.meta?.source, "judge-control");
 });
