@@ -1955,8 +1955,9 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  指向 `parseJudgeDecision`（`src/reflection/judge.js`）——`--verbose` 实测 32 组 / 70 处。
  *  #313（工单 261016-313-obs）在契约中英新增「erix_run 终局面」一节，带进 10 组新锚点：
  *  `--verbose` 实测 **42 组 / 91 处**（契约 EN 45 / CN 44 + 两份 0.19 指南各 1），于是下限升到 42
- *  （不升就是**假绿**：#286 返工 R1 的两例自测会因「实测 ≫ 下限」而 fail-open，干净 clone 的
- *  红集从预期的 3 例变成 5 例）。
+ *  （不升就是**假绿**：#286 返工 R1 的两例自测会因「实测 ≫ 下限」而 fail-open；#302 之前那种
+ *  「干净 clone 本来就会红 3 例」的前提已经不存在——现在干净检出上 `--self-test` 实测 103 例全 ✓，
+ *  所以这里只剩 fail-open 这一个理由）。
  *  升下限的理由（工单 261016-021 归版收尾 R3，53 → **63**，+10 组 / 122 → 165 处）：
  *  `docs/host-upgrade-guide-0.21.0.md` 与 `_cn.md` 成对补上 #313 / #314 / #312(b) 三节（EN 8 → 30 处、
  *  CN 6 → 27 处），全部用符号锚点引用宿主扩展与引擎的真声明——
