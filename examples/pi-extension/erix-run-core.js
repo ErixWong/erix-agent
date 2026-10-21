@@ -326,10 +326,12 @@ export function resolveArtifacts({ transcriptPath, judgeLogPath }) {
  * 工具参数 → 归一化参数。抛 `ErixRunError("bad_params")`。
  *
  * @param {{task?:unknown, cwd?:unknown, maxRounds?:unknown, strategy?:unknown, timeoutMs?:unknown, model?:unknown,
- *   sessionDir?:unknown, transcript?:unknown, maxExtensions?:unknown, maxRoundsCap?:unknown, extensionStep?:unknown}} raw
+ *   sessionDir?:unknown, transcript?:unknown, maxExtensions?:unknown, maxRoundsCap?:unknown, extensionStep?:unknown,
+ *   judgeDoneAdvisory?:unknown}} raw
  * @param {{home?:string}} [options]
  * @returns {{task:string, cwd:string, maxRounds:number, strategy?:string, timeoutMs:number, model?:string,
- *   sessionDir?:string, maxExtensions?:number, maxRoundsCap?:number, extensionStep?:number}}
+ *   sessionDir?:string, maxExtensions?:number, maxRoundsCap?:number, extensionStep?:number,
+ *   judgeDoneAdvisory?:boolean}}
  */
 export function parseRunParams(raw = {}, { home = homedir() } = {}) {
   const task = textOf(raw?.task).trim();
@@ -417,6 +419,22 @@ export function parseRunParams(raw = {}, { home = homedir() } = {}) {
       "bad_params",
       "finalGuardTimeoutMs 只在 finalGuard: true 时有意义（没开启就别传，否则容易误以为在核验）",
     );
+  }
+
+  // issue #322 的宿主侧口子：评审意见回灌开关，**默认关**（没传就不写进 params，
+  // 让引擎自己的缺省 false 生效——本层不替引擎造默认值）。形状照上面的 `finalGuard`：
+  // 只认真布尔，`"true"` / `1` 这类脏值直接报错（当成「没传」就是把用户意图吞掉）。
+  // 与 finalGuard 的**唯一**差别：`false` 也原样保留（宿主明确说「关」，透传下去就是事实，
+  // 不是替引擎填的默认值）。
+  const judgeDoneAdvisoryRaw = raw?.judgeDoneAdvisory;
+  if (judgeDoneAdvisoryRaw !== undefined && judgeDoneAdvisoryRaw !== null && judgeDoneAdvisoryRaw !== "") {
+    if (typeof judgeDoneAdvisoryRaw !== "boolean") {
+      throw new ErixRunError(
+        "bad_params",
+        `judgeDoneAdvisory 只能是 true | false，收到 ${JSON.stringify(judgeDoneAdvisoryRaw)}`,
+      );
+    }
+    params.judgeDoneAdvisory = judgeDoneAdvisoryRaw;
   }
 
   // #207 R1：扩轮三参数。**maxExtensions 允许 0**（引擎是 `>= 0` 判断，0 = 关掉扩轮），
