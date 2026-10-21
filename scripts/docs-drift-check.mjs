@@ -2559,10 +2559,14 @@ const SHORTHAND_REFS = new Map([
  *     其余类别按目录规则整体放行，但都必须在表里写明为什么。
  * 哪些类别**整目录不进扫描面**由 `SKIPPED_DIR_KINDS` 显式点名（#337：`.scratch/` 里的文件曾按文件系统
  * 扫进来，被当成仓内实物参与「唯一同名」解析与近邻判据）；没进那张清单的类别照常下钻。
- * .gitignore 里出现新的目录型规则而未登记 → 直接红（而不是默默放行）。 */
+ * .gitignore 里出现新的目录型规则而未登记 → 直接红（而不是默默放行）。
+ * 反向也守（#302）：登记了类别、而 `.gitignore` 里根本没有那条规则 = 空转条目，同样红
+ * （`test/static-guards.test.js` 的「目录规则双向一致」那一节）。因此这张表**不是**「可能会被忽略的目录清单」，
+ * 而是「`.gitignore` 里那几条目录规则的分类」——所以 `dist/` 那条 `build-output` 在 #302 里被删了：
+ * 本仓从来没有过 `dist/` 规则（建表至今 `git log -S'dist/' -- .gitignore` 为空），examples 也不往那儿构建，
+ * 它是一条从落地那天起就永不生效的空转条目。哪天真的加了一条 `dist/` 规则，正向校会提醒在这里登记。 */
 const IGNORED_DIR_CLASSES = new Map([
   ["node_modules/", { kind: "install-tree", why: "宿主侧安装位置，不是仓库内容" }],
-  ["dist/", { kind: "build-output", why: "examples 的构建产物目录" }],
   ["logs/", { kind: "runtime", why: "运行日志目录" }],
   [".worktrees/", { kind: "worktree", why: "并行任务的本机工作副本（#184 引入）" }],
   [".scratch/", { kind: "scratch", why: "丢弃型临时工作目录（复现脚本、`git archive` 对照树等一次性产物，#337）：内容不是仓库内容，整目录不进扫描面" }],
@@ -2690,18 +2694,40 @@ function gitignoreMatcher(text) {
 }
 
 /** 未被忽略的仓库文件清单（惰性建一次；`walk()` 从根递归会钻到 node_modules，所以自带剪枝）。 */
-/** 全仓文件清单（惰性建一次，键是 .gitignore 的规则集合）。分两份：未忽略的（= 克隆后仍在的）
+/** 全仓文件清单（惰性建一次，键是 .gitignore 的规则集合 + 当前树形夹具）。分两份：未忽略的（= 克隆后仍在的）
  *  与被忽略的（= 只有本机有的）。被忽略目录照常下钻（要认得 e2e-wake.mjs 这种「裸名指向档案」），
  *  但安装位置、工作副本与丢弃型临时目录剪掉（node_modules/ / .worktrees/ / .scratch/ 里不是仓库内容：
  *  前两个是一整份别的仓库，后一个是复现脚本与对照树）。哪些类别被剪由 `SKIPPED_DIR_KINDS` 显式点名。
  *
- * `SIM_ABSENT_TASK_ARCHIVE`（#280，只给 `--self-test` 用，**不是豁免开关**）：把「本机根本没有任务档案
- * 目录」这一**树形**模拟出来 = 全新 clone / CI / 一次性沙箱。实物只从两个地方渗进裁决——`resolveRef`
- * 的裸名同名索引与 `bareNameNearest` 的实物清单——两处都读这份清单的 `ignored` 那一半，所以在这里
- * 把 task-archive 类目录下的文件摘掉就等于「那个目录整目录不在」。声明一侧（.gitignore 规则、就地声明、
- * 登记表）一个字都不动：要证的正是「裁决只依赖声明时，有实物与没实物两种树形必须给同一个结论」。
- * 缓存键必须带上它，否则同一个进程里两种树形会互相吃到对方的缓存。 */
-let SIM_ABSENT_TASK_ARCHIVE = false;
+ * `SIM_TREE_SHAPE`（#280 引入、#302 改造成**合成树夹具**；只给 `--self-test` 用，**不是豁免开关**）：
+ * 「本机档案目录」这一格渗进裁决的地方只有两处——`resolveRef` 的裸名同名索引与 `bareNameNearest`
+ * 的实物清单（都读这份清单的 `ignored` 那一半），外加一个 `taskArchiveDirPresent()` 谓词。
+ * 所以「树形」在这份脚本里的**全部**含义就是这三样，夹具就声明在这三样上，与检查机上恰好有没有
+ * `docs/tasks/` 无关：
+ *   · `no-archive-dir`     —— 全新 clone / CI / 一次性沙箱：那个目录整片不在；
+ *   · `empty-archive-dir`  —— 目录在、里面一条档案都没有（`npm test` 的端到端探针造过这个形状）；
+ *   · `filled-archive-dir` —— 目录在、里面有本仓文档真的引用的那几条登记物（= 开发机）。
+ * 声明一侧（.gitignore 规则、就地声明、登记表）一个字都不动：要证的正是「裁决只依赖声明时，
+ * 三种树形必须给同一个结论」。
+ *
+ * #302 的病：旧口子 `SIM_ABSENT_TASK_ARCHIVE` 只有「摘掉实物」这一个动作，于是自测自己的落地检查
+ * 拿**真实实物数量**当判据（「本机有档案目录却一条都没摘掉 ⇒ 口子没接线」）——在「目录在、里面是空的」
+ * 机器上恒真地误报 2 例（CI 的干净检出上却是 0 例）。夹具化之后落地检查比对的是**夹具声明的那份清单**
+ * （`treeFixtureLanding`），同一提交在三种树形上给同一个结论。
+ * 缓存键必须带上它，否则同一个进程里三种树形会互相吃到对方的缓存。 */
+const TREE_SHAPE_NO_DIR = "no-archive-dir";
+const TREE_SHAPE_EMPTY = "empty-archive-dir";
+const TREE_SHAPE_FILLED = "filled-archive-dir";
+const TREE_SHAPES = [TREE_SHAPE_NO_DIR, TREE_SHAPE_EMPTY, TREE_SHAPE_FILLED];
+/** `filled-archive-dir` 里那几条档案：本仓文档真的引用到的登记物（路径与开发机上同名同位置，内容不重要）。
+ *  它把「实物在场」那一支也覆盖到：登记物解得到 ⇒ `localArchiveVerdict` 走「已核实」而不是「按声明放行」。 */
+const TREE_FIXTURE_ARCHIVE_FILES = [
+  "docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs",
+  "docs/tasks/active/261010-13-erix-run-async/e2e-wake.mjs",
+  "docs/tasks/active/task-20260830-touwaka-full-integration/BRANCH.md",
+  "docs/tasks/done/260926-strategy-variance-benchmark/REPORT.md",
+];
+let SIM_TREE_SHAPE = null;   // null = 真实树（默认）；否则是上面三种形状之一
 let repoFilesCache = null;
 /** 一条被忽略的**目录规则**要不要整目录剪掉（不进 tracked / ignored 清单）。未登记的规则按「不扫」处理：
  *  未分类本身已由 collectPathErrors 直接报红，扫描面不替它兜底。跳过与否只由 `SKIPPED_DIR_KINDS` 决定，
@@ -2712,7 +2738,7 @@ function ignoredDirIsSkipped(rule) {
   return SKIPPED_DIR_KINDS.has(cls.kind);
 }
 function repoFiles(ign) {
-  const key = `${SIM_ABSENT_TASK_ARCHIVE ? "no-archive|" : ""}${ign.rules.map((r) => r.pattern).join("\n")}`;
+  const key = `${SIM_TREE_SHAPE ?? "real"}|${ign.rules.map((r) => r.pattern).join("\n")}`;
   if (repoFilesCache && repoFilesCache.key === key) return repoFilesCache;
   const tracked = [];
   const ignored = [];
@@ -2730,10 +2756,17 @@ function repoFiles(ign) {
       else (underIgnored || ign.ruleFor(rel) ? ignored : tracked).push(rel);
     }
   })("", false);
-  const ignoredHere = SIM_ABSENT_TASK_ARCHIVE
-    ? ignored.filter((f) => !isUnderTaskArchive(ign, f))
-    : ignored;
-  repoFilesCache = { key, tracked, ignored: ignoredHere, simDropped: ignored.length - ignoredHere.length };
+  // 树形夹具：把 task-archive 类目录这一格**整片**换成夹具声明的那份清单（真实实物一律不参与），
+  // 所以三形状之间只差「那批文件在不在索引里」这一件事——声明一侧（.gitignore / 登记表 / 就地声明）不动。
+  const outside = SIM_TREE_SHAPE ? ignored.filter((f) => !isUnderTaskArchive(ign, f)) : ignored;
+  const ignoredHere = SIM_TREE_SHAPE === TREE_SHAPE_FILLED
+    ? outside.concat(TREE_FIXTURE_ARCHIVE_FILES)
+    : outside;
+  repoFilesCache = {
+    key, tracked, ignored: ignoredHere,
+    // #302：夹具落地检查要问「索引里那批档案到底是哪几条」，所以把它单独留一份（真实树里就是真清单）。
+    archiveInIndex: ignoredHere.filter((f) => isUnderTaskArchive(ign, f)),
+  };
   return repoFilesCache;
 }
 
@@ -2742,12 +2775,37 @@ function isUnderTaskArchive(ign, rel) {
   const rule = ign.ruleFor(rel);
   return !!rule && IGNORED_DIR_CLASSES.get(rule.pattern)?.kind === "task-archive";
 }
-/** 本机是否真的有 task-archive 类目录：用来区分「树形口子没落地（空跑，假绿）」与
- *  「这棵树本来就没有那个目录（在全新 clone 里跑自测）」——后者里树形例退化成对照，不算失败。 */
+/** 本机是否真的有 task-archive 类目录。夹具挂着时由**夹具**回答（#302：否则这个谓词读的是检查机上的
+ *  文件系统，同一提交在「目录在」与「目录不在」两台机器上就不同判）。 */
 function taskArchiveDirPresent(ign) {
+  if (SIM_TREE_SHAPE) return SIM_TREE_SHAPE !== TREE_SHAPE_NO_DIR;
   return [...IGNORED_DIR_CLASSES.entries()]
     .filter(([, c]) => c.kind === "task-archive")
     .some(([dir]) => existsSync(path.join(ROOT, dir)));
+}
+
+/** #302：合成树夹具必须**真的落上**——索引里 task-archive 类的文件清单必须逐条等于夹具声明的那一份。
+ *  旧判据是「本机确实有档案实物、却一条都没摘掉 ⇒ 口子没接线」，它把「机器上恰好有一个**空的**
+ *  `docs/tasks/`」误报成没接线（#302 现场：同一提交在 CI 上 0 红、在空目录的机器上红 2 例）。
+ *  新判据只问「夹具声明的清单 == 索引里的清单」，与机器形状无关；`filled` 那一格是非空期望，
+ *  所以口子被拆掉时它会红（`no-archive-dir` / `empty-archive-dir` 在干净机器上退化成同一个清单，
+ *  光靠它们证不到接线——这也是三形状必须**一起**跑的原因）。
+ *  `taskArchiveDirPresent()` 那一句看着像同义反复，其实是唯一能证明「这个谓词由夹具回答」的断言：
+ *  三种形状要求它依次返回 false / true / true，而真实文件系统只可能给其中一个值 ⇒ 三格同时绿
+ *  只可能是夹具真的接管了它。返回 null = 落上了。 */
+function treeFixtureLanding(ign) {
+  const want = SIM_TREE_SHAPE === TREE_SHAPE_FILLED ? TREE_FIXTURE_ARCHIVE_FILES : [];
+  const got = repoFiles(ign).archiveInIndex;
+  const problems = [];
+  const missing = want.filter((f) => !got.includes(f));
+  const extra = got.filter((f) => !want.includes(f));
+  if (missing.length) problems.push(`夹具声明的档案没进索引（${missing.join(", ")}）——SIM_TREE_SHAPE 没接进 repoFiles`);
+  if (extra.length) problems.push(`索引里还有夹具没声明的档案（${extra.join(", ")}）——真实树的实物漏进了裁决面，树形没解耦`);
+  const wantDir = SIM_TREE_SHAPE !== TREE_SHAPE_NO_DIR;
+  if (taskArchiveDirPresent(ign) !== wantDir) {
+    problems.push(`taskArchiveDirPresent() 与夹具形状 ${SIM_TREE_SHAPE} 不一致（应为 ${wantDir}）——口子没接进这条谓词`);
+  }
+  return problems.length ? problems.join("；") : null;
 }
 
 /** 三级解析：仓库根 → 文档同目录 → 全仓唯一同名。同名只认**唯一**命中（歧义不算解析成功，
@@ -2931,7 +2989,7 @@ function collectPathErrors() {
   for (const r of ign.rules.filter((x) => x.pattern.endsWith("/"))) {
     if (IGNORED_DIR_CLASSES.has(r.pattern)) continue;
     out.push(`paths: .gitignore:${r.line} 的目录规则 \`${r.pattern}\` 没在 IGNORED_DIR_CLASSES 里分类`
-      + `（install-tree / build-output / runtime / worktree / scratch / task-archive 六选一 + 写明理由）——`
+      + `（install-tree / build-output / runtime / worktree / scratch / task-archive 里选一个 + 写明理由）——`
       + `被忽略目录里的引用要不要放行、要不要进扫描面（SKIPPED_DIR_KINDS），得由分类决定，不许默默放行新目录`);
   }
   REF_CLASS_HITS.clear();
@@ -3554,19 +3612,22 @@ const SELF_TEST_CASES = [
   },
 
   // —— #280：门禁不得隐含依赖「检查机上恰好有被 .gitignore 忽略的 docs/tasks/」（修前全新 clone 必红）——
+  // #302：这两例改成在**合成树夹具**上跑，三种树形（无目录 / 空目录 / 有档案）各跑一遍、各自断言。
+  // 旧写法只在「无目录」那一格能跑通：「目录在、里面是空的」的机器上，自测自己的落地检查（拿真实
+  // 实物数量当判据）恒真地误报 2 例——于是 CI 上 0 红、开发机上 2 红，同一提交两个结论。
   {
-    label: "#280 树形对照：本机没有 docs/tasks/（全新 clone / CI / 一次性沙箱）时，本机档案类必须整片绿",
+    label: "#280 树形对照：本机没有/空着/有 docs/tasks/ 三种树形下，本机档案类必须整片绿（合成树夹具）",
     // 修前：同一提交在 `git archive HEAD` 解出来的树里 check:docs exit 1（10 条）、工作树里 exit 0——
     // 「本机档案」的裁决把「实物在 docs/tasks/ 下解得到」当成了放行前提。这一例把那棵树的形状钉进自测：
-    // 声明一侧（登记表 / 就地声明 / .gitignore 规则）一个字没动，只把实物从清单里摘掉，必须仍 0 错。
-    simulateAbsentTaskArchive: true,
+    // 声明一侧（登记表 / 就地声明 / .gitignore 规则）一个字没动，只把实物换成夹具声明的那一份，必须仍 0 错。
+    simulateTreeShapes: TREE_SHAPES,
     expectGreen: true,
   },
   {
-    label: "#280 上一例的绿不是「整类不裁决」：同一空树形里把已登记裸名改成未登记的假名 → 仍红",
-    // 「本机档案默认按声明放行」很容易被糊成「干脆整类不裁决」——这条就是抓它的：树形一样是空的，
-    // 但引用改成了既未登记、也解不到的假名，必须照样红并点名那处引用（与上一例共用同一个树形口子）。
-    simulateAbsentTaskArchive: true,
+    label: "#280 上一例的绿不是「整类不裁决」：同一批树形里把已登记裸名改成未登记的假名 → 三种树形都仍红",
+    // 「本机档案默认按声明放行」很容易被糊成「干脆整类不裁决」——这条就是抓它的：树形一样是夹具那三份，
+    // 但引用改成了既未登记、也解不到的假名，必须照样红并点名那处引用（与上一例共用同一批树形夹具）。
+    simulateTreeShapes: TREE_SHAPES,
     overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("e2e-wake.mjs", "e2e-wake-cloneQ.mjs") },
     expect: [/archive-refs: docs\/research\/2026-10-13[\s\S]*`e2e-wake-cloneQ\.mjs`（第 \d+ 行）[\s\S]*本仓不存在/],
     expectFiles: ["docs/research/2026-10-13-pi-subagents-async-attribution.md"],
@@ -4070,8 +4131,11 @@ function runSelfTest() {
   } else {
     passed.push("对照：源码与文档都不改 → 0 错");
   }
-  for (const c of SELF_TEST_CASES) {
-    let ok = true;
+  // #302：一例可以声明多份**合成树夹具**（`simulateTreeShapes`），每个形状各跑一遍、各自断言——
+  // 要证的是「同一份声明在三种树形下同判」，而不是「在检查机碰巧有的那个树形下绿」。
+  // 返回 { pass, msg }；所有状态还原（OVERLAY / 树形口子 / 配置口子）都在这里，调用方只管记账。
+  function execCase(c, shape) {
+    const label = shape ? `${c.label}［树形 ${shape}］` : c.label;
     let missedOn = null;   // #286 T-a：变异没打上的那一处（`expectMutateMiss` 用例等的就是它）
     for (const [rel, mutate] of Object.entries(c.overlay ?? {})) {   // #280：纯树形例可以不带 overlay
       const before = read(rel);
@@ -4081,22 +4145,17 @@ function runSelfTest() {
     }
     if (missedOn !== null) {
       OVERLAY.clear();
-      if (c.expectMutateMiss) {
-        passed.push(`${c.label} → 变异确实没落上（${missedOn}），「变异器空转也算失败」这条判据在生效`);
-      } else {
-        failures.push(`${c.label}：变异没落到 ${missedOn} 上（反向证自身失效：脚本里的变异体已与文档/源码脱节）`);
-      }
-      continue;
+      return c.expectMutateMiss
+        ? { pass: true, msg: `${c.label} → 变异确实没落上（${missedOn}），「变异器空转也算失败」这条判据在生效` }
+        : { pass: false, msg: `${label}：变异没落到 ${missedOn} 上（反向证自身失效：脚本里的变异体已与文档/源码脱节）` };
     }
     if (c.expectMutateMiss) {
       OVERLAY.clear();
-      failures.push(`${c.label}：这一例要的就是「变异打不上」，结果打上了——靶子已存在于文档，换一个不存在的靶子`);
-      continue;
+      return { pass: false, msg: `${label}：这一例要的就是「变异打不上」，结果打上了——靶子已存在于文档，换一个不存在的靶子` };
     }
-    // #280：有的锚点要测的不是文件**文本**而是**树形**（本机有没有那个被 .gitignore 忽略的任务档案目录）。
-    // 树形用 SIM_ABSENT_TASK_ARCHIVE 这个口子模拟（只影响实物清单，声明一侧一律不动），跑完必须还原。
-    const simSaved = SIM_ABSENT_TASK_ARCHIVE;
-    SIM_ABSENT_TASK_ARCHIVE = !!c.simulateAbsentTaskArchive;
+    // #302：树形用合成树夹具模拟（只影响实物清单与那一个谓词，声明一侧一律不动），跑完必须还原。
+    const simSaved = SIM_TREE_SHAPE;
+    SIM_TREE_SHAPE = shape ?? null;
     const guideSaved = SIM_RENAMED_GUIDE;                       // #286 返工 R2：覆盖面缩面的树形口子
     SIM_RENAMED_GUIDE = c.simulateRenamedGuide ?? null;
     const scanCountBefore = LAST_SCAN_DOC_COUNT;
@@ -4104,9 +4163,8 @@ function runSelfTest() {
     if (c.simulateLooseDecl) {
       const target = BARE_LINE_EXEMPTIONS.find((x) => x.doc === c.simulateLooseDecl.doc && x.target === c.simulateLooseDecl.target);
       if (!target) {
-        OVERLAY.clear(); SIM_RENAMED_GUIDE = guideSaved;
-        failures.push(`${c.label}：配置口子没落上（豁免表里找不到 ${c.simulateLooseDecl.doc} / ${c.simulateLooseDecl.target}）`);
-        continue;
+        OVERLAY.clear(); SIM_RENAMED_GUIDE = guideSaved; SIM_TREE_SHAPE = simSaved;
+        return { pass: false, msg: `${label}：配置口子没落上（豁免表里找不到 ${c.simulateLooseDecl.doc} / ${c.simulateLooseDecl.target}）` };
       }
       looseDeclSaved = [target, target.decl];
       target.decl = /.*/;
@@ -4120,14 +4178,14 @@ function runSelfTest() {
       IGNORED_DIR_CLASSES.set(pattern, { kind: c.simulateIgnoreDirClass.kind, why: c.simulateIgnoreDirClass.why });
     }
     let errs = [];
-    let simDropped = -1;
+    let landing = null;    // #302：夹具有没有真的落上（null = 本例不挂夹具）
     let afterWhy = null;   // #337：assertAfter 必须在配置口子**还挂着**的时候问（否则临时登记已被还原）
     try {
       errs = run();
-      simDropped = LAST_IGN ? repoFiles(LAST_IGN).simDropped : 0;
+      if (shape && LAST_IGN) landing = treeFixtureLanding(LAST_IGN);
       if (c.assertAfter) afterWhy = c.assertAfter({ errs });
     } finally {
-      SIM_ABSENT_TASK_ARCHIVE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
+      SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
       if (looseDeclSaved) looseDeclSaved[0].decl = looseDeclSaved[1];   // 判据必须还原，别把探针留在表里
       if (dirClassSaved) {                                              // 同上：临时登记的类别一条也不许留在表里
         const [pattern, prev] = dirClassSaved;
@@ -4135,44 +4193,42 @@ function runSelfTest() {
       }
       OVERLAY.clear();
     }
-    // #279 的教训：「变异没落上」的空跑会交出一条假的绿。树形口子也一样——本机确实有任务档案实物、
-    // 却一个都没从清单里摘掉，就是 SIM_ABSENT_TASK_ARCHIVE 没接进 repoFiles。本机本来就没那个目录
-    // （在全新 clone 里跑自测）时这一例退化成对照，不算失败。
+    // #279 的教训：「变异没落上」的空跑会交出一条假的绿。树形口子也一样——但判据是**夹具声明与索引是否
+    // 一致**（`treeFixtureLanding`），不是「本机实物掉了几条」（那条在空目录的机器上恒真地误报，#302）。
     // #286 返工 R2：树形口子也要证「真的落上了」——说要模拟一份指南改名，覆盖面份数却没变就是没接进 refScanDocs。
     if (c.simulateRenamedGuide && LAST_SCAN_DOC_COUNT > 0 && LAST_SCAN_DOC_COUNT === scanCountBefore) {
-      failures.push(`${c.label}：覆盖面树形口子没落上（说要模拟 \`c.simulateRenamedGuide\` 改名，但 refScanDocs() 的份数没变）`);
-      continue;
+      return { pass: false, msg: `${label}：覆盖面树形口子没落上（说要模拟 \`c.simulateRenamedGuide\` 改名，但 refScanDocs() 的份数没变）` };
     }
-    if (c.simulateAbsentTaskArchive && LAST_IGN && taskArchiveDirPresent(LAST_IGN) && simDropped === 0) {
-      failures.push(`${c.label}：树形口子没落上（说要模拟「没有 docs/tasks/」，但实物清单一条都没摘掉）`);
-      continue;
-    }
+    if (landing) return { pass: false, msg: `${label}：树形夹具没落上——${landing}` };
     // #337：绿只说明「静态分类不再报」，证不到扫描面——这里让用例自己再问一句生产谓词（如
     // 「这条类别真在 SKIPPED_DIR_KINDS 里」）。返回非空字符串就是失败。
-    if (afterWhy) { failures.push(`${c.label}：${afterWhy}`); continue; }
+    if (afterWhy) return { pass: false, msg: `${label}：${afterWhy}` };
     if (c.expectGreen) {
-      if (errs.length) {
-        failures.push(`${c.label}：变异之后本该绿（这条是在证「白名单/就地声明真的在放行」），实测 ${errs.length} 处红：\n      ${errs.join("\n      ")}`);
-      } else {
-        passed.push(`${c.label} → 仍然 0 错（放行分支有效，不是恒绿）`);
-      }
-      continue;
+      return errs.length
+        ? { pass: false, msg: `${label}：变异之后本该绿（这条是在证「白名单/就地声明真的在放行」），实测 ${errs.length} 处红：\n      ${errs.join("\n      ")}` }
+        : { pass: true, msg: `${label} → 仍然 0 错（放行分支有效，不是恒绿）` };
     }
     const missed = (c.expect ?? []).filter((re) => !errs.some((e) => re.test(e)));
     const missedFiles = (c.expectFiles ?? []).filter((rel) => !errs.some((e) => e.includes(rel)));
     // #337：红得「对」还不够，还得「没红错地方」——比如把「新增目录规则未登记」报成 `paths:` 的
     // 「引用了无法裁决的仓库内路径」（#337 的病：人看到红以为是真文档漂移，白排查一轮）。
     const rejected = (c.reject ?? []).filter((re) => errs.some((e) => re.test(e)));
-    if (!errs.length) failures.push(`${c.label}：改了但没红（锚点仍是 fail-open）`);
-    else if (rejected.length) {
-      failures.push(`${c.label}：红了，但报成了不该报的形状（命中 reject：${rejected.map((r) => String(r)).join(" ; ")}）`
-        + `——这一例要的是「点名未登记的目录规则」，不是「文档漂移/无法裁决」那类误报：\n      实测：${errs.join("\n      ")}`);
-    } else if (missed.length || missedFiles.length) {
-      failures.push(`${c.label}：红了，但错误信息没点该点的名／没覆盖该覆盖的文件`
+    if (!errs.length) return { pass: false, msg: `${label}：改了但没红（锚点仍是 fail-open）` };
+    if (rejected.length) {
+      return { pass: false, msg: `${label}：红了，但报成了不该报的形状（命中 reject：${rejected.map((r) => String(r)).join(" ; ")}）`
+        + `——这一例要的是「点名未登记的目录规则」，不是「文档漂移/无法裁决」那类误报：\n      实测：${errs.join("\n      ")}` };
+    }
+    if (missed.length || missedFiles.length) {
+      return { pass: false, msg: `${label}：红了，但错误信息没点该点的名／没覆盖该覆盖的文件`
         + `（未命中 ${missed.map((r) => String(r)).join(" ; ") || "—"}${missedFiles.length ? `；未覆盖 ${missedFiles.join(", ")}` : ""}）`
-        + `\n      实测：${errs.join("\n      ")}`);
-    } else {
-      passed.push(`${c.label} → ${errs.length} 处红（已点名）`);
+        + `\n      实测：${errs.join("\n      ")}` };
+    }
+    return { pass: true, msg: `${label} → ${errs.length} 处红（已点名）` };
+  }
+  for (const c of SELF_TEST_CASES) {
+    for (const shape of c.simulateTreeShapes ?? [null]) {
+      const r = execCase(c, shape);
+      if (r.pass) passed.push(r.msg); else failures.push(r.msg);
     }
   }
   console.log(`docs-drift-check --self-test：全部锚点的反向证（改→红、不改→绿、放行分支变异→绿；变异未落上也算失败）`);
