@@ -51,6 +51,14 @@
   - 定性：**测试期望过期，不是产品回归**。引擎仍然不就地改写宿主传入的旧块（本地 fake-provider 复现：同一轮 resume 前后宿主对象的键集合逐字相同，旧块上没被补 `erix`），投影的 `erix` 优先 / 顶层回退优先级也未变（旧块仍只回退 `executionStatus`，不伪造 `toolCallKey`/`durationMs`）。
   - 改法：旧正文按升级前账本的真实形状写进轮行（`appendRound(round 1, …)`），快照留一份副本顺带钉住「快照正文不再被当成上下文」。**断言一条没删、没放宽**（`legacy.erix === undefined` 等原样）。
   - 顺手把 F9b 加硬（只增不减）：包一层 `saveRunSnapshot` 收引擎每次写的快照（`messages` = `cloneState(messages)`，即引擎**内存**上下文的逐字副本），断言里面的旧块键集合与宿主传入的逐字相同、没被补 `erix`。原断言只读 `store.load()`（磁盘），**改内存不落盘那种坏法它看不见**；反向证：在 `resume-manager.js#restoreResume` 里临时给 `ctx.messages` 的旧 `tool_result` 补一个 `erix`（`cp` 备份 + `md5sum` 逐字还原）⇒ 新探针红（`inMemoryLegacyErix` 带上了值），而磁盘侧 `legacy.erix` 仍是 `undefined`——**旧断言照旧绿**，证明这条加硬不是重复。真机实测 `快照探针=6 份`（非空转）。
+
+### Documentation
+
+- **契约补一句「`partialPersistence` 值不值得开」：只降低续跑时的重生成成本，先量自己的崩溃重排队率再决定（issue #295；纯文档，`src/` 零改动、默认值与选项白名单未动）。**
+  中英契约各加一段（`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`，落在「中止后事实分布」那节的收口处，**不新开节**）：这个选项只降低**续跑时重新生成正文**的成本，它不是把部分正文摆到用户面前的渠道（那是 `error.finalText`）；而它在稳态下做的快照写入，在宿主自己的崩溃重排队率低时是净亏。
+  配一条**可执行判据**，句式是「先量再决定」：排队里的 run 中 `attempts > 1` 的占比（`run_queue.attempts`）——不写「低于 X 就别开」这类我们没测过的阈值。
+  宿主 erix-station 的实测按**证据**引用、不当建议：开发期十天自然崩溃重排约 1 次（全量 `attempts > 1` 8/133，其中 3 条是人为 `docker pause` / `kill -9` 演练）；⚠ 单机单用户、且是它修完自身缺陷之后的样本，**不外推**。因此不建议退役该选项（留在白名单里、五个测试文件覆盖、默认关零成本）。
+  门禁：`npm run check:docs` / `npm run check:docs:strict` 绿（中英成对骨架照校）；新文本无裸行号，符号锚点组数 77 不变、裸行号棘轮实测 **136 = 基线 136**。
 ## [0.23.0] - 2026-10-21
 
 **本版要点：存储收敛（工单 261021 三刀 + 投影改读折叠）——账本从「一轮一行、正文挂在轮行上」改成「一条消息一成型就落盘、轮行只留元数据」，`store.load()` 负责把消息行折回轮行。**

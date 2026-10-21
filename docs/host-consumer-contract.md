@@ -1148,6 +1148,20 @@ reasoning, possibly nothing at all, up to `intervalMs` stale); and a host must n
 "`partial: true` but zero `RoundRecord` for that round" as a persistence bug — that is the
 documented shape of an abort without partial persistence.
 
+Its value proposition comes down to one thing: `partialPersistence` lowers only the cost of
+**regenerating that text when the run resumes**; it is not the channel that puts the text in
+front of a user (that is `error.finalText`), and the snapshot writes it performs in steady
+state are a net loss when a host's own crash-requeue rate is low. So measure that rate
+before enabling it — the share of queued runs with `attempts > 1` (`run_queue.attempts`, the
+number erix-station reads) — and decide from your own number rather than from a threshold
+measured somewhere else. The host that asked for the option is itself the evidence, cited as
+observation and not as advice: over ten days of development erix-station saw roughly one
+natural crash-requeue (`attempts > 1` on 8 of 133 runs, 3 of those 8 being deliberate
+`docker pause` / `kill -9` drills); ⚠ that is a single-machine, single-user sample taken
+after the host had fixed its own defects — do not extrapolate it. It is not a reason to
+retire the option either: it stays in the whitelist, five test files cover it, and it costs
+nothing while it is off.
+
 ## Judge record correlation and run outcome (issue #165)
 
 Judge decisions are consumed off `onJudge` (the CLI appends them to `judge.log`;
