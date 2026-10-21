@@ -6,12 +6,15 @@
 
 ## 1. 消费方背景与痛点
 
-### app_container（`apps/worker/src/pi/` + `packages/context`）
+> 本文里的路径引用写作 `<仓名>:<那个仓里的路径>`——例如 `touwaka:lib/agent/`。前缀写的是这个路径**属于哪个仓**
+> （口径见 `AGENTS_cn.md`）；**不带**前缀的就是本仓路径，必须能在本仓解到。
+
+### app_container（`app_container:apps/worker/src/pi/` + `app_container:packages/context`）
 
 - 已有能力：双协议归一化（OpenAI/Anthropic → 统一的 `tool_use`/`tool_result` 块）、基于签名窗口比对的停滞检测、固定十轮硬窗口、`max_tokens` 续写，以及 idea 对话的骨架折叠（`chat_summary_json` 加 `foldedUpTo` 水位线）。
 - 痛点：（1）硬窗口会静默丢弃早期轮次，因此一个 24 轮的开发任务可能丢失一半历史，模型可能重复已完成的工作；（2）provider 错误会使整个任务失败，导致 reaper 从头开始，浪费已经支付的 LLM 调用；（3）`pi_models.context_window_tokens` 已存储，却没有接入循环（`llm-context-budget.md` §7，“本周期不改”）；（4）骨架折叠输出没有确定性的大小约束，依赖 LLM 遵守预算，而不是将最终大小保持为代码不变量。
 
-### touwaka（`lib/agent/` + `lib/context-organizer/`）
+### touwaka（`touwaka:lib/agent/` + `touwaka:lib/context-organizer/`）
 
 - 已有能力：基于预算的整组折叠与统计摘要（`history-compactor`、R19-1）、轮内快照重试（`round-state-snapshot`）、完成信号检测（R15）、相邻 assistant 合并（R16-3）、孤儿消息保护，以及面向对话负载的 Psyche 反思系统。
 - 痛点：两套实现相互重复，却各自独立演进；压缩与重试方面的经验没有回流到共享运行时。

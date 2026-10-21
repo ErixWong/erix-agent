@@ -6,12 +6,16 @@ This document was first drafted on 2026-08-29 and has been reconciled with the i
 
 ## 1. Consumer context and pain points
 
-### app_container (`apps/worker/src/pi/` + `packages/context`)
+> Path references in this document are written `<repo>:<path inside that repo>` — e.g.
+> `touwaka:lib/agent/`. The prefix names the repository the path lives in (the wording rule is in
+> `AGENTS.md`); a path **without** a prefix is a path inside this repository and must resolve here.
+
+### app_container (`app_container:apps/worker/src/pi/` + `app_container:packages/context`)
 
 - Existing capabilities: dual-protocol normalization (OpenAI/Anthropic to common `tool_use`/`tool_result` blocks), stall detection based on signature-window comparison, a fixed ten-round hard window, `max_tokens` continuation, and skeleton folding for idea conversations (`chat_summary_json` plus the `foldedUpTo` watermark).
 - Pain points: (1) the hard window silently discards early rounds, so a 24-round development task can lose half its history and the model may redo completed work; (2) a provider error fails the whole task and causes the reaper to start over, wasting the LLM calls already paid for; (3) `pi_models.context_window_tokens` is stored but was not wired into the loop (`llm-context-budget.md` §7, “not changed this cycle”); and (4) skeleton-folding output had no deterministic size enforcement, relying on the LLM to obey the budget instead of keeping the final size a code invariant.
 
-### touwaka (`lib/agent/` + `lib/context-organizer/`)
+### touwaka (`touwaka:lib/agent/` + `touwaka:lib/context-organizer/`)
 
 - Existing capabilities: budget-driven whole-group folding with statistical summaries (`history-compactor`, R19-1), in-round snapshot retry (`round-state-snapshot`), completion-signal detection (R15), adjacent-assistant merging (R16-3), orphan-message protection, and the Psyche reflection system for conversation workloads.
 - Pain point: the two implementations duplicate one another while evolving separately, and the lessons from compaction and retry do not flow back into a shared runtime.

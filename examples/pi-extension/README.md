@@ -262,8 +262,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 - **后台 run 与扩展同进程**：pi 进程退出 / 扩展 `/reload` 会杀掉它（`status.json` 只留下最后一个已知状态，
   **不会自动续跑**）。⚠ 这**不是** `pi-subagents` 的做法：上游**每个**后台 run 都 `spawn` 一个独立 runner 进程
-  （上游 `pi-subagents` 仓的 `src/runs/background/async-execution.js:4` 导入 `spawn`，它的 `spawnRunner` 定义在该仓 `:385`、`:484` 真调用，
-  调用点 `:1255` / `:1800`——这四个行号全部属于那个仓，本仓没有这个文件）。
+  （上游 `pi-subagents` 仓的 `pi-subagents:src/runs/background/async-execution.js:4` 导入 `spawn`，那里的 `spawnRunner` 定义在该仓 `:385`、`:484` 真调用，
+  调用点 `:1255` / `:1800`——这四个行号全部属于那个仓，本仓没有这个文件；路径写成 `pi-subagents:` 前缀形式就是声明「它不是本仓路径」，口径见 `AGENTS.md`）。
   所以「同进程 + 不起子进程 / IPC」是**本单自己的选择**而不是跟上游——理由与代价见
   `docs/research/2026-10-13-pi-subagents-async-attribution.md` §6（旧版本这里写的「`pi-subagents` 也没为每个子任务
   spawn 子进程（全仓唯一 `spawnSync` 在 `herdr-pi-bridge.js:1`）」是假的，#269 已改：上游 `spawnSync` 有十来处，

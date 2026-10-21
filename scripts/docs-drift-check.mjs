@@ -2161,12 +2161,19 @@ function bareLineExemptionEntryErrors() {
   return out;
 }
 
+/** 裸行号一侧的外仓前缀（工单 261021-03 B1）：`BARE_LINE_RE` 不带首部边界，所以
+ *  `pi-subagents:src/runs/background/async-execution.js:4` 里的 `src/…:4` 会被抽到。回看匹配点之前的
+ *  那几个字符就能判「它是不是带了仓名前缀」。边界用 `[^\w./-]`（反引号 / 括号 / 中文标点都是），
+ *  于是同名的裸 `src/x.js:4` 不会被误归到前缀那一档。 */
+const BARE_LINE_PREFIX_RE = /(?:^|[^\w./-])([a-z][a-z0-9_-]{1,30}):$/;
+
 function collectBareLineRefErrors() {
   const out = [];
   const notes = [];
   const docs = refScanDocs();
   const unique = new Map();   // `${doc}|${target}|${from}-${to}` → { doc, line, target, from, to }
   const exemptHits = new Set();
+  const extPrefixed = new Set();   // 带已知外仓前缀的外仓行号（不计棘轮、不查存在性）
   let occurrences = 0;
   for (const rel of docs) {
     const rec = fileRecord(rel);
@@ -2174,6 +2181,16 @@ function collectBareLineRefErrors() {
     rec.lines.forEach((line, i) => {
       BARE_LINE_RE.lastIndex = 0;
       for (const m of line.matchAll(BARE_LINE_RE)) {
+        // 工单 261021-03 B1：写成 `<仓名>:src/…:N` 的外仓引用 —— 行号属于那个仓，本仓没有可核对的真值，
+        // 所以既不查存在性也**不计入棘轮**（只减不增的基线只能被本仓的改动推动）。
+        // 前缀不在已知清单里 ⇒ 照样红：否则「随手编个前缀」就成了把死链藏起来的口子。
+        const pm = line.slice(0, m.index).match(BARE_LINE_PREFIX_RE);
+        if (pm) {
+          const v = externalRepoPrefixVerdict(`${pm[1]}:${m[0]}`);
+          if (v?.ok) { extPrefixed.add(`${rel}|${pm[1]}`); continue; }
+          out.push(`bare-lines: ${rel}:${i + 1} 写了带外部仓前缀的 \`${pm[1]}:${m[0]}\`，${v.why}`);
+          continue;
+        }
         occurrences += 1;
         const target = `src/${m[1]}`;
         const from = Number(m[2]);
@@ -2232,7 +2249,8 @@ function collectBareLineRefErrors() {
   } else if (baseline !== null && measured < baseline) {
     notes.push(`bare-lines: 实测 ${measured} 处 < 基线 ${baseline} 处——存量在变少，请把 BARE_LINE_REF_BASELINE 降到 ${measured}（降基线要写理由，棘轮不许空转）`);
   }
-  notes.push(`bare-lines: 覆盖面 ${docs.length} 份文档里裸行号引用 ${occurrences} 次出现 / 唯一 (文档,目标文件,行区间) ${unique.size} 处，` + `其中声明式豁免 ${exemptHits.size} 处（${BARE_LINE_EXEMPTIONS.length} 条条目）⇒ 棘轮口径实测 **${measured}** vs 基线 ${baseline}`);
+  notes.push(`bare-lines: 覆盖面 ${docs.length} 份文档里裸行号引用 ${occurrences} 次出现 / 唯一 (文档,目标文件,行区间) ${unique.size} 处，` + `其中声明式豁免 ${exemptHits.size} 处（${BARE_LINE_EXEMPTIONS.length} 条条目）⇒ 棘轮口径实测 **${measured}** vs 基线 ${baseline}`
+    + `；另有带已知外部仓前缀的外仓行号 ${extPrefixed.size} 处（文档|仓名 去重，既不计棘轮也不查存在性，见 EXTERNAL_REPO_PREFIXES）`);
   collectBareLineRefErrors.notes = notes;
   return out;
 }
@@ -2409,11 +2427,18 @@ const EXPECTED_ABSENT_PATHS = new Map([
   ["transcript.json", "erix run 写进宿主输出目录的 transcript 文件名（host-upgrade-guide-v030 中英 :94/:99 讲的是宿主怎么读它），不是仓库文件"],
   ["checkpoint-executor.js", "0.x 时代的 `src/loop/checkpoint-executor.js`（ADR-015 之后已拆掉），docs/design/2026-09-17:25 写当时落点时引的；文档在讲历史，所以登记"],
   ["console.log", "CHANGELOG:22 写的是 JS 调用形式 `console.log(...)`，不是文件路径——它被 .gitignore 的 `*.log` 顺手接住了，所以必须在这里写清它不是路径，而不是假装不存在"],
+  // —— 以下是工单 261021-03 B1 把架构中英两份纳进 `paths` 覆盖面后暴露的两处：文档就在校「这个文件不存在」——
+  //   它们是「预期的不在场」（与上面 `src/loop.js` 同档），不是死链，也不是外仓路径（前缀法不适用于它们）。
+  ["src/providers/index.js", "架构中英（docs/architecture{,_cn}.md）在讲「当前目录树**特意不包含** providers 的 index，也不导出通用的 `createProvider` 工厂」——文档主旨就是这个路径不存在"],
+  ["src/skills/index.js", "同上：`src/skills/` 只发 `loader.js`，没有 `src/skills/index.js`、也没有 `./skills` 子路径导出（中英同一句）"],
 ]);
 /** ② 引用的是**另一个仓库/宿主安装物/文档里举的示意名**（写清归属或凭什么不是路径）。 */
 const EXTERNAL_REPO_PATHS = new Map([
   ["src/shared/parent-wake.js", "上游 pi-subagents 仓内的路径（#269 逐分支对照的证据行号就在那个子模块里），本仓没有同名文件"],
-  ["src/runs/background/async-execution.js", "上游 pi-subagents 仓内的路径（#269 对照的等待循环本体）"],
+  // （工单 261021-03 B1：这里原本还有一条 `src/runs/background/async-execution.js`——它是被
+  //  `examples/pi-extension/README.md` 那一处引用养着的，现在那一处已改写成
+  //  `pi-subagents:src/runs/background/async-execution.js:4`，逐路径登记已被**前缀登记**取代，反向校（条目空转）
+  //  就把它带红了。`docs/research/2026-10-13-*` 与 CHANGELOG 里的写法不改：那是快照档案与历史条目。）
   ["dist/core/extensions/virtual-modules.js", "上游 pi 发行包的编译产物（#246 写 host-consumer-contract 时读的就是它）"],
   ["dist/core/extensions/loader.js", "上游 pi 发行包的编译产物（同上）"],
   ["docs/extensions.md", "pi 自己的官方文档（本仓不镜像）"],
@@ -2433,6 +2458,61 @@ const EXTERNAL_REPO_PATHS = new Map([
   ["llm-context-budget.md", "宿主 touwaka 仓里的设计档案（docs/requirements 中英 :12 引它 §7「not changed this cycle」），本仓不镜像"],
   ["skill.mjs", "技能目录的**约定入口名**（ADR-008 / docs/decisions/014 / harness-comparison 中英讲的是约定，不是某个具体文件）；本仓实物是 examples/skills/getTime/skill.mjs 与 examples/skills/todo/skill.mjs 两个，拿裸名指它俩属于约定名不是路径"],
 ]);
+/** ②′ 外部仓引用的**前缀标记法**（工单 261021-03 B1）。
+ *
+ * 病根：覆盖面从 24 抬到 31 之后，架构 / 需求对照 / pi 扩展 README 里那批「引用别的仓库的路径」
+ * 全暴露在红灯里（`lib/agent/`、`lib/context-organizer/`、`src/runs/background/async-execution.js:4`…）。
+ * 用 `EXTERNAL_REPO_PATHS` 逐条登记能过，但它按**路径**开条目：外仓每多一个被引路径就得多一条白名单，
+ * 而白名单条目本身会腐朽（#273/#278 已经为这个形状写过三条反向证）。前缀标记法把归属写在**引用本身**上：
+ *   `touwaka:lib/agent/`、`pi-subagents:src/runs/background/async-execution.js:4`
+ * 冒号前是**已知外部仓名**（下表逐仓点名 + 写归属），冒号后是那个仓里的路径。于是
+ *   ① 不查本仓存在性（那本来就不是本仓文件），
+ *   ② **不计入裸行号棘轮**（`BARE_LINE_REF_BASELINE` 数的是本仓可核对的裸行号；一条外仓引用不该把
+ *      只减不增的基线顶上去，也不该为了让它不顶而删掉真证据）；
+ *   ③ 前缀**不在**已知清单里 ⇒ 红 —— 这条是全部放宽的代价：否则「随手编个前缀」就成了死链的免检通道。
+ * 已知清单还会被**反向校**（没有任何一处引用用到这个仓名 ⇒ 红，与四张白名单登记表同口径），条目不会烂在那儿。
+ * 一句话口径（AGENTS 中英「文档真值」一节同写）：**引用别的仓库的文件时写 `<仓名>:<该仓路径>`，
+ * 仓名必须是 `EXTERNAL_REPO_PREFIXES` 里登记过的那几个；不带前缀就是本仓路径，必须解得到。** */
+const EXTERNAL_REPO_PREFIXES = new Map([
+  ["touwaka", "宿主 touwaka 仓：`docs/requirements{,_cn}.md` §1 的消费方画像写的就是它的代码位置（`lib/agent/`、`lib/context-organizer/`）"],
+  ["app_container", "宿主 app_container 仓：同上 §1 的另一个消费方（`apps/worker/src/pi/` + `packages/context`）；裸行号一侧的外仓根就地声明见 `BARE_LINE_EXEMPTIONS` 的 `apps/worker/` 两条"],
+  ["pi-subagents", "上游 pi-subagents 仓：`examples/pi-extension/README.md` §6 与 `docs/research/2026-10-13-*` 的对照证据行号都在那个子模块里（本仓没有 `src/runs/`）"],
+]);
+/** 前缀形状：`<小写仓名>:<路径>`。**排除** `://`（URL / 自定义 scheme，`push()` 早已整段跳过，这里再兜一道）、
+ *  排除冒号后紧跟空白或斜杠（`done: true`、`file://` 这类不是路径）。名字干限小写字母数字与 `-` `_`，
+ *  长度 ≥ 2 —— 拿实测语料校过：全仓 110 份已跟踪 Markdown 里形如 `<词>:` 又被当成路径的 token 一个都没有，
+ *  所以这条判据不会把既有写法误判成前缀（`--self-test` 的对照组也证明了这点）。 */
+const EXT_REPO_PREFIX_RE = /^([a-z][a-z0-9_-]{1,30}):(?!\/|\\|\s)(\S.*)$/;
+/** 取一处引用带的外部仓名；没带前缀返 null。 */
+function externalRepoPrefixOf(p) { return p.match(EXT_REPO_PREFIX_RE)?.[1] ?? null; }
+/** 前缀裁决（纯函数，反向证直接拿它问）：带前缀 ⇒ 已知仓放行 / 未知仓点名；不带前缀 ⇒ 交回常规四类裁决。 */
+function externalRepoPrefixVerdict(p) {
+  const repo = externalRepoPrefixOf(p);
+  if (repo === null) return null;
+  if (EXTERNAL_REPO_PREFIXES.has(repo)) return { ok: true, repo };
+  return {
+    ok: false,
+    repo,
+    why: `带的是外部仓前缀 \`${repo}:\`，但 "${repo}" 不在 EXTERNAL_REPO_PREFIXES 已知清单里（已知：`
+      + [...EXTERNAL_REPO_PREFIXES.keys()].join(" / ") + `）——前缀不是「不存在的免检通道」：它确实是清单外的仓，`
+      + `就去表里登记并写归属；它是本仓路径，就**删掉前缀**并改成真的本仓路径（漏写前缀与编造前缀同样红）`,
+  };
+}
+/** 已知仓名的**使用情况**：扫覆盖面（点名文档 + 实扫指南）里全部带前缀的引用，供反向校「条目空转」。
+ *  行号在 `extractRefOccurrences` 里已被剥掉，所以带不带 `:N` 的引用都会算进来（不依赖两处判据的执行顺序）。 */
+function externalRepoPrefixCensus() {
+  const used = new Set();
+  for (const rel of new Set([...PATH_DOCS, ...refScanDocs()])) {
+    const rec = fileRecord(rel);
+    if (!rec) continue;
+    for (const { p } of extractRefOccurrences(rec.text).refs) {
+      const repo = externalRepoPrefixOf(p);
+      if (repo) used.add(repo);
+    }
+  }
+  return used;
+}
+
 /** ③ 生成物：由命令产出、被 .gitignore 忽略，仓库里没有是预期的。**模式**级条目（一文件一条会造出
  *  63 条同义自述），但每条都带 why 并与 .gitignore 互校：匹配了模式却不被忽略 → 红。 */
 const GENERATED_ARTIFACT_REFS = [
@@ -2709,6 +2789,9 @@ function candidatePaths(rel) {
 /** 把一处解不到的引用归到四类里；解得出结论就返回 null。 */
 /** 分类台账：每条白名单被哪一处引用用到过，都在这里留痕；收尾时反查「登记了却没一处用上」的条目。 */
 const REF_CLASS_HITS = new Set();
+/** 台账之三（工单 261021-03 B1）：外部仓前缀被哪些仓名真的用过——只用来报「条目空转」，
+ *  使用情况本身另走 `externalRepoPrefixCensus()`（它不依赖两处判据的执行顺序）。 */
+const extPrefixHits = new Set();
 /** 台账之二（#280）：某条登记**被哪一处引用提到过**——在裁决**之前**记，与「那一处能不能放行」无关。
  *  「白名单条目空转」回答的是「登记表里有没有没人用的条目」，不回答「引用能不能裁决」。
  *  修前反向校只读 REF_CLASS_HITS，于是同一处引用一旦被判红，这里就**再补一条**「没有一处引用真正用到它」
@@ -2813,6 +2896,7 @@ function collectPathErrors() {
   }
   REF_CLASS_HITS.clear();
   REF_REFERRING_HITS.clear();
+  extPrefixHits.clear();
   let excusedArchive = 0;
   for (const rel of PATH_DOCS) {
     const { refs, commands } = candidatePaths(rel);
@@ -2820,7 +2904,14 @@ function collectPathErrors() {
     let resolvedByDoc = 0;
     let resolvedByBase = 0;
     let excused = 0;
+    let extPrefixed = 0;
     for (const { p, line } of refs) {
+      const ext = externalRepoPrefixVerdict(p);   // 工单 261021-03 B1：带外部仓前缀的引用不查本仓存在性
+      if (ext) {
+        if (ext.ok) { extPrefixHits.add(ext.repo); extPrefixed += 1; }
+        else bad.push(`\`${p}\`（第 ${line} 行）：${ext.why}`);
+        continue;
+      }
       const r = resolveRef(p, rel, ign);
       if (r.resolved) {
         if (r.via === "文档同目录") resolvedByDoc += 1;
@@ -2847,7 +2938,7 @@ function collectPathErrors() {
     if (badCommands.length) {
       out.push(`paths: ${rel} 引用的命令不可执行：${badCommands.map((c) => `第 ${c.line} 行 \`${c.kind === "file" ? `node ${c.value}` : `npm run ${c.value}`}\``).join(", ")}`);
     }
-    notes.push(`paths: ${rel} 核对 ${refs.length} 个路径引用（其中 ${resolvedByDoc} 个靠文档同目录、${resolvedByBase} 个靠唯一同名解析）、${commands.length} 个命令；白名单判定 ${excused} 处`);
+    notes.push(`paths: ${rel} 核对 ${refs.length} 个路径引用（其中 ${resolvedByDoc} 个靠文档同目录、${resolvedByBase} 个靠唯一同名解析）、${commands.length} 个命令；白名单判定 ${excused} 处、外部仓前缀 ${extPrefixed} 处`);
   }
   // 本机档案与**无斜杠裸名**两类都**不限 PATH_DOCS**，全仓已跟踪 Markdown 都跑（#273 点名的两条历史样本就在
   // docs/harness-comparison/05 与 docs/research/2026-09-26 里，而那两份文档不适宜整体纳入
@@ -2862,6 +2953,12 @@ function collectPathErrors() {
     const { refs } = candidatePaths(rel);
     const bad = [];
     for (const { p, line } of refs) {
+      const ext = externalRepoPrefixVerdict(p);   // 全仓 .md 那一轮同一条前缀判据（前缀不是 PATH_DOCS 专享的通道）
+      if (ext) {
+        if (ext.ok) extPrefixHits.add(ext.repo);
+        else bad.push(`\`${p}\`（第 ${line} 行）：${ext.why}`);
+        continue;
+      }
       const r = resolveRef(p, rel, ign);
       if (r.resolved) continue;
       const rule = r.ignoredPath ? r.rule : ign.ruleFor(p.replace(/^\.\.?\//, ""));
@@ -2948,6 +3045,14 @@ function collectPathErrors() {
       out.push(`paths: 白名单条目 \`${p}\` 没有一处引用真正用到它——要么它现在已能直接解析到（那就该删），`
         + `要么被检文档（${PATH_DOCS.join(", ")} + 全仓 .md）里已没人引用它；留着就是给未来的漂移留后门`);
     }
+  }
+  // 已知外部仓前缀也要反向校（工单 261021-03 B1，与四张白名单登记表同口径）：没人用的仓名就是给
+  // 未来的死链留的后门（随手拿一个已登记的仓名当「不是本仓文件」的通行票）。
+  const extUsed = externalRepoPrefixCensus();
+  for (const repo of EXTERNAL_REPO_PREFIXES.keys()) {
+    if (extUsed.has(repo)) continue;
+    out.push(`paths: 外部仓前缀 \`${repo}:\` 没有一处引用真正用到它（校面 = 点名文档 ∪ 实扫指南共 ${new Set([...PATH_DOCS, ...refScanDocs()]).size} 份）——`
+      + `要么引用已改对/已删，要么该删这条登记；前缀清单里留着没人用的仓名，等于给下一个死链预备了一个借口（${EXTERNAL_REPO_PREFIXES.get(repo)}）`);
   }
   // #278：逐份点名的跳仓文档也要反向校—4 份文档里已经没有任何需要豁免的裸名（或文档已改名/删了）
   // 就该销账，否则豁免清单会默许烂下去（跟白名单条目同病）。
@@ -3787,11 +3892,61 @@ const SELF_TEST_CASES = [
     overlay: { [CONTRACT_CN]: mentionInProse("自测探针（#286 返工 R4）：这里只是在文档靠前插一句散文，什么引用都没动。") },
     expectGreen: true,
   },
+
+  // —— 工单 261021-03 B1：外部仓引用的**前缀标记法**（`<仓名>:<该仓路径>`）。放宽了什么就必须有反向证：
+  //    「带前缀 ⇒ 不查本仓存在性、不计裸行号棘轮」是把裁决交给**引用自己写的归属**，所以必须同时钉住
+  //    ① 漏写前缀 ⇒ 红（否则谁都能拿一个冒号把死链藏起来）；
+  //    ② 写了清单外的仓名 ⇒ 红（前缀不是「不是本仓文件」的免检通道）；
+  //    ③ 前缀写法本身不动 ⇒ 绿（放行分支真的在放行，不是碰巧没扫到）；
+  //    ④ 裸行号一侧同一条判据（前缀在/不在，两例各自点名）；
+  //    ⑤ 前缀清单里的仓名没人用 ⇒ 红（与四张白名单登记表同口径，条目不许烂在那儿）。
+  {
+    label: "工单 261021-03 B1：requirements EN 把 `touwaka:lib/agent/` 的**前缀删掉** ⇒ 必须红（漏写前缀就是本仓死链）",
+    overlay: { [REQ_EN]: (t) => t.replace("`touwaka:lib/agent/`", "`lib/agent/`") },
+    expect: [/paths: docs\/requirements\.md 引用了无法裁决的仓库内路径/, /`lib\/agent\/`（第 \d+ 行）：本仓不存在/],
+    expectFiles: [REQ_EN],
+  },
+  {
+    label: "工单 261021-03 B1：requirements EN 换成清单外的仓名 `pi:` ⇒ 必须红（编一个前缀不能把死链藏起来）",
+    overlay: { [REQ_EN]: (t) => t.replace("`touwaka:lib/agent/`", "`pi:lib/agent/`") },
+    expect: [/paths: docs\/requirements\.md 引用了无法裁决的仓库内路径/,
+      /外部仓前缀 `pi:`，但 "pi" 不在 EXTERNAL_REPO_PREFIXES 已知清单里/],
+    expectFiles: [REQ_EN],
+  },
+  {
+    label: "工单 261021-03 B1 的放行证：把带前缀的外仓路径改成本仓解不到的名字 ⇒ 必须 0 错（带前缀真的不查本仓存在性，不是碰巧没扫到）",
+    overlay: { [REQ_EN]: (t) => t.split("`touwaka:lib/agent/`").join("`touwaka:lib/agent-selftest-probe/`") },
+    expectGreen: true,
+  },
+  {
+    label: "工单 261021-03 B1（裸行号一侧）：删掉 pi 扩展 README 的 `pi-subagents:` 前缀 ⇒ 既报「目标不存在」又把只减不增的棘轮顶到 " + (BARE_LINE_REF_BASELINE + 1),
+    overlay: { [PI_EXT_README]: (t) => t.replace("`pi-subagents:src/runs/background/async-execution.js:4`", "`src/runs/background/async-execution.js:4`") },
+    expect: [/bare-lines: examples\/pi-extension\/README\.md:\d+ 引用 src\/runs\/background\/async-execution\.js:4，但 .*在本仓不存在/,
+      ratchetOverBaseline(BARE_LINE_REF_BASELINE + 1, BARE_LINE_REF_BASELINE)],
+    expectFiles: [PI_EXT_README],
+  },
+  {
+    label: "工单 261021-03 B1（裸行号一侧的未知前缀）：把 `pi-subagents:` 改成 `pi-workflow:` ⇒ 两侧都必须点名这个清单外的仓名",
+    overlay: { [PI_EXT_README]: (t) => t.replace("`pi-subagents:src/runs/background/async-execution.js:4`", "`pi-workflow:src/runs/background/async-execution.js:4`") },
+    expect: [/bare-lines: examples\/pi-extension\/README\.md:\d+ 写了带外部仓前缀的 `pi-workflow:src\/runs\/background\/async-execution\.js:4`，.*不在 EXTERNAL_REPO_PREFIXES 已知清单/,
+      /paths: examples\/pi-extension\/README\.md[\s\S]*外部仓前缀 `pi-workflow:`/],
+    expectFiles: [PI_EXT_README],
+  },
+  {
+    label: "工单 261021-03 B1：把中英需求对照里的 `app_container:` 改成已登记的另一个仓名 ⇒ 前缀条目空转必须红（与前四张白名单登记表同口径）",
+    // 为什不拿「改脚本自己的表」当变异：overlay 只改**文本**，改不动运行时那份 `EXTERNAL_REPO_PREFIXES`（与
+    // `simulateLooseDecl` 同一课）。改引用侧反而仍的是真命题：登记了却没人用 = 给下一个死链预备了借口。
+    overlay: {
+      [REQ_EN]: (t) => t.replace("`app_container:apps/worker/src/pi/`", "`touwaka:apps/worker/src/pi/`"),
+      [REQ_CN]: (t) => t.replace("`app_container:apps/worker/src/pi/`", "`touwaka:apps/worker/src/pi/`"),
+    },
+    expect: [/外部仓前缀 `app_container:` 没有一处引用真正用到它/],
+  },
 ];
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 94;   // #286 T-b1a R1 之后共 96 例（下限留 2 例余量给并行分支，见上：别按当天条数写死）
+const MIN_SELF_TEST_CASES = 99;   // 工单 261021-03 B1 加了 6 例前缀反向证（实测 **101** 例，修前 95 例；下限留 2 例余量给并行分支，见上：别按当天条数写死）
 
 function runSelfTest() {
   const run = () => collectAllDrift();
