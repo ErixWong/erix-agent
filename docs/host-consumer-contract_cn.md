@@ -1907,7 +1907,7 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 `records.flatMap((record) => record.messages ?? [])` 这条口径——与改造前写出的账本逐字一致
 （金样：`scripts/message-journal-golden.mjs`）。
 
-对宿主 store 与宿主读方的三个推论：
+对宿主 store 与宿主读方的以下推论：
 
 - `kind`、`seq`、`partOf` 从此是**携带保真语义的字段**：丢了它们，消息行就折不回去，会
   以独立行的形式留在 `load()` 数组里。分组看 `round`，排序看 `seq`。
@@ -1927,6 +1927,12 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
   `restoreResume`（`src/loop/resume-manager.js`）把 `:input:` 行当 tail，延后到补跑结果之后才拼。
   真上游守卫：`examples/resume-real-e2e.test.mjs`（`ERIX_E2E_REAL=1`：真进程 SIGKILL → 同
   `--session` 续跑 → 账本闭合 / 不丢 / 不重复执行 / 半行隔离）。
+- **读账本一律过 `load()`，不要自己再折一遍原始行。**
+  `foldMessageRows`（`src/store/message-rows.js`）是唯一的读侧。自己重实现折叠——例如按内容
+  指纹给消息去重——会把**合法的重复**静默丢掉：两条前 400 字符相同的长消息会被并成一条，
+  而任何基于那个数组的计数都会错，且错不错取决于负载文本（「CLI 是不是真跑了 ≥2 次工具」
+  这种计数可能读成 1）。仓内先例：`scripts/cli-real-smoke.mjs` 的工具结果计数取自
+  `createFileTranscriptStore({ dir }).load(runId)`。
 
 ## 工具事实与字段归属（issue #284 / #285）
 
