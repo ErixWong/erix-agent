@@ -45,8 +45,7 @@
 `createMemoryTranscriptStore().load(runId)`——再按 `records.flatMap((record) => record.messages ?? [])`
 摊平，这正是引擎自己用的口径。两条仍然成立、可以放心依赖：
 
-- **`load()` 的形状没变。** 一轮一条记录、正文挂在上面，另外 0.22.0 引入的引擎事实行（`:control:` /
-  `:fold:` / `:ttl:` / `:resume:` / `:input:`）照旧存在，它们的 `messages` 照旧可能为空或缺失。
+- **`load()` 的形状没变。** 一轮一条记录、正文挂在上面，另外引擎自己的事实/控制行（`:control:` / `:fold:` / `:ttl:` 由 0.22.0 引入，`:resume` / `:input:` 更早）照旧存在，它们的 `messages` 照旧可能为空或缺失。
 - **行序就是追加序。** 消息行写在它描述的那次工具**执行之前**，所以「第 N 轮的正文」不再是
   「round 为 N 的那一行」。
 

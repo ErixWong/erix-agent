@@ -24,7 +24,7 @@
 //
 // 两个刻意的设计约束：
 // · **只有带 `seq` 的消息行参与折叠**。宿主经 `src/store/append-user-turn.js` 写的 `:input:` 行
-//   同样标 `kind: "message"`（行形状统一，投影可一视同仁），但没有引擎的轮内序号、也就没有排序
+//   同样携带正文（行形状统一，投影可一视同仁；但它**不带** `kind: "message"`，因为 `appendUserTurn` 不写这个字段），但没有引擎的轮内序号、也就没有排序
 //   依据；更硬的理由是 `appendUserTurn` 的幂等判据是「`store.load()` 里能看见自己那条 dedupKey」，
 //   被折叠吸走就会重复追加同一轮追问。
 // · **`partOf`**：一条逻辑消息的分片（一轮的多个 `tool_result` 改造前是同一条 user 消息的多个

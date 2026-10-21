@@ -49,7 +49,7 @@ column of your own DB that mirrors the journal line. If any of them expect the b
 which is the exact idiom the engine itself uses. Two things stay true and are safe to rely on:
 
 - **`load()`'s shape did not change.** One record per round, body attached, plus the engine fact rows
-  0.22.0 introduced (`:control:`, `:fold:`, `:ttl:`, `:resume`, `:input:`) — those still exist and still
+  the engine's own fact/control rows (`:control:`, `:fold:`, `:ttl:` landed in 0.22.0; `:resume` and `:input:` are older) — those still exist and still
   may carry an empty or absent `messages`.
 - **The row order is append order.** A message row is written *before* the tool it describes runs, so
   "the body of round N" is no longer "the row with round N".
