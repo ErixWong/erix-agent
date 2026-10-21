@@ -949,6 +949,174 @@ test("#207 R1：三个扩轮参数直传引擎 reflection（含 maxExtensions:0�
   assert.equal(captured.options.reflection, false, "ERIX_NO_REFLECTION=1 依旧把整个 reflection 关掉");
 });
 
+// —— issue #322 的宿主侧口子：`judgeDoneAdvisory`（引擎 reflection.judgeDoneAdvisory 的透传口）——
+
+test("#322 judgeDoneAdvisory 只认真布尔：true/false 原样进 params，脏值 bad_params，没传不凭空出现", () => {
+  // (a) 两个合法值都**原样**保留（`false` 是宿主明确说了「关」，不是本层替引擎造的默认值）
+  assert.equal(
+    core.parseRunParams({ task: "t", cwd: "/tmp", judgeDoneAdvisory: true }).judgeDoneAdvisory,
+    true,
+  );
+  assert.equal(
+    core.parseRunParams({ task: "t", cwd: "/tmp", judgeDoneAdvisory: false }).judgeDoneAdvisory,
+    false,
+    "false 不许被当成「没传」丢掉",
+  );
+
+  // (b) 字符串 / 数字 / 对象 / 数组 ⇒ bad_params，文案逐字钉住（与 finalGuard 同族口径）
+  for (const value of ["true", "false", "1", 1, 0, {}, [], [true]]) {
+    assert.throws(
+      () => core.parseRunParams({ task: "t", cwd: "/tmp", judgeDoneAdvisory: value }),
+      (error) => {
+        assert.equal(error.name, "ErixRunError");
+        assert.equal(error.code, "bad_params");
+        assert.equal(error.stage, "assembly");
+        assert.equal(
+          error.message,
+          `judgeDoneAdvisory 只能是 true | false，收到 ${JSON.stringify(value)}`,
+        );
+        return true;
+      },
+      `应当 bad_params：${JSON.stringify(value)}`,
+    );
+  }
+});
+
+test("#322 judgeDoneAdvisory 没传时：params 与交给 runToolLoop 的 options 里都不出现这个键", async () => {
+  // (c) parse 层：键根本不存在（而不是 `judgeDoneAdvisory: undefined`）
+  const bare = core.parseRunParams({ task: "t", cwd: "/tmp" });
+  assert.equal("judgeDoneAdvisory" in bare, false, "没传就不许替引擎造默认值");
+
+  // 装配层（judge 开着）：reflection 里只有 enabled + onReflection，引擎缺省一个不覆盖
+  const captured = {};
+  const untouched = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 20 },
+    makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
+  );
+  assert.deepEqual(
+    Object.keys(captured.options.reflection),
+    ["enabled", "onReflection"],
+    "未传时下发面一个字节都不许多（与 #207/#234 的「不覆盖引擎默认」同口径）",
+  );
+  assert.equal("judgeDoneAdvisory" in captured.options.reflection, false);
+  // diagnostics 同步不出现（现有断言的逐字不变是这里的真护栏）
+  assert.deepEqual(untouched.diagnostics.reflection, {
+    enabled: true, requested: {}, maxExtensions: core.ENGINE_DEFAULT_MAX_EXTENSIONS,
+  });
+
+  // judge 闸门关着时也一样：reflection 整块是 false，不会多出一个没人读的键
+  await core.runErixRun(
+    { task: "t", cwd: repoRoot },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT), captured }),
+  );
+  assert.equal(captured.options.reflection, false);
+});
+
+test("#322 judgeDoneAdvisory 与三个扩轮参数同传时四个键都在（合并而不是互相覆盖）", async () => {
+  // (d) judge 开着 + 四个参数同传：下发给引擎的 reflection 里四个键全在，值逐一对得上
+  const captured = {};
+  const all = await core.runErixRun(
+    {
+      task: "t", cwd: repoRoot, maxRounds: 20, judgeDoneAdvisory: true,
+      maxExtensions: 0, maxRoundsCap: 24, extensionStep: 2,
+    },
+    makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
+  );
+  assert.deepEqual(
+    Object.keys(captured.options.reflection).sort(),
+    ["enabled", "extensionStep", "judgeDoneAdvisory", "maxExtensions", "maxRoundsCap", "onReflection"],
+    "少了任何一个键就是互相覆盖了",
+  );
+  assert.equal(captured.options.reflection.judgeDoneAdvisory, true, "开关必须真的传给引擎");
+  assert.equal(captured.options.reflection.maxExtensions, 0, "maxExtensions: 0 不许被开关顶掉");
+  assert.equal(captured.options.reflection.maxRoundsCap, 24);
+  assert.equal(captured.options.reflection.extensionStep, 2);
+  assert.deepEqual(all.diagnostics.reflection.judgeDoneAdvisory, { requested: true, enabled: true });
+  assert.deepEqual(all.diagnostics.reflection.requested, {
+    maxExtensions: 0, maxRoundsCap: 24, extensionStep: 2,
+  }, "requested 仍只装扩轮三参数（advisory 走自己的键，不挤同族的账）");
+
+  // 只传开关（不动扩轮三参数）：也不得替引擎填那三个默认值
+  await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 20, judgeDoneAdvisory: false },
+    makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
+  );
+  assert.deepEqual(Object.keys(captured.options.reflection), ["enabled", "judgeDoneAdvisory", "onReflection"]);
+  assert.equal(captured.options.reflection.judgeDoneAdvisory, false, "明说「关」也要原样下发");
+});
+
+test("#322 judge 闸门关着时 judgeDoneAdvisory 不塞进 reflection，且 diagnostics / 模型文本都不静默", async () => {
+  const captured = {};
+  // maxRounds < 16 ⇒ judge 没跑 ⇒ reflection 整块是 false，不能夹带一个永不被读的键
+  const gated = await core.runErixRun(
+    { task: "t", cwd: repoRoot, judgeDoneAdvisory: true },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT), captured }),
+  );
+  assert.equal(captured.options.reflection, false, "judge 没跑时这个开关没有意义，不得塞进去");
+  // 但「传了」这件事必须看得见（与 requested/enabled 同族口径）
+  const gatedAdvisory = gated.diagnostics.reflection.judgeDoneAdvisory;
+  assert.equal(gatedAdvisory.requested, true, "宿主传了什么要照实记");
+  assert.equal(gatedAdvisory.enabled, false, "没生效就写没生效");
+  assert.match(gatedAdvisory.reason, /judge 未开启/u, "还要能看出为什么没生效");
+  assert.match(core.formatPayloadForModel(gated), /judgeDoneAdvisory 未生效/u);
+
+  // ERIX_NO_REFLECTION=1 同口径（judge 被环境变量关掉）
+  const envOff = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 20, judgeDoneAdvisory: true },
+    makeDepsWithoutStore({
+      provider: createFakeProvider(TWO_ROUND_SCRIPT), captured, extra: { env: { ERIX_NO_REFLECTION: "1" } },
+    }),
+  );
+  assert.equal(captured.options.reflection, false);
+  assert.deepEqual(envOff.diagnostics.reflection.judgeDoneAdvisory.enabled, false);
+  assert.match(core.formatPayloadForModel(envOff), /judgeDoneAdvisory 未生效/u);
+
+  // 脏值在 runErixRun 里归一成 bad_params 终局，不花模型钱（与扩轮三参数同形状）
+  let providerCalls = 0;
+  const dirty = await core.runErixRun(
+    { task: "t", cwd: repoRoot, judgeDoneAdvisory: "yes" },
+    makeDepsWithoutStore({
+      provider: { async chat() { providerCalls += 1; return { content: [], stopReason: "end_turn" }; } },
+    }),
+  );
+  assert.equal(dirty.ok, false);
+  assert.equal(dirty.error.code, "bad_params");
+  assert.equal(dirty.termination.reason, "failed");
+  assert.equal(providerCalls, 0);
+});
+
+test("#322 键名与引擎对账：引擎只认 reflection.judgeDoneAdvisory，本层下发的就是这个名字", async () => {
+  // 拼错了不会报错，只会静默失效 ⇒ 拿引擎自己的启动期校验当对账口。
+  const captured = {};
+  await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 20, judgeDoneAdvisory: true },
+    makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
+  );
+  const sent = captured.options.reflection;
+  assert.equal(sent.judgeDoneAdvisory, true, "本层下发的键名");
+  // 把同一份 reflection 里的值换成脏字符串交给**真** runToolLoop：报出来的错名必须就是本层用的那个
+  await assert.rejects(
+    () => runToolLoop({
+      provider: createFakeProvider([]),
+      initialUserMessage: "t",
+      executeTool: async () => "ok",
+      maxRounds: 2,
+      store: createMemoryTranscriptStore(),
+      reflection: { ...sent, judgeDoneAdvisory: "yes" },
+    }),
+    (error) => error instanceof TypeError
+      && error.message === "reflection.judgeDoneAdvisory must be a boolean",
+    "引擎侧文案变了就得重新核对 src/loop/orchestrator.js",
+  );
+  // 而本层真的下发的 boolean 不会被引擎拒（否则钱都花不出去）
+  const ok = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 20, judgeDoneAdvisory: true },
+    makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }),
+  );
+  assert.equal(ok.ok, true, JSON.stringify(ok.termination));
+  assert.equal(ok.diagnostics.reflection.judgeDoneAdvisory.enabled, true);
+});
+
 test("#207 R1：非法扩轮参数在 runErixRun 里归一成 bad_params 终局（不抛异常、不跑模型）", async () => {
   let providerCalls = 0;
   const provider = {

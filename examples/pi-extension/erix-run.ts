@@ -131,6 +131,20 @@ const parameters = Type.Object({
         `单次 guard 等待上限（毫秒），默认 ${FINAL_GUARD_TIMEOUT_MS}；只在 finalGuard: true 时有意义（没开启时传了会报 bad_params）。`,
     }),
   ),
+  // issue #322：引擎侧 reflection.judgeDoneAdvisory 的宿主侧口子（与上面的 reflection 三参数同族）。
+  judgeDoneAdvisory: Type.Optional(
+    Type.Boolean({
+      description:
+        "**默认关**（引擎缺省也是 false）。开启后，中途治理（judge）判定「目标已达成」时，"
+        + "它那句评审意见会作为**一条普通用户文本消息**在下一个安全点递给内层模型（直传引擎 "
+        + "reflection.judgeDoneAdvisory），于是模型能知道「为什么说它已经做完了」。\n"
+        + "**那是软提示，不是硬停止**：不会打断当前轮、不会拦工具调用、不会提前收尾，"
+        + "termination.reason 也不会因此改变（模型收到后继续干活是允许的）。\n"
+        + "只在 judge 真的跑了时才生效（maxRounds ≥ 16，且未设 ERIX_NO_REFLECTION=1）；"
+        + "judge 没跑时下发里根本不带这个键，终局的 diagnostics.reflection.judgeDoneAdvisory 会写清「没生效」。\n"
+        + "只接受 true | false，其他值报 bad_params。",
+    }),
+  ),
   sessionDir: Type.Optional(
     Type.String({
       description:

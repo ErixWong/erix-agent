@@ -326,10 +326,12 @@ export function resolveArtifacts({ transcriptPath, judgeLogPath }) {
  * 工具参数 → 归一化参数。抛 `ErixRunError("bad_params")`。
  *
  * @param {{task?:unknown, cwd?:unknown, maxRounds?:unknown, strategy?:unknown, timeoutMs?:unknown, model?:unknown,
- *   sessionDir?:unknown, transcript?:unknown, maxExtensions?:unknown, maxRoundsCap?:unknown, extensionStep?:unknown}} raw
+ *   sessionDir?:unknown, transcript?:unknown, maxExtensions?:unknown, maxRoundsCap?:unknown, extensionStep?:unknown,
+ *   judgeDoneAdvisory?:unknown}} raw
  * @param {{home?:string}} [options]
  * @returns {{task:string, cwd:string, maxRounds:number, strategy?:string, timeoutMs:number, model?:string,
- *   sessionDir?:string, maxExtensions?:number, maxRoundsCap?:number, extensionStep?:number}}
+ *   sessionDir?:string, maxExtensions?:number, maxRoundsCap?:number, extensionStep?:number,
+ *   judgeDoneAdvisory?:boolean}}
  */
 export function parseRunParams(raw = {}, { home = homedir() } = {}) {
   const task = textOf(raw?.task).trim();
@@ -417,6 +419,22 @@ export function parseRunParams(raw = {}, { home = homedir() } = {}) {
       "bad_params",
       "finalGuardTimeoutMs 只在 finalGuard: true 时有意义（没开启就别传，否则容易误以为在核验）",
     );
+  }
+
+  // issue #322 的宿主侧口子：评审意见回灌开关，**默认关**（没传就不写进 params，
+  // 让引擎自己的缺省 false 生效——本层不替引擎造默认值）。形状照上面的 `finalGuard`：
+  // 只认真布尔，`"true"` / `1` 这类脏值直接报错（当成「没传」就是把用户意图吞掉）。
+  // 与 finalGuard 的**唯一**差别：`false` 也原样保留（宿主明确说「关」，透传下去就是事实，
+  // 不是替引擎填的默认值）。
+  const judgeDoneAdvisoryRaw = raw?.judgeDoneAdvisory;
+  if (judgeDoneAdvisoryRaw !== undefined && judgeDoneAdvisoryRaw !== null && judgeDoneAdvisoryRaw !== "") {
+    if (typeof judgeDoneAdvisoryRaw !== "boolean") {
+      throw new ErixRunError(
+        "bad_params",
+        `judgeDoneAdvisory 只能是 true | false，收到 ${JSON.stringify(judgeDoneAdvisoryRaw)}`,
+      );
+    }
+    params.judgeDoneAdvisory = judgeDoneAdvisoryRaw;
   }
 
   // #207 R1：扩轮三参数。**maxExtensions 允许 0**（引擎是 `>= 0` 判断，0 = 关掉扩轮），
@@ -1778,16 +1796,43 @@ export async function runErixRun(rawParams = {}, deps = {}) {
     maxExtensions = reflectionEnabled
       ? (params.maxExtensions ?? ENGINE_DEFAULT_MAX_EXTENSIONS)
       : 0;
+    // issue #322：`judgeDoneAdvisory` 的下发体：没传就是空对象 ⇒ 下发给引擎的 reflection 里
+    // 一个键也不多（不许替引擎造默认值，引擎缺省 false）。
+    const advisoryRequested = params.judgeDoneAdvisory;
+    const advisoryOption = advisoryRequested === undefined
+      ? {}
+      : { judgeDoneAdvisory: advisoryRequested };
+    // diagnostics 里的那一份：requested = 宿主传了什么、enabled = 本次真下发了吗。
+    const advisoryDiagnostic = advisoryRequested === undefined
+      ? {}
+      : {
+        judgeDoneAdvisory: reflectionEnabled
+          ? { requested: advisoryRequested, enabled: true }
+          : {
+            requested: advisoryRequested,
+            enabled: false,
+            reason: "judge 未开启（需 maxRounds ≥ 16 且未设 ERIX_NO_REFLECTION=1）⇒ 开关没下发，本次没生效",
+          },
+      };
     context.reflection = {
       enabled: reflectionEnabled,
       requested: requestedExtensions,
       // 生效上限：未传时是引擎缺省（ ENGINE_DEFAULT_MAX_EXTENSIONS，不是本层下发的默认值）。
       maxExtensions,
+      // issue #322：评审意见回灌开关按既有 requested / enabled 同族口径透出：judge 闸门关着时
+      // requested 是宿主传的值而 enabled=false ⇒「传了但没生效」看得见，不静默；没传时整个键
+      // 不存在（而不是写个 false 冒充「宿主说了关」）。
+      ...advisoryDiagnostic,
     };
     const reflection = reflectionEnabled
       ? {
         enabled: true,
         ...requestedExtensions,
+        // issue #322：评审意见回灌开关，**与上面三个扩轮参数合并而不是覆盖**（两边各自展开，
+        // 同传时四个键都在），且只在宿主真传了的时候出现（没传就不写这个键 ⇒ 引擎缺省 false）。
+        // judge 闸门关着时 reflection 整块是 false、**不把这个开关塞进去**：judge 没跑就没有
+        // 「中途判定目标已达成」这件事，下发一个永不被读的键只会让人以为它在生效。
+        ...advisoryOption,
         // 扩轮计数的唯一可靠入口：引擎只在真的执行了 extend / extend+redirect 时调它
         // （src/loop/orchestrator.js 里紧接 governorState.extensionCount += 1）。
         // ⚠ 它不在隔离名单里（契约「reflection.onReflection 仍按未隔离处理，抛错杀 run」），
@@ -2011,6 +2056,11 @@ export function formatPayloadForModel(payload, { limit = 20_000 } = {}) {
     // 传了扩轮参数但 judge 闸门没开 → 明说它没生效，别假称传了。
     lines.push(`  ↳ 扩轮参数未生效（judge 未开启，需 maxRounds ≥ 16 或去掉 ERIX_NO_REFLECTION）：`
       + JSON.stringify(reflection.requested));
+  }
+  if (reflection?.judgeDoneAdvisory?.requested === true && reflection.judgeDoneAdvisory.enabled === false) {
+    // 同上口径：传了 true 但 reflection 整块没下发 ⇒ 本次一条评审意见也不会回灌给模型。
+    lines.push(`  ↳ judgeDoneAdvisory 未生效（judge 未开启，需 maxRounds ≥ 16 或去掉 ERIX_NO_REFLECTION）`
+      + `：传了 true，但本次不会有任何评审意见回灌给模型`);
   }
   if (payload?.error?.message) {
     lines.push(`[error] ${payload.error.code ?? payload.error.name ?? "Error"}: ${payload.error.message}`);
