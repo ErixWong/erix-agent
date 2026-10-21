@@ -1,6 +1,18 @@
 # Changelog
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
+## [Unreleased]
+
+### Changed
+
+- **跨版本 e2e 夹具化：老账本改读仓内只读夹具，不再要求「这台机器上恰好装着 0.22.0 的全局 CLI」（`examples/cross-version-real-e2e.test.mjs` + 新增 `test/fixtures/journal-0.22.0/`；`src/` 零改动、无新依赖、`package.json` 版本号未动）。** 夹具化之前，这条用例从 `~/.npm-global/bin/erix`（要求 0.22.0）现产老账本；全局 CLI 升到 0.23.0 之后它整条 **skip**（实测 `1 pass / 1 skip`）——那是**前置依赖外部状态**，不是被测行为坏了。
+  - **夹具怎么来的**：`npm pack erix-agent@0.22.0` 解包到临时目录，用它的 CLI 跑一个**需要 ≥1 次工具**的小任务（`readFile a.txt` → `readFile b.txt`），把 `--dir` 里的产物**原样**拷进仓：账本 4 行（种子行 + 轮 1/2/3，8495 字节）+ `state` / `status` / `snapshot` 三份侧档（989 / 97 / 2603 字节），**一字未改**。来源（版本、日期 2026-10-21T15:18:55Z–15:19:07Z、任务原文、逐字命令、行形状）与卫生检查（无凭据、无绝对路径、无端点）写在 `test/fixtures/journal-0.22.0/README.md`，并明写「**只读夹具，不要重生成**」。
+  - **两半的分界**：夹具那半（`L1–L3` / `R1–R3` / `X1–X3`）**默认、离线、必跑**——读夹具 + `store.load()` 折叠 + 反向证（临时破坏 `src/store/message-rows.js` 的透传分支 ⇒ R1/R2 必须红，md5 逐字还原）；续跑那半（`S1–S6` / `Z1`）仍要真模型，仍由 `ERIX_E2E_REAL=1` 闸门控制，**但闸门关时不再 `t.skip()`**：`t.skip()` 会把整条用例标成 skipped，把夹具那半已经跑出来的绿一起吞掉。闸门关 ⇒ 打一行分类日志（`[gate_missing] …`）后收尾。
+  - **断言一条没放宽**：`R1–R3` / `S1–S6` / `X1–X3` / `Z1` 逐字不动；`L1` 从「旧 CLI 退出码 4 + 统计行 `termination=end_turn`」改成断言**夹具自身的收尾证据**（无末尾残段、每行可解析、末轮行带 `wrapup`、`test/fixtures/journal-0.22.0/<runId>.state.json` 的 `termination=end_turn` 且 `asOfRound` 与末轮号对齐、`<runId>.status.json` 的 `status=succeeded`）；`L2` 不动；`L3` 不动，另加「`tool_result` 里必须带着 `a.txt` / `b.txt` 的两个合成 token」（不是空壳结果）。反向证 `X` 从「闸门开才跑」挪进夹具那半——它不联网、不花模型钱，现在**每次默认门禁都跑**。
+  - **实测（`L1` 的一处判断被数据推翻，已记在夹具 README）**：0.22.0 的轮行 `runState` 是在**终止裁定之前**快照的，末轮行里它恒为 `termination.reason="running"`；终止事实只落在 `<runId>.state.json` 侧档里。所以 `L1` 只拿 `wrapup`（行内收尾标记）与 `test/fixtures/journal-0.22.0/<runId>.state.json`（权威侧档）两边对撞，不去断言轮行里的 `runState`。
+  - **新增可选分支 `L4`**（机器上**恰好**有 0.22.0 CLI 时，在闸门开的前提下再真产一份账本，与夹具对**形状**）：默认路径 `~/.npm-global/bin/erix`，可用 `ERIX_LEGACY_CLI` 覆盖、`ERIX_LEGACY_CLI_VERSION` 改期望版本；**缺席不红也不 skip**（只打一行日志），夹具永远是主路径。
+  - **门禁**：`node --test examples/cross-version-real-e2e.test.mjs`（闸门关）→ **2 pass / 0 fail / 0 skip**（改前 1 pass / 1 skip）；`ERIX_E2E_REAL=1` → **2 pass / 0 fail / 0 skip**，17 条 check 全绿（`L1–L4` / `R1–R3` / `S1–S6` / `X1–X3` / `Z1`，含 L4）；全量 `npm test` → **tests 1844 / pass 1835 / fail 0 / skipped 9**（基线 1844 / 1834 / 0 / 10，差值恰好是这条用例不再 skip）；`check:syntax`、`check:docs`、`check:docs:strict`、`docs-drift-check --self-test`（103）、`check:tests` 全绿（新夹具目录不触发 test-hygiene 的 `/tmp` 首参检查：那里只有 `.jsonl` / `.json` / `.md`，不是扫描面里的 `.js` / `.mjs` / `.cjs`）。
+
 ## [0.23.0] - 2026-10-21
 
 **本版要点：存储收敛（工单 261021 三刀 + 投影改读折叠）——账本从「一轮一行、正文挂在轮行上」改成「一条消息一成型就落盘、轮行只留元数据」，`store.load()` 负责把消息行折回轮行。**
