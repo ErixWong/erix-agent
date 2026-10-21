@@ -324,7 +324,7 @@ function projectRecord(record, recordIndex) {
     ? record.messages.filter(isObject)
     : [];
   const base = recordBase(record);
-  const assistantBlocks = blocksOf(record?.response?.content);
+  // `record.response` 的**元数据**（stopReason / usage）仍然照旧读它；正文的来源已换到消息行（见下）。
   const hasResponse = record?.response !== undefined && record?.response !== null;
 
   const emittedFoldTexts = new Set();
@@ -378,45 +378,52 @@ function projectRecord(record, recordIndex) {
     });
   }
 
-  let assistantEntry;
-  if (hasResponse && assistantBlocks.length > 0) {
-    const toolCalls = toolCallsOf(assistantBlocks);
-    const reasoning = reasoningOf(assistantBlocks);
-    assistantEntry = {
+  // assistant 条目的形状工厂：字段名与含义逐字不变（`text`/`blocks`/`toolCalls`/`reasoning`/`meta`），
+  // 宿主（touwaka）与 CLI 都在读这套形状；这里只换「正文从哪来」，不换「条目长什么样」。
+  /** @param {object[]} blocks @param {object} [extraMeta] */
+  const assistantEntryFrom = (blocks, extraMeta = {}) => {
+    const toolCalls = toolCallsOf(blocks);
+    const reasoning = reasoningOf(blocks);
+    return {
       role: "assistant",
-      text: textOf(assistantBlocks),
-      blocks: assistantBlocks,
+      text: textOf(blocks),
+      blocks,
       ...(toolCalls === undefined ? {} : { toolCalls }),
       ...(reasoning === undefined ? {} : { reasoning }),
       ...base,
-      meta: recordMeta(record, { synthetic: false }),
+      meta: recordMeta(record, { synthetic: false, ...extraMeta }),
     };
+  };
+
+  // issue #335 第一步：**正本在消息行**。#334 之后一条 assistant 消息一成型就落盘、恢复也只认它，
+  // 而轮行的 `response.content` 只是同一份正文的第二副本（两份谁是真的没有机制保证）。所以展示
+  // 侧改为优先读折叠后的轮内消息 `record.messages` 里那条 assistant 消息；两条线同时在场时**只出
+  // 这一条**，不会再出现「response 一条 + messages 一条」的重复显示。
+  /** @type {object[]} */
+  const assistantMessageEntries = [];
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    const blocks = blocksOf(message.content);
+    if (blocks.length === 0) continue;
+    assistantMessageEntries.push(assistantEntryFrom(blocks));
+  }
+
+  let assistantEntry;
+  if (assistantMessageEntries.length > 0) {
+    entries.push(...assistantMessageEntries);
   } else {
-    for (const message of messages) {
-      if (message.role !== "assistant") continue;
-      const blocks = blocksOf(message.content);
-      if (blocks.length === 0) continue;
-      const toolCalls = toolCallsOf(blocks);
-      const reasoning = reasoningOf(blocks);
-      entries.push({
-        role: "assistant",
-        text: textOf(blocks),
-        blocks,
-        ...(toolCalls === undefined ? {} : { toolCalls }),
-        ...(reasoning === undefined ? {} : { reasoning }),
-        ...base,
-        meta: recordMeta(record, { synthetic: false }),
-      });
-    }
-    const fallbackText = typeof record.textPreview === "string" ? record.textPreview : "";
-    if (entries.at(-1)?.role !== "assistant" && fallbackText !== "") {
-      assistantEntry = {
-        role: "assistant",
-        text: fallbackText,
-        blocks: [],
-        ...base,
-        meta: recordMeta(record, { synthetic: false, source: "textPreview" }),
-      };
+    // 回退分支（老账本 / 宿主手写的行）：轮内消息里没有 assistant 正文时，退回轮行的
+    // `response.content`。#335 第二步**停写** `response.content` 之后，这条分支只服务两类行：
+    // 改造前落盘的老账本，以及 touwaka 宿主自己手写 `response.content` 的轮行。
+    const responseBlocks = blocksOf(record?.response?.content);
+    if (responseBlocks.length > 0) {
+      assistantEntry = assistantEntryFrom(responseBlocks);
+    } else {
+      const fallbackText = typeof record.textPreview === "string" ? record.textPreview : "";
+      if (fallbackText !== "") {
+        // 预览兜底：只有文本、没有块（与改造前逐字一致：`blocks: []`、`text` 就是 textPreview 本身）。
+        assistantEntry = { ...assistantEntryFrom([], { source: "textPreview" }), text: fallbackText };
+      }
     }
   }
   if (assistantEntry !== undefined) entries.push(assistantEntry);
