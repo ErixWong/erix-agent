@@ -12,6 +12,15 @@
   - 测试与文档：`test/examples/erix-run-core.test.js` 新增 5 条（全离线，复用既有捕获 `runToolLoop` 入参的夹具）——含「没传就不出现在 `params` 与 options 里」、「与扩轮三参数同传时四个键都在」、以及一条**拿引擎自己的启动期校验对账键名**的用例（键名拼错不会报错，只会静默失效）；`examples/pi-extension/README.md` 的参数表、judge 闸门说明、终局载荷示例同步。
   - ⚠ **`erix_run`（`examples/pi-extension/`）不进 npm tarball，与本包共用同一个版本号** —— 它的分发仍是「从仓库拷到 `~/.pi/agent/extensions/erix-run/`」，所以**这条参数口只能靠拷仓库拿到**，装了哪一版目前仍无盘上痕迹（同一声明见 0.19.0 条目头注）。本单只动 `examples/pi-extension/**` 与 `test/examples/**` 与 `CHANGELOG.md`；`src/`、`bin/`、`docs/host-consumer-contract.md`、`package.json` 一字未动。
 
+### Chore
+
+- **文档真值治理收尾单（工单 261021-03 B1，四件事全部只动文档与门禁，`src/`、`bin/`、`package.json` 一字未动）。**
+  - **`.d.ts` 声称进 `check:pack-links` 对账**：「装包应携带 N 个 `src/**/*.d.ts`」这类文档声称不再靠手抄——`scripts/pack-link-check.mjs` 从同一次 `npm pack --dry-run --json` 的 tarball 清单数出随包声明数，与 README×2 / AGENTS×2 这 4 份入口文档里抽到的声称位逐处对账（本轮当前值 69、命中 2 处句式声称位）；声称与清单不齐就红，抽不到任何声称位也红。
+  - **`check:docs` 的引用棘轮覆盖面由 24 抬到 31**（架构×2 + 图表×2 + 需求对照×2 + `examples/pi-extension/README.md` 纳入 `paths` 判据），并为此新立**外部仓前缀规则**：引用别的仓库的路径一律写 `<仓名>:<该仓路径>`（已知清单 `touwaka` / `app_container` / `pi-subagents`，逐仓写归属理由），带前缀 ⇒ 不查本仓存在性且**不计入裸行号棘轮**，清单外的仓名红、登记了却没人用的仓名也红；`--self-test` 新增 6 例反向证（漏写前缀 ⇒ 红 / 编一个仓名 ⇒ 红 / 前缀写法不动 ⇒ 绿 / 裸行号一侧前缀在与不在各自点名 / 前缀条目空转 ⇒ 红），例数 95 → **101**。被前缀取代的逐路径豁免条目、以及那七份活文档里真漂的路径（`src/providers/index.js` 与 `src/skills/index.js` 属「预期的不在场」）同步处理；**裸行号棘轮实测 138 = 基线 138**（半成品一度顶到 139，未抬基线）。`SYMBOL_ANCHOR_MIN_UNIQUE` 因新纳面带进的 5 组新锚点从 67 抬到 **72**（`--verbose` 实测 72 组 / 180 处）。
+  - **28 份历史档案加「快照档案（日期）」抬头**（`docs/v0.*-contracts*`、`docs/design/`、`docs/research/`、`docs/harness-comparison/`）：每份首部一行「本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准」。日期不抖机估计：能用仓内可推源头的用可推源头，推不出的宁可退化到一个可辩护的下界并在抬头里写明依据（v0.1 契约用的是「该路径首次提交日」）。
+  - **中英 README 新增「文档家族与真值口径」一节**（哪几份是活文档、哪几份是快照档案、ADR 为何不加快照抬头），并把「latest host-facing migration guide」指针从 0.19.0 改成 **0.22.0**（中英各一处），描述换成 0.22.0 的真内容（`dedup_payload_conflict`、`load()` 行数多于轮数、`foldedSummary` / `ttlDegradations`、`reflection.judgeDoneAdvisory`）。
+  - **门禁实测**（本轮收尾）：`npm test` **1808 例 / 1800 通过 / 0 失败 / 8 skip**（开工时 3 失败）；`check:syntax` 271 文件全过；`check:docs` 与 `check:docs:strict` **由红转绿**；`check:docs-examples` 全过；`check:pack-links` OK（21 份随包 Markdown + 69 个 `.d.ts` 声称对账）；`check:tests` OK；`check:types` 实测 **119** = 基线；`docs-drift-check --self-test` **101/101**（开工时 19 红）；`node --test test/docs-anchor-ratchet.test.js` **6/6**（开工时 3 红）。
+
 ## [0.22.0] - 2026-10-21
 
 ### Added
