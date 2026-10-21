@@ -191,7 +191,7 @@ scripts/          # experiment scripts and results
   `symbols` never needed them) or move it onto the declaration. Anchors *without* a range are outside this rule,
   which is also why dropping ranges makes the ratchet below go down legitimately.
   *`bare-lines`* is a *ratchet (only down)*: `src/**.js:N` / `:N-M` references, counted as unique
-  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 138` in that same script. The number
+  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 136` in that same script. The number
   is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 142 measured minus 4 declaratively exempted
   example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
   declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
@@ -296,7 +296,7 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 ├── mcp.json           # MCP server registry (standard format; can reuse ~/.config/mcp/mcp.json)
 ├── <session>.json     # session history (id derived from cwd)
 ├── transcripts/
-│   ├── <runId>.jsonl          # per-round records (includes judge decision fields)
+│   ├── <runId>.jsonl          # metadata-only round rows + one row per message (`kind:"message"`, `seq` / `partOf?`); `load()` folds them back into round rows
 │   └── outputs/<runId>/       # everything archived for this run: tool captures, reports, judge.log
 │       └── judge.log          # judge decision JSONL (written here by default; override with --judge-log / ERIX_JUDGE_LOG)
 ├── skills/            # user-level skills (self-describing protocol)

@@ -58,7 +58,9 @@
 **现象。** 递给 `onRound` 的 `record` 就是引擎落盘的那条轮记录。既然轮记录不再写 `messages`，
 `record.messages` 现在是 `undefined`（不是空数组）。其余字段一字未变：`round`、`response`
 （`content` / `stopReason` / `usage`）、`textPreview`、`summary`、`l0facts`、`runState`、`toolUses`、
-`judge`、`wrapup`、`compactionStats`、`foldedSummary`、`ttlDegradations`。
+`judge`、`wrapup`、`compactionStats`。（`foldedSummary` 与 `ttlDegradations` **不是**轮记录字段——它们各有自己的
+事实行 `…:fold:<fp>` / `…:ttl:<fp>`，`messages` 为 `[]`；要读就从 `load()` 的行里读，别从 `onRound` 的
+`record` 里要。）
 
 **判据。** `grep -n "onRound" your-host.js`，看回调里有没有 `record.messages`。
 
@@ -99,8 +101,8 @@
 
 - 每一轮出现**两遍**——一遍来自轮行（元数据 + `response.content`），一遍来自携带同一段 assistant
   正文的 `kind:"message"` 行；
-- 工具条目的 `durationMs` **缺失**（`undefined`），因为 `erix.*` 执行事实挂在轮行的工具结果记录上，而
-  投影拿来配对的那份正文来自一条**在工具执行之前**就写下的消息行；
+- 工具条目的 `durationMs` **缺失**（`undefined`），因为在新账本里 assistant 的调用与它的结果落在
+  **两行**上（调用在工具执行前就落盘，结果在跑完后落盘），逐条记录配对的投影根本配不上；
 - 同一个 `toolCallKey` 出现两次，于是任何「一次调用一条」的断言都红。
 
 这不是假设：本仓自己的真上游冒烟脚本就踩了这个坑（`scripts/cli-real-smoke.mjs`，本版修掉），修法就是
