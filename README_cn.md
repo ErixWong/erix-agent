@@ -559,13 +559,34 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - [docs/testing_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing_cn.md) - 测试策略与行为指标
 - [docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md) - 关于核验、note-first 取回、provenance 和重跑的宿主消费者契约；内含终止裁决决策表（逐 reason 的触发机制、优先级位置、宿主开关、推荐动作）与模型元数据 / 预算推导字段契约及多模型槽位装配示例
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0 破坏窗口迁移步骤（英文）
-- [docs/host-upgrade-guide-0.19.0.md](docs/host-upgrade-guide-0.19.0.md) / [docs/host-upgrade-guide-0.19.0_cn.md](docs/host-upgrade-guide-0.19.0_cn.md) - 最新的宿主迁移指南（中英成对）：`chat --session <id>` 的报错退出与它的四条出路、不再一律落 `unknown` 的 4xx `code` 取值、以及随包 `.d.ts` 的类型面
-- [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) / [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md) - 上一个破坏窗口的宿主迁移指南（中英成对）：judge 的 `writeToolNames` 默认值、七项文件工具清单、`rg`/`grep` 的弃用提示行、属 Experimental 的 marker 文案、以及 `erix-agent/tools` 导入路径；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`（随包清单见上文）
-- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - 上一个破坏窗口迁移指南：成对可选快路径探针（英文）
+- [docs/host-upgrade-guide-0.22.0.md](docs/host-upgrade-guide-0.22.0.md) / [docs/host-upgrade-guide-0.22.0_cn.md](docs/host-upgrade-guide-0.22.0_cn.md) - 最新的宿主迁移指南（中英成对）：它把 **0.20.0 → 0.22.0** 一跳走完（0.21.0 从来没发出去过，那部分的详细文字仍在 `docs/host-upgrade-guide-0.21.0.md`）。对宿主真正有感的四处：同 `dedupKey` 却换内容的写入从此**抛** `code === "dedup_payload_conflict"` 而不是悄悄消失；`load()` 返回的**行数多于轮数**（引擎自己写的行，部分 `messages` 为空——按 `round` 归组、按 `dedupKey` 去重）；折叠摘要与 TTL 降级结果落进 `foldedSummary` / `ttlDegradations` 两个载荷字段并在 resume 时**复用而不是重算**（因此按列白名单重建记录的 store 必须把这两个键加进去）；`reflection.judgeDoneAdvisory` 是可选项、默认关
+- [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) / [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md) - 更早一个破坏窗口的宿主迁移指南（中英成对）：judge 的 `writeToolNames` 默认值、七项文件工具清单、`rg`/`grep` 的弃用提示行、属 Experimental 的 marker 文案、以及 `erix-agent/tools` 导入路径；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`（随包清单见上文）
+- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - 更早的破坏窗口迁移指南：成对可选快路径探针（英文）
 - [docs/host-upgrade-guide-v030_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/host-upgrade-guide-v030_cn.md) - 面向 `touwaka` / `app_container` 的宿主升级指南与 v0.3.x 行为
 - [docs/maintenance-policy_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/maintenance-policy_cn.md) - 维护策略与内部替换/止损标准
 - [docs/research/](https://github.com/ErixWong/erix-agent/tree/main/docs/research) - 调研报告（仅中文）
 - [docs/design/](https://github.com/ErixWong/erix-agent/tree/main/docs/design) - 设计与 RFC 材料（仅中文）
+
+### 文档家族与真值口径
+
+本仓不是每份 Markdown 都在声明同一件事，门禁也按不同的口径筛（`scripts/docs-drift-check.mjs` + `test/docs-anchor-ratchet.test.js`）。三类：
+
+- **活文档——有门禁，必须「今天为真」。** `README*.md`、`AGENTS*.md`、中英契约（`docs/host-consumer-contract.md` /
+  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（当前 18 份，按目录实扫），再加上
+  工单 261021-03 B1 新纳面的中英架构（`docs/architecture.md` / `docs/architecture_cn.md`）、中英图表
+  （`docs/charts.md` / `docs/charts_cn.md`）、中英需求对照（`docs/requirements.md` / `docs/requirements_cn.md`）
+  与 `erix_run` 的 README（`examples/pi-extension/README.md`）。共 31 份（`REF_SCAN_DOCS_MINIMUM = 31`）：文件改名、
+  行号漂到另一个函数、符号在 `src/` 里已不存在，都会把 `npm run check:docs` 压红。
+- **快照档案——「首部写的那一日为真」。** `docs/v0.0-contracts*.md` / `docs/v0.1-contracts*.md` /
+  `docs/v0.2-contracts*.md`、`docs/design/`、`docs/research/`、`docs/harness-comparison/`（共 28 份）。每份首部都有一行
+  `> 快照档案（<日期>）`：里面的路径、数字与结论按**当时**为真，“现在是什么”由中英契约与 `CHANGELOG.md` 回答而不是由它们
+  回答。把它们改成“跟今天一致”等于揉掉它们作为证据的身份——这也是它们故意不进棘轮面的理由。
+- **ADR——编号就是时间点。** `docs/decisions/NNN-*.md` 记的是“那一刻做了什么决定”，不加快照抬头：ADR 的编号**就是**
+  时间戳，它不会“今天错了”，只会被后面那个编号推翻。
+
+`docs/` 剩下的那些（`docs/testing*.md`、`docs/maintenance-policy*.md`、`docs/mcp-design*.md`、`docs/soak.md`）两边都不算：
+既不在棘轮面内，也没有快照抬头——当“有日期的辅助说明”读，不要当现行契约读。而引用**别的仓库**的文件时一律写成
+`<仓名>:<那个仓里的路径>`（例 `touwaka:lib/agent/`）；**不带**前缀的路径就是本仓路径，必须能在本仓解到。
 
 ## 状态与版本历史
 

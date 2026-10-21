@@ -939,18 +939,22 @@ library-level controls
 - [docs/testing.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing.md) - test strategy and behavior metrics
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
-- [docs/host-upgrade-guide-0.19.0.md](docs/host-upgrade-guide-0.19.0.md) - latest
-  host-facing migration guide: the `chat --session <id>` exit and the way out of it, the
-  4xx error codes that no longer collapse into `unknown`, and the packaged `.d.ts` type
-  surface (a Chinese counterpart ships alongside it:
-  `docs/host-upgrade-guide-0.19.0_cn.md`)
-- [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) - previous
+- [docs/host-upgrade-guide-0.22.0.md](docs/host-upgrade-guide-0.22.0.md) / [docs/host-upgrade-guide-0.22.0_cn.md](docs/host-upgrade-guide-0.22.0_cn.md) - the
+  latest host-facing migration guide (EN/CN pair): it hops **0.20.0 → 0.22.0** in one step because 0.21.0 was
+  never published (its detailed text stays in `docs/host-upgrade-guide-0.21.0.md`). What it actually changes for a
+  host: a same-`dedupKey` write carrying a different payload now **throws** `code === "dedup_payload_conflict"`
+  instead of vanishing, `load()` returns **more rows than there are rounds** (engine-owned rows, some with an empty
+  `messages` — project by `round`, dedupe by `dedupKey`), compaction summaries and TTL degradations are journaled in
+  the `foldedSummary` / `ttlDegradations` payload fields and **reused rather than recomputed** on resume (so a store
+  that rebuilds records from a column whitelist must add those two), and `reflection.judgeDoneAdvisory` is opt-in and
+  default off
+- [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) - an earlier
   host-facing migration guide: the judge's `writeToolNames` default, the seven-entry
   file-tool list, the `rg`/`grep` deprecation line, the Experimental marker wording,
   and the `erix-agent/tools` import path (a Chinese counterpart ships alongside it:
   `docs/host-upgrade-guide-0.18.0_cn.md`). Each later breaking window ships its own
   `docs/host-upgrade-guide-<version>.md` (the packaged set is listed above)
-- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - previous
+- [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - an earlier
   breaking-window guide (the paired fast-path store probes)
 - [docs/host-consumer-contract.md](docs/host-consumer-contract.md) - host
   consumer contract for verification, note-first retrieval, provenance, and reruns;
@@ -963,6 +967,32 @@ library-level controls
   policy and internal replacement/stop-loss criteria
 - [docs/research/](https://github.com/ErixWong/erix-agent/tree/main/docs/research) - research reports (Chinese only)
 - [docs/design/](https://github.com/ErixWong/erix-agent/tree/main/docs/design) - design and RFC material (Chinese only)
+
+### Documentation family and truth levels
+
+Not every Markdown file in this repository claims the same thing, and the gate knows the difference
+(`scripts/docs-drift-check.mjs` + `test/docs-anchor-ratchet.test.js`). Three levels:
+
+- **Live documentation — gated, must be true *today*.** `README*.md`, `AGENTS*.md`, the consumer contract pair
+  (`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`), **every** `docs/host-upgrade-guide*.md`
+  (18 today, discovered from the directory), plus — since 工单 261021-03 B1 — the architecture pair
+  (`docs/architecture.md` / `docs/architecture_cn.md`), the chart pair (`docs/charts.md` / `docs/charts_cn.md`),
+  the requirements pair (`docs/requirements.md` / `docs/requirements_cn.md`) and the `erix_run` README
+  (`examples/pi-extension/README.md`). That is 31 documents (`REF_SCAN_DOCS_MINIMUM = 31`): a renamed file, a moved
+  line or a symbol that no longer exists in `src/` turns `npm run check:docs` red.
+- **Snapshot archives — true at the date in their own header.** `docs/v0.0-contracts*.md` /
+  `docs/v0.1-contracts*.md` / `docs/v0.2-contracts*.md`, `docs/design/`, `docs/research/`, `docs/harness-comparison/`
+  (28 files). Each opens with a `> 快照档案（<date>）` line: its paths, numbers and conclusions were true **then**,
+  and "what is true now" is answered by the consumer contract and `CHANGELOG.md`, not by them. Rewriting a snapshot
+  to match today would destroy the evidence it is — which is why they are deliberately outside the ratchet scope.
+- **ADRs — the number is the date.** `docs/decisions/NNN-*.md` records a decision taken at a point in time. They get
+  no snapshot header: the ADR number **is** the timestamp, and an ADR is not "wrong today" — it is superseded by a
+  later number.
+
+Everything else under `docs/` (`docs/testing*.md`, `docs/maintenance-policy*.md`, `docs/mcp-design*.md`,
+`docs/soak.md`) is neither: not in the ratchet scope, no snapshot header — read those as dated helper notes, not as
+current contract. And a path that points into **another** repository is written `<repo-name>:<path inside it>`
+(e.g. `touwaka:lib/agent/`); a path without that prefix is a path inside this repository and must resolve here.
 
 ## Status and version history
 
