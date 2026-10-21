@@ -251,21 +251,6 @@ function blocksOf(messages, type) {
     .filter((block) => block?.type === type);
 }
 
-/** RoundRecord.messages 只存本轮新增消息（坑 ②）：按轮拼回完整历史 */
-function collapseHistory(records) {
-  const seen = new Set();
-  const history = [];
-  for (const record of [...records].sort((a, b) => (a?.round ?? 0) - (b?.round ?? 0))) {
-    for (const message of record?.messages ?? []) {
-      const fingerprint = JSON.stringify(message)?.slice(0, 400);
-      if (fingerprint === undefined || seen.has(fingerprint)) continue;
-      seen.add(fingerprint);
-      history.push(message);
-    }
-  }
-  return history;
-}
-
 /**
  * 把「transcript 文件名」映回 `store.load(runId)` 要的 runId。
  *
@@ -453,8 +438,34 @@ async function main() {
   const records = jsonlFiles.length > 0
     ? readFileSync(transcriptPath, "utf8").split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l))
     : [];
-  const history = collapseHistory(records);
+
+  // **C4–C6 的正文来源（本单修的正是这里）：`store.load()` 的折叠输出，不是原始 JSONL 行。**
+  // 「一条消息一成型就落盘」之后一个 run 的文件里有两种行（轮行带 `response.content`、没有
+  // `messages`；消息行带一条正文），要把它们拼回「模型当时看到的历史」只有两条路：自己拼，或者
+  // 问账本的读侧。自己拼的那版（把消息序列化后的前 400 个字符当指纹去重）有牙但不准：
+  // **前 400 字符相同**的两条长消息会被判成同一条、静默吞掉一条，而 C4 的判据正是「真跑了
+  // ≥2 次工具」——吞一条就少一次，红/绿取决于消息前缀长得像不像。折叠层
+  // （`src/store/message-rows.js#foldMessageRows`）由产品代码维护、`src/loop/resume-manager.js`
+  // 重建上下文与宿主投影用的是同一个口径，e2e 没有理由再手写一份。
+  // 下面这一句只是文档口径的那次摊平（`records.flatMap(record => record.messages ?? [])`），
+  // 不排序、不去重、不改写：折叠之后每一行要么是载体行（正文已折回），要么是无载体的消息行。
+  const installedEntry = await import(pathToFileURL(join(installedRoot, "src", "index.js")).href);
+  const { projectTranscriptForDisplay, createFileTranscriptStore } = installedEntry;
+  // `safeRunId` 没走公共入口（`src/index.js` 只导出 `createFileTranscriptStore`）：从**同一份装好的
+  // 代码**里直接取，用它把「文件名」映回「runId」（不安全 id 的文件名是 `run-h-<hash>`，不可逆）。
+  const { safeRunId } = await import(pathToFileURL(join(installedRoot, "src", "store", "file.js")).href);
+  const store = createFileTranscriptStore({ dir: transcripts });
+  // C3 已经红了的时候别让 `resolveRunIdForTranscript` 抛栈把断言表埋掉：没有 jsonl 就是空账本，
+  // C4/C7 照样各自报红（这不是放宽，是把「脚本自身失败」换成「哪条断言红」）。
+  const runId = jsonlFiles.length > 0
+    ? resolveRunIdForTranscript(transcripts, jsonlFiles[0], safeRunId)
+    : "";
+  const folded = runId === "" ? [] : await store.load(runId);
+  const history = folded.flatMap((record) => record?.messages ?? []);
   const results = blocksOf(history, "tool_result");
+  // C7 的**落盘侧**仍取原始行：那一侧问的是「落盘真相上的耗时」，两边都取折叠输出就变成自己比
+  // 自己（折叠层把 `erix.durationMs` 丢了，两边会同时缺席，只剩「至少一条 > 0」一根牙）。
+  const diskResults = blocksOf(records.flatMap((record) => record?.messages ?? []), "tool_result");
   const durations = results.map((block) => block?.erix?.durationMs);
   const usage = records.reduce((acc, record) => {
     const u = record?.response?.usage ?? {};
@@ -464,10 +475,11 @@ async function main() {
   }, { input: 0, output: 0 });
 
   check("C4 装后的 CLI 真跑了 ≥2 次工具（不是空转）", () => {
-    assert(results.length >= 2, `落盘 tool_result=${results.length}，RoundRecord=${records.length}`);
+    assert(results.length >= 2,
+      `折叠输出 tool_result=${results.length}，折叠记录=${folded.length}，原始行=${records.length}`);
     assert(usage.input > 0 && usage.output > 0, `用量必须非零，实际 ${JSON.stringify(usage)}`);
-  }, `RoundRecord=${records.length}，↑${usage.input}/↓${usage.output}`);
-  check("C5 落盘 tool_result 顶层键集合 ⊆ 契约集合，退役名不在顶层", () => {
+  }, `折叠记录=${folded.length}（原始行 ${records.length}），↑${usage.input}/↓${usage.output}`);
+  check("C5 tool_result 顶层键集合 ⊆ 契约集合，退役名不在顶层（折叠输出上的块本体）", () => {
     const problems = [];
     for (const block of results) {
       for (const key of Object.keys(block)) if (!allowed.has(key)) problems.push(`${block.tool_use_id}:${key}`);
@@ -489,28 +501,16 @@ async function main() {
 
   // ⑥ 投影用**装好的包**跑（宿主 UI 的镜像也必须是新形状）
   //
-  // **输入口径（本单修的正是这里）：投影必须喂 `store.load()` 的折叠输出，原始 journal 行不是宿主口径。**
-  // 「一条消息一成型就落盘」之后，一个 run 的文件里有两种行：轮行（带 `response.content`、**没有**
-  // `messages`）与消息行（assistant 正文，落盘于工具执行**之前**，因此不带 `erix.durationMs`）。读侧
-  // `load()` 用 `foldMessageRows` 把消息行折回轮行——宿主看到的才是「一轮一条」。拿原始行直接投影 ⇒
-  // 同一轮被投影两遍（`toolCallKey` 键重复两遍）+ 耗时全 `undefined`（消息行上根本没有执行事实）。
-  // 产品代码没错，错的是喂法。C5/C6 查的是**落盘原始行**上的键集合与 `erix` 事实面，那两条继续用
-  // 原始行是对的（那正是落盘真相），只有 C7 换成折叠输出。
-  const installedEntry = await import(pathToFileURL(join(installedRoot, "src", "index.js")).href);
-  const { projectTranscriptForDisplay, createFileTranscriptStore } = installedEntry;
-  // `safeRunId` 没走公共入口（`src/index.js` 只导出 `createFileTranscriptStore`）：从**同一份装好的
-  // 代码**里直接取，用它把「文件名」映回「runId」（不安全 id 的文件名是 `run-h-<hash>`，不可逆）。
-  const { safeRunId } = await import(pathToFileURL(join(installedRoot, "src", "store", "file.js")).href);
-  const store = createFileTranscriptStore({ dir: transcripts });
-  const runId = resolveRunIdForTranscript(transcripts, jsonlFiles[0] ?? "", safeRunId);
-  const folded = await store.load(runId);
+  // 输入口径同 C4–C6：投影必须喂 `store.load()` 的折叠输出，原始 journal 行不是宿主口径（拿原始行
+  // 直接投影 ⇒ 同一轮被投影两遍、耗时全 `undefined`，因为 assistant 消息行落盘于工具执行**之前**、
+  // 不带 `erix` 事实）。
   const calls = projectTranscriptForDisplay(folded).flatMap((card) => card?.toolCalls ?? []);
   // PR #289 断言强度 3：修前允许**所有**投影条目的 durationMs 都缺席，也不与落盘对账
   // ⇒「投影根本不透耗时」与「透错了值」都查不出。现在逐条对照 transcript：
   // 同一条 toolCallKey 的投影 durationMs 必须**等于**该结果块的 erix.durationMs（缺失也必须两边
   // 同时缺失），并且至少一条 > 0（否则这条线仍是死的）。
   const durationByKey = new Map();
-  for (const block of results) {
+  for (const block of diskResults) {
     const key = block?.erix?.toolCallKey;
     if (typeof key === "string") durationByKey.set(key, block?.erix?.durationMs);
   }
