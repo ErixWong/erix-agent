@@ -171,8 +171,8 @@ flowchart TB
 ### Key points
 
 - **Pure ESM, zero npm dependencies**: only `node:` built-ins + relative paths. The 2.5k-line orchestration core concentrates in a single `orchestrator.js`; surrounding modules are small single-responsibility files with one-directional dependencies (compact/reflection/store/tools never depend back on loop).
-- **The orchestration core (loop/) is the heart**: main loop, provider calls, checkpoint execution, budget, termination, resume, and error accounting are all assembled here; `reflection/` and `compact/` are loop-driven "decision/transformation" modules only invoked by the loop — governor/judge-prompt building are pure, while fold-llm/wrapup may call an injected summarizer/evaluator (external calls, never hardcoded).
-- **The message layer is the single protocol adaptation point**: internally there is exactly one CanonicalMessage/Block format; OpenAI and Anthropic conversions + stream assembly live in `messages/` + `providers/`. Adding a protocol means adding one pair of adapters.
+- **The orchestration core (`src/loop/`) is the heart**: main loop, provider calls, checkpoint execution, budget, termination, resume, and error accounting are all assembled here; `src/reflection/` and `src/compact/` are loop-driven "decision/transformation" modules only invoked by the loop — governor/judge-prompt building are pure, while fold-llm/wrapup may call an injected summarizer/evaluator (external calls, never hardcoded).
+- **The message layer is the single protocol adaptation point**: internally there is exactly one CanonicalMessage/Block format; OpenAI and Anthropic conversions + stream assembly live in `src/messages/` + `src/providers/`. Adding a protocol means adding one pair of adapters.
 - **The CLI is not the product**: `bin/` is a verifier/debugger (chat one-shot + repl interactive + MCP/skill/final-guard implementations). The real evaluation surface is the external erix-bench headless harness; CLI archive/output-capture behavior is outside the library contract.
 - **`erix-agent/tools` is an optional subpath**: tool registry and tool providers (static/json-file/composite) — the host may opt in; nothing is implicitly installed into runToolLoop (recall retired, issue #36).
 
@@ -297,8 +297,8 @@ strategy still exceeds the budget—so it can appear before or after the selecte
 strategy in one request. `foldStatistical` and `foldLlm` are mutually exclusive
 selected strategies, not two consecutive folds.
 
-- **`cacheCapable` only changes the TTL default** (`orchestrator.js:480-482`): with `cacheCapable: true` and no explicit `toolResultTtl`, the request's TTL resolves to 0 (single-result folding off, keeping the provider prefix cache effective); an explicit `toolResultTtl` always wins; whole-round folding strategies are untouched — it does **not** "delete whole-round compaction".
-- **`cacheStablePrefix` → provider cache adapter** (default on): before each request `markStablePrefix` (`provider-runner.js:20`) marks the system + first real user message with a `cacheBoundary` hint; each protocol adapter maps it its own way (OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`), normalized into `usage.cacheRead`/`cacheWrite`.
+- **`cacheCapable` only changes the TTL default** (`resolvedToolResultTtl` (`src/loop/orchestrator.js`)): with `cacheCapable: true` and no explicit `toolResultTtl`, the request's TTL resolves to 0 (single-result folding off, keeping the provider prefix cache effective); an explicit `toolResultTtl` always wins; whole-round folding strategies are untouched — it does **not** "delete whole-round compaction".
+- **`cacheStablePrefix` → provider cache adapter** (default on): before each request `markStablePrefix` (`src/loop/provider-runner.js`) marks the system + first real user message with a `cacheBoundary` hint; each protocol adapter maps it its own way (OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`), normalized into `usage.cacheRead`/`cacheWrite`.
 
 | Layer (registry order) | Trigger | Granularity | Model/archive product |
 |---|---|---|---|

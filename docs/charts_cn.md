@@ -171,8 +171,8 @@ flowchart TB
 ### 要点
 
 - **纯 ESM、零 npm 依赖**：只 import `node:` 内置模块 + 相对路径；编排核心 2500 行集中在一个 `orchestrator.js`，周边模块按职责切小文件，依赖单向指向（compact/reflection/store/tools 不反向依赖 loop）
-- **编排核心（loop/）是心脏**：主循环、provider 调用、检查点执行、预算、终态、恢复、错误记账全部在这里被组装；`reflection/` 与 `compact/` 是由 loop 驱动的“决策/变换”模块、只被 loop 调用——governor/judge 提示构造是纯函数，fold-llm/wrapup 可调用注入的 summarizer/evaluator（外部调用，绝不硬编码）
-- **消息层是唯一协议适配点**：内部只有一套 CanonicalMessage/Block；OpenAI 与 Anthropic 双向转换 + 流式聚合都在 `messages/` + `providers/`，新增协议只需加一对适配器
+- **编排核心（`src/loop/`）是心脏**：主循环、provider 调用、检查点执行、预算、终态、恢复、错误记账全部在这里被组装；`src/reflection/` 与 `src/compact/` 是由 loop 驱动的“决策/变换”模块、只被 loop 调用——governor/judge 提示构造是纯函数，fold-llm/wrapup 可调用注入的 summarizer/evaluator（外部调用，绝不硬编码）
+- **消息层是唯一协议适配点**：内部只有一套 CanonicalMessage/Block；OpenAI 与 Anthropic 双向转换 + 流式聚合都在 `src/messages/` + `src/providers/`，新增协议只需加一对适配器
 - **CLI 不是产品**：`bin/` 是校验器/调试器（chat 单发 + repl 交互 + MCP/技能/final-guard 实现），真正验收面是外部 erix-bench 无头 harness；CLI 的 archive/输出捕获行为不属于库契约
 - **`erix-agent/tools` 是可选子路径**：工具注册表、工具 provider（static/json-file/composite）——宿主可按需取用，不是隐式安装进 runToolLoop 的工具集（recall 已退役，issue #36）
 
@@ -294,12 +294,12 @@ flowchart TD
 选定策略之前或之后。`foldStatistical` 与 `foldLlm` 是互斥的选定整轮策略，
 不是连续执行的两次折叠。
 
-- **`cacheCapable` 只改 TTL 默认值**（`orchestrator.js:480-482`）：`cacheCapable: true`
+- **`cacheCapable` 只改 TTL 默认值**（`resolvedToolResultTtl`（`src/loop/orchestrator.js`））：`cacheCapable: true`
   且未显式指定 `toolResultTtl` 时，该请求 TTL 解析为 0（单结果折叠关闭，保住
   provider 前缀缓存）；显式 `toolResultTtl` 始终优先；整轮折叠策略完全不受影响——
   不是“删除 whole-round compaction”。
 - **`cacheStablePrefix` → provider 缓存适配器**（默认开）：每次请求前
-  `markStablePrefix`（`provider-runner.js:20`）把 system + 首条真实 user 消息打上
+  `markStablePrefix`（`src/loop/provider-runner.js`）把 system + 首条真实 user 消息打上
   `cacheBoundary` 提示；两个协议适配器各自映射（OpenAI `cached_tokens` /
   Anthropic `cache_read_input_tokens`），归一化为 `usage.cacheRead`/`cacheWrite`。
 

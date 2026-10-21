@@ -137,6 +137,10 @@ const CONTRACT_CN = "docs/host-consumer-contract_cn.md";
 const AGENTS_EN = "AGENTS.md";
 const AGENTS_CN = "AGENTS_cn.md";
 const PI_EXT_README = "examples/pi-extension/README.md";
+const ARCH_EN = "docs/architecture.md";
+const ARCH_CN = "docs/architecture_cn.md";
+const CHARTS_EN = "docs/charts.md";
+const CHARTS_CN = "docs/charts_cn.md";
 const RATCHET_SRC = "scripts/type-check-ratchet.mjs";
 /** 工具事实契约常量的真值出处（工单 261014 T1）。 */
 const TOOL_FACT_SRC = "src/tool-fact.js";
@@ -1529,21 +1533,25 @@ function collectBaselineClaimErrors() {
 //   中英两侧必须同步替换，那时数量才具备可比性）。
 
 /** #286 T-a：覆盖面清单里被硬编码的那几份（升级指南按目录实扫，见 `refScanDocs()`）。 */
-const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT_EN, CONTRACT_CN];
+const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT_EN, CONTRACT_CN,
+  // 工单 261021-03 B1：活文档纳面（架构 / 图表 / 需求对照中英各一份 + pi 扩展 README）。
+  ARCH_EN, ARCH_CN, CHARTS_EN, CHARTS_CN, REQ_EN, REQ_CN, PI_EXT_README];
 
-/** #286 返工 R2：覆盖面份数的**下限**。病根：覆盖面是「6 份硬编码 + 按 `^host-upgrade-guide.*\.md$` 实扫」，
+/** #286 返工 R2：覆盖面份数的**下限**。病根：覆盖面是「硬编码那批 + 按 `^host-upgrade-guide.*\.md$` 实扫」，
  *  于是有人把某份指南改名到不再匹配那个模式（或把它挪出 `docs/`），脚本与测试侧的 glob **一起少一份**，
- *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前 16 份的清单做对照，这里再钉一道份数下限。
- *  下限取 24（= 6 份硬编码 + 18 份指南）；新增指南让份数往上走，改名/删除想绿就必须同时动这两处。
- *  抬下限的理由（工单 261016-307 / 发版准备 R4，20 → **22**）：0.21.0 的中英两份升级指南落地，
- *  `--verbose` 实测覆盖面 20 → 22（6 份硬编码 + 16 份实扫指南）。写法必须保持这一行不变形（自测要改这个数）。 */
-const REF_SCAN_DOCS_MINIMUM = 24;
+ *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前 18 份的清单做对照，这里再钉一道份数下限。
+ *  抬下限的理由（工单 261021-03 B1，**24 → 31**）：覆盖面从「6 份硬编码 + 18 份实扫指南」抬到
+ *  「13 份点名文档（6 入口 + 架构/图表/需求对照中英六份 + pi 扩展 README）+ 18 份实扫指南」——
+ *  那七份是工单点名的活文档，它们不在面内时「`src/providers/index.js` 这类路径漂了不会红」。
+ *  （工单写「8 份 / 32」，但它点名的清单只有 7 份：CHANGELOG 按 #286 既定口径**不进**棘轮面。
+ *  写法必须保持这一行不变形（自测要改这个数）。 */
+const REF_SCAN_DOCS_MINIMUM = 31;
 
 /** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟「某份指南改名到不匹配模式」。 */
 let SIM_RENAMED_GUIDE = null;
 let LAST_SCAN_DOC_COUNT = -1;   // 自测据此判断树形口子有没有真的落上（#279 的「变异没落上」同一条纪律）
 
-/** 覆盖面：宿主会读的 22 份文档 = 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部（实扫，新增指南自动纳面）。 */
+/** 覆盖面：13 份点名文档 + `docs/host-upgrade-guide*.md` 全部（实扫，新增指南自动纳面）。 */
 function refScanDocs() {
   const guides = readdirSync(path.join(ROOT, "docs"))
     .filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
@@ -1580,9 +1588,9 @@ function collectRefScanCoverageErrors() {
   const unreadable = docs.filter((d) => fileRecord(d) === null);
   if (unreadable.length) {
     out.push(`ref-scan: 覆盖面清单里点名了却读不到的文档：${unreadable.join(", ")}——`
-      + `硬编码那 6 份（README/AGENTS/契约中英）被改名或删除时，检查面会静默少一份，必须同步清单`);
+      + `硬编码那 ${SYMBOL_DOCS_STATIC.length} 份（README/AGENTS/契约/架构/图表/需求/pi 扩展 README）被改名或删除时，检查面会静默少一份，必须同步清单`);
   }
-  notes.push(`ref-scan: 覆盖面 ${docs.length} 份文档（6 份硬编码 + ${docs.length - SYMBOL_DOCS_STATIC.length} 份按目录实扫的升级指南），下限 ${minimum}`);
+  notes.push(`ref-scan: 覆盖面 ${docs.length} 份文档（${SYMBOL_DOCS_STATIC.length} 份点名 + ${docs.length - SYMBOL_DOCS_STATIC.length} 份按目录实扫的升级指南），下限 ${minimum}`);
   collectRefScanCoverageErrors.notes = notes;
   return out;
 }
@@ -2376,8 +2384,12 @@ for (const rel of [README_EN, README_CN]) {
 //   · 判据：只有「仓库根下存在吗」一级。examples 版 README 里 `erix-run.ts`（同目录文件）、
 //     `../../test/examples/plain-data.js`（相对路径）、`erix-run-core.test.js`（裸文件名）这类
 //     **真引用**一律解析不到，于是真引用与死引用在它眼里没区别。
-/** paths 的覆盖面（#273）：使用者与宿主会照着找文件的那批入口文档。 */
-const PATH_DOCS = [README_EN, README_CN, PI_EXT_README, CONTRACT_EN, CONTRACT_CN, AGENTS_EN, AGENTS_CN];
+/** paths 的覆盖面（#273）：使用者与宿主会照着找文件的那批入口文档。
+ *  工单 261021-03 B1 把架构 / 图表 / 需求对照的中英各一份也纳进来（原本只有 README×2 + AGENTS×2 +
+ *  契约×2 + pi 扩展 README）——这三对是「会被人当成现状读」的活文档，死引用漂了不会红的代价比
+ *  入口文档只高不低。 */
+const PATH_DOCS = [README_EN, README_CN, PI_EXT_README, CONTRACT_EN, CONTRACT_CN, AGENTS_EN, AGENTS_CN,
+  ARCH_EN, ARCH_CN, CHARTS_EN, CHARTS_CN, REQ_EN, REQ_CN];
 
 // 引用裁决分类（四类，**没一类能整目录/整前缀豁免**；每条白名单必须写理由）。
 // 白名单条目还会被反向校：没人引用、或分类与 .gitignore 不再自洽 → 红，所以条目不会烂在那里。
