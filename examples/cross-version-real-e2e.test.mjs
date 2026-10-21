@@ -7,24 +7,33 @@
 // 账本，新代码要读它（宿主可见形状不许变）、还要在它上面续跑（不许重写历史、不许把老正文喂两遍、
 // 不许丢）。
 //
-// 此前只有单测里**手写**的旧形状夹具（`test/store/message-rows*.test.js` 之类）：手写夹具证明的是
-// 「折叠层认这个形状」，不证明「0.22.0 真的写成这个形状」——旧 CLI 的写侧一旦与夹具的记忆不同
-// （键名、种子行、`runState` 字段、正文块的排布），夹具永远发现不了。这一条用**真旧 CLI**
-// （`~/.npm-global/bin/erix` = 0.22.0）产账本、**真新代码**读与续跑，两头都是实物。
+// 手写夹具（`test/store/message-rows*.test.js` 之类）证明的是「折叠层认这个形状」，**不**证明
+// 「0.22.0 真的写成这个形状」。所以老账本必须是**真旧 CLI 的产物**——但「产物从哪来」与「产物长什么样」
+// 是两件事：本用例要验的是**产物**（读侧透传 / 续跑），不是「这台机器今天装没装 0.22.0」。
+// 于是老账本改成**仓内只读夹具** `test/fixtures/journal-0.22.0/`（真 0.22.0 CLI 跑出来的原始字节，
+// 一字未改；来源、任务、日期、卫生检查见该目录的 `README.md`）。
 //
-// 用法：ERIX_E2E_REAL=1 node --test examples/cross-version-real-e2e.test.mjs
+// **为什么改（261021 的现场）**：夹具化之前，这条用例从 `~/.npm-global/bin/erix` 现产老账本；
+// 全局 CLI 一升到 0.23.0，用例就整条 skip（实测 1 pass / 1 skip）——那是**前置依赖外部状态**，
+// 不是被测行为坏了。现在默认路径是夹具，**不需要任何外部 CLI**。
 //
-// 两把闸门，缺席原因**分类**报（一律「skipped」会把「机器坏了」伪装成「没开闸」）：
-//   ① 真上游：共用 `examples/e2e-real-gate.mjs`（gate 缺失 / 配置缺失 / JSON 坏了 / 缺字段 /
-//      凭据引用解不出值 / 端点不可达）。
-//   ② 旧 CLI：本文件自带的 `LEGACY_GAP_CODES`——`legacy_cli_missing`（路径不存在）/
-//      `legacy_cli_unusable`（在但跑不起来：EACCES、非 0 退出、版本命令没输出）/
-//      `legacy_cli_version_mismatch`（在、能跑，但不是 0.22.0）。
-//      **没装旧 CLI 不是红**：这是环境前提，不是被测行为。默认路径 `~/.npm-global/bin/erix`
-//      （可用 `ERIX_LEGACY_CLI` 覆盖），期望版本 0.22.0（可用 `ERIX_LEGACY_CLI_VERSION` 覆盖）。
+// 用法：
+//   node --test examples/cross-version-real-e2e.test.mjs                      # 夹具那半（离线、必跑）
+//   ERIX_E2E_REAL=1 node --test examples/cross-version-real-e2e.test.mjs      # 夹具那半 + 续跑那半
+//
+// 两半的分界（**闸门只挡续跑，不挡夹具**）：
+//   ① 夹具那半（L1–L3 / R1–R3 / X1–X3）：**始终跑、不联网、不花模型钱**。读夹具 + `store.load()`
+//      折叠 + 反向证（临时破坏透传分支 ⇒ R1/R2 必须红）。
+//   ② 续跑那半（S1–S6 / Z1）：要**真模型**，共用 `examples/e2e-real-gate.mjs` 的闸门
+//      （`ERIX_E2E_REAL=1` 才跑；gate 缺失 / 配置缺失 / JSON 坏了 / 缺字段 / 凭据引用解不出值 /
+//      端点不可达各自分类打日志）。闸门关时这一半**不打 skip**：夹具那半照跑，续跑那半打一行
+//      「闸门关 ⇒ 本次没跑续跑」的日志后结束（`t.skip()` 会让整条用例变 skipped，把夹具那半的绿也吞掉）。
+//   ③ 可选分支（L4）：机器上**恰好**有 0.22.0 的 CLI 时（默认 `~/.npm-global/bin/erix`，可用
+//      `ERIX_LEGACY_CLI` 覆盖、`ERIX_LEGACY_CLI_VERSION` 改期望版本），在闸门开的前提下再真产一份
+//      老账本，与夹具对**形状**（不是逐字：模型输出本来就不可复现）。**没有它也是全绿**：夹具是主路径。
 //
 // ---------------------------------------------------------------------------
-// 老账本怎么产（**不用 `--session`**，与工单里的写法差一步，理由在下面）
+// 夹具里的老账本是怎么产的（**不用 `--session`**，与工单里的写法差一步，理由在下面）
 //
 // `erix chat "<prompt>" --dir <tmp> --session <id>` 在 0.22.0 里是**续跑入口**：该 id 没有非空
 // transcript 时直接 `exit 1`（issue #168 之后的既定行为，实测「错误：会话不存在：my-fixed-id」）。
@@ -32,13 +41,15 @@
 // 再从 `--dir` 里的文件名反解（`resolveRunIdForTranscript`，与 `examples/resume-real-e2e.test.mjs`
 // 同一口径；这里文件名本身就是安全 id，`safeRunId(name) === name` 有硬断言兜住）。
 // 续跑那一步才用 `--session <同一个 id>`——那正是宿主升级后要走的入口。
+// 逐字命令与产物清单见 `test/fixtures/journal-0.22.0/README.md`（**只读夹具，不要重生成**）。
 //
 // ---------------------------------------------------------------------------
 // 三组断言各自防什么
 //
-//   第 1 组（老账本是 0.22.0 形状）：轮行自带 `messages`、**没有** `kind:"message"` 消息行、
-//     没有 `:msg:<round>:<seq>` 键、且真的跑过工具（有 `tool_result` 块）。这一组是**前提**：
-//     老账本要是被新写侧产出来的，后两组就什么都没证明。
+//   第 1 组（**夹具**是 0.22.0 形状）：轮行自带 `messages`、**没有** `kind:"message"` 消息行、
+//     没有 `:msg:<round>:<seq>` 键、干净收尾（无残段、末轮带 `wrapup`、侧档 `termination=end_turn` /
+//     `status=succeeded`）、且真的跑过工具（有配对的 `tool_use`/`tool_result` 块）。这一组是**前提**：
+//     夹具要是被新写侧产出来的（或被人手改过），后两组就什么都没证明。
 //   第 2 组（新代码读它）：`createFileTranscriptStore({dir}).load(runId)`
 //     R1 老行**原样透传**：逐行 `JSON.stringify` 与直接读原始 JSONL 的对应行**逐字相等**（不复制、
 //        不改写、不重排、不丢字段）；
@@ -77,7 +88,7 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
@@ -102,14 +113,24 @@ const ROWS_URL = new URL("../src/store/message-rows.js", import.meta.url).href;
 const EXIT_NOT_VERIFIED = 4;
 const LEDGER_SUFFIX = ".jsonl";
 const CORRUPT_MARK = ".corrupt.";
-/** 旧 CLI 默认位置（不在默认 PATH 里，必须绝对路径）。 */
+/** 旧 CLI 默认位置（不在默认 PATH 里，必须绝对路径）——**只给可选分支 L4 用**。 */
 const LEGACY_CLI_ENV = "ERIX_LEGACY_CLI";
 const LEGACY_VERSION_ENV = "ERIX_LEGACY_CLI_VERSION";
 const LEGACY_VERSION = "0.22.0";
+/**
+ * **主路径**：仓内只读夹具（真 0.22.0 CLI 的原始产物，来源见该目录 `README.md`）。
+ * 默认路径不许被环境变量改写：夹具是仓内实物，"这台机器上有什么"不该影响它。
+ */
+const FIXTURE_DIR = fileURLToPath(new URL("../test/fixtures/journal-0.22.0/", import.meta.url));
+/** 夹具的 runId（0.22.0 自生成的安全 id；与文件名同名，`safeRunId(id) === id`）。 */
+const FIXTURE_RUN_ID = "work-c7d61121-mvi9c4fj-77f54351";
+/** 夹具 `tool_result` 里的两个合成 token（S5 拿 ALPHA 当「续跑终稿里必须出现」的判据）。 */
+const FIXTURE_ALPHA_RE = /FIXTURE-ALPHA-[0-9a-f]{8}/u;
+const FIXTURE_BETA_RE = /FIXTURE-BETA-[0-9a-f]{8}/u;
 /** 老形状的正文轮行：键以 `:engine:round:<n>` 结尾且带非空 `messages`（改造前的写侧形状）。 */
 const OLD_SHAPE_ROUND_KEY = /:engine:round:\d+$/;
 
-/** 旧 CLI 缺席的稳定代号（进 skip 文案，便于事后 grep 是哪一类）。 */
+/** 旧 CLI 缺席的稳定代号（进日志，便于事后 grep 是哪一类；**不再进 `t.skip()`**）。 */
 const LEGACY_GAP_CODES = Object.freeze({
   LEGACY_CLI_MISSING: "legacy_cli_missing",
   LEGACY_CLI_UNUSABLE: "legacy_cli_unusable",
@@ -252,10 +273,13 @@ function parseStats(stdout) {
 }
 
 // ---------------------------------------------------------------------------
-// 旧 CLI 闸门（分类 skip，不许把「没装旧 CLI」写成红）
+// 旧 CLI 探测（**只给可选分支 L4 用**：缺席不是红、也不是 skip，只是不打那个分支）
 // ---------------------------------------------------------------------------
 
 /**
+ * 探一下这台机器上有没有恰好是 0.22.0 的旧 CLI（默认 `~/.npm-global/bin/erix`）。
+ * **主路径不依赖它**（老账本来自仓内夹具），所以落空只是「L4 不跑」，不是 skip。
+ *
  * @param {{ env?: NodeJS.ProcessEnv, home?: string }} [options]
  * @returns {{ ok: true, path: string, version: string }
  *   | { ok: false, code: string, message: string, path?: string }}
@@ -273,8 +297,9 @@ export function resolveLegacyCli({ env = process.env, home = homedir() } = {}) {
       ok: false,
       code: LEGACY_GAP_CODES.LEGACY_CLI_MISSING,
       path: cliPath,
-      message: `旧 CLI 不存在：${cliPath}（期望 ${expected}）。跨版本 e2e 需要一份**真的旧写侧**产账本；`
-        + `没装不是红，判 skip。装法示例：npm i -g erix-agent@${expected}（或设 ${LEGACY_CLI_ENV} 指到已有的旧 CLI）`,
+      message: `旧 CLI 不存在：${cliPath}（期望 ${expected}）。**这不是红也不是 skip**：老账本走仓内夹具`
+        + `（test/fixtures/journal-0.22.0/），旧 CLI 只在可选分支 L4（夹具与真旧写侧对形状）里用。`
+        + `想跑 L4：npm pack erix-agent@${expected} 解包后用 ${LEGACY_CLI_ENV} 指到它的 bin/cli.js`,
     };
   }
   const probe = spawnSync(cliPath, ["--version"], { encoding: "utf8", timeout: 20_000 });
@@ -284,7 +309,7 @@ export function resolveLegacyCli({ env = process.env, home = homedir() } = {}) {
       code: LEGACY_GAP_CODES.LEGACY_CLI_UNUSABLE,
       path: cliPath,
       message: `旧 CLI 在但跑不起来：${cliPath} --version 失败（${probe.error?.code ?? probe.error?.message ?? probe.error}）`
-        + " ⇒ 判 skip（不是断言失败）",
+        + " ⇒ L4 不打（夹具那半照跑）",
     };
   }
   if (probe.status !== 0) {
@@ -293,7 +318,7 @@ export function resolveLegacyCli({ env = process.env, home = homedir() } = {}) {
       code: LEGACY_GAP_CODES.LEGACY_CLI_UNUSABLE,
       path: cliPath,
       message: `旧 CLI 在但 --version 退出码 ${String(probe.status)}（stderr 尾部：`
-        + `${JSON.stringify(String(probe.stderr ?? "").slice(-200))}）⇒ 判 skip（不是断言失败）`,
+        + `${JSON.stringify(String(probe.stderr ?? "").slice(-200))}）⇒ L4 不打（夹具那半照跑）`,
     };
   }
   const version = String(probe.stdout ?? "").trim();
@@ -361,6 +386,49 @@ function resolveRunIdForTranscript(dir, jsonlName) {
     if (existsSync(join(dir, `${safeRunId(candidate)}.jsonl`))) return candidate;
   }
   throw new Error(`${jsonlName} 的 runId 拿不到（候选：${candidates.join(",")}）`);
+}
+
+// ---------------------------------------------------------------------------
+// 夹具（老账本的**主路径**）：test/fixtures/journal-0.22.0/
+// ---------------------------------------------------------------------------
+
+/**
+ * 读仓内只读夹具。**不比对字节哈希**：夹具本来就是「某个历史产物」，改它靠 code review
+ * 与该目录的 README，而不是让用例在别人重新生成夹具时红成一片（形状判据在 L1–L3 里）。
+ *
+ * @returns {{
+ *   dir: string, name: string, runId: string, file: string, raw: string,
+ *   rows: any[], partial: string, parseErrors: string[],
+ *   state?: any, status?: any, snapshot?: any,
+ * }}
+ */
+function loadFixtureJournal() {
+  const ledger = readLedger(FIXTURE_DIR);
+  if (ledger.file === null) {
+    throw new Error(`夹具目录里没有账本（${LEDGER_SUFFIX}）：${FIXTURE_DIR}——`
+      + "夹具是仓内实物，缺失就是仓坏了（不是环境问题，所以直接抛而不 skip）");
+  }
+  const name = ledger.file.split("/").pop();
+  const runId = resolveRunIdForTranscript(FIXTURE_DIR, name);
+  const sidecar = (suffix) => {
+    const path = join(FIXTURE_DIR, `${safeRunId(runId)}${suffix}`);
+    return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined;
+  };
+  return {
+    dir: FIXTURE_DIR, name, runId, ...ledger,
+    state: sidecar(".state.json"),
+    status: sidecar(".status.json"),
+    snapshot: sidecar(".snapshot.json"),
+  };
+}
+
+/** 把夹具原样搬进一个临时 `--dir`（字节逐字拷：S2 的「老行是字节前缀」靠的就是这份字节）。 */
+function copyFixtureInto(targetDir, fixture) {
+  mkdirSync(targetDir, { recursive: true });
+  for (const suffix of [LEDGER_SUFFIX, ".state.json", ".status.json", ".snapshot.json"]) {
+    const from = join(fixture.dir, `${safeRunId(fixture.runId)}${suffix}`);
+    if (existsSync(from)) writeFileSync(join(targetDir, `${safeRunId(fixture.runId)}${suffix}`), readFileSync(from));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -556,29 +624,25 @@ test("断言集自身的不变量：旧形状/新形状判据、原样透传、�
 });
 
 // ---------------------------------------------------------------------------
-// 真上游 + 真旧 CLI 段
+// 夹具那半（离线、**始终跑**）+ 续跑那半（真上游、闸门开才跑）
 // ---------------------------------------------------------------------------
 
-test("跨版本 e2e：0.22.0 写的账本 → 0.23.0 读（原样透传/恰好一份）→ 同 --session 续跑（字节前缀/新形状/不重复喂）", {
+test("跨版本 e2e：0.22.0 夹具账本 → 0.23.0 读（原样透传/恰好一份）→ 同 --session 续跑（字节前缀/新形状/不重复喂）", {
   timeout: 20 * 60 * 1000,
-}, async (t) => {
+}, async () => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
-  if (!gate.ok) {
-    t.skip(`真上游不可用/闸门关：${formatSkip(gate)}`);
-    return;
-  }
-  const legacy = resolveLegacyCli();
-  if (!legacy.ok) {
-    t.skip(`旧 CLI 不可用：${formatSkip(legacy)}`);
-    return;
-  }
-  console.log(`[13] 闸门开：model=${gate.model} endpoint=${printableEndpoint(gate.endpoint)}`
-    + `｜旧 CLI=${legacy.path} version=${legacy.version}`);
+  const fixture = loadFixtureJournal();
+  console.log(`[13] 老账本来源 = 仓内夹具 ${fixture.dir}`
+    + `（runId=${fixture.runId}，${fixture.rows.length} 行 / ${fixture.raw.length} 字节）`);
+  console.log(gate.ok
+    ? `[13] 闸门开：model=${gate.model} endpoint=${printableEndpoint(gate.endpoint)}`
+    : `[13] 闸门关（${formatSkip(gate)}）⇒ 本次只跑夹具那半（L1–L3 / R1–R3 / X1–X3）；`
+      + "续跑那半（S1–S6 / Z1）不打 skip、也不假装跑过");
 
   const realHome = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
   const realErix = join(realHome, ".erix");
   const realTranscripts = join(realErix, "transcripts");
-  const configHashBefore = hashFileIfExists(gate.configPath);
+  const configHashBefore = gate.ok ? hashFileIfExists(gate.configPath) : "（闸门关，无选中配置）";
   const erixSnapshotBefore = snapshotDir(realErix);
 
   const root = mkdtempSync(join(tmpdir(), TMP_PREFIX.crossVersion));
@@ -602,51 +666,17 @@ test("跨版本 e2e：0.22.0 写的账本 → 0.23.0 读（原样透传/恰好�
   let pendingRestore;
 
   try {
-    // 每次跑用**全新**的 token：模型不可能先验知道，于是「续跑终稿里出现了它」只能来自历史。
-    const tokenA = `ALPHA-${randomBytes(4).toString("hex")}`;
-    const betaText = `BETA-${randomBytes(4).toString("hex")}`;
-
     const work = join(root, "work");
     const transcripts = join(root, "transcripts");
     mkdirSync(work, { recursive: true });
-    mkdirSync(transcripts, { recursive: true });
-    writeFileSync(join(work, "a.txt"), `第一行 token=${tokenA}\n第二行 没有关键字\n`, "utf8");
-    writeFileSync(join(work, "b.txt"), `${betaText}\n`, "utf8");
+    // 夹具原样搬进临时 --dir：老账本的**字节**必须逐字来自仓内夹具（S2 的「字节前缀」靠它）。
+    copyFixtureInto(transcripts, fixture);
 
-    const commonArgs = [
-      "--config", gate.configPath,
-      "--dir", transcripts,
-      "--max-rounds", "6",
-      "--reflection", "off",
-      "--no-notes",
-      "--no-todo",
-    ];
-    const env = { ...process.env };
-    const RUN_TIMEOUT_MS = 300_000;
-
-    // ================= 第 1 组：用**旧 CLI** 产出 0.22.0 形状的老账本 =================
-    // 任务要「需要 ≥1 次工具」：两个 readFile（工具真的执行过，账本里才有 tool_result 块）。
-    // 不带 `--session`（见文件头：0.22.0 的 `--session` 是续跑入口，新会话会被它挡掉 exit 1）。
-    const oldPrompt = "请用 readFile 依次读取 a.txt 与 b.txt，然后用一句话同时报出 a.txt 里的 token"
-      + " 与 b.txt 的内容。";
-    const legacyExit = await runProcess(legacy.path, ["chat", oldPrompt, ...commonArgs], { cwd: work, env }, RUN_TIMEOUT_MS);
-    const legacyStats = parseStats(legacyExit.stdout);
-    console.log(`[13] 旧 CLI（${legacy.version}）退出码=${legacyExit.code}`
-      + `${legacyExit.signal ? ` signal=${legacyExit.signal}` : ""}`
-      + `｜统计行=${legacyStats === undefined ? "（没有）" : legacyStats.line}`);
-    console.log(`[13] 旧 CLI stdout 尾部：\n${legacyExit.stdout.slice(-600).split("\n").map((line) => `      ${line}`).join("\n")}`);
-    if (legacyExit.stderr.trim() !== "") {
-      console.log(`[13] 旧 CLI stderr 尾部：${legacyExit.stderr.slice(-400)}`);
-    }
-
-    const oldLedger = readLedger(transcripts);
-    assert.notEqual(oldLedger.file, null,
-      `旧 CLI 没有在 --dir 里留下账本（退出码 ${String(legacyExit.code)}；`
-      + `stderr 尾部：${JSON.stringify(legacyExit.stderr.slice(-400))}）`);
-    const oldLedgerName = oldLedger.file.split("/").pop();
-    const runId = resolveRunIdForTranscript(transcripts, oldLedgerName);
-    const oldRaw = oldLedger.raw;
-    const oldRows = oldLedger.rows;
+    // ================= 第 1 组：老账本 = 仓内夹具（真 0.22.0 CLI 的原始产物）=================
+    const oldLedger = fixture;
+    const runId = fixture.runId;
+    const oldRaw = fixture.raw;
+    const oldRows = fixture.rows;
     const oldLogical = foldLedgerMessages(oldRows).map((entry) => entry.message);
     const oldCounts = new Map();
     for (const message of oldLogical) {
@@ -657,13 +687,52 @@ test("跨版本 e2e：0.22.0 写的账本 → 0.23.0 读（原样透传/恰好�
     console.log(`[13] 老账本：runId=${runId}｜${oldRows.length} 行 / ${oldRaw.length} 字节 / `
       + `${oldLogical.length} 条逻辑消息｜最大轮=${oldMaxRound}`);
 
-    check("L1 旧 CLI 正常收尾（退出码 4 = verification skipped，termination=end_turn）", () => {
-      assert.equal(legacyExit.code, EXIT_NOT_VERIFIED,
-        `旧 CLI 退出码 ${String(legacyExit.code)}${legacyExit.signal ? `（signal=${legacyExit.signal}）` : ""}`
-        + `，期望 ${EXIT_NOT_VERIFIED}；stderr 尾部：${JSON.stringify(legacyExit.stderr.slice(-300))}`);
-      assert.ok(legacyStats !== undefined, `旧 CLI 没有打出统计行：${JSON.stringify(legacyExit.stdout.slice(-300))}`);
-      assert.equal(legacyStats.termination, "end_turn", `旧 CLI 终止原因=${String(legacyStats.termination)}`);
-    }, legacyStats === undefined ? "统计行缺失" : legacyStats.line);
+    // token 一律**从夹具里抽**（不是现编）：S5 要的就是「续跑终稿里出现老账本里的那个 token」。
+    // 抽不到就是夹具坏了（不是环境问题）⇒ 直接抛，不让 S5 拿 `undefined` 去做假绿。
+    const toolResultText = oldLogical.flatMap(blocksOf)
+      .filter((block) => block?.type === "tool_result")
+      .map((block) => String(block?.content ?? "")).join("\n");
+    const tokenA = FIXTURE_ALPHA_RE.exec(toolResultText)?.[0];
+    const betaText = FIXTURE_BETA_RE.exec(toolResultText)?.[0];
+    assert.ok(typeof tokenA === "string" && tokenA !== "",
+      `夹具的 tool_result 里找不到 ${String(FIXTURE_ALPHA_RE)} token（夹具被改坏了？）：${toolResultText.slice(0, 200)}`);
+    assert.ok(typeof betaText === "string" && betaText !== "",
+      `夹具的 tool_result 里找不到 ${String(FIXTURE_BETA_RE)} token（夹具被改坏了？）`);
+
+    // 续跑那半的工作目录：a.txt 里就是夹具里的 token（续跑前会删掉它，见 S5）。
+    writeFileSync(join(work, "a.txt"), `第一行 token=${tokenA}\n第二行 没有关键字\n`, "utf8");
+    writeFileSync(join(work, "b.txt"), `${betaText}\n`, "utf8");
+
+    const env = { ...process.env };
+    const RUN_TIMEOUT_MS = 300_000;
+    /** 两个 CLI 共用的参数（`--dir` 由调用点给，S6 要把同一个 run 搬到另一个目录）。 */
+    const commonArgsFor = (dir) => [
+      "--config", gate.configPath,
+      "--dir", dir,
+      "--max-rounds", "6",
+      "--reflection", "off",
+      "--no-notes",
+      "--no-todo",
+    ];
+    /** 可选分支 L4 用的提示词（与产夹具时逐字一致）。 */
+    const oldPrompt = "请用 readFile 依次读取 a.txt 与 b.txt，然后用一句话同时报出 a.txt 里的 token"
+      + " 与 b.txt 的内容。";
+
+    check("L1 夹具是 0.22.0 干净收尾的产物：末尾无残段、每行可解析、末轮带 wrapup、侧档 termination=end_turn / status=succeeded", () => {
+      assert.deepEqual(fixture.parseErrors, [], `夹具账本中间行解析失败：${fixture.parseErrors.join(" | ")}`);
+      assert.equal(fixture.partial, "", "0.22.0 干净收尾的账本不该有末尾残段");
+      assert.ok(oldRows.length >= 3, `夹具只有 ${oldRows.length} 行，判据落空`);
+      const last = oldRows[oldRows.length - 1];
+      assert.equal(Object.hasOwn(last ?? {}, "wrapup"), true,
+        `末轮行没有 wrapup 字段（0.22.0 只在收尾轮写它）：${JSON.stringify(Object.keys(last ?? {}))}`);
+      // 注意（实测发现，已写进 README）：0.22.0 的轮行 `runState` 是在**终止裁定之前**快照的，
+      // 所以末轮行里它恒为 `termination.reason="running"`；终止事实只落在 `.state.json` 里。
+      assert.equal(fixture.state?.runId, runId, "state.json 的 runId 与账本文件名对不上（侧档被换过？）");
+      assert.equal(fixture.state?.deterministic?.termination?.reason, "end_turn",
+        `state.json 的终止原因=${String(fixture.state?.deterministic?.termination?.reason)}`);
+      assert.equal(fixture.state?.asOfRound, last?.round, "state.json 的 asOfRound 与末轮号对不上");
+      assert.equal(fixture.status?.status, "succeeded", `status.json 的终态=${String(fixture.status?.status)}`);
+    }, `${oldRows.length} 行｜state.asOfRound=${String(fixture.state?.asOfRound)}｜status=${String(fixture.status?.status)}`);
 
     check("L2 老账本是 0.22.0 形状：没有 kind:\"message\" 行、没有 :msg: 键、轮行自带正文", () => {
       assert.deepEqual(oldLedger.parseErrors, [], `老账本中间行解析失败：${oldLedger.parseErrors.join(" | ")}`);
@@ -677,14 +746,54 @@ test("跨版本 e2e：0.22.0 写的账本 → 0.23.0 读（原样透传/恰好�
         + JSON.stringify(oldRows.map((row) => ({ k: row?.dedupKey, n: messagesOf(row).length }))));
     }, `${oldRows.length} 行，其中老形状正文行 ${oldRows.filter(isOldShapeBodyRow).length} 行`);
 
-    check("L3 老账本里真的跑过工具（有 tool_result 块，且 ≥1 次调用）", () => {
+    check("L3 老账本里真的跑过工具（有 tool_result 块，且 ≥1 次调用；两个合成 token 就在结果里）", () => {
       const results = oldLogical.flatMap(blocksOf).filter((block) => block?.type === "tool_result");
       assert.ok(results.length >= 1, `老账本里一个 tool_result 都没有 ⇒ 场景没成立（换提示词，别放宽断言）`);
       const uses = oldLogical.flatMap(blocksOf).filter((block) => block?.type === "tool_use");
       assert.ok(uses.length >= 1, "老账本里一个 tool_use 都没有");
       assert.equal(results.map((block) => String(block?.tool_use_id)).sort().join(","),
         uses.map((block) => String(block?.id)).sort().join(","), "tool_use 与 tool_result 的 id 没配对");
-    }, `tool_use ${oldLogical.flatMap(blocksOf).filter((block) => block?.type === "tool_use").length} 个`);
+      // 工具**真的读过那两个文件**：结果里必须带着 a.txt / b.txt 的合成 token（不是空壳 tool_result）。
+      assert.equal(toolResultText.includes(tokenA), true,
+        `tool_result 里没有 a.txt 的 token ${String(tokenA)} ⇒ 工具没真读文件`);
+      assert.equal(toolResultText.includes(betaText), true,
+        `tool_result 里没有 b.txt 的内容 ${String(betaText)}`);
+    }, `tool_use ${oldLogical.flatMap(blocksOf).filter((block) => block?.type === "tool_use").length} 个｜token=${String(tokenA)}`);
+
+    // ================= 可选分支 L4：机器上**恰好**有 0.22.0 CLI 时，与夹具对形状 =================
+    // **不是主路径**：夹具那半不依赖它（没装旧 CLI 也不 skip、不红，只打一行日志）。
+    // 它要花一次模型钱 ⇒ 只在闸门开时打；断言只到**形状**（模型输出本来就不可复现，比逐字就是假红）。
+    if (gate.ok) {
+      const legacy = resolveLegacyCli();
+      if (!legacy.ok) {
+        console.log(`[13] 可选分支 L4 不打：${formatSkip(legacy)}`);
+      } else {
+        const legacyDir = join(root, "legacy-cli-transcripts");
+        mkdirSync(legacyDir, { recursive: true });
+        const legacyExit = await runProcess(legacy.path, ["chat", oldPrompt, ...commonArgsFor(legacyDir)],
+          { cwd: work, env }, RUN_TIMEOUT_MS);
+        const legacyStats = parseStats(legacyExit.stdout);
+        console.log(`[13] 旧 CLI（${legacy.version}）新产一份：退出码=${legacyExit.code}`
+          + `｜统计行=${legacyStats === undefined ? "（没有）" : legacyStats.line}`);
+        const freshLedger = readLedger(legacyDir);
+        const freshRows = freshLedger.rows;
+        const freshLogical = foldLedgerMessages(freshRows).map((entry) => entry.message);
+        check("L4（可选）真旧 CLI 新产的账本与夹具同形状：无 kind:\"message\" 行、有老形状正文行、工具配对", () => {
+          assert.notEqual(freshLedger.file, null,
+            `旧 CLI 没在 --dir 里留下账本（退出码 ${String(legacyExit.code)}；`
+            + `stderr 尾部：${JSON.stringify(legacyExit.stderr.slice(-300))}）`);
+          assert.deepEqual(freshLedger.parseErrors, [], `新产账本中间行解析失败：${freshLedger.parseErrors.join(" | ")}`);
+          assert.equal(freshRows.filter((row) => row?.kind === MESSAGE_ROW_KIND).length, 0,
+            "新产账本里出现了 kind:\"message\" 行（那它就不是 0.22.0 写的）");
+          assert.equal(freshRows.map((row) => String(row?.dedupKey ?? "")).filter((key) => key.includes(":msg:")).length, 0,
+            "新产账本里出现了 :msg:<round>:<seq> 键");
+          assert.ok(freshRows.some(isOldShapeBodyRow), "新产账本里没有「轮行自带 messages」的行");
+          const freshUses = freshLogical.flatMap(blocksOf).filter((block) => block?.type === "tool_use");
+          const freshResults = freshLogical.flatMap(blocksOf).filter((block) => block?.type === "tool_result");
+          assert.ok(freshUses.length >= 1 && freshResults.length >= 1, "新产账本里没有工具调用");
+        }, `${freshRows.length} 行 / ${freshLogical.length} 条逻辑消息`);
+      }
+    }
 
     // ================= 第 2 组：新代码读它（store.load 折叠输出）=================
     assert.equal(safeRunId(runId), runId,
@@ -716,6 +825,91 @@ test("跨版本 e2e：0.22.0 写的账本 → 0.23.0 读（原样透传/恰好�
         `折叠条数 ${readProbe.logicalCount} ≠ 独立计数 ${independentLogicalCount(oldRows)}`);
     }, `record.messages 共 ${readProbe.readMessages} 条`);
 
+    // ================= 反向证（**离线、始终跑**：临时破坏透传分支 ⇒ R1/R2 必须红）=================
+    // 反向证要在**纯老账本**上做：破坏点 `foldable === 0` 只在「整个数组里没有可折叠消息行」时生效，
+    // 而续跑后的账本里已经有新形状消息行（foldable > 0）⇒ 拿它当靶子会让破坏变成空操作（假绿）。
+    // 所以把**续跑前**的老账本字节原样放回一个只读靶子目录，probe 只读它。
+    // 闸门关时它也跑：这一组不联网、不花模型钱，是「夹具那半」的一部分。
+    const reverseDir = join(root, "transcripts-old-only");
+    mkdirSync(reverseDir, { recursive: true });
+    const reverseRawPath = join(reverseDir, `${safeRunId(runId)}${LEDGER_SUFFIX}`);
+    writeFileSync(reverseRawPath, oldRaw, "utf8");
+    const probeArgs = { dir: reverseDir, runId, rawPath: reverseRawPath };
+    // 先跑一次**未破坏**的对照：证明子进程这套判据不是「永远红」。
+    const controlProbe = await probeInChild(probeArgs);
+    const originalBytes = readFileSync(ROWS_FILE);
+    const originalMd5 = md5Of(originalBytes);
+    let brokenProbe;
+    let restoredMd5;
+    let restoreError;
+    try {
+      const text = originalBytes.toString("utf8");
+      const hits = text.split(PASSTHROUGH_LINE).length - 1;
+      assert.equal(hits, 1,
+        `折叠层的透传分支定位失败（命中 ${hits} 次，期望 1 次）——源码变了就要更新本用例的破坏点，`
+        + `不许静默跳过反向证：${PASSTHROUGH_LINE}`);
+      writeFileSync(ROWS_FILE, text.replace(PASSTHROUGH_LINE, BROKEN_PASSTHROUGH_LINE), "utf8");
+      pendingRestore = () => { writeFileSync(ROWS_FILE, originalBytes); };
+      process.once("exit", pendingRestore);
+      brokenProbe = await probeInChild(probeArgs);
+    } finally {
+      if (pendingRestore !== undefined) {
+        process.removeListener("exit", pendingRestore);
+        try {
+          pendingRestore();
+        } catch (error) {
+          restoreError = error;
+        }
+        pendingRestore = undefined;
+      }
+      restoredMd5 = md5Of(readFileSync(ROWS_FILE));
+    }
+    console.log(`[13] 反向证：对照 probe=${JSON.stringify({
+      problems: controlProbe.problems.length, duplicates: controlProbe.duplicateProblems.length,
+      logical: controlProbe.logicalCount,
+    })}｜破坏后 probe=${JSON.stringify({
+      problems: brokenProbe?.problems?.length, duplicates: brokenProbe?.duplicateProblems?.length,
+      logical: brokenProbe?.logicalCount,
+    })}｜md5 前=${originalMd5} 后=${restoredMd5}`);
+    console.log(`[13] 反向证红样（破坏后子进程 probe 的第一条 R1 / R2）：\n`
+      + `      R1: ${String(brokenProbe?.problems?.[0] ?? "（无）").slice(0, 220)}\n`
+      + `      R2: ${String(brokenProbe?.duplicateProblems?.[0] ?? "（无）").slice(0, 220)}`);
+
+    check("X1 对照：未破坏时子进程 probe 全绿（判据不是永远红）", () => {
+      assert.deepEqual(controlProbe.problems, [], `对照 probe 报红：${controlProbe.problems.join(" ｜ ")}`);
+      assert.deepEqual(controlProbe.duplicateProblems, [], `对照 probe 报重复：${controlProbe.duplicateProblems.join(" ｜ ")}`);
+      assert.equal(controlProbe.logicalCount, readProbe.logicalCount,
+        `子进程 probe 的逻辑条数 ${controlProbe.logicalCount} 与主进程 ${readProbe.logicalCount} 不一致`);
+    }, `problems=0 duplicates=0 logical=${controlProbe.logicalCount}`);
+
+    check("X2 破坏透传分支（foldable===0 时强制 messages: []）⇒ R1「原样透传」与 R2「恰好 1 份」都红", () => {
+      assert.ok(brokenProbe.problems.length > 0,
+        `破坏后「原样透传」竟然还是绿的（problems 为空）——R1 没有牙齿：${JSON.stringify(brokenProbe)}`);
+      assert.ok(brokenProbe.problems.some((line) => line.includes("不逐字相等")),
+        `破坏后 R1 的失败文案里没有「不逐字相等」：${JSON.stringify(brokenProbe.problems)}`);
+      assert.equal(brokenProbe.duplicateProblems.length, oldCounts.size,
+        `破坏后 R2 应报 ${oldCounts.size} 条（每条老消息指纹一条），实得 ${brokenProbe.duplicateProblems.length} 条：`
+        + `${JSON.stringify(brokenProbe.duplicateProblems)}`);
+      assert.ok(brokenProbe.duplicateProblems.every((line) => line.includes("实得 0 份")),
+        `破坏后 R2 应报「实得 0 份」：${JSON.stringify(brokenProbe.duplicateProblems)}`);
+    }, `problems=${brokenProbe.problems.length} duplicates=${brokenProbe.duplicateProblems.length}`);
+
+    check("X3 源码 md5 逐字还原（临时破坏不留痕）", () => {
+      assert.equal(restoreError, undefined, `还原源码时抛错：${String(restoreError?.message ?? restoreError)}`);
+      assert.equal(restoredMd5, originalMd5, `src/store/message-rows.js 的 md5 变了：${originalMd5} → ${restoredMd5}`);
+      assert.equal(readFileSync(ROWS_FILE).length, originalBytes.length, "还原后字节数不一致");
+    }, `md5=${restoredMd5}（${originalBytes.length} 字节）`);
+
+    // ================= 续跑那半的闸门（关 = 只跑夹具那半，**不打 skip**）=================
+    // `t.skip()` 会把整条用例标成 skipped，连夹具那半已经跑出来的绿一起吞掉；而夹具那半是**离线必跑**的。
+    // 所以闸门关时只打一行日志就收尾（`finally` 照常清理临时目录），夹具那半的失败照样在 failures 里红。
+    if (!gate.ok) {
+      console.log(`[13] 续跑那半没跑：${formatSkip(gate)}——S1–S6 / Z1 要真模型；`
+        + "夹具那半（L1–L3 / R1–R3 / X1–X3）已跑完，本用例不打 skip（见文件头「两半的分界」）");
+      assert.deepEqual(failures, [], `夹具那半失败的断言：${failures.join(", ")}`);
+      return;
+    }
+
     // ================= 第 3 组：新代码续跑它 =================
     // 续跑前把 a.txt **删掉**：token 只留在账本（与 0.22.0 快照）里，模型能说出来就只能是从历史里看到的。
     // 这一步同时挡住「模型又读了一遍文件」这种假绿（resume-real-e2e 的 E4 只能记备注，这里把它变成判据）。
@@ -730,7 +924,7 @@ test("跨版本 e2e：0.22.0 写的账本 → 0.23.0 读（原样透传/恰好�
     const resumePrompt = `继续上一轮（${runId}）：请只用一句话同时报出 a.txt 里的 token 与 b.txt 的内容。`
       + "历史里已经有这些数据了，不要再调用工具。";
     const resumeExit = await runProcess(process.execPath,
-      [CLI, "chat", resumePrompt, "--session", runId, ...commonArgs], { cwd: work, env }, RUN_TIMEOUT_MS);
+      [CLI, "chat", resumePrompt, "--session", runId, ...commonArgsFor(transcripts)], { cwd: work, env }, RUN_TIMEOUT_MS);
     const resumeStats = parseStats(resumeExit.stdout);
     const resumeDraft = finalDraft(resumeExit.stdout);
     console.log(`[13] 续跑退出码=${resumeExit.code}${resumeExit.signal ? ` signal=${resumeExit.signal}` : ""}`
@@ -844,7 +1038,7 @@ test("跨版本 e2e：0.22.0 写的账本 → 0.23.0 读（原样透传/恰好�
 
     const ledgerOnlyExit = await runProcess(process.execPath, [
       CLI, "chat", resumePrompt, "--session", runId,
-      ...commonArgs.map((arg) => (arg === transcripts ? ledgerOnlyDir : arg)),
+      ...commonArgsFor(ledgerOnlyDir),
     ], { cwd: work, env }, RUN_TIMEOUT_MS);
     const ledgerOnlyStats = parseStats(ledgerOnlyExit.stdout);
     const ledgerOnlyDraft = finalDraft(ledgerOnlyExit.stdout);
@@ -861,80 +1055,6 @@ test("跨版本 e2e：0.22.0 写的账本 → 0.23.0 读（原样透传/恰好�
       assert.equal(ledgerOnlyDraft.includes(tokenA), true,
         `账本单独续跑的终稿里没有老 token ${tokenA}：${JSON.stringify(ledgerOnlyDraft.slice(0, 300))}`);
     }, `无快照续跑后账本 ${ledgerOnlyLedger.rows.length} 行`);
-
-    // ================= 第 4 组：反向证（临时破坏透传分支 ⇒ R1/R2 必须红）=================
-    // 反向证要在**纯老账本**上做：破坏点 `foldable === 0` 只在「整个数组里没有可折叠消息行」时生效，
-    // 而续跑后的账本里已经有新形状消息行（foldable > 0）⇒ 拿它当靶子会让破坏变成空操作（假绿）。
-    // 所以把**续跑前**的老账本字节原样放回一个只读靶子目录，probe 只读它。
-    const reverseDir = join(root, "transcripts-old-only");
-    mkdirSync(reverseDir, { recursive: true });
-    const reverseRawPath = join(reverseDir, `${safeRunId(runId)}${LEDGER_SUFFIX}`);
-    writeFileSync(reverseRawPath, oldRaw, "utf8");
-    const probeArgs = { dir: reverseDir, runId, rawPath: reverseRawPath };
-    // 先跑一次**未破坏**的对照：证明子进程这套判据不是「永远红」。
-    const controlProbe = await probeInChild(probeArgs);
-    const originalBytes = readFileSync(ROWS_FILE);
-    const originalMd5 = md5Of(originalBytes);
-    let brokenProbe;
-    let restoredMd5;
-    let restoreError;
-    try {
-      const text = originalBytes.toString("utf8");
-      const hits = text.split(PASSTHROUGH_LINE).length - 1;
-      assert.equal(hits, 1,
-        `折叠层的透传分支定位失败（命中 ${hits} 次，期望 1 次）——源码变了就要更新本用例的破坏点，`
-        + `不许静默跳过反向证：${PASSTHROUGH_LINE}`);
-      writeFileSync(ROWS_FILE, text.replace(PASSTHROUGH_LINE, BROKEN_PASSTHROUGH_LINE), "utf8");
-      pendingRestore = () => { writeFileSync(ROWS_FILE, originalBytes); };
-      process.once("exit", pendingRestore);
-      brokenProbe = await probeInChild(probeArgs);
-    } finally {
-      if (pendingRestore !== undefined) {
-        process.removeListener("exit", pendingRestore);
-        try {
-          pendingRestore();
-        } catch (error) {
-          restoreError = error;
-        }
-        pendingRestore = undefined;
-      }
-      restoredMd5 = md5Of(readFileSync(ROWS_FILE));
-    }
-    console.log(`[13] 反向证：对照 probe=${JSON.stringify({
-      problems: controlProbe.problems.length, duplicates: controlProbe.duplicateProblems.length,
-      logical: controlProbe.logicalCount,
-    })}｜破坏后 probe=${JSON.stringify({
-      problems: brokenProbe?.problems?.length, duplicates: brokenProbe?.duplicateProblems?.length,
-      logical: brokenProbe?.logicalCount,
-    })}｜md5 前=${originalMd5} 后=${restoredMd5}`);
-    console.log(`[13] 反向证红样（破坏后子进程 probe 的第一条 R1 / R2）：\n`
-      + `      R1: ${String(brokenProbe?.problems?.[0] ?? "（无）").slice(0, 220)}\n`
-      + `      R2: ${String(brokenProbe?.duplicateProblems?.[0] ?? "（无）").slice(0, 220)}`);
-
-    check("X1 对照：未破坏时子进程 probe 全绿（判据不是永远红）", () => {
-      assert.deepEqual(controlProbe.problems, [], `对照 probe 报红：${controlProbe.problems.join(" ｜ ")}`);
-      assert.deepEqual(controlProbe.duplicateProblems, [], `对照 probe 报重复：${controlProbe.duplicateProblems.join(" ｜ ")}`);
-      assert.equal(controlProbe.logicalCount, readProbe.logicalCount,
-        `子进程 probe 的逻辑条数 ${controlProbe.logicalCount} 与主进程 ${readProbe.logicalCount} 不一致`);
-    }, `problems=0 duplicates=0 logical=${controlProbe.logicalCount}`);
-
-    check("X2 破坏透传分支（foldable===0 时强制 messages: []）⇒ R1「原样透传」与 R2「恰好 1 份」都红", () => {
-      assert.ok(brokenProbe.problems.length > 0,
-        `破坏后「原样透传」竟然还是绿的（problems 为空）——R1 没有牙齿：${JSON.stringify(brokenProbe)}`);
-      assert.ok(brokenProbe.problems.some((line) => line.includes("不逐字相等")),
-        `破坏后 R1 的失败文案里没有「不逐字相等」：${JSON.stringify(brokenProbe.problems)}`);
-      assert.equal(brokenProbe.duplicateProblems.length, oldCounts.size,
-        `破坏后 R2 应报 ${oldCounts.size} 条（每条老消息指纹一条），实得 ${brokenProbe.duplicateProblems.length} 条：`
-        + `${JSON.stringify(brokenProbe.duplicateProblems)}`);
-      assert.ok(brokenProbe.duplicateProblems.every((line) => line.includes("实得 0 份")),
-        `破坏后 R2 应报「实得 0 份」：${JSON.stringify(brokenProbe.duplicateProblems)}`);
-    }, `problems=${brokenProbe.problems.length} duplicates=${brokenProbe.duplicateProblems.length}`);
-
-    check("X3 源码 md5 逐字还原（临时破坏不留痕）", () => {
-      assert.equal(restoreError, undefined, `还原源码时抛错：${String(restoreError?.message ?? restoreError)}`);
-      assert.equal(restoredMd5, originalMd5, `src/store/message-rows.js 的 md5 变了：${originalMd5} → ${restoredMd5}`);
-      assert.equal(readFileSync(ROWS_FILE).length, originalBytes.length, "还原后字节数不一致");
-    }, `md5=${restoredMd5}（${originalBytes.length} 字节）`);
 
     // ================= 隔离对账（真实 ~/.erix 一个字节都不许动）=================
     check("Z1 真实 ~/.erix 没被写：选中配置哈希不变 + 真实 transcripts/outputs 下没有本次 run 的产物", () => {
