@@ -1802,11 +1802,27 @@ export async function runErixRun(rawParams = {}, deps = {}) {
     const advisoryOption = advisoryRequested === undefined
       ? {}
       : { judgeDoneAdvisory: advisoryRequested };
+    // diagnostics 里的那一份：requested = 宿主传了什么、enabled = 本次真下发了吗。
+    const advisoryDiagnostic = advisoryRequested === undefined
+      ? {}
+      : {
+        judgeDoneAdvisory: reflectionEnabled
+          ? { requested: advisoryRequested, enabled: true }
+          : {
+            requested: advisoryRequested,
+            enabled: false,
+            reason: "judge 未开启（需 maxRounds ≥ 16 且未设 ERIX_NO_REFLECTION=1）⇒ 开关没下发，本次没生效",
+          },
+      };
     context.reflection = {
       enabled: reflectionEnabled,
       requested: requestedExtensions,
       // 生效上限：未传时是引擎缺省（ ENGINE_DEFAULT_MAX_EXTENSIONS，不是本层下发的默认值）。
       maxExtensions,
+      // issue #322：评审意见回灌开关按既有 requested / enabled 同族口径透出：judge 闸门关着时
+      // requested 是宿主传的值而 enabled=false ⇒「传了但没生效」看得见，不静默；没传时整个键
+      // 不存在（而不是写个 false 冒充「宿主说了关」）。
+      ...advisoryDiagnostic,
     };
     const reflection = reflectionEnabled
       ? {
@@ -2040,6 +2056,11 @@ export function formatPayloadForModel(payload, { limit = 20_000 } = {}) {
     // 传了扩轮参数但 judge 闸门没开 → 明说它没生效，别假称传了。
     lines.push(`  ↳ 扩轮参数未生效（judge 未开启，需 maxRounds ≥ 16 或去掉 ERIX_NO_REFLECTION）：`
       + JSON.stringify(reflection.requested));
+  }
+  if (reflection?.judgeDoneAdvisory?.requested === true && reflection.judgeDoneAdvisory.enabled === false) {
+    // 同上口径：传了 true 但 reflection 整块没下发 ⇒ 本次一条评审意见也不会回灌给模型。
+    lines.push(`  ↳ judgeDoneAdvisory 未生效（judge 未开启，需 maxRounds ≥ 16 或去掉 ERIX_NO_REFLECTION）`
+      + `：传了 true，但本次不会有任何评审意见回灌给模型`);
   }
   if (payload?.error?.message) {
     lines.push(`[error] ${payload.error.code ?? payload.error.name ?? "Error"}: ${payload.error.message}`);
