@@ -1673,6 +1673,12 @@ issue #184/#195 一路在收的那类静默撒谎。具体算账：一个看着�
   住了这个等式（issue #195 硬判据）；宿主不得在别名上假定扁平形态去写解析器。别名的截断 marker 带的是与规范入口同一个数
 （`…；下一步：改用 searchText 传 offset=N 继续（本别名不接受 offset）`，N = 本次返回的
 命中条数），即别名**给真值但不因此获得参数**（issue #196 追加轮）。
+- `path` **不存在**时返回**错误结果，永不落 `（无命中）`**（issue #219）。`（无命中）` 的
+  语义是「搜过了，没有」；路径写错时给同一句话就是**假阴性**——`metadata.searchFiles` 只进
+  transcript、不上 wire，模型唯一的通道就是那句字符串，于是会把「路径写错了」读成「代码里
+  没有这个」。三个入口一律返回文本结果 `错误：路径不存在：<path>`（与 jail 越界、无效正则
+  同一条通道：文本，不抛）。两种情形严格分开：**存在**但没有命中的目录仍是 `（无命中）`；
+  `path` 指向**文件**时只搜这个文件（行为未变，现由契约套件钉住）。
 - `searchText` 返回 `{ content, metadata }`。`metadata` 携带 `searchHits`、
   `searchMatchedLines`、`searchFiles`、`searchLimit`、`searchOffset`、`searchTruncated`、
   `searchNextOffset`（仅在截断时）与 `searchSkipped { vendorDirectories,
@@ -1687,6 +1693,11 @@ issue #184/#195 一路在收的那类静默撒谎。具体算账：一个看着�
   `rg` 与 `grep` 会在结果尾部挂一行 `[已弃用 rg：它是 searchText 的薄别名，…]`。拿工具
   输出做逐字相等比较的宿主会看到这一行——它是模型可见变更；CLI 系统提示的工具清单行与
   `test/fixtures/cli-golden.json` 同理。
+  这一行里的迁移提示按**本次入参**生成（issue #221）：`is_regex=false` → `mode="literal"`，
+  其余 → `mode="regex"`；`grep` 只在本次真的传了 `glob` 时才点名 `name_pattern`。写死
+  `mode="regex"` 会静默换语义——`literal` 不解释元字符、`regex` 解释（`a.b`、`\d+`、`(x)`
+  的命中集不同），而 `mode` 无默认值，这条提示就是模型唯一的迁移依据。契约套件钉住「照提示
+  改写 → 命中集不变」。
 - **没发生**的事（issue #195 R4）：没加 `-i`、没加 `-A`/`-B`/`-C` 上下文行、没加
   `--type`、没加 `.gitignore` 感知。每一条都会与边界注入/输出预算/中止交叉（`-A`/`-B`
   会顶破字节上限；读 `.gitignore` 本身要过 `allowRead`），所以上游要求先看 transcript

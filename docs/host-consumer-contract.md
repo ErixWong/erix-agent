@@ -2100,6 +2100,16 @@ What a host can code against:
   (`…；下一步：改用 searchText 传 offset=N 继续（本别名不接受 offset）`, N = this call's hit
   count), so the aliases give the truth without acquiring the parameter (issue #196
   follow-up).
+- a `path` that **does not exist** is an **error result, never `（无命中）`**
+  (issue #219). `（无命中）` means "searched it, nothing there"; returning it for a
+  typo'd path is a false negative — `metadata.searchFiles` goes into the
+  transcript only, so the model's whole channel is that string and it would
+  conclude "this code is not in the repo". All three entry points return the text
+  result `错误：路径不存在：<path>` (same channel as the jail-denied and
+  invalid-regex results: text, never a throw). The two cases stay strictly
+  apart: an **existing** directory with no hits is still `（无命中）`, and a `path`
+  naming a **file** searches that one file (unchanged behaviour, now pinned by
+  the contract suite).
 - `searchText` returns `{ content, metadata }`. `metadata` carries
   `searchHits`, `searchMatchedLines`, `searchFiles`, `searchLimit`,
   `searchOffset`, `searchTruncated`, `searchNextOffset` (only when truncated) and
@@ -2118,6 +2128,13 @@ What a host can code against:
   `[已弃用 rg：它是 searchText 的薄别名，…]`. Hosts comparing tool output with
   exact string equality will see that line — it is a model-visible change, as is
   the CLI system prompt's tool-list line and `test/fixtures/cli-golden.json`.
+  That line's migration hint is derived from **this call's arguments** (issue
+  #221): `is_regex=false` → `mode="literal"`, otherwise → `mode="regex"`, and
+  `grep` names `name_pattern` only when the call actually passed `glob`. A fixed
+  `mode="regex"` hint would silently swap semantics — `literal` does not
+  interpret metacharacters and `regex` does (`a.b`, `\d+`, `(x)` give different
+  hit sets), and `mode` has no default, so the hint is the model's only migration
+  evidence. The contract suite pins "rewrite as hinted → identical hit set".
 - what did **not** happen (issue #195 R4): no `-i`, no `-A`/`-B`/`-C` context
   lines, no `--type`, no `.gitignore` support. Each of those crosses the
   boundary-injection, output-budget and abort paths (`-A`/`-B` breaks the byte
