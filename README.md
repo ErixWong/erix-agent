@@ -356,6 +356,8 @@ quoted blocks below against it):
   "docs/host-upgrade-guide-0.20.0_cn.md",
   "docs/host-upgrade-guide-0.21.0.md",
   "docs/host-upgrade-guide-0.21.0_cn.md",
+  "docs/host-upgrade-guide-0.22.0.md",
+  "docs/host-upgrade-guide-0.22.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -966,12 +968,23 @@ library-level controls
 
 The authoritative version is the `version` field of
 [`package.json`](package.json), and `npm run check:docs` verifies the release
-line below against it. Current release: **v0.21.0** (2026-10-16). The complete,
+line below against it. Current release: **v0.22.0** (2026-10-21). The complete,
 authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
 only the releases that changed how a host consumes the runtime. The 0.6.0
 migration steps remain in
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
+- **v0.22.0 (2026-10-21)**: the persistence-truth release (issues #322 / #323 / #326) — text the engine
+  injects *after* a round record has already landed (judge advisory, extension notice, guard revision note,
+  forced wrap-up plus its final assistant message) is now journalled in the same run, and compaction summaries
+  and TTL degradations are journalled too and **reused instead of recomputed** on resume, so "what did the model
+  actually see" is answerable from the archive. Two consequences a host must handle: a same-`dedupKey` write
+  carrying different payload now throws `code === "dedup_payload_conflict"` instead of vanishing silently, and
+  `load()` returns **more rows than there are rounds** (some with an empty `messages`) — project by `round`,
+  deduplicate by `dedupKey`, skip `meta.source === "judge-control"`. New opt-in `reflection.judgeDoneAdvisory`
+  tells the model *why* governance judged the goal reached (default off; termination semantics unchanged).
+  **0.21.0 was never published**, so this version ships it as well: migration
+  [docs/host-upgrade-guide-0.22.0.md](docs/host-upgrade-guide-0.22.0.md), which covers 0.20.0 → 0.22.0 in one hop.
 - **v0.21.0 (2026-10-16)**: the model-JSON release — `parseModelJson` (from `src/text/parse-model-json.js`, exported
   at the package root) becomes the one way to dig a JSON object out of model text: a three-way failure verdict
   (`no_candidate` / `unparsable` / `shape_mismatch`), **no** `value` key on a miss, no repair of any kind, and two
