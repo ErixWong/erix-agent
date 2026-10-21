@@ -1,6 +1,17 @@
 # Changelog
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
+## [Unreleased]
+
+### Fixed
+
+- **真上游 e2e `examples/tool-fact-e2e.test.mjs` 的 F9b / F9d 假红：旧块（0.19 形状）的载体在改造后不再是 run snapshot，改回账本轮行（只动该 e2e，`src/` 零改动）。**
+  - 现场：`ERIX_E2E_REAL=1 node --test examples/tool-fact-e2e.test.mjs` 的 F9b「旧块的退役名与宿主摊平键原样保留」与 F9d「投影的一代回退」两条红，且红在**判据落空**（`assert.ok(legacy)` / `assert.ok(legacyCall)`），不是断言值不符。
+  - 根因：夹具把旧块只写进 `saveRunSnapshot` 的 `messages`。改造前 resume 会把「快照里账本没有的那段正文」抄进 `…:resume` 轮行（`resumeRunSnapshotMessages` + `messages.slice(resumeTranscriptStart)`），旧块于是经那条轮行落进 `store.load()`；0.23.0 起 `…:resume` 只带锚点之后新产生的引擎控制正文，恢复的正文**只认账本**（快照正文只在「崩溃现场」判定成立时作升级补全）⇒ 快照里的旧块既不进上下文、也不进 `load()`。
+  - 定性：**测试期望过期，不是产品回归**。引擎仍然不就地改写宿主传入的旧块（本地 fake-provider 复现：同一轮 resume 前后宿主对象的键集合逐字相同，旧块上没被补 `erix`），投影的 `erix` 优先 / 顶层回退优先级也未变（旧块仍只回退 `executionStatus`，不伪造 `toolCallKey`/`durationMs`）。
+  - 改法：旧正文按升级前账本的真实形状写进轮行（`appendRound(round 1, …)`），快照留一份副本顺带钉住「快照正文不再被当成上下文」。**断言一条没删、没放宽**（`legacy.erix === undefined` 等原样）。
+  - 顺手把 F9b 加硬（只增不减）：包一层 `saveRunSnapshot` 收引擎每次写的快照（`messages` = `cloneState(messages)`，即引擎**内存**上下文的逐字副本），断言里面的旧块键集合与宿主传入的逐字相同、没被补 `erix`。原断言只读 `store.load()`（磁盘），**改内存不落盘那种坏法它看不见**；反向证：在 `resume-manager.js#restoreResume` 里临时给 `ctx.messages` 的旧 `tool_result` 补一个 `erix`（`cp` 备份 + `md5sum` 逐字还原）⇒ 新探针红（`inMemoryLegacyErix` 带上了值），而磁盘侧 `legacy.erix` 仍是 `undefined`——**旧断言照旧绿**，证明这条加硬不是重复。真机实测 `快照探针=6 份`（非空转）。
+
 ## [0.23.0] - 2026-10-21
 
 **本版要点：存储收敛（工单 261021 三刀 + 投影改读折叠）——账本从「一轮一行、正文挂在轮行上」改成「一条消息一成型就落盘、轮行只留元数据」，`store.load()` 负责把消息行折回轮行。**
