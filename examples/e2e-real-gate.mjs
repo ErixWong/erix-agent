@@ -293,6 +293,7 @@ export const TMP_PREFIX = {
   erixRun: "erix-run-e2e-",
   cliReal: "erix-cli-real-",
   resumeReal: "erix-resume-real-e2e-",
+  crossVersion: "erix-cross-version-e2e-",
 };
 
 export { tmpdir };

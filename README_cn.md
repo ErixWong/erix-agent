@@ -291,7 +291,7 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 - 永远不要提交 token、API key 或其他凭据。
 
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段（`npm run check:docs` 会校验本文的
-发布行）。当前发布版本：**v0.22.0**。下面引用的 `files` 清单以 `package.json` 为权威：
+发布行）。当前发布版本：**v0.23.0**。下面引用的 `files` 清单以 `package.json` 为权威：
 
 ```json
 [
@@ -320,6 +320,8 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
   "docs/host-upgrade-guide-0.21.0_cn.md",
   "docs/host-upgrade-guide-0.22.0.md",
   "docs/host-upgrade-guide-0.22.0_cn.md",
+  "docs/host-upgrade-guide-0.23.0.md",
+  "docs/host-upgrade-guide-0.23.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -560,7 +562,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - [docs/testing_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing_cn.md) - 测试策略与行为指标
 - [docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md) - 关于核验、note-first 取回、provenance 和重跑的宿主消费者契约；内含终止裁决决策表（逐 reason 的触发机制、优先级位置、宿主开关、推荐动作）与模型元数据 / 预算推导字段契约及多模型槽位装配示例
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0 破坏窗口迁移步骤（英文）
-- [docs/host-upgrade-guide-0.22.0.md](docs/host-upgrade-guide-0.22.0.md) / [docs/host-upgrade-guide-0.22.0_cn.md](docs/host-upgrade-guide-0.22.0_cn.md) - 最新的宿主迁移指南（中英成对）：它把 **0.20.0 → 0.22.0** 一跳走完（0.21.0 从来没发出去过，那部分的详细文字仍在 `docs/host-upgrade-guide-0.21.0.md`）。对宿主真正有感的四处：同 `dedupKey` 却换内容的写入从此**抛** `code === "dedup_payload_conflict"` 而不是悄悄消失；`load()` 返回的**行数多于轮数**（引擎自己写的行，部分 `messages` 为空——按 `round` 归组、按 `dedupKey` 去重）；折叠摘要与 TTL 降级结果落进 `foldedSummary` / `ttlDegradations` 两个载荷字段并在 resume 时**复用而不是重算**（因此按列白名单重建记录的 store 必须把这两个键加进去）；`reflection.judgeDoneAdvisory` 是可选项、默认关
+- [docs/host-upgrade-guide-0.23.0.md](docs/host-upgrade-guide-0.23.0.md) / [docs/host-upgrade-guide-0.23.0_cn.md](docs/host-upgrade-guide-0.23.0_cn.md) - 最新的宿主迁移指南（中英成对），**0.22.0 → 0.23.0**：存储收敛那一版。账本改成**一条消息一行**（消息一成型就落盘）、轮行只留**元数据**，于是 `store.load()` 就是正文 API：自己解析原始 `.jsonl` 的宿主从此看不到正文（轮行不带 `messages`）、`onRound(record)` 不再交出 `record.messages`、run snapshot 的 `messages` 只是**落后副本**而不是正文来源、`projectTranscriptForDisplay` 必须喂 `load()` 的折叠输出（喂原始行会重复出条目并丢掉 `durationMs`）。没有 store 签名、选项或导出搬家
 - [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) / [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md) - 更早一个破坏窗口的宿主迁移指南（中英成对）：judge 的 `writeToolNames` 默认值、七项文件工具清单、`rg`/`grep` 的弃用提示行、属 Experimental 的 marker 文案、以及 `erix-agent/tools` 导入路径；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`（随包清单见上文）
 - [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - 更早的破坏窗口迁移指南：成对可选快路径探针（英文）
 - [docs/host-upgrade-guide-v030_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/host-upgrade-guide-v030_cn.md) - 面向 `touwaka` / `app_container` 的宿主升级指南与 v0.3.x 行为
@@ -573,10 +575,10 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 本仓不是每份 Markdown 都在声明同一件事，门禁也按不同的口径筛（`scripts/docs-drift-check.mjs` + `test/docs-anchor-ratchet.test.js`）。三类：
 
 - **活文档——有门禁，必须「今天为真」。** `README*.md`、`AGENTS*.md`、中英契约（`docs/host-consumer-contract.md` /
-  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（当前 18 份，按目录实扫），再加上
+  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（当前 20 份，按目录实扫），再加上
   工单 261021-03 B1 新纳面的中英架构（`docs/architecture.md` / `docs/architecture_cn.md`）、中英图表
   （`docs/charts.md` / `docs/charts_cn.md`）、中英需求对照（`docs/requirements.md` / `docs/requirements_cn.md`）
-  与 `erix_run` 的 README（`examples/pi-extension/README.md`）。共 31 份（`REF_SCAN_DOCS_MINIMUM = 31`）：文件改名、
+  与 `erix_run` 的 README（`examples/pi-extension/README.md`）。共 33 份（`REF_SCAN_DOCS_MINIMUM = 33`）：文件改名、
   行号漂到另一个函数、符号在 `src/` 里已不存在，都会把 `npm run check:docs` 压红。
 - **快照档案——「首部写的那一日为真」。** `docs/v0.0-contracts*.md` / `docs/v0.1-contracts*.md` /
   `docs/v0.2-contracts*.md`、`docs/design/`、`docs/research/`、`docs/harness-comparison/`（共 28 份）。每份首部都有一行
@@ -591,9 +593,15 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 ## 状态与版本历史
 
-权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.22.0**（2026-10-21）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
+权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.23.0**（2026-10-21）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)。
 
+- **v0.23.0 (2026-10-21)**：存储收敛那一版（工单 261021 三刀）——账本改成**一条消息一行**、消息一成型就落盘，
+  轮行只留**元数据**；`store.load()` 把消息行折回所属的轮，所以读 `load()` 的宿主看到的记录形状不变。宿主必须
+  处理四处后果：原始 journal 行不再带正文（改读 `load()`）、`onRound(record)` 不再交出 `record.messages`、
+  run snapshot 的 `messages` 只是**落后副本**（写于本轮工具执行之前）而不是正文来源、`projectTranscriptForDisplay`
+  必须喂 `load()` 的折叠输出（喂原始行会重复出条目并丢掉 `durationMs`）。没有 store 签名、选项、导出或依赖搬家。
+  迁移见 [docs/host-upgrade-guide-0.23.0_cn.md](docs/host-upgrade-guide-0.23.0_cn.md)，覆盖 0.22.0 → 0.23.0。
 - **v0.22.0 (2026-10-21)**：持久化真相专场（issue #322 / #323 / #326）——引擎在**轮记录已经落盘之后**才注入给模型的文本（judge 评审意见、扩轮提示、guard 返工意见、强制收尾指令与它的终稿 assistant）从此在同一轮里就写进档案；折叠摘要与 TTL 降级结果同样落账，并在 resume 时**复用而不是重算**，于是「模型当时到底看见了什么」变成可以从档案里回答的问题。宿主必须处理的两处后果：同 `dedupKey` 却换内容的写入从此抛 `code === "dedup_payload_conflict"`，不再悄悄消失；`load()` 返回的**行数多于轮数**（其中一些 `messages` 为空）——按 `round` 归组、按 `dedupKey` 去重、跳过 `meta.source === "judge-control"`。新增可选 `reflection.judgeDoneAdvisory`，把「治理凭什么说目标已达成」说给模型听（默认关，终止语义一字未改）。**0.21.0 从来没发出去过**，因此本版把它一并带上：迁移见 [docs/host-upgrade-guide-0.22.0_cn.md](docs/host-upgrade-guide-0.22.0_cn.md)，那份指南是 0.20.0 → 0.22.0 一跳到位。
 - **v0.21.0 (2026-10-16)**：模型 JSON 专场——`parseModelJson`（`src/text/parse-model-json.js`，从包根导出）成为「从模型文本里抠 JSON」的唯一入口：失败三态可分（`no_candidate` / `unparsable` / `shape_mismatch`）、失败结果**不带** `value` 键、**没有任何 repair**、`topOnly` 两档扫描。`parseReflectionDecision` 不再把模型明确写下的布尔值翻向（贪婪花括号正则换成顶层平衡扫描），返回体新增 `via: "json" | "prose_fallback"`（随包声明里是字面量联合）。把 `context.budgetTokens` 配得很小的宿主从此不再收到 `400 No user query found in messages`：发给上游的请求视图始终保留一条真 user 轮（run 就是能跑了；守卫真生效时才多出两个 additive 的 `compactionStats` 键）。本版**没有任何一处会打断调用点**。迁移见 [docs/host-upgrade-guide-0.21.0.md](docs/host-upgrade-guide-0.21.0.md)。
 - **v0.20.0 (2026-10-15)**：工具事实专场——引擎拥有的每一条 `tool_result` 事实从此只落 `erix.*` 命名空间（`toolCallKey` / `round` / `durationMs` / `executionStatus` / `success`），宿主扩展只落 `metadata.*`；顶层摊平别名（`erixRound`、`duration`、`executionStatus`、`success`，以及过去被摊到顶层的任意宿主键）**停写**，升级前落盘的记录保留**一代读兼容**。「停止」从此压过 end-turn judge 与 final guard（终局 `reason` 是 `aborted`，不再是 `judge_done`），且 `termination.partial: true` 只担保终局载荷、对 store 不作断言（issue #283，裁决 = β）。`createFileTools().executeTool()` 的四种成功形态由随包契约套件逐工具钉死，并新增从 `erix-agent/tools` 导出的判别式 `classifyFileToolResult`。迁移见 [docs/host-upgrade-guide-0.20.0.md](docs/host-upgrade-guide-0.20.0.md)。
