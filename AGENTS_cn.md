@@ -65,7 +65,7 @@ scripts/          # 实验脚本和结果
 | `npm run check:docs:strict` | 同上，但把告警升级为失败 |
 | `node scripts/docs-drift-check.mjs --self-test` | 清单/枚举/单位类锚点的反向证自测（issue #210）：改文档一处声明 → 红、改源码真值 → 红、都不改 → 绿；变异没落上去也算失败（#210 R2） **必须在开发树里跑**：在没有 `docs/tasks/`（被 `.gitignore` 忽略、从不入库的本机任务档案目录）的检出里，其中 3 例是**已知假红**（它们的期望要点名只存在于开发机的近邻文件）——issue #281 已记录并有意暂不处理，不是回归。 |
 | `npm run check:docs-examples` | 真实执行 `docs/host-consumer-contract.md` 里的 js 围栏（issue #158） |
-| `npm run check:pack-links` | 随包 Markdown 的链接闭合检查 |
+| `npm run check:pack-links` | 随包 Markdown 的链接闭合检查，**外加** `.d.ts` 声称对账：四份入口文档里每一句「装包应列 **N** 个 `.d.ts`」都必须等于同一次 `npm pack --dry-run --json` 列出的 `src/**/*.d.ts` 条目数（不为了数数再跑一次 `tsc`） |
 | `npm run check:release` | 把发版前那条手工验证变成一条命令（issue #257 T5）：按顺序五步，红就点名第几步——`npm pack` → 断言 tarball（声明文件数 > 0、当前版本的中英两份升级指南都在、随包的 `test/contract/` 文件一个不少、`files` 白名单之外没有杂物；Markdown 链接闭合**交给** `check:pack-links`，不在这里重写）→ 把 tarball 装进一个一次性临时项目并断言 `import("erix-agent")`/`import("erix-agent/tools")` → 用**装好的包**跑随包契约套件 → 用 `tsc --strict --skipLibCheck` 编译一个真 TypeScript 宿主（退 0，且未知的 `runToolLoop` option 键**必须**报 `TS2353`）并把编译产物真跑一遍 → 拿本地假上游冒烟装好的 `erix` CLI（`--version` 等于 `package.json`；一次成功的 `chat` 退 **4**，因为不开 `--final-guard` 时核验是 `skipped`；`--session` 不存在退 1）。离线（`npm --offline` + 一次性 cache/userconfig + 假 `HOME`）、跑完自清、约 15 秒 |
 | `npm run check:cli-real` | 装后 CLI 打真上游的 gate 冒烟（工单 261015 T5，#284/#285 收尾）：`npm pack` → 把 tarball 装进一次性临时项目 → 用**装好的 `erix`**（不是 `node bin/cli.js`）打真上游跑一个 ≥2 次工具的任务，断言退出码承诺（不开 `--final-guard` 的成功 run 退 **4** = 核验 skipped）、transcript 里 `tool_result` 的字段面、以及装好的包自己的投影。只有 `ERIX_E2E_REAL=1` 才跑；闸门关着时 exit 0 并打出**分类**原因（gate 缺失 / 配置不存在 / JSON 坏了 / 缺字段 / 端点不可达）。模型名从 `slots.default` 读（`ERIX_E2E_CONFIG` 可换路径）。另两条同闸门的套件：`examples/tool-fact-e2e.test.mjs` 与 `examples/pi-extension/erix-run-e2e.test.mjs`（`npm test` 里默认 skip，真上游不是默认门禁的硬依赖）。需要 `node_modules`；自清理，不写真实 `~/.npmrc` 与 `~/.erix/config.json` |
 | `npm run types:build` | 把随包发布的 `.d.ts` 生成到 `src/**/*.d.ts` 并保留（issue #213；`prepack` 钩子跑的是同一个脚本） |
@@ -152,10 +152,13 @@ scripts/          # 实验脚本和结果
 - `repository.url` 使用 `git+https://...` 格式（或运行 `npm pkg fix`）。
 - 类型面（issue #213）：顶层 `types` 指向 `./src/index.d.ts`，`exports["."]` 与 `exports["./tools"]` 各带对应的 `types` 条件；
   `exports["./contract-tests"]` **刻意不带** `types`（其目标在 `test/` 下，不在声明依赖图里）。声明由 `prepack` 钩子生成，
-  因此干净检出里一个 `.d.ts` 都没有——`npm publish --dry-run` 应列出 **67** 个 `.d.ts`（2026-10-16 在 #307 之后的树上实测：#307 新增 `src/text/parse-model-json.js` 使 66 → 67；此前 2026-10-15 在 #292 之后的干净树上实测：
-  `npm pack --dry-run --json` 列出整整 65 个；历史值：0.20.0 的 tarball 是 64 个、0.19.0 时代是 63 个；打包体积 +约 44 kB、
-  解包 +约 139 kB，是 0.18.0 上实测的）；`npm run check:types-build` 就是「还能不能生成」的门禁。
-- 当前版本：`0.21.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
+  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **69** 个 `.d.ts`（2026-10-21 在 #322/#326 之后的树上实测：`npm pack --dry-run --json`
+  列出整整 69 个，因为 #326 新增 `src/store/transcript-dedup.js`、#322 新增 `src/compact/fold-summary-journal.js`）。**这个数由
+  `npm run check:pack-links` 与 tarball 内容对账——不许手抄进这两份口径文件，门禁会点名文档与行。**
+  以下都是**历史值**，按当时为真保留：67（#307 之后，2026-10-16 实测）、66（#305 新增 `src/text/json-candidates.js` 之后）、
+  65（#292 之后，2026-10-15 实测）、64（0.20.0 的 tarball）、63（0.19.0 时代）；体积 +约 44 kB（打包）/ +约 139 kB（解包）是 0.18.0 上实测的。
+  `npm run check:types-build` 是「还能不能生成」的门禁。
+- 当前版本：`0.22.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
 
 ### npm 2026 政策变化（TOTP 停止 + bypass token 限制）
 - ❌ 不再支持新的 TOTP 注册（`enable-2fa` 返回 404）。
