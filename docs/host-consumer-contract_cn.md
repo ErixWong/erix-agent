@@ -851,16 +851,22 @@ number 不是安全整数。命中记录自身 `round` 不是安全整数时，�
   工具边界的 `checkpoint_failed`（`assertSnapshotPersisted`，`src/loop/run-snapshot-executor.js`）
   与 run 末尾的 `persistence_failed`（`makePersistenceFailure`，`src/loop/orchestrator.js`）。
   两者都带 `operation`、`phase`、`sideEffect`、`persistence`、`persistenceError`、`cause`、
-  `unpersisted`（issue #230：后两个原先只挂在 run 末尾那个出口上），宿主分流不必再解析
-  `message`。`cause` 是根因分类，与 `termination.errorCode` 同一套口径读取
-  （`terminationErrorCodeForError`，`src/loop/termination.js`：取错误自身的 `code`，取不到即
-  `"unknown"`）——在 `checkpoint_failed` 上该字段就是这个分类字符串，而 `persistence_failed`
-  保持它一直携带的底层错误对象。`checkpoint_failed` 上的 `unpersisted` 是经
-  `normalizeUnpersisted`（`src/run-state.js`）归一化的账单，形状 `{ count, items }`——与
-  `deterministic.errors.unpersisted` 同一口径、同一形状；`persistence_failed` 上的同名键仍是
-  原始冻结数组（`result.unpersisted` 的 schema，自 issue #109 起未变）。错误码本身与
-  `phase`/`sideEffect` 语义不因此改变：工具前失败仍报 `not_started` 并阻断执行，工具后失败仍报
-  `executed_uncommitted`。
+  `errorCode`、`unpersisted`（issue #230），宿主分流不必再解析 `message`。对称的是**键名与
+  取值类型**——同名同形，一条读法管两个出口：
+  - `cause` —— 两侧都是**底层错误对象**（绝不是字符串）。`checkpoint_failed` 上取链上最深那一环，
+    即 store 自己抛的那个错；没有 store 失败明细时退回持久化失败本身。所以无论接到哪个出口，
+    `err.cause?.code` 都同样可读。
+  - `errorCode` —— 两侧都是**字符串**，与 `termination.errorCode` 同一套口径读取
+    （`terminationErrorCodeForError`，`src/loop/termination.js`：取根因自身的 `code`，取不到即
+    `"unknown"`）。只要分类结果的宿主读这个字段即可，不必自己去 `cause` 上摸 `.code`；
+    同一份底层故障在两个出口上给出同一个字符串。
+  - `unpersisted` —— 两侧都是**原始冻结数组**（`result.unpersisted` 的 schema，自 issue #109 起
+    未变），所以 `err.unpersisted.length` 两侧都能用。`normalizeUnpersisted`（`src/run-state.js`）
+    的 `{ count, items }` 投影属于 `<runId>.state.json` 那条路径（`deterministic.errors.unpersisted`），
+    **不**写进错误对象。
+
+  错误码本身与 `phase`/`sideEffect` 语义不因此改变：工具前失败仍报 `not_started` 并阻断执行，
+  工具后失败仍报 `executed_uncommitted`。
 
 deterministic run-state 里带同一份账单（`deterministic.errors.unpersisted`），run 中途
 崩溃也不会丢；模型可见渲染只给条数，不把宿主错误正文灌进上下文。
@@ -1869,8 +1875,8 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 
 投递保证：账本与 `diagnostics.error` 事件是两条可靠通道；模型可见提示仅为 advisory，
 从不计入投递。异常终止的 run 会把账本挂在抛出的持久化失败上，即 `error.unpersisted`——
-`persistence_failed` 上是原始冻结数组，`checkpoint_failed` 上是 `normalizeUnpersisted`
-的投影（`{ count, items }`，run-state 口径；issue #230，见上文「持久化失败上报」）。
+`persistence_failed` 与 `checkpoint_failed` 上都是原始冻结数组（issue #230：两个出口同形，
+`{ count, items }` 投影留在 `<runId>.state.json` 那条路径；见上文「持久化失败上报」）。
 
 `persistence_error` 诊断事件现在带 `port: "transcript"`；该字段是增量添加，既有消费者
 不受影响。

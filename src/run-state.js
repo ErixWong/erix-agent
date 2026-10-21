@@ -268,10 +268,10 @@ function renderLines(lines, budget = MAX_RENDERED_CHARS) {
  */
 const RUN_STATE_MAX_UNPERSISTED_ITEMS = 10;
 
-// 未落盘清单的**唯一**归一化口径。除 run-state（`deterministic.errors.unpersisted`）外，
-// `run-snapshot-executor.js` 的 `checkpoint_failed` 也读它（issue #230：同一份账单两个出口不许各写一份）。
-// 语义只读复用：本函数的行为/形状不随调用方改变。
-export function normalizeUnpersisted(value) {
+// 未落盘清单在 `state.json` 这条路径上的归一化口径（`deterministic.errors.unpersisted`，形状
+// `{ count, items }`）。它**不是**错误对象上的形状：`persistence_failed` 与 `checkpoint_failed` 的
+// `unpersisted` 都是 #109 冻结的原始数组（issue #230 起两个出口取值也对称），别把这份投影塞进去。
+function normalizeUnpersisted(value) {
   if (!Array.isArray(value) || value.length === 0) return { count: 0, items: [] };
   const items = value.slice(-RUN_STATE_MAX_UNPERSISTED_ITEMS).map((entry) => ({
     ts: safeText(entry?.ts, 32),

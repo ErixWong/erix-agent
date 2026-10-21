@@ -1050,21 +1050,33 @@ depends on the model reading a hint:
   boundary (`assertSnapshotPersisted`, `src/loop/run-snapshot-executor.js`) and
   `persistence_failed` at the run tail (`makePersistenceFailure`,
   `src/loop/orchestrator.js`). Both carry `operation`, `phase`, `sideEffect`,
-  `persistence`, `persistenceError`, `cause`, and `unpersisted` (issue #230:
-  the last two were previously on the run-tail outlet only), so a host can
-  branch on the failure without parsing `message`. `cause` is the root-cause
-  class, read by the same caliber as `termination.errorCode`
-  (`terminationErrorCodeForError`, `src/loop/termination.js`: the error's own
-  `code`, else `"unknown"`) — on `checkpoint_failed` the field is that code
-  string, while `persistence_failed` keeps the underlying error object it has
-  always carried. `unpersisted` on `checkpoint_failed` is the bill normalized by
-  `normalizeUnpersisted` (`src/run-state.js`) into `{ count, items }` — the same
-  caliber and shape as `deterministic.errors.unpersisted`; on
-  `persistence_failed` the same key is the raw frozen array (`result.unpersisted`
-  schema, unchanged since issue #109). The error code itself and the
-  `phase`/`sideEffect` semantics are unchanged by this: a pre-tool failure still
-  reports `not_started` and blocks execution, a post-tool failure still reports
-  `executed_uncommitted`.
+  `persistence`, `persistenceError`, `cause`, `errorCode`, and `unpersisted`
+  (issue #230), so a host can branch on the failure without parsing `message`.
+  The symmetry is over **keys and value types** — a field that exists on both
+  outlets under the same name always has the same shape there, so one read path
+  serves both:
+
+  - `cause` — the underlying error object on both outlets (never a string). On
+    `checkpoint_failed` it is the deepest link in the chain, i.e. the error the
+    store itself threw; with no store detail it falls back to the persistence
+    failure itself. `err.cause?.code` therefore reads the same way whichever
+    outlet you catch.
+  - `errorCode` — a string on both outlets, read by the same caliber as
+    `termination.errorCode` (`terminationErrorCodeForError`,
+    `src/loop/termination.js`: the root cause's own `code`, else `"unknown"`).
+    A host that only needs the classification reads this field and does not
+    have to reach into `cause`; identical input yields the identical string on
+    both outlets.
+  - `unpersisted` — the raw frozen array on both outlets (the `result.unpersisted`
+    schema, unchanged since issue #109), so `err.unpersisted.length` works on
+    either side. The `{ count, items }` projection produced by
+    `normalizeUnpersisted` (`src/run-state.js`) belongs to the
+    `<runId>.state.json` path (`deterministic.errors.unpersisted`) and is
+    **not** written into the error object.
+
+  The error code itself and the `phase`/`sideEffect` semantics are unchanged by
+  this: a pre-tool failure still reports `not_started` and blocks execution, a
+  post-tool failure still reports `executed_uncommitted`.
 
 The deterministic run state carries the same bill (`deterministic.errors.unpersisted`)
 so a mid-run crash does not lose it; the model-visible render shows only the
@@ -2381,10 +2393,10 @@ An `Entry` is one of:
 Delivery guarantees: the ledger and the `diagnostics.error` event are the two
 reliable channels; model-visible warnings are advisory only and never count
 as delivery. On an exception-terminated run the ledger is attached to the
-thrown persistence failure as `error.unpersisted` — as the raw frozen array on
-`persistence_failed`, and as the `normalizeUnpersisted` projection
-(`{ count, items }`, the run-state caliber) on `checkpoint_failed` (issue #230;
-see "Persistence failure reporting" above).
+thrown persistence failure as `error.unpersisted`, as the raw frozen array on
+both `persistence_failed` and `checkpoint_failed` (issue #230: the two outlets
+carry the same shape, and the `{ count, items }` projection stays on the
+`<runId>.state.json` path — see "Persistence failure reporting" above).
 
 `persistence_error` diagnostic events now include `port: "transcript"`;
 the field is additive and existing consumers are unaffected.
