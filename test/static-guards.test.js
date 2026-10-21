@@ -1160,3 +1160,125 @@ describe("静态守卫：文档声称值与脚本常量（issue #310）", () => 
     );
   });
 });
+
+// ── #302：`.gitignore` 目录规则 ↔ `scripts/docs-drift-check.mjs` 的 `IGNORED_DIR_CLASSES` 双向一致 ──
+//
+// 病根（#273 埋的、2026-10-15 现场踩过）：两个方向只有一半被看守。
+//   · 正向（`.gitignore` 有规则、登记表没类别）**已经有**了——`scripts/docs-drift-check.mjs` 的
+//     `collectPathErrors()` 会直接报「`.gitignore:N 的目录规则 … 没在 IGNORED_DIR_CLASSES 里分类`」，
+//     `--self-test` 里还有 #337 那一对反向证钉着它。实测（本单）：给 `.gitignore` 加一条 `zz-probe/`
+//     而不登记类别 ⇒ `check:docs` 当场红并点名那条规则。
+//   · 反向（登记表有类别、`.gitignore` 里没有对应规则）**没有任何人校**。实测（本单）：把
+//     `.gitignore` 的 `logs/` 那行删掉之后 `check:docs` 与 `check:docs --strict` 双双 exit 0——
+//     登记表里那条 `logs/` 从此是一条永不生效的空转条目，谁把它删了都没人知道；更糟的是有人以为
+//     「这类目录已被处理」，而 `.gitignore` 根本不忽略它（`dist/` 就是这么一条：登记成 build-output，
+//     `.gitignore` 里从来就没有过这条规则，本单加上这条守卫时才被它自己抓出来）。
+// 所以这条规则是**成对**的：缺哪一半都红，并分别点名差在哪几条规则上。写成纯函数 + 现造文本反向证，
+// 不靠「今天树里恰好少一条」碰运气。
+
+/** 从脚本源码里解析 `IGNORED_DIR_CLASSES`（`new Map([["dir/", { kind, why }], …])`）。
+ *  只认这一个字面量：解析不到就抛——宁可炸也不要静默返回空表（空表会让本规则恒绿）。 */
+function parseIgnoredDirClasses(src) {
+  const block = src.match(/const IGNORED_DIR_CLASSES = new Map\(\[([\s\S]*?)\n\]\);/);
+  assert.ok(block, "scripts/docs-drift-check.mjs 里找不到 `const IGNORED_DIR_CLASSES = new Map([` 字面量："
+    + "本规则靠它取真值，解析器必须先能看见它（找不到就抛，不许静默返回空表）");
+  const out = new Map();
+  for (const m of block[1].matchAll(/\[\s*"([^"]+)"\s*,\s*\{\s*kind:\s*"([^"]+)"\s*,\s*why:\s*"((?:[^"\\]|\\.)*)"\s*\}/g)) {
+    out.set(m[1], { kind: m[2], why: m[3] });
+  }
+  return out;
+}
+
+/** `.gitignore` 里的**目录型规则**（以 `/` 结尾；注释与取反行不算——取反本身是另一种病，
+ *  由 docs-drift-check 的 `unsupported` 那一支报）。 */
+function gitignoreDirRules(text) {
+  return text.split(/\r?\n/)
+    .map((raw, i) => ({ line: i + 1, rule: raw.trim() }))
+    .filter(({ rule }) => rule && !rule.startsWith("#") && !rule.startsWith("!") && rule.endsWith("/"));
+}
+
+/** 双向差集（纯函数，自带反向证）：缺哪一半都点名。 */
+function ignoreDirClassDiff(gitignoreText, classes) {
+  const rules = gitignoreDirRules(gitignoreText);
+  const patterns = rules.map((r) => r.rule);
+  return {
+    rules,
+    // 正向：`.gitignore` 有这条目录规则，登记表里没有类别
+    unclassified: patterns.filter((p) => !classes.has(p)),
+    // 反向：登记表里有这个类别，`.gitignore` 里没有对应规则（= 空转条目）
+    orphan: [...classes.keys()].filter((p) => !patterns.includes(p)),
+  };
+}
+
+describe("静态守卫：.gitignore 目录规则与 IGNORED_DIR_CLASSES 双向一致（issue #302）", () => {
+  const scriptSrc = readFileSync(resolve(ROOT, "scripts/docs-drift-check.mjs"), "utf8");
+  const gitignore = readFileSync(resolve(ROOT, ".gitignore"), "utf8");
+  const classes = parseIgnoredDirClasses(scriptSrc);
+
+  it("前置：两边都解析出了东西（否则本规则恒绿）", () => {
+    assert.ok(classes.size >= 5, `IGNORED_DIR_CLASSES 只解析出 ${classes.size} 条：解析器或那张表被改坏了`);
+    const rules = gitignoreDirRules(gitignore);
+    assert.ok(rules.length >= 4, `.gitignore 只解析出 ${rules.length} 条目录规则：解析口径被改窄了（当前：${rules.map((r) => r.rule).join(", ")}）`);
+    // 每条登记都要有类别名与理由：空理由等于「分类过了但没人知道为什么」
+    for (const [pattern, cls] of classes) {
+      assert.ok(pattern.endsWith("/"), `IGNORED_DIR_CLASSES 的键必须是目录（以 / 结尾）：${pattern}`);
+      assert.ok(cls.kind && cls.kind.length >= 3, `${pattern} 没有类别名`);
+      assert.ok(cls.why.trim().length >= 4, `${pattern} 的分类理由等于没写：${JSON.stringify(cls.why)}`);
+    }
+  });
+
+  it("两个方向都闭合：`.gitignore` 每条目录规则都有类别，每个类别都有对应规则", () => {
+    const { rules, unclassified, orphan } = ignoreDirClassDiff(gitignore, classes);
+    assert.deepEqual(
+      unclassified,
+      [],
+      "`.gitignore` 里有目录规则没在 IGNORED_DIR_CLASSES 里分类："
+      + `${unclassified.join(", ")}（被忽略目录里的引用要不要放行、要不要进扫描面，得由分类决定——`
+      + "这正是 docs-drift-check 自己会报的那条红，本规则在 `npm test` 这一侧再钉一遍）",
+    );
+    assert.deepEqual(
+      orphan,
+      [],
+      "IGNORED_DIR_CLASSES 里有类别，`.gitignore` 里却没有对应的目录规则（空转条目）："
+      + `${orphan.join(", ")}——要么在 .gitignore 里补回那条规则，要么从 IGNORED_DIR_CLASSES 里删掉这个类别；`
+      + "留着它就是给未来的漂移留后门（有人会以为「这类目录已经被处理」，而 git 根本不忽略它）",
+    );
+    // 扫描面自检：`.gitignore` 的目录规则必须多于登记表的 0 条，且本仓真实存在的那几条在两边都看得见
+    assert.ok(rules.length === [...classes.keys()].filter((p) => rules.some((r) => r.rule === p)).length,
+      "两边的目录规则条数不一致（上面两条断言之外还漏了？）");
+    for (const must of ["docs/tasks/", "docs/delivery/"]) {
+      assert.ok(classes.has(must), `IGNORED_DIR_CLASSES 里没有 ${must}：本机档案类的分类被拆了`);
+      assert.ok(rules.some((r) => r.rule === must), `.gitignore 里没有 ${must}：本机档案目录不再被忽略，档案会被提交进库`);
+    }
+  });
+
+  it("反向证：两个方向各自缺一条都会红（拿现造文本证，不靠树里恰好少一条）", () => {
+    // 这一例**自带一份**最小文本与登记表，不拿真实 .gitignore 当素材：真实那对一旦不一致，
+    // 「两个方向都闭合」那一例已经红过一次了，这里再连带红一次只会把真问题淹掉（本单修前就踩过）。
+    const base = "# 注释行不算规则\nnode_modules/\nlogs/\n*.log\n";
+    const sample = new Map([
+      ["node_modules/", { kind: "install-tree", why: "样例：安装位置" }],
+      ["logs/", { kind: "runtime", why: "样例：运行日志" }],
+    ]);
+    // ④ 先证「两边一致时必须是空的」，否则下面三条只是「永远有话说」
+    assert.deepEqual(ignoreDirClassDiff(base, sample), { rules: gitignoreDirRules(base), unclassified: [], orphan: [] },
+      "自带的样例文本本身就不一致：纯函数口径有问题");
+    // ① 反向那一半：登记表里的类别在 .gitignore 里没有规则 → orphan 点名它
+    const dropped = base.split(/\r?\n/).filter((l) => l.trim() !== "logs/").join("\n");
+    assert.ok(!dropped.split(/\r?\n/).some((l) => l.trim() === "logs/"), "变异没落上：logs/ 还在文本里");
+    const rev = ignoreDirClassDiff(dropped, sample);
+    assert.deepEqual(rev.orphan, ["logs/"], `反向证失败：删掉 .gitignore 的 logs/ 之后 orphan 应为 ["logs/"]，实测 ${JSON.stringify(rev.orphan)}`);
+    assert.deepEqual(rev.unclassified, [], "反向证里不该冒正向问题");
+    // ② 正向那一半：.gitignore 多一条没分类的目录规则 → unclassified 点名它
+    const fwd = ignoreDirClassDiff(`${base}zz-302-probe-dir/\n`, sample);
+    assert.deepEqual(fwd.unclassified, ["zz-302-probe-dir/"], `正向证失败：新增未登记目录规则应被点名，实测 ${JSON.stringify(fwd.unclassified)}`);
+    assert.deepEqual(fwd.orphan, [], "正向证里不该冒反向问题");
+    // ③ 只在登记表一侧多一条 → 仍然是 orphan（空转条目不因为「看起来合理」就放过）
+    const extraClass = new Map(sample);
+    extraClass.set("zz-302-orphan/", { kind: "scratch", why: "反向证用的假类别：.gitignore 里没有这条规则" });
+    assert.deepEqual(ignoreDirClassDiff(base, extraClass).orphan, ["zz-302-orphan/"], "空转条目没被点名");
+    // ⑤ 非目录规则（`*.log`、裸文件名、注释）一律不进两边：口径不能被扩到文件级
+    assert.deepEqual(gitignoreDirRules("*.log\npackage-lock.json\n# docs/tasks/\n").map((r) => r.rule), [],
+      "非目录规则被当成了目录规则：这条守卫会开始对文件级规则要求分类");
+  });
+});

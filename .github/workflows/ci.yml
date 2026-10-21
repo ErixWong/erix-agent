@@ -84,15 +84,12 @@ jobs:
         if: matrix.node == 22
         run: npm run check:release
 
-      # continue-on-error 的理由（issue #281）：--self-test 的三条用例期望点名 `docs/tasks/` 下的
-      # 近邻文件，而那个目录被 .gitignore 整目录忽略、任何干净克隆里都不存在 ⇒ 在 CI 这种干净检出里
-      # **预期红 3 条**（`#280 .gitignore`、`#278-P2`、`#278-P3`）。所以它只能观测、不能阻塞。
-      # ⚠ 红集合必须是这 3 条：变多就是新回归，要按回归查，不是「又红了」。
-      # 已踩过的坑（本单实测）：如果红数是 **5**（多出 `#280 树形对照` 两条「树形口子没落上」），
-      # 不是新回归，而是树里出现了一个**空的** `docs/tasks/`：`taskArchiveDirPresent()` 变真而
-      # `simDropped === 0` ⇒ 那两条的变异落不上。来源就是本行前面 `npm test` 里的
-      # `test/static-guards.test.js` 端到端探针（它 mkdir 那个目录）——它在 #187 之前只删自己写的文件、
-      # 把空目录留在干净树里，于是把这一行从 3 条抬到 5 条；现在它自己 `rmdirSync` 回去并带反向证。
-      - name: docs-drift-check self-test (observational; 3 known false reds on a clean clone, issue #281)
-        continue-on-error: true
+      # 阻塞（issue #302）：--self-test 的期望集合与「本机有没有 docs/tasks/」彻底解耦——那两条 `#280`
+      # 树形用例现在跑在**合成树夹具**上（无档案目录 / 空档案目录 / 有档案目录，三种形状各跑一遍），
+      # 落地检查比对的是夹具声明的档案清单，而不是这台机器上的真实实物数。于是同一提交在干净检出
+      # （CI）与开发机上给同一个结论：三种树形实测各 **103 例全绿、0 红**（造树方式见报告：
+      # `git archive HEAD | tar -x` 之后分别不建 / 建空 / 建带文件的 `docs/tasks/` 各跑一遍）。
+      # #281 时期那条 `continue-on-error: true` 的理由（干净克隆里预期红 3 条）已经不成立，故摘掉转阻塞。
+      # ⚠ 红一条就是回归，按回归查——别再把它当「观测项」。
+      - name: docs-drift-check self-test
         run: node scripts/docs-drift-check.mjs --self-test
