@@ -177,8 +177,8 @@ scripts/          # experiment scripts and results
   `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs`. Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 80` (groups
-  measured today: 80 unique (symbol, file) pairs over 201 occurrences, raised from 32 when the 0.21.0 guide pair
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 81` (groups
+  measured today: 81 unique (symbol, file) pairs over 203 occurrences, raised from 32 when the 0.21.0 guide pair
   landed, again for the #293 fixes to the 0.19.0 guide, again to 45 when #313's contract section merged on top
   of them, again to 53 when #314's host-side guard section landed as a pair, and again to 63 when the 0.21.0 guide
   pair grew the #313 / #314 / #312(b) host sections during the 0.21.0 fold-in (工单 261016-021), reproducible via `--verbose`, and again to 67 when the #326 store-dedup contract section landed as an EN/CN pair, and again to 72 when 架构×2 / 图表×2 / 需求对照×2 and `examples/pi-extension/README.md` joined the coverage (工单 261021-03 B1 — five new groups: `resolvedToolResultTtl`, `markStablePrefix`, `loadModelSlot`, `createProviderForSlot`, `createJsonFileModelConfigProvider`, and again to 75 when the direction-hint archive-row wording landed as an EN/CN contract pair (工单 261021-04 — three new groups: `pendingDirectionHints`, `directionHintText`, `restoreResume`), and again to 77 when the 0.23.0 host-upgrade guide pair landed (工单 261021-12 — `projectTranscriptForDisplay` / `foldMessageRows`), and again to 80 when the #361 "row shape on disk is not the shape after `load()`" contract section landed as an EN/CN pair (工单 F2 — three new groups: `isRoundCarrier`, `createMemoryTranscriptStore`, `createFileTranscriptStore`)): dropping below it is

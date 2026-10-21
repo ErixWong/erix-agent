@@ -50,7 +50,7 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 80`（现测 80 组 / 201 处；0.23.0 中英指南落地 +1 组，契约 #361 小节 +3 组）：
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 81`（现测 81 组 / 203 处；0.23.0 中英指南落地 +1 组，契约 #361 小节 +3 组）：
 //                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
@@ -1988,8 +1988,13 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `createFileTranscriptStore`（`src/store/file.js`）——`--verbose` 实测 80 组 / 201 处。不升就是
  *  **假绿**：#286 返工 R1 的两例自测会因「实测 ≫ 下限」而 fail-open（本单实测正是如此：77 的下限
  *  在 80 组上已经空转，两例从 ✓ 变红）。
+ *  再升一次的理由（工单 261022-13 / issue #315，80 → **81**，+1 组 / 201 → 203 处）：#315 的
+ *  `compactionStatsWindow` 小节按同一红线用符号锚点引用 `createDeterministicRunState`
+ *  （`src/run-state.js`）与 `normalizeCompactionStats`（`src/compact/pipeline.js`），合并后
+ *  `--verbose` 实测 81 组 / 203 处；下限不跟着升，#286 返工 R1 的两例自测就会再次 fail-open
+ *  （把 `defaultSleep` 退化成裸行号后 80 ≥ 80 不红 ⇒ 用例判「锚点仍是 fail-open」）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 80;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 81;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
