@@ -26,7 +26,7 @@ const CONTRACT_CN = "docs/host-consumer-contract_cn.md";
 /** #286 返工 R2：升级指南的**硬编码清单**（测试侧这一份是第二只眼）。脚本侧按
  *  `^host-upgrade-guide.*\.md$` 实扫、测试侧本来也用同一个 glob——那等于两只眼用同一只眼睛看：
  *  有人把某份指南改名到不匹配该模式，两边**一起**少一份，数字仍然相等，覆盖面静默缩面。
- *  所以这里把当前 16 份逐份点名：改名/新增/删除都会红，并提示「脚本侧下限与这份清单要一起改」。 */
+ *  所以这里把当前 18 份逐份点名：改名/新增/删除都会红，并提示「脚本侧下限与这份清单要一起改」。 */
 const GUIDE_DOCS_PINNED = [
   "docs/host-upgrade-guide-0.6.0.md",
   "docs/host-upgrade-guide-0.12.0.md",
@@ -42,6 +42,8 @@ const GUIDE_DOCS_PINNED = [
   "docs/host-upgrade-guide-0.20.0_cn.md",
   "docs/host-upgrade-guide-0.21.0.md",
   "docs/host-upgrade-guide-0.21.0_cn.md",
+  "docs/host-upgrade-guide-0.22.0.md",
+  "docs/host-upgrade-guide-0.22.0_cn.md",
   "docs/host-upgrade-guide-v030.md",
   "docs/host-upgrade-guide-v030_cn.md",
 ];
@@ -53,7 +55,7 @@ const DOCS = [
   ...readdirSync(join(ROOT, "docs")).filter((f) => /^host-upgrade-guide.*\.md$/.test(f)).sort().map((f) => `docs/${f}`),
 ];
 
-test("#286 覆盖面（返工 R2）：脚本侧实扫的指南清单必须等于测试侧硬编码的那 16 份，且下限常量 = 22", () => {
+test("#286 覆盖面（返工 R2）：脚本侧实扫的指南清单必须等于测试侧硬编码的那 18 份，且下限常量 = 24", () => {
   const discovered = readdirSync(join(ROOT, "docs")).filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
     .map((f) => `docs/${f}`).sort();   // 与清单同形状（都带 docs/ 前缀），免得比出假差集
   const missing = GUIDE_DOCS_PINNED.filter((f) => !discovered.includes(f));
@@ -64,7 +66,7 @@ test("#286 覆盖面（返工 R2）：脚本侧实扫的指南清单必须等于
     + "\n  新增指南请把名字补进 test/docs-anchor-ratchet.test.js 的 GUIDE_DOCS_PINNED，并把脚本侧 REF_SCAN_DOCS_MINIMUM 升上去");
   const script = read("scripts/docs-drift-check.mjs");
   const minimum = Number(script.match(/^const REF_SCAN_DOCS_MINIMUM = (\d+);/m)?.[1] ?? NaN);
-  assert.equal(minimum, 22, "覆盖面下限常量被改了：应为 6 份硬编码 + 16 份指南 = 22（新增一份指南就抬一次）");
+  assert.equal(minimum, 24, "覆盖面下限常量被改了：应为 6 份硬编码 + 18 份指南 = 24（新增一份指南就抬一次）");
   assert.equal(6 + GUIDE_DOCS_PINNED.length, minimum, "测试侧清单份数与脚本侧下限不一致（两处必须同步）");
 });
 

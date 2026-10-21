@@ -62,7 +62,7 @@
 //                 正则 `src\/[A-Za-z0-9_./-]+\.js:(\d+)(?:-(\d+))?`；#286 T-a 落地时该口径实测 248 唯一区间 /
 //                 279 次出现，减去 `BARE_LINE_EXEMPTIONS` 的 4 处示例/外仓路径 ⇒ 当时基线 244（**历史值**；
 //                 现值一律跑 `--verbose` 复核，别只信注释）。
-//                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM = 22`（6 份点名 + 16 份实扫指南，工单 261016-307
+//                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM = 24`（6 份点名 + 18 份实扫指南，工单 261016-307
 //                 的 R4 把 20 抬到 22）：按目录实扫意味着「把某份指南改名到不匹配模式」会让脚本与测试侧一起
 //                 少一份而数字仍相等 ⇒ 静默缩面，这条下限与测试侧硬编码的 16 份清单就是那道报警（#286 T-a R2）。
 //                 豁免是**三信号 AND**（① 表里点名这一条 ② 引用行含那个占位路径 ③ 同一行有就地声明词）：
@@ -1534,10 +1534,10 @@ const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT
 /** #286 返工 R2：覆盖面份数的**下限**。病根：覆盖面是「6 份硬编码 + 按 `^host-upgrade-guide.*\.md$` 实扫」，
  *  于是有人把某份指南改名到不再匹配那个模式（或把它挪出 `docs/`），脚本与测试侧的 glob **一起少一份**，
  *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前 16 份的清单做对照，这里再钉一道份数下限。
- *  下限取 22（= 6 份硬编码 + 16 份指南）；新增指南让份数往上走，改名/删除想绿就必须同时动这两处。
+ *  下限取 24（= 6 份硬编码 + 18 份指南）；新增指南让份数往上走，改名/删除想绿就必须同时动这两处。
  *  抬下限的理由（工单 261016-307 / 发版准备 R4，20 → **22**）：0.21.0 的中英两份升级指南落地，
  *  `--verbose` 实测覆盖面 20 → 22（6 份硬编码 + 16 份实扫指南）。写法必须保持这一行不变形（自测要改这个数）。 */
-const REF_SCAN_DOCS_MINIMUM = 22;
+const REF_SCAN_DOCS_MINIMUM = 24;
 
 /** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟「某份指南改名到不匹配模式」。 */
 let SIM_RENAMED_GUIDE = null;
@@ -3700,14 +3700,14 @@ const SELF_TEST_CASES = [
     expectFiles: [CONTRACT_CN],
   },
   {
-    label: "#286 T-b1a 区间相交的放行证：删掉 `no_final_guard` 的区间（只留符号 + 文件）⇒ 本判据不适用，必须 0 错",
-    overlay: { [CONTRACT_CN]: mutateSymbolAnchorSpan("no_final_guard", "src/loop/orchestrator.js", "") },
+    label: "#286 T-b1a 区间相交的放行证：删掉 `max_rounds_cap`（termination.js:93-98）的区间（只留符号 + 文件）⇒ 本判据不适用，必须 0 错",
+    overlay: { [CONTRACT_CN]: mutateSymbolAnchorSpan("max_rounds_cap", "src/loop/termination.js", "") },
     expectGreen: true,
   },
   {
-    label: "#286 T-b1a 弱档真值位：把 `judge_done`（orchestrator.js:3318-3326）改窄到 3318-3323 ⇒ 字面量在 3324，红（弱档也真按出现行判）",
-    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("judge_done", "src/loop/orchestrator.js", ":3318-3323") },
-    expect: [/symbol-anchor-span: .*引用 `judge_done`（`src\/loop\/orchestrator\.js:3318-3323`）/,
+    label: "#286 T-b1a 弱档真值位：把 `max_rounds_cap`（termination.js:93-98）改窄到 93-97 ⇒ 字面量在 98，红（弱档也真按出现行判）",
+    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("max_rounds_cap", "src/loop/termination.js", ":93-97") },
+    expect: [/symbol-anchor-span: .*引用 `max_rounds_cap`（`src\/loop\/termination\.js:93-97`）/,
       /真值形态 具名字面量成员/],
     expectFiles: [CONTRACT_EN],
   },

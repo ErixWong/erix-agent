@@ -3,6 +3,13 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-21
+
+### Added
+
+- **中途审计判定「目标已达成」时，把评审意见回灸给模型（issue #322，`reflection.judgeDoneAdvisory`，默认关）。** 病根不是链接断了而是设计缺了一段：judge 是一个**意见**，它的 `done + confident` 在中途拦截路径上只被用来停，意见本身（`reason` / `direction`）从不说给模型——于是模型不知道自己为何被打断，典型表现为「已判定达成却继续烧十几轮」。修后的形状：**一个单槽、一次一条**，在下一个安全点以普通 `user` 文本消息注入；**判定与终止语义一字未改**（软提示不是硬停止，`test/reflection.test.js` 钉住），`judgeDoneConfidenceThreshold` 与拦截路径共用同一个 0.7 常量（不再两处内联）。开关关闭时行为与旧版**逐字相同**（四份 fixture 字节对齐钉住）；`uncertain` 方向的文案在开关开启时走中性表述（`judgeDoneAdvisoryText`），不开关时空串，且 `off_track` 一字节不动。新增选项校验：`reflection.judgeDoneAdvisory must be a boolean`。
+- **引擎自己注入给模型的消息一律带 `meta.source`（issue #323，契约面已写明）。** 目前定下的取值是 `"judge-control"`（评审意见 / 扩轮提示 / guard 返工意见 / 强制收尾指令）。作属**投影与展示层的标签**：宿主可以拿它把「引擎自说自话」与真实用户输入分开（内置 CLI 已按它过滤），但**不要拿它当判定依据**——它不是新 kind，也不改变消息语义。
+
 ### Fixed
 
 - **内置 store 的 `appendRound` 不再把「同 `dedupKey` 携不同 payload」静默接受（issue #326 开工顺序第 1 步；持久化真相模型审计只留下的四条事实里的①）。** 病根：幂等判据只看 key——`src/store/memory.js` 里是 `records.some((existing) => recordKey(runId, existing) === key)` 命中就 `return`，`src/store/file.js` 里是 `entry.keys.has(key)` 命中就 `return false`（那份 issue #160 的进程内缓存只有 `Set<key>`，本来就拿不出 payload）。于是第二次的 payload **既不落盘也不报错**：续接轮被同 key 去重掉了、同一消息 id 换了正文重预写，引擎与宿主都看不到任何信号。

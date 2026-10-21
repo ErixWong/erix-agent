@@ -97,7 +97,9 @@ console.log("resume termination:", second.termination.reason);
 console.log("resume summarizer calls:", p2.summaryRequests.length);
 const records2 = await store.load(runId);
 console.log("journal fold fact rows after resume:", records2.filter((r) => r.foldedSummary).length,
-  "(不重算 ⇒ 仍是 1 条，且 resume 那条请求用的是 V1)");
+  // 注：这里的「3 次调用 / 多条事实行」是续跑时折叠了**新的轮区间**（指纹不同）⇒ 合法的新摘要，不是重算同一输入。
+  // “复用不重算”的判据在 test/loop-persist-compaction-facts.test.js 第 3/4 条：同一指纹不得二次调摘要器。
+  "(新轮区间的新摘要属合法新增；同指纹不重算的判据见 test/loop-persist-compaction-facts.test.js 第 3/4 条)");
 console.log("resume last main request contains V1:", p2.mainRequests.at(-1).messages.some((m) => textOf(m).includes("SUMMARY_V1")));
 console.log("resume last main request contains V2:", p2.mainRequests.at(-1).messages.some((m) => textOf(m).includes("SUMMARY_V2")));
 
