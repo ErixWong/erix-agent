@@ -315,8 +315,17 @@ test("intercept result snapshot failure terminates without running the blocked t
 test("appendRound failure after a tool reports executed_uncommitted", async () => {
   const store = fullStore();
   const originalAppendRound = store.appendRound.bind(store);
+  // 工单 261021 写侧之后，一轮里不再只有一条 `appendRound`：本轮 assistant 正文行（seq 0）在
+  // **工具执行前**就落盘，工具结果行（seq 1）才是「工具已经执行」之后的那一条。
+  // 本用例钉的保证没变：**工具已执行、结果未能入账 ⇒ 必须报 `sideEffect: executed_uncommitted`**，
+  // 所以故障注入点跟着语义边界走：只对「带走 `tool_result` 的那条入账」报错。
+  // （改造前「round === 1」刚好只命中工具执行后的那一次写入，两者在此用例里等价。）
   store.appendRound = async (runId, record) => {
-    if (record.round === 1) throw new Error("transcript unavailable after tool");
+    const carriesToolResult = (record.messages ?? []).some((message) => (
+      (Array.isArray(message?.content) ? message.content : [])
+        .some((block) => block?.type === "tool_result")
+    ));
+    if (record.round === 1 && carriesToolResult) throw new Error("transcript unavailable after tool");
     return originalAppendRound(runId, record);
   };
   const events = [];

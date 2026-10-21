@@ -954,7 +954,12 @@ test("resumes folded checkpoints from the persisted transcript anchor", async ()
     );
 
     const checkpoint = await store.loadLatestCheckpoint(`fold-${keepRounds}`);
-    assert.equal(checkpoint.persistedTranscriptLength, 5);
+    // 锁点 = 崩溃那一刻账本里已落盘的**逻辑消息数**（分片不加）。工单 261021 写侧之后，
+    // 崩溃轮（round 3）的 assistant 正文已「一成型就落盘」，所以下标比改造前多 1：
+    // 1（种子行）+ 2（round 1）+ 2（round 2）+ **1（round 3 已落盘的 assistant）**= 6。
+    // 这一条不是可以动的装饰：少 1 就是把崩溃轮那条带 pending tool_use 的 assistant 切进
+    // 尾队列，补跑结果将找不到对应的 tool_use（`validateMessages` 当场 invalid_messages）。
+    assert.equal(checkpoint.persistedTranscriptLength, 6);
     await store.appendRound(`fold-${keepRounds}`, {
       round: 2,
       dedupKey: `fold-${keepRounds}:input`,

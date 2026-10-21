@@ -174,3 +174,47 @@ export function nextMessageSeqByRound(records) {
   }
   return next;
 }
+
+/**
+ * 恢复路径与**快照锚点共用的那一个口径**：把 `store.load()` 的输出拼成「一条逻辑消息一项」的序列。
+ *
+ * 为什么不能直接用 `records.flatMap(record.messages)`：那条式子在**载体行在场**时把 `partOf` 分片
+ * 折回同一条消息（一条逻辑消息一项），在**载体行不在场**（崩溃在轮行落盘之前）时把分片原样留着
+ * （每个分片各自一项）。于是同一个账本状态会因为「轮行有没有落」而给出两种条数，而写侧的锚点计数
+ * （`orchestrator.js#appendMessageRowToTranscript` 里 `partOf === ""` 才加 1）只认前者。
+ * 锚点与条数不同口径 ⇒ 切片会切在一条逻辑消息的中间（崩溃轮那条聚合 `tool_result` 被劈成两半），
+ * 而拆出来的多条 user 消息也不再是合法形状——`src/messages/rounds.js#validateMessages` 要求一条
+ * assistant 的 tool_use 由**紧随其后的那一条** user 消息结清，于是恢复出来的上下文直接
+ * `invalid_messages`（实测：`resume consistency: visible stubs after recovery match the normal path`）。
+ *
+ * 所以这里与载体行在场无关：`partOf` 分片一律接回它指认的那条消息。已折叠的账本（分片已被
+ * `foldMessageRows` 吸进载体行）走这条路是**幂等**的——看不见分片行，也就无片可接。
+ * 老账本（轮行自带 `messages`、没有消息行）原样拼出，与改造前逐字一致。
+ *
+ * @param {Array<{ round?: number, kind?: string, partOf?: string, messages?: object[], dedupKey?: string, roundKey?: string }>} records
+ * @returns {Array<{ message: object, round: number }>} 逻辑消息序列（含来源轮号）
+ */
+export function foldLedgerMessages(records) {
+  /** @type {Array<{ message: object, round: number }>} */
+  const entries = [];
+  /** @type {Map<string, number>} 行 key → 该行第一条逻辑消息在 `entries` 里的下标 */
+  const keyToIndex = new Map();
+  for (const record of Array.isArray(records) ? records : []) {
+    const round = Number.isSafeInteger(record?.round) ? record.round : 0;
+    const key = rowKey(record);
+    if (key !== "") keyToIndex.set(key, entries.length);
+    const messages = Array.isArray(record?.messages) ? record.messages : [];
+    const partOf = typeof record?.partOf === "string" ? record.partOf : "";
+    const targetIndex = partOf === "" ? undefined : keyToIndex.get(partOf);
+    if (targetIndex !== undefined && messages.length === 1 && entries[targetIndex] !== undefined) {
+      // 分片：接回它指认的那条消息（浅拷贝，不改入参行、也不改已折回的载体行）
+      entries[targetIndex] = {
+        round: entries[targetIndex].round,
+        message: mergePartIntoMessage(entries[targetIndex].message, messages[0]),
+      };
+      continue;
+    }
+    for (const message of messages) entries.push({ message, round });
+  }
+  return entries;
+}

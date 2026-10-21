@@ -1,6 +1,6 @@
 import { cloneState } from "./budget.js";
 import { blocksFor, mergeToolResultsIntoMessages } from "./messages.js";
-import { MESSAGE_ROW_KIND, nextMessageSeqByRound } from "../store/message-rows.js";
+import { MESSAGE_ROW_KIND, nextMessageSeqByRound, foldLedgerMessages } from "../store/message-rows.js";
 import { extractL0Facts } from "../reflection/l0.js";
 import { buildTimeline } from "../reflection/judge.js";
 import { validateRunState } from "../run-state.js";
@@ -93,21 +93,22 @@ export async function restoreResume(ctx) {
           restoreRunState(latestStateRecord.runState);
         }
       }
-      const ledgerMessages = records.flatMap((record) => record.messages ?? []);
+      const ledgerEntries = foldLedgerMessages(records);
+      const ledgerMessages = ledgerEntries.map((entry) => entry.message);
       const seedRecords = records.filter((record) => (record.round ?? 0) === 0);
       const seedMessages = seedRecords.flatMap((record) => record.messages ?? []);
       ctx.taskBriefSource = seedRecords.length > 0 ? seedMessages : [];
-      // 工单 261021（第三刀·恢复只认账本）：`records.flatMap(record.messages)` 是崩溃/续跑
-      // 上下文的**唯一正文来源**（读侧折叠层已保证它的语义与改造前逐字一致）。下面那个循环
-      // 顺手记下每条消息的来源轮号（`messageRoundById`），供崩溃现场切片后用。
+      // 工单 261021（第三刀·恢复只认账本）：逻辑消息序列是崩溃/续跑上下文的**唯一正文来源**。
+      // 口径不是裸 `records.flatMap(record.messages)`，而是 `foldLedgerMessages(records)`：
+      // 它与写侧锚点计数（`persistedTranscriptLength`，分片不加）同一条口径，把 `partOf` 分片
+      // 接回它指认的那条消息，**与载体行在场无关**（理由见 `src/store/message-rows.js` 里该函数的注释）。
+      // 轮号直接带在 `ledgerEntries` 里：切片后的正文是 `cloneState` 的副本，拿身份去查轮号会落空。
       ctx.messages = ledgerMessages;
       ctx.persistedTranscriptLength = ctx.messages.length;
-      const messageRoundById = new Map();
+      for (const entry of ledgerEntries) {
+        ctx.messageRounds.set(entry.message, entry.round);
+      }
       for (const record of records) {
-        for (const message of record.messages ?? []) {
-          ctx.messageRounds.set(message, record.round ?? 0);
-          messageRoundById.set(message, record.round ?? 0);
-        }
         // issue #326（wo-C）：**引擎事实行不进治理历史**。`…:engine:round:<n>:fold:<fp>` /
         // `…:ttl:<fp>` 这类补充记录带轮号但没有轮正文（`messages: []`），照旧走下面的分支就会给同一轮
         // 追加一条 `summary: "missing"` 的历史条目，污染 judge 看到的轮次历史。
@@ -203,10 +204,13 @@ export async function restoreResume(ctx) {
             && ctx.resumeRunSnapshot.persistedTranscriptLength >= 0
             ? Math.min(ctx.resumeRunSnapshot.persistedTranscriptLength, ledgerMessages.length)
             : ledgerMessages.length;
-          ctx.messages = cloneState(ledgerMessages.slice(0, anchor));
-          ctx.resumeTailMessages = ledgerMessages.slice(anchor).map((message, offset) => ({
-            message: cloneState(message),
-            round: messageRoundById.get(ledgerMessages[anchor + offset]) ?? 0,
+          ctx.messages = ledgerEntries.slice(0, anchor).map((entry) => cloneState(entry.message));
+          for (const [index, message] of ctx.messages.entries()) {
+            ctx.messageRounds.set(message, ledgerEntries[index].round);
+          }
+          ctx.resumeTailMessages = ledgerEntries.slice(anchor).map((entry) => ({
+            message: cloneState(entry.message),
+            round: entry.round,
           }));
           // **升级路径（不是旧逻辑的残留）**：改造前写的账本里，崩溃那一轮的正文**只在快照里**
           // （旧写侧把整轮正文留到轮末才写，而轮行因崩溃 never landed）。对这类旧账本，快照正文副本
@@ -259,11 +263,14 @@ export async function restoreResume(ctx) {
           const partialRound = ctx.resumeRunSnapshot.partialRound;
           // 半截正文只补**账本里还没有的那一段**：写侧已在本轮正文一成型就落盘，所以
           // 「快照里带 partialText 而本轮 assistant 行已落」是常见路径（工具执行期崩溃）；
-          // 再补一次就是把同一份正文喂给模型两遍。判据：崩溃轮的 assistant 行已在账本 ⇒ 不补。
-          const crashRoundAssistantPersisted = ctx.messages.some((message, index) => (
-            message?.role === "assistant"
-            && messageRoundById.get(ctx.messages[index]) === ctx.resumeRunSnapshot.round
-          ));
+          // 再补一次就是把同一份正文喂给模型两遍。判据：崩溃轮的 assistant 行已在锚点之内 ⇒ 不补。
+          // ⚠ 这里必须读**轮号本身**（`ledgerEntries`）而不是拿克隆后的 `ctx.messages` 去查轮号表：
+          // `ctx.messages` 是 `cloneState` 的副本，身份对不上，那种写法永远返回 false
+          // ⇒ partialText 会被再喂一遗（实测改造前靠「上下文整体取自快照正文」逗着，不暴露这个问题）。
+          const crashRoundAssistantPersisted = ledgerEntries
+            .slice(0, anchor)
+            .some((entry) => entry.message?.role === "assistant"
+              && entry.round === ctx.resumeRunSnapshot.round);
           if (typeof partialText === "string" && partialText.length > 0
             && Number.isSafeInteger(partialRound)
             && partialRound === ctx.resumeRunSnapshot.round
