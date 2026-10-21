@@ -115,6 +115,12 @@
 
 ### Documentation
 
+- **符号锚点下限 80 → 81（现值同步，不是放宽门禁）。** #315 的 `compactionStatsWindow` 小节按本仓红线用符号
+  锚点引用 `createDeterministicRunState`（`src/run-state.js`）与 `normalizeCompactionStats`（`src/compact/pipeline.js`），
+  合并后 `--verbose` 实测 **81 组 / 203 处**；下限不跟着升，`--self-test` 里两条 `#286 返工 R1` 用例就再次
+  fail-open（把 `defaultSleep` 退化成裸行号之后 80 ≥ 80 不红 ⇒ 用例判「锚点仍是 fail-open」）。中英 `AGENTS`
+  的声称值一起同步（`test/static-guards.test.js` 规则 4 逐字对撞脚本真值与两份文档）。
+
 - **契约补一节「落盘行形状 ≠ `load()` 之后的形状」：把读侧口径从 #326 / #328 的 issue 正文搬进仓库树（issue #361；纯文档，`src/` 零改动）。**
   现场：#353 里宿主（erix-station）把「落盘行形状」当成了「`store.load()` 之后的形状」，于是报了一条**不存在的** 0.23 回归（判决见 #353 与 PR #355）。根因不是宿主笨——中英契约里**没有任何一句**讲清这两者的关系，读侧口径散在 #326 / #328 的 issue 正文里，而那些不在仓库树里，宿主读不到。
   中英各加一个 `###` 小节（`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`，落在「Store 保真要求 → 档案行形状」之后，**不新开顶级节**），覆盖四点：① `load()` 返回的是折叠后的形状，`foldMessageRows` 在两个内置 store 的 `load()` 里跑；② 落盘行不是这个形状，轮载体行**没有** `messages` 键，数行数 / 数轮数 / 读正文都得先过 `load()`；③ **行数 ≥ 轮数**是常态（引擎事实行 `…:fold:<fp>` / `…:ttl:<fp>` 与控制行 `…:control:<slot>` 也在里面），宿主 materializer 必须按 `round` 归并、按 `dedupKey` 去重（#328 C 组对 station / touwaka 的要求，本段是它的权威出处）；④ 一条可核对判据：`load()` 之后 `tool_use` 与配对的 `tool_result` 在同一条记录内，这正是 #353 探针里 `[ok]` 与 `[pending]` 的分界。
