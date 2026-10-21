@@ -24,7 +24,7 @@
 //      实测都是这件事）。所以准入规则里的 `// @ts-check` 只是**声明这份文件愿意被检查**，真正的范围是 import 图。
 //   2. ⚠ **反过来，`src/index.js` 也不是全部**：`erix-agent/tools` 那条公共入口有**两个文件不在包根的 import
 //      图里**（`src/tools/file-tools.js`、`src/skills/loader.js`），它们的新错默认**卡不住**。见下面的
-//      `--with-tools` 与 `BASELINE_WITH_TOOLS`（实测两入口并集 = **156 个 / 31 文件**（2026-10-22 复测；2026-10-21 那轮是 160、2026-10-15 是 162、2026-10-13 是 164），比单入口多 39 个：23 + 16）。
+//      `--with-tools` 与 `BASELINE_WITH_TOOLS`（实测两入口并集 = **153 个 / 31 文件**（2026-10-22 复测；同一天上一轮是 156、2026-10-21 那轮是 160、2026-10-15 是 162、2026-10-13 是 164），比单入口多 36 个：20 + 16）。
 //   3. ⚠ **`src/**/*.d.ts` 生成物在场时，本检查会静默变成空跑**（实测，见下面的「陈旧声明守卫」）：#213 的
 //      `types:build` 把声明**生成到 `src/` 里**，而 tsc 解析 `./x.js` 时**优先命中同目录的 `x.d.ts`**，于是
 //      被检查的是声明而不是实现——当前树上（2026-10-21 复测：`npm run types:build` 产出 **70** 个 `.d.ts`）70 个 `.d.ts` 在场时同一条命令报 **0 个错**（`--skipLibCheck` 跳过声明文件；2026-10-15 那轮量到的 65 个、2026-10-13 在 `39e96f1` 上量到的 63 个都是**历史值**），
@@ -35,7 +35,7 @@
 //
 // 用法：
 //   npm run check:types                       # 默认：包根入口 src/index.js，基线 117
-//   npm run check:types -- --with-tools       # 连 erix-agent/tools 入口一起卡，基线 156
+//   npm run check:types -- --with-tools       # 连 erix-agent/tools 入口一起卡，基线 153
 //   node scripts/type-check-ratchet.mjs --verbose                   # 额外打印每文件、每错误码分布
 //   node scripts/type-check-ratchet.mjs --show-errors 20            # 额外打印前 20 条错误定位（定位新错用）
 //   node scripts/type-check-ratchet.mjs --baseline                  # 只打印基线常量与复现命令
@@ -88,7 +88,14 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   现在最集中的文件：`src/store/notes.js` 27、`src/loop/orchestrator.js` 17、`src/run-state.js` 10、
 //   `src/display/projection.js` 9、`src/providers/anthropic.js` 9。**上面那段 218/190/28 的分布是 218 时代的
 //   历史记录**；**142 时代（2026-10-11 实测）**的口径是：公共面 114 个 / 20 个文件、实现侧 28 个 / 9 个文件（当前口径见下面那条 2026-10-21 的下调记录）。
-// 下调记录（最新一笔）：**160 → 156**（issue #362，2026-10-22 实测于当前树；**只动 `--with-tools` 一档**，
+// 下调记录（最新一笔）：**156 → 153**（issue #376，2026-10-22 实测于当前树；**只动 `--with-tools` 一档**，
+//   包根入口同刀重测仍 117、一个错都没变，故 `BASELINE_ROOT` 不动）。减的 **3** 个**全部**来自
+//   `src/tools/file-tools.js` **23 → 20**：PR #370（issue #358 读侧诚实性——tree 非根首行可回放、readFile 参数
+//   改写留痕、路径文案去 errno）把 `"readParamAdjusted" | "readEof" | "editDiffTruncated"` 并进了那个 cause 联合类型，
+//   于是 `editDiffTruncated` 那 3 条（2×TS2345 + 1×TS2678）随之消失，是**重构顺带**掉的、不是专门修的；
+//   `src/skills/loader.js` 仍 **16**，其余 29 个带错文件逐项复核一字未动（153 = 117 + 20 + 16，31 个文件不变）。
+//   `file-tools.js` 剩下的 20 个按 #179 跟着下一次进该文件的 PR 走，本单不动（#376 非目标）。
+//   上一笔：**160 → 156**（issue #362，2026-10-22 实测于当前树；**只动 `--with-tools` 一档**，
 //   包根入口仍 117、一个错都没变）。减的 **4** 个**全部**来自 `src/tools/file-tools.js` **27 → 23**：PR #356
 //   （issue #215 / #222）为 `toolMarker` 加的 `markerCount` 窄化点顺带消掉了 4 个 `--checkJs` 错，是**重构顺带**掉的、
 //   不是专门修的；`src/skills/loader.js` 仍 **16**，其余 29 个带错文件逐项复核一字未动（156 = 117 + 23 + 16，31 个文件不变）。
@@ -112,7 +119,7 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   按文件聚合 + 从两个入口的分类闭包（见 `AGENTS.md` 里同一条），而那 21 个全落在公共面那半边（`notes.js` 本来就在闭包里）。
 //   现在最集中的文件：`src/loop/orchestrator.js` 17、`src/run-state.js` 10、`src/providers/anthropic.js` 9、
 //   `src/loop/run-snapshot-executor.js` 8、`src/display/projection.js` 7、`src/providers/openai.js` 7、`src/tools/notes.js` 7
-//   （`--with-tools` 一档再加 `src/tools/file-tools.js` 23、`src/skills/loader.js` 16）。
+//   （`--with-tools` 一档再加 `src/tools/file-tools.js` 20、`src/skills/loader.js` 16）。
 const BASELINE_ROOT = 117;
 
 // `--with-tools` 的基线：把第二个公共入口 `src/tools/index.js` 也喂给 tsc 后的并集。
@@ -121,14 +128,14 @@ const BASELINE_ROOT = 117;
 //     --module nodenext --moduleResolution nodenext --skipLibCheck src/index.js src/tools/index.js
 // 实测（2026-10-11，`59f3a72`）：**185 个错 / 31 个文件** = 单入口的 142 个，加上只有 `./tools` 才拉进来的
 //   `src/tools/file-tools.js` 27 个与 `src/skills/loader.js` 16 个（两个都是宿主直接可见的导出实现，
-//   `createFileTools` / `discoverSkills` 那一族）**当前值（2026-10-22 复测）= 156 个 / 31 个文件 = 117 + 23 + 16**；
-//   2026-10-21 那轮的 160 个 = 117 + 27 + 16、2026-10-15 那轮的 162 个 = 119 + 27 + 16、2026-10-13 在同一棵 `39e96f1` 上复测的 164 个 = 121 + 27 + 16 都是**历史值**（与旧常量的差额逐个落在 `src/store/notes.js`、`src/display/projection.js` 与 `src/tools/file-tools.js`，同上面那些下调记录；
+//   `createFileTools` / `discoverSkills` 那一族）**当前值（2026-10-22 复测）= 153 个 / 31 个文件 = 117 + 20 + 16**；
+//   2026-10-22 上一轮的 156 个 = 117 + 23 + 16、2026-10-21 那轮的 160 个 = 117 + 27 + 16、2026-10-15 那轮的 162 个 = 119 + 27 + 16、2026-10-13 在同一棵 `39e96f1` 上复测的 164 个 = 121 + 27 + 16 都是**历史值**（与旧常量的差额逐个落在 `src/store/notes.js`、`src/display/projection.js` 与 `src/tools/file-tools.js`，同上面那些下调记录；
 //   `loader.js` 16 这个计数自 #214 起一字未动，本次也逐个复核过）。#214 时代入库的是 **261**，
 //   而它**从来没跟着 #177 刀 1 复测过**：同一对 tsc/@types 在改前树 `8f83375` 实测这一档是 **260**，
 //   于是 261 → 185 的 76 个 = #249 的 75 个 + #177 欠下的那 1 个（教训：下调基线要**两档一起复测**）。为什么默认不带它：#214 正文给的口径就是 `src/index.js`，
 //   默认值必须与规格逐字一致；但它**是**真实盲区，所以这里留一条可随时收紧的通道（收紧=把默认入口加上并
 //   把基线换成当前实测值，属 #214 之后的收紧动作，不要拿它当「反正卡不住」的理由）。
-const BASELINE_WITH_TOOLS = 156;
+const BASELINE_WITH_TOOLS = 153;
 
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");

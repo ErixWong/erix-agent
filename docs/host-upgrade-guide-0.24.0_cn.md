@@ -160,9 +160,10 @@ marker 抹掉——它是「你看到的这段不是你要求的那个切片」�
 `../helpers/tmp.js`，缺了它宿主跑随包套件会得到 `ERR_MODULE_NOT_FOUND`。tarball 其余形状未变；
 `README` / `README_cn` 的 `files` 围栏照 `package.json` 逐字同步。
 
-**7b. `npm run check:types -- --with-tools` 的基线是 156** —— `BASELINE_WITH_TOOLS`（`scripts/type-check-ratchet.mjs`）；
-包根入口仍是 117，并集是 `117 + 23 + 16` 个 / 31 文件。少掉的那 4 个错来自
-`src/tools/file-tools.js`，是 tree/marker 那一刀加的窄化顺带消掉的——**没有为了凑数压掉任何错**。
+**7b. `npm run check:types -- --with-tools` 的基线是 153** —— `BASELINE_WITH_TOOLS`（`scripts/type-check-ratchet.mjs`）；
+包根入口是 117，并集是 `117 + 20 + 16` 个 / 31 文件。`src/tools/file-tools.js` 从 27 个降到 20 个——
+tree/marker 那一刀的窄化、以及读侧诚实性那一刀（`editDiffTruncated` 并入那个联合类型）顺带消掉的；
+**没有为了凑数压掉任何错**。
 
 **7c. `node scripts/docs-drift-check.mjs --self-test` 与本机 `docs/tasks/` 解耦。** 它的树形用例改跑**合成
 夹具**，不再数本机真实档案，于是同一提交在全新 clone / CI / `docs/tasks/` 为空的机器上都是绿的。因此 CI
