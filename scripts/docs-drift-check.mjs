@@ -2534,18 +2534,19 @@ const SHORTHAND_REFS = new Map([
   ["notes.js", { real: ["src/store/notes.js", "src/tools/notes.js"], why: "CHANGELOG:42 讲 #270 公共闭包计数时的简称；本仓确实有两个 `notes.js`，拿裸名指它俩的全体（歧义必须写清，历史条目不改写故登记）" }],
   ["anthropic.js", { real: ["src/providers/anthropic.js"], why: "CHANGELOG:180 与 docs/design/2026-10-08:28 讲类型错误分布时对 `src/providers/anthropic.js` 的简称（同段的 `src/messages/anthropic.js` 是另一个同名文件，裸名指前者）" }],
 ]);
-/** 被忽略的**目录规则**必须逐条分类（#273：不许默认当没事）。两类语义不同：
- *   · install-tree / build-output / runtime / worktree：目录内容根本不是仓库内容（安装位置、构建产物、
- *     运行日志、本机工作副本），引用它们不构成「克隆后死链」；
+/** 被忽略的**目录规则**必须逐条分类（#273：不许默认当没事）。语义分两类：
+ *   · install-tree / build-output / runtime / worktree / scratch：目录内容根本不是仓库内容（安装位置、构建产物、
+ *     运行日志、本机工作副本、丢弃型临时工作目录），引用它们不构成「克隆后死链」；
  *   · task-archive：`docs/tasks/` 存的是主 agent 的写作现场，**看起来像**仓内文档却整目录不入库，
  *     克隆后就是死引用——所以只有这一类要求**逐条**证据（就地声明或 LOCAL_ARCHIVE_REFS 逐条理由），
- *     其余三类按目录规则整体放行，但都必须在表里写明为什么。
+ *     其余类别按目录规则整体放行，但都必须在表里写明为什么。
  * .gitignore 里出现新的目录型规则而未登记 → 直接红（而不是默默放行）。 */
 const IGNORED_DIR_CLASSES = new Map([
   ["node_modules/", { kind: "install-tree", why: "宿主侧安装位置，不是仓库内容" }],
   ["dist/", { kind: "build-output", why: "examples 的构建产物目录" }],
   ["logs/", { kind: "runtime", why: "运行日志目录" }],
   [".worktrees/", { kind: "worktree", why: "并行任务的本机工作副本（#184 引入）" }],
+  [".scratch/", { kind: "scratch", why: "丢弃型临时工作目录（复现脚本、`git archive` 对照树等一次性产物，#337）：内容不是仓库内容，整目录不进扫描面" }],
   ["docs/tasks/", { kind: "task-archive", why: "主 agent 的任务工作目录：整目录不入库，#162 定了口径，#273 把它纳进检查面" }],
   ["docs/delivery/", { kind: "task-archive", why: "交付报告的本机落点：与 docs/tasks/ 同口径不入库（2026-10-15 实测：新增 ignore 目录规则若不在这里登记类别，--self-test 会从 3 条红抬到 6 条）" }],
 ]);
@@ -2896,7 +2897,7 @@ function collectPathErrors() {
   for (const r of ign.rules.filter((x) => x.pattern.endsWith("/"))) {
     if (IGNORED_DIR_CLASSES.has(r.pattern)) continue;
     out.push(`paths: .gitignore:${r.line} 的目录规则 \`${r.pattern}\` 没在 IGNORED_DIR_CLASSES 里分类`
-      + `（install-tree / build-output / runtime / worktree / task-archive 五选一 + 写明理由）——`
+      + `（install-tree / build-output / runtime / worktree / scratch / task-archive 六选一 + 写明理由）——`
       + `被忽略目录里的引用要不要放行，得由分类决定，不许默默放行新目录`);
   }
   REF_CLASS_HITS.clear();
