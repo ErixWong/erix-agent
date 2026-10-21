@@ -25,6 +25,14 @@
 
 ### Fixed
 
+- **文档现值修正 + 机器校对（issue #310）：中英 AGENTS 的 `SYMBOL_ANCHOR_MIN_UNIQUE = 77`（此前两份都还写着 76）与 `scripts/docs-drift-check.mjs` 的真值对齐，并由 `test/static-guards.test.js` 的新增规则 4 把它钉住。**
+  病根：#310——`AGENTS.md` / `AGENTS_cn.md` 里有一批**声称值**引用门禁脚本自己的常量（`` `CONST_NAME = N` ``），而 `check:docs` 不锚定它们：脚本常量一改，文档静默过时而门禁照绿（历史上已两次现场抓到：`SYMBOL_ANCHOR_MIN_UNIQUE` 写 27 而脚本 29；`.d.ts` 写 66 而真实 67）。
+  这一处是**当下就在漂**的活体实例：`scripts/docs-drift-check.mjs` 的 `SYMBOL_ANCHOR_MIN_UNIQUE` 在 0.23.0 发版准备（工单 261021-12）已抬到 **77**（`--verbose` 今日复核 77 组 / 194 处；脚本注释里的 192 是当时的旧数），而两份 AGENTS 仍写 76 / 189 处。本单只改**现值**，历史沿革（此前 76 / 75 / 72 / 67 …）逐字保留。
+  - **新增守卫（`test/static-guards.test.js` 规则 4，加法，不动既有三条）**：真值从两个脚本**自己的文本**里抽（`scripts/docs-drift-check.mjs` 的 `SYMBOL_ANCHOR_MIN_UNIQUE` / `BARE_LINE_REF_BASELINE` / `REF_SCAN_DOCS_MINIMUM`，`scripts/type-check-ratchet.mjs` 的 `BASELINE_ROOT`），声称从两份 AGENTS 全文抽 `` `<NAME> = <数字>` ``，三条判据：① 每个常量在两份文档**各至少出现一次**（句子被删也红）；② 每处声称都等于真值；③ 两份文档在同一常量上彼此相同。**抽不到真值 = 红**（#164 口径，不许静默放行）；报错直接点名「哪份文档第几行声称 N，脚本真值 M」。
+  - **覆盖面诚实标注（哪些是新能力、哪些是第二道锁）**：`SYMBOL_ANCHOR_MIN_UNIQUE` / `BARE_LINE_REF_BASELINE` / `REF_SCAN_DOCS_MINIMUM` 在 `check:docs` 里没有声称锚点 ⇒ **新增覆盖面**；`BASELINE_ROOT` 的 `` `BASELINE_ROOT = N` `` 写法早已被 `scripts/docs-drift-check.mjs` 的 `BASELINE_CLAIM_RULES`（`required: true`，中英各一）校着 ⇒ 这里对它是**第二道锁**；`BASELINE_WITH_TOOLS` 在文档里的现值是「基线 **N** / 31 个文件」句式（两侧**零**处 `= N` 写法），同表 `tier: "withTools"` 规则已校 ⇒ 本守卫**不重复造真值**，只加一条**覆盖面断言**：从脚本文本抽 `BASELINE_CLAIM_RULES`，断言仍存在 `tier: "withTools"` 与 `tier: "sum"` 且 `required: true`、`claims` 同时覆盖两份 AGENTS 的规则（降级 / 缩面 / `AGENTS_EN`·`AGENTS_CN` 改指向都红）。
+  - **`.d.ts` 计数声称那半边不重复造**：已由 `npm run check:pack-links` 的 `DECLARATION_CLAIM_DOCS` 现值对账承担（真值取自同一次 `npm pack --dry-run --json` 清单，实测「2 处声明位全部等于随包声明数 70，覆盖面 4 份入口文档」）。守卫只加一条**覆盖面断言**：从 `scripts/pack-link-check.mjs` 的文本里抽 `DECLARATION_CLAIM_DOCS` 并断言含 `AGENTS.md` / `AGENTS_cn.md`，将来谁缩小覆盖面会红。
+  - **反向证（跑在 `makeTmp` 的合成树上，进 `npm test`）**：只改脚本常量不改文档 ⇒ 恰好 2 处红（中英各一）；只改文档声称不改脚本 ⇒ 恰好 2 处红（值不等 + 中英彼此不同）；两边同时改 ⇒ 绿；「把文档里那句整段删掉」⇒ 因「每份至少一次」而红；「脚本里把常量整行删掉」⇒ 因抽不到真值而红；变异没落上时变异器自己抛（本仓 #210 R2 口径）。两条覆盖面断言各带反向证（`BASELINE_WITH_TOOLS` 侧三例：`withTools` 规则 `required` 降级 / `claims` 缩掉一份 / `AGENTS_CN` 改指向；`.d.ts` 侧两例：`DECLARATION_CLAIM_DOCS` 缩面 / 改名），每例都把实际红打印出来（`t.diagnostic`）。真实树上另跑一次作回归基线，并做了一次真实变异取证（`AGENTS_cn.md` 的 77 改回 76 ⇒ 红，`cp` + `md5sum` 逐字还原）。
+
 - **`tree` 的根标签可回放：解析到工作目录根的**任何**写法都输出 `./`（issue #215；`src/tools/file-tools.js` + 共享契约套件）。**
   - 现场：`tree {path: "."}` / `tree {}` 给 `./`，而 `tree {path: "./"}` / `tree {path: "sub/.."}` / 绝对根路径给的是 **basename**（`wd/`）。模型把首行读成「根下有个叫 `wd` 的子目录」，回放 `tree {path: "wd/"}` 必然 `ENOENT`，白烧一轮。
   - 根因：`rootLabel` 的判据是**入参字面**（`treePath === "."`）而不是**解析后的目标**，除字面 `.` 之外全部掉进 `path.basename()`。

@@ -2,12 +2,14 @@
 // 真形状」——真实事故是把 provider 槽位名写死成 `my-relay`，真机器上没有这个名字，`LLM_KIT_E2E=1`
 // 的 4 个真实场景起跑即失败、瞎了约三周（同类：断言里调 0.8.0 已退役的 `store.recall`）。
 //
-// 三条规则（**取舍口径：宁可窄而真**，每条都同时断言扫描面不退化）：
+// 四条规则（**取舍口径：宁可窄而真**，每条都同时断言扫描面不退化）：
 //   1. examples/ test/ bin/ src/ 里不许出现**字面 provider 槽位名**；名字一律从 fixtures/config-shape.mjs 拿。
 //      守卫自己也被这条管住（见「规则 1 自审」）。
 //   2. 已退役的适配器/store 方法名不许再被调用（`store.recall` 那一类，出处逐条写死）。
 //   3. 命令行旗标：接受集合**从 bin/cli.js 现推**（不手抄清单），凡是挂在 `erix` 命令行上的旗标
 //      不在接受集合里就红；「已退役」名单同样从 CHANGELOG 现推，不手抄。
+//   4. 文档里的**声称值**（`AGENTS.md` / `AGENTS_cn.md` 的 `` `<CONST> = <N>` ``）必须与脚本常量对得上
+//      （issue #310；真值只从脚本**自己的文本**里抽，抽不到就红）。第 4 条在文件末尾的独立 describe 里。
 //
 // 误报是第 3 条的头号风险（`--help`、npm/tsc/rg/pi 的参数、docs 里的历史叙述都会命中），所以
 // 范围收到「只有挂在 erix 命令行上的旗标才算 erix 的旗标」，并在报告里如实写清扫了什么、豁免了什么。
@@ -748,5 +750,413 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
     );
     assert.ok(existsSync(resolve(ROOT, "fixtures/rounds-fixtures.mjs")), "rounds-fixtures 没搬到根 fixtures/");
     assert.ok(!existsSync(resolve(ROOT, "test/fixtures/rounds-fixtures.mjs")), "test/fixtures/rounds-fixtures.mjs 还在原地");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 规则 4：文档里的「声称值」必须与脚本常量对得上（issue #310）
+//
+// 病根：`AGENTS.md` / `AGENTS_cn.md` 里有一批**声称值**引用门禁脚本自己的常量
+// （`` `CONST_NAME = N` ``），而 `check:docs` 不锚定它们 ⇒ 脚本常量一改，文档静默过时而门禁照绿。
+// 历史上已两次现场抓到（AGENTS 写 `SYMBOL_ANCHOR_MIN_UNIQUE = 27` 而脚本 29；写 `.d.ts` 66 而真实 67），
+// 本单开工时又抓到第三处（写 76 而脚本 77）。
+//
+// 口径（与 #164 / #210 R2 一致）：
+//   · 真值只从脚本**自己的文本**里抽（`const <NAME> = <数字>;`）；**抽不到 = 红**，禁止静默放行。
+//   · 声称只认反引号包裹的 `` `<NAME> = <数字>` `` 这一种形态；散文里的数字不算声称。
+//   · 每份文档每个常量**各至少一处**（句子被删也红——中英成对是 #210 那族「位数对不齐」的既有口径）。
+//   · 每一处声称都等于真值；两份文档在同一常量上彼此相同。
+//
+// 覆盖面诚实标注（工单 261022-03 裁决 A）：
+//   · `BASELINE_ROOT` 的 `` `BASELINE_ROOT = N` `` 写法**已经**被 `scripts/docs-drift-check.mjs` 的
+//     `BASELINE_CLAIM_RULES`（`required: true`，中英各一）校着 ⇒ 这里对它是**第二道锁**。
+//   · `SYMBOL_ANCHOR_MIN_UNIQUE` / `BARE_LINE_REF_BASELINE` / `REF_SCAN_DOCS_MINIMUM` 在 `check:docs`
+//     里没有声称锚点（脚本只把常量当真值读，没人校文档里的那个数）⇒ 这三个是**新增覆盖面**。
+//   · `BASELINE_WITH_TOOLS` 在文档里的现值是「基线 **N** / 31 个文件」句式（不是 `= N` 写法，两侧 0 处），
+//     已被 `BASELINE_CLAIM_RULES` 的 `tier: "withTools"` 规则校着 ⇒ 这里只锁**覆盖面**（那条规则还在不在、
+//     还校不校两份 AGENTS），不重复造真值对账。`.d.ts` 计数声称同理（真值在 `check:pack-links`）。
+
+const DRIFT_SRC = "scripts/docs-drift-check.mjs";
+const RATCHET_SRC = "scripts/type-check-ratchet.mjs";
+const PACK_LINK_SRC = "scripts/pack-link-check.mjs";
+
+/**
+ * R1 的常量表（工单裁决 A：4 个）。每条只写「常量名 → 定义它的脚本」——真值不在这里，在脚本文本里。
+ * `BASELINE_WITH_TOOLS` **不在表里**：文档里没有 `` `BASELINE_WITH_TOOLS = N` `` 这种写法（两侧 0 处），
+ * 硬塞进来就只能靠「往文档里造一句」或「放宽每份至少一次」二选一，两个都是本单要堵的 fail-open 形状。
+ * 它的现值句式由下面 `baselineTierCoverage` 的覆盖面断言看住。
+ */
+const CLAIMED_VALUE_CONSTANTS = Object.freeze([
+  { name: "SYMBOL_ANCHOR_MIN_UNIQUE", script: DRIFT_SRC },
+  { name: "BARE_LINE_REF_BASELINE", script: DRIFT_SRC },
+  { name: "REF_SCAN_DOCS_MINIMUM", script: DRIFT_SRC },
+  { name: "BASELINE_ROOT", script: RATCHET_SRC },
+]);
+
+/** 声称面：两份 AGENTS（中英成对）。README 不在本单范围（它的同形声称是另一笔，见报告「未验证/存疑」）。 */
+const CLAIMED_VALUE_DOCS = Object.freeze(["AGENTS.md", "AGENTS_cn.md"]);
+
+/** 真值：`^const <NAME> = <数字>;` 一行（与两个脚本里既有的 `fileRecord` 自读口径同形）。抽不到返 null。 */
+function extractConstValue(text, name) {
+  if (typeof text !== "string") return null;
+  const m = text.match(new RegExp(`^const ${name} = (\\d+);`, "m"));
+  return m ? Number(m[1]) : null;
+}
+
+/** 声称：反引号包裹的 `` `<NAME> = <数字>` ``。返回 `{ value, line }`（行号是文档自己的行，报错要用）。 */
+function extractDocClaims(text, name) {
+  if (typeof text !== "string") return [];
+  const re = new RegExp("`" + name + "\\s*=\\s*(\\d+)`", "g");
+  return [...text.matchAll(re)].map((m) => ({
+    value: Number(m[1]),
+    line: text.slice(0, m.index).split("\n").length,
+  }));
+}
+
+/**
+ * R1 的核心（**纯函数，读文本可注入**——合成树的反向证直接拿它问，不绑真实文件）。
+ *
+ * @param {{readText: (rel: string) => (string|null), constants?: object[], docs?: string[]}} params
+ * @returns {{errors: string[], rows: {name: string, script: string, truth: number|null, claims: {doc: string, line: number, value: number}[]}[]}}
+ */
+function claimedValueReport({ readText, constants = CLAIMED_VALUE_CONSTANTS, docs = CLAIMED_VALUE_DOCS }) {
+  const errors = [];
+  const rows = [];
+  for (const { name, script } of constants) {
+    const truth = extractConstValue(readText(script), name);
+    const row = { name, script, truth, claims: [] };
+    rows.push(row);
+    if (truth === null) {
+      errors.push(`claimed-values: 从 ${script} 自己的文本里抽不到 \`const ${name} = <数字>;\`——`
+        + "真值读不到就判红（#164 口径：不许在真值缺席时静默放行）；脚本改了写法就同步改本守卫");
+      continue;
+    }
+    const byDoc = new Map();
+    for (const doc of docs) {
+      const text = readText(doc);
+      if (typeof text !== "string") {
+        errors.push(`claimed-values: ${doc} 读不到文本——声称面少一份，等于这份文档的声称没人校`);
+        continue;
+      }
+      const claims = extractDocClaims(text, name);
+      row.claims.push(...claims.map((c) => ({ doc, ...c })));
+      byDoc.set(doc, claims);
+      if (claims.length === 0) {
+        errors.push(`claimed-values: ${doc} 里一处 \`${name} = <数字>\` 声称都没有——两份文档必须**各**至少一处`
+          + "（句子被删也要红，否则这个常量就脱离了机器校对；真值在 " + script + "）");
+      }
+      for (const c of claims) {
+        if (c.value !== truth) {
+          errors.push(`claimed-values: ${doc}:${c.line} 声称 \`${name} = ${c.value}\`，但 ${script} 里的真值是 ${truth}——`
+            + `把文档改成 ${truth}（历史沿革留着写历史），或改脚本常量并写明理由`);
+        }
+      }
+    }
+    // ③ 中英同一常量必须同值（#210 那族「中英声明位数对不齐」的口径）
+    const pairs = [...byDoc.entries()].filter(([, claims]) => claims.length > 0);
+    for (let i = 0; i < pairs.length; i += 1) {
+      for (let j = i + 1; j < pairs.length; j += 1) {
+        const [docA, claimsA] = pairs[i];
+        const [docB, claimsB] = pairs[j];
+        const setA = [...new Set(claimsA.map((c) => c.value))];
+        const setB = [...new Set(claimsB.map((c) => c.value))];
+        const onlyA = setA.filter((v) => !setB.includes(v));
+        const onlyB = setB.filter((v) => !setA.includes(v));
+        if (onlyA.length || onlyB.length) {
+          errors.push(`claimed-values: ${docA} 与 ${docB} 在 \`${name}\` 上彼此不同`
+            + `（${docA} 声称 ${setA.join(" / ")}，${docB} 声称 ${setB.join(" / ")}）——中英成对：同一条声称两边必须同值`);
+        }
+      }
+    }
+  }
+  return { errors, rows };
+}
+
+/** 从一段源码里取**第一层**的 `{ … }` 块（对象字面量配对；配不上对返 null，让调用方报红而不是静默空跑）。 */
+function topLevelObjectBlocks(src) {
+  const blocks = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth < 0) return null;
+      if (depth === 0 && start >= 0) {
+        blocks.push(src.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+  return depth === 0 ? blocks : null;
+}
+
+/**
+ * `BASELINE_WITH_TOOLS` 那一半：**只锁覆盖面，不重复造真值**。
+ *
+ * 文档里 160 的现值句式是「基线 **N** / 31 个文件」（EN）与「基线 **N** / 31 个文件」（CN），真值对账已经由
+ * `scripts/docs-drift-check.mjs` 的 `BASELINE_CLAIM_RULES` 做着。这里断言的是「那条规则还在，而且仍校两份
+ * AGENTS」：把 `required` 改成 false、或从 `claims` 里删掉一份文档 ⇒ 红。分解式（`tier: "sum"`，`= A + B + C`）
+ * 同理纳入。
+ */
+function baselineTierCoverage(readText, tiers = ["withTools", "sum"]) {
+  const src = readText(DRIFT_SRC);
+  if (typeof src !== "string") return { errors: [`claimed-values: ${DRIFT_SRC} 读不到文本——baseline 句式覆盖面无从校起`], rules: [] };
+  const errors = [];
+  const block = src.match(/^const BASELINE_CLAIM_RULES = \[([\s\S]*?)\n\];/m);
+  const blocks = block ? topLevelObjectBlocks(block[1]) : null;
+  if (!block || !blocks) {
+    return {
+      errors: [`claimed-values: 从 ${DRIFT_SRC} 自己的文本里抽不出 \`BASELINE_CLAIM_RULES\` 的规则表——`
+        + "这张表是 baseline 现值句式的唯一锚点，抽不到就判红（#164 口径），别让覆盖面断言静默失效"],
+      rules: [],
+    };
+  }
+  const rules = blocks.map((b) => ({
+    id: b.match(/\bid:\s*"([^"]*)"/)?.[1] ?? "(无 id)",
+    tier: b.match(/\btier:\s*"([^"]*)"/)?.[1] ?? null,
+    required: /\brequired:\s*true\b/.test(b),
+    rels: [...b.matchAll(/\brel:\s*([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]),
+  }));
+  const enDoc = src.match(/^const AGENTS_EN = "([^"]+)";/m)?.[1];
+  const cnDoc = src.match(/^const AGENTS_CN = "([^"]+)";/m)?.[1];
+  if (enDoc !== "AGENTS.md" || cnDoc !== "AGENTS_cn.md") {
+    errors.push(`claimed-values: ${DRIFT_SRC} 的 AGENTS_EN / AGENTS_CN 不再指向两份 AGENTS`
+      + `（实测 ${JSON.stringify(enDoc)} / ${JSON.stringify(cnDoc)}）——覆盖面断言下面的 rel 名字会对到别的文件上`);
+  }
+  for (const tier of tiers) {
+    const hit = rules.filter((r) => r.tier === tier && r.required && r.rels.includes("AGENTS_EN") && r.rels.includes("AGENTS_CN"));
+    if (hit.length === 0) {
+      errors.push(`claimed-values: ${DRIFT_SRC} 的 \`BASELINE_CLAIM_RULES\` 里已经没有 \`tier: "${tier}"\` 且 \`required: true\`、`
+        + "同时覆盖两份 AGENTS 的规则了——这条现值句式的锚点被删/被降级/被缩面，文档里的那个数从此没人校（#274 那族）");
+    }
+  }
+  return { errors, rules };
+}
+
+/**
+ * `.d.ts` 计数声称那一半：**只锁覆盖面**。真值对账（同一次 `npm pack --dry-run --json` 清单）由
+ * `npm run check:pack-links` 的 `checkDeclarationClaims` 承担——本守卫**不在 `npm test` 里再跑 tsc/pack**。
+ * 这里只钉住「哪几份文档在对账面里」：谁把 AGENTS 两份从 `DECLARATION_CLAIM_DOCS` 里摘掉就红。
+ */
+function declarationClaimCoverageErrors(readText, required = ["AGENTS.md", "AGENTS_cn.md"]) {
+  const src = readText(PACK_LINK_SRC);
+  if (typeof src !== "string") return [`claimed-values: ${PACK_LINK_SRC} 读不到文本——.d.ts 声称对账的覆盖面无从校起`];
+  const m = src.match(/^const DECLARATION_CLAIM_DOCS = (\[[^\]]*\]);/m);
+  if (!m) {
+    return [`claimed-values: 从 ${PACK_LINK_SRC} 自己的文本里抽不到 \`const DECLARATION_CLAIM_DOCS = [...];\`——`
+      + "覆盖面被改名/改写法，这条断言会静默失效（#164 口径：抽不到就报错）"];
+  }
+  let list;
+  try {
+    list = JSON.parse(m[1]);
+  } catch (error) {
+    return [`claimed-values: ${PACK_LINK_SRC} 的 DECLARATION_CLAIM_DOCS 解析不了（${error.message}）：${m[1]}`];
+  }
+  if (!Array.isArray(list)) return [`claimed-values: ${PACK_LINK_SRC} 的 DECLARATION_CLAIM_DOCS 不是数组：${m[1]}`];
+  const missing = required.filter((rel) => !list.includes(rel));
+  if (missing.length) {
+    return [`claimed-values: ${PACK_LINK_SRC} 的 DECLARATION_CLAIM_DOCS 不再覆盖 ${missing.join(" / ")}（当前：${list.join(", ")}）——`
+      + "`.d.ts` 现值声称的对账面被缩小了：AGENTS 里那句「装包应列 N 个 `.d.ts`」就没人校了"];
+  }
+  return [];
+}
+
+/** 变异器：**变异没打上也要红**（#210 R2 口径）——靶子被改写时这里直接抛，别让「没变异」冒充「变异后仍绿」。 */
+function mutateText(text, from, to, label) {
+  assert.equal(typeof text, "string", `变异「${label}」：靶子文本读不到`);
+  assert.ok(
+    text.includes(from),
+    `变异「${label}」没落上：靶子里找不到 ${JSON.stringify(from)}——靶子被改写了，这一例不能当成绿（先修靶子）`,
+  );
+  return text.replace(from, to);
+}
+
+/** 真实树读文本（读不到返 null，让守卫按「抽不到真值就红」处理）。 */
+function realReadText(rel) {
+  const abs = resolve(ROOT, rel);
+  return existsSync(abs) ? readFileSync(abs, "utf8") : null;
+}
+
+describe("静态守卫：文档声称值与脚本常量（issue #310）", () => {
+  it("规则 4：两份 AGENTS 的声称值逐处等于脚本常量（真实树 = 回归基线）", (t) => {
+    const { errors, rows } = claimedValueReport({ readText: realReadText });
+    t.diagnostic(`规则 4：${rows.length} 个常量 / ${rows.reduce((n, r) => n + r.claims.length, 0)} 处声称`);
+    assert.deepEqual(errors, [], `文档声称值与脚本常量对不上：\n${errors.join("\n")}`);
+    assert.equal(rows.length, CLAIMED_VALUE_CONSTANTS.length, "常量表被改了？rows 数应与表同长");
+    // 正面证据：每个常量在两份文档**各**至少一处（不是靠某一份把另一份盖住）
+    for (const row of rows) {
+      const docs = new Set(row.claims.map((c) => c.doc));
+      assert.deepEqual([...docs].sort(), [...CLAIMED_VALUE_DOCS].sort(), `\`${row.name}\` 的声称没覆盖两份文档`);
+      assert.ok(row.claims.every((c) => c.value === row.truth), `\`${row.name}\` 有声称不等于真值 ${row.truth}`);
+    }
+  });
+
+  it("规则 4 的覆盖面：`BASELINE_WITH_TOOLS` 的现值句式必须仍被 check:docs 校着（自带反向证）", (t) => {
+    const { errors, rules } = baselineTierCoverage(realReadText);
+    assert.deepEqual(errors, [], `baseline 句式覆盖面掉了：\n${errors.join("\n")}`);
+    assert.ok(
+      rules.some((r) => r.tier === "withTools" && r.required),
+      "抽出来的规则表里一条 withTools + required 都没有——抽取口径可能失效了",
+    );
+
+    // 反向证 ①：把 withTools 那条规则的 required 改成 false ⇒ 必须红
+    const downgraded = mutateText(
+      realReadText(DRIFT_SRC),
+      'tier: "withTools",\n    required: true,',
+      'tier: "withTools",\n    required: false,',
+      "降级 withTools 规则",
+    );
+    const downgradedErrors = baselineTierCoverage((rel) => (rel === DRIFT_SRC ? downgraded : realReadText(rel))).errors;
+    assert.match(downgradedErrors.join("\n"), /没有 \`tier: "withTools"\` 且 \`required: true\`/);
+    t.diagnostic(`withTools 规则 required → false ⇒ ${downgradedErrors.length} 处红：\n${downgradedErrors.join("\n")}`);
+
+    // 反向证 ②：从那条规则的 claims 里删掉中文那份（rel 名字被换掉）⇒ 必须红
+    const shrunk = mutateText(
+      realReadText(DRIFT_SRC),
+      "{ rel: AGENTS_CN, re: /基线\\s*",
+      "{ rel: AGENTS_EN, re: /基线\\s*",
+      "withTools 规则缩面",
+    );
+    const shrunkErrors = baselineTierCoverage((rel) => (rel === DRIFT_SRC ? shrunk : realReadText(rel))).errors;
+    assert.match(shrunkErrors.join("\n"), /没有 \`tier: "withTools"\` 且 \`required: true\`/);
+    t.diagnostic(`withTools 规则的 claims 缩掉中文那份 ⇒ ${shrunkErrors.length} 处红：\n${shrunkErrors.join("\n")}`);
+
+    // 反向证 ③：AGENTS_CN 常量被改指向别的文件 ⇒ 必须红（rel 名字对、指向错，也会漏）
+    const retargeted = mutateText(
+      realReadText(DRIFT_SRC),
+      'const AGENTS_CN = "AGENTS_cn.md";',
+      'const AGENTS_CN = "README_cn.md";',
+      "AGENTS_CN 改指向",
+    );
+    const retargetedErrors = baselineTierCoverage((rel) => (rel === DRIFT_SRC ? retargeted : realReadText(rel))).errors;
+    assert.match(retargetedErrors.join("\n"), /AGENTS_EN \/ AGENTS_CN 不再指向两份 AGENTS/);
+    t.diagnostic(`AGENTS_CN 改指向 README_cn.md ⇒ ${retargetedErrors.length} 处红：\n${retargetedErrors.join("\n")}`);
+  });
+
+  it("规则 4 的覆盖面：`.d.ts` 声称对账（check:pack-links）必须含两份 AGENTS（自带反向证）", (t) => {
+    assert.deepEqual(declarationClaimCoverageErrors(realReadText), []);
+
+    // 反向证：把覆盖面缩成两份 README ⇒ 必须点名缺的两份
+    const shrunk = mutateText(
+      realReadText(PACK_LINK_SRC),
+      'const DECLARATION_CLAIM_DOCS = ["README.md", "README_cn.md", "AGENTS.md", "AGENTS_cn.md"];',
+      'const DECLARATION_CLAIM_DOCS = ["README.md", "README_cn.md"];',
+      "DECLARATION_CLAIM_DOCS 缩面",
+    );
+    const errors = declarationClaimCoverageErrors((rel) => (rel === PACK_LINK_SRC ? shrunk : realReadText(rel)));
+    assert.match(errors.join("\n"), /不再覆盖 AGENTS\.md \/ AGENTS_cn\.md/);
+    t.diagnostic(`DECLARATION_CLAIM_DOCS 缩成两份 README ⇒ ${errors.length} 处红：\n${errors.join("\n")}`);
+
+    // 抽不到常量 = 红（改名/改写法不许静默放行）
+    const renamed = mutateText(
+      realReadText(PACK_LINK_SRC),
+      "const DECLARATION_CLAIM_DOCS =",
+      "const DECLARATION_CLAIM_FILES =",
+      "DECLARATION_CLAIM_DOCS 改名",
+    );
+    const renamedErrors = declarationClaimCoverageErrors((rel) => (rel === PACK_LINK_SRC ? renamed : realReadText(rel)));
+    assert.match(renamedErrors.join("\n"), /抽不到 \`const DECLARATION_CLAIM_DOCS = \[\.\.\.\];\`/);
+    t.diagnostic(`DECLARATION_CLAIM_DOCS 改名 ⇒ ${renamedErrors.length} 处红：\n${renamedErrors.join("\n")}`);
+  });
+
+  it("规则 4 的反向证：合成树上只改一边必红、两边同改才绿（变异没打上也算失败）", async (t) => {
+    const dir = await makeTmp("erix-claimed-values-");
+    const read = (rel) => {
+      const abs = join(dir, rel);
+      return existsSync(abs) ? readFileSync(abs, "utf8") : null;
+    };
+    const write = (rel, text) => {
+      const abs = join(dir, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, text);
+    };
+    // 合成树的「真值」故意与真仓不同（7 / 11 / 13 / 17）：这条用例不会因为真仓的常量涨落而失效，
+    // 也不会因为「恰好等于真仓现值」而假绿。
+    const V = { SYMBOL_ANCHOR_MIN_UNIQUE: 7, BARE_LINE_REF_BASELINE: 11, REF_SCAN_DOCS_MINIMUM: 13, BASELINE_ROOT: 17 };
+    const script = (rel) => (rel === DRIFT_SRC
+      ? [`const SYMBOL_ANCHOR_MIN_UNIQUE = ${V.SYMBOL_ANCHOR_MIN_UNIQUE};`,
+        `const BARE_LINE_REF_BASELINE = ${V.BARE_LINE_REF_BASELINE};`,
+        `const REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM};`, ""].join("\n")
+      : [`const BASELINE_ROOT = ${V.BASELINE_ROOT};`, ""].join("\n"));
+    const doc = (lang) => (lang === "en"
+      ? ["# Synthetic AGENTS (makeTmp only)",
+        `- only-up floor: \`SYMBOL_ANCHOR_MIN_UNIQUE = ${V.SYMBOL_ANCHOR_MIN_UNIQUE}\` (synthetic value)`,
+        `- bare-line ratchet: \`BARE_LINE_REF_BASELINE = ${V.BARE_LINE_REF_BASELINE}\``,
+        `- scan floor: \`REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM}\``,
+        `- ratchet: \`BASELINE_ROOT = ${V.BASELINE_ROOT}\``, ""].join("\n")
+      : ["# 合成 AGENTS（只在 makeTmp 里）",
+        `- 只增不减下限：\`SYMBOL_ANCHOR_MIN_UNIQUE = ${V.SYMBOL_ANCHOR_MIN_UNIQUE}\`（合成值）`,
+        `- 裸行号棘轮：\`BARE_LINE_REF_BASELINE = ${V.BARE_LINE_REF_BASELINE}\``,
+        `- 覆盖面下限：\`REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM}\``,
+        `- 棘轮：\`BASELINE_ROOT = ${V.BASELINE_ROOT}\``, ""].join("\n"));
+    const seed = () => {
+      write(DRIFT_SRC, script(DRIFT_SRC));
+      write(RATCHET_SRC, script(RATCHET_SRC));
+      write("AGENTS.md", doc("en"));
+      write("AGENTS_cn.md", doc("cn"));
+    };
+    const report = () => claimedValueReport({ readText: read });
+
+    // 对照组：合成树本身必须绿（否则下面每一条变异证都不成立）
+    seed();
+    assert.deepEqual(report().errors, [], "合成树对照组没绿——后面的反向证会全部失去意义");
+    assert.equal(report().rows.length, 4, "合成树上应当校 4 个常量");
+
+    // ① 只改脚本常量、不改文档 ⇒ 红（两份文档各一处，且只该有这两处）
+    seed();
+    write(DRIFT_SRC, mutateText(read(DRIFT_SRC),
+      `const SYMBOL_ANCHOR_MIN_UNIQUE = ${V.SYMBOL_ANCHOR_MIN_UNIQUE};`,
+      "const SYMBOL_ANCHOR_MIN_UNIQUE = 8;", "只改脚本常量"));
+    const scriptOnly = report().errors;
+    assert.equal(scriptOnly.length, 2, `只改脚本应当恰好 2 处红（中英各一），实测：\n${scriptOnly.join("\n")}`);
+    assert.match(scriptOnly.join("\n"), /AGENTS\.md:\d+ 声称 \`SYMBOL_ANCHOR_MIN_UNIQUE = 7\`，但 scripts\/docs-drift-check\.mjs 里的真值是 8/);
+    assert.match(scriptOnly.join("\n"), /AGENTS_cn\.md:\d+ 声称 \`SYMBOL_ANCHOR_MIN_UNIQUE = 7\`，但 scripts\/docs-drift-check\.mjs 里的真值是 8/);
+    t.diagnostic(`① 只改脚本常量（7 → 8）⇒ ${scriptOnly.length} 处红：\n${scriptOnly.join("\n")}`);
+
+    // ② 只改文档声称、不改脚本 ⇒ 红（值不等 + 中英彼此不同）
+    seed();
+    write("AGENTS.md", mutateText(read("AGENTS.md"),
+      `\`SYMBOL_ANCHOR_MIN_UNIQUE = ${V.SYMBOL_ANCHOR_MIN_UNIQUE}\``, "`SYMBOL_ANCHOR_MIN_UNIQUE = 8`", "只改文档声称"));
+    const docOnly = report().errors;
+    assert.equal(docOnly.length, 2, `只改文档应当恰好 2 处红（值不等 + 中英不同），实测：\n${docOnly.join("\n")}`);
+    assert.match(docOnly.join("\n"), /AGENTS\.md:\d+ 声称 \`SYMBOL_ANCHOR_MIN_UNIQUE = 8\`，但 scripts\/docs-drift-check\.mjs 里的真值是 7/);
+    assert.match(docOnly.join("\n"), /AGENTS\.md 与 AGENTS_cn\.md 在 \`SYMBOL_ANCHOR_MIN_UNIQUE\` 上彼此不同/);
+    t.diagnostic(`② 只改文档声称（EN 7 → 8）⇒ ${docOnly.length} 处红：\n${docOnly.join("\n")}`);
+
+    // ③ 两边同时改 ⇒ 绿（证明判据不是恒红）
+    seed();
+    write(DRIFT_SRC, mutateText(read(DRIFT_SRC),
+      `const SYMBOL_ANCHOR_MIN_UNIQUE = ${V.SYMBOL_ANCHOR_MIN_UNIQUE};`,
+      "const SYMBOL_ANCHOR_MIN_UNIQUE = 8;", "两边同改（脚本）"));
+    write("AGENTS.md", mutateText(read("AGENTS.md"),
+      `\`SYMBOL_ANCHOR_MIN_UNIQUE = ${V.SYMBOL_ANCHOR_MIN_UNIQUE}\``, "`SYMBOL_ANCHOR_MIN_UNIQUE = 8`", "两边同改（EN）"));
+    write("AGENTS_cn.md", mutateText(read("AGENTS_cn.md"),
+      `\`SYMBOL_ANCHOR_MIN_UNIQUE = ${V.SYMBOL_ANCHOR_MIN_UNIQUE}\``, "`SYMBOL_ANCHOR_MIN_UNIQUE = 8`", "两边同改（CN）"));
+    assert.deepEqual(report().errors, [], "两边同时改必须绿");
+    t.diagnostic("③ 两边同时改（脚本 8 + 中英都 8）⇒ 0 处红（绿）");
+
+    // ④ 把文档里那句整段删掉 ⇒ 因「每份至少一次」而红（不是靠数值不等才红）
+    seed();
+    write("AGENTS_cn.md", mutateText(read("AGENTS_cn.md"),
+      `- 覆盖面下限：\`REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM}\`\n`, "", "删掉 CN 那句声称"));
+    assert.match(report().errors.join("\n"), /AGENTS_cn\.md 里一处 \`REF_SCAN_DOCS_MINIMUM = <数字>\` 声称都没有/);
+    t.diagnostic(`④ 删掉 CN 那句声称 ⇒ ${report().errors.length} 处红：\n${report().errors.join("\n")}`);
+
+    // ⑤ 脚本里把常量整行删掉 ⇒ 抽不到真值就红（#164 口径，不许静默放行）
+    seed();
+    write(RATCHET_SRC, mutateText(read(RATCHET_SRC),
+      `const BASELINE_ROOT = ${V.BASELINE_ROOT};\n`, "", "删掉脚本常量"));
+    assert.match(report().errors.join("\n"), /抽不到 \`const BASELINE_ROOT = <数字>;\`/);
+    t.diagnostic(`⑤ 删掉脚本里的常量行 ⇒ ${report().errors.length} 处红：\n${report().errors.join("\n")}`);
+
+    // ⑥ 变异没打上也要红：靶子被改写时变异器自己就抛（防止「没变异」冒充「变异后仍绿」）
+    assert.throws(
+      () => mutateText(read("AGENTS.md"), "`SYMBOL_ANCHOR_MIN_UNIQUE = 999`", "`SYMBOL_ANCHOR_MIN_UNIQUE = 1`", "靶子不存在"),
+      /变异「靶子不存在」没落上/,
+    );
   });
 });
