@@ -1913,6 +1913,29 @@ Defaults a host must know about, because they change what the model sees
   line back as `path` succeeds. It used to be the basename of the working
   directory for every spelling but the literal `.`, which read as "there is a
   subdirectory with that name" and made the replay fail with `ENOENT`;
+- **a non-root `tree` target labels itself with a replayable relative path**
+  (issue #358, the other half of #215). For a target below the root the first line
+  is that target's path **relative to the tool root** — `<父目录>/sub/` — so copying
+  it back into `path` (after dropping the trailing `/`) returns the same tree
+  verbatim, and two directories sharing a basename can still be told apart. It used
+  to print the bare basename, which replayed only by luck;
+- **`readFile` reports every parameter it rewrote** (issue #358). `offset`,
+  `limit` and `max_bytes` are normalized/clamped (a numeric string such as
+  `offset:"120"` is not a number here, negatives clamp to 0, fractions floor,
+  `max_bytes` clamps to `[1 KiB, 4 MiB]`), and since the fallback is the default
+  value, "we changed it" and "you asked for that" used to be textually
+  indistinguishable. Such a call now carries `[参数校正：…]` naming the original
+  value and the effective one. Semantics are unchanged — this is reporting only.
+  An `offset` past the end of the file returns `[已到末尾：…]` with the real line
+  count instead of an empty string;
+- **read-side path errors keep the channel but lose the errno** (issue #358,
+  tail of #234). A missing `path` still **throws** — the engine turns a throw into
+  `is_error: true` plus one `toolStats.failures` / `toolErrorCount` increment, and
+  a text result would drop it from that ledger — but the message is this module's
+  own phrasing and contains only the path relative to the tool root, so host
+  absolute paths no longer leak into the transcript. `readFile` pointed at a
+  **directory** returns a text result (`错误：路径是目录：…`), matching `edit`,
+  because that is a caller-side mistake rather than an I/O failure;
 - **both search tools default to regex matching** (`rg` and `grep` alike, which
   is what the real `rg` / `grep` commands do; issue #184 round A reversed an
   earlier `rg`-defaults-to-literal choice that made the two tools in one library
