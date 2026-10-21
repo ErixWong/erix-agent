@@ -3066,7 +3066,7 @@ what they were before this section exists.
 | `diagnostics.modelMetadataMissingEvents.count` | the `model_metadata_missing` events received by `onEvent` | event count. The pre-existing `modelMetadataMissing` flag keeps its own meaning and value |
 | `diagnostics.notes.observed` / `diagnostics.modelMetadataMissingEvents.observed` | set when the inner loop was entered | `false` ⇒ the text renders `unknown`. A run that failed during assembly produced no event at all, and "no events" is not "zero calls" |
 
-| `diagnostics.compaction.layers.source` / `.truncationNote` | `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE` (`examples/pi-extension/erix-run-core.js`) | which `compactionStats` the summary read: the **full** array on the run result (or the throw payload). The copy in `<runId>.state.json` goes through `normalizeCompactionStats(value, limit = 32)` (`src/compact/pipeline.js`) from `createDeterministicRunState` (`src/run-state.js`), i.e. `value.slice(-limit)` keeps only the **last 32** entries — on a run longer than 32 rounds counting off that file silently under-counts (tracked as issue #315; not changed by this section). Since issue #315 the file self-reports that window as `deterministic.compactionStatsWindow` (`{ limit, dropped, total }`) |
+| `diagnostics.compaction.layers.source` / `.truncationNote` / `.compactionStatsWindow` | `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE` (`examples/pi-extension/erix-run-core.js`); the window account is read from `<runId>.state.json` (`readRunStateFile`) | which `compactionStats` the summary read: the **full** array on the run result (or the throw payload). The copy in `<runId>.state.json` goes through `normalizeCompactionStats(value, limit)` (`src/compact/pipeline.js`) from `createDeterministicRunState` (`src/run-state.js`), i.e. `value.slice(-limit)` keeps only the **last `limit`** entries — on a long run, counting off that file silently under-counts. Since issue #315 the file self-reports that window as `deterministic.compactionStatsWindow` (`{ limit, dropped, total }`); since issue #373 `truncationNote` **quotes those numbers from the file** (`layers.compactionStatsWindow` carries the same account structurally), and a file without that field (older run) says plainly that its entry count must not be read as the number of compactions |
 
 `formatCompactionLayerSummary` (`examples/pi-extension/erix-run-core.js`) renders the buckets one
 per line, so the accident run above now reads:
@@ -3078,7 +3078,7 @@ per line, so the accident run above now reads:
   ↳ 输出钳制（enforceSize）=0 次/0 tok
   ↳ 折叠锚点（anchors）=0 次/0 tok
   ↳ 分层观测=2 条评估条目，tokensBefore 峰值 130000
-  ↳ 来源 runResult.compactionStats（全量）；若改读 state.json：state.json 的 deterministic.compactionStats 经 normalizeCompactionStats(value, limit=32) 截尾到最后 32 条（issue #315）；>32 轮的 run 拿它当源会静默少算
+  ↳ 来源 runResult.compactionStats（全量）；若改读 state.json：该文件自报 deterministic.compactionStatsWindow：limit=32、dropped=0、total=2——没有丢条目，这份窗口就是全量
   ↳ notes 写=2/读=2 ｜ note_take=2 note_read=1 note_list=1 ｜ 来源 onEvent:tool_use
 ```
 

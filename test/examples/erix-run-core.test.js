@@ -1444,11 +1444,13 @@ test("#313 C1：foldedRounds=0 但 ttl 层真削减过 ⇒ 结构与文本里都
   // 那个比数不许再被当成结论读
   assert.match(text, /compaction=0\/2（=compactedRounds\/events，不等于「压缩没生效」）/u);
 
-  // #313 追加：终局面自报数据源——汇总读的是 run 返回值那份全量 compactionStats，
-  // 而 state.json 那份被 normalizeCompactionStats(value, limit=32) 截尾（issue #315，本单不修）。
+  // #313 追加 / #373：终局面自报数据源——汇总读的是 run 返回值那份全量 compactionStats；
+  // 而「若改读 state.json」那句现在念**文件里**的窗口账（这个 payload 没带 runState ⇒ 没有窗口账
+  // 可引，文案必须这么如实说，不能回退到写死的条数）。
   assert.equal(summary.source, core.COMPACTION_STATS_SOURCE);
-  assert.match(summary.truncationNote, /normalizeCompactionStats\(value, limit=32\)/u);
-  assert.match(summary.truncationNote, /最后 32 条/u);
+  assert.equal(summary.compactionStatsWindow, null);
+  assert.equal(summary.truncationNote, core.COMPACTION_STATS_NO_STATE_NOTE);
+  assert.doesNotMatch(summary.truncationNote, /\d+ 条/u, "没读到文件时不许出现任何具体条数");
   assert.match(text, /↳ 来源 runResult\.compactionStats（全量）；若改读 state\.json：/u);
 });
 

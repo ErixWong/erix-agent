@@ -2398,7 +2398,7 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 | `diagnostics.modelMetadataMissingEvents.count` | `onEvent` 收到的 `model_metadata_missing` 事件 | 事件数。既有的 `modelMetadataMissing` 标志含义与取值不变 |
 | `diagnostics.notes.observed` / `diagnostics.modelMetadataMissingEvents.observed` | 是否真的进入了内层循环 | `false` ⇒ 文本渲染 `unknown`：装配期就失败的 run 一个事件也没产生，「没事件」不等于「没调用」 |
 
-| `diagnostics.compaction.layers.source` / `.truncationNote` | `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE`（`examples/pi-extension/erix-run-core.js`） | 汇总读的是**哪一份** `compactionStats`：run 返回值（或抛错载荷）上那份**全量**。而 `<runId>.state.json` 里那份要经 `normalizeCompactionStats(value, limit = 32)`（`src/compact/pipeline.js`）截尾（调用点 `createDeterministicRunState`（`src/run-state.js`）），即 `value.slice(-limit)` 只留**最后 32 条** —— >32 轮的 run 去那个文件数削减账会静默少算（已另开 **issue #315**，本小节不改它的行为）。自 issue #315 起文件会把那个窗口自报为 `deterministic.compactionStatsWindow`（`{ limit, dropped, total }`） |
+| `diagnostics.compaction.layers.source` / `.truncationNote` / `.compactionStatsWindow` | `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE`（`examples/pi-extension/erix-run-core.js`）；窗口账从 `<runId>.state.json` 读（`readRunStateFile`） | 汇总读的是**哪一份** `compactionStats`：run 返回值（或抛错载荷）上那份**全量**。而 `<runId>.state.json` 里那份要经 `normalizeCompactionStats(value, limit)`（`src/compact/pipeline.js`）截尾（调用点 `createDeterministicRunState`（`src/run-state.js`）），即 `value.slice(-limit)` 只留最后 `limit` 条 —— 长 run 去那个文件数削减账会静默少算。自 issue #315 起文件把那个窗口自报为 `deterministic.compactionStatsWindow`（`{ limit, dropped, total }`）；自 issue #373 起 `truncationNote` **念的就是这几个数字**（`layers.compactionStatsWindow` 同时给出结构化形状），文件里没有这个字段（老档）时明说「条数不可当压缩次数用」 |
 
 `formatCompactionLayerSummary`（`examples/pi-extension/erix-run-core.js`）把四个归组逐行渲染，
 上面那个事故 run 现在读起来是：
@@ -2410,7 +2410,7 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
   ↳ 输出钳制（enforceSize）=0 次/0 tok
   ↳ 折叠锚点（anchors）=0 次/0 tok
   ↳ 分层观测=2 条评估条目，tokensBefore 峰值 130000
-  ↳ 来源 runResult.compactionStats（全量）；若改读 state.json：state.json 的 deterministic.compactionStats 经 normalizeCompactionStats(value, limit=32) 截尾到最后 32 条（issue #315）；>32 轮的 run 拿它当源会静默少算
+  ↳ 来源 runResult.compactionStats（全量）；若改读 state.json：该文件自报 deterministic.compactionStatsWindow：limit=32、dropped=0、total=2——没有丢条目，这份窗口就是全量
   ↳ notes 写=2/读=2 ｜ note_take=2 note_read=1 note_list=1 ｜ 来源 onEvent:tool_use
 ```
 

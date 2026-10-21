@@ -12,7 +12,7 @@
 //   - 观察者（onEvent 等）在 0.18 之后是安全的（抛错经 onObserverError 上报、不改
 //     termination），本层仍接 onObserverError 并计数进 diagnostics。
 
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -1358,14 +1358,89 @@ export const COMPACTION_LAYER_ROLES = Object.freeze([
  *
  * 本层读的是 **run 返回值（或抛错载荷）上那份全量 `compactionStats`**（`buildDiagnostics` 从
  * `source.compactionStats` 取），不是 `<runId>.state.json` 里那份。后者写盘前要过
- * `normalizeCompactionStats(value, limit = 32)`（`src/compact/pipeline.js`）的 `value.slice(-limit)`
- * 截尾（调用点 `src/run-state.js` 的 `createDeterministicRunState`），>32 轮的 run 上「去 state.json 数削减账」
- * 会静默少算前面那些轮（截尾本身已另开 **issue #315**，本单不修它）。字段名毫无提示，所以终局面
- * 自带这一份源声明（`layers.source` / `layers.truncationNote`，并渲染进文本）。
+ * `normalizeCompactionStats`（`src/compact/pipeline.js`）的 `value.slice(-limit)` 截尾（limit 的
+ * 唯一声明是同一文件的 `COMPACTION_STATS_STATE_LIMIT`，调用点 `src/run-state.js` 的
+ * `createDeterministicRunState`），长 run 上「去 state.json 数削减账」会静默少算前面那些轮。
+ * 所以终局面自带这一份源声明（`layers.source` / `layers.truncationNote`，并渲染进文本）。
  */
 export const COMPACTION_STATS_SOURCE = "runResult.compactionStats";
+
+/**
+ * #373：`layers.truncationNote` 的文案**不再硬编码条数**，一律念 `<runId>.state.json` 自报的
+ * `deterministic.compactionStatsWindow`（#315 起该字段就一直在文件里，只是没人念）。
+ *
+ * 病根（#313 遗留）：老提示把窗口大小**写死在文案里**（当时是 state 文件体积约束的那个常数，
+ * 换个上限就得改文案）。可 state 文件里有**两条**截断路径——
+ * `createDeterministicRunState`（`src/run-state.js`）按 `COMPACTION_STATS_STATE_LIMIT`
+ * （`src/compact/pipeline.js`）切一次；序列化超限时 `compactStateForSize`（`src/run-state.js`）
+ * 再切一次（更小的 limit）。提示与真相分叉 ⇒ 宿主照提示数 `length`，在第二条路径下会把
+ * 「压缩只跑了 limit 次」当成事实。现在数字**全部来自文件**：
+ *   - 文件里有窗口账 ⇒ 引用它的 limit / dropped / total（本文件不写任何条数常数）；
+ *   - 文件在、但没有这个字段（#315 之前落盘的老档）⇒ 明说「没有自报窗口，条数不可当压缩次数用」；
+ *   - 连文件都读不到（纯内存 run / 落盘失败）⇒ 明说没有窗口账可引用。
+ */
 export const COMPACTION_STATS_TRUNCATION_NOTE =
-  "state.json 的 deterministic.compactionStats 经 normalizeCompactionStats(value, limit=32) 截尾到最后 32 条（issue #315）；>32 轮的 run 拿它当源会静默少算";
+  "该文件没有自报 deterministic.compactionStatsWindow，里面的条数不可当压缩次数用";
+
+/** 连 `<runId>.state.json` 都读不到时的文案（纯内存 run / 落盘失败）：没有窗口账可引用。 */
+export const COMPACTION_STATS_NO_STATE_NOTE =
+  "本次 run 没有可读的 state.json（未给 sessionDir 或落盘失败），没有窗口账可引用，条数不可当压缩次数用";
+
+/**
+ * `state.json` 里的窗口账 → `{ limit, dropped, total }`；形状不对 / 缺席一律 `null`（不猜）。
+ *
+ * @param {any} runState 解析后的 `<runId>.state.json`（`readRunStateFile` 的返回值）
+ * @returns {{limit:number, dropped:number, total:number}|null}
+ */
+export function compactionStatsWindowOf(runState) {
+  const window = runState?.deterministic?.compactionStatsWindow;
+  if (window === null || typeof window !== "object" || Array.isArray(window)) return null;
+  const { limit, dropped, total } = /** @type {any} */ (window);
+  if (!Number.isSafeInteger(limit) || limit < 0) return null;
+  if (!Number.isSafeInteger(dropped) || dropped < 0) return null;
+  if (!Number.isSafeInteger(total) || total < 0) return null;
+  return { limit, dropped, total };
+}
+
+/**
+ * 读 `<sessionDir>/<safeRunId>.state.json`（#373：提示文案的唯一真值来源）。
+ *
+ * 文件名与引擎 `src/store/file.js` 的 `statePath()` 同式（`<safeRunId>.state.json`，`safeRunId`
+ * 由本文件的 `safeRunIdForFile` 逐字复刻）。读不到 / 坏档一律 `null`：提示层只是旁证，不该因为
+ * 「读不动一份旁证」把一次已经跑完的 run 弄红。
+ *
+ * @param {{sessionDir?:string, runId?:string, readFile?:(path:string, encoding:"utf8")=>string}} [input]
+ * @returns {any|null} 解析后的 state 对象；读不到即 `null`
+ */
+export function readRunStateFile({ sessionDir, runId, readFile = readFileSync } = {}) {
+  if (typeof sessionDir !== "string" || sessionDir === "") return null;
+  if (typeof runId !== "string" || runId === "") return null;
+  const statePath = path.join(sessionDir, `${safeRunIdForFile(runId)}.state.json`);
+  try {
+    return JSON.parse(readFile(statePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 窗口账 → 提示文案（#373）：数字一律来自**文件**，本文件不写死任何条数。
+ *
+ * @param {any} runState 解析后的 `<runId>.state.json`（`null` = 没读到文件）
+ * @returns {string}
+ */
+export function compactionStatsTruncationNote(runState) {
+  const window = compactionStatsWindowOf(runState);
+  if (window !== null) {
+    const { limit, dropped, total } = window;
+    const head = `该文件自报 deterministic.compactionStatsWindow：limit=${limit}、dropped=${dropped}、total=${total}`;
+    return dropped > 0
+      ? `${head}——只留最后 ${limit} 条，拿它数削减账会少算 ${dropped} 条`
+      : `${head}——没有丢条目，这份窗口就是全量`;
+  }
+  if (runState === null || runState === undefined) return COMPACTION_STATS_NO_STATE_NOTE;
+  return COMPACTION_STATS_TRUNCATION_NOTE;
+}
 
 /**
  * 把每轮 `compactionStats[].layers` 折成**每个层 id** 的 triggered / tokensSaved 总和。
@@ -1377,10 +1452,15 @@ export const COMPACTION_STATS_TRUNCATION_NOTE =
  * `roundsObserved` 是**带 layers 字段的条目数**（0 = 本次拿到的统计没有分层信息，渲染成 unknown），
  * `tokensBeforePeak` 是所有条目 `tokensBefore` 的最大值（评估轮数与峰值就是工单 R1 要的两个数）。
  *
+ * #373：`truncationNote` / `compactionStatsWindow` 来自**文件**——调用方把解析后的
+ * `<runId>.state.json`（`readRunStateFile` 的返回值，没有就 `null`）当第二参数传进来；
+ * 不传时文案就如实说「没有窗口账可引用」，绝不回退到写死的条数。
+ *
  * @param {Array<{tokensBefore?:number, layers?:Record<string,{triggered?:number,tokensSaved?:number}>}>} compactionStats
- * @returns {{roundsObserved:number, tokensBeforePeak:number, byLayerId:Record<string,{triggered:number,tokensSaved:number}>, roles:Array<{key:string,label:string,layerIds:string[],triggered:number,tokensSaved:number}>, unattributed:Array<{layerId:string,triggered:number,tokensSaved:number}>}}
+ * @param {any} [runState] 解析后的 `<runId>.state.json`（`null`/不传 = 没读到文件）
+ * @returns {{roundsObserved:number, tokensBeforePeak:number, byLayerId:Record<string,{triggered:number,tokensSaved:number}>, roles:Array<{key:string,label:string,layerIds:string[],triggered:number,tokensSaved:number}>, unattributed:Array<{layerId:string,triggered:number,tokensSaved:number}>, source:string, compactionStatsWindow:{limit:number,dropped:number,total:number}|null, truncationNote:string}}
  */
-export function summarizeCompactionLayers(compactionStats) {
+export function summarizeCompactionLayers(compactionStats, runState) {
   const stats = Array.isArray(compactionStats) ? compactionStats : [];
   /** @type {Record<string, {triggered:number, tokensSaved:number}>} */
   const byLayerId = {};
@@ -1421,9 +1501,11 @@ export function summarizeCompactionLayers(compactionStats) {
     .filter(([layerId]) => !attributed.has(layerId))
     .map(([layerId, totals]) => ({ layerId, ...totals }));
   return { roundsObserved, tokensBeforePeak, byLayerId, roles, unattributed,
-    // #313 追加：自报数据源（本层读 run 返回值那份全量统计；state.json 那份会截尾 32 条）。
+    // #313 追加：自报数据源（本层读 run 返回值那份全量统计）。
     source: COMPACTION_STATS_SOURCE,
-    truncationNote: COMPACTION_STATS_TRUNCATION_NOTE };
+    // #373：窗口账与文案都从文件里读（没有就 `null` / 如实说没得引用），不写死条数。
+    compactionStatsWindow: compactionStatsWindowOf(runState),
+    truncationNote: compactionStatsTruncationNote(runState) };
 }
 
 /**
@@ -1438,7 +1520,7 @@ export function formatCompactionLayerSummary(summary) {
   if (!(layers.roundsObserved > 0)) {
     return "分层削减=unknown（拿到的 compactionStats 条目没有 layers 字段）"
       + `\n  ↳ 来源 ${layers.source ?? COMPACTION_STATS_SOURCE}（全量）`
-      + `；若改读 state.json：${layers.truncationNote ?? COMPACTION_STATS_TRUNCATION_NOTE}`;
+      + `；若改读 state.json：${layers.truncationNote ?? compactionStatsTruncationNote(null)}`;
   }
   const rows = layers.roles.map((role) => `  ↳ ${role.label}（${role.layerIds.join("+") || "本 run 未出现"}）`
     + `=${role.triggered} 次/${role.tokensSaved} tok`);
@@ -1446,9 +1528,9 @@ export function formatCompactionLayerSummary(summary) {
     rows.push(`  ↳ ${extra.layerId}（未归组层 id）=${extra.triggered} 次/${extra.tokensSaved} tok`);
   }
   rows.push(`  ↳ 分层观测=${layers.roundsObserved} 条评估条目，tokensBefore 峰值 ${layers.tokensBeforePeak}`);
-  // #313 追加：自报数据源，并声明「若改读 state.json 则只覆盖最后 32 条」。
+  // #313 追加 / #373：自报数据源，并给出**文件里**的窗口账（有就引它的数字，没有就说没有）。
   rows.push(`  ↳ 来源 ${layers.source ?? COMPACTION_STATS_SOURCE}（全量）`
-    + `；若改读 state.json：${layers.truncationNote ?? COMPACTION_STATS_TRUNCATION_NOTE}`);
+    + `；若改读 state.json：${layers.truncationNote ?? compactionStatsTruncationNote(null)}`);
   return rows.join("\n");
 }
 
@@ -1511,6 +1593,12 @@ function formatNoteTally(notes) {
 function buildDiagnostics(input, source) {
   const { context, observerErrors = [], metadataEvents = [], ledgerErrors = [] } = input;
   const compactionStats = Array.isArray(source?.compactionStats) ? source.compactionStats : [];
+  // #373：窗口账从 `<sessionDir>/<runId>.state.json` **读文件**（不写死条数）。
+  // `input.runState` 是显式覆盖口（测试 / 宿主已经读过那份文件时不必再读一遍）；
+  // 读不到文件（纯内存 run / 落盘失败）就是 `null`，文案会如实说没有窗口账可引用。
+  const runState = input.runState !== undefined
+    ? input.runState
+    : readRunStateFile({ sessionDir: context.sessionDir, runId: context.runId });
   /** @type {Record<string, unknown>} */
   const diagnostics = {
     observerErrors: sampleList(observerErrors),
@@ -1532,7 +1620,8 @@ function buildDiagnostics(input, source) {
         0,
       ),
       // #313 R1：分层削减（每个真实层 id 的 triggered / tokensSaved）+ 评估条目数 + tokensBefore 峰值。
-      layers: summarizeCompactionLayers(compactionStats),
+      // #373：第二个参数是那份 state 文件（决定 `truncationNote` 引哪几个数字）。
+      layers: summarizeCompactionLayers(compactionStats, runState),
     },
     // #313 R3：notes 写/读计数（来源：事件流 tool_use，见 `countNoteToolEvent` 的注释）与
     // model_metadata_missing **事件数**（来源：onEvent 收到的该类型事件，一条都不落）。

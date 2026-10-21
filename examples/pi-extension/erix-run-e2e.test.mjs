@@ -116,6 +116,146 @@ test("erix_run core 的源码不再把退役名当唯一耗时来源（静态守
 });
 
 // ---------------------------------------------------------------------------
+// #373：`layers.truncationNote` 念的是 **state.json 里的窗口账**，不是写死的条数。
+//
+// 这一格是离线可跑的（不联网、不打模型），所以放在本文件里「始终跑」的那一半：
+// 真机段（`ERIX_E2E_REAL=1`）是补充证据，不能当这条回归的唯一证据。
+//
+// 能杀什么：
+//   - 把文案改回写死条数（不管写成 32 还是别的常数）→ 第 ①② 格当场红（文案跟文件里的数字对不上）；
+//   - 只读常数不看文件 → ② 改完文件里的数字后文案不变 ⇒ 红；
+//   - 老档（没有 `compactionStatsWindow`）当成有窗口账 → ③ 红；
+//   - 读不到文件时编一个条数 → ④ 红。
+const STATE_WINDOW_RUN = "e2e-window-run";
+
+/** 在临时 sessionDir 里落一份 `<runId>.state.json`（与引擎 `src/store/file.js` 的 statePath 同式）。 */
+function writeStateFile(sessionDir, runId, deterministic) {
+  writeFileSync(
+    path.join(sessionDir, `${core.safeRunIdForFile(runId)}.state.json`),
+    `${JSON.stringify({ runId, stateVersion: 1, asOfRound: 3, deterministic }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+/** 一份最小可用的终局载荷输入：只关心 `diagnostics.compaction.layers` 那几行。 */
+function payloadInputFor(sessionDir, runId) {
+  return {
+    timeout: false,
+    aborted: false,
+    observerErrors: [],
+    metadataEvents: [],
+    ledgerErrors: [],
+    context: { model: "m", cwd: "/w", runId, sessionDir },
+  };
+}
+
+const COMPACTION_STATS_FIXTURE = [
+  { compacted: false, foldedRounds: 0, tokensBefore: 1000, tokensAfter: 900, layers: { ttl: { triggered: 3, tokensSaved: 42 } } },
+];
+
+test("#373：truncationNote 引用的是 state.json 里的 limit/dropped/total（离线，写盘→读盘→文案）", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), TMP_PREFIX.erixRun));
+  try {
+    writeStateFile(dir, STATE_WINDOW_RUN, {
+      compactionStats: [{ compacted: false }],
+      // 故意用一组**不是** 32 的数字：文案里出现哪个数，只可能来自这份文件。
+      compactionStatsWindow: { limit: 7, dropped: 5, total: 12 },
+    });
+
+    // ① 读盘那一层：窗口账是从文件里读出来的
+    const state = core.readRunStateFile({ sessionDir: dir, runId: STATE_WINDOW_RUN });
+    assert.deepEqual(core.compactionStatsWindowOf(state), { limit: 7, dropped: 5, total: 12 },
+      "窗口账必须来自文件里的 deterministic.compactionStatsWindow");
+    const note = core.compactionStatsTruncationNote(state);
+    assert.match(note, /limit=7/u, `文案必须引用文件里的 limit，实际：${note}`);
+    assert.match(note, /dropped=5/u, `文案必须引用文件里的 dropped，实际：${note}`);
+    assert.match(note, /total=12/u, `文案必须引用文件里的 total，实际：${note}`);
+    assert.doesNotMatch(note, /\b32\b/u, `文案不许再出现那个写死的条数，实际：${note}`);
+
+    // ② 同一个文件改一组数字 ⇒ 文案跟着变（证明它读文件，不是读常数）
+    writeStateFile(dir, STATE_WINDOW_RUN, {
+      compactionStats: [{ compacted: false }],
+      compactionStatsWindow: { limit: 9, dropped: 1, total: 10 },
+    });
+    const moved = core.compactionStatsTruncationNote(core.readRunStateFile({ sessionDir: dir, runId: STATE_WINDOW_RUN }));
+    assert.match(moved, /limit=9、dropped=1、total=10/u, `文案必须跟着文件变，实际：${moved}`);
+    assert.doesNotMatch(moved, /limit=7|dropped=5|total=12/u, `旧数字不许残留，实际：${moved}`);
+
+    // ③ 终局面（真路径）：buildSuccessPayload 自己会去读 `<sessionDir>/<runId>.state.json`
+    writeStateFile(dir, STATE_WINDOW_RUN, {
+      compactionStats: [{ compacted: false }],
+      compactionStatsWindow: { limit: 4, dropped: 6, total: 10 },
+    });
+    const payload = core.buildSuccessPayload({
+      finalText: "x",
+      rounds: 3,
+      usage: { input_tokens: 1, output_tokens: 1 },
+      termination: { reason: "end_turn" },
+      compactionStats: COMPACTION_STATS_FIXTURE,
+    }, payloadInputFor(dir, STATE_WINDOW_RUN));
+    const layers = payload.diagnostics.compaction.layers;
+    assert.deepEqual(layers.compactionStatsWindow, { limit: 4, dropped: 6, total: 10 },
+      "layers 里也要给出结构化的窗口账（宿主不必解析文案）");
+    assert.match(layers.truncationNote, /limit=4、dropped=6、total=10/u,
+      `终局面的 truncationNote 必须引用文件里的数字，实际：${layers.truncationNote}`);
+    assert.match(core.formatCompactionLayerSummary(layers), /若改读 state\.json：该文件自报 deterministic\.compactionStatsWindow：limit=4/u,
+      "渲染出来的文本也要带上文件里的数字");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#373：老档（文件在、没有 compactionStatsWindow）与读不到文件时都明说「条数不可当压缩次数用」", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), TMP_PREFIX.erixRun));
+  try {
+    // ① #315 之前落盘的老档：有 compactionStats，没有窗口账
+    writeStateFile(dir, STATE_WINDOW_RUN, { compactionStats: [{ compacted: false }] });
+    const legacy = core.readRunStateFile({ sessionDir: dir, runId: STATE_WINDOW_RUN });
+    assert.equal(core.compactionStatsWindowOf(legacy), null, "老档没有窗口账 ⇒ null，不猜一个出来");
+    const legacyNote = core.compactionStatsTruncationNote(legacy);
+    assert.equal(legacyNote, core.COMPACTION_STATS_TRUNCATION_NOTE);
+    assert.match(legacyNote, /没有自报 deterministic\.compactionStatsWindow/u);
+    assert.match(legacyNote, /条数不可当压缩次数用/u);
+    assert.doesNotMatch(legacyNote, /\d/u, `老档文案里不许出现任何条数，实际：${legacyNote}`);
+
+    const legacyPayload = core.buildSuccessPayload({
+      finalText: "x", rounds: 3, usage: { input_tokens: 1, output_tokens: 1 },
+      termination: { reason: "end_turn" }, compactionStats: COMPACTION_STATS_FIXTURE,
+    }, payloadInputFor(dir, STATE_WINDOW_RUN));
+    assert.equal(legacyPayload.diagnostics.compaction.layers.truncationNote, core.COMPACTION_STATS_TRUNCATION_NOTE,
+      "老档走终局面也必须落到「没有自报窗口」那句");
+    assert.equal(legacyPayload.diagnostics.compaction.layers.compactionStatsWindow, null);
+
+    // ② 读不到文件（纯内存 run / 落盘失败）：不是「老档」，是「没有窗口账可引用」
+    const missingNote = core.compactionStatsTruncationNote(
+      core.readRunStateFile({ sessionDir: dir, runId: "never-written" }),
+    );
+    assert.equal(missingNote, core.COMPACTION_STATS_NO_STATE_NOTE);
+    assert.match(missingNote, /没有窗口账可引用/u);
+    assert.doesNotMatch(missingNote, /\d/u, `读不到文件时也不许编条数，实际：${missingNote}`);
+
+    // ③ 坏档（JSON 不合法）也不许把已经跑完的 run 弄红：返回 null ⇒ 同上那句
+    writeFileSync(path.join(dir, `${STATE_WINDOW_RUN}.state.json`), "{ 不是 JSON", "utf8");
+    assert.equal(core.readRunStateFile({ sessionDir: dir, runId: STATE_WINDOW_RUN }), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#373 静态守卫：core 里不再有写死条数的截断文案（不联网）", () => {
+  const src = readFileSync(new URL("./erix-run-core.js", import.meta.url), "utf8");
+  assert.doesNotMatch(src, /limit=32/u, "文案里不许再出现写死的 limit=32");
+  assert.doesNotMatch(src, /最后 32 条/u, "文案里不许再出现「最后 32 条」");
+  // 两个兜底文案本身一个数字都不许带（数字只能来自文件）
+  assert.doesNotMatch(core.COMPACTION_STATS_TRUNCATION_NOTE, /\d/u);
+  assert.doesNotMatch(core.COMPACTION_STATS_NO_STATE_NOTE, /\d/u);
+  // 读文件的入口必须在（文案的真值来源）
+  assert.equal(typeof core.readRunStateFile, "function");
+  assert.equal(typeof core.compactionStatsWindowOf, "function");
+  assert.equal(typeof core.compactionStatsTruncationNote, "function");
+});
+
+// ---------------------------------------------------------------------------
 // 真机段（ERIX_E2E_REAL=1）：一次真 run + 真落盘 + 真进度行
 // ---------------------------------------------------------------------------
 
