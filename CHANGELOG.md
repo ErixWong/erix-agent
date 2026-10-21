@@ -5,6 +5,14 @@
 
 ### Fixed
 
+- **真上游 e2e 的 C7 假红：`scripts/cli-real-smoke.mjs` 把**原始 JSONL 行**喂给展示投影，而宿主口径是 `store.load()` 的折叠输出（只动该脚本 + 中英契约，`src/` 零改动）。**
+  - 现场：`ERIX_E2E_REAL=1 npm run check:cli-real` 的 C7 报「投影与落盘的耗时逐条对不上」——投影侧 `durationMs=undefined`、落盘侧 `3`，且同一个 `toolCallKey` 出现两遍。「一条消息一成型就落盘」之后账本里是两种行：轮行（带 `response.content`、**没有** `messages`）与消息行（assistant 正文，落盘于工具执行**之前**，因此不带 `erix` 事实）。`store.load()` 用 `foldMessageRows` 把消息行折回轮行，宿主才看到「一轮一条」；拿原始行直接投影 ⇒ 同一轮投两遍 + 执行事实全缺。**产品代码没错**，错的是 e2e 用了改造前的口径。
+  - 改法：C7 的输入改成「装好的包」里的 `createFileTranscriptStore({ dir: transcripts }).load(runId)` 输出（`runId` 由 `resolveRunIdForTranscript` 从文件名 + 同 run 的 `.state.json`/`.status.json`/`.snapshot.json` 映回，映射用**同一份装好的代码**里的 `safeRunId`，不在脚本里重实现文件名规则），再 `projectTranscriptForDisplay(folded)`。**C5/C6 继续吃原始行**（它们查的就是落盘真相上的键集合与 `erix` 事实面）。断言一条没放宽：「至少一条 `durationMs > 0`」照旧，逐条等值对账照旧。
+  - 新增护栏（C7 内）：折叠输出里每个含 `tool_use` 的轮必须同轮带配对的 `tool_result`，且配对总数 ≥ 2。理由是 C7 的对账是「投影 vs 落盘」两边比，折叠层坏成直通/空泡时可能**两边都空 ⇒ 绿**；这条只看折叠输出自身形状，不依赖落盘侧。
+  - 反向证：把 C7 的输入临时改回原始行 ⇒ **C7 红**（护栏先响：`round 1/2: <tool_use id> 同轮没有配对的结果块`），C1–C6、C8 照旧绿 ⇒ 只有喂法坏了；离线合成账本另证「折叠层吞正文」形态下 `paired=0` + `calls=[]` 双红。还原后 `md5sum` 与变异前逐字一致（`cp` 备份，零 `git checkout`）。
+  - 门禁实测：`ERIX_E2E_REAL=1 npm run check:cli-real` **C1–C8 全 PASS**（折叠输出 6 条 vs 原始行 12 条，投影 2 条 `tc_` 且 `durationMs` 4/65 与落盘逐条相等）；全量 `npm test` 与开工基线一致；`check:syntax`（276 个跟踪文件）、`check:docs`、`check:docs:strict` 逐个 exit 0。
+  - 文档：中英契约「宿主展示投影」一节各加一段（符号锚点，无裸行号）——投影的输入必须是 `store.load()` 的折叠输出，直接喂原始 journal 行会重复出条目且缺执行事实（耗时等），并点名 `createFileTranscriptStore({ dir }).load(runId)` / `createMemoryTranscriptStore().load(runId)` 两个入口。
+
 - **soak 的三方对账按「逐条落盘」重述新口径：`test/soak-script.test.js` 的 4 条红修绿（工单 261021-05，只动 `scripts/soak.mjs` 与它的用例 + `docs/soak.md`，`src/` 零改动）。**
   - **四条红只有一个根因，且全是「期望写死了旧口径」，没有一条是真回归**：`not ok 1359/1360/1361/1364` 全部溯源自同一个阻断项 `store-reconcile-jsonl-vs-load` 的判据 `jsonlLines === store.load().length`——那是「一轮一行」时代的形状恒等式，写侧改成「一消息一成型一落盘 + 轮行只留元数据」后必然红（实测 6 轮：账本 **21 行** / `store.load()` **9 条**，差的 12 条正是被 `src/store/message-rows.js#foldMessageRows` 折回载体行的消息行）。1359 另在测试面重复钉了一遍旧等式（`reconcile.jsonlLines === reconcile.loadedRoundRecords` ⇒ 21 !== 9），1360 / 1361 / 1364 本身一条没坏，只是被那个阻断项拖红了退出码与 `failedBlocking`（期望 1 实得 2）。
   - **不是放宽，是重述**：旧等式在新结构下只表达「本次有没有写消息行」（absorbed = 0 时才成立），牙齿全无。换成两条真不变量：**① 行级闭合** `jsonlLines === loadedRecords + absorbedMessageRows`——每一行要么原样出现在 `load()` 里，要么作为消息行被折进该轮载体行，丢一行或多一行（同一份正文存两遍）都红；**② 正文闭合**——soak **不调用 src 的实现**，自己按读侧口径独立复折一遍（`foldLedgerFromRawRows`：按轮分组、组内按 `seq` 升序、`partOf` 接回它指认的那条消息、只有存在载体行的轮才吸、正文挤到载体行的位置上），折出的正文序列与 `store.load()` 摊平的**逐条比对**（实测 15 == 15 逐字相等；少=折叠吞正文，多=双喂，错位=模型看到的顺序变了）。另钉（脚本侧 + 用例侧一起）`messageRows > 0` / `engineRoundRows > 0` / `absorbedMessageRows > 0` / `standaloneMessageRows === 0` / `foldMismatches === []`，防止两条闭合退化成空跑。`EXPECTED_ASSERTIONS` 名单与断言条数**一字未动**（没加也不删）。
