@@ -3255,6 +3255,17 @@ function mutateRef(from, to, opts = {}) {
 const RATCHET_TRUTH = ratchetBaselines(textOf(RATCHET_SRC));
 const B_ROOT = Number(RATCHET_TRUTH.root);
 const B_WT = Number(RATCHET_TRUTH.withTools);
+// 并集分解式的两个分项（`= 117 + 23 + 16` 里的 23 与 16）也**现读** AGENTS，不写死：它们不是常量（真值没有
+// 单一脚本可抽），但「写死就会在下一次下调时变成空操作」是同一条病——#292 的 5 条硬编码 121/164 之后，
+// #362 又把 27 写死在这里（160 → 156 那笔），于是两条反向证立刻变成「变异没落上」的假红。抽不到 → 变异打不上
+// → `expectMutateMiss` 那条判据照样红（fail-closed，不给静默放行留门）。
+const B_SPLIT = (() => {
+  for (const rel of [AGENTS_EN, AGENTS_CN]) {
+    const m = textOf(rel).match(/= (\d+) \+ (\d+) \+ (\d+)/);
+    if (m && Number(m[1]) === B_ROOT) return { b: Number(m[2]), c: Number(m[3]) };
+  }
+  return { b: NaN, c: NaN };
+})();
 
 const SELF_TEST_CASES = [
   // —— pkg-block / exports：#210 报的四种破坏，**前两种修前是绿的** ——
@@ -3770,14 +3781,14 @@ const SELF_TEST_CASES = [
     expectFiles: [AGENTS_EN, AGENTS_CN],
   },
   {
-    label: `CN 的分解式写成 ${B_ROOT} + 27 + 15 → 算术不闭合就红`,
-    overlay: { [AGENTS_CN]: (t) => t.replace(`= ${B_ROOT} + 27 + 16`, `= ${B_ROOT} + 27 + 15`) },
-    expect: [new RegExp(`分解式 ${B_ROOT} \\+ 27 \\+ 15 = ${B_ROOT + 42}，不等于 BASELINE_WITH_TOOLS（${B_WT}）`)],
+    label: `CN 的分解式写成 ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c - 1} → 算术不闭合就红`,
+    overlay: { [AGENTS_CN]: (t) => t.replace(`= ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c}`, `= ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c - 1}`) },
+    expect: [new RegExp(`分解式 ${B_ROOT} \\+ ${B_SPLIT.b} \\+ ${B_SPLIT.c - 1} = ${B_ROOT + B_SPLIT.b + B_SPLIT.c - 1}，不等于 BASELINE_WITH_TOOLS（${B_WT}）`)],
     expectFiles: [AGENTS_CN],
   },
   {
     label: `EN 少写一处「基线 **${B_WT}** / 31 files」→ 中英句式处数不齐`,
-    overlay: { [AGENTS_EN]: (t) => t.replace(`baseline **${B_WT}** / 31 files = ${B_ROOT} + 27 + 16`, `the ${B_WT}-error baseline spread over 31 files (= ${B_ROOT} + 27 + 16)`) },
+    overlay: { [AGENTS_EN]: (t) => t.replace(`baseline **${B_WT}** / 31 files = ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c}`, `the ${B_WT}-error baseline spread over 31 files (= ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c})`) },
     expect: [/baseline\/「基线 \*\*N\*\* \/ 31 个文件」声明: 声明点处数中英不齐：AGENTS\.md 1 处 vs AGENTS_cn\.md 2 处/],
   },
   {
