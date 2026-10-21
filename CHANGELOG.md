@@ -5,6 +5,16 @@
 
 ### Changed
 
+- **文档声称值守卫的声称面从「两份 AGENTS」扩到五份：两份随包 README 与 `erix_run` 的 README 纳入 `test/static-guards.test.js` 规则 4，并加「同一常量在所有声称它的文档里同值」的对账（issue #359，续 #310；`src/` 零改动）。**
+  病根：#310 落地时规则 4 只校 `AGENTS.md` / `AGENTS_cn.md` 的 `` `<CONST> = <N>` `` 声称，而 `README.md:995` / `README_cn.md:590` 的 `` `REF_SCAN_DOCS_MINIMUM = 33` `` 与 `examples/pi-extension/README.md:246` 的 `` `WAKE_PENDING_MS = 10_000` `` 在声称面之外——前两份还是 `package.json` 的 `files` 里的**随包**文档（宿主读得比 AGENTS 更多），脚本常量一改它们静默过时而门禁照绿，正是 #310 那个病。
+  - **先实测再动手（清点）**：三份文档里 `` `<NAME> = <数字>` `` 形态的命中**恰好 3 处**，全部是现值声称：`README.md:995` / `README_cn.md:590` 的 `REF_SCAN_DOCS_MINIMUM = 33`、`examples/pi-extension/README.md:246` 的 `WAKE_PENDING_MS = 10_000`。同批还有 23 行 `ERIX_*=1` 形态的命中，逐行判为「环境变量开关」（置位语义，不是任何脚本常量的现值），不进声称面。**三处的现值当时都等于真值**（`scripts/docs-drift-check.mjs` 的 33、`examples/pi-extension/erix-run-parent-wake.js` 的 10_000）⇒ 本单**没有**像 #310 那次（76 vs 77）需要修的现值，只做纳面。
+  - **声称面写成登记表**：`CLAIMED_VALUE_DOC_RULES` 逐份写明「这份文档必须至少出现哪些常量的 `NAME = N`」——两份 AGENTS 登记那四个（`WAKE_PENDING_MS` 是扩展的常量，AGENTS 不提它合法），两份 README 各登记 `REF_SCAN_DOCS_MINIMUM`，`erix_run` README 登记 `WAKE_PENDING_MS`。未登记的常量**不要求出现**（README 不必提别的常量），但一旦出现就照样对真值、照样参与同值对账；**登记了的那句被整段删掉 ⇒ 红**。声称面名单本身也在用例里钉住（改窄 / 改名 / 删一份 ⇒ 红）。
+  - **真值抽取扩两种写法**：`export const`（扩展里的导出常量）与数字分隔符（`10_000`——`Number("10_000")` 是 NaN，两侧都得自己剔下划线）。抽不到真值仍判红（#164 口径：不许在真值缺席时静默放行）。
+  - **「中英同值」升级为「全部文档同值」**：同一常量在所有声称它的文档里必须是一个值（中英成对 + 随包 README），报错逐份点名「哪份声称几」并给出脚本真值。
+  - **反向证（进 `npm test`，跑在 `makeTmp` 的合成树上）**：只改脚本 ⇒ 红；只改文档 ⇒ 红；两边同改 ⇒ 绿；删掉登记过的那句 ⇒ 因「登记了就必须在」而红；脚本常量整行删掉 ⇒ 因抽不到真值而红；变异没落上时变异器自己抛（#210 R2 口径）。**#359 新增的三条覆盖各有自己的反向证**：只改 `README.md` 的 33 ⇒ 2 处红（值不等 + 各文档不一致）；只改 `examples/pi-extension/README.md` 的 10_000 ⇒ 1 处红；只改 `WAKE_PENDING_MS` 脚本常量 ⇒ 1 处红；删掉 `README_cn.md` / `erix_run` README 那句 ⇒ 各自红；五份文档 + 两个脚本同改 ⇒ 绿。另有一格**放行证**：两份 README 不提另外三个常量**不红**（不是恒绿——同一条用例里「登记了就必须在」那几格证明它会红）。真实树上另做一次变异取证：`README.md` 的 33 改成 34 ⇒ `node --test test/static-guards.test.js` 红 1（19 pass / 1 fail），`cp` + `md5sum` 逐字还原（md5 与改前一致）。
+  - **未纳面的异形声称（如实记下，不是遗漏）**：`README.md:546` / `README_cn.md:397` 的「`maxRounds >= 16`（`DEFAULT_REFLECTION_MIN_ROUNDS`）」是「比较式 + 常量名」，不是 `NAME = N` 形态，本条管辖不到；它属于「默认值/阈值」那一族，真要机器校得另立一条规则（本单不做，已在报告里单列）。
+  - **门禁**：`npm test` → tests 1864 / pass 1855 / fail 0 / skipped 9（本单只改既有用例，不新增条数）；`node --test test/static-guards.test.js` → 20/20；`check:syntax`、`check:docs`、`check:docs:strict`、`check:docs-examples`（36/36）、`check:pack-links`、`check:tests`、`docs-drift-check --self-test`（103 例）、`check:types`（117 = 基线）全 exit 0。
+
 - **chore/scripts：#374 给卫生守卫 `scripts/test-hygiene-check.mjs` 加 `--self-test`（内存假文件集合 13 例，不落盘、不碰 `test/` 真实文件），并把它接进 CI 的阻塞步骤（issue #374；`test/` 零改动、`src/` 零改动、无新依赖）。**
   现场：#209 把守卫升级成阻塞之后，**守卫自己的口径仍然只能靠人肉试**——往 `test/` 里临时插一行 `mkdtemp(...)`、跑一遍、再删掉。这种验证既不可复现，又会因为「插进去的那行先命中别的规则」而误判；更糟的是**守卫自己被改坏时没人知道**：`check:tests` 只证「今天的 `test/` 干净」，把 `bare-mkdtemp` 的 `Sync` 变体删掉它照样 exit 0。
   - **自测与真树共用一条裁决路径**：新增纯函数 `checkRecords(records)`（`{ rel, text }` 记录集合 → 违规与豁免清单），真树扫描 `scanTree()` 只是「walk `test/**` + 读成记录」再交给它。`--self-test` 喂的是**内存里的假文件集合**，所以它绿证明的是**规则表本身**没被改坏，而不是「今天 `test/` 恰好干净」。

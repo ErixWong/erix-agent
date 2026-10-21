@@ -8,8 +8,9 @@
 //   2. 已退役的适配器/store 方法名不许再被调用（`store.recall` 那一类，出处逐条写死）。
 //   3. 命令行旗标：接受集合**从 bin/cli.js 现推**（不手抄清单），凡是挂在 `erix` 命令行上的旗标
 //      不在接受集合里就红；「已退役」名单同样从 CHANGELOG 现推，不手抄。
-//   4. 文档里的**声称值**（`AGENTS.md` / `AGENTS_cn.md` 的 `` `<CONST> = <N>` ``）必须与脚本常量对得上
-//      （issue #310；真值只从脚本**自己的文本**里抽，抽不到就红）。第 4 条在文件末尾的独立 describe 里。
+//   4. 文档里的**声称值**（`` `<CONST> = <N>` ``）必须与脚本常量对得上（issue #310；真值只从脚本
+//      **自己的文本**里抽，抽不到就红）。声称面是五份：两份 AGENTS + 两份随包 README + `erix_run` 的 README
+//      （issue #359 把后面三份纳进来）。第 4 条在文件末尾的独立 describe 里。
 //
 // 误报是第 3 条的头号风险（`--help`、npm/tsc/rg/pi 的参数、docs 里的历史叙述都会命中），所以
 // 范围收到「只有挂在 erix 命令行上的旗标才算 erix 的旗标」，并在报告里如实写清扫了什么、豁免了什么。
@@ -761,13 +762,26 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
 // 历史上已两次现场抓到（AGENTS 写 `SYMBOL_ANCHOR_MIN_UNIQUE = 27` 而脚本 29；写 `.d.ts` 66 而真实 67），
 // 本单开工时又抓到第三处（写 76 而脚本 77）。
 //
-// 口径（与 #164 / #210 R2 一致）：
-//   · 真值只从脚本**自己的文本**里抽（`const <NAME> = <数字>;`）；**抽不到 = 红**，禁止静默放行。
-//   · 声称只认反引号包裹的 `` `<NAME> = <数字>` `` 这一种形态；散文里的数字不算声称。
-//   · 每份文档每个常量**各至少一处**（句子被删也红——中英成对是 #210 那族「位数对不齐」的既有口径）。
-//   · 每一处声称都等于真值；两份文档在同一常量上彼此相同。
+// #359 把声称面从「两份 AGENTS」扩到**五份**：`README.md` / `README_cn.md` 是**随包**文档（`package.json`
+// 的 `files` 里有它们），宿主读得比 AGENTS 更多；`examples/pi-extension/README.md` 是 `erix_run` 的宿主
+// 文档（虽不在 tarball 里，但它声称的是扩展自己的常量）。实测（本单开工时）这三份里各**恰好一处**真值声称：
+//   `README.md:995` / `README_cn.md:590` 的 `` `REF_SCAN_DOCS_MINIMUM = 33` ``、
+//   `examples/pi-extension/README.md:246` 的 `` `WAKE_PENDING_MS = 10_000` ``（真值在
+//   `examples/pi-extension/erix-run-parent-wake.js`，`export const` + 数字分隔符两种写法都要认）。
+// 三处的现值**当时都对得上**（不像 #310 那次 76 vs 77），本单没有需要修的现值——只是把它们钉住。
 //
-// 覆盖面诚实标注（工单 261022-03 裁决 A）：
+// 口径（与 #164 / #210 R2 一致）：
+//   · 真值只从脚本**自己的文本**里抽（`const <NAME> = <数字>;`，也认 `export const` 与 `10_000` 这种
+//     数字分隔符）；**抽不到 = 红**，禁止静默放行。
+//   · 声称只认反引号包裹的 `` `<NAME> = <数字>` `` 这一种形态；散文里的数字不算声称。
+//   · 「每份至少一处」**只对 `CLAIMED_VALUE_DOC_RULES` 里登记的 (文档, 常量) 对**要求——README 不必提到
+//     全部常量（它只提其中一个），硬逼它去提别的常量等于往文档里造句子，那是本单要堵的 fail-open 形状。
+//     但**登记了就必须在**：把 README 里那句删掉 ⇒ 红（#210 那族「句子被删也要红」的口径）。
+//   · 每一处声称都等于真值；同一常量在**所有**声称它的文档里彼此相同（中英成对 + 随包 README 同值）。
+//   · 未纳面的同形声称（本单实测为空）与**异形**声称（例：`README.md:546` 的「`maxRounds >= 16`
+//     (`DEFAULT_REFLECTION_MIN_ROUNDS`)」是「比较式 + 常量名」，不是 `NAME = N`）不在本条管辖内，见报告。
+//
+// 覆盖面诚实标注（工单 261022-03 裁决 A；#359 只加文档，不动下面这几条的判据）：
 //   · `BASELINE_ROOT` 的 `` `BASELINE_ROOT = N` `` 写法**已经**被 `scripts/docs-drift-check.mjs` 的
 //     `BASELINE_CLAIM_RULES`（`required: true`，中英各一）校着 ⇒ 这里对它是**第二道锁**。
 //   · `SYMBOL_ANCHOR_MIN_UNIQUE` / `BARE_LINE_REF_BASELINE` / `REF_SCAN_DOCS_MINIMUM` 在 `check:docs`
@@ -779,9 +793,11 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
 const DRIFT_SRC = "scripts/docs-drift-check.mjs";
 const RATCHET_SRC = "scripts/type-check-ratchet.mjs";
 const PACK_LINK_SRC = "scripts/pack-link-check.mjs";
+const WAKE_SRC = "examples/pi-extension/erix-run-parent-wake.js";
 
 /**
- * R1 的常量表（工单裁决 A：4 个）。每条只写「常量名 → 定义它的脚本」——真值不在这里，在脚本文本里。
+ * R1 的常量表（工单裁决 A：4 个 + #359 的 `WAKE_PENDING_MS`）。每条只写「常量名 → 定义它的脚本」——
+ * 真值不在这里，在脚本文本里。
  * `BASELINE_WITH_TOOLS` **不在表里**：文档里没有 `` `BASELINE_WITH_TOOLS = N` `` 这种写法（两侧 0 处），
  * 硬塞进来就只能靠「往文档里造一句」或「放宽每份至少一次」二选一，两个都是本单要堵的 fail-open 形状。
  * 它的现值句式由下面 `baselineTierCoverage` 的覆盖面断言看住。
@@ -791,24 +807,58 @@ const CLAIMED_VALUE_CONSTANTS = Object.freeze([
   { name: "BARE_LINE_REF_BASELINE", script: DRIFT_SRC },
   { name: "REF_SCAN_DOCS_MINIMUM", script: DRIFT_SRC },
   { name: "BASELINE_ROOT", script: RATCHET_SRC },
+  // #359：`examples/pi-extension/README.md` 声称的那个（真值是 `export const` + 数字分隔符写法）
+  { name: "WAKE_PENDING_MS", script: WAKE_SRC },
 ]);
 
-/** 声称面：两份 AGENTS（中英成对）。README 不在本单范围（它的同形声称是另一笔，见报告「未验证/存疑」）。 */
-const CLAIMED_VALUE_DOCS = Object.freeze(["AGENTS.md", "AGENTS_cn.md"]);
+/**
+ * 两份 AGENTS 必须提到的那四个常量（手写清单，不从 `CLAIMED_VALUE_CONSTANTS` 推导）：
+ * 推导式会让「表里新增一个只被 README 声称的常量」突然变成「AGENTS 也必须提它」⇒ 下次有人被卡就会
+ * 把判据放宽。这里写死四个，跟 #310 落地时 AGENTS 中英两侧的实际声称面一致。
+ * `WAKE_PENDING_MS` 不在里面：它是 `erix_run` 扩展的常量，两份 AGENTS 一个字都不提。
+ */
+const AGENTS_REQUIRED_CLAIMS = Object.freeze([
+  "SYMBOL_ANCHOR_MIN_UNIQUE",
+  "BARE_LINE_REF_BASELINE",
+  "REF_SCAN_DOCS_MINIMUM",
+  "BASELINE_ROOT",
+]);
 
-/** 真值：`^const <NAME> = <数字>;` 一行（与两个脚本里既有的 `fileRecord` 自读口径同形）。抽不到返 null。 */
+/**
+ * 声称面（#359 起五份）。`requires` 是**这份文档必须至少出现一次**的常量：
+ *   · 两份 AGENTS：表里那四个（`WAKE_PENDING_MS` 是扩展的常量，AGENTS 不提它是合法的）。
+ *   · 两份随包 README：只登记 `REF_SCAN_DOCS_MINIMUM`（它们各自只声称这一个）。
+ *   · `erix_run` 的 README：只登记 `WAKE_PENDING_MS`。
+ * 没登记进 `requires` 的常量**不要求出现**，但一旦出现就照样对真值、照样参与「各文档同值」。
+ */
+const CLAIMED_VALUE_DOC_RULES = Object.freeze([
+  { doc: "AGENTS.md", requires: AGENTS_REQUIRED_CLAIMS },
+  { doc: "AGENTS_cn.md", requires: AGENTS_REQUIRED_CLAIMS },
+  { doc: "README.md", requires: Object.freeze(["REF_SCAN_DOCS_MINIMUM"]) },
+  { doc: "README_cn.md", requires: Object.freeze(["REF_SCAN_DOCS_MINIMUM"]) },
+  { doc: "examples/pi-extension/README.md", requires: Object.freeze(["WAKE_PENDING_MS"]) },
+]);
+
+/**
+ * 真值：`[export ]const <NAME> = <数字>;` 一行（与两个脚本里既有的 `fileRecord` 自读口径同形）。
+ * #359 起也认两种新写法：`export const`（`examples/pi-extension/*.js` 的导出常量）与数字分隔符
+ * （`10_000` —— `Number("10_000")` 是 NaN，必须自己剔下划线）。抽不到返 null。
+ */
 function extractConstValue(text, name) {
   if (typeof text !== "string") return null;
-  const m = text.match(new RegExp(`^const ${name} = (\\d+);`, "m"));
-  return m ? Number(m[1]) : null;
+  const m = text.match(new RegExp(`^(?:export )?const ${name} = (\\d[\\d_]*);`, "m"));
+  return m ? Number(m[1].replace(/_/g, "")) : null;
 }
 
-/** 声称：反引号包裹的 `` `<NAME> = <数字>` ``。返回 `{ value, line }`（行号是文档自己的行，报错要用）。 */
+/**
+ * 声称：反引号包裹的 `` `<NAME> = <数字>` ``（也认 `10_000`）。
+ * 返回 `{ value, line }`（行号是文档自己的行，报错要用）。
+ */
 function extractDocClaims(text, name) {
   if (typeof text !== "string") return [];
-  const re = new RegExp("`" + name + "\\s*=\\s*(\\d+)`", "g");
+  const re = new RegExp("`" + name + "\\s*=\\s*(\\d[\\d_]*)`", "g");
   return [...text.matchAll(re)].map((m) => ({
-    value: Number(m[1]),
+    value: Number(m[1].replace(/_/g, "")),
     line: text.slice(0, m.index).split("\n").length,
   }));
 }
@@ -816,10 +866,10 @@ function extractDocClaims(text, name) {
 /**
  * R1 的核心（**纯函数，读文本可注入**——合成树的反向证直接拿它问，不绑真实文件）。
  *
- * @param {{readText: (rel: string) => (string|null), constants?: object[], docs?: string[]}} params
+ * @param {{readText: (rel: string) => (string|null), constants?: object[], docRules?: {doc: string, requires: readonly string[]}[]}} params
  * @returns {{errors: string[], rows: {name: string, script: string, truth: number|null, claims: {doc: string, line: number, value: number}[]}[]}}
  */
-function claimedValueReport({ readText, constants = CLAIMED_VALUE_CONSTANTS, docs = CLAIMED_VALUE_DOCS }) {
+function claimedValueReport({ readText, constants = CLAIMED_VALUE_CONSTANTS, docRules = CLAIMED_VALUE_DOC_RULES }) {
   const errors = [];
   const rows = [];
   for (const { name, script } of constants) {
@@ -832,7 +882,7 @@ function claimedValueReport({ readText, constants = CLAIMED_VALUE_CONSTANTS, doc
       continue;
     }
     const byDoc = new Map();
-    for (const doc of docs) {
+    for (const { doc, requires } of docRules) {
       const text = readText(doc);
       if (typeof text !== "string") {
         errors.push(`claimed-values: ${doc} 读不到文本——声称面少一份，等于这份文档的声称没人校`);
@@ -841,9 +891,12 @@ function claimedValueReport({ readText, constants = CLAIMED_VALUE_CONSTANTS, doc
       const claims = extractDocClaims(text, name);
       row.claims.push(...claims.map((c) => ({ doc, ...c })));
       byDoc.set(doc, claims);
-      if (claims.length === 0) {
-        errors.push(`claimed-values: ${doc} 里一处 \`${name} = <数字>\` 声称都没有——两份文档必须**各**至少一处`
-          + "（句子被删也要红，否则这个常量就脱离了机器校对；真值在 " + script + "）");
+      // 只对**登记过的** (文档, 常量) 对要求「至少一处」：README 不提某常量是合法的，
+      // 但登记了的那一句被删 ⇒ 红（#210 那族：句子没了不能算绿）
+      if (requires.includes(name) && claims.length === 0) {
+        errors.push(`claimed-values: ${doc} 里一处 \`${name} = <数字>\` 声称都没有——`
+          + "这份文档的声称面登记了它，句子被删也要红（否则这个常量就脱离了机器校对；"
+          + `真值在 ${script}）`);
       }
       for (const c of claims) {
         if (c.value !== truth) {
@@ -852,21 +905,16 @@ function claimedValueReport({ readText, constants = CLAIMED_VALUE_CONSTANTS, doc
         }
       }
     }
-    // ③ 中英同一常量必须同值（#210 那族「中英声明位数对不齐」的口径）
-    const pairs = [...byDoc.entries()].filter(([, claims]) => claims.length > 0);
-    for (let i = 0; i < pairs.length; i += 1) {
-      for (let j = i + 1; j < pairs.length; j += 1) {
-        const [docA, claimsA] = pairs[i];
-        const [docB, claimsB] = pairs[j];
-        const setA = [...new Set(claimsA.map((c) => c.value))];
-        const setB = [...new Set(claimsB.map((c) => c.value))];
-        const onlyA = setA.filter((v) => !setB.includes(v));
-        const onlyB = setB.filter((v) => !setA.includes(v));
-        if (onlyA.length || onlyB.length) {
-          errors.push(`claimed-values: ${docA} 与 ${docB} 在 \`${name}\` 上彼此不同`
-            + `（${docA} 声称 ${setA.join(" / ")}，${docB} 声称 ${setB.join(" / ")}）——中英成对：同一条声称两边必须同值`);
-        }
-      }
+    // ③ 同一常量在所有声称它的文档里必须同值（中英成对 + 随包 README 同值；
+    //    #210 那族「中英声明位数对不齐」的口径，#359 把它从「两份 AGENTS 两两比」改成「全部文档一个值」）
+    const claiming = [...byDoc.entries()].filter(([, claims]) => claims.length > 0);
+    const distinct = [...new Set(claiming.flatMap(([, claims]) => claims.map((c) => c.value)))];
+    if (distinct.length > 1) {
+      const detail = claiming
+        .map(([doc, claims]) => `${doc} 声称 ${[...new Set(claims.map((c) => c.value))].join(" / ")}`)
+        .join("；");
+      errors.push(`claimed-values: \`${name}\` 的现值声称在各文档间不一致（${detail}）——`
+        + `同一常量在所有声称它的文档里必须同值（中英成对 + 随包 README），且都等于 ${script} 里的真值 ${truth}`);
     }
   }
   return { errors, rows };
@@ -982,15 +1030,31 @@ function realReadText(rel) {
 }
 
 describe("静态守卫：文档声称值与脚本常量（issue #310）", () => {
-  it("规则 4：两份 AGENTS 的声称值逐处等于脚本常量（真实树 = 回归基线）", (t) => {
+  it("规则 4：五份文档的声称值逐处等于脚本常量（真实树 = 回归基线）", (t) => {
     const { errors, rows } = claimedValueReport({ readText: realReadText });
     t.diagnostic(`规则 4：${rows.length} 个常量 / ${rows.reduce((n, r) => n + r.claims.length, 0)} 处声称`);
+    for (const { doc } of CLAIMED_VALUE_DOC_RULES) {
+      const hits = rows.flatMap((r) => r.claims.filter((c) => c.doc === doc).map((c) => `${r.name}=${c.value}@${c.line}`));
+      t.diagnostic(`  ${doc}：${hits.length ? hits.join(", ") : "（零处）"}`);
+    }
     assert.deepEqual(errors, [], `文档声称值与脚本常量对不上：\n${errors.join("\n")}`);
     assert.equal(rows.length, CLAIMED_VALUE_CONSTANTS.length, "常量表被改了？rows 数应与表同长");
-    // 正面证据：每个常量在两份文档**各**至少一处（不是靠某一份把另一份盖住）
+    // 声称面本身：#359 扩到五份之后，谁把它改窄/改名/删一份 ⇒ 红
+    // （光靠「每份至少一处」不能防「把一份从 docRules 里拿掉」，所以这里把名单本身也钉住）
+    assert.deepEqual(
+      CLAIMED_VALUE_DOC_RULES.map((r) => r.doc),
+      ["AGENTS.md", "AGENTS_cn.md", "README.md", "README_cn.md", "examples/pi-extension/README.md"],
+      "规则 4 的声称面被改窄了（#359 要求两份随包 README 与 erix_run 的 README 都在面内）",
+    );
+    // 正面证据：登记过的 (文档, 常量) 对**真的**有声称，而不是靠别的文档盖住
+    for (const { doc, requires } of CLAIMED_VALUE_DOC_RULES) {
+      const claimed = new Set(rows.filter((r) => r.claims.some((c) => c.doc === doc)).map((r) => r.name));
+      for (const name of requires) {
+        assert.ok(claimed.has(name), `${doc} 里没有 \`${name} = <数字>\` 声称（登记了却没出现 ⇒ 该文档这一条没人校）`);
+      }
+      assert.ok(claimed.size > 0, `${doc} 在声称面里却一处声称都没有：它凭什么占一个位置`);
+    }
     for (const row of rows) {
-      const docs = new Set(row.claims.map((c) => c.doc));
-      assert.deepEqual([...docs].sort(), [...CLAIMED_VALUE_DOCS].sort(), `\`${row.name}\` 的声称没覆盖两份文档`);
       assert.ok(row.claims.every((c) => c.value === row.truth), `\`${row.name}\` 有声称不等于真值 ${row.truth}`);
     }
   });
@@ -1074,14 +1138,26 @@ describe("静态守卫：文档声称值与脚本常量（issue #310）", () => 
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, text);
     };
-    // 合成树的「真值」故意与真仓不同（7 / 11 / 13 / 17）：这条用例不会因为真仓的常量涨落而失效，
+    // 合成树的「真值」故意与真仓不同（7 / 11 / 13 / 17 / 10_000）：这条用例不会因为真仓的常量涨落而失效，
     // 也不会因为「恰好等于真仓现值」而假绿。
-    const V = { SYMBOL_ANCHOR_MIN_UNIQUE: 7, BARE_LINE_REF_BASELINE: 11, REF_SCAN_DOCS_MINIMUM: 13, BASELINE_ROOT: 17 };
-    const script = (rel) => (rel === DRIFT_SRC
-      ? [`const SYMBOL_ANCHOR_MIN_UNIQUE = ${V.SYMBOL_ANCHOR_MIN_UNIQUE};`,
-        `const BARE_LINE_REF_BASELINE = ${V.BARE_LINE_REF_BASELINE};`,
-        `const REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM};`, ""].join("\n")
-      : [`const BASELINE_ROOT = ${V.BASELINE_ROOT};`, ""].join("\n"));
+    const WAKE_LITERAL = "10_000"; // 数字分隔符写法：`Number("10_000")` 是 NaN，两侧都得自己剔下划线
+    const V = {
+      SYMBOL_ANCHOR_MIN_UNIQUE: 7,
+      BARE_LINE_REF_BASELINE: 11,
+      REF_SCAN_DOCS_MINIMUM: 13,
+      BASELINE_ROOT: 17,
+      WAKE_PENDING_MS: 10_000,
+    };
+    const script = (rel) => {
+      if (rel === DRIFT_SRC) {
+        return [`const SYMBOL_ANCHOR_MIN_UNIQUE = ${V.SYMBOL_ANCHOR_MIN_UNIQUE};`,
+          `const BARE_LINE_REF_BASELINE = ${V.BARE_LINE_REF_BASELINE};`,
+          `const REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM};`, ""].join("\n");
+      }
+      if (rel === RATCHET_SRC) return [`const BASELINE_ROOT = ${V.BASELINE_ROOT};`, ""].join("\n");
+      // 真仓里 `WAKE_PENDING_MS` 就是 `export const` + 数字分隔符，合成树照抄这个写法
+      return ["/** synthetic pending window */", `export const WAKE_PENDING_MS = ${WAKE_LITERAL};`, ""].join("\n");
+    };
     const doc = (lang) => (lang === "en"
       ? ["# Synthetic AGENTS (makeTmp only)",
         `- only-up floor: \`SYMBOL_ANCHOR_MIN_UNIQUE = ${V.SYMBOL_ANCHOR_MIN_UNIQUE}\` (synthetic value)`,
@@ -1093,18 +1169,38 @@ describe("静态守卫：文档声称值与脚本常量（issue #310）", () => 
         `- 裸行号棘轮：\`BARE_LINE_REF_BASELINE = ${V.BARE_LINE_REF_BASELINE}\``,
         `- 覆盖面下限：\`REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM}\``,
         `- 棘轮：\`BASELINE_ROOT = ${V.BASELINE_ROOT}\``, ""].join("\n"));
+    const readmeEn = () => ["# Synthetic README (makeTmp only)",
+      `- scanned documents: 13 of them (\`REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM}\`)`, ""].join("\n");
+    const readmeCn = () => ["# 合成 README（只在 makeTmp 里）",
+      `- 实扫文档：共 13 份（\`REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM}\`）`, ""].join("\n");
+    const wakeReadme = () => ["# 合成 erix_run README（只在 makeTmp 里）",
+      `- **\`WAKE_PENDING_MS = ${WAKE_LITERAL}\` pending 窗口**：窗口内不重复排 steer。`, ""].join("\n");
     const seed = () => {
       write(DRIFT_SRC, script(DRIFT_SRC));
       write(RATCHET_SRC, script(RATCHET_SRC));
+      write(WAKE_SRC, script(WAKE_SRC));
       write("AGENTS.md", doc("en"));
       write("AGENTS_cn.md", doc("cn"));
+      write("README.md", readmeEn());
+      write("README_cn.md", readmeCn());
+      write("examples/pi-extension/README.md", wakeReadme());
     };
     const report = () => claimedValueReport({ readText: read });
 
     // 对照组：合成树本身必须绿（否则下面每一条变异证都不成立）
     seed();
     assert.deepEqual(report().errors, [], "合成树对照组没绿——后面的反向证会全部失去意义");
-    assert.equal(report().rows.length, 4, "合成树上应当校 4 个常量");
+    assert.equal(report().rows.length, 5, "合成树上应当校 5 个常量");
+    // 新增的**放行格**（必须真的放行，不是恒绿）：两份 README 只声称了 `REF_SCAN_DOCS_MINIMUM`，
+    // 它们不提 `SYMBOL_ANCHOR_MIN_UNIQUE` / `BARE_LINE_REF_BASELINE` / `BASELINE_ROOT` 也不红。
+    // 这一格和下面⑦⑧⑨⑪ 的「登记了就必须在」正好是一对：不要求出现 ≠ 出现了不管。
+    const readmeNames = new Set(report().rows
+      .filter((r) => r.claims.some((c) => c.doc === "README.md"))
+      .map((r) => r.name));
+    assert.deepEqual([...readmeNames], ["REF_SCAN_DOCS_MINIMUM"],
+      "README.md 只声称一个常量：合成树里应当就这一处（这条也是「缺其它常量不红」的放行格）");
+    t.diagnostic("对照组：5 份文档 / 5 个常量 全绿；README.md 只声称 REF_SCAN_DOCS_MINIMUM（其余缺不红）");
+
 
     // ① 只改脚本常量、不改文档 ⇒ 红（两份文档各一处，且只该有这两处）
     seed();
@@ -1124,7 +1220,7 @@ describe("静态守卫：文档声称值与脚本常量（issue #310）", () => 
     const docOnly = report().errors;
     assert.equal(docOnly.length, 2, `只改文档应当恰好 2 处红（值不等 + 中英不同），实测：\n${docOnly.join("\n")}`);
     assert.match(docOnly.join("\n"), /AGENTS\.md:\d+ 声称 \`SYMBOL_ANCHOR_MIN_UNIQUE = 8\`，但 scripts\/docs-drift-check\.mjs 里的真值是 7/);
-    assert.match(docOnly.join("\n"), /AGENTS\.md 与 AGENTS_cn\.md 在 \`SYMBOL_ANCHOR_MIN_UNIQUE\` 上彼此不同/);
+    assert.match(docOnly.join("\n"), /\`SYMBOL_ANCHOR_MIN_UNIQUE\` 的现值声称在各文档间不一致/);
     t.diagnostic(`② 只改文档声称（EN 7 → 8）⇒ ${docOnly.length} 处红：\n${docOnly.join("\n")}`);
 
     // ③ 两边同时改 ⇒ 绿（证明判据不是恒红）
@@ -1158,6 +1254,66 @@ describe("静态守卫：文档声称值与脚本常量（issue #310）", () => 
       () => mutateText(read("AGENTS.md"), "`SYMBOL_ANCHOR_MIN_UNIQUE = 999`", "`SYMBOL_ANCHOR_MIN_UNIQUE = 1`", "靶子不存在"),
       /变异「靶子不存在」没落上/,
     );
+
+    // ── #359 新增的三份文档：每条新覆盖都带自己的反向证 ────────────────────────────────
+
+    // ⑦ 只改 `README.md` 的声称（EN 13 → 14），`README_cn.md` / AGENTS / 脚本不动 ⇒
+    //    值不等 + 「各文档同值」两条都红（中英成对的口径扩到 README 对）
+    seed();
+    write("README.md", mutateText(read("README.md"),
+      `\`REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM}\``, "`REF_SCAN_DOCS_MINIMUM = 14`", "只改 README.md 声称"));
+    const readmeOnly = report().errors;
+    assert.equal(readmeOnly.length, 2, `只改 README.md 应当恰好 2 处红（值不等 + 各文档不同），实测：\n${readmeOnly.join("\n")}`);
+    assert.match(readmeOnly.join("\n"), /README\.md:\d+ 声称 \`REF_SCAN_DOCS_MINIMUM = 14\`，但 scripts\/docs-drift-check\.mjs 里的真值是 13/);
+    assert.match(readmeOnly.join("\n"), /\`REF_SCAN_DOCS_MINIMUM\` 的现值声称在各文档间不一致（AGENTS\.md 声称 13；AGENTS_cn\.md 声称 13；README\.md 声称 14；README_cn\.md 声称 13）/);
+    t.diagnostic(`⑦ 只改 README.md 声称（13 → 14）⇒ ${readmeOnly.length} 处红：\n${readmeOnly.join("\n")}`);
+
+    // ⑧ 只改 `examples/pi-extension/README.md` 的声称（10_000 → 20_000）⇒ 红
+    seed();
+    write("examples/pi-extension/README.md", mutateText(read("examples/pi-extension/README.md"),
+      `\`WAKE_PENDING_MS = ${WAKE_LITERAL}\``, "`WAKE_PENDING_MS = 20_000`", "只改 erix_run README 声称"));
+    const wakeDocOnly = report().errors;
+    assert.equal(wakeDocOnly.length, 1, `只改 erix_run README 应当恰好 1 处红，实测：\n${wakeDocOnly.join("\n")}`);
+    assert.match(wakeDocOnly.join("\n"), /examples\/pi-extension\/README\.md:\d+ 声称 \`WAKE_PENDING_MS = 20000\`，但 examples\/pi-extension\/erix-run-parent-wake\.js 里的真值是 10000/);
+    t.diagnostic(`⑧ 只改 erix_run README 声称（10_000 → 20_000）⇒ ${wakeDocOnly.length} 处红：\n${wakeDocOnly.join("\n")}`);
+
+    // ⑨ 只改脚本常量（`export const WAKE_PENDING_MS = 10_000` → 20_000）⇒ 红（真值侧走 `export const`）
+    seed();
+    write(WAKE_SRC, mutateText(read(WAKE_SRC),
+      `export const WAKE_PENDING_MS = ${WAKE_LITERAL};`, "export const WAKE_PENDING_MS = 20_000;", "只改 WAKE 脚本常量"));
+    const wakeScriptOnly = report().errors;
+    assert.equal(wakeScriptOnly.length, 1, `只改 WAKE 脚本常量应当恰好 1 处红，实测：\n${wakeScriptOnly.join("\n")}`);
+    assert.match(wakeScriptOnly.join("\n"), /examples\/pi-extension\/README\.md:\d+ 声称 \`WAKE_PENDING_MS = 10000\`，但 examples\/pi-extension\/erix-run-parent-wake\.js 里的真值是 20000/);
+    t.diagnostic(`⑨ 只改脚本常量（WAKE 10_000 → 20_000）⇒ ${wakeScriptOnly.length} 处红：\n${wakeScriptOnly.join("\n")}`);
+
+    // ⑩ 把 `examples/pi-extension/README.md` 里那句整段删掉 ⇒ 因「登记了就必须在」而红
+    seed();
+    write("examples/pi-extension/README.md", mutateText(read("examples/pi-extension/README.md"),
+      `- **\`WAKE_PENDING_MS = ${WAKE_LITERAL}\` pending 窗口**：窗口内不重复排 steer。\n`, "", "删掉 erix_run README 那句声称"));
+    assert.match(report().errors.join("\n"), /examples\/pi-extension\/README\.md 里一处 \`WAKE_PENDING_MS = <数字>\` 声称都没有/);
+    t.diagnostic(`⑩ 删掉 erix_run README 那句声称 ⇒ ${report().errors.length} 处红：\n${report().errors.join("\n")}`);
+
+    // ⑪ 把 `README_cn.md` 里那句整段删掉 ⇒ 同样红（两份随包 README 各一格）
+    seed();
+    write("README_cn.md", mutateText(read("README_cn.md"),
+      `- 实扫文档：共 13 份（\`REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM}\`）\n`, "", "删掉 README_cn 那句声称"));
+    assert.match(report().errors.join("\n"), /README_cn\.md 里一处 \`REF_SCAN_DOCS_MINIMUM = <数字>\` 声称都没有/);
+    t.diagnostic(`⑪ 删掉 README_cn.md 那句声称 ⇒ ${report().errors.length} 处红：\n${report().errors.join("\n")}`);
+
+    // ⑫ 五份文档 + 两个脚本**同时**改到同一个新值 ⇒ 绿（证明扩面后的判据不是恒红）
+    seed();
+    write(DRIFT_SRC, mutateText(read(DRIFT_SRC),
+      `const REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM};`, "const REF_SCAN_DOCS_MINIMUM = 21;", "全改（脚本 REF）"));
+    write(WAKE_SRC, mutateText(read(WAKE_SRC),
+      `export const WAKE_PENDING_MS = ${WAKE_LITERAL};`, "export const WAKE_PENDING_MS = 20_000;", "全改（脚本 WAKE）"));
+    for (const rel of ["AGENTS.md", "AGENTS_cn.md", "README.md", "README_cn.md"]) {
+      write(rel, mutateText(read(rel),
+        `\`REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM}\``, "`REF_SCAN_DOCS_MINIMUM = 21`", `全改（${rel}）`));
+    }
+    write("examples/pi-extension/README.md", mutateText(read("examples/pi-extension/README.md"),
+      `\`WAKE_PENDING_MS = ${WAKE_LITERAL}\``, "`WAKE_PENDING_MS = 20_000`", "全改（erix_run README）"));
+    assert.deepEqual(report().errors, [], "五份文档 + 两个脚本同时改到同值必须绿");
+    t.diagnostic("⑫ 五份文档 + 两个脚本同改（REF 21 / WAKE 20_000）⇒ 0 处红（绿）");
   });
 });
 
