@@ -34,6 +34,8 @@ modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }))
 
    **守卫现在是阻塞的（issue #209）。** `test/**` 里除 `test/helpers/tmp.js` 自身之外的**任何** `mkdtemp` 调用——`mkdtemp(...)`、`fs.mkdtemp(...)`、`mkdtempSync(...)` 一视同仁——都让 `npm run check:tests` 失败；`/tmp` 字面量作首参同样失败。#209 之前只有窄形态 `mkdtemp(join(tmpdir(` 阻塞，其余只打一行**不阻塞**的提示（`mkdtempSync` 连数都没数，尽管注释声称覆盖了它）。**没有**同步版 `makeTmp`：需要临时目录的用例要么是 `async`（`node --test` 的回调本来就能 `async`），要么在 `before()` 里取。
 
+   **守卫有自己的反向证（issue #374）。** `node scripts/test-hygiene-check.mjs --self-test` 把同一张规则表跑在**内存里的假文件集合**上——不落盘、不碰 `test/`：`mkdtempSync(...)`、`mkdtemp(...)`、`fs.mkdtemp(...)` 各必须红，`makeTmp(...)` 必须绿，带豁免的调用绿而缺理由的 `test-hygiene-exempt:` 写法红且点名行号，`test/helpers/tmp.js` 自身不计数，变异没落上则该例判失败（#210 R2 的口径）。CI 里它是与 `npm run check:tests` 并列的独立阻塞步骤：单纯扫描只证「今天的树干净」，规则表自己被改坏时它照样绿。
+
    **豁免必须显式且逐行。** 确实不能走 `makeTmp` 的调用点（例如目录必须在文件级 `after()` 里删——`makeTmp` 的钩子作用域是注册它的那个上下文；或必须留在工作目录下），在调用所在行或紧邻的上一行写：
 
    ```js

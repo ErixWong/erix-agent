@@ -66,6 +66,14 @@ jobs:
       - name: Test hygiene guard
         run: npm run check:tests
 
+      # 阻塞（issue #374）：守卫自己的反向证——同一张规则表跑在**内存假文件集合**上（不落盘、不碰 test/）。
+      # `mkdtempSync` / `mkdtemp` / `fs.mkdtemp` 必须红，`makeTmp` 必须绿，`test-hygiene-exempt: <理由>` 绿而
+      # 缺理由红且点名行号，`test/helpers/tmp.js` 自身不计数，变异没落上也算失败（#210 R2）。
+      # 为什么不并进上面那条：那条证的是「今天的 test/ 干净」，这条证的是「规则表还拦得住」——改坏规则表时
+      # 前者照样 exit 0（实测：把 bare-mkdtemp 的 Sync 变体删掉 ⇒ check:tests 仍绿，本步 3 例红）。
+      - name: Test hygiene guard self-test
+        run: node scripts/test-hygiene-check.mjs --self-test
+
       # --checkJs 棘轮（issue #214）：基线 119 / --with-tools 162，只减不增。
       # 干净 checkout 里没有生成的 src/**/*.d.ts；若残留会让棘轮脚本自己硬失败（假绿防线）。
       - name: Type-error ratchet

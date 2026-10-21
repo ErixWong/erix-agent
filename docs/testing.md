@@ -34,6 +34,8 @@ modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }))
 
    **The guard blocks (issue #209).** `npm run check:tests` fails on any `mkdtemp` call under `test/**` — `mkdtemp(...)`, `fs.mkdtemp(...)` and `mkdtempSync(...)` alike — except inside `test/helpers/tmp.js` itself, and on any `/tmp` literal passed as a first argument. Before #209 only the narrow shape `mkdtemp(join(tmpdir(` was blocking while everything else was printed as a non-blocking hint (and `mkdtempSync` was not even counted, although the comment claimed it was). There is no synchronous `makeTmp`: a test that needs one must either be `async` (`node --test` callbacks may be `async`) or take its directory in a `before()` hook.
 
+   **The guard has its own reverse proof (issue #374).** `node scripts/test-hygiene-check.mjs --self-test` runs the same rule table over an **in-memory fake file set** — nothing is written and `test/` is never touched: `mkdtempSync(...)`, `mkdtemp(...)` and `fs.mkdtemp(...)` must each come back red, `makeTmp(...)` green, an exempted call green while the reason-less `test-hygiene-exempt:` form is red and names the line, `test/helpers/tmp.js` itself uncounted, and a mutation that stops applying fails its case (the #210 R2 convention). CI runs it as its own blocking step beside `npm run check:tests`: the plain scan only proves today's tree is clean, and it stays green when the rule table itself is broken.
+
    **Exemptions are explicit and per line.** When a call genuinely cannot go through `makeTmp` (for example a directory that must outlive a `before()` hook scope, or one that must stay inside the working directory), put a comment on the call line or on the line directly above it:
 
    ```js
