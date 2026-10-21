@@ -591,6 +591,16 @@ function collectBlocksFromMessages(messages) {
   return blocks;
 }
 
+// 从 store 记录里摊平正文消息（**只扫 record.messages**，与 collectBlocksFromRecords 同口径：
+// RoundRecord.response 是副本，两边一起扫会把同一批块数两次）。
+function collectMessagesFromRecords(records) {
+  const messages = [];
+  for (const record of toList(records)) {
+    if (Array.isArray(record?.messages)) messages.push(...record.messages);
+  }
+  return messages;
+}
+
 function toList(value) {
   return Array.isArray(value) ? value : (value === undefined || value === null ? [] : [value]);
 }
@@ -653,6 +663,168 @@ async function countJsonlLines(storeDir, runId) {
   const text = await readFile(file, "utf8");
   const lines = text.split("\n").filter((line) => line.trim() !== "").length;
   return { file, lines, bytes: Buffer.byteLength(text, "utf8"), text };
+}
+
+function parseJsonlRecords(text) {
+  return (text ?? "")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return { __unparsable: true, line: line.slice(0, 120) };
+      }
+    });
+}
+
+// ---------- 账本行的**独立复刻**（工单 261021 写侧「一条消息一落盘」之后的对账新口径）
+//
+// 旧口径（改造前）：一轮 = 一行 ⇒ 「jsonl 行数 == store.load() 记录数」就是「落盘不丢不重」。
+// 新口径（工单 261021）：一条消息一行（`kind:"message"` + 轮内 `seq`），轮行只留元数据，
+// `store.load()` 再把消息行**折回轮行**（`src/store/message-rows.js#foldMessageRows`）。
+// 于是行数与记录数不再相等（实测 6 轮：21 行 / 9 条），旧等式不再表达「不丢不重」——
+// 它只表达「有没有消息行」，那是个恒真的形状差异，不是不变量。
+// 所以这里不写 src 的实现，而是**照读侧口径自己独立折一遍**（分轮按 `seq` 升序、`partOf` 接回
+// 它指认的那条消息、有载体行的轮才吸、正文挪到载体行的位置上），再把折出来的正文序列与
+// `store.load()` 摊平的序列**逐条比对**：少一条 = 折叠丢了正文，多一条 = 同一份正文喂两遍
+// （正是第三刀要销掉的双喂），顺序错位 = 模型会看到与改造前不同的历史。
+const MESSAGE_ROW_KIND_LITERAL = "message";
+
+function independentRowKey(record) {
+  const key = record?.dedupKey ?? record?.roundKey;
+  return typeof key === "string" ? key : "";
+}
+
+function independentIsMessageRow(record) {
+  return record?.kind === MESSAGE_ROW_KIND_LITERAL
+    && Number.isSafeInteger(record.seq)
+    && Array.isArray(record.messages)
+    && record.messages.length > 0;
+}
+
+function independentIsCarrier(record, round) {
+  const key = independentRowKey(record);
+  return key !== ""
+    && (key.endsWith(`:round:${String(round)}`) || key.endsWith(`:round:${String(round)}:resume`));
+}
+
+function independentMergePart(target, part) {
+  const targetContent = Array.isArray(target?.content) ? [...target.content] : [target?.content];
+  const partContent = Array.isArray(part?.content) ? [...part.content] : [part?.content];
+  return { ...target, content: [...targetContent, ...partContent] };
+}
+
+/**
+ * 从**原始行**独立折出「模型该看到的正文序列」与行分类计数（不调用 src 的实现）。
+ * @param {any[]} rawRecords
+ */
+function foldLedgerFromRawRows(rawRecords) {
+  const rows = toList(rawRecords);
+  /** @type {Map<number, { carrier: number, rows: number[] }>} */
+  const groups = new Map();
+  for (let index = 0; index < rows.length; index += 1) {
+    const round = Number.isSafeInteger(rows[index]?.round) ? rows[index].round : undefined;
+    if (round === undefined) continue;
+    if (!groups.has(round)) groups.set(round, { carrier: -1, rows: [] });
+    const group = groups.get(round);
+    if (independentIsMessageRow(rows[index])) {
+      group.rows.push(index);
+    } else if (group.carrier === -1 && independentIsCarrier(rows[index], round)) {
+      group.carrier = index;
+    }
+  }
+
+  /** @type {Map<number, object[]>} 载体行下标 → 折回的正文 */
+  const attached = new Map();
+  const absorbed = new Set();
+  let standaloneMessageRows = 0;
+  let partOfMerges = 0;
+  for (const [round, group] of groups) {
+    if (group.rows.length === 0) continue;
+    if (group.carrier === -1) {
+      standaloneMessageRows += group.rows.length;
+      continue;
+    }
+    const ordered = [...group.rows].sort((left, right) => (
+      (rows[left].seq ?? 0) - (rows[right].seq ?? 0) || left - right
+    ));
+    const messages = [];
+    /** @type {Map<string, number>} */
+    const parts = new Map();
+    for (const index of ordered) {
+      absorbed.add(index);
+      const row = rows[index];
+      const partOf = typeof row.partOf === "string" ? row.partOf : "";
+      const targetIndex = partOf === "" ? -1 : (parts.get(partOf) ?? -1);
+      if (targetIndex >= 0 && row.messages.length === 1) {
+        messages[targetIndex] = independentMergePart(messages[targetIndex], row.messages[0]);
+        partOfMerges += 1;
+        continue;
+      }
+      const key = independentRowKey(row);
+      if (key !== "") parts.set(key, messages.length);
+      messages.push(...row.messages);
+    }
+    attached.set(group.carrier, messages);
+    void round;
+  }
+
+  const orderedMessages = [];
+  let engineRoundRows = 0;
+  let seedRows = 0;
+  let factRows = 0;
+  let messageRows = 0;
+  let otherRows = 0;
+  let unparsable = 0;
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (row?.__unparsable === true) unparsable += 1;
+    if (row?.kind === MESSAGE_ROW_KIND_LITERAL) messageRows += 1;
+    else if (row?.response) engineRoundRows += 1;
+    else if (independentRowKey(row).endsWith(":seed")) seedRows += 1;
+    else if (Number.isSafeInteger(row?.round)) factRows += 1;
+    else otherRows += 1;
+    if (absorbed.has(index)) continue;
+    const own = Array.isArray(row?.messages) ? row.messages : [];
+    orderedMessages.push(...own);
+    const extra = attached.get(index);
+    if (extra !== undefined) orderedMessages.push(...extra);
+  }
+  return {
+    orderedMessages,
+    counts: {
+      rows: rows.length,
+      messageRows,
+      absorbedMessageRows: absorbed.size,
+      standaloneMessageRows,
+      partOfMerges,
+      engineRoundRows,
+      seedRows,
+      factRows,
+      otherRows,
+      unparsable,
+    },
+  };
+}
+
+// 逐条比对两条正文序列（JSON 文本口径，与 `resume-history-bytes-unchanged` 同一个比较口径）。
+function compareMessageSequences(left, right) {
+  const mismatches = [];
+  const total = Math.max(left.length, right.length);
+  for (let index = 0; index < total; index += 1) {
+    const a = JSON.stringify(left[index]);
+    const b = JSON.stringify(right[index]);
+    if (a !== b) {
+      mismatches.push({
+        index,
+        left: a === undefined ? "MISSING" : a.slice(0, 120),
+        right: b === undefined ? "MISSING" : b.slice(0, 120),
+      });
+      if (mismatches.length >= 3) break;
+    }
+  }
+  return { equal: mismatches.length === 0 && left.length === right.length, mismatches };
 }
 
 // --------------------------------------------------------------- 断言台账
@@ -806,15 +978,40 @@ async function main() {
       foldedRounds: mainResult?.compactionStats?.find?.((s) => s.compacted)?.foldedRounds,
     });
 
-  // ---------- 阶段 B：三方对账（落盘行数 / store.load / 事件流）
+  // ---------- 阶段 B：三方对账（落盘原始行 / store.load / 事件流）
   const mainRecords = await common.store.load(mainRunId);
   const mainJsonl = await countJsonlLines(storeDir, mainRunId);
+  const journal = foldLedgerFromRawRows(parseJsonlRecords(mainJsonl.text));
+  const loadedMessages = collectMessagesFromRecords(mainRecords);
+  const foldCompare = compareMessageSequences(journal.orderedMessages, loadedMessages);
   const recordKinds = tallyRecordKinds(mainRecords);
   const responseCopies = tallyResponseCopies(mainRecords);
+  // 旧断言是 `jsonlLines === store.load().length`（改造前一轮一行，两者相等）。
+  // 逐条落盘后那个等式只能表达「本次没写消息行」，牙齿全无 ⇒ 换成两条真不变量：
+  //   ① **行级闭合**：每一行要么原样出现在 load() 里，要么作为消息行被折进载体行；
+  //      所发 `jsonlLines === loadedRecords + absorbedMessageRows`（相等 = 不丢行也不多行，
+  //      任何一行被静默丢弃 / 重复暴露都会红）；
+  //   ② **正文闭合**：本脚本独立复刻的折叠结果与 `store.load()` 摊平的正文**逐条相等**
+  //      （少一条 = 折叠吞了正文；多一条 = 同一份正文存了两遍；错位 = 顺序变了）。
+  // 并且钉住「本次真的逐条落盘了」（messageRows > 0），否则两条新不变量都会退化成空跑。
   ledger.check("store-reconcile-jsonl-vs-load",
-    mainJsonl.lines === mainRecords.length, {
+    mainJsonl.lines > 0
+      && journal.counts.unparsable === 0
+      && journal.counts.messageRows > 0
+      && journal.counts.engineRoundRows > 0
+      && mainJsonl.lines === mainRecords.length + journal.counts.absorbedMessageRows
+      && foldCompare.equal, {
       jsonlLines: mainJsonl.lines,
       loadedRoundRecords: mainRecords.length,
+      // 新口径的三个计数：旧等式的「行数 == 记录数」就是这两个数的合一（absorbed = 0 时退化回旧形状）。
+      messageRows: journal.counts.messageRows,
+      absorbedMessageRows: journal.counts.absorbedMessageRows,
+      standaloneMessageRows: journal.counts.standaloneMessageRows,
+      partOfMerges: journal.counts.partOfMerges,
+      ledgerMessages: loadedMessages.length,
+      independentlyFoldedMessages: journal.orderedMessages.length,
+      foldMismatches: foldCompare.mismatches,
+      accounting: `jsonlLines=${mainJsonl.lines} == load() 返回 ${mainRecords.length} 条 + 被折进载体行的消息行 ${journal.counts.absorbedMessageRows} 条`,
       recordKinds,
       responseContentCopies: responseCopies,
       file: path.basename(mainJsonl.file),
@@ -827,15 +1024,18 @@ async function main() {
       toolUseEvents: counter.toolUses,
       loadedRoundRecords: mainRecords.length,
       nonEngineRoundRecords: recordKinds.nonRound,
-      composition: `jsonlLines=${mainJsonl.lines} = 引擎轮记录 ${recordKinds.engineRounds}`
-        + ` + seed 记录 ${recordKinds.nonRound}`,
-      compositionMatches: mainJsonl.lines === recordKinds.engineRounds + recordKinds.nonRound,
-      explanation: "seed 记录不是某一轮的消息副本，也不是「initialUserMessage 自己占一行」："
-        + "initialUserMessage 只进内存消息（src/loop/orchestrator.js:1412-1413），而轮记录写的是"
-        + " messages.slice(roundStart)（src/loop/orchestrator.js:2904）。那一行是**非 resume 分支专门归档的"
-        + " round=0 种子记录**（src/loop/resume-manager.js:274-289，dedupKey=`<runId>:engine:round:0:seed`，"
+      composition: `jsonlLines=${mainJsonl.lines} = 引擎轮行 ${journal.counts.engineRoundRows}`
+        + ` + 消息行 ${journal.counts.messageRows}`
+        + ` + seed 行 ${journal.counts.seedRows} + 事实/控制行 ${journal.counts.factRows + journal.counts.otherRows}`,
+      compositionMatches: mainJsonl.lines === journal.counts.engineRoundRows + journal.counts.messageRows
+        + journal.counts.seedRows + journal.counts.factRows + journal.counts.otherRows,
+      explanation: "seed 行不是某一轮的消息副本，也不是「initialUserMessage 自己占一行」："
+        + "initialUserMessage 只进内存消息（src/loop/orchestrator.js 的 initialUserMessage 入 ctx.messages），"
+        + "而轮行从工单 261021 起**只留元数据**（正文逐条写进 `…:msg:<round>:<seq>` 消息行，"
+        + "读侧由 src/store/message-rows.js#foldMessageRows 折回轮行）。那一行是**非 resume 分支专门归档的 "
+        + "round=0 种子行**（src/loop/resume-manager.js，dedupKey=`<runId>:engine:round:0:seed`，"
         + "内容 = 初始消息，无 response），目的是 ADR-002 的档案完整性（fold 后还能恢复初始历史）。"
-        + " round_end 事件只等于引擎轮记录数（seed 不是轮）。",
+        + " round_end 事件只等于引擎轮行数（seed 不是轮，消息行也不是轮）。",
     });
 
   // ---------- 阶段 B2：TTL 折叠真的发生了（工单 #290 返工第 1 条）
@@ -1453,6 +1653,14 @@ async function main() {
       jsonlLines: mainJsonl.lines,
       jsonlBytes: mainJsonl.bytes,
       loadedRoundRecords: mainRecords.length,
+      // 工单 261021 写侧后的新对账口径（行级闭合 + 正文闭合），旧口径是 `jsonlLines == loadedRoundRecords`。
+      messageRows: journal.counts.messageRows,
+      absorbedMessageRows: journal.counts.absorbedMessageRows,
+      standaloneMessageRows: journal.counts.standaloneMessageRows,
+      partOfMerges: journal.counts.partOfMerges,
+      ledgerMessages: loadedMessages.length,
+      independentlyFoldedMessages: journal.orderedMessages.length,
+      foldMismatches: foldCompare.mismatches,
       roundEndEvents: counter.roundEnds,
       toolResultEvents: counter.toolResults,
       toolUseEvents: counter.toolUses,
