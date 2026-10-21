@@ -3,6 +3,14 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Documentation
+
+- **纠正一条被沿用的错误说法：judge 的「方向提示」从来不是「模型见过、档案里没有」（工单 261021-04；`src/` 只加了两处约束注释，行为零改动）。** 结论来自实测：两个 flush 点（`src/loop/orchestrator.js` 主循环的工具块末、以及 resume 补跑段之后）都在**本轮 `appendRound` 落盘之前**把提示 push 进 `messages`，于是正文被轮记录的 `messages.slice(roundStart)`（resume 路径是被 `…:resume` 那行的 `messages.slice(resumeTranscriptStart)`）带走 ⇒ `store.load()` 里**恰有一条**（实测：主循环 `…:engine:round:2` 命中 1、resume `…:engine:round:1:resume` 命中 1）。此前「档案 0 条」的说法出自只数 `…:control:` 行、没数「正文是否在轮记录里」的旧探针。
+  - 照 #326 第 3 步的先例给它补一条 `…:control:direction-hint:<seq>` 行是**净引入回归**：同一条正文在账本里出现两遍，而 `src/loop/resume-manager.js` 用 `records.flatMap(record.messages)` 重建上下文 ⇒ resume 后模型收到 **2 条**（探针实测：改前 1 / 改后 2），`persistedTranscriptLength` 再多算 1。`:fold:` / `:ttl:` 走「事实字段 + `messages: []`」是因为那里本来没有别的副本，前提不同。
+  - 顺带量到的两条口径（已写进中英契约）：同一进程内**每轮最多 flush 一次**（主循环的 flush 点在 `response?.stopReason === "tool_use"` 分支里、身份轮号严格前进；resume 的 flush 在进圈前，轮号 = 回放的 run 快照 `resumeRunSnapshot` 的 round，而主循环首轮是 `rounds + 1`）⇒ 「每轮序号」分支今天不可达；而双喂回归在全量 `npm test` 下**仍然全绿**（1808 / 1800 / 0）⇒ 只能靠新增守卫钉住。
+  - **补三道回归守卫**（`test/loop-persist-engine-text.test.js`，新增 3 条全离线用例）：主循环 flush 与 resume flush 各一条断言「`store.load()` 全部行里**恰好 1 条**」（写的是恰好 1，不是 `>= 1`：flush 点被挪到轮记录落盘之后 ⇒ 0，再补专属行 ⇒ 2，两种都必须红）并钉住带正文的那一行就是轮记录 / `…:resume` 行；第三条钉「resume 重建后模型侧只收到 1 条」。反向证（把 flush 临时搬到轮记录 `appendRound` 之后）实测红在 `0 !== 1`。
+  - 中英契约 `docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md` 的「引擎控制行」小节补一句子项：`direction-hint` **不是** `:control:` 行的 slot，正文随轮记录入账，以及为什么（flush 点在圈底 persist 之前）；中英锚点成对，符号锚点 72 → **75**（`SYMBOL_ANCHOR_MIN_UNIQUE` 同步升到 75），裸行号棘轮实测 **138 = 基线 138**（新文本一律用符号锚点不写行号）。
+
 ### Added
 
 - **`erix_run`（pi extension）新增 `judgeDoneAdvisory` 参数，把引擎已有的评审意见回灌接到宿主侧（透传给引擎 `reflection.judgeDoneAdvisory`）。** 引擎侧能力（issue #322，随 0.22.0 发布）早就在，缺的只是 `erix_run` 的参数面：它此前只把 `maxExtensions` / `maxRoundsCap` / `extensionStep` 三个名字拼进下发给引擎的 `reflection:{}`，而 `~/.erix/config.json` 里根本没有 reflection 段 ⇒ **通过 `erix_run` 派工的 run 吃不到这条修复**。现在 `judgeDoneAdvisory: true` 会原样递给引擎：中途治理（judge）判定「目标已达成」时，它那句评审意见会作为**一条普通用户文本消息**在下一个安全点内递给内层模型；**那是软提示不是硬停止**——不拦工具调用、不提前收尾、`termination.reason` 一字不因它改变。
