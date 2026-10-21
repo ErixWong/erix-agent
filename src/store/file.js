@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { boundRunState } from "../run-state.js";
+import { foldMessageRows } from "./message-rows.js";
 import { dedupConflictError, payloadFingerprint, recordKey } from "./transcript-dedup.js";
 
 const HASHED_RUN_ID_PREFIX = "run-h-";
@@ -362,7 +363,9 @@ export function createFileTranscriptStore({ dir }) {
     },
 
     async load(runId) {
-      return loadRecords(runId);
+      // 工单 261021：读侧折叠——`kind: "message"` 行的正文按轮拼回轮行，宿主可见形状与
+      // 「一条消息一落盘」改造前逐字一致；没有消息行的老账本由 foldMessageRows 原样透传。
+      return foldMessageRows(await loadRecords(runId));
     },
 
     async markRunState(runId, state) {

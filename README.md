@@ -219,6 +219,7 @@ src/
     notes-memory.js                In-process NotesStore adapter (shares src/store/notes-port.js)
     notes-port.js                  Shared NotesStore port semantics (internal)
     append-user-turn.js            Pre-written user turn for the multi-turn resume contract
+    message-rows.js                Read-side folding of `kind:"message"` rows back into round rows (internal)
     transcript-dedup.js            Shared appendRound dedup payload fingerprint (internal)
   config/
     api-key.js                     API-key materialization

@@ -1,4 +1,5 @@
 import { boundRunState } from "../run-state.js";
+import { foldMessageRows } from "./message-rows.js";
 import { dedupConflictError, payloadFingerprint, recordKey } from "./transcript-dedup.js";
 
 /**
@@ -77,7 +78,8 @@ export function createMemoryTranscriptStore() {
     },
 
     async load(runId) {
-      return (transcripts.get(runId) ?? []).map(copyRecord);
+      // 工单 261021：与 file store 同一个折叠层（两侧不得各抄一套），宿主看到的 `load()` 形状不变。
+      return foldMessageRows((transcripts.get(runId) ?? []).map(copyRecord));
     },
 
     async markRunState(runId, state) {
