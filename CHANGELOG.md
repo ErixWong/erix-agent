@@ -5,6 +5,13 @@
 
 ### Changed
 
+- **chore/scripts：#374 给卫生守卫 `scripts/test-hygiene-check.mjs` 加 `--self-test`（内存假文件集合 13 例，不落盘、不碰 `test/` 真实文件），并把它接进 CI 的阻塞步骤（issue #374；`test/` 零改动、`src/` 零改动、无新依赖）。**
+  现场：#209 把守卫升级成阻塞之后，**守卫自己的口径仍然只能靠人肉试**——往 `test/` 里临时插一行 `mkdtemp(...)`、跑一遍、再删掉。这种验证既不可复现，又会因为「插进去的那行先命中别的规则」而误判；更糟的是**守卫自己被改坏时没人知道**：`check:tests` 只证「今天的 `test/` 干净」，把 `bare-mkdtemp` 的 `Sync` 变体删掉它照样 exit 0。
+  - **自测与真树共用一条裁决路径**：新增纯函数 `checkRecords(records)`（`{ rel, text }` 记录集合 → 违规与豁免清单），真树扫描 `scanTree()` 只是「walk `test/**` + 读成记录」再交给它。`--self-test` 喂的是**内存里的假文件集合**，所以它绿证明的是**规则表本身**没被改坏，而不是「今天 `test/` 恰好干净」。
+  - **13 例**（下限常量 `MIN_SELF_TEST_CASES = 13`，只许涨不许降；工单下限 6 格）：① `mkdtempSync(join(tmpdir(), …))` ⇒ 红；② `mkdtemp(` ⇒ 红（旧 hint 漏的那一格）；②b `fs.mkdtemp(` ⇒ 红；③ `makeTmp(` ⇒ 绿；④a 豁免注释 `// test-hygiene-exempt: <理由>` ⇒ 绿且守卫把理由记下来；④b 只写标记缺理由 ⇒ 红且点名行号；⑤ `test/helpers/tmp.js` 自身不计数；⑤对照 同一段 `mkdtemp` 文本换个文件名 ⇒ 必须红（证明豁免不是整条规则失效）；⑥ 变异「靶子不存在」⇒ 判「变异没落上」（#210 R2）；A1 `join("/tmp", …)` / A2 `readFileSync("/tmp/…")` / A3 `mkdtempSync("/tmp/…")` ⇒ 红（A3 三条重叠规则各点一次名）；A4 惰性字面量（对象字面量里的 `"/tmp/project"`、第二参数里的 `"/tmp"`）⇒ 绿（#185 口径不误伤）。期望自己也被看守：能匹配空串的期望、既非放行证又没写期望的整例跳过、用例数低于下限，三刀都在跑变异之前报。
+  - **双向实证**（`cp` 备份 + `md5sum` 逐字还原，零 `git checkout`）：把 `ANY_MKDTEMP_CALL` 的 `(?:Sync)?` 删掉（= 只扫 `mkdtemp(`）⇒ `--self-test` **3 例红**（① / ④b / A3），而 `npm run check:tests` 真树扫描**仍然 exit 0**——自测抓的正是扫描抓不到的那半个证明；再去掉 `bare-mkdtemp` 的 `exempt: EXEMPT_FILE` ⇒ ⑤ 红。还原后 `scripts/test-hygiene-check.mjs` 的 `md5sum` 回到 `23a367e73299bcd373577237944a5e09`（逐字一致）。
+  - **CI**：`.github/workflows/ci.yml` 新增独立阻塞步骤 `Test hygiene guard self-test`（`node scripts/test-hygiene-check.mjs --self-test`，紧跟 `Test hygiene guard`）。**不并入 `check:tests`**：两者证的是不同命题（「今天的树干净」vs「规则表还拦得住」），分成两步时失败的那一步直接说明是哪一半破了；AGENTS 中英的 blocking 步骤清单已同步（`check:tests` 之后）。
+  - **文档**：`docs/testing.md` / `docs/testing_cn.md` 的基础设施第 6 条补一段「守卫有自己的反向证」，写明 `--self-test` 跑在内存假文件集合上、覆盖哪几种形状、以及为什么它是独立 CI 步骤。
 - **chore/test：#209 收口测试里剩下的历史临时目录形态，并把卫生守卫从「提示」升级为「阻塞」（`test/**` 约 42 处 `mkdtemp` 调用点 + `scripts/test-hygiene-check.mjs`；`src/` 零改动、无新依赖、`makeTmp` 语义与 memoize 行为未动）。**
   现场：守卫注释声称「`mkdtemp(path.join(tmpdir(…)` 与 `mkdtempSync(...)` 等历史形态一并卷入」，但它硬拦的只是窄形态 `mkdtemp(join(tmpdir(`，其余只打印一行**不阻塞**的提示，而提示数 **23** 既不等于 `mkdtemp(` 的 25、也不等于 `mkdtempSync(` 的 17——注释、实现、实际三者互不相符，且 `mkdtempSync` 那一格连数都没数。
   - **清点（以实测为准）**：`test/**` 里 `mkdtemp(`（不含 Sync）**25** 处、`mkdtempSync(` **17** 处，其中 `mkdtemp(join(tmpdir` / `mkdtemp(path.join(tmpdir` 形态 20 处、`mkdtempSync(*tmpdir*` 13 处、`mkdtemp(path.join(process.cwd()` 1 处（`test/notes-experiment-script.test.js`，临时目录建在仓内）、`test/contract/doc-examples.js` 一个文件 11 处。逐条表（文件:行:形态）见报告。
