@@ -1,5 +1,6 @@
 # Bounded recall API 设计
 
+> 快照档案（2026-09-14）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 - 状态：已实现（TranscriptStore memory/file 参考实现）
 - 日期：2026-09-14
 - 关联：[memory and compaction RFC](./2026-09-14-memory-and-compaction-rfc.md)、[评审](./2026-09-14-memory-and-compaction-rfc-review.md)、Issue [#82](https://github.com/ErixWong/erix-agent/issues/82)

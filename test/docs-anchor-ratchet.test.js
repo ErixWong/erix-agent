@@ -13,7 +13,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,14 +48,26 @@ const GUIDE_DOCS_PINNED = [
   "docs/host-upgrade-guide-v030_cn.md",
 ];
 
+/** 覆盖面里**硬编码点名**的那批文档（工单 261021-03 B1：6 份 → **13** 份）。与脚本侧的
+ *  `SYMBOL_DOCS_STATIC` 同一批：两份 README、中英 AGENTS、中英契约、中英架构、中英图表、中英需求对照，
+ *  外加 `examples/pi-extension/README.md`。测试侧故意另写一份并逐份点名：脚本侧改名 / 从清单里揉掉一份
+ *  而不在这里同步，这一例就红（与下面 `GUIDE_DOCS_PINNED` 同一条理由：两只眼不得用同一只眼睛看）。 */
+const NAMED_DOCS_PINNED = [
+  "README.md", "README_cn.md", "AGENTS.md", "AGENTS_cn.md", CONTRACT_EN, CONTRACT_CN,
+  "docs/architecture.md", "docs/architecture_cn.md",
+  "docs/charts.md", "docs/charts_cn.md",
+  "docs/requirements.md", "docs/requirements_cn.md",
+  "examples/pi-extension/README.md",
+];
+
 /** 覆盖面：与脚本里的 `refScanDocs()` 同一批文档，**故意**在测试侧另写一遍——两边不一致时第 ②③ 条
  *  就会红，等于把「覆盖面悄悄缩水」也钉住（升级指南按目录实扫，新指南落地即自动纳面）。 */
 const DOCS = [
-  "README.md", "README_cn.md", "AGENTS.md", "AGENTS_cn.md", CONTRACT_EN, CONTRACT_CN,
+  ...NAMED_DOCS_PINNED,
   ...readdirSync(join(ROOT, "docs")).filter((f) => /^host-upgrade-guide.*\.md$/.test(f)).sort().map((f) => `docs/${f}`),
 ];
 
-test("#286 覆盖面（返工 R2）：脚本侧实扫的指南清单必须等于测试侧硬编码的那 18 份，且下限常量 = 24", () => {
+test("#286 覆盖面（返工 R2 + 工单 261021-03 B1）：脚本侧实扫的指南清单必须等于测试侧硬编码的那 18 份，且下限常量 = 13 份点名 + 18 份指南 = 31", () => {
   const discovered = readdirSync(join(ROOT, "docs")).filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
     .map((f) => `docs/${f}`).sort();   // 与清单同形状（都带 docs/ 前缀），免得比出假差集
   const missing = GUIDE_DOCS_PINNED.filter((f) => !discovered.includes(f));
@@ -66,8 +78,22 @@ test("#286 覆盖面（返工 R2）：脚本侧实扫的指南清单必须等于
     + "\n  新增指南请把名字补进 test/docs-anchor-ratchet.test.js 的 GUIDE_DOCS_PINNED，并把脚本侧 REF_SCAN_DOCS_MINIMUM 升上去");
   const script = read("scripts/docs-drift-check.mjs");
   const minimum = Number(script.match(/^const REF_SCAN_DOCS_MINIMUM = (\d+);/m)?.[1] ?? NaN);
-  assert.equal(minimum, 24, "覆盖面下限常量被改了：应为 6 份硬编码 + 18 份指南 = 24（新增一份指南就抬一次）");
-  assert.equal(6 + GUIDE_DOCS_PINNED.length, minimum, "测试侧清单份数与脚本侧下限不一致（两处必须同步）");
+  assert.equal(minimum, 31, "覆盖面下限常量被改了：应为 13 份点名文档 + 18 份指南 = 31"
+    + "（13 份 = README×2 + AGENTS×2 + 契约×2 + 架构×2 + 图表×2 + 需求对照×2 + erix_run README，工单 261021-03 B1 由 6 抬到 13；新增一份就抬一次）");
+  assert.equal(NAMED_DOCS_PINNED.length + GUIDE_DOCS_PINNED.length, minimum, "测试侧清单份数与脚本侧下限不一致（两处必须同步）");
+  // 点名那一批还要与脚本里的 `SYMBOL_DOCS_STATIC` 逐份对得上：只比份数的话，「揉掉架构、换成另一份」
+  // 这种等量交换两边仍然相等 ⇒ 静默换面（与指南改名同一条病，只是形状不同）。
+  const staticBlock = script.slice(
+    script.indexOf("const SYMBOL_DOCS_STATIC = ["),
+    script.indexOf("];", script.indexOf("const SYMBOL_DOCS_STATIC = [")),
+  );
+  assert.ok(staticBlock.length > 20, "抽不到脚本侧的 `const SYMBOL_DOCS_STATIC = [...]`——点名清单被挪走了");
+  const constToRel = { README_EN: "README.md", README_CN: "README_cn.md", AGENTS_EN: "AGENTS.md", AGENTS_CN: "AGENTS_cn.md", CONTRACT_EN, CONTRACT_CN, ARCH_EN: "docs/architecture.md", ARCH_CN: "docs/architecture_cn.md", CHARTS_EN: "docs/charts.md", CHARTS_CN: "docs/charts_cn.md", REQ_EN: "docs/requirements.md", REQ_CN: "docs/requirements_cn.md", PI_EXT_README: "examples/pi-extension/README.md" };
+  const scriptNamed = [...staticBlock.matchAll(/\b([A-Z][A-Z0-9_]+)\b/g)].map((m) => constToRel[m[1]]).filter(Boolean);
+  assert.deepEqual([...new Set(scriptNamed)].sort(), [...NAMED_DOCS_PINNED].sort(),
+    `脚本侧 SYMBOL_DOCS_STATIC 点名的文档与本文件的 NAMED_DOCS_PINNED 不一致（脚本 ${scriptNamed.join(", ")}）`
+    + "\n  两边不一致 = 覆盖面被**等量换面**（揉掉一份又补一份，份数不变而检查面已经不同）");
+  for (const rel of NAMED_DOCS_PINNED) assert.ok(existsSync(join(ROOT, rel)), `点名的活文档不见了：${rel}（改名 = 检查面静默缩面，与指南改名同一条病）`);
 });
 
 test("#286 棘轮基线常量与 AGENTS 中英两侧声称的数一致（口径文件化不许单边腐烂）", () => {

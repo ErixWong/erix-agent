@@ -262,7 +262,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 - **后台 run 与扩展同进程**：pi 进程退出 / 扩展 `/reload` 会杀掉它（`status.json` 只留下最后一个已知状态，
   **不会自动续跑**）。⚠ 这**不是** `pi-subagents` 的做法：上游**每个**后台 run 都 `spawn` 一个独立 runner 进程
-  （`src/runs/background/async-execution.js:4` 导入 `spawn`，`spawnRunner` 定义在 `:385`，`:484` 真调用，调用点 `:1255` / `:1800`）。
+  （上游 `pi-subagents` 仓的 `pi-subagents:src/runs/background/async-execution.js:4` 导入 `spawn`，那里的 `spawnRunner` 定义在该仓 `:385`、`:484` 真调用，
+  调用点 `:1255` / `:1800`——这四个行号全部属于那个仓，本仓没有这个文件；路径写成 `pi-subagents:` 前缀形式就是声明「它不是本仓路径」，口径见 `AGENTS.md`）。
   所以「同进程 + 不起子进程 / IPC」是**本单自己的选择**而不是跟上游——理由与代价见
   `docs/research/2026-10-13-pi-subagents-async-attribution.md` §6（旧版本这里写的「`pi-subagents` 也没为每个子任务
   spawn 子进程（全仓唯一 `spawnSync` 在 `herdr-pi-bridge.js:1`）」是假的，#269 已改：上游 `spawnSync` 有十来处，
@@ -360,9 +361,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 | 环节 | 位置 | 行为 |
 |---|---|---|
-| 读配置文件 | `src/config/json-file.js:39` | `return { ...config }` |
-| erix_run 读槽位 | `erix-run-core.js:639` | `const resolved = { ...slot }` |
-| 造 provider | `erix-run-core.js:679` | `createOpenAIProvider({ ...slot, … })`，而 `src/providers/openai.js` 具名收 `thinking` / `reasoning_effort` / `enable_thinking` / `thinking_format` |
+| 读配置文件 | `createJsonFileModelConfigProvider`（`src/config/json-file.js`） | `return apiKey === undefined ? { ...config } : { ...config, apiKey }` |
+| erix_run 读槽位 | `loadModelSlot`（`examples/pi-extension/erix-run-core.js`） | `const resolved = { ...slot }` |
+| 造 provider | `createProviderForSlot`（`examples/pi-extension/erix-run-core.js`） | `createOpenAIProvider({ ...slot, … })`，而 `src/providers/openai.js` 具名收 `thinking` / `reasoning_effort` / `enable_thinking` / `thinking_format` |
 
 ```json
 {

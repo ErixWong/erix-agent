@@ -1,5 +1,6 @@
 # erix-agent 架构级评审（代码架构层）
 
+> 快照档案（2026-10-08）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 > 独立架构评审（subagent 产出，主 agent 抽验复核：A2/A4/A5/A6/A9 证据与 npm test 基线均复核相符；A9 中 truncateBody 主 agent 粗窗口比对显示有差异，落地时按实际逐字节比对为准）。任务清单见 GitHub issues #164-#170（产品层，本报告不重复）。
 
 - **日期**：2026-10-08（任务单写 2026-10-09，`date +%F` 实测为 **2026-10-08**，按纪律自校正；运行时输出文件名仍为 `2026-10-09-architecture-review.md`，落地到仓库时建议改名 `2026-10-08-architecture-review.md`）

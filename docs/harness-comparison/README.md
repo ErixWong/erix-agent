@@ -1,5 +1,6 @@
 # Agent Harness 上下文与记忆机制横向对比
 
+> 快照档案（2026-09-17）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 > 目录用途：把 5 个 agent harness 在**上下文 / 记忆**方面的实现读透并横向对比，为自研 agent（本项目 erix-agent）的架构决策提供事实依据。
 > 创建于 2026-09-17。前一轮相关工作：`docs/research/2026-08-29-memory-context-research.md`（外部实践扫描 + 业界论文），本目录补的是**可执行代码级**的一手对比。
 

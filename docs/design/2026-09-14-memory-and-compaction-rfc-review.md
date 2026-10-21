@@ -1,5 +1,6 @@
 # RFC《记忆系统与折叠方案全面重构》独立对抗性评审
 
+> 快照档案（2026-09-14）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 - 对象：`docs/design/2026-09-14-memory-and-compaction-rfc.md`
 - 对象 PR：[ErixWong/erix-agent#81](https://github.com/ErixWong/erix-agent/pull/81)
 - 性质：静态代码/文档评审；**本评审没有发起任何模型、relay 或实验调用**

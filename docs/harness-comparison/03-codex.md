@@ -1,5 +1,6 @@
 # OpenAI Codex CLI（codex-rs）上下文与记忆机制剖析
 
+> 快照档案（2026-09-17）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 ## 0. 版本与范围
 
 - 对象：OpenAI Codex CLI 的 Rust 实现 `codex-rs`（Cargo workspace，含 `core` / `prompts` / `skills` / `memories` / `ext` / `state` / `tools` / `context-fragments` 等 100+ 个 crate）。仓库根 `/home/eric/projects/github/codex`，HEAD=`800d183`（depth=1）。

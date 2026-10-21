@@ -1,5 +1,6 @@
 # erix-agent / erix-llm-kit 上下文与记忆机制剖析
 
+> 快照档案（2026-09-14）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 > **Historical snapshot（历史快照标注）**：本文写于评审时点（0.5.1 时代，
 > HEAD=`0c309e6`），文中引用的 `skills/notes/skill.mjs`、`bin/auto-capture.js`、
 > 旧 janitor 语义（时间启发式 active orphan 清理、run 起终点自动 GC）与

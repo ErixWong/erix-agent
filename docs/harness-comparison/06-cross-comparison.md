@@ -1,5 +1,6 @@
 # 横向对比：上下文、截断、折叠召回、工具技能、长期记忆
 
+> 快照档案（2026-10-10）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 > 单项目事实与证据见同目录 `01`~`05`；本文只做**对照**，行号级证据请回各单项目文档。
 > 缩写：**pi** = pi-coding-agent 0.84.2 / **tw** = touwaka-mate / **cx** = OpenAI Codex CLI（codex-rs）/ **hm** = Hermes Agent / **ex** = 本项目 erix-agent。
 
