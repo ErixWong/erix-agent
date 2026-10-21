@@ -67,6 +67,7 @@ scripts/          # 实验脚本和结果
 | `npm run check:docs-examples` | 真实执行 `docs/host-consumer-contract.md` 里的 js 围栏（issue #158） |
 | `npm run check:pack-links` | 随包 Markdown 的链接闭合检查，**外加** `.d.ts` 声称对账：四份入口文档里每一句「装包应列 **N** 个 `.d.ts`」都必须等于同一次 `npm pack --dry-run --json` 列出的 `src/**/*.d.ts` 条目数（不为了数数再跑一次 `tsc`） |
 | `npm run check:release` | 把发版前那条手工验证变成一条命令（issue #257 T5）：按顺序五步，红就点名第几步——`npm pack` → 断言 tarball（声明文件数 > 0、当前版本的中英两份升级指南都在、随包的 `test/contract/` 文件一个不少、`files` 白名单之外没有杂物；Markdown 链接闭合**交给** `check:pack-links`，不在这里重写）→ 把 tarball 装进一个一次性临时项目并断言 `import("erix-agent")`/`import("erix-agent/tools")` → 用**装好的包**跑随包契约套件 → 用 `tsc --strict --skipLibCheck` 编译一个真 TypeScript 宿主（退 0，且未知的 `runToolLoop` option 键**必须**报 `TS2353`）并把编译产物真跑一遍 → 拿本地假上游冒烟装好的 `erix` CLI（`--version` 等于 `package.json`；一次成功的 `chat` 退 **4**，因为不开 `--final-guard` 时核验是 `skipped`；`--session` 不存在退 1）。离线（`npm --offline` + 一次性 cache/userconfig + 假 `HOME`）、跑完自清、约 15 秒 |
+| `npm run check:release:real` | **发版前真机清单**（工单 261021-13；写它的直接起因是 0.23.0 在「文档审计没跑 + 四条真上游 e2e 没跑」的状态下发车）：五条按固定顺序串成一条命令——`node --test examples/tool-fact-e2e.test.mjs` → `examples/resume-real-e2e.test.mjs` → `examples/cross-version-real-e2e.test.mjs` → `examples/pi-extension/erix-run-e2e.test.mjs` → `node scripts/cli-real-smoke.mjs`——每条前打 `=== [i/5] <名字> ===`，跑完打该条的 `tests/pass/fail` 与耗时；每条单独 **900 秒**硬超时（超时算红，按**进程组** `SIGKILL` 以免孙进程继续烧钱，然后继续下一条）。任一条红 ⇒ **跑完整张清单后** exit 1，末尾点名是哪几条；全绿 exit 0 并打总耗时。闸门：`ERIX_E2E_REAL=1` 不是 1 时**一步都不跑**、exit 0、打分类原因（与 `examples/e2e-real-gate.mjs` 同一套 `GAP_CODES`），因此永不成为任何默认门禁的硬依赖；但闸门**开着**而配置/凭据/端点不可用 ⇒ exit **1**（发版必跑项被「跳过」冒充「通过」正是 PR #289 阻断 1 的镜像错误）；子进程出现闸门/配置类 skip 也判红（预检与子进程口径打架 = 装置坏了），别的 skip（例：跨版本那条的「旧 CLI 0.22.0 不可用」）不判红但在汇总里点名。本脚本**一个字节也不写**（不建临时目录、不写 `~/.erix`），隔离留在各子命令的消费点 |
 | `npm run check:cli-real` | 装后 CLI 打真上游的 gate 冒烟（工单 261015 T5，#284/#285 收尾）：`npm pack` → 把 tarball 装进一次性临时项目 → 用**装好的 `erix`**（不是 `node bin/cli.js`）打真上游跑一个 ≥2 次工具的任务，断言退出码承诺（不开 `--final-guard` 的成功 run 退 **4** = 核验 skipped）、transcript 里 `tool_result` 的字段面、以及装好的包自己的投影。只有 `ERIX_E2E_REAL=1` 才跑；闸门关着时 exit 0 并打出**分类**原因（gate 缺失 / 配置不存在 / JSON 坏了 / 缺字段 / 端点不可达）。模型名从 `slots.default` 读（`ERIX_E2E_CONFIG` 可换路径）。另两条同闸门的套件：`examples/tool-fact-e2e.test.mjs` 与 `examples/pi-extension/erix-run-e2e.test.mjs`（`npm test` 里默认 skip，真上游不是默认门禁的硬依赖）。需要 `node_modules`；自清理，不写真实 `~/.npmrc` 与 `~/.erix/config.json` |
 | `npm run types:build` | 把随包发布的 `.d.ts` 生成到 `src/**/*.d.ts` 并保留（issue #213；`prepack` 钩子跑的是同一个脚本） |
 | `npm run check:types-build` | 断言式门禁：`tsc` exit 0 / 声明文件数 > 0 / `src/index.d.ts` 含 `runToolLoop` / `src/tools/index.d.ts` 含 `createFileTools`，跑完删掉生成物（issue #213；需要先 `npm install --include=dev`） |
@@ -175,6 +176,19 @@ scripts/          # 实验脚本和结果
 - ⚠️ **预发布版本必须显式指定 `--tag`**（由 npm12 强制）：`npm publish --tag latest`；否则会报告 `You must specify a tag when publishing a prerelease version`。
 - ⚠️ 在非 TTY 环境（脚本/管道）中，认证 URL 会被掩码为 `***`——**用户必须在自己的终端运行**；在 agent 侧，使用 Python pty 方案为用户捕获真实 URL（见陷阱 4）。
 - ⚠️ **不要在 "Press ENTER to open in the browser..." 提示处按 ENTER**（已在 2026-09 验证）：没有浏览器时，按 ENTER 会触发 `xdg-open` 失败并终止 npm（`command failed`，code 3）。如果不按 ENTER，npm 会继续轮询认证状态并正常完成。
+
+### 发版前必跑清单（强制——0.23.0 的教训）
+
+发布前有**两件事是强制的**，而 0.23.0 两件都没跑，因为两件都靠「记得手动跑」：**文档审计**与**真机清单**。按这个顺序跑完，才轮到 `npm publish`：
+
+```bash
+npm run check:docs && npm run check:docs:strict   # 文档审计（漂移 + 中英成对）
+ERIX_E2E_REAL=1 npm run check:release:real        # 真机清单（五条，红就点名）
+npm run check:release                             # 离线：tarball 形状 / 装后包 / TS 宿主 / CLI 假上游
+```
+
+不带 `ERIX_E2E_REAL=1` 时中间那条**什么都不跑**并 exit 0——那**不是**通过，那意味着这次发版的真上游那一半根本没做，发版不算验过。
+文档审计也不是可选项：0.23.0 发出去的文档里就有审计本来会抓到的东西（契约版本标注、中英成对、存储图）。
 
 ### 发布验证闭环
 ```bash

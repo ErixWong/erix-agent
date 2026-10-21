@@ -79,6 +79,7 @@
     "check:docs-examples": "node --test test/contract/doc-examples.test.js",
     "check:pack-links": "node scripts/pack-link-check.mjs",
     "check:release": "node scripts/release-check.mjs",
+    "check:release:real": "node scripts/release-real-check.mjs",
     "check:cli-real": "node scripts/cli-real-smoke.mjs",
     "check:tests": "node scripts/test-hygiene-check.mjs"
   },

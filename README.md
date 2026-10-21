@@ -424,6 +424,17 @@ installed CLI against a local scripted upstream. It stays offline (throwaway npm
 cache and userconfig, fake `HOME`), deletes its temporary tree and the generated
 declarations again, and names the failing step when it goes red.
 
+The real-upstream half is one command as well (ticket 261021-13): `npm run
+check:release:real` runs the four gated real e2e suites
+(`examples/tool-fact-e2e.test.mjs`, `examples/resume-real-e2e.test.mjs`,
+`examples/cross-version-real-e2e.test.mjs`, `examples/pi-extension/erix-run-e2e.test.mjs`)
+and then `npm run check:cli-real`, in that order, each with its own 900 s hard timeout; it
+exits non-zero only after the whole list is done and names the steps that went red. Without
+`ERIX_E2E_REAL=1` it runs nothing and exits 0 with a categorized reason, so it never becomes
+a hard dependency of a default gate — but the gate being open with an unusable
+configuration is an error, not a skip. It and the documentation audit
+(`npm run check:docs` / `npm run check:docs:strict`) are mandatory before every publish.
+
 ## `runToolLoop` API
 
 The core entry point is:
