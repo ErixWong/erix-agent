@@ -2980,6 +2980,20 @@ the persisted `semantic.truncated` flag rather than rendered inline. The closing
 truncation and replaces the previous block in place instead of accumulating a
 second copy.
 
+`deterministic.compactionStats` is a **window**, not a full history: it keeps
+only the last 32 entries so the state file stays bounded. Since issue #315 the
+file says so itself — `deterministic.compactionStatsWindow`
+(`{ limit, dropped, total }`) records the window size, how many entries were
+dropped, and how many the run actually produced, so a host never has to read the
+engine source to tell whether it is holding the whole array or its tail.
+`total > limit` (equivalently `dropped > 0`) means the file is a tail; the run
+result's `compactionStats` is still the full array. The field is present only
+when the run produced at least one entry (`total > 0`); with no stats there is
+nothing to truncate and the absence is not ambiguous. `bounds.truncated` covers
+size-driven trims (tool/file/todo entries and serialized-size cuts), not this
+fixed window; read the window field instead. A state written before this field
+existed has no `compactionStatsWindow` and stays readable.
+
 An unknown schema or incomplete persisted state is not silently treated as a
 valid default. On resume it is exposed as
 `runState.stateAvailability.status = "state_unavailable"` (for example,
@@ -3017,7 +3031,7 @@ what they were before this section exists.
 | `diagnostics.modelMetadataMissingEvents.count` | the `model_metadata_missing` events received by `onEvent` | event count. The pre-existing `modelMetadataMissing` flag keeps its own meaning and value |
 | `diagnostics.notes.observed` / `diagnostics.modelMetadataMissingEvents.observed` | set when the inner loop was entered | `false` ⇒ the text renders `unknown`. A run that failed during assembly produced no event at all, and "no events" is not "zero calls" |
 
-| `diagnostics.compaction.layers.source` / `.truncationNote` | `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE` (`examples/pi-extension/erix-run-core.js`) | which `compactionStats` the summary read: the **full** array on the run result (or the throw payload). The copy in `<runId>.state.json` goes through `normalizeCompactionStats(value, limit = 32)` (`src/compact/pipeline.js`) from `createDeterministicRunState` (`src/run-state.js`), i.e. `value.slice(-limit)` keeps only the **last 32** entries — on a run longer than 32 rounds counting off that file silently under-counts (tracked as issue #315; not changed by this section) |
+| `diagnostics.compaction.layers.source` / `.truncationNote` | `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE` (`examples/pi-extension/erix-run-core.js`) | which `compactionStats` the summary read: the **full** array on the run result (or the throw payload). The copy in `<runId>.state.json` goes through `normalizeCompactionStats(value, limit = 32)` (`src/compact/pipeline.js`) from `createDeterministicRunState` (`src/run-state.js`), i.e. `value.slice(-limit)` keeps only the **last 32** entries — on a run longer than 32 rounds counting off that file silently under-counts (tracked as issue #315; not changed by this section). Since issue #315 the file self-reports that window as `deterministic.compactionStatsWindow` (`{ limit, dropped, total }`) |
 
 `formatCompactionLayerSummary` (`examples/pi-extension/erix-run-core.js`) renders the buckets one
 per line, so the accident run above now reads:
@@ -3043,7 +3057,8 @@ Host rules:
   the buckets above name engine ids, and anything new shows up in `layers.unattributed`.
 - The final face reports its own data source (`layers.source`). Read it off the run result; if a
   host instead re-reads `<runId>.state.json`, it is reading a **last-32** window and must not
-  present the totals as whole-run savings.
+  present the totals as whole-run savings. That file self-reports the window since issue #315 as
+  `deterministic.compactionStatsWindow` (`{ limit, dropped, total }`, see the Run state section).
 
 ## Contract test suites (issue #183)
 

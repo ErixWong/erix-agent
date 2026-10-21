@@ -15,6 +15,13 @@
 
 ### Added
 
+- **`<runId>.state.json` 自报 `compactionStats` 窗口：新增 `deterministic.compactionStatsWindow`（`{ limit, dropped, total }`），长 run 不必再读源码才知道手里那份是尾巴（issue #315；`src/run-state.js` + `src/compact/pipeline.js` 新增一个导出常量）。**
+  - **现场**：同一个字段两个出口，截断行为不同——run 返回值是全量（`compactionStats: ctx.compactionStats`），`<runId>.state.json` 只留最后 32 条：`createDeterministicRunState`（`src/run-state.js`）调 `normalizeCompactionStats`（`src/compact/pipeline.js`），默认 `limit = 32` ⇒ `value.slice(-limit)`。字段名里零提示，于是「去 `<runId>.state.json` 数削减账」的宿主在 **>32 条**的 run 上读到的是被切过尾的数据，而长 run 恰恰是要算成本的那类。
+  - **改法（只加不减）**：`deterministic.compactionStatsWindow` 与 `deterministic.compactionStats` 同时落盘——`limit` 是窗口条数（仍是 **32**，没有调大/取消，那是 state 文件体积的既有约束）、`dropped` 是被丢弃条数、`total` 是本次 run 实际产出条数；`total > limit`（⇔ `dropped > 0`）即说明这份是尾巴，`dropped === total - limit` 恒成立。字段只在 `total > 0` 时出现（一条统计都没有时没有可截断的东西，缺席不是歧义）。run 返回值仍是全量（没有顺手也截）。序列化超 64KB 的第二道截断把数组再切到最后 8 条时，窗口账跟着改口（`limit: 8`，`dropped`/`total` 重算），不会出现「数组 8 条、账说 32」的自相矛盾。
+  - **读侧兼容**：`validateRunState` 放过没有该字段的旧档（不判坏档），只有「有、但形状坏了」才报 `missing_fields`；新增用例钉住旧档 validate + resume 都照旧可读。
+  - **文档**：`docs/host-consumer-contract.md` / `_cn.md` 的「Run state / 运行状态」节写明窗口语义、`total > 0` 的出现条件与 `bounds.truncated` 的分界（后者只覆盖体积驱动的裁剪），#313 那节的宿主约束同步一句；`src/compact/pipeline.js` 新增导出常量 `COMPACTION_STATS_STATE_LIMIT = 32`，`normalizeCompactionStats` 的默认值改用它（默认值与既有调用点行为不变）。
+  - **门禁**：`npm test` → **tests 1852 / pass 1843 / fail 0 / skipped 9**（基线 1848 / 1839 / 0 / 9，+4 即本单四条新用例，其中一条是**真跑**的 >32 条 run：`compactionStats` 37 条、`<runId>.state.json` 里 32 条、`dropped = 5 = 37 − 32`）；`check:syntax` / `check:docs` / `check:docs:strict` / `check:docs-examples` / `check:pack-links` / `check:tests` / `check:types`（117，`--with-tools` 156 ≤ 基线 160）全绿。
+
 - **发版前真机清单：`npm run check:release:real`（工单 261021-13；只加脚本 + `package.json` 一条 + 文档，`src/` 与版本号零改动）。**
   0.23.0 是在「文档审计没跑 + 四条真上游 e2e 没跑」的状态下发出去的：每一条单独看都是「记得手动跑就绿、忘了就红」的东西，而**记性不是机制**。这条命令把那五条按固定顺序串起来——`node --test examples/tool-fact-e2e.test.mjs` → `examples/resume-real-e2e.test.mjs` → `examples/cross-version-real-e2e.test.mjs` → `examples/pi-extension/erix-run-e2e.test.mjs` → `node scripts/cli-real-smoke.mjs`——每条前打 `=== [i/5] <名字> ===`，跑完打该条的 `tests/pass/fail` 与耗时；任一条红就**跑完整张清单再** exit 1 并点名是哪几条，全绿 exit 0 并打总耗时。每条单独 900 秒硬超时，超时按**进程组** `SIGKILL`（`node --test` 自己还会 spawn 子进程，只杀直接子进程会留下孤儿继续烧钱），算红并继续下一条。
   - **闸门不另造一套**：`ERIX_E2E_REAL` 不是 `1` 时一步都不跑、exit 0、打分类原因（复用 `examples/e2e-real-gate.mjs` 的 `GAP_CODES`：gate 缺失 / 配置读不到 / JSON 坏了 / 缺字段 / 凭据引用解不出值 / 端点不可达），因此真上游永远不是任何默认门禁的硬依赖（`npm test` 与 CI 都不跑它）。

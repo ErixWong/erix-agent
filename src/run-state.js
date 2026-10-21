@@ -1,9 +1,12 @@
 import {
   COMPACTION_LAYER_IDS,
+  COMPACTION_STATS_STATE_LIMIT,
   normalizeCompactionStats,
 } from "./compact/pipeline.js";
 
 const MAX_RENDERED_CHARS = 1600;
+// 序列化超限时的第二道压缩把 compactionStats 再切成最后 8 条（体积约束），窗口账要跟着改口。
+const COMPACTION_STATS_SERIALIZED_LIMIT = 8;
 export const RUN_STATE_SCHEMA_VERSION = 1;
 export const RUN_STATE_MAX_SERIALIZED_BYTES = 64 * 1024;
 export const RUN_STATE_MAX_TOOL_ENTRIES = 128;
@@ -135,12 +138,43 @@ function serializedBytes(value) {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
+/**
+ * `deterministic.compactionStatsWindow` 的唯一构造点（issue #315）。
+ * `state.json` 里那份 `compactionStats` 是**定长窗口**（只留最后 `limit` 条），字段名本身
+ * 说不出来；这个结构化账把「窗口多大 / 丢了几条 / 原本几条」写在同一份文件里，
+ * 读者不读源码也能知道手里这份是全量还是尾巴。
+ */
+function compactionStatsWindow(kept, total, limit) {
+  const safeTotal = safeInteger(total);
+  const safeKept = Math.min(safeInteger(kept), safeTotal);
+  return {
+    limit: safeInteger(limit),
+    dropped: Math.max(0, safeTotal - safeKept),
+    total: safeTotal,
+  };
+}
+
 function compactStateForSize(state) {
   const compact = structuredClone(state);
   const deterministic = compact.deterministic ?? {};
   deterministic.tools = (deterministic.tools ?? []).slice(0, 16);
   deterministic.filesWritten = (deterministic.filesWritten ?? []).slice(-16);
-  deterministic.compactionStats = (deterministic.compactionStats ?? []).slice(-8);
+  // 第二道截断（体积）改的是同一个窗口：`total` 沿用原账里的真值，`dropped` 跟着重算，
+  // 否则窗口账会跟实际数组对不上（issue #315）。旧档没有窗口账时只能以现存条数为 total。
+  const previousCompactionWindow = deterministic.compactionStatsWindow;
+  const previousCompactionStats = deterministic.compactionStats ?? [];
+  const compactionTotal = Number.isSafeInteger(previousCompactionWindow?.total)
+    ? previousCompactionWindow.total
+    : previousCompactionStats.length;
+  deterministic.compactionStats = previousCompactionStats
+    .slice(-COMPACTION_STATS_SERIALIZED_LIMIT);
+  if (previousCompactionWindow !== undefined || compactionTotal > 0) {
+    deterministic.compactionStatsWindow = compactionStatsWindow(
+      deterministic.compactionStats.length,
+      compactionTotal,
+      COMPACTION_STATS_SERIALIZED_LIMIT,
+    );
+  }
   if (deterministic.todo?.items) {
     deterministic.todo = {
       ...deterministic.todo,
@@ -193,6 +227,9 @@ export function boundRunState(state) {
       filesWritten: [],
       fold: deterministic.fold ?? {},
       compactionStats: deterministic.compactionStats ?? [],
+      ...(deterministic.compactionStatsWindow === undefined
+        ? {}
+        : { compactionStatsWindow: deterministic.compactionStatsWindow }),
       termination: deterministic.termination ?? { reason: "running" },
       errors: deterministic.errors ?? {},
     },
@@ -234,7 +271,23 @@ export function validateRunState(state) {
     || !state.deterministic.errors) {
     return { ok: false, status: "state_unavailable", reason: "missing_fields" };
   }
+  // issue #315：`deterministic.compactionStatsWindow` 是**增量**字段——旧档没有它照旧可读
+  // （不判坏档）；只有「有、但形状坏了」才判坏，免得拿半份窗口账去算削减。
+  const compactionWindow = state.deterministic.compactionStatsWindow;
+  if (compactionWindow !== undefined && !isValidCompactionStatsWindow(compactionWindow)) {
+    return { ok: false, status: "state_unavailable", reason: "missing_fields" };
+  }
   return { ok: true, status: "available", state };
+}
+
+/** 窗口账的形状校验：旧档缺这个字段是正常的（由调用方判 `undefined` 放过），不在这里当成缺字段。 */
+function isValidCompactionStatsWindow(value) {
+  return value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Number.isSafeInteger(value.limit) && value.limit >= 0
+    && Number.isSafeInteger(value.dropped) && value.dropped >= 0
+    && Number.isSafeInteger(value.total) && value.total >= 0;
 }
 
 function renderLines(lines, budget = MAX_RENDERED_CHARS) {
@@ -316,6 +369,10 @@ export function createDeterministicRunState({
   const tools = normalizeCountMap(toolStats);
   const files = normalizeFiles(filesWritten);
   const normalizedTodo = normalizeTodo(todo);
+  // issue #315：state.json 里只留最后 `COMPACTION_STATS_STATE_LIMIT` 条（体积约束），
+  // 但窗口账必须与数组同时落盘：读者不读源码就知道「这份是尾巴、丢了几条、原本几条」。
+  const compactionStatsTotal = Array.isArray(compactionStats) ? compactionStats.length : 0;
+  const persistedCompactionStats = normalizeCompactionStats(compactionStats);
   const state = {
     schemaVersion: RUN_STATE_SCHEMA_VERSION,
     runId: safeText(runId, 120),
@@ -337,7 +394,18 @@ export function createDeterministicRunState({
         foldedRounds: safeInteger(foldedRounds),
         navigationRecords: safeInteger(navigationRecords),
       },
-      compactionStats: normalizeCompactionStats(compactionStats),
+      compactionStats: persistedCompactionStats,
+      // 只在本次 run 真的产出过统计时出现：0 条没有可截断的东西，缺席不是歧义
+      // （旧版本落的 state 也没这个字段，读侧必须放过）。
+      ...(compactionStatsTotal > 0
+        ? {
+          compactionStatsWindow: compactionStatsWindow(
+            persistedCompactionStats.length,
+            compactionStatsTotal,
+            COMPACTION_STATS_STATE_LIMIT,
+          ),
+        }
+        : {}),
       termination: { reason: safeText(terminationReason, 48) || "running" },
       errors: {
         tool: safeInteger(toolErrorCount),

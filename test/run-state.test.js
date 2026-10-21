@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
+  boundRunState,
   createDeterministicRunState,
   renderRunState,
   RUN_STATE_MAX_CHARS,
@@ -13,7 +16,9 @@ import {
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { createFileTranscriptStore } from "../src/store/file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 test("run state carries the persistence bill so a mid-run crash does not lose it (issue #109 修正 4)", () => {
   const state = createDeterministicRunState({
@@ -158,6 +163,149 @@ test("validateRunState accepts the additive runRounds budget field", () => {
   delete legacy.deterministic.budget.runRounds;
   assert.equal(validateRunState(legacy).ok, true);
   assert.match(renderRunState(legacy), /r=12\/20 left=16/u);
+});
+
+// issue #315：`state.json` 里那份 `compactionStats` 是只留最后 32 条的窗口，
+// 而 run 返回值上那份是全量。窗口大小/丢弃条数/原本条数必须**写在同一份文件里**，
+// 读者不读源码也能判断手里这份是全量还是尾巴（不许再靠人数列）。
+const compactionStatFixture = (index) => ({
+  compacted: true,
+  foldedRounds: 1,
+  tokensBefore: 1000 + index,
+  tokensAfter: 100,
+});
+
+test("#315 compactionStatsWindow 与数组同时落盘：全量时 dropped=0，超窗时 dropped=total-limit", () => {
+  const full = createDeterministicRunState({
+    runId: "window-full",
+    compactionStats: Array.from({ length: 5 }, (_unused, index) => compactionStatFixture(index)),
+  });
+  assert.deepEqual(full.deterministic.compactionStatsWindow, { limit: 32, dropped: 0, total: 5 });
+  assert.equal(full.deterministic.compactionStats.length, 5);
+
+  const windowed = createDeterministicRunState({
+    runId: "window-cut",
+    compactionStats: Array.from({ length: 40 }, (_unused, index) => compactionStatFixture(index)),
+  });
+  assert.deepEqual(windowed.deterministic.compactionStatsWindow, { limit: 32, dropped: 8, total: 40 });
+  assert.equal(windowed.deterministic.compactionStats.length, 32);
+  // 窗口留的是**尾巴**（不是头）——最后一个才是最近的账
+  assert.equal(windowed.deterministic.compactionStats.at(-1).tokensBefore, 1039);
+  assert.equal(validateRunState(windowed).ok, true);
+
+  // 没有统计（非数组 / 空）时不出窗口账：0 条没有可截断的东西，缺席不是歧义
+  assert.equal(
+    createDeterministicRunState({ runId: "window-empty" }).deterministic.compactionStatsWindow,
+    undefined,
+  );
+});
+
+test("#315 序列化体积的第二道截断也改窗口账：数组切到 8 条时 limit/dropped 跟着改口", () => {
+  const state = createDeterministicRunState({
+    runId: "window-size-cut",
+    compactionStats: Array.from({ length: 40 }, (_unused, index) => compactionStatFixture(index)),
+  });
+  // 撑爆 64KB：boundRunState 只负责 bounding，不重新归一化，所以这里直接挂大字段
+  const inflated = {
+    ...state,
+    semantic: { status: "ok", text: "s".repeat(80_000), semanticStateVersion: 0 },
+  };
+  assert.ok(Buffer.byteLength(JSON.stringify(inflated), "utf8") > RUN_STATE_MAX_SERIALIZED_BYTES);
+  const bounded = boundRunState(inflated);
+  assert.ok(Buffer.byteLength(JSON.stringify(bounded), "utf8") <= RUN_STATE_MAX_SERIALIZED_BYTES);
+  assert.equal(bounded.bounds.reason, "serialized_size");
+  assert.equal(bounded.deterministic.compactionStats.length, 8);
+  // 窗口账不能停在 32：它必须说真话（limit=8，丢 32 条，原本 40 条）
+  assert.deepEqual(bounded.deterministic.compactionStatsWindow, { limit: 8, dropped: 32, total: 40 });
+  assert.equal(validateRunState(bounded).ok, true);
+});
+
+test("#315 旧档没有 compactionStatsWindow 仍可读（validate 与 resume 都不判坏档）", async () => {
+  const legacy = createDeterministicRunState({
+    runId: "window-legacy",
+    stateVersion: 2,
+    rounds: 3,
+    maxRounds: 1,
+  });
+  delete legacy.deterministic.compactionStatsWindow;
+  assert.equal(legacy.deterministic.compactionStatsWindow, undefined);
+  assert.equal(validateRunState(legacy).ok, true);
+
+  const store = createMemoryTranscriptStore();
+  await store.appendRound("window-legacy", {
+    round: 0,
+    messages: [{ role: "user", content: [{ type: "text", text: "seed" }] }],
+  });
+  store.loadRunState = async () => legacy;
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    resume: true,
+    completion: false,
+    store,
+    runId: "window-legacy",
+    executeTool: async () => "unused",
+  });
+  assert.equal(result.runState.stateAvailability.status, "available");
+  // 旧档可读；本次 run 没有产出统计（total = 0）⇒ 不出窗口账（缺席不是歧义）
+  assert.equal(result.runState.deterministic.compactionStatsWindow, undefined);
+
+  // 有、但形状坏了才判坏档：不拿半份窗口账去算削减
+  const broken = structuredClone(legacy);
+  broken.deterministic.compactionStatsWindow = { limit: "32", dropped: 0, total: 0 };
+  assert.deepEqual(validateRunState(broken), {
+    ok: false,
+    status: "state_unavailable",
+    reason: "missing_fields",
+  });
+});
+
+test("#315 真跑一个 >32 条 compactionStats 的 run：<runId>.state.json 文件里直接看出丢了几条，run 返回值仍是全量", async () => {
+  const toolResponse = (id) => ({
+    content: [{ type: "tool_use", id, name: "work", input: { n: id } }],
+    stopReason: "tool_use",
+  });
+  // 真落盘：断言读的是磁盘上的 `<runId>.state.json`，不是内存里的那个对象
+  const dir = await makeTmp("erix-compaction-window-");
+  const store = createFileTranscriptStore({ dir });
+  const runId = "compaction-window-run";
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      ...Array.from({ length: 40 }, (_unused, index) => toolResponse(`t-${index}`)),
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "start",
+    // 每轮工具结果都不同，避免 stall 裁决提前收工（本用例要的是长 run，不是终止行为）
+    executeTool: async (options) => `worked-${options?.id ?? "?"}`,
+    completion: false,
+    context: { budgetTokens: 10 },
+    maxRounds: 60,
+    store,
+    runId,
+  });
+
+  // ① run 返回值是全量（本单不改它）：真跑出 >32 条，否则这条用例是空转
+  const total = result.compactionStats.length;
+  assert.ok(total > 32, `run 返回值应有 >32 条 compactionStats，实际 ${total}`);
+
+  // ② 磁盘上的 state.json 里直接能看出「有 N 条被丢弃」，两种口径的差值**就是** dropped
+  const persisted = JSON.parse(await readFile(join(dir, `${runId}.state.json`), "utf8"));
+  const window = persisted.deterministic.compactionStatsWindow;
+  assert.ok(window, "state.json 必须自报窗口，不许再让读者读源码猜");
+  assert.equal(window.limit, 32);
+  assert.equal(window.total, total);
+  assert.ok(window.total > window.limit);
+  assert.equal(window.dropped, window.total - window.limit);
+  assert.ok(window.dropped > 0);
+  assert.equal(persisted.deterministic.compactionStats.length, window.limit);
+  assert.equal(total - persisted.deterministic.compactionStats.length, window.dropped);
+  // 窗口留的是尾巴：最后一条逐字相同（读侧按窗口理解就不会数错方向）
+  assert.deepEqual(
+    persisted.deterministic.compactionStats.at(-1),
+    result.compactionStats.at(-1),
+  );
+  assert.equal(validateRunState(persisted).ok, true);
 });
 
 test("resume exposes unknown persisted schema instead of silently resetting it", async () => {

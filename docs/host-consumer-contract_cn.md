@@ -2335,6 +2335,15 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 闭合标记 `[/run state]` 在渲染之后恒被追加，因此截断时依然存活——旧块会被原地替换，
 而不会在上下文中累积出第二份。
 
+`deterministic.compactionStats` 是一份**窗口**而不是全量历史：只留最后 32 条，以便 state
+文件体积有界。自 issue #315 起文件自己会说这件事——`deterministic.compactionStatsWindow`
+（`{ limit, dropped, total }`）记录窗口大小、被丢弃的条数与本次 run 实际产出的条数，
+宿主不必读引擎源码就能知道手里这份是全量还是尾巴。`total > limit`（等价于 `dropped > 0`）
+即说明这份是尾巴；run 返回值上的 `compactionStats` 仍是全量。字段只在本次 run 至少产出
+一条统计（`total > 0`）时出现；一条都没有时没有可截断的东西，缺席不是歧义。
+`bounds.truncated` 覆盖的是体积驱动的裁剪（工具/文件/todo 条目与序列化超限），不含这个
+定长窗口，请读窗口字段。旧版本落盘的 state 没有 `compactionStatsWindow`，仍照旧可读。
+
 未知 schema 或不完整的持久化状态不会被静默当作有效默认值。恢复时它表现为
 `runState.stateAvailability.status = "state_unavailable"`（例如 `unknown_schema` 或
 `missing_fields`）。损坏的 file-store JSON 状态同样报告为不可用，而不是被恢复。完全不存
@@ -2367,7 +2376,7 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 | `diagnostics.modelMetadataMissingEvents.count` | `onEvent` 收到的 `model_metadata_missing` 事件 | 事件数。既有的 `modelMetadataMissing` 标志含义与取值不变 |
 | `diagnostics.notes.observed` / `diagnostics.modelMetadataMissingEvents.observed` | 是否真的进入了内层循环 | `false` ⇒ 文本渲染 `unknown`：装配期就失败的 run 一个事件也没产生，「没事件」不等于「没调用」 |
 
-| `diagnostics.compaction.layers.source` / `.truncationNote` | `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE`（`examples/pi-extension/erix-run-core.js`） | 汇总读的是**哪一份** `compactionStats`：run 返回值（或抛错载荷）上那份**全量**。而 `<runId>.state.json` 里那份要经 `normalizeCompactionStats(value, limit = 32)`（`src/compact/pipeline.js`）截尾（调用点 `createDeterministicRunState`（`src/run-state.js`）），即 `value.slice(-limit)` 只留**最后 32 条** —— >32 轮的 run 去那个文件数削减账会静默少算（已另开 **issue #315**，本小节不改它的行为） |
+| `diagnostics.compaction.layers.source` / `.truncationNote` | `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE`（`examples/pi-extension/erix-run-core.js`） | 汇总读的是**哪一份** `compactionStats`：run 返回值（或抛错载荷）上那份**全量**。而 `<runId>.state.json` 里那份要经 `normalizeCompactionStats(value, limit = 32)`（`src/compact/pipeline.js`）截尾（调用点 `createDeterministicRunState`（`src/run-state.js`）），即 `value.slice(-limit)` 只留**最后 32 条** —— >32 轮的 run 去那个文件数削减账会静默少算（已另开 **issue #315**，本小节不改它的行为）。自 issue #315 起文件会把那个窗口自报为 `deterministic.compactionStatsWindow`（`{ limit, dropped, total }`） |
 
 `formatCompactionLayerSummary`（`examples/pi-extension/erix-run-core.js`）把四个归组逐行渲染，
 上面那个事故 run 现在读起来是：
@@ -2392,6 +2401,8 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
   点名的都是引擎的真 id，新增的层会出现在 `layers.unattributed` 里。
 - 终局面会自报数据源（`layers.source`）：请从 run 返回值上读这份账；如果宿主改为重读
   `<runId>.state.json`，它拿到的是一个**最后 32 条**的窗口，不能当成全 run 的削减总量报出去。
+  自 issue #315 起那个文件会把窗口自报为 `deterministic.compactionStatsWindow`
+  （`{ limit, dropped, total }`，见「运行状态」一节）。
 
 ## 契约测试套件（issue #183）
 
