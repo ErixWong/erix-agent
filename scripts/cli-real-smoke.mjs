@@ -266,6 +266,37 @@ function collapseHistory(records) {
   return history;
 }
 
+/**
+ * 把「transcript 文件名」映回 `store.load(runId)` 要的 runId。
+ *
+ * 文件名是 `safeRunId(runId).jsonl`：安全 id 的文件名与 runId 逐字相等，不安全 id 被换成
+ * `run-h-<sha256[:24]>`（不可逆）⇒ 先按文件名试，再拿同一个 run 的 `.state.json` /
+ * `.status.json` / `.snapshot.json` 里记的 `runId` 兜底，最后用「`safeRunId(候选)` 对应的
+ * transcript 文件确实是这一份」确认选中。`safeRunId` 由调用方从**装好的包**里传进来（不在这
+ * 里重实现一份：文件名规则只有一份真源）。
+ *
+ * @param {string} dir transcripts 目录
+ * @param {string} jsonlName 目录里的 jsonl 文件名
+ * @param {(runId: string) => string} safeRunId 装好的包里的同实现
+ * @returns {string}
+ */
+function resolveRunIdForTranscript(dir, jsonlName, safeRunId) {
+  const base = jsonlName.replace(/\.jsonl$/, "");
+  const candidates = [base];
+  for (const suffix of [".state.json", ".status.json", ".snapshot.json"]) {
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, `${base}${suffix}`), "utf8"));
+      if (typeof parsed?.runId === "string" && parsed.runId !== "") candidates.push(parsed.runId);
+    } catch {
+      // 这个 run 没有这份侧档 / 内容坏了：不参与候选（不是失败）
+    }
+  }
+  for (const candidate of candidates) {
+    if (existsSync(join(dir, `${safeRunId(candidate)}.jsonl`))) return candidate;
+  }
+  throw new Error(`${jsonlName} 的 runId 拿不到（候选：${candidates.join(",")}）`);
+}
+
 async function main() {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
@@ -457,8 +488,23 @@ async function main() {
   }, JSON.stringify(durations));
 
   // ⑥ 投影用**装好的包**跑（宿主 UI 的镜像也必须是新形状）
-  const { projectTranscriptForDisplay } = await import(pathToFileURL(join(installedRoot, "src", "index.js")).href);
-  const calls = projectTranscriptForDisplay(records).flatMap((card) => card?.toolCalls ?? []);
+  //
+  // **输入口径（本单修的正是这里）：投影必须喂 `store.load()` 的折叠输出，原始 journal 行不是宿主口径。**
+  // 「一条消息一成型就落盘」之后，一个 run 的文件里有两种行：轮行（带 `response.content`、**没有**
+  // `messages`）与消息行（assistant 正文，落盘于工具执行**之前**，因此不带 `erix.durationMs`）。读侧
+  // `load()` 用 `foldMessageRows` 把消息行折回轮行——宿主看到的才是「一轮一条」。拿原始行直接投影 ⇒
+  // 同一轮被投影两遍（`toolCallKey` 键重复两遍）+ 耗时全 `undefined`（消息行上根本没有执行事实）。
+  // 产品代码没错，错的是喂法。C5/C6 查的是**落盘原始行**上的键集合与 `erix` 事实面，那两条继续用
+  // 原始行是对的（那正是落盘真相），只有 C7 换成折叠输出。
+  const installedEntry = await import(pathToFileURL(join(installedRoot, "src", "index.js")).href);
+  const { projectTranscriptForDisplay, createFileTranscriptStore } = installedEntry;
+  // `safeRunId` 没走公共入口（`src/index.js` 只导出 `createFileTranscriptStore`）：从**同一份装好的
+  // 代码**里直接取，用它把「文件名」映回「runId」（不安全 id 的文件名是 `run-h-<hash>`，不可逆）。
+  const { safeRunId } = await import(pathToFileURL(join(installedRoot, "src", "store", "file.js")).href);
+  const store = createFileTranscriptStore({ dir: transcripts });
+  const runId = resolveRunIdForTranscript(transcripts, jsonlFiles[0] ?? "", safeRunId);
+  const folded = await store.load(runId);
+  const calls = projectTranscriptForDisplay(folded).flatMap((card) => card?.toolCalls ?? []);
   // PR #289 断言强度 3：修前允许**所有**投影条目的 durationMs 都缺席，也不与落盘对账
   // ⇒「投影根本不透耗时」与「透错了值」都查不出。现在逐条对照 transcript：
   // 同一条 toolCallKey 的投影 durationMs 必须**等于**该结果块的 erix.durationMs（缺失也必须两边
@@ -469,6 +515,27 @@ async function main() {
     if (typeof key === "string") durationByKey.set(key, block?.erix?.durationMs);
   }
   check("C7 装好的包投影的每条 toolCalls 带 toolCallKey，durationMs 逐条等于落盘的 erix.durationMs", () => {
+    // 护栏（本单新增）：折叠输出必须把每个 `tool_use` 与它的 `tool_result` 放回**同一轮**。
+    // 为什么需要：C7 的对账是「投影 vs 落盘」两边比，折叠层坏成直通或坏成空泡时，上面的逐条
+    // 对账可能**两边都空 ⇒ 绿**（假绿）。这条只看折叠输出自己的形状，不依赖落盘侧，所以能独立
+    // 打红「折叠层把正文吞了 / 只折了一半」；`paired >= 2` 再防它退化成空跑。
+    const pairing = [];
+    let paired = 0;
+    for (const record of folded) {
+      const uses = blocksOf(record?.messages, "tool_use");
+      if (uses.length === 0) continue;
+      const resultIds = new Set(blocksOf(record?.messages, "tool_result")
+        .map((block) => block?.tool_use_id));
+      for (const use of uses) {
+        if (!resultIds.has(use?.id)) {
+          pairing.push(`round ${String(record?.round)}: ${String(use?.id)} 同轮没有配对的结果块`);
+        } else {
+          paired += 1;
+        }
+      }
+    }
+    assertDeepEqual(pairing, [], "折叠输出里 tool_use 与 tool_result 没在同一轮配对");
+    assert(paired >= 2, `折叠输出里配对的 tool_use/tool_result 只有 ${paired} 对（至少 2 对）`);
     assert(calls.length >= 2, `投影条目=${calls.length}`);
     assert(calls.every((call) => typeof call.toolCallKey === "string" && call.toolCallKey.startsWith("tc_")),
       JSON.stringify(calls.map((call) => call.toolCallKey)));
@@ -490,7 +557,8 @@ async function main() {
     assert(calls.some((call) => Number.isFinite(call.durationMs) && call.durationMs > 0),
       `投影里至少一条必须带真实非 0 耗时（全缺席 = 投影这条耗时线是死的）：`
       + JSON.stringify(calls.map((call) => call.durationMs)));
-  }, JSON.stringify(calls.map((call) => ({ k: call.toolCallKey, d: call.durationMs, n: call.name })))
+  }, `runId=${runId}｜折叠输出 ${folded.length} 条（原始行 ${records.length} 条）`
+    + `｜${JSON.stringify(calls.map((call) => ({ k: call.toolCallKey, d: call.durationMs, n: call.name })))}`
     + `｜落盘侧=${JSON.stringify([...durationByKey.entries()])}`);
 
   // ⑧ 真实 HOME 没被污染（对账对象 = **闸门实际选中的那份配置**，PR #289 阻断 2）

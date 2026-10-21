@@ -2094,6 +2094,14 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 // [{ key, role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
 ```
 
+**输入必须是 `store.load()` 的折叠输出，不是原始 journal 行。** `load()` 是 journal 的读侧：
+账本改成「一条消息一落盘」之后，一个 run 的文件里有两种行——轮行（带 `response.content`、
+**没有** `messages`）与消息行（assistant 正文，落盘于工具执行**之前**，因此不带 `erix`
+执行事实）。直接把原始行喂给投影，同一轮会被投影两遍（`toolCallKey` 重复），并且执行事实
+（如 `erix.durationMs`）全部缺席——投影本身没错，错在宿主的输入。请从引擎自己的恢复路径
+用的同一个入口取数组：文件账本 `createFileTranscriptStore({ dir }).load(runId)`，内存账本
+`createMemoryTranscriptStore().load(runId)`，把**那个**数组交给投影。
+
 它是纯函数：无 I/O、无模型调用、构造结果时不变更输入记录、无宿主特有假设。它接受任意记录
 子集（过滤或切片后的 `load()` 结果均可），按 `round` 升序返回轮次；没有可用 `round` 的记
 录保持输入顺序并排在最后（同 `round` 的记录也保持输入相对顺序）。

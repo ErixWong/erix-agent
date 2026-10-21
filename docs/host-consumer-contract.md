@@ -2636,6 +2636,17 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 // [{ key, role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
 ```
 
+The **input must be `store.load()`'s folded output, not the raw journal lines.** `load()` is
+the read side of the journal: since the journal became one row per message, a run's file
+holds two kinds of lines — round rows (carrying `response.content` and **no** `messages`) and
+message rows (assistant text, written **before** the tool runs, so they never carry the
+`erix` execution facts). Feeding raw lines straight into the projection therefore projects
+the same round twice (duplicate `toolCallKey`s) and drops execution facts such as
+`erix.durationMs` — the projection is not wrong, the host's input is. Take the array from
+the same accessor the engine's own resume path uses: `createFileTranscriptStore({ dir }).load(runId)`
+for a file journal, `createMemoryTranscriptStore().load(runId)` for a memory one, and hand
+**that** array to the projection.
+
 It is a pure function: no I/O, no model calls, no mutation of the input records
 while producing the result, and no host-specific assumptions. It accepts any
 subset of records (a filtered or sliced `load()` result is fine) and returns
