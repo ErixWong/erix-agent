@@ -1971,8 +1971,13 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  （`src/run-state.js`）、`guardMetrics` / `remainingMs`（`src/loop/orchestrator.js`）、
  *  `FINAL_GUARD_TERMINATION_REASONS`（`src/loop/termination.js`）——`--verbose` 实测 **63 组 / 165 处**，
  *  裸行号棘轮不受影响（同一刀 `--verbose` 实测仍是 146 唯一区间 − 4 处豁免 = 142 = 基线）。
+ *  升下限的理由（工单 261021-03 B1，67 → **72**，+5 组 / 168 → 180 处）：覆盖面从 24 抬到 31，新纳面的
+ *  `docs/charts{,_cn}.md` 与 `examples/pi-extension/README.md` 带进 5 组新锚点（`resolvedToolResultTtl` /
+ *  `markStablePrefix`（`src/loop/orchestrator.js` / `src/loop/provider-runner.js`）、`loadModelSlot` /
+ *  `createProviderForSlot`（`examples/pi-extension/erix-run-core.js`）与 `createJsonFileModelConfigProvider`
+ *  （`src/config/json-file.js`））——`--verbose` 实测 72 组 / 180 处。不升就是下限在空转（那条 note 自己会报）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 67;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 72;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
@@ -3454,7 +3459,13 @@ const SELF_TEST_CASES = [
   {
     label: "分类真的读 .gitignore：把 docs/tasks/ 从 .gitignore 里去掉 → 本机档案登记与放行全部失效",
     overlay: { ".gitignore": (t) => t.replace("docs/tasks/\n", "") },
-    expect: [/登记为本机档案.*但 \.gitignore 并不忽略/, /archive-refs: CHANGELOG\.md|paths: examples\/pi-extension\/README\.md/],
+    expect: [
+      // 树形两侧同判（#280：这一类裁决**不得依赖实物存在**）：有 `docs/tasks/` 实物的树形里红在「登记失效」那一句，
+      // 干净 clone / CI / 一次性沙箱里实物根本不存在、登记按声明放行，红就落在**引用侧**（同一个原因，不同那一句）。
+      // 两个分支都要求点名 `docs/tasks`，所以不是拿「恒真」糊这一例。
+      /登记为本机档案.*但 \.gitignore 并不忽略[\s\S]*docs\/tasks|archive-refs: [^\n]*引用了克隆后不存在的本机档案[\s\S]*docs\/tasks|paths: [^\n]*引用了无法裁决的仓库内路径[\s\S]*`docs\/tasks\/`/,
+      /archive-refs: CHANGELOG\.md|paths: examples\/pi-extension\/README\.md|paths: AGENTS\.md/,   // 引用侧必须点名到文档（两种树形里至少中一个）
+    ],
   },
   {
     label: ".gitignore 新增一条没分类的目录规则 → 红（不许默默放行新目录）",
@@ -3498,7 +3509,10 @@ const SELF_TEST_CASES = [
     overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("repro-circular-details.mjs", "repro-circular-detailsQ.mjs") },
     expect: [
       /archive-refs: docs\/research\/2026-10-13[\s\S]*`repro-circular-detailsQ\.mjs`（第 \d+ 行）/,
-      /↳ 它跟本仓实物只差一点：docs\/tasks\/active\/261010-13-erix-run-async\/repro-circular-details\.mjs/,
+      // 近邻提示（↳ 它跟本仓实物只差一点）拿的是**被 .gitignore 忽略但本机真在**的实物：干净 clone 里没有
+      // `docs/tasks/`，实物无从比对，红的就是「解不到 + 未登记」那一句。两个分支都点名了被改坏的名字，
+      // 所以不是放宽：本例的主命题（改坏已登记的裸名必须红并点名）在两种树形里都被铉住。
+      /↳ 它跟本仓实物只差一点：docs\/tasks\/active\/261010-13-erix-run-async\/repro-circular-details\.mjs|`repro-circular-detailsQ\.mjs`（第 \d+ 行）：本仓不存在[\s\S]*不属于四类里的任何一类/,
     ],
     expectFiles: ["docs/research/2026-10-13-pi-subagents-async-attribution.md"],
   },
@@ -3507,7 +3521,8 @@ const SELF_TEST_CASES = [
     overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("e2e-wake.mjs", "e2e-wakeQ.mjs") },
     expect: [
       /archive-refs: docs\/research\/2026-10-13[\s\S]*`e2e-wakeQ\.mjs`（第 \d+ 行）[\s\S]*本仓不存在/,
-      /↳ 它跟本仓实物只差一点：docs\/tasks\/active\/261010-13-erix-run-async\/e2e-wake\.mjs（比实物名字干多写了 “Q”）/,
+      // 同上：近邻提示只在「本机有 task-archive 实物」的树形里存到，另一棵树上红在「解不到 + 未登记」那一句。
+      /↳ 它跟本仓实物只差一点：docs\/tasks\/active\/261010-13-erix-run-async\/e2e-wake\.mjs（比实物名字干多写了 “Q”）|`e2e-wakeQ\.mjs`（第 \d+ 行）：本仓不存在[\s\S]*不属于四类里的任何一类/,
     ],
     expectFiles: ["docs/research/2026-10-13-pi-subagents-async-attribution.md"],
   },
@@ -3832,7 +3847,8 @@ const SELF_TEST_CASES = [
   // —— 返工 R1（评审阻断项）：符号锚点的**只增不减下限**。病根：裸行号棘轮的唯一键不含文档行号，
   // 所以「把符号锚点换成裸行号」这种**退化**在棘轮那一侧一字不变，没有下限就没人报警。
   {
-    label: "#286 返工 R1：把中英契约的 `defaultSleep`（`src/loop/abort.js:16`）一起退化成裸行号 ⇒ 棘轮一字不变，只有符号下限红（23 < 24）",
+    label: "#286 返工 R1：把中英契约的 `defaultSleep`（`src/loop/abort.js:16`）一起退化成裸行号 ⇒ 棘轮一字不变，只有符号下限红（"
+      + (SYMBOL_ANCHOR_MIN_UNIQUE - 1) + " < " + SYMBOL_ANCHOR_MIN_UNIQUE + "）",
     // 退化前后那一处 `src/loop/abort.js:16` 都还在文档里（棘轮的唯一键不含**文档行号**），所以裸行号侧
     // 一个数都不变——这正是本条下限存在的理由。两侧一起退化是因为 (符号, 文件) 是按全局去重的：
     // `defaultSleep` 中英各一处（CN:217 / EN:262），只退一侧不会掉组，只退一侧看不见评审那条形状。
