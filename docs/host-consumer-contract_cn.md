@@ -1887,6 +1887,37 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 有损。宿主必须自证保真，例如针对自身 schema 与未知字段运行并扩展
 `test/contract/transcript-store.js` 中的断言。
 
+### 档案行形状：消息行 + 只留元数据的轮行（工单 261021）
+
+引擎现在把一条消息在**成型的那一刻**写进档案，而不是整轮末一次性写。一个档案行只携带
+一条消息：
+
+```ts
+{ round, roundKey: `${runId}:round:${round}`,
+  dedupKey: `${runId}:msg:${round}:${seq}`,   // seq 轮内从 0 单调递增
+  kind: "message", seq, messages: [那一条消息], ts,
+  partOf?: string }                            // 已写入的那条消息的分片
+```
+
+轮行本身（`<runId>:engine:round:<n>`，在 `src/loop/orchestrator.js#runToolLoop` 里以 `record`
+构造）对新 run **只留元数据**：`response`、`textPreview`、`toolUses`、`summary`、`l0facts`、
+`runState`、`judge`、`wrapup`、`compactionStats`、`toolOutputs` … —— `messages` 字段已消失。
+`src/store/message-rows.js#foldMessageRows`（两个内置 store 的 `load()` 都会调它）把消息行
+折回那条轮行，因此 `load()` 的宿主可见形状——以及
+`records.flatMap((record) => record.messages ?? [])` 这条口径——与改造前写出的账本逐字一致
+（金样：`scripts/message-journal-golden.mjs`）。
+
+对宿主 store 与宿主读方的三个推论：
+
+- `kind`、`seq`、`partOf` 从此是**携带保真语义的字段**：丢了它们，消息行就折不回去，会
+  以独立行的形式留在 `load()` 数组里。分组看 `round`，排序看 `seq`。
+- 不要假设「轮行携带正文」。载体可能是 `<runId>:engine:round:<n>`、`<runId>:round:<n>`
+  （宿主默认键）或 `<runId>:engine:round:<n>:resume`；如果 run 崩在轮行落盘之前，消息行会
+  原样留在数组里——这是崩溃恢复契约，不是 store 缺陷。
+- 引擎控制文本行（`src/loop/orchestrator.js#appendEngineMessagesToTranscript` 写的
+  `<runId>:engine:round:<n>:control:<slot>`，以及 `appendEngineFactToTranscript` 写的
+  `…:fold:` / `…:ttl:` 事实行）刻意不带 `seq`，因此折叠层原样透传。
+
 ## 工具事实与字段归属（issue #284 / #285）
 
 引擎产出的每一条 `tool_result` 都是一个**事实对象**，只在一个构造点产生：
