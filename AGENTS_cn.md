@@ -70,7 +70,7 @@ scripts/          # 实验脚本和结果
 | `npm run check:cli-real` | 装后 CLI 打真上游的 gate 冒烟（工单 261015 T5，#284/#285 收尾）：`npm pack` → 把 tarball 装进一次性临时项目 → 用**装好的 `erix`**（不是 `node bin/cli.js`）打真上游跑一个 ≥2 次工具的任务，断言退出码承诺（不开 `--final-guard` 的成功 run 退 **4** = 核验 skipped）、transcript 里 `tool_result` 的字段面、以及装好的包自己的投影。只有 `ERIX_E2E_REAL=1` 才跑；闸门关着时 exit 0 并打出**分类**原因（gate 缺失 / 配置不存在 / JSON 坏了 / 缺字段 / 端点不可达）。模型名从 `slots.default` 读（`ERIX_E2E_CONFIG` 可换路径）。另两条同闸门的套件：`examples/tool-fact-e2e.test.mjs` 与 `examples/pi-extension/erix-run-e2e.test.mjs`（`npm test` 里默认 skip，真上游不是默认门禁的硬依赖）。需要 `node_modules`；自清理，不写真实 `~/.npmrc` 与 `~/.erix/config.json` |
 | `npm run types:build` | 把随包发布的 `.d.ts` 生成到 `src/**/*.d.ts` 并保留（issue #213；`prepack` 钩子跑的是同一个脚本） |
 | `npm run check:types-build` | 断言式门禁：`tsc` exit 0 / 声明文件数 > 0 / `src/index.d.ts` 含 `runToolLoop` / `src/tools/index.d.ts` 含 `createFileTools`，跑完删掉生成物（issue #213；需要先 `npm install --include=dev`） |
-| `npm run check:types` | `--checkJs` **棘轮**：统计从 `src/index.js` 可达的类型错误总数，超过 `scripts/type-check-ratchet.mjs` 里写死的基线常量 **119** 就失败（issue #214；棘轮 = 只减不增，低于基线仍通过并提示「可下调至 N」；两档基线均于 2026-10-15 复测，并在**同一笔提交里一起下调**）。**跑之前先删掉生成的 `src/**/*.d.ts`**——见下面「`--checkJs` 棘轮规则」。加 `-- --with-tools` 可把范围扩到 `./tools` 入口（基线 **162** / 31 个文件） |
+| `npm run check:types` | `--checkJs` **棘轮**：统计从 `src/index.js` 可达的类型错误总数，超过 `scripts/type-check-ratchet.mjs` 里写死的基线常量 **117** 就失败（issue #214；棘轮 = 只减不增，低于基线仍通过并提示「可下调至 N」；两档基线均于 2026-10-21 复测，并在**同一笔提交里一起下调**）。**跑之前先删掉生成的 `src/**/*.d.ts`**——见下面「`--checkJs` 棘轮规则」。加 `-- --with-tools` 可把范围扩到 `./tools` 入口（基线 **160** / 31 个文件） |
 | `node bin/cli.js ...` | 本地运行 CLI（无需安装） |
 
 - CI（issue #187）：`.github/workflows/ci.yml` 在 `pull_request`、`push` 到 `main`、以及 `workflow_dispatch`（手工重跑入口；注意 `POST …/dispatches` 在 GitHub **第一次见过**这份 workflow 之前一直返 **404**，推上分支 + 跑过任意一次就注册好了，之后 dispatch 返 204）三种触发下跑，矩阵是 **node 22 与 24**、`fail-fast: false`。装依赖用的是 `npm install --include=dev`，**绝不是** `npm ci`——本仓故意把 `package-lock.json` 整份 gitignore（见 `.gitignore` 里「npm lockfile 不入库」那条注释），而那两个 dev 包（`typescript` + `@types/node`，issue #213）正是 `check:types` / `check:types-build` / `check:pack-links` / `check:release` 能跑起来的前提。按顺序**阻塞**的步骤：`check:syntax` → `test` → `check:docs` → `check:docs:strict`（今天它就是绿的 ⇒ 直接阻塞，issue #187 提案里的 `continue-on-error` 在落地前已作废）→ `check:docs-examples` → `check:pack-links` → `check:tests` → `check:types` → `check:types-build` → `check:cli-real`（CI 里 `ERIX_E2E_REAL` 闸门是关着的 ⇒ 它 exit 0 并打分类原因：它自证的是这套自检装置本身没坏，不是真上游可用的信号）→ `if: matrix.node == 22` 的 `check:release`（离线且自清，但矩阵里跑两遍纯浪费）。`npm run soak` 需要真实 relay 配置与 key ⇒ **绝不进**默认 CI。**唯一**的观测项是 `node scripts/docs-drift-check.mjs --self-test` 配 `continue-on-error: true`：干净克隆里没有被 gitignore 的 `docs/tasks/` 目录 ⇒ 在那里**预期红 3 例**（`#280 .gitignore`、`#278-P2`、`#278-P3`，issue #281 在管）——第 4 条红就是新回归，不是「又红了」。还有一个**不是**新回归也能拿到 **5** 条的已知坑：树里出现了一个**空的** `docs/tasks/` 目录（`taskArchiveDirPresent()` 变真而 `simDropped === 0` ⇒ `#280 树形对照` 那两条报「树形口子没落上」）。造它的就是 `npm test` 自己——`test/static-guards.test.js` 的端到端探针会 `mkdir` 那个目录，而 issue #187 之前它只删自己写的两个文件、把空目录留在干净树里，于是把自测从 3 条抬到 5 条；现在它**谁造的目录谁删**（并带一条反向证断言）。还有一个**不是**新回归也能拿到更多红的坑（2026-10-15 实测）：**在 `.gitignore` 里新增一条目录规则，却没在同一份脚本的 `IGNORED_DIR_CLASSES` 里登记类别**。交付报告目录就是活案例，三个提交各测一次：未登记＋仍跟踪 ⇒ **6** 条红；登记成 `task-archive`＋仍跟踪 ⇒ **3** 条；登记＋取消跟踪 ⇒ **3** 条。所以扳机是「没登记类别」（检查器原话：`.gitignore:10 的目录规则 … 没在 IGNORED_DIR_CLASSES 里分类`），档案/裸名裁决只是继承了分类器解析不出来的那部分。`docs/delivery/` 因此既像 `docs/tasks/` 一样登记类别，也保持不入库，**交付证据的持久落点是 PR/issue 评论，不是仓库树**。 Gitea 只是代码镜像：那边**不建** Actions，GitHub 仍是唯一执行方。
@@ -120,27 +120,28 @@ scripts/          # 实验脚本和结果
   它的行号记的是「发版那一刻为真」的事实，改掉等于伪造历史（与 #278 的简称登记表同一套理由）。
   第一批 T-a 做的是基建与棘轮；第二批 T-b1a 把契约里**自带区间的符号锚点**那一族改绿（中英同一个 PR），基线从 244 降到 232；第三批 T-b1b 收尾同一族——两份契约里剩下的裸 `src/loop/orchestrator.js:N[-M]` 条目要么**删掉区间**（首选，并把真声明处的符号名写进句子：`resolvedModelConfig` / `reportObserverError` / `persist` / `isEndTurn` 等），要么作为**范围性事实**保留并把区间对过代码，基线从 232 降到 144。剩下的 `provider-runner.js` / `termination.js` / `governor.js` 三族属 T-b2，而「把基线常量降下来并在提交信息里写理由」
   仍然是「确实少了一些」唯一可核对的写法。
-- `--checkJs` 棘轮规则（issue #214）：`npm run check:types` **不追求清零**——119 个错（涉 29 个文件）是已接受的债（#214 首测是 218，issue #177 刀 1 给 `src/loop/orchestrator.js` 还掉 1 个；PR #249（即 #213 的两个 provider 工厂 JSDoc）又还掉 75 个，**全部落在那两个工厂文件**：`src/providers/openai.js` 46 → 7、`src/providers/anthropic.js` 45 → 9，其余 27 个带错文件一个没动；issue #265 把 `src/store/notes.js` 的端口语义抽进两个新模块后又还掉 21 个，**同样全部落在那一个文件**：`src/store/notes.js` 27 → 6，两个首行 `// @ts-check` 的新模块（`src/store/notes-port.js`、`src/store/notes-memory.js`）各自贡献 0 个，其余 28 个带错文件一个没动——逐文件对账用的是 `git archive` 取出的 `7354fab^` 对照树，它在同一条命令下逐字复现 142 / 185）。
-  它保证的是**只减不增**：总数与 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 119` 常量比较（2026-10-15 在
-  当前树上复测，环境 `typescript@5.9.3` + `@types/node@22.20.5`，**两档在同一笔提交里一起下调**；issue 正文里的 226 在 #213 之前的树
-  `bc3ad02` 上逐字复现，这正是 #214 当时入库值是 218 而不是 226 的原因）。**先还哪一半**：119 个里有 93（2026-10-15 重算：可及 93 / 宿主不可及 26 = 119；#292 少掉的 2 条全在 `src/compact/pipeline.js`，而它在不可及那一半 ⇒ 可及份额仍是 93） 个（涉 20 个文件）落在**宿主真的能碰到的公共面**
-  上（2026-10-13 **重新实测**：把 tsc 输出按文件聚合，再把每个文件对闭包分类，**不是**从 142 时代的 114 减 21 推出来的——从生成的 `src/index.d.ts`/`src/tools/index.d.ts` 沿类型引用可达的 `src/` 下模块共 **40 个**（原 38；#265 新增的两个模块都进了闭包），只算包根入口是 **36 个**（原 34）；
-  从两个入口沿 `export … from` 可达的是 **39 个**（原 37）——`src/assembly-validators.js` 就是那个「类型可达但没被再导出」的模块（仍是唯一那一个），
-  #214 说两种量法得同一集合（共 40 个文件）已不再成立）；剩下 28 个仍在同样的 9 个宿主点不到名的纯实现内部文件里（`run-snapshot-executor` 8、`compact/pipeline` 5、
-  `error-ledger` 3、`providers/timeout` 3，另有 5 个文件各 1-2 个）——这 28 个本次**重测一个没少**；#265 那 21 个因此全落在公共面那半边（`src/store/notes.js` 本来就在公共闭包里）。准入规则：
+- `--checkJs` 棘轮规则（issue #214）：`npm run check:types` **不追求清零**——117 个错（涉 29 个文件）是已接受的债（#214 首测是 218，issue #177 刀 1 给 `src/loop/orchestrator.js` 还掉 1 个；PR #249（即 #213 的两个 provider 工厂 JSDoc）又还掉 75 个，**全部落在那两个工厂文件**：`src/providers/openai.js` 46 → 7、`src/providers/anthropic.js` 45 → 9，其余 27 个带错文件一个没动；issue #265 把 `src/store/notes.js` 的端口语义抽进两个新模块后又还掉 21 个，**同样全部落在那一个文件**：`src/store/notes.js` 27 → 6，两个首行 `// @ts-check` 的新模块（`src/store/notes-port.js`、`src/store/notes-memory.js`）各自贡献 0 个，其余 28 个带错文件一个没动——逐文件对账用的是 `git archive` 取出的 `7354fab^` 对照树，它在同一条命令下逐字复现 142 / 185）。
+  它保证的是**只减不增**：总数与 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 117` 常量比较（2026-10-21 在
+  当前树上复测，环境 `typescript@5.9.3` + `@types/node@22.20.5`，**两档在同一笔提交里一起下调**；上一轮 2026-10-15 量到的
+  119 / 162 是**历史值**；issue 正文里的 226 在 #213 之前的树
+  `bc3ad02` 上逐字复现，这正是 #214 当时入库值是 218 而不是 226 的原因）。**先还哪一半**：117 个里有 91（2026-10-21 重算：可及 91 / 宿主不可及 26 = 117；2026-10-15 那轮是 93 + 26 = 119，那次少掉的 2 条全在 `src/compact/pipeline.js`（不可及那一半）⇒ 可及份额仍是 93；本轮少掉的 2 条全在 `src/display/projection.js`，**它在可及那一半** ⇒ 可及份额自己从 93 掉到 91，不可及那一半的 26 个一个没动） 个（涉 20 个文件）落在**宿主真的能碰到的公共面**
+  上（2026-10-13 **重新实测**：把 tsc 输出按文件聚合，再把每个文件对闭包分类，**不是**从 142 时代的 114 减 21 推出来的——从生成的 `src/index.d.ts`/`src/tools/index.d.ts` 沿类型引用可达的 `src/` 下模块共 **42 个**（2026-10-21 复测，不含两个入口文件本身；原 40——`src/reflection/*`、`src/text/parse-model-json.js`、`src/tools/notes.js` 这几族后来进了闭包），只算包根入口是 **38 个**（原 36）；
+  从两个入口沿 `export … from` 可达的是 **41 个**（原 39）——`src/assembly-validators.js` 就是那个「类型可达但没被再导出」的模块（仍是唯一那一个），
+  #214 说两种量法得同一集合（共 40 个文件）已不再成立）；剩下 26 个仍在同样的 9 个宿主点不到名的纯实现内部文件里（`run-snapshot-executor` 8、`compact/pipeline` 3、
+  `error-ledger` 3、`providers/timeout` 3，另有 5 个文件各 1-2 个）——这 26 个本次**重测一个没少**；#265 那 21 个因此全落在公共面那半边（`src/store/notes.js` 本来就在公共闭包里）。准入规则：
   - **新增文件必须首行开 `// @ts-check`。** 它是「这份文件愿意被检查」的声明，**不是范围开关**：`--checkJs` 加上
-    `src/index.js` 已经会把整张 import 图拉进来（`--listFiles` 实测单入口能到 `src/` 下 **58 个文件**（2026-10-13 复测；#265 前是 56，因为多了两个 `src/` 模块），其中 **29 个带错**），
+    `src/index.js` 已经会把整张 import 图拉进来（`--listFiles` 实测单入口能到 `src/` 下 **65 个文件**（2026-10-21 复测；2026-10-13 记的 58、#265 之前的 56 都是**历史值**），其中 **29 个带错**），
     所以「只编入口」根本限制不了范围；白名单只能按文件加，这正是 #214 R2 要的事。
   - **改动某个文件时，若它的错误数能降就是顺路机会**（#179 那一类：随本就在改这个文件的 PR 消化，不单开单）。
     总数降下来后，把基线常量的下调**单独一次提交**，并在提交信息里写清哪个文件减了几个——棘轮的全部价值在于「这个数只会变小」。
   - ⚠ **跑之前先删掉生成物。** tsc 解析 `./x.js` 时**优先命中同目录的 `x.d.ts`**，所以 `npm run types:build`/`prepack`
     之后，本门禁会变成「在检查声明而不是实现」：同一棵工作树实测（2026-10-11 在 #249 之后的那棵树上复测），**无 `.d.ts` 在场 = 142 个错**，**61 个 `.d.ts` 在场 =
-    0 个错**（`--skipLibCheck` 直接跳过声明文件），去掉 `--skipLibCheck` = **13 个错且全部落在 `.d.ts` 上**。**2026-10-15 在当前树（#292 之后）上重跑同一组对照**：生成物数量已是 **65** 个（历史值：2026-10-11 那棵树 61 个、`39e96f1` 上 63 个、0.20.0 出厂 64 个），**无 `.d.ts` = 119 个错**、**65 个在场 = 0 个错**、去掉 `--skipLibCheck` = **13 个错且全落在 `.d.ts` 上**。
+    0 个错**（`--skipLibCheck` 直接跳过声明文件），去掉 `--skipLibCheck` = **13 个错且全部落在 `.d.ts` 上**。**2026-10-21 在当前树（#339 之后）上重跑同一组对照**：生成物数量已是 **70** 个（历史值：2026-10-15 那棵树 65 个、2026-10-11 那棵树 61 个、`39e96f1` 上 63 个、0.20.0 出厂 64 个），**无 `.d.ts` = 117 个错**、**70 个在场 = 0 个错**、去掉 `--skipLibCheck` = **13 个错且全落在 `.d.ts` 上**。
     「0 < 基线」在这里是**假绿**，所以脚本对残留的 `src/**/*.d.ts` 直接变红（仓库提交了 0 个 `.d.ts`，存在即生成物）；
     清掉即可：`find src -name '*.d.ts' -delete`（生成物不入库、可随时重建）。
   - 故意留着的盲区（规格就是这么定的）：第二个公共入口 `src/tools/index.js` 会拉进包根图里**到不了**的
     `src/tools/file-tools.js`（27 个错）与 `src/skills/loader.js`（16 个），所以这两个文件的新错默认**卡不住**；
-    `npm run check:types -- --with-tools` 卡并集（基线 **162** / 31 个文件 = 119 + 27 + 16，2026-10-15 重测；这里的 27 与 16 每次下调都要重新数，本次两个数确实未变），将来收紧就走这条路，不要拿它当「反正卡不住」的理由。
+    `npm run check:types -- --with-tools` 卡并集（基线 **160** / 31 个文件 = 117 + 27 + 16，2026-10-21 重测；这里的 27 与 16 每次下调都要重新数，本次两个数确实未变），将来收紧就走这条路，不要拿它当「反正卡不住」的理由。
     ⚠ 退役的 261 里悄悄留着 #177 已经还掉的那 1 个（那一档当时没跟着复测）：**下调基线必须两档在同一笔提交里一起复测、一起降**。
   - 工具链许可（issue #213，#214 重申）：`typescript` + `@types/node` 只能待在 dev——零运行时依赖红线约束的是
     `src/`/`bin/` 的 import（`node:` 内置 + 相对路径），本门禁也不新增依赖（只用 `node:` 内置，不建 tsconfig、不引入新工具）。

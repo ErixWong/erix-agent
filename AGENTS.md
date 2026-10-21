@@ -73,7 +73,7 @@ scripts/          # experiment scripts and results
 | `npm run check:cli-real` | Gated real-upstream CLI smoke (ticket 261015 T5, #284/#285 wrap-up): `npm pack` → install the tarball into a throwaway project → drive the **installed `erix`** (not `node bin/cli.js`) against the real relay with a ≥2-tool task, then assert the exit-code promise (a success without `--final-guard` exits **4**, verification `skipped`), the `tool_result` field surface in the transcript, and the installed package's own projection. Runs only under `ERIX_E2E_REAL=1`; with the gate closed it exits 0 and prints a **categorized** reason (gate missing / config missing / unparsable JSON / missing field / endpoint unreachable). Model name is read from `slots.default` (`ERIX_E2E_CONFIG` overrides the path). Two sibling gated suites: `examples/tool-fact-e2e.test.mjs` and `examples/pi-extension/erix-run-e2e.test.mjs` (same gate; they skip under `npm test`, so the real upstream is never a hard dependency of the default suite). Needs `node_modules`; self-cleaning, and it never writes the real `~/.npmrc` or `~/.erix/config.json` |
 | `npm run types:build` | Generate the published `.d.ts` into `src/**/*.d.ts` and keep them (issue #213; the `prepack` hook runs the same script) |
 | `npm run check:types-build` | Assertion gate: `tsc` exit 0 / declaration count > 0 / `src/index.d.ts` contains `runToolLoop` / `src/tools/index.d.ts` contains `createFileTools`, then delete the artifacts (issue #213; needs `npm install --include=dev`) |
-| `npm run check:types` | `--checkJs` **ratchet**: counts the type errors reachable from `src/index.js` and fails if the total exceeds the baseline constant **119** in `scripts/type-check-ratchet.mjs` (issue #214; ratchet = never up, going down is a pass with a "you may lower the baseline to N" hint; both tiers re-measured 2026-10-15 and lowered in the same commit). **Delete the generated `src/**/*.d.ts` first** — see the `--checkJs` ratchet rule below. `-- --with-tools` widens it to the `./tools` entry (baseline **162** / 31 files) |
+| `npm run check:types` | `--checkJs` **ratchet**: counts the type errors reachable from `src/index.js` and fails if the total exceeds the baseline constant **117** in `scripts/type-check-ratchet.mjs` (issue #214; ratchet = never up, going down is a pass with a "you may lower the baseline to N" hint; both tiers re-measured 2026-10-21 and lowered in the same commit). **Delete the generated `src/**/*.d.ts` first** — see the `--checkJs` ratchet rule below. `-- --with-tools` widens it to the `./tools` entry (baseline **160** / 31 files) |
 | `node bin/cli.js ...` | Run the CLI locally (no installation required) |
 
 - CI (issue #187): `.github/workflows/ci.yml` runs on `pull_request`, on `push` to `main`, and on `workflow_dispatch` (the manual re-run entry point; note that `POST …/dispatches` answers **404** until GitHub has seen this workflow once — a branch push plus any run registers it, then dispatch returns 204), on **node 22 and 24** with `fail-fast: false`. Install is `npm install --include=dev`, **never** `npm ci` — this repository gitignores `package-lock.json` on purpose (see the `npm lockfile` comment in `.gitignore`), and the two dev packages (`typescript`, `@types/node`, issue #213) are exactly what `check:types` / `check:types-build` / `check:pack-links` / `check:release` need to run at all. **Blocking** steps, in order: `check:syntax` → `test` → `check:docs` → `check:docs:strict` (it is green today, so it blocks — the `continue-on-error` proposed in issue #187 was retired before landing) → `check:docs-examples` → `check:pack-links` → `check:tests` → `check:types` → `check:types-build` → `check:cli-real` (the `ERIX_E2E_REAL` gate is closed in CI ⇒ it exits 0 with a categorized reason: it self-checks that harness, it is not a real-upstream signal) → `check:release` under `if: matrix.node == 22` (offline and self-cleaning, but running it twice per matrix is pure waste). `npm run soak` needs a real relay configuration and key ⇒ **never** in the default CI. The **only** observational step is `node scripts/docs-drift-check.mjs --self-test` with `continue-on-error: true`: on a clean clone the gitignored `docs/tasks/` directory is absent, so **3 cases are expected red** there (`#280 .gitignore`, `#278-P2`, `#278-P3`, tracked in issue #281) — a 4th red is a regression, not "just more redness". One known way to get **5** instead of 3 without any regression: an **empty** `docs/tasks/` directory sitting in the tree (`taskArchiveDirPresent()` turns true while nothing gets dropped, so the two `#280 树形对照` cases report "the tree hole did not land"). The producer was `npm test` itself — the end-to-end probe in `test/static-guards.test.js` creates that directory and, before issue #187, deleted only its own files and left the empty directory behind in a clean tree; it now removes the directory it created (with a reverse-proof assertion). A **second** measured way to reach more reds without any regression (2026-10-15): **adding a `.gitignore` directory rule without classifying it in `IGNORED_DIR_CLASSES`** in that same script. The delivery-report directory was the live case, measured three ways on three commits: unclassified + tracked → **6** reds; classified as `task-archive` + still tracked → **3** reds; classified + un-tracked → **3** reds. So the trigger was the missing classification (the checker says so itself: `.gitignore:10 的目录规则 … 没在 IGNORED_DIR_CLASSES 里分类`), and the archive/bare-name adjudication merely inherits whatever the classifier cannot resolve. `docs/delivery/` is therefore classified like `docs/tasks/` **and** left untracked, so **the durable delivery evidence lives in the PR/issue comments, not in the repository tree**. Gitea is a code mirror only: **no** Actions pipeline is set up there, GitHub stays the single runner.
@@ -85,7 +85,7 @@ scripts/          # experiment scripts and results
   Two JSDoc shapes silently degrade a parameter to `any` (no compile error, discovered only by reading the emitted `.d.ts`, both fixed in
   #213 R4): a **standalone `//` line inside an inline `@param {{ … }}` type literal**, and a **doc block that is not the comment directly
   above its declaration**. When a host-facing signature matters, read the generated `.d.ts`, not the source comment.
-- `--checkJs` ratchet rule (issue #214): `npm run check:types` does **not** aim for zero errors — 119 of them
+- `--checkJs` ratchet rule (issue #214): `npm run check:types` does **not** aim for zero errors — 117 of them
   (29 files) are accepted debt (the #214 measurement was 218; issue #177 knife 1 took one off
   `src/loop/orchestrator.js` by annotating `resumeRunSnapshot`; PR #249 — the #213 provider-factory JSDoc — took
   75 more, **all of it in two files**: `src/providers/openai.js` 46 → 7 and `src/providers/anthropic.js` 45 → 9,
@@ -94,23 +94,26 @@ scripts/          # experiment scripts and results
   (`src/store/notes-port.js`, `src/store/notes-memory.js`) contributing 0, and the other 28 error-carrying files
   moving by zero — verified file by file against the `7354fab^` tree exported with `git archive`, which reproduces
   142 / 185 verbatim). What it guarantees is **never up**: the total is compared against the
-  `BASELINE_ROOT = 119` constant in `scripts/type-check-ratchet.mjs` (re-measured 2026-10-15 on the current tree
-  with `typescript@5.9.3` + `@types/node@22.20.5`, **both tiers lowered in the same commit**; the 226 in the issue body
+  `BASELINE_ROOT = 117` constant in `scripts/type-check-ratchet.mjs` (re-measured 2026-10-21 on the current tree
+  with `typescript@5.9.3` + `@types/node@22.20.5`, **both tiers lowered in the same commit**; the previous
+  measurement, 2026-10-15, read 119 / 162; the 226 in the issue body
   reproduces on the pre-#213 tree `bc3ad02`, which is why the number committed at #214 was 218 and not 226).
-  **Which half to pay down first**: 93 of the 119 (in 20 files) sit in files a host can actually reach — re-measured
-  2026-10-13 by aggregating the tsc output per file and classifying each file against the closures, and re-derived 2026-10-15 after #292 (93 reachable + 26 implementation-only = 119: the −2 all landed in `src/compact/pipeline.js`, which sits in the implementation-only half, so the reachable share is unchanged at 93), **not** by
+  **Which half to pay down first**: 91 of the 117 (in 20 files) sit in files a host can actually reach — re-measured
+  2026-10-13 by aggregating the tsc output per file and classifying each file against the closures, re-derived 2026-10-15 after #292 (93 reachable + 26 implementation-only = 119: the −2 all landed in `src/compact/pipeline.js`, which sits in the implementation-only half, so the reachable share was unchanged at 93), and re-derived again 2026-10-21 after #335's first step (91 reachable + 26 implementation-only = 117: this time the −2 all landed in `src/display/projection.js`, which **is** in the public half, so the reachable share itself dropped 93 → 91 while the 26 / 9 implementation-only count did not move), **not** by
   subtracting 21 from the 142-era 114: the type-reference closure of the published `src/index.d.ts`
-  and `src/tools/index.d.ts` is **40 modules** under `src/` (was 38; `src/store/notes-port.js` and
-  `src/store/notes-memory.js` both joined it), 36 of them from the package root alone (was 34); the
-  `export … from` closure of those two entries is **39** (was 37) — `src/assembly-validators.js` is still the one module that is
+  and `src/tools/index.d.ts` is **42 modules** under `src/` (re-measured 2026-10-21, the two entries themselves
+  excluded; was 40 — `src/reflection/*`, `src/text/parse-model-json.js` and `src/tools/notes.js` joined it since),
+  38 of them from the package root alone (was 36); the
+  `export … from` closure of those two entries is **41** (was 39) — `src/assembly-validators.js` is still the one module that is
   type-reachable without being re-exported, and #214 reported the two counts as equal at 40, which no longer holds.
-  the other 28 sit in the same 9 implementation-only modules no host can name (`run-snapshot-executor` 8,
-  `compact/pipeline` 5, `error-ledger` 3, `providers/timeout` 3, and 5 more at 1-2 each) — re-measured unchanged,
+  the other 26 sit in the same 9 implementation-only modules no host can name (`run-snapshot-executor` 8,
+  `compact/pipeline` 3, `error-ledger` 3, `providers/timeout` 3, and 5 more at 1-2 each) — re-measured unchanged,
   none of them moved, and all 21 units #265 removed fell on the public half, since `src/store/notes.js` is itself
   inside the public closure. Admission rules for the whitelist:
   - **New files must open `// @ts-check` on line 1.** It is a declaration of intent, not the scope control:
-    `--checkJs` plus `src/index.js` already pulls the whole import graph — `--listFiles` measures **58 files under
-    `src/`** reached from that one entry (re-measured 2026-10-13; 56 before #265, which added two `src/` modules),
+    `--checkJs` plus `src/index.js` already pulls the whole import graph — `--listFiles` measures **65 files under
+    `src/`** reached from that one entry (re-measured 2026-10-21; the 58 recorded on 2026-10-13 and the 56 before
+    #265 are **historical values**),
     **29 of them carrying errors** — so picking "just the public entry" as
     the input file narrows nothing; the whitelist has to be per-file, which is exactly what #214 R2 asks for.
   - **Touching a file whose error count can go down is a drive-by opportunity** (the #179 pattern: fold it into
@@ -121,15 +124,15 @@ scripts/          # experiment scripts and results
     so after `npm run types:build`/`prepack` the ratchet would be checking declarations instead of
     implementations: measured on the post-#249 tree (2026-10-11), **142 errors** with no `.d.ts` present, **0 errors**
     with the then-61 declarations present (`--skipLibCheck` skips declaration files), **13 errors all pointing at `.d.ts`** if
-    `--skipLibCheck` is dropped; re-measured 2026-10-15 on the current tree (post-#292, where `npm run types:build`
-    emits **65** declarations — the earlier counts 61 (the 2026-10-11 tree), 63 (`39e96f1`, 2026-10-13) and 64 (the 0.20.0 tarball) are **historical values**; current: **119 errors** with none present, **0 errors** with the 65 present, and the same **13 errors on `.d.ts` files** without `--skipLibCheck`.
+    `--skipLibCheck` is dropped; re-measured 2026-10-21 on the current tree (post-#339, where `npm run types:build`
+    emits **70** declarations — the earlier counts 61 (the 2026-10-11 tree), 63 (`39e96f1`, 2026-10-13), 64 (the 0.20.0 tarball) and 65 (the post-#292 tree, 2026-10-15) are **historical values**; current: **117 errors** with none present, **0 errors** with the 70 present, and the same **13 errors on `.d.ts` files** without `--skipLibCheck`.
     "0 errors < baseline" would be a **false green**, so the script hard-fails on
     stale `src/**/*.d.ts` (the repository commits zero `.d.ts`, so their presence always means generated).
     Fix: `find src -name '*.d.ts' -delete` — they are git-ignored and regenerable.
   - Known hole, deliberately left open by the spec: the second public entry `src/tools/index.js` pulls in
     `src/tools/file-tools.js` (27 errors) and `src/skills/loader.js` (16), which the package-root graph never
     reaches, so new errors there are **not** caught by the default gate. `npm run check:types -- --with-tools`
-    gates the union (baseline **162** / 31 files = 119 + 27 + 16, re-measured 2026-10-15; the 27 and the 16 are
+    gates the union (baseline **160** / 31 files = 117 + 27 + 16, re-measured 2026-10-21; the 27 and the 16 are
     re-counted every time the tiers are lowered, and both are unchanged) and is the cheap way to tighten this later.
     ⚠ The retired 261 had quietly kept the one unit #177 took off `orchestrator`, because that tier was never
     re-measured: **lower both tiers in the same commit**, after measuring both.
