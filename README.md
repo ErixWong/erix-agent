@@ -359,6 +359,8 @@ quoted blocks below against it):
   "docs/host-upgrade-guide-0.21.0_cn.md",
   "docs/host-upgrade-guide-0.22.0.md",
   "docs/host-upgrade-guide-0.22.0_cn.md",
+  "docs/host-upgrade-guide-0.23.0.md",
+  "docs/host-upgrade-guide-0.23.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -940,15 +942,14 @@ library-level controls
 - [docs/testing.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing.md) - test strategy and behavior metrics
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
-- [docs/host-upgrade-guide-0.22.0.md](docs/host-upgrade-guide-0.22.0.md) / [docs/host-upgrade-guide-0.22.0_cn.md](docs/host-upgrade-guide-0.22.0_cn.md) - the
-  latest host-facing migration guide (EN/CN pair): it hops **0.20.0 → 0.22.0** in one step because 0.21.0 was
-  never published (its detailed text stays in `docs/host-upgrade-guide-0.21.0.md`). What it actually changes for a
-  host: a same-`dedupKey` write carrying a different payload now **throws** `code === "dedup_payload_conflict"`
-  instead of vanishing, `load()` returns **more rows than there are rounds** (engine-owned rows, some with an empty
-  `messages` — project by `round`, dedupe by `dedupKey`), compaction summaries and TTL degradations are journaled in
-  the `foldedSummary` / `ttlDegradations` payload fields and **reused rather than recomputed** on resume (so a store
-  that rebuilds records from a column whitelist must add those two), and `reflection.judgeDoneAdvisory` is opt-in and
-  default off
+- [docs/host-upgrade-guide-0.23.0.md](docs/host-upgrade-guide-0.23.0.md) / [docs/host-upgrade-guide-0.23.0_cn.md](docs/host-upgrade-guide-0.23.0_cn.md) - the
+  latest host-facing migration guide (EN/CN pair), **0.22.0 → 0.23.0**: the storage-convergence release. The
+  journal now gets **one row per message** (written the moment the message is final) and a round row keeps
+  **metadata only**, so `store.load()` is the body API: a host that parses the raw `.jsonl` itself no longer sees
+  the body (round rows carry no `messages`), `onRound(record)` no longer hands you `record.messages`, the run
+  snapshot's `messages` is a **stale copy** rather than the body source, and `projectTranscriptForDisplay` must be
+  fed `load()`'s folded output (raw rows duplicate entries and drop `durationMs`). No store signature, option or
+  export moved
 - [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) - an earlier
   host-facing migration guide: the judge's `writeToolNames` default, the seven-entry
   file-tool list, the `rg`/`grep` deprecation line, the Experimental marker wording,
@@ -976,10 +977,10 @@ Not every Markdown file in this repository claims the same thing, and the gate k
 
 - **Live documentation — gated, must be true *today*.** `README*.md`, `AGENTS*.md`, the consumer contract pair
   (`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`), **every** `docs/host-upgrade-guide*.md`
-  (18 today, discovered from the directory), plus — since 工单 261021-03 B1 — the architecture pair
+  (20 today, discovered from the directory), plus — since 工单 261021-03 B1 — the architecture pair
   (`docs/architecture.md` / `docs/architecture_cn.md`), the chart pair (`docs/charts.md` / `docs/charts_cn.md`),
   the requirements pair (`docs/requirements.md` / `docs/requirements_cn.md`) and the `erix_run` README
-  (`examples/pi-extension/README.md`). That is 31 documents (`REF_SCAN_DOCS_MINIMUM = 31`): a renamed file, a moved
+  (`examples/pi-extension/README.md`). That is 33 documents (`REF_SCAN_DOCS_MINIMUM = 33`): a renamed file, a moved
   line or a symbol that no longer exists in `src/` turns `npm run check:docs` red.
 - **Snapshot archives — true at the date in their own header.** `docs/v0.0-contracts*.md` /
   `docs/v0.1-contracts*.md` / `docs/v0.2-contracts*.md`, `docs/design/`, `docs/research/`, `docs/harness-comparison/`
@@ -999,12 +1000,20 @@ current contract. And a path that points into **another** repository is written 
 
 The authoritative version is the `version` field of
 [`package.json`](package.json), and `npm run check:docs` verifies the release
-line below against it. Current release: **v0.22.0** (2026-10-21). The complete,
+line below against it. Current release: **v0.23.0** (2026-10-21). The complete,
 authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
 only the releases that changed how a host consumes the runtime. The 0.6.0
 migration steps remain in
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
+- **v0.23.0 (2026-10-21)**: the storage-convergence release (工单 261021, the three knives) — the journal now gets
+  **one row per message**, written the moment the message is final, and a round row keeps **metadata only**;
+  `store.load()` folds the message rows back into their round, so the record shape a `load()` reader sees is
+  unchanged. Four consequences a host must handle: raw journal rows no longer carry the body (read `load()`),
+  `onRound(record)` no longer hands you `record.messages`, the run snapshot's `messages` is a **stale copy**
+  (written before the round's tools ran) rather than the body source, and `projectTranscriptForDisplay` must be fed
+  `load()`'s folded output — raw rows duplicate entries and drop `durationMs`. No store signature, option, export or
+  dependency moved. Migration: [docs/host-upgrade-guide-0.23.0.md](docs/host-upgrade-guide-0.23.0.md), 0.22.0 → 0.23.0.
 - **v0.22.0 (2026-10-21)**: the persistence-truth release (issues #322 / #323 / #326) — text the engine
   injects *after* a round record has already landed (judge advisory, extension notice, guard revision note,
   forced wrap-up plus its final assistant message) is now journalled in the same run, and compaction summaries
