@@ -141,6 +141,14 @@
 
 ### Documentation
 
+- **`--self-test` 的散文改口：AGENTS 中英那两行不再说「必须在开发树里跑、3 例已知假红」，并加机器守卫把这类「拿旧行为冒充现状」的措辞钉住（issue #377，收 #302 / #281 的尾巴；`test/static-guards.test.js` 规则 5 + 中英 AGENTS + 0.19.0 指南中英那段；`src/` 零改动、无新依赖）。**
+  - **现场**：`AGENTS.md:69` / `AGENTS_cn.md:66` 的命令行表里，`docs-drift-check --self-test` 那一行从 #302 之前一直留到 0.24.0：「**必须在开发树里跑**……其中 3 例是**已知假红**」。#302（PR #369）把树形判定改成**合成树夹具**之后，`git archive` 导出的干净树上实测 **103 例全 ✓**，而同一份 AGENTS 的 CI 段已被 #369 改口成「那批干净克隆红数已经不存在」⇒ 中英两份**自相矛盾**。`check:docs` / `check:docs:strict` 双双 exit 0：它们校的是清单/枚举/单位/路径/命令/默认值这些**锚点**，抓不到「这句散文今天还成立吗」——本单存在的理由就是那个缺口。
+  - **改法（保留历史，只改时态）**：中英两行改成「自 #302 起在哪棵树里跑都不影响结论（树形用例跑合成树夹具）+ 三种树形实测 103 例 0 红」，历史留成一句带时态的「#302 之前是另一回事：没有 `docs/tasks/`（本机任务档案，不入库）的检出里 3 例是已知假红（树里有个空目录则 5 例），由 issue #281 记录在案」——**不删历史**，只禁止它冒充现状。
+  - **全仓扫同类残留（判定表见交付报告）**：工单给的那条 grep 逐条判「现在还是不是真的」。真正需要改的只有两处：点名的 AGENTS 中英两行，以及 `docs/host-upgrade-guide-0.19.0.md` / `_cn.md` 里那段「给本仓贡献者的一句话」——它同样说「必须在开发树里跑 + 3 例已知假红」，还把口径指回 `AGENTS.md`，改完 AGENTS 之后就与它互相矛盾；已改成「0.19.0 当时还多一条限制……**那是 #302 之前的事**」。其余命中（`三个` / `恰好 3` / `假红` 等）逐条判为**与本病无关**（压缩策略数、搜索工具数、HTTP code 数、「宁可假红不要假绿」的口径话术、`#374` 的 13 例自测），一处未动——不为凑数改。
+  - **机器守卫（`test/static-guards.test.js` 规则 5，规则号接现有 1–4）**：文档里提到 `--self-test` 的**段落**内，凡出现「已知假红 / known false red」的行，同段落必须带时态标记（`#302 之前` / `#302 以前` / `before #302`），否则红并点名 `文档:行`；另加覆盖面断言——两份 AGENTS 的 `--self-test` 表格行必须在、且必须提到 `#302`（句子被删也红）。描述面 = 第 4 条那五份 + 顶层 `docs/*.md`（`docs/design/`、`docs/research/`、`docs/decisions/` 这些带日期的档案不在面内：逼它们改口等于改历史）。**为什么按段落判**：中文句子会折行，0.19.0 指南那句的「已知假红」与命令名就不在同一行，按行判会漏。**为什么不是「出现『假红』就红」**：那个词在 `test/` / `scripts/` 的注释里是常用语，全仓禁令会淹死在误报里（与第 3 条同一取舍：宁可窄而真）。
+  - **反向证（进 `npm test`）**：删掉 AGENTS.md 的「Before #302」⇒ `AGENTS.md:69` 红 1；删掉 AGENTS_cn.md 的「#302 之前」⇒ `AGENTS_cn.md:66` 红 1；删掉 0.19.0 指南的「那是 #302 之前的事」⇒ 那一段红 1；抹掉那一行的 `#302` ⇒ 覆盖面红 1；整行删掉 ⇒ 覆盖面红 1；变异没落上时变异器自己抛（#210 R2）。放行证/范围证：带标记的历史叙述绿、标记折行也绿、不带标记红、只有「假红」不算命中、不提 `--self-test` 的段落不算命中、文档读不到红。真实树上另做一次变异取证：`cp` 备份 + `md5sum` 逐字还原（`AGENTS.md` 删掉「Before #302」⇒ `node --test test/static-guards.test.js` 红 2，还原后 md5 回到 `a7522a364de338dfd525691157bee015`）。
+  - **门禁**：`npm test` → **tests 1870 / pass 1861 / fail 0 / skipped 9**（改前基线 1867 / 1858 / 0 / 9，差值恰是新增的 3 格规则 5 用例；`node --test test/static-guards.test.js` → 23/23，改前 20/20）；`check:syntax`、`check:docs`（70 项）、`check:docs:strict`、`check:docs-examples`（36/36）、`check:pack-links`、`check:tests`、`check:types`（117 = 基线）、`check:types -- --with-tools`（153 < 基线 156，差值本单之前就有）、`node scripts/docs-drift-check.mjs --self-test`（103 例）全 exit 0。
+
 - **符号锚点下限 80 → 81（现值同步，不是放宽门禁）。** #315 的 `compactionStatsWindow` 小节按本仓红线用符号
   锚点引用 `createDeterministicRunState`（`src/run-state.js`）与 `normalizeCompactionStats`（`src/compact/pipeline.js`），
   合并后 `--verbose` 实测 **81 组 / 203 处**；下限不跟着升，`--self-test` 里两条 `#286 返工 R1` 用例就再次

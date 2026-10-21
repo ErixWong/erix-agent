@@ -223,10 +223,12 @@ engine and loads that engine by package name. There is currently no version stam
 installed directory, so "which build is installed" is answered by comparing file hashes.
 
 **For contributors to this repository:** `node scripts/docs-drift-check.mjs --self-test`
-must be run in the development tree. In a checkout without the git-ignored local archive
-directory, 3 of its cases are known false reds (their expectations name neighbouring files
-that only exist on a development machine) — tracked and deliberately deferred, see
-`AGENTS.md`.
+can be run in this repository's tree. 0.19.0 had one further restriction: in a checkout without
+the git-ignored local archive directory, 3 of its cases were known false reds (their
+expectations name neighbouring files that only exist on a development machine) — those reds were
+tracked in issue #281 and are gone: **that was before #302**, after which the tree-shape cases
+run on a synthetic tree fixture (103 cases, all green on a clean checkout); see `AGENTS.md` for
+the current wording.
 
 Prior guides in this series:
 [0.18.0](host-upgrade-guide-0.18.0.md),
