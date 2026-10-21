@@ -397,8 +397,10 @@ function projectRecord(record, recordIndex) {
 
   // issue #335 第一步：**正本在消息行**。#334 之后一条 assistant 消息一成型就落盘、恢复也只认它，
   // 而轮行的 `response.content` 只是同一份正文的第二副本（两份谁是真的没有机制保证）。所以展示
-  // 侧改为优先读折叠后的轮内消息 `record.messages` 里那条 assistant 消息；两条线同时在场时**只出
-  // 这一条**，不会再出现「response 一条 + messages 一条」的重复显示。
+  // 侧改为优先读折叠后的轮内消息 `record.messages` 里那条 assistant 消息。两份副本同时在场时**只按
+  // 消息行那一份出条目**（照每条 assistant 消息各一条，与改造前的 messages 分支同规则），不会再出现
+  // 「response 一条 + messages 一条」的重复显示；改造前一轮里第二条 assistant 消息（forced-final /
+  // 续写）会被 response 副本遮住，现在看得见——真实账本实测输出与改造前逐字相同（见工单报告）。
   /** @type {object[]} */
   const assistantMessageEntries = [];
   for (const message of messages) {
