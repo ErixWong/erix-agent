@@ -1,5 +1,6 @@
 # erix_run 异步执行机制分析（issue #234）—— 对照 `pi-subagents@0.76.1` 的实证
 
+> 快照档案（2026-10-13）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 > 这份文件是 `examples/pi-extension/README.md`「异步执行：派工即返回句柄」一节与
 > `examples/pi-extension/erix-run-*.js` / `erix-run.ts` 头注释里那个引用落点。
 > **issue #269 之前它是不存在的**（三处代码注释、README、CHANGELOG 都在指一个空文件），

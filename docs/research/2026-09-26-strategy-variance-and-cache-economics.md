@@ -1,5 +1,6 @@
 # 策略方差与缓存经济学基准（2026-09-26）
 
+> 快照档案（2026-09-26）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 > 任务文档（本地，不入库）：docs/tasks/done/260926-strategy-variance-benchmark/REPORT.md
 > 关联 issue：#44（cache-adaptive folding，本文是其数据来源）｜ #40 ｜ #39
 > 口径：erix-station 只读代码分析（prompt 与 260920 基准逐字同）、relay deepseek-flash、隔离 HOME、cwd=erix-station、n=3×2 臂 + 1 作废批（cwd 协议错误，详见任务文档）

@@ -1,5 +1,6 @@
 # pi 上下文与记忆机制剖析
 
+> 快照档案（2026-10-10）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 ## 0. 版本与范围
 
 - 对象：`@earendil-works/pi-coding-agent`，包版本 `0.84.2`（包根 `package.json` 第 3 行）。形态是 TypeScript → `dist/*.js` 编译产物（可读），同目录 `docs/*.md` 为官方文档。

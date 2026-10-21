@@ -1,5 +1,6 @@
 # touwaka（touwaka-mate）上下文与记忆机制剖析
 
+> 快照档案（2026-09-17）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 ## 0. 版本与范围
 
 - 对象：touwaka-mate，Node.js（ESM + Koa + Sequelize/MySQL）多角色「专家（expert）」agent 平台。版本 `0.4.0`（`package.json:3`），分析时 git HEAD 为 `bcf8ef8`。
