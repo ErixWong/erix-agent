@@ -141,6 +141,13 @@ scripts/          # experiment scripts and results
   `package.json` and `src/`, so docs cannot silently drift; the required phrasing for
   "current version" claims is documented in the header comment of `scripts/docs-drift-check.mjs`.
   Chinese/English document pairs stay in sync (see `AGENTS_cn.md`).
+- Referring to a file in **another repository** (issue #286 family, 工单 261021-03 B1): write it as
+  `<repo-name>:<path inside that repo>` — e.g. `touwaka:lib/agent/`,
+  `pi-subagents:src/runs/background/async-execution.js:4`. A prefixed reference is *not* looked up in this repository
+  and its line numbers do **not** count against the bare-line ratchet below; the repo name must be one registered in
+  `EXTERNAL_REPO_PREFIXES` in `scripts/docs-drift-check.mjs` (an unregistered name is red, and a registered name that
+  nothing references is red too). **A path without a prefix is a path inside this repository and must resolve here** —
+  that is the whole point of the marker: it names ownership instead of granting a free pass.
 - Anchor granularity (issue #210): **do not assume "delete one mention in the docs turns red"** — most anchors are
   *existence-level* (the whole `defaults` group, `modulemap`, `paths`: they ask "is this string present in that file",
   so deleting one extra mention of the same value stays green). Only these are *per-occurrence* (each declaration site
@@ -164,11 +171,11 @@ scripts/          # experiment scripts and results
   `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs`. Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 67` (groups
-  measured today: 67 unique (symbol, file) pairs over 173 occurrences, raised from 32 when the 0.21.0 guide pair
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 72` (groups
+  measured today: 72 unique (symbol, file) pairs over 180 occurrences, raised from 32 when the 0.21.0 guide pair
   landed, again for the #293 fixes to the 0.19.0 guide, again to 45 when #313's contract section merged on top
   of them, again to 53 when #314's host-side guard section landed as a pair, and again to 63 when the 0.21.0 guide
-  pair grew the #313 / #314 / #312(b) host sections during the 0.21.0 fold-in (工单 261016-021), reproducible via `--verbose`, and again to 67 when the #326 store-dedup contract section landed as an EN/CN pair): dropping below it is
+  pair grew the #313 / #314 / #312(b) host sections during the 0.21.0 fold-in (工单 261016-021), reproducible via `--verbose`, and again to 67 when the #326 store-dedup contract section landed as an EN/CN pair, and again to 72 when 架构×2 / 图表×2 / 需求对照×2 and `examples/pi-extension/README.md` joined the coverage (工单 261021-03 B1 — five new groups: `resolvedToolResultTtl`, `markStablePrefix`, `loadModelSlot`, `createProviderForSlot`, `createJsonFileModelConfigProvider`)): dropping below it is
   red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
   Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
   *`symbol-anchor-span`* (#286 batch T-b1a) is the *per-occurrence* companion of the rule above: when a symbol anchor
@@ -188,12 +195,16 @@ scripts/          # experiment scripts and results
   nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty
   string (or carries a `g` flag, making `.test()` stateful) is itself an error — same dual-condition family as #286's
   `test/static-guards.test.js`). An out-of-range line number is an
-  error, not an observation. Scope is the 24 documents a host actually reads: the two READMEs, both AGENTS files, both
-  contract files, plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
+  error, not an observation. Scope is the 31 documents a host actually reads: the two READMEs, both AGENTS files, both
+  contract files, both architecture docs, both chart docs, both requirements docs, `examples/pi-extension/README.md`,
+  plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
   covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that
   pattern shrinks the coverage in the script **and** in the test that mirrors the same glob, so both numbers still
-  agree: `REF_SCAN_DOCS_MINIMUM = 24` is the floor (6 pinned documents + the 18 guides found today, raised from 22
-  when the 0.22.0 guide pair landed), and `test/docs-anchor-ratchet.test.js` keeps its own pinned list of those 18
+  agree: `REF_SCAN_DOCS_MINIMUM = 31` is the floor (13 pinned documents + the 18 guides found today; raised from 22
+  when the 0.22.0 guide pair landed, and from 24 to **31** in 工单 261021-03 B1 because 架构×2 + 图表×2 + 需求对照×2 +
+  `examples/pi-extension/README.md` were brought into scope — those seven documents are read as *current state*, so a dead
+  reference in them is worth at least as much as one in an entry document), and `test/docs-anchor-ratchet.test.js`
+  keeps its own pinned list of those 13 + 18
   file names. Renaming or adding a guide is
   red until both places are updated. `CHANGELOG.md` is deliberately out of scope: its line numbers record what was true at
   release time, and rewriting them would fake history (same reasoning as the #278 shorthand register).
