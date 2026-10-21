@@ -7,7 +7,8 @@
 //   PI_CODING_AGENT_ROOT → 常见全局安装路径 → import.meta.resolve("@earendil-works/pi-coding-agent")
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { makeTmp } from "../helpers/tmp.js";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -239,8 +240,8 @@ test("#237：execute() 每条返回路径的 details 都可 JSON 序列化（真
     const entry = loaded.extensions[0].tools.get("erix_run");
     const definition = entry?.definition ?? entry;
 
-    const work = mkdtempSync(path.join(tmpdir(), "erix-run-details-pi-"));
-    const sess = mkdtempSync(path.join(tmpdir(), "erix-run-details-pi-sess-"));
+    const work = await makeTmp("erix-run-details-pi-");
+    const sess = await makeTmp("erix-run-details-pi-sess-");
     const ctx = {
       signal: undefined, cwd: process.cwd(), mode: "rpc", hasUI: false,
       isIdle: () => true, sessionManager: { getSessionId: () => "t-237" },

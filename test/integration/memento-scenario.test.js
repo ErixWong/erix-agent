@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { buildCaptureRecoveryHint, buildCaptureStub } from "../../bin/final-guard.js";
@@ -11,9 +10,10 @@ import { runToolLoop } from "../../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { estimateMessageTokens } from "../../src/tokens.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 test("S1 folds an early value into the provider request", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-memento-s1-"));
+  const directory = await makeTmp("erix-memento-s1-");
   const archiveDir = path.join(directory, "archive");
   const value = "deterministic-abc123";
   const command = `printf 'nonce=${value}\\n'; head -c 1 /dev/urandom >/dev/null; : "${"x".repeat(800)}"`;
@@ -75,7 +75,7 @@ test("S1 folds an early value into the provider request", async () => {
 });
 
 test("S2 folds a stub verbatim (no agent-side credential filter, #55) while retaining its archive pointer", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-memento-s2-"));
+  const directory = await makeTmp("erix-memento-s2-");
   const archiveDir = path.join(directory, "archive");
   const secret = "sk-deterministic-secret";
   const safeValue = "safe-deterministic-value";
@@ -142,7 +142,7 @@ test("S2 folds a stub verbatim (no agent-side credential filter, #55) while reta
 });
 
 test("S3 executes a repeated command and returns fresh output (ADR-016)", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-memento-s3-"));
+  const directory = await makeTmp("erix-memento-s3-");
   const command = `printf 'nonce=s3-deterministic\n'; head -c 1 /dev/urandom >/dev/null`;
   const provider = createFakeProvider([
     {
@@ -203,7 +203,7 @@ test("S3 executes a repeated command and returns fresh output (ADR-016)", async 
 });
 
 test("S4 replaces fold state while preserving unique stubs across two folds", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-memento-s4-"));
+  const directory = await makeTmp("erix-memento-s4-");
   const archiveDir = path.join(directory, "archive");
   const command = `printf 'nonce=s4-deterministic\\n'; head -c 1 /dev/urandom >/dev/null; : "${"x".repeat(5000)}"`;
   const provider = createFakeProvider([

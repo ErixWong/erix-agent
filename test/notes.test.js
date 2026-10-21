@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   rename,
@@ -11,7 +10,6 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -20,6 +18,7 @@ import { createBuiltinNotesTools } from "../src/tools/notes.js";
 import { createFileNotesStore } from "../src/store/notes.js";
 import { discoverSkills, skillDirectories } from "../bin/skills.js";
 import { estimateTokens } from "../src/tokens.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 const HISTORICAL_TS = "2026-09-15T02:00:00.000Z";
 
@@ -64,7 +63,7 @@ async function seedHistoricalAutoNote(directory, record) {
 const skillPath = fileURLToPath(new URL("../src/tools/notes.js", import.meta.url));
 
 async function withNotes(callback, options = {}) {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-notes-test-"));
+  const directory = await makeTmp("erix-notes-test-");
   const previous = Object.fromEntries(
     [
       "ERIX_NOTES_DIR",
@@ -709,8 +708,8 @@ test("completeRun reports the lifecycle status and host purge is the only GC", a
 });
 
 test("bundled notes skill is retired and user notes skill remains discoverable", async () => {
-  const home = await mkdtemp(path.join(tmpdir(), "erix-notes-home-"));
-  const cwd = await mkdtemp(path.join(tmpdir(), "erix-notes-cwd-"));
+  const home = await makeTmp("erix-notes-home-");
+  const cwd = await makeTmp("erix-notes-cwd-");
   try {
     // issue #61：bundled notes skill 已退役（skills/ 目录不再含 notes 子目录），
     // bundled 发现机制本身保留（skills/ 目录仍在发现列表内）。

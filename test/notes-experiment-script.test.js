@@ -4,7 +4,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdir,
-  mkdtemp,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -33,9 +32,10 @@ import {
   validateCostPlan,
 } from "../scripts/experiment-guardrails.mjs";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 async function withProjectTemp(callback) {
-  const directory = await mkdtemp(path.join(process.cwd(), ".test-notes-experiment-"));
+  const directory = await makeTmp("erix-notes-experiment-");
   try {
     return await callback(directory);
   } finally {

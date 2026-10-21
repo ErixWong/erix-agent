@@ -5,6 +5,17 @@
 
 ### Changed
 
+- **chore/test：#209 收口测试里剩下的历史临时目录形态，并把卫生守卫从「提示」升级为「阻塞」（`test/**` 约 42 处 `mkdtemp` 调用点 + `scripts/test-hygiene-check.mjs`；`src/` 零改动、无新依赖、`makeTmp` 语义与 memoize 行为未动）。**
+  现场：守卫注释声称「`mkdtemp(path.join(tmpdir(…)` 与 `mkdtempSync(...)` 等历史形态一并卷入」，但它硬拦的只是窄形态 `mkdtemp(join(tmpdir(`，其余只打印一行**不阻塞**的提示，而提示数 **23** 既不等于 `mkdtemp(` 的 25、也不等于 `mkdtempSync(` 的 17——注释、实现、实际三者互不相符，且 `mkdtempSync` 那一格连数都没数。
+  - **清点（以实测为准）**：`test/**` 里 `mkdtemp(`（不含 Sync）**25** 处、`mkdtempSync(` **17** 处，其中 `mkdtemp(join(tmpdir` / `mkdtemp(path.join(tmpdir` 形态 20 处、`mkdtempSync(*tmpdir*` 13 处、`mkdtemp(path.join(process.cwd()` 1 处（`test/notes-experiment-script.test.js`，临时目录建在仓内）、`test/contract/doc-examples.js` 一个文件 11 处。逐条表（文件:行:形态）见报告。
+  - **改造**：全部改成 `await makeTmp(prefix)`。`mkdtempSync` 没有同步版 `makeTmp` ⇒ 用例按 `async` 化（`node --test` 回调本来就支持），`test/examples/*` 的 5 个同步工厂（`makeRuntime` / `tempDir` 等）随调用链 `async` 化；`test/loop-option-normalization.js` 的 cwd 沙箱改在**模块顶层**取目录（`makeTmp` 的清理是 `after()` 钩子，在 `before()` 里注册时作用域属于那个钩子，会在后面的用例还在 chdir 时就把目录抽掉），并保留 `realpathSync` 处理 tmpdir 是符号链接的情况。
+  - **`test/contract/doc-examples.js`**：围栏 preamble 里的 4 处 `mkdtempSync` 改成「harness 用 `makeTmp` 建目录、经 `ERIX_DOC_EXAMPLE_TMP` 传给子进程」，L2/L3 的临时 .mjs 目录也走 `makeTmp`（`runLevel3` 因此变成 `async`）。围栏正文（`docs/host-consumer-contract*.md`）一字未动，`EXPECTED_JS_FENCE_COUNT` 仍 11，`npm run check:docs-examples` 36/36 绿。
+  - **守卫**：规则 B 从「只拦 `mkdtemp(join(tmpdir(`」升级为「`test/**` 里除 `test/helpers/tmp.js` 外任何 `mkdtemp` / `fs.mkdtemp` / `mkdtempSync` 调用都失败」；新增**逐行豁免**机制（调用行或紧邻上一行写 `test-hygiene-exempt: <理由>`，只写标记不写理由本身即违规，守卫把生效的豁免连理由一起打印），注释与实现改成同一句话。当前真树上**零豁免**。
+  - **反向证**（`cp` 备份 + `md5sum` 逐字还原，零 `git checkout`）：临时插 `mkdtemp(path.join(tmpdir(), "x"))` ⇒ `check:tests` 红（`bare-mkdtemp`）；再插 `mkdtempSync(tmpdir() + "/y")` ⇒ 也红（这是旧守卫漏掉的那一格）；插一处带理由的豁免 ⇒ 绿且打印豁免行，插一处**无理由**的豁免 ⇒ 红。还原后 `md5sum` 逐字一致。
+  - **两象限复跑**：`node --test` 全量在「正常环境」与「`TMPDIR=<新目录>` 重定向」两象限 fail 数一致（均 0，pass 1843 / skipped 9）。**只测了 TMPDIR 重定向，没测只读 `/tmp`**（本机无法真造只读 `/tmp`，不谎报）。
+  - **文档**：`docs/testing.md` / `docs/testing_cn.md` 的基础设施第 6 条写明「守卫现在阻塞、`mkdtempSync` 也在管辖内、豁免怎么写」。
+  - **随包面（一处需要点名的副作用）**：`test/contract/file-tools.js` / `skills-loader.js` 是**随包发布**的契约套件（`./contract-tests` 再导出），它们现在 import `../helpers/tmp.js`，所以 `package.json` 的 `files` 白名单新增 `test/helpers/tmp.js`（README / README_cn 的 `files` 围栏同步，`check:docs` 的 pkg-block 对账绿）。不这么做，宿主装下来的 `erix-agent/contract-tests` 会在 `../helpers/tmp.js` 上 `ERR_MODULE_NOT_FOUND`；`npm run check:release` 五步全绿（随包契约套件 122/122、tarball 192 文件）实测背书。
+
 - **`checkpoint_failed` 与 `persistence_failed` 字段面对称——键名与取值类型都对称：工具调用点的落盘失败现在也带 `cause`、`errorCode`、`unpersisted`，且三个字段与 run 末尾那个出口**同型**（issue #230；`src/loop/run-snapshot-executor.js` 的 `assertSnapshotPersisted` + `src/loop/orchestrator.js` 的 `makePersistenceFailure`；错误码、`phase`/`sideEffect` 语义、fail-closed 早退条件与公共导出面一字未动）。**
   - **现场**：同一次底层故障（run snapshot 落盘失败）有两个出口。run 末尾的 `persistence_failed` 带根因与未落盘清单；工具前/后/拦截结果三个调用点的 `checkpoint_failed` 只透传 `operation`/`persistence`/`persistenceError` 与调用点自己声明的 `phase`/`sideEffect`，`cause` 与 `unpersisted` 两者皆无。宿主按「是否可恢复 / 要不要重放」分流时，后者只能去解析 `message` 字符串——正是 issue #176 当初要消灭的用法。
   - **归 Changed 而不是 Fixed 的理由**：行为本来是对的（工具前失败不执行、工具后失败标 `executed_uncommitted`），错的只是宿主拿到的**信息面**。本次是宿主可见字段的**增量扩展**（既有字段的形状/取值/语义、错误码、`phase`/`sideEffect` 全部不变），按 Keep a Changelog 的语义归 Changed；「缺字段」这个缺陷本身是 issue #230 的动机，不是一次行为回归。

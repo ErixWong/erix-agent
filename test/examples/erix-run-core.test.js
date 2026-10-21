@@ -8,7 +8,7 @@
 // 外加：lib 装载回退顺序、超时标注、载荷格式化。
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +21,7 @@ import { COMPACTION_LAYER_IDS, createEmptyCompactionLayers, observeCompactionLay
 import { safeRunId } from "../../src/store/file.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
+import { makeTmp } from "../helpers/tmp.js";
 import {
   ENGINE_FINAL_GUARD_MAX_RETRIES,
   FINAL_DRAFT_SECTIONS,
@@ -29,8 +30,8 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-function tempDir(prefix = "erix-run-core-") {
-  return mkdtempSync(path.join(tmpdir(), prefix));
+async function tempDir(prefix = "erix-run-core-") {
+  return makeTmp(prefix);
 }
 
 async function waitUntil(predicate, { timeoutMs = 2_000, stepMs = 5 } = {}) {
@@ -97,7 +98,7 @@ function makeDeps({ provider, lib = fakeLib(), slot = fakeSlot(), captured, prog
   };
 }
 
-test("parseRunParams：默认值、~ 展开、逐项校验", () => {
+test("parseRunParams：默认值、~ 展开、逐项校验", async () => {
   const parsed = core.parseRunParams({ task: "  修好 it  ", cwd: "/tmp" });
   assert.deepEqual(parsed, {
     task: "修好 it",
@@ -106,7 +107,7 @@ test("parseRunParams：默认值、~ 展开、逐项校验", () => {
     timeoutMs: core.DEFAULT_TIMEOUT_MS,
   });
 
-  const fakeHome = tempDir("erix-run-home-");
+  const fakeHome = await tempDir("erix-run-home-");
   mkdirSync(path.join(fakeHome, "somewhere"));
   const withHome = core.parseRunParams({ task: "t", cwd: "~/somewhere" }, { home: fakeHome });
   assert.equal(withHome.cwd, path.join(fakeHome, "somewhere"));
@@ -176,7 +177,7 @@ test("resolveLibCandidates/loadErixAgent：ERIX_AGENT_LIB 优先，其次裸包�
 });
 
 test("loadModelSlot：slots.default + apiKeyEnv 落值 + model 覆盖 + 元数据缺失诊断", async () => {
-  const dir = tempDir();
+  const dir = await tempDir();
   const lib = { createJsonFileModelConfigProvider: core_loadJsonProvider };
 
   const goodPath = path.join(dir, "good.json");
@@ -579,8 +580,8 @@ test("#207 R3：safeRunIdForFile 与引擎 safeRunId 逐字同式（算错就是
   assert.match(core.safeRunIdForFile("erix-run-2026-10-11T13-30-00-000Z-a1b2c3"), /^erix-run-/u);
 });
 
-test("#207 R3：sessionDir / transcript 参数解析（缺省不落盘、file 同义、~ 展开、相对路径 bad_params）", () => {
-  const home = tempDir("erix-run-home-");
+test("#207 R3：sessionDir / transcript 参数解析（缺省不落盘、file 同义、~ 展开、相对路径 bad_params）", async () => {
+  const home = await tempDir("erix-run-home-");
   // 不传 = 纯内存（现有默认语义）
   assert.equal("sessionDir" in core.parseRunParams({ task: "t", cwd: "/tmp" }, { home }), false);
   assert.equal("sessionDir" in core.parseRunParams({ task: "t", cwd: "/tmp", transcript: "" }, { home }), false);
@@ -610,7 +611,7 @@ test("#207 R3：sessionDir / transcript 参数解析（缺省不落盘、file �
 });
 
 test("#207 R3：不传 sessionDir 时一个字节也不落盘（内存行为逐字不变）", async () => {
-  const home = tempDir("erix-run-home-");
+  const home = await tempDir("erix-run-home-");
   const fileStoreCalls = [];
   const lib = fakeLib();
   lib.index.createFileTranscriptStore = (input) => {
@@ -632,7 +633,7 @@ test("#207 R3：不传 sessionDir 时一个字节也不落盘（内存行为逐�
 });
 
 test("#207 R3：传 sessionDir 时 transcript 真落盘（文件 store，路径由 sessionDir+runId 推出）", async () => {
-  const dir = tempDir("erix-run-session-");
+  const dir = await tempDir("erix-run-session-");
   const sessionDir = path.join(dir, "nested", "transcripts");
   const captured = {};
   const payload = await core.runErixRun(
@@ -661,7 +662,7 @@ test("#207 R3：传 sessionDir 时 transcript 真落盘（文件 store，路径�
   // 落盘只跟 sessionDir 有关，不往 cwd / home 里渗
   assert.deepEqual(readdirSync(dir), ["nested"]);
   // 未落盘与落盘的差：同一个 deps 不传 sessionDir 时目录根本不会被建
-  const untouched = tempDir("erix-run-memory-");
+  const untouched = await tempDir("erix-run-memory-");
   await core.runErixRun(
     { task: "t", cwd: repoRoot },
     { ...makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }), home: untouched },
@@ -670,7 +671,7 @@ test("#207 R3：传 sessionDir 时 transcript 真落盘（文件 store，路径�
 });
 
 test("#207 R3：sessionDir 指到一个已存在的文件 → 归一成 bad_params 终局，不抛给调用方", async () => {
-  const dir = tempDir("erix-run-bad-dir-");
+  const dir = await tempDir("erix-run-bad-dir-");
   const blocker = path.join(dir, "not-a-dir");
   writeFileSync(blocker, "x", "utf8");
   const payload = await core.runErixRun(
@@ -684,7 +685,7 @@ test("#207 R3：sessionDir 指到一个已存在的文件 → 归一成 bad_para
 });
 
 test("#207 R3：judge 决策与 run_outcome 落进 <sessionDir>/outputs/<runId>/judge.log（形状能分辨「不扩」 vs「缺字段」）", async () => {
-  const sessionDir = tempDir("erix-run-judge-");
+  const sessionDir = await tempDir("erix-run-judge-");
   const payload = await core.runErixRun({ task: "t", cwd: repoRoot, sessionDir }, {
     env: {},
     home: "/tmp/fake-home",
@@ -739,7 +740,7 @@ test("#207 R3：judge 决策与 run_outcome 落进 <sessionDir>/outputs/<runId>/
 });
 
 test("#207 R3：judge.log 写不进去只记账，不把已跑完的 run 带成 failed", async () => {
-  const dir = tempDir("erix-run-judge-broken-");
+  const dir = await tempDir("erix-run-judge-broken-");
   const sessionDir = path.join(dir, "transcripts");
   const payload = await core.runErixRun({ task: "t", cwd: repoRoot, sessionDir }, {
     env: {},
@@ -784,7 +785,7 @@ test("#207 R4：artifacts / extensionCount / maxExtensions / resumable（不落�
   });
 
   // ② 落盘：两个路径都是真文件，且等于由 runId 推出来的那个（不是硬编码）
-  const sessionDir = tempDir("erix-run-artifacts-");
+  const sessionDir = await tempDir("erix-run-artifacts-");
   const persisted = await core.runErixRun(
     { task: "t", cwd: repoRoot, sessionDir },
     makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }),
@@ -809,7 +810,7 @@ test("#207 R4：artifacts / extensionCount / maxExtensions / resumable（不落�
 });
 
 test("#207 R4：judge 没跑过（judge.log 未建）时 judgeLogPath 仍是 null，不拿目录当一个产物", async () => {
-  const sessionDir = tempDir("erix-run-nojudge-");
+  const sessionDir = await tempDir("erix-run-nojudge-");
   const payload = await core.runErixRun({ task: "t", cwd: repoRoot, sessionDir }, {
     env: {},
     home: "/tmp/fake-home",
@@ -1273,7 +1274,7 @@ test("#234 R0：judge 开着但没传 maxExtensions 时生效上限 = 引擎缺�
   const captured = {};
   const reported = await core.runErixRun({ task: "t", cwd: repoRoot, maxRounds: 20 }, {
     ...makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
-    home: mkdtempSync(path.join(tmpdir(), "erix-run-r0-home-")),
+    home: await tempDir("erix-run-r0-home-"),
   });
   assert.equal(captured.options.reflection.maxExtensions, undefined, "未传就不得替引擎填默认值");
   assert.equal(

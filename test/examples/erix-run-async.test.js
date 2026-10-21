@@ -8,8 +8,7 @@
 // 机制出处：docs/research/2026-10-13-pi-subagents-async-attribution.md（照 pi-subagents 的逐行实现）
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -37,6 +36,7 @@ import {
   createParentWake,
 } from "../../examples/pi-extension/erix-run-parent-wake.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
+import { makeTmp } from "../helpers/tmp.js";
 import { formatAsyncResult } from "../../examples/pi-extension/erix-run-format.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -44,8 +44,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 /** 同步结果的字段全集（测试侧从 jobs 导出的派生表取，① 那条断言负责验它没骗人）。 */
 const SYNC_FIELDS = jobsApi.SYNC_RESULT_FIELDS;
 
-function tempDir(prefix = "erix-run-async-") {
-  return mkdtempSync(path.join(tmpdir(), prefix));
+async function tempDir(prefix = "erix-run-async-") {
+  return makeTmp(prefix);
 }
 
 async function waitUntil(predicate, { timeoutMs = 3_000, stepMs = 5, label = "condition" } = {}) {
@@ -87,8 +87,8 @@ function gatedJob(extra = {}) {
   return state;
 }
 
-function makeRuntime({ job, sent, registry = createAsyncJobRegistry(), sendRegistry = createCompletionSendRegistry(), now, extra = {} } = {}) {
-  const home = tempDir("erix-run-async-home-");
+async function makeRuntime({ job, sent, registry = createAsyncJobRegistry(), sendRegistry = createCompletionSendRegistry(), now, extra = {} } = {}) {
+  const home = await tempDir("erix-run-async-home-");
   const runtime = createAsyncRuntime({
     home,
     registry,
@@ -110,7 +110,7 @@ function makeRuntime({ job, sent, registry = createAsyncJobRegistry(), sendRegis
 
 test("#234 R1：不传 async / async:false 都走同步语义（返回的是完整终局载荷，不是句柄）", async () => {
   const sent = [];
-  const { runtime } = makeRuntime({ job: async () => ({ ...P_OK }), sent });
+  const { runtime } = await makeRuntime({ job: async () => ({ ...P_OK }), sent });
 
   for (const raw of [{ task: "t", cwd: repoRoot }, { task: "t", cwd: repoRoot, async: false }]) {
     const outcome = await runtime.dispatch(raw, {});
@@ -126,8 +126,8 @@ test("#234 R1：不传 async / async:false 都走同步语义（返回的是完�
 test("#234 R1：async:true 立即返回句柄，且返回时内层 run 还没结束", async () => {
   const sent = [];
   const job = gatedJob();
-  const { runtime, registry } = makeRuntime({ job: job.job, sent });
-  const sessionDir = tempDir("erix-run-async-dir-");
+  const { runtime, registry } = await makeRuntime({ job: job.job, sent });
+  const sessionDir = await tempDir("erix-run-async-dir-");
 
   const startedAt = Date.now();
   const outcome = await runtime.dispatch({
@@ -195,8 +195,8 @@ test("#234 R1：async:true 立即返回句柄，且返回时内层 run 还没结
 });
 
 test("#234 R6：不传 sessionDir 的异步 run 不落盘（内存可查，句柄里 statusPath 是 null）", async () => {
-  const home = tempDir("erix-run-async-nohome-");
-  const dir = tempDir("erix-run-async-nodir-");
+  const home = await tempDir("erix-run-async-nohome-");
+  const dir = await tempDir("erix-run-async-nodir-");
   const job = gatedJob();
   const runtime = createAsyncRuntime({ home, registry: createAsyncJobRegistry(), runJob: job.job, notify: () => true });
   const { handle } = runtime.start({ task: "t", cwd: dir, async: true });
@@ -215,7 +215,7 @@ test("#234 R6：不传 sessionDir 的异步 run 不落盘（内存可查，句�
 
 test("#234 R2：action:list / 未知 runId / 缺 runId 的形状", async () => {
   const job = gatedJob();
-  const { runtime } = makeRuntime({ job: job.job, sent: [] });
+  const { runtime } = await makeRuntime({ job: job.job, sent: [] });
   const a = runtime.start({ task: "a", cwd: repoRoot, async: true }).handle;
   const b = runtime.start({ task: "b", cwd: repoRoot, async: true, quiet: true }).handle;
 
@@ -238,8 +238,8 @@ test("#234 R2：action:list / 未知 runId / 缺 runId 的形状", async () => {
   assert.equal(runtime.act({ action: "list" }).active, 0);
 });
 
-test("#234 R2：跨 /reload 查询 —— 内存表空了仍能从 status.json 读回终局", () => {
-  const sessionDir = tempDir("erix-run-async-reload-");
+test("#234 R2：跨 /reload 查询 —— 内存表空了仍能从 status.json 读回终局", async () => {
+  const sessionDir = await tempDir("erix-run-async-reload-");
   const runId = "erix-run-old-1";
   const written = writeStatusFile({
     sessionDir, runId,
@@ -271,8 +271,8 @@ test("#234 R2：跨 /reload 查询 —— 内存表空了仍能从 status.json �
 
 test("#234 R3：cancel 把 signal 打进内层 runToolLoop，终局是 aborted 而不是悬挂", async () => {
   // 真 runToolLoop + 第二轮永悬的 provider：只有 signal 真打进去才能拿到 aborted
-  const dir = tempDir("erix-run-async-cancel-");
-  const home = tempDir("erix-run-async-cancel-home-");
+  const dir = await tempDir("erix-run-async-cancel-");
+  const home = await tempDir("erix-run-async-cancel-home-");
   let calls = 0;
   const provider = {
     protocol: "fake",
@@ -359,13 +359,13 @@ test("#234 R3：cancel 把 signal 打进内层 runToolLoop，终局是 aborted �
 
 test("#234 R5：异步分支返回后 timeoutMs 到点仍把终局写成 aborted 并落进 status.json（内层连 abort 都不理）", async () => {
   const sent = [];
-  const dir = tempDir("erix-run-async-watchdog-");
+  const dir = await tempDir("erix-run-async-watchdog-");
   // 内层连 signal 都不看、永远不返回：只有 run 级看门狗能把状态从 running 推到 aborted
   const job = async (_params, { signal }) => {
     await new Promise((resolve) => { signal.addEventListener("abort", () => resolve(), { once: true }); });
     return new Promise(() => {});
   };
-  const { runtime } = makeRuntime({ job, sent });
+  const { runtime } = await makeRuntime({ job, sent });
   const { handle } = runtime.start({ task: "卡死", cwd: dir, async: true, sessionDir: dir, timeoutMs: core.MIN_TIMEOUT_MS });
   assert.equal(runtime.registry.get(handle.runId).status, "running");
   assert.equal(JSON.parse(readFileSync(handle.statusPath, "utf8")).status, "running");
@@ -384,8 +384,8 @@ test("#234 R5：异步分支返回后 timeoutMs 到点仍把终局写成 aborted
 test("#234 R5：看门狗到点之后内层真终局仍要落盘，但不得二次投递", async () => {
   const sent = [];
   let release;
-  const dir = tempDir("erix-run-async-late-");
-  const { runtime } = makeRuntime({
+  const dir = await tempDir("erix-run-async-late-");
+  const { runtime } = await makeRuntime({
     sent,
     job: async () => { await new Promise((resolve) => { release = resolve; }); return { ...P_OK, timeout: true, aborted: true, termination: { reason: "aborted" } }; },
   });
@@ -441,7 +441,7 @@ test("#234 机制4：createCompletionSendRegistry —— 同一 key 只 owned �
 
 test("#234 机制4：同一 run 的完成被多个来源触发时只投递一次（去重注册表在 runtime 里真起作用）", async () => {
   const sent = [];
-  const { runtime, registry } = makeRuntime({ job: async () => ({ ...P_OK }), sent });
+  const { runtime, registry } = await makeRuntime({ job: async () => ({ ...P_OK }), sent });
   const { handle } = runtime.start({ task: "t", cwd: repoRoot, async: true });
   await waitUntil(() => registry.get(handle.runId).status === "completed");
   assert.equal(sent.length, 1);
@@ -579,14 +579,14 @@ test("#234 机制2：reservation 挂 Symbol.for + WeakMap（按 sessionManager�
 
 test("#234 机制3：唤醒策略 —— quiet 的成功完成不唤醒，失败/中止仍然唤醒", async () => {
   const sent = [];
-  const { runtime } = makeRuntime({ job: async () => ({ ...P_OK }), sent });
+  const { runtime } = await makeRuntime({ job: async () => ({ ...P_OK }), sent });
   runtime.start({ task: "quiet", cwd: repoRoot, async: true, quiet: true });
   await waitUntil(() => sent.length === 1);
   assert.equal(sent[0].triggersTurn, false, "quiet + completed 不打扰父会话（只落 status.json）");
   assert.equal(sent[0].outcome, "completed");
 
   const noisy = [];
-  const rt2 = makeRuntime({ job: async () => ({ ...P_OK, ok: false, termination: { reason: "failed", errorCode: "unknown" } }), sent: noisy });
+  const rt2 = await makeRuntime({ job: async () => ({ ...P_OK, ok: false, termination: { reason: "failed", errorCode: "unknown" } }), sent: noisy });
   rt2.runtime.start({ task: "quiet-fail", cwd: repoRoot, async: true, quiet: true });
   await waitUntil(() => noisy.length === 1);
   assert.equal(noisy[0].triggersTurn, true, "quiet 也不能吞掉失败（那是可动作的结果）");
@@ -597,8 +597,8 @@ test("#234 机制3：唤醒策略 —— quiet 的成功完成不唤醒，失败
 // 机制 6：session_shutdown 幂等清理 + 落盘面的 artifacts 口径
 // ---------------------------------------------------------------------------
 
-test("#234 机制6：shutdown 幂等（重复调用不重复清、不抛），并清掉在跑 run 的看门狗定时器", () => {
-  const { runtime, registry } = makeRuntime({ job: gatedJob().job, sent: [] });
+test("#234 机制6：shutdown 幂等（重复调用不重复清、不抛），并清掉在跑 run 的看门狗定时器", async () => {
+  const { runtime, registry } = await makeRuntime({ job: gatedJob().job, sent: [] });
   const { handle } = runtime.start({ task: "t", cwd: repoRoot, async: true, timeoutMs: core.MIN_TIMEOUT_MS });
   assert.notEqual(registry.get(handle.runId).watchdog, undefined, "派工后定时器必须在");
   assert.equal(runtime.shutdown(), true);
@@ -607,10 +607,10 @@ test("#234 机制6：shutdown 幂等（重复调用不重复清、不抛），�
 });
 
 test("#234 R6：status.json 的 artifacts 沿用 core 的 resolveArtifacts 口径（文件真在盘上才给路径）", async () => {
-  const dir = tempDir("erix-run-async-artifacts-");
+  const dir = await tempDir("erix-run-async-artifacts-");
   const runId = "erix-run-artifact-run";
   const paths = core.artifactPaths({ sessionDir: dir, runId });
-  const { runtime } = makeRuntime({ job: gatedJob(), sent: [] });
+  const { runtime } = await makeRuntime({ job: gatedJob(), sent: [] });
   // 直接给一个已知的 runId（走 jobView，不依赖真引擎命名）
   const job = {
     runId, status: "aborted", cwd: dir, maxRounds: 8, timeoutMs: 1_000, sessionDir: dir,
@@ -644,8 +644,8 @@ test("#234 R6：status.json 的 artifacts 沿用 core 的 resolveArtifacts 口�
 // 把它透传给内部每一次 `persistStatus`。
 // ---------------------------------------------------------------------------
 
-test("#237 R4：writeStatusFile 必须先写 .tmp- 再 rename（退化成直接写同名文件必须变红）", () => {
-  const sessionDir = tempDir("erix-run-atomic-");
+test("#237 R4：writeStatusFile 必须先写 .tmp- 再 rename（退化成直接写同名文件必须变红）", async () => {
+  const sessionDir = await tempDir("erix-run-atomic-");
   const runId = "erix-run-atomic-1";
   const file = statusFilePath({ sessionDir, runId });
   const calls = [];
@@ -680,8 +680,8 @@ test("#237 R4：writeStatusFile 必须先写 .tmp- 再 rename（退化成直接�
   );
 });
 
-test("#237 R4：rename 失败时旧 status.json 不被破坏、不留 .tmp- 残留、错误被回报而不是抛出", () => {
-  const sessionDir = tempDir("erix-run-atomic-rename-fail-");
+test("#237 R4：rename 失败时旧 status.json 不被破坏、不留 .tmp- 残留、错误被回报而不是抛出", async () => {
+  const sessionDir = await tempDir("erix-run-atomic-rename-fail-");
   const runId = "erix-run-atomic-rename-fail";
   const first = writeStatusFile({ sessionDir, runId, view: { runId, status: "running", marker: "old" } });
   assert.equal(first.error, undefined);
@@ -710,8 +710,8 @@ test("#237 R4：rename 失败时旧 status.json 不被破坏、不留 .tmp- 残�
   );
 });
 
-test("#237 R4：写临时文件中途抛错（半截文件已在盘上）同样要清干净并回报错误", () => {
-  const sessionDir = tempDir("erix-run-atomic-write-fail-");
+test("#237 R4：写临时文件中途抛错（半截文件已在盘上）同样要清干净并回报错误", async () => {
+  const sessionDir = await tempDir("erix-run-atomic-write-fail-");
   const runId = "erix-run-atomic-write-fail";
   const first = writeStatusFile({ sessionDir, runId, view: { runId, status: "running", marker: "old" } });
   const before = readFileSync(first.path, "utf8");
@@ -734,9 +734,9 @@ test("#237 R4：写临时文件中途抛错（半截文件已在盘上）同样�
 });
 
 test("#237 R4：status.json 写失败不打断派工，错误经 job.statusWriteError 进查询视图（不抛）", async () => {
-  const sessionDir = tempDir("erix-run-atomic-runtime-");
+  const sessionDir = await tempDir("erix-run-atomic-runtime-");
   const job = gatedJob();
-  const { runtime, registry } = makeRuntime({
+  const { runtime, registry } = await makeRuntime({
     job: job.job,
     extra: { deps: { writeFileSync: () => { throw new Error("EROFS: read-only file system"); } } },
   });
@@ -764,10 +764,10 @@ const FINAL_TEXT = "任务已完成：R1 落地了\n验证：node --test 全绿\
 
 /** 派一条会成功结束的异步 run，等它终局（内层 run 是可控假 run）。 */
 async function settledRun({ payload = {}, prefix = "erix-run-finaltext", outcome = "completed" } = {}) {
-  const sessionDir = tempDir(`${prefix}-`);
+  const sessionDir = await tempDir(`${prefix}-`);
   const sent = [];
   const job = gatedJob({ payload });
-  const { runtime, registry } = makeRuntime({ job: job.job, sent });
+  const { runtime, registry } = await makeRuntime({ job: job.job, sent });
   const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
   job.release();
   await waitUntil(() => registry.get(handle.runId).status === outcome, { label: `${prefix} ${outcome}` });
@@ -806,9 +806,9 @@ test("#261 R4②：status.json（复用同一 jobView，不另写拼装）里含
 });
 
 test("#261 R4③：还没终局时 jobView.finalText === \"\"（字段恒在场，不是缺字段）", async () => {
-  const sessionDir = tempDir("erix-run-finaltext-running-");
+  const sessionDir = await tempDir("erix-run-finaltext-running-");
   const job = gatedJob();
-  const { runtime, registry } = makeRuntime({ job: job.job, sent: [] });
+  const { runtime, registry } = await makeRuntime({ job: job.job, sent: [] });
   const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
 
   const running = jobView(registry.get(handle.runId));
@@ -904,7 +904,7 @@ async function offlineSyncPayload({ sessionDir } = {}) {
     { task: "修 bug", cwd: repoRoot, maxRounds: 4, strategy: "sliding-window", ...(sessionDir === undefined ? {} : { sessionDir }) },
     {
       env: {},
-      home: tempDir("erix-run-276-home-"),
+      home: await tempDir("erix-run-276-home-"),
       now: () => 1_700_000_000_000,
       loadLib: async () => offlineFakeLib(),
       loadSlot: async () => ({ slot: { endpoint: "https://relay.example/v1", model: "slot-model", apiKey: "k", contextWindowTokens: 200_000, maxOutputTokens: 4_096 }, configPath: "/tmp/fake-erix-config.json" }),
@@ -930,7 +930,7 @@ function jsonKeys(value) {
 }
 
 test("#276 复现：同一个 run 的同步终局有 diagnostics，异步视图此前整键丢失", async () => {
-  const syncPayload = await offlineSyncPayload({ sessionDir: tempDir("erix-run-276-syncdir-") });
+  const syncPayload = await offlineSyncPayload({ sessionDir: await tempDir("erix-run-276-syncdir-") });
 
   // 真值源自己先自证：同步面确实有 diagnostics / termination（工具描述承诺的就是它）
   assert.ok("diagnostics" in syncPayload, "同步面（runJob 的返回）必须有 diagnostics");
@@ -969,7 +969,7 @@ test("#276 复现（抛错终局）：error 载荷的 diagnostics 同样不许�
 });
 
 test("#276 复现：#266 的 notesLifecycle 是 diagnostics 的子键，因此也一并丢了", async () => {
-  const syncPayload = await offlineSyncPayload({ sessionDir: tempDir("erix-run-276-notesdir-") });
+  const syncPayload = await offlineSyncPayload({ sessionDir: await tempDir("erix-run-276-notesdir-") });
   const withNotes = { ...syncPayload, diagnostics: { ...syncPayload.diagnostics, notesLifecycle: { attempted: true, completed: 1, errors: [] } } };
 
   const { runtime, runId, sessionDir } = await settledRun({ payload: withNotes, prefix: "erix-run-276-notes" });
@@ -1057,9 +1057,9 @@ test("#276 R2③：同步结果里出现的每个键，三处异步面都得有�
 });
 
 test("#276 R2④：还没终局时同步字段也恒在场（零值形状，查询侧不必分两种形状）", async () => {
-  const sessionDir = tempDir("erix-run-276-preterminal-");
+  const sessionDir = await tempDir("erix-run-276-preterminal-");
   const job = gatedJob();
-  const { runtime, registry } = makeRuntime({ job: job.job, sent: [] });
+  const { runtime, registry } = await makeRuntime({ job: job.job, sent: [] });
   const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
 
   const running = jobView(registry.get(handle.runId));
@@ -1073,9 +1073,9 @@ test("#276 R2④：还没终局时同步字段也恒在场（零值形状，查�
 });
 
 test("#276 R2⑤：刻意只给子集的两个视图要钉死，并在 README 写明理由", async () => {
-  const sessionDir = tempDir("erix-run-276-subset-");
+  const sessionDir = await tempDir("erix-run-276-subset-");
   const job = gatedJob();
-  const { runtime } = makeRuntime({ job: job.job, sent: [] });
+  const { runtime } = await makeRuntime({ job: job.job, sent: [] });
   const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
 
   // 派工句柄与 list 摘要行是**终局面之外**的刻意子集（字段少 = 设计），键集合钉死。

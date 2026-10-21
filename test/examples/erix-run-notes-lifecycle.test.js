@@ -11,8 +11,7 @@
 // 全离线：真 lib（src/index.js + bin/tools.js）+ 临时目录 + 桩 runLoop，不触网、不碰 ~/.erix。
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -20,9 +19,10 @@ import * as binTools from "../../bin/tools.js";
 import { createMemoryTranscriptStore } from "../../src/index.js";
 import * as libIndex from "../../src/index.js";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
+import { makeTmp } from "../helpers/tmp.js";
 
-function tempDir(prefix = "erix-run-266-") {
-  return mkdtempSync(path.join(tmpdir(), prefix));
+async function tempDir(prefix = "erix-run-266-") {
+  return makeTmp(prefix);
 }
 
 /** 真 lib 形状（与 loadErixAgent 的返回同构）。 */
@@ -155,10 +155,10 @@ async function listStates(store, scopeRef) {
 // ---------------------------------------------------------------------------
 
 test("#266①：成功终局把 sessionDir 下的笔记从 active 收到 done", async () => {
-  const sessionDir = tempDir("session-");
+  const sessionDir = await tempDir("session-");
   let stateWhileRunning;
   const payload = await core.runErixRun(
-    { task: "收口测试", cwd: tempDir("cwd-"), sessionDir },
+    { task: "收口测试", cwd: await tempDir("cwd-"), sessionDir },
     makeDeps({
       runLoop: stubRunLoop({
         noteKey: "k266-success",
@@ -192,7 +192,7 @@ test("#266②：内层抛错的终局也把笔记收到 done，且不影响 fail
   assert.deepEqual(before, { active: 0, done: 0, revoked: 0 }, "前提：起点空");
 
   const payload = await core.runErixRun(
-    { task: "收口测试", cwd: tempDir("cwd-") },
+    { task: "收口测试", cwd: await tempDir("cwd-") },
     makeDeps({
       extra: { runId, createAssembly: () => assembly },
       runLoop: stubRunLoop({ outcome: "throw", noteKey: "k266-error" }),
@@ -225,7 +225,7 @@ test("#266③a：onRunComplete 抛错 → ok/termination/usage 一字不动，�
   const progressLines = [];
 
   const payload = await core.runErixRun(
-    { task: "收口测试", cwd: tempDir("cwd-") },
+    { task: "收口测试", cwd: await tempDir("cwd-") },
     makeDeps({
       extra: { runId, createAssembly: () => assembly, onProgress: (line) => progressLines.push(line) },
       runLoop: stubRunLoop({ noteKey: "k266-hookthrows" }),
@@ -268,7 +268,7 @@ test("#266③b：onRunComplete 返回 errors[]（store 层失败不抛）→ 同
   };
 
   const payload = await core.runErixRun(
-    { task: "收口测试", cwd: tempDir("cwd-") },
+    { task: "收口测试", cwd: await tempDir("cwd-") },
     makeDeps({ extra: { runId, createAssembly: () => assembly }, runLoop: stubRunLoop({ noteKey: "k266-errors" }) }),
   );
 
@@ -288,7 +288,7 @@ test("#266③b：onRunComplete 返回 errors[]（store 层失败不抛）→ 同
 test("#266④：deps.createAssembly 无 notes 字段 → 不调收尾也不炸，也不假留痕", async () => {
   let executeCalls = 0;
   const payload = await core.runErixRun(
-    { task: "收口测试", cwd: tempDir("cwd-") },
+    { task: "收口测试", cwd: await tempDir("cwd-") },
     makeDeps({
       extra: {
         createAssembly: (input) => {
@@ -314,7 +314,7 @@ test("#266④：deps.createAssembly 无 notes 字段 → 不调收尾也不炸�
 test("#266④b：notes 字段形状不全（undefined/null/{}/无 onRunComplete）→ 不调不炸、不假留痕", async () => {
   for (const notes of [undefined, null, {}, { lifecycle: {} }, { lifecycle: { onRunComplete: "nope" } }]) {
     const shaped = await core.runErixRun(
-      { task: "收口测试", cwd: tempDir("cwd-") },
+      { task: "收口测试", cwd: await tempDir("cwd-") },
       makeDeps({
         extra: { createAssembly: () => ({ tools: [], executeTool: async () => "tool-ok", notes }) },
         runLoop: async (options) => {
@@ -333,7 +333,7 @@ test("#266④c：整个自定义装配返回 undefined → 终局仍是结构化
   // 装配缺失本身是旧的装配问题（buildLoopOptions 要 tools），不归 #266 管；
   // 这里只钉住：收尾路径不得把它带成未捕获异常，也不得假留痕。
   const payload = await core.runErixRun(
-    { task: "收口测试", cwd: tempDir("cwd-") },
+    { task: "收口测试", cwd: await tempDir("cwd-") },
     makeDeps({
       extra: { createAssembly: () => undefined },
       runLoop: async () => successResult(),
@@ -363,7 +363,7 @@ test("#266⑤：无 sessionDir 走内存 notes store，收口照样把 store 里
   };
 
   const payload = await core.runErixRun(
-    { task: "收口测试", cwd: tempDir("cwd-") },
+    { task: "收口测试", cwd: await tempDir("cwd-") },
     makeDeps({
       lib: realLib(index),
       extra: { runId },
@@ -394,7 +394,7 @@ test("#266⑥：timeoutMs 到点 abort 的终局同样收口", async () => {
   const started = Date.now();
 
   const payload = await core.runErixRun(
-    { task: "收口测试", cwd: tempDir("cwd-"), timeoutMs: core.MIN_TIMEOUT_MS },
+    { task: "收口测试", cwd: await tempDir("cwd-"), timeoutMs: core.MIN_TIMEOUT_MS },
     makeDeps({
       extra: { runId, createAssembly: () => assembly },
       runLoop: stubRunLoop({ outcome: "abort", noteKey: "k266-timeout" }),

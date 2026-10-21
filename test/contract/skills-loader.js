@@ -20,16 +20,16 @@
 //     未知工具返回 `Unknown tool: <name>` 文本而不是抛。
 //
 // 实现特有行为（CLI 终端回显、告警文案）由实现方自行补测，不进契约。
-// ⚠️ 隔离：每个用例注入临时 home/cwd/bundledDir（node:test + fs.mkdtemp），不得读写真实 ~/.erix。
+// ⚠️ 隔离：每个用例注入临时 home/cwd/bundledDir（node:test + test/helpers/tmp.js 的 makeTmp），不得读写真实 ~/.erix。
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { makeTmp } from "../helpers/tmp.js";
 
 async function withDirectory(callback) {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-skills-loader-contract-"));
+  const directory = await makeTmp("erix-skills-loader-contract-");
   try {
     return await callback(directory);
   } finally {

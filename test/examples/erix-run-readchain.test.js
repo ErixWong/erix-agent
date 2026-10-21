@@ -5,8 +5,8 @@
 // 唯一碰真实 home 的用例是「不传 sessionDir 时 ~/.erix 不得多出文件」——它只**读** home。
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -14,11 +14,12 @@ import test from "node:test";
 import * as binTools from "../../bin/tools.js";
 import * as libIndex from "../../src/index.js";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-function tempDir(prefix = "erix-run-readchain-") {
-  return mkdtempSync(path.join(tmpdir(), prefix));
+async function tempDir(prefix = "erix-run-readchain-") {
+  return makeTmp(prefix);
 }
 
 /** 真 lib 形状（与 loadErixAgent 的返回同构：index + binTools）。 */
@@ -51,9 +52,9 @@ function writeLongFile(dir, { lines = 300, width = 40 } = {}) {
 // ---------------------------------------------------------------------------
 
 test("R1①：executeTool 把 readFile 的结果原样交回（>4096 字符、中段哨兵在场）", async () => {
-  const cwd = tempDir();
+  const cwd = await tempDir();
   writeLongFile(cwd);
-  const tools = core.createInnerTools({ lib: realLib(), cwd, runId: "r1-read", sessionDir: tempDir() });
+  const tools = core.createInnerTools({ lib: realLib(), cwd, runId: "r1-read", sessionDir: await tempDir() });
 
   const viaHost = textOf(await tools.executeTool({
     id: "t1", name: "readFile", input: { path: "long.txt", offset: 0, limit: 200 },
@@ -74,8 +75,8 @@ test("R1①：executeTool 把 readFile 的结果原样交回（>4096 字符、�
 });
 
 test("R1②：exec 的结果同样原样返回（本层不再截）", async () => {
-  const cwd = tempDir();
-  const tools = core.createInnerTools({ lib: realLib(), cwd, runId: "r1-exec", sessionDir: tempDir() });
+  const cwd = await tempDir();
+  const tools = core.createInnerTools({ lib: realLib(), cwd, runId: "r1-exec", sessionDir: await tempDir() });
   const command = "node -e \"process.stdout.write('y'.repeat(6000))\"";
 
   const viaHost = textOf(await tools.executeTool({ id: "t1", name: "exec", input: { command } }));
@@ -109,8 +110,8 @@ test("R1：宿主截断的旧常量与形参已随之删除（不留死代码）
 const NOTE_TOOLS = ["note_take", "note_read", "note_list", "note_forget"];
 
 test("R2③：内层工具面里有 note_*，且真的可执行（take → read → list）", async () => {
-  const cwd = tempDir();
-  const tools = core.createInnerTools({ lib: realLib(), cwd, runId: "r2-notes", sessionDir: tempDir() });
+  const cwd = await tempDir();
+  const tools = core.createInnerTools({ lib: realLib(), cwd, runId: "r2-notes", sessionDir: await tempDir() });
   const names = tools.tools.map((tool) => tool.name);
   for (const name of NOTE_TOOLS) {
     assert.ok(names.includes(name), `内层工具面必须含 ${name}（TTL 文案点名它）：${names.join(",")}`);
@@ -134,7 +135,7 @@ test("R2④：不传 sessionDir 时 notes 走内存，真实 ~/.erix 不得多�
   const snapshot = () => (existsSync(root) ? readdirSync(root, { recursive: true }) : []);
   const before = snapshot();
 
-  const cwd = tempDir();
+  const cwd = await tempDir();
   const tools = core.createInnerTools({ lib: realLib(), cwd, runId: "r2-no-sessiondir" });
   await tools.executeTool({ id: "n1", name: "note_take", input: { key: "home-probe", content: "不落盘" } });
   await tools.executeTool({ id: "n2", name: "note_list", input: {} });
@@ -145,9 +146,9 @@ test("R2④：不传 sessionDir 时 notes 走内存，真实 ~/.erix 不得多�
 });
 
 test("R2：传了 sessionDir 时 notes 落在 <sessionDir>/notes 之下（与 transcript 同根）", async () => {
-  const sessionDir = tempDir("erix-run-readchain-session-");
+  const sessionDir = await tempDir("erix-run-readchain-session-");
   mkdirSync(sessionDir, { recursive: true });
-  const cwd = tempDir();
+  const cwd = await tempDir();
   const tools = core.createInnerTools({ lib: realLib(), cwd, runId: "r2-scoped", sessionDir });
   await tools.executeTool({ id: "n1", name: "note_take", input: { key: "scoped", content: "跟着 sessionDir" } });
 
@@ -206,7 +207,7 @@ test("R2：无 sessionDir 时真注入到 createBuiltinNotesTools 的就是引�
       },
     },
   };
-  const tools = core.createInnerTools({ lib: spyLib, cwd: tempDir(), runId: "r2-spy" });
+  const tools = core.createInnerTools({ lib: spyLib, cwd: await tempDir(), runId: "r2-spy" });
   assert.ok(tools, "前提：工具装配成功");
   assert.ok(captured, "前提：无 sessionDir 时确实注入了 notesStore");
   assert.doesNotThrow(() => libIndex.assertNotesStore(captured));
@@ -222,14 +223,14 @@ test("R2：无 sessionDir 时真注入到 createBuiltinNotesTools 的就是引�
 // ---------------------------------------------------------------------------
 
 test("R3⑤：readMoreLines marker 含 formatSize 形态的文件大小", async () => {
-  const cwd = tempDir();
+  const cwd = await tempDir();
   const file = path.join(cwd, "sized.txt");
   const rows = Array.from({ length: 40 }, (_, index) => `row ${index} ${"z".repeat(40)}`).join("\n");
   writeFileSync(file, `${rows}\n`, "utf8");
   const size = 1910; // 10 行 ×46 + 30 行 ×47 + 40 个换行 = 1910B → formatSize 的 2KB 档
   assert.equal(statSync(file).size, size, "fixture 体积变了这条前提就要一起改");
 
-  const tools = core.createInnerTools({ lib: realLib(), cwd, runId: "r3-marker", sessionDir: tempDir() });
+  const tools = core.createInnerTools({ lib: realLib(), cwd, runId: "r3-marker", sessionDir: await tempDir() });
   const output = textOf(await tools.executeTool({ id: "t1", name: "readFile", input: { path: "sized.txt", limit: 5 } }));
   const marker = output.split("\n").find((line) => line.includes("共 40 行")) ?? "";
   assert.match(marker, /文件 \d+(B|KB|MB|GB|TB)/u, `marker 必须带可读大小：${marker}`);

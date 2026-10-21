@@ -371,7 +371,8 @@ quoted blocks below against it):
   "test/contract/skills-loader.js",
   "test/contract/termination-payload.js",
   "test/contract/tool-result-envelope.js",
-  "test/contract/transcript-store.js"
+  "test/contract/transcript-store.js",
+  "test/helpers/tmp.js"
 ]
 ```
 

@@ -73,8 +73,8 @@ for (const fence of enFences) {
     assert.ok(result.ok, describeFailure(fence, "L2", result.stderr));
   });
 
-  test(`L3 执行 [${label}]：示例体在注入上下文下真实跑通`, () => {
-    const result = runLevel3(fence);
+  test(`L3 执行 [${label}]：示例体在注入上下文下真实跑通`, async () => {
+    const result = await runLevel3(fence);
     assert.ok(
       result.ok,
       describeFailure(fence, "L3", `--- 子进程 stdout ---\n${result.stdout}\n--- 子进程 stderr ---\n${result.stderr}`),
