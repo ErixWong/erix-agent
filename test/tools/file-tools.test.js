@@ -563,8 +563,10 @@ const READ_LINE_CAPACITY_ROLES = [
   // 现在描述里那句「this tool's own source fits 4,938」与本行记录的是**同一个实测值**（不再是旧记录值 5,029）。
   // 2026-10-22 再刷一次：issue #215/#222 改了本文件的 `tree` 根标签与排除账 marker（+3.9% 字节、+56 行），
   // 自指锚点当场红（这正是它该做的事）；描述里的自身容量 `4,966` 随之实测为 `4,938` 并已同步。
+  // 2026-10-22 第三刷：issue #219/#221 给搜索根加了存在性判定、把弃用提示的 mode 改成按入参生成
+  // （+3.9% 字节、+59 行），自指锚点同样当场红；描述里的自身容量 `4,938` 随之实测为 `4,896` 并已同步。
   // ⚠ 自指：改本文件的任何注释与描述都会挪动这一行的字节数——改完先跑本测试再定数字（同一位数的数字改动是字节中性的）。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 97_034, lines: 1_828, bytesPerLine: 53.0821, capacity: 4_938, cjkShare: 0.2529 } },
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 101_033, lines: 1_887, bytesPerLine: 53.5416, capacity: 4_896, cjkShare: 0.2623 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];

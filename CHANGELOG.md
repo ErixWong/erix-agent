@@ -25,6 +25,19 @@
 
 ### Fixed
 
+- **搜索根不存在不再返回「（无命中）」：`searchText`/`rg`/`grep` 的 `path` 不存在时给文本错误结果（issue #219；`src/tools/file-tools.js` + 共享契约套件 + 契约中英）。**
+  - 现场：`searchText {pattern:"react", path:"nope-不存在", mode:"literal"}` → `（无命中）`（`metadata.searchFiles=0` 只进 transcript、不上 wire）；`rg`/`grep` 同输入同样「（无命中）」。
+  - 根因：`collectFiles` 的 `visit` 对 `statSync` 失败一律 `return`（悬空 symlink、权限受限的**子**路径都该跳过——那是遍历现场），于是**调用方亲自给的根**不存在时与「搜过了但没有」走同一条返回路径。模型读到「（无命中）」会直接接受「代码里没有这个」的结论；`readFile`/`tree` 在同一输入上抛 `ENOENT` 反而逼它改路径重试。
+  - 改法：遍历前加一次根存在性判定（在 `allowRead` 边界判定**之后**——越界路径不告诉调用方它存不存在），不存在返回 `错误：路径不存在：<path>（相对路径按工具根目录解析；先用 tree 确认要搜的目录是否存在）`，非 `ENOENT`/`ENOTDIR` 走 `错误：读不到 <path>（<code>）`。口径与 jail 越界、无效正则一致：**文本结果、不抛**。三种情形严格分开：根存在但没有命中仍是 `（无命中）`；`path` 指向**文件**时只搜这个文件（行为未变，本次由契约钉住）；根不存在才是错误。
+  - 契约：`test/contract/file-tools.js` 新增「搜索根不存在返回错误结果而非（无命中）」一条（三个载体 × 两种缺失写法 + 「存在但无命中仍是（无命中）」+ 「文件路径只搜该文件」三个格子）。
+- **`rg`/`grep` 的弃用提示按本次入参给迁移 mode：`is_regex=false` 不再被劝去 `mode="regex"`（issue #221；`src/tools/file-tools.js` + 共享契约套件 + 契约中英）。**
+  - 现场：`rg {is_regex:false}` 与 `grep {is_regex:false}` 的尾行都写死 `请改用 searchText with mode="regex"`，而这两个调用的实际语义是**字面量**。
+  - 为什么是 bug 而不是文案瑕疵：`literal` 不解释元字符、`regex` 解释，含元字符的 pattern（`a.b`、`\d+`、`(x)`）两种模式命中集不同；`searchText.mode` 必填且**无默认值**，这条提示就是模型唯一的迁移依据 ⇒ 照提示改写 = **静默换语义**。
+  - 改法：文案改由 `toolMarker("deprecated")` 按 `{ mode, nameFilter }` 生成（调用方不再拼字面量）。`rg` 的 mode 直接取编译用的同一个映射（`aliasSearchMode`）；`grep` 的实际语义仍是**默认正则**（`is_regex = true`，等价 `grep -E`）、`is_regex=false` 才是字面量（`grep -F`），所以提示跟着这个真值走（不是一律 literal）；`name_pattern` 只在本次真的传了 `glob` 时才点名（没传就不劝一个空参数）。文案：`[已弃用 rg：它是 searchText 的薄别名，请改用 searchText 并传 mode="literal"；rg 将在后续 major 版本移除]`。
+  - 模型可见面：这一行**逐字变了**（`with mode="regex"` → `并传 mode="<本次真值>"`），拿工具输出做逐字相等比较的宿主会看到——与 #195 加这行时同类，属刻意变更。
+  - 契约：`test/contract/file-tools.js` 新增「弃用提示按本次入参给迁移 mode」一条（6 个格子：`rg` 默认 / `is_regex:true` / `is_regex:false`、`grep` 默认 / `is_regex:false` / 带 `glob`；每格钉「提示里的 mode == 该调用的真值」「另一档不许同时出现」「`name_pattern` 只随 `glob` 出现」），核心判据是**照提示改写命中集逐条相同**（另加「fixture 对两种 mode 敏感」的反向对照，否则等式恒真）。
+  - 连带：`test/tools/file-tools.test.js` 的 `self` 角色锚点（自指：记录的就是 `src/tools/file-tools.js` 自己的字节数）按该测试自己的口径复测刷新（97,034 B / 1,828 行 → 101,033 B / 1,887 行），`readFile` 描述里点名的自身容量 `4,938` 同步为实测 `4,896`（同一位数、字节中性）；`docs/host-consumer-contract.md` / `_cn.md` 的搜索工具段中英成对补两条（根不存在 → 错误结果 / 弃用提示按入参给 mode）。
+
 - **文档现值修正 + 机器校对（issue #310）：中英 AGENTS 的 `SYMBOL_ANCHOR_MIN_UNIQUE = 77`（此前两份都还写着 76）与 `scripts/docs-drift-check.mjs` 的真值对齐，并由 `test/static-guards.test.js` 的新增规则 4 把它钉住。**
   病根：#310——`AGENTS.md` / `AGENTS_cn.md` 里有一批**声称值**引用门禁脚本自己的常量（`` `CONST_NAME = N` ``），而 `check:docs` 不锚定它们：脚本常量一改，文档静默过时而门禁照绿（历史上已两次现场抓到：`SYMBOL_ANCHOR_MIN_UNIQUE` 写 27 而脚本 29；`.d.ts` 写 66 而真实 67）。
   这一处是**当下就在漂**的活体实例：`scripts/docs-drift-check.mjs` 的 `SYMBOL_ANCHOR_MIN_UNIQUE` 在 0.23.0 发版准备（工单 261021-12）已抬到 **77**（`--verbose` 今日复核 77 组 / 194 处；脚本注释里的 192 是当时的旧数），而两份 AGENTS 仍写 76 / 189 处。本单只改**现值**，历史沿革（此前 76 / 75 / 72 / 67 …）逐字保留。

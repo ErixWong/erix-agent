@@ -12,7 +12,10 @@
 //
 // 「静默撒谎」收口（ADR-010「默认去噪合法，但必须可撤销」）：
 //   * rg/grep/tree 共用同一套 vendor/隐藏目录跳过逻辑，跳过数量写进结果尾部**排除账** + 开关名；
-//   * 无命中统一 `（无命中）`，rg 不再返回空串；
+//   * 无命中统一 `（无命中）`，rg 不再返回空串；**但**搜索根不存在返回错误结果而不是无命中
+//     （issue #219：假阴性比报错贵——模型会把「路径写错了」读成「代码里没有」）；
+//   * rg/grep 的弃用提示按**本次入参**给出迁移 mode（issue #221：写死 `regex` 会把字面量调用
+//     静默换成正则语义）；
 //   * tree 截断必须带 marker + 剩余计数；
 //   * readFile 有界读（按块扫行 + 早停），不再整文件 `readFileSync`（几百 MB 会 RangeError/OOM）。
 //
@@ -374,10 +377,20 @@ export function toolMarker(kind, values = {}) {
         ? `[命中过多，已按 max_results=${values.limit} 截断；${NEXT_STEP_CLAUSE}改用 searchText 传 offset=${values.nextOffset} 继续（本别名不接受 offset）]`
         : `[命中过多，已按 max_results=${values.limit} 截断；${NEXT_STEP_CLAUSE}searchText 传 offset=${values.nextOffset} 继续]`;
     }
-    case "deprecated":
+    case "deprecated": {
       // 别名弃用告警（issue #188 三层分级：工具名与入参形状属 Stable → 本轮只加告警不删）。
       // ⚠ 文案里不得出现 `…`：既有的「未触顶的行不得带省略号」断言比对的是整段结果文本。
-      return `[已弃用 ${values.name}：它是 searchText 的薄别名，请改用 ${values.replacement}；${values.name} 将在后续 major 版本移除]`;
+      //
+      // issue #221：迁移提示必须按**本次调用参数**生成。此前两个别名都写死 `mode="regex"`，于是
+      // `rg {is_regex:false}`（字面量语义）的模型照抄提示就换成了正则语义——`literal` 不解释元字符、
+      // `regex` 解释，`a.b` / `\d+` / `(x)` 三种 pattern 的命中集不同，这不是迁移而是**静默换语义**；
+      // 而 `searchText.mode` 必填且无默认值，这条提示就是模型唯一的迁移依据。
+      // `nameFilter` 只在本次调用**真的**用了名称过滤时才点名 `name_pattern`（没传 `glob` 的调用
+      // 劝一个空参数等于让模型多猜一步）。
+      const mode = values.mode === "literal" ? "literal" : "regex";
+      const filter = values.nameFilter === true ? "、name_pattern（原 glob，只匹配文件名）" : "";
+      return `[已弃用 ${values.name}：它是 searchText 的薄别名，请改用 searchText 并传 mode="${mode}"${filter}；${values.name} 将在后续 major 版本移除]`;
+    }
     case "treeEntryCap":
       return `[另有 ${values.remaining} 条未列出，条目上限 ${MAX_TREE_ENTRIES} 已达；缩小 path 或传 include_vendor=true 查看更多]`;
     case "treeDepthCap":
@@ -856,7 +869,7 @@ export const FILE_TOOL_DEFINITIONS = [
       + "(61.2 bytes/line, the widest lines), median 7,243 (36.3), most 9,772 (26.8). Wide lines cut this proportionally "
       + "and CJK cuts hardest (3 UTF-8 bytes per character): the 4,286 floor is itself a CJK-heavy file "
       + "(`src/loop/resume-manager.js`, 24% of its bytes are CJK), while the most CJK-dense file in that sample "
-      + "(`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,938. Nothing outside this repo "
+      + "(`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,896. Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
       + "Token budget of the default window, measured with the engine estimator (~3.5 characters per token for non-CJK, "
@@ -1168,6 +1181,31 @@ export function createFileTools({
   const readDenied = (target) => `错误：读取被宿主边界拒绝：${truncateDisplayText(displayName(target), 200)}`;
   const writeDenied = (target) => `错误：写入被宿主边界拒绝：${truncateDisplayText(displayName(target), 200)}`;
 
+  /**
+   * 搜索根的**存在性**判定（issue #219）：`undefined` = 可以搜，字符串 = 错误结果文本。
+   *
+   * `collectFiles` 的 `visit` 对 `statSync` 失败一律 `return`（悬空 symlink、权限受限的**子**路径
+   * 都该跳过——那是遍历现场，不是调用方给的目标）。但**调用方亲自给的 `path`** 不存在时静默落进
+   * 「（无命中）」就是假阴性：`metadata.searchFiles=0` 只进 transcript、不上 wire，模型读到的只有
+   * 「（无命中）」，会直接接受「代码里没有这个」的结论；抛错反而逼它改路径重试。
+   *
+   * 所以根不存在走与 jail 越界 / 无效正则**同一条通道**：返回错误结果文本（不抛）。
+   * 与「路径存在但没有命中」严格分开：后者仍是「（无命中）」，这里只判存在性。
+   */
+  const searchRootError = (target) => {
+    const label = truncateDisplayText(displayName(target), 200);
+    try {
+      statSync(target);
+      return undefined;
+    } catch (error) {
+      const code = error?.code ?? error?.name ?? "读取失败";
+      // ENOTDIR（把文件当目录用）对调用方来说与「不存在」是同一件事：路径写错了。
+      return code === "ENOENT" || code === "ENOTDIR"
+        ? `错误：路径不存在：${label}（相对路径按工具根目录解析；先用 tree 确认要搜的目录是否存在）`
+        : `错误：读不到 ${label}（${code}）：先用 tree 确认这个路径可读`;
+    }
+  };
+
   /** 无 signal 时零让出（非中止路径行为与开销不变）；有 signal 时每 32 个条目让出 + 查中止。 */
   const createCheckpoint = (signal) => {
     if (!signal) return async () => {};
@@ -1286,6 +1324,10 @@ export function createFileTools({
   }, context) => {
     const resolvedSearchPath = resolveToolPath(root, searchPath);
     if (!canRead(resolvedSearchPath)) return readDenied(resolvedSearchPath);
+    // 根不存在 ≠ 无命中（issue #219）：这条判定必须在遍历之前，且必须在边界判定之后
+    // （越界路径不告诉调用方它到底存不存在）。
+    const rootError = searchRootError(resolvedSearchPath);
+    if (rootError !== undefined) return rootError;
     const nameExpression = compileNamePattern(namePattern);
     const account = createSkipAccount();
     const hits = [];
@@ -1389,11 +1431,20 @@ export function createFileTools({
     return wrap(lines.join("\n"));
   };
 
-  /** 别名结果尾部挂一行弃用提示（issue #188：Stable 面本轮只加告警、不删）。 */
-  const withDeprecation = (result, name, replacement) => (
+  /**
+   * 别名结果尾部挂一行弃用提示（issue #188：Stable 面本轮只加告警、不删）。
+   *
+   * `values` 是**本次调用**的迁移事实（`mode` 由入参映射而来，`nameFilter` 表示这次真的用了名称
+   * 过滤），文案在 `toolMarker("deprecated")` 里生成——调用方不许自己拼字面量（issue #221）。
+   *
+   * @param {string|{content:string}} result
+   * @param {"rg"|"grep"} name
+   * @param {{mode:"literal"|"regex", nameFilter?:boolean}} values
+   */
+  const withDeprecation = (result, name, values) => (
     typeof result === "string"
-      ? `${result}\n${toolMarker("deprecated", { name, replacement })}`
-      : { ...result, content: `${result.content}\n${toolMarker("deprecated", { name, replacement })}` }
+      ? `${result}\n${toolMarker("deprecated", { name, ...values })}`
+      : { ...result, content: `${result.content}\n${toolMarker("deprecated", { name, ...values })}` }
   );
 
   /**
@@ -1431,7 +1482,9 @@ export function createFileTools({
     const { pattern, path: searchPath = "." } = input ?? {};
     // 别名默认与真实命令一致：ripgrep 默认就是**正则**（字面量要 `--fixed-strings`），
     // 本库的 grep 默认同样是正则——两个搜索工具默认相反才是反常（issue #184 追加轮 A）。
-    const compiled = compileSearchPattern(pattern, { literal: aliasSearchMode(input) === "literal" });
+    // 同一个映射既决定**编译口径**也决定**迁移提示里的 mode**（issue #221：提示照抄就能等价迁移）。
+    const mode = aliasSearchMode(input);
+    const compiled = compileSearchPattern(pattern, { literal: mode === "literal" });
     if (compiled.error !== undefined) return compiled.error;
     const result = await runSearch({
       expression: compiled.expression,
@@ -1442,7 +1495,7 @@ export function createFileTools({
       format: "flat",
       alias: true,
     }, context);
-    return withDeprecation(result, "rg", 'searchText with mode="regex"');
+    return withDeprecation(result, "rg", { mode });
   };
 
   /** `grep` 薄别名（issue #195 R3）：继续吃 `glob`（语义 = name_pattern），分组形状逐字不变。 */
@@ -1468,7 +1521,13 @@ export function createFileTools({
       format: "grouped",
       alias: true,
     }, context);
-    return withDeprecation(result, "grep", 'searchText with mode="regex" and name_pattern');
+    // issue #221：`grep` 的实际语义仍是**默认正则**（`is_regex = true`，与 `grep -E` 一致）、
+    // `is_regex=false` 才是字面量（`grep -F`），所以提示里的 mode 跟着这个真值走；`name_pattern`
+    // 只在本次真的传了 `glob` 时才点名（没传就没有要迁移的名称过滤）。
+    return withDeprecation(result, "grep", {
+      mode: is_regex === false ? "literal" : "regex",
+      nameFilter: typeof glob === "string" && glob !== "",
+    });
   };
 
   const tree = async (input, context) => {

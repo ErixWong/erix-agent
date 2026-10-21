@@ -19,6 +19,11 @@
 //   * rg/grep 都默认按**正则**匹配（与真实 `rg` / `grep` 命令的默认一致，issue #184 追加轮 A），
 //     is_regex=false 是字面量逃生口（等价 `rg --fixed-strings` / `grep -F`），无效正则一律返回错误结果而非抛；
 //   * 无命中统一「（无命中）」；tree 截断必须带 marker + 剩余计数；
+//   * **搜索根不存在不得返回「（无命中）」**（#219）：`searchText`/`rg`/`grep` 的 `path` 不存在时
+//     返回「错误：路径不存在：…」文本结果（与 jail 越界、无效正则同一条通道）；根存在但没有命中
+//     仍是「（无命中）」；`path` 指向文件 = 只搜这个文件；
+//   * `rg`/`grep` 的弃用提示按**本次入参**给迁移后的 mode（#221）：`is_regex=false` → `literal`，
+//     否则 `regex`；`grep` 只在本次传了 `glob` 时才点名 `name_pattern`。照提示改写命中集必须不变；
 //   * rg 与 grep 共用**同一个**命中行宽上限（500 字符 + `…`）：同一份长行 fixture 上两边命中行
 //     必须逐字相等（#184 追加轮 A 收口：此前只有 grep 截行，两个搜索工具口径相反）；
 //   * 遍历可被 context.signal 中止。
@@ -601,6 +606,139 @@ export function fileToolsContract(label, { createFileTools }) {
       assert.equal(withoutDeprecation(await tools.executeTool("grep", { pattern: "nope-not-here" })), "（无命中）");
       // #195：规范入口同样统一口径，且排除账与截断另有结构化字段（进 transcript、不上 wire）
       assert.equal(contentOf(await tools.executeTool("searchText", { pattern: "nope-not-here", mode: "literal" })), "（无命中）");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // issue #219：搜索根**不存在**时不得返回「（无命中）」。
+  // 「（无命中）」的语义是「搜过了，没有」；路径写错时给同一句话就是**假阴性**——模型读不到
+  // `metadata.searchFiles`（只进 transcript、不上 wire），只能把「路径写错了」读成「代码里没有」，
+  // 并据此收结论。抛错反而逼它改路径重试，但本模块的既有口径是「工具错误返回文本」（jail 越界、
+  // 无效正则都是文本），所以这里也是**文本**错误结果，且与「根存在但没有命中」严格分开。
+  // -------------------------------------------------------------------------
+  test(`${label}: 搜索根不存在返回错误结果而非「（无命中）」；根存在但无命中仍是「（无命中）」（#219）`, async () => {
+    await withDirectory(async (cwd) => {
+      await writeFile(path.join(cwd, "src.js"), "react\n", "utf8");
+      await mkdir(path.join(cwd, "empty"), { recursive: true });
+      const tools = createFileTools({ cwd });
+
+      // 三个载体同一条口径（searchText 是规范入口，rg/grep 是薄别名）
+      const missingRoots = ["nope-不存在", path.join("empty", "deeper", "nope.js")];
+      for (const missing of missingRoots) {
+        const calls = {
+          searchText: () => tools.executeTool("searchText", { pattern: "react", path: missing, mode: "literal" }),
+          rg: () => tools.executeTool("rg", { pattern: "react", path: missing }),
+          grep: () => tools.executeTool("grep", { pattern: "react", path: missing }),
+        };
+        for (const [name, run] of Object.entries(calls)) {
+          const output = String(contentOf(await run()));
+          const where = `${name} path=${JSON.stringify(missing)}`;
+          assert.match(output, /^错误：路径不存在：/u, `${where} 必须给错误结果（与 jail 越界、无效正则同一条通道）：${output}`);
+          assert.ok(output.includes(missing.split(path.sep).join("/")), `${where} 的错误必须点名调用方给的那个路径：${output}`);
+          assert.doesNotMatch(output, /无命中/u, `${where} 不得把「路径不存在」说成「（无命中）」：${output}`);
+        }
+      }
+
+      // 反向对照：路径**存在**但没有命中，仍是「（无命中）」（这条不许被上一条吞掉）
+      for (const [name, run] of Object.entries({
+        searchText: () => tools.executeTool("searchText", { pattern: "react", path: "empty", mode: "literal" }),
+        rg: () => tools.executeTool("rg", { pattern: "react", path: "empty" }),
+        grep: () => tools.executeTool("grep", { pattern: "react", path: "empty" }),
+      })) {
+        const output = withoutDeprecation(contentOf(await run()));
+        assert.equal(output, "（无命中）", `${name} 对「存在但没有命中」的目录必须仍给「（无命中）」：${output}`);
+        assert.doesNotMatch(output, /^错误：/u, `${name} 不得把「没搜到」报成错误：${output}`);
+      }
+
+      // `path` 指向**文件**：本实现按「只搜这个文件」处理（不是错误、也不是无命中）——契约把现状钉住，
+      // 免得日后三个载体各自漂成三种口径。
+      for (const [name, run] of Object.entries({
+        searchText: () => tools.executeTool("searchText", { pattern: "react", path: "src.js", mode: "literal" }),
+        rg: () => tools.executeTool("rg", { pattern: "react", path: "src.js" }),
+        grep: () => tools.executeTool("grep", { pattern: "react", path: "src.js" }),
+      })) {
+        const output = withoutDeprecation(contentOf(await run()));
+        assert.match(output, /src\.js/u, `${name} 传文件路径必须只搜这个文件：${output}`);
+        assert.match(output, /react/u, `${name} 传文件路径必须真的命中：${output}`);
+        assert.doesNotMatch(output, /^错误：/u, `${name} 传文件路径不是错误：${output}`);
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // issue #221：弃用提示必须按**本次入参**给出迁移后的 mode。
+  // `literal` 不解释元字符、`regex` 解释：`a.b` / `\d+` / `(x)` 两种模式的命中集不同，而
+  // `searchText.mode` 必填且无默认值——这条提示就是模型唯一的迁移依据。写死 `mode="regex"`
+  // 等于把「字面量搜索」的调用**静默换成**「正则搜索」，那不是迁移，是换语义。
+  // 判据不是「文案里有没有 literal 三个字」，而是**照提示改写后命中集逐条相同**。
+  // -------------------------------------------------------------------------
+  test(`${label}: 弃用提示按本次入参给迁移 mode，照提示改写命中集不变（#221）`, async () => {
+    await withDirectory(async (cwd) => {
+      // 同一份 fixture 上两种模式的命中集不同（否则这条测试没有判别力，见下面的反向对照）
+      await writeFile(path.join(cwd, "code.js"), "a.b literal\naxb literal\n", "utf8");
+      await writeFile(path.join(cwd, "notes.txt"), "a.b text\n", "utf8");
+      const tools = createFileTools({ cwd });
+
+      const hintOf = (result) => String(contentOf(result) ?? "")
+        .split("\n")
+        .find((line) => DEPRECATION_LINE.test(line)) ?? "";
+      const hintedMode = (result) => hintOf(result).match(/mode="(literal|regex)"/u)?.[1];
+      // 两家前缀不同（rg/searchText = `文件:行号:`，grep = `行号: `），只比「行号 + 命中行正文」
+      const hits = (result) => String(contentOf(result) ?? "")
+        .split("\n")
+        .filter((line) => !DEPRECATION_LINE.test(line))
+        .map((line) => line.match(/(?:^|:)(\d+):\s?(.*)$/u))
+        .filter((match) => match !== null)
+        .map((match) => `${match[1]}:${match[2]}`);
+
+      const cells = [
+        { name: "rg", input: { pattern: "a.b" }, mode: "regex" },
+        { name: "rg", input: { pattern: "a.b", is_regex: true }, mode: "regex" },
+        { name: "rg", input: { pattern: "a.b", is_regex: false }, mode: "literal" },
+        // grep 的实际语义仍是**默认正则**（`is_regex = true`，等价 `grep -E`）、`is_regex=false`
+        // 才是字面量（`grep -F`），所以提示跟着这个真值走，而不是一律 literal。
+        { name: "grep", input: { pattern: "a.b" }, mode: "regex" },
+        { name: "grep", input: { pattern: "a.b", is_regex: false }, mode: "literal" },
+        { name: "grep", input: { pattern: "a.b", glob: "code.js" }, mode: "regex", nameFilter: true },
+      ];
+      for (const { name, input, mode, nameFilter } of cells) {
+        const title = `${name} ${JSON.stringify(input)}`;
+        const aliasResult = await tools.executeTool(name, input);
+        const hint = hintOf(aliasResult);
+        assert.ok(hint !== "", `${title} 必须挂弃用提示行`);
+        assert.equal(hintedMode(aliasResult), mode, `${title} 的迁移 mode 必须是 ${mode}：${hint}`);
+        // 另一档不许同时出现（否则模型照抄哪一档都对，提示等于没说）
+        assert.doesNotMatch(hint, new RegExp(`mode="${mode === "regex" ? "literal" : "regex"}"`, "u"),
+          `${title} 的提示不得同时给出另一种 mode：${hint}`);
+        // name_pattern 只在本次真的用了名称过滤（`glob`）时才点名
+        if (nameFilter === true) {
+          assert.match(hint, /name_pattern/u, `${title} 传了 glob → 提示必须点名 name_pattern：${hint}`);
+        } else {
+          assert.doesNotMatch(hint, /name_pattern/u, `${title} 没传 glob → 提示不得劝一个空参数：${hint}`);
+        }
+        // ★ 核心判据：照提示改写命中集必须逐条相同。改写 = 换入口 + 把 `mode` 换成提示里那一档，
+        // 另把别名的入参名翻成规范名（`is_regex` 由 mode 取代、`glob` → `name_pattern`，提示里那句
+        // 「原 glob」就是这个映射）——别名入参形状属 Stable，`searchText` 不接受这两个键。
+        const { glob, is_regex: _isRegex, ...rest } = input;
+        const migratedInput = {
+          ...rest,
+          mode: hintedMode(aliasResult),
+          ...(typeof glob === "string" ? { name_pattern: glob } : {}),
+        };
+        const migrated = await tools.executeTool("searchText", migratedInput);
+        assert.deepEqual(hits(migrated), hits(aliasResult),
+          `${title} 照提示改写成 searchText(${JSON.stringify(migratedInput)}) 后命中集变了：${hint}`);
+      }
+
+      // 反向对照：fixture 必须对两种 mode 敏感，否则上面的等式恒真（`a.b` 正则多命中 `axb` 那行）
+      const literalHits = hits(await tools.executeTool("searchText", { pattern: "a.b", mode: "literal" }));
+      const regexHits = hits(await tools.executeTool("searchText", { pattern: "a.b", mode: "regex" }));
+      assert.notDeepEqual(literalHits, regexHits, "fixture 对两种 mode 不敏感 → 上一条等式没有判别力");
+      // 而 `rg {is_regex:false}` 的实际命中集正是 literal 那一档（提示说的是真话）
+      assert.deepEqual(hits(await tools.executeTool("rg", { pattern: "a.b", is_regex: false })), literalHits,
+        "rg is_regex=false 的命中集必须等于 mode=literal 那一档");
+      assert.deepEqual(hits(await tools.executeTool("rg", { pattern: "a.b" })), regexHits,
+        "rg 默认的命中集必须等于 mode=regex 那一档");
     });
   });
 
