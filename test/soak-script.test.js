@@ -59,6 +59,9 @@ const EXPECTED_ASSERTIONS = [
   "unknown-run-tool-loop-option-rejected",
   // 0.20.0（PR #291 R7）之后常量已登记存在条件，这条从「无条件报缺欠」改成活锁断言，跑在最后
   "contract-constant-records-execution-status-presence",
+  // issue #336 的机械守卫：跑在报告成型之后（它盘的就是台账与报告本身）
+  "evidence-keys-classified",
+  "report-fact-keys-classified",
 ];
 
 function runSoak(args) {
