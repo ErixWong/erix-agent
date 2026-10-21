@@ -1,5 +1,6 @@
 # 结论、可借鉴清单与开放问题
 
+> 快照档案（2026-09-17）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 > 面向两类读者：① 要给本项目（erix-agent）排改进优先级；② 在为自研 agent 做架构决策。
 > 事实依据见 `01`~`05`，对照见 `06-cross-comparison.md`。
 

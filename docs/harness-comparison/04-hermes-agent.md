@@ -1,5 +1,6 @@
 # Hermes Agent（NousResearch/hermes-agent）上下文与记忆机制剖析
 
+> 快照档案（2026-09-17）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 ## 0. 版本与范围
 
 - 对象：[`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent)（Python，CLI + Gateway + Desktop 多形态），本地 clone `HEAD=6005aa1`（`git log --oneline -1`）。

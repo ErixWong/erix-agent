@@ -1,5 +1,6 @@
 # 08 · erix 运行时实测（电池任务）——改进验证与回归
 
+> 快照档案（2026-09-17）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 > 2026-09-17。补 01–07 静态对比的运行时缺口：用一个真实任务跑 erix（main，含 ADR-015/016），
 > 验证本轮各项改进是否起作用，并回收优化点。codex / hermes 已完成接线验证
 > （codex 0.154.0 + relay responses API；hermes venv + relay；均见 §4），运行时对比留后续。
