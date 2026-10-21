@@ -133,6 +133,9 @@ export async function restoreResume(ctx) {
             record.wrapup,
             record.judge,
           );
+          // `record.messages` 是 `store.load()` 的**折叠后**形状（`src/store/message-rows.js`），不是落盘行形状：
+          // 0.23 的正文在 `kind:"message"` 行里，读侧折回轮载体行（issue #353）。判据钉在
+          // `test/loop-resume.test.js` 的「#353 resume 从折叠后的账本重建」两条用例。
           const recordedTimeline = buildTimeline(record.messages ?? [], 0, {
             writeToolNames: ctx.resolvedWriteToolNames,
             writeToolPathKeys: ctx.resolvedWriteToolPathKeys,

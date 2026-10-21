@@ -1461,3 +1461,163 @@ test("#323 强制收尾指令对主模型可见、但不进 judge 输入（rende
   );
   assert.equal(instruction.meta?.source, "judge-control");
 });
+
+// —— issue #353：resume 后 governor 的 `timeline` / `filesWritten` 是否从账本重建 ——
+//
+// 宿主报的是「0.23 的轮记录不再写 `messages`，而 `resume-manager.js` 仍取 `record.messages` ⇒
+// resume 后治理历史是空的」。实测判据不成立：`store.load()` 在返回前把 `kind:"message"` 行折回轮行
+// （`src/store/message-rows.js#foldMessageRows`，memory/file 两个 store 同一层），`resume-manager`
+// 拿到的正是 `await ctx.store.load(runId)` 的返回值 ⇒ `record.messages` 非空。
+//
+// 本用例把两个**必须分清**的概念分别钉住（宿主正是把前者当成了后者）：
+//   · 「落盘行形状」：轮载体行（`…:engine:round:<n>`）**没有** `messages` 键 —— 0.23 写侧口径；
+//   · 「load() 之后的形状」：同一个轮行带上本轮全部正文（含 `tool_use` / `tool_result`），与 0.22 同形。
+// 反向对照（实测，2026-10 夜班工单 B 探针）：把折叠层摘掉、直接拿落盘行当记录喂 resume，
+// 时间线不会变空，但工具状态会从 `[ok]` 掉成 `[pending]`（`tool_result` 与 `tool_use` 落在不同行，
+// 配不上对）—— 所以下面钉 `[ok]` 才是「折叠真的生效」的判据，不是「非空」。
+const GOVERNED_WRITE_PATH = "/tmp/issue-353/governed.txt";
+
+const WRITE_FILE_TOOL = {
+  name: "writeFile",
+  description: "write a file",
+  inputSchema: {
+    type: "object",
+    properties: { path: { type: "string" }, content: { type: "string" } },
+  },
+};
+
+const promptTextOf = (provider) => provider.requests
+  .map((request) => (request.messages ?? []).map((message) => (
+    Array.isArray(message?.content)
+      ? message.content.map((block) => block?.text ?? "").join("")
+      : String(message?.content ?? "")
+  )).join("\n"))
+  .join("\n");
+
+/**
+ * 跑两轮（第 1 轮含一次写类工具调用）再在同一 store/runId 上 resume，返回观测面。
+ * @param {string} runId
+ * @param {{ withRunState: boolean }} options `withRunState:false` 把 run-state 独立通道切断，
+ *   只剩「从账本重建」一条路（#353 诉求①的判决只需要这一条）。
+ */
+async function runTwoRoundsThenResume(runId, { withRunState }) {
+  const store = createMemoryTranscriptStore();
+  const rawRows = [];
+  const appendRound = store.appendRound.bind(store);
+  store.appendRound = async (id, record) => {
+    rawRows.push(structuredClone(record));
+    return appendRound(id, record);
+  };
+  if (!withRunState) store.loadRunState = async () => undefined;
+
+  await runToolLoop({
+    provider: createFakeProvider([
+      {
+        content: [
+          { type: "text", text: "先写文件" },
+          { type: "tool_use", id: "w1", name: "writeFile", input: { path: GOVERNED_WRITE_PATH, content: "x" } },
+        ],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "收尾" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "任务：写一个文件然后收尾",
+    executeTool: async ({ input }) => `wrote ${input?.path ?? ""}`,
+    tools: [WRITE_FILE_TOOL],
+    maxRounds: 4,
+    completion: false,
+    wrapup: false,
+    reflection: false,
+    store,
+    runId,
+  });
+
+  const resumedProvider = createFakeProvider([
+    { content: [{ type: "text", text: "续接完成" }], stopReason: "end_turn", times: 3 },
+  ]);
+  const resumedJudge = createFakeProvider([
+    {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          done: false, confidence: 0.5, reason: "继续", evidence: "有工具足迹",
+          direction: "on_track", directionReason: "推进中",
+        }),
+      }],
+      times: 3,
+    },
+  ]);
+  await runToolLoop({
+    provider: resumedProvider,
+    resume: true,
+    executeTool: async () => "unused",
+    tools: [WRITE_FILE_TOOL],
+    maxRounds: 2,
+    completion: false,
+    wrapup: false,
+    reflection: { enabled: true, judge: { provider: resumedJudge } },
+    store,
+    runId,
+  });
+
+  return { rawRows, records: await store.load(runId), judgePrompt: promptTextOf(resumedJudge) };
+}
+
+const roundRowOf = (rows, round) => rows.find((row) => (
+  (row.dedupKey ?? row.roundKey ?? "").endsWith(`:engine:round:${String(round)}`)
+));
+
+for (const withRunState of [true, false]) {
+  const channel = withRunState ? "run-state 在场" : "run-state 切断（只剩账本一条路）";
+  test(`#353 resume 从折叠后的账本重建 timeline / filesWritten（${channel}）`, async () => {
+    const { rawRows, records, judgePrompt } = await runTwoRoundsThenResume(
+      `issue-353-resume-governance-${withRunState ? "with" : "without"}-run-state`,
+      { withRunState },
+    );
+
+    // ① 落盘行形状：轮载体行不带 `messages`（宿主观察到的就是这个，0.23 写侧口径）
+    const rawRoundRow = roundRowOf(rawRows, 1);
+    assert.ok(rawRoundRow !== undefined, "第一轮必须有轮载体行");
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(rawRoundRow, "messages"),
+      false,
+      "0.23 写侧：轮记录只留元数据，正文在 `…:msg:<round>:<seq>` 行里",
+    );
+    assert.ok(rawRows.some((row) => row.kind === "message" && row.round === 1),
+      "正文由 `kind:\"message\"` 行承载");
+
+    // ② load() 之后的形状：同一个轮行被折回本轮全部正文（含 tool_use 与配对上的 tool_result）
+    const loadedRoundRow = roundRowOf(records, 1);
+    assert.ok(loadedRoundRow !== undefined, "load() 之后仍按轮行读");
+    const loadedBlocks = (loadedRoundRow.messages ?? []).flatMap((message) => (
+      Array.isArray(message?.content) ? message.content : []
+    ));
+    assert.equal((loadedRoundRow.messages ?? []).length, 2,
+      "折叠层把本轮两条消息行拼回轮行（assistant + tool_result 那条 user）");
+    assert.ok(loadedBlocks.some((block) => block?.type === "tool_use" && block.name === "writeFile"));
+    assert.ok(loadedBlocks.some((block) => block?.type === "tool_result"),
+      "`tool_result` 也必须在折叠后的正文里（否则时间线状态只能到 [pending]）");
+
+    // ③ 治理历史：resume 侧 judge 提示词的「时间线」与「写过的文件」两节
+    assert.ok(judgePrompt.length > 0, "resume 必须真的请求过 judge");
+    const timelineSection = judgePrompt.slice(
+      judgePrompt.indexOf("时间线（最新在前）"),
+      judgePrompt.indexOf("写过的文件"),
+    );
+    assert.ok(
+      timelineSection.includes(`R1: writeFile ${GOVERNED_WRITE_PATH} [ok]`),
+      `崩溃前那轮的工具足迹必须重建出来（状态 [ok] 说明 tool_result 也折回了）；实测：${timelineSection}`,
+    );
+    assert.equal((timelineSection.match(/R1: writeFile/gu) ?? []).length, 1,
+      "每轮只能有一条时间线条目（折叠前按消息行逐行重建会给同一轮重复条目）");
+    assert.ok(
+      judgePrompt.includes(`写过的文件：${GOVERNED_WRITE_PATH}(R1)`),
+      "写过的文件必须带轮号 R1 ⇒ 来自账本重建（run-state 那条通道只有路径、没有轮号）",
+    );
+
+    // ④ Q3：轮行 `summary` 恒为字符串 `"missing"` 是 `parseL1Summary` 的既定兜底
+    // （模型没发 `<erix-summary>` 标记 ⇒ l0.js 的缺省值），不是引擎漏写字段。
+    assert.equal(loadedRoundRow.summary, "missing",
+      "summary 字段存在且取 L1 兜底字面值（不是 undefined / 缺键）");
+  });
+}
