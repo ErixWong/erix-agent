@@ -258,14 +258,44 @@ function directorySkipReason(entry, { includeVendor, includeHidden }) {
   return undefined;
 }
 
+/**
+ * 排除账：计数 + 每类被跳过目录的**名字样本**（issue #222）。
+ *
+ * 名字必须来自遍历现场：此前 marker 写死「node_modules/.git 等 N 个目录」，于是
+ * `include_vendor=true` 之后 vendor 计数已经是 0、`node_modules` 也确实搜了，marker 还
+ * 在点名它 —— 模型据此判定「参数没生效」，弃用工具改跑 shell（宿主 erix-station 实录）。
+ * 名字样本只进 marker 文案，**不进** `metadata.searchSkipped`（那里的形状保持不变）。
+ */
 function createSkipAccount() {
   return {
     vendorDirectories: 0,
     hiddenDirectories: 0,
+    vendorDirectoryNames: [],
+    hiddenDirectoryNames: [],
     largeFiles: 0,
     binaryFiles: 0,
     deniedPaths: 0,
   };
+}
+
+/** marker 里每类最多点名的目录名个数（再多的用「等」收尾，不把结果撑爆）。 */
+const SKIP_NAME_SAMPLES = 3;
+
+/**
+ * `toolMarker` 的 `values` 是 `Record<string, unknown>`：计数一律经这里取值，不靠 `as` 糊过去
+ * （#214 类型棘轮：只减不增，所以这里给出一个窄化点而不是新增 `unknown > number` 比较）。
+ */
+function markerCount(value) {
+  return typeof value === "number" ? value : 0;
+}
+
+/** 记一笔目录跳过：计数与名字样本同源，两处遍历（search / tree）共用。 */
+function recordDirectorySkip(account, category, name) {
+  account[category] += 1;
+  const names = category === "vendorDirectories"
+    ? account.vendorDirectoryNames
+    : account.hiddenDirectoryNames;
+  if (names.length < SKIP_NAME_SAMPLES && !names.includes(name)) names.push(name);
 }
 
 /**
@@ -293,15 +323,39 @@ export function toolMarker(kind, values = {}) {
     case "skipped": {
       // 排除账（一次说清，不占多少 token）：模型不知道被排除了就无从发起取回，
       // 退化成不可召回的丢失（ADR-010）。
+      //
+      // issue #222：类别名与目录名样本**只从本次真实账目来**（`values.*Directories` 计数 +
+      // 遍历现场收集的名字样本）。此前这里写死「node_modules/.git 等 N 个目录」，于是只开了
+      // `include_vendor=true` 的那次调用仍在点名 `node_modules`——marker 说的不是真相，
+      // 模型判定「参数没生效」而弃用工具。同理，尾部开关提示只提**尚未开启**的 flag。
       const parts = [];
-      if (values.directories > 0) parts.push(`node_modules/.git 等 ${values.directories} 个目录`);
-      if (values.largeFiles > 0) {
-        parts.push(`${values.largeFiles} 个 >${MAX_FILE_BYTES / (1024 * 1024)}MiB 文件`);
+      // `label` 自带前导空格：`1 个 vendor 目录`（latin 词与「个」之间留空格）/ `1 个隐藏目录`。
+      const directoryPart = (count, samples, label) => {
+        const names = Array.isArray(samples) ? samples.slice(0, SKIP_NAME_SAMPLES) : [];
+        const list = names.length === 0
+          ? ""
+          : `（${names.map((name) => `${name}/`).join("、")}${count > names.length ? "等" : ""}）`;
+        return `${count} 个${label}${list}`;
+      };
+      const vendorDirectories = markerCount(values.vendorDirectories);
+      const hiddenDirectories = markerCount(values.hiddenDirectories);
+      const largeFiles = markerCount(values.largeFiles);
+      const binaryFiles = markerCount(values.binaryFiles);
+      const deniedPaths = markerCount(values.deniedPaths);
+      if (vendorDirectories > 0) {
+        parts.push(directoryPart(vendorDirectories, values.vendorDirectoryNames, " vendor 目录"));
       }
-      if (values.binaryFiles > 0) parts.push(`${values.binaryFiles} 个二进制文件`);
-      if (values.deniedPaths > 0) parts.push(`${values.deniedPaths} 个宿主边界拒绝的路径`);
-      const switchHint = values.suggestSwitches === true
-        ? "；要一起搜传 include_vendor=true, include_hidden=true"
+      if (hiddenDirectories > 0) {
+        parts.push(directoryPart(hiddenDirectories, values.hiddenDirectoryNames, "隐藏目录"));
+      }
+      if (largeFiles > 0) {
+        parts.push(`${largeFiles} 个 >${MAX_FILE_BYTES / (1024 * 1024)}MiB 文件`);
+      }
+      if (binaryFiles > 0) parts.push(`${binaryFiles} 个二进制文件`);
+      if (deniedPaths > 0) parts.push(`${deniedPaths} 个宿主边界拒绝的路径`);
+      const switches = Array.isArray(values.suggestSwitches) ? values.suggestSwitches : [];
+      const switchHint = switches.length > 0
+        ? `；要一起搜传 ${switches.join(", ")}`
         : "";
       return `[已跳过 ${parts.join("、")}${switchHint}]`;
     }
@@ -369,17 +423,28 @@ export function toolMarker(kind, values = {}) {
   }
 }
 
-/** 排除账 → marker 文本；全零返回 undefined（输出零变化）。文案本身在 toolMarker 里。 */
-function skipAccountMarker(account) {
+/**
+ * 排除账 → marker 文本；全零返回 undefined（输出零变化）。文案本身在 toolMarker 里。
+ *
+ * `includeVendor` / `includeHidden` 是**本次调用**的开关真值（issue #222）：尾部提示只提尚未
+ * 开启的 flag，已经传过的不再劝一遍（劝了等于告诉模型「你的参数没生效」）。
+ */
+function skipAccountMarker(account, { includeVendor = false, includeHidden = false } = {}) {
   const directories = account.vendorDirectories + account.hiddenDirectories;
   const total = directories + account.largeFiles + account.binaryFiles + account.deniedPaths;
   if (total === 0) return undefined;
+  const switches = [];
+  if (account.vendorDirectories > 0 && includeVendor !== true) switches.push("include_vendor=true");
+  if (account.hiddenDirectories > 0 && includeHidden !== true) switches.push("include_hidden=true");
   return toolMarker("skipped", {
-    directories,
+    vendorDirectories: account.vendorDirectories,
+    vendorDirectoryNames: account.vendorDirectoryNames,
+    hiddenDirectories: account.hiddenDirectories,
+    hiddenDirectoryNames: account.hiddenDirectoryNames,
     largeFiles: account.largeFiles,
     binaryFiles: account.binaryFiles,
     deniedPaths: account.deniedPaths,
-    suggestSwitches: directories > 0,
+    suggestSwitches: switches,
   });
 }
 
@@ -791,7 +856,7 @@ export const FILE_TOOL_DEFINITIONS = [
       + "(61.2 bytes/line, the widest lines), median 7,243 (36.3), most 9,772 (26.8). Wide lines cut this proportionally "
       + "and CJK cuts hardest (3 UTF-8 bytes per character): the 4,286 floor is itself a CJK-heavy file "
       + "(`src/loop/resume-manager.js`, 24% of its bytes are CJK), while the most CJK-dense file in that sample "
-      + "(`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,966. Nothing outside this repo "
+      + "(`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,938. Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
       + "Token budget of the default window, measured with the engine estimator (~3.5 characters per token for non-CJK, "
@@ -1159,7 +1224,7 @@ export function createFileTools({
         const entryPath = path.join(currentPath, entry.name);
         const skipped = directorySkipReason(entry, { includeVendor, includeHidden });
         if (skipped !== undefined) {
-          account[skipped] += 1;
+          recordDirectorySkip(account, skipped, entry.name);
           continue;
         }
         if (!canRead(entryPath)) {
@@ -1270,7 +1335,7 @@ export function createFileTools({
       onFile: (filePath, stat) => { searchFile(filePath, stat); },
     });
 
-    const note = skipAccountMarker(account);
+    const note = skipAccountMarker(account, { includeVendor, includeHidden });
     // 截断判据与历史逐字同口径：命中数 == 上限即报截断（#184 之后 rg 用 `results.length >= limit`、
     // grep 用 `truncated || total >= limit`，两者等价，本轮不改语义）。
     const reachedCap = hits.length >= resultLimit;
@@ -1417,7 +1482,11 @@ export function createFileTools({
     const checkpoint = createCheckpoint(signal);
     const maxDepth = normalizeNonNegativeInteger(depth, 3);
     const rootStat = statSync(resolvedTreePath);
-    const rootLabel = treePath === "." ? "." : path.basename(resolvedTreePath);
+    // 根标签只看**解析后的目标是否等于工作目录根**，与入参写法无关（issue #215）：
+    // 此前只有字面 `path === "."` 走 `./` 分支，`"./"`、`sub/..`、绝对根路径全部掉进
+    // basename，于是模型看到首行 `wd/`、以为根下有个叫 `wd` 的子目录，回放 `tree {path:"wd/"}`
+    // 必然 ENOENT（白烧一轮）。`./` 是唯一可回放的根标签。
+    const rootLabel = resolvedTreePath === root ? "." : path.basename(resolvedTreePath);
     const lines = [rootLabel + (rootStat.isDirectory() ? "/" : "")];
     const account = createSkipAccount();
     const visitedDirectories = new Set();
@@ -1458,7 +1527,7 @@ export function createFileTools({
         const childPath = path.join(currentPath, child.name);
         const skipped = directorySkipReason(child, { includeVendor, includeHidden });
         if (skipped !== undefined) {
-          account[skipped] += 1;
+          recordDirectorySkip(account, skipped, child.name);
           continue;
         }
         if (!canRead(childPath)) {
@@ -1487,7 +1556,7 @@ export function createFileTools({
     if (frontierDirectories > 0) {
       markers.push(toolMarker("treeDepthCap", { remaining: frontierDirectories, depth: maxDepth }));
     }
-    const note = skipAccountMarker(account);
+    const note = skipAccountMarker(account, { includeVendor, includeHidden });
     if (note !== undefined) markers.push(note);
     if (markers.length > 0) lines.push(...markers);
     return lines.join("\n");

@@ -1507,7 +1507,16 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 
 - `rg` / `grep` / `tree` 默认跳过 `node_modules`、`dist`、`build`、`target`、
   `vendor` 与 `.` 开头的目录（含 `.git`），除非传 `include_vendor=true` /
-  `include_hidden=true`；结果尾部会带跳过数量，以及能撤销它们的开关名；
+  `include_hidden=true`；结果尾部会带跳过数量，以及能撤销它们的开关名。排除账只点名
+  **本次真的被跳过的类别**（vendor 目录 / 隐藏目录，各自带自己的计数与真实目录名样本），
+  计数为 0 的类别一字不提；尾部开关提示只列调用方**尚未**传的 flag，所以已经传了
+  `include_vendor=true` 的那次调用不会再被劝一遍（issue #222：旧文案写死
+  `node_modules/.git 等 N 个目录` 并无条件劝 `include_vendor=true, include_hidden=true`，
+  模型据此判定参数被忽略，弃用工具去跑 `shell grep`）；
+- **`tree` 的根标签可回放**（issue #215）。只要目标解析到工作目录根，首行就是 `./`——
+  `path` 缺省、`.`、`./`、空串、绝对根路径、用 `..` 绕回来的写法，都给同一行首行与同一份
+  条目，所以把首行当 `path` 传回去一定成功。此前除了字面 `.` 之外的写法都退成工作目录的
+  basename，模型读成「根下有个同名子目录」，回放必然 `ENOENT`；
 - **两个搜索工具都默认按正则匹配**（`rg` 与 `grep` 一致，也是真实 `rg` / `grep`
   命令自己的默认；#184 追加轮 A 推翻了此前「`rg` 默认字面量」的选择——同一库里两个
   搜索工具默认相反才是本轮修掉的反常）。`is_regex=false` 是字面量逃生口，按真实旗标
