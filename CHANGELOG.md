@@ -51,6 +51,19 @@
   - 定性：**测试期望过期，不是产品回归**。引擎仍然不就地改写宿主传入的旧块（本地 fake-provider 复现：同一轮 resume 前后宿主对象的键集合逐字相同，旧块上没被补 `erix`），投影的 `erix` 优先 / 顶层回退优先级也未变（旧块仍只回退 `executionStatus`，不伪造 `toolCallKey`/`durationMs`）。
   - 改法：旧正文按升级前账本的真实形状写进轮行（`appendRound(round 1, …)`），快照留一份副本顺带钉住「快照正文不再被当成上下文」。**断言一条没删、没放宽**（`legacy.erix === undefined` 等原样）。
   - 顺手把 F9b 加硬（只增不减）：包一层 `saveRunSnapshot` 收引擎每次写的快照（`messages` = `cloneState(messages)`，即引擎**内存**上下文的逐字副本），断言里面的旧块键集合与宿主传入的逐字相同、没被补 `erix`。原断言只读 `store.load()`（磁盘），**改内存不落盘那种坏法它看不见**；反向证：在 `resume-manager.js#restoreResume` 里临时给 `ctx.messages` 的旧 `tool_result` 补一个 `erix`（`cp` 备份 + `md5sum` 逐字还原）⇒ 新探针红（`inMemoryLegacyErix` 带上了值），而磁盘侧 `legacy.erix` 仍是 `undefined`——**旧断言照旧绿**，证明这条加硬不是重复。真机实测 `快照探针=6 份`（非空转）。
+
+### Documentation
+
+- **契约补一节「落盘行形状 ≠ `load()` 之后的形状」：把读侧口径从 #326 / #328 的 issue 正文搬进仓库树（issue #361；纯文档，`src/` 零改动）。**
+  现场：#353 里宿主（erix-station）把「落盘行形状」当成了「`store.load()` 之后的形状」，于是报了一条**不存在的** 0.23 回归（判决见 #353 与 PR #355）。根因不是宿主笨——中英契约里**没有任何一句**讲清这两者的关系，读侧口径散在 #326 / #328 的 issue 正文里，而那些不在仓库树里，宿主读不到。
+  中英各加一个 `###` 小节（`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`，落在「Store 保真要求 → 档案行形状」之后，**不新开顶级节**），覆盖四点：① `load()` 返回的是折叠后的形状，`foldMessageRows` 在两个内置 store 的 `load()` 里跑；② 落盘行不是这个形状，轮载体行**没有** `messages` 键，数行数 / 数轮数 / 读正文都得先过 `load()`；③ **行数 ≥ 轮数**是常态（引擎事实行 `…:fold:<fp>` / `…:ttl:<fp>` 与控制行 `…:control:<slot>` 也在里面），宿主 materializer 必须按 `round` 归并、按 `dedupKey` 去重（#328 C 组对 station / touwaka 的要求，本段是它的权威出处）；④ 一条可核对判据：`load()` 之后 `tool_use` 与配对的 `tool_result` 在同一条记录内，这正是 #353 探针里 `[ok]` 与 `[pending]` 的分界。
+  锚点：`foldMessageRows` / `isRoundCarrier`（`src/store/message-rows.js`）、`createMemoryTranscriptStore`（`src/store/memory.js`）、`createFileTranscriptStore`（`src/store/file.js`），全部不带行区间；无新增裸行号（`BARE_LINE_REF_BASELINE` 不动）。
+  **同一刀抬下限**：`SYMBOL_ANCHOR_MIN_UNIQUE` 77 → **80**（`--verbose` 实测 80 组 / 201 处，+3 组；不抬就是**假绿**——`#286 返工 R1` 的两例自测会因「实测 ≫ 下限」而 fail-open，本单实测过：下限留在 77 时那两例从 ✓ 变红），中英 AGENTS 的现值声称（`= 80` / 80 组 201 处）同步，`scripts/docs-drift-check.mjs` 的常量注释补上「升下限的理由」一行。
+- **契约补一句「`partialPersistence` 值不值得开」：只降低续跑时的重生成成本，先量自己的崩溃重排队率再决定（issue #295；纯文档，`src/` 零改动、默认值与选项白名单未动）。**
+  中英契约各加一段（`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`，落在「中止后事实分布」那节的收口处，**不新开节**）：这个选项只降低**续跑时重新生成正文**的成本，它不是把部分正文摆到用户面前的渠道（那是 `error.finalText`）；而它在稳态下做的快照写入，在宿主自己的崩溃重排队率低时是净亏。
+  配一条**可执行判据**，句式是「先量再决定」：排队里的 run 中 `attempts > 1` 的占比（`run_queue.attempts`）——不写「低于 X 就别开」这类我们没测过的阈值。
+  宿主 erix-station 的实测按**证据**引用、不当建议：开发期十天自然崩溃重排约 1 次（全量 `attempts > 1` 8/133，其中 3 条是人为 `docker pause` / `kill -9` 演练）；⚠ 单机单用户、且是它修完自身缺陷之后的样本，**不外推**。因此不建议退役该选项（留在白名单里、五个测试文件覆盖、默认关零成本）。
+  门禁：`npm run check:docs` / `npm run check:docs:strict` 绿（中英成对骨架照校）；新文本无裸行号，符号锚点组数 77 不变、裸行号棘轮实测 **136 = 基线 136**。
 ## [0.23.0] - 2026-10-21
 
 **本版要点：存储收敛（工单 261021 三刀 + 投影改读折叠）——账本从「一轮一行、正文挂在轮行上」改成「一条消息一成型就落盘、轮行只留元数据」，`store.load()` 负责把消息行折回轮行。**

@@ -1148,6 +1148,20 @@ reasoning, possibly nothing at all, up to `intervalMs` stale); and a host must n
 "`partial: true` but zero `RoundRecord` for that round" as a persistence bug — that is the
 documented shape of an abort without partial persistence.
 
+Its value proposition comes down to one thing: `partialPersistence` lowers only the cost of
+**regenerating that text when the run resumes**; it is not the channel that puts the text in
+front of a user (that is `error.finalText`), and the snapshot writes it performs in steady
+state are a net loss when a host's own crash-requeue rate is low. So measure that rate
+before enabling it — the share of queued runs with `attempts > 1` (`run_queue.attempts`, the
+number erix-station reads) — and decide from your own number rather than from a threshold
+measured somewhere else. The host that asked for the option is itself the evidence, cited as
+observation and not as advice: over ten days of development erix-station saw roughly one
+natural crash-requeue (`attempts > 1` on 8 of 133 runs, 3 of those 8 being deliberate
+`docker pause` / `kill -9` drills); ⚠ that is a single-machine, single-user sample taken
+after the host had fixed its own defects — do not extrapolate it. It is not a reason to
+retire the option either: it stays in the whitelist, five test files cover it, and it costs
+nothing while it is off.
+
 ## Judge record correlation and run outcome (issue #165)
 
 Judge decisions are consumed off `onJudge` (the CLI appends them to `judge.log`;
@@ -2464,6 +2478,47 @@ Consequences for a host store and for host readers:
   way that depends on the payload text (a “did the CLI really run ≥2 tools” check can
   read 1). In-repo precedent: `scripts/cli-real-smoke.mjs` takes its tool-result census
   from `createFileTranscriptStore({ dir }).load(runId)`.
+
+### The row shape on disk is not the shape after `load()` (issue #361)
+
+These are two different shapes, and only the second one is what a host reads.
+Issue #353 was a host reading the first one and reporting a 0.23 regression that
+does not exist.
+
+**What `load(runId)` returns is the folded shape.** `foldMessageRows`
+(`src/store/message-rows.js`) runs inside `load()` of both built-in stores —
+`createMemoryTranscriptStore` (`src/store/memory.js`) and
+`createFileTranscriptStore` (`src/store/file.js`) — and re-attaches the body of
+every `kind: "message"` row to that round's carrier row before the array is
+returned. `isRoundCarrier` (`src/store/message-rows.js`) is the predicate that
+decides which row is the carrier. A host `TranscriptStore` must produce the same
+result: folding is the read side, and it is not optional.
+
+**What sits on disk is not that shape.** In the journal, the round carrier row
+(`<runId>:engine:round:<n>`) carries metadata only and has **no `messages` key**
+at all; the bodies live in their own `kind: "message"` rows. So counting rows,
+counting rounds, and reading a body all have to go through `load()` — never
+through a hand-rolled pass over the raw lines. A reader that takes the raw
+journal and flattens `record.messages` gets an empty array, not a transcript.
+
+**Row count ≥ round count is normal (since #326).** Besides the message rows, a
+`load()` result also carries engine fact rows (`…:engine:round:<n>:fold:<fp>`
+and `…:ttl:<fp>`, which are `messages: []` by construction) and engine control
+rows (`…:engine:round:<n>:control:<slot>`, which do carry `messages` but no
+`seq`). So “one record per round” has not been true since that change. A host
+materializer — anything that turns `load()` output into rounds for display, for
+a queue, or for a second store — must merge by `round` and de-duplicate by
+`dedupKey`; it must not assume a one-to-one record-to-round mapping. That is
+what issue #328 group C asks of the station and touwaka materializers, and this
+paragraph is its authoritative source in this repository.
+
+**One checkable criterion.** After `load()`, a round record's `messages` array
+holds the `tool_use` block and its paired `tool_result` block — as two messages,
+but inside the same record. That is the line between `[ok]` and `[pending]` in
+the #353 probe: with folding in place, a resumed run rebuilds the governed
+timeline with the tool call marked `[ok]`; without folding the use and the
+result sit in different rows, cannot be paired, and the same timeline reads
+`[pending]`.
 
 ## Tool result fact and field ownership (issue #284 / #285)
 

@@ -930,6 +930,15 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
 可能什么都没有，最多陈旧 `intervalMs`）；且宿主不得把「`partial: true` 但该轮在 store 里 0 条
 `RoundRecord`」当成持久化 bug——那就是未开部分持久化时中止的既定形状。
 
+它的价值主张说到底是这一条：`partialPersistence` 只降低**续跑时重新生成这段正文**的成本；它不是
+把这段正文摆到用户面前的渠道（那是 `error.finalText`），而它在稳态下做的那些快照写入，在宿主自己的
+崩溃重排队率低时是净亏。所以先量那个数再决定——排队里的 run 中 `attempts > 1` 的占比
+（`run_queue.attempts`，erix-station 读的就是这个数）——按你自己的数决定，别照搬别处量出来的阈值。
+提出这个选项的宿主本身就是证据，这是观测、不是建议：erix-station 开发期十天里自然崩溃重排约 1 次
+（全量 `attempts > 1` 为 8/133，其中 3 条是人为 `docker pause` / `kill -9` 演练）；⚠ 单机单用户、
+且是它修完自身缺陷之后的样本，不外推。这也不构成退役这个选项的理由：它留在白名单里，五个测试文件
+覆盖着，关着的时候零成本。
+
 ## judge 记录关联字段与 run 级 outcome（issue #165）
 
 judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log`，宿主可落任意去处）。
@@ -1944,6 +1953,34 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
   而任何基于那个数组的计数都会错，且错不错取决于负载文本（「CLI 是不是真跑了 ≥2 次工具」
   这种计数可能读成 1）。仓内先例：`scripts/cli-real-smoke.mjs` 的工具结果计数取自
   `createFileTranscriptStore({ dir }).load(runId)`。
+
+### 落盘行形状 ≠ `load()` 之后的形状（issue #361）
+
+这是两个形状，只有第二个是宿主读到的。issue #353 就是宿主把第一个当成了第二个，于是报了一条
+**不存在的** 0.23 回归。
+
+**`load(runId)` 返回的是折叠后的形状。** `foldMessageRows`（`src/store/message-rows.js`）
+在两个内置 store 的 `load()` 里都会跑——`createMemoryTranscriptStore`（`src/store/memory.js`）
+与 `createFileTranscriptStore`（`src/store/file.js`）——它在数组返回前把每一条
+`kind: "message"` 行的正文折回该轮的载体行。哪一行算载体由
+`isRoundCarrier`（`src/store/message-rows.js`）判定。宿主自己实现的 `TranscriptStore`
+必须产出同样的结果：折叠是读侧，不是可选项。
+
+**落盘的不是这个形状。** 档案里的轮载体行（`<runId>:engine:round:<n>`）只留元数据，**根本没有
+`messages` 键**；正文在各自的 `kind: "message"` 行里。所以数行数、数轮数、读正文三件事都必须先过
+`load()`，不要自己拿原始行拼一遍。拿原始档案去摊平 `record.messages` 得到的是空数组，不是 transcript。
+
+**行数 ≥ 轮数是常态（#326 之后）。** `load()` 的结果里除了消息行，还有引擎事实行
+（`…:engine:round:<n>:fold:<fp>` 与 `…:ttl:<fp>`，构造上就是 `messages: []`）和引擎控制行
+（`…:engine:round:<n>:control:<slot>`，带 `messages` 但不带 `seq`）。所以「一轮一条记录」从那时起
+就不再成立。宿主 materializer——任何把 `load()` 输出变成轮次的东西，无论为了展示、入队还是写进第二个
+store——必须按 `round` 归并、按 `dedupKey` 去重，不得假设记录与轮次一一对应。这正是 issue #328 C 组
+对 station 与 touwaka 的 materializer 提的要求，而本段就是它在本仓的权威出处。
+
+**一条可核对的判据。** `load()` 之后，一条轮记录的 `messages` 里同时有 `tool_use` 块与配对的
+`tool_result` 块——是两条消息，但在同一条记录内。这正是 #353 探针里 `[ok]` 与 `[pending]` 的分界：
+折叠生效时，续跑重建出的治理时间线把该工具调用标成 `[ok]`；折叠不生效时，调用与结果落在不同行、
+配不上对，同一条时间线只能读到 `[pending]`。
 
 ## 工具事实与字段归属（issue #284 / #285）
 
