@@ -1,0 +1,1554 @@
+{
+  "generator": "scripts/message-journal-golden.mjs",
+  "volatileKeys": [
+    "ts",
+    "at",
+    "updatedAt",
+    "elapsedMs",
+    "duration",
+    "durationMs",
+    "tookMs",
+    "toolCallKey",
+    "startedAt",
+    "finishedAt"
+  ],
+  "scenarios": [
+    {
+      "name": "single-run",
+      "runId": "golden-single",
+      "termination": "judge_done",
+      "rounds": 5,
+      "records": [
+        {
+          "round": 0,
+          "roundKey": "golden-single:round:0",
+          "dedupKey": "golden-single:engine:round:0:seed",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "金样任务"
+                }
+              ]
+            }
+          ],
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": false
+          }
+        },
+        {
+          "round": 1,
+          "roundKey": "golden-single:round:1",
+          "dedupKey": "golden-single:engine:round:1",
+          "messages": [
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "a1",
+                  "name": "work",
+                  "input": {
+                    "step": "a1"
+                  },
+                  "erix": {}
+                },
+                {
+                  "type": "tool_use",
+                  "id": "a2",
+                  "name": "work",
+                  "input": {
+                    "step": "a2"
+                  },
+                  "erix": {}
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "a1",
+                  "content": "done-a1",
+                  "erix": {
+                    "round": 1,
+                    "success": true
+                  }
+                },
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "a2",
+                  "content": "done-a2",
+                  "erix": {
+                    "round": 1,
+                    "success": true
+                  }
+                }
+              ]
+            }
+          ],
+          "response": {
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "a1",
+                "name": "work",
+                "input": {
+                  "step": "a1"
+                },
+                "erix": {}
+              },
+              {
+                "type": "tool_use",
+                "id": "a2",
+                "name": "work",
+                "input": {
+                  "step": "a2"
+                },
+                "erix": {}
+              }
+            ],
+            "stopReason": "tool_use"
+          },
+          "textPreview": "",
+          "toolUses": 2,
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": true
+          },
+          "runState": {
+            "schemaVersion": 1,
+            "runId": "golden-single",
+            "stateVersion": 0,
+            "asOfRound": 1,
+            "stateStatus": "available",
+            "deterministic": {
+              "budget": {
+                "rounds": 1,
+                "runRounds": 1,
+                "maxRounds": 8,
+                "remainingRounds": 7,
+                "lowBudgetPrompted": false
+              },
+              "tools": [
+                {
+                  "name": "work",
+                  "calls": 2,
+                  "failures": 0
+                }
+              ],
+              "filesWritten": [],
+              "fold": {
+                "foldedRounds": 0,
+                "navigationRecords": 0
+              },
+              "compactionStats": [],
+              "termination": {
+                "reason": "running"
+              },
+              "errors": {
+                "tool": 0,
+                "checkpoint": 0,
+                "unpersisted": {
+                  "count": 0,
+                  "items": []
+                }
+              }
+            },
+            "bounds": {
+              "maxSerializedBytes": 65536,
+              "truncated": false
+            },
+            "stateAvailability": {
+              "status": "available"
+            },
+            "semantic": {
+              "status": "absent"
+            },
+            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=1/8 left=7 low=0\ntools=work=2/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+          }
+        },
+        {
+          "round": 2,
+          "roundKey": "golden-single:round:2",
+          "dedupKey": "golden-single:engine:round:2",
+          "messages": [
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "第二段正文"
+                }
+              ]
+            }
+          ],
+          "response": {
+            "content": [
+              {
+                "type": "text",
+                "text": "第二段正文"
+              }
+            ],
+            "stopReason": "end_turn"
+          },
+          "textPreview": "第二段正文",
+          "toolUses": 0,
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": false
+          },
+          "runState": {
+            "schemaVersion": 1,
+            "runId": "golden-single",
+            "stateVersion": 0,
+            "asOfRound": 2,
+            "stateStatus": "available",
+            "deterministic": {
+              "budget": {
+                "rounds": 2,
+                "runRounds": 2,
+                "maxRounds": 8,
+                "remainingRounds": 6,
+                "lowBudgetPrompted": false
+              },
+              "tools": [
+                {
+                  "name": "work",
+                  "calls": 2,
+                  "failures": 0
+                }
+              ],
+              "filesWritten": [],
+              "fold": {
+                "foldedRounds": 0,
+                "navigationRecords": 0
+              },
+              "compactionStats": [],
+              "termination": {
+                "reason": "running"
+              },
+              "errors": {
+                "tool": 0,
+                "checkpoint": 0,
+                "unpersisted": {
+                  "count": 0,
+                  "items": []
+                }
+              }
+            },
+            "bounds": {
+              "maxSerializedBytes": 65536,
+              "truncated": false
+            },
+            "stateAvailability": {
+              "status": "available"
+            },
+            "semantic": {
+              "status": "absent"
+            },
+            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=2/8 left=6 low=0\ntools=work=2/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+          },
+          "judge": {
+            "done": false,
+            "confidence": 0.6,
+            "reason": "还差证据",
+            "evidence": "本地证据",
+            "direction": "on_track",
+            "directionReason": ""
+          }
+        },
+        {
+          "round": 2,
+          "roundKey": "golden-single:round:2",
+          "dedupKey": "golden-single:engine:round:2:control:judge-nudge",
+          "messages": [
+            {
+              "role": "user",
+              "meta": {
+                "source": "judge-control"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "【Judge 评审意见】还差证据\n证据：本地证据\n请根据评审意见继续完成任务。"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "roundKey": "golden-single:round:3",
+          "dedupKey": "golden-single:engine:round:3",
+          "messages": [
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "a3",
+                  "name": "work",
+                  "input": {
+                    "step": "a3"
+                  },
+                  "erix": {}
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "a3",
+                  "content": "done-a3",
+                  "erix": {
+                    "round": 3,
+                    "success": true
+                  }
+                }
+              ]
+            }
+          ],
+          "response": {
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "a3",
+                "name": "work",
+                "input": {
+                  "step": "a3"
+                },
+                "erix": {}
+              }
+            ],
+            "stopReason": "tool_use"
+          },
+          "textPreview": "",
+          "toolUses": 1,
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": true
+          },
+          "runState": {
+            "schemaVersion": 1,
+            "runId": "golden-single",
+            "stateVersion": 0,
+            "asOfRound": 3,
+            "stateStatus": "available",
+            "deterministic": {
+              "budget": {
+                "rounds": 3,
+                "runRounds": 3,
+                "maxRounds": 8,
+                "remainingRounds": 5,
+                "lowBudgetPrompted": false
+              },
+              "tools": [
+                {
+                  "name": "work",
+                  "calls": 3,
+                  "failures": 0
+                }
+              ],
+              "filesWritten": [],
+              "fold": {
+                "foldedRounds": 0,
+                "navigationRecords": 0
+              },
+              "compactionStats": [],
+              "termination": {
+                "reason": "running"
+              },
+              "errors": {
+                "tool": 0,
+                "checkpoint": 0,
+                "unpersisted": {
+                  "count": 0,
+                  "items": []
+                }
+              }
+            },
+            "bounds": {
+              "maxSerializedBytes": 65536,
+              "truncated": false
+            },
+            "stateAvailability": {
+              "status": "available"
+            },
+            "semantic": {
+              "status": "absent"
+            },
+            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=3/8 left=5 low=0\ntools=work=3/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+          }
+        },
+        {
+          "round": 4,
+          "roundKey": "golden-single:round:4",
+          "dedupKey": "golden-single:engine:round:4",
+          "messages": [
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "第一版终稿"
+                }
+              ]
+            }
+          ],
+          "response": {
+            "content": [
+              {
+                "type": "text",
+                "text": "第一版终稿"
+              }
+            ],
+            "stopReason": "end_turn"
+          },
+          "textPreview": "第一版终稿",
+          "toolUses": 0,
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": false
+          },
+          "runState": {
+            "schemaVersion": 1,
+            "runId": "golden-single",
+            "stateVersion": 0,
+            "asOfRound": 4,
+            "stateStatus": "available",
+            "deterministic": {
+              "budget": {
+                "rounds": 4,
+                "runRounds": 4,
+                "maxRounds": 8,
+                "remainingRounds": 4,
+                "lowBudgetPrompted": false
+              },
+              "tools": [
+                {
+                  "name": "work",
+                  "calls": 3,
+                  "failures": 0
+                }
+              ],
+              "filesWritten": [],
+              "fold": {
+                "foldedRounds": 0,
+                "navigationRecords": 0
+              },
+              "compactionStats": [],
+              "termination": {
+                "reason": "running"
+              },
+              "errors": {
+                "tool": 0,
+                "checkpoint": 0,
+                "unpersisted": {
+                  "count": 0,
+                  "items": []
+                }
+              }
+            },
+            "bounds": {
+              "maxSerializedBytes": 65536,
+              "truncated": false
+            },
+            "stateAvailability": {
+              "status": "available"
+            },
+            "semantic": {
+              "status": "absent"
+            },
+            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=4/8 left=4 low=0\ntools=work=3/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+          },
+          "judge": {
+            "done": true,
+            "confidence": 0.95,
+            "reason": "已达成",
+            "evidence": "本地证据",
+            "direction": "on_track",
+            "directionReason": ""
+          }
+        },
+        {
+          "round": 4,
+          "roundKey": "golden-single:round:4",
+          "dedupKey": "golden-single:engine:round:4:control:guard-revise",
+          "messages": [
+            {
+              "role": "user",
+              "meta": {
+                "source": "judge-control"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "请补充证据后再收口"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "round": 5,
+          "roundKey": "golden-single:round:5",
+          "dedupKey": "golden-single:engine:round:5",
+          "messages": [
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "第二版终稿"
+                }
+              ]
+            }
+          ],
+          "response": {
+            "content": [
+              {
+                "type": "text",
+                "text": "第二版终稿"
+              }
+            ],
+            "stopReason": "end_turn"
+          },
+          "textPreview": "第二版终稿",
+          "toolUses": 0,
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": false
+          },
+          "runState": {
+            "schemaVersion": 1,
+            "runId": "golden-single",
+            "stateVersion": 0,
+            "asOfRound": 5,
+            "stateStatus": "available",
+            "deterministic": {
+              "budget": {
+                "rounds": 5,
+                "runRounds": 5,
+                "maxRounds": 8,
+                "remainingRounds": 3,
+                "lowBudgetPrompted": false
+              },
+              "tools": [
+                {
+                  "name": "work",
+                  "calls": 3,
+                  "failures": 0
+                }
+              ],
+              "filesWritten": [],
+              "fold": {
+                "foldedRounds": 0,
+                "navigationRecords": 0
+              },
+              "compactionStats": [],
+              "termination": {
+                "reason": "running"
+              },
+              "errors": {
+                "tool": 0,
+                "checkpoint": 0,
+                "unpersisted": {
+                  "count": 0,
+                  "items": []
+                }
+              }
+            },
+            "bounds": {
+              "maxSerializedBytes": 65536,
+              "truncated": false
+            },
+            "stateAvailability": {
+              "status": "available"
+            },
+            "semantic": {
+              "status": "absent"
+            },
+            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=5/8 left=3 low=0\ntools=work=3/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+          },
+          "judge": {
+            "done": true,
+            "confidence": 0.95,
+            "reason": "已达成",
+            "evidence": "本地证据",
+            "direction": "on_track",
+            "directionReason": ""
+          }
+        }
+      ],
+      "messagesFlat": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "金样任务"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "a1",
+              "name": "work",
+              "input": {
+                "step": "a1"
+              },
+              "erix": {}
+            },
+            {
+              "type": "tool_use",
+              "id": "a2",
+              "name": "work",
+              "input": {
+                "step": "a2"
+              },
+              "erix": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "a1",
+              "content": "done-a1",
+              "erix": {
+                "round": 1,
+                "success": true
+              }
+            },
+            {
+              "type": "tool_result",
+              "tool_use_id": "a2",
+              "content": "done-a2",
+              "erix": {
+                "round": 1,
+                "success": true
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "第二段正文"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "meta": {
+            "source": "judge-control"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "【Judge 评审意见】还差证据\n证据：本地证据\n请根据评审意见继续完成任务。"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "a3",
+              "name": "work",
+              "input": {
+                "step": "a3"
+              },
+              "erix": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "a3",
+              "content": "done-a3",
+              "erix": {
+                "round": 3,
+                "success": true
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "第一版终稿"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "meta": {
+            "source": "judge-control"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "请补充证据后再收口"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "第二版终稿"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "crash-resume",
+      "runId": "golden-resume",
+      "termination": "judge_done",
+      "rounds": 5,
+      "thrown": "golden crash after tool a2",
+      "resumedModelMessages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "金样任务"
+            }
+          ],
+          "cacheBoundary": true
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "a1",
+              "name": "work",
+              "input": {
+                "step": "a1"
+              },
+              "erix": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "a1",
+              "content": "done-a1",
+              "erix": {
+                "round": 1,
+                "success": true
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "第一段正文"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "meta": {
+            "source": "judge-control"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "【Judge 评审意见】还没完\n证据：本地证据\n请根据评审意见继续完成任务。"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "a2",
+              "name": "work",
+              "input": {
+                "step": "a2"
+              },
+              "erix": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "a2",
+              "content": "done-a2",
+              "erix": {
+                "round": 3,
+                "success": true
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "追问：还剩什么没做？"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "a3",
+              "name": "work",
+              "input": {
+                "step": "a3"
+              },
+              "erix": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "a3",
+              "content": "done-a3",
+              "erix": {
+                "round": 4,
+                "success": true
+              }
+            }
+          ]
+        }
+      ],
+      "records": [
+        {
+          "round": 0,
+          "roundKey": "golden-resume:round:0",
+          "dedupKey": "golden-resume:engine:round:0:seed",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "金样任务"
+                }
+              ]
+            }
+          ],
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": false
+          }
+        },
+        {
+          "round": 1,
+          "roundKey": "golden-resume:round:1",
+          "dedupKey": "golden-resume:engine:round:1",
+          "messages": [
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "a1",
+                  "name": "work",
+                  "input": {
+                    "step": "a1"
+                  },
+                  "erix": {}
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "a1",
+                  "content": "done-a1",
+                  "erix": {
+                    "round": 1,
+                    "success": true
+                  }
+                }
+              ]
+            }
+          ],
+          "response": {
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "a1",
+                "name": "work",
+                "input": {
+                  "step": "a1"
+                },
+                "erix": {}
+              }
+            ],
+            "stopReason": "tool_use"
+          },
+          "textPreview": "",
+          "toolUses": 1,
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": true
+          },
+          "runState": {
+            "schemaVersion": 1,
+            "runId": "golden-resume",
+            "stateVersion": 0,
+            "asOfRound": 1,
+            "stateStatus": "available",
+            "deterministic": {
+              "budget": {
+                "rounds": 1,
+                "runRounds": 1,
+                "maxRounds": 8,
+                "remainingRounds": 7,
+                "lowBudgetPrompted": false
+              },
+              "tools": [
+                {
+                  "name": "work",
+                  "calls": 1,
+                  "failures": 0
+                }
+              ],
+              "filesWritten": [],
+              "fold": {
+                "foldedRounds": 0,
+                "navigationRecords": 0
+              },
+              "compactionStats": [],
+              "termination": {
+                "reason": "running"
+              },
+              "errors": {
+                "tool": 0,
+                "checkpoint": 0,
+                "unpersisted": {
+                  "count": 0,
+                  "items": []
+                }
+              }
+            },
+            "bounds": {
+              "maxSerializedBytes": 65536,
+              "truncated": false
+            },
+            "stateAvailability": {
+              "status": "available"
+            },
+            "semantic": {
+              "status": "absent"
+            },
+            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=1/8 left=7 low=0\ntools=work=1/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+          }
+        },
+        {
+          "round": 2,
+          "roundKey": "golden-resume:round:2",
+          "dedupKey": "golden-resume:engine:round:2",
+          "messages": [
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "第一段正文"
+                }
+              ]
+            }
+          ],
+          "response": {
+            "content": [
+              {
+                "type": "text",
+                "text": "第一段正文"
+              }
+            ],
+            "stopReason": "end_turn"
+          },
+          "textPreview": "第一段正文",
+          "toolUses": 0,
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": false
+          },
+          "runState": {
+            "schemaVersion": 1,
+            "runId": "golden-resume",
+            "stateVersion": 0,
+            "asOfRound": 2,
+            "stateStatus": "available",
+            "deterministic": {
+              "budget": {
+                "rounds": 2,
+                "runRounds": 2,
+                "maxRounds": 8,
+                "remainingRounds": 6,
+                "lowBudgetPrompted": false
+              },
+              "tools": [
+                {
+                  "name": "work",
+                  "calls": 1,
+                  "failures": 0
+                }
+              ],
+              "filesWritten": [],
+              "fold": {
+                "foldedRounds": 0,
+                "navigationRecords": 0
+              },
+              "compactionStats": [],
+              "termination": {
+                "reason": "running"
+              },
+              "errors": {
+                "tool": 0,
+                "checkpoint": 0,
+                "unpersisted": {
+                  "count": 0,
+                  "items": []
+                }
+              }
+            },
+            "bounds": {
+              "maxSerializedBytes": 65536,
+              "truncated": false
+            },
+            "stateAvailability": {
+              "status": "available"
+            },
+            "semantic": {
+              "status": "absent"
+            },
+            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=2/8 left=6 low=0\ntools=work=1/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+          },
+          "judge": {
+            "done": false,
+            "confidence": 0.6,
+            "reason": "还没完",
+            "evidence": "本地证据",
+            "direction": "on_track",
+            "directionReason": ""
+          }
+        },
+        {
+          "round": 2,
+          "roundKey": "golden-resume:round:2",
+          "dedupKey": "golden-resume:engine:round:2:control:judge-nudge",
+          "messages": [
+            {
+              "role": "user",
+              "meta": {
+                "source": "judge-control"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "【Judge 评审意见】还没完\n证据：本地证据\n请根据评审意见继续完成任务。"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "round": 3,
+          "roundKey": "golden-resume:round:3",
+          "dedupKey": "golden-resume:engine:round:3",
+          "messages": [
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "a2",
+                  "name": "work",
+                  "input": {
+                    "step": "a2"
+                  },
+                  "erix": {}
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "a2",
+                  "content": "done-a2",
+                  "erix": {
+                    "round": 3,
+                    "success": true
+                  }
+                }
+              ]
+            }
+          ],
+          "response": {
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "a2",
+                "name": "work",
+                "input": {
+                  "step": "a2"
+                },
+                "erix": {}
+              }
+            ],
+            "stopReason": "tool_use"
+          },
+          "textPreview": "",
+          "toolUses": 1,
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": true
+          },
+          "runState": {
+            "schemaVersion": 1,
+            "runId": "golden-resume",
+            "stateVersion": 0,
+            "asOfRound": 3,
+            "stateStatus": "available",
+            "deterministic": {
+              "budget": {
+                "rounds": 3,
+                "runRounds": 3,
+                "maxRounds": 8,
+                "remainingRounds": 5,
+                "lowBudgetPrompted": false
+              },
+              "tools": [
+                {
+                  "name": "work",
+                  "calls": 2,
+                  "failures": 0
+                }
+              ],
+              "filesWritten": [],
+              "fold": {
+                "foldedRounds": 0,
+                "navigationRecords": 0
+              },
+              "compactionStats": [],
+              "termination": {
+                "reason": "running"
+              },
+              "errors": {
+                "tool": 0,
+                "checkpoint": 0,
+                "unpersisted": {
+                  "count": 0,
+                  "items": []
+                }
+              }
+            },
+            "bounds": {
+              "maxSerializedBytes": 65536,
+              "truncated": false
+            },
+            "stateAvailability": {
+              "status": "available"
+            },
+            "semantic": {
+              "status": "absent"
+            },
+            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=3/8 left=5 low=0\ntools=work=2/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+          }
+        },
+        {
+          "round": 3,
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "追问：还剩什么没做？"
+                }
+              ]
+            }
+          ],
+          "dedupKey": "golden-resume:input:host-followup-1",
+          "roundKey": "golden-resume:input:host-followup-1"
+        },
+        {
+          "round": 4,
+          "roundKey": "golden-resume:round:4",
+          "dedupKey": "golden-resume:engine:round:4",
+          "messages": [
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "a3",
+                  "name": "work",
+                  "input": {
+                    "step": "a3"
+                  },
+                  "erix": {}
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "a3",
+                  "content": "done-a3",
+                  "erix": {
+                    "round": 4,
+                    "success": true
+                  }
+                }
+              ]
+            }
+          ],
+          "response": {
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "a3",
+                "name": "work",
+                "input": {
+                  "step": "a3"
+                },
+                "erix": {}
+              }
+            ],
+            "stopReason": "tool_use"
+          },
+          "textPreview": "",
+          "toolUses": 1,
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": true
+          },
+          "runState": {
+            "schemaVersion": 1,
+            "runId": "golden-resume",
+            "stateVersion": 0,
+            "asOfRound": 4,
+            "stateStatus": "available",
+            "deterministic": {
+              "budget": {
+                "rounds": 4,
+                "runRounds": 1,
+                "maxRounds": 8,
+                "remainingRounds": 7,
+                "lowBudgetPrompted": false
+              },
+              "tools": [
+                {
+                  "name": "work",
+                  "calls": 3,
+                  "failures": 0
+                }
+              ],
+              "filesWritten": [],
+              "fold": {
+                "foldedRounds": 0,
+                "navigationRecords": 0
+              },
+              "compactionStats": [],
+              "termination": {
+                "reason": "running"
+              },
+              "errors": {
+                "tool": 0,
+                "checkpoint": 0,
+                "unpersisted": {
+                  "count": 0,
+                  "items": []
+                }
+              }
+            },
+            "bounds": {
+              "maxSerializedBytes": 65536,
+              "truncated": false
+            },
+            "stateAvailability": {
+              "status": "available"
+            },
+            "semantic": {
+              "status": "stale",
+              "text": "",
+              "semanticStateVersion": null
+            },
+            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=1/8 left=7 low=0 session=4\ntools=work=3/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=stale version=-\n[/run state]"
+          }
+        },
+        {
+          "round": 5,
+          "roundKey": "golden-resume:round:5",
+          "dedupKey": "golden-resume:engine:round:5",
+          "messages": [
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "恢复后的终稿"
+                }
+              ]
+            }
+          ],
+          "response": {
+            "content": [
+              {
+                "type": "text",
+                "text": "恢复后的终稿"
+              }
+            ],
+            "stopReason": "end_turn"
+          },
+          "textPreview": "恢复后的终稿",
+          "toolUses": 0,
+          "summary": "missing",
+          "l0facts": {
+            "exitOk": false
+          },
+          "runState": {
+            "schemaVersion": 1,
+            "runId": "golden-resume",
+            "stateVersion": 0,
+            "asOfRound": 5,
+            "stateStatus": "available",
+            "deterministic": {
+              "budget": {
+                "rounds": 5,
+                "runRounds": 2,
+                "maxRounds": 8,
+                "remainingRounds": 6,
+                "lowBudgetPrompted": false
+              },
+              "tools": [
+                {
+                  "name": "work",
+                  "calls": 3,
+                  "failures": 0
+                }
+              ],
+              "filesWritten": [],
+              "fold": {
+                "foldedRounds": 0,
+                "navigationRecords": 0
+              },
+              "compactionStats": [],
+              "termination": {
+                "reason": "running"
+              },
+              "errors": {
+                "tool": 0,
+                "checkpoint": 0,
+                "unpersisted": {
+                  "count": 0,
+                  "items": []
+                }
+              }
+            },
+            "bounds": {
+              "maxSerializedBytes": 65536,
+              "truncated": false
+            },
+            "stateAvailability": {
+              "status": "available"
+            },
+            "semantic": {
+              "status": "stale",
+              "text": "",
+              "semanticStateVersion": null
+            },
+            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=2/8 left=6 low=0 session=5\ntools=work=3/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=stale version=-\n[/run state]"
+          },
+          "judge": {
+            "done": true,
+            "confidence": 0.95,
+            "reason": "已达成",
+            "evidence": "本地证据",
+            "direction": "on_track",
+            "directionReason": ""
+          }
+        }
+      ],
+      "messagesFlat": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "金样任务"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "a1",
+              "name": "work",
+              "input": {
+                "step": "a1"
+              },
+              "erix": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "a1",
+              "content": "done-a1",
+              "erix": {
+                "round": 1,
+                "success": true
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "第一段正文"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "meta": {
+            "source": "judge-control"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "【Judge 评审意见】还没完\n证据：本地证据\n请根据评审意见继续完成任务。"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "a2",
+              "name": "work",
+              "input": {
+                "step": "a2"
+              },
+              "erix": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "a2",
+              "content": "done-a2",
+              "erix": {
+                "round": 3,
+                "success": true
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "追问：还剩什么没做？"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "a3",
+              "name": "work",
+              "input": {
+                "step": "a3"
+              },
+              "erix": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "a3",
+              "content": "done-a3",
+              "erix": {
+                "round": 4,
+                "success": true
+              }
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "恢复后的终稿"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
