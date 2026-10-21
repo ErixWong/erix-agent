@@ -192,7 +192,15 @@ export function createCompactionStat({
   return stat;
 }
 
-export function normalizeCompactionStats(value, limit = 32) {
+/**
+ * `state.json` 里 `deterministic.compactionStats` 的窗口条数（issue #315）。
+ * 32 是 state 文件体积的既有约束，不许调大或取消（换掉它等于换权衡）。
+ * `createDeterministicRunState`（`src/run-state.js`）用**同一个常量**把窗口大小写进
+ * `deterministic.compactionStatsWindow.limit`，读侧不必读源码就知道手里这份是不是全量。
+ */
+export const COMPACTION_STATS_STATE_LIMIT = 32;
+
+export function normalizeCompactionStats(value, limit = COMPACTION_STATS_STATE_LIMIT) {
   const entries = Array.isArray(value) ? value.slice(-limit) : [];
   return entries.map((entry) => createCompactionStat({
     compacted: entry?.compacted,
