@@ -1917,6 +1917,16 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 - 引擎控制文本行（`src/loop/orchestrator.js#appendEngineMessagesToTranscript` 写的
   `<runId>:engine:round:<n>:control:<slot>`，以及 `appendEngineFactToTranscript` 写的
   `…:fold:` / `…:ttl:` 事实行）刻意不带 `seq`，因此折叠层原样透传。
+- **续跑后账本闭合（工单 261021）。** 同一个 `runId` 再跑一次（`resume: true`）只从账本重建
+  上下文，而账本是**追加式**的：已落盘的行不会被改写，续跑只在其后追加。因此 `load()` 折叠后
+  每条逻辑消息**恰好出现一次**，一次工具调用也**恰好一份结果**（同 `erix.toolCallKey`、同
+  `tool_use_id`）——崩溃补跑出来的结果用 `partOf` 接回崩溃轮那条聚合 `tool_result` 消息，
+  不新增消息。宿主可见的顺序有一个细节：崩溃轮的载体行 `…:engine:round:<n>:resume` 写在宿主
+  `:input:` 行**之后**，而折叠把正文挤到载体行的位置上（`load()` 按追加顺序返回），所以
+  `load()` 里「续跑提示」可能排在崩溃轮正文之前；模型上下文不受这个顺序影响——
+  `restoreResume`（`src/loop/resume-manager.js`）把 `:input:` 行当 tail，延后到补跑结果之后才拼。
+  真上游守卫：`examples/resume-real-e2e.test.mjs`（`ERIX_E2E_REAL=1`：真进程 SIGKILL → 同
+  `--session` 续跑 → 账本闭合 / 不丢 / 不重复执行 / 半行隔离）。
 
 ## 工具事实与字段归属（issue #284 / #285）
 
