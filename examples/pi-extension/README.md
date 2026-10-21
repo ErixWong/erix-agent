@@ -87,6 +87,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `extensionStep` | | 引擎缺省 `max(8, ⌊maxRounds/2⌋)` | 每次扩轮加的轮数，直传 `reflection.extensionStep`（正整数，上限 10000） |
 | `finalGuard` | | **`false`** | **#314：终稿核验开关。`true` = 向 `runToolLoop` 透传 `finalGuard` 回调**，终局 `verification` 才可能是 `verified`；默认关 ⇒ 透传的 options 里连这个键都没有（不是写 `undefined`），`verification` 恒 `skipped`。只认真布尔：`"true"` / `1` 归 `bad_params`（详见下文「终稿核验 finalGuard」） |
 | `finalGuardTimeoutMs` | | `10000` | 单次 guard 等待上限（200..600000）；**只在 `finalGuard: true` 时有意义**，没开却传 ⇒ `bad_params`。**不靠引擎默认的 30000**，理由见下文坑 ① |
+| `judgeDoneAdvisory` | | **`false`** | **引擎 `reflection.judgeDoneAdvisory` 的透传口（#322）。** `true` = 中途治理（judge）判定「目标已达成」时，把它那句评审意见作为**一条普通用户文本消息**在下一个安全点递给内层模型（于是模型能知道「为什么说它已经做完了」）。**那是软提示，不是硬停止**：不打断当前轮、不拦工具调用、不提前收尾，`termination.reason` 也不因它改变（模型收到后继续干活是允许的）。只认真布尔：`"true"` / `1` 归 `bad_params`；**没传就不下发**（引擎缺省 `false`，本层不替它造默认值）。与三个扩轮参数同一条 judge 闸门，没生效时 `diagnostics.reflection.judgeDoneAdvisory` 会写清（见下方 ⚠） |
 | `async` | | `false` | **#234：`true` = 派工即返回句柄**（主会话不阻塞），内层 run 在同进程后台跑，终局经通知回到本会话。缺省 `false` = 原有同步语义逐字不变。句柄形状：`{runId, status:"running", cwd, model, maxRounds, timeoutMs, sessionDir, statusPath, quiet}` |
 | `quiet` | | `false` | 只在 `async:true` 时有意义：**成功的完成不唤醒**父会话（只落 `status.json`），失败 / 中止仍然唤醒。一次派一批切片时用它免得把主会话打断成筛子 |
 | `action` | | — | `status`（当前状态 + 终局四件套）\| `result`（完整终局：四件套 + `artifacts` + **终稿正文 `finalText`**，#261）\| `list`（本进程已知 run 的摘要表）\| `cancel`（把 `signal` 打进内层，终局记成 `aborted`）。`status`/`result`/`cancel` 要带 `runId` |
@@ -96,6 +97,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
 > 而本层的 judge 闸门是「`maxRounds ≥ 16` 自动开，`ERIX_NO_REFLECTION=1` 关」（与 #207 之前逐字一致）。
 > 闸门关着时三个参数**整体不下发**，返回里 `diagnostics.reflection.enabled` 是 `false`、
 > 模型可见文本里会多一行「扩轮参数未生效」——本层不顺手替你打开 judge（那会改变成本）。
+> 同一条闸门也管 `judgeDoneAdvisory`：judge 没跑就没有「中途判定达成」这件事，届时 `reflection` 整块是 `false`、
+> 这个开关**不会被塞进去**，而 `diagnostics.reflection.judgeDoneAdvisory` 会写 `{requested:true, enabled:false, reason}`
+> 并多一行「judgeDoneAdvisory 未生效」（不许拿「我传了」当成「它生效了」）。
 > 另：`maxRounds` 的 1..100 是**入参校验上限**，不是引擎的总轮数上限（扩轮后由 `maxRoundsCap` 说话）。
 
 ## 过程落盘与审计面（issue #207）
@@ -524,7 +528,9 @@ system prompt 也复用 `buildCliToolsSystemPrompt()`，再叠加「交付物落
     "libSource": "ERIX_AGENT_LIB=…", "strategy": "sliding-window",
     "runId": "…", "maxRounds": 8, "timeoutMs": 300000, "elapsedMs": 6276,
     "sessionDir": "/home/eric/.erix/transcripts",   // 未落盘时 null
-    "reflection": { "enabled": false, "requested": {}, "maxExtensions": 0 },
+    "reflection": { "enabled": false, "requested": {}, "maxExtensions": 0,
+      // 只在宿主真传了 judgeDoneAdvisory 时才有这个键（requested = 传了什么，enabled = 本次真下发了吗）
+      "judgeDoneAdvisory": { "requested": true, "enabled": false, "reason": "judge 未开启（需 maxRounds ≥ 16 且未设 ERIX_NO_REFLECTION=1）⇒ 开关没下发，本次没生效" } },
     "notesLifecycle": { "attempted": true, "completed": 1, "errors": [] }
       // #266：未装配 notes（如自定义 createAssembly 不给 notes）时整个键不存在
   }
