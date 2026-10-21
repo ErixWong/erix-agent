@@ -1,8 +1,7 @@
 // ADR-015 Phase 3：notes 小抄目录 → semantic 槽位 → run-state 块
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
@@ -16,6 +15,7 @@ import {
 } from "../src/tools/notes.js";
 import { createFileNotesStore } from "../src/store/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 // 真实记录形态：source 在 current.provenance.source（writeNote 构造），
 // 顶层没有 source 字段——旧 fake 的顶层 source 正是评审抓到的字段错位。
@@ -69,7 +69,7 @@ test("directory provider: active notes rendered pinned-first with source markers
 });
 
 test("directory provider: real file-store integration renders source markers and artifact placeholder", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-notes-directory-"));
+  const directory = await makeTmp("erix-notes-directory-");
   try {
     const notesStore = createFileNotesStore({ dir: directory });
     const builtin = createBuiltinNotesTools({ notesDir: directory, notesStore, runId: "dir-run" });

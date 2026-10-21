@@ -15,12 +15,14 @@
 // 另：部分围栏自带顶层 `import ... from "erix-agent"`（含 "erix-agent/tools"），L1 会将其
 // 改写为 `const { ... } = await import(...)` 以便 vm.Script 编译。
 
-import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as vm from "node:vm";
+
+import { makeTmp } from "../helpers/tmp.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, "..", "..");
@@ -230,10 +232,11 @@ if (__safe__ !== "grep,readFile,rg,searchText,tree") {
   {
     linkImports: [],
     stubs: `
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir as __osTmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join as __join } from "node:path";
-const __slotsDir__ = mkdtempSync(__join(__osTmpdir(), "doc-example-slots-"));
+// 临时目录由 harness 用 makeTmp 建好、经 env 传进来（示例代码里不出现裸 mkdtemp，见 issue #209）。
+const __slotsDir__ = __join(process.env.ERIX_DOC_EXAMPLE_TMP, "slots");
+mkdirSync(__slotsDir__, { recursive: true });
 const configPath = __join(__slotsDir__, "config.json");
 writeFileSync(configPath, JSON.stringify({ slots: {
   default: {
@@ -348,10 +351,10 @@ if (__listQueries__[0]?.scope !== "run") throw new Error("store.list 查询 scop
       `import { createBuiltinNotesTools } from ${JSON.stringify(INDEX_URL)};`,
     ],
     stubs: `
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir as __osTmpdir } from "node:os";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join as __join } from "node:path";
-const __notesDir__ = mkdtempSync(__join(__osTmpdir(), "doc-example-notes-"));
+const __notesDir__ = __join(process.env.ERIX_DOC_EXAMPLE_TMP, "notes");
+mkdirSync(__notesDir__, { recursive: true });
 const __reportedFailures__ = [];
 const __loopOptions__ = [];
 const runId = \`doc-example-notes-\${process.pid}-\${Date.now()}\`;
@@ -397,12 +400,12 @@ rmSync(__notesDir__, { recursive: true, force: true });
   {
     linkImports: [],
     stubs: `
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir as __osTmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join as __join } from "node:path";
 // 示例体里 cwd/expectedPath 是宿主侧的自由标识符：这里给一份真实临时目录 + 真实文件，
 // 于是 allowWrite 的等值谓词比对的是**绝对路径真值**，不是桩里的假路径。
-const __editDir__ = mkdtempSync(__join(__osTmpdir(), "doc-example-edit-"));
+const __editDir__ = __join(process.env.ERIX_DOC_EXAMPLE_TMP, "edit");
+mkdirSync(__editDir__, { recursive: true });
 const cwd = __editDir__;
 const expectedPath = __join(__editDir__, "a.js");
 writeFileSync(expectedPath, "const a = 1;\\n", "utf8");
@@ -463,10 +466,12 @@ if (__storeLoads__.count !== 1) throw new Error(\`store.load 应被调用 1 次�
   {
     linkImports: [],
     stubs: `
-import { mkdtempSync, rmSync, readdirSync } from "node:fs";
-import { tmpdir as __osTmpdir } from "node:os";
+// mkdtempSync 只作为**符号**注入：围栏正文（宿主侧示例代码）自己用它给 notes 根开子目录，
+// 那是宿主的目录、不是测试的临时目录，所以不在本仓测试卫生守卫的管辖内（见 issue #209 报告）。
+import { mkdirSync, mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { join as __join } from "node:path";
-const notesDir = mkdtempSync(__join(__osTmpdir(), "doc-example-contract-"));
+const notesDir = __join(process.env.ERIX_DOC_EXAMPLE_TMP, "contract-notes");
+mkdirSync(notesDir, { recursive: true });
 `,
     epilogue: `
 process.on("beforeExit", () => {
@@ -528,7 +533,7 @@ export function buildExecProgram(fence) {
 /** L2：动态 import 临时 .mjs（不执行示例体）。返回 { ok, error? }。 */
 export async function runLevel2(fence) {
   const source = buildLinkProgram(fence);
-  const dir = mkdtempSync(join(tmpdir(), "doc-examples-"));
+  const dir = await makeTmp("doc-examples-");
   const file = join(dir, `link-${fence.line}-${fence.index}.mjs`);
   try {
     writeFileSync(file, source);
@@ -542,9 +547,9 @@ export async function runLevel2(fence) {
 }
 
 /** L3：子进程执行临时 .mjs（spawnSync，timeout 15s）。返回 { ok, stdout, stderr }。 */
-export function runLevel3(fence) {
+export async function runLevel3(fence) {
   const source = buildExecProgram(fence);
-  const dir = mkdtempSync(join(tmpdir(), "doc-examples-"));
+  const dir = await makeTmp("doc-examples-");
   const file = join(dir, `exec-${fence.line}-${fence.index}.mjs`);
   try {
     writeFileSync(file, source);
@@ -552,6 +557,9 @@ export function runLevel3(fence) {
       encoding: "utf8",
       timeout: L3_TIMEOUT_MS,
       cwd: REPO_ROOT,
+      // 围栏 preamble 的临时目录一律由 harness 用 makeTmp 建（尊重 TMPDIR + 可写探针），
+      // 子进程只拿到路径，自己不再 mkdtemp（issue #209）。
+      env: { ...process.env, ERIX_DOC_EXAMPLE_TMP: dir },
     });
     const stdout = result.stdout ?? "";
     const stderr = result.stderr ?? "";

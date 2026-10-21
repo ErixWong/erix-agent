@@ -9,12 +9,12 @@
 //     断言把「旧断言为什么会红」钉住）。
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 
 import { createFileNotesStore } from "../../src/store/notes.js";
 import { notesStoreCasContract, notesStoreContract } from "../contract/notes-store.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 const slot = (scopeRef, key) => `${scopeRef} ${key}`;
 
@@ -75,7 +75,7 @@ function createPhysicalDeleteNotesStore(options) {
 }
 
 async function makeStore() {
-  const dir = await mkdtemp(path.join(tmpdir(), "erix-notes-forms-"));
+  const dir = await makeTmp("erix-notes-forms-");
   return createPhysicalDeleteNotesStore({ dir });
 }
 
@@ -108,14 +108,14 @@ function createCasConflictNotesStore(options) {
 }
 
 notesStoreCasContract("cas-conflict notes", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "erix-notes-cas-"));
+  const dir = await makeTmp("erix-notes-cas-");
   return createCasConflictNotesStore({ dir });
 });
 
 // --- 负控制：把「放宽前为什么会红」钉成断言 -------------------------------
 
 test("negative control: a physically deleted record reads as undefined (old tombstone assertion would be red)", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "erix-notes-forms-neg-"));
+  const dir = await makeTmp("erix-notes-forms-neg-");
   try {
     const store = createPhysicalDeleteNotesStore({ dir });
     await store.write({
@@ -148,7 +148,7 @@ test("negative control: a physically deleted record reads as undefined (old tomb
 });
 
 test("negative control: a CAS store rejects the second concurrent writer (old LWW assertion would be red)", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "erix-notes-cas-neg-"));
+  const dir = await makeTmp("erix-notes-cas-neg-");
   try {
     const store = createCasConflictNotesStore({ dir });
     const record = {

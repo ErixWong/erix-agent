@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { exitCodeForVerification, parseChatArgs, runChat } from "../bin/cli.js";
@@ -16,9 +15,10 @@ import * as notes from "../src/tools/notes.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createFileNotesStore } from "../src/store/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 async function withNotes(callback) {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-final-guard-"));
+  const directory = await makeTmp("erix-final-guard-");
   const previous = {
     notesDir: process.env.ERIX_NOTES_DIR,
   };
@@ -228,7 +228,7 @@ test("fold state marker counts captures without exposing values or keys and repl
 });
 
 test("transcript recovery hints never expose filesystem paths", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-opaque-hint-"));
+  const directory = await makeTmp("erix-opaque-hint-");
   try {
     const records = [];
     await seedCapture(records, directory, "nonce=hint-value\n", 1);

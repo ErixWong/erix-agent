@@ -32,6 +32,17 @@ modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }))
 5. **Contract helpers** (`test/contract/index.js`, `test/contract/transcript-store.js`, `test/contract/model-config-provider.js`, `test/contract/assembly-port.js`, `test/contract/execute-tool.js`, and `test/contract/notes-store.js`) define the shared assertions for the host ports. The built-in memory/file stores and config providers register these contracts from their own tests.
 6. **Temp directory helper** (`test/helpers/tmp.js`) provides `makeTmp(prefix)` (respects `TMPDIR`, creates a missing parent directory, registers `after()` cleanup): every test temporary directory must go through it instead of hardcoding `/tmp`, and when the base directory is not writable the first call fails once with the named error `TMPDIR_NOT_WRITABLE` (machine guard: `npm run check:tests`, i.e. `scripts/test-hygiene-check.mjs`).
 
+   **The guard blocks (issue #209).** `npm run check:tests` fails on any `mkdtemp` call under `test/**` — `mkdtemp(...)`, `fs.mkdtemp(...)` and `mkdtempSync(...)` alike — except inside `test/helpers/tmp.js` itself, and on any `/tmp` literal passed as a first argument. Before #209 only the narrow shape `mkdtemp(join(tmpdir(` was blocking while everything else was printed as a non-blocking hint (and `mkdtempSync` was not even counted, although the comment claimed it was). There is no synchronous `makeTmp`: a test that needs one must either be `async` (`node --test` callbacks may be `async`) or take its directory in a `before()` hook.
+
+   **Exemptions are explicit and per line.** When a call genuinely cannot go through `makeTmp` (for example a directory that must outlive a `before()` hook scope, or one that must stay inside the working directory), put a comment on the call line or on the line directly above it:
+
+   ```js
+   // test-hygiene-exempt: 这个目录必须在文件级 after() 里删，makeTmp 的钩子作用域是 before()
+   const dir = await mkdtemp(join(tmpdir(), "erix-something-"));
+   ```
+
+   A marker without a reason is itself a violation, so an exemption can never silently degrade into a mute switch; the guard prints every exemption it honoured, with its reason.
+
 The complete tracked `test/` tree is:
 
 ```text

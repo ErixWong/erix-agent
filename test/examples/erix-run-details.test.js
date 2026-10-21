@@ -19,8 +19,6 @@
 // 全部离线：内层 run 走注入的 `runJob`，`cwd` / `home` / `sessionDir` 一律临时目录。
 
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -35,9 +33,10 @@ import {
   formatSyncResult,
 } from "../../examples/pi-extension/erix-run-format.js";
 import { assertMachineReadableResult, findLivePath } from "./plain-data.js";
+import { makeTmp } from "../helpers/tmp.js";
 
-function tempDir(prefix = "erix-run-details-") {
-  return mkdtempSync(path.join(tmpdir(), prefix));
+async function tempDir(prefix = "erix-run-details-") {
+  return makeTmp(prefix);
 }
 
 async function waitUntil(predicate, { timeoutMs = 3_000, stepMs = 5, label = "condition" } = {}) {
@@ -85,8 +84,8 @@ function gatedJob(extra = {}) {
   return state;
 }
 
-function makeRuntime({ job, sent = [] } = {}) {
-  const home = tempDir("erix-run-details-home-");
+async function makeRuntime({ job, sent = [] } = {}) {
+  const home = await tempDir("erix-run-details-home-");
   const registry = createAsyncJobRegistry();
   const runtime = createAsyncRuntime({
     home,
@@ -104,8 +103,8 @@ function makeRuntime({ job, sent = [] } = {}) {
 
 test("#237 R2：全部返回路径（started/status/result/list/cancel/unknown-run/error/crashed/同步）的 details 都可序列化", async () => {
   const job = gatedJob();
-  const { runtime } = makeRuntime({ job: job.job });
-  const sessionDir = tempDir("erix-run-details-sess-");
+  const { runtime } = await makeRuntime({ job: job.job });
+  const sessionDir = await tempDir("erix-run-details-sess-");
 
   const started = runtime.start({ task: "改点东西", cwd: sessionDir, sessionDir, async: true, maxRounds: 4 });
   const runId = started.handle.runId;
@@ -136,7 +135,7 @@ test("#237 R2：全部返回路径（started/status/result/list/cancel/unknown-r
   // 已结束的 run 再取消 → 「无需取消」是另一条形状
   assertMachineReadableResult(formatAsyncResult(runtime.act({ action: "cancel", runId })), "路径 cancel(已结束)");
   // 空注册表的 list（`jobs: []` 也要能序列化，且文本非空）
-  const empty = makeRuntime({ job: job.job });
+  const empty = await makeRuntime({ job: job.job });
   assertMachineReadableResult(formatAsyncResult(empty.runtime.act({ action: "list" })), "路径 list(空表)");
 });
 
@@ -146,8 +145,8 @@ test("#237 R2：全部返回路径（started/status/result/list/cancel/unknown-r
 
 test("#237 R1/R2：async 派工 —— jobs 层返回值本身不带活对象，details 只有 handle", async () => {
   const job = gatedJob();
-  const { runtime } = makeRuntime({ job: job.job });
-  const sessionDir = tempDir("erix-run-details-start-");
+  const { runtime } = await makeRuntime({ job: job.job });
+  const sessionDir = await tempDir("erix-run-details-start-");
 
   const outcome = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
 
@@ -177,8 +176,8 @@ test("#237 R1/R2：async 派工 —— jobs 层返回值本身不带活对象，
 
 test("#237 R2：status / result 的 details 只有 {kind, source, view}，view 里也不许有活对象", async () => {
   const job = gatedJob();
-  const { runtime, registry } = makeRuntime({ job: job.job });
-  const sessionDir = tempDir("erix-run-details-view-");
+  const { runtime, registry } = await makeRuntime({ job: job.job });
+  const sessionDir = await tempDir("erix-run-details-view-");
   const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
 
   await waitUntil(() => registry.get(handle.runId).status === "running", { label: "running" });
@@ -208,8 +207,8 @@ test("#237 R2：status / result 的 details 只有 {kind, source, view}，view �
 
 test("#237 R2：list 的 details 是 {kind, jobs, active}，表里每行都必须是 plain 数据", async () => {
   const job = gatedJob();
-  const { runtime } = makeRuntime({ job: job.job });
-  const sessionDir = tempDir("erix-run-details-list-");
+  const { runtime } = await makeRuntime({ job: job.job });
+  const sessionDir = await tempDir("erix-run-details-list-");
   runtime.start({ task: "a", cwd: sessionDir, sessionDir, async: true });
   runtime.start({ task: "b", cwd: sessionDir, sessionDir, async: true, quiet: true });
 
@@ -230,7 +229,7 @@ test("#237 R2：list 的 details 是 {kind, jobs, active}，表里每行都必�
 });
 
 test("#237 R2：unknown-run / error 的小对象可序列化且报 isError", async () => {
-  const { runtime } = makeRuntime({ job: gatedJob().job });
+  const { runtime } = await makeRuntime({ job: gatedJob().job });
 
   const unknown = formatAsyncResult(runtime.act({ action: "status", runId: "ghost-237" }));
   assertMachineReadableResult(unknown, "unknown-run");
@@ -300,8 +299,8 @@ test("#237 R1/R2：同步终局的 details / structuredContent 可序列化且�
 
 test("#237 R2：守卫 —— view 里混进活对象时 details 退化而不是把宿主带崩", async () => {
   const job = gatedJob();
-  const { runtime } = makeRuntime({ job: job.job });
-  const sessionDir = tempDir("erix-run-details-guard-");
+  const { runtime } = await makeRuntime({ job: job.job });
+  const sessionDir = await tempDir("erix-run-details-guard-");
   const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
   await waitUntil(() => runtime.registry.get(handle.runId).status === "running", { label: "running" });
 
@@ -360,8 +359,8 @@ function payloadWithDiagnostics(extra = {}) {
 
 test("#276：details 里的 view 现在带 diagnostics/verification，且仍是可序列化的纯数据", async () => {
   const job = gatedJob({ payload: payloadWithDiagnostics() });
-  const { runtime, registry } = makeRuntime({ job: job.job });
-  const sessionDir = tempDir("erix-run-details-diagnostics-");
+  const { runtime, registry } = await makeRuntime({ job: job.job });
+  const sessionDir = await tempDir("erix-run-details-diagnostics-");
   const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
   job.release();
   await waitUntil(() => registry.get(handle.runId).status === "completed", { label: "completed" });
@@ -386,8 +385,8 @@ test("#276：失败终局的 details/文本把 errorCode 报到（工具描述�
     ok: false,
     termination: { reason: "failed", detail: "upstream 502", errorCode: "provider_error" },
   }) });
-  const { runtime, registry } = makeRuntime({ job: job.job });
-  const sessionDir = tempDir("erix-run-details-failed-");
+  const { runtime, registry } = await makeRuntime({ job: job.job });
+  const sessionDir = await tempDir("erix-run-details-failed-");
   const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
   job.release();
   await waitUntil(() => registry.get(handle.runId).status === "failed", { label: "failed" });

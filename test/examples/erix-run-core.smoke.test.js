@@ -4,20 +4,21 @@
 //   ERIX_PI_SMOKE=1 node --test test/examples/erix-run-core.smoke.test.js
 //
 // 默认跳过的原因：这会打一次真 relay（一次完整多轮 run，成本很小但不是零），而 `npm test`
-// 必须是离线可重复的（AGENTS.md 测试隔离条）。写文件只发生在 mkdtemp 的临时目录里，
+// 必须是离线可重复的（AGENTS.md 测试隔离条）。写文件只发生在 makeTmp 的临时目录里，
 // 不碰 ~/.erix（内层工具集默认不带 todo，见 examples/pi-extension/README.md）。
 //
 // 库来源固定用 ERIX_AGENT_LIB 指向本仓检出（发版后可改成裸包名）。
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createScriptedUpstream } from "../../fixtures/upstream.mjs";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const enabled = process.env.ERIX_PI_SMOKE === "1";
@@ -58,7 +59,7 @@ test(`真机冒烟：core 级 erix_run 修好临时目录里的 bug（配置 ${c
     return;
   }
 
-  const dir = mkdtempSync(path.join(tmpdir(), "erix-run-smoke-"));
+  const dir = await makeTmp("erix-run-smoke-");
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, "sum.js"), BUGGY, "utf8");
   writeFileSync(path.join(dir, "check.js"), CHECK, "utf8");
@@ -254,8 +255,8 @@ test("默认段：core 级 erix_run 在本地假上游上修好 bug（装配链�
   t.after(() => upstream.close());
   const baseUrl = await upstream.listen();
 
-  const home = mkdtempSync(path.join(tmpdir(), "erix-run-offline-home-"));
-  const dir = mkdtempSync(path.join(tmpdir(), "erix-run-offline-cwd-"));
+  const home = await makeTmp("erix-run-offline-home-");
+  const dir = await makeTmp("erix-run-offline-cwd-");
   const sessionDir = path.join(dir, "sessions");
   const configPath = writeOfflineConfig(home, `${baseUrl}/v1`);
   writeFileSync(path.join(dir, "sum.js"), BUGGY, "utf8");

@@ -4,14 +4,12 @@ import { createHash } from "node:crypto";
 import {
   cp,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   rm,
   utimes,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
@@ -20,9 +18,10 @@ import {
 } from "../../src/store/notes.js";
 import { notesStoreCasContract, notesStoreContract } from "../contract/notes-store.js";
 import * as notes from "../../src/tools/notes.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 async function makeTempDirectory() {
-  return mkdtemp(path.join(tmpdir(), "erix-notes-store-"));
+  return makeTmp("erix-notes-store-");
 }
 
 notesStoreContract("file notes", async () => {

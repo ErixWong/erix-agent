@@ -17,10 +17,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
@@ -31,10 +30,12 @@ import { makeTmp } from "./helpers/tmp.js";
 // 本身成为被断言的对象（见文件末的卫生用例）。
 // ERIX_STALL_MODE 会覆盖 stallDetection 的 mode，默认值用例必须在一个干净的环境里跑。
 //
-// home 用 helpers/tmp.js 的 makeTmp（自带 TMPDIR 可写探针）；cwd 沙箱不能同样用 makeTmp：
-// 它的清理 `after()` 是在 `before` 里注册的，钩子作用域属于那个钩子而不是整个文件，会在
-// 后面的用例还在 chdir 状态时就把目录抽掉（实测 `uv_cwd` ENOENT）。cwd 自己建、自己在
-// 文件级 `after` 里删。
+// home 与 cwd 都走 helpers/tmp.js 的 makeTmp（自带 TMPDIR 可写探针）。
+// 两处都在**模块顶层**取（而不是在 `before()` 里）：makeTmp 的清理是 `after()` 钩子，
+// 在钩子里注册时作用域属于那个钩子，会在后面的用例还在 chdir 状态时就把目录抽掉
+// （实测 `uv_cwd` ENOENT）；模块顶层注册才是「整个文件跑完才删」。
+// cwd 额外过一层 `realpathSync`：`process.cwd()` 返回的是真路径，tmpdir() 是符号链接
+// 时（macOS 的 /var → /private/var）两边比不相等。
 const REAL_ERIX_HOME = join(homedir(), ".erix");
 const realHomeSnapshot = () => (existsSync(REAL_ERIX_HOME)
   ? { exists: true, mtimeMs: statSync(REAL_ERIX_HOME).mtimeMs }
@@ -47,9 +48,10 @@ let savedUserProfile;
 let savedCwd;
 let savedStallMode;
 
+sandboxHome = await makeTmp("erix-opt-home-");
+sandboxCwd = realpathSync(await makeTmp("erix-opt-cwd-"));
+
 before(async () => {
-  sandboxHome = await makeTmp("erix-opt-home-");
-  sandboxCwd = await mkdtemp(join(realpathSync(tmpdir()), "erix-opt-cwd-"));
   savedHome = process.env.HOME;
   savedUserProfile = process.env.USERPROFILE;
   savedCwd = process.cwd();
@@ -65,7 +67,7 @@ after(async () => {
   if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
   if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
   if (savedStallMode === undefined) delete process.env.ERIX_STALL_MODE; else process.env.ERIX_STALL_MODE = savedStallMode;
-  await rm(sandboxCwd, { recursive: true, force: true }).catch(() => {});
+  // 目录由 makeTmp 注册的 `after()` 回收，这里不再手写 rm。
 });
 
 // ---------------------------------------------------------------- 夹具

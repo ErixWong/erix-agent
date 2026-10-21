@@ -7,7 +7,6 @@ import { createHash } from "node:crypto";
 import {
   chmod,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   rm,
@@ -15,7 +14,6 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { runChat } from "../bin/cli.js";
@@ -31,6 +29,7 @@ import * as notes from "../src/tools/notes.js";
 import { NOTE_VALUE_MAX_CHARS } from "../src/tools/notes.js";
 import { createFileNotesStore } from "../src/store/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 // issue #81：注入空 MCP 配置，避免 runChat 的 MCP 代理解析真实 ~/.erix/mcp.json。
 async function writeEmptyMcpConfig(dir) {
@@ -41,7 +40,7 @@ async function writeEmptyMcpConfig(dir) {
 }
 
 async function withTempDirectory(callback) {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-notes-autocapture-"));
+  const directory = await makeTmp("erix-notes-autocapture-");
   try {
     return await callback(directory);
   } finally {
@@ -206,7 +205,7 @@ const DAY = 24 * 60 * 60 * 1000;
 let permissionsEnforced;
 async function filePermissionsAreEnforced() {
   if (permissionsEnforced !== undefined) return permissionsEnforced;
-  const probeRoot = await mkdtemp(path.join(tmpdir(), "erix-perms-probe-"));
+  const probeRoot = await makeTmp("erix-perms-probe-");
   try {
     const probeDir = path.join(probeRoot, "readonly");
     await mkdir(probeDir, { recursive: true });

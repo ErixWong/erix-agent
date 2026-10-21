@@ -32,6 +32,17 @@ modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }))
 5. **契约 helpers**（`test/contract/index.js`、`test/contract/transcript-store.js`、`test/contract/model-config-provider.js`、`test/contract/assembly-port.js`、`test/contract/execute-tool.js` 和 `test/contract/notes-store.js`）定义宿主端口的共享断言。内置的 memory/file store 和 config provider 会在各自测试中注册这些契约。
 6. **临时目录 helper**（`test/helpers/tmp.js`）提供 `makeTmp(prefix)`（尊重 `TMPDIR`、兜底建父目录、`after()` 注册清理）：测试临时目录一律走它、不焊死 `/tmp`，基路径不可写时以具名错误 `TMPDIR_NOT_WRITABLE` 一次性失败（机器守卫：`npm run check:tests`，即 `scripts/test-hygiene-check.mjs`）。
 
+   **守卫现在是阻塞的（issue #209）。** `test/**` 里除 `test/helpers/tmp.js` 自身之外的**任何** `mkdtemp` 调用——`mkdtemp(...)`、`fs.mkdtemp(...)`、`mkdtempSync(...)` 一视同仁——都让 `npm run check:tests` 失败；`/tmp` 字面量作首参同样失败。#209 之前只有窄形态 `mkdtemp(join(tmpdir(` 阻塞，其余只打一行**不阻塞**的提示（`mkdtempSync` 连数都没数，尽管注释声称覆盖了它）。**没有**同步版 `makeTmp`：需要临时目录的用例要么是 `async`（`node --test` 的回调本来就能 `async`），要么在 `before()` 里取。
+
+   **豁免必须显式且逐行。** 确实不能走 `makeTmp` 的调用点（例如目录必须在文件级 `after()` 里删——`makeTmp` 的钩子作用域是注册它的那个上下文；或必须留在工作目录下），在调用所在行或紧邻的上一行写：
+
+   ```js
+   // test-hygiene-exempt: 这个目录必须在文件级 after() 里删，makeTmp 的钩子作用域是 before()
+   const dir = await mkdtemp(join(tmpdir(), "erix-something-"));
+   ```
+
+   只写标记不写理由**本身即违规**，豁免不会退化成静音开关；守卫会把每一条生效的豁免连同理由打印出来。
+
 完整的、已跟踪的 `test/` tree 如下：
 
 ```text

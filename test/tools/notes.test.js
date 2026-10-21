@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { readFile, rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import {
@@ -11,9 +11,10 @@ import {
   resolveNotesDir,
 } from "../../src/tools/notes.js";
 import { createFileNotesStore, normalizeNoteRecord } from "../../src/store/notes.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 async function withDirectory(callback) {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-builtin-notes-"));
+  const directory = await makeTmp("erix-builtin-notes-");
   try {
     return await callback(directory);
   } finally {

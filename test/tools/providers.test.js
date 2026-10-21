@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 
 import {
@@ -9,6 +8,7 @@ import {
   createJsonFileToolProvider,
   createStaticToolProvider,
 } from "../../src/tools/providers.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 const first = {
   name: "one",
@@ -31,7 +31,7 @@ test("static provider selects sets and returns isolated schemas", async () => {
 });
 
 test("json-file provider reloads definitions on every listTools call", async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "erix-provider-"));
+  const directory = await makeTmp("erix-provider-");
   try {
     const file = path.join(directory, "tools.json");
     await fs.writeFile(file, JSON.stringify({ sets: { default: [first] } }));

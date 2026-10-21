@@ -35,18 +35,18 @@
 //   * 遍历可被 context.signal 中止。
 //
 // 实现特有行为（宿主 jail 的具体谓词、CLI 终端回显）由实现方自行补测，不进契约。
-// ⚠️ 隔离：每个用例注入临时 cwd（node:test + fs.mkdtemp），不得读写真实 ~/.erix。
+// ⚠️ 隔离：每个用例注入临时 cwd（node:test + test/helpers/tmp.js 的 makeTmp），不得读写真实 ~/.erix。
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 // issue #220：契约从「怎么把四种形态读成正文」升级为「把四种形态逐个钉住」。
 // 判别式由库导出（不在套件里推字符串），宿主侧 switch 的 default 分支才能靠它编译期钉死。
 import { classifyFileToolResult } from "../../src/tools/file-tools.js";
+import { makeTmp } from "../helpers/tmp.js";
 
 // 契约文档 docs/host-consumer-contract.md「File tool registration」声明的默认值。
 const READ_MAX_BYTES_DEFAULT = 262_144;
@@ -65,7 +65,7 @@ const contentOf = (result) => (result && typeof result === "object" && !Array.is
 const metadataOf = (result) => (result && typeof result === "object" && !Array.isArray(result) ? result.metadata : undefined);
 
 async function withDirectory(callback) {
-  const directory = await mkdtemp(path.join(tmpdir(), "erix-file-tools-contract-"));
+  const directory = await makeTmp("erix-file-tools-contract-");
   try {
     return await callback(directory);
   } finally {
