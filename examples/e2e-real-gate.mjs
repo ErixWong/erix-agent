@@ -287,11 +287,12 @@ export function printableEndpoint(endpoint) {
   }
 }
 
-/** 临时目录前缀（三处消费点共用一种前缀，便于事后清残留）。 */
+/** 临时目录前缀（各消费点共用一种前缀，便于事后清残留）。 */
 export const TMP_PREFIX = {
   toolFact: "erix-tool-fact-e2e-",
   erixRun: "erix-run-e2e-",
   cliReal: "erix-cli-real-",
+  resumeReal: "erix-resume-real-e2e-",
 };
 
 export { tmpdir };
