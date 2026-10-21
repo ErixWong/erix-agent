@@ -684,7 +684,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number> }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], persistedTranscriptLength: number, resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number> }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -697,7 +697,9 @@ export async function runToolLoop(options) {
     // 【C resume 尾队列】（初值与语义与原闭包 `let` 逐字一致）
     resumePendingTools: [],
     resumeTailMessages: [],
-    resumeRunSnapshotMessages: [],
+    // 工单 261021（第三刀·恢复只认账本）：崩溃轮里那条已落盘的 `tool_result` 聚合消息的首片行 key，
+    // 由 `restoreResume` 从账本读出；补跑跑出来的结果靠 `partOf` 接回它（见 resume 补跑段）。
+    resumeToolResultRowKey: undefined,
     persistedTranscriptLength: 0,
     // 工单 261021（第二刀·写侧）：轮内消息序号计数器（`round → 下一个可用 seq`），与
     // `persistedTranscriptLength` 同族的「已落盘」状态；`seq` 从 0 单调递增，写进展见
@@ -1567,17 +1569,21 @@ export async function runToolLoop(options) {
     set resumeTranscriptStart(value) {
       runLoopState.resumeTranscriptStart = value;
     },
-    get resumeRunSnapshotMessages() {
-      return runLoopState.resumeRunSnapshotMessages;
-    },
-    set resumeRunSnapshotMessages(value) {
-      runLoopState.resumeRunSnapshotMessages = value;
-    },
     get persistedTranscriptLength() {
       return runLoopState.persistedTranscriptLength;
     },
     set persistedTranscriptLength(value) {
       runLoopState.persistedTranscriptLength = value;
+    },
+    // 工单 261021（第三刀）：恢复路径要从账本播 `seq` 计数器与崩溃轮的首片行 key。
+    get messageSeqByRound() {
+      return runLoopState.messageSeqByRound;
+    },
+    get resumeToolResultRowKey() {
+      return runLoopState.resumeToolResultRowKey;
+    },
+    set resumeToolResultRowKey(value) {
+      runLoopState.resumeToolResultRowKey = value;
     },
     resumeExecutedToolIds,
     resumeRunSnapshotResults,
@@ -3018,8 +3024,31 @@ export async function runToolLoop(options) {
     runLoopState.ttlInjectConsumed = false;
     runLoopState.lowBudgetInjectFired = false;
     throwIfAborted(signal);
+    // 工单 261021（第三刀）：resume 补跑段新产生的**引擎控制正文**（方向提示 / 达成 advisory）在此
+    // 暂存，由下面那条 `…:resume` 行带走（它是该轮的折叠载体）。工具结果不走这里。
+    const resumeEngineText = [];
     if (runLoopState.resumePendingTools.length > 0) {
       const resumedToolResults = [];
+      // 工单 261021（第三刀）：**补跑跑出来的工具结果也逐条入账**，用 `partOf` 接回崩溃轮里
+      // 已落盘的那条聚合消息（`ctx.resumeToolResultRowKey`，从账本里读）。于是：
+      //   · 「崩溃在轮中途 ⇒ 已产出的工具输出必须还在」在新结构下不但成立，而且不再依赖快照正文副本；
+      //   · 下一次恢复折出来的 `flatMap(record.messages)` 仍是**一条**含全部结果的 user 消息，
+      //     `validateMessages` 的严格配对不会报重复 id（旧写法靠 `…:resume` 行重抄整条聚合消息，
+      //     逐条入账后就会把已完成的那个结果存两遍）。
+      const journaledResumedResults = new Set();
+      let resumedResultRowKey = runLoopState.resumeToolResultRowKey;
+      const journalResumedToolResults = async () => {
+        for (const toolResult of resumedToolResults) {
+          if (journaledResumedResults.has(toolResult)) continue;
+          journaledResumedResults.add(toolResult);
+          const persistedRowKey = await appendMessageRowToTranscript(
+            { role: "user", content: [toolResult] },
+            runLoopState.rounds,
+            resumedResultRowKey === undefined ? {} : { partOf: resumedResultRowKey },
+          );
+          if (persistedRowKey !== undefined) resumedResultRowKey = persistedRowKey;
+        }
+      };
       for (const [index, resumePendingTool] of runLoopState.resumePendingTools.entries()) {
         const resumedToolUse = { ...resumePendingTool };
         delete resumedToolUse.replay;
@@ -3104,6 +3133,7 @@ export async function runToolLoop(options) {
             partialOutputAvailable: partialOutput.length > 0,
           });
           emitEvent({ type: "tool_result", round: runLoopState.rounds, toolResult: cloneState(toolResult) });
+          await journalResumedToolResults();
           continue;
         }
         await executeToolWithIntercept(
@@ -3112,6 +3142,7 @@ export async function runToolLoop(options) {
           resumedToolResults,
           runLoopState.resumePendingTools.slice(index),
         );
+        await journalResumedToolResults();
       }
       appendToolResultsToTranscript(resumedToolResults, runLoopState.rounds);
       // resume 路径也 flush 方向提示（与主循环一致，限 2 条；独立 user text 消息）
@@ -3128,19 +3159,19 @@ export async function runToolLoop(options) {
           content: hints.map((text) => ({ type: "text", text })),
         };
         messages.push(hintMessage);
+        resumeEngineText.push(hintMessage);
         if (runLoopState.rounds !== undefined) messageRounds.set(hintMessage, runLoopState.rounds);
         pendingDirectionHints.length = 0;
       }
       // resume 路径同样投达成 advisory（与主循环同一个单槽策略，issue #322）
-      flushJudgeDoneAdvisory(runLoopState.rounds);
+      const resumeAdvisoryMessage = flushJudgeDoneAdvisory(runLoopState.rounds);
+      if (resumeAdvisoryMessage !== undefined) resumeEngineText.push(resumeAdvisoryMessage);
       runLoopState.resumePendingTools = [];
     }
     if (runLoopState.resumeRunSnapshot && runLoopState.resumeTranscriptStart !== undefined) {
-      const resumeRecordMessages = messages.slice(runLoopState.resumeTranscriptStart);
-      const resumeMessagesToPersist = [
-        ...runLoopState.resumeRunSnapshotMessages,
-        ...resumeRecordMessages,
-      ];
+      // 锚点之后新产生的**引擎控制正文**（方向提示 / 达成 advisory）。**工具结果不在这里**——
+      // 它们已按「一条消息一成型就落盘」逐条入账（上面那段 `journalResumedToolResults`），
+      // 在这里重抄就是同一份正文存两遍（第三次刀要销掉的正是这种双喂）。
       const persisted = await persist("appendRound", runId, {
         round: runLoopState.resumeRunSnapshot.round,
         roundKey: `${String(runId)}:round:${String(runLoopState.resumeRunSnapshot.round)}`,
@@ -3148,7 +3179,7 @@ export async function runToolLoop(options) {
         // 同键会被 appendRound 去重 → 续接轮（含补跑工具结果）落盘被静默丢弃，
         // transcript 只剩宿主那条近空行（issue #32 #8）。`:resume` 幂等，重启重跑不重复写。
         dedupKey: `${String(runId)}:engine:round:${String(runLoopState.resumeRunSnapshot.round)}:resume`,
-        messages: cloneState(resumeMessagesToPersist),
+        messages: cloneState(resumeEngineText),
         ...(archivedOutputs.some((entry) => entry.round === runLoopState.resumeRunSnapshot.round)
           ? {
             toolOutputs: archivedOutputs
@@ -3158,9 +3189,8 @@ export async function runToolLoop(options) {
           : {}),
         ts: new Date().toISOString(),
       });
-      if (persisted) runLoopState.persistedTranscriptLength += resumeMessagesToPersist.length;
+      if (persisted) runLoopState.persistedTranscriptLength += resumeEngineText.length;
       runLoopState.resumeTranscriptStart = undefined;
-      runLoopState.resumeRunSnapshotMessages = [];
     }
     appendResumeTailMessages();
 
