@@ -1,7 +1,12 @@
 # Changelog
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
-## [Unreleased]
+## [0.23.0] - 2026-10-21
+
+**本版要点：存储收敛（工单 261021 三刀 + 投影改读折叠）——账本从「一轮一行、正文挂在轮行上」改成「一条消息一成型就落盘、轮行只留元数据」，`store.load()` 负责把消息行折回轮行。**
+读 `store.load()` 的宿主**形状不变**；**直接读原始 journal 行**的宿主会看不到正文（轮行不再带 `messages`，正文在 `kind:"message"` 行里）。
+宿主必须改的四件事见 `docs/host-upgrade-guide-0.23.0.md` / `docs/host-upgrade-guide-0.23.0_cn.md`：① 原始行读不到正文 ⇒ 改读 `store.load()`；② `onRound(record)` 的 `record` 不再带 `messages`；③ run snapshot 的 `messages` 只是**落后副本**，不再是正文来源；④ 展示投影的输入必须是 `store.load()` 的折叠输出（喂原始行会重复出条目且缺 `durationMs` 等执行事实）。
+`src/` 的公共面、选项名、导出名、store 方法签名**一个没动**；本版没有新增运行时依赖（仍是零）。
 
 ### Added
 
@@ -15,6 +20,35 @@
   - **隔离**：`--dir` 一律临时目录；真实 `~/.erix` 只读（配置）。硬断言「闸门选中的配置哈希前后一致」+「真实 `~/.erix/transcripts` 下没有本次 runId 的任何产物」（`--dir` 若被丢掉，CLI 会把 `<runId>.jsonl` 写进真实目录）+「真实 `~/.erix/outputs/<runId>` 不存在」；整棵 `~/.erix` 的前后快照只作备注（开发者机器上同时可能有别的 session 在写）。临时目录 `mkdtemp` + `finally` 与 `exit` 钩子双保险删除。
   - **门禁**：`ERIX_E2E_REAL=1 node --test examples/resume-real-e2e.test.mjs` → **2 / 2 / 0**（真上游，11.6s）；`node --test examples/resume-real-e2e.test.mjs`（闸门关）→ 1 pass / 1 skip / exit 0；全量 `npm test` → **tests 1,840 / pass 1,831 / fail 0 / skipped 9**（开工基线 1,838 / 1,830 / 0 / skipped 8，新增的 2 条 = 1 条离线自检 pass + 1 条真上游 skip）；`npm run check:syntax`（277 个跟踪文件）、`npm run check:docs`、`npm run check:docs:strict` 逐个 exit 0。
   - **文档**：中英契约「档案行形状」一节各加一条子项（中英成对，符号锚点，无裸行号）——续跑只从账本重建、账本追加式、折叠后每条逻辑消息恰好一次 / 一次调用恰好一份结果、`partOf` 接回崩溃轮的聚合消息、以及上面那个 `:input:` 行与载体行的顺序细节。
+
+- **`erix_run`（pi extension）新增 `judgeDoneAdvisory` 参数，把引擎已有的评审意见回灌接到宿主侧（透传给引擎 `reflection.judgeDoneAdvisory`）。** 引擎侧能力（issue #322，随 0.22.0 发布）早就在，缺的只是 `erix_run` 的参数面：它此前只把 `maxExtensions` / `maxRoundsCap` / `extensionStep` 三个名字拼进下发给引擎的 `reflection:{}`，而 `~/.erix/config.json` 里根本没有 reflection 段 ⇒ **通过 `erix_run` 派工的 run 吃不到这条修复**。现在 `judgeDoneAdvisory: true` 会原样递给引擎：中途治理（judge）判定「目标已达成」时，它那句评审意见会作为**一条普通用户文本消息**在下一个安全点内递给内层模型；**那是软提示不是硬停止**——不拦工具调用、不提前收尾、`termination.reason` 一字不因它改变。
+  - 入参形状照抄仓内既有的布尔开关 `finalGuard`（`parseRunParams`）：只认 `true | false`，`"true"` / `1` 归 `bad_params`（文案 `judgeDoneAdvisory 只能是 true | false，收到 <JSON>`）；**没传就不出现** —— `params`、下发给引擎的 `reflection:{}`、以及 diagnostics 里都不带这个键（本层不替引擎造默认值 `false`）。
+  - 与三个扩轮参数（`EXTENSION_PARAM_NAMES`）**合并而不是覆盖**：同传时 `reflection:{}` 里四个键都在。judge 闸门关着时（`maxRounds < 16` 或 `ERIX_NO_REFLECTION=1` ⇒ `reflection` 整块是 `false`）**不塞这个开关**：judge 没跑就没有「中途判定达成」这件事，下发一个永不被读的键只会让人误以为它在生效（理由已写进代码注释）。
+  - 可观测面按既有 `requested` / `enabled` 同族口径透出 `diagnostics.reflection.judgeDoneAdvisory = {requested, enabled[, reason]}`（没传时整个键不存在），模型可见文本同步多一行「judgeDoneAdvisory 未生效」（与「扩轮参数未生效」同形状）——**传了但没生效不许静默**。
+  - 测试与文档：`test/examples/erix-run-core.test.js` 新增 5 条（全离线，复用既有捕获 `runToolLoop` 入参的夹具）——含「没传就不出现在 `params` 与 options 里」、「与扩轮三参数同传时四个键都在」、以及一条**拿引擎自己的启动期校验对账键名**的用例（键名拼错不会报错，只会静默失效）；`examples/pi-extension/README.md` 的参数表、judge 闸门说明、终局载荷示例同步。
+  - ⚠ **`erix_run`（`examples/pi-extension/`）不进 npm tarball，与本包共用同一个版本号** —— 它的分发仍是「从仓库拷到 `~/.pi/agent/extensions/erix-run/`」，所以**这条参数口只能靠拷仓库拿到**，装了哪一版目前仍无盘上痕迹（同一声明见 0.19.0 条目头注）。本单只动 `examples/pi-extension/**` 与 `test/examples/**` 与 `CHANGELOG.md`；`src/`、`bin/`、`docs/host-consumer-contract.md`、`package.json` 一字未动。
+
+### Changed
+
+- **存储收敛第一刀·只动读侧：`store.load()` 开一层「消息行折叠」（工单 261021；写侧「一条消息一落盘」是下一单）。** 新增内部模块 `src/store/message-rows.js`（`foldMessageRows`），`src/store/file.js` 与 `src/store/memory.js` 的 `load()` 在 `loadRecords` 之后统一过它：`kind:"message"` 且带轮内 `seq` 的行按 `round` 分组、组内按 `seq` 升序（同 `seq` 按落盘先后）把正文拼回该轮的**载体行**（`<runId>:engine:round:<n>` / `<runId>:round:<n>` / `<runId>:engine:round:<n>:resume`），`partOf` 指认的分片按 `seq` 接回同一条消息（一轮多个 `tool_result` 在改造前本就是同一条 user 消息的多个 block）。
+  - **宿主可见形状一字不变**：`records.flatMap(record => record.messages ?? [])`（`src/loop/resume-manager.js` 重建上下文的唯一口径）读到的序列与改造前逐字一致；三条硬口径写在新模块文件头——无载体行（崩在轮行落盘之前）⇒ 消息行**原样留在数组里、一个字节不改**；无消息行的**老账本 ⇒ 返回入参本身**（同一引用、同一批对象）；宿主经 `src/store/append-user-turn.js` 写的 `:input:` 行虽同标 `kind:"message"` 但没有引擎 `seq` ⇒ **不吸走**（否则 `appendUserTurn`「load 里能看见自己的 dedupKey」的幂等判据会失效）。
+  - 点查探针（`loadByDedupKey` / `loadMaxRound`）**不折叠**：它们是对原始行的探针，`appendUserTurn` 快路径要的正是「这条 key 在不在」。
+  - **金样方法论**（`scripts/message-journal-golden.mjs` + `test/fixtures/message-journal-golden.json`）：夹具必须由**改造前的基线提交**（`2ca60bc`，`git worktree` 上跑 `--write`）产出，再在改后代码上 `--check` 对撞——否则是「拿改后的代码生成夹具、再拿同一份代码比」的自己证明自己。`test/store/message-journal-golden.test.js` 里加了一条**夹具来源守卫**（夹具里不得出现 `kind:"message"` 行）防退化。实测两个场景（`single-run` / `crash-resume`）：基线与改后各 8 行 / 正文 10 与 11 条，逐字一致。
+  - 折叠规则本身另由 `test/store/message-rows-fold.test.js` 16 条**手写期望值**用例钉住（写侧未落地，今天引擎还不产消息行，金样只能证明透传；反向证：把 `seq` 排序改成落盘序 ⇒ 4 条红、把 `partOf` 无视 ⇒ 1 条红）。本刀**未动** `src/loop/orchestrator.js`、`bin/`、快照字段与 `package.json`。
+
+- **存储收敛第一刀·下半（写侧）：：消息一成型就落盘，轮记录只留元数据（工单 261021 第二刀）。** `src/loop/orchestrator.js` 新增 `appendMessageRowToTranscript`（紧邻既有 `appendEngineMessagesToTranscript` 先例），行形状 `{ round, roundKey: <runId>:round:<n>, dedupKey: <runId>:msg:<round>:<seq>, kind:"message", seq, messages:[那一条消息], ts, ...(partOf?{partOf}:{}) }`，`seq` 轮内从 0 单调递增（计数器 `runLoopState.messageSeqByRound`，与 `persistedTranscriptLength` 同族）。三个写入点：**① assistant 正文**在「本轮正文定型后（L1 标记已剔、续写已合并）、工具执行前」入账；**② 每个 `tool_result` 一产生就写**（全循环唯一有外部副作用的边界），同轮多个结果用 `partOf` 指认首片行 ⇒ 折叠接回**同一条** user 消息；**③ 轮记录不再写 `messages: messages.slice(roundStart)`**，元数据（`response`/`summary`/`l0facts`/`textPreview`/`toolUses`/`judge`/`toolOutputs` …）原样保留。崩溃重跑幂等由 `appendRound` 同 key 同 payload 的既有幂等判据兑住（同 `(round, seq)` 同内容不产生第二行）。引擎自产控制文本（`judge-nudge`/`extend`/`guard-revise`/`forced-final`）仍旧写 `…:control:` 行、**不带 `seq`**（折叠层原样透传）；方向提示与达成 advisory 的 `messages.push` 位置不动，但档案行改到轮行**之后**落盘（否则 `flatMap(record.messages)` 会变成 [提示, assistant, tool_result]）。金样 `node scripts/message-journal-golden.mjs --check` 与基线夹具（`2ca60bc` 产出）**逐字一致**。
+  - 新增 `test/loop-message-rows-crash-matrix.test.js`（5 条）：在「模型消息已写 / 工具结果已写 / 轮行未写」三种状态各崩一次，只靠 `store.load()` 折叠（= `src/loop/resume-manager.js` 重建上下文的口径）断言上下文可重建，**已执行完的工具结果必须在**；另加 state0（不崩）钉「分片折回同一条 user 消息、消息行不再单独暴露」，以及一条崩溃重跑幂等。反向证：把「工具结果立刻写」那一行去掉 ⇒ state2/state3/state0 全红（实测 5 条里 4 条红）。
+  - `persistedTranscriptLength` 的口径从「journal 已落盘的消息总数」收紧为「**折叠后**的逻辑消息数」（`partOf` 分片加 0）——否则 `restoreResume` 的 `messages.slice(resumeTranscriptStart)` 锚点会多跳。⚠ **残留：run snapshot 里那个锚点的语义与逐条落盘不再对齐**，15 条 resume / 诊断类用例红（基线 1830/1822/0 → 本单 1835/1812/15），根因止于恢复路径单源化（下一单 `resumeRunSnapshotMessages`），按工单红线**没有硬改锚点逻辑**。（后续：那一单已落地，见本版 `Changed` 里的「存储收敛第三刀·恢复只认账本」，15 条红随之修绿。）
+  - 文档：`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md` 在「Store 保真要求」一节各加子节「档案行形状：消息行 + 只留元数据的轮行」（中英成对，全用符号锚点不写裸行号）：`kind`/`seq`/`partOf` 从此是携带保真语义的字段，且宿主不得再假设「轮行携带正文」。
+
+- **存储收敛第三刀·恢复只认账本：崩溃/续跑上下文的正文来源只剩 `store.load()` 的折叠输出，快照正文不再并入上下文（工单 261021 第三刀，`7ac89b5` + `77d4417`，随 PR #334 合入；`src/loop/resume-manager.js` 与 `src/loop/orchestrator.js` 的恢复段）。** 写侧改成「一条消息一成型就落盘」之后，run snapshot 里那份正文副本**必然落后于**账本（它写于工具执行之前），拿它当上下文就是把正文回滚；于是删掉「快照正文逐条往账本上匹配」的锚点对齐算法，锚点换成**纯账本口径**（= 崩溃那一刻账本里已落盘的**折叠后**逻辑消息数，`persistedTranscriptLength`），锚点之后的行进 `resumeTailMessages` 延后接回，补跑跑出来的工具结果同样逐条入账（`partOf` 接回崩溃轮已落盘的聚合消息）。`resumeRunSnapshotMessages`（同一份正文双喂的来源）随之销掉。
+  - **宿主可见**：run snapshot（`.snapshot.json`）**仍然带 `messages`**——本刀删的是「引擎拿它当正文来源」这件事，不是那个字段（实测：一次两轮 run 的快照里 `messages` 3 条、`status:"executed"`、`round:1`，是工具执行**之前**的旧副本）。读快照正文的宿主从此拿到的是**落后的副本**，正文正本只有 `store.load()`。旧账本（崩溃轮正文只写在快照里）保留一条**升级补全**路径：仅当「账本在锚点之后一条都没有、而快照里还有」时才用快照补，新账本永不满足该条件。
+  - **反向证与门禁**：`77d4417` 把「崩溃现场切在聚合 tool_result 中间」的 4 条红修绿（锚点与读侧折叠同口径）；恢复族用例从 15 红收到 0，全量 `npm test` 与发版基线一致。
+
+- **展示投影不再读 `record.response.content`，assistant 正文改读折叠后的轮内消息（issue #335 第一步，只动 `src/display/projection.js` + 投影用例 + 契约两行）。** 写侧「一条消息一成型就落盘」之后，assistant 正文的正本在**消息行**、恢复也只认它，但轮行的 `response.content` 仍存着同一份正文 ⇒ 同一段话两份、谁是真的没有机制保证。投影是仓内**唯一**读落盘 `response.content` 的地方，所以第一刀切读侧：assistant 条目的 `text`/`blocks`/`toolCalls`/`reasoning` 优先取 `record.messages` 里那条 assistant 消息；轮内消息没有 assistant 正文时**回退** `response.content`、再回退 `textPreview`（回退分支只服务改造前的老账本与宿主手写的轮行，第二步停写后仍然服务得到）。展示**形状与语义一字未动**（字段名、条目顺序、折叠条目、工具结果配对、`meta.*`、`key` 全照旧），`src/loop/`、落盘写入面、`package.json` 零改动。契约 `messages` / `response` 两行按新口径重写（中英同步：正文正本在 `messages`，`response` 只贡献 `meta.stopReason`/`usage`）。
+  - 用例：`test/display/projection.test.js` 加 3 条（messages-only 常态 / 只有 `response.content` 的老账本与宿主手写行 / 两份同时在场只出一条且块的对象必须是 messages 那一份），并修好 `plain round` 的 fixture——它原本编码的正是这条被推翻的旧优先级（messages 里那条 assistant 只有 `tool_use`、正文只在 `response`），改造后正本那份的 `tool_use` 必须看得见，断言面净增（`toolCalls` 名称 + 结果预览 401 字符截断）。没删用例、没放宽断言。
+  - ⚠ **反向证的诚实版**：把优先级翻回「`response` 在场就用它」（= 改造前 HEAD 的行为）⇒ `plain round` + `both copies` 两条红，而 messages-only 那条**照旧绿**（旧代码在 `response.content` 缺位时本来就会回退到 messages）；只有把它改成「**只**认 `response.content`」（= 第二步停写后投影不改的形态）才打掉 messages-only 那条（实测 5 红，含两条既有的 messages-only 用例）。⇒ 「优先谁」由 `both copies`（块对象身份）钉，messages-only 那条钉的是「停写后不许空泡」。
+  - 门禁实测：`npm test` **tests 1,838 / pass 1,830 / fail 0 / skipped 8**（基线 1,835 / 1,827 / 0，+3 用例）；`check:syntax`（276 个跟踪文件）、`check:docs`、`check:docs:strict` exit 0；`check:types` **117**（基线 119，少 2 ⇒ 棘轮基线可下调，未在本单动，另笔提交）。
 
 ### Fixed
 
@@ -54,26 +88,6 @@
   - **文档**：中英契约「档案行形状」一节的推论清单各加一条（中英成对、符号锚点、无裸行号）——读账本一律过 `load()`，自己按内容指纹再折一遍会把合法的重复静默丢掉（前 400 字符相同的两条长消息并成一条，「是不是真跑了 ≥2 次工具」这种计数可能读成 1），并点名 `scripts/cli-real-smoke.mjs` 这个仓内先例；顺手把中文那句「三个推论」（下面实际列了四条）改成不写死数字。
   - **同一形态还有两处，本单未动（只登记）**：`examples/tool-fact-e2e.test.mjs` 与 `examples/pi-extension/erix-run-e2e.test.mjs` 里各有一份逐字相同的 `collapseHistory`（后者的 TTL 折叠那一段甚至已经喂的是 `storeC.load()` 的折叠输出，再按指纹去重一遍）；两处都建议按本单的改法换成折叠输出，另开一单。
 
-### Changed
-
-- **展示投影不再读 `record.response.content`，assistant 正文改读折叠后的轮内消息（issue #335 第一步，只动 `src/display/projection.js` + 投影用例 + 契约两行）。** 写侧「一条消息一成型就落盘」之后，assistant 正文的正本在**消息行**、恢复也只认它，但轮行的 `response.content` 仍存着同一份正文 ⇒ 同一段话两份、谁是真的没有机制保证。投影是仓内**唯一**读落盘 `response.content` 的地方，所以第一刀切读侧：assistant 条目的 `text`/`blocks`/`toolCalls`/`reasoning` 优先取 `record.messages` 里那条 assistant 消息；轮内消息没有 assistant 正文时**回退** `response.content`、再回退 `textPreview`（回退分支只服务改造前的老账本与宿主手写的轮行，第二步停写后仍然服务得到）。展示**形状与语义一字未动**（字段名、条目顺序、折叠条目、工具结果配对、`meta.*`、`key` 全照旧），`src/loop/`、落盘写入面、`package.json` 零改动。契约 `messages` / `response` 两行按新口径重写（中英同步：正文正本在 `messages`，`response` 只贡献 `meta.stopReason`/`usage`）。
-  - 用例：`test/display/projection.test.js` 加 3 条（messages-only 常态 / 只有 `response.content` 的老账本与宿主手写行 / 两份同时在场只出一条且块的对象必须是 messages 那一份），并修好 `plain round` 的 fixture——它原本编码的正是这条被推翻的旧优先级（messages 里那条 assistant 只有 `tool_use`、正文只在 `response`），改造后正本那份的 `tool_use` 必须看得见，断言面净增（`toolCalls` 名称 + 结果预览 401 字符截断）。没删用例、没放宽断言。
-  - ⚠ **反向证的诚实版**：把优先级翻回「`response` 在场就用它」（= 改造前 HEAD 的行为）⇒ `plain round` + `both copies` 两条红，而 messages-only 那条**照旧绿**（旧代码在 `response.content` 缺位时本来就会回退到 messages）；只有把它改成「**只**认 `response.content`」（= 第二步停写后投影不改的形态）才打掉 messages-only 那条（实测 5 红，含两条既有的 messages-only 用例）。⇒ 「优先谁」由 `both copies`（块对象身份）钉，messages-only 那条钉的是「停写后不许空泡」。
-  - 门禁实测：`npm test` **tests 1,838 / pass 1,830 / fail 0 / skipped 8**（基线 1,835 / 1,827 / 0，+3 用例）；`check:syntax`（276 个跟踪文件）、`check:docs`、`check:docs:strict` exit 0；`check:types` **117**（基线 119，少 2 ⇒ 棘轮基线可下调，未在本单动，另笔提交）。
-
-：消息一成型就落盘，轮记录只留元数据（工单 261021 第二刀）。** `src/loop/orchestrator.js` 新增 `appendMessageRowToTranscript`（紧邻既有 `appendEngineMessagesToTranscript` 先例），行形状 `{ round, roundKey: <runId>:round:<n>, dedupKey: <runId>:msg:<round>:<seq>, kind:"message", seq, messages:[那一条消息], ts, ...(partOf?{partOf}:{}) }`，`seq` 轮内从 0 单调递增（计数器 `runLoopState.messageSeqByRound`，与 `persistedTranscriptLength` 同族）。三个写入点：**① assistant 正文**在「本轮正文定型后（L1 标记已剔、续写已合并）、工具执行前」入账；**② 每个 `tool_result` 一产生就写**（全循环唯一有外部副作用的边界），同轮多个结果用 `partOf` 指认首片行 ⇒ 折叠接回**同一条** user 消息；**③ 轮记录不再写 `messages: messages.slice(roundStart)`**，元数据（`response`/`summary`/`l0facts`/`textPreview`/`toolUses`/`judge`/`toolOutputs` …）原样保留。崩溃重跑幂等由 `appendRound` 同 key 同 payload 的既有幂等判据兑住（同 `(round, seq)` 同内容不产生第二行）。引擎自产控制文本（`judge-nudge`/`extend`/`guard-revise`/`forced-final`）仍旧写 `…:control:` 行、**不带 `seq`**（折叠层原样透传）；方向提示与达成 advisory 的 `messages.push` 位置不动，但档案行改到轮行**之后**落盘（否则 `flatMap(record.messages)` 会变成 [提示, assistant, tool_result]）。金样 `node scripts/message-journal-golden.mjs --check` 与基线夹具（`2ca60bc` 产出）**逐字一致**。
-  - 新增 `test/loop-message-rows-crash-matrix.test.js`（5 条）：在「模型消息已写 / 工具结果已写 / 轮行未写」三种状态各崩一次，只靠 `store.load()` 折叠（= `src/loop/resume-manager.js` 重建上下文的口径）断言上下文可重建，**已执行完的工具结果必须在**；另加 state0（不崩）钉「分片折回同一条 user 消息、消息行不再单独暴露」，以及一条崩溃重跑幂等。反向证：把「工具结果立刻写」那一行去掉 ⇒ state2/state3/state0 全红（实测 5 条里 4 条红）。
-  - `persistedTranscriptLength` 的口径从「journal 已落盘的消息总数」收紧为「**折叠后**的逻辑消息数」（`partOf` 分片加 0）——否则 `restoreResume` 的 `messages.slice(resumeTranscriptStart)` 锚点会多跳。⚠ **残留：run snapshot 里那个锚点的语义与逐条落盘不再对齐**，15 条 resume / 诊断类用例红（基线 1830/1822/0 → 本单 1835/1812/15），根因止于恢复路径单源化（下一单 `resumeRunSnapshotMessages`），按工单红线**没有硬改锚点逻辑**。
-  - 文档：`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md` 在「Store 保真要求」一节各加子节「档案行形状：消息行 + 只留元数据的轮行」（中英成对，全用符号锚点不写裸行号）：`kind`/`seq`/`partOf` 从此是携带保真语义的字段，且宿主不得再假设「轮行携带正文」。
-
-### Changed
-
-- **存储收敛第一刀·只动读侧：`store.load()` 开一层「消息行折叠」（工单 261021；写侧「一条消息一落盘」是下一单）。** 新增内部模块 `src/store/message-rows.js`（`foldMessageRows`），`src/store/file.js` 与 `src/store/memory.js` 的 `load()` 在 `loadRecords` 之后统一过它：`kind:"message"` 且带轮内 `seq` 的行按 `round` 分组、组内按 `seq` 升序（同 `seq` 按落盘先后）把正文拼回该轮的**载体行**（`<runId>:engine:round:<n>` / `<runId>:round:<n>` / `<runId>:engine:round:<n>:resume`），`partOf` 指认的分片按 `seq` 接回同一条消息（一轮多个 `tool_result` 在改造前本就是同一条 user 消息的多个 block）。
-  - **宿主可见形状一字不变**：`records.flatMap(record => record.messages ?? [])`（`src/loop/resume-manager.js` 重建上下文的唯一口径）读到的序列与改造前逐字一致；三条硬口径写在新模块文件头——无载体行（崩在轮行落盘之前）⇒ 消息行**原样留在数组里、一个字节不改**；无消息行的**老账本 ⇒ 返回入参本身**（同一引用、同一批对象）；宿主经 `src/store/append-user-turn.js` 写的 `:input:` 行虽同标 `kind:"message"` 但没有引擎 `seq` ⇒ **不吸走**（否则 `appendUserTurn`「load 里能看见自己的 dedupKey」的幂等判据会失效）。
-  - 点查探针（`loadByDedupKey` / `loadMaxRound`）**不折叠**：它们是对原始行的探针，`appendUserTurn` 快路径要的正是「这条 key 在不在」。
-  - **金样方法论**（`scripts/message-journal-golden.mjs` + `test/fixtures/message-journal-golden.json`）：夹具必须由**改造前的基线提交**（`2ca60bc`，`git worktree` 上跑 `--write`）产出，再在改后代码上 `--check` 对撞——否则是「拿改后的代码生成夹具、再拿同一份代码比」的自己证明自己。`test/store/message-journal-golden.test.js` 里加了一条**夹具来源守卫**（夹具里不得出现 `kind:"message"` 行）防退化。实测两个场景（`single-run` / `crash-resume`）：基线与改后各 8 行 / 正文 10 与 11 条，逐字一致。
-  - 折叠规则本身另由 `test/store/message-rows-fold.test.js` 16 条**手写期望值**用例钉住（写侧未落地，今天引擎还不产消息行，金样只能证明透传；反向证：把 `seq` 排序改成落盘序 ⇒ 4 条红、把 `partOf` 无视 ⇒ 1 条红）。本刀**未动** `src/loop/orchestrator.js`、`bin/`、快照字段与 `package.json`。
-
 ### Documentation
 
 - **纠正一条被沿用的错误说法：judge 的「方向提示」从来不是「模型见过、档案里没有」（工单 261021-04；`src/` 只加了两处约束注释，行为零改动）。** 结论来自实测：两个 flush 点（`src/loop/orchestrator.js` 主循环的工具块末、以及 resume 补跑段之后）都在**本轮 `appendRound` 落盘之前**把提示 push 进 `messages`，于是正文被轮记录的 `messages.slice(roundStart)`（resume 路径是被 `…:resume` 那行的 `messages.slice(resumeTranscriptStart)`）带走 ⇒ `store.load()` 里**恰有一条**（实测：主循环 `…:engine:round:2` 命中 1、resume `…:engine:round:1:resume` 命中 1）。此前「档案 0 条」的说法出自只数 `…:control:` 行、没数「正文是否在轮记录里」的旧探针。
@@ -81,15 +95,6 @@
   - 顺带量到的两条口径（已写进中英契约）：同一进程内**每轮最多 flush 一次**（主循环的 flush 点在 `response?.stopReason === "tool_use"` 分支里、身份轮号严格前进；resume 的 flush 在进圈前，轮号 = 回放的 run 快照 `resumeRunSnapshot` 的 round，而主循环首轮是 `rounds + 1`）⇒ 「每轮序号」分支今天不可达；而双喂回归在全量 `npm test` 下**仍然全绿**（1808 / 1800 / 0）⇒ 只能靠新增守卫钉住。
   - **补三道回归守卫**（`test/loop-persist-engine-text.test.js`，新增 3 条全离线用例）：主循环 flush 与 resume flush 各一条断言「`store.load()` 全部行里**恰好 1 条**」（写的是恰好 1，不是 `>= 1`：flush 点被挪到轮记录落盘之后 ⇒ 0，再补专属行 ⇒ 2，两种都必须红）并钉住带正文的那一行就是轮记录 / `…:resume` 行；第三条钉「resume 重建后模型侧只收到 1 条」。反向证（把 flush 临时搬到轮记录 `appendRound` 之后）实测红在 `0 !== 1`。
   - 中英契约 `docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md` 的「引擎控制行」小节补一句子项：`direction-hint` **不是** `:control:` 行的 slot，正文随轮记录入账，以及为什么（flush 点在圈底 persist 之前）；中英锚点成对，符号锚点 72 → **75**（`SYMBOL_ANCHOR_MIN_UNIQUE` 同步升到 75），裸行号棘轮实测 **138 = 基线 138**（新文本一律用符号锚点不写行号）。
-
-### Added
-
-- **`erix_run`（pi extension）新增 `judgeDoneAdvisory` 参数，把引擎已有的评审意见回灌接到宿主侧（透传给引擎 `reflection.judgeDoneAdvisory`）。** 引擎侧能力（issue #322，随 0.22.0 发布）早就在，缺的只是 `erix_run` 的参数面：它此前只把 `maxExtensions` / `maxRoundsCap` / `extensionStep` 三个名字拼进下发给引擎的 `reflection:{}`，而 `~/.erix/config.json` 里根本没有 reflection 段 ⇒ **通过 `erix_run` 派工的 run 吃不到这条修复**。现在 `judgeDoneAdvisory: true` 会原样递给引擎：中途治理（judge）判定「目标已达成」时，它那句评审意见会作为**一条普通用户文本消息**在下一个安全点内递给内层模型；**那是软提示不是硬停止**——不拦工具调用、不提前收尾、`termination.reason` 一字不因它改变。
-  - 入参形状照抄仓内既有的布尔开关 `finalGuard`（`parseRunParams`）：只认 `true | false`，`"true"` / `1` 归 `bad_params`（文案 `judgeDoneAdvisory 只能是 true | false，收到 <JSON>`）；**没传就不出现** —— `params`、下发给引擎的 `reflection:{}`、以及 diagnostics 里都不带这个键（本层不替引擎造默认值 `false`）。
-  - 与三个扩轮参数（`EXTENSION_PARAM_NAMES`）**合并而不是覆盖**：同传时 `reflection:{}` 里四个键都在。judge 闸门关着时（`maxRounds < 16` 或 `ERIX_NO_REFLECTION=1` ⇒ `reflection` 整块是 `false`）**不塞这个开关**：judge 没跑就没有「中途判定达成」这件事，下发一个永不被读的键只会让人误以为它在生效（理由已写进代码注释）。
-  - 可观测面按既有 `requested` / `enabled` 同族口径透出 `diagnostics.reflection.judgeDoneAdvisory = {requested, enabled[, reason]}`（没传时整个键不存在），模型可见文本同步多一行「judgeDoneAdvisory 未生效」（与「扩轮参数未生效」同形状）——**传了但没生效不许静默**。
-  - 测试与文档：`test/examples/erix-run-core.test.js` 新增 5 条（全离线，复用既有捕获 `runToolLoop` 入参的夹具）——含「没传就不出现在 `params` 与 options 里」、「与扩轮三参数同传时四个键都在」、以及一条**拿引擎自己的启动期校验对账键名**的用例（键名拼错不会报错，只会静默失效）；`examples/pi-extension/README.md` 的参数表、judge 闸门说明、终局载荷示例同步。
-  - ⚠ **`erix_run`（`examples/pi-extension/`）不进 npm tarball，与本包共用同一个版本号** —— 它的分发仍是「从仓库拷到 `~/.pi/agent/extensions/erix-run/`」，所以**这条参数口只能靠拷仓库拿到**，装了哪一版目前仍无盘上痕迹（同一声明见 0.19.0 条目头注）。本单只动 `examples/pi-extension/**` 与 `test/examples/**` 与 `CHANGELOG.md`；`src/`、`bin/`、`docs/host-consumer-contract.md`、`package.json` 一字未动。
 
 ### Chore
 
