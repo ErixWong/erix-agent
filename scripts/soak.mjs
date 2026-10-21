@@ -827,6 +827,549 @@ function compareMessageSequences(left, right) {
   return { equal: mismatches.length === 0 && left.length === right.length, mismatches };
 }
 
+// -------------------------------------------------- 事实键分类守卫（issue #336）
+//
+// 病根：`store-reconcile-event-stream` 的 `compositionMatches` 算得很认真、打得很显眼，却
+// **不在通过条件里**——一条写得像在核对事实的断言，无论真假都不会让用例红。同类键在 848 行
+// 的脚本里绝不止一处，靠人眼盘不住。
+//
+// 口径（**每个事实键只有两种状态，没有第三种**）：
+//   ① 参与通过条件（机械判定：它的取值表达式在条件表达式里出现，或它的名字在条件里出现）；
+//   ② 显式登记为诊断键（`EVIDENCE_DIAGNOSTICS` / `REPORT_KEY_CLASSES`），并且**写清理由**：
+//      为什么它不该决定红绿。
+// 剩下的键一律让 `evidence-keys-classified` 判红，提示就一句话：这个键要么进条件，要么登记成诊断。
+//
+// 为什么要读自己的源码：条件表达式在 run 完之后就不存在了（只有 pass/evidence 留在台账里），
+// 想机械判定「这个键进没进条件」只能回到源码文本上比对。这不是新的依赖面——
+// `scripts/docs-drift-check.mjs` 早就从自己的文本里读回 SYMBOL_ANCHOR_MIN_UNIQUE 等锚点。
+const KEY_AUDIT_ASSERTION = "evidence-keys-classified";
+const REPORT_AUDIT_ASSERTION = "report-fact-keys-classified";
+const SELF_SOURCE = new URL(import.meta.url);
+const TEST_SOURCE = new URL("../test/soak-script.test.js", import.meta.url);
+
+// 表现层形状：**字面量文本 / 样本截断 / 路径渲染**，不可能是判定值（布尔或计数都写不成这几种形状）。
+// 只把「可能是事实」的键交给登记表，避免把 note/rule/样本当事实键批量登记（那样登记表会
+// 膨胀到没人读，守卫就退化成噪声）。
+function isPresentationShape(expression) {
+  const withoutStrings = expression
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    .replace(/`(?:[^`\\]|\\.)*`/g, "``");
+  // 注意 `?.`（可选链）不是三元运算符：`String(mainError?.message)` 是纯渲染，不该被当成判定。
+  const hasOperator = /===|!==|>=|<=|>|<|&&|\|\||\s\?\s/.test(withoutStrings);
+  if (/^\s*(""|''|``)(\s*\+\s*(""|''|``))*\s*$/.test(withoutStrings)) return true;
+  if (hasOperator) return false;
+  return /^String\(/.test(expression)
+    || /^path\.basename\(/.test(expression)
+    || /\.(slice|map|filter)\(/.test(expression);
+}
+
+// 诊断键登记表：断言名 → [{ keys, reason }]。key 用 `...(spread)` 表示该断言里的展开项。
+// 每条 reason 必须回答「为什么它不该决定红绿」，不是「它是诊断」这种同义反复。
+//
+// 判据：一个键被判成诊断，只能因为**把它放进条件会让断言变错**（脆弱 / 重复判红 / 判的不是同一件事），
+// 不能因为「加上去会红」就登记成诊断——那是把守卫改成橡皮图章。
+const EVIDENCE_DIAGNOSTICS = {
+  "long-replay-completes": [
+    {
+      keys: ["code", "termination"],
+      reason: "失败分支的诊断：走到这个分支时条件已因 mainError 判红，这两键只说明红在哪一步（错误码 / 终局对象），再进条件只是重复判红",
+    },
+    {
+      keys: ["maxRounds"],
+      reason: "输入回显（cli.rounds）：条件是「达成的轮数 >= minRounds」，上限只给宿主对照，比上限等于把测试输入当成被测事实",
+    },
+    {
+      keys: ["terminationReason"],
+      reason: "条件通过 CLEAN_STOPS.includes(mainResult.termination?.reason) 读同一个值，本键是它渲染出来的形态（可选链 vs 数组包含，文本链接器认不出），不是第二个判据",
+    },
+  ],
+  "forced-compaction-observed": [
+    {
+      keys: ["ideal", "budgetTokens", "perRoundTokens", "compactEvery", "effectiveEvery"],
+      reason: "预算/输入回显：条件是「压缩次数 >= expectedCompactions」，这几个键是让人手算「该压几次」的输入（budget 与每轮 token 量），比它们等于在断言自己配的参数",
+    },
+    {
+      keys: ["foldedRounds"],
+      reason: "样本：从 compactionStats 里取第一条已压缩记录的 foldedRounds 给人看，条件已经按条数比过同一批记录",
+    },
+  ],
+  "store-reconcile-jsonl-vs-load": [
+    {
+      keys: ["standaloneMessageRows", "partOfMerges", "ledgerMessages", "independentlyFoldedMessages", "foldMismatches"],
+      reason: "对账口径的计数面/样本面：条件由 foldCompare.equal（正文逐条相等）与行级闭合等式决定，相等时这几个数必然为 0/相等；把它们也写进条件只会让红的原因变模糊",
+    },
+    {
+      keys: ["recordKinds", "responseContentCopies"],
+      reason: "结构旁证（行分类计数、response 副本量）：行级闭合已由 jsonlLines == 记录数 + 被折消息行数决定，这两个对象只是给宿主看落盘形状",
+    },
+  ],
+  "store-reconcile-event-stream": [
+    {
+      keys: ["toolUseEvents", "loadedRoundRecords", "nonEngineRoundRecords"],
+      reason: "计数面：条件是「round_end 事件数 == 引擎轮行数 且 有 tool_result 且 行级成分等式成立」，这三个数说明另外三类行/事件各有多少，判红判绿不靠它们",
+    },
+  ],
+  "ttl-fold-actually-applied": [
+    {
+      keys: ["toolResultTtlOption", "engineTtlLayerEvents", "engineTtlTokensSaved", "observedUpstreamRequests", "requestsWithFoldedBlock", "warningOnlyViews", "ageThreshold"],
+      reason: "证据面：条件已由 engineTtlFolded / foldedInstances / distinctFolded / tokensBefore>tokensAfter / ageOkSamples 决定；这几个是「传进去的是什么值」「折了几次、省了多少」的量，token 省量在 fake 上游下与 padding 绑定，拿它当条件就是脆弱断言",
+    },
+  ],
+  "contract-tool-result-erix-core-fields": [
+    {
+      keys: ["required", "missingSamples"],
+      reason: "常量回显 + 缺失样本：条件是 missingFieldTally 为空（一个字段名都不缺），required 是被比对的字段清单本身，样本只给定位用",
+    },
+  ],
+  "contract-execution-status-special-states-only": [
+    {
+      keys: ["withExecutionStatus", "withoutExecutionStatus", "allowed"],
+      reason: "计数面 + 白名单回显：条件是 unexpectedStatus 为空（取值都在白名单里），两个计数只说明「有几个块带了这个键」，allowed 是被比对的白名单本身",
+    },
+  ],
+  "contract-no-retired-top-level-names": [
+    {
+      keys: ["scannedBlocks"],
+      reason: "扫描面计数：条件是 retiredHits 为空，这个数说明「真的扫过东西」（防空跑靠的是它非 0 的可读性，而空扫已在 toolResults/diskBlocks 那一层被别的断言盯住）",
+    },
+  ],
+  "contract-toolcallkey-unique": [
+    {
+      keys: ["toolUseBlocks"],
+      reason: "计数面：条件是「有键 且 无重复键」（diskKeys.length > 0 && duplicateKeys 为空），这个数只是 tool_use 块总数",
+    },
+  ],
+  "contract-projection-keysets-bidirectionally-equal": [
+    {
+      keys: ["projectionKeyCount", "diskKeyCount"],
+      reason: "计数面：条件是两侧键集合的双向差为空，只比 size 会漏掉「换了一个键但总数不变」，所以 size 只能当旁证不能当条件",
+    },
+  ],
+  "contract-projection-durationms-equals-disk": [
+    {
+      keys: ["projectedWithDuration", "diskWithDuration"],
+      reason: "计数面：条件是「值逐条相等 + 两侧 duration 键集合双向相等」，两个 size 是它的旁证（同上：size 相等不等于键集合相等）",
+    },
+  ],
+  "abort-actually-fired": [
+    {
+      keys: ["coverage", "trigger", "abortedAtRound", "naturalTermination", "toolResultsLanded", "threw", "rounds", "...(spread)"],
+      reason: "条件只有 abortFired 一个布尔（它由 abortedAtRound !== null 派生，见 abortStage 构造）；其余键把「为什么触发 / 为什么没触发」摊开给宿主，其中 naturalTermination 与 toolResultsLanded 只在没触发时有意义——那时本断言已经红了",
+    },
+  ],
+  "abort-termination-reason-is-aborted": [
+    {
+      keys: ["observedReason", "issue282Rewritten", "abortedAtRound", "naturalTermination"],
+      reason: "本条是非阻断观察（blocking:false，红由 abort-actually-fired 承担）：observedReason 就是被观察的值（条件比的是 abortedReason），issue282Rewritten 是给宿主读的结论位——把结论位写进条件等于用结论证明结论",
+    },
+  ],
+  "resume-run-succeeds": [
+    {
+      keys: ["snapshotPresent", "...(spread)"],
+      reason: "旁证 + 运行摘要：条件是 resumeInfo.ok === true（续跑能从 jsonl 恢复，snapshot 在不在不是判据）；展开项是 rounds/usage/terminationReason 这些宿主面的运行摘要",
+    },
+  ],
+  "resume-history-bytes-unchanged": [
+    {
+      keys: ["beforeLines", "afterLines"],
+      reason: "渲染口径：条件比的是行数组本身（rewritten 为空 + 行数不减），这两个「非空行数」是同一事实的第二种算法，写进条件等于把同一件事比两遍",
+    },
+  ],
+  "resume-new-toolcallkeys-disjoint-from-history": [
+    {
+      keys: ["newToolUseBlocks", "newKeys"],
+      reason: "计数面：条件是 collided 为空（新键与历史键不相交），两个计数只是「真的续跑出新调用了」的旁证",
+    },
+  ],
+  "resume-special-state-facts-not-read-as-success": [
+    {
+      keys: ["coverage", "engineSpecialStateBlocks", "engineSamples", "engineWritesOnly"],
+      reason: "样本/白名单回显：条件是 read.asExpected 且「引擎样本里没有一个带 success 事实」，这几个键说明本次有没有引擎样本、白名单是哪两个值——样本数写进条件会让「引擎没产出特殊块」变成红（那是覆盖度，不是缺陷）",
+    },
+  ],
+  "pairing-request-views-pass-strict-validation": [
+    {
+      keys: ["samples", "conversion", "contrastWithPreviousVersion"],
+      reason: "错误样本 + 转换细节 + 对照叙述：条件是 requests>0 且 validationErrorCount===0；转换器 ok 由 request-view-protocol-conversion-survives 单独判（issue #336 补的），对照块是给人读的历史说明",
+    },
+  ],
+  "pairing-no-orphan-or-dangling-in-request-views": [
+    {
+      keys: ["violations"],
+      reason: "违规样本：条件是 orphanResults / danglingUses 两个计数为 0，样本只给定位用",
+    },
+  ],
+  "no-unexpected-unhandled-rejection": [
+    {
+      keys: ["total", "whitelistedKnownAborted"],
+      reason: "总账：条件是 unexpected 为空（白名单外的未处理拒绝一条都不许有）；total/whitelisted 说明白名单接住了几条——白名单接住的正是已知引擎形态，把它写进条件会让已知形态判红",
+    },
+  ],
+  "unknown-run-tool-loop-option-rejected": [
+    {
+      keys: ["evidence"],
+      reason: "拒绝原文：条件是 accepted === false，本键是探针拿到的拒绝消息（判定依据的出处，不是第二个判据）",
+    },
+  ],
+  "contract-constant-records-execution-status-presence": [
+    {
+      keys: ["writtenFor", "presentValues"],
+      reason: "被检值原文：条件读的是 presenceRecorded（由这两个键参与计算出来的布尔），再单独比一遍等于把同一事实写两遍",
+    },
+  ],
+};
+
+// 报告顶层键登记表：key → { assertion, expr }（条件证明）| { testExpr }（测试文件里断言的证明）| { reason }。
+// 粒度：顶层键（28 个）。子键不单列的原因：它们的值面已被 evidence 层的同一个值守过一次，
+// 再按 195 个叶子节点列一遍只会把登记表变成噪声；容器类的 reason 里点名「由哪条断言/测试守」。
+const REPORT_KEY_CLASSES = {
+  tool: { reason: "报告身份位（写死 soak），由 test 的字段面清单与 schemaVersion 一起守" },
+  schemaVersion: { reason: "报告格式版本：格式变了就该由消费方（test 与宿主）而不是 soak 自己判红" },
+  generatedAt: { reason: "运行元数据（时间戳），无真值可言" },
+  durationMs: { reason: "运行元数据（时长）：长跑的时长本来就随机器与上游浮动，拿它当条件必然抖" },
+  node: { reason: "运行环境元数据（node 版本），CI 矩阵管它，soak 不管" },
+  cli: { reason: "调用参数回显（宿主复算用）：--store/--out 的红线由 CLI 拒绝路径（exit 2）+ test 里的两条用例守" },
+  upstream: {
+    reason: "上游身份（模型/端点来源）：soak 的条件里**不允许**写死模型名（AGENTS §8），所以它只能是诊断面",
+  },
+  provider: { reason: "cli.provider 的回显（fake/real）：分支选择已由 test 分别跑两条路径覆盖" },
+  rounds: { assertion: "long-replay-completes", expr: "mainResult.rounds >= minRounds" },
+  usage: { testExpr: "report.usage.input_tokens > 0" },
+  usageParts: {
+    reason: "分阶段用量明细（main/abort/resume）：总和由 usage 守住；拆开只是给宿主看哪个阶段烧了 token",
+  },
+  compactions: { testExpr: "report.compactions.compactionStats.length > 0" },
+  abortRequested: { reason: "输入回显（cli.abortAt）：把宿主要求的触发点写回报告，防的是「报了中止但没说要中止」" },
+  abortTrigger: { testExpr: "report.abortTrigger.mode" },
+  abortObservedReason: { testExpr: "report.abortObservedReason, \"aborted\"" },
+  abortStage: { testExpr: "report.abortStage.abortFired" },
+  abort: { testExpr: "report.abort.partial" },
+  resume: { testExpr: "report.resume.ok === true" },
+  ttl: { testExpr: "report.ttl.engineLayerEvents > 0" },
+  requestViews: { testExpr: "report.requestViews.validationErrors, 0" },
+  storeCleanup: { testExpr: "storeCleanup.removed, true" },
+  storeReconcile: { testExpr: "reconcile.jsonlLines, reconcile.loadedRoundRecords + reconcile.absorbedMessageRows" },
+  contract: { testExpr: "report.contract.diskKeys, report.contract.projectionKeys" },
+  assertions: { testExpr: "report.assertions.length, EXPECTED_ASSERTIONS.length" },
+  assertionManifest: { testExpr: "report.assertionManifest, EXPECTED_ASSERTIONS" },
+  totals: { testExpr: "report.totals.failedBlocking, 0" },
+  engineDefects: {
+    reason: "只报不修的缺陷清单：红绿由各断言与 no-unexpected-unhandled-rejection 决定，本键是宿主读的登记面（缺陷条目没有真值可言）",
+  },
+  unhandledRejections: {
+    reason: "未处理拒绝的原文清单：红绿由 no-unexpected-unhandled-rejection（白名单外的计数为空）决定，原文只给定位用",
+  },
+};
+
+// 行内 `//` 的位置：**字符串里的 `//` 不算注释**（evidence 里全是 URL / 路径 / 正则字样），
+// 所以这里按引号状态走一遍，而不是拿正则硬切。
+function lineCommentIndex(line) {
+  let quote = "";
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (quote !== "") {
+      if (char === "\\") { i += 1; continue; }
+      if (char === quote) quote = "";
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") { quote = char; continue; }
+    if (char === "/" && line[i + 1] === "/") return i;
+  }
+  return -1;
+}
+
+function stripCodeComments(text) {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .map((line) => {
+      const index = lineCommentIndex(line);
+      return index === -1 ? line : line.slice(0, index);
+    })
+    .join("\n")
+    .trim();
+}
+
+// 从 `openIdx`（指向 `(`/`[`/`{`）开始找配对的闭合符，跳过字符串/模板/注释。
+function matchDelimiter(source, openIdx) {
+  let depth = 0;
+  for (let i = openIdx; i < source.length; i += 1) {
+    const char = source[i];
+    if (char === '"' || char === "'" || char === "`") {
+      const quote = char;
+      i += 1;
+      while (i < source.length) {
+        if (source[i] === "\\") { i += 2; continue; }
+        if (source[i] === quote) break;
+        i += 1;
+      }
+      continue;
+    }
+    if (char === "/" && source[i + 1] === "/") {
+      while (i < source.length && source[i] !== "\n") i += 1;
+      continue;
+    }
+    if (char === "/" && source[i + 1] === "*") {
+      i += 2;
+      while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) i += 1;
+      i += 1;
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") depth += 1;
+    else if (char === ")" || char === "]" || char === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function splitTopLevel(source, from, to) {
+  const parts = [];
+  let depth = 0;
+  let start = from;
+  for (let i = from; i < to; i += 1) {
+    const char = source[i];
+    if (char === '"' || char === "'" || char === "`") {
+      const quote = char;
+      i += 1;
+      while (i < to) {
+        if (source[i] === "\\") { i += 2; continue; }
+        if (source[i] === quote) break;
+        i += 1;
+      }
+      continue;
+    }
+    if (char === "/" && source[i + 1] === "/") {
+      while (i < to && source[i] !== "\n") i += 1;
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") depth += 1;
+    else if (char === ")" || char === "]" || char === "}") depth -= 1;
+    else if (char === "," && depth === 0) { parts.push(source.slice(start, i)); start = i + 1; }
+  }
+  parts.push(source.slice(start, to));
+  return parts;
+}
+
+function topLevelColon(text) {
+  let depth = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === '"' || char === "'" || char === "`") {
+      const quote = char;
+      i += 1;
+      while (i < text.length) {
+        if (text[i] === "\\") { i += 2; continue; }
+        if (text[i] === quote) break;
+        i += 1;
+      }
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") depth += 1;
+    else if (char === ")" || char === "]" || char === "}") depth -= 1;
+    else if (char === ":" && depth === 0) return i;
+  }
+  return -1;
+}
+
+// 字面量（true/false/null/undefined/this）不算「取值表达式」：它们出现在条件里纯属巧合
+// （例如未覆盖分支的条件就是 `false`），把它们当链接会把登记表判成过期。
+const SIMPLE_PATH = /^(?!(?:true|false|null|undefined|this)$)[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/;
+
+/**
+ * 从源码里读出每一次 `ledger.check(name, condition, evidence)`：条件表达式文本 + evidence 的键值对。
+ * @param {string} source
+ */
+function parseAssertionCalls(source) {
+  // 注释里也会出现 `ledger.check(...)` 这种字样（本文件的说明文字就是），扫描必须先做一张
+  // 「这个位置在不在注释里」的掩码，否则会把注释当成第 29、30 条断言。
+  const inComment = new Uint8Array(source.length);
+  {
+    let i = 0;
+    while (i < source.length) {
+      const char = source[i];
+      if (char === '"' || char === "'" || char === "`") {
+        const quote = char;
+        i += 1;
+        while (i < source.length) {
+          if (source[i] === "\\") { i += 2; continue; }
+          if (source[i] === quote) break;
+          i += 1;
+        }
+        i += 1;
+        continue;
+      }
+      if (char === "/" && source[i + 1] === "/") {
+        while (i < source.length && source[i] !== "\n") { inComment[i] = 1; i += 1; }
+        continue;
+      }
+      if (char === "/" && source[i + 1] === "*") {
+        while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) { inComment[i] = 1; i += 1; }
+        inComment[i] = 1;
+        if (i + 1 < source.length) inComment[i + 1] = 1;
+        i += 2;
+        continue;
+      }
+      i += 1;
+    }
+  }
+  const calls = [];
+  let cursor = 0;
+  while ((cursor = source.indexOf("ledger.check(", cursor)) !== -1) {
+    if (inComment[cursor] === 1) { cursor += 1; continue; }
+    const open = cursor + "ledger.check".length;
+    const close = matchDelimiter(source, open);
+    if (close === -1) throw new Error(`ledger.check 调用没闭合（源码偏移 ${cursor}）`);
+    const args = splitTopLevel(source, open + 1, close);
+    const name = stripCodeComments(args[0] ?? "").replace(/^["']|["']$/g, "");
+    const condition = stripCodeComments(args[1] ?? "");
+    const evidenceText = (args[2] ?? "").trim();
+    const entries = [];
+    if (evidenceText.startsWith("{")) {
+      const braces = matchDelimiter(evidenceText, 0);
+      for (const part of splitTopLevel(evidenceText, 1, braces)) {
+        const text = stripCodeComments(part);
+        if (text === "") continue;
+        if (text.startsWith("...")) { entries.push({ key: "...(spread)", value: text }); continue; }
+        const colon = topLevelColon(text);
+        if (colon === -1) { entries.push({ key: text, value: text }); continue; } // 简写属性
+        entries.push({
+          key: text.slice(0, colon).trim().replace(/^["']|["']$/g, ""),
+          value: text.slice(colon + 1).trim(),
+        });
+      }
+    }
+    calls.push({ name, condition, entries });
+    cursor = close;
+  }
+  return calls;
+}
+
+function registeredDiagnostics(assertionName) {
+  const groups = EVIDENCE_DIAGNOSTICS[assertionName] ?? [];
+  const table = new Map();
+  for (const group of groups) {
+    for (const key of group.keys) table.set(key, group.reason);
+  }
+  return table;
+}
+
+/**
+ * 事实键守卫：evidence 里每一个键，要么在条件里，要么在登记表里（并写了理由）。
+ * @param {string} source
+ */
+// 同名断言会有多个分支（例如 long-replay-completes 的失败分支与正常分支）：按名字合并，
+// 条件文本取并集（任一分支持有这个键就算「在条件里」），evidence 键也取并集。
+function groupAssertionCalls(source) {
+  const grouped = new Map();
+  for (const call of parseAssertionCalls(source)) {
+    if (!grouped.has(call.name)) grouped.set(call.name, { name: call.name, condition: "", entries: [] });
+    const group = grouped.get(call.name);
+    group.condition += `\n${call.condition}`;
+    group.entries.push(...call.entries);
+  }
+  return grouped;
+}
+
+function auditEvidenceKeys(source) {
+  const calls = [...groupAssertionCalls(source).values()].filter((call) => call.name !== KEY_AUDIT_ASSERTION
+    && call.name !== REPORT_AUDIT_ASSERTION);
+  const unclassified = [];
+  const stale = [];
+  const unreasoned = [];
+  let linked = 0;
+  let presentation = 0;
+  let diagnostic = 0;
+  for (const call of calls) {
+    const table = registeredDiagnostics(call.name);
+    const seen = new Set();
+    for (const entry of call.entries) {
+      seen.add(entry.key);
+      // 链接判据只看**取值表达式**在不在条件里：拿键名做子串匹配太松（键 `rounds` 会被
+      // `mainResult.rounds` 命中），那等于给守卫开后门。
+      const inCondition = SIMPLE_PATH.test(entry.value) && call.condition.includes(entry.value);
+      if (inCondition) {
+        linked += 1;
+        // 登记了却在条件里 = 登记表过期（留着会让人以为它没被守住），也判红。
+        if (table.has(entry.key)) stale.push(`${call.name}.${entry.key}`);
+        continue;
+      }
+      if (isPresentationShape(entry.value)) { presentation += 1; continue; }
+      const reason = table.get(entry.key);
+      if (reason === undefined) {
+        unclassified.push(`${call.name}.${entry.key} = ${entry.value.slice(0, 60)}`);
+        continue;
+      }
+      if (reason.trim().length < 12) unreasoned.push(`${call.name}.${entry.key}（理由太短，等于没写）`);
+      else diagnostic += 1;
+    }
+    for (const key of table.keys()) {
+      if (!seen.has(key)) unclassified.push(`${call.name}.${key}（登记了但 evidence 里没有这个键 = 死登记）`);
+    }
+  }
+  for (const name of Object.keys(EVIDENCE_DIAGNOSTICS)) {
+    if (!calls.some((call) => call.name === name)) {
+      unclassified.push(`${name}（登记表里的断言名不存在）`);
+    }
+  }
+  return {
+    ok: unclassified.length === 0 && stale.length === 0 && unreasoned.length === 0,
+    assertions: calls.length,
+    linked,
+    presentation,
+    diagnostic,
+    unclassified,
+    stale,
+    unreasoned,
+    hint: "这个键要么进通过条件，要么在 EVIDENCE_DIAGNOSTICS 里登记成诊断键并写清「为什么它不该决定红绿」",
+  };
+}
+
+/**
+ * 报告顶层键守卫：报告里每个键，要么有断言/测试在守它，要么登记为诊断（写理由）。
+ * @param {Record<string, unknown>} report
+ * @param {string} soakSource
+ * @param {string} testSource
+ */
+function auditReportKeys(report, soakSource, testSource) {
+  const calls = [...groupAssertionCalls(soakSource).values()];
+  const unclassified = [];
+  const unproven = [];
+  const unreasoned = [];
+  const keys = Object.keys(report).filter((key) => key !== REPORT_AUDIT_ASSERTION);
+  for (const key of keys) {
+    const entry = REPORT_KEY_CLASSES[key];
+    if (entry === undefined) {
+      unclassified.push(key);
+      continue;
+    }
+    if (typeof entry.reason === "string") {
+      if (entry.reason.trim().length < 12) unreasoned.push(key);
+      continue;
+    }
+    if (typeof entry.testExpr === "string") {
+      if (!testSource.includes(entry.testExpr)) unproven.push(`${key}（test 里找不到 ${entry.testExpr}）`);
+      continue;
+    }
+    const call = calls.find((candidate) => candidate.name === entry.assertion);
+    if (!call) { unproven.push(`${key}（断言 ${entry.assertion} 不存在）`); continue; }
+    if (!call.condition.includes(entry.expr)) unproven.push(`${key}（${entry.assertion} 的条件里找不到 ${entry.expr}）`);
+  }
+  for (const key of Object.keys(REPORT_KEY_CLASSES)) {
+    if (!keys.includes(key)) unclassified.push(`${key}（登记了但报告里没有这个键 = 死登记）`);
+  }
+  return {
+    ok: unclassified.length === 0 && unproven.length === 0 && unreasoned.length === 0,
+    keys: keys.length,
+    unclassified,
+    unproven,
+    unreasoned,
+    hint: "报告的每个顶层键要么有断言/测试在守（写 assertion+expr 或 testExpr），要么登记成诊断键并写理由",
+  };
+}
+
 // --------------------------------------------------------------- 断言台账
 
 function createLedger() {
@@ -1016,8 +1559,14 @@ async function main() {
       responseContentCopies: responseCopies,
       file: path.basename(mainJsonl.file),
     });
+  // issue #336：这个「行级成分等式」以前只算进 evidence（`compositionMatches`），**不在条件里**——
+  // 于是它算得再认真也决定不了红绿（实测那条断言在 compositionMatches=false 的年份也是绿的）。
+  // 现在把它提成条件本身：行分类加起来必须等于 jsonl 行数（少一类 / 多一类都红）。
+  const compositionBalanced = mainJsonl.lines === journal.counts.engineRoundRows
+    + journal.counts.messageRows + journal.counts.seedRows
+    + journal.counts.factRows + journal.counts.otherRows;
   ledger.check("store-reconcile-event-stream",
-    counter.roundEnds === recordKinds.engineRounds && counter.toolResults > 0, {
+    counter.roundEnds === recordKinds.engineRounds && counter.toolResults > 0 && compositionBalanced, {
       roundEndEvents: counter.roundEnds,
       engineRoundRecords: recordKinds.engineRounds,
       toolResultEvents: counter.toolResults,
@@ -1027,8 +1576,7 @@ async function main() {
       composition: `jsonlLines=${mainJsonl.lines} = 引擎轮行 ${journal.counts.engineRoundRows}`
         + ` + 消息行 ${journal.counts.messageRows}`
         + ` + seed 行 ${journal.counts.seedRows} + 事实/控制行 ${journal.counts.factRows + journal.counts.otherRows}`,
-      compositionMatches: mainJsonl.lines === journal.counts.engineRoundRows + journal.counts.messageRows
-        + journal.counts.seedRows + journal.counts.factRows + journal.counts.otherRows,
+      compositionMatches: compositionBalanced,
       explanation: "seed 行不是某一轮的消息副本，也不是「initialUserMessage 自己占一行」："
         + "initialUserMessage 只进内存消息（src/loop/orchestrator.js 的 initialUserMessage 入 ctx.messages），"
         + "而轮行从工单 261021 起**只留元数据**（正文逐条写进 `…:msg:<round>:<seq>` 消息行，"
@@ -1504,6 +2052,17 @@ async function main() {
       violations: probe.pairViolationSamples,
       note: "这两个计数以前只进 evidence 不进条件（所以转换器不报错也能绿），现在就是通过条件本身",
     });
+  // issue #336：`probe.conversion.*.ok` 是**算出来的布尔**，以前只写进 evidence，而旁边的注释还写着
+  // 「转换坏也是红」——那是假的：没有任何条件读它（同一个病：写得像核对事实，真假都不红）。
+  // 现在它有自己的一条断言：两个协议转换器在**每一个真实请求视图**上都不许抛错。
+  ledger.check("request-view-protocol-conversion-survives",
+    probe.requests > 0 && probe.conversion.openai.ok === true && probe.conversion.anthropic.ok === true, {
+      observedUpstreamRequests: probe.requests,
+      openai: probe.conversion.openai,
+      anthropic: probe.conversion.anthropic,
+      note: "转换器本身不校验配对（那是 pairing-* 两条的事）；本条只管「转换不抛错」。"
+        + "两者以前混在同一条 evidence 里，结果谁都没判",
+    });
 
   // ---------- 引擎缺陷探针（只观察不改）
   const defects = [];
@@ -1591,7 +2150,6 @@ async function main() {
     abortInfo?.usage ? { usage: abortInfo.usage } : null,
     resumeInfo?.usage ? { usage: resumeInfo.usage } : null,
   ]);
-  const failing = ledger.assertions.filter((a) => !a.pass && a.blocking);
   const cleanupStore = usedTempStore && !cli.keepStore;
   const report = {
     tool: "soak",
@@ -1675,15 +2233,26 @@ async function main() {
       projectionKeys: projectionKeys.size,
     },
     assertions: ledger.assertions,
-    assertionManifest: ledger.assertions.map((a) => a.name),
-    totals: {
-      assertions: ledger.assertions.length,
-      passed: ledger.assertions.filter((a) => a.pass).length,
-      failedBlocking: failing.length,
-      observedNonBlocking: ledger.assertions.filter((a) => !a.pass && !a.blocking).length,
-    },
+    // 清单/合计在下面两条「事实键分类守卫」跑完之后再补算一次（守卫自己也是断言，要在清单里）
+    assertionManifest: [],
+    totals: { assertions: 0, passed: 0, failedBlocking: 0, observedNonBlocking: 0 },
     engineDefects: defects,
     unhandledRejections,
+  };
+  // ---------- 事实键分类守卫（issue #336，故意跑在报告成型之后：它盘的就是报告与台账本身）
+  const soakSource = readFileSync(SELF_SOURCE, "utf8");
+  const testSource = readFileSync(TEST_SOURCE, "utf8");
+  const evidenceAudit = auditEvidenceKeys(soakSource);
+  ledger.check(KEY_AUDIT_ASSERTION, evidenceAudit.ok, evidenceAudit);
+  const reportAudit = auditReportKeys(report, soakSource, testSource);
+  ledger.check(REPORT_AUDIT_ASSERTION, reportAudit.ok, reportAudit);
+  report.assertionManifest = ledger.assertions.map((a) => a.name);
+  const failing = ledger.assertions.filter((a) => !a.pass && a.blocking);
+  report.totals = {
+    assertions: ledger.assertions.length,
+    passed: ledger.assertions.filter((a) => a.pass).length,
+    failedBlocking: failing.length,
+    observedNonBlocking: ledger.assertions.filter((a) => !a.pass && !a.blocking).length,
   };
   if (cleanupStore) {
     // --keep-store 与帮助文案得对上（以前帮助说默认清理、实现是保留）：默认真的删，

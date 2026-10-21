@@ -53,10 +53,15 @@ const EXPECTED_ASSERTIONS = [
   "resume-special-state-facts-not-read-as-success",
   "pairing-request-views-pass-strict-validation",
   "pairing-no-orphan-or-dangling-in-request-views",
+  // issue #336：转换器 ok 以前只写在 pairing 那条的 evidence 里（注释说「转换坏也是红」，其实没人判）
+  "request-view-protocol-conversion-survives",
   "no-unexpected-unhandled-rejection",
   "unknown-run-tool-loop-option-rejected",
   // 0.20.0（PR #291 R7）之后常量已登记存在条件，这条从「无条件报缺欠」改成活锁断言，跑在最后
   "contract-constant-records-execution-status-presence",
+  // issue #336 的机械守卫：跑在报告成型之后（它盘的就是台账与报告本身）
+  "evidence-keys-classified",
+  "report-fact-keys-classified",
 ];
 
 function runSoak(args) {
