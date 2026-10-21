@@ -188,9 +188,10 @@ signal, you now get an actual error text — treat it as one.
 `ERR_MODULE_NOT_FOUND`. The tarball is otherwise unchanged in shape; `README` / `README_cn`'s `files` fence
 follows `package.json` verbatim.
 
-**7b. `npm run check:types -- --with-tools` baseline is 156** — `BASELINE_WITH_TOOLS` (`scripts/type-check-ratchet.mjs`);
-the package-root entry stays at 117, and the union is `117 + 23 + 16` over 31 files. The four errors that disappeared came from `src/tools/file-tools.js` as a side effect of a
-narrowing added for the tree/marker work — no error was suppressed to reach the number.
+**7b. `npm run check:types -- --with-tools` baseline is 153** — `BASELINE_WITH_TOOLS` (`scripts/type-check-ratchet.mjs`);
+the package-root entry is 117, and the union is `117 + 20 + 16` over 31 files. `src/tools/file-tools.js` is down to 20
+errors from 27 — the tree/marker narrowing and the read-side honesty work (the `editDiffTruncated` cause joining that
+union) knocked them out as a side effect; no error was suppressed to reach the number.
 
 **7c. `node scripts/docs-drift-check.mjs --self-test` is decoupled from this machine's local task archive**
 (`docs/tasks/`, untracked and never committed). Its tree-shape cases now run against a synthetic fixture
