@@ -268,7 +268,10 @@ function renderLines(lines, budget = MAX_RENDERED_CHARS) {
  */
 const RUN_STATE_MAX_UNPERSISTED_ITEMS = 10;
 
-function normalizeUnpersisted(value) {
+// 未落盘清单的**唯一**归一化口径。除 run-state（`deterministic.errors.unpersisted`）外，
+// `run-snapshot-executor.js` 的 `checkpoint_failed` 也读它（issue #230：同一份账单两个出口不许各写一份）。
+// 语义只读复用：本函数的行为/形状不随调用方改变。
+export function normalizeUnpersisted(value) {
   if (!Array.isArray(value) || value.length === 0) return { count: 0, items: [] };
   const items = value.slice(-RUN_STATE_MAX_UNPERSISTED_ITEMS).map((entry) => ({
     ts: safeText(entry?.ts, 32),

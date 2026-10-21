@@ -15,6 +15,8 @@ import {
   toolResultData,
 } from "./messages.js";
 import { JUDGE_DONE_CONFIDENCE_THRESHOLD, directionHintText, judgeDoneAdvisoryText } from "./reflection.js";
+import { terminationErrorCodeForError } from "./termination.js";
+import { normalizeUnpersisted } from "../run-state.js";
 import { buildToolResultFact } from "../tool-fact.js";
 import {
   aggregateStubText,
@@ -28,11 +30,27 @@ import {
 // phase/sideEffect 由调用点给出（工具是否已执行、是否留下外部副作用），
 // operation/persistence/persistenceError 从 lastPersistenceFailure 透传；
 // 落盘成功或本次 run 没有 snapshot store 时静默返回（语义与合并前的四段 if 完全一致）。
+//
+// issue #230：两个出口（run 末尾的 `persistence_failed` 与工具调用点的 `checkpoint_failed`）描述的
+// 是同一次底层故障，字段面必须对称——宿主分流「可恢复/要不要重放」时不该去解析 `message` 字符串
+// （那正是 #176 要消灭的用法）。因此这里补两个字段，且**不另造口径**：
+//   · `cause`       —— 复用 `terminationErrorCodeForError`（`error.code`，取不到即 `"unknown"`），
+//                     与 `termination.errorCode` 是同一个根因分类函数；根因取链上最深的一环
+//                     （`lastPersistenceFailure.cause` 是 store 自己抛的那个错，没有则退回持久化失败本身）；
+//   · `unpersisted` —— 复用 `run-state.js#normalizeUnpersisted`（与 `deterministic.errors.unpersisted`
+//                     同一口径、同一形状 `{ count, items }`），账本来源是 ctx 上的 errorLedger（#109）。
+// 两个字段**无条件写**：`persistence_failed` 上的 `unpersisted` 也恒在（`?? []`），缺字段会让
+// 「对称」这条契约变成有条件成立。
+// `cause` 经 `KitError` 的 `{ cause }` 选项进构造函数（不是事后赋值）：`Error` 把 `cause` 定义为
+// **不可枚举**自有属性，`persistence_failed` 的 `cause` 也是这么来的——字段面要对称就不能一边
+// 可枚举一边不可枚举（`Object.keys` / `{ ...error }` 会给出不同形状）。
 function assertSnapshotPersisted(ctx, persisted, { phase, sideEffect, message }) {
   if (persisted || !ctx.hasRunSnapshotStore) return;
   ctx.runSnapshotFailureCount += 1;
-  const failure = new KitError("checkpoint_failed", message);
   const previous = ctx.lastPersistenceFailure;
+  const failure = new KitError("checkpoint_failed", message, {
+    cause: terminationErrorCodeForError(previous?.cause ?? previous),
+  });
   if (previous) {
     failure.operation = previous.operation;
     failure.phase = phase;
@@ -40,6 +58,11 @@ function assertSnapshotPersisted(ctx, persisted, { phase, sideEffect, message })
     failure.persistence = previous.persistence;
     failure.persistenceError = previous.persistenceError;
   }
+  // `KitError` 的 JSDoc 没声明这个 additive 字段（改 `providers/errors.js` 的类形状会动公共面）⇒
+  // 用 `Object.assign` 写入：`--checkJs` 棘轮因此不多背一个 TS2339（#214 的「只减不增」）。
+  Object.assign(failure, {
+    unpersisted: normalizeUnpersisted(ctx.errorLedger?.toUnpersisted?.() ?? []),
+  });
   throw failure;
 }
 

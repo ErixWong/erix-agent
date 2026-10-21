@@ -847,6 +847,20 @@ number 不是安全整数。命中记录自身 `round` 不是安全整数时，�
   身份——会去重成一条并累加 `repeat`，不会刷屏。
 - `diagnostics.error(event)` —— 同一身份的事件；宿主编排了 sink 时投递。sink 自身抛错
   也会记成一条 `delivery_failure`。
+- 抛出的错误本身 —— 因落盘失败而死的 run 抛的是 `KitError`，两个出口的字段面相同：
+  工具边界的 `checkpoint_failed`（`assertSnapshotPersisted`，`src/loop/run-snapshot-executor.js`）
+  与 run 末尾的 `persistence_failed`（`makePersistenceFailure`，`src/loop/orchestrator.js`）。
+  两者都带 `operation`、`phase`、`sideEffect`、`persistence`、`persistenceError`、`cause`、
+  `unpersisted`（issue #230：后两个原先只挂在 run 末尾那个出口上），宿主分流不必再解析
+  `message`。`cause` 是根因分类，与 `termination.errorCode` 同一套口径读取
+  （`terminationErrorCodeForError`，`src/loop/termination.js`：取错误自身的 `code`，取不到即
+  `"unknown"`）——在 `checkpoint_failed` 上该字段就是这个分类字符串，而 `persistence_failed`
+  保持它一直携带的底层错误对象。`checkpoint_failed` 上的 `unpersisted` 是经
+  `normalizeUnpersisted`（`src/run-state.js`）归一化的账单，形状 `{ count, items }`——与
+  `deterministic.errors.unpersisted` 同一口径、同一形状；`persistence_failed` 上的同名键仍是
+  原始冻结数组（`result.unpersisted` 的 schema，自 issue #109 起未变）。错误码本身与
+  `phase`/`sideEffect` 语义不因此改变：工具前失败仍报 `not_started` 并阻断执行，工具后失败仍报
+  `executed_uncommitted`。
 
 deterministic run-state 里带同一份账单（`deterministic.errors.unpersisted`），run 中途
 崩溃也不会丢；模型可见渲染只给条数，不把宿主错误正文灌进上下文。
@@ -1854,7 +1868,9 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 - 另外，`repeat` 字段表示同一失败被去重合并的次数（首条为 1）。
 
 投递保证：账本与 `diagnostics.error` 事件是两条可靠通道；模型可见提示仅为 advisory，
-从不计入投递。异常终止的 run 会把账本挂在抛出的持久化失败上，即 `error.unpersisted`。
+从不计入投递。异常终止的 run 会把账本挂在抛出的持久化失败上，即 `error.unpersisted`——
+`persistence_failed` 上是原始冻结数组，`checkpoint_failed` 上是 `normalizeUnpersisted`
+的投影（`{ count, items }`，run-state 口径；issue #230，见上文「持久化失败上报」）。
 
 `persistence_error` 诊断事件现在带 `port: "transcript"`；该字段是增量添加，既有消费者
 不受影响。
