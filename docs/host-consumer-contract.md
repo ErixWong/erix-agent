@@ -2422,6 +2422,23 @@ Consequences for a host store and for host readers:
   `src/loop/orchestrator.js#appendEngineMessagesToTranscript`, and the
   `…:fold:` / `…:ttl:` fact rows from `appendEngineFactToTranscript`) carry no
   `seq` by design, so folding passes them through untouched.
+- **A resumed run leaves the ledger closed (ticket 261021).** Running the same
+  `runId` again (`resume: true`) rebuilds the context from the ledger alone, and
+  the ledger is **append-only**: already-landed rows are never rewritten, a
+  resume only appends after them. So after folding, every logical message
+  appears **exactly once**, and one tool call has **exactly one result** (same
+  `erix.toolCallKey`, same `tool_use_id`) — a result replayed after the crash is
+  attached to the crash round's aggregated `tool_result` message through
+  `partOf` instead of becoming a new message. One host-visible ordering detail:
+  the crash round's carrier row `…:engine:round:<n>:resume` is written **after**
+  the host's `:input:` row, and folding places the body at the carrier's
+  position (`load()` returns records in append order), so the resume prompt can
+  precede the crash round's body in `load()` output; the model context is not
+  affected by that order — `restoreResume` (`src/loop/resume-manager.js`) keeps
+  the `:input:` row as a tail and splices it after the replayed results.
+  Real-upstream guard: `examples/resume-real-e2e.test.mjs` (`ERIX_E2E_REAL=1`:
+  real process SIGKILL → same `--session` resume → ledger closure / no loss /
+  no duplicate execution / half-line quarantine).
 
 ## Tool result fact and field ownership (issue #284 / #285)
 
