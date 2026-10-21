@@ -3491,6 +3491,29 @@ const SELF_TEST_CASES = [
     expect: [/没在 IGNORED_DIR_CLASSES 里分类|没有一处引用真正用到它/],
   },
   {
+    label: "#337 未登记的 ignore 目录规则必须点名那条规则本身，而不是报成「文档漂移」",
+    // 病历（#337）：`.scratch/` 只在 `.git/info/exclude` 里时，本脚本**按文件系统**扫，对照树里的文件被当成
+    // 仓内实物参与「唯一同名」解析，`check:docs` 当场变红——而红的是 `paths:` 的「无法裁决」，人以为是真文档漂移，
+    // 白排查一轮。这一例把「新增目录规则未登记」那一句钉死：必须点名规则名与行号，且**不许**出现漂移 /
+    // 无法裁决 / 白名单空转那类措辞（上一例的 expect 带 `|没有一处引用真正用到它` 的 OR，单独看不能证这件事）。
+    overlay: { ".gitignore": (t) => t.replace("docs/tasks/\n", "docs/tasks/\nzz-337-probe-dir/\n") },
+    expect: [/paths: \.gitignore:\d+ 的目录规则 `zz-337-probe-dir\/` 没在 IGNORED_DIR_CLASSES 里分类/],
+    reject: [/漂移/, /引用了无法裁决的仓库内路径/, /白名单条目/],
+  },
+  {
+    label: "#337 同一目录登记类别之后不再产生任何红，且真的整目录不进扫描面（反向证的另一半）",
+    // 登记只能来自运行时那张 Map（overlay 只改**文本**，与 simulateLooseDecl 同一课），所以走配置口子；
+    // 跑完在 finally 里还原。绿只能证明「静态分类不再报」，所以再加一句 assertAfter：这条类别必须在
+    // `SKIPPED_DIR_KINDS` 里——否则 `.scratch/` 里的文件会重新进入实物解析（本单要防的静默污染）。
+    overlay: { ".gitignore": (t) => t.replace("docs/tasks/\n", "docs/tasks/\nzz-337-probe-dir/\n") },
+    simulateIgnoreDirClass: { pattern: "zz-337-probe-dir/", kind: "scratch", why: "#337 自测探针：丢弃型临时目录" },
+    expectGreen: true,
+    assertAfter: () => (ignoredDirIsSkipped({ pattern: "zz-337-probe-dir/" })
+      ? null
+      : "登记了但这条类别没进 SKIPPED_DIR_KINDS（整目录仍会被扫）——绿只是「静态分类不再报」，"
+        + "真实 `.scratch/` 里的文件照样会参与「唯一同名」解析与近邻判据；把 scratch 加进那张显式清单"),
+  },
+  {
     label: "白名单条目变空转：两处引用（examples README 与 CHANGELOG 的同名提及）全改掉 → 该登记被判失效",
     overlay: {
       // #273 把 archive 类的三级解析接上后，CHANGELOG:89 的裸名提及也算一处真实引用；只下掉一处只会
@@ -3980,7 +4003,7 @@ const SELF_TEST_CASES = [
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 99;   // 工单 261021-03 B1 加了 6 例前缀反向证（实测 **101** 例，修前 95 例；下限留 2 例余量给并行分支，见上：别按当天条数写死）
+const MIN_SELF_TEST_CASES = 99;   // 工单 261021-03 B1 加了 6 例前缀反向证（实测 **103** 例：#337 又加 2 例目录规则反向证，修前 95 例；下限留 4 例余量给并行分支，见上：别按当天条数写死）
 
 function runSelfTest() {
   const run = () => collectAllDrift();
@@ -4004,6 +4027,10 @@ function runSelfTest() {
     const who = c.label ?? `第 ${i + 1} 例`;
     for (const re of c.expect ?? []) {
       if (re.test("")) failures.push(`${who}：期望被削弱——正则 ${re} 连空串都匹配，等于没有断言（不许拿「永真」糊过这一例）`);
+    }
+    // #337：`reject` 是「必须**不**出现的形状」。连空串都匹配的 reject 会禁掉一切报错，同样是没断言。
+    for (const re of c.reject ?? []) {
+      if (re.test("")) failures.push(`${who}：反向期望被削弱——reject 正则 ${re} 连空串都匹配，等于禁止一切报错`);
     }
     if (!c.expectGreen && !c.expectMutateMiss && !(c.expect ?? []).length && !(c.expectFiles ?? []).length) {
       failures.push(`${who}：期望被削弱——既不是放行证（expectGreen）也没写 expect / expectFiles，等于整例被跳过`);
@@ -4056,14 +4083,28 @@ function runSelfTest() {
       looseDeclSaved = [target, target.decl];
       target.decl = /.*/;
     }
+    // #337：目录**类别**的配置口子（与 simulateLooseDecl 同一课：overlay 只改文本，改不动运行时那张 Map）。
+    // 用来证「未登记 → 红、登记之后同一目录 → 不再红」这对反向证的两半；跑完必须在 finally 里还原。
+    let dirClassSaved = null;
+    if (c.simulateIgnoreDirClass) {
+      const { pattern } = c.simulateIgnoreDirClass;
+      dirClassSaved = [pattern, IGNORED_DIR_CLASSES.get(pattern) ?? null];
+      IGNORED_DIR_CLASSES.set(pattern, { kind: c.simulateIgnoreDirClass.kind, why: c.simulateIgnoreDirClass.why });
+    }
     let errs = [];
     let simDropped = -1;
+    let afterWhy = null;   // #337：assertAfter 必须在配置口子**还挂着**的时候问（否则临时登记已被还原）
     try {
       errs = run();
       simDropped = LAST_IGN ? repoFiles(LAST_IGN).simDropped : 0;
+      if (c.assertAfter) afterWhy = c.assertAfter({ errs });
     } finally {
       SIM_ABSENT_TASK_ARCHIVE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
       if (looseDeclSaved) looseDeclSaved[0].decl = looseDeclSaved[1];   // 判据必须还原，别把探针留在表里
+      if (dirClassSaved) {                                              // 同上：临时登记的类别一条也不许留在表里
+        const [pattern, prev] = dirClassSaved;
+        if (prev) IGNORED_DIR_CLASSES.set(pattern, prev); else IGNORED_DIR_CLASSES.delete(pattern);
+      }
       OVERLAY.clear();
     }
     // #279 的教训：「变异没落上」的空跑会交出一条假的绿。树形口子也一样——本机确实有任务档案实物、
@@ -4078,6 +4119,9 @@ function runSelfTest() {
       failures.push(`${c.label}：树形口子没落上（说要模拟「没有 docs/tasks/」，但实物清单一条都没摘掉）`);
       continue;
     }
+    // #337：绿只说明「静态分类不再报」，证不到扫描面——这里让用例自己再问一句生产谓词（如
+    // 「这条类别真在 SKIPPED_DIR_KINDS 里」）。返回非空字符串就是失败。
+    if (afterWhy) { failures.push(`${c.label}：${afterWhy}`); continue; }
     if (c.expectGreen) {
       if (errs.length) {
         failures.push(`${c.label}：变异之后本该绿（这条是在证「白名单/就地声明真的在放行」），实测 ${errs.length} 处红：\n      ${errs.join("\n      ")}`);
@@ -4088,8 +4132,14 @@ function runSelfTest() {
     }
     const missed = (c.expect ?? []).filter((re) => !errs.some((e) => re.test(e)));
     const missedFiles = (c.expectFiles ?? []).filter((rel) => !errs.some((e) => e.includes(rel)));
+    // #337：红得「对」还不够，还得「没红错地方」——比如把「新增目录规则未登记」报成 `paths:` 的
+    // 「引用了无法裁决的仓库内路径」（#337 的病：人看到红以为是真文档漂移，白排查一轮）。
+    const rejected = (c.reject ?? []).filter((re) => errs.some((e) => re.test(e)));
     if (!errs.length) failures.push(`${c.label}：改了但没红（锚点仍是 fail-open）`);
-    else if (missed.length || missedFiles.length) {
+    else if (rejected.length) {
+      failures.push(`${c.label}：红了，但报成了不该报的形状（命中 reject：${rejected.map((r) => String(r)).join(" ; ")}）`
+        + `——这一例要的是「点名未登记的目录规则」，不是「文档漂移/无法裁决」那类误报：\n      实测：${errs.join("\n      ")}`);
+    } else if (missed.length || missedFiles.length) {
       failures.push(`${c.label}：红了，但错误信息没点该点的名／没覆盖该覆盖的文件`
         + `（未命中 ${missed.map((r) => String(r)).join(" ; ") || "—"}${missedFiles.length ? `；未覆盖 ${missedFiles.join(", ")}` : ""}）`
         + `\n      实测：${errs.join("\n      ")}`);
