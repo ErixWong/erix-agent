@@ -3,6 +3,15 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Added
+
+- **`erix_run`（pi extension）新增 `judgeDoneAdvisory` 参数，把引擎已有的评审意见回灌接到宿主侧（透传给引擎 `reflection.judgeDoneAdvisory`）。** 引擎侧能力（issue #322，随 0.22.0 发布）早就在，缺的只是 `erix_run` 的参数面：它此前只把 `maxExtensions` / `maxRoundsCap` / `extensionStep` 三个名字拼进下发给引擎的 `reflection:{}`，而 `~/.erix/config.json` 里根本没有 reflection 段 ⇒ **通过 `erix_run` 派工的 run 吃不到这条修复**。现在 `judgeDoneAdvisory: true` 会原样递给引擎：中途治理（judge）判定「目标已达成」时，它那句评审意见会作为**一条普通用户文本消息**在下一个安全点内递给内层模型；**那是软提示不是硬停止**——不拦工具调用、不提前收尾、`termination.reason` 一字不因它改变。
+  - 入参形状照抄仓内既有的布尔开关 `finalGuard`（`parseRunParams`）：只认 `true | false`，`"true"` / `1` 归 `bad_params`（文案 `judgeDoneAdvisory 只能是 true | false，收到 <JSON>`）；**没传就不出现** —— `params`、下发给引擎的 `reflection:{}`、以及 diagnostics 里都不带这个键（本层不替引擎造默认值 `false`）。
+  - 与三个扩轮参数（`EXTENSION_PARAM_NAMES`）**合并而不是覆盖**：同传时 `reflection:{}` 里四个键都在。judge 闸门关着时（`maxRounds < 16` 或 `ERIX_NO_REFLECTION=1` ⇒ `reflection` 整块是 `false`）**不塞这个开关**：judge 没跑就没有「中途判定达成」这件事，下发一个永不被读的键只会让人误以为它在生效（理由已写进代码注释）。
+  - 可观测面按既有 `requested` / `enabled` 同族口径透出 `diagnostics.reflection.judgeDoneAdvisory = {requested, enabled[, reason]}`（没传时整个键不存在），模型可见文本同步多一行「judgeDoneAdvisory 未生效」（与「扩轮参数未生效」同形状）——**传了但没生效不许静默**。
+  - 测试与文档：`test/examples/erix-run-core.test.js` 新增 5 条（全离线，复用既有捕获 `runToolLoop` 入参的夹具）——含「没传就不出现在 `params` 与 options 里」、「与扩轮三参数同传时四个键都在」、以及一条**拿引擎自己的启动期校验对账键名**的用例（键名拼错不会报错，只会静默失效）；`examples/pi-extension/README.md` 的参数表、judge 闸门说明、终局载荷示例同步。
+  - ⚠ **`erix_run`（`examples/pi-extension/`）不进 npm tarball，与本包共用同一个版本号** —— 它的分发仍是「从仓库拷到 `~/.pi/agent/extensions/erix-run/`」，所以**这条参数口只能靠拷仓库拿到**，装了哪一版目前仍无盘上痕迹（同一声明见 0.19.0 条目头注）。本单只动 `examples/pi-extension/**` 与 `test/examples/**` 与 `CHANGELOG.md`；`src/`、`bin/`、`docs/host-consumer-contract.md`、`package.json` 一字未动。
+
 ## [0.22.0] - 2026-10-21
 
 ### Added
