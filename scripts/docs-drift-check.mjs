@@ -2540,6 +2540,8 @@ const SHORTHAND_REFS = new Map([
  *   · task-archive：`docs/tasks/` 存的是主 agent 的写作现场，**看起来像**仓内文档却整目录不入库，
  *     克隆后就是死引用——所以只有这一类要求**逐条**证据（就地声明或 LOCAL_ARCHIVE_REFS 逐条理由），
  *     其余类别按目录规则整体放行，但都必须在表里写明为什么。
+ * 哪些类别**整目录不进扫描面**由 `SKIPPED_DIR_KINDS` 显式点名（#337：`.scratch/` 里的文件曾按文件系统
+ * 扫进来，被当成仓内实物参与「唯一同名」解析与近邻判据）；没进那张清单的类别照常下钻。
  * .gitignore 里出现新的目录型规则而未登记 → 直接红（而不是默默放行）。 */
 const IGNORED_DIR_CLASSES = new Map([
   ["node_modules/", { kind: "install-tree", why: "宿主侧安装位置，不是仓库内容" }],
@@ -2550,6 +2552,13 @@ const IGNORED_DIR_CLASSES = new Map([
   ["docs/tasks/", { kind: "task-archive", why: "主 agent 的任务工作目录：整目录不入库，#162 定了口径，#273 把它纳进检查面" }],
   ["docs/delivery/", { kind: "task-archive", why: "交付报告的本机落点：与 docs/tasks/ 同口径不入库（2026-10-15 实测：新增 ignore 目录规则若不在这里登记类别，--self-test 会从 3 条红抬到 6 条）" }],
 ]);
+
+/** 整目录**不进扫描面**的类别（显式清单，issue #337）。方向是「列出来的才跳过」，不是「除了某类都跳过」：
+ *  将来新增一个类别时默认**照常下钻**（宁可多扫、让问题暴露），要跳过必须在这里点名并写明为什么；
+ *  反向写法会让新类别静默漏扫——正是本文件反复踩的那类溃败。
+ *   · install-tree / worktree：里面是一整份别的仓库，钻进去又慢又脏；
+ *   · scratch：丢弃型临时工作目录（复现脚本、对照树），内容不是仓库内容，也不该参与实物解析。 */
+const SKIPPED_DIR_KINDS = new Set(["install-tree", "worktree", "scratch"]);
 
 /** ④ 本机档案：指向被 .gitignore 忽略的**目录**（本仓只有 `docs/tasks/`：主 agent 的任务工作目录）。
  *  首选判据是「就地声明」：引用所在行或紧邻上一行写了「本机/本地/不入库/未入库/未跟踪/gitignore/忽略/归档」
@@ -2666,7 +2675,8 @@ function gitignoreMatcher(text) {
 /** 未被忽略的仓库文件清单（惰性建一次；`walk()` 从根递归会钻到 node_modules，所以自带剪枝）。 */
 /** 全仓文件清单（惰性建一次，键是 .gitignore 的规则集合）。分两份：未忽略的（= 克隆后仍在的）
  *  与被忽略的（= 只有本机有的）。被忽略目录照常下钻（要认得 e2e-wake.mjs 这种「裸名指向档案」），
- *  但安装位置与工作副本剪掉（node_modules/ 与 .worktrees/ 里是一整份别的仓库，钻进去又慢又脏）。
+ *  但安装位置、工作副本与丢弃型临时目录剪掉（node_modules/ / .worktrees/ / .scratch/ 里不是仓库内容：
+ *  前两个是一整份别的仓库，后一个是复现脚本与对照树）。哪些类别被剪由 `SKIPPED_DIR_KINDS` 显式点名。
  *
  * `SIM_ABSENT_TASK_ARCHIVE`（#280，只给 `--self-test` 用，**不是豁免开关**）：把「本机根本没有任务档案
  * 目录」这一**树形**模拟出来 = 全新 clone / CI / 一次性沙箱。实物只从两个地方渗进裁决——`resolveRef`
@@ -2676,6 +2686,14 @@ function gitignoreMatcher(text) {
  * 缓存键必须带上它，否则同一个进程里两种树形会互相吃到对方的缓存。 */
 let SIM_ABSENT_TASK_ARCHIVE = false;
 let repoFilesCache = null;
+/** 一条被忽略的**目录规则**要不要整目录剪掉（不进 tracked / ignored 清单）。未登记的规则按「不扫」处理：
+ *  未分类本身已由 collectPathErrors 直接报红，扫描面不替它兜底。跳过与否只由 `SKIPPED_DIR_KINDS` 决定，
+ *  所以 `--self-test` 能拿这个谓词直接证「`.scratch/` 真的不扫」（见 #337 那一例的 assertAfter）。 */
+function ignoredDirIsSkipped(rule) {
+  const cls = IGNORED_DIR_CLASSES.get(rule.pattern);
+  if (!cls) return true;
+  return SKIPPED_DIR_KINDS.has(cls.kind);
+}
 function repoFiles(ign) {
   const key = `${SIM_ABSENT_TASK_ARCHIVE ? "no-archive|" : ""}${ign.rules.map((r) => r.pattern).join("\n")}`;
   if (repoFilesCache && repoFilesCache.key === key) return repoFilesCache;
@@ -2684,8 +2702,7 @@ function repoFiles(ign) {
   const skipDir = (rel) => {
     const rule = ign.ruleFor(`${rel}/`);
     if (!rule) return false;
-    const cls = IGNORED_DIR_CLASSES.get(rule.pattern);
-    return !cls || cls.kind === "install-tree" || cls.kind === "worktree";
+    return ignoredDirIsSkipped(rule);
   };
   (function down(dir, underIgnored) {
     for (const name of readdirSync(path.join(ROOT, dir || "."))) {
@@ -2898,7 +2915,7 @@ function collectPathErrors() {
     if (IGNORED_DIR_CLASSES.has(r.pattern)) continue;
     out.push(`paths: .gitignore:${r.line} 的目录规则 \`${r.pattern}\` 没在 IGNORED_DIR_CLASSES 里分类`
       + `（install-tree / build-output / runtime / worktree / scratch / task-archive 六选一 + 写明理由）——`
-      + `被忽略目录里的引用要不要放行，得由分类决定，不许默默放行新目录`);
+      + `被忽略目录里的引用要不要放行、要不要进扫描面（SKIPPED_DIR_KINDS），得由分类决定，不许默默放行新目录`);
   }
   REF_CLASS_HITS.clear();
   REF_REFERRING_HITS.clear();
