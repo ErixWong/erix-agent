@@ -25,6 +25,18 @@
 
 ### Fixed
 
+- **`tree` 的根标签可回放：解析到工作目录根的**任何**写法都输出 `./`（issue #215；`src/tools/file-tools.js` + 共享契约套件）。**
+  - 现场：`tree {path: "."}` / `tree {}` 给 `./`，而 `tree {path: "./"}` / `tree {path: "sub/.."}` / 绝对根路径给的是 **basename**（`wd/`）。模型把首行读成「根下有个叫 `wd` 的子目录」，回放 `tree {path: "wd/"}` 必然 `ENOENT`，白烧一轮。
+  - 根因：`rootLabel` 的判据是**入参字面**（`treePath === "."`）而不是**解析后的目标**，除字面 `.` 之外全部掉进 `path.basename()`。
+  - 改法：判据换成 `resolvedTreePath === root`（目标是否等于工作目录根），与写法无关；`''` / `'.'` / `'./'` / 缺省 / 绝对根 / `sub/..` 全部输出 `./`，条目、depth/条目上限 marker、排除账文本一字未变（非根目标的标签仍是 basename，本单不改）。
+  - 契约：`test/contract/file-tools.js` 新增「根标签可回放」一条（七种写法逐字相同 + 首行当 `path` 回放必须成功且逐字相同），对所有载体跑。
+- **排除账 marker 按实际类别点名，尾部开关提示只提尚未开启的 flag（issue #222；`src/tools/file-tools.js` + 共享契约套件）。**
+  - 现场：`searchText {include_vendor: true}` 的 `metadata.searchSkipped.vendorDirectories` 已是 `0`（`node_modules` 确实搜了），marker 仍在点名 `node_modules/.git 等 1 个目录`，且无条件劝 `include_vendor=true, include_hidden=true`。宿主 erix-station 实录：模型据此判定「参数没生效」，弃用工具改跑 `shell grep`（多一轮且绕开宿主边界）。
+  - 根因：类别名（`node_modules/.git`）与开关提示都是**写死字面量**，与本次真实账目无关；遍历只累加计数、不记名字样本。
+  - 改法：排除账多记每类被跳过的目录名样本（每类最多 3 个，多的用「等」收尾），marker 由「实际计数 + 实际名字样本」生成（`1 个 vendor 目录（node_modules/）、1 个隐藏目录（.git/）`）；计数为 0 的类别一字不提；`suggestSwitches` 从布尔改成**待提示的 flag 列表**，只含本次未开启的开关。`tree` 与 `searchText`/`rg`/`grep` 仍共用同一条生成路径（`skipAccountMarker` → `toolMarker("skipped")`）。`metadata.searchSkipped` 的形状与字段**一个没动**（名字样本只进 marker 文案）。
+  - 契约：`test/contract/file-tools.js` 新增「marker 说的是真相」一条（默认 / 只开 vendor / 只开 hidden / 全开四个格子；类别与计数对齐 `metadata.searchSkipped`、零计数类别不出现、已开启的 flag 不再出现在提示里、四个载体文案逐字相同）。既有 `/2 个目录/u` 一条改成 `/1 个 vendor 目录/u` + `/1 个隐藏目录/u`（**只加严**：旧断言钉的是本单取消的那个聚合句，新断言同时钉类别名与各类别自己的计数）。
+  - 连带：`test/tools/file-tools.test.js` 的 `self` 角色锚点（自指：记录的就是 `src/tools/file-tools.js` 自己的字节数）按该测试自己的口径复测刷新（92,843 B / 1,759 行 → 97,034 B / 1,828 行），`readFile` 描述里点名的自身容量 `4,966` 同步为实测 `4,938`（同一位数、字节中性）；`docs/host-consumer-contract.md` / `_cn.md` 的默认值清单中英成对更新（排除账点名实际类别 + 只提未开启的开关、`tree` 根标签可回放）。
+  - 门禁：`npm test` → **tests 1846 / pass 1837 / fail 0 / skipped 9**（基线 1844 / 1835 / 0 / 9，+2 即本单两条新契约）。
 - **真上游 e2e `examples/tool-fact-e2e.test.mjs` 的 F9b / F9d 假红：旧块（0.19 形状）的载体在改造后不再是 run snapshot，改回账本轮行（只动该 e2e，`src/` 零改动）。**
   - 现场：`ERIX_E2E_REAL=1 node --test examples/tool-fact-e2e.test.mjs` 的 F9b「旧块的退役名与宿主摊平键原样保留」与 F9d「投影的一代回退」两条红，且红在**判据落空**（`assert.ok(legacy)` / `assert.ok(legacyCall)`），不是断言值不符。
   - 根因：夹具把旧块只写进 `saveRunSnapshot` 的 `messages`。改造前 resume 会把「快照里账本没有的那段正文」抄进 `…:resume` 轮行（`resumeRunSnapshotMessages` + `messages.slice(resumeTranscriptStart)`），旧块于是经那条轮行落进 `store.load()`；0.23.0 起 `…:resume` 只带锚点之后新产生的引擎控制正文，恢复的正文**只认账本**（快照正文只在「崩溃现场」判定成立时作升级补全）⇒ 快照里的旧块既不进上下文、也不进 `load()`。

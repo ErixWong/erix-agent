@@ -12,6 +12,10 @@
 //   * allowRead/allowWrite 以**绝对路径**被调用，越界返回「错误：…」文本结果而非抛；
 //   * readFile 单次返回不超过 max_bytes（默认 262144）；
 //   * vendor 目录默认跳过且结果尾部带排除账，include_vendor=true 可撤销；
+//   * 排除账 marker 说的是**本次真相**（#222）：类别名 / 计数 / 目录名样本来自遍历现场，
+//     尾部开关提示只提尚未开启的 flag，且 searchText / rg / grep / tree 共用同一条文案；
+//   * `tree` 的根标签只看解析后的目标是否等于工作目录根（#215）：`.` / `./` / 空串 / 缺省 /
+//     绝对根路径 / `sub/..` 全部输出 `./`，且首行当 path 回放必须成功；
 //   * rg/grep 都默认按**正则**匹配（与真实 `rg` / `grep` 命令的默认一致，issue #184 追加轮 A），
 //     is_regex=false 是字面量逃生口（等价 `rg --fixed-strings` / `grep -F`），无效正则一律返回错误结果而非抛；
 //   * 无命中统一「（无命中）」；tree 截断必须带 marker + 剩余计数；
@@ -434,7 +438,10 @@ export function fileToolsContract(label, { createFileTools }) {
         assert.doesNotMatch(skipped, /needle git/u, `${name} 默认必须跳 .git`);
         assert.match(skipped, /needle app/u);
         assert.match(skipped, /已跳过/u, `${name} 必须回报排除账`);
-        assert.match(skipped, /2 个目录/u, `排除账必须带目录计数：${skipped}`);
+        // issue #222：排除账按**实际被跳过的类别**点名（原来是写死的「node_modules/.git 等 N 个目录」
+        // 聚合句）。这条断言比旧的 `/2 个目录/u` 更严：它同时钉类别名与各类别自己的计数。
+        assert.match(skipped, /1 个 vendor 目录/u, `排除账必须点名 vendor 类别及其实计数：${skipped}`);
+        assert.match(skipped, /1 个隐藏目录/u, `排除账必须点名隐藏目录类别及其实计数：${skipped}`);
         assert.match(skipped, /include_vendor=true/u, "排除账必须给出撤销开关名");
 
         const withVendor = await tools.executeTool(name, {
@@ -460,6 +467,129 @@ export function fileToolsContract(label, { createFileTools }) {
         listing(treeVendor).some((line) => line.startsWith("node_modules")),
         `tree include_vendor=true 必须列出 vendor：${treeVendor}`,
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // issue #215：`tree` 的根标签必须可回放。首行是模型拿得到的最强提示之一：给成 basename
+  // （`wd/`）它就以为根下有个叫 `wd` 的子目录，回放 `tree {path:"wd/"}` 必然 ENOENT，白烧一轮。
+  // 所以根标签只看**解析后的目标是否等于工作目录根**，与入参写法无关。
+  // -------------------------------------------------------------------------
+  test(`${label}: tree 的根标签可回放：任何写法解析到工作目录根都输出 ./（#215）`, async () => {
+    await withDirectory(async (cwd) => {
+      await mkdir(path.join(cwd, "node_modules", "x"), { recursive: true });
+      await writeFile(path.join(cwd, "node_modules", "x", "index.js"), "needle vendor\n", "utf8");
+      await writeFile(path.join(cwd, "app.js"), "needle app\n", "utf8");
+      const tools = createFileTools({ cwd });
+
+      // 同一目标的七种写法：缺省 / `.` / `./` / 空串 / 绝对根（带不带尾分隔符）/ `..` 绕回来
+      const spellings = [undefined, ".", "./", "", cwd, `${cwd}${path.sep}`, path.join(cwd, "node_modules", "..")];
+      const outputs = [];
+      for (const spelling of spellings) {
+        const input = spelling === undefined ? {} : { path: spelling };
+        const output = String(await tools.executeTool("tree", input));
+        const firstLine = output.split("\n")[0];
+        assert.equal(firstLine, "./",
+          `tree ${JSON.stringify(input)} 的根标签必须是 \`./\`（唯一可回放的写法），实际是 \`${firstLine}\``);
+        outputs.push(output);
+      }
+      // 条目、depth/条目上限 marker、排除账都不得随入参写法变化（根标签是唯一允许变的那一格，而它现在也不变）
+      for (const output of outputs) {
+        assert.equal(output, outputs[0], "同一目录的不同写法必须给出逐字相同的结果（只有根标签曾经不同）");
+      }
+
+      // 回放：把首行当 path 传回去必须成功（旧行为下 `wd/` 会拿到 ENOENT 错误结果）
+      const replayed = String(await tools.executeTool("tree", { path: outputs[0].split("\n")[0] }));
+      assert.doesNotMatch(replayed, /^错误：/u, `首行当 path 回放必须成功：${replayed}`);
+      assert.equal(replayed, outputs[0], "回放必须与原调用逐字相同（标签可回放才叫可回放）");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // issue #222：排除账 marker 必须说的是**本次的真相**。旧文案写死「node_modules/.git 等 N 个
+  // 目录」与「传 include_vendor=true, include_hidden=true」，于是只开了 `include_vendor=true` 的
+  // 那次调用还在点名 node_modules、还在劝一个已经传过的开关——模型据此判定「参数没生效」，弃用
+  // 工具去跑 shell（宿主实录）。这里按三个格子 + 一个「全开」格子钉住：类别名、计数、目录名样本、
+  // 开关提示四者都只能来自本次真实账目，且四个载体（searchText / rg / grep / tree）共用同一条文案。
+  // -------------------------------------------------------------------------
+  test(`${label}: 排除账 marker 说的是真相：类别/计数/开关提示都来自本次账目（#222）`, async () => {
+    await withDirectory(async (cwd) => {
+      await mkdir(path.join(cwd, "node_modules", "x"), { recursive: true });
+      await mkdir(path.join(cwd, ".git"), { recursive: true });
+      await writeFile(path.join(cwd, "node_modules", "x", "index.js"), "needle vendor\n", "utf8");
+      await writeFile(path.join(cwd, ".git", "config.txt"), "needle git\n", "utf8");
+      await writeFile(path.join(cwd, "app.js"), "needle app\n", "utf8");
+      const tools = createFileTools({ cwd });
+
+      const markerOf = (result) => String(contentOf(result))
+        .split("\n")
+        .find((line) => line.includes("已跳过")) ?? "";
+
+      // 三格子：默认 / 只开 vendor / 只开 hidden（每个格子的真相由 `metadata.searchSkipped` 给）
+      const cells = [
+        { flags: {}, vendor: 1, hidden: 1 },
+        { flags: { include_vendor: true }, vendor: 0, hidden: 1 },
+        { flags: { include_hidden: true }, vendor: 1, hidden: 0 },
+      ];
+      for (const { flags, vendor, hidden } of cells) {
+        const title = JSON.stringify(flags);
+        const results = {
+          searchText: await tools.executeTool("searchText", { pattern: "needle", mode: "literal", ...flags }),
+          rg: await tools.executeTool("rg", { pattern: "needle", ...flags }),
+          grep: await tools.executeTool("grep", { pattern: "needle", ...flags }),
+          tree: await tools.executeTool("tree", { path: ".", ...flags }),
+        };
+        const account = metadataOf(results.searchText).searchSkipped;
+        assert.equal(account.vendorDirectories, vendor, `${title} 的 vendorDirectories 真值`);
+        assert.equal(account.hiddenDirectories, hidden, `${title} 的 hiddenDirectories 真值`);
+
+        const marker = markerOf(results.searchText);
+        assert.match(marker, /^\[已跳过 /u, `${title} 必须有排除账（此时确有目录被跳）：${marker}`);
+        // 一条文案四个载体共用（#222 要求 3：tree 与三个搜索入口不许写两份口径）
+        for (const [name, result] of Object.entries(results)) {
+          assert.equal(markerOf(result), marker, `${title} 的 ${name} 排除账文案必须与 searchText 逐字相同`);
+        }
+
+        // 1) 类别名与计数必须与 `searchSkipped` 一致
+        if (vendor > 0) {
+          assert.match(marker, new RegExp(`\\b${vendor} 个 vendor 目录`, "u"), `${title} 必须点名 vendor 类别与计数：${marker}`);
+          assert.match(marker, /node_modules\//u, `${title} 必须给出真实被跳过的目录名样本：${marker}`);
+        } else {
+          assert.doesNotMatch(marker, /node_modules|vendor/u,
+            `${title} 本次 vendorDirectories=0（node_modules 已搜）→ marker 不许再点名它：${marker}`);
+        }
+        if (hidden > 0) {
+          assert.match(marker, new RegExp(`\\b${hidden} 个隐藏目录`, "u"), `${title} 必须点名隐藏目录类别与计数：${marker}`);
+          assert.match(marker, /\.git\//u, `${title} 必须给出真实被跳过的目录名样本：${marker}`);
+        } else {
+          assert.doesNotMatch(marker, /隐藏目录|\.git/u,
+            `${title} 本次 hiddenDirectories=0（.git 已搜）→ marker 不许再点名它：${marker}`);
+        }
+
+        // 2) 尾部提示只提**尚未开启**的开关（已传过的不再劝一遍，否则模型会判定参数没生效）
+        if (flags.include_vendor === true) {
+          assert.doesNotMatch(marker, /include_vendor/u, `${title} 已经传了 include_vendor=true，提示里不许再出现它：${marker}`);
+        } else {
+          assert.match(marker, /include_vendor=true/u, `${title} 未传 include_vendor=true → 提示里必须给出它：${marker}`);
+        }
+        if (flags.include_hidden === true) {
+          assert.doesNotMatch(marker, /include_hidden/u, `${title} 已经传了 include_hidden=true，提示里不许再出现它：${marker}`);
+        } else {
+          assert.match(marker, /include_hidden=true/u, `${title} 未传 include_hidden=true → 提示里必须给出它：${marker}`);
+        }
+      }
+
+      // 全开：排除账本身清空，且不再提任何开关（没有可跳过的东西了）
+      const both = await tools.executeTool("searchText", {
+        pattern: "needle",
+        mode: "literal",
+        include_vendor: true,
+        include_hidden: true,
+      });
+      assert.equal(markerOf(both), "", "两个开关都传了 → 不该还有排除账");
+      assert.deepEqual(both.metadata.searchSkipped, {
+        vendorDirectories: 0, hiddenDirectories: 0, largeFiles: 0, binaryFiles: 0, deniedPaths: 0,
+      }, "全开之后排除账必须清空（marker 消失与账目清空是同一件事）");
     });
   });
 

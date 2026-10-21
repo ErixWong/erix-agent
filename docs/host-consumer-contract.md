@@ -1883,7 +1883,22 @@ Defaults a host must know about, because they change what the model sees
 - `rg` / `grep` / `tree` skip `node_modules`, `dist`, `build`, `target`,
   `vendor` and dot-directories (`.git` included) unless `include_vendor=true`
   / `include_hidden=true`, and state the skipped counts at the end of the
-  result together with the switch names that undo them;
+  result together with the switch names that undo them. The account names **the
+  categories actually skipped this call** (vendor directories / hidden
+  directories, each with its own count and a sample of the real directory names)
+  and never a category whose count is zero; the switch hint only lists flags the
+  caller has **not** set yet, so a call that already passed
+  `include_vendor=true` is never told to pass it again (issue #222: the old fixed
+  wording `node_modules/.git 等 N 个目录` plus an unconditional
+  `include_vendor=true, include_hidden=true` hint made the model conclude its
+  parameter had been ignored and abandon the tool for `shell grep`);
+- **`tree`'s root label is replayable** (issue #215). The first line is `./`
+  whenever the target resolves to the working-directory root — `path` omitted,
+  `.`, `./`, the empty string, the absolute root path or a `..`-relative spelling
+  all produce the same first line and the same entries — so feeding that first
+  line back as `path` succeeds. It used to be the basename of the working
+  directory for every spelling but the literal `.`, which read as "there is a
+  subdirectory with that name" and made the replay fail with `ENOENT`;
 - **both search tools default to regex matching** (`rg` and `grep` alike, which
   is what the real `rg` / `grep` commands do; issue #184 round A reversed an
   earlier `rg`-defaults-to-literal choice that made the two tools in one library
