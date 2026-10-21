@@ -175,6 +175,7 @@ src/
     notes-memory.js                 进程内 NotesStore 适配器（共用 src/store/notes-port.js）
     notes-port.js                   NotesStore 端口语义共享实现（内部模块）
     append-user-turn.js             多轮续跑契约的预写 user 轮
+    message-rows.js                 读侧折叠：把 `kind:"message"` 行按轮拼回轮行（内部模块）
     transcript-dedup.js             appendRound 去重的 payload 判据（内部模块）
   config/
     api-key.js                      API key 物化
