@@ -10,6 +10,7 @@ import {
   estimateTokensFromCharacterCounts,
 } from "../tokens.js";
 import { groupIntoRounds } from "../messages/rounds.js";
+import { MESSAGE_ROW_KIND } from "../store/message-rows.js";
 import { decideRoundAction, decideWithEvaluation } from "../reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "../reflection/l0.js";
 import { tryParseWrapupJson, normalizeWrapupWithLlm } from "../reflection/wrapup.js";
@@ -683,7 +684,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], resumeRunSnapshotMessages: any[], persistedTranscriptLength: number, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number> }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -698,6 +699,10 @@ export async function runToolLoop(options) {
     resumeTailMessages: [],
     resumeRunSnapshotMessages: [],
     persistedTranscriptLength: 0,
+    // 工单 261021（第二刀·写侧）：轮内消息序号计数器（`round → 下一个可用 seq`），与
+    // `persistedTranscriptLength` 同族的「已落盘」状态；`seq` 从 0 单调递增，写进展见
+    // `appendMessageRowToTranscript`，读侧口径见 `src/store/message-rows.js`。
+    messageSeqByRound: new Map(),
     // 【C resume 尾队列（续）】无初值格子：原 `let X;` 的初值就是 undefined，逐字保住。
     resumeTranscriptStart: undefined,
     lastPersistenceFailure: undefined,
@@ -2128,6 +2133,41 @@ export async function runToolLoop(options) {
     return persisted;
   };
 
+  // 工单 261021（第二刀·写侧）：**一条消息一成型就落盘**——补齐上面那条先例没覆盖的那一半：
+  // 轮记录原本把整轮正文（`messages.slice(roundStart)`）留到轮末才写，于是「模型已经看到、
+  // 档案里还没有」的窗口覆盖整轮（工具执行期崩溃 ⇒ 本轮 assistant 正文与已完成的工具结果全丢）。
+  // 行形状与读侧折叠层（`src/store/message-rows.js`）逐字对齐，否则正文折不回去：
+  //   · `dedupKey = <runId>:msg:<round>:<seq>`，`seq` 轮内从 0 单调递增（计数器在 `runLoopState`）
+  //     ⇒ 崩溃重跑同 `(round, seq)` 同内容 = 同 key 同 payload = `appendRound` 幂等跳过（不产生第二行）；
+  //   · `kind: "message"` + `seq` 是折叠的两把钥匙（无 `seq` 的引擎控制文本行不参与折叠，原样透传）；
+  //   · `partOf` = 同一逻辑消息首片行的 `dedupKey`：一轮的多个 `tool_result` 改造前是同一条 user
+  //     消息的多个 content block，现在每个结果单独成行，靠 `partOf` 接回同一条消息。
+  // `persistedTranscriptLength` 的口径仍然是「折叠后已落盘的**逻辑消息**总数」（= `restoreResume`
+  // 的 `records.flatMap(record.messages).length`）⇒ 分片行（`partOf`）加 0，否则 resume 锚点会偏。
+  /** @param {any} message @param {number} roundNumber @param {{ partOf?: string }} [options] */
+  const appendMessageRowToTranscript = async (message, roundNumber, options = {}) => {
+    if (message === undefined || message === null) return undefined;
+    if (!Number.isSafeInteger(roundNumber)) return undefined;
+    const seq = runLoopState.messageSeqByRound.get(roundNumber) ?? 0;
+    runLoopState.messageSeqByRound.set(roundNumber, seq + 1);
+    const dedupKey = `${String(runId)}:msg:${String(roundNumber)}:${String(seq)}`;
+    const partOf = typeof options.partOf === "string" ? options.partOf : "";
+    const persisted = await persist("appendRound", runId, {
+      round: roundNumber,
+      roundKey: `${String(runId)}:round:${String(roundNumber)}`,
+      dedupKey,
+      kind: MESSAGE_ROW_KIND,
+      seq,
+      messages: cloneState([message]),
+      ts: new Date().toISOString(),
+      ...(partOf === "" ? {} : { partOf }),
+    });
+    if (!persisted) return undefined;
+    // 分片只往已有那条逻辑消息里加 block，不新增消息 ⇒ 锥点计数不变。
+    if (partOf === "") runLoopState.persistedTranscriptLength += 1;
+    return dedupKey;
+  };
+
   // issue #326（wo-C）：**引擎自产「上下文事实」的产生即入账**——沿用上面同一先例的形状与命名空间风格
   // （引擎命名空间 + 轮号 + 槽位名），只多一个**事实指纹**后缀：同一事实崩溃后重跑幂等，不同事实
   // 换键 ⇒ 不会被 #326 第1步的「同 key 异 payload = 冲突」判据误伤（一轮里可能发生两次不同折叠）。
@@ -2632,7 +2672,7 @@ export async function runToolLoop(options) {
   // 所以不需要条数上限 / 合并去重 / 终身额度。文案不进 `tool_result`（独立 user text 消息）。
   const flushJudgeDoneAdvisory = (roundNumber) => {
     const text = pendingJudgeDoneAdvisory.text;
-    if (typeof text !== "string" || text === "") return;
+    if (typeof text !== "string" || text === "") return undefined;
     pendingJudgeDoneAdvisory.text = undefined;
     const advisoryMessage = {
       role: "user",
@@ -2643,6 +2683,7 @@ export async function runToolLoop(options) {
     };
     messages.push(advisoryMessage);
     if (roundNumber !== undefined) messageRounds.set(advisoryMessage, roundNumber);
+    return advisoryMessage;
   };
 
   const roundNumbersForMessages = (currentMessages) => {
@@ -3153,6 +3194,12 @@ export async function runToolLoop(options) {
     const compaction = await compactBeforeRound(round);
     let requestStateBlock = compaction.requestStateBlock;
     const roundStart = messages.length;
+    // 工单 261021 写侧：轮末才入账的引擎控制文本（方向提示 / 达成 advisory）在此暂存，
+    // 在本轮轮记录落盘**之后**写成 `…:control:` 行（不带 `seq`，折叠层原样透传）：
+    // 它们的 `messages.push` 位置不动（模型下一轮照旧看得见），只是档案行改排在轮行后面，
+    // 于是 `flatMap(record.messages)` 的序列与改造前（正文靠轮记录 `messages.slice(roundStart)`
+    // 带走）逐字一致。写在前会让折叠后的顺序变成 [提示, assistant, tool_result]。
+    const engineTextAfterRound = [];
     // 预算兜底（2026-09-20 基准实测：剩余轮数耗尽时模型无视文字提示继续调工具，
     // 撞 max_rounds 被 truncate，靠 wrapup 全量重发历史 + 额外 4 分钟兜底）：
     // 本轮是最后一个预算轮时不带 tools，强制输出文本终稿。此时消息历史里所有
@@ -3169,6 +3216,8 @@ export async function runToolLoop(options) {
     const assistantMessage = { role: "assistant", content };
     messages.push(assistantMessage);
     messageRounds.set(assistantMessage, round);
+    // 工单 261021 写侧：正文的入账点在下面「本轮正文定型之后」（L1 标记剥离 / 续写合并都已完成，
+    // 但仍在工具执行**之前**）——append-only 行没有更新，写早了就把处理前的正文当成档案正文。
     addUsage(response, providerResult.estimatedTokens);
     if (!providerResult.usageEmitted && response?.usage !== undefined) {
       emitEvent({ type: "usage", round, usage: response.usage });
@@ -3236,6 +3285,19 @@ export async function runToolLoop(options) {
     ));
     const assistant = messages.at(-1);
     if (assistant?.role === "assistant") assistant.content = content;
+    // 工单 261021 写侧·写入点 1：**本轮 assistant 正文一成型就入账**（此刻 L1 标记已剥离、续写已
+    // 合并，而工具还没执行 ⇒ 「工具执行期崩溃 ⇒ 本轮 assistant 正文全丢」那个窗口关掉了）。
+    // 先把本轮 tool_use 的 `toolCallKey` 按工具循环里同一口径认领好（`claimToolCallKey` 自带
+    // `peek`、重复认领幂等），否则账本里的 tool_use 块会少了改造前就有的 `erix.toolCallKey`。
+    for (const block of content) {
+      if (block?.type !== "tool_use") continue;
+      const claimedKey = acceptedToolCallKey(block, snapshotResults.get(block.id));
+      if (claimedKey !== null) ensureToolCallKeyOnBlock(block, claimedKey);
+    }
+    await appendMessageRowToTranscript(
+      assistant?.role === "assistant" ? assistant : { role: "assistant", content },
+      round,
+    );
     finalText = textFromBlocks(content);
     if (wrapupJson !== null) {
       finalText = wrapupJson.output || wrapupJson.summary;
@@ -3248,6 +3310,9 @@ export async function runToolLoop(options) {
 
     if (response?.stopReason === "tool_use") {
       const toolResults = [];
+      // 工单 261021 写侧：本轮 `tool_result` 聚合消息的首片行 key（后续结果靠 `partOf` 接回同一条）。
+      let toolResultRowKey = undefined;
+      const journaledToolResults = new Set();
       const pendingToolUses = content.filter((candidate) => candidate?.type === "tool_use");
       for (const block of content) {
         if (block?.type !== "tool_use") continue;
@@ -3287,6 +3352,19 @@ export async function runToolLoop(options) {
             pendingToolUses.slice(pendingToolUses.findIndex((candidate) => candidate === block)),
           );
         if (!toolResults.includes(toolResult)) toolResults.push(toolResult);
+        if (!journaledToolResults.has(toolResult)) {
+          journaledToolResults.add(toolResult);
+          // 工单 261021 写侧：**工具结果一产生就写**——这是全循环里唯一有外部副作用的边界，
+          // 改造前它与同轮其余结果挤在同一条 user 消息里、等轮末才落盘。
+          // 去重口径不能拄 `toolResults.includes(...)`：执行器自己也会把结果 push 进 `toolResults`，
+          // 那个判据在正常路径下恒为真 ⇒ 一个结果都不会入账 ⇒ 按身份集合自己记。
+          const persistedRowKey = await appendMessageRowToTranscript(
+            { role: "user", content: [toolResult] },
+            round,
+            toolResultRowKey === undefined ? {} : { partOf: toolResultRowKey },
+          );
+          if (persistedRowKey !== undefined) toolResultRowKey = persistedRowKey;
+        }
         emitEvent({ type: "tool_result", round, toolResult: cloneState(toolResult) });
       }
       if (toolResults.length > 0) {
@@ -3313,9 +3391,13 @@ export async function runToolLoop(options) {
         messages.push(hintMessage);
         messageRounds.set(hintMessage, round);
         pendingDirectionHints.length = 0;
+        engineTextAfterRound.push({ message: hintMessage, slot: "direction-hint" });
       }
       // 达成 advisory 与方向提示同批发出，但走自己的单槽（issue #322）
-      flushJudgeDoneAdvisory(round);
+      const advisoryMessageThisRound = flushJudgeDoneAdvisory(round);
+      if (advisoryMessageThisRound !== undefined) {
+        engineTextAfterRound.push({ message: advisoryMessageThisRound, slot: "judge-advisory" });
+      }
     }
     // streak 只累积 stalled 命中；出现不同签名（模型转向）才清零
     if (stallSuspicion) {
@@ -3583,7 +3665,9 @@ export async function runToolLoop(options) {
       // 引擎命名空间（同 resume 预落盘，见上方注释）：宿主若已用默认键
       // `${runId}:round:N` 写了同行号的行，引擎本轮的完整记录不会被去重丢掉。
       dedupKey: `${String(runId)}:engine:round:${String(round)}`,
-      messages: messages.slice(roundStart),
+      // 工单 261021 写侧：轮记录不再写正文（`messages: messages.slice(roundStart)`）——正文已在
+      // 成型的那一刻逐条入账（`appendMessageRowToTranscript`），这里只留元数据；读侧折叠层
+      // （`src/store/message-rows.js`）把那些消息行折回本行，所以 `store.load()` 的形状不变。
       ts: new Date().toISOString(),
       response: {
         content,
@@ -3635,7 +3719,10 @@ export async function runToolLoop(options) {
       }
     }
     const persisted = await persist("appendRound", runId, record);
-    if (persisted) runLoopState.persistedTranscriptLength += record.messages.length;
+    // 工单 261021 写侧：正文的计数已跟着消息行走（`appendMessageRowToTranscript`），轮行只剩元数据。
+    for (const entry of engineTextAfterRound) {
+      await appendEngineMessagesToTranscript(entry.message, round, entry.slot);
+    }
     if (onRound) {
       // issue #173 PR-B：onRound 是被 await 的钩子，同步 throw 与 rejected Promise 都在此吸收。
       // 轮次此刻已经落库，宿主回调失败不得改写 run 终局——记一笔后继续跑下一轮。
