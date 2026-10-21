@@ -3,6 +3,14 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Changed
+
+- **存储收敛第一刀·只动读侧：`store.load()` 开一层「消息行折叠」（工单 261021；写侧「一条消息一落盘」是下一单）。** 新增内部模块 `src/store/message-rows.js`（`foldMessageRows`），`src/store/file.js` 与 `src/store/memory.js` 的 `load()` 在 `loadRecords` 之后统一过它：`kind:"message"` 且带轮内 `seq` 的行按 `round` 分组、组内按 `seq` 升序（同 `seq` 按落盘先后）把正文拼回该轮的**载体行**（`<runId>:engine:round:<n>` / `<runId>:round:<n>` / `<runId>:engine:round:<n>:resume`），`partOf` 指认的分片按 `seq` 接回同一条消息（一轮多个 `tool_result` 在改造前本就是同一条 user 消息的多个 block）。
+  - **宿主可见形状一字不变**：`records.flatMap(record => record.messages ?? [])`（`src/loop/resume-manager.js` 重建上下文的唯一口径）读到的序列与改造前逐字一致；三条硬口径写在新模块文件头——无载体行（崩在轮行落盘之前）⇒ 消息行**原样留在数组里、一个字节不改**；无消息行的**老账本 ⇒ 返回入参本身**（同一引用、同一批对象）；宿主经 `src/store/append-user-turn.js` 写的 `:input:` 行虽同标 `kind:"message"` 但没有引擎 `seq` ⇒ **不吸走**（否则 `appendUserTurn`「load 里能看见自己的 dedupKey」的幂等判据会失效）。
+  - 点查探针（`loadByDedupKey` / `loadMaxRound`）**不折叠**：它们是对原始行的探针，`appendUserTurn` 快路径要的正是「这条 key 在不在」。
+  - **金样方法论**（`scripts/message-journal-golden.mjs` + `test/fixtures/message-journal-golden.json`）：夹具必须由**改造前的基线提交**（`2ca60bc`，`git worktree` 上跑 `--write`）产出，再在改后代码上 `--check` 对撞——否则是「拿改后的代码生成夹具、再拿同一份代码比」的自己证明自己。`test/store/message-journal-golden.test.js` 里加了一条**夹具来源守卫**（夹具里不得出现 `kind:"message"` 行）防退化。实测两个场景（`single-run` / `crash-resume`）：基线与改后各 8 行 / 正文 10 与 11 条，逐字一致。
+  - 折叠规则本身另由 `test/store/message-rows-fold.test.js` 16 条**手写期望值**用例钉住（写侧未落地，今天引擎还不产消息行，金样只能证明透传；反向证：把 `seq` 排序改成落盘序 ⇒ 4 条红、把 `partOf` 无视 ⇒ 1 条红）。本刀**未动** `src/loop/orchestrator.js`、`bin/`、快照字段与 `package.json`。
+
 ### Documentation
 
 - **纠正一条被沿用的错误说法：judge 的「方向提示」从来不是「模型见过、档案里没有」（工单 261021-04；`src/` 只加了两处约束注释，行为零改动）。** 结论来自实测：两个 flush 点（`src/loop/orchestrator.js` 主循环的工具块末、以及 resume 补跑段之后）都在**本轮 `appendRound` 落盘之前**把提示 push 进 `messages`，于是正文被轮记录的 `messages.slice(roundStart)`（resume 路径是被 `…:resume` 那行的 `messages.slice(resumeTranscriptStart)`）带走 ⇒ `store.load()` 里**恰有一条**（实测：主循环 `…:engine:round:2` 命中 1、resume `…:engine:round:1:resume` 命中 1）。此前「档案 0 条」的说法出自只数 `…:control:` 行、没数「正文是否在轮记录里」的旧探针。
