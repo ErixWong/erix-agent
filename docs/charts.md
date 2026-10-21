@@ -239,7 +239,7 @@ sequenceDiagram
     Note over H,S: Phase 4 — result and event stream
     L-->>H: result{finalText, termination, verification, usage, compactionStats}
     L-->>H: full-event stream onRound / onDelta / onToolCall / onUsage / onJudge / onEvent
-    Note over S: archive complete: per-round JSONL + folded payload + run snapshot + run-state<br/>— the host can reconcile, replay, and audit
+    Note over S: archive complete: one row per message + metadata-only round rows + run snapshot + run-state<br/>— the host can reconcile, replay, and audit
     end
 ```
 
@@ -412,7 +412,7 @@ flowchart TB
     end
 
     subgraph archive["archive (one per run)"]
-        JSONL["<runId>.jsonl<br/>per-round record: messages + foldedPayload + toolOutputs"]
+        JSONL["<runId>.jsonl<br/>metadata-only round rows + one row per message<br/>(kind:\"message\", seq / partOf?); load() folds them back"]
         ST["<runId>.state.json<br/>run-state"]
         CK["<runId>.snapshot.json<br/>latest run snapshot<br/>(legacy .checkpoint.json read-compatible)"]
     end

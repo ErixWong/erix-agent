@@ -106,8 +106,8 @@ scripts/          # 实验脚本和结果
   看不见。合法修法两条：**删掉区间**（`` `符号`（`路径`） ``，首选：行号会漂，`symbols` 从来不需要它），或把区间挪到真的
   覆盖声明处。不带区间的锚点不在本判据范围内，这也正是「删区间」能让下面那道棘轮合法下降的原因。
   *`bare-lines`* 是**只减不增的棘轮**：`src/**.js:N` / `:N-M` 形态的裸行号引用，按唯一 (文档, 目标文件, 行区间) 计数，
-  不得超过同一份脚本里的 `BARE_LINE_REF_BASELINE = 138`。这个数可以复核：`node scripts/docs-drift-check.mjs --verbose`
-  会打出实测「142 唯一区间 − 4 处声明式豁免 = 138」。豁免走 `BARE_LINE_EXEMPTIONS`，**三个信号缺一不放行**（评审 R4 把从前的整行 OR 收紧成 AND）：
+  不得超过同一份脚本里的 `BARE_LINE_REF_BASELINE = 136`。这个数可以复核：`node scripts/docs-drift-check.mjs --verbose`
+  会打出实测「140 唯一区间 − 4 处声明式豁免 = 136」。豁免走 `BARE_LINE_EXEMPTIONS`，**三个信号缺一不放行**（评审 R4 把从前的整行 OR 收紧成 AND）：
   ① 表里点名这一条（文档 + 占位路径）；② 引用行里确实写着那个占位路径；③ 同一行还有「示例/示意/宿主仓根」
   这类就地声明词——同一行剩着一句 `for example` 之类的附带措辞不算声明。条目自己还要过配置校（声明词若能
   匹配空串 = 这一侧恒真、或带 `g` 标志让 `.test()` 变有状态 ⇒ 红）；没被任何引用用到的条目本身也会红
@@ -212,7 +212,7 @@ erix --version && erix chat "..."   # 端到端验证（复用 ~/.erix/config.js
 ├── mcp.json           # MCP server 注册（标准格式，可复用 ~/.config/mcp/mcp.json）
 ├── <session>.json     # 会话历史（id 按 cwd 派生）
 ├── transcripts/
-│   ├── <runId>.jsonl          # 逐轮记录（含 judge 决策字段）
+│   ├── <runId>.jsonl          # 只留元数据的轮行 + 一条消息一行（`kind:"message"`，`seq` / `partOf?`）；`load()` 折叠回轮行
 │   └── outputs/<runId>/       # 该 run 的全部产物归档：工具捕获、报告、judge.log
 │       └── judge.log          # judge 决策 JSONL（默认写这里；--judge-log / ERIX_JUDGE_LOG 可覆盖）
 ├── skills/            # 用户级 skill（自描述协议）

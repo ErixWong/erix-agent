@@ -856,7 +856,7 @@ To continue an existing run with a new user message, the host **pre-writes a
 user turn** into the transcript store and then calls `runToolLoop` with
 `resume: true`. When — and only when — `resume: true` is combined with a
 supplied `store` and `runId` (the condition in
-`src/loop/resume-manager.js:75`), the engine rebuilds its message state from
+`restoreResume` (`src/loop/resume-manager.js`)), the engine rebuilds its message state from
 `store.load(runId)` and **ignores `initialMessages` and
 `initialUserMessage`** — a host-provided user message reaches the model only
 through a pre-written record, never through those options. Resuming without a
@@ -877,8 +877,10 @@ A correct pre-written `RoundRecord` must satisfy:
   exist yet, which is equivalent for the engine.
 - **dedupKey:** namespaced `"<key>:input:<suffix>"`, unique per turn. The
   engine writes its own rows under `"<runId>:engine:round:<n>"`,
-  `"…:resume"` and `"…:control:<slot>"` (see the next bullet), so host
-  `:input:` keys never collide with engine rows.
+  `"…:engine:round:0:seed"` (the seed row), `"…:msg:<round>:<seq>"` (**one row per
+  message, several per round** — see the journal row shapes section), `"…:resume"`,
+  `"…:control:<slot>"`, and the fact rows `"…:fold:<fp>"` / `"…:ttl:<fp>"` (see the
+  next bullet), so host `:input:` keys never collide with engine rows.
 - **Engine control rows (issue #326):** text the engine injects into the model's
   context **after** the current round record has already been written — the judge
   advisory nudge, the extension continuation note, the final-guard revise note, and
@@ -2387,7 +2389,7 @@ proving fidelity, for example by running and extending the assertions in
 
 ### Journal row shapes: message rows plus metadata-only round rows (ticket 261021)
 
-Since 0.22.x the engine writes a message into the journal **the moment it is
+Since 0.23.0 the engine writes a message into the journal **the moment it is
 formed** instead of once per round. One journal row carries exactly one
 message:
 

@@ -717,7 +717,7 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
 
 要用新的用户消息继续一个既有 run，宿主需**预写入一个用户轮**到 transcript store，
 然后以 `resume: true` 调用 `runToolLoop`。当且仅当 `resume: true` 与提供的 `store`、
-`runId` 同时成立时（即 `src/loop/resume-manager.js:75` 的条件分支），引擎会从
+`runId` 同时成立时（即 `restoreResume`（`src/loop/resume-manager.js`）的条件分支），引擎会从
 `store.load(runId)` 重建消息状态，并**忽略 `initialMessages` 与 `initialUserMessage`**
 ——宿主提供的用户消息只能通过预写记录到达模型，绝不通过这两个选项。resume 而缺少
 `store` 或 `runId` 属于未支持的调用：此时初始消息选项不会被覆盖。
@@ -732,7 +732,9 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
   进它。空 `load` 结果是种子路径：在 round `0` 预写该轮；内置 CLI 则在没有既有记录
   时不带 `resume` 地传 `initialMessages`/`initialUserMessage`，对引擎而言等价。
 - **dedupKey：** 命名空间为 `"<key>:input:<suffix>"`，每轮唯一。引擎自身行写在
-  `"<runId>:engine:round:<n>"`、`"…:resume"` 与 `"…:control:<slot>"`（见下一条）下，
+  `"<runId>:engine:round:<n>"`、`"…:engine:round:0:seed"`（种子行）、`"…:msg:<round>:<seq>"`
+  （**一条消息一行，每轮可多行**——见「档案行形状」一节）、`"…:resume"`、`"…:control:<slot>"`
+  与事实行 `"…:fold:<fp>"` / `"…:ttl:<fp>"`（见下一条）下，
   宿主 `:input:` 键永不与引擎行碰撞。
 - **引擎控制行（issue #326）：** 引擎在当前轮记录**已经落盘之后**注入给模型的文本——judge 评审意见
   nudge、扩轮续跑提示、finalGuard revise 意见、强制收尾指令及其终稿 assistant——在**产生的那一刻**
@@ -1889,7 +1891,7 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 
 ### 档案行形状：消息行 + 只留元数据的轮行（工单 261021）
 
-引擎现在把一条消息在**成型的那一刻**写进档案，而不是整轮末一次性写。一个档案行只携带
+自 **0.23.0** 起，引擎把一条消息在**成型的那一刻**写进档案，而不是整轮末一次性写。一个档案行只携带
 一条消息：
 
 ```ts

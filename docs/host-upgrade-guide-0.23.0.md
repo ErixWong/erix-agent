@@ -62,7 +62,9 @@ If you need the raw rows for an audit (the engine's own real-upstream e2e does e
 **Symptom.** The `record` handed to `onRound` is the round record the engine persists. Since that record
 no longer writes `messages`, `record.messages` is now `undefined` (not an empty array). Everything else is
 unchanged: `round`, `response` (`content` / `stopReason` / `usage`), `textPreview`, `summary`, `l0facts`,
-`runState`, `toolUses`, `judge`, `wrapup`, `compactionStats`, `foldedSummary`, `ttlDegradations`.
+`runState`, `toolUses`, `judge`, `wrapup`, `compactionStats`. (`foldedSummary` and `ttlDegradations` are
+**not** round-record fields — they live on their own fact rows, `…:fold:<fp>` / `…:ttl:<fp>`, whose
+`messages` is `[]`; read them from `load()` rows, not from `onRound`'s `record`.)
 
 **How to tell.** `grep -n "onRound" your-host.js` and look for `record.messages` inside the callback.
 
@@ -110,9 +112,9 @@ projection instead of `load()`'s output:
 
 - every round appears **twice** — once from the round row (metadata, `response.content`) and once from
   the `kind:"message"` row that carries the same assistant text;
-- `durationMs` is **missing** (`undefined`) on the tool entries, because the `erix.*` execution facts live
-  on the round row's tool-result record, while the body that the projection pairs against came from a
-  message row written *before* the tool ran;
+- `durationMs` is **missing** (`undefined`) on the tool entries, because the assistant call and its
+  result live on **two different rows** in the new ledger (the call is journaled before the tool runs,
+  the result right after), so a projection that works record-by-record cannot pair them;
 - the same `toolCallKey` shows up twice, so any "one entry per call" assertion fails.
 
 This is not hypothetical: the repository's own real-upstream smoke test had exactly this bug
