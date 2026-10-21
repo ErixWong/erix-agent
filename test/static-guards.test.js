@@ -541,9 +541,10 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
     const made = [];
     // ⚠ 「用完即删」必须把**目录本身**也算进去：干净检出（CI / 全新 clone）里这个目录本来不存在，
     // 下面的 `mkdirSync(…, { recursive: true })` 会把它**造**出来。以前只删自己写的两个文件，空目录留在树里，
-    // 于是同一棵树里稍后跑的 `docs-drift-check --self-test` 看到「docs/tasks/ 在场但里面一条实物都没有」：
-    // `taskArchiveDirPresent()` 为真而 `simDropped === 0` ⇒ #280 那两条「树形对照」用例的变异落不上
-    // 而报「树形口子没落上」⇒ 自测红数从 3 抬到 **5**（CI 里就是这么被抬上去的；同属 issue #281 那一族的假红）。
+    // 于是同一棵树里稍后跑的 `docs-drift-check --self-test` 看到「docs/tasks/ 在场但里面一条实物都没有」，
+    // 报「树形口子没落上」——**#302 之前**那会让自测红数从 3 抬到 5（CI 里就是这么被抬上去的，同属 issue #281
+    // 那一族的假红）；#302 起树形用例跑在合成树夹具上，与真树有没有 `docs/tasks/` 无关（干净检出实测 103 例全 ✓），
+    // 所以现在这条只是「别把自己造的东西留在树里」，不再改判据。
     // 修法只有一条：谁造的目录谁删。开发树里该目录本来就在（且里面有实物）⇒ dirWasAbsent=false，一律不碰。
     const dirWasAbsent = !existsSync(dir);
     const probe = (name, body) => {
@@ -573,9 +574,11 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
       }
     }
     // 反向证（只在干净树里可从）：把上面那行 rmdirSync 删掉就必须红——空目录留在仓树里不只难看，
-    // 它会改变同树里其它门禁的行为（上面那段注释）。
+    // 而且它是本测试自己造的（谁造的谁删；#302 之前它还会改同树里 docs-drift-check --self-test 的红数）。
     if (dirWasAbsent && existsSync(dir)) {
-      assert.fail(`探针在干净树里造的 ${relative(ROOT, dir)}/ 没跟着探针一起消失，会把同树里跑的 docs-drift-check --self-test 从 3 条红抬到 5 条`);
+      assert.fail(`探针在干净树里造的 ${relative(ROOT, dir)}/ 没跟着探针一起消失（谁造的目录谁删）；`
+        + "#302 之前这会把同树里 docs-drift-check --self-test 的红数从 3 抬到 5，现在那条耦合已经断了，"
+        + "但把自己造的东西留在仓树里仍然是本测试自己的卫生问题");
     }
   });
 
@@ -1457,11 +1460,18 @@ describe("静态守卫：.gitignore 目录规则与 IGNORED_DIR_CLASSES 双向�
 //     命令名就不在同一行），按行判会漏——那正是本规则要接住的形状。
 //   · 为什么「带时态标记就放行」：历史要留（#377 明写「别删历史」），本规则只禁止它**冒充现状**。
 //   · 为什么不是「出现『假红』就红」：那个词在 `test/` / `scripts/` 的注释里是常用语（「宁可假红，不要假绿」），
-//     全仓禁令会淹死在误报里。本规则只管**文档**，且只管 `--self-test` 语境；口径与第 3 条一致（宁可窄而真）。
+//     全仓禁令会淹死在误报里。本规则只管散文（文档 + 代码注释），且只管那一两个措辞；口径与第 3 条一致（宁可窄而真）。
 //   · 另加一条**覆盖面**断言（#210 那族「句子被删也要红」）：两份 AGENTS 的 `--self-test` 那一行必须在，
 //     且必须提到 `#302`——否则有人把整句删掉，上面那条禁令就恒绿了。
+//   · 代码面（#384）：门禁脚本（`scripts/*.mjs`）与测试（`test/**`）的**注释**也在面内——改门禁的人读的
+//     第一手材料就是那些注释，而 #377 只清了文档，同一类话在那里还有一份。只认**整行注释**（`isCommentLine`）：
+//     代码里的字符串是靶子字面（本文件「放行证与范围证」那几条 `sample([...])` 就是故意造的红），
+//     把它们算进面里等于让规则咬自己的反向证。提到集合也从「`--self-test`」扩到「`--self-test` 或
+//     干净 clone / clean clone」：**#302 之前**那批红正是「干净 clone 本来就会红几例」的产物，
+//     那种句子最容易冒充现状。段内出现「已知假红 / known false red」却没有任何时态标记 ⇒ 红并点名 `文件:行`。
 
-/** 禁止冒充现状的措辞（本单实测：真实树上只剩 AGENTS 中英两行 + 0.19.0 指南中英两段命中）。 */
+/** 禁止冒充现状的措辞（真实树上的命中清单由下面「规则 5」用例的 diagnostic 打出来：文档面 4 处 +
+ *  代码面若干处，后者都在本文件规则 5 的头注释里——#384 起代码注释也进面）。 */
 const SELF_TEST_FALSE_RED_PHRASES = Object.freeze([
   { name: "已知假红", re: /已知假红/ },
   { name: "known false red", re: /known false reds?/i },
@@ -1474,8 +1484,17 @@ const SELF_TEST_TENSE_MARKERS = Object.freeze([
   { name: "before #302", re: /\bbefore\s+#302\b/i },
 ]);
 
-/** 命令名：一段话提到它，这段话才是在描述 `--self-test`。 */
-const SELF_TEST_MENTION = "--self-test";
+/** 提及集合：一段话提到其中任一，这段话才是在描述「树形 / 干净检出」那件事（#384 起从单个命令名扩到这里）。 */
+const SELF_TEST_PROSE_MENTIONS = Object.freeze([
+  { name: "--self-test", re: /--self-test/ },
+  { name: "干净 clone", re: /干净\s*clone/ },
+  { name: "clean clone", re: /clean\s+clone/i },
+]);
+
+/** 代码面只看整行注释：非注释行换成空行（行号不动），于是段落切分与报错点名与文档面完全同形。 */
+function commentOnlyView(text) {
+  return text.split(/\r?\n/).map((line) => (isCommentLine(line) ? line : "")).join("\n");
+}
 
 /** 段落切分（保留每行自己的行号，报错要点名到行）。 */
 function paragraphsOf(text) {
@@ -1498,29 +1517,33 @@ function paragraphsOf(text) {
 /**
  * 规则 5 的核心（**纯函数，读文本可注入**——反向证直接喂改过的真实文本，不碰磁盘）。
  *
- * @param {{readText: (rel: string) => (string|null), docs?: readonly string[]}} params
- * @returns {{errors: string[], rows: {doc: string, line: number, phrase: string, markerLine: number|null}[]}}
+ * @param {{readText: (rel: string) => (string|null), docs?: readonly string[], codeFiles?: readonly string[]}} params
+ * @returns {{errors: string[], rows: {doc: string, kind: "doc"|"code", line: number, phrase: string, markerLine: number|null}[]}}
  */
-function selfTestFalseRedReport({ readText, docs = SELF_TEST_PROSE_DOCS }) {
+function selfTestFalseRedReport({ readText, docs = SELF_TEST_PROSE_DOCS, codeFiles = SELF_TEST_PROSE_CODE_FILES }) {
   const errors = [];
   const rows = [];
-  for (const doc of docs) {
+  const surfaces = [
+    ...docs.map((doc) => ({ doc, kind: "doc" })),
+    ...codeFiles.map((doc) => ({ doc, kind: "code" })),
+  ];
+  for (const { doc, kind } of surfaces) {
     const text = readText(doc);
     if (typeof text !== "string") {
-      errors.push(`self-test-prose: ${doc} 读不到文本——描述面的文档少一份，等于这份文档没人校（issue #377）`);
+      errors.push(`self-test-prose: ${doc} 读不到文本——描述面少一份（文档与代码面同口径：少一份就等于那份没人校，issue #377 / #384）`);
       continue;
     }
-    for (const para of paragraphsOf(text)) {
-      if (!para.lines.some((l) => l.text.includes(SELF_TEST_MENTION))) continue;
+    for (const para of paragraphsOf(kind === "code" ? commentOnlyView(text) : text)) {
+      if (!para.lines.some((l) => SELF_TEST_PROSE_MENTIONS.some((m) => m.re.test(l.text)))) continue;
       const marker = para.lines.find((l) => SELF_TEST_TENSE_MARKERS.some((m) => m.re.test(l.text)));
       for (const l of para.lines) {
         for (const phrase of SELF_TEST_FALSE_RED_PHRASES) {
           if (!phrase.re.test(l.text)) continue;
-          rows.push({ doc, line: l.line, phrase: phrase.name, markerLine: marker ? marker.line : null });
+          rows.push({ doc, kind, line: l.line, phrase: phrase.name, markerLine: marker ? marker.line : null });
           if (!marker) {
-            errors.push(`self-test-prose: ${doc}:${l.line} 用「${phrase.name}」描述 \`--self-test\`，同段落却没有时态标记`
+            errors.push(`self-test-prose: ${doc}:${l.line} 用「${phrase.name}」描述 \`--self-test\` / 干净检出，同段落却没有时态标记`
               + "（`#302 之前` / `before #302`）——#302 起树形用例跑在合成树夹具上，干净检出实测 103 例全绿："
-              + "要么按现在的行为重写这句，要么把历史留成带时态的一句（issue #377）");
+              + "要么按现在的行为重写这句，要么把历史留成带时态的一句（issue #377 / #384）");
           }
         }
       }
@@ -1566,7 +1589,18 @@ const SELF_TEST_PROSE_DOCS = Object.freeze([
     .map((name) => `docs/${name}`),
 ]);
 
-describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒充现状（issue #377）", () => {
+/** 代码面（#384）：门禁脚本 `scripts/*.mjs` + 测试 `test/**`。这些文件的**注释**是改门禁的人读的第一手材料，
+ *  #377 只清了文档，同一类话在这里还有一份。扫描时只认整行注释（`commentOnlyView`），代码里的字符串不进面。
+ *  面本身也钉住（见下面「规则 5」用例里的代码面断言）：只许是这两个目录，少一份就红——而不是静默缩小扫描面。 */
+const SELF_TEST_PROSE_CODE_FILES = Object.freeze([
+  ...readdirSync(resolve(ROOT, "scripts"))
+    .filter((name) => name.endsWith(".mjs"))
+    .sort()
+    .map((name) => `scripts/${name}`),
+  ...[...listScannable(CODE_EXTS, "test")].map((f) => f.rel).sort(),
+]);
+
+describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒充现状（issue #377；#384 扩到代码注释）", () => {
   it("规则 5：真实树上每条「已知假红」都有时态标记（回归基线），且两份 AGENTS 的那一行都在", (t) => {
     const { errors, rows } = selfTestFalseRedReport({ readText: realReadText });
     t.diagnostic(`规则 5：命中 ${rows.length} 处（「已知假红 / known false red」）：`);
@@ -1594,13 +1628,29 @@ describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒�
     const coverage = selfTestRowCoverageErrors({ readText: realReadText });
     assert.deepEqual(coverage, [], `两份 AGENTS 的 \`--self-test\` 行覆盖面掉了：\n${coverage.join("\n")}`);
     t.diagnostic("规则 5 覆盖面：AGENTS.md / AGENTS_cn.md 的 `--self-test` 行都在，且都提到 #302");
+
+    // 代码面（#384）：门禁脚本 + 测试的注释也在面内，且面本身不许缩水
+    assert.ok(SELF_TEST_PROSE_CODE_FILES.includes("scripts/docs-drift-check.mjs"), "门禁脚本不在代码面里");
+    assert.ok(SELF_TEST_PROSE_CODE_FILES.includes(SELF), "守卫自己不在代码面里：自审是这条规则的底线");
+    assert.ok(SELF_TEST_PROSE_CODE_FILES.every((f) => f.startsWith("scripts/") || f.startsWith("test/")),
+      "代码面混进了 scripts/ 与 test/ 之外的文件");
+    assert.ok(SELF_TEST_PROSE_CODE_FILES.filter((f) => f.startsWith("test/")).length >= 100,
+      `test/ 面只剩 ${SELF_TEST_PROSE_CODE_FILES.filter((f) => f.startsWith("test/")).length} 份：扫描面被改窄了`);
+    const codeRows = rows.filter((r) => r.kind === "code");
+    assert.ok(codeRows.length >= 1,
+      "代码面一处命中都没有：本文件规则 5 的病根段本来就该命中（若那句话被改写成别的措辞，请同步靶子；恒绿比红更糟）");
+    assert.ok(codeRows.some((r) => r.doc === SELF && r.markerLine !== null),
+      "本文件规则 5 病根段的命中没有时态标记：那段历史叙述会冒充现状");
+    t.diagnostic(`规则 5 代码面：${SELF_TEST_PROSE_CODE_FILES.length} 份（scripts/*.mjs + test/**），命中 ${codeRows.length} 处`);
   });
 
   it("规则 5 反向证：删掉时态标记 ⇒ 红（中英各一格；变异没落上也算失败）", (t) => {
     // ① EN：把「Before #302 it was the other way round」的时态标记删掉 ⇒ AGENTS.md 那一行红
     const enBroken = mutateText(realReadText("AGENTS.md"),
       "Before #302 it was the other way round:", "It used to be the other way round:", "删掉 EN 时态标记");
-    const enReport = selfTestFalseRedReport({ readText: (rel) => (rel === "AGENTS.md" ? enBroken : realReadText(rel)) });
+    const enReport = selfTestFalseRedReport({
+      readText: (rel) => (rel === "AGENTS.md" ? enBroken : realReadText(rel)), codeFiles: [],
+    });
     assert.equal(enReport.errors.length, 1, `只删 EN 时态标记应恰好 1 处红，实测：\n${enReport.errors.join("\n")}`);
     assert.match(enReport.errors.join("\n"), /self-test-prose: AGENTS\.md:69 用「known false red」/);
     t.diagnostic(`① 删掉 AGENTS.md 的「Before #302」⇒ ${enReport.errors.length} 处红：\n${enReport.errors.join("\n")}`);
@@ -1608,7 +1658,9 @@ describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒�
     // ② CN：把「#302 之前是另一回事」的时态标记删掉 ⇒ AGENTS_cn.md 那一行红
     const cnBroken = mutateText(realReadText("AGENTS_cn.md"),
       "#302 之前是另一回事", "曾经是另一回事", "删掉 CN 时态标记");
-    const cnReport = selfTestFalseRedReport({ readText: (rel) => (rel === "AGENTS_cn.md" ? cnBroken : realReadText(rel)) });
+    const cnReport = selfTestFalseRedReport({
+      readText: (rel) => (rel === "AGENTS_cn.md" ? cnBroken : realReadText(rel)), codeFiles: [],
+    });
     assert.equal(cnReport.errors.length, 1, `只删 CN 时态标记应恰好 1 处红，实测：\n${cnReport.errors.join("\n")}`);
     assert.match(cnReport.errors.join("\n"), /self-test-prose: AGENTS_cn\.md:66 用「已知假红」/);
     t.diagnostic(`② 删掉 AGENTS_cn.md 的「#302 之前」⇒ ${cnReport.errors.length} 处红：\n${cnReport.errors.join("\n")}`);
@@ -1616,7 +1668,9 @@ describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒�
     // ③ 把 0.19.0 指南的时态标记删掉（中文那半）⇒ 红：证明修好的历史叙述也被同一条规则看住
     const guide = "docs/host-upgrade-guide-0.19.0_cn.md";
     const guideBroken = mutateText(realReadText(guide), "**那是 #302 之前的事**", "**那批红仍然在**", "删掉指南时态标记");
-    const guideReport = selfTestFalseRedReport({ readText: (rel) => (rel === guide ? guideBroken : realReadText(rel)) });
+    const guideReport = selfTestFalseRedReport({
+      readText: (rel) => (rel === guide ? guideBroken : realReadText(rel)), codeFiles: [],
+    });
     assert.equal(guideReport.errors.length, 1, `只删指南时态标记应恰好 1 处红，实测：\n${guideReport.errors.join("\n")}`);
     assert.match(guideReport.errors.join("\n"), /docs\/host-upgrade-guide-0\.19\.0_cn\.md:\d+ 用「已知假红」/);
     t.diagnostic(`③ 删掉 0.19.0 指南（CN）的「#302 之前」⇒ ${guideReport.errors.length} 处红：\n${guideReport.errors.join("\n")}`);
@@ -1652,31 +1706,58 @@ describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒�
     // ⑤ 带时态标记 ⇒ 绿（历史可以留）
     assert.deepEqual(selfTestFalseRedReport({
       readText: () => sample(["`node scripts/docs-drift-check.mjs --self-test` 的树形用例：", "  #302 之前有 3 例已知假红，现在 0 红。"]),
-      docs: ["x.md"],
+      docs: ["x.md"], codeFiles: [],
     }).errors, [], "带时态标记的历史叙述被误判成红");
     // ⑥ 段落级：标记折到下一行也算（中文会换行，按行判会漏）
     assert.deepEqual(selfTestFalseRedReport({
       readText: () => sample(["`--self-test` 在干净检出里 3 例 known false reds", "before #302 it was; now 0."]),
-      docs: ["x.md"],
+      docs: ["x.md"], codeFiles: [],
     }).errors, [], "时态标记折行时被误判成红（段落级口径失效）");
     // ⑦ 不带时态标记 ⇒ 红（反向证的对照：证明上面两条不是恒绿）
     assert.equal(selfTestFalseRedReport({
       readText: () => sample(["`--self-test` 在干净检出里 3 例 known false reds。"]),
-      docs: ["x.md"],
+      docs: ["x.md"], codeFiles: [],
     }).errors.length, 1, "不带时态标记的现状口吻没被抓住");
-    // ⑧ 范围证：提到 `--self-test` 的段落里出现「假红」（不是「已知假红」）⇒ 不红（本规则只管那一个措辞）
+    // ⑧ 范围证：段落里只出现「假红」、不出现 SELF_TEST_FALSE_RED_PHRASES 里那两个措辞 ⇒ 不红
     assert.deepEqual(selfTestFalseRedReport({
       readText: () => sample(["`--self-test` 宁可假红，不要假绿。"]),
-      docs: ["x.md"],
+      docs: ["x.md"], codeFiles: [],
     }).errors, [], "「假红」这个常用词被一刀切了：这条规则会开始淹死在误报里");
-    // ⑨ 范围证：没提到 `--self-test` 的段落里出现「已知假红」⇒ 不红（别的主题不归本条管）
+    // ⑨ 范围证：没提到 SELF_TEST_PROSE_MENTIONS 里任何一项的段落 ⇒ 不红（别的主题不归本条管）
     assert.deepEqual(selfTestFalseRedReport({
       readText: () => sample(["`check:release` 历史上 3 例已知假红。"]),
-      docs: ["x.md"],
+      docs: ["x.md"], codeFiles: [],
     }).errors, [], "不描述 `--self-test` 的段落被误伤");
     // ⑩ 读不到文本 ⇒ 红（描述面少一份不许静默放行）
-    assert.equal(selfTestFalseRedReport({ readText: () => null, docs: ["gone.md"] }).errors.length, 1,
+    assert.equal(selfTestFalseRedReport({ readText: () => null, docs: ["gone.md"], codeFiles: [] }).errors.length, 1,
       "文档读不到时没有报错（描述面少一份被静默吞掉）");
     t.diagnostic("⑤–⑩ 放行证 / 范围证 / 读不到文本 逐条按预期");
+  });
+
+  it("规则 5 的代码面：注释里删掉时态标记 ⇒ 红并点名那一行（内存假文件，不依赖真树内容）", (t) => {
+    const fake = (lines) => lines.join("\n");
+    // ① 注释里带时态标记 ⇒ 绿（代码面与文档面同一判据）
+    const withMarker = fake(["// 树形用例（#302 之前有 3 例已知假红，现在 0 红）：干净 clone 里也一样。"]);
+    assert.deepEqual(selfTestFalseRedReport({ readText: () => withMarker, docs: [], codeFiles: ["fake/a.js"] }).errors, [],
+      "代码注释里带时态标记的历史叙述被误判成红");
+    // ② 把时态标记删掉 ⇒ 恰好 1 处红，并点名 `文件:行`（这一格就是工单要的反向证，靶子全在内存里）
+    const noMarker = withMarker.replace("#302 之前", "当时");
+    const red = selfTestFalseRedReport({ readText: () => noMarker, docs: [], codeFiles: ["fake/a.js"] });
+    assert.equal(red.errors.length, 1, `删掉代码注释里的时态标记应恰好 1 处红，实测：\n${red.errors.join("\n")}`);
+    assert.match(red.errors.join("\n"), /self-test-prose: fake\/a\.js:1 用「已知假红」/);
+    assert.equal(red.rows[0].kind, "code");
+    t.diagnostic(`① 删掉假文件注释里的「#302 之前」⇒ ${red.errors.length} 处红：${red.errors.join("\n")}`);
+    // ③ 代码串不算：同一条句子写成字符串字面量 ⇒ 绿（靶子字面不是散文，把它们算进面里规则会咬自己的反向证）
+    const asCode = fake(['      readText: () => sample(["`--self-test` 在干净 clone 里 3 例 known false reds。"]),']);
+    assert.deepEqual(selfTestFalseRedReport({ readText: () => asCode, docs: [], codeFiles: ["fake/b.js"] }).errors, [],
+      "代码串（非注释）被算成了散文：本规则会把规则自己的靶子字面当违规");
+    // ④ 块注释也算（`/* */` 与 ` * ` 续行）——门禁脚本的头注释就是这个形状，只认 `//` 会让它们整片漏掉
+    const block = fake(["/*", " * `--self-test` 在干净 clone 里 3 例 known false reds", " */"]);
+    assert.equal(selfTestFalseRedReport({ readText: () => block, docs: [], codeFiles: ["fake/c.js"] }).errors.length, 1,
+      "块注释里的现状口吻没被抓住");
+    // ⑤ 代码面读不到文本 ⇒ 红（面少一份不许静默放行，与文档面同口径）
+    assert.equal(selfTestFalseRedReport({ readText: () => null, docs: [], codeFiles: ["fake/gone.js"] }).errors.length, 1,
+      "代码面读不到文本时没有报错（面少一份被静默吞掉）");
+    t.diagnostic("①–⑤ 代码面反向证 / 范围证 / 读不到文本 逐条按预期");
   });
 });
