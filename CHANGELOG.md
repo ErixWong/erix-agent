@@ -3,6 +3,8 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-22
+
 ### Changed
 
 - **`erix_run` 终局面的 `layers.truncationNote` 不再硬编码「截断到最后 32 条」，改成念 `<runId>.state.json` 自报的 `deterministic.compactionStatsWindow`（issue #373；`examples/pi-extension/erix-run-core.js` + 两格离线用例；`src/` 零改动、无新依赖、纯 ESM）。**

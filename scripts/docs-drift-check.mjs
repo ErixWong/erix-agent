@@ -50,7 +50,7 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 81`（现测 81 组 / 203 处；0.23.0 中英指南落地 +1 组，契约 #361 小节 +3 组）：
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 95`（现测 95 组 / 238 处；0.24.0 中英指南落地 +14 组 / +35 处）：
 //                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
@@ -62,7 +62,7 @@
 //                 正则 `src\/[A-Za-z0-9_./-]+\.js:(\d+)(?:-(\d+))?`；#286 T-a 落地时该口径实测 248 唯一区间 /
 //                 279 次出现，减去 `BARE_LINE_EXEMPTIONS` 的 4 处示例/外仓路径 ⇒ 当时基线 244（**历史值**；
 //                 现值一律跑 `--verbose` 复核，别只信注释）。
-//                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM = 33`（13 份点名 + 20 份实扫指南，工单 261016-307
+//                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM = 35`（13 份点名 + 22 份实扫指南，工单 261016-307
 //                 的 R4 把 20 抬到 22）：按目录实扫意味着「把某份指南改名到不匹配模式」会让脚本与测试侧一起
 //                 少一份而数字仍相等 ⇒ 静默缩面，这条下限与测试侧硬编码的 16 份清单就是那道报警（#286 T-a R2）。
 //                 豁免是**三信号 AND**（① 表里点名这一条 ② 引用行含那个占位路径 ③ 同一行有就地声明词）：
@@ -1539,15 +1539,17 @@ const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT
 
 /** #286 返工 R2：覆盖面份数的**下限**。病根：覆盖面是「硬编码那批 + 按 `^host-upgrade-guide.*\.md$` 实扫」，
  *  于是有人把某份指南改名到不再匹配那个模式（或把它挪出 `docs/`），脚本与测试侧的 glob **一起少一份**，
- *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前 20 份的清单做对照，这里再钉一道份数下限。
+ *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前 22 份的清单做对照，这里再钉一道份数下限。
  *  抬下限的理由（工单 261021-03 B1，**24 → 31**）：覆盖面从「6 份硬编码 + 18 份实扫指南」抬到
  *  「13 份点名文档（6 入口 + 架构/图表/需求对照中英六份 + pi 扩展 README）+ 18 份实扫指南」——
  *  那七份是工单点名的活文档，它们不在面内时「`src/providers/index.js` 这类路径漂了不会红」。
  *  （工单写「8 份 / 32」，但它点名的清单只有 7 份：CHANGELOG 按 #286 既定口径**不进**棘轮面。
  *  抬下限的理由（工单 261021-12 发版准备，**31 → 33**）：0.23.0 的中英成对宿主升级指南
  *  （`docs/host-upgrade-guide-0.23.0.md` / `_cn.md`）落地，实扫指南 18 → **20** ⇒ 13 份点名 + 20 份实扫 = 33。
+ *  抬下限的理由（工单 261022-17 发版准备，**33 → 35**）：0.24.0 的中英成对宿主升级指南
+ *  （`docs/host-upgrade-guide-0.24.0.md` / `_cn.md`）落地，实扫指南 20 → **22** ⇒ 13 份点名 + 22 份实扫 = 35。
  *  写法必须保持这一行不变形（自测要改这个数）。 */
-const REF_SCAN_DOCS_MINIMUM = 33;
+const REF_SCAN_DOCS_MINIMUM = 35;
 
 /** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟「某份指南改名到不匹配模式」。 */
 let SIM_RENAMED_GUIDE = null;
@@ -1993,8 +1995,18 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  （`src/run-state.js`）与 `normalizeCompactionStats`（`src/compact/pipeline.js`），合并后
  *  `--verbose` 实测 81 组 / 203 处；下限不跟着升，#286 返工 R1 的两例自测就会再次 fail-open
  *  （把 `defaultSleep` 退化成裸行号后 80 ≥ 80 不红 ⇒ 用例判「锚点仍是 fail-open」）。
+ *  再升一次的理由（工单 261022-17 发版准备，81 → **95**，+14 组 / 203 → 238 处）：0.24.0 的中英成对宿主升级指南
+ *  （`docs/host-upgrade-guide-0.24.0.md` / `_cn.md`）按同一红线全部用符号锚点引用
+ *  `compactionStatsWindow` / `validateRunState` / `RUN_STATE_MAX_SERIALIZED_BYTES` / `COMPACTION_STATS_SERIALIZED_LIMIT`
+ *  （`src/run-state.js`）、`COMPACTION_STATS_STATE_LIMIT`（`src/compact/pipeline.js`）、
+ *  `assertSnapshotPersisted`（`src/loop/run-snapshot-executor.js`）、`makePersistenceFailure`（`src/loop/orchestrator.js`）、
+ *  `terminationErrorCodeForError`（`src/loop/termination.js`）、`toolMarker` / `displayName` / `searchRootError` /
+ *  `withDeprecation`（`src/tools/file-tools.js`）、`BASELINE_WITH_TOOLS`（`scripts/type-check-ratchet.mjs`）、
+ *  `makeTmp`（`test/helpers/tmp.js`）——`--verbose` 实测 **95 组 / 238 处**（两份新指南各 15 处 = 30 处，14 组是新的；
+ *  余下 5 处是中英 AGENTS 里同一批锚点的声称句）。
+ *  下限不跟着升，#286 返工 R1 的两例自测就会再次 fail-open。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 81;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 95;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

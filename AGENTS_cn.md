@@ -98,7 +98,7 @@ scripts/          # 实验脚本和结果
   抽不到真值不许静默放行）。**字符串值**（终止原因、provider 错误码）是唯一弱一档的形态，只在
   `scripts/docs-drift-check.mjs` 的 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的那 4 个文件里被接受。 裸行号棘轮的唯一键是 (文档, 目标文件, 行区间)，**不含文档自己的行号**——于是把
   `` `符号`（`路径:1517-1531`） `` 改写成不带括号/链接的裸 `路径:1517-1531`，棘轮那个数一字不变，而符号校验整条消失。
-  因此 `symbols` 自带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 81`（#315 的 `compactionStatsWindow` 小节 +1 组 / +2 处，实测 81 组 / 203 处；工单 F2 / issue #361 把契约中英成对新增的「落盘行形状 ≠ `load()` 之后的形状」小节落地后实测 **80 组** / **201 处**（唯一组数 +3：`isRoundCarrier` / `createMemoryTranscriptStore` / `createFileTranscriptStore`），下限随之抬到 80；此前工单 261021-12 发版准备让 0.23.0 中英成对宿主升级指南落地后实测 **77 组** / **194 处**（唯一组数 +1，新指南的锚点含 `projectTranscriptForDisplay` / `foldMessageRows`），下限随之抬到 77；此前工单 261021-11 让读账本一律过 `load()` 的契约子项落地后实测 **76 组** / **189 处**（+1 组：`foldMessageRows`），下限随之抬到 76；此前工单 261021-04 把方向提示的档案口径写成中英成对的契约子项后实测 **75 组** / **185 处**（+3 组：`pendingDirectionHints` / `directionHintText` / `restoreResume`），下限随之抬到 75；此前工单 261021-03 B1 把架构×2 / 图表×2 / 需求对照×2 与 `examples/pi-extension/README.md` 纳面后实测 **72 组** / **180 处**，下限随之抬到 72（+5 组：`resolvedToolResultTtl` / `markStablePrefix` / `loadModelSlot` / `createProviderForSlot` / `createJsonFileModelConfigProvider`）；此前 #326 的 store 去重契约中英成对小节落地后实测 67 组 / 173 处，下限随之抬到 67；此前 2026-10-16 在 0.21.0 中英成对指南落地、
+  因此 `symbols` 自带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 95`（工单 261022-17 发版准备让 0.24.0 中英成对宿主升级指南落地后实测 **95 组** / **238 处**（+14 组：`compactionStatsWindow` / `validateRunState` / `RUN_STATE_MAX_SERIALIZED_BYTES` / `COMPACTION_STATS_SERIALIZED_LIMIT`（`src/run-state.js`）、`COMPACTION_STATS_STATE_LIMIT`（`src/compact/pipeline.js`）、`assertSnapshotPersisted` / `makePersistenceFailure`、`toolMarker` / `displayName` / `searchRootError` / `withDeprecation`（`src/tools/file-tools.js`）、`BASELINE_WITH_TOOLS`（`scripts/type-check-ratchet.mjs`）、`makeTmp`（`test/helpers/tmp.js`）），下限随之抬到 95；此前 #315 的 `compactionStatsWindow` 小节 +1 组 / +2 处，实测 81 组 / 203 处；工单 F2 / issue #361 把契约中英成对新增的「落盘行形状 ≠ `load()` 之后的形状」小节落地后实测 **80 组** / **201 处**（唯一组数 +3：`isRoundCarrier` / `createMemoryTranscriptStore` / `createFileTranscriptStore`），下限随之抬到 80；此前工单 261021-12 发版准备让 0.23.0 中英成对宿主升级指南落地后实测 **77 组** / **194 处**（唯一组数 +1，新指南的锚点含 `projectTranscriptForDisplay` / `foldMessageRows`），下限随之抬到 77；此前工单 261021-11 让读账本一律过 `load()` 的契约子项落地后实测 **76 组** / **189 处**（+1 组：`foldMessageRows`），下限随之抬到 76；此前工单 261021-04 把方向提示的档案口径写成中英成对的契约子项后实测 **75 组** / **185 处**（+3 组：`pendingDirectionHints` / `directionHintText` / `restoreResume`），下限随之抬到 75；此前工单 261021-03 B1 把架构×2 / 图表×2 / 需求对照×2 与 `examples/pi-extension/README.md` 纳面后实测 **72 组** / **180 处**，下限随之抬到 72（+5 组：`resolvedToolResultTtl` / `markStablePrefix` / `loadModelSlot` / `createProviderForSlot` / `createJsonFileModelConfigProvider`）；此前 #326 的 store 去重契约中英成对小节落地后实测 67 组 / 173 处，下限随之抬到 67；此前 2026-10-16 在 0.21.0 中英成对指南落地、
   并按 issue #293 补正 0.19.0 指南之后由 32 抬到 35；#313 的契约新节合到它们之上之后实测 45 组 / 107 处；#314 的
   宿主侧 guard 接线一节中英成对落地后实测 **53 组**唯一 (符号, 文件) / **122 处**，下限随之抬到 53；工单 261016-021
   把 0.21.0 中英成对指南补上 #313 / #314 / #312(b) 三节之后实测 **63 组** / **165 处**，下限随之抬到 63；`--verbose` 可复核）：掉到下限以下就红——那是「锚点在退化」被抓住，不是棘轮上升——超过它则收到「请把下限升上去」的提示。
@@ -116,11 +116,11 @@ scripts/          # 实验脚本和结果
   这类就地声明词——同一行剩着一句 `for example` 之类的附带措辞不算声明。条目自己还要过配置校（声明词若能
   匹配空串 = 这一侧恒真、或带 `g` 标志让 `.test()` 变有状态 ⇒ 红）；没被任何引用用到的条目本身也会红
   （与 #286 已落在 `test/static-guards.test.js` 的双条件同口径）。
-  行号越界是**错误**，不是观察项。覆盖面是宿主真会读的 **31** 份文档：两份 README、中英 AGENTS、中英契约、中英架构、中英图表、中英需求对照、`examples/pi-extension/README.md`，加上
+  行号越界是**错误**，不是观察项。覆盖面是宿主真会读的 **35** 份文档：两份 README、中英 AGENTS、中英契约、中英架构、中英图表、中英需求对照、`examples/pi-extension/README.md`，加上
   **全部** `docs/host-upgrade-guide*.md`（按目录实扫，新指南一落地就自动在面内）。按目录实扫有一个静默失效的形状：
   把某份指南改名到不再匹配那个模式，脚本侧和用同一个 glob 的测试侧**一起**少一份，两边数字仍然相等 ⇒ 覆盖面悄悄缩面。
-  所以有 `REF_SCAN_DOCS_MINIMUM = 33` 这道下限（13 份点名文档 + 当前实扫到的 20 份指南；0.22.0 中英成对指南落地时
-  由 22 抬到 24，工单 261021-03 B1 因「架构×2 + 图表×2 + 需求对照×2 + `examples/pi-extension/README.md` 纳入 `paths` 判据」由 24 抬到 **31**——那七份是「会被当成现状读」的活文档，它们不在面内时「`src/providers/index.js` 这类路径漂了不会红」），并且 `test/docs-anchor-ratchet.test.js` 里另硬编码了那 13 + 20 个文件名做对照：改名或新增指南，两处不同步就红。`CHANGELOG.md` 明确**不参与**：
+  所以有 `REF_SCAN_DOCS_MINIMUM = 35` 这道下限（13 份点名文档 + 当前实扫到的 22 份指南；0.22.0 中英成对指南落地时
+  由 22 抬到 24，工单 261021-03 B1 因「架构×2 + 图表×2 + 需求对照×2 + `examples/pi-extension/README.md` 纳入 `paths` 判据」由 24 抬到 **31**——那七份是「会被当成现状读」的活文档，它们不在面内时「`src/providers/index.js` 这类路径漂了不会红」），并且 `test/docs-anchor-ratchet.test.js` 里另硬编码了那 13 + 22 个文件名做对照：改名或新增指南，两处不同步就红。`CHANGELOG.md` 明确**不参与**：
   它的行号记的是「发版那一刻为真」的事实，改掉等于伪造历史（与 #278 的简称登记表同一套理由）。
   第一批 T-a 做的是基建与棘轮；第二批 T-b1a 把契约里**自带区间的符号锚点**那一族改绿（中英同一个 PR），基线从 244 降到 232；第三批 T-b1b 收尾同一族——两份契约里剩下的裸 `src/loop/orchestrator.js:N[-M]` 条目要么**删掉区间**（首选，并把真声明处的符号名写进句子：`resolvedModelConfig` / `reportObserverError` / `persist` / `isEndTurn` 等），要么作为**范围性事实**保留并把区间对过代码，基线从 232 降到 144。剩下的 `provider-runner.js` / `termination.js` / `governor.js` 三族属 T-b2，而「把基线常量降下来并在提交信息里写理由」
   仍然是「确实少了一些」唯一可核对的写法。
@@ -164,7 +164,7 @@ scripts/          # 实验脚本和结果
   以下都是**历史值**，按当时为真保留：67（#307 之后，2026-10-16 实测）、66（#305 新增 `src/text/json-candidates.js` 之后）、
   65（#292 之后，2026-10-15 实测）、64（0.20.0 的 tarball）、63（0.19.0 时代）；体积 +约 44 kB（打包）/ +约 139 kB（解包）是 0.18.0 上实测的。
   `npm run check:types-build` 是「还能不能生成」的门禁。
-- 当前版本：`0.23.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
+- 当前版本：`0.24.0`；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。
 
 ### npm 2026 政策变化（TOTP 停止 + bypass token 限制）
 - ❌ 不再支持新的 TOTP 注册（`enable-2fa` 返回 404）。

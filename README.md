@@ -361,6 +361,8 @@ quoted blocks below against it):
   "docs/host-upgrade-guide-0.22.0_cn.md",
   "docs/host-upgrade-guide-0.23.0.md",
   "docs/host-upgrade-guide-0.23.0_cn.md",
+  "docs/host-upgrade-guide-0.24.0.md",
+  "docs/host-upgrade-guide-0.24.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -954,14 +956,16 @@ library-level controls
 - [docs/testing.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing.md) - test strategy and behavior metrics
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
-- [docs/host-upgrade-guide-0.23.0.md](docs/host-upgrade-guide-0.23.0.md) / [docs/host-upgrade-guide-0.23.0_cn.md](docs/host-upgrade-guide-0.23.0_cn.md) - the
-  latest host-facing migration guide (EN/CN pair), **0.22.0 → 0.23.0**: the storage-convergence release. The
-  journal now gets **one row per message** (written the moment the message is final) and a round row keeps
-  **metadata only**, so `store.load()` is the body API: a host that parses the raw `.jsonl` itself no longer sees
-  the body (round rows carry no `messages`), `onRound(record)` no longer hands you `record.messages`, the run
-  snapshot's `messages` is a **stale copy** rather than the body source, and `projectTranscriptForDisplay` must be
-  fed `load()`'s folded output (raw rows duplicate entries and drop `durationMs`). No store signature, option or
-  export moved
+- [docs/host-upgrade-guide-0.24.0.md](docs/host-upgrade-guide-0.24.0.md) / [docs/host-upgrade-guide-0.24.0_cn.md](docs/host-upgrade-guide-0.24.0_cn.md) - the
+  latest host-facing migration guide (EN/CN pair), **0.23.0 → 0.24.0**: the "the runtime stops guessing on your
+  behalf" release. Two additive/fixed information surfaces — `<runId>.state.json` now reports
+  `deterministic.compactionStatsWindow` (`{ limit, dropped, total }`), and `checkpoint_failed` carries `cause` /
+  `errorCode` / `unpersisted` with the **same names and the same value types** as `persistence_failed` — plus four
+  model-visible tool-output corrections: `tree`'s non-root first line is a replayable relative path, `readFile`
+  emits `[参数校正：…]` when it rewrote your arguments and `[已到末尾：…]` instead of an empty string, a search root
+  that does not exist is an error text rather than `（无命中）`, and the `rg`/`grep` deprecation line names the mode
+  that call really used. No store signature, option or export moved
+  (earlier guide: [docs/host-upgrade-guide-0.23.0.md](docs/host-upgrade-guide-0.23.0.md), 0.22.0 → 0.23.0)
 - [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) - an earlier
   host-facing migration guide: the judge's `writeToolNames` default, the seven-entry
   file-tool list, the `rg`/`grep` deprecation line, the Experimental marker wording,
@@ -989,10 +993,10 @@ Not every Markdown file in this repository claims the same thing, and the gate k
 
 - **Live documentation — gated, must be true *today*.** `README*.md`, `AGENTS*.md`, the consumer contract pair
   (`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`), **every** `docs/host-upgrade-guide*.md`
-  (20 today, discovered from the directory), plus — since 工单 261021-03 B1 — the architecture pair
+  (22 today, discovered from the directory), plus — since 工单 261021-03 B1 — the architecture pair
   (`docs/architecture.md` / `docs/architecture_cn.md`), the chart pair (`docs/charts.md` / `docs/charts_cn.md`),
   the requirements pair (`docs/requirements.md` / `docs/requirements_cn.md`) and the `erix_run` README
-  (`examples/pi-extension/README.md`). That is 33 documents (`REF_SCAN_DOCS_MINIMUM = 33`): a renamed file, a moved
+  (`examples/pi-extension/README.md`). That is 35 documents (`REF_SCAN_DOCS_MINIMUM = 35`): a renamed file, a moved
   line or a symbol that no longer exists in `src/` turns `npm run check:docs` red.
 - **Snapshot archives — true at the date in their own header.** `docs/v0.0-contracts*.md` /
   `docs/v0.1-contracts*.md` / `docs/v0.2-contracts*.md`, `docs/design/`, `docs/research/`, `docs/harness-comparison/`
@@ -1012,12 +1016,26 @@ current contract. And a path that points into **another** repository is written 
 
 The authoritative version is the `version` field of
 [`package.json`](package.json), and `npm run check:docs` verifies the release
-line below against it. Current release: **v0.23.0** (2026-10-21). The complete,
+line below against it. Current release: **v0.24.0** (2026-10-22). The complete,
 authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
 only the releases that changed how a host consumes the runtime. The 0.6.0
 migration steps remain in
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
+- **v0.24.0 (2026-10-22)**: the "the runtime stops guessing on your behalf" release — the engine did not change
+  what it does, it changed what it *says*. `<runId>.state.json` now reports its own compaction window
+  (`deterministic.compactionStatsWindow = { limit, dropped, total }`, additive: a reader can tell a truncated
+  ledger from a short one without reading the source), and the two persistence-failure exits
+  (`persistence_failed` / `checkpoint_failed`) now carry `cause` (an `Error`), `errorCode` (a string) and
+  `unpersisted` (a raw array) with the **same keys and the same value types**, so a host stops parsing `message`
+  strings. Four tool outputs (model-visible) became honest: `tree`'s non-root first line is the path relative to
+  the tool root (replayable) instead of the basename, `readFile` reports `[参数校正：…]` when it rewrote
+  `offset`/`limit`/`max_bytes` and `[已到末尾：…]` instead of an empty string past EOF, a search root that does not
+  exist returns an error text instead of `（无命中）`, and the `rg`/`grep` deprecation line names the mode the call
+  actually used (`is_regex: false` is literal, and advising `mode="regex"` silently changed the match set).
+  Packaging: the tarball now ships `test/helpers/tmp.js` (the packaged contract suites import it). No store
+  signature, option, export or dependency moved. Migration:
+  [docs/host-upgrade-guide-0.24.0.md](docs/host-upgrade-guide-0.24.0.md), 0.23.0 → 0.24.0.
 - **v0.23.0 (2026-10-21)**: the storage-convergence release (工单 261021, the three knives) — the journal now gets
   **one row per message**, written the moment the message is final, and a round row keeps **metadata only**;
   `store.load()` folds the message rows back into their round, so the record shape a `load()` reader sees is
