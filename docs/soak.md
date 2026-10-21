@@ -39,12 +39,19 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
   （`src/loop/orchestrator.js:323`；传对象会被 `src/loop/tool-result-ttl.js` 的 `!Number.isFinite(ttl)`
   原样退回消息，等于没开）。证据两路互证：引擎 TTL 层记账（折叠条数、省下的 token、发生在第几轮）+
   实际请求视图里看到的折叠占位符（被折块的 `erix.round` 与当时 `currentRound`、折叠前后 token）。
-- **三方对账**：`<runId>.jsonl` 行数 / `store.load()` 的 `RoundRecord` 数 / 事件流累计的 `round_end` 数。
-  口径写在证据里：`jsonl 行数 = 引擎轮记录 + 1 条 seed 记录`。那条 seed 不是「`initialUserMessage` 自己占一行」：
-  `initialUserMessage` 只进内存消息（`src/loop/orchestrator.js:1425-1426`），轮记录写的是
-  `messages.slice(roundStart)`（`:2904`）；seed 是**非 resume 分支专门归档的 `round=0` 记录**
-  （`src/loop/resume-manager.js:274-289`，`dedupKey=<runId>:engine:round:0:seed`，无 `response`），
-  为的是 ADR-002 的档案完整性。`round_end` 只等于引擎轮记录数（seed 不是轮）。
+- **三方对账**：`<runId>.jsonl` 的**原始行** / `store.load()` 返回的记录 / 事件流累计的 `round_end` 数。
+  口径从工单 261021 写侧（「一条消息一成型就落盘」，见 `docs/host-consumer-contract.md` 的
+  “Journal row shapes” 一节）起重述过一遍：旧口径是「`jsonl` 行数 == `load()` 记录数」（一轮一行），
+  新口径是**两条闭合**：
+  ① **行级闭合** `jsonl 行数 == load() 记录数 + 被折进载体行的消息行数`（每一行要么原样暴露，
+     要么被 `src/store/message-rows.js#foldMessageRows` 折回该轮的载体行）；② **正文闭合**——脚本
+     **独立复刻**一遍读侧口径（按轮分组、组内按 `seq` 升序、`partOf` 接回它指认的那条消息、只有存在
+     载体行的轮才吸），折出来的正文序列与 `store.load()` 摊平的**逐条相等**（少一条 = 折叠吞正文，
+     多一条 = 同一份正文存两遍，错位 = 顺序变了）。另钉 `messageRows > 0`，否则两条闭合会退化成空跑。
+  那条 seed 行不是「`initialUserMessage` 自己占一行」：`initialUserMessage` 只进内存消息，而轮行从
+  261021 起**只留元数据**（正文逐条写进 `<runId>:msg:<round>:<seq>`）；seed 是**非 resume 分支专门归档的
+  `round=0` 记录**（`src/loop/resume-manager.js`，`dedupKey=<runId>:engine:round:0:seed`，无 `response`），
+  为的是 ADR-002 的档案完整性。`round_end` 只等于引擎轮行数（seed 不是轮，消息行也不是轮）。
 - **契约事实**：`tool_result` 块的 `erix.{toolCallKey,round,durationMs,success}` 齐、顶层无退役名、
   `toolCallKey` 全局唯一、投影 `toolCalls[]` 的 key 集合与落盘**双向相等**、投影/落盘两侧的
   `durationMs` **键集合双向相等**（整条漏掉也算红）且逐条相等、缺失不写成 0。
