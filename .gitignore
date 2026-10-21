@@ -9,6 +9,11 @@ docs/tasks/
 # 交付报告同样是本机档案（与 docs/tasks/ 同口径）。教训（2026-10-15 三点实测）：新增 ignore 目录规则必须在 scripts/docs-drift-check.mjs 的 IGNORED_DIR_CLASSES 里登记类别；未登记时 --self-test 从 3 条红抬到 6 条，登记后退回 3 条。
 docs/delivery/
 
+# 临时工作目录（复现脚本、对照树、一次性产物，不入库；issue #337）。
+# 同 docs/delivery/ 上面那条教训：新增 ignore 目录规则必须同时在 scripts/docs-drift-check.mjs 的
+# IGNORED_DIR_CLASSES 里登记类别，否则 --self-test 会红；登记后还要决定它进不进扫描面（SKIPPED_DIR_KINDS）。
+.scratch/
+
 # npm lockfile 不入库（仓库历史上没有 lockfile；加它属于另一个决定，见 issue #213）
 package-lock.json
 
