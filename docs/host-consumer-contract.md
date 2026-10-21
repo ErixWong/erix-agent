@@ -895,6 +895,22 @@ A correct pre-written `RoundRecord` must satisfy:
   and the row's `ts` drift does not turn the replay into a payload conflict (#326
   dedup rule). Before this fix such text was visible to the model but absent from
   `load()`, so after a restart the engine had no record of what it had told itself.
+  - **The judge direction hint is deliberately *not* one of those rows.** The hint
+    queued by `pendingDirectionHints` (`src/loop/run-snapshot-executor.js`), worded by
+    `directionHintText` (`src/loop/reflection.js`), is flushed into a standalone `user`
+    message **before** that round's own `appendRound` runs: the flush site sits inside
+    the tool block, while the round record is written at the bottom of the same
+    iteration in `src/loop/orchestrator.js`. Its body is therefore carried by the round
+    record itself — and on the resume path by the `"…:resume"` row, whose round is the
+    restored run snapshot's round (`resumeRunSnapshot`, `src/loop/orchestrator.js`). Exactly
+    one copy is in `load()`, and `restoreResume` (`src/loop/resume-manager.js`) rebuilds
+    it exactly once. Adding a `:control:` row for this text would store the same body
+    twice and make `restoreResume` feed it to the model twice — hosts must not expect a
+    `direction-hint` slot in the list above, and a projection that recognizes engine
+    text by `dedupKey` alone will find this one under the plain round key. The guards
+    live in `test/loop-persist-engine-text.test.js`: the journal copy count must stay
+    **1** (`0` = the flush site moved past the round-record write and the text is lost,
+    `2` = a second copy landed and resume feeds it twice).
 - **Idempotency:** the store deduplicates by `dedupKey` (falling back to
   `roundKey`, then to the store-generated `<runId>:round:<n>` key), and
   crash-rerun judgement is by `dedupKey`: a repeated append with the same

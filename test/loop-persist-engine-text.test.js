@@ -216,3 +216,139 @@ test("#326-B1 守卫：正常轮的 judge advisory 仍恰有一条（既不许 0
     "advisory 在基线里已入账 1 条；本次修复不得把它变成 0 或 2");
   assert.deepEqual(duplicated(messagesOf(records)), [], "journal 不得出现重复行");
 });
+
+// ── issue #326（续·方向提示，工单 261021-04）：方向提示的**入账面是轮记录带走**，不是专属行 ──
+//
+// 与上面几族用例的**唯一差别**：judge 的「方向提示」在两个消费点被 flush 时，push 的时机在
+// **轮记录落盘之前**（主循环：flush 点在工具块末，轮记录 `persist("appendRound", …, record)` 在
+// 同一轮迭代靠后才执行，正文由 `record.messages = messages.slice(roundStart)` 带走；
+// resume：flush 点在 `…:resume` 那行落盘之前，正文由 `messages.slice(resumeTranscriptStart)` 带走）。
+// 所以它**本来就在档案里**（探针实测：`…:engine:round:<n>` 1 条 / `…:engine:round:<n>:resume` 1 条），
+// 不需要 `…:control:<slot>` 专属行——补一条反而把同一份正文存两遍，并在 resume 重建上下文时
+// 经 `resume-manager.js` 的 `records.flatMap(record.messages)` 把它**喂两遍**（实测模型 1 → 2）。
+//
+// 判据口径：**恰好 1 条**。写 `>= 1` 会同时放过两种退化：flush 点被挪到轮记录落盘**之后** ⇒ 0（丢档），
+// 或再补一条专属行 ⇒ 2（双份 + 双喂）。两种都必须红。
+const hintTools = [{ name: "work", replay: "safe", inputSchema: { type: "object" } }];
+const hintOptions = (extra) => ({
+  ...baseOptions,
+  tools: hintTools,
+  reflection: {
+    enabled: true,
+    roundJudge: false,
+    judgeIntervalRound: 1,
+    judge: { provider: createFakeProvider([
+      judgeJson({
+        done: false, confidence: 0.9, reason: "还在做", evidence: "本地证据",
+        direction: "off_track", directionReason: extra.marker,
+      }),
+      judgeJson({ done: true, confidence: 0.99, reason: "达成", evidence: "本地证据", direction: "on_track" }),
+    ]) },
+  },
+});
+const rowsWith = (records, needle) => records.filter((record) => countIn(record.messages ?? [], needle) > 0);
+
+test("#326 续（方向提示·主循环 flush）：store.load() 全部行里**恰有一条**，且带它的是轮记录本身", async () => {
+  const marker = "MARKER_326_HINT_MAIN";
+  const store = createMemoryTranscriptStore();
+  // 两次工具调用：intercept 审计在第二次才开审（`judgeInterceptCount >= judgeIntervalRound`），
+  // 于是 `directionHintText` 在第二次的工具块里入队、并在同一轮的 flush 点发出。
+  const provider = createFakeProvider([toolTurn("c1"), toolTurn("c2"), endTurn("收尾结论")]);
+  const { tools, ...withoutTools } = hintOptions({ marker });
+  const result = await runToolLoop({
+    ...withoutTools, tools: hintTools,
+    maxRounds: 6, store, runId: "326-hint-main", initialUserMessage: "local task", provider,
+  });
+
+  // 前置：这真的产生并 flush 了一条方向提示（否则「恰有一条」是空断言）。
+  assert.equal(countIn(provider.requests.at(-1).messages, marker), 1,
+    "方向提示必须进主模型上下文（探针实测模型 1）");
+  assert.equal(result.termination.reason, "end_turn", "flush 语义不因守卫而变");
+
+  const records = await store.load("326-hint-main");
+  assert.equal(countIn(messagesOf(records), marker), 1,
+    `档案全部行里必须**恰好** 1 条（0 = flush 点被挪到轮记录落盘之后而丢档，2 = 又被补了专属行）；实测行：${
+      JSON.stringify(records.map((record) => record.dedupKey ?? record.roundKey))}`);
+  assert.deepEqual(duplicated(messagesOf(records)), [], "journal 不得出现重复正文");
+  // 带它的行必须是**轮记录本身**（`<runId>:engine:round:<n>`），不是 `…:control:` 专属行：
+  // 专属行一旦补上，正文就存两遍，且 resume 重建上下文时被喂两遍。
+  const carriers = rowsWith(records, marker);
+  assert.equal(carriers.length, 1, "只能有一行带这条正文");
+  assert.match(String(carriers[0].dedupKey ?? carriers[0].roundKey), /^326-hint-main:engine:round:\d+$/u,
+    "带正文的行必须是轮记录（方向提示随轮记录入账，不走 :control: 专属行）");
+});
+
+test("#326 续（方向提示·resume flush）：store.load() 全部行里**恰有一条**，且带它的是 `…:resume` 那行", async () => {
+  const marker = "MARKER_326_HINT_RESUME";
+  const store = createMemoryTranscriptStore();
+  const runId = "326-hint-resume";
+  await store.appendRound(runId, { round: 0, messages: [{ role: "user", content: "local task" }] });
+  await store.saveCheckpoint(runId, {
+    round: 1,
+    pendingToolUses: [
+      { type: "tool_use", id: "a", name: "work", input: { step: 1 } },
+      { type: "tool_use", id: "b", name: "work", input: { step: 2 } },
+    ],
+    messages: [
+      { role: "user", content: "local task" },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "a", name: "work", input: { step: 1 } },
+          { type: "tool_use", id: "b", name: "work", input: { step: 2 } },
+        ],
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }] },
+    ],
+    executedToolIds: ["a"],
+    toolResults: [{
+      toolUseId: "a",
+      toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
+    }],
+  });
+
+  // `executedToolIds: ["a"]` 给 `judgeInterceptCount` 播种（resume-manager），于是补跑 b 时
+  // intercept 立刻开审 ⇒ 提示在 resume 补跑段入队，由 resume 路径的 flush 点发出。
+  const provider = createFakeProvider([toolTurn("c"), endTurn("收尾结论")]);
+  const { tools, ...withoutTools } = hintOptions({ marker });
+  await runToolLoop({
+    ...withoutTools, tools: hintTools,
+    maxRounds: 6, store, runId, provider, resume: true, executeTool: async ({ id }) => `done-${id}`,
+  });
+
+  const records = await store.load(runId);
+  assert.equal(countIn(provider.requests.at(-1).messages, marker), 1, "提示必须进模型上下文");
+  assert.equal(countIn(messagesOf(records), marker), 1,
+    `resume 路径的 flush 也必须**恰有一条**入账；实测行：${
+      JSON.stringify(records.map((record) => record.dedupKey ?? record.roundKey))}`);
+  assert.deepEqual(duplicated(messagesOf(records)), [], "journal 不得出现重复正文");
+  const carriers = rowsWith(records, marker);
+  assert.equal(carriers.length, 1, "只能有一行带这条正文");
+  assert.equal(carriers[0].dedupKey, "326-hint-resume:engine:round:1:resume",
+    "resume flush 的正文由 `…:resume` 那行带走（轮号 = resumeRunSnapshot.round）");
+});
+
+test("#326 续（方向提示·resume 侧重建）：模型只收到 **1 条**，不是被 flatMap 喂成 2 条", async () => {
+  // 钉住 `src/loop/resume-manager.js` 的 `records.flatMap(record.messages)` 语义：
+  // 谁将来给方向提示再开一条补充行（正文再存一遍），这条就会从 1 变 2。
+  const marker = "MARKER_326_HINT_DOUBLE_FEED";
+  const store = createMemoryTranscriptStore();
+  const runId = "326-hint-double-feed";
+  const firstRun = createFakeProvider([toolTurn("c1"), toolTurn("c2"), endTurn("收尾结论")]);
+  const { tools, ...withoutTools } = hintOptions({ marker });
+  await runToolLoop({
+    ...withoutTools, tools: hintTools,
+    maxRounds: 6, store, runId, initialUserMessage: "local task", provider: firstRun,
+  });
+  const firstRecords = await store.load(runId);
+  assert.equal(countIn(messagesOf(firstRecords), marker), 1, "前置：档案里恰有一条");
+
+  const resumed = createFakeProvider([endTurn("续接结论")]);
+  await runToolLoop({
+    ...baseOptions, tools: hintTools,
+    maxRounds: 6, store, runId, provider: resumed, resume: true, reflection: false,
+  });
+  assert.ok(resumed.requests.length > 0, "续接必须真的请求过模型");
+  assert.equal(countIn(resumed.requests[0].messages, marker), 1,
+    "重建后的上下文里只能有一条方向提示（两条 = 同一份正文被存了两遍并双喂）");
+});

@@ -3074,6 +3074,9 @@ export async function runToolLoop(options) {
       }
       appendToolResultsToTranscript(resumedToolResults, runLoopState.rounds);
       // resume 路径也 flush 方向提示（与主循环一致，限 2 条；独立 user text 消息）
+      // ⚠ **必须在下面那条 `…:resume` 行落盘之前 flush**：提示正文是靠 `messages.slice(runLoopState
+      // .resumeTranscriptStart)` 被那一行带走的；挪到落盘之后就落不进任何记录（档案 0 条）。
+      // 反向证与「档案恰有一条」的断言在 `test/loop-persist-engine-text.test.js`（#326 续·方向提示）。
       if (pendingDirectionHints.length > 0) {
         const hints = pendingDirectionHints.length > 2
           ? [...pendingDirectionHints.slice(0, 2), "（另有多次方向提示已合并）"]
@@ -3294,6 +3297,11 @@ export async function runToolLoop(options) {
       if (pendingDirectionHints.length > 0) {
         // 方向提示独立 user text 消息（模型可见，但不混入 tool_result 事实链——避免污染后续 judge 输入）
         // 限 2 条/轮防膨胀（同轮多个 off_track 合并）
+        // ⚠ **必须在本轮的 `persist("appendRound", runId, record)` 之前 flush**：正文是靠轮记录的
+        //   `messages: messages.slice(roundStart)`（`roundStart` = 圈顶的 `messages.length`）入账的；
+        //   挪到落盘之后它就落不进任何记录（档案 0 条），而另开一条 `…:control:` 行则会把同一份正文
+        //   存两遍并在 resume 重建时双喂。两侧都由 `test/loop-persist-engine-text.test.js`
+        //   （#326 续·方向提示）钉住；本行上方与圈底的 `persist` 在同一次迭代里，不要拆散。
         const hints = pendingDirectionHints.length > 2
           ? [...pendingDirectionHints.slice(0, 2), "（另有多次方向提示已合并）"]
           : [...pendingDirectionHints];

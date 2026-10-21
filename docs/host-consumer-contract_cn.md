@@ -743,6 +743,17 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
   用户/assistant 正文的 UI 继续按现有做法跳过 `meta.source === "judge-control"` 即可。同一槽位重放
   幂等：崩溃重跑不会多出行，且这一行的 `ts` 漂移不会把重放判成 payload 冲突（#326 去重规则）。
   修之前这类文本是「模型见过、`load()` 里没有」，进程重启后引擎对自己说过什么零档案。
+  - **judge 的「方向提示」故意不是上面那类行。** `pendingDirectionHints`
+    （`src/loop/run-snapshot-executor.js`，文案出自 `directionHintText`
+    （`src/loop/reflection.js`））被 flush 成一条独立 `user` 消息的时机，在本轮自己的
+    `appendRound` **之前**（flush 点在工具块里，而轮记录是在同一次迭代的圈底写的），
+    所以它的正文是由轮记录本身带走的——resume 路径上则是由 `"…:resume"` 那一行带走，
+    轮号取回放的 run 快照 `resumeRunSnapshot`（`src/loop/orchestrator.js`）。于是
+    `load()` 里恰好只有一份，`restoreResume`（`src/loop/resume-manager.js`）也只重建
+    一份。给方向提示再补一条 `:control:` 行会把同一份正文存两遍，并让 `restoreResume`
+    把它给模型喂两遍——宿主**不要**指望上面那个 slot 清单里有 `direction-hint`，
+    只按 `dedupKey` 认引擎文本的投影会在普通轮键下找到它。守卫在
+    `test/loop-persist-engine-text.test.js`，中英两道。
 - **幂等性：** store 按 `dedupKey`（回落 `roundKey`，两者都缺时回落 store 自造的
   `<runId>:round:<n>`）去重，崩溃重跑的判定依据是 `dedupKey`：同 `dedupKey` **且
   payload 未变**的重复 append 是 no-op，因此稳定的 `dedupKey`（由宿主消息 id 推
