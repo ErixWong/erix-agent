@@ -1016,8 +1016,14 @@ async function main() {
       responseContentCopies: responseCopies,
       file: path.basename(mainJsonl.file),
     });
+  // issue #336：这个「行级成分等式」以前只算进 evidence（`compositionMatches`），**不在条件里**——
+  // 于是它算得再认真也决定不了红绿（实测那条断言在 compositionMatches=false 的年月里也是绿的）。
+  // 现在把它提成条件本身：行分类加起来必须等于 jsonl 行数（少一类 / 多一类都红）。
+  const compositionBalanced = mainJsonl.lines === journal.counts.engineRoundRows
+    + journal.counts.messageRows + journal.counts.seedRows
+    + journal.counts.factRows + journal.counts.otherRows;
   ledger.check("store-reconcile-event-stream",
-    counter.roundEnds === recordKinds.engineRounds && counter.toolResults > 0, {
+    counter.roundEnds === recordKinds.engineRounds && counter.toolResults > 0 && compositionBalanced, {
       roundEndEvents: counter.roundEnds,
       engineRoundRecords: recordKinds.engineRounds,
       toolResultEvents: counter.toolResults,
@@ -1027,8 +1033,7 @@ async function main() {
       composition: `jsonlLines=${mainJsonl.lines} = 引擎轮行 ${journal.counts.engineRoundRows}`
         + ` + 消息行 ${journal.counts.messageRows}`
         + ` + seed 行 ${journal.counts.seedRows} + 事实/控制行 ${journal.counts.factRows + journal.counts.otherRows}`,
-      compositionMatches: mainJsonl.lines === journal.counts.engineRoundRows + journal.counts.messageRows
-        + journal.counts.seedRows + journal.counts.factRows + journal.counts.otherRows,
+      compositionMatches: compositionBalanced,
       explanation: "seed 行不是某一轮的消息副本，也不是「initialUserMessage 自己占一行」："
         + "initialUserMessage 只进内存消息（src/loop/orchestrator.js 的 initialUserMessage 入 ctx.messages），"
         + "而轮行从工单 261021 起**只留元数据**（正文逐条写进 `…:msg:<round>:<seq>` 消息行，"
@@ -1503,6 +1508,17 @@ async function main() {
       danglingUses: probe.danglingUses,
       violations: probe.pairViolationSamples,
       note: "这两个计数以前只进 evidence 不进条件（所以转换器不报错也能绿），现在就是通过条件本身",
+    });
+  // issue #336：`probe.conversion.*.ok` 是**算出来的布尔**，以前只写进 evidence，而旁边的注释还写着
+  // 「转换坏也是红」——那是假的：没有任何条件读它（同一个病：写得像核对事实，真假都不红）。
+  // 现在它有自己的一条断言：两个协议转换器在**每一个真实请求视图**上都不许抛错。
+  ledger.check("request-view-protocol-conversion-survives",
+    probe.requests > 0 && probe.conversion.openai.ok === true && probe.conversion.anthropic.ok === true, {
+      observedUpstreamRequests: probe.requests,
+      openai: probe.conversion.openai,
+      anthropic: probe.conversion.anthropic,
+      note: "转换器本身不校验配对（那是 pairing-* 两条的事）；本条只管「转换不抛错」。"
+        + "两者以前混在同一条 evidence 里，结果谁都没判",
     });
 
   // ---------- 引擎缺陷探针（只观察不改）
