@@ -176,7 +176,7 @@ marker 抹掉——它是「你看到的这段不是你要求的那个切片」�
 ## 8. 自检
 
 ```bash
-npm test                       # 1,864 tests，0 失败（1,855 通过 + 9 skipped）
+npm test                       # 1,867 tests，0 失败（1,858 通过 + 9 skipped）
 npm run check:docs && npm run check:docs:strict
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件
 ```

@@ -207,7 +207,7 @@ currently has zero exemptions. This is repository hygiene — it never runs in y
 ## 8. Self-check
 
 ```bash
-npm test                       # 1,864 tests, 0 failing (1,855 passing + 9 skipped)
+npm test                       # 1,867 tests, 0 failing (1,858 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites
 ```
