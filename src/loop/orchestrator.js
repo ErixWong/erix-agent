@@ -56,6 +56,7 @@ import {
   createTerminationManager,
   makeTermination,
   terminationDetailForError,
+  terminationErrorCodeForError,
   terminationReasonForAction,
   withErrorCode,
   withTerminationPayload,
@@ -255,6 +256,13 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
     event,
   };
   failure.persistenceError = event;
+  // issue #230：与 `checkpoint_failed`（`src/loop/run-snapshot-executor.js#assertSnapshotPersisted`）
+  // **取值也对称**——两个出口是同一次底层故障的两张脸，同名字段两种类型等于把「宿主只能读源码
+  // 才知道」换了个坑。`errorCode` 与 `termination.errorCode` 同一套口径（`terminationErrorCodeForError`：
+  // 取根因自己的 `code`，取不到即 `"unknown"`），`cause` 仍是底层错误对象（既有形状，不动）。
+  // 用 `Object.assign` 写入：`KitError` 的 JSDoc 没声明这个 additive 字段，直接赋值会让 `--checkJs`
+  // 棘轮多背一个 TS2339（#214 的「只减不增」）。
+  Object.assign(failure, { errorCode: terminationErrorCodeForError(error) });
   // 账单可靠性（issue #109）：异常终止时 run 不会返回 result，账单必须随异常走，
   // 否则 sink 失败留痕与未持久化事实一起丢失。
   failure.unpersisted = errorLedger?.toUnpersisted?.() ?? [];

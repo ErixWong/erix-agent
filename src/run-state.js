@@ -321,6 +321,9 @@ function renderLines(lines, budget = MAX_RENDERED_CHARS) {
  */
 const RUN_STATE_MAX_UNPERSISTED_ITEMS = 10;
 
+// 未落盘清单在 `state.json` 这条路径上的归一化口径（`deterministic.errors.unpersisted`，形状
+// `{ count, items }`）。它**不是**错误对象上的形状：`persistence_failed` 与 `checkpoint_failed` 的
+// `unpersisted` 都是 #109 冻结的原始数组（issue #230 起两个出口取值也对称），别把这份投影塞进去。
 function normalizeUnpersisted(value) {
   if (!Array.isArray(value) || value.length === 0) return { count: 0, items: [] };
   const items = value.slice(-RUN_STATE_MAX_UNPERSISTED_ITEMS).map((entry) => ({

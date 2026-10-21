@@ -19,6 +19,14 @@
 // 顺带钉住 #178 正文 A7 的另一半：`persistence_error` 事件的字段形状与抛出错误里的字段一致
 // （同一事件对象、`operation`/`phase`/`sideEffect` 三值相同、`termination` 同源）。
 //
+// issue #230：上面这条「附带不变量」同时是**两个出口的字段面对称**守门——原先它钉的是「`checkpoint_failed`
+// 缺 `cause`/`unpersisted`」这个已知不对称，现在改成可枚举对撞（两个错误的 `Object.keys` 与
+// `Object.getOwnPropertyNames` 必须逐字相等），缺任一字段即红。
+// 键名对称只是第一层：**取值类型**也必须对称（同名字段两种类型 = 宿主只能读源码才知道），故另钉
+// 「两侧 `cause` 都是错误对象且 `cause.code` 可读」「两侧 `unpersisted` 都是数组」「两侧 `errorCode`
+// 都是字符串且同输入同值（`ETIMEDOUT` / 无 code ⇒ `"unknown"`）」。把任一取值换回旧形状（字符串 /
+// `{ count, items }`）即红。
+//
 // 卫生：store 全程注入内存实现，`toolContext.cwd` 注入临时目录（AGENTS.md 测试隔离规则），
 // 用例另外断言真实 `~/.erix` 的存在性未被改动。
 import assert from "node:assert/strict";
@@ -47,12 +55,15 @@ function delay(milliseconds) {
 // 探针 store：记录每一次 run snapshot 写的**分类输入**（status / 是否 partial / pending 工具 /
 // 已执行工具 id / 已带工具结果），并只在 `failWriteAt` 命中的那一次抛错——于是一次写同时被
 // 两条通道分类（事件 = 通道 A，抛出的 `checkpoint_failed` = 通道 B）。
-function createProbeStore({ failWriteAt = -1 } = {}) {
+// `storeErrorCode`（issue #230）：给注入的底层故障挂一个分类码，用来验证两个出口的根因口径
+// 是**透传**而不是硬编码 `unknown`。
+function createProbeStore({ failWriteAt = -1, storeErrorCode } = {}) {
   const writes = [];
   const events = [];
   const transcripts = [];
   const storeError = new Error(`injected snapshot store failure (write #${String(failWriteAt)})`);
   storeError.name = "InjectedStoreFailure";
+  if (storeErrorCode !== undefined) storeError.code = storeErrorCode;
   let failedAt = -1;
 
   return {
@@ -138,8 +149,8 @@ function createBlockingJudgeProvider() {
 }
 
 // 一次完整场景：成功跑（failWriteAt=-1）用来枚举可达的快照写；指定下标时那条写必然失败。
-async function runScenario({ failWriteAt = -1, cwd, toolContextSeen }) {
-  const store = createProbeStore({ failWriteAt });
+async function runScenario({ failWriteAt = -1, cwd, toolContextSeen, storeErrorCode } = {}) {
+  const store = createProbeStore({ failWriteAt, storeErrorCode });
   let result;
   let thrown;
   try {
@@ -395,15 +406,85 @@ test("#178 附带不变量：persistence_error 事件与抛出错误的字段形
     assert.equal(thrown.termination.sideEffect, event.sideEffect, label);
   }
 
-  // 已知不对称（**不在本单修**，只记录以免被误当作已修）：定时器通道的 `persistence_failed`
-  // 带 `cause`/`unpersisted`，工具调用点的 `checkpoint_failed` 两者皆无（根因只经事件对象可达）。
+  // issue #230：两个出口描述的是**同一次底层故障**，字段面必须对称——宿主按「是否可恢复 /
+  // 要不要重放」分流时不该去解析 `message` 字符串（那正是 #176 要消灭的用法）。
+  // 对称分两层：**键名**（下面这段对撞）与**取值类型**（紧随其后的断言）。
+  // 这里不手写两份字段清单各自断言（那样漏一个字段两边都不红），而是把两个错误的**可枚举字段
+  // 集合**直接对撞：任一侧多/少一个键，这条就红。
   const timerRun = await runScenario({ failWriteAt: timerIndex, cwd });
   const executorRun = await runScenario({ failWriteAt: executorIndex, cwd });
-  assert.equal(timerRun.thrown.cause, timerRun.store.storeError, "persistence_failed keeps the cause");
-  assert.ok(Array.isArray(timerRun.thrown.unpersisted), "persistence_failed rides the ledger (#109)");
+  assert.equal(timerRun.thrown.code, "persistence_failed", "timer channel keeps persistence_failed");
   assert.equal(executorRun.thrown.code, "checkpoint_failed");
-  assert.equal(executorRun.thrown.cause, undefined, "checkpoint_failed currently drops the cause");
-  assert.equal(executorRun.thrown.unpersisted, undefined, "checkpoint_failed currently drops the ledger");
+  assert.deepEqual(
+    Object.keys(executorRun.thrown).sort(),
+    Object.keys(timerRun.thrown).sort(),
+    "#230: checkpoint_failed 与 persistence_failed 的可枚举字段集合必须对称（缺字段就红）",
+  );
+  // `cause` 在 `Error` 上是**不可枚举**自有属性（`persistence_failed` 也是构造函数传的）⇒
+  // 只比 `Object.keys` 会看不见它。这里再对撞一次**全部自有属性名**，把不可枚举的那层也钉住。
+  assert.deepEqual(
+    Object.getOwnPropertyNames(executorRun.thrown).sort(),
+    Object.getOwnPropertyNames(timerRun.thrown).sort(),
+    "#230: 全部自有字段名（含不可枚举的 cause）也必须对称",
+  );
+  // 两个出口都**无条件**带这三个字段（「有条件存在」等于没契约）。
+  for (const [label, thrown] of [
+    ["persistence_failed", timerRun.thrown],
+    ["checkpoint_failed", executorRun.thrown],
+  ]) {
+    for (const key of ["cause", "errorCode", "unpersisted"]) {
+      assert.ok(Object.hasOwn(thrown, key), `${label} must carry ${key} (#230)`);
+    }
+  }
+
+  // —— 取值类型对称（本单判据，#230 的第二层）：同名字段不许两种类型 ——
+  // 宿主写 `err.cause?.code` / `err.unpersisted.length` 必须两个出口都能用；「只要分类结果」的宿主
+  // 则写 `err.errorCode`，同样是两个出口都能用。任一侧把类型换回去（字符串 / `{count,items}`）即红。
+  const OUTLETS = [["persistence_failed", timerRun.thrown], ["checkpoint_failed", executorRun.thrown]];
+  for (const [label, thrown] of OUTLETS) {
+    assert.equal(typeof thrown.cause, "object", `${label}: cause 必须是错误对象（不是分类字符串）`);
+    assert.ok(thrown.cause instanceof Error, `${label}: cause 必须是 Error 实例`);
+    assert.equal(typeof thrown.cause.code, "undefined", `${label}: 未注入 code 时 cause.code 不可读（无假值）`);
+    assert.ok(Array.isArray(thrown.unpersisted), `${label}: unpersisted 必须是原始数组（不是 {count,items}）`);
+    assert.equal(typeof thrown.errorCode, "string", `${label}: errorCode 必须是字符串`);
+    assert.equal(thrown.errorCode, "unknown", `${label}: 根因无 code ⇒ errorCode === "unknown"`);
+  }
+  assert.equal(timerRun.thrown.cause, timerRun.store.storeError, "persistence_failed keeps the cause object");
+  assert.equal(
+    executorRun.thrown.cause,
+    executorRun.store.storeError,
+    "checkpoint_failed 的 cause 是链上最深那一环（同一个 store 错对象），不是字符串",
+  );
+  assert.equal(
+    timerRun.thrown.unpersisted.length,
+    timerRun.store.events.length,
+    "两个出口的账单都来自同一个 errorLedger（事件条数即账单条数）",
+  );
+  assert.equal(
+    executorRun.thrown.unpersisted.length,
+    executorRun.store.events.length,
+    "checkpoint_failed 的 unpersisted 与 persistence_failed 同源同形状",
+  );
+  assert.equal(executorRun.thrown.unpersisted.at(-1).operation, "saveRunSnapshot", "账单条目点名失败的写");
+
+  // 同输入同值：注入一个带分类码的 store 错，两侧 `errorCode` 必须是同一个字符串，且不能从
+  // message 里抠出来（抠得出来就说明它只是文本，不是分类结果）。
+  const codedTimer = await runScenario({ failWriteAt: timerIndex, cwd, storeErrorCode: "ETIMEDOUT" });
+  const codedExecutor = await runScenario({ failWriteAt: executorIndex, cwd, storeErrorCode: "ETIMEDOUT" });
+  assert.equal(codedTimer.thrown.errorCode, "ETIMEDOUT", "persistence_failed 透出根因 code");
+  assert.equal(codedExecutor.thrown.errorCode, "ETIMEDOUT", "checkpoint_failed 透出同一个根因 code");
+  assert.equal(
+    codedExecutor.thrown.errorCode,
+    codedTimer.thrown.errorCode,
+    "#230: 同一次底层故障在两个出口上的 errorCode 必须相等",
+  );
+  assert.equal(codedExecutor.thrown.message.includes("ETIMEDOUT"), false,
+    "the code must not be recoverable by parsing the checkpoint_failed message");
+  for (const [label, thrown] of [["persistence_failed", codedTimer.thrown], ["checkpoint_failed", codedExecutor.thrown]]) {
+    assert.equal(typeof thrown.cause, "object", `${label}: 带 code 时 cause 仍是错误对象`);
+    assert.equal(thrown.cause.code, "ETIMEDOUT", `${label}: 分类码读自 cause.code（与 errorCode 同源）`);
+    assert.ok(Array.isArray(thrown.unpersisted), `${label}: 带 code 时 unpersisted 仍是数组`);
+  }
 });
 
 test("用例卫生：run 使用注入的临时 cwd 与内存 store，未改动真实 ~/.erix", async () => {
