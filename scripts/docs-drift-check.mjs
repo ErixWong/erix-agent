@@ -1977,7 +1977,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `createProviderForSlot`（`examples/pi-extension/erix-run-core.js`）与 `createJsonFileModelConfigProvider`
  *  （`src/config/json-file.js`））——`--verbose` 实测 72 组 / 180 处。不升就是下限在空转（那条 note 自己会报）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 72;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 75;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
