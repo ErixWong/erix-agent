@@ -54,6 +54,11 @@
 
 ### Documentation
 
+- **契约补一节「落盘行形状 ≠ `load()` 之后的形状」：把读侧口径从 #326 / #328 的 issue 正文搬进仓库树（issue #361；纯文档，`src/` 零改动）。**
+  现场：#353 里宿主（erix-station）把「落盘行形状」当成了「`store.load()` 之后的形状」，于是报了一条**不存在的** 0.23 回归（判决见 #353 与 PR #355）。根因不是宿主笨——中英契约里**没有任何一句**讲清这两者的关系，读侧口径散在 #326 / #328 的 issue 正文里，而那些不在仓库树里，宿主读不到。
+  中英各加一个 `###` 小节（`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`，落在「Store 保真要求 → 档案行形状」之后，**不新开顶级节**），覆盖四点：① `load()` 返回的是折叠后的形状，`foldMessageRows` 在两个内置 store 的 `load()` 里跑；② 落盘行不是这个形状，轮载体行**没有** `messages` 键，数行数 / 数轮数 / 读正文都得先过 `load()`；③ **行数 ≥ 轮数**是常态（引擎事实行 `…:fold:<fp>` / `…:ttl:<fp>` 与控制行 `…:control:<slot>` 也在里面），宿主 materializer 必须按 `round` 归并、按 `dedupKey` 去重（#328 C 组对 station / touwaka 的要求，本段是它的权威出处）；④ 一条可核对判据：`load()` 之后 `tool_use` 与配对的 `tool_result` 在同一条记录内，这正是 #353 探针里 `[ok]` 与 `[pending]` 的分界。
+  锚点：`foldMessageRows` / `isRoundCarrier`（`src/store/message-rows.js`）、`createMemoryTranscriptStore`（`src/store/memory.js`）、`createFileTranscriptStore`（`src/store/file.js`），全部不带行区间；无新增裸行号（`BARE_LINE_REF_BASELINE` 不动）。
+  **同一刀抬下限**：`SYMBOL_ANCHOR_MIN_UNIQUE` 77 → **80**（`--verbose` 实测 80 组 / 201 处，+3 组；不抬就是**假绿**——`#286 返工 R1` 的两例自测会因「实测 ≫ 下限」而 fail-open，本单实测过：下限留在 77 时那两例从 ✓ 变红），中英 AGENTS 的现值声称（`= 80` / 80 组 201 处）同步，`scripts/docs-drift-check.mjs` 的常量注释补上「升下限的理由」一行。
 - **契约补一句「`partialPersistence` 值不值得开」：只降低续跑时的重生成成本，先量自己的崩溃重排队率再决定（issue #295；纯文档，`src/` 零改动、默认值与选项白名单未动）。**
   中英契约各加一段（`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`，落在「中止后事实分布」那节的收口处，**不新开节**）：这个选项只降低**续跑时重新生成正文**的成本，它不是把部分正文摆到用户面前的渠道（那是 `error.finalText`）；而它在稳态下做的快照写入，在宿主自己的崩溃重排队率低时是净亏。
   配一条**可执行判据**，句式是「先量再决定」：排队里的 run 中 `attempts > 1` 的占比（`run_queue.attempts`）——不写「低于 X 就别开」这类我们没测过的阈值。

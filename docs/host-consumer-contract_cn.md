@@ -1954,6 +1954,34 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
   这种计数可能读成 1）。仓内先例：`scripts/cli-real-smoke.mjs` 的工具结果计数取自
   `createFileTranscriptStore({ dir }).load(runId)`。
 
+### 落盘行形状 ≠ `load()` 之后的形状（issue #361）
+
+这是两个形状，只有第二个是宿主读到的。issue #353 就是宿主把第一个当成了第二个，于是报了一条
+**不存在的** 0.23 回归。
+
+**`load(runId)` 返回的是折叠后的形状。** `foldMessageRows`（`src/store/message-rows.js`）
+在两个内置 store 的 `load()` 里都会跑——`createMemoryTranscriptStore`（`src/store/memory.js`）
+与 `createFileTranscriptStore`（`src/store/file.js`）——它在数组返回前把每一条
+`kind: "message"` 行的正文折回该轮的载体行。哪一行算载体由
+`isRoundCarrier`（`src/store/message-rows.js`）判定。宿主自己实现的 `TranscriptStore`
+必须产出同样的结果：折叠是读侧，不是可选项。
+
+**落盘的不是这个形状。** 档案里的轮载体行（`<runId>:engine:round:<n>`）只留元数据，**根本没有
+`messages` 键**；正文在各自的 `kind: "message"` 行里。所以数行数、数轮数、读正文三件事都必须先过
+`load()`，不要自己拿原始行拼一遍。拿原始档案去摊平 `record.messages` 得到的是空数组，不是 transcript。
+
+**行数 ≥ 轮数是常态（#326 之后）。** `load()` 的结果里除了消息行，还有引擎事实行
+（`…:engine:round:<n>:fold:<fp>` 与 `…:ttl:<fp>`，构造上就是 `messages: []`）和引擎控制行
+（`…:engine:round:<n>:control:<slot>`，带 `messages` 但不带 `seq`）。所以「一轮一条记录」从那时起
+就不再成立。宿主 materializer——任何把 `load()` 输出变成轮次的东西，无论为了展示、入队还是写进第二个
+store——必须按 `round` 归并、按 `dedupKey` 去重，不得假设记录与轮次一一对应。这正是 issue #328 C 组
+对 station 与 touwaka 的 materializer 提的要求，而本段就是它在本仓的权威出处。
+
+**一条可核对的判据。** `load()` 之后，一条轮记录的 `messages` 里同时有 `tool_use` 块与配对的
+`tool_result` 块——是两条消息，但在同一条记录内。这正是 #353 探针里 `[ok]` 与 `[pending]` 的分界：
+折叠生效时，续跑重建出的治理时间线把该工具调用标成 `[ok]`；折叠不生效时，调用与结果落在不同行、
+配不上对，同一条时间线只能读到 `[pending]`。
+
 ## 工具事实与字段归属（issue #284 / #285）
 
 引擎产出的每一条 `tool_result` 都是一个**事实对象**，只在一个构造点产生：

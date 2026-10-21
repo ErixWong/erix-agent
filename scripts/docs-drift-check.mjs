@@ -50,7 +50,7 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 77`（现测 77 组 / 192 处；0.23.0 中英指南落地 +1 组）：
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 80`（现测 80 组 / 201 处；0.23.0 中英指南落地 +1 组，契约 #361 小节 +3 组）：
 //                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
@@ -1982,8 +1982,14 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  （`docs/host-upgrade-guide-0.23.0.md` / `_cn.md`）按同一红线全部用符号锚点引用
  *  `foldMessageRows`（`src/store/message-rows.js`）、`projectTranscriptForDisplay`（`src/display/projection.js`）——
  *  `--verbose` 实测 77 组 / 192 处（唯一组数只增不减，这条下限跟着实测走）。
+ *  升下限的理由（工单 F2 / issue #361，77 → **80**，+3 组 / 194 → 201 处）：契约中英成对新增
+ *  「落盘行形状 ≠ `load()` 之后的形状」小节，按同一红线全部用符号锚点引用 `isRoundCarrier`
+ *  （`src/store/message-rows.js`）、`createMemoryTranscriptStore`（`src/store/memory.js`）、
+ *  `createFileTranscriptStore`（`src/store/file.js`）——`--verbose` 实测 80 组 / 201 处。不升就是
+ *  **假绿**：#286 返工 R1 的两例自测会因「实测 ≫ 下限」而 fail-open（本单实测正是如此：77 的下限
+ *  在 80 组上已经空转，两例从 ✓ 变红）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 77;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 80;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
