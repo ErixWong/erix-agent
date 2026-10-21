@@ -1,6 +1,18 @@
 # Changelog
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
+## [Unreleased]
+
+### Added
+
+- **发版前真机清单：`npm run check:release:real`（工单 261021-13；只加脚本 + `package.json` 一条 + 文档，`src/` 与版本号零改动）。**
+  0.23.0 是在「文档审计没跑 + 四条真上游 e2e 没跑」的状态下发出去的：每一条单独看都是「记得手动跑就绿、忘了就红」的东西，而**记性不是机制**。这条命令把那五条按固定顺序串起来——`node --test examples/tool-fact-e2e.test.mjs` → `examples/resume-real-e2e.test.mjs` → `examples/cross-version-real-e2e.test.mjs` → `examples/pi-extension/erix-run-e2e.test.mjs` → `node scripts/cli-real-smoke.mjs`——每条前打 `=== [i/5] <名字> ===`，跑完打该条的 `tests/pass/fail` 与耗时；任一条红就**跑完整张清单再** exit 1 并点名是哪几条，全绿 exit 0 并打总耗时。每条单独 900 秒硬超时，超时按**进程组** `SIGKILL`（`node --test` 自己还会 spawn 子进程，只杀直接子进程会留下孤儿继续烧钱），算红并继续下一条。
+  - **闸门不另造一套**：`ERIX_E2E_REAL` 不是 `1` 时一步都不跑、exit 0、打分类原因（复用 `examples/e2e-real-gate.mjs` 的 `GAP_CODES`：gate 缺失 / 配置读不到 / JSON 坏了 / 缺字段 / 凭据引用解不出值 / 端点不可达），因此真上游永远不是任何默认门禁的硬依赖（`npm test` 与 CI 都不跑它）。
+  - **一处刻意比 `npm run check:cli-real` 更严**：闸门**开着**而配置/凭据/端点不可用 ⇒ exit **1**。那边是「有就顺手验一下」，这边是发版前的必跑项——操作者已经声明要打真上游，此时「跳过」等于「发版清单根本没跑」，报成绿就是 PR #289 阻断 1 的镜像错误（那边是「闸门说 ok 其实跑不起来」，这边是「跳过冒充通过」）。同理，子进程里出现 `[gate_missing]` / `[config_*]` / `[api_key_*]` / `[endpoint_unreachable]` 这类闸门/配置类 skip 也判红（预检与子进程口径打架 = 装置坏了）；别的 skip（例：跨版本那条的「旧 CLI 0.22.0 不可用」）不判红，但在汇总里逐条点名——不许静默。
+  - **隔离**：本脚本**一个字节也不写**（不建临时目录、不写 `~/.erix`、不写 `~/.npmrc`）。隔离留在各子命令的消费点（`--dir` 临时目录 / 假 `HOME` / 真配置只读 + 前后哈希对账），这里再包一层假 `HOME` 反而会让子命令读不到真配置，等于用隔离换假绿。子进程环境照 `scripts/cli-real-smoke.mjs` 的 `childEnv()`：清 `npm_config_*` 外泄通道，但**保留**代理变量（子命令要打真端点，删代理会造出「端点不可达」的假红）。
+  - **实测**：闸门关（`node scripts/release-real-check.mjs`）⇒ 一步没跑、`SKIP — [gate_missing] …`、exit 0；`ERIX_E2E_REAL=1` + 配置不可用（`ERIX_E2E_CONFIG` 指到不存在的路径）⇒ `[config_missing]` + exit 1。**反向证**（`cp` 备份 + `md5sum` 逐字还原，零 `git checkout`）：把五条临时换成四条假命令（绿 / 退 3 / 挂住 / 只产 `[gate_missing]` skip）+ 超时临时改 1 秒 ⇒ 绿那条照旧绿，退 3 那条「退出码 3」、挂住那条「超时 1.0s 未结束（进程组已 SIGKILL）」、skip 那条「闸门开着却出现闸门/配置类 skip」，汇总点名 3/4 红、exit 1，还原后 `md5sum` 与变异前逐字一致。**没有**在这里跑全量真上游（烧钱），四条真机路径的绿灯由各自的既有门禁记录背书。
+  - **文档**：`AGENTS.md` / `AGENTS_cn.md` 命令表各加一行（中英成对），并在「发版前必跑清单（强制——0.23.0 的教训）」一节写明**发布前必须跑文档审计（`npm run check:docs` / `npm run check:docs:strict`）与 `ERIX_E2E_REAL=1 npm run check:release:real`**；中英 README 的检查命令段同步；本节即 CHANGELOG 记录。
+
 ## [0.23.0] - 2026-10-21
 
 **本版要点：存储收敛（工单 261021 三刀 + 投影改读折叠）——账本从「一轮一行、正文挂在轮行上」改成「一条消息一成型就落盘、轮行只留元数据」，`store.load()` 负责把消息行折回轮行。**
