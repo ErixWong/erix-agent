@@ -2439,6 +2439,14 @@ Consequences for a host store and for host readers:
   Real-upstream guard: `examples/resume-real-e2e.test.mjs` (`ERIX_E2E_REAL=1`:
   real process SIGKILL → same `--session` resume → ledger closure / no loss /
   no duplicate execution / half-line quarantine).
+- **Read the ledger through `load()`, never by re-folding raw rows.**
+  `foldMessageRows` (`src/store/message-rows.js`) is the only read side. A reader that
+  re-implements the fold — de-duplicating messages on a content fingerprint, say —
+  silently drops legitimate repeats: two long messages that share their first 400
+  characters collapse into one, and any census derived from that array is wrong in a
+  way that depends on the payload text (a “did the CLI really run ≥2 tools” check can
+  read 1). In-repo precedent: `scripts/cli-real-smoke.mjs` takes its tool-result census
+  from `createFileTranscriptStore({ dir }).load(runId)`.
 
 ## Tool result fact and field ownership (issue #284 / #285)
 
