@@ -380,6 +380,18 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     await mkdir(dirC, { recursive: true });
     await makeProject(dirC);
     const storeC = createFileTranscriptStore({ dir: join(root, "store-c") });
+    // 探针：resume 期间引擎每写一次 run snapshot 就留一份副本。快照的 `messages` 是
+    // `cloneState(messages)`——即**引擎内存里那份上下文**的逐字快照 ⇒ 拿它判「引擎有没有在内存里
+    // 给宿主传进来的旧块补 `erix`」。光看 `store.load()` 不够：那是磁盘，就地改内存对象而不再落盘
+    // 的坏法不会在磁盘上留下痕迹（本单要防的 (a) 正是那一种）。
+    const snapshotPayloads = [];
+    const storeCProbed = {
+      ...storeC,
+      async saveRunSnapshot(runId, snapshot) {
+        snapshotPayloads.push(snapshot);
+        return storeC.saveRunSnapshot(runId, snapshot);
+      },
+    };
     const runIdC = "e2e-c";
     const legacyBlock = {
       type: "tool_result",
@@ -391,16 +403,29 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
       executionStatus: "ok",
       artifactStatus: "ok",
     };
+    const legacyRoundMessages = [
+      { role: "user", content: "旧会话" },
+      { role: "assistant", content: [{ type: "tool_use", id: "legacy-1", name: "readFile", input: { path: "a.txt" } }] },
+      { role: "user", content: [legacyBlock] },
+      { role: "assistant", content: [{ type: "text", text: "旧版本：已读完 a.txt。" }] },
+    ];
     await storeC.appendRound(runIdC, { round: 0, messages: [{ role: "user", content: "旧会话" }] });
+    // 工单 261021（存储收敛）之后的形状：**旧正文也必须在账本里**。
+    // 为什么本条以前把正文只放在快照里、现在不行（旧断言不是被放宽，而是取值来源过期）：
+    // 改造前 resume 会把「快照里账本没有的那段正文」抄进 `…:resume` 轮行
+    // （`resumeRunSnapshotMessages` + `messages.slice(resumeTranscriptStart)`），于是只写在快照里的旧块
+    // 会经那条轮行落进 `load()`；改造后 `…:resume` 只带锚点之后新产生的引擎控制正文，恢复的正文
+    // **只认账本**（`resume-manager.js#restoreResume`：`ctx.messages = foldLedgerMessages(records)`，
+    // 快照正文只在「崩溃现场」判定成立时作升级补全），快照里的旧块既不进上下文、也不进 `load()`
+    // ⇒ F9b 的 `legacy` / F9d 的投影条目会整条落空（`assert.ok(legacy)` 红，而不是断言被改写）。
+    // 升级前的真实账本本来就是这个形状：`appendRound` 每轮都带全量轮内消息，快照只是同一份正文的
+    // 第二副本 ⇒ 旧块写在轮行里才是「0.19 形状」的原样，快照留一份副本正好顺带钉住
+    // 「快照正文不再被当成上下文」（重复的正文一份也不多喂）。
+    await storeC.appendRound(runIdC, { round: 1, messages: legacyRoundMessages });
     await storeC.saveRunSnapshot(runIdC, {
       round: 1,
       status: "done",
-      messages: [
-        { role: "user", content: "旧会话" },
-        { role: "assistant", content: [{ type: "tool_use", id: "legacy-1", name: "readFile", input: { path: "a.txt" } }] },
-        { role: "user", content: [legacyBlock] },
-        { role: "assistant", content: [{ type: "text", text: "旧版本：已读完 a.txt。" }] },
-      ],
+      messages: legacyRoundMessages,
       executedToolIds: ["legacy-1"],
       toolResults: [legacyBlock],
     });
@@ -420,7 +445,7 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
         task: "继续旧会话（必须真的调一次工具）",
         tools: TOOLS,
         executeTool: makeExecutor(dirC),
-        store: storeC,
+        store: storeCProbed,
         runId: runIdC,
         maxRounds: 4,
       });
@@ -453,7 +478,19 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
       assert.equal(legacy.executionStatus, "ok");
       assert.equal(legacy.artifactStatus, "ok");
       assert.equal(legacy.erix, undefined, "旧块不该被补上 erix 命名空间");
-    }, `旧块仍带退役名=${RETIRED.filter((r) => Object.hasOwn(legacy ?? {}, r)).join(",")}`);
+      // 磁盘之外的另一半：引擎**内存里**那份上下文也不许改写宿主传进来的旧块。
+      // 探针取的是 run snapshot 的 `messages`（= `cloneState(messages)`），即引擎内存上下文的逐字副本
+      // ⇒ 这一条才真的钉住「宿主对象不被就地改写」；只读 `store.load()` 的话，改内存不落盘的坏法看不见。
+      assert.ok(snapshotPayloads.length > 0, "resume 期间没写任何 run snapshot（探针空转，判据落空）");
+      const seenInMemory = snapshotPayloads.flatMap((payload) => blocksOf(payload?.messages, "tool_result"))
+        .filter((block) => block?.tool_use_id === "legacy-1");
+      assert.ok(seenInMemory.length > 0, "引擎内存上下文里没见过旧块（探针没盖上要判的那一段）");
+      for (const block of seenInMemory) {
+        assert.deepEqual(Object.keys(block).sort(), Object.keys(legacyBlock).sort(),
+          "引擎在内存里改了旧块的键集合（就地改写宿主对象）");
+        assert.equal(block.erix, undefined, "引擎在内存里给旧块补了 erix（就地改写宿主对象）");
+      }
+    }, `旧块仍带退役名=${RETIRED.filter((r) => Object.hasOwn(legacy ?? {}, r)).join(",")}，快照探针=${snapshotPayloads.length} 份`);
 
     check("F9c 一代读窗口：TTL 仍按旧块 erixRound 算年龄并折叠（年龄来源没断）", () => {
       const stats = {};
