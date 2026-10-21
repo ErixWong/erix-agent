@@ -1,5 +1,6 @@
 # erix-agent 上下文 / 记忆机制改进方案
 
+> 快照档案（2026-09-17）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 - 状态：**待评审**
 - 日期：2026-09-17
 - 依据：[`docs/harness-comparison/`](../harness-comparison/README.md)（pi / touwaka / codex / hermes 五方代码级对比）

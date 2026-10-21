@@ -1,5 +1,6 @@
 # 调研：记忆系统与上下文压缩的外部实践（2026-08-29）
 
+> 快照档案（2026-08-29）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 > 目的：为 v2（psyche / 记忆系统）与 v0.2（fold-llm / recall）吸收业界已验证的做法。
 > 方法：unifuncs 联网检索 + 原文精读（Letta sleep-time blog、生产上下文工程综述）。
 > 结论分三部分：外部实践扫描 → 我们设计被验证的部分 → 需要吸收的修正。

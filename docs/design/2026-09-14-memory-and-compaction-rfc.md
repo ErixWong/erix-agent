@@ -1,5 +1,6 @@
 # RFC：记忆系统与折叠方案全面重构（第一性原理重审）
 
+> 快照档案（2026-09-14）：本文里的路径、数字与结论按**当时**为真；现状以 `docs/host-consumer-contract.md` 与 `CHANGELOG.md` 为准。
 - 状态：**RFC / 待评审**（2026-09-14）
 - 作者：与用户逐轮讨论整理
 - 评审：[独立对抗性评审](./2026-09-14-memory-and-compaction-rfc-review.md)（PR [#81](https://github.com/ErixWong/erix-agent/pull/81)）
