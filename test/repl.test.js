@@ -538,9 +538,15 @@ test("runRepl preserves new input when resuming an aborted tool", async () => {
       message.role === "user"
       && message.content?.some((block) => block.text === "user-two")
     )));
+    // 账本形状：种子行(0) · 本轮崩溃时已入账的 assistant 行 · 宿主那条追问 · 补跑轮行 · 终稿轮行。
+    // 工单 261021 写侧之后两个变化（都不是丢行、也不是重复行，行数与改造前相同）：
+    //   1. `msg:1:0`（崩溃轮的 assistant 正文）已单独成行 ⇒ `appendUserTurn` 派生的 round =
+    //      账本里的最大轮号（它定死的口径），从改造前的 0 变成崩溃轮的 1；
+    //   2. 那行随后被 `…:round:1:resume` 载体行折进去（读侧不再单独暴露）。
+    // ⇒ 逐轮号序列从 `[0, 0, 1, 2]` 变成 `[0, 1, 1, 2]`，仍是 4 行且一行不多一行不少。
     assert.deepEqual(
       (await store.load(session)).map((record) => record.round),
-      [0, 0, 1, 2],
+      [0, 1, 1, 2],
     );
   } finally {
     input.destroy();

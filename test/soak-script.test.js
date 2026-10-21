@@ -6,6 +6,9 @@
 //      于是「非阻断失败」能一路混过去）；
 //   2) 断言**数量与名单逐条相等**（清单是实现的契约，加一条不登记就红，防止静默减项）；
 //   3) 三方对账 / 契约事实 / TTL 折叠 / 请求视图配对**真的跑过**（证据值非 0，不是空跑）；
+//      三方对账的口径在工单 261021 写侧（「一条消息一成型就落盘」）之后重述过一遍：
+//      旧 = 「jsonl 行数 == store.load() 记录数」（一轮一行），新 = 「jsonl 行数 == load() 记录数
+//      + 被折进载体行的消息行数」，另加「独立复刻的折叠正文 == store.load() 摊平的正文」逐条相等。
 //   4) --store/--out 不许落在真实 ~/.erix 下（红线），默认清理自建的临时 store；
 //   5) abort 阶段**真的中止过**（工单 261015-02 小修：旧版把「没发生的中止」报成 #282 真机复现，
 //      因为非抛分支不带 abortedAtRound、evidence 又用 `?? cli.abortAt` 兑底）。
@@ -157,10 +160,21 @@ test("soak 假上游：退出码 0 + 每条断言都过 + 断言名单逐条相�
     "本路径观察到的是 aborted，不得把 #282 报成命中",
   );
 
-  // 三方对账：落盘行数 == store.load() 记录数；轮事件数 == 引擎轮记录数；且都非 0
+  // 三方对账（工单 261021 写侧「一条消息一成型就落盘」之后按**新口径**重述）：
+  //   旧口径（改造前，一轮一行）：`jsonlLines === loadedRoundRecords`（一轮一条 RoundRecord）。
+  //   新口径（一条消息一行 + 轮行只留元数据）：`jsonlLines === loadedRoundRecords + absorbedMessageRows`——
+  //     `absorbedMessageRows` 是本用例从**原始 jsonl 行**独立复算的「被读侧折进载体行的消息行数」
+  //     （口径见 soak.mjs 里的 foldLedgerFromRawRows，不是 store 自己报的数）。
+  //   等式仍然两端都要核：少一行（落盘丢行 / 折叠吞了行）与多一行（同一份正文存两遍）都红。
+  //   另钉三条防「空跑」：消息行必须真的写了、必须真的被折回去了、独立复刻与 store.load() 的正文逐条相等。
   const reconcile = report.storeReconcile;
   assert.ok(reconcile.jsonlLines > 0);
-  assert.equal(reconcile.jsonlLines, reconcile.loadedRoundRecords);
+  assert.ok(reconcile.messageRows > 0, "0 条消息行 = 写侧的逐条落盘没生效，本用例的口径就是空的");
+  assert.ok(reconcile.absorbedMessageRows > 0, "一条消息行都没被折回轮行 = 读侧折叠没跑（宿主面会多出游离行）");
+  assert.equal(reconcile.jsonlLines, reconcile.loadedRoundRecords + reconcile.absorbedMessageRows);
+  assert.equal(reconcile.standaloneMessageRows, 0, "主 run 不崩 ⇒ 每条消息行都该找到自己的载体行");
+  assert.equal(reconcile.foldMismatches.length, 0, JSON.stringify(reconcile.foldMismatches));
+  assert.equal(reconcile.independentlyFoldedMessages, reconcile.ledgerMessages);
   assert.equal(reconcile.roundEndEvents, reconcile.recordKinds.engineRounds);
   assert.ok(reconcile.toolResultEvents > 0);
 

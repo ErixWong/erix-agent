@@ -248,7 +248,7 @@ const hintOptions = (extra) => ({
 });
 const rowsWith = (records, needle) => records.filter((record) => countIn(record.messages ?? [], needle) > 0);
 
-test("#326 续（方向提示·主循环 flush）：store.load() 全部行里**恰有一条**，且带它的是轮记录本身", async () => {
+test("#326 续（方向提示·主循环 flush）：store.load() 全部行里**恰有一条**，且带它的是 `…:control:direction-hint` 行", async () => {
   const marker = "MARKER_326_HINT_MAIN";
   const store = createMemoryTranscriptStore();
   // 两次工具调用：intercept 审计在第二次才开审（`judgeInterceptCount >= judgeIntervalRound`），
@@ -270,12 +270,15 @@ test("#326 续（方向提示·主循环 flush）：store.load() 全部行里**�
     `档案全部行里必须**恰好** 1 条（0 = flush 点被挪到轮记录落盘之后而丢档，2 = 又被补了专属行）；实测行：${
       JSON.stringify(records.map((record) => record.dedupKey ?? record.roundKey))}`);
   assert.deepEqual(duplicated(messagesOf(records)), [], "journal 不得出现重复正文");
-  // 带它的行必须是**轮记录本身**（`<runId>:engine:round:<n>`），不是 `…:control:` 专属行：
-  // 专属行一旦补上，正文就存两遍，且 resume 重建上下文时被喂两遍。
+  // 带它的行必须是 `…:control:direction-hint` 行。工单 261021 写侧之后轮记录不再携带正文
+  // （`messages` 只剩逐条入账的消息行折回来的那部分），所以方向提示的正文只能走专属控制行；
+  // 它不带 `seq` ⇒ 折叠层原样透传。**真正要钉的危险没变**：全档案只能有一条（双喂 = resume 时
+  // 模型收到 2 条，#326 实测的回归面）。
   const carriers = rowsWith(records, marker);
   assert.equal(carriers.length, 1, "只能有一行带这条正文");
-  assert.match(String(carriers[0].dedupKey ?? carriers[0].roundKey), /^326-hint-main:engine:round:\d+$/u,
-    "带正文的行必须是轮记录（方向提示随轮记录入账，不走 :control: 专属行）");
+  assert.match(String(carriers[0].dedupKey ?? carriers[0].roundKey),
+    /^326-hint-main:engine:round:\d+:control:direction-hint$/u,
+    "带正文的行必须是本轮的 `…:control:direction-hint` 行（工单 261021 写侧后的新口径）");
 });
 
 test("#326 续（方向提示·resume flush）：store.load() 全部行里**恰有一条**，且带它的是 `…:resume` 那行", async () => {

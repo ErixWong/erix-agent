@@ -2385,6 +2385,44 @@ these fallbacks do not detect or report store loss. Hosts are responsible for
 proving fidelity, for example by running and extending the assertions in
 `test/contract/transcript-store.js` for their own schema and unknown fields.
 
+### Journal row shapes: message rows plus metadata-only round rows (ticket 261021)
+
+Since 0.22.x the engine writes a message into the journal **the moment it is
+formed** instead of once per round. One journal row carries exactly one
+message:
+
+```ts
+{ round, roundKey: `${runId}:round:${round}`,
+  dedupKey: `${runId}:msg:${round}:${seq}`,   // seq counts up from 0 inside a round
+  kind: "message", seq, messages: [that one message], ts,
+  partOf?: string }                            // shard of an already-written message
+```
+
+The round row itself (`<runId>:engine:round:<n>`, built as `record` in
+`src/loop/orchestrator.js#runToolLoop`) keeps **metadata only** for new runs:
+`response`, `textPreview`, `toolUses`, `summary`, `l0facts`, `runState`,
+`judge`, `wrapup`, `compactionStats`, `toolOutputs`, … — its `messages` field is
+gone. `src/store/message-rows.js#foldMessageRows` (called by `load()` of both
+built-in stores) folds the message rows back into that round row, so the
+host-visible shape of `load()` — and therefore
+`records.flatMap((record) => record.messages ?? [])` — is byte-identical to a
+journal written before the change (golden: `scripts/message-journal-golden.mjs`).
+
+Consequences for a host store and for host readers:
+
+- `kind`, `seq` and `partOf` are now **fidelity-bearing fields**: dropping them
+  makes a message row unfoldable, which leaves it standing on its own in the
+  `load()` array. Round grouping happens by `round`, ordering by `seq`.
+- Do not assume “round rows carry the messages”. The carrier may be
+  `<runId>:engine:round:<n>`, `<runId>:round:<n>` (host default key) or
+  `<runId>:engine:round:<n>:resume`; if a run crashed before its round row
+  landed, the message rows stay in the array unchanged, which is the
+  crash-recovery contract, not a store bug.
+- Engine control text rows (`<runId>:engine:round:<n>:control:<slot>` from
+  `src/loop/orchestrator.js#appendEngineMessagesToTranscript`, and the
+  `…:fold:` / `…:ttl:` fact rows from `appendEngineFactToTranscript`) carry no
+  `seq` by design, so folding passes them through untouched.
+
 ## Tool result fact and field ownership (issue #284 / #285)
 
 Every `tool_result` the engine produces is one **fact object** built at a single

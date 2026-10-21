@@ -646,8 +646,17 @@ test("#207 R3：传 sessionDir 时 transcript 真落盘（文件 store，路径�
   const transcriptPath = path.join(sessionDir, `${runId}.jsonl`);
   assert.equal(existsSync(transcriptPath), true, `transcript 应在 ${transcriptPath}`);
   const records = readFileSync(transcriptPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  // round 0 是引擎开跑前预落的用户轮（resume 锚点），模型轮从 1 开始
-  assert.deepEqual(records.map((record) => record.round), [0, 1, 2]);
+  // round 0 是引擎开跑前预落的用户轮（resume 锚点），模型轮从 1 开始。
+  // 工单 261021 写侧之后**一轮不止一行**（消息行 + 只留元数据的轮行），所以下面先按行类分开：
+  // 轮行给轮次序列，消息行钉「正文一成型就有一行」与它的 `(round, seq)` 身份。
+  const roundRows = records.filter((record) => record.kind !== "message");
+  assert.deepEqual(roundRows.map((record) => record.round), [0, 1, 2]);
+  assert.deepEqual(
+    records.filter((record) => record.kind === "message")
+      .map((record) => `${record.round}:${record.seq}`),
+    ["1:0", "1:1", "2:0"],
+    "assistant 正文与工具结果各自一行，partOf 分片接在同一条消息上",
+  );
   assert.match(JSON.stringify(records.at(-1).response.content), /落了盘/u);
   // 落盘只跟 sessionDir 有关，不往 cwd / home 里渗
   assert.deepEqual(readdirSync(dir), ["nested"]);
