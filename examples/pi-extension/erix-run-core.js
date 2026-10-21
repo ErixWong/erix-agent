@@ -1796,6 +1796,12 @@ export async function runErixRun(rawParams = {}, deps = {}) {
     maxExtensions = reflectionEnabled
       ? (params.maxExtensions ?? ENGINE_DEFAULT_MAX_EXTENSIONS)
       : 0;
+    // issue #322：`judgeDoneAdvisory` 的下发体：没传就是空对象 ⇒ 下发给引擎的 reflection 里
+    // 一个键也不多（不许替引擎造默认值，引擎缺省 false）。
+    const advisoryRequested = params.judgeDoneAdvisory;
+    const advisoryOption = advisoryRequested === undefined
+      ? {}
+      : { judgeDoneAdvisory: advisoryRequested };
     context.reflection = {
       enabled: reflectionEnabled,
       requested: requestedExtensions,
@@ -1806,6 +1812,11 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       ? {
         enabled: true,
         ...requestedExtensions,
+        // issue #322：评审意见回灌开关，**与上面三个扩轮参数合并而不是覆盖**（两边各自展开，
+        // 同传时四个键都在），且只在宿主真传了的时候出现（没传就不写这个键 ⇒ 引擎缺省 false）。
+        // judge 闸门关着时 reflection 整块是 false、**不把这个开关塞进去**：judge 没跑就没有
+        // 「中途判定目标已达成」这件事，下发一个永不被读的键只会让人以为它在生效。
+        ...advisoryOption,
         // 扩轮计数的唯一可靠入口：引擎只在真的执行了 extend / extend+redirect 时调它
         // （src/loop/orchestrator.js 里紧接 governorState.extensionCount += 1）。
         // ⚠ 它不在隔离名单里（契约「reflection.onReflection 仍按未隔离处理，抛错杀 run」），
