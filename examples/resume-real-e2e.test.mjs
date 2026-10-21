@@ -195,6 +195,19 @@ function logicalMessages(foldedRecords) {
   return foldLedgerMessages(foldedRecords).map((entry) => entry.message);
 }
 
+/**
+ * `candidate` 是不是 `expected` 的「只长尾巴」版本：前面每个 block 逐个指纹相等，多出来的是补跑的结果。
+ * 崩溃那一轮的多个 `tool_result` 改造前是同一条 user 消息的多个 block，续跑补跑的结果靠 `partOf`
+ * 接在后面 ⇒ **唯一**允许被拉长的那一条消息就是这个形状。
+ */
+function growsAtTail(expected, candidate) {
+  const expectedBlocks = blocksOf(expected);
+  const candidateBlocks = blocksOf(candidate);
+  if (expectedBlocks.length === 0 || candidateBlocks.length <= expectedBlocks.length) return false;
+  return expectedBlocks.every((block, position) => fingerprintMessage({ role: "x", content: [block] })
+    === fingerprintMessage({ role: "x", content: [candidateBlocks[position]] }));
+}
+
 // ---------------------------------------------------------------------------
 // 子进程 / 轮询 / 隔离对账
 // ---------------------------------------------------------------------------
@@ -671,29 +684,38 @@ test("真上游 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账本闭�
     }, `杀点最大轮=${preKillMaxRound}｜新增 ${rowsAdded.length} 行`
       + `｜${JSON.stringify(rowsAdded.map((row) => String(row?.dedupKey ?? "").split(":").slice(-3).join(":")))}`);
 
-    check("E2 被杀前的逻辑消息**原样**是续跑后折叠输出的前缀（只许在末尾接新内容）", () => {
+    check("E2 被杀前的逻辑消息按原顺序全部还在（只许在末尾长出补跑结果，不许改写/重排）", () => {
+      // 为什么判「有序子序列」而不是「逐位前缀」：续跑时宿主先 `appendUserTurn` 写下 `:input:` 行
+      // （轮号 = 当前最大轮），引擎随后才写本轮载体行 `…:resume`，而折叠把本轮正文挤到**载体行的位置**上
+      // （`store.load()` 按**追加顺序**返回，契约「load 返回顺序」那条）⇒ 宿主可见顺序里
+      // 「续跑提示」落在崩溃轮正文之前。**模型上下文不是这个顺序**（`restoreResume` 把 `:input:` 行
+      // 当 tail 延后拼），所以这里判「原顺序保留 + 不改写」，不判「逐位前缀」。实测顺序见下方备注。
       const before = logicalMessages(foldMessageRows(rowsBefore));
       assert.ok(before.length >= 2, `杀点账本只有 ${before.length} 条逻辑消息，前缀判据落空`);
       assert.ok(messagesAfter.length >= before.length,
         `续跑后逻辑消息更少了：${before.length} → ${messagesAfter.length}`);
       const problems = [];
+      let cursor = 0;
       for (const [index, message] of before.entries()) {
-        const actual = messagesAfter[index];
-        const expectedFingerprint = fingerprintMessage(message);
-        const actualFingerprint = fingerprintMessage(actual);
-        if (actualFingerprint === expectedFingerprint) continue;
-        // 唯一允许的生长点：杀点那一条聚合 user 消息（被补跑的结果用 `partOf` 接在后面）。
-        const expectedBlocks = blocksOf(message);
-        const actualBlocks = blocksOf(actual);
-        const growsAtTail = index === before.length - 1
-          && actualBlocks.length > expectedBlocks.length
-          && expectedBlocks.every((block, position) => fingerprintMessage({ role: "x", content: [block] })
-            === fingerprintMessage({ role: "x", content: [actualBlocks[position]] }));
-        if (!growsAtTail) {
-          problems.push(`#${index}: ${expectedFingerprint.slice(0, 80)} ≠ ${actualFingerprint.slice(0, 80)}`);
+        const expected = fingerprintMessage(message);
+        let found = -1;
+        for (let position = cursor; position < messagesAfter.length; position += 1) {
+          if (fingerprintMessage(messagesAfter[position]) === expected
+            || (index === before.length - 1 && growsAtTail(message, messagesAfter[position]))) {
+            found = position;
+            break;
+          }
         }
+        if (found === -1) {
+          problems.push(`#${index}（${expected.slice(0, 60)}）在续跑后的账本里找不到`);
+          continue;
+        }
+        cursor = found + 1;
       }
-      assert.deepEqual(problems, [], `续跑改写了被杀前的历史：${problems.join(" ｜ ")}`);
+      assert.deepEqual(problems, [], `续跑丢了/改写了被杀前的历史：${problems.join(" ｜ ")}`);
+      notes.push(`E2 实测折叠顺序（宿主可见）：`
+        + messagesAfter.map((message) => `${String(message?.role)}:${blocksOf(message).map((block) => String(block?.type)).join("+")}`).join(" → ")
+        + `；杀点前 ${before.length} 条按原顺序全部在场`);
     }, `杀点 ${logicalMessages(foldMessageRows(rowsBefore)).length} 条 → 续跑后 ${messagesAfter.length} 条`);
 
     check("E3 续跑入口真的走到了：账本里有 appendUserTurn 的 `:input:` 行（只有续跑路径才写）", () => {
@@ -708,12 +730,14 @@ test("真上游 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账本闭�
     check("E4 续跑那次的模型真的看到了账本历史（终稿里出现被杀前那个 token）", () => {
       // 硬判据在 E1/E2/E3（账本结构）。这一条是**模型可见面**的旁证：被杀前 a.txt 的 token 只在账本里，
       // 续跑进程若**没有**再读 a.txt，模型能说出它就只能是从历史里看到的。
-      // 前提不成立（模型又读了一次 a.txt）时不判红，只记备注——`examples/tool-fact-e2e.test.mjs` 与
-      // `scripts/cli-real-smoke.mjs` 的 C2 同一条纪律：真上游是否照抄标记是模型自由，拿它判红会把门禁
-      // 跑成随机假红。
-      const reread = resultsAfter.filter((block) => String(block?.content ?? "").includes(tokenA));
+      // 前提不成立（模型又调了一次 readFile a.txt）时不判红，只记备注——`examples/tool-fact-e2e.test.mjs`
+      // 与 `scripts/cli-real-smoke.mjs` 的 C2 同一条纪律：真上游是否照抄标记是模型自由，拿它判红会把门禁
+      // 跑成随机假红。注意「新结果」要按 tool_use_id 排掉杀点之前就落盘的那一份（它本身就含 tokenA）。
+      const preKillIds = new Set(preKillResults.map((block) => String(block?.tool_use_id)));
+      const reread = resultsAfter.filter((block) => !preKillIds.has(String(block?.tool_use_id))
+        && String(block?.content ?? "").includes(tokenA));
       if (reread.length > 0) {
-        notes.push(`E4 旁证不成立：续跑那次又读了 a.txt（${reread.length} 份含 ${tokenA} 的结果），`
+        notes.push(`E4 旁证不成立：续跑那次又读了 a.txt（${reread.length} 份新结果含 ${tokenA}），`
           + "模型可见面这条本轮没有判据（结构判据 E1–E3 不受影响）");
         return;
       }
@@ -726,8 +750,9 @@ test("真上游 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账本闭�
         .join("\n");
       assert.equal(newAssistantText.includes(tokenA), true,
         `续跑的 assistant 正文里没有被杀前的 token ${tokenA}（模型没看到历史？）`);
-    }, `被杀前 token=${tokenA}｜续跑后含它的新结果块=`
-      + `${resultsAfter.filter((block) => String(block?.content ?? "").includes(tokenA)).length}`);
+    }, `被杀前 token=${tokenA}｜续跑后含它的**新**结果块=`
+      + `${resultsAfter.filter((block) => !preKillResults.some((before) => before?.tool_use_id === block?.tool_use_id)
+        && String(block?.content ?? "").includes(tokenA)).length}`);
 
     check("E5 续跑是正常收尾：退出码 4 + 统计行 termination=end_turn、truncated=false", () => {
       assert.equal(secondExit.code, EXIT_NOT_VERIFIED,
