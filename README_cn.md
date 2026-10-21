@@ -276,6 +276,14 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 键必须被 `TS2353` 拒掉——这就是「类型面不是 `any`」的证据）并把编译产物真跑一遍，最后拿本地假上游冒烟装好的
 命令行。它全程离线（一次性 npm cache 与 userconfig、假 `HOME`）、跑完把临时目录和生成的声明一并清掉，红的时候点名第几步。
 
+真上游那一半也是一条命令（工单 261021-13）：`npm run check:release:real` 按顺序跑四条同闸门的真 e2e 套件
+（`examples/tool-fact-e2e.test.mjs`、`examples/resume-real-e2e.test.mjs`、
+`examples/cross-version-real-e2e.test.mjs`、`examples/pi-extension/erix-run-e2e.test.mjs`），
+再跑 `npm run check:cli-real`；每条单独 900 秒硬超时，跑完整张清单才判红并点名是哪几条。
+不带 `ERIX_E2E_REAL=1` 时它一步都不跑、exit 0 并打分类原因，因此永远不会变成默认门禁的硬依赖——
+但闸门开着而配置不可用是**错误**，不是跳过。它和文档审计（`npm run check:docs` /
+`npm run check:docs:strict`）都是每次发布前**必跑**的。
+
 ## 工程约束
 
 - 零运行时 npm 依赖、纯 ESM、Node 22+，发布的 JavaScript 没有构建步骤。本仓库唯一的 npm
