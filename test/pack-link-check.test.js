@@ -23,6 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  checkDeclarationClaims,
   checkPackLinks,
   runNpmPackDryRun,
 } from "../scripts/pack-link-check.mjs";
@@ -251,6 +252,109 @@ test("被 import 时零副作用：只有被当命令直接跑才执行门禁", 
     "import 不得跑门禁：process.exitCode 必须仍是 undefined，且不能有输出",
   );
   assert.equal(existsSync(path.join(root, "src")), true, "import 也不该动 src/");
+});
+
+// ── 声称对账（工单 261021-03 任务 A）：文档里的「装包应列 N 个 .d.ts」必须等于随包声明数 ────
+// 反向证口径与 #210/#286 同构：声称对 ⇒ 绿；声称错 ⇒ 红且点名文档与行；抽不到 ⇒ 红（不许空跑）。
+// 真值只取自注入的 pack 清单，所以这里不跑 npm、不跑 tsc。
+
+/** 写一份带「装包应列 N 个 .d.ts」声称的入口文档。 */
+async function writeClaimDoc(root, rel, text) {
+  const abs = path.join(root, rel);
+  await mkdir(path.dirname(abs), { recursive: true });
+  await writeFile(abs, text, "utf8");
+  return abs;
+}
+
+const CLAIM_HEAD = "# fake\n\nDeclarations ship with the tarball:\n";
+
+test(".d.ts 声称对账：声称 == 随包声明数 → 0，并在 note 里报出处数", async () => {
+  const root = await makeProject({ existing: [] });
+  await writeClaimDoc(root, "AGENTS.md", `${CLAIM_HEAD}a packed install should list **69** \`.d.ts\`\n`);
+
+  const out = capture(() => checkDeclarationClaims({ root, packedDeclarationCount: 69, reclaim: { removed: 69, kept: 0 } }));
+
+  assert.equal(out.code, 0, `stderr=${out.stderr.join("\n")}`);
+  assert.match(out.stdout.join("\n"), /\.d\.ts 声称对账：1 处声明位全部等于随包声明数 69/);
+});
+
+test(".d.ts 声称对账的反向证：声称 ≠ 随包声明数 → 红，且点名文档、行号与两个数", async () => {
+  const root = await makeProject({ existing: [] });
+  await writeClaimDoc(root, "AGENTS.md", `${CLAIM_HEAD}a packed install should list **67** \`.d.ts\`\n`);
+  await writeClaimDoc(root, "AGENTS_cn.md", "# 假的\n\n因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **67** 个 `.d.ts`。\n");
+
+  const out = capture(() => checkDeclarationClaims({ root, packedDeclarationCount: 69, reclaim: { removed: 69, kept: 0 } }));
+
+  assert.equal(out.code, 1);
+  const text = out.stderr.join("\n");
+  assert.match(text, /AGENTS\.md:4 声称「装包应列 67 个 \.d\.ts」（句式 en-should-list）/);
+  assert.match(text, /AGENTS_cn\.md:3 声称「装包应列 67 个 \.d\.ts」（句式 cn-应列出）/);
+  assert.match(text, /npm pack 的清单里有 69 个 src\/\*\*\/\*\.d\.ts/);
+  assert.match(text, /这个数由本门禁与包内容对账，不许手抄/);
+});
+
+test(".d.ts 声称对账不许空跑：四份文档在树里、却一句声明都没抽到 → 红", async () => {
+  const root = await makeProject({ existing: [] });
+  await writeClaimDoc(root, "README.md", "# fake\n\nNo numeric claim here.\n");
+
+  const out = capture(() => checkDeclarationClaims({ root, packedDeclarationCount: 69, reclaim: { removed: 69, kept: 0 } }));
+
+  assert.equal(out.code, 1);
+  assert.match(out.stderr.join("\n"), /一句「装包应列 N 个 \.d\.ts」的声明位都没抽到.*对账在空跑/);
+});
+
+test("合成测试树里没有那四份文档 → 对账不适用，不判红（不拿缺失当漂移）", async () => {
+  const root = await makeProject({ existing: ["src/index.js"] });
+
+  const out = capture(() => checkDeclarationClaims({ root, packedDeclarationCount: 69, reclaim: { removed: 69, kept: 0 } }));
+
+  assert.equal(out.code, 0);
+  assert.match(out.stdout.join("\n"), /\.d\.ts 声称对账不适用/);
+});
+
+test("历史值与叙述句不算现值声称：带日期的历史数字、「N 个 .d.ts 在场」实验记录都不会被抓成声明位", async () => {
+  const root = await makeProject({ existing: [] });
+  await writeClaimDoc(
+    root,
+    "AGENTS_cn.md",
+    "# 假的\n\n"
+    + "实测（2026-10-11）：无 `.d.ts` 在场 = 142 个错，**61 个 `.d.ts` 在场 = 0 个错**。\n"
+    + "历史值：67（#307 之后）、66、65、64（0.20.0 的 tarball）、63（0.19.0 时代）。\n"
+    + "因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **69** 个 `.d.ts`。\n",
+  );
+
+  const out = capture(() => checkDeclarationClaims({ root, packedDeclarationCount: 69, reclaim: { removed: 69, kept: 0 } }));
+
+  assert.equal(out.code, 0, `stderr=${out.stderr.join("\n")}`);
+  assert.match(out.stdout.join("\n"), /1 处声明位全部等于随包声明数 69/, "只应抓到那一句现值声称");
+});
+
+test("包清单与实物清点对不上 → 红（两个读法必须同值，否则真值不可信）", async () => {
+  const root = await makeProject({ existing: [] });
+  await writeClaimDoc(root, "AGENTS.md", `${CLAIM_HEAD}a packed install should list **2** \`.d.ts\`\n`);
+
+  const out = capture(() => checkDeclarationClaims({ root, packedDeclarationCount: 2, reclaim: { removed: 1, kept: 0 } }));
+
+  assert.equal(out.code, 1);
+  assert.match(out.stderr.join("\n"), /随包声明数 2 与 src\/ 下的实物清点 1.*对不上/);
+});
+
+test("端到端（注入假 pack）：声称等于假 prepack 生成的声明数 → 0；声称少一个 → 1", async () => {
+  const generated = ["src/a.d.ts", "src/b.d.ts"];
+  const packJson = JSON.stringify([
+    { files: [{ path: "package/src/index.js" }, ...generated.map((p) => ({ path: `package/${p}` }))] },
+  ]);
+
+  const okRoot = await makeProject({ existing: [] });
+  await writeClaimDoc(okRoot, "AGENTS.md", `${CLAIM_HEAD}a packed install should list **2** \`.d.ts\`\n`);
+  const okOut = capture(() => checkPackLinks({ root: okRoot, runPack: fakePack({ generated, result: { status: 0, stdout: packJson, stderr: "" } }) }));
+  assert.equal(okOut.code, 0, `stderr=${okOut.stderr.join("\n")}`);
+
+  const badRoot = await makeProject({ existing: [] });
+  await writeClaimDoc(badRoot, "AGENTS.md", `${CLAIM_HEAD}a packed install should list **67** \`.d.ts\`\n`);
+  const badOut = capture(() => checkPackLinks({ root: badRoot, runPack: fakePack({ generated, result: { status: 0, stdout: packJson, stderr: "" } }) }));
+  assert.equal(badOut.code, 1, "声称与包内容对不上必须以非零退出码传出");
+  assert.match(badOut.stderr.join("\n"), /声称「装包应列 67 个 \.d\.ts」.*清单里有 2 个/);
 });
 
 // ── 共享小工具本身 ─────────────────────────────────────────────────────────
