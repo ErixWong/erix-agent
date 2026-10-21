@@ -412,7 +412,7 @@ test("readFile 的 marker 不带裸字节数，且长路径下仍守住 max_byte
 const READ_TOKEN_SAMPLES = [
   { role: "sparse", file: "bin/guard-metrics.js", measured: 150 },
   { role: "typical", file: "bin/sessions.js", measured: 2_493 },
-  { role: "dense", file: "src/tools/file-tools.js", measured: 4_539 },
+  { role: "dense", file: "src/tools/file-tools.js", measured: 4_773 }  // 2026-10-22 #358 复测（本文件前 200 行；本仓自己的文件是密实档，注释一改就漂）,
 ];
 
 function measureReadWindowTokens(rel) {
@@ -566,7 +566,10 @@ const READ_LINE_CAPACITY_ROLES = [
   // 2026-10-22 第三刷：issue #219/#221 给搜索根加了存在性判定、把弃用提示的 mode 改成按入参生成
   // （+3.9% 字节、+59 行），自指锚点同样当场红；描述里的自身容量 `4,938` 随之实测为 `4,896` 并已同步。
   // ⚠ 自指：改本文件的任何注释与描述都会挪动这一行的字节数——改完先跑本测试再定数字（同一位数的数字改动是字节中性的）。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 101_033, lines: 1_887, bytesPerLine: 53.5416, capacity: 4_896, cjkShare: 0.2623 } },
+    // 2026-10-22 第四刷（rebase 到已含 #219/#221 的 main 之后重测）：issue #358 给读侧加了
+  // `[参数校正：…]` / `[已到末尾：…]`、`normalizeIntegerWithReport` 与中文路径文案。描述里那句
+  // 「this tool's own source fits」随之 4,896 → 4,857（同位数改动 ⇒ 字节中性，所以复测在此之前做完即可）。
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 107_120, lines: 1_985, bytesPerLine: 53.9647, capacity: 4_857, cjkShare: 0.2676 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];

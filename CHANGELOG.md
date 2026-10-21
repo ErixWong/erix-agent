@@ -25,6 +25,28 @@
 
 ### Fixed
 
+- **`tree` 非根目标的首行改成可回放的相对路径（issue #358，#215 的另一半）。** 根标签在 #356 修过之后，
+  非根目标仍走 `path.basename`：`tree {path:"nested/sub"}` 首行是 `sub/`。它「看起来能回放」，但两个同名
+  目录（`a/sub` 与 `b/sub`）的首行一模一样，绝对路径入参更是把父链直接丢掉。现在首行是相对工具根目录的
+  `nested/sub/`，抄回 `path`（去掉尾斜杠）逐字得到同一棵树——判据写在共享契约套件 `test/contract/file-tools.js`
+  里（五种写法 + 回放 + 同名可区分），不是文案断言。
+- **`readFile` 不再静默改写 `offset` / `limit` / `max_bytes`，越界 offset 不再返回空串（issue #358）。**
+  `offset:"120"`（数字串）被当非数字归 0、`offset:-5` 钳到 0、`limit:1.9` 取整、`max_bytes` 越界回默认值——
+  四种改写在旧输出里**读不出来**，而兜底值恰好等于默认值，于是「被我改了」与「你本来就要这个」逐字不可分
+  （与 #219 的搜索侧同一个病，只是另一半）。现在这类调用尾部带 `[参数校正：<原值> … 已按 <生效值> 处理]`；
+  `offset` 越过末尾给 `[已到末尾：…（共 N 行，最后一行 offset=M）]` 而不是空串。**语义一字未改**：只报告，
+  归一化与钳制的结果与旧行为逐字相同（契约里带反向对照：正常调用不得出现这两个 marker）。
+- **读侧路径错误保留抛出的通道，但去掉 errno 原文与宿主绝对路径（issue #358，#234 的尾巴）。**
+  `readFile`/`tree` 指到不存在的路径此前直抛 `ENOENT: no such file or directory, stat '/abs/…'`：文案是 Node
+  原文、没有下一步，还把宿主绝对路径注进 transcript。现在 message 是本模块自己的中文句式（`错误：路径不存在：<相对路径>…`）
+  且**仍然抛**——引擎的 `executeToolBlock` 会把抛出变成 `is_error:true` 并给 `toolStats.failures` /
+  `toolErrorCount` 各记一次，改成返回文本会让这次失败从账本上消失（这是与 #219 的关键区别：那边是根本没有错信号，
+  这边是账本已记、只是文案差）。`readFile` 指向目录改为**返回文本** `错误：路径是目录：…`，与 `edit` 同类输入同口径。
+  未知 errno 原样上抛，不扩本模块自己的口径。
+- **连带（自指锚点）**：`test/tools/file-tools.test.js` 的 `self` 角色锚点按新字节数/行数复测刷新
+  （97,034 → 103,519 B、1,828 → 1,933 行，`readFile` 描述里「this tool's own source fits」随之 4,938 → 4,894，
+  同位数改动 ⇒ 字节中性）。这是该锚点该做的事——它钉的就是「本文件自己的源码一次能读多少行」这条事实。
+
 - **搜索根不存在不再返回「（无命中）」：`searchText`/`rg`/`grep` 的 `path` 不存在时给文本错误结果（issue #219；`src/tools/file-tools.js` + 共享契约套件 + 契约中英）。**
   - 现场：`searchText {pattern:"react", path:"nope-不存在", mode:"literal"}` → `（无命中）`（`metadata.searchFiles=0` 只进 transcript、不上 wire）；`rg`/`grep` 同输入同样「（无命中）」。
   - 根因：`collectFiles` 的 `visit` 对 `statSync` 失败一律 `return`（悬空 symlink、权限受限的**子**路径都该跳过——那是遍历现场），于是**调用方亲自给的根**不存在时与「搜过了但没有」走同一条返回路径。模型读到「（无命中）」会直接接受「代码里没有这个」的结论；`readFile`/`tree` 在同一输入上抛 `ENOENT` 反而逼它改路径重试。

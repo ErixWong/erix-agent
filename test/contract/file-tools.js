@@ -16,6 +16,12 @@
 //     尾部开关提示只提尚未开启的 flag，且 searchText / rg / grep / tree 共用同一条文案；
 //   * `tree` 的根标签只看解析后的目标是否等于工作目录根（#215）：`.` / `./` / 空串 / 缺省 /
 //     绝对根路径 / `sub/..` 全部输出 `./`，且首行当 path 回放必须成功；
+//   * `tree` 指向**非根目标**时首行是相对根目录的路径（#358，`nested/sub/`），抄回 `path` 必须
+//     逐字得到同一棵树；同名不同父目录必须可区分（此前两侧都是裸 basename `sub/`）；
+//   * `readFile` 把 `offset` / `limit` / `max_bytes` 归一化或钳制时必须挂 `[参数校正：…]`，
+//     offset 越过末尾必须给 `[已到末尾：…]` 而非空串（#358；只报告，不改语义）；
+//   * 读侧路径错误：不存在 → **抛**，但 message 是本模块中文句式且不含宿主绝对路径；
+//     `readFile` 指向目录 → 返回「错误：路径是目录：…」文本（与 `edit` 同口径，#358/#234）；
 //   * rg/grep 都默认按**正则**匹配（与真实 `rg` / `grep` 命令的默认一致，issue #184 追加轮 A），
 //     is_regex=false 是字面量逃生口（等价 `rg --fixed-strings` / `grep -F`），无效正则一律返回错误结果而非抛；
 //   * 无命中统一「（无命中）」；tree 截断必须带 marker + 剩余计数；
@@ -507,6 +513,113 @@ export function fileToolsContract(label, { createFileTools }) {
       const replayed = String(await tools.executeTool("tree", { path: outputs[0].split("\n")[0] }));
       assert.doesNotMatch(replayed, /^错误：/u, `首行当 path 回放必须成功：${replayed}`);
       assert.equal(replayed, outputs[0], "回放必须与原调用逐字相同（标签可回放才叫可回放）");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // issue #358（#215 的半边）：**非根目标**的首行同样是 basename，于是「看起来可回放」但
+  // 换个父目录就回放不了（`a/sub` 与 `b/sub` 的首行都是 `sub/`），绝对路径入参更是直接丢父链。
+  // 判据不是文案，是**把首行抄回 `path` 必须逐字得到同一棵树**。
+  // -------------------------------------------------------------------------
+  test(`${label}: tree 非根目标的首行是可回放的相对路径（#358）`, async () => {
+    await withDirectory(async (cwd) => {
+      await mkdir(path.join(cwd, "nested", "sub"), { recursive: true });
+      await mkdir(path.join(cwd, "other", "sub"), { recursive: true });
+      await writeFile(path.join(cwd, "nested", "sub", "a.txt"), "needle nested\n", "utf8");
+      await writeFile(path.join(cwd, "other", "sub", "b.txt"), "needle other\n", "utf8");
+      const tools = createFileTools({ cwd });
+
+      // 同一目标的五种写法（含绝对路径与 `..` 绕路）：首行必须都是**相对根目录**的那一个写法
+      const spellings = ["nested/sub", "./nested/sub", path.join(cwd, "nested", "sub"), "nested/./sub", "nested/../nested/sub"];
+      const outputs = [];
+      for (const spelling of spellings) {
+        const output = String(await tools.executeTool("tree", { path: spelling }));
+        const firstLine = output.split("\n")[0];
+        assert.equal(firstLine, "nested/sub/",
+          `tree {path:${JSON.stringify(spelling)}} 的首行必须是可回放的相对路径 nested/sub/，实际是 \`${firstLine}\``);
+        outputs.push(output);
+      }
+      assert.ok(outputs.every((o) => o === outputs[0]), "同一目标的不同写法必须逐字相同");
+
+      // 回放判据：首行去掉尾斜杠当 path 传回去，必须拿回同一棵树
+      const replayed = String(await tools.executeTool("tree", { path: outputs[0].split("\n")[0].replace(/\/$/u, "") }));
+      assert.equal(replayed, outputs[0], "把首行抄回 path 必须逐字得到同一棵树（basename 时代靠运气，现在靠构造）");
+
+      // 同名不同父目录必须可区分 —— 这正是 basename 首行的第二个病灶
+      const other = String(await tools.executeTool("tree", { path: "other/sub" }));
+      assert.equal(other.split("\n")[0], "other/sub/", "两个都叫 sub 的目录，首行必须能分出是哪一个");
+      assert.doesNotMatch(outputs[0] + other, /(^|\n)sub\//u, "首行不得再出现分不清归属的裸 basename");
+
+      // 目标是文件时同样给相对路径（不带尾斜杠），且可回放
+      const fileTree = String(await tools.executeTool("tree", { path: path.join(cwd, "nested", "sub", "a.txt") }));
+      assert.equal(fileTree.split("\n")[0], "nested/sub/a.txt", "tree 指向文件时首行也要可回放");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // issue #358：`readFile` 的入参被归一化/钳制时必须**说话**（不改语义，只把「我改了什么」讲出来），
+  // 并且 offset 越过末尾不得返回空串。三格病灶的共同点：模型拿到的结果与「调用方的本意」之间的
+  // 差别在输出里读不出来（#219 的搜索侧是同一个病的另一半）。
+  // -------------------------------------------------------------------------
+  test(`${label}: readFile 的静默参数归一与越界 offset 都必须留痕（#358）`, async () => {
+    await withDirectory(async (cwd) => {
+      await writeFile(path.join(cwd, "five.txt"), Array.from({ length: 5 }, (_u, i) => `line${i}`).join("\n") + "\n", "utf8");
+      const tools = createFileTools({ cwd });
+      const read = async (input) => String(await tools.executeTool("readFile", input));
+
+      // ① 数字字符串：此前被当非数字归 0，而 0 就是默认值 ⇒ 与「本来就要第 1 行」逐字不可分
+      const numericString = await read({ path: "five.txt", offset: "2" });
+      assert.match(numericString, /\[参数校正：offset="2" 不是数字，已按 0 处理/u,
+        `offset="2" 被静默归 0 时必须报告（模型会以为这就是文件开头）：\n${numericString}`);
+      assert.match(numericString, /line0/u, "语义不变：归一化结果仍是 0，只多了报告");
+
+      // ② 负数与小数同样要报
+      assert.match(await read({ path: "five.txt", offset: -5 }), /offset=-5 是负数，已按 0 处理/u);
+      assert.match(await read({ path: "five.txt", limit: 1.9 }), /limit=1\.9 不是整数，已向下取整为 1/u);
+      // ③ max_bytes 越界：parseIntEnv 静默回默认值，没撞上字节上限时毫无出口
+      assert.match(await read({ path: "five.txt", max_bytes: 7 }), /max_bytes=7 超出允许区间，已钳到 262144/u);
+
+      // ④ 越界 offset：此前是**空串**（模型分不清「空文件」与「我多读了」）
+      const past = await read({ path: "five.txt", offset: 99 });
+      assert.match(past, /\[已到末尾：offset=99 越过文件末尾（共 5 行，最后一行 offset=4）/u,
+        `offset 越过末尾必须说明共几行，实际输出：\n${JSON.stringify(past)}`);
+      assert.notEqual(past.trim(), "", "越界读取不得是空串");
+
+      // ⑤ 反向对照：正常调用不得被这些 marker 污染（新增报告不许变成噪音）
+      const normal = await read({ path: "five.txt", offset: 1, limit: 2 });
+      assert.doesNotMatch(normal, /参数校正|已到末尾/u, `正常调用不该出现新 marker：\n${normal}`);
+      assert.match(normal, /line1/u);
+      // 空文件不算「已到末尾」（totalLines === 0 时那句「共 0 行」没有信息量）
+      await writeFile(path.join(cwd, "empty.txt"), "", "utf8");
+      assert.doesNotMatch(await read({ path: "empty.txt" }), /已到末尾/u);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // issue #358 + #234 尾巴：读侧路径错误的**通道不变（继续抛）**，但文案换成本模块的中文句式，
+  // 并且只出现相对路径 —— 此前直抛 `ENOENT: ... stat '/abs/...'`，把宿主绝对路径注进 transcript。
+  // 目录是「调用方给错了东西」，与 `edit` 同类输入同口径 ⇒ 返回文本（不抛）。
+  // -------------------------------------------------------------------------
+  test(`${label}: 读侧路径错误：文案是本模块句式、只带相对路径（#358）`, async () => {
+    await withDirectory(async (cwd) => {
+      await mkdir(path.join(cwd, "adir"), { recursive: true });
+      await writeFile(path.join(cwd, "afile.txt"), "x\n", "utf8");
+      const tools = createFileTools({ cwd });
+
+      for (const [toolName, input] of [["readFile", { path: "nope.txt" }], ["tree", { path: "nope-dir" }]]) {
+        await assert.rejects(() => tools.executeTool(toolName, input), (error) => {
+          assert.match(error.message, /^错误：路径不存在：nope/u, `${toolName} 的缺失路径文案必须是本模块句式：${error.message}`);
+          assert.doesNotMatch(error.message, /ENOENT|no such file/u, "不得再把 Node 的 errno 原文丢给模型");
+          assert.ok(!error.message.includes(cwd), `文案不得泄露宿主绝对路径 ${cwd}：${error.message}`);
+          return true;
+        });
+      }
+
+      // 目录：与 edit 同口径，返回文本结果而不是抛
+      const dirResult = String(await tools.executeTool("readFile", { path: "adir" }));
+      assert.match(dirResult, /^错误：路径是目录：adir（readFile 只读文件；要看目录用 tree）$/u, dirResult);
+      // tree 指到目录是正常输入，不得被这条检查误伤
+      assert.match(String(await tools.executeTool("tree", { path: "adir" })), /^adir\/$/u);
     });
   });
 

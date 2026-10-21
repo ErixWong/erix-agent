@@ -18,6 +18,9 @@
 //     静默换成正则语义）；
 //   * tree 截断必须带 marker + 剩余计数；
 //   * readFile 有界读（按块扫行 + 早停），不再整文件 `readFileSync`（几百 MB 会 RangeError/OOM）。
+//   * readFile 归一化/钳制过入参就挂 `[参数校正：…]`，offset 越界给 `[已到末尾：…]` 而非空串（#358）；
+//   * tree 首行永远是**可回放的相对路径**（根 → `./`，非根 → `<父目录>/sub/`），#215 + #358；
+//   * 读侧路径不存在仍抛（引擎才会记 `is_error`），但 message 用本模块句式且只带相对路径（#358/#234）；
 //
 // 可中止：遍历每 `ABORT_CHECKPOINT_EVERY` 个条目让出一次事件循环（`setImmediate`）并检查
 // `context.signal.aborted`；同步遍历不让出时，宿主的下行中止处理器根本跑不到（纯 node 递归
@@ -317,7 +320,8 @@ function recordDirectorySkip(account, category, name) {
  * 否则就是给模型开一张兜不了现的支票（照做只会拿到「未知工具」），而 marker 是模型唯一的通道。
  *
  * @param {"skipped"|"noMatch"|"searchTruncated"|"treeEntryCap"|"treeDepthCap"
- *   |"readBytesCap"|"readMoreLines"|"readNotScanned"|"readLineTruncated"} kind
+ *   |"readBytesCap"|"readMoreLines"|"readNotScanned"|"readLineTruncated"
+ *   |"readParamAdjusted"|"readEof"|"editDiffTruncated"} kind
  * @param {Record<string, unknown>} [values] 语义值（计数、上限、offset）
  * @returns {string}
  */
@@ -425,6 +429,17 @@ export function toolMarker(kind, values = {}) {
         + `（文件 ${where}，${formatSize(values.size)}）；`
         + `${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset}, limit=1 并提高 max_bytes]`;
     }
+    case "readParamAdjusted": {
+      // issue #358 同族（参数被静默改写）：只**报告**不改语义。报的全是本次真值：原值（JSON
+      // 字面量 ⇒ 数字串与数字在文案里可分）、实际生效值、怎么重传。不报就等于让模型拿着
+      // 「从第 0 行起」的结果去推断文件内容（#219 搜索侧同一个病：假阴性读不出区别）。
+      const notes = Array.isArray(values.notes) ? values.notes : [];
+      return `[参数校正：${notes.join("；")}；${NEXT_STEP_CLAUSE}重传 readFile 并传整数 ${values.names ?? ""}]`;
+    }
+    case "readEof":
+      // offset 越过末尾：以前返**空串**（零信息，模型分不清「文件是空的」与「我多读了」）。
+      // 与 readMoreLines 互斥（那说的是「还有」，这说的是「没了」）。
+      return `[已到末尾：offset=${values.offset} 越过文件末尾（共 ${values.total} 行，最后一行 offset=${values.lastOffset}），本次无新内容]`;
     case "editDiffTruncated":
       // edit 的 diff 预算 marker（issue #191）：截断必须可撤销 + 给出取回方式（ADR-010）。
       // 有意**不**引用 #196 的 NEXT_STEP_CLAUSE：那是截断 marker 的措辞源，语义是「被截的那段
@@ -799,8 +814,32 @@ function readLineWindow(absolutePath, { start, count, maxBytes }) {
   return { selected, totalLines, contentCapped, lineTruncated, truncatedLines, size };
 }
 
-function fileReadMarkers(window, { start, count, maxBytes, displayPath }) {
+/**
+ * `normalizeNonNegativeInteger` 的**带报版**（issue #358 同族：参数被静默改写）。
+ * 归一化一字不改，多的只是「我改了什么」：`offset="120"` 这类数字串会被归 0，而 0 恰是默认值
+ * ⇒ 「被我改了」与「本来就要 0」在结果里逐字不可分。只**报告**不改语义（改语义要动 Stable 面）。
+ *
+ * @returns {{ value: number, note: string | null }} `note` 为空表示未改写
+ */
+function normalizeIntegerWithReport(value, fallback, name) {
+  const value2 = normalizeNonNegativeInteger(value, fallback);
+  if (value === undefined || value === value2) return { value: value2, note: null };
+  if (!Number.isFinite(value)) {
+    return { value: value2, note: `${name}=${JSON.stringify(value)} 不是数字，已按 ${fallback} 处理` };
+  }
+  if (Number(value) < 0) {
+    return { value: value2, note: `${name}=${JSON.stringify(value)} 是负数，已按 0 处理` };
+  }
+  return { value: value2, note: `${name}=${JSON.stringify(value)} 不是整数，已向下取整为 ${value2}` };
+}
+
+function fileReadMarkers(window, { start, count, maxBytes, displayPath, parameterNotes = [] }) {
   const markers = [];
+  // 参数被改写时报一句（issue #358 同族）：只说本次真值与重传方式，不改任何语义。
+  if (parameterNotes.length > 0) {
+    const names = [...new Set(parameterNotes.map((note) => String(note).split("=")[0]))].join(", ");
+    markers.push(toolMarker("readParamAdjusted", { notes: parameterNotes, names }));
+  }
   const nextOffset = start + window.selected.length;
   if (window.contentCapped) {
     markers.push(toolMarker("readBytesCap", { maxBytes, total: window.totalLines, offset: nextOffset }));
@@ -810,6 +849,13 @@ function fileReadMarkers(window, { start, count, maxBytes, displayPath }) {
         total: window.totalLines,
         offset: start + count,
         size: window.size,
+      }));
+    } else if (window.selected.length === 0 && window.totalLines > 0) {
+      // offset 越过末尾：以前这里是**空串**（模型分不清「空文件」与「我多读了」）。
+      markers.push(toolMarker("readEof", {
+        offset: start,
+        total: window.totalLines,
+        lastOffset: Math.max(0, window.totalLines - 1),
       }));
     }
   } else {
@@ -845,7 +891,7 @@ export const FILE_TOOL_DEFINITIONS = [
     // 只写无状态的静态事实（默认值/单位换算），不引入「首次读某文件才提示」这类跨调用状态。
     // issue #267：token 那三个档是**复测值**，不是估的——口径 `estimateTokens(前 200 行)`，样本写死在
     // `test/tools/file-tools.test.js`：150（`bin/guard-metrics.js`，稀疏短行）/ 2,493（`bin/sessions.js`，
-    // 工单样本的中位）/ 4,539（**本文件**，密中文注释 = CJK 密度上限，也是全包 83 个 `src/`+`bin/`+`examples/`
+    // 工单样本的中位）/ 4,773（**本文件**，密中文注释 = CJK 密度上限，也是全包 83 个 `src/`+`bin/`+`examples/`
     // `.js` 同一测法的最大值）。旧文案只写「~2,500」，正好压在中位数上、把 1.8× 的尾巴藏了。
     // 复测命令与全量清扫结果见 CHANGELOG 的 #267 条目；`test/tools/file-tools.test.js` 会拿上面三个写死的
     // 样本当场复测，并把测得的数**夹在描述声称的档位里**（把档位改小就红），所以这段文字不能随手改小。
@@ -869,12 +915,12 @@ export const FILE_TOOL_DEFINITIONS = [
       + "(61.2 bytes/line, the widest lines), median 7,243 (36.3), most 9,772 (26.8). Wide lines cut this proportionally "
       + "and CJK cuts hardest (3 UTF-8 bytes per character): the 4,286 floor is itself a CJK-heavy file "
       + "(`src/loop/resume-manager.js`, 24% of its bytes are CJK), while the most CJK-dense file in that sample "
-      + "(`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,896. Nothing outside this repo "
+      + "(`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,857. Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
       + "Token budget of the default window, measured with the engine estimator (~3.5 characters per token for non-CJK, "
       + "~1.5 for CJK, \u00d71.15 margin) on the first 200 lines of real source files shipped here: ~150 tokens where lines "
-      + "are short and sparse, ~2,500 on typical source, and ~4,500 where lines are wide, comments are dense or the text "
+      + "are short and sparse, ~2,500 on typical source, and ~4,750 where lines are wide, comments are dense or the text "
       + "is CJK \u2014 budget the tail, not the typical case. "
       + "Estimate the budget first and ask for it **in one call** \u2014 when unsure take more (e.g. `limit=1000`) rather than "
       + "conservatively paging 200 lines at a time. Whatever is withheld is reported by a marker that carries the exact `offset` to continue from.",
@@ -1182,6 +1228,27 @@ export function createFileTools({
   const writeDenied = (target) => `错误：写入被宿主边界拒绝：${truncateDisplayText(displayName(target), 200)}`;
 
   /**
+   * 读侧路径的前置 stat（issue #358 + #234 尾巴）：errno 文案换成本模块的中文句式，且只出现
+   * `displayName` 的相对路径（此前宿主绝对路径会被注进 transcript）。通道不变——**仍然抛**：
+   * 引擎的 catch 才会把它记成 `is_error:true` 与一次失败，改成返回文本会让失败从账本上消失。
+   * 未知 errno 原样上抛，不扩本模块自己的口径。
+   */
+  const normalizedReadStat = (target) => {
+    const label = truncateDisplayText(displayName(target), 200);
+    try {
+      return statSync(target);
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        throw new Error(`错误：路径不存在：${label}（相对路径按工具根目录解析；下一步：tree 传 "." 看根下有什么）`);
+      }
+      if (error?.code === "EACCES") {
+        throw new Error(`错误：读不到 ${label}（权限不足 EACCES）`);
+      }
+      throw error;
+    }
+  };
+
+  /**
    * 搜索根的**存在性**判定（issue #219）：`undefined` = 可以搜，字符串 = 错误结果文本。
    *
    * `collectFiles` 的 `visit` 对 `statSync` 失败一律 `return`（悬空 symlink、权限受限的**子**路径
@@ -1279,19 +1346,47 @@ export function createFileTools({
 
   const readFile = async (input) => {
     const { path: filePath, offset = 0, limit = 200 } = input ?? {};
-    const start = normalizeNonNegativeInteger(offset, 0);
-    const count = normalizeNonNegativeInteger(limit, 200);
+    // 参数校正只报告不改语义（issue #358 同族）：offset/limit 被静默归一时模型无从得知。
+    const startReport = normalizeIntegerWithReport(offset, 0, "offset");
+    const countReport = normalizeIntegerWithReport(limit, 200, "limit");
+    const start = startReport.value;
+    const count = countReport.value;
+    const maxBytesRequested = input?.max_bytes ?? process.env.ERIX_FILE_READ_MAX_BYTES;
     const maxBytes = parseIntEnv(
-      input?.max_bytes ?? process.env.ERIX_FILE_READ_MAX_BYTES,
+      maxBytesRequested,
       FILE_READ_MAX_BYTES_DEFAULT,
       { min: FILE_READ_MAX_BYTES_MIN, max: FILE_READ_MAX_BYTES_CEILING },
     );
+    // `max_bytes` 越界/非整数时 parseIntEnv 静默回默认值；没撞上字节上限就完全看不见 ⇒ 报一句。
+    const maxBytesNote = (() => {
+      if (maxBytesRequested === undefined || maxBytesRequested === null || maxBytesRequested === "") return null;
+      const requested = Number(maxBytesRequested);
+      if (!Number.isFinite(requested) || Math.trunc(requested) !== requested) {
+        return `max_bytes=${JSON.stringify(maxBytesRequested)} 不是可用整数，已按 ${maxBytes} 处理`;
+      }
+      if (requested !== maxBytes) {
+        return `max_bytes=${requested} 超出允许区间，已钳到 ${maxBytes}`;
+      }
+      return null;
+    })();
     const target = resolveToolPath(root, filePath);
     if (!canRead(target)) return readDenied(target);
 
+    const targetStat = normalizedReadStat(target);
+    if (targetStat.isDirectory()) {
+      // 目录不是文件：调用方给错了东西，与 `edit` 同类输入同口径 ⇒ 返回文本（不抛）。
+      return `错误：路径是目录：${truncateDisplayText(displayName(target), 200)}（readFile 只读文件；要看目录用 tree）`;
+    }
+
     const window = readLineWindow(target, { start, count, maxBytes });
     const parts = [...window.selected];
-    parts.push(...fileReadMarkers(window, { start, count, maxBytes, displayPath: displayName(target) }));
+    parts.push(...fileReadMarkers(window, {
+      start,
+      count,
+      maxBytes,
+      displayPath: displayName(target),
+      parameterNotes: [startReport.note, countReport.note, maxBytesNote].filter(Boolean),
+    }));
     return parts.join("\n");
   };
   /**
@@ -1540,12 +1635,15 @@ export function createFileTools({
     if (signal) throwIfAborted(signal);
     const checkpoint = createCheckpoint(signal);
     const maxDepth = normalizeNonNegativeInteger(depth, 3);
-    const rootStat = statSync(resolvedTreePath);
+    const rootStat = normalizedReadStat(resolvedTreePath);
     // 根标签只看**解析后的目标是否等于工作目录根**，与入参写法无关（issue #215）：
     // 此前只有字面 `path === "."` 走 `./` 分支，`"./"`、`sub/..`、绝对根路径全部掉进
     // basename，于是模型看到首行 `wd/`、以为根下有个叫 `wd` 的子目录，回放 `tree {path:"wd/"}`
     // 必然 ENOENT（白烧一轮）。`./` 是唯一可回放的根标签。
-    const rootLabel = resolvedTreePath === root ? "." : path.basename(resolvedTreePath);
+    // 首行只看**解析后的目标**（#215 + #358）：根 → `.`（唯一可回放的根标签）；非根 → `displayName`
+    // 的相对路径。此前非根给 basename：同名不同父目录分不开（`<父>/sub` 与 `other/sub` 都是 `sub/`），
+    // 绝对路径入参还直接丢父链——能不能回放全看运气。相对路径才是能直接抄回 `path` 的那一个。
+    const rootLabel = resolvedTreePath === root ? "." : displayName(resolvedTreePath);
     const lines = [rootLabel + (rootStat.isDirectory() ? "/" : "")];
     const account = createSkipAccount();
     const visitedDirectories = new Set();
