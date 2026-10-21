@@ -15,8 +15,14 @@ test("plain round: assistant text, tool call summary with key args, tool result 
   const entries = projectTranscriptForDisplay([{
     round: 3,
     ts: "2026-10-07T08:00:00.000Z",
+    // 轮内消息里那条 assistant 消息是正文的**正本**（issue #335 第一步的读法）：它带 tool_use，
+    // 而轮行 `response.content` 只有文字——两份副本不一致时以消息行为准，所以 tool_use 必须看得见
+    // （改造前从 response 取，这一条会被吞掉，本用例的 toolCalls 断言在改造前是红的）。
     messages: [
-      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read", input: { path: "src/a.js" } }] },
+      { role: "assistant", content: [
+        { type: "text", text: "done reading" },
+        { type: "tool_use", id: "t1", name: "read", input: { path: "src/a.js" } },
+      ] },
       { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "file body".repeat(100) }] },
     ],
     response: {
@@ -35,6 +41,11 @@ test("plain round: assistant text, tool call summary with key args, tool result 
   assert.equal(assistant.round, 3);
   assert.equal(assistant.ts, "2026-10-07T08:00:00.000Z");
   assert.equal(assistant.text, "done reading");
+  // 正本那一份的 tool_use 与配对结果照旧成对出现（结果预览按 MAX_RESULT_PREVIEW 截断）。
+  assert.equal(assistant.toolCalls.length, 1);
+  assert.equal(assistant.toolCalls[0].name, "read");
+  assert.match(assistant.toolCalls[0].resultPreview, /^file body/u);
+  assert.equal(assistant.toolCalls[0].resultPreview.length, 401);
   assert.equal(assistant.folded, undefined);
   assert.equal(assistant.meta.synthetic, false);
   assert.equal(assistant.meta.stopReason, "end_turn");
@@ -56,6 +67,110 @@ test("plain round: assistant text, tool call summary with key args, tool result 
   assert.equal(projected[0].toolCalls[0].id, "t9");
   assert.match(projected[0].toolCalls[0].argsSummary, /^command=npm test/u);
   assert.ok(projected[0].toolCalls[0].argsSummary.length <= 121);
+});
+
+// ── issue #335 第一步：assistant 正文的正本在消息行，展示侧不再依赖 `record.response.content` ──
+// #334 之后「一条消息一成型就落盘」，恢复也只认消息行；轮行的 `response.content` 只是同一份正文的
+// 第二副本。下面四条用例把「谁是正本」钉死：messages 优先、老账本回退、两份同时在场不得重复显示。
+
+test("messages-only round (no response.content) still shows the assistant body", () => {
+  // 第二步停写 `response.content` 之后的常态形状：轮行只剩元数据。
+  const entries = projectTranscriptForDisplay([{
+    round: 4,
+    ts: "2026-10-21T08:00:00.000Z",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "the task" }] },
+      { role: "assistant", content: [
+        { type: "reasoning", text: "musing" },
+        { type: "text", text: "answer from the message row" },
+        { type: "tool_use", id: "m1", name: "read", input: { path: "src/x.js" } },
+      ] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "m1", content: "file body" }] },
+    ],
+    response: { stopReason: "end_turn", usage: { inputTokens: 7, outputTokens: 3 } },
+    toolUses: 1,
+  }]);
+
+  const assistants = entries.filter((entry) => entry.role === "assistant");
+  assert.equal(assistants.length, 1);
+  const [assistant] = assistants;
+  assert.equal(assistant.text, "answer from the message row");
+  assert.equal(assistant.reasoning, "musing");
+  assert.equal(assistant.toolCalls.length, 1);
+  assert.equal(assistant.toolCalls[0].name, "read");
+  assert.equal(assistant.toolCalls[0].resultPreview, "file body");
+  // 展示形状逐字不变：meta 仍从轮行元数据来，正文不因此被标成 synthetic/回退来源。
+  assert.equal(assistant.meta.synthetic, false);
+  assert.equal(assistant.meta.source, undefined);
+  assert.equal(assistant.meta.stopReason, "end_turn");
+  assert.deepEqual(assistant.meta.usage, { inputTokens: 7, outputTokens: 3 });
+  assert.equal(assistant.round, 4);
+  // 正文与工具结果的分拣照旧：只有 tool_result 的 user 消息不进展示流。
+  assert.deepEqual(entries.map((entry) => entry.role), ["user", "assistant"]);
+  assert.equal(entries[0].text, "the task");
+});
+
+test("legacy round with only response.content (no messages) still shows the assistant body", () => {
+  // 老账本 + 宿主手写的轮行（touwaka 仍在写 response.content）⇒ 回退分支必须仍然服务得到。
+  const entries = projectTranscriptForDisplay([{
+    round: 1,
+    ts: "2026-10-07T08:00:00.000Z",
+    response: {
+      content: [
+        { type: "reasoning", text: "legacy thought" },
+        { type: "text", text: "legacy answer" },
+        { type: "tool_use", id: "l1", name: "exec", input: { command: "ls" } },
+      ],
+      stopReason: "tool_use",
+      usage: { inputTokens: 4 },
+    },
+    toolUses: 1,
+    summary: { action: "listing", note: "legacy" },
+  }]);
+
+  const assistants = entries.filter((entry) => entry.role === "assistant");
+  assert.equal(assistants.length, 1);
+  assert.equal(assistants[0].text, "legacy answer");
+  assert.equal(assistants[0].reasoning, "legacy thought");
+  assert.equal(assistants[0].toolCalls[0].name, "exec");
+  assert.equal(assistants[0].meta.synthetic, false);
+  assert.equal(assistants[0].meta.source, undefined);
+  assert.equal(assistants[0].meta.stopReason, "tool_use");
+  assert.deepEqual(assistants[0].meta.summary, { action: "listing", note: "legacy" });
+
+  // 只有 user 消息 + response.content（宿主手写行）也走同一条回退分支。
+  const hostWritten = projectTranscriptForDisplay([{
+    round: 2,
+    messages: [{ role: "user", content: [{ type: "text", text: "host question" }] }],
+    response: { content: [{ type: "text", text: "host answer" }] },
+  }]);
+  assert.deepEqual(hostWritten.map((entry) => [entry.role, entry.text]), [
+    ["user", "host question"],
+    ["assistant", "host answer"],
+  ]);
+});
+
+test("both copies present and consistent: exactly one assistant entry, sourced from messages", () => {
+  const body = [
+    { type: "text", text: "the one body" },
+    { type: "tool_use", id: "d1", name: "work", input: { path: "p" } },
+  ];
+  const record = {
+    round: 2,
+    messages: [{ role: "assistant", content: structuredClone(body) }],
+    response: { content: structuredClone(body), stopReason: "tool_use" },
+    textPreview: "the one body",
+    toolUses: 1,
+  };
+  const entries = projectTranscriptForDisplay([record]);
+  const assistants = entries.filter((entry) => entry.role === "assistant");
+  assert.equal(assistants.length, 1);
+  assert.equal(assistants[0].text, "the one body");
+  assert.equal(assistants[0].toolCalls.length, 1);
+  assert.equal(assistants[0].toolCalls[0].name, "work");
+  // 正本的身份可查：展示的块是**消息行那一份**的对象，不是 response.content 那一份。
+  assert.equal(assistants[0].blocks[0], record.messages[0].content[0]);
+  assert.notEqual(assistants[0].blocks[0], record.response.content[0]);
 });
 
 test("tool result preview is attached to the matching tool call", () => {
