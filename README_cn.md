@@ -299,7 +299,7 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 - 永远不要提交 token、API key 或其他凭据。
 
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段（`npm run check:docs` 会校验本文的
-发布行）。当前发布版本：**v0.23.0**。下面引用的 `files` 清单以 `package.json` 为权威：
+发布行）。当前发布版本：**v0.24.0**。下面引用的 `files` 清单以 `package.json` 为权威：
 
 ```json
 [
@@ -330,6 +330,8 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
   "docs/host-upgrade-guide-0.22.0_cn.md",
   "docs/host-upgrade-guide-0.23.0.md",
   "docs/host-upgrade-guide-0.23.0_cn.md",
+  "docs/host-upgrade-guide-0.24.0.md",
+  "docs/host-upgrade-guide-0.24.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -571,7 +573,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - [docs/testing_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing_cn.md) - 测试策略与行为指标
 - [docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md) - 关于核验、note-first 取回、provenance 和重跑的宿主消费者契约；内含终止裁决决策表（逐 reason 的触发机制、优先级位置、宿主开关、推荐动作）与模型元数据 / 预算推导字段契约及多模型槽位装配示例
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0 破坏窗口迁移步骤（英文）
-- [docs/host-upgrade-guide-0.23.0.md](docs/host-upgrade-guide-0.23.0.md) / [docs/host-upgrade-guide-0.23.0_cn.md](docs/host-upgrade-guide-0.23.0_cn.md) - 最新的宿主迁移指南（中英成对），**0.22.0 → 0.23.0**：存储收敛那一版。账本改成**一条消息一行**（消息一成型就落盘）、轮行只留**元数据**，于是 `store.load()` 就是正文 API：自己解析原始 `.jsonl` 的宿主从此看不到正文（轮行不带 `messages`）、`onRound(record)` 不再交出 `record.messages`、run snapshot 的 `messages` 只是**落后副本**而不是正文来源、`projectTranscriptForDisplay` 必须喂 `load()` 的折叠输出（喂原始行会重复出条目并丢掉 `durationMs`）。没有 store 签名、选项或导出搬家
+- [docs/host-upgrade-guide-0.24.0.md](docs/host-upgrade-guide-0.24.0.md) / [docs/host-upgrade-guide-0.24.0_cn.md](docs/host-upgrade-guide-0.24.0_cn.md) - 最新的宿主迁移指南（中英成对），**0.23.0 → 0.24.0**：「运行时不再替你做猜测」那一版。两处增量/修好的信息面——`<runId>.state.json` 自报 `deterministic.compactionStatsWindow`（`{ limit, dropped, total }`），`checkpoint_failed` 的 `cause` / `errorCode` / `unpersisted` 与 `persistence_failed` **键名与取值类型都相同**——加上四处**模型可见**的工具输出修正：`tree` 非根目标首行改成可回放的相对路径、`readFile` 改写你入参时给 `[参数校正：…]`、读到末尾给 `[已到末尾：…]` 而不是空串、搜索根不存在返回错误文本而不是 `（无命中）`、`rg`/`grep` 的弃用提示按本次调用的真实 mode 说话。没有 store 签名、选项或导出搬家（更早一份见 [docs/host-upgrade-guide-0.23.0.md](docs/host-upgrade-guide-0.23.0.md)，覆盖 0.22.0 → 0.23.0）
 - [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) / [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md) - 更早一个破坏窗口的宿主迁移指南（中英成对）：judge 的 `writeToolNames` 默认值、七项文件工具清单、`rg`/`grep` 的弃用提示行、属 Experimental 的 marker 文案、以及 `erix-agent/tools` 导入路径；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`（随包清单见上文）
 - [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - 更早的破坏窗口迁移指南：成对可选快路径探针（英文）
 - [docs/host-upgrade-guide-v030_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/host-upgrade-guide-v030_cn.md) - 面向 `touwaka` / `app_container` 的宿主升级指南与 v0.3.x 行为
@@ -584,10 +586,10 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 本仓不是每份 Markdown 都在声明同一件事，门禁也按不同的口径筛（`scripts/docs-drift-check.mjs` + `test/docs-anchor-ratchet.test.js`）。三类：
 
 - **活文档——有门禁，必须「今天为真」。** `README*.md`、`AGENTS*.md`、中英契约（`docs/host-consumer-contract.md` /
-  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（当前 20 份，按目录实扫），再加上
+  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（当前 22 份，按目录实扫），再加上
   工单 261021-03 B1 新纳面的中英架构（`docs/architecture.md` / `docs/architecture_cn.md`）、中英图表
   （`docs/charts.md` / `docs/charts_cn.md`）、中英需求对照（`docs/requirements.md` / `docs/requirements_cn.md`）
-  与 `erix_run` 的 README（`examples/pi-extension/README.md`）。共 33 份（`REF_SCAN_DOCS_MINIMUM = 33`）：文件改名、
+  与 `erix_run` 的 README（`examples/pi-extension/README.md`）。共 35 份（`REF_SCAN_DOCS_MINIMUM = 35`）：文件改名、
   行号漂到另一个函数、符号在 `src/` 里已不存在，都会把 `npm run check:docs` 压红。
 - **快照档案——「首部写的那一日为真」。** `docs/v0.0-contracts*.md` / `docs/v0.1-contracts*.md` /
   `docs/v0.2-contracts*.md`、`docs/design/`、`docs/research/`、`docs/harness-comparison/`（共 28 份）。每份首部都有一行
@@ -602,8 +604,19 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 ## 状态与版本历史
 
-权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.23.0**（2026-10-21）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
+权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.24.0**（2026-10-22）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)。
+
+- **v0.24.0 (2026-10-22)**：「运行时不再替你做猜测」那一版——引擎没有改它**做**什么，改的是它**说**什么。
+  `<runId>.state.json` 自报削减账窗口（`deterministic.compactionStatsWindow = { limit, dropped, total }`，
+  增量字段：读的人不必读源码就能分清「尾巴」与「全量」），两个持久化失败出口（`persistence_failed` /
+  `checkpoint_failed`）从此带**同名同类型**的 `cause`（是 `Error`）、`errorCode`（是字符串）、
+  `unpersisted`（是裸数组），宿主不必再解析 `message` 字符串。四处**模型可见**的工具输出变诚实：`tree`
+  非根目标首行改成相对工具根目录的可回放路径（不再是 basename）、`readFile` 改写
+  `offset`/`limit`/`max_bytes` 时给 `[参数校正：…]`、越过末尾给 `[已到末尾：…]` 而不是空串、搜索根不存在返回
+  错误文本而不是 `（无命中）`、`rg`/`grep` 的弃用提示按本次调用的真实 mode 给（`is_regex: false` 是字面量，
+  劝 `mode="regex"` 等于静默换语义）。打包：tarball 新增 `test/helpers/tmp.js`（随包契约套件要 import 它）。
+  没有 store 签名、选项、导出或依赖搬家。迁移见 [docs/host-upgrade-guide-0.24.0_cn.md](docs/host-upgrade-guide-0.24.0_cn.md)，覆盖 0.23.0 → 0.24.0。
 
 - **v0.23.0 (2026-10-21)**：存储收敛那一版（工单 261021 三刀）——账本改成**一条消息一行**、消息一成型就落盘，
   轮行只留**元数据**；`store.load()` 把消息行折回所属的轮，所以读 `load()` 的宿主看到的记录形状不变。宿主必须

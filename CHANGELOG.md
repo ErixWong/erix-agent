@@ -3,6 +3,8 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-22
+
 ### Changed
 
 - **`erix_run` 终局面的 `layers.truncationNote` 不再硬编码「截断到最后 32 条」，改成念 `<runId>.state.json` 自报的 `deterministic.compactionStatsWindow`（issue #373；`examples/pi-extension/erix-run-core.js` + 两格离线用例；`src/` 零改动、无新依赖、纯 ESM）。**
@@ -20,7 +22,7 @@
   - **「中英同值」升级为「全部文档同值」**：同一常量在所有声称它的文档里必须是一个值（中英成对 + 随包 README），报错逐份点名「哪份声称几」并给出脚本真值。
   - **反向证（进 `npm test`，跑在 `makeTmp` 的合成树上）**：只改脚本 ⇒ 红；只改文档 ⇒ 红；两边同改 ⇒ 绿；删掉登记过的那句 ⇒ 因「登记了就必须在」而红；脚本常量整行删掉 ⇒ 因抽不到真值而红；变异没落上时变异器自己抛（#210 R2 口径）。**#359 新增的三条覆盖各有自己的反向证**：只改 `README.md` 的 33 ⇒ 2 处红（值不等 + 各文档不一致）；只改 `examples/pi-extension/README.md` 的 10_000 ⇒ 1 处红；只改 `WAKE_PENDING_MS` 脚本常量 ⇒ 1 处红；删掉 `README_cn.md` / `erix_run` README 那句 ⇒ 各自红；五份文档 + 两个脚本同改 ⇒ 绿。另有一格**放行证**：两份 README 不提另外三个常量**不红**（不是恒绿——同一条用例里「登记了就必须在」那几格证明它会红）。真实树上另做一次变异取证：`README.md` 的 33 改成 34 ⇒ `node --test test/static-guards.test.js` 红 1（19 pass / 1 fail），`cp` + `md5sum` 逐字还原（md5 与改前一致）。
   - **未纳面的异形声称（如实记下，不是遗漏）**：`README.md:546` / `README_cn.md:397` 的「`maxRounds >= 16`（`DEFAULT_REFLECTION_MIN_ROUNDS`）」是「比较式 + 常量名」，不是 `NAME = N` 形态，本条管辖不到；它属于「默认值/阈值」那一族，真要机器校得另立一条规则（本单不做，已在报告里单列）。
-  - **门禁**：`npm test` → tests 1864 / pass 1855 / fail 0 / skipped 9（本单只改既有用例，不新增条数）；`node --test test/static-guards.test.js` → 20/20；`check:syntax`、`check:docs`、`check:docs:strict`、`check:docs-examples`（36/36）、`check:pack-links`、`check:tests`、`docs-drift-check --self-test`（103 例）、`check:types`（117 = 基线）全 exit 0。
+  - **门禁**：`npm test` → tests 1867 / pass 1858 / fail 0 / skipped 9（本单只改既有用例，不新增条数）；`node --test test/static-guards.test.js` → 20/20；`check:syntax`、`check:docs`、`check:docs:strict`、`check:docs-examples`（36/36）、`check:pack-links`、`check:tests`、`docs-drift-check --self-test`（103 例）、`check:types`（117 = 基线）全 exit 0。
 
 - **chore/scripts：#374 给卫生守卫 `scripts/test-hygiene-check.mjs` 加 `--self-test`（内存假文件集合 13 例，不落盘、不碰 `test/` 真实文件），并把它接进 CI 的阻塞步骤（issue #374；`test/` 零改动、`src/` 零改动、无新依赖）。**
   现场：#209 把守卫升级成阻塞之后，**守卫自己的口径仍然只能靠人肉试**——往 `test/` 里临时插一行 `mkdtemp(...)`、跑一遍、再删掉。这种验证既不可复现，又会因为「插进去的那行先命中别的规则」而误判；更糟的是**守卫自己被改坏时没人知道**：`check:tests` 只证「今天的 `test/` 干净」，把 `bare-mkdtemp` 的 `Sync` 变体删掉它照样 exit 0。
