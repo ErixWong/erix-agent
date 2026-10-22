@@ -1254,11 +1254,11 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 
 | `termination.reason` | Triggering mechanism (file:line) | Position in the precedence chain | Host switch | Recommended host action |
 |---|---|---|---|---|
-| `end_turn` | governance stop `completion` (`src/reflection/governor.js:108-110`) or the fall-through stop `complete` (`src/reflection/governor.js:123-125`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:94-101`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3159-3163`, `3164-3218`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
+| `end_turn` | governance stop `completion` (`src/reflection/governor.js:118`) or the fall-through stop `complete` (`src/reflection/governor.js:134`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:110`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3159-3163`, `3164-3218`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
 | `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3357-3365`, `isEndTurn` at `3053`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
-| `no_tool` | governance stop `noTool` (`src/reflection/governor.js:111-114`), gated by `noToolRound` (`src/loop/orchestrator.js`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
+| `no_tool` | governance stop `noTool` (`src/reflection/governor.js:122`), gated by `noToolRound` (`src/loop/orchestrator.js`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
 | `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2712-2726`), streak accumulation (`src/loop/orchestrator.js:2763-2770`), stop at `src/reflection/governor.js:67-70` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`errorHashes` at `src/loop/orchestrator.js`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
-| `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:94-100`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
+| `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:115`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
 | `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:147-149`); (b) the round loop simply runs out (`runToolLoop` at `src/loop/orchestrator.js`, tail handling at `3189-3207`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`termination` at `src/loop/orchestrator.js`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
 | `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3529-3542`), revision limit (`3544-3559`), or the budget-exhaustion tail (`3558-3578`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1663-1665`); `finalGuardMaxRetries` moves the revision limit (default 2, `budgetRounds` at `src/loop/orchestrator.js`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
 | `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:1058-1116`; classification at `1061` and `1080-1085`, annotation at `1103-1108`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
@@ -1292,20 +1292,20 @@ verification outcome.
 
 Within one round, exactly one mechanism gets to decide, in this order
 (`judge_done` at `src/loop/orchestrator.js`, `src/reflection/governor.js:59-126`,
-`src/loop/termination.js:94-101`):
+`src/loop/termination.js:110`):
 
 1. **token-continuation boundary** — repeated `max_tokens` responses set
    `continuationExhausted`, which is the first test in both governance entry
    points (`src/reflection/governor.js:62-64`, `133-135`). Because
    `continuationExhausted` is checked before the `cap` mapping
-   (`src/loop/termination.js:94-100`), a `cap` stop caused by truncated output
+   (`src/loop/termination.js:115`), a `cap` stop caused by truncated output
    reports `continuation_exhausted`, never `max_rounds_cap`.
 2. **stall stop** (`src/reflection/governor.js:67-70`) — above the wrap-up and
    repeated-error nudges on purpose, so a low-priority nudge cannot starve a
    genuine loop into `max_rounds_cap`.
 3. **wrapup declaration** — a `done:true` envelope suppresses continuation and
    raises `completionSignalDetected` (`src/loop/orchestrator.js`),
-   which both produces the `completion` stop (`src/reflection/governor.js:108-110`)
+   which both produces the `completion` stop (`src/reflection/governor.js:118`)
    and makes `noToolRound` false (`src/loop/orchestrator.js:3230-3233`). Declared
    completion and `no_tool` are therefore mutually exclusive.
 4. **completion keyword fallback** — the same signal with no parseable envelope
@@ -1540,6 +1540,15 @@ by default, and `--no-final-guard` is a compatibility no-op. The default
 verification exit codes above describe verification outcomes only; ordinary
 provider, tool, or loop failures follow the normal failure path.
 
+`verification.metrics` is the guard's **decision counter**, not a second verdict:
+`metrics.verified` counts guard calls that returned `accept`, so a run stopped by
+`max_rounds_cap` with an `accept` verdict reads `metrics.verified: 1` while
+`verification.status` stays `unverified` (`reason: "non_continuable"`,
+`termination.reason: "final_guard_unverified"`) — the counter says "a verdict was
+rendered", the status says "nothing was accepted". To decide whether an answer was
+accepted, read `verification.status` **only**; `metrics` is observability and must never
+be read as a status.
+
 The loop calls a configured guard before stopping for
 `end_turn`, `no_tool`, `judge_done`, `max_rounds_cap`, `stall`,
 or `continuation_exhausted`. The guard receives
@@ -1565,6 +1574,51 @@ preserved, but `verification.status` is `error` and the result is never
 `degraded`, or `error`. When a store provides `markRunState`, the terminal state is
 `unverified_error` for an unverified result, `guard_error` for a guard error,
 and `succeeded` otherwise.
+
+#### Budget-type stops: the opt-in guard bridge — `finalGuardExtend` (issue #386 slice 3)
+
+`finalGuardExtend: boolean`, **default `false`**. Absent or `false`, every budget-type stop
+behaves byte-for-byte as described above. With `finalGuardExtend: true`, a `revise` verdict on
+a **budget-type** stop buys **at most one** extra round through the engine's *existing*
+mid-run extension mechanism — `extensionAllowed` (`src/reflection/governor.js`), applied by
+`applyGovernorExtension` (`src/loop/orchestrator.js`): the same counters, the same
+`meta.source: "judge-control"` user message — instead of degrading. All four conditions must
+hold:
+
+| Condition | Detail |
+|---|---|
+| stop reason ∈ `{max_rounds_cap, continuation_exhausted}` | **`stall` is never extended** — a stall *is* "no progress", so granting it rounds only burns budget. The set is `FINAL_GUARD_EXTENDABLE_REASONS` (`src/loop/termination.js`); `FINAL_GUARD_NON_CONTINUABLE_REASONS` and every `termination.reason` value are unchanged |
+| `finalGuardExtend === true` | host opt-in; `null` / numbers / strings throw `TypeError` (a `"false"` string must never switch it on) |
+| guard verdict is `revise` | `accept`, `skip`, and guard errors never extend — the bridge only serves "the guard knows what is missing" |
+| `extensionAllowed` **and** the budget gate | the same counters the mid-run extension reads (`extensionCount < reflection.maxExtensions && effectiveMaxRounds < reflection.maxRoundsCap`), plus: refuse when the last real API input already exceeded `context.budgetTokens` (`isApiInputOverBudget` (`src/loop/budget.js`)), or when the per-round aggregate output budget already archived/stubbed a tool result in this run (`src/loop/aggregate-budget.js`). Extending an over-budget run would tear the budget promise |
+
+Cost and observability:
+
+- **one extension per run** (`governorState.guardExtensionUsed`), independent of the
+  governor's own extension quota — the guard never gets a second "go more" budget;
+- the quota is **persisted in run state** (`deterministic.guardExtension.used`,
+  `src/run-state.js`, restored by `src/loop/resume-manager.js`) and is **not reset by
+  resume**: "run → crash → resume" must not mint a fresh quota every time. Older states
+  without the field read as "not used";
+- new event `{ type: "final_guard_extend", round, from_max_rounds, to_max_rounds, guard_extension: true }`,
+  and `verification.metrics.guard_extensions: 1` — **only** when a bridge actually ran. A run
+  that never opts in (or opts in and never bridges) keeps today's `verification` /
+  `metrics` byte for byte;
+- the extension happens **after** the forced wrap-up of the stop that triggered it, so a
+  bridged run's `termination` may carry `forcedFinal: true` even when it ends `end_turn`
+  (the forced wrap-up did run; the run then continued). The bridge never rewrites
+  `termination.reason` values and never introduces a new stop reason.
+- if that stop left a **pending `tool_use`** on the last assistant message — the forced wrap-up
+  round answered with a tool call instead of text — the bridge first closes it with an
+  engine-written `tool_result` (`is_error: true`, content is
+  `PENDING_TOOL_RESULT_TEXT` (`src/loop/orchestrator.js`), starting with the `[erix]` marker)
+  and only then injects the control text (issue #393). The injected user message must never
+  split a `tool_use` from its result, or the provider rejects the whole history as
+  `invalid_messages` and the host receives `termination: failed`. That `tool_result` reports a
+  fact ("this call never ran"), so the call itself is **not** executed; a tail whose `tool_use`
+  ids cannot be read is not repairable and is **not** extended — the run degrades exactly as
+  without the bridge.
+
 
 The engine has no separate "delivery authentication" or "completion
 authentication" layer. It reports facts such as rounds, tools, file calls,

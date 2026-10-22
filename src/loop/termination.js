@@ -27,6 +27,22 @@ export const FINAL_GUARD_NON_CONTINUABLE_REASONS = new Set([
   "continuation_exhausted",
 ]);
 
+/**
+ * issue #386 切片 3：`FINAL_GUARD_NON_CONTINUABLE_REASONS` 里**允许补跑**的那两类。
+ *
+ * ⚠ 它不是上面那个集合的改名，也不是它的子集变量：两个集合的**内容都一个字没改**（上面那个仍是
+ * 三类，`TRUNCATED_TERMINATION_REASONS` 也不动）。本集合只回答「预算类停机里哪些可以借中途扩轮
+ * 的机制再跑一次」，而 `stall` 被**显式排除**——stall 的定义就是「连续无进展」，给它轮次是纯烧钱，
+ * 这一条由 `test/loop-guard-extend.test.js` 单独钉住（含 opt-in 下的反向证）。
+ *
+ * 补跑是否真的发生还取决于另外三个条件（宿主 opt-in / guard 判 `revise` / 扩轮准入与预算闸），
+ * 见 `src/loop/orchestrator.js#extendAfterGuard`。
+ */
+export const FINAL_GUARD_EXTENDABLE_REASONS = new Set([
+  "max_rounds_cap",
+  "continuation_exhausted",
+]);
+
 export function makeTermination(reason, detail) {
   return {
     reason,

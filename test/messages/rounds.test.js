@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { groupIntoRounds, validateMessages } from "../../src/messages/rounds.js";
+import { groupIntoRounds, pendingTrailingToolUses, validateMessages } from "../../src/messages/rounds.js";
 import { KitError } from "../../src/providers/errors.js";
 import {
   multiRoundMixedConversation,
@@ -149,4 +149,39 @@ test("rejects tool blocks in roles that cannot carry them", () => {
     }]),
     (error) => error?.code === "invalid_messages",
   );
+});
+
+// issue #393：`pendingTrailingToolUses` 是「能不能往尾部再插一条 user 消息」的唯一判据。
+// 它必须与 `validateMessages` 同源：返回空数组 ⇔ 追加一条 user 文本消息后仍然合法。
+test("pendingTrailingToolUses: 只认末条 assistant 上的悬空 tool_use", () => {
+  const pending = { role: "assistant", content: [{ type: "tool_use", id: "call-1", name: "exec", input: {} }] };
+  assert.deepEqual(pendingTrailingToolUses([{ role: "user", content: "go" }, pending]), [pending.content[0]]);
+  // 末条是 user（哪怕它只是 tool_result 载体）⇒ 没有悬空 tool_use
+  assert.deepEqual(pendingTrailingToolUses(multipleToolCallsRound.slice(0, 3)), []);
+  // 末条 assistant 是纯文本 ⇒ 没有悬空 tool_use
+  assert.deepEqual(pendingTrailingToolUses([{ role: "user", content: "go" }, { role: "assistant", content: "done" }]), []);
+  // 空列表 / 非数组 ⇒ 空数组（不抛）
+  assert.deepEqual(pendingTrailingToolUses([]), []);
+  assert.deepEqual(pendingTrailingToolUses(undefined), []);
+});
+
+test("pendingTrailingToolUses 与 validateMessages 同一口径：非空 ⇔ 尾部不能再插 user 消息", () => {
+  const dangling = [
+    { role: "user", content: "go" },
+    { role: "assistant", content: [{ type: "tool_use", id: "call-1", name: "exec", input: {} }] },
+  ];
+  assert.equal(pendingTrailingToolUses(dangling).length, 1);
+  // 悬空时插一条 user 文本消息 ⇒ 严格校验当场红（这正是 issue #393 的报错）
+  assert.throws(
+    () => validateMessages(dangling.concat({ role: "user", content: "还差一步" })),
+    (error) => error instanceof KitError
+      && /assistant tool_use has no immediately following user tool_result/.test(error.message),
+  );
+  // 先按 canonical 规则结清（紧随其后的 user tool_result）⇒ 插什么都不再破配对
+  const repaired = dangling.concat({
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: "call-1", content: "[erix] not executed" }],
+  });
+  assert.deepEqual(pendingTrailingToolUses(repaired), []);
+  assert.doesNotThrow(() => validateMessages(repaired.concat({ role: "user", content: "还差一步" })));
 });
