@@ -179,6 +179,7 @@ src/
     request-user-view.js           Request-view invariant: never send an upstream view without a user turn (issue #292)
     termination.js                 Termination reason classification
     deliverables.js                Host-declared deliverable checks (machine gate before finalGuard)
+    pending-tool-result.js         Shared repair of a pending trailing tool_use before injecting control text (issue #394)
     resume-manager.js              Resume restore and run-state application
     error-ledger.js                Repeated-error accounting
     messages.js                    Message/block helpers

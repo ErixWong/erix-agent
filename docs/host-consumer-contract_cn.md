@@ -1297,7 +1297,7 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
   `termination.reason` 取值，也不引入新的停机原因。
 - 若那次停机在末条 assistant 上留下了**悬空 `tool_use`**（强制收尾那一轮模型回的是工具调用而不是
   纯文本），桥会先用一条引擎自写的 `tool_result` 把它结清（`is_error: true`，正文取
-  `PENDING_TOOL_RESULT_TEXT`（`src/loop/orchestrator.js`），以 `[erix]` marker 开头），**然后**才注入
+  `PENDING_TOOL_RESULT_TEXT`（`src/loop/pending-tool-result.js`），以 `[erix]` marker 开头），**然后**才注入
   控制文本（issue #393）。注入的 user 消息绝不能把 `tool_use` 与它的结果隔开——否则 provider 会以
   `invalid_messages` 拒掉整份历史，宿主收到 `termination: failed`。那条 `tool_result` 陈述的是事实
   （「这次调用根本没跑」），所以该调用**不会**被执行；`tool_use` 的 id 读不出来的畸形尾巴补不出合法

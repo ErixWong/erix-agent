@@ -1611,7 +1611,7 @@ Cost and observability:
 - if that stop left a **pending `tool_use`** on the last assistant message — the forced wrap-up
   round answered with a tool call instead of text — the bridge first closes it with an
   engine-written `tool_result` (`is_error: true`, content is
-  `PENDING_TOOL_RESULT_TEXT` (`src/loop/orchestrator.js`), starting with the `[erix]` marker)
+  `PENDING_TOOL_RESULT_TEXT` (`src/loop/pending-tool-result.js`), starting with the `[erix]` marker)
   and only then injects the control text (issue #393). The injected user message must never
   split a `tool_use` from its result, or the provider rejects the whole history as
   `invalid_messages` and the host receives `termination: failed`. That `tool_result` reports a

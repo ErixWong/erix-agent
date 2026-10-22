@@ -193,7 +193,7 @@ scripts/          # experiment scripts and results
   in `src/reflection/governor.js`, `applyGovernorExtension` in `src/loop/orchestrator.js`,
   `FINAL_GUARD_EXTENDABLE_REASONS` in `src/loop/termination.js`, `isApiInputOverBudget` in `src/loop/budget.js`), and again to 103 when the
   #393 pending-`tool_use` tail repair landed as an EN/CN contract pair (one new group: `PENDING_TOOL_RESULT_TEXT`
-  in `src/loop/orchestrator.js`), again to 105 when #391 的交付物小节中英成对改成「只给命名判据」并新增 `createNamedDeliverableChecks`（工单 V——两个新组：`createDeliverableChecks` 与 `createNamedDeliverableChecks`，都在 `bin/final-guard.js`；`--verbose` 实测 **105 组 / 264 处**，契约 EN 75 / CN 74）): dropping below it is
+  in `src/loop/pending-tool-result.js` since issue #394 moved it next to the repair action), again to 105 when #391 的交付物小节中英成对改成「只给命名判据」并新增 `createNamedDeliverableChecks`（工单 V——两个新组：`createDeliverableChecks` 与 `createNamedDeliverableChecks`，都在 `bin/final-guard.js`；`--verbose` 实测 **105 组 / 264 处**，契约 EN 75 / CN 74）): dropping below it is
   red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
   Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
   *`symbol-anchor-span`* (#286 batch T-b1a) is the *per-occurrence* companion of the rule above: when a symbol anchor
