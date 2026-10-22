@@ -46,6 +46,11 @@ export {
 export { enforceSize } from "./compact/enforce-size.js";
 export { createMemoryTranscriptStore } from "./store/memory.js";
 export { createFileTranscriptStore } from "./store/file.js";
+// 折叠义务必须可履行（issue #401）：宿主自研 store 的 `load()` 要做与内置 store 同一件事，
+// 而在此之前这个函数**拿不到**——packed install 里 `'foldMessageRows' in await import("erix-agent")`
+// 为 false，深路径 `erix-agent/src/store/message-rows.js` 又是 `ERR_PACKAGE_PATH_NOT_EXPORTED`。
+// `isRoundCarrier` 是内部判据，刻意**不外露**（载体形态属于实现口径，宿主不该依赖它）。
+export { foldMessageRows } from "./store/message-rows.js";
 export { projectTranscriptForDisplay } from "./display/projection.js";
 export { appendUserTurn } from "./store/append-user-turn.js";
 export {
