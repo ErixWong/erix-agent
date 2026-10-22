@@ -567,7 +567,7 @@ directly, and so does every other reader you wrote against
 ## 14. Self-check
 
 ```bash
-npm test                       # 1,970 tests, 0 failing (1,961 passing + 9 skipped)
+npm test                       # 1,976 tests, 0 failing (1,967 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # offline, zero model calls; asserts the finalGuard payload surface
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites

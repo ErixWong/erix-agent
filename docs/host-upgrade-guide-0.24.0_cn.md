@@ -474,7 +474,7 @@ forcedFinal: true }`、`finalText` 有值、CLI 退出码 **4**（没配 guard �
 ## 14. 自检
 
 ```bash
-npm test                       # 1,970 tests，0 失败（1,961 通过 + 9 skipped）
+npm test                       # 1,976 tests，0 失败（1,967 通过 + 9 skipped）
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # 离线、零模型调用；断言 finalGuard 的载荷面
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件
