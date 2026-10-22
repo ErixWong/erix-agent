@@ -278,10 +278,78 @@ values; the verdict semantics (`accept` / `skip` / `revise` / retry limit / fail
 untouched. If you were re-parsing `messages` to recover any of the facts above, you can
 delete that code — that is the point of the slice.
 
-## 9. Self-check
+## 9. Build `accept` on disk facts: `deliverables` + `fileWrites` (issue #386 slice 2, #388)
+
+**Symptom.** §8 handed the guard the run's facts, but the engine still had no opinion about
+them: a guard that accepts whenever `finalText.trim() !== ""` keeps returning `verified` for a
+run whose deliverable does not exist. Facts without a gate are an invitation, not a check.
+
+**What is new.** Two additions, both purely additive:
+
+1. **`fileWrites`** (issue #388) — the payload's raw-path companion to `filesWritten`:
+
+   | Key | Value | Safe to `stat()`? |
+   |---|---|---|
+   | `filesWritten` | `[{ path, round }]`, `path` = the judge timeline's `summarizeArgument` output — **40 code points, no truncation marker** | **no**: a long path is silently cut, so `existsSync()` on it fails for a run that did write the file |
+   | `fileWrites` | `[{ path, round, tool }]`, `path` = the verbatim `tool_use.input[pathKey]` value | **yes** — this is the key a criterion must read |
+
+   Both are capped by the **same** constant (`FILE_LEDGER_LIMIT`, 50 entries, newest kept) and
+   both carry a truncation marker (`filesWrittenTruncated` / `fileWritesTruncated`). Use
+   `filesWritten` when you want a human-readable hint; use `fileWrites` when the answer must
+   be exact.
+
+2. **`deliverables`** — the host declares what "delivered" means, the engine decides when it
+   is checked and what a failure costs:
+
+   ```js
+   runToolLoop({
+     // … your usual options …
+     deliverables: [{
+       name: "report",
+       // `facts` is the payload the guard is about to receive (attempt/rounds/cwd/fileWrites/…).
+       check: ({ cwd, fileWrites }) => {
+         const target = path.join(cwd, "report.md");
+         const wrote = fileWrites.some((write) => write.path === target);
+         return { ok: wrote && fs.existsSync(target), detail: wrote ? "missing on disk" : "never written" };
+       },
+     }],
+   });
+   ```
+
+   At most 20 criteria, `{ name: string, check: function }`, unique names, `TypeError`
+   otherwise. `check` may be async. Two fail-closed rules: **a throw is `ok:false` +
+   `detail:"threw"`, and exceeding `finalGuardTimeoutMs` is `ok:false` + `detail:"timeout"`**
+   — a broken or hanging criterion blocks, it never passes. Returning anything that is not
+   `true` / `false` / `{ ok: boolean }` is `ok:false` + `detail:"invalid_result"`, so
+   `return "ok"` cannot be mistaken for a pass.
+
+**The gate.** Criteria are re-checked **before every guard call** (so a `revise` →
+remediation → second attempt really can reach `verified`), and when any criterion fails a
+guard's `accept` yields `verification.status === "unverified"` with
+`reason: "deliverables_failed"`. That is the whole point: machine evidence outranks the
+guard's opinion. `termination.reason` is **not** rewritten (no new stop reason, and
+`final_guard_unverified` keeps its meaning), non-continuable stops still degrade to
+`non_continuable`, and `verification.metrics` gains `deliverables_checked` /
+`deliverables_failed` next to the five existing counters.
+
+**Zero regression when undeclared.** Omit `deliverables` (or pass `[]`) and nothing changes:
+no payload key, no metric key, no event field, no verdict. The regression anchor in
+`test/loop-deliverables.test.js` compares `verification`, `verification.metrics`, and the
+payload key set byte-for-byte against the pre-slice behaviour.
+
+**CLI.** `erix chat --require-deliverable` turns on exactly one default criterion — "every
+path this run declared it wrote must still exist on disk" — and it is **off by default**, so
+the exit-code promise (`0` verified / `2` unverified / `3` error / `4` skipped) is unchanged
+unless you ask for it.
+
+**Do you have to act?** No, but if your guard currently does its own disk checking, move that
+check into `deliverables` and let the engine enforce it: then a future guard rewrite cannot
+silently turn the check back into a rubber stamp.
+
+## 10. Self-check
 
 ```bash
-npm test                       # 1,881 tests, 0 failing (1,872 passing + 9 skipped)
+npm test                       # 1,895 tests, 0 failing (1,886 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # offline, zero model calls; asserts the finalGuard payload surface
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites
@@ -303,8 +371,13 @@ Against your own host, five questions are worth answering with a test before you
    assert that `attempt` increments across a forced `revise`, that `selfReport.findings ===
    findings`, and that your accept path still refuses a run whose deliverable is missing
    (§8's `S6` counter-example).
+6. **Deliverable gate.** Declare one `deliverables` criterion that stats a file under `cwd`,
+   keep the naive `finalText` guard, and assert that a run which never wrote the file ends
+   `unverified` / `deliverables_failed` — then remove the option and assert the same run goes
+   back to `verified` (that pair is the proof the gate, not your prompt, is doing the work;
+   §9's `S6a`/`S6b` cells are the shipped version of it).
 
-## 10. What did not change
+## 11. What did not change
 
 No store method signature, no return type, no option name, no export, no record kind, no message field, no
 termination reason, no error code, and no runtime dependency (still zero). `store.load()`'s shape is
@@ -314,7 +387,7 @@ untouched too — its payload gained additive keys (§8), which is information, 
 release is that a missing search root returns an error text instead of `（无命中）` — and that one is a
 correction of a false negative, not a new rule.
 
-## 11. Migration recipe
+## 12. Migration recipe
 
 1. If you read `<runId>.state.json`'s compaction ledger, read `compactionStatsWindow.total` (and
    `dropped`) instead of counting the array — and treat the key's absence as "no statistics", not "zero".
@@ -330,3 +403,8 @@ correction of a false negative, not a new rule.
    counts, the task brief, the model's self-report, usage, or elapsed time: read `filesWritten`,
    `toolStats`, `taskBrief`, `selfReport`, `usage`, `elapsedMs` instead (§8). Keep reading
    `messages` only for the *contents* of a tool result.
+7. Move your guard's disk/existence checks into `deliverables` (§9): the engine then enforces
+   them on **every** attempt, a `revise` really gets re-checked, and a later guard rewrite
+   cannot quietly turn the check back into a rubber stamp. Switch any `stat()` you do today
+   from `filesWritten[].path` (40-code-point summary) to `fileWrites[].path` (verbatim) — the
+   summary silently rejects runs that already wrote the file.
