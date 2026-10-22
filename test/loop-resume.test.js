@@ -297,7 +297,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
   });
 
   assert.equal(resumedProvider.requests.length, 1);
-  // issue #398（工单 BB）：恢复运行会在**上下文之后、第一次请求之前**注入一条「复活赛告示」。
+  // issue #404（工单 BB）：恢复运行会在**上下文之后、第一次请求之前**注入一条「复活赛告示」。
   // 断言强度不降：除最后那一条告示之外，请求正文与崩溃那一刻的账本**逐字一致**。
   const notice = resumedProvider.requests[0].messages.at(-1);
   assert.match(JSON.stringify(notice), /【恢复运行】/u,
@@ -307,7 +307,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
   assert.equal(resumedResult.finalText, "round four");
   assert.deepEqual(
     (await store.load("resume-run")).map((record) => record.round),
-    // 末位那条 round 3 的 `:control:resume-notice` 行是 #398 的告示（`round` 取恢复时的身份轮号）。
+    // 末位那条 round 3 的 `:control:resume-notice` 行是 #404 的告示（`round` 取恢复时的身份轮号）。
     [0, 1, 2, 3, 3, 4],
   );
   assert.deepEqual(resumedResult.messages, [
@@ -405,7 +405,7 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
     .map((block) => block.tool_use_id);
   assert.deepEqual(toolUseIds, ["a", "b", "c"]);
   assert.deepEqual(toolResultIds, ["a", "b", "c"]);
-  // issue #398：最后一条是恢复告示，补跑出来的那条聚合结果紧排在它前面（位置与强度都不降）。
+  // issue #404：最后一条是恢复告示，补跑出来的那条聚合结果紧排在它前面（位置与强度都不降）。
   assert.match(JSON.stringify(resumedProvider.requests[0].messages.at(-1)), /【恢复运行】/u);
   assert.deepEqual(
     resumedProvider.requests[0].messages.at(-2).content.map((block) => block.tool_use_id),
@@ -813,7 +813,7 @@ test("resumes tool results before a later direction hint without moving the hint
     executeTool: async ({ id }) => `done-${id}`,
   });
 
-  // issue #398：恢复告示排在方向提示之后（提示仍是「宿主/引擎最后一句」之前的那一条）。
+  // issue #404：恢复告示排在方向提示之后（提示仍是「宿主/引擎最后一句」之前的那一条）。
   assert.deepEqual(
     provider.requests[0].messages.slice(-4).map((message) => message.role),
     ["assistant", "user", "user", "user"],
@@ -1251,7 +1251,7 @@ test("resumed session gets its own round budget and persists the continuation ro
   // issue #326（B1）多出的那一条 round=2 是引擎的**强制收尾补充记录**（指令 + 终稿 assistant）：
   // 它产生时 round 2 的轮记录早已落盘，不当场补一笔就永远不会进档案。
   // 顺序：引擎轮记录 → 收尾补充记录（同轮号，独立 dedupKey）→ 宿主追问行 → 续接轮。
-  // issue #398：多出的那条 round 2 是**恢复告示**（`…:control:resume-notice:<fp>`，轮号取恢复时的
+  // issue #404：多出的那条 round 2 是**恢复告示**（`…:control:resume-notice:<fp>`，轮号取恢复时的
   // 身份轮号），它与下面第 6 条那条「收尾补充记录」同一个先例：宿主看到行数多于轮数。
   assert.deepEqual(records.map((record) => record.round), [0, 1, 2, 2, 2, 2, 3, 4]);
   const flatMessages = records.flatMap((record) => record.messages ?? []);

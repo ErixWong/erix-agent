@@ -444,7 +444,7 @@ test("runRepl resumes from the transcript store without an engine-owned retrieva
     )));
 
     const records = await createFileTranscriptStore({ dir }).load("repl-store");
-    // issue #398：另有一条 round 1 的恢复告示行（`…:control:resume-notice:<fp>`）。
+    // issue #404：另有一条 round 1 的恢复告示行（`…:control:resume-notice:<fp>`）。
     assert.deepEqual(records.map((record) => record.round), [0, 1, 1, 1, 2]);
     assert.ok(records.some((record) => record.dedupKey?.includes(":input:")));
   } finally {
@@ -649,7 +649,7 @@ test("runRepl preserves new input when resuming an aborted tool", async () => {
     //      账本里的最大轮号（它定死的口径），从改造前的 0 变成崩溃轮的 1；
     //   2. 那行随后被 `…:round:1:resume` 载体行折进去（读侧不再单独暴露）。
     // ⇒ 逐轮号序列从 `[0, 0, 1, 2]` 变成 `[0, 1, 1, 2]`，仍是 4 行且一行不多一行不少。
-    // issue #398 之后是 5 行：多出的那条 round 1 是**恢复告示**（`…:control:resume-notice:<fp>`，
+    // issue #404 之后是 5 行：多出的那条 round 1 是**恢复告示**（`…:control:resume-notice:<fp>`，
     // 与 judge-nudge / forced-final 同一个先例），不是多出来的一轮、也不是重复行。
     assert.deepEqual(
       (await store.load(session)).map((record) => record.round),
