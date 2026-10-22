@@ -8,7 +8,8 @@
 //   · 交付物是真的写在临时目录里的文件（`os.tmpdir()`，跑完删掉），所以「文件在不在」是磁盘事实；
 //   · **每个场景都断言语义**，不是只打印。任一场景的语义变了（payload 少一个键、假完成抓不住、
 //     revise 耗尽不再 fail-closed、guard 抛错/超时被当成 verified、橡皮章 guard 又能蒙过、
-//     新键体积超过 messages 的 2%）⇒ 退出码非零。
+//     声明了交付物判据却仍被橡皮章蒙过（issue #386 切片 2 的机器闸门）、新键体积超过 messages 的 2%）
+//     ⇒ 退出码非零。
 //
 // 用法：
 //   node scripts/final-guard-probe.mjs            # 人读版（每个场景一行结论 + payload 逐键字节）
@@ -379,10 +380,29 @@ try {
       + `（payload 键 ${payloads[0]?.keys} 个）`);
   }
 
-  // ── S6 天真 guard 橡皮章：只看 finalText 有没有字 ⇒ 撒谎也能 verified ──────────────
-  {
-    currentCase = "S6 天真 guard（只看 finalText 非空）= 橡皮章";
+  // ── S6 天真 guard 橡皮章（**双格**，issue #386 切片 2）────────────────────────────
+  // 同一个天真 guard（只看 finalText 有没有字）、同一份撒谎输入、同一个「文件根本不存在」的磁盘事实，
+  // 唯一变量是宿主有没有声明 `deliverables`：
+  //   S6a 未声明 ⇒ 仍然 verified（证明闸门是**纯加法**：不声明就一个字都不改）；
+  //   S6b 声明了 ⇒ 必须 unverified:deliverables_failed（证明**机器闸门**真的压过 guard 意见）。
+  // 两格合起来才是本单要的证据：单看 S6b 无法排除「顺手把 accept 改严了」，单看 S6a 无法证明闸门有效。
+  for (const cell of [
+    {
+      case: "S6a 天真 guard（只看 finalText 非空）+ 未声明 deliverables = 仍是橡皮章（纯加法）",
+      deliverables: undefined,
+      expectedStatus: "verified",
+      expectedReason: undefined,
+    },
+    {
+      case: "S6b 天真 guard + 声明了 deliverables（文件不存在）= 被机器闸门拦住",
+      deliverables: [{ name: "answer-file", check: () => fs.existsSync(answerPath) }],
+      expectedStatus: "unverified",
+      expectedReason: "deliverables_failed",
+    },
+  ]) {
+    currentCase = cell.case;
     resetSandbox();
+    let payload;
     const result = await runToolLoop({
       provider: createFakeProvider([
         wrapup({ done: true, summary: "完成", output: `已生成 ${answerPath}，内容为 42` }),
@@ -390,33 +410,74 @@ try {
       initialUserMessage: "写文件",
       maxRounds: 2,
       executeTool: async () => "ok",
-      finalGuard: async (payload) => (String(payload.finalText).length > 0
-        ? { action: "accept" }
-        : { action: "revise", message: "空" }),
+      ...(cell.deliverables === undefined ? {} : { deliverables: cell.deliverables }),
+      finalGuard: async (value) => {
+        payload = value;
+        return String(value.finalText).length > 0
+          ? { action: "accept" }
+          : { action: "revise", message: "空" };
+      },
     });
 
-    // 这条断言是**故意反着写**的：它记录的是「白名单式 guard 的失效形状」，不是期望行为。
-    // 判据 = 磁盘事实（文件根本不存在）+ 引擎裁决（verified）同时成立 ⇒ 橡皮章。
     expect(
-      !fs.existsSync(answerPath) && result.verification?.status === "verified",
-      "天真 guard 的失效形状变了：现在「finalText 非空」不再能骗过 verified —— "
-      + "若这是有意的语义改动，请连同 S6 的结论与 docs 里的反例一起改",
+      !fs.existsSync(answerPath),
+      "本场景的前提是交付物不存在（判据必须是独立于模型嘴的磁盘事实）",
     );
-    // 同一份撒谎输入交给磁盘验收器（S2 的第一轮）必须被抓住 —— 两个场景合起来才是完整的对照。
     expect(
       result.finalText.includes("已生成"),
-      "S6 的终稿不再是模型的自报文本（对照失去意义）",
+      "终稿不再是模型的自报文本（对照失去意义）",
     );
+    expect(
+      result.verification?.status === cell.expectedStatus,
+      `verification 应为 ${cell.expectedStatus}，实际 ${result.verification?.status}`
+        + (cell.expectedReason === undefined ? "" : `（reason 应为 ${cell.expectedReason}）`),
+    );
+    if (cell.expectedReason !== undefined) {
+      expect(
+        result.verification?.reason === cell.expectedReason,
+        `verification.reason 应为 ${cell.expectedReason}，实际 ${result.verification?.reason}`,
+      );
+      // 闸门只改 verification，不改 termination.reason。
+      expect(
+        result.termination?.reason === "end_turn",
+        `闸门不许改写 termination.reason，实际 ${result.termination?.reason}`,
+      );
+      expect(
+        payload?.deliverablesAllPassed === false,
+        `payload.deliverablesAllPassed 应为 false，实际 ${payload?.deliverablesAllPassed}`,
+      );
+      expect(
+        payload?.deliverables?.[0]?.ok === false,
+        `payload.deliverables[0].ok 应为 false，实际 ${JSON.stringify(payload?.deliverables)}`,
+      );
+      expect(
+        result.verification?.metrics?.deliverables_failed === 1,
+        `metrics.deliverables_failed 应为 1，实际 ${result.verification?.metrics?.deliverables_failed}`,
+      );
+    } else {
+      expect(
+        !("deliverables" in (payload ?? {})),
+        "未声明 deliverables 却往 payload 里塞了 deliverables 键（不是纯加法）",
+      );
+      expect(
+        result.verification?.metrics?.deliverables_checked === undefined,
+        "未声明 deliverables 却往 metrics 里塞了 deliverables_* 键（不是纯加法）",
+      );
+    }
 
     record({
+      deliverables_declared: String(cell.deliverables !== undefined),
       file_exists: String(fs.existsSync(answerPath)),
       termination: JSON.stringify(result.termination),
       verification: JSON.stringify(result.verification),
-      conclusion: "文件不存在但 verification=verified ⇒ 只看 finalText 的 guard 是橡皮章",
+      conclusion: cell.expectedReason === undefined
+        ? "未声明判据 ⇒ 文件不存在也能 verified（纯加法：闸门不改变既有行为）"
+        : "声明了判据 ⇒ 文件不存在时 guard 的 accept 被机器闸门降级成 unverified:deliverables_failed",
     });
     log(`\n── ${currentCase}`);
-    log(`   文件存在=${fs.existsSync(answerPath)} / verification=${result.verification?.status}`
-      + " ⇒ 白名单式 guard 是橡皮章（验收判据必须是独立事实）");
+    log(`   文件存在=${fs.existsSync(answerPath)} / termination=${result.termination?.reason}`
+      + ` / verification=${result.verification?.status}${result.verification?.reason === undefined ? "" : `:${result.verification.reason}`}`
+      + ` ⇒ ${cell.expectedReason === undefined ? "橡皮章仍在（未声明判据）" : "橡皮章被闸门拦住"}`);
   }
 
   // ── S7 新键的体积开销：30 轮 × 4KB 工具输出下必须 < messages 的 2% ────────────────
