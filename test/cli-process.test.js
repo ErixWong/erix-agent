@@ -21,12 +21,13 @@
 //    否则「绿了但根本没发请求」看不出来。
 // 4. **代理防御**：宿主若设了 `NODE_USE_ENV_PROXY=1`，`127.0.0.1` 也会被送给代理；
 //    所以进出都保存并清理代理变量，子进程环境里也一律删掉。
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { after, describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
@@ -35,6 +36,7 @@ import {
   createScriptedUpstream,
   jsonResponse,
   openAITextChunks,
+  openAIToolCallChunks,
   sseOpenAI,
   sseResponse,
 } from "../fixtures/upstream.mjs";
@@ -743,5 +745,201 @@ describe("真起 CLI 子进程：参数、退出码、stdout/stderr、落盘（i
     assert.match(result.stderr, /LLM_KIT_ENDPOINT/u);
     assert.match(result.stderr, /slots\.default\.model/u, "文案要给出不走环境变量的那条出路（配置文件 slot）");
     assert.equal(sandbox.upstream.requestCount, 0, "没有端点配置时一条请求也不该发");
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// `erix repl` 的进程级证据（issue #398-3）
+//
+// 为什么 repl 需要单独一层：`test/repl.test.js` 全是**函数级**调用（注入 `io.loop` 再断言
+// `loopOptions.deliverables`），看不见「真进程里相对路径按哪个目录解析」「统计行到底印了什么」
+// 这两件事。而 repl 恰恰是**会话目录 = 进程目录**的那一侧（`bin/repl.js#runRepl` 开头的
+// `const cwd = process.cwd()` 一路传进 `loopOptions.cwd`），相对交付物的判据全靠它。
+//
+// 为什么必须用 PTY：repl 有一条产品承诺——**非交互终端拒绝启动**
+// （`bin/repl.js`：`if (input.isTTY !== true) { NON_TTY_MESSAGE; process.exitCode = 1; return; }`）。
+// 所以「spawn 子进程 + 写 stdin」在 repl 上只有一条路：给它一个**真 PTY**。这里用系统自带的
+// `script`（util-linux 与 BSD 两种调用形状），**不**给产品面加 `--eval` / 单行模式之类的新旗标
+// ——那是产品决定，测试不该替产品拍板。拿不到 PTY 的环境（没有 `script`、形状不认识）⇒
+// `t.skip` 并点名原因：宁可少一格证据，也不在这里塞一个「假装是进程级」的函数级替身。
+//
+// repl 侧**没有**退出码承诺（`bin/repl.js` 只在非 TTY 时置 1；终局 `unverified` 只印统计行），
+// 所以本组的判据是**统计行 + 磁盘事实**，不是退出码。要退出码那条承诺面，看 `chat` 那组。
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 探测本机可用的 PTY 驱动形状；拿不到就返回 `null`（用例 `t.skip`）。
+ * 两种形状都是「把命令塞进一个真终端再收干输出」：
+ *   · util-linux（Linux）：`script -qec "<shell 命令>" /dev/null`，`-e` 让 `script` 以子进程的退出码退出；
+ *   · BSD（macOS）：`script -q /dev/null <argv...>`，子进程直接由 `script` 拉起（不经 shell）。
+ */
+const PTY_DRIVER = detectPtyDriver();
+
+function detectPtyDriver() {
+  const linux = process.platform === "linux";
+  const probe = linux
+    ? spawnSync("script", ["-qec", "exit 0", "/dev/null"], { stdio: "ignore", timeout: 10_000 })
+    : spawnSync("script", ["-q", "/dev/null", "true"], { stdio: "ignore", timeout: 10_000 });
+  if (probe.error || probe.status !== 0) return null;
+  return linux ? "util-linux" : "bsd";
+}
+
+/** util-linux 的 `-c` 走 shell，路径要自己引号化（临时目录名里可能有空格）。 */
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function spawnReplPty({ args, home, cwd, env = {} }) {
+  const argv = [CLI_PATH, ...args];
+  const options = {
+    cwd,
+    env: childEnvironment({ home, extra: env }),
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: CHILD_TIMEOUT_MS,
+  };
+  return PTY_DRIVER === "util-linux"
+    ? spawn("script", ["-qec", [process.execPath, ...argv].map(shellQuote).join(" "), "/dev/null"], options)
+    : spawn("script", ["-q", "/dev/null", process.execPath, ...argv], options);
+}
+
+/**
+ * 起一个**真 `erix repl` 进程**（真 PTY + 真 stdin + 假 HOME + 真 socket 上游），喂一行 prompt，
+ * 等统计行出现后 `/exit`，收干输出与退出码。
+ *
+ * 为什么等统计行而不是睡固定时长：统计行是 repl 唯一一次「本轮终局已定」的可见信号
+ * （`bin/repl.js#handleInput` 里 `[rounds=… usage=… guard={…}]`）。睡固定时长要么慢要么假绿。
+ */
+async function runReplSession({ args, home, cwd, prompt, env = {} }) {
+  const child = spawnReplPty({ args, home, cwd, env });
+  let stdout = "";
+  let stderr = "";
+  let closed = false;
+  let exit = null;
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const done = new Promise((resolvePromise) => {
+    child.once("close", (code, signal) => {
+      closed = true;
+      exit = { code, signal };
+      resolvePromise(exit);
+    });
+    child.once("error", (error) => {
+      closed = true;
+      exit = { code: null, signal: null, error };
+      resolvePromise(exit);
+    });
+  });
+  const deadline = Date.now() + CHILD_TIMEOUT_MS - 2_000;
+  child.stdin.write(`${prompt}\n`);
+  while (!/\[rounds=/u.test(stdout) && !closed && Date.now() < deadline) {
+    await delay(25);
+  }
+  if (!closed) {
+    child.stdin.write("/exit\n");
+    child.stdin.end();
+  }
+  await done;
+  return { ...exit, stdout, stderr };
+}
+
+/** PTY 下 readline 会把输入回显一遍、并夹着 ANSI 控制码；断言只看统计行那一截。 */
+function guardStatsLine(stdout) {
+  return stdout.split("\n").find((line) => line.includes("guard={" ) && /\[rounds=/u.test(line))
+    ?? stdout.split("\n").find((line) => /\[rounds=/u.test(line))
+    ?? "";
+}
+
+describe("真起 repl 子进程：会话目录 = 进程目录，相对交付物按它判定（issue #398-3）", () => {
+  it("① --final-guard --require-deliverable <缺失路径>：终局 unverified / deliverables_failed（统计行可见）", async (t) => {
+    if (PTY_DRIVER === null) {
+      t.skip("本环境没有可用的 PTY 驱动（`script`）：repl 非交互终端会拒绝启动，进程级证据无法在此机上取");
+      return;
+    }
+    const sandbox = await makeSandbox(t, { script: [sseResponse({ frames: sseOpenAI(openAITextChunks(["没写任何文件。任务已完成"])) })] });
+    const result = await runReplSession({
+      args: ["repl", "--final-guard", "--require-deliverable", "missing-report.md", "--max-rounds", "3"],
+      home: sandbox.home,
+      cwd: sandbox.project,
+      prompt: "随便说一句",
+    });
+
+    assert.ok(await sandbox.upstream.waitForRequests(1, 2_000), "repl 根本没往模型端点发请求");
+    assert.equal(existsSync(join(sandbox.project, "missing-report.md")), false,
+      "本用例的前提就是那个交付物不在盘上");
+    const line = guardStatsLine(result.stdout);
+    assert.match(line, /deliverables_checked:1/u,
+      `统计行必须给出判据计数；stdout=${JSON.stringify(result.stdout.slice(-600))}`);
+    assert.match(line, /deliverables_failed:1/u, "判据没过必须计数（这是 #391「真空通过」的反例）");
+    assert.match(line, /unverified:1/u, "终局是 unverified（不是 verified，也不是「没验」）");
+    // repl 没有退出码承诺：终局 unverified 也退 0（与 chat 的 exit 2 是两条承诺面，别混）。
+    assert.equal(result.code, 0, `repl 只在非 TTY 时置退出码 1；实得 ${result.code}，stderr=${JSON.stringify(result.stderr.slice(-300))}`);
+  });
+
+  it("② 相对交付物按**会话的进程目录**判定：写在会话目录里 ⇒ deliverables_failed:0", async (t) => {
+    if (PTY_DRIVER === null) {
+      t.skip("本环境没有可用的 PTY 驱动（`script`）：repl 非交互终端会拒绝启动，进程级证据无法在此机上取");
+      return;
+    }
+    const script = [];
+    const sandbox = await makeSandbox(t, { script });
+    script.push(
+      sseResponse({ frames: sseOpenAI(openAIToolCallChunks("writeFile", { path: "report.md", content: "42" }, "call-repl-ok")) }),
+      sseResponse({ frames: sseOpenAI(openAITextChunks(["已写入 report.md。任务已完成"])) }),
+    );
+
+    const result = await runReplSession({
+      args: ["repl", "--final-guard", "--require-deliverable", "report.md", "--max-rounds", "3"],
+      home: sandbox.home,
+      cwd: sandbox.project,
+      prompt: "把 42 写进 report.md",
+    });
+
+    // 磁盘事实先钉住：文件是**真子进程**按**相对路径**写下来的，落在它的进程目录里。
+    assert.equal(existsSync(join(sandbox.project, "report.md")), true,
+      `相对路径必须落在会话（= 子进程）目录；stdout=${JSON.stringify(result.stdout.slice(-600))}`);
+    assert.equal(readFileSync(join(sandbox.project, "report.md"), "utf8"), "42");
+    // 反证：测试进程自己的目录（仓库根）里没有这个文件——判据不是拿它解析的。
+    assert.equal(existsSync(join(REPO_ROOT, "report.md")), false,
+      "判据解析的是会话进程目录，不是测试进程目录（仓库根）");
+    const line = guardStatsLine(result.stdout);
+    assert.match(line, /deliverables_checked:1/u, `stdout=${JSON.stringify(result.stdout.slice(-600))}`);
+    assert.match(line, /deliverables_failed:0/u, "判据成立时必须是 0（不是「没跑」）");
+    assert.match(line, /unverified:0/u);
+  });
+
+  it("② 反证：同一声明，文件写到**会话目录之外** ⇒ 判据不过（deliverables_failed:1）", async (t) => {
+    if (PTY_DRIVER === null) {
+      t.skip("本环境没有可用的 PTY 驱动（`script`）：repl 非交互终端会拒绝启动，进程级证据无法在此机上取");
+      return;
+    }
+    const script = [];
+    const sandbox = await makeSandbox(t, { script });
+    const elsewhere = join(sandbox.root, "elsewhere");
+    mkdirSync(elsewhere, { recursive: true });
+    script.push(
+      // 相对路径往上跳一层：文件**真的写出来了**，只是不在会话目录里。
+      sseResponse({ frames: sseOpenAI(openAIToolCallChunks("writeFile", { path: "../elsewhere/report.md", content: "42" }, "call-repl-outside")) }),
+      sseResponse({ frames: sseOpenAI(openAITextChunks(["已写入 report.md。任务已完成"])) }),
+    );
+
+    const result = await runReplSession({
+      args: ["repl", "--final-guard", "--require-deliverable", "report.md", "--max-rounds", "3"],
+      home: sandbox.home,
+      cwd: sandbox.project,
+      prompt: "把 42 写进 report.md",
+    });
+
+    // 前提：写确实发生了（否则这条用例会退化成「模型没动手」的另一种绿）。
+    assert.equal(existsSync(join(elsewhere, "report.md")), true,
+      `本用例的前提是「文件写到了别处」；stdout=${JSON.stringify(result.stdout.slice(-600))}`);
+    assert.equal(existsSync(join(sandbox.project, "report.md")), false,
+      "会话目录里没有 report.md —— 判据要判的正是这一条");
+    const line = guardStatsLine(result.stdout);
+    assert.match(line, /deliverables_checked:1/u);
+    assert.match(line, /deliverables_failed:1/u,
+      "同名文件在别的目录里不算交付：判据锚在会话进程目录，不是「盘上随便哪个 report.md」");
+    assert.match(line, /unverified:1/u);
   });
 });
