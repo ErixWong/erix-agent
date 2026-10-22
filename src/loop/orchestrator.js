@@ -20,6 +20,7 @@ import {
   DEFAULT_WRITE_TOOL_NAMES,
   INTERCEPT_CONVERSATION_TOKENS,
   parseJudgeDecision,
+  rawWritePaths,
   renderConversation,
 } from "../reflection/judge.js";
 import {
@@ -50,6 +51,7 @@ import {
   resolveTaskBrief,
 } from "./task-brief.js";
 import {
+  FILE_LEDGER_LIMIT,
   FINAL_GUARD_NON_CONTINUABLE_REASONS,
   FINAL_GUARD_TERMINATION_REASONS,
   annotateTermination,
@@ -61,6 +63,7 @@ import {
   withErrorCode,
   withTerminationPayload,
 } from "./termination.js";
+import { normalizeDeliverables } from "./deliverables.js";
 import { createErrorLedger } from "./error-ledger.js";
 import {
   judgeRecordFields,
@@ -513,6 +516,8 @@ export async function runToolLoop(options) {
     finalGuard,
     finalGuardMaxRetries = 2,
     finalGuardTimeoutMs = 30_000,
+    // issue #386 切片 2：宿主声明的交付物判据（引擎在每次 guard 调用前核一遍）。
+    deliverables,
     maxTokenContinuations = 3,
     context,
     todoStateProvider,
@@ -623,6 +628,9 @@ export async function runToolLoop(options) {
   if (cwd !== undefined && typeof cwd !== "string") {
     throw new TypeError("cwd must be a string");
   }
+  // issue #386 切片 2：`deliverables` 的校验必须**早于**任何宿主端口被调用（与其它选项同一口径），
+  // 且校验结果就是后续唯一被读的那一份（`undefined` = 未声明 ⇒ 下面所有分支都走「今天」的路）。
+  const resolvedDeliverables = normalizeDeliverables(deliverables);
   // 输出卫生：档案在 round record（toolOutputs）里，必须有 store 落盘，否则 stub 就是纯丢失。
   if (outputHygiene !== undefined && outputHygiene !== false
     && (outputHygiene === null || typeof outputHygiene !== "object"
@@ -1391,6 +1399,10 @@ export async function runToolLoop(options) {
     l0Facts: [],
     timeline: [],
     filesWritten: [],
+    // issue #388：**原始**写路径台账（与 `filesWritten` 并列、同源、同上限）。
+    // 分工：`filesWritten` = judge 提示用的摘要（40 码点、不裁斜杠、无截断标记）；
+    // `fileWrites` = 判据用的原值（可直接 `stat()`）。两个键名不许混用。
+    fileWrites: [],
   };
   const toolStats = new Map();
   // `lowBudgetPrompted` 已迁入 `runLoopState`（issue #177 刀5-E）。
@@ -1408,7 +1420,7 @@ export async function runToolLoop(options) {
     const seen = new Set();
     const kept = [];
     for (let index = governorState.filesWritten.length - 1;
-      index >= 0 && kept.length < 50;
+      index >= 0 && kept.length < FILE_LEDGER_LIMIT;
       index -= 1) {
       const file = governorState.filesWritten[index];
       if (!seen.has(file.path)) {
@@ -1417,6 +1429,33 @@ export async function runToolLoop(options) {
       }
     }
     governorState.filesWritten = kept.reverse();
+  };
+  // issue #388：`fileWrites` 用**同一个**上限常量（`FILE_LEDGER_LIMIT`）与同一套去重/保新语义。
+  // 为什么不另写一个数字：切片 1 报告点名的就是「两处各一个 50」那种会静默不一致的形状。
+  const trimFileWrites = () => {
+    const seen = new Set();
+    const kept = [];
+    for (let index = governorState.fileWrites.length - 1;
+      index >= 0 && kept.length < FILE_LEDGER_LIMIT;
+      index -= 1) {
+      const file = governorState.fileWrites[index];
+      if (!seen.has(file.path)) {
+        seen.add(file.path);
+        kept.push(file);
+      }
+    }
+    governorState.fileWrites = kept.reverse();
+  };
+  // issue #388：把一段消息里写工具声明的**原始**路径记进 `fileWrites` 台账。
+  // 主循环与 resume 都只调这一个函数（两份实现 = 两种口径，那正是 #388 的根因形状）。
+  const recordFileWrites = (sourceMessages, round) => {
+    for (const write of rawWritePaths(sourceMessages, 0, {
+      writeToolNames: resolvedWriteToolNames,
+      writeToolPathKeys: resolvedWriteToolPathKeys,
+    })) {
+      governorState.fileWrites.push({ path: write.path, round, tool: write.name });
+      trimFileWrites();
+    }
   };
   // `stallStreak` / `lastStallSignature` 已迁入 `runLoopState`（issue #177 刀5-B）。
   const startedAt = Date.now();
@@ -1613,6 +1652,10 @@ export async function runToolLoop(options) {
     restoreErrorSeen,
     addGovernorHistory,
     trimFilesWritten,
+    // issue #388：原始写路径台账的裁剪器（与 `trimFilesWritten` 共用 `FILE_LEDGER_LIMIT`）
+    // 与台账写入口（resume 从账本重建时调它，不另写一份解析）。
+    trimFileWrites,
+    recordFileWrites,
     get lowBudgetPrompted() {
       return runLoopState.lowBudgetPrompted;
     },
@@ -1736,6 +1779,12 @@ export async function runToolLoop(options) {
     revised: 0,
     unverified: 0,
     guard_error: 0,
+    // issue #386 切片 2：这两个键**只在声明了 `deliverables` 时才存在**——未声明时 metrics 必须与
+    // 今天逐字一致（`test/loop-deliverables.test.js` 的 R4-1 回归锚逐字比的就是这份对象）。
+    // 语义与既有五个计数同口径：一个 run 内**累计**（多次 guard 调用/多次 revise 各自累加）。
+    ...(resolvedDeliverables === undefined
+      ? {}
+      : { deliverables_checked: 0, deliverables_failed: 0 }),
   };
   // `hadToolUse` 已迁入 `runLoopState`（刀5-B）：初值仍在本行原来声明处现算（求值点/副作用不变），
   // 之前没有任何语句读它，所以只是把存储位置换成状态对象的一格。
@@ -2396,6 +2445,8 @@ export async function runToolLoop(options) {
   const terminationContext = {
     finalGuard,
     finalGuardTimeout,
+    // issue #386 切片 2：已规范化的判据清单（`undefined` = 未声明 ⇒ 引擎侧一条分支都不走）。
+    deliverables: resolvedDeliverables,
     toolSignal,
     signal,
     awaitWithAbort,
@@ -2444,6 +2495,10 @@ export async function runToolLoop(options) {
     finalGuardRetryLimit,
     get filesWritten() {
       return governorState.filesWritten;
+    },
+    // issue #388：原始写路径台账（与 `filesWritten` 并列的第二个键，不是替换）。
+    get fileWrites() {
+      return governorState.fileWrites;
     },
     get selfReport() {
       return selfReport;
@@ -3583,6 +3638,9 @@ export async function runToolLoop(options) {
         trimFilesWritten();
       }
     }
+    // issue #388：写工具命中那一刻的**原始**路径台账。与上面那个循环并列而不合并：
+    // `filesWritten` 的既有语义（`call.arg` 为真才记）一字不动，`fileWrites` 只多记一份原值。
+    recordFileWrites(currentRoundMessages, round);
     const actionSignals = {
       round,
       // 治理层的 rounds 只用于推进速率估算（elapsedMs / rounds），跟预算同域：

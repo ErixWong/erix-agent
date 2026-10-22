@@ -27,7 +27,8 @@ const LEGACY_KEYS = ["finalText", "findings", "messages", "round", "rounds", "si
 
 /** #386 的加法键（含只在截断时出现的标记键）。 */
 const ADDITIVE_KEYS = [
-  "cwd", "runId", "filesWritten", "filesWrittenTruncated", "toolStats", "toolStatsTruncated",
+  "cwd", "runId", "filesWritten", "filesWrittenTruncated", "fileWrites", "fileWritesTruncated",
+  "toolStats", "toolStatsTruncated",
   "taskBrief", "taskBriefTruncated", "selfReport", "selfReportSummaryTruncated",
   "selfReportOutputTruncated", "usage", "elapsedMs", "attempt", "guardBudget",
 ];

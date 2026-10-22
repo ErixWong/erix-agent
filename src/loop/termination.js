@@ -1,4 +1,5 @@
 import { markStablePrefix } from "./provider-runner.js";
+import { runDeliverables } from "./deliverables.js";
 import { tryParseWrapupJson } from "../reflection/wrapup.js";
 import { validateMessages } from "../messages/rounds.js";
 import { cloneState } from "./budget.js";
@@ -110,15 +111,26 @@ export function terminationReasonForAction(action, continuationExhausted) {
 //   3. 每个可变长键都有明确上限，超限时截断并在**同键旁**留一个可判定的 `…Truncated:true`。
 // 不改任何裁决语义：本模块只多交事实，accept/skip/revise 的判定与终局 reason 一字未动。
 
+/** 文件台账的**唯一**上限（issue #388）：
+ *  `governorState.filesWritten` / `governorState.fileWrites` 的裁剪（orchestrator 的 `trimFilesWritten` /
+ *  `trimFileWrites`）与 payload 里对应键的截断（`FINAL_GUARD_PAYLOAD_LIMITS`）都读这一个常量。
+ *
+ *  为什么必须是共享常量：切片 1 的报告点名过「payload 里一份 50、引擎 `trimFilesWritten` 一份 50」——
+ *  改一处就会出现「引擎留着 50 条、payload 只发 30 条」这类隐蔽不一致，而两边都不会报错。
+ *  本常量是**台账**口径（条目数），不是字节口径。 */
+export const FILE_LEDGER_LIMIT = 50;
+
 /** `finalGuard` payload 各可变长键的上限（超限截断 + 截断标记，见 `buildFinalGuardPayload`）。
  *
  * 上限不是审美：`messages` 才是 payload 的字节大头（30 轮 × 4KB 工具输出 ≈ 130KB），新键必须
  * 小到可以忽略（探针 `scripts/final-guard-probe.mjs` 把「新键总字节 < messages 字节的 2%」
- * 当断言跑）。数值口径：`filesWritten` / `toolStats` 取**最新/最活跃**的那一头（旧尾巴丢掉），
- * `taskBrief` / `selfReport` 的文本按 Unicode 码点截断（与 `capTaskBrief` 同口径，不会切碎代理对）。
+ * 当断言跑）。数值口径：`filesWritten` / `fileWrites` / `toolStats` 取**最新/最活跃**的那一头
+ * （旧尾巴丢掉），`taskBrief` / `selfReport` 的文本按 Unicode 码点截断（与 `capTaskBrief` 同口径，
+ * 不会切碎代理对）。两个文件台账键的上限都指 `FILE_LEDGER_LIMIT`（同一个数，不是两个 50）。
  */
 export const FINAL_GUARD_PAYLOAD_LIMITS = Object.freeze({
-  filesWritten: 50,
+  filesWritten: FILE_LEDGER_LIMIT,
+  fileWrites: FILE_LEDGER_LIMIT,
   toolStats: 40,
   taskBrief: 2000,
   selfReportText: 2000,
@@ -165,6 +177,30 @@ function plainFilesWritten(filesWritten, limit) {
     rows.push({
       path: String(entry.path ?? ""),
       round: Number.isFinite(entry.round) ? entry.round : null,
+    });
+  }
+  const kept = rows.slice(Math.max(0, rows.length - limit));
+  return { files: kept, truncated: kept.length < rows.length };
+}
+
+/** 原始写路径台账 → `[{path, round, tool}]`（issue #388）。
+ *
+ *  与 `plainFilesWritten` 的区别只有一处，但那一处是本单的根因：这里的 `path` 是
+ *  `tool_use.input[pathKey]` 的**原始值**（逐字，不摘要、不截断），可以直接拿去 `stat()`；
+ *  `filesWritten[].path` 是 judge timeline 的 40 码点摘要（`summarizeArgument`，且不带截断标记）。
+ *  三个键总是写全（`round` 探不到写 `null`，`tool` 探不到写 `""`）：形状固定，宿主不用判空。
+ *
+ *  @returns {{files:{path:string,round:number|null,tool:string}[], truncated:boolean}|null}
+ */
+function plainFileWrites(fileWrites, limit) {
+  if (!Array.isArray(fileWrites)) return null;
+  const rows = [];
+  for (const entry of fileWrites) {
+    if (entry === null || typeof entry !== "object") continue;
+    rows.push({
+      path: String(entry.path ?? ""),
+      round: Number.isFinite(entry.round) ? entry.round : null,
+      tool: typeof entry.tool === "string" ? entry.tool : "",
     });
   }
   const kept = rows.slice(Math.max(0, rows.length - limit));
@@ -230,6 +266,13 @@ export function buildFinalGuardPayload(ctx, reason, detail, attempt) {
     payload.filesWritten = files.files;
     if (files.truncated) payload.filesWrittenTruncated = true;
   }
+  // issue #388：原始写路径（可直接 `stat()`）。与 `filesWritten` 的分工写进契约：
+  // `filesWritten` = 提示用摘要，`fileWrites` = 机器判据用原值。
+  const writes = plainFileWrites(ctx.fileWrites, FINAL_GUARD_PAYLOAD_LIMITS.fileWrites);
+  if (writes !== null) {
+    payload.fileWrites = writes.files;
+    if (writes.truncated) payload.fileWritesTruncated = true;
+  }
   const stats = plainToolStats(ctx.toolStats, FINAL_GUARD_PAYLOAD_LIMITS.toolStats);
   if (stats !== null) {
     payload.toolStats = stats.stats;
@@ -271,6 +314,27 @@ export function createTerminationManager(ctx) {
   const callFinalGuard = async (reason, detail) => {
     guardAttempt += 1;
     const payload = buildFinalGuardPayload(ctx, reason, detail, guardAttempt);
+    // ── issue #386 切片 2 R2：**每次**调用 guard 之前核一遍宿主声明的交付物判据 ─────────────
+    // 「每次」是核心：guard 判 revise → 模型补做 → 下一轮 attempt 的判据自动重算，补做之后才可能
+    // 拿到 verified。只核一次（比如只在第一次调用前核）会把「补做后通过」的 run 永久拦在门外。
+    //
+    // 判据拿到的 `payload` 就是**这次**要交给 guard 的那一份事实（`buildFinalGuardPayload` 的输出，
+    // 此时还没挂 `deliverables` 键，所以宿主判据看不到自己的结论——不会出现自我指涉的判据）。
+    // 结果随后**写回同一份 payload**：guard 因此能看见机器判据的结论，而不只是模型的自报。
+    const deliverables = ctx.deliverables;
+    let deliverablesAllPassed = true;
+    let deliverablesFailed = 0;
+    if (deliverables !== undefined) {
+      const outcome = await runDeliverables(deliverables, payload, {
+        timeoutMs: ctx.finalGuardTimeout,
+      });
+      payload.deliverables = outcome.results;
+      payload.deliverablesAllPassed = outcome.allPassed;
+      ctx.guardMetrics.deliverables_checked += outcome.checked;
+      ctx.guardMetrics.deliverables_failed += outcome.failed;
+      deliverablesAllPassed = outcome.allPassed;
+      deliverablesFailed = outcome.failed;
+    }
     let timeoutId;
     try {
       const finalGuard = ctx.finalGuard;
@@ -288,10 +352,32 @@ export function createTerminationManager(ctx) {
         timeoutPromise,
       ]);
       if (decision?.action === "accept") {
+        const emitEvent = ctx.emitEvent;
+        // ── issue #386 切片 2 R3：**机器闸门**。guard 说 accept，但宿主声明的判据没过 ⇒
+        // 不许盖 `verified` 章（这就是「橡皮章」的解药：机器证据压过 LLM 意见）。
+        // 只改 `verification`，**不动** `termination.reason`：闸门不引入新的停机原因，
+        // `final_guard_unverified` 那条既有路径也一字未改（它在 orchestrator 里，不在这里）。
+        // 未声明 `deliverables` 时 `deliverablesAllPassed` 恒为 true ⇒ 这条分支永不进入（纯加法）。
+        if (!deliverablesAllPassed) {
+          ctx.guardMetrics.unverified += 1;
+          ctx.verification = { status: "unverified", reason: "deliverables_failed" };
+          emitEvent({
+            type: "final_guard",
+            round: ctx.rounds,
+            action: "accept",
+            deliverables_failed: deliverablesFailed,
+          });
+          return { action: "accept", deliverablesAllPassed: false };
+        }
         ctx.guardMetrics.verified += 1;
         ctx.verification = { status: "verified" };
-        const emitEvent = ctx.emitEvent;
-        emitEvent({ type: "final_guard", round: ctx.rounds, action: "accept" });
+        emitEvent({
+          type: "final_guard",
+          round: ctx.rounds,
+          action: "accept",
+          // 新增字段只在声明了判据时出现（未声明 ⇒ 事件形状与今天逐字一致）。
+          ...(deliverables === undefined ? {} : { deliverables_failed: 0 }),
+        });
         return { action: "accept" };
       }
       if (

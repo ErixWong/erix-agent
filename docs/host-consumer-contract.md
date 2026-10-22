@@ -29,7 +29,7 @@ completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
-toolContext, store, persistence, runId, cwd, resume, onRound, onJudge,
+toolContext, store, persistence, runId, cwd, deliverables, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
 ```
@@ -323,7 +323,7 @@ pre-attempt snapshot before re-requesting the whole completion
 - `DEFAULT_STREAM_RECOVERY_MAX_ATTEMPTS` is **not an identifier in this
   package** (grep-verified). A `2` quoted as its value is the `retryAttempts`
   fallback at `src/loop/orchestrator.js`. The CLI's own `2` comes from
-  `ERIX_RETRY_ATTEMPTS` (`bin/cli.js:841-848`), which the CLI passes as
+  `ERIX_RETRY_ATTEMPTS` (`bin/cli.js:860-868`), which the CLI passes as
   `retry: { attempts: … }`; the **library** default stays `false`, so copying
   CLI behaviour into a host is how this number gets misattributed.
 - `partialPersistence` is durability, not retry: it commits the partial text of
@@ -1254,11 +1254,11 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 
 | `termination.reason` | Triggering mechanism (file:line) | Position in the precedence chain | Host switch | Recommended host action |
 |---|---|---|---|---|
-| `end_turn` | governance stop `completion` (`src/reflection/governor.js:108-110`) or the fall-through stop `complete` (`src/reflection/governor.js:123-125`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:93-100`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3159-3163`, `3164-3218`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
+| `end_turn` | governance stop `completion` (`src/reflection/governor.js:108-110`) or the fall-through stop `complete` (`src/reflection/governor.js:123-125`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:94-101`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3159-3163`, `3164-3218`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
 | `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3357-3365`, `isEndTurn` at `3053`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
 | `no_tool` | governance stop `noTool` (`src/reflection/governor.js:111-114`), gated by `noToolRound` (`src/loop/orchestrator.js`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
 | `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2712-2726`), streak accumulation (`src/loop/orchestrator.js:2763-2770`), stop at `src/reflection/governor.js:67-70` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`errorHashes` at `src/loop/orchestrator.js`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
-| `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:93-98`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
+| `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:94-100`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
 | `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:147-149`); (b) the round loop simply runs out (`runToolLoop` at `src/loop/orchestrator.js`, tail handling at `3189-3207`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`termination` at `src/loop/orchestrator.js`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
 | `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3529-3542`), revision limit (`3544-3559`), or the budget-exhaustion tail (`3558-3578`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1663-1665`); `finalGuardMaxRetries` moves the revision limit (default 2, `budgetRounds` at `src/loop/orchestrator.js`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
 | `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:1058-1116`; classification at `1061` and `1080-1085`, annotation at `1103-1108`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
@@ -1273,7 +1273,7 @@ come back `unverified`, and a `max_rounds_cap` / `stall` /
 configured, a `verified` verdict is not available to them, because a guard
 `accept` on those three reasons still terminates as `final_guard_unverified`
 (`src/loop/orchestrator.js:3529-3542`). The CLI mapping is
-`exitCodeForVerification` (`bin/cli.js:1053-1060`):
+`exitCodeForVerification` (`bin/cli.js:1070-1078`):
 
 | `verification.status` | Meaning | `verification.reason` seen in practice | CLI exit code |
 |---|---|---|---|
@@ -1292,13 +1292,13 @@ verification outcome.
 
 Within one round, exactly one mechanism gets to decide, in this order
 (`judge_done` at `src/loop/orchestrator.js`, `src/reflection/governor.js:59-126`,
-`src/loop/termination.js:93-100`):
+`src/loop/termination.js:94-101`):
 
 1. **token-continuation boundary** — repeated `max_tokens` responses set
    `continuationExhausted`, which is the first test in both governance entry
    points (`src/reflection/governor.js:62-64`, `133-135`). Because
    `continuationExhausted` is checked before the `cap` mapping
-   (`src/loop/termination.js:93-98`), a `cap` stop caused by truncated output
+   (`src/loop/termination.js:94-100`), a `cap` stop caused by truncated output
    reports `continuation_exhausted`, never `max_rounds_cap`.
 2. **stall stop** (`src/reflection/governor.js:67-70`) — above the wrap-up and
    repeated-error nudges on purpose, so a low-priority nudge cannot starve a
@@ -1587,6 +1587,7 @@ that fact — absence is the "not probed / not provided" signal, and it is never
 | `cwd` | string | the `cwd` the host passed to `runToolLoop`, verbatim | none — the engine never interprets it (no `chdir`, no existence check, no path joins) |
 | `runId` | string | the `runId` the host passed, verbatim | none |
 | `filesWritten` | `[{ path, round }]` | write-tool calls recorded in the run's timeline ledger | **last 50** entries; older ones are dropped and `filesWrittenTruncated: true` is set |
+| `fileWrites` | `[{ path, round, tool }]` | write-tool calls with the **raw** `tool_use.input[pathKey]` value (issue #388): not summarized, not truncated, safe to `stat()` | **last 50** entries (`FILE_LEDGER_LIMIT`, the same constant the engine's ledger uses); older ones are dropped and `fileWritesTruncated: true` is set |
 | `toolStats` | `{ [toolName]: { calls, failures } }` | the run's tool counters, as a **plain object** (`JSON.stringify(new Map())` is `{}`, so a raw `Map` would reach you empty) | **top 40** tool names by `calls`; `toolStatsTruncated: true` |
 | `taskBrief` | string | the brief `resolveTaskBrief` (`src/loop/task-brief.js`) produced for this run — the same text the judge and wrap-up see | 2000 code points; `taskBriefTruncated: true` |
 | `selfReport` | `{ done, summary, output, findings }` | the model's **last normalized** wrap-up envelope (the LLM-normalized copy when normalization ran; never re-parsed from prose) | `summary` and `output` 2000 code points each; `selfReportSummaryTruncated` / `selfReportOutputTruncated` |
@@ -1606,13 +1607,17 @@ host is most likely to get wrong:
   judge timeline (`summarizeArgument`（`src/reflection/judge.js`）), which caps it at 40 code
   points **without** a truncation marker. Treat it as a hint ("this run wrote something that
   starts like this") and verify against the filesystem, the tool results in `messages`, or
-  `cwd`; do not use it as a join key.
+  `cwd`; do not use it as a join key. **Use `fileWrites[].path` when the answer must be exact**
+  (issue #388): it is the raw input value, so `stat()`/`existsSync()` on it is meaningful,
+  while the summary is not (a >40-code-point path is cut with no marker, and a criterion built
+  on it rejects runs that already did the work).
 - **`filesWritten` and `toolStats` are always present in a `runToolLoop` run** (an empty
   array / empty object means "the run recorded nothing", which is itself a fact). `cwd`,
   `runId`, `taskBrief`, and `selfReport` are present only when there was something to report.
 - **The overhead is bounded and measured.** `node scripts/final-guard-probe.mjs` runs a
   30-round × 4 KB-tool-output scenario offline: `messages` is 257,618 bytes, the additive
-  keys are 2,242 bytes — **0.87%**, against a budget of < 2%. A host can therefore log or
+  keys are 4,789 bytes — **1.86%** (2,242 B before `fileWrites` was added in issue #388),
+  against a budget of < 2%. A host can therefore log or
   queue the whole payload without a size panic, and a guard can read the facts instead of
   re-parsing the transcript (a small run's `messages` is 611 bytes; a real one is tens of
   KB to MB).
@@ -1620,11 +1625,93 @@ host is most likely to get wrong:
 **Authority precondition: `verified` is only as strong as the guard's evidence.** An `accept`
 must rest on an **independent fact** — a file on disk, a command's exit code, a store row —
 never on `finalText` being non-empty. The probe pins the counter-example as a scenario
-(`S6`): a guard that accepts whenever `finalText.trim() !== ""` returns `verified` for a run
+(`S6a`): a guard that accepts whenever `finalText.trim() !== ""` returns `verified` for a run
 whose declared deliverable **does not exist**, while the identical lying script under a
-disk-checking guard is caught at `attempt: 1` and remediated at `attempt: 2`. Both halves run
-in `node scripts/final-guard-probe.mjs` with zero model calls, so the trap is reproducible
-rather than folklore.
+disk-checking guard is caught at `attempt: 1` and remediated at `attempt: 2`. The trap now has
+a second cell (`S6b`): the same rubber-stamp guard plus a declared `deliverables` criterion
+returns `unverified` / `deliverables_failed` — the machine gate, not a better prompt, is what
+stops it (see the next section). All of it runs in `node scripts/final-guard-probe.mjs` with
+zero model calls, so the trap is reproducible rather than folklore.
+
+### Deliverable checks: the host-declared machine gate (issue #386 slice 2)
+
+`deliverables` lets the **host** declare what "delivered" means, while the **engine** owns
+two things: *when* the declaration is checked, and *what a failure costs*. This is the
+answer to the rubber-stamp problem — a guard that accepts whenever `finalText.trim() !== ""`
+can no longer turn a missing deliverable into `verified`.
+
+Option shape and validation (every violation throws `TypeError` **before** the run starts,
+same convention as the other options):
+
+```text
+deliverables?: [
+  { name: string (non-empty, unique within the run), check: (facts) => boolean | {ok, detail?} | Promise<…> },
+  … at most 20 entries …
+]
+```
+
+- `deliverables` is optional; at most **20** entries; `[]` is treated as **not declared**
+  (zero criteria is no criteria, so it behaves exactly like omitting the option).
+- `name` must be a non-empty string and unique within one run.
+- `check(facts)` may be sync or async. `facts` is the **same object the guard is about to
+  receive** — the `buildFinalGuardPayload` output described above, so at least `cwd`,
+  `fileWrites`, `filesWritten`, `toolStats`, `taskBrief`, `selfReport`, `findings`,
+  `finalText`, `attempt`, `rounds`. It never contains `deliverables` itself (no
+  self-reference).
+
+Two fail-closed rules, fixed by contract — a broken or hanging criterion must **block**, not
+pass:
+
+| `check` outcome | Recorded result |
+|---|---|
+| returns `true` | `{ ok: true }` |
+| returns `false` | `{ ok: false }` |
+| returns `{ ok: boolean, detail? }` | carried over verbatim |
+| returns anything else (a string, a number, `{ ok: "yes" }`, `undefined`) | `{ ok: false, detail: "invalid_result" }` |
+| throws | `{ ok: false, detail: "threw" }` |
+| runs longer than `finalGuardTimeoutMs` | `{ ok: false, detail: "timeout" }` |
+
+The timeout reuses `finalGuardTimeoutMs` — there is **no** separate `deliverablesTimeoutMs`
+knob, and the timer is per criterion (one slow criterion cannot make the next one look slow).
+
+**Timing: checks run before *every* guard call**, not once per run. A `revise` decision is
+therefore followed by a fresh computation on the next `attempt`, so a model that actually
+remediates reaches `verified` and one that only re-words its claim does not.
+
+Results reach both surfaces, and only when the host declared something:
+
+- payload: `deliverables: [{ name, ok, detail? }]` plus `deliverablesAllPassed: boolean`.
+  The guard sees them, so a well-written guard can weigh machine evidence instead of prose.
+- `verification.metrics`: `deliverables_checked` / `deliverables_failed`, cumulative across
+  guard calls, next to the existing `verified` / `skipped` / `revised` / `unverified` /
+  `guard_error` counters (whose meaning is unchanged).
+
+The gate itself — the ruling change this option exists for:
+
+| Deliverable result | Guard verdict | `verification.status` |
+|---|---|---|
+| all passed | `accept` | `verified` — as before, plus the two counters |
+| **any failed** | `accept` | **`unverified`, `reason: "deliverables_failed"`** — machine evidence outranks the guard |
+| any failed | `revise` / `skip` / guard error | unchanged from today (`unverified` / `skipped` / `error`) |
+| not declared | any | **byte-for-byte unchanged**: no payload key, no metric key, no event field |
+
+Three boundaries are deliberate:
+
+- **`termination.reason` is not rewritten.** The gate changes `verification` only; it
+  introduces no new stop reason, and the existing `final_guard_unverified` path (retry
+  limit, non-continuable degradation) is untouched.
+- **Non-continuable stops still check once, and still degrade.** For `max_rounds_cap`,
+  `stall`, and `continuation_exhausted` the criteria run once and the result is recorded,
+  but the stop keeps its existing `non_continuable` verdict. The gate adds a label, it does
+  not invent a stop.
+- **The event gains one field.** A `type: "final_guard"` event carries
+  `deliverables_failed: <n>` (present only when criteria were declared), so a host can
+  observe the gate without reading metrics. Every existing event field is unchanged.
+
+Which path key to use in a criterion: `fileWrites[].path` is the raw
+`tool_use.input[pathKey]` value (verbatim, safe to `stat()`), while `filesWritten[].path` is
+the 40-code-point judge-timeline summary (a hint only — see the payload table above). A
+criterion built on the summary will systematically reject runs that already did the work.
 
 ### Host-side guard wiring and the deadline tail (issue #314)
 

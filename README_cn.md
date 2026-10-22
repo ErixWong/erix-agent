@@ -134,6 +134,7 @@ src/
     tool-result-ttl.js             旧工具结果的 request-view TTL 折叠
     request-user-view.js           视图定稿处不变量：发给上游/写回的视图不得没有 user 轮（issue #292）
     termination.js                 终态归类
+    deliverables.js                宿主声明的交付物判据（finalGuard 之前的机器闸门）
     resume-manager.js              断点恢复与 run-state 应用
     error-ledger.js                重复错误记账
     messages.js                    消息/block 辅助函数

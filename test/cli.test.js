@@ -1440,3 +1440,37 @@ test("#326-D 账本里有 messages 缺失/为 null 的老行时续跑也不崩",
   );
   assert.ok(records.length > rows.length, "续跑至少要留下用户轮与引擎轮记录");
 });
+
+// issue #386 切片 2：CLI 侧**默认关闭**的交付物判据（`--require-deliverable`）。
+test("parseChatArgs parses --require-deliverable, and it is off by default (issue #386 slice 2)", () => {
+  assert.equal(parseChatArgs(["hello"], "/tmp/project").requireDeliverable, undefined,
+    "默认必须关闭：开了它会改掉「成功 + 无 --final-guard ⇒ exit 4」的既有退出码承诺");
+  assert.equal(parseChatArgs(["hello", "--require-deliverable"], "/tmp/project").requireDeliverable, true);
+  assert.throws(
+    () => parseChatArgs(["hello", "--require-deliverable", "--require-deliverable"], "/tmp/project"),
+    /参数重复/u,
+  );
+});
+
+test("createDeliverableChecks 判的是原始写路径的磁盘事实（fileWrites，不是 40 码点摘要）", async () => {
+  const { createDeliverableChecks } = await import("../bin/final-guard.js");
+  const dir = await makeTmp("erix-cli-deliverable-");
+  const written = `${dir}/nested/artifact-with-a-very-long-name.txt`;
+  await mkdir(join(dir, "nested"), { recursive: true });
+  await writeFile(written, "42");
+
+  const [criterion] = createDeliverableChecks();
+  assert.equal(criterion.name, "files_written_exist");
+  // 全部在盘上 ⇒ 通过（返回 `true`，与契约里「true ⇒ ok:true」那一格一致）。
+  assert.equal(criterion.check({ fileWrites: [{ path: written, round: 1, tool: "writeFile" }] }), true);
+  // 一条不在盘上 ⇒ 失败并点名那条路径（`detail` 是宿主可见的，必须能直接定位）。
+  const missing = `${dir}/never-written.txt`;
+  const failed = criterion.check({
+    fileWrites: [{ path: written, round: 1, tool: "writeFile" }, { path: missing, round: 2, tool: "writeFile" }],
+  });
+  assert.equal(failed.ok, false);
+  assert.ok(failed.detail.includes(missing), `detail 没点名缺失的路径：${failed.detail}`);
+  // 没写过任何文件 ⇒ 通过（「这个 run 没声明写文件」不是「交付物缺失」）。
+  assert.equal(criterion.check({}), true);
+  assert.equal(criterion.check({ fileWrites: [] }), true);
+});

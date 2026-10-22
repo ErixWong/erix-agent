@@ -25,6 +25,7 @@ import { defaultSessionId, runRepl } from "./repl.js";
 import {
   buildCaptureRecoveryHint,
   buildCaptureStub,
+  createDeliverableChecks,
   createFinalGuard,
 } from "./final-guard.js";
 import {
@@ -50,7 +51,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--no-todo] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable] [--no-notes] [--no-todo] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
@@ -70,6 +71,9 @@ const HELP_TEXT = `用法：
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 16 时启用，见 DEFAULT_REFLECTION_MIN_ROUNDS）
   --final-guard         开启终稿 provenance 核验（默认关闭）
   --no-final-guard      兼容别名（默认已关闭，no-op）
+  --require-deliverable 交付物机器判据（默认关闭）：本 run 用写工具声明过的每个路径收尾时都必须
+                      真的在盘上，否则 guard 的 accept 也拿不到 verified（终局 unverified:deliverables_failed，
+                      exit 2）。读的是原始写路径（fileWrites），不是 40 码点摘要
   --no-notes            不装配 notes 工厂（note_* 工具不再可用），保留其他 skill
   --no-todo             彻底关闭 todo：内置 todo_* 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
@@ -289,6 +293,14 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       }
       seenOptions.add(argument);
       options.finalGuard = argument === "--final-guard";
+      continue;
+    }
+    if (argument === "--require-deliverable") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.requireDeliverable = true;
       continue;
     }
     if (argument === "-c" || argument === "--continue") {
@@ -614,6 +626,7 @@ async function runChatWithNotes({
   reflection,
   finalGuard,
   finalGuardMaxRetries = 2,
+  requireDeliverable,
   timeoutMs,
   stream,
   completion,
@@ -841,6 +854,9 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           finalGuard: resolvedFinalGuard,
           finalGuardMaxRetries,
         }),
+    // issue #386 切片 2：`--require-deliverable`（默认关闭）——把「声明的写路径必须真的在盘上」
+    // 这条机器判据交给引擎，闸门因此能在 guard 说 accept 之后仍然拒绝盖章。
+    ...(requireDeliverable === true ? { deliverables: createDeliverableChecks() } : {}),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     maxTokens,
     retry: {

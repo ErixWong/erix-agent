@@ -163,7 +163,7 @@ function editDistance(left, right) {
 
 const suggestionThreshold = (unknownName) => Math.max(2, Math.floor(unknownName.length / 3));
 
-// 白名单 = `RUN_TOOL_LOOP_OPTION_NAMES`（**61 项**，顺序即平局优先级）。这里内联复制而不是
+// 白名单 = `RUN_TOOL_LOOP_OPTION_NAMES`（**62 项**，顺序即平局优先级）。这里内联复制而不是
 // import：表征测试要能在刀1 之后继续钉住同一份名单——名单被改动时本用例应**主动变红**，
 // 逼着改动者确认「建议行为」是否随之变化。
 const OPTION_WHITELIST = [
@@ -230,6 +230,7 @@ const OPTION_WHITELIST = [
   // issue #386 切片 1：`cwd` 只透传给 `finalGuard` payload（引擎不解释）。追加在末尾，
   // 所以上面那些未知键的建议结果逐字不变。
   "cwd",
+  "deliverables",
 ];
 
 // ================================================================ A. 未知选项建议
@@ -321,9 +322,9 @@ test("建议平局取白名单顺序在前者（严格 < 比较，非字典序�
 });
 
 
-test("白名单恰为 61 项：每一项都被接受，未知键一律被拒", async () => {
-  assert.equal(OPTION_WHITELIST.length, 61);
-  assert.equal(new Set(OPTION_WHITELIST).size, 61);
+test("白名单恰为 62 项：每一项都被接受，未知键一律被拒", async () => {
+  assert.equal(OPTION_WHITELIST.length, 62);
+  assert.equal(new Set(OPTION_WHITELIST).size, 62);
   // 平局断言依赖这份顺序，先自证它没被顺手排序成字典序。
   assert.notEqual(
     JSON.stringify(OPTION_WHITELIST),

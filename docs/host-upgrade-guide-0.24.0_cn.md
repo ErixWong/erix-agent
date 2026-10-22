@@ -235,10 +235,70 @@ guard 超时、橡皮章陷阱，以及开销上限（30 轮 × 4KB 工具输出
 重试上限 / fail-closed）一字未动。如果你原本在重解析 `messages` 去捞上面那些事实，那段代码可以删了——
 这正是本切片的意义。
 
-## 9. 自检
+## 9. 把 `accept` 建在磁盘事实之上：`deliverables` + `fileWrites`（issue #386 切片 2、#388）
+
+**症状。** §8 把 run 的事实交给了 guard，但引擎对那些事实**没有意见**：只看
+`finalText.trim() !== ""` 就 accept 的 guard，仍然会为一个交付物根本不存在的 run 返回
+`verified`。只有事实、没有闸门，那只是邀请，不是检查。
+
+**新增两件东西，都是纯加法：**
+
+1. **`fileWrites`**（issue #388）——payload 里 `filesWritten` 的「原始路径」搭档：
+
+   | 键 | 取值 | 能直接 `stat()` 吗 |
+   |---|---|---|
+   | `filesWritten` | `[{ path, round }]`，`path` 是 judge 时间线 `summarizeArgument` 的输出——**40 码点，且不带截断标记** | **不能**：长路径被无声截断，`existsSync()` 对「其实已经写了文件」的 run 会判不存在 |
+   | `fileWrites` | `[{ path, round, tool }]`，`path` 是 `tool_use.input[pathKey]` 的**逐字原值** | **能**——判据必须读这个键 |
+
+   两个键由**同一个**常量封顶（`FILE_LEDGER_LIMIT`，50 条，留最新的），也各自带截断标记
+   （`filesWrittenTruncated` / `fileWritesTruncated`）。要给人看的提示用 `filesWritten`；
+   要精确答案用 `fileWrites`。
+
+2. **`deliverables`**——宿主声明「什么算交付完成」，引擎决定「何时核」与「核不过的后果」：
+
+   ```js
+   runToolLoop({
+     // ……你原有的选项……
+     deliverables: [{
+       name: "report",
+       // `facts` 就是 guard 即将拿到的那份 payload（attempt/rounds/cwd/fileWrites/……）。
+       check: ({ cwd, fileWrites }) => {
+         const target = path.join(cwd, "report.md");
+         const wrote = fileWrites.some((write) => write.path === target);
+         return { ok: wrote && fs.existsSync(target), detail: wrote ? "missing on disk" : "never written" };
+       },
+     }],
+   });
+   ```
+
+   至多 20 条、每项 `{ name: string, check: function }`、`name` 唯一，否则 `TypeError`。
+   `check` 允许 async。两条 fail-closed：**抛异常 ⇒ `ok:false` + `detail:"threw"`，超过
+   `finalGuardTimeoutMs` ⇒ `ok:false` + `detail:"timeout"`**——判据写错或卡住必须拦住，绝不
+   放行。返回不是 `true` / `false` / `{ ok: boolean }` 的一律 `ok:false` +
+   `detail:"invalid_result"`，所以 `return "ok"` 不会被当成通过。
+
+**闸门。** 判据在**每次**调用 guard 之前重算（于是 `revise` → 补做 → 第二次 attempt 真的
+能拿到 `verified`）；任何一条失败时，guard 的 `accept` 只会得到
+`verification.status === "unverified"` + `reason: "deliverables_failed"`。这就是全部意义：
+机器证据压过 guard 的意见。`termination.reason` **不被改写**（不引入新的停机原因，
+`final_guard_unverified` 的既有含义不变），不可续跑终局仍降级为 `non_continuable`，
+`verification.metrics` 在既有五个计数旁新增 `deliverables_checked` / `deliverables_failed`。
+
+**未声明时零回归。** 不传 `deliverables`（或传 `[]`）就什么都不变：payload 无键、metrics
+无键、事件无字段、裁决不变。`test/loop-deliverables.test.js` 里的回归锚把 `verification`、
+`verification.metrics` 与 payload 的键集合逐字比对本切片之前的行为。
+
+**CLI。** `erix chat --require-deliverable` 打开一条默认判据——「本 run 声明写过的每个路径，
+收尾时都必须真的在盘上」——且**默认关闭**，所以退出码承诺（`0` verified / `2` unverified /
+`3` error / `4` skipped）在你主动要求之前一字不变。
+
+**需要你动手吗？** 不需要；但如果你现在的 guard 自己查磁盘，把那段检查搬进 `deliverables`
+交给引擎强制：这样以后重写 guard 时，它不可能悄悄退化成橡皮章。
+
+## 10. 自检
 
 ```bash
-npm test                       # 1,881 tests，0 失败（1,872 通过 + 9 skipped）
+npm test                       # 1,895 tests，0 失败（1,886 通过 + 9 skipped）
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # 离线、零模型调用；断言 finalGuard 的载荷面
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件
@@ -258,8 +318,12 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
 5. **guard 载荷。** 给 `runToolLoop` 传 `cwd`，在你的 guard 里把整个 payload 记下来，并断言：强制一次
    `revise` 时 `attempt` 递增、`selfReport.findings === findings`、你的 accept 路径仍然会拒掉一个交付物
    缺失的 run（§8 的 `S6` 反例）。
+6. **交付物闸门。** 声明一条 `deliverables` 判据（`stat` 一个 `cwd` 下的文件），**保留**那个天真的
+   `finalText` guard，断言：从没写过该文件的 run 以 `unverified` / `deliverables_failed` 收尾；然后去掉
+   这个选项，断言同一个 run 又回到 `verified`。这一对断言才是「干活的是闸门、不是你的 prompt」的证据
+   （§9 的 `S6a`/`S6b` 两格就是它的随包版本）。
 
-## 10. 没变的
+## 11. 没变的
 
 没有 store 方法签名、没有返回类型、没有选项名、没有导出、没有记录种类、没有消息字段、没有终止原因、
 没有错误码搬家，运行时依赖仍是零。`store.load()` 的形状与 0.23.0 一致。`deterministic.compactionStats`
@@ -267,7 +331,7 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
 那是信息，不是新规则。整个发布里唯一**行为**变化是「搜索根不存在
 返回错误文本而不是 `（无命中）`」——而那是修一次假阴性，不是新规则。
 
-## 11. 迁移配方
+## 12. 迁移配方
 
 1. 如果你读 `<runId>.state.json` 的削减账，改读 `compactionStatsWindow.total`（与 `dropped`），别再数数组；
    把键的缺席理解成「没有统计」，而不是「零」。
@@ -281,3 +345,7 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
 6. 删掉你 `finalGuard` 里为了捞「写了哪些文件 / 工具计数 / 任务简报 / 模型自报 / usage / 耗时」而做的
    `messages` 重解析：改读 `filesWritten`、`toolStats`、`taskBrief`、`selfReport`、`usage`、`elapsedMs`（§8）。
    `messages` 只留给你读工具结果的**内容**。
+7. 把 guard 里的磁盘/存在性检查搬进 `deliverables`（§9）：引擎会在**每一次** attempt 上强制它们，
+   `revise` 之后真的会重算，而且以后重写 guard 也不可能悄悄把它退回成橡皮章。今天用
+   `filesWritten[].path` 做 `stat()` 的地方，改读 `fileWrites[].path`（逐字原值）——摘要会静默误杀
+   已经写了文件的 run。

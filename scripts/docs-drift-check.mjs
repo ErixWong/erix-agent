@@ -3945,9 +3945,9 @@ const SELF_TEST_CASES = [
     expectGreen: true,
   },
   {
-    label: "#286 越界必红：CN 契约的 termination.js:93-100 改成 99999-100（唯一区间数不变 → 只有越界这条红）",
-    overlay: { [CONTRACT_CN]: (t) => t.split("src/loop/termination.js:93-100").join("src/loop/termination.js:99999-100") },
-    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:99999-100，但该文件只有 \d+ 行/],
+    label: "#286 越界必红：CN 契约的 termination.js:94-101 改成 99999-101（唯一区间数不变 → 只有越界这条红）",
+    overlay: { [CONTRACT_CN]: (t) => t.split("src/loop/termination.js:94-101").join("src/loop/termination.js:99999-101") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:99999-101，但该文件只有 \d+ 行/],
     expectFiles: [CONTRACT_CN],
   },
   {
@@ -3973,10 +3973,10 @@ const SELF_TEST_CASES = [
   //    弱档（具名字面量）也真的按「该字面量的出现行」判 → 改窄到不含出现行就红。
   //  四条都用 `mutateSymbolAnchorSpan`（与主检查同一套提取逻辑，#279 口径：打靶由提取逻辑定）。
   {
-    label: "#286 T-b1a 区间相交：把 `terminationReasonForAction`（termination.js:93-100）改窄成 94-100 ⇒ 声明在 93，红",
-    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("terminationReasonForAction", "src/loop/termination.js", ":94-100") },
-    expect: [/symbol-anchor-span: .*引用 `terminationReasonForAction`（`src\/loop\/termination\.js:94-100`）/,
-      /声明处不相交/, /真值位在 93/],
+    label: "#286 T-b1a 区间相交：把 `terminationReasonForAction`（termination.js:94-101）改窄成 95-101 ⇒ 声明在 94，红",
+    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("terminationReasonForAction", "src/loop/termination.js", ":95-101") },
+    expect: [/symbol-anchor-span: .*引用 `terminationReasonForAction`（`src\/loop\/termination\.js:95-101`）/,
+      /声明处不相交/, /真值位在 94/],
     expectFiles: [CONTRACT_EN],
   },
   {
@@ -3987,14 +3987,14 @@ const SELF_TEST_CASES = [
     expectFiles: [CONTRACT_CN],
   },
   {
-    label: "#286 T-b1a 区间相交的放行证：删掉 `max_rounds_cap`（termination.js:93-98）的区间（只留符号 + 文件）⇒ 本判据不适用，必须 0 错",
+    label: "#286 T-b1a 区间相交的放行证：删掉 `max_rounds_cap`（termination.js:94-100）的区间（只留符号 + 文件）⇒ 本判据不适用，必须 0 错",
     overlay: { [CONTRACT_CN]: mutateSymbolAnchorSpan("max_rounds_cap", "src/loop/termination.js", "") },
     expectGreen: true,
   },
   {
-    label: "#286 T-b1a 弱档真值位：把 `max_rounds_cap`（termination.js:93-98）改窄到 93-97 ⇒ 字面量在 98，红（弱档也真按出现行判）",
-    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("max_rounds_cap", "src/loop/termination.js", ":93-97") },
-    expect: [/symbol-anchor-span: .*引用 `max_rounds_cap`（`src\/loop\/termination\.js:93-97`）/,
+    label: "#286 T-b1a 弱档真值位：把 `max_rounds_cap`（termination.js:94-100）改窄到 94-98 ⇒ 字面量在 99，红（弱档也真按出现行判）",
+    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("max_rounds_cap", "src/loop/termination.js", ":94-98") },
+    expect: [/symbol-anchor-span: .*引用 `max_rounds_cap`（`src\/loop\/termination\.js:94-98`）/,
       /真值形态 具名字面量成员/],
     expectFiles: [CONTRACT_EN],
   },
@@ -4042,8 +4042,8 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#286 返工 R3 不存在：把 CN 契约的一处目标改成 src/loop/__no_such_probe__.js ⇒ 必须红（从前是 continue 静默跳过）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:93-100", "src/loop/__no_such_probe__.js:93-100") },
-    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/__no_such_probe__\.js:93-100，但 .*在本仓不存在——裸行号没有可核对的真值/],
+    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:94-101", "src/loop/__no_such_probe__.js:94-101") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/__no_such_probe__\.js:94-101，但 .*在本仓不存在——裸行号没有可核对的真值/],
     expectFiles: [CONTRACT_CN],
   },
 
