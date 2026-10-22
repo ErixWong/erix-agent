@@ -82,7 +82,7 @@ executeTool({ id, name, input, context, signal })
 | `context.channel` | 额外字段 | 引擎防护点 |
 |---|---|---|
 | `onEvent` | `type`，事件自带 `round` 时再带 `round` | `emitEvent`（`src/loop/orchestrator.js`） |
-| `onEvent`（启动期诊断） | `type: "model_metadata_missing"`，或 `type: "persistence_capability_degraded"` 加 `method` | `notifyCapabilitySkipped` / `notifyModelMetadataMissing` 里的本地防护（`src/loop/orchestrator.js:916-969`）：这两条路径在 `emitEvent` 定义之前就触发，因此直调 `onEvent` |
+| `onEvent`（启动期诊断） | `type: "model_metadata_missing"`，或 `type: "persistence_capability_degraded"` 加 `method` | `notifyCapabilitySkipped` / `notifyModelMetadataMissing` 里的本地防护（`src/loop/orchestrator.js`）：这两条路径在 `emitEvent` 定义之前就触发，因此直调 `onEvent` |
 | `onRound` | `round` | `src/loop/orchestrator.js` |
 | `onToolResult` | `toolName`、`round` | `src/loop/run-snapshot-executor.js:266-294` |
 | `onJudge` | `round`、`kind` | `emitJudge`（`src/loop/orchestrator.js`） |
@@ -1026,7 +1026,7 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 | `verified` | 已配置的 guard 接受了一份终答 | —（无 reason 字段） | `0` |
 | `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js`）；CLI guard 的 `no_capture_evidence` / `no_extractable_candidates`（`bin/final-guard.js:86,89`） | `4` |
 | `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js`）、`max_retries`（`3547-3551`） | `2` |
-| `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`——两者都由 `errorReason`（`src/loop/termination.js:173-176`）决出 | `3` |
+| `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`——两者都由 `errorReason`（`src/loop/termination.js`）决出 | `3` |
 
 `exitCodeForVerification` 对其他任何 status（包括根本没有 `verification` 对象）都返回
 `0`，所以**退出码 0 本身不是已验答案的证明**——请读 `verification.status`。抛错的 run

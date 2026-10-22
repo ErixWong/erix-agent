@@ -2109,8 +2109,14 @@ const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
  *  降基线的理由（issue #326 wo-C，140 → **138**，降 2）：折叠摘要事实行 / TTL 降级事实行要写进 `orchestrator.js`，
  *  该文件行数一变，中英契约里两处**符号锚点自带区间**（`sideEffect` `1093-1098`、`no_final_guard` `1663-1665`）
  *  就与声明处不相交了 —— 按本文件与 AGENTS 的首选修法**删掉区间只留符号**（符号判据不需要行号），
- *  于是每处少一个唯一区间键。区间本身是错的（真值位在别处），删掉它同时消掉一处会漂移的假精度。 */
-const BARE_LINE_REF_BASELINE = 136;
+ *  于是每处少一个唯一区间键。区间本身是错的（真值位在别处），删掉它同时消掉一处会漂移的假精度。
+ *  降基线的理由（工单 P / issue #386 切片 1，136 → **132**，降 4）：`src/loop/termination.js` 与
+ *  `src/loop/orchestrator.js` 因 finalGuard payload 的组装与上限常量各长了一截，中英契约里四处
+ *  **符号锚点自带区间**（`notifyModelMetadataMissing` `916-969`、`errorReason` `173-176`，中英各两处）
+ *  与声明处不再相交——同样按首选修法**删掉区间只留符号**（`symbols` 判据不需要行号），
+ *  每处少一个唯一区间键 ⇒ 实测 136 唯一区间 − 4 处豁免 = **132**（`--verbose` 可复核：
+ *  出现 162 次 / 唯一 136 处 / 豁免 4 处）。 */
+const BARE_LINE_REF_BASELINE = 132;
 
 /** 棘轮生效值：从**本脚本自己的文本**里读 `BARE_LINE_REF_BASELINE`（走 `textOf`，所以 `--self-test`
  *  能把这个常量临时改小来证「它真的是锁」：调低到低于实测值必须红，改回来必须绿）。

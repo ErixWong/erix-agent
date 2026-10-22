@@ -476,7 +476,10 @@ test("E2 finalGuard 载荷的 messages 是深拷贝，宿主回调改不动循�
   });
 
   assert.equal(payloads.length, 1);
-  assert.deepEqual(Object.keys(payloads[0]).slice().sort(), [
+  // issue #386 切片 1：payload 是**纯加法**富化的——既有 7 键的名字与**顺序**逐字不变（前 7 个），
+  // 新增键只许落在它们之后，且必须属于已登记的加法键集合。
+  const payloadKeys = Object.keys(payloads[0]);
+  assert.deepEqual(payloadKeys.slice(0, 7), [
     "finalText",
     "findings",
     "messages",
@@ -485,6 +488,17 @@ test("E2 finalGuard 载荷的 messages 是深拷贝，宿主回调改不动循�
     "signal",
     "termination",
   ]);
+  const additive = new Set([
+    "cwd", "runId", "filesWritten", "filesWrittenTruncated", "toolStats", "toolStatsTruncated",
+    "taskBrief", "taskBriefTruncated", "selfReport", "selfReportSummaryTruncated",
+    "selfReportOutputTruncated", "usage", "elapsedMs", "attempt", "guardBudget",
+  ]);
+  const unknownKeys = payloadKeys.slice(7).filter((key) => !additive.has(key));
+  assert.deepEqual(unknownKeys, [], "payload 多了未登记的键：加法键集合要跟着契约一起改");
+  // 这几个在「引擎一定探得到」的那一类里，本 run 必须逐个在场（不在场就不是「纯加法」了）。
+  for (const key of ["filesWritten", "toolStats", "usage", "elapsedMs", "attempt", "guardBudget"]) {
+    assert.ok(payloadKeys.includes(key), `payload 缺了引擎一定探得到的加法键：${key}`);
+  }
   // 当前行为：callFinalGuard 里 `messages: cloneState(ctx.messages)`——载荷不是活引用。
   assert.notEqual(payloads[0].messages, result.messages);
   assert.notEqual(payloads[0].messages[0], result.messages[0]);

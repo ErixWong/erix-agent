@@ -506,7 +506,9 @@ test("中英契约文档引用的 readMoreLines marker 字面与源码产出同�
 //   CJK 字节占比 9% → 24%，一次能装的行数从 5,391 掉到 **4,286**，**取代** `src/loop/state-view.js`（4,387 行、
 //   37% CJK，自 #271 起一字未动、当场复测 0.00% 漂移）成为「装得最少」那一档；上面那个「floor 就是 CJK 最密那个」
 //   的巧合随之成立不起来，描述拆成了**两个各自复测的锚点**（下面角色表里的 `fewest` 与 `densest`）。
-//   中位随之从记录值 7,290 换成同口径实测的 **7,243**（`median` 那个锚点文件 `src/loop/termination.js` 同步刷成实测值）。
+//   中位随之从记录值 7,290 换成同口径实测的 **7,243**（`median` 那个锚点文件同步刷成实测值；
+//   2026-10-22 起那个锚点文件是 `bin/repl.js`，原先的 `src/loop/termination.js` 被 #386 的 payload 组装
+//   撑大 +74%、容量掉出中位带，见角色表里 median 那一行的注释）。
 //   全树（`src`/`bin`/`examples` 共 91 个 `*.js`）实测的下界也仍是 resume-manager.js 的 4,286 ⇒ 描述里那句 floor 对全树也为真。
 //   ⚠ 代价照 #275 的口径写明：floor 锚点现在钉在一个**本分支正在反复改**的文件上（±2% 只等于 ±7 行 / ±440 字节），
 //     后续再动它的注释仍会红在这里——那是「描述里的数必须是实测值」这个决定的固有代价，不是新 bug。
@@ -550,9 +552,14 @@ const READ_LINE_CAPACITY_ROLES = [
   { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 22_014, lines: 360, bytesPerLine: 61.15, capacity: 4_286, cjkShare: 0.2400 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
-  // median 这一行 2026-10-21 从 #271 的记录值（11,471 B / 319 行 → 7,290）刷成同口径实测值：
-  // 旧记录在本树上已经漂到 ±2% 限内侧只剩 0.5pp（字节 1.50% / 容量 0.86% / CJK 占比 +0.57pp），再动一次 termination.js 就红。
-  { role: "median", file: "src/loop/termination.js", recorded: { bytes: 11_643, lines: 321, bytesPerLine: 36.271, capacity: 7_227, cjkShare: 0.0959 } },
+  // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
+  // `src/loop/termination.js` 加了 finalGuard payload 的组装与四个上限常量（+8,638 B / +163 行，
+  // 字节 +74%），它的容量从 7,227 掉到 6,255，已经不再是样本中位（实测中位 7,225）——
+  // 再把它当 median 锚点，描述里那句「median 7,243」就成了谎话。改钉 `bin/repl.js`
+  // （29,279 B / 809 行 ⇒ 7,243 行，与样本中位差 0.25%，且分母比 provider-summarizer.js 大 7 倍，
+  // ±2% 的抖动额度从 ±2 行变成 ±16 行）。描述里的 `median 7,243 (36.3)` 因此**一个字都不用改**。
+  // 历史：2026-10-21 从 #271 的记录值（11,471 B / 319 行 → 7,290）刷成同口径实测值（11,643 / 321 / 36.271）。
+  { role: "median", file: "bin/repl.js", recorded: { bytes: 29_279, lines: 809, bytesPerLine: 36.1916, capacity: 7_243, cjkShare: 0.1242 } },
   { role: "most", file: "bin/guard-metrics.js", recorded: { bytes: 456, lines: 17, bytesPerLine: 26.8235, capacity: 9_772, cjkShare: 0 } },
   // self 这一行在 PR #291 返工（必修 4）里重测过：`classifyFileToolResult` 的 JSDoc 改成按 `kind`
   // 关联的判别联合（工单明说改它的 JSDoc 是允许的，生成的 `.d.ts` 里 `kind:"bytes"` 那一支的

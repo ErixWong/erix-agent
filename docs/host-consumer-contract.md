@@ -97,7 +97,7 @@ observer throws synchronously, or returns a rejected promise (onRound / onToolRe
 | `context.channel` | Extra fields | Engine guard |
 |---|---|---|
 | `onEvent` | `type`, plus `round` when the event carries one | `emitEvent` (`src/loop/orchestrator.js`) |
-| `onEvent` (startup diagnostics) | `type: "model_metadata_missing"`, or `type: "persistence_capability_degraded"` plus `method` | the local guards in `notifyCapabilitySkipped` / `notifyModelMetadataMissing` (`src/loop/orchestrator.js:916-969`), which call `onEvent` directly because they fire before `emitEvent` exists |
+| `onEvent` (startup diagnostics) | `type: "model_metadata_missing"`, or `type: "persistence_capability_degraded"` plus `method` | the local guards in `notifyCapabilitySkipped` / `notifyModelMetadataMissing` (`src/loop/orchestrator.js`), which call `onEvent` directly because they fire before `emitEvent` exists |
 | `onRound` | `round` | `src/loop/orchestrator.js` |
 | `onToolResult` | `toolName`, `round` | `src/loop/run-snapshot-executor.js:266-294` |
 | `onJudge` | `round`, `kind` | `emitJudge` (`src/loop/orchestrator.js`) |
@@ -1280,7 +1280,7 @@ configured, a `verified` verdict is not available to them, because a guard
 | `verified` | the configured guard accepted this final answer | — (no reason field) | `0` |
 | `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js`); CLI guard `no_capture_evidence` / `no_extractable_candidates` (`bin/final-guard.js:86,89`) | `4` |
 | `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js`), `max_retries` (`3547-3551`) | `2` |
-| `error` | the guard threw, decided invalidly, or timed out (fail-open for availability, never `verified`) | `timeout` or `error`, both resolved by `errorReason` (`src/loop/termination.js:173-176`) | `3` |
+| `error` | the guard threw, decided invalidly, or timed out (fail-open for availability, never `verified`) | `timeout` or `error`, both resolved by `errorReason` (`src/loop/termination.js`) | `3` |
 
 `exitCodeForVerification` returns `0` for any other status, including a missing
 `verification` object, so **exit code 0 is not by itself proof of a verified
