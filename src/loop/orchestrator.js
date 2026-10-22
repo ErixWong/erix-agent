@@ -1800,6 +1800,10 @@ export async function runToolLoop(options) {
   // issue #165：verification 已进入作用域，接管读取器（在此之前的早退 fail() 读到 undefined
   // → run_outcome 记录不带 verification 字段，而不是写一个假状态）。
   runLoopState.verificationReader = () => verification;
+  // issue #386 切片 3：`guard_extensions` 只在**真的补跑过**时由 `extendAfterGuard` 现写（未 opt-in
+  // 或 opt-in 但一次没补的 run，`metrics` 必须与今天逐字一致），所以这里只声明成可选键——纯注解，
+  // 不往字面量里加任何键（加了就等于给未补跑的 run 多一个 `guard_extensions: 0`）。
+  /** @type {{ verified: number, skipped: number, revised: number, unverified: number, guard_error: number, deliverables_checked?: number, deliverables_failed?: number, guard_extensions?: number }} */
   const guardMetrics = {
     verified: 0,
     skipped: 0,
@@ -4029,21 +4033,11 @@ export async function runToolLoop(options) {
       continue;
     }
     if (action.kind === "extend" || action.kind === "extend+redirect") {
-      governorState.effectiveMaxRounds = Math.min(
-        governorState.effectiveMaxRounds + reflectionExtensionStep,
-        reflectionMaxRoundsCap,
-      );
-      governorState.extensionCount += 1;
-      const continuationMessage = {
-        role: "user",
-        // issue #323：引擎自写的续跑控制文本，打 marker 防 judge 自读回（主模型仍可见）。
-        meta: { source: "judge-control" },
-        content: [{ type: "text", text: action.text }],
-      };
-      messages.push(continuationMessage);
-      messageRounds.set(continuationMessage, round);
-      // issue #326（B1）：同 nudge——轮尾注入的续跑提示必须在产生的那一刻入账。
-      await appendEngineMessagesToTranscript(continuationMessage, round, "extend");
+      // issue #386 切片 3：这一段原先是**就地**写的，现在与 guard 补跑桥共用
+      // `applyGovernorExtension` 那一个闭包（`Math.min(当前 + step, cap)` / `extensionCount += 1` /
+      // `meta.source:"judge-control"` 的 user 消息 / 当场入账，逐字不变，槽位名仍是 `"extend"`）。
+      // 唯一目的：让「第二份扩轮实现」没有存在的理由。
+      await applyGovernorExtension(action.text, round, "extend");
       continue;
     }
     if (action.kind === "stop") {
