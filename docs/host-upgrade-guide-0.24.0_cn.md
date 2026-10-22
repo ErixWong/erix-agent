@@ -5,7 +5,7 @@
 **同名同类型**的字段，还有几处工具输出不再「悄悄改参数 / 悄悄说没错」而是把真实情况写出来。没有删
 东西、没有改名、没有 store 方法签名搬家，运行时依赖仍然是**零**。
 
-**其中两处是增量信息，其余是模型可见文本。** 这里没有任何一处会让今天能编译的宿主编译不过——
+**其中三处是增量信息，其余是模型可见文本。** 这里没有任何一处会让今天能编译的宿主编译不过——
 但如果你断言工具输出文本，或者靠猜去读 `err.unpersisted` / `err.cause`，你会**看见**差别，而且应该看见：
 那些读法从此是「有定义的」，不再是「读过源码才成立」。下面某一节描述的不是你的代码路径，那节对你就是
 空操作；完整清单仍在 `CHANGELOG.md`。
@@ -20,6 +20,7 @@
 | `readFile` 改写你入参时给 `[参数校正：…]`，读到末尾给 `[已到末尾：…]` 而不是空串（§5） | 要——只要你断言 `readFile` 输出 |
 | `rg` / `grep` / `searchText`：搜索根不存在是**错误文本**而不再是 `（无命中）`；`rg`/`grep` 的弃用提示按**本次**语义给 mode（§6） | 要——只要你比较工具输出文本 |
 | tarball 现在随包 `test/helpers/tmp.js`；门禁侧落地三项（§7） | 不用——只关乎打包与门禁 |
+| `finalGuard` 现在除原有 7 键外还拿到 10 个加法事实（`cwd`、`runId`、`filesWritten`、`toolStats`、`taskBrief`、`selfReport`、`usage`、`elapsedMs`、`attempt`、`guardBudget`）（§8） | 不用——纯加法；只有你原本在重解析 `messages` 或拿 `finalText` 猜结论时才要动手 |
 
 一句话版本：**以前要靠你推断的事实，现在写在明面上了。** 引擎没有改它**做**什么，改的是它**说**什么——
 状态文件里、错误对象上，以及模型会读到的那几处工具输出。
@@ -174,15 +175,76 @@ tree/marker 那一刀的窄化、以及读侧诚实性那一刀（`editDiffTrunc
 豁免机制（调用行或紧邻上一行写 `test-hygiene-exempt: <理由>`，理由必填）；当前树上**零豁免**。这是仓库
 卫生，永不在你的宿主里跑。
 
-## 8. 自检
+## 8. `finalGuard` 拿到的不再只是 transcript，而是这个 run 的事实（issue #386）
+
+**现象。** guard 回调是引擎里唯一**有牙**的复核——它能把一个声称变成 `verified`，也能逼一次 `revise`
+并在重试上限处把终局原因改写成 `final_guard_unverified`。可它的载荷一直只有 7 个键
+（`finalText`、`findings`、`messages`、`round`、`rounds`、`signal`、`termination`）。验收决策要的那些
+事实——写了哪些文件、哪些工具跑过几次失败几次、任务到底是什么、模型自报了什么、这个 run 花了多少、
+这是第几次 guard 调用——一项都不在里面。于是宿主要么去重解析 `messages`（玩具 run 611 字节，真实 run
+几十 KB 到 MB），要么直接拿 `finalText` 打分。
+
+**新增了什么。** 10 个加法键，每个都只在引擎真读得到那份事实时才写（缺席 = 「没探到」，绝不用
+`null`/`0`/`""` 冒充）：
+
+| 键 | 给你什么 | 上限 |
+|---|---|---|
+| `cwd` | 宿主的 `cwd`，原样——新选项 `runToolLoop({ cwd })`，只透传 | 无 |
+| `runId` | 宿主的 `runId`，原样 | 无 |
+| `filesWritten` | `[{ path, round }]`——本 run 记录的写工具调用 | 最后 50 条（`filesWrittenTruncated`） |
+| `toolStats` | `{ [工具名]: { calls, failures } }`，**plain object** | 前 40 个（`toolStatsTruncated`） |
+| `taskBrief` | judge 与收尾看到的那份任务简报 | 2000 码点（`taskBriefTruncated`） |
+| `selfReport` | 模型最后一次**归一化后**的 wrap-up：`{ done, summary, output, findings }` | `summary`/`output` 各 2000 |
+| `usage` | run 累计 usage | 无 |
+| `elapsedMs` | 从 loop 起算的墙钟毫秒 | 无 |
+| `attempt` | 第几次 guard 调用，1 起，跨 `revise` 单调递增 | 无 |
+| `guardBudget` | 本次生效的 `finalGuardMaxRetries` | 无 |
+
+完整表格、截断标记与缺席语义在契约里：`### `finalGuard` 载荷：既有 7 键 + 10 个加法事实（issue #386）`
+（`docs/host-consumer-contract_cn.md`）。
+
+**怎么用它做机器判据的验收。** 三种以前做不到的形状：
+
+1. **有文件才算数。** 只在交付物存在**且**内容对得上时才 accept——`fs.statSync(path.join(payload.cwd, 期望))`
+   ——并用 `payload.filesWritten` 把「模型压根没试着写」与「写了但写错」区分开；`attempt` 再告诉你手上这份是
+   第一次声称还是 `revise` 之后的第 N 次。
+2. **声称对证据。** `payload.selfReport.findings` 与 `payload.findings` 是**同一个对象**：模型声明的每个
+   `label -> value` 都能和你自己算出来的值逐条对账。信封什么都没声明时两边都没有该键——那是「模型跳过了声明
+   步骤」，不等于「没有可核验的值」。
+3. **成本与重试记账。** `payload.usage` + `payload.elapsedMs` + `payload.attempt` 让宿主不必给 provider 埋点
+   就能记下每次 guard 往返的价钱（每次 `revise` 就是一次额外的模型往返），`payload.toolStats` 给出每个工具的
+   失败比例，用来识别「这个 run 在原地打转」。
+
+**这一版**没有**消除的三个坑，信任这些键之前先读一遍。**
+
+- **`finalText` 仍然不是证据。** 只看 `finalText` 非空就 accept 的 guard，会为一个交付物根本不存在的 run 返回
+  `verified`。探针把这个反例做成了场景（`S6`），旁边就是查磁盘的那个 guard：同一份撒谎脚本在 `attempt: 1`
+  被抓住、`attempt: 2` 被补救。
+- **`filesWritten[].path` 是摘要参数的 40 码点前缀，且不带截断标记。** 它来自 judge 的时间线
+  （`summarizeArgument`（`src/reflection/judge.js`）），长路径会被静默截短。当提示用；权威路径是 `messages`
+  里的 tool_result，或者你自己在 `cwd` 下 stat 的那个文件。
+- **`cwd` 引擎从不解释。** 不 `chdir`、不校验存在性、不拼路径——它只是一条透传，让你的 guard 不必通过旁路
+  才能知道工作目录。传非字符串会抛 `TypeError: cwd must be a string`。
+
+**不用花一个 token 就能验证。** `node scripts/final-guard-probe.mjs`（也可 `npm run check:final-guard-probe`）
+用脚本化的假 provider 驱动整个面：payload 键与逐键字节、假完成 → `revise` → 补救、重试耗尽、guard 抛错、
+guard 超时、橡皮章陷阱，以及开销上限（30 轮 × 4KB 工具输出：`messages` 257,618 B vs 加法键 2,242 B =
+**0.87%**，预算 < 2%）。每个场景都**断言**；语义一动，进程就以非零退出。
+
+**要不要动手？** 不用。原有 7 键的名字、类型、顺序、取值不变；裁决语义（`accept` / `skip` / `revise` /
+重试上限 / fail-closed）一字未动。如果你原本在重解析 `messages` 去捞上面那些事实，那段代码可以删了——
+这正是本切片的意义。
+
+## 9. 自检
 
 ```bash
-npm test                       # 1,867 tests，0 失败（1,858 通过 + 9 skipped）
+npm test                       # 1,881 tests，0 失败（1,872 通过 + 9 skipped）
 npm run check:docs && npm run check:docs:strict
+npm run check:final-guard-probe # 离线、零模型调用；断言 finalGuard 的载荷面
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件
 ```
 
-对你的宿主，升级前有四个问题值得用测试回答：
+对你的宿主，升级前有五个问题值得用测试回答：
 
 1. **状态文件。** 造一个削减账超过 32 条的 run：`compactionStatsWindow.total` 等于全量条数、
    `dropped === total − 32`，并且**旧**状态文件（没有窗口键）照旧 validate、照旧可续跑。
@@ -193,15 +255,19 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    `rg { pattern: "x", path: "nope" }` → 错误文本，不是 `（无命中）`。
 4. **随包套件。** 把 tarball 装进一次性项目并跑 `erix-agent/contract-tests`——不许在 `../helpers/tmp.js`
    上失败。
+5. **guard 载荷。** 给 `runToolLoop` 传 `cwd`，在你的 guard 里把整个 payload 记下来，并断言：强制一次
+   `revise` 时 `attempt` 递增、`selfReport.findings === findings`、你的 accept 路径仍然会拒掉一个交付物
+   缺失的 run（§8 的 `S6` 反例）。
 
-## 9. 没变的
+## 10. 没变的
 
 没有 store 方法签名、没有返回类型、没有选项名、没有导出、没有记录种类、没有消息字段、没有终止原因、
 没有错误码搬家，运行时依赖仍是零。`store.load()` 的形状与 0.23.0 一致。`deterministic.compactionStats`
-仍是最后 32 条。judge 决策面、final guard、续跑路径一字未动。整个发布里唯一**行为**变化是「搜索根不存在
+仍是最后 32 条。judge 决策面与续跑路径一字未动；final guard 的**裁决**语义也一字未动——它的载荷多了几个加法键（§8），
+那是信息，不是新规则。整个发布里唯一**行为**变化是「搜索根不存在
 返回错误文本而不是 `（无命中）`」——而那是修一次假阴性，不是新规则。
 
-## 10. 迁移配方
+## 11. 迁移配方
 
 1. 如果你读 `<runId>.state.json` 的削减账，改读 `compactionStatsWindow.total`（与 `dropped`），别再数数组；
    把键的缺席理解成「没有统计」，而不是「零」。
@@ -212,3 +278,6 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    能断言 marker 的**存在**就别断言它的逐字内容。
 5. 拿新文本重跑你自己那条「模型当时看见了什么」的测试——它们每一处现在说的都是真实情况，这正是本次发布
    的全部意义。
+6. 删掉你 `finalGuard` 里为了捞「写了哪些文件 / 工具计数 / 任务简报 / 模型自报 / usage / 耗时」而做的
+   `messages` 重解析：改读 `filesWritten`、`toolStats`、`taskBrief`、`selfReport`、`usage`、`elapsedMs`（§8）。
+   `messages` 只留给你读工具结果的**内容**。

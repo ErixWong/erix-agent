@@ -371,6 +371,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   persistence?:"none"|"required", // Defaults to required with a store and none without one.
  *   diagnostics?: {error:(event:object)=>void|Promise<void>},
  *   runId?: string,
+ *   cwd?: string, // issue #386: the host's working directory. The engine never uses it (no chdir, no existence check, no path joins) — it is passed through to the `finalGuard` payload's `cwd` key only, and the key is absent when the host did not pass one.
  *   resume?: boolean,
  *   onRound?: (record:object) => void,      // 观察者（issue #173 PR-B）：抛错/rejected Promise 均被隔离
  *   onJudge?:(info:JudgeEvent) => void,     // 观察者（issue #173 PR-B）：抛错被隔离
@@ -528,6 +529,7 @@ export async function runToolLoop(options) {
     store,
     persistence,
     runId,
+    cwd,
     resume = false,
     onRound,
     onJudge,
@@ -614,6 +616,12 @@ export async function runToolLoop(options) {
   const persistenceMode = persistence ?? (store === undefined ? "none" : "required");
   if (persistenceMode !== "none" && persistenceMode !== "required") {
     throw new TypeError('persistence must be "none" or "required"');
+  }
+  // issue #386 切片 1：`cwd` 是**纯透传**选项（只进 `finalGuard` payload），所以这里只校类型。
+  // 引擎不解释它：不 chdir、不校验目录存在、不把它拼进任何路径。`undefined`（未提供）与
+  // `""`（提供了空串）必须可区分——缺省时 payload 里根本不写 `cwd` 键。
+  if (cwd !== undefined && typeof cwd !== "string") {
+    throw new TypeError("cwd must be a string");
   }
   // 输出卫生：档案在 round record（toolOutputs）里，必须有 store 落盘，否则 stub 就是纯丢失。
   if (outputHygiene !== undefined && outputHygiene !== false
@@ -1702,6 +1710,10 @@ export async function runToolLoop(options) {
   // cacheRead/cacheWrite；usage 与 makeResult 交出的是同一个对象）。
   runLoopState.readLoopPayload = () => ({ usage, rounds: runLoopState.rounds, finalText });
   let declaredFindings;
+  // issue #386 切片 1：模型最后一次 wrap-up 对象（**已归一化**的那一份，不重新解析）。
+  // 与 `declaredFindings` 永远在同一处赋值（`wrapupJson` / `normalizedWrapup` / 强制收尾三处），
+  // 所以 `finalGuard` payload 的 `selfReport` 与 `findings` 是同源的。
+  let selfReport;
   let forcedFinal = false;
   let lastAssistantContent = [];
   const finalGuardRetryLimit = Number.isSafeInteger(finalGuardMaxRetries)
@@ -2422,6 +2434,22 @@ export async function runToolLoop(options) {
     },
     set declaredFindings(value) {
       declaredFindings = value;
+    },
+    // issue #386 切片 1：`finalGuard` payload 的加法键读取口（全部读引擎**既有**状态，零新采集）。
+    cwd,
+    runId,
+    taskBrief,
+    toolStats,
+    elapsedMs,
+    finalGuardRetryLimit,
+    get filesWritten() {
+      return governorState.filesWritten;
+    },
+    get selfReport() {
+      return selfReport;
+    },
+    set selfReport(value) {
+      selfReport = value;
     },
     get rounds() {
       return runLoopState.rounds;
@@ -3313,6 +3341,8 @@ export async function runToolLoop(options) {
       : null;
     const parsedSummary = parseL1Summary(responseText);
     declaredFindings = wrapupJson?.findings;
+    // issue #386：自报对象与 `declaredFindings` 同源同刻（`null` 就是不写该键）。
+    selfReport = wrapupJson ?? undefined;
     let roundSummary = wrapupJson === null
       ? parsedSummary.summary
       : wrapupJson.summary;
@@ -3516,6 +3546,9 @@ export async function runToolLoop(options) {
     if (normalizedWrapup?.findings !== undefined) {
       declaredFindings = normalizedWrapup.findings;
     }
+    // issue #386：归一化产出的那一份才是「模型自报」的可读版本（LLM 归一化只许搬运，不改写），
+    // 所以自报对象换成它；`findings` 仍以 `declaredFindings` 为准（上面那条 `if` 的语义没动）。
+    if (normalizedWrapup !== null) selfReport = normalizedWrapup;
     // 失忆兑底：超过 5 轮后模型若输出欢迎语（误以为新会话），注入任务提醒并继续
     // （上下文折叠可能让模型丢失任务感；此处把主线拉回，避免空转）
     const memoryLossDetected = budgetRounds > 5

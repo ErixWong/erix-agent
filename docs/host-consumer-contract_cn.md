@@ -25,7 +25,7 @@ completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
-toolContext, store, persistence, runId, resume, onRound, onJudge,
+toolContext, store, persistence, runId, cwd, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
 ```
@@ -82,7 +82,7 @@ executeTool({ id, name, input, context, signal })
 | `context.channel` | 额外字段 | 引擎防护点 |
 |---|---|---|
 | `onEvent` | `type`，事件自带 `round` 时再带 `round` | `emitEvent`（`src/loop/orchestrator.js`） |
-| `onEvent`（启动期诊断） | `type: "model_metadata_missing"`，或 `type: "persistence_capability_degraded"` 加 `method` | `notifyCapabilitySkipped` / `notifyModelMetadataMissing` 里的本地防护（`src/loop/orchestrator.js:916-969`）：这两条路径在 `emitEvent` 定义之前就触发，因此直调 `onEvent` |
+| `onEvent`（启动期诊断） | `type: "model_metadata_missing"`，或 `type: "persistence_capability_degraded"` 加 `method` | `notifyCapabilitySkipped` / `notifyModelMetadataMissing` 里的本地防护（`src/loop/orchestrator.js`）：这两条路径在 `emitEvent` 定义之前就触发，因此直调 `onEvent` |
 | `onRound` | `round` | `src/loop/orchestrator.js` |
 | `onToolResult` | `toolName`、`round` | `src/loop/run-snapshot-executor.js:266-294` |
 | `onJudge` | `round`、`kind` | `emitJudge`（`src/loop/orchestrator.js`） |
@@ -1026,7 +1026,7 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
 | `verified` | 已配置的 guard 接受了一份终答 | —（无 reason 字段） | `0` |
 | `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js`）；CLI guard 的 `no_capture_evidence` / `no_extractable_candidates`（`bin/final-guard.js:86,89`） | `4` |
 | `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js`）、`max_retries`（`3547-3551`） | `2` |
-| `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`——两者都由 `errorReason`（`src/loop/termination.js:173-176`）决出 | `3` |
+| `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`——两者都由 `errorReason`（`src/loop/termination.js`）决出 | `3` |
 
 `exitCodeForVerification` 对其他任何 status（包括根本没有 `verification` 对象）都返回
 `0`，所以**退出码 0 本身不是已验答案的证明**——请读 `verification.status`。抛错的 run
@@ -1263,6 +1263,48 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 引擎没有独立的“交付认证”或“完成认证”层。它报告轮数、工具、文件调用、归档、终止与核验
 等事实。任务是否完成、交付物是否满足要求、能否自动进入下游，仍由宿主、测试系统或人工
 审核决定。
+
+### `finalGuard` 载荷：既有 7 键 + 10 个加法事实（issue #386）
+
+payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的 7 个键
+（`finalText`、`findings`、`messages`、`round`、`rounds`、`signal`、`termination`）是原有契约：
+名字、类型、**顺序**与取值一律不变。其后是 10 个**加法**键，每个都只在引擎真读得到那份事实时才写
+——**缺席就是「没探到 / 没提供」的信号**，绝不用 `null`、`0`、`""` 或 `{}` 冒充：
+
+| 键 | 类型 | 含义 | 上限 |
+|---|---|---|---|
+| `cwd` | string | 宿主传给 `runToolLoop` 的 `cwd`，原样 | 无——引擎从不解释它（不 `chdir`、不校验存在性、不拼路径） |
+| `runId` | string | 宿主传的 `runId`，原样 | 无 |
+| `filesWritten` | `[{ path, round }]` | run 的时间线台账里记录的写工具调用 | **最后 50 条**；更早的被丢掉并置 `filesWrittenTruncated: true` |
+| `toolStats` | `{ [工具名]: { calls, failures } }` | run 的工具计数，**plain object**（`JSON.stringify(new Map())` 是 `{}`，直接交 `Map` 你只会读到空对象） | 按 `calls` 取**前 40** 个工具名；`toolStatsTruncated: true` |
+| `taskBrief` | string | 本次 run 由 `resolveTaskBrief`（`src/loop/task-brief.js`）产出、judge 与收尾看到的那份任务简报 | 2000 码点；`taskBriefTruncated: true` |
+| `selfReport` | `{ done, summary, output, findings }` | 模型**最后一次归一化后**的 wrap-up 信封（跑过归一化就用归一化那份；绝不重新解析散文） | `summary` 与 `output` 各 2000 码点；`selfReportSummaryTruncated` / `selfReportOutputTruncated` |
+| `usage` | `{ input_tokens, output_tokens, cacheRead?, cacheWrite? }` | run 累计 usage，与结果里那份是同一份 | 无 |
+| `elapsedMs` | number | 从 loop 起算的墙钟毫秒 | 无 |
+| `attempt` | number | 这是第几次 guard 调用，**1 起且单调递增**（跨 `revise` 重试） | 无 |
+| `guardBudget` | number | 本次 run 生效的 `finalGuardMaxRetries` | 无 |
+
+这个面有四条性质必须写明，因为它们最容易读错：
+
+- **`selfReport.findings` 与 `findings` 是同一个对象。** 不存在「`findings` 有值而 `selfReport`
+  缺该键」的路径：组装时把 payload 自己的 `findings` 注进 `selfReport`，两者不可能分叉。信封没声明
+  任何值时，**两边都没有该键**。
+- **`filesWritten[].path` 是摘要参数，不是规范路径。** 它来自 judge 的时间线（`summarizeArgument`
+  （`src/reflection/judge.js`）），被截到 40 个码点且**不带任何截断标记**。把它当提示（「这个 run
+  写过一条长这样的路径」），核事实请用文件系统、`messages` 里的 tool_result 或 `cwd`；别拿它当 join 键。
+- **`filesWritten` 与 `toolStats` 在任何一次 `runToolLoop` 里都在场**（空数组 / 空对象的意思是
+  「这个 run 什么都没记」——这本身就是事实）。`cwd`、`runId`、`taskBrief`、`selfReport` 只在真有
+  东西可报时在场。
+- **开销有上限且已实测。** `node scripts/final-guard-probe.mjs` 离线跑「30 轮 × 4KB 工具输出」：
+  `messages` 257,618 字节、加法键 2,242 字节 = **0.87%**，预算上限是 < 2%。所以宿主可以整包落盘/入队
+  而不用怕体积，guard 也可以读事实而不是重解析 transcript（小 run 的 `messages` 是 611 字节，真实 run
+  几十 KB 到 MB）。
+
+**权威地位的前提：`verified` 只和 guard 手里的证据一样硬。** `accept` 必须建立在**独立事实**上——磁盘上
+的文件、命令的退出码、store 里的一行——绝不是「`finalText` 非空」。探针把这个反例钉成了一个场景（`S6`）：
+只看 `finalText.trim() !== ""` 的 guard，会为一个交付物**根本不存在**的 run 返回 `verified`；而同一份撒谎
+脚本交给查磁盘的 guard，在 `attempt: 1` 被抓住、`attempt: 2` 被补救。两半都在
+`node scripts/final-guard-probe.mjs` 里、零模型调用可复现——不是口口相传的经验。
 
 ### 宿主侧的 guard 接线与截止线余量（issue #314）
 

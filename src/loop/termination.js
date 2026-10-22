@@ -99,17 +99,178 @@ export function terminationReasonForAction(action, continuationExhausted) {
   return "end_turn";
 }
 
+// ── issue #386 切片 1：finalGuard payload 的富化（**纯加法**）───────────────────────────────
+// 背景：guard 是引擎里唯一**有牙**的复核（它能改写终局），但它从前只拿到 7 个键
+// （finalText / findings / messages / round / rounds / signal / termination），验收要用的
+// 事实一项都没有，宿主只能去重解析 `messages`（小 run 611 字节，真实 run 几十 KB~MB）。
+//
+// 纪律（三条，缺一条就退化成假数据）：
+//   1. 每个新键都来自引擎**既有**状态（零新采集），现有 7 个键的名字/类型/取值逐字不变；
+//   2. 探不到就**不写该键**（不写假值、不写空壳）：`undefined` / 非预期类型一律跳过；
+//   3. 每个可变长键都有明确上限，超限时截断并在**同键旁**留一个可判定的 `…Truncated:true`。
+// 不改任何裁决语义：本模块只多交事实，accept/skip/revise 的判定与终局 reason 一字未动。
+
+/** `finalGuard` payload 各可变长键的上限（超限截断 + 截断标记，见 `buildFinalGuardPayload`）。
+ *
+ * 上限不是审美：`messages` 才是 payload 的字节大头（30 轮 × 4KB 工具输出 ≈ 130KB），新键必须
+ * 小到可以忽略（探针 `scripts/final-guard-probe.mjs` 把「新键总字节 < messages 字节的 2%」
+ * 当断言跑）。数值口径：`filesWritten` / `toolStats` 取**最新/最活跃**的那一头（旧尾巴丢掉），
+ * `taskBrief` / `selfReport` 的文本按 Unicode 码点截断（与 `capTaskBrief` 同口径，不会切碎代理对）。
+ */
+export const FINAL_GUARD_PAYLOAD_LIMITS = Object.freeze({
+  filesWritten: 50,
+  toolStats: 40,
+  taskBrief: 2000,
+  selfReportText: 2000,
+});
+
+/** 按**码点**截断（不按 UTF-16 码元：那会把 emoji/生僻字切成半个）。
+ *  @returns {{text:string, truncated:boolean}} */
+function capCodePoints(value, limit) {
+  const chars = Array.from(String(value ?? ""));
+  if (chars.length <= limit) return { text: chars.join(""), truncated: false };
+  return { text: chars.slice(0, limit).join(""), truncated: true };
+}
+
+/** `Map` → plain object（`JSON.stringify(new Map())` 是 `{}`，宿主会读到空对象）。
+ *  保留**调用次数最多**的 `limit` 个工具（calls 降序、同数按名字升序 ⇒ 可复现）；
+ *  字段只搬引擎已有的 `calls` / `failures`，不新造统计。
+ *  @returns {{stats:Record<string,{calls:number,failures:number}>, truncated:boolean}|null} */
+function plainToolStats(toolStats, limit) {
+  if (!(toolStats instanceof Map)) return null;
+  const rows = [];
+  for (const [name, value] of toolStats) {
+    rows.push({
+      name: String(name),
+      calls: Number.isFinite(value?.calls) ? value.calls : 0,
+      failures: Number.isFinite(value?.failures) ? value.failures : 0,
+    });
+  }
+  rows.sort((a, b) => b.calls - a.calls || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const kept = rows.slice(0, limit);
+  /** @type {Record<string, {calls:number, failures:number}>} */
+  const stats = {};
+  for (const row of kept) stats[row.name] = { calls: row.calls, failures: row.failures };
+  return { stats, truncated: kept.length < rows.length };
+}
+
+/** 写文件台账 → `[{path, round}]`，只留**最后** `limit` 条（= 最新；`governorState.filesWritten`
+ *  本来就是 append 顺序）。`round` 缺失时写 `null` 而不是编一个 0（0 是一个合法轮号，编不得）。
+ *  @returns {{files:{path:string,round:number|null}[], truncated:boolean}|null} */
+function plainFilesWritten(filesWritten, limit) {
+  if (!Array.isArray(filesWritten)) return null;
+  const rows = [];
+  for (const entry of filesWritten) {
+    if (entry === null || typeof entry !== "object") continue;
+    rows.push({
+      path: String(entry.path ?? ""),
+      round: Number.isFinite(entry.round) ? entry.round : null,
+    });
+  }
+  const kept = rows.slice(Math.max(0, rows.length - limit));
+  return { files: kept, truncated: kept.length < rows.length };
+}
+
+/** run 累计 usage → plain object（只搬引擎自己写的四个计数，不做换算、不补 0）。 */
+function plainUsage(usage) {
+  if (usage === null || typeof usage !== "object") return undefined;
+  const out = {};
+  for (const key of ["input_tokens", "output_tokens", "cacheRead", "cacheWrite"]) {
+    if (Number.isFinite(usage[key])) out[key] = usage[key];
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** 模型最后一次 wrap-up 对象（**已归一化**的那一份，不重新解析）→ JSON-safe 的 `{done,summary,output,findings}`。
+ *
+ *  `findings` **不是**从这里原样搬的：它取 `ctx.declaredFindings`（即 payload 的 `findings` 键），
+ *  两者同源 ⇒ 永远不会出现「`findings` 有值而 `selfReport` 缺该键」的分裂。
+ *  @returns {{report:object, summaryTruncated:boolean, outputTruncated:boolean}|null} */
+function plainSelfReport(raw, findings, limit) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const summary = capCodePoints(raw.summary, limit);
+  const output = capCodePoints(raw.output, limit);
+  const report = { done: raw.done === true, summary: summary.text, output: output.text };
+  if (findings !== undefined) report.findings = findings;
+  return {
+    report,
+    summaryTruncated: summary.truncated,
+    outputTruncated: output.truncated,
+  };
+}
+
+/**
+ * 组装 `finalGuard` 的 payload。
+ *
+ * 前 7 个键（`finalText` / `findings` / `messages` / `round` / `rounds` / `signal` / `termination`）
+ * 是既有契约，名字、类型、取值与顺序**逐字不变**（`test/loop-final-guard.test.js` 钉住）。
+ * 其后全是 issue #386 的加法键，每个都「探不到就不写」。
+ *
+ * @param {object} ctx 引擎侧终局上下文（`createTerminationManager` 的入参）
+ * @param {string} reason 终局 reason
+ * @param {string|undefined} detail 终局 detail
+ * @param {number} attempt 第几次 guard 调用（1 起，单调递增）
+ * @returns {object} 可直接 `JSON.stringify` 的 payload（无 Map、无函数、无循环引用、无 Error）
+ */
+export function buildFinalGuardPayload(ctx, reason, detail, attempt) {
+  const payload = {
+    finalText: ctx.finalText,
+    findings: ctx.declaredFindings,
+    messages: cloneState(ctx.messages),
+    round: ctx.rounds,
+    rounds: ctx.rounds,
+    signal: ctx.toolSignal,
+    termination: makeTermination(reason, detail),
+  };
+  // ── 以下为 issue #386 加法键。顺序固定，便于宿主与探针逐键对账。
+  if (typeof ctx.cwd === "string") payload.cwd = ctx.cwd;
+  if (typeof ctx.runId === "string") payload.runId = ctx.runId;
+  const files = plainFilesWritten(ctx.filesWritten, FINAL_GUARD_PAYLOAD_LIMITS.filesWritten);
+  if (files !== null) {
+    payload.filesWritten = files.files;
+    if (files.truncated) payload.filesWrittenTruncated = true;
+  }
+  const stats = plainToolStats(ctx.toolStats, FINAL_GUARD_PAYLOAD_LIMITS.toolStats);
+  if (stats !== null) {
+    payload.toolStats = stats.stats;
+    if (stats.truncated) payload.toolStatsTruncated = true;
+  }
+  if (typeof ctx.taskBrief === "string" && ctx.taskBrief !== "") {
+    const brief = capCodePoints(ctx.taskBrief, FINAL_GUARD_PAYLOAD_LIMITS.taskBrief);
+    payload.taskBrief = brief.text;
+    if (brief.truncated) payload.taskBriefTruncated = true;
+  }
+  const selfReport = plainSelfReport(
+    ctx.selfReport,
+    ctx.declaredFindings,
+    FINAL_GUARD_PAYLOAD_LIMITS.selfReportText,
+  );
+  if (selfReport !== null) {
+    payload.selfReport = selfReport.report;
+    if (selfReport.summaryTruncated) payload.selfReportSummaryTruncated = true;
+    if (selfReport.outputTruncated) payload.selfReportOutputTruncated = true;
+  }
+  const usage = plainUsage(ctx.usage);
+  if (usage !== undefined) payload.usage = usage;
+  if (typeof ctx.elapsedMs === "function") {
+    const elapsed = ctx.elapsedMs();
+    if (Number.isFinite(elapsed)) payload.elapsedMs = elapsed;
+  }
+  if (Number.isSafeInteger(attempt) && attempt > 0) payload.attempt = attempt;
+  if (Number.isSafeInteger(ctx.finalGuardRetryLimit)) {
+    payload.guardBudget = ctx.finalGuardRetryLimit;
+  }
+  return payload;
+}
+
 export function createTerminationManager(ctx) {
+  // issue #386：`attempt` 是「这是第几次 guard 调用」（1 起，单调递增）。计数器放在本模块的闭包里
+  // 而不是 `guardMetrics`：后者是**结果**计数（verified/skipped/revised/unverified/guard_error），
+  // 一个 run 里多次 revise 会让它们分散增长，反推不出调用序号。
+  let guardAttempt = 0;
   const callFinalGuard = async (reason, detail) => {
-    const payload = {
-      finalText: ctx.finalText,
-      findings: ctx.declaredFindings,
-      messages: cloneState(ctx.messages),
-      round: ctx.rounds,
-      rounds: ctx.rounds,
-      signal: ctx.toolSignal,
-      termination: makeTermination(reason, detail),
-    };
+    guardAttempt += 1;
+    const payload = buildFinalGuardPayload(ctx, reason, detail, guardAttempt);
     let timeoutId;
     try {
       const finalGuard = ctx.finalGuard;
@@ -251,6 +412,9 @@ export function createTerminationManager(ctx) {
       ? responseText
       : wrapup.output || wrapup.summary;
     ctx.declaredFindings = wrapup?.findings;
+    // issue #386：强制收尾同样产出一份 wrap-up（与 `declaredFindings` 同源、同一时刻），
+    // 所以自报对象也要跟着换——否则 guard 拿到的是收尾**之前**那份自报，甚至没有。
+    ctx.selfReport = wrapup ?? undefined;
     ctx.forcedFinal = true;
     const emitEvent = ctx.emitEvent;
     emitEvent({ type: "forced_final", round: ctx.rounds, reason });

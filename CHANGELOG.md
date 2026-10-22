@@ -3,6 +3,21 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Added
+
+- **`finalGuard` 的载荷从 7 键富化到「7 键 + 10 个加法事实」，并新增只透传的 `runToolLoop` 选项 `cwd`（issue #386 切片 1；`src/loop/termination.js` 的 `buildFinalGuardPayload` / `callFinalGuard`、`src/loop/orchestrator.js`、`src/loop/option-normalization.js`；零依赖、零新采集、**不改任何裁决语义**）。**
+  - **现场**：guard 是引擎里唯一**有牙**的复核（实测能抓假完成 → `revise` → 模型补做 → `verified`；持续 `revise` 则把终局改写成 `final_guard_unverified`），但它从前只拿到 `finalText` / `findings` / `messages` / `round` / `rounds` / `signal` / `termination`。验收要用的事实**一项都没有**（实测 9 项探测全 false），宿主只能去重解析 `messages`（小 run 611 字节，真实 run 几十 KB~MB），而引擎**根本没有 `cwd` 概念**（`runToolLoop({cwd})` 直接抛 `TypeError: unknown runToolLoop option: "cwd"`）。
+  - **新增的 10 个键**（每个都来自引擎**既有**状态，探不到就**不写该键**，不写 `null`/`0`/`""` 这类假值）：`cwd`、`runId`、`filesWritten`（`[{path, round}]`）、`toolStats`（**plain object**，`JSON.stringify(new Map())` 是 `{}` 所以必须转）、`taskBrief`、`selfReport`（模型最后一次**已归一化**的 wrap-up）、`usage`、`elapsedMs`、`attempt`（第几次 guard 调用，1 起单调递增）、`guardBudget`（`finalGuardMaxRetries`）。**既有 7 键的名字、类型、取值与顺序逐字不变**（前 7 个位置有测试逐值钉住）。
+  - **上限与可判定截断标记**：`filesWritten` 留**最后** 50 条（`filesWrittenTruncated`）、`toolStats` 留 `calls` 最多的 40 个工具（`toolStatsTruncated`）、`taskBrief` 2000 码点（`taskBriefTruncated`）、`selfReport` 的 `summary`/`output` 各 2000 码点（`selfReportSummaryTruncated` / `selfReportOutputTruncated`）。上限常量为导出的 `FINAL_GUARD_PAYLOAD_LIMITS`。
+  - **`cwd` 只透传**：白名单追加（61 项）、`runToolLoop` 解构 + 只校类型（非 string 且非 `undefined` ⇒ `TypeError: cwd must be a string`）；引擎不 `chdir`、不校验存在性、不读盘、不拼路径。缺省时 payload 里**没有该键**，`""`（提供了空串）与缺省可区分。
+  - **同源保证**：`selfReport.findings` 直接取 payload 自己的 `findings`（同一个对象），结构上不可能出现「`findings` 有值但 `selfReport` 缺键」；三处赋值点（`wrapupJson` / LLM 归一化 / 强制收尾）同步维护。
+  - **开销实测**（新增探针，30 轮 × 4KB 工具输出）：`messages` 257,618 字节 vs 加法键 2,242 字节 = **0.87%**，预算 < 2%。
+  - **新增探针脚本** `scripts/final-guard-probe.mjs`（`npm run check:final-guard-probe`）：零 LLM 成本（`test/helpers/fake-provider.js`）、离线、**断言式**（语义一变就非零退出）。7 个场景：payload 面（键名/逐键字节/9 项需求命中/JSON 往返）、假完成 → `revise` → 补救（`attempt` 1→2、`filesWritten` 0→1、磁盘上真有文件）、`revise` 耗尽（`final_guard_unverified` / `unverified:max_retries`）、guard 抛错、guard 超时、天真 guard 橡皮章（文件不存在却 `verified` —— 验收判据必须是独立事实）、新键体积开销。`--json` 把 results 打到 stdout；结果**不入库**（判据在脚本里，落盘快照只会腐烂）。
+  - **测试**：新增 `test/loop-final-guard-payload.test.js`（10 格：既有 7 键逐值不变、10 个加法键形状 + `toolStats` 是 plain object 且 JSON 里有真实计数、四处上限与截断标记（直测组装函数，因为公开入口造不出超限输入）、`cwd` 三态 + 5 种非字符串、`attempt` 单调 + `guardBudget`、`selfReport`/`findings` 同源、「探不到就不写」）。反向证 4 次（删 `attempt` / `cwd` / `selfReport.findings` / `filesWritten` 截断标记的写入点 ⇒ 分别 4 / 2 / 3 / 1 格变红，`cp` + `md5sum` 逐字还原）。
+  - **文档**：契约中英新增 `### The `finalGuard` payload: 7 contract keys plus 10 additive facts (issue #386)`（键表、上限、缺席语义、`filesWritten[].path` 只是 40 码点摘要前缀、以及「`verified` 只和 guard 的证据一样硬」这条前提 + `S6` 反例）；0.24.0 中英升级指南新增 §8 并给出「机器判据验收」的三种用法与三个坑；`runToolLoop` 选项清单补 `cwd`。
+  - **如实记下的既有缺陷（本切片不修）**：`filesWritten[].path` 是 judge 时间线的 `summarizeArgument` 摘要参数，被 `MAX_COMMAND_LENGTH = 40` 截断且**不带截断标记** ⇒ 长路径只能当提示，不能当主键（探针 `S7` 把 `longest === 40` 钉住，改上限会变红）。
+  - **门禁**：`npm test` → **tests 1,881 / pass 1,872 / fail 0 / skipped 9**（改前基线 1,871 / 1,862 / 0 / 9，差值恰是新增的 10 格）；`check:syntax`、`check:docs`、`check:docs:strict`、`check:docs-examples`、`check:pack-links`、`check:tests`、`check:types`（117 = 基线）、`check:types -- --with-tools`（153 = 基线）、`docs-drift-check --self-test`、`check:release`、`final-guard-probe` 逐个 exit 0。两处连带：`test/tools/file-tools.test.js` 的 `median` 角色锚点从 `src/loop/termination.js` 换到 `bin/repl.js`（前者被本单撑大 +74%，容量 7,227 → 6,255 已掉出样本中位带，描述里的 `median 7,243` 因此一字不用改）；契约中英各两处符号锚点自带区间因行号位移而不相交 ⇒ 删区间只留符号，裸行号棘轮 136 → **132**。
+
 ## [0.24.0] - 2026-10-22
 
 ### Changed
