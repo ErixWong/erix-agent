@@ -323,7 +323,7 @@ pre-attempt snapshot before re-requesting the whole completion
 - `DEFAULT_STREAM_RECOVERY_MAX_ATTEMPTS` is **not an identifier in this
   package** (grep-verified). A `2` quoted as its value is the `retryAttempts`
   fallback at `src/loop/orchestrator.js`. The CLI's own `2` comes from
-  `ERIX_RETRY_ATTEMPTS` (`bin/cli.js:860-868`), which the CLI passes as
+  `ERIX_RETRY_ATTEMPTS` (`bin/cli.js`), which the CLI passes as
   `retry: { attempts: … }`; the **library** default stays `false`, so copying
   CLI behaviour into a host is how this number gets misattributed.
 - `partialPersistence` is durability, not retry: it commits the partial text of
@@ -1273,7 +1273,7 @@ come back `unverified`, and a `max_rounds_cap` / `stall` /
 configured, a `verified` verdict is not available to them, because a guard
 `accept` on those three reasons still terminates as `final_guard_unverified`
 (`src/loop/orchestrator.js:3529-3542`). The CLI mapping is
-`exitCodeForVerification` (`bin/cli.js:1070-1078`):
+`exitCodeForVerification` (`bin/cli.js`):
 
 | `verification.status` | Meaning | `verification.reason` seen in practice | CLI exit code |
 |---|---|---|---|

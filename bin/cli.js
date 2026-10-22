@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { join } from "node:path";
@@ -51,7 +51,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable] [--no-notes] [--no-todo] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
@@ -67,6 +67,9 @@ const HELP_TEXT = `用法：
                       前缀；名字不合此形状的 id（自取的名字、目录名含空格/中文而被哈希成 run-h-*）
                       在 -c/-r 里看不见，但仍可用 --session <完整 id> 恢复
   --dir <path>          Transcript 存档目录（chat 默认：~/.erix/transcripts）
+  --cwd <dir>           本次 run 的工作目录（默认：进程工作目录；必须是已存在的目录）。它同时是
+                       finalGuard / deliverables 判据拿到的 cwd——宿主侧的磁盘判据要靠它拼路径，
+                       不接就会拼成 "undefined/report.md"（issue #391）
   --max-rounds <n>      工具循环最大轮数（默认：64，可用 ERIX_MAX_ROUNDS 覆盖）
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 16 时启用，见 DEFAULT_REFLECTION_MIN_ROUNDS）
   --final-guard         开启终稿 provenance 核验（默认关闭）
@@ -181,6 +184,23 @@ function parseCompactionOption(name, rawValue) {
     usageError(`${name}：${error?.message ?? String(error)}`);
   }
   return undefined;
+}
+
+// issue #391 R1：`--cwd` 必须解析成**已存在的目录**（绝对化之后才算数）。它会被原样交给
+// finalGuard / deliverables 判据去拼路径（升级指南 §9 的配方就是 `path.join(cwd, "report.md")`），
+// 指到一个不存在/不是目录的地方等于让判据恒假——那正是 #391 报的事故形状（宿主的 cwd 缺席 ⇒
+// `"undefined/report.md"`）。所以在这里挡住，而不是让判据在收尾时才默默 `ok:false`。
+function parseCwdOption(rawValue) {
+  if (rawValue.trim() === "") usageError("--cwd 不能为空");
+  const resolved = path.resolve(process.cwd(), rawValue);
+  let stats;
+  try {
+    stats = statSync(resolved);
+  } catch {
+    usageError(`--cwd 必须是已存在的目录：${resolved}`);
+  }
+  if (!stats.isDirectory()) usageError(`--cwd 必须是目录：${resolved}`);
+  return resolved;
 }
 
 function resolveMaxRounds(maxRounds) {
@@ -339,6 +359,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       argument === "--config"
       || argument === "--skills-dir"
       || argument === "--session"
+      || argument === "--cwd"
       || argument === "--dir"
       || argument === "--compact-budget"
       || argument === "--compaction"
@@ -360,6 +381,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
         (argument === "--config"
           || argument === "--skills-dir"
           || argument === "--session"
+          || argument === "--cwd"
           || argument === "--dir"
           || argument === "--reflection"
           || argument === "--compaction"
@@ -381,6 +403,8 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       } else if (argument === "--session") {
         if (rawValue.trim() === "") usageError("--session 不能为空");
         options.session = rawValue;
+      } else if (argument === "--cwd") {
+        options.cwd = parseCwdOption(rawValue);
       } else if (argument === "--dir") {
         if (rawValue.trim() === "") usageError("--dir 不能为空");
         options.dir = rawValue;
@@ -427,6 +451,13 @@ export function parseChatArgs(args, cwd = process.cwd()) {
   }
   if (options.continueSession === true && options.resumePicker === true) {
     usageError("-c/--continue 与 -r 互斥");
+  }
+
+  // issue #391 R1：`--cwd` 就是「本次 run 的工作目录」⇒ 默认会话 id 也按它派生（否则会话前缀
+  // 指向进程目录、run 却跑在另一个目录，`-c` 找回的会是「另一棵树」的会话）。显式 `--session`
+  // 优先，一个字也不改。
+  if (options.cwd !== undefined && !seenOptions.has("--session")) {
+    options.session = defaultSessionId(options.cwd, { unique: true });
   }
 
   return { prompt, ...options };
@@ -604,7 +635,7 @@ async function runMcp({ configPath }) {
 }
 
 export async function runChat(options = {}) {
-  const runId = options.session ?? defaultSessionId(process.cwd(), { unique: true });
+  const runId = options.session ?? defaultSessionId(options.cwd ?? process.cwd(), { unique: true });
   const notesDir = resolveNotesDir(options.notesDir);
   // Notes scope is explicit throughout the CLI path; avoid mutating process
   // globals so concurrent runChat calls cannot restore each other's env.
@@ -633,6 +664,7 @@ async function runChatWithNotes({
   idleTimeout = DEFAULT_IDLE_TIMEOUT_SECONDS,
   session,
   sessionExplicit,
+  cwd: cwdOption,
   dir = join(homedir(), ".erix", "transcripts"),
   judgeLog,
   errorLog,
@@ -648,7 +680,7 @@ async function runChatWithNotes({
   _notesStore,
   _assemblyRoot,
 }) {
-  const cwd = process.cwd();
+  const cwd = cwdOption ?? process.cwd();
   const runId = _notesRunId ?? session ?? defaultSessionId(cwd, { unique: true });
   const explicitSession = sessionExplicit ?? session !== undefined;
   const loadedConfig = configOverride ?? await loadCliConfig({ configPath });
@@ -834,6 +866,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     diagnostics,
     runId,
     resume,
+    // issue #391 R1：`cwd` 是引擎的**纯透传**选项（只进 finalGuard/deliverables 的事实载荷）。
+    // 不接的后果不是报错而是静默恒假：升级指南 §9 的判据 `path.join(cwd, "report.md")` 会拼成
+    // `"undefined/report.md"`，每次 accept 都被闸门判成 `unverified:deliverables_failed`。
+    cwd,
     // ADR-015：notes 小抄目录经 semantic 槽位注入 run-state 块（折叠时注入，正好对准失忆点）
     ...(notesAssembler === undefined ? {} : {
       semanticStateProvider: notesAssembler.semanticStateProvider,
@@ -1053,7 +1089,9 @@ async function main(args) {
     },
     {
       home: homedir(),
-      cwd: process.cwd(),
+      // issue #391 R1：`--cwd` 就是「本次 run 的工作目录」——`-c` / `-r` 的会话发现也按它扫，
+      // 否则「在 A 目录里列 B 目录的会话」会把选中的 id 拿去跑在另一个目录上。
+      cwd: chatArgs.cwd ?? process.cwd(),
       input: process.stdin,
       output: process.stderr,
     },

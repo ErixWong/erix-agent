@@ -1161,6 +1161,10 @@ export function buildLoopOptions(input) {
     initialUserMessage: params.task,
     // 契约「#1.3 硬注意」/task 选项：判官/收尾的简报取显式 task，多轮宿主必须显式传。
     task: params.task,
+    // #391 R1：`cwd` 是引擎的**纯透传**选项（只进 finalGuard / deliverables 的事实载荷）。
+    // 本层早已有 `params.cwd`（绝对路径 + 存在性都已验），漏的只是往下传：不传的话
+    // 升级指南 §9 的判据会拼成 `"undefined/report.md"`，每次 accept 都被判 `deliverables_failed`。
+    cwd: params.cwd,
     tools: tools.tools,
     executeTool: tools.executeTool,
     maxRounds: params.maxRounds,

@@ -269,7 +269,7 @@ await provider.chat({ messages });
 
 - `DEFAULT_STREAM_RECOVERY_MAX_ATTEMPTS` **不是本包里的标识符**（grep 证真）。被当作它的
   值引用的那个 `2`，其实是 `src/loop/orchestrator.js` 的 `retryAttempts` 回落值。
-  CLI 自己的那个 `2` 来自 `ERIX_RETRY_ATTEMPTS`（`bin/cli.js:860-868`），CLI 把它作为
+  CLI 自己的那个 `2` 来自 `ERIX_RETRY_ATTEMPTS`（`bin/cli.js`），CLI 把它作为
   `retry: { attempts: … }` 传下；**库**默认仍是 `false`，所以「把 CLI 行为抄进宿主」正是
   这个数字被误归因的方式。
 - `partialPersistence` 是持久性而非重试：它提交一个将死尝试的部分文本
@@ -1019,7 +1019,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 `max_rounds_cap` / `stall` / `continuation_exhausted` 只能以 `skipped` 或 `error`
 收尾——配了 guard 之后它们拿不到 `verified`，因为 guard 对这三个 reason 返回
 `accept` 也仍然以 `final_guard_unverified` 终局（`src/loop/orchestrator.js:3529-3542`）。
-CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1070-1078`）：
+CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
 
 | `verification.status` | 含义 | 实际会看到的 `verification.reason` | CLI 退出码 |
 |---|---|---|---|

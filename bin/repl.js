@@ -691,6 +691,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         system: systemPrompt,
         ...(resume ? {} : { initialMessages: roundMessages, initialUserMessage: line }),
         maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
+        // issue #391 R1：`cwd` 是引擎的**纯透传**选项（只进 finalGuard/deliverables 的事实载荷）。
+        // repl 没有 `--cwd`：交互会话的工作目录就是进程工作目录，工具/session 派生也都用它，
+        // 再造一个「run 的 cwd 与工具的 cwd 不同」的旗标只会让磁盘判据与写入位置错位。
+        cwd,
         // 交互 REPL 不需要 judge（人在环自己判断）；chat 单次任务的默认开启规则不适用
         reflection: false,
         maxTokens: config.maxOutputTokens,
