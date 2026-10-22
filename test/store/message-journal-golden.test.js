@@ -31,11 +31,11 @@ test("261021 golden: 两个场景的 store.load() 全量行、模型可见正文
   assert.deepEqual(differences.slice(0, 20), [], `与基线夹具存在 ${String(differences.length)} 处差异`);
 });
 
-// issue #398：金样是「折叠层逐字一致」的对照，而恢复告示是基线代码**不可能产出**的新事实
+// issue #404：金样是「折叠层逐字一致」的对照，而恢复告示是基线代码**不可能产出**的新事实
 // （`2ca60bc` 上没有这条注入）⇒ 捕获侧把它逐条剥掉。这条断言把**豁免面**钉住：
 // 只有 crash-resume 那一格允许出现告示，而且**恰好两条**（账本那条 `:control:` 行 + 那次请求里的
 // 那条消息）。多一条 = 豁免在替别的漂移打掩护；少一条 = 槽位名/正文标记变了，豁免已失效。
-test("261021 golden: 恢复告示的豁免面恰是「crash-resume 的 1 行 + 1 条请求消息」（issue #398）", () => {
+test("261021 golden: 恢复告示的豁免面恰是「crash-resume 的 1 行 + 1 条请求消息」（issue #404）", () => {
   assert.deepEqual(resumeNoticeCensus, [
     { name: "single-run", stripped: 0 },
     { name: "crash-resume", stripped: 2 },

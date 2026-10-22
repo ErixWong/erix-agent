@@ -929,6 +929,49 @@ A correct pre-written `RoundRecord` must satisfy:
   lazily after a worker picks the task up — a crash between acceptance and
   pre-write would otherwise lose the turn or duplicate it.
 
+### The resumed run is told that it was resumed (issue #404)
+
+A resumed run is **not** a continuous conversation: between the two segments the process died, so some
+`tool_use` calls had no result at all, and the engine had to replay or annotate them before the next
+request. Until issue #404 the model was never told any of that — it read the engine's replay results as
+its own previous output, or re-issued a side-effecting call (`git commit`, `npm publish`, an HTTP `POST`,
+an overwrite, a PR) whose first attempt may already have landed.
+
+When — and only when — `resume: true` comes with a `store` and `runId` that actually produced a ledger,
+`restoreResume` (`src/loop/resume-manager.js`) plans **one** engine control message and the loop injects it
+**after** the restored context (and after the replayed tool results) but **before** the first request.
+The body is four lines, and every fact in it already existed in the ledger:
+
+| Line | Fact source |
+| --- | --- |
+| this is a restored run, the previous segment stopped at round N, plus the stop reason if the ledger has one | `runLoopState.rounds` and `deterministic.termination.reason` (`src/run-state.js`) |
+| which `tool_use` calls had no result at the crash (`id` + tool name + argument summary) | `pendingTrailingToolUses` (`src/messages/rounds.js`), read **before** the replay |
+| which files were written / which tools were called recently | `deterministic.filesWritten` and the governor timeline |
+| verify before acting; do not re-issue side-effecting calls blindly | static text |
+
+What a host can observe, and what it must not conclude:
+
+- **It is a message in `messages`.** Shape: `{ role: "user", content: [{ type: "text", text }], meta:
+  { source: "judge-control" } }` — the #323 marker, so judge input keeps skipping it while the main model
+  reads it. It is **not** a new payload key, and nothing is added to the `finalGuard` payload.
+- **It is journaled as an ordinary `:control:` row**, `dedupKey` `<runId>:engine:round:<n>:control:resume-notice:<fp>`,
+  where `<fp>` is a fingerprint of the body. Same facts ⇒ same key ⇒ the crash-rerun writes no second row and
+  the resumed run does not inject a second copy; different facts (e.g. the previous crash recorded
+  `termination: failed`) ⇒ a different key ⇒ one more row, and the older notice stays in the context.
+  A host that counts rows per round therefore sees **one more row than rounds** on a resumed run, exactly
+  like the judge nudge / extension / forced-final rows.
+- **`messages` grows by one.** A resumed run's first request carries one more message (and one more
+  `:control:` row) than the crashed ledger did; `round` accounting, `result.messages`, and input-token
+  counts all include it. A first (non-resumed) run is byte-for-byte unchanged.
+- **It is not a verification mechanism.** It is advice to the model, not a gate: `verification` still comes
+  from `finalGuard` / deliverables, and a resumed run with an `accept`ing guard is `verified` whether or
+  not the model acted on the notice. The engine cannot make the model verify anything — so a host whose
+  tools have side effects should still make those calls idempotent on its own side (a key, a lock, a
+  dedupe table). See the upgrade guide's “what did not change” section.
+- **It can be folded away.** The notice is the newest round, so the default `keepRounds` keeps it
+  unfolded; with an aggressive compaction configuration (e.g. `keepRounds: 0`) it can be folded into the
+  summary in the very same turn, in which case the model reads the summary and not the notice.
+
 ### Same-key payload conflicts (issue #326)
 
 An `appendRound` whose key is already persisted is a no-op **only when the

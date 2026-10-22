@@ -361,7 +361,7 @@ export async function restoreResume(ctx) {
         // 单条去重诊断（loadLatestCheckpoint 旧名也缺才走到这里），跳过崩溃现场恢复。
         ctx.notifyCapabilitySkipped?.("loadLatestRunSnapshot");
       }
-      // issue #398：恢复运行要告诉模型这是复活赛（拼装/幂等见 `src/loop/resume-notice.js`）。
+      // issue #404：恢复运行要告诉模型这是复活赛（拼装/幂等见 `src/loop/resume-notice.js`）。
       ctx.resumeNotice = planResumeNotice(ctx, records, pendingTail);
     } catch (error) {
       const fail = ctx.fail;

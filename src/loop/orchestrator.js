@@ -1561,7 +1561,7 @@ export async function runToolLoop(options) {
       ? [{ role: "user", content: [{ type: "text", text: initialUserMessage }] }]
       : [];
   let taskBriefSource = messages;
-  // issue #398（工单 BB「复活赛告示」）：`restoreResume`（`src/loop/resume-manager.js`）造好的那条告示
+  // issue #404（工单 BB「复活赛告示」）：`restoreResume`（`src/loop/resume-manager.js`）造好的那条告示
   // 先存在这里，由主循环圈前（`appendResumeTailMessages()` 之后）注入。写成**普通局部变量 + 一对
   // 访问器**（与紧邻的 `taskBriefSource` 同一个先例）：它是「本次 resume 的一次性事实」，不归
   // `runLoopState`（那里放的是要跟整个 run 走、跨 resume 有语义的格子）；注入完就清空，所以
@@ -3511,7 +3511,7 @@ export async function runToolLoop(options) {
       if (persisted) runLoopState.persistedTranscriptLength += resumeEngineText.length;
       runLoopState.resumeTranscriptStart = undefined;
     }
-    // ── issue #398（工单 BB「复活赛告示」）：恢复运行告诉模型「这是复活赛」────────────────
+    // ── issue #404（工单 BB「复活赛告示」）：恢复运行告诉模型「这是复活赛」────────────────
     // 位置：上下文重建完（`restoreResume`）、补跑结果接回之后、**宿主这次追问之前**，也就是
     // 第一次请求之前。为什么在 `appendResumeTailMessages()` 之前而不是之后：告示是「接下来这段上下文
     // 是什么」的前言，用户/宿主的真请求应该留在最后一条（模型对最后一条 user 的权重最高，且

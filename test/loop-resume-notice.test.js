@@ -1,4 +1,4 @@
-// issue #398（工单 BB「复活赛告示」）：**恢复运行要告诉模型「这是复活赛」**。
+// issue #404（工单 BB「复活赛告示」）：**恢复运行要告诉模型「这是复活赛」**。
 //
 // 本文件钉五格（工单要求「至少五格」）+ 两格附加事实：
 //   1. 上一轮带未回答 `tool_use` 的账本 ⇒ 告示逐条列出那些 `id`，且与 `pendingTrailingToolUses` 一致；
@@ -72,7 +72,7 @@ async function crashMidTool(store, runId, ids) {
 }
 
 // ── 1. 未结清的 `tool_use` 逐条列出，且与既有判据一致 ────────────────────────────────
-test("#398 格1：恢复时逐条列出崩溃现场未结清的 tool_use（id + 工具名 + 参数摘要）", async () => {
+test("#404 格1：恢复时逐条列出崩溃现场未结清的 tool_use（id + 工具名 + 参数摘要）", async () => {
   const store = createMemoryTranscriptStore();
   const runId = "bb-pending";
   await crashMidTool(store, runId, ["a", "b"]);
@@ -113,7 +113,7 @@ test("#398 格1：恢复时逐条列出崩溃现场未结清的 tool_use（id + 
 });
 
 // ── 2. 尾部已结清 ⇒ 仍然注入，但「未结清」那一节缺席 ────────────────────────────────
-test("#398 格2：尾部已结清的账本恢复时仍然注入，但「未结清调用」一节缺席", async () => {
+test("#404 格2：尾部已结清的账本恢复时仍然注入，但「未结清调用」一节缺席", async () => {
   const store = createMemoryTranscriptStore();
   const runId = "bb-settled";
   await runToolLoop({
@@ -147,7 +147,7 @@ test("#398 格2：尾部已结清的账本恢复时仍然注入，但「未结�
 });
 
 // ── 3. 非 resume ⇒ messages 与今天逐字一致（deepEqual 回归锚）────────────────────────
-test("#398 格3：首次运行（非 resume）的 messages 与今天逐字一致（多一个字都算红）", async () => {
+test("#404 格3：首次运行（非 resume）的 messages 与今天逐字一致（多一个字都算红）", async () => {
   const provider = createFakeProvider([toolTurn("t1"), textTurn("收工")]);
   const result = await runToolLoop({
     provider,
@@ -158,7 +158,7 @@ test("#398 格3：首次运行（非 resume）的 messages 与今天逐字一致
     tools,
   });
 
-  // 逐字锚：这条数组是**今天**（#398 之前）的形状，一个字段都不许变。
+  // 逐字锚：这条数组是**今天**（#404 之前）的形状，一个字段都不许变。
   assert.deepEqual(stableKeys(result.messages), [
     { role: "user", content: [{ type: "text", text: "干活" }] },
     {
@@ -194,7 +194,7 @@ test("#398 格3：首次运行（非 resume）的 messages 与今天逐字一致
 });
 
 // ── 4. 入账形状：`:control:` 行 + `load()` 折回来顺序正确 ─────────────────────────────
-test("#398 格4：入账走 `:control:` 行，`load()` 折回来告示仍在 tool_result 之后，且消息序合法", async () => {
+test("#404 格4：入账走 `:control:` 行，`load()` 折回来告示仍在 tool_result 之后，且消息序合法", async () => {
   const store = createMemoryTranscriptStore();
   const runId = "bb-ledger";
   await crashMidTool(store, runId, ["a"]);
@@ -235,7 +235,7 @@ test("#398 格4：入账走 `:control:` 行，`load()` 折回来告示仍在 too
 });
 
 // ── 5. 幂等：同内容不重复；事实变了各一条 ────────────────────────────────────────────
-test("#398 格5a：账本里已有同内容的告示 ⇒ 本次恢复不再注入第二份（同 key 幂等）", async () => {
+test("#404 格5a：账本里已有同内容的告示 ⇒ 本次恢复不再注入第二份（同 key 幂等）", async () => {
   const store = createMemoryTranscriptStore();
   const runId = "bb-idempotent";
   // 一个「没有工具、尾部已结清」的最小账本 ⇒ 告示的事实完全确定（可预先算出同一个 key）。
@@ -276,7 +276,7 @@ test("#398 格5a：账本里已有同内容的告示 ⇒ 本次恢复不再注�
   assert.equal(noticeRows(await store.load(runId)).length, 1, "账本里也必须仍只有一条");
 });
 
-test("#398 格5b：连续 resume 两次、事实变了 ⇒ 各一条，且不同内容互不顶掉（不同 key 不冲突）", async () => {
+test("#404 格5b：连续 resume 两次、事实变了 ⇒ 各一条，且不同内容互不顶掉（不同 key 不冲突）", async () => {
   const store = createMemoryTranscriptStore();
   const runId = "bb-twice";
   await crashMidTool(store, runId, ["a"]);
@@ -323,7 +323,7 @@ test("#398 格5b：连续 resume 两次、事实变了 ⇒ 各一条，且不同
 });
 
 // ── 附加：尺寸上限 + 已知边界 ───────────────────────────────────────────────────────
-test("#398 附1：告示是一条消息、一段散文预算之内（不许膨胀成第二份上下文）", () => {
+test("#404 附1：告示是一条消息、一段散文预算之内（不许膨胀成第二份上下文）", () => {
   const notice = buildResumeNotice({
     round: 12,
     stopReason: "max_rounds_cap",
@@ -342,7 +342,7 @@ test("#398 附1：告示是一条消息、一段散文预算之内（不许膨�
   assert.ok(!notice.text.includes("x".repeat(200)), "工具入参必须截断（摘要不是全文）");
 });
 
-test("#398 附2：已知边界——全折叠配置（keepRounds=0）下告示会在同一轮被折进摘要", async () => {
+test("#404 附2：已知边界——全折叠配置（keepRounds=0）下告示会在同一轮被折进摘要", async () => {
   // 这条钉的是**限制**，不是承诺：告示是最新的一轮，`keepRounds: 0` 会把整段（含它）折成摘要，
   // 于是模型看到的是摘要而不是告示原文。默认 `keepRounds = 6` 不会发生（告示在保留窗口内）。
   // 这里同时钉住「重算只发生一次」：告示让折叠输入变了 ⇒ 复用落空是**预期**，但不能每轮重算。

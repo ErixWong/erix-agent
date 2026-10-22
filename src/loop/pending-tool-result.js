@@ -34,7 +34,7 @@ import { pendingTrailingToolUses } from "../messages/rounds.js";
 import { buildToolResultFact } from "../tool-fact.js";
 
 /**
- * 尾部悬空 `tool_use` 的**读侧**入口（issue #398）：内容就是 `pendingTrailingToolUses` 那一份，
+ * 尾部悬空 `tool_use` 的**读侧**入口（issue #404）：内容就是 `pendingTrailingToolUses` 那一份，
  * 这里只是把它挂到共享实现的出口上。为什么需要这一层：`src/` 里**除本文件外**不许再引用判据符号
  * （`test/loop-pending-tool-result.test.js` 的结构判据钉着——任何别处再写一遍配对逻辑就是下一个
  * #394），而恢复路径也要读一眼尾部形状（告示里要列「哪些调用没结果」）。
