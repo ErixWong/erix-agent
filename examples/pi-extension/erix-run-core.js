@@ -23,6 +23,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   createFinalGuardTally,
   createFinalGuardVerify,
+  finalGuardWorstCaseMs,
   FINAL_DRAFT_PROMPT,
   FINAL_GUARD_TIMEOUT_MS,
   FINAL_GUARD_WORST_CASE_MS,
@@ -58,6 +59,15 @@ export const ENGINE_DEFAULT_MAX_EXTENSIONS = 2;
 export const MAX_MAX_EXTENSIONS = 1_000;
 export const MAX_MAX_ROUNDS_CAP = 100_000;
 export const MAX_EXTENSION_STEP = 10_000;
+/**
+ * issue #391 R1：`deliverablePaths` 的条数上限（宿主侧**前置**挡，不等引擎 `TypeError`）。
+ *
+ * 真值在引擎（`src/loop/deliverables.js` 的 `DELIVERABLES_LIMIT = 20`）。本文件**不能**静态 import
+ * 它：这一层是扩展侧的纯逻辑层，库根目录由 `ERIX_AGENT_LIB` 决定、可能是另一份安装的副本，
+ * 装载期硬依赖会把「库没装好」变成「扩展加载不了」。所以这里存一份值 + 一条对账用例
+ * （`test/examples/erix-run-core.test.js` 拿它与引擎常量逐字比），漂了当场红。
+ */
+export const DELIVERABLE_PATHS_LIMIT = 20;
 /** #207 R1：下发给引擎 `reflection:{…}` 的扩轮参数名单（也是 diagnostics 里 `requested` 的键）。 */
 export const EXTENSION_PARAM_NAMES = Object.freeze(["maxExtensions", "maxRoundsCap", "extensionStep"]);
 /**
@@ -327,11 +337,13 @@ export function resolveArtifacts({ transcriptPath, judgeLogPath }) {
  *
  * @param {{task?:unknown, cwd?:unknown, maxRounds?:unknown, strategy?:unknown, timeoutMs?:unknown, model?:unknown,
  *   sessionDir?:unknown, transcript?:unknown, maxExtensions?:unknown, maxRoundsCap?:unknown, extensionStep?:unknown,
- *   judgeDoneAdvisory?:unknown}} raw
+ *   judgeDoneAdvisory?:unknown, finalGuard?:unknown, finalGuardTimeoutMs?:unknown,
+ *   requireDeliverable?:unknown, deliverablePaths?:unknown}} raw
  * @param {{home?:string}} [options]
  * @returns {{task:string, cwd:string, maxRounds:number, strategy?:string, timeoutMs:number, model?:string,
  *   sessionDir?:string, maxExtensions?:number, maxRoundsCap?:number, extensionStep?:number,
- *   judgeDoneAdvisory?:boolean}}
+ *   judgeDoneAdvisory?:boolean, finalGuard?:boolean, finalGuardTimeoutMs?:number,
+ *   requireDeliverable?:boolean, deliverablePaths?:string[]}}
  */
 export function parseRunParams(raw = {}, { home = homedir() } = {}) {
   const task = textOf(raw?.task).trim();
@@ -418,6 +430,95 @@ export function parseRunParams(raw = {}, { home = homedir() } = {}) {
     throw new ErixRunError(
       "bad_params",
       "finalGuardTimeoutMs 只在 finalGuard: true 时有意义（没开启就别传，否则容易误以为在核验）",
+    );
+  }
+
+  // issue #391 R5：交付物判据开关，**默认关**。形状照 `finalGuard`（只认真布尔，只保留 true）。
+  // 这里**只给命名判据**，不开放「宿主自定义 check 函数」入口：跨扩展边界传函数不安全
+  // （pi 的扩展装载/序列化面不可控，`details` 与 `structured_output` 更是要求纯数据），
+  // 所以判据本体由 `bin/final-guard.js` 的 `createDeliverableChecks()` 提供，宿主只能选「用不用」。
+  const requireDeliverableRaw = raw?.requireDeliverable;
+  if (requireDeliverableRaw !== undefined && requireDeliverableRaw !== null && requireDeliverableRaw !== "") {
+    if (typeof requireDeliverableRaw !== "boolean") {
+      throw new ErixRunError(
+        "bad_params",
+        `requireDeliverable 只能是 true | false，收到 ${JSON.stringify(requireDeliverableRaw)}`,
+      );
+    }
+    if (requireDeliverableRaw) params.requireDeliverable = true;
+  }
+  // 与 CLI 逐字同口径（#391 R2）：判据是拦 guard `accept` 的闸门，引擎只在 `finalGuard` 存在时
+  // 才核它 ⇒ 没有 `finalGuard: true` 时交付物判据是**静默空转**，必须显式失败
+  // （不替宿主自动开 guard：那会改掉「不传 finalGuard ⇒ verification 恒 skipped」这条承诺）。
+  //
+  // issue #391 R1：**命名**交付物判据（`deliverablePaths`）——与上面那个布尔开关是**两个不同的问题**，
+  // 两个都要留：
+  //   · `requireDeliverable: true` 问「**你说过要写的东西**还在盘上吗」（读 `fileWrites`）。模型什么都不
+  //     声明时集合为空、`every()` 恒真 ⇒ 一次工具都没调的 run 也能 `verified`（#391 回帖实测）。
+  //   · `deliverablePaths: [...]` 问「**这次任务要求的这些文件**在盘上吗」（不读模型说了什么）。
+  //     「必须交付 report.md」只能靠这一条。
+  // 相对路径不在本层 join：判据收到的是引擎 payload 里的 `facts.cwd`（= 本层下发的 `params.cwd`），
+  // 由 `bin/final-guard.js` 的 `createNamedDeliverableChecks()` 在那里 `resolve`。
+  const deliverablePathsRaw = raw?.deliverablePaths;
+  if (deliverablePathsRaw !== undefined && deliverablePathsRaw !== null && deliverablePathsRaw !== "") {
+    if (!Array.isArray(deliverablePathsRaw)) {
+      throw new ErixRunError(
+        "bad_params",
+        `deliverablePaths 必须是字符串数组，收到 ${JSON.stringify(deliverablePathsRaw)}`,
+      );
+    }
+    if (deliverablePathsRaw.length === 0) {
+      // 空集合的判据集合恒真——那正是 #391 要杀的真空通过形状，不能当「没声明」静默吞掉。
+      throw new ErixRunError(
+        "bad_params",
+        "deliverablePaths 传了就必须至少一条：空清单等于没有判据（恒真），"
+        + "要「声明过的写路径都在盘上」请用 requireDeliverable: true",
+      );
+    }
+    if (deliverablePathsRaw.length > DELIVERABLE_PATHS_LIMIT) {
+      throw new ErixRunError(
+        "bad_params",
+        `deliverablePaths 最多 ${DELIVERABLE_PATHS_LIMIT} 条（引擎 DELIVERABLES_LIMIT），`
+        + `收到 ${deliverablePathsRaw.length} 条`,
+      );
+    }
+    const seen = new Set();
+    const paths = [];
+    for (const [index, entry] of deliverablePathsRaw.entries()) {
+      if (typeof entry !== "string" || entry.trim() === "") {
+        throw new ErixRunError(
+          "bad_params",
+          `deliverablePaths[${index}] 必须是非空字符串，收到 ${JSON.stringify(entry)}`,
+        );
+      }
+      // 引擎要求 `deliverables[].name` 在同一 run 内唯一，而这里的 name 就是路径本身
+      // ⇒ 重复路径必须在宿主侧就挡（否则到引擎才吃一个 TypeError）。
+      if (seen.has(entry)) {
+        throw new ErixRunError(
+          "bad_params",
+          `deliverablePaths[${index}] 重复：${JSON.stringify(entry)}（判据名 = 路径，引擎要求唯一）`,
+        );
+      }
+      seen.add(entry);
+      paths.push(entry);
+    }
+    params.deliverablePaths = paths;
+  }
+  const declaredCriteria = (params.requireDeliverable === true ? 1 : 0)
+    + (params.deliverablePaths?.length ?? 0);
+  if (declaredCriteria > 0 && params.finalGuard !== true) {
+    throw new ErixRunError(
+      "bad_params",
+      "交付物判据（requireDeliverable / deliverablePaths）只在 finalGuard: true 时有意义："
+      + "判据是拦 guard accept 的闸门，没有 guard 就没有闸门（单独开等于什么都不核）",
+    );
+  }
+  // 条数上限是**合计**的：布尔那条也占一个 `deliverables` 槽位（引擎看的是数组长度）。
+  if (declaredCriteria > DELIVERABLE_PATHS_LIMIT) {
+    throw new ErixRunError(
+      "bad_params",
+      `交付物判据合计最多 ${DELIVERABLE_PATHS_LIMIT} 条（引擎 DELIVERABLES_LIMIT），`
+      + `收到 ${declaredCriteria} 条（requireDeliverable ${params.requireDeliverable === true ? 1 : 0} + deliverablePaths ${params.deliverablePaths?.length ?? 0}）`,
     );
   }
 
@@ -558,7 +659,7 @@ export function packageRootFromEntry(moduleUrl) {
  * }} [options]
  * @returns {Promise<{
  *   index: any, binTools: any, libEntry: string, libRoot: string,
- *   binToolsEntry: string, source: string,
+ *   binToolsEntry: string, binFinalGuard?: any, binFinalGuardEntry?: string, source: string,
  * }>}
  */
 export async function loadErixAgent({
@@ -619,13 +720,31 @@ export async function loadErixAgent({
       failures.push(`${binToolsEntry}: bin/tools.js 未导出 createCliTools`);
       continue;
     }
+    // #391 R5：交付物判据（`createDeliverableChecks`）住在 `bin/final-guard.js`。它是**按需**依赖：
+    // 只有 `requireDeliverable: true` 的 run 才会读它，装载期失败只记一条（不拖累默认路径），
+    // 真要用时由 runErixRun 明确报 `lib_missing`。为什么复用 bin/ 那一份而不是在本层重写：
+    // 判据口径只能有一份（`fileWrites` 原始路径 + `existsSync`），第二份实现就是第二种口径。
+    const binFinalGuardEntry = libRoot === undefined
+      ? undefined
+      : path.join(libRoot, "bin", "final-guard.js");
+    let binFinalGuard;
+    if (binFinalGuardEntry !== undefined && exists(binFinalGuardEntry)) {
+      try {
+        binFinalGuard = await importModule(pathToFileURL(binFinalGuardEntry).href);
+      } catch (error) {
+        failures.push(`${binFinalGuardEntry}: ${textOf(error)}`);
+        binFinalGuard = undefined;
+      }
+    }
 
     return {
       index,
       binTools,
+      binFinalGuard,
       libEntry: candidate.libEntry,
       libRoot,
       binToolsEntry,
+      binFinalGuardEntry,
       source: candidate.source,
     };
   }
@@ -1144,6 +1263,10 @@ export function formatLoopEvent(event) {
  *   //   round, rounds, signal, termination}`，见 `src/loop/termination.js` 的 `callFinalGuard`）。
  *   // **不传就是不透传** ⇒ 引擎侧 verification 保持 `skipped`。
  *   finalGuard?: (payload:object)=>Promise<{action:string, message?:string, reason?:string}>,
+ *   // #391 R5：宿主声明的交付物判据（**已组装好的** `[{ name, check }]`）。本层只做「传 / 不传」，
+ *   //   判据本体由 `bin/final-guard.js` 的 `createDeliverableChecks()` 给（不在这里手抄第二份口径）。
+ *   //   不传 ⇒ options 上连这个键都没有（引擎「未声明 ⇒ 逐字不变」的回归锚靠的就是这个形状）。
+ *   deliverables?: {name:string, check:Function}[],
  * }} input
  * @returns {object} runToolLoop 的 options 对象
  */
@@ -1151,7 +1274,7 @@ export function buildLoopOptions(input) {
   const {
     params, slot, provider, tools, store, signal, runId,
     system, onEvent, onObserverError, onPersistenceError, onJudge, diagnostics,
-    reflection, finalGuard,
+    reflection, finalGuard, deliverables,
   } = input;
 
   /** @type {Record<string, unknown>} */
@@ -1192,6 +1315,8 @@ export function buildLoopOptions(input) {
       finalGuard,
       finalGuardTimeoutMs: params.finalGuardTimeoutMs ?? FINAL_GUARD_TIMEOUT_MS,
     }),
+    // #391 R5：交付物判据只在 `requireDeliverable: true` 时存在（默认路径一个键都不多）。
+    ...(deliverables === undefined ? {} : { deliverables }),
   };
 
   // #182：两个预算字段必须成对给（引擎跨候选不合并），缺任何一个都不如不给。
@@ -1766,8 +1891,17 @@ export async function runErixRun(rawParams = {}, deps = {}) {
     context.timeoutMs = params.timeoutMs;
 
     // #314 R1/R3：只有显式开了 finalGuard 才建计数器与回调；默认关 ⇒ 下面透传链上一个键都不多。
+    // #391 R5：交付物判据条数（0..N）。它同时决定「最坏开销」与 tally 里的说明——
+    // 判据跑在 guard **之前**且共享同一个 `finalGuardTimeoutMs`，所以每次 attempt 的上限要
+    // 加上「判据条数 × 该上限」（见 `finalGuardWorstCaseMs`）。
+    // #391 R1：布尔开关与命名清单是两种语义，条数相加（两个都给了就两条都核）。
+    const deliverableCriteria = (params.requireDeliverable === true ? 1 : 0)
+      + (params.deliverablePaths?.length ?? 0);
     finalGuardTally = params.finalGuard === true
-      ? createFinalGuardTally({ finalGuardTimeoutMs: params.finalGuardTimeoutMs })
+      ? createFinalGuardTally({
+        finalGuardTimeoutMs: params.finalGuardTimeoutMs,
+        deliverableCriteria,
+      })
       : undefined;
     finalGuardVerify = finalGuardTally === undefined
       ? undefined
@@ -1784,15 +1918,48 @@ export async function runErixRun(rawParams = {}, deps = {}) {
     // 而引擎只在**轮边界**查截止线（`src/loop/orchestrator.js` 的 `remainingMs()`），
     // stop → guard 之间没有 deadline 检查。本层那根 `setTimeout` 硬 abort 若仍卡在
     // `params.timeoutMs`，就会把「钱已花、正要把 verified 交出来」的 run 掐死（宿主自己
-    // 把核验抢掉）。以开启时把硬 abort 往后挪 `FINAL_GUARD_WORST_CASE_MS`（= 3 × 10s）；
-    // run 自身的截止线（下发给引擎的 `timeoutMs`）**不动**，不拿它去掩盖额外开销。
-    const guardHeadroomMs = finalGuardTally === undefined ? 0 : FINAL_GUARD_WORST_CASE_MS;
+    // 把核验抢掉）。以开启时把硬 abort 往后挪 `finalGuardWorstCaseMs(...)`（未声明判据 = 3 × 10s，
+    // 声明 1 条判据 = 3 × (10s + 10s)）；run 自身的截止线（下发给引擎的 `timeoutMs`）**不动**，
+    // 不拿它去掩盖额外开销。
+    const guardHeadroomMs = finalGuardTally === undefined
+      ? 0
+      : finalGuardWorstCaseMs({ deliverableCriteria });
 
     const lib = deps.loadLib
       ? await deps.loadLib()
       : await loadErixAgent({ env, home });
     const libIndex = lib?.index ?? lib;
     context.libSource = lib.source ?? lib.libEntry;
+
+    // #391 R5/R1：声明了任何一条交付物判据时才去拿判据本体。装载面缺这一份就**当场报错**
+    // （`lib_missing`），不静默降级成「没有判据」——那正是 #391 要杀的静默空转。
+    // 两个工厂都住 `bin/final-guard.js`：布尔那条是 `createDeliverableChecks`（读 `fileWrites`），
+    // 命名那条是 `createNamedDeliverableChecks`（读宿主声明的清单）。本层**不**手抄第二份口径。
+    let deliverableChecks;
+    if (deliverableCriteria > 0) {
+      const binFinalGuard = lib?.binFinalGuard;
+      const missingFactory = (name) => {
+        if (typeof binFinalGuard?.[name] === "function") return undefined;
+        return new ErixRunError(
+          "lib_missing",
+          `交付物判据需要 <libRoot>/bin/final-guard.js 导出的 ${name}`
+          + `（${lib?.binFinalGuardEntry ?? "包根目录未解析"}）。`
+          + "本层不手抄第二份判据口径：要么把它装上，要么别声明交付物",
+        );
+      };
+      const checks = [];
+      if (params.requireDeliverable === true) {
+        const error = missingFactory("createDeliverableChecks");
+        if (error !== undefined) throw error;
+        checks.push(...binFinalGuard.createDeliverableChecks());
+      }
+      if (params.deliverablePaths !== undefined) {
+        const error = missingFactory("createNamedDeliverableChecks");
+        if (error !== undefined) throw error;
+        checks.push(...binFinalGuard.createNamedDeliverableChecks(params.deliverablePaths));
+      }
+      deliverableChecks = checks;
+    }
 
     const slotResult = deps.loadSlot
       ? await deps.loadSlot({ lib: libIndex })
@@ -1962,6 +2129,11 @@ export async function runErixRun(rawParams = {}, deps = {}) {
         }),
       // #314 R1：没开启时这个键不存在（不是 `undefined`），以免被当成「传了但空」。
       ...(finalGuardVerify === undefined ? {} : { finalGuard: finalGuardVerify }),
+      // #391 R5/R1：交付物判据（默认关）。判据本体来自 `bin/final-guard.js` 的两个工厂
+      // （`createDeliverableChecks` = 布尔那条，`createNamedDeliverableChecks` = 命名清单那条）
+      // ——**复用 CLI 那一份**，本层不手抄第二份口径；宿主面只给命名开关 / 命名路径，
+      // 不开放自定义 `check` 函数（跨扩展边界传函数不安全，理由见 README 参数表与契约）。
+      ...(deliverableChecks === undefined ? {} : { deliverables: deliverableChecks }),
       // 观察者必须自带防护：0.18 起引擎会隔离抛错并经 onObserverError 报告，但进度通道
       // （pi 的 onUpdate）在引擎直调路径上仍可能同步抛错。
       onEvent: (event) => {

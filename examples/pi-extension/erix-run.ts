@@ -39,6 +39,7 @@ import { Type } from "typebox";
 import {
   DEFAULT_MAX_ROUNDS,
   DEFAULT_TIMEOUT_MS,
+  DELIVERABLE_PATHS_LIMIT,
   ENGINE_DEFAULT_MAX_EXTENSIONS,
   MAX_EXTENSION_STEP,
   MAX_MAX_EXTENSIONS,
@@ -128,8 +129,47 @@ const parameters = Type.Object({
       minimum: 200,
       maximum: 600_000,
       description:
-        `单次 guard 等待上限（毫秒），默认 ${FINAL_GUARD_TIMEOUT_MS}；只在 finalGuard: true 时有意义（没开启时传了会报 bad_params）。`,
+        `单次 guard 等待上限（毫秒），默认 ${FINAL_GUARD_TIMEOUT_MS}；只在 finalGuard: true 时有意义（没开启时传了会报 bad_params）。`
+        + "⚠ 它同时是**交付物判据**的超时（引擎复用同一个旋钮）：一次 attempt 的最坏等待 = 判据条数 × 该上限 + guard 上限。",
     }),
+  ),
+  // issue #391 R5：交付物机器判据的**命名开关**（不开放宿主自定义 check 函数：跨扩展边界传函数不安全）。
+  requireDeliverable: Type.Optional(
+    Type.Boolean({
+      description:
+        "**默认关**：交付物机器判据（`requireDeliverable`）。为 true 时启用一条磁盘事实判据——"
+        + "「本次 run 用写工具声明过的每个路径，收尾时都必须真的在盘上」（读 `fileWrites` 原始路径，"
+        + "不是 40 码点摘要）。判据跑在 guard **之前**：guard 说 accept 而判据没过 ⇒ `verification` 变成 "
+        + "unverified + `reason: \"deliverables_failed\"`（机器证据压过 guard 意见），`termination.reason` 不变。\n"
+        + "**必须与 `finalGuard: true` 同用**：判据是拦 guard accept 的闸门，没有 guard 就没有闸门——"
+        + "单独开是 bad_params（不静默空转）。\n"
+        + "成本：判据与 guard 共享同一个 `finalGuardTimeoutMs` 预算 ⇒ 1 条判据让每次 attempt 的上限多一倍"
+        + `（默认 10s ⇒ 最坏额外 ${FINAL_GUARD_WORST_CASE_MS * 2}ms 而不是 ${FINAL_GUARD_WORST_CASE_MS}ms）。\n`
+        + "只认真布尔：`\"true\"` / `1` 归 bad_params。本工具**不**接受宿主自定义的 check 函数（跨扩展边界传函数不安全）。\n"
+        + "⚠ 它判的是「声明过的写路径还在盘上」，**模型什么都不声明时空集合恒真**（一次工具都没调也能 verified）。"
+        + "要「这次必须交付 report.md」请用 `deliverablePaths`——那是另一个问题，不是同一个开关的细化。",
+    }),
+  ),
+  // issue #391 R1：**命名**交付物判据——与上面那个布尔开关是两个不同的问题，两个都要留。
+  deliverablePaths: Type.Optional(
+    Type.Array(
+      Type.String({ minLength: 1 }),
+      {
+        minItems: 1,
+        maxItems: DELIVERABLE_PATHS_LIMIT,
+        description:
+          "**这次任务必须交付这些文件**（默认关）。每条一个判据：收尾时该路径必须真的在盘上。"
+          + "与 `requireDeliverable: true` 的差别是**语义**而不是粒度：布尔那条问「你说过要写的东西还在盘上吗」"
+          + "（读 `fileWrites`，模型什么都不声明时空集合恒真 ⇒ 一次工具都没调也能 verified，issue #391 回帖实测）；"
+          + "这一条不读模型说了什么，只读你声明的清单 ⇒ 模型啥都没写照样判不过。要「必须交付 report.md」只能用它。\n"
+          + "相对路径按本次 run 的 `cwd` 解析（引擎不 join：它把宿主传的 cwd 原样放进 payload，"
+          + "没接线时判据拿到 undefined ⇒ 恒 ok:false，见 docs/host-upgrade-guide-0.24.0.md §9）；绝对路径不需要 cwd。\n"
+          + `条数 1..${DELIVERABLE_PATHS_LIMIT}（引擎 DELIVERABLES_LIMIT），路径不许重复（判据名 = 路径，引擎要求唯一）；`
+          + "非数组 / 空串 / 空数组 / 超限 / 重复均归 bad_params（在宿主侧就挡）。"
+          + "**必须与 `finalGuard: true` 同用**（没有 guard 就没有闸门，单独给是 bad_params）。"
+          + "判据跑在 guard 之前、与 guard 共享 `finalGuardTimeoutMs` ⇒ 每条判据让每次 attempt 的上限再加一个该上限。",
+      },
+    ),
   ),
   // issue #322：引擎侧 reflection.judgeDoneAdvisory 的宿主侧口子（与上面的 reflection 三参数同族）。
   judgeDoneAdvisory: Type.Optional(

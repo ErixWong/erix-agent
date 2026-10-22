@@ -177,4 +177,54 @@ export function createDeliverableChecks({ exists = existsSync } = {}) {
   }];
 }
 
+/**
+ * issue #391：**命名**交付物判据（`--require-deliverable <path>` / `deliverablePaths`）。
+ *
+ * 与上面那条（`createDeliverableChecks`）的语义**必须分开**，这不是重复而是两个不同的问题：
+ *
+ *   · 布尔那条问「**你说过要写的东西**还在盘上吗」——它读 `fileWrites`，模型**什么都不声明**时
+ *     集合是空的、`every()` 恒真 ⇒ 一次工具都没调的 run 也能拿到 `verified`（#391 回帖的实测）。
+ *     它是「没撒谎」的判据，不是「做了事」的判据。
+ *   · 命名这条问「**这次任务要求的这些文件**在盘上吗」——它不读模型说了什么，只读宿主声明的清单
+ *     ⇒ 模型一次工具都没调时照样判 `ok:false`。要「必须交付 report.md」，只能靠这一条。
+ *
+ * 相对路径按**判据收到的 `facts.cwd`** 解析（不是进程 cwd）：引擎把宿主传给 `runToolLoop({ cwd })`
+ * 的那个值原样放进 payload，**自己不 join、不 `chdir`、也不检查它存在**（#391 的原始症状就是
+ * 宿主没接线 ⇒ 判据拿到 `undefined`）。绝对路径不需要 `cwd`。
+ *
+ * @param {string[]} paths 宿主声明的交付物路径（已去过重，条数上限见 `DELIVERABLES_LIMIT`）
+ * @param {{exists?: (path: string) => boolean}} [options] `exists` 只为测试注入
+ * @returns {{name: string, check: (facts: object) => true|{ok:false, detail:string}}[]}
+ */
+export function createNamedDeliverableChecks(paths, { exists = existsSync } = {}) {
+  return (Array.isArray(paths) ? paths : []).map((declared) => ({
+    name: declared,
+    check: (facts) => {
+      const cwd = typeof facts?.cwd === "string" && facts.cwd !== "" ? facts.cwd : undefined;
+      let target = declared;
+      if (!path.isAbsolute(declared)) {
+        if (cwd === undefined) {
+          // fail-closed：相对路径 + 没有 cwd ⇒ 无从解析。这正是 #391 报的原始症状，不许当通过。
+          return {
+            ok: false,
+            detail: `交付物 ${declared} 是相对路径，但宿主没把 cwd 交给 runToolLoop`
+              + "（引擎不补、不 chdir）——接线见 docs/host-upgrade-guide-0.24.0.md §9",
+          };
+        }
+        target = path.resolve(cwd, declared);
+      }
+      if (exists(target)) return true;
+      return { ok: false, detail: `交付物不在盘上：${target}` };
+    },
+  }));
+}
+
+/**
+ * `deliverables` 的条数上限，**真值在引擎**（`src/loop/deliverables.js` 的 `DELIVERABLES_LIMIT`）。
+ * 这里只转出去给宿主侧做**前置**校验：条数超限要让宿主拿到 `bad_params`（可读、可改），
+ * 而不是到引擎才吃一个 `TypeError`（那是引擎内部错误，宿主看不出是自己多写了一条）。
+ * `test/cli.test.js` 与 `test/examples/erix-run-core.test.js` 都拿它与引擎常量逐字对账。
+ */
+export { DELIVERABLES_LIMIT } from "../src/loop/deliverables.js";
+
 export const finalGuard = createFinalGuard;

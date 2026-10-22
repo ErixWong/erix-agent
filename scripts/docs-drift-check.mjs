@@ -2031,7 +2031,10 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  （「悬空 `tool_use` 先结清再注入」那一颗 + 「`metrics.verified` 不等于 `verification.status`」那一颗）
  *  按同一红线用符号锚点引用 `PENDING_TOOL_RESULT_TEXT`（`src/loop/orchestrator.js`）——`--verbose` 实测
  *  **103 组 / 262 处**（契约 EN 73 → 74 / CN 72 → 73，其余不变）。
- *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
+ *    *  再升一次的理由（issue #391 R5，98 → **99**，+1 组 / 247 → 249 处）：契约中英「交付物机器判据」小节
+ *  成对新增 `createDeliverableChecks`（`bin/final-guard.js`）这个锚点——宿主面只给命名判据，
+ *  判据本体必须在文档里指到真声明（`--verbose` 实测 **99 组 / 249 处**：契约 EN 70 / CN 69）。
+ *    *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
 const SYMBOL_ANCHOR_MIN_UNIQUE = 103;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
@@ -2645,6 +2648,7 @@ const EXPECTED_ABSENT_PATHS = new Map([
   ["judge.log", "引擎写入 transcripts/outputs/<runId>/ 的运行产物名，不是仓库文件"],
   ["erix-state/judge.log", "2026-09 基准证据里的宿主侧路径，不在本仓库"],
   ["status.json", "erix_run 在宿主 sessionDir 下写的 job 状态文件名，不是仓库文件"],
+  ["report.md", "#391：`--require-deliverable report.md` / `deliverablePaths: [\"report.md\"]` 举的示例交付物名——它是宿主自己树里才有的文件（本仓当然没有），文档在讲「怎么声明一条命名判据」"],
   ["analysis.md", "#269 复盘：这条引用本身就是「不存在的文件」，CHANGELOG:102 在讲它为什么不存在（#278 把它纳进裸名裁决后必须登记）"],
   ["session-meta.json", "宿主 `~/.erix/session-meta.json`（#168 停读停写的会话归属状态文件），CHANGELOG:158 讲的是宿主侧行为"],
   ["models.json", "宿主 `~/.pi/agent/models.json`（provider 槽位配置），CHANGELOG:200-201 的 e2e 根因在宿主配置里"],

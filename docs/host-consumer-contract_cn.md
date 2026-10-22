@@ -1427,6 +1427,41 @@ deliverables?: [
 （逐字，可直接 `stat()`）；`filesWritten[].path` 是 judge timeline 的 40 码点摘要
 （只能当提示，见上面那张载荷表）。拿摘要建判据会**系统性误拦**已经做对的 run。
 
+**本仓出厂的宿主只给「命名判据」，不开放谓词（issue #391）。** CLI（`erix chat` / `erix repl`）
+有 `--require-deliverable [<path>]`，pi 扩展有 `requireDeliverable: true` 与 `deliverablePaths: string[]`。
+两个工厂都在 `bin/final-guard.js`：`createDeliverableChecks` 产出 `files_written_exist`，
+`createNamedDeliverableChecks` 按宿主声明的路径逐条产出一条判据。**都不接受宿主自带 `check` 函数**：
+函数没法安全穿过扩展/工具边界（pi 要序列化 `details` 与 `structuredContent`，扩展装载面不是数据通道），
+所以那个面只能选「跑哪几条命名判据」。
+
+**两种语义，都刻意保留。** 它们回答不同的问题，谁也不是谁的细化：
+
+| 声明方式 | 它问的问题 | 判据 | 模型什么都不声明时 |
+|---|---|---|---|
+| `requireDeliverable: true`（裸 `--require-deliverable`） | 「**你说过要写的东西**还在盘上吗」 | `createDeliverableChecks()` 读 `fileWrites` | **通过**（空集合 ⇒ `every()` 恒真） |
+| `deliverablePaths: [...]`（`--require-deliverable <path>`） | 「**这次任务要求的这些文件**在盘上吗」 | `createNamedDeliverableChecks(paths)` 读宿主清单 | **不通过**（判据与模型的嘴无关） |
+
+布尔那条是「没撒谎」判据，不是「做了事」判据：**一次工具都没调**的 run 不会声明任何写路径，
+于是判据通过、`verification` 变成 `verified`（issue #391 回帖里的实测）。「这次必须交付
+`report.md`」只能靠命名路径表达。反过来命名那条也替代不了布尔那条——探索型任务事先不知道文件名，
+但「别声称写了 A 又把 A 写丢」仍然要核——所以宿主可以两条都给（条数相加，合计受
+`DELIVERABLES_LIMIT` 约束）。
+
+四条随之而来的事实：
+
+- **两者都不能单独用。** 判据是拦 guard `accept` 的闸门，而引擎只在 `finalGuard` 存在时才核它
+  ——所以 `--require-deliverable` 不带 `--final-guard`（以及 `requireDeliverable` / `deliverablePaths`
+  不带 `finalGuard: true`）是**用法错误**，不是静默空转。CLI 那一种组合的行为从 `exit 4` 变成了 `exit 1`。
+- **`cwd` 是宿主的责任。** 判据按 `cwd` 解析相对路径，而那个 `cwd` 只在宿主传了
+  `runToolLoop({ cwd })` 时才存在；引擎永远不补、不 `chdir`、也不检查它是否存在——判据于是 fail-closed
+  （`ok:false`），这正是 #391 的原始症状。`erix chat --cwd <dir>`（缺省进程工作目录）与 `erix_run`
+  必填的 `cwd` 参数就是这处接线。绝对路径不需要 `cwd`。
+- **判据与 guard 共享一份预算。** 两者的上限都是 `finalGuardTimeoutMs`，而判据在**每次** attempt
+  里跑在 guard **之前**，所以按「3 × 超时」算硬 abort 余量的宿主，每声明一条判据就要多留一个超时
+  （1 条判据 + pi 扩展的 10s ⇒ 3 × (10s + 10s) = 60s；N 条 ⇒ 3 × (10s + N × 10s)）。
+- **布尔那条的已知局限。** `fileWrites[].path` 是模型给的**原始**路径：若它是相对路径而宿主 `cwd`
+  与进程工作目录不同，存在性检查会按进程 cwd 解析、可能误判。要求「某个具体文件必须在盘上」请用命名判据。
+
 ### 宿主侧的 guard 接线与截止线余量（issue #314）
 
 pi 宿主扩展（`examples/pi-extension/erix-run-core.js`）带一个 `finalGuard` 开关，**默认关**。

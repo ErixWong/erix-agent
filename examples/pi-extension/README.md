@@ -86,7 +86,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `maxRoundsCap` | | 引擎缺省 `256` | 扩轮后的总轮数硬顶，直传 `reflection.maxRoundsCap`（正整数；引擎会抬到不低于 `maxRounds`）。上限 100000 |
 | `extensionStep` | | 引擎缺省 `max(8, ⌊maxRounds/2⌋)` | 每次扩轮加的轮数，直传 `reflection.extensionStep`（正整数，上限 10000） |
 | `finalGuard` | | **`false`** | **#314：终稿核验开关。`true` = 向 `runToolLoop` 透传 `finalGuard` 回调**，终局 `verification` 才可能是 `verified`；默认关 ⇒ 透传的 options 里连这个键都没有（不是写 `undefined`），`verification` 恒 `skipped`。只认真布尔：`"true"` / `1` 归 `bad_params`（详见下文「终稿核验 finalGuard」） |
-| `finalGuardTimeoutMs` | | `10000` | 单次 guard 等待上限（200..600000）；**只在 `finalGuard: true` 时有意义**，没开却传 ⇒ `bad_params`。**不靠引擎默认的 30000**，理由见下文坑 ① |
+| `finalGuardTimeoutMs` | | `10000` | 单次 guard 等待上限（200..600000）；**只在 `finalGuard: true` 时有意义**，没开却传 ⇒ `bad_params`。**不靠引擎默认的 30000**，理由见下文坑 ①。⚠ 它**同时**是交付物判据的超时（引擎复用同一个旋钮，不新增配置）：一次 attempt 的最坏等待 = 判据条数 × 该上限 + guard 上限 |
+| `requireDeliverable` | | **`false`** | **#391：交付物机器判据（命名开关）。** 为 `true` 时启用一条磁盘事实判据——「本次 run 用写工具声明过的每个路径，收尾时都必须真的在盘上」（读 `fileWrites` 原始路径，不是 40 码点摘要）。判据跑在 guard **之前**：guard 说 `accept` 而判据没过 ⇒ `verification.status = "unverified"` + `reason: "deliverables_failed"`（机器证据压过 guard 意见），`termination.reason` 不变。**必须与 `finalGuard: true` 同用**（判据是拦 `accept` 的闸门，没有 guard 就没有闸门；单独开是 `bad_params`，不静默空转）。只认真布尔。判据本体复用 `bin/final-guard.js` 的 `createDeliverableChecks()`；**本工具不开放宿主自定义 `check` 函数**——跨扩展边界传函数不安全（pi 的扩展装载面与 `details`/`structuredContent` 都要求纯数据），所以这里只给「用不用」这个命名开关，不给你塞谓词。⚠ **它判的是「你说过要写的东西还在盘上」，模型什么都不声明时空集合恒真 ⇒ 一次工具都没调也能 `verified`**（#391 回帖实测）；要「这次必须交付 report.md」请用 `deliverablePaths`（见下文「交付物判据的两种语义」） |
+| `deliverablePaths` | | — | **#391：命名交付物判据（`string[]`，1..20 条）。** 每条一个判据：**这次任务必须交付的这个文件**收尾时必须在盘上。与 `requireDeliverable` 是**两种语义**（不是同一个开关的细化，见下文「交付物判据的两种语义」）：这一条不读模型说了什么，只读你声明的清单 ⇒ 模型一次工具都没调也照样判不过。相对路径按本次 run 的 `cwd` 解析（引擎不 join，它把宿主传的 `cwd` 原样放进 payload）；绝对路径不需要 `cwd`。非数组 / 空串 / 空数组 / 超 20 条 / 重复路径 ⇒ `bad_params`（**宿主侧就挡**，不等引擎 `TypeError`）；**必须与 `finalGuard: true` 同用**。成本：每条判据让每次 attempt 的上限再加一个 `finalGuardTimeoutMs` |
 | `judgeDoneAdvisory` | | **`false`** | **引擎 `reflection.judgeDoneAdvisory` 的透传口（#322）。** `true` = 中途治理（judge）判定「目标已达成」时，把它那句评审意见作为**一条普通用户文本消息**在下一个安全点递给内层模型（于是模型能知道「为什么说它已经做完了」）。**那是软提示，不是硬停止**：不打断当前轮、不拦工具调用、不提前收尾，`termination.reason` 也不因它改变（模型收到后继续干活是允许的）。只认真布尔：`"true"` / `1` 归 `bad_params`；**没传就不下发**（引擎缺省 `false`，本层不替它造默认值）。与三个扩轮参数同一条 judge 闸门，没生效时 `diagnostics.reflection.judgeDoneAdvisory` 会写清（见下方 ⚠） |
 | `async` | | `false` | **#234：`true` = 派工即返回句柄**（主会话不阻塞），内层 run 在同进程后台跑，终局经通知回到本会话。缺省 `false` = 原有同步语义逐字不变。句柄形状：`{runId, status:"running", cwd, model, maxRounds, timeoutMs, sessionDir, statusPath, quiet}` |
 | `quiet` | | `false` | 只在 `async:true` 时有意义：**成功的完成不唤醒**父会话（只落 `status.json`），失败 / 中止仍然唤醒。一次派一批切片时用它免得把主会话打断成筛子 |
@@ -614,6 +616,11 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
   guard 等待**（本层显式下发 `finalGuardTimeoutMs=10000`，不用引擎默认的 30000）。开启后的四段格式、
   两个坑与成本口径见下文「终稿核验 finalGuard（issue #314，默认关）」与契约「Host-side guard wiring
   and the deadline tail（issue #314）」。
+- **声明交付物判据（`requireDeliverable` / `deliverablePaths`）会再加一份等待预算**（#391）：判据在**每次**
+  guard 调用**之前**核，且与 guard 共用同一个 `finalGuardTimeoutMs`（引擎不新增旋钮）⇒ 每条判据让每次
+  attempt 的上限再加一个该上限。1 条判据：`10000ms → 20000ms`，最坏额外开销 `3 × 10s = 30s → 3 × 20s = 60s`；
+  N 条判据就是 `3 × (10s + N × 10s)`（本层的硬 abort 余量按这个数顺延，
+  `diagnostics.finalGuard.worstCaseExtraMs` 与终局面那一行都会写出 `交付物判据 N 条`）。
 
 ## 终稿核验 finalGuard（issue #314，默认关）
 
@@ -633,16 +640,43 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
 3. **比值 / 总量只提醒**：`1:N`、百分比、「总计」类进 `diagnostics.finalGuard.ratioFlags`，**不硬拒**。
 4. 「至少一条非文件系统探针」**不做**（一条 `date` 就能糊弄）。
 
+### 交付物判据的两种语义：布尔 vs 命名（issue #391）
+
+`requireDeliverable: true` 与 `deliverablePaths: [...]` **不是同一个判据的粗细两档**，它们回答两个不同的问题，
+所以两个都留：
+
+| 参数 | 它问的问题 | 判据 | 模型什么都不声明时 |
+|---|---|---|---|
+| `requireDeliverable: true` | 「**你说过要写的东西**还在盘上吗」 | `createDeliverableChecks()`：读 `fileWrites`（原始写路径） | **通过**（空集合 `every()` 恒真） |
+| `deliverablePaths: ["report.md"]` | 「**这次任务要求的这些文件**在盘上吗」 | `createNamedDeliverableChecks()`：读宿主声明的清单 | **不通过**（判据与模型说了什么无关） |
+
+- **为什么布尔那条不够（#391 的原始症状）**：`fileWrites` 是「模型自己声明过的写路径」台账。模型一次工具
+  都没调、什么都没声明时它是空数组，判据 `every()` 空集恒真 ⇒ 终局 `verification.status = "verified"`。
+  它判的是**没撒谎**，不是**做了事**。「必须交付 `report.md`」只能靠命名路径：那是一条宿主清单，与模型的嘴无关。
+- **为什么命名那条也不替代布尔**：命名路径要求宿主事先知道要交付什么。探索型任务里宿主不知道文件名，
+  但「别声称写了 A 却把 A 写坏/写丢」仍然要核 ⇒ 两条可以同时给（两个都给了就是两条都核，条数相加）。
+- **判据本体只有一份**：两个工厂都在 `bin/final-guard.js`（`createDeliverableChecks` / `createNamedDeliverableChecks`），
+  CLI 与扩展复用同一份，不手抄第二份口径。**宿主仍然不能塞自定义 `check` 函数**——跨扩展边界传函数不安全
+  （pi 序列化 `details` / `structuredContent`，扩展装载面不是数据通道），所以这里只有「命名」这一种扩展方式。
+- **`cwd` 是宿主的责任**：命名判据里的相对路径按判据收到的 `facts.cwd` 解析，而引擎**不补、不 `chdir`、不检查
+  它存在**。宿主没接线 ⇒ 判据拿到 `undefined` ⇒ 恒 `ok:false`（这正是 #391 的原始症状，
+  `docs/host-upgrade-guide-0.24.0.md` §9 有对偶两格的配方）。绝对路径不需要 `cwd`。
+- **已知局限（布尔那条）**：`fileWrites` 里存的是模型给的**原始**路径。模型写相对路径而宿主 `cwd` 与进程
+  工作目录不同时，`existsSync(原始路径)` 会按进程 cwd 解析 ⇒ 可能误判。要「这个路径必须在盘上」就用命名判据。
+
 ### 最坏开销与两个坑（为什么不能靠默认值）
 
-- **成本**：最坏多 **≤2 个模型往返** + **≤3 次 guard 等待**（每次 ≤ `finalGuardTimeoutMs`）。次数、累计墙钟、
+- **成本**：最坏多 **≤2 个模型往返** + **≤3 次 guard 等待**（每次 ≤ `finalGuardTimeoutMs`）；声明了
+  `requireDeliverable` 时每次 attempt 还要先跑一遍判据、判据也吃同一个 `finalGuardTimeoutMs`
+  ⇒ 上限翻倍（1 条判据 = `3 × (10s + 10s) = 60s`，未声明时仍是 `3 × 10s = 30s`）。次数、累计墙钟、
   revise 轮数都在 `diagnostics.finalGuard`（接在 #313 那棵树下，不另起顶层字段），终局面另起一行
   `finalGuard calls=… 累计等待=…ms … verification=…`；没开启时那一行是 `finalGuard=disabled`，不假称已通过。
   引擎自己的 `guardMetrics` 仍在 `verification.metrics`，两边各带 `source`，不拿宿主计数冒充引擎计数。
 - **坑 ①（宿主自己把核验掐死）**：引擎只在**轮边界**查截止时间（`orchestrator.js` 的 `remainingMs`），
   stop 判定 → guard 之间**没有** deadline 检查；而本层那根 `setTimeout` 硬 abort 挂在 `params.timeoutMs` 上
   （`runErixRun`）。靠引擎默认 `3 × 30s`，guard 等待全落在宿主定时器过期**之后** ⇒ **钱花了、`verified` 拿不到**。
-  处理：开启时**显式**下发 `finalGuardTimeoutMs=10000`，并把硬 abort 往后挪 `3 × 10000 = 30000ms`（下发给引擎的
+  处理：开启时**显式**下发 `finalGuardTimeoutMs=10000`，并把硬 abort 往后挪 `finalGuardWorstCaseMs(...)`
+  ——未声明判据 `3 × 10000 = 30000ms`，声明 1 条判据 `3 × (10000 + 10000) = 60000ms`（下发给引擎的
   run 截止线不动，不拿它掩盖开销）。回归用例：run 截止线 1s、谓词跑 1.2s ⇒ 仍须 `verified`。
 - **坑 ②（谓词是异步的）**：包装器必须 `await` 谓词，否则 Promise 被当成决策交给引擎 ⇒ `invalid decision`
   ⇒ `verification.status` 是 `error`（本单真踩到过，有用例钉着）。

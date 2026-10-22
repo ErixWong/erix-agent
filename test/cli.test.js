@@ -1510,3 +1510,39 @@ test("createDeliverableChecks 判的是原始写路径的磁盘事实（fileWrit
   assert.equal(criterion.check({}), true);
   assert.equal(criterion.check({ fileWrites: [] }), true);
 });
+
+// issue #391 R1：**命名**交付物判据（`--require-deliverable <path>` / `deliverablePaths`）。
+// 与上面那条布尔判据是两个不同的问题：布尔那条在模型什么都不声明时空集合恒真（一次工具都没调也通过），
+// 命名这条只读宿主声明的清单 ⇒ 模型啥都没写照样判不过。
+test("createNamedDeliverableChecks：每条一个判据、name = 声明路径、相对路径按 facts.cwd 解析", async () => {
+  const { createNamedDeliverableChecks, DELIVERABLES_LIMIT } = await import("../bin/final-guard.js");
+  const { DELIVERABLES_LIMIT: ENGINE_LIMIT } = await import("../src/loop/deliverables.js");
+  // 宿主侧前置挡用的上限必须是引擎那个数（不是自己发明的第二个数）
+  assert.equal(DELIVERABLES_LIMIT, ENGINE_LIMIT);
+
+  const dir = await makeTmp("erix-cli-named-deliverable-");
+  const relative = "report.md";
+  const absolute = `${dir}/nested/absolute.txt`;
+  await mkdir(join(dir, "nested"), { recursive: true });
+  await writeFile(join(dir, relative), "42");
+
+  const criteria = createNamedDeliverableChecks([relative, absolute]);
+  assert.deepEqual(criteria.map((entry) => entry.name), [relative, absolute], "判据名就是声明的路径本身");
+  // 相对路径：按 facts.cwd 解析（引擎不 join，它把宿主传的 cwd 原样放进 payload）
+  assert.equal(criteria[0].check({ cwd: dir }), true);
+  const otherDir = await makeTmp("erix-cli-named-other-");
+  const notThere = criteria[0].check({ cwd: otherDir });
+  assert.equal(notThere.ok, false);
+  assert.ok(notThere.detail.includes(join(otherDir, relative)), `detail 没点名解析后的绝对路径：${notThere.detail}`);
+  // 没有 cwd ⇒ 相对路径 fail-closed（#391 的原始症状：宿主没接线就不许判通过）
+  const noCwd = criteria[0].check({});
+  assert.equal(noCwd.ok, false);
+  assert.match(noCwd.detail, /没把 cwd 交给 runToolLoop/u);
+  // 绝对路径不需要 cwd，且判的是磁盘事实（不是「文件被写过」的台账）
+  await writeFile(absolute, "1");
+  assert.equal(criteria[1].check({}), true);
+  assert.equal(criteria[1].check({ cwd: dir }), true);
+  // 空清单 ⇒ 空数组（不抛、也不伪造一条「恒真」判据；宿主侧负责把空清单挡在门外）
+  assert.deepEqual(createNamedDeliverableChecks([]), []);
+  assert.deepEqual(createNamedDeliverableChecks(undefined), []);
+});

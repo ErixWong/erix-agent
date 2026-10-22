@@ -1767,6 +1767,53 @@ Which path key to use in a criterion: `fileWrites[].path` is the raw
 the 40-code-point judge-timeline summary (a hint only — see the payload table above). A
 criterion built on the summary will systematically reject runs that already did the work.
 
+**The hosts that ship here expose *named* criteria, not predicates (issue #391).** The CLI
+(`erix chat` / `erix repl`) has `--require-deliverable [<path>]`, and the pi extension has
+`requireDeliverable: true` plus `deliverablePaths: string[]`. Both factories live in
+`bin/final-guard.js` — `createDeliverableChecks` produces `files_written_exist`, and
+`createNamedDeliverableChecks` produces one criterion per declared path. Neither host accepts
+a host-supplied `check` function: a function cannot cross the extension/tool boundary safely
+(pi serializes `details` and `structuredContent`, and the extension loader is not a data
+channel), so the surface only chooses *which named criteria* run.
+
+**Two semantics, both kept on purpose.** They answer different questions, so neither is a
+refinement of the other:
+
+| Declared as | Question it answers | Criterion | Model declares nothing |
+|---|---|---|---|
+| `requireDeliverable: true` (bare `--require-deliverable`) | "is everything **you said you wrote** still on disk?" | `createDeliverableChecks()` reads `fileWrites` | **passes** (empty set ⇒ `every()` is vacuously true) |
+| `deliverablePaths: [...]` (`--require-deliverable <path>`) | "are **the files this task demanded** on disk?" | `createNamedDeliverableChecks(paths)` reads the host's list | **fails** (the criterion never looks at what the model said) |
+
+The boolean one is a "did not lie" criterion, not a "did the work" criterion: a run that
+called **zero tools** declares no write paths, so the criterion passes and `verification`
+becomes `verified` (measured in the issue #391 reply). "This task must deliver `report.md`"
+can only be expressed by a named path. Conversely the named form cannot replace the boolean
+one — an exploratory task does not know the file names up front, yet "don't claim you wrote A
+and then lose A" still needs checking — so a host may declare both (they add up, and the
+combined count is capped at `DELIVERABLES_LIMIT`).
+
+Four consequences worth knowing:
+
+- **Neither is standalone.** A criterion gates the guard's `accept`, and the engine runs
+  criteria only when a `finalGuard` exists — so `--require-deliverable` without
+  `--final-guard` (and `requireDeliverable` / `deliverablePaths` without
+  `finalGuard: true`) is a **usage error**, not a silent no-op. In the CLI that combination
+  changed from `exit 4` to `exit 1`.
+- **`cwd` is the host's job.** A criterion that resolves a relative path against `cwd`
+  receives `undefined` unless the host passed `runToolLoop({ cwd })`; the engine never fills
+  it in, never `chdir`s and never checks that it exists — the criterion then fails closed
+  (`ok:false`), which is exactly the #391 symptom. `erix chat --cwd <dir>` (default: the
+  process working directory) and `erix_run`'s required `cwd` parameter are that wiring.
+  Absolute paths do not need `cwd`.
+- **Criteria and the guard share one budget.** Both are bounded by `finalGuardTimeoutMs`,
+  and the criteria run *before* the guard on every attempt, so a host that sizes its hard
+  abort by "3 × timeout" must add one timeout per declared criterion (one criterion ⇒
+  3 × (10s + 10s) = 60s with the pi extension's 10s; N criteria ⇒ 3 × (10s + N × 10s)).
+- **Known limit of the boolean form.** `fileWrites[].path` is the raw path the model passed.
+  If it was relative and the host's `cwd` differs from the process working directory, the
+  existence check resolves against the process cwd and can false-negative. Use a named path
+  when a specific file must be on disk.
+
 ### Host-side guard wiring and the deadline tail (issue #314)
 
 The pi host extension (`examples/pi-extension/erix-run-core.js`) carries a

@@ -39,11 +39,30 @@ export const ENGINE_FINAL_GUARD_MAX_RETRIES = 2;
 const FINAL_GUARD_MAX_CALLS = 1 + ENGINE_FINAL_GUARD_MAX_RETRIES;
 
 /**
+ * 交付物判据的单条等待上限（issue #391 R5）：**与 guard 同一个旋钮**——引擎的
+ * `runDeliverables` 直接读 `finalGuardTimeoutMs` 当判据超时（`src/loop/deliverables.js`
+ * 的 `runOne`，逐条计时），不新增配置项。所以「判据跑在 guard 之前，两者共享同一时间预算」
+ * 不是取舍，而是引擎的现状：一次 attempt 的最坏等待 = `判据条数 × 上限 + guard 上限`。
+ */
+export const DELIVERABLE_CHECK_TIMEOUT_MS = FINAL_GUARD_TIMEOUT_MS;
+
+/**
  * 开启 finalGuard 的**最坏额外开销**：guard 最多被叫 `1 + maxRetries` 次（每次上限
  * `finalGuardTimeoutMs`），外加 ≤2 轮 revise 的模型往返。宿主据此把自己的硬 abort
  * 往后挪，否则就是坑 ①（见 `FINAL_GUARD_TIMEOUT_MS` 的注释）。
+ *
+ * issue #391 R5：声明了交付物判据时，**每次 attempt 还要先跑一遍判据**（引擎在每次 guard 调用
+ * 之前核，`src/loop/termination.js` 的闸门那一段），而判据的超时预算与 guard 共用同一个
+ * `finalGuardTimeoutMs` ⇒ 每条判据让每次 attempt 的上限再加一个 `finalGuardTimeoutMs`。
+ * 按「1 条默认判据」算就是 3 × (10s + 10s) = **60s**（不声明判据时仍是 30s，常量未变）。
  */
-export const FINAL_GUARD_WORST_CASE_MS = FINAL_GUARD_MAX_CALLS * FINAL_GUARD_TIMEOUT_MS;
+export function finalGuardWorstCaseMs({ deliverableCriteria = 0 } = {}) {
+  const perAttempt = FINAL_GUARD_TIMEOUT_MS * (1 + Math.max(0, deliverableCriteria));
+  return FINAL_GUARD_MAX_CALLS * perAttempt;
+}
+
+/** 未声明交付物判据时的最坏额外开销（既有常量，语义与数值都未变）。 */
+export const FINAL_GUARD_WORST_CASE_MS = finalGuardWorstCaseMs();
 
 /** 每段要模型写什么（提示词里的槽位说明；段名才是 guard 的判定对象）。 */
 const SECTION_HINTS = {
@@ -249,10 +268,16 @@ export function inspectFinalDraft({ finalText, messages } = {}) {
 }
 
 /** guard 计数器的初始形状（挂在 diagnostics.finalGuard 上，见 `summarizeFinalGuard`）。 */
-export function createFinalGuardTally({ finalGuardTimeoutMs = FINAL_GUARD_TIMEOUT_MS } = {}) {
+export function createFinalGuardTally({
+  finalGuardTimeoutMs = FINAL_GUARD_TIMEOUT_MS,
+  deliverableCriteria = 0,
+} = {}) {
   const timeoutMs = Number.isSafeInteger(finalGuardTimeoutMs) && finalGuardTimeoutMs > 0
     ? finalGuardTimeoutMs
     : FINAL_GUARD_TIMEOUT_MS;
+  const criteria = Number.isSafeInteger(deliverableCriteria) && deliverableCriteria > 0
+    ? deliverableCriteria
+    : 0;
   return {
     enabled: true,
     calls: 0,
@@ -265,7 +290,9 @@ export function createFinalGuardTally({ finalGuardTimeoutMs = FINAL_GUARD_TIMEOU
     declaredBases: [],
     untraceableBases: [],
     finalGuardTimeoutMs: timeoutMs,
-    worstCaseExtraMs: FINAL_GUARD_MAX_CALLS * timeoutMs,
+    // #391 R5：判据条数（0 = 没声明 `requireDeliverable`）与据此算出的最坏额外开销。
+    deliverableCriteria: criteria,
+    worstCaseExtraMs: FINAL_GUARD_MAX_CALLS * timeoutMs * (1 + criteria),
     source: "host finalGuard wrapper (erix-run-final-guard.js)",
   };
 }
@@ -329,7 +356,12 @@ export function summarizeFinalGuard(tally) {
   return `finalGuard calls=${tally.calls ?? 0} 累计等待=${tally.elapsedMs ?? 0}ms`
     + ` revise=${tally.reviseRounds ?? 0}/2（引擎 finalGuardMaxRetries 默认 2）`
     + ` 每次上限=${tally.finalGuardTimeoutMs ?? FINAL_GUARD_TIMEOUT_MS}ms`
-    + `（最坏额外 ${tally.worstCaseExtraMs ?? FINAL_GUARD_WORST_CASE_MS}ms）`
+    + `（最坏额外 ${tally.worstCaseExtraMs ?? FINAL_GUARD_WORST_CASE_MS}ms`
+    // #391 R5：声明了交付物判据时把「判据也吃同一个时间预算」说出来（没声明 ⇒ 这一句不存在，
+    // 整行与 #314 逐字一致）。
+    + `${tally.deliverableCriteria > 0
+      ? `；其中交付物判据 ${tally.deliverableCriteria} 条 × 每次 ${tally.finalGuardTimeoutMs ?? FINAL_GUARD_TIMEOUT_MS}ms，与 guard 共享同一预算`
+      : ""}）`
     + ` ｜ 声明基点 ${tally.declaredBases?.length ?? 0} 条 / 逐字对不上 ${(tally.untraceableBases ?? []).length} 条`
     + ` ｜ 派生结论提醒 ${tally.ratioFlags?.length ?? 0} 条（只提醒不硬拒）`
     + ` ｜ 来源 ${tally.source ?? "unknown"}`;
