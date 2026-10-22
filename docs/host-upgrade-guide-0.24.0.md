@@ -270,7 +270,7 @@ The full table, the truncation markers, and the absence semantics live in the co
 `npm run check:final-guard-probe`) drives the whole surface with a scripted fake provider:
 payload keys and per-key bytes, fake-completion → `revise` → remediation, retry exhaustion,
 guard throw, guard timeout, the rubber-stamp trap, and the overhead bound (30 rounds × 4 KB
-tool output: `messages` 257,618 B vs additive keys 2,122 B = **0.82%**, budget < 2%). Every
+tool output: `messages` 257,618 B vs additive keys 2,242 B = **0.87%**, budget < 2%). Every
 scenario **asserts**; the process exits non-zero if the semantics move.
 
 **Do you have to act?** No. The seven original keys keep their names, types, order, and

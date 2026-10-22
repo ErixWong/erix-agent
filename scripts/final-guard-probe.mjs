@@ -447,9 +447,12 @@ try {
     });
 
     const messagesBytes = jsonBytes(payload.messages);
-    const additiveBytes = ADDITIVE_PAYLOAD_KEYS
-      .filter((key) => payload[key] !== undefined)
-      .reduce((sum, key) => sum + jsonBytes(payload[key]), 0);
+    // 加法键的**整包**开销（含键名与逗号）：整份 payload 减去「把加法键全摘掉」的那份。
+    // 只累加值的字节会漏掉键名（10 个键名 ≈ 130 字节），那种数偏乐观，不用它。
+    const stripped = Object.fromEntries(
+      Object.entries(payload).filter(([key]) => !ADDITIVE_PAYLOAD_KEYS.includes(key)),
+    );
+    const additiveBytes = jsonBytes(payload) - jsonBytes(stripped);
     const share = additiveBytes / messagesBytes;
 
     expect(result.rounds >= 30, `场景应跑满 30 轮，实际 ${result.rounds} 轮`);

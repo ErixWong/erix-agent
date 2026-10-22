@@ -228,8 +228,8 @@ tree/marker 那一刀的窄化、以及读侧诚实性那一刀（`editDiffTrunc
 
 **不用花一个 token 就能验证。** `node scripts/final-guard-probe.mjs`（也可 `npm run check:final-guard-probe`）
 用脚本化的假 provider 驱动整个面：payload 键与逐键字节、假完成 → `revise` → 补救、重试耗尽、guard 抛错、
-guard 超时、橡皮章陷阱，以及开销上限（30 轮 × 4KB 工具输出：`messages` 257,618 B vs 加法键 2,122 B =
-**0.82%**，预算 < 2%）。每个场景都**断言**；语义一动，进程就以非零退出。
+guard 超时、橡皮章陷阱，以及开销上限（30 轮 × 4KB 工具输出：`messages` 257,618 B vs 加法键 2,242 B =
+**0.87%**，预算 < 2%）。每个场景都**断言**；语义一动，进程就以非零退出。
 
 **要不要动手？** 不用。原有 7 键的名字、类型、顺序、取值不变；裁决语义（`accept` / `skip` / `revise` /
 重试上限 / fail-closed）一字未动。如果你原本在重解析 `messages` 去捞上面那些事实，那段代码可以删了——

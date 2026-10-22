@@ -1296,7 +1296,7 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
   「这个 run 什么都没记」——这本身就是事实）。`cwd`、`runId`、`taskBrief`、`selfReport` 只在真有
   东西可报时在场。
 - **开销有上限且已实测。** `node scripts/final-guard-probe.mjs` 离线跑「30 轮 × 4KB 工具输出」：
-  `messages` 257,618 字节、加法键 2,122 字节 = **0.82%**，预算上限是 < 2%。所以宿主可以整包落盘/入队
+  `messages` 257,618 字节、加法键 2,242 字节 = **0.87%**，预算上限是 < 2%。所以宿主可以整包落盘/入队
   而不用怕体积，guard 也可以读事实而不是重解析 transcript（小 run 的 `messages` 是 611 字节，真实 run
   几十 KB 到 MB）。
 

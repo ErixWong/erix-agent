@@ -1612,7 +1612,7 @@ host is most likely to get wrong:
   `runId`, `taskBrief`, and `selfReport` are present only when there was something to report.
 - **The overhead is bounded and measured.** `node scripts/final-guard-probe.mjs` runs a
   30-round × 4 KB-tool-output scenario offline: `messages` is 257,618 bytes, the additive
-  keys are 2,122 bytes — **0.82%**, against a budget of < 2%. A host can therefore log or
+  keys are 2,242 bytes — **0.87%**, against a budget of < 2%. A host can therefore log or
   queue the whole payload without a size panic, and a guard can read the facts instead of
   re-parsing the transcript (a small run's `messages` is 611 bytes; a real one is tens of
   KB to MB).
