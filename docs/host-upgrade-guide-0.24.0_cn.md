@@ -349,8 +349,17 @@ issue #391（宿主采用）改了三件事：
 | 未声明 | 任意 | 与今天逐字一致 |
 
 **对退出码意味着什么。** 声明了判据、guard 又 `skip` 的 run：判据全通过时现在退 **0**（原先 4），
-判据有失败时退 **2**（原先 4）。这就是本单的意义；如果你用 shell 调
-`erix chat --require-deliverable`，这是唯一要写进你自己发布说明的一行。
+判据有失败时退 **2**（原先 4）。本机修前/修后实测：这一对 run 是 `4` / `4` → `0` / `2`。这就是
+本单的意义；如果你用 shell 调 `erix chat --require-deliverable`，这是唯一要写进你自己发布说明的一行。
+
+**旧行为是自相矛盾的。** 失败的那一半从前退 **4**（「没人验过」），而这次 run 自己的 metrics 里写着
+`deliverables_failed: 1`；终稿也打在朴素的 `=== 终稿 ===` 标题下，而不是
+`=== 终稿（未核验，不可信） ===`。如果你的 CI 闸门建在退出码上，它为一个引擎**已经判过**的 run
+读到的是「没验」——而判据**通过**的那个 run 读到的也是同一个「没验」。
+
+**如果你从来没声明 `deliverables`，这一节与你无关。** 没有判据就没有机器结论，于是 guard `skip`
+仍然以 `skipped` 收尾、CLI 仍然退 **4**——引擎自己的发布冒烟就属于这一类
+（`npm run check:release` 跑的那次 `chat` 不带判据并断言退出 **4**）。这一节从头到尾都是 opt-in。
 
 **`machine_only` 不是「guard 验过了」。** 它是引擎**用你自己的判据**验收了这次 run，而 guard 放弃了
 判断。聚合形式是 `metrics.deliverables_machine_only`（只在这一格出现）；`metrics.verified` 在这一格
@@ -401,7 +410,7 @@ guard 的 `revise` 意见足够具体、多跑一轮**确实**能补上那个缺
 ## 12. 自检
 
 ```bash
-npm test                       # 1,918 tests，0 失败（1,909 通过 + 9 skipped）
+npm test                       # 1,920 tests，0 失败（1,911 通过 + 9 skipped）
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # 离线、零模型调用；断言 finalGuard 的载荷面
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件

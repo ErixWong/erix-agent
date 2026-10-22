@@ -411,8 +411,20 @@ applies **only** when you declared `deliverables`:
 
 **What it means for exit codes.** A run that declares criteria and whose guard skips now
 exits **0** when the criteria pass (it used to exit **4**) and **2** when they fail (it used
-to exit **4**). That is the point of the change, and it is the one line to put in your own
-release notes if you shell out to `erix chat --require-deliverable`.
+to exit **4**). Measured on this machine before/after: `4` / `4` → `0` / `2` for that pair of
+runs. That is the point of the change, and it is the one line to put in your own release
+notes if you shell out to `erix chat --require-deliverable`.
+
+**The old behaviour contradicted itself.** The failing half used to exit **4** ("nobody
+checked") while the run's own metrics said `deliverables_failed: 1`, and the final answer was
+printed under the plain `=== 终稿 ===` title instead of `=== 终稿（未核验，不可信） ===`. If
+you had wired a CI gate on the exit code, it was reading "not verified" for a run the engine
+had already judged — and reading the same "not verified" for a run whose criteria **passed**.
+
+**If you never declared `deliverables`, nothing here applies to you.** No criteria means no
+machine verdict, so a guard `skip` still ends `skipped` and the CLI still exits **4** — that
+is the class the engine's own release smoke belongs to (`npm run check:release` runs a
+`chat` without criteria and asserts exit **4**). This section is opt-in all the way down.
 
 **`machine_only` is not "the guard verified it".** It is the engine accepting the run **on
 your own criteria** while the guard declined to judge. `metrics.deliverables_machine_only`
@@ -473,7 +485,7 @@ enough that one more round plausibly closes the gap — that is the only thing t
 ## 12. Self-check
 
 ```bash
-npm test                       # 1,918 tests, 0 failing (1,909 passing + 9 skipped)
+npm test                       # 1,920 tests, 0 failing (1,911 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # offline, zero model calls; asserts the finalGuard payload surface
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites

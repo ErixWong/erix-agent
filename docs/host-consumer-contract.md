@@ -1767,6 +1767,19 @@ aggregate form, and `metrics.verified` deliberately does **not** move there: it 
 Because `machine_only` is `verified`, a CLI run that declares criteria and whose guard skips
 exits **0** instead of **4** when the criteria pass, and **2** when they fail.
 
+Before this change the two surfaces contradicted each other: a run whose criteria had already
+**failed** still exited **4** ("nobody checked") and printed the plain `=== 终稿 ===` title,
+while the run's own metrics recorded `deliverables_failed: 1` — the machine had decided, and
+the exit code a CI job reads said it had not. The pair measured on this machine before the
+fix is `4` / `4` (criteria passing / failing); after it, `0` / `2`.
+
+**Hosts that do not declare `deliverables` are untouched.** Without the option there is no
+machine verdict to outrank anything: a guard `skip` still yields
+`{ status: "skipped", reason: <the guard's own skip reason> }`, the CLI still exits **4**, and
+no payload key, metric key or event field appears. That is also the class the engine's own
+release smoke belongs to — `npm run check:release` runs a `chat` **without** criteria and
+asserts exit **4**; it must keep exiting 4, and it does.
+
 Four boundaries are deliberate:
 
 - **`termination.reason` is not rewritten.** The gate changes `verification` only; it

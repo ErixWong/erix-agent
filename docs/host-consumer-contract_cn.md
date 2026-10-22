@@ -1430,6 +1430,16 @@ deliverables?: [
 因为 `machine_only` 就是 `verified`，所以一条声明了判据、guard 又 `skip` 的 CLI run：
 判据全通过时退出码是 **0**（不再是 4），判据有失败时是 **2**。
 
+改之前这两个面是**自相矛盾**的：判据已经**失败**的 run 仍然退 **4**（「没人验过」）、终稿标题
+还是朴素的 `=== 终稿 ===`，而这次 run 自己的 metrics 里明明记着 `deliverables_failed: 1`——
+机器已经判了，CI 读到的退出码却说它没判。本机修前实测的那一对是 `4` / `4`（判据通过 / 失败），
+修后是 `0` / `2`。
+
+**没有声明 `deliverables` 的宿主完全不受影响。** 没有判据就没有「机器结论」可以压过任何东西：
+guard `skip` 仍然产出 `{ status: "skipped", reason: <guard 自己的 skip 原因> }`，CLI 仍然退 **4**，
+payload 无键、metrics 无键、事件无字段。引擎自己的发布冒烟也属于这一类——
+`npm run check:release` 跑的那次 `chat` **不带**判据并断言退出 **4**；它必须继续退 4，事实上也仍然退 4。
+
 四条边界是刻意的：
 
 - **`termination.reason` 不被改写。** 闸门只改 `verification`，不引入新的停机原因；
