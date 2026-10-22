@@ -75,8 +75,8 @@ export function pendingTailToolUsesAreAnswerable(messages) {
  * 调它，不必自己判断尾部。
  *
  * @param {any[]} messages canonical 消息数组（就地追加）
- * @param {{round?: number, messageRounds?: Map<any, any>, onMessage?: (message: any, round?: number) => any}} [options]
- *   `messageRounds` 与主循环同一份口径（轮号表）；`onMessage` 是**入账回调**，由 orchestrator 注入
+ * @param {{round?: number, messageRounds?: Map<any, any> | WeakMap<any, any>, onMessage?: (message: any, round?: number) => any}} [options]
+ *   `messageRounds` 与主循环同一份口径（轮号表——主循环用的是 `WeakMap`，termination 侧原样转交）；`onMessage` 是**入账回调**，由 orchestrator 注入
  *   （本模块不持有 store、不碰 persist —— journal 写入一直是 orchestrator 的职责面）。
  * @returns {Promise<boolean>} true = 真的补了一条 user 消息；false = 尾部没有可结清的悬空块
  *   （含「畸形尾巴补不出合法结果」那一格）
