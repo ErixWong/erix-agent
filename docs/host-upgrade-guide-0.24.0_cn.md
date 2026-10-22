@@ -292,7 +292,21 @@ guard 超时、橡皮章陷阱，以及开销上限（30 轮 × 4KB 工具输出
 
 **CLI。** `erix chat --require-deliverable` 打开一条默认判据——「本 run 声明写过的每个路径，
 收尾时都必须真的在盘上」——且**默认关闭**，所以退出码承诺（`0` verified / `2` unverified /
-`3` error / `4` skipped）在你主动要求之前一字不变。
+`3` error / `4` skipped）在你主动要求之前一字不变。issue #391（宿主采用）改了两件事：
+
+- **它必须与 `--final-guard` 同用**（或 `ERIX_FINAL_GUARD=1`）。判据是**拦 guard `accept` 的闸门**；
+没有 guard 就没有闸门，所以从前单独给 `--require-deliverable` 是一个静默空转。现在它是
+**usage error**（`exit 1`，文案点名两个旗标与理由）。这一种组合的行为变了：`exit 4` → `exit 1`。
+- **run 的工作目录接上了**：`erix chat --cwd <dir>`（缺省：进程工作目录；必须是已存在的目录，
+否则 usage error）。`cwd` 就是 `deliverables` / `finalGuard` 载荷里带的那个值，所以上面那段配方
+（`path.join(cwd, …)`）开箱即用。`erix repl` 传进程工作目录；`erix_run` 传它自己那个必填的
+`cwd` 参数。
+
+**宿主侧的 `cwd`（issue #391）。** `runToolLoop({ cwd })` 从 §8 起就存在，且是纯透传。缺的是
+**宿主把它传下去**：CLI、REPL 与 `erix_run` 扩展三处组装 options 时都没带 `cwd`，于是 §9 的判据
+拿到 `undefined`、`path.join(undefined, "report.md")` 在每次 accept 时抛错——一个看起来像
+「交付物不在盘上」的永久 `unverified:deliverables_failed`。如果你把 §9 抄进了自己的宿主却从来
+没拿到 `verified`，先检查你有没有传 `cwd`：引擎永远不会替你补。
 
 **需要你动手吗？** 不需要；但如果你现在的 guard 自己查磁盘，把那段检查搬进 `deliverables`
 交给引擎强制：这样以后重写 guard 时，它不可能悄悄退化成橡皮章。

@@ -43,6 +43,20 @@
   - **如实记下的既有缺陷（本切片不修）**：`filesWritten[].path` 是 judge 时间线的 `summarizeArgument` 摘要参数，被 `MAX_COMMAND_LENGTH = 40` 截断且**不带截断标记** ⇒ 长路径只能当提示，不能当主键（探针 `S7` 把 `longest === 40` 钉住，改上限会变红）。
   - **门禁**：`npm test` → **tests 1,881 / pass 1,872 / fail 0 / skipped 9**（改前基线 1,871 / 1,862 / 0 / 9，差值恰是新增的 10 格）；`check:syntax`、`check:docs`、`check:docs:strict`、`check:docs-examples`、`check:pack-links`、`check:tests`、`check:types`（117 = 基线）、`check:types -- --with-tools`（153 = 基线）、`docs-drift-check --self-test`、`check:release`、`final-guard-probe` 逐个 exit 0。两处连带：`test/tools/file-tools.test.js` 的 `median` 角色锚点从 `src/loop/termination.js` 换到 `bin/repl.js`（前者被本单撑大 +74%，容量 7,227 → 6,255 已掉出样本中位带，描述里的 `median 7,243` 因此一字不用改）；契约中英各两处符号锚点自带区间因行号位移而不相交 ⇒ 删区间只留符号，裸行号棘轮 136 → **132**。
 
+### Changed
+
+- **宿主侧采用 `finalGuard` 新能力（issue #391，`#386` 切片 4）：三个宿主都接上 `cwd`，`--require-deliverable` 不再静默空转，`erix_run` 拿到命名判据（`bin/cli.js`、`bin/repl.js`、`examples/pi-extension/erix-run-core.js`、`examples/pi-extension/erix-run.ts`、`bin/guard-metrics.js`、`scripts/docs-drift-check.mjs`；**引擎语义一字未动**，`src/**` 零改动）。**
+  - **现场（为什么这是缺陷而不是遗漏）**：`cwd` 从切片 1 起就是 `runToolLoop` 的纯透传选项（只进 `finalGuard` / `deliverables` 的事实载荷），但三个宿主组装 options 时**都没传**。于是升级指南 §9 那段配方 `path.join(cwd, "report.md")` 在宿主里拼成 `"undefined/report.md"`——不报错、不警告，只是**恒假**：guard 每次 accept 都被机器闸门判成 `unverified:deliverables_failed`。另一个静默空转：`--require-deliverable` 单独给时引擎根本不核（闸门只在 `typeof finalGuard === "function"` 时才跑）。
+  - **R1 三处接线**：`erix chat` 新增 `--cwd <dir>`（缺省进程工作目录，必须是**已存在的目录**否则 usage error `exit 1`），接进 `loopOptions.cwd`，默认会话 id 与 `-c`/`-r` 的会话发现一并按它派生；`erix repl` 的 `loopOptions.cwd` = 进程工作目录（不加 `--cwd`：交互会话的工作目录就是进程目录，再造一个「run 的 cwd ≠ 工具的 cwd」只会让磁盘判据与写入位置错位）；`erix_run` 的 `buildLoopOptions` 把它早就验过的 `params.cwd` 往下传。
+  - **R2 `--require-deliverable` 与 `--final-guard` 必须同用**（或 `ERIX_FINAL_GUARD=1`）：单独给是 usage error（`exit 1`，文案点名两个旗标与理由）。**这是行为变化**：原来那一种组合是 `exit 4`（skipped，看起来「跑完了」），现在是 `exit 1`。选显式失败而不是「自动替用户装一个天真 guard」，是因为后者会把「成功 + 不带 `--final-guard` ⇒ `exit 4`」这条被 `check:release` / `check:cli-real` 与 7 处进程级断言钉着的承诺面改掉。
+  - **R3 repl 侧补齐**：`erix repl --require-deliverable`（解析 + usage 行 + `loopOptions.deliverables`，同一条同用要求）；`bin/guard-metrics.js` 在**有值时**多渲染 `deliverables_checked` / `deliverables_failed` 两个计数，未声明判据时那一行逐字不变。
+  - **R4 旗标清单变成机器锚**：`scripts/docs-drift-check.mjs` 新增 `cli-flags` 锚点——从 `bin/cli.js` 的帮助/usage 文本抽出 `chat` / `repl` 两条命令的旗标集合，与 `README.md` / `README_cn.md` 的 usage 行**双向逐处**对账（README 少一个红、多一个红、改名红），另加中英处数对账，并在 `--self-test` 里带三例反向证。首次生效即抓到三处既有漂移：两份 README 的 usage 行都缺 `--require-deliverable`、`--no-todo`、`--error-log`。
+  - **R5 `erix_run` 的参数面**：新增 `requireDeliverable: boolean`（缺省 `false`），为真 ⇒ 复用 `bin/final-guard.js` 的 `createDeliverableChecks()`（`files_written_exist`）接进 `buildLoopOptions` 的 `deliverables`。**不提供宿主自定义 `check` 入口**（跨扩展边界传函数不安全）。判据与 guard 共享同一个 `finalGuardTimeoutMs` 预算 ⇒ 最坏额外开销从 `3 × 10s` 重算为 `3 × (1 + 判据条数) × 10s`（默认 1 条判据 = 60s），宿主硬 abort 的余量按此顺延。
+  - **测试**：新增 `test/host-cwd-wiring.test.js`（**不手抄**指南 §9 配方：从文档围栏读源码、`new Function` 原样执行；给 `cwd` ⇒ `verified` / 不给 ⇒ `unverified:deliverables_failed` 对偶两格 + 三处接线各一格）；`test/cli-process.test.js` 新增真子进程两格（`--final-guard --require-deliverable` + 判据不成立 ⇒ `exit 2` 且 stdout 里能看到 `deliverables_failed`；`--require-deliverable` 单独给 ⇒ `exit 1` 且零模型请求）；`test/repl.test.js` / `test/guard-metrics` 侧补齐 repl 旗标解析与渲染两格。
+  - **反向证**：把三处 `cwd` 接线注释掉 ⇒ `test/host-cwd-wiring.test.js` **3 格变红**，`md5sum` 前后一致。
+  - **文档**：0.24.0 中英升级指南 §9 补「CLI 的两条变化（同用要求 + `--cwd` 接线）」与「宿主侧 `cwd` 缺失的症状与自查」；README 中英 usage 行与参数散文补齐既有漂移。
+  - **本单仍未解决（写清）**：`erix_run` 的安装副本（`~/.pi/agent/extensions/erix-run/`）部署同步由主 agent 做；`--require-deliverable` 与 `--final-guard` 的耦合是产品面决定（另一个选项是「自动装天真 guard」，已否决）；repl 侧仍无进程级测试（只有函数级）。
+
 ### Fixed
 
 - **`finalGuardExtend` 的补跑桥在「末轮带 `tool_use`」时不再产出非法消息序（issue #393；`src/loop/orchestrator.js`、`src/messages/rounds.js`；零依赖、纯 ESM、**不动判定表**）。**

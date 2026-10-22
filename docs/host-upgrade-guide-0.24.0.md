@@ -342,7 +342,25 @@ payload key set byte-for-byte against the pre-slice behaviour.
 **CLI.** `erix chat --require-deliverable` turns on exactly one default criterion — "every
 path this run declared it wrote must still exist on disk" — and it is **off by default**, so
 the exit-code promise (`0` verified / `2` unverified / `3` error / `4` skipped) is unchanged
-unless you ask for it.
+unless you ask for it. Two things changed in issue #391 (host adoption):
+
+- **It must be used together with `--final-guard`** (or `ERIX_FINAL_GUARD=1`). The criterion is
+a *gate on the guard's `accept`*; with no guard there is no gate, so `--require-deliverable`
+alone used to be a silent no-op. It is now a **usage error** (`exit 1`, the message names both
+flags and the reason). That one combination changes behaviour: `exit 4` → `exit 1`.
+- **The run's working directory is now wired**: `erix chat --cwd <dir>` (default: the process
+working directory, must be an existing directory or it is a usage error). `cwd` is the value
+the `deliverables` / `finalGuard` payload carries, so the recipe above (`path.join(cwd, …)`)
+works out of the box. `erix repl` passes the process working directory; `erix_run` passes its
+own required `cwd` parameter.
+
+**Host-side `cwd` (issue #391).** `runToolLoop({ cwd })` has existed since §8 as a pure
+pass-through. What was missing was *the hosts using it*: the CLI, the REPL and the `erix_run`
+extension all built their options without `cwd`, so §9's criterion received `undefined` and
+`path.join(undefined, "report.md")` threw on every accept — a permanent
+`unverified:deliverables_failed` that looked like "the deliverable is missing". If you copied
+§9 into your own host and it never verified, check that you pass `cwd`; the engine never
+fills it in for you.
 
 **Do you have to act?** No, but if your guard currently does its own disk checking, move that
 check into `deliverables` and let the engine enforce it: then a future guard rewrite cannot

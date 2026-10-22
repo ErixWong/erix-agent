@@ -1442,10 +1442,21 @@ test("#326-D 账本里有 messages 缺失/为 null 的老行时续跑也不崩",
 });
 
 // issue #386 切片 2：CLI 侧**默认关闭**的交付物判据（`--require-deliverable`）。
+// issue #391 R2：它必须与 `--final-guard` 同用——单独给是 usage error（不是静默空转）。
 test("parseChatArgs parses --require-deliverable, and it is off by default (issue #386 slice 2)", () => {
   assert.equal(parseChatArgs(["hello"], "/tmp/project").requireDeliverable, undefined,
     "默认必须关闭：开了它会改掉「成功 + 无 --final-guard ⇒ exit 4」的既有退出码承诺");
-  assert.equal(parseChatArgs(["hello", "--require-deliverable"], "/tmp/project").requireDeliverable, true);
+  // #391 R2：这一格从「单独给也能解析」改成「必须与 --final-guard 同用」——**不是放宽**：
+  // 单独给的那一格现在由下面那条 assert.throws 钉着（闸门跑在 guard 之内，没有 guard 就没有闸门，
+  // 旧行为是静默空转：用户以为在要求交付物，实际一个字都没核）。
+  assert.equal(
+    parseChatArgs(["hello", "--final-guard", "--require-deliverable"], "/tmp/project").requireDeliverable,
+    true,
+  );
+  assert.throws(
+    () => parseChatArgs(["hello", "--require-deliverable"], "/tmp/project"),
+    /--require-deliverable 必须与 --final-guard 同用/u,
+  );
   assert.throws(
     () => parseChatArgs(["hello", "--require-deliverable", "--require-deliverable"], "/tmp/project"),
     /参数重复/u,

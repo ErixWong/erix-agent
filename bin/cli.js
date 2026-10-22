@@ -76,7 +76,10 @@ const HELP_TEXT = `用法：
   --no-final-guard      兼容别名（默认已关闭，no-op）
   --require-deliverable 交付物机器判据（默认关闭）：本 run 用写工具声明过的每个路径收尾时都必须
                       真的在盘上，否则 guard 的 accept 也拿不到 verified（终局 unverified:deliverables_failed，
-                      exit 2）。读的是原始写路径（fileWrites），不是 40 码点摘要
+                      exit 2）。读的是原始写路径（fileWrites），不是 40 码点摘要。
+                      ⚠ **必须与 --final-guard 同用**（或 ERIX_FINAL_GUARD=1）：判据是拦 guard accept
+                      的闸门，没有 guard 就没有闸门——单独给会直接报 usage error（exit 1），
+                      不静默空转（issue #391 R2）
   --no-notes            不装配 notes 工厂（note_* 工具不再可用），保留其他 skill
   --no-todo             彻底关闭 todo：内置 todo_* 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
@@ -458,6 +461,24 @@ export function parseChatArgs(args, cwd = process.cwd()) {
   // 优先，一个字也不改。
   if (options.cwd !== undefined && !seenOptions.has("--session")) {
     options.session = defaultSessionId(options.cwd, { unique: true });
+  }
+
+  // issue #391 R2：`--require-deliverable` 单独用是**空转**——引擎只在
+  // `typeof finalGuard === "function"` 时才跑 deliverables 闸门（`src/loop/termination.js`
+  // 的 callFinalGuard 入口），没有 guard 就没有闸门。静默空转比报错更坏：用户以为自己已经
+  // 要求了交付物，实际一个字都没核（这正是 #391 报的「旗标看起来能用、其实不生效」）。
+  // 所以选**显式失败**（exit 1 + 点名两个旗标必须同用），而不是自动替用户装一个天真 guard——
+  // 那会把「不带 --final-guard 的一次成功 chat ⇒ exit 4」这个既有承诺面改掉。
+  if (
+    options.requireDeliverable === true
+    && options.finalGuard !== true
+    && process.env.ERIX_FINAL_GUARD?.trim() !== "1"
+  ) {
+    usageError(
+      "--require-deliverable 必须与 --final-guard 同用（或设 ERIX_FINAL_GUARD=1）："
+      + "交付物判据是拦 guard accept 的**闸门**，引擎只在 guard 存在时才核它；"
+      + "单独用等于什么都不核（静默空转）",
+    );
   }
 
   return { prompt, ...options };
