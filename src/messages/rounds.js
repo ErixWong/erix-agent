@@ -127,8 +127,9 @@ export function validateMessages(messages, { allowPendingToolUse = false } = {})
  * 唯一形状就是「末条 assistant 的 `tool_use` 之后没有 user `tool_result`」
  * （`index === messages.length - 1 && next === undefined`）。于是「在这条 assistant 之后还能不能插
  * 一条 user 消息」的判据就是本函数返回空数组 —— 引擎要往尾部注入任何 user 消息（`meta.source:
- * "judge-control"` 的控制文本等）之前都必须先问它，否则 provider 会以 `invalid_messages`
- * （`assistant tool_use has no immediately following user tool_result`）拒掉整份历史。
+ * "judge-control"` 的控制文本等）之前都必须先问它，否则**本库自己的校验器**会在任何请求发出之前以
+ * `invalid_messages`（`assistant tool_use has no immediately following user tool_result`）拒掉
+ * 整份历史（2026-10-22 实测更正归因：**零 HTTP**，不是 provider 拒；规矩按两协议里最严的那一档立）。
  *
  * 只看末条：`validateMessages` 在中间位置从不接受悬空 `tool_use`，所以「末条以外」没有这种形状。
  *

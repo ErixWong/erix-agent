@@ -9,9 +9,13 @@
  *   2. `src/loop/termination.js#forceFinalIfNeeded`（强制收尾：【强制收尾】指令注入之前）；
  *   3. 兄弟洞：`src/loop/orchestrator.js` 的 stop 分支里 finalGuard 判 `revise` 那条续跑消息。
  * 2 与 3 都在 #394 之前**没有**结清动作，于是「尾部是 `assistant[tool_use]`」时注入把 `tool_use`
- * 与它应有的 `tool_result` 隔开 ⇒ provider 以 `invalid_messages`
+ * 与它应有的 `tool_result` 隔开 ⇒ **本库自己的消息校验器**在任何请求发出**之前**就本地抛
+ * `invalid_messages`
  * （`assistant tool_use has no immediately following user tool_result`）拒掉整份历史，宿主拿到
  * `termination: failed`，终稿丢失。缺口不在判据、不在构造器，而在「只有一个结清点」。
+ * 归因（2026-10-22 实测更正，别写回「provider 拒」）：那次失败**零 HTTP**，栈落在
+ * `src/messages/rounds.js#validateMessages`；规矩按本库说的两协议里**最严的那一档**立
+ * （Anthropic 形状对这个形状回 400），而实跑的 OpenAI 兼容中转会回 **200** 并让模型**自己编**一个结局。
  *
  * 三条纪律（本模块存在的全部理由，改它之前先读）：
  *   - **判据复用既有那一份**：`pendingTrailingToolUses`（`src/messages/rounds.js`，与

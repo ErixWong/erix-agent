@@ -3190,9 +3190,10 @@ export async function runToolLoop(options) {
     // 对它是空操作；但 guard 补跑桥是在**终局收尾之后**被调的，末条 assistant 完全可能带着
     // 未被回答的 `tool_use`（实测形状：`max_rounds_cap` ⇒ 强制收尾那一轮模型仍回了工具调用，
     // 而强制收尾的请求本身就带 `tools: []`，于是那条 `tool_use` 没有任何结果）。
-    // 直接 push 控制文本就把它与应有的 `tool_result` 隔开 ⇒ provider 以
-    // `invalid_messages`（`assistant tool_use has no immediately following user tool_result`）
-    // 拒掉整份历史，宿主拿到 `termination: failed`（issue #393 实测 index 4 / 8 两处）。
+    // 直接 push 控制文本就把它与应有的 `tool_result` 隔开 ⇒ **本库自己的消息校验器**在任何
+    // 请求发出之前本地抛 `invalid_messages`（`assistant tool_use has no immediately following user
+    // tool_result`）拒掉整份历史，宿主拿到 `termination: failed`（issue #393 实测 index 4 / 8 两处；
+    // 2026-10-22 更正归因：**零 HTTP**，拒的是 `validateMessages`，不是 provider）。
     //
     // 判据（`pendingTrailingToolUses`，与 `validateMessages` 的配对规则同源）、结果块（唯一构造点
     // `buildToolResultFact`）、正文（`PENDING_TOOL_RESULT_TEXT`）三件事实都在共享实现

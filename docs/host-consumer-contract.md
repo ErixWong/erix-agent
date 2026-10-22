@@ -1613,8 +1613,11 @@ Cost and observability:
   engine-written `tool_result` (`is_error: true`, content is
   `PENDING_TOOL_RESULT_TEXT` (`src/loop/pending-tool-result.js`), starting with the `[erix]` marker)
   and only then injects the control text (issue #393). The injected user message must never
-  split a `tool_use` from its result, or the provider rejects the whole history as
-  `invalid_messages` and the host receives `termination: failed`. That `tool_result` reports a
+  split a `tool_use` from its result, or the library's own message validator throws locally
+  with `invalid_messages` **before a single request leaves the process** (measured 2026-10-22:
+  zero HTTP; the rule is the stricter of the two protocols this library speaks — an
+  Anthropic-shaped upstream answers 400 for this shape, while an OpenAI-compatible relay answers
+  200 and lets the model invent the outcome), and the host receives `termination: failed`. That `tool_result` reports a
   fact ("this call never ran"), so the call itself is **not** executed; a tail whose `tool_use`
   ids cannot be read is not repairable and is **not** extended — the run degrades exactly as
   without the bridge.

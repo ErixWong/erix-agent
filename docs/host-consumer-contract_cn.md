@@ -1298,8 +1298,11 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 - 若那次停机在末条 assistant 上留下了**悬空 `tool_use`**（强制收尾那一轮模型回的是工具调用而不是
   纯文本），桥会先用一条引擎自写的 `tool_result` 把它结清（`is_error: true`，正文取
   `PENDING_TOOL_RESULT_TEXT`（`src/loop/pending-tool-result.js`），以 `[erix]` marker 开头），**然后**才注入
-  控制文本（issue #393）。注入的 user 消息绝不能把 `tool_use` 与它的结果隔开——否则 provider 会以
-  `invalid_messages` 拒掉整份历史，宿主收到 `termination: failed`。那条 `tool_result` 陈述的是事实
+  控制文本（issue #393）。注入的 user 消息绝不能把 `tool_use` 与它的结果隔开——否则**本库自己的消息
+  校验器**会在任何一个请求发出**之前**本地抛 `invalid_messages` 拒掉整份历史，宿主收到
+  `termination: failed`（2026-10-22 实测更正：**零 HTTP**，拒的不是 provider；规矩按本库说的两协议里
+  最严的那一档立——Anthropic 形状对这个形状回 400，而实跑的 OpenAI 兼容中转会回 200 并让模型自己编
+  一个结局）。那条 `tool_result` 陈述的是事实
   （「这次调用根本没跑」），所以该调用**不会**被执行；`tool_use` 的 id 读不出来的畸形尾巴补不出合法
   结果，这一格**不补跑**，行为与未 opt-in 完全一致。
 - **同一个结清动作在**每一条**引擎自写控制消息之前都会跑，不只是补跑桥**（issue #394）。另外两个注入点

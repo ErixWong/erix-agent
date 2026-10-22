@@ -3,6 +3,10 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Docs
+
+- **归因更正（issue #394）：`invalid_messages` 是本库自己抛的，不是 provider 拒的**。三处源码注释与契约中英各一处原写「provider 以 `invalid_messages` 拒掉整份历史」，2026-10-22 实测：同形状的请求打到实跑的 OpenAI 兼容中转（`qwen3.8-flash-next`）拿 **HTTP 200**（模型照常答，于是它会**自己编**一个调用结局），而失败那次的栈落在 `validateMessages`（`src/messages/rounds.js`）、**一次 HTTP 都没发**。规矩本身保留，理由改成如实的三条：本库说两种协议、按**最严的那一档**校验（Anthropic 形状对该形状回 400，本机 `/v1/messages` 不可达故未实测）；不告诉模型调用结局它就会编；本地早失败的错误信息可解释。
+
 ### Added
 
 - **折叠义务变成可履行、可发现：`foldMessageRows` 进公共 API（issue #401 R1；`src/index.js`、`src/store/message-rows.js`；零依赖、纯 ESM、折叠口径一字未改）。**
