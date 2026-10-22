@@ -44,6 +44,8 @@ const ADDITIVE_PAYLOAD_KEYS = [
   "runId",
   "filesWritten",
   "filesWrittenTruncated",
+  "fileWrites",
+  "fileWritesTruncated",
   "toolStats",
   "toolStatsTruncated",
   "taskBrief",

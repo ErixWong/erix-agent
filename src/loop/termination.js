@@ -110,15 +110,26 @@ export function terminationReasonForAction(action, continuationExhausted) {
 //   3. 每个可变长键都有明确上限，超限时截断并在**同键旁**留一个可判定的 `…Truncated:true`。
 // 不改任何裁决语义：本模块只多交事实，accept/skip/revise 的判定与终局 reason 一字未动。
 
+/** 文件台账的**唯一**上限（issue #388）：
+ *  `governorState.filesWritten` / `governorState.fileWrites` 的裁剪（orchestrator 的 `trimFilesWritten` /
+ *  `trimFileWrites`）与 payload 里对应键的截断（`FINAL_GUARD_PAYLOAD_LIMITS`）都读这一个常量。
+ *
+ *  为什么必须是共享常量：切片 1 的报告点名过「payload 里一份 50、引擎 `trimFilesWritten` 一份 50」——
+ *  改一处就会出现「引擎留着 50 条、payload 只发 30 条」这类隐蔽不一致，而两边都不会报错。
+ *  本常量是**台账**口径（条目数），不是字节口径。 */
+export const FILE_LEDGER_LIMIT = 50;
+
 /** `finalGuard` payload 各可变长键的上限（超限截断 + 截断标记，见 `buildFinalGuardPayload`）。
  *
  * 上限不是审美：`messages` 才是 payload 的字节大头（30 轮 × 4KB 工具输出 ≈ 130KB），新键必须
  * 小到可以忽略（探针 `scripts/final-guard-probe.mjs` 把「新键总字节 < messages 字节的 2%」
- * 当断言跑）。数值口径：`filesWritten` / `toolStats` 取**最新/最活跃**的那一头（旧尾巴丢掉），
- * `taskBrief` / `selfReport` 的文本按 Unicode 码点截断（与 `capTaskBrief` 同口径，不会切碎代理对）。
+ * 当断言跑）。数值口径：`filesWritten` / `fileWrites` / `toolStats` 取**最新/最活跃**的那一头
+ * （旧尾巴丢掉），`taskBrief` / `selfReport` 的文本按 Unicode 码点截断（与 `capTaskBrief` 同口径，
+ * 不会切碎代理对）。两个文件台账键的上限都指 `FILE_LEDGER_LIMIT`（同一个数，不是两个 50）。
  */
 export const FINAL_GUARD_PAYLOAD_LIMITS = Object.freeze({
-  filesWritten: 50,
+  filesWritten: FILE_LEDGER_LIMIT,
+  fileWrites: FILE_LEDGER_LIMIT,
   toolStats: 40,
   taskBrief: 2000,
   selfReportText: 2000,
@@ -165,6 +176,30 @@ function plainFilesWritten(filesWritten, limit) {
     rows.push({
       path: String(entry.path ?? ""),
       round: Number.isFinite(entry.round) ? entry.round : null,
+    });
+  }
+  const kept = rows.slice(Math.max(0, rows.length - limit));
+  return { files: kept, truncated: kept.length < rows.length };
+}
+
+/** 原始写路径台账 → `[{path, round, tool}]`（issue #388）。
+ *
+ *  与 `plainFilesWritten` 的区别只有一处，但那一处是本单的根因：这里的 `path` 是
+ *  `tool_use.input[pathKey]` 的**原始值**（逐字，不摘要、不截断），可以直接拿去 `stat()`；
+ *  `filesWritten[].path` 是 judge timeline 的 40 码点摘要（`summarizeArgument`，且不带截断标记）。
+ *  三个键总是写全（`round` 探不到写 `null`，`tool` 探不到写 `""`）：形状固定，宿主不用判空。
+ *
+ *  @returns {{files:{path:string,round:number|null,tool:string}[], truncated:boolean}|null}
+ */
+function plainFileWrites(fileWrites, limit) {
+  if (!Array.isArray(fileWrites)) return null;
+  const rows = [];
+  for (const entry of fileWrites) {
+    if (entry === null || typeof entry !== "object") continue;
+    rows.push({
+      path: String(entry.path ?? ""),
+      round: Number.isFinite(entry.round) ? entry.round : null,
+      tool: typeof entry.tool === "string" ? entry.tool : "",
     });
   }
   const kept = rows.slice(Math.max(0, rows.length - limit));
@@ -229,6 +264,13 @@ export function buildFinalGuardPayload(ctx, reason, detail, attempt) {
   if (files !== null) {
     payload.filesWritten = files.files;
     if (files.truncated) payload.filesWrittenTruncated = true;
+  }
+  // issue #388：原始写路径（可直接 `stat()`）。与 `filesWritten` 的分工写进契约：
+  // `filesWritten` = 提示用摘要，`fileWrites` = 机器判据用原值。
+  const writes = plainFileWrites(ctx.fileWrites, FINAL_GUARD_PAYLOAD_LIMITS.fileWrites);
+  if (writes !== null) {
+    payload.fileWrites = writes.files;
+    if (writes.truncated) payload.fileWritesTruncated = true;
   }
   const stats = plainToolStats(ctx.toolStats, FINAL_GUARD_PAYLOAD_LIMITS.toolStats);
   if (stats !== null) {

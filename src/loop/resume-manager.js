@@ -150,6 +150,7 @@ export async function restoreResume(ctx) {
                 trimFilesWritten();
               }
             }
+            ctx.recordFileWrites(record.messages ?? [], record.round);
           }
         }
       }

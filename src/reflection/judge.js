@@ -24,12 +24,41 @@ function truncate(value, length) {
   return Array.from(String(value ?? "")).slice(0, length).join("");
 }
 
+/** 从工具的 `input` 里选出它声明要写的那个路径键（按 `writeToolPathKeys` 顺序取第一个非空字符串）。
+ *  `readFile` 的摘要参数与写工具的原始路径共用这一份解析口径（issue #191 的「一个可改点」纪律）。
+ *
+ *  @param {any} input
+ *  @param {string[]|undefined} writeToolPathKeys
+ *  @returns {string|undefined} 命中的键名（不是路径值）
+ */
+function resolvePathKey(input, writeToolPathKeys) {
+  return writeToolPathKeys?.find((key) => (
+    typeof input?.[key] === "string" && input[key].trim() !== ""
+  ));
+}
+
+/** 写工具 → 它声明要写的那个路径的**原始值**（不摘要、不截断、不裁斜杠）；不是写工具或没带
+ *  可解析的路径键 ⇒ `undefined`。
+ *
+ *  为什么与 `summarizeArgument` 分开而不是加个参数：两者的**契约方向相反**——摘要参数是给人/模型
+ *  看的提示（`MAX_COMMAND_LENGTH = 40` 且**不带截断标记**，见 issue #388 的实测），原始路径是给
+ *  `stat()` 用的判据（必须逐字相等）。塞进同一个函数就会有人顺手把上限套到原始值上。
+ *
+ *  @param {string} name
+ *  @param {any} input
+ *  @param {{writeToolNames?: Set<string>, writeToolPathKeys?: string[]}} [options]
+ *  @returns {string|undefined}
+ */
+export function rawWritePath(name, input, { writeToolNames, writeToolPathKeys } = {}) {
+  if (!writeToolNames?.has(name)) return undefined;
+  const pathKey = resolvePathKey(input, writeToolPathKeys);
+  return pathKey === undefined ? undefined : input[pathKey];
+}
+
 function summarizeArgument(name, input, { writeToolNames, writeToolPathKeys } = {}) {
   if (name === "exec") return truncate(input?.command, MAX_COMMAND_LENGTH);
   if (name === "readFile" || writeToolNames?.has(name)) {
-    const pathKey = writeToolPathKeys?.find((key) => (
-      typeof input?.[key] === "string" && input[key].trim() !== ""
-    ));
+    const pathKey = resolvePathKey(input, writeToolPathKeys);
     if (pathKey !== undefined) return truncate(input[pathKey], MAX_COMMAND_LENGTH);
     return "";
   }
@@ -62,12 +91,7 @@ export function buildTimeline(messages, roundStart = 0, options = {}) {
   const selected = Array.isArray(messages)
     ? messages.slice(Math.max(0, Number.isSafeInteger(roundStart) ? roundStart : 0))
     : [];
-  const writeToolNames = options.writeToolNames instanceof Set
-    ? options.writeToolNames
-    : new Set(Array.isArray(options.writeToolNames) ? options.writeToolNames : DEFAULT_WRITE_TOOL_NAMES);
-  const writeToolPathKeys = Array.isArray(options.writeToolPathKeys)
-    ? options.writeToolPathKeys
-    : ["path", "file_path"];
+  const { writeToolNames, writeToolPathKeys } = resolveWriteOptions(options);
   const toolCalls = [];
   const statusById = new Map();
 
@@ -140,6 +164,50 @@ export function buildTimeline(messages, roundStart = 0, options = {}) {
     errors: l0facts.errorTexts ?? [],
     errorRepeat,
   };
+}
+
+/** `writeToolNames` / `writeToolPathKeys` 的缺省口径（issue #191 的「一个可改点」）：
+ *  `buildTimeline`（摘要参数）与 `rawWritePaths`（原始路径）读同一份，不各写一遍。
+ *
+ *  @param {{writeToolNames?: Set<string>|string[], writeToolPathKeys?: string[]}} options
+ *  @returns {{writeToolNames: Set<string>, writeToolPathKeys: string[]}}
+ */
+function resolveWriteOptions(options) {
+  const writeToolNames = options.writeToolNames instanceof Set
+    ? options.writeToolNames
+    : new Set(Array.isArray(options.writeToolNames) ? options.writeToolNames : DEFAULT_WRITE_TOOL_NAMES);
+  const writeToolPathKeys = Array.isArray(options.writeToolPathKeys)
+    ? options.writeToolPathKeys
+    : ["path", "file_path"];
+  return { writeToolNames, writeToolPathKeys };
+}
+
+/** 一轮（或若干条）消息里写工具声明要写的**原始路径**（issue #388），按出现顺序。
+ *
+ *  为什么是**另一个**导出而不是 `buildTimeline` 的一格：`buildTimeline` 的返回形状是 judge 提示面的
+ *  既有契约（`toolCalls: [{name, arg, status}]`，测试逐字深比），本单不需要动它；台账要的只是
+ *  「哪个工具、写了哪个原值路径」两件事。两者共用 `resolveWriteOptions` / `rawWritePath`，
+ *  所以「哪个键算路径」「哪个工具算写工具」只有一份口径。
+ *
+ *  @param {object[]} messages
+ *  @param {number} [roundStart]
+ *  @param {{writeToolNames?: Set<string>|string[], writeToolPathKeys?: string[]}} [options]
+ *  @returns {{name:string, path:string}[]}
+ */
+export function rawWritePaths(messages, roundStart = 0, options = {}) {
+  const selected = Array.isArray(messages)
+    ? messages.slice(Math.max(0, Number.isSafeInteger(roundStart) ? roundStart : 0))
+    : [];
+  const { writeToolNames, writeToolPathKeys } = resolveWriteOptions(options);
+  const writes = [];
+  for (const message of selected) {
+    for (const block of blocksFor(message?.content)) {
+      if (block?.type !== "tool_use") continue;
+      const path = rawWritePath(block.name, block.input, { writeToolNames, writeToolPathKeys });
+      if (path !== undefined) writes.push({ name: String(block.name ?? ""), path });
+    }
+  }
+  return writes;
 }
 
 function formatTimeline(timeline) {

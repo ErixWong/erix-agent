@@ -489,7 +489,8 @@ test("E2 finalGuard 载荷的 messages 是深拷贝，宿主回调改不动循�
     "termination",
   ]);
   const additive = new Set([
-    "cwd", "runId", "filesWritten", "filesWrittenTruncated", "toolStats", "toolStatsTruncated",
+    "cwd", "runId", "filesWritten", "filesWrittenTruncated", "fileWrites", "fileWritesTruncated",
+    "toolStats", "toolStatsTruncated",
     "taskBrief", "taskBriefTruncated", "selfReport", "selfReportSummaryTruncated",
     "selfReportOutputTruncated", "usage", "elapsedMs", "attempt", "guardBudget",
   ]);

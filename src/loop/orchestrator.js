@@ -20,6 +20,7 @@ import {
   DEFAULT_WRITE_TOOL_NAMES,
   INTERCEPT_CONVERSATION_TOKENS,
   parseJudgeDecision,
+  rawWritePaths,
   renderConversation,
 } from "../reflection/judge.js";
 import {
@@ -50,6 +51,7 @@ import {
   resolveTaskBrief,
 } from "./task-brief.js";
 import {
+  FILE_LEDGER_LIMIT,
   FINAL_GUARD_NON_CONTINUABLE_REASONS,
   FINAL_GUARD_TERMINATION_REASONS,
   annotateTermination,
@@ -1391,6 +1393,10 @@ export async function runToolLoop(options) {
     l0Facts: [],
     timeline: [],
     filesWritten: [],
+    // issue #388：**原始**写路径台账（与 `filesWritten` 并列、同源、同上限）。
+    // 分工：`filesWritten` = judge 提示用的摘要（40 码点、不裁斜杠、无截断标记）；
+    // `fileWrites` = 判据用的原值（可直接 `stat()`）。两个键名不许混用。
+    fileWrites: [],
   };
   const toolStats = new Map();
   // `lowBudgetPrompted` 已迁入 `runLoopState`（issue #177 刀5-E）。
@@ -1408,7 +1414,7 @@ export async function runToolLoop(options) {
     const seen = new Set();
     const kept = [];
     for (let index = governorState.filesWritten.length - 1;
-      index >= 0 && kept.length < 50;
+      index >= 0 && kept.length < FILE_LEDGER_LIMIT;
       index -= 1) {
       const file = governorState.filesWritten[index];
       if (!seen.has(file.path)) {
@@ -1417,6 +1423,33 @@ export async function runToolLoop(options) {
       }
     }
     governorState.filesWritten = kept.reverse();
+  };
+  // issue #388：`fileWrites` 用**同一个**上限常量（`FILE_LEDGER_LIMIT`）与同一套去重/保新语义。
+  // 为什么不另写一个数字：切片 1 报告点名的就是「两处各一个 50」那种会静默不一致的形状。
+  const trimFileWrites = () => {
+    const seen = new Set();
+    const kept = [];
+    for (let index = governorState.fileWrites.length - 1;
+      index >= 0 && kept.length < FILE_LEDGER_LIMIT;
+      index -= 1) {
+      const file = governorState.fileWrites[index];
+      if (!seen.has(file.path)) {
+        seen.add(file.path);
+        kept.push(file);
+      }
+    }
+    governorState.fileWrites = kept.reverse();
+  };
+  // issue #388：把一段消息里写工具声明的**原始**路径记进 `fileWrites` 台账。
+  // 主循环与 resume 都只调这一个函数（两份实现 = 两种口径，那正是 #388 的根因形状）。
+  const recordFileWrites = (sourceMessages, round) => {
+    for (const write of rawWritePaths(sourceMessages, 0, {
+      writeToolNames: resolvedWriteToolNames,
+      writeToolPathKeys: resolvedWriteToolPathKeys,
+    })) {
+      governorState.fileWrites.push({ path: write.path, round, tool: write.name });
+      trimFileWrites();
+    }
   };
   // `stallStreak` / `lastStallSignature` 已迁入 `runLoopState`（issue #177 刀5-B）。
   const startedAt = Date.now();
@@ -1613,6 +1646,10 @@ export async function runToolLoop(options) {
     restoreErrorSeen,
     addGovernorHistory,
     trimFilesWritten,
+    // issue #388：原始写路径台账的裁剪器（与 `trimFilesWritten` 共用 `FILE_LEDGER_LIMIT`）
+    // 与台账写入口（resume 从账本重建时调它，不另写一份解析）。
+    trimFileWrites,
+    recordFileWrites,
     get lowBudgetPrompted() {
       return runLoopState.lowBudgetPrompted;
     },
@@ -2444,6 +2481,10 @@ export async function runToolLoop(options) {
     finalGuardRetryLimit,
     get filesWritten() {
       return governorState.filesWritten;
+    },
+    // issue #388：原始写路径台账（与 `filesWritten` 并列的第二个键，不是替换）。
+    get fileWrites() {
+      return governorState.fileWrites;
     },
     get selfReport() {
       return selfReport;
@@ -3583,6 +3624,9 @@ export async function runToolLoop(options) {
         trimFilesWritten();
       }
     }
+    // issue #388：写工具命中那一刻的**原始**路径台账。与上面那个循环并列而不合并：
+    // `filesWritten` 的既有语义（`call.arg` 为真才记）一字不动，`fileWrites` 只多记一份原值。
+    recordFileWrites(currentRoundMessages, round);
     const actionSignals = {
       round,
       // 治理层的 rounds 只用于推进速率估算（elapsedMs / rounds），跟预算同域：
