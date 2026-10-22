@@ -27,6 +27,8 @@ import { runRepl } from "../bin/repl.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import * as core from "../examples/pi-extension/erix-run-core.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+// issue #391 R3：出厂判据本体（CLI 与扩展共用同一份，见 bin/final-guard.js）。
+import { createNamedDeliverableChecks } from "../bin/final-guard.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
 
@@ -158,6 +160,70 @@ test("#391 R1-b2 反证（不抛版本）：判据自己挡 cwd 缺席，也一�
 
   assert.equal(observed, undefined, "没传 cwd ⇒ 判据拿到的就是 undefined（不是 \"\" / \".\" / process.cwd()）");
   assert.equal(result.verification.reason, "deliverables_failed");
+});
+
+// ── issue #391 R3：**出厂判据**（不是宿主手写的谓词）的对偶两格 ──────────────────────
+//
+// 上面 R1-a / R1-b 钉的是指南 §9 那段**宿主手写**的谓词。本仓现在出厂的是**命名判据**
+// （`createNamedDeliverableChecks`，CLI 的 `--require-deliverable <path>` 与扩展的
+// `deliverablePaths` 都走它），它的 cwd 语义必须与 §9 同一形状：
+//   · 宿主接了 cwd ⇒ 相对路径按它解析 ⇒ 文件在盘上就 verified；
+//   · 宿主没接 cwd ⇒ **不抛**（工厂自己挡），但一律 `ok:false` 并点名「没把 cwd 交给 runToolLoop」
+//     ——这就是 #391 的原始症状，只是这次它说的是人话，而不是一个 TypeError 的 `threw`。
+test("#391 R3-a 出厂命名判据 + 宿主接了 cwd ⇒ 按 cwd 解析相对路径 ⇒ verified", async () => {
+  const dir = await makeTmp("erix-cwd-named-ok-");
+  const target = join(dir, "report.md");
+  let seenPayload;
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      toolUse("w1", "writeFile", { path: target, content: "42" }),
+      wrapup({ done: true, summary: "写完了", output: "done" }),
+    ]),
+    initialUserMessage: "写 report.md",
+    cwd: dir,
+    maxRounds: 4,
+    executeTool: diskWriteTool,
+    // 出厂判据本体：宿主只声明「这次必须交付 report.md」（相对路径），join 由工厂做。
+    deliverables: createNamedDeliverableChecks(["report.md"]),
+    finalGuard: async (payload) => {
+      seenPayload = payload;
+      return { action: "accept" };
+    },
+  });
+  assert.equal(existsSync(target), true);
+  assert.deepEqual(seenPayload.deliverables, [{ name: "report.md", ok: true }]);
+  assert.equal(result.verification.status, "verified", JSON.stringify(result.verification));
+});
+
+test("#391 R3-b 出厂命名判据 + 宿主**没接** cwd ⇒ 恒 ok:false（#391 的原始症状，不抛但拦得住）", async () => {
+  const dir = await makeTmp("erix-cwd-named-nocwd-");
+  const target = join(dir, "report.md");
+  let seenPayload;
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      toolUse("w1", "writeFile", { path: target, content: "42" }),
+      wrapup({ done: true, summary: "写完了", output: "done" }),
+    ]),
+    initialUserMessage: "写 report.md",
+    // 没有 cwd：宿主漏接线时的真实形状。
+    maxRounds: 4,
+    executeTool: diskWriteTool,
+    deliverables: createNamedDeliverableChecks(["report.md"]),
+    finalGuard: async (payload) => {
+      seenPayload = payload;
+      return { action: "accept" };
+    },
+  });
+  assert.equal(existsSync(target), true, "文件确实写了——失败的只能是判据");
+  assert.equal("cwd" in seenPayload, false, "没传 cwd 时 payload 里根本不该有该键（缺席 ≠ undefined）");
+  const [criterion] = seenPayload.deliverables;
+  assert.equal(criterion.ok, false, "没有 cwd 时相对路径无从解析 ⇒ 必须 ok:false（不许放行）");
+  assert.match(criterion.detail, /没把 cwd 交给 runToolLoop/u, `detail 要说出真正的原因：${criterion.detail}`);
+  assert.equal(result.verification.status, "unverified");
+  assert.equal(result.verification.reason, "deliverables_failed");
+  // 绝对路径不吃 cwd：同一台机器上换一个 cwd 也必须照旧通过（判据判的是路径，不是 cwd 在不在）。
+  const absolute = createNamedDeliverableChecks([target])[0];
+  assert.equal(absolute.check({}), true, "绝对路径不需要 cwd");
 });
 
 // ── 三个宿主的接线（R1 的改动面本身）─────────────────────────────────────────────

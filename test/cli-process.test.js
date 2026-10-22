@@ -56,6 +56,9 @@ const EXIT_USAGE = 1;
 // 于是「不带 --final-guard 的一次成功 chat」当前**不**退 0（README/帮助里那行「0 成功」
 // 只在 verified 时成立）。本文件按**当前真实行为**钉住，差异写进 REPORT-T2.md。
 const EXIT_NOT_VERIFIED = 4;
+// issue #391 R3：交付物判据没过 ⇒ `verification.status = "unverified"` ⇒ exit 2
+// （`exitCodeForVerification` 的既有承诺，不是新加的退出码）。
+const EXIT_UNVERIFIED = 2;
 
 /** 宿主可能带进来的代理类变量：进出都要保存并清掉。 */
 const PROXY_VARS = [
@@ -423,6 +426,73 @@ describe("真起 CLI 子进程：参数、退出码、stdout/stderr、落盘（i
     // 工具是在这个真子进程里真的执行的：它的副作用必须在项目目录里看得见。
     assert.equal(readFileSync(join(sandbox.project, "t2-tool-side-effect.txt"), "utf8"), "side");
     assert.match(result.stdout, /T2MARKER=alpha-777/u, "工具输出要在 stdout 里可见");
+  });
+
+  // issue #391 R3：交付物判据的**进程级**证据。函数级用例（test/cli.test.js）只证明
+  // 「loopOptions.deliverables 里有这条判据」，看不见退出码与输出——而 exit 2 正是本单对宿主的
+  // 承诺面。这一格是 #391 报的「真空通过」在 CLI 层的反例转正：
+  // guard 说 accept（findings 逐字对得上归档捕获值 ⇒ 否则它会 revise），但声明的交付物不在盘上
+  // ⇒ 机器闸门拦下盖章，终局 unverified:deliverables_failed ⇒ 退出 2。
+  it("--final-guard --require-deliverable <缺失路径>：退出 2 + 输出 deliverables_failed（机器证据压过 guard accept）", async (t) => {
+    const sandbox = await makeSandbox(t, {
+      script: [
+        replyWithToolCall("exec", { command: "echo T2MARKER=delta-391" }, "call-1"),
+        replyWithText(JSON.stringify({
+          done: true,
+          summary: "任务已完成",
+          output: "值是 delta-391",
+          findings: { T2MARKER: "delta-391" },
+        })),
+      ],
+    });
+    const result = await sandbox.run([
+      "chat", "交付 report.md", "--final-guard",
+      "--require-deliverable", "report.md", ...MINIMAL_CHAT_FLAGS,
+    ]);
+    assert.equal(sandbox.upstream.requestCount, 2, "一轮工具调用 + 一轮终稿");
+    assert.equal(
+      result.code,
+      EXIT_UNVERIFIED,
+      `交付物不在盘上必须退 ${EXIT_UNVERIFIED}（不是 0，也不是「guard 关着」的 4）；`
+      + `stdout=${JSON.stringify(result.stdout.slice(-500))}`,
+    );
+    assert.match(result.stdout, /deliverables_failed/u, "输出必须点名原因");
+    assert.match(result.stdout, /交付物判据没过/u);
+    assert.match(result.stdout, /guard=\{verified:0,skipped:0,revised:0,unverified:1,guard_error:0,deliverables_checked:1,deliverables_failed:1\}/u,
+      `统计行要同时给出判据计数；stdout=${JSON.stringify(result.stdout.slice(-400))}`);
+    assert.match(result.stdout, /未核验，不可信/u);
+    // 盘上确实没有那个文件（判据判的是磁盘事实，不是模型的嘴）
+    assert.equal(existsSync(join(sandbox.project, "report.md")), false);
+  });
+
+  it("--final-guard --require-deliverable <已写入的路径>：退出 0（判据不是恒假，写到位就放行）", async (t) => {
+    const sandbox = await makeSandbox(t, {
+      script: [
+        replyWithToolCall("exec", { command: "printf done > report.md && echo T2MARKER=epsilon-391" }, "call-1"),
+        replyWithText(JSON.stringify({
+          done: true,
+          summary: "任务已完成",
+          output: "值是 epsilon-391",
+          findings: { T2MARKER: "epsilon-391" },
+        })),
+      ],
+    });
+    const result = await sandbox.run([
+      "chat", "交付 report.md", "--final-guard",
+      "--require-deliverable", "report.md", ...MINIMAL_CHAT_FLAGS,
+    ]);
+    assert.equal(result.code, EXIT_OK, `stdout=${JSON.stringify(result.stdout.slice(-500))}`);
+    assert.match(result.stdout, /已核验/u);
+    assert.match(result.stdout, /deliverables_failed:0/u);
+    assert.equal(readFileSync(join(sandbox.project, "report.md"), "utf8"), "done");
+  });
+
+  it("--require-deliverable <path> 不带 --final-guard：用法错误（exit 1），一次模型调用都不花", async (t) => {
+    const sandbox = await makeSandbox(t, { script: [replyWithText("不该被用到 T2-UNUSED-3 任务已完成")] });
+    const result = await sandbox.run(["chat", "随便", "--require-deliverable", "report.md"]);
+    assert.equal(result.code, EXIT_USAGE, `stdout=${JSON.stringify(result.stdout.slice(-300))}`);
+    assert.match(result.stderr, /--require-deliverable 必须与 --final-guard 同用/u);
+    assert.equal(sandbox.upstream.requestCount, 0);
   });
 
   it("--session <存在的 id>：退出 0/4 同一次成功、且上游第二发带上了历史", async (t) => {
