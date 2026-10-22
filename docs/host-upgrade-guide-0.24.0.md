@@ -24,6 +24,8 @@ of "works if you read the source". If a section below is not your code path, it 
 | `rg` / `grep` / `searchText`: a search root that does not exist is an **error text**, not `（无命中）`; the `rg`/`grep` deprecation line names *your* mode (§6) | yes, if you compare tool output text |
 | The tarball now ships `test/helpers/tmp.js`; three gate-side changes landed (§7) | no — packaging and gates only |
 | `finalGuard` now receives 10 additive facts (`cwd`, `runId`, `filesWritten`, `toolStats`, `taskBrief`, `selfReport`, `usage`, `elapsedMs`, `attempt`, `guardBudget`) next to the original 7 keys (§8) | no — additive; act only if you were re-parsing `messages` or guessing from `finalText` |
+| New `deliverables` option + payload key `fileWrites`: host-declared machine criteria, checked before **every** guard call; a failing criterion turns a guard's `accept` into `unverified` / `deliverables_failed` (§9) | no — opt-in; act if your guard does its own disk checks today |
+| New `finalGuardExtend` option (**default `false`**): a `revise` on `max_rounds_cap` / `continuation_exhausted` buys at most one more round per run; `stall` never extends (§10) | no — opt-in, and off by default keeps every budget-type stop byte-for-byte as in 0.23.0 |
 
 The one-line version: **the facts you used to infer are now written down.** The engine did not change what
 it *does*; it changed what it *says* — in the state file, in the error objects, and in the tool outputs the
@@ -346,7 +348,43 @@ unless you ask for it.
 check into `deliverables` and let the engine enforce it: then a future guard rewrite cannot
 silently turn the check back into a rubber stamp.
 
-## 10. Self-check
+## 10. Budget-type stops can buy one more round: `finalGuardExtend` (issue #386 slice 3)
+
+**Symptom.** A run whose `maxRounds` budget runs out while the model is still calling tools
+ends `max_rounds_cap` → `verification: { status: "unverified", reason: "non_continuable" }`.
+The guard saw exactly what was missing and answered `revise`, and nothing happened: on the
+three non-continuable reasons the engine had no continuation to spend (§8's `E4` cell).
+
+**What is new.** One option, **off by default**:
+
+```js
+runToolLoop({ finalGuardExtend: true, /* … your usual options … */ });
+```
+
+With it on, a `revise` verdict on `max_rounds_cap` / `continuation_exhausted` borrows the
+engine's **existing** mid-run extension mechanism — `extensionAllowed`
+(`src/reflection/governor.js`), applied by `applyGovernorExtension`
+(`src/loop/orchestrator.js`) — for **at most one extra round per run**, and then the loop
+resumes. `stall` is **never** extended — a stall *is* "no progress", so granting it rounds
+only burns budget. The remaining conditions: your opt-in, a `revise` verdict (never `accept`
+/ `skip` / guard error), extension headroom from the **same** counters the mid-run extension
+reads, and no budget already breached (last real API input over `context.budgetTokens`, or
+the per-round aggregate output budget having archived/stubbed a result in this run).
+
+**What you will see.** A `{ type: "final_guard_extend", round, from_max_rounds,
+to_max_rounds, guard_extension: true }` event and `verification.metrics.guard_extensions: 1`
+— both **only** when a bridge actually ran, so an opted-out (or opted-in but never bridged)
+run keeps today's `verification` / `metrics` byte for byte. The quota lives in run state
+(`deterministic.guardExtension.used`, restored by `src/loop/resume-manager.js`) and is **not**
+reset by resume, so "run → crash → resume" cannot mint a second one. `termination.reason`
+values are unchanged, and a bridged run may carry `forcedFinal: true`: the forced wrap-up of
+the first stop did run, then the loop continued.
+
+**Do you have to act?** No. Leave `finalGuardExtend` alone and every budget-type stop behaves
+byte-for-byte as in 0.23.0. Turn it on only when your guard's `revise` messages are specific
+enough that one more round plausibly closes the gap — that is the only thing the bridge buys.
+
+## 11. Self-check
 
 ```bash
 npm test                       # 1,895 tests, 0 failing (1,886 passing + 9 skipped)
@@ -355,7 +393,7 @@ npm run check:final-guard-probe # offline, zero model calls; asserts the finalGu
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites
 ```
 
-Against your own host, five questions are worth answering with a test before you upgrade:
+Against your own host, seven questions are worth answering with a test before you upgrade:
 
 1. **State file.** Take a run with more than 32 compaction entries: `compactionStatsWindow.total` equals
    the full count, `dropped === total − 32`, and an **old** state file (no window key) still validates and
@@ -376,8 +414,14 @@ Against your own host, five questions are worth answering with a test before you
    `unverified` / `deliverables_failed` — then remove the option and assert the same run goes
    back to `verified` (that pair is the proof the gate, not your prompt, is doing the work;
    §9's `S6a`/`S6b` cells are the shipped version of it).
+7. **Budget bridge.** Take a run with `maxRounds: 1`, a guard that returns `revise` on the
+   first call and `accept` on the second, and `finalGuardExtend: true`: the result must be
+   `verified`, the event log must carry one `final_guard_extend` with
+   `from_max_rounds: 1`, and the model must have done the missing step. Then delete the
+   option and assert the same script ends `unverified` / `non_continuable` — and that a
+   `stall` run never extends even with the option on (§10's cells are the shipped version).
 
-## 11. What did not change
+## 12. What did not change
 
 No store method signature, no return type, no option name, no export, no record kind, no message field, no
 termination reason, no error code, and no runtime dependency (still zero). `store.load()`'s shape is
@@ -387,7 +431,7 @@ untouched too — its payload gained additive keys (§8), which is information, 
 release is that a missing search root returns an error text instead of `（无命中）` — and that one is a
 correction of a false negative, not a new rule.
 
-## 12. Migration recipe
+## 13. Migration recipe
 
 1. If you read `<runId>.state.json`'s compaction ledger, read `compactionStatsWindow.total` (and
    `dropped`) instead of counting the array — and treat the key's absence as "no statistics", not "zero".
@@ -408,3 +452,6 @@ correction of a false negative, not a new rule.
    cannot quietly turn the check back into a rubber stamp. Switch any `stat()` you do today
    from `filesWritten[].path` (40-code-point summary) to `fileWrites[].path` (verbatim) — the
    summary silently rejects runs that already wrote the file.
+8. If you want budget-type stops to be recoverable, set `finalGuardExtend: true` (§10) — and
+   then make your guard's `revise` messages name the missing step, because that message is
+   what the extra round is spent on. Leave it unset and nothing changes.

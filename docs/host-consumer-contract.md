@@ -1566,6 +1566,41 @@ preserved, but `verification.status` is `error` and the result is never
 `unverified_error` for an unverified result, `guard_error` for a guard error,
 and `succeeded` otherwise.
 
+#### Budget-type stops: the opt-in guard bridge — `finalGuardExtend` (issue #386 slice 3)
+
+`finalGuardExtend: boolean`, **default `false`**. Absent or `false`, every budget-type stop
+behaves byte-for-byte as described above. With `finalGuardExtend: true`, a `revise` verdict on
+a **budget-type** stop buys **at most one** extra round through the engine's *existing*
+mid-run extension mechanism — `extensionAllowed` (`src/reflection/governor.js`), applied by
+`applyGovernorExtension` (`src/loop/orchestrator.js`): the same counters, the same
+`meta.source: "judge-control"` user message — instead of degrading. All four conditions must
+hold:
+
+| Condition | Detail |
+|---|---|
+| stop reason ∈ `{max_rounds_cap, continuation_exhausted}` | **`stall` is never extended** — a stall *is* "no progress", so granting it rounds only burns budget. The set is `FINAL_GUARD_EXTENDABLE_REASONS` (`src/loop/termination.js`); `FINAL_GUARD_NON_CONTINUABLE_REASONS` and every `termination.reason` value are unchanged |
+| `finalGuardExtend === true` | host opt-in; `null` / numbers / strings throw `TypeError` (a `"false"` string must never switch it on) |
+| guard verdict is `revise` | `accept`, `skip`, and guard errors never extend — the bridge only serves "the guard knows what is missing" |
+| `extensionAllowed` **and** the budget gate | the same counters the mid-run extension reads (`extensionCount < reflection.maxExtensions && effectiveMaxRounds < reflection.maxRoundsCap`), plus: refuse when the last real API input already exceeded `context.budgetTokens` (`isApiInputOverBudget` (`src/loop/budget.js`)), or when the per-round aggregate output budget already archived/stubbed a tool result in this run (`src/loop/aggregate-budget.js`). Extending an over-budget run would tear the budget promise |
+
+Cost and observability:
+
+- **one extension per run** (`governorState.guardExtensionUsed`), independent of the
+  governor's own extension quota — the guard never gets a second "go more" budget;
+- the quota is **persisted in run state** (`deterministic.guardExtension.used`,
+  `src/run-state.js`, restored by `src/loop/resume-manager.js`) and is **not reset by
+  resume**: "run → crash → resume" must not mint a fresh quota every time. Older states
+  without the field read as "not used";
+- new event `{ type: "final_guard_extend", round, from_max_rounds, to_max_rounds, guard_extension: true }`,
+  and `verification.metrics.guard_extensions: 1` — **only** when a bridge actually ran. A run
+  that never opts in (or opts in and never bridges) keeps today's `verification` /
+  `metrics` byte for byte;
+- the extension happens **after** the forced wrap-up of the stop that triggered it, so a
+  bridged run's `termination` may carry `forcedFinal: true` even when it ends `end_turn`
+  (the forced wrap-up did run; the run then continued). The bridge never rewrites
+  `termination.reason` values and never introduces a new stop reason.
+
+
 The engine has no separate "delivery authentication" or "completion
 authentication" layer. It reports facts such as rounds, tools, file calls,
 archives, termination, and verification. Whether the task is complete,

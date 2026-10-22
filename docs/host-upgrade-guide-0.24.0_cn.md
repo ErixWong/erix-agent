@@ -21,6 +21,8 @@
 | `rg` / `grep` / `searchText`：搜索根不存在是**错误文本**而不再是 `（无命中）`；`rg`/`grep` 的弃用提示按**本次**语义给 mode（§6） | 要——只要你比较工具输出文本 |
 | tarball 现在随包 `test/helpers/tmp.js`；门禁侧落地三项（§7） | 不用——只关乎打包与门禁 |
 | `finalGuard` 现在除原有 7 键外还拿到 10 个加法事实（`cwd`、`runId`、`filesWritten`、`toolStats`、`taskBrief`、`selfReport`、`usage`、`elapsedMs`、`attempt`、`guardBudget`）（§8） | 不用——纯加法；只有你原本在重解析 `messages` 或拿 `finalText` 猜结论时才要动手 |
+| 新增 `deliverables` 选项与载荷键 `fileWrites`：宿主声明的机器判据，在**每次** guard 调用前核一遍；判据失败会把 guard 的 `accept` 变成 `unverified` / `deliverables_failed`（§9） | 不用——opt-in；只有你原本在 guard 里自己查磁盘时才要动手 |
+| 新增 `finalGuardExtend` 选项（**默认 `false`**）：`max_rounds_cap` / `continuation_exhausted` 上的 `revise` 每 run 最多补跑一轮；`stall` 永远不补（§10） | 不用——opt-in；不打开时每一类预算停机都与 0.23.0 逐字一致 |
 
 一句话版本：**以前要靠你推断的事实，现在写在明面上了。** 引擎没有改它**做**什么，改的是它**说**什么——
 状态文件里、错误对象上，以及模型会读到的那几处工具输出。
@@ -295,7 +297,38 @@ guard 超时、橡皮章陷阱，以及开销上限（30 轮 × 4KB 工具输出
 **需要你动手吗？** 不需要；但如果你现在的 guard 自己查磁盘，把那段检查搬进 `deliverables`
 交给引擎强制：这样以后重写 guard 时，它不可能悄悄退化成橡皮章。
 
-## 10. 自检
+## 10. 预算类停机可以再买一轮：`finalGuardExtend`（issue #386 切片 3）
+
+**现象。** `maxRounds` 预算耗尽时模型还在正常调工具，run 以 `max_rounds_cap` 收尾 →
+`verification: { status: "unverified", reason: "non_continuable" }`。guard 明明看见差什么、
+也答了 `revise`，却什么都没发生：三类不可续跑停机上，引擎**没有** continuation 可以花
+（§8 的 `E4` 那一格）。
+
+**新增什么。** 一个选项，**默认关**：
+
+```js
+runToolLoop({ finalGuardExtend: true, /* … 你原有的选项 … */ });
+```
+
+打开之后，`max_rounds_cap` / `continuation_exhausted` 上的 `revise` 裁决可以借引擎**既有**的
+中途扩轮机制——`extensionAllowed`（`src/reflection/governor.js`），落地动作
+`applyGovernorExtension`（`src/loop/orchestrator.js`）——**每个 run 最多补跑一轮**，然后主循环继续。
+`stall` **永远不补**——stall 的定义就是「连续无进展」，给它轮次是纯烧钱。其余条件：你的 opt-in、
+裁决必须是 `revise`（`accept` / `skip` / guard 报错都不算）、扩轮额度用的是中途扩轮**同一份**
+计数器、且两份预算都还没撞线（最近一次真实 API 输入超过 `context.budgetTokens`，或本 run 的单轮
+聚合输出预算已经归档/stub 过结果）。
+
+**你会看到什么。** 一条 `{ type: "final_guard_extend", round, from_max_rounds, to_max_rounds,
+guard_extension: true }` 事件，以及 `verification.metrics.guard_extensions: 1`——两者**只在真的补跑过
+时**出现，所以没 opt-in（或 opt-in 但一次没补）的 run，`verification` / `metrics` 与今天逐字相同。
+配额进 run state（`deterministic.guardExtension.used`，由 `src/loop/resume-manager.js` 恢复），
+**跨 resume 不重置**，于是「跑 → 崩 → resume」铸不出第二份。`termination.reason` 的取值一字未改；
+补跑过的 run 可能带 `forcedFinal: true`——第一次停机的强制收尾确实跑过，之后才继续。
+
+**要不要动手？** 不用。`finalGuardExtend` 不动，每一类预算停机都与 0.23.0 逐字一致。只有当你的
+guard 的 `revise` 意见足够具体、多跑一轮**确实**能补上那个缺口时才打开它——桥买到的就是这一件事。
+
+## 11. 自检
 
 ```bash
 npm test                       # 1,895 tests，0 失败（1,886 通过 + 9 skipped）
@@ -304,7 +337,7 @@ npm run check:final-guard-probe # 离线、零模型调用；断言 finalGuard �
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件
 ```
 
-对你的宿主，升级前有五个问题值得用测试回答：
+对你的宿主，升级前有七个问题值得用测试回答：
 
 1. **状态文件。** 造一个削减账超过 32 条的 run：`compactionStatsWindow.total` 等于全量条数、
    `dropped === total − 32`，并且**旧**状态文件（没有窗口键）照旧 validate、照旧可续跑。
@@ -322,8 +355,13 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    `finalText` guard，断言：从没写过该文件的 run 以 `unverified` / `deliverables_failed` 收尾；然后去掉
    这个选项，断言同一个 run 又回到 `verified`。这一对断言才是「干活的是闸门、不是你的 prompt」的证据
    （§9 的 `S6a`/`S6b` 两格就是它的随包版本）。
+7. **预算补跑桥。** 造一个 `maxRounds: 1` 的 run，guard 第一次答 `revise`、第二次答 `accept`，并传
+   `finalGuardExtend: true`：结果必须是 `verified`，事件里必须恰好一条 `final_guard_extend` 且
+   `from_max_rounds: 1`，模型必须真的补做了那一步。然后去掉这个选项，断言同一个脚本以
+   `unverified` / `non_continuable` 收尾；再断言 `stall` 的 run 即使开着选项也**从不**补跑
+   （§10 的那几格就是它的随包版本）。
 
-## 11. 没变的
+## 12. 没变的
 
 没有 store 方法签名、没有返回类型、没有选项名、没有导出、没有记录种类、没有消息字段、没有终止原因、
 没有错误码搬家，运行时依赖仍是零。`store.load()` 的形状与 0.23.0 一致。`deterministic.compactionStats`
@@ -331,7 +369,7 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
 那是信息，不是新规则。整个发布里唯一**行为**变化是「搜索根不存在
 返回错误文本而不是 `（无命中）`」——而那是修一次假阴性，不是新规则。
 
-## 12. 迁移配方
+## 13. 迁移配方
 
 1. 如果你读 `<runId>.state.json` 的削减账，改读 `compactionStatsWindow.total`（与 `dropped`），别再数数组；
    把键的缺席理解成「没有统计」，而不是「零」。
@@ -349,3 +387,5 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    `revise` 之后真的会重算，而且以后重写 guard 也不可能悄悄把它退回成橡皮章。今天用
    `filesWritten[].path` 做 `stat()` 的地方，改读 `fileWrites[].path`（逐字原值）——摘要会静默误杀
    已经写了文件的 run。
+8. 如果你想让预算类停机可挽回，就打开 `finalGuardExtend: true`（§10）——并且把 guard 的
+   `revise` 意见写成「缺哪一步」，因为那一轮就是花在这句话上的。不设它，一切照旧。

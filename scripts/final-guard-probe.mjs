@@ -8,7 +8,8 @@
 //   · 交付物是真的写在临时目录里的文件（`os.tmpdir()`，跑完删掉），所以「文件在不在」是磁盘事实；
 //   · **每个场景都断言语义**，不是只打印。任一场景的语义变了（payload 少一个键、假完成抓不住、
 //     revise 耗尽不再 fail-closed、guard 抛错/超时被当成 verified、橡皮章 guard 又能蒙过、
-//     声明了交付物判据却仍被橡皮章蒙过（issue #386 切片 2 的机器闸门）、新键体积超过 messages 的 2%）
+//     声明了交付物判据却仍被橡皮章蒙过（issue #386 切片 2 的机器闸门）、新键体积超过 messages 的 2%、
+//     预算类停机上的补跑桥失效或默认关时悄悄改行为（issue #386 切片 3 的 E4a/E4b 双格））
 //     ⇒ 退出码非零。
 //
 // 用法：
@@ -555,6 +556,136 @@ try {
     log(`   messages ${messagesBytes} B / 新键 ${additiveBytes} B = ${(share * 100).toFixed(2)}%`
       + `（${result.rounds} 轮，filesWritten ${payload.filesWritten?.length} 条）`);
   }
+  // ── E4 预算类停机的补跑桥（**双格**，issue #386 切片 3）───────────────────────────────
+  // 同一个「轮预算被掐停、模型还在正常调工具、交付物还差一步」的现场，同一个 guard（第一次必
+  // `revise`、第二次 `accept`），唯一变量是宿主有没有 opt-in `finalGuardExtend`：
+  //   E4a 默认关 ⇒ 与今天逐字一致：`unverified / non_continuable` + `final_guard_unverified`，
+  //       模型**没有**被拉回来补做（provider 请求数 2 = 第 1 轮 + 强制收尾）；
+  //   E4b opt-in ⇒ 事件里出现 `final_guard_extend`（from→to 抬了上限）、模型真的补做了那一步、
+  //       第二次 guard `accept` ⇒ `verified`。
+  // 两格合起来才是本切片要的证据：单看 E4b 无法排除「顺手把停机行为全改了」，单看 E4a 无法证明桥有效。
+  for (const cell of [
+    {
+      case: "E4a max_rounds_cap + guard revise + 未 opt-in = 今天的行为（标签，不是补跑）",
+      optIn: false,
+      expectedStatus: "unverified",
+      expectedReason: "non_continuable",
+      expectedTermination: "final_guard_unverified",
+    },
+    {
+      case: "E4b max_rounds_cap + guard revise + finalGuardExtend:true = 补跑一轮后 verified",
+      optIn: true,
+      expectedStatus: "verified",
+      expectedReason: undefined,
+      expectedTermination: "end_turn",
+    },
+  ]) {
+    currentCase = cell.case;
+    resetSandbox();
+    const events = [];
+    const executed = [];
+    let guardCalls = 0;
+    const provider = createFakeProvider([
+      // 第 1 轮：模型还在正常调工具（预算只有 1 轮）⇒ 出圈 ⇒ max_rounds_cap。
+      toolUse("e4-w1", "writeFile", { path: answerPath, content: "0" }),
+      // 强制收尾：引擎要一句终稿（模型此时**还没**写对交付物）。
+      wrapup({ done: true, summary: "完成", output: `已生成 ${answerPath}` }),
+      // 补跑那一轮：模型补做交付物。
+      toolUse("e4-fix", "writeFile", { path: answerPath, content: "42" }),
+      wrapup({ done: true, summary: "已补做", output: "answer.txt 内容是 42" }),
+      { times: 8, ...text("idle") },
+    ]);
+    const result = await runToolLoop({
+      provider,
+      initialUserMessage: `把 42 写进 ${answerPath}`,
+      maxRounds: 1,
+      // 显式给全扩轮参数：默认 step 是 max(8, maxRounds/2)，不显式给的话「抬到多少」会漂。
+      reflection: { enabled: true, extensionStep: 2, maxExtensions: 2, maxRoundsCap: 8 },
+      finalGuardExtend: cell.optIn,
+      executeTool: async (call) => {
+        fs.writeFileSync(call.input.path, call.input.content);
+        executed.push(call.id);
+        return `wrote ${call.input.path}`;
+      },
+      finalGuard: async (payload) => {
+        guardCalls += 1;
+        return diskVerifier(payload);
+      },
+      onEvent: (event) => events.push(event),
+    });
+
+    const extensions = events.filter((event) => event.type === "final_guard_extend");
+    expect(
+      result.verification?.status === cell.expectedStatus,
+      `verification.status 应为 ${cell.expectedStatus}，实际 ${result.verification?.status}`,
+    );
+    if (cell.expectedReason === undefined) {
+      expect(
+        result.verification?.reason === undefined,
+        `verified 的结果不该带 verification.reason，实际 ${result.verification?.reason}`,
+      );
+    } else {
+      expect(
+        result.verification?.reason === cell.expectedReason,
+        `verification.reason 应为 ${cell.expectedReason}，实际 ${result.verification?.reason}`,
+      );
+      expect(
+        result.verification?.detail === "max_rounds_cap",
+        `verification.detail 应为 max_rounds_cap，实际 ${result.verification?.detail}`,
+      );
+    }
+    expect(
+      result.termination?.reason === cell.expectedTermination,
+      `termination.reason 应为 ${cell.expectedTermination}，实际 ${result.termination?.reason}`,
+    );
+    if (cell.optIn) {
+      expect(extensions.length === 1, `opt-in 时事件里必须恰好一条 final_guard_extend，实际 ${extensions.length}`);
+      expect(
+        extensions[0]?.from_max_rounds === 1 && extensions[0]?.to_max_rounds === 3,
+        `final_guard_extend 的 from/to 必须是 1 → 3（step=2），实际 ${JSON.stringify(extensions[0])}`,
+      );
+      expect(extensions[0]?.guard_extension === true, "事件必须自带 guard_extension: true");
+      expect(guardCalls === 2, `opt-in 时 guard 应被问 2 次（revise → 补跑 → accept），实际 ${guardCalls}`);
+      expect(executed.includes("e4-fix"), "模型没有被拉回来补做（e4-fix 从未执行）");
+      expect(
+        fs.existsSync(answerPath) && fs.readFileSync(answerPath, "utf8").trim() === "42",
+        "补跑之后交付物仍不对（桥没有真的把模型拉回到「差的那一步」上）",
+      );
+      expect(
+        result.verification?.metrics?.guard_extensions === 1,
+        `metrics.guard_extensions 应为 1，实际 ${result.verification?.metrics?.guard_extensions}`,
+      );
+    } else {
+      expect(extensions.length === 0, `未 opt-in 时不许出现 final_guard_extend 事件，实际 ${extensions.length} 条`);
+      expect(guardCalls === 1, `未 opt-in 时 guard 只该被问 1 次，实际 ${guardCalls}`);
+      expect(!executed.includes("e4-fix"), "未 opt-in 时模型不许被拉回来补做");
+      expect(
+        provider.requests.length === 2,
+        `未 opt-in 时 provider 请求数应保持 2（第 1 轮 + 强制收尾），实际 ${provider.requests.length}`,
+      );
+      expect(
+        !("guard_extensions" in (result.verification?.metrics ?? {})),
+        "未 opt-in 时 metrics 里不许出现 guard_extensions（回归锚：与今天逐字一致）",
+      );
+    }
+
+    record({
+      opted_in: String(cell.optIn),
+      guard_calls: guardCalls,
+      provider_requests: provider.requests.length,
+      termination: JSON.stringify(result.termination),
+      verification: JSON.stringify(result.verification),
+      extend_events: JSON.stringify(extensions),
+      executed_tools: executed.join(","),
+      answer_on_disk: fs.existsSync(answerPath) ? fs.readFileSync(answerPath, "utf8").trim() : "(absent)",
+    });
+    log(`\n── ${currentCase}`);
+    log(`   guard ${guardCalls} 次 / provider ${provider.requests.length} 次 / 事件 ${extensions.length} 条`
+      + ` ⇒ ${result.termination?.reason} / ${result.verification?.status}`
+      + `${result.verification?.reason === undefined ? "" : `:${result.verification.reason}`}`
+      + `（磁盘 answer.txt = ${fs.existsSync(answerPath) ? fs.readFileSync(answerPath, "utf8").trim() : "不存在"}）`);
+  }
+
 } finally {
   fs.rmSync(sandbox, { recursive: true, force: true });
 }

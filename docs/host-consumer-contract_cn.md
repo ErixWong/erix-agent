@@ -1260,6 +1260,35 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 `skip`、`revise`、`degraded` 或 `error`。当 store 提供 `markRunState` 时，终态为：
 未核验结果 `unverified_error`、guard 错误 `guard_error`、其余 `succeeded`。
 
+#### 预算类停机上的补跑桥：`finalGuardExtend`（issue #386 切片 3）
+
+`finalGuardExtend: boolean`，**默认 `false`**。不传或传 `false` 时，每一类预算停机都与上面那段
+逐字一致。传 `true` 时，**预算类**停机（`max_rounds_cap`、`continuation_exhausted`）上的 `revise`
+裁决可以借引擎**既有**的中途扩轮机制——`extensionAllowed`（`src/reflection/governor.js`），落地动作
+`applyGovernorExtension`（`src/loop/orchestrator.js`）：同一份计数器、同一种
+`meta.source: "judge-control"` 的 user 消息——**最多补跑一次**，而不是直接降级。四个条件必须同时成立：
+
+| 条件 | 细节 |
+|---|---|
+| 停机原因 ∈ `{max_rounds_cap, continuation_exhausted}` | **`stall` 永远不补**——stall 的定义就是「连续无进展」，给它轮次是纯烧钱。集合是 `FINAL_GUARD_EXTENDABLE_REASONS`（`src/loop/termination.js`）；`FINAL_GUARD_NON_CONTINUABLE_REASONS` 与每一个 `termination.reason` 取值都一字未改 |
+| `finalGuardExtend === true` | 宿主显式 opt-in；`null` / 数字 / 字符串一律 `TypeError`（`"false"` 这种写法绝不许把它打开） |
+| guard 本轮裁决是 `revise` | `accept` / `skip` / guard 报错都不触发——桥只服务「guard 知道还差什么」那一格 |
+| `extensionAllowed` **且** 预算闸 | 与中途扩轮**同一份**计数器（`extensionCount < reflection.maxExtensions && effectiveMaxRounds < reflection.maxRoundsCap`），外加：最近一次真实 API 输入已超 `context.budgetTokens`（`isApiInputOverBudget`（`src/loop/budget.js`））、或本 run 的单轮聚合输出预算已经归档/stub 过工具结果（`src/loop/aggregate-budget.js`）时拒绝。给一个已经超预算的 run 补轮 = 撕掉预算承诺 |
+
+成本与观测面：
+
+- **每个 run 最多 1 次**（`governorState.guardExtensionUsed`），与 governor 自己的扩轮额度
+  **互相独立**——guard 拿不到第二份「继续跑」的预算；
+- 配额**进 run state**（`deterministic.guardExtension.used`，`src/run-state.js`，由
+  `src/loop/resume-manager.js` 恢复），且**跨 resume 不重置**：「跑 → 崩 → resume」不许每次
+  都铸一份新配额。没有该字段的旧 state 读作「没用过」；
+- 新事件 `{ type: "final_guard_extend", round, from_max_rounds, to_max_rounds, guard_extension: true }`，
+  以及 `verification.metrics.guard_extensions: 1`——**只在真的补跑过时**出现。未 opt-in（或 opt-in
+  但一次都没补）的 run，其 `verification` / `metrics` 与今天逐字相同；
+- 补跑发生在触发它的那次停机**已经强制收尾之后**，所以补跑过的 run 即使最后以 `end_turn` 收场，
+  `termination` 里也可能带 `forcedFinal: true`（强制收尾确实跑过，之后才继续）。桥不改写任何
+  `termination.reason` 取值，也不引入新的停机原因。
+
 引擎没有独立的“交付认证”或“完成认证”层。它报告轮数、工具、文件调用、归档、终止与核验
 等事实。任务是否完成、交付物是否满足要求、能否自动进入下游，仍由宿主、测试系统或人工
 审核决定。
