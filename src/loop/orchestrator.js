@@ -1566,6 +1566,7 @@ export async function runToolLoop(options) {
   // 访问器**（与紧邻的 `taskBriefSource` 同一个先例）：它是「本次 resume 的一次性事实」，不归
   // `runLoopState`（那里放的是要跟整个 run 走、跨 resume 有语义的格子）；注入完就清空，所以
   // guard 补跑桥绕回主循环时不会再注入一次。
+  /** @type {{ text: string, slot: string, round: number } | undefined} */
   let resumeNotice;
   const messageRounds = new WeakMap();
   for (const message of messages) messageRounds.set(message, 0);

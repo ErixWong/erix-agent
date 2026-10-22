@@ -158,8 +158,8 @@ scripts/          # 实验脚本和结果
 - `repository.url` 使用 `git+https://...` 格式（或运行 `npm pkg fix`）。
 - 类型面（issue #213）：顶层 `types` 指向 `./src/index.d.ts`，`exports["."]` 与 `exports["./tools"]` 各带对应的 `types` 条件；
   `exports["./contract-tests"]` **刻意不带** `types`（其目标在 `test/` 下，不在声明依赖图里）。声明由 `prepack` 钩子生成，
-  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **72** 个 `.d.ts`（2026-10-23 在 #394 的树上实测：`npm pack --dry-run --json`
-  列出整整 72 个，因为本单新增 `src/loop/pending-tool-result.js`；此前是 71，因为 #386 切片 2 新增 `src/loop/deliverables.js`；再此前 70，因为 #333 新增 `src/store/message-rows.js`；再此前 69，因为 #326 新增 `src/store/transcript-dedup.js`、#322 新增 `src/compact/fold-summary-journal.js`）。**这个数由
+  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **73** 个 `.d.ts`（2026-10-23 在 #398 的树上实测：`npm pack --dry-run --json`
+  列出整整 73 个，因为本单新增 `src/loop/resume-notice.js`；此前是 72，因为 #394 新增 `src/loop/pending-tool-result.js`；再此前 71，因为 #386 切片 2 新增 `src/loop/deliverables.js`；再此前 70，因为 #333 新增 `src/store/message-rows.js`；再此前 69，因为 #326 新增 `src/store/transcript-dedup.js`、#322 新增 `src/compact/fold-summary-journal.js`）。**这个数由
   `npm run check:pack-links` 与 tarball 内容对账——不许手抄进这两份口径文件，门禁会点名文档与行。**
   以下都是**历史值**，按当时为真保留：67（#307 之后，2026-10-16 实测）、66（#305 新增 `src/text/json-candidates.js` 之后）、
   65（#292 之后，2026-10-15 实测）、64（0.20.0 的 tarball）、63（0.19.0 时代）；体积 +约 44 kB（打包）/ +约 139 kB（解包）是 0.18.0 上实测的。
