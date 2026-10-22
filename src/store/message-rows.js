@@ -34,6 +34,8 @@
 // 折叠层挂在哪：两个内置 store 的 `load()`（`src/store/file.js`、`src/store/memory.js`）在
 // `loadRecords` 之后调用本模块。`loadByDedupKey` / `loadMaxRound` 两个点查探针**不折叠**
 // （它们是对原始行的探针，`appendUserTurn` 快路径要的正是「这条 key 在不在」）。
+import { isDeepStrictEqual } from "node:util";
+
 /** 消息行的 `kind` 字面值。 */
 export const MESSAGE_ROW_KIND = "message";
 
@@ -160,6 +162,14 @@ export function foldMessageRows(records) {
       if (key !== "") parts.set(key, messages.length);
       messages.push(...row.messages);
     }
+    // 守卫（issue #401 R3）：该轮载体**已经带着这一轮的正文**——宿主把折好的载体与原始消息行
+    // 都交给了我们。此时再把消息行拼一次就是同一轮正文重复一遍（实测 r1 变
+    // assistant+user+assistant+user）。判据是「折出来的结果与载体现有正文逐字段深比较相等」，
+    // 而不是「载体非空」：`…:engine:round:<n>:resume` 载体带的是方向提示那几条引擎控制正文，
+    // 同轮的消息行装的是崩溃轮的正文——那一轮**必须**照常拼，按「非空就跳」会把正文丢掉。
+    const carrier = records[group.carrier];
+    const existing = Array.isArray(carrier?.messages) ? carrier.messages : [];
+    if (existing.length > 0 && isDeepStrictEqual(existing, messages)) continue; // 已折过：消息行当重复副本丢弃
     attached.set(group.carrier, messages);
   }
   if (consumed.size === 0) return records;
