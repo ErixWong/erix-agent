@@ -169,7 +169,13 @@ test("#326-C 复用不重算：折叠后中断，resume 不再调 summarizer，�
     maxRounds: 2,
     completion: false,
     reflection: false,
-    context: foldContext,
+    // issue #398：恢复运行会注入一条「复活赛告示」消息，于是**最后多出一个轮**。本用例的
+    // `foldContext` 是 `keepRounds: 0`（全折叠）——那样告示自己也会被折进去，折叠输入真的变了，
+    // 复用当然落空。这里把 `keepRounds` 提到 1，让「被折叠的那一段」保持与崩溃前逐字相同：
+    // 本用例要钉的是**同一份折叠输入不重算**，不是「上下文变了也不许重算」。
+    // 告示自己落进折叠区间那一格另有专门的锚（`test/loop-resume-notice.test.js` 的
+    // 「告示在同一轮被折进摘要」条）。
+    context: { ...foldContext, keepRounds: 1 },
   });
 
   assert.equal(resumed.summaryCalls, 0,

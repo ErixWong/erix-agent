@@ -162,13 +162,57 @@ const SCENARIOS = [
 /** 基线提交：夹具必须在它上面 `--write` 生成（口径见文件头「方法论」）。 */
 export const BASELINE_COMMIT = "2ca60bc";
 
+/** issue #398（工单 BB「复活赛告示」）的**豁免**：恢复告示是基线代码**不可能产出**的新事实
+ *  （`2ca60bc` 上根本没有这条注入），所以它没法出现在基线夹具里，也不该让「折叠层逐字一致」这条
+ *  对照判据变红。这里把它从**捕获侧**逐条剥掉，并把剥掉的条数交回去由测试断言——
+ *  多剥一条就等于这条豁免在替别的漂移打掩护，少剥一条说明槽位名变了（两条都会当场红）。
+ *
+ *  剥三处：账本里的 `…:control:resume-notice:<fp>` 行、它的正文（`messagesFlat` 由 records 派生，
+ *  剥行即剥正文）、以及恢复那次请求里的那条消息（`resumedModelMessages`）。
+ *  告示自己的行为锚在 `test/loop-resume-notice.test.js`，不靠这份金样。 */
+const RESUME_NOTICE_ROW = /:engine:round:\d+:control:resume-notice:/u;
+export const RESUME_NOTICE_MARKER = "【恢复运行】";
+
+function isResumeNoticeMessage(message) {
+  return message?.meta?.source === "judge-control"
+    && (Array.isArray(message?.content) ? message.content : [])
+      .some((block) => typeof block?.text === "string" && block.text.includes(RESUME_NOTICE_MARKER));
+}
+
+/** @returns {number} 本次真的剥掉了几条（行 + 请求消息各算一条） */
+function stripResumeNotice(scenario) {
+  let stripped = 0;
+  const before = scenario.records.length;
+  scenario.records = scenario.records.filter((record) => {
+    const key = String(record?.dedupKey ?? record?.roundKey ?? "");
+    if (!RESUME_NOTICE_ROW.test(key)) return true;
+    stripped += 1;
+    return false;
+  });
+  if (scenario.records.length !== before) scenario.messagesFlat = null; // 由下面重算
+  if (scenario.resumedModelMessages !== undefined) {
+    const kept = scenario.resumedModelMessages.filter((message) => {
+      if (!isResumeNoticeMessage(message)) return true;
+      stripped += 1;
+      return false;
+    });
+    scenario.resumedModelMessages = kept;
+  }
+  return stripped;
+}
+
+/** 每次 `capture()` 都会重填：`[{ name, stripped }]` —— 那条豁免剥掉了几条（0 = 该场景没有告示）。
+ *  由 `test/store/message-journal-golden.test.js` 断言，防止豁免面悄悄变大。 */
+export const resumeNoticeCensus = [];
+
 /** 跑全部场景，产出可提交的夹具对象。 */
 export async function capture() {
+  resumeNoticeCensus.length = 0;
   const scenarios = [];
   for (const scenario of SCENARIOS) {
     const outcome = await scenario.run();
     const records = await outcome.store.load(outcome.runId);
-    scenarios.push({
+    const entry = {
       name: scenario.name,
       runId: outcome.runId,
       termination: outcome.termination,
@@ -179,8 +223,11 @@ export async function capture() {
         : { resumedModelMessages: outcome.resumedModelMessages }),
       records: normalize(records),
       // 模型可见正文序列（折叠层的第一判据：这条序列不得因存储改造而改变）
-      messagesFlat: normalize(records.flatMap((record) => record.messages ?? [])),
-    });
+      messagesFlat: null,
+    };
+    resumeNoticeCensus.push({ name: scenario.name, stripped: stripResumeNotice(entry) });
+    entry.messagesFlat = normalize(entry.records.flatMap((record) => record.messages ?? []));
+    scenarios.push(entry);
   }
   return { generator: "scripts/message-journal-golden.mjs", volatileKeys: [...VOLATILE_KEYS], scenarios };
 }
