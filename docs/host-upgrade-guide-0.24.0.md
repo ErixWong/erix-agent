@@ -27,6 +27,7 @@ of "works if you read the source". If a section below is not your code path, it 
 | New `deliverables` option + payload key `fileWrites`: host-declared machine criteria, checked before **every** guard call; a failing criterion turns a guard's `accept` into `unverified` / `deliverables_failed` (§9) | no — opt-in; act if your guard does its own disk checks today |
 | The machine criteria now count under **every** guard verdict: `skip` + all passing ⇒ `verified` / `reason: "machine_only"` (exit **0** instead of **4**), `skip` or guard error + any failing ⇒ `unverified` / `deliverables_failed` (exit **2**) (§10) | yes, if you treat `verified` as "the guard judged it" — read `reason === "machine_only"` before trusting one |
 | New `finalGuardExtend` option (**default `false`**): a `revise` on `max_rounds_cap` / `continuation_exhausted` buys at most one more round per run; `stall` never extends (§11) | no — opt-in, and off by default keeps every budget-type stop byte-for-byte as in 0.23.0 |
+| A **truncated tool-call round** no longer loses its final text: the forced wrap-up settles the pending `tool_use` first, so those runs end `continuation_exhausted` (CLI exit **4**) instead of `failed` / `invalid_messages` (exit **1**) (§12) | yes, if you treat `failed` / exit 1 as "retryable" |
 
 The one-line version: **the facts you used to infer are now written down.** The engine did not change what
 it *does*; it changed what it *says* — in the state file, in the error objects, and in the tool outputs the
@@ -482,16 +483,58 @@ the first stop did run, then the loop continued.
 byte-for-byte as in 0.23.0. Turn it on only when your guard's `revise` messages are specific
 enough that one more round plausibly closes the gap — that is the only thing the bridge buys.
 
-## 12. Self-check
+## 12. A truncated tool-call round no longer loses its final text (issue #394)
+
+**Symptom.** A **truncated tool-call round** — the provider answered `max_tokens` (OpenAI
+`finish_reason: "length"`) *and* the response carried a `tool_calls` / `tool_use` block — leaves the
+last message as an `assistant` holding a `tool_use` with no `tool_result`, because the tool branch
+only runs on `stopReason === "tool_use"`. When the continuation budget then runs out, the engine's
+forced wrap-up pushed its `【强制收尾】` instruction **before** validating the message order, and the
+only shape that validation tolerates in that mode is "the dangling `tool_use` is the very last
+message". So the validation threw `invalid_messages`, `runToolLoop` rejected with
+`termination: { reason: "failed", errorCode: "invalid_messages" }`, and the **final text was lost** —
+the wrap-up request was never sent. Nothing had to be switched on: this reproduced with the defaults
+(`finalGuard` off).
+
+**What is new.** Every engine-written user control message is now preceded by the same repair —
+`answerPendingTailToolUses` (`src/loop/pending-tool-result.js`) — which closes a pending trailing
+`tool_use` with **one** engine-written `tool_result` (`is_error: true`, content
+`PENDING_TOOL_RESULT_TEXT` (`src/loop/pending-tool-result.js`), starting with the `[erix]` marker)
+before the instruction goes in. Three injection points share that one implementation: the forced
+wrap-up (`forceFinalIfNeeded` (`src/loop/termination.js`)), the mid-run extension and the guard
+bridge (`applyGovernorExtension` (`src/loop/orchestrator.js`)), and the post-stop `revise`
+continuation message.
+
+**Behaviour change (this is the part to act on).** The same script that used to end `failed` /
+`invalid_messages` — CLI exit code **1**, no final text — now finishes normally:
+`termination: { reason: "continuation_exhausted", forcedFinal: true }`, `finalText` populated, and
+CLI exit code **4** (verification is still `skipped` / `no_final_guard` when no guard is configured;
+`exitCodeForVerification` (`bin/cli.js`) is unchanged). Measured on a real `erix chat` subprocess
+against a scripted upstream: **1 → 4**, and the upstream went from 4 requests to 5 (the wrap-up
+request used to never happen). The run also gains one `tool_result` in `messages` and one
+`:control:` transcript row. If your host branches on `termination.reason === "failed"` or on exit
+code 1 to decide "retryable", re-read those runs: they now finish, so key the retry policy on
+`continuation_exhausted` / `truncated` instead.
+
+**The injected `tool_result` is not an executed call.** It states a fact ("this call never ran"), so
+the call is **not** executed and the model may re-issue it. A tail whose `tool_use` ids cannot be
+read is **not** settled: it keeps reporting today's `invalid_messages` instead of gaining a third
+fallback.
+
+**Do you have to act?** Only for that `failed` branch. Nothing else moved: no new option, no new
+export, no new termination reason, no new error code, and the strict message-order rule
+(`allowPendingToolUse: false`) is unchanged.
+
+## 13. Self-check
 
 ```bash
-npm test                       # 1,920 tests, 0 failing (1,911 passing + 9 skipped)
+npm test                       # 1,965 tests, 0 failing (1,956 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # offline, zero model calls; asserts the finalGuard payload surface
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites
 ```
 
-Against your own host, eight questions are worth answering with a test before you upgrade:
+Against your own host, nine questions are worth answering with a test before you upgrade:
 
 1. **State file.** Take a run with more than 32 compaction entries: `compactionStatsWindow.total` equals
    the full count, `dropped === total − 32`, and an **old** state file (no window key) still validates and
@@ -526,19 +569,27 @@ Against your own host, eight questions are worth answering with a test before yo
    must end `unverified` / `deliverables_failed` (exit **2**), and a guard that **throws**
    with passing criteria must still end `error` (§10's table; the `S6c`/`S6d` probe cells are
    the shipped version).
+9. **Truncated tool-call round.** Script your upstream to answer `finish_reason: "length"` **with** a
+   `tool_calls` payload, and run `erix chat` with the defaults (no `--final-guard`): the run must end
+   `continuation_exhausted` with a non-empty `finalText` and exit **4** — before this change the same
+   script exited **1** with `invalid_messages` and no final text — and the transcript must carry one
+   engine-written `tool_result` (the `[erix]` marker) right after the truncated `assistant` message.
+   Then break the tail (a `tool_use` without an `id`): the run must still fail with
+   `invalid_messages`, not swallow it.
 
-## 13. What did not change
+## 14. What did not change
 
 No store method signature, no return type, no option name, no export, no record kind, no message field, no
 termination reason, no error code, and no runtime dependency (still zero). `store.load()`'s shape is
 unchanged from 0.23.0. `deterministic.compactionStats` still holds the last 32 entries. The judge decision
 surface and the resume path are untouched; the final guard's *verdict* semantics are
-untouched too — its payload gained additive keys (§8), which is information, not a new rule. Two
-*behavioural* changes shipped in this release, and both are corrections of false negatives rather than new
-rules: a missing search root returns an error text instead of `（无命中）` (§6), and a machine criterion
-that passes under a guard `skip` is no longer thrown away (§10). Everything else is additive.
+untouched too — its payload gained additive keys (§8), which is information, not a new rule. Three
+*behavioural* changes shipped in this release, and all three are corrections of false negatives rather than
+new rules: a missing search root returns an error text instead of `（无命中）` (§6), a machine criterion
+that passes under a guard `skip` is no longer thrown away (§10), and a truncated tool-call round finishes
+with its final text instead of ending `failed` / `invalid_messages` (§12). Everything else is additive.
 
-## 14. Migration recipe
+## 15. Migration recipe
 
 1. If you read `<runId>.state.json`'s compaction ledger, read `compactionStatsWindow.total` (and
    `dropped`) instead of counting the array — and treat the key's absence as "no statistics", not "zero".

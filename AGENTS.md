@@ -126,7 +126,7 @@ scripts/          # experiment scripts and results
     implementations: measured on the post-#249 tree (2026-10-11), **142 errors** with no `.d.ts` present, **0 errors**
     with the then-61 declarations present (`--skipLibCheck` skips declaration files), **13 errors all pointing at `.d.ts`** if
     `--skipLibCheck` is dropped; re-measured 2026-10-21 on the current tree (post-#339, where `npm run types:build`
-    emits **71** declarations — the earlier counts 61 (the 2026-10-11 tree), 63 (`39e96f1`, 2026-10-13), 64 (the 0.20.0 tarball) and 65 (the post-#292 tree, 2026-10-15) are **historical values**; current: **117 errors** with none present, **0 errors** with the 71 present, and the same **13 errors on `.d.ts` files** without `--skipLibCheck`.
+    emits **72** declarations — the earlier counts 61 (the 2026-10-11 tree), 63 (`39e96f1`, 2026-10-13), 64 (the 0.20.0 tarball), 65 (the post-#292 tree, 2026-10-15) and 71 (the post-#386 tree, 2026-10-23) are **historical values**; current: **117 errors** with none present, **0 errors** with the 72 present, and the same **13 errors on `.d.ts` files** without `--skipLibCheck`.
     "0 errors < baseline" would be a **false green**, so the script hard-fails on
     stale `src/**/*.d.ts` (the repository commits zero `.d.ts`, so their presence always means generated).
     Fix: `find src -name '*.d.ts' -delete` — they are git-ignored and regenerable.
@@ -182,8 +182,8 @@ scripts/          # experiment scripts and results
   `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs`. Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 105` (groups
-  measured today: 105 unique (symbol, file) pairs over 264 occurrences, raised from 32 when the 0.21.0 guide pair
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 109` (groups
+  measured today: 109 unique (symbol, file) pairs over 287 occurrences, raised from 32 when the 0.21.0 guide pair
   landed, again for the #293 fixes to the 0.19.0 guide, again to 45 when #313's contract section merged on top
   of them, again to 53 when #314's host-side guard section landed as a pair, and again to 63 when the 0.21.0 guide
   pair grew the #313 / #314 / #312(b) host sections during the 0.21.0 fold-in (工单 261016-021), reproducible via `--verbose`, and again to 67 when the #326 store-dedup contract section landed as an EN/CN pair, and again to 72 when 架构×2 / 图表×2 / 需求对照×2 and `examples/pi-extension/README.md` joined the coverage (工单 261021-03 B1 — five new groups: `resolvedToolResultTtl`, `markStablePrefix`, `loadModelSlot`, `createProviderForSlot`, `createJsonFileModelConfigProvider`, and again to 75 when the direction-hint archive-row wording landed as an EN/CN contract pair (工单 261021-04 — three new groups: `pendingDirectionHints`, `directionHintText`, `restoreResume`), and again to 77 when the 0.23.0 host-upgrade guide pair landed (工单 261021-12 — `projectTranscriptForDisplay` / `foldMessageRows`), again to 80 when the #361 "row shape on disk is not the shape after `load()`" contract section landed as an EN/CN pair (工单 F2 — three new groups: `isRoundCarrier`, `createMemoryTranscriptStore`, `createFileTranscriptStore`), and again to 95 when the 0.24.0 host-upgrade guide pair landed (工单 261022-17 — fourteen new groups, e.g. `compactionStatsWindow` / `validateRunState` in `src/run-state.js`, `COMPACTION_STATS_STATE_LIMIT` in `src/compact/pipeline.js`, `assertSnapshotPersisted` / `makePersistenceFailure`, `toolMarker` / `displayName` / `searchRootError` / `withDeprecation` in `src/tools/file-tools.js`, plus `BASELINE_WITH_TOOLS` and `makeTmp`), and again to 98 when the #386 `finalGuard` payload contract section
@@ -193,7 +193,7 @@ scripts/          # experiment scripts and results
   in `src/reflection/governor.js`, `applyGovernorExtension` in `src/loop/orchestrator.js`,
   `FINAL_GUARD_EXTENDABLE_REASONS` in `src/loop/termination.js`, `isApiInputOverBudget` in `src/loop/budget.js`), and again to 103 when the
   #393 pending-`tool_use` tail repair landed as an EN/CN contract pair (one new group: `PENDING_TOOL_RESULT_TEXT`
-  in `src/loop/orchestrator.js`), again to 105 when #391 的交付物小节中英成对改成「只给命名判据」并新增 `createNamedDeliverableChecks`（工单 V——两个新组：`createDeliverableChecks` 与 `createNamedDeliverableChecks`，都在 `bin/final-guard.js`；`--verbose` 实测 **105 组 / 264 处**，契约 EN 75 / CN 74）): dropping below it is
+  in `src/loop/pending-tool-result.js` since issue #394 moved it next to the repair action), again to 105 when #391 的交付物小节中英成对改成「只给命名判据」并新增 `createNamedDeliverableChecks`（工单 V——两个新组：`createDeliverableChecks` 与 `createNamedDeliverableChecks`，都在 `bin/final-guard.js`；`--verbose` 实测 **105 组 / 264 处**，契约 EN 75 / CN 74）, and again to 109 when #394 的「强制收尾 / guard 续跑注入前结清悬空 `tool_use`」落成契约 + 指南中英成对的一节（工单 Z——四个新组：`answerPendingTailToolUses` 与 `PENDING_TOOL_RESULT_TEXT` 都在 `src/loop/pending-tool-result.js`、`pendingTrailingToolUses` 在 `src/messages/rounds.js`、`buildToolResultFact` 在 `src/tool-fact.js`、`exitCodeForVerification` 在 `bin/cli.js`；`--verbose` 实测 **109 组 / 287 处**，契约 EN 81 / CN 78，0.24.0 指南 EN 20 / CN 22）): dropping below it is
   red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
   Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
   *`symbol-anchor-span`* (#286 batch T-b1a) is the *per-occurrence* companion of the rule above: when a symbol anchor
@@ -244,8 +244,9 @@ scripts/          # experiment scripts and results
 - Type surface (issue #213): `types` points at `./src/index.d.ts` and `exports["."]`/`exports["./tools"]` carry a matching `types`
   condition; `exports["./contract-tests"]` has **no** `types` key on purpose (its target lives under `test/`, outside the declaration graph).
   Declarations are generated by the `prepack` hook, so a clean checkout has none — a packed install should list
-  **71** `.d.ts` (measured 2026-10-23 on the #386 slice-2 tree: `npm pack --dry-run --json` lists exactly 71 since that
-  slice added `src/loop/deliverables.js`; before that 70 since #333 added `src/store/message-rows.js`, 69 since #326
+  **72** `.d.ts` (measured 2026-10-23 on the #394 tree: `npm pack --dry-run --json` lists exactly 72 since that
+  slice added `src/loop/pending-tool-result.js`; before that 71 since #386 slice 2 added `src/loop/deliverables.js`,
+  70 since #333 added `src/store/message-rows.js`, 69 since #326
   added `src/store/transcript-dedup.js`, and #322 added `src/compact/fold-summary-journal.js`). **That number is reconciled against the tarball
   contents by `npm run check:pack-links` — never hand-copy it into these two files; the gate names the document and the line.**
   Historical values, kept as history: 67 (post-#307, measured 2026-10-16), 66 (after #305 added `src/text/json-candidates.js`),

@@ -24,6 +24,7 @@
 | 新增 `deliverables` 选项与载荷键 `fileWrites`：宿主声明的机器判据，在**每次** guard 调用前核一遍；判据失败会把 guard 的 `accept` 变成 `unverified` / `deliverables_failed`（§9） | 不用——opt-in；只有你原本在 guard 里自己查磁盘时才要动手 |
 | 机器判据在**每一种** guard 裁决下都算数：`skip` + 全通过 ⇒ `verified` / `reason: "machine_only"`（退出码 **4 → 0**），`skip` 或 guard 报错 + 有失败 ⇒ `unverified` / `deliverables_failed`（退出码 **2**）（§10） | 要——只要你把 `verified` 读成「guard 判过了」；信之前先看 `reason === "machine_only"` |
 | 新增 `finalGuardExtend` 选项（**默认 `false`**）：`max_rounds_cap` / `continuation_exhausted` 上的 `revise` 每 run 最多补跑一轮；`stall` 永远不补（§11） | 不用——opt-in；不打开时每一类预算停机都与 0.23.0 逐字一致 |
+| **被截断的工具调用轮**不再丢终稿：强制收尾注入前会先结清悬空 `tool_use`，于是这类 run 以 `continuation_exhausted` 收场（CLI 退出码 **4**），而不是 `failed` / `invalid_messages`（退出码 **1**）（§12） | 要——只要你把 `failed` / 退出码 1 当「可重试」 |
 
 一句话版本：**以前要靠你推断的事实，现在写在明面上了。** 引擎没有改它**做**什么，改的是它**说**什么——
 状态文件里、错误对象上，以及模型会读到的那几处工具输出。
@@ -407,16 +408,49 @@ guard_extension: true }` 事件，以及 `verification.metrics.guard_extensions:
 **要不要动手？** 不用。`finalGuardExtend` 不动，每一类预算停机都与 0.23.0 逐字一致。只有当你的
 guard 的 `revise` 意见足够具体、多跑一轮**确实**能补上那个缺口时才打开它——桥买到的就是这一件事。
 
-## 12. 自检
+## 12. 被截断的工具调用轮不再丢终稿（issue #394）
+
+**症状。** **被截断的工具调用轮**——provider 回了 `max_tokens`（OpenAI `finish_reason: "length"`）
+**并且**响应里带着 `tool_calls` / `tool_use` 块——会让末条消息停在一条「有 `tool_use`、没有
+`tool_result`」的 `assistant` 上，因为工具执行分支的门是 `stopReason === "tool_use"`。续写预算再用尽时，
+引擎的强制收尾**先** push `【强制收尾】` 指令、**后**校验消息序，而该档唯一容忍的形状是「悬空
+`tool_use` 就是最后一条消息」⇒ 校验抛 `invalid_messages`、`runToolLoop` 以
+`termination: { reason: "failed", errorCode: "invalid_messages" }` 拒掉整次 run，**终稿丢失**（收尾
+那一次请求根本没发出去）。不需要打开任何开关：默认配置（不传 `finalGuard`）就复现。
+
+**新的是什么。** 每一条引擎自写的 user 控制消息之前，现在都跑同一个结清动作
+`answerPendingTailToolUses`（`src/loop/pending-tool-result.js`）：尾部悬空的 `tool_use` 先用**一条**
+引擎自写的 `tool_result` 结清（`is_error: true`，正文 `PENDING_TOOL_RESULT_TEXT`
+（`src/loop/pending-tool-result.js`），以 `[erix]` marker 开头），然后才注入指令。三个注入点共用这一份
+实现：强制收尾（`forceFinalIfNeeded`（`src/loop/termination.js`））、中途扩轮与 guard 补跑桥
+（`applyGovernorExtension`（`src/loop/orchestrator.js`））、以及停机后那条 `revise` 续跑消息。
+
+**行为变化（这一段才是要动手的部分）。** 同一个脚本从前以 `failed` / `invalid_messages` 收场——CLI
+退出码 **1**、没有终稿——现在正常跑完：`termination: { reason: "continuation_exhausted",
+forcedFinal: true }`、`finalText` 有值、CLI 退出码 **4**（没配 guard 时 `verification` 仍是
+`skipped` / `no_final_guard`；`exitCodeForVerification`（`bin/cli.js`）一字未改）。用真 `erix chat`
+子进程打脚本化上游实测：**1 → 4**，且上游从 4 发变成 5 发（收尾那一次请求从前根本没发生）。run 还会在
+`messages` 里多一条 `tool_result`、档案里多一行 `:control:`。如果你的宿主按
+`termination.reason === "failed"` 或退出码 1 判「可重试」，请重新判断这些 run：它们现在会跑完，重试策略
+应该改看 `continuation_exhausted` / `truncated`。
+
+**那条 `tool_result` 不是执行过的调用。** 它陈述的是事实（「这次调用根本没跑」），所以该调用**不会**被
+执行，模型可以重新发起。`tool_use` 的 id 读不出来的畸形尾巴**不结清**：它照旧如实报今天的
+`invalid_messages`，不会多出第三种兜底。
+
+**要不要动手？** 只对那条 `failed` 分支。其余一律没动：没有新选项、没有新导出、没有新终止原因、没有新
+错误码，严格的消息序规则（`allowPendingToolUse: false`）也一字未改。
+
+## 13. 自检
 
 ```bash
-npm test                       # 1,920 tests，0 失败（1,911 通过 + 9 skipped）
+npm test                       # 1,965 tests，0 失败（1,956 通过 + 9 skipped）
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # 离线、零模型调用；断言 finalGuard 的载荷面
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件
 ```
 
-对你的宿主，升级前有八个问题值得用测试回答：
+对你的宿主，升级前有九个问题值得用测试回答：
 
 1. **状态文件。** 造一个削减账超过 32 条的 run：`compactionStatsWindow.total` 等于全量条数、
    `dropped === total − 32`，并且**旧**状态文件（没有窗口键）照旧 validate、照旧可续跑。
@@ -445,17 +479,22 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    `erix chat --final-guard --require-deliverable` 必须退 **0**。然后把那个文件删掉：同一个 run 必须以
    `unverified` / `deliverables_failed` 收尾（退 **2**）；而判据全通过但 guard **抛异常**时仍必须是
    `error`（§10 的那张表；探针的 `S6c`/`S6d` 两格就是它的随包版本）。
+9. **被截断的工具调用轮。** 让脚本化上游回 `finish_reason: "length"` **且**带 `tool_calls`，用默认配置
+   跑 `erix chat`（不带 `--final-guard`）：run 必须以 `continuation_exhausted` 收尾、`finalText` 有值、
+   退出码 **4**——本次改动之前同一个脚本退 **1** 并报 `invalid_messages`、没有终稿——且档案里在截断的
+   `assistant` 消息之后必须有一条引擎自写的 `tool_result`（带 `[erix]` marker）。然后把尾巴弄畸形
+   （`tool_use` 没有 `id`）：run 必须照旧以 `invalid_messages` 失败，而不是被悄悄吞掉。
 
-## 13. 没变的
+## 14. 没变的
 
 没有 store 方法签名、没有返回类型、没有选项名、没有导出、没有记录种类、没有消息字段、没有终止原因、
 没有错误码搬家，运行时依赖仍是零。`store.load()` 的形状与 0.23.0 一致。`deterministic.compactionStats`
 仍是最后 32 条。judge 决策面与续跑路径一字未动；final guard 的**裁决**语义也一字未动——它的载荷多了几个加法键（§8），
-那是信息，不是新规则。整个发布里有**两处**行为变化，两处都是修假阴性、不是新规则：搜索根不存在
-返回错误文本而不是 `（无命中）`（§6），以及 guard `skip` 下通过的机器判据不再被丢掉（§10）。
-其余全是加法。
+那是信息，不是新规则。整个发布里有**三处**行为变化，三处都是修假阴性、不是新规则：搜索根不存在
+返回错误文本而不是 `（无命中）`（§6）、guard `skip` 下通过的机器判据不再被丢掉（§10），以及被截断的
+工具调用轮会带着终稿跑完、而不是以 `failed` / `invalid_messages` 结束（§12）。其余全是加法。
 
-## 14. 迁移配方
+## 15. 迁移配方
 
 1. 如果你读 `<runId>.state.json` 的削减账，改读 `compactionStatsWindow.total`（与 `dropped`），别再数数组；
    把键的缺席理解成「没有统计」，而不是「零」。

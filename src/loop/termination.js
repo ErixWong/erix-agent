@@ -1,4 +1,5 @@
 import { markStablePrefix } from "./provider-runner.js";
+import { answerPendingTailToolUses } from "./pending-tool-result.js";
 import { runDeliverables } from "./deliverables.js";
 import { tryParseWrapupJson } from "../reflection/wrapup.js";
 import { validateMessages } from "../messages/rounds.js";
@@ -539,6 +540,25 @@ export function createTerminationManager(ctx) {
         text: `【强制收尾】循环因 ${reason} 结束。禁止调用任何工具；请立即给出最终结论，或明确声明不可恢复。`,
       }],
     };
+    // ── issue #394：注入**之前**先结清尾部悬空 `tool_use` ────────────────────────────────────
+    // 病根不在判据也不在构造器，而在「结清点只有一个」：#393 把结清动作放进了 orchestrator 的
+    // `applyGovernorExtension` 闭包，而**本函数是另一个注入点**（强制收尾的指令也是引擎自写的 user
+    // 控制文本）。于是「被截断的工具调用轮」——`stopReason:"max_tokens"` 且 content 带 `tool_use`
+    // （`src/messages/openai-normalization.js#normalizeOpenAIStopReason` 的 `length → max_tokens`、
+    // Anthropic 原生 `max_tokens` 同理）——在续写预算用尽时尾部正是一条没有 `tool_result` 的
+    // `assistant[tool_use]`；先 push 指令、再 `validateMessages(..., { allowPendingToolUse: true })`
+    // 而该档唯一容忍的形状是「悬空 `tool_use` 之后什么都没有」⇒ 必然抛 ⇒ `runToolLoop` reject
+    // `invalid_messages`、**终稿丢失**（默认关就复现，只花 1 次请求）。
+    //
+    // 结清动作走共享实现（`src/loop/pending-tool-result.js`，判据 / 结果块 / 正文三件事实都在那一份里），
+    // 入账回调由 orchestrator 在建 termination manager 时注入——本模块不持有 store、不碰 persist。
+    // 畸形尾巴（`tool_use` 的 id 读不出来）沿用 #393 的退路 B：共享实现不结清，下面那条
+    // `validateMessages` 继续如实报 `invalid_messages`（不在这里发明第三种兜底）。
+    await answerPendingTailToolUses(ctx.messages, {
+      round: ctx.rounds,
+      messageRounds: ctx.messageRounds,
+      onMessage: ctx.journalPendingTailToolResult,
+    });
     ctx.messages.push(instruction);
     ctx.messageRounds.set(instruction, ctx.rounds);
     validateMessages(ctx.messages, { allowPendingToolUse: true });
