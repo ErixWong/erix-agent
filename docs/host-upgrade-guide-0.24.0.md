@@ -28,6 +28,7 @@ of "works if you read the source". If a section below is not your code path, it 
 | The machine criteria now count under **every** guard verdict: `skip` + all passing ⇒ `verified` / `reason: "machine_only"` (exit **0** instead of **4**), `skip` or guard error + any failing ⇒ `unverified` / `deliverables_failed` (exit **2**) (§10) | yes, if you treat `verified` as "the guard judged it" — read `reason === "machine_only"` before trusting one |
 | New `finalGuardExtend` option (**default `false`**): a `revise` on `max_rounds_cap` / `continuation_exhausted` buys at most one more round per run; `stall` never extends (§11) | no — opt-in, and off by default keeps every budget-type stop byte-for-byte as in 0.23.0 |
 | A **truncated tool-call round** no longer loses its final text: the forced wrap-up settles the pending `tool_use` first, so those runs end `continuation_exhausted` (CLI exit **4**) instead of `failed` / `invalid_messages` (exit **1**) (§12) | yes, if you treat `failed` / exit 1 as "retryable" |
+| `foldMessageRows` is exported from the package root, and `resume` folds `store.load()` once more: a store whose `load()` returns the on-disk rows no longer loses the tool pairing (§12) | no — act only if your own `load()` returns the on-disk rows, and then fold it |
 
 The one-line version: **the facts you used to infer are now written down.** The engine did not change what
 it *does*; it changed what it *says* — in the state file, in the error objects, and in the tool outputs the
@@ -524,17 +525,55 @@ fallback.
 **Do you have to act?** Only for that `failed` branch. Nothing else moved: no new option, no new
 export, no new termination reason, no new error code, and the strict message-order rule
 (`allowPendingToolUse: false`) is unchanged.
+## 13. `foldMessageRows` is public API, and `resume` folds once for you (issue #401)
 
-## 13. Self-check
+**Symptom.** 0.23.0 moved the body of a run into `kind: "message"` rows and made the fold a
+**host** obligation: your `load()` has to re-attach those rows to the round carrier, or every
+reader that flattens `record.messages` sees nothing. Two things were wrong with how that
+obligation shipped. First, it was **unfulfillable**: the fold lived in
+`src/store/message-rows.js`, which is not in the package `exports`, and it was not exported
+from the package root either — measured on a real `npm pack` plus install,
+`'foldMessageRows' in await import("erix-agent")` was `false`. Second, it was **untested**:
+the shipped contract suite (`erix-agent/contract-tests`) had zero cells about folding, so a
+store that never folded passed the whole suite. That is the exact shape of the report behind
+this issue: green everywhere, and on resume the governed timeline read `[pending]` where it
+used to read `[ok]`.
+
+**What is new.**
+
+- `foldMessageRows` is exported from the package root: `import { foldMessageRows } from
+  "erix-agent"`. Feed it the array your store persists (the `load()`-level rows) and return
+  its result from `load()`. It is idempotent, it passes an old ledger through untouched (the
+  same array, the same objects), and it skips a round whose carrier row **already holds that
+  round's folded body** — so a store that both folds *and* keeps the raw message rows does not
+  return the body twice.
+- `test/contract/transcript-store.js` now asserts folding: three cells (fold plus `seq` order
+  plus the `partOf` shard, idempotence, and the “both copies” shape). A pass-through store
+  fails all three while the 22 pre-existing cells stay green — that pair is the shipped
+  version of “green but not folded”.
+- The resume path no longer depends on you having folded: `restoreResume`
+  (`src/loop/resume-manager.js`) folds the value `store.load()` returned once more before it
+  rebuilds the context. On an unfolded store the tool call reads `[ok]` again, and one round
+  is counted once.
+
+**Do you have to act?** Only if your own `load()` returns the on-disk rows. Then fold it —
+either with `foldMessageRows` or with your own implementation of the same three rules (group
+by `round`, order by `seq`, attach `partOf` shards to the message they point at). The
+engine's fallback covers the **resume path only**: the display projection
+(`projectTranscriptForDisplay`, `src/display/projection.js`) still reads `load()` output
+directly, and so does every other reader you wrote against
+`records.flatMap((record) => record.messages ?? [])`.
+
+## 14. Self-check
 
 ```bash
-npm test                       # 1,965 tests, 0 failing (1,956 passing + 9 skipped)
+npm test                       # 1,970 tests, 0 failing (1,961 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # offline, zero model calls; asserts the finalGuard payload surface
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites
 ```
 
-Against your own host, nine questions are worth answering with a test before you upgrade:
+Against your own host, ten questions are worth answering with a test before you upgrade:
 
 1. **State file.** Take a run with more than 32 compaction entries: `compactionStatsWindow.total` equals
    the full count, `dropped === total − 32`, and an **old** state file (no window key) still validates and
@@ -576,20 +615,28 @@ Against your own host, nine questions are worth answering with a test before you
    engine-written `tool_result` (the `[erix]` marker) right after the truncated `assistant` message.
    Then break the tail (a `tool_use` without an `id`): the run must still fail with
    `invalid_messages`, not swallow it.
+10. **Your store folds.** Point your `load()` at the raw journal of one run (one
+   `kind: "message"` row per message, the carrier row with no `messages` key): `load()` must
+   return one record per round with the body re-attached and the `partOf` shards inside the
+   message they belong to, and `erix-agent/contract-tests` must stay green. Then drop the
+   fold from `load()`: the three fold cells must go red — if they stay green, you are the
+   erix-station shape this section exists for (§13).
 
-## 14. What did not change
+## 15. What did not change
 
-No store method signature, no return type, no option name, no export, no record kind, no message field, no
+No store method signature, no return type, no option name, no export **removed** (one export was
+*added*, §13), no record kind, no message field, no
 termination reason, no error code, and no runtime dependency (still zero). `store.load()`'s shape is
 unchanged from 0.23.0. `deterministic.compactionStats` still holds the last 32 entries. The judge decision
 surface and the resume path are untouched; the final guard's *verdict* semantics are
-untouched too — its payload gained additive keys (§8), which is information, not a new rule. Three
-*behavioural* changes shipped in this release, and all three are corrections of false negatives rather than
+untouched too — its payload gained additive keys (§8), which is information, not a new rule. Four
+*behavioural* changes shipped in this release, and all four are corrections of false negatives rather than
 new rules: a missing search root returns an error text instead of `（无命中）` (§6), a machine criterion
 that passes under a guard `skip` is no longer thrown away (§10), and a truncated tool-call round finishes
-with its final text instead of ending `failed` / `invalid_messages` (§12). Everything else is additive.
+with its final text instead of ending `failed` / `invalid_messages` (§12), and a store whose `load()` hands
+back raw rows no longer loses its tool pairing on resume (§13). Everything else is additive.
 
-## 15. Migration recipe
+## 16. Migration recipe
 
 1. If you read `<runId>.state.json`'s compaction ledger, read `compactionStatsWindow.total` (and
    `dropped`) instead of counting the array — and treat the key's absence as "no statistics", not "zero".

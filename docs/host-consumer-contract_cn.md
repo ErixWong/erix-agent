@@ -2242,8 +2242,11 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
   `restoreResume`（`src/loop/resume-manager.js`）把 `:input:` 行当 tail，延后到补跑结果之后才拼。
   真上游守卫：`examples/resume-real-e2e.test.mjs`（`ERIX_E2E_REAL=1`：真进程 SIGKILL → 同
   `--session` 续跑 → 账本闭合 / 不丢 / 不重复执行 / 半行隔离）。
-- **读账本一律过 `load()`，不要自己再折一遍原始行。**
-  `foldMessageRows`（`src/store/message-rows.js`）是唯一的读侧。自己重实现折叠——例如按内容
+- **读账本一律过 `load()`，不要自己拿原始行再折一遍。**
+  `foldMessageRows`（`src/store/message-rows.js`）是唯一的读侧，而且自 issue #401 起它是**公共 API**：
+  `import { foldMessageRows } from "erix-agent"`。自己拼 `load()` 返回值的宿主 store 直接调它就行——
+  这个模块的深路径不在包的 `exports` 里，而在 #401 之前这个函数在打包安装里**根本拿不到**
+  （`ERR_PACKAGE_PATH_NOT_EXPORTED`），所以「自己实现一套折叠」是当时唯一可选项。自己重实现折叠——例如按内容
   指纹给消息去重——会把**合法的重复**静默丢掉：两条前 400 字符相同的长消息会被并成一条，
   而任何基于那个数组的计数都会错，且错不错取决于负载文本（「CLI 是不是真跑了 ≥2 次工具」
   这种计数可能读成 1）。仓内先例：`scripts/cli-real-smoke.mjs` 的工具结果计数取自
@@ -2276,6 +2279,30 @@ store——必须按 `round` 归并、按 `dedupKey` 去重，不得假设记录
 `tool_result` 块——是两条消息，但在同一条记录内。这正是 #353 探针里 `[ok]` 与 `[pending]` 的分界：
 折叠生效时，续跑重建出的治理时间线把该工具调用标成 `[ok]`；折叠不生效时，调用与结果落在不同行、
 配不上对，同一条时间线只能读到 `[pending]`。
+
+### 折叠是公共 API，引擎兜了一层（issue #401）
+
+**未折叠 store 的两个症状**（`load()` 把落盘行原样返回——issue #401 背后那条真机事故）：
+
+1. **治理时间线读成 `[pending]` 而不是 `[ok]`。** `tool_use` 与它的 `tool_result` 落在两条不同记录里，
+   配不上对；该轮的时间线条目于是被建构成「调了、没人答」。
+2. **一轮被数成很多条。** 每条消息行都是独立记录，于是任何数记录的东西——治理的轮次历史、
+   `l0facts` 的重抽取、「这次 run 真调了几次工具」的计数——都把一轮正文读成好几条消息。
+
+还有第三种形状，它不是症状而是另一种 bug：既折了**又**保留原始消息行的 store，会把同一轮正文
+返回两遍（实测：两条消息的一轮变成 `assistant+user+assistant+user`）。
+
+**引擎现在做什么。** `restoreResume`（`src/loop/resume-manager.js`）在重建上下文之前，把
+`store.load()` 的返回值**再折一次**，于是 resume 这条路不再依赖宿主有没有折。折叠本身会跳过
+**载体行已经带着这一轮折叠正文**的轮（`foldMessageRows`，从包根导出）——正是这条规则让「两份都留」
+那种形状不会把正文翻倍。
+
+**但仍然建议宿主自己折。** 这层兜底只管 **resume 路径**。展示投影
+（`projectTranscriptForDisplay`，`src/display/projection.js`）直接读 `load()` 的输出，未折叠的 store
+在它那里仍然是歪的；你自己按 `records.flatMap((record) => record.messages ?? [])` 写的每一个读方同理。
+折叠属于 `load()`；`foldMessageRows` 现在从打包安装里拿得到，这条义务才真的可履行，
+而 `test/contract/transcript-store.js` 现在会断言它——三格判据，原样存取的 store 会红
+（实测：既有 22 格全绿、三格折叠判据全红）。
 
 ## 工具事实与字段归属（issue #284 / #285）
 

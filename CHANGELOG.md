@@ -5,6 +5,12 @@
 
 ### Added
 
+- **折叠义务变成可履行、可发现：`foldMessageRows` 进公共 API（issue #401 R1；`src/index.js`、`src/store/message-rows.js`；零依赖、纯 ESM、折叠口径一字未改）。**
+  - **现场**：0.23.0 把一轮的正文挪进 `kind: "message"` 行、把折叠变成**宿主**义务（`load()` 必须返回折叠形状），但这条义务当初**不可履行**——真 `npm pack` + 临时项目安装里 `'foldMessageRows' in await import("erix-agent")` 为 **false**，深路径 `import("erix-agent/src/store/message-rows.js")` 直接 `ERR_PACKAGE_PATH_NOT_EXPORTED`（`exports` 只有 `.` / `./tools` / `./contract-tests`）。于是宿主只能自己重写一套折叠，而那套重写正是 #353 / #401 两份事故的根因形状。
+  - **修法**：`src/index.js` 导出 `foldMessageRows`；`isRoundCarrier` 刻意**不外露**（载体形态是实现口径，宿主不该依赖它）。JSDoc 补成宿主可读：入参是 `load()` 级别的原样行、出参是折叠形状（与 0.22 账本逐字一致）、幂等、以及「该轮载体已带这一轮正文 ⇒ 该轮跳过」这条守卫。
+  - **类型面**：生成的 `src/index.d.ts` 读过签名，没退化成 `any`：`foldMessageRows<T extends { round?: number; seq?: number; kind?: string; partOf?: string; messages?: object[] }>(records: T[]): T[]`（#213 R4 那两个坑——内联 `@param {{…}}` 里的独立 `//` 行、注释块不紧贴声明——都没有再犯；`npm run check:types-build` 绿）。
+  - **契约**：`test/contract/transcript-store.js` 新增三格折叠判据（见 `### Tests` 与 `### Fixed` 的 #401 条目）。
+
 - **预算类停机的补跑桥：新增 `runToolLoop` 选项 `finalGuardExtend`（**默认 `false`**；opt-in 时，`max_rounds_cap` / `continuation_exhausted` 上 guard 判 `revise` 可以借**中途扩轮那套机制**再跑一轮，每 run 最多一次）（issue #386 切片 3；`src/loop/option-normalization.js`、`src/loop/orchestrator.js`、`src/loop/termination.js`、`src/reflection/governor.js`、`src/loop/run-snapshot-executor.js`、`src/run-state.js`、`src/loop/resume-manager.js`；零依赖、纯 ESM、**不动 judge / governor 的判定表**，只复用它们的计数器）。**
   - **现场（探针 E4）**：`maxRounds` 被掐停时模型还在正常调工具、交付物还差一步，guard 明确知道差什么（`revise`），但它只能贴标签——`FINAL_GUARD_NON_CONTINUABLE_REASONS` 那三类停机上没有 continuation 可走（`unverified / non_continuable` + `final_guard_unverified`）。
   - **R1 选项**：`finalGuardExtend: boolean`，缺省 `false`（**默认关是本单的安全底座**：不传时行为与今天逐字一致，升级风险为零，宿主侧启用放在切片 4）。白名单**尾部追加**（保住既有「did you mean」建议逐字不变），计数 62 → 63；非布尔 ⇒ `TypeError: finalGuardExtend must be a boolean`（`"false"` 这种写法绝不许把它打开）。
@@ -76,6 +82,11 @@
 
 ### Fixed
 
+- **宿主「没折」的 store 在 resume 上不再掉成 `[pending]`：引擎侧折叠免疫（issue #401 R3；`src/loop/resume-manager.js`、`src/store/message-rows.js`；零依赖、纯 ESM、**不动任何裁决表**）。**
+  - **症状（真机）**：宿主自研 store 的 `load()` 原样返回落盘行 ⇒ 恢复后治理时间线里该轮工具调用从 `[ok]` 掉成 **`[pending]`**（`tool_use` 与 `tool_result` 落在两条不同记录里，配不上对），同一轮还被计成多条历史条目（2 轮被计成 6 条 `addGovernorHistory`），污染 `l0Facts → recentErrors`。
+  - **修法**：`restoreResume` 对 `store.load()` 的返回值**再折一次**（`foldMessageRows`，只在账本里还看得见 `kind:"message"` 行时才折——已折过的账本原样用，内置 store 这条路连一次额外遍历都不添）；守卫落在折叠层——某轮载体**已经带着这一轮折出来的正文**（逐字段深比较相等）时该轮跳过，于是宿主「两份都留」（折好的载体 + 原始消息行）也不会让正文翻倍。判据刻意**不是**「载体非空」：`…:engine:round:<n>:resume` 载体带的是方向提示那几条引擎控制正文，同轮消息行装的才是崩溃轮正文，按「非空就跳」会把崩溃轮正文整轮丢掉（实测同一组行：窄规则折出 3 条、「非空就跳」只剩 1 条）。
+  - **测试**：新增 `test/loop-resume-fold-immunity.test.js` 5 格——① 宿主没折 ⇒ 时间线 `[ok]` 不是 `[pending]`、`filesWritten` 不重复计；② 宿主折对了（内置 store）⇒ 正文序列 / 时间线 / 写过的文件与今天逐字一致（回归锚）；③ 两份都留 ⇒ 正文条数不翻倍；另两格钉折叠层本身（三形状折出来逐字相同、守卫精度）。反向证：去掉 resume 那次折叠 ⇒ ①③ 红（实测时间线 `R1: writeFile … [pending]`、r1 变 4 条），② 仍绿。
+
 - **`finalGuardExtend` 的补跑桥在「末轮带 `tool_use`」时不再产出非法消息序（issue #393；`src/loop/orchestrator.js`、`src/messages/rounds.js`；零依赖、纯 ESM、**不动判定表**）。**
   - **现场**：`max_rounds_cap` 掐停后引擎强制收尾（那次请求带 `tools: []`），但模型仍回了一条工具调用 ⇒ **末条 assistant 带着未被回答的 `tool_use`**。桥直接 push `meta.source:"judge-control"` 的控制文本，把它与应有的 `tool_result` 隔开 ⇒ 下一次 provider 调用以 `Invalid message at index N: assistant tool_use has no immediately following user tool_result` 拒掉整份历史，宿主收到 `termination: failed` / `errorCode: invalid_messages`（reflection 开/关/未设三种配置全都一样；默认关不受影响）。
   - **修法（A）**：注入前先查尾部形状——`pendingTrailingToolUses`（新增在 `src/messages/rounds.js`，与 `validateMessages` 的配对规则**同源**：`allowPendingToolUse` 容忍的唯一形状就是它）非空时，先用 `buildToolResultFact` 补一条引擎自写的 user `tool_result`（`is_error: true`、正文 `PENDING_TOOL_RESULT_TEXT`、以 `[erix]` marker 开头），再注入控制文本。检查放在**共享**的 `applyGovernorExtension` 里（引擎往尾部注入 user 控制消息的唯一实现），对中途扩轮是空操作。入账走 `:control:guard-extend-tool-result` 行（**不是** `kind:"message"` 消息行：消息行会被 `foldMessageRows` 折回轮载体行，恢复时反而插到强制收尾那两条控制消息之前）。
@@ -95,6 +106,12 @@
   - **文档**：契约中英在 `finalGuardExtend` 小节旁补一条（三个注入点共用一个结清实现、那条 `tool_result` 不是执行过的调用、畸形尾巴不结清、退出码 1 → 4 的行为变化）；0.24.0 中英指南新增 §12（原 §12-§14 顺延为 §13-§15）、变更一览表 +1 行、自检 +1 问（八个 → 九个）、「没变的」一节从两处行为变化改成三处；README 模块地图补 `src/loop/pending-tool-result.js`；`PENDING_TOOL_RESULT_TEXT` 的符号锚点随定义搬到新模块（AGENTS 中英各一处同步）。
 
 ### Tests
+
+- **契约套件加折叠判据（issue #401 R2；`test/contract/transcript-store.js`；宿主与内置 store 跑同一套）。**
+  - **现场**：`grep -c 'kind: "message"' test/contract/transcript-store.js` = **0**——宿主跑完整个随包套件也不会被问一句「你的 `load()` 折了吗」，于是「全绿但没折」的自研 store 安静通过（erix-station 就是那个活样本）。
+  - **新增三格**（参数化 factory）：① 载体行 + `kind:"message"` 行（`seq` 递增、其中一条带 `partOf` 分片）⇒ `load()` 必须折回：该轮只剩载体一行、正文按 `seq` 拼回、分片**接进目标消息**的 content 数组（不是并列成第二条 user 消息）；② 幂等：同一个账本 `load()` 两次逐字一致；③ 混合形状：宿主「两份都留」时正文条数不翻倍。内置 memory / file 两个 store 的契约格 77 → **83**。
+  - **反向证（真跑）**：临时一个「原样存取」的 pass-through store 跑同一套 ⇒ 既有 **22 格全绿**、新增三格**全红**（`md5sum` 前后一致，契约文件没被改）；把折叠层的守卫去掉时第③格同样红。
+  - **连带**：`npm run check:release` 第 3 步跑随包契约套件，格子数随之上升（见门禁条目）。
 
 - **`#394` 的复现钉进仓**：`test/loop-forced-final-pending-tool-use.test.js` 5 格钉住今天的行为——  被截断的工具调用轮（`stopReason: "max_tokens"` 且 content 带 `tool_use`）在续写预算用尽时撞上  `forceFinalIfNeeded` 自己的 `validateMessages` ⇒ `runToolLoop` reject `invalid_messages`（**默认关也复现**，  终稿丢失）。两条反证分别钉住「抛的是注入而不是悬空尾部本身」（`ERIX_NO_FORCED_FINAL=1` ⇒ 正常返回  且尾部 `pendingTrailingToolUses === 1`）与「尾部已结清 ⇒ 收尾正常注入」；修法落地时前三格会自动变红。- **repl 第一次拿到进程级证据**（`#398-3`）：`runRepl` 在非 TTY 下按产品承诺直接 `exit 1`，所以只能起  真 PTY（系统 `script`，util-linux / BSD 两种形状，探不到就 `t.skip` 并点名原因）。3 格钉「相对交付物按  会话（= 子进程）目录判定」的正反两面；变异证：拿掉 `bin/repl.js` 的 `loopOptions.cwd` ⇒ 该 describe 变红。- **`--require-deliverable` 的两种语义各留进程级格**（`#398-4`）：命名路径形状（不成立 ⇒ 退 **2**、成立 ⇒  退 **0**）与布尔形状那格原样保留（钉 `fileWrites` 语义）。顺带实测「布尔旗标真空通过」：一次工具都没调  的 run 在裸旗标下拿 `verified` 退 0，换命名路径后同一脚本退 2。
 ## [0.24.0] - 2026-10-22
