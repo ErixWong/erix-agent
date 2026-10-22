@@ -4162,10 +4162,10 @@ const SELF_TEST_CASES = [
   //    弱档（具名字面量）也真的按「该字面量的出现行」判 → 改窄到不含出现行就红。
   //  四条都用 `mutateSymbolAnchorSpan`（与主检查同一套提取逻辑，#279 口径：打靶由提取逻辑定）。
   {
-    label: "#286 T-b1a 区间相交：把 `terminationReasonForAction`（termination.js:110）改窄成 111-115 ⇒ 声明在 110，红",
-    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("terminationReasonForAction", "src/loop/termination.js", ":111-115") },
-    expect: [/symbol-anchor-span: .*引用 `terminationReasonForAction`（`src\/loop\/termination\.js:111-115`）/,
-      /声明处不相交/, /真值位在 110/],
+    label: "#286 T-b1a 区间相交：把 `terminationReasonForAction`（termination.js:111）改窄成 112-116 ⇒ 声明在 111，红",
+    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("terminationReasonForAction", "src/loop/termination.js", ":112-116") },
+    expect: [/symbol-anchor-span: .*引用 `terminationReasonForAction`（`src\/loop\/termination\.js:112-116`）/,
+      /声明处不相交/, /真值位在 111/],
     expectFiles: [CONTRACT_EN],
   },
   {

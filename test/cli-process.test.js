@@ -180,6 +180,30 @@ function replyWithToolCall(name, args, id) {
   });
 }
 
+/**
+ * issue #394：**被截断的工具调用轮**——`finish_reason:"length"`（⇒ canonical `stopReason:"max_tokens"`）
+ * 且 `tool_calls` 里的参数是半截 JSON（⇒ 一个 `tool_use` 块）。两个协议都真会吐这个形状：
+ * OpenAI 是 `length + tool_calls`，Anthropic 原生就是 `stop_reason:"max_tokens"` 带被截断的
+ * `tool_use.input`。它不进工具执行分支（门是 `stopReason === "tool_use"`）⇒ 尾部留一条没有
+ * `tool_result` 的 `assistant[tool_use]`。
+ */
+function replyWithTruncatedToolCall(id) {
+  return jsonResponse({
+    choices: [{
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id,
+          type: "function",
+          function: { name: "readFile", arguments: "{\"path\":\"/etc/hostn" },
+        }],
+      },
+      finish_reason: "length",
+    }],
+  });
+}
+
 /** 跑模型时统一带的旗标：把轮数与反思压到最小，别把 judge 的额外调用混进请求计数。 */
 const MINIMAL_CHAT_FLAGS = ["--max-rounds", "3", "--reflection", "off"];
 
@@ -385,6 +409,50 @@ describe("真起 CLI 子进程：参数、退出码、stdout/stderr、落盘（i
       ? readdirSync(realTranscripts).filter((name) => name.includes(hash8))
       : [];
     assert.deepEqual(leaked, [], `真实 ~/.erix/transcripts 被写了：${JSON.stringify(leaked)}`);
+  });
+
+  // issue #394：**默认关**（不传 `--final-guard`）就复现的那一格，进程级。
+  // 修前的现场：`forceFinalIfNeeded` 先 push【强制收尾】指令、再 `validateMessages(..., {
+  // allowPendingToolUse: true })`，而尾部是一条悬空的 `assistant[tool_use]` ⇒ 必然抛
+  // `invalid_messages` ⇒ run reject ⇒ `bin/cli.js` 的 catch 把 `process.exitCode` 置成 **1**，
+  // stderr 打「Invalid message at index 1: assistant tool_use has no immediately following user
+  // tool_result」，**终稿丢失**（第 5 次请求根本没发出去，实测上游只收到 4 发）。
+  // 修后：收尾注入前先结清 ⇒ 终稿正常产出、verification 仍是 `skipped / no_final_guard`
+  // ⇒ `exitCodeForVerification` 给 **4**（与不带 guard 的成功 run 同一档），5 发全发。
+  it("#394 默认关 + 截断的工具调用轮：退出码 1 → 4，收尾那一次请求真的发出去，结清结果落在 transcript 里", async (t) => {
+    const sandbox = await makeSandbox(t, {
+      script: [
+        replyWithTruncatedToolCall("call_t1"),
+        replyWithTruncatedToolCall("call_t2"),
+        replyWithTruncatedToolCall("call_t3"),
+        replyWithTruncatedToolCall("call_t4"),
+        replyWithText("收尾 T4-FORCED-FINAL-394"),
+      ],
+    });
+    const result = await sandbox.run(["chat", "做点事", ...MINIMAL_CHAT_FLAGS]);
+
+    // `maxTokenContinuations` 没有 CLI 旗标（默认 3）⇒ 1 次首发 + 3 次续写 + 1 次强制收尾。
+    assert.ok(await sandbox.upstream.waitForRequests(5, 5_000),
+      `收尾那一次请求必须真的发出去（修前只发 4 发就崩了），实测 ${sandbox.upstream.requestCount}`);
+    assert.equal(sandbox.upstream.requestCount, 5);
+
+    // **退出码的实际数值**：修前 1（failed），修后 4（skipped / no_final_guard）。
+    assert.equal(result.code, EXIT_NOT_VERIFIED,
+      `修前这一格是 1（failed / invalid_messages），修后必须是 4（verification skipped）；`
+      + `stdout=${JSON.stringify(result.stdout.slice(-300))} stderr=${JSON.stringify(result.stderr.slice(-300))}`);
+    assert.doesNotMatch(result.stderr, /invalid_messages/u,
+      "修后不许再出现 invalid_messages（那正是本单要消灭的那一句）");
+    assert.doesNotMatch(result.stderr, /tool_use has no immediately following/u);
+    assert.match(result.stdout, /收尾 T4-FORCED-FINAL-394/u, "终稿必须真的产出（修前它是丢的）");
+
+    // 落盘证据：结清产生的那条引擎自写 `tool_result` 在 transcript 里（`[erix]` marker 开头）。
+    const sessionFile = listJsonl(sandbox.transcriptsDir)[0];
+    assert.ok(sessionFile, "这次 run 必须落一份 transcript");
+    const journal = readFileSync(join(sandbox.transcriptsDir, sessionFile), "utf8");
+    assert.match(journal, /This tool call was never executed/u,
+      "结清产生的 tool_result 必须入账（引擎自写正文）");
+    assert.match(journal, /forced-final-tool-result/u,
+      "入账行必须是 :control:forced-final-tool-result（不是 kind:message 消息行）");
   });
 
   it("--dir 覆盖归档目录：transcripts 落在指定目录，假 HOME 的默认目录不产生", async (t) => {
