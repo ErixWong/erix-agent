@@ -137,6 +137,7 @@ src/
     deliverables.js                宿主声明的交付物判据（finalGuard 之前的机器闸门）
     pending-tool-result.js         注入控制文本前结清尾部悬空 tool_use 的共享实现（issue #394）
     resume-manager.js              断点恢复与 run-state 应用
+    resume-notice.js               恢复运行注入给模型的「这是复活赛」告示（issue #398）
     error-ledger.js                重复错误记账
     messages.js                    消息/block 辅助函数
     reflection.js                  反思提示与决策解析

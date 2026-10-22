@@ -34,6 +34,21 @@ import { pendingTrailingToolUses } from "../messages/rounds.js";
 import { buildToolResultFact } from "../tool-fact.js";
 
 /**
+ * 尾部悬空 `tool_use` 的**读侧**入口（issue #398）：内容就是 `pendingTrailingToolUses` 那一份，
+ * 这里只是把它挂到共享实现的出口上。为什么需要这一层：`src/` 里**除本文件外**不许再引用判据符号
+ * （`test/loop-pending-tool-result.test.js` 的结构判据钉着——任何别处再写一遍配对逻辑就是下一个
+ * #394），而恢复路径也要读一眼尾部形状（告示里要列「哪些调用没结果」）。
+ *
+ * 只读、不结清、不碰 `messages`：结清仍然只有 `answerPendingTailToolUses` 一条路。
+ *
+ * @param {any[]} messages
+ * @returns {object[]} 末条 assistant 消息里的 `tool_use` 块（可能为空数组）
+ */
+export function pendingTailToolUses(messages) {
+  return pendingTrailingToolUses(messages);
+}
+
+/**
  * 给「末轮那条**未执行**的 `tool_use`」补的 `tool_result` 正文。
  *
  * 这是引擎自写的**事实陈述**，不是任何工具的输出：那条调用真的没跑（预算掐停 / 强制收尾期间

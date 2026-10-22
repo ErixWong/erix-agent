@@ -3,6 +3,8 @@ import { blocksFor, mergeToolResultsIntoMessages } from "./messages.js";
 import { MESSAGE_ROW_KIND, nextMessageSeqByRound, foldLedgerMessages, foldMessageRows } from "../store/message-rows.js";
 import { extractL0Facts } from "../reflection/l0.js";
 import { buildTimeline } from "../reflection/judge.js";
+import { pendingTailToolUses } from "./pending-tool-result.js";
+import { planResumeNotice } from "./resume-notice.js";
 import { validateRunState } from "../run-state.js";
 
 const rowKeyOf = (record) => {
@@ -121,6 +123,7 @@ export async function restoreResume(ctx) {
       // 轮号直接带在 `ledgerEntries` 里：切片后的正文是 `cloneState` 的副本，拿身份去查轮号会落空。
       ctx.messages = ledgerMessages;
       ctx.persistedTranscriptLength = ctx.messages.length;
+      let pendingTail = pendingTailToolUses(ctx.messages);
       for (const entry of ledgerEntries) {
         ctx.messageRounds.set(entry.message, entry.round);
       }
@@ -322,6 +325,7 @@ export async function restoreResume(ctx) {
               });
             }
           }
+          pendingTail = pendingTailToolUses(ctx.messages);
           const recordedIds = new Set(
             ctx.messages.flatMap((message) => blocksFor(message?.content))
               .filter((block) => block?.type === "tool_result")
@@ -357,6 +361,8 @@ export async function restoreResume(ctx) {
         // 单条去重诊断（loadLatestCheckpoint 旧名也缺才走到这里），跳过崩溃现场恢复。
         ctx.notifyCapabilitySkipped?.("loadLatestRunSnapshot");
       }
+      // issue #398：恢复运行要告诉模型这是复活赛（拼装/幂等见 `src/loop/resume-notice.js`）。
+      ctx.resumeNotice = planResumeNotice(ctx, records, pendingTail);
     } catch (error) {
       const fail = ctx.fail;
       await fail(error);

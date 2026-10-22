@@ -181,6 +181,7 @@ src/
     deliverables.js                Host-declared deliverable checks (machine gate before finalGuard)
     pending-tool-result.js         Shared repair of a pending trailing tool_use before injecting control text (issue #394)
     resume-manager.js              Resume restore and run-state application
+    resume-notice.js               The "this run was restored" notice injected into a resumed context (issue #398)
     error-ledger.js                Repeated-error accounting
     messages.js                    Message/block helpers
     reflection.js                  Reflection prompts and decision parsing
