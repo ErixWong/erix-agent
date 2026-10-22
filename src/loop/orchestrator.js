@@ -371,6 +371,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   persistence?:"none"|"required", // Defaults to required with a store and none without one.
  *   diagnostics?: {error:(event:object)=>void|Promise<void>},
  *   runId?: string,
+ *   cwd?: string, // issue #386：宿主的工作目录。引擎**不使用**它——不 chdir、不校验存在性、不读盘；
+ *     // 只原样透传给 `finalGuard` payload 的 `cwd` 键（缺省时 payload 里没有该键）。
  *   resume?: boolean,
  *   onRound?: (record:object) => void,      // 观察者（issue #173 PR-B）：抛错/rejected Promise 均被隔离
  *   onJudge?:(info:JudgeEvent) => void,     // 观察者（issue #173 PR-B）：抛错被隔离
@@ -528,6 +530,7 @@ export async function runToolLoop(options) {
     store,
     persistence,
     runId,
+    cwd,
     resume = false,
     onRound,
     onJudge,
@@ -614,6 +617,12 @@ export async function runToolLoop(options) {
   const persistenceMode = persistence ?? (store === undefined ? "none" : "required");
   if (persistenceMode !== "none" && persistenceMode !== "required") {
     throw new TypeError('persistence must be "none" or "required"');
+  }
+  // issue #386 切片 1：`cwd` 是**纯透传**选项（只进 `finalGuard` payload），所以这里只校类型。
+  // 引擎不解释它：不 chdir、不校验目录存在、不把它拼进任何路径。`undefined`（未提供）与
+  // `""`（提供了空串）必须可区分——缺省时 payload 里根本不写 `cwd` 键。
+  if (cwd !== undefined && typeof cwd !== "string") {
+    throw new TypeError("cwd must be a string");
   }
   // 输出卫生：档案在 round record（toolOutputs）里，必须有 store 落盘，否则 stub 就是纯丢失。
   if (outputHygiene !== undefined && outputHygiene !== false
