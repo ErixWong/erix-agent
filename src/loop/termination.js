@@ -322,6 +322,8 @@ export function createTerminationManager(ctx) {
     // 此时还没挂 `deliverables` 键，所以宿主判据看不到自己的结论——不会出现自我指涉的判据）。
     // 结果随后**写回同一份 payload**：guard 因此能看见机器判据的结论，而不只是模型的自报。
     const deliverables = ctx.deliverables;
+    let deliverablesAllPassed = true;
+    let deliverablesFailed = 0;
     if (deliverables !== undefined) {
       const outcome = await runDeliverables(deliverables, payload, {
         timeoutMs: ctx.finalGuardTimeout,
@@ -330,6 +332,8 @@ export function createTerminationManager(ctx) {
       payload.deliverablesAllPassed = outcome.allPassed;
       ctx.guardMetrics.deliverables_checked += outcome.checked;
       ctx.guardMetrics.deliverables_failed += outcome.failed;
+      deliverablesAllPassed = outcome.allPassed;
+      deliverablesFailed = outcome.failed;
     }
     let timeoutId;
     try {
@@ -349,6 +353,22 @@ export function createTerminationManager(ctx) {
       ]);
       if (decision?.action === "accept") {
         const emitEvent = ctx.emitEvent;
+        // ── issue #386 切片 2 R3：**机器闸门**。guard 说 accept，但宿主声明的判据没过 ⇒
+        // 不许盖 `verified` 章（这就是「橡皮章」的解药：机器证据压过 LLM 意见）。
+        // 只改 `verification`，**不动** `termination.reason`：闸门不引入新的停机原因，
+        // `final_guard_unverified` 那条既有路径也一字未改（它在 orchestrator 里，不在这里）。
+        // 未声明 `deliverables` 时 `deliverablesAllPassed` 恒为 true ⇒ 这条分支永不进入（纯加法）。
+        if (!deliverablesAllPassed) {
+          ctx.guardMetrics.unverified += 1;
+          ctx.verification = { status: "unverified", reason: "deliverables_failed" };
+          emitEvent({
+            type: "final_guard",
+            round: ctx.rounds,
+            action: "accept",
+            deliverables_failed: deliverablesFailed,
+          });
+          return { action: "accept", deliverablesAllPassed: false };
+        }
         ctx.guardMetrics.verified += 1;
         ctx.verification = { status: "verified" };
         emitEvent({
