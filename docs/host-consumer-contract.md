@@ -1618,6 +1618,27 @@ Cost and observability:
   fact ("this call never ran"), so the call itself is **not** executed; a tail whose `tool_use`
   ids cannot be read is not repairable and is **not** extended — the run degrades exactly as
   without the bridge.
+- **the same repair runs before every engine-written control message, not only on the bridge**
+  (issue #394). Two other injection points had the same hole: the **forced wrap-up**
+  (`forceFinalIfNeeded` (`src/loop/termination.js`), whose `【强制收尾】` instruction used to be
+  pushed *before* validating the message order) and the **`revise` continuation message**
+  (`applyGovernorExtension` (`src/loop/orchestrator.js`) covers the extension path; the
+  post-stop `revise` message is the sibling). All three now call one shared implementation,
+  `answerPendingTailToolUses` (`src/loop/pending-tool-result.js`), which reuses the pairing
+  criterion `pendingTrailingToolUses` (`src/messages/rounds.js`) and the single result builder
+  `buildToolResultFact` (`src/tool-fact.js`). So a run whose last assistant message carries an
+  unanswered `tool_use` — a **truncated tool-call round**: the provider answered
+  `max_tokens` / `finish_reason: "length"` with a `tool_calls` / `tool_use` block, and the
+  continuation budget ran out — now reaches its real terminal state instead of
+  `failed` / `invalid_messages`. **Behaviour change:** such a run used to be rejected with
+  `termination: { reason: "failed", errorCode: "invalid_messages" }` (CLI exit code **1**) and
+  **lost its final text**; it now ends `continuation_exhausted` with `finalText` populated (CLI
+  exit code **4** when no `finalGuard` is configured, because `verification` is still
+  `skipped` / `no_final_guard`), plus one extra engine-written `tool_result` and one
+  `:control:` transcript row. That `tool_result` again only states a fact — the call is **not**
+  executed, and the model may re-issue it; a tail whose `tool_use` ids cannot be read is **not**
+  settled, so the run reports `invalid_messages` exactly as before. A host that treats
+  `failed` (or exit code 1) as "retryable" must re-read those runs: they now finish.
 
 
 The engine has no separate "delivery authentication" or "completion

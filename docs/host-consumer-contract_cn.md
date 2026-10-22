@@ -1302,6 +1302,22 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
   `invalid_messages` 拒掉整份历史，宿主收到 `termination: failed`。那条 `tool_result` 陈述的是事实
   （「这次调用根本没跑」），所以该调用**不会**被执行；`tool_use` 的 id 读不出来的畸形尾巴补不出合法
   结果，这一格**不补跑**，行为与未 opt-in 完全一致。
+- **同一个结清动作在**每一条**引擎自写控制消息之前都会跑，不只是补跑桥**（issue #394）。另外两个注入点
+  原先有同一个洞：**强制收尾**（`forceFinalIfNeeded`（`src/loop/termination.js`），它的
+  `【强制收尾】` 指令从前是**先 push、后**校验消息序）与 **`revise` 续跑消息**（
+  `applyGovernorExtension`（`src/loop/orchestrator.js`）覆盖的是扩轮那一路；停机后那条 `revise`
+  消息是兄弟洞）。三处现在都调同一个共享实现 `answerPendingTailToolUses`
+  （`src/loop/pending-tool-result.js`），判据复用 `pendingTrailingToolUses`
+  （`src/messages/rounds.js`）、结果块复用唯一构造点 `buildToolResultFact`（`src/tool-fact.js`）。
+  于是「末条 assistant 带一条没人回答的 `tool_use`」的 run——**被截断的工具调用轮**：provider 回了
+  `max_tokens` / `finish_reason: "length"` 且带 `tool_calls` / `tool_use` 块，续写预算又用尽——
+  现在能拿到真实终局，而不是 `failed` / `invalid_messages`。**这是行为变化**：这种 run 从前以
+  `termination: { reason: "failed", errorCode: "invalid_messages" }` 被拒（CLI 退出码 **1**）且
+  **终稿丢失**；现在以 `continuation_exhausted` 收场、`finalText` 有值（没配 `finalGuard` 时 CLI
+  退出码 **4**，因为 `verification` 仍是 `skipped` / `no_final_guard`），并多出一条引擎自写的
+  `tool_result` 与一行 `:control:` 档案行。那条 `tool_result` 同样只是陈述事实——该调用**不会**被执行，
+  模型可以重新发起；`tool_use` 的 id 读不出来的畸形尾巴**不结清**，run 仍如实报 `invalid_messages`。
+  把 `failed`（或退出码 1）当「可重试」的宿主需要重新判断：这些 run 现在会正常跑完。
 
 引擎没有独立的“交付认证”或“完成认证”层。它报告轮数、工具、文件调用、归档、终止与核验
 等事实。任务是否完成、交付物是否满足要求、能否自动进入下游，仍由宿主、测试系统或人工
