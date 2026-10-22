@@ -2492,6 +2492,18 @@ export async function runToolLoop(options) {
     return runLoopState.currentRunState;
   };
 
+  // issue #394：强制收尾那一路的**入账口**（`forceFinalIfNeeded` 结清尾部悬空 `tool_use` 时用）。
+  // 为什么是回调而不是在 `src/loop/termination.js` 里写一份：那个模块不持有 store、不碰 persist
+  // （journal 写入一直是 orchestrator 的职责面），结清动作的**入账口径**必须与这里同一份。
+  // 为什么 `forceFinalAndJournal` 要把它排除在自己的切片之外：这条消息已经当场落了一行，
+  // 再跟着切片落一次就是同一条 `tool_result` 两行 ⇒ `load()` 折回来会有两条结果指向同一个
+  // `tool_use`，`validateMessages` 以「多余的结果」拒掉历史（resume 复发）。
+  const journaledPendingTailToolResult = new WeakSet();
+  const journalPendingTailToolResult = async (message, roundNumber) => {
+    await appendEngineMessagesToTranscript(message, roundNumber, "forced-final-tool-result");
+    journaledPendingTailToolResult.add(message);
+  };
+
   const terminationContext = {
     finalGuard,
     finalGuardTimeout,
@@ -2524,6 +2536,8 @@ export async function runToolLoop(options) {
     get messages() {
       return messages;
     },
+    // issue #394：结清尾部悬空 `tool_use` 的入账回调（强制收尾那一路；见上面那个 WeakSet）。
+    journalPendingTailToolResult,
     get finalText() {
       return finalText;
     },
@@ -2612,8 +2626,10 @@ export async function runToolLoop(options) {
   const forceFinalAndJournal = async (reason) => {
     const producedFrom = messages.length;
     await forceFinalIfNeeded(reason);
+    // issue #394：结清动作产生的那条 `tool_result` 已由 `journalPendingTailToolResult` 当场落行，
+    // 从切片里剔掉——否则同一条结果会落两行（见上面那个 WeakSet 的理由）。
     await appendEngineMessagesToTranscript(
-      messages.slice(producedFrom),
+      messages.slice(producedFrom).filter((message) => !journaledPendingTailToolResult.has(message)),
       runLoopState.rounds,
       "forced-final",
     );
