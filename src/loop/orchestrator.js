@@ -9,7 +9,7 @@ import {
   estimateMessageTokens,
   estimateTokensFromCharacterCounts,
 } from "../tokens.js";
-import { groupIntoRounds } from "../messages/rounds.js";
+import { groupIntoRounds, pendingTrailingToolUses } from "../messages/rounds.js";
 import { MESSAGE_ROW_KIND } from "../store/message-rows.js";
 import {
   decideRoundAction,
@@ -126,6 +126,18 @@ export { parseReflectionDecision };
  * Governor 历史的估算上限（与 #172 A4 之前的内联 4000 同口径）。
  */
 export const GOVERNOR_HISTORY_TOKEN_LIMIT = 4000;
+
+/**
+ * issue #393：guard 补跑桥给「末轮那条**未执行**的 `tool_use`」补的 `tool_result` 正文。
+ *
+ * 这是引擎自写的**事实陈述**，不是任何工具的输出：那条调用真的没跑（预算掐停 / 强制收尾期间
+ * 模型仍回了工具调用），所以下一轮模型可以重新发起。开头的 `[erix]` 是 marker —— 宿主、judge、
+ * 审计凭它一眼认出「引擎自写」，不会把这句话当成工具结果。导出只为让测试断言这一份唯一来源，
+ * 不属公开契约面（`src/index.js` 不转出）。
+ */
+export const PENDING_TOOL_RESULT_TEXT = "[erix] This tool call was never executed: the loop stopped "
+  + "before it could run (budget-type stop or forced wrap-up), so no result exists for it. "
+  + "Re-issue the call if the task still needs it.";
 
 /**
  * 逐条目估算字符计数 + JSON 数组骨架，供 {@link trimGovernorHistory} 递减。
@@ -3152,6 +3164,36 @@ export async function runToolLoop(options) {
   // 两个桥函数声明在 `try` **之外**：出圈收尾那段 try 是这个 try 的兄弟（不在它内部），
   // 声明在 try 里会让尾段读不到它们（`ReferenceError`，不是红测试）。
   mainLoop: for (;;) {
+    // ── issue #393：注入控制文本之前先把尾部的悬空 `tool_use` 结清 ────────────────────────
+    // 中途扩轮永远发生在纯文本 `end_turn` 上（末条 assistant 不可能带 `tool_use`），所以这一步
+    // 对它是空操作；但 guard 补跑桥是在**终局收尾之后**被调的，末条 assistant 完全可能带着
+    // 未被回答的 `tool_use`（实测形状：`max_rounds_cap` ⇒ 强制收尾那一轮模型仍回了工具调用，
+    // 而强制收尾的请求本身就带 `tools: []`，于是那条 `tool_use` 没有任何结果）。
+    // 直接 push 控制文本就把它与应有的 `tool_result` 隔开 ⇒ provider 以
+    // `invalid_messages`（`assistant tool_use has no immediately following user tool_result`）
+    // 拒掉整份历史，宿主拿到 `termination: failed`（issue #393 实测 index 4 / 8 两处）。
+    //
+    // 判据用 canonical 那一份（`pendingTrailingToolUses`，与 `validateMessages` 的配对规则同源），
+    // 结果块走唯一构造点 `buildToolResultFact`，入账走引擎自写消息那条既有口径
+    // （`:control:` 行，**不是** `kind:"message"` 消息行：消息行会被 `foldMessageRows` 折回轮
+    // 载体行，从而在恢复时插到「强制收尾」那两条控制消息**之前**，把配对重新打散）。
+    const answerPendingTailToolUses = async (roundNumber) => {
+      const pending = pendingTrailingToolUses(messages);
+      if (pending.length === 0) return false;
+      const toolResults = pending.map((block) => buildToolResultFact({
+        toolUseId: block.id,
+        content: PENDING_TOOL_RESULT_TEXT,
+        // 这条调用确实没有结果（不是成功，也不是工具自己报的错）：`is_error` 是 wire 上
+        // 「这次调用没产出可用结果」的唯一出口，与续跑复放写 `interrupted` 的口径一致。
+        isError: true,
+      }));
+      const message = { role: "user", content: toolResults };
+      messages.push(message);
+      messageRounds.set(message, roundNumber);
+      await appendEngineMessagesToTranscript(message, roundNumber, "guard-extend-tool-result");
+      return true;
+    };
+
     // ── issue #386 切片 3：guard 补跑桥的两个唯一实现 ────────────────────────────────────
     // 背景（#386 探针 E4）：`max_rounds_cap` 掐停时模型还在正常调工具、交付物还差一步，guard
     // 明确知道差什么（`revise`），但 `FINAL_GUARD_NON_CONTINUABLE_REASONS` 那三类停机上它没有
@@ -3162,6 +3204,10 @@ export async function runToolLoop(options) {
     // `meta.source:"judge-control"` 的 user 消息）。两处调用同一个闭包，所以不存在第二份实现。
     // 唯一新增参数是 `journalSlot`（落账本的槽位名，决定 dedupKey 后缀），中途扩轮仍传 `"extend"`。
     const applyGovernorExtension = async (text, roundNumber, journalSlot) => {
+      // issue #393：注入**之前**先结清尾部悬空 `tool_use`（理由与两种形状见上面那个闭包）。
+      // 放在这个共享闭包里而不是只放桥里：这里是「引擎往尾部注入 user 控制消息」的唯一实现，
+      // 任何将来的调用点都不该有机会重新引入同一个非法消息序。
+      await answerPendingTailToolUses(roundNumber);
       governorState.effectiveMaxRounds = Math.min(
         governorState.effectiveMaxRounds + reflectionExtensionStep,
         reflectionMaxRoundsCap,
@@ -3216,6 +3262,13 @@ export async function runToolLoop(options) {
       if (!FINAL_GUARD_EXTENDABLE_REASONS.has(reason)) return false;
       // 一次性配额：每个 run 最多 1 次，即使 governor 还有扩轮额度（成本闸，R3）。
       if (governorState.guardExtensionUsed === true) return false;
+      // issue #393 的退路 B（兜底，不是主路）：尾部悬空 `tool_use` 的 id 必须是**非空字符串**
+      // （canonical 的配对要求，见 `validateMessages`），连 id 都读不出来的畸形尾巴补不出一条
+      // 合法的 `tool_result`。这一格**不补跑**、落回今天的 `unverified / non_continuable`，
+      // 而不是让宿主收到 `failed / invalid_messages`（工单明禁的那一格）。
+      if (!pendingTrailingToolUses(messages).every(
+        (block) => typeof block?.id === "string" && block.id !== "",
+      )) return false;
       // 复用 governor 的**同一份**判据与**同一份**计数器，不另写「还剩几次」的第二套算术。
       if (!extensionAllowed({
         extensionCount: governorState.extensionCount,

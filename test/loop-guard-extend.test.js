@@ -20,7 +20,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { PENDING_TOOL_RESULT_TEXT } from "../src/loop/orchestrator.js";
 import { FINAL_GUARD_EXTENDABLE_REASONS, FINAL_GUARD_NON_CONTINUABLE_REASONS } from "../src/loop/termination.js";
+import { pendingTrailingToolUses, validateMessages } from "../src/messages/rounds.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -484,4 +486,199 @@ test("#386-3 补充 continuation_exhausted + opt-in ⇒ 同样可以补跑一次
   assert.equal(extensions[0].to_max_rounds, 8);
   assert.equal(result.verification.status, "verified", "补跑后第二次 accept ⇒ verified");
   assert.equal(result.verification.metrics.guard_extensions, 1);
+});
+
+// ── #393：末轮带 `tool_use` 的形状（issue #393）──────────────────────────────────────
+//
+// 现场：`max_rounds_cap` 掐停之后引擎强制收尾（那次请求 `tools: []`），但模型仍然回了一条
+// `tool_use` ⇒ **末条 assistant 带着未被回答的 `tool_use`**。补跑桥原来直接 push 控制文本，
+// 于是那条 `tool_use` 与它应有的 `tool_result` 被隔开，下一次 provider 调用以
+// `invalid_messages`（`assistant tool_use has no immediately following user tool_result`）
+// 拒掉整份历史 ⇒ 宿主收到 `termination: failed`。修法是注入前先按 canonical 判据
+// （`pendingTrailingToolUses`）结清尾部，再注入控制文本。
+//
+// 判据（工单四条）：① 终局不得是 `failed`；② 消息序不变量（`validateMessages` +
+// `pendingTrailingToolUses`，都来自 `src/messages/rounds.js`，不另写一套配对规则）；
+// ③ 默认关时同形状逐字等于今天；④ 畸形尾巴（id 读不出来）落回 `unverified / non_continuable`。
+const pendingTailScript = () => [
+  toolUse("w1"),
+  // 强制收尾那一轮：模型还在调工具（这就是 #393 的形状）
+  toolUse("wrap-tool"),
+  toolUse("fix"),
+  wrapup({ done: true, summary: "已补做", output: "完成" }),
+  { times: 12, ...text("idle") },
+];
+
+/** 引擎自写的那条 `tool_result`（按 `tool_use_id` 找），找不到返回 `undefined`。 */
+const toolResultFor = (messages, toolUseId) => messages
+  .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
+  .find((block) => block?.type === "tool_result" && block.tool_use_id === toolUseId);
+
+test("#393 末轮带 tool_use + 默认关：同形状下逐字等于今天（标签，不是补跑，更不是 failed）", async () => {
+  let guardCalls = 0;
+  const events = [];
+  const result = await runToolLoop({
+    provider: createFakeProvider(pendingTailScript()),
+    initialUserMessage: "做点事",
+    maxRounds: 1,
+    reflection: REFLECTION,
+    executeTool: async () => "ok",
+    finalGuard: async () => {
+      guardCalls += 1;
+      return { action: "revise", message: "还差一步" };
+    },
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.notEqual(result.termination.reason, "failed", "默认关时也不许出现 failed（回归锚）");
+  assert.equal(result.termination.errorCode, undefined, "终局不许带 errorCode");
+  assert.deepEqual(result.termination, { reason: "final_guard_unverified", forcedFinal: true },
+    "默认关时终局必须与今天逐字一致");
+  assert.deepEqual(result.verification, {
+    status: "unverified",
+    reason: "non_continuable",
+    detail: "max_rounds_cap",
+    metrics: { verified: 0, skipped: 0, revised: 1, unverified: 1, guard_error: 0 },
+  }, "默认关时 verification/metrics 必须与今天逐字一致（不许出现 guard_extensions）");
+  assert.equal(guardCalls, 1, "默认关时 guard 只该被问 1 次");
+  assert.deepEqual(extendEvents(events), [], "默认关时不许发 final_guard_extend 事件");
+});
+
+test("#393 末轮带 tool_use + opt-in：注入前先结清尾部，终局不是 failed 且消息序合法", async () => {
+  let guardCalls = 0;
+  const events = [];
+  const executed = [];
+  const result = await runToolLoop({
+    provider: createFakeProvider(pendingTailScript()),
+    initialUserMessage: "做点事",
+    maxRounds: 1,
+    reflection: REFLECTION,
+    executeTool: async (call) => {
+      executed.push(call.id);
+      return "ok";
+    },
+    finalGuardExtend: true,
+    finalGuard: async () => {
+      guardCalls += 1;
+      return guardCalls === 1
+        ? { action: "revise", message: "还差一步：把 fix 做掉" }
+        : { action: "accept" };
+    },
+    onEvent: (event) => events.push(event),
+  });
+
+  // ① 终局不得是 failed（工单明禁的那一格）
+  assert.notEqual(result.termination.reason, "failed", "末轮带工具时补跑不许把 run 打成 failed");
+  assert.equal(result.termination.errorCode, undefined, "终局不许带 errorCode（invalid_messages 就是从这里漏出去的）");
+  assert.equal(result.termination.reason, "end_turn", "补跑 + 第二次 accept 之后应正常收口");
+  assert.equal(result.verification.status, "verified");
+
+  // ② 消息序不变量：判据就是 canonical 那一份，不在这里另写一遍配对规则
+  assert.doesNotThrow(() => validateMessages(result.messages),
+    "终局消息必须通过 canonical 校验（每个 assistant tool_use 紧跟 user tool_result）");
+  assert.deepEqual(pendingTrailingToolUses(result.messages), [],
+    "终局不许留下悬空 tool_use（尾部形状判据与 validateMessages 同源）");
+
+  // 引擎自写的那条 `tool_result`：补齐了强制收尾那条 `tool_use`，且**不是**任何工具的真实输出
+  const repaired = toolResultFor(result.messages, "wrap-tool");
+  assert.ok(repaired !== undefined, "强制收尾那条 tool_use 没有配到 tool_result");
+  assert.equal(repaired.is_error, true, "未执行的调用必须标成 is_error（wire 上「没有可用结果」的出口）");
+  assert.equal(repaired.content, PENDING_TOOL_RESULT_TEXT,
+    "补的正文必须来自唯一来源 PENDING_TOOL_RESULT_TEXT（宿主 / judge 靠 [erix] marker 认出是引擎自写）");
+  assert.deepEqual(executed, ["w1", "fix"],
+    "补的那条 result 只是事实陈述：它对应的调用不许被执行，补跑那一轮的工具照常执行");
+  assert.equal(toolResultFor(result.messages, "fix")?.is_error, undefined,
+    "真的执行过的结果不许被顺手标成 is_error");
+
+  // ③ 顺序：assistant(tool_use) → user(tool_result) → user(guard 控制文本)
+  const assistantIndex = result.messages.findIndex((message) => (
+    message.role === "assistant"
+    && (Array.isArray(message.content) ? message.content : [])
+      .some((block) => block?.type === "tool_use" && block.id === "wrap-tool")
+  ));
+  assert.ok(assistantIndex >= 0, "找不到强制收尾那条 assistant tool_use");
+  assert.equal(result.messages[assistantIndex + 1]?.content?.[0]?.tool_use_id, "wrap-tool",
+    "tool_result 必须紧跟在它的 tool_use 之后（中间不许插进控制文本）");
+  assert.match(
+    (Array.isArray(result.messages[assistantIndex + 2]?.content)
+      ? result.messages[assistantIndex + 2].content : []
+    ).map((block) => block?.text ?? "").join(""),
+    /还差一步：把 fix 做掉/u,
+    "guard 的 revise 文本必须排在 tool_result 之后",
+  );
+  assert.equal(extendEvents(events).length, 1, "补跑仍要恰好发生 1 次");
+  assert.equal(guardCalls, 2);
+});
+
+test("#393 末轮带多个 tool_use + opt-in：一条 user 消息补齐全部 id（不许只补第一个）", async () => {
+  let guardCalls = 0;
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      toolUse("w1"),
+      // 强制收尾那一轮回了两个工具调用（一条 assistant 消息里两个 tool_use 块）
+      {
+        content: [
+          { type: "text", text: "还想再调两次" },
+          { type: "tool_use", id: "wa", name: "noop", input: {} },
+          { type: "tool_use", id: "wb", name: "noop", input: {} },
+        ],
+        stopReason: "tool_use",
+      },
+      toolUse("fix"),
+      wrapup({ done: true, summary: "已补做", output: "完成" }),
+      { times: 12, ...text("idle") },
+    ]),
+    initialUserMessage: "做点事",
+    maxRounds: 1,
+    reflection: REFLECTION,
+    executeTool: async () => "ok",
+    finalGuardExtend: true,
+    finalGuard: async () => {
+      guardCalls += 1;
+      return guardCalls === 1 ? { action: "revise", message: "还差一步" } : { action: "accept" };
+    },
+  });
+
+  assert.equal(result.termination.reason, "end_turn");
+  assert.doesNotThrow(() => validateMessages(result.messages),
+    "多 id 的尾巴只补一部分 ⇒ canonical 校验会以 tool_result ids do not match 报红");
+  for (const id of ["wa", "wb"]) {
+    assert.equal(toolResultFor(result.messages, id)?.content, PENDING_TOOL_RESULT_TEXT,
+      `tool_use ${id} 没有被补齐`);
+  }
+});
+
+test("#393 畸形尾巴（tool_use 没有 id）：拒绝补跑，落回 unverified/non_continuable（退路 B，不许 failed）", async () => {
+  let guardCalls = 0;
+  const events = [];
+  const result = await runToolLoop({
+    provider: createFakeProvider([
+      toolUse("w1"),
+      // 非标准响应：tool_use 块没有 id ⇒ 补不出一条合法的 tool_result
+      { content: [{ type: "tool_use", name: "noop", input: {} }], stopReason: "tool_use" },
+      toolUse("fix"),
+      wrapup({ done: true, summary: "已补做", output: "完成" }),
+      { times: 12, ...text("idle") },
+    ]),
+    initialUserMessage: "做点事",
+    maxRounds: 1,
+    reflection: REFLECTION,
+    executeTool: async () => "ok",
+    finalGuardExtend: true,
+    finalGuard: async () => {
+      guardCalls += 1;
+      return { action: "revise", message: "还差一步" };
+    },
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.notEqual(result.termination.reason, "failed", "补不出合法 tool_result 时也不许留给宿主 failed");
+  assert.equal(result.termination.errorCode, undefined);
+  assert.deepEqual(extendEvents(events), [], "形状补不出来 ⇒ 不补跑（退路 B）");
+  assert.equal(guardCalls, 1);
+  assert.equal(result.verification.status, "unverified");
+  assert.equal(result.verification.reason, "non_continuable");
+  assert.equal(result.verification.detail, "max_rounds_cap");
+  assert.equal(result.termination.reason, "final_guard_unverified");
+  assert.equal("guard_extensions" in result.verification.metrics, false);
 });

@@ -25,6 +25,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { pendingTrailingToolUses, validateMessages } from "../src/messages/rounds.js";
 import { createFakeProvider } from "../test/helpers/fake-provider.js";
 
 const JSON_OUT = process.argv.includes("--json");
@@ -556,7 +557,7 @@ try {
     log(`   messages ${messagesBytes} B / 新键 ${additiveBytes} B = ${(share * 100).toFixed(2)}%`
       + `（${result.rounds} 轮，filesWritten ${payload.filesWritten?.length} 条）`);
   }
-  // ── E4 预算类停机的补跑桥（**双格**，issue #386 切片 3）───────────────────────────────
+  // ── E4 预算类停机的补跑桥（**双格**，issue #386 切片 3；形状按 issue #393 改成末轮带工具）────
   // 同一个「轮预算被掐停、模型还在正常调工具、交付物还差一步」的现场，同一个 guard（第一次必
   // `revise`、第二次 `accept`），唯一变量是宿主有没有 opt-in `finalGuardExtend`：
   //   E4a 默认关 ⇒ 与今天逐字一致：`unverified / non_continuable` + `final_guard_unverified`，
@@ -564,6 +565,12 @@ try {
   //   E4b opt-in ⇒ 事件里出现 `final_guard_extend`（from→to 抬了上限）、模型真的补做了那一步、
   //       第二次 guard `accept` ⇒ `verified`。
   // 两格合起来才是本切片要的证据：单看 E4b 无法排除「顺手把停机行为全改了」，单看 E4a 无法证明桥有效。
+  //
+  // issue #393 把两格的**形状**一起换掉了（仍是单变量：只差 opt-in）：强制收尾那一轮模型回的是
+  // **工具调用**，不是纯文本 ⇒ 末条 assistant 带着未被回答的 `tool_use`。这才是真实现场（探针原先
+  // 那一版让强制收尾回纯文本，于是恰好绕开了这个形状，对 #393 这类回归零信号）。补跑桥在这里
+  // 必须先把尾部结清再注入控制文本，否则 provider 以 `invalid_messages` 拒掉整份历史 ⇒
+  // 宿主拿到 `termination: failed`。两格都断言「终局不得是 failed」。
   for (const cell of [
     {
       case: "E4a max_rounds_cap + guard revise + 未 opt-in = 今天的行为（标签，不是补跑）",
@@ -588,8 +595,9 @@ try {
     const provider = createFakeProvider([
       // 第 1 轮：模型还在正常调工具（预算只有 1 轮）⇒ 出圈 ⇒ max_rounds_cap。
       toolUse("e4-w1", "writeFile", { path: answerPath, content: "0" }),
-      // 强制收尾：引擎要一句终稿（模型此时**还没**写对交付物）。
-      wrapup({ done: true, summary: "完成", output: `已生成 ${answerPath}` }),
+      // 强制收尾（issue #393 的形状）：引擎要一句终稿，模型**又回了一个工具调用** ⇒
+      // 末条 assistant 带着未被回答的 `tool_use`（这条调用不会被执行，交付物此时还差一步）。
+      toolUse("e4-w2", "writeFile", { path: answerPath, content: "1" }),
       // 补跑那一轮：模型补做交付物。
       toolUse("e4-fix", "writeFile", { path: answerPath, content: "42" }),
       wrapup({ done: true, summary: "已补做", output: "answer.txt 内容是 42" }),
@@ -615,6 +623,15 @@ try {
     });
 
     const extensions = events.filter((event) => event.type === "final_guard_extend");
+    // issue #393：这条形状**不许**落成 `failed`（现状就是把非法消息序漏给宿主的那一格）。
+    expect(
+      result.termination?.reason !== "failed",
+      `末轮带工具时终局不得是 failed（实际 ${JSON.stringify(result.termination)}）`,
+    );
+    expect(
+      result.termination?.errorCode === undefined,
+      `终局不许带 errorCode（实际 ${result.termination?.errorCode}）`,
+    );
     expect(
       result.verification?.status === cell.expectedStatus,
       `verification.status 应为 ${cell.expectedStatus}，实际 ${result.verification?.status}`,
@@ -654,6 +671,34 @@ try {
       expect(
         result.verification?.metrics?.guard_extensions === 1,
         `metrics.guard_extensions 应为 1，实际 ${result.verification?.metrics?.guard_extensions}`,
+      );
+      // issue #393 的消息序不变量：判据用 canonical 那一份（`validateMessages` 的配对规则 +
+      // 同源的 `pendingTrailingToolUses`），不在这里另写一遍。
+      let canonicalError;
+      try {
+        validateMessages(result.messages);
+      } catch (error) {
+        canonicalError = error;
+      }
+      expect(
+        canonicalError === undefined,
+        `补跑之后的消息序不合法：${canonicalError?.message}`,
+      );
+      expect(
+        pendingTrailingToolUses(result.messages).length === 0,
+        "补跑之后尾部还留着悬空 tool_use",
+      );
+      const repaired = (result.messages ?? [])
+        .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
+        .find((block) => block?.type === "tool_result" && block.tool_use_id === "e4-w2");
+      expect(repaired !== undefined, "强制收尾那条 tool_use（e4-w2）没有被结清");
+      expect(
+        repaired?.is_error === true && /\[erix\]/u.test(String(repaired?.content)),
+        `引擎自写的 tool_result 必须带 is_error 与 [erix] marker，实际 ${JSON.stringify(repaired)}`,
+      );
+      expect(
+        !executed.includes("e4-w2"),
+        "补的只是事实陈述：那条未执行的调用不许被真的执行",
       );
     } else {
       expect(extensions.length === 0, `未 opt-in 时不许出现 final_guard_extend 事件，实际 ${extensions.length} 条`);

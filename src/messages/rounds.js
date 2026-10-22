@@ -121,6 +121,28 @@ export function validateMessages(messages, { allowPendingToolUse = false } = {})
 }
 
 /**
+ * 尾部悬空 `tool_use`（issue #393）：末条消息是 assistant 且带 `tool_use` 块时返回这些块，否则空数组。
+ *
+ * 判据与上面 `validateMessages` 的配对规则**同源**，这里不另立一套：`allowPendingToolUse` 容忍的
+ * 唯一形状就是「末条 assistant 的 `tool_use` 之后没有 user `tool_result`」
+ * （`index === messages.length - 1 && next === undefined`）。于是「在这条 assistant 之后还能不能插
+ * 一条 user 消息」的判据就是本函数返回空数组 —— 引擎要往尾部注入任何 user 消息（`meta.source:
+ * "judge-control"` 的控制文本等）之前都必须先问它，否则 provider 会以 `invalid_messages`
+ * （`assistant tool_use has no immediately following user tool_result`）拒掉整份历史。
+ *
+ * 只看末条：`validateMessages` 在中间位置从不接受悬空 `tool_use`，所以「末条以外」没有这种形状。
+ *
+ * @param {CanonicalMessage[]} messages
+ * @returns {object[]} 末条 assistant 消息里的 `tool_use` 块（可能为空数组）
+ */
+export function pendingTrailingToolUses(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const last = list[list.length - 1];
+  if (last?.role !== "assistant") return [];
+  return toolUses(last);
+}
+
+/**
  * Group canonical messages into indivisible conversation rounds.
  *
  * @param {CanonicalMessage[]} messages
