@@ -84,7 +84,8 @@
     "check:release": "node scripts/release-check.mjs",
     "check:release:real": "node scripts/release-real-check.mjs",
     "check:cli-real": "node scripts/cli-real-smoke.mjs",
-    "check:tests": "node scripts/test-hygiene-check.mjs"
+    "check:tests": "node scripts/test-hygiene-check.mjs",
+    "check:final-guard-probe": "node scripts/final-guard-probe.mjs"
   },
   "license": "MIT",
   "devDependencies": {
