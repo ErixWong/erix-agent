@@ -2019,8 +2019,12 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `applyGovernorExtension`（`src/loop/orchestrator.js`）、`FINAL_GUARD_EXTENDABLE_REASONS`
  *  （`src/loop/termination.js`）、`isApiInputOverBudget`（`src/loop/budget.js`）——`--verbose` 实测
  *  **102 组 / 260 处**（契约 EN 73 / CN 72、两份 0.24.0 指南各 +2 处、`AGENTS_cn.md` 8 → 11 处，其余不变）。
+ *  再升一次的理由（issue #393 修轮，102 → **103**，+1 组 / 260 → 262 处）：契约中英成对补的两句
+ *  （「悬空 `tool_use` 先结清再注入」那一颗 + 「`metrics.verified` 不等于 `verification.status`」那一颗）
+ *  按同一红线用符号锚点引用 `PENDING_TOOL_RESULT_TEXT`（`src/loop/orchestrator.js`）——`--verbose` 实测
+ *  **103 组 / 262 处**（契约 EN 73 → 74 / CN 72 → 73，其余不变）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 102;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 103;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

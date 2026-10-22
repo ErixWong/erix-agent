@@ -43,6 +43,17 @@
   - **如实记下的既有缺陷（本切片不修）**：`filesWritten[].path` 是 judge 时间线的 `summarizeArgument` 摘要参数，被 `MAX_COMMAND_LENGTH = 40` 截断且**不带截断标记** ⇒ 长路径只能当提示，不能当主键（探针 `S7` 把 `longest === 40` 钉住，改上限会变红）。
   - **门禁**：`npm test` → **tests 1,881 / pass 1,872 / fail 0 / skipped 9**（改前基线 1,871 / 1,862 / 0 / 9，差值恰是新增的 10 格）；`check:syntax`、`check:docs`、`check:docs:strict`、`check:docs-examples`、`check:pack-links`、`check:tests`、`check:types`（117 = 基线）、`check:types -- --with-tools`（153 = 基线）、`docs-drift-check --self-test`、`check:release`、`final-guard-probe` 逐个 exit 0。两处连带：`test/tools/file-tools.test.js` 的 `median` 角色锚点从 `src/loop/termination.js` 换到 `bin/repl.js`（前者被本单撑大 +74%，容量 7,227 → 6,255 已掉出样本中位带，描述里的 `median 7,243` 因此一字不用改）；契约中英各两处符号锚点自带区间因行号位移而不相交 ⇒ 删区间只留符号，裸行号棘轮 136 → **132**。
 
+### Fixed
+
+- **`finalGuardExtend` 的补跑桥在「末轮带 `tool_use`」时不再产出非法消息序（issue #393；`src/loop/orchestrator.js`、`src/messages/rounds.js`；零依赖、纯 ESM、**不动判定表**）。**
+  - **现场**：`max_rounds_cap` 掐停后引擎强制收尾（那次请求带 `tools: []`），但模型仍回了一条工具调用 ⇒ **末条 assistant 带着未被回答的 `tool_use`**。桥直接 push `meta.source:"judge-control"` 的控制文本，把它与应有的 `tool_result` 隔开 ⇒ 下一次 provider 调用以 `Invalid message at index N: assistant tool_use has no immediately following user tool_result` 拒掉整份历史，宿主收到 `termination: failed` / `errorCode: invalid_messages`（reflection 开/关/未设三种配置全都一样；默认关不受影响）。
+  - **修法（A）**：注入前先查尾部形状——`pendingTrailingToolUses`（新增在 `src/messages/rounds.js`，与 `validateMessages` 的配对规则**同源**：`allowPendingToolUse` 容忍的唯一形状就是它）非空时，先用 `buildToolResultFact` 补一条引擎自写的 user `tool_result`（`is_error: true`、正文 `PENDING_TOOL_RESULT_TEXT`、以 `[erix]` marker 开头），再注入控制文本。检查放在**共享**的 `applyGovernorExtension` 里（引擎往尾部注入 user 控制消息的唯一实现），对中途扩轮是空操作。入账走 `:control:guard-extend-tool-result` 行（**不是** `kind:"message"` 消息行：消息行会被 `foldMessageRows` 折回轮载体行，恢复时反而插到强制收尾那两条控制消息之前）。
+  - **退路 B（兜底，不是主路）**：`tool_use` 的 id 读不出来的畸形尾巴补不出合法 `tool_result` ⇒ 这一格**不补跑**，落回 `unverified / non_continuable`，绝不把 `failed / invalid_messages` 留给宿主。
+  - **测试**：`test/loop-guard-extend.test.js` 新增 4 格（末轮带工具 + 默认关逐字等于今天且不是 `failed`；末轮带工具 + opt-in ⇒ 终局 `end_turn`/`verified` 且 `validateMessages` 通过、`pendingTrailingToolUses` 为空、补的那条 `tool_result` 紧跟在它的 `tool_use` 之后、控制文本排在它之后；一条 assistant 里多个 `tool_use` ⇒ 一条 user 消息补齐全部 id；畸形尾巴 ⇒ 不补跑、`unverified / non_continuable`）；`test/messages/rounds.test.js` 新增 2 格钉住 `pendingTrailingToolUses` 与 `validateMessages` 同源。
+  - **探针**：`scripts/final-guard-probe.mjs` 的 E4a/E4b 双格改成**末轮带工具**的形状（强制收尾那一轮回的是工具调用），并加断言「终局不得是 `failed`」+ 补跑后的消息序不变量（`validateMessages` / `pendingTrailingToolUses` / 补的那条 `tool_result` 带 `is_error` 与 `[erix]` / 那条未执行的调用没被执行）。场景数仍 10。
+  - **反向证**：去掉「查尾部形状」那一步（直接注入）⇒ `test/loop-guard-extend.test.js` **2 格红**（#393 opt-in、#393 多 id）+ 探针在 E4b 上以 `invalid_messages` 非零退出；`cp` 还原后 `md5sum` 与变异前逐字一致。
+  - **文档**：契约中英在 `finalGuardExtend` 小节补一条（悬空 `tool_use` 先结清再注入、那条 `tool_result` 陈述事实所以调用不执行、畸形尾巴不补跑），并在「终答核验 / Final-answer verification」补一句观测口径：**`verification.metrics.verified` 数的是 guard 裁决次数，不等于 `verification.status === "verified"`；判「是否验收」只准读 `verification.status`**。
+
 ## [0.24.0] - 2026-10-22
 
 ### Changed

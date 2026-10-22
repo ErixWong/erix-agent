@@ -1242,6 +1242,13 @@ if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate)
 默认 30000，非正值使用默认值。上述退出码只描述核验结果；常规 provider、工具或循环失败
 走正常失败路径。
 
+`verification.metrics` 是 guard 的**裁决计数**，不是第二个判决：`metrics.verified` 数的是
+返回 `accept` 的 guard 调用次数，所以一次被 `max_rounds_cap` 掐停、guard 判 `accept` 的 run
+会读到 `metrics.verified: 1`，而 `verification.status` 仍是 `unverified`
+（`reason: "non_continuable"`、`termination.reason: "final_guard_unverified"`）——计数说的是
+「裁决发生过」，状态说的是「什么都没被接受」。判「是否验收」只准读 `verification.status`；
+`metrics` 是观测面，任何时候都不得当成状态来读。
+
 loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`、
 `continuation_exhausted` 停机前，会调用已配置的 guard。guard 收到
 `finalText`、`findings`、`messages`、`round`、`rounds`、`signal` 与 `termination`。
@@ -1288,6 +1295,13 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 - 补跑发生在触发它的那次停机**已经强制收尾之后**，所以补跑过的 run 即使最后以 `end_turn` 收场，
   `termination` 里也可能带 `forcedFinal: true`（强制收尾确实跑过，之后才继续）。桥不改写任何
   `termination.reason` 取值，也不引入新的停机原因。
+- 若那次停机在末条 assistant 上留下了**悬空 `tool_use`**（强制收尾那一轮模型回的是工具调用而不是
+  纯文本），桥会先用一条引擎自写的 `tool_result` 把它结清（`is_error: true`，正文取
+  `PENDING_TOOL_RESULT_TEXT`（`src/loop/orchestrator.js`），以 `[erix]` marker 开头），**然后**才注入
+  控制文本（issue #393）。注入的 user 消息绝不能把 `tool_use` 与它的结果隔开——否则 provider 会以
+  `invalid_messages` 拒掉整份历史，宿主收到 `termination: failed`。那条 `tool_result` 陈述的是事实
+  （「这次调用根本没跑」），所以该调用**不会**被执行；`tool_use` 的 id 读不出来的畸形尾巴补不出合法
+  结果，这一格**不补跑**，行为与未 opt-in 完全一致。
 
 引擎没有独立的“交付认证”或“完成认证”层。它报告轮数、工具、文件调用、归档、终止与核验
 等事实。任务是否完成、交付物是否满足要求、能否自动进入下游，仍由宿主、测试系统或人工

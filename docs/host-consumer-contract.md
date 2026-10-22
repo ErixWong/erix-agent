@@ -1540,6 +1540,15 @@ by default, and `--no-final-guard` is a compatibility no-op. The default
 verification exit codes above describe verification outcomes only; ordinary
 provider, tool, or loop failures follow the normal failure path.
 
+`verification.metrics` is the guard's **decision counter**, not a second verdict:
+`metrics.verified` counts guard calls that returned `accept`, so a run stopped by
+`max_rounds_cap` with an `accept` verdict reads `metrics.verified: 1` while
+`verification.status` stays `unverified` (`reason: "non_continuable"`,
+`termination.reason: "final_guard_unverified"`) — the counter says "a verdict was
+rendered", the status says "nothing was accepted". To decide whether an answer was
+accepted, read `verification.status` **only**; `metrics` is observability and must never
+be read as a status.
+
 The loop calls a configured guard before stopping for
 `end_turn`, `no_tool`, `judge_done`, `max_rounds_cap`, `stall`,
 or `continuation_exhausted`. The guard receives
@@ -1599,6 +1608,16 @@ Cost and observability:
   bridged run's `termination` may carry `forcedFinal: true` even when it ends `end_turn`
   (the forced wrap-up did run; the run then continued). The bridge never rewrites
   `termination.reason` values and never introduces a new stop reason.
+- if that stop left a **pending `tool_use`** on the last assistant message — the forced wrap-up
+  round answered with a tool call instead of text — the bridge first closes it with an
+  engine-written `tool_result` (`is_error: true`, content is
+  `PENDING_TOOL_RESULT_TEXT` (`src/loop/orchestrator.js`), starting with the `[erix]` marker)
+  and only then injects the control text (issue #393). The injected user message must never
+  split a `tool_use` from its result, or the provider rejects the whole history as
+  `invalid_messages` and the host receives `termination: failed`. That `tool_result` reports a
+  fact ("this call never ran"), so the call itself is **not** executed; a tail whose `tool_use`
+  ids cannot be read is not repairable and is **not** extended — the run degrades exactly as
+  without the bridge.
 
 
 The engine has no separate "delivery authentication" or "completion
