@@ -620,7 +620,7 @@ field, no new termination reason, and no change to a first run.
 ## 15. Self-check
 
 ```bash
-npm test                       # 1,974 tests, 0 failing (1,965 passing + 9 skipped)
+npm test                       # 1,985 tests, 0 failing (1,976 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # offline, zero model calls; asserts the finalGuard payload surface
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites

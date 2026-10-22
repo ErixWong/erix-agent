@@ -517,7 +517,7 @@ guard 判 `accept` 的恢复 run 就是 `verified`，与模型有没有照告示
 ## 15. 自检
 
 ```bash
-npm test                       # 1,974 tests，0 失败（1,965 通过 + 9 skipped）
+npm test                       # 1,985 tests，0 失败（1,976 通过 + 9 skipped）
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # 离线、零模型调用；断言 finalGuard 的载荷面
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件

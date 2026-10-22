@@ -47,9 +47,14 @@ const noticeRows = (records) => records.filter((record) => (
   String(record?.dedupKey ?? "").includes(`:control:${RESUME_NOTICE_SLOT}`)
 ));
 
-/** 随机分配的工具调用身份键（`tc_<12 hex>`）归一化，好让 `deepEqual` 当回归锚用。 */
+/** 两个**非确定位**归一化，好让 `deepEqual` 当回归锚用（其余字段逐字比）：
+ *  · 随机分配的工具调用身份键 `tc_<12 hex>`；
+ *  · **实测墙钟** `erix.durationMs`（`Date.now() - startedAt`，满负载跑全量套件时会从 0 变成 1+）——
+ *    与 `scripts/message-journal-golden.mjs` 的 `VOLATILE_KEYS` 同一口径（那里也把 `durationMs` 剥掉）。 */
 const stableKeys = (messages) => JSON.parse(
-  JSON.stringify(messages).replace(/tc_[0-9a-f]{12}/gu, "tc_stable"),
+  JSON.stringify(messages)
+    .replace(/tc_[0-9a-f]{12}/gu, "tc_stable")
+    .replace(/"durationMs":\d+/gu, "\"durationMs\":0"),
 );
 
 /** 崩溃一次：第一次工具执行时中止（于是账本尾部是那条带 `tool_use` 的 assistant，结果一条都没落）。 */
