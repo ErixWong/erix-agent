@@ -22,7 +22,8 @@
 | tarball 现在随包 `test/helpers/tmp.js`；门禁侧落地三项（§7） | 不用——只关乎打包与门禁 |
 | `finalGuard` 现在除原有 7 键外还拿到 10 个加法事实（`cwd`、`runId`、`filesWritten`、`toolStats`、`taskBrief`、`selfReport`、`usage`、`elapsedMs`、`attempt`、`guardBudget`）（§8） | 不用——纯加法；只有你原本在重解析 `messages` 或拿 `finalText` 猜结论时才要动手 |
 | 新增 `deliverables` 选项与载荷键 `fileWrites`：宿主声明的机器判据，在**每次** guard 调用前核一遍；判据失败会把 guard 的 `accept` 变成 `unverified` / `deliverables_failed`（§9） | 不用——opt-in；只有你原本在 guard 里自己查磁盘时才要动手 |
-| 新增 `finalGuardExtend` 选项（**默认 `false`**）：`max_rounds_cap` / `continuation_exhausted` 上的 `revise` 每 run 最多补跑一轮；`stall` 永远不补（§10） | 不用——opt-in；不打开时每一类预算停机都与 0.23.0 逐字一致 |
+| 机器判据在**每一种** guard 裁决下都算数：`skip` + 全通过 ⇒ `verified` / `reason: "machine_only"`（退出码 **4 → 0**），`skip` 或 guard 报错 + 有失败 ⇒ `unverified` / `deliverables_failed`（退出码 **2**）（§10） | 要——只要你把 `verified` 读成「guard 判过了」；信之前先看 `reason === "machine_only"` |
+| 新增 `finalGuardExtend` 选项（**默认 `false`**）：`max_rounds_cap` / `continuation_exhausted` 上的 `revise` 每 run 最多补跑一轮；`stall` 永远不补（§11） | 不用——opt-in；不打开时每一类预算停机都与 0.23.0 逐字一致 |
 
 一句话版本：**以前要靠你推断的事实，现在写在明面上了。** 引擎没有改它**做**什么，改的是它**说**什么——
 状态文件里、错误对象上，以及模型会读到的那几处工具输出。
@@ -324,7 +325,49 @@ issue #391（宿主采用）改了三件事：
 **需要你动手吗？** 不需要；但如果你现在的 guard 自己查磁盘，把那段检查搬进 `deliverables`
 交给引擎强制：这样以后重写 guard 时，它不可能悄悄退化成橡皮章。
 
-## 10. 预算类停机可以再买一轮：`finalGuardExtend`（issue #386 切片 3）
+## 10. 机器判据在每一种 guard 裁决下都算数（issue #392）
+
+**现象。** §9 的闸门只挂在 guard 的 `accept` 那一条分支上。`erix chat … --final-guard
+--require-deliverable`，交付物**真的在盘上**，退出码却是 **4**：CLI 的来源 guard 没有归档捕获
+可比对，答 `{ action: "skip", reason: "no_capture_evidence" }`，于是引擎把机器结论整包丢掉——
+`verification` 留在 `skipped`，`exitCodeForVerification` 就把它映射成 4。同一个洞还朝另一个方向
+漏：`skip` 下判据**失败**时状态也是 `skipped`，即「没人验过」，而机器其实说了「没过」。本机实测：
+9 条有记录的真 run 里 `verification` 全是 `skipped`、`verified` **0 条**——接了 guard 的宿主
+永远拿不到 `verified`。
+
+**新增什么。** `skip` 的意思是「这次 guard 验不了」，从来不是「交付物没交付」，所以机器结论现在
+在**两个方向**上都压过它。整张表**只**在你声明了 `deliverables` 时生效：
+
+| guard 裁决 | 判据 | `verification` |
+|---|---|---|
+| `accept` | 全通过 | `verified`（不变） |
+| `accept` | 有失败 | `unverified` / `deliverables_failed`（不变） |
+| `skip` | **有失败** | **`unverified` / `deliverables_failed`** |
+| `skip` | **全通过** | **`verified` + `reason: "machine_only"`** |
+| 报错 / 超时 | **有失败** | **`unverified` / `deliverables_failed`** |
+| 报错 / 超时 | 全通过 | **`error`（刻意保留）** |
+| 未声明 | 任意 | 与今天逐字一致 |
+
+**对退出码意味着什么。** 声明了判据、guard 又 `skip` 的 run：判据全通过时现在退 **0**（原先 4），
+判据有失败时退 **2**（原先 4）。这就是本单的意义；如果你用 shell 调
+`erix chat --require-deliverable`，这是唯一要写进你自己发布说明的一行。
+
+**`machine_only` 不是「guard 验过了」。** 它是引擎**用你自己的判据**验收了这次 run，而 guard 放弃了
+判断。聚合形式是 `metrics.deliverables_machine_only`（只在这一格出现）；`metrics.verified` 在这一格
+**刻意不涨**——它数的仍是 guard 的 `accept` 裁决。如果你的策略要求 guard 本身必须判过，那就把
+`reason === "machine_only"` 读成「我的 guard 跳过了：去收紧判据或 guard」。
+
+**为什么 guard 报错 + 判据全通过仍是 `error`。** guard 抛异常/超时是**基础设施故障**，不是一个裁决。
+把它升级成 `verified: machine_only` 等于用一条机器判据盖掉一次 guard 面根本没跑成的 run：你会读到
+「至少机器验过了」，而那个从昨天就坏掉的回调永远不会被发现。这个不对称是故意的——「机器说没过」
+是一个已决的答案，照样赢（`unverified`），而「guard 坏了」不是。
+
+**需要你动手吗？** 只有当你把 `verified` 读成「guard 判过了」时才需要。那种情况下加一个分支：
+`if (verification.status === "verified" && verification.reason === "machine_only")` → 你自己的策略裁决。
+其余全是加法：`termination.reason` 不新增取值、`exitCodeForVerification` 一字未改、不声明
+`deliverables` 时每一格都与今天逐字相同。
+
+## 11. 预算类停机可以再买一轮：`finalGuardExtend`（issue #386 切片 3）
 
 **现象。** `maxRounds` 预算耗尽时模型还在正常调工具，run 以 `max_rounds_cap` 收尾 →
 `verification: { status: "unverified", reason: "non_continuable" }`。guard 明明看见差什么、
@@ -355,16 +398,16 @@ guard_extension: true }` 事件，以及 `verification.metrics.guard_extensions:
 **要不要动手？** 不用。`finalGuardExtend` 不动，每一类预算停机都与 0.23.0 逐字一致。只有当你的
 guard 的 `revise` 意见足够具体、多跑一轮**确实**能补上那个缺口时才打开它——桥买到的就是这一件事。
 
-## 11. 自检
+## 12. 自检
 
 ```bash
-npm test                       # 1,895 tests，0 失败（1,886 通过 + 9 skipped）
+npm test                       # 1,918 tests，0 失败（1,909 通过 + 9 skipped）
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # 离线、零模型调用；断言 finalGuard 的载荷面
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件
 ```
 
-对你的宿主，升级前有七个问题值得用测试回答：
+对你的宿主，升级前有八个问题值得用测试回答：
 
 1. **状态文件。** 造一个削减账超过 32 条的 run：`compactionStatsWindow.total` 等于全量条数、
    `dropped === total − 32`，并且**旧**状态文件（没有窗口键）照旧 validate、照旧可续跑。
@@ -386,17 +429,24 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    `finalGuardExtend: true`：结果必须是 `verified`，事件里必须恰好一条 `final_guard_extend` 且
    `from_max_rounds: 1`，模型必须真的补做了那一步。然后去掉这个选项，断言同一个脚本以
    `unverified` / `non_continuable` 收尾；再断言 `stall` 的 run 即使开着选项也**从不**补跑
-   （§10 的那几格就是它的随包版本）。
+   （§11 的那几格就是它的随包版本）。
+8. **机器单独验收。** 声明一条 `deliverables` 判据去 `stat` 一个**真的存在**的文件，并让你的 guard 答
+   `skip`（CLI 的来源 guard 在没有捕获可比对时就是这样）。这个 run 必须以 `verified` +
+   `reason: "machine_only"` 收尾、`metrics.deliverables_machine_only === 1`，且
+   `erix chat --final-guard --require-deliverable` 必须退 **0**。然后把那个文件删掉：同一个 run 必须以
+   `unverified` / `deliverables_failed` 收尾（退 **2**）；而判据全通过但 guard **抛异常**时仍必须是
+   `error`（§10 的那张表；探针的 `S6c`/`S6d` 两格就是它的随包版本）。
 
-## 12. 没变的
+## 13. 没变的
 
 没有 store 方法签名、没有返回类型、没有选项名、没有导出、没有记录种类、没有消息字段、没有终止原因、
 没有错误码搬家，运行时依赖仍是零。`store.load()` 的形状与 0.23.0 一致。`deterministic.compactionStats`
 仍是最后 32 条。judge 决策面与续跑路径一字未动；final guard 的**裁决**语义也一字未动——它的载荷多了几个加法键（§8），
-那是信息，不是新规则。整个发布里唯一**行为**变化是「搜索根不存在
-返回错误文本而不是 `（无命中）`」——而那是修一次假阴性，不是新规则。
+那是信息，不是新规则。整个发布里有**两处**行为变化，两处都是修假阴性、不是新规则：搜索根不存在
+返回错误文本而不是 `（无命中）`（§6），以及 guard `skip` 下通过的机器判据不再被丢掉（§10）。
+其余全是加法。
 
-## 13. 迁移配方
+## 14. 迁移配方
 
 1. 如果你读 `<runId>.state.json` 的削减账，改读 `compactionStatsWindow.total`（与 `dropped`），别再数数组；
    把键的缺席理解成「没有统计」，而不是「零」。
@@ -414,5 +464,9 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    `revise` 之后真的会重算，而且以后重写 guard 也不可能悄悄把它退回成橡皮章。今天用
    `filesWritten[].path` 做 `stat()` 的地方，改读 `fileWrites[].path`（逐字原值）——摘要会静默误杀
    已经写了文件的 run。
-8. 如果你想让预算类停机可挽回，就打开 `finalGuardExtend: true`（§10）——并且把 guard 的
+8. 如果你想让预算类停机可挽回，就打开 `finalGuardExtend: true`（§11）——并且把 guard 的
    `revise` 意见写成「缺哪一步」，因为那一轮就是花在这句话上的。不设它，一切照旧。
+9. 别再拿 `skipped` 当「没有机器证据」。从 §10 起，声明了判据的 run 在判据通过时以
+   `verified` / `machine_only` 收尾、在判据失败时以 `unverified` / `deliverables_failed` 收尾——如果你用
+   shell 调 CLI，请重新基线化你断言的退出码（`4` → `0` / `2`）；如果你在内部按 `verified` 放行，请显式
+   决定 `reason === "machine_only"` 是否满足你的策略。

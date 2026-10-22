@@ -1402,26 +1402,50 @@ deliverables?: [
   guard 因此能看见机器判据的结论，而不是只能读模型的嘴。
 - `verification.metrics`：`deliverables_checked` / `deliverables_failed`，一个 run 内累计
   （多次 guard 调用各自累加），与既有的 `verified` / `skipped` / `revised` /
-  `unverified` / `guard_error` 并列，既有五个键的语义一字不变。
+  `unverified` / `guard_error` 并列（既有五个键的语义一字不变），另有
+  `deliverables_machine_only`——**只**在「单靠判据就产出了 `verified`」那一格出现
+  （guard `skip`，issue #392）。
 
-闸门本身——这个选项存在的理由：
+闸门本身——这个选项存在的理由。它在**每一种** guard 裁决下都成立，不只是 `accept`
+（issue #392）：`skip` 的意思是「这次 guard 验不了」，从来不是「交付物没交付」，所以机器结论
+在**两个方向**上都压过它。
 
 | 判据结果 | guard 意见 | `verification.status` |
 |---|---|---|
 | 全部通过 | `accept` | `verified`——与今天一致，只是多记两个计数 |
 | **有失败** | `accept` | **`unverified`，`reason: "deliverables_failed"`**——机器证据压过 guard 意见 |
-| 有失败 | `revise` / `skip` / guard 报错 | 与今天一致（`unverified` / `skipped` / `error`） |
+| **有失败** | `skip` | **`unverified`，`reason: "deliverables_failed"`**——证据压过「我验不了」 |
+| **全部通过** | `skip` | **`verified`，`reason: "machine_only"`**——机器判据**本身**构成验收，而且要标明这一点 |
+| **有失败** | guard 报错 / 超时 | **`unverified`，`reason: "deliverables_failed"`**——机器说了「没过」，这比「不知道」更强 |
+| 全部通过 | guard 报错 / 超时 | **`error`——刻意不升级**（理由见下面的边界） |
+| 有失败 | `revise` | 与今天一致（修订次数触顶 ⇒ `unverified`；预算类停机 ⇒ `non_continuable`） |
 | 未声明判据 | 任意 | **逐字不变**：payload 无键、metrics 无键、事件无字段 |
 
-三条边界是刻意的：
+`reason: "machine_only"` 是宿主**必须逐字读**的那一格：它的意思是「引擎用**宿主自己的判据**
+验收了这次 run」，**不是**「guard 判过了」。如果你的策略要求 guard 本身必须判过，那就该把
+`machine_only` 当成「我的 guard 跳过了——去收紧判据或 guard」，因为它描述的正是这件事。
+聚合形式的同一个事实是 `metrics.deliverables_machine_only`（**只**在这一格出现）；
+`metrics.verified` 在这一格**刻意不涨**：它数的是 guard 的 `accept` 裁决，语义一字不变。
+
+因为 `machine_only` 就是 `verified`，所以一条声明了判据、guard 又 `skip` 的 CLI run：
+判据全通过时退出码是 **0**（不再是 4），判据有失败时是 **2**。
+
+四条边界是刻意的：
 
 - **`termination.reason` 不被改写。** 闸门只改 `verification`，不引入新的停机原因；
   既有的 `final_guard_unverified` 路径（修订次数触顶、不可续跑降级）一字未动。
+- **guard 报错 + 判据全通过仍然是 `error`。** guard 抛异常/超时是**基础设施故障**
+  （宿主回调写错、依赖挂了），把它升级成 `verified: machine_only` 等于用一条机器判据
+  盖掉一次真实故障——宿主会读到「至少机器验过了」，而它该去修的那次故障被藏起来了。
+  这个不对称是故意的：判据**失败**照样赢（`unverified`），因为「机器说没过」是一个
+  已决的答案，而「guard 坏了」不是。
 - **不可续跑终局也照核一次，但结论不变。** `max_rounds_cap` / `stall` /
-  `continuation_exhausted` 上判据会跑一遍并记账，但终局仍是既有的 `non_continuable`。
-  闸门只贴标签，不新造停止行为。
-- **事件只多一个字段。** `type: "final_guard"` 的事件带 `deliverables_failed: <n>`
-  （只在声明了判据时出现），宿主不必读 metrics 就能观测闸门。既有事件字段一律不动。
+  `continuation_exhausted` 上判据会跑一遍并记账，但 `revise` 收尾仍是既有的
+  `non_continuable`。闸门只贴标签，不新造停止行为。
+- **事件只多字段。** `type: "final_guard"` 的事件带 `deliverables_failed: <n>`
+  （只在声明了判据时出现），machine-only 那一格另带 `machine_only: true`——
+  它的 `action` 仍是 `"skip"`、`reason` 仍是 guard 自己的 skip 原因，宿主不必读 metrics
+  就能观测闸门。既有事件字段一律不动。
 
 判据里该用哪个路径键：`fileWrites[].path` 是 `tool_use.input[pathKey]` 的**原始值**
 （逐字，可直接 `stat()`）；`filesWritten[].path` 是 judge timeline 的 40 码点摘要

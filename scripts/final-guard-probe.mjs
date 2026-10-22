@@ -9,7 +9,9 @@
 //   · **每个场景都断言语义**，不是只打印。任一场景的语义变了（payload 少一个键、假完成抓不住、
 //     revise 耗尽不再 fail-closed、guard 抛错/超时被当成 verified、橡皮章 guard 又能蒙过、
 //     声明了交付物判据却仍被橡皮章蒙过（issue #386 切片 2 的机器闸门）、新键体积超过 messages 的 2%、
-//     预算类停机上的补跑桥失效或默认关时悄悄改行为（issue #386 切片 3 的 E4a/E4b 双格））
+//     预算类停机上的补跑桥失效或默认关时悄悄改行为（issue #386 切片 3 的 E4a/E4b 双格）、
+//     guard `skip` 又把机器证据整包丢掉（issue #392 的 S6c/S6d 双格：skip + 判据全通过 ⇒
+//     `verified:machine_only`，skip + 判据有失败 ⇒ `unverified:deliverables_failed`））
 //     ⇒ 退出码非零。
 //
 // 用法：
@@ -382,22 +384,51 @@ try {
       + `（payload 键 ${payloads[0]?.keys} 个）`);
   }
 
-  // ── S6 天真 guard 橡皮章（**双格**，issue #386 切片 2）────────────────────────────
-  // 同一个天真 guard（只看 finalText 有没有字）、同一份撒谎输入、同一个「文件根本不存在」的磁盘事实，
-  // 唯一变量是宿主有没有声明 `deliverables`：
+  // ── S6 天真 guard 橡皮章（**四格**：issue #386 切片 2 的 S6a/S6b + issue #392 的 S6c/S6d）──
+  // 同一个天真 guard 家族（只看 finalText 有没有字）、同一份撒谎输入、同一份磁盘事实，
+  // 变量只有两个：宿主有没有声明 `deliverables`、以及 guard 给的是 `accept` 还是 `skip`：
   //   S6a 未声明 ⇒ 仍然 verified（证明闸门是**纯加法**：不声明就一个字都不改）；
-  //   S6b 声明了 ⇒ 必须 unverified:deliverables_failed（证明**机器闸门**真的压过 guard 意见）。
-  // 两格合起来才是本单要的证据：单看 S6b 无法排除「顺手把 accept 改严了」，单看 S6a 无法证明闸门有效。
+  //   S6b 声明了 + accept ⇒ 必须 unverified:deliverables_failed（**机器闸门**真的压过 guard 意见）；
+  //   S6c 声明了 + **skip** + 判据全通过 ⇒ 必须 verified:machine_only（#392 的现场：今天这一格是
+  //       `skipped`，于是真上游「文件真在盘上」的 run 退出码是 4）；
+  //   S6d 声明了 + **skip** + 判据有失败 ⇒ 必须 unverified:deliverables_failed（状态不许再说「没验」）。
+  // 四格合起来才是完整证据：单看 S6b 无法排除「顺手把 accept 改严了」，单看 S6a 无法证明闸门有效，
+  // 单看 S6c 无法排除「skip 一律当通过」，单看 S6d 无法排除「skip 一律当失败」。
   for (const cell of [
     {
       case: "S6a 天真 guard（只看 finalText 非空）+ 未声明 deliverables = 仍是橡皮章（纯加法）",
       deliverables: undefined,
+      guardDecision: { action: "accept" },
       expectedStatus: "verified",
       expectedReason: undefined,
     },
     {
       case: "S6b 天真 guard + 声明了 deliverables（文件不存在）= 被机器闸门拦住",
       deliverables: [{ name: "answer-file", check: () => fs.existsSync(answerPath) }],
+      guardDecision: { action: "accept" },
+      expectedStatus: "unverified",
+      expectedReason: "deliverables_failed",
+    },
+    {
+      // issue #392：天真 guard 这次**放弃**（`skip` = 「我验不了」，不是「交付物没交付」），
+      // 但判据是磁盘事实且真的过了 ⇒ 机器证据本身构成验收，且必须标成 machine_only。
+      case: "S6c 天真 guard 判 skip + 声明了 deliverables（文件真在盘上）= verified:machine_only",
+      deliverables: [{
+        name: "answer-file",
+        check: () => fs.existsSync(answerPath)
+          && fs.readFileSync(answerPath, "utf8").trim() === "42",
+      }],
+      guardDecision: { action: "skip", reason: "no_capture_evidence" },
+      writeAnswer: true,
+      expectedStatus: "verified",
+      expectedReason: "machine_only",
+      expectedMachineOnly: true,
+    },
+    {
+      // 同一格的反面：skip + 判据**没过** ⇒ 状态必须说「没过」，不许留在「没验」。
+      case: "S6d 天真 guard 判 skip + 声明了 deliverables（文件不存在）= unverified:deliverables_failed",
+      deliverables: [{ name: "answer-file", check: () => fs.existsSync(answerPath) }],
+      guardDecision: { action: "skip", reason: "no_capture_evidence" },
       expectedStatus: "unverified",
       expectedReason: "deliverables_failed",
     },
@@ -405,25 +436,37 @@ try {
     currentCase = cell.case;
     resetSandbox();
     let payload;
+    const events = [];
     const result = await runToolLoop({
       provider: createFakeProvider([
+        // `writeAnswer` 的格先真写一次盘（判据要的是磁盘事实，不是模型的自报）。
+        ...(cell.writeAnswer
+          ? [toolUse("w-s6c", "writeFile", { path: answerPath, content: "42" })]
+          : []),
         wrapup({ done: true, summary: "完成", output: `已生成 ${answerPath}，内容为 42` }),
       ]),
       initialUserMessage: "写文件",
-      maxRounds: 2,
-      executeTool: async () => "ok",
+      cwd: sandbox,
+      maxRounds: 3,
+      executeTool: async (call) => {
+        if (call.name === "writeFile") fs.writeFileSync(call.input.path, call.input.content ?? "");
+        return "ok";
+      },
       ...(cell.deliverables === undefined ? {} : { deliverables: cell.deliverables }),
       finalGuard: async (value) => {
         payload = value;
+        // 天真 guard 的**裁决**由格指定：它自己不看磁盘，只看终稿有没有字。
+        if (cell.guardDecision.action === "skip") return { ...cell.guardDecision };
         return String(value.finalText).length > 0
           ? { action: "accept" }
           : { action: "revise", message: "空" };
       },
+      onEvent: (event) => events.push(event),
     });
 
     expect(
-      !fs.existsSync(answerPath),
-      "本场景的前提是交付物不存在（判据必须是独立于模型嘴的磁盘事实）",
+      fs.existsSync(answerPath) === (cell.writeAnswer === true),
+      `本场景的磁盘前提不成立（answerPath 存在=${fs.existsSync(answerPath)}）`,
     );
     expect(
       result.finalText.includes("已生成"),
@@ -434,27 +477,51 @@ try {
       `verification 应为 ${cell.expectedStatus}，实际 ${result.verification?.status}`
         + (cell.expectedReason === undefined ? "" : `（reason 应为 ${cell.expectedReason}）`),
     );
+    // 闸门只改 verification，不改 termination.reason。
+    expect(
+      result.termination?.reason === "end_turn",
+      `闸门不许改写 termination.reason，实际 ${result.termination?.reason}`,
+    );
     if (cell.expectedReason !== undefined) {
       expect(
         result.verification?.reason === cell.expectedReason,
         `verification.reason 应为 ${cell.expectedReason}，实际 ${result.verification?.reason}`,
       );
-      // 闸门只改 verification，不改 termination.reason。
       expect(
-        result.termination?.reason === "end_turn",
-        `闸门不许改写 termination.reason，实际 ${result.termination?.reason}`,
+        payload?.deliverablesAllPassed === (cell.expectedMachineOnly === true),
+        `payload.deliverablesAllPassed 与磁盘事实不符，实际 ${payload?.deliverablesAllPassed}`,
       );
+      if (cell.expectedMachineOnly === true) {
+        // machine_only 是「引擎用宿主判据验收」的**唯一**凭据：计数键 + 事件字段各一处。
+        expect(
+          result.verification?.metrics?.deliverables_machine_only === 1,
+          `metrics.deliverables_machine_only 应为 1，实际 ${result.verification?.metrics?.deliverables_machine_only}`,
+        );
+        expect(
+          result.verification?.metrics?.verified === 0,
+          "guard 没有 accept，`verified` 计数（数的是 guard 裁决）不该涨",
+        );
+        const guardEvents = events.filter((event) => event.type === "final_guard");
+        expect(
+          guardEvents.length === 1 && guardEvents[0].machine_only === true
+            && guardEvents[0].action === "skip",
+          `事件应是 action:"skip" + machine_only:true，实际 ${JSON.stringify(guardEvents)}`,
+        );
+      } else {
+        expect(
+          !("deliverables_machine_only" in (result.verification?.metrics ?? {})),
+          "machine_only 的计数漏进了不该出现的格",
+        );
+      }
       expect(
-        payload?.deliverablesAllPassed === false,
-        `payload.deliverablesAllPassed 应为 false，实际 ${payload?.deliverablesAllPassed}`,
+        result.verification?.metrics?.deliverables_failed
+          === (cell.expectedStatus === "unverified" ? 1 : 0),
+        `metrics.deliverables_failed 与结论不符，实际 ${result.verification?.metrics?.deliverables_failed}`,
       );
+      // 机器说「没过」时，状态不许再说「没验」。
       expect(
-        payload?.deliverables?.[0]?.ok === false,
-        `payload.deliverables[0].ok 应为 false，实际 ${JSON.stringify(payload?.deliverables)}`,
-      );
-      expect(
-        result.verification?.metrics?.deliverables_failed === 1,
-        `metrics.deliverables_failed 应为 1，实际 ${result.verification?.metrics?.deliverables_failed}`,
+        result.verification?.reason !== "no_capture_evidence",
+        "reason 仍是 skip 串（状态说「没验」，而机器其实说了「没过」）",
       );
     } else {
       expect(
@@ -468,18 +535,21 @@ try {
     }
 
     record({
+      guard_action: cell.guardDecision.action,
       deliverables_declared: String(cell.deliverables !== undefined),
       file_exists: String(fs.existsSync(answerPath)),
       termination: JSON.stringify(result.termination),
       verification: JSON.stringify(result.verification),
-      conclusion: cell.expectedReason === undefined
-        ? "未声明判据 ⇒ 文件不存在也能 verified（纯加法：闸门不改变既有行为）"
-        : "声明了判据 ⇒ 文件不存在时 guard 的 accept 被机器闸门降级成 unverified:deliverables_failed",
+      conclusion: cell.expectedMachineOnly === true
+        ? "guard skip + 判据全通过 ⇒ verified:machine_only（机器证据本身构成验收，且可区分于 guard 验收）"
+        : cell.expectedReason === undefined
+          ? "未声明判据 ⇒ 文件不存在也能 verified（纯加法：闸门不改变既有行为）"
+          : `guard ${cell.guardDecision.action} + 判据有失败 ⇒ unverified:deliverables_failed（证据优先于「我验不了」）`,
     });
     log(`\n── ${currentCase}`);
-    log(`   文件存在=${fs.existsSync(answerPath)} / termination=${result.termination?.reason}`
-      + ` / verification=${result.verification?.status}${result.verification?.reason === undefined ? "" : `:${result.verification.reason}`}`
-      + ` ⇒ ${cell.expectedReason === undefined ? "橡皮章仍在（未声明判据）" : "橡皮章被闸门拦住"}`);
+    log(`   文件存在=${fs.existsSync(answerPath)} / guard=${cell.guardDecision.action}`
+      + ` / termination=${result.termination?.reason}`
+      + ` / verification=${result.verification?.status}${result.verification?.reason === undefined ? "" : `:${result.verification.reason}`}`);
   }
 
   // ── S7 新键的体积开销：30 轮 × 4KB 工具输出下必须 < messages 的 2% ────────────────
