@@ -11,7 +11,12 @@ import {
 } from "../tokens.js";
 import { groupIntoRounds } from "../messages/rounds.js";
 import { MESSAGE_ROW_KIND } from "../store/message-rows.js";
-import { decideRoundAction, decideWithEvaluation } from "../reflection/governor.js";
+import {
+  decideRoundAction,
+  decideWithEvaluation,
+  // issue #386 切片 3：guard 补跑桥复用**同一份**扩轮准入判据（判定表一字未动，只是改了可见性）。
+  extensionAllowed,
+} from "../reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "../reflection/l0.js";
 import { tryParseWrapupJson, normalizeWrapupWithLlm } from "../reflection/wrapup.js";
 import {
@@ -52,6 +57,7 @@ import {
 } from "./task-brief.js";
 import {
   FILE_LEDGER_LIMIT,
+  FINAL_GUARD_EXTENDABLE_REASONS,
   FINAL_GUARD_NON_CONTINUABLE_REASONS,
   FINAL_GUARD_TERMINATION_REASONS,
   annotateTermination,
@@ -718,7 +724,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], persistedTranscriptLength: number, resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number> }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], persistedTranscriptLength: number, resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, aggregateBudgetHit: boolean, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number> }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -808,6 +814,12 @@ export async function runToolLoop(options) {
     lowBudgetPrompted: false,
     toolErrorCount: 0,
     runSnapshotFailureCount: 0,
+    // issue #386 切片 3：**单轮聚合输出预算**是否已经撞过线（本 run 内一旦为真就不再复位）。
+    // 写者只有 `runSnapshotContext.markAggregateBudgetHit`（聚合层把某条工具输出归档/stub 化时记账），
+    // 读者只有 guard 补跑桥的预算闸——它回答「再补一轮会不会继续撕输出预算」。
+    // 初值 `false` 逐字照「未发生过」；不入 run-state（它只影响本次进程的补跑决定，
+    // 而配额本身已经由 `governorState.guardExtensionUsed` 落盘，不需要第二个跨 resume 判据）。
+    aggregateBudgetHit: false,
     // 【E 轮内量（四）】`currentTerminationReason`（原 :1213）——**有初值**的格子，初值 `"running"` 逐字
     //   原样搬（它是 run-state `termination.reason` 的起点，也是「本次 run 还没结束」这个语义的唯一表示）。
     //   ⚠ 两处写在 `fail()` 里，位置**早于**原声明点（原 :941 / :965，声明在原 :1213）：迁移前它们读的就是
@@ -1402,6 +1414,11 @@ export async function runToolLoop(options) {
   const governorState = {
     effectiveMaxRounds: maxRounds,
     extensionCount: 0,
+    // issue #386 切片 3：guard 补跑的**一次性配额**（每个 run 最多 1 次，独立于 `extensionCount`——
+    // governor 还有扩轮额度也不许 guard 领第二份）。它必须**跨 resume 不重置**：否则
+    // 「跑 → 崩 → resume」每次都领一份新配额 = 无界成本，所以它随 run-state 落盘、由
+    // `resume-manager.js` 恢复（见 `deterministic.guardExtension`）。
+    guardExtensionUsed: false,
     noToolStreak: 0,
     wrapUpNudged: false,
     errorSeen: new Map(),
@@ -2724,6 +2741,11 @@ export async function runToolLoop(options) {
     markToolExecuted() {
       runLoopState.toolExecutedThisRound = true;
     },
+    // issue #386 切片 3：聚合层撞线记账（写者见 `run-snapshot-executor.js#applyRoundAggregate`，
+    // 读者见 `guardExtensionBudgetAllows`）。单向、幂等、无返回值。
+    markAggregateBudgetHit() {
+      runLoopState.aggregateBudgetHit = true;
+    },
     get lowBudgetPrompted() {
       return runLoopState.lowBudgetPrompted;
     },
@@ -3116,6 +3138,114 @@ export async function runToolLoop(options) {
     }
     runLoopState.resumeTailMessages = [];
   };
+
+  // issue #386 切片 3：补跑桥要在「出圈收尾之后」回到主循环，所以把「主循环 + 出圈收尾」包进
+  // 一层可重入的外层循环。**默认关时它只转一圈**（两段 try 的所有出口都是 return/throw）⇒
+  // 行为与今天逐字一致；opt-in 时最多转两圈（配额 `guardExtensionUsed` 保证第二圈必被拒绝）。
+  // 内层那 ~670 行的缩进刻意不动：那是既有代码，为一行括号重排整段只会让本切片的 diff 不可审。
+  // 两个桥函数声明在 `try` **之外**：出圈收尾那段 try 是这个 try 的兄弟（不在它内部），
+  // 声明在 try 里会让尾段读不到它们（`ReferenceError`，不是红测试）。
+  mainLoop: for (;;) {
+    // ── issue #386 切片 3：guard 补跑桥的两个唯一实现 ────────────────────────────────────
+    // 背景（#386 探针 E4）：`max_rounds_cap` 掐停时模型还在正常调工具、交付物还差一步，guard
+    // 明确知道差什么（`revise`），但 `FINAL_GUARD_NON_CONTINUABLE_REASONS` 那三类停机上它没有
+    // continuation 可走 ⇒ 只能贴标签。本切片给它开一条**窄桥**：不是再发明一套扩轮，而是复用
+    // 中途 judge 扩轮的同一份判据（`extensionAllowed`）与同一段落地动作（下面这个闭包）。
+    //
+    // 落地动作 = 中途扩轮那一段的**逐字搬移**（`Math.min(当前 + step, cap)` / `extensionCount += 1` /
+    // `meta.source:"judge-control"` 的 user 消息）。两处调用同一个闭包，所以不存在第二份实现。
+    // 唯一新增参数是 `journalSlot`（落账本的槽位名，决定 dedupKey 后缀），中途扩轮仍传 `"extend"`。
+    const applyGovernorExtension = async (text, roundNumber, journalSlot) => {
+      governorState.effectiveMaxRounds = Math.min(
+        governorState.effectiveMaxRounds + reflectionExtensionStep,
+        reflectionMaxRoundsCap,
+      );
+      governorState.extensionCount += 1;
+      const continuationMessage = {
+        role: "user",
+        // issue #323：引擎自写的续跑控制文本，打 marker 防 judge 自读回（主模型仍可见）。
+        meta: { source: "judge-control" },
+        content: [{ type: "text", text }],
+      };
+      messages.push(continuationMessage);
+      messageRounds.set(continuationMessage, roundNumber);
+      // issue #326（B1）：同 nudge——轮尾注入的续跑提示必须在产生的那一刻入账。
+      await appendEngineMessagesToTranscript(continuationMessage, roundNumber, journalSlot);
+    };
+
+    // 桥的预算闸（R2 第 4 条后半）：**复用引擎既有的两份预算事实**，不新起第三套口径。
+    // 补一轮的代价是一次完整的主模型请求，所以「预算已经撞线」时拒绝——否则本单就成了
+    // 用「补跑」撕掉预算承诺的后门（AGENTS 里那根累计输入 token 的弦）。
+    const guardExtensionBudgetAllows = () => {
+      // ① 上下文预算：`budgetTokens` 是压缩与单轮聚合输出预算的共同基准（`src/loop/budget.js`）。
+      //    最近一次**真实 API 输入 token** 已经越过它 ⇒ 上下文已经装不下，再补一轮只会在超预算的
+      //    上下文里再要一次请求。判据本身是既有导出 `isApiInputOverBudget`，这里不另写一份。
+      if (isApiInputOverBudget(latestApiInputTokens, budgetTokens)) return false;
+      // ② 单轮聚合输出预算（`src/loop/aggregate-budget.js`）：本 run 已经有工具输出被聚合层
+      //    归档/stub 化（`runLoopState.aggregateBudgetHit`，写者是 run-snapshot-executor）⇒
+      //    输出预算已经撞线，再补一轮只会继续 stub 化。
+      if (runLoopState.aggregateBudgetHit === true) return false;
+      return true;
+    };
+
+    /** guard 补跑桥的**唯一**准入 + 落地收口。
+     *  @param {string} reason 停机原因（`terminationReasonForAction` 的取值）
+     *  @param {{action?:string, message?:string}} guardDecision `callFinalGuard` 的返回
+     *  @returns {Promise<boolean>} true = 已经补跑，调用方应回到主循环；false = 一律走既有降级分支
+     *
+     *  四个条件必须**同时**成立（缺一个都退回今天的行为，逐字一致）：
+     *    1. 停机原因 ∈ `{max_rounds_cap, continuation_exhausted}`；`stall` 永远不补；
+     *    2. 宿主 opt-in（`finalGuardExtend === true`）；
+     *    3. guard 本轮裁决是 `revise`（`accept` / `skip` / `error` 都不触发——桥只服务
+     *       「guard 知道还差什么」那一格）；
+     *    4. `extensionAllowed` 等价判据通过（复用同一份 `extensionCount` / `effectiveMaxRounds`）、
+     *       配额没用过、且预算闸放行。
+     */
+    const extendAfterGuard = async (reason, guardDecision) => {
+      if (finalGuardExtend !== true) return false;
+      if (guardDecision?.action !== "revise") return false;
+      // `stall` 永远不补：stall 的定义就是「连续无进展」，给它轮次是纯烧钱。写成**显式**判据
+      // （而不是只靠集合里没有它），并由 `test/loop-guard-extend.test.js` 单独钉住。
+      if (reason === "stall") return false;
+      if (!FINAL_GUARD_EXTENDABLE_REASONS.has(reason)) return false;
+      // 一次性配额：每个 run 最多 1 次，即使 governor 还有扩轮额度（成本闸，R3）。
+      if (governorState.guardExtensionUsed === true) return false;
+      // 复用 governor 的**同一份**判据与**同一份**计数器，不另写「还剩几次」的第二套算术。
+      if (!extensionAllowed({
+        extensionCount: governorState.extensionCount,
+        maxExtensions: reflectionMaxExtensions,
+        effectiveMaxRounds: governorState.effectiveMaxRounds,
+        maxRoundsCap: reflectionMaxRoundsCap,
+      })) return false;
+      if (!guardExtensionBudgetAllows()) return false;
+      const fromMaxRounds = governorState.effectiveMaxRounds;
+      // 配额先记账再落地：`applyGovernorExtension` 里有 await（落账本），若那一步抛错，
+      // 「已经领过配额」这个事实不该被抹掉（否则重跑又会领一份）。
+      governorState.guardExtensionUsed = true;
+      await applyGovernorExtension(guardDecision.message, runLoopState.rounds, "guard-extend");
+      guardMetrics.guard_extensions = (guardMetrics.guard_extensions ?? 0) + 1;
+      emitEvent({
+        type: "final_guard_extend",
+        round: runLoopState.rounds,
+        from_max_rounds: fromMaxRounds,
+        to_max_rounds: governorState.effectiveMaxRounds,
+        guard_extension: true,
+      });
+      // 配额**消费即入账**：立刻刷一次 run-state，否则「补跑 → 崩 → resume」会让新进程读到
+      // `guardExtensionUsed:false` 而再领一份配额（无界成本）。落盘失败只走既有的持久化错误账本，
+      // 不改变「已经补跑」这个事实。
+      try {
+        await refreshRunState();
+      } catch (persistenceError) {
+        await reportPersistenceError(persistenceError, {
+          port: "transcript",
+          operation: "saveRunState",
+          phase: "guard_extension",
+          fatal: false,
+        });
+      }
+      return true;
+    };
 
   try {
     await refreshRunState();
@@ -3934,6 +4064,11 @@ export async function runToolLoop(options) {
           return finish(reason);
         }
         if (FINAL_GUARD_NON_CONTINUABLE_REASONS.has(reason)) {
+          // issue #386 切片 3：预算类停机（`max_rounds_cap` / `continuation_exhausted`）+ guard 判
+          // `revise` + 宿主 opt-in ⇒ 借中途扩轮那套机制补跑一次，然后回到主循环。
+          // 任一条件不成立 ⇒ 下面这段与今天**逐字一致**（`unverified / non_continuable` +
+          // `final_guard_unverified`）。`stall` 在 `extendAfterGuard` 里被显式拒绝。
+          if (await extendAfterGuard(reason, guardDecision)) continue;
           guardMetrics.unverified += 1;
           verification = {
             status: "unverified",
@@ -4013,6 +4148,9 @@ export async function runToolLoop(options) {
     const guardDecision = await callFinalGuard("max_rounds_cap");
     if (guardDecision.action === "error") return finish("max_rounds_cap");
     if (guardDecision.action === "skip") return finish("max_rounds_cap");
+    // issue #386 切片 3：**E4 那一格**——轮预算被掐停、模型还在正常调工具、guard 明确知道差什么
+    // （`revise`）时，opt-in 的宿主可以让它补跑一轮再收尾。条件不成立 ⇒ 下面与今天逐字一致。
+    if (await extendAfterGuard("max_rounds_cap", guardDecision)) continue mainLoop;
     guardMetrics.unverified += 1;
     verification = {
       ...verification,
@@ -4030,4 +4168,5 @@ export async function runToolLoop(options) {
   } catch (error) {
     return await fail(error);
   }
+    }
 }

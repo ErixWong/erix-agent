@@ -204,6 +204,10 @@ export function createRunSnapshotExecutor(ctx) {
       content: execution.content,
     });
     if (decision.action === "inline") return execution;
+    // issue #386 切片 3：聚合层一旦把**任何**一条结果归档/stub 化，就说明本 run 的工具输出预算
+    // 已经撞线。guard 补跑桥的预算闸要读这个事实（再补一轮只会继续 stub 化 ⇒ 拒绝补跑），
+    // 所以在这里记账——这是本模块对外的唯一新副作用，判定与输出形状一字未动。
+    ctx.markAggregateBudgetHit?.();
     const fullText = execution.content;
     const snippet = failed ? errorSnippet(fullText) : undefined;
     const emitAggregate = (action, extra = {}) => {

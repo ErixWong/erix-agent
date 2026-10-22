@@ -30,7 +30,16 @@ export function shouldWrapUp(signals = {}) {
     && numberOr(signals.errorRepeat) < 3;
 }
 
-function extensionAllowed(signals) {
+/**
+ * 扩轮准入的唯一判据：`extensionCount < maxExtensions && currentMax < cap`。
+ *
+ * issue #386 切片 3：它从私有函数改成**导出**，因为 guard 补跑桥要复用**同一份判据与同一份计数器**
+ * （`governorState.extensionCount` / `effectiveMaxRounds`）——判定表本身一字未动，改的只是可见性，
+ * 目的是让「第二份实现」没有存在的理由。语义细节（都是既有行为）：
+ *   · `maxExtensions` / `maxRoundsCap` 缺省（非有限数）= 无上限，用 `Infinity` 表示；
+ *   · `effectiveMaxRounds` 读的是**被扩过之后**的当前上限，不是构造时的 `maxRounds`。
+ */
+export function extensionAllowed(signals) {
   const extensionCount = numberOr(signals?.extensionCount);
   const maxExtensions = Number.isFinite(signals?.maxExtensions)
     ? signals.maxExtensions
