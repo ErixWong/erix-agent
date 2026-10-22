@@ -63,6 +63,7 @@ import {
   withErrorCode,
   withTerminationPayload,
 } from "./termination.js";
+import { normalizeDeliverables } from "./deliverables.js";
 import { createErrorLedger } from "./error-ledger.js";
 import {
   judgeRecordFields,
@@ -515,6 +516,8 @@ export async function runToolLoop(options) {
     finalGuard,
     finalGuardMaxRetries = 2,
     finalGuardTimeoutMs = 30_000,
+    // issue #386 切片 2：宿主声明的交付物判据（引擎在每次 guard 调用前核一遍）。
+    deliverables,
     maxTokenContinuations = 3,
     context,
     todoStateProvider,
@@ -625,6 +628,9 @@ export async function runToolLoop(options) {
   if (cwd !== undefined && typeof cwd !== "string") {
     throw new TypeError("cwd must be a string");
   }
+  // issue #386 切片 2：`deliverables` 的校验必须**早于**任何宿主端口被调用（与其它选项同一口径），
+  // 且校验结果就是后续唯一被读的那一份（`undefined` = 未声明 ⇒ 下面所有分支都走「今天」的路）。
+  const resolvedDeliverables = normalizeDeliverables(deliverables);
   // 输出卫生：档案在 round record（toolOutputs）里，必须有 store 落盘，否则 stub 就是纯丢失。
   if (outputHygiene !== undefined && outputHygiene !== false
     && (outputHygiene === null || typeof outputHygiene !== "object"
@@ -1773,6 +1779,12 @@ export async function runToolLoop(options) {
     revised: 0,
     unverified: 0,
     guard_error: 0,
+    // issue #386 切片 2：这两个键**只在声明了 `deliverables` 时才存在**——未声明时 metrics 必须与
+    // 今天逐字一致（`test/loop-deliverables.test.js` 的 R4-1 回归锚逐字比的就是这份对象）。
+    // 语义与既有五个计数同口径：一个 run 内**累计**（多次 guard 调用/多次 revise 各自累加）。
+    ...(resolvedDeliverables === undefined
+      ? {}
+      : { deliverables_checked: 0, deliverables_failed: 0 }),
   };
   // `hadToolUse` 已迁入 `runLoopState`（刀5-B）：初值仍在本行原来声明处现算（求值点/副作用不变），
   // 之前没有任何语句读它，所以只是把存储位置换成状态对象的一格。
@@ -2433,6 +2445,8 @@ export async function runToolLoop(options) {
   const terminationContext = {
     finalGuard,
     finalGuardTimeout,
+    // issue #386 切片 2：已规范化的判据清单（`undefined` = 未声明 ⇒ 引擎侧一条分支都不走）。
+    deliverables: resolvedDeliverables,
     toolSignal,
     signal,
     awaitWithAbort,

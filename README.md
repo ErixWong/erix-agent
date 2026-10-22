@@ -178,6 +178,7 @@ src/
     tool-result-ttl.js             Request-view TTL folding for old tool results
     request-user-view.js           Request-view invariant: never send an upstream view without a user turn (issue #292)
     termination.js                 Termination reason classification
+    deliverables.js                Host-declared deliverable checks (machine gate before finalGuard)
     resume-manager.js              Resume restore and run-state application
     error-ledger.js                Repeated-error accounting
     messages.js                    Message/block helpers

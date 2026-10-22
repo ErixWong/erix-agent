@@ -1,4 +1,5 @@
 import { markStablePrefix } from "./provider-runner.js";
+import { runDeliverables } from "./deliverables.js";
 import { tryParseWrapupJson } from "../reflection/wrapup.js";
 import { validateMessages } from "../messages/rounds.js";
 import { cloneState } from "./budget.js";
@@ -313,6 +314,23 @@ export function createTerminationManager(ctx) {
   const callFinalGuard = async (reason, detail) => {
     guardAttempt += 1;
     const payload = buildFinalGuardPayload(ctx, reason, detail, guardAttempt);
+    // ── issue #386 切片 2 R2：**每次**调用 guard 之前核一遍宿主声明的交付物判据 ─────────────
+    // 「每次」是核心：guard 判 revise → 模型补做 → 下一轮 attempt 的判据自动重算，补做之后才可能
+    // 拿到 verified。只核一次（比如只在第一次调用前核）会把「补做后通过」的 run 永久拦在门外。
+    //
+    // 判据拿到的 `payload` 就是**这次**要交给 guard 的那一份事实（`buildFinalGuardPayload` 的输出，
+    // 此时还没挂 `deliverables` 键，所以宿主判据看不到自己的结论——不会出现自我指涉的判据）。
+    // 结果随后**写回同一份 payload**：guard 因此能看见机器判据的结论，而不只是模型的自报。
+    const deliverables = ctx.deliverables;
+    if (deliverables !== undefined) {
+      const outcome = await runDeliverables(deliverables, payload, {
+        timeoutMs: ctx.finalGuardTimeout,
+      });
+      payload.deliverables = outcome.results;
+      payload.deliverablesAllPassed = outcome.allPassed;
+      ctx.guardMetrics.deliverables_checked += outcome.checked;
+      ctx.guardMetrics.deliverables_failed += outcome.failed;
+    }
     let timeoutId;
     try {
       const finalGuard = ctx.finalGuard;
@@ -330,10 +348,16 @@ export function createTerminationManager(ctx) {
         timeoutPromise,
       ]);
       if (decision?.action === "accept") {
+        const emitEvent = ctx.emitEvent;
         ctx.guardMetrics.verified += 1;
         ctx.verification = { status: "verified" };
-        const emitEvent = ctx.emitEvent;
-        emitEvent({ type: "final_guard", round: ctx.rounds, action: "accept" });
+        emitEvent({
+          type: "final_guard",
+          round: ctx.rounds,
+          action: "accept",
+          // 新增字段只在声明了判据时出现（未声明 ⇒ 事件形状与今天逐字一致）。
+          ...(deliverables === undefined ? {} : { deliverables_failed: 0 }),
+        });
         return { action: "accept" };
       }
       if (
