@@ -13,19 +13,17 @@
 // `assistant[tool_use]`（尾部悬空）。谁能造出这个形状，见文件末尾「形状清单」那段注释——
 // 本文件把最小形状钉住，并给出两组反证（同形状关掉强制收尾 ⇒ 不抛；尾部已结清 ⇒ 不抛）。
 //
-// ⚠ 本文件的断言钉的是**今天的行为**（reject）。#394 的修法落地后，第 1-3 格必须反过来：
-//   `await assert.rejects(...)` → `const result = await run`，并断言
-//   `result.termination.reason === "continuation_exhausted"` / `result.forcedFinal === true`
-//   （修法见 #394：把 `#393` 的「结清尾部悬空 tool_use」动作挪成共享模块，注入之前调一次）。
-//   这些格子绿着不动才是坏信号：它意味着收尾注入前仍然没人问过尾部。
+// ⚠ 本文件的前 3 格在 #394 之前钉的是**修复前的行为**（reject `invalid_messages`）；修法落地时按
+//   工单给的目标值翻了过来（`#394` R4）：`continuation_exhausted` + `forcedFinal: true`、请求数
+//   2 / 5、尾部 `pendingTrailingToolUses === 0`、`finalText === "收尾"`。它们今天绿着才有意义——
+//   红了就说明收尾注入前又没人问过尾部（结清动作被拿掉/被绕过）。第 4-5 格是两条反证，一字未动：
+//   关掉强制收尾 ⇒ 尾部仍悬空；尾部本来就已结清 ⇒ 收尾照旧注入。
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { pendingTrailingToolUses } from "../src/messages/rounds.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
-
-const DANGLING = "assistant tool_use has no immediately following user tool_result";
 
 /** `stopReason: "max_tokens"` + `tool_use` 块：两个协议都真会吐这个形状（见文件末尾清单 ①）。 */
 const truncatedToolUse = (id, { text = undefined } = {}) => ({
@@ -43,64 +41,69 @@ const settleWith = (id) => ({
 
 const text = (value) => ({ content: [{ type: "text", text: value }], stopReason: "end_turn" });
 
-/** 断言 reject 是 `invalid_messages`，且理由就是「悬空 tool_use 被 user 文本隔开」那一条。 */
-const rejectsAsDanglingToolUse = (error) => {
-  assert.equal(error?.code, "invalid_messages",
-    `必须是 invalid_messages（实测 ${String(error?.code)} / ${String(error?.message)}）`);
-  assert.match(String(error?.message), new RegExp(DANGLING),
-    "失败理由必须是悬空 tool_use 那条，不能是别的消息序问题");
-  return true;
+/** #394 之后这三格的共同断言：结清 + 收尾都真的发生了（而不是被吞成 failed / 静默降级）。 */
+const assertSettledForcedFinal = (result, expectedRequests, provider) => {
+  assert.deepEqual(result.termination, { reason: "continuation_exhausted", forcedFinal: true },
+    `终局必须是「续写用尽 + 强制收尾」，实得 ${JSON.stringify(result.termination)}`);
+  // 没挂 finalGuard ⇒ 核验面与 #394 之前**逐字一致**（修复不改核验语义，只补一条 tool_result）。
+  assert.equal(result.verification.status, "skipped");
+  assert.equal(result.verification.reason, "no_final_guard");
+  assert.equal(result.finalText, "收尾", "终稿必须落到结果里（修复前这一步是丢的）");
+  assert.equal(pendingTrailingToolUses(result.messages).length, 0,
+    "收尾注入前尾部已结清：结清之后再没有悬空 tool_use");
+  assert.equal(provider.requests.length, expectedRequests,
+    `请求数必须是 ${expectedRequests}（1 次首发${expectedRequests === 5 ? " + 3 次续写" : ""} + 1 次强制收尾）`);
 };
 
 // ── 1（最小形状）：一次响应就够 —— `maxTokenContinuations: 0` ⇒ 立刻 continuation_exhausted ──────
 // 为什么这条是「最小」：续写预算为 0 ⇒ 首个响应直接判定用尽，provider 只被调用 **1 次**，
 // 于是「崩溃点在收尾注入」这件事可以被请求次数直接证明（不是续写、不是压缩、不是 guard）。
-test("#394 R1-1 默认关（不传 finalGuard / finalGuardExtend）：continuation_exhausted + 尾部悬空 tool_use ⇒ reject invalid_messages", async () => {
+test("#394 R1-1 默认关（不传 finalGuard / finalGuardExtend）：continuation_exhausted + 尾部悬空 tool_use ⇒ 结清后正常收尾（2 次请求）", async () => {
   const provider = createFakeProvider([
     truncatedToolUse("t1"),
     text("收尾"),
   ]);
-  await assert.rejects(
-    runToolLoop({
-      provider,
-      initialUserMessage: "做点事",
-      maxRounds: 3,
-      maxTokenContinuations: 0,
-      executeTool: async () => "ok",
-    }),
-    rejectsAsDanglingToolUse,
-  );
-  assert.equal(provider.requests.length, 1,
-    "只该发生 1 次主模型请求：崩溃点是收尾注入（第二次请求之前），不是续写");
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "做点事",
+    maxRounds: 3,
+    maxTokenContinuations: 0,
+    executeTool: async () => "ok",
+  });
+  assertSettledForcedFinal(result, 2, provider);
 });
 
 // ── 2（真实形状）：截断的响应里同时有正文与半截工具调用 ────────────────────────────────────
 // 真上游最常见的截断形态就是「先说了一句 + 工具参数被截断」（OpenAI `finish_reason:"length"` 带
 // `tool_calls`；Anthropic `stop_reason:"max_tokens"` 带 `tool_use`）。正文的存在不影响结论：
 // `hasFinalDraft()` 要求 `roundStopReason === "end_turn"`，截断轮永远进不去，收尾照样注入。
-test("#394 R1-2 截断轮带正文 + 悬空 tool_use ⇒ 同样 reject（正文不构成终稿，收尾仍会注入）", async () => {
+test("#394 R1-2 截断轮带正文 + 悬空 tool_use ⇒ 同样结清后收尾（正文不构成终稿，收尾仍会注入）", async () => {
   const provider = createFakeProvider([
     truncatedToolUse("t1", { text: "我先看一眼目录结构，然后" }),
     text("收尾"),
   ]);
-  await assert.rejects(
-    runToolLoop({
-      provider,
-      initialUserMessage: "做点事",
-      maxRounds: 3,
-      maxTokenContinuations: 0,
-      executeTool: async () => "ok",
-    }),
-    rejectsAsDanglingToolUse,
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "做点事",
+    maxRounds: 3,
+    maxTokenContinuations: 0,
+    executeTool: async () => "ok",
+  });
+  assertSettledForcedFinal(result, 2, provider);
+  // 截断轮那句正文还在历史里（它没被吞掉，只是不构成终稿）。
+  assert.ok(
+    result.messages.some((message) => Array.isArray(message.content)
+      && message.content.some((block) => block?.type === "text"
+        && block.text === "我先看一眼目录结构，然后")),
+    "截断轮已经吐出来的正文必须留在历史里",
   );
-  assert.equal(provider.requests.length, 1);
 });
 
 // ── 3（默认续写预算）：`maxTokenContinuations` 用默认 3 ⇒ 续写全截断后同样落在悬空尾部 ─────────
 // 续写是把新块**追加进同一条 assistant**（`appendAssistantContent`），所以三轮续写之后尾部仍是
 // 一条 `assistant[tool_use]`，仍然没有任何 `tool_result`（工具执行分支的门是
 // `response.stopReason === "tool_use"`，截断轮进不去）。
-test("#394 R1-3 默认续写预算（3）全截断 ⇒ 同样 reject（4 次请求：1 + 3 续写）", async () => {
+test("#394 R1-3 默认续写预算（3）全截断 ⇒ 同样结清后收尾（5 次请求：1 + 3 续写 + 1 收尾）", async () => {
   const provider = createFakeProvider([
     truncatedToolUse("t1"),
     truncatedToolUse("t2"),
@@ -108,16 +111,13 @@ test("#394 R1-3 默认续写预算（3）全截断 ⇒ 同样 reject（4 次请�
     truncatedToolUse("t4"),
     text("收尾"),
   ]);
-  await assert.rejects(
-    runToolLoop({
-      provider,
-      initialUserMessage: "做点事",
-      maxRounds: 3,
-      executeTool: async () => "ok",
-    }),
-    rejectsAsDanglingToolUse,
-  );
-  assert.equal(provider.requests.length, 4, "1 次首发 + 3 次续写，然后才轮到收尾注入");
+  const result = await runToolLoop({
+    provider,
+    initialUserMessage: "做点事",
+    maxRounds: 3,
+    executeTool: async () => "ok",
+  });
+  assertSettledForcedFinal(result, 5, provider);
 });
 
 // ── 4（反证 A）：同一个脚本，只把强制收尾关掉 ⇒ 不抛，终局是 continuation_exhausted ─────────────
@@ -179,11 +179,12 @@ test("#394 R1-5 反证：尾部已结清（工具真跑过）⇒ 收尾正常注
 //
 // ② `stopReason === "end_turn"` 但 content 带 `tool_use`（`isEndTurn` 那条注释里点名的非标准边界）。
 //    同样不进工具执行 ⇒ 尾部悬空；但 reason 落到 `end_turn` ⇒ `forceFinalIfNeeded` 直接早退
-//    ⇒ **不崩**（run 正常返回 `end_turn`，尾部留一条悬空 `tool_use`）。它会在**下一处**注入上爆：
+//    ⇒ **不崩**（run 正常返回 `end_turn`，尾部留一条悬空 `tool_use`）。它在**下一处**注入上爆：
 //    stop 分支里 finalGuard 判 `revise` 的那条 `messages.push(continuationMessage)` 之后，下一次
 //    `src/loop/provider-runner.js#callProvider` 以 `allowPendingToolUse:false` 校验 ⇒
 //    `invalid_messages`（实测同一句理由，栈在 `provider-runner.js` 而不是 `termination.js`）。
-//    这是 #394 的**兄弟洞**，不在本单断言范围内，但修法应当同源（同一个共享结清动作）。
+//    这是 #394 的**兄弟洞**，已并入本刀（R3：同一条共享结清动作），正面断言在
+//    `test/loop-pending-tool-result.test.js`。
 //
 // ③ `stall`：**造不出悬空尾部**。`stallSuspicion` 只在 `stopReason === "tool_use"` 那个分支里
 //    （遍历 tool_use 块时）被置位，而那条路径一定会 `messages.push({role:"user", content:toolResults})`
