@@ -29,7 +29,7 @@ import { assemblyPortOptions } from "../assembly.js";
  *
  * ⚠ 这份名单的**顺序**同时是未知键建议的平局优先级（`optionSuggestion` 用严格 `<`），
  * 所以它不是集合语义、不许排序、不许增删项而不同时确认建议行为。
- * 计数与顺序都由 `test/loop-option-normalization.test.js` 钉住（62 项）。
+ * 计数与顺序都由 `test/loop-option-normalization.test.js` 钉住（63 项）。
  *
  * @type {string[]}
  */
@@ -102,6 +102,10 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // issue #386 切片 2：`deliverables` 是宿主声明的交付物判据（引擎在每次 guard 调用前核一遍，
   // 核不过就不许盖 `verified` 章）。同样追加在末尾，理由同上（旧未知键的建议结果一字不改）。
   "deliverables",
+  // issue #386 切片 3：`finalGuardExtend` 是**预算类停机**上的补跑开关（默认 `false` = 今天的行为）。
+  // 它**会改停机时的行为**（不是纯加法），所以默认关、只在宿主显式 opt-in 时生效。
+  // 同样追加在末尾：旧未知键的「did you mean」建议逐字不变。
+  "finalGuardExtend",
 ];
 
 /** 白名单的查询视图（与 `RUN_TOOL_LOOP_OPTION_NAMES` 同源，勿另行维护）。 */

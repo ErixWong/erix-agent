@@ -358,6 +358,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   finalGuard?:(payload:{finalText:string,messages:object[],round:number,rounds:number,signal:AbortSignal,termination:object}) => Promise<{action:"accept"}|{action:"skip",reason:string}|{action:"revise",message:string}>,
  *   finalGuardMaxRetries?: number,
  *   finalGuardTimeoutMs?: number, // Defaults to 30000; non-positive values use the default.
+ *   finalGuardExtend?: boolean, // issue #386 slice 3: let a `revise` on a budget-type stop (max_rounds_cap / continuation_exhausted) borrow the mid-run extension mechanism **once per run**. Defaults to false = today's behaviour byte for byte; `stall` is never extended.
  *   maxTokenContinuations?: number,
  *   context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // strategy accepts a strategy object or a built-in name (#167); task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
  *   todoStateProvider?:(payload:{runId?:string,rounds:number})=>object|Promise<object>,
@@ -516,6 +517,9 @@ export async function runToolLoop(options) {
     finalGuard,
     finalGuardMaxRetries = 2,
     finalGuardTimeoutMs = 30_000,
+    // issue #386 切片 3：预算类停机上的补跑开关。**默认 `false`** ⇒ 不传时行为与今天逐字一致
+    // （这一条会改停机时的行为，不是纯加法；默认关让升级风险为零，宿主侧启用放在切片 4）。
+    finalGuardExtend = false,
     // issue #386 切片 2：宿主声明的交付物判据（引擎在每次 guard 调用前核一遍）。
     deliverables,
     maxTokenContinuations = 3,
@@ -631,6 +635,12 @@ export async function runToolLoop(options) {
   // issue #386 切片 2：`deliverables` 的校验必须**早于**任何宿主端口被调用（与其它选项同一口径），
   // 且校验结果就是后续唯一被读的那一份（`undefined` = 未声明 ⇒ 下面所有分支都走「今天」的路）。
   const resolvedDeliverables = normalizeDeliverables(deliverables);
+  // issue #386 切片 3：`finalGuardExtend` 只接受布尔。`undefined`（未提供）已由解构默认值折成
+  // `false`，所以这里拒的是 `null` / 数字 / 字符串这类显式错型——静默当 truthy 处理会让
+  // 「补跑」这个**会改停机行为**的开关被 `"false"` 这种写法意外打开。
+  if (typeof finalGuardExtend !== "boolean") {
+    throw new TypeError("finalGuardExtend must be a boolean");
+  }
   // 输出卫生：档案在 round record（toolOutputs）里，必须有 store 落盘，否则 stub 就是纯丢失。
   if (outputHygiene !== undefined && outputHygiene !== false
     && (outputHygiene === null || typeof outputHygiene !== "object"
