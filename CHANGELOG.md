@@ -85,6 +85,9 @@
   - **反向证**：去掉「查尾部形状」那一步（直接注入）⇒ `test/loop-guard-extend.test.js` **2 格红**（#393 opt-in、#393 多 id）+ 探针在 E4b 上以 `invalid_messages` 非零退出；`cp` 还原后 `md5sum` 与变异前逐字一致。
   - **文档**：契约中英在 `finalGuardExtend` 小节补一条（悬空 `tool_use` 先结清再注入、那条 `tool_result` 陈述事实所以调用不执行、畸形尾巴不补跑），并在「终答核验 / Final-answer verification」补一句观测口径：**`verification.metrics.verified` 数的是 guard 裁决次数，不等于 `verification.status === "verified"`；判「是否验收」只准读 `verification.status`**。
 
+### Tests
+
+- **`#394` 的复现钉进仓**：`test/loop-forced-final-pending-tool-use.test.js` 5 格钉住今天的行为——  被截断的工具调用轮（`stopReason: "max_tokens"` 且 content 带 `tool_use`）在续写预算用尽时撞上  `forceFinalIfNeeded` 自己的 `validateMessages` ⇒ `runToolLoop` reject `invalid_messages`（**默认关也复现**，  终稿丢失）。两条反证分别钉住「抛的是注入而不是悬空尾部本身」（`ERIX_NO_FORCED_FINAL=1` ⇒ 正常返回  且尾部 `pendingTrailingToolUses === 1`）与「尾部已结清 ⇒ 收尾正常注入」；修法落地时前三格会自动变红。- **repl 第一次拿到进程级证据**（`#398-3`）：`runRepl` 在非 TTY 下按产品承诺直接 `exit 1`，所以只能起  真 PTY（系统 `script`，util-linux / BSD 两种形状，探不到就 `t.skip` 并点名原因）。3 格钉「相对交付物按  会话（= 子进程）目录判定」的正反两面；变异证：拿掉 `bin/repl.js` 的 `loopOptions.cwd` ⇒ 该 describe 变红。- **`--require-deliverable` 的两种语义各留进程级格**（`#398-4`）：命名路径形状（不成立 ⇒ 退 **2**、成立 ⇒  退 **0**）与布尔形状那格原样保留（钉 `fileWrites` 语义）。顺带实测「布尔旗标真空通过」：一次工具都没调  的 run 在裸旗标下拿 `verified` 退 0，换命名路径后同一脚本退 2。
 ## [0.24.0] - 2026-10-22
 
 ### Changed

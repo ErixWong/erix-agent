@@ -96,6 +96,47 @@ export function openAITextChunks(parts) {
 }
 
 /**
+ * 把一次工具调用切成 OpenAI 流式 chunk 序列（`delta.tool_calls`）：
+ * 首帧带 id/name/参数，末帧 `finish_reason:"tool_calls"`，再补一帧 usage。
+ *
+ * 为什么要这个 helper：`openAITextChunks` 只覆盖纯文本，而 repl / `--stream` 这类
+ * 「模型端必须流式」的进程级用例要的是**工具调用**那条路径（参数是拼装出来的，不是一次给全）。
+ *
+ * @param {string} name 工具名
+ * @param {object} args 工具入参（会被 `JSON.stringify` 进 `function.arguments`）
+ * @param {string} id 工具调用 id（引擎按它配对 `tool_result`）
+ * @param {{ usage?: object }} [options] 末帧的 usage（缺省给一个固定的非零值）
+ * @returns {object[]} chunk 序列
+ */
+export function openAIToolCallChunks(name, args, id, options = {}) {
+  const usage = options.usage ?? { prompt_tokens: 11, completion_tokens: 9 };
+  return [
+    {
+      id: `chunk-${id}`,
+      object: "chat.completion.chunk",
+      choices: [{
+        index: 0,
+        delta: {
+          tool_calls: [{
+            index: 0,
+            id,
+            type: "function",
+            function: { name, arguments: JSON.stringify(args) },
+          }],
+        },
+        finish_reason: null,
+      }],
+    },
+    {
+      id: `chunk-${id}-finish`,
+      object: "chat.completion.chunk",
+      choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+    },
+    { id: `chunk-${id}-usage`, object: "chat.completion.chunk", choices: [], usage },
+  ];
+}
+
+/**
  * Anthropic 文本回复事件序列：message_start → content_block_start → N × content_block_delta
  * → content_block_stop → message_delta → message_stop。
  * @param {string[]} parts 文本片段
