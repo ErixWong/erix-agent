@@ -2034,10 +2034,10 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *    *    *  （issue #391，98 → **100**，+2 组 / 247 → 252 处）：契约中英「交付物机器判据」小节
  *  成对新增两个锚点——`createDeliverableChecks` 与 `createNamedDeliverableChecks`（都在
  *  `bin/final-guard.js`）：宿主面只给**命名**判据（布尔开关 + 命名路径清单），判据本体必须在文档里
- *  指到真声明（`--verbose` 实测 **100 组 / 252 处**：契约 EN 71 / CN 70）。
+ *  指到真声明（分支内 `--verbose` 实测 100 组 / 252 处；rebase 到 `2cb3303` 之后为 **105 组 / 264 处**：契约 EN 75 / CN 74）。
  *
   *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 103;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 105;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
