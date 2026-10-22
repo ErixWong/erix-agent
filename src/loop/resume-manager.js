@@ -48,6 +48,12 @@ export async function restoreResume(ctx) {
     ctx.toolErrorCount = deterministic.errors?.tool ?? 0;
     ctx.runSnapshotFailureCount = deterministic.errors?.checkpoint ?? 0;
     ctx.compactionStats = deterministic.compactionStats;
+    // issue #386 切片 3：guard 补跑的**一次性配额**跨 resume 不重置——它就在上面那句
+    // 「预算类状态一律复位」的旁边，语义**相反**：`lowBudgetPrompted` 复位是因为它只描述
+    // 「本次预算将尽」（续接会话有全新预算），而这一格是成本闸：已经领过的补跑额度必须跟着
+    // 这个 run 走完，否则「跑 → 崩 → resume」每次都能领一份 = 无界成本。
+    // 旧档没有 `deterministic.guardExtension`（增量字段）⇒ 读成 `false`，与今天的 run 等价。
+    ctx.governorState.guardExtensionUsed = deterministic.guardExtension?.used === true;
     ctx.governorState.filesWritten = Array.isArray(deterministic.filesWritten)
       ? deterministic.filesWritten.map((path) => ({ path }))
       : [];

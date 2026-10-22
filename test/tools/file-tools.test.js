@@ -549,7 +549,10 @@ const READ_LINE_CAPACITY_SAMPLE = [
 // 为了不把「floor 与 CJK 最密是同一个文件」当成免费前提，state-view.js 不再删掉而是另挂 `densest` 角色继续钉住。
 const READ_LINE_CAPACITY_ROLES = [
   // 2026-10-21 按本测试口径复测后更新的 floor 锚点（本分支新加入的中文注释把它顶成了本仓最宽行的那一个）。
-  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 22_014, lines: 360, bytesPerLine: 61.15, capacity: 4_286, cjkShare: 0.2400 } },
+  // 2026-10-22 按本测试自己的口径**再复测**（issue #386 切片 3 给 `src/loop/resume-manager.js` 加了
+  // guard 补跑配额的恢复：22,014 → 23,104 字节 / 360 → 370 行，均行字节 61.15 → 62.44，容量 4,286 → 4,198
+  // ——漂移 -2.05%，刚好越过 ±2% ⇒ 记录值必须按实测同步；**容差常量一个都没动**）。
+  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 23_104, lines: 370, bytesPerLine: 62.44, capacity: 4_198, cjkShare: 0.2498 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
@@ -576,7 +579,10 @@ const READ_LINE_CAPACITY_ROLES = [
     // 2026-10-22 第四刷（rebase 到已含 #219/#221 的 main 之后重测）：issue #358 给读侧加了
   // `[参数校正：…]` / `[已到末尾：…]`、`normalizeIntegerWithReport` 与中文路径文案。描述里那句
   // 「this tool's own source fits」随之 4,896 → 4,857（同位数改动 ⇒ 字节中性，所以复测在此之前做完即可）。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 107_120, lines: 1_985, bytesPerLine: 53.9647, capacity: 4_857, cjkShare: 0.2676 } },
+  // 2026-10-22 第五刷（issue #386 切片 3）：本单只改了上面 `fewest` 那一行的记录值与本文件的两条注释、
+  // 外加 `readFile` 描述里的两个数（floor 4,286 → 4,198、本工具自身容量 4,857 → 4,844），自指锚点照旧
+  // 当场红、按同口径复测后同步。
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 107_620, lines: 1_989, bytesPerLine: 54.1076, capacity: 4_844, cjkShare: 0.2686 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];

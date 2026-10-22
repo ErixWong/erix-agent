@@ -2430,6 +2430,8 @@ export async function runToolLoop(options) {
       checkpointFailureCount: runLoopState.runSnapshotFailureCount,
       unpersisted: errorLedger.toUnpersisted(),
       compactionStats,
+      // issue #386 切片 3：guard 补跑配额随 run-state 落盘（**跨 resume 不重置**的成本闸）。
+      guardExtensionUsed: governorState.guardExtensionUsed,
     });
     if (semantic && typeof semanticStateProvider === "function") {
       try {

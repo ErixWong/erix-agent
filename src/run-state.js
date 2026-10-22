@@ -230,6 +230,11 @@ export function boundRunState(state) {
       ...(deterministic.compactionStatsWindow === undefined
         ? {}
         : { compactionStatsWindow: deterministic.compactionStatsWindow }),
+      // issue #386 切片 3：最后一级体积兜底也**不许把配额丢掉**——丢掉就等于「状态被压小过一次」
+      // 让同一个 run 又能领一份补跑（无界成本）。它只有一个布尔，留着不占体积。
+      ...(deterministic.guardExtension === undefined
+        ? {}
+        : { guardExtension: deterministic.guardExtension }),
       termination: deterministic.termination ?? { reason: "running" },
       errors: deterministic.errors ?? {},
     },
@@ -362,6 +367,10 @@ export function createDeterministicRunState({
   checkpointFailureCount = 0,
   unpersisted,
   compactionStats,
+  // issue #386 切片 3：guard 补跑的一次性配额。它**不是**「本次预算」类状态（那一类在 resume 时
+  // 全部复位，见 `resume-manager.js` 的 `lowBudgetPrompted = false`）——它是**跨 resume 不许重置**
+  // 的成本闸：否则「跑 → 崩 → resume」每次都领一份新配额 = 无界成本。
+  guardExtensionUsed = false,
 } = {}) {
   const safeRounds = safeInteger(rounds);
   // 双计数器（issue #32 #8）：rounds = 会话累计身份轮号（跨 resume 单调递增）；
@@ -409,6 +418,9 @@ export function createDeterministicRunState({
           ),
         }
         : {}),
+      // issue #386 切片 3：**只在真的用过配额时才出现这个键**（未 opt-in / opt-in 但没补跑的 run
+      // 的 state.json 与今天逐字一致，与 `compactionStatsWindow` 同一个「缺席不是歧义」口径）。
+      ...(guardExtensionUsed === true ? { guardExtension: { used: true } } : {}),
       termination: { reason: safeText(terminationReason, 48) || "running" },
       errors: {
         tool: safeInteger(toolErrorCount),
