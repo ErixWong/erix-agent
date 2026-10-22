@@ -29,7 +29,7 @@ completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
-toolContext, store, persistence, runId, resume, onRound, onJudge,
+toolContext, store, persistence, runId, cwd, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
 ```
@@ -1572,6 +1572,59 @@ archives, termination, and verification. Whether the task is complete,
 whether the deliverable meets its requirements, and whether it may proceed
 automatically downstream remain decisions for the host, test system, or human
 review.
+
+### The `finalGuard` payload: 7 contract keys plus 10 additive facts (issue #386)
+
+`callFinalGuard` (`src/loop/termination.js`) assembles the payload. The seven keys listed
+above (`finalText`, `findings`, `messages`, `round`, `rounds`, `signal`, `termination`) are
+the original contract: their names, types, **order**, and values are unchanged. Ten
+**additive** keys follow them. Each one is written only when the engine can actually read
+that fact — absence is the "not probed / not provided" signal, and it is never faked with
+`null`, `0`, `""`, or `{}`:
+
+| Key | Type | Meaning | Bound |
+|---|---|---|---|
+| `cwd` | string | the `cwd` the host passed to `runToolLoop`, verbatim | none — the engine never interprets it (no `chdir`, no existence check, no path joins) |
+| `runId` | string | the `runId` the host passed, verbatim | none |
+| `filesWritten` | `[{ path, round }]` | write-tool calls recorded in the run's timeline ledger | **last 50** entries; older ones are dropped and `filesWrittenTruncated: true` is set |
+| `toolStats` | `{ [toolName]: { calls, failures } }` | the run's tool counters, as a **plain object** (`JSON.stringify(new Map())` is `{}`, so a raw `Map` would reach you empty) | **top 40** tool names by `calls`; `toolStatsTruncated: true` |
+| `taskBrief` | string | the brief `resolveTaskBrief` (`src/loop/task-brief.js`) produced for this run — the same text the judge and wrap-up see | 2000 code points; `taskBriefTruncated: true` |
+| `selfReport` | `{ done, summary, output, findings }` | the model's **last normalized** wrap-up envelope (the LLM-normalized copy when normalization ran; never re-parsed from prose) | `summary` and `output` 2000 code points each; `selfReportSummaryTruncated` / `selfReportOutputTruncated` |
+| `usage` | `{ input_tokens, output_tokens, cacheRead?, cacheWrite? }` | run-cumulative usage, the same object the result carries | none |
+| `elapsedMs` | number | wall-clock milliseconds since the loop started | none |
+| `attempt` | number | which guard call this is, **1-based and monotonic** across `revise` retries | none |
+| `guardBudget` | number | the `finalGuardMaxRetries` in force for this run | none |
+
+Four properties of this surface are worth stating explicitly, because they are the ones a
+host is most likely to get wrong:
+
+- **`selfReport.findings` is the same object as `findings`.** There is no path where
+  `findings` has a value while `selfReport` lacks the key: the builder injects the payload's
+  own `findings` into `selfReport`, so the two can never diverge. When the envelope declared
+  nothing, **neither** carries the key.
+- **`filesWritten[].path` is a summarized argument, not a canonical path.** It comes from the
+  judge timeline (`summarizeArgument`（`src/reflection/judge.js`）), which caps it at 40 code
+  points **without** a truncation marker. Treat it as a hint ("this run wrote something that
+  starts like this") and verify against the filesystem, the tool results in `messages`, or
+  `cwd`; do not use it as a join key.
+- **`filesWritten` and `toolStats` are always present in a `runToolLoop` run** (an empty
+  array / empty object means "the run recorded nothing", which is itself a fact). `cwd`,
+  `runId`, `taskBrief`, and `selfReport` are present only when there was something to report.
+- **The overhead is bounded and measured.** `node scripts/final-guard-probe.mjs` runs a
+  30-round × 4 KB-tool-output scenario offline: `messages` is 257,618 bytes, the additive
+  keys are 2,122 bytes — **0.82%**, against a budget of < 2%. A host can therefore log or
+  queue the whole payload without a size panic, and a guard can read the facts instead of
+  re-parsing the transcript (a small run's `messages` is 611 bytes; a real one is tens of
+  KB to MB).
+
+**Authority precondition: `verified` is only as strong as the guard's evidence.** An `accept`
+must rest on an **independent fact** — a file on disk, a command's exit code, a store row —
+never on `finalText` being non-empty. The probe pins the counter-example as a scenario
+(`S6`): a guard that accepts whenever `finalText.trim() !== ""` returns `verified` for a run
+whose declared deliverable **does not exist**, while the identical lying script under a
+disk-checking guard is caught at `attempt: 1` and remediated at `attempt: 2`. Both halves run
+in `node scripts/final-guard-probe.mjs` with zero model calls, so the trap is reproducible
+rather than folklore.
 
 ### Host-side guard wiring and the deadline tail (issue #314)
 

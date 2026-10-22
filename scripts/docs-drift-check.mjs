@@ -2006,8 +2006,14 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `makeTmp`（`test/helpers/tmp.js`）——`--verbose` 实测 **95 组 / 238 处**（两份新指南各 15 处 = 30 处，14 组是新的；
  *  余下 5 处是中英 AGENTS 里同一批锚点的声称句）。
  *  下限不跟着升，#286 返工 R1 的两例自测就会再次 fail-open。
+ *  再升一次的理由（工单 P / issue #386 切片 1，95 → **98**，+3 组 / 238 → 244 处）：契约中英成对新增
+ *  「`finalGuard` 载荷：既有 7 键 + 10 个加法事实」小节，按同一红线全部用符号锚点引用
+ *  `callFinalGuard`（`src/loop/termination.js`）、`summarizeArgument`（`src/reflection/judge.js`）、
+ *  `resolveTaskBrief`（`src/loop/task-brief.js`），外加 0.24.0 中英指南新 §8 的同一批锚点——
+ *  `--verbose` 实测 **98 组 / 247 处**（契约 EN 69 / CN 68 + 两份 0.24.0 指南各 15 / 16 处 +
+ *  中英 AGENTS 里同一批锚点的声称句：`AGENTS_cn.md` 8 处、`AGENTS.md` 用 "in `path`" 句式不入锚点面）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 95;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 98;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

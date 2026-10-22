@@ -148,6 +148,7 @@ function plainToolStats(toolStats, limit) {
   }
   rows.sort((a, b) => b.calls - a.calls || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const kept = rows.slice(0, limit);
+  /** @type {Record<string, {calls:number, failures:number}>} */
   const stats = {};
   for (const row of kept) stats[row.name] = { calls: row.calls, failures: row.failures };
   return { stats, truncated: kept.length < rows.length };

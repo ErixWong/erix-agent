@@ -371,8 +371,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   persistence?:"none"|"required", // Defaults to required with a store and none without one.
  *   diagnostics?: {error:(event:object)=>void|Promise<void>},
  *   runId?: string,
- *   cwd?: string, // issue #386：宿主的工作目录。引擎**不使用**它——不 chdir、不校验存在性、不读盘；
- *     // 只原样透传给 `finalGuard` payload 的 `cwd` 键（缺省时 payload 里没有该键）。
+ *   cwd?: string, // issue #386: the host's working directory. The engine never uses it (no chdir, no existence check, no path joins) — it is passed through to the `finalGuard` payload's `cwd` key only, and the key is absent when the host did not pass one.
  *   resume?: boolean,
  *   onRound?: (record:object) => void,      // 观察者（issue #173 PR-B）：抛错/rejected Promise 均被隔离
  *   onJudge?:(info:JudgeEvent) => void,     // 观察者（issue #173 PR-B）：抛错被隔离

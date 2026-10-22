@@ -7,7 +7,7 @@ value types**, and the tool outputs that used to be silently wrong (or silently 
 actually happened. Nothing is removed, nothing is renamed, no store method signature moved, and the
 runtime still has **zero** npm dependencies.
 
-**Two of the changes are additive information; the tool-output ones are model-visible text.** Nothing here breaks a host
+**Three of the changes are additive information; the tool-output ones are model-visible text.** Nothing here breaks a host
 that compiles today — but a host that asserts on tool output text, or that reads `err.unpersisted` /
 `err.cause` by guessing, will *see* the difference, and it should: those reads are now well-defined instead
 of "works if you read the source". If a section below is not your code path, it is a no-op for you;
@@ -23,6 +23,7 @@ of "works if you read the source". If a section below is not your code path, it 
 | `readFile` now emits `[参数校正：…]` when it rewrote your arguments and `[已到末尾：…]` instead of an empty string (§5) | yes, if you assert on `readFile` output |
 | `rg` / `grep` / `searchText`: a search root that does not exist is an **error text**, not `（无命中）`; the `rg`/`grep` deprecation line names *your* mode (§6) | yes, if you compare tool output text |
 | The tarball now ships `test/helpers/tmp.js`; three gate-side changes landed (§7) | no — packaging and gates only |
+| `finalGuard` now receives 10 additive facts (`cwd`, `runId`, `filesWritten`, `toolStats`, `taskBrief`, `selfReport`, `usage`, `elapsedMs`, `attempt`, `guardBudget`) next to the original 7 keys (§8) | no — additive; act only if you were re-parsing `messages` or guessing from `finalText` |
 
 The one-line version: **the facts you used to infer are now written down.** The engine did not change what
 it *does*; it changed what it *says* — in the state file, in the error objects, and in the tool outputs the
@@ -205,15 +206,88 @@ local archive (`docs/tasks/`, never committed) is empty. CI therefore runs it as
 (`test-hygiene-exempt: <reason>` on the call line or the line above, with a mandatory reason); the tree
 currently has zero exemptions. This is repository hygiene — it never runs in your host.
 
-## 8. Self-check
+## 8. `finalGuard` now receives the run's facts, not just the transcript (issue #386)
+
+**Symptom.** The guard callback is the only *toothed* check the engine has — it can turn a
+claim into `verified`, or force a `revise` and, at the retry limit, replace the terminal
+reason with `final_guard_unverified`. Yet its payload carried exactly seven keys
+(`finalText`, `findings`, `messages`, `round`, `rounds`, `signal`, `termination`). None of
+the facts an acceptance decision needs — which files were written, which tools ran and how
+often they failed, what the task actually was, what the model claimed, how much the run
+cost, which guard attempt this is — were in it. So a host either re-parsed `messages` (611
+bytes on a toy run, tens of KB to MB on a real one) or graded the answer on `finalText`.
+
+**What is new.** Ten additive keys, each written only when the engine can actually read that
+fact (absence = "not probed", never `null`/`0`/`""`):
+
+| Key | What it gives you | Bound |
+|---|---|---|
+| `cwd` | the host's `cwd`, verbatim — new option `runToolLoop({ cwd })`, passed through only | none |
+| `runId` | the host's `runId`, verbatim | none |
+| `filesWritten` | `[{ path, round }]` — write-tool calls this run recorded | last 50 (`filesWrittenTruncated`) |
+| `toolStats` | `{ [toolName]: { calls, failures } }` as a **plain object** | top 40 (`toolStatsTruncated`) |
+| `taskBrief` | the brief the judge and wrap-up saw | 2000 code points (`taskBriefTruncated`) |
+| `selfReport` | the model's last **normalized** wrap-up: `{ done, summary, output, findings }` | `summary`/`output` 2000 each |
+| `usage` | run-cumulative usage | none |
+| `elapsedMs` | wall-clock ms since the loop started | none |
+| `attempt` | which guard call this is, 1-based, monotonic across `revise` | none |
+| `guardBudget` | the `finalGuardMaxRetries` in force | none |
+
+The full table, the truncation markers, and the absence semantics live in the contract:
+`### The `finalGuard` payload: 7 contract keys plus 10 additive facts (issue #386)`
+(`docs/host-consumer-contract.md`).
+
+**How to use it for machine-checkable acceptance.** Three shapes that used to be impossible:
+
+1. **File-or-nothing.** Accept only when the deliverable exists *and* its content matches —
+   `fs.statSync(path.join(payload.cwd, expected))` — and use `payload.filesWritten` to tell
+   "the model never even tried to write" apart from "it wrote the wrong thing". `attempt`
+   then tells you whether you are looking at the first claim or a post-`revise` retry.
+2. **Claim-versus-evidence.** `payload.selfReport.findings` is the *same object* as
+   `payload.findings`: every declared `label -> value` the model claims can be diffed against
+   a value you computed yourself. If the envelope declared nothing, both keys are absent —
+   that is "the model skipped the declaration step", which is not "nothing to verify".
+3. **Cost and retry accounting.** `payload.usage` + `payload.elapsedMs` + `payload.attempt`
+   let a host log the price of each guard round trip (each `revise` is one more model round
+   trip) without instrumenting the provider, and `payload.toolStats` gives the failure ratio
+   per tool for a "the run was thrashing" signal.
+
+**Three traps this release does not remove — read them before you trust the keys.**
+
+- **`finalText` is still not evidence.** A guard that accepts when `finalText` is non-empty
+  returns `verified` for a run whose deliverable does not exist. The probe ships that
+  counter-example as a scenario (`S6`), next to the disk-checking guard that catches the same
+  lying script at `attempt: 1` and remediates it at `attempt: 2`.
+- **`filesWritten[].path` is a 40-code-point prefix of a summarized argument, with no
+  truncation marker.** It comes from the judge timeline (`summarizeArgument`
+  (`src/reflection/judge.js`)), so long paths are silently shortened. Use it as a hint; the
+  authoritative path is the tool result in `messages` or the file you stat under `cwd`.
+- **`cwd` is never interpreted by the engine.** No `chdir`, no existence check, no path
+  joins — it is a pass-through so that *your* guard does not have to be told the directory
+  out of band. A non-string value throws `TypeError: cwd must be a string`.
+
+**Verify it without spending a token.** `node scripts/final-guard-probe.mjs` (also
+`npm run check:final-guard-probe`) drives the whole surface with a scripted fake provider:
+payload keys and per-key bytes, fake-completion → `revise` → remediation, retry exhaustion,
+guard throw, guard timeout, the rubber-stamp trap, and the overhead bound (30 rounds × 4 KB
+tool output: `messages` 257,618 B vs additive keys 2,122 B = **0.82%**, budget < 2%). Every
+scenario **asserts**; the process exits non-zero if the semantics move.
+
+**Do you have to act?** No. The seven original keys keep their names, types, order, and
+values; the verdict semantics (`accept` / `skip` / `revise` / retry limit / fail-closed) are
+untouched. If you were re-parsing `messages` to recover any of the facts above, you can
+delete that code — that is the point of the slice.
+
+## 9. Self-check
 
 ```bash
-npm test                       # 1,867 tests, 0 failing (1,858 passing + 9 skipped)
+npm test                       # 1,881 tests, 0 failing (1,872 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
+npm run check:final-guard-probe # offline, zero model calls; asserts the finalGuard payload surface
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites
 ```
 
-Against your own host, four questions are worth answering with a test before you upgrade:
+Against your own host, five questions are worth answering with a test before you upgrade:
 
 1. **State file.** Take a run with more than 32 compaction entries: `compactionStatsWindow.total` equals
    the full count, `dropped === total − 32`, and an **old** state file (no window key) still validates and
@@ -225,17 +299,22 @@ Against your own host, four questions are worth answering with a test before you
    a short file → `[已到末尾：…]`; `rg { pattern: "x", path: "nope" }` → an error text, not `（无命中）`.
 4. **Packaged suites.** Install the tarball in a throwaway project and run
    `erix-agent/contract-tests` — it must not fail on `../helpers/tmp.js`.
+5. **Guard payload.** Pass `cwd` to `runToolLoop`, log the whole payload in your guard, and
+   assert that `attempt` increments across a forced `revise`, that `selfReport.findings ===
+   findings`, and that your accept path still refuses a run whose deliverable is missing
+   (§8's `S6` counter-example).
 
-## 9. What did not change
+## 10. What did not change
 
 No store method signature, no return type, no option name, no export, no record kind, no message field, no
 termination reason, no error code, and no runtime dependency (still zero). `store.load()`'s shape is
 unchanged from 0.23.0. `deterministic.compactionStats` still holds the last 32 entries. The judge decision
-surface, the final guard and the resume path are untouched. The only *behavioural* change in the whole
+surface and the resume path are untouched; the final guard's *verdict* semantics are
+untouched too — its payload gained additive keys (§8), which is information, not a new rule. The only *behavioural* change in the whole
 release is that a missing search root returns an error text instead of `（无命中）` — and that one is a
 correction of a false negative, not a new rule.
 
-## 10. Migration recipe
+## 11. Migration recipe
 
 1. If you read `<runId>.state.json`'s compaction ledger, read `compactionStatsWindow.total` (and
    `dropped`) instead of counting the array — and treat the key's absence as "no statistics", not "zero".
@@ -247,3 +326,7 @@ correction of a false negative, not a new rule.
    you can.
 5. Re-run your own "what did the model see" test against the new texts — every one of them now says what
    actually happened, which is the whole point of this release.
+6. Delete any `messages` re-parsing in your `finalGuard` that recovers files written, tool
+   counts, the task brief, the model's self-report, usage, or elapsed time: read `filesWritten`,
+   `toolStats`, `taskBrief`, `selfReport`, `usage`, `elapsedMs` instead (§8). Keep reading
+   `messages` only for the *contents* of a tool result.
