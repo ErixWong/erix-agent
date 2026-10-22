@@ -1561,6 +1561,13 @@ export async function runToolLoop(options) {
       ? [{ role: "user", content: [{ type: "text", text: initialUserMessage }] }]
       : [];
   let taskBriefSource = messages;
+  // issue #404（工单 BB「复活赛告示」）：`restoreResume`（`src/loop/resume-manager.js`）造好的那条告示
+  // 先存在这里，由主循环圈前（`appendResumeTailMessages()` 之后）注入。写成**普通局部变量 + 一对
+  // 访问器**（与紧邻的 `taskBriefSource` 同一个先例）：它是「本次 resume 的一次性事实」，不归
+  // `runLoopState`（那里放的是要跟整个 run 走、跨 resume 有语义的格子）；注入完就清空，所以
+  // guard 补跑桥绕回主循环时不会再注入一次。
+  /** @type {{ text: string, slot: string, round: number } | undefined} */
+  let resumeNotice;
   const messageRounds = new WeakMap();
   for (const message of messages) messageRounds.set(message, 0);
   // 双计数器约定（issue #32 #8）——改这两处语义前先读这里：
@@ -1628,6 +1635,12 @@ export async function runToolLoop(options) {
     },
     set taskBriefSource(value) {
       taskBriefSource = value;
+    },
+    get resumeNotice() {
+      return resumeNotice;
+    },
+    set resumeNotice(value) {
+      resumeNotice = value;
     },
     messageRounds,
     get rounds() {
@@ -3498,6 +3511,34 @@ export async function runToolLoop(options) {
       });
       if (persisted) runLoopState.persistedTranscriptLength += resumeEngineText.length;
       runLoopState.resumeTranscriptStart = undefined;
+    }
+    // ── issue #404（工单 BB「复活赛告示」）：恢复运行告诉模型「这是复活赛」────────────────
+    // 位置：上下文重建完（`restoreResume`）、补跑结果接回之后、**宿主这次追问之前**，也就是
+    // 第一次请求之前。为什么在 `appendResumeTailMessages()` 之前而不是之后：告示是「接下来这段上下文
+    // 是什么」的前言，用户/宿主的真请求应该留在最后一条（模型对最后一条 user 的权重最高，且
+    // 「最后一条 user 是宿主写的那句」是既有可观察形状）。
+    // 三条硬约束的落点：
+    //   · 只有真恢复才有：`resumeNotice` 只由 `restoreResume` 的 `resume: true` 账本分支赋值，
+    //     首次运行拿到的是 `undefined` ⇒ 一个字节都不多（回归锚在 `test/loop-resume-notice.test.js`）；
+    //   · 入账走**既有**的 `:control:` 行（`appendEngineMessagesToTranscript`），不是
+    //     `kind:"message"` 消息行（后者会被 `foldMessageRows` 折回轮载体行、恢复时插到
+    //     `tool_use` 之前把配对重新打散——#393 的结论）；
+    //   · 注入前先结清尾部（#394 的共享实现）：到这里尾部通常已经由补跑结清，这一步是空操作；
+    //     但「账本尾部就是一条悬空 `tool_use`」的格（无快照/升级前账本）靠它把消息序守住。
+    if (resumeNotice !== undefined) {
+      const notice = resumeNotice;
+      resumeNotice = undefined;
+      await answerPendingTailToolUses(notice.round, "resume-notice-tool-result");
+      const noticeMessage = {
+        role: "user",
+        // issue #323 的 marker：引擎自写的控制文本，judge 不把它当成用户说的话自读回
+        // （主模型仍可见——它就是要给主模型看的）。
+        meta: { source: "judge-control" },
+        content: [{ type: "text", text: notice.text }],
+      };
+      messages.push(noticeMessage);
+      messageRounds.set(noticeMessage, notice.round);
+      await appendEngineMessagesToTranscript(noticeMessage, notice.round, notice.slot);
     }
     appendResumeTailMessages();
 

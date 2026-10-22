@@ -19,6 +19,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { RESUME_NOTICE_TAG } from "../src/loop/resume-notice.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { foldMessageRows } from "../src/store/message-rows.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -66,13 +67,56 @@ const describeMessages = (messages) => messages.map((message) => {
 });
 
 // 账本正文的「今天」形状（三条路必须逐字相同）：round 0 种子 → R1 的 assistant（正文 + 工具调用）
-// → R1 那条聚合 tool_result → R2 的 assistant（收尾；续接轮的正文按角色交替规则并进同一条）。
+// → R1 那条聚合 tool_result → R2 的 assistant（收尾）。
+//
+// issue #404（复活赛告示）：第 4 条从 `assistant:收尾+续接完成` 变成 `assistant:收尾`。**这不是内容变化，
+// 是形状位移**：恢复运行会在「账本正文」与「续接轮的正文」之间注入一条 **user** 控制消息（告示），
+// 于是原先「`收尾`(assistant) 与 `续接完成`(assistant) 相邻 ⇒ `normalizeMessages` 把两条并成一条」
+// 这个纯形状效应不再成立，两段正文各自成条。位移前后的逐条对照（同一段脚本、同一份 fake provider）：
+//   位移前（`eb158ad`）：7 条，`[3] assistant:收尾+续接完成`
+//   位移后（本树）  ：9 条，`[3] assistant:收尾` / `[4] user:【恢复运行】…` / `[5] assistant:续接完成`
+// 内容一条没少：下面 `assertResumedBody` 逐条点名这 6 条，并额外钉「告示恰一条」「`assistant:收尾` 恰一条」
+// （既防丢也防翻倍）。告示自己的行为锚在 `test/loop-resume-notice.test.js`（8 格），这里只钉它在序列里的**位置**。
 const EXPECTED_LEDGER_BODY = [
   "user:任务：写一个文件然后收尾",
   "assistant:先写文件+tool_use(writeFile)",
   "user:tool_result(wrote ledger/governed.txt)",
-  "assistant:收尾+续接完成",
+  "assistant:收尾",
 ];
+
+/** 告示那一行的**前缀**：正文随账本事实变化（轮号 / 文件 / 工具），整段散文不进断言。 */
+const NOTICE_LINE_PREFIX = `user:${RESUME_NOTICE_TAG}`;
+
+/**
+ * 恢复之后的正文序列（①②③ 三条宿主路径必须逐字相同）。
+ *
+ * 0–3 账本正文（崩溃那一刻的账本，与 `#401` 的回归锚逐字相同）· 4 复活赛告示（user 控制消息）
+ * · 5 续接轮的第一段正文。
+ *
+ * 强度只增不减：原先只比 4 条（第 4 条还是被合并后的两段），现在 4 条照旧逐字比 + 告示那一行**点名**钉
+ * （前缀 + 三件既有事实）+ 续接正文点名钉 + 「告示恰一条」「`assistant:收尾` 恰一条」两条唯一性判据。
+ *
+ * @param {string[]} body `describeMessages(result.messages)`
+ * @param {string} label 哪一条宿主路径（失败信息里点名）
+ */
+function assertResumedBody(body, label) {
+  assert.deepEqual(body.slice(0, 4), EXPECTED_LEDGER_BODY,
+    `${label}：账本正文必须与今天逐字一致；实测前 6 条：${JSON.stringify(body.slice(0, 6))}`);
+  const notice = body[4];
+  assert.ok(notice !== undefined && notice.startsWith(NOTICE_LINE_PREFIX),
+    `${label}：第 5 条必须是复活赛告示（user 控制消息），实测：${JSON.stringify(String(notice).slice(0, 120))}`);
+  // 告示点名的是**既有事实**：停在哪个轮、写过哪个文件、最近调过哪个工具。
+  assert.match(notice, /第 2 轮/u, `${label}：告示必须给出「上一段停在第 N 轮」`);
+  assert.match(notice, /ledger\/governed\.txt/u, `${label}：告示必须带账本记过的写文件事实`);
+  assert.match(notice, /writeFile\(ledger\/governed\.txt\)/u, `${label}：告示必须带最近调过的工具`);
+  assert.equal(body[5], "assistant:续接完成",
+    `${label}：告示之后必须紧跟续接轮的第一段正文（内容不丢）；实测：${JSON.stringify(body[5])}`);
+  // 唯一性：告示恰一条（不重复注入）、`assistant:收尾` 恰一条（不丢也不翻倍）。
+  assert.equal(body.filter((line) => line.startsWith(NOTICE_LINE_PREFIX)).length, 1,
+    `${label}：一次恢复只许一条告示，实测：${JSON.stringify(body.filter((line) => line.startsWith(NOTICE_LINE_PREFIX)))}`);
+  assert.equal(body.filter((line) => line === "assistant:收尾").length, 1,
+    `${label}：崩溃轮那段「收尾」正文必须恰一条；实测：${JSON.stringify(body)}`);
+}
 
 /**
  * 造一个「宿主 store」：写入仍走内置 memory store（落盘行就是引擎真产出的形状），
@@ -195,17 +239,18 @@ test("#401 R3① 宿主没折（load 原样返回落盘行）⇒ resume 自己�
   assert.ok(unfolded.judgePrompt.includes(`写过的文件：${GOVERNED_WRITE_PATH}(R1)`),
     "写过的文件要带轮号 R1（来自账本重建，不是 run-state 那条只有路径的通道）");
   // 判据④：正文与「宿主折对了」那一条逐字相同（见 ②）
-  assert.deepEqual(unfolded.body.slice(0, 4), EXPECTED_LEDGER_BODY);
+  assertResumedBody(unfolded.body, "① 宿主没折");
 });
 
 // ── ② 宿主折对了：与今天逐字一致（回归锚） ─────────────────────────────────────
-test("#401 R3② 宿主折对了（内置 store）⇒ resume 结果与今天逐字一致（正文 / 时间线 / 写过的文件）", async () => {
+test("#401 R3② 宿主折对了（内置 store）⇒ 账本正文与今天逐字一致（正文 / 时间线 / 写过的文件）", async () => {
   const builtin = await runTwoRoundsThenResume("issue-401-r3-builtin", "builtin");
 
   // 回归锚：这三份字面量就是「今天」的样子。R3 的免疫只许**增加**「宿主没折也能救」这一格，
   // 不许挪动内置 store 这一条路上的任何一个字节。
-  assert.deepEqual(builtin.body.slice(0, 4), EXPECTED_LEDGER_BODY,
-    `账本正文序列（含 R1 的 tool_use / tool_result 两条）必须与今天逐字一致；实测：${JSON.stringify(builtin.body)}`);
+  // issue #404：唯一允许的位移是那条**已文档化**的复活赛告示（它在**每一条**恢复路径上都一样地出现，
+  // 因此不是「折叠免疫」引入的差异）——账本正文这 4 条照旧逐字比，见 `assertResumedBody`。
+  assertResumedBody(builtin.body, "② 宿主折对了");
   assert.ok(builtin.timelineSection.includes(`R1: writeFile ${GOVERNED_WRITE_PATH} [ok]`),
     `内置 store 的今天就是这样；实测：${builtin.timelineSection}`);
   assert.equal((builtin.timelineSection.match(/R1: writeFile/gu) ?? []).length, 1);
@@ -221,8 +266,7 @@ test("#401 R3③ 宿主「两份都留」（折好的载体 + 原始消息行）
   const r1Blocks = both.body.slice(0, 4).filter((line) => /tool_use|tool_result/u.test(line));
   assert.equal(r1Blocks.length, 2,
     `第 1 轮只该有 assistant（含 tool_use）与 user（含 tool_result）两条；翻倍时会变成 4 条。实测：${JSON.stringify(both.body)}`);
-  assert.deepEqual(both.body.slice(0, 4), EXPECTED_LEDGER_BODY,
-    "「两份都留」的宿主折出来的正文必须与折对了的宿主逐字一致（既不翻倍，也不丢）");
+  assertResumedBody(both.body, "③ 两份都留");
   assert.equal((both.timelineSection.match(/R1: writeFile/gu) ?? []).length, 1,
     "同一轮的时间线条目也只能一条");
   assert.deepEqual(both.filesWritten, [GOVERNED_WRITE_PATH], "写过的文件同样不重复计");

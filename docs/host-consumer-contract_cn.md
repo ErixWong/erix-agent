@@ -766,6 +766,41 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
 - **时机：** 在接受用户消息的事务内持久化该轮（当宿主决定该轮属于本 run 时），
   而不是懒到 worker 接手之后再写——否则接受与预写之间崩溃会丢失或重复该轮。
 
+### 恢复运行会被告知「这是复活赛」（issue #404）
+
+续跑**不是**一段连续会话：两段之间进程死过一次，于是有些 `tool_use` 根本没有结果，引擎不得不在下一次
+请求之前替它补跑或标注。issue #404 之前模型对此一无所知——它把引擎补跑出来的结果当成自己上一次调用的
+输出，或者重发一遍有副作用的调用（`git commit`、`npm publish`、HTTP `POST`、覆盖写、建 PR），而第一次
+可能已经落地了。
+
+当且仅当 `resume: true` 配上真的产出过账本的 `store` 与 `runId` 时，`restoreResume`
+（`src/loop/resume-manager.js`）会规划**一条**引擎控制消息，由主循环在恢复出来的上下文**之后**（补跑结果
+之后）、第一次请求**之前**注入。正文四行，每一件事实在账本里都已经存在：
+
+| 那一行说的是 | 事实来源 |
+| --- | --- |
+| 这是恢复运行、上一段停在第 N 轮、停机原因（账本里有才说） | `runLoopState.rounds` 与 `deterministic.termination.reason`（`src/run-state.js`） |
+| 崩溃时哪些 `tool_use` 没有结果（`id` + 工具名 + 参数摘要） | `pendingTrailingToolUses`（`src/messages/rounds.js`），在补跑**之前**读 |
+| 账本记过写过哪些文件 / 最近调过哪些工具 | `deterministic.filesWritten` 与 governor 的时间线 |
+| 动手前先勘验、别直接重发有副作用的调用 | 固定文案 |
+
+宿主能观察到什么、不能推出什么：
+
+- **它是 `messages` 里的一条消息。** 形状 `{ role: "user", content: [{ type: "text", text }], meta:
+  { source: "judge-control" } }`——#323 的 marker，于是 judge 输入照旧跳过它，而主模型读得到。
+  它**不是**新的 payload 键，`finalGuard` payload 里也一个字节都没加。
+- **它按既有的 `:control:` 行入账**，`dedupKey` 是 `<runId>:engine:round:<n>:control:resume-notice:<fp>`
+  （`<fp>` 是正文指纹）。同一份事实 ⇒ 同 key ⇒ 崩溃重跑不写第二行、本次恢复也不再注入第二份；事实变了
+  （例如上一次崩溃把 `termination` 记成了 `failed`）⇒ 换 key ⇒ 多一行，旧那条仍留在上下文里。
+  所以按轮数行的宿主在恢复的 run 上看到的是**行数比轮数多**，与 judge nudge / 扩轮 / 强制收尾那几行同一个口径。
+- **`messages` 会多一条。** 恢复的第一次请求比崩溃时的账本多一条消息（账本多一行 `:control:`）；
+  轮号记账、`result.messages`、输入 token 计数都包含它。首次（非 resume）运行一个字节都不变。
+- **它不是验收机制。** 它是给模型的忠告，不是闸门：验收仍看 `finalGuard` / 交付物判据，一个 guard 判
+  `accept` 的恢复 run 就是 `verified`，与模型有没有照告示去做无关。引擎无法让模型一定去勘验——所以
+  有副作用的工具**仍然应该由宿主自己加幂等键**（键 / 锁 / 去重表）。见升级指南的「没变的」那一节。
+- **它可能被折掉。** 告示是最新的一轮，默认 `keepRounds` 会把它留在保留窗口内；但激进的压缩配置
+  （例如 `keepRounds: 0`）会在同一轮就把它折进摘要，那时模型读到的摘要而不是告示原文。
+
 ### 同 key 异 payload 的冲突（issue #326）
 
 一次 `appendRound` 命中已存在的 key 时，**只有 payload 就是那条记录**才是 no-op。

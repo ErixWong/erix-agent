@@ -29,6 +29,7 @@ of "works if you read the source". If a section below is not your code path, it 
 | New `finalGuardExtend` option (**default `false`**): a `revise` on `max_rounds_cap` / `continuation_exhausted` buys at most one more round per run; `stall` never extends (§11) | no — opt-in, and off by default keeps every budget-type stop byte-for-byte as in 0.23.0 |
 | A **truncated tool-call round** no longer loses its final text: the forced wrap-up settles the pending `tool_use` first, so those runs end `continuation_exhausted` (CLI exit **4**) instead of `failed` / `invalid_messages` (exit **1**) (§12) | yes, if you treat `failed` / exit 1 as "retryable" |
 | `foldMessageRows` is exported from the package root, and `resume` folds `store.load()` once more: a store whose `load()` returns the on-disk rows no longer loses the tool pairing (§12) | no — act only if your own `load()` returns the on-disk rows, and then fold it |
+| A **resumed** run now carries one engine control message saying it was resumed, which `tool_use` calls had no result, and "verify before acting" (§14) | yes, if you diff `messages` / count transcript rows or input tokens on resumed runs |
 
 The one-line version: **the facts you used to infer are now written down.** The engine did not change what
 it *does*; it changed what it *says* — in the state file, in the error objects, and in the tool outputs the
@@ -564,16 +565,68 @@ engine's fallback covers the **resume path only**: the display projection
 directly, and so does every other reader you wrote against
 `records.flatMap((record) => record.messages ?? [])`.
 
-## 14. Self-check
+## 14. A resumed run is told that it was resumed (issue #404)
+
+**Symptom.** Resuming a crashed run was **completely silent to the model**. The engine rebuilt the
+context from the ledger, replayed (or annotated) every `tool_use` that had no result, and sent the next
+request — without ever saying "the previous segment ended here". A model that reads the replay results as
+its own previous output will either build on a call that never ran, or **re-issue a side-effecting call**
+(`git commit`, `npm publish`, an HTTP `POST`, an overwrite, opening a PR) whose first attempt may already
+have landed. Grepping the engine's injected control text (`grep -rhoE "【[^】]{2,12}】" src/ bin/`) turned
+up seven kinds — audit interception, forced wrap-up, judge opinions, and so on — and none of them said
+"you were just restored".
+
+**What is new.** On a resumed run the engine injects **one** engine control message (a `user` message
+carrying `meta.source: "judge-control"`, so judge input keeps skipping it while the main model reads it).
+It is injected after the restored context and the replayed tool results, before the host's next turn, and
+its body is four lines built **only from facts the ledger already had**:
+
+| Line | Fact source |
+| --- | --- |
+| this is a restored run; the previous segment stopped at round N, plus the stop reason if the ledger recorded one | `runLoopState.rounds`, `deterministic.termination.reason` (`src/run-state.js`) |
+| which `tool_use` calls had no result at the crash (`id`, tool name, argument summary) | `pendingTrailingToolUses` (`src/messages/rounds.js`), read **before** the replay |
+| which files were written, which tools were called recently | `deterministic.filesWritten`, the governor timeline |
+| verify before acting; do not blindly re-issue side-effecting calls | static text |
+
+Nothing new is invented and no payload key is added: the `finalGuard` payload is byte-for-byte what §8
+describes.
+
+**Behaviour change (the part to act on).** A resumed run's `messages` carries **one more message**, and
+its transcript carries **one more row** — `dedupKey` `<runId>:engine:round:<n>:control:resume-notice:<fp>`,
+an ordinary `:control:` row like the judge nudge / extension / forced-final ones, so a host that counts
+rows per round sees one more row than rounds (the existing "hosts observe more rows than rounds" rule,
+unchanged). The extra message costs input tokens on **every** remaining request of that run: measured on
+the shipped cells, **508 B / 232 chars** for the shortest body ("tail already settled") up to **885 B /
+523 chars** for the fullest (two long argument summaries, five files, four recent calls); the typical
+crash-site body is **720 B / 368 chars** — roughly **230 input tokens** (estimate: 176 CJK chars ≈ 1
+token each + 192 ASCII chars ≈ 1 token per 3.5). A **first, non-resumed** run is byte-for-byte unchanged.
+
+**It is not a verification mechanism.** The notice is advice to the model, not a gate: `verification`
+still comes from `finalGuard` / the `deliverables` criteria, and a resumed run whose guard answers
+`accept` is `verified` whether or not the model acted on the notice. The engine cannot make the model
+verify anything — **so a host whose tools have side effects should still make those calls idempotent on
+its own side** (a key, a lock, a dedupe table). That gap is open, not covered by this release.
+
+**Two boundaries worth knowing.** The notice is the newest round, so the default `keepRounds` (6) keeps it
+unfolded; with an aggressive compaction configuration (e.g. `keepRounds: 0`) it can be folded into the
+summary in the very same turn and the model reads the summary instead. And a resume that has to
+re-summarize does so **once**: the notice changes the fold input, so the journaled-summary reuse of #326
+can miss — it must not re-summarize per round.
+
+**Do you have to act?** Only if you diff `messages`, count transcript rows, or measure input tokens on
+**resumed** runs. Nothing else moved: no new option, no new export, no new record kind, no new message
+field, no new termination reason, and no change to a first run.
+
+## 15. Self-check
 
 ```bash
-npm test                       # 1,976 tests, 0 failing (1,967 passing + 9 skipped)
+npm test                       # 1,985 tests, 0 failing (1,976 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # offline, zero model calls; asserts the finalGuard payload surface
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites
 ```
 
-Against your own host, ten questions are worth answering with a test before you upgrade:
+Against your own host, eleven questions are worth answering with a test before you upgrade:
 
 1. **State file.** Take a run with more than 32 compaction entries: `compactionStatsWindow.total` equals
    the full count, `dropped === total − 32`, and an **old** state file (no window key) still validates and
@@ -622,21 +675,32 @@ Against your own host, ten questions are worth answering with a test before you 
    fold from `load()`: the three fold cells must go red — if they stay green, you are the
    erix-station shape this section exists for (§13).
 
-## 15. What did not change
+11. **Resume notice.** Crash a run mid-tool (abort during the first tool), then resume it: the first
+   request of the resumed run must carry exactly one `meta.source: "judge-control"` message whose body
+   starts with `【恢复运行】` and names every `tool_use` id that had no result, and the transcript must
+   carry exactly one `…:control:resume-notice:<fp>` row. Resume the same ledger twice with unchanged
+   facts: still exactly one notice. Then run the same script **without** `resume` and assert the request
+   is byte-for-byte what it was before you upgraded — that pair is the proof the injection is
+   resume-only (§14).
+
+## 16. What did not change
 
 No store method signature, no return type, no option name, no export **removed** (one export was
 *added*, §13), no record kind, no message field, no
 termination reason, no error code, and no runtime dependency (still zero). `store.load()`'s shape is
 unchanged from 0.23.0. `deterministic.compactionStats` still holds the last 32 entries. The judge decision
-surface and the resume path are untouched; the final guard's *verdict* semantics are
-untouched too — its payload gained additive keys (§8), which is information, not a new rule. Four
-*behavioural* changes shipped in this release, and all four are corrections of false negatives rather than
-new rules: a missing search root returns an error text instead of `（无命中）` (§6), a machine criterion
-that passes under a guard `skip` is no longer thrown away (§10), and a truncated tool-call round finishes
-with its final text instead of ending `failed` / `invalid_messages` (§12), and a store whose `load()` hands
-back raw rows no longer loses its tool pairing on resume (§13). Everything else is additive.
+surface is untouched; the resume path moved in **two** places — a store whose `load()` hands back raw
+rows no longer loses its tool pairing on resume (§13), and a resumed run now carries one engine control
+message (§14), the only change in this release that lengthens `messages`. The final guard's *verdict*
+semantics are untouched too — its payload gained additive keys (§8), which is information, not a new rule.
+Five *behavioural* changes shipped in this release: the first three are corrections of false negatives
+rather than new rules — a missing search root returns an error text instead of `（无命中）` (§6), a machine
+criterion that passes under a guard `skip` is no longer thrown away (§10), and a truncated tool-call round
+finishes with its final text instead of ending `failed` / `invalid_messages` (§12); §13 makes a fact
+correct that used to be wrong (§13); §14 is new information for the model, and it is advice, not a gate.
+Everything else is additive.
 
-## 16. Migration recipe
+## 17. Migration recipe
 
 1. If you read `<runId>.state.json`'s compaction ledger, read `compactionStatsWindow.total` (and
    `dropped`) instead of counting the array — and treat the key's absence as "no statistics", not "zero".

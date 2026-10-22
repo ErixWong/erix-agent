@@ -546,10 +546,13 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
   });
 
   assert.equal(executions, 0);
-  assert.equal(resumedProvider.requests[0].messages.at(-1).content[0].content, "replayed");
+  // issue #404：恢复告示排在最后；回放出来的结果紧排在它前面（位置与强度都不降）。
+  assert.match(JSON.stringify(resumedProvider.requests[0].messages.at(-1)), /【恢复运行】/u);
+  assert.equal(resumedProvider.requests[0].messages.at(-2).content[0].content, "replayed");
   assert.deepEqual(
     (await resumeStore.load("resume-checkpoint")).map((record) => record.round),
-    [0, 1, 2],
+    // 中间那条 round 1 是 #404 的 `…:control:resume-notice` 行（轮号取恢复时的身份轮号）。
+    [0, 1, 1, 2],
   );
 });
 

@@ -893,7 +893,9 @@ test("chat reuses an explicitly selected session and keeps the new prompt", asyn
     assert.deepEqual(
       (await createFileTranscriptStore({ dir }).load("explicit-run"))
         .map((record) => record.round),
-      [0, 1, 1, 2],
+      // issue #404：中间多出的那条 round 1 是恢复告示（`…:control:resume-notice:<fp>`）——
+      // 宿主看到行数多于轮数，这是 `:control:` 行的既有口径，不是多出来的一轮。
+      [0, 1, 1, 1, 2],
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -950,7 +952,8 @@ test("chat resume 路径预写 :input: 记录且复用最大 round（issue #97 �
     ]);
     assert.equal(prewritten[0].roundKey, prewritten[0].dedupKey);
     // 预写复用最大 round：[0, 1]（首轮）+ [1（预写复用）, 2（引擎续轮）]
-    assert.deepEqual(records.map((record) => record.round), [0, 1, 1, 2]);
+    // issue #404：另有一条 round 1 的恢复告示行（`…:control:resume-notice:<fp>`）。
+    assert.deepEqual(records.map((record) => record.round), [0, 1, 1, 1, 2]);
     assert.equal(prewritten[0].round, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1434,7 +1437,14 @@ test("#326-D 只有事实行的账本仍算「会话存在」：M1 不误报，�
     (Array.isArray(message?.content) ? message.content : []).map((block) => String(block?.text ?? ""))
   )).join("\n"), /续跑的新问题/u);
   assert.equal(records.filter((entry) => String(entry.dedupKey ?? "").includes(":input:")).length, 1);
-  assert.equal(factRowsOf(records).length, 3, "事实行既没被吞掉也没被复制");
+  // issue #404：恢复告示本身也是一条 `:control:` 事实行 ⇒ 4 条；其中「告示恰一条」单独点名，
+  // 不靠总数蒙（总数多了是复制、少了是吞掉）。
+  assert.equal(
+    factRowsOf(records).filter((entry) => String(entry.dedupKey ?? "").includes(":control:resume-notice")).length,
+    1,
+    "恢复告示必须恰有一条 `…:control:resume-notice:<fp>` 行",
+  );
+  assert.equal(factRowsOf(records).length, 4, "事实行既没被吞掉也没被复制");
 });
 
 // 事实行的独立口径（不依赖被测实现）：引擎命名空间里带槽位后缀的那几类
