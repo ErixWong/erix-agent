@@ -402,8 +402,48 @@ export function createTerminationManager(ctx) {
         && decision.reason.length > 0
       ) {
         ctx.guardMetrics.skipped += 1;
-        ctx.verification = { status: "skipped", reason: decision.reason };
         const emitEvent = ctx.emitEvent;
+        // ── issue #392：**机器判据在任何 guard 裁决下都算数** ─────────────────────────────
+        // `skip` 的意思是「guard 这次没验」（没有捕获证据 / 没有可抽取候选 / 宿主自己放弃），
+        // 不是「交付物没交付」。它从前把机器证据整包丢掉，两个方向的代价都是真的：
+        //   · 判据全通过的 run 永远拿不到 `verified`（真上游：`erix chat --final-guard
+        //     --require-deliverable` 且交付物真在盘上 ⇒ 退出码 4）；
+        //   · 判据失败的 run 报 `skipped`（状态说「没验」，而机器其实说了「没过」）。
+        // 两条都以「证据优先于『我验不了』」收口：
+        //   · 有失败 ⇒ `unverified / deliverables_failed`（与 accept 那格同一个 reason、同一个形状）
+        //   · 全通过 ⇒ `verified` + `reason: "machine_only"`（机器证据本身构成验收，但**可区分**：
+        //     它不是 guard 验收，宿主据此知道自己该收紧判据）
+        // 未声明 `deliverables` 时这两条都不进入 ⇒ 逐字回到今天（`test/loop-deliverables.test.js`
+        // 的 R4-1 回归锚钉的就是这一格）。
+        if (deliverables !== undefined) {
+          if (!deliverablesAllPassed) {
+            ctx.guardMetrics.unverified += 1;
+            ctx.verification = { status: "unverified", reason: "deliverables_failed" };
+            emitEvent({
+              type: "final_guard",
+              round: ctx.rounds,
+              action: "skip",
+              reason: decision.reason,
+              deliverables_failed: deliverablesFailed,
+            });
+            return { action: "skip", reason: decision.reason };
+          }
+          // 这个键**只**在这一格出现：未声明 / accept / revise / error / skip+失败 都不写它
+          // （`deliverables_machine_only` 就是「这条 verified 不是 guard 给的」的可计数凭据）。
+          ctx.guardMetrics.deliverables_machine_only =
+            (ctx.guardMetrics.deliverables_machine_only ?? 0) + 1;
+          ctx.verification = { status: "verified", reason: "machine_only" };
+          emitEvent({
+            type: "final_guard",
+            round: ctx.rounds,
+            action: "skip",
+            reason: decision.reason,
+            deliverables_failed: 0,
+            machine_only: true,
+          });
+          return { action: "skip", reason: decision.reason };
+        }
+        ctx.verification = { status: "skipped", reason: decision.reason };
         emitEvent({
           type: "final_guard",
           round: ctx.rounds,
@@ -438,18 +478,37 @@ export function createTerminationManager(ctx) {
         ? "timeout"
         : "error";
       ctx.guardMetrics.unverified += 1;
+      ctx.guardMetrics.guard_error += 1;
+      const emitEvent = ctx.emitEvent;
+      // ── issue #392：guard 崩了 / 超时，机器判据仍然算数（**只有一个方向**）────────────────
+      // 判据**有失败** ⇒ `unverified / deliverables_failed`：机器给出了「没过」这个可判定结论，
+      // 它比「guard 崩了，所以不知道」更强，而且它与 accept/skip 两格是同一个 reason、同一个形状。
+      // 判据**全通过** ⇒ **刻意保持 `error`**：guard 抛异常/超时是**基础设施故障**（宿主回调写错、
+      // 依赖挂了），把它升级成 `verified: machine_only` 等于用一条机器判据盖掉一次真实的故障——
+      // 宿主会以为「这条 verified 至少是机器验过的」，而这次 run 的 guard 面根本没跑成。
+      // 未声明 `deliverables` ⇒ 逐字回到今天（这一格是回归锚的一半）。
+      if (deliverables !== undefined && !deliverablesAllPassed) {
+        ctx.verification = { status: "unverified", reason: "deliverables_failed" };
+        emitEvent({
+          type: "final_guard",
+          round: ctx.rounds,
+          action: "error",
+          reason: errorReason,
+          deliverables_failed: deliverablesFailed,
+        });
+        return { action: "error", reason: errorReason };
+      }
       ctx.verification = {
         status: "error",
         reason: errorReason,
         detail: terminationDetailForError(error),
       };
-      ctx.guardMetrics.guard_error += 1;
-      const emitEvent = ctx.emitEvent;
       emitEvent({
         type: "final_guard",
         round: ctx.rounds,
         action: "error",
         reason: errorReason,
+        ...(deliverables === undefined ? {} : { deliverables_failed: deliverablesFailed }),
       });
       return { action: "error", reason: errorReason };
     } finally {
