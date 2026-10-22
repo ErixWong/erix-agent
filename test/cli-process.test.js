@@ -507,40 +507,82 @@ describe("真起 CLI 子进程：参数、退出码、stdout/stderr、落盘（i
   // 从前 `skip` 把机器结论整包丢掉，于是**判据跑了、判对了、结论被丢掉**：给人看的文案说判据没过，
   // 给 CI 用的退出码却说「没验」——本单要杀的就是这个自相矛盾。
   //
-  // 旗标形状：`--require-deliverable` 在当前 main（基点 `2cb3303`）上是**不带值**的布尔旗标
-  // （issue #391 的可带路径变体还只在 `feat-261022-04-host-adoption` 上，未进 main），所以两格都用
-  // 无值形状；出厂判据 `createDeliverableChecks` 的口径是「本 run 用写工具声明过的每个路径都必须
-  // 真的在盘上」。要让它在**无值**形状下失败，就让模型先写、再把文件删掉（`exec rm`）——那样
-  // `fileWrites` 里有路径而盘上没有，判据判的仍是磁盘事实。
-  it("--final-guard --require-deliverable + 交付物真在盘上：退 0（guard skip ⇒ machine_only）（issue #392）", async (t) => {
+  // 旗标形状（issue #398-4）：`--require-deliverable <path>` 已进 main，所以前两格从**裸旗标**升级成
+  // **命名路径**形状——判据不再读模型「声明过什么」（`fileWrites`），只读宿主声明的清单：
+  //   · 正面格：模型真 `writeFile report.md` ⇒ 判据成立 ⇒ 退 0；
+  //   · 负面格：模型**一次写工具都不调** ⇒ 判据照样不成立 ⇒ 退 2。这一格同时是 #391
+  //     「布尔旗标真空通过」的**进程级反例**：布尔形状下 `fileWrites` 是空集 ⇒ 判据恒真 ⇒ 退 0
+  //     （一次工具都没调的 run 也能拿到 `verified`），命名形状没有这个真空。
+  // 布尔形状（裸旗标）那一格**没有删**，留在最后：它钉的是另一件事——`fileWrites` 语义
+  // （「你说过要写的东西还在盘上吗」）在进程边界上仍然咬得住（先写再删 ⇒ 判据不过）。
+  // 删掉它等于把这个语义唯一的进程级负面证据一起丢掉，断言强度会降。
+  // 正面格（命名路径）：宿主声明 `report.md`，模型**真把它写出来** ⇒ 判据成立 ⇒ machine_only ⇒ 退 0。
+  it("--final-guard --require-deliverable report.md + 模型真写出该文件：退 0（guard skip ⇒ machine_only）（issue #398-4，升级自 #392）", async (t) => {
     // 先拿住 script 数组的引用：交付物路径要等 `makeSandbox` 把项目目录建出来才知道。
     const script = [];
     const sandbox = await makeSandbox(t, { script });
-    const answerPath = join(sandbox.project, "answer.txt");
+    const reportPath = join(sandbox.project, "report.md");
     script.push(
-      replyWithToolCall("writeFile", { path: answerPath, content: "42" }, "call-392-ok"),
+      // 相对路径：`chat` 把进程目录交给引擎，`writeFile` 也按它落盘——判据解析的是同一个锚点。
+      replyWithToolCall("writeFile", { path: "report.md", content: "42" }, "call-3984-ok"),
       // 终稿**不声明 findings**：来源 guard 没有可核验的声明，于是它只能 `skip`。
-      replyWithText("已写入 answer.txt，内容 42。任务已完成"),
+      replyWithText("已写入 report.md，内容 42。任务已完成"),
     );
 
     const result = await sandbox.run([
-      "chat", "把 42 写进 answer.txt", "--final-guard", "--require-deliverable", ...MINIMAL_CHAT_FLAGS,
+      "chat", "把 42 写进 report.md", "--final-guard",
+      "--require-deliverable", "report.md", ...MINIMAL_CHAT_FLAGS,
     ]);
 
     // 前提：交付物是**真子进程**真的写下来的磁盘事实（不是断言里的假设）。
-    assert.equal(existsSync(answerPath), true, `交付物没落在盘上；stdout=${JSON.stringify(result.stdout.slice(-400))}`);
-    assert.equal(readFileSync(answerPath, "utf8"), "42");
+    assert.equal(existsSync(reportPath), true, `交付物没落在盘上；stdout=${JSON.stringify(result.stdout.slice(-400))}`);
+    assert.equal(readFileSync(reportPath, "utf8"), "42");
     assert.equal(sandbox.upstream.requestCount, 2, "一轮工具调用 + 一轮终稿，共两次模型请求");
     assert.equal(result.code, EXIT_OK,
       `判据全通过 + guard skip 必须是 verified:machine_only（退 0，不再是「没验」的 4）；实得 ${result.code}；`
       + `stdout=${JSON.stringify(result.stdout.slice(-500))} stderr=${JSON.stringify(result.stderr.slice(-300))}`);
     assert.match(result.stdout, /已核验/u, "machine_only 也是 verified，终稿标题应是「已核验」");
     // 机器裁决与 guard 裁决在 CLI 的统计行上**同时可见且可区分**：guard 没有 accept（verified:0），
-    // 它确实 skip 了一次（skipped:1）。
-    assert.match(result.stdout, /guard=\{verified:0,skipped:1,/u);
+    // 它确实 skip 了一次（skipped:1）；命名判据跑了 1 条、0 条没过。
+    assert.match(
+      result.stdout,
+      /guard=\{verified:0,skipped:1,revised:0,unverified:0,guard_error:0,deliverables_checked:1,deliverables_failed:0\}/u,
+      `统计行要同时给出 guard 裁决与判据计数；stdout=${JSON.stringify(result.stdout.slice(-400))}`,
+    );
   });
 
-  it("--final-guard --require-deliverable + 判据不成立（写过但被删掉）：退 2（unverified:deliverables_failed）（issue #392）", async (t) => {
+  // 负面格（命名路径）：模型**一次写工具都不调** ⇒ 判据照样不成立 ⇒ 退 2。
+  // 这一格就是 #391「布尔旗标真空通过」的进程级反例：同样的脚本换成裸旗标会退 0（`fileWrites` 空集恒真）。
+  it("--final-guard --require-deliverable report.md + 模型一次写工具都不调：退 2（unverified:deliverables_failed）（issue #398-4，升级自 #392）", async (t) => {
+    const sandbox = await makeSandbox(t, {
+      // 只有一句纯文本终稿：没有 tool_use，也就没有 `fileWrites`（布尔形状下这正是「真空通过」）。
+      script: [replyWithText("好的，任务已完成")],
+    });
+    const reportPath = join(sandbox.project, "report.md");
+
+    const result = await sandbox.run([
+      "chat", "交付 report.md", "--final-guard",
+      "--require-deliverable", "report.md", ...MINIMAL_CHAT_FLAGS,
+    ]);
+
+    assert.equal(sandbox.upstream.requestCount, 1, "一次终稿请求，没有任何工具轮");
+    assert.equal(existsSync(reportPath), false, `本用例的前提是交付物**从未**被写出来；stdout=${JSON.stringify(result.stdout.slice(-400))}`);
+    assert.equal(result.code, EXIT_UNVERIFIED,
+      `命名判据没过 + guard skip 必须是 unverified:deliverables_failed（退 2，不再是「没验」的 4）；`
+      + `实得 ${result.code}；stdout=${JSON.stringify(result.stdout.slice(-500))}`);
+    assert.match(result.stdout, /未核验，不可信/u, "终稿必须被标成不可信（文案与退出码不许再自相矛盾）");
+    assert.match(result.stdout, /交付物判据没过/u);
+    assert.match(
+      result.stdout,
+      /guard=\{verified:0,skipped:1,revised:0,unverified:1,guard_error:0,deliverables_checked:1,deliverables_failed:1\}/u,
+      `统计行要同时给出 guard 裁决与判据计数（真空通过那格这里会是 failed:0）；stdout=${JSON.stringify(result.stdout.slice(-400))}`,
+    );
+  });
+
+  // 布尔形状（裸旗标）保留：它钉的是 `createDeliverableChecks()` 的语义——「本 run 用写工具
+  // **声明过**的每个路径都必须真的在盘上」。要让它在裸旗标下失败，只能先写再删（`fileWrites`
+  // 里有路径、盘上没有）。命名形状覆盖不到这条语义，所以这一格不升级、不删。
+  it("--final-guard --require-deliverable（裸旗标）+ 写过但被删掉：退 2（unverified:deliverables_failed）（issue #392，布尔语义保留）", async (t) => {
     const script = [];
     const sandbox = await makeSandbox(t, { script });
     const answerPath = join(sandbox.project, "answer.txt");
