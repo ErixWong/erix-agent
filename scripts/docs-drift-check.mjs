@@ -77,6 +77,13 @@
 //                 `CHANGELOG.md` **不进棘轮面**：历史条目写的是**当时**那份代码的行号，改掉等于伪造历史
 //                 （与 #278 对简称「只登记不改写」同口径）；那些行号仍由 `paths` 校文件存在性，只是不进这个数。
 //
+//  13. cli-flags CLI 旗标清单（issue #391 R4）：`bin/cli.js` 帮助文本里 `erix chat …` / `erix repl …`
+//                 两条 usage 行的旗标集合，与 `README.md` / `README_cn.md` 的 usage 行**双向逐处**对账
+//                 （README 少一个红、多一个红、改名红，错误点名旗标 + 文档 + 命令）。别名（`-c|--continue`、
+//                 `-r`、`--no-final-guard`）一律计入。现场：`--require-deliverable` 进了帮助文本、契约、
+//                 升级指南，两份 README 的 usage 行一个都没写，而所有门禁一路绿。放行口
+//                 `CLI_FLAG_EXEMPTIONS` 现在为空，且条目空转即红（#210 R2 惯例）。
+//
 // 锚点粒度（issue #210 R3：**别把「存在性」锚点误当成「文档里删一处提及就会红」**）：
 //   · 存在性（每档被检查文档至少命中一次即可；同一句里删掉额外一处提及不会红）：
 //       defaults 的全部条目（`must` 是「文档里存在这个正则」，`mustNot` 才是逐处的）、
@@ -86,7 +93,8 @@
 //       pkg-block 的 files/exports（双向对称）、anchors 的清单/枚举/单位规则、
 //       markers 的 marker 字面量（#272）、baseline 的棘轮当前值（#274）、
 //       toolfact 的五个字段声明面（工单 261014，与 TOOL_RESULT_CONTRACT 双向对称）、
-//       symbols 的「符号 + 文件」锚点（#286 T-a：每一处都要在被引文件里抽到该符号的声明）
+//       symbols 的「符号 + 文件」锚点（#286 T-a：每一处都要在被引文件里抽到该符号的声明）、
+//       cli-flags 的旗标清单（#391 R4：帮助文本 ⇄ 两份 README 的 usage 行双向逐处，缺/多/改名都红）
 //   · 只减不增的棘轮（比的是「还剩多少」：新增即红，变少则必须降基线并写理由）：
 //       bare-lines 的裸行号引用数（#286 T-a 起，现基线 232，与 `check:types` 的 BASELINE_ROOT 同构）
 //   · 中英对账（比的是处数与数量级）：skeleton 的标题数与层级序列（README **与** AGENTS 两对）、
@@ -2023,8 +2031,13 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  （「悬空 `tool_use` 先结清再注入」那一颗 + 「`metrics.verified` 不等于 `verification.status`」那一颗）
  *  按同一红线用符号锚点引用 `PENDING_TOOL_RESULT_TEXT`（`src/loop/orchestrator.js`）——`--verbose` 实测
  *  **103 组 / 262 处**（契约 EN 73 → 74 / CN 72 → 73，其余不变）。
- *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 103;
+ *    *    *  （issue #391，98 → **100**，+2 组 / 247 → 252 处）：契约中英「交付物机器判据」小节
+ *  成对新增两个锚点——`createDeliverableChecks` 与 `createNamedDeliverableChecks`（都在
+ *  `bin/final-guard.js`）：宿主面只给**命名**判据（布尔开关 + 命名路径清单），判据本体必须在文档里
+ *  指到真声明（分支内 `--verbose` 实测 100 组 / 252 处；rebase 到 `2cb3303` 之后为 **105 组 / 264 处**：契约 EN 75 / CN 74）。
+ *
+  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
+const SYMBOL_ANCHOR_MIN_UNIQUE = 105;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
@@ -2313,6 +2326,167 @@ function collectBareLineRefErrors() {
   return out;
 }
 
+// ── 2.9 CLI 旗标清单：`bin/cli.js` 的帮助文本 ⇄ 两份 README 的 usage 行（issue #391 R4）────
+//
+// 为什么要有这一节：#386 切片 2 给 `erix chat` 加了 `--require-deliverable`，帮助文本、契约、
+// 升级指南都写了，**两份 README 的 usage 行都没写**（实测：`README.md` / `README_cn.md` 的 chat 行
+// 同时缺 `--require-deliverable`、`--no-todo`、`--error-log` 三个旗标，而所有门禁一路绿）。
+// README 是宿主唯一会照着敲命令的那一页，而「加旗标的人只改了帮助文本」是一个**结构性**的漂移方向：
+// 帮助与实现住在同一个文件里，改的人看得见；README 在另一个目录，改的人不会想起它。
+//
+// 真值 = `bin/cli.js` 的 `HELP_TEXT` 里 `erix chat …` / `erix repl …` 两条 usage 行的旗标集合；
+// 文档侧 = `README.md` / `README_cn.md` 里 ```text 围栏内同名的两条 usage 行。**双向逐处**：
+// README 少了红、多了红、改名红，错误信息点名是哪个旗标、哪份文档、哪条命令。
+//
+// 覆盖面（为什么只对 chat / repl 两条命令）：`erix --version` / `erix --help` / `erix skills` /
+// `erix mcp` 那四行是单旗标行，两侧写法本就不同（帮助是 `erix --version, -v`，README 也是，但
+// `skills`/`mcp` 只带一个 `--skills-dir`/`--config`），把它们拉进逐处对账只会让门禁对排版敏感；
+// 真正的漂移面是 chat/repl 这两条长 usage 行——旗标一多，漏写就是静默的。
+//
+// 别名（`-c|--continue`、`-r`、`--no-final-guard`）**一律计入真值与文档两侧**：它们是真被接受的
+// 旗标（`--no-final-guard` 是「兼容 no-op」，最容易被当成废话忘掉），把别名排除在外等于允许
+// 「README 少写一个别名」静默通过。短别名 `-c` / `-r` 同样逐字比。
+//
+// 为什么是逐处而不是存在性（AGENTS §「锚点粒度」）：存在性锚点只问「文档里有没有这个字符串」，
+// 于是「README 的 chat 行漏一个旗标、正文别处提过一次」就全绿——本单的病正是「帮助/正文都写了、
+// usage 行没写」。旗标名是定长 token、两侧都是结构化列表，逐字比对不会变成措辞绑架
+// （数值型 defaults 不敢升级到逐处，是因为它们的散文句式多变；这里不存在那个问题）。
+//
+// 放行口（`CLI_FLAG_EXEMPTIONS`）现在**一条也没有**，保留它是因为 #210 R2 的惯例：将来若真出现
+// 「这条旗标对 repl 不适用」，放行必须逐条登记 + 写明理由，而且**条目空转本身就是错误**
+// （那对 (doc, command, flag) 其实并不缺 / 旗标根本不在真值里 / 文档已补上 ⇒ 红），
+// 否则放行表会变成一张永久免死金牌。两条都由 `--self-test` 的反向证钉着。
+
+/** 真值出处：CLI 的帮助文本与 usage 行都在这一个文件里。 */
+const CLI_SOURCE = "bin/cli.js";
+/** 纳入逐处对账的命令（理由见本节节头）。 */
+const CLI_FLAG_COMMANDS = Object.freeze(["chat", "repl"]);
+
+/**
+ * 「某份文档的某条 usage 行可以少写某个旗标」的登记表——**现在是空的，也不该有**。
+ * 条目形状：`{ doc, command, flag, why }`，`why` 是给下一个人看的理由。
+ */
+const CLI_FLAG_EXEMPTIONS = [
+  // { doc: README_CN, command: "repl", flag: "--example", why: "……" }
+];
+
+/** `--self-test` 用：临时替换放行表（与 `SIM_TREE_SHAPE` 同一课：overlay 只改文本，改不动运行时数组）。 */
+let SIM_CLI_FLAG_EXEMPTIONS = null;
+const cliFlagExemptions = () => SIM_CLI_FLAG_EXEMPTIONS ?? CLI_FLAG_EXEMPTIONS;
+
+/** `erix chat …` / `erix repl …` 两条 usage 行（帮助与 README 同一句式，所以同一个提取器）。 */
+function cliUsageLines(text) {
+  const out = new Map();
+  for (const line of String(text ?? "").split("\n")) {
+    const m = /^\s*erix (chat|repl)\s+(\S.*)$/u.exec(line);
+    if (!m) continue;
+    const [, command, rest] = m;
+    if (!out.has(command)) out.set(command, []);
+    out.get(command).push(rest);
+  }
+  return out;
+}
+
+/** 一条 usage 行里的旗标 token（`--final-guard|--no-final-guard`、`[-c|--continue]` 各取两个）。 */
+function cliFlagsOf(text) {
+  return [...new Set(
+    [...String(text ?? "").matchAll(/(?<![\w-])(--?[A-Za-z][\w-]*)/gu)].map((m) => m[1]),
+  )];
+}
+
+/** README 里那份 ```text usage 围栏（找不到就是检查面失效，#164 口径）。 */
+function readmeUsageBlock(rel) {
+  const fences = [...String(textOf(rel) ?? "").matchAll(/```text\n([\s\S]*?)```/gu)]
+    .map((m) => m[1])
+    .filter((body) => /^\s*erix chat\s/mu.test(body));
+  return fences.length === 1 ? fences[0] : null;
+}
+
+function collectCliFlagErrors() {
+  const errors = [];
+  const notes = [];
+  const truth = new Map();
+  const helpLines = cliUsageLines(textOf(CLI_SOURCE));
+  for (const command of CLI_FLAG_COMMANDS) {
+    const lines = helpLines.get(command);
+    if (!lines || lines.length === 0) {
+      errors.push(`cli-flags: 从 ${CLI_SOURCE} 的帮助文本里抽不到 \`erix ${command}\` 的 usage 行——`
+        + "检查面失效（#164 口径：抽不到真值就报错，不许静默放行）");
+      continue;
+    }
+    truth.set(command, cliFlagsOf(lines.join(" ")));
+  }
+  if (errors.length > 0) return errors;
+
+  // 放行表的配置校（#210 R2 惯例：放行必须逐条有效，空转就是错误）
+  const exemptions = cliFlagExemptions();
+  for (const entry of exemptions) {
+    const where = `cli-flags: 放行条目 (${entry?.doc} / ${entry?.command} / ${entry?.flag})`;
+    if (![README_EN, README_CN].includes(entry?.doc)) {
+      errors.push(`${where} 的 doc 不是受检文档（只能是 ${README_EN} 或 ${README_CN}）`);
+      continue;
+    }
+    if (!CLI_FLAG_COMMANDS.includes(entry?.command)) {
+      errors.push(`${where} 的 command 不在受检命令里（只能是 ${CLI_FLAG_COMMANDS.join(" / ")}）`);
+      continue;
+    }
+    if (!truth.get(entry.command).includes(entry?.flag)) {
+      errors.push(`${where} 的 flag 在帮助文本里根本没有——放行一个不存在的旗标等于免死金牌`);
+      continue;
+    }
+    if (typeof entry.why !== "string" || entry.why.trim() === "") {
+      errors.push(`${where} 没有 why（放行必须写明理由，否则下一个人只能靠猜）`);
+      continue;
+    }
+    const block = readmeUsageBlock(entry.doc);
+    const docFlags = block === null
+      ? []
+      : cliFlagsOf((cliUsageLines(block).get(entry.command) ?? []).join(" "));
+    if (docFlags.includes(entry.flag)) {
+      errors.push(`${where} 已经空转：该文档那条 usage 行**已经写了**这个旗标 ⇒ 删掉这条放行`
+        + "（留着一张用不上的放行表，就是给下一次真漂移留的后门）");
+    }
+  }
+
+  for (const doc of [README_EN, README_CN]) {
+    const block = readmeUsageBlock(doc);
+    if (block === null) {
+      errors.push(`cli-flags: ${doc} 里找不到含 \`erix chat\` 的 \`\`\`text usage 围栏（或找到不止一个）——`
+        + "检查面失效：这一节的全部对账都在空跑");
+      continue;
+    }
+    const docLines = cliUsageLines(block);
+    for (const command of CLI_FLAG_COMMANDS) {
+      const docLine = docLines.get(command);
+      if (!docLine) {
+        errors.push(`cli-flags: ${doc} 的 usage 围栏里找不到 \`erix ${command}\` 那一行——`
+          + "整条命令的旗标对账因此空转（删掉整行不是「少写一个旗标」，是检查面失效）");
+        continue;
+      }
+      const docFlags = cliFlagsOf(docLine.join(" "));
+      const truthFlags = truth.get(command);
+      const exempt = new Set(exemptions
+        .filter((entry) => entry.doc === doc && entry.command === command)
+        .map((entry) => entry.flag));
+      for (const flag of truthFlags) {
+        if (docFlags.includes(flag) || exempt.has(flag)) continue;
+        errors.push(`cli-flags: ${doc} 的 \`erix ${command}\` usage 行缺 旗标 ${flag}`
+          + `（${CLI_SOURCE} 的帮助文本里有它）`);
+      }
+      for (const flag of docFlags) {
+        if (truthFlags.includes(flag)) continue;
+        errors.push(`cli-flags: ${doc} 的 \`erix ${command}\` usage 行多出 旗标 ${flag}`
+          + `（${CLI_SOURCE} 的帮助文本里没有它：要么是文档写错了，要么是新旗标没进帮助）`);
+      }
+    }
+  }
+  notes.push(`cli-flags: ${CLI_SOURCE} 的帮助文本 ⇄ 两份 README 的 usage 行逐处对账`
+    + `（${CLI_FLAG_COMMANDS.map((command) => `${command} ${truth.get(command).length} 个旗标`).join(" / ")}；`
+    + `放行条目 ${exemptions.length} 条）`);
+  collectCliFlagErrors.notes = notes;
+  return errors;
+}
+
 // ── 3. README 引用的 package.json 清单（files / exports）────────────────────────
 // issue #210 的**主修项**：这块原先是 fail-open 的——围栏定位靠真值键（`b["./tools"]`、
 // `b.includes("src")`），文档把 `"./tools"` 改名或整个删掉时块就找不到了，于是退化成一条 warn
@@ -2476,6 +2650,7 @@ const EXPECTED_ABSENT_PATHS = new Map([
   ["judge.log", "引擎写入 transcripts/outputs/<runId>/ 的运行产物名，不是仓库文件"],
   ["erix-state/judge.log", "2026-09 基准证据里的宿主侧路径，不在本仓库"],
   ["status.json", "erix_run 在宿主 sessionDir 下写的 job 状态文件名，不是仓库文件"],
+  ["report.md", "#391：`--require-deliverable report.md` / `deliverablePaths: [\"report.md\"]` 举的示例交付物名——它是宿主自己树里才有的文件（本仓当然没有），文档在讲「怎么声明一条命名判据」"],
   ["analysis.md", "#269 复盘：这条引用本身就是「不存在的文件」，CHANGELOG:102 在讲它为什么不存在（#278 把它纳进裸名裁决后必须登记）"],
   ["session-meta.json", "宿主 `~/.erix/session-meta.json`（#168 停读停写的会话归属状态文件），CHANGELOG:158 讲的是宿主侧行为"],
   ["models.json", "宿主 `~/.pi/agent/models.json`（provider 槽位配置），CHANGELOG:200-201 的 e2e 根因在宿主配置里"],
@@ -3283,7 +3458,8 @@ const SKELETON_PAIRS = [
 function collectAllDrift() {
   const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
     ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors(),
-    ...collectSymbolAnchorErrors(), ...collectBareLineRefErrors(), ...collectRefScanCoverageErrors()];
+    ...collectSymbolAnchorErrors(), ...collectBareLineRefErrors(), ...collectRefScanCoverageErrors(),
+    ...collectCliFlagErrors()];
   for (const [, en, cn] of SKELETON_PAIRS) out.push(...collectSkeletonErrors(en === README_EN ? "中英 README" : "中英 AGENTS", en, cn));
   return out;
 }
@@ -3302,6 +3478,8 @@ for (const e of collectSymbolAnchorErrors()) err(e);
 for (const n of collectSymbolAnchorErrors.notes ?? []) note(n);
 for (const e of collectBareLineRefErrors()) err(e);
 for (const n of collectBareLineRefErrors.notes ?? []) note(n);
+for (const e of collectCliFlagErrors()) err(e);
+for (const n of collectCliFlagErrors.notes ?? []) note(n);
 for (const e of collectMarkerLiteralErrors()) err(e);
 for (const n of collectMarkerLiteralErrors.notes ?? []) note(n);
 for (const e of collectBaselineClaimErrors()) err(e);
@@ -4124,11 +4302,54 @@ const SELF_TEST_CASES = [
     },
     expect: [/外部仓前缀 `app_container:` 没有一处引用真正用到它/],
   },
+  // —— issue #391 R4：`cli-flags`（bin/cli.js 帮助文本 ⇄ 两份 README 的 usage 行，双向逐处）——
+  {
+    label: "#391 R4：README EN 的 chat usage 行删掉 `[--require-deliverable [<path>]]` ⇒ 红并点名那个旗标",
+    overlay: { [README_EN]: (t) => t.replace(" [--require-deliverable [<path>]]", "", 1) },
+    expect: [/cli-flags: README\.md 的 `erix chat` usage 行缺 旗标 --require-deliverable/],
+    expectFiles: [README_EN],
+  },
+  {
+    label: "#391 R4：README_cn 的 repl usage 行凭空多写一个旗标 ⇒ 红（双向：多也红）",
+    // 靶点取 repl 行**末尾**（`[--require-deliverable [<path>]]` 在 chat 行里也出现一次，裸 replace 会打到 chat 上）
+    overlay: { [README_CN]: (t) => t.replace("[--require-deliverable [<path>]]\nerix skills", "[--require-deliverable [<path>]] [--zzz-flag]\nerix skills", 1) },
+    expect: [/cli-flags: README_cn\.md 的 `erix repl` usage 行多出 旗标 --zzz-flag/],
+    expectFiles: [README_CN],
+  },
+  {
+    label: "#391 R4：帮助文本侧（真值）加一个新旗标 ⇒ 中英两份 README 同时红（这才是「加旗标忘了文档」的形状）",
+    overlay: { "bin/cli.js": (t) => t.replace("[--require-deliverable [<path>]] [--no-notes]", "[--require-deliverable [<path>]] [--zzz-flag] [--no-notes]", 1) },
+    expect: [/cli-flags: README\.md 的 `erix chat` usage 行缺 旗标 --zzz-flag/,
+      /cli-flags: README_cn\.md 的 `erix chat` usage 行缺 旗标 --zzz-flag/],
+    expectFiles: [README_EN, README_CN],
+  },
+  {
+    label: "#391 R4（放行证）：把 README chat 行里两个旗标**对调顺序** ⇒ 仍然绿（逐处比对的是集合，不是排版）",
+    overlay: {
+      [README_EN]: (t) => t.replace("[--final-guard|--no-final-guard] [--require-deliverable [<path>]]", "[--require-deliverable [<path>]] [--final-guard|--no-final-guard]", 1),
+    },
+    expectGreen: true,
+  },
+  {
+    label: "#391 R4（放行表空转）：登记一条「README 已经写了」的放行 ⇒ 红（#210 R2 惯例：用不上的放行就是后门）",
+    simulateCliFlagExemptions: [
+      { doc: README_EN, command: "chat", flag: "--require-deliverable", why: "测试用：这一条其实不需要放行" },
+    ],
+    expect: [/cli-flags: 放行条目 \(README\.md \/ chat \/ --require-deliverable\) 已经空转/],
+  },
+  {
+    label: "#391 R4（放行分支有效）：README 删掉一个旗标 + 为它登记一条放行 ⇒ 绿（证明放行真的被读到，不是恒绿）",
+    overlay: { [README_EN]: (t) => t.replace(" [--require-deliverable [<path>]]", "", 1) },
+    simulateCliFlagExemptions: [
+      { doc: README_EN, command: "chat", flag: "--require-deliverable", why: "测试用：这一条确实是刻意的例外" },
+    ],
+    expectGreen: true,
+  },
 ];
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 99;   // 工单 261021-03 B1 加了 6 例前缀反向证（实测 **103** 例：#337 又加 2 例目录规则反向证，修前 95 例；下限留 4 例余量给并行分支，见上：别按当天条数写死）
+const MIN_SELF_TEST_CASES = 99;   // 工单 261021-03 B1 加了 6 例前缀反向证（实测 **109** 例：#337 又加 2 例目录规则反向证，修前 95 例；#391 R4 又加 6 例 `cli-flags` 反向证/放行证；下限留余量给并行分支，见上：别按当天条数写死）
 
 function runSelfTest() {
   const run = () => collectAllDrift();
@@ -4213,6 +4434,10 @@ function runSelfTest() {
       dirClassSaved = [pattern, IGNORED_DIR_CLASSES.get(pattern) ?? null];
       IGNORED_DIR_CLASSES.set(pattern, { kind: c.simulateIgnoreDirClass.kind, why: c.simulateIgnoreDirClass.why });
     }
+    // #391 R4：CLI 旗标放行表的配置口子（与 simulateLooseDecl / simulateIgnoreDirClass 同一课：
+    // overlay 只改文本，改不动运行时那个数组）。放行分支与「空转即红」两条反向证都靠它。
+    const cliExemptSaved = SIM_CLI_FLAG_EXEMPTIONS;
+    if (c.simulateCliFlagExemptions) SIM_CLI_FLAG_EXEMPTIONS = c.simulateCliFlagExemptions;
     let errs = [];
     let landing = null;    // #302：夹具有没有真的落上（null = 本例不挂夹具）
     let afterWhy = null;   // #337：assertAfter 必须在配置口子**还挂着**的时候问（否则临时登记已被还原）
@@ -4222,6 +4447,7 @@ function runSelfTest() {
       if (c.assertAfter) afterWhy = c.assertAfter({ errs });
     } finally {
       SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
+      SIM_CLI_FLAG_EXEMPTIONS = cliExemptSaved;   // 放行表一条也不许留在全局
       if (looseDeclSaved) looseDeclSaved[0].decl = looseDeclSaved[1];   // 判据必须还原，别把探针留在表里
       if (dirClassSaved) {                                              // 同上：临时登记的类别一条也不许留在表里
         const [pattern, prev] = dirClassSaved;

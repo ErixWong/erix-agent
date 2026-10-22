@@ -22,6 +22,8 @@ import { safeRunId } from "../../src/store/file.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
 import { makeTmp } from "../helpers/tmp.js";
+// #391 R5/R1：交付物判据本体就在 bin/final-guard.js（宿主面只给命名开关 / 命名路径，不开放谓词）。
+import { createDeliverableChecks, createNamedDeliverableChecks } from "../../bin/final-guard.js";
 import {
   ENGINE_FINAL_GUARD_MAX_RETRIES,
   FINAL_DRAFT_SECTIONS,
@@ -74,6 +76,8 @@ function fakeLib(overrides = {}) {
       createCliTools: () => ({ tools: [], executeTool: async () => "unused", truncateResult: (t) => t }),
       truncateResult: (text) => text,
     },
+    // #391 R5/R1：与 loadErixAgent 的真实返回同构（声明了交付物判据的 run 会读这两个工厂）。
+    binFinalGuard: { createDeliverableChecks, createNamedDeliverableChecks },
     ...overrides,
   };
 }
@@ -1666,4 +1670,285 @@ test("#314 R1：finalGuard 只认真布尔；没开启时传超时是 bad_params
     () => core.parseRunParams({ task: "t", cwd: "/tmp", finalGuardTimeoutMs: 5_000 }),
     (error) => error.code === "bad_params" && /只在 finalGuard: true 时有意义/u.test(error.message),
   );
+});
+
+// ---------------------------------------------------------------------------
+// #391 R5：erix_run 的参数面拿到**命名**交付物判据（`requireDeliverable`），复用
+// `bin/final-guard.js` 的 `createDeliverableChecks()`。不开放宿主自定义 `check` 函数入口
+// （跨扩展边界传函数不安全）。全部离线：真 runToolLoop + fake provider + 注入的谓词。
+// ---------------------------------------------------------------------------
+
+test("#391 R5：requireDeliverable 只认真布尔、必须与 finalGuard 同用、默认关时 params 里没有这个键", () => {
+  for (const value of ["true", 1, "yes", {}]) {
+    assert.throws(
+      () => core.parseRunParams({ task: "t", cwd: "/tmp", finalGuard: true, requireDeliverable: value }),
+      (error) => error.code === "bad_params" && /requireDeliverable 只能是 true \| false/u.test(error.message),
+      `requireDeliverable=${JSON.stringify(value)} 该报错`,
+    );
+  }
+  // 与 CLI 逐字同口径（#391 R2）：没有 guard 就没有闸门 ⇒ 单独开是显式失败，不是静默空转。
+  assert.throws(
+    () => core.parseRunParams({ task: "t", cwd: "/tmp", requireDeliverable: true }),
+    (error) => error.code === "bad_params" && /只在 finalGuard: true 时有意义/u.test(error.message),
+  );
+  // 默认路径零变化：false / 没传都与既有形状逐字同形。
+  const bare = { task: "t", cwd: "/tmp", maxRounds: core.DEFAULT_MAX_ROUNDS, timeoutMs: core.DEFAULT_TIMEOUT_MS };
+  assert.deepEqual(core.parseRunParams({ task: "t", cwd: "/tmp", requireDeliverable: false }), bare);
+  assert.deepEqual(core.parseRunParams({ task: "t", cwd: "/tmp" }), bare);
+  assert.equal(
+    core.parseRunParams({ task: "t", cwd: "/tmp", finalGuard: true, requireDeliverable: true }).requireDeliverable,
+    true,
+  );
+});
+
+test("#391 R5：开了 requireDeliverable ⇒ options 里是 bin/final-guard.js 那条命名判据，默认关时连键都没有", async () => {
+  const captured = {};
+  const payload = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 4 },
+    makeDeps({ provider: createFakeProvider([DRAFT_END_TURN]), captured }),
+  );
+  assert.equal("deliverables" in captured.options, false, "默认关时不许往 options 里塞 deliverables 键");
+  assert.equal(payload.diagnostics.finalGuard.enabled, false);
+
+  const withDeliverable = {};
+  const onPayload = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 4, finalGuard: true, requireDeliverable: true },
+    makeDeps({
+      provider: createFakeProvider([DRAFT_END_TURN]),
+      captured: withDeliverable,
+      extra: { finalGuardInspect: acceptAll },
+    }),
+  );
+  assert.ok(Array.isArray(withDeliverable.options.deliverables), "开了开关却没把判据交给引擎（就是静默空转）");
+  assert.deepEqual(withDeliverable.options.deliverables.map((entry) => entry.name), ["files_written_exist"]);
+  assert.equal(typeof withDeliverable.options.deliverables[0].check, "function");
+  // 判据口径必须与 CLI 那一份同源（同一个工厂函数，不是手抄第二份）
+  const { createDeliverableChecks } = await import("../../bin/final-guard.js");
+  assert.equal(withDeliverable.options.deliverables[0].name, createDeliverableChecks()[0].name);
+  // 成本口径：1 条判据与 guard 共享同一 finalGuardTimeoutMs ⇒ 每次 attempt 的上限翻倍
+  assert.equal(onPayload.diagnostics.finalGuard.deliverableCriteria, 1);
+  assert.equal(
+    onPayload.diagnostics.finalGuard.worstCaseExtraMs,
+    3 * 2 * FINAL_GUARD_TIMEOUT_MS,
+    "判据跑在 guard 之前、共用同一预算 ⇒ 最坏开销必须重算成 3 × (1 + 判据条数) × 上限",
+  );
+  assert.match(core.formatPayloadForModel(onPayload), /交付物判据 1 条/u);
+});
+
+test("#391 R5：判据不成立 + guard accept ⇒ unverified:deliverables_failed（闸门真的在跑）", async () => {
+  const missing = path.join(repoRoot, "definitely-not-written-by-this-run.txt");
+  const writeThenLie = {
+    content: [{ type: "tool_use", id: "w1", name: "writeFile", input: { path: missing, content: "42" } }],
+    stopReason: "tool_use",
+    usage: { input_tokens: 1, output_tokens: 1 },
+  };
+  const payload = await core.runErixRun(
+    { task: "写一个不存在的文件", cwd: repoRoot, maxRounds: 4, finalGuard: true, requireDeliverable: true },
+    makeDeps({
+      provider: createFakeProvider([writeThenLie, DRAFT_END_TURN]),
+      extra: {
+        finalGuardInspect: acceptAll,
+        // 内层工具面：声明了写路径但**不真写**（判据的判据是磁盘事实，不是模型的嘴）
+        createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
+      },
+    }),
+  );
+  assert.equal(payload.verification.status, "unverified", JSON.stringify(payload.verification));
+  assert.equal(payload.verification.reason, "deliverables_failed");
+  assert.equal(payload.verification.metrics.deliverables_checked, 1);
+  assert.equal(payload.verification.metrics.deliverables_failed, 1);
+});
+
+test("#391 R5：库面缺 bin/final-guard.js ⇒ lib_missing 终局（不静默降级成「没有判据」）", async () => {
+  const lib = fakeLib();
+  delete lib.binFinalGuard;
+  // runErixRun 把装配期错误也转成载荷（`ok:false` + `error.code`），所以这里断言载荷而不是抛错。
+  const payload = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 3, finalGuard: true, requireDeliverable: true },
+    makeDeps({ provider: createFakeProvider([]), lib }),
+  );
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error.code, "lib_missing");
+  assert.match(payload.error.message, /createDeliverableChecks/u);
+  assert.equal(payload.verification, undefined, "装配期就失败了，不该出现任何 verification 结论");
+});
+
+// ---------------------------------------------------------------------------
+// #391 R1：`deliverablePaths` = **命名**交付物判据（「这次任务必须交付这些文件」）。
+// 与上面的布尔开关是两种语义（布尔那条在模型什么都不声明时空集合恒真 ⇒ 一次工具都没调也 verified）。
+// 判据本体复用 `bin/final-guard.js` 的 `createNamedDeliverableChecks()`，本层不手抄第二份口径。
+// ---------------------------------------------------------------------------
+
+test("#391 R1：deliverablePaths 逐项校验（非数组 / 空数组 / 空串 / 超限 / 重复 / 缺 finalGuard / 合计超限）", () => {
+  const base = { task: "t", cwd: "/tmp", finalGuard: true };
+  const code = (fn) => {
+    try {
+      fn();
+      return "no-throw";
+    } catch (error) {
+      return error.code;
+    }
+  };
+  // 非数组
+  for (const value of ["report.md", { 0: "report.md" }, 42, true]) {
+    assert.equal(code(() => core.parseRunParams({ ...base, deliverablePaths: value })), "bad_params",
+      `deliverablePaths=${JSON.stringify(value)} 该报 bad_params`);
+  }
+  // 空数组：空集合的判据集合恒真 = #391 要杀的真空通过形状，不能当「没声明」吞掉
+  assert.equal(code(() => core.parseRunParams({ ...base, deliverablePaths: [] })), "bad_params");
+  assert.throws(
+    () => core.parseRunParams({ ...base, deliverablePaths: [] }),
+    /至少一条/u,
+  );
+  // 空串 / 非字符串成员
+  for (const value of [[""], ["  "], ["ok.md", 42], ["ok.md", null]]) {
+    assert.equal(code(() => core.parseRunParams({ ...base, deliverablePaths: value })), "bad_params",
+      `deliverablePaths=${JSON.stringify(value)} 该报 bad_params`);
+  }
+  // 条数上限（引擎 DELIVERABLES_LIMIT）
+  const tooMany = Array.from({ length: core.DELIVERABLE_PATHS_LIMIT + 1 }, (_, index) => `f${index}.md`);
+  assert.equal(code(() => core.parseRunParams({ ...base, deliverablePaths: tooMany })), "bad_params");
+  assert.throws(() => core.parseRunParams({ ...base, deliverablePaths: tooMany }), /DELIVERABLES_LIMIT/u);
+  // 重复路径：判据名 = 路径，引擎要求同一 run 内唯一 ⇒ 宿主侧就挡
+  assert.equal(code(() => core.parseRunParams({ ...base, deliverablePaths: ["a.md", "a.md"] })), "bad_params");
+  // 必须与 finalGuard 同用（与 requireDeliverable 同一条闸门口径）
+  assert.equal(code(() => core.parseRunParams({ task: "t", cwd: "/tmp", deliverablePaths: ["a.md"] })), "bad_params");
+  assert.throws(
+    () => core.parseRunParams({ task: "t", cwd: "/tmp", deliverablePaths: ["a.md"] }),
+    /只在 finalGuard: true 时有意义/u,
+  );
+  // 合计上限：布尔那条也占一个槽位
+  const full = Array.from({ length: core.DELIVERABLE_PATHS_LIMIT }, (_, index) => `f${index}.md`);
+  assert.equal(
+    code(() => core.parseRunParams({ ...base, requireDeliverable: true, deliverablePaths: full })),
+    "bad_params",
+  );
+  // 正面：合法清单原样进 params（路径一个字都不改，含空格与绝对路径）
+  const ok = core.parseRunParams({
+    ...base,
+    deliverablePaths: ["report.md", "/abs/already/absolute.md", "with space.md"],
+  });
+  assert.deepEqual(ok.deliverablePaths, ["report.md", "/abs/already/absolute.md", "with space.md"]);
+  // 默认路径零变化：没传就没有这个键（不是空数组）
+  assert.equal("deliverablePaths" in core.parseRunParams({ task: "t", cwd: "/tmp" }), false);
+});
+
+test("#391 R1：DELIVERABLE_PATHS_LIMIT 与引擎 DELIVERABLES_LIMIT 同值（宿主侧前置挡不许自己发明一个数）", async () => {
+  const { DELIVERABLES_LIMIT } = await import("../../src/loop/deliverables.js");
+  assert.equal(core.DELIVERABLE_PATHS_LIMIT, DELIVERABLES_LIMIT);
+});
+
+test("#391 R1：命名判据交给引擎时 name = 声明路径、check 按 facts.cwd 解析（引擎不 join）", async () => {
+  const captured = {};
+  await core.runErixRun(
+    {
+      task: "交付 report.md",
+      cwd: repoRoot,
+      maxRounds: 4,
+      finalGuard: true,
+      deliverablePaths: ["report.md", path.join(repoRoot, "absolute.md")],
+    },
+    makeDeps({
+      provider: createFakeProvider([DRAFT_END_TURN]),
+      captured,
+      extra: { finalGuardInspect: acceptAll },
+    }),
+  );
+  const criteria = captured.options.deliverables;
+  assert.deepEqual(criteria.map((entry) => entry.name), ["report.md", path.join(repoRoot, "absolute.md")]);
+  assert.ok(criteria.every((entry) => typeof entry.check === "function"));
+  // 相对路径按**判据收到的 cwd** 解析，不是进程 cwd：cwd 指到另一个临时目录时就该看那个目录。
+  const dir = await tempDir("erix-run-named-");
+  const probe = criteria[0].check({ cwd: dir });
+  assert.equal(probe.ok, false, "cwd 里没有 report.md，判据必须 ok:false");
+  assert.ok(probe.detail.includes(path.join(dir, "report.md")), probe.detail);
+  writeFileSync(path.join(dir, "report.md"), "42");
+  assert.equal(criteria[0].check({ cwd: dir }), true);
+  // 没有 cwd ⇒ 相对路径 fail-closed（#391 的原始症状：宿主没接线就不许判通过）
+  const noCwd = criteria[0].check({});
+  assert.equal(noCwd.ok, false);
+  assert.match(noCwd.detail, /没把 cwd 交给 runToolLoop/u);
+  // 绝对路径不需要 cwd（给不给 cwd 都按那条绝对路径判）
+  for (const facts of [{ cwd: dir }, {}]) {
+    const absoluteProbe = criteria[1].check(facts);
+    assert.equal(absoluteProbe.ok, false);
+    assert.match(absoluteProbe.detail, /不在盘上/u);
+  }
+  // 两个都声明 ⇒ 两条判据都在（布尔那条排在前），条数计入成本口径
+  const both = {};
+  const payload = await core.runErixRun(
+    {
+      task: "两样都要核",
+      cwd: repoRoot,
+      maxRounds: 4,
+      finalGuard: true,
+      requireDeliverable: true,
+      deliverablePaths: ["report.md"],
+    },
+    makeDeps({
+      provider: createFakeProvider([DRAFT_END_TURN]),
+      captured: both,
+      extra: { finalGuardInspect: acceptAll },
+    }),
+  );
+  assert.deepEqual(both.options.deliverables.map((entry) => entry.name), ["files_written_exist", "report.md"]);
+  assert.equal(payload.diagnostics.finalGuard.deliverableCriteria, 2);
+  assert.equal(payload.diagnostics.finalGuard.worstCaseExtraMs, 3 * 3 * FINAL_GUARD_TIMEOUT_MS);
+});
+
+test("#391 R1：模型一次工具都没调 + 命名交付物不在盘上 ⇒ unverified:deliverables_failed（布尔那条会放它过去）", async () => {
+  const missing = path.join(repoRoot, "must-deliver-but-absent.md");
+  assert.equal(existsSync(missing), false, "这条用例要求该文件一开始就不在盘上");
+  // ① 布尔那条（#391 的真空通过）：模型什么都没声明 ⇒ 空集合恒真 ⇒ 判据放行
+  const booleanOnly = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 4, finalGuard: true, requireDeliverable: true },
+    makeDeps({ provider: createFakeProvider([DRAFT_END_TURN]), extra: { finalGuardInspect: acceptAll } }),
+  );
+  assert.equal(booleanOnly.verification.status, "verified",
+    "布尔判据在「什么都没声明」时恒真——这正是 #391 报的真空通过，本条把它当**现状事实**钉住");
+  // ② 命名那条：同一次 run 的同一个终稿，只是多了一条宿主清单 ⇒ 判不过
+  const named = await core.runErixRun(
+    {
+      task: "改一行",
+      cwd: repoRoot,
+      maxRounds: 4,
+      finalGuard: true,
+      deliverablePaths: [path.basename(missing)],
+    },
+    makeDeps({ provider: createFakeProvider([DRAFT_END_TURN]), extra: { finalGuardInspect: acceptAll } }),
+  );
+  assert.equal(named.verification.status, "unverified", JSON.stringify(named.verification));
+  assert.equal(named.verification.reason, "deliverables_failed");
+  assert.equal(named.verification.metrics.deliverables_checked, 1);
+  assert.equal(named.verification.metrics.deliverables_failed, 1);
+  assert.equal(named.termination.reason, "end_turn", "判据只拦盖章，不改终止原因");
+});
+
+test("#391 R1：命名交付物真在盘上 ⇒ verified（判据不是恒假）", async () => {
+  const dir = await tempDir("erix-run-named-ok-");
+  writeFileSync(path.join(dir, "report.md"), "# done\n");
+  const payload = await core.runErixRun(
+    {
+      task: "交付 report.md",
+      cwd: dir,
+      maxRounds: 4,
+      finalGuard: true,
+      deliverablePaths: ["report.md"],
+    },
+    makeDeps({ provider: createFakeProvider([DRAFT_END_TURN]), extra: { finalGuardInspect: acceptAll } }),
+  );
+  assert.equal(payload.verification.status, "verified", JSON.stringify(payload.verification));
+  assert.equal(payload.verification.metrics.deliverables_checked, 1);
+  assert.equal(payload.verification.metrics.deliverables_failed, 0);
+});
+
+test("#391 R1：库面缺 createNamedDeliverableChecks ⇒ lib_missing（不静默降级成「没有判据」）", async () => {
+  const lib = fakeLib({ binFinalGuard: { createDeliverableChecks } });
+  const payload = await core.runErixRun(
+    { task: "t", cwd: repoRoot, maxRounds: 3, finalGuard: true, deliverablePaths: ["a.md"] },
+    makeDeps({ provider: createFakeProvider([]), lib }),
+  );
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error.code, "lib_missing");
+  assert.match(payload.error.message, /createNamedDeliverableChecks/u);
 });

@@ -64,7 +64,7 @@ scripts/          # experiment scripts and results
 | `npm test` | Full test suite (`node --test`) |
 | `node --check <file>` | Syntax safety check |
 | `npm run check:syntax` | **Full-tree** syntax check (issue #187): `scripts/syntax-check.mjs` walks every tracked `.js`/`.mjs`/`.cjs` from `git ls-files` (`src/`, `bin/`, `scripts/`, `test/`, `examples/`, `fixtures/`) through `node --check`, names each failing file, exits non-zero. `npm run check` deliberately stays the single-file `node --check src/index.js`: `check:docs` verifies that the commands the docs reference actually exist, so replacing it would manufacture doc drift |
-| `npm run check:docs` | Documentation drift check (`scripts/docs-drift-check.mjs`: version claims, quoted `files`/`exports` lists, module map, referenced paths/commands, 14 key defaults read out of the source, EN/CN README skeleton) plus the EN/CN contract heading sync |
+| `npm run check:docs` | Documentation drift check (`scripts/docs-drift-check.mjs`: version claims, quoted `files`/`exports` lists, module map, referenced paths/commands, 14 key defaults read out of the source, the CLI flag list reconciled bidirectionally between `bin/cli.js`'s help text and the two READMEs' usage lines, EN/CN README skeleton) plus the EN/CN contract heading sync |
 | `npm run check:docs:strict` | Same check, promoting its warnings to failures |
 | `node scripts/docs-drift-check.mjs --self-test` | Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one doc claim → red, change the source truth → red, change nothing → green; a mutation that stops applying also fails (issue #210 R2) **Since issue #302 the tree it runs in does not change the verdict**: the two `#280` tree-shape cases run on a **synthetic tree fixture**, so the result no longer depends on whether this machine's untracked `docs/tasks/` directory (never committed) exists — measured on `git archive HEAD | tar -x` checkouts with no / empty / filled `docs/tasks/`: **103 cases, 0 red in all three shapes**. Before #302 it was the other way round: 3 of the cases were known false reds in a checkout without `docs/tasks/` (5 with an empty one), tracked in issue #281 — those reds are gone, so "run it in the development tree" is history, not a current requirement. |
 | `npm run check:docs-examples` | Executes the JavaScript fences in `docs/host-consumer-contract.md` (issue #158) |
@@ -161,7 +161,11 @@ scripts/          # experiment scripts and results
   is compared on its own, so missing / extra / renamed members all go red): the `version` claims, the README
   `files`/`exports` fences — compared **bidirectionally** with `package.json`, so renaming or dropping a key in the doc
   is red, not just adding one — and the list/unit/enum anchors (file-tool list, CLI tool list, vendor skip directories,
-  `formatSize` unit tiers plus every `` `bytes` → `rendered` `` example claim, built-in compaction strategy names).
+  `formatSize` unit tiers plus every `` `bytes` → `rendered` `` example claim, built-in compaction strategy names), plus the
+  `cli-flags` anchor (issue #391 R4: the flag set of the `erix chat` / `erix repl` usage lines is compared **both ways**
+  against `bin/cli.js`'s help text, so a flag added to the help and forgotten in the READMEs is red — and so is one the
+  README invents; aliases like `-c|--continue` and `--no-final-guard` are counted, and its exemption register must stay
+  empty-or-justified, since an idle entry is itself red).
   Those anchors also reconcile the **number of declaration sites between the EN and the CN doc**, which is what catches
   "someone deleted the whole sentence on one side". Every per-occurrence rule carries its reverse proof in
   `node scripts/docs-drift-check.mjs --self-test`; run it after touching `scripts/docs-drift-check.mjs`. The level of
@@ -178,8 +182,8 @@ scripts/          # experiment scripts and results
   `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs`. Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 103` (groups
-  measured today: 103 unique (symbol, file) pairs over 262 occurrences, raised from 32 when the 0.21.0 guide pair
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 105` (groups
+  measured today: 105 unique (symbol, file) pairs over 264 occurrences, raised from 32 when the 0.21.0 guide pair
   landed, again for the #293 fixes to the 0.19.0 guide, again to 45 when #313's contract section merged on top
   of them, again to 53 when #314's host-side guard section landed as a pair, and again to 63 when the 0.21.0 guide
   pair grew the #313 / #314 / #312(b) host sections during the 0.21.0 fold-in (工单 261016-021), reproducible via `--verbose`, and again to 67 when the #326 store-dedup contract section landed as an EN/CN pair, and again to 72 when 架构×2 / 图表×2 / 需求对照×2 and `examples/pi-extension/README.md` joined the coverage (工单 261021-03 B1 — five new groups: `resolvedToolResultTtl`, `markStablePrefix`, `loadModelSlot`, `createProviderForSlot`, `createJsonFileModelConfigProvider`, and again to 75 when the direction-hint archive-row wording landed as an EN/CN contract pair (工单 261021-04 — three new groups: `pendingDirectionHints`, `directionHintText`, `restoreResume`), and again to 77 when the 0.23.0 host-upgrade guide pair landed (工单 261021-12 — `projectTranscriptForDisplay` / `foldMessageRows`), again to 80 when the #361 "row shape on disk is not the shape after `load()`" contract section landed as an EN/CN pair (工单 F2 — three new groups: `isRoundCarrier`, `createMemoryTranscriptStore`, `createFileTranscriptStore`), and again to 95 when the 0.24.0 host-upgrade guide pair landed (工单 261022-17 — fourteen new groups, e.g. `compactionStatsWindow` / `validateRunState` in `src/run-state.js`, `COMPACTION_STATS_STATE_LIMIT` in `src/compact/pipeline.js`, `assertSnapshotPersisted` / `makePersistenceFailure`, `toolMarker` / `displayName` / `searchRootError` / `withDeprecation` in `src/tools/file-tools.js`, plus `BASELINE_WITH_TOOLS` and `makeTmp`), and again to 98 when the #386 `finalGuard` payload contract section
@@ -189,7 +193,7 @@ scripts/          # experiment scripts and results
   in `src/reflection/governor.js`, `applyGovernorExtension` in `src/loop/orchestrator.js`,
   `FINAL_GUARD_EXTENDABLE_REASONS` in `src/loop/termination.js`, `isApiInputOverBudget` in `src/loop/budget.js`), and again to 103 when the
   #393 pending-`tool_use` tail repair landed as an EN/CN contract pair (one new group: `PENDING_TOOL_RESULT_TEXT`
-  in `src/loop/orchestrator.js`)): dropping below it is
+  in `src/loop/orchestrator.js`), again to 105 when #391 的交付物小节中英成对改成「只给命名判据」并新增 `createNamedDeliverableChecks`（工单 V——两个新组：`createDeliverableChecks` 与 `createNamedDeliverableChecks`，都在 `bin/final-guard.js`；`--verbose` 实测 **105 组 / 264 处**，契约 EN 75 / CN 74）): dropping below it is
   red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
   Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
   *`symbol-anchor-span`* (#286 batch T-b1a) is the *per-occurrence* companion of the rule above: when a symbol anchor

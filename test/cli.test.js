@@ -196,6 +196,31 @@ test("CLI formats guard metrics and shows disabled guards explicitly", () => {
     formatGuardMetrics({ status: "skipped", reason: "no_final_guard" }),
     "guard=off",
   );
+  // issue #391 R3：声明了交付物判据时（引擎才写这两个计数）多渲染两个键。
+  assert.equal(
+    formatGuardMetrics({
+      status: "unverified",
+      reason: "deliverables_failed",
+      metrics: {
+        verified: 0,
+        skipped: 0,
+        revised: 0,
+        unverified: 1,
+        guard_error: 0,
+        deliverables_checked: 1,
+        deliverables_failed: 1,
+      },
+    }),
+    "guard={verified:0,skipped:0,revised:0,unverified:1,guard_error:0,deliverables_checked:1,deliverables_failed:1}",
+  );
+  // 未声明判据时那一行**逐字不变**（既有五个键、同序、无多余尾巴）——上面第一条就是这一格的锁。
+  assert.equal(
+    formatGuardMetrics({
+      status: "verified",
+      metrics: { verified: 1, skipped: 0, revised: 0, unverified: 0, guard_error: 0 },
+    }),
+    "guard={verified:1,skipped:0,revised:0,unverified:0,guard_error:0}",
+  );
 });
 
 test("archive guidance is present once in the system prompt", async () => {
@@ -1442,10 +1467,21 @@ test("#326-D 账本里有 messages 缺失/为 null 的老行时续跑也不崩",
 });
 
 // issue #386 切片 2：CLI 侧**默认关闭**的交付物判据（`--require-deliverable`）。
+// issue #391 R2：它必须与 `--final-guard` 同用——单独给是 usage error（不是静默空转）。
 test("parseChatArgs parses --require-deliverable, and it is off by default (issue #386 slice 2)", () => {
   assert.equal(parseChatArgs(["hello"], "/tmp/project").requireDeliverable, undefined,
     "默认必须关闭：开了它会改掉「成功 + 无 --final-guard ⇒ exit 4」的既有退出码承诺");
-  assert.equal(parseChatArgs(["hello", "--require-deliverable"], "/tmp/project").requireDeliverable, true);
+  // #391 R2：这一格从「单独给也能解析」改成「必须与 --final-guard 同用」——**不是放宽**：
+  // 单独给的那一格现在由下面那条 assert.throws 钉着（闸门跑在 guard 之内，没有 guard 就没有闸门，
+  // 旧行为是静默空转：用户以为在要求交付物，实际一个字都没核）。
+  assert.equal(
+    parseChatArgs(["hello", "--final-guard", "--require-deliverable"], "/tmp/project").requireDeliverable,
+    true,
+  );
+  assert.throws(
+    () => parseChatArgs(["hello", "--require-deliverable"], "/tmp/project"),
+    /--require-deliverable 必须与 --final-guard 同用/u,
+  );
   assert.throws(
     () => parseChatArgs(["hello", "--require-deliverable", "--require-deliverable"], "/tmp/project"),
     /参数重复/u,
@@ -1473,4 +1509,151 @@ test("createDeliverableChecks 判的是原始写路径的磁盘事实（fileWrit
   // 没写过任何文件 ⇒ 通过（「这个 run 没声明写文件」不是「交付物缺失」）。
   assert.equal(criterion.check({}), true);
   assert.equal(criterion.check({ fileWrites: [] }), true);
+});
+
+// issue #391 R1：**命名**交付物判据（`--require-deliverable <path>` / `deliverablePaths`）。
+// 与上面那条布尔判据是两个不同的问题：布尔那条在模型什么都不声明时空集合恒真（一次工具都没调也通过），
+// 命名这条只读宿主声明的清单 ⇒ 模型啥都没写照样判不过。
+test("createNamedDeliverableChecks：每条一个判据、name = 声明路径、相对路径按 facts.cwd 解析", async () => {
+  const { createNamedDeliverableChecks, DELIVERABLES_LIMIT } = await import("../bin/final-guard.js");
+  const { DELIVERABLES_LIMIT: ENGINE_LIMIT } = await import("../src/loop/deliverables.js");
+  // 宿主侧前置挡用的上限必须是引擎那个数（不是自己发明的第二个数）
+  assert.equal(DELIVERABLES_LIMIT, ENGINE_LIMIT);
+
+  const dir = await makeTmp("erix-cli-named-deliverable-");
+  const relative = "report.md";
+  const absolute = `${dir}/nested/absolute.txt`;
+  await mkdir(join(dir, "nested"), { recursive: true });
+  await writeFile(join(dir, relative), "42");
+
+  const criteria = createNamedDeliverableChecks([relative, absolute]);
+  assert.deepEqual(criteria.map((entry) => entry.name), [relative, absolute], "判据名就是声明的路径本身");
+  // 相对路径：按 facts.cwd 解析（引擎不 join，它把宿主传的 cwd 原样放进 payload）
+  assert.equal(criteria[0].check({ cwd: dir }), true);
+  const otherDir = await makeTmp("erix-cli-named-other-");
+  const notThere = criteria[0].check({ cwd: otherDir });
+  assert.equal(notThere.ok, false);
+  assert.ok(notThere.detail.includes(join(otherDir, relative)), `detail 没点名解析后的绝对路径：${notThere.detail}`);
+  // 没有 cwd ⇒ 相对路径 fail-closed（#391 的原始症状：宿主没接线就不许判通过）
+  const noCwd = criteria[0].check({});
+  assert.equal(noCwd.ok, false);
+  assert.match(noCwd.detail, /没把 cwd 交给 runToolLoop/u);
+  // 绝对路径不需要 cwd，且判的是磁盘事实（不是「文件被写过」的台账）
+  await writeFile(absolute, "1");
+  assert.equal(criteria[1].check({}), true);
+  assert.equal(criteria[1].check({ cwd: dir }), true);
+  // 空清单 ⇒ 空数组（不抛、也不伪造一条「恒真」判据；宿主侧负责把空清单挡在门外）
+  assert.deepEqual(createNamedDeliverableChecks([]), []);
+  assert.deepEqual(createNamedDeliverableChecks(undefined), []);
+});
+
+// issue #391 R2：`--require-deliverable <path>`（可重复）＝**命名**交付物判据。
+// 裸用保持现语义（布尔判据），带值 = 「这次任务必须交付这些文件」——两种语义在 CLI 层也分开。
+test("parseChatArgs：--require-deliverable 带值 = 命名路径（可重复，空格与 = 两种写法都收）", () => {
+  const parse = (args) => parseChatArgs(["hello", "--final-guard", ...args], "/tmp/project");
+  // 默认：既没有布尔开关，也没有命名清单
+  const bare = parseChatArgs(["hello"], "/tmp/project");
+  assert.equal(bare.requireDeliverable, undefined);
+  assert.equal(bare.deliverablePaths, undefined);
+  // 裸用 ⇒ 现语义（布尔那条），deliverablePaths 不出现
+  const flagOnly = parse(["--require-deliverable"]);
+  assert.equal(flagOnly.requireDeliverable, true);
+  assert.equal(flagOnly.deliverablePaths, undefined);
+  // 空格写法（本文件既有惯例）
+  assert.deepEqual(parse(["--require-deliverable", "report.md"]).deliverablePaths, ["report.md"]);
+  // `=` 写法（可重复的带值旗标用 = 更清楚）
+  assert.deepEqual(parse(["--require-deliverable=report.md"]).deliverablePaths, ["report.md"]);
+  // 可重复：两种写法混用也行，顺序即声明顺序
+  const repeated = parse(["--require-deliverable=a.md", "--require-deliverable", "b.md"]);
+  assert.deepEqual(repeated.deliverablePaths, ["a.md", "b.md"]);
+  assert.equal(repeated.requireDeliverable, undefined, "带值不该顺手把布尔那条也打开");
+  // 两种语义可以同时声明（条数相加，判据两条都跑）
+  const both = parse(["--require-deliverable", "--require-deliverable", "a.md"]);
+  assert.equal(both.requireDeliverable, true);
+  assert.deepEqual(both.deliverablePaths, ["a.md"]);
+});
+
+test("parseChatArgs：--require-deliverable 的坏值逐格报 usage error（空值 / 重复 / 超限 / 缺 guard）", () => {
+  const code = (args) => {
+    try {
+      parseChatArgs(["hello", "--final-guard", ...args], "/tmp/project");
+      return "no-throw";
+    } catch (error) {
+      return error.message;
+    }
+  };
+  assert.match(code(["--require-deliverable="]), /必须是路径/u);
+  assert.match(code(["--require-deliverable=   "]), /必须是路径/u);
+  assert.match(code(["--require-deliverable=a.md", "--require-deliverable=a.md"]), /路径重复/u);
+  const tooMany = Array.from({ length: 21 }, (_, index) => `f${index}.md`);
+  assert.match(code(tooMany.flatMap((name) => ["--require-deliverable", name])), /最多 20 条/u);
+  // 合计上限：布尔那条也占一个槽位（20 条命名 + 裸用 = 21）
+  const full = Array.from({ length: 20 }, (_, index) => `f${index}.md`);
+  assert.match(
+    code(["--require-deliverable", ...full.flatMap((name) => ["--require-deliverable", name])]),
+    /合计最多 20 条/u,
+  );
+  // 命名路径同样必须与 --final-guard 同用（闸门在 guard 之内）
+  assert.throws(
+    () => parseChatArgs(["hello", "--require-deliverable", "report.md"], "/tmp/project"),
+    /--require-deliverable 必须与 --final-guard 同用/u,
+  );
+  // 裸旗标重复仍然报重复（既有断言不动）
+  assert.throws(
+    () => parseChatArgs(["hello", "--final-guard", "--require-deliverable", "--require-deliverable"], "/tmp/project"),
+    /参数重复/u,
+  );
+});
+
+test("runChat：--require-deliverable <path> ⇒ 命名判据真的交给引擎，且默认路径一个键都不多", async () => {
+  const dir = await makeTmp("erix-cli-named-wire-");
+  let captured;
+  const captureLoop = async (options) => {
+    captured = options;
+    return {
+      finalText: "done",
+      messages: [],
+      rounds: 1,
+      truncated: false,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      compactionStats: [],
+    };
+  };
+  try {
+    const configPath = await writeEmptyMcpConfig(dir);
+    const base = {
+      prompt: "hi",
+      dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
+      provider: createFakeProvider([]),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 2,
+      idleTimeout: 0,
+      toolOutput: () => {},
+      loop: captureLoop,
+    };
+    // ① 默认：没有 deliverables 键（引擎「未声明 ⇒ 逐字不变」的回归锚）
+    await runChat({ ...base, session: "named-wire-0" });
+    assert.equal("deliverables" in captured, false, "没声明判据时不许出现 deliverables 键");
+    // ② 命名路径 ⇒ 一条判据，name = 声明的路径；判据拿到的 cwd 就是本次 run 的 cwd
+    await runChat({ ...base, session: "named-wire-1", finalGuard: true, deliverablePaths: ["report.md"], cwd: dir });
+    assert.deepEqual(captured.deliverables.map((entry) => entry.name), ["report.md"]);
+    assert.equal(typeof captured.deliverables[0].check, "function");
+    assert.equal(captured.cwd, dir, "cwd 必须原样交给引擎（判据靠它拼路径）");
+    assert.equal(captured.deliverables[0].check({ cwd: captured.cwd }).ok, false, "盘上没有 report.md ⇒ 判据必须 ok:false");
+    // ③ 两种语义同时声明 ⇒ 两条判据（布尔那条在前，与扩展侧同一顺序）
+    await runChat({
+      ...base,
+      session: "named-wire-2",
+      finalGuard: true,
+      requireDeliverable: true,
+      deliverablePaths: ["a.md", "b.md"],
+      cwd: dir,
+    });
+    assert.deepEqual(captured.deliverables.map((entry) => entry.name), ["files_written_exist", "a.md", "b.md"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

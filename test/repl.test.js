@@ -142,6 +142,110 @@ test("parseReplArgs accepts a tools allowlist", () => {
   );
 });
 
+// issue #391 R3：repl 侧补齐交付物判据旗标（与 chat 同语义，含 R2 的同用要求）。
+test("parseReplArgs：--require-deliverable 默认关、必须与 --final-guard 同用（#391 R3）", () => {
+  assert.equal(parseReplArgs([], "/tmp/project").requireDeliverable, undefined, "默认必须关闭");
+  assert.equal(
+    parseReplArgs(["--final-guard", "--require-deliverable"], "/tmp/project").requireDeliverable,
+    true,
+  );
+  // 单独给 = 静默空转（引擎只在 guard 存在时才核判据）⇒ 显式失败，不自动装天真 guard
+  assert.throws(
+    () => parseReplArgs(["--require-deliverable"], "/tmp/project"),
+    /--require-deliverable 必须与 --final-guard 同用/u,
+  );
+  assert.throws(
+    () => parseReplArgs(["--final-guard", "--require-deliverable", "--require-deliverable"], "/tmp/project"),
+    /参数重复/u,
+  );
+  // 环境变量同样算「有 guard」
+  const saved = process.env.ERIX_FINAL_GUARD;
+  process.env.ERIX_FINAL_GUARD = "1";
+  try {
+    assert.equal(parseReplArgs(["--require-deliverable"], "/tmp/project").requireDeliverable, true);
+  } finally {
+    if (saved === undefined) delete process.env.ERIX_FINAL_GUARD;
+    else process.env.ERIX_FINAL_GUARD = saved;
+  }
+});
+
+test("runRepl：--final-guard + --require-deliverable ⇒ loopOptions.deliverables 是默认判据（#391 R3）", async () => {
+  const home = await makeTmp("erix-repl-deliverable-");
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  let captured;
+  try {
+    const mcpConfigPath = await writeEmptyMcpConfig(home);
+    const run = runRepl(["--session", "repl-deliverable", "--dir", home, "--final-guard", "--require-deliverable", "--config", mcpConfigPath], {
+      input,
+      output,
+      sessionDir: home,
+      home,
+      notesDir: join(home, "notes"),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      providerFactory: () => ({}),
+      loop: async (options) => {
+        captured = options;
+        return {
+          finalText: "done",
+          messages: [],
+          rounds: 1,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          compactionStats: [],
+        };
+      },
+    });
+    input.end("hi\n/exit\n");
+    await run;
+    assert.equal(typeof captured.finalGuard, "function");
+    assert.ok(Array.isArray(captured.deliverables), "旗标开了却没把判据交给引擎（就是静默空转）");
+    assert.deepEqual(captured.deliverables.map((entry) => entry.name), ["files_written_exist"]);
+    assert.equal(typeof captured.deliverables[0].check, "function");
+  } finally {
+    input.destroy();
+    output.destroy();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("runRepl：没给 --require-deliverable ⇒ options 里连 deliverables 键都没有（#391 R3）", async () => {
+  const home = await makeTmp("erix-repl-no-deliverable-");
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  let captured;
+  try {
+    const mcpConfigPath = await writeEmptyMcpConfig(home);
+    const run = runRepl(["--session", "repl-no-deliverable", "--dir", home, "--config", mcpConfigPath], {
+      input,
+      output,
+      sessionDir: home,
+      home,
+      notesDir: join(home, "notes"),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      providerFactory: () => ({}),
+      loop: async (options) => {
+        captured = options;
+        return {
+          finalText: "done",
+          messages: [],
+          rounds: 1,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          compactionStats: [],
+        };
+      },
+    });
+    input.end("hi\n/exit\n");
+    await run;
+    assert.equal("deliverables" in captured, false, "未声明判据时不许往 options 里塞这个键");
+  } finally {
+    input.destroy();
+    output.destroy();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("parseReplArgs rejects an invalid compact budget", () => {
   assert.throws(
     () => parseReplArgs(["--compact-budget", "-1"]),
@@ -720,4 +824,80 @@ test("#326-D 只有事实行的账本：恢复行报 0 条正文而不崩", asyn
   assert.ok(line !== undefined, `没有恢复行：${JSON.stringify(rendered)}`);
   assert.match(line, /（0 条消息/u);
   assert.match(line, /1 条引擎提示/u);
+});
+
+// issue #391 R2/R3：repl 侧的命名交付物判据（与 chat 逐字同口径：裸用 = 布尔，带值 = 命名清单）。
+test("parseReplArgs：--require-deliverable 带值 = 命名路径（可重复，空格与 = 都收，坏值逐格报错）", () => {
+  const parse = (args) => parseReplArgs(["--final-guard", ...args], "/tmp/project", "/tmp/home");
+  assert.deepEqual(parse(["--require-deliverable", "report.md"]).deliverablePaths, ["report.md"]);
+  assert.deepEqual(parse(["--require-deliverable=report.md"]).deliverablePaths, ["report.md"]);
+  assert.deepEqual(
+    parse(["--require-deliverable=a.md", "--require-deliverable", "b.md"]).deliverablePaths,
+    ["a.md", "b.md"],
+  );
+  // 裸用仍是现语义（布尔判据），不顺手造出 deliverablePaths
+  const bare = parse(["--require-deliverable"]);
+  assert.equal(bare.requireDeliverable, true);
+  assert.equal(bare.deliverablePaths, undefined);
+  const code = (args) => {
+    try {
+      parse(args);
+      return "no-throw";
+    } catch (error) {
+      return error.message;
+    }
+  };
+  assert.match(code(["--require-deliverable="]), /必须是路径/u);
+  assert.match(code(["--require-deliverable=a.md", "--require-deliverable=a.md"]), /路径重复/u);
+  assert.match(
+    code(Array.from({ length: 21 }, (_, index) => `--require-deliverable=f${index}.md`)),
+    /最多 20 条/u,
+  );
+  // 命名路径也必须与 --final-guard 同用
+  assert.throws(
+    () => parseReplArgs(["--require-deliverable", "report.md"], "/tmp/project", "/tmp/home"),
+    /--require-deliverable 必须与 --final-guard 同用/u,
+  );
+});
+
+test("runRepl：--require-deliverable <path> ⇒ 命名判据交给引擎（name = 声明路径）", async () => {
+  const home = await makeTmp("erix-repl-named-deliverable-");
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  let captured;
+  try {
+    const mcpConfigPath = await writeEmptyMcpConfig(home);
+    const run = runRepl(
+      ["--session", "repl-named", "--dir", home, "--final-guard", "--require-deliverable", "report.md", "--config", mcpConfigPath],
+      {
+        input,
+        output,
+        sessionDir: home,
+        home,
+        notesDir: join(home, "notes"),
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        providerFactory: () => ({}),
+        loop: async (options) => {
+          captured = options;
+          return {
+            finalText: "done",
+            messages: [],
+            rounds: 1,
+            usage: { input_tokens: 0, output_tokens: 0 },
+            compactionStats: [],
+          };
+        },
+      },
+    );
+    input.end("hi\n/exit\n");
+    await run;
+    assert.deepEqual(captured.deliverables.map((entry) => entry.name), ["report.md"]);
+    // repl 没有 --cwd：判据拿到的 cwd 就是进程工作目录（工具与 session 派生也用这一个）
+    assert.equal(captured.cwd, process.cwd());
+  } finally {
+    input.destroy();
+    output.destroy();
+    await rm(home, { recursive: true, force: true });
+  }
 });

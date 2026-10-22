@@ -890,7 +890,7 @@ export const FILE_TOOL_DEFINITIONS = [
     // 额度事实只活在这一段文字里：模型看不到实现，只能靠它决定一次要多少（issue 261013 R3）。
     // 只写无状态的静态事实（默认值/单位换算），不引入「首次读某文件才提示」这类跨调用状态。
     // issue #267：token 那三个档是**复测值**，不是估的——口径 `estimateTokens(前 200 行)`，样本写死在
-    // `test/tools/file-tools.test.js`：150（`bin/guard-metrics.js`，稀疏短行）/ 2,493（`bin/sessions.js`，
+    // `test/tools/file-tools.test.js`：190（`src/text/label.js`，稀疏短行）/ 2,493（`bin/sessions.js`，
     // 工单样本的中位）/ 4,773（**本文件**，密中文注释 = CJK 密度上限，也是全包 83 个 `src/`+`bin/`+`examples/`
     // `.js` 同一测法的最大值）。旧文案只写「~2,500」，正好压在中位数上、把 1.8× 的尾巴藏了。
     // 复测命令与全量清扫结果见 CHANGELOG 的 #267 条目；`test/tools/file-tools.test.js` 会拿上面三个写死的
@@ -900,15 +900,17 @@ export const FILE_TOOL_DEFINITIONS = [
     // 任何人新增一个 `.js` 都会红在 `test/tools/file-tools.test.js` 上（与 readFile 行为无关的税）。
     // 保留的是**换算式 + 三个档位（fewest / median / most）+ 两个 CJK 锚点**：档位仍是本仓口径的实测样本，
     // 由测试里那 5 个角色文件（fewest / densest / median / most / self）当场复测钉住，改坏数字仍然当场红。
-    // ⚠ 2026-10-22 再复测（issue #386 切片 3：`src/loop/resume-manager.js` 加了 guard 补跑配额的恢复，
-    //   22,014 → 23,104 字节 / 360 → 370 行，均行字节 61.15 → 62.44）：同一个 floor 文件、同一条口径，
-    //   容量 4,286 → 4,198 行（-2.05%，刚好越过 ±2% ⇒ 描述与本测试的记录值必须按实测同步）。
-    //   `median` / `most` / `densest` 三个锚点与那一刀之后逐字相同（它们的文件本单没动）。
     // ⚠ 2026-10-21 复测（工单 261021 那一刀之后）：floor 从 `src/loop/state-view.js` 的 4,387 行换成
     //   `src/loop/resume-manager.js` 的 4,286 行——那一刀净给它加了 62 行中文注释（130 增 / 68 删），
     //   平均行字节 48.6 → 61.1、CJK 字节占比 9% → 24%，于是**它**取代 state-view.js 成为「一次装得最少」那一个。
     //   于是「floor 恰好就是 CJK 最密那一个」这个 2026-10-13 的巧合不再成立，句子拆成**两个各自复测的锚点**；
     //   中位同时从记录值 7,290 换成这次实测的 7,243（main 上实测已是 7,243，只差 0.65% ⇒ 一直没红）。
+    // ⚠ 2026-10-23 复测（issue #391 宿主采用那一刀之后）：中位锚点文件 `bin/repl.js` 加了
+    //   `--require-deliverable` / `loopOptions.deliverables` / `loopOptions.cwd`（+30 行），容量
+    //   7,243 → 7,009；`bin/guard-metrics.js` 加了交付物计数渲染后不再是「一次装得最多」那一个
+    //   （9,772 → 5,671），most 档改钉 `src/messages/openai-normalization.js`（9,587）；token 稀疏档
+    //   同因改钉 `src/text/label.js`（150 → 190）。三个数都是当场复测值，`test/tools/file-tools.test.js`
+    //   的五角色锚点与三档 token 样本逐字钉着它们。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
@@ -916,14 +918,14 @@ export const FILE_TOOL_DEFINITIONS = [
       + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
       + "at the default budget (this codebase, not your tree) \u2014 fewest 4,198 lines "
-      + "(62.4 bytes/line, the widest lines), median 7,243 (36.3), most 9,772 (26.8). Wide lines cut this proportionally "
+      + "(62.4 bytes/line, the widest lines), median 7,130 (36.8), most 9,587 (27.3). Wide lines cut this proportionally "
       + "and CJK cuts hardest (3 UTF-8 bytes per character): the 4,198 floor is itself a CJK-heavy file "
       + "(`src/loop/resume-manager.js`, 25% of its bytes are CJK), while the most CJK-dense file in that sample "
       + "(`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,844. Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
       + "Token budget of the default window, measured with the engine estimator (~3.5 characters per token for non-CJK, "
-      + "~1.5 for CJK, \u00d71.15 margin) on the first 200 lines of real source files shipped here: ~150 tokens where lines "
+      + "~1.5 for CJK, \u00d71.15 margin) on the first 200 lines of real source files shipped here: ~190 tokens where lines "
       + "are short and sparse, ~2,500 on typical source, and ~4,750 where lines are wide, comments are dense or the text "
       + "is CJK \u2014 budget the tail, not the typical case. "
       + "Estimate the budget first and ask for it **in one call** \u2014 when unsure take more (e.g. `limit=1000`) rather than "

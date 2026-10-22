@@ -24,7 +24,11 @@ import { buildCompactionContext, loadCliConfig, normalizeCompactionOption } from
 import {
   buildCaptureRecoveryHint,
   buildCaptureStub,
+  createDeliverableChecks,
   createFinalGuard,
+  createNamedDeliverableChecks,
+  DELIVERABLES_LIMIT,
+  normalizeDeliverablePaths,
 } from "./final-guard.js";
 import {
   closeAllMcpServers,
@@ -55,7 +59,7 @@ const NON_TTY_MESSAGE =
   'repl 需要交互式终端，单次对话请用：erix chat "<prompt>"';
 
 const REPL_HELP_TEXT = `REPL 用法：
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--tools <逗号分隔工具名>]
   --session <id>        会话 ID（默认按工作目录自动派生）。repl 里它是**命名**：新名字直接开新会话；
                       注意 chat 的 --session 是续跑入口，id 不存在会报错（issue #168）
   --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
@@ -65,6 +69,14 @@ const REPL_HELP_TEXT = `REPL 用法：
   --idle-timeout <秒>   无进展自动中止（默认：0=不启用）
   --final-guard         开启终稿 provenance 核验（默认关闭）
   --no-final-guard      兼容别名（默认已关闭，no-op）
+  --require-deliverable [<path>]  交付物机器判据（默认关闭，**必须与 --final-guard 同用**）。
+                      裸用：本会话用写工具**声明过的**每个路径收尾时都必须真的在盘上（读 fileWrites
+                      原始路径）——模型什么都不声明时集合为空 ⇒ 判据恒真，它判的是「没撒谎」。
+                      带值（可重复）：**这次必须交付这些文件**，每条一个判据，相对路径按会话工作目录
+                      （进程目录）解析。两种写法都收：--require-deliverable report.md 与
+                      --require-deliverable=report.md；值可选，裸用时别让后面紧跟非旗标 token。
+                      判据没过 ⇒ 终局 unverified:deliverables_failed。条数合计 ≤ 20，路径不许重复。
+                      没有 guard 就没有闸门 ⇒ 单独给报用法错误（issue #391 R2）
   --tools <名1,名2>     工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
 
 命令：
@@ -238,8 +250,61 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
       options.finalGuard = argument === "--final-guard";
       continue;
     }
+    // issue #391 R2/R3：与 chat **逐字同口径**的交付物判据——裸用 = `createDeliverableChecks()`
+    // （「你说过要写的东西还在盘上吗」），带值（可重复）= `createNamedDeliverableChecks(paths)`
+    // （「这次必须交付的这些文件在盘上吗」）。两种写法都收（空格 / `=`），与 chat 同一份校验器。
+    if (argument === "--require-deliverable" || argument.startsWith("--require-deliverable=")) {
+      let rawValue;
+      if (argument.startsWith("--require-deliverable=")) {
+        rawValue = argument.slice("--require-deliverable=".length);
+        if (rawValue.trim() === "") {
+          usageError("--require-deliverable= 后面必须是路径（裸用请直接写 --require-deliverable）");
+        }
+      } else {
+        const next = args[index + 1];
+        if (next !== undefined && !next.startsWith("-")) {
+          rawValue = next;
+          index += 1;
+        }
+      }
+      if (rawValue === undefined) {
+        if (seenOptions.has(argument)) {
+          usageError(`参数重复：${argument}`);
+        }
+        seenOptions.add(argument);
+        options.requireDeliverable = true;
+      } else {
+        try {
+          options.deliverablePaths = normalizeDeliverablePaths([...(options.deliverablePaths ?? []), rawValue]);
+        } catch (error) {
+          usageError(`--require-deliverable：${error?.message ?? String(error)}`);
+        }
+      }
+      continue;
+    }
 
     usageError(`未知参数：${argument}`);
+  }
+
+  // issue #391 R2/R3：与 chat **逐字同口径**——闸门跑在 guard 之内，没有 guard 就没有闸门，
+  // 单独给 `--require-deliverable` 是静默空转，所以显式失败（不是自动装一个天真 guard：
+  // 那会把「不带 --final-guard 的 repl 会话」的既有承诺面改掉）。
+  if (
+    (options.requireDeliverable === true || (options.deliverablePaths?.length ?? 0) > 0)
+    && options.finalGuard !== true
+    && process.env.ERIX_FINAL_GUARD?.trim() !== "1"
+  ) {
+    usageError(
+      "--require-deliverable 必须与 --final-guard 同用（或设 ERIX_FINAL_GUARD=1）："
+      + "交付物判据是拦 guard accept 的**闸门**，引擎只在 guard 存在时才核它；单独用等于什么都不核",
+    );
+  }
+  // issue #391 R2：条数上限是**合计**的（布尔那条也占一个 `deliverables` 槽位），与 chat 同口径。
+  if ((options.requireDeliverable === true ? 1 : 0) + (options.deliverablePaths?.length ?? 0) > DELIVERABLES_LIMIT) {
+    usageError(
+      `--require-deliverable 的判据合计最多 ${DELIVERABLES_LIMIT} 条（引擎 DELIVERABLES_LIMIT）：`
+      + `裸用 1 条 + 命名路径 ${options.deliverablePaths?.length ?? 0} 条`,
+    );
   }
 
   return options;
@@ -691,6 +756,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         system: systemPrompt,
         ...(resume ? {} : { initialMessages: roundMessages, initialUserMessage: line }),
         maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
+        // issue #391 R1：`cwd` 是引擎的**纯透传**选项（只进 finalGuard/deliverables 的事实载荷）。
+        // repl 没有 `--cwd`：交互会话的工作目录就是进程工作目录，工具/session 派生也都用它，
+        // 再造一个「run 的 cwd 与工具的 cwd 不同」的旗标只会让磁盘判据与写入位置错位。
+        cwd,
         // 交互 REPL 不需要 judge（人在环自己判断）；chat 单次任务的默认开启规则不适用
         reflection: false,
         maxTokens: config.maxOutputTokens,
@@ -709,6 +778,15 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
               finalGuardMaxRetries: 2,
             }
           : {}),
+        // issue #391 R3/R2：与 chat 同一份判据本体，两种语义（裸用 = 声明过的写路径；带值 = 命名清单）。
+        // 未声明 ⇒ 连这个键都没有（引擎的「未声明 deliverables ⇒ 逐字不变」回归锚就靠这个形状）。
+        ...(() => {
+          const criteria = [];
+          if (options.requireDeliverable === true) criteria.push(...createDeliverableChecks());
+          const named = options.deliverablePaths;
+          if (Array.isArray(named) && named.length > 0) criteria.push(...createNamedDeliverableChecks(named));
+          return criteria.length === 0 ? {} : { deliverables: criteria };
+        })(),
         tools: visibleTools,
         executeTool: executeToolForLoop,
         store,

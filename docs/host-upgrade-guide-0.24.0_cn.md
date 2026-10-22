@@ -290,9 +290,36 @@ guard 超时、橡皮章陷阱，以及开销上限（30 轮 × 4KB 工具输出
 无键、事件无字段、裁决不变。`test/loop-deliverables.test.js` 里的回归锚把 `verification`、
 `verification.metrics` 与 payload 的键集合逐字比对本切片之前的行为。
 
-**CLI。** `erix chat --require-deliverable` 打开一条默认判据——「本 run 声明写过的每个路径，
-收尾时都必须真的在盘上」——且**默认关闭**，所以退出码承诺（`0` verified / `2` unverified /
-`3` error / `4` skipped）在你主动要求之前一字不变。
+**CLI。** `erix chat --require-deliverable [<path>]` **默认关闭**，所以退出码承诺（`0` verified /
+`2` unverified / `3` error / `4` skipped）在你主动要求之前一字不变。它可重复，且带**两种语义**
+（issue #391）——按「给不给路径」选，而不是按「你觉得该多严」选：
+
+- **裸用**（`--require-deliverable`）——「本 run 用写工具**声明过的**每个路径，收尾时都必须真的在
+  盘上」（`createDeliverableChecks`，读 `fileWrites`）。模型什么都不声明时空集合恒真 ⇒ 它说的是
+  「没撒谎」，不是「做了事」。
+- **带值**（`--require-deliverable report.md`，或 `--require-deliverable=report.md`；可重复）——
+  「**这次任务必须交付的这些文件**在盘上」（`createNamedDeliverableChecks`，每条一个判据，相对路径
+  按 `cwd` 解析）。模型一次工具都没调也照样判不过。「这次必须交付 `report.md`」只能用这一种。
+  判据合计最多 20 条（`DELIVERABLES_LIMIT`），名字唯一，否则 `bad_params` / `exit 1`。
+
+issue #391（宿主采用）改了三件事：
+
+- **它必须与 `--final-guard` 同用**（或 `ERIX_FINAL_GUARD=1`）。判据是**拦 guard `accept` 的闸门**；
+没有 guard 就没有闸门，所以从前单独给 `--require-deliverable` 是一个静默空转。现在它是
+**usage error**（`exit 1`，文案点名两个旗标与理由）。这一种组合的行为变了：`exit 4` → `exit 1`。
+- **run 的工作目录接上了**：`erix chat --cwd <dir>`（缺省：进程工作目录；必须是已存在的目录，
+否则 usage error）。`cwd` 就是 `deliverables` / `finalGuard` 载荷里带的那个值，所以上面那段配方
+（`path.join(cwd, …)`）开箱即用。`erix repl` 传进程工作目录；`erix_run` 传它自己那个必填的
+`cwd` 参数。
+- **命名路径是宿主参数，不是谓词。** pi 扩展在 `requireDeliverable: true` 之外还有
+`deliverablePaths: string[]`；CLI 与扩展**都不接受**宿主自带的 `check` 函数（函数没法安全穿过
+扩展/工具边界）。两种写法共用同一份实现：`bin/final-guard.js`。
+
+**宿主侧的 `cwd`（issue #391）。** `runToolLoop({ cwd })` 从 §8 起就存在，且是纯透传。缺的是
+**宿主把它传下去**：CLI、REPL 与 `erix_run` 扩展三处组装 options 时都没带 `cwd`，于是 §9 的判据
+拿到 `undefined`、`path.join(undefined, "report.md")` 在每次 accept 时抛错——一个看起来像
+「交付物不在盘上」的永久 `unverified:deliverables_failed`。如果你把 §9 抄进了自己的宿主却从来
+没拿到 `verified`，先检查你有没有传 `cwd`：引擎永远不会替你补。
 
 **需要你动手吗？** 不需要；但如果你现在的 guard 自己查磁盘，把那段检查搬进 `deliverables`
 交给引擎强制：这样以后重写 guard 时，它不可能悄悄退化成橡皮章。
