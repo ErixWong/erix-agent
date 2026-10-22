@@ -24,6 +24,7 @@ import { buildCompactionContext, loadCliConfig, normalizeCompactionOption } from
 import {
   buildCaptureRecoveryHint,
   buildCaptureStub,
+  createDeliverableChecks,
   createFinalGuard,
 } from "./final-guard.js";
 import {
@@ -55,7 +56,7 @@ const NON_TTY_MESSAGE =
   'repl 需要交互式终端，单次对话请用：erix chat "<prompt>"';
 
 const REPL_HELP_TEXT = `REPL 用法：
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable] [--tools <逗号分隔工具名>]
   --session <id>        会话 ID（默认按工作目录自动派生）。repl 里它是**命名**：新名字直接开新会话；
                       注意 chat 的 --session 是续跑入口，id 不存在会报错（issue #168）
   --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
@@ -65,6 +66,9 @@ const REPL_HELP_TEXT = `REPL 用法：
   --idle-timeout <秒>   无进展自动中止（默认：0=不启用）
   --final-guard         开启终稿 provenance 核验（默认关闭）
   --no-final-guard      兼容别名（默认已关闭，no-op）
+  --require-deliverable 交付物机器判据（默认关闭，**必须与 --final-guard 同用**）：本会话用写工具
+                      声明过的每个路径收尾时都必须真的在盘上，否则 guard 的 accept 也拿不到 verified
+                      （终局 unverified:deliverables_failed）。没有 guard 就没有闸门 ⇒ 单独给报用法错误
   --tools <名1,名2>     工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
 
 命令：
@@ -238,8 +242,31 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
       options.finalGuard = argument === "--final-guard";
       continue;
     }
+    // issue #391 R3：与 chat 同语义的交付物判据（同一个 createDeliverableChecks 默认判据）。
+    if (argument === "--require-deliverable") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.requireDeliverable = true;
+      continue;
+    }
 
     usageError(`未知参数：${argument}`);
+  }
+
+  // issue #391 R2/R3：与 chat **逐字同口径**——闸门跑在 guard 之内，没有 guard 就没有闸门，
+  // 单独给 `--require-deliverable` 是静默空转，所以显式失败（不是自动装一个天真 guard：
+  // 那会把「不带 --final-guard 的 repl 会话」的既有承诺面改掉）。
+  if (
+    options.requireDeliverable === true
+    && options.finalGuard !== true
+    && process.env.ERIX_FINAL_GUARD?.trim() !== "1"
+  ) {
+    usageError(
+      "--require-deliverable 必须与 --final-guard 同用（或设 ERIX_FINAL_GUARD=1）："
+      + "交付物判据是拦 guard accept 的**闸门**，引擎只在 guard 存在时才核它；单独用等于什么都不核",
+    );
   }
 
   return options;
@@ -713,6 +740,9 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
               finalGuardMaxRetries: 2,
             }
           : {}),
+        // issue #391 R3：与 chat 同一条默认判据（「本 run 声明写过的每个路径收尾时都必须在盘上」）。
+        // 未开 ⇒ 连这个键都没有（引擎的「未声明 deliverables ⇒ 逐字不变」回归锚就靠这个形状）。
+        ...(options.requireDeliverable === true ? { deliverables: createDeliverableChecks() } : {}),
         tools: visibleTools,
         executeTool: executeToolForLoop,
         store,

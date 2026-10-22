@@ -196,6 +196,31 @@ test("CLI formats guard metrics and shows disabled guards explicitly", () => {
     formatGuardMetrics({ status: "skipped", reason: "no_final_guard" }),
     "guard=off",
   );
+  // issue #391 R3：声明了交付物判据时（引擎才写这两个计数）多渲染两个键。
+  assert.equal(
+    formatGuardMetrics({
+      status: "unverified",
+      reason: "deliverables_failed",
+      metrics: {
+        verified: 0,
+        skipped: 0,
+        revised: 0,
+        unverified: 1,
+        guard_error: 0,
+        deliverables_checked: 1,
+        deliverables_failed: 1,
+      },
+    }),
+    "guard={verified:0,skipped:0,revised:0,unverified:1,guard_error:0,deliverables_checked:1,deliverables_failed:1}",
+  );
+  // 未声明判据时那一行**逐字不变**（既有五个键、同序、无多余尾巴）——上面第一条就是这一格的锁。
+  assert.equal(
+    formatGuardMetrics({
+      status: "verified",
+      metrics: { verified: 1, skipped: 0, revised: 0, unverified: 0, guard_error: 0 },
+    }),
+    "guard={verified:1,skipped:0,revised:0,unverified:0,guard_error:0}",
+  );
 });
 
 test("archive guidance is present once in the system prompt", async () => {

@@ -410,7 +410,11 @@ test("readFile 的 marker 不带裸字节数，且长路径下仍守住 max_byte
 // 隐式样本）。测法与工单给的复现命令逐字同口径：`estimateTokens(文件前 200 行)`。
 // `measured` 是 2026-10-13 主 agent 与本单各自独立复测的同一个数（下面第一条把它也钉住）。
 const READ_TOKEN_SAMPLES = [
-  { role: "sparse", file: "bin/guard-metrics.js", measured: 150 },
+  // 2026-10-23 #391 复测（**换了文件**，不是只刷数字）：`bin/guard-metrics.js` 被本单加了交付物计数的
+  // 渲染与注释（+607 B / +6 行，前 200 行 = 整个文件），实测 150 → **392** tokens 且成了 CJK 注释密实档
+  // （均行 46 B）——它不再是「短而稀疏」那一个。改钉 `src/text/label.js`（573 B / 17 行英文代码，
+  // 实测 188 tokens），描述里那一档随之 150 → 190（同位数 ⇒ 对本文件字节数是中性的）。
+  { role: "sparse", file: "src/text/label.js", measured: 188 },
   { role: "typical", file: "bin/sessions.js", measured: 2_493 },
   { role: "dense", file: "src/tools/file-tools.js", measured: 4_773 }  // 2026-10-22 #358 复测（本文件前 200 行；本仓自己的文件是密实档，注释一改就漂）,
 ];
@@ -561,9 +565,17 @@ const READ_LINE_CAPACITY_ROLES = [
   // 再把它当 median 锚点，描述里那句「median 7,243」就成了谎话。改钉 `bin/repl.js`
   // （29,279 B / 809 行 ⇒ 7,243 行，与样本中位差 0.25%，且分母比 provider-summarizer.js 大 7 倍，
   // ±2% 的抖动额度从 ±2 行变成 ±16 行）。描述里的 `median 7,243 (36.3)` 因此**一个字都不用改**。
+  // 2026-10-23 第三刷（#391 改了 `bin/repl.js`：`--require-deliverable` + `loopOptions.deliverables` +
+  // `loopOptions.cwd`，+1,872 B / +30 行 ⇒ 7,243 → **7,009**，-3.2% 已超出 ±2%）：角色文件仍是
+  // `bin/repl.js`（与当场样本中位 7,117 差 1.5%，仍在 ±2% 内），但记录值与描述里的
+  // `median 7,009 (37.4)` 一起刷新（同位数改动 ⇒ 字节中性）。
   // 历史：2026-10-21 从 #271 的记录值（11,471 B / 319 行 → 7,290）刷成同口径实测值（11,643 / 321 / 36.271）。
-  { role: "median", file: "bin/repl.js", recorded: { bytes: 29_279, lines: 809, bytesPerLine: 36.1916, capacity: 7_243, cjkShare: 0.1242 } },
-  { role: "most", file: "bin/guard-metrics.js", recorded: { bytes: 456, lines: 17, bytesPerLine: 26.8235, capacity: 9_772, cjkShare: 0 } },
+  { role: "median", file: "bin/repl.js", recorded: { bytes: 31_527, lines: 843, bytesPerLine: 37.3986, capacity: 7_009, cjkShare: 0.1446 } },
+  // 2026-10-23 #391：`most` 也**换了文件**——`bin/guard-metrics.js` 从 456 B / 17 行长到 1,063 B / 23 行
+  // （均行 26.8 → 46.2），容量 9,772 → 5,671，已经不是「一次装得最多」那一个。样本里现在最大的是
+  // `src/messages/openai-normalization.js`（5,496 B / 201 行 ⇒ 27.34 B/line ⇒ 9,587 行），描述里那一档随之
+  // `most 9,772 (26.8)` → `most 9,587 (27.3)`（同位数 ⇒ 对本文件字节数中性）。
+  { role: "most", file: "src/messages/openai-normalization.js", recorded: { bytes: 5_496, lines: 201, bytesPerLine: 27.3433, capacity: 9_587, cjkShare: 0 } },
   // self 这一行在 PR #291 返工（必修 4）里重测过：`classifyFileToolResult` 的 JSDoc 改成按 `kind`
   // 关联的判别联合（工单明说改它的 JSDoc 是允许的，生成的 `.d.ts` 里 `kind:"bytes"` 那一支的
   // `bytes` 必须是 `number`），而本行原本记录的 89,537 字节与当时 1,718 行已经被此前几个单
