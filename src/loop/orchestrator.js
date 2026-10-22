@@ -4164,6 +4164,15 @@ export async function runToolLoop(options) {
             return finish("final_guard_unverified");
           }
           finalGuardRetries += 1;
+          // ── issue #394（兄弟洞）：这条续跑消息也是一个「往尾部注入 user 控制文本」的注入点 ────
+          // 形状：`stopReason:"end_turn"` 但 content 带 `tool_use`（非标准边界，`isEndTurn` 那条
+          // 注释点名的那个）⇒ 不进工具执行 ⇒ 尾部留一条悬空 `tool_use`，而 reason 落到 `end_turn`
+          // ⇒ `forceFinalIfNeeded` 直接早退（不结清，也不报错），run 正常返回。于是**下一次**请求
+          // （下面那条 `continue` 回到主循环）在 `src/loop/provider-runner.js#callProvider`
+          // （`allowPendingToolUse:false`）以同一句 `invalid_messages` 崩。修法同源：注入之前先
+          // 结清（共享实现），入账走 `:control:` 行。这是**行为变化**（多一条 `tool_result` +
+          // 一条 `:control:` 行），契约与 CHANGELOG 已写。
+          await answerPendingTailToolUses(round, "guard-revise-tool-result");
           const continuationMessage = {
             role: "user",
             // issue #323：finalGuard revise 的 message 是引擎注入的控制文本，打 marker 防 judge
