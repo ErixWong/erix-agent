@@ -495,6 +495,75 @@ describe("真起 CLI 子进程：参数、退出码、stdout/stderr、落盘（i
     assert.equal(sandbox.upstream.requestCount, 0);
   });
 
+  // issue #392：机器判据在 guard `skip` 下也算数——这是 #392 现场在 CLI 层的**正面对账**，
+  // 而且**两个方向都要钉**（今天的 `4` 在两个方向上都变，只钉一边会漏）：
+  //   · 判据不成立 ⇒ `unverified / deliverables_failed` ⇒ 退 **2**（从前也是 4）；
+  //   · 判据成立   ⇒ `verified` + `reason:"machine_only"` ⇒ 退 **0**（从前是 4）。
+  //
+  // 现场：`erix chat … --final-guard --require-deliverable` 的**来源 guard** 在没有归档捕获可比对时
+  // 只能 `skip`（真上游实测：`skipped:1`，`no_capture_evidence` / `no_extractable_candidates`）。
+  // 从前 `skip` 把机器结论整包丢掉，于是**判据跑了、判对了、结论被丢掉**：给人看的文案说判据没过，
+  // 给 CI 用的退出码却说「没验」——本单要杀的就是这个自相矛盾。
+  //
+  // 旗标形状：`--require-deliverable` 在当前 main（基点 `2cb3303`）上是**不带值**的布尔旗标
+  // （issue #391 的可带路径变体还只在 `feat-261022-04-host-adoption` 上，未进 main），所以两格都用
+  // 无值形状；出厂判据 `createDeliverableChecks` 的口径是「本 run 用写工具声明过的每个路径都必须
+  // 真的在盘上」。要让它在**无值**形状下失败，就让模型先写、再把文件删掉（`exec rm`）——那样
+  // `fileWrites` 里有路径而盘上没有，判据判的仍是磁盘事实。
+  it("--final-guard --require-deliverable + 交付物真在盘上：退 0（guard skip ⇒ machine_only）（issue #392）", async (t) => {
+    // 先拿住 script 数组的引用：交付物路径要等 `makeSandbox` 把项目目录建出来才知道。
+    const script = [];
+    const sandbox = await makeSandbox(t, { script });
+    const answerPath = join(sandbox.project, "answer.txt");
+    script.push(
+      replyWithToolCall("writeFile", { path: answerPath, content: "42" }, "call-392-ok"),
+      // 终稿**不声明 findings**：来源 guard 没有可核验的声明，于是它只能 `skip`。
+      replyWithText("已写入 answer.txt，内容 42。任务已完成"),
+    );
+
+    const result = await sandbox.run([
+      "chat", "把 42 写进 answer.txt", "--final-guard", "--require-deliverable", ...MINIMAL_CHAT_FLAGS,
+    ]);
+
+    // 前提：交付物是**真子进程**真的写下来的磁盘事实（不是断言里的假设）。
+    assert.equal(existsSync(answerPath), true, `交付物没落在盘上；stdout=${JSON.stringify(result.stdout.slice(-400))}`);
+    assert.equal(readFileSync(answerPath, "utf8"), "42");
+    assert.equal(sandbox.upstream.requestCount, 2, "一轮工具调用 + 一轮终稿，共两次模型请求");
+    assert.equal(result.code, EXIT_OK,
+      `判据全通过 + guard skip 必须是 verified:machine_only（退 0，不再是「没验」的 4）；实得 ${result.code}；`
+      + `stdout=${JSON.stringify(result.stdout.slice(-500))} stderr=${JSON.stringify(result.stderr.slice(-300))}`);
+    assert.match(result.stdout, /已核验/u, "machine_only 也是 verified，终稿标题应是「已核验」");
+    // 机器裁决与 guard 裁决在 CLI 的统计行上**同时可见且可区分**：guard 没有 accept（verified:0），
+    // 它确实 skip 了一次（skipped:1）。
+    assert.match(result.stdout, /guard=\{verified:0,skipped:1,/u);
+  });
+
+  it("--final-guard --require-deliverable + 判据不成立（写过但被删掉）：退 2（unverified:deliverables_failed）（issue #392）", async (t) => {
+    const script = [];
+    const sandbox = await makeSandbox(t, { script });
+    const answerPath = join(sandbox.project, "answer.txt");
+    script.push(
+      // 声明写一次（`fileWrites` 因此有这条路径）……
+      replyWithToolCall("writeFile", { path: answerPath, content: "42" }, "call-392-bad-1"),
+      // ……再把文件删掉：收尾时盘上没有它 ⇒ 出厂判据必须判 `ok:false`。
+      replyWithToolCall("exec", { command: `rm -f ${JSON.stringify(answerPath)}` }, "call-392-bad-2"),
+      replyWithText("已清理 answer.txt。任务已完成"),
+    );
+
+    const result = await sandbox.run([
+      "chat", "先写再删 answer.txt", "--final-guard", "--require-deliverable", ...MINIMAL_CHAT_FLAGS,
+    ]);
+
+    assert.equal(existsSync(answerPath), false, `本用例的前提是交付物收尾时**不在**盘上；stdout=${JSON.stringify(result.stdout.slice(-400))}`);
+    assert.equal(result.code, EXIT_UNVERIFIED,
+      `判据没过 + guard skip 必须是 unverified:deliverables_failed（退 2，不再是「没验」的 4）；`
+      + `实得 ${result.code}；stdout=${JSON.stringify(result.stdout.slice(-500))}`);
+    assert.match(result.stdout, /未核验，不可信/u, "终稿必须被标成不可信（文案与退出码不许再自相矛盾）");
+    // guard 仍然 skip 了一次，而 `unverified` 计数涨了 1：两件事同时可见，互不掩盖。
+    assert.match(result.stdout, /guard=\{verified:0,skipped:1,revised:0,unverified:1,/u,
+      `统计行要同时给出 guard 裁决与机器结论；stdout=${JSON.stringify(result.stdout.slice(-400))}`);
+  });
+
   it("--session <存在的 id>：退出 0/4 同一次成功、且上游第二发带上了历史", async (t) => {
     const sandbox = await makeSandbox(t, {
       script: [replyWithText("第一轮 T2-R1 任务已完成"), replyWithText("第二轮 T2-R2 任务已完成")],

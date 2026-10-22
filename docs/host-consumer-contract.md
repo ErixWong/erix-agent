@@ -1738,29 +1738,69 @@ Results reach both surfaces, and only when the host declared something:
   The guard sees them, so a well-written guard can weigh machine evidence instead of prose.
 - `verification.metrics`: `deliverables_checked` / `deliverables_failed`, cumulative across
   guard calls, next to the existing `verified` / `skipped` / `revised` / `unverified` /
-  `guard_error` counters (whose meaning is unchanged).
+  `guard_error` counters (whose meaning is unchanged), plus `deliverables_machine_only`, which
+  appears **only** when the criteria alone produced a `verified` (guard `skip`, issue #392).
 
-The gate itself — the ruling change this option exists for:
+The gate itself — the ruling this option exists for. It holds under **every** guard verdict, not
+only `accept` (issue #392): `skip` means "this guard could not check", never "the deliverable
+was not delivered", so the machine verdict outranks it in both directions.
 
 | Deliverable result | Guard verdict | `verification.status` |
 |---|---|---|
 | all passed | `accept` | `verified` — as before, plus the two counters |
 | **any failed** | `accept` | **`unverified`, `reason: "deliverables_failed"`** — machine evidence outranks the guard |
-| any failed | `revise` / `skip` / guard error | unchanged from today (`unverified` / `skipped` / `error`) |
+| **any failed** | `skip` | **`unverified`, `reason: "deliverables_failed"`** — evidence outranks "I could not check" |
+| **all passed** | `skip` | **`verified`, `reason: "machine_only"`** — the machine criterion *is* the acceptance, and it is labelled as such |
+| **any failed** | guard error / timeout | **`unverified`, `reason: "deliverables_failed"`** — a decided "no" beats an unknown |
+| all passed | guard error / timeout | **`error` — deliberately not upgraded** (see the boundaries below) |
+| any failed | `revise` | unchanged from today (retries exhaust into `unverified`, `non_continuable` on budget stops) |
 | not declared | any | **byte-for-byte unchanged**: no payload key, no metric key, no event field |
 
-Three boundaries are deliberate:
+`reason: "machine_only"` is the one thing a host must read literally: it means **the engine
+accepted the run on the host's own criteria**, *not* that the guard judged it. If your policy
+requires the guard itself to have passed, treat `machine_only` as "my guard skipped — tighten
+the criteria or the guard", because that is exactly what happened. The counter
+`metrics.deliverables_machine_only` (present **only** in that cell) is the same fact in
+aggregate form, and `metrics.verified` deliberately does **not** move there: it counts guard
+`accept` verdicts, whose meaning is unchanged.
+
+Because `machine_only` is `verified`, a CLI run that declares criteria and whose guard skips
+exits **0** instead of **4** when the criteria pass, and **2** when they fail.
+
+Before this change the two surfaces contradicted each other: a run whose criteria had already
+**failed** still exited **4** ("nobody checked") and printed the plain `=== 终稿 ===` title,
+while the run's own metrics recorded `deliverables_failed: 1` — the machine had decided, and
+the exit code a CI job reads said it had not. The pair measured on this machine before the
+fix is `4` / `4` (criteria passing / failing); after it, `0` / `2`.
+
+**Hosts that do not declare `deliverables` are untouched.** Without the option there is no
+machine verdict to outrank anything: a guard `skip` still yields
+`{ status: "skipped", reason: <the guard's own skip reason> }`, the CLI still exits **4**, and
+no payload key, metric key or event field appears. That is also the class the engine's own
+release smoke belongs to — `npm run check:release` runs a `chat` **without** criteria and
+asserts exit **4**; it must keep exiting 4, and it does.
+
+Four boundaries are deliberate:
 
 - **`termination.reason` is not rewritten.** The gate changes `verification` only; it
   introduces no new stop reason, and the existing `final_guard_unverified` path (retry
   limit, non-continuable degradation) is untouched.
+- **A guard error plus passing criteria stays `error`.** A guard that throws or times out is
+  an **infrastructure failure** (a broken callback, a dead dependency), and upgrading it to
+  `verified: machine_only` would let one machine criterion paper over a run whose guard face
+  never ran — the host would read "at least the machine checked it" while the failure it
+  should fix stays hidden. The asymmetry is intentional: a failing criterion still wins
+  (`unverified`), because "the machine says no" is a decided answer, while "the guard is
+  broken" is not.
 - **Non-continuable stops still check once, and still degrade.** For `max_rounds_cap`,
   `stall`, and `continuation_exhausted` the criteria run once and the result is recorded,
-  but the stop keeps its existing `non_continuable` verdict. The gate adds a label, it does
-  not invent a stop.
+  but a `revise` stop keeps its existing `non_continuable` verdict. The gate adds a label, it
+  does not invent a stop.
 - **The event gains one field.** A `type: "final_guard"` event carries
-  `deliverables_failed: <n>` (present only when criteria were declared), so a host can
-  observe the gate without reading metrics. Every existing event field is unchanged.
+  `deliverables_failed: <n>` (present only when criteria were declared) and, in the
+  machine-only cell, `machine_only: true` — its `action` stays `"skip"` and its `reason` stays
+  the guard's own skip reason, so a host can observe the gate without reading metrics. Every
+  existing event field is unchanged.
 
 Which path key to use in a criterion: `fileWrites[].path` is the raw
 `tool_use.input[pathKey]` value (verbatim, safe to `stat()`), while `filesWritten[].path` is

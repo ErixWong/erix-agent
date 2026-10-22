@@ -25,7 +25,8 @@ of "works if you read the source". If a section below is not your code path, it 
 | The tarball now ships `test/helpers/tmp.js`; three gate-side changes landed (§7) | no — packaging and gates only |
 | `finalGuard` now receives 10 additive facts (`cwd`, `runId`, `filesWritten`, `toolStats`, `taskBrief`, `selfReport`, `usage`, `elapsedMs`, `attempt`, `guardBudget`) next to the original 7 keys (§8) | no — additive; act only if you were re-parsing `messages` or guessing from `finalText` |
 | New `deliverables` option + payload key `fileWrites`: host-declared machine criteria, checked before **every** guard call; a failing criterion turns a guard's `accept` into `unverified` / `deliverables_failed` (§9) | no — opt-in; act if your guard does its own disk checks today |
-| New `finalGuardExtend` option (**default `false`**): a `revise` on `max_rounds_cap` / `continuation_exhausted` buys at most one more round per run; `stall` never extends (§10) | no — opt-in, and off by default keeps every budget-type stop byte-for-byte as in 0.23.0 |
+| The machine criteria now count under **every** guard verdict: `skip` + all passing ⇒ `verified` / `reason: "machine_only"` (exit **0** instead of **4**), `skip` or guard error + any failing ⇒ `unverified` / `deliverables_failed` (exit **2**) (§10) | yes, if you treat `verified` as "the guard judged it" — read `reason === "machine_only"` before trusting one |
+| New `finalGuardExtend` option (**default `false`**): a `revise` on `max_rounds_cap` / `continuation_exhausted` buys at most one more round per run; `stall` never extends (§11) | no — opt-in, and off by default keeps every budget-type stop byte-for-byte as in 0.23.0 |
 
 The one-line version: **the facts you used to infer are now written down.** The engine did not change what
 it *does*; it changed what it *says* — in the state file, in the error objects, and in the tool outputs the
@@ -382,7 +383,70 @@ fills it in for you.
 check into `deliverables` and let the engine enforce it: then a future guard rewrite cannot
 silently turn the check back into a rubber stamp.
 
-## 10. Budget-type stops can buy one more round: `finalGuardExtend` (issue #386 slice 3)
+## 10. Machine criteria count under every guard verdict (issue #392)
+
+**Symptom.** §9's gate only fired on the guard's `accept` branch. `erix chat … --final-guard
+--require-deliverable` on a run whose deliverable **really is on disk** ended with exit code
+**4**: the CLI's provenance guard has no archived capture to compare against, answers
+`{ action: "skip", reason: "no_capture_evidence" }`, and the engine threw the machine
+verdict away — `verification` stayed `skipped`, so `exitCodeForVerification` mapped it to 4.
+The same hole ran the other way too: a **failing** criterion under `skip` also reported
+`skipped`, i.e. the status said "nobody checked" while the machine had said "it did not
+pass". Measured on one machine: of 9 recorded real runs, `verification` was `skipped` in all
+of them and `verified` in none — so any host that wired a guard could never earn `verified`.
+
+**What is new.** `skip` means "this guard could not check", never "the deliverable was not
+delivered", so the machine verdict now outranks it — in both directions. The whole table
+applies **only** when you declared `deliverables`:
+
+| Guard verdict | Criteria | `verification` |
+|---|---|---|
+| `accept` | all passing | `verified` (unchanged) |
+| `accept` | any failing | `unverified` / `deliverables_failed` (unchanged) |
+| `skip` | **any failing** | **`unverified` / `deliverables_failed`** |
+| `skip` | **all passing** | **`verified` + `reason: "machine_only"`** |
+| error / timeout | **any failing** | **`unverified` / `deliverables_failed`** |
+| error / timeout | all passing | **`error` (deliberately kept)** |
+| not declared | any | byte-for-byte as before |
+
+**What it means for exit codes.** A run that declares criteria and whose guard skips now
+exits **0** when the criteria pass (it used to exit **4**) and **2** when they fail (it used
+to exit **4**). Measured on this machine before/after: `4` / `4` → `0` / `2` for that pair of
+runs. That is the point of the change, and it is the one line to put in your own release
+notes if you shell out to `erix chat --require-deliverable`.
+
+**The old behaviour contradicted itself.** The failing half used to exit **4** ("nobody
+checked") while the run's own metrics said `deliverables_failed: 1`, and the final answer was
+printed under the plain `=== 终稿 ===` title instead of `=== 终稿（未核验，不可信） ===`. If
+you had wired a CI gate on the exit code, it was reading "not verified" for a run the engine
+had already judged — and reading the same "not verified" for a run whose criteria **passed**.
+
+**If you never declared `deliverables`, nothing here applies to you.** No criteria means no
+machine verdict, so a guard `skip` still ends `skipped` and the CLI still exits **4** — that
+is the class the engine's own release smoke belongs to (`npm run check:release` runs a
+`chat` without criteria and asserts exit **4**). This section is opt-in all the way down.
+
+**`machine_only` is not "the guard verified it".** It is the engine accepting the run **on
+your own criteria** while the guard declined to judge. `metrics.deliverables_machine_only`
+(that cell only) is the aggregate form, and `metrics.verified` deliberately does not move
+there — it still counts guard `accept` verdicts. If your policy requires the guard itself to
+have passed, treat `reason === "machine_only"` as "my guard skipped: tighten the criteria or
+the guard".
+
+**Why a guard error with passing criteria stays `error`.** A guard that throws or times out is
+an **infrastructure failure**, not a verdict. Upgrading it to `verified: machine_only` would
+let one machine criterion paper over a run whose guard face never ran: you would read "at
+least the machine checked it" and never notice the callback that has been broken since
+yesterday. The asymmetry is intentional — "the machine says no" is a decided answer and still
+wins (`unverified`), while "the guard is broken" is not.
+
+**Do you have to act?** Only if you read `verified` as "the guard judged it". In that case add
+one branch: `if (verification.status === "verified" && verification.reason === "machine_only")`
+→ your own policy decision. Everything else is additive: `termination.reason` gains nothing,
+`exitCodeForVerification` is untouched, and omitting `deliverables` leaves every cell
+byte-for-byte as it was.
+
+## 11. Budget-type stops can buy one more round: `finalGuardExtend` (issue #386 slice 3)
 
 **Symptom.** A run whose `maxRounds` budget runs out while the model is still calling tools
 ends `max_rounds_cap` → `verification: { status: "unverified", reason: "non_continuable" }`.
@@ -418,16 +482,16 @@ the first stop did run, then the loop continued.
 byte-for-byte as in 0.23.0. Turn it on only when your guard's `revise` messages are specific
 enough that one more round plausibly closes the gap — that is the only thing the bridge buys.
 
-## 11. Self-check
+## 12. Self-check
 
 ```bash
-npm test                       # 1,895 tests, 0 failing (1,886 passing + 9 skipped)
+npm test                       # 1,920 tests, 0 failing (1,911 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # offline, zero model calls; asserts the finalGuard payload surface
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites
 ```
 
-Against your own host, seven questions are worth answering with a test before you upgrade:
+Against your own host, eight questions are worth answering with a test before you upgrade:
 
 1. **State file.** Take a run with more than 32 compaction entries: `compactionStatsWindow.total` equals
    the full count, `dropped === total − 32`, and an **old** state file (no window key) still validates and
@@ -453,19 +517,28 @@ Against your own host, seven questions are worth answering with a test before yo
    `verified`, the event log must carry one `final_guard_extend` with
    `from_max_rounds: 1`, and the model must have done the missing step. Then delete the
    option and assert the same script ends `unverified` / `non_continuable` — and that a
-   `stall` run never extends even with the option on (§10's cells are the shipped version).
+   `stall` run never extends even with the option on (§11's cells are the shipped version).
+8. **Machine-only acceptance.** Declare one `deliverables` criterion that stats a file which
+   really exists, and have your guard answer `skip` (the CLI's provenance guard does exactly
+   that when it has no capture to compare against). The run must end `verified` with
+   `reason: "machine_only"` and `metrics.deliverables_machine_only === 1`, and `erix chat
+   --final-guard --require-deliverable` must exit **0**. Then delete the file: the same run
+   must end `unverified` / `deliverables_failed` (exit **2**), and a guard that **throws**
+   with passing criteria must still end `error` (§10's table; the `S6c`/`S6d` probe cells are
+   the shipped version).
 
-## 12. What did not change
+## 13. What did not change
 
 No store method signature, no return type, no option name, no export, no record kind, no message field, no
 termination reason, no error code, and no runtime dependency (still zero). `store.load()`'s shape is
 unchanged from 0.23.0. `deterministic.compactionStats` still holds the last 32 entries. The judge decision
 surface and the resume path are untouched; the final guard's *verdict* semantics are
-untouched too — its payload gained additive keys (§8), which is information, not a new rule. The only *behavioural* change in the whole
-release is that a missing search root returns an error text instead of `（无命中）` — and that one is a
-correction of a false negative, not a new rule.
+untouched too — its payload gained additive keys (§8), which is information, not a new rule. Two
+*behavioural* changes shipped in this release, and both are corrections of false negatives rather than new
+rules: a missing search root returns an error text instead of `（无命中）` (§6), and a machine criterion
+that passes under a guard `skip` is no longer thrown away (§10). Everything else is additive.
 
-## 13. Migration recipe
+## 14. Migration recipe
 
 1. If you read `<runId>.state.json`'s compaction ledger, read `compactionStatsWindow.total` (and
    `dropped`) instead of counting the array — and treat the key's absence as "no statistics", not "zero".
@@ -486,6 +559,11 @@ correction of a false negative, not a new rule.
    cannot quietly turn the check back into a rubber stamp. Switch any `stat()` you do today
    from `filesWritten[].path` (40-code-point summary) to `fileWrites[].path` (verbatim) — the
    summary silently rejects runs that already wrote the file.
-8. If you want budget-type stops to be recoverable, set `finalGuardExtend: true` (§10) — and
+8. If you want budget-type stops to be recoverable, set `finalGuardExtend: true` (§11) — and
    then make your guard's `revise` messages name the missing step, because that message is
    what the extra round is spent on. Leave it unset and nothing changes.
+9. Stop reading `skipped` as "no machine evidence". Since §10 a run with declared criteria
+   ends `verified` / `machine_only` when the criteria pass and `unverified` /
+   `deliverables_failed` when they fail — if you shell out to the CLI, re-baseline the exit
+   codes you assert on (`4` → `0` / `2`), and if you gate on `verified` internally, decide
+   explicitly whether `reason === "machine_only"` satisfies your policy.

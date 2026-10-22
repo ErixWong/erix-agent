@@ -1815,7 +1815,9 @@ export async function runToolLoop(options) {
   // issue #386 切片 3：`guard_extensions` 只在**真的补跑过**时由 `extendAfterGuard` 现写（未 opt-in
   // 或 opt-in 但一次没补的 run，`metrics` 必须与今天逐字一致），所以这里只声明成可选键——纯注解，
   // 不往字面量里加任何键（加了就等于给未补跑的 run 多一个 `guard_extensions: 0`）。
-  /** @type {{ verified: number, skipped: number, revised: number, unverified: number, guard_error: number, deliverables_checked?: number, deliverables_failed?: number, guard_extensions?: number }} */
+  // issue #392：`deliverables_machine_only` 同理——只在 guard `skip` + 判据全通过（机器证据单独构成
+  // 验收）那一格由 `callFinalGuard` 现写，其余任何一格都不出现这个键。
+  /** @type {{ verified: number, skipped: number, revised: number, unverified: number, guard_error: number, deliverables_checked?: number, deliverables_failed?: number, deliverables_machine_only?: number, guard_extensions?: number }} */
   const guardMetrics = {
     verified: 0,
     skipped: 0,
