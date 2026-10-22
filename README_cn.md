@@ -494,8 +494,8 @@ onEvent
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>
-erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>]
+erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
 ```
@@ -514,7 +514,11 @@ erix mcp [--config <path>]
 - `--max-rounds <n>` 设置工具循环轮次上限。
 - `--reflection <on|off>` 选择 chat reflection 行为。
 - `--final-guard` 启用 CLI provenance guard；`--no-final-guard` 是兼容性 no-op，因为默认已关闭。
+- `--require-deliverable` 打开交付物机器判据（「本 run 声明写过的每个路径，收尾时都必须真的在盘上」）。它**默认关闭**，且**必须与 `--final-guard` 同用**（或 `ERIX_FINAL_GUARD=1`）：判据是拦 guard `accept` 的闸门，没有 guard 就没有闸门——单独给是 usage error（exit 1），不是静默空转（issue #391）。
+- `--cwd <dir>` 设置本次 run 报给 guard 与模型的工作目录（默认：进程工作目录；必须是已存在的目录）。它正是 `finalGuard` / `deliverables` 载荷里的 `cwd`，所以用 `path.join(cwd, …)` 的判据开箱即用。
 - `--no-notes`（或 `ERIX_NO_NOTES=1`）不装配 notes 工厂（`note_*` 工具不再可用），保留其他已加载的 skill。
+- `--no-todo`（或 `ERIX_NO_TODO=1`）彻底关闭 todo：内置 `todo_*` 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除。
+- `--error-log <path>` 把持久化错误事件追加写入 JSONL 文件（等价 `ERIX_ERROR_LOG`；默认只进 stderr）。
 - `--timeout <ms>` 为 `chat` 提供软任务截止时间；它会推动循环进入 wrap-up，而不是强制杀死进程。
 - `--idle-timeout <seconds>` 在没有进展后中止；`chat` 默认为 300，`repl` 默认为 0（禁用）。
 - `--compact-budget <tokens>` 覆盖自动压缩预算。

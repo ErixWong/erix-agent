@@ -756,8 +756,8 @@ headless runtime's product interface.
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--no-notes] [--timeout <ms>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>
-erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>]
+erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
 ```
@@ -792,7 +792,22 @@ The shared CLI flags are:
 - `--final-guard` enables the CLI provenance guard;
   `--no-final-guard` is a compatibility no-op because the default is already
   off.
+- `--require-deliverable` turns on the machine deliverable criterion ("every
+  path this run declared it wrote must still exist on disk"). It is **off by
+  default** and must be used **together with `--final-guard`** (or
+  `ERIX_FINAL_GUARD=1`): the criterion gates the guard's `accept`, so without a
+  guard there is nothing to gate — giving it alone is a usage error (exit 1),
+  not a silent no-op (issue #391).
+- `--cwd <dir>` sets the working directory this run reports to the guard and to
+  the model (default: the process working directory; must be an existing
+  directory). It is what the `finalGuard` / `deliverables` payload carries as
+  `cwd`, so a criterion that stats `path.join(cwd, …)` works out of the box.
 - `--no-notes` (or `ERIX_NO_NOTES=1`) skips the notes factory assembly (`note_*` tools become unavailable); other skills stay loaded.
+- `--no-todo` (or `ERIX_NO_TODO=1`) disables `todo` entirely: the four built-in
+  `todo_*` tools are not registered, the system prompt has no todo section, and
+  the user-level todo skill is excluded.
+- `--error-log <path>` appends persistence-error events to a JSONL file (same as
+  `ERIX_ERROR_LOG`; default: stderr only).
 - `--timeout <ms>` supplies a soft task deadline to `chat`; it nudges the
   loop toward wrap-up rather than hard-killing the process.
 - `--idle-timeout <seconds>` aborts after no progress; it defaults to 300

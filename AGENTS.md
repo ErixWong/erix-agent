@@ -64,7 +64,7 @@ scripts/          # experiment scripts and results
 | `npm test` | Full test suite (`node --test`) |
 | `node --check <file>` | Syntax safety check |
 | `npm run check:syntax` | **Full-tree** syntax check (issue #187): `scripts/syntax-check.mjs` walks every tracked `.js`/`.mjs`/`.cjs` from `git ls-files` (`src/`, `bin/`, `scripts/`, `test/`, `examples/`, `fixtures/`) through `node --check`, names each failing file, exits non-zero. `npm run check` deliberately stays the single-file `node --check src/index.js`: `check:docs` verifies that the commands the docs reference actually exist, so replacing it would manufacture doc drift |
-| `npm run check:docs` | Documentation drift check (`scripts/docs-drift-check.mjs`: version claims, quoted `files`/`exports` lists, module map, referenced paths/commands, 14 key defaults read out of the source, EN/CN README skeleton) plus the EN/CN contract heading sync |
+| `npm run check:docs` | Documentation drift check (`scripts/docs-drift-check.mjs`: version claims, quoted `files`/`exports` lists, module map, referenced paths/commands, 14 key defaults read out of the source, the CLI flag list reconciled bidirectionally between `bin/cli.js`'s help text and the two READMEs' usage lines, EN/CN README skeleton) plus the EN/CN contract heading sync |
 | `npm run check:docs:strict` | Same check, promoting its warnings to failures |
 | `node scripts/docs-drift-check.mjs --self-test` | Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one doc claim → red, change the source truth → red, change nothing → green; a mutation that stops applying also fails (issue #210 R2) **Since issue #302 the tree it runs in does not change the verdict**: the two `#280` tree-shape cases run on a **synthetic tree fixture**, so the result no longer depends on whether this machine's untracked `docs/tasks/` directory (never committed) exists — measured on `git archive HEAD | tar -x` checkouts with no / empty / filled `docs/tasks/`: **103 cases, 0 red in all three shapes**. Before #302 it was the other way round: 3 of the cases were known false reds in a checkout without `docs/tasks/` (5 with an empty one), tracked in issue #281 — those reds are gone, so "run it in the development tree" is history, not a current requirement. |
 | `npm run check:docs-examples` | Executes the JavaScript fences in `docs/host-consumer-contract.md` (issue #158) |
@@ -161,7 +161,11 @@ scripts/          # experiment scripts and results
   is compared on its own, so missing / extra / renamed members all go red): the `version` claims, the README
   `files`/`exports` fences — compared **bidirectionally** with `package.json`, so renaming or dropping a key in the doc
   is red, not just adding one — and the list/unit/enum anchors (file-tool list, CLI tool list, vendor skip directories,
-  `formatSize` unit tiers plus every `` `bytes` → `rendered` `` example claim, built-in compaction strategy names).
+  `formatSize` unit tiers plus every `` `bytes` → `rendered` `` example claim, built-in compaction strategy names), plus the
+  `cli-flags` anchor (issue #391 R4: the flag set of the `erix chat` / `erix repl` usage lines is compared **both ways**
+  against `bin/cli.js`'s help text, so a flag added to the help and forgotten in the READMEs is red — and so is one the
+  README invents; aliases like `-c|--continue` and `--no-final-guard` are counted, and its exemption register must stay
+  empty-or-justified, since an idle entry is itself red).
   Those anchors also reconcile the **number of declaration sites between the EN and the CN doc**, which is what catches
   "someone deleted the whole sentence on one side". Every per-occurrence rule carries its reverse proof in
   `node scripts/docs-drift-check.mjs --self-test`; run it after touching `scripts/docs-drift-check.mjs`. The level of
