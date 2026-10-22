@@ -1546,3 +1546,114 @@ test("createNamedDeliverableChecks：每条一个判据、name = 声明路径、
   assert.deepEqual(createNamedDeliverableChecks([]), []);
   assert.deepEqual(createNamedDeliverableChecks(undefined), []);
 });
+
+// issue #391 R2：`--require-deliverable <path>`（可重复）＝**命名**交付物判据。
+// 裸用保持现语义（布尔判据），带值 = 「这次任务必须交付这些文件」——两种语义在 CLI 层也分开。
+test("parseChatArgs：--require-deliverable 带值 = 命名路径（可重复，空格与 = 两种写法都收）", () => {
+  const parse = (args) => parseChatArgs(["hello", "--final-guard", ...args], "/tmp/project");
+  // 默认：既没有布尔开关，也没有命名清单
+  const bare = parseChatArgs(["hello"], "/tmp/project");
+  assert.equal(bare.requireDeliverable, undefined);
+  assert.equal(bare.deliverablePaths, undefined);
+  // 裸用 ⇒ 现语义（布尔那条），deliverablePaths 不出现
+  const flagOnly = parse(["--require-deliverable"]);
+  assert.equal(flagOnly.requireDeliverable, true);
+  assert.equal(flagOnly.deliverablePaths, undefined);
+  // 空格写法（本文件既有惯例）
+  assert.deepEqual(parse(["--require-deliverable", "report.md"]).deliverablePaths, ["report.md"]);
+  // `=` 写法（可重复的带值旗标用 = 更清楚）
+  assert.deepEqual(parse(["--require-deliverable=report.md"]).deliverablePaths, ["report.md"]);
+  // 可重复：两种写法混用也行，顺序即声明顺序
+  const repeated = parse(["--require-deliverable=a.md", "--require-deliverable", "b.md"]);
+  assert.deepEqual(repeated.deliverablePaths, ["a.md", "b.md"]);
+  assert.equal(repeated.requireDeliverable, undefined, "带值不该顺手把布尔那条也打开");
+  // 两种语义可以同时声明（条数相加，判据两条都跑）
+  const both = parse(["--require-deliverable", "--require-deliverable", "a.md"]);
+  assert.equal(both.requireDeliverable, true);
+  assert.deepEqual(both.deliverablePaths, ["a.md"]);
+});
+
+test("parseChatArgs：--require-deliverable 的坏值逐格报 usage error（空值 / 重复 / 超限 / 缺 guard）", () => {
+  const code = (args) => {
+    try {
+      parseChatArgs(["hello", "--final-guard", ...args], "/tmp/project");
+      return "no-throw";
+    } catch (error) {
+      return error.message;
+    }
+  };
+  assert.match(code(["--require-deliverable="]), /必须是路径/u);
+  assert.match(code(["--require-deliverable=   "]), /必须是路径/u);
+  assert.match(code(["--require-deliverable=a.md", "--require-deliverable=a.md"]), /路径重复/u);
+  const tooMany = Array.from({ length: 21 }, (_, index) => `f${index}.md`);
+  assert.match(code(tooMany.flatMap((name) => ["--require-deliverable", name])), /最多 20 条/u);
+  // 合计上限：布尔那条也占一个槽位（20 条命名 + 裸用 = 21）
+  const full = Array.from({ length: 20 }, (_, index) => `f${index}.md`);
+  assert.match(
+    code(["--require-deliverable", ...full.flatMap((name) => ["--require-deliverable", name])]),
+    /合计最多 20 条/u,
+  );
+  // 命名路径同样必须与 --final-guard 同用（闸门在 guard 之内）
+  assert.throws(
+    () => parseChatArgs(["hello", "--require-deliverable", "report.md"], "/tmp/project"),
+    /--require-deliverable 必须与 --final-guard 同用/u,
+  );
+  // 裸旗标重复仍然报重复（既有断言不动）
+  assert.throws(
+    () => parseChatArgs(["hello", "--final-guard", "--require-deliverable", "--require-deliverable"], "/tmp/project"),
+    /参数重复/u,
+  );
+});
+
+test("runChat：--require-deliverable <path> ⇒ 命名判据真的交给引擎，且默认路径一个键都不多", async () => {
+  const dir = await makeTmp("erix-cli-named-wire-");
+  let captured;
+  const captureLoop = async (options) => {
+    captured = options;
+    return {
+      finalText: "done",
+      messages: [],
+      rounds: 1,
+      truncated: false,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      compactionStats: [],
+    };
+  };
+  try {
+    const configPath = await writeEmptyMcpConfig(dir);
+    const base = {
+      prompt: "hi",
+      dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
+      provider: createFakeProvider([]),
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      maxRounds: 2,
+      idleTimeout: 0,
+      toolOutput: () => {},
+      loop: captureLoop,
+    };
+    // ① 默认：没有 deliverables 键（引擎「未声明 ⇒ 逐字不变」的回归锚）
+    await runChat({ ...base, session: "named-wire-0" });
+    assert.equal("deliverables" in captured, false, "没声明判据时不许出现 deliverables 键");
+    // ② 命名路径 ⇒ 一条判据，name = 声明的路径；判据拿到的 cwd 就是本次 run 的 cwd
+    await runChat({ ...base, session: "named-wire-1", finalGuard: true, deliverablePaths: ["report.md"], cwd: dir });
+    assert.deepEqual(captured.deliverables.map((entry) => entry.name), ["report.md"]);
+    assert.equal(typeof captured.deliverables[0].check, "function");
+    assert.equal(captured.cwd, dir, "cwd 必须原样交给引擎（判据靠它拼路径）");
+    assert.equal(captured.deliverables[0].check({ cwd: captured.cwd }).ok, false, "盘上没有 report.md ⇒ 判据必须 ok:false");
+    // ③ 两种语义同时声明 ⇒ 两条判据（布尔那条在前，与扩展侧同一顺序）
+    await runChat({
+      ...base,
+      session: "named-wire-2",
+      finalGuard: true,
+      requireDeliverable: true,
+      deliverablePaths: ["a.md", "b.md"],
+      cwd: dir,
+    });
+    assert.deepEqual(captured.deliverables.map((entry) => entry.name), ["files_written_exist", "a.md", "b.md"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

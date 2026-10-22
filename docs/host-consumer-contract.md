@@ -1770,9 +1770,9 @@ criterion built on the summary will systematically reject runs that already did 
 **The hosts that ship here expose *named* criteria, not predicates (issue #391).** The CLI
 (`erix chat` / `erix repl`) has `--require-deliverable [<path>]`, and the pi extension has
 `requireDeliverable: true` plus `deliverablePaths: string[]`. Both factories live in
-`bin/final-guard.js` — `createDeliverableChecks` produces `files_written_exist`, and
-`createNamedDeliverableChecks` produces one criterion per declared path. Neither host accepts
-a host-supplied `check` function: a function cannot cross the extension/tool boundary safely
+`bin/final-guard.js` — `createDeliverableChecks` (`bin/final-guard.js`) produces
+`files_written_exist`, and `createNamedDeliverableChecks` (`bin/final-guard.js`) produces one
+criterion per declared path. Neither host accepts a host-supplied `check` function: a function cannot cross the extension/tool boundary safely
 (pi serializes `details` and `structuredContent`, and the extension loader is not a data
 channel), so the surface only chooses *which named criteria* run.
 

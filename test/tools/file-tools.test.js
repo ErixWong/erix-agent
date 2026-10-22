@@ -569,8 +569,14 @@ const READ_LINE_CAPACITY_ROLES = [
   // `loopOptions.cwd`，+1,872 B / +30 行 ⇒ 7,243 → **7,009**，-3.2% 已超出 ±2%）：角色文件仍是
   // `bin/repl.js`（与当场样本中位 7,117 差 1.5%，仍在 ±2% 内），但记录值与描述里的
   // `median 7,009 (37.4)` 一起刷新（同位数改动 ⇒ 字节中性）。
+  // 2026-10-23 第四刷（#391 R2 又改了 `bin/repl.js`：`--require-deliverable [<path>]` 的可选值解析 +
+  // 帮助文本，+2,603 B / +44 行 ⇒ 7,009 → 6,812，-4.3% 已**掉出**样本中位 7,117 的 ±2% 带）：
+  // 这次**换文件**——`median` 改钉 `src/tools/registry.js`（6,250 B / 170 行 ⇒ 7,130，与样本中位差
+  // 0.18%，分母够大：±2% 的额度是 ±142 行）。`bin/repl.js` 不再占任何角色（它仍在样本清单里，
+  // 只是不再是「最接近中位」的那一个）。描述里的 `median 7,009 (37.4)` → `median 7,130 (36.8)`
+  // 是**同位数替换**（对本文件字节数中性，所以这一行不因描述改动而再刷）。
   // 历史：2026-10-21 从 #271 的记录值（11,471 B / 319 行 → 7,290）刷成同口径实测值（11,643 / 321 / 36.271）。
-  { role: "median", file: "bin/repl.js", recorded: { bytes: 31_527, lines: 843, bytesPerLine: 37.3986, capacity: 7_009, cjkShare: 0.1446 } },
+  { role: "median", file: "src/tools/registry.js", recorded: { bytes: 6_250, lines: 170, bytesPerLine: 36.7647, capacity: 7_130, cjkShare: 0 } },
   // 2026-10-23 #391：`most` 也**换了文件**——`bin/guard-metrics.js` 从 456 B / 17 行长到 1,063 B / 23 行
   // （均行 26.8 → 46.2），容量 9,772 → 5,671，已经不是「一次装得最多」那一个。样本里现在最大的是
   // `src/messages/openai-normalization.js`（5,496 B / 201 行 ⇒ 27.34 B/line ⇒ 9,587 行），描述里那一档随之

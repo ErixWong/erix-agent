@@ -2031,10 +2031,12 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  （「悬空 `tool_use` 先结清再注入」那一颗 + 「`metrics.verified` 不等于 `verification.status`」那一颗）
  *  按同一红线用符号锚点引用 `PENDING_TOOL_RESULT_TEXT`（`src/loop/orchestrator.js`）——`--verbose` 实测
  *  **103 组 / 262 处**（契约 EN 73 → 74 / CN 72 → 73，其余不变）。
- *    *  再升一次的理由（issue #391 R5，98 → **99**，+1 组 / 247 → 249 处）：契约中英「交付物机器判据」小节
- *  成对新增 `createDeliverableChecks`（`bin/final-guard.js`）这个锚点——宿主面只给命名判据，
- *  判据本体必须在文档里指到真声明（`--verbose` 实测 **99 组 / 249 处**：契约 EN 70 / CN 69）。
- *    *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
+ *    *    *  （issue #391，98 → **100**，+2 组 / 247 → 252 处）：契约中英「交付物机器判据」小节
+ *  成对新增两个锚点——`createDeliverableChecks` 与 `createNamedDeliverableChecks`（都在
+ *  `bin/final-guard.js`）：宿主面只给**命名**判据（布尔开关 + 命名路径清单），判据本体必须在文档里
+ *  指到真声明（`--verbose` 实测 **100 组 / 252 处**：契约 EN 71 / CN 70）。
+ *
+  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
 const SYMBOL_ANCHOR_MIN_UNIQUE = 103;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
@@ -4302,21 +4304,21 @@ const SELF_TEST_CASES = [
   },
   // —— issue #391 R4：`cli-flags`（bin/cli.js 帮助文本 ⇄ 两份 README 的 usage 行，双向逐处）——
   {
-    label: "#391 R4：README EN 的 chat usage 行删掉 `[--require-deliverable]` ⇒ 红并点名那个旗标",
-    overlay: { [README_EN]: (t) => t.replace(" [--require-deliverable]", "", 1) },
+    label: "#391 R4：README EN 的 chat usage 行删掉 `[--require-deliverable [<path>]]` ⇒ 红并点名那个旗标",
+    overlay: { [README_EN]: (t) => t.replace(" [--require-deliverable [<path>]]", "", 1) },
     expect: [/cli-flags: README\.md 的 `erix chat` usage 行缺 旗标 --require-deliverable/],
     expectFiles: [README_EN],
   },
   {
     label: "#391 R4：README_cn 的 repl usage 行凭空多写一个旗标 ⇒ 红（双向：多也红）",
-    // 靶点取 repl 行**末尾**（`[--require-deliverable]` 在 chat 行里也出现一次，裸 replace 会打到 chat 上）
-    overlay: { [README_CN]: (t) => t.replace("[--require-deliverable]\nerix skills", "[--require-deliverable] [--zzz-flag]\nerix skills", 1) },
+    // 靶点取 repl 行**末尾**（`[--require-deliverable [<path>]]` 在 chat 行里也出现一次，裸 replace 会打到 chat 上）
+    overlay: { [README_CN]: (t) => t.replace("[--require-deliverable [<path>]]\nerix skills", "[--require-deliverable [<path>]] [--zzz-flag]\nerix skills", 1) },
     expect: [/cli-flags: README_cn\.md 的 `erix repl` usage 行多出 旗标 --zzz-flag/],
     expectFiles: [README_CN],
   },
   {
     label: "#391 R4：帮助文本侧（真值）加一个新旗标 ⇒ 中英两份 README 同时红（这才是「加旗标忘了文档」的形状）",
-    overlay: { "bin/cli.js": (t) => t.replace("[--require-deliverable] [--no-notes]", "[--require-deliverable] [--zzz-flag] [--no-notes]", 1) },
+    overlay: { "bin/cli.js": (t) => t.replace("[--require-deliverable [<path>]] [--no-notes]", "[--require-deliverable [<path>]] [--zzz-flag] [--no-notes]", 1) },
     expect: [/cli-flags: README\.md 的 `erix chat` usage 行缺 旗标 --zzz-flag/,
       /cli-flags: README_cn\.md 的 `erix chat` usage 行缺 旗标 --zzz-flag/],
     expectFiles: [README_EN, README_CN],
@@ -4324,7 +4326,7 @@ const SELF_TEST_CASES = [
   {
     label: "#391 R4（放行证）：把 README chat 行里两个旗标**对调顺序** ⇒ 仍然绿（逐处比对的是集合，不是排版）",
     overlay: {
-      [README_EN]: (t) => t.replace("[--final-guard|--no-final-guard] [--require-deliverable]", "[--require-deliverable] [--final-guard|--no-final-guard]", 1),
+      [README_EN]: (t) => t.replace("[--final-guard|--no-final-guard] [--require-deliverable [<path>]]", "[--require-deliverable [<path>]] [--final-guard|--no-final-guard]", 1),
     },
     expectGreen: true,
   },
@@ -4337,7 +4339,7 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#391 R4（放行分支有效）：README 删掉一个旗标 + 为它登记一条放行 ⇒ 绿（证明放行真的被读到，不是恒绿）",
-    overlay: { [README_EN]: (t) => t.replace(" [--require-deliverable]", "", 1) },
+    overlay: { [README_EN]: (t) => t.replace(" [--require-deliverable [<path>]]", "", 1) },
     simulateCliFlagExemptions: [
       { doc: README_EN, command: "chat", flag: "--require-deliverable", why: "测试用：这一条确实是刻意的例外" },
     ],

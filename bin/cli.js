@@ -27,6 +27,9 @@ import {
   buildCaptureStub,
   createDeliverableChecks,
   createFinalGuard,
+  createNamedDeliverableChecks,
+  DELIVERABLES_LIMIT,
+  normalizeDeliverablePaths,
 } from "./final-guard.js";
 import {
   buildSkillTools,
@@ -51,8 +54,8 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable] [--tools <逗号分隔工具名>]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--tools <逗号分隔工具名>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
@@ -74,9 +77,17 @@ const HELP_TEXT = `用法：
   --reflection <on|off> 是否启用反思驱动的自适应预算（默认：max-rounds >= 16 时启用，见 DEFAULT_REFLECTION_MIN_ROUNDS）
   --final-guard         开启终稿 provenance 核验（默认关闭）
   --no-final-guard      兼容别名（默认已关闭，no-op）
-  --require-deliverable 交付物机器判据（默认关闭）：本 run 用写工具声明过的每个路径收尾时都必须
-                      真的在盘上，否则 guard 的 accept 也拿不到 verified（终局 unverified:deliverables_failed，
-                      exit 2）。读的是原始写路径（fileWrites），不是 40 码点摘要。
+  --require-deliverable [<path>]  交付物机器判据（默认关闭）。**两种语义**（issue #391）：
+                      · 裸用（不带值）：本 run 用写工具**声明过的**每个路径收尾时都必须真的在盘上
+                        （读 fileWrites 原始路径，不是 40 码点摘要）。⚠ 模型什么都不声明时集合为空
+                        ⇒ 判据恒真，所以它判的是「没撒谎」，不是「做了事」。
+                      · 带值（可重复）：**这次任务必须交付这些文件**，每条一个判据（相对路径按
+                        --cwd 解析）。模型一次工具都没调也照样判不过——要「必须交付 report.md」
+                        只能用这一种。两种写法都收：--require-deliverable report.md 与
+                        --require-deliverable=report.md；值是可选的，所以裸用时别让后面紧跟一个
+                        非旗标 token（把 prompt 写最前、或把裸旗标放末尾）。
+                      判据跑在 guard 之前：guard 说 accept 而判据没过 ⇒ 终局 unverified:deliverables_failed，
+                      **exit 2**。条数合计 ≤ 20（引擎 DELIVERABLES_LIMIT），路径不许重复。
                       ⚠ **必须与 --final-guard 同用**（或 ERIX_FINAL_GUARD=1）：判据是拦 guard accept
                       的闸门，没有 guard 就没有闸门——单独给会直接报 usage error（exit 1），
                       不静默空转（issue #391 R2）
@@ -318,12 +329,40 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       options.finalGuard = argument === "--final-guard";
       continue;
     }
-    if (argument === "--require-deliverable") {
-      if (seenOptions.has(argument)) {
-        usageError(`参数重复：${argument}`);
+    // issue #391 R2：`--require-deliverable` **可重复**，且值是可选的（裸用 = 布尔判据，现语义）。
+    // 两种写法都收：`--require-deliverable <path>`（照本文件既有惯例：空格分隔）与
+    // `--require-deliverable=<path>`（可重复的带值旗标用 `=` 更清楚，空值当场报错）。
+    if (argument === "--require-deliverable" || argument.startsWith("--require-deliverable=")) {
+      let rawValue;
+      if (argument.startsWith("--require-deliverable=")) {
+        rawValue = argument.slice("--require-deliverable=".length);
+        if (rawValue.trim() === "") {
+          usageError("--require-deliverable= 后面必须是路径（裸用请直接写 --require-deliverable）");
+        }
+      } else {
+        const next = args[index + 1];
+        // 值是可选的：只有后面紧跟「不是旗标」的 token 才当成路径（`--require-deliverable --final-guard`
+        // 里的第二个 token 是旗标 ⇒ 走裸用分支）。⚠ 代价：裸用时后面紧跟的 prompt 会被当成路径，
+        // 所以帮助文本里要求「prompt 写最前，或裸旗标放末尾」。
+        if (next !== undefined && !next.startsWith("-")) {
+          rawValue = next;
+          index += 1;
+        }
       }
-      seenOptions.add(argument);
-      options.requireDeliverable = true;
+      if (rawValue === undefined) {
+        if (seenOptions.has(argument)) {
+          usageError(`参数重复：${argument}`);
+        }
+        seenOptions.add(argument);
+        options.requireDeliverable = true;
+      } else {
+        // 重复的**带值**出现是正常的（可重复旗标）；重复的路径由共用校验器挡（判据名 = 路径）。
+        try {
+          options.deliverablePaths = normalizeDeliverablePaths([...(options.deliverablePaths ?? []), rawValue]);
+        } catch (error) {
+          usageError(`--require-deliverable：${error?.message ?? String(error)}`);
+        }
+      }
       continue;
     }
     if (argument === "-c" || argument === "--continue") {
@@ -470,7 +509,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
   // 所以选**显式失败**（exit 1 + 点名两个旗标必须同用），而不是自动替用户装一个天真 guard——
   // 那会把「不带 --final-guard 的一次成功 chat ⇒ exit 4」这个既有承诺面改掉。
   if (
-    options.requireDeliverable === true
+    (options.requireDeliverable === true || (options.deliverablePaths?.length ?? 0) > 0)
     && options.finalGuard !== true
     && process.env.ERIX_FINAL_GUARD?.trim() !== "1"
   ) {
@@ -478,6 +517,14 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       "--require-deliverable 必须与 --final-guard 同用（或设 ERIX_FINAL_GUARD=1）："
       + "交付物判据是拦 guard accept 的**闸门**，引擎只在 guard 存在时才核它；"
       + "单独用等于什么都不核（静默空转）",
+    );
+  }
+  // issue #391 R2：条数上限是**合计**的（布尔那条也占一个 `deliverables` 槽位，引擎看的是数组长度）。
+  // 单条路径在解析时已挡过重复/空串，这里只补「合计超限」这一格。
+  if ((options.requireDeliverable === true ? 1 : 0) + (options.deliverablePaths?.length ?? 0) > DELIVERABLES_LIMIT) {
+    usageError(
+      `--require-deliverable 的判据合计最多 ${DELIVERABLES_LIMIT} 条（引擎 DELIVERABLES_LIMIT）：`
+      + `裸用 1 条 + 命名路径 ${options.deliverablePaths?.length ?? 0} 条`,
     );
   }
 
@@ -679,6 +726,7 @@ async function runChatWithNotes({
   finalGuard,
   finalGuardMaxRetries = 2,
   requireDeliverable,
+  deliverablePaths,
   timeoutMs,
   stream,
   completion,
@@ -911,9 +959,19 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
           finalGuard: resolvedFinalGuard,
           finalGuardMaxRetries,
         }),
-    // issue #386 切片 2：`--require-deliverable`（默认关闭）——把「声明的写路径必须真的在盘上」
-    // 这条机器判据交给引擎，闸门因此能在 guard 说 accept 之后仍然拒绝盖章。
-    ...(requireDeliverable === true ? { deliverables: createDeliverableChecks() } : {}),
+    // issue #386 切片 2 / #391 R2：`--require-deliverable`（默认关闭）——把机器判据交给引擎，
+    // 闸门因此能在 guard 说 accept 之后仍然拒绝盖章。两种语义都留（见帮助文本）：
+    //   裸用 ⇒ `createDeliverableChecks()`（「你说过要写的东西还在盘上吗」，读 fileWrites）；
+    //   带值 ⇒ `createNamedDeliverableChecks(paths)`（「这次必须交付的这些文件在盘上吗」）。
+    // 两个工厂都在 `bin/final-guard.js`，与 pi 扩展复用同一份判据本体。
+    ...(() => {
+      const criteria = [];
+      if (requireDeliverable === true) criteria.push(...createDeliverableChecks());
+      if (deliverablePaths !== undefined && deliverablePaths.length > 0) {
+        criteria.push(...createNamedDeliverableChecks(deliverablePaths));
+      }
+      return criteria.length === 0 ? {} : { deliverables: criteria };
+    })(),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     maxTokens,
     retry: {
@@ -982,7 +1040,19 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     );
     if (result.verification?.status === "unverified") {
       console.log(`\n=== 终稿（未核验，不可信） ===\n${result.finalText}`);
-      console.log("⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。");
+      // issue #391 R2：交付物判据没过时把**原因**说出来（unverified 的两种来源完全不同：
+      // guard 打回重试用尽 vs 机器闸门拦下 guard 的 accept）。这句只在 deliverables_failed 时出现，
+      // 其它 unverified 形状（max_retries 等）的输出逐字不变。
+      if (result.verification?.reason === "deliverables_failed") {
+        const failedCount = result.verification?.metrics?.deliverables_failed;
+        console.log(
+          `⚠️ 交付物判据没过（deliverables_failed${Number.isSafeInteger(failedCount) ? `，失败 ${failedCount} 条` : ""}）：`
+          + "宿主声明的交付物不在盘上——guard 说 accept 也被机器闸门拦下，本次运行不视为成功结果。"
+          + "（声明方式：--require-deliverable <path> / requireDeliverable / deliverablePaths）",
+        );
+      } else {
+        console.log("⚠️ 该值未通过来源核验，不可信/需人工核验；本次运行不视为成功结果。");
+      }
     } else if (result.verification?.status === "error") {
       console.log(`\n=== 终稿（核验错误，不可信） ===\n${result.finalText}`);
     } else {

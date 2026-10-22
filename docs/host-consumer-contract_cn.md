@@ -1429,8 +1429,9 @@ deliverables?: [
 
 **本仓出厂的宿主只给「命名判据」，不开放谓词（issue #391）。** CLI（`erix chat` / `erix repl`）
 有 `--require-deliverable [<path>]`，pi 扩展有 `requireDeliverable: true` 与 `deliverablePaths: string[]`。
-两个工厂都在 `bin/final-guard.js`：`createDeliverableChecks` 产出 `files_written_exist`，
-`createNamedDeliverableChecks` 按宿主声明的路径逐条产出一条判据。**都不接受宿主自带 `check` 函数**：
+两个工厂都在 `bin/final-guard.js`：`createDeliverableChecks`（`bin/final-guard.js`）产出
+`files_written_exist`，`createNamedDeliverableChecks`（`bin/final-guard.js`）按宿主声明的路径
+逐条产出一条判据。**都不接受宿主自带 `check` 函数**：
 函数没法安全穿过扩展/工具边界（pi 要序列化 `details` 与 `structuredContent`，扩展装载面不是数据通道），
 所以那个面只能选「跑哪几条命名判据」。
 

@@ -825,3 +825,79 @@ test("#326-D 只有事实行的账本：恢复行报 0 条正文而不崩", asyn
   assert.match(line, /（0 条消息/u);
   assert.match(line, /1 条引擎提示/u);
 });
+
+// issue #391 R2/R3：repl 侧的命名交付物判据（与 chat 逐字同口径：裸用 = 布尔，带值 = 命名清单）。
+test("parseReplArgs：--require-deliverable 带值 = 命名路径（可重复，空格与 = 都收，坏值逐格报错）", () => {
+  const parse = (args) => parseReplArgs(["--final-guard", ...args], "/tmp/project", "/tmp/home");
+  assert.deepEqual(parse(["--require-deliverable", "report.md"]).deliverablePaths, ["report.md"]);
+  assert.deepEqual(parse(["--require-deliverable=report.md"]).deliverablePaths, ["report.md"]);
+  assert.deepEqual(
+    parse(["--require-deliverable=a.md", "--require-deliverable", "b.md"]).deliverablePaths,
+    ["a.md", "b.md"],
+  );
+  // 裸用仍是现语义（布尔判据），不顺手造出 deliverablePaths
+  const bare = parse(["--require-deliverable"]);
+  assert.equal(bare.requireDeliverable, true);
+  assert.equal(bare.deliverablePaths, undefined);
+  const code = (args) => {
+    try {
+      parse(args);
+      return "no-throw";
+    } catch (error) {
+      return error.message;
+    }
+  };
+  assert.match(code(["--require-deliverable="]), /必须是路径/u);
+  assert.match(code(["--require-deliverable=a.md", "--require-deliverable=a.md"]), /路径重复/u);
+  assert.match(
+    code(Array.from({ length: 21 }, (_, index) => `--require-deliverable=f${index}.md`)),
+    /最多 20 条/u,
+  );
+  // 命名路径也必须与 --final-guard 同用
+  assert.throws(
+    () => parseReplArgs(["--require-deliverable", "report.md"], "/tmp/project", "/tmp/home"),
+    /--require-deliverable 必须与 --final-guard 同用/u,
+  );
+});
+
+test("runRepl：--require-deliverable <path> ⇒ 命名判据交给引擎（name = 声明路径）", async () => {
+  const home = await makeTmp("erix-repl-named-deliverable-");
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  let captured;
+  try {
+    const mcpConfigPath = await writeEmptyMcpConfig(home);
+    const run = runRepl(
+      ["--session", "repl-named", "--dir", home, "--final-guard", "--require-deliverable", "report.md", "--config", mcpConfigPath],
+      {
+        input,
+        output,
+        sessionDir: home,
+        home,
+        notesDir: join(home, "notes"),
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        providerFactory: () => ({}),
+        loop: async (options) => {
+          captured = options;
+          return {
+            finalText: "done",
+            messages: [],
+            rounds: 1,
+            usage: { input_tokens: 0, output_tokens: 0 },
+            compactionStats: [],
+          };
+        },
+      },
+    );
+    input.end("hi\n/exit\n");
+    await run;
+    assert.deepEqual(captured.deliverables.map((entry) => entry.name), ["report.md"]);
+    // repl 没有 --cwd：判据拿到的 cwd 就是进程工作目录（工具与 session 派生也用这一个）
+    assert.equal(captured.cwd, process.cwd());
+  } finally {
+    input.destroy();
+    output.destroy();
+    await rm(home, { recursive: true, force: true });
+  }
+});

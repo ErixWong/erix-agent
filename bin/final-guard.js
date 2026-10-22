@@ -8,6 +8,8 @@ import {
   readCaptureManifests,
 } from "./final-guard-support.js";
 import { normalizedLabel } from "../src/text/label.js";
+// #391 R2：交付物判据的条数上限只有一份真值（引擎侧）；宿主侧前置挡直接引用它。
+import { DELIVERABLES_LIMIT as ENGINE_DELIVERABLES_LIMIT } from "../src/loop/deliverables.js";
 
 export { buildCaptureStub };
 function warningMessage(message) {
@@ -220,11 +222,47 @@ export function createNamedDeliverableChecks(paths, { exists = existsSync } = {}
 }
 
 /**
+ * issue #391 R2：CLI 侧 `--require-deliverable <path>` 的**前置**校验（chat 与 repl 共用这一份，
+ * 不许两处各写一遍「什么算合法路径」——那正是三种方言的起点）。
+ *
+ * 只做「形状」判断：非空字符串、不重复（判据名 = 路径，引擎要求同一 run 内唯一）、
+ * 条数 ≤ `DELIVERABLES_LIMIT`。**不**判文件在不在盘上：那正是判据本体要回答的问题。
+ *
+ * 抛的是普通 `Error`（不是 `CliError`）：调用方各自翻成自己的错误类型
+ * （CLI 是 `usageError` ⇒ exit 1 + 帮助；扩展侧是 `bad_params`）。
+ *
+ * @param {unknown} raw 单个路径或路径数组（两种写法都收：`--require-deliverable a.md` 与重复旗标）
+ * @returns {string[]} 规范化后的清单（空输入 ⇒ 空数组）
+ */
+export function normalizeDeliverablePaths(raw) {
+  const list = raw === undefined || raw === null ? [] : (Array.isArray(raw) ? raw : [raw]);
+  if (list.length > DELIVERABLES_LIMIT) {
+    throw new Error(
+      `交付物路径最多 ${DELIVERABLES_LIMIT} 条（引擎 DELIVERABLES_LIMIT），收到 ${list.length} 条`,
+    );
+  }
+  const seen = new Set();
+  const paths = [];
+  for (const [index, entry] of list.entries()) {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new Error(`交付物路径必须是非空字符串（第 ${index + 1} 条是 ${JSON.stringify(entry)}）`);
+    }
+    if (seen.has(entry)) {
+      throw new Error(`交付物路径重复：${entry}（判据名 = 路径，引擎要求同一 run 内唯一）`);
+    }
+    seen.add(entry);
+    paths.push(entry);
+  }
+  return paths;
+}
+
+/**
  * `deliverables` 的条数上限，**真值在引擎**（`src/loop/deliverables.js` 的 `DELIVERABLES_LIMIT`）。
  * 这里只转出去给宿主侧做**前置**校验：条数超限要让宿主拿到 `bad_params`（可读、可改），
  * 而不是到引擎才吃一个 `TypeError`（那是引擎内部错误，宿主看不出是自己多写了一条）。
  * `test/cli.test.js` 与 `test/examples/erix-run-core.test.js` 都拿它与引擎常量逐字对账。
  */
-export { DELIVERABLES_LIMIT } from "../src/loop/deliverables.js";
+export { DELIVERABLES_LIMIT };
+const DELIVERABLES_LIMIT = ENGINE_DELIVERABLES_LIMIT;
 
 export const finalGuard = createFinalGuard;
