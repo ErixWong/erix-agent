@@ -25,7 +25,7 @@ completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
-toolContext, store, persistence, runId, cwd, resume, onRound, onJudge,
+toolContext, store, persistence, runId, cwd, deliverables, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
 ```
@@ -269,7 +269,7 @@ await provider.chat({ messages });
 
 - `DEFAULT_STREAM_RECOVERY_MAX_ATTEMPTS` **不是本包里的标识符**（grep 证真）。被当作它的
   值引用的那个 `2`，其实是 `src/loop/orchestrator.js` 的 `retryAttempts` 回落值。
-  CLI 自己的那个 `2` 来自 `ERIX_RETRY_ATTEMPTS`（`bin/cli.js:841-848`），CLI 把它作为
+  CLI 自己的那个 `2` 来自 `ERIX_RETRY_ATTEMPTS`（`bin/cli.js:860-868`），CLI 把它作为
   `retry: { attempts: … }` 传下；**库**默认仍是 `false`，所以「把 CLI 行为抄进宿主」正是
   这个数字被误归因的方式。
 - `partialPersistence` 是持久性而非重试：它提交一个将死尝试的部分文本
@@ -1019,7 +1019,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 `max_rounds_cap` / `stall` / `continuation_exhausted` 只能以 `skipped` 或 `error`
 收尾——配了 guard 之后它们拿不到 `verified`，因为 guard 对这三个 reason 返回
 `accept` 也仍然以 `final_guard_unverified` 终局（`src/loop/orchestrator.js:3529-3542`）。
-CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1053-1060`）：
+CLI 映射在 `exitCodeForVerification`（`bin/cli.js:1070-1078`）：
 
 | `verification.status` | 含义 | 实际会看到的 `verification.reason` | CLI 退出码 |
 |---|---|---|---|
@@ -1276,6 +1276,7 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
 | `cwd` | string | 宿主传给 `runToolLoop` 的 `cwd`，原样 | 无——引擎从不解释它（不 `chdir`、不校验存在性、不拼路径） |
 | `runId` | string | 宿主传的 `runId`，原样 | 无 |
 | `filesWritten` | `[{ path, round }]` | run 的时间线台账里记录的写工具调用 | **最后 50 条**；更早的被丢掉并置 `filesWrittenTruncated: true` |
+| `fileWrites` | `[{ path, round, tool }]` | 写工具调用声明的**原始** `tool_use.input[pathKey]` 值（issue #388）：不摘要、不截断，可直接 `stat()` | **最后 50 条**（`FILE_LEDGER_LIMIT`，与引擎台账同一个常量）；更早的被丢掉并置 `fileWritesTruncated: true` |
 | `toolStats` | `{ [工具名]: { calls, failures } }` | run 的工具计数，**plain object**（`JSON.stringify(new Map())` 是 `{}`，直接交 `Map` 你只会读到空对象） | 按 `calls` 取**前 40** 个工具名；`toolStatsTruncated: true` |
 | `taskBrief` | string | 本次 run 由 `resolveTaskBrief`（`src/loop/task-brief.js`）产出、judge 与收尾看到的那份任务简报 | 2000 码点；`taskBriefTruncated: true` |
 | `selfReport` | `{ done, summary, output, findings }` | 模型**最后一次归一化后**的 wrap-up 信封（跑过归一化就用归一化那份；绝不重新解析散文） | `summary` 与 `output` 各 2000 码点；`selfReportSummaryTruncated` / `selfReportOutputTruncated` |
@@ -1292,19 +1293,96 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
 - **`filesWritten[].path` 是摘要参数，不是规范路径。** 它来自 judge 的时间线（`summarizeArgument`
   （`src/reflection/judge.js`）），被截到 40 个码点且**不带任何截断标记**。把它当提示（「这个 run
   写过一条长这样的路径」），核事实请用文件系统、`messages` 里的 tool_result 或 `cwd`；别拿它当 join 键。
+  **要精确值就用 `fileWrites[].path`**（issue #388）：它是原始入参值，`stat()`/`existsSync()` 才有意义；
+  摘要不是（>40 码点的路径被无声截断，拿它建判据会系统性误拦已经做对的 run）。
 - **`filesWritten` 与 `toolStats` 在任何一次 `runToolLoop` 里都在场**（空数组 / 空对象的意思是
   「这个 run 什么都没记」——这本身就是事实）。`cwd`、`runId`、`taskBrief`、`selfReport` 只在真有
   东西可报时在场。
 - **开销有上限且已实测。** `node scripts/final-guard-probe.mjs` 离线跑「30 轮 × 4KB 工具输出」：
-  `messages` 257,618 字节、加法键 2,242 字节 = **0.87%**，预算上限是 < 2%。所以宿主可以整包落盘/入队
+  `messages` 257,618 字节、加法键 4,789 字节 = **1.86%**（`fileWrites` 落地前是 2,242 字节），
+  预算上限是 < 2%。所以宿主可以整包落盘/入队
   而不用怕体积，guard 也可以读事实而不是重解析 transcript（小 run 的 `messages` 是 611 字节，真实 run
   几十 KB 到 MB）。
 
 **权威地位的前提：`verified` 只和 guard 手里的证据一样硬。** `accept` 必须建立在**独立事实**上——磁盘上
-的文件、命令的退出码、store 里的一行——绝不是「`finalText` 非空」。探针把这个反例钉成了一个场景（`S6`）：
+的文件、命令的退出码、store 里的一行——绝不是「`finalText` 非空」。探针把这个反例钉成了一个场景（`S6a`）：
 只看 `finalText.trim() !== ""` 的 guard，会为一个交付物**根本不存在**的 run 返回 `verified`；而同一份撒谎
-脚本交给查磁盘的 guard，在 `attempt: 1` 被抓住、`attempt: 2` 被补救。两半都在
-`node scripts/final-guard-probe.mjs` 里、零模型调用可复现——不是口口相传的经验。
+脚本交给查磁盘的 guard，在 `attempt: 1` 被抓住、`attempt: 2` 被补救。这个反例现在还多了一格（`S6b`）：同一个
+橡皮章 guard 加上宿主声明的 `deliverables` 判据之后，终局是 `unverified` / `deliverables_failed`——拦住它的是
+机器闸门，不是一段更好的 prompt（见下一节）。全部都在 `node scripts/final-guard-probe.mjs` 里、零模型调用
+可复现——不是口口相传的经验。
+
+### 交付物机器判据：宿主声明、引擎执行的闸门（issue #386 切片 2）
+
+`deliverables` 让**宿主**声明「什么算交付完成」，而**引擎**决定两件事：判据**何时**核、
+核不过**有什么后果**。这就是「橡皮章」问题的解药——只看 `finalText.trim() !== ""` 就
+`accept` 的 guard，再也不能把「交付物根本不存在」变成 `verified`。
+
+选项形状与校验（任何一条不满足都在 run 启动**之前**抛 `TypeError`，与其它选项同一口径）：
+
+```text
+deliverables?: [
+  { name: string（非空、同一 run 内唯一）, check: (facts) => boolean | {ok, detail?} | Promise<…> },
+  …… 至多 20 条 ……
+]
+```
+
+- `deliverables` 可选，至多 **20** 条；`[]` 等价于**未声明**（零条判据等于没有判据，行为
+  与不传该选项完全相同）。
+- `name` 必须是非空字符串，且在同一 run 内唯一。
+- `check(facts)` 允许同步或异步。`facts` 就是 **guard 即将拿到的那一份**事实
+  （`buildFinalGuardPayload` 的输出，至少含 `cwd` / `fileWrites` / `filesWritten` /
+  `toolStats` / `taskBrief` / `selfReport` / `findings` / `finalText` / `attempt` /
+  `rounds`）。它**不含** `deliverables` 自己（不自我指涉）。
+
+两条 fail-closed 纪律由契约写死——判据写错或卡住必须**拦住**，不许白放：
+
+| `check` 的结果 | 记账结果 |
+|---|---|
+| 返回 `true` | `{ ok: true }` |
+| 返回 `false` | `{ ok: false }` |
+| 返回 `{ ok: boolean, detail? }` | 原样搬 |
+| 返回其它任何值（字符串 / 数字 / `{ ok: "yes" }` / `undefined`） | `{ ok: false, detail: "invalid_result" }` |
+| 抛异常 | `{ ok: false, detail: "threw" }` |
+| 耗时超过 `finalGuardTimeoutMs` | `{ ok: false, detail: "timeout" }` |
+
+超时**复用** `finalGuardTimeoutMs`——没有单独的 `deliverablesTimeoutMs` 旋钮；计时是
+**逐条**的（前一条慢不会让后一条被判超时）。
+
+**核验时机：每次调用 guard 之前都核一遍**，不是每个 run 只核一次。于是 guard 判 `revise`
+之后，下一次 `attempt` 的判据会自动重算：真补做了的模型能拿到 `verified`，只是换了个
+说法的模型拿不到。
+
+结果进两个面，且只在宿主声明了判据时出现：
+
+- payload：`deliverables: [{ name, ok, detail? }]` 与 `deliverablesAllPassed: boolean`。
+  guard 因此能看见机器判据的结论，而不是只能读模型的嘴。
+- `verification.metrics`：`deliverables_checked` / `deliverables_failed`，一个 run 内累计
+  （多次 guard 调用各自累加），与既有的 `verified` / `skipped` / `revised` /
+  `unverified` / `guard_error` 并列，既有五个键的语义一字不变。
+
+闸门本身——这个选项存在的理由：
+
+| 判据结果 | guard 意见 | `verification.status` |
+|---|---|---|
+| 全部通过 | `accept` | `verified`——与今天一致，只是多记两个计数 |
+| **有失败** | `accept` | **`unverified`，`reason: "deliverables_failed"`**——机器证据压过 guard 意见 |
+| 有失败 | `revise` / `skip` / guard 报错 | 与今天一致（`unverified` / `skipped` / `error`） |
+| 未声明判据 | 任意 | **逐字不变**：payload 无键、metrics 无键、事件无字段 |
+
+三条边界是刻意的：
+
+- **`termination.reason` 不被改写。** 闸门只改 `verification`，不引入新的停机原因；
+  既有的 `final_guard_unverified` 路径（修订次数触顶、不可续跑降级）一字未动。
+- **不可续跑终局也照核一次，但结论不变。** `max_rounds_cap` / `stall` /
+  `continuation_exhausted` 上判据会跑一遍并记账，但终局仍是既有的 `non_continuable`。
+  闸门只贴标签，不新造停止行为。
+- **事件只多一个字段。** `type: "final_guard"` 的事件带 `deliverables_failed: <n>`
+  （只在声明了判据时出现），宿主不必读 metrics 就能观测闸门。既有事件字段一律不动。
+
+判据里该用哪个路径键：`fileWrites[].path` 是 `tool_use.input[pathKey]` 的**原始值**
+（逐字，可直接 `stat()`）；`filesWritten[].path` 是 judge timeline 的 40 码点摘要
+（只能当提示，见上面那张载荷表）。拿摘要建判据会**系统性误拦**已经做对的 run。
 
 ### 宿主侧的 guard 接线与截止线余量（issue #314）
 
