@@ -25,6 +25,7 @@
 | 机器判据在**每一种** guard 裁决下都算数：`skip` + 全通过 ⇒ `verified` / `reason: "machine_only"`（退出码 **4 → 0**），`skip` 或 guard 报错 + 有失败 ⇒ `unverified` / `deliverables_failed`（退出码 **2**）（§10） | 要——只要你把 `verified` 读成「guard 判过了」；信之前先看 `reason === "machine_only"` |
 | 新增 `finalGuardExtend` 选项（**默认 `false`**）：`max_rounds_cap` / `continuation_exhausted` 上的 `revise` 每 run 最多补跑一轮；`stall` 永远不补（§11） | 不用——opt-in；不打开时每一类预算停机都与 0.23.0 逐字一致 |
 | **被截断的工具调用轮**不再丢终稿：强制收尾注入前会先结清悬空 `tool_use`，于是这类 run 以 `continuation_exhausted` 收场（CLI 退出码 **4**），而不是 `failed` / `invalid_messages`（退出码 **1**）（§12） | 要——只要你把 `failed` / 退出码 1 当「可重试」 |
+| `foldMessageRows` 从包根导出，且 resume 会把 `store.load()` 再折一次：`load()` 原样返回落盘行的 store 不再丢工具配对（§13） | 不用——只有你自己的 `load()` 原样返回落盘行时才要动手，那时请折 |
 
 一句话版本：**以前要靠你推断的事实，现在写在明面上了。** 引擎没有改它**做**什么，改的是它**说**什么——
 状态文件里、错误对象上，以及模型会读到的那几处工具输出。
@@ -440,17 +441,46 @@ forcedFinal: true }`、`finalText` 有值、CLI 退出码 **4**（没配 guard �
 
 **要不要动手？** 只对那条 `failed` 分支。其余一律没动：没有新选项、没有新导出、没有新终止原因、没有新
 错误码，严格的消息序规则（`allowPendingToolUse: false`）也一字未改。
+## 13. `foldMessageRows` 是公共 API，resume 还会替你折一次（issue #401）
 
-## 13. 自检
+**症状。** 0.23.0 把一轮的正文挪进了 `kind: "message"` 行，并把折叠变成**宿主**的义务：
+你的 `load()` 必须把这些行接回轮载体行，否则每一个摊平 `record.messages` 的读方都什么也看不到。
+这条义务当初的交付方式有两个毛病。第一，它**不可履行**：折叠住在 `src/store/message-rows.js`，
+那个路径不在包的 `exports` 里，也没从包根导出——在真 `npm pack` + 安装里实测
+`'foldMessageRows' in await import("erix-agent")` 为 `false`。第二，它**没被测**：随包契约套件
+（`erix-agent/contract-tests`）关于折叠的格子是零，于是一个从不折叠的 store 能把整套跑绿。
+这正是本 issue 背后那份报告的形态：到处都是绿的，而续跑后治理时间线在该读 `[ok]` 的地方读成
+`[pending]`。
+
+**新东西。**
+
+- `foldMessageRows` 从包根导出：`import { foldMessageRows } from "erix-agent"`。把你 store 落盘的
+  那个数组（`load()` 级别的行）喂给它，把返回值当作 `load()` 的结果。它是幂等的、对老账本原样透传
+  （同一个数组、同一批对象），并且会跳过**载体行已经带着这一轮折叠正文**的轮——所以既折了**又**保留
+  原始消息行的 store 不会把正文返回两遍。
+- `test/contract/transcript-store.js` 现在会断言折叠：三格（折叠 + `seq` 排序 + `partOf` 分片、
+  幂等、以及「两份都留」的形状）。原样存取的 store 三格全红，而既有 22 格照样全绿——这一对就是
+  「全绿但没折」的随包版本。
+- 续跑路径不再依赖你折过：`restoreResume`（`src/loop/resume-manager.js`）在重建上下文之前，
+  把 `store.load()` 的返回值**再折一次**。未折叠的 store 上，那次工具调用重新读成 `[ok]`，
+  一轮也只被数一次。
+
+**要不要动手？** 只有你自己的 `load()` 原样返回落盘行时才要。那就折——用 `foldMessageRows`，
+或者按同样三条规则自己实现（按 `round` 分组、按 `seq` 排序、把 `partOf` 分片接进它指认的那条消息）。
+引擎那层兜底只管 **resume 路径**：展示投影（`projectTranscriptForDisplay`，
+`src/display/projection.js`）仍然直接读 `load()` 的输出，你自己按
+`records.flatMap((record) => record.messages ?? [])` 写的每一个读方同理。
+
+## 14. 自检
 
 ```bash
-npm test                       # 1,965 tests，0 失败（1,956 通过 + 9 skipped）
+npm test                       # 1,976 tests，0 失败（1,967 通过 + 9 skipped）
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # 离线、零模型调用；断言 finalGuard 的载荷面
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件
 ```
 
-对你的宿主，升级前有九个问题值得用测试回答：
+对你的宿主，升级前有十个问题值得用测试回答：
 
 1. **状态文件。** 造一个削减账超过 32 条的 run：`compactionStatsWindow.total` 等于全量条数、
    `dropped === total − 32`，并且**旧**状态文件（没有窗口键）照旧 validate、照旧可续跑。
@@ -484,17 +514,21 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    退出码 **4**——本次改动之前同一个脚本退 **1** 并报 `invalid_messages`、没有终稿——且档案里在截断的
    `assistant` 消息之后必须有一条引擎自写的 `tool_result`（带 `[erix]` marker）。然后把尾巴弄畸形
    （`tool_use` 没有 `id`）：run 必须照旧以 `invalid_messages` 失败，而不是被悄悄吞掉。
+10. **你的 store 折了吗。** 把 `load()` 指向某个 run 的原始档案（一条消息一条
+   `kind: "message"` 行，载体行**没有** `messages` 键）：`load()` 必须按轮返回一条记录、正文接回去、
+   `partOf` 的分片落在它所属的那条消息里，而 `erix-agent/contract-tests` 必须保持全绿。然后把
+   `load()` 里的折叠去掉：那三格折叠判据必须变红——若它们仍是绿的，你就是本节存在的原因（§13）。
 
-## 14. 没变的
+## 15. 没变的
 
-没有 store 方法签名、没有返回类型、没有选项名、没有导出、没有记录种类、没有消息字段、没有终止原因、
+没有 store 方法签名、没有返回类型、没有选项名、没有**删掉**的导出（**新增**了一个，见 §13）、没有记录种类、没有消息字段、没有终止原因、
 没有错误码搬家，运行时依赖仍是零。`store.load()` 的形状与 0.23.0 一致。`deterministic.compactionStats`
 仍是最后 32 条。judge 决策面与续跑路径一字未动；final guard 的**裁决**语义也一字未动——它的载荷多了几个加法键（§8），
-那是信息，不是新规则。整个发布里有**三处**行为变化，三处都是修假阴性、不是新规则：搜索根不存在
+那是信息，不是新规则。整个发布里有**四处**行为变化，四处都是修假阴性、不是新规则：搜索根不存在
 返回错误文本而不是 `（无命中）`（§6）、guard `skip` 下通过的机器判据不再被丢掉（§10），以及被截断的
-工具调用轮会带着终稿跑完、而不是以 `failed` / `invalid_messages` 结束（§12）。其余全是加法。
+工具调用轮会带着终稿跑完、而不是以 `failed` / `invalid_messages` 结束（§12），`load()` 交回散行的 store 在 resume 后不再丢工具配对（§13）。其余全是加法。
 
-## 15. 迁移配方
+## 16. 迁移配方
 
 1. 如果你读 `<runId>.state.json` 的削减账，改读 `compactionStatsWindow.total`（与 `dropped`），别再数数组；
    把键的缺席理解成「没有统计」，而不是「零」。

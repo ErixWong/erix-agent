@@ -252,6 +252,106 @@ export function transcriptStoreContract(label, createStore) {
     assert.deepEqual(loaded.map((r) => r.round), [0, 1, 2]);
   });
 
+  // ---- issue #401：折叠义务（宿主 store 的 `load()` 必须返回折叠形状）-----------------------
+  // 折叠义务在**宿主侧**：引擎写侧一条消息落一行（`kind:"message"` + `seq`，分片带 `partOf`），
+  // `load()` 必须在返回前把它们折回轮载体行。在此之前本套件**一格折叠判据都没有**
+  // （`grep -c 'kind: "message"' test/contract/transcript-store.js` 当时 = 0），于是 erix-station 那种
+  // 「全绿但没折」的自研 store 能安静地过完整个套件，而 resume 侧的时间线从 `[ok]` 掉成 `[pending]`。
+  // 实现在包根：`foldMessageRows`（issue #401 R1 导出），宿主可直接用，也可自己重写（口径见契约）。
+  const foldRunId = "fold-run";
+  const textBlock = (text) => ({ type: "text", text });
+  const foldCarrier = (round, messages) => ({
+    round,
+    ts: "2026-08-29T00:10:00.000Z",
+    dedupKey: `${foldRunId}:engine:round:${String(round)}`,
+    roundKey: `${foldRunId}:round:${String(round)}`,
+    ...(messages === undefined ? {} : { messages }),
+  });
+  const foldMessageRow = (round, seq, message, extra = {}) => ({
+    round,
+    ts: "2026-08-29T00:10:00.000Z",
+    kind: "message",
+    seq,
+    dedupKey: `${foldRunId}:msg:${String(round)}:${String(seq)}`,
+    messages: [message],
+    ...extra,
+  });
+  // 一轮的真实形状：载体行（只留元数据）+ 三条消息行（assistant 带 tool_use、user 带 tool_result、
+  // 第二条 tool_result 是**分片**：`partOf` 指认前一条消息行的 key）。
+  const foldRound = (round) => {
+    const useId = `tool-${String(round)}`;
+    const rows = [
+      foldCarrier(round),
+      foldMessageRow(round, 0, { role: "user", content: [textBlock("inspect files")] }),
+      foldMessageRow(round, 1, {
+        role: "assistant",
+        content: [{ type: "tool_use", id: useId, name: "list", input: { path: "." } }],
+      }),
+      foldMessageRow(round, 2, {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: useId, content: "README.md" }],
+      }),
+      foldMessageRow(round, 3, {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: `${useId}-b`, content: "src" }],
+      }, { partOf: `${foldRunId}:msg:${String(round)}:2` }),
+    ];
+    const expected = [
+      { role: "user", content: [textBlock("inspect files")] },
+      { role: "assistant", content: [{ type: "tool_use", id: useId, name: "list", input: { path: "." } }] },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: useId, content: "README.md" },
+          { type: "tool_result", tool_use_id: `${useId}-b`, content: "src" },
+        ],
+      },
+    ];
+    return { rows, expected };
+  };
+
+  test(`${label}: 折叠——消息行按 seq 折回载体行，partOf 分片接进目标消息（issue #401）`, async () => {
+    const store = await createStore();
+    const { rows, expected } = foldRound(2);
+    for (const row of rows) await store.appendRound(foldRunId, row);
+
+    const loaded = await store.load(foldRunId);
+    assert.equal(loaded.length, 1,
+      `折叠后该轮只剩载体一行（消息行不得以独立行留在数组里）；实测 ${String(loaded.length)} 行：`
+      + JSON.stringify(loaded.map((record) => record.dedupKey)));
+    assert.equal(loaded[0].dedupKey, `${foldRunId}:engine:round:2`, "正文折回的载体就是那条轮行");
+    assert.deepEqual(loaded[0].messages, expected,
+      "正文按 `seq` 拼回，且 `partOf` 的分片要**接进目标消息**（同一 content 数组），而不是并列成第二条 user 消息");
+  });
+
+  test(`${label}: 折叠幂等——已折叠的账本再读一次逐字一致（issue #401）`, async () => {
+    const store = await createStore();
+    const { rows, expected } = foldRound(3);
+    for (const row of rows) await store.appendRound(foldRunId, row);
+
+    const first = await store.load(foldRunId);
+    const second = await store.load(foldRunId);
+    assert.deepEqual(first, second, "同一个账本读两次必须逐字相同（折叠层不得带状态）");
+    assert.deepEqual(first[0].messages, expected, "两次读都必须是折叠后的形状");
+  });
+
+  test(`${label}: 折叠守卫——宿主「两份都留」时正文不得翻倍（issue #401）`, async () => {
+    const store = await createStore();
+    // 宿主 materializer 自己折了一份（载体行已经带正文），又把原始消息行一起交回去。
+    // 按 R3 的规则：该轮载体已有正文 ⇒ 这一轮跳过（消息行当重复副本丢弃），正文条数不得翻倍。
+    const { rows, expected } = foldRound(4);
+    await store.appendRound(foldRunId, { ...rows[0], messages: expected });
+    for (const row of rows.slice(1)) await store.appendRound(foldRunId, row);
+
+    const loaded = await store.load(foldRunId);
+    const carrier = loaded.find((record) => record.dedupKey === `${foldRunId}:engine:round:4`);
+    assert.ok(carrier !== undefined, "载体行必须在场");
+    assert.deepEqual(carrier.messages, expected,
+      `「两份都留」再折一遍不得让同一轮正文出现两次（实测过的坏法：r1 = assistant+user+assistant+user）；`
+      + `实测：${JSON.stringify(carrier.messages)}`);
+    assert.equal(loaded.length, 1, "消息行是重复副本，不得作为独立行留在数组里");
+  });
+
   test(`${label}: folded/foldedPayload 元数据往返`, async () => {
     const store = await createStore();
     const payload = [

@@ -2847,14 +2847,18 @@ Consequences for a host store and for host readers:
   Real-upstream guard: `examples/resume-real-e2e.test.mjs` (`ERIX_E2E_REAL=1`:
   real process SIGKILL → same `--session` resume → ledger closure / no loss /
   no duplicate execution / half-line quarantine).
-- **Read the ledger through `load()`, never by re-folding raw rows.**
-  `foldMessageRows` (`src/store/message-rows.js`) is the only read side. A reader that
-  re-implements the fold — de-duplicating messages on a content fingerprint, say —
-  silently drops legitimate repeats: two long messages that share their first 400
-  characters collapse into one, and any census derived from that array is wrong in a
-  way that depends on the payload text (a “did the CLI really run ≥2 tools” check can
-  read 1). In-repo precedent: `scripts/cli-real-smoke.mjs` takes its tool-result census
-  from `createFileTranscriptStore({ dir }).load(runId)`.
+- **Read the ledger through `load()`, never by re-folding raw rows by hand.**
+  `foldMessageRows` (`src/store/message-rows.js`) is the only read side, and since issue
+  #401 it is **public API**: `import { foldMessageRows } from "erix-agent"`. A host store
+  that assembles its own `load()` return value calls it — the module's deep path is not in
+  the package `exports`, and before #401 the function was not reachable from a packed
+  install at all (`ERR_PACKAGE_PATH_NOT_EXPORTED`), so “implement the fold yourself” was
+  the only thing on offer. A reader that re-implements the fold — de-duplicating messages on a
+  content fingerprint, say — silently drops legitimate repeats: two long messages that
+  share their first 400 characters collapse into one, and any census derived from that
+  array is wrong in a way that depends on the payload text (a “did the CLI really run ≥2
+  tools” check can read 1). In-repo precedent: `scripts/cli-real-smoke.mjs` takes its
+  tool-result census from `createFileTranscriptStore({ dir }).load(runId)`.
 
 ### The row shape on disk is not the shape after `load()` (issue #361)
 
@@ -2896,6 +2900,38 @@ the #353 probe: with folding in place, a resumed run rebuilds the governed
 timeline with the tool call marked `[ok]`; without folding the use and the
 result sit in different rows, cannot be paired, and the same timeline reads
 `[pending]`.
+
+### The fold is public API, and the engine covers one fallback (issue #401)
+
+**Two symptoms of an unfolded store** (a `load()` that returns the on-disk rows as
+they are — the real-upstream case behind issue #401):
+
+1. **The governed timeline reads `[pending]` instead of `[ok]`.** A `tool_use` and its
+   `tool_result` land in two different records, so they cannot be paired; the timeline
+   entry for that round is built as “called, never answered”.
+2. **One round is counted as many.** Every message row is its own record, so anything
+   that counts records — the governor's round history, a `l0facts` re-extraction, a
+   “how many tools did this run really call” census — reads the body of one round as
+   several messages.
+
+A third shape is not a symptom but a bug of its own: a store that folds **and** keeps the
+raw message rows returns the same round body twice (measured: `assistant+user+assistant+user`
+for a two-message round).
+
+**What the engine does now.** `restoreResume` (`src/loop/resume-manager.js`) folds the
+value `store.load()` returned once more before it rebuilds the context, so the resume path
+no longer depends on the host having folded. The fold itself skips a round whose carrier
+row **already holds that round's folded body** (`foldMessageRows`, exported from the
+package root), which is what keeps the “both copies” shape from doubling the body.
+
+**Still fold it yourself.** That fallback covers the **resume path only**. The display
+projection (`projectTranscriptForDisplay`, `src/display/projection.js`) reads `load()`
+output directly and is still wrong on an unfolded store, and so is every other reader you
+wrote against `records.flatMap((record) => record.messages ?? [])`. Folding belongs inside
+`load()`; `foldMessageRows` is now reachable from a packed install so that the obligation
+is actually fulfillable, and `test/contract/transcript-store.js` now asserts it — three
+cells that a pass-through store fails (measured: 22 existing cells green, all three fold
+cells red).
 
 ## Tool result fact and field ownership (issue #284 / #285)
 

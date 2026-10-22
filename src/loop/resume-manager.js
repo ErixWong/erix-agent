@@ -1,6 +1,6 @@
 import { cloneState } from "./budget.js";
 import { blocksFor, mergeToolResultsIntoMessages } from "./messages.js";
-import { MESSAGE_ROW_KIND, nextMessageSeqByRound, foldLedgerMessages } from "../store/message-rows.js";
+import { MESSAGE_ROW_KIND, nextMessageSeqByRound, foldLedgerMessages, foldMessageRows } from "../store/message-rows.js";
 import { extractL0Facts } from "../reflection/l0.js";
 import { buildTimeline } from "../reflection/judge.js";
 import { validateRunState } from "../run-state.js";
@@ -86,7 +86,17 @@ export async function restoreResume(ctx) {
   const persistedRunStateResult = await restorePersistedRunState();
   if (ctx.resume && ctx.store && ctx.runId !== undefined) {
     try {
-      const records = await ctx.store.load(ctx.runId);
+      // issue #401：宿主自研 store 可能**没折**（`load()` 直接返回落盘行）。再折一次，宿主折不折都能
+      // 拿到同一份时间线——守卫在 `foldMessageRows` 里（该轮载体已带这一轮正文 ⇒ 该轮跳过），
+      // 所以「两份都留」的宿主也不会让正文翻倍。
+      // 只有账本里**还看得见消息行**时才需要折（宿主没折 / 折了又留着原始行）；已折过的账本直接原样用，
+      // 不多走一遍折叠（内置 store 这条路因此与今天逐字一致，连一次额外的数组遍历都不添）。
+      const loadedRecords = await ctx.store.load(ctx.runId);
+      const records = loadedRecords.some((record) => (
+        record?.kind === MESSAGE_ROW_KIND && Number.isSafeInteger(record.seq)
+      ))
+        ? foldMessageRows(loadedRecords)
+        : loadedRecords;
       if (records.length === 0) throw new Error("resume: 无可恢复记录");
       // issue #326（wo-C）：**恢复不得重算折叠摘要**——把已入账的那份灌回引擎的复用账本，
       // 于是本次进程里同一折叠输入直接命中，不再调摘要器，也不会重复落账。

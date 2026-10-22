@@ -34,6 +34,7 @@
 // 折叠层挂在哪：两个内置 store 的 `load()`（`src/store/file.js`、`src/store/memory.js`）在
 // `loadRecords` 之后调用本模块。`loadByDedupKey` / `loadMaxRound` 两个点查探针**不折叠**
 // （它们是对原始行的探针，`appendUserTurn` 快路径要的正是「这条 key 在不在」）。
+import { isDeepStrictEqual } from "node:util";
 
 /** 消息行的 `kind` 字面值。 */
 export const MESSAGE_ROW_KIND = "message";
@@ -89,6 +90,25 @@ function mergePartIntoMessage(target, part) {
 /**
  * 读侧折叠：把 `kind: "message"` 行的正文按轮拼回轮行。
  * 无消息行时返回入参本身（老账本零改写）。
+ *
+ * **公共 API（issue #401，`src/index.js` 导出）。** 宿主自研 `TranscriptStore` 时，`load()` 必须在
+ * 返回前跑一遍本函数——契约「落盘行形状 ≠ `load()` 之后的形状」那一节的要求，在此之前宿主只能
+ * 自己重写一套（而重写的那套正是 #353 / #401 两份事故的根因）。
+ *
+ * 入参是 **`load()` 级别的原样行**：`appendRound` 收到什么形状，就喂什么形状（`round` 分组、
+ * `kind: "message"` + `seq` 排序、`partOf` 分片）。出参是**折叠后的形状**——与「一条消息一落盘」
+ * 改造前（0.22 及更早）的账本 `load()` 逐字一致，于是 `records.flatMap((record) => record.messages ?? [])`
+ * 仍然拼出模型当时该看到的序列。老账本（轮行自带正文、没有消息行）原样透传：**同一个引用、
+ * 同一批对象**，不复制不改写。
+ *
+ * **幂等**：`foldMessageRows(foldMessageRows(rows))` 与 `foldMessageRows(rows)` 逐字相等。
+ *
+ * **守卫（载体已带这一轮的正文 ⇒ 该轮跳过）**：某轮载体行的 `messages` 已经等于从该轮消息行折出来的
+ * 正文（逐字段深比较相等）时，这一轮的消息行被当作**重复副本**丢弃，不再往里拼一次。这就是宿主
+ * 「两份都留」（折好的载体 + 原始消息行）时唯一安全的读法：再折一遍不会让同一轮正文翻倍。
+ * 引擎的 resume 路径也靠这条规则免疫（`src/loop/resume-manager.js` 会对 `store.load()` 的返回值
+ * 再折一次，宿主折不折都能拿到同一份时间线）。
+ *
  * @template {{ round?: number, seq?: number, kind?: string, partOf?: string, messages?: object[] }} T
  * @param {T[]} records
  * @returns {T[]}
@@ -142,6 +162,14 @@ export function foldMessageRows(records) {
       if (key !== "") parts.set(key, messages.length);
       messages.push(...row.messages);
     }
+    // 守卫（issue #401 R3）：该轮载体**已经带着这一轮的正文**——宿主把折好的载体与原始消息行
+    // 都交给了我们。此时再把消息行拼一次就是同一轮正文重复一遍（实测 r1 变
+    // assistant+user+assistant+user）。判据是「折出来的结果与载体现有正文逐字段深比较相等」，
+    // 而不是「载体非空」：`…:engine:round:<n>:resume` 载体带的是方向提示那几条引擎控制正文，
+    // 同轮的消息行装的是崩溃轮的正文——那一轮**必须**照常拼，按「非空就跳」会把正文丢掉。
+    const carrier = records[group.carrier];
+    const existing = Array.isArray(carrier?.messages) ? carrier.messages : [];
+    if (existing.length > 0 && isDeepStrictEqual(existing, messages)) continue; // 已折过：消息行当重复副本丢弃
     attached.set(group.carrier, messages);
   }
   if (consumed.size === 0) return records;
