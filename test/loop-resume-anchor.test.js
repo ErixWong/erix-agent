@@ -6,11 +6,12 @@
 // 已经落盘的终稿当成「崩溃之后宿主追加的」尾队列，而快照里那份 `partialText` 又是同一段正文
 // ⇒ **终稿正文喂给模型两遍**（provider 上下文 4 条 vs 应有 3 条）。
 //
-// 三格：
+// 四格：
 //   ① 纯函数：账本行 → 锚点（尾部宿主行不计、分片算一条、老账本原样算）；
 //   ② 回归：`stream: true` + `partialPersistence` 现场恢复后终稿正文只出现一次（先红后绿）；
 //   ③ 反向证：现算值人为少 1 ⇒ 崩溃现场的 tool_use/tool_result 配对断裂 ⇒
-//      `invalid_messages` + **零请求**（锚点偏移的方向敏感）。
+//      `invalid_messages` + **零请求**（锚点偏移的方向敏感）；
+//   ④ 恢复**不消费**快照锚点：写成 0 / 超大都不改变上下文（写侧多算的残留也在这条里被中和）。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
