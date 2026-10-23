@@ -1,4 +1,5 @@
 import { SUMMARIZER_PROMPT_GUIDE } from "./fold-llm.js";
+import { NORMALIZATION_REASONING_EFFORT } from "../reflection/wrapup.js";
 
 const DEFAULT_SUMMARY_SYSTEM = "你是对话历史压缩器。只输出摘要正文，不要调用工具，不要寒暄。";
 
@@ -95,6 +96,7 @@ export function createProviderSummarizer({
         role: "user",
         content: `${perCallGuide ?? promptGuide}\n\n${serializeFoldedMessages(messages, roundRange)}`,
       }],
+      reasoning_effort: NORMALIZATION_REASONING_EFFORT,
     };
     const response = await chat(request);
     const usage = response?.usage;
