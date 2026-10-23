@@ -168,3 +168,63 @@ test("#439 record: `error.phase` 的 getter 抛异常 ⇒ 条目仍入账、`err
   assert.equal(entry.error.message, "disk full");
   assert.equal(Object.hasOwn(entry.error, "phase"), false, "取不到 phase ⇒ 缺键，不猜值");
 });
+
+// issue #439 第二轮评审退回项：契约把 `error.phase` 的**对外口径**写成「压平空白、截到 32 字符」，
+// 但当时这三条只有契约文字、没有判据（评审把 `MAX_ERROR_PHASE_LENGTH` 32 → 33，全量 2082 / 零红）。
+// 下面三格把契约的每一句都钉住——对外数字、压平、以及「取不到就完全没有这个键」。
+test("#439 record: `error.phase` 截到 32 字符（对外口径；评审把常量改成 33 时这一格必须红）", () => {
+  const ledger = createErrorLedger();
+  ledger.record({
+    port: "transcript",
+    operation: "appendRound",
+    fatal: true,
+    error: { name: "KitError", message: "boom", phase: "p".repeat(33) },
+  });
+  const [entry] = ledger.toUnpersisted();
+  assert.equal(entry.error.phase.length, 32, "契约写的上限就是 32 字符");
+  assert.equal(entry.error.phase, "p".repeat(32), "截的是尾部，不是随机 32 个字符");
+});
+
+test("#439 record: `error.phase` 里的换行/连续空白压平成单空格（`stream\\nrequest` ⇒ `stream request`）", () => {
+  const ledger = createErrorLedger();
+  ledger.record({
+    port: "transcript",
+    operation: "appendRound",
+    fatal: true,
+    error: new KitError("timeout", "stream timed out", { phase: "stream\nrequest" }),
+  });
+  ledger.record({
+    port: "transcript",
+    operation: "appendRound",
+    fatal: false,
+    error: { name: "KitError", message: "stream timed out", phase: "  stream \n\t request  " },
+  });
+  const [crlf, padded] = ledger.toUnpersisted();
+  assert.equal(crlf.error.phase, "stream request", "换行必须压成单空格（否则宿主拿去分类会漏）");
+  assert.equal(padded.error.phase, "stream request", "首尾空白与连续空白都压平");
+  assert.equal(padded.repeat, 1, "压平后两条的 error.phase 相同、但 fatal 不同 ⇒ 仍是两条账");
+});
+
+test("#439 record: `42` / `null` / 缺键的 `error.phase` ⇒ 完全没有 `phase` 键（不写 `phase: undefined`）", () => {
+  const ledger = createErrorLedger();
+  // 三条必须各自成账（operation 不同），否则去重会把它们并成一条，后两条就看不见了。
+  ledger.record({ port: "notes", operation: "note_write", fatal: false, error: { name: "Error", message: "boom", phase: 42 } });
+  ledger.record({ port: "notes", operation: "note_read", fatal: false, error: { name: "Error", message: "boom", phase: null } });
+  ledger.record({ port: "notes", operation: "note_purge", fatal: false, error: { name: "Error", message: "boom" } });
+  const entries = ledger.toUnpersisted();
+  assert.equal(entries.length, 3, "三格必须各自入账（否则这一格测不到全部三条路径）");
+  for (const entry of entries) {
+    assert.equal(Object.hasOwn(entry.error, "phase"), false,
+      `非字符串 / null / 缺键都不许产出 phase 键，实测 ${JSON.stringify(entry.error)}`);
+    assert.equal("phase" in entry.error, false, "连 `phase: undefined` 都不许出现（宿主会把它当「有阶段」）");
+    assert.deepEqual(Object.keys(entry.error).sort(), ["message", "name"], "只有既有两键");
+  }
+});
+
+// 顺手登记（契约里已写明）：32 字符这个上限**不是** `LEDGER_LIMITS` 的成员 ⇒ 宿主读不到它。
+// 谁要是把它加进去（或把 `errorMessageLength` / `maxEntries` 改名），这一格先红——那是对外口径的变更，
+// 不是内部重构。
+test("#439 LEDGER_LIMITS 只有 `errorMessageLength` / `maxEntries`（phase 的 32 字符上限刻意不在里面）", () => {
+  assert.deepEqual(Object.keys(LEDGER_LIMITS).sort(), ["errorMessageLength", "maxEntries"],
+    "`error.phase` 的上限是契约口径，不是宿主可读的常量");
+});
