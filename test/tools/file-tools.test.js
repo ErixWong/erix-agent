@@ -571,13 +571,13 @@ const READ_LINE_CAPACITY_ROLES = [
   // 63.1 → **64.4**、26% → **27%**，三处都是同位数替换 ⇒ 对本文件字节中性，`self` 那一行不用再刷）；
   // 记录值按本测试自己的口径复测，**容差常量一个都没动**。
   // 2026-10-24 第八刷（issue #425）：`src/loop/resume-manager.js` 把恢复锚点从「快照采样」改成
-  // 「恢复时按账本现算」（新增纯函数 `countResumeAnchor` 与它的裁定注释，+2,866 字节 / +47 行，
-  // 均行字节 64.3747 → **64.0136**），容量 4,072 → **4,095**、CJK 占比 26.66% → **29.70%**；
+  // 「恢复时按账本现算」（新增纯函数 `countResumeAnchor` 与它的裁定注释，+2,864 字节 / +47 行，
+  // 均行字节 64.3747 → **64.009**），容量 4,072 → **4,095**、CJK 占比 26.66% → **29.71%**；
   // 字节 +11.27% 与 CJK 占比都越过限值 ⇒ 记录值按本测试自己的口径复测并同步，`readFile` 描述里的
   // floor / 均行字节 / CJK 占比随之 `4,072 → 4,095`、`64.4 → 64.0`、`27% → 30%`（三处都是同位数
   // 替换 ⇒ 对本文件字节中性，`self` 那一行不用再刷）。`median` / `most` / `densest` 三个角色当场
   // 复测未变（样本中位仍是 `src/tools/notes.js` 6,952，样本最大仍是 `src/loop/abort.js` 9,407）。
-  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 28_294, lines: 442, bytesPerLine: 64.0136, capacity: 4_095, cjkShare: 0.297 } },
+  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 28_292, lines: 442, bytesPerLine: 64.009, capacity: 4_095, cjkShare: 0.2971 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
