@@ -2943,6 +2943,14 @@ Consequences for a host store and for host readers:
   as canonical messages **without** the per-message `ts` (`foldLedgerMessages`),
   so a fold input keeps one stable identity across a resume (the reuse key of
   the fold summary, issue #326, is computed over those messages).
+  **Do not write a folded message back as a message row.** The `ts` on a folded
+  message is a **nested** payload field, not the top-level envelope `ts` that
+  the same-key digest drops: re-appending it under the same `dedupKey` is
+  judged a payload conflict (`code: dedup_payload_conflict`,
+  `differingFields: ["messages"]`; measured — the pre-#439 shape does not
+  collide). The four excluded names are exactly the top-level ones, as stated
+  in `### Same-key payload conflicts (issue #326)` (“nested `ts` values are
+  payload”).
 - Do not assume “round rows carry the messages”. The carrier may be
   `<runId>:engine:round:<n>`, `<runId>:round:<n>` (host default key) or
   `<runId>:engine:round:<n>:resume`; if a run crashed before its round row

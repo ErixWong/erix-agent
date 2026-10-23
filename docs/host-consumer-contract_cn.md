@@ -2316,6 +2316,11 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
   `ts` 键**，绝不是 `ts: undefined`。这是加法面：既有键一个未改；引擎自己的恢复路径刻意按
   **不含逐条 `ts`** 的规范化消息读账本（`foldLedgerMessages`），于是同一份折叠输入跨 resume
   保持同一个身份（折叠摘要的复用键，issue #326，就是拿这些消息算的）。
+  **不要把 `load()` 折出来的消息回写成消息行。** 消息上的 `ts` 是**嵌套** payload 字段，不是
+  同 key 摘要会剥掉的那个**顶层**信封 `ts`：原样回写同一个 `dedupKey` 会判成 payload 冲突
+  （`code: dedup_payload_conflict`、`differingFields: ["messages"]`；实测如此——基点版本不撞）。
+  排除表就只剥四个**顶层**字段，见 `### 同 key 异 payload 的冲突（issue #326）` 一节
+  （「嵌套的 `ts` 算内容」）。
 - 不要假设「轮行携带正文」。载体可能是 `<runId>:engine:round:<n>`、`<runId>:round:<n>`
   （宿主默认键）或 `<runId>:engine:round:<n>:resume`；如果 run 崩在轮行落盘之前，消息行会
   原样留在数组里——这是崩溃恢复契约，不是 store 缺陷。
