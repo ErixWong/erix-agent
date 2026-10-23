@@ -3466,8 +3466,8 @@ export async function runToolLoop(options) {
     // 必须在补跑段（B 集合）之前：
     //   · `seq` 顺序 = 崩溃那一刻的真实发生顺序（A 集合先于 B 集合被产出），折叠后聚合消息里的
     //     block 顺序与内存里的 `messages` 一致；
-    //   · `resumeToolResultRowKey` 由本段向前推进（`resumeToolResultRowKey === undefined` 时首个 A 结果
-    //     就是新的聚合消息锚点），补跑段读到的正是推进后的值 ⇒ 两种集合接回**同一条**聚合消息。
+    //   · `resumeToolResultRowKey` 由本段**落定一次**（`undefined` 时首个 A 结果就是新的聚合消息锚点；
+    //     issue #430 起不随分片推进），补跑段读到的正是这个首片锚点 ⇒ 两种集合接回**同一条**聚合消息。
     await journalResumeUnpersistedToolResults();
     if (runLoopState.resumePendingTools.length > 0) {
       const resumedToolResults = [];
