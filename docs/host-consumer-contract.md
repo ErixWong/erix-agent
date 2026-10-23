@@ -463,7 +463,10 @@ Four rules, in order:
    config error that names the key, instead of reaching the engine as
    `undefined` — where it used to mean "this phase deadline silently does not
    exist" (stream) or "the request expires immediately, zero calls reach the
-   upstream" (non-streaming). `0` is legal and means "already expired".
+   upstream" (non-streaming). `0` is legal and means "already expired". The legacy `timeout` / `timeoutMs` key is **not** covered by
+   this validation — it is still forwarded verbatim, so a non-numeric value reaches `setTimeout` and
+   behaves as "already expired"; only the four phase keys are load-validated, because they are the four
+   this change made load-bearing.
 
 Two host-observable consequences:
 

@@ -605,6 +605,11 @@ provider，因此每次都是被杀掉，而不是被重试。
   idle 与 legacy `timeout` 默认**都是 `300`** ⇒ **任何**收缩都会杀掉这条带。非流式静默的正解是
   「判死后重试」（issue #433 fix 1），不是提前掐死。在它落地之前，**非流式静默仍然不可重试**：idle 看门狗
   在 provider 调用之前就武装了，两个默认值又相等，所以它必然先响。
+  两个数都是在**关闭每轮 Judge**（`ERIX_NO_REFLECTION=1`）下测的：默认的 `erix chat` 一轮是**两次**模型调用
+  （正文 + 交付评审），第二发本身就会越过 idle 窗口，与「请求截止」无关。同一条带另有更便宜的等比复现：
+  `--idle-timeout 20` + 上游 **18s** 后一次性应答，出货接线**成功**（**18.42s** / `end_turn` / 退码 4），
+  而把 `requestTimeoutMs` 加回派生面就在 **15.06s**（= `⌊20 × 3/4⌋`）被杀（`failed` / `errorCode: "timeout"`）。
+
 - `streamTotalTimeoutMs` **不派生**：它是单条流的**绝对上限**，不是静默截止；而流在吐字节时 idle 会被
   `onDelta` 喂表、本来就不会响。显式 legacy `timeout` 仍会作为 `streamTotalTimeoutMs` 透传，所以你配过的
   天花板不会因为切到相位模型而被悄悄降低。
@@ -614,6 +619,8 @@ provider，因此每次都是被杀掉，而不是被重试。
   （与 `ERIX_EXEC_TIMEOUT_MS` 同一口径）；而**非法**值（`-1000`、`"abc"`、`true`、`1.5`）现在是
   **点名该键的加载错误**，不再以 `undefined` 的身份进引擎（在那里它要么意味着「这个相位的截止悄悄不存在」，
   要么意味着「非流式请求立刻超时」）。`0` 合法，意思是「已经到点」。
+  legacy `timeout` / `timeoutMs` **不在这条校验面内**——照旧原样透传（非数值会一路进 `setTimeout`，
+  行为等同「已经到点」）。
 - idle 看门狗用 `attempt` / `recovering` 事件喂表，所以一次重试（含它的退避）算**进展**而不是「无进展」。
 
 宿主能观测到什么：**`--stream`** 的静默 run 在重试用尽后终局是 `termination.reason: "failed"` +

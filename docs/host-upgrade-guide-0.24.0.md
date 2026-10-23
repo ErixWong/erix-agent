@@ -723,6 +723,13 @@ identically):
   band. The correct fix for non-streaming silence is "retry after declaring death" (issue #433 fix 1), not
   an earlier kill. Until that lands, **non-streaming silence is still not retryable**: the idle watchdog
   is armed before the provider call and the two defaults are equal, so it always fires first.
+  Both numbers were measured with the per-round judge disabled (`ERIX_NO_REFLECTION=1`): a default
+  `erix chat` turn is **two** model calls (body + judge), so the second call alone would cross the idle
+  window for reasons unrelated to the request deadline. The same band was reproduced at a cheaper scale:
+  with `--idle-timeout 20` and an upstream that answers in one shot after **18s**, the shipped wiring
+  succeeds (**18.42s**, `end_turn`, exit 4), while adding `requestTimeoutMs` back to the derived set kills
+  it at **15.06s** = `⌊20 × 3/4⌋` (`failed` / `errorCode: "timeout"`).
+
 - `streamTotalTimeoutMs` is **not** derived: it is an absolute cap on one stream, not a silence deadline,
   and while a stream is flowing the idle watchdog is fed by `onDelta` and cannot fire anyway. An explicit
   legacy `timeout` is still passed through as `streamTotalTimeoutMs`, so a ceiling you configured is not
@@ -735,6 +742,8 @@ identically):
   **invalid** value (`-1000`, `"abc"`, `true`, `1.5`) is a **load error that names the key** instead of
   reaching the engine as `undefined` (where it used to mean "the phase deadline silently does not exist",
   or "the non-streaming request times out immediately"). `0` is legal and means "already expired".
+  The legacy `timeout` / `timeoutMs` key is **not** validated the same way — it is forwarded verbatim as
+  before (a non-numeric value reaches `setTimeout` and behaves as "already expired").
 - The idle watchdog is fed on the `attempt` / `recovering` events, so a retry and its backoff count as
   progress instead of "no progress".
 
