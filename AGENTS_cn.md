@@ -33,8 +33,11 @@ src/
 │                  # task-brief、abort、block-helpers、tool-result-ttl、deliverables
 ├── compact/       # 上下文压缩：budget、pipeline、sliding-window、fold-statistical、
 │                  # fold-llm、anchors、fold-fidelity、enforce-size、helpers
-├── config/        # 配置适配器
+├── config/        # 配置适配器（含槽位 → provider 构造件 loadModelSlot / createProviderForSlot，issue #406）
 ├── messages/      # 规范消息模型 + OpenAI/Anthropic 转换
+├── normalization/ # 模型输出归一化：normalizeModelJson（L1 保字节修复、闸门判原始字节、
+│                  # 可选 L2 LLM 兜底，issue #406）——与 text/ 里同步 L0 的 parseModelJson
+│                  # 是**两个入口**，不是同一个函数的两个名字
 ├── providers/     # OpenAI/Anthropic 双协议 provider
 ├── reflection/    # governor、judge、l0、wrapup
 ├── skills/        # 技能包 loader（发现/校验/装配）的规范实现；内置技能目录由调用方注入（`bundledDir`），

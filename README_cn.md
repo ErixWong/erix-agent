@@ -185,9 +185,12 @@ src/
     api-key.js                      API key 物化
     env.js                          基于环境变量的模型配置
     json-file.js                    基于 JSON 文件的模型配置
+    slot-provider.js                模型槽位 → provider 构造件：loadModelSlot / createProviderForSlot（issue #406）
     static.js                       静态模型配置
   display/
     projection.js                   宿主展示投影（RoundRecord[] 的读侧视图）
+  normalization/
+    parse-model-json.js             模型输出归一化：normalizeModelJson——L1 保字节修复、闸门判原始字节、可选 L2 LLM 兜底（issue #406）
   reflection/
     governor.js                     确定性的轮次治理
     judge.js                        objective timeline 与 judge prompt/response 解析

@@ -190,6 +190,8 @@ src/
     block-helpers.js               Block access helpers
     judge-record.js                Judge record correlation (model identity, run outcome)
     state-view.js                  Live-reference state view factory for the loop state (#246, not wired yet)
+  normalization/
+    parse-model-json.js            Model-output normalization: normalizeModelJson — L1 byte-preserving repair, gate on the original bytes, optional L2 LLM fallback (issue #406)
   providers/
     anthropic.js                   Anthropic provider and streaming
     errors.js                      Provider errors and classification
@@ -229,6 +231,7 @@ src/
     api-key.js                     API-key materialization
     env.js                         Environment-backed model configuration
     json-file.js                   JSON-file model configuration
+    slot-provider.js               Model slot → provider constructors: loadModelSlot / createProviderForSlot (issue #406)
     static.js                      Static model configuration
   display/
     projection.js                  Host display projection over RoundRecord[] (read side)

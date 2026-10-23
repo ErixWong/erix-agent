@@ -34,8 +34,12 @@ src/
 │                  # task-brief, abort, block-helpers, tool-result-ttl, deliverables
 ├── compact/       # context compaction: budget, pipeline, sliding-window, fold-statistical,
 │                  # fold-llm, anchors, fold-fidelity, enforce-size, helpers
-├── config/        # configuration adapters
+├── config/        # configuration adapters (incl. the slot → provider constructors
+│                  # loadModelSlot / createProviderForSlot, issue #406)
 ├── messages/      # canonical message model + OpenAI/Anthropic conversion
+├── normalization/ # model-output normalization: normalizeModelJson (L1 byte-preserving repair,
+│                  # gate on the original bytes, optional L2 LLM fallback, issue #406) — a
+│                  # separate asynchronous entry from the synchronous L0 parseModelJson in text/
 ├── providers/     # OpenAI/Anthropic dual-protocol providers
 ├── reflection/    # governor, judge, l0, wrapup
 ├── skills/        # canonical skill-pack loader (discovery/validation/assembly); the
