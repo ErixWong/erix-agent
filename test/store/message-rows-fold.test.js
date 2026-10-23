@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 
 import {
   MESSAGE_ROW_KIND,
+  foldLedgerMessages,
   foldMessageRows,
   isFoldableMessageRow,
   isMessageRow,
@@ -23,6 +24,8 @@ import { makeTmp } from "../helpers/tmp.js";
 const RUN = "r1";
 const text = (t) => ({ type: "text", text: t });
 const msg = (role, t) => ({ role, content: [text(t)] });
+/** 一条 `tool_result` 块（分片用例的最小正文单元）。 */
+const toolResult = (id) => ({ type: "tool_result", tool_use_id: id, content: `out-${id}` });
 
 /** 轮行（载体）：改造前一轮正文只在这里落一次。 */
 const roundRow = (round, messages = [], extra = {}) => ({
@@ -221,6 +224,115 @@ test("261021 fold: partOf 指认的行不在本组（或没指认到）⇒ 分�
     messageRow(3, 0, msg("user", "结果"), { partOf: "r1:msg:9:9" }),
   ]);
   assert.deepEqual(contentOf(folded[0]), [[text("结果")]]);
+});
+
+// ── issue #430：`foldLedgerMessages` 的 `partOf` 只认**首片** ─────────────────────────
+// 病根（评审定位 + 本单复现）：写侧曾把锚点推进成「刚写那条分片的 `dedupKey`」，于是分片链成
+// `t1 ← t2 ← t3`。而折叠对**分片行**也登记 key（`keyToIndex.set(key, entries.length)`），分片不新增
+// entry ⇒ 分片的 key 指向「下一条消息的下标」；第三片拿它当 `partOf` 目标时 `entries[targetIndex]`
+// 恒为 `undefined` ⇒ 落空 ⇒ 新起一条消息（实测 `[[t1,t2],[t3]]`）。
+// 修法在写侧：锚点钉在首片、不随分片推进。本用例钉读侧的**正确输入形状**（三片都指向首片）
+// 必须折成两条消息（assistant + 一条含三个结果的 user），也就是「同一崩溃轮的所有结果折回一条」。
+test("#430 foldLedgerMessages: 三片都 partOf 指向首片 ⇒ 折成 assistant + 一条含 3 个结果的 user", () => {
+  const entries = foldLedgerMessages([
+    {
+      round: 1,
+      dedupKey: `${RUN}:msg:1:0`,
+      kind: MESSAGE_ROW_KIND,
+      seq: 0,
+      messages: [{ role: "assistant", content: [{ type: "tool_use", id: "t1", name: "work", input: {} }] }],
+    },
+    { round: 1, dedupKey: `${RUN}:msg:1:1`, kind: MESSAGE_ROW_KIND, seq: 1, messages: [{ role: "user", content: [toolResult("t1")] }] },
+    {
+      round: 1,
+      dedupKey: `${RUN}:msg:1:2`,
+      kind: MESSAGE_ROW_KIND,
+      seq: 2,
+      partOf: `${RUN}:msg:1:1`,
+      messages: [{ role: "user", content: [toolResult("t2")] }],
+    },
+    {
+      round: 1,
+      dedupKey: `${RUN}:msg:1:3`,
+      kind: MESSAGE_ROW_KIND,
+      seq: 3,
+      partOf: `${RUN}:msg:1:1`,
+      messages: [{ role: "user", content: [toolResult("t3")] }],
+    },
+  ]);
+  assert.equal(entries.length, 2, "三片必须折回**一条** user 消息（不是两条）");
+  assert.deepEqual(entries.map((entry) => entry.message.role), ["assistant", "user"]);
+  assert.deepEqual(
+    entries[1].message.content.map((block) => block.tool_use_id),
+    ["t1", "t2", "t3"],
+    "聚合消息里三个结果的顺序 = 落盘顺序（首片在前）",
+  );
+});
+
+// 「条数不限」：契约声称同一崩溃轮的所有结果折回**一条**聚合 `user` 消息，与条数无关。上面那格钉 3 片，
+// 这里把 4 片与 5 片也钉住（片数再多也只是同一个形状）。
+for (const shardCount of [4, 5]) {
+  test(`#430 foldLedgerMessages: ${shardCount} 片都 partOf 指向首片 ⇒ 仍折成一条聚合 user 消息（条数不限）`, () => {
+    const ids = Array.from({ length: shardCount }, (_, index) => `t${String(index + 1)}`);
+    const rows = [
+      {
+        round: 1,
+        dedupKey: `${RUN}:msg:1:0`,
+        kind: MESSAGE_ROW_KIND,
+        seq: 0,
+        messages: [{
+          role: "assistant",
+          content: ids.map((id) => ({ type: "tool_use", id, name: "work", input: {} })),
+        }],
+      },
+      ...ids.map((id, index) => ({
+        round: 1,
+        dedupKey: `${RUN}:msg:1:${String(index + 1)}`,
+        kind: MESSAGE_ROW_KIND,
+        seq: index + 1,
+        ...(index === 0 ? {} : { partOf: `${RUN}:msg:1:1` }),
+        messages: [{ role: "user", content: [toolResult(id)] }],
+      })),
+    ];
+    const entries = foldLedgerMessages(rows);
+    assert.equal(entries.length, 2, `${shardCount} 片必须折回**一条** user 消息（不是两条/多条）`);
+    assert.deepEqual(entries.map((entry) => entry.message.role), ["assistant", "user"]);
+    assert.deepEqual(
+      entries[1].message.content.map((block) => block.tool_use_id),
+      ids,
+      "聚合消息里结果的顺序 = 落盘顺序（首片在前）",
+    );
+  });
+}
+
+// 寻址目标**不存在**（`partOf` 指向一条不在账本里的行）：分片按普通消息拼接——正文不许丢，也不许
+// 并进别人身上。`foldMessageRows` 那一侧已有同形用例（上面「partOf 指认的行不在本组」），这一格是
+// `foldLedgerMessages`（恢复路径真正用的那个口径）的对应证明。
+test("#430 foldLedgerMessages: partOf 指认的行不在账本里 ⇒ 分片按普通消息拼接，不丢正文", () => {
+  const entries = foldLedgerMessages([
+    {
+      round: 1,
+      dedupKey: `${RUN}:msg:1:0`,
+      kind: MESSAGE_ROW_KIND,
+      seq: 0,
+      messages: [{ role: "assistant", content: [{ type: "tool_use", id: "t1", name: "work", input: {} }] }],
+    },
+    {
+      round: 1,
+      dedupKey: `${RUN}:msg:1:1`,
+      kind: MESSAGE_ROW_KIND,
+      seq: 1,
+      partOf: `${RUN}:msg:9:9`,
+      messages: [{ role: "user", content: [toolResult("t1")] }],
+    },
+  ]);
+  assert.equal(entries.length, 2, "寻址目标不存在 ⇒ 分片自己成为一条消息（正文不许丢）");
+  assert.deepEqual(entries.map((entry) => entry.message.role), ["assistant", "user"]);
+  assert.deepEqual(
+    entries[1].message.content.map((block) => block.tool_use_id),
+    ["t1"],
+    "这一块必须原样在它自己的消息里，不得被并进上一条 assistant",
+  );
 });
 
 // ── store 侧：两个内置 store 给同一个答案 ────────────────────────────────────

@@ -50,7 +50,7 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 120`（现测 120 组 / 339 处；issue #424 的升级路径守卫让契约中英各多两处既有锚点（+0 组 / +4 处），下限不变；此前 issue #420 的 A 集合入账
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 121`（现测 121 组 / 341 处；issue #430 的「分片锚点钉在首片」让契约中英各多一处锚点（+1 组 / +2 处）：`threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`，指向新的钉住用例），下限随之抬到 121；此前 issue #424 的升级路径守卫让契约中英各多两处既有锚点（+0 组 / +4 处），下限不变；此前 issue #420 的 A 集合入账
 //                 +1 组 / +8 处：`journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`），契约中英各一处 + AGENTS_cn 声称句一处。
 //                 上一版 119 组 / 327 处是 issue #409 的工具引数判词
 //                 +5 组 / +10 处：`REPAIR_RULES`、`parseJsonWithRepair`（`src/text/repair-json.js`）、`parseToolArguments`、
@@ -2054,9 +2054,13 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`）——落点是契约中英「续跑后账本闭合」
  *  各一处与 AGENTS_cn 的声称句一处（`--verbose` 实测 120 组 / 335 处：契约 EN 92 / CN 88）。下限不跟着升，
  *  R1 的两例自测就会空转。
+ *  再升一次的理由（issue #430，120 → **121**，+1 组 / 339 → 341 处）：崩溃轮 ≥3 条 `tool_result` 仍要折回
+ *  一条聚合 `user` 消息的修法（分片锚点钉在首片）按同一条红线用符号锚点指到新的钉住用例
+ *  `threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`）——落点是契约中英
+ *  「续跑后账本闭合」各一处。下限不跟着升，R1 的两例自测就会空转。
  *
   *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 120;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 121;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
