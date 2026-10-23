@@ -528,7 +528,7 @@ erix mcp [--config <path>]
 - `--no-todo`（或 `ERIX_NO_TODO=1`）彻底关闭 todo：内置 `todo_*` 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除。
 - `--error-log <path>` 把持久化错误事件追加写入 JSONL 文件（等价 `ERIX_ERROR_LOG`；默认只进 stderr）。
 - `--timeout <ms>` 为 `chat` 提供软任务截止时间；它会推动循环进入 wrap-up，而不是强制杀死进程。
-- `--idle-timeout <seconds>` 在没有进展后中止；`chat` 默认为 300，`repl` 默认为 0（禁用）。
+- `--idle-timeout <seconds>` 在没有进展后中止；`chat` 默认为 300，`repl` 默认为 0（禁用）。**工具执行时间不再计入静默窗口**（issue #433）：工具跑着的时候看门狗持续被喂表，所以一条长的安装/编译命令不会再打死整个 run。这份喂表是有上限的——`exec` 的天花板被钳到 `idle − 60s`（下限 30s），所以真正挂住的命令仍然以「命令超时」收场（默认 240s，即 `300 − 60`），而不是被看门狗悄悄吃掉。显式设置的 `ERIX_EXEC_TIMEOUT_MS` 若高于该天花板，只警告、绝不改写。
 - `--compact-budget <tokens>` 覆盖自动压缩预算。
 - `--compaction <名>` 选择压缩策略（`sliding-window | fold-statistical | fold-llm`，默认 `fold-statistical`；也可用 `slots.default.compaction` 固定）。`fold-llm` 每次压缩多一次主力模型调用。
 - `--tools <逗号分隔名称>` 是 `chat` 和 `repl` 的硬能力白名单；未知名称会告警，过滤后为空会报错。

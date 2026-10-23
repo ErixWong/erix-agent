@@ -826,7 +826,13 @@ The shared CLI flags are:
 - `--timeout <ms>` supplies a soft task deadline to `chat`; it nudges the
   loop toward wrap-up rather than hard-killing the process.
 - `--idle-timeout <seconds>` aborts after no progress; it defaults to 300
-  for `chat` and 0 (disabled) for `repl`.
+  for `chat` and 0 (disabled) for `repl`. **Tool execution time no longer
+  counts toward the silence window** (issue #433): the watchdog is fed while a
+  tool runs, so a long install/build no longer kills the whole run. That
+  feeding is bounded — the `exec` ceiling is clamped to `idle − 60s` (floor
+  30s), so a command that really hangs still ends as a command timeout (240s by
+  default, i.e. `300 − 60`) instead of being eaten by the watchdog. An explicit
+  `ERIX_EXEC_TIMEOUT_MS` above that ceiling is warned about, never rewritten.
 - `--compact-budget <tokens>` overrides the automatic compaction budget.
 - `--compaction <name>` selects the compaction strategy
   (`sliding-window | fold-statistical | fold-llm`, default `fold-statistical`, or the
