@@ -1284,6 +1284,70 @@ after the host had fixed its own defects — do not extrapolate it. It is not a 
 retire the option either: it stays in the whitelist, five test files cover it, and it costs
 nothing while it is off.
 
+## Usage accounting: the round ledger vs engine overhead (issue #438)
+
+`result.usage` is unchanged: it accumulates **every** provider call the run made — the model's
+own responses and the calls the engine issues on its own behalf. Issue #438 adds the split, as
+new keys only. No existing key changed shape or meaning, and a host that ignores the new keys
+behaves exactly as before.
+
+| Key | Lives on | Means |
+|---|---|---|
+| `usage` | `result` (unchanged) | run-cumulative over **all** provider calls: `modelUsage` + `engineUsage`, field by field (a missing field counts as 0) |
+| `modelUsage` | `result` (**new**) | run-cumulative over the loop's own model responses, `max_tokens` continuations included |
+| `engineUsage` | `result` (**new**) | run-cumulative over the calls the engine issued itself |
+| `usage` | `RoundRecord` (**new**) | that round's **complete** model usage: every response of the round, continuations included |
+| `engineUsage` | `RoundRecord` (**new**) | engine-issued calls that ran **during** that round; the key is **absent** when none did |
+| `response.usage` | `RoundRecord` (unchanged) | the **last** response of the round only — the historical shape, kept byte for byte |
+
+Four things a host has to read correctly, because getting them wrong silently miscounts money:
+
+- **`record.response.usage` is not the round's bill.** It is literally the `usage` of the last
+  provider response merged into the round. A round that hits `stopReason: "max_tokens"` is
+  continued **inside the same round** (up to `maxTokenContinuations` extra requests, all merged
+  into one assistant message and one `RoundRecord`), so `response.usage` then carries only the
+  final shot. Measured on a real round: three shots of 700 + 700 + 7 `output_tokens` (1407 in
+  total) left `response.usage.output_tokens === 7` — a 200× undercount. Before issue #438 this
+  contract never said which of the two it was, so a host reading it as the round's usage was
+  reading a number that had never been promised. **Read `record.usage` for the round.**
+  `response.usage` stays byte-identical because hosts already read it — and so does the
+  projection: `meta.usage` is still that same last-response value, deliberately not switched
+  over by issue #438.
+- **`record.usage` is the round ledger.** It sums every response of the round, so budgets,
+  billing, and "how much did the model write per round" analyses should read it. `input_tokens`
+  and `output_tokens` are **always present** (zero when the provider reported nothing — never
+  an absent key), while `cacheRead` / `cacheWrite` appear only when some response reported them
+  (the same field-presence rule `result.usage` follows). In a round with no continuation, whose
+  provider reports all four fields, `record.usage` and `record.response.usage` are deep-equal;
+  that equality is a test, not a coincidence. With no usage at all the key is still there, as
+  `{ input_tokens: 0, output_tokens: 0 }`. A record written **before** this version — or by the
+  host itself — simply has no `record.usage`: the key is additive, so absence means "this row
+  predates the key", never "zero".
+- **Engine overhead is a separate bucket, never inside the round ledger.** The engine issues
+  provider calls the model did not ask for: the round judge, the wrap-up LLM normalizer, the
+  fold summarizer, and the forced final (`forceFinalIfNeeded` (`src/loop/termination.js`)).
+  Their usage lands in `engineUsage` — round-level for the first three (they run inside the
+  round) and run-level for the forced final (it runs **after** the last round record is
+  written, so it can never be attributed to a round). The round ledger therefore contains
+  model output only, which is what keeps "the model wrote a lot" and "the engine spent a lot"
+  distinguishable. On a `RoundRecord`, `engineUsage` is absent when the round issued no such
+  call, and zero-valued when such calls ran but the provider reported no usage; the run-level
+  key is always present. Both buckets are booked at the single accounting point
+  (`addUsage` (`src/loop/orchestrator.js`)) through one `account` argument, so there is no
+  second ledger to drift.
+- **`finalGuard` usage is in neither bucket, and the abort payload carries no split.** The
+  guard is a **host** callback: the engine never issues that call and cannot measure it, so it
+  must not be counted as model output or as engine overhead — a host whose guard calls a model
+  books that cost itself. And an aborted run still throws with `error.usage` /
+  `termination.usage` only (issue #180). The two buckets are additive on the **success result**
+  **only**, and there `usage` remains the sum of the two, field by field. A `RoundRecord` has no
+  such key: it carries no `modelUsage`, so `record.usage` is the **model bucket alone** (the
+  table row above says "complete **model** usage" for exactly this reason) and the round's total
+  is `record.usage` (model bucket) + `record.engineUsage` (engine bucket) — with the second one
+  **absent** when the round issued no engine call, so a host adding them reads absence as 0.
+  What a host must not do is take `record.usage` for the round's whole bill: it is the model's
+  share of it, and only `result.usage` (on the success result) is a ready-made sum.
+
 ## Judge record correlation and run outcome (issue #165)
 
 Judge decisions are consumed off `onJudge` (the CLI appends them to `judge.log`;
@@ -3353,7 +3417,7 @@ records must remain unchanged.
 | `navigationRecord` | display | Bounded archive pointers `{ roundFrom, roundTo, artifacts[], truncated? }` for recovered tool outputs. Render as navigation links/pointers, never as message content. |
 | `messages` | model | The exact model-context slice, including `tool_use`/`tool_result` blocks and fold placeholders. Do not render it raw; the projection extracts displayable text and tool-call summaries from it. Since issue #335 this is also the **canonical source of the projected assistant body** (a message is persisted the moment it forms); `response.content` is only the legacy/host-written fallback. |
 | `messages[].meta` | model / engine | Preserve this object, including unknown keys. `meta.source` is an engine-reserved marker used by projection classification and judge visibility; do not reuse it for host-owned source information. |
-| `response` | model | Full provider response content (`text`, `reasoning`, `tool_use` blocks), `stopReason`, `usage`. Projected display text/blocks come from `messages`, not from here; only `stopReason`/`usage` are copied into the projection's `meta`. Its block shape is model-facing and may change. |
+| `response` | model | Full provider response content (`text`, `reasoning`, `tool_use` blocks), `stopReason`, `usage`. Projected display text/blocks come from `messages`, not from here; only `stopReason`/`usage` are copied into the projection's `meta`. Its block shape is model-facing and may change. **Its `usage` is the last response of the round only** — the round's complete ledger is the sibling key `record.usage` (see "Usage accounting: the round ledger vs engine overhead (issue #438)"). |
 | `l0facts`, `runState`, `compactionStats`, `judge`, `wrapup`, `toolOutputs`, `dedupKey`, `roundKey` | model / engine internals | Facts for the governor, resume, and diagnostics. Only `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` are copied into the projection's `meta` for optional labelling; the rest is not part of the display surface. |
 
 ### Stability promise
