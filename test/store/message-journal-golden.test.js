@@ -44,12 +44,39 @@ test("261021 golden: 恢复告示的豁免面恰是「crash-resume 的 1 行 + 1
 });
 
 // issue #438：`record.usage` / `record.engineUsage` 是基线不可能产出的新增事实 ⇒ 捕获侧剥掉。
-// 这条断言把**豁免面**钉住：单条轮记录最多两个键，剥掉的个数变了（少 = 某个键没写，多 = 豁免在替
-// 别的漂移打掩护）就红。数值本身由 `test/loop-usage-accounting.test.js` 钉。
-test("261021 golden: 新增分账键的豁免面恰是「带引擎开销的 4 条 + 其余轮各 1 个 `usage`」（issue #438）", () => {
+//
+// 这条断言钉的是**逐条明细**，不是总数：只钉总数时，把 `engineUsage` 从 round 2 挪到 round 3
+// 总数一模一样（评审实测：照样绿），而「哪个键属于哪一轮」正是本单的分账契约要保证的东西。
+// 明细同时钉住三件事——哪些轮带了键（少一条 = 某个键没写）、每轮带了哪几个（多/少一个 = 豁免在
+// 替别的漂移打掩护）、以及**归属**（同一组键换一轮就红）。数值本身由
+// `test/loop-usage-accounting.test.js` 钉。
+//
+// 实测口径：带引擎开销的是 **5 条**轮记录（single-run 的 round 2/4/5 + crash-resume 的 round 2/5），
+// 其余轮各 1 个 `usage`；合计 8 个键（single-run 5 条轮 × `usage` + 3 个 `engineUsage`）与
+// 7 个键（crash-resume 5 × `usage` + 2 个 `engineUsage`）。上一版标题写的「带引擎开销的 4 条」是
+// 自述与实现不符（评审点名），本版按实测改成逐条明细。
+test("261021 golden: 新增分账键的豁免面逐条钉住「哪一轮剥了哪几个键」（issue #438）", () => {
   assert.deepEqual(additiveUsageCensus, [
-    { name: "single-run", stripped: 8 },
-    { name: "crash-resume", stripped: 7 },
+    {
+      name: "single-run",
+      detail: [
+        { round: 1, keys: ["usage"] },
+        { round: 2, keys: ["usage", "engineUsage"] },
+        { round: 3, keys: ["usage"] },
+        { round: 4, keys: ["usage", "engineUsage"] },
+        { round: 5, keys: ["usage", "engineUsage"] },
+      ],
+    },
+    {
+      name: "crash-resume",
+      detail: [
+        { round: 1, keys: ["usage"] },
+        { round: 2, keys: ["usage", "engineUsage"] },
+        { round: 3, keys: ["usage"] },
+        { round: 4, keys: ["usage"] },
+        { round: 5, keys: ["usage", "engineUsage"] },
+      ],
+    },
   ]);
 });
 

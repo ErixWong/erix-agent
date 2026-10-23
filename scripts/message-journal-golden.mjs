@@ -214,21 +214,43 @@ export const resumeNoticeCensus = [];
  */
 const ADDITIVE_USAGE_KEYS = ["usage", "engineUsage"];
 
-/** 每次 `capture()` 都会重填：`[{ name, stripped }]` —— 剥掉了几个新增分账键。 */
+/** 引擎轮记录的身份形态（`<runId>:engine:round:<n>`，含 `:seed` / `:control:*` 这些后缀行）。 */
+const ENGINE_ROUND_ROW = /:engine:round:\d+(?::|$)/u;
+
+/**
+ * 「这条记录看起来像引擎轮记录吗」——剥键的**准入判据**，不是摆设：
+ *   · 轮记录一定带 `response`（`record.response` 是它的历史字段），或
+ *   · 它的身份键是 `…:engine:round:<n>` 形态。
+ * 收紧到这两条的理由（评审退回项）：原来的实现是对**任意**记录无脑 `delete usage`，于是宿主将来
+ * 自己写的、**真带 `usage`** 的行（例如 `…:input:<id>` 这类宿主自写行）会被无声吞掉——金样照样绿，
+ * 而宿主的账被悄悄改掉了。收紧后那种行会留在捕获结果里，与基线夹具对不上 ⇒ 当场红。
+ * 注意只剥轮记录**顶层**这两个键：`record.response.usage` 是历史形状，一个字都不许动。
+ */
+function looksLikeEngineRoundRecord(record) {
+  if (Object.hasOwn(record, "response")) return true;
+  const key = String(record?.dedupKey ?? record?.roundKey ?? "");
+  return ENGINE_ROUND_ROW.test(key);
+}
+
+/**
+ * 每次 `capture()` 都会重填：`[{ name, detail: [{ round, keys }] }]` —— **逐条**记下
+ * 「哪一轮剥掉了哪几个新增分账键」。只记总数是不够的（评审实测：把 `engineUsage` 从 round 2
+ * 挪到 round 3，总数一模一样 ⇒ 照样绿），逐条明细才钉得住**归属**。
+ */
 export const additiveUsageCensus = [];
 
-/** @returns {number} 本次真的剥掉了几个键（每条轮记录最多两个） */
+/** @returns {Array<{round: number|undefined, keys: string[]}>} 本次真的剥掉了哪些键（逐条） */
 function stripAdditiveUsageKeys(scenario) {
-  let stripped = 0;
+  const detail = [];
   for (const record of scenario.records) {
     if (record === null || typeof record !== "object") continue;
-    for (const key of ADDITIVE_USAGE_KEYS) {
-      if (!Object.hasOwn(record, key)) continue;
-      delete record[key];
-      stripped += 1;
-    }
+    if (!looksLikeEngineRoundRecord(record)) continue;
+    const keys = ADDITIVE_USAGE_KEYS.filter((key) => Object.hasOwn(record, key));
+    if (keys.length === 0) continue;
+    for (const key of keys) delete record[key];
+    detail.push({ round: record.round, keys });
   }
-  return stripped;
+  return detail;
 }
 
 /** 跑全部场景，产出可提交的夹具对象。 */
@@ -253,7 +275,7 @@ export async function capture() {
       messagesFlat: null,
     };
     resumeNoticeCensus.push({ name: scenario.name, stripped: stripResumeNotice(entry) });
-    additiveUsageCensus.push({ name: scenario.name, stripped: stripAdditiveUsageKeys(entry) });
+    additiveUsageCensus.push({ name: scenario.name, detail: stripAdditiveUsageKeys(entry) });
     entry.messagesFlat = normalize(entry.records.flatMap((record) => record.messages ?? []));
     scenarios.push(entry);
   }
