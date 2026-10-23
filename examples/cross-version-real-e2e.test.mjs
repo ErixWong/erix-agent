@@ -73,8 +73,11 @@
 //        0.23.0 的恢复契约是「正文一律来自账本，快照只剩在飞工具」，这一条把它钉在跨版本场景上。
 //   反向证（报告里贴实测）：把折叠层对「老行自带 messages」的**透传分支**破坏掉（`foldable === 0`
 //     时强制 `messages: []`）⇒ 第 2 组的 R1（逐字相等）与 R2（恰好 1 份）必须**红**。
-//     破坏是**临时**的：`src/store/message-rows.js` 原字节保存在内存里，`finally` + `exit` 双保险
-//     还原，并用 md5 **逐字**核对（`md5sum` 口径）。`src/` 的**提交**内容零改动。
+//     破坏的靶子是**副本**（issue #411）：`src/` 整棵树先 `cpSync` 进本次运行自有的临时目录，
+//     两次 probe 都 import 副本的入口，只在副本上写坏；**仓内 `src/` 全程只读**（X3 用 md5 钉住），
+//     临时目录由 `finally` + `exit` 双保险 `rmSync`。
+//     为什么不原地改：`writeFileSync` 是「先截断后写」，并发测试文件 import 到这个模块会拿到半写文件
+//     ⇒ 整个测试文件级 `'test failed'`（实测 `npm test` 1/25，与本票无关的干净 main 也能复现）。
 //
 // 隔离纪律（照 `scripts/cli-real-smoke.mjs` 的 C8 与 `examples/resume-real-e2e.test.mjs`）：
 // - 两个 CLI 的 `--dir` 一律指临时目录；真实 `~/.erix` 只**读**（配置）。开跑前取 `~/.erix` 快照
@@ -90,13 +93,12 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
-  unlinkSync, writeFileSync,
+  cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createFileTranscriptStore } from "../src/index.js";
 import { foldLedgerMessages, foldMessageRows, MESSAGE_ROW_KIND } from "../src/store/message-rows.js";
@@ -106,10 +108,13 @@ import {
 } from "./e2e-real-gate.mjs";
 
 const CLI = resolve(fileURLToPath(new URL("../bin/cli.js", import.meta.url)));
-/** 折叠层源码（反向证要**临时**破坏它的透传分支，再 md5 逐字还原）。 */
+/**
+ * 折叠层源码。**只读**：反向证改的是它的**副本**（见 `copySrcInto`），仓内这个文件一个字节都不许写
+ * ——issue #411 的病根就是「原地改它」撞上并发 import 读到半写文件。X3 用 md5 钉住它全程没变。
+ */
 const ROWS_FILE = fileURLToPath(new URL("../src/store/message-rows.js", import.meta.url));
-const INDEX_URL = new URL("../src/index.js", import.meta.url).href;
-const ROWS_URL = new URL("../src/store/message-rows.js", import.meta.url).href;
+/** 仓内 `src/` 整棵树（反向证把它逐字拷进临时目录，只在副本上造坏数据）。 */
+const SRC_DIR = fileURLToPath(new URL("../src/", import.meta.url));
 /** `bin/cli.js` 帮助里承诺的退出码：没有 `--final-guard` 的成功 run 是 4（verification=skipped）。 */
 const EXIT_NOT_VERIFIED = 4;
 const LEDGER_SUFFIX = ".jsonl";
@@ -508,49 +513,57 @@ const hashFileIfExists = (file) => (existsSync(file)
   ? createHash("sha256").update(readFileSync(file)).digest("hex").slice(0, 16)
   : "（不存在）");
 
-/** 透传分支的原文与「破坏版」——反向证只换这一行（`foldable === 0` 时强制清空 `messages`）。 */
 /**
- * **原子**替换一个「别的进程正在 import」的文件（issue #409 切片 B 追加轮，实测的偶发红根因）。
+ * 把仓内 `src/` 整棵树**逐字**拷进 `destDir`，返回副本里两个入口的 `file://` URL。
  *
- * 病根：本用例的反向证要**故意**改仓内源码（`ROWS_FILE`），而 `writeFileSync` 的语义是「先截断再写」。
- * 那一小段（实测 ~0.07ms / 8 次观测，最小 0 字节）里，任何**并发**进程 import 到这个模块都会拿到
- * 0 字节/半写的文件 ⇒ ESM 抛 `SyntaxError: The requested module … does not provide an export named …`
- * ⇒ 那个测试文件的子进程在跑任何用例之前就死了，`node --test` 只报一行 `'test failed'`
- * （整文件级失败，没有任何断言红）。`npm test` 默认并发跑 149 个文件，其中 loop 系列的 import 图
- * 都经过 `src/loop/resume-manager.js` → 本文件（实测：并发 truncate 后 `test/loop-fr2.test.js` 当场
- * 报 `'test failed'`），所以这条竞态会随机打中别的文件。
+ * 为什么是「拷副本」而不是「原地改」（issue #411，实测的偶发红根因）：
+ * 本用例的反向证要**故意**让折叠层读不出老账本的正文，那就必须改**被测代码 import 的那份模块**。
+ * #409 之前是直接改仓内的 `src/store/message-rows.js`，而 `writeFileSync` 的语义是「先截断再写」：
+ * 那一小段（实测窗口 ~0.07ms、231ms 内 8 次观测、最短 0 字节）里，任何**并发**进程 import 到这个
+ * 模块都会拿到 0 字节/半写的文件 ⇒ ESM 抛
+ * `SyntaxError: The requested module … does not provide an export named 'MESSAGE_ROW_KIND'`
+ * ⇒ 那个测试文件的子进程在跑任何用例之前就死了，`node --test` 只报一行 `'test failed'`（整文件级
+ * 失败，没有任何断言红）。`npm test` 默认并发跑上百个文件，loop 系列的 import 图都经过
+ * `src/loop/resume-manager.js` → 本文件，所以这条竞态会随机打中**别的**测试文件。
+ * #409 先用「同目录 + rename」把崩溃窗口堵了，但**行为污染**还在：被改过的模块在那 ~231ms 里对
+ * 并发读者可见（读到的是合法但被改的源码）。根治的办法只有一个：**仓内源码全程只读**，
+ * 把破坏落在本次运行自有的副本上（本函数）——副本没有任何别的进程 import，先截断后写也无所谓。
  *
- * 修法：**同目录 + `rename`**（同一文件系统上的原子替换）。读者只会看到「完整的旧文件」或
- * 「完整的新文件」，看不到中间态。判据一条没动（X1–X3 仍按字节与 md5 判）。
- * ⚠ 剩下的是**行为污染**（不是崩溃）：被改过的模块在 ~231ms 的窗口里对并发读者可见（实测）。
- * 那要靠「把 src/ 复制到临时目录再破坏副本」才能根除，属另一张单（本文件不在这里改判据）。
+ * 为什么拷**整棵树**而不是单个文件：`src/index.js` 的 re-export 图把 `store/message-rows.js` 与
+ * `store/file.js` 拉在一起；只拷一个文件会让副本 import 回仓内，于是破坏对 `store.load()` 不生效
+ * （反向证变成假绿）。整棵树逐字拷（1.3MB / 77 个文件，实测 < 20ms）才能保证「副本是自洽的」。
+ *
+ * @param {string} destDir 本次运行自有的临时目录（`mkdtemp` 出来的 `root`）
+ * @returns {{ dir: string, rowsFile: string, indexUrl: string, rowsUrl: string }}
  */
-function replaceFileAtomically(target, bytes) {
-  const tmp = `${target}.${String(process.pid)}.${String(Date.now())}.tmp`;
-  try {
-    writeFileSync(tmp, bytes);
-    renameSync(tmp, target);
-  } catch (error) {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      // 临时文件没建起来也没关系：别让清理掩盖真正的原因
-    }
-    throw error;
-  }
+function copySrcInto(destDir) {
+  const target = join(destDir, "src");
+  cpSync(SRC_DIR, target, { recursive: true });
+  return {
+    dir: target,
+    rowsFile: join(target, "store", "message-rows.js"),
+    indexUrl: pathToFileURL(join(target, "index.js")).href,
+    rowsUrl: pathToFileURL(join(target, "store", "message-rows.js")).href,
+  };
 }
 
+/** 透传分支的原文与「破坏版」——反向证只换这一行（`foldable === 0` 时强制清空 `messages`）。 */
 const PASSTHROUGH_LINE = "  if (foldable === 0) return records;";
 const BROKEN_PASSTHROUGH_LINE = "  if (foldable === 0) return records.map((record) => ({ ...record, messages: [] }));";
 
 /**
  * 反向证用的子进程脚本：**同一份** `legacyReadProbe`（`toString()` 搬过去）跑在**新进程**里，
  * 于是它能看见被临时破坏的折叠层（主用例进程里的模块早已缓存，改了源码它也不会变）。
+ *
+ * 两个入口 URL **由调用点传**：正常/破坏两次 probe 都 import 临时目录里的**副本**（见 `copySrcInto`），
+ * 所以「破坏对被测代码生效」与「仓内源码一个字节都不写」同时成立。
+ *
+ * @param {{ indexUrl: string, rowsUrl: string }} urls
  */
-function buildProbeScript() {
+function buildProbeScript({ indexUrl, rowsUrl }) {
   return [
-    `import { createFileTranscriptStore } from ${JSON.stringify(INDEX_URL)};`,
-    `import { foldLedgerMessages } from ${JSON.stringify(ROWS_URL)};`,
+    `import { createFileTranscriptStore } from ${JSON.stringify(indexUrl)};`,
+    `import { foldLedgerMessages } from ${JSON.stringify(rowsUrl)};`,
     `import { readFileSync } from "node:fs";`,
     `const blocksOf = ${blocksOf.toString()};`,
     `const messagesOf = ${messagesOf.toString()};`,
@@ -564,9 +577,12 @@ function buildProbeScript() {
   ].join("\n");
 }
 
-/** 在子进程里跑一次第 2 组的判据（`dir` / `runId` / 原始 JSONL 路径经环境变量传）。 */
-async function probeInChild({ dir, runId, rawPath }) {
-  const result = await runProcess(process.execPath, ["--input-type=module", "-e", buildProbeScript()], {
+/**
+ * 在子进程里跑一次第 2 组的判据（`dir` / `runId` / 原始 JSONL 路径 / 两个入口 URL 经环境变量传）。
+ * `indexUrl` / `rowsUrl` 一律指向**临时副本**，不是仓内源码。
+ */
+async function probeInChild({ dir, runId, rawPath, indexUrl, rowsUrl }) {
+  const result = await runProcess(process.execPath, ["--input-type=module", "-e", buildProbeScript({ indexUrl, rowsUrl })], {
     cwd: dir,
     env: { ...process.env, XV_DIR: dir, XV_RUNID: runId, XV_RAW: rawPath },
   }, 60_000);
@@ -694,8 +710,6 @@ test("跨版本 e2e：0.22.0 夹具账本 → 0.23.0 读（原样透传/恰好�
     }
   };
   /** @type {string[]} */ const notes = [];
-  /** 反向证里临时破坏过的源码必须在任何退出路径上还原。 */
-  let pendingRestore;
 
   try {
     const work = join(root, "work");
@@ -866,44 +880,38 @@ test("跨版本 e2e：0.22.0 夹具账本 → 0.23.0 读（原样透传/恰好�
     mkdirSync(reverseDir, { recursive: true });
     const reverseRawPath = join(reverseDir, `${safeRunId(runId)}${LEDGER_SUFFIX}`);
     writeFileSync(reverseRawPath, oldRaw, "utf8");
-    const probeArgs = { dir: reverseDir, runId, rawPath: reverseRawPath };
+    // 破坏的靶子**不是仓内源码**（issue #411）：把 `src/` 整棵树逐字拷进本次运行自有的临时目录，
+    // 两次 probe 都 import 副本的入口，只在副本上造坏数据 ⇒ 仓内文件全程只读（X3 钉住）。
+    // 副本里的 `writeFileSync` 先截断后写也无所谓：没有任何别的进程会 import 它。
+    const shadow = copySrcInto(join(root, "shadow"));
+    const probeArgs = {
+      dir: reverseDir, runId, rawPath: reverseRawPath, indexUrl: shadow.indexUrl, rowsUrl: shadow.rowsUrl,
+    };
     // 先跑一次**未破坏**的对照：证明子进程这套判据不是「永远红」。
     const controlProbe = await probeInChild(probeArgs);
     const originalBytes = readFileSync(ROWS_FILE);
     const originalMd5 = md5Of(originalBytes);
-    let brokenProbe;
-    let restoredMd5;
-    let restoreError;
-    try {
-      const text = originalBytes.toString("utf8");
-      const hits = text.split(PASSTHROUGH_LINE).length - 1;
-      assert.equal(hits, 1,
-        `折叠层的透传分支定位失败（命中 ${hits} 次，期望 1 次）——源码变了就要更新本用例的破坏点，`
-        + `不许静默跳过反向证：${PASSTHROUGH_LINE}`);
-      // 破坏与还原都必须**原子**（见 `replaceFileAtomically` 的文件头）：并发 import 读到中间态会整文件死。
-      replaceFileAtomically(ROWS_FILE, text.replace(PASSTHROUGH_LINE, BROKEN_PASSTHROUGH_LINE));
-      pendingRestore = () => { replaceFileAtomically(ROWS_FILE, originalBytes); };
-      process.once("exit", pendingRestore);
-      brokenProbe = await probeInChild(probeArgs);
-    } finally {
-      if (pendingRestore !== undefined) {
-        process.removeListener("exit", pendingRestore);
-        try {
-          pendingRestore();
-        } catch (error) {
-          restoreError = error;
-        }
-        pendingRestore = undefined;
-      }
-      restoredMd5 = md5Of(readFileSync(ROWS_FILE));
-    }
+    const shadowBytesBefore = readFileSync(shadow.rowsFile);
+    assert.equal(md5Of(shadowBytesBefore), originalMd5,
+      "副本与仓内源码不逐字相同（`cpSync` 出问题？）——副本不是原件的拷贝，反向证就不成立");
+    const text = shadowBytesBefore.toString("utf8");
+    const hits = text.split(PASSTHROUGH_LINE).length - 1;
+    assert.equal(hits, 1,
+      `折叠层的透传分支定位失败（命中 ${hits} 次，期望 1 次）——源码变了就要更新本用例的破坏点，`
+      + `不许静默跳过反向证：${PASSTHROUGH_LINE}`);
+    // 破坏只落在副本上：普通 `writeFileSync`（先截断后写）在这里是安全的。
+    writeFileSync(shadow.rowsFile, text.replace(PASSTHROUGH_LINE, BROKEN_PASSTHROUGH_LINE));
+    const shadowMd5Broken = md5Of(readFileSync(shadow.rowsFile));
+    const brokenProbe = await probeInChild(probeArgs);
+    const sourceMd5After = md5Of(readFileSync(ROWS_FILE));
     console.log(`[13] 反向证：对照 probe=${JSON.stringify({
       problems: controlProbe.problems.length, duplicates: controlProbe.duplicateProblems.length,
       logical: controlProbe.logicalCount,
     })}｜破坏后 probe=${JSON.stringify({
       problems: brokenProbe?.problems?.length, duplicates: brokenProbe?.duplicateProblems?.length,
       logical: brokenProbe?.logicalCount,
-    })}｜md5 前=${originalMd5} 后=${restoredMd5}`);
+    })}｜md5 前=${originalMd5} 后=${sourceMd5After}｜副本 md5=${shadowMd5Broken}`);
+    console.log(`[13] 反向证：破坏落在副本上（${shadow.rowsFile}），仓内源码全程只读`);
     console.log(`[13] 反向证红样（破坏后子进程 probe 的第一条 R1 / R2）：\n`
       + `      R1: ${String(brokenProbe?.problems?.[0] ?? "（无）").slice(0, 220)}\n`
       + `      R2: ${String(brokenProbe?.duplicateProblems?.[0] ?? "（无）").slice(0, 220)}`);
@@ -927,11 +935,14 @@ test("跨版本 e2e：0.22.0 夹具账本 → 0.23.0 读（原样透传/恰好�
         `破坏后 R2 应报「实得 0 份」：${JSON.stringify(brokenProbe.duplicateProblems)}`);
     }, `problems=${brokenProbe.problems.length} duplicates=${brokenProbe.duplicateProblems.length}`);
 
-    check("X3 源码 md5 逐字还原（临时破坏不留痕）", () => {
-      assert.equal(restoreError, undefined, `还原源码时抛错：${String(restoreError?.message ?? restoreError)}`);
-      assert.equal(restoredMd5, originalMd5, `src/store/message-rows.js 的 md5 变了：${originalMd5} → ${restoredMd5}`);
-      assert.equal(readFileSync(ROWS_FILE).length, originalBytes.length, "还原后字节数不一致");
-    }, `md5=${restoredMd5}（${originalBytes.length} 字节）`);
+    check("X3 源码 md5 逐字未变（破坏只落在副本上，临时目录整棵删）", () => {
+      assert.equal(sourceMd5After, originalMd5, `src/store/message-rows.js 的 md5 变了：${originalMd5} → ${sourceMd5After}`);
+      assert.equal(readFileSync(ROWS_FILE).length, originalBytes.length, "仓内源码的字节数不一致");
+      assert.equal(shadow.rowsFile.startsWith(root), true,
+        `副本不在本次运行的临时目录里（${shadow.rowsFile}）——那就又是在改仓内文件了`);
+      assert.notEqual(shadow.rowsFile, ROWS_FILE, "副本路径与仓内路径相同 ⇒ 反向证又变成了原地改");
+      assert.notEqual(shadowMd5Broken, originalMd5, "副本没被改坏 ⇒ 反向证没有靶子");
+    }, `md5=${sourceMd5After}（${originalBytes.length} 字节）`);
 
     // ================= 续跑那半的闸门（关 = 只跑夹具那半，**不打 skip**）=================
     // `t.skip()` 会把整条用例标成 skipped，连夹具那半已经跑出来的绿一起吞掉；而夹具那半是**离线必跑**的。
@@ -1115,10 +1126,6 @@ test("跨版本 e2e：0.22.0 夹具账本 → 0.23.0 读（原样透传/恰好�
 
     assert.deepEqual(failures, [], `真机段失败的断言：${failures.join(", ")}`);
   } finally {
-    if (pendingRestore !== undefined) {
-      process.removeListener("exit", pendingRestore);
-      pendingRestore();
-    }
     process.removeListener("exit", cleanup);
     cleanup();
   }
