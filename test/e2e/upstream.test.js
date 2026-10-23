@@ -556,8 +556,13 @@ const PROBE_FRAMES = sseOpenAI(openAITextChunks(["ok"]));
  * 顺带把到该 origin 的 TCP 连接预热（undici 的全局 dispatcher 会复用连接，正式那一发因此更便宜）。
  * 探针本身走的是与正式用例**同一条**代码路径（真 provider、真 socket、同一台上游）。
  *
+ * 计时口径与上面那句 docstring 必须一致（#412 评审第 2 条）：落地时刻取**服务端侧事实**
+ * `requests[0].receivedAtMs`（`performance.now()`，与测试同一时间原点），在 `waitForRequests` 返回后
+ * 立刻取——**不是**「调用 → 整条响应读完」（旧写法量的是后者，会把上游的发送延迟算进「本机调度延迟」，
+ * 偏保守但口径不对）。
+ *
  * 第一次单独丢掉（warmup）：它含模块初始化 + undici dispatcher 首建连接，是冷启动而非「这台机器此刻的
- * 调度延迟」；把它算进去只会把截止线抬高到几百毫秒、白白拖慢套件（实测：不丢 533ms，丢掉 ~170ms）。
+ * 调度延迟」；把它算进去只会把截止线抬高到几百毫秒、白白拖慢套件。
  *
  * 取 5 个样本里的最差值而不是 p50：要覆盖的是尾部，而尾部正是负载下先坏掉的那一段。
  */
@@ -572,6 +577,8 @@ async function measureRequestLandingMs(
     const startedAt = performance.now();
     const pending = rejection(openAIProvider(baseUrl).chatStream(providerRequest()));
     const landed = await upstream.waitForRequests(1, 5_000);
+    // 落地时刻就在 `waitForRequests` 返回后立刻取：服务端侧事实，不受「轮询何时被调度」影响。
+    const receivedAtMs = upstream.requests[0]?.receivedAtMs;
     const { threw, err } = await pending;
     // 守卫①：探针自己量不到落地 ⇒ 立刻红。宁可这一格红着并说明「这台机器量不出来」，
     // 也绝不拿一个 0 去派生截止线（那会退化成 1ms 级竞速，即本格要根治的那个病）。
@@ -581,7 +588,11 @@ async function measureRequestLandingMs(
       `RTT 探针第 ${i + 1} 次没落地：这台机器此刻连一次请求都发不出去，量不出落地耗时就不许派生截止线`,
     );
     assert.equal(threw, false, `RTT 探针第 ${i + 1} 次失败：${err?.message ?? err}`);
-    if (i >= warmups) measured.push(performance.now() - startedAt);
+    assert.ok(
+      Number.isFinite(receivedAtMs),
+      `RTT 探针第 ${i + 1} 次没拿到服务端侧落地时刻（receivedAtMs=${receivedAtMs}）：没有落地时刻就没有实测`,
+    );
+    if (i >= warmups) measured.push(receivedAtMs - startedAt);
   }
   upstream.reset();
   assert.equal(
