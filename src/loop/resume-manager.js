@@ -18,30 +18,68 @@ const rowKeyOf = (record) => {
 // `write === read`，恢复时却少 2）⇒ `slice(0, anchor)` 把已经落盘的正文当成「崩溃之后宿主追加的」
 // 尾队列，终稿正文被喂给模型两遍。
 //
-// 现算口径按**引擎命名空间的行**统计折叠后的逻辑消息条数：
-//   · 引擎写的行：`<runId>:engine:…`（种子 / 轮记录 / `:resume` / `:control:` / 事实行）、
-//     `<runId>:msg:…`（一条消息一落盘）、老账本的 `<runId>:round:<n>`（早期版本的轮记录，
-//     那时引擎自己就写这个键）以及没有任何身份键的远古轮行；
-//   · 宿主写的行：`<runId>:input:…`（`src/store/append-user-turn.js`）——它是崩溃**之后**才追加的
-//     追问，属于尾队列（补跑结果之后再接回），不属于崩溃现场。
+// 现算口径统计折叠后的逻辑消息条数，**尾部**的宿主追问行不算（它属于尾队列，补跑结果之后再接回）。
 // 只排除**尾部**的宿主行：上一次恢复留下的追问行夹在中间时，它已经在模型的上下文里了，必须计入
 // （否则按条数切片会切在一条逻辑消息中间，或者把历史追问挤进尾队列）。
-const ENGINE_NAMESPACE_KEY = /:(?:engine|msg|round):/u;
+//
+// 归属判据 = **键 + 形状**两件事实，顺序是「键优先、形状兜底」（issue #425 评审阻塞）：
+//   ① 键是引擎**独占**命名空间（`<runId>:engine:…`；`:resume` / `:control:` / `:fold:` / `:ttl:`
+//      全在它下面）⇒ 引擎行。**必须按键先判**：这些载体的形状**也可能**是「单条 user/text」
+//      （`…:engine:round:<n>:control:resume-notice` 带一条真消息就是那一格），形状判据优先就会把
+//      引擎自己的载体误判成宿主尾队列。
+//   ② 键是宿主命名空间（`<runId>:input:…`，`src/store/append-user-turn.js`）或宿主自定键 ⇒ 宿主行。
+//   ③ 键**不足以**定归属——`<runId>:round:<n>`（契约 `docs/host-consumer-contract.md` 自己叫它
+//      "host default key"，宿主照抄它完全合法）、`<runId>:msg:<round>:<seq>`（引擎逐条消息行用过的
+//      命名空间）、以及**根本没有键**的远古行 ⇒ 看**形状**：`appendUserTurn` 的产出形状是
+//      `{ round, messages: [user(text)], dedupKey, roundKey, ts }`，即「没有 `kind`、没有安全整数
+//      `seq`、恰好一条 `role:"user"` 消息、content 全是 text」⇒ 宿主预写行；其余 ⇒ 引擎行。
+//      引擎自己的 `<runId>:msg:` 行**恒带** `kind:"message"` 与安全整数 `seq`，老账本的
+//      `<runId>:round:<n>` 轮行带的是整轮正文（assistant / tool_result），两者都落不进那个形状。
+//
+// 为什么不能只认键（旧口径，`key === "" || /:(?:engine|msg|round):/`）：宿主用引擎形态的键或干脆
+// 不写键时，它的追问行被算进**崩溃现场** ⇒ 补跑结果插错位置 ⇒ `invalid_messages` + **零请求**
+// （现场已落 1 条结果行时是**静默改序**：宿主追问排到【恢复运行】告示**之前**，与契约的形状相反）。
+// 契约只写宿主 **should** 走 `appendUserTurn`（`:1090`），`:964` 还允许 dedup 回落到 store 生成的
+// `<runId>:round:<n>`，`orchestrator.js` 的注释也明写「宿主可能已用默认键」——按「必须走
+// `appendUserTurn`」立论，就是把 main 上可恢复的现场改成永久不可恢复。
+const ENGINE_ONLY_KEY = /:engine:|:control:/u;
+const AMBIGUOUS_KEY = /:(?:msg|round):/u;
 
-/** 这一行是不是引擎自己写的账本行（见上面 `ENGINE_NAMESPACE_KEY` 的三种形态）。
+/** `appendUserTurn` 的产出形状（宿主预写行）：没有 `kind` / 安全整数 `seq`，恰好一条 `user` 消息，
+ * content 全是 `text` 块。形状判据只回答「像不像宿主预写行」，**不**单独决定归属（见上面的顺序）。
  * @param {any} record
  * @returns {boolean}
  */
-function isEngineNamespaceRow(record) {
+function hasHostPreWriteShape(record) {
+  if (record?.kind !== undefined) return false;
+  if (Number.isSafeInteger(record?.seq)) return false;
+  const messages = record?.messages;
+  if (!Array.isArray(messages) || messages.length !== 1) return false;
+  const [message] = messages;
+  if (message?.role !== "user") return false;
+  const content = Array.isArray(message.content) ? message.content : [];
+  return content.length > 0 && content.every((block) => block?.type === "text");
+}
+
+/** 这一行是不是引擎自己写的账本行。判别顺序见上面那段注释：键独占 ⇒ 引擎；宿主命名空间/自定键 ⇒
+ * 宿主；**键不足以定归属时**（`:round:` / `:msg:` / 无键）才看形状。
+ * 实例（「形状像预写、但按键归引擎」）：`{ dedupKey: "r:engine:round:1:control:resume-notice",
+ * messages: [userText("【恢复运行】…")] }` 形状与宿主预写行逐字相同，但键是引擎独占命名空间 ⇒ 引擎行。
+ * @param {any} record
+ * @returns {boolean}
+ */
+function isEngineLedgerRow(record) {
   const key = rowKeyOf(record);
-  return key === "" || ENGINE_NAMESPACE_KEY.test(key);
+  if (ENGINE_ONLY_KEY.test(key)) return true;
+  if (key !== "" && !AMBIGUOUS_KEY.test(key)) return false;
+  return !hasHostPreWriteShape(record);
 }
 
 /**
  * 恢复锚点：账本里「崩溃那一刻**已经落盘**」的折叠逻辑消息条数（issue #425）。
  *
  * 纯函数，单一职责：输入账本行（`store.load()` 的折叠行或原始行都行），输出条数。
- * 口径 = 去掉**尾部**宿主命名空间行之后，按 `foldLedgerMessages` 折出来的逻辑消息数
+ * 口径 = 去掉**尾部**宿主行之后，按 `foldLedgerMessages` 折出来的逻辑消息数
  * （`partOf` 分片接回它指认的那条消息，分片不加）。
  *
  * 为什么不是「全账本条数」：宿主追问行（`…:input:…`）是崩溃之后才写的，把它算进崩溃现场
@@ -55,7 +93,10 @@ function isEngineNamespaceRow(record) {
 export function countResumeAnchor(records) {
   const rows = Array.isArray(records) ? records : [];
   let end = rows.length;
-  while (end > 0 && !isEngineNamespaceRow(rows[end - 1])) end -= 1;
+  // `end > 1`：账本的**第一行**是这个 run 的种子（round 0，引擎在任何请求之前写的），它不是「崩溃之后
+  // 宿主追加的」东西，尾队列最多从第二行开始。这一条同时把「无键的远古种子行」从形状判据的歧义里救回来：
+  // 它与宿主预写行都是「单条 user/text」形状，区别只在**位置**（种子在最前、追问在末尾）。
+  while (end > 1 && !isEngineLedgerRow(rows[end - 1])) end -= 1;
   return foldLedgerMessages(rows.slice(0, end)).length;
 }
 
@@ -165,8 +206,12 @@ export async function restoreResume(ctx) {
       ctx.taskBriefSource = seedRecords.length > 0 ? seedMessages : [];
       // 工单 261021（第三刀·恢复只认账本）：逻辑消息序列是崩溃/续跑上下文的**唯一正文来源**。
       // 口径不是裸 `records.flatMap(record.messages)`，而是 `foldLedgerMessages(records)`：
-      // 它与写侧锚点计数（`persistedTranscriptLength`，分片不加）同一条口径，把 `partOf` 分片
-      // 接回它指认的那条消息，**与载体行在场无关**（理由见 `src/store/message-rows.js` 里该函数的注释）。
+      // 它把 `partOf` 分片接回它指认的那条消息（分片不加一条），**与载体行在场无关**
+      // （理由见 `src/store/message-rows.js` 里该函数的注释）。
+      // issue #425：折叠口径仍与写侧**同源**，但恢复侧已经**不读**写侧那个计数了——
+      // `persistedTranscriptLength` 是快照里的采样（写侧 `+= n` 逐条累加，去重命中时还会多算），
+      // 恢复锚点改由 `countResumeAnchor(records)` 在账本上**现算**（多算对它彻底惰性）。
+      // 两者共同点只剩「分片不加」这一条折叠规则，不再是一条等价的计数。
       // 轮号直接带在 `ledgerEntries` 里：切片后的正文是 `cloneState` 的副本，拿身份去查轮号会落空。
       ctx.messages = ledgerMessages;
       ctx.persistedTranscriptLength = ctx.messages.length;
@@ -243,8 +288,8 @@ export async function restoreResume(ctx) {
         // 就落盘」（`orchestrator.js#appendMessageRowToTranscript`），于是本轮的 assistant 正文与
         // 已完成的工具结果**已经在账本里**；快照那份正文副本此时必然**落后于**账本（它写于工具执行
         // 之前），拿它当上下文就是把正文回滚，并把 `resumeTailMessages` 那套「对齐快照与账本」的
-        // 匹配逻辑全部作废。锚点仍在（`persistedTranscriptLength`），但口径换成**纯账本口径**：
-        // 崩溃时刻账本里已落盘的逻辑消息条数（见下面 `ledgerMessages` 与 `anchor`）。
+        // 匹配逻辑全部作废。锚点仍在（现在是**恢复时现算**的 `countResumeAnchor(records)`，issue #425），
+        // 口径是**纯账本口径**：崩溃时刻账本里已落盘的逻辑消息条数（见下面 `ledgerMessages` 与 `anchor`）。
         const crashToolUses = ctx.resumeRunSnapshot?.pendingToolUses
           ?? (ctx.resumeRunSnapshot?.pendingToolUse ? [ctx.resumeRunSnapshot.pendingToolUse] : []);
         const ledgerToolResultIds = new Set(ledgerMessages
