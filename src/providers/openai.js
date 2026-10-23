@@ -195,6 +195,7 @@ function abortReason(signal) {
  *   thinking_format?:unknown,
  *   defaultHeaders?:Record<string,string|number|boolean|null|undefined>,
  *   extraBody?:Record<string,unknown>,
+ *   warn?:(message:string)=>void,
  * }} options provider construction options
  */
 export function createOpenAIProvider({
@@ -240,6 +241,7 @@ export function createOpenAIProvider({
   thinking_format,
   defaultHeaders,
   extraBody,
+  warn,
 } = {}) {
   const selectedModel = model ?? model_name;
   validateProviderConfig("OpenAI", { endpoint, apiKey, model: selectedModel });
@@ -298,6 +300,10 @@ export function createOpenAIProvider({
     },
     defaultHeaders,
     extraBody,
+    // issue #406 M7：注入口冲突（`extraBody` 抢引擎字段）本来只打印到 console，宿主既接不住
+    // 也测不到。`warn` 一路透到 `createInjectionWarner`，宿主拿到的是回调而不是日志行。
+    // 不传 ⇒ `createRequestInjection` 自己的 `defaultWarn`（行为与今天逐字一致）。
+    ...(warn === undefined ? {} : { warn }),
   });
 
   async function chat(req) {
