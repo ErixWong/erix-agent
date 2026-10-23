@@ -23,10 +23,11 @@ const rowKeyOf = (record) => {
 // （否则按条数切片会切在一条逻辑消息中间，或者把历史追问挤进尾队列）。
 //
 // 归属判据 = **键 + 形状**两件事实，顺序是「键优先、形状兜底」（issue #425 评审阻塞）：
-//   ① 键是引擎**独占**命名空间（`<runId>:engine:…`；`:resume` / `:control:` / `:fold:` / `:ttl:`
-//      全在它下面）⇒ 引擎行。**必须按键先判**：这些载体的形状**也可能**是「单条 user/text」
-//      （`…:engine:round:<n>:control:resume-notice` 带一条真消息就是那一格），形状判据优先就会把
-//      引擎自己的载体误判成宿主尾队列。
+//   ① 键是引擎**独占**命名空间 = `:engine:`（`<runId>:engine:…`；`:resume` / `:control:` / `:fold:` /
+//      `:ttl:` 这些载体**都写在 `:engine:` 下面**）⇒ 引擎行。**必须按键先判**：这些载体的形状**也可能**是
+//      「单条 user/text」（`…:engine:round:<n>:control:resume-notice` 带一条真消息就是那一格），形状判据
+//      优先就会把引擎自己的载体误判成宿主尾队列。⚠ 独占命名空间**只有** `:engine:`：裸 `:control:` 不是
+//      （把它并进来，`myapp:control:x` 这类契约内合法的宿主自定键会被判成引擎行 ⇒ 0 请求 + `invalid_messages`）。
 //   ② 键是宿主命名空间（`<runId>:input:…`，`src/store/append-user-turn.js`）或宿主自定键 ⇒ 宿主行。
 //   ③ 键**不足以**定归属——`<runId>:round:<n>`（契约 `docs/host-consumer-contract.md` 自己叫它
 //      "host default key"，宿主照抄它完全合法）、`<runId>:msg:<round>:<seq>`（引擎逐条消息行用过的
@@ -42,7 +43,7 @@ const rowKeyOf = (record) => {
 // 契约只写宿主 **should** 走 `appendUserTurn`（`:1090`），`:964` 还允许 dedup 回落到 store 生成的
 // `<runId>:round:<n>`，`orchestrator.js` 的注释也明写「宿主可能已用默认键」——按「必须走
 // `appendUserTurn`」立论，就是把 main 上可恢复的现场改成永久不可恢复。
-const ENGINE_ONLY_KEY = /:engine:|:control:/u;
+const ENGINE_ONLY_KEY = /:engine:/u;
 const AMBIGUOUS_KEY = /:(?:msg|round):/u;
 
 /** `appendUserTurn` 的产出形状（宿主预写行）：没有 `kind` / 安全整数 `seq`，恰好一条 `user` 消息，
