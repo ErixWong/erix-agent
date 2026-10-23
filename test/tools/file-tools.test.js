@@ -529,9 +529,15 @@ test("中英契约文档引用的 readMoreLines marker 字面与源码产出同�
 //     `src/loop/state-view.js` 4,387（59.75, 37.31%）。
 //   修法（issue 的三选一，选 ①）：floor 是**全称命题**（「没有文件比这更少」），只能靠枚举全树证明 ⇒ `fewest`
 //   角色改钉全树真最小值 `bin/provider-timeouts.js`，描述里写明口径，并新增一格把「描述声称的 floor == 全树实测最小值」
-//   钉死（新文件把真最小值拉低就红）。`median`/`most` 仍是写死样本口径（中位随新增文件漂移会给全仓加税），
-//   所以描述里**明写**这两个数来自固定样本；`densest` 照旧钉样本最密（state-view 37.31%），全树最密现在是 floor
-//   那个文件（45.02%），由 `anchorsStillHold.densestIsThePinnedOne: false` 如实报告（#271 起就有这一格）。
+//   钉死（新文件把真最小值拉低就红）。
+//   **口径分工（一处说清，别再分两处各说一套）**：`floor` = **全树**（`src`/`bin`/`examples`，枚举可证的全称命题）；
+//   `median` / `most` = **固定写死样本**（随新增文件漂移会给全仓加税，`#275` 拆掉的正是这道税）——描述里已明写这两个数
+//   「come from a fixed sample of those sources and describe that sample」，测试也按**样本**复测它们。
+//   ⚠ PR #454 评审退回：`measuredMost` 一度取**全树**末位 ⇒ 新增一个短行文件（容量远大于 9,407）就把描述里的 `most` 顶红
+//     （`main` 59/59 绿、本分支红）——那正是 `#275` 专门拆掉的税。现在 `measuredMost` = 样本末位，全树末位另设 `treeMost`
+//     只供下面那条「全树自洽」断言用。
+//   `densest` 照旧钉样本最密（state-view 37.31%），全树最密现在是 floor 那个文件（45.02%），
+//   由 `anchorsStillHold.densestIsThePinnedOne: false` 如实报告（#271 起就有这一格）。
 // ---------------------------------------------------------------------------
 
 // 样本是写死的 83 个路径（#271 的工单硬约束：不许 `find … | head -14` 这类随仓库新增文件漂移的隐式样本）。
@@ -824,15 +830,21 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
     + "CJK 最密是 `src/loop/state-view.js`（37%），两个锚点必须各自复测各自说");
 
   // 当场复测（写死路径，同一口径）
-  // 2026-10-25（#453）：**两种口径各取所需** —— floor/most 是全树（`src`/`bin`/`examples`）极值（全称命题，枚举可证），
-  // 中位与 CJK 最密仍取写死样本（中位随新增文件漂移会给全仓加税，见上面 ⚠ #453）。
+  // 2026-10-25（#453 + PR #454 评审）：**两套口径各取所需，别混** ——
+  //   `floor` = 全树（`src`/`bin`/`examples`）最小值（全称命题，只能靠枚举证明）；
+  //   `median` / `most` 与 CJK 最密 = 固定写死样本（随新增文件漂移会给全仓加税，见上面 ⚠ #453）。
+  // 评审实测的税：`measuredMost` 原先取全树末位 ⇒ 新增一个**短行**文件（容量 64,198 ≫ 9,407）就让
+  // 「描述声称的「一次最多装多少行」」那条 ±1% 断言变红，而描述里的 `most` 说的本来就是**样本**。
   const rows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
   const scannedRows = listShippedSourceFiles().map(measureReadLineCapacity);
   const byRole = Object.fromEntries(READ_LINE_CAPACITY_ROLES.map(({ role, file }) => [role, measureReadLineCapacity(file)]));
   const sampleCaps = rows.map((row) => row.capacity).sort((a, b) => a - b);
   const treeCaps = scannedRows.map((row) => row.capacity).sort((a, b) => a - b);
   const measuredFewest = treeCaps[0];
-  const measuredMost = treeCaps[treeCaps.length - 1];
+  // `most` 是样本最大值（描述里那句 `median and most come from a fixed sample`）；全树最大值只用于下面
+  // 那条「全树自洽」的包含关系，**不参与**描述声称的比对（否则新增无害文件就变红 = #275 拆掉的税）。
+  const measuredMost = sampleCaps[sampleCaps.length - 1];
+  const treeMost = treeCaps[treeCaps.length - 1];
   const measuredMedian = sampleCaps.length % 2 === 1
     ? sampleCaps[(sampleCaps.length - 1) / 2]
     : (sampleCaps[sampleCaps.length / 2 - 1] + sampleCaps[sampleCaps.length / 2]) / 2;
@@ -872,7 +884,7 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
     `实测中位行数容量 ${measuredMedian} 没有超过 ${LEGACY_UNMEASURED_CEILING}：旧上限重新成立了，描述与本测试的口径都要重谈`);
   assert.ok(rows.every((row) => row.capacity >= measuredFewest && row.capacity <= measuredMost),
     "样本内的极值不自洽（重算逻辑被改坏）");
-  assert.ok(scannedRows.every((row) => row.capacity >= measuredFewest && row.capacity <= measuredMost),
+  assert.ok(scannedRows.every((row) => row.capacity >= measuredFewest && row.capacity <= treeMost),
     "全树扫描的极值不自洽（重算逻辑被改坏）");
 
   // 4) CJK：本仓实测支持「CJK 让行数按比例下降」这句话；但描述不许给没测过的 CJK 区间。
