@@ -138,6 +138,13 @@ function stampRowTs(message, row) {
  * 引擎的 resume 路径也靠这条规则免疫（`src/loop/resume-manager.js` 会对 `store.load()` 的返回值
  * 再折一次，宿主折不折都能拿到同一份时间线）。
  *
+ * **这条守卫对逐条 `ts` 是盲的（issue #439 升级现场，`withoutJournalTs`）**：比较两侧都先剥掉
+ * 消息上的信封 `ts`。守卫判的是「**同一段正文**是否已经折过」——`ts` 答的是「这条消息什么时候
+ * 落盘」，不是「这段正文是什么」，让信封字段参与比较就等于让**折叠实现的时间戳口径**参与正文
+ * 身份：上一版（≤0.24.0 或宿主自研折叠）折出来的载体里消息**没有** `ts`，而原始消息行有 ⇒
+ * 逐字段比较判不等 ⇒ 同一轮正文拼第二遍（实测 2 条变 4 条：`assistant+user+assistant+user`，
+ * 正是 #401 R3 治过的坏形状）。所以升级现场（旧载体 + 新消息行）必须仍然判「已折过」。
+ *
  * @template {{ round?: number, seq?: number, kind?: string, partOf?: string, messages?: object[] }} T
  * @param {T[]} records
  * @returns {T[]}
@@ -196,9 +203,13 @@ export function foldMessageRows(records) {
     // assistant+user+assistant+user）。判据是「折出来的结果与载体现有正文逐字段深比较相等」，
     // 而不是「载体非空」：`…:engine:round:<n>:resume` 载体带的是方向提示那几条引擎控制正文，
     // 同轮的消息行装的是崩溃轮的正文——那一轮**必须**照常拼，按「非空就跳」会把正文丢掉。
+    //
+    // issue #439：比较两侧都剥掉信封 `ts`（`withoutJournalTs`）。上一版折叠产出的载体里消息**没有**
+    // 这个键，原始消息行有 ⇒ 不剥就判不等 ⇒ 升级现场正文静默翻倍（见本函数 JSDoc「守卫」一段）。
     const carrier = records[group.carrier];
     const existing = Array.isArray(carrier?.messages) ? carrier.messages : [];
-    if (existing.length > 0 && isDeepStrictEqual(existing, messages)) continue; // 已折过：消息行当重复副本丢弃
+    if (existing.length > 0
+      && isDeepStrictEqual(existing.map(withoutJournalTs), messages.map(withoutJournalTs))) continue; // 已折过：消息行当重复副本丢弃
     attached.set(group.carrier, messages);
   }
   if (consumed.size === 0) return records;
@@ -297,8 +308,10 @@ export function foldLedgerMessages(records) {
 }
 
 /**
- * 去掉消息上的**档案信封**字段 `ts`（issue #439 A，恢复路径专用）。
+ * 去掉消息上的**档案信封**字段 `ts`（issue #439）。
  *
+ * 只用于「这段正文是否已经折过」的比较（`foldMessageRows` 的守卫）与恢复路径的规范化
+ * （`foldLedgerMessages`）：`ts` 是档案信封，不是正文身份的一部分。
  * 只在真的带 `ts` 时拷贝；没有就原样返回（老账本/手写行/宿主不落 `ts` 的 store 零改写）。
  * @param {any} message
  * @returns {any}
