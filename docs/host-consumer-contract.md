@@ -2938,14 +2938,20 @@ Consequences for a host store and for host readers:
   `restoreResume` (`src/loop/resume-manager.js`) reads out of the ledger as
   `resumeToolResultRowKey`; when the crash round landed **no** result row at all,
   the first slice starts the aggregate itself and becomes the anchor for the
-  rest — so with **up to two** results the shape stays one aggregated `user`
-  message (never one `user` message per result) and the
-  `<runId>:msg:<round>:<seq>` sequence keeps the issue #326 order. With **three
-  or more** results that promise does **not** hold yet: for a crash round with
-  three tool calls the measured fold is `[[t1,t2],[t3]]` (the replayed batch
-  chains `partOf` at the *previous slice* instead of the first one, so the third
-  result does not fold back into the aggregate), and the next resume fails
-  `invalid_messages` — that is issue #430 and it is **not** fixed here. Before issue #420 that half was handed over
+  rest. The anchor is always the **first slice** and it never advances with the
+  slices: a slice's key is not an addressable `partOf` target (a slice adds no
+  logical message, so folding maps its key to the *next* message), which is why
+  chaining `partOf` at the previous slice made the third result start a message
+  of its own. So **every** result of one crash round folds back into **one**
+  aggregated `user` message, no matter how many there are (never one `user`
+  message per result), and the `<runId>:msg:<round>:<seq>` sequence keeps the
+  issue #326 order. Pinned by the `#430` end-to-end cases in
+  `test/loop-resume-unpersisted-tool-results.test.js` (the shared crash scene is
+  `threeToolCrashScene` (`test/loop-resume-unpersisted-tool-results.test.js`)),
+  plus the four-row unit case in `test/store/message-rows-fold.test.js`; before
+  the fix the measured fold for three tool calls was `[[t1,t2],[t3]]` and the
+  next resume failed `invalid_messages` (issue #430). Before issue #420 that half
+  was handed over
   on `resumeUnpersistedToolResults` with a comment promising it would be
   journaled, and nothing read it: its only carrier was the latest-only run
   snapshot, so the next round that really ran a tool overwrote it and that
