@@ -42,7 +42,7 @@ export const FAKE_PROVIDER_URL = pathToFileURL(
   join(REPO_ROOT, "test", "helpers", "fake-provider.js"),
 ).href;
 
-export const EXPECTED_JS_FENCE_COUNT = 11;
+export const EXPECTED_JS_FENCE_COUNT = 12;
 export const L3_TIMEOUT_MS = 15000;
 
 /** 提取 markdown 中所有 ```js 围栏 → [{ line, code }]（line 为围栏起始行号，1-based）。 */
@@ -329,7 +329,19 @@ rmSync(__slotsDir__, { recursive: true, force: true });
 }
 `,
   },
-  // fence #6（store.list 返回 plain array）
+  // fence #6（EN「Model-output normalization with an optional fallback」节，issue #406：
+  // normalizeModelJson 的 provenance 与「闸门永远判候选的原始字节」这条承重不变量）
+  {
+    // 示例体自带 `import { normalizeModelJson } from "erix-agent"`，splitImports 会把它提到模块作用域
+    // （再在 linkImports 里注一次就是「重复声明」）；示例体自带全部上下文，不碰网络、不碰盘。
+    linkImports: [],
+    stubs: "",
+    // 示例体自己逐条 throw（provenance / 闸门判原始字节 / 截断两档）；跑到这一行就是四条判据全部按预期。
+    epilogue: `
+if (typeof normalizeModelJson !== "function") throw new Error("normalizeModelJson 没链接上");
+`,
+  },
+  // fence #7（store.list 返回 plain array）
   {
     linkImports: [],
     stubs: `
@@ -345,7 +357,7 @@ if (__listQueries__.length !== 1) throw new Error(\`store.list 应被调用 1 �
 if (__listQueries__[0]?.scope !== "run") throw new Error("store.list 查询 scope 应为 \\"run\\"");
 `,
   },
-  // fence #7（createBuiltinNotesTools 接线）
+  // fence #8（createBuiltinNotesTools 接线）
   {
     linkImports: [
       `import { createBuiltinNotesTools } from ${JSON.stringify(INDEX_URL)};`,
@@ -396,7 +408,7 @@ if (readdirSync(__notesDir__).length === 0) throw new Error("note_take 未在 tm
 rmSync(__notesDir__, { recursive: true, force: true });
 `,
   },
-  // fence #8（EN「File edit tool `edit`」节：edit 的写边界与越界错误结果，issue #191）
+  // fence #9（EN「File edit tool `edit`」节：edit 的写边界与越界错误结果，issue #191）
   {
     linkImports: [],
     stubs: `
@@ -433,7 +445,7 @@ if (!__miss__.startsWith("错误：") || !__miss__.includes("readFile")) {
 rmSync(__editDir__, { recursive: true, force: true });
 `,
   },
-  // fence #9（projectTranscriptForDisplay 展示投影）
+  // fence #10（projectTranscriptForDisplay 展示投影）
   {
     linkImports: [],
     stubs: `
@@ -456,7 +468,7 @@ const store = { async load() {
 if (__storeLoads__.count !== 1) throw new Error(\`store.load 应被调用 1 次，实际 \${__storeLoads__.count} 次\`);
 `,
   },
-  // fence #10（契约套件标准注入用法，issue #183）
+  // fence #11（契约套件标准注入用法，issue #183）
   // 两层都真验：L2 靠 `erix-agent/contract-tests` 说明符重写到 test/contract/index.js（证明
   // 发布的子路径入盘）；L3 把示例当宿主那样注册 24 条断言（transcript 16 + notes 7 +
   // notes CAS 子套件 1，issue #183）并真的跑完

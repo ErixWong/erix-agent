@@ -190,6 +190,8 @@ src/
     block-helpers.js               Block access helpers
     judge-record.js                Judge record correlation (model identity, run outcome)
     state-view.js                  Live-reference state view factory for the loop state (#246, not wired yet)
+  normalization/
+    parse-model-json.js            Model-output normalization: normalizeModelJson — L1 byte-preserving repair, gate on the original bytes, optional L2 LLM fallback (issue #406)
   providers/
     anthropic.js                   Anthropic provider and streaming
     errors.js                      Provider errors and classification
@@ -229,6 +231,7 @@ src/
     api-key.js                     API-key materialization
     env.js                         Environment-backed model configuration
     json-file.js                   JSON-file model configuration
+    slot-provider.js               Model slot → provider constructors: loadModelSlot / createProviderForSlot (issue #406)
     static.js                      Static model configuration
   display/
     projection.js                  Host display projection over RoundRecord[] (read side)
@@ -256,7 +259,10 @@ src/
 and compaction helpers, transcript stores, run-state helpers, the host display
 projection (`projectTranscriptForDisplay`), the multi-turn pre-write helper
 (`appendUserTurn`), configuration providers, `runToolLoop`, and reflection
-helpers. The optional
+helpers, plus the model-output normalization substrate (`normalizeModelJson`, issue
+#406 — the asynchronous entry with deterministic repair plus an optional LLM
+fallback; it does **not** replace the synchronous L0 `parseModelJson`) and the
+slot → provider constructors (`loadModelSlot` / `createProviderForSlot`). The optional
 `erix-agent/tools` subpath exports the tool registry and provider helpers, the
 canonical file and notes factories, and the skill-package loader
 (`discoverSkills` / `loadSkill` / `buildSkillTools`, issue #197 — the bundled skill

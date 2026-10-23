@@ -762,6 +762,19 @@ export async function loadErixAgent({
  * 读 `~/.erix/config.json` 的 `slots.default`（库自带 createJsonFileModelConfigProvider 负责
  * 槽位选取 + apiKey/apiKeyEnv/apiKeyFile 落值），支持 `model` 参数覆盖槽位里的模型名。
  *
+ * ⚠ **已升进 `src/config/slot-provider.js`（#406 B2-a），本份是 B2-b 要删的遗留件，勿在此演进。**
+ * 新代码一律用包根导出的那份（`import { loadModelSlot } from "erix-agent"`）；本份只为了让
+ * `erix_run` 在 B2-a 落地后仍能跑（同一批要动 `src/loop/orchestrator.js`，被 #430 占着）。
+ * 两份的总差异**是五条，不是一条**（合并前评审实测，`src/config/slot-provider.js` 文件头也列了同一份）：
+ *   1. **首参**：本份 `loadModelSlot({lib, …})` / `createProviderForSlot(lib, slot, …)` 带 `lib`（扩展动态加载的产物），
+ *      `src/` 那份直接 import，没有这个首参；
+ *   2. **`ERIX_CONFIG_PATH`**：本份的 `defaultConfigPath` **不读**它（只在错误文案里承诺），`src/` 那份真读；
+ *   3. **`warn`（M7）**：本份的 `createProviderForSlot` 没有 `warn` 注入口，`src/` 那份有（接到 `createRequestInjection`）；
+ *   4. **错误载体**：本份每条错误都带 `ErixRunError(code, msg, {detail})`（`detail` 恒为字符串），`src/`
+ *      那份**只有解析失败**那一条带附加字段 `{cause: <Error>}`，其余三条（`config_missing` / 非对象 /
+ *      缺必填字段）是裸 `KitError(code, msg)`；`code` 字面值相同，且本份多一个 `lib_missing` 分支；
+ *   5. **`metadataMissing` 的键存在性**：本份**总是**带这个键（可能是 `undefined`），`src/` 那份缺元数据时才出现。
+ *
  * @param {{
  *   lib: any,
  *   configPath?:string,
@@ -850,7 +863,13 @@ export async function loadModelSlot({
   return { slot: resolved, configPath: resolvedPath, metadataMissing };
 }
 
-/** provider 构造：relay 是 OpenAI 协议，直接用 createOpenAIProvider（src/providers/openai.js 的具名参数）。 */
+/**
+ * provider 构造：relay 是 OpenAI 协议，直接用 createOpenAIProvider（src/providers/openai.js 的具名参数）。
+ *
+ * ⚠ **已升进 `src/config/slot-provider.js`（#406 B2-a），本份是 B2-b 要删的遗留件，勿在此演进。**
+ * 差异（与 `loadModelSlot` 同一份清单的第 1 / 3 条）：本份首参是 `lib`；本份**没有** `warn` 注入口
+ * （M7 只落在 `src/` 那份），所以经本份构造的 provider 接不住注入冲突的 warn。
+ */
 export function createProviderForSlot(lib, slot, { timeoutMs = PROVIDER_TIMEOUT_MS } = {}) {
   // 槽位整体摊平进去：内置 provider 读固定参数清单，未知字段惰性（契约
   // 「Unknown slot fields are inert and safe」），顺带把 contextWindowTokens /

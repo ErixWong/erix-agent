@@ -590,7 +590,15 @@ const READ_LINE_CAPACITY_ROLES = [
   // 只是不再是「最接近中位」的那一个）。描述里的 `median 7,009 (37.4)` → `median 7,130 (36.8)`
   // 是**同位数替换**（对本文件字节数中性，所以这一行不因描述改动而再刷）。
   // 历史：2026-10-21 从 #271 的记录值（11,471 B / 319 行 → 7,290）刷成同口径实测值（11,643 / 321 / 36.271）。
-  { role: "median", file: "src/tools/registry.js", recorded: { bytes: 6_250, lines: 170, bytesPerLine: 36.7647, capacity: 7_130, cjkShare: 0 } },
+  // 2026-10-23 第五刷（issue #406 B2-a，**换文件**）：`src/index.js` 也是本样本的一员，本单给它加了
+  // 三条包根导出与它们的注释（4,407 B / 120 行 ⇒ 5,125 B / 127 行，均行 36.73 → 40.35），容量
+  // 7,138 → **6,496**——刚好从样本中位的**上方**跨到下方，把中位那个元素从 `src/config/api-key.js`
+  // （7,117）顶成了 `src/tools/notes.js`（**6,952**，实测中位恰好就是它）。所以这一行改钉
+  // `src/tools/notes.js`（29,901 B / 793 行 ⇒ 37.7062 B/line ⇒ 6,952，与样本中位差 0.00%，
+  // 分母够大：±2% 的额度是 ±139 行），描述里的 `median 7,130 (36.8)` → `median 6,952 (37.7)`
+  // 是**同位数替换**（对本文件字节数中性，所以 `self` 那一行不用再刷）。
+  // 上一任 `src/tools/registry.js`（7,130）仍在样本清单里，只是不再是「最接近中位」的那一个。
+  { role: "median", file: "src/tools/notes.js", recorded: { bytes: 29_901, lines: 793, bytesPerLine: 37.7062, capacity: 6_952, cjkShare: 0.1301 } },
   // 2026-10-23 #391：`most` 也**换了文件**——`bin/guard-metrics.js` 从 456 B / 17 行长到 1,063 B / 23 行
   // （均行 26.8 → 46.2），容量 9,772 → 5,671，已经不是「一次装得最多」那一个。样本里现在最大的是
   // `src/messages/openai-normalization.js`（5,496 B / 201 行 ⇒ 27.34 B/line ⇒ 9,587 行），描述里那一档随之
