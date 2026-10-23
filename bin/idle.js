@@ -197,15 +197,19 @@ export function toolHeartbeatCapMs(seconds) {
  * @template T
  * @param {ReturnType<typeof createIdleTimeout>} idle
  * @param {() => Promise<T> | T} run
- * @param {{ label?: string, log?: (line: string) => void }} [options]
+ * @param {{ label?: string, log?: (line: string) => void, capMs?: number }} [options]
+ *   `capMs` 缺省 = `toolHeartbeatCapMs(idle.seconds)`（装配处不给）。它存在的唯一理由是**可测**：
+ *   缺省上限有 30s 下限，单测里等不起；生产路径一个字节都不会传它。
  * @returns {Promise<T>}
  */
-export function withToolHeartbeat(idle, run, { label, log } = {}) {
+export function withToolHeartbeat(idle, run, { label, log, capMs: capOverride } = {}) {
   if (idle === null || idle === undefined) return Promise.resolve().then(run);
   const emit = typeof log === "function" ? log : () => {};
   const name = typeof label === "string" && label !== "" ? label : "tool";
   const intervalMs = toolHeartbeatIntervalMs(idle.seconds);
-  const capMs = toolHeartbeatCapMs(idle.seconds);
+  const capMs = Number.isFinite(capOverride) && capOverride >= 0
+    ? capOverride
+    : toolHeartbeatCapMs(idle.seconds);
   const startedAt = Date.now();
   let ticks = 0;
   let capped = false;

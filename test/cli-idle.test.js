@@ -32,6 +32,7 @@ import {
   execCeilingMsForIdle,
   toolHeartbeatCapMs,
   toolHeartbeatIntervalMs,
+  withToolHeartbeat,
 } from "../bin/idle.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
@@ -104,6 +105,47 @@ test("idle window / exec ceiling / heartbeat intervals are one口径 (issue #433
   // 喂表上限 = exec 天花板（所以「工具执行期」不是无界静默窗口）
   assert.equal(toolHeartbeatCapMs(300), 240_000);
   assert.equal(toolHeartbeatCapMs(1), EXEC_CEILING_FLOOR_MS);
+});
+
+// ①' 喂表是**有界**的（issue #433 fix 3 的另一半，工单只写了「持续喂」）：
+// 到上限就停止喂表、静默窗口重新开始计时 ⇒ **永久挂住的工具仍然会被看门狗收掉**。
+// 没有这一条，fix 3 会把 fix 1 变成「永不判死」——一个 never-settling 的工具可以让整个 run 永远活着。
+//
+// 为什么在单元层钉、不跑 31s 的 CLI 级用例：缺省上限是 `toolHeartbeatCapMs(idle.seconds)`，它有
+// 30s 下限（`EXEC_CEILING_FLOOR_MS`），`idle=1` 时挂住的工具要 ~31s 才会被收掉——那会让全量套件
+// 的墙钟翻倍。所以这里注入 `capMs: 600` 走**同一条**代码路径（上限判据、停喂、日志都在里面），
+// 装配侧（cli.js 不传 capMs ⇒ 用 `toolHeartbeatCapMs`）由上面那格的纯函数断言钉着。
+test("withToolHeartbeat: feeding is bounded, so a tool that never returns is still collected (issue #433 fix 3)", async () => {
+  const idle = createIdleTimeout(1);
+  const lines = [];
+  let touched = 0;
+  const observed = {
+    seconds: idle.seconds,
+    touch: () => {
+      touched += 1;
+      idle.touch();
+    },
+  };
+  // 工具永久挂住：与被挂住的 exec 一样，这个 promise 永不 settle。
+  withToolHeartbeat(observed, () => new Promise(() => {}), {
+    label: "exec",
+    log: (line) => lines.push(line),
+    capMs: 600,
+  });
+  await new Promise((resolve) => {
+    idle.controller.signal.addEventListener("abort", resolve, { once: true });
+  });
+  assert.equal(
+    idle.timedOut(),
+    true,
+    "喂表到上限后必须停止喂表——否则一个永久挂住的工具会让看门狗永远不响（fix 3 把 fix 1 变成永不判死）",
+  );
+  assert.ok(touched >= 1, `上限之前必须真的喂过表（实测 ${touched} 次）`);
+  assert.ok(
+    lines.some((line) => /执行期喂表已到上限 600ms，停止喂表/u.test(line)),
+    `必须留下「停止喂表」的可观测证据：${JSON.stringify(lines)}`,
+  );
+  idle.dispose();
 });
 
 // ① 工具执行期喂表：一条**比 idle 窗口长 1.5 倍**的命令不许把 run 打死。
