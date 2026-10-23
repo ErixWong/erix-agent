@@ -1053,7 +1053,7 @@ CLI 自己也是一个宿主，它自己的看门狗（`--idle-timeout`）是能
 | `error.code` | `"idle_timeout"` | **判别面，一字不变**——CLI 最外层 `catch`、repl 的行处理、外部 bench 统计都按它分流。它的唯一声明是 `IDLE_TIMEOUT_CODE`（`bin/idle.js`） |
 | `error.name` / `error.message` | `"IdleTimeoutError"` / `任务 <N> 秒无进展，已中止` | 不变（面向人的文案） |
 | `error.termination` | 引擎自己那份 `aborted` 终局 | `reason: "aborted"`、`partial: true`，且它的 `usage` / `rounds` 与下面两个字段相同 |
-| `error.usage`、`error.rounds`、`error.finalText` | 引擎的累计量 | **同一个对象**，不是拷贝——`termination.usage === error.usage` 成立 |
+| `error.usage`、`error.rounds`、`error.finalText` | 引擎的累计量 | **同一个对象**，不是拷贝——`termination.usage === error.usage` 成立 ⇒ 两者都视作**只读**：改一处会改到另一处（引擎本来就是这个口径） |
 | `error.cause` | 引擎原本抛的那个错误 | 抵达终局 `fail()` 的那个 `AbortError` |
 | `error.partial` | **不存在** | 本契约里没有顶层 `partial`；标记位是 `termination.partial` |
 

@@ -1331,7 +1331,7 @@ What the thrown error carries now:
 | `error.code` | `"idle_timeout"` | **the discriminator, unchanged** — the CLI's top-level `catch`, the repl line handler, and external bench accounting all branch on it. `IDLE_TIMEOUT_CODE` (`bin/idle.js`) is its single declaration |
 | `error.name` / `error.message` | `"IdleTimeoutError"` / `任务 <N> 秒无进展，已中止` | unchanged (human-facing text) |
 | `error.termination` | the engine's own `aborted` termination | `reason: "aborted"`, `partial: true`, and its `usage` / `rounds` equal to the two fields below |
-| `error.usage`, `error.rounds`, `error.finalText` | the engine's accumulated values | **the same objects**, not copies — `termination.usage === error.usage` holds |
+| `error.usage`, `error.rounds`, `error.finalText` | the engine's accumulated values | **the same objects**, not copies — `termination.usage === error.usage` holds, so treat both as **read-only**: mutating one mutates the other (that is already the engine's stance) |
 | `error.cause` | the engine's original error | the `AbortError` that reached the terminal `fail()` |
 | `error.partial` | **absent** | there is no top-level `partial` in this contract; the flag is `termination.partial` |
 
