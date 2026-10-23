@@ -24,11 +24,13 @@ import {
   extensionAllowed,
 } from "../reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "../reflection/l0.js";
-import { tryParseWrapupJson, normalizeWrapupWithLlm } from "../reflection/wrapup.js";
+import { tryParseWrapupJson } from "../reflection/wrapup.js";
 // issue #419 ① 后半段：循环里那份**内联**归一化请求（下面 `requestForJudge`）与
-// `normalizeWrapupWithLlm` 共用同一个「不思考」字面量，不许两处各写各的（否则日后必然漂移）。
-// ⚠ 单独一条 import 语句是**故意**的：上面那行 `normalizeWrapupWithLlm` 是死 import，
-//   它是删还是改成调用 `normalizeWrapupWithLlm` 属 #419 ③，**本票不动**（保持该行逐字不变）。
+// `normalizeWrapupWithLlm`（`src/reflection/wrapup.js` 的公开入口）共用同一个「不思考」字面量，
+// 不许两处各写各的（否则日后必然漂移）。
+// issue #430 顺手删掉本文件顶部那条**死 import**（`normalizeWrapupWithLlm` 在这里从来没有调用点，
+// 它是 `src/index.js` 的公开导出、契约中英各一处符号锚点、`test/wrapup*.test.js` 多格在用 ⇒ 只删
+// 这条 import，**不删函数本体**）。
 import { NORMALIZATION_REASONING_EFFORT } from "../reflection/wrapup.js";
 import {
   buildJudgePrompt,
@@ -2390,9 +2392,15 @@ export async function runToolLoop(options) {
   //   · 崩溃轮**一条结果行都没落**（`resumeToolResultRowKey === undefined`）⇒ 首片不带 `partOf`，
   //     它**自己**就是新起的那条聚合消息（在账本里也是一条独立逻辑消息，`persistedTranscriptLength`
   //     随 `appendMessageRowToTranscript` 的 `partOf === ""` 分支 +1，与账本折叠后的逻辑消息数
-  //     （`foldLedgerMessages`）对齐），然后把它写回 `resumeToolResultRowKey` 当后续分片（含 B 集合）
-  //     的锚点。否则每个结果都会各起一条 user 消息：合法但形状变了，`#326` 的
-  //     `<runId>:msg:<round>:<seq>` 序号语义也跟着散掉。
+  //     （`foldLedgerMessages`）对齐），然后把**它自己的** `dedupKey` 写回 `resumeToolResultRowKey`
+  //     当后续分片（含 B 集合）的锚点。否则每个结果都会各起一条 user 消息：合法但形状变了，
+  //     `#326` 的 `<runId>:msg:<round>:<seq>` 序号语义也跟着散掉。
+  //
+  // issue #430：**锚点写一次就钉住，不随分片推进**。分片行的 key 不是合法的 `partOf` 寻址目标——
+  // 读侧折叠（`src/store/message-rows.js#foldLedgerMessages` / `#foldMessageRows`）对分片行不新增
+  // 逻辑消息，于是它的 key 指向的是「下一条消息」。把锚点推进成「刚写那条分片的 `dedupKey`」时，
+  // 第三片起就落空并**新起一条消息**（实测 `[[t1,t2],[t3]]`），第二次恢复永久 `invalid_messages`。
+  // 所以下面只在**首片**写成功后落定一次 `rowKey`，之后一律 `partOf` 指向它。
   //
   // issue #424（守卫）：**崩溃轮的 assistant 正文不在账本里时，整段跳过入账**。升级路径（旧账本 +
   // 快照补全）上崩溃轮的 assistant 正文只存在于 run snapshot，`restoreResume` 只把它补进内存
@@ -2425,7 +2433,8 @@ export async function runToolLoop(options) {
         crashRound,
         rowKey === undefined ? {} : { partOf: rowKey },
       );
-      if (persistedRowKey !== undefined) rowKey = persistedRowKey;
+      // issue #430：只在首片写成功后落定锚点，之后**不推进**（分片 key 不能当 `partOf` 目标）。
+      if (rowKey === undefined && persistedRowKey !== undefined) rowKey = persistedRowKey;
     }
     if (rowKey !== undefined) runLoopState.resumeToolResultRowKey = rowKey;
   };
@@ -3494,8 +3503,8 @@ export async function runToolLoop(options) {
     // 必须在补跑段（B 集合）之前：
     //   · `seq` 顺序 = 崩溃那一刻的真实发生顺序（A 集合先于 B 集合被产出），折叠后聚合消息里的
     //     block 顺序与内存里的 `messages` 一致；
-    //   · `resumeToolResultRowKey` 由本段向前推进（`resumeToolResultRowKey === undefined` 时首个 A 结果
-    //     就是新的聚合消息锚点），补跑段读到的正是推进后的值 ⇒ 两种集合接回**同一条**聚合消息。
+    //   · `resumeToolResultRowKey` 由本段**落定一次**（`undefined` 时首个 A 结果就是新的聚合消息锚点；
+    //     issue #430 起不随分片推进），补跑段读到的正是这个首片锚点 ⇒ 两种集合接回**同一条**聚合消息。
     await journalResumeUnpersistedToolResults();
     if (runLoopState.resumePendingTools.length > 0) {
       const resumedToolResults = [];
@@ -3505,6 +3514,8 @@ export async function runToolLoop(options) {
       //   · 下一次恢复折出来的 `flatMap(record.messages)` 仍是**一条**含全部结果的 user 消息，
       //     `validateMessages` 的严格配对不会报重复 id（旧写法靠 `…:resume` 行重抄整条聚合消息，
       //     逐条入账后就会把已完成的那个结果存两遍）。
+      // issue #430：锚点同样**只在首片落定一次**，不随分片推进（分片行的 key 不是合法的 `partOf`
+      // 寻址目标，链到上一片会让第三片起新起一条消息）。A 集合已经首片落地时这里拿到的就是首片 key。
       const journaledResumedResults = new Set();
       let resumedResultRowKey = runLoopState.resumeToolResultRowKey;
       const journalResumedToolResults = async () => {
@@ -3516,7 +3527,9 @@ export async function runToolLoop(options) {
             runLoopState.rounds,
             resumedResultRowKey === undefined ? {} : { partOf: resumedResultRowKey },
           );
-          if (persistedRowKey !== undefined) resumedResultRowKey = persistedRowKey;
+          if (resumedResultRowKey === undefined && persistedRowKey !== undefined) {
+            resumedResultRowKey = persistedRowKey;
+          }
         }
       };
       for (const [index, resumePendingTool] of runLoopState.resumePendingTools.entries()) {
@@ -3897,7 +3910,11 @@ export async function runToolLoop(options) {
             round,
             toolResultRowKey === undefined ? {} : { partOf: toolResultRowKey },
           );
-          if (persistedRowKey !== undefined) toolResultRowKey = persistedRowKey;
+          // issue #430：锚点 = 本轮聚合消息的**首片** key，写成功后**不再推进**（分片 key 不能当
+          // `partOf` 目标）。链到上一片时第三个结果起就折不回聚合消息（崩溃在轮行落盘之前时可见）。
+          if (toolResultRowKey === undefined && persistedRowKey !== undefined) {
+            toolResultRowKey = persistedRowKey;
+          }
         }
         emitEvent({ type: "tool_result", round, toolResult: cloneState(toolResult) });
       }

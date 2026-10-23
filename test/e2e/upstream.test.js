@@ -5,7 +5,10 @@
 // 起的真 `http.createServer`，于是 SSE 分帧、跨包切片、半截流、真 HTTP 状态码与
 // 首字节超时都是**真 socket 上发生的事**，而不是测试自己写的假 fetch 的形状。
 //
-// 离线、确定、默认跑：上游只绑 127.0.0.1:0，延迟一律 ≤ 50ms，不依赖外网与真实秒级等待。
+// 离线、确定、默认跑：上游只绑 127.0.0.1:0，不依赖外网。**延迟不再一律 ≤ 50ms**（#412）：
+// 「header 迟迟不到」那一格的 header 延迟由当场实测的截止线派生（`截止线 + max(30, 截止线/2)`，
+// 下限即 90ms，机器慢时可达秒级），「header 已到、body 迟迟不到」那格的 body 延迟同样派生
+// （`4 × 实测落地耗时`，下限 45ms）；其余各格仍是毫秒级固定延迟。
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -514,40 +517,279 @@ test("真上游：503 → server / retryable=true，流式路径同样分类，�
 
 const SLOW_FRAMES = sseOpenAI(openAITextChunks(["慢"]), { done: false });
 
-test("真上游：header 迟迟不到 → timeout / retryable=true / phase=request，不发第二发（#257 T1）", async (t) => {
-  const { upstream, baseUrl } = await startUpstream(t, {
-    // 上游 45ms 才发 header，provider 20ms 就放弃：仍是毫秒级，不拖慢套件。
-    // undici 的 fetch() 要收到 header 才 resolve，所以这一路命中的是 **request** 阶段。
-    // 20ms 而不是 5ms：request 阶段的时钟从调用起就开着，5ms 会跟 TCP 连接建立赛跑，
-    // 请求可能根本没上线 → “不发第二发”退化成“一发也没发”的偶发红。
-    script: [sseResponse({ frames: SLOW_FRAMES, delayFirstByteMs: 45 })],
-  });
+// ---------------------------------------------------------------------------
+// 「截止线该定多长」不能拍脑袋（#412）
+//
+// `requestTimeoutMs` 的 request 阶段时钟**从 `chatStream()` 调用起就开着**
+// （`src/providers/timeout.js` 的 `startedAt`），它必须罩住 **TCP 连接建立 + 把请求写出去**。
+// 这一段耗时是负载的函数，不是常数——36 核机实测（#412，`/tmp/probe-412.mjs` 口径：
+// 「调用 → 上游真的收到这一发」）：
+//   · 空载 20 次：min 3.0 / p50 4.7 / max 29.0 ms
+//   · 72 个 busy loop（≈2× 核数）20 次：min 2.4 / p50 10.8 / p90 26.8 / max 123.1 ms
+// 所以写死 20ms 就是在跟调度器赛跑：负载下请求根本还没上线，`requestCount` 就是 0，
+// 「超时后绝不补发第二发」悄悄退化成「一发也没发」（#412 留档实测：修前 50 轮红 5 次 = 10%/轮，
+// 见 `CHANGELOG.md` 的红率台账）。
+//
+// 本文件的口径：**截止线由当场实测的落地耗时派生**（8 倍，下限 60ms 只为量到的值接近 0 时
+// 不至于退化成 1ms 级竞速），header 延迟再由截止线派生。两个前提（请求先落地、header 后到）
+// 于是都由构造保证，而不是由某台机器此刻有多快保证。
+//
+// 三条**不依赖运行结果**的守卫（#412 交付判据，全部是判红/判失败，不是悄悄放行）：
+//   ① 探针量不到落地（`waitForRequests` 假、`chatStream` 抛错）⇒ 立刻红——没有实测就没有派生；
+//   ② 派生值自检：**实测值必须是有限正数、且 ≤ 上限/8**（机器慢到毫秒级断言失去意义时判红，
+//      而不是把截止线抬到天上去假装没事）。注意「≥ 下限」「≥ 8 × 实测」这两条由 `Math.max` /
+//      乘法本身保证，写成断言是**恒真**的（#412 评审实测：把 ×8 改成 ×1、floor 60 改成 floor 1，
+//      全套仍绿）⇒ 所以「×8 / 下限 60ms」这条契约改由下面两条**字面量用例**钉住
+//      （直接调 `deriveRequestTimeoutMs`，取值不随常量漂移）；
+//   ③ 正式那一发的**落地时刻**（`requests[0].receivedAtMs`，服务端侧事实）必须早于截止线。
+//      这一条替代了「轮询等到第 n 发」：轮询自己会被调度器饿着，「早就落地了但轮询没醒」与
+//      「压根没落地」在它眼里长得一样，而 `requestCount === 0` 正是本格要防的**假绿**形状。
+const REQUEST_TIMEOUT_RTT_FACTOR = 8;
+const REQUEST_TIMEOUT_FLOOR_MS = 60;
+/** 上限只为「机器慢到无法做毫秒级断言」时把假绿变成红（36 核机实测最差值 123ms，×8 ≈ 1s）。 */
+const REQUEST_TIMEOUT_CEILING_MS = 5_000;
+const PROBE_WARMUPS = 1;
+const PROBE_SAMPLES = 5;
+const PROBE_FRAMES = sseOpenAI(openAITextChunks(["ok"]));
 
-  const { err } = await rejection(
-    openAIProvider(baseUrl).chatStream(providerRequest({ requestTimeoutMs: 20 })),
+/**
+ * 量「`chatStream()` 调用 → 上游真的收到这一发」的本机耗时（毫秒），返回**最差的一次**与全部样本，
+ * 顺带把到该 origin 的 TCP 连接预热（undici 的全局 dispatcher 会复用连接，正式那一发因此更便宜）。
+ * 探针本身走的是与正式用例**同一条**代码路径（真 provider、真 socket、同一台上游）。
+ *
+ * 计时口径与上面那句 docstring 必须一致（#412 评审第 2 条）：落地时刻取**服务端侧事实**
+ * `requests[0].receivedAtMs`（`performance.now()`，与测试同一时间原点），在 `waitForRequests` 返回后
+ * 立刻取——**不是**「调用 → 整条响应读完」（旧写法量的是后者，会把上游的发送延迟算进「本机调度延迟」，
+ * 偏保守但口径不对）。
+ *
+ * 第一次单独丢掉（warmup）：它含模块初始化 + undici dispatcher 首建连接，是冷启动而非「这台机器此刻的
+ * 调度延迟」；把它算进去只会把截止线抬高到几百毫秒、白白拖慢套件。
+ *
+ * 取 5 个样本里的最差值而不是 p50：要覆盖的是尾部，而尾部正是负载下先坏掉的那一段。
+ */
+async function measureRequestLandingMs(
+  upstream,
+  baseUrl,
+  { warmups = PROBE_WARMUPS, samples = PROBE_SAMPLES } = {},
+) {
+  const measured = [];
+  for (let i = 0; i < warmups + samples; i += 1) {
+    upstream.reset();
+    const startedAt = performance.now();
+    const pending = rejection(openAIProvider(baseUrl).chatStream(providerRequest()));
+    const landed = await upstream.waitForRequests(1, 5_000);
+    // 落地时刻就在 `waitForRequests` 返回后立刻取：服务端侧事实，不受「轮询何时被调度」影响。
+    const receivedAtMs = upstream.requests[0]?.receivedAtMs;
+    const { threw, err } = await pending;
+    // 守卫①：探针自己量不到落地 ⇒ 立刻红。宁可这一格红着并说明「这台机器量不出来」，
+    // 也绝不拿一个 0 去派生截止线（那会退化成 1ms 级竞速，即本格要根治的那个病）。
+    assert.equal(
+      landed,
+      true,
+      `RTT 探针第 ${i + 1} 次没落地：这台机器此刻连一次请求都发不出去，量不出落地耗时就不许派生截止线`,
+    );
+    assert.equal(threw, false, `RTT 探针第 ${i + 1} 次失败：${err?.message ?? err}`);
+    assert.ok(
+      Number.isFinite(receivedAtMs),
+      `RTT 探针第 ${i + 1} 次没拿到服务端侧落地时刻（receivedAtMs=${receivedAtMs}）：没有落地时刻就没有实测`,
+    );
+    if (i >= warmups) measured.push(receivedAtMs - startedAt);
+  }
+  upstream.reset();
+  assert.equal(
+    measured.length,
+    samples,
+    `RTT 探针只量到 ${measured.length}/${samples} 个样本：样本不足即判红（不允许用残缺样本派生截止线）`,
+  );
+  return { worstMs: Math.max(...measured), samplesMs: measured };
+}
+
+/**
+ * 派生 request 阶段截止线：有限正数校验 → ×8 → 夹到 [下限, 上限]。
+ *
+ * 这里**只**保留能真正变红的自检（守卫②）：有限正数、实测 ≤ 上限/8、派生值 ≤ 上限。
+ * 「≥ 下限」「≥ 8 × 实测」原本也写成了断言，但那是**恒真**的（同一对常量、同一个表达式，
+ * `Math.max(FLOOR, Math.ceil(worstMs * F))` 天然满足两者）——#412 评审实测：把 ×8 改成 ×1、
+ * floor 60 改成 floor 1，全套 20/20 仍绿。所以那条契约改由**字面量用例**钉住（见下面两个
+ * `派生契约` 测试）：取值写死，不随常量漂移，改系数/下限就红。
+ */
+function deriveRequestTimeoutMs({ worstMs, samplesMs }) {
+  assert.ok(
+    Number.isFinite(worstMs) && worstMs > 0,
+    `实测落地耗时不是有限正数（${worstMs}，样本 ${JSON.stringify(samplesMs)}）：没有实测就不许派生截止线`,
+  );
+  assert.ok(
+    worstMs <= REQUEST_TIMEOUT_CEILING_MS / REQUEST_TIMEOUT_RTT_FACTOR,
+    `实测落地耗时 ${worstMs.toFixed(1)}ms 已经超过上限 ${REQUEST_TIMEOUT_CEILING_MS}ms 的 1/${REQUEST_TIMEOUT_RTT_FACTOR}：`
+    + "这台机器此刻慢到毫秒级断言失去意义（判红，不把截止线抬上去假装没事）",
+  );
+  const scaled = Math.ceil(worstMs * REQUEST_TIMEOUT_RTT_FACTOR);
+  const derived = Math.max(REQUEST_TIMEOUT_FLOOR_MS, scaled);
+  // 非恒真的上界不变量（下限被抬到上限之上、或上限自检被拿掉时才会红）。
+  assert.ok(
+    derived <= REQUEST_TIMEOUT_CEILING_MS,
+    `派生截止线 ${derived}ms 超过了上限 ${REQUEST_TIMEOUT_CEILING_MS}ms`,
+  );
+  return derived;
+}
+
+// 守卫②的正身（#412 评审阻塞项）：「×8 / 下限 60ms」这条契约用**字面量**钉住。
+// 两条都直接调 `deriveRequestTimeoutMs`，不经过任何实测值，因此不随常量漂移：
+// 把 ×8 改成 ×1、floor 60 改成 floor 1 ⇒ 两条分别得 100 与 1（`ceil(0.5 × 1)`）⇒ 红。
+test("派生契约（#412 守卫②）：worstMs=100 ⇒ 截止线 800ms（×8）", () => {
+  assert.equal(deriveRequestTimeoutMs({ worstMs: 100, samplesMs: [100] }), 800);
+});
+
+test("派生契约（#412 守卫②）：worstMs=0.5 ⇒ 截止线 60ms（下限生效）", () => {
+  assert.equal(deriveRequestTimeoutMs({ worstMs: 0.5, samplesMs: [0.5] }), 60);
+});
+
+/**
+ * 本格的判据（抽成函数是为了**反向证**能直接喂坏现场：同一份判据必须能红）。
+ * 顺序有讲究：先证明首发真的落地了，再谈「没有补发第二发」——否则后者会退化成「一发也没发」的假绿。
+ */
+function assertRequestPhaseTimeoutWithoutResend({
+  upstream, err, callStartedAt, requestTimeoutMs, worstLandingMs,
+}) {
+  const count = upstream.requestCount;
+  assert.notEqual(
+    count,
+    0,
+    "首发根本没落地（requestCount=0）：这不是「没补发」，是「一发也没发」——"
+    + `截止线 ${requestTimeoutMs}ms（${REQUEST_TIMEOUT_RTT_FACTOR} × 实测最差落地 ${worstLandingMs.toFixed(1)}ms）`
+    + "没罩住连接建立 + 写出请求，本格要钉的行为因此完全没被验证",
+  );
+  assert.equal(count, 1, `超时之后补发了第 ${count} 发：本格钉的是「绝不补发第二发」`);
+  const arrivalOffsetMs = upstream.requests[0].receivedAtMs - callStartedAt;
+  assert.ok(
+    arrivalOffsetMs < requestTimeoutMs,
+    `首发是**晚于**截止线才到达上游的（${arrivalOffsetMs.toFixed(1)}ms ≥ ${requestTimeoutMs}ms）：`
+    + "这一次的 timeout 发生在请求上线之前，本格钉的行为没被验证到（判红，不算绿）",
   );
   assert.deepEqual(kitShape(err), {
     name: "KitError", code: "timeout", retryable: true, phase: "request",
   });
-  await upstream.settled();
-  assert.equal(upstream.requestCount, 1, "超时后绝不能自己补一发");
   assert.equal(upstream.responses[0].truncated, "client-gone", "上游必须观察到客户端真的走了");
+}
+
+/**
+ * 故意坏的 provider：**超时之后自己补发一发**（#412 的变异反证，只坏在桩层，`src/` 一个字节不改）。
+ * 形状照着「把 retry 挂到错误分类上」那种真实退化写：超时被判成可重试 ⇒ 再发一次。
+ */
+function resendOnTimeoutProvider(baseUrl) {
+  const real = openAIProvider(baseUrl);
+  return {
+    ...real,
+    chatStream(request) {
+      return (async () => {
+        try {
+          return await real.chatStream(request);
+        } catch (err) {
+          if (err?.code === "timeout") return real.chatStream(request);
+          throw err;
+        }
+      })();
+    },
+  };
+}
+
+test("真上游：header 迟迟不到 → timeout / retryable=true / phase=request，不发第二发（#257 T1）", async (t) => {
+  // 上游迟迟不发 header：undici 的 fetch() 要收到 header 才 resolve，所以这一路命中的是
+  // **request** 阶段。两个数字都由「当场实测 + 派生」给出，见上面的长注释。
+  const script = [];
+  const { upstream, baseUrl } = await startUpstream(t, { script });
+  script.push(sseResponse({ frames: PROBE_FRAMES }));
+  const measurement = await measureRequestLandingMs(upstream, baseUrl);
+  const requestTimeoutMs = deriveRequestTimeoutMs(measurement);
+  // 「header 迟到」由截止线派生：上游的 `delayFirstByteMs` 在**收完请求体之后**才起算
+  // （`fixtures/upstream.mjs` 里 `readRequestBody` 之后才 `await delay(...)`），所以
+  // 「调用 → header」≥ 这个延迟；只要它严格大于截止线，「header 一定晚于截止线」就是构造出来的，
+  // 不再是一场 45ms vs 20ms 的赌局。
+  const headerDelayMs = requestTimeoutMs + Math.max(30, Math.ceil(requestTimeoutMs / 2));
+  script.length = 0;
+  script.push(sseResponse({ frames: SLOW_FRAMES, delayFirstByteMs: headerDelayMs }));
+
+  const callStartedAt = performance.now();
+  const pending = rejection(
+    openAIProvider(baseUrl).chatStream(providerRequest({ requestTimeoutMs })),
+  );
+  const { err } = await pending;
+  await upstream.settled();
+  assertRequestPhaseTimeoutWithoutResend({
+    upstream,
+    err,
+    callStartedAt,
+    requestTimeoutMs,
+    worstLandingMs: measurement.worstMs,
+  });
+});
+
+// 反向证（#412 交付判据之一）：**同一份判据**喂给一个「超时后补发一发」的坏 provider，必须红。
+// 它证明的是判据有牙——而不是「我们写了 assert」这件事本身。变异只在桩层（包装 provider），
+// `src/` 一个字节不改；坏 provider 真的补发了第 2 发也被单独钉住，否则这条反向证什么都没证明。
+test("[反向证] provider 若在超时后补发一发，本格的判据必须红（#412）", async (t) => {
+  const script = [];
+  const { upstream, baseUrl } = await startUpstream(t, { script });
+  script.push(sseResponse({ frames: PROBE_FRAMES }));
+  const measurement = await measureRequestLandingMs(upstream, baseUrl);
+  const requestTimeoutMs = deriveRequestTimeoutMs(measurement);
+  const headerDelayMs = requestTimeoutMs + Math.max(30, Math.ceil(requestTimeoutMs / 2));
+  script.length = 0;
+  script.push(sseResponse({ frames: SLOW_FRAMES, delayFirstByteMs: headerDelayMs }));
+
+  const callStartedAt = performance.now();
+  const { err } = await rejection(
+    resendOnTimeoutProvider(baseUrl).chatStream(providerRequest({ requestTimeoutMs })),
+  );
+  await upstream.settled();
+  assert.equal(
+    upstream.requestCount,
+    2,
+    "反向证失效：坏 provider 没有补发第二发（它若没坏，下面那条「判据必须红」什么都没证明）",
+  );
+  assert.throws(
+    () => assertRequestPhaseTimeoutWithoutResend({
+      upstream,
+      err,
+      callStartedAt,
+      requestTimeoutMs,
+      worstLandingMs: measurement.worstMs,
+    }),
+    /补发了第 2 发/,
+    "判据没有抓住「超时后补发第二发」——本格又变回橡皮章了",
+  );
 });
 
 test("真上游：header 已到、body 字节迟迟不到 → phase=firstByte，不发第二发（#257 T1）", async (t) => {
   // 与上一条分开钉：firstByte 时钟从 header **之后**才起算，两者是不同的分类通道。
-  const { upstream, baseUrl } = await startUpstream(t, {
-    script: [sseResponse({ frames: SLOW_FRAMES, delayBodyMs: 45 })],
-  });
+  // 但**余量同样是负载的函数**：firstByte 时钟在「客户端收到 header」那一刻才起跑，而 body 的
+  // 延迟在上游 flush header 时就起算（`fixtures/upstream.mjs` 的 `delayBodyMs`）。负载下 header
+  // 送达本身会慢（#412 实测 72 busy loop 下「调用 → 上游落地」p50 10.8 / max 123.1ms），
+  // 于是 45ms 的 body 延迟可能在客户端起表后几毫秒就到了 —— 10ms vs 45ms 的固定余量会输。
+  // 口径与上一条一致：余量由当场实测派生（4 × 最差落地耗时，下限 45ms），量不到落地即判红。
+  const script = [];
+  const { upstream, baseUrl } = await startUpstream(t, { script });
+  script.push(sseResponse({ frames: PROBE_FRAMES }));
+  const measurement = await measureRequestLandingMs(upstream, baseUrl);
+  const firstByteTimeoutMs = 10;
+  const bodyDelayMs = firstByteTimeoutMs + Math.max(45, Math.ceil(measurement.worstMs * 4));
+  script.length = 0;
+  script.push(sseResponse({ frames: SLOW_FRAMES, delayBodyMs: bodyDelayMs }));
 
   const { err } = await rejection(
-    openAIProvider(baseUrl).chatStream(providerRequest({ firstByteTimeoutMs: 10 })),
+    openAIProvider(baseUrl).chatStream(providerRequest({ firstByteTimeoutMs })),
   );
   assert.deepEqual(kitShape(err), {
     name: "KitError", code: "timeout", retryable: true, phase: "firstByte",
   });
   await upstream.settled();
-  assert.equal(upstream.requestCount, 1);
+  // 这一条必须在 `settled()` **之后**（#412 评审第 3 条）：放在它之前时，只要首发在超时前上了线就
+  // 立刻放行，「超时之后又补发第二发」这种退化要等上游写回之后才看得见——时机因此变弱。
+  assert.equal(
+    upstream.requestCount,
+    1,
+    "首发没落地（0）或超时后又补发（≥2）：「不发第二发」两种退化都要在这里抓住",
+  );
   assert.equal(upstream.responses[0].truncated, "client-gone");
 });
 

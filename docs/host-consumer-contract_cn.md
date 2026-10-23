@@ -2357,12 +2357,15 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
   `journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`）在补跑段**之前**用同一条
   写侧写下去。两类结果都用 `partOf` 接回崩溃轮那条聚合 `tool_result` 消息，不新增消息；锚点就是
   `restoreResume`（`src/loop/resume-manager.js`）从账本里读出的 `resumeToolResultRowKey`。
-  崩溃轮**一条结果行都没落**时，首片自己就是那条聚合消息、并成为后续分片的锚点——于是**两条以内**
-  结果时形状仍是「一条聚合 `user` 消息」，绝不会变成「每条结果各一条 `user` 消息」，
-  `<runId>:msg:<round>:<seq>` 的序号语义也按 issue #326 保持。**三条及以上**结果时这条承诺**尚不**
-  成立：崩溃轮有三个工具调用时实测折成 `[[t1,t2],[t3]]`（补跑那批的 `partOf` 指向**上一片**而不是
-  首片，于是第三条结果折不回聚合消息），第二次恢复即 `invalid_messages`——那是 issue #430，
-  **本单不修**。
+  崩溃轮**一条结果行都没落**时，首片自己就是那条聚合消息、并成为后续分片的锚点。锚点永远是**首片**，
+  **不随分片推进**：分片行的 key 不是合法的 `partOf` 寻址目标（分片不新增逻辑消息，折叠会把它的 key
+  映射到**下一条**消息），这正是「把 `partOf` 链到上一片」时第三条结果会自己新起一条消息的原因。于是
+  同一崩溃轮的**所有**结果都折回**一条**聚合 `user` 消息，条数不限，绝不会变成「每条结果各一条
+  `user` 消息」，`<runId>:msg:<round>:<seq>` 的序号语义也按 issue #326 保持。钉住它的是
+  `test/loop-resume-unpersisted-tool-results.test.js` 里的 `#430` 端到端用例（前两例共用同一份崩溃
+  现场：`threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`））与
+  `test/store/message-rows-fold.test.js` 的四行单元用例；修前三个工具调用实测折成 `[[t1,t2],[t3]]`、
+  第二次恢复 `invalid_messages`（issue #430）。
   issue #420 之前这半批结果靠 `resumeUnpersistedToolResults` 交出去，
   注释承诺「交给 orchestr 逐条入账」，而全仓没有读取方：它唯一的载体是 latest-only 覆盖写的 run
   snapshot，下一轮真跑一个工具就被覆盖 ⇒ 那个 `runId` 从此不可恢复（第一次模型请求之前就
