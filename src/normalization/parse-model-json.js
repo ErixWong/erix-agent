@@ -36,8 +36,10 @@
  * `validate(value, source)` 的第二个参数是该候选的**原始字节**（`source` 永远是原文切片，
  * **绝不是修后文本**）。写反的后果是静默丢值：`jsonrepair` 式修复把 `http\.request` 改成
  * `http.request`，拿修后文本判 `includes` 就放行一条原文里根本不存在的值。
- * `test/normalization/parse-model-json.test.js` 里有一格**专门钉它写反就红**的变异级用例
- * （宿主注入一条会改字节的修复规则，闸门必须把那条值判掉）。
+ * 补全版候选同样受这条约束：它的 `original` 是**补全前**的原文，闸门拿到的就是它（`{"a":` ⇒
+ * 闸门看到 `{"a":`，不是 `{"a":null}`）。`test/normalization/parse-model-json.test.js` 里有两格
+ * **专门钉它写反就红**的变异级用例：宿主注入一条会改字节的修复规则（闸门必须把那条值判掉）、
+ * 以及往补全规则里插一个**伪造字符串值**（`__FABRICATED__`，闸门必须判掉——那一档原先零测试看守）。
  *
  * ## `repaired` 与可信链（D6）
  *
@@ -183,6 +185,7 @@ function isTruncationShaped(text) {
  * @typedef {object} Candidate
  * @property {string} text
  * @property {boolean} completed
+ * @property {string} original 闸门看到的**原文**（补全前；非补全候选就是 `text` 本身）
  */
 
 /**
@@ -200,10 +203,10 @@ function candidatesFor(text, repairOptions) {
   const base = [];
   /** @type {Set<string>} */
   const seen = new Set();
-  const push = (value, completed) => {
+  const push = (value, completed, original = value) => {
     if (value.trim() === "" || seen.has(value)) return;
     seen.add(value);
-    base.push({ text: value, completed });
+    base.push({ text: value, completed, original });
   };
   push(text, false);
   for (const body of fenceBodies(text)) push(body, false);
@@ -214,7 +217,7 @@ function candidatesFor(text, repairOptions) {
     const completed = repairJsonText(candidate.text, { rules: [TRUNCATION_RULE_ID] }).text;
     if (completed === candidate.text || completed.trim() === "" || seen.has(completed)) continue;
     seen.add(completed);
-    candidates.push({ text: completed, completed: true });
+    candidates.push({ text: completed, completed: true, original: candidate.text });
   }
   return candidates;
 }
@@ -272,7 +275,7 @@ function normalizeRepair(repair) {
 /**
  * 单候选：宿主注入的修复器 → L0/L1（B1 的 `parseJsonWithRepair`）→ 闸门。
  *
- * 闸门的 `source` 传的是 `candidate.text`（**这个候选的原始字节**），不是 `text`（修后文本）。
+ * 闸门的 `source` 传的是 `candidate.original`（**这个候选补全前的原始字节**），不是 `text`（修后 / 补全后的文本）。
  *
  * @param {Candidate} candidate
  * @param {{gate: ModelJsonGate, repairOptions: RepairOptions}} context
@@ -308,7 +311,7 @@ function attemptCandidate(candidate, { gate, repairOptions }) {
     ...injected,
     ...parsed.applied,
   ];
-  const verdict = gate(parsed.value, candidate.text);
+  const verdict = gate(parsed.value, candidate.original);
   if (verdict === null || typeof verdict !== "object" || typeof verdict.ok !== "boolean") {
     throw new TypeError("normalizeModelJson: validate 必须返回 { ok: boolean, dropped?: string[] }");
   }

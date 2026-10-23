@@ -4,6 +4,9 @@
 //   · 「两层确实分层」：同一段含非法转义的输入喂两个入口 ⇒ L0 仍 `unparsable`、归一化入口成功且值逐字等于原文；
 //   · 「闸门对谁判」的变异级用例：宿主注入一条**会改字节**的修复器（jsonrepair 式删反斜杠），
 //     闸门必须把那条值判掉；反向证里同时钉住「若闸门看的是修后文本，这格会被放行」——于是这格写反就红。
+//
+// 合并前评审（PR #443）补的看守，每一条都先红后绿：
+//   · 补全档的闸门同样判**补全前**原文（往补全规则里插 `__FABRICATED__` ⇒ 必须判掉）。
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -146,6 +149,23 @@ test("围栏候选的「原始字节」是围栏块体本身（不是整段原�
   const result = await normalizeModelJson(`说明\n\`\`\`json\n${body}\n\`\`\``, { validate: gate.validate });
   assert.equal(result.ok, true);
   assert.equal(gate.seen.at(-1), body);
+});
+
+// 合并前评审 blocker 1：补全版候选的 `source` 必须是**补全前**原文。
+// 变异敏感点：把补全规则改成插一个伪造字符串值 ⇒ 下面第一格必须变红（原先 30/30 全绿）。
+test("补全档的闸门同样判**补全前**原文：补全规则伪造的字符串值必须被判掉", async () => {
+  const gate = verbatimGate(["a"]);
+  const result = await normalizeModelJson('{"a":', { validate: gate.validate, repair: { truncateCompletion: true } });
+  // 今天 truncation 只补结构（这里补出来的是 null），所以正常规则下这一格是命中。
+  assert.equal(result.ok, true, `补全档正常工作时应当命中：${JSON.stringify(result)}`);
+  // 闸门看到的是补全**前**的原文，不是 `{"a":null}`。
+  assert.deepEqual(gate.seen, ['{"a":'], "闸门必须看到补全前的原文");
+
+  // 反向证（这格写反就红）：补全规则一旦伪造一个字符串值，闸门必须判掉。
+  // 判据是「原文里有没有这一串」：补全后的文本里有、补全前的原文里没有。
+  const fabricated = "__FABRICATED__";
+  assert.equal(gate.validate({ a: fabricated }, `{"a":"${fabricated}"}`).ok, true, "拿补全后文本当 source 会放行伪造值");
+  assert.equal(gate.validate({ a: fabricated }, '{"a":').ok, false, "拿补全前原文当 source 必须判掉伪造值");
 });
 
 // ── 硬要求 4：截断输入（候选数 0）──────────────────────────────────────────────
