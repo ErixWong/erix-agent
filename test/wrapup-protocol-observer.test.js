@@ -16,8 +16,10 @@ import { createMockFetch } from "./helpers/mock-fetch.js";
 //   · `normalizeWrapupWithLlm`（`src/reflection/wrapup.js`）全仓只有两处：`src/index.js` 导出、
 //     以及它自己的定义 —— **引擎循环从来没调用过它**（issue #430 顺手删掉了 orchestrator 顶部那条
 //     死 import；函数本体保留：它是公开导出，契约中英各一处符号锚点）。
-//   · 循环里真正在跑的收尾归一化是 `src/loop/orchestrator.js` 里 `requestForJudge` 那段内联请求
-//     （触发条件 `wrapupJson === null && stopReason === "end_turn" && !hasToolUse(...)`）。
+//   · 循环里真正在跑的收尾归一化是 `src/loop/orchestrator.js` 里那条 end_turn 兜底
+//     （触发条件 `wrapupJson === null && stopReason === "end_turn" && !hasToolUse(...)`）；issue #406
+//     B2-b 起它改调 `normalizeWrapupText` → `normalizeModelJson`，与公开入口**同一个实现**
+//     （所以本文件那格「两处共用同一个常量」现在更强：两处连请求体都是同一份）。
 //   所以「库函数发了 reasoning_effort」不等于「真上游那次请求发了」——后者只有跑真循环才看得见。
 //   `test/wrapup.test.js` 那两格（#419 ① 前半段）证的是库函数的请求体，盖不到这里。
 //
@@ -48,7 +50,7 @@ const NON_JSON_ROUNDS = [
 
 const DONE_FALSE_JSON = JSON.stringify({ done: false, summary: "进展：做了一半" });
 
-// 归一化请求的身份判据：内联那段自己的 system 提示词（`requestForJudge.system`）。
+// 归一化请求的身份判据：统一入口的 system 提示词（`buildL2Request`，B2-b 起内联与公开入口共用）。
 const isInlineNormalizationRequest = (request) => /归一化/.test(String(request?.system ?? ""));
 
 async function runLoopWithNormalizer({ normalizer, maxRounds = 4 }) {

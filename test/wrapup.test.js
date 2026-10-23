@@ -545,25 +545,40 @@ test("done:false with completion word in text keeps going (reviewer #6)", async 
   assert.equal(result.finalText, "完成");
 });
 
-test("empty-text end_turn also triggers normalization (找不到 JSON 就该归一化)", async () => {
+// issue #406 B2-b（行为变化，先红后绿）：**空文本 end_turn 不再发归一化请求**。
+//
+// 旧断言（`finalText === "无结论"`、`rounds === 1`）钉的是**重复实现**的一个副作用：内联那份
+// 归一化请求不检查候选集，原文为空也照发一次（prompt 里塞 `JSON.stringify("")`）。统一入口
+// `normalizeModelJson` 在 B2-a 的评审里已裁定「候选为空 ⇒ 一次请求都不发」（没有原文可交给
+// 模型，发出去只是白烧一次），引擎改调它之后自然继承这一条。归一化不再参与这一格，终稿就是
+// 模型这一轮的真实输出（空串），`end_turn` 照常由治理层给出。
+//
+// 断言没放宽：请求数从「1 次归一化」收紧成「归一化 0 次」，终稿/轮数/停机原因逐字钉住。
+test("empty-text end_turn 不再白烧归一化请求（候选为空 ⇒ 一次都不发，issue #406 B2-b）", async () => {
   const prev = process.env.ERIX_WRAPUP_NORMALIZE;
   process.env.ERIX_WRAPUP_NORMALIZE = "1";
   try {
-    // 模型超难任务放弃：空文本 end_turn（无 tool_use、无 text）
+    // 模型超难任务放弃：空文本 end_turn（无 tool_use、无 text）。
     const sequence = createFakeProvider([
       { content: [{ type: "text", text: "" }], stopReason: "end_turn" },
       { content: [{ type: "text", text: '{"done":true,"summary":"模型空输出","output":"无结论"}' }], stopReason: "end_turn" },
+    ]);
+    // 单独注入归一化 provider：这样「有没有发请求」是直接可数的，不靠调用顺序去猜。
+    const normalizer = createFakeProvider([
+      { content: [{ type: "text", text: '{"done":true,"summary":"模型空输出","output":"无结论"}' }], times: 8 },
     ]);
     const result = await runToolLoop({
       provider: sequence,
       initialUserMessage: "做一件不可能的事",
       executeTool: async () => "ok",
       completion: { signals: [], maxNoToolRounds: 3 },
+      reflection: { wrapupNormalize: true, roundJudge: false, judgeIntercept: false, judge: { provider: normalizer } },
     });
-    // 空文本触发归一化 → judge 判 done:true → 1 轮停（非拖 3 轮 noToolStreak）
+    assert.equal(normalizer.requests.length, 0, "空原文 ⇒ 归一化器一次都不该被调（B2-a 的候选为空判据）");
+    assert.equal(sequence.requests.length, 1, "主 provider 只跑了那一轮空文本");
     assert.equal(result.rounds, 1);
     assert.deepEqual(result.termination, { reason: "end_turn" });
-    assert.equal(result.finalText, "无结论");
+    assert.equal(result.finalText, "", "终稿就是模型这一轮的真实输出（空串），不再被归一化器替换");
   } finally {
     if (prev === undefined) delete process.env.ERIX_WRAPUP_NORMALIZE;
     else process.env.ERIX_WRAPUP_NORMALIZE = prev;

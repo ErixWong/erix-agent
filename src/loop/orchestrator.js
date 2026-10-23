@@ -24,14 +24,11 @@ import {
   extensionAllowed,
 } from "../reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "../reflection/l0.js";
-import { tryParseWrapupJson } from "../reflection/wrapup.js";
-// issue #419 ① 后半段：循环里那份**内联**归一化请求（下面 `requestForJudge`）与
-// `normalizeWrapupWithLlm`（`src/reflection/wrapup.js` 的公开入口）共用同一个「不思考」字面量，
-// 不许两处各写各的（否则日后必然漂移）。
-// issue #430 顺手删掉本文件顶部那条**死 import**（`normalizeWrapupWithLlm` 在这里从来没有调用点，
-// 它是 `src/index.js` 的公开导出、契约中英各一处符号锚点、`test/wrapup*.test.js` 多格在用 ⇒ 只删
-// 这条 import，**不删函数本体**）。
-import { NORMALIZATION_REASONING_EFFORT } from "../reflection/wrapup.js";
+// issue #406 B2-b：收尾归一化**只有一个实现**——`normalizeWrapupText`（`src/reflection/wrapup.js`）
+// 转调 `normalizeModelJson`。引擎与公开入口 `normalizeWrapupWithLlm` 都走它 ⇒ 同一份提示词、
+// 同一道闸门、同一个「思考恒关」取值、同一份失败事实。`tryParseWrapupJson` 仍是每轮先用一次的
+// 同步严格档（零修复、零请求），两者分工见 `src/reflection/wrapup.js` 的文件头。
+import { normalizeWrapupText, tryParseWrapupJson } from "../reflection/wrapup.js";
 import {
   buildJudgePrompt,
   buildTimeline,
@@ -253,22 +250,6 @@ function persistenceErrorEvent({ port = "transcript", operation, phase, runId, s
     },
     ts: new Date().toISOString(),
   };
-}
-
-// 归一化结果的机械校验：LLM 只许搬运，不许改写。
-// 每个 finding 值必须是 agent 原文的逐字子串，否则丢弃该条（宁少不多）。
-function filterFindingsBySource(findings, sourceText) {
-  if (findings === undefined || findings === null
-    || typeof findings !== "object" || Array.isArray(findings)) {
-    return undefined;
-  }
-  const source = typeof sourceText === "string" ? sourceText : "";
-  const kept = {};
-  for (const [key, value] of Object.entries(findings)) {
-    const text = typeof value === "string" ? value : String(value);
-    if (text.length > 0 && source.includes(text)) kept[key] = value;
-  }
-  return Object.keys(kept).length > 0 ? kept : undefined;
 }
 
 function makePersistenceFailure({ operation, phase, sideEffect, runId, error, event, errorLedger }) {
@@ -3979,35 +3960,28 @@ export async function runToolLoop(options) {
       && runLoopState.wrapupNormalizationEnabled
     ) {
       try {
-        const requestForJudge = {
-          system: "你是输出协议归一化器，只输出有效 JSON。",
-          messages: [{
-            role: "user",
-            content: [{ type: "text", text: `【归一化】判断 agent 是否完成任务。
-任务目标：${taskBrief || "（未提供）"}
-已运行轮数：${runLoopState.rounds}
-本轮 agent 最终输出（可能为空）：${JSON.stringify(responseText).slice(0, 2000)}
-若 agent 已给出明确结论/产物就绪则 done=true；若它在工作中途停下/放弃则判断产出是否可判定，可判定则 done=true 否则 done=false。
-只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果","findings":{"label":"value"}}。findings 只做搬运：value 必须逐字摘自本轮 agent 原文（原样复制，不得改写/规整/补全/翻译，包括引号与标点）；原文里抄不到的值的就省略该条，宁可少写。` }],
-          }],
-          signal,
-          // issue #419 ① 后半段：这条内联请求才是**真在跑**的收尾归一化（`normalizeWrapupWithLlm`
-          // 全仓没人调用），所以「不思考」必须也发在这里，且取值与库函数共用同一个常量
-          // （`NORMALIZATION_REASONING_EFFORT`）——只修库函数不会让「正文 0 字」的症状消失。
-          reasoning_effort: NORMALIZATION_REASONING_EFFORT,
-        };
-        if (maxTokens !== undefined) requestForJudge.maxTokens = maxTokens;
-        if (temperature !== undefined) requestForJudge.temperature = temperature;
-        const judgeResponse = await awaitWithAbort(wrapupEvaluator.chat(requestForJudge));
-        // issue #438：收尾归一化同样是引擎自发起的调用 ⇒ 只进 engine 桶。
-        addUsage(judgeResponse, undefined, { trackLatest: false, account: "engine" });
-        const candidate = tryParseWrapupJson(
-          textFromBlocks(blocksFor(judgeResponse?.content)),
-        );
-        if (candidate !== null) {
-          // 归一化只许“搬运”：LLM 给出的每个 finding 值必须是 agent 原文的逐字子串；
-          // 不是就丢掉该条（不得靠 LLM 改写去“修好”模型输出，那会把核验变成不可复现）。
-          candidate.findings = filterFindingsBySource(candidate.findings, responseText);
+        // issue #406 B2-b：改调**同一个入口**（`normalizeWrapupText` → `normalizeModelJson`）。
+        // 旧的内联请求（自带一份提示词、自己拼 taskBrief/轮数、自己解析、自己滤 findings）已删：
+        // 两份提示词必然漂移，且那份没有闸门（summary/output 从不核验）、失败只有一句 `catch {}`。
+        // `provider` 只做两件引擎侧的事：把 provider 的 Promise 挂上本 run 的 abort，并把这次
+        // 引擎自发起的调用记进 engine 用量桶（issue #438）。请求体本身一个字都不改。
+        const normalized = await normalizeWrapupText(responseText, {
+          provider: {
+            async chat(request) {
+              const judgeResponse = await awaitWithAbort(wrapupEvaluator.chat(request));
+              // issue #438：收尾归一化同样是引擎自发起的调用 ⇒ 只进 engine 桶。
+              addUsage(judgeResponse, undefined, { trackLatest: false, account: "engine" });
+              return judgeResponse;
+            },
+          },
+          ...(signal === undefined ? {} : { signal }),
+          ...(maxTokens === undefined ? {} : { maxTokens }),
+          ...(temperature === undefined ? {} : { temperature }),
+        });
+        if (normalized.ok === true) {
+          // 归一化只许“搬运”：`normalizeWrapupText` 的闸门已经按 agent 原文把非逐字的
+          // finding 丢掉了（旧的内联 `filterFindingsBySource` 已删——同一件事只有一处实现）。
+          const candidate = normalized.value;
           normalizedWrapup = candidate;
           if (candidate.summary !== "" || candidate.output !== "") {
             roundSummary = candidate.summary || candidate.output || roundSummary;
