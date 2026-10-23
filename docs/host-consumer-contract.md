@@ -401,6 +401,76 @@ counter, so a per-run total has to be assembled from events by the host. A
 durable retry counter is **not** promised today; treat `attempt` / `recovering`
 / `recovered` and `retry.sleepImpl` as the only supported observation points.
 
+### Silence is a retryable deadline — but only if someone wires it (issue #441)
+
+The engine ships its own **silence deadlines**: `firstByteTimeoutMs`,
+`streamIdleTimeoutMs`, `streamTotalTimeoutMs` and `requestTimeoutMs`. When one of
+them expires it throws `KitError("timeout", …, { retryable: true })`
+(`src/providers/timeout.js`), and `timeout` is in `RETRYABLE_CODES`
+(`src/providers/errors.js`) — so a silent provider is supposed to land on the
+retry loop above, not on a hard kill. Until 0.24.0 **no CLI code passed any of
+them** (`grep -rn 'firstByteTimeoutMs' bin/` had zero hits, and the CLI config
+whitelist did not carry them either), which left the CLI's idle watchdog as the
+only thing that could end a silent run — and that path aborts the run's
+`AbortSignal`, which is **not** retryable. That is the structural failure this
+section records the fix for.
+
+The CLI now derives them from `--idle-timeout` in one place (the resolver lives
+in `bin/provider-timeouts.js`; `bin/cli.js` and `bin/repl.js` use it
+identically):
+
+| `--idle-timeout` | what reaches the provider |
+|---|---|
+| `0` (`erix repl` default) | **nothing derived** — the pre-0.24.0 assembly, byte for byte: the legacy `timeoutMs` deadline only. Explicit phase keys in the config file still pass through (the engine then uses its phase model) |
+| `N > 0` (`erix chat` default `300`) | `requestTimeoutMs` = `firstByteTimeoutMs` = `streamIdleTimeoutMs` = `⌊N × 3/4⌋` ms, unless the user configured that key explicitly |
+
+Four rules, in order:
+
+1. **The silence budget is strictly smaller than the idle window.** Equality is a
+   defect, not a preference: for a silent request both timers start at the same
+   moment and the idle one starts *earlier* (it is armed before the provider
+   call), so `deadline === idle` always resolves to the non-retryable abort. The
+   remaining quarter is the room a retry needs — the backoff
+   (`backoffBaseMs = 1500`, then `3000`) plus the next attempt.
+2. **`requestTimeoutMs` is part of the wiring**, because it is the only deadline
+   the **non-streaming** path has: `provider.chat()` never consults
+   firstByte/streamIdle. `erix chat` is non-streaming by default, so wiring only
+   the two stream phases would have fixed `--stream` and left the default
+   configuration exactly as broken as before.
+3. **`streamTotalTimeoutMs` is not derived.** It is an absolute cap on one
+   stream, not a silence deadline, and while a stream is flowing the idle
+   watchdog is fed by `onDelta` and cannot fire anyway — deriving it from the
+   idle window would turn a long-but-healthy output into a retry that fails the
+   same way. The engine default (`300000`) stays. An explicit legacy `timeout`
+   **is** passed through as `streamTotalTimeoutMs`, because entering the phase
+   model disables the legacy absolute deadline (`hasExplicitPhase` in
+   `src/providers/payload.js`) and dropping it would silently lower a ceiling the
+   user asked for.
+4. **Explicit configuration wins and is never rewritten** (the same rule as
+   `ERIX_EXEC_TIMEOUT_MS`): a phase value ≥ the idle window is used verbatim and
+   only produces a one-line warning — the silence may then still be ended by the
+   non-retryable idle path.
+
+Two host-observable consequences:
+
+- A silent run now ends `termination.reason: "failed"` with
+  `termination.errorCode: "timeout"` once the retries are exhausted, instead of
+  `reason: "aborted"` with no `errorCode` at all. This is **not** a contract
+  extension: `failed` already carries `errorCode` (issue #176) and no other
+  reason gained the field. Hosts that branch on `aborted` for "silent kill" must
+  branch on `failed` + `errorCode: "timeout"`.
+- The CLI feeds its idle watchdog on the `attempt` and `recovering` events, so a
+  retry (including its backoff) is progress rather than "no progress". Without
+  that, the idle window would cut the backoff and the silence would fall back to
+  the abort path anyway.
+
+The budget guarantees that **one attempt's** silence deadline fires before the
+idle watchdog; it does not put the retry **backoff** inside the idle window. A
+`--idle-timeout` smaller than the backoff schedule (`backoffBaseMs = 1500`, then
+`3000`, `6000`, … capped at `backoffMaxMs = 10000`) can still be ended by the
+non-retryable idle path during a backoff — exactly as before this change. With
+the defaults (`300`) that cannot happen.
+
 ## AssemblyPort
 
 Hosts that assemble a complete run can provide one validated composition root
@@ -1351,7 +1421,7 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 | `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:116`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
 | `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:147-149`); (b) the round loop simply runs out (`runToolLoop` at `src/loop/orchestrator.js`, tail handling at `3189-3207`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`termination` at `src/loop/orchestrator.js`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
 | `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3529-3542`), revision limit (`3544-3559`), or the budget-exhaustion tail (`3558-3578`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1663-1665`); `finalGuardMaxRetries` moves the revision limit (default 2, `budgetRounds` at `src/loop/orchestrator.js`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
-| `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:1058-1116`; classification at `1061` and `1080-1085`, annotation at `1103-1108`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
+| `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:1058-1116`; classification at `1061` and `1080-1085`, annotation at `1103-1108`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop. A **silent** run is no longer guaranteed to land here: since issue #441 the CLI wires the engine's retryable phase deadlines, so silence ends `failed` / `errorCode: "timeout"` once the retries are exhausted (see "Silence is a retryable deadline"); this row now means the signal was really aborted — by the host, or by the idle watchdog when no phase deadline could fire |
 | `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:1058-1116`, loop catch at `3576-3580`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `invalid_request` / `not_found` / `conflict` (issue #179) → fix the request, the model name, or the colliding resource — re-sending the same payload cannot help; `unknown` → inspect `termination.detail` |
 | `persistence_failed` | same `fail()` path, selected when the error carries persistence info (`src/loop/orchestrator.js:1080-1085`), which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
 
