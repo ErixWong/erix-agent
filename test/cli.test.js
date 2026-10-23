@@ -369,6 +369,8 @@ test("parseChatArgs accepts session and transcript directory overrides", () => {
   assert.deepEqual(options, {
     prompt: "hello",
     idleTimeout: 300,
+    // issue #433 fix 1：新增的续跑预算旗标，缺省 900s（预算从第一次判死起算）
+    idleRetryBudget: 900,
     session: "chat-run",
     dir: "/tmp/erix-transcripts",
   });

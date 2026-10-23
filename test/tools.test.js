@@ -19,6 +19,7 @@ import {
 } from "../bin/tools.js";
 import {
   DEFAULT_CHAT_IDLE_TIMEOUT_SECONDS,
+  EXEC_CEILING_FLOOR_MS,
   EXEC_CEILING_MARGIN_MS,
 } from "../bin/idle.js";
 import * as notes from "../src/tools/notes.js";
@@ -609,23 +610,65 @@ test("exec ceilings stay strictly below the default chat idle window (issue #433
   }
 });
 
-// issue #433 T0 ②：显式 `ERIX_EXEC_TIMEOUT_MS` 超过天花板时**只警告、不改值**（既有语义：
-// 尊重显式配置）。「钳天花板」只动默认值。
-test("explicit ERIX_EXEC_TIMEOUT_MS above the idle ceiling warns but is never rewritten (issue #433 T0)", () => {
+// issue #433 fix 4：显式 `ERIX_EXEC_TIMEOUT_MS` **也会**被 idle 天花板收敛（`min(exec, idle − 60s)`），
+// 并打一条 loud 日志；**不**启动即报错（bench 两臂就是 exec==idle，硬报错会把现成调用打断）。
+// 旧行为（T0：「显式配置只警告、绝不改写」）已被本刀推翻，理由写在 bin/tools.js#resolveExecCeiling。
+test("explicit ERIX_EXEC_TIMEOUT_MS above the idle ceiling is converged and logged (issue #433 fix 4)", () => {
   const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
   try {
     process.env.ERIX_EXEC_TIMEOUT_MS = "600000";
     const warnings = [];
-    // idle=300s ⇒ 天花板 240s < 显式 600s
+    // idle=300s ⇒ 天花板 240s < 显式 600s ⇒ 收敛到 240s
     const ceiling = resolveExecCeiling(300, { warn: (line) => warnings.push(line) });
-    assert.equal(ceiling, null, "显式配置超限时不钳（返回 null = 不设天花板）");
-    assert.equal(warnings.length, 1);
+    assert.equal(ceiling, 240_000, "显式配置超限时也钳到天花板（fix 4 的裁定）");
+    assert.equal(warnings.length, 1, `应当恰好一条 loud 日志，实测 ${warnings.length} 条`);
     assert.match(warnings[0], /ERIX_EXEC_TIMEOUT_MS=600000/u);
-    assert.match(warnings[0], /不钳值/u);
-    // 显式值原样生效，一个字节都没被改写
-    assert.equal(getCommandTimeoutMs("make", { ceilingMs: 240_000 }), 600_000);
-    assert.equal(getCommandTimeoutMs("echo hi", { ceilingMs: 240_000 }), 600_000);
+    assert.match(warnings[0], /已收敛/u);
+    assert.match(warnings[0], /240000/u);
+    // 生效值真的被收敛：显式 600s 不再原样穿透
+    assert.equal(getCommandTimeoutMs("make", { ceilingMs: ceiling }), 240_000);
+    assert.equal(getCommandTimeoutMs("echo hi", { ceilingMs: ceiling }), 240_000);
+    // 环境变量本身不被改写（只改「本次 run 生效值」，不改用户的进程环境）
     assert.equal(process.env.ERIX_EXEC_TIMEOUT_MS, "600000");
+
+    // 显式值**低于**天花板时一个字节都不动（收敛只是上界）
+    process.env.ERIX_EXEC_TIMEOUT_MS = "2500";
+    const quiet = [];
+    const smallCeiling = resolveExecCeiling(300, { warn: (line) => quiet.push(line) });
+    assert.equal(smallCeiling, 240_000);
+    assert.deepEqual(quiet, [], "没有发生收敛就不该刷日志");
+    assert.equal(getCommandTimeoutMs("make", { ceilingMs: smallCeiling }), 2500);
+
+    // bench 两臂的真实形状：exec == idle == 600s ⇒ 必须收敛到 540s，而不是「同值同归于尽」
+    process.env.ERIX_EXEC_TIMEOUT_MS = "600000";
+    const equalArm = [];
+    const equalCeiling = resolveExecCeiling(600, { warn: (line) => equalArm.push(line) });
+    assert.equal(equalCeiling, 540_000);
+    assert.equal(getCommandTimeoutMs("make", { ceilingMs: equalCeiling }), 540_000);
+    assert.ok(
+      getCommandTimeoutMs("make", { ceilingMs: equalCeiling }) < 600_000,
+      "exec 上限必须严格小于 idle 窗口（否则「命令超时」事实上不可达）",
+    );
+    assert.equal(equalArm.length, 1);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
+  }
+});
+
+// issue #433 fix 4 的第二条：`idle ≤ 下限 + 余量`（< 90s）时 `exec < idle` **物理上不可能**成立
+// （天花板有 30s 下限）。不能静默：要打一行说明「能兑付的是喂表、最坏 30s + idle」。
+test("tiny idle windows log that exec < idle cannot hold and say what is actually guaranteed (issue #433 fix 4)", () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  try {
+    delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    const warnings = [];
+    const ceiling = resolveExecCeiling(1, { warn: (line) => warnings.push(line) });
+    assert.equal(ceiling, EXEC_CEILING_FLOOR_MS, "idle=1s ⇒ 天花板 = 下限 30s");
+    // 两行都是事实：① install 档默认值被钳到下限；② 钳完仍然 ≥ idle 窗口（不变式物理上不成立）。
+    const floorLine = warnings.find((line) => /仍 ≥ idle 窗口/u.test(line));
+    assert.ok(floorLine, `应当有一行说明「exec < idle 无法成立」，实测：${JSON.stringify(warnings)}`);
+    assert.match(floorLine, /最坏 31s|31000ms/u);
   } finally {
     if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
     else process.env.ERIX_EXEC_TIMEOUT_MS = previous;

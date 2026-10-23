@@ -189,27 +189,53 @@ export function toolHeartbeatCapMs(seconds) {
  * （install 档 exec 天花板，装配处已把它钳到 `idle − 60s`）。到上限就停止喂表，静默窗口重新开始
  * 计时 ⇒ 工具执行期仍受「天花板 + 一个完整 idle 窗口」约束，一个永不返回的工具不会让看门狗失效。
  *
+ * **可观测证据（issue #433 fix 3 的验收原文：日志里要能看到「工具执行期间喂过计时器」的行）**：
+ * 每次工具执行收尾时打一行 `[idle-heartbeat] …：执行期喂过 idle 计时器 N 次`（`N > 0` 才打，
+ * 短命令不会刷屏）；真的喂到上限时另打一行说明「停止喂表、窗口重新计时」。日志走调用方注入的
+ * `log`（`bin/cli.js` / `bin/repl.js` 都接到 stderr），缺省 no-op——不替调用方决定往哪写。
+ *
  * @template T
  * @param {ReturnType<typeof createIdleTimeout>} idle
  * @param {() => Promise<T> | T} run
+ * @param {{ label?: string, log?: (line: string) => void }} [options]
  * @returns {Promise<T>}
  */
-export function withToolHeartbeat(idle, run) {
+export function withToolHeartbeat(idle, run, { label, log } = {}) {
   if (idle === null || idle === undefined) return Promise.resolve().then(run);
+  const emit = typeof log === "function" ? log : () => {};
+  const name = typeof label === "string" && label !== "" ? label : "tool";
   const intervalMs = toolHeartbeatIntervalMs(idle.seconds);
   const capMs = toolHeartbeatCapMs(idle.seconds);
   const startedAt = Date.now();
+  let ticks = 0;
+  let capped = false;
   const timer = setInterval(() => {
     if (Date.now() - startedAt >= capMs) {
       // 到上限就停喂：工具执行期不是无界静默窗口（见上面的注释），剩下的交给 idle 自己判死。
+      if (!capped) {
+        capped = true;
+        emit(
+          `[idle-heartbeat] ${name}：执行期喂表已到上限 ${capMs}ms，停止喂表`
+          + "（静默窗口重新开始计时，挂住的工具仍会被看门狗收掉）",
+        );
+      }
       clearInterval(timer);
       return;
     }
     idle.touch();
+    ticks += 1;
   }, intervalMs);
   // 只喂表，不该把进程钉住：run 结束（或抛错）时立刻清掉，不靠 unref 兜底。
   timer.unref?.();
-  const stop = () => clearInterval(timer);
+  const stop = () => {
+    clearInterval(timer);
+    if (ticks > 0) {
+      emit(
+        `[idle-heartbeat] ${name}：执行期喂过 idle 计时器 ${ticks} 次`
+        + `（间隔 ${intervalMs}ms，用时 ${Date.now() - startedAt}ms）`,
+      );
+    }
+  };
   return Promise.resolve()
     .then(run)
     .then(
@@ -222,4 +248,145 @@ export function withToolHeartbeat(idle, run) {
         throw error;
       },
     );
+}
+
+// ── issue #433 fix 1：判死之后**从账本续跑**（不是整单重跑）──────────────────────────────
+//
+// 现场（issue 实测）：27% 的格子被 `idle_timeout` 中止、reward 全 0，其中 46/55 该轮一个字节都
+// 没回来；而这种静默**通常自愈**（未删失窗里 >300s 静默每 1000 轮 7 次、中位 400s，经历过的 35
+// 个 run 有 18 个最终拿到分），中转探针显示**新请求 3.4–15s 就起流** ⇒ **干等不如重发**。
+//
+// 为什么是「从快照/账本续跑」而不是「整单重跑」：#440 之后判死错误上已经带着 `rounds` /
+// `usage` / `finalText`，引擎侧本来就有 `resume` 面（`restoreResume`，读 transcript 账本 + run
+// snapshot）。整单重跑等于把已经付过费的 6~19 轮再烧一遍。
+//
+// ⚠ 与 #441 的交互（如实写在契约里，别说成「所有静默都被救」）：**流式**静默现在先撞 provider
+// 的相位截止（`⌊idle×3/4⌋`，`KitError("timeout", …, {retryable:true})`，走引擎自己的重试通道），
+// 所以 fix 1 主要救的是**非流式**（`requestTimeoutMs` 故意不派生）与「provider 没有相位截止」
+// （宿主注入的 provider）两条路径。
+
+/** 重试**总预算**的默认值（秒）：从第一次判死开始计时，用尽才落 `idle_timeout` 终局。 */
+export const DEFAULT_IDLE_RETRY_BUDGET_SECONDS = 900;
+
+/** 退避起点（毫秒）：中转探针实测新请求 3.4–15s 就起流，所以第一档不必等太久。 */
+export const IDLE_RETRY_BASE_DELAY_MS = 1_000;
+/** 单次退避上限（毫秒）：指数退避夹在这里，避免长预算下退避把窗口本身吃掉。 */
+export const IDLE_RETRY_MAX_DELAY_MS = 30_000;
+
+/**
+ * 重试**次数**硬上限（不含首发）。为什么是 8：
+ *  - 预算（默认 900s）在有意义的 idle 窗口下本来就先撞线（`idle=300s` ⇒ 最多 2~3 次）；
+ *  - 但 `--idle-timeout 1` 这种极小窗口能把 900s 预算摊成几百次重试 ⇒ 次数上限是**成本闸**：
+ *    指数退避前 8 档之和 ≈ `1+2+4+8+16+32+64+128 = 255s`，第 9 次起预算/次数必有一个先响；
+ *  - 8 次 ≈ 一个 run 最多 9 发请求，配合预算仍是有界的（「不许无限重试」的双闸）。
+ */
+export const IDLE_RETRY_MAX_ATTEMPTS = 8;
+
+/**
+ * 第 `retryIndex` 次重试（1 起算）的退避时长：`base × 2^(n-1)`，夹在 `IDLE_RETRY_MAX_DELAY_MS`。
+ *
+ * @param {number} retryIndex
+ * @returns {number} 毫秒
+ */
+export function idleRetryBackoffMs(retryIndex) {
+  const index = Number.isInteger(retryIndex) && retryIndex > 0 ? retryIndex : 1;
+  const raw = IDLE_RETRY_BASE_DELAY_MS * 2 ** (index - 1);
+  return Math.min(IDLE_RETRY_MAX_DELAY_MS, raw);
+}
+
+/**
+ * 重试决策（纯函数）：预算与次数**双闸**。
+ *
+ * 语义：`budgetMs` 从**第一次判死**起算（含退避与后续尝试的耗时）；`elapsedMs >= budgetMs` ⇒
+ * `reason: "budget"`；`retries >= maxAttempts` ⇒ `reason: "max_attempts"`。都满足时返回的
+ * `backoffMs` 会被剩余预算夹住（退避可以短，但**不会为负**）。
+ *
+ * @param {{ retries: number, elapsedMs: number, budgetMs: number, maxAttempts?: number }} input
+ * @returns {{ retry: boolean, reason?: "budget" | "max_attempts", backoffMs?: number, retryIndex?: number }}
+ */
+export function planIdleRetry({
+  retries,
+  elapsedMs,
+  budgetMs,
+  maxAttempts = IDLE_RETRY_MAX_ATTEMPTS,
+}) {
+  if (!Number.isFinite(budgetMs) || budgetMs <= 0) return { retry: false, reason: "budget" };
+  if (!Number.isInteger(retries) || retries < 0) return { retry: false, reason: "max_attempts" };
+  if (retries >= maxAttempts) return { retry: false, reason: "max_attempts" };
+  const remainingMs = budgetMs - (Number.isFinite(elapsedMs) ? elapsedMs : 0);
+  if (remainingMs <= 0) return { retry: false, reason: "budget" };
+  const retryIndex = retries + 1;
+  return {
+    retry: true,
+    backoffMs: Math.min(idleRetryBackoffMs(retryIndex), remainingMs),
+    retryIndex,
+  };
+}
+
+/** 累加 usage（只累数值字段；`undefined` 视为 0，不伪造键）。 */
+function addUsage(target, usage) {
+  if (usage === null || typeof usage !== "object") return;
+  for (const [key, value] of Object.entries(usage)) {
+    if (!Number.isFinite(value)) continue;
+    target[key] = (target[key] ?? 0) + value;
+  }
+}
+
+/**
+ * 重试记账（issue #433 验收原文：「重试次数/退避进 run state 与事件」）。
+ *
+ * 只记账、不做决定（决定在 `planIdleRetry`）：
+ *  - `markKilled(usage)`：一次判死，把这次尝试的 usage 累进总账；
+ *  - `next()`：问「还能不能再试一次」，把结论里的 `elapsedMs` / `retries` / `budgetMs` 一并带出；
+ *  - `recordBackoff(ms)`：真的退避了，记一笔（次数 +1）；
+ *  - `recordUsage(usage)`：成功那一发的 usage 也累进总账；
+ *  - `snapshot()`：交给终局载荷 / judge.log 的**同一份**形状。
+ *
+ * @param {{ budgetMs?: number, maxAttempts?: number, now?: () => number }} [options]
+ */
+export function createIdleRetryState({
+  budgetMs = DEFAULT_IDLE_RETRY_BUDGET_SECONDS * 1000,
+  maxAttempts = IDLE_RETRY_MAX_ATTEMPTS,
+  now = () => Date.now(),
+} = {}) {
+  const backoffMs = [];
+  const usage = { input_tokens: 0, output_tokens: 0 };
+  let retries = 0;
+  let startedAt;
+  let exhausted;
+  const elapsed = () => (startedAt === undefined ? 0 : Math.max(0, now() - startedAt));
+  return {
+    markKilled(attemptUsage) {
+      if (startedAt === undefined) startedAt = now();
+      addUsage(usage, attemptUsage);
+    },
+    next() {
+      const decision = planIdleRetry({
+        retries,
+        elapsedMs: elapsed(),
+        budgetMs,
+        maxAttempts,
+      });
+      if (!decision.retry) exhausted = decision.reason;
+      return { ...decision, retries, elapsedMs: elapsed(), budgetMs, maxAttempts };
+    },
+    recordBackoff(ms) {
+      retries += 1;
+      backoffMs.push(ms);
+    },
+    recordUsage(attemptUsage) {
+      addUsage(usage, attemptUsage);
+    },
+    snapshot() {
+      return {
+        retries,
+        backoffMs: [...backoffMs],
+        budgetMs,
+        maxAttempts,
+        elapsedMs: elapsed(),
+        usage: { ...usage },
+        ...(exhausted === undefined ? {} : { exhausted }),
+      };
+    },
+  };
 }

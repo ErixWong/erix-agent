@@ -15,6 +15,7 @@ import path from "node:path";
 
 import {
   DEFAULT_CHAT_IDLE_TIMEOUT_SECONDS,
+  EXEC_CEILING_FLOOR_MS,
   EXEC_CEILING_MARGIN_MS,
   execCeilingMsForIdle,
 } from "./idle.js";
@@ -277,7 +278,8 @@ export function isInstallCommand(command) {
 }
 
 /** `ERIX_EXEC_TIMEOUT_MS` 的显式值（未设/非法 ⇒ `null`）。「显式」与「默认」必须能区分：
- *  钳天花板时**只动默认值，不动显式配置**（既有语义，见 getCommandTimeoutMs）。 */
+ *  装配处对两者都按 idle 天花板收口（issue #433 fix 4），区分只用于**日志口径**（“用户显式设的” vs
+ *  “install 档默认值”）。 */
 function explicitExecTimeoutMs() {
   const configured = Number(process.env.ERIX_EXEC_TIMEOUT_MS);
   return Number.isFinite(configured) && configured > 0 ? configured : null;
@@ -293,9 +295,11 @@ export function getExecTimeoutMs() {
  * 按命令类型选择超时：安装/编译/下载类命令超时更长（默认 240s = idle 默认窗口 300s − 60s），
  * 其余默认 120s。哪一类由 `isInstallCommand` 判（issue #434 T1：**按分段后的段首**判，不是整条命令的开头）。
  *
- * `ceilingMs`（issue #433 T0）：装配处按 `--idle-timeout` 算出来的天花板（`execCeilingMsForIdle`）。
- * 未显式配置 `ERIX_EXEC_TIMEOUT_MS` 时按它收口（`Math.min`）；显式配置时**一字不改**
- * （尊重显式配置是既有语义，装配处只警告）。
+ * `ceilingMs`（issue #433 T0 / fix 4）：装配处按 `--idle-timeout` 算出来的天花板（`execCeilingMsForIdle`）。
+ * **两者都按它收口**（`Math.min`）：issue #433 fix 4 的裁定是「启动时校验 exec 上限 < idle；不满足时
+ * 自动收敛为 `min(exec, idle − 60s)` 并打一条 loud 日志，**不**启动即报错」（bench 两臂就是 exec==idle，
+ * 硬报错会把现成调用打断；判据是「终局不得是 `idle_timeout`」）。因此 T0 时代的「显式配置一字不改」
+ * 已被本刀推翻，旧行为只保留在历史注释里。
  *
  * @param {string} command
  * @param {{ ceilingMs?: number | null }} [options]
@@ -305,21 +309,24 @@ export function getCommandTimeoutMs(command, { ceilingMs } = {}) {
   const explicit = explicitExecTimeoutMs();
   const install = isInstallCommand(command);
   const tier = explicit ?? (install ? INSTALL_EXEC_TIMEOUT_MS : DEFAULT_EXEC_TIMEOUT_MS);
-  // 显式配置不放大也不钳（既有语义）；未显式配置时按 idle 天花板收口。
-  if (explicit !== null) return tier;
   if (!Number.isFinite(ceilingMs) || ceilingMs <= 0) return tier;
   return Math.min(tier, ceilingMs);
 }
 
 /**
- * 装配处的一次性口径：把 exec 天花板按 idle 算出来（issue #433 T0）。
+ * 装配处的一次性口径：把 exec 天花板按 idle 算出来（issue #433 T0 / fix 4）。
  *
- * 返回给 `createCliTools({ execCeilingMs })` 的那份值，同时把「钳制发生了 / 显式配置超限」讲清楚：
+ * 返回给 `createCliTools({ execCeilingMs })` 的那份值，同时把口径讲清楚：
  *  - idle 未启用 ⇒ `null`（不钳，也不打日志：没有窗口就没有要先响的对象）；
- *  - 用户显式设了 `ERIX_EXEC_TIMEOUT_MS` 且超过天花板 ⇒ **只警告、不改值**，返回 `null`（不钳）；
- *  - 默认值（install 档）本来就高于天花板（`--idle-timeout` 小于 300s 时）⇒ 钳到天花板并打一行日志。
- *    默认 idle=300s 时天花板恰好等于 install 档默认值（240s），**钳制没有改变任何取值 ⇒ 不打日志**
- *    （每次 chat 都打一行「钳了但没变」只会是噪声）。
+ *  - 天花板 = `max(30s, idle − 60s)`（`execCeilingMsForIdle`），**显式配置也会被它收敛**（fix 4）：
+ *    `ERIX_EXEC_TIMEOUT_MS` 高于天花板时打一条 loud 日志并返回天花板——不启动即报错，
+ *    因为「exec == idle」正是 bench 两臂的现成配置，硬报错会把调用打断；
+ *  - 默认值（install 档）本来就高于天花板时同样钳到天花板并打日志；默认 idle=300s 时天花板恰好
+ *    等于 install 档默认值（240s），**钳制没有改变任何取值 ⇒ 不打日志**（每次 chat 都打一行
+ *    「钳了但没变」只会是噪声）；
+ *  - **天花板压不到窗口以下时也要说**（`idle ≤ 30s` 时下限 30s 压过 `idle − 60s`）：这时
+ *    「exec 上限 < idle」这条不变式**物理上不可能**成立，能兑付的是「工具执行期由喂表兜住、
+ *    最坏 `30s + idle`」——打一行日志把代价说在前面，而不是默默失效。
  *
  * @param {number} idleSeconds `--idle-timeout` 的秒数
  * @param {{ warn?: (line: string) => void }} [options]
@@ -328,24 +335,33 @@ export function getCommandTimeoutMs(command, { ceilingMs } = {}) {
 export function resolveExecCeiling(idleSeconds, { warn = (line) => console.error(line) } = {}) {
   const ceilingMs = execCeilingMsForIdle(idleSeconds);
   if (ceilingMs === null) return null;
+  const idleMs = idleSeconds * 1000;
   const explicit = explicitExecTimeoutMs();
-  if (explicit !== null) {
-    if (explicit > ceilingMs) {
-      warn(
-        `⚠️ ERIX_EXEC_TIMEOUT_MS=${explicit}ms 超过 idle 天花板 ${ceilingMs}ms`
-        + `（--idle-timeout ${idleSeconds}s − ${EXEC_CEILING_MARGIN_MS / 1000}s）：显式配置优先，**不钳值**；`
-        + "挂住的命令会先被 idle 看门狗打死（整个 run 中止），而不是先拿到「命令超时」结果。",
-      );
-    }
-    return null;
-  }
-  if (INSTALL_EXEC_TIMEOUT_MS > ceilingMs) {
+  if (explicit !== null && explicit > ceilingMs) {
+    warn(
+      `⚠️ exec 上限已收敛（issue #433 fix 4）：ERIX_EXEC_TIMEOUT_MS=${explicit}ms ≥ idle 天花板 ${ceilingMs}ms`
+      + `（--idle-timeout ${idleSeconds}s − ${EXEC_CEILING_MARGIN_MS / 1000}s）`
+      + `⇒ 实际生效 ${ceilingMs}ms = min(exec, idle − ${EXEC_CEILING_MARGIN_MS / 1000}s)。`
+      + "同值时 idle 的起点更早，挂住的命令会先打死整个 run，而不是先报「命令超时」。",
+    );
+  } else if (explicit === null && INSTALL_EXEC_TIMEOUT_MS > ceilingMs) {
     warn(
       `exec 天花板已钳到 ${ceilingMs}ms（install 档默认 ${INSTALL_EXEC_TIMEOUT_MS}ms > `
       + `--idle-timeout ${idleSeconds}s − ${EXEC_CEILING_MARGIN_MS / 1000}s）：`
       + "否则挂住的安装命令会先打死整个 run，而不是先报「命令超时」。",
     );
-    return ceilingMs;
+  }
+  // 不变式 `exec < idle` 在 `idle ≤ 下限 + 余量` 时**物理上不可能**成立（天花板有 30s 下限）。
+  // 不静默：把能兑付的那半（工具执行期喂表）与最坏代价写在一行里。
+  const effectiveMs = Math.min(explicit ?? INSTALL_EXEC_TIMEOUT_MS, ceilingMs);
+  if (effectiveMs >= idleMs) {
+    warn(
+      `⚠️ exec 上限 ${effectiveMs}ms 仍 ≥ idle 窗口 ${idleMs}ms（issue #433 fix 4）：`
+      + `--idle-timeout ${idleSeconds}s 低于天花板下限 ${EXEC_CEILING_FLOOR_MS / 1000}s + `
+      + `${EXEC_CEILING_MARGIN_MS / 1000}s，exec < idle 这条不变式无法成立。`
+      + `能兑付的是「工具执行期喂表」：最坏 ${(EXEC_CEILING_FLOOR_MS + idleMs) / 1000}s，`
+      + "而不是整个 run 被 idle 打死。",
+    );
   }
   return ceilingMs;
 }
