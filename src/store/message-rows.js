@@ -234,10 +234,16 @@ export function foldLedgerMessages(records) {
     // 「**下一条**逻辑消息的下标」。所以分片行的 key **不是合法的 `partOf` 寻址目标**：写侧必须把锚点
     // 钉在该聚合消息的**首片**上（`src/loop/orchestrator.js` 的三处写入口——
     // `journalResumeUnpersistedToolResults`、resume 补跑段、主循环的工具结果入账——都只在首片落定时
-    // 记一次 key，之后不推进）。若有人把 `partOf` 链成「上一片」，第三片起 `entries[targetIndex]`
-    // 恒为 `undefined` ⇒ 新起一条消息（实测 `[[t1,t2],[t3]]`，第二次恢复永久 `invalid_messages`）。
-    // `foldMessageRows` 里同一个坑的形态略有不同（分片 key 根本不入 `parts`，链式 `partOf` 同样落空），
-    // 结论一样：`partOf` 只认首片。
+    // 记一次 key，之后不推进）。
+    // 若有人把 `partOf` 链成「上一片」，坏形状是**每隔一片落一次**（不是「第三片起恒为 `undefined`」）：
+    // 每落空一次就新起一条消息、下一片又接得上。实测 3 片 ⇒ `[[t1,t2],[t3]]`、4 片 ⇒ `[[t1,t2],[t3,t4]]`、
+    // 5 片 ⇒ 三段（`[[t1,t2],[t3,t4],[t5]]`）、6 片 ⇒ `[[t1,t2],[t3,t4],[t5,t6]]`；`assistant` 的
+    // `tool_use` 与紧随其后的那一条 user 消息再也配不上 ⇒ 第二次恢复永久 `invalid_messages`（0 请求）。
+    // 更坏的形态是**静默并进错的消息**：分片 key 指向的是「下一条逻辑消息」，若它之后恰好落了另一条
+    // 逻辑消息（宿主追问、下一轮的正文……），链式 `partOf` 就把这条结果块并进**那条**消息——不报错、
+    // 不丢块、形状全错（实测折出 `assistant:text+t3`）。
+    // `foldMessageRows` 里同一个坑的形态不同（分片 key 根本不入 `parts`，链式 `partOf` 一律落空 ⇒ 每片
+    // 自起一条消息，不会并进错的消息），结论一样：`partOf` 只认首片。
     if (key !== "") keyToIndex.set(key, entries.length);
     const messages = Array.isArray(record?.messages) ? record.messages : [];
     const partOf = typeof record?.partOf === "string" ? record.partOf : "";
