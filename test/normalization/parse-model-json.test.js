@@ -7,7 +7,9 @@
 //
 // 合并前评审（PR #443）补的看守，每一条都先红后绿：
 //   · 补全档的闸门同样判**补全前**原文（往补全规则里插 `__FABRICATED__` ⇒ 必须判掉）；
-//   · 候选集复用 L0 的平衡对象扫描（散文前缀 / 后缀 / 对象后跟垃圾）。
+//   · 候选集复用 L0 的平衡对象扫描（散文前缀 / 后缀 / 对象后跟垃圾）；
+//   · 截断判据按「**任一**候选是截断形状」（多候选时 `every` 会把围栏里的截断报成 `unparsable`）；
+//   · 补全档串联规则表 ⇒ 围栏里的截断（含未闭合围栏）与「截断 + 非法转义」真救得回来。
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -234,6 +236,49 @@ test("空输入 ⇒ no_candidate（候选数为 0 的另一档）", async () => 
     assert.equal(result.ok, false);
     assert.equal(result.error, "no_candidate");
   }
+});
+
+// 合并前评审 blocker 3（a）：截断判据按「**任一**候选是截断形状」，不是「全都」。
+// 修前这一格是红的：多候选时 `every` 会把围栏里的截断报成 `unparsable`（L0 报 `no_candidate`）。
+test("截断判据按「任一候选」算：围栏里的截断与 L0 同答 no_candidate", async () => {
+  for (const text of ["说明\n```json\n{\"a\":1\n```", "说明\n```json\n{\"a\":1", '说明\n```json\n{"a":"x\\.y"']) {
+    const strict = parseModelJson(text);
+    assert.equal(strict.ok, false, text);
+    assert.equal(strict.error, "no_candidate", `L0 的答案：${text}`);
+    const result = await normalizeModelJson(text);
+    assert.equal(result.ok, false, text);
+    assert.equal(result.error, "no_candidate", `多候选时按「任一」算：${text} → ${JSON.stringify(result)}`);
+  }
+});
+
+// 合并前评审 blocker 3（b）：补全档与规则表**串联**跑，围栏里的截断真救得回来。
+// 修前三格全红（补全要求「补完即 JSON.parse」，而单跑 truncation 不吃非法转义、也不认未闭合围栏）。
+test("补全档救得回围栏里的截断（含未闭合围栏）与「截断 + 非法转义」", async () => {
+  const cases = [
+    ["围栏内截断", "说明\n```json\n{\"a\":1\n```", { a: 1 }, "truncation"],
+    ["未闭合围栏", "说明\n```json\n{\"a\":1", { a: 1 }, "truncation"],
+    ["截断 + 非法转义", '{"a":"x\\.y"', { a: String.raw`x\.y` }, "invalid-escape+truncation"],
+    ["围栏内截断 + 非法转义", '说明\n```json\n{"a":"x\\.y"', { a: String.raw`x\.y` }, "invalid-escape+truncation"],
+  ];
+  for (const [label, text, value, rule] of cases) {
+    const result = await normalizeModelJson(text, { repair: { truncateCompletion: true } });
+    assert.equal(result.ok, true, `${label} 必须救得回来：${JSON.stringify(result)}`);
+    assert.deepEqual(result.value, value, label);
+    assert.equal(result.repaired?.rule, rule, `${label} 的出处必须点名生效的规则：${JSON.stringify(result)}`);
+    assert.equal(result.repaired?.trusted, true, label);
+  }
+});
+
+// 合并前评审 blocker 3 的边界：这一档**救不回来**，如实钉住（契约中英都写着，不许留假话）。
+test("已知边界：散文前缀 + 截断 ⇒ 本入口 unparsable，L0 no_candidate（补全档也救不回）", async () => {
+  const text = '前言 {"a":1';
+  assert.equal(parseModelJson(text).error, "no_candidate", "L0 靠「括号不配对」认出截断");
+  const plain = await normalizeModelJson(text);
+  assert.equal(plain.ok, false);
+  assert.equal(plain.error, "unparsable", "候选集里没有一段能被补全规则改写的片段");
+  const completed = await normalizeModelJson(text, { repair: { truncateCompletion: true } });
+  assert.equal(completed.ok, false);
+  assert.equal(completed.error, "unparsable", "补全要求「补完即 JSON.parse」，散文前缀不是结构字符");
 });
 
 // ── 硬要求 5：L2（llm 唯一开关 / 恒定 reasoning_effort / 仍过同一道闸门）────────

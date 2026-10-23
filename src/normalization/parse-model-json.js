@@ -18,15 +18,19 @@
  *
  * ## 三态（名字沿用 #307，不新造）
  *
- * - `no_candidate`：没有任何候选可试。两档：**输入为空**（候选数为 0），或**截断**（结构未闭合——
- *   今天的 L0 对截断输入也报 `no_candidate`，本入口与它一字不差）。截断的判定**复用 L1 自己的
- *   `truncation` 规则**（规则会改文本 ⇒ 就是截断形状），不新写一个检测器。
+ * - `no_candidate`：没有任何候选可试。两档：**输入为空**（候选数为 0），或**截断**（结构未闭合）。
+ *   截断的判定**复用 L1 自己的 `truncation` 规则**（补全规则会改这段文本 ⇒ 就是截断形状），不新写
+ *   一个检测器；判据是「**任一**候选是截断形状」（多候选时按**存在**算，不是按「全都」算——
+ *   `说明\n```json\n{"a":1\n``` ` 这种形状里整段原文补不出来、围栏块体补得出来，答案必须是 L0 的
+ *   `no_candidate`，不是 `unparsable`）。与 L0 的一致面与**已知差异面**见契约：L0 靠「括号不配对 ⇒
+ *   零候选」认出的**散文前缀 + 截断**（`前言 {"a":1`）在这里是 `unparsable`，因为候选集里没有一段
+ *   能被补全规则改写的片段（扫描器是 L0 那份，不复制）。
  * - `unparsable`：有候选、每个都解析不出来。
  * - `shape_mismatch`：有候选解析成功，但一个都没过 `validate` 闸门。
  *
  * ## 候选（M6 的正解；D1：**复用 L0 的扫描，不复制**）
  *
- * 候选集 = **整段原文** + 按出现顺序的**每个 ``` 围栏块**（去围栏符）
+ * 候选集 = **整段原文** + 按出现顺序的**每个 ``` 围栏块**（去围栏符，**含未闭合围栏剩下的那段块体**）
  * + L0 的平衡对象扫描（`jsonCandidates`，`src/text/json-candidates.js`）扫出的**每个顶层平衡对象**。
  * 每个候选依次交给 `parseJsonWithRepair`（先 L0 的 `JSON.parse`，不行再按规则表修）→ 闸门，
  * **第一个「可解析 + 过闸门」者胜出**。
@@ -36,9 +40,12 @@
  * `{"done":true} 以上是结果。`、`{"a":1}}extra{`、`前言 {"outer":{"done":true}} 后语`、`~~~json` 围栏……）。
  * 所以第三档直接调 L0 的 `jsonCandidates`，不另写扫描。
  *
- * `repair.truncateCompletion` 显式开时，
- * 再把每个候选的「补全版」当**额外**候选**追加在末尾**（整段原文的补全版在其中——截断输入的唯一出路；
- * 围栏里的截断也一并救得回来，因为模型最常写的就是围栏）。
+ * `repair.truncateCompletion` 显式开时，再把每个候选的「补全版」当**额外**候选**追加在末尾**。
+ * 补全**与规则表串联**（先跑本档启用的规则，`truncation` 是规则表最后一条），因此救得回：
+ *   纯截断（`{"a":1`）、**围栏里的截断**（含**未闭合围栏**：`说明\n```json\n{"a":1`）、
+ *   截断 + 结构类缺陷（`{"a":"x\\.y"` ⇒ `invalid-escape` 先加倍、再补 `}`）。
+ * 救不回的：**散文前缀 + 截断**（`前言 {"a":1`）——补全要求「补完即可 `JSON.parse`」，而那段前缀
+ * 不是结构字符，规则表不动它。这句是实测边界，不是承诺。
  *
  * ## 承重墙：闸门永远对**候选的原始字节**判
  *
@@ -145,8 +152,9 @@ const THINKING_INHERIT = "inherit";
  * 剥出每个 ``` 围栏块的**块体**（去掉围栏行本身）。
  *
  * 与 `src/text/repair-json.js` 的 `code-fence` 规则分工不同：那条规则只认「整段就是一段围栏」，
- * 这里认「一段文本里夹着的每一段围栏」。未闭合的围栏不产候选（半截围栏不是候选，是截断，
- * 由 `truncateCompletion` 那一档负责）。
+ * 这里认「一段文本里夹着的每一段围栏」。**未闭合的围栏照样产候选**：剩下那段就是模型写到
+ * 一半的块体（模型最常写的形态就是围栏），它是不是「截断」由三态判据自己算，不在这里先
+ * 替它下定论——否则「围栏里的截断也救得回来」就成了空话。
  *
  * @param {string} text
  * @returns {string[]}
@@ -168,34 +176,52 @@ function fenceBodies(text) {
     }
     if (current !== null) current.push(line);
   }
+  if (current !== null) bodies.push(current.join("\n"));
   return bodies;
 }
 
 /**
- * 「截断形状」判定：L1 的 `truncation` 规则会不会改这段文本。
+ * 本档实际要跑的规则链：启用的规则 + `truncation`（表序即语义，`truncation` 永远是最后一条）。
+ *
+ * 「截断形状」的判定与「补全版候选」的生成共用这一条链——两处各写一份必然漂移。
+ *
+ * @param {RepairOptions} repairOptions
+ * @returns {string[]}
+ */
+function completionChain(repairOptions) {
+  return [...repairOptions.rules.filter((id) => id !== TRUNCATION_RULE_ID), TRUNCATION_RULE_ID];
+}
+
+/**
+ * 「截断形状」判定：把规则链（含 `truncation`）跑一遍，补全那一步会不会改这段文本。
  *
  * 为什么用规则本身当检测器：截断的定义（未闭合括号 / 未收尾字符串）与补全动作是同一件事，
  * 分两处写必然漂移。`completeTruncatedJson` 在「补完仍然解析不了」时原样返回，所以
  * 「改了」=「补得出来」，正是我们要的那一档。
  *
+ * 串上其它规则（而不是只跑 `truncation`）是必要的：`{"a":"x\\.y"` 这种「截断 + 非法转义」的
+ * 形状，单跑补全永远补不出来（补完仍解析不了），而 `invalid-escape` 先把转义加倍之后就能补。
+ *
  * @param {string} text
+ * @param {RepairOptions} repairOptions
  * @returns {boolean}
  */
-function isTruncationShaped(text) {
-  return repairJsonText(text, { rules: [TRUNCATION_RULE_ID] }).text !== text;
+function isTruncationShaped(text, repairOptions) {
+  return repairJsonText(text, { rules: completionChain(repairOptions) }).applied.includes(TRUNCATION_RULE_ID);
 }
 
 /**
- * 一个候选：文本 + 它是不是「补全版」。
+ * 一个候选：交给 L1 的文本 + **闸门该看到的原文** + 补全那一步真的做了什么。
  *
- * `completed` 这个位不是装饰：补全发生在**候选生成**这一步（不在逐候选规则里），所以
+ * `completionApplied` 不是装饰：补全发生在**候选生成**这一步（不在逐候选规则里），所以
  * `repaired` 的 provenance 必须由这里带下去，否则「这条值来自截断补全」会被记成「没修过」——
- * 那正是最危险的一类静默。
+ * 那正是最危险的一类静默。`original` 则是同一件事的另一面：补全后的文本里可能有**原文没有的字节**
+ * （`{"a":` ⇒ `{"a":null}`），闸门必须拿补全**前**的原文判。
  *
  * @typedef {object} Candidate
- * @property {string} text
- * @property {boolean} completed
+ * @property {string} text 交给 `parseJsonWithRepair` 的文本（补全档里是补全后的）
  * @property {string} original 闸门看到的**原文**（补全前；非补全候选就是 `text` 本身）
+ * @property {string[]} completionApplied 补全这一步实际生效的规则 id（含 `truncation`；非补全候选为空）
  */
 
 /**
@@ -211,26 +237,37 @@ function isTruncationShaped(text) {
  */
 function candidatesFor(text, repairOptions) {
   /** @type {Candidate[]} */
-  const base = [];
+  const candidates = [];
   /** @type {Set<string>} */
   const seen = new Set();
-  const push = (value, completed, original = value) => {
+  /**
+   * @param {string} value
+   * @param {string} [original]
+   * @param {string[]} [completionApplied]
+   */
+  const push = (value, original = value, completionApplied = []) => {
     if (value.trim() === "" || seen.has(value)) return;
     seen.add(value);
-    base.push({ text: value, completed, original });
+    candidates.push({ text: value, original, completionApplied });
   };
-  push(text, false);
-  for (const body of fenceBodies(text)) push(body, false);
-  // D1：候选生成**调 L0 的扫描**（`jsonCandidates`），不复制一份扫描实现。
-  for (const object of jsonCandidates(text)) push(object, false);
-  if (!repairOptions.truncateCompletion) return base;
 
-  const candidates = [...base];
-  for (const candidate of base) {
-    const completed = repairJsonText(candidate.text, { rules: [TRUNCATION_RULE_ID] }).text;
-    if (completed === candidate.text || completed.trim() === "" || seen.has(completed)) continue;
-    seen.add(completed);
-    candidates.push({ text: completed, completed: true, original: candidate.text });
+  push(text);
+  for (const body of fenceBodies(text)) push(body);
+  // D1：候选生成**调 L0 的扫描**（`jsonCandidates`），不复制一份扫描实现。
+  for (const object of jsonCandidates(text)) push(object);
+  if (!repairOptions.truncateCompletion) return candidates;
+
+  const chain = completionChain(repairOptions);
+  for (const candidate of [...candidates]) {
+    const completed = repairJsonText(candidate.text, { rules: chain });
+    // 补全那一步没生效 ⇒ 这不是「补全版」，不追加（否则 `repaired` 会凭空多出 `truncation`）。
+    if (!completed.applied.includes(TRUNCATION_RULE_ID)) continue;
+    if (completed.text.trim() === "" || seen.has(completed.text)) continue;
+    push(completed.text, candidate.original, completed.applied);
+    // 补全之后才露出平衡对象的形状（散文前缀 + 截断）：照样只认 L0 的扫描，闸门仍看补全前原文。
+    for (const object of jsonCandidates(completed.text)) {
+      push(object, candidate.original, completed.applied);
+    }
   }
   return candidates;
 }
@@ -320,7 +357,7 @@ function attemptCandidate(candidate, { gate, repairOptions }) {
   }
 
   const applied = [
-    ...(candidate.completed ? [TRUNCATION_RULE_ID] : []),
+    ...candidate.completionApplied,
     ...injected,
     ...parsed.applied,
   ];
@@ -405,8 +442,10 @@ function missResult(outcome, candidates, repairOptions, llmUsed) {
     error = "no_candidate";
   } else if (outcome.sawRejected) {
     error = "shape_mismatch";
-  } else if (!repairOptions.truncateCompletion && candidates.every((candidate) => isTruncationShaped(candidate.text))) {
-    // 截断输入：今天 L0 的观察面就是 `no_candidate`（"什么都不产，也不补括号"），本入口不偷偷改口径。
+  } else if (candidates.some((candidate) => isTruncationShaped(candidate.text, repairOptions))) {
+    // 截断输入：L0 的观察面就是 `no_candidate`（“什么都不产，也不补括号”），本入口不偷偷改口径。
+    // 判据是**任一**候选是截断形状，不是「全都」：多候选时 `every` 会把
+    // `说明\n```json\n{"a":1\n``` `（整段原文补不出、围栏块体补得出）报成 `unparsable`。
     error = "no_candidate";
   } else {
     error = "unparsable";
