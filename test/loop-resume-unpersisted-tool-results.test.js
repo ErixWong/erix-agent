@@ -814,3 +814,56 @@ test("#430 主循环写入口（崩在轮载体行之前）⇒ 三条结果同�
     ["t1", "t2", "t3"],
   );
 });
+
+// ── issue #430 的**生产主路径**：正常轮 ≥3 个工具调用（合并前修复：评审实测「正常轮就已中招」）──────
+// 上面那条主循环用例的现场是「崩溃在轮载体行之前」，容易被读成「只有崩溃才可见」。实测不是：`resume:false`
+// 的正常一轮（3 个 `tool_use` + 3 条结果 + `end_turn`）就会把账本写成链式
+// `msg:1:1`(none) → `msg:1:2`(partOf `msg:1:1`) → `msg:1:3`(partOf `msg:1:2`)，`load()` 折成
+// `[assistant, user(t1,t2), user(t3)]`，**紧接着的** resume 直接 `invalid_messages`、**0 请求** ⇒ 该 runId
+// 永久不可恢复。不需要崩溃、不需要 A/B 集合——这是本票最值钱的战果，必须有回归保护。
+test("#430 正常轮 3 个工具调用 ⇒ 落盘 partOf 不链式、load() 一条聚合 user 消息、紧随的 resume 成功", async () => {
+  const ids = ["t1", "t2", "t3"];
+  const inner = createMemoryTranscriptStore();
+  const { store, rows } = recordRoundWrites(inner);
+  const first = await runLoop({
+    store,
+    provider: createFakeProvider([toolTurn(ids), endTurn("完成")]),
+    executeTool: async ({ id }) => `out-${String(id)}`,
+    resume: false,
+    initialUserMessage: "任务",
+  });
+  assert.equal(first.ok, true, "前置：正常轮必须跑完（这不是崩溃现场，`resume:false` 的一轮跑到底）");
+
+  // 落盘形状（修法本体）：首片无 `partOf`，后两片**都**指向首片——不是链到上一片。
+  const resultRows = resultRowsInRound(rows, 1);
+  assert.deepEqual(
+    resultRows.map((record) => record.messages?.[0]?.content?.[0]?.tool_use_id),
+    ids,
+    "前置：三条结果各落一行，顺序 = 真实发生顺序",
+  );
+  assert.equal(resultRows[0].partOf, undefined, "首片不带 `partOf`：它自己就是聚合消息");
+  assert.deepEqual(
+    resultRows.slice(1).map((record) => record.partOf),
+    [resultRows[0].dedupKey, resultRows[0].dedupKey],
+    "后两片必须都 `partOf` 指向**首片**（只回退主循环那一处时是链式：`msg:1:3` 指 `msg:1:2`）",
+  );
+
+  const records = await inner.load(RUN_ID);
+  assert.deepEqual(aggregateResults(records), [{ role: "user", ids }],
+    "正常轮的三条结果必须折回**一条**聚合 user 消息（只回退主循环那一处时实测 `[[t1,t2],[t3]]`，"
+    + "两条；`load()` 的序列会变成 assistant / user(t1,t2) / user(t3)）");
+
+  // 紧随其后的 resume：修前这里在第一次模型请求之前就 `invalid_messages`（0 请求）。
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(resumed.ok, true,
+    "紧随的 resume 必须成功（只回退主循环那一处时实测："
+    + "`invalid_messages: tool_result ids do not match assistant tool_use ids`，0 请求；"
+    + `实测：\`${String(resumed.error)}\`）`);
+  assert.equal(provider.requests.length, 1, "resume 必须真的发过一次模型请求（只回退主循环那一处时 0 次）");
+  for (const id of ids) {
+    const blocks = resultsFor(provider.requests[0].messages, id);
+    assert.equal(blocks.length, 1, `${id} 的结果在 resume 之后必须恰好一份`);
+    assert.equal(blocks[0].content, `out-${id}`, `${id} 的内容必须逐字相同`);
+  }
+});
