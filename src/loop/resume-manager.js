@@ -342,7 +342,9 @@ export async function restoreResume(ctx) {
               ctx.messages.push(replayMessage);
               ctx.messageRounds.set(replayMessage, ctx.resumeRunSnapshot.round);
             }
-            // 交给 orchestr 逐条入账（它们同样是「已成型但未落盘」的消息）。
+            // issue #420：**真实交接**（修前是死字段：注释承诺入账，全仓无读取方）。`restoreResume`
+            // 是纯读侧（拿不到 `persist`），写入口在 orchestrator 的
+            // `journalResumeUnpersistedToolResults`：补跑段之前逐条写成消息行。
             ctx.resumeUnpersistedToolResults = replayResults;
           }
           const pendingTools = ctx.resumeRunSnapshot.pendingToolUses

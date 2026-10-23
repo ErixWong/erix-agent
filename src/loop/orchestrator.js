@@ -1577,6 +1577,14 @@ export async function runToolLoop(options) {
   // guard 补跑桥绕回主循环时不会再注入一次。
   /** @type {{ text: string, slot: string, round: number } | undefined} */
   let resumeNotice;
+  // issue #420（A 集合入账）：`restoreResume` 从 run snapshot 接回来的那批「崩溃前**已执行完、结果已成型、
+  // 账本里没有对应 `tool_result` 行**」的结果（A 集合）。它同样是「已成型但未落盘」的消息，必须和补跑
+  // 跑出来的结果（B 集合）走**同一条写侧**（`appendMessageRowToTranscript` + `partOf`）。
+  // 写成**普通局部变量 + 一对访问器**（与紧邻的 `resumeNotice` / `taskBriefSource` 同一个先例）：
+  // `restoreResume` 是**纯读侧**（`src/loop/resume-manager.js` 拿不到 `persist`），只负责把批次交出来；
+  // 写入口在本文件（`journalResumeUnpersistedToolResults`），由它在补跑段之前逐条入账。
+  /** @type {any[]} */
+  let resumeUnpersistedToolResults = [];
   const messageRounds = new WeakMap();
   for (const message of messages) messageRounds.set(message, 0);
   // 双计数器约定（issue #32 #8）——改这两处语义前先读这里：
@@ -1650,6 +1658,12 @@ export async function runToolLoop(options) {
     },
     set resumeNotice(value) {
       resumeNotice = value;
+    },
+    get resumeUnpersistedToolResults() {
+      return resumeUnpersistedToolResults;
+    },
+    set resumeUnpersistedToolResults(value) {
+      resumeUnpersistedToolResults = value;
     },
     messageRounds,
     get rounds() {
@@ -2311,6 +2325,40 @@ export async function runToolLoop(options) {
     // 分片只往已有那条逻辑消息里加 block，不新增消息 ⇒ 锥点计数不变。
     if (partOf === "") runLoopState.persistedTranscriptLength += 1;
     return dedupKey;
+  };
+
+  // issue #420（A 集合入账）：把 `restoreResume` 交回来的那批「崩溃前已执行完、结果已成型、账本里没有
+  // `tool_result` 行」的结果**逐条走与 B 集合同一条写侧**。
+  //
+  // 为什么写在这里（而不是让 `restoreResume` 自己写）：那个函数是**纯读侧**——它的 `ctx` 里根本没有
+  // `persist`（只有 `store` 的读接口），失败语义也是「整次恢复失败」（`ctx.fail`）。给它开一个写口子 =
+  // 把「读一半账本 + 写一半账本」两种副作用缠在同一个 try 里，崩溃后哪条已写、哪条未写没有任何标记。
+  // 写侧本来就在本文件（`appendMessageRowToTranscript` / `persist`），交接到主循环前由这一小段入账，
+  // 与补跑段共用同一个 `resumeToolResultRowKey` 锚点与同一套 `seq` 计数器。
+  //
+  // 锚点的两种情形（探查票点名的边界）：
+  //   · 崩溃轮**已有**结果行落盘（`resumeToolResultRowKey` 有值）⇒ 首片用 `partOf` 接回那条聚合消息；
+  //   · 崩溃轮**一条结果行都没落**（`resumeToolResultRowKey === undefined`）⇒ 首片不带 `partOf`，
+  //     它**自己**就是新起的那条聚合消息（在账本里也是一条独立逻辑消息，`persistedTranscriptLength`
+  //     随 `appendMessageRowToTranscript` 的 `partOf === ""` 分支 +1，与内存里 push 的那条对齐），
+  //     然后把它写回 `resumeToolResultRowKey` 当后续分片（含 B 集合）的锚点。否则每个结果都会各起
+  //     一条 user 消息：合法但形状变了，`#326` 的 `<runId>:msg:<round>:<seq>` 序号语义也跟着散掉。
+  const journalResumeUnpersistedToolResults = async () => {
+    const unpersisted = resumeUnpersistedToolResults;
+    if (!Array.isArray(unpersisted) || unpersisted.length === 0) return;
+    // 一次性交接：无论下面写不写成，这批都不得在本次 run 里被第二次入账（guard 补跑桥会回到主循环）。
+    resumeUnpersistedToolResults = [];
+    const crashRound = runLoopState.resumeRunSnapshot?.round;
+    let rowKey = runLoopState.resumeToolResultRowKey;
+    for (const toolResult of unpersisted) {
+      const persistedRowKey = await appendMessageRowToTranscript(
+        { role: "user", content: [toolResult] },
+        crashRound,
+        rowKey === undefined ? {} : { partOf: rowKey },
+      );
+      if (persistedRowKey !== undefined) rowKey = persistedRowKey;
+    }
+    if (rowKey !== undefined) runLoopState.resumeToolResultRowKey = rowKey;
   };
 
   // issue #326（wo-C）：**引擎自产「上下文事实」的产生即入账**——沿用上面同一先例的形状与命名空间风格
@@ -3369,6 +3417,13 @@ export async function runToolLoop(options) {
     // 工单 261021（第三刀）：resume 补跑段新产生的**引擎控制正文**（方向提示 / 达成 advisory）在此
     // 暂存，由下面那条 `…:resume` 行带走（它是该轮的折叠载体）。工具结果不走这里。
     const resumeEngineText = [];
+    // issue #420：**A 集合先入账**（崩溃前已执行完、结果已成型、账本里没有 `tool_result` 行的那批）。
+    // 必须在补跑段（B 集合）之前：
+    //   · `seq` 顺序 = 崩溃那一刻的真实发生顺序（A 集合先于 B 集合被产出），折叠后聚合消息里的
+    //     block 顺序与内存里的 `messages` 一致；
+    //   · `resumeToolResultRowKey` 由本段向前推进（`resumeToolResultRowKey === undefined` 时首个 A 结果
+    //     就是新的聚合消息锚点），补跑段读到的正是推进后的值 ⇒ 两种集合接回**同一条**聚合消息。
+    await journalResumeUnpersistedToolResults();
     if (runLoopState.resumePendingTools.length > 0) {
       const resumedToolResults = [];
       // 工单 261021（第三刀）：**补跑跑出来的工具结果也逐条入账**，用 `partOf` 接回崩溃轮里

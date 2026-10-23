@@ -1,29 +1,29 @@
-// issue #414（探查票）的机器证据：**A 集合**——崩溃前**已执行完、结果已成型、但账本里没有对应
-// `tool_result` 行**的那批结果——到底有没有以任何形式落到账本里。
+// issue #414（探查票）报现场、issue #420 修实现：**A 集合**——崩溃前**已执行完、结果已成型、但账本里
+// 没有对应 `tool_result` 行**的那批结果——现在**逐条入账**，与补跑出来的结果（B 集合）走同一条写侧。
 //
-// 现场（`src/loop/resume-manager.js:340-346`）：`restoreResume` 把 A 集合从 run snapshot 的
+// 修前的现场（`src/loop/resume-manager.js`）：`restoreResume` 把 A 集合从 run snapshot 的
 // `toolResults` 接回来，用 `mergeToolResultsIntoMessages` 合进内存里的 `messages`（合不进去就整条
 // push 成一条 user 消息），然后写一句 `ctx.resumeUnpersistedToolResults = replayResults;`，注释称
-// 「交给 orchestr 逐条入账」——**全仓没有读取方**（`grep -rn resumeUnpersistedToolResults src bin
-// examples test` 只有这一行）。
+// 「交给 orchestr 逐条入账」——**全仓没有读取方**。于是它的唯一载体是 latest-only 覆盖写的 run snapshot。
 //
-// 本文件实测的三条事实：
-//   ① 第一次恢复：A 集合的结果**在模型上下文里恰 1 份、内容逐字相同**——靠的是 run snapshot
-//      再喂一遍，不是账本（用例 1，绿）。
-//   ② 第一次恢复之后账本里**仍然没有**那个结果的行：该轮的 assistant 带着 tool_use，账本里却没有
-//      配对的 tool_result ⇒ 「账本闭合」这条契约（`docs/host-consumer-contract.md`「A resumed run
-//      leaves the ledger closed」）对 A 集合不成立（用例 2，**故意红**）。
-//   ③ 再崩一次（新一轮的 run snapshot 是 latest-only 覆盖写 ⇒ 旧 `toolResults` 没了）之后：
-//      A 集合的结果既不在账本、也不在快照 ⇒ 账本里那条 tool_use 永远悬空 ⇒ `restoreResume` 重建
-//      出的上下文过不了 `validateMessages`，**整个 run 从此不可恢复**
-//      （`invalid_messages: tool_result ids do not match assistant tool_use ids`，0 次模型请求；
-//      用例 3，**故意红**）。
+// 修后（#420）的三条事实：
+//   ① 第一次恢复：A 集合的结果在模型上下文里**恰 1 份、内容逐字相同**，而且账本里也有它的行
+//      （用例 1 绿、用例 2 绿）。
+//   ② 「账本闭合」这条契约（`docs/host-consumer-contract.md`「A resumed run leaves the ledger closed」）
+//      现在对**所有**结果成立，不只是补跑的那批（用例 2）。
+//   ③ 再崩一次（新一轮的 run snapshot 是 latest-only 覆盖写 ⇒ 旧 `toolResults` 没了）之后，A 集合的
+//      结果从**账本**折回来 ⇒ 上下文仍然合法，run 仍然可恢复（用例 3）。修前这里抛
+//      `invalid_messages: tool_result ids do not match assistant tool_use ids`，0 次模型请求，
+//      该 runId 永久不可恢复。
 //
-// 为什么不是「重复两份」：`load()` 折叠出来的那一轮永远只有已落盘的那条聚合消息，A 集合每次恢复
-// 都是「从快照补进内存」而不是「从账本折出来」，所以它既不会翻倍，也永远不会被写下去。
-//
-// 两条红用例是**缺陷现场**（#414 只报现场、不改实现：时序语义属功能改动，另开票）。修法落地后它们
-// 应转绿，届时删掉本节「故意红」的说明即可。**不许 skip、不许放宽断言。**
+// 用例 3 的账本顺序断言（`t1, t2, t3` 而不是 `t1, t3, t2`）是**折叠语义的必然结果**，不是放宽：
+// A 集合的 `t2` 是**崩溃轮（round 1）**那条聚合 user 消息的分片（`partOf` 指认它），而 `load()` 把
+// 每一轮的消息行折回**该轮**的载体行 ⇒ 它必然出现在 round 1 的正文里、早于 round 2 的 `t3`。
+// 反向证（脚本实测，两行都打印过）：要让 `t2` 排到 `t3` 之后，只能让 `t2` **不折进** round 1 的聚合
+// 消息 —— 那正是 `load()` 形状碎成「assistant / user[t1] / user[t2]」、`t2` 悬在 `t3` 之后的那种坏形状
+// （`#420` 明确禁止的「每条结果各自一条 user 消息」）。所以这里把顺序断言改成折出来**必然**是的那一个，
+// 并**加**一条形状断言（round 1 的聚合 user 消息同时带着 t1 与 t2）：断言只增不减。
+// **不许 skip、不许放宽断言。**
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -147,7 +147,7 @@ test("#414 A 集合 · 第一次恢复：结果在上下文里恰 1 份、内容
   assert.ok(paired !== undefined, "两个结果必须合回同一条聚合 user 消息");
 });
 
-test("#414 A 集合 · 第一次恢复之后账本里仍然没有它的 tool_result 行（账本不闭合）", async () => {
+test("#414/#420 A 集合 · 第一次恢复就把它的 tool_result 行写进账本（账本闭合）", async () => {
   const inner = createMemoryTranscriptStore();
   await crashWithUnpersistedResult(inner);
 
@@ -160,9 +160,20 @@ test("#414 A 集合 · 第一次恢复之后账本里仍然没有它的 tool_res
 
   const records = await inner.load(RUN_ID);
   assert.deepEqual(ledgerResults(records), ["t1=out-t1", "t2=out-t2"],
-    "恢复之后账本必须闭合：`t2` 的结果行要落下去（`resumeUnpersistedToolResults` 的注释承诺"
-    + "「交给 orchestr 逐条入账」，而全仓没有读取方 ⇒ 今天只有 t1 一行；"
-    + "见 `src/loop/resume-manager.js:346`）");
+    "恢复之后账本必须闭合：`t2` 的结果行要落下去（`ctx.resumeUnpersistedToolResults` 是真实交接，"
+    + "写入方在 `orchestrator.js#journalResumeUnpersistedToolResults`；修前这里只有 t1 一行）");
+  // 形状：`t2` 是崩溃轮那条聚合 user 消息的分片，折回来必须仍是**同一条** user 消息。
+  const aggregates = records
+    .flatMap((record) => record.messages ?? [])
+    .filter((message) => (Array.isArray(message?.content) ? message.content : [])
+      .some((block) => block?.type === "tool_result"));
+  assert.equal(aggregates.length, 1, "两个结果必须折回同一条聚合 user 消息（不是两条）");
+  assert.deepEqual(
+    aggregates[0].content.filter((block) => block?.type === "tool_result")
+      .map((block) => block.tool_use_id),
+    ["t1", "t2"],
+    "聚合消息里两个结果的顺序 = 崩溃那一刻的真实发生顺序",
+  );
 });
 
 test("#414 A 集合 · 快照被新一轮覆盖后再恢复：结果不得丢，run 不得因此不可恢复", async () => {
@@ -195,6 +206,17 @@ test("#414 A 集合 · 快照被新一轮覆盖后再恢复：结果不得丢，
   const t2 = resultsFor(provider.requests[0].messages, "t2");
   assert.equal(t2.length, 1, "第二次恢复之后 A 集合的结果必须仍然恰 1 份");
   assert.equal(t2[0].content, "out-t2", "内容必须逐字相同（不许退化成占位符/中断说明）");
-  assert.deepEqual(ledgerResults(await inner.load(RUN_ID)), ["t1=out-t1", "t3=out-t3", "t2=out-t2"],
-    "账本最终必须闭合：三个 tool_use 各有一条结果行");
+  assert.deepEqual(ledgerResults(await inner.load(RUN_ID)), ["t1=out-t1", "t2=out-t2", "t3=out-t3"],
+    "账本最终必须闭合：三个 tool_use 各有一条结果行。顺序是折叠语义的必然结果：`t2` 属于崩溃轮"
+    + "（round 1）那条聚合消息，`load()` 按轮折回载体 ⇒ 它排在 round 2 的 `t3` 之前");
+  // 形状（#420 的红线）：崩溃轮的正文必须仍是**一条**聚合 user 消息带着 t1+t2，不能碎成两条。
+  const roundOne = (await inner.load(RUN_ID)).find((record) => record?.round === 1
+    && (record.messages ?? []).some((message) => (Array.isArray(message?.content) ? message.content : [])
+      .some((block) => block?.type === "tool_result")));
+  const roundOneResults = (roundOne.messages ?? [])
+    .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
+    .filter((block) => block?.type === "tool_result")
+    .map((block) => block.tool_use_id);
+  assert.deepEqual(roundOneResults, ["t1", "t2"],
+    "round 1 的正文里必须同时有 t1 与 t2（同一条聚合 user 消息，不是每条结果各一条）");
 });
