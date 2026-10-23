@@ -5,11 +5,12 @@
 //   · 「闸门对谁判」的变异级用例：宿主注入一条**会改字节**的修复器（jsonrepair 式删反斜杠），
 //     闸门必须把那条值判掉；反向证里同时钉住「若闸门看的是修后文本，这格会被放行」——于是这格写反就红。
 //
-// 合并前评审（PR #443）补的看守，每一条都先红后绿：
+// 合并前评审（PR #443）补的五类看守，每一条都先红后绿：
 //   · 补全档的闸门同样判**补全前**原文（往补全规则里插 `__FABRICATED__` ⇒ 必须判掉）；
 //   · 候选集复用 L0 的平衡对象扫描（散文前缀 / 后缀 / 对象后跟垃圾）；
 //   · 截断判据按「**任一**候选是截断形状」（多候选时 `every` 会把围栏里的截断报成 `unparsable`）；
-//   · 补全档串联规则表 ⇒ 围栏里的截断（含未闭合围栏）与「截断 + 非法转义」真救得回来。
+//   · 补全档串联规则表 ⇒ 围栏里的截断（含未闭合围栏）与「截断 + 非法转义」真救得回来；
+//   · 候选为空时 `llm:true` 一次请求都不发。
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -279,6 +280,24 @@ test("已知边界：散文前缀 + 截断 ⇒ 本入口 unparsable，L0 no_cand
   const completed = await normalizeModelJson(text, { repair: { truncateCompletion: true } });
   assert.equal(completed.ok, false);
   assert.equal(completed.error, "unparsable", "补全要求「补完即 JSON.parse」，散文前缀不是结构字符");
+});
+
+// 合并前评审 blocker 4：候选为空 ⇒ 一次请求都不发（原先空串会白烧 1 个请求 + `llmUsed:true`）。
+test("候选为空时一次请求都不发（空输入 / 纯空白 + llm:true）", async () => {
+  for (const text of ["", "   \n\t "]) {
+    let requests = 0;
+    const provider = {
+      async chat() {
+        requests += 1;
+        return { content: [{ type: "text", text: '{"done":true}' }] };
+      },
+    };
+    const result = await normalizeModelJson(text, { provider, llm: true });
+    assert.equal(requests, 0, `候选为空不许发请求：${JSON.stringify(text)}`);
+    assert.equal(result.ok, false);
+    assert.equal(result.error, "no_candidate");
+    assert.equal("llmUsed" in result, false, "没发请求就不许声称用过 L2");
+  }
 });
 
 // ── 硬要求 5：L2（llm 唯一开关 / 恒定 reasoning_effort / 仍过同一道闸门）────────

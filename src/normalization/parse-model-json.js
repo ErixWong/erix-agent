@@ -11,7 +11,7 @@
  * | 入口 | 层 | 同步性 | 修不修 | 发不发请求 |
  * |---|---|---|---|---|
  * | `parseModelJson` | L0 严格档 | 同步 | **绝不修** | 从不 |
- * | `normalizeModelJson`（本文件） | L1 保字节修复 + 闸门 + L2 兜底 | 异步 | 只修**结构字符**（复用 `src/text/repair-json.js`） | 只有 `llm:true` 且 L1 全败 |
+ * | `normalizeModelJson`（本文件） | L1 保字节修复 + 闸门 + L2 兜底 | 异步 | 只修**结构字符**（复用 `src/text/repair-json.js`） | 只有 `llm:true` 且候选非空、L1 全败 |
  *
  * `parseModelJson` 那一面（#307 的包根导出、契约三态形状）本文件一个字都没动——B2-a 只新增，
  * 不改名、不撤件；改名属后续的契约破坏批次（B2-b / 公开面清理单）。
@@ -65,7 +65,9 @@
  *
  * ## L2（`llm:true` 是唯一开关）
  *
- * L1 全败才发请求；请求**恒定**带 `reasoning_effort`（`thinking:"none"` ⇒
+ * L1 全败**且候选非空**才发请求——候选为空（空输入 / 纯空白）时一次请求都不发：没有原文可交给
+ * 模型，发出去只是白烧一次（每次调用最多 1 个请求、无重试，见契约的成本一节）。请求**恒定**带
+ * `reasoning_effort`（`thinking:"none"` ⇒
  * `NORMALIZATION_REASONING_EFFORT`；`thinking:"inherit"` ⇒ 不发该字段），取值引用
  * `src/reflection/wrapup.js` 的常量而**不是**字面量。L2 的产物**仍过同一道 `validate` 闸门**：
  * 不过就是 `shape_mismatch`，不许静默接受。
@@ -580,6 +582,9 @@ export async function normalizeModelJson(rawText, options = {}) {
 
   const first = runCandidates(candidates, context);
   if (first.hit !== undefined) return hitResult(first.hit, false);
+
+  // 候选为空（空输入 / 纯空白）⇒ 一次请求都不发：没有原文可交给模型，发出去只是白烧一次。
+  if (candidates.length === 0) return missResult(first, candidates, repairOptions, false);
 
   if (llm === true) {
     const chat = resolveChat({ provider, slot });
