@@ -570,8 +570,9 @@ export function createTerminationManager(ctx) {
       messages: stablePrefix.messages,
       tools: [],
       signal: ctx.signal,
-      // issue #419 ②（本票有意不发 `reasoning_effort`，见 CHANGELOG #419 ① 的覆盖面清单）：强制收尾同时是
-      // 终稿正文载体，预算用 run 的 `maxTokens`（不是归一化那种 120 小预算），要不要关思考属 #419 ② 的裁定。
+      // issue #419 ② 的**终态裁定：有意不发 `reasoning_effort`**（见 CHANGELOG #419 ① 的覆盖面清单里
+      // 「强制收尾」那一格）：强制收尾同时是终稿正文载体（`finalText` / `declaredFindings` / `selfReport`
+      // 都从它取），预算用 run 的 `maxTokens`（不是归一化那种 120 小预算）⇒ 不适用「小预算被思考吃光」的现场。
     };
     if (ctx.maxTokens !== undefined) request.maxTokens = ctx.maxTokens;
     if (ctx.temperature !== undefined) request.temperature = ctx.temperature;

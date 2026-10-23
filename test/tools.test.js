@@ -12,9 +12,14 @@ import {
   createCliTools,
   getCommandTimeoutMs,
   getExecTimeoutMs,
+  resolveExecCeiling,
   truncateResult,
   wrapExecuteTool,
 } from "../bin/tools.js";
+import {
+  DEFAULT_CHAT_IDLE_TIMEOUT_SECONDS,
+  EXEC_CEILING_MARGIN_MS,
+} from "../bin/idle.js";
 import * as notes from "../src/tools/notes.js";
 
 async function withDirectory(callback) {
@@ -442,11 +447,12 @@ test("install/compile commands get extended timeout while regular commands keep 
   const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
   try {
     delete process.env.ERIX_EXEC_TIMEOUT_MS;
-    // 安装/编译/下载类命令：300s
-    assert.equal(getCommandTimeoutMs("apt-get install -y build-essential"), 300_000);
-    assert.equal(getCommandTimeoutMs("pip3 install numpy"), 300_000);
-    assert.equal(getCommandTimeoutMs("make -j4"), 300_000);
-    assert.equal(getCommandTimeoutMs("curl -sL https://example.com/x.tar.gz"), 300_000);
+    // 安装/编译/下载类命令：240s（issue #433 T0：= chat 默认 idle 300s − 60s 余量，
+    // 见下一条不变式；旧值 300s 与 idle 同值 ⇒ 那条「命令超时」事实上不可达）
+    assert.equal(getCommandTimeoutMs("apt-get install -y build-essential"), 240_000);
+    assert.equal(getCommandTimeoutMs("pip3 install numpy"), 240_000);
+    assert.equal(getCommandTimeoutMs("make -j4"), 240_000);
+    assert.equal(getCommandTimeoutMs("curl -sL https://example.com/x.tar.gz"), 240_000);
     // 普通命令：120s
     assert.equal(getCommandTimeoutMs("echo hello"), 120_000);
     assert.equal(getCommandTimeoutMs("ls -la /app"), 120_000);
@@ -454,6 +460,68 @@ test("install/compile commands get extended timeout while regular commands keep 
     // 显式设置全局超时则不放大
     process.env.ERIX_EXEC_TIMEOUT_MS = "2500";
     assert.equal(getCommandTimeoutMs("apt-get install -y gcc"), 2500);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
+  }
+});
+
+// issue #433 T0 ②：**天花板不变式**——exec 的任何一档默认值都必须短于 chat 的 idle 默认窗口。
+// 为什么这是一条不变式而不是一个具体数字：idle 的计时起点更早（模型请求期就开始走），同值时
+// idle 必然先响 ⇒ 「命令超时」这条路事实上不可达，挂住的安装命令的结局是「整个 run 被打死」。
+// 断言「小于」而不是「等于某个数」：idle 默认值以后可以调，这条关系不能被悄悄破坏。
+test("exec ceilings stay strictly below the default chat idle window (issue #433 T0)", () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  try {
+    delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    const idleMs = DEFAULT_CHAT_IDLE_TIMEOUT_SECONDS * 1000;
+    for (const command of ["make", "apt-get install -y gcc", "echo hi", "ls -la"]) {
+      assert.ok(
+        getCommandTimeoutMs(command) < idleMs,
+        `getCommandTimeoutMs(${JSON.stringify(command)}) = ${getCommandTimeoutMs(command)} 必须 < idle 默认窗口 ${idleMs}ms`,
+      );
+    }
+    // 余量口径也钉住：天花板 = idle − 60s（不是「碰巧小一点」）
+    assert.equal(getCommandTimeoutMs("make"), idleMs - EXEC_CEILING_MARGIN_MS);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
+  }
+});
+
+// issue #433 T0 ②：显式 `ERIX_EXEC_TIMEOUT_MS` 超过天花板时**只警告、不改值**（既有语义：
+// 尊重显式配置）。「钳天花板」只动默认值。
+test("explicit ERIX_EXEC_TIMEOUT_MS above the idle ceiling warns but is never rewritten (issue #433 T0)", () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  try {
+    process.env.ERIX_EXEC_TIMEOUT_MS = "600000";
+    const warnings = [];
+    // idle=300s ⇒ 天花板 240s < 显式 600s
+    const ceiling = resolveExecCeiling(300, { warn: (line) => warnings.push(line) });
+    assert.equal(ceiling, null, "显式配置超限时不钳（返回 null = 不设天花板）");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /ERIX_EXEC_TIMEOUT_MS=600000/u);
+    assert.match(warnings[0], /不钳值/u);
+    // 显式值原样生效，一个字节都没被改写
+    assert.equal(getCommandTimeoutMs("make", { ceilingMs: 240_000 }), 600_000);
+    assert.equal(getCommandTimeoutMs("echo hi", { ceilingMs: 240_000 }), 600_000);
+    assert.equal(process.env.ERIX_EXEC_TIMEOUT_MS, "600000");
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
+  }
+});
+
+// issue #433 T0 ③ 的装配侧：天花板真的走到了 exec 工具里（不是只算出来放着）。
+// 用 100ms 这种「不可能由 resolveExecCeiling 生成」的值直接喂 createCliTools，观察 exec 的
+// 超时文案里带着它——事件驱动（命令自己超时返回），不靠 sleep 断言时长。
+test("createCliTools({ execCeilingMs }) reaches the exec timeout (issue #433 T0)", async () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  try {
+    delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    const { executeTool } = createCliTools({ execCeilingMs: 100 });
+    const result = await executeTool("exec", { command: "sleep 0.4" });
+    assert.match(result, /命令超时（100ms）被终止/u);
   } finally {
     if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
     else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
