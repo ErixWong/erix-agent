@@ -1,9 +1,13 @@
-// issue #433 T0：idle 看门狗的回归钉子。
+// issue #433 T0 / #441：idle 看门狗与「静默可重试」的回归钉子。
 //
-// 覆盖三件事：
+// 覆盖四件事：
 //   ① 工具执行期喂表（长命令不再被静默窗口打死）；
 //   ② repl 侧的**同型**用例（防只改一处——双实现正是本单要消的缺陷）；
-//   ③ 判死仍单向的回归护栏（本刀**不加**重试，重试属 #441）。
+//   ③ 单份实现的语义钉子（`null` 三态、判死单向、abort 无自定义 reason）；
+//   ④ **静默走可重试通道**（issue #441）：静默上游不再被 idle 打死，而是落到 provider 的相位截止上
+//      （`KitError("timeout", …, {retryable:true})`）⇒ 真的重试（≥2 发）⇒ 重试用尽后 `failed` + `errorCode:"timeout"`。
+//      三态对照：接线前 = 1 发 / `idle_timeout`（无 `termination`）；接线后 = ≥2 发 / `failed`+`timeout`。
+//      另保留一格：**provider 侧没有任何可重试截止时**（宿主注入的 hang provider），看门狗仍然咬得住。
 //
 // 纪律：全部用例**事件驱动**，不写「先 sleep N 毫秒再断言耗时」那种断言——本机可能高负载，
 // 固定 sleep 只会变成 flaky。慢的那一侧是**被测行为本身**（一条 1.5s 的命令 / 一个永不返回的
@@ -39,7 +43,7 @@ async function writeEmptyMcpConfig(dir) {
   return configPath;
 }
 
-/** 一个**永不返回**的 provider：用来证明看门狗还咬得住（不是被本刀的喂表关掉了）。 */
+/** 一个**永不返回**的 provider（宿主注入，**没有任何 provider 侧截止**）：用来证明看门狗还咬得住。 */
 function createHangingProvider() {
   const calls = [];
   return {
@@ -187,11 +191,115 @@ test("repl: a tool that outlives the idle window does not kill the round (issue 
   }
 });
 
-// ④ 回归护栏：静默 stub（永不返回的 provider）+ idleTimeout: 1 ⇒ 看门狗仍然咬，且**只咬一次**。
-// 本刀**不加**重试：idle 打死之后 provider 只被调用 1 次。
-// 等 #441（判死后的重试/续跑）落地后，这条要改成 `>= 2`——现在就写成 1，是为了让「本刀没加
-// 重试」这件事在测试里有据可查，而不是只写在报告里。
-test("chat: a silent provider still trips the idle watchdog exactly once (no retry yet, #441)", { timeout: 20_000 }, async () => {
+// ④ 静默 → **可重试**通道（issue #441）。这是 #433 那条护栏的继任者：同一条「永不返回的上游」，
+// 接线前断言的是「只发 1 发」（`provider.calls.length === 1`，且终局是 `idle_timeout`），接线后必须
+// 变成「≥2 发 + 重试用尽后的 `failed` / `errorCode:"timeout"`」。
+//
+// 为什么把 stub 换成「静默的 **fetch 上游**」而不是注入一个 hang provider：相位截止长在
+// `createOpenAIProvider` 里（`src/providers/timeout.js`），注入 provider 就把被测的那条装配绕过去了
+// （那是接线前那条护栏的形状）。这里让 CLI 自己造 provider，只把 `fetchImpl` 换成一个永不回字节的上游。
+//
+// 纪律同前：不断言耗时。等待的是**事件**（上游被再次调用 / run 抛错），idle 窗口只作为「不该先响」的背景。
+const SILENT_IDLE_SECONDS = 3;
+const SILENT_RETRY_ATTEMPTS = "1";
+
+/** 静默上游：`mode` 决定「哪一条相位截止」该先响。`calls` 记每一次真实请求。 */
+function createSilentUpstream({ mode }) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, body: init?.body });
+    if (mode === "stream") {
+      // 响应头立刻回，body 永不出字节、也永不关闭 ⇒ 流式的 firstByte / streamIdle 相位。
+      return new Response(new ReadableStream({ start() {} }), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    // 连响应头都不回 ⇒ 非流式（`erix chat` 的默认形态）唯一的那条 request 相位。
+    return new Promise(() => {});
+  };
+  return { fetchImpl, calls };
+}
+
+/** 跑一次「静默上游」的 chat，返回抛出的错误（run 必须以 `failed` 收尾，不是 `idle_timeout`）。 */
+async function runSilentChat({ dir, mode }) {
+  const upstream = createSilentUpstream({ mode });
+  const previous = process.env.ERIX_RETRY_ATTEMPTS;
+  // 重试次数压到 1（= 总共 2 发）：默认 2 次会把这条用例拖到 ~7s，而「有没有走重试通道」在 2 发上
+  // 已经可以判定（`attempt` 事件喂表的口径与次数无关）。
+  process.env.ERIX_RETRY_ATTEMPTS = SILENT_RETRY_ATTEMPTS;
+  let error;
+  try {
+    await runChat({
+      prompt: "永不返回",
+      session: `idle-silent-${mode}`,
+      dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath: await writeEmptyMcpConfig(dir),
+      config: {
+        model: "fake-model",
+        endpoint: "http://silent.invalid/v1",
+        apiKey: "test-key",
+        fetchImpl: upstream.fetchImpl,
+        maxOutputTokens: 1000,
+      },
+      idleTimeout: SILENT_IDLE_SECONDS,
+      maxRounds: 2,
+      stream: mode === "stream",
+      toolOutput: () => {},
+    });
+  } catch (thrown) {
+    error = thrown;
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_RETRY_ATTEMPTS;
+    else process.env.ERIX_RETRY_ATTEMPTS = previous;
+  }
+  assert.ok(error, "静默上游的 run 必须抛错（重试用尽 ⇒ failed），不许静默返回");
+  return { error, upstream };
+}
+
+test("chat: a silent upstream is retried on the retryable phase deadline (issue #441)", { timeout: 30_000 }, async () => {
+  const dir = await makeTmp("erix-cli-silent-retry-");
+  try {
+    // 非流式：`erix chat` 的默认形态，走 `provider.chat()` 的 request 相位。
+    const { error, upstream } = await runSilentChat({ dir, mode: "nonstream" });
+    // 接线前这里是 `idle_timeout`（`IdleTimeoutError`，没有 `termination`）：idle 走的是不可重试的 abort。
+    assert.notEqual(error?.code, "idle_timeout");
+    assert.equal(error?.code, "timeout");
+    assert.equal(error?.termination?.reason, "failed");
+    assert.equal(error?.termination?.errorCode, "timeout");
+    // 真的走了重试通道：上游被请求了不止一次。
+    assert.ok(
+      upstream.calls.length >= 2,
+      `静默必须落到重试通道上（实测只发了 ${upstream.calls.length} 发）`,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("chat --stream: a silent stream body is retried on the firstByte deadline (issue #441)", { timeout: 30_000 }, async () => {
+  const dir = await makeTmp("erix-cli-silent-retry-stream-");
+  try {
+    // 流式：响应头回来了但一个正文字节都不出 ⇒ firstByte 相位（不是 idle）。
+    const { error, upstream } = await runSilentChat({ dir, mode: "stream" });
+    assert.notEqual(error?.code, "idle_timeout");
+    assert.equal(error?.code, "timeout");
+    assert.equal(error?.termination?.reason, "failed");
+    assert.equal(error?.termination?.errorCode, "timeout");
+    assert.ok(
+      upstream.calls.length >= 2,
+      `流式静默同样必须走重试通道（实测只发了 ${upstream.calls.length} 发）`,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ④' 反向护栏：provider 侧**没有任何可重试截止**时（宿主注入的 hang provider，相位截止根本没接上），
+// 看门狗必须照旧咬——#433 的那条不变式不能因为 #441 的接线而被顺手关掉。
+test("chat: the idle watchdog still bites when the provider has no retryable deadline (issue #433/#441)", { timeout: 20_000 }, async () => {
   const dir = await makeTmp("erix-cli-idle-silent-");
   try {
     const provider = createHangingProvider();
@@ -216,6 +324,7 @@ test("chat: a silent provider still trips the idle watchdog exactly once (no ret
         return true;
       },
     );
+    // 没有可重试的截止 ⇒ 没有重试，只发一发。
     assert.equal(provider.calls.length, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
