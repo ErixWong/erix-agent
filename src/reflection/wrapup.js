@@ -88,6 +88,20 @@ const WRAPUP_NORMALIZATION_PROMPT = `请把下面模型的最终文本归一化�
 `;
 
 /**
+ * 归一化请求的「不思考」取值——**唯一字面量**（issue #419 ① 后半段）。
+ *
+ * 为什么要有这个常量：归一化这条路有**两份**请求构造点，必须发同一个值——
+ *   ① `normalizeWrapupWithLlm`（本文件，公开入口）；
+ *   ② 循环里真正在跑的那份内联请求（`src/loop/orchestrator.js` 的 `requestForJudge`，
+ *      `wrapupJson === null && stopReason === "end_turn"` 的兜底分支）。
+ * 两处各写各的字面量 ⇒ 日后必然漂移（改一处、另一处静默留旧值，症状只在真上游上现形）。
+ *
+ * **故意不导出到 `src/index.js`**：这是内部实现细节，不是对外契约（对外签名/选项/返回值一字未改）。
+ * 也不加进 `RUN_TOOL_LOOP_OPTION_NAMES`——它不是选项，是语义。
+ */
+export const NORMALIZATION_REASONING_EFFORT = "none";
+
+/**
  * Ask an evaluator to normalize a non-conforming end-of-turn response.
  * The loop may use this as an optional, low-frequency fallback.
  */
@@ -105,6 +119,16 @@ export async function normalizeWrapupWithLlm(
         text: `${WRAPUP_NORMALIZATION_PROMPT}${String(text ?? "")}`,
       }],
     }],
+    // issue #419 ①：归一化只输出一段 JSON，与 judge 同口径——**总是**不思考（这是本函数的
+    // 语义，不是选项：对外签名/选项/返回值一字未改）。思考开着的模型上小预算会被思考吃光：
+    // 2026-10-23 真上游实测（qwen3.8-flash-next，maxTokens:120、temperature:0、同一段输入）
+    // 默认 ⇒ 正文 0 字 / 思考 198 字 / output_tokens 顶格 120 / 本函数返回 null；带
+    // reasoning_effort:"none" ⇒ 正文 228 字 / 思考 0 字。写法逐字照
+    // `src/loop/orchestrator.js` 的 judge 请求（那里注释写的「统一语义=不思考」）；GLM 系模型
+    // 由 provider 载荷层把 "none" 转译成 "low"（见 `src/providers/payload.js`）。
+    // 取值走 `NORMALIZATION_REASONING_EFFORT`（本文件导出）：与循环里那份内联归一化请求
+    // （`src/loop/orchestrator.js` 的 `requestForJudge`）共用**同一个**字面量，不许各写各的。
+    reasoning_effort: NORMALIZATION_REASONING_EFFORT,
   };
   if (signal !== undefined) request.signal = signal;
   if (maxTokens !== undefined) request.maxTokens = maxTokens;
