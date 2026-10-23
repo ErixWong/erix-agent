@@ -1052,13 +1052,15 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
   真实轮上的实测：三发 700 + 700 + 7 个 `output_tokens`（共 1407）留下的是
   `response.usage.output_tokens === 7`——200 倍量级失真。issue #438 之前契约从没写过它是哪一种，
   所以把它当「本轮的用量」读的宿主，读到的是一个从未被承诺过的数。**本轮的花费读 `record.usage`。**
-  `response.usage` 逐字不变，因为已有宿主在读它。
+  `response.usage` 逐字不变，因为已有宿主在读它——投影也一样：`meta.usage` 仍是那个「最后一发」的值，
+  issue #438 刻意没有把它换掉。
 - **`record.usage` 才是逐轮账。** 它把本轮每一发响应加起来，所以预算、计费、以及「每轮输出多少」
   这类分析读它。`input_tokens` / `output_tokens` **恒在**（provider 没报时是 0，绝不是缺键），
   `cacheRead` / `cacheWrite` 只在某一发报过时才出现（与 `result.usage` 同一条字段在场规则）。
   无续写、且 provider 四个字段都报的那一轮，`record.usage` 与 `record.response.usage` 深相等；
   这条等式是测试钉住的，不是巧合。完全没有用量时该键仍在，形状是
-  `{ input_tokens: 0, output_tokens: 0 }`。
+  `{ input_tokens: 0, output_tokens: 0 }`。**本版本之前**写下的记录（或宿主自己写的那行）压根没有
+  `record.usage`：它是加法键，缺键的意思是「这行早于这个键」，绝不当 0 读。
 - **引擎开销是另一个桶，永不进逐轮账。** 引擎会发起模型没要求的 provider 调用：round judge、
   收尾归一化器、折叠摘要器、以及强制收尾（`forceFinalIfNeeded`（`src/loop/termination.js`））。
   它们的用量落进 `engineUsage`——前三个是**轮级**（它们在轮内跑），强制收尾是 **run 级**

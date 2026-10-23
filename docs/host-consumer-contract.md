@@ -1310,7 +1310,9 @@ Four things a host has to read correctly, because getting them wrong silently mi
   total) left `response.usage.output_tokens === 7` — a 200× undercount. Before issue #438 this
   contract never said which of the two it was, so a host reading it as the round's usage was
   reading a number that had never been promised. **Read `record.usage` for the round.**
-  `response.usage` stays byte-identical because hosts already read it.
+  `response.usage` stays byte-identical because hosts already read it — and so does the
+  projection: `meta.usage` is still that same last-response value, deliberately not switched
+  over by issue #438.
 - **`record.usage` is the round ledger.** It sums every response of the round, so budgets,
   billing, and "how much did the model write per round" analyses should read it. `input_tokens`
   and `output_tokens` are **always present** (zero when the provider reported nothing — never
@@ -1318,7 +1320,9 @@ Four things a host has to read correctly, because getting them wrong silently mi
   (the same field-presence rule `result.usage` follows). In a round with no continuation, whose
   provider reports all four fields, `record.usage` and `record.response.usage` are deep-equal;
   that equality is a test, not a coincidence. With no usage at all the key is still there, as
-  `{ input_tokens: 0, output_tokens: 0 }`.
+  `{ input_tokens: 0, output_tokens: 0 }`. A record written **before** this version — or by the
+  host itself — simply has no `record.usage`: the key is additive, so absence means "this row
+  predates the key", never "zero".
 - **Engine overhead is a separate bucket, never inside the round ledger.** The engine issues
   provider calls the model did not ask for: the round judge, the wrap-up LLM normalizer, the
   fold summarizer, and the forced final (`forceFinalIfNeeded` (`src/loop/termination.js`)).
