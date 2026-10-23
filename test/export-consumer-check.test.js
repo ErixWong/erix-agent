@@ -221,6 +221,38 @@ test("--self-test：反向证（真树删消费者 +1 / 坑 1 / 坑 2 / 坑 3）
   assert.match(result.stdout, /export-consumer-check --self-test: OK/u);
 });
 
+test("反向证（磁盘上，临时副本）：删掉一个真消费者 ⇒ 候选 +1；加回来 ⇒ 回到原值", async () => {
+  // `--self-test` 的例① 打在**内存记录**上；这一条打在同一棵树的两份**磁盘副本**上（`makeTmp`），
+  // 证明的是「读盘 → 清点 → 报告」整条链路的三态，而不是纯函数的三态。仓内源码全程只读。
+  const files = {
+    "src/index.js": 'export { orphan, used } from "./mod.js";\n',
+    "src/tools/index.js": 'export { used } from "../mod.js";\n',
+    "src/mod.js": "export const orphan = 1;\nexport const used = 2;\n",
+    "src/consumer.js": 'import { used } from "./mod.js";\nconsole.log(used);\n',
+  };
+  const countCandidates = (root) => {
+    const result = runScript(["--root", root, "--json"]);
+    assert.equal(result.status, 0, `清点必须 exit 0：${result.stderr}`);
+    return JSON.parse(result.stdout).candidates.map((c) => c.name).sort();
+  };
+
+  const baseline = await miniRepo(files, "erix-export-consumer-baseline-");
+  const original = countCandidates(baseline);
+  assert.deepEqual(original, ["orphan"], "基线：只有 orphan 零消费者");
+
+  const mutated = await miniRepo(files, "erix-export-consumer-mutated-");
+  const consumerPath = join(mutated, "src/consumer.js");
+  const before = readFileSync(consumerPath, "utf8");
+  // 整个文件清空：只删 import 行不够——`console.log(used)` 还在，按口径它仍是消费者。
+  writeFileSync(consumerPath, "// consumer 暂时空着\n");
+  assert.notEqual(readFileSync(consumerPath, "utf8"), before, "变异必须真的落上（#210 R2）");
+  const afterDelete = countCandidates(mutated);
+  assert.deepEqual(afterDelete, ["orphan", "used"], `删掉唯一那处引用后候选数必须 +1：${JSON.stringify(afterDelete)}`);
+
+  writeFileSync(consumerPath, before);   // 加回来
+  assert.deepEqual(countCandidates(mutated), original, "加回来后候选数必须回到原值");
+});
+
 test("npm script 与中英 AGENTS 各有一行（成对，且写清「清点、不判定」）", () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
   assert.equal(pkg.scripts["check:exports"], "node scripts/export-consumer-check.mjs", "npm script 必须指向这个脚本");
