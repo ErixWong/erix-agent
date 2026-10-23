@@ -25,6 +25,10 @@
 //    在退避期收尾（不可重试，与接线前一致）。实测（`ERIX_RETRY_ATTEMPTS=2`、全程静默）：`--idle-timeout 3`
 //    时第二次退避恰好 3000ms、**等于**窗口 ⇒ idle 先响，2 发 / 9.21s / `aborted`。默认 idle = 300s
 //    ⇒ 永不发生；这是**如实记下**的边界，不是隐藏行为（契约与 0.24.0 升级指南同一处写着）。
+//    TODO(#441 后续，不在本单)：这条残留的根因在引擎侧——`src/loop/provider-runner.js` 是
+//    `emitEvent({type:"recovering"})` **之后**才 `await waitForRetry(delay)`，于是 idle 定时器在退避
+//    开始前先注册、必然先响；要让「退避也算进展」在小于等于窗口时也成立，得由引擎在退避期间持续喂表
+//    （本单按工单约束不动 `src/`）。
 // 3. **`requestTimeoutMs` 不在派生面内**（评审实测退回：此前那条 `⌊idle×3/4⌋` 的派生是错的）。
 //    非流式的「请求时间」量的是**整段生成时间**，不是首字节时间——`provider.chat()` 只有一条绝对截止
 //    （`requestTimeoutMs ?? legacy(timeout/timeoutMs) ?? 120000`，`src/providers/openai.js`）。把它派生
