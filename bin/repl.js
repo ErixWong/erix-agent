@@ -19,6 +19,13 @@ import {
   runToolLoop,
 } from "../src/index.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
+// issue #433 T0：idle 看门狗只有 bin/idle.js 一份实现（此前本文件与 bin/cli.js 各有一份逐字同构的
+// createIdleTimeout）。`DEFAULT_IDLE_TIMEOUT_SECONDS` 这个名字保留，真值来自共享模块。
+import {
+  DEFAULT_REPL_IDLE_TIMEOUT_SECONDS as DEFAULT_IDLE_TIMEOUT_SECONDS,
+  createIdleTimeout,
+  withToolHeartbeat,
+} from "./idle.js";
 import { safeRunId } from "../src/store/file.js";
 import { buildCompactionContext, loadCliConfig, normalizeCompactionOption } from "./config.js";
 import {
@@ -46,12 +53,12 @@ import {
   createCliTools,
   filterToolsByAllowlist,
   purgeInactiveNoteScopes,
+  resolveExecCeiling,
   wrapExecuteTool,
 } from "./tools.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
 
 const DEFAULT_MAX_ROUNDS = 32;
-const DEFAULT_IDLE_TIMEOUT_SECONDS = 0;
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
@@ -143,28 +150,6 @@ function optionValue(args, index, option) {
     usageError(`${option} 缺少数值`);
   }
   return value;
-}
-
-function createIdleTimeout(seconds) {
-  if (!Number.isInteger(seconds) || seconds <= 0) return null;
-  const controller = new AbortController();
-  let timer;
-  let timedOut = false;
-  const touch = () => {
-    if (timedOut) return;
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, seconds * 1000);
-  };
-  touch();
-  return {
-    controller,
-    timedOut: () => timedOut,
-    touch,
-    dispose: () => clearTimeout(timer),
-  };
 }
 
 // issue #168 T2：目录哈希式只有 bin/session-scan.js 一份实现——`-c` 的「按本目录」语义
@@ -483,7 +468,11 @@ export async function runRepl(argv, io = {}) {
     : { ...baseConfig, compaction: options.compaction };
   const providerFactory = io.providerFactory
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
-  const cliTools = createCliTools({ cwd, todo: !todoDisabled });
+  // issue #433 T0：exec 天花板按 `--idle-timeout` 收口（repl 默认 0 = 不启用 ⇒ 不钳、不打日志）。
+  const execCeilingMs = resolveExecCeiling(options.idleTimeout, {
+    warn: (line) => writeLine(errorOutput, line),
+  });
+  const cliTools = createCliTools({ cwd, todo: !todoDisabled, execCeilingMs });
   // 用户级 notes skill 仍经 excludeSkillIds 排除：notes 装配统一走工厂（ERIX_NO_NOTES=1 时不装配工厂）。
   // todo 关闭时用户级 todo skill 同样经 excludeSkillIds 排除。
   const skillTools = await buildSkillTools({
@@ -745,11 +734,13 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       const signal = idle === null
         ? runController.signal
         : AbortSignal.any([runController.signal, idle.controller.signal]);
-      const executeToolForLoop = async (execution) => {
+      // issue #433 T0：工具执行期**周期性喂表**（理由与上限口径见 bin/idle.js#withToolHeartbeat）；
+      // 返回后仍补一次 touch()，把工具尾部的静默一并抹平。
+      const executeToolForLoop = (execution) => withToolHeartbeat(idle, async () => {
         const result = await executeTool(execution);
         idle?.touch();
         return result;
-      };
+      });
       const loopOptions = {
         ...(context ? { context } : {}),
         provider,

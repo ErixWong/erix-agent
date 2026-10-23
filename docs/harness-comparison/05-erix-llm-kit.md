@@ -79,7 +79,7 @@
 
 **各工具默认上限（CLI 内置工具）。** `readFile`：`limit` 默认 **200 行**，未读完追加 `[共 N 行，offset=X 继续]`（bin/tools.js:816-826）。
 `rg`：`maxResults` 默认 **50 条**、单文件 >1 MiB 跳过（`MAX_FILE_BYTES`，bin/tools.js:16,831-852）。`tree`：**500** 条目封顶（bin/tools.js:17,890-927）。
-`exec`：`maxBuffer` **1 MiB**（超限回「命令输出超过 1MB 上限」）、默认超时 120s、安装/编译类前缀 300s（bin/tools.js:21-23,305-310）。
+`exec`：`maxBuffer` **1 MiB**（超限回「命令输出超过 1MB 上限」）、默认超时 120s、安装/编译类前缀 240s（= 默认 idle 300s − 60s；`getCommandTimeoutMs`（`bin/tools.js`））。
 
 **落盘（spill）与回读路径：两条并存。**
 

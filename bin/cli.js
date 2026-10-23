@@ -15,6 +15,13 @@ import {
   runToolLoop,
 } from "../src/index.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
+// issue #433 T0：idle 看门狗只有 bin/idle.js 一份实现（此前本文件与 bin/repl.js 各有一份逐字同构的
+// createIdleTimeout）。`DEFAULT_IDLE_TIMEOUT_SECONDS` 这个名字保留，真值来自共享模块。
+import {
+  DEFAULT_CHAT_IDLE_TIMEOUT_SECONDS as DEFAULT_IDLE_TIMEOUT_SECONDS,
+  createIdleTimeout,
+  withToolHeartbeat,
+} from "./idle.js";
 import { buildCompactionContext, loadCliConfig, normalizeCompactionOption } from "./config.js";
 import {
   closeAllMcpServers,
@@ -43,13 +50,13 @@ import {
   createCliTools,
   filterToolsByAllowlist,
   purgeInactiveNoteScopes,
+  resolveExecCeiling,
   wrapExecuteTool,
 } from "./tools.js";
 import { resolveChatSessionSelection } from "./sessions.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
 
 const DEFAULT_MAX_ROUNDS = 64;
-const DEFAULT_IDLE_TIMEOUT_SECONDS = 300;
 
 const HELP_TEXT = `用法：
   erix --version, -v
@@ -274,28 +281,6 @@ function resolveFinalGuard(
     notesStore,
     store,
   });
-}
-
-function createIdleTimeout(seconds) {
-  if (!Number.isInteger(seconds) || seconds <= 0) return null;
-  const controller = new AbortController();
-  let timer;
-  let timedOut = false;
-  const touch = () => {
-    if (timedOut) return;
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, seconds * 1000);
-  };
-  touch();
-  return {
-    controller,
-    timedOut: () => timedOut,
-    touch,
-    dispose: () => clearTimeout(timer),
-  };
 }
 
 export function parseChatArgs(args, cwd = process.cwd()) {
@@ -810,7 +795,10 @@ async function runChatWithNotes({
   // issue #69：--no-todo / ERIX_NO_TODO=1 —— 彻底关：内置 todo 四工具不注册、
   // 系统提示不再含 todo、用户级 todo skill 经 excludeSkillIds 一并排除。
   const todoDisabled = noTodo === true || process.env.ERIX_NO_TODO?.trim() === "1";
-  const cliTools = createCliTools({ cwd, todo: !todoDisabled });
+  // issue #433 T0：exec 天花板按 idle 收口（install 档 300s 与 chat 默认 idle 300s 同值时，
+  // idle 起点更早 ⇒ 那条「命令超时」事实上不可达）。口径与日志文案都在 resolveExecCeiling 里。
+  const execCeilingMs = resolveExecCeiling(idleTimeout);
+  const cliTools = createCliTools({ cwd, todo: !todoDisabled, execCeilingMs });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
   // 用户级 notes skill 经 excludeSkillIds 排除：notes 装配统一走工厂，否则会出现两套同名 note_* 工具
   // （bundled notes skill 已于 v0.11.0 退役，见 issue #61）。
@@ -944,11 +932,14 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       semanticStateProvider: notesAssembler.semanticStateProvider,
     }),
     tools: tools.tools,
-    executeTool: async (execution) => {
+    // issue #433 T0：工具执行期**周期性喂表**（不是「返回后补一次」——那样长命令执行期间静默表
+    // 一直在走，到点把整个 run 打死）。喂表有上限（install 档 exec 天花板），口径与理由见
+    // bin/idle.js#withToolHeartbeat；返回后仍补一次 touch()，把工具尾部的静默一并抹平。
+    executeTool: (execution) => withToolHeartbeat(idle, async () => {
       const result = await executeTool(execution);
       idle?.touch();
       return result;
-    },
+    }),
     maxRounds: resolvedMaxRounds,
     toolResultTtl: resolveToolResultTtl(config),
     toolResultFoldMinTokens: resolveToolResultFoldMinTokens(),
@@ -1007,12 +998,18 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     },
     stream,
     signal: idle?.controller.signal,
-    onDelta: stream
-      ? (chunk) => {
-        idle?.touch();
-        process.stdout.write(chunk);
-      }
-      : undefined,
+    // issue #433 T0：`onDelta` **无条件**注册（此前是 `stream ? (chunk) => { touch; write } : undefined`）。
+    // 理由：`--stream` 是 opt-in，默认 `erix chat` 不流式 ⇒ 两次轮边界（onRound / onToolResult）
+    // 之间看门狗**没有任何字节级粒度**，「正在正常吐字但慢」与「真挂起」不可区分；喂表这件事
+    // 不该由「要不要把字打到终端」决定。输出行为一字未改：只有 `stream` 时才写 stdout。
+    // 如实记下的残留（本刀不修，属 src/ 契约面）：引擎只在 `stream: true` 时把 onDelta 传给
+    // provider（`src/loop/provider-runner.js` 的非流式分支直接 `provider.chat(request)`），
+    // 所以非流式路径上这道门去掉后**今天仍然没有**逐块粒度；本项是让喂表与输出解耦的
+    // 准备动作，真正的非流式粒度要动引擎侧。
+    onDelta: (chunk) => {
+      idle?.touch();
+      if (stream) process.stdout.write(chunk);
+    },
     onToolResult: (_name, result) => {
       idle?.touch();
       // ADR-015 4a：截断/归档退役给引擎（outputHygiene），CLI 不再二次截断

@@ -415,7 +415,7 @@ system prompt 也复用 `buildCliToolsSystemPrompt()`，再叠加「交付物落
   「整行 + offset 续读」契约当场失效（实测：请求 `offset=0,limit=200` 拿到 1-66 + 182-200，
   中段约 115 行静默消失，模型连补 5 轮回补取证）。transcript 缺省用 `createMemoryTranscriptStore()`
   （**纯内存、不落盘**），传了 `sessionDir` / `transcript:"file"` 才换成 `createFileTranscriptStore()`——见下一节。
-- `exec` 由 `bin/tools.js` 自己带超时（`ERIX_EXEC_TIMEOUT_MS`，普通命令 120s / 安装编译类 300s），
+- `exec` 由 `bin/tools.js` 自己带超时（`ERIX_EXEC_TIMEOUT_MS`，普通命令 120s / 安装编译类 240s = 默认 idle 300s − 60s），
   它**不吃 abort signal**：erix_run 被取消时，正在跑的 `exec` 会跑到自己的超时为止。
 - **`note_*` 四件套已接入**（issue 261013 R2）：`note_take` / `note_read` / `note_list` / `note_forget`
   走引擎公共导出 `createBuiltinNotesTools`（照 `bin/cli.js` 的用法，不是本层自写）。为什么必须接：

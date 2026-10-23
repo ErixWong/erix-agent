@@ -28,6 +28,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { foldLedgerMessages } from "../src/store/message-rows.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -514,4 +515,355 @@ test("#424 守卫精度 · 新账本（崩溃轮 assistant 已落盘）照旧入
     "守卫不得误伤新账本路径：崩溃轮 assistant 已在账本里 ⇒ 照旧入账、不发跳过事件");
   assert.deepEqual(ledgerResults(await inner.load(RUN_ID)), ["t1=out-t1", "t2=out-t2"],
     "账本照旧闭合（#420 的行为一条都没变）");
+});
+
+// ── issue #430：崩溃轮 **≥3 条**结果需要入账时，仍然只折回**一条**聚合 user 消息 ─────────────────
+// 现场（独立评审在两棵树上逐字复现，本单在 `main` 上再复现一次）：崩溃轮（round 2）的 assistant 正文
+// 已落盘，三个 `tool_use` 一条结果行都没有；结果要么已在快照里（A 集合），要么还在飞（B 集合）。
+// 修前两个写入口（A 集合 `journalResumeUnpersistedToolResults`、B 集合补跑段）都是「写完一条就把锚点
+// 推进成刚写那条分片的 `dedupKey`」⇒ 分片链成 `t1 ← t2 ← t3`。而折叠对分片行也登记 key、分片却不
+// 新增逻辑消息 ⇒ 第三片拿上一片的 key 当 `partOf` 目标时落空 ⇒ 新起一条消息：`load()` 折成
+// `[[t1,t2],[t3]]`，第二次恢复**永久** `invalid_messages`（0 请求）。
+// 修法：锚点只在**首片**写成功后落定一次，之后一律 `partOf` 指向首片。
+
+/** 把 `appendRound` 的入参抄一份（用来断言**落盘形状**：分片行的 `partOf` 链到哪）。 */
+function recordRoundWrites(inner) {
+  const rows = [];
+  const store = {
+    ...inner,
+    async appendRound(runId, record) {
+      rows.push(record);
+      return inner.appendRound(runId, record);
+    },
+  };
+  return { store, rows };
+}
+
+/** 某一轮里「带 `tool_result` 的消息行」，按落盘顺序。 */
+const resultRowsInRound = (rows, round) => rows.filter((record) => record?.round === round
+  && record?.kind === "message"
+  && (record.messages ?? []).some((message) => (Array.isArray(message?.content) ? message.content : [])
+    .some((block) => block?.type === "tool_result")));
+
+/** 轮 2 里「带 `tool_result` 的消息行」，按落盘顺序。 */
+const resultRowsOf = (rows) => resultRowsInRound(rows, 2);
+
+/**
+ * 手搭三工具崩溃现场（与 `upgradePathCrashScene` 同一手法：账本 + 快照逐字段点名，不靠注入时序）：
+ *   · round 1 载体行：`user` 任务；
+ *   · round 2：**只有** assistant 那一行消息行（三个 `tool_use`），没有任何结果行，也没有轮载体行；
+ *   · 快照：`snapshotResultIds` 那批结果已成型（A 集合），`pendingIds` 里未执行的那批还在飞（B 集合）。
+ * 崩溃轮 assistant 已在账本里 ⇒ #424 守卫放行，A 集合照常入账（这是本票的现场）。
+ */
+async function threeToolCrashScene(inner, { snapshotResultIds, pendingIds }) {
+  const task = { role: "user", content: [text("任务")] };
+  const assistant = {
+    role: "assistant",
+    content: [text("第二轮"), toolUse("t1"), toolUse("t2"), toolUse("t3")],
+  };
+  await inner.appendRound(RUN_ID, {
+    round: 1,
+    roundKey: `${RUN_ID}:round:1`,
+    dedupKey: `${RUN_ID}:engine:round:1`,
+    messages: [task],
+    summary: "missing",
+    ts: new Date().toISOString(),
+  });
+  await inner.appendRound(RUN_ID, {
+    round: 2,
+    roundKey: `${RUN_ID}:round:2`,
+    dedupKey: `${RUN_ID}:msg:2:0`,
+    kind: "message",
+    seq: 0,
+    messages: [assistant],
+    ts: new Date().toISOString(),
+  });
+  await inner.saveRunSnapshot(RUN_ID, {
+    round: 2,
+    messages: [task, assistant],
+    persistedTranscriptLength: 2,
+    executedToolIds: [...snapshotResultIds],
+    pendingToolUses: pendingIds.map(toolUse),
+    toolResults: snapshotResultIds.map((id) => ({ toolUseId: id, toolResult: toolResultBlock(id) })),
+    toolOutputs: [],
+    compactionStats: [],
+    ts: new Date().toISOString(),
+  });
+  return inner;
+}
+
+test("#430 崩溃轮 3 条结果（纯 A 集合）⇒ 折叠后一条聚合 user 消息 [t1,t2,t3]，第二次恢复成功", async () => {
+  const inner = createMemoryTranscriptStore();
+  await threeToolCrashScene(inner, {
+    snapshotResultIds: ["t1", "t2", "t3"],
+    pendingIds: ["t1", "t2", "t3"],
+  });
+  const { store, rows } = recordRoundWrites(inner);
+  const resumed = await runLoop({
+    store,
+    provider: createFakeProvider([endTurn("续接完成")]),
+    executeTool: async () => {
+      throw new Error("补跑不该发生：三个工具都已在 executedToolIds 里（A 集合）");
+    },
+  });
+  assert.equal(resumed.ok, true, "第一次恢复必须成功");
+
+  const records = await inner.load(RUN_ID);
+  assert.deepEqual(aggregateResults(records), [{ role: "user", ids: ["t1", "t2", "t3"] }],
+    "三条结果必须折回**一条**聚合 user 消息（修前实测 `[[t1,t2],[t3]]`，两条）");
+  // 落盘形状（修法本体）：首片无 `partOf`，后两片**都**指向首片的 `dedupKey`——不是链到上一片。
+  const resultRows = resultRowsOf(rows);
+  assert.equal(resultRows.length, 3, "三个结果各落一行");
+  assert.equal(resultRows[0].partOf, undefined, "首片不带 `partOf`：它自己就是聚合消息");
+  assert.deepEqual(
+    resultRows.slice(1).map((record) => record.partOf),
+    [resultRows[0].dedupKey, resultRows[0].dedupKey],
+    "后两片必须都 `partOf` 指向**首片**（修前是链式：第二片指首片、第三片指第二片）",
+  );
+
+  // 第二次恢复：折出来的上下文必须合法，且三个结果各一份。
+  const provider = createFakeProvider([endTurn("第二次续接完成")]);
+  const second = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(second.ok, true,
+    `第二次恢复必须成功（修前实测：\`invalid_messages: tool_result ids do not match assistant tool_use ids\`，0 请求；实测：\`${String(second.error)}\`）`);
+  assert.equal(provider.requests.length, 1, "第二次恢复必须真的发过一次模型请求（修前 0 次）");
+  for (const id of ["t1", "t2", "t3"]) {
+    const blocks = resultsFor(provider.requests[0].messages, id);
+    assert.equal(blocks.length, 1, `${id} 的结果在第二次恢复后必须恰好一份`);
+    assert.equal(blocks[0].content, `out-${id}`, `${id} 的内容必须逐字相同`);
+  }
+  assert.deepEqual(aggregateResults(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1", "t2", "t3"] }],
+    "第二次恢复之后账本形状不许变（仍是一条聚合 user 消息）");
+});
+
+test("#430 混合形状（A 集合 2 条 + B 集合补跑 1 条）⇒ 仍是一条聚合 user 消息 [t1,t2,t3]", async () => {
+  const inner = createMemoryTranscriptStore();
+  await threeToolCrashScene(inner, {
+    snapshotResultIds: ["t1", "t2"],
+    pendingIds: ["t1", "t2", "t3"],
+  });
+  const { store, rows } = recordRoundWrites(inner);
+  const resumed = await runLoop({
+    store,
+    provider: createFakeProvider([endTurn("续接完成")]),
+    executeTool: async ({ id }) => `out-${String(id)}`,
+  });
+  assert.equal(resumed.ok, true, "第一次恢复必须成功");
+
+  const records = await inner.load(RUN_ID);
+  assert.deepEqual(aggregateResults(records), [{ role: "user", ids: ["t1", "t2", "t3"] }],
+    "A 集合两条 + B 集合一条必须折回**同一条**聚合 user 消息（评审探针 E 的形状）");
+  const resultRows = resultRowsOf(rows);
+  assert.equal(resultRows.length, 3, "A 两条 + B 一条 = 三行");
+  assert.equal(resultRows[0].partOf, undefined, "A 集合首片自己起聚合消息");
+  assert.deepEqual(
+    resultRows.slice(1).map((record) => record.partOf),
+    [resultRows[0].dedupKey, resultRows[0].dedupKey],
+    "A 的第二条与 B 的那条都必须 `partOf` 指向**同一个**首片（B 集合读到的是 A 落定的锚点）",
+  );
+
+  const provider = createFakeProvider([endTurn("第二次续接完成")]);
+  const second = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(second.ok, true, `第二次恢复必须成功（实测：\`${String(second.error)}\`）`);
+  assert.equal(provider.requests.length, 1, "第二次恢复必须真的发过一次模型请求");
+  for (const id of ["t1", "t2", "t3"]) {
+    assert.equal(resultsFor(provider.requests[0].messages, id).length, 1, `${id} 的结果必须恰好一份`);
+  }
+  assert.deepEqual(aggregateResults(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1", "t2", "t3"] }],
+    "第二次恢复之后账本形状不许变（仍是一条聚合 user 消息）");
+});
+
+// ── issue #430 的 **B 集合单点覆盖**（合并前修复：独立评审逐点单独回退时发现的那一格）────────────
+// 上面两条用例的 B 集合最多 **1 条**（①纯 A 集合 A=3/B=0、②混合形状 A=2/B=1），而「锚点链到上一片」
+// 这个病只在**同一锚点下写第 2 片**时才发作 ⇒ 只回退 B 集合那一处
+// （`orchestrator.js` 里 `resumedResultRowKey === undefined` 那行）时既有用例**全绿、0 红**，三处修法里
+// 有一处零回归保护。本用例把 B 集合堆到 3 条（A 集合为空），专钉那一处。
+test("#430 B 集合 3 条（A 集合为空）⇒ 首片当锚点、后两片都指首片，折叠后一条聚合 user 消息", async () => {
+  const inner = createMemoryTranscriptStore();
+  await threeToolCrashScene(inner, { snapshotResultIds: [], pendingIds: ["t1", "t2", "t3"] });
+  // 前置：三个工具都**没执行**（A 集合为空）⇒ 三条结果只能由补跑段（B 集合）产出。
+  const snapshot = await inner.loadLatestRunSnapshot(RUN_ID);
+  assert.deepEqual(snapshot?.executedToolIds, [], "前置：A 集合为空（一个工具都还没执行）");
+  assert.deepEqual(snapshot?.toolResults, [], "前置：快照里没有任何已成型的结果（A 集合为空）");
+  assert.deepEqual(snapshot?.pendingToolUses?.map((block) => block.id), ["t1", "t2", "t3"],
+    "前置：三条都还在飞 ⇒ B 集合 = 三条全部");
+
+  const { store, rows } = recordRoundWrites(inner);
+  const executed = [];
+  const resumed = await runLoop({
+    store,
+    provider: createFakeProvider([endTurn("续接完成")]),
+    executeTool: async ({ id }) => {
+      executed.push(id);
+      return `out-${String(id)}`;
+    },
+  });
+  assert.equal(resumed.ok, true, "第一次恢复必须成功");
+  assert.deepEqual(executed, ["t1", "t2", "t3"],
+    "前置：三条结果必须真的由补跑段产出（B 集合；A 集合一条都不该走那条路）");
+
+  // 落盘形状（修法本体）：首片无 `partOf`，后两片**都**指向首片——不是链到上一片。
+  const resultRows = resultRowsInRound(rows, 2);
+  assert.equal(resultRows.length, 3, "三个结果各落一行");
+  assert.equal(resultRows[0].partOf, undefined,
+    "首片不带 `partOf`：B 集合首片自己就是聚合消息，并落定为后续分片的锚点");
+  assert.deepEqual(
+    resultRows.slice(1).map((record) => record.partOf),
+    [resultRows[0].dedupKey, resultRows[0].dedupKey],
+    "后两片必须都 `partOf` 指向**首片**（只回退 B 集合那一处时这里是 [首片, 第二片] ⇒ 本用例红）",
+  );
+
+  const records = await inner.load(RUN_ID);
+  assert.deepEqual(aggregateResults(records), [{ role: "user", ids: ["t1", "t2", "t3"] }],
+    "三条结果必须折回**一条**聚合 user 消息（只回退 B 集合那一处时实测 `[[t1,t2],[t3]]`，两条）");
+
+  // 第二次恢复：折出来的上下文必须合法，且三个结果各一份。
+  const provider = createFakeProvider([endTurn("第二次续接完成")]);
+  const second = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(second.ok, true,
+    "第二次恢复必须成功（只回退 B 集合那一处时实测："
+    + "`invalid_messages: tool_result ids do not match assistant tool_use ids`，0 请求；"
+    + `实测：\`${String(second.error)}\``);
+  assert.equal(provider.requests.length, 1,
+    "第二次恢复必须真的发过一次模型请求（只回退 B 集合那一处时 0 次）");
+  for (const id of ["t1", "t2", "t3"]) {
+    const blocks = resultsFor(provider.requests[0].messages, id);
+    assert.equal(blocks.length, 1, `${id} 的结果在第二次恢复后必须恰好一份`);
+    assert.equal(blocks[0].content, `out-${id}`, `${id} 的内容必须逐字相同`);
+  }
+  assert.deepEqual(aggregateResults(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1", "t2", "t3"] }],
+    "第二次恢复之后账本形状不许变（仍是一条聚合 user 消息）");
+});
+
+// 第三个写入口（同一个缺陷的第三份拷贝）：主循环「工具结果一产生就写」那一处也把锚点推进成刚写那条
+// 分片的 key。它不经过 resume，只要**崩溃在轮载体行落盘之前**（轮行没落 ⇒ 折叠层找不到载体 ⇒ 消息行
+// 原样留在 `load()` 输出里、由 `foldLedgerMessages` 折），三条结果就会裂成 `[[t1,t2],[t3]]`。
+// ⚠ 别把这条读成「只有崩溃才中招」：**正常轮就已中招**（见下面 `#430 正常轮` 那一组），本用例只是让
+// 同一个坏形状在 `foldLedgerMessages` 那一侧也显形（载体行没落 ⇒ `load()` 不折）。
+test("#430 主循环写入口（崩在轮载体行之前）⇒ 三条结果同样折回一条聚合 user 消息", async () => {
+  const inner = createMemoryTranscriptStore();
+  let fired = false;
+  const store = {
+    ...inner,
+    async appendRound(runId, record) {
+      if (!fired && record?.dedupKey === `${RUN_ID}:engine:round:1`) {
+        fired = true;
+        throw new Error("simulated crash before round carrier row");
+      }
+      return inner.appendRound(runId, record);
+    },
+  };
+  const first = await runLoop({
+    store,
+    provider: createFakeProvider([toolTurn(["t1", "t2", "t3"])]),
+    executeTool: async ({ id }) => `out-${String(id)}`,
+    resume: false,
+    initialUserMessage: "任务",
+  });
+  assert.equal(first.ok, false, "前置：第一次运行必须真的崩在轮载体行写入点");
+  assert.match(first.error, /simulated crash before round carrier row/u);
+
+  const crashed = await inner.load(RUN_ID);
+  assert.deepEqual(
+    crashed.filter((record) => record?.round === 1 && record?.kind === "message")
+      .flatMap((record) => (record.messages ?? []).flatMap((message) => message.content ?? []))
+      .filter((block) => block?.type === "tool_result")
+      .map((block) => block.tool_use_id),
+    ["t1", "t2", "t3"],
+    "前置：三条结果都已逐条入账（轮载体行没落 ⇒ 它们原样留在 load() 输出里）",
+  );
+  // 轮载体没落 ⇒ `load()` 按契约把消息行原样留着（每条自成一「记录」），所以形状要看**恢复口径**
+  // （`foldLedgerMessages`，`restoreResume` 用的就是它）与落盘行的 `partOf` 链。
+  const crashedResultRows = crashed.filter((record) => record?.round === 1
+    && record?.kind === "message"
+    && (record.messages ?? []).some((message) => (Array.isArray(message?.content) ? message.content : [])
+      .some((block) => block?.type === "tool_result")));
+  assert.equal(crashedResultRows.length, 3, "三条结果各一行");
+  assert.equal(crashedResultRows[0].partOf, undefined, "首片不带 `partOf`");
+  assert.deepEqual(
+    crashedResultRows.slice(1).map((record) => record.partOf),
+    [crashedResultRows[0].dedupKey, crashedResultRows[0].dedupKey],
+    "后两片必须都 `partOf` 指向**首片**（修前是链式：第三片指第二片）",
+  );
+  const crashedAggregates = foldLedgerMessages(crashed)
+    .filter((entry) => (Array.isArray(entry.message?.content) ? entry.message.content : [])
+      .some((block) => block?.type === "tool_result"));
+  assert.equal(crashedAggregates.length, 1,
+    "崩溃现场的账本折回来就必须是**一条**聚合 user 消息（修前实测 `[[t1,t2],[t3]]`，两条）");
+  assert.deepEqual(
+    crashedAggregates[0].message.content.map((block) => block.tool_use_id),
+    ["t1", "t2", "t3"],
+  );
+
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(resumed.ok, true,
+    `恢复必须成功（修前实测：\`invalid_messages: tool_result ids do not match assistant tool_use ids\`，0 请求；实测：\`${String(resumed.error)}\`）`);
+  assert.equal(provider.requests.length, 1, "恢复必须真的发过一次模型请求");
+  for (const id of ["t1", "t2", "t3"]) {
+    assert.equal(resultsFor(provider.requests[0].messages, id).length, 1, `${id} 的结果必须恰好一份`);
+  }
+  // 崩溃轮一直没有轮载体（第一次就崩在它上面）⇒ `load()` 按契约原样留着消息行；形状仍看恢复口径。
+  const afterResume = await inner.load(RUN_ID);
+  const afterAggregates = foldLedgerMessages(afterResume)
+    .filter((entry) => (Array.isArray(entry.message?.content) ? entry.message.content : [])
+      .some((block) => block?.type === "tool_result"));
+  assert.equal(afterAggregates.length, 1, "恢复之后折回来仍是**一条**聚合 user 消息");
+  assert.deepEqual(
+    afterAggregates[0].message.content.map((block) => block.tool_use_id),
+    ["t1", "t2", "t3"],
+  );
+});
+
+// ── issue #430 的**生产主路径**：正常轮 ≥3 个工具调用（合并前修复：评审实测「正常轮就已中招」）──────
+// 上面那条主循环用例的现场是「崩溃在轮载体行之前」，容易被读成「只有崩溃才可见」。实测不是：`resume:false`
+// 的正常一轮（3 个 `tool_use` + 3 条结果 + `end_turn`）就会把账本写成链式
+// `msg:1:1`(none) → `msg:1:2`(partOf `msg:1:1`) → `msg:1:3`(partOf `msg:1:2`)，`load()` 折成
+// `[assistant, user(t1,t2), user(t3)]`，**紧接着的** resume 直接 `invalid_messages`、**0 请求** ⇒ 该 runId
+// 永久不可恢复。不需要崩溃、不需要 A/B 集合——这是本票最值钱的战果，必须有回归保护。
+test("#430 正常轮 3 个工具调用 ⇒ 落盘 partOf 不链式、load() 一条聚合 user 消息、紧随的 resume 成功", async () => {
+  const ids = ["t1", "t2", "t3"];
+  const inner = createMemoryTranscriptStore();
+  const { store, rows } = recordRoundWrites(inner);
+  const first = await runLoop({
+    store,
+    provider: createFakeProvider([toolTurn(ids), endTurn("完成")]),
+    executeTool: async ({ id }) => `out-${String(id)}`,
+    resume: false,
+    initialUserMessage: "任务",
+  });
+  assert.equal(first.ok, true, "前置：正常轮必须跑完（这不是崩溃现场，`resume:false` 的一轮跑到底）");
+
+  // 落盘形状（修法本体）：首片无 `partOf`，后两片**都**指向首片——不是链到上一片。
+  const resultRows = resultRowsInRound(rows, 1);
+  assert.deepEqual(
+    resultRows.map((record) => record.messages?.[0]?.content?.[0]?.tool_use_id),
+    ids,
+    "前置：三条结果各落一行，顺序 = 真实发生顺序",
+  );
+  assert.equal(resultRows[0].partOf, undefined, "首片不带 `partOf`：它自己就是聚合消息");
+  assert.deepEqual(
+    resultRows.slice(1).map((record) => record.partOf),
+    [resultRows[0].dedupKey, resultRows[0].dedupKey],
+    "后两片必须都 `partOf` 指向**首片**（只回退主循环那一处时是链式：`msg:1:3` 指 `msg:1:2`）",
+  );
+
+  const records = await inner.load(RUN_ID);
+  assert.deepEqual(aggregateResults(records), [{ role: "user", ids }],
+    "正常轮的三条结果必须折回**一条**聚合 user 消息（只回退主循环那一处时实测 `[[t1,t2],[t3]]`，"
+    + "两条；`load()` 的序列会变成 assistant / user(t1,t2) / user(t3)）");
+
+  // 紧随其后的 resume：修前这里在第一次模型请求之前就 `invalid_messages`（0 请求）。
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(resumed.ok, true,
+    "紧随的 resume 必须成功（只回退主循环那一处时实测："
+    + "`invalid_messages: tool_result ids do not match assistant tool_use ids`，0 请求；"
+    + `实测：\`${String(resumed.error)}\`）`);
+  assert.equal(provider.requests.length, 1, "resume 必须真的发过一次模型请求（只回退主循环那一处时 0 次）");
+  for (const id of ids) {
+    const blocks = resultsFor(provider.requests[0].messages, id);
+    assert.equal(blocks.length, 1, `${id} 的结果在 resume 之后必须恰好一份`);
+    assert.equal(blocks[0].content, `out-${id}`, `${id} 的内容必须逐字相同`);
+  }
 });

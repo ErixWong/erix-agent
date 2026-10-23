@@ -1761,3 +1761,173 @@ describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒�
     t.diagnostic("①–⑤ 代码面反向证 / 范围证 / 读不到文本 逐条按预期");
   });
 });
+
+// ── #433 T0：`resolveExecCeiling → createCliTools({ execCeilingMs })` 这条接线的静态护栏 ──
+//
+// 病根（PR #444 评审现场）：T0 的修法有两半——引擎侧（`bin/tools.js#getCommandTimeoutMs` 按
+// `ceilingMs` 收口）与**装配侧**（`bin/cli.js#runChat` / `bin/repl.js#runRepl` 各调一次
+// `resolveExecCeiling(idleTimeout)`，把结果当 `execCeilingMs` 传给 `createCliTools`）。
+// 评审把**两处装配都断开**（`execCeilingMs` 从调用里去掉）之后全量测试**照样全绿**：
+// `test/tools.test.js` 是自己给 `createCliTools({ execCeilingMs: … })` 喂值的，
+// `test/cli-idle.test.js` 走的是「工具期喂表」与纯函数口径——**没有任何一格**真的去看那两处
+// 装配点写了什么。于是「接线被拆掉」只有人眼能发现。这条护栏补的就是那一格。
+//
+// 判据（**纯函数，读文本可注入**——反向证直接拿它问，不绑真实文件）：
+//   · 装配文件里必须有一个 `createCliTools({ … })` **调用**，其实参对象里出现 `execCeilingMs`，
+//     且不是 `execCeilingMs: null` / `undefined`（`null` 就是「不钳」，等于接线断开）；
+//   · 同一个文件里还要有 `resolveExecCeiling(` 调用——只传一个常量同样接不上；
+//   · 覆盖面**逐份点名**（`bin/cli.js` / `bin/repl.js`）：少一份 = 少一处接线，且会静默缩面。
+// 口径与其余几条一致：宁可窄而真（只认这一个选项名与这两个文件，不做语义判断）。
+
+/** 护栏要看见的选项名（**只在这一处**出现；反向证就是把它改掉 ⇒ 恰好「真实树」那一格红）。 */
+const EXEC_CEILING_WIRING_OPTION = "execCeilingMs";
+
+/** 覆盖面：`idle → exec 天花板` 的装配点，逐份点名 + 一句为什么它必须在面内。 */
+const EXEC_CEILING_WIRING_FILES = Object.freeze([
+  ["bin/cli.js", "runChat：chat 的装配点（`--idle-timeout` 的默认值就从这里进 run）"],
+  ["bin/repl.js", "runRepl：repl 的装配点（`--idle-timeout` 缺省 0 = 不启用 ⇒ 不钳）"],
+]);
+
+/** 从 `open`（必须是 `{` 或 `(`）起配对到同种括号的闭合处，返回闭合下标（找不到返 -1）。
+ *  只做括号计数，不解析字符串字面量：两处装配点的实参都是单行字面量，真出现带括号的字符串实参时
+ *  本护栏会红——那时改判据，不许反过来放行。 */
+function matchBracket(text, open) {
+  const opener = text[open];
+  const closer = opener === "{" ? "}" : ")";
+  let depth = 0;
+  for (let i = open; i < text.length; i += 1) {
+    if (text[i] === opener) depth += 1;
+    else if (text[i] === closer) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** `createCliTools({ … })` 的**实参对象**文本（`export function createCliTools({ … })` 那种声明不算调用）。 */
+function createCliToolsCallArgs(text) {
+  const needle = "createCliTools(";
+  const out = [];
+  let i = text.indexOf(needle);
+  while (i !== -1) {
+    const isDeclaration = /function\s+$/.test(text.slice(Math.max(0, i - 40), i));
+    const argStart = i + needle.length;
+    if (!isDeclaration && text[argStart] === "{") {
+      const end = matchBracket(text, argStart);
+      if (end !== -1) out.push(text.slice(argStart, end + 1));
+    }
+    i = text.indexOf(needle, i + needle.length);
+  }
+  return out;
+}
+
+/** 接线判据（纯函数）：返回每个装配点的缺口，空数组 = 接线在。 */
+function missingExecCeilingWiring(textByFile, option = EXEC_CEILING_WIRING_OPTION) {
+  const findings = [];
+  const wired = new RegExp(`(?:^|[{,\\s])${option}(?!\\s*:\\s*(?:null|undefined)\\b)`);
+  for (const [rel, text] of Object.entries(textByFile)) {
+    if (typeof text !== "string") {
+      findings.push(`${rel}: 读不到文本（装配点无从校起，不许静默放行）`);
+      continue;
+    }
+    if (!/\bresolveExecCeiling\s*\(/.test(text)) {
+      findings.push(`${rel}: 没有 \`resolveExecCeiling(...)\` 调用——exec 天花板没被算出来，接不上`);
+    }
+    const calls = createCliToolsCallArgs(text);
+    if (calls.length === 0) {
+      findings.push(`${rel}: 找不到 \`createCliTools({ … })\` 调用点（装配点被改名/搬走？）`);
+      continue;
+    }
+    // 行注释先剥掉：注释里提到选项名不算接线
+    const hit = calls.some((args) => wired.test(args.replace(/\/\/[^\n]*/g, "")));
+    if (!hit) {
+      findings.push(`${rel}: \`createCliTools({ … })\` 的实参里没有 \`${option}\`（或传的是 null/undefined = 不钳）——idle 与 exec 天花板之间的接线断了`);
+    }
+  }
+  return findings;
+}
+
+describe("静态守卫：idle → exec 天花板的装配接线（issue #433 T0；PR #444 评审补）", () => {
+  const readWiring = () => Object.fromEntries(
+    EXEC_CEILING_WIRING_FILES.map(([rel]) => [rel, realReadText(rel)]),
+  );
+
+  it("前置：覆盖面逐份点名两处装配点，且每份都真的解析得到 createCliTools({ … }) 调用", (t) => {
+    assert.deepEqual(
+      EXEC_CEILING_WIRING_FILES.map(([rel]) => rel),
+      ["bin/cli.js", "bin/repl.js"],
+      "接线护栏的覆盖面被改窄了：两处装配点（chat / repl）都必须逐份点名，否则少的那一处断了没人知道",
+    );
+    for (const [rel, why] of EXEC_CEILING_WIRING_FILES) {
+      const text = realReadText(rel);
+      assert.equal(typeof text, "string", `${rel} 读不到文本：装配点无从校起`);
+      const calls = createCliToolsCallArgs(text);
+      assert.ok(calls.length >= 1,
+        `${rel} 里解析不到任何 \`createCliTools({ … })\` 调用（解析口径被改窄 / 装配点被搬走）——本规则会恒绿`);
+      t.diagnostic(`${rel}（${why}）: createCliTools 调用点 ${calls.length} 处（${calls.map((a) => a.trim()).join(" | ")}）`);
+    }
+  });
+
+  it("两处装配点都把 resolveExecCeiling 的结果当 execCeilingMs 传给了 createCliTools（真实树 = 回归基线）", (t) => {
+    const findings = missingExecCeilingWiring(readWiring());
+    t.diagnostic(`接线判据：${findings.length ? findings.join(" / ") : "两处装配点都在"}`);
+    assert.deepEqual(
+      findings,
+      [],
+      `idle → exec 天花板的接线断了（评审的变异就是把这两处拆掉，全量测试照样绿）：\n${findings.join("\n")}\n`
+      + "修法：装配处写 `const execCeilingMs = resolveExecCeiling(idleTimeout);` 并把它传给 `createCliTools({ …, execCeilingMs })`；"
+      + "传 `null` 等于不钳，同样算断开",
+    );
+  });
+
+  it("反向证与放行证：拿掉选项 / 传 null / 删掉 resolveExecCeiling ⇒ 各自点名；不动 ⇒ 零处红", (t) => {
+    // 合成文本从同一个选项名造：这样「把护栏断言的字面量改掉」时这一格仍然自洽（红的只有真实树那一格）
+    const wire = (rel) => [
+      `  const execCeilingMs = resolveExecCeiling(idleTimeout);`,
+      `  const cliTools = createCliTools({ cwd, todo: !todoDisabled, ${EXEC_CEILING_WIRING_OPTION} });`,
+      `  // ${rel}`,
+    ].join("\n");
+    const fake = (rel, text) => ({ [`fake/${rel}`]: text });
+
+    // ① 放行证：接线完整 ⇒ 零处红（否则下面三条只是「永远有话说」）
+    assert.deepEqual(missingExecCeilingWiring(fake("ok.js", wire("ok"))), [], "自带的完整样例被判红：判据口径有问题");
+    // ② 拿掉选项 ⇒ 恰好点名那一个文件
+    const dropped = wire("dropped").replace(`, ${EXEC_CEILING_WIRING_OPTION} `, " ");
+    assert.ok(
+      createCliToolsCallArgs(dropped).every((args) => !args.includes(EXEC_CEILING_WIRING_OPTION)),
+      "变异没落上：createCliTools 的实参里还有那个选项名",
+    );
+    const droppedFindings = missingExecCeilingWiring(fake("dropped.js", dropped));
+    assert.equal(droppedFindings.length, 1, `拿掉选项应恰好 1 条缺口，实测：${JSON.stringify(droppedFindings)}`);
+    assert.match(droppedFindings[0], /^fake\/dropped\.js: .*接线断了/);
+    // ③ 传 null / undefined ⇒ 同样算断开（`null` 就是「不钳」，语义上等于没接线）
+    for (const bad of ["null", "undefined"]) {
+      const asNull = wire("nulled").replace(`, ${EXEC_CEILING_WIRING_OPTION} }`, `, ${EXEC_CEILING_WIRING_OPTION}: ${bad} }`);
+      assert.ok(asNull.includes(`${EXEC_CEILING_WIRING_OPTION}: ${bad}`), `变异没落上：${bad} 没写进去`);
+      assert.equal(missingExecCeilingWiring(fake("nulled.js", asNull)).length, 1,
+        `${EXEC_CEILING_WIRING_OPTION}: ${bad} 被当成了接线（它等于不钳）`);
+    }
+    // ④ 删掉 resolveExecCeiling ⇒ 点名它（只传一个常量同样接不上）
+    const noResolve = wire("noresolve").split("\n").slice(1).join("\n");
+    const noResolveFindings = missingExecCeilingWiring(fake("noresolve.js", noResolve));
+    assert.equal(noResolveFindings.length, 1, `删掉 resolveExecCeiling 应恰好 1 条缺口，实测：${JSON.stringify(noResolveFindings)}`);
+    assert.match(noResolveFindings[0], /没有 `resolveExecCeiling\(\.\.\.\)` 调用/);
+    // ⑤ 读不到文本 / 没有 createCliTools 调用 ⇒ 红（面少一份不许静默放行，与其余规则同口径）
+    assert.equal(missingExecCeilingWiring({ "fake/gone.js": null }).length, 1, "读不到文本时没有报错");
+    assert.equal(missingExecCeilingWiring(fake("nocall.js", "const x = 1;\n")).length, 2,
+      "既没有 resolveExecCeiling 也没有 createCliTools 调用时应报两条缺口");
+    // ⑥ 声明处不算调用（`export function createCliTools({ execCeilingMs = null })` 不许冒充装配点）
+    const declaration = "export function createCliTools({\n  execCeilingMs = null,\n}) {}\n";
+    assert.deepEqual(createCliToolsCallArgs(declaration), [], "函数声明被当成了调用点：护栏会拿声明冒充接线");
+    // ⑦ 注释里的选项名不算接线
+    const commented = [
+      "  const execCeilingMs = resolveExecCeiling(idleTimeout);",
+      "  const cliTools = createCliTools({ cwd, // execCeilingMs 待接",
+      "  });",
+    ].join("\n");
+    assert.equal(missingExecCeilingWiring(fake("commented.js", commented)).length, 1,
+      "注释里提到选项名被当成了接线");
+    t.diagnostic("①–⑦ 放行证 / 变异证 / 面证 逐条按预期");
+  });
+});

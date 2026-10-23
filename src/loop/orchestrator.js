@@ -24,11 +24,13 @@ import {
   extensionAllowed,
 } from "../reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "../reflection/l0.js";
-import { tryParseWrapupJson, normalizeWrapupWithLlm } from "../reflection/wrapup.js";
+import { tryParseWrapupJson } from "../reflection/wrapup.js";
 // issue #419 ① 后半段：循环里那份**内联**归一化请求（下面 `requestForJudge`）与
-// `normalizeWrapupWithLlm` 共用同一个「不思考」字面量，不许两处各写各的（否则日后必然漂移）。
-// ⚠ 单独一条 import 语句是**故意**的：上面那行 `normalizeWrapupWithLlm` 是死 import，
-//   它是删还是改成调用 `normalizeWrapupWithLlm` 属 #419 ③，**本票不动**（保持该行逐字不变）。
+// `normalizeWrapupWithLlm`（`src/reflection/wrapup.js` 的公开入口）共用同一个「不思考」字面量，
+// 不许两处各写各的（否则日后必然漂移）。
+// issue #430 顺手删掉本文件顶部那条**死 import**（`normalizeWrapupWithLlm` 在这里从来没有调用点，
+// 它是 `src/index.js` 的公开导出、契约中英各一处符号锚点、`test/wrapup*.test.js` 多格在用 ⇒ 只删
+// 这条 import，**不删函数本体**）。
 import { NORMALIZATION_REASONING_EFFORT } from "../reflection/wrapup.js";
 import {
   buildJudgePrompt,
@@ -506,6 +508,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   verification:{status:"verified"|"unverified"|"skipped"|"error", reason?:string, detail?:string},
  *   runState?:object,
  *   usage:{input_tokens:number, output_tokens:number, cacheRead?:number, cacheWrite?:number},
+ *   modelUsage:{input_tokens:number, output_tokens:number, cacheRead?:number, cacheWrite?:number},  // issue #438：run 累计里主模型自己的那份（含续写每一发）
+ *   engineUsage:{input_tokens:number, output_tokens:number, cacheRead?:number, cacheWrite?:number}, // issue #438：run 累计里引擎自发起的调用那份（judge / 归一化 / 折叠摘要 / 强制收尾）
  *   compactionStats:{compacted:boolean, foldedRounds:number, tokensBefore:number, tokensAfter:number, layers:object, userTurnGuard?:string, userTurnGuardChannel?:string}[]
  * }>}
  */
@@ -1271,7 +1275,8 @@ export async function runToolLoop(options) {
           ? provider.chat(summarizerRequest)
           : provider.chatStream({ ...summarizerRequest, onDelta: () => {} }),
       );
-      addUsage(response, undefined, { trackLatest: false });
+      // issue #438：折叠摘要器是**引擎自己发起**的调用 ⇒ 只进 engine 桶（不进模型轮账）。
+      addUsage(response, undefined, { trackLatest: false, account: "engine" });
       return response;
     },
     ...(onUsage === undefined ? {} : { onUsage }),
@@ -1834,6 +1839,20 @@ export async function runToolLoop(options) {
       : 4;
   const stallMode = resolvedStallDetection?.mode === "consecutive" ? "consecutive" : "appear";
   const usage = { input_tokens: 0, output_tokens: 0 };
+  // ── issue #438：用量分账（**纯加法**：`usage` 的口径与形状一字不动）────────────────────────
+  // 病根：主循环里 `response` 在续写循环（`stopReason:"max_tokens"`）里被**逐发覆盖**，而轮记录
+  // `record.response.usage` 读的就是这同一个变量 ⇒ 一轮真花 700+700+7 = 1407 个 `output_tokens`，
+  // 档案只记最后一发的 7（评审实测，200 倍量级失真），而「它只含最后一发」从没写进契约。
+  // 分账口径（四个桶，互不重叠）：
+  //   · `modelUsage` / `roundUsage` —— 主模型自己的响应（含续写每一发）；
+  //   · `engineUsage` / `roundEngineUsage` —— **引擎自发起的调用**：round judge / 收尾归一化 /
+  //     折叠摘要 / 强制收尾。混进模型账里，宿主就分不开「模型话多」与「引擎开销大」。
+  // `finalGuard` 是宿主回调（引擎不发起、也测不到它的用量）⇒ 两个桶都不计，见契约。
+  const modelUsage = { input_tokens: 0, output_tokens: 0 };
+  const engineUsage = { input_tokens: 0, output_tokens: 0 };
+  let roundUsage = { input_tokens: 0, output_tokens: 0 };
+  let roundEngineUsage = { input_tokens: 0, output_tokens: 0 };
+  let roundEngineCallCount = 0;
   let latestApiInputTokens;
   let latestApiEstimatedTokens;
   const completionEnabled = completion !== false;
@@ -1955,23 +1974,39 @@ export async function runToolLoop(options) {
     }
   };
 
-  const addUsage = (response, estimatedTokens, { trackLatest = true } = {}) => {
-    const inputTokens = response?.usage?.input_tokens;
-    if (Number.isFinite(inputTokens)) {
-      usage.input_tokens += inputTokens;
-      if (trackLatest) {
-        latestApiInputTokens = inputTokens > 0 ? inputTokens : undefined;
-        latestApiEstimatedTokens = Number.isFinite(estimatedTokens)
-          ? estimatedTokens
-          : undefined;
-      }
+  // 把一份 provider usage 累加进一个计数器（issue #438）：只搬四个计数字段，不换算、不补 0、
+  // 不改写来源。`cacheRead`/`cacheWrite` 只在来源报过时才出现（与 `usage` 既有口径同构）。
+  const accumulateUsage = (target, source) => {
+    if (source === null || typeof source !== "object") return target;
+    for (const key of ["input_tokens", "output_tokens", "cacheRead", "cacheWrite"]) {
+      const value = source[key];
+      if (Number.isFinite(value)) target[key] = (target[key] ?? 0) + value;
     }
-    if (Number.isFinite(response?.usage?.output_tokens)) {
-      usage.output_tokens += response.usage.output_tokens;
+    return target;
+  };
+
+  /**
+   * 记一次 provider 调用的用量。
+   * `account:"engine"` = 引擎自发起的调用（judge / 归一化 / 折叠摘要 / 强制收尾），
+   * 缺省 `"model"` = 主循环里模型自己的响应（含续写每一发）。
+   */
+  const addUsage = (response, estimatedTokens, { trackLatest = true, account = "model" } = {}) => {
+    const source = response?.usage;
+    accumulateUsage(usage, source);
+    if (account === "engine") {
+      accumulateUsage(engineUsage, source);
+      accumulateUsage(roundEngineUsage, source);
+      roundEngineCallCount += 1;
+    } else {
+      accumulateUsage(modelUsage, source);
+      accumulateUsage(roundUsage, source);
     }
-    for (const key of ["cacheRead", "cacheWrite"]) {
-      const value = response?.usage?.[key];
-      if (Number.isFinite(value)) usage[key] = (usage[key] ?? 0) + value;
+    const inputTokens = source?.input_tokens;
+    if (Number.isFinite(inputTokens) && trackLatest) {
+      latestApiInputTokens = inputTokens > 0 ? inputTokens : undefined;
+      latestApiEstimatedTokens = Number.isFinite(estimatedTokens)
+        ? estimatedTokens
+        : undefined;
     }
   };
 
@@ -2357,9 +2392,15 @@ export async function runToolLoop(options) {
   //   · 崩溃轮**一条结果行都没落**（`resumeToolResultRowKey === undefined`）⇒ 首片不带 `partOf`，
   //     它**自己**就是新起的那条聚合消息（在账本里也是一条独立逻辑消息，`persistedTranscriptLength`
   //     随 `appendMessageRowToTranscript` 的 `partOf === ""` 分支 +1，与账本折叠后的逻辑消息数
-  //     （`foldLedgerMessages`）对齐），然后把它写回 `resumeToolResultRowKey` 当后续分片（含 B 集合）
-  //     的锚点。否则每个结果都会各起一条 user 消息：合法但形状变了，`#326` 的
-  //     `<runId>:msg:<round>:<seq>` 序号语义也跟着散掉。
+  //     （`foldLedgerMessages`）对齐），然后把**它自己的** `dedupKey` 写回 `resumeToolResultRowKey`
+  //     当后续分片（含 B 集合）的锚点。否则每个结果都会各起一条 user 消息：合法但形状变了，
+  //     `#326` 的 `<runId>:msg:<round>:<seq>` 序号语义也跟着散掉。
+  //
+  // issue #430：**锚点写一次就钉住，不随分片推进**。分片行的 key 不是合法的 `partOf` 寻址目标——
+  // 读侧折叠（`src/store/message-rows.js#foldLedgerMessages` / `#foldMessageRows`）对分片行不新增
+  // 逻辑消息，于是它的 key 指向的是「下一条消息」。把锚点推进成「刚写那条分片的 `dedupKey`」时，
+  // 第三片起就落空并**新起一条消息**（实测 `[[t1,t2],[t3]]`），第二次恢复永久 `invalid_messages`。
+  // 所以下面只在**首片**写成功后落定一次 `rowKey`，之后一律 `partOf` 指向它。
   //
   // issue #424（守卫）：**崩溃轮的 assistant 正文不在账本里时，整段跳过入账**。升级路径（旧账本 +
   // 快照补全）上崩溃轮的 assistant 正文只存在于 run snapshot，`restoreResume` 只把它补进内存
@@ -2392,7 +2433,8 @@ export async function runToolLoop(options) {
         crashRound,
         rowKey === undefined ? {} : { partOf: rowKey },
       );
-      if (persistedRowKey !== undefined) rowKey = persistedRowKey;
+      // issue #430：只在首片写成功后落定锚点，之后**不推进**（分片 key 不能当 `partOf` 目标）。
+      if (rowKey === undefined && persistedRowKey !== undefined) rowKey = persistedRowKey;
     }
     if (rowKey !== undefined) runLoopState.resumeToolResultRowKey = rowKey;
   };
@@ -2632,6 +2674,9 @@ export async function runToolLoop(options) {
     throwIfAborted,
     messageRounds,
     usage,
+    // issue #438：run 级分账两桶（`usage` 仍是两者之和，逐字不动）。
+    modelUsage,
+    engineUsage,
     compactionStats,
     refreshRunState,
     markRunState,
@@ -2830,7 +2875,8 @@ export async function runToolLoop(options) {
       clearTimeout(timeoutId);
       removeParentAbort?.();
     }
-    addUsage(response, undefined, { trackLatest: false });
+    // issue #438：judge 是引擎自发起的调用 ⇒ 只进 engine 桶（不进模型轮账）。
+    addUsage(response, undefined, { trackLatest: false, account: "engine" });
     // 带出当次 judge 调用的用量（issue #33 B）：judge.log / 逐轮 transcript 可对账；
     // 超时/出错路径 response 为 undefined，usage 缺省（调用方不设置该字段）。
     const inputTokens = response?.usage?.input_tokens;
@@ -3457,8 +3503,8 @@ export async function runToolLoop(options) {
     // 必须在补跑段（B 集合）之前：
     //   · `seq` 顺序 = 崩溃那一刻的真实发生顺序（A 集合先于 B 集合被产出），折叠后聚合消息里的
     //     block 顺序与内存里的 `messages` 一致；
-    //   · `resumeToolResultRowKey` 由本段向前推进（`resumeToolResultRowKey === undefined` 时首个 A 结果
-    //     就是新的聚合消息锚点），补跑段读到的正是推进后的值 ⇒ 两种集合接回**同一条**聚合消息。
+    //   · `resumeToolResultRowKey` 由本段**落定一次**（`undefined` 时首个 A 结果就是新的聚合消息锚点；
+    //     issue #430 起不随分片推进），补跑段读到的正是这个首片锚点 ⇒ 两种集合接回**同一条**聚合消息。
     await journalResumeUnpersistedToolResults();
     if (runLoopState.resumePendingTools.length > 0) {
       const resumedToolResults = [];
@@ -3468,6 +3514,8 @@ export async function runToolLoop(options) {
       //   · 下一次恢复折出来的 `flatMap(record.messages)` 仍是**一条**含全部结果的 user 消息，
       //     `validateMessages` 的严格配对不会报重复 id（旧写法靠 `…:resume` 行重抄整条聚合消息，
       //     逐条入账后就会把已完成的那个结果存两遍）。
+      // issue #430：锚点同样**只在首片落定一次**，不随分片推进（分片行的 key 不是合法的 `partOf`
+      // 寻址目标，链到上一片会让第三片起新起一条消息）。A 集合已经首片落地时这里拿到的就是首片 key。
       const journaledResumedResults = new Set();
       let resumedResultRowKey = runLoopState.resumeToolResultRowKey;
       const journalResumedToolResults = async () => {
@@ -3479,7 +3527,9 @@ export async function runToolLoop(options) {
             runLoopState.rounds,
             resumedResultRowKey === undefined ? {} : { partOf: resumedResultRowKey },
           );
-          if (persistedRowKey !== undefined) resumedResultRowKey = persistedRowKey;
+          if (resumedResultRowKey === undefined && persistedRowKey !== undefined) {
+            resumedResultRowKey = persistedRowKey;
+          }
         }
       };
       for (const [index, resumePendingTool] of runLoopState.resumePendingTools.entries()) {
@@ -3681,6 +3731,10 @@ export async function runToolLoop(options) {
     let stallSignature = null;
     let lastSignatureThisRound = null;
     emitEvent({ type: "round_start", round });
+    // issue #438：本轮两个桶从零开始（放在 `compactBeforeRound` 之前——折叠摘要器的用量属于本轮）。
+    roundUsage = { input_tokens: 0, output_tokens: 0 };
+    roundEngineUsage = { input_tokens: 0, output_tokens: 0 };
+    roundEngineCallCount = 0;
     const compactionStatsStart = compactionStats.length;
     const compaction = await compactBeforeRound(round);
     let requestStateBlock = compaction.requestStateBlock;
@@ -3856,7 +3910,11 @@ export async function runToolLoop(options) {
             round,
             toolResultRowKey === undefined ? {} : { partOf: toolResultRowKey },
           );
-          if (persistedRowKey !== undefined) toolResultRowKey = persistedRowKey;
+          // issue #430：锚点 = 本轮聚合消息的**首片** key，写成功后**不再推进**（分片 key 不能当
+          // `partOf` 目标）。链到上一片时第三个结果起就折不回聚合消息（崩溃在轮行落盘之前时可见）。
+          if (toolResultRowKey === undefined && persistedRowKey !== undefined) {
+            toolResultRowKey = persistedRowKey;
+          }
         }
         emitEvent({ type: "tool_result", round, toolResult: cloneState(toolResult) });
       }
@@ -3941,7 +3999,8 @@ export async function runToolLoop(options) {
         if (maxTokens !== undefined) requestForJudge.maxTokens = maxTokens;
         if (temperature !== undefined) requestForJudge.temperature = temperature;
         const judgeResponse = await awaitWithAbort(wrapupEvaluator.chat(requestForJudge));
-        addUsage(judgeResponse, undefined, { trackLatest: false });
+        // issue #438：收尾归一化同样是引擎自发起的调用 ⇒ 只进 engine 桶。
+        addUsage(judgeResponse, undefined, { trackLatest: false, account: "engine" });
         const candidate = tryParseWrapupJson(
           textFromBlocks(blocksFor(judgeResponse?.content)),
         );
@@ -4177,6 +4236,14 @@ export async function runToolLoop(options) {
         stopReason: response?.stopReason,
         ...(response?.usage === undefined ? {} : { usage: response.usage }),
       },
+      // issue #438（新键，纯加法）：本轮**全部**响应的累计用量——逐轮账（预算/计费/「每轮输出多少」）
+      // 读这个。上面 `response.usage` 仍是「最后一次响应的 usage」（历史形状，逐字不动：续写轮里
+      // 它只有最后一发）。零值恒在（`{input_tokens:0, output_tokens:0}`），不是缺字段。
+      usage: { ...roundUsage },
+      // 本轮**引擎自发起的调用**（round judge / 收尾归一化 / 折叠摘要）的用量。缺键 = 本轮没有
+      // 这类调用；有键才写（同 `judge`/`compactionStats` 的缺省口径）。强制收尾发生在最后一条轮记录
+      // 之后 ⇒ 它只出现在 run 级 `result.engineUsage` 里。
+      ...(roundEngineCallCount === 0 ? {} : { engineUsage: { ...roundEngineUsage } }),
       textPreview: textFromBlocks(content),
       toolUses: content.filter((block) => block?.type === "tool_use").length,
       summary: roundSummary,

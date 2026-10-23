@@ -1029,6 +1029,54 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
 且是它修完自身缺陷之后的样本，不外推。这也不构成退役这个选项的理由：它留在白名单里，五个测试文件
 覆盖着，关着的时候零成本。
 
+## 用量分账：逐轮账 vs 引擎开销（issue #438）
+
+`result.usage` 一字未动：它累计这个 run **每一次** provider 调用——模型自己的响应，加上引擎为
+自己发起的调用。issue #438 只**加**键做分账：既有键的形状与语义一律不变，忽略新键的宿主行为
+与今天逐字一致。
+
+| 键 | 落在哪 | 语义 |
+|---|---|---|
+| `usage` | `result`（不变） | run 累计，覆盖**全部** provider 调用：`modelUsage` + `engineUsage`，逐字段相加（缺键当 0） |
+| `modelUsage` | `result`（**新**） | run 累计里主循环自己那些模型响应（含 `max_tokens` 续写的每一发） |
+| `engineUsage` | `result`（**新**） | run 累计里引擎**自己发起**的调用 |
+| `usage` | `RoundRecord`（**新**） | 本轮**全部**模型响应的累计：续写每一发都算 |
+| `engineUsage` | `RoundRecord`（**新**） | 本轮**期间**跑过的引擎自发起调用；一个都没有时**缺键** |
+| `response.usage` | `RoundRecord`（不变） | **只含本轮最后一发**响应——历史形状，逐字保留 |
+
+宿主必须读对的四件事（读错就是静默算错钱）：
+
+- **`record.response.usage` 不是这一轮的花费。** 它就是本轮最后那一次 provider 响应的 `usage`。
+  撞上 `stopReason: "max_tokens"` 的轮会**在同一轮内**续写（最多 `maxTokenContinuations` 次额外请求，
+  全部并进同一条 assistant 消息与同一条 `RoundRecord`），于是 `response.usage` 只带最后一发。
+  真实轮上的实测：三发 700 + 700 + 7 个 `output_tokens`（共 1407）留下的是
+  `response.usage.output_tokens === 7`——200 倍量级失真。issue #438 之前契约从没写过它是哪一种，
+  所以把它当「本轮的用量」读的宿主，读到的是一个从未被承诺过的数。**本轮的花费读 `record.usage`。**
+  `response.usage` 逐字不变，因为已有宿主在读它——投影也一样：`meta.usage` 仍是那个「最后一发」的值，
+  issue #438 刻意没有把它换掉。
+- **`record.usage` 才是逐轮账。** 它把本轮每一发响应加起来，所以预算、计费、以及「每轮输出多少」
+  这类分析读它。`input_tokens` / `output_tokens` **恒在**（provider 没报时是 0，绝不是缺键），
+  `cacheRead` / `cacheWrite` 只在某一发报过时才出现（与 `result.usage` 同一条字段在场规则）。
+  无续写、且 provider 四个字段都报的那一轮，`record.usage` 与 `record.response.usage` 深相等；
+  这条等式是测试钉住的，不是巧合。完全没有用量时该键仍在，形状是
+  `{ input_tokens: 0, output_tokens: 0 }`。**本版本之前**写下的记录（或宿主自己写的那行）压根没有
+  `record.usage`：它是加法键，缺键的意思是「这行早于这个键」，绝不当 0 读。
+- **引擎开销是另一个桶，永不进逐轮账。** 引擎会发起模型没要求的 provider 调用：round judge、
+  收尾归一化器、折叠摘要器、以及强制收尾（`forceFinalIfNeeded`（`src/loop/termination.js`））。
+  它们的用量落进 `engineUsage`——前三个是**轮级**（它们在轮内跑），强制收尾是 **run 级**
+  （它在最后一条轮记录落盘**之后**才发生，永远归不到某一轮）。因此逐轮账里只有模型的输出，
+  这正是「模型话多」与「引擎开销大」还能分开的原因。轮记录上的 `engineUsage`：本轮没有这类调用
+  ⇒ **缺键**；有调用但 provider 没报用量 ⇒ 零值。run 级那个键恒在。两个桶都只在唯一记账点
+  （`addUsage`（`src/loop/orchestrator.js`））按一个 `account` 参数入桶，不存在第二本会漂的账。
+- **`finalGuard` 的用量两个桶都不计，中止载荷也不带分账。** guard 是**宿主**回调：引擎不发起那次
+  调用、也测不到它，所以它既不能算模型输出、也不能算引擎开销——guard 里真调了模型的宿主自己记。
+  另外中止的 run 仍然只抛 `error.usage` / `termination.usage`（issue #180）。两个桶的加法关系**只成
+  立在成功结果上**：那里 `usage` 依旧等于 `modelUsage` + `engineUsage` 逐字段相加。`RoundRecord`
+  上没有这样一个键——轮记录**没有** `modelUsage`，所以 `record.usage` 就是**模型桶本身**（上面表格那
+  行写的正是「本轮**模型**用量」），本轮的总账是 `record.usage`（模型桶）+ `record.engineUsage`
+  （引擎桶）；后者在本轮没发起过引擎调用时**缺键**，宿主相加时按 0 读。要分清的是：`record.usage`
+  是模型那一份、不是本轮总账——现成的「两桶之和」只有成功结果上的 `result.usage` 一个。
+
 ## judge 记录关联字段与 run 级 outcome（issue #165）
 
 judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log`，宿主可落任意去处）。
@@ -2457,12 +2505,15 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
   `journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`）在补跑段**之前**用同一条
   写侧写下去。两类结果都用 `partOf` 接回崩溃轮那条聚合 `tool_result` 消息，不新增消息；锚点就是
   `restoreResume`（`src/loop/resume-manager.js`）从账本里读出的 `resumeToolResultRowKey`。
-  崩溃轮**一条结果行都没落**时，首片自己就是那条聚合消息、并成为后续分片的锚点——于是**两条以内**
-  结果时形状仍是「一条聚合 `user` 消息」，绝不会变成「每条结果各一条 `user` 消息」，
-  `<runId>:msg:<round>:<seq>` 的序号语义也按 issue #326 保持。**三条及以上**结果时这条承诺**尚不**
-  成立：崩溃轮有三个工具调用时实测折成 `[[t1,t2],[t3]]`（补跑那批的 `partOf` 指向**上一片**而不是
-  首片，于是第三条结果折不回聚合消息），第二次恢复即 `invalid_messages`——那是 issue #430，
-  **本单不修**。
+  崩溃轮**一条结果行都没落**时，首片自己就是那条聚合消息、并成为后续分片的锚点。锚点永远是**首片**，
+  **不随分片推进**：分片行的 key 不是合法的 `partOf` 寻址目标（分片不新增逻辑消息，折叠会把它的 key
+  映射到**下一条**消息），这正是「把 `partOf` 链到上一片」时第三条结果会自己新起一条消息的原因。于是
+  同一崩溃轮的**所有**结果都折回**一条**聚合 `user` 消息，条数不限，绝不会变成「每条结果各一条
+  `user` 消息」，`<runId>:msg:<round>:<seq>` 的序号语义也按 issue #326 保持。钉住它的是
+  `test/loop-resume-unpersisted-tool-results.test.js` 里的 `#430` 端到端用例（前两例共用同一份崩溃
+  现场：`threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`））与
+  `test/store/message-rows-fold.test.js` 的四行单元用例；修前三个工具调用实测折成 `[[t1,t2],[t3]]`、
+  第二次恢复 `invalid_messages`（issue #430）。
   issue #420 之前这半批结果靠 `resumeUnpersistedToolResults` 交出去，
   注释承诺「交给 orchestr 逐条入账」，而全仓没有读取方：它唯一的载体是 latest-only 覆盖写的 run
   snapshot，下一轮真跑一个工具就被覆盖 ⇒ 那个 `runId` 从此不可恢复（第一次模型请求之前就
@@ -2776,7 +2827,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 | `navigationRecord` | 展示 | 有界归档指针 `{ roundFrom, roundTo, artifacts[], truncated? }`，指向被恢复的工具输出。渲染为导航链接/指针，绝不作为消息内容。 |
 | `messages` | 模型 | 精确的模型上下文切片，含 `tool_use`/`tool_result` 块与折叠占位符。不要裸渲染；投影从中提取可展示文本与工具调用摘要。issue #335 起，投影里 assistant 条目的**正文正本也以这里为准**（消息一成型就落盘）；`response.content` 只是老账本与宿主手写行的回退。 |
 | `messages[].meta` | 模型 / 引擎 | 保留该对象及未知键。`meta.source` 是引擎保留标记，投影分类与 judge 可见性依赖它；不得复用它承载宿主自己的来源信息。 |
-| `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。投影展示的正文与块取自 `messages`，不再取自这里；只有 `stopReason`/`usage` 会被抄进投影的 `meta`。其块形状是模型面向的，可能变化。 |
+| `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。投影展示的正文与块取自 `messages`，不再取自这里；只有 `stopReason`/`usage` 会被抄进投影的 `meta`。其块形状是模型面向的，可能变化。**它的 `usage` 只含本轮最后一发响应**——本轮的完整逐轮账是同级键 `record.usage`（见「用量分账：逐轮账 vs 引擎开销（issue #438）」）。 |
 | `l0facts`、`runState`、`compactionStats`、`judge`、`wrapup`、`toolOutputs`、`dedupKey`、`roundKey` | 模型 / 引擎内部 | 给 governor、resume、诊断用的事实。只有 `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` 被拷进投影的 `meta` 供可选标注；其余不属于展示表面。 |
 
 ### 稳定性承诺
