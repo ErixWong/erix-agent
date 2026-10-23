@@ -13,8 +13,9 @@ import { createMockFetch } from "./helpers/mock-fetch.js";
 // `reasoning_effort:"none"`。
 //
 // 为什么需要这个文件（前半段测试盖不到的那一格）：
-//   · `normalizeWrapupWithLlm`（`src/reflection/wrapup.js`）全仓只有三处：`src/index.js` 导出、
-//     `src/loop/orchestrator.js:27` 的死 import、以及它自己的定义 —— **它从来没被调用过**。
+//   · `normalizeWrapupWithLlm`（`src/reflection/wrapup.js`）全仓只有两处：`src/index.js` 导出、
+//     以及它自己的定义 —— **引擎循环从来没调用过它**（issue #430 顺手删掉了 orchestrator 顶部那条
+//     死 import；函数本体保留：它是公开导出，契约中英各一处符号锚点）。
 //   · 循环里真正在跑的收尾归一化是 `src/loop/orchestrator.js` 里 `requestForJudge` 那段内联请求
 //     （触发条件 `wrapupJson === null && stopReason === "end_turn" && !hasToolUse(...)`）。
 //   所以「库函数发了 reasoning_effort」不等于「真上游那次请求发了」——后者只有跑真循环才看得见。
