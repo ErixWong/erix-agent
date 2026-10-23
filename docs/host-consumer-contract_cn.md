@@ -361,20 +361,24 @@ CLI 现在在**一处**从 `--idle-timeout` 派生**其中两个**（解析器�
    **活的**变成**必死**：真 HTTP 上游、`ERIX_RETRY_ATTEMPTS=2` 实测，**240s** 后才回的请求在接线前是
    **240.29s / `end_turn` / 退码 4**，接线后变成 **225.21s 被杀 / `failed` / `errorCode: "timeout"`**。
    要让非流式**静默**可重试，截止必须**严格小于** idle 窗口，而 idle 与 legacy `timeout` 默认**都是
-   `300`** ⇒ 任何收缩都会杀掉这条带。非流式静默的正解是「判死后重试」（issue #433 fix 1），不是提前
-   掐死；**在它落地之前，非流式静默不可重试**（1 发、`idle_timeout`）。
+   `300`** ⇒ 任何收缩都会杀掉这条带。非流式静默的正解是「判死后重试」（issue #433 fix 1，见下一节），
+   不是提前掐死：CLI 现在会在看门狗命中后退避、从 transcript 续跑同一个 run，只有预算用尽才以
+   `idle_timeout` 收尾（那条路上每次尝试 1 发，引擎侧不重试）。
 3. **`streamTotalTimeoutMs` 不派生。** 它是单条流的**绝对上限**，不是静默截止；而流在吐字节时 idle
    会被 `onDelta` 喂表、本来就不会响——拿 idle 窗口派生它，只会把「长但健康」的输出变成一次
    注定重蹈覆辙的重试。引擎默认值（`300000`）保留。显式 legacy `timeout` **会**作为
    `streamTotalTimeoutMs` 透传：相位模型一开，legacy 那条绝对截止就失效
    （`src/providers/payload.js` 的 `hasExplicitPhase`），不透传等于把用户要的天花板悄悄降下来。
-4. **显式配置优先、不被隐式改写**（与 `ERIX_EXEC_TIMEOUT_MS` 同一口径）：相位值 ≥ idle 窗口时
-   原样使用，只打一行警告——那种静默仍可能被不可重试的 idle 路径收尾。这四个键还会在**加载时校验**：
+4. **显式相位配置优先、不被隐式改写**：相位值 ≥ idle 窗口时原样使用，只打一行警告——那种静默
+   仍可能被不可重试的 idle 路径收尾。这四个键还会在**加载时校验**：
    不是「`>= 0` 的安全整数」（`-1000`、`"abc"`、`true`、`1.5`）就报错并**点名该键**，而不是以
    `undefined` 的身份进引擎——在那里它要么意味着「这个相位的截止悄悄不存在」（流式），要么意味着
    「请求立刻超时、上游 0 发」（非流式）。`0` 合法，意思是「已经到点」。
    legacy `timeout` / `timeoutMs` **不在**这条校验面内——它照旧原样透传，所以非数值会一路进 `setTimeout`，
    行为等同「已经到点」；加载期校验只覆盖这四个相位键，因为是本次改动让它们变成承重的。
+   （注意：CLI 的 `exec` 天花板自 issue #433 fix 4 起走**另一条**规则——显式 `ERIX_EXEC_TIMEOUT_MS`
+   会被**收敛**成 `min(exec, idle − 60s)` 并打一条 loud 日志；理由只对命令超时成立，见
+   「工具执行不是静默，`exec` 也不能长过 idle 窗口」。）
 
 两个宿主可观测的后果：
 
@@ -382,8 +386,8 @@ CLI 现在在**一处**从 `--idle-timeout` 派生**其中两个**（解析器�
   `termination.errorCode: "timeout"`，不再是 `reason: "aborted"` 且没有 `errorCode`。这**不是**
   契约扩展：`failed` 本来就带 `errorCode`（issue #176），也没有任何别的 reason 因此新增该字段。
   把 `aborted` 当「静默被杀」判断的宿主，对流式 run 要改判 `failed` + `errorCode: "timeout"`；
-  **非流式静默没有变化**，仍以 `idle_timeout` 收尾——issue #440 之后那个错误保留引擎的终局载荷
-  （见「CLI 的 idle 判死保留载荷」）。
+  **非流式静默在截止面没有变化**，仍以 `idle_timeout` 收尾（在 CLI 的重试预算用尽之后，issue #433
+  fix 1）——issue #440 之后那个错误保留引擎的终局载荷（见「CLI 的 idle 判死保留载荷」）。
 - CLI 用 `attempt` 与 `recovering` 事件喂 idle 表，所以一次重试（含它的退避）算**进展**而不是
   「无进展」。不喂的话 idle 窗口会把退避切断，静默又回到 abort 那条路。
 
@@ -1074,7 +1078,73 @@ CLI 自己也是一个宿主，它自己的看门狗（`--idle-timeout`）是能
 可达性（在本树上实测，见「静默是一条可重试的截止」）：静默的 **`--stream`** run 先被 provider
 的相位截止收掉，重试用尽后终局是 `failed` / `errorCode: "timeout"`，所以 idle 判死**不是**那条
 路径上的常态；静默的**非流式** run 仍以 `idle_timeout` 收尾（legacy `requestTimeoutMs` 故意不派生），
-任何「provider 根本没有相位截止」（例如宿主注入的 provider）或「idle 窗口不大于重试退避」的 run 也一样。
+但那是在 CLI 的重试预算用尽之后（issue #433 fix 1）；任何「provider 根本没有相位截止」（例如宿主注入的
+provider）或「idle 窗口不大于重试退避」的 run 也一样。
+
+### CLI 判死后从账本续跑（issue #433 fix 1）
+
+idle 看门狗曾经是终局：`bin/cli.js` 的最外层 `catch` 看到 `code === "idle_timeout"` 就
+`process.exitCode = 1`，把一个已经付过好几轮费用的 run 直接扔掉。支撑这次改判的现场数据
+（55 个被看门狗打死的 run）是：静默**通常自愈**——46/55 一个字节都没回来，而未删失窗口里
+>300s 的静默每 1000 轮出现 7 次（中位 400s、最长 1168s），经历过它的 35 个 run 里 18 个最终
+拿到分，而**新请求** 3.4–15s 就起流。所以 CLI 现在**退避后从持久化 transcript 续跑同一个
+run**，既不死等，也不把任务从头重跑：
+
+- `--idle-retry-budget <seconds>`（仅 `chat`，默认 **900**，`0` = 关闭），按**从第一次判死起的
+  墙钟总时长**算——退避**与**重试尝试都算在里面，所以它不是「退避之和」。
+  **这改变了静默 run 的默认墙钟**：依赖「静默 ⇒ 快速退出」的宿主必须传 `--idle-retry-budget 0`。
+  **实测最坏**（上游永久静默、`--idle-timeout 1`、默认预算）：从启动到进程退出 **130.3s**，共 9 发，
+  退避 `1, 2, 4, 8, 16, 30, 30, 30` 秒——这个窗口下先撞的是**次数**闸；默认 `--idle-timeout 300`
+  时先撞的是预算（从启动约 **903s**）。**第一次重试约在 2s 时发起**（1s 窗口 + 1s 首段退避）。
+- 指数退避：`IDLE_RETRY_BASE_DELAY_MS`（`bin/idle.js`）= 1000，每次翻倍，夹在
+  `IDLE_RETRY_MAX_DELAY_MS` = 30000；每次退避还会被剩余预算夹住。
+- 第二道**独立**的闸：`IDLE_RETRY_MAX_ATTEMPTS` = 8 次重试。只靠预算的话，
+  `--idle-timeout 1` 会把 900s 摊成几百发 provider 调用；有 30s 上限时 8 段退避之和约 121s
+  ⇒ 两道闸会合，而不是一道悄悄替另一道兜底。
+- 重试是**续跑、不是重跑**：引擎的 `resume` 路径（`restoreResume`（`src/loop/resume-manager.js`））
+  从 transcript 与 run snapshot 重建上下文，所以已经付过费的轮次与 token 都留着——`rounds` 从
+  账本接着数，续跑的请求里带着判死前已落盘的工具结果。
+- 只有 transcript 非空时才重试：store 里一条记录都没有的 run（例如持久化失败）直接落
+  `idle_timeout`，而不是被一个 resume 错误顶掉真正的终局原因。
+
+宿主能观测到什么、从哪里读：
+
+| 事实 | 渠道 |
+|---|---|
+| 重试次数、每次退避、预算、累计 usage、哪道闸停的 | `result.idleRetry`（成功）/ `error.idleRetry`（终局） |
+| 每一步一条记录（`phase: "backoff"` / `"recovered"` / `"exhausted"`，带 `retries` / `backoffMs` / `usage` / `idleSeconds`） | `judge.log` 的 `type: "idle_retry"` |
+| 每次重试一行人类可读日志 + 一条汇总 | stderr（`idleLog` 槽位，进程内可注入） |
+
+边界，按实测口径写：
+
+- **不是所有静默都被救。** `--stream` 的静默先撞 provider 的可重试相位截止（上一节），落到引擎
+  自己的重试循环上；`--idle-timeout 0` 完全关闭看门狗（没有重试）；`erix repl` 没有重试
+  （它的默认窗口是 0，而且那是交互式会话）。
+- **终局形状不变。** 预算或次数用尽时，run 与之前一字不差地收尾：`code === "idle_timeout"`、
+  `name === "IdleTimeoutError"`，以及 issue #440 的四件载荷（`termination` / `usage` / `rounds` /
+  `finalText`，没有顶层 `partial`）。`error.idleRetry.exhausted` 说明是哪道闸停的
+  （`"budget"` / `"max_attempts"` / `"no_transcript"`）。
+- **引擎自己的重试计数一个字没动。** 每次重试是一次独立的 `runToolLoop` 调用，所以 provider 层的
+  `attempt` / `recovering` 事件按尝试重新起算，`judge.log` 里每次尝试都有一条 `run_outcome`
+  （最后一条才是终局）。CLI 的记账是上面的 `idleRetry` 快照，不是对引擎计数器的重算。
+- **终局错误上的 `usage` 是最后一次尝试的 usage**（引擎的契约形状）；跨尝试的总量在
+  `idleRetry.usage` 里。
+
+### 工具执行不是静默，`exec` 也不能长过 idle 窗口（issue #433 fix 3 / fix 4）
+
+两条都在 CLI 侧，`src/` 一行未改：
+
+- **fix 3 —— 喂表。** 工具执行期间每 `toolHeartbeatIntervalMs`（= `idle/4`，夹在 250ms–30s）
+  喂一次看门狗，所以比 idle 窗口还长的命令不再打死整个 run。喂表是**有界**的：到
+  `toolHeartbeatCapMs`（= `exec` 天花板，即 `max(30s, idle − 60s)`）就停，静默窗口重新开始
+  计时 ⇒ 永不返回的工具仍然会被收掉——没有这条界，喂表会把 fix 1 变成「永不判死」。证据可观测：每次被喂过的执行都会打一行
+  `[idle-heartbeat] <工具名>：执行期喂过 idle 计时器 N 次`（只在 `N > 0` 时打），真的喂到上限
+  还会再打一行。
+- **fix 4 —— 天花板。** 生效的 `exec` 超时是 `min(配置值, max(30s, idle − 60s))`，**包括**显式
+  `ERIX_EXEC_TIMEOUT_MS`（它以前是原样使用的）。钳制真的降低了取值时 CLI 打一条 loud 日志；
+  它**不会**启动即报错——`exec == idle` 是 bench 的真实配置，判据是「终局不得是 `idle_timeout`」。
+  `idle ≤ 90s` 时 30s 下限胜出、`exec < idle` 根本不可能成立：这种情形也会打日志，那时真正
+  兑付的是上面的喂表（最坏 `30s + idle`，实测数在 CLI README 里）。
 
 ### 终局前的增值调用在中止时的行为（issue #282）
 

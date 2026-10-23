@@ -444,8 +444,10 @@ Four rules, in order:
    *silence* would need a deadline **strictly below** the idle window, and both
    idle and the legacy `timeout` default to `300` — so any shrink kills that
    band. The fix for non-streaming silence is "retry after declaring death"
-   (issue #433 fix 1), not an earlier kill; **until it lands, non-streaming
-   silence is not retryable** (one call, `idle_timeout`).
+   (issue #433 fix 1, see the next section), not an earlier kill: the CLI now
+   resumes the run from its transcript after the watchdog fires, and only the
+   exhausted budget ends it as `idle_timeout` (one call per attempt, no engine
+   retry on that path).
 3. **`streamTotalTimeoutMs` is not derived.** It is an absolute cap on one
    stream, not a silence deadline, and while a stream is flowing the idle
    watchdog is fed by `onDelta` and cannot fire anyway — deriving it from the
@@ -455,9 +457,8 @@ Four rules, in order:
    model disables the legacy absolute deadline (`hasExplicitPhase` in
    `src/providers/payload.js`) and dropping it would silently lower a ceiling the
    user asked for.
-4. **Explicit configuration wins and is never rewritten** (the same rule as
-   `ERIX_EXEC_TIMEOUT_MS`): a phase value ≥ the idle window is used verbatim and
-   only produces a one-line warning — the silence may then still be ended by the
+4. **Explicit phase configuration wins and is never rewritten**: a phase value
+   ≥ the idle window is used verbatim and only produces a one-line warning — the silence may then still be ended by the
    non-retryable idle path. The four keys are also **validated at load**: a value
    that is not a safe integer `>= 0` (`-1000`, `"abc"`, `true`, `1.5`) is a
    config error that names the key, instead of reaching the engine as
@@ -466,7 +467,10 @@ Four rules, in order:
    upstream" (non-streaming). `0` is legal and means "already expired". The legacy `timeout` / `timeoutMs` key is **not** covered by
    this validation — it is still forwarded verbatim, so a non-numeric value reaches `setTimeout` and
    behaves as "already expired"; only the four phase keys are load-validated, because they are the four
-   this change made load-bearing.
+   this change made load-bearing. (Note that the CLI's `exec` ceiling follows a
+   **different** rule since issue #433 fix 4: an explicit `ERIX_EXEC_TIMEOUT_MS`
+   is *converged* to `min(exec, idle − 60s)` with a loud log — the reason is
+   specific to command timeouts, see "Tool execution is not silence".)
 
 Two host-observable consequences:
 
@@ -476,9 +480,10 @@ Two host-observable consequences:
   extension: `failed` already carries `errorCode` (issue #176) and no other
   reason gained the field. Hosts that branch on `aborted` for "silent kill" must
   branch on `failed` + `errorCode: "timeout"` for streaming runs;
-  **non-streaming silence is unchanged** and still ends `idle_timeout` — and
-  since issue #440 that error keeps the engine's termination payload (see "The
-  CLI's idle kill keeps the payload").
+  **non-streaming silence is unchanged on the deadline side** and still ends
+  `idle_timeout` once the CLI's retry budget is exhausted (issue #433 fix 1) —
+  and since issue #440 that error keeps the engine's termination payload (see
+  "The CLI's idle kill keeps the payload").
 - The CLI feeds its idle watchdog on the `attempt` and `recovering` events, so a
   retry (including its backoff) is progress rather than "no progress". Without
   that, the idle window would cut the backoff and the silence would fall back to
@@ -1363,9 +1368,101 @@ silent **`--stream`** run is ended by the provider's phase deadline first and
 finishes `failed` / `errorCode: "timeout"` once the retries are exhausted, so
 the idle kill is *not* the normal outcome there; a silent **non-streaming** run
 still ends `idle_timeout` (the legacy `requestTimeoutMs` is deliberately not
-derived), and so does any run whose provider has no phase deadlines at all
-(e.g. a host-injected provider) or whose idle window is not larger than the
-retry backoff.
+derived) once the CLI's retry budget is exhausted, and so does any run whose
+provider has no phase deadlines at all (e.g. a host-injected provider) or whose
+idle window is not larger than the retry backoff.
+
+### The CLI retries a silent kill from the transcript (issue #433 fix 1)
+
+The idle watchdog used to be terminal: `bin/cli.js`'s top-level `catch` saw
+`code === "idle_timeout"` and set `process.exitCode = 1`, throwing away a run
+that had already paid for several rounds. The field data behind that decision
+(55 watchdog-killed runs) is that the silence **usually heals itself**: 46 of
+55 produced not a single byte, yet more than 300s of silence shows up 7 times
+per 1,000 rounds in the uncensored window (median 400s, max 1168s), 18 of the
+35 runs that went through such a silence still scored, and a *fresh* request
+starts streaming in 3.4–15s. So the CLI now **backs off and resumes the same
+run from its persisted transcript** instead of waiting forever or re-running
+the task:
+
+- `--idle-retry-budget <seconds>` (`chat` only, default **900**, `0` = off),
+  measured as **wall-clock elapsed since the first kill** — backoffs *and* the
+  retry attempts count, so it is not merely the sum of backoffs.
+  **This changes the default wall clock of a silent run**: a host that relied on
+  "silence ⇒ quick exit" must pass `--idle-retry-budget 0`. **Measured worst
+  case** (permanently silent upstream, `--idle-timeout 1`, default budget):
+  **130.3s** from start to exit, nine attempts, backoffs
+  `1, 2, 4, 8, 16, 30, 30, 30`s — at that window size the attempt cap binds
+  first; at the default `--idle-timeout 300` the budget binds instead (~903s
+  from start). The first retry starts **~2s** in (1s window + 1s first
+  backoff).
+- Exponential backoff: `IDLE_RETRY_BASE_DELAY_MS` (`bin/idle.js`) = 1000,
+  doubled per retry, capped at `IDLE_RETRY_MAX_DELAY_MS` = 30000; each backoff
+  is also clamped to the remaining budget.
+- A second, independent gate: `IDLE_RETRY_MAX_ATTEMPTS` = 8 retries. The budget
+  alone would let `--idle-timeout 1` spread 900s into hundreds of provider
+  calls; with the 30s cap the eight backoffs sum to ~121s, so the two gates meet
+  rather than one silently standing in for the other.
+- The retry is a **resume, not a re-run**: the engine's `resume` path
+  (`restoreResume` (`src/loop/resume-manager.js`)) rebuilds the context from
+  the transcript and the run snapshot, so the paid rounds and tokens are kept —
+  `rounds` keeps counting from the ledger and the resumed request carries the
+  tool results that were already persisted.
+- A retry is attempted only when the transcript is non-empty. A run whose store
+  holds no record (e.g. persistence failed) ends `idle_timeout` directly,
+  instead of being replaced by a resume error.
+
+What a host can observe, and where:
+
+| Fact | Channel |
+|---|---|
+| retry count, each backoff, budget, accumulated usage, which gate stopped it | `result.idleRetry` (success) / `error.idleRetry` (terminal) |
+| one record per step (`phase: "backoff"` / `"recovered"` / `"exhausted"`, carrying `retries` / `backoffMs` / `usage` / `idleSeconds`) | `judge.log`, `type: "idle_retry"` |
+| one human-readable line per retry plus a summary | stderr (the `idleLog` sink; injectable in-process) |
+
+Boundaries, stated as measured:
+
+- **Not every silence is rescued.** A `--stream` run hits the provider's
+  retryable phase deadline first (previous section) and lands on the engine's
+  retry loop; `--idle-timeout 0` disables the watchdog entirely (no retry); and
+  `erix repl` has no retry (its default window is 0 and it is an interactive
+  session).
+- **The terminal is unchanged.** When the budget or the attempt cap runs out,
+  the run ends exactly as before: `code === "idle_timeout"`,
+  `name === "IdleTimeoutError"`, and the issue #440 payload
+  (`termination` / `usage` / `rounds` / `finalText`, no top-level `partial`).
+  `error.idleRetry.exhausted` says which gate stopped it (`"budget"` /
+  `"max_attempts"` / `"no_transcript"`).
+- **The engine's own retry counter is untouched.** Each retry attempt is a
+  separate `runToolLoop` call, so provider-level `attempt` / `recovering`
+  events restart per attempt and `judge.log` holds one `run_outcome` record per
+  attempt (the last one is the terminal). The CLI's accounting is the
+  `idleRetry` snapshot above, not a reconstruction of the engine's counters.
+- **`usage` on the terminal error is the last attempt's usage** (the engine's
+  contract shape); the cross-attempt total is `idleRetry.usage`.
+
+### Tool execution is not silence, and `exec` cannot outlive the idle window (issue #433 fix 3 / fix 4)
+
+Two CLI-side behaviours, no `src/` change:
+
+- **Fix 3 — feeding.** While a tool runs, the watchdog is fed every
+  `toolHeartbeatIntervalMs` (= `idle/4`, clamped to 250ms–30s), so a command
+  that outlives the idle window no longer kills the run. The feeding is
+  **bounded**: it stops after `toolHeartbeatCapMs` (= the `exec` ceiling, i.e.
+  `max(30s, idle − 60s)`) and the silence window then starts over, so a tool
+  that never returns is still collected — without that bound, feeding would turn
+  fix 1 into "death is never declared". Evidence is observable: every fed execution logs
+  `[idle-heartbeat] <tool>: fed the idle timer N times` (`N > 0` only) and
+  reaching the cap logs a second line.
+- **Fix 4 — the ceiling.** The effective `exec` timeout is
+  `min(configured, max(30s, idle − 60s))` — **including** an explicit
+  `ERIX_EXEC_TIMEOUT_MS`, which used to be used verbatim. When the clamp
+  actually lowers the value the CLI logs one loud line; it does **not** refuse
+  to start, because `exec == idle` is a real benchmark configuration and the
+  criterion is "the run must not end `idle_timeout`". For `idle ≤ 90s` the 30s
+  floor wins and `exec < idle` cannot hold at all: that case is logged too, and
+  what is actually guaranteed there is the feeding above (worst case
+  `30s + idle`, measured in the CLI README).
 
 ### Value-added calls before the terminal decision (issue #282)
 
