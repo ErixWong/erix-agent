@@ -50,8 +50,8 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 120`（现测 120 组 / 334 处；issue #420 的 A 集合入账
-//                 +1 组 / +7 处：`journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`），契约中英各一处。
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 120`（现测 120 组 / 335 处；issue #420 的 A 集合入账
+//                 +1 组 / +8 处：`journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`），契约中英各一处 + AGENTS_cn 声称句一处。
 //                 上一版 119 组 / 327 处是 issue #409 的工具引数判词
 //                 +5 组 / +10 处：`REPAIR_RULES`、`parseJsonWithRepair`（`src/text/repair-json.js`）、`parseToolArguments`、
 //                 `describeToolArgumentsParseError`（`src/messages/tool-arguments.js`）、`RUN_TOOL_LOOP_OPTION_NAMES`
@@ -2049,10 +2049,11 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `--verbose` 实测 **114 组 / 317 处**（契约 EN 84 → 85 / CN 80 → 81，0.24.0 指南 EN 21 → 29 / CN 24 → 32）。
  *  下限不跟着升，#286 返工 R1 的两例自测就会再次 fail-open（实测正是如此：109 的下限在 114 组上空转，
  *  两例从 ✓ 变红），而 `--self-test` 是 CI 的阻断步。
- *  再升一次的理由（issue #420，119 → **120**，+1 组 / 327 → 334 处）：A 集合（崩溃前已执行完、结果已成型、
+ *  再升一次的理由（issue #420，119 → **120**，+1 组 / 327 → 335 处）：A 集合（崩溃前已执行完、结果已成型、
  *  账本里没有对应 `tool_result` 行）逐条入账的写入口按同一条红线用符号锚点引用
  *  `journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`）——落点是契约中英「续跑后账本闭合」
- *  各一处（`--verbose` 实测 120 组 / 334 处：契约 EN 92 / CN 88）。下限不跟着升，R1 的两例自测就会空转。
+ *  各一处与 AGENTS_cn 的声称句一处（`--verbose` 实测 120 组 / 335 处：契约 EN 92 / CN 88）。下限不跟着升，
+ *  R1 的两例自测就会空转。
  *
   *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
 const SYMBOL_ANCHOR_MIN_UNIQUE = 120;
