@@ -6,7 +6,8 @@
 //     闸门必须把那条值判掉；反向证里同时钉住「若闸门看的是修后文本，这格会被放行」——于是这格写反就红。
 //
 // 合并前评审（PR #443）补的看守，每一条都先红后绿：
-//   · 补全档的闸门同样判**补全前**原文（往补全规则里插 `__FABRICATED__` ⇒ 必须判掉）。
+//   · 补全档的闸门同样判**补全前**原文（往补全规则里插 `__FABRICATED__` ⇒ 必须判掉）；
+//   · 候选集复用 L0 的平衡对象扫描（散文前缀 / 后缀 / 对象后跟垃圾）。
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -166,6 +167,34 @@ test("补全档的闸门同样判**补全前**原文：补全规则伪造的字�
   const fabricated = "__FABRICATED__";
   assert.equal(gate.validate({ a: fabricated }, `{"a":"${fabricated}"}`).ok, true, "拿补全后文本当 source 会放行伪造值");
   assert.equal(gate.validate({ a: fabricated }, '{"a":').ok, false, "拿补全前原文当 source 必须判掉伪造值");
+});
+
+// 合并前评审 blocker 2：候选集必须复用 L0 的平衡对象扫描（D1：调 L0，不复制扫描）。
+// 三格分别对应「散文前缀」「散文后缀」「对象后跟垃圾」——修前全红（L0 `ok`、本入口 `unparsable`）。
+
+test("候选集复用 L0 扫描：散文前缀不影响抠取（`好的，结果如下：{…}`）", async () => {
+  const text = '好的，结果如下：{"done":true}';
+  assert.equal(parseModelJson(text).ok, true, "L0 能抠出来");
+  const result = await normalizeModelJson(text);
+  assert.equal(result.ok, true, `新入口不许比它包装的 L0 更弱：${JSON.stringify(result)}`);
+  assert.deepEqual(result.value, { done: true });
+  assert.equal("repaired" in result, false, "只是抠取，不该有修复出处");
+});
+
+test("候选集复用 L0 扫描：散文后缀不影响抠取（`{…} 以上是结果。`）", async () => {
+  const text = '{"done":true} 以上是结果。';
+  assert.equal(parseModelJson(text).ok, true, "L0 能抠出来");
+  const result = await normalizeModelJson(text);
+  assert.equal(result.ok, true, `新入口不许比它包装的 L0 更弱：${JSON.stringify(result)}`);
+  assert.deepEqual(result.value, { done: true });
+});
+
+test("候选集复用 L0 扫描：对象后跟垃圾不影响抠取（`{…}}extra{`）", async () => {
+  const text = '{"a":1}}extra{';
+  assert.equal(parseModelJson(text).ok, true, "L0 能抠出来");
+  const result = await normalizeModelJson(text);
+  assert.equal(result.ok, true, `新入口不许比它包装的 L0 更弱：${JSON.stringify(result)}`);
+  assert.deepEqual(result.value, { a: 1 });
 });
 
 // ── 硬要求 4：截断输入（候选数 0）──────────────────────────────────────────────

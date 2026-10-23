@@ -24,10 +24,19 @@
  * - `unparsable`：有候选、每个都解析不出来。
  * - `shape_mismatch`：有候选解析成功，但一个都没过 `validate` 闸门。
  *
- * ## 候选（M6 的正解）
+ * ## 候选（M6 的正解；D1：**复用 L0 的扫描，不复制**）
  *
- * 候选集 = **整段原文** + 按出现顺序的**每个 ``` 围栏块**（去围栏符）；逐候选独立跑
- * L0 → L1 → 闸门，**第一个「可解析 + 过闸门」者胜出**。`repair.truncateCompletion` 显式开时，
+ * 候选集 = **整段原文** + 按出现顺序的**每个 ``` 围栏块**（去围栏符）
+ * + L0 的平衡对象扫描（`jsonCandidates`，`src/text/json-candidates.js`）扫出的**每个顶层平衡对象**。
+ * 每个候选依次交给 `parseJsonWithRepair`（先 L0 的 `JSON.parse`，不行再按规则表修）→ 闸门，
+ * **第一个「可解析 + 过闸门」者胜出**。
+ *
+ * 只加 `push(text)` + `fenceBodies(text)` 是不够的：新入口会比它声称包装的 L0 **更弱**（实测 9 种
+ * 真实形状里 7 种 L0 `ok`、本入口 `unparsable`——`好的，结果如下：{"done":true}`、
+ * `{"done":true} 以上是结果。`、`{"a":1}}extra{`、`前言 {"outer":{"done":true}} 后语`、`~~~json` 围栏……）。
+ * 所以第三档直接调 L0 的 `jsonCandidates`，不另写扫描。
+ *
+ * `repair.truncateCompletion` 显式开时，
  * 再把每个候选的「补全版」当**额外**候选**追加在末尾**（整段原文的补全版在其中——截断输入的唯一出路；
  * 围栏里的截断也一并救得回来，因为模型最常写的就是围栏）。
  *
@@ -60,6 +69,7 @@
 import { createProviderForSlot } from "../config/slot-provider.js";
 import { exampleToolArguments } from "../messages/tool-arguments.js";
 import { NORMALIZATION_REASONING_EFFORT } from "../reflection/wrapup.js";
+import { jsonCandidates } from "../text/json-candidates.js";
 import {
   DEFAULT_REPAIR_RULE_IDS,
   REPAIR_RULES,
@@ -189,7 +199,8 @@ function isTruncationShaped(text) {
  */
 
 /**
- * 候选集：整段原文 + 每个围栏块体（按出现顺序）+ （可选）每个候选的补全版（追加在末尾）。
+ * 候选集：整段原文 + 每个围栏块体 + L0 扫出的每个顶层平衡对象
+ * + （可选）每个候选的补全版（追加在末尾）。
  *
  * 补全版只加在**末尾**，不挤占原候选的位置：本来就完整的输入仍然由原候选胜出，
  * `repaired` 里也不会凭空出现 `truncation`。
@@ -210,6 +221,8 @@ function candidatesFor(text, repairOptions) {
   };
   push(text, false);
   for (const body of fenceBodies(text)) push(body, false);
+  // D1：候选生成**调 L0 的扫描**（`jsonCandidates`），不复制一份扫描实现。
+  for (const object of jsonCandidates(text)) push(object, false);
   if (!repairOptions.truncateCompletion) return base;
 
   const candidates = [...base];
