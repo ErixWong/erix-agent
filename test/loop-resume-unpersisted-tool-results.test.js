@@ -539,11 +539,14 @@ function recordRoundWrites(inner) {
   return { store, rows };
 }
 
-/** 轮 2 里「带 `tool_result` 的消息行」，按落盘顺序。 */
-const resultRowsOf = (rows) => rows.filter((record) => record?.round === 2
+/** 某一轮里「带 `tool_result` 的消息行」，按落盘顺序。 */
+const resultRowsInRound = (rows, round) => rows.filter((record) => record?.round === round
   && record?.kind === "message"
   && (record.messages ?? []).some((message) => (Array.isArray(message?.content) ? message.content : [])
     .some((block) => block?.type === "tool_result")));
+
+/** 轮 2 里「带 `tool_result` 的消息行」，按落盘顺序。 */
+const resultRowsOf = (rows) => resultRowsInRound(rows, 2);
 
 /**
  * 手搭三工具崩溃现场（与 `upgradePathCrashScene` 同一手法：账本 + 快照逐字段点名，不靠注入时序）：
@@ -670,9 +673,73 @@ test("#430 混合形状（A 集合 2 条 + B 集合补跑 1 条）⇒ 仍是一�
     "第二次恢复之后账本形状不许变（仍是一条聚合 user 消息）");
 });
 
+// ── issue #430 的 **B 集合单点覆盖**（合并前修复：独立评审逐点单独回退时发现的那一格）────────────
+// 上面两条用例的 B 集合最多 **1 条**（①纯 A 集合 A=3/B=0、②混合形状 A=2/B=1），而「锚点链到上一片」
+// 这个病只在**同一锚点下写第 2 片**时才发作 ⇒ 只回退 B 集合那一处
+// （`orchestrator.js` 里 `resumedResultRowKey === undefined` 那行）时既有用例**全绿、0 红**，三处修法里
+// 有一处零回归保护。本用例把 B 集合堆到 3 条（A 集合为空），专钉那一处。
+test("#430 B 集合 3 条（A 集合为空）⇒ 首片当锚点、后两片都指首片，折叠后一条聚合 user 消息", async () => {
+  const inner = createMemoryTranscriptStore();
+  await threeToolCrashScene(inner, { snapshotResultIds: [], pendingIds: ["t1", "t2", "t3"] });
+  // 前置：三个工具都**没执行**（A 集合为空）⇒ 三条结果只能由补跑段（B 集合）产出。
+  const snapshot = await inner.loadLatestRunSnapshot(RUN_ID);
+  assert.deepEqual(snapshot?.executedToolIds, [], "前置：A 集合为空（一个工具都还没执行）");
+  assert.deepEqual(snapshot?.toolResults, [], "前置：快照里没有任何已成型的结果（A 集合为空）");
+  assert.deepEqual(snapshot?.pendingToolUses?.map((block) => block.id), ["t1", "t2", "t3"],
+    "前置：三条都还在飞 ⇒ B 集合 = 三条全部");
+
+  const { store, rows } = recordRoundWrites(inner);
+  const executed = [];
+  const resumed = await runLoop({
+    store,
+    provider: createFakeProvider([endTurn("续接完成")]),
+    executeTool: async ({ id }) => {
+      executed.push(id);
+      return `out-${String(id)}`;
+    },
+  });
+  assert.equal(resumed.ok, true, "第一次恢复必须成功");
+  assert.deepEqual(executed, ["t1", "t2", "t3"],
+    "前置：三条结果必须真的由补跑段产出（B 集合；A 集合一条都不该走那条路）");
+
+  // 落盘形状（修法本体）：首片无 `partOf`，后两片**都**指向首片——不是链到上一片。
+  const resultRows = resultRowsInRound(rows, 2);
+  assert.equal(resultRows.length, 3, "三个结果各落一行");
+  assert.equal(resultRows[0].partOf, undefined,
+    "首片不带 `partOf`：B 集合首片自己就是聚合消息，并落定为后续分片的锚点");
+  assert.deepEqual(
+    resultRows.slice(1).map((record) => record.partOf),
+    [resultRows[0].dedupKey, resultRows[0].dedupKey],
+    "后两片必须都 `partOf` 指向**首片**（只回退 B 集合那一处时这里是 [首片, 第二片] ⇒ 本用例红）",
+  );
+
+  const records = await inner.load(RUN_ID);
+  assert.deepEqual(aggregateResults(records), [{ role: "user", ids: ["t1", "t2", "t3"] }],
+    "三条结果必须折回**一条**聚合 user 消息（只回退 B 集合那一处时实测 `[[t1,t2],[t3]]`，两条）");
+
+  // 第二次恢复：折出来的上下文必须合法，且三个结果各一份。
+  const provider = createFakeProvider([endTurn("第二次续接完成")]);
+  const second = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(second.ok, true,
+    "第二次恢复必须成功（只回退 B 集合那一处时实测："
+    + "`invalid_messages: tool_result ids do not match assistant tool_use ids`，0 请求；"
+    + `实测：\`${String(second.error)}\``);
+  assert.equal(provider.requests.length, 1,
+    "第二次恢复必须真的发过一次模型请求（只回退 B 集合那一处时 0 次）");
+  for (const id of ["t1", "t2", "t3"]) {
+    const blocks = resultsFor(provider.requests[0].messages, id);
+    assert.equal(blocks.length, 1, `${id} 的结果在第二次恢复后必须恰好一份`);
+    assert.equal(blocks[0].content, `out-${id}`, `${id} 的内容必须逐字相同`);
+  }
+  assert.deepEqual(aggregateResults(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1", "t2", "t3"] }],
+    "第二次恢复之后账本形状不许变（仍是一条聚合 user 消息）");
+});
+
 // 第三个写入口（同一个缺陷的第三份拷贝）：主循环「工具结果一产生就写」那一处也把锚点推进成刚写那条
 // 分片的 key。它不经过 resume，只要**崩溃在轮载体行落盘之前**（轮行没落 ⇒ 折叠层找不到载体 ⇒ 消息行
 // 原样留在 `load()` 输出里、由 `foldLedgerMessages` 折），三条结果就会裂成 `[[t1,t2],[t3]]`。
+// ⚠ 别把这条读成「只有崩溃才中招」：**正常轮就已中招**（见下面 `#430 正常轮` 那一组），本用例只是让
+// 同一个坏形状在 `foldLedgerMessages` 那一侧也显形（载体行没落 ⇒ `load()` 不折）。
 test("#430 主循环写入口（崩在轮载体行之前）⇒ 三条结果同样折回一条聚合 user 消息", async () => {
   const inner = createMemoryTranscriptStore();
   let fired = false;
