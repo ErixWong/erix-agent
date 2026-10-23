@@ -2928,9 +2928,24 @@ Consequences for a host store and for host readers:
   the ledger is **append-only**: already-landed rows are never rewritten, a
   resume only appends after them. So after folding, every logical message
   appears **exactly once**, and one tool call has **exactly one result** (same
-  `erix.toolCallKey`, same `tool_use_id`) — a result replayed after the crash is
-  attached to the crash round's aggregated `tool_result` message through
-  `partOf` instead of becoming a new message. One host-visible ordering detail:
+  `erix.toolCallKey`, same `tool_use_id`) — **every** result becomes a row, not
+  only the ones a resume re-executes. Results that had already finished
+  executing when the process died (outcome formed, no row in the ledger) are
+  written by `journalResumeUnpersistedToolResults` (`src/loop/orchestrator.js`)
+  **before** the replay section, through the same writer a replayed result uses;
+  both kinds are attached to the crash round's aggregated `tool_result` message
+  through `partOf` instead of becoming a new message. The anchor is the row key
+  `restoreResume` (`src/loop/resume-manager.js`) reads out of the ledger as
+  `resumeToolResultRowKey`; when the crash round landed **no** result row at all,
+  the first slice starts the aggregate itself and becomes the anchor for the
+  rest — so the shape stays one aggregated `user` message (never one `user`
+  message per result) and the `<runId>:msg:<round>:<seq>` sequence keeps the
+  issue #326 order. Before issue #420 that half was handed over on
+  `resumeUnpersistedToolResults` with a comment promising it would be journaled,
+  and nothing read it: its only carrier was the latest-only run snapshot, so the
+  next round that really ran a tool overwrote it and that `runId` could never be
+  resumed again (`invalid_messages` before the first model request, zero
+  requests). One host-visible ordering detail:
   the crash round's carrier row `…:engine:round:<n>:resume` is written **after**
   the host's `:input:` row, and folding places the body at the carrier's
   position (`load()` returns records in append order), so the resume prompt can
