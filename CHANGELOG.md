@@ -109,6 +109,14 @@
 
 ### Fixed
 
+- **收尾协议归一化这次调用不再被思考吃光：`normalizeWrapupWithLlm` 恒定发 `reasoning_effort:"none"`（issue #419 ①；`src/reflection/wrapup.js`；零依赖、纯 ESM、**对外 API 一字未改**——不新增选项、不新增返回字段、不改函数签名）。**
+  - **现场（2026-10-23 真上游实测，`qwen3.8-flash-next` @ `api.ai.erix.vip`，`maxTokens:120`、`temperature:0`、同一段输入）**：默认（思考开）⇒ 正文 **0 字** / 思考 **198 字** / `output_tokens` **120（顶格）** / 函数返回 **`null`**；请求体带 `reasoning_effort:"none"` ⇒ 正文 **228 字** / 思考 **0 字**。根因是构造请求时只带 `system` / `messages` / `maxTokens` / `temperature`，思考开着的模型上小预算全被思考吃掉，正文为空 ⇒ 归一化静默失效。
+  - **修法（照仓内先例，不自创第三种）**：请求对象里**恒定**带 `reasoning_effort:"none"`，写法与 `src/loop/orchestrator.js` 的 `callRoundJudge`（judge 那条路，注释写「统一语义=不思考」）逐字一致。GLM 系模型的 `none` → `low` 转译仍由 provider 载荷层（`src/providers/payload.js`）负责，本次未碰。**归一化只输出一段 JSON，所以「不思考」是本函数的语义，不是选项**（故不加开关）。
+  - **测试**：`test/wrapup.test.js` 新增 2 格（26 → 28）——①「总是发」：不传选项 / 传全选项 / 函数式 `evaluator` 三条分支都断言字段在场，并反钉没有多带 `thinking` / `enable_thinking` / `chat_template_kwargs`；②「真落到请求体」：现成的 `createMockFetch` 假上游 + 真 `createOpenAIProvider`，断言 fetch 收到的 `body.reasoning_effort === "none"`（同时校验 `max_tokens` / `temperature` 未被挤掉）。
+  - **反向证**：把源码那行 `reasoning_effort` 删掉 ⇒ 这两格红（`actual: undefined` / `expected: 'none'`）、其余 26 格绿；`cp` 还原后 `md5sum` 与改前逐字一致（`533dd5eeae99fd45c91a616805fd0428`），28 格全绿。
+  - **顺带测量（只报不改）**：引擎里其余「拿模型产出结构化结果」的路径——judge **发了**（`src/loop/orchestrator.js` 的 `callRoundJudge`）；折叠摘要（`fold-llm` 默认 summarizer）**没发**（`src/compact/provider-summarizer.js` 只带 `system`/`messages`，注入点 `src/loop/orchestrator.js` 只补 `signal`/`maxTokens`）；final guard **不适用**（`finalGuard` 是宿主回调，引擎侧不发请求，`bin/final-guard.js` / `bin/final-guard-support.js` 是纯磁盘判据）。这两条要不要跟，单独决策。
+  - **本单故意没碰**：`#419` 的第 ②（预算 / `stopReason`）与第 ③（`normalizeWrapupWithLlm` 在循环里没被调用、orchestrator 那条死 import）；`src/providers/*`、`src/messages/*`、`src/reflection/l0.js`、`src/loop/reflection.js` 全部未改。
+
 - **`npm test` 的偶发「整文件级 `'test failed'`」找到根因并修掉：反向证不再原地改写仓内源码（issue #409 切片 B 追加轮；`examples/cross-version-real-e2e.test.mjs`；零依赖、判据一条没动）。**
   - **症状**：全量并行跑时随机某个测试文件**整文件失败**——输出只有 `✖ <文件>` + `'test failed'`，没有任何断言红、没有超时、单独跑永远绿。
   - **根因（已抓到现场）**：`examples/cross-version-real-e2e.test.mjs` 的反向证要**故意**破坏仓内源码 `src/store/message-rows.js` 来证明「判据不是永远红」，而 `writeFileSync` 的语义是**先截断再写**。实测那一小段是 **~0.07ms / 8 次观测（最小 0 字节）**，而全量 `npm test` 默认并发跑 149 个文件，其中 loop 系列的 import 图都经过 `src/loop/resume-manager.js` → 该文件：落在这段窗口里的子进程会读到 0 字节/半写的模块，ESM 抛 `SyntaxError: The requested module '../store/message-rows.js' does not provide an export named 'MESSAGE_ROW_KIND'`，**在跑任何用例之前就死掉**，runner 于是只报一行 `'test failed'`。`main` 干净树上抓到过完整现场（`1/25` 轮，失败文件 `test/loop-fold-count-cells.test.js`，同一轮里 cross-version 的 `[13] 反向证 … md5 前=7f65… 后=7f65…` 正在跑）。
