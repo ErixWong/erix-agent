@@ -326,25 +326,24 @@ export async function restoreResume(ctx) {
             }
           }
           pendingTail = pendingTailToolUses(ctx.messages);
-          const recordedIds = new Set(
-            ctx.messages.flatMap((message) => blocksFor(message?.content))
-              .filter((block) => block?.type === "tool_result")
-              .map((block) => block.tool_use_id),
-          );
           // 崩溃前已产出、但**没来得及落盘**的结果：账本里没有 ⇒ 从快照接回来。接回的位置很讲究：
           // 它们属于崩溃那一轮的那条聚合消息，必须**合进**账本里已落盘的那条（否则 assistant 的
           // tool_use 与紧随其后的 tool_result 条数对不上，`validateMessages` 当场报 invalid_messages）。
+          // issue #420：判据是账本（`ledgerToolResultIds`）不是上下文
+          // （`ctx.messages`）：升级路径可能已把结果补进上下文，
+          // 账本里却仍没有那一行（合并自己按 id 去重）。
           const replayResults = [...ctx.resumeRunSnapshotResults.values()]
-            .filter((toolResult) => !recordedIds.has(toolResult.tool_use_id));
+            .filter((toolResult) => !ledgerToolResultIds.has(toolResult.tool_use_id));
           if (replayResults.length > 0) {
             if (mergeToolResultsIntoMessages(ctx.messages, replayResults) === false) {
               const replayMessage = { role: "user", content: replayResults };
               ctx.messages.push(replayMessage);
               ctx.messageRounds.set(replayMessage, ctx.resumeRunSnapshot.round);
             }
-            // issue #420：**真实交接**（修前是死字段：注释承诺入账，全仓无读取方）。`restoreResume`
-            // 是纯读侧（拿不到 `persist`），写入口在 orchestrator 的
-            // `journalResumeUnpersistedToolResults`：补跑段之前逐条写成消息行。
+            // issue #420：**真实交接**（修前是死字段，注释承诺的入账
+            // 全仓无读取方）。`restoreResume` 是纯读侧（拿不到 `persist`），
+            // 写入口在 orchestrator 的 `journalResumeUnpersistedToolResults`：
+            // 补跑段之前逐条写成消息行。
             ctx.resumeUnpersistedToolResults = replayResults;
           }
           const pendingTools = ctx.resumeRunSnapshot.pendingToolUses

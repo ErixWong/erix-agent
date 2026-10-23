@@ -220,3 +220,106 @@ test("#414 A 集合 · 快照被新一轮覆盖后再恢复：结果不得丢，
   assert.deepEqual(roundOneResults, ["t1", "t2"],
     "round 1 的正文里必须同时有 t1 与 t2（同一条聚合 user 消息，不是每条结果各一条）");
 });
+
+// ── #420 边界（探查票点名）：崩溃轮**一条结果行都没落** ─────────────────────────────────────────
+// 此时 `resumeToolResultRowKey === undefined` ⇒ A 集合的首片**没有载体可接**。修法要求它自己新起一条
+// 聚合消息、并成为后续分片（含 B 集合）的 `partOf` 锚点；否则每个结果各起一条 user 消息——形状变了，
+// `#326` 的 `<runId>:msg:<round>:<seq>` 序号语义也跟着散掉。
+
+/** 账本里所有「带 tool_result 的 user 消息」（折叠后形状），按出现顺序。 */
+const aggregateResults = (records) => records
+  .flatMap((record) => record.messages ?? [])
+  .filter((message) => (Array.isArray(message?.content) ? message.content : [])
+    .some((block) => block?.type === "tool_result"))
+  .map((message) => ({
+    role: message.role,
+    ids: message.content.filter((block) => block?.type === "tool_result").map((block) => block.tool_use_id),
+  }));
+
+test("#420 边界 · 崩溃轮零结果行落盘（A 集合没有锚点）：自己当锚点，形状仍是一条聚合消息，再恢复仍成功", async () => {
+  const inner = createMemoryTranscriptStore();
+  // 单个工具、崩在**它的**结果行写入点 ⇒ 账本里这一轮一条 `tool_result` 行都没有，
+  // 也没有 pending 工具（唯一那个已经执行完、结果已成型）。
+  const first = await runLoop({
+    store: crashOnResultRow(inner, "t1"),
+    provider: createFakeProvider([toolTurn(["t1"])]),
+    executeTool: async ({ id }) => `out-${String(id)}`,
+    resume: false,
+    initialUserMessage: "任务",
+  });
+  assert.equal(first.ok, false, "前置：第一次运行必须真的崩在 t1 的结果行写入点");
+  assert.deepEqual(ledgerResults(await inner.load(RUN_ID)), [],
+    "前置：崩溃轮一条结果行都没落（这就是本用例的边界）");
+  const snapshot = await inner.loadLatestRunSnapshot(RUN_ID);
+  assert.deepEqual(snapshot?.toolResults?.map((entry) => entry.toolUseId), ["t1"],
+    "前置：t1 已执行完、结果已成型（A 集合），但账本里没有它的行");
+
+  // 第一次恢复：A 集合从快照接回来并逐条入账。没有锚点 ⇒ 首片自己新起一条聚合消息。
+  const resumed = await runLoop({
+    store: inner,
+    provider: createFakeProvider([endTurn("续接完成")]),
+    executeTool: async () => {
+      throw new Error("补跑不该发生：t1 已执行完（A 集合，不是 pending 工具）");
+    },
+  });
+  assert.equal(resumed.ok, true, "第一次恢复必须成功");
+  const records = await inner.load(RUN_ID);
+  assert.deepEqual(ledgerResults(records), ["t1=out-t1"], "A 集合的结果行必须落下去");
+  assert.deepEqual(aggregateResults(records), [{ role: "user", ids: ["t1"] }],
+    "`load()` 形状必须是**一条**聚合 user 消息带全部结果（不是每条结果各自一条 user 消息）");
+  // 形状（不是条数）：round 1 里带 tool_result 的记录必须只有**一条**（分片行被折叠层吸收进载体行），
+  // 而且它是载体行（`kind` 不是 `"message"`）——这就是「新起的聚合消息被 `…:resume` 载体收走」。
+  const roundOneResults = records.filter((record) => record?.round === 1
+    && (record.messages ?? []).some((message) => (Array.isArray(message?.content) ? message.content : [])
+      .some((block) => block?.type === "tool_result")));
+  assert.equal(roundOneResults.length, 1, "round 1 带 tool_result 的记录必须只有一条（不是两条并列）");
+  assert.equal(roundOneResults[0].kind, undefined, "折回的是载体行，分片行必须已被折叠层吸收");
+
+  // 第二次恢复：形状没变 ⇒ 折出来的上下文仍然合法，run 仍可恢复，且结果不翻倍。
+  const provider = createFakeProvider([endTurn("第二次续接完成")]);
+  const second = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(second.ok, true, `第二次恢复必须成功（实测：\`${String(second.error)}\`）`);
+  const t1 = resultsFor(provider.requests[0].messages, "t1");
+  assert.equal(t1.length, 1, "A 集合的结果在第二次恢复后必须仍恰 1 份");
+  assert.equal(t1[0].content, "out-t1", "内容必须逐字相同");
+  assert.deepEqual(aggregateResults(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1"] }],
+    "第二次恢复之后账本形状不许变（仍是一条聚合 user 消息）");
+});
+
+test("#420 边界 · 零结果行 + 还有待补跑工具：A 集合首片当锚点，B 集合接回同一条聚合消息", async () => {
+  const inner = createMemoryTranscriptStore();
+  // 崩在 t1 的结果行写入点 ⇒ A 集合 = [t1]（无锚点），B 集合 = [t2]（还没执行）。
+  const first = await runLoop({
+    store: crashOnResultRow(inner, "t1"),
+    provider: createFakeProvider([toolTurn(["t1", "t2"])]),
+    executeTool: async ({ id }) => `out-${String(id)}`,
+    resume: false,
+    initialUserMessage: "任务",
+  });
+  assert.equal(first.ok, false, "前置：第一次运行必须真的崩在 t1 的结果行写入点");
+  assert.deepEqual(ledgerResults(await inner.load(RUN_ID)), [], "前置：一条结果行都没落");
+
+  const resumed = await runLoop({
+    store: inner,
+    provider: createFakeProvider([endTurn("续接完成")]),
+    executeTool: async ({ id }) => `out-${String(id)}`,
+  });
+  assert.equal(resumed.ok, true, "第一次恢复必须成功");
+  const records = await inner.load(RUN_ID);
+  assert.deepEqual(ledgerResults(records), ["t1=out-t1", "t2=out-t2"],
+    "两个结果各一条行，且顺序 = 真实发生顺序（A 先于 B）");
+  assert.deepEqual(aggregateResults(records), [{ role: "user", ids: ["t1", "t2"] }],
+    "A 集合首片新起的聚合消息必须同时收下 B 集合（同一条 user 消息，不是两条）");
+  const roundOneResults = records.filter((record) => record?.round === 1
+    && (record.messages ?? []).some((message) => (Array.isArray(message?.content) ? message.content : [])
+      .some((block) => block?.type === "tool_result")));
+  assert.equal(roundOneResults.length, 1, "round 1 带 tool_result 的记录只有一条（A+B 都折进同一个载体行）");
+  assert.equal(roundOneResults[0].kind, undefined, "折回的是载体行，分片行必须已被折叠层吸收");
+
+  const provider = createFakeProvider([endTurn("第二次续接完成")]);
+  const second = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(second.ok, true, `第二次恢复必须成功（实测：\`${String(second.error)}\`）`);
+  assert.equal(resultsFor(provider.requests[0].messages, "t1").length, 1);
+  assert.equal(resultsFor(provider.requests[0].messages, "t2").length, 1);
+  assert.deepEqual(aggregateResults(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1", "t2"] }]);
+});
