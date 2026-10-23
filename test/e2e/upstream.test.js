@@ -532,8 +532,11 @@ const SLOW_FRAMES = sseOpenAI(openAITextChunks(["慢"]), { done: false });
 //
 // 三条**不依赖运行结果**的守卫（#412 交付判据，全部是判红/判失败，不是悄悄放行）：
 //   ① 探针量不到落地（`waitForRequests` 假、`chatStream` 抛错）⇒ 立刻红——没有实测就没有派生；
-//   ② 派生值本身自检：必须是有限正数、≥ 下限、≥ 8 × 实测值、≤ 上限/8（机器慢到毫秒级断言失去意义
-//      时判红，而不是把截止线抬到天上去假装没事）；
+//   ② 派生值自检：**实测值必须是有限正数、且 ≤ 上限/8**（机器慢到毫秒级断言失去意义时判红，
+//      而不是把截止线抬到天上去假装没事）。注意「≥ 下限」「≥ 8 × 实测」这两条由 `Math.max` /
+//      乘法本身保证，写成断言是**恒真**的（#412 评审实测：把 ×8 改成 ×1、floor 60 改成 floor 1，
+//      全套仍绿）⇒ 所以「×8 / 下限 60ms」这条契约改由下面两条**字面量用例**钉住
+//      （直接调 `deriveRequestTimeoutMs`，取值不随常量漂移）；
 //   ③ 正式那一发的**落地时刻**（`requests[0].receivedAtMs`，服务端侧事实）必须早于截止线。
 //      这一条替代了「轮询等到第 n 发」：轮询自己会被调度器饿着，「早就落地了但轮询没醒」与
 //      「压根没落地」在它眼里长得一样，而 `requestCount === 0` 正是本格要防的**假绿**形状。
@@ -587,8 +590,13 @@ async function measureRequestLandingMs(
 }
 
 /**
- * 派生 request 阶段截止线，并自检派生本身（守卫②）：
- * 有限正数 → ×8 → 夹到 [下限, 上限]。任何一步不成立都判红，而不是返回一个「看起来能跑」的数字。
+ * 派生 request 阶段截止线：有限正数校验 → ×8 → 夹到 [下限, 上限]。
+ *
+ * 这里**只**保留能真正变红的自检（守卫②）：有限正数、实测 ≤ 上限/8、派生值 ≤ 上限。
+ * 「≥ 下限」「≥ 8 × 实测」原本也写成了断言，但那是**恒真**的（同一对常量、同一个表达式，
+ * `Math.max(FLOOR, Math.ceil(worstMs * F))` 天然满足两者）——#412 评审实测：把 ×8 改成 ×1、
+ * floor 60 改成 floor 1，全套 11/11 仍绿。所以那条契约改由**字面量用例**钉住（见下面两个
+ * `派生契约` 测试）：取值写死，不随常量漂移，改系数/下限就红。
  */
 function deriveRequestTimeoutMs({ worstMs, samplesMs }) {
   assert.ok(
@@ -602,12 +610,24 @@ function deriveRequestTimeoutMs({ worstMs, samplesMs }) {
   );
   const scaled = Math.ceil(worstMs * REQUEST_TIMEOUT_RTT_FACTOR);
   const derived = Math.max(REQUEST_TIMEOUT_FLOOR_MS, scaled);
+  // 非恒真的上界不变量（下限被抬到上限之上、或上限自检被拿掉时才会红）。
   assert.ok(
-    derived >= REQUEST_TIMEOUT_FLOOR_MS && derived >= scaled,
-    `派生截止线 ${derived}ms 不满足「≥ 下限 ${REQUEST_TIMEOUT_FLOOR_MS}ms 且 ≥ ${REQUEST_TIMEOUT_RTT_FACTOR} × ${worstMs}ms」`,
+    derived <= REQUEST_TIMEOUT_CEILING_MS,
+    `派生截止线 ${derived}ms 超过了上限 ${REQUEST_TIMEOUT_CEILING_MS}ms`,
   );
   return derived;
 }
+
+// 守卫②的正身（#412 评审阻塞项）：「×8 / 下限 60ms」这条契约用**字面量**钉住。
+// 两条都直接调 `deriveRequestTimeoutMs`，不经过任何实测值，因此不随常量漂移：
+// 把 ×8 改成 ×1、floor 60 改成 floor 1 ⇒ 两条分别得 100 与 1（`ceil(0.5 × 1)`）⇒ 红。
+test("派生契约（#412 守卫②）：worstMs=100 ⇒ 截止线 800ms（×8）", () => {
+  assert.equal(deriveRequestTimeoutMs({ worstMs: 100, samplesMs: [100] }), 800);
+});
+
+test("派生契约（#412 守卫②）：worstMs=0.5 ⇒ 截止线 60ms（下限生效）", () => {
+  assert.equal(deriveRequestTimeoutMs({ worstMs: 0.5, samplesMs: [0.5] }), 60);
+});
 
 /**
  * 本格的判据（抽成函数是为了**反向证**能直接喂坏现场：同一份判据必须能红）。
