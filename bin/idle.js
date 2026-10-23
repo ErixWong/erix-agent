@@ -190,8 +190,11 @@ export function toolHeartbeatCapMs(seconds) {
  * 计时 ⇒ 工具执行期仍受「天花板 + 一个完整 idle 窗口」约束，一个永不返回的工具不会让看门狗失效。
  *
  * **可观测证据（issue #433 fix 3 的验收原文：日志里要能看到「工具执行期间喂过计时器」的行）**：
- * 每次工具执行收尾时打一行 `[idle-heartbeat] …：执行期喂过 idle 计时器 N 次`（`N > 0` 才打，
- * 短命令不会刷屏）；真的喂到上限时另打一行说明「停止喂表、窗口重新计时」。日志走调用方注入的
+ * 每次工具执行收尾时打一行 `[idle-heartbeat] …：执行期喂过 idle 计时器 N 次（间隔 …ms，上限 …ms，
+ * 用时 …ms）`（`N > 0` 才打，短命令不会刷屏）；真的喂到上限时另打一行说明「停止喂表、窗口重新计时」。
+ * 那行里的**上限**不是装饰：它就是本次真的生效的 `capMs`（缺省分支 = `toolHeartbeatCapMs`），
+ * 所以「装配处有没有把上限接上」可以在**不跑 31s** 的 CLI 级用例里断言（issue #433 评审必修 3-B：
+ * 把装配处的 `toolHeartbeatCapMs(idle.seconds)` 换成 `Infinity` 曾经 14/14 全绿）。日志走调用方注入的
  * `log`（`bin/cli.js` / `bin/repl.js` 都接到 stderr），缺省 no-op——不替调用方决定往哪写。
  *
  * @template T
@@ -236,7 +239,7 @@ export function withToolHeartbeat(idle, run, { label, log, capMs: capOverride } 
     if (ticks > 0) {
       emit(
         `[idle-heartbeat] ${name}：执行期喂过 idle 计时器 ${ticks} 次`
-        + `（间隔 ${intervalMs}ms，用时 ${Date.now() - startedAt}ms）`,
+        + `（间隔 ${intervalMs}ms，上限 ${capMs}ms，用时 ${Date.now() - startedAt}ms）`,
       );
     }
   };
@@ -281,7 +284,8 @@ export const IDLE_RETRY_MAX_DELAY_MS = 30_000;
  * 重试**次数**硬上限（不含首发）。为什么是 8：
  *  - 预算（默认 900s）在有意义的 idle 窗口下本来就先撞线（`idle=300s` ⇒ 最多 2~3 次）；
  *  - 但 `--idle-timeout 1` 这种极小窗口能把 900s 预算摊成几百次重试 ⇒ 次数上限是**成本闸**：
- *    指数退避前 8 档之和 ≈ `1+2+4+8+16+32+64+128 = 255s`，第 9 次起预算/次数必有一个先响；
+ *    指数退避前 8 档之和 = `1+2+4+8+16+30+30+30 = 121s`（**套了自己的 `IDLE_RETRY_MAX_DELAY_MS`
+ *    = 30s 上限**，不是无上限的 `1+2+…+128 = 255s`），第 9 次起预算/次数必有一个先响；
  *  - 8 次 ≈ 一个 run 最多 9 发请求，配合预算仍是有界的（「不许无限重试」的双闸）。
  */
 export const IDLE_RETRY_MAX_ATTEMPTS = 8;

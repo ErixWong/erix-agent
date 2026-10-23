@@ -113,9 +113,15 @@ test("idle window / exec ceiling / heartbeat intervals are one口径 (issue #433
 //
 // 为什么在单元层钉、不跑 31s 的 CLI 级用例：缺省上限是 `toolHeartbeatCapMs(idle.seconds)`，它有
 // 30s 下限（`EXEC_CEILING_FLOOR_MS`），`idle=1` 时挂住的工具要 ~31s 才会被收掉——那会让全量套件
-// 的墙钟翻倍。所以这里注入 `capMs: 600` 走**同一条**代码路径（上限判据、停喂、日志都在里面），
-// 装配侧（cli.js 不传 capMs ⇒ 用 `toolHeartbeatCapMs`）由上面那格的纯函数断言钉着。
-test("withToolHeartbeat: feeding is bounded, so a tool that never returns is still collected (issue #433 fix 3)", async () => {
+// 的墙钟翻倍。所以这里注入 `capMs: 600` 走**同一条**代码路径（上限判据、停喂、日志都在里面）。
+//
+// ⚠️ 这一格单独**不承重**装配处（issue #433 评审必修 3-B）：把 `bin/idle.js` 装配处的
+// `: toolHeartbeatCapMs(idle.seconds)` 改成 `: Infinity` 时，这里注入的显式 `capMs: 600` 走不到
+// 缺省分支 ⇒ 本格照旧绿。承重的是下面 T0 的 CLI 级那一格：它在**真实装配**（`idle=1`、不传
+// `capMs`）下断言 `[idle-heartbeat] … 上限 …ms` 里的上限 == `toolHeartbeatCapMs(1)`。
+// 另一个纪律：本格给 `{ timeout: 5_000 }`——把上限判据（`Date.now() - startedAt >= capMs`）变异成
+// `false` 时，工具永不 settle、喂表永不停，**没有超时就会把整个套件钉 300s 挂死**（不是红）。
+test("withToolHeartbeat: feeding is bounded, so a tool that never returns is still collected (issue #433 fix 3)", { timeout: 5_000 }, async () => {
   const idle = createIdleTimeout(1);
   const lines = [];
   let touched = 0;
@@ -193,6 +199,17 @@ test("chat: a tool that outlives the idle window does not kill the run (issue #4
     assert.ok(
       Number(/喂过 idle 计时器 (\d+) 次/u.exec(heartbeat)[1]) >= 1,
       `喂表次数必须 ≥ 1：${heartbeat}`,
+    );
+    // issue #433 评审必修 3-B：**接线承重**。这格走的是真实装配（`bin/cli.js` 不传 `capMs` ⇒
+    // 缺省分支 `toolHeartbeatCapMs(idle.seconds)`），所以日志里的「上限」必须就是那个值。
+    // 把装配处换成 `: Infinity`（或把 `toolHeartbeatCapMs` 改成返回 `Infinity`）⇒ 这里必红；
+    // 而注入 `capMs: 600` 的单元格永远看不见缺省分支，钉不住这件事。
+    const loggedCap = /上限 (\d+)ms/u.exec(heartbeat);
+    assert.ok(loggedCap, `喂表日志必须带上生效的上限（接线证据）：${heartbeat}`);
+    assert.equal(
+      Number(loggedCap[1]),
+      toolHeartbeatCapMs(1),
+      `日志里的上限必须等于 toolHeartbeatCapMs(idle.seconds)（idle=1 ⇒ ${toolHeartbeatCapMs(1)}ms），实测：${heartbeat}`,
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -421,9 +438,11 @@ test("chat: the idle watchdog still bites when the provider has no retryable dea
 //
 // 工单的验收原文是「把 exec 上限设为 idle 的 2 倍跑一个 sleep 装包任务 ⇒ 终局不得是 idle_timeout，
 // 且日志能看到 fix 3 的喂证据 + fix 4 的收敛日志」。为什么拆成两格（如实记，不合并冒充）：
-// `exec < idle` 这条不变式在 `idle ≤ 90s` 时**物理上不可能**成立（天花板有 30s 下限），而喂表间隔是
-// `idle/4`（长窗口下夹到 30s）——所以「一次 run 里同时看到真收敛与真喂表」需要 `idle > 90s` 且工具
-// 跑够 `idle/4 > 22.5s`，单格就要 20+ 秒。两格各自钉住承重的那一半：
+// `exec < idle` 这条不变式在 `idle ≤ 30s` 时**物理上不可能**成立（天花板有 30s 下限：
+// `execCeilingMsForIdle(idle) = max(30s, idle − 60s)` ⇒ `idle ≤ 30s` 时生效值是 30000ms ≥ idle；
+// 而 `idle > 30s` 时天花板严格小于 idle，包括 `idle=31/50/90`），而喂表间隔是
+// `idle/4`（长窗口下夹到 30s）——所以「一次 run 里同时看到真收敛与真喂表」需要 `idle > 30s` 且工具
+// 跑够 `idle/4`，单格就要 20+ 秒。两格各自钉住承重的那一半：
 //   ① exec 上限 = idle 的 2 倍 + 一条比 idle 长的命令 ⇒ 终局不是 idle_timeout，日志有喂表证据；
 //   ② exec 上限 ≥ idle ⇒ 真的收敛到 `min(exec, idle − 60s)` 并打 loud 日志，run 照常跑完。
 test("chat: exec cap = 2× idle with a long sleep still finishes, and the heartbeat is logged (issue #433 fix 3+4)", async () => {
