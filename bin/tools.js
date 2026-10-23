@@ -102,8 +102,179 @@ const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const INSTALL_EXEC_TIMEOUT_MS = DEFAULT_CHAT_IDLE_TIMEOUT_SECONDS * 1000 - EXEC_CEILING_MARGIN_MS;
 const EXEC_MAX_BUFFER = 1024 * 1024;
 
-// 安装/编译/下载类命令前缀（benchmark 实测 apt-get install 频繁超时）
+// 安装/编译/下载类命令前缀（benchmark 实测 apt-get install 频繁超时）。
+// issue #434 T1：这条正则**仍然 `^` 锚定**，但锚在「切段 + 剥前缀之后的**段首**」上，不是整条命令的
+// 开头（判定见 `isInstallCommand`）。整条去掉 `^` 会把 `grep 'apt-get install' f`、
+// `sed -i 's/apt-get install/x/'`、`node -e "..."`、`cat install.log` 全判成 install 档，白白给 240s。
 const INSTALL_COMMAND_PATTERN = /^(?:sudo\s+)?(?:apt-get|apt|pip\d?|pip3|npm|yarn|pnpm|make|cmake|gcc|g\+\+|cc|configure|bash\s+.*\.sh|curl|wget)\b/;
+
+/**
+ * 包在真正命令前面的**前缀命令**（issue #434 T1 的表驱动口径）：名字 ⇒ 「要连吃一个参数值」的短选项集合
+ * （`sudo -u root` / `timeout -s KILL`）。`command` 故意**不**吃选项：`command -v npm` 只是查存在，
+ * 吃了 `-v` 就会把 `npm` 当成段首 ⇒ 假 install 档。
+ * 这张表是**反向证的靶子**：清空任一格，对应的正例必须变红。
+ */
+const SHELL_PREFIX_COMMANDS = new Map([
+  ["sudo", new Set(["-u", "-g", "-p", "-C", "-h", "-r", "-t", "-U", "-D", "-R", "-T"])],
+  ["env", new Set(["-u", "-C", "-S"])],
+  ["time", new Set(["-f", "-o"])],
+  ["nohup", new Set()],
+  ["command", new Set()],
+  ["exec", new Set(["-a"])],
+  ["timeout", new Set(["-s", "-k"])],
+]);
+
+/** 段首出现时要跳过的 shell 关键字（`set -e; pip install x`、`then npm ci` 这类连接体）。 */
+const SHELL_SEGMENT_KEYWORDS = new Set([
+  "then", "do", "else", "elif", "if", "while", "until", "!", "{", "}", "fi", "done",
+]);
+
+/** `VAR=值` 形式的赋值前缀（`NODE_ENV=prod npm install`）。 */
+const ASSIGNMENT_PREFIX = /^[A-Za-z_][A-Za-z0-9_]*=\S*/;
+/** 命令的路径前缀（`/usr/local/bin/pip3`、`./mvnw`）——只吃路径本身，段首换成 basename。 */
+const PATH_PREFIX = /^(?:\.{1,2}\/|\/)\S*$/;
+/** 剥前缀的循环上限（防病态输入把纯函数拖成死循环；正常命令 2–3 轮就到底）。 */
+const SEGMENT_PREFIX_STRIP_LIMIT = 24;
+
+/** 按 shell 的命令连接符切段（纯函数）：`&&` / `||` / `;` / `|` / `&` / 换行。
+ *  引号内的分隔符**不切**（`grep 'a|b' f` 是一段），引号外的 `\` 转义照 shell 走。 */
+function splitCommandSegments(command) {
+  const text = String(command ?? "");
+  const segments = [];
+  let current = "";
+  let quote = null;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (quote !== null) {
+      current += ch;
+      if (quote === "'") {
+        if (ch === "'") quote = null;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "\\") {
+      current += ch;
+      escaped = true;
+      continue;
+    }
+    if ((ch === "&" || ch === "|") && text[i + 1] === ch) {
+      segments.push(current);
+      current = "";
+      i += 1;
+      continue;
+    }
+    if (ch === ";" || ch === "|" || ch === "&" || ch === "\n") {
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current);
+  return segments;
+}
+
+/** 吃掉命令名之后的短选项（`-E` / `-n` …）；`takesArg` 里的选项再连吃一个参数值。 */
+function dropShortOptions(text, takesArg) {
+  let rest = text.trimStart();
+  while (rest.startsWith("-") || rest.startsWith("+")) {
+    const option = rest.match(/^\S+/);
+    if (!option) break;
+    rest = rest.slice(option[0].length).trimStart();
+    if (takesArg.has(option[0])) {
+      const argument = rest.match(/^\S+/);
+      if (argument) rest = rest.slice(argument[0].length).trimStart();
+    }
+  }
+  return rest;
+}
+
+/** 剥掉一段的前缀，返回「真正要执行的命令」的段首文本（纯函数）。
+ *  剥的次序每轮重来：路径前缀 → `(` → `VAR=值` → `set`/关键字 → 前缀命令（含各自的选项与参数）。 */
+function segmentHead(segment) {
+  let rest = segment.trim();
+  for (let round = 0; round < SEGMENT_PREFIX_STRIP_LIMIT && rest !== ""; round += 1) {
+    if (rest.startsWith("(")) {
+      rest = rest.slice(1).trimStart();
+      continue;
+    }
+    const assignment = rest.match(ASSIGNMENT_PREFIX);
+    if (assignment) {
+      rest = rest.slice(assignment[0].length).trimStart();
+      continue;
+    }
+    const head = rest.match(/^\S+/);
+    if (!head) break;
+    const name = head[0];
+    const tail = rest.slice(name.length);
+    if (PATH_PREFIX.test(name)) {
+      rest = (name.slice(name.lastIndexOf("/") + 1) + tail).trimStart();
+      continue;
+    }
+    if (name === "set") {
+      rest = dropShortOptions(tail, new Set(["-o", "+o"]));
+      continue;
+    }
+    if (SHELL_SEGMENT_KEYWORDS.has(name)) {
+      rest = tail.trimStart();
+      continue;
+    }
+    if (SHELL_PREFIX_COMMANDS.has(name)) {
+      let after = tail;
+      if (name === "command") {
+        // `command -v npm` 只是查存在，不吃选项（吃了会把 `npm` 顶到段首 ⇒ 假 install 档）。
+        after = after.trimStart();
+      } else {
+        after = dropShortOptions(after, SHELL_PREFIX_COMMANDS.get(name));
+      }
+      if (name === "timeout") {
+        // `timeout 300 npm ci`：选项之后还要吃掉那个时长。
+        const duration = after.match(/^\S+/);
+        if (duration) after = after.slice(duration[0].length);
+      }
+      rest = after.trimStart();
+      continue;
+    }
+    break;
+  }
+  return rest;
+}
+
+/**
+ * 判定一条命令是否「安装/编译/下载类」（issue #434 T1）。**纯函数、零 IO**：只吃命令字符串，
+ * 环境变量/时钟/文件一律不读（`ERIX_EXEC_TIMEOUT_MS` 由调用方处理）。
+ *
+ * 口径：先按 `&&` / `||` / `;` / `|` / `&` / 换行**切段**（引号内不切），每段剥掉已知前缀
+ * （`sudo`/`env`/`time`/`nohup`/`command`/`exec`/`timeout <时长>`、`VAR=值` 赋值、`set -e` 之类
+ * shell 关键字、`(`、可选路径前缀），剥完之后的**段首**再跑 `INSTALL_COMMAND_PATTERN`。
+ * **任一段落段首命中 ⇒ 放大档**；`echo apt-get`、`grep 'apt-get install' f`、
+ * `sed -i 's/apt-get install/x/' f`、`node -e "..."`、`cat install.log` 都保持默认档。
+ *
+ * 已知不覆盖（如实登记，**不**偷偷扩大范围）：`sh setup.sh` 这类「install 字样只在脚本里面」的写法
+ * **不**进放大档——本函数只看命令的段首，不做脚本内容分析（也没打算加脚本白名单）。
+ * （`bash xxx.sh` 命中是 `INSTALL_COMMAND_PATTERN` 里的**存量**分支，不是本刀加的，行为一字未改。）
+ *
+ * @param {string} command
+ * @returns {boolean}
+ */
+export function isInstallCommand(command) {
+  return splitCommandSegments(command).some((segment) => INSTALL_COMMAND_PATTERN.test(segmentHead(segment)));
+}
 
 /** `ERIX_EXEC_TIMEOUT_MS` 的显式值（未设/非法 ⇒ `null`）。「显式」与「默认」必须能区分：
  *  钳天花板时**只动默认值，不动显式配置**（既有语义，见 getCommandTimeoutMs）。 */
@@ -120,7 +291,7 @@ export function getExecTimeoutMs() {
 
 /**
  * 按命令类型选择超时：安装/编译/下载类命令超时更长（默认 240s = idle 默认窗口 300s − 60s），
- * 其余默认 120s。
+ * 其余默认 120s。哪一类由 `isInstallCommand` 判（issue #434 T1：**按分段后的段首**判，不是整条命令的开头）。
  *
  * `ceilingMs`（issue #433 T0）：装配处按 `--idle-timeout` 算出来的天花板（`execCeilingMsForIdle`）。
  * 未显式配置 `ERIX_EXEC_TIMEOUT_MS` 时按它收口（`Math.min`）；显式配置时**一字不改**
@@ -132,7 +303,7 @@ export function getExecTimeoutMs() {
  */
 export function getCommandTimeoutMs(command, { ceilingMs } = {}) {
   const explicit = explicitExecTimeoutMs();
-  const install = INSTALL_COMMAND_PATTERN.test(String(command ?? "").trim());
+  const install = isInstallCommand(command);
   const tier = explicit ?? (install ? INSTALL_EXEC_TIMEOUT_MS : DEFAULT_EXEC_TIMEOUT_MS);
   // 显式配置不放大也不钳（既有语义）；未显式配置时按 idle 天花板收口。
   if (explicit !== null) return tier;

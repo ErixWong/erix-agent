@@ -1030,6 +1030,54 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
 且是它修完自身缺陷之后的样本，不外推。这也不构成退役这个选项的理由：它留在白名单里，五个测试文件
 覆盖着，关着的时候零成本。
 
+## 用量分账：逐轮账 vs 引擎开销（issue #438）
+
+`result.usage` 一字未动：它累计这个 run **每一次** provider 调用——模型自己的响应，加上引擎为
+自己发起的调用。issue #438 只**加**键做分账：既有键的形状与语义一律不变，忽略新键的宿主行为
+与今天逐字一致。
+
+| 键 | 落在哪 | 语义 |
+|---|---|---|
+| `usage` | `result`（不变） | run 累计，覆盖**全部** provider 调用：`modelUsage` + `engineUsage`，逐字段相加（缺键当 0） |
+| `modelUsage` | `result`（**新**） | run 累计里主循环自己那些模型响应（含 `max_tokens` 续写的每一发） |
+| `engineUsage` | `result`（**新**） | run 累计里引擎**自己发起**的调用 |
+| `usage` | `RoundRecord`（**新**） | 本轮**全部**模型响应的累计：续写每一发都算 |
+| `engineUsage` | `RoundRecord`（**新**） | 本轮**期间**跑过的引擎自发起调用；一个都没有时**缺键** |
+| `response.usage` | `RoundRecord`（不变） | **只含本轮最后一发**响应——历史形状，逐字保留 |
+
+宿主必须读对的四件事（读错就是静默算错钱）：
+
+- **`record.response.usage` 不是这一轮的花费。** 它就是本轮最后那一次 provider 响应的 `usage`。
+  撞上 `stopReason: "max_tokens"` 的轮会**在同一轮内**续写（最多 `maxTokenContinuations` 次额外请求，
+  全部并进同一条 assistant 消息与同一条 `RoundRecord`），于是 `response.usage` 只带最后一发。
+  真实轮上的实测：三发 700 + 700 + 7 个 `output_tokens`（共 1407）留下的是
+  `response.usage.output_tokens === 7`——200 倍量级失真。issue #438 之前契约从没写过它是哪一种，
+  所以把它当「本轮的用量」读的宿主，读到的是一个从未被承诺过的数。**本轮的花费读 `record.usage`。**
+  `response.usage` 逐字不变，因为已有宿主在读它——投影也一样：`meta.usage` 仍是那个「最后一发」的值，
+  issue #438 刻意没有把它换掉。
+- **`record.usage` 才是逐轮账。** 它把本轮每一发响应加起来，所以预算、计费、以及「每轮输出多少」
+  这类分析读它。`input_tokens` / `output_tokens` **恒在**（provider 没报时是 0，绝不是缺键），
+  `cacheRead` / `cacheWrite` 只在某一发报过时才出现（与 `result.usage` 同一条字段在场规则）。
+  无续写、且 provider 四个字段都报的那一轮，`record.usage` 与 `record.response.usage` 深相等；
+  这条等式是测试钉住的，不是巧合。完全没有用量时该键仍在，形状是
+  `{ input_tokens: 0, output_tokens: 0 }`。**本版本之前**写下的记录（或宿主自己写的那行）压根没有
+  `record.usage`：它是加法键，缺键的意思是「这行早于这个键」，绝不当 0 读。
+- **引擎开销是另一个桶，永不进逐轮账。** 引擎会发起模型没要求的 provider 调用：round judge、
+  收尾归一化器、折叠摘要器、以及强制收尾（`forceFinalIfNeeded`（`src/loop/termination.js`））。
+  它们的用量落进 `engineUsage`——前三个是**轮级**（它们在轮内跑），强制收尾是 **run 级**
+  （它在最后一条轮记录落盘**之后**才发生，永远归不到某一轮）。因此逐轮账里只有模型的输出，
+  这正是「模型话多」与「引擎开销大」还能分开的原因。轮记录上的 `engineUsage`：本轮没有这类调用
+  ⇒ **缺键**；有调用但 provider 没报用量 ⇒ 零值。run 级那个键恒在。两个桶都只在唯一记账点
+  （`addUsage`（`src/loop/orchestrator.js`））按一个 `account` 参数入桶，不存在第二本会漂的账。
+- **`finalGuard` 的用量两个桶都不计，中止载荷也不带分账。** guard 是**宿主**回调：引擎不发起那次
+  调用、也测不到它，所以它既不能算模型输出、也不能算引擎开销——guard 里真调了模型的宿主自己记。
+  另外中止的 run 仍然只抛 `error.usage` / `termination.usage`（issue #180）。两个桶的加法关系**只成
+  立在成功结果上**：那里 `usage` 依旧等于 `modelUsage` + `engineUsage` 逐字段相加。`RoundRecord`
+  上没有这样一个键——轮记录**没有** `modelUsage`，所以 `record.usage` 就是**模型桶本身**（上面表格那
+  行写的正是「本轮**模型**用量」），本轮的总账是 `record.usage`（模型桶）+ `record.engineUsage`
+  （引擎桶）；后者在本轮没发起过引擎调用时**缺键**，宿主相加时按 0 读。要分清的是：`record.usage`
+  是模型那一份、不是本轮总账——现成的「两桶之和」只有成功结果上的 `result.usage` 一个。
+
 ## judge 记录关联字段与 run 级 outcome（issue #165）
 
 judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log`，宿主可落任意去处）。
@@ -1278,6 +1326,150 @@ if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate)
 | `parseJudgeDecision`（`src/reflection/judge.js`） | 扫描器换成公共入口的 `topOnly: false`，**它自己的逐候选循环留着** | judge 必须跳过「能解析但不合格」的候选（`done` 不是字面布尔、`confidence` 不在 [0,1]）再试下一个；公共入口只返回单个 `value`，直接拿它当结论会把「跳过这个候选」变成「整次解析失败」 |
 | `tryParseWrapupJson`（`src/reflection/wrapup.js`） | **未迁**，仍直接调 `jsonCandidates` | 它的门槛比键存在性严（`done` 必须字面布尔；出现 `action`/`note` 就把对象退回内联 L1 路径），而且同样必须「跳过并续试」。跳过是承重的：`{"done":"true"}{"done":true}` 必须返回第二个。内层的 `{"done":…}` 不得绕过那条 mandatory-done 守卫（issue #30 follow-up），所以这里的扫描继续保持只认顶层 |
 | `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`（`src/compact/fold-statistical.js`） | **不在本单** | 两者都不是「在模型散文里找 JSON」：L0 取的是引擎要求模型写的 `<erix-summary>` 标签，折叠摘要读的是**引擎自己**写下的 `导航记录：{…}` 行并且 fail-closed 到 `undefined`。去掉标签 / 行锚定会放宽它们接受的形状 —— 那是行为变更，不是去重 |
+
+## 带可选兜底的模型输出归一化：`normalizeModelJson`（issue #406）
+
+`normalizeModelJson`（`src/normalization/parse-model-json.js`）是 `parseModelJson`
+（`src/text/parse-model-json.js`）的**异步**兄弟。它存在的原因很具体：宿主此前各自从模型
+输出里抠 JSON，而每一种方言——围栏块、尾逗号、单引号、Python 字面量、截断的答案——都从不同
+实现那里拿到不同答案。
+
+**它不取代 `parseModelJson`，两者也不许合并成一个函数。** 一个是同步、绝不修复；另一个是异步、
+只修结构，末尾还带一次可选的模型调用。宿主同时 `await` 两个，会从一个拿到值、从另一个拿到
+`Promise`；而把它们折成一个函数，会让每一处既有的 `parseModelJson` 调用点静默改变行为。
+
+| | `parseModelJson`（`src/text/parse-model-json.js`） | `normalizeModelJson`（`src/normalization/parse-model-json.js`） |
+|---|---|---|
+| 层 | L0，严格档 | L1 确定性修复 + 闸门 + 可选 L2 兜底 |
+| 同步性 | **同步** | **异步**（恒定返回 `Promise`） |
+| 修不修 | **绝不修** | 只修结构——值的字节保原样 |
+| 发不发请求 | 从不 | 只有 `llm: true`、候选非空**且**每个确定性候选都失败时才发 |
+| 结果 | `{ ok, value, via, candidates }` / `{ ok: false, error, candidates }` | `{ ok, value, repaired?, llmUsed?, dropped? }` / `{ ok: false, error, llmUsed? }` |
+
+失败三态沿用**同一组名字**，但两边的映射**不一一对应**，宿主必须按对的那一档分流：
+
+| `error` | `normalizeModelJson` | `parseModelJson` |
+|---|---|---|
+| `no_candidate` | 输入为空，或截断输入——**任一**候选是截断形状（补全规则改得动它） | 什么都没扫出来（纯散文，或括号永不闭合） |
+| `unparsable` | 有候选但每个都解析不了——**纯散文落这一档**，因为整段原文本身就是候选 | 有候选但每个 `JSON.parse` 都抛 |
+| `shape_mismatch` | 有候选解析成功，但一个都没过 `validate` | 有候选解析成功，但一个都不满足 `requireKeys` |
+
+这里**如实公开两处**差异（不粉饰）：宿主只要把其中任一处读成「和 `parseModelJson` 同一个答案」，分流就会错。
+
+**① `parseModelJson` 只可能返回对象。** 它的扫描只找**顶层平衡对象**，拿到值之后还会把数组 /
+非对象判掉（`src/text/parse-model-json.js` 逐条跳过），所以**顶层非对象**根本成不了候选：`[1,2]`、
+`123`、`"hello"`、`null`、`true` 在那边一律 `no_candidate`，在这个入口一律 `ok` 且值就是它
+（**没有** `repaired` 键——什么都没被改写）。本入口的 `no_candidate` 只对应上表那两档，**不要**
+读成「这里没有 JSON」。
+
+**② 补全规则修不动的截断是「一类」，不是单个形状。** 这一类的每一个形状在 `parseModelJson` 是
+`no_candidate`（括号永不闭合 ⇒ 扫描一个候选都不产），在本入口是 `unparsable`（候选集复用的是
+L0 那份扫描，而它产出的候选没有一个补得出来——补全要求「补完即可 `JSON.parse`」）。本分支实测：
+
+- 片段**前**夹散文 — `前言 {"a":1`；
+- 片段**后**夹散文 — `{"a":1 以上是结果。`；
+- 片段**不是对象** — `前言 [1,2`（L0 的扫描只产对象，所以一个候选都活不下来）；
+- 围栏内的截断之后又夹散文 — 一个块体为 `{"a":1 以上是结果。` 的 `json` 围栏（围栏块体是整块
+  剩下的全部，散文也在里面）；
+- #406 那个场景：截断的**工具引数**串，值里带**裸换行** —
+  `{"tool":"readFile","args":{"path":"a<newline>以上`：补全得先修一个非法字符、而不只是
+  闭合括号，所以这段文本连截断形状都不是。
+
+最后一条有个必须点名的边：把同一个换行写成**两字符的 JSON 转义** `\n`
+（`{"tool":"readFile","args":{"path":"a\n以上`）时，它**是**截断形状、补得成一个可解析的
+对象，两边都是 `no_candidate`。差异的成因是**裸换行那个字节**，不是工具引数这个形状。
+
+两个入口说的是同一件事（「这里没有 JSON」），只是数尝试的方式不同。这是**一类**形状——任何
+补全规则改不动的截断——不是单个特例，`test/normalization/parse-model-json.test.js` 逐条钉住。
+
+**出处是 `repaired`，且只有真的改了文本时才有这个键。** `repaired: { rule, trusted }`：
+`rule` 是**实际生效**的规则 id 按施加顺序用 `+` 连接；`trusted` 为 `true` 当且仅当生效的全是
+引擎自带规则。宿主经 `repair.inject` 注入的规则一律 `trusted: false`——引擎替不了宿主证明
+别人那条规则的保字节性。所以能解析的输入**根本没有** `repaired` 键（不是 `repaired: null`）。
+
+**闸门永远对候选的原始字节判。** `validate` 的调用形状是 `validate(value, source)`，其中
+`source` 是**输入原文的切片**——绝不是修后文本。这是整层承重的不变量：一条会改写值的修复
+（比如把 `http\.request` 改成 `http.request`）否则就能拿调用方从未见过的文本过掉
+`source.includes(value)` 这类逐字核验，那就是一条**被静默伪造的值**。**补全版**候选同样受这条
+约束：闸门拿到的是**补全前**的原文（输入 `{"a":` ⇒ 闸门看到 `{"a":`，不是 `{"a":null}`）——
+否则一条补全规则就能凭空造一个字符串值，而每一道逐字核验都会放行它。第二个参数是 additive 的：
+只写 `(value) => …` 的宿主照旧可用，但那样它就放弃了「证明值没被改写」的能力。
+
+`source.includes(value)` 这个配方有一条限定，而且它正是 #406 的主场景（工具引数里就是**带 `\n`
+的代码串**）：那道逐字核验只对**不含 JSON 转义**的字符串值成立。模型写成 `"line1\nline2"`、
+`"tab\there"`、`"quote\"inside"` 的值，到 `validate` 手里已经是**解码后**的（`\n` 是真换行），
+原文切片里永远不可能逐字包含它——于是天真的 `includes` 会把一个完全合法的值误杀成
+`shape_mismatch`。这类值要**两侧解码后比**：把切片解出来（`JSON.parse(source)`）比值，或拿
+`JSON.stringify(value)` 去掉首尾引号后比，而不要在原始文本上做逐字节搜索。
+
+**候选**是整段原文、每一个围栏块（**含未闭合围栏剩下的那段块体**）、以及 L0 的扫描抠出的
+**每个顶层平衡对象**，按这个顺序逐个独立试完再过闸门；第一个「可解析 **且** 过闸门」的候选
+胜出。**这个顺序是承重的**：围栏块排在 L0 扫描**之前**，所以更晚出现的围栏对象会**压过**文本里
+更早的顶层对象——`{"a":1}` 后面跟一个装着 `{"b":2}` 的 `json` 围栏，本入口给 `{"b":2}`，
+而 `parseModelJson` 给 `{"a":1}`。第三档复用 L0 的扫描（`jsonCandidates`（`src/text/json-candidates.js`）），
+存在的理由就是设计裁定 D1（「内部调 L0，不复制扫描」）：只有「整段原文 + 围栏」时，这个入口会
+比它声称包装的 L0 **更弱**。测试文件里钉住的每个形状都是「整段原文与每一个围栏块体都解析不了」
+的那一类，于是唯一能胜出的候选只能来自 L0 的扫描
+（`好的，结果如下：{"done":true}`、`{"done":true} 以上是结果。`、`{"a":1}}extra{`、
+`前言 {"outer":{"done":true}} 后语`、`~~~json` 围栏）。
+`repair.truncateCompletion` 显式开时，每个候选的补全版会作为**额外**候选追加在末尾。补全与规则表
+**串联**跑（先本档启用的规则，`truncation` 最后），这才是它真能救回东西的原因：纯截断、围栏里的
+截断（**闭合与未闭合围栏都算**）、以及截断叠加结构缺陷（`{"a":"x\\.y"` ⇒ `invalid-escape` 先把
+转义加倍，再补 `}`）——出处会把生效的规则逐个点名（`invalid-escape+truncation`）。它**救不回**
+补全规则改不动的那类截断（见上面 `no_candidate` 那条差异），且它默认关，所以本来就完整的输入绝不会凭空
+长出 `truncation` 出处。
+
+```js
+import { normalizeModelJson } from "erix-agent";
+
+// normalizeModelJson(rawText, { validate?, provider?, slot?, llm?, thinking?, maxTokens?, signal?, repair?, schema? })
+//   -> Promise<{ ok: true, value, repaired?: {rule, trusted}, llmUsed?: true, dropped? }
+//             | { ok: false, error: "no_candidate" | "unparsable" | "shape_mismatch", llmUsed?: true }>
+const clean = await normalizeModelJson('{"done":true}');
+if (clean.ok !== true || clean.repaired !== undefined) throw new Error("a parseable input is not repaired");
+
+const repaired = await normalizeModelJson('{"done":true,}');
+if (repaired.repaired.rule !== "trailing-comma" || repaired.repaired.trusted !== true) {
+  throw new Error("provenance must name the rule and whether the engine trusts it");
+}
+
+// 闸门的第二个参数是候选的**原始字节**，绝不是修后文本。
+const raw = '{"path":"a\\.b"}';
+const injected = { id: "host-unescape", apply: (text) => text.replace("a\\.b", "a.b") };
+const gated = await normalizeModelJson(raw, {
+  repair: { inject: [injected] },
+  validate: (value, source) => ({ ok: source.includes(value.path) }),
+});
+if (gated.ok !== false || gated.error !== "shape_mismatch") {
+  throw new Error("a value the original text does not contain must be rejected");
+}
+
+// 截断输入：与同步入口同一判词，除非显式开补全。
+const truncated = await normalizeModelJson('{"outer":{"done":true}');
+if (truncated.error !== "no_candidate") throw new Error("truncation is not repaired by default");
+const completed = await normalizeModelJson('{"outer":{"done":true}', { repair: { truncateCompletion: true } });
+if (completed.repaired.rule !== "truncation") throw new Error("opting in must be visible in provenance");
+```
+
+可选的模型调用（L2）是这里**唯一**会花钱的东西，`llm: true` 是它唯一的开关：只有每个确定性候选
+都失败之后才发，而且候选集为空时**一次都不发**（空输入 / 纯空白 ⇒ 零请求，没有原文可交给模型）。
+请求恒定带 `reasoning_effort` 且钉在不思考的取值上（归一化文本不是推理任务），
+它的产物仍要过同一道 `validate` 闸门——L2 的产物过不了闸门就是 `shape_mismatch`，绝不静默接受。
+
+`loadModelSlot` / `createProviderForSlot`（`src/config/slot-provider.js`）的存在，是让宿主不必自己
+写一份配置读取就能拿到 L2 需要的 provider：前者读 `slots.default` 并校验必填字段
+（`config_missing` / `config_invalid`），后者把槽位摊平成 OpenAI 兼容 provider。
+
+#### 可选调用的成本
+
+每次调用**最多 1 个请求、从不重试**：`llm: true` 买的是一次归一化机会，第二个请求不会发——解析
+失败不发、闸门判掉不发、模型答歪了也不发。这里也**没有内建的成本上限**：`maxTokens` 不新造
+默认值（不传就用 provider 自己的默认），选项面上**没有 timeout 旋钮**——唯一的超时是 `slot`
+路径钉死的那个，`DEFAULT_PROVIDER_TIMEOUT_MS`（`src/config/slot-provider.js`）= 300 s 硬挂钟
+上限（每请求）。`slot` 这条路还意味着**读盘**：它的起点是 `loadModelSlot`，在拼请求之前先读并
+校验配置文件，所以把这条路径放进热循环的宿主每次调用都要付一次文件 I/O。最后：provider 抛错时是
+**抛异常**出 `normalizeModelJson`，**不会**折进那三个失败态。宿主需要自己的成本 / 失败上限，就在
+调用点包一层。
 
 ## 可复用的归一化原语
 
@@ -2657,7 +2849,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 | `navigationRecord` | 展示 | 有界归档指针 `{ roundFrom, roundTo, artifacts[], truncated? }`，指向被恢复的工具输出。渲染为导航链接/指针，绝不作为消息内容。 |
 | `messages` | 模型 | 精确的模型上下文切片，含 `tool_use`/`tool_result` 块与折叠占位符。不要裸渲染；投影从中提取可展示文本与工具调用摘要。issue #335 起，投影里 assistant 条目的**正文正本也以这里为准**（消息一成型就落盘）；`response.content` 只是老账本与宿主手写行的回退。 |
 | `messages[].meta` | 模型 / 引擎 | 保留该对象及未知键。`meta.source` 是引擎保留标记，投影分类与 judge 可见性依赖它；不得复用它承载宿主自己的来源信息。 |
-| `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。投影展示的正文与块取自 `messages`，不再取自这里；只有 `stopReason`/`usage` 会被抄进投影的 `meta`。其块形状是模型面向的，可能变化。 |
+| `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。投影展示的正文与块取自 `messages`，不再取自这里；只有 `stopReason`/`usage` 会被抄进投影的 `meta`。其块形状是模型面向的，可能变化。**它的 `usage` 只含本轮最后一发响应**——本轮的完整逐轮账是同级键 `record.usage`（见「用量分账：逐轮账 vs 引擎开销（issue #438）」）。 |
 | `l0facts`、`runState`、`compactionStats`、`judge`、`wrapup`、`toolOutputs`、`dedupKey`、`roundKey` | 模型 / 引擎内部 | 给 governor、resume、诊断用的事实。只有 `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` 被拷进投影的 `meta` 供可选标注；其余不属于展示表面。 |
 
 ### 稳定性承诺

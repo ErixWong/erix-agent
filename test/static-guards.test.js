@@ -1652,7 +1652,7 @@ describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒�
       readText: (rel) => (rel === "AGENTS.md" ? enBroken : realReadText(rel)), codeFiles: [],
     });
     assert.equal(enReport.errors.length, 1, `只删 EN 时态标记应恰好 1 处红，实测：\n${enReport.errors.join("\n")}`);
-    assert.match(enReport.errors.join("\n"), /self-test-prose: AGENTS\.md:69 用「known false red」/);
+    assert.match(enReport.errors.join("\n"), /self-test-prose: AGENTS\.md:\d+ 用「known false red」/);
     t.diagnostic(`① 删掉 AGENTS.md 的「Before #302」⇒ ${enReport.errors.length} 处红：\n${enReport.errors.join("\n")}`);
 
     // ② CN：把「#302 之前是另一回事」的时态标记删掉 ⇒ AGENTS_cn.md 那一行红
@@ -1662,7 +1662,7 @@ describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒�
       readText: (rel) => (rel === "AGENTS_cn.md" ? cnBroken : realReadText(rel)), codeFiles: [],
     });
     assert.equal(cnReport.errors.length, 1, `只删 CN 时态标记应恰好 1 处红，实测：\n${cnReport.errors.join("\n")}`);
-    assert.match(cnReport.errors.join("\n"), /self-test-prose: AGENTS_cn\.md:66 用「已知假红」/);
+    assert.match(cnReport.errors.join("\n"), /self-test-prose: AGENTS_cn\.md:\d+ 用「已知假红」/);
     t.diagnostic(`② 删掉 AGENTS_cn.md 的「#302 之前」⇒ ${cnReport.errors.length} 处红：\n${cnReport.errors.join("\n")}`);
 
     // ③ 把 0.19.0 指南的时态标记删掉（中文那半）⇒ 红：证明修好的历史叙述也被同一条规则看住
