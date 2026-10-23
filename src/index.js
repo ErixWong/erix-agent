@@ -85,6 +85,9 @@ export {
 export { createEnvModelConfigProvider } from "./config/env.js";
 export { createJsonFileModelConfigProvider } from "./config/json-file.js";
 export { resolveApiKey } from "./config/api-key.js";
+// 槽位 → provider 的构造件（issue #406 B2-a 的 C-a）：宿主拿 L2 兜底得先有 provider，
+// 而「读 slots.default → 校验必填 → 摊平给 createOpenAIProvider」在此之前每个宿主各写一份。
+export { loadModelSlot, createProviderForSlot } from "./config/slot-provider.js";
 export { createFoldLlmStrategy, SUMMARIZER_PROMPT_GUIDE } from "./compact/fold-llm.js";
 export {
   BUILTIN_COMPACTION_STRATEGIES,
@@ -96,6 +99,10 @@ export { createProviderSummarizer, serializeFoldedMessages } from "./compact/pro
 export { runToolLoop } from "./loop/orchestrator.js";
 export { parseReflectionDecision } from "./loop/reflection.js";
 export { parseModelJson } from "./text/parse-model-json.js";
+// 模型输出归一化底座（issue #406 B2-a）：**异步**、L1 保字节修复 + 闸门 + L2 兜底。
+// 与上面那条同步 L0 入口是**两个函数**（设计稿 §10 的分工），不许合并、不许改名：
+// `parseModelJson` 是 #307 钉死的同步 L0 面，`normalizeModelJson` 是带兜底的异步入口。
+export { normalizeModelJson } from "./normalization/parse-model-json.js";
 export { tryParseWrapupJson, normalizeWrapupWithLlm } from "./reflection/wrapup.js";
 export {
   buildTimeline,

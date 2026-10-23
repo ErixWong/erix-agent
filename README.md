@@ -256,7 +256,10 @@ src/
 and compaction helpers, transcript stores, run-state helpers, the host display
 projection (`projectTranscriptForDisplay`), the multi-turn pre-write helper
 (`appendUserTurn`), configuration providers, `runToolLoop`, and reflection
-helpers. The optional
+helpers, plus the model-output normalization substrate (`normalizeModelJson`, issue
+#406 — the asynchronous entry with deterministic repair plus an optional LLM
+fallback; it does **not** replace the synchronous L0 `parseModelJson`) and the
+slot → provider constructors (`loadModelSlot` / `createProviderForSlot`). The optional
 `erix-agent/tools` subpath exports the tool registry and provider helpers, the
 canonical file and notes factories, and the skill-package loader
 (`discoverSkills` / `loadSkill` / `buildSkillTools`, issue #197 — the bundled skill
