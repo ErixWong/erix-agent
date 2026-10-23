@@ -1344,8 +1344,9 @@ Four things a host has to read correctly, because getting them wrong silently mi
   such key: it carries no `modelUsage`, so `record.usage` is the **model bucket alone** (the
   table row above says "complete **model** usage" for exactly this reason) and the round's total
   is `record.usage` (model bucket) + `record.engineUsage` (engine bucket) — with the second one
-  **absent** when the round issued no engine call, which a host adding them has to read as 0,
-  never as "this round's usage is the model bucket".
+  **absent** when the round issued no engine call, so a host adding them reads absence as 0.
+  What a host must not do is take `record.usage` for the round's whole bill: it is the model's
+  share of it, and only `result.usage` (on the success result) is a ready-made sum.
 
 ## Judge record correlation and run outcome (issue #165)
 
