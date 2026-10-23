@@ -770,8 +770,9 @@ export async function loadErixAgent({
  *      `src/` 那份直接 import，没有这个首参；
  *   2. **`ERIX_CONFIG_PATH`**：本份的 `defaultConfigPath` **不读**它（只在错误文案里承诺），`src/` 那份真读；
  *   3. **`warn`（M7）**：本份的 `createProviderForSlot` 没有 `warn` 注入口，`src/` 那份有（接到 `createRequestInjection`）；
- *   4. **错误载体**：本份抛 `ErixRunError(code, msg, {detail})`，`src/` 那份抛 `KitError(code, msg, {cause})`——
- *      `code` 字面值相同，结构化细节的键名不同，且本份多一个 `lib_missing` 分支；
+ *   4. **错误载体**：本份每条错误都带 `ErixRunError(code, msg, {detail})`（`detail` 恒为字符串），`src/`
+ *      那份**只有解析失败**那一条带附加字段 `{cause: <Error>}`，其余三条（`config_missing` / 非对象 /
+ *      缺必填字段）是裸 `KitError(code, msg)`；`code` 字面值相同，且本份多一个 `lib_missing` 分支；
  *   5. **`metadataMissing` 的键存在性**：本份**总是**带这个键（可能是 `undefined`），`src/` 那份缺元数据时才出现。
  *
  * @param {{

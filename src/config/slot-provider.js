@@ -32,9 +32,12 @@
  *      （排在显式 `configPath` 之后、`XDG_CONFIG_HOME` 之前）；
  *   3. **`warn`（M7）**：只有本文件的 `createProviderForSlot` 有 `warn` 注入口（一路接到
  *      `createRequestInjection`），example 那份没有——宿主在 example 路径上接不住那条 warn；
- *   4. **错误载体**：example 抛 `ErixRunError(code, message, {detail})`，本文件抛 `KitError(code, message,
- *      {cause})`——`code` 字面值相同（`config_missing` / `config_invalid`），但**结构化细节的键名不同**
- *      （`detail` vs `cause`），且 example 多一个 `lib_missing` 分支（它靠动态加载拿库，`src/` 不需要）；
+ *   4. **错误载体（只有一处对等）**：example 每条错误都带结构化细节——`ErixRunError(code, message,
+ *      {detail})`，`detail` 恒为字符串（`config_missing` 给路径、缺必填字段给「路径: 字段」）；本文件
+ *      **只有解析失败**那一条带附加字段，且是 `{cause: <Error>}`（不是字符串）；其余三条
+ *      （`config_missing` / `slots.default` 非对象 / 缺必填字段）是裸 `KitError(code, message)`，
+ *      **没有任何结构化细节**。`code` 字面值相同（`config_missing` / `config_invalid`），且 example 多
+ *      一个 `lib_missing` 分支（它靠动态加载拿库，`src/` 不需要）；
  *   5. **`metadataMissing` 的键存在性**：example 的返回值**总是**带这个键（可能是 `undefined`），
  *      本文件**缺元数据时才出现该键**（「探不到就不写键」）——于是 `"metadataMissing" in result` 在
  *      两份实现上答案相反。
