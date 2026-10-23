@@ -1609,7 +1609,7 @@ silently change behaviour if the two were collapsed.
 | layer | L0, strict | L1 deterministic repair + gate + optional L2 fallback |
 | sync | **synchronous** | **asynchronous** (always returns a `Promise`) |
 | repairs | **never** | structure only — a value's bytes are preserved |
-| model call | never | only when `llm: true` **and** every deterministic candidate lost |
+| model call | never | only when `llm: true`, candidates exist, **and** every deterministic candidate lost |
 | result | `{ ok, value, via, candidates }` / `{ ok: false, error, candidates }` | `{ ok, value, repaired?, llmUsed?, dropped? }` / `{ ok: false, error, llmUsed? }` |
 
 The failure kinds keep the **same three names**, but two mappings differ and a host must
@@ -1617,9 +1617,16 @@ branch on the right one:
 
 | `error` | `normalizeModelJson` | `parseModelJson` |
 |---|---|---|
-| `no_candidate` | empty input, or truncated input with `truncateCompletion` off | nothing scanned out (prose only, or braces that never balance) |
+| `no_candidate` | empty input, or truncated input — **any** candidate is truncation-shaped (the completion rule can rewrite it) | nothing scanned out (prose only, or braces that never balance) |
 | `unparsable` | candidates exist but every one threw — **prose lands here**, because the whole text is itself a candidate | candidates exist but every `JSON.parse` threw |
 | `shape_mismatch` | something parsed, but no candidate passed `validate` | something parsed, but no candidate satisfied `requireKeys` |
+
+One divergence inside `no_candidate` is disclosed rather than papered over: a **prose prefix
+followed by a truncated object** (`前言 {"a":1`) is `no_candidate` for `parseModelJson` (the
+braces never balance, so the scan yields nothing) but `unparsable` here — the candidate set
+reuses L0's scan, and none of the candidates it yields can be completed (completion requires
+the completed text to `JSON.parse`). Both entries are saying "there is no JSON here"; they
+count the attempts differently, and this is the one shape where that shows.
 
 **Provenance is `repaired`, and the key appears only when the text really changed.**
 `repaired: { rule, trusted }`: `rule` is the ids of the rules that actually fired, in
@@ -1633,13 +1640,37 @@ as `validate(value, source)`, where `source` is the **original slice of the inpu
 the repaired text. This is the load-bearing invariant of the whole layer: a repair that
 rewrites a value (say `http\.request` → `http.request`) would otherwise pass a
 `source.includes(value)` check against text the caller never saw, which is a silently
-fabricated value. The second argument is additive: a one-argument `validate` still works,
-but it has given up the ability to prove the value was not rewritten.
+fabricated value. A **completed** candidate is under the same rule: the gate receives the
+**pre-completion** original (`{"a":` for the input `{"a":`), not the completed `{"a":null}` —
+otherwise a completion rule could fabricate a string value and every verbatim check would
+wave it through. The second argument is additive: a one-argument `validate` still works, but
+it has given up the ability to prove the value was not rewritten.
 
-**Candidates** are the whole input plus every fenced block, in order of appearance, each
-tried independently; the first candidate that parses **and** passes the gate wins. With
-`repair.truncateCompletion` on, each candidate's completed form is appended as an **extra**
-candidate at the end — that is the only way a truncated answer is rescued, and it is off by
+One limit on the `source.includes(value)` recipe, and it is the #406 main scenario (tool
+arguments carry **code strings with `\n`**): that literal comparison only holds for string
+values that contain **no JSON escape**. A value the model wrote as `"line1\nline2"`,
+`"tab\there"` or `"quote\"inside"` arrives at `validate` **decoded** (`\n` is a real newline),
+so the raw slice never contains it and a naive `includes` rejects a perfectly good value as
+`shape_mismatch`. For those values compare after decoding both sides — parse the slice
+(`JSON.parse(source)`) and compare the values, or compare against `JSON.stringify(value)`
+without its outer quotes — instead of doing a byte-for-byte search on the raw text.
+
+**Candidates** are the whole input, every fenced block (including the remaining body of an
+**unclosed** fence), and every top-level balanced object L0's scan finds — in that order,
+each tried independently and then gated; the first candidate that parses **and** passes the
+gate wins. The third tier reuses L0's scan — `jsonCandidates`（`src/text/json-candidates.js`） —
+and exists because of design decision D1 ("call L0, do not copy the scan"): with only the
+whole input plus fences, this entry is **weaker** than the L0 it claims to wrap — measured
+7 of 9 real shapes came back `ok` from `parseModelJson` and `unparsable` here
+(`好的，结果如下：{"done":true}`, `{"done":true} 以上是结果。`, `{"a":1}}extra{`,
+`前言 {"outer":{"done":true}} 后语`, a `~~~json` fence, …). With `repair.truncateCompletion`
+on, each candidate's completed form is appended as an **extra** candidate at the end.
+Completion is **chained with the rule table** (the enabled rules first, `truncation` last),
+which is what makes it actually rescue: a plain truncation, a truncation inside a fence
+(closed **or unclosed**), and a truncation combined with a structural defect
+(`{"a":"x\.y"` ⇒ `invalid-escape` doubles the escape, then the brace is closed) — and the
+provenance names every rule that fired (`invalid-escape+truncation`). It does **not** rescue
+a prose prefix followed by a truncation (the `no_candidate` note above), and it is off by
 default so a complete input never gains a `truncation` provenance.
 
 ```js
@@ -1675,7 +1706,9 @@ if (completed.repaired.rule !== "truncation") throw new Error("opting in must be
 ```
 
 The optional model call (L2) is the **only** thing here that ever spends money, and
-`llm: true` is its only switch: it fires only after every deterministic candidate lost. The
+`llm: true` is its only switch: it fires only after every deterministic candidate lost, and
+**never** when the candidate set is empty (an empty or whitespace-only input makes zero
+requests — there is no original text to hand the model). The
 request always carries `reasoning_effort` pinned to a non-thinking value (normalizing text
 is not a reasoning task), and its answer still has to pass the same `validate` gate — L2
 output that fails the gate is `shape_mismatch`, never a silent accept.
@@ -1684,6 +1717,21 @@ output that fails the gate is `shape_mismatch`, never a silent accept.
 obtain the provider L2 needs without writing its own config reader: the first reads
 `slots.default` and validates the required fields (`config_missing` / `config_invalid`), the
 second flattens a slot into an OpenAI-compatible provider.
+
+#### Cost of the optional call
+
+Each call makes **at most one request and never retries**: `llm: true` buys one attempt at
+normalizing the text, and a second request is never issued — not on a parse failure, not on
+a gate rejection, not on a malformed answer. Nothing here imposes a cost ceiling: no
+default `maxTokens` is invented (omit it and the provider's own default applies), and there
+is no timeout knob on the option surface — the only timeout is the one the `slot` path
+pins, `DEFAULT_PROVIDER_TIMEOUT_MS`（`src/config/slot-provider.js`）= 300 s of hard
+wall-clock time per request. The `slot` route also means **reading the disk**: it starts
+with `loadModelSlot`, which reads and validates the config file before any request is built
+— so a host that takes that route in a hot path pays for file I/O on every call. Finally, a
+provider that throws **propagates the exception** out of `normalizeModelJson`; it is not
+folded into the three failure states. Wrap the call if the host needs a cost or failure
+ceiling of its own.
 
 ## Reusable normalization primitives
 

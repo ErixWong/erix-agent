@@ -22,8 +22,24 @@
  *
  * 与 example 那份的关系（**报告里点名**的事实）：`examples/pi-extension/erix-run-core.js` 的
  * `loadModelSlot` / `createProviderForSlot` **还在**，两份实现同时存在。删它属于 B2-b / 公开面清理
- * （同一批还要动 `src/loop/orchestrator.js`，被 #430 占着），本单不碰。差异只有一条：
- * example 那份的首参是 `lib`（扩展动态加载的产物），本文件在 `src/` 里直接 import，**没有那个首参**。
+ * （同一批还要动 `src/loop/orchestrator.js`，被 #430 占着），本单不碰。
+ *
+ * 两份的差异**不是一条，是五条**（合并前评审实测；原先这里写「差异只有一条」，与下文自相矛盾）：
+ *   1. **首参**：example 那份的 `loadModelSlot({lib, …})` / `createProviderForSlot(lib, slot, …)` 带 `lib`
+ *      （扩展动态加载的产物），本文件在 `src/` 里直接 import，**没有那个首参**；
+ *   2. **`ERIX_CONFIG_PATH`**：example 的 `defaultConfigPath` **实际不读**它（只在错误文案里承诺「可用
+ *      `ERIX_CONFIG_PATH` 指定别的路径」——文案兑现了、代码没兑现），本文件的 `resolveConfigPath` 真的读
+ *      （排在显式 `configPath` 之后、`XDG_CONFIG_HOME` 之前）；
+ *   3. **`warn`（M7）**：只有本文件的 `createProviderForSlot` 有 `warn` 注入口（一路接到
+ *      `createRequestInjection`），example 那份没有——宿主在 example 路径上接不住那条 warn；
+ *   4. **错误载体**：example 抛 `ErixRunError(code, message, {detail})`，本文件抛 `KitError(code, message,
+ *      {cause})`——`code` 字面值相同（`config_missing` / `config_invalid`），但**结构化细节的键名不同**
+ *      （`detail` vs `cause`），且 example 多一个 `lib_missing` 分支（它靠动态加载拿库，`src/` 不需要）；
+ *   5. **`metadataMissing` 的键存在性**：example 的返回值**总是**带这个键（可能是 `undefined`），
+ *      本文件**缺元数据时才出现该键**（「探不到就不写键」）——于是 `"metadataMissing" in result` 在
+ *      两份实现上答案相反。
+ *
+ * 迁移到本文件时这五条都要逐条对账，不能当「同一份实现搬了个家」。
  *
  * 零依赖：只用 `node:` 内建与相对路径。
  */
@@ -63,7 +79,7 @@ function expandUserPath(value, { home = homedir() } = {}) {
  * 为什么环境变量排在 XDG 之前：`ERIX_CONFIG_PATH` 是**本包自己**的旋钮（错误文案里一直这么
  * 承诺），而 `XDG_CONFIG_HOME` 是整台机器的通用约定——宿主显式设了前者就是更具体的意图。
  * 注：example 那份的 `loadModelSlot` 只在**错误文案**里提到 `ERIX_CONFIG_PATH`，实际并不读它
- * （文案承诺了、代码没兑现）；本文件把这个洞补上，两份实现的差异因此只剩「首参 `lib`」。
+ * （文案承诺了、代码没兑现）；本文件把这个洞补上（两份实现的总差异清单见文件头五条）。
  *
  * @param {{configPath?:string, env?:Record<string,string|undefined>, home?:string}} [options]
  * @returns {string}

@@ -136,7 +136,7 @@ const THINKING_INHERIT = "inherit";
  * @typedef {object} RepairOptions
  * @property {readonly string[]} rules 逐候选启用的**引擎自带**规则 id（顺序即语义）
  * @property {InjectedRepairRule[]} inject 宿主注入的修复器（在引擎规则**之前**跑）
- * @property {boolean} truncateCompletion 是否把「整段原文补全后」当额外候选追加在末尾
+ * @property {boolean} truncateCompletion 是否把每个候选的「补全版」（串联规则表）当额外候选追加在末尾
  */
 
 /**

@@ -118,7 +118,8 @@ export function engineApiContract(label, getEntry) {
     // 失败三态与 #307 **同名同形**，且失败结果**不带 value 键**。
     // ⚠ 三态名一样不等于映射一样，这里逐档钉住两处**真实的**语义差（宿主要按它们分流，不能照搬 #307 的直觉）：
     //   · 纯散文：L0 报 `no_candidate`（一个候选都抽不到），本入口报 `unparsable`（整段原文就是候选、试过不行）；
-    //   · 空输入 / 截断：本入口报 `no_candidate`（与 L0 一字不差，不偷偷补括号）。
+    //   · 空输入 / 截断形状（**任一**候选可被补全规则改写）：本入口报 `no_candidate`（与 L0 同答，不偷偷补括号）；
+    //     唯一已知差异（契约中英写明）是**散文前缀 + 截断**（`前言 {"a":1`）：L0 `no_candidate`、本入口 `unparsable`。
     const miss = {
       no_candidate: await entry.normalizeModelJson(""),
       unparsable: await entry.normalizeModelJson('{"a":,}'),

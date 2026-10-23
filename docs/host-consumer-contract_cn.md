@@ -1294,16 +1294,22 @@ if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate)
 | 层 | L0，严格档 | L1 确定性修复 + 闸门 + 可选 L2 兜底 |
 | 同步性 | **同步** | **异步**（恒定返回 `Promise`） |
 | 修不修 | **绝不修** | 只修结构——值的字节保原样 |
-| 发不发请求 | 从不 | 只有 `llm: true` **且**每个确定性候选都失败时才发 |
+| 发不发请求 | 从不 | 只有 `llm: true`、候选非空**且**每个确定性候选都失败时才发 |
 | 结果 | `{ ok, value, via, candidates }` / `{ ok: false, error, candidates }` | `{ ok, value, repaired?, llmUsed?, dropped? }` / `{ ok: false, error, llmUsed? }` |
 
 失败三态沿用**同一组名字**，但有两档的映射不同，宿主必须按对的那一档分流：
 
 | `error` | `normalizeModelJson` | `parseModelJson` |
 |---|---|---|
-| `no_candidate` | 输入为空，或截断输入且 `truncateCompletion` 没开 | 什么都没扫出来（纯散文，或括号永不闭合） |
+| `no_candidate` | 输入为空，或截断输入——**任一**候选是截断形状（补全规则改得动它） | 什么都没扫出来（纯散文，或括号永不闭合） |
 | `unparsable` | 有候选但每个都解析不了——**纯散文落这一档**，因为整段原文本身就是候选 | 有候选但每个 `JSON.parse` 都抛 |
 | `shape_mismatch` | 有候选解析成功，但一个都没过 `validate` | 有候选解析成功，但一个都不满足 `requireKeys` |
+
+`no_candidate` 里还有一处**如实公开**的差异：**散文前缀 + 截断**（`前言 {"a":1`）在
+`parseModelJson` 是 `no_candidate`（括号永不闭合 ⇒ 扫描一个候选都不产），在这里是
+`unparsable`——候选集复用的是 L0 那份扫描，而它产出的候选没有一个补得出来（补全要求「补完
+即可 `JSON.parse`」）。两个入口说的是同一件事（「这里没有 JSON」），只是数尝试的方式不同，
+而这是那处差异唯一现形的形状。
 
 **出处是 `repaired`，且只有真的改了文本时才有这个键。** `repaired: { rule, trusted }`：
 `rule` 是**实际生效**的规则 id 按施加顺序用 `+` 连接；`trusted` 为 `true` 当且仅当生效的全是
@@ -1313,12 +1319,31 @@ if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate)
 **闸门永远对候选的原始字节判。** `validate` 的调用形状是 `validate(value, source)`，其中
 `source` 是**输入原文的切片**——绝不是修后文本。这是整层承重的不变量：一条会改写值的修复
 （比如把 `http\.request` 改成 `http.request`）否则就能拿调用方从未见过的文本过掉
-`source.includes(value)` 这类逐字核验，那就是一条**被静默伪造的值**。第二个参数是 additive 的：
+`source.includes(value)` 这类逐字核验，那就是一条**被静默伪造的值**。**补全版**候选同样受这条
+约束：闸门拿到的是**补全前**的原文（输入 `{"a":` ⇒ 闸门看到 `{"a":`，不是 `{"a":null}`）——
+否则一条补全规则就能凭空造一个字符串值，而每一道逐字核验都会放行它。第二个参数是 additive 的：
 只写 `(value) => …` 的宿主照旧可用，但那样它就放弃了「证明值没被改写」的能力。
 
-**候选**是整段原文加上每一个围栏块，按出现顺序逐个独立试；第一个「可解析 **且** 过闸门」的
-候选胜出。`repair.truncateCompletion` 显式开时，每个候选的补全版会作为**额外**候选追加在末尾
-——那是截断答案唯一的出路，且它默认关，所以本来就完整的输入绝不会凭空长出 `truncation` 出处。
+`source.includes(value)` 这个配方有一条限定，而且它正是 #406 的主场景（工具引数里就是**带 `\n`
+的代码串**）：那道逐字核验只对**不含 JSON 转义**的字符串值成立。模型写成 `"line1\nline2"`、
+`"tab\there"`、`"quote\"inside"` 的值，到 `validate` 手里已经是**解码后**的（`\n` 是真换行），
+原文切片里永远不可能逐字包含它——于是天真的 `includes` 会把一个完全合法的值误杀成
+`shape_mismatch`。这类值要**两侧解码后比**：把切片解出来（`JSON.parse(source)`）比值，或拿
+`JSON.stringify(value)` 去掉首尾引号后比，而不要在原始文本上做逐字节搜索。
+
+**候选**是整段原文、每一个围栏块（**含未闭合围栏剩下的那段块体**）、以及 L0 的扫描抠出的
+**每个顶层平衡对象**，按这个顺序逐个独立试完再过闸门；第一个「可解析 **且** 过闸门」的候选
+胜出。第三档复用 L0 的扫描（`jsonCandidates`（`src/text/json-candidates.js`）），存在的理由
+就是设计裁定 D1（「内部调 L0，不复制扫描」）：只有「整段原文 + 围栏」时，这个入口比它声称包装
+的 L0 **更弱**——实测 9 种真实形状里 7 种 `parseModelJson` 给 `ok`、这里给 `unparsable`
+（`好的，结果如下：{"done":true}`、`{"done":true} 以上是结果。`、`{"a":1}}extra{`、
+`前言 {"outer":{"done":true}} 后语`、`~~~json` 围栏……）。
+`repair.truncateCompletion` 显式开时，每个候选的补全版会作为**额外**候选追加在末尾。补全与规则表
+**串联**跑（先本档启用的规则，`truncation` 最后），这才是它真能救回东西的原因：纯截断、围栏里的
+截断（**闭合与未闭合围栏都算**）、以及截断叠加结构缺陷（`{"a":"x\\.y"` ⇒ `invalid-escape` 先把
+转义加倍，再补 `}`）——出处会把生效的规则逐个点名（`invalid-escape+truncation`）。它**救不回**
+散文前缀 + 截断（见上面 `no_candidate` 那条差异），且它默认关，所以本来就完整的输入绝不会凭空
+长出 `truncation` 出处。
 
 ```js
 import { normalizeModelJson } from "erix-agent";
@@ -1353,12 +1378,24 @@ if (completed.repaired.rule !== "truncation") throw new Error("opting in must be
 ```
 
 可选的模型调用（L2）是这里**唯一**会花钱的东西，`llm: true` 是它唯一的开关：只有每个确定性候选
-都失败之后才发。请求恒定带 `reasoning_effort` 且钉在不思考的取值上（归一化文本不是推理任务），
+都失败之后才发，而且候选集为空时**一次都不发**（空输入 / 纯空白 ⇒ 零请求，没有原文可交给模型）。
+请求恒定带 `reasoning_effort` 且钉在不思考的取值上（归一化文本不是推理任务），
 它的产物仍要过同一道 `validate` 闸门——L2 的产物过不了闸门就是 `shape_mismatch`，绝不静默接受。
 
 `loadModelSlot` / `createProviderForSlot`（`src/config/slot-provider.js`）的存在，是让宿主不必自己
 写一份配置读取就能拿到 L2 需要的 provider：前者读 `slots.default` 并校验必填字段
 （`config_missing` / `config_invalid`），后者把槽位摊平成 OpenAI 兼容 provider。
+
+#### 可选调用的成本
+
+每次调用**最多 1 个请求、从不重试**：`llm: true` 买的是一次归一化机会，第二个请求不会发——解析
+失败不发、闸门判掉不发、模型答歪了也不发。这里也**没有内建的成本上限**：`maxTokens` 不新造
+默认值（不传就用 provider 自己的默认），选项面上**没有 timeout 旋钮**——唯一的超时是 `slot`
+路径钉死的那个，`DEFAULT_PROVIDER_TIMEOUT_MS`（`src/config/slot-provider.js`）= 300 s 硬挂钟
+上限（每请求）。`slot` 这条路还意味着**读盘**：它的起点是 `loadModelSlot`，在拼请求之前先读并
+校验配置文件，所以把这条路径放进热循环的宿主每次调用都要付一次文件 I/O。最后：provider 抛错时是
+**抛异常**出 `normalizeModelJson`，**不会**折进那三个失败态。宿主需要自己的成本 / 失败上限，就在
+调用点包一层。
 
 ## 可复用的归一化原语
 
