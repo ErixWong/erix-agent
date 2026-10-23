@@ -342,42 +342,52 @@ await provider.chat({ messages });
 零命中，CLI 的配置白名单也不收），于是能终结一次静默 run 的只剩 CLI 的 idle 看门狗——而它 abort 的是
 run 的 `AbortSignal`，那条路**不可重试**。本节记录的就是这个结构性失效的修法。
 
-CLI 现在在**一处**从 `--idle-timeout` 派生它们（解析器在 `bin/provider-timeouts.js`，
+CLI 现在在**一处**从 `--idle-timeout` 派生**其中两个**（解析器在 `bin/provider-timeouts.js`，
 `bin/cli.js` 与 `bin/repl.js` 用的是同一份）：
 
 | `--idle-timeout` | 传给 provider 的东西 |
 |---|---|
 | `0`（`erix repl` 默认） | **不派生任何东西**——与 0.24.0 之前的装配逐字一致：只有 legacy `timeoutMs` 那条截止。配置文件里显式写的相位键照旧透传（那时语义归引擎的相位模型） |
-| `N > 0`（`erix chat` 默认 `300`） | `requestTimeoutMs` = `firstByteTimeoutMs` = `streamIdleTimeoutMs` = `⌊N × 3/4⌋` ms，除非用户显式配了那一个键 |
+| `N > 0`（`erix chat` 默认 `300`） | `firstByteTimeoutMs` = `streamIdleTimeoutMs` = `⌊N × 3/4⌋` ms，除非用户显式配了那一个键。`requestTimeoutMs` **不派生**：非流式那条截止保持 legacy（`config.timeout ?? 300_000`） |
 
 四条规则，按顺序：
 
 1. **静默预算严格小于 idle 窗口。** 相等是缺陷而不是偏好：一次静默请求里两条截止同时起跑，
    而 idle 的起点**更早**（provider 调用之前就武装了）⇒ `截止 === idle` 永远解成不可重试的 abort。
    留出的四分之一是重试需要的空间——退避（`backoffBaseMs = 1500`，第二次 `3000`）加下一次尝试。
-2. **`requestTimeoutMs` 属于接线面**，因为它是**非流式**路径上唯一的截止：`provider.chat()`
-   根本不看 firstByte/streamIdle。`erix chat` 默认非流式，只接两个流式相位等于「只修了 `--stream`
-   的人」，默认配置照旧坏。
+2. **`requestTimeoutMs` 故意不派生**——非流式路径保持它的 legacy 截止（`config.timeout ?? 300_000`）。
+   那条路径上 `requestTimeoutMs` 量的是**整段生成**、不是静默（`provider.chat()` 只有一条绝对截止），
+   把它派生成 `⌊idle × 3/4⌋` 等于把默认配置下 `[⌊idle × 3/4⌋, idle)` = `[225s, 300s)` 这条带从
+   **活的**变成**必死**：真 HTTP 上游、`ERIX_RETRY_ATTEMPTS=2` 实测，**240s** 后才回的请求在接线前是
+   **240.29s / `end_turn` / 退码 4**，接线后变成 **225.21s 被杀 / `failed` / `errorCode: "timeout"`**。
+   要让非流式**静默**可重试，截止必须**严格小于** idle 窗口，而 idle 与 legacy `timeout` 默认**都是
+   `300`** ⇒ 任何收缩都会杀掉这条带。非流式静默的正解是「判死后重试」（issue #433 fix 1），不是提前
+   掐死；**在它落地之前，非流式静默不可重试**（1 发、`idle_timeout`）。
 3. **`streamTotalTimeoutMs` 不派生。** 它是单条流的**绝对上限**，不是静默截止；而流在吐字节时 idle
    会被 `onDelta` 喂表、本来就不会响——拿 idle 窗口派生它，只会把「长但健康」的输出变成一次
    注定重蹈覆辙的重试。引擎默认值（`300000`）保留。显式 legacy `timeout` **会**作为
    `streamTotalTimeoutMs` 透传：相位模型一开，legacy 那条绝对截止就失效
    （`src/providers/payload.js` 的 `hasExplicitPhase`），不透传等于把用户要的天花板悄悄降下来。
 4. **显式配置优先、不被隐式改写**（与 `ERIX_EXEC_TIMEOUT_MS` 同一口径）：相位值 ≥ idle 窗口时
-   原样使用，只打一行警告——那种静默仍可能被不可重试的 idle 路径收尾。
+   原样使用，只打一行警告——那种静默仍可能被不可重试的 idle 路径收尾。这四个键还会在**加载时校验**：
+   不是「`>= 0` 的安全整数」（`-1000`、`"abc"`、`true`、`1.5`）就报错并**点名该键**，而不是以
+   `undefined` 的身份进引擎——在那里它要么意味着「这个相位的截止悄悄不存在」（流式），要么意味着
+   「请求立刻超时、上游 0 发」（非流式）。`0` 合法，意思是「已经到点」。
 
 两个宿主可观测的后果：
 
-- 静默 run 在重试用尽后终局是 `termination.reason: "failed"` + `termination.errorCode: "timeout"`，
-  不再是 `reason: "aborted"` 且没有 `errorCode`。这**不是**契约扩展：`failed` 本来就带
-  `errorCode`（issue #176），也没有任何别的 reason 因此新增该字段。把 `aborted` 当「静默被杀」
-  判断的宿主，要改判 `failed` + `errorCode: "timeout"`。
+- 静默的 **`--stream`** run 在重试用尽后终局是 `termination.reason: "failed"` +
+  `termination.errorCode: "timeout"`，不再是 `reason: "aborted"` 且没有 `errorCode`。这**不是**
+  契约扩展：`failed` 本来就带 `errorCode`（issue #176），也没有任何别的 reason 因此新增该字段。
+  把 `aborted` 当「静默被杀」判断的宿主，对流式 run 要改判 `failed` + `errorCode: "timeout"`；
+  **非流式静默没有变化**，仍以 `idle_timeout` 收尾。
 - CLI 用 `attempt` 与 `recovering` 事件喂 idle 表，所以一次重试（含它的退避）算**进展**而不是
   「无进展」。不喂的话 idle 窗口会把退避切断，静默又回到 abort 那条路。
 
 这条预算保证的是「**单次尝试**的静默截止先于 idle 看门狗响」；它**不**把重试的**退避**塞进 idle
-窗口。`--idle-timeout` 小于退避序列（`backoffBaseMs = 1500`，之后 `3000`、`6000`……上限
-`backoffMaxMs = 10000`）时，退避期仍可能被不可重试的 idle 路径收尾——与本次改动之前完全一样。
+窗口。`--idle-timeout` **小于或等于**退避序列（`backoffBaseMs = 1500`，之后 `3000`、`6000`……上限
+`backoffMaxMs = 10000`）时，退避期仍可能被不可重试的 idle 路径收尾——与本次改动之前完全一样；
+实测 `--idle-timeout 3` 时第二次退避恰好 `3000ms`、**等于**窗口：2 发 / 9.21s / `aborted`。
 默认值（`300`）下不会发生。
 
 ## AssemblyPort

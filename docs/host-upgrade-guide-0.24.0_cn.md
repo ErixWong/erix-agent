@@ -28,7 +28,7 @@
 | `foldMessageRows` 从包根导出，且 resume 会把 `store.load()` 再折一次：`load()` 原样返回落盘行的 store 不再丢工具配对（§13） | 不用——只有你自己的 `load()` 原样返回落盘行时才要动手，那时请折 |
 | **恢复**的 run 现在会带一条引擎控制消息，说明「这是复活赛」、崩溃时哪些 `tool_use` 没有结果、以及「动手前先勘验」（§14） | 要——只要你在恢复的 run 上 diff `messages`、数档案行数或称输入 token |
 | 流式思考除了 `delta.reasoning_content`，现在也认别名 `delta.reasoning`（字符串**或** `{ content }`）与 `delta.reasoning_text`，且每个 chunk 只取一个字段——思考字段被中继改了名字的 run 不再 100% 丢思考（§15） | 要——只要你渲染思考、或断言 assistant 消息的块类型：以前只有 `text` 的地方现在会多一个 `reasoning` 块 |
-| **CLI** 现在接上了引擎自带的可重试静默截止（`requestTimeoutMs` / `firstByteTimeoutMs` / `streamIdleTimeoutMs` = `⌊--idle-timeout × 3/4⌋`）：静默 run 在重试用尽后以 `failed` / `errorCode: "timeout"` 收尾，不再是 `aborted`（§16） | 要——如果你把 `aborted` 当「provider 静默」，或者你用脚本调 CLI 并断言终局原因 |
+| **CLI** 现在接上了引擎自带的可重试**流式**静默截止（`firstByteTimeoutMs` / `streamIdleTimeoutMs` = `⌊--idle-timeout × 3/4⌋`）：静默的 `--stream` run 在重试用尽后以 `failed` / `errorCode: "timeout"` 收尾，不再是 `aborted`；非流式截止保持 legacy、非流式静默不变（§16） | 要——如果你把 `aborted` 当「provider 静默」，或者你用脚本调 CLI 并断言终局原因 |
 
 一句话版本：**以前要靠你推断的事实，现在写在明面上了。** 引擎没有改它**做**什么，改的是它**说**什么——
 状态文件里、错误对象上，以及模型会读到的那几处工具输出。
@@ -582,7 +582,7 @@ data: {"choices":[{"delta":{"reasoning_text":"思考…"}}]}
 `reasoning_content` 的 run 逐字不变；其余也没动：没有新选项、没有新导出、没有新事件类型、没有新块
 类型，非流式路径一字未改。
 
-## 16. 静默现在是一条可重试的截止：CLI 接上了引擎的相位超时（issue #441）
+## 16. 静默现在是一条可重试的截止：CLI 接上了引擎的流式相位超时（issue #441）
 
 **这是 CLI 的改动，不是引擎的改动。** 引擎一直有四条静默截止——`firstByteTimeoutMs`、
 `streamIdleTimeoutMs`、`streamTotalTimeoutMs`、`requestTimeoutMs`——它们抛的都是**可重试**的 `timeout`。
@@ -592,36 +592,47 @@ provider，因此每次都是被杀掉，而不是被重试。
 
 改了什么，全部在 CLI 里（解析器是一份共享模块，`erix chat` 与 `erix repl` 用法完全一致）：
 
-- `--idle-timeout N > 0` 现在派生 `requestTimeoutMs` = `firstByteTimeoutMs` = `streamIdleTimeoutMs` =
+- `--idle-timeout N > 0` 现在派生**两个流式相位**：`firstByteTimeoutMs` = `streamIdleTimeoutMs` =
   `⌊N × 3/4⌋` 毫秒。剩下的四分之一是重试需要的空间——退避加上下一次尝试。这个预算**故意严格小于**
   idle 窗口：一次静默请求里两条截止同时起跑，而 idle 的起点**更早**，所以「相等」永远解成不可重试的 abort。
-- `requestTimeoutMs` 也在接线面内，因为它是**非流式**路径上唯一的截止（`provider.chat()` 根本不看流式
-  相位），而 `erix chat` 默认非流式。只接两个流式相位等于只修了 `--stream` 的人，默认配置照旧坏。
+- **`requestTimeoutMs` 故意**不**派生**，非流式那条截止保持 legacy（`config.timeout ?? 300_000`）。
+  这是从本改动早先的草稿上**退回**的一步，理由是**实测**而不是偏好：非流式路径上 `requestTimeoutMs`
+  量的是**整段生成**（`provider.chat()` 只有一条绝对截止），不是静默；把它派生成 `⌊idle × 3/4⌋`，等于把
+  默认配置下 `[⌊idle × 3/4⌋, idle)` = **`[225s, 300s)`** 这条带从**活的**变成**必死**。真 HTTP 上游、
+  `ERIX_RETRY_ATTEMPTS=2` 实测：一个 **240s** 后才回一个字节的请求（慢而**健康**）在接线前是
+  **240.29s / `end_turn` / 退码 4**，接线后变成 **225.21s 被杀 / `failed` / `errorCode: "timeout"`**
+  （默认重试次数下 3 发 / 679.73s）。而要让**非流式静默**可重试，截止必须**严格小于** idle 窗口，可
+  idle 与 legacy `timeout` 默认**都是 `300`** ⇒ **任何**收缩都会杀掉这条带。非流式静默的正解是
+  「判死后重试」（issue #433 fix 1），不是提前掐死。在它落地之前，**非流式静默仍然不可重试**：idle 看门狗
+  在 provider 调用之前就武装了，两个默认值又相等，所以它必然先响。
 - `streamTotalTimeoutMs` **不派生**：它是单条流的**绝对上限**，不是静默截止；而流在吐字节时 idle 会被
   `onDelta` 喂表、本来就不会响。显式 legacy `timeout` 仍会作为 `streamTotalTimeoutMs` 透传，所以你配过的
   天花板不会因为切到相位模型而被悄悄降低。
 - `--idle-timeout 0`（`erix repl` 的默认值）**什么都不派生**——那条装配与以前逐字一致。
 - 显式配置优先、不被隐式改写：`firstByteTimeoutMs` / `streamIdleTimeoutMs` / `requestTimeoutMs` /
-  `streamTotalTimeoutMs` 现在可以从 CLI 配置文件里配，而 ≥ idle 窗口的值原样使用、只打一行警告
-  （与 `ERIX_EXEC_TIMEOUT_MS` 同一口径）。
+  `streamTotalTimeoutMs` 现在可以从 CLI 配置文件里配，≥ idle 窗口的值原样使用、只打一行警告
+  （与 `ERIX_EXEC_TIMEOUT_MS` 同一口径）；而**非法**值（`-1000`、`"abc"`、`true`、`1.5`）现在是
+  **点名该键的加载错误**，不再以 `undefined` 的身份进引擎（在那里它要么意味着「这个相位的截止悄悄不存在」，
+  要么意味着「非流式请求立刻超时」）。`0` 合法，意思是「已经到点」。
 - idle 看门狗用 `attempt` / `recovering` 事件喂表，所以一次重试（含它的退避）算**进展**而不是「无进展」。
 
-宿主能观测到什么：静默 run 在重试用尽后终局是 `termination.reason: "failed"` +
+宿主能观测到什么：**`--stream`** 的静默 run 在重试用尽后终局是 `termination.reason: "failed"` +
 `termination.errorCode: "timeout"`，不再是 `reason: "aborted"` 且完全没有 `errorCode`。`failed` 本来就带
 `errorCode`（issue #176），也**没有任何别的 reason 因此新增该字段**，所以契约没有被扩展——但把 `aborted`
-读成「provider 静默了」的宿主必须改判。CLI 退出码不动：静默的 `erix chat` 仍然退出 **1**。
+读成「provider 静默了」的宿主必须改判。**非流式静默没有变化**（仍是 `idle_timeout`、只发 1 发）。
+CLI 退出码不动：静默的 `erix chat` 仍然退出 **1**。
 
-三个值得先知道的地方。第一，静默 run 现在放弃得更慢：每次尝试以 `⌊idle × 3/4⌋` 为界、之间隔着退避，
-默认最坏情况从一个 idle 窗口长到大约 `(attempts + 1) × ⌊idle × 3/4⌋ + 退避`。第二，非流式请求的截止从
-`300s` 缩到 `⌊idle × 3/4⌋`（默认 idle 下是 `225s`）——这正是本改动的要点：非流式请求一旦超过 idle 窗口，
-以前本来就是必死，现在改成重试。第三，这条预算覆盖的是**单次尝试**的静默、不是重试的**退避**：
-`--idle-timeout` 小于退避序列（`1.5s`、`3s`、`6s`……上限 `10s`）时，退避期仍可能被不可重试的 idle 路径
-收尾，与改动前完全一样。默认 `300` 下不会发生。
+三个值得先知道的地方。第一，流式静默 run 现在放弃得更慢：每次尝试以 `⌊idle × 3/4⌋` 为界、之间隔着退避，
+默认最坏情况从一个 idle 窗口长到大约 `(attempts + 1) × ⌊idle × 3/4⌋ + 退避`。第二，非流式那条截止没有
+动，而且**非流式静默今天仍不可重试**——上面那条 `[225s, 300s)` 带就是原因，正解是 issue #433 fix 1。
+第三，这条预算覆盖的是**单次尝试**的静默、不是重试的**退避**：`--idle-timeout` **小于或等于**退避序列
+（`1.5s`、`3s`、`6s`……上限 `10s`）时，退避期仍可能被不可重试的 idle 路径收尾——实测 `--idle-timeout 3`
+时第二次退避恰好 `3000ms`、**等于**窗口：2 发 / 9.21s / `aborted`。默认 `300` 下不会发生。
 
 ## 17. 自检
 
 ```bash
-npm test                       # 2,080 tests，0 失败（2,071 通过 + 9 skipped）
+npm test                       # 2,081 tests，0 失败（2,072 通过 + 9 skipped）
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # 离线、零模型调用；断言 finalGuard 的载荷面
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件
@@ -679,10 +690,12 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    形状、换成 `delta.reasoning_text`：同样的断言、同样的期望。最后把文本放回 `delta.reasoning_content`，
    断言这三处读与你升级前逐字一致——这一对才是「别名清单没搬走原有字段」的证据（§15）。
 
-13. **静默 provider。** 让 CLI 打一个「接了连接却一个字节都不发」的 stub 上游（`fetchImpl` 返回一个
-    永不落定的 promise），带 `--idle-timeout 3` 与 `ERIX_RETRY_ATTEMPTS=1` 跑：上游必须被调用**两次**、
-    run 必须以 `failed` / `errorCode: "timeout"` 收尾（不是 `aborted`），CLI 仍须退出 **1**。然后把
-    `--idle-timeout 0` 再跑一遍：什么都不派生，于是回到 legacy `timeoutMs` 那个形状（§16 的两半在
+13. **流式静默。** 让 CLI 打一个「头回来了、却一个字节都不发」的 stub 上游（body 永不入队的 SSE
+    `Response`），带 `--stream --idle-timeout 3` 与 `ERIX_RETRY_ATTEMPTS=1` 跑：上游必须被调用**两次**
+    ——而且**永远不超过 `attempts + 1`**——run 必须以 `failed` / `errorCode: "timeout"` 收尾（不是
+    `aborted`），CLI 仍须退出 **1**。然后去掉 `--stream` 跑同一条：结果必须相反——**只发 1 发**、
+    `idle_timeout`，因为非流式那条截止是**有意**保持 legacy 的（§16 的 `[225s, 300s)` 带）。最后把流式那格
+    换成 `--idle-timeout 0` 再跑一遍：什么都不派生，于是回到 legacy `timeoutMs` 那个形状（§16 的三格在
     `test/cli-idle.test.js` 里都有随包用例）。
 
 ## 18. 没变的
@@ -695,8 +708,9 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
 不是新规则——搜索根不存在返回错误文本而不是 `（无命中）`（§6）、guard `skip` 下通过的机器判据不再被丢掉（§10）、
 被截断的工具调用轮会带着终稿跑完而不是以 `failed` / `invalid_messages` 结束（§12）；§13 是把一个原本就写错的事实
 改对；§14 是给模型的新信息，而且是忠告、不是闸门；§15 是第四处假阴性修正——中继本来就在发的思考字段现在真的被读到了，
-而原先读的那个字段行为逐字保留（§15）；§16 把静默 run 从不可重试的 abort 路径挪到可重试的那条上，于是这类 run 的
-终局原因变了（`aborted` → `failed` / `errorCode: "timeout"`）。其余全是加法。
+而原先读的那个字段行为逐字保留（§15）；§16 把**流式**静默 run 从不可重试的 abort 路径挪到可重试的那条上，
+于是这类 run 的终局原因变了（`aborted` → `failed` / `errorCode: "timeout"`）——非流式静默一字未动。
+其余全是加法。
 
 ## 19. 迁移配方
 
@@ -728,6 +742,7 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    `reasoning_content` 优先、空字段不占名额），而不是抄一份字段清单：中继用哪个名字取决于你发出去的
    请求体，而不是模型本身，把清单砍到「本中继发的那个」一定会反弹（§15）。
 
-11. 如果你把 `termination.reason === "aborted"` 读成「provider 静默了」，请补上 `failed` +
-    `errorCode: "timeout"` 分支（§16）。如果你用脚本调 CLI，还要重新基线化你给「挂住的上游」留的墙钟预算：
-    静默现在会先重试一轮，然后才放弃。
+11. 如果你把 `termination.reason === "aborted"` 读成「provider 静默了」，请给**流式** run 补上 `failed` +
+    `errorCode: "timeout"` 分支（§16）。非流式静默仍以 `idle_timeout` 收尾、只发 1 发——那一半是**有意**
+    不动的（§16 的 `[225s, 300s)` 带），别以为重试通道把它也覆盖了。如果你用脚本调 CLI，还要重新基线化
+    你给「挂住的流式上游」留的墙钟预算：静默现在会先重试一轮，然后才放弃。

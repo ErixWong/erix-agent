@@ -415,14 +415,14 @@ only thing that could end a silent run — and that path aborts the run's
 `AbortSignal`, which is **not** retryable. That is the structural failure this
 section records the fix for.
 
-The CLI now derives them from `--idle-timeout` in one place (the resolver lives
-in `bin/provider-timeouts.js`; `bin/cli.js` and `bin/repl.js` use it
-identically):
+The CLI now derives **two of them** from `--idle-timeout` in one place (the
+resolver lives in `bin/provider-timeouts.js`; `bin/cli.js` and `bin/repl.js` use
+it identically):
 
 | `--idle-timeout` | what reaches the provider |
 |---|---|
 | `0` (`erix repl` default) | **nothing derived** — the pre-0.24.0 assembly, byte for byte: the legacy `timeoutMs` deadline only. Explicit phase keys in the config file still pass through (the engine then uses its phase model) |
-| `N > 0` (`erix chat` default `300`) | `requestTimeoutMs` = `firstByteTimeoutMs` = `streamIdleTimeoutMs` = `⌊N × 3/4⌋` ms, unless the user configured that key explicitly |
+| `N > 0` (`erix chat` default `300`) | `firstByteTimeoutMs` = `streamIdleTimeoutMs` = `⌊N × 3/4⌋` ms, unless the user configured that key explicitly. `requestTimeoutMs` is **not** derived: the non-streaming deadline stays legacy (`config.timeout ?? 300_000`) |
 
 Four rules, in order:
 
@@ -432,11 +432,20 @@ Four rules, in order:
    call), so `deadline === idle` always resolves to the non-retryable abort. The
    remaining quarter is the room a retry needs — the backoff
    (`backoffBaseMs = 1500`, then `3000`) plus the next attempt.
-2. **`requestTimeoutMs` is part of the wiring**, because it is the only deadline
-   the **non-streaming** path has: `provider.chat()` never consults
-   firstByte/streamIdle. `erix chat` is non-streaming by default, so wiring only
-   the two stream phases would have fixed `--stream` and left the default
-   configuration exactly as broken as before.
+2. **`requestTimeoutMs` is deliberately not derived** — the non-streaming path
+   keeps its legacy deadline (`config.timeout ?? 300_000`). On that path
+   `requestTimeoutMs` measures the **whole generation**, not a silence
+   (`provider.chat()` has exactly one absolute deadline), so deriving it to
+   `⌊idle × 3/4⌋` turns the default `[⌊idle × 3/4⌋, idle)` = `[225s, 300s)` band
+   from *alive* into *always fatal*: measured against a real HTTP upstream with
+   `ERIX_RETRY_ATTEMPTS=2`, a request answered after **240s** ended `end_turn`
+   (exit **4**) in **240.29s** before the wiring and was killed at **225.21s**
+   with `failed` / `errorCode: "timeout"` after it. Retrying non-streaming
+   *silence* would need a deadline **strictly below** the idle window, and both
+   idle and the legacy `timeout` default to `300` — so any shrink kills that
+   band. The fix for non-streaming silence is "retry after declaring death"
+   (issue #433 fix 1), not an earlier kill; **until it lands, non-streaming
+   silence is not retryable** (one call, `idle_timeout`).
 3. **`streamTotalTimeoutMs` is not derived.** It is an absolute cap on one
    stream, not a silence deadline, and while a stream is flowing the idle
    watchdog is fed by `onDelta` and cannot fire anyway — deriving it from the
@@ -449,27 +458,35 @@ Four rules, in order:
 4. **Explicit configuration wins and is never rewritten** (the same rule as
    `ERIX_EXEC_TIMEOUT_MS`): a phase value ≥ the idle window is used verbatim and
    only produces a one-line warning — the silence may then still be ended by the
-   non-retryable idle path.
+   non-retryable idle path. The four keys are also **validated at load**: a value
+   that is not a safe integer `>= 0` (`-1000`, `"abc"`, `true`, `1.5`) is a
+   config error that names the key, instead of reaching the engine as
+   `undefined` — where it used to mean "this phase deadline silently does not
+   exist" (stream) or "the request expires immediately, zero calls reach the
+   upstream" (non-streaming). `0` is legal and means "already expired".
 
 Two host-observable consequences:
 
-- A silent run now ends `termination.reason: "failed"` with
+- A silent **`--stream`** run now ends `termination.reason: "failed"` with
   `termination.errorCode: "timeout"` once the retries are exhausted, instead of
   `reason: "aborted"` with no `errorCode` at all. This is **not** a contract
   extension: `failed` already carries `errorCode` (issue #176) and no other
   reason gained the field. Hosts that branch on `aborted` for "silent kill" must
-  branch on `failed` + `errorCode: "timeout"`.
+  branch on `failed` + `errorCode: "timeout"` for streaming runs;
+  **non-streaming silence is unchanged** and still ends `idle_timeout`.
 - The CLI feeds its idle watchdog on the `attempt` and `recovering` events, so a
   retry (including its backoff) is progress rather than "no progress". Without
   that, the idle window would cut the backoff and the silence would fall back to
   the abort path anyway.
 
 The budget guarantees that **one attempt's** silence deadline fires before the
-idle watchdog; it does not put the retry **backoff** inside the idle window. A
-`--idle-timeout` smaller than the backoff schedule (`backoffBaseMs = 1500`, then
-`3000`, `6000`, … capped at `backoffMaxMs = 10000`) can still be ended by the
-non-retryable idle path during a backoff — exactly as before this change. With
-the defaults (`300`) that cannot happen.
+idle watchdog; it does not put the retry **backoff** inside the idle window. An
+`--idle-timeout` **smaller than or equal to** the backoff schedule
+(`backoffBaseMs = 1500`, then `3000`, `6000`, … capped at `backoffMaxMs = 10000`)
+can still be ended by the non-retryable idle path during a backoff — exactly as
+before this change; measured at `--idle-timeout 3`, where the second backoff is
+exactly `3000ms` = the window: 2 calls, 9.21s, `aborted`. With the defaults
+(`300`) that cannot happen.
 
 ## AssemblyPort
 
