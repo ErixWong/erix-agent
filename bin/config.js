@@ -9,6 +9,7 @@ import {
   isBuiltinCompactionStrategyName,
 } from "../src/index.js";
 import { isRealUser } from "../src/compact/helpers.js";
+import { PROVIDER_PHASE_TIMEOUT_FIELDS, assertPhaseTimeoutValue } from "./provider-timeouts.js";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
 // issue #167：默认仍为 fold-statistical（零额外模型调用），fold-llm 需用户显式选择
@@ -108,9 +109,16 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
   if (!model) missing.push("LLM_KIT_MODEL or ERIX_DEFAULT_MODEL or slots.default.model");
   if (missing.length > 0) throw missingConfigError(missing);
 
+  // issue #441：静默相位截止的四个键——两个流式相位由 CLI 按 `--idle-timeout` 派生（见
+  // bin/provider-timeouts.js；非流式的 `requestTimeoutMs` 保持 legacy）；用户也能直接配。
+  // 显式配置**优先于派生值**（只警告不改值）；非法取值报错并点名键（见 provider-timeouts.js）。
   const forwardedFields = [
     "protocol",
     "timeout",
+    "requestTimeoutMs",
+    "firstByteTimeoutMs",
+    "streamIdleTimeoutMs",
+    "streamTotalTimeoutMs",
     "model_type",
     "supports_reasoning",
     "thinking_format",
@@ -127,7 +135,10 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
   ];
   const modelOptions = {};
   for (const field of forwardedFields) {
-    if (fileConfig[field] !== undefined) modelOptions[field] = fileConfig[field];
+    if (fileConfig[field] === undefined) continue;
+    modelOptions[field] = PROVIDER_PHASE_TIMEOUT_FIELDS.includes(field)
+      ? assertPhaseTimeoutValue(field, fileConfig[field])
+      : fileConfig[field];
   }
 
   return {

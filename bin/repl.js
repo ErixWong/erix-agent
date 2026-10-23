@@ -28,6 +28,8 @@ import {
 } from "./idle.js";
 import { safeRunId } from "../src/store/file.js";
 import { buildCompactionContext, loadCliConfig, normalizeCompactionOption } from "./config.js";
+// issue #441：与 `bin/cli.js` **同一份**取值口径（静默相位截止按 `--idle-timeout` 派生）。
+import { resolveProviderPhaseTimeouts } from "./provider-timeouts.js";
 import {
   buildCaptureRecoveryHint,
   buildCaptureStub,
@@ -472,6 +474,14 @@ export async function runRepl(argv, io = {}) {
   const execCeilingMs = resolveExecCeiling(options.idleTimeout, {
     warn: (line) => writeLine(errorOutput, line),
   });
+  // issue #441：与 `bin/cli.js` 同构——两个**流式**静默相位截止按 `--idle-timeout` 派生。repl 默认 idle=0
+  // （不启用）⇒ 这里是空对象，provider 装配与接线前逐字一致。非流式的 `requestTimeoutMs` **不派生**
+  // （保持 legacy 截止；理由与实测数见 bin/provider-timeouts.js 头注释第 3 条）。
+  const providerPhaseTimeouts = resolveProviderPhaseTimeouts({
+    idleSeconds: options.idleTimeout,
+    config,
+    warn: (line) => writeLine(errorOutput, line),
+  });
   const cliTools = createCliTools({ cwd, todo: !todoDisabled, execCeilingMs });
   // 用户级 notes skill 仍经 excludeSkillIds 排除：notes 装配统一走工厂（ERIX_NO_NOTES=1 时不装配工厂）。
   // todo 关闭时用户级 todo skill 同样经 excludeSkillIds 排除。
@@ -694,6 +704,7 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         endpoint: config.endpoint,
         apiKey: config.apiKey,
         model,
+        ...providerPhaseTimeouts,
         timeoutMs: config.timeout ?? 300_000,
         maxTokens: config.maxOutputTokens,
       });
@@ -805,6 +816,11 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
             output,
             `\n[round ${info.round}]${info.folded ? "（含折叠）" : ""}`,
           );
+        },
+        // issue #441：与 `bin/cli.js` 同构——重试本身是进展（`attempt` / `recovering` 各喂一次 idle 表），
+        // 否则退避期会被 idle 看门狗打断，又回到不可重试的 abort 路径。
+        onEvent: (event) => {
+          if (event?.type === "attempt" || event?.type === "recovering") idle?.touch();
         },
       };
 
