@@ -37,12 +37,30 @@ export function capErrorMessage(error) {
 // 宿主在账本里无法区分「请求没发出去」与「流中间断了」，而这两类可重试性不同（#441 依赖这个判断）。
 // 口径：取不到（无键 / 非字符串 / 空串）就**缺键**——不写 `phase: undefined`，不猜值。
 function capError(error) {
-  const raw = typeof error?.phase === "string" ? error.phase.replaceAll(/\s+/gu, " ").trim() : "";
+  const raw = phaseOf(error);
   return {
     name: String(error?.name ?? "Error"),
     message: capErrorMessage(error),
     ...(raw === "" ? {} : { phase: Array.from(raw).slice(0, MAX_ERROR_PHASE_LENGTH).join("") }),
   };
+}
+
+/**
+ * 读 `error.phase`（issue #439）。
+ *
+ * 抛异常的 getter 不许把 `record()` 顶出去：`phase` 是本单**新增**的读取面，兜住它，风险面就与
+ * 改动前一样大（`name` / `message` 那两处既有读取一字未动，它们本来就会读 getter）。
+ * @param {any} error
+ * @returns {string} 压平空白后的 phase；取不到就是空串
+ */
+function phaseOf(error) {
+  let value;
+  try {
+    value = error?.phase;
+  } catch {
+    return "";
+  }
+  return typeof value === "string" ? value.replaceAll(/\s+/gu, " ").trim() : "";
 }
 
 export function createErrorLedger() {

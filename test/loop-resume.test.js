@@ -274,8 +274,13 @@ test("resumes after three rounds without replaying paid provider calls", async (
   // 种子记录后档案 = 完整消息。issue #439 A：**被折叠**的每条逻辑消息多一个行级 `ts`（落盘时刻），
   // 内存里的消息没有 —— 剥信封字段后**正文逐字相等**。轮行自带的正文（round 0 种子行）不是折叠
   // 产物，没有这个字段；这里只要求「从消息行折回来的那部分」带 `ts`。
-  assert.ok(storedMessages.some((message) => typeof message.ts === "string"),
-    "折叠后的逻辑消息必须带 `ts`（#439）");
+  // 轮 0 是 `:seed` 控制行（轮行自带正文，不是折叠产物），不带逐条 `ts`；其余各轮**每条**都必须带。
+  const foldedMessages = beforeResume
+    .filter((record) => (record.round ?? 0) !== 0)
+    .flatMap((record) => record.messages ?? []);
+  assert.ok(foldedMessages.length > 0, "前置：这次 run 必须有从消息行折回来的正文（否则下一条判据空转）");
+  assert.ok(foldedMessages.every((message) => typeof message.ts === "string"),
+    "折叠后的**每条**逻辑消息都必须带 `ts`（#439）");
   assert.deepEqual(firstResult.messages, withoutJournalTs(storedMessages));
   assert.equal(firstProvider.requests.length, 3);
   assert.ok(

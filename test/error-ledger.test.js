@@ -150,3 +150,21 @@ test("#439 record: 去重身份包含 error.phase —— 同消息不同阶段�
   assert.equal(entries.length, 2, "同 message 不同 error.phase 不得被去重成一条（可重试性不同）");
   assert.deepEqual(entries.map((entry) => [entry.error.phase, entry.repeat]), [["request", 2], ["stream", 1]]);
 });
+
+// issue #439 评审退回项：`phase` 是本单**新增**的读取面。抛异常的 getter 若把 `record()` 顶出去，
+// 错误账本自己就成了新的失败源（记一条失败反而让调用方崩）。兜住它 ⇒ 缺键，风险面与改动前一样大。
+test("#439 record: `error.phase` 的 getter 抛异常 ⇒ 条目仍入账、`error` 缺 `phase`（不把 record 顶出去）", () => {
+  const ledger = createErrorLedger();
+  const hostile = {
+    name: "Error",
+    message: "disk full",
+    get phase() {
+      throw new Error("getter exploded");
+    },
+  };
+  assert.equal(ledger.record({ port: "notes", operation: "note_write", fatal: false, error: hostile }), true,
+    "抛异常的 getter 不得让 record() 抛出或拒收这条账");
+  const [entry] = ledger.toUnpersisted();
+  assert.equal(entry.error.message, "disk full");
+  assert.equal(Object.hasOwn(entry.error, "phase"), false, "取不到 phase ⇒ 缺键，不猜值");
+});
