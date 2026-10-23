@@ -1004,7 +1004,12 @@ A correct pre-written `RoundRecord` must satisfy:
 
 - **Shape:** `{ round, messages: [{ role: "user", content: [{ type: "text",
   text }] }], dedupKey, roundKey, ts }` with `ts` an ISO-8601 string
-  (`new Date().toISOString()`).
+  (`new Date().toISOString()`). A pre-write row **must not** carry `kind` / `seq`:
+  those two fields mark engine per-message rows (`kind: "message"` + a safe-integer
+  `seq`), and a row carrying them is judged an engine row by
+  `restoreResume` (`src/loop/resume-manager.js`) and counted into the **crash
+  site** (replayed results then land after it, so `tool_use` and `tool_result`
+  are no longer adjacent ⇒ `invalid_messages`).
 - **Round:** reuse the existing maximum round across `load` results
   (`Math.max(0, ...rounds)`, `0` for an empty store). The engine resumes from
   that maximum round and writes its own records at later rounds; pre-writes

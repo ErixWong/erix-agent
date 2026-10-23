@@ -570,7 +570,23 @@ const READ_LINE_CAPACITY_ROLES = [
   // 但均行字节本身越过 ±1% ⇒ 描述里的 floor / 均行字节 / CJK 占比一起按实测同步：4,151 → **4,072**、
   // 63.1 → **64.4**、26% → **27%**，三处都是同位数替换 ⇒ 对本文件字节中性，`self` 那一行不用再刷）；
   // 记录值按本测试自己的口径复测，**容差常量一个都没动**。
-  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 25_428, lines: 395, bytesPerLine: 64.3747, capacity: 4_072, cjkShare: 0.2666 } },
+  // 2026-10-24 第八刷（issue #425）：`src/loop/resume-manager.js` 把恢复锚点从「快照采样」改成
+  // 「恢复时按账本现算」（新增纯函数 `countResumeAnchor` 与它的裁定注释，+2,864 字节 / +47 行，
+  // 均行字节 64.3747 → **64.009**），容量 4,072 → **4,095**、CJK 占比 26.66% → **29.71%**。
+  // 2026-10-24 第九刷（issue #425 评审阻塞）：同一个函数又加了**形状判据**（尾部宿主预写行不能只按
+  // 键的命名空间判归属）与它的判别顺序注释，+3,939 字节 / +45 行，均行字节 64.009 → **66.1828**，
+  // 容量 4,095 → **3,960**、CJK 占比 29.71% → **31.94%**（字节 +13.92% 与 CJK 占比都越过限值）。
+  // 记录值按本测试自己的口径复测并同步，`readFile` 描述里的 floor / 均行字节 / CJK 占比随之
+  // `4,072 → 3,960`、`64.4 → 66.2`、`27% → 32%`（三处都是同位数替换 ⇒ 对本文件字节中性，`self` 那一行
+  // 不用再刷）。`median` / `most` / `densest` 三个角色当场复测未变（样本中位仍是 `src/tools/notes.js`
+  // 6,952，样本最大仍是 `src/loop/abort.js` 9,407，CJK 最密仍是 `src/loop/state-view.js` 37.31%）。
+  // 2026-10-24 第十刷（issue #425 第二轮评审）：`src/loop/resume-manager.js` 只删了一个 token（引擎独占
+  // 命名空间收成 `:engine:`）加改注释，+247 字节 / +1 行，均行字节 66.1828 → **66.5533**、容量
+  // 3,960 → **3,938**、CJK 占比 31.94% → **32.08%**；描述里 floor / 均行字节随之 `3,960 → 3,938`、
+  // `66.2 → 66.6`（同位数 ⇒ 对本文件字节中性），CJK 仍是 32%。本文件自己也多了一段 ⚠ 复测注
+  // （+489 字节 / +4 行）⇒ `self` 那一行按同口径重测：107,772 → **108,261** 字节 / 1,991 → **1,995** 行 /
+  // 容量 4,842 → **4,830**，描述里「this tool's own source fits」随之 4,842 → 4,830（同位数 ⇒ 字节中性）。
+  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 32_478, lines: 488, bytesPerLine: 66.5533, capacity: 3_938, cjkShare: 0.3208 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
@@ -640,7 +656,7 @@ const READ_LINE_CAPACITY_ROLES = [
   // 当场红、按同口径复测后同步。
   // 2026-10-23（issue #404）：描述里的 floor / 均行字节 / 自身容量三处数字同步（同位数 ⇒ 字节中性），
   // 记录值按本测试口径复测：107,620 → **107,772** 字节 / 1,989 → **1,991** 行 / 容量 4,844 → **4,842**。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 107_772, lines: 1_991, bytesPerLine: 54.1296, capacity: 4_842, cjkShare: 0.2683 } },
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 108_261, lines: 1_995, bytesPerLine: 54.2662, capacity: 4_830, cjkShare: 0.2688 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];

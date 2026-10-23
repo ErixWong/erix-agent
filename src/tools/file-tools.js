@@ -911,17 +911,21 @@ export const FILE_TOOL_DEFINITIONS = [
     //   （9,772 → 5,671），most 档改钉 `src/messages/openai-normalization.js`（9,587）；token 稀疏档
     //   同因改钉 `src/text/label.js`（150 → 190）。三个数都是当场复测值，`test/tools/file-tools.test.js`
     //   的五角色锚点与三档 token 样本逐字钉着它们。
+    // ⚠ 2026-10-24 第十刷（issue #425 第二轮评审）：`src/loop/resume-manager.js` 的引擎独占命名空间收成
+    //   `:engine:`（删掉裸 `:control:` 这个 token + 注释改写，+247 字节 / +1 行），均行字节
+    //   66.1828 → **66.5533**、容量 3,960 → **3,938**、CJK 占比 31.94% → **32.08%**；描述里 floor 与
+    //   均行字节随之 `3,960 → 3,938`、`66.2 → 66.6`（同位数 ⇒ 对本文件字节中性），CJK 仍是 32%。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
       + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) — the budget is counted in BYTES, so how many "
       + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
-      + "at the default budget (this codebase, not your tree) \u2014 fewest 4,072 lines "
-      + "(64.4 bytes/line, the widest lines), median 6,952 (37.7), most 9,407 (27.9). Wide lines cut this proportionally "
-      + "and CJK cuts hardest (3 UTF-8 bytes per character): the 4,072 floor is itself a CJK-heavy file "
-      + "(`src/loop/resume-manager.js`, 27% of its bytes are CJK), while the most CJK-dense file in that sample "
-      + "(`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,842. Nothing outside this repo "
+      + "at the default budget (this codebase, not your tree) \u2014 fewest 3,938 lines "
+      + "(66.6 bytes/line, the widest lines), median 6,952 (37.7), most 9,407 (27.9). Wide lines cut this proportionally "
+      + "and CJK cuts hardest (3 UTF-8 bytes per character): the 3,938 floor is itself a CJK-heavy file "
+      + "(`src/loop/resume-manager.js`, 32% of its bytes are CJK), while the most CJK-dense file in that sample "
+      + "(`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,830. Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
       + "Token budget of the default window, measured with the engine estimator (~3.5 characters per token for non-CJK, "
