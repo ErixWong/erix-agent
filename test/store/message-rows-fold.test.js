@@ -357,6 +357,135 @@ test("261021 fold: file store 与 memory store 的 load() 折叠结果一致，�
   assert.deepEqual(await file.load(RUN), fromFile);
 });
 
+// ── issue #439 A：折叠产出的**每条逻辑消息**带逐条 `ts` ──────────────────────
+//
+// 病根：折叠把「一行一条消息」的行级 `ts`（`appendMessageRowToTranscript` 每条消息落盘时都写
+// `ts: new Date().toISOString()`）丢在行上，只把 `messages` 拼回载体行 ⇒ 宿主拿 `load()` 的结果
+// 做时间线/延迟分析时，凡是被折叠过的消息**没有时间戳**（载体行自己的 `ts` 是轮行落盘时刻，
+// 不是这条消息成型的时刻）。
+// 口径（与 #430 的「锚点钉在首片」同向）：`ts` = 该逻辑消息**首片行**的 `ts`；行上没有 `ts` 时
+// **缺键**（不写 `undefined`、不猜值）。
+test("#439 fold: 折叠产出的每条逻辑消息带 `ts` = 该消息**首片行**的 `ts`（分片取首片，不是末片）", () => {
+  const folded = foldMessageRows([
+    roundRow(1, [], { ts: "2026-10-24T00:00:00.000Z" }),
+    messageRow(1, 0, msg("assistant", "正文"), { ts: "2026-10-24T00:00:01.000Z" }),
+    messageRow(1, 1, { role: "user", content: [toolResult("a1")] }, { ts: "2026-10-24T00:00:02.000Z" }),
+    messageRow(1, 2, { role: "user", content: [toolResult("a2")] },
+      { ts: "2026-10-24T00:00:03.000Z", partOf: `${RUN}:msg:1:1` }),
+  ]);
+  assert.deepEqual(folded[0].messages.map((message) => message.ts), [
+    "2026-10-24T00:00:01.000Z",
+    "2026-10-24T00:00:02.000Z",
+  ], "分片折回的那条消息取**首片**（00:00:02）的 ts，不是末片（00:00:03）");
+  // 既有键语义一个字不改：正文、角色顺序、载体行自己的 ts 都原样。
+  assert.deepEqual(folded[0].messages.map((message) => message.role), ["assistant", "user"]);
+  assert.deepEqual(folded[0].messages[1].content.map((block) => block.tool_use_id), ["a1", "a2"]);
+  assert.equal(folded[0].ts, "2026-10-24T00:00:00.000Z", "载体行的 ts 是轮行落盘时刻，不参与折叠改写");
+});
+
+test("#439 fold: 行上没有 `ts` ⇒ 消息**缺键**（不写 undefined、不猜值）", () => {
+  const folded = foldMessageRows([roundRow(1), messageRow(1, 0, msg("assistant", "正文"))]);
+  assert.equal(Object.hasOwn(folded[0].messages[0], "ts"), false,
+    "手写行/不落 ts 的宿主 store 不该凭空多出一个 `ts: undefined`");
+});
+
+test("#439 fold: 内置 store 的 load() 里被分片的消息带首片 ts（file 与 memory 同答案）", async () => {
+  const rows = [
+    roundRow(1, [], { ts: "2026-10-24T00:00:00.000Z" }),
+    messageRow(1, 0, msg("assistant", "正文"), { ts: "2026-10-24T00:00:01.000Z" }),
+    messageRow(1, 1, { role: "user", content: [toolResult("a1")] }, { ts: "2026-10-24T00:00:02.000Z" }),
+    messageRow(1, 2, { role: "user", content: [toolResult("a2")] },
+      { ts: "2026-10-24T00:00:03.000Z", partOf: `${RUN}:msg:1:1` }),
+  ];
+  const memory = createMemoryTranscriptStore();
+  for (const row of rows) await memory.appendRound(RUN, row);
+  const file = createFileTranscriptStore({ dir: await makeTmp("fold-ts-file") });
+  for (const row of rows) await file.appendRound(RUN, row);
+
+  const expected = ["2026-10-24T00:00:01.000Z", "2026-10-24T00:00:02.000Z"];
+  const fromMemory = await memory.load(RUN);
+  const fromFile = await file.load(RUN);
+  assert.deepEqual(fromMemory[0].messages.map((message) => message.ts), expected);
+  assert.deepEqual(fromFile[0].messages.map((message) => message.ts), expected);
+  assert.deepEqual(fromFile, fromMemory, "两个内置 store 必须给同一个答案");
+});
+
+test("#439 foldLedgerMessages: 恢复路径按**规范化消息**读账本——逐条 `ts` 不进模型上下文", () => {
+  // 为什么必须有这一格：`ts` 是档案信封（这条消息什么时候落盘），而 `foldLedgerMessages` 的产物是
+  // 恢复上下文。留在这里会让 #326 的折叠摘要复用键（`foldSummaryFingerprint` 的输入就是这些消息）
+  // 在 resume 后变一次 ⇒ 同一份折叠输入被重算一次（实测多调一次付费摘要器）。
+  const rows = foldMessageRows([
+    roundRow(1, [], { ts: "2026-10-24T00:00:00.000Z" }),
+    messageRow(1, 0, msg("assistant", "正文"), { ts: "2026-10-24T00:00:01.000Z" }),
+    messageRow(1, 1, { role: "user", content: [toolResult("a1")] }, { ts: "2026-10-24T00:00:02.000Z" }),
+    messageRow(1, 2, { role: "user", content: [toolResult("a2")] },
+      { ts: "2026-10-24T00:00:03.000Z", partOf: `${RUN}:msg:1:1` }),
+  ]);
+  assert.deepEqual(rows[0].messages.map((message) => message.ts), [
+    "2026-10-24T00:00:01.000Z",
+    "2026-10-24T00:00:02.000Z",
+  ], "前置：折叠结果（load() 面）带逐条 ts");
+  const entries = foldLedgerMessages(rows);
+  assert.equal(entries.length, 2);
+  for (const entry of entries) {
+    assert.equal(Object.hasOwn(entry.message, "ts"), false, "恢复上下文里不许留档案信封的 ts");
+  }
+  // 既有键语义一个字不改：正文与角色照旧（只少了那个加法键）。
+  assert.deepEqual(entries.map((entry) => entry.message.role), ["assistant", "user"]);
+  assert.deepEqual(entries[1].message.content.map((block) => block.tool_use_id), ["a1", "a2"]);
+});
+
+// ── issue #439 回归：升级现场（旧版折叠产物 + 原始消息行）正文不许翻倍 ─────────────
+//
+// 「两份都留」（折好的载体 + 原始消息行）是契约明文承诺的安全形状（`docs/host-consumer-contract.md`
+// 的 `### The fold is public API, and the engine covers one fallback (issue #401)` 一节：
+// 「which is what keeps the “both copies” shape from doubling the body」）。而 #439 给折叠出的
+// 每条消息加了逐条 `ts`：上一版（≤0.24.0 或宿主自研折叠）折出来的**载体行里，消息没有这个键** ⇒
+// 若守卫按「逐字段深比较」，升级现场（旧载体 + 新消息行）会判不等 ⇒ 同一轮正文拼第二遍（实测
+// 2 条变 4 条：`assistant+user+assistant+user`，正是 #401 R3 治过的坏形状）。
+// 守卫判的是「同一段正文是否已折过」，**信封字段（`ts`）不该参与**——它答的是「这条消息什么时候
+// 落盘」，不是「这段正文是什么」。
+const LEGACY_CARRIER_TS = "2026-10-24T00:00:00.000Z";
+const LEGACY_MSG_TS = ["2026-10-24T00:00:01.000Z", "2026-10-24T00:00:02.000Z"];
+const textsOf = (record) => record.messages.map((message) => message.content[0].text);
+
+test("#439 升级现场：载体由**旧版折叠**产出（消息不带 `ts`）+ 原始消息行仍在 ⇒ load() 正文不翻倍", async () => {
+  const body = [msg("assistant", "正文"), msg("user", "工具结果")];
+  // 基线形状：同一份账本**没有**旧载体（消息行照常折）——正文就是这两条。
+  const baseline = foldMessageRows([
+    roundRow(1),
+    messageRow(1, 0, structuredClone(body[0]), { ts: LEGACY_MSG_TS[0] }),
+    messageRow(1, 1, structuredClone(body[1]), { ts: LEGACY_MSG_TS[1] }),
+  ]);
+  assert.deepEqual(baseline[0].messages.map((message) => message.role), ["assistant", "user"],
+    "前置：基线形状就是这两条（翻倍前的正确条数）");
+
+  // 升级现场：宿主手里是**上一版 `load()` 的产物**（每条消息都没有 `ts`），原始消息行也还在。
+  const legacyRows = [
+    roundRow(1, structuredClone(body), { ts: LEGACY_CARRIER_TS }),
+    messageRow(1, 0, structuredClone(body[0]), { ts: LEGACY_MSG_TS[0] }),
+    messageRow(1, 1, structuredClone(body[1]), { ts: LEGACY_MSG_TS[1] }),
+  ];
+  const folded = foldMessageRows(structuredClone(legacyRows));
+  assert.equal(folded.length, 1, "消息行折进载体行（当重复副本丢弃），只剩一条记录");
+  assert.deepEqual(folded[0].messages.map((message) => message.role), ["assistant", "user"],
+    `升级现场不得把正文拼第二遍；翻倍时是 assistant+user+assistant+user，实测：${JSON.stringify(folded[0].messages.map((message) => message.role))}`);
+  assert.deepEqual(textsOf(folded[0]), textsOf(baseline[0]), "正文与基线逐字相同（既不丢也不翻倍）");
+
+  // store 面：`load()` 才是宿主实际读到的那一层（file 与 memory 必须同答案）。
+  const memory = createMemoryTranscriptStore();
+  for (const row of structuredClone(legacyRows)) await memory.appendRound(RUN, row);
+  const file = createFileTranscriptStore({ dir: await makeTmp("fold-legacy-carrier-file") });
+  for (const row of structuredClone(legacyRows)) await file.appendRound(RUN, row);
+  const fromMemory = await memory.load(RUN);
+  const fromFile = await file.load(RUN);
+  assert.deepEqual(fromFile, fromMemory, "两个内置 store 必须给同一个答案");
+  assert.equal(fromMemory.length, 1);
+  assert.deepEqual(fromMemory[0].messages.map((message) => message.role), ["assistant", "user"],
+    `load() 的正文不得翻倍；实测：${JSON.stringify(fromMemory[0].messages.map((message) => message.role))}`);
+  assert.deepEqual(textsOf(fromMemory[0]), textsOf(baseline[0]));
+});
+
 // ── seq 播种（崩溃重跑幂等，写侧下一单要用） ─────────────────────────────────
 test("261021 fold: nextMessageSeqByRound 按轮取 max(seq)+1，忽略无 seq/无 round 的行", () => {
   const next = nextMessageSeqByRound([

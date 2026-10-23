@@ -31,6 +31,7 @@ of "works if you read the source". If a section below is not your code path, it 
 | `foldMessageRows` is exported from the package root, and `resume` folds `store.load()` once more: a store whose `load()` returns the on-disk rows no longer loses the tool pairing (§13) | no — act only if your own `load()` returns the on-disk rows, and then fold it |
 | A **resumed** run now carries one engine control message saying it was resumed, which `tool_use` calls had no result, and "verify before acting" (§14) | yes, if you diff `messages` / count transcript rows or input tokens on resumed runs |
 | Streaming thinking is read from `delta.reasoning_content` **and** the aliases `delta.reasoning` (string **or** `{ content }`) and `delta.reasoning_text`, one field per chunk — so runs whose relay names the thinking field differently stop losing **100%** of it (§15) | yes, if you render reasoning or assert on an assistant message's block types: a `reasoning` block now appears where only `text` used to |
+| The **CLI** now wires the engine's retryable **stream** silence deadlines (`firstByteTimeoutMs` / `streamIdleTimeoutMs` = `⌊--idle-timeout × 3/4⌋`), so a silent `--stream` run ends `failed` / `errorCode: "timeout"` after the retries are exhausted instead of `aborted`; the non-streaming deadline stays legacy and non-streaming silence is unchanged (§16) | yes, if you treat `aborted` as "the provider went silent", or if you script the CLI and assert on the terminal reason |
 
 The one-line version: **the facts you used to infer are now written down.** The engine did not change what
 it *does*; it changed what it *says* — in the state file, in the error objects, and in the tool outputs the
@@ -692,16 +693,87 @@ used to not have — count block **types**, not their absence. A run whose relay
 `reasoning_content` is byte-for-byte what it was, and nothing else moved: no new option, no new export, no
 new event type, no new block type, and no change to the non-streaming path.
 
-## 16. Self-check
+## 16. Silence is now a retryable deadline: the CLI wires the engine's stream phase timeouts (issue #441)
+
+**This is a CLI change, not an engine change.** The engine has always had four silence deadlines —
+`firstByteTimeoutMs`, `streamIdleTimeoutMs`, `streamTotalTimeoutMs`, `requestTimeoutMs` — and each of them
+throws a **retryable** `timeout`. What was missing was the wiring: no `bin/` file passed them, and the CLI
+config whitelist did not carry them either, so in the default configuration the only thing that could end
+a silent run was the CLI's idle watchdog — an `AbortSignal` abort, which is **not** retried. A provider
+that accepted the connection and then said nothing was therefore killed instead of retried, every time.
+
+What changed, in the CLI only (the resolver is one shared module; `erix chat` and `erix repl` use it
+identically):
+
+- `--idle-timeout N > 0` now derives the **two stream phases**: `firstByteTimeoutMs` =
+  `streamIdleTimeoutMs` = `⌊N × 3/4⌋` ms. The quarter left over is the room a retry needs — the backoff
+  plus the next attempt. The budget is **strictly** smaller than the idle window on purpose: for a silent
+  stream both timers start at the same moment and the idle one starts *earlier*, so an equal deadline
+  always resolves to the non-retryable abort.
+- **`requestTimeoutMs` is deliberately *not* derived.** The non-streaming deadline keeps its legacy value
+  (`config.timeout ?? 300_000`). This is a retreat from an earlier draft of this change, and the reason is
+  measured, not stylistic: on the non-streaming path `requestTimeoutMs` is not a *silence* deadline but
+  the **whole generation** (`provider.chat()` has exactly one absolute deadline), so deriving it to
+  `⌊idle × 3/4⌋` turns the default `[⌊idle × 3/4⌋, idle)` = **`[225s, 300s)`** band from *alive* into
+  *always fatal*. Measured against a real HTTP upstream with `ERIX_RETRY_ATTEMPTS=2`: a request answered
+  after **240s** (slow but **healthy**) ended `end_turn` / exit **4** in **240.29s** before the wiring,
+  and was killed at **225.21s** with `failed` / `errorCode: "timeout"` after it (3 calls / 679.73s with
+  the default retry count). Making non-streaming *silence* retryable needs a deadline **strictly below**
+  the idle window, and both idle and the legacy `timeout` default to `300` — so **any** shrink kills that
+  band. The correct fix for non-streaming silence is "retry after declaring death" (issue #433 fix 1), not
+  an earlier kill. Until that lands, **non-streaming silence is still not retryable**: the idle watchdog
+  is armed before the provider call and the two defaults are equal, so it always fires first.
+  Both numbers were measured with the per-round judge disabled (`ERIX_NO_REFLECTION=1`): a default
+  `erix chat` turn is **two** model calls (body + judge), so the second call alone would cross the idle
+  window for reasons unrelated to the request deadline. The same band was reproduced at a cheaper scale:
+  with `--idle-timeout 20` and an upstream that answers in one shot after **18s**, the shipped wiring
+  succeeds (**18.42s**, `end_turn`, exit 4), while adding `requestTimeoutMs` back to the derived set kills
+  it at **15.06s** = `⌊20 × 3/4⌋` (`failed` / `errorCode: "timeout"`).
+
+- `streamTotalTimeoutMs` is **not** derived: it is an absolute cap on one stream, not a silence deadline,
+  and while a stream is flowing the idle watchdog is fed by `onDelta` and cannot fire anyway. An explicit
+  legacy `timeout` is still passed through as `streamTotalTimeoutMs`, so a ceiling you configured is not
+  silently lowered by the switch to the phase model.
+- `--idle-timeout 0` (`erix repl`'s default) derives **nothing** — that assembly is byte-for-byte what it
+  was.
+- Explicit configuration wins and is never rewritten: `firstByteTimeoutMs` / `streamIdleTimeoutMs` /
+  `requestTimeoutMs` / `streamTotalTimeoutMs` are now accepted from the CLI config file, a value ≥ the
+  idle window is used verbatim with a one-line warning (the same rule as `ERIX_EXEC_TIMEOUT_MS`), and an
+  **invalid** value (`-1000`, `"abc"`, `true`, `1.5`) is a **load error that names the key** instead of
+  reaching the engine as `undefined` (where it used to mean "the phase deadline silently does not exist",
+  or "the non-streaming request times out immediately"). `0` is legal and means "already expired".
+  The legacy `timeout` / `timeoutMs` key is **not** validated the same way — it is forwarded verbatim as
+  before (a non-numeric value reaches `setTimeout` and behaves as "already expired").
+- The idle watchdog is fed on the `attempt` / `recovering` events, so a retry and its backoff count as
+  progress instead of "no progress".
+
+What you observe as a host: a silent **`--stream`** run now ends `termination.reason: "failed"` with
+`termination.errorCode: "timeout"` once the retries are exhausted, instead of `reason: "aborted"` with no
+`errorCode` at all. `failed` already carried `errorCode` (issue #176) and **no other reason gained the
+field**, so the contract is not extended — but a host that reads `aborted` as "the provider went silent"
+has to re-branch. **Non-streaming silence is unchanged** (still `idle_timeout`, one call). CLI exit codes
+do not move: a silent `erix chat` still exits **1**.
+
+Three things worth knowing before you rely on it. First, a silent stream now takes longer to give up: each
+attempt is bounded by `⌊idle × 3/4⌋` and separated by a backoff, so the default worst case grows from one
+idle window to roughly `(attempts + 1) × ⌊idle × 3/4⌋ + backoff`. Second, the non-streaming deadline did
+not move and **non-streaming silence is not retryable today** — the `[225s, 300s)` band above is the
+reason, and issue #433 fix 1 is the fix. Third, the budget covers **one attempt's** silence, not the retry
+**backoff**: an `--idle-timeout` **smaller than or equal to** the backoff schedule (`1.5s`, `3s`, `6s`, …
+capped at `10s`) can still be ended by the non-retryable idle path during a backoff — measured at
+`--idle-timeout 3`, where the second backoff is exactly `3000ms` = the window: 2 calls, 9.21s, `aborted`.
+At the default `300` that cannot happen.
+
+## 17. Self-check
 
 ```bash
-npm test                       # 1,992 tests, 0 failing (1,983 passing + 9 skipped)
+npm test                       # 2,081 tests, 0 failing (2,072 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # offline, zero model calls; asserts the finalGuard payload surface
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites
 ```
 
-Against your own host, twelve questions are worth answering with a test before you upgrade:
+Against your own host, thirteen questions are worth answering with a test before you upgrade:
 
 1. **State file.** Take a run with more than 32 compaction entries: `compactionStatsWindow.total` equals
    the full count, `dropped === total − 32`, and an **old** state file (no window key) still validates and
@@ -767,7 +839,16 @@ Against your own host, twelve questions are worth answering with a test before y
     reads are byte-for-byte what they were before you upgraded — that pair is the proof the alias list did
     not move the existing field (§15).
 
-## 17. What did not change
+13. **Silent stream.** Point the CLI at a stub upstream that answers the headers and then never sends a
+    byte (an SSE `Response` whose body never enqueues), run with `--stream --idle-timeout 3` and
+    `ERIX_RETRY_ATTEMPTS=1`: the upstream must be called **twice** — and never more than `attempts + 1` —
+    the run must end `failed` / `errorCode: "timeout"` (not `aborted`), and the CLI must still exit **1**.
+    Then drop `--stream` and assert the opposite: **one** call and `idle_timeout`, because the
+    non-streaming deadline stays legacy on purpose (§16's `[225s, 300s)` band). Then repeat the stream
+    case with `--idle-timeout 0`: nothing is derived, so you are back to the legacy `timeoutMs` shape
+    (§16's cells in `test/cli-idle.test.js` are the shipped version of all three).
+
+## 18. What did not change
 
 No store method signature, no return type, no option name, no export **removed** (one export was
 *added*, §13), no record kind, no message field, no content-block **type** (§15 fills a block type that
@@ -778,15 +859,18 @@ surface is untouched; the resume path moved in **two** places — a store whose 
 rows no longer loses its tool pairing on resume (§13), and a resumed run now carries one engine control
 message (§14), the only change in this release that lengthens `messages`. The final guard's *verdict*
 semantics are untouched too — its payload gained additive keys (§8), which is information, not a new rule.
-Six *behavioural* changes shipped in this release: the first three are corrections of false negatives
+Seven *behavioural* changes shipped in this release: the first three are corrections of false negatives
 rather than new rules — a missing search root returns an error text instead of `（无命中）` (§6), a machine
 criterion that passes under a guard `skip` is no longer thrown away (§10), and a truncated tool-call round
 finishes with its final text instead of ending `failed` / `invalid_messages` (§12); §13 makes a fact
 correct that used to be wrong (§13); §14 is new information for the model, and it is advice, not a gate;
 §15 is a fourth correction of a false negative — a thinking field the relay was already sending is now
-read, and the field that used to be read keeps its behaviour verbatim (§15). Everything else is additive.
+read, and the field that used to be read keeps its behaviour verbatim (§15); §16 moves a silent **stream**
+run off the non-retryable abort path and onto the retryable one, which changes the terminal reason
+(`aborted` → `failed` / `errorCode: "timeout"`) for that class of run — non-streaming silence is untouched.
+Everything else is additive.
 
-## 18. Migration recipe
+## 19. Migration recipe
 
 1. If you read `<runId>.state.json`'s compaction ledger, read `compactionStatsWindow.total` (and
    `dropped`) instead of counting the array — and treat the key's absence as "no statistics", not "zero".
@@ -822,3 +906,9 @@ read, and the field that used to be read keeps its behaviour verbatim (§15). Ev
     empty field does not hold the slot) rather than the field list: which name a relay uses depends on the
     request body you sent, not on the model, so a list you trimmed to "the one this relay sends" will
     regress (§15).
+
+11. If you read `termination.reason === "aborted"` as "the provider went silent", add the `failed` +
+    `errorCode: "timeout"` branch for **streaming** runs (§16). Non-streaming silence still ends
+    `idle_timeout` after one call — that half is deliberately unchanged (§16's `[225s, 300s)` band), so do
+    not assume the retry path covers it. If you script the CLI, also re-baseline the wall-clock you allow
+    for a silent stream: the silence is now retried before it gives up.

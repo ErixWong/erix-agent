@@ -764,7 +764,7 @@ function foldLedgerFromRawRows(rawRecords) {
       }
       const key = independentRowKey(row);
       if (key !== "") parts.set(key, messages.length);
-      messages.push(...row.messages);
+      messages.push(...row.messages.map((message) => independentStampRowTs(message, row)));
     }
     attached.set(group.carrier, messages);
     void round;
@@ -806,6 +806,24 @@ function foldLedgerFromRawRows(rawRecords) {
       unparsable,
     },
   };
+}
+
+/**
+ * 对账用的**独立第二实现**：给折出来的消息补上它那一行的 `ts`（issue #439 A）。
+ *
+ * 口径与引擎侧（`src/store/message-rows.js#stampRowTs`）逐字一致：`ts` = 该逻辑消息**首片行**的
+ * `ts`；分片合并只加 content、不改首片已经写上的；行上没有 `ts` ⇒ 缺键。
+ * 这是对账（`store-reconcile-jsonl-vs-load` 的 `foldCompare.equal`）必须跟上的地方：引擎给每条
+ * 逻辑消息补了 `ts` 而这里不补，两边的 `JSON.stringify` 就会条条不等（实测 3 处 mismatch）。
+ * @param {any} message
+ * @param {any} row
+ * @returns {any}
+ */
+function independentStampRowTs(message, row) {
+  if (message === null || typeof message !== "object" || Array.isArray(message)) return message;
+  if (typeof message.ts === "string" && message.ts !== "") return message;
+  const ts = typeof row?.ts === "string" ? row.ts : "";
+  return ts === "" ? message : { ...message, ts };
 }
 
 // 逐条比对两条正文序列（JSON 文本口径，与 `resume-history-bytes-unchanged` 同一个比较口径）。
