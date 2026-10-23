@@ -610,7 +610,7 @@ async function measureRequestLandingMs(
  * 这里**只**保留能真正变红的自检（守卫②）：有限正数、实测 ≤ 上限/8、派生值 ≤ 上限。
  * 「≥ 下限」「≥ 8 × 实测」原本也写成了断言，但那是**恒真**的（同一对常量、同一个表达式，
  * `Math.max(FLOOR, Math.ceil(worstMs * F))` 天然满足两者）——#412 评审实测：把 ×8 改成 ×1、
- * floor 60 改成 floor 1，全套 11/11 仍绿。所以那条契约改由**字面量用例**钉住（见下面两个
+ * floor 60 改成 floor 1，全套 20/20 仍绿。所以那条契约改由**字面量用例**钉住（见下面两个
  * `派生契约` 测试）：取值写死，不随常量漂移，改系数/下限就红。
  */
 function deriveRequestTimeoutMs({ worstMs, samplesMs }) {
