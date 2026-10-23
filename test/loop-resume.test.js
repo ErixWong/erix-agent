@@ -12,6 +12,11 @@ const textMessage = (text) => ({
   content: [{ type: "text", text }],
 });
 
+/** issue #439 A：`load()` 的折叠结果给每条逻辑消息带了行级 `ts`（落盘时刻，宿主时间线），
+ * 内存里的消息没有——比较「档案 = 完整正文」时剥掉信封字段，**逐字比正文**。
+ * 不静默放宽：调用点另有一句断言档案侧**真的**带 `ts`（否则这条剥字段就成了白名单）。 */
+const withoutJournalTs = (messages) => messages.map(({ ts, ...message }) => message);
+
 test("replay policy and tool declarations reject unsupported values", async () => {
   const options = {
     provider: createFakeProvider([]),
@@ -266,7 +271,12 @@ test("resumes after three rounds without replaying paid provider calls", async (
   const storedMessages = beforeResume.flatMap((record) => record.messages);
 
   assert.equal(firstResult.rounds, 3);
-  assert.deepEqual(firstResult.messages, storedMessages); // 种子记录后档案 = 完整消息
+  // 种子记录后档案 = 完整消息。issue #439 A：**被折叠**的每条逻辑消息多一个行级 `ts`（落盘时刻），
+  // 内存里的消息没有 —— 剥信封字段后**正文逐字相等**。轮行自带的正文（round 0 种子行）不是折叠
+  // 产物，没有这个字段；这里只要求「从消息行折回来的那部分」带 `ts`。
+  assert.ok(storedMessages.some((message) => typeof message.ts === "string"),
+    "折叠后的逻辑消息必须带 `ts`（#439）");
+  assert.deepEqual(firstResult.messages, withoutJournalTs(storedMessages));
   assert.equal(firstProvider.requests.length, 3);
   assert.ok(
     firstProvider.requests[0].messages.some((message) => (
@@ -302,7 +312,9 @@ test("resumes after three rounds without replaying paid provider calls", async (
   const notice = resumedProvider.requests[0].messages.at(-1);
   assert.match(JSON.stringify(notice), /【恢复运行】/u,
     `恢复的第一次请求末尾必须是那条告示，实测 ${JSON.stringify(notice).slice(0, 120)}`);
-  assert.deepEqual(resumedProvider.requests[0].messages.slice(0, -1), storedMessages);
+  // #439 A：恢复上下文用的是**规范化消息**（不含档案信封的逐条 `ts`，见
+  // `src/store/message-rows.js#foldLedgerMessages`），所以这里剥掉它再逐字比。
+  assert.deepEqual(resumedProvider.requests[0].messages.slice(0, -1), withoutJournalTs(storedMessages));
   assert.equal(resumedResult.rounds, 4);
   assert.equal(resumedResult.finalText, "round four");
   assert.deepEqual(
@@ -311,7 +323,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
     [0, 1, 2, 3, 3, 4],
   );
   assert.deepEqual(resumedResult.messages, [
-    ...storedMessages,
+    ...withoutJournalTs(storedMessages),
     notice,
     { role: "assistant", content: [{ type: "text", text: "round four" }] },
   ]);

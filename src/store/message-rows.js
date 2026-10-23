@@ -88,6 +88,30 @@ function mergePartIntoMessage(target, part) {
 }
 
 /**
+ * 给折出来的一条消息补上**它那一行**的 `ts`（issue #439 A）。
+ *
+ * 病根：写侧每条消息落盘时都带行级 `ts`（`orchestrator.js#appendMessageRowToTranscript` 的
+ * `ts: new Date().toISOString()`），但折叠只把 `messages` 拼回载体行 ⇒ 消息成型时刻**丢了**，
+ * 而载体行的 `ts` 是**轮行**落盘时刻。宿主拿 `load()` 做时间线/延迟分析时，被折叠过的消息没有
+ * 时间戳。
+ *
+ * 口径（与 #430「锚点钉在首片」同向）：`ts` = 该逻辑消息**首片行**的 `ts`。分片合并只加 content、
+ * 不改首片已经写上的 `ts`（`mergePartIntoMessage` 的浅拷贝已经保住它）；行上没有 `ts`（手写行 /
+ * 不落 `ts` 的宿主 store）⇒ **缺键**，不写 `undefined`、不猜值。
+ * 已有 `ts` 的消息不改写（幂等：同一份账本折两次不会把时间戳推后）。
+ *
+ * @param {any} message
+ * @param {any} row
+ * @returns {any}
+ */
+function stampRowTs(message, row) {
+  if (message === null || typeof message !== "object" || Array.isArray(message)) return message;
+  if (typeof message.ts === "string" && message.ts !== "") return message;
+  const ts = typeof row?.ts === "string" ? row.ts : "";
+  return ts === "" ? message : { ...message, ts };
+}
+
+/**
  * 读侧折叠：把 `kind: "message"` 行的正文按轮拼回轮行。
  * 无消息行时返回入参本身（老账本零改写）。
  *
@@ -102,6 +126,11 @@ function mergePartIntoMessage(target, part) {
  * 同一批对象**，不复制不改写。
  *
  * **幂等**：`foldMessageRows(foldMessageRows(rows))` 与 `foldMessageRows(rows)` 逐字相等。
+ *
+ * **逐条 `ts`（issue #439）**：折叠出的每条逻辑消息带 `ts`，取值是**该消息首片行**的 `ts`
+ * （见 `stampRowTs`；分片只追加 content、不改写首片写上的戳）。行上没有 `ts`（手写行 / 不落 `ts`
+ * 的宿主 store）⇒ 该消息**没有 `ts` 键**。宿主拿它做时间线/延迟分析——载体行自己的 `ts` 是
+ * **轮行**落盘时刻，不是这条消息成型的时刻。
  *
  * **守卫（载体已带这一轮的正文 ⇒ 该轮跳过）**：某轮载体行的 `messages` 已经等于从该轮消息行折出来的
  * 正文（逐字段深比较相等）时，这一轮的消息行被当作**重复副本**丢弃，不再往里拼一次。这就是宿主
@@ -160,7 +189,7 @@ export function foldMessageRows(records) {
         continue;
       }
       if (key !== "") parts.set(key, messages.length);
-      messages.push(...row.messages);
+      messages.push(...row.messages.map((message) => stampRowTs(message, row)));
     }
     // 守卫（issue #401 R3）：该轮载体**已经带着这一轮的正文**——宿主把折好的载体与原始消息行
     // 都交给了我们。此时再把消息行拼一次就是同一轮正文重复一遍（实测 r1 变
@@ -219,7 +248,13 @@ export function nextMessageSeqByRound(records) {
  * `foldMessageRows` 吸进载体行）走这条路是**幂等**的——看不见分片行，也就无片可接。
  * 老账本（轮行自带 `messages`、没有消息行）原样拼出，与改造前逐字一致。
  *
- * @param {Array<{ round?: number, kind?: string, partOf?: string, messages?: object[], dedupKey?: string, roundKey?: string }>} records
+ * **issue #439 A：这里去掉逐条 `ts`。** `load()` 的折叠结果给每条逻辑消息带了行级 `ts`
+ * （`foldMessageRows#stampRowTs`，宿主拿它做时间线），但那是**档案信封**（这条消息什么时候落盘），
+ * 不是模型上下文的一部分：留在这里会让 #326 的折叠摘要复用键（`foldSummaryFingerprint` 的输入就是
+ * 这些消息，见 `src/compact/fold-summary-journal.js`）在 resume 后变一次——同一份折叠输入被判成
+ * 新输入，重启一次多调一次付费摘要器（实测 1 次）。所以恢复上下文一律回到「规范化消息」。
+ *
+ * @param {Array<{ round?: number, kind?: string, partOf?: string, messages?: object[], dedupKey?: string, roundKey?: string, ts?: string }>} records
  * @returns {Array<{ message: object, round: number }>} 逻辑消息序列（含来源轮号）
  */
 export function foldLedgerMessages(records) {
@@ -256,7 +291,22 @@ export function foldLedgerMessages(records) {
       };
       continue;
     }
-    for (const message of messages) entries.push({ message, round });
+    for (const message of messages) entries.push({ message: withoutJournalTs(message), round });
   }
   return entries;
+}
+
+/**
+ * 去掉消息上的**档案信封**字段 `ts`（issue #439 A，恢复路径专用）。
+ *
+ * 只在真的带 `ts` 时拷贝；没有就原样返回（老账本/手写行/宿主不落 `ts` 的 store 零改写）。
+ * @param {any} message
+ * @returns {any}
+ */
+function withoutJournalTs(message) {
+  if (message === null || typeof message !== "object" || Array.isArray(message)) return message;
+  if (typeof message.ts !== "string") return message;
+  const rest = { ...message };
+  delete rest.ts;
+  return rest;
 }
