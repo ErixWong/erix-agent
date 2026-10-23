@@ -2318,7 +2318,7 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
   映射到**下一条**消息），这正是「把 `partOf` 链到上一片」时第三条结果会自己新起一条消息的原因。于是
   同一崩溃轮的**所有**结果都折回**一条**聚合 `user` 消息，条数不限，绝不会变成「每条结果各一条
   `user` 消息」，`<runId>:msg:<round>:<seq>` 的序号语义也按 issue #326 保持。钉住它的是
-  `test/loop-resume-unpersisted-tool-results.test.js` 里的 `#430` 端到端用例（三例共用同一份崩溃
+  `test/loop-resume-unpersisted-tool-results.test.js` 里的 `#430` 端到端用例（前两例共用同一份崩溃
   现场：`threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`））与
   `test/store/message-rows-fold.test.js` 的四行单元用例；修前三个工具调用实测折成 `[[t1,t2],[t3]]`、
   第二次恢复 `invalid_messages`（issue #430）。
