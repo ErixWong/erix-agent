@@ -7,6 +7,14 @@
 
 const MAX_ERROR_MESSAGE_LENGTH = 500;
 const MAX_LEDGER_ENTRIES = 100;
+// issue #439：`error.phase` 的长度上限。口径与 run-state 的 `safeText(entry.phase, 32)` 相同
+// （`src/run-state.js`）：宿主的错误对象也进这条通道，不许一条异常把 result 撑大。
+//
+// ⚠ 本文件是 `test/tools/file-tools.test.js` 的 #271 行容量写死样本。下面这两处注释按该测试
+// 自己的口径复测后，样本中位从 7,117 掉到 6,952（−2.3%，越过 ±2%）——连带按仓内既定口径刷新了
+// `readFile` 的模型可见描述（`src/tools/file-tools.js` 的 `median` 档）与 #271 的 `median` 记录值
+// （`src/tools/registry.js` → `src/tools/notes.js`）。下次再改本文件，同样先看那条断言。
+const MAX_ERROR_PHASE_LENGTH = 32;
 
 export const LEDGER_LIMITS = Object.freeze({
   errorMessageLength: MAX_ERROR_MESSAGE_LENGTH,
@@ -20,11 +28,20 @@ export function capErrorMessage(error) {
   return `${raw.slice(0, MAX_ERROR_MESSAGE_LENGTH)}… [truncated ${raw.length - MAX_ERROR_MESSAGE_LENGTH} chars]`;
 }
 
-// 错误统一收成 {name, message}：截断 + 去掉 stack（堆栈含本机路径且可能很长）。
+// 错误统一收成 {name, message}（+ issue #439 的加法键 phase）：截断 + 去掉 stack（堆栈含本机路径
+// 且可能很长）。
+//
+// issue #439（加法面）：`error.phase` **原样保留**。provider 的错误对象（`KitError`，
+// `src/providers/errors.js`）上本来就带 `phase`（`"request"` / `"stream"` / `"streamTotal"`，
+// 由 `src/providers/timeout.js` 与两个协议适配器打上），而归一化到 `{name, message}` 时它被丢了 ⇒
+// 宿主在账本里无法区分「请求没发出去」与「流中间断了」，而这两类可重试性不同（#441 依赖这个判断）。
+// 口径：取不到（无键 / 非字符串 / 空串）就**缺键**——不写 `phase: undefined`，不猜值。
 function capError(error) {
+  const raw = typeof error?.phase === "string" ? error.phase.replaceAll(/\s+/gu, " ").trim() : "";
   return {
     name: String(error?.name ?? "Error"),
     message: capErrorMessage(error),
+    ...(raw === "" ? {} : { phase: Array.from(raw).slice(0, MAX_ERROR_PHASE_LENGTH).join("") }),
   };
 }
 
@@ -45,6 +62,10 @@ export function createErrorLedger() {
       entry.fatal === true,
       entry.error?.name,
       entry.error?.message,
+      // issue #439：错误自身的阶段也是身份的一部分——同消息、同持久化阶段，但一次是「请求没发出去」、
+      // 一次是「流中间断了」，不是同一个失败（可重试性不同）。既有条目里这个位置恒为空串
+      // （`capError` 在此之前丢掉了 `error.phase`）⇒ 对**已有**去重结果零影响。
+      entry.error?.phase,
       entry.failedEvent
         ? [entry.failedEvent.type, entry.failedEvent.port, entry.failedEvent.operation, entry.failedEvent.phase].join("\u0000")
         : "",

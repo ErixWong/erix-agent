@@ -6,6 +6,7 @@ import {
   capErrorMessage,
   createErrorLedger,
 } from "../src/loop/error-ledger.js";
+import { KitError } from "../src/providers/errors.js";
 
 test("capErrorMessage truncates over-long messages with an audit marker", () => {
   const out = capErrorMessage({ message: "x".repeat(2000) });
@@ -96,4 +97,56 @@ test("toUnpersisted returns an empty array by default and never hands out the in
   assert.deepEqual(empty, []);
   empty.push({ junk: true }); // 基本封装：外部拿到的不是内部数组本身
   assert.deepEqual(ledger.toUnpersisted(), []);
+});
+
+// ── issue #439 B：错误账保留错误对象自带的 `phase` ────────────────────────────────
+//
+// 病根：`capError` 把错误统一收成 `{name, message}`，而 provider 错误（`KitError`）上本来就带
+// `phase`（`"request"` / `"stream"`，见 `src/providers/errors.js` 与 `src/providers/timeout.js`）⇒
+// 「请求没发出去」与「流中间断了」在账本里长得一模一样，而这两类可重试性不同（#441）。
+// 口径：`phase` 从 `error.phase` 取，取不到就**缺键**（不写 `undefined`、不猜 `unknown` 以外的值）。
+test("#439 record: 错误对象自带 `phase` 时账本条目保留它（request / stream 可分）", () => {
+  const ledger = createErrorLedger();
+  ledger.record({
+    port: "transcript",
+    operation: "appendRound",
+    phase: "transcript",
+    fatal: true,
+    error: new KitError("timeout", "request timed out", { phase: "request" }),
+  });
+  const [entry] = ledger.toUnpersisted();
+  assert.equal(entry.error.phase, "request", "provider 错误上的 phase 不得在归一化时丢掉");
+  assert.equal(entry.phase, "transcript", "条目级 phase（持久化阶段）语义不变，不被 error.phase 覆盖");
+  assert.deepEqual(Object.keys(entry.error).sort(), ["message", "name", "phase"]);
+});
+
+test("#439 record: 错误对象没有 `phase` ⇒ 条目 `error` 缺键（不写 undefined、不猜值）", () => {
+  const ledger = createErrorLedger();
+  ledger.record({ port: "notes", operation: "note_write", fatal: false, error: new Error("disk full") });
+  ledger.record({
+    port: "notes",
+    operation: "note_read",
+    fatal: false,
+    error: { name: "Error", message: "permission denied", phase: "" },
+  });
+  const [plain, emptyPhase] = ledger.toUnpersisted();
+  assert.deepEqual(Object.keys(plain.error), ["name", "message"], "无 phase ⇒ 只有既有两键");
+  assert.equal(Object.hasOwn(plain.error, "phase"), false, "不得写 `phase: undefined`");
+  assert.equal(Object.hasOwn(emptyPhase.error, "phase"), false, "空串不是 phase（缺键，不猜 unknown）");
+});
+
+test("#439 record: 去重身份包含 error.phase —— 同消息不同阶段是两条账", () => {
+  const ledger = createErrorLedger();
+  for (const phase of ["request", "stream", "request"]) {
+    ledger.record({
+      port: "transcript",
+      operation: "appendRound",
+      phase: "transcript",
+      fatal: true,
+      error: new KitError("disconnect", "socket closed", { phase }),
+    });
+  }
+  const entries = ledger.toUnpersisted();
+  assert.equal(entries.length, 2, "同 message 不同 error.phase 不得被去重成一条（可重试性不同）");
+  assert.deepEqual(entries.map((entry) => [entry.error.phase, entry.repeat]), [["request", 2], ["stream", 1]]);
 });
