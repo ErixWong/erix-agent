@@ -10,6 +10,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { makeTmp } from "../helpers/tmp.js";
+
 /**
  * @param {string} label 实现名（测试标题前缀）
  * @param {() => object | Promise<object>} getEntry 返回包入口命名空间
@@ -174,10 +176,10 @@ export function engineApiContract(label, getEntry) {
     assert.equal(missing.code, "config_missing");
 
     // 必填校验：给了文件但缺 slots.default 的必填字段 ⇒ `config_invalid`，且文案点名缺了什么。
-    const { mkdtemp, writeFile } = await import("node:fs/promises");
-    const { tmpdir } = await import("node:os");
+    // 临时目录一律走 `makeTmp`（#185/#199）：裸 `mkdtemp` 不建父目录、没有 TMPDIR 可写探针。
+    const { writeFile } = await import("node:fs/promises");
     const { join } = await import("node:path");
-    const dir = await mkdtemp(join(tmpdir(), "erix-slot-contract-"));
+    const dir = await makeTmp("erix-slot-contract-");
     const configPath = join(dir, "config.json");
     await writeFile(configPath, JSON.stringify({ slots: { default: { endpoint: "https://example.invalid/v1" } } }), "utf8");
     const invalid = await entry.loadModelSlot({ configPath }).then(() => null, (err) => err);

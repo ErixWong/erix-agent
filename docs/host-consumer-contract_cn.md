@@ -1278,6 +1278,88 @@ if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate)
 | `tryParseWrapupJson`（`src/reflection/wrapup.js`） | **未迁**，仍直接调 `jsonCandidates` | 它的门槛比键存在性严（`done` 必须字面布尔；出现 `action`/`note` 就把对象退回内联 L1 路径），而且同样必须「跳过并续试」。跳过是承重的：`{"done":"true"}{"done":true}` 必须返回第二个。内层的 `{"done":…}` 不得绕过那条 mandatory-done 守卫（issue #30 follow-up），所以这里的扫描继续保持只认顶层 |
 | `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`（`src/compact/fold-statistical.js`） | **不在本单** | 两者都不是「在模型散文里找 JSON」：L0 取的是引擎要求模型写的 `<erix-summary>` 标签，折叠摘要读的是**引擎自己**写下的 `导航记录：{…}` 行并且 fail-closed 到 `undefined`。去掉标签 / 行锚定会放宽它们接受的形状 —— 那是行为变更，不是去重 |
 
+## 带可选兜底的模型输出归一化：`normalizeModelJson`（issue #406）
+
+`normalizeModelJson`（`src/normalization/parse-model-json.js`）是 `parseModelJson`
+（`src/text/parse-model-json.js`）的**异步**兄弟。它存在的原因很具体：宿主此前各自从模型
+输出里抠 JSON，而每一种方言——围栏块、尾逗号、单引号、Python 字面量、截断的答案——都从不同
+实现那里拿到不同答案。
+
+**它不取代 `parseModelJson`，两者也不许合并成一个函数。** 一个是同步、绝不修复；另一个是异步、
+只修结构，末尾还带一次可选的模型调用。宿主同时 `await` 两个，会从一个拿到值、从另一个拿到
+`Promise`；而把它们折成一个函数，会让每一处既有的 `parseModelJson` 调用点静默改变行为。
+
+| | `parseModelJson`（`src/text/parse-model-json.js`） | `normalizeModelJson`（`src/normalization/parse-model-json.js`） |
+|---|---|---|
+| 层 | L0，严格档 | L1 确定性修复 + 闸门 + 可选 L2 兜底 |
+| 同步性 | **同步** | **异步**（恒定返回 `Promise`） |
+| 修不修 | **绝不修** | 只修结构——值的字节保原样 |
+| 发不发请求 | 从不 | 只有 `llm: true` **且**每个确定性候选都失败时才发 |
+| 结果 | `{ ok, value, via, candidates }` / `{ ok: false, error, candidates }` | `{ ok, value, repaired?, llmUsed?, dropped? }` / `{ ok: false, error, llmUsed? }` |
+
+失败三态沿用**同一组名字**，但有两档的映射不同，宿主必须按对的那一档分流：
+
+| `error` | `normalizeModelJson` | `parseModelJson` |
+|---|---|---|
+| `no_candidate` | 输入为空，或截断输入且 `truncateCompletion` 没开 | 什么都没扫出来（纯散文，或括号永不闭合） |
+| `unparsable` | 有候选但每个都解析不了——**纯散文落这一档**，因为整段原文本身就是候选 | 有候选但每个 `JSON.parse` 都抛 |
+| `shape_mismatch` | 有候选解析成功，但一个都没过 `validate` | 有候选解析成功，但一个都不满足 `requireKeys` |
+
+**出处是 `repaired`，且只有真的改了文本时才有这个键。** `repaired: { rule, trusted }`：
+`rule` 是**实际生效**的规则 id 按施加顺序用 `+` 连接；`trusted` 为 `true` 当且仅当生效的全是
+引擎自带规则。宿主经 `repair.inject` 注入的规则一律 `trusted: false`——引擎替不了宿主证明
+别人那条规则的保字节性。所以能解析的输入**根本没有** `repaired` 键（不是 `repaired: null`）。
+
+**闸门永远对候选的原始字节判。** `validate` 的调用形状是 `validate(value, source)`，其中
+`source` 是**输入原文的切片**——绝不是修后文本。这是整层承重的不变量：一条会改写值的修复
+（比如把 `http\.request` 改成 `http.request`）否则就能拿调用方从未见过的文本过掉
+`source.includes(value)` 这类逐字核验，那就是一条**被静默伪造的值**。第二个参数是 additive 的：
+只写 `(value) => …` 的宿主照旧可用，但那样它就放弃了「证明值没被改写」的能力。
+
+**候选**是整段原文加上每一个围栏块，按出现顺序逐个独立试；第一个「可解析 **且** 过闸门」的
+候选胜出。`repair.truncateCompletion` 显式开时，每个候选的补全版会作为**额外**候选追加在末尾
+——那是截断答案唯一的出路，且它默认关，所以本来就完整的输入绝不会凭空长出 `truncation` 出处。
+
+```js
+import { normalizeModelJson } from "erix-agent";
+
+// normalizeModelJson(rawText, { validate?, provider?, slot?, llm?, thinking?, maxTokens?, signal?, repair?, schema? })
+//   -> Promise<{ ok: true, value, repaired?: {rule, trusted}, llmUsed?: true, dropped? }
+//             | { ok: false, error: "no_candidate" | "unparsable" | "shape_mismatch", llmUsed?: true }>
+const clean = await normalizeModelJson('{"done":true}');
+if (clean.ok !== true || clean.repaired !== undefined) throw new Error("a parseable input is not repaired");
+
+const repaired = await normalizeModelJson('{"done":true,}');
+if (repaired.repaired.rule !== "trailing-comma" || repaired.repaired.trusted !== true) {
+  throw new Error("provenance must name the rule and whether the engine trusts it");
+}
+
+// 闸门的第二个参数是候选的**原始字节**，绝不是修后文本。
+const raw = '{"path":"a\\.b"}';
+const injected = { id: "host-unescape", apply: (text) => text.replace("a\\.b", "a.b") };
+const gated = await normalizeModelJson(raw, {
+  repair: { inject: [injected] },
+  validate: (value, source) => ({ ok: source.includes(value.path) }),
+});
+if (gated.ok !== false || gated.error !== "shape_mismatch") {
+  throw new Error("a value the original text does not contain must be rejected");
+}
+
+// 截断输入：与同步入口同一判词，除非显式开补全。
+const truncated = await normalizeModelJson('{"outer":{"done":true}');
+if (truncated.error !== "no_candidate") throw new Error("truncation is not repaired by default");
+const completed = await normalizeModelJson('{"outer":{"done":true}', { repair: { truncateCompletion: true } });
+if (completed.repaired.rule !== "truncation") throw new Error("opting in must be visible in provenance");
+```
+
+可选的模型调用（L2）是这里**唯一**会花钱的东西，`llm: true` 是它唯一的开关：只有每个确定性候选
+都失败之后才发。请求恒定带 `reasoning_effort` 且钉在不思考的取值上（归一化文本不是推理任务），
+它的产物仍要过同一道 `validate` 闸门——L2 的产物过不了闸门就是 `shape_mismatch`，绝不静默接受。
+
+`loadModelSlot` / `createProviderForSlot`（`src/config/slot-provider.js`）的存在，是让宿主不必自己
+写一份配置读取就能拿到 L2 需要的 provider：前者读 `slots.default` 并校验必填字段
+（`config_missing` / `config_invalid`），后者把槽位摊平成 OpenAI 兼容 provider。
+
 ## 可复用的归一化原语
 
 ## 可复用的归一化原语

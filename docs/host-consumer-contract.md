@@ -1590,6 +1590,101 @@ Where the four sites went, and why:
 | `tryParseWrapupJson`（`src/reflection/wrapup.js`） | **not migrated**, still calls `jsonCandidates` directly | its guard is stricter than key presence (`done` must be a literal boolean; `action`/`note` sends the object back to the inline-L1 path) and it must also skip-and-continue. Skipping is load-bearing: `{"done":"true"}{"done":true}` has to return the second object. The inner `{"done":…}` must not bypass that mandatory-done guard（issue #30 follow-up）, which is why the scan stays top-level-only here |
 | `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`（`src/compact/fold-statistical.js`） | **out of scope** | neither is "find JSON in model prose": L0 lifts a `<erix-summary>` tag the engine told the model to emit, and the fold summary reads a `导航记录：{…}` line the **engine itself** wrote, failing closed to `undefined`. Dropping the tag / the line anchor would widen what they accept — a behavior change, not a deduplication |
 
+## Model-output normalization with an optional fallback: `normalizeModelJson` (issue #406)
+
+`normalizeModelJson`（`src/normalization/parse-model-json.js`）is the **asynchronous**
+sibling of `parseModelJson`（`src/text/parse-model-json.js`）. It exists because hosts were
+each digging JSON out of model output themselves, and every dialect — a fenced block, a
+trailing comma, single quotes, Python literals, a truncated answer — got a different
+answer from a different implementation.
+
+**It does not replace `parseModelJson`, and the two must not be merged into one function.**
+One is synchronous and repairs nothing; the other is asynchronous and repairs structure,
+with an optional model call at the end. A host that `await`s both would get a value from
+one and a `Promise` from the other, and every existing `parseModelJson` caller would
+silently change behaviour if the two were collapsed.
+
+| | `parseModelJson`（`src/text/parse-model-json.js`） | `normalizeModelJson`（`src/normalization/parse-model-json.js`） |
+|---|---|---|
+| layer | L0, strict | L1 deterministic repair + gate + optional L2 fallback |
+| sync | **synchronous** | **asynchronous** (always returns a `Promise`) |
+| repairs | **never** | structure only — a value's bytes are preserved |
+| model call | never | only when `llm: true` **and** every deterministic candidate lost |
+| result | `{ ok, value, via, candidates }` / `{ ok: false, error, candidates }` | `{ ok, value, repaired?, llmUsed?, dropped? }` / `{ ok: false, error, llmUsed? }` |
+
+The failure kinds keep the **same three names**, but two mappings differ and a host must
+branch on the right one:
+
+| `error` | `normalizeModelJson` | `parseModelJson` |
+|---|---|---|
+| `no_candidate` | empty input, or truncated input with `truncateCompletion` off | nothing scanned out (prose only, or braces that never balance) |
+| `unparsable` | candidates exist but every one threw — **prose lands here**, because the whole text is itself a candidate | candidates exist but every `JSON.parse` threw |
+| `shape_mismatch` | something parsed, but no candidate passed `validate` | something parsed, but no candidate satisfied `requireKeys` |
+
+**Provenance is `repaired`, and the key appears only when the text really changed.**
+`repaired: { rule, trusted }`: `rule` is the ids of the rules that actually fired, in
+application order, joined with `+`; `trusted` is `true` only when every one of them is an
+engine rule. A rule the host injected through `repair.inject` always yields
+`trusted: false` — the engine cannot prove byte preservation for someone else's rule. A
+parseable input therefore carries **no** `repaired` key at all (not `repaired: null`).
+
+**The gate is always judged against the candidate's original bytes.** `validate` is called
+as `validate(value, source)`, where `source` is the **original slice of the input** — never
+the repaired text. This is the load-bearing invariant of the whole layer: a repair that
+rewrites a value (say `http\.request` → `http.request`) would otherwise pass a
+`source.includes(value)` check against text the caller never saw, which is a silently
+fabricated value. The second argument is additive: a one-argument `validate` still works,
+but it has given up the ability to prove the value was not rewritten.
+
+**Candidates** are the whole input plus every fenced block, in order of appearance, each
+tried independently; the first candidate that parses **and** passes the gate wins. With
+`repair.truncateCompletion` on, each candidate's completed form is appended as an **extra**
+candidate at the end — that is the only way a truncated answer is rescued, and it is off by
+default so a complete input never gains a `truncation` provenance.
+
+```js
+import { normalizeModelJson } from "erix-agent";
+
+// normalizeModelJson(rawText, { validate?, provider?, slot?, llm?, thinking?, maxTokens?, signal?, repair?, schema? })
+//   -> Promise<{ ok: true, value, repaired?: {rule, trusted}, llmUsed?: true, dropped? }
+//             | { ok: false, error: "no_candidate" | "unparsable" | "shape_mismatch", llmUsed?: true }>
+const clean = await normalizeModelJson('{"done":true}');
+if (clean.ok !== true || clean.repaired !== undefined) throw new Error("a parseable input is not repaired");
+
+const repaired = await normalizeModelJson('{"done":true,}');
+if (repaired.repaired.rule !== "trailing-comma" || repaired.repaired.trusted !== true) {
+  throw new Error("provenance must name the rule and whether the engine trusts it");
+}
+
+// The gate's second argument is the candidate's ORIGINAL bytes, never the repaired text.
+const raw = '{"path":"a\\.b"}';
+const injected = { id: "host-unescape", apply: (text) => text.replace("a\\.b", "a.b") };
+const gated = await normalizeModelJson(raw, {
+  repair: { inject: [injected] },
+  validate: (value, source) => ({ ok: source.includes(value.path) }),
+});
+if (gated.ok !== false || gated.error !== "shape_mismatch") {
+  throw new Error("a value the original text does not contain must be rejected");
+}
+
+// Truncated input: the same verdict as the synchronous entry unless completion is opted in.
+const truncated = await normalizeModelJson('{"outer":{"done":true}');
+if (truncated.error !== "no_candidate") throw new Error("truncation is not repaired by default");
+const completed = await normalizeModelJson('{"outer":{"done":true}', { repair: { truncateCompletion: true } });
+if (completed.repaired.rule !== "truncation") throw new Error("opting in must be visible in provenance");
+```
+
+The optional model call (L2) is the **only** thing here that ever spends money, and
+`llm: true` is its only switch: it fires only after every deterministic candidate lost. The
+request always carries `reasoning_effort` pinned to a non-thinking value (normalizing text
+is not a reasoning task), and its answer still has to pass the same `validate` gate — L2
+output that fails the gate is `shape_mismatch`, never a silent accept.
+
+`loadModelSlot` / `createProviderForSlot`（`src/config/slot-provider.js`）exist so a host can
+obtain the provider L2 needs without writing its own config reader: the first reads
+`slots.default` and validates the required fields (`config_missing` / `config_invalid`), the
+second flattens a slot into an OpenAI-compatible provider.
+
 ## Reusable normalization primitives
 
 ## Reusable normalization primitives

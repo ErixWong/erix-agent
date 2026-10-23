@@ -50,7 +50,7 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 120`（现测 120 组 / 339 处；issue #424 的升级路径守卫让契约中英各多两处既有锚点（+0 组 / +4 处），下限不变；此前 issue #420 的 A 集合入账
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 122`（现测 122 组 / 350 处；issue #406 B2-a 的 `normalizeModelJson` 契约中英成对一节让锚点面 +2 组 / +9 处：`normalizeModelJson`（`src/normalization/parse-model-json.js`）与 `createProviderForSlot`（`src/config/slot-provider.js`），下限随之抬到 122；此前 issue #424 的升级路径守卫让契约中英各多两处既有锚点（+0 组 / +4 处），下限不变；此前 issue #420 的 A 集合入账
 //                 +1 组 / +8 处：`journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`），契约中英各一处 + AGENTS_cn 声称句一处。
 //                 上一版 119 组 / 327 处是 issue #409 的工具引数判词
 //                 +5 组 / +10 处：`REPAIR_RULES`、`parseJsonWithRepair`（`src/text/repair-json.js`）、`parseToolArguments`、
@@ -2056,7 +2056,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  R1 的两例自测就会空转。
  *
   *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 120;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 122;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
