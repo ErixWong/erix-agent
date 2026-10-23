@@ -205,9 +205,36 @@ function stripResumeNotice(scenario) {
  *  由 `test/store/message-journal-golden.test.js` 断言，防止豁免面悄悄变大。 */
 export const resumeNoticeCensus = [];
 
+/**
+ * issue #438：轮记录上两个**新增**分账键——`usage`（本轮全部响应累计）与 `engineUsage`（本轮
+ * 引擎自发起的调用）。基线 `2ca60bc` 上不可能产出它们（那个版本连 `record.usage` 都没有），
+ * 而金样的职责是「折叠层把基线账本读成同一个形状」⇒ 与 #404 的恢复告示同口径：**捕获侧逐条剥掉**，
+ * 再用下面的 census 把**豁免面**钉住（哪几条轮记录带了它们、各剥了几个键）。
+ * 注意只剥轮记录**顶层**这两个键：`record.response.usage` 是历史形状，一个字都不许动。
+ */
+const ADDITIVE_USAGE_KEYS = ["usage", "engineUsage"];
+
+/** 每次 `capture()` 都会重填：`[{ name, stripped }]` —— 剥掉了几个新增分账键。 */
+export const additiveUsageCensus = [];
+
+/** @returns {number} 本次真的剥掉了几个键（每条轮记录最多两个） */
+function stripAdditiveUsageKeys(scenario) {
+  let stripped = 0;
+  for (const record of scenario.records) {
+    if (record === null || typeof record !== "object") continue;
+    for (const key of ADDITIVE_USAGE_KEYS) {
+      if (!Object.hasOwn(record, key)) continue;
+      delete record[key];
+      stripped += 1;
+    }
+  }
+  return stripped;
+}
+
 /** 跑全部场景，产出可提交的夹具对象。 */
 export async function capture() {
   resumeNoticeCensus.length = 0;
+  additiveUsageCensus.length = 0;
   const scenarios = [];
   for (const scenario of SCENARIOS) {
     const outcome = await scenario.run();
@@ -226,6 +253,7 @@ export async function capture() {
       messagesFlat: null,
     };
     resumeNoticeCensus.push({ name: scenario.name, stripped: stripResumeNotice(entry) });
+    additiveUsageCensus.push({ name: scenario.name, stripped: stripAdditiveUsageKeys(entry) });
     entry.messagesFlat = normalize(entry.records.flatMap((record) => record.messages ?? []));
     scenarios.push(entry);
   }

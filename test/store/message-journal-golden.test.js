@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 
 import {
   BASELINE_COMMIT,
+  additiveUsageCensus,
   capture,
   diffLines,
   fixtureHasMessageRows,
@@ -39,6 +40,16 @@ test("261021 golden: 恢复告示的豁免面恰是「crash-resume 的 1 行 + 1
   assert.deepEqual(resumeNoticeCensus, [
     { name: "single-run", stripped: 0 },
     { name: "crash-resume", stripped: 2 },
+  ]);
+});
+
+// issue #438：`record.usage` / `record.engineUsage` 是基线不可能产出的新增事实 ⇒ 捕获侧剥掉。
+// 这条断言把**豁免面**钉住：单条轮记录最多两个键，剥掉的个数变了（少 = 某个键没写，多 = 豁免在替
+// 别的漂移打掩护）就红。数值本身由 `test/loop-usage-accounting.test.js` 钉。
+test("261021 golden: 新增分账键的豁免面恰是「带引擎开销的 4 条 + 其余轮各 1 个 `usage`」（issue #438）", () => {
+  assert.deepEqual(additiveUsageCensus, [
+    { name: "single-run", stripped: 8 },
+    { name: "crash-resume", stripped: 7 },
   ]);
 });
 
