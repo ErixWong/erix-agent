@@ -82,8 +82,8 @@ function isEngineLedgerRow(record) {
  * 口径 = 去掉**尾部**宿主行之后，按 `foldLedgerMessages` 折出来的逻辑消息数
  * （`partOf` 分片接回它指认的那条消息，分片不加）。
  *
- * 为什么不是「全账本条数」：宿主追问行（`…:input:…`）是崩溃之后才写的，把它算进崩溃现场
- * 会让补跑结果插到它前面（`validateMessages` 当场 `invalid_messages`）。
+ * 为什么不是「全账本条数」：宿主追问行（`…:input:…`，或宿主用默认键 / 无键写的预写行）是崩溃之后
+ * 才写的，把它算进崩溃现场会让补跑结果插到它前面（`validateMessages` 当场 `invalid_messages`）。
  * 为什么不是「只数引擎行」：上一次恢复留下的追问行夹在中间，只数引擎行会把条数压小，
  * 切片同样会错位。
  *

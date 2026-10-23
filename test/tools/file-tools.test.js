@@ -574,13 +574,13 @@ const READ_LINE_CAPACITY_ROLES = [
   // 「恢复时按账本现算」（新增纯函数 `countResumeAnchor` 与它的裁定注释，+2,864 字节 / +47 行，
   // 均行字节 64.3747 → **64.009**），容量 4,072 → **4,095**、CJK 占比 26.66% → **29.71%**。
   // 2026-10-24 第九刷（issue #425 评审阻塞）：同一个函数又加了**形状判据**（尾部宿主预写行不能只按
-  // 键的命名空间判归属）与它的判别顺序注释，+3,891 字节 / +45 行，均行字节 64.009 → **66.0842**，
-  // 容量 4,095 → **3,966**、CJK 占比 29.71% → **31.85%**（字节 +13.75% 与 CJK 占比都越过限值）。
+  // 键的命名空间判归属）与它的判别顺序注释，+3,939 字节 / +45 行，均行字节 64.009 → **66.1828**，
+  // 容量 4,095 → **3,960**、CJK 占比 29.71% → **31.94%**（字节 +13.92% 与 CJK 占比都越过限值）。
   // 记录值按本测试自己的口径复测并同步，`readFile` 描述里的 floor / 均行字节 / CJK 占比随之
-  // `4,072 → 3,966`、`64.4 → 66.1`、`27% → 32%`（三处都是同位数替换 ⇒ 对本文件字节中性，`self` 那一行
+  // `4,072 → 3,960`、`64.4 → 66.2`、`27% → 32%`（三处都是同位数替换 ⇒ 对本文件字节中性，`self` 那一行
   // 不用再刷）。`median` / `most` / `densest` 三个角色当场复测未变（样本中位仍是 `src/tools/notes.js`
   // 6,952，样本最大仍是 `src/loop/abort.js` 9,407，CJK 最密仍是 `src/loop/state-view.js` 37.31%）。
-  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 32_183, lines: 487, bytesPerLine: 66.0842, capacity: 3_966, cjkShare: 0.3185 } },
+  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 32_231, lines: 487, bytesPerLine: 66.1828, capacity: 3_960, cjkShare: 0.3194 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
