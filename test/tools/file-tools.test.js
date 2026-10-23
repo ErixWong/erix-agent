@@ -516,6 +516,33 @@ test("中英契约文档引用的 readMoreLines marker 字面与源码产出同�
 //   全树（`src`/`bin`/`examples` 共 91 个 `*.js`）实测的下界也仍是 resume-manager.js 的 4,286 ⇒ 描述里那句 floor 对全树也为真。
 //   ⚠ 代价照 #275 的口径写明：floor 锚点现在钉在一个**本分支正在反复改**的文件上（±2% 只等于 ±7 行 / ±440 字节），
 //     后续再动它的注释仍会红在这里——那是「描述里的数必须是实测值」这个决定的固有代价，不是新 bug。
+//   ⚠ **2026-10-25 起 floor 换到 `bin/provider-timeouts.js`，该文件 ±1 字节敏感**（不是上面那档 ±2% / ±440 字节）：
+//     `#453` 那一格把「描述声称的 floor」与全树实测最小值用 `assert.equal` 钉死（**零容差**，floor 是承诺不是估计），
+//     所以给 `bin/provider-timeouts.js` 加 **1 个字节**（11,888 → 11,889 ⇒ 67.1695 B/line）容量就从 3,903 掉到 3,902 ⇒ 红。
+//     这是「描述里的数必须是实测值」这条决定的**真实代价**，如实写在这里（不是要放宽容差，也不加「git diff 命中该文件就提示」
+//     那种仓内没有先例的守卫）：动了这个文件就按 `measureReadLineCapacity` 复测、同步描述与角色记录值，失败消息会点名修法。
+//
+// ⚠ **2026-10-25 复测（issue #453）：floor 的**口径**错了，不是数字算错。**
+//   #271 以来 `fewest` 钉的是**写死 83 文件样本**的最小值，而描述里那句 floor 读起来是「本仓没有文件比这更少」。
+//   #441 合流带来的 `bin/provider-timeouts.js` 不在样本里，实测容量 **3,903**（11,888 B / 177 行 ⇒ 67.1638 B/line、
+//   CJK 45.02%）——比样本 floor（`src/loop/resume-manager.js` 3,938）更低，而**没有一格测试会红**：
+//   `test/tools/file-tools.test.js` 只复测样本内的极值，全树扫描那格当时只断言 `> 3,000` 并打一行日志。
+//   全树普查（口径 = `src`/`bin`/`examples` 下全部 `*.js`，与描述里 `sources` 同义；`test/` 不在这个面里，
+//   其中 `test/contract/*.js` 虽随包发布但属于测试夹具、容量低到 3,657）容量最低的五个：
+//     `bin/provider-timeouts.js` 3,903（67.16 B/line, 45.02% CJK）/ `src/loop/resume-manager.js` 3,938（66.55, 32.08%）/
+//     `src/store/message-rows.js` 4,199（62.43, 41.89%）/ `src/loop/pending-tool-result.js` 4,240（61.82, 42.34%）/
+//     `src/loop/state-view.js` 4,387（59.75, 37.31%）。
+//   修法（issue 的三选一，选 ①）：floor 是**全称命题**（「没有文件比这更少」），只能靠枚举全树证明 ⇒ `fewest`
+//   角色改钉全树真最小值 `bin/provider-timeouts.js`，描述里写明口径，并新增一格把「描述声称的 floor == 全树实测最小值」
+//   钉死（新文件把真最小值拉低就红）。
+//   **口径分工（一处说清，别再分两处各说一套）**：`floor` = **全树**（`src`/`bin`/`examples`，枚举可证的全称命题）；
+//   `median` / `most` = **固定写死样本**（随新增文件漂移会给全仓加税，`#275` 拆掉的正是这道税）——描述里已明写这两个数
+//   「come from a fixed sample of those sources and describe that sample」，测试也按**样本**复测它们。
+//   ⚠ PR #454 评审退回：`measuredMost` 一度取**全树**末位 ⇒ 新增一个短行文件（容量远大于 9,407）就把描述里的 `most` 顶红
+//     （`main` 59/59 绿、本分支红）——那正是 `#275` 专门拆掉的税。现在 `measuredMost` = 样本末位，全树末位另设 `treeMost`
+//     只供下面那条「全树自洽」断言用。
+//   `densest` 照旧钉样本最密（state-view 37.31%），全树最密现在是 floor 那个文件（45.02%），
+//   由 `anchorsStillHold.densestIsThePinnedOne: false` 如实报告（#271 起就有这一格）。
 // ---------------------------------------------------------------------------
 
 // 样本是写死的 83 个路径（#271 的工单硬约束：不许 `find … | head -14` 这类随仓库新增文件漂移的隐式样本）。
@@ -586,7 +613,14 @@ const READ_LINE_CAPACITY_ROLES = [
   // `66.2 → 66.6`（同位数 ⇒ 对本文件字节中性），CJK 仍是 32%。本文件自己也多了一段 ⚠ 复测注
   // （+489 字节 / +4 行）⇒ `self` 那一行按同口径重测：107,772 → **108,261** 字节 / 1,991 → **1,995** 行 /
   // 容量 4,842 → **4,830**，描述里「this tool's own source fits」随之 4,842 → 4,830（同位数 ⇒ 字节中性）。
-  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 32_478, lines: 488, bytesPerLine: 66.5533, capacity: 3_938, cjkShare: 0.3208 } },
+  // 2026-10-25 第十一刷（issue #453，**换文件 + 换口径**）：floor 从写死样本最小值改成**全树真最小值**。
+  // `bin/provider-timeouts.js`（#441 的新文件，不在 83 文件样本里）11,888 B / 177 行 ⇒ 67.1638 B/line、
+  // 容量 **3,903**、CJK 45.02%——比原先样本 floor（`src/loop/resume-manager.js` 3,938）更低，而旧断言只复测样本 ⇒ 一直绿。
+  // floor 是「没有文件比这更少」的全称命题，只能靠枚举 `src`/`bin`/`examples` 全树证明，所以角色改钉这个文件；
+  // 描述里 floor 3,938 → **3,903**、均行字节 66.6 → **67.2**、CJK 32% → **45%**、文件名同步（同位数 ⇒ 对本文件字节中性）。
+  // `resume-manager.js` 仍是样本里的最小值（3,938）但不再是全树 floor；它不再占角色，仍在样本清单里被中位/极值断言扫到。
+  // 容差常量一个都没动。
+  { role: "fewest", file: "bin/provider-timeouts.js", recorded: { bytes: 11_888, lines: 177, bytesPerLine: 67.1638, capacity: 3_903, cjkShare: 0.4502 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
@@ -656,7 +690,11 @@ const READ_LINE_CAPACITY_ROLES = [
   // 当场红、按同口径复测后同步。
   // 2026-10-23（issue #404）：描述里的 floor / 均行字节 / 自身容量三处数字同步（同位数 ⇒ 字节中性），
   // 记录值按本测试口径复测：107,620 → **107,772** 字节 / 1,989 → **1,991** 行 / 容量 4,844 → **4,842**。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 108_261, lines: 1_995, bytesPerLine: 54.2662, capacity: 4_830, cjkShare: 0.2688 } },
+  // 2026-10-25（issue #453）：本文件多了一段 #453 复测注 + 描述改写（floor 换文件、口径写明、自身容量同步），
+  // 自指锚点照旧当场红，按同口径复测：108,261 → **109,959** 字节 / 1,995 → **2,007** 行 / 容量 4,830 → **4,784**
+  // （描述里「this tool's own source fits」同步 4,830 → 4,784，同位数 ⇒ 字节中性）。
+  // 容量 4,784 仍低于样本中位 6,952，所以「CJK 按比例压低行数」那条断言照旧成立。
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 109_959, lines: 2_007, bytesPerLine: 54.7877, capacity: 4_784, cjkShare: 0.2717 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];
@@ -731,19 +769,22 @@ test("readFile 行数容量的五个角色锚点未漂移，样本清单仍盘�
       `${file} 的 CJK 字节占比从 ${(recorded.cjkShare * 100).toFixed(1)}% 变成 ${(got.cjkShare * 100).toFixed(1)}%`
       + " → 描述里 CJK 那半句（含 37% 这个数）要重测");
   }
-  // 描述里「floor 那个文件」与「CJK 最密那个文件」这两句话的四个前提（2026-10-21 起它们是**两个**文件，
-  // 所以两条断言各自钉自己的角色；口径仍是**写死清单**而不是全树枚举：新增文件不会把这两个极值拉下马（那正是 #275 要的）；
-  //   全树上的单调性质另有一条不断言条数的测试在 `readFile 行容量：全仓扫描只留单调性质` 里看。
+  // 描述里「floor 那个文件」与「CJK 最密那个文件」这两句话的前提（2026-10-21 起它们是**两个**文件，所以各自钉角色）。
+  // 2026-10-25（issue #453）：两个角色现在钉的是**不同口径**——`fewest` 是全树（`src`/`bin`/`examples`）真最小值，
+  // `densest` 仍是写死样本里 CJK 最密的那一个。理由写在上面那段 ⚠ #453 里：floor 是全称命题，只能枚举全树证明；
+  // 中位/最密是「典型 / 样本」事实，全树枚举会随新增文件漂移（那正是 #275 要拆掉的税）。
   const rows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
+  const scannedRows = listShippedSourceFiles().map(measureReadLineCapacity);
   const densest = rows.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
-  const fewest = rows.reduce((a, b) => (b.capacity < a.capacity ? b : a));
+  const fewest = scannedRows.reduce((a, b) => (b.capacity < a.capacity ? b : a));
   assert.equal(densest.rel, roleFile("densest"),
-    `CJK 最密的文件已不是 ${roleFile("densest")}（现在是 ${densest.rel}，占比 ${(densest.cjkShare * 100).toFixed(1)}%）`);
+    `CJK 最密的样本文件已不是 ${roleFile("densest")}（现在是 ${densest.rel}，占比 ${(densest.cjkShare * 100).toFixed(1)}%）`);
   assert.equal(fewest.rel, roleFile("fewest"),
-    `「一次装得最少」的文件已不是 ${roleFile("fewest")}（现在是 ${fewest.rel}，${fewest.capacity} 行）→ floor 数字要重测`);
-  // 反向证：两个极值如果重新落到同一个文件上，上面两条仍会绿，而描述里那句「两个锚点」就成了谎话 —— 这里再钉一句。
-  assert.notEqual(densest.rel, fewest.rel,
-    "CJK 最密与装得最少又回到了同一个文件（现在两个角色钉的都是它）：描述里的「两个各自复测的锚点」要重新审视，"
+    `全树「一次装得最少」的文件已不是 ${roleFile("fewest")}（现在是 ${fewest.rel}，${fewest.capacity} 行）→ floor 数字要重测`);
+  // 反向证：两个名字如果重新落到同一个文件上，描述里「floor 是 X，而 CJK 最密的是 Y」就成了谎话 —— 这里再钉一句。
+  // （#453 之后 floor 在 `bin/`、CJK 最密锚点在样本里的 `src/`，不同源；若有人把 floor 文件加进样本并让它同时成为最密，这里会红。）
+  assert.notEqual(densest.rel, roleFile("fewest"),
+    "CJK 最密（样本）与 floor（全树）落到了同一个文件：描述里的「floor 文件 / 最密文件」两个名字要重新审视，"
     + "并把两个角色与句子一起改回一句话（本条故意不许静默默过）");
 });
 
@@ -772,10 +813,16 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
     "描述又给了「N 个文件从不下穿某一档」这种依赖全仓条数的总量（#275 已删，要回去就连带把统计根子钉回来）");
   assert.doesNotMatch(description, /[\d,]+ of them take over/u,
     "描述又给了「多少个文件一次能装超过某一档」这种依赖全仓条数的总量（#275 已删，同上）");
+  // PR #454 评审建议 1：这句免责声明是「median/most 只描述固定样本」的**唯一**在场证据，而它此前可被
+  // **静默删除**（整段删掉后本文件仍 60/60 绿）。正钉住：删掉就红（变异自证见 CHANGELOG 的 #453 评审条目）。
+  assert.match(description, /median and most come from a fixed sample of those sources/u,
+    "描述里「median and most come from a fixed sample of those sources」的免责声明不见了：删掉它，"
+    + "`most` 就重新变成「全树最大值」的谎话（PR #454 评审建议 1）");
   // 2026-10-21：floor 与「CJK 最密」落在两个不同文件上，句子拆成了**两个各自复测的锚点**，解析面跟着拆。
   // 断言只多不少：捕获位从 4 个变成 7 个（floor 文件 + 它的 CJK 占比、densest 文件 + 它的占比 + 它的容量、本工具自身容量）。
+  // 2026-10-25（#453）：句子又加了一个前提——floor 是**全树最小值**（`src`/`bin`/`examples`），中位/最多来自固定样本。
   const cjk = description.match(
-    /the ([\d,]+) floor is itself a CJK-heavy file \(`([^`]+)`, (\d+)% of its bytes are CJK\), while the most CJK-dense file in that sample \(`([^`]+)`, (\d+)%\) fits ([\d,]+) and this tool's own source fits ([\d,]+)/u,
+    /the ([\d,]+) floor is itself a CJK-heavy file \(`([^`]+)`, (\d+)% of its bytes are CJK\), while the most CJK-dense file in that fixed sample \(`([^`]+)`, (\d+)%\) fits ([\d,]+) and this tool's own source fits ([\d,]+)/u,
   );
   assert.ok(cjk, "描述不再按「floor 那个文件 + 它的 CJK 占比 / CJK 最密那个文件 + 它的占比与容量 / 本工具自身源码容量」给出两个 CJK 锚点"
     + " → 解析面失效（同步本测试，不许让这条断言静默变成永真）");
@@ -793,14 +840,24 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
     + "CJK 最密是 `src/loop/state-view.js`（37%），两个锚点必须各自复测各自说");
 
   // 当场复测（写死路径，同一口径）
+  // 2026-10-25（#453 + PR #454 评审）：**两套口径各取所需，别混** ——
+  //   `floor` = 全树（`src`/`bin`/`examples`）最小值（全称命题，只能靠枚举证明）；
+  //   `median` / `most` 与 CJK 最密 = 固定写死样本（随新增文件漂移会给全仓加税，见上面 ⚠ #453）。
+  // 评审实测的税：`measuredMost` 原先取全树末位 ⇒ 新增一个**短行**文件（容量 64,198 ≫ 9,407）就让
+  // 「描述声称的「一次最多装多少行」」那条 ±1% 断言变红，而描述里的 `most` 说的本来就是**样本**。
   const rows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
+  const scannedRows = listShippedSourceFiles().map(measureReadLineCapacity);
   const byRole = Object.fromEntries(READ_LINE_CAPACITY_ROLES.map(({ role, file }) => [role, measureReadLineCapacity(file)]));
-  const caps = rows.map((row) => row.capacity).sort((a, b) => a - b);
-  const measuredFewest = caps[0];
-  const measuredMost = caps[caps.length - 1];
-  const measuredMedian = caps.length % 2 === 1
-    ? caps[(caps.length - 1) / 2]
-    : (caps[caps.length / 2 - 1] + caps[caps.length / 2]) / 2;
+  const sampleCaps = rows.map((row) => row.capacity).sort((a, b) => a - b);
+  const treeCaps = scannedRows.map((row) => row.capacity).sort((a, b) => a - b);
+  const measuredFewest = treeCaps[0];
+  // `most` 是样本最大值（描述里那句 `median and most come from a fixed sample`）；全树最大值只用于下面
+  // 那条「全树自洽」的包含关系，**不参与**描述声称的比对（否则新增无害文件就变红 = #275 拆掉的税）。
+  const measuredMost = sampleCaps[sampleCaps.length - 1];
+  const treeMost = treeCaps[treeCaps.length - 1];
+  const measuredMedian = sampleCaps.length % 2 === 1
+    ? sampleCaps[(sampleCaps.length - 1) / 2]
+    : (sampleCaps[sampleCaps.length / 2 - 1] + sampleCaps[sampleCaps.length / 2]) / 2;
 
   // 1) 声称的三个档位必须由小到大，且与当场实测同档（旧文案 3,000 / — / 6,000 在这里必红）
   assert.ok(fewestClaim < medianClaim && medianClaim < mostClaim,
@@ -836,7 +893,9 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
   assert.ok(measuredMedian > LEGACY_UNMEASURED_CEILING,
     `实测中位行数容量 ${measuredMedian} 没有超过 ${LEGACY_UNMEASURED_CEILING}：旧上限重新成立了，描述与本测试的口径都要重谈`);
   assert.ok(rows.every((row) => row.capacity >= measuredFewest && row.capacity <= measuredMost),
-    "清单内的极值不自洽（重算逻辑被改坏）");
+    "样本内的极值不自洽（重算逻辑被改坏）");
+  assert.ok(scannedRows.every((row) => row.capacity >= measuredFewest && row.capacity <= treeMost),
+    "全树扫描的极值不自洽（重算逻辑被改坏）");
 
   // 4) CJK：本仓实测支持「CJK 让行数按比例下降」这句话；但描述不许给没测过的 CJK 区间。
   //    2026-10-21 起这一节钉**两个**锚点：CJK 最密那个文件（身份 + 占比 + 它的容量）与 floor 那个文件自己的占比。
@@ -854,12 +913,63 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
 });
 
 // ---------------------------------------------------------------------------
+// issue #453：描述里的 floor 是**全树**（`src`/`bin`/`examples`）真最小值，不是 83 文件样本的最小值。
+// 缺口现场：#441 带来的 `bin/provider-timeouts.js` 不在写死样本里，容量 3,903 < 样本 floor 3,938，
+// 而当时没有一格会红（描述里那句 floor 对全树已经不是真话，测试只复测样本）。这一格就是补上的那块：
+// 新增文件把真最小值拉低 ⇒ 红；描述里的数字与全树实测对不上 ⇒ 红（不靠 ±2% 容差：floor 是承诺，不是估计）。
+// ---------------------------------------------------------------------------
+test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文件把下限拉低时，旧断言无感）", () => {
+  const description = FILE_TOOL_DEFINITIONS.find((definition) => definition.name === "readFile").description;
+  const claim = Number(description.match(/fewest ([\d,]+) lines/u)[1].replace(/,/g, ""));
+  assert.match(description, /no file in those three trees reads fewer/u,
+    "描述不再明写 floor 的口径（`src`/`bin`/`examples` 三棵树的最小值）→ 读者会把它当成本仓任意 `.js` 的下限（#453）");
+
+  const scanned = listShippedSourceFiles().map(measureReadLineCapacity);
+  const fewest = scanned.reduce((a, b) => (b.capacity < a.capacity ? b : a));
+  const pinned = measureReadLineCapacity(roleFile("fewest"));
+
+  // 1) `fewest` 角色钉的必须就是全树真最小值（新文件一低就红；不是「> 3,000」那种松阈值）。
+  assert.equal(fewest.rel, pinned.rel,
+    `全树「一次装得最少」已不是 ${pinned.rel}（现在是 ${fewest.rel}，${fewest.capacity} 行 / ${fewest.bytesPerLine.toFixed(2)} B/line）`
+    + " → readFile 描述里的 floor 已不再对全树为真：按 measureReadLineCapacity 复测后同步描述、角色表与本测试");
+  assert.equal(fewest.capacity, pinned.capacity,
+    `${fewest.rel} 容量实测 ${fewest.capacity} 与角色表记录值 ${pinned.capacity} 不同（同一个文件的两份实测对不上）`);
+
+  // 2) 描述声称的 floor 与全树实测**逐字相等**（这一格是「把描述里的数字改错 ⇒ 必红」的硬闸）。
+  assert.equal(claim, fewest.capacity,
+    `描述声称 fewest ${claim} 行，全树实测最小值是 ${fewest.capacity} 行（${fewest.rel}）→ floor 在说谎：`
+    + "偏小 = 白白保守分批，偏大 = 按它估会超预算（#453 要修的正是偏大这一侧）");
+
+  // 3) 口径证明（信息性 + 一条恒真的包含关系）：#271 的写死样本只覆盖全树的一部分，它的下界**不低于**全树下界；
+  //    今天样本下界更高（3,938 vs 3,903）—— 这正是 #453 的缺口，也是为什么这一格必须枚举全树而不是复测样本。
+  const sampleRows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
+  const sampleFewest = sampleRows.reduce((a, b) => (b.capacity < a.capacity ? b : a));
+  assert.ok(sampleFewest.capacity >= fewest.capacity,
+    `写死样本的下界 ${sampleFewest.capacity}（${sampleFewest.rel}）反而低于全树下界 ${fewest.capacity}：样本不是全树的子集？重算逻辑被改坏`);
+  console.log("#453 floor census:", JSON.stringify({
+    scope: READ_LINE_CAPACITY_DIRS.join("/"),
+    scanned: scanned.length,
+    top5: scanned.slice().sort((a, b) => a.capacity - b.capacity).slice(0, 5).map((row) => ({
+      file: row.rel,
+      bytes: row.bytes,
+      lines: row.lines,
+      bytesPerLine: Number(row.bytesPerLine.toFixed(4)),
+      capacity: row.capacity,
+      cjkShare: Number((row.cjkShare * 100).toFixed(2)),
+    })),
+    pinnedFewest: { file: pinned.rel, capacity: pinned.capacity },
+    pinnedSampleFewest: { file: sampleFewest.rel, capacity: sampleFewest.capacity },
+    claim,
+  }));
+});
+
+// ---------------------------------------------------------------------------
 // issue #275：全仓扫描（src/bin/examples 下的 `*.js`）从「钉死条数」降级为**只断单调性质 + 信息性输出**。
-// 它保留的价值是「描述里 floor 4,286 / CJK 最密 37% 那两句有没有被新文件推翻」；它**不再**因为
+// 它保留的价值是「描述里 floor / CJK 最密那两句有没有被新文件推翻」；它**不再**因为
 // 「有人新增了一个普通的 `.js`」而红——旧写法 `assert.deepEqual(盘上枚举, 写死清单)` 正是在这里给全仓加税：
 // 红的是一个测 readFile 额度的文件，而改的人往往不知道为什么红。
-// 单调性说明：下面两条的阈值都是**松的**（旧文案的 3,000 / 样本条数），普通新增（平均行字节不超过约 87B）
-// 不可能会碍它们；只有真的把描述里的声称变成谎话时才会红。
+// 单调性说明：本格的阈值是**松的**（旧文案的 3,000），普通新增（平均行字节不超过约 87B）不会碍它；
+// 真正「新文件把 floor 拉低」的硬闸在上一格（`floor == 全树真最小值`，#453），这一格只守旧文案那档底线。
 // ---------------------------------------------------------------------------
 
 test("readFile 行数容量：全仓扫描只留单调性质与信息性输出，新增一个文件不得变红（#275）", () => {
@@ -868,15 +978,17 @@ test("readFile 行数容量：全仓扫描只留单调性质与信息性输出�
   assert.ok(scanned.length >= READ_LINE_CAPACITY_SAMPLE.length,
     `盘上 ${READ_LINE_CAPACITY_DIRS.join("/")} 的 *.js 只剩 ${scanned.length} 个，比 #271 的写死样本（${READ_LINE_CAPACITY_SAMPLE.length}）还少`
     + " → 有样本文件被删除，描述里的档位要重测（新增不会走到这条）");
-  // 单调性质 2：全树实测下界仍不得跌进 #264 旧文案那档（阈值取旧下界 3,000 而不是声称的 4,286，就是为了让新增宽容件不红）。
+  // 单调性质 2：全树实测下界仍不得跌进 #264 旧文案那档（阈值取旧下界 3,000 而不是描述声称的 floor，
+  // 就是为了让新增宽容件不红；「描述 floor == 全树下界」的硬闸在上一格）。
   const fewest = scanned.reduce((a, b) => (b.capacity < a.capacity ? b : a));
   const densest = scanned.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
   assert.ok(fewest.capacity > 3_000,
     `${fewest.rel} 一次只能装 ${fewest.capacity} 行（均行 ${fewest.bytesPerLine.toFixed(1)}B），已跌进旧文案的 3,000 那档`
-    + " → 描述里「fewest 4,286」这个 floor 已被新文件推翻，要按 measureReadLineCapacity 重测并改描述");
+    + " → 描述里的 floor 已被新文件推翻，要按 measureReadLineCapacity 重测并改描述");
   // 信息性输出（不断言）：本仓当前分布、极值落在哪两个文件上、描述点名的两个锚点是否仍站得住。
-  // ⚠ 全树极值与写死样本极值可以不同（新增文件不进样本清单，那正是 #275 要的），所以这里只报数不断言；
-  //   描述里的「in that sample」口径就是那份写死样本，不是全树。
+  // ⚠ `fewest` 角色 2026-10-25（#453）起钉的是全树真最小值 ⇒ `fewestIsThePinnedOne` 必须为 true
+  //   （上一格把它钉死了；这里只报告）；`densest` 仍钉写死样本（全树最密现在是 floor 那个文件 45.02%），
+  //   所以 `densestIsThePinnedOne` 为 false 是**如实报告**的已知差异，不是红。
   console.log("#275 read-line capacity sweep:", JSON.stringify({
     scanned: scanned.length,
     pinnedSample: READ_LINE_CAPACITY_SAMPLE.length,

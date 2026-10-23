@@ -915,17 +915,29 @@ export const FILE_TOOL_DEFINITIONS = [
     //   `:engine:`（删掉裸 `:control:` 这个 token + 注释改写，+247 字节 / +1 行），均行字节
     //   66.1828 → **66.5533**、容量 3,960 → **3,938**、CJK 占比 31.94% → **32.08%**；描述里 floor 与
     //   均行字节随之 `3,960 → 3,938`、`66.2 → 66.6`（同位数 ⇒ 对本文件字节中性），CJK 仍是 32%。
+    // ⚠ 2026-10-25 第十一刷（issue #453，**floor 换了文件、也换了口径**）：`bin/provider-timeouts.js`（#441 落地的新文件）
+    //   实测容量 **3,903**（11,888 B / 177 行 ⇒ 67.1638 B/line、CJK 45.02%）—— 比描述里的 3,938 **更低**。
+    //   缺口不在数字算错，而在**口径**：`fewest` 角色钉的是 #271 那份写死样本的最小值，样本外的 17 个
+    //   `src/`+`bin/`+`examples/` 文件（含这个新文件）从来没人量 ⇒ 描述里那句 floor 对全树**不再是真话**。
+    //   修法（issue 的三选一，选 ①）：floor 是「没有文件比这更少」的**全称命题**，只能靠枚举全树证明，所以
+    //   `fewest` 角色改钉全树真最小值 `bin/provider-timeouts.js`（3,903），描述里写明口径 = `src/`+`bin/`+`examples/`
+    //   三棵树的最小值，测试里新增一格把「描述声称的 floor == 全树实测最小值」钉死（新文件把真最小值拉低就红）。
+    //   `median` / `most` 仍是写死样本口径（样本中位 6,952 与全树中位 6,517 不同；中位是典型值，随新增文件漂移
+    //   会给全仓加税，所以描述里**明写**这两个数来自固定样本）。`densest` 照旧钉样本最密（state-view 37.31%），
+    //   全树最密现在也是 floor 那个文件（45.02%）—— 该差异由 `anchorsStillHold.densestIsThePinnedOne: false` 如实报告。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
       + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) — the budget is counted in BYTES, so how many "
       + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
-      + "at the default budget (this codebase, not your tree) \u2014 fewest 3,938 lines "
-      + "(66.6 bytes/line, the widest lines), median 6,952 (37.7), most 9,407 (27.9). Wide lines cut this proportionally "
-      + "and CJK cuts hardest (3 UTF-8 bytes per character): the 3,938 floor is itself a CJK-heavy file "
-      + "(`src/loop/resume-manager.js`, 32% of its bytes are CJK), while the most CJK-dense file in that sample "
-      + "(`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,830. Nothing outside this repo "
+      + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest 3,903 lines "
+      + "(67.2 bytes/line, the widest lines; no file in those three trees reads fewer), median 6,952 (37.7), most 9,407 (27.9). "
+      + "The floor is a whole-tree minimum; median and most come from a fixed sample of those sources and describe that sample, not every file here. "
+      + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
+      + "the 3,903 floor is itself a CJK-heavy file (`bin/provider-timeouts.js`, 45% of its bytes are CJK), while the most "
+      + "CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,784. "
+      + "Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
       + "Token budget of the default window, measured with the engine estimator (~3.5 characters per token for non-CJK, "
