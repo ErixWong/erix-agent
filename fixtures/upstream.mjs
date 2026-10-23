@@ -382,7 +382,7 @@ function resolveSpec(source, ctx) {
  *   waitForRequests: (count?: number, timeoutMs?: number) => Promise<boolean>,
  *   readonly baseUrl: string,
  *   readonly port: number,
- *   readonly requests: Array<{seq:number, method:string, path:string, headers:Record<string,string>, bodyText:string, json:any}>,
+ *   readonly requests: Array<{seq:number, method:string, path:string, headers:Record<string,string>, bodyText:string, json:any, receivedAtMs:number}>,
  *   readonly responses: Array<{seq:number, status:number, headers:Record<string,string|number>, writes:number[], frames?:string[], truncated:boolean|string|undefined, completed:boolean}>,
  *   readonly requestCount: number,
  *   pathsFor: (n?: number) => string[],
@@ -412,6 +412,12 @@ export function createScriptedUpstream(options = {}) {
       headers: { ...req.headers },
       bodyText: "",
       json: undefined,
+      // 请求**到达服务端**的时刻（`performance.now()`，与同进程的测试同一个时间原点）。
+      // 为什么要有：`waitForRequests()` 是**轮询**判据，负载下轮询自己会被调度器饿着，
+      // 「请求早就落地了但轮询没醒」和「请求压根没落地」在它眼里长得一样。落地时刻是
+      // 服务端侧的事实，事后比对即可（#412：`test/e2e/upstream.test.js` 用它证明首发
+      // **在截止线之前**就上了线，而不是「超时之后才勉强到达」）。
+      receivedAtMs: performance.now(),
     };
     requests.push(entry);
     const bodyText = await readRequestBody(req);
