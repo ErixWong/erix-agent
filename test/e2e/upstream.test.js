@@ -778,15 +778,17 @@ test("真上游：header 已到、body 字节迟迟不到 → phase=firstByte，
   const { err } = await rejection(
     openAIProvider(baseUrl).chatStream(providerRequest({ firstByteTimeoutMs })),
   );
-  assert.equal(
-    upstream.requestCount,
-    1,
-    "首发没落地（requestCount=0）：「不发第二发」会退化成「一发也没发」的假绿",
-  );
   assert.deepEqual(kitShape(err), {
     name: "KitError", code: "timeout", retryable: true, phase: "firstByte",
   });
   await upstream.settled();
+  // 这一条必须在 `settled()` **之后**（#412 评审第 3 条）：放在它之前时，只要首发在超时前上了线就
+  // 立刻放行，「超时之后又补发第二发」这种退化要等上游写回之后才看得见——时机因此变弱。
+  assert.equal(
+    upstream.requestCount,
+    1,
+    "首发没落地（0）或超时后又补发（≥2）：「不发第二发」两种退化都要在这里抓住",
+  );
   assert.equal(upstream.responses[0].truncated, "client-gone");
 });
 
