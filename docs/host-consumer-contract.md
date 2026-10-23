@@ -2938,14 +2938,30 @@ Consequences for a host store and for host readers:
   `restoreResume` (`src/loop/resume-manager.js`) reads out of the ledger as
   `resumeToolResultRowKey`; when the crash round landed **no** result row at all,
   the first slice starts the aggregate itself and becomes the anchor for the
-  rest — so the shape stays one aggregated `user` message (never one `user`
-  message per result) and the `<runId>:msg:<round>:<seq>` sequence keeps the
-  issue #326 order. Before issue #420 that half was handed over on
-  `resumeUnpersistedToolResults` with a comment promising it would be journaled,
-  and nothing read it: its only carrier was the latest-only run snapshot, so the
-  next round that really ran a tool overwrote it and that `runId` could never be
-  resumed again (`invalid_messages` before the first model request, zero
-  requests). One host-visible ordering detail:
+  rest — so with **up to two** results the shape stays one aggregated `user`
+  message (never one `user` message per result) and the
+  `<runId>:msg:<round>:<seq>` sequence keeps the issue #326 order. With **three
+  or more** results that promise does **not** hold yet: for a crash round with
+  three tool calls the measured fold is `[[t1,t2],[t3]]` (the replayed batch
+  chains `partOf` at the *previous slice* instead of the first one, so the third
+  result does not fold back into the aggregate), and the next resume fails
+  `invalid_messages` — that is issue #430 and it is **not** fixed here. Before issue #420 that half was handed over
+  on `resumeUnpersistedToolResults` with a comment promising it would be
+  journaled, and nothing read it: its only carrier was the latest-only run
+  snapshot, so the next round that really ran a tool overwrote it and that
+  `runId` could never be resumed again (`invalid_messages` before the first
+  model request, zero requests). **Upgrade-path guard (issue #424):** a ledger
+  written before the per-message rows existed keeps the crash round's `assistant`
+  body only in the run snapshot, so journaling those results would leave
+  `tool_result` rows with no matching `assistant` and the next resume would fail
+  the same way. `journalResumeUnpersistedToolResults` (`src/loop/orchestrator.js`)
+  therefore first checks a fact `restoreResume` (`src/loop/resume-manager.js`)
+  computed over the **folded** ledger entries — does the crash round's body
+  already contain an `assistant` message? If it does not, the whole batch is
+  skipped (the pre-#420 semantics: memory only, carried by the snapshot), the
+  ledger ends up byte-identical to a pre-#420 journal, and exactly one
+  `resume_journal_skipped` event (`{type, runId, round, reason, count}`) is
+  emitted on `onEvent`. One host-visible ordering detail:
   the crash round's carrier row `…:engine:round:<n>:resume` is written **after**
   the host's `:input:` row, and folding places the body at the carrier's
   position (`load()` returns records in append order), so the resume prompt can
