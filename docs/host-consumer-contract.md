@@ -3314,7 +3314,13 @@ merged into `text`. Recommendation: show it in a collapsed/expandable block by
 default, since it is long and noisy, and keep it visually distinct from the
 answer. Hosts must not silently drop reasoning from their own storage when they
 also replay history to the model — reasoning replay is a model-side contract
-(see the thinking-mode requirement), independent of this display field.
+(see the thinking-mode requirement), independent of this display field. Since
+issue #407 the streaming path also folds `delta.reasoning` (either the string or
+the `{ content: "…" }` shape) and `delta.reasoning_text` into that same canonical
+`reasoning` block, so which name a relay uses no longer decides whether this
+field has anything in it: the name follows the **request body**, not the model
+(`streamReasoningText` (`src/providers/openai.js`)). One asymmetry is still open
+— `reasoning_text` is not recognised on the non-streaming path.
 
 ### Synthetic messages
 
