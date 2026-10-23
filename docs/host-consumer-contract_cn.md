@@ -25,7 +25,7 @@ completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
-toolContext, store, persistence, runId, cwd, deliverables, resume, onRound, onJudge,
+toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
 ```
@@ -52,6 +52,41 @@ executeTool({ id, name, input, context, signal })
 
 旧的 `{ data, success, ... }` 形态与其他鸭子类型形态为兼容起见仍被宽松归一化，但已废弃，
 不得依赖。
+
+### 工具引数解析不了的时候（issue #409）
+
+每一次工具调用都带着一段模型自己写的引数。引擎分两层解析它，且**从不发明值**。L0 是对原文的
+一次朴素 `JSON.parse`；失败才进 L1，跑 `REPAIR_RULES`（`src/text/repair-json.js`）那张确定性规则表：
+剥代码围栏、单引号串与裸键、非法转义按**反斜杠加倍**（`\.` → `\\.`）变合法、Python 字面量
+`True`/`False`/`None`、尾逗号。截断补全也在这张表里，但**默认关**：它是唯一会补出模型没写过的
+结构的规则，而实测语料（110 份 transcript / 312 条真实终答）里截断类需求 = 0 条——默认关的依据是
+**零需求**，不是「有风险」。
+
+让这一层可以默认开的是那条不变量：**修复产出的每一个字符串值，必须仍是原始文本里逐字存在的一段。**
+改了值字节的规则会被机器判为不合格，而不是靠品味裁量。被否掉的那种做法就是 `jsonrepair` 处理
+非法转义的方式：`{"api":"http\.request"}` 会被修成值 `http.request`，而它在原文里再也找不到，
+任何逐字闸门都会把它整条丢掉。加倍则让值逐字等于原文，同时让文本变得可解析。
+
+`parseJsonWithRepair`（`src/text/repair-json.js`）是工具路径用的「先 L0 再 L1」入口，
+`parseToolArguments`（`src/messages/tool-arguments.js`）是 OpenAI 非流式转换、OpenAI 流式累加器、
+Anthropic 流式组装**三处共用**的那一份，所以两条协议在这里不可能各长一套。严格入口一字未动：
+`parseModelJson` 仍然不做任何 repair（见它自己那一节）——修复只存在于工具引数这条路上。
+
+修完仍然解析不出来时，默认行为（`invalidArguments: "reject"`，白名单成员见
+`RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`））是**根本不执行这个工具**。引擎返回一条 `is_error` 的
+`tool_result`，正文由 `describeToolArgumentsParseError`（`src/messages/tool-arguments.js`）拼出来：
+解析器原话、**从 1 开始数的**字符位置与它附近的一小段原文、以及按该工具自己的 `inputSchema` 渲染的
+正确形状示例。后面那句指示是「只改参数写法、重发同一次调用」——不换工具，也不凭猜测补内容。这条结果带
+`erix.executionStatus: "rejected"`；因为调用从未执行，它不带 `erix.round`、不带 `erix.durationMs`、
+也不带 `erix.success`（与 judge 拦截同一套存在性口径）。`tool_use` 块上另带
+`erix.argumentsParseError`（`{reason, message, position?, text}`，additive 可选键，永不上 wire），
+于是宿主不必去解析 `content` 就能分清「模型把 JSON 写坏了」与「工具自己失败了」。这次调用不重试、
+也不额外花一次模型调用：模型下一轮拿到判词，自己把参数改对。
+
+`invalidArguments: "execute"` 逐字节恢复 #409 之前的行为：坏 payload 照旧以
+`{_truncatedArguments, _raw}` 交到 `executeTool`，工具照跑，模型看到的是那个工具自己报的二次错误
+（典型的是「缺必填字段」）而不是解析判词。这两半——交给执行器的假对象、以及回来的那条二次错误——
+都由 `deepEqual` 用例钉住。
 
 ## 观察者回调抛错（issue #173）
 
@@ -1253,7 +1288,7 @@ if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate)
 |---|---|---|
 | `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | `null`/`undefined` 返回 `undefined`；其他输入返回对象，把存在的 `prompt_tokens`/`completion_tokens` 映射为 `input_tokens`/`output_tokens`（所以 `{}`、数组、字符串都得到 `{}`）。**不接受** canonical alias。 |
 | `normalizeOpenAIStopReason` | `(reason, fallback = "unknown") -> string` | 把 `stop`、`tool_calls`/`function_call`、`length` 映射为规范 stop reason；未知值原样透传。 |
-| `parseOpenAIToolArguments` | `(rawArguments) -> any` | 解析 JSON；缺省时返回 `{}`；畸形值放在 `_truncatedArguments` 与 `_raw` 下返回。 |
+| `parseOpenAIToolArguments` | `(rawArguments) -> any` | 解析 JSON；缺省时返回 `{}`；畸形值放在 `_truncatedArguments` 与 `_raw` 下返回。自 issue #409 起它走与引擎工具循环同一条「先 L0 再 L1」的路径（非法转义是加倍、绝不删除），所以修得出来的 payload 现在会返回解析后的对象；仍然失败的 payload 逐字保留旧的 `_truncatedArguments`/`_raw` 形状。判词不在这个返回值上——它挂在 `tool_use` 块的 `erix.argumentsParseError` 上。 |
 | `createOpenAIStreamAccumulator` | `() -> accumulator` | 累积带索引的或 legacy 的流式 tool-call 片段；`getToolUseBlocks()` 返回规范 tool-use 块。 |
 
 `createOpenAIStreamAccumulator().addToolCallDelta()` 接受 OpenAI delta 或
@@ -2386,7 +2421,7 @@ store——必须按 `round` 归并、按 `dedupKey` 去重，不得假设记录
 | `erix.toolCallKey` | 引擎 | 每一个被引擎接受的 `tool_use`，以及由它构造出的结果 | 跳通道身份：一次被接受的调用只分配一次，从第一个可识别的流式片段开始，一路带到 `tool_use` 块（因此也在持久化块与 `tool_use` 事件克隆上）、`tool_result` 与投影。resume 与复放**沿用**已落盘的值，已有身份的调用绝不重生成。但 provider 的配对 id **不是身份**，也不保证 run 内唯一（轮内 index 前缀，或畸形响应兜底成 `call_legacy`），所以下一轮再出现同一个 id 就是**一次新调用**，会拿到新 key：只有被确认为同一次调用时才继承 —— 本轮的复放窗口，或从崩溃现场恢复回来的那一条 pending 调用。**升级前写下的记录复放时两端都缺身份**（见下面那条 carve-out）。 |
 | `erix.round` | 引擎 | 调用真的执行了 | **执行轮**。它不是事件 envelope 的 `round`（交付轮），两者刻意不合并。 |
 | `erix.durationMs` | 引擎 | executor 的 promise settle 或 reject 了 | 从「调用 executor 前」到「该 promise settle/reject」的毫秒数。 |
-| `erix.executionStatus` | 引擎 | 仅特殊状态 | `intercepted` / `interrupted`。这个存在条件同样机器可读：`TOOL_RESULT_CONTRACT.engine.fields.executionStatus` 携 `writtenFor: "special states only"` 与 `presentValues`（`src/tool-fact.js`），因此只读常量的宿主不得假设每个结果块上都有这个字段（issue #286）。 |
+| `erix.executionStatus` | 引擎 | 仅特殊状态 | `intercepted` / `interrupted` / `rejected`。这个存在条件同样机器可读：`TOOL_RESULT_CONTRACT.engine.fields.executionStatus` 携 `writtenFor: "special states only"` 与 `presentValues`（`src/tool-fact.js`），因此只读常量的宿主不得假设每个结果块上都有这个字段（issue #286）。`rejected`（issue #409）表示这次调用的引数解析不了，工具**从未执行**，结果正文是解析器判词。 |
 | `erix.success` | 引擎 | executor 的 promise settle 过的每一条结果 | 引擎归一化后的布尔值（`success !== false`）。顶层 `success` 退役后它就**无条件写**：顶层没了以后还按「宿主声明过才写」，宿主就分不清「成功」与「没表过态」。根本没跑的调用（judge 拦截、中断重放）没有成败可言，因此也没有该字段。 |
 | `metadata.*` | 宿主 | executor 返了扩展就有 | 宿主唯一可写的命名空间。 |
 
@@ -2448,6 +2483,7 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 | 成功（string / number / 结构化 / 遗留四形态-pass） | 有 | 有 | 有 | 无 | 无 | 有 |
 | 失败（返回 Error / 抛非 abort 异常） | 有 | 有 | 有 | 有 | 无 | 有 |
 | judge 拦截 | 有 | 无 | 无——从未执行 | 无 | intercepted | 有 |
+| 引数解析不了（issue #409） | 有 | 无 | 无——从未执行 | 有 | rejected | 有 |
 | resume 里的 unsafe 中断重放 | 有，沿用落盘值 | 无 | 无 | 有 | interrupted | 有 |
 | 已完成结果的复放 | 有，同一个值 | 原值 | 原值，不重算 | 原值 | 原值 | 复用原记录 |
 | executor 未 settle 就中止 | tool_use 上有 | 无 | 无 | 无 | 无 | 可能没有 |
