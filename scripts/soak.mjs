@@ -1660,7 +1660,8 @@ async function main() {
   // 契约真相：`erix.executionStatus` **只在特殊状态出现**（docs/host-consumer-contract.md:2073「special states only」、
   // _cn.md:1635「仅特殊状态」；引擎写入点 src/loop/orchestrator.js:2787 / :2816 与 src/loop/run-snapshot-executor.js:589）。
   // 「每个结果块都该带 executionStatus」是**错的断言**（本脚本前一版就这么错过，错因在主 agent 的工单）。
-  const SPECIAL_EXECUTION_STATUS = ["intercepted", "interrupted"];
+  // issue #409 追加第三档 `rejected`（引数解析失败 ⇒ 工具从未执行，判词经 `is_error` 的 tool_result 回给模型）。
+  const SPECIAL_EXECUTION_STATUS = ["intercepted", "interrupted", "rejected"];
   const unexpectedStatus = [];
   for (const { block } of diskBlocks) {
     const value = block?.erix?.executionStatus;
@@ -2123,7 +2124,7 @@ async function main() {
   const esFieldContract = TOOL_RESULT_CONTRACT?.engine?.fields?.executionStatus ?? {};
   const presenceRecorded = esFieldContract.writtenFor === "special states only"
     && Array.isArray(esFieldContract.presentValues)
-    && [...esFieldContract.presentValues].sort().join(",") === "intercepted,interrupted";
+    && [...esFieldContract.presentValues].sort().join(",") === "intercepted,interrupted,rejected";
   ledger.check("contract-constant-records-execution-status-presence", presenceRecorded, {
     writtenFor: esFieldContract.writtenFor ?? null,
     presentValues: esFieldContract.presentValues ?? null,
@@ -2135,7 +2136,7 @@ async function main() {
       kind: "常量面缺条件（文档已写对）",
       severity: "minor",
       where: "TOOL_RESULT_CONTRACT.engine.fields.executionStatus 没标存在条件（字段元数据在 src/tool-fact.js）vs "
-        + "docs/host-consumer-contract.md / _cn.md 的字段表（已写「仅特殊状态 intercepted/interrupted」）",
+        + "docs/host-consumer-contract.md / _cn.md 的字段表（已写「仅特殊状态 intercepted / interrupted / rejected」）",
       why: "宿主只读 TOOL_RESULT_CONTRACT（随包发布）时看不出该字段是条件存在的，会按「每个块都有」写代码（本脚本工单就中了这个招）",
       blocking: false,
       evidence: { toolResultBlocks: toolResults.length, withExecutionStatus: executionStatusPresent },

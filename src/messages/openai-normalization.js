@@ -1,5 +1,7 @@
 // Shared OpenAI-compatible protocol normalization primitives.
 
+import { parseToolArguments } from "./tool-arguments.js";
+
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -51,19 +53,17 @@ export function normalizeOpenAIStopReason(reason, fallback = "unknown") {
 /**
  * Parse an OpenAI tool-call arguments value without losing malformed input.
  *
+ * issue #409：解析走共享入口 `parseToolArguments`（`src/messages/tool-arguments.js`）——
+ * 先 L0（原文 `JSON.parse`），再 L1 确定性修复（非法转义加倍 / 尾逗号 / 单引号与裸键 /
+ * Python 字面量；截断补全默认关），修不出来才落那个假对象。**本函数的返回形状没变**：
+ * 能解析就是解析结果，不能解析就是 `{_truncatedArguments, _raw}`（判词挂在 `tool_use` 块的
+ * `erix.argumentsParseError` 上，不塞进 `input`）。
+ *
  * @param {unknown} rawArguments
  * @returns {any}
  */
 export function parseOpenAIToolArguments(rawArguments) {
-  const value = rawArguments === undefined ? "{}" : rawArguments;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return {
-      _truncatedArguments: value,
-      _raw: value,
-    };
-  }
+  return parseToolArguments(rawArguments).input;
 }
 
 function argumentFragment(value) {
@@ -182,12 +182,18 @@ export function createOpenAIStreamAccumulator() {
 
   function getToolUseBlocks() {
     return slots
-      .map((slot) => (slot ? {
-        type: "tool_use",
-        id: slot.id,
-        name: slot.name,
-        input: parseOpenAIToolArguments(slot.arguments),
-      } : undefined))
+      .map((slot) => {
+        if (!slot) return undefined;
+        const { input, parseError } = parseToolArguments(slot.arguments);
+        return {
+          type: "tool_use",
+          id: slot.id,
+          name: slot.name,
+          input,
+          // issue #409：判词挂在块上（additive 可选键），执行层据它决定「不执行这个工具」。
+          ...(parseError === undefined ? {} : { erix: { argumentsParseError: parseError } }),
+        };
+      })
       .filter(Boolean);
   }
 

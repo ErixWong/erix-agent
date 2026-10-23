@@ -201,6 +201,7 @@ src/
     anthropic.js                   Anthropic protocol conversion and stream assembly
     canonical.js                   Canonical message/tool conversion
     openai-normalization.js        OpenAI-compatible normalization primitives
+    tool-arguments.js              Tool-argument parsing: L0 then L1 repair, plus the parser's own verdict (issue #409)
     rounds.js                      Message validation and round grouping
   compact/
     budget.js                      Context-budget calculation
@@ -241,6 +242,7 @@ src/
   text/
     json-candidates.js               Top-level balanced JSON object scan (shared by wrapup and reflection)
     parse-model-json.js              Unified model-JSON entry point: three-state failure, no repair (issue #307)
+    repair-json.js                  L1 deterministic repair rules: structure only, never a value's bytes (issue #409)
     label.js                       Note/findings label normalization
   tools/
     file-tools.js                  Canonical file tools: readFile/searchText/rg/grep/tree/edit/writeFile

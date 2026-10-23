@@ -50,7 +50,10 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 114`（现测 114 组 / 317 处；issue #407 的流式思考别名 +5 组 / +30 处）：
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 119`（现测 119 组 / 327 处；issue #409 的工具引数判词
+//                 +5 组 / +10 处：`REPAIR_RULES`、`parseJsonWithRepair`（`src/text/repair-json.js`）、`parseToolArguments`、
+//                 `describeToolArgumentsParseError`（`src/messages/tool-arguments.js`）、`RUN_TOOL_LOOP_OPTION_NAMES`
+//                 （`src/loop/option-normalization.js`），每组分中英两处。上一版 114 组 / 317 处是 issue #407 的流式思考别名 +5 组 / +30 处）：
 //                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
@@ -2046,7 +2049,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  两例从 ✓ 变红），而 `--self-test` 是 CI 的阻断步。
  *
   *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 114;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 119;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
@@ -4106,7 +4109,9 @@ const SELF_TEST_CASES = [
   {
     label: "#286 符号锚点：契约 CN 把 `emitEvent` 改成 `emitEventProbe`（只改文档，修前门禁全绿）",
     overlay: { [CONTRACT_CN]: mutateSymbolAnchor("emitEvent", "src/loop/orchestrator.js", "emitEventProbe") },
-    expect: [/symbol-anchor: docs\/host-consumer-contract_cn\.md:84 引用 `emitEventProbe`（`src\/loop\/orchestrator\.js`/,
+    // 行号写成 `\d+`：这条断言查的是「点不点得出那个错符号」，而文档行号会随任何一次契约改动漂移
+    // （issue #409 加一节契约就把 84 顶到 119）——把行号钉死等于给每次文档改动埋一颗哑雷（#286 的同一个病）。
+    expect: [/symbol-anchor: docs\/host-consumer-contract_cn\.md:\d+ 引用 `emitEventProbe`（`src\/loop\/orchestrator\.js`/,
       /实际存在的相近符号：.*emitEvent/],
     expectFiles: [CONTRACT_CN],
   },

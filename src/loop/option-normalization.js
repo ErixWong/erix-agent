@@ -29,7 +29,7 @@ import { assemblyPortOptions } from "../assembly.js";
  *
  * ⚠ 这份名单的**顺序**同时是未知键建议的平局优先级（`optionSuggestion` 用严格 `<`），
  * 所以它不是集合语义、不许排序、不许增删项而不同时确认建议行为。
- * 计数与顺序都由 `test/loop-option-normalization.test.js` 钉住（63 项）。
+ * 计数与顺序都由 `test/loop-option-normalization.test.js` 钉住（64 项）。
  *
  * @type {string[]}
  */
@@ -106,6 +106,10 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // 它**会改停机时的行为**（不是纯加法），所以默认关、只在宿主显式 opt-in 时生效。
   // 同样追加在末尾：旧未知键的「did you mean」建议逐字不变。
   "finalGuardExtend",
+  // issue #409 需求②：`invalidArguments` 决定「工具引数解析失败时要不要执行该工具」。
+  // 默认 `"reject"`（不执行 + 把解析器原判词作为 `is_error` 的 `tool_result` 回给模型），
+  // `"execute"` 是显式回退（行为逐字等于 #409 之前）。同样追加在末尾，理由同上。
+  "invalidArguments",
 ];
 
 /** 白名单的查询视图（与 `RUN_TOOL_LOOP_OPTION_NAMES` 同源，勿另行维护）。 */

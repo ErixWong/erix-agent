@@ -339,12 +339,22 @@ test("keeps invalid streamed tool JSON as raw input", () => {
   });
   assembler.push("content_block_stop", { index: 0 });
 
-  assert.deepEqual(assembler.finish().content, [{
+  const [block] = assembler.finish().content;
+  assert.deepEqual(block, {
     type: "tool_use",
     id: "toolu_bad",
     name: "bad",
     input: { _truncatedArguments: '{"broken":', _raw: '{"broken":' },
-  }]);
+    // issue #409：判词是 additive 可选键，挂 `erix.argumentsParseError`（不塞进 `input`）。
+    erix: {
+      argumentsParseError: {
+        reason: "unparsable",
+        message: "Unexpected end of JSON input",
+        text: '{"broken":',
+      },
+    },
+  });
+  assert.equal(block.input._raw, '{"broken":');
 });
 
 test("wraps unknown streamed blocks as Anthropic raw blocks", () => {

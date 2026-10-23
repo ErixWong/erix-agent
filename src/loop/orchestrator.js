@@ -356,6 +356,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
  *     => Promise<string|{content:any, metadata?:object, success?:boolean}|Error>,
  *   replayPolicy?:"always-replay"|"per-tool-declaration", // Default always-replay preserves existing resume behavior.
+ *   invalidArguments?:"reject"|"execute", // issue #409: what to do when a tool call's arguments cannot be parsed (default "reject" = do not execute the tool, return the parser's own verdict as an `is_error` tool_result; "execute" restores the pre-#409 behaviour byte for byte)
  *   partialPersistence?:false|{intervalMs:number,minBytes?:number}, // Default false; persist partial streamed text on an interval.
  *   maxRounds?: number,
  *   cacheCapable?: boolean, // cache-capable 端点默认关闭工具结果 TTL 折叠；显式 toolResultTtl 优先。
@@ -521,6 +522,9 @@ export async function runToolLoop(options) {
     writeToolPathKeys = ["path", "file_path"],
     executeTool,
     replayPolicy = "always-replay",
+    // issue #409 需求②：引数解析失败 ⇒ 不执行该工具（默认），判词经 `is_error` 的 `tool_result`
+    // 回给模型。`"execute"` 是显式回退，行为逐字等于 #409 之前。
+    invalidArguments = "reject",
     partialPersistence = false,
     maxRounds = 8,
     cacheCapable = false,
@@ -604,6 +608,11 @@ export async function runToolLoop(options) {
   }
   if (replayPolicy !== "always-replay" && replayPolicy !== "per-tool-declaration") {
     throw new TypeError('replayPolicy must be "always-replay" or "per-tool-declaration"');
+  }
+  // issue #409：只认两个字面量。显式错型不许静默折成默认值——「要不要执行一个引数写坏的调用」
+  // 是宿主的安全决策，猜错的代价是工具带着假参数跑起来。
+  if (invalidArguments !== "reject" && invalidArguments !== "execute") {
+    throw new TypeError('invalidArguments must be "reject" or "execute"');
   }
   if (partialPersistence !== false && !stream) {
     throw new TypeError("partialPersistence requires stream: true");
@@ -2757,9 +2766,22 @@ export async function runToolLoop(options) {
     };
   };
 
+  // issue #409：判词里的「正确形状示例」用工具自己的 `inputSchema` 渲染（有就用，没有就泛化示例）。
+  // 只读、只在这里建一次；`tools` 是宿主给的 ToolSchema 数组（`{name, description, inputSchema}`）。
+  const toolSchemaByName = new Map();
+  for (const tool of Array.isArray(tools) ? tools : []) {
+    if (tool === null || typeof tool !== "object") continue;
+    if (typeof tool.name !== "string" || tool.name === "") continue;
+    toolSchemaByName.set(tool.name, tool.inputSchema ?? tool.input_schema);
+  }
+
   const runSnapshotContext = {
     runId,
     executeTool,
+    invalidArguments,
+    toolSchemaFor(name) {
+      return toolSchemaByName.get(name);
+    },
     baseToolContext,
     outputHygieneEnabled,
     outputHygieneLimit,

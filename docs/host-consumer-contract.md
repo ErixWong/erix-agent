@@ -29,7 +29,7 @@ completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
-toolContext, store, persistence, runId, cwd, deliverables, resume, onRound, onJudge,
+toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
 ```
@@ -60,6 +60,53 @@ Canonical execution results have one of these three forms:
 The older `{ data, success, ... }` shape and other duck-typed shapes are
 normalized permissively for compatibility, but are deprecated and must not be
 depended on.
+
+### Tool arguments that cannot be parsed (issue #409)
+
+Every tool call carries an arguments payload the model wrote. The engine parses it in two
+layers and never invents a value. L0 is a plain `JSON.parse` of the original text. If that
+fails, L1 runs the deterministic rule table in `REPAIR_RULES`（`src/text/repair-json.js`）:
+code-fence stripping, single-quoted strings and bare keys, invalid escapes made legal by
+**doubling the backslash** (`\.` → `\\.`), the Python literals `True`/`False`/`None`, and
+trailing commas. Truncation completion exists in that table but is **off by default**: it is
+the only rule that completes structure the model never wrote, and the measured corpus (110
+transcripts / 312 real final answers) contained zero truncated-argument cases, so it is off
+for lack of demand rather than for risk.
+
+One invariant makes that layer safe to default on: **every string value a repair produces
+must still be a verbatim slice of the original text.** A rule that changes a value's bytes is
+disqualified by machine, not by taste. The rejected alternative is what `jsonrepair` does with
+an invalid escape: `{"api":"http\.request"}` becomes the value `http.request`, which no longer
+appears in the original text and would be silently dropped by any verbatim gate. Doubling keeps
+the value byte-identical to the source and still makes the text parseable.
+
+`parseJsonWithRepair`（`src/text/repair-json.js`）is the L0-then-L1 entry the tool path uses, and
+`parseToolArguments`（`src/messages/tool-arguments.js`）is what the OpenAI non-streaming
+conversion, the OpenAI stream accumulator, and the Anthropic stream assembler all call, so the
+two protocols cannot drift apart here. The strict entry point is untouched: `parseModelJson`
+still repairs nothing (see its own section) — repair exists only on the tool-argument path.
+
+When the arguments still do not parse, the default (`invalidArguments: "reject"`, a member of
+`RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`）) is to **not execute the tool at
+all**. The engine
+returns an `is_error` `tool_result` whose content is the parser's own verdict, assembled by
+`describeToolArgumentsParseError`（`src/messages/tool-arguments.js`）: the parser's words, the
+1-based character position with a snippet around it, and a correct-shape example rendered from
+that tool's own `inputSchema`. The instruction that follows tells the model to re-send the same
+call with fixed arguments, not to switch tools and not to guess content. That result carries
+`erix.executionStatus: "rejected"`; because the call never ran it carries no `erix.round`, no
+`erix.durationMs` and no `erix.success` (the same existence rule as a judge interception). The
+`tool_use` block additionally carries `erix.argumentsParseError`
+(`{reason, message, position?, text}`, an additive optional key that is never on the wire), so a
+host can tell "the model wrote broken JSON" apart from "the tool itself failed" without parsing
+`content`. No retry and no second LLM call is spent on it: the model gets the verdict on its next
+turn and fixes the arguments itself.
+
+`invalidArguments: "execute"` restores the pre-#409 behaviour byte for byte: the malformed payload
+reaches `executeTool` as `{_truncatedArguments, _raw}`, the tool runs anyway, and the model sees
+whatever second-order error that tool reports (typically "missing required field") instead of the
+parse verdict. Both halves — the fake object handed to the executor and the second-order error
+that comes back — are pinned by `deepEqual` tests.
 
 ## Observer callback errors (issue #173)
 
@@ -1554,7 +1601,7 @@ helpers from the package root. They perform no I/O or model calls:
 |---|---|---|
 | `normalizeOpenAIUsage` | `(usage) -> canonical usage \| undefined` | `null`/`undefined` return `undefined`; any other input returns an object mapping `prompt_tokens`/`completion_tokens` to `input_tokens`/`output_tokens` when present (so `{}`, an array, or a string yields `{}`). Canonical aliases are **not** accepted. |
 | `normalizeOpenAIStopReason` | `(reason, fallback = "unknown") -> string` | Maps `stop`, `tool_calls`/`function_call`, and `length` to canonical stop reasons; unknown values pass through. |
-| `parseOpenAIToolArguments` | `(rawArguments) -> any` | Parses JSON, uses `{}` when absent, and returns malformed values under `_truncatedArguments` and `_raw`. |
+| `parseOpenAIToolArguments` | `(rawArguments) -> any` | Parses JSON, uses `{}` when absent, and returns malformed values under `_truncatedArguments` and `_raw`. Since issue #409 it runs the same L0-then-L1 path as the engine's tool loop (invalid escapes are doubled, never deleted), so a payload that is repairable now comes back as a parsed object; a payload that still fails keeps the legacy `_truncatedArguments`/`_raw` shape byte for byte. The verdict itself is not on this return value — it rides on the `tool_use` block as `erix.argumentsParseError`. |
 | `createOpenAIStreamAccumulator` | `() -> accumulator` | Accumulates indexed or legacy streamed tool-call fragments; `getToolUseBlocks()` returns canonical tool-use blocks. |
 
 `createOpenAIStreamAccumulator().addToolCallDelta()` accepts an OpenAI delta
@@ -3035,7 +3082,7 @@ addressed as `erix.<field>`: `toolCallKey` / `round` / `durationMs` / `execution
 | `erix.toolCallKey` | engine | every `tool_use` the engine accepts, and every result built from one | Cross-channel identity: one allocation per accepted call, carried by the first recognisable stream fragment, the `tool_use` block (and therefore the persisted block and the `tool_use` event clone), the `tool_result`, and the projection. Resume and replay **reuse** the persisted value; a value is never regenerated for a call that already had one. A provider pairing id is **not** an identity and is not guaranteed unique inside a run (per-round index prefixes, or the `call_legacy` fallback for malformed responses), so the same id reappearing in a later round is a **new call** and gets a new key: a key is inherited only where the call is confirmed to be the same one — the replay window of the current round, or the one pending call restored from the crash site. **Pre-contract records stay keyless on both ends** (see the carve-out below). |
 | `erix.round` | engine | the call actually executed | The **execution** round. It is not the event envelope’s `round` (the delivery round), and the two are deliberately not merged. |
 | `erix.durationMs` | engine | the executor promise settled or rejected | Milliseconds from “immediately before the executor is invoked” to “that promise settled or rejected”. |
-| `erix.executionStatus` | engine | special states only | `intercepted` / `interrupted`. The existence condition is machine-readable as well: `TOOL_RESULT_CONTRACT.engine.fields.executionStatus` carries `writtenFor: "special states only"` plus `presentValues` (`src/tool-fact.js`), so a host that reads only the constant must not assume the field exists on every result block (issue #286). |
+| `erix.executionStatus` | engine | special states only | `intercepted` / `interrupted` / `rejected`. The existence condition is machine-readable as well: `TOOL_RESULT_CONTRACT.engine.fields.executionStatus` carries `writtenFor: "special states only"` plus `presentValues` (`src/tool-fact.js`), so a host that reads only the constant must not assume the field exists on every result block (issue #286). `rejected` (issue #409) means the call's arguments could not be parsed, so the tool **never ran** and the result content is the parser's verdict. |
 | `erix.success` | engine | every result whose executor settled | The engine-normalised boolean (`success !== false`). Written unconditionally since the retirement of the top-level `success` key: with the top level gone, writing it only when the host declared a verdict would make "succeeded" and "no verdict declared" indistinguishable. A call that never ran (judge interception, interrupted replay) has no verdict and therefore no field. |
 | `metadata.*` | host | whenever the executor returned extensions | The only namespace a host may write. |
 
@@ -3110,6 +3157,7 @@ the retired top-level names reappears anywhere, and the provider `id` is never r
 | success (string / number / structured / legacy all behave the same) | yes | yes | yes | absent | absent | yes |
 | failure (returned Error / thrown non-abort) | yes | yes | yes | yes | absent | yes |
 | judge interception | yes | absent | absent — never executed | absent | intercepted | yes |
+| arguments could not be parsed (issue #409) | yes | absent | absent — never executed | yes | rejected | yes |
 | resume replay of an unsafe interruption | yes, the persisted value | absent | absent | yes | interrupted | yes |
 | replay of an already-completed result | yes, same value | original value | original value, never recomputed | original value | original value | reuses the original record |
 | abort before the executor settles | present on the tool_use | absent | absent | absent | absent | may be absent |

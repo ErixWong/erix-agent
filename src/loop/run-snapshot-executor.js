@@ -17,6 +17,7 @@ import {
 import { JUDGE_DONE_CONFIDENCE_THRESHOLD, directionHintText, judgeDoneAdvisoryText } from "./reflection.js";
 import { terminationErrorCodeForError } from "./termination.js";
 import { buildToolResultFact } from "../tool-fact.js";
+import { describeToolArgumentsParseError } from "../messages/tool-arguments.js";
 import {
   aggregateStubText,
   aggregateUnrecoverableStubText,
@@ -273,7 +274,67 @@ export function createRunSnapshotExecutor(ctx) {
     return execution;
   };
 
+  // issue #409 需求②：引数解析失败 ⇒ **不执行**这个工具（设计文档 D4：把解析器原判词作为
+  // `is_error` 的 `tool_result` 退给模型，模型下一轮自己改）。`invalidArguments: "execute"`
+  // 是显式回退，行为**逐字等于 #409 之前**：假对象照旧当参数塞给工具，模型看到的是
+  // 「缺 path 参数」那种二次错误。判词挂在 `tool_use` 块的 `erix.argumentsParseError` 上
+  // （由消息归一化写入，见 `src/messages/tool-arguments.js`），不在 `input` 里。
+  const rejectInvalidArgumentsEnabled = ctx.invalidArguments !== "execute";
+  const argumentsParseErrorOf = (block) => {
+    if (!rejectInvalidArgumentsEnabled) return undefined;
+    const parseError = block?.erix?.argumentsParseError;
+    return parseError !== null && typeof parseError === "object" ? parseError : undefined;
+  };
+
+  // 被拒的调用**从未执行**：不写 `erix.round` / `erix.durationMs` / `erix.success`（与审计拦截
+  // 同一套存在性口径：缺失 = unknown，不是 0），只写 `erix.toolCallKey` 与
+  // `erix.executionStatus: "rejected"`。落盘一次（`status: "rejected"`，`sideEffect: "not_started"`）：
+  // 工具没跑过，所以不需要「执行前」那个 checkpoint。
+  const rejectInvalidArguments = async (block, round, toolResults, pendingToolUses) => {
+    const parseError = argumentsParseErrorOf(block);
+    const schema = typeof ctx.toolSchemaFor === "function"
+      ? ctx.toolSchemaFor(String(block.name ?? ""))
+      : undefined;
+    const parseErrorMessage = describeToolArgumentsParseError({
+      toolName: block.name,
+      parseError,
+      schema,
+    });
+    const budgetHint = budgetHintFor();
+    const toolResult = buildToolResultFact({
+      toolUseId: block.id,
+      content: budgetHint ? `${parseErrorMessage}\n${budgetHint}` : parseErrorMessage,
+      isError: true,
+      engine: {
+        toolCallKey: typeof block?.erix?.toolCallKey === "string"
+          ? block.erix.toolCallKey
+          : undefined,
+        executionStatus: "rejected",
+      },
+    });
+    if (block.id !== undefined) ctx.snapshotResults.set(block.id, toolResult);
+    toolResults.push(toolResult);
+    const persistRunSnapshotForReject = ctx.persistRunSnapshot;
+    const rejectedRunSnapshotPersisted = await persistRunSnapshotForReject({
+      round,
+      pendingToolUse: block,
+      pendingToolUses,
+      toolResults,
+      status: "rejected",
+      messagesOverride: messagesWithToolResults(toolResults),
+    });
+    assertSnapshotPersisted(ctx, rejectedRunSnapshotPersisted, {
+      phase: "checkpoint_after_tool",
+      sideEffect: "not_started",
+      message: `Checkpoint persistence failed after rejected tool call: the call never ran but its result was not persisted (toolUseId=${String(block.id)}, runId=${String(ctx.runId)}, round=${round})`,
+    });
+    return toolResult;
+  };
+
   const executeToolBlock = async (block, round, toolResults, pendingToolUses = []) => {
+    if (argumentsParseErrorOf(block) !== undefined) {
+      return rejectInvalidArguments(block, round, toolResults, pendingToolUses);
+    }
     const toolName = String(block.name ?? "");
     const toolStat = ctx.toolStats.get(toolName) ?? { calls: 0, failures: 0 };
     toolStat.calls += 1;
@@ -463,6 +524,11 @@ export function createRunSnapshotExecutor(ctx) {
     toolResults,
     pendingToolUses = [],
   ) => {
+    // issue #409：引数解析不了就不必花一次 judge 调用去审它——判词是确定性的，且这次调用
+    // 根本不会执行。**不消耗 intercept 计数**（它没走到执行器；拦截是审计的产物，不是同一件事）。
+    if (argumentsParseErrorOf(block) !== undefined) {
+      return executeToolBlock(block, round, toolResults, pendingToolUses);
+    }
     // 最后一轮（无 tools 请求）跳过 intercept 审计：无工具可审（2026-09-20 预算兜底修复）。
     // 用 budgetRounds 而非身份轮号：resume 后身份轮号已到顶，会误判剩余轮数（issue #32 #8 同口径）。
     const finalBudgetRound = ctx.budgetRounds >= ctx.governorState.effectiveMaxRounds;
