@@ -195,8 +195,8 @@ scripts/          # experiment scripts and results
   `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs`. Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 125` (groups
-  measured today: 125 unique (symbol, file) pairs over 385 occurrences, re-measured on the **merged** tree (the #443 substrate together with #438's per-round usage accounting and #434's install tier on main — a floor of `max(a, b)` is wrong because the merged tree carries both sides' anchors), raised from 32 when the 0.21.0 guide pair
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 126` (groups
+  measured today: 126 unique (symbol, file) pairs over 389 occurrences, re-measured on the **merged** tree (the #443 substrate together with #438's per-round usage accounting and #434's install tier on main — a floor of `max(a, b)` is wrong because the merged tree carries both sides' anchors), re-raised to 126 when PR #451 (issue #406 B2-b) replaced the two bare line ranges pointing at the end-turn wrap-up block with a symbol anchor `normalizeWrapupText` (`src/reflection/wrapup.js`), one per contract language (+1 group, measured on the tree merged with main `7d0e9dd`), raised from 32 when the 0.21.0 guide pair
   landed, again for the #293 fixes to the 0.19.0 guide, again to 45 when #313's contract section merged on top
   of them, again to 53 when #314's host-side guard section landed as a pair, and again to 63 when the 0.21.0 guide
   pair grew the #313 / #314 / #312(b) host sections during the 0.21.0 fold-in (工单 261016-021), reproducible via `--verbose`, and again to 67 when the #326 store-dedup contract section landed as an EN/CN pair, and again to 72 when 架构×2 / 图表×2 / 需求对照×2 and `examples/pi-extension/README.md` joined the coverage (工单 261021-03 B1 — five new groups: `resolvedToolResultTtl`, `markStablePrefix`, `loadModelSlot`, `createProviderForSlot`, `createJsonFileModelConfigProvider`, and again to 75 when the direction-hint archive-row wording landed as an EN/CN contract pair (工单 261021-04 — three new groups: `pendingDirectionHints`, `directionHintText`, `restoreResume`), and again to 77 when the 0.23.0 host-upgrade guide pair landed (工单 261021-12 — `projectTranscriptForDisplay` / `foldMessageRows`), again to 80 when the #361 "row shape on disk is not the shape after `load()`" contract section landed as an EN/CN pair (工单 F2 — three new groups: `isRoundCarrier`, `createMemoryTranscriptStore`, `createFileTranscriptStore`), and again to 95 when the 0.24.0 host-upgrade guide pair landed (工单 261022-17 — fourteen new groups, e.g. `compactionStatsWindow` / `validateRunState` in `src/run-state.js`, `COMPACTION_STATS_STATE_LIMIT` in `src/compact/pipeline.js`, `assertSnapshotPersisted` / `makePersistenceFailure`, `toolMarker` / `displayName` / `searchRootError` / `withDeprecation` in `src/tools/file-tools.js`, plus `BASELINE_WITH_TOOLS` and `makeTmp`), and again to 98 when the #386 `finalGuard` payload contract section
@@ -219,8 +219,10 @@ scripts/          # experiment scripts and results
   `symbols` never needed them) or move it onto the declaration. Anchors *without* a range are outside this rule,
   which is also why dropping ranges makes the ratchet below go down legitimately.
   *`bare-lines`* is a *ratchet (only down)*: `src/**.js:N` / `:N-M` references, counted as unique
-  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 132` in that same script. The number
-  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 136 unique ranges minus 4 declaratively exempted
+  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 130` in that same script (lowered from 132:
+  PR #451 turned the contract's two bare ranges pointing at the end-turn wrap-up block into a symbol anchor).
+  The number
+  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 134 unique ranges minus 4 declaratively exempted
   example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
   declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
   nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty

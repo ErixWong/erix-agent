@@ -79,6 +79,27 @@
 
 ### Changed
 
+- **收尾归一化收口到同一个入口：引擎内联那条改调 `normalizeWrapupText` → `normalizeModelJson`，公开入口 `normalizeWrapupWithLlm` 改成同一函数的薄壳（issue #406 B2-b；`src/loop/orchestrator.js`（只碰内联归一化那一段）、`src/reflection/wrapup.js`、`test/wrapup-normalization-unified.test.js`（新）、`test/wrapup.test.js`（一格改钉新事实）；零依赖、纯 ESM，**不删任何导出**）。**
+  - **现场（改前实测，别重复调查）**：真在跑的收尾归一化是 `src/loop/orchestrator.js` 里那条内联请求（自带一份提示词：任务目标 + 轮数 + `JSON.stringify(responseText).slice(0, 2000)`），而公开入口 `normalizeWrapupWithLlm` 全仓没人调用、另有一份提示词 ⇒ **两份提示词、两套行为**。内联那份**没有闸门**（`summary`/`output` 从不核验），公开入口连 findings 的逐字核验都没有。
+  - **改法**：`src/reflection/wrapup.js` 新增 `normalizeWrapupText`（唯一的 L2 实现）→ 调 `normalizeModelJson({validate: wrapupGate(text), llm: true, provider, thinking: "none", schema: WRAPUP_SHAPE_SCHEMA})`；引擎与薄壳都只调它。闸门闭包捕获 **agent 原文**（不是候选字节、不是归一化器的回答），findings 非逐字条目逐条丢弃（`dropped`），`summary`/`output` 是散文不核。删掉内联请求与 `filterFindingsBySource`（同一件事只剩一处实现）。
+  - **行为变化（宿主可观察，逐条实测；假 provider，零真实 LLM）**：
+
+    | 输入（agent 终答） | 改前 | 改后 |
+    |---|---|---|
+    | 散文前后缀 + 合法信封 | 0 次归一化请求，`done:true`，终稿 `o` | 同 |
+    | 非法转义 `http\.request` | 2 次请求（归一化器答 done:false），终稿是原文 | **0 次请求**（`invalid-escape` 加倍反斜杠），终稿 `http\.request`（字节逐字保留） |
+    | 截断 `{"done":true,…`（缺右括号） | 2 次请求 | 2 次请求（`truncateCompletion` 默认关，行为不变） |
+    | 尾逗号 `{…,}` | 2 次请求 | **0 次请求**（`trailing-comma`），终稿 `o` |
+    | 纯散文 `做完了` | 2 次请求 | 2 次请求（提示词换成统一那份） |
+    | 空文本 | 1 次请求 + 归一化器的输出成为终稿 | **0 次请求**，终稿就是空串 |
+    | 公开入口 + 归一化器改写 findings（`gold-417` → `gold-4173`） | 改写值被**接受** | 该条被丢弃（`findings` 不出现） |
+
+  - **提示词份数**：改前 **3 份**「归一化器」提示词（内联 `【归一化】…`、`WRAPUP_NORMALIZATION_PROMPT`、`buildL2Request`）与 **3 处** system 字面量；改后 **1 份**（`buildL2Request`）+ **1 处** system 字面量。`grep -rF` 计数：`【归一化】判断 agent 是否完成任务` 1→0、`请把下面模型的最终文本归一化为结束协议 JSON` 1→0、`你是输出协议归一化器，只输出有效 JSON。` 3→1。
+  - **公开入口同样继承入口语义（行为变化）**：原文本身就是可解析信封、或 L1 规则修得动的输入 ⇒ **0 次请求**直接返回（以前总是发一次）；空 / 纯空白 ⇒ 0 次请求 + `null`；归一化器自己的回答也过同一套 L1 规则（`{"done":true,}` 以前算失败并关断本 run 的归一化，现在修好）。
+  - **代价（如实登记）**：统一提示词**不再包含任务目标与轮数**（旧内联那份有），归一化器只看到原文 + 信封形状示例；`summary`/`output` 的逐字性仍不核（它们是给用户看的散文，不是声明的事实）；归一化器的回答改走统一入口的候选集，**围栏块体排在 L0 扫描之前**（B2-a 已公开的优先级）⇒ 回答里同时有围栏信封与更早的裸对象时，围栏那个胜出（旧内联只认裸对象扫描的第一个）。
+  - **测试**：新增 `test/wrapup-normalization-unified.test.js` 5 格（先红格：两条路径请求体 `deepEqual` + 同一回答得到逐字相同信封；闸门对原文判；思考恒关两条路径；失败可见（请求停在 1 条、loop 不崩、终稿仍是原文）；L1 命中不发请求）。**先红后绿**：同一份测试在 `git archive HEAD`（`78d28a0`）的副本上 **3 格红 / 2 格绿**（红的是「同一份请求」「闸门」「L1 不发请求」），本树 **5/5 绿**。`test/wrapup.test.js` 的「空文本也归一化」一格按新事实改钉（断言没放宽：请求数从 1 **收紧**成 0，轮数/终稿/停机原因逐字钉住）——旧断言钉的是重复实现「空原文也照发一次」的副作用。
+  - **文档**：契约中英新增 `#### The engine's wrap-up normalization uses this entry (issue #406 B2-b)` / `#### 引擎的收尾归一化走的就是这个入口（issue #406 B2-b）`（五条宿主可观察后果 + `summary`/`output` 不核的理由）；`end_turn` 输入说明补「文本非空」；guard 的「只许搬运」段补「与 `normalizeModelJson` 同一道闸门」。`tryParseWrapupJson` 不迁 `parseModelJson` 的理由**复核仍成立**（对拍用例仍绿：`parseModelJson` 在第一个候选上停下，返回 `{"done":"true"}`），源码注释补了「异步那条是另一层」的差异说明。
+  - **门禁**：`npm test` → **tests 2,139 / pass 2,130 / fail 0 / skipped 9**（改前同树 2,134 / 2,125 / 0 / 9；+5 是新文件的 5 格，另一格是改钉不是新增）；`check:syntax`（311 文件）、`check:docs`（71 项，中英契约 **88** 节）、`check:docs:strict`、`check:docs-examples`、`check:tests`、`check:types`（**113** < 基线 116）、`check:types -- --with-tools`（**149** < 基线 152）、`check:exports`、`check:exports --self-test`、`check:pack-links`、`docs-drift-check --self-test`、`test-hygiene --self-test`、`node --test test/static-guards.test.js` 逐个 exit 0；符号锚点 `--verbose` 实测 **125 组 / 385 处**（本单没有新增/删除契约符号锚点，下限不动）。
 - **流式静默不再必然不可重试：CLI 接上了引擎自带的两个流式相位截止（`firstByteTimeoutMs` / `streamIdleTimeoutMs`）（issue #441；`bin/provider-timeouts.js`（新）、`bin/cli.js`、`bin/repl.js`、`bin/config.js`；**`src/` 一行未改**——引擎侧本来就支持，本单只是接线；零依赖、纯 ESM）。**
   - **现场**：`src/providers/timeout.js` 到点抛 `KitError("timeout", …, { retryable: true })`（`grep -n 'retryable' src/providers/timeout.js` → `78:    retryable: true,`），而 `timeout` 在 `RETRYABLE_CODES` 里（`src/providers/errors.js:1`）⇒ 这条错误本来就会走 `src/loop/provider-runner.js` 的重试分支。但 `grep -rn 'firstByteTimeoutMs\|streamIdleTimeoutMs' bin/` **零命中**、`bin/config.js` 的 `forwardedFields` 也不含它们 ⇒ CLI 既不用、用户也配不了；默认配置下能终结一次静默 run 的只剩 idle 看门狗（chat 默认 300s），而 idle 走的是**不可重试**的 abort 路径 ⇒ 「静默 → 重试」这条通道结构性失效（#433 里 27% 的格子就是这么死的）。
   - **取值关系（显式定义，不留隐式）**：`--idle-timeout N > 0` ⇒ `firstByteTimeoutMs` = `streamIdleTimeoutMs` = `⌊N × 3/4⌋` ms。预算**严格小于** idle 窗口（相等就等于 idle 先响：两条截止同时起跑，而 idle 的起点更早），剩下的 1/4 是重试退避（`backoffBaseMs = 1500`，第二次 `3000`）加下一次尝试的空间。`--idle-timeout 0`（repl 默认）⇒ **什么都不派生**，装配与接线前逐字一致。
