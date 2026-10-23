@@ -821,7 +821,11 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
 
 - **形状：** `{ round, messages: [{ role: "user", content: [{ type: "text",
   text }] }], dedupKey, roundKey, ts }`，`ts` 为 ISO-8601 字符串
-  （`new Date().toISOString()`）。
+  （`new Date().toISOString()`）。预写行**不得**带 `kind` / `seq`——这两个字段是
+  引擎逐条消息行的标记（`kind: "message"` + 安全整数 `seq`）；带上它们的行会被
+  恢复侧的 `restoreResume`（`src/loop/resume-manager.js`）判成引擎行并算进**崩溃
+  现场**（补跑结果因此排到它之后、`tool_use` 与 `tool_result` 不再相邻 ⇒
+  `invalid_messages`）。
 - **round：** 复用 `load` 结果中的现有最大 round（`Math.max(0, ...rounds)`，空
   store 为 `0`）。引擎从该最大 round 续起并把自身记录落在更后的 round；预写不得推
   进它。空 `load` 结果是种子路径：在 round `0` 预写该轮；内置 CLI 则在没有既有记录
