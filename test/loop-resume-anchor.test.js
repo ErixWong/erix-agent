@@ -356,12 +356,15 @@ const crashScene = (RUN_ID, { tail, landedT1 = false } = {}) => [
   ...(tail === undefined ? [] : [tail]),
 ];
 
-/** 三种「宿主预写行」的键形态（`appendUserTurn` 的产出形状，只换身份键）。 */
+/** 三种「宿主预写行」的键形态：`appendUserTurn` 的**产出形状**逐字照抄
+ * （`{ round, messages: [user(text)], dedupKey, roundKey, ts }`），只换身份键。 */
 const hostPreWriteRow = (RUN_ID, keyShape) => {
-  const row = { round: 1, messages: [userText("宿主追问")] };
-  if (keyShape === "default") return { ...row, dedupKey: `${RUN_ID}:round:1`, roundKey: `${RUN_ID}:round:1` };
-  if (keyShape === "none") return row;
-  return { ...row, dedupKey: `${RUN_ID}:msg:1:9` };
+  const shape = { round: 1, messages: [userText("宿主追问")], ts: new Date().toISOString() };
+  if (keyShape === "none") return shape; // 远古 / 手搓宿主：连键都没写
+  const dedupKey = keyShape === "default"
+    ? `${RUN_ID}:round:1` // 契约里的 "host default key"（store 生成 / 宿主照抄）
+    : `${RUN_ID}:msg:1:9`; // 引擎逐条消息行用过的命名空间
+  return { ...shape, dedupKey, roundKey: dedupKey };
 };
 
 /** provider 收到的消息序列（断言失败时贴出来，评审要求「贴序列」而不是只贴条数）。 */
