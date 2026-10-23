@@ -1070,8 +1070,12 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
   （`addUsage`（`src/loop/orchestrator.js`））按一个 `account` 参数入桶，不存在第二本会漂的账。
 - **`finalGuard` 的用量两个桶都不计，中止载荷也不带分账。** guard 是**宿主**回调：引擎不发起那次
   调用、也测不到它，所以它既不能算模型输出、也不能算引擎开销——guard 里真调了模型的宿主自己记。
-  另外中止的 run 仍然只抛 `error.usage` / `termination.usage`（issue #180）：两个桶是**成功结果**与
-  `RoundRecord` 上的加法键，而这两处的 `usage` 依旧等于两桶之和。
+  另外中止的 run 仍然只抛 `error.usage` / `termination.usage`（issue #180）。两个桶的加法关系**只成
+  立在成功结果上**：那里 `usage` 依旧等于 `modelUsage` + `engineUsage` 逐字段相加。`RoundRecord`
+  上没有这样一个键——轮记录**没有** `modelUsage`，所以 `record.usage` 就是**模型桶本身**（上面表格那
+  行写的正是「本轮**模型**用量」），本轮的总账是 `record.usage`（模型桶）+ `record.engineUsage`
+  （引擎桶）；后者在本轮没发起过引擎调用时**缺键**，宿主相加时必须当 0 读，绝不能读成「本轮用量
+  就是这个模型桶」。
 
 ## judge 记录关联字段与 run 级 outcome（issue #165）
 

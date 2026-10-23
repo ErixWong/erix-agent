@@ -1339,8 +1339,13 @@ Four things a host has to read correctly, because getting them wrong silently mi
   guard is a **host** callback: the engine never issues that call and cannot measure it, so it
   must not be counted as model output or as engine overhead — a host whose guard calls a model
   books that cost itself. And an aborted run still throws with `error.usage` /
-  `termination.usage` only (issue #180): the two buckets are additive on the success result and
-  on `RoundRecord`, and `usage` in both places remains the sum of the two.
+  `termination.usage` only (issue #180). The two buckets are additive on the **success result**
+  **only**, and there `usage` remains the sum of the two, field by field. A `RoundRecord` has no
+  such key: it carries no `modelUsage`, so `record.usage` is the **model bucket alone** (the
+  table row above says "complete **model** usage" for exactly this reason) and the round's total
+  is `record.usage` (model bucket) + `record.engineUsage` (engine bucket) — with the second one
+  **absent** when the round issued no engine call, which a host adding them has to read as 0,
+  never as "this round's usage is the model bucket".
 
 ## Judge record correlation and run outcome (issue #165)
 
