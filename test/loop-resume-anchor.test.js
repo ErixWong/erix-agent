@@ -548,3 +548,61 @@ test("#425 方向敏感复证：默认键现场下锚点人为少 1 ⇒ 仍 inva
   assert.match(String(broken.error?.message), /tool_result ids do not match assistant tool_use ids/u);
   assert.equal(broken.provider.requests.length, 0, "锚点偏移一格 = 零请求（方向敏感）");
 });
+
+// ── ⑧ 契约外形状的边界：宿主行**带 `kind:"message"`** ⇒ 不像预写 ⇒ 判引擎（算进崩溃现场） ────────
+//
+// 这是**如实钉住的剩余边界**，不是要修的 bug：契约的宿主预写行形状是
+// `{ round, messages, dedupKey, roundKey, ts }`（`docs/host-consumer-contract.md`「A correct
+// pre-written `RoundRecord` must satisfy」那一段），`kind` / `seq` 是**引擎逐条消息行**的标记。
+// 宿主给预写行带上它们 ⇒ 形状判据认不出「这是预写」⇒ 判引擎行 ⇒ 锚点把它算进崩溃现场 ⇒
+// 补跑结果被插到它**之后**、`tool_use` 与 `tool_result` 不再相邻 ⇒ `invalid_messages` + **零请求**
+// （同一现场在 main 上是 1 请求）。契约中英已把「预写行不得带 `kind` / `seq`」写成成对约束。
+test("#425 边界：`:round:` 键 + `kind:\"message\"` 的尾行判引擎（anchor 计入）", async () => {
+  const RUN_ID = "anchor-host-row-with-kind";
+  // 键是契约的 "host default key"（`:round:`），但形状带了引擎逐条消息行的标记 ⇒ 判引擎。
+  const tail = {
+    round: 1,
+    dedupKey: `${RUN_ID}:round:1`,
+    roundKey: `${RUN_ID}:round:1`,
+    kind: "message",
+    messages: [userText("宿主追问")],
+    ts: new Date().toISOString(),
+  };
+  const rows = crashScene(RUN_ID, { tail });
+  assert.equal(countResumeAnchor(rows), 3,
+    "`kind:\"message\"` 的尾行**算进**崩溃现场（锚点 = seed + assistant + 该行）——形状判据只认契约形状");
+  // 同一行的 `kind` 摘掉 ⇒ 逐字变回契约形状 ⇒ 立刻归尾队列。这一对证明上一条断的是 `kind` 本身。
+  assert.equal(countResumeAnchor(crashScene(RUN_ID, { tail: { ...tail, kind: undefined } })), 2,
+    "对照：摘掉 `kind` 后同一行（同键、同正文）归尾队列");
+
+  const store = createMemoryTranscriptStore();
+  for (const row of rows) await store.appendRound(RUN_ID, row);
+  await store.saveRunSnapshot(RUN_ID, {
+    round: 1,
+    messages: [userText("任务"), { role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
+    persistedTranscriptLength: 3,
+    executedToolIds: [],
+    pendingToolUses: [toolUse("t1"), toolUse("t2")],
+    toolResults: [],
+    toolOutputs: [],
+    compactionStats: [],
+    ts: new Date().toISOString(),
+  });
+  const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
+  const error = await runToolLoop({
+    provider,
+    resume: true,
+    store,
+    runId: RUN_ID,
+    tools: TOOLS,
+    maxRounds: 8,
+    completion: false,
+    wrapup: false,
+    stallDetection: false,
+    executeTool: async ({ id }) => `replayed-${id}`,
+  }).then(() => undefined, (thrown) => thrown);
+  assert.ok(error, "这一现场在本地校验器上必须被拒（不是静默放过）");
+  assert.equal(error?.code, "invalid_messages", "判引擎 ⇒ 补跑结果排到宿主行之后 ⇒ 配对断裂");
+  assert.match(String(error?.message), /assistant tool_use has no immediately following user tool_result/u);
+  assert.equal(provider.requests.length, 0, "零请求（契约外形状的边界，与 main 的 1 请求不同）");
+});
