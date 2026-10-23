@@ -1297,7 +1297,7 @@ if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate)
 | 发不发请求 | 从不 | 只有 `llm: true`、候选非空**且**每个确定性候选都失败时才发 |
 | 结果 | `{ ok, value, via, candidates }` / `{ ok: false, error, candidates }` | `{ ok, value, repaired?, llmUsed?, dropped? }` / `{ ok: false, error, llmUsed? }` |
 
-失败三态沿用**同一组名字**，但有两档的映射不同，宿主必须按对的那一档分流：
+失败三态沿用**同一组名字**，但两边的映射**不一一对应**，宿主必须按对的那一档分流：
 
 | `error` | `normalizeModelJson` | `parseModelJson` |
 |---|---|---|

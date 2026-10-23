@@ -1612,8 +1612,8 @@ silently change behaviour if the two were collapsed.
 | model call | never | only when `llm: true`, candidates exist, **and** every deterministic candidate lost |
 | result | `{ ok, value, via, candidates }` / `{ ok: false, error, candidates }` | `{ ok, value, repaired?, llmUsed?, dropped? }` / `{ ok: false, error, llmUsed? }` |
 
-The failure kinds keep the **same three names**, but two mappings differ and a host must
-branch on the right one:
+The failure kinds keep the **same three names**, but the mappings are not interchangeable —
+a host must branch on the right one:
 
 | `error` | `normalizeModelJson` | `parseModelJson` |
 |---|---|---|
