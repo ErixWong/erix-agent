@@ -2299,8 +2299,9 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 `runState`、`judge`、`wrapup`、`compactionStats`、`toolOutputs` … —— `messages` 字段已消失。
 `src/store/message-rows.js#foldMessageRows`（两个内置 store 的 `load()` 都会调它）把消息行
 折回那条轮行，因此 `load()` 的宿主可见形状——以及
-`records.flatMap((record) => record.messages ?? [])` 这条口径——与改造前写出的账本逐字一致
-（金样：`scripts/message-journal-golden.mjs`）。
+`records.flatMap((record) => record.messages ?? [])` 这条口径——与改造前写出的账本**除 #439 新增的
+逐条 `ts` 外**逐字一致（下一条；金样：`scripts/message-journal-golden.mjs`，夹具里没有消息行，
+因此它钉的正是 #439 之前的形状）。
 
 对宿主 store 与宿主读方的以下推论：
 

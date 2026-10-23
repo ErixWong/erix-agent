@@ -2919,7 +2919,9 @@ gone. `src/store/message-rows.js#foldMessageRows` (called by `load()` of both
 built-in stores) folds the message rows back into that round row, so the
 host-visible shape of `load()` — and therefore
 `records.flatMap((record) => record.messages ?? [])` — is byte-identical to a
-journal written before the change (golden: `scripts/message-journal-golden.mjs`).
+journal written before the change **except for the per-message `ts` added by
+issue #439** (next bullet; golden: `scripts/message-journal-golden.mjs`, whose
+fixture has no message rows and therefore pins the pre-#439 shape).
 
 Consequences for a host store and for host readers:
 
