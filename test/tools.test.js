@@ -12,6 +12,7 @@ import {
   createCliTools,
   getCommandTimeoutMs,
   getExecTimeoutMs,
+  isInstallCommand,
   resolveExecCeiling,
   truncateResult,
   wrapExecuteTool,
@@ -460,6 +461,117 @@ test("install/compile commands get extended timeout while regular commands keep 
     // 显式设置全局超时则不放大
     process.env.ERIX_EXEC_TIMEOUT_MS = "2500";
     assert.equal(getCommandTimeoutMs("apt-get install -y gcc"), 2500);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
+  }
+});
+
+// issue #434 T1：install 档的判定口径 = 「切段 + 剥前缀之后的**段首**」，不是整条命令的开头。
+// 两张表分开写：正例是「漏网写法」（改动前全部落默认档），反例是本单的主要风险面——
+// 命令**里**出现过 `apt-get` / `npm install` 字样不等于它就是安装命令。
+const INSTALL_HEAD_CASES = [
+  "cd /app && pip install x",
+  "cd /app && npm ci",
+  "sudo -E apt-get install -y gcc",
+  "time npm ci",
+  "timeout 300 npm ci",
+  "NODE_ENV=prod npm install",
+  "set -e; pip install x",
+  "/usr/local/bin/pip3 install x",
+  "make -j4 && make install",
+];
+
+const NON_INSTALL_HEAD_CASES = [
+  "echo apt-get",
+  "echo \"npm install 很慢\"",
+  "grep 'apt-get install' README.md",
+  "sed -i 's/apt-get install/x/' f",
+  "node -e \"require('npm')\"",
+  "cat install.log",
+  "ls && echo done",
+  "git add -A && git commit -m x",
+  // 引号内的 `|` 不是段分隔符（`grep -E 'a|b'` 是一段）：切段必须尊重引号
+  "grep -E 'apt-get|npm install' README.md",
+  // `command -v` 只是查存在，不是执行：吃掉 `-v` 就会把 `npm` 顶到段首 ⇒ 假 install 档
+  "command -v npm",
+];
+
+// issue #434 T1 正例：分段 / 前缀剥完之后的段首命中 install 正则 ⇒ 放大档。
+// 每条改动前都是 120_000（整条命令开头是 `cd` / `sudo` / `time` / `VAR=值` / `set` / 绝对路径）。
+test("install tier fires on the segment head after separators and shell prefixes (issue #434 T1)", () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  try {
+    delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    for (const command of INSTALL_HEAD_CASES) {
+      assert.equal(
+        getCommandTimeoutMs(command),
+        240_000,
+        `${JSON.stringify(command)} 的段首是安装/编译类命令 ⇒ 必须落进 install 档（240s）`,
+      );
+    }
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
+  }
+});
+
+// issue #434 T1 反例（本单的主要风险面）：只是**提到**了安装命令/文件名，一律保持默认档。
+// 全局去掉 `^` 的写法会把这些全部误判成 install 档，白白给 240s。
+test("commands that merely mention install tools keep the default timeout (issue #434 T1)", () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  try {
+    delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    for (const command of NON_INSTALL_HEAD_CASES) {
+      assert.equal(
+        getCommandTimeoutMs(command),
+        120_000,
+        `${JSON.stringify(command)} 不是安装/编译命令（只是字样出现在参数里）⇒ 必须保持默认档（120s）`,
+      );
+    }
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
+  }
+});
+
+// issue #434 T1：分类是**纯函数**（零 IO）——`ERIX_EXEC_TIMEOUT_MS` 这类环境变量只影响「用哪个值」，
+// 不得影响「这是哪一类」；同一输入多次求值必须一致。
+test("isInstallCommand is a pure predicate: env cannot change the classification (issue #434 T1)", () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  try {
+    delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    for (const command of INSTALL_HEAD_CASES) assert.equal(isInstallCommand(command), true, command);
+    for (const command of NON_INSTALL_HEAD_CASES) assert.equal(isInstallCommand(command), false, command);
+    process.env.ERIX_EXEC_TIMEOUT_MS = "1";
+    assert.equal(isInstallCommand("cd /app && pip install x"), true, "显式超时环境变量不许改写分类");
+    assert.equal(isInstallCommand("echo apt-get"), false);
+    assert.equal(isInstallCommand(""), false);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
+  }
+});
+
+// issue #434 T1 不变式（#433 T0 那条）：放大档仍**严格小于**默认 idle 窗口，且显式 `ERIX_EXEC_TIMEOUT_MS`
+// 仍不被改写——新写法（分段/前缀）不得把任何一条正例抬到 idle 之上，也不得绕过显式配置。
+test("install tier stays strictly below the idle window and never rewrites an explicit timeout (issue #434 T1)", () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  try {
+    delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    const idleMs = DEFAULT_CHAT_IDLE_TIMEOUT_SECONDS * 1000;
+    for (const command of INSTALL_HEAD_CASES) {
+      assert.ok(
+        getCommandTimeoutMs(command) < idleMs,
+        `${JSON.stringify(command)} 的 install 档 ${getCommandTimeoutMs(command)}ms 必须 < idle 默认窗口 ${idleMs}ms`,
+      );
+    }
+    // 显式配置仍然一字不改：分段写法也不放大
+    process.env.ERIX_EXEC_TIMEOUT_MS = "2500";
+    for (const command of INSTALL_HEAD_CASES) {
+      assert.equal(getCommandTimeoutMs(command), 2500, `${JSON.stringify(command)} 不得绕过显式 ERIX_EXEC_TIMEOUT_MS`);
+    }
+    assert.equal(process.env.ERIX_EXEC_TIMEOUT_MS, "2500");
   } finally {
     if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
     else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
