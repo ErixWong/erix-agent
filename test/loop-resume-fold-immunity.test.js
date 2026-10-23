@@ -122,7 +122,7 @@ function assertResumedBody(body, label) {
  * 造一个「宿主 store」：写入仍走内置 memory store（落盘行就是引擎真产出的形状），
  * 只替换 `load()` 的返回值形状——三种宿主坏法各一档。
  *
- * @param {"builtin"|"unfolded"|"both"} shape
+ * @param {"builtin"|"unfolded"|"both"|"both-legacy"} shape
  */
 function createHostStore(shape) {
   const store = createMemoryTranscriptStore();
@@ -138,8 +138,23 @@ function createHostStore(shape) {
     // ① 宿主没折：`load()` 把落盘行原样交出来（erix-station 那种自研 store 的实测形状）
     if (shape === "unfolded") return structuredClone(rawRows);
     // ③ 两份都留：折好的载体行 + 原始消息行（宿主 materializer 自己折了一份，又没把原始行丢掉）
+    if (shape === "both") {
+      return [
+        ...structuredClone(await foldedLoad(runId)),
+        ...structuredClone(rawRows).filter((row) => row.kind === "message"),
+      ];
+    }
+    // ③' 两份都留，但载体是**上一版折叠**的产物（issue #439 升级现场）：≤0.24.0 折出来的消息上
+    // 没有逐条 `ts`，而原始消息行有 ⇒ 守卫若把信封字段算进「同一段正文」的判据就会判不等。
+    const legacyFolded = (await foldedLoad(runId)).map((record) => ({
+      ...record,
+      messages: (record.messages ?? []).map((message) => {
+        const { ts, ...rest } = message;
+        return rest;
+      }),
+    }));
     return [
-      ...structuredClone(await foldedLoad(runId)),
+      ...structuredClone(legacyFolded),
       ...structuredClone(rawRows).filter((row) => row.kind === "message"),
     ];
   };
@@ -150,7 +165,7 @@ function createHostStore(shape) {
  * 跑两轮（第 1 轮含一次写类工具调用），再在同一 store / runId 上 resume，返回观测面。
  *
  * @param {string} runId
- * @param {"builtin"|"unfolded"|"both"} shape
+ * @param {"builtin"|"unfolded"|"both"|"both-legacy"} shape
  */
 async function runTwoRoundsThenResume(runId, shape) {
   const { store, rawRows } = createHostStore(shape);
@@ -324,4 +339,24 @@ test("#401 R3 折叠层：未折 / 已折 / 两份都留 三种形状折出来�
   const bothRows = [...structuredClone(folded), ...structuredClone(rows)];
   assert.deepEqual(bodyOf(foldMessageRows(bothRows)), [["a", "b"]],
     "「两份都留」再折一遍不得让同一轮正文出现两次（工单 #401 事实④：实测 r1 会变成 assistant+user+assistant+user）");
+});
+
+// ── ③' 升级现场：「两份都留」但载体是**上一版折叠**的产物（消息不带逐条 `ts`） ────────
+//
+// 为什么单列一格：③ 用的是**本库当前**的折叠产物，载体里带的戳与消息行完全一样 ⇒ 守卫靠
+// 逐字段深比较就能过。而 #439 之前的折叠（≤0.24.0，或宿主自研折叠）产出的载体里消息**没有**
+// `ts`，原始消息行有 ⇒ 把信封字段算进「同一段正文」的判据就会判不等，正文静默拼第二遍
+// （实测 2 条变 4 条：`assistant+user+assistant+user`，正是 #401 R3 治过的坏形状），而且
+// `restoreResume` 会对 `load()` **再折一次** ⇒ 翻倍序列直接进 `ctx.messages`。
+// 判据与 ③ 相同（不翻倍 + 与 ② 逐字一致），只是换了载体的来源。
+test("#439 升级现场：宿主「两份都留」且载体由旧版折叠产出（消息无 `ts`）⇒ 正文不翻倍", async () => {
+  const legacy = await runTwoRoundsThenResume("issue-439-legacy-both", "both-legacy");
+
+  const r1Blocks = legacy.body.slice(0, 4).filter((line) => /tool_use|tool_result/u.test(line));
+  assert.equal(r1Blocks.length, 2,
+    `第 1 轮只该有 assistant（含 tool_use）与 user（含 tool_result）两条；翻倍时会变成 4 条。实测：${JSON.stringify(legacy.body)}`);
+  assertResumedBody(legacy.body, "③' 升级现场（旧版载体 + 消息行）");
+  assert.equal((legacy.timelineSection.match(/R1: writeFile/gu) ?? []).length, 1,
+    "同一轮的时间线条目也只能一条");
+  assert.deepEqual(legacy.filesWritten, [GOVERNED_WRITE_PATH], "写过的文件同样不重复计");
 });
