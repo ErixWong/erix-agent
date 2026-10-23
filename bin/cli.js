@@ -23,6 +23,8 @@ import {
   withToolHeartbeat,
 } from "./idle.js";
 import { buildCompactionContext, loadCliConfig, normalizeCompactionOption } from "./config.js";
+// issue #441：把引擎自带的可重试静默相位截止接到 provider（取值关系见 bin/provider-timeouts.js 头注释）。
+import { resolveProviderPhaseTimeouts } from "./provider-timeouts.js";
 import {
   closeAllMcpServers,
   createMcpProxyTool,
@@ -747,11 +749,20 @@ async function runChatWithNotes({
     throw new CliError("chat 需要提供 prompt，例如：erix chat \"你好\"");
   }
 
+  // issue #441：静默相位截止（firstByte / streamIdle / request）按 `--idle-timeout` 派生——它们到点抛的是
+  // **可重试**的 `timeout`，于是「provider 静默」落到既有重试通道上，而不是被 idle 的不可重试 abort 收尾。
+  // `timeoutMs` 那条 legacy 绝对截止仍按原样传（idle 关闭时它就是唯一的那条，行为逐字不变）。
+  const providerPhaseTimeouts = resolveProviderPhaseTimeouts({
+    idleSeconds: idleTimeout,
+    config,
+    warn: (line) => console.error(line),
+  });
   const provider = providerOverride ?? createOpenAIProvider({
     ...config,
     endpoint: config.endpoint,
     apiKey: config.apiKey,
     model: config.model,
+    ...providerPhaseTimeouts,
     timeoutMs: config.timeout ?? 300_000,
     maxTokens,
   });
@@ -895,12 +906,15 @@ async function runChatWithNotes({
   // 终局」在同一文件内按 runId join（per-model 校准指标不需第二条档案）。只挑这一条，其余事件
   // 不抄进 judge.log。引擎现状「宿主 onEvent 抛错是 fatal 的」（#173），而写入器内部已吞错，
   // 不会把已跑完的 run 带成 failed。
-  const onEvent = appendJudgeLogRecord
-    ? (event) => {
-      if (event?.type !== "run_outcome") return;
-      appendJudgeLogRecord(event);
-    }
-    : undefined;
+  // issue #441：`onEvent` 现在**总是**注册（此前只在 judge-log 可写时注册）。两件事：
+  //   ① `attempt` / `recovering` 喂一次 idle 表——重试本身是进展（引擎已经决定重试、并真的发起了下一次
+  //      尝试）；不喂的话默认 300s 窗口会在退避期把重试打断，又回到「静默 = 不可重试 abort」的老路
+  //      （派生出来的相位截止严格小于 idle 窗口，但**退避**不在那个窗口里，只能靠这里补）。
+  //   ② `run_outcome` 汇总记录照旧落 judge.log。
+  const onEvent = (event) => {
+    if (event?.type === "attempt" || event?.type === "recovering") idle?.touch();
+    if (event?.type === "run_outcome") appendJudgeLogRecord?.(event);
+  };
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({ todo: !todoDisabled })}`;
   systemPrompt += buildArchiveNotice(archiveDir);

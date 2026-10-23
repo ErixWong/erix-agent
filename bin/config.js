@@ -108,9 +108,16 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
   if (!model) missing.push("LLM_KIT_MODEL or ERIX_DEFAULT_MODEL or slots.default.model");
   if (missing.length > 0) throw missingConfigError(missing);
 
+  // issue #441：静默相位截止的四个键——CLI 自己按 `--idle-timeout` 派生（见 bin/provider-timeouts.js），
+  // 但用户也要能直接配（此前它们不在白名单里，配置文件写了等于没写）。
+  // 显式配置**优先于派生值**（只警告不改值，口径与 `ERIX_EXEC_TIMEOUT_MS` 一致）。
   const forwardedFields = [
     "protocol",
     "timeout",
+    "requestTimeoutMs",
+    "firstByteTimeoutMs",
+    "streamIdleTimeoutMs",
+    "streamTotalTimeoutMs",
     "model_type",
     "supports_reasoning",
     "thinking_format",
