@@ -257,6 +257,13 @@ export async function restoreResume(ctx) {
           // 一条合法的 tool_use/tool_result 配对。两个信息只能从账本拿：本轮下一个可用 `seq`、以及
           // 该轮首片行的 dedupKey（无载体行时消息行原样留在 `load()` 输出里，所以两者都看得见）。
           const crashRound = ctx.resumeRunSnapshot.round;
+          // issue #424（守卫事实）：崩溃轮的正文里**是否已有 assistant 行**——判据是**已折叠的账本条目**
+          // （`ledgerEntries`，按轮号看），不是 `ctx.messages`：升级路径（旧账本 + 快照补全）会把崩溃轮的
+          // assistant 正文从快照补进内存，账本里却没有那一行。本函数只把事实交出去，
+          // 写不写由写侧决定（`orchestrator.js#journalResumeUnpersistedToolResults`）。
+          ctx.resumeCrashRoundAssistantPersisted = ledgerEntries.some((entry) => (
+            entry.round === crashRound && entry.message?.role === "assistant"
+          ));
           // 两个只能从账本拿的信息：**本轮下一个可用的 `seq`**（否则重跑/续跑会在同 `(round, seq)`
           // 上携不同正文 ⇒ 去重冲突），以及**该轮首片行的 dedupKey**（无载体行时消息行原样留在
           // `load()` 输出里，所以两者都看得见）。seq 的地板取「该轮已有正文的条数」：折叠过的轮里
@@ -326,23 +333,25 @@ export async function restoreResume(ctx) {
             }
           }
           pendingTail = pendingTailToolUses(ctx.messages);
-          const recordedIds = new Set(
-            ctx.messages.flatMap((message) => blocksFor(message?.content))
-              .filter((block) => block?.type === "tool_result")
-              .map((block) => block.tool_use_id),
-          );
           // 崩溃前已产出、但**没来得及落盘**的结果：账本里没有 ⇒ 从快照接回来。接回的位置很讲究：
           // 它们属于崩溃那一轮的那条聚合消息，必须**合进**账本里已落盘的那条（否则 assistant 的
           // tool_use 与紧随其后的 tool_result 条数对不上，`validateMessages` 当场报 invalid_messages）。
+          // issue #420：判据是账本（`ledgerToolResultIds`）不是上下文
+          // （`ctx.messages`）：升级路径可能已把结果补进上下文，
+          // 账本里却仍没有那一行（合并自己按 id 去重）。
           const replayResults = [...ctx.resumeRunSnapshotResults.values()]
-            .filter((toolResult) => !recordedIds.has(toolResult.tool_use_id));
+            .filter((toolResult) => !ledgerToolResultIds.has(toolResult.tool_use_id));
           if (replayResults.length > 0) {
             if (mergeToolResultsIntoMessages(ctx.messages, replayResults) === false) {
               const replayMessage = { role: "user", content: replayResults };
               ctx.messages.push(replayMessage);
               ctx.messageRounds.set(replayMessage, ctx.resumeRunSnapshot.round);
             }
-            // 交给 orchestr 逐条入账（它们同样是「已成型但未落盘」的消息）。
+            // issue #420：**真实交接**（修前是死字段，注释承诺的入账
+            // 全仓无读取方）。`restoreResume` 的 resume 分支只读 transcript 账本；
+            // 账本写入一律在 orchestrator（`appendMessageRowToTranscript` / `persist`），
+            // 失败语义与 `seq` 计数器只有一处。写入口在 orchestrator 的
+            // `journalResumeUnpersistedToolResults`：补跑段之前逐条写成消息行。
             ctx.resumeUnpersistedToolResults = replayResults;
           }
           const pendingTools = ctx.resumeRunSnapshot.pendingToolUses
