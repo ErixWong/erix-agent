@@ -96,10 +96,11 @@ export function tryParseWrapupJson(text) {
 /**
  * 归一化请求的「不思考」取值——**唯一字面量**（issue #419 ① 后半段）。
  *
- * 为什么要有这个常量：归一化这条路只有**一个**请求构造点（`normalizeModelJson` 的
- * `buildL2Request`，`src/normalization/parse-model-json.js`），但它的两个调用方
- * （引擎内联的收尾归一化与公开入口 `normalizeWrapupWithLlm`）都必须发同一个值。
- * 本常量是那条语义的唯一出处：`parse-model-json.js` 引用它而**不是**字面量。
+ * 为什么要有这个常量：引擎里「只输出一段文本、不该思考」的调用共用同一个字面量——
+ *   · 归一化：`normalizeModelJson` 的 `buildL2Request`（`src/normalization/parse-model-json.js`），
+ *     它的两个调用方（引擎内联的收尾归一化与公开入口 `normalizeWrapupWithLlm`）都走这一处；
+ *   · 折叠摘要：`src/compact/provider-summarizer.js`。
+ * 本常量是那条语义的唯一出处：两处都引用它而**不是**字面量。
  *
  * **故意不导出到 `src/index.js`**：这是内部实现细节，不是对外契约（对外签名/选项/返回值一字未改）。
  * 也不加进 `RUN_TOOL_LOOP_OPTION_NAMES`——它不是选项，是语义。
