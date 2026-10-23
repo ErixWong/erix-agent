@@ -25,6 +25,11 @@ import {
 } from "../reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "../reflection/l0.js";
 import { tryParseWrapupJson, normalizeWrapupWithLlm } from "../reflection/wrapup.js";
+// issue #419 ① 后半段：循环里那份**内联**归一化请求（下面 `requestForJudge`）与
+// `normalizeWrapupWithLlm` 共用同一个「不思考」字面量，不许两处各写各的（否则日后必然漂移）。
+// ⚠ 单独一条 import 语句是**故意**的：上面那行 `normalizeWrapupWithLlm` 是死 import，
+//   它是删还是改成调用 `normalizeWrapupWithLlm` 属 #419 ③，**本票不动**（保持该行逐字不变）。
+import { NORMALIZATION_REASONING_EFFORT } from "../reflection/wrapup.js";
 import {
   buildJudgePrompt,
   buildTimeline,
@@ -3928,6 +3933,10 @@ export async function runToolLoop(options) {
 只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果","findings":{"label":"value"}}。findings 只做搬运：value 必须逐字摘自本轮 agent 原文（原样复制，不得改写/规整/补全/翻译，包括引号与标点）；原文里抄不到的值的就省略该条，宁可少写。` }],
           }],
           signal,
+          // issue #419 ① 后半段：这条内联请求才是**真在跑**的收尾归一化（`normalizeWrapupWithLlm`
+          // 全仓没人调用），所以「不思考」必须也发在这里，且取值与库函数共用同一个常量
+          // （`NORMALIZATION_REASONING_EFFORT`）——只修库函数不会让「正文 0 字」的症状消失。
+          reasoning_effort: NORMALIZATION_REASONING_EFFORT,
         };
         if (maxTokens !== undefined) requestForJudge.maxTokens = maxTokens;
         if (temperature !== undefined) requestForJudge.temperature = temperature;
