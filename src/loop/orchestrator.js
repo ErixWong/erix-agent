@@ -24,11 +24,13 @@ import {
   extensionAllowed,
 } from "../reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "../reflection/l0.js";
-import { tryParseWrapupJson, normalizeWrapupWithLlm } from "../reflection/wrapup.js";
+import { tryParseWrapupJson } from "../reflection/wrapup.js";
 // issue #419 ① 后半段：循环里那份**内联**归一化请求（下面 `requestForJudge`）与
-// `normalizeWrapupWithLlm` 共用同一个「不思考」字面量，不许两处各写各的（否则日后必然漂移）。
-// ⚠ 单独一条 import 语句是**故意**的：上面那行 `normalizeWrapupWithLlm` 是死 import，
-//   它是删还是改成调用 `normalizeWrapupWithLlm` 属 #419 ③，**本票不动**（保持该行逐字不变）。
+// `normalizeWrapupWithLlm`（`src/reflection/wrapup.js` 的公开入口）共用同一个「不思考」字面量，
+// 不许两处各写各的（否则日后必然漂移）。
+// issue #430 顺手删掉本文件顶部那条**死 import**（`normalizeWrapupWithLlm` 在这里从来没有调用点，
+// 它是 `src/index.js` 的公开导出、契约中英各一处符号锚点、`test/wrapup*.test.js` 多格在用 ⇒ 只删
+// 这条 import，**不删函数本体**）。
 import { NORMALIZATION_REASONING_EFFORT } from "../reflection/wrapup.js";
 import {
   buildJudgePrompt,
