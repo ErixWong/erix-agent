@@ -74,7 +74,9 @@ jobs:
       - name: Test hygiene guard self-test
         run: node scripts/test-hygiene-check.mjs --self-test
 
-      # --checkJs 棘轮（issue #214）：基线 119 / --with-tools 162，只减不增。
+      # --checkJs 棘轮（issue #214）：当前基线 116 / --with-tools 152，只减不增。
+      # ⚠ 基线的**唯一真值**是 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT` / `BASELINE_WITH_TOOLS`；
+      #   这行只是人读提示（不在 `check:docs` 覆盖面内，漂了没人拦），**漂了以脚本为准**。
       # 干净 checkout 里没有生成的 src/**/*.d.ts；若残留会让棘轮脚本自己硬失败（假绿防线）。
       - name: Type-error ratchet
         run: npm run check:types
