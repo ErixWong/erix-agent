@@ -5,6 +5,8 @@ import { normalizeWrapupWithLlm, tryParseWrapupJson } from "../src/reflection/wr
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { createMockFetch } from "./helpers/mock-fetch.js";
+import { createOpenAIProvider } from "../src/providers/openai.js";
 import { parseModelJson } from "../src/text/parse-model-json.js";
 
 test("tryParseWrapupJson parses a plain protocol object", () => {
@@ -341,6 +343,71 @@ test("normalizeWrapupWithLlm parses the evaluator response", async () => {
   assert.equal(requests[0].maxTokens, 64);
   assert.equal(requests[0].temperature, 0);
   assert.match(requests[0].messages[0].content[0].text, /已经完成了/);
+});
+
+// issue #419 ①：归一化调用必须**总是**带「不思考」，且不新增任何对外选项（三格一起钉住：
+// 不传选项 / 传全选项 / 函数式 evaluator 分支），并落到真 provider 的 HTTP 请求体上。
+test("normalizeWrapupWithLlm always sends reasoning_effort:none (issue #419)", async () => {
+  const requests = [];
+  const evaluator = {
+    async chat(request) {
+      requests.push(request);
+      return { content: [{ type: "text", text: '{"done":true,"summary":"s","output":"o"}' }] };
+    },
+  };
+
+  // ① 不传任何选项：字段仍然在场（默认语义，不是 opt-in）
+  await normalizeWrapupWithLlm("已完成", evaluator);
+  // ② 传全选项：字段不被调用方参数冲掉
+  await normalizeWrapupWithLlm("已完成", evaluator, {
+    signal: new AbortController().signal,
+    maxTokens: 120,
+    temperature: 0,
+  });
+  // ③ 函数式 evaluator（`typeof evaluator === "function"` 那条分支）拿到的也是同一份请求
+  let functionFormRequest;
+  await normalizeWrapupWithLlm("已完成", async (request) => {
+    functionFormRequest = request;
+    return { content: [{ type: "text", text: '{"done":true,"summary":"s","output":"o"}' }] };
+  });
+
+  assert.equal(requests.length, 2);
+  for (const request of [...requests, functionFormRequest]) {
+    assert.equal(request.reasoning_effort, "none");
+  }
+  // 反向钉：不该多出别的思考开关（只跟 judge 的既有写法一致，不自创第三种）
+  assert.equal(Object.hasOwn(requests[0], "thinking"), false);
+  assert.equal(Object.hasOwn(requests[0], "enable_thinking"), false);
+  assert.equal(Object.hasOwn(requests[0], "chat_template_kwargs"), false);
+});
+
+test("normalizeWrapupWithLlm lands reasoning_effort:none in the real provider request body (issue #419)", async () => {
+  const fetchImpl = createMockFetch([{
+    json: {
+      choices: [{
+        message: { content: '{"done":true,"summary":"归一化","output":"结果"}' },
+        finish_reason: "stop",
+      }],
+    },
+  }]);
+  const provider = createOpenAIProvider({
+    endpoint: "https://api.example.test/v1",
+    apiKey: "test-key",
+    model: "qwen3.8-flash-next",
+    fetchImpl,
+  });
+
+  const result = await normalizeWrapupWithLlm("已经完成了", provider, {
+    maxTokens: 120,
+    temperature: 0,
+  });
+
+  assert.deepEqual(result, { done: true, summary: "归一化", output: "结果" });
+  // 「发出的请求体里必须有那个字段」——这里读的是 fetch 真正收到的那份 body
+  const body = fetchImpl.calls[0].body;
+  assert.equal(body.reasoning_effort, "none");
+  assert.equal(body.max_tokens, 120);
+  assert.equal(body.temperature, 0);
 });
 
 test("arbitrary JSON in prose is not mistaken for a wrapup marker (reviewer #1)", () => {
