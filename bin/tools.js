@@ -13,6 +13,12 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 
+import {
+  DEFAULT_CHAT_IDLE_TIMEOUT_SECONDS,
+  EXEC_CEILING_MARGIN_MS,
+  execCeilingMsForIdle,
+} from "./idle.js";
+
 // 文件工具（readFile/rg/grep/tree/writeFile）的规范实现在 src/tools/file-tools.js，CLI 反过来 import 它
 // （issue #184：ADR-005 第二层，先例 src/tools/notes.js）。bin/ 只做装配与呈现。
 import { createFileTools, FILE_TOOL_DEFINITIONS, truncateDisplayText } from "../src/tools/file-tools.js";
@@ -88,29 +94,89 @@ const OUTPUT_LIMIT = 4096;
 // 尾部保留比例（截断时）：结局（报错 / exit / 汇总）留在尾部可见
 const TRUNCATE_TAIL_SHARE = 0.25;
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
-const INSTALL_EXEC_TIMEOUT_MS = 300_000; // 安装/编译类命令（apt/pip/make 等）给更长时间
+// 安装/编译类命令（apt/pip/make 等）给更长时间——但**必须短于 chat 的 idle 窗口**（issue #433 T0）：
+// idle 的计时起点更早（模型请求期就开始走），同值时 idle 必然先响 ⇒ 这条「命令超时」事实上不可达，
+// 一条挂住的安装命令的结局是「整个 run 被打死」而不是「命令超时」。所以它由 idle 默认窗口减去
+// `EXEC_CEILING_MARGIN_MS` 现算（300s − 60s = 240s），不是另写一个魔法数：改 idle 默认值时这条关系
+// 自动跟着走，不会留下一个「文档没声明、门禁也拦不住」的悬空常量。
+const INSTALL_EXEC_TIMEOUT_MS = DEFAULT_CHAT_IDLE_TIMEOUT_SECONDS * 1000 - EXEC_CEILING_MARGIN_MS;
 const EXEC_MAX_BUFFER = 1024 * 1024;
 
 // 安装/编译/下载类命令前缀（benchmark 实测 apt-get install 频繁超时）
 const INSTALL_COMMAND_PATTERN = /^(?:sudo\s+)?(?:apt-get|apt|pip\d?|pip3|npm|yarn|pnpm|make|cmake|gcc|g\+\+|cc|configure|bash\s+.*\.sh|curl|wget)\b/;
 
-// ERIX_EXEC_TIMEOUT_MS overrides the default timeout for foreground commands.
-export function getExecTimeoutMs() {
+/** `ERIX_EXEC_TIMEOUT_MS` 的显式值（未设/非法 ⇒ `null`）。「显式」与「默认」必须能区分：
+ *  钳天花板时**只动默认值，不动显式配置**（既有语义，见 getCommandTimeoutMs）。 */
+function explicitExecTimeoutMs() {
   const configured = Number(process.env.ERIX_EXEC_TIMEOUT_MS);
-  return Number.isFinite(configured) && configured > 0
-    ? configured
-    : DEFAULT_EXEC_TIMEOUT_MS;
+  return Number.isFinite(configured) && configured > 0 ? configured : null;
 }
 
-// 按命令类型选择超时：安装/编译/下载类命令超时更长（默认 300s），其余默认 120s。
-export function getCommandTimeoutMs(command) {
-  const base = getExecTimeoutMs();
-  if (!INSTALL_COMMAND_PATTERN.test(String(command ?? "").trim())) return base;
-  // 用户显式设置了全局超时则不放大（尊重显式配置）
-  const configured = Number(process.env.ERIX_EXEC_TIMEOUT_MS);
-  return Number.isFinite(configured) && configured > 0
-    ? configured
-    : INSTALL_EXEC_TIMEOUT_MS;
+// ERIX_EXEC_TIMEOUT_MS overrides the default timeout for foreground commands.
+export function getExecTimeoutMs() {
+  const explicit = explicitExecTimeoutMs();
+  return explicit === null ? DEFAULT_EXEC_TIMEOUT_MS : explicit;
+}
+
+/**
+ * 按命令类型选择超时：安装/编译/下载类命令超时更长（默认 240s = idle 默认窗口 300s − 60s），
+ * 其余默认 120s。
+ *
+ * `ceilingMs`（issue #433 T0）：装配处按 `--idle-timeout` 算出来的天花板（`execCeilingMsForIdle`）。
+ * 未显式配置 `ERIX_EXEC_TIMEOUT_MS` 时按它收口（`Math.min`）；显式配置时**一字不改**
+ * （尊重显式配置是既有语义，装配处只警告）。
+ *
+ * @param {string} command
+ * @param {{ ceilingMs?: number | null }} [options]
+ * @returns {number} 毫秒
+ */
+export function getCommandTimeoutMs(command, { ceilingMs } = {}) {
+  const explicit = explicitExecTimeoutMs();
+  const install = INSTALL_COMMAND_PATTERN.test(String(command ?? "").trim());
+  const tier = explicit ?? (install ? INSTALL_EXEC_TIMEOUT_MS : DEFAULT_EXEC_TIMEOUT_MS);
+  // 显式配置不放大也不钳（既有语义）；未显式配置时按 idle 天花板收口。
+  if (explicit !== null) return tier;
+  if (!Number.isFinite(ceilingMs) || ceilingMs <= 0) return tier;
+  return Math.min(tier, ceilingMs);
+}
+
+/**
+ * 装配处的一次性口径：把 exec 天花板按 idle 算出来（issue #433 T0）。
+ *
+ * 返回给 `createCliTools({ execCeilingMs })` 的那份值，同时把「钳制发生了 / 显式配置超限」讲清楚：
+ *  - idle 未启用 ⇒ `null`（不钳，也不打日志：没有窗口就没有要先响的对象）；
+ *  - 用户显式设了 `ERIX_EXEC_TIMEOUT_MS` 且超过天花板 ⇒ **只警告、不改值**，返回 `null`（不钳）；
+ *  - 默认值（install 档）本来就高于天花板（`--idle-timeout` 小于 300s 时）⇒ 钳到天花板并打一行日志。
+ *    默认 idle=300s 时天花板恰好等于 install 档默认值（240s），**钳制没有改变任何取值 ⇒ 不打日志**
+ *    （每次 chat 都打一行「钳了但没变」只会是噪声）。
+ *
+ * @param {number} idleSeconds `--idle-timeout` 的秒数
+ * @param {{ warn?: (line: string) => void }} [options]
+ * @returns {number | null} 毫秒；`null` = 不钳
+ */
+export function resolveExecCeiling(idleSeconds, { warn = (line) => console.error(line) } = {}) {
+  const ceilingMs = execCeilingMsForIdle(idleSeconds);
+  if (ceilingMs === null) return null;
+  const explicit = explicitExecTimeoutMs();
+  if (explicit !== null) {
+    if (explicit > ceilingMs) {
+      warn(
+        `⚠️ ERIX_EXEC_TIMEOUT_MS=${explicit}ms 超过 idle 天花板 ${ceilingMs}ms`
+        + `（--idle-timeout ${idleSeconds}s − ${EXEC_CEILING_MARGIN_MS / 1000}s）：显式配置优先，**不钳值**；`
+        + "挂住的命令会先被 idle 看门狗打死（整个 run 中止），而不是先拿到「命令超时」结果。",
+      );
+    }
+    return null;
+  }
+  if (INSTALL_EXEC_TIMEOUT_MS > ceilingMs) {
+    warn(
+      `exec 天花板已钳到 ${ceilingMs}ms（install 档默认 ${INSTALL_EXEC_TIMEOUT_MS}ms > `
+      + `--idle-timeout ${idleSeconds}s − ${EXEC_CEILING_MARGIN_MS / 1000}s）：`
+      + "否则挂住的安装命令会先打死整个 run，而不是先报「命令超时」。",
+    );
+    return ceilingMs;
+  }
+  return ceilingMs;
 }
 
 function normalizeSchema(schema) {
@@ -410,7 +476,7 @@ function isBackgroundCommand(command) {
   return command.trim().endsWith("&");
 }
 
-function executeExecCommand(input, cwd) {
+function executeExecCommand(input, cwd, execCeilingMs) {
   const command = input?.command;
   if (typeof command !== "string") {
     return Promise.resolve("错误：命令必须是字符串");
@@ -428,7 +494,7 @@ function executeExecCommand(input, cwd) {
     );
   }
 
-  const timeoutMs = getCommandTimeoutMs(command);
+  const timeoutMs = getCommandTimeoutMs(command, { ceilingMs: execCeilingMs });
   return new Promise((resolve) => {
     execFile(
       "/bin/sh",
@@ -596,9 +662,17 @@ function normalizeCommand(command) {
 }
 
 
+/**
+ * @param {object} [options]
+ * @param {string} [options.cwd]
+ * @param {boolean} [options.todo]
+ * @param {number | null} [options.execCeilingMs] exec 天花板（issue #433 T0）：装配处按 idle 算出的
+ *   `execCeilingMsForIdle(...)`；`null`/未传 = 不钳（`getCommandTimeoutMs` 的默认行为）。
+ */
 export function createCliTools({
   cwd = process.cwd(),
   todo = true,
+  execCeilingMs = null,
 } = {}) {
   const root = path.resolve(cwd);
   const todoEnabled = todo !== false;
@@ -688,7 +762,7 @@ export function createCliTools({
   }
 
   const executors = {
-    exec: (input, context) => executeExecCommand(input, root),
+    exec: (input, context) => executeExecCommand(input, root, execCeilingMs),
   };
   // 文件工具名以库里的 definitions 为准，避免两处名单漂移。
   for (const { name } of fileTools.definitions) {
