@@ -221,6 +221,18 @@ test("--self-test：反向证（真树删消费者 +1 / 坑 1 / 坑 2 / 坑 3）
   assert.match(result.stdout, /export-consumer-check --self-test: OK/u);
 });
 
+test("npm script 与中英 AGENTS 各有一行（成对，且写清「清点、不判定」）", () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  assert.equal(pkg.scripts["check:exports"], "node scripts/export-consumer-check.mjs", "npm script 必须指向这个脚本");
+  for (const doc of ["AGENTS.md", "AGENTS_cn.md"]) {
+    const rows = readFileSync(join(ROOT, doc), "utf8")
+      .split("\n").filter((line) => line.startsWith("| `npm run check:exports` |"));
+    assert.equal(rows.length, 1, `${doc} 的「开发命令」表里要有且只有一行 \`npm run check:exports\`（中英成对）`);
+    assert.match(rows[0], /不判定|no gate, no judgement/u, `${doc} 那一行必须写清「清点、不判定」——这是本票的红线，不是修辞`);
+    assert.match(rows[0], /scripts\/export-consumer-check\.mjs/u, `${doc} 那一行要点名脚本（check:docs 会核这个路径存在）`);
+  }
+});
+
 test("computeInventory 是纯函数：同一份记录跑两遍结果一致，且不写盘", () => {
   const records = [
     { rel: "src/index.js", text: 'export { a } from "./mod.js";\n' },
