@@ -27,6 +27,7 @@
 | **被截断的工具调用轮**不再丢终稿：强制收尾注入前会先结清悬空 `tool_use`，于是这类 run 以 `continuation_exhausted` 收场（CLI 退出码 **4**），而不是 `failed` / `invalid_messages`（退出码 **1**）（§12） | 要——只要你把 `failed` / 退出码 1 当「可重试」 |
 | `foldMessageRows` 从包根导出，且 resume 会把 `store.load()` 再折一次：`load()` 原样返回落盘行的 store 不再丢工具配对（§13） | 不用——只有你自己的 `load()` 原样返回落盘行时才要动手，那时请折 |
 | **恢复**的 run 现在会带一条引擎控制消息，说明「这是复活赛」、崩溃时哪些 `tool_use` 没有结果、以及「动手前先勘验」（§14） | 要——只要你在恢复的 run 上 diff `messages`、数档案行数或称输入 token |
+| 流式思考除了 `delta.reasoning_content`，现在也认别名 `delta.reasoning`（字符串**或** `{ content }`）与 `delta.reasoning_text`，且每个 chunk 只取一个字段——思考字段被中继改了名字的 run 不再 100% 丢思考（§15） | 要——只要你渲染思考、或断言 assistant 消息的块类型：以前只有 `text` 的地方现在会多一个 `reasoning` 块 |
 
 一句话版本：**以前要靠你推断的事实，现在写在明面上了。** 引擎没有改它**做**什么，改的是它**说**什么——
 状态文件里、错误对象上，以及模型会读到的那几处工具输出。
@@ -514,16 +515,82 @@ guard 判 `accept` 的恢复 run 就是 `verified`，与模型有没有照告示
 **要不要动手？** 只有当你在**恢复的** run 上 diff `messages`、数档案行数或称输入 token 时才要。其余一律
 没动：没有新选项、没有新导出、没有新记录种类、没有新消息字段、没有新终止原因，首次运行的形状也不变。
 
-## 15. 自检
+## 15. 流式思考不再因为中继换了字段名就整段丢掉（issue #407）
+
+**症状。** `chatStream`（`src/providers/openai.js`）累加流式思考时只认**一个** SSE 字段
+`delta.reasoning_content`。于是思考字段叫别的名字的模型，思考**全丢且不响**：不进累加器、
+`onReasoningDelta` 从不回调、不发 `reasoning_delta` 事件，最终响应里也**没有** `reasoning` 块。
+2026-10-23 走本仓自己的 `chatStream`（`src/providers/openai.js`）打真实中继 `api.ai.erix.vip` 实测，
+两个模型同一时刻、同一配置：
+
+| 模型 | 实际收到的思考字段（累计字符） | provider 交回的 content 块（修复前） | 修复后 |
+| --- | --- | --- | --- |
+| `qwen3.8-flash-next`（即 `~/.erix/config.json` 的 `slots.default`） | `reasoning` — 368 | `["text"]` — 思考 100% 丢 | `["reasoning","text"]` |
+| `deepseek-flash` | `reasoning` — 264 / 785 | `["text"]` — 思考 100% 丢 | `["reasoning","text"]` |
+
+同一处还连带一个静默后果：`chatStream`（`src/providers/openai.js`）末尾「流里没给 usage 就补一次
+探针」有三个触发条件，其中之一是累加到的 `reasoning` 非空。正是这类流让那一格一直是灭的——
+想得很多的 run 也可能连 usage 都没有。
+
+**字段名属于请求体，不属于模型。** 在你想「简化」任何东西之前先把这句记住。用裸 `fetch` 手搓请求时
+`deepseek-flash` 回的是 `reasoning_content`；换成引擎自己拼的请求体，**同一个模型**改回 `reasoning`。
+两种形状在真实世界里都存在，所以别名清单**不许**因为「本中继现在只发 `reasoning`」就把
+`reasoning_content` 砍掉——这也正是修复方向选「**加别名 + 既有字段逐字不变**」而不是「换字段名」的原因。
+
+**新增了什么。** `streamReasoningText`（`src/providers/openai.js`）现在按单一别名清单
+`REASONING_DELTA_FIELDS`（`src/providers/openai.js`）的优先级
+`reasoning_content` → `reasoning` → `reasoning_text` 读每个 chunk 的思考增量，并且 `delta.reasoning`
+被包成 `{ content: "…" }` 时同样算思考增量（有的网关就这么干）。
+
+```jsonc
+// 一个 SSE chunk 的 choices[0].delta——下面每一种形状现在都是思考增量
+data: {"choices":[{"delta":{"reasoning_content":"思考…"}}]}
+data: {"choices":[{"delta":{"reasoning":"思考…"}}]}
+data: {"choices":[{"delta":{"reasoning":{"content":"思考…"}}}]}
+data: {"choices":[{"delta":{"reasoning_text":"思考…"}}]}
+```
+
+**同一个 chunk 只取一个字段**——优先级最高、且真的有内容的那一个。所以同一段思考不会被累加两遍，
+`onReasoningDelta` 与 `reasoning_delta` 也不会为一个 chunk 各发两次。字段**在场但为空**时不占优先级
+名额：下一个别名照样会被看——这正是「网关一边发 `reasoning_content: ""` 一边把真内容放在
+`reasoning`」时不会退回「又没了思考」的原因。
+
+| 一个 chunk 里的 delta 形状 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `reasoning_content: "…"` | 累加 | **逐字不变** |
+| `reasoning: "…"` | 丢 | 累加 |
+| `reasoning: { content: "…" }` | 丢 | 累加 |
+| `reasoning_text: "…"` | 丢 | 累加 |
+| 同一 chunk 里两个或三个别名 | 只取 `reasoning_content` | 取优先级最高的非空那一个，**只取一次** |
+
+**故意没动的地方：`src/messages/canonical.js`。** `openAIResponseToCanonical`
+（`src/messages/canonical.js`）一直两个字段都认（先 `reasoning_content`，`else if` fallback 到
+`reasoning`，注释点名 GLM/Zhipu 风格），所以非流式从来是对的，这条不对称**只存在于流式一侧**。
+那个文件是**按原样留着**的：它判的是「整条 message 一次判定」，流式这一侧判的是「逐 chunk 增量」，
+并成一份 helper 要么把 chunk 语义灌进整条消息判定，要么改掉 canonical 的既有 fallback 顺序。
+同一份理由也写在 `streamReasoningText`（`src/providers/openai.js`）上方的注释里。
+
+**遗留：两边仍不等价。** 流式认三个别名，`openAIResponseToCanonical`（`src/messages/canonical.js`）
+只认两个 ⇒ `reasoning_text` 在非流式路径上仍不生效，usage 探针也算——因为 `probeStreamUsage`
+（`src/providers/openai.js`）走的就是非流式那条 `chat`。两份清单要不要收敛成一份共享定义是单独
+决策，本次发布没做。
+
+**你要动手吗？** 只有在你渲染思考、或断言 assistant 消息的块类型时才要动。中继回
+`reasoning` / `reasoning_text` 的 run，现在最终消息里会多一个排在 `text` 之前的 `reasoning` 块，
+事件流里也会多出以前根本没有的 `reasoning_delta`——请数块**类型**，而不是数它的缺席。中继本来就发
+`reasoning_content` 的 run 逐字不变；其余也没动：没有新选项、没有新导出、没有新事件类型、没有新块
+类型，非流式路径一字未改。
+
+## 16. 自检
 
 ```bash
-npm test                       # 1,985 tests，0 失败（1,976 通过 + 9 skipped）
+npm test                       # 1,992 tests，0 失败（1,983 通过 + 9 skipped）
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # 离线、零模型调用；断言 finalGuard 的载荷面
 npm run check:release          # 打包 → 装进一次性项目 → 跑随包契约套件
 ```
 
-对你的宿主，升级前有十一个问题值得用测试回答：
+对你的宿主，升级前有十二个问题值得用测试回答：
 
 1. **状态文件。** 造一个削减账超过 32 条的 run：`compactionStatsWindow.total` 等于全量条数、
    `dropped === total − 32`，并且**旧**状态文件（没有窗口键）照旧 validate、照旧可续跑。
@@ -568,18 +635,26 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    连续续跑两次：仍然只有一条告示。然后用**不带** `resume` 的同一份脚本跑一遍，断言请求与你升级前逐字
    一致——这一对才是「注入只发生在恢复路径」的证据（§14）。
 
-## 16. 没变的
+12. **思考别名。** 让脚本化上游的 SSE chunk 把思考放在 `delta.reasoning`（而不是
+   `delta.reasoning_content`），拿它驱动 `chatStream`（`src/providers/openai.js`）：每个思考 chunk 必须
+   恰好产生一条 `reasoning_delta` 事件**与**一次同文本的 `onReasoningDelta` 回调，且最终消息必须带着
+   一个排在 `text` 之前的 `reasoning` 块。再把同样的文本换成 `delta.reasoning` 的 `{ content: "…" }`
+   形状、换成 `delta.reasoning_text`：同样的断言、同样的期望。最后把文本放回 `delta.reasoning_content`，
+   断言这三处读与你升级前逐字一致——这一对才是「别名清单没搬走原有字段」的证据（§15）。
 
-没有 store 方法签名、没有返回类型、没有选项名、没有**删掉**的导出（**新增**了一个，见 §13）、没有记录种类、没有消息字段、没有终止原因、
+## 17. 没变的
+
+没有 store 方法签名、没有返回类型、没有选项名、没有**删掉**的导出（**新增**了一个，见 §13）、没有记录种类、没有消息字段、没有**新增**的 content 块类型（§15 填的是一个早就存在的块类型）、没有终止原因、
 没有错误码搬家，运行时依赖仍是零。`store.load()` 的形状与 0.23.0 一致。`deterministic.compactionStats`
 仍是最后 32 条。judge 决策面一字未动；**续跑路径动了两处**：`load()` 交回散行的 store 在 resume 后不再丢工具配对（§13），
 恢复的 run 会多带一条引擎控制消息（§14）——后者也是本版唯一一处让 `messages` 变长的改动。final guard 的**裁决**语义也
-一字未动——它的载荷多了几个加法键（§8），那是信息，不是新规则。整个发布里有**五处**行为变化：前三处是修假阴性、
+一字未动——它的载荷多了几个加法键（§8），那是信息，不是新规则。整个发布里有**六处**行为变化：前三处是修假阴性、
 不是新规则——搜索根不存在返回错误文本而不是 `（无命中）`（§6）、guard `skip` 下通过的机器判据不再被丢掉（§10）、
 被截断的工具调用轮会带着终稿跑完而不是以 `failed` / `invalid_messages` 结束（§12）；§13 是把一个原本就写错的事实
-改对；§14 是给模型的新信息，而且是忠告、不是闸门。其余全是加法。
+改对；§14 是给模型的新信息，而且是忠告、不是闸门；§15 是第四处假阴性修正——中继本来就在发的思考字段现在真的被读到了，
+而原先读的那个字段行为逐字保留（§15）。其余全是加法。
 
-## 17. 迁移配方
+## 18. 迁移配方
 
 1. 如果你读 `<runId>.state.json` 的削减账，改读 `compactionStatsWindow.total`（与 `dropped`），别再数数组；
    把键的缺席理解成「没有统计」，而不是「零」。
@@ -603,3 +678,8 @@ npm run check:release          # 打包 → 装进一次性项目 → 跑随包�
    `verified` / `machine_only` 收尾、在判据失败时以 `unverified` / `deliverables_failed` 收尾——如果你用
    shell 调 CLI，请重新基线化你断言的退出码（`4` → `0` / `2`）；如果你在内部按 `verified` 放行，请显式
    决定 `reason === "machine_only"` 是否满足你的策略。
+10. 别再拿「没有 `reasoning` 块」当「这个模型不思考」。从 §15 起，中继回 `delta.reasoning`（或
+   `delta.reasoning_text`）的 run 会交出它早该交出的那个块，所以请按你处理的块**类型**分支，而不是按
+   它们的缺席——而且如果你自维护一份 SSE 解析器，请抄**优先级规则**（每个 chunk 只取一个字段、
+   `reasoning_content` 优先、空字段不占名额），而不是抄一份字段清单：中继用哪个名字取决于你发出去的
+   请求体，而不是模型本身，把清单砍到「本中继发的那个」一定会反弹（§15）。

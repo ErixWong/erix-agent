@@ -95,6 +95,40 @@ function isReasoningProvider({
     || thinking_format !== undefined;
 }
 
+// issue #407：中继（one-api 系）**按模型发不同的思考字段**——2026-10-23 实测 `stream:true` 下
+// `qwen3.8-flash-next` 把思考放进 `delta.reasoning`，`deepseek-flash` 放进 `delta.reasoning_content`。
+// 流式累加原先只认后者 ⇒ 前者的思考在流式路径上 100% 丢失（不进累加器、不回调 onReasoningDelta、
+// 也不发 reasoning_delta 事件）。别名清单**只在这里定义一次**，按优先级从高到低取第一个可用字段。
+const REASONING_DELTA_FIELDS = ["reasoning_content", "reasoning", "reasoning_text"];
+
+/**
+ * 从一个流式 delta 里取本 chunk 的思考增量（逐 chunk 语义，优先级只取一个，绝不重复累加）。
+ *
+ * 为什么**故意**不并入 `src/messages/canonical.js` 里那份 `reasoning_content`/`reasoning` 判定：
+ * 那里是「整条 message 一次判定」（`openAIResponseToCanonical` 的 if/else fallback，语义是整条响应），
+ * 这里吃的是**逐 chunk 增量**——同一个 chunk 里多个别名同时在场时必须只取优先级最高的那一个，
+ * 否则同一段思考会被累加两遍、`onReasoningDelta` 与 `reasoning_delta` 也会各发两次。抽成两侧共用
+ * 的 helper 要么把 chunk 语义灌进整条消息的判定、要么改掉 canonical 的既有 fallback 顺序，
+ * 都不是本单（只修两条路径的不对称）该动的刀，所以 canonical 那份按原样留着。
+ *
+ * @param {any} delta SSE chunk 里的 `choices[0].delta`
+ * @returns {string} 本 chunk 的思考增量；没有可用字段时为空串
+ */
+function streamReasoningText(delta) {
+  for (const field of REASONING_DELTA_FIELDS) {
+    const value = delta?.[field];
+    // `"..."` 与 `{ content: "..." }` 两种形状都算思考增量（有的网关把 reasoning 包成对象）
+    const text = typeof value === "string"
+      ? value
+      : (value !== null && typeof value === "object" && typeof value.content === "string"
+        ? value.content
+        : "");
+    // 空串与不可用的值不占用优先级：继续看下一个别名，免得「在场但为空」把真正有内容的字段遮住
+    if (text.length > 0) return text;
+  }
+  return "";
+}
+
 function eventBoundary(text) {
   const match = /\r?\n\r?\n/.exec(text);
   return match ? { index: match.index, length: match[0].length } : undefined;
@@ -510,10 +544,12 @@ export function createOpenAIProvider({
           emitEvent({ type: "delta", delta: delta.content });
         }
 
-        if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
-          reasoning += delta.reasoning_content;
-          req.onReasoningDelta?.(delta.reasoning_content);
-          emitEvent({ type: "reasoning_delta", delta: delta.reasoning_content });
+        // issue #407：思考字段按 REASONING_DELTA_FIELDS 的优先级取一个（同一 chunk 不重复累加）。
+        const reasoningDelta = streamReasoningText(delta);
+        if (reasoningDelta.length > 0) {
+          reasoning += reasoningDelta;
+          req.onReasoningDelta?.(reasoningDelta);
+          emitEvent({ type: "reasoning_delta", delta: reasoningDelta });
         }
 
         if (delta.function_call && typeof delta.function_call === "object") {

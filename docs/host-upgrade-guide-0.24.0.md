@@ -28,8 +28,9 @@ of "works if you read the source". If a section below is not your code path, it 
 | The machine criteria now count under **every** guard verdict: `skip` + all passing ⇒ `verified` / `reason: "machine_only"` (exit **0** instead of **4**), `skip` or guard error + any failing ⇒ `unverified` / `deliverables_failed` (exit **2**) (§10) | yes, if you treat `verified` as "the guard judged it" — read `reason === "machine_only"` before trusting one |
 | New `finalGuardExtend` option (**default `false`**): a `revise` on `max_rounds_cap` / `continuation_exhausted` buys at most one more round per run; `stall` never extends (§11) | no — opt-in, and off by default keeps every budget-type stop byte-for-byte as in 0.23.0 |
 | A **truncated tool-call round** no longer loses its final text: the forced wrap-up settles the pending `tool_use` first, so those runs end `continuation_exhausted` (CLI exit **4**) instead of `failed` / `invalid_messages` (exit **1**) (§12) | yes, if you treat `failed` / exit 1 as "retryable" |
-| `foldMessageRows` is exported from the package root, and `resume` folds `store.load()` once more: a store whose `load()` returns the on-disk rows no longer loses the tool pairing (§12) | no — act only if your own `load()` returns the on-disk rows, and then fold it |
+| `foldMessageRows` is exported from the package root, and `resume` folds `store.load()` once more: a store whose `load()` returns the on-disk rows no longer loses the tool pairing (§13) | no — act only if your own `load()` returns the on-disk rows, and then fold it |
 | A **resumed** run now carries one engine control message saying it was resumed, which `tool_use` calls had no result, and "verify before acting" (§14) | yes, if you diff `messages` / count transcript rows or input tokens on resumed runs |
+| Streaming thinking is read from `delta.reasoning_content` **and** the aliases `delta.reasoning` (string **or** `{ content }`) and `delta.reasoning_text`, one field per chunk — so runs whose relay names the thinking field differently stop losing **100%** of it (§15) | yes, if you render reasoning or assert on an assistant message's block types: a `reasoning` block now appears where only `text` used to |
 
 The one-line version: **the facts you used to infer are now written down.** The engine did not change what
 it *does*; it changed what it *says* — in the state file, in the error objects, and in the tool outputs the
@@ -617,16 +618,90 @@ can miss — it must not re-summarize per round.
 **resumed** runs. Nothing else moved: no new option, no new export, no new record kind, no new message
 field, no new termination reason, and no change to a first run.
 
-## 15. Self-check
+## 15. Streaming thinking is no longer dropped when the relay names the field differently (issue #407)
+
+**Symptom.** `chatStream` (`src/providers/openai.js`) accumulated the streamed thinking text from **one**
+SSE field, `delta.reasoning_content`. A model whose relay puts the thinking anywhere else therefore lost
+**all of it, silently**: nothing reached the accumulator, `onReasoningDelta` never fired, no
+`reasoning_delta` event was emitted, and the finished response carried **no** `reasoning` block. Measured
+on 2026-10-23 through this repository's own `chatStream` (`src/providers/openai.js`) against the real
+relay `api.ai.erix.vip`, both models at the same moment with the same configuration:
+
+| Model | thinking field actually received (cumulative characters) | content blocks the provider returned — before | after |
+| --- | --- | --- | --- |
+| `qwen3.8-flash-next` (this is `slots.default` in `~/.erix/config.json`) | `reasoning` — 368 | `["text"]` — 100% of the thinking dropped | `["reasoning","text"]` |
+| `deepseek-flash` | `reasoning` — 264 / 785 | `["text"]` — 100% dropped | `["reasoning","text"]` |
+
+One more silent consequence of the same line: the "probe for usage when the stream never sent any" rule at
+the end of `chatStream` (`src/providers/openai.js`) has three triggers, and one of them is a non-empty
+accumulated `reasoning`. That trigger was dark for exactly these streams, so a run that thought a lot could
+also end with no usage at all.
+
+**The field name belongs to the request body, not to the model.** Internalise this before you "simplify"
+anything. Hand-roll the request with bare `fetch` and `deepseek-flash` answers with `reasoning_content`;
+send the body the engine itself builds and the **same model** answers with `reasoning`. Both shapes exist
+in the real world, which is why the alias list keeps `reasoning_content` even though this relay currently
+sends only `reasoning` — and why the fix **added aliases and left the existing field byte-for-byte
+identical** instead of renaming it.
+
+**What is new.** `streamReasoningText` (`src/providers/openai.js`) now reads the per-chunk thinking
+increment through one alias list, `REASONING_DELTA_FIELDS` (`src/providers/openai.js`), in priority order
+`reasoning_content` → `reasoning` → `reasoning_text`, and it also accepts `delta.reasoning` wrapped as
+`{ content: "…" }` (some gateways do exactly that).
+
+```jsonc
+// one SSE chunk's choices[0].delta — every shape below is a thinking increment now
+data: {"choices":[{"delta":{"reasoning_content":"thinking…"}}]}
+data: {"choices":[{"delta":{"reasoning":"thinking…"}}]}
+data: {"choices":[{"delta":{"reasoning":{"content":"thinking…"}}}]}
+data: {"choices":[{"delta":{"reasoning_text":"thinking…"}}]}
+```
+
+**Exactly one field is taken per chunk** — the highest-priority one that actually has text. So a thinking
+segment is never accumulated twice, and `onReasoningDelta` and `reasoning_delta` never fire twice for one
+chunk. A field that is present but **empty** does not hold the priority slot: the next alias is still
+consulted, which is what keeps a relay that ships `reasoning_content: ""` next to a real `reasoning` from
+deproducing back into "no thinking".
+
+| delta shape in one chunk | before | after |
+| --- | --- | --- |
+| `reasoning_content: "…"` | collected | **byte-for-byte unchanged** |
+| `reasoning: "…"` | dropped | collected |
+| `reasoning: { content: "…" }` | dropped | collected |
+| `reasoning_text: "…"` | dropped | collected |
+| two or three aliases in one chunk | `reasoning_content` only | the highest-priority non-empty one, **once** |
+
+**What deliberately did not move: `src/messages/canonical.js`.** `openAIResponseToCanonical`
+(`src/messages/canonical.js`) has always accepted both `reasoning_content` and `reasoning` (the
+`else if` fallback; its comment names the GLM/Zhipu shape), so non-streaming was never wrong and the
+asymmetry lived on the streaming side only. That file is untouched on purpose: it judges a **whole message
+in one pass**, while the streaming side judges **one chunk at a time**, and folding the two into one helper
+would either push chunk semantics into whole-message judgement or reorder canonical's existing fallback.
+The same reasoning is written into the comment above `streamReasoningText` (`src/providers/openai.js`).
+
+**Known gap: the two sides are still not equivalent.** Streaming recognises three aliases,
+`openAIResponseToCanonical` (`src/messages/canonical.js`) recognises two ⇒ `reasoning_text` still does
+nothing on the non-streaming path — the usage probe included, because `probeStreamUsage`
+(`src/providers/openai.js`) goes through the non-streaming `chat`. Whether the two lists should collapse
+into one shared definition is a separate decision, and this release did not make it.
+
+**Do you have to act?** Only if you render thinking, or assert on the block types of an assistant message.
+For runs whose relay answers with `reasoning` / `reasoning_text`, the finished message now carries a
+`reasoning` block ahead of the `text` one, and the event stream now carries `reasoning_delta` events it
+used to not have — count block **types**, not their absence. A run whose relay already sent
+`reasoning_content` is byte-for-byte what it was, and nothing else moved: no new option, no new export, no
+new event type, no new block type, and no change to the non-streaming path.
+
+## 16. Self-check
 
 ```bash
-npm test                       # 1,985 tests, 0 failing (1,976 passing + 9 skipped)
+npm test                       # 1,992 tests, 0 failing (1,983 passing + 9 skipped)
 npm run check:docs && npm run check:docs:strict
 npm run check:final-guard-probe # offline, zero model calls; asserts the finalGuard payload surface
 npm run check:release          # packs, installs into a throwaway project, runs the shipped contract suites
 ```
 
-Against your own host, eleven questions are worth answering with a test before you upgrade:
+Against your own host, twelve questions are worth answering with a test before you upgrade:
 
 1. **State file.** Take a run with more than 32 compaction entries: `compactionStatsWindow.total` equals
    the full count, `dropped === total − 32`, and an **old** state file (no window key) still validates and
@@ -683,24 +758,35 @@ Against your own host, eleven questions are worth answering with a test before y
    is byte-for-byte what it was before you upgraded — that pair is the proof the injection is
    resume-only (§14).
 
-## 16. What did not change
+12. **Thinking aliases.** Script an upstream whose SSE chunks carry the thinking under `delta.reasoning`
+    (not `delta.reasoning_content`) and drive `chatStream` (`src/providers/openai.js`) against it: every
+    thinking chunk must produce exactly one `reasoning_delta` event **and** one `onReasoningDelta` call
+    with the same text, and the finished message must carry a `reasoning` block ahead of the `text` one.
+    Repeat with `delta.reasoning` as `{ content: "…" }` and with `delta.reasoning_text`: same assertions,
+    same expectations. Then put the same text back under `delta.reasoning_content` and assert the three
+    reads are byte-for-byte what they were before you upgraded — that pair is the proof the alias list did
+    not move the existing field (§15).
+
+## 17. What did not change
 
 No store method signature, no return type, no option name, no export **removed** (one export was
-*added*, §13), no record kind, no message field, no
-termination reason, no error code, and no runtime dependency (still zero). `store.load()`'s shape is
+*added*, §13), no record kind, no message field, no content-block **type** (§15 fills a block type that
+already existed), no termination reason, no error code, and no runtime dependency (still zero).
+`store.load()`'s shape is
 unchanged from 0.23.0. `deterministic.compactionStats` still holds the last 32 entries. The judge decision
 surface is untouched; the resume path moved in **two** places — a store whose `load()` hands back raw
 rows no longer loses its tool pairing on resume (§13), and a resumed run now carries one engine control
 message (§14), the only change in this release that lengthens `messages`. The final guard's *verdict*
 semantics are untouched too — its payload gained additive keys (§8), which is information, not a new rule.
-Five *behavioural* changes shipped in this release: the first three are corrections of false negatives
+Six *behavioural* changes shipped in this release: the first three are corrections of false negatives
 rather than new rules — a missing search root returns an error text instead of `（无命中）` (§6), a machine
 criterion that passes under a guard `skip` is no longer thrown away (§10), and a truncated tool-call round
 finishes with its final text instead of ending `failed` / `invalid_messages` (§12); §13 makes a fact
-correct that used to be wrong (§13); §14 is new information for the model, and it is advice, not a gate.
-Everything else is additive.
+correct that used to be wrong (§13); §14 is new information for the model, and it is advice, not a gate;
+§15 is a fourth correction of a false negative — a thinking field the relay was already sending is now
+read, and the field that used to be read keeps its behaviour verbatim (§15). Everything else is additive.
 
-## 17. Migration recipe
+## 18. Migration recipe
 
 1. If you read `<runId>.state.json`'s compaction ledger, read `compactionStatsWindow.total` (and
    `dropped`) instead of counting the array — and treat the key's absence as "no statistics", not "zero".
@@ -729,3 +815,10 @@ Everything else is additive.
    `deliverables_failed` when they fail — if you shell out to the CLI, re-baseline the exit
    codes you assert on (`4` → `0` / `2`), and if you gate on `verified` internally, decide
    explicitly whether `reason === "machine_only"` satisfies your policy.
+10. Stop deciding "this model does not think" from the absence of a `reasoning` block. Since §15 a relay
+    that answers with `delta.reasoning` (or `delta.reasoning_text`) yields the block it always should have
+    delivered, so branch on the block **types** you handle rather than on their absence — and if you keep
+    your own SSE parser, copy the **priority rule** (one field per chunk, `reasoning_content` first, an
+    empty field does not hold the slot) rather than the field list: which name a relay uses depends on the
+    request body you sent, not on the model, so a list you trimmed to "the one this relay sends" will
+    regress (§15).

@@ -470,3 +470,144 @@ test("normalizes cached prompt tokens from streamed usage", async () => {
     cacheRead: 15,
   });
 });
+
+// ---------------------------------------------------------------------------
+// issue #407：流式思考字段的别名。中继（one-api 系）**按模型发不同字段**，2026-10-23 实测
+// `stream:true` 下 `qwen3.8-flash-next`（默认模型）发 `delta.reasoning`、`deepseek-flash` 发
+// `delta.reasoning_content`。原先流式只认后者 ⇒ 前者的思考全丢。下面每一组别名共用**同一份**
+// 判据（assertReasoningPipeline）：只换字段名或值的形状，管道三处与最终 content 必须一模一样。
+// 全部离线脚本化，不碰真实上游。
+// ---------------------------------------------------------------------------
+
+const REASONING_FRAGMENTS = ["First thought. ", "Second thought."];
+const ALIAS_USAGE = { prompt_tokens: 5, completion_tokens: 7 };
+
+// 脚本：思考块与文本块交替，末尾带 usage（带 usage 就不会触发 usage 探针，
+// 下面的 calls.length === 1 因此也是判据的一部分）。
+function reasoningAliasStream(field, fragments) {
+  const chunks = [];
+  fragments.forEach((fragment, index) => {
+    chunks.push(sse({
+      choices: [{ delta: { [field]: fragment }, finish_reason: null }],
+    }));
+    chunks.push(sse({
+      choices: [{
+        delta: { content: index === 0 ? "o" : "k" },
+        finish_reason: index === fragments.length - 1 ? "stop" : null,
+      }],
+    }));
+  });
+  chunks.push(sse({ choices: [], usage: ALIAS_USAGE }));
+  chunks.push("data: [DONE]\n\n");
+  return chunks.join("");
+}
+
+async function runReasoningAliasStream(field, fragments) {
+  const events = [];
+  const reasoning = [];
+  const fetchImpl = createMockFetch([{ body: reasoningAliasStream(field, fragments) }]);
+  const response = await makeProvider(fetchImpl).chatStream({
+    ...request,
+    onEvent: (event) => events.push(event),
+    onReasoningDelta: (delta) => reasoning.push(delta),
+  });
+  return { events, reasoning, response, fetchImpl };
+}
+
+// 别名用例共用的那一组断言：思考被累加、onReasoningDelta 被调、reasoning_delta 事件发出、
+// 最终 content 里有 {type:"reasoning"} 块——四项一起，且与 reasoning_content 逐字同形。
+function assertReasoningPipeline(got) {
+  assert.deepEqual(got.reasoning, ["First thought. ", "Second thought."]);
+  assert.deepEqual(got.events, [
+    { type: "reasoning_delta", delta: "First thought. " },
+    { type: "delta", delta: "o" },
+    { type: "reasoning_delta", delta: "Second thought." },
+    { type: "delta", delta: "k" },
+    { type: "usage", usage: ALIAS_USAGE },
+  ]);
+  assert.deepEqual(got.response, {
+    content: [
+      { type: "reasoning", text: "First thought. Second thought." },
+      { type: "text", text: "ok" },
+    ],
+    stopReason: "end_turn",
+    usage: { input_tokens: 5, output_tokens: 7 },
+  });
+  assert.equal(got.fetchImpl.calls.length, 1);
+}
+
+test("issue #407: accumulates delta.reasoning (qwen3.8-flash-next shape)", async () => {
+  assertReasoningPipeline(await runReasoningAliasStream("reasoning", REASONING_FRAGMENTS));
+});
+
+test("issue #407: keeps delta.reasoning_content (deepseek-flash shape) byte-identical", async () => {
+  assertReasoningPipeline(
+    await runReasoningAliasStream("reasoning_content", REASONING_FRAGMENTS),
+  );
+});
+
+test("issue #407: accumulates the delta.reasoning_text alias", async () => {
+  assertReasoningPipeline(await runReasoningAliasStream("reasoning_text", REASONING_FRAGMENTS));
+});
+
+test("issue #407: accepts delta.reasoning as a { content } object", async () => {
+  assertReasoningPipeline(await runReasoningAliasStream(
+    "reasoning",
+    REASONING_FRAGMENTS.map((fragment) => ({ content: fragment })),
+  ));
+});
+
+// 单个 delta 里多个思考字段同时在场：只取优先级最高的那一个，不重复累加/回调/发事件。
+async function runSharedChunkDelta(delta) {
+  const events = [];
+  const reasoning = [];
+  const fetchImpl = createMockFetch([{
+    body: [
+      sse({ choices: [{ delta, finish_reason: null }] }),
+      sse({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }),
+      sse({ choices: [], usage: ALIAS_USAGE }),
+      "data: [DONE]\n\n",
+    ].join(""),
+  }]);
+  const response = await makeProvider(fetchImpl).chatStream({
+    ...request,
+    onEvent: (event) => events.push(event),
+    onReasoningDelta: (value) => reasoning.push(value),
+  });
+  return { events, reasoning, response };
+}
+
+function assertSingleReasoning(got, winner) {
+  assert.deepEqual(got.reasoning, [winner]);
+  assert.deepEqual(got.events, [
+    { type: "reasoning_delta", delta: winner },
+    { type: "delta", delta: "ok" },
+    { type: "usage", usage: ALIAS_USAGE },
+  ]);
+  assert.deepEqual(got.response.content, [
+    { type: "reasoning", text: winner },
+    { type: "text", text: "ok" },
+  ]);
+}
+
+test("issue #407: takes only reasoning_content when all three aliases share one chunk", async () => {
+  assertSingleReasoning(await runSharedChunkDelta({
+    reasoning_content: "from reasoning_content",
+    reasoning: "from reasoning",
+    reasoning_text: "from reasoning_text",
+  }), "from reasoning_content");
+});
+
+test("issue #407: takes reasoning over reasoning_text when reasoning_content is absent", async () => {
+  assertSingleReasoning(await runSharedChunkDelta({
+    reasoning: "from reasoning",
+    reasoning_text: "from reasoning_text",
+  }), "from reasoning");
+});
+
+test("issue #407: an empty alias does not shadow a lower-priority field that has text", async () => {
+  assertSingleReasoning(await runSharedChunkDelta({
+    reasoning_content: "",
+    reasoning: "from reasoning",
+  }), "from reasoning");
+});

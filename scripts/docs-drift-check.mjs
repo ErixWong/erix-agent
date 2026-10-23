@@ -50,7 +50,7 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 109`（现测 109 组 / 287 处；issue #394 的强制收尾结清小节 +4 组 / +19 处）：
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 114`（现测 114 组 / 317 处；issue #407 的流式思考别名 +5 组 / +30 处）：
 //                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
@@ -2035,9 +2035,18 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  成对新增两个锚点——`createDeliverableChecks` 与 `createNamedDeliverableChecks`（都在
  *  `bin/final-guard.js`）：宿主面只给**命名**判据（布尔开关 + 命名路径清单），判据本体必须在文档里
  *  指到真声明（分支内 `--verbose` 实测 100 组 / 252 处；rebase 到 `2cb3303` 之后为 **105 组 / 264 处**：契约 EN 75 / CN 74）。
+ *  再升一次的理由（issue #407，109 → **114**，+5 组 / 287 → 317 处）：流式思考别名（只认
+ *  `delta.reasoning_content` ⇒ 走引擎自己拼的请求时**两个模型的思考 100% 丢失**）的变更说明按同一红线
+ *  用符号锚点引用 `streamReasoningText` / `REASONING_DELTA_FIELDS` / `chatStream` / `probeStreamUsage`
+ *  （`src/providers/openai.js`）与 `openAIResponseToCanonical`（`src/messages/canonical.js`）——落点是
+ *  CHANGELOG（不入面）、契约中英「推理文本」各一句、两份 0.24.0 指南新增的 §15，以及中英 AGENTS 的声称句
+ *  （**声称句自己也入锚点面**：`AGENTS.md` 从 0 组变 2 组、`AGENTS_cn.md` 15 → 17）。
+ *  `--verbose` 实测 **114 组 / 317 处**（契约 EN 84 → 85 / CN 80 → 81，0.24.0 指南 EN 21 → 29 / CN 24 → 32）。
+ *  下限不跟着升，#286 返工 R1 的两例自测就会再次 fail-open（实测正是如此：109 的下限在 114 组上空转，
+ *  两例从 ✓ 变红），而 `--self-test` 是 CI 的阻断步。
  *
   *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 109;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 114;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

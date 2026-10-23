@@ -2609,7 +2609,11 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 `reasoning` 携带该轮的推理文本（规范 `reasoning` 块，外加 provider 归一化的
 `thinking`/`reasoning_content` 形状），**从不**合并进 `text`。建议默认用折叠/可展开块
 展示，因为它长且噪，并与答案保持视觉区分。宿主在向模型回放历史时，不得在自己的存储
-中静默丢弃推理——推理回放是模型侧契约（见 thinking 模式要求），与本展示字段无关。
+中静默丢弃推理——推理回放是模型侧契约（见 thinking 模式要求），与本展示字段无关。自
+issue #407 起，流式一侧也会把 `delta.reasoning`（字符串或 `{ content: "…" }` 两种形状）与
+`delta.reasoning_text` 折进同一个规范 `reasoning` 块，于是中继用哪个名字不再决定这个字段里有没有
+东西：名字跟着**请求体**走，而不是跟着模型走（`streamReasoningText`（`src/providers/openai.js`））。
+还有一处不对称没关掉——`reasoning_text` 在非流式路径上仍不被识别。
 
 ### 合成消息
 
