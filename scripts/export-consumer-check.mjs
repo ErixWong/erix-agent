@@ -557,7 +557,11 @@ export function scanImportedButUnused(records, dirRel = "bin") {
       if (stmt.kind === "import-names") {
         try {
           // import 名单里 `a as b` 的**本地绑定是右边那个**（与 export 相反），所以取 `name` 而不是 `local`。
-          for (const spec of parseSpecList(stmt.specText, `${record.rel}:${stmt.line}`)) locals.push({ name: spec.name, line: stmt.line });
+          // 行号取**名字自己那一行**（多行 import 的语句起始行会指偏，实测 bin/tools.js 的 unlinkSync 在第 10 行、语句从第 3 行起）。
+          for (const spec of parseSpecList(stmt.specText, `${record.rel}:${stmt.line}`)) {
+            const at = record.text.indexOf(spec.name, stmt.start);
+            locals.push({ name: spec.name, line: at >= 0 && at < stmt.end ? lineOf(record.text, at) : stmt.line });
+          }
         } catch {
           // import 名单解析不了不归这条判据管（export 侧会红）；这里跳过而不是假装 0
           locals.push({ name: `(unparsed import @ line ${stmt.line})`, line: stmt.line, unparsed: true });
