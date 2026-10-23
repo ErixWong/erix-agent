@@ -749,9 +749,12 @@ async function runChatWithNotes({
     throw new CliError("chat 需要提供 prompt，例如：erix chat \"你好\"");
   }
 
-  // issue #441：静默相位截止（firstByte / streamIdle / request）按 `--idle-timeout` 派生——它们到点抛的是
-  // **可重试**的 `timeout`，于是「provider 静默」落到既有重试通道上，而不是被 idle 的不可重试 abort 收尾。
-  // `timeoutMs` 那条 legacy 绝对截止仍按原样传（idle 关闭时它就是唯一的那条，行为逐字不变）。
+  // issue #441：两个**流式**静默相位截止（firstByte / streamIdle）按 `--idle-timeout` 派生——它们到点抛的是
+  // **可重试**的 `timeout`，于是「流式静默」落到既有重试通道上，而不是被 idle 的不可重试 abort 收尾。
+  // **非流式那条 `requestTimeoutMs` 故意不派生**：它量的是整段生成时间，派生成 `⌊idle×3/4⌋` 会把默认配置下
+  // `[225s, 300s)` 这条以前成功的带变成必死带（实测 240s 请求：接线前 `end_turn`、派生后 225.21s 被杀）。
+  // 非流式截止因此**保持 legacy**（下面的 `timeoutMs`，默认 300s）；非流式静默的正解是 #433 fix 1。
+  // 取值关系与实测数见 bin/provider-timeouts.js 头注释。
   const providerPhaseTimeouts = resolveProviderPhaseTimeouts({
     idleSeconds: idleTimeout,
     config,

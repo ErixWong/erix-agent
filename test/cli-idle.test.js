@@ -4,10 +4,12 @@
 //   ① 工具执行期喂表（长命令不再被静默窗口打死）；
 //   ② repl 侧的**同型**用例（防只改一处——双实现正是本单要消的缺陷）；
 //   ③ 单份实现的语义钉子（`null` 三态、判死单向、abort 无自定义 reason）；
-//   ④ **静默走可重试通道**（issue #441）：静默上游不再被 idle 打死，而是落到 provider 的相位截止上
-//      （`KitError("timeout", …, {retryable:true})`）⇒ 真的重试（≥2 发）⇒ 重试用尽后 `failed` + `errorCode:"timeout"`。
-//      三态对照：接线前 = 1 发 / `idle_timeout`（无 `termination`）；接线后 = ≥2 发 / `failed`+`timeout`。
-//      另保留一格：**provider 侧没有任何可重试截止时**（宿主注入的 hang provider），看门狗仍然咬得住。
+//   ④ **流式静默走可重试通道**（issue #441）：`--stream` 的静默上游不再被 idle 打死，而是落到 provider 的
+//      **流式相位截止**上（`KitError("timeout", …, {retryable:true})`）⇒ 真的重试（≥2 发、且**有界**：
+//      ≤ attempts+1）⇒ 重试用尽后 `failed` + `errorCode:"timeout"`。
+//      另有两格是**有意保留**的反向护栏：① **非流式**静默今天**仍不可重试**（截止保持 legacy，等 #433
+//      fix 1）⇒ 1 发 / `idle_timeout`；② 宿主注入的 hang provider **没有任何**可重试截止 ⇒ 看门狗照旧咬。
+//      「非流式为什么不派生」的实测因果见 bin/provider-timeouts.js 头注释第 3 条。
 //
 // 纪律：全部用例**事件驱动**，不写「先 sleep N 毫秒再断言耗时」那种断言——本机可能高负载，
 // 固定 sleep 只会变成 flaky。慢的那一侧是**被测行为本身**（一条 1.5s 的命令 / 一个永不返回的
@@ -191,9 +193,14 @@ test("repl: a tool that outlives the idle window does not kill the round (issue 
   }
 });
 
-// ④ 静默 → **可重试**通道（issue #441）。这是 #433 那条护栏的继任者：同一条「永不返回的上游」，
-// 接线前断言的是「只发 1 发」（`provider.calls.length === 1`，且终局是 `idle_timeout`），接线后必须
-// 变成「≥2 发 + 重试用尽后的 `failed` / `errorCode:"timeout"`」。
+// ④ **流式**静默 → 可重试通道（issue #441）；**非流式**静默 → 仍不可重试（有意，等 #433 fix 1）。
+//
+// 历史：#433 那条护栏断言「同一条永不返回的上游只发 1 发、终局 `idle_timeout`」。接线后这条断言只对
+// **流式**不再成立（`firstByteTimeoutMs = ⌊idle×3/4⌋` 严格小于 idle 窗口 ⇒ 可重试）。非流式**故意保持**
+// 原样：非流式的「请求时间」量的是**整段生成时间**，把它的截止派生成 `⌊idle×3/4⌋` 会把默认配置下
+// `[225s, 300s)` 这条以前**活的**带变成必死带（评审实测：240s 的健康请求接线前 `end_turn` / 240.29s，
+// 派生后 225.21s 被杀成 `failed`+`timeout`）。非流式静默的正解是「判死后重试」（#433 fix 1），不是
+// 提前掐死 ⇒ 今天它仍然由 idle 看门狗收尾。因果与实测数见 bin/provider-timeouts.js 头注释第 3 条。
 //
 // 为什么把 stub 换成「静默的 **fetch 上游**」而不是注入一个 hang provider：相位截止长在
 // `createOpenAIProvider` 里（`src/providers/timeout.js`），注入 provider 就把被测的那条装配绕过去了
@@ -202,8 +209,11 @@ test("repl: a tool that outlives the idle window does not kill the round (issue 
 // 纪律同前：不断言耗时。等待的是**事件**（上游被再次调用 / run 抛错），idle 窗口只作为「不该先响」的背景。
 const SILENT_IDLE_SECONDS = 3;
 const SILENT_RETRY_ATTEMPTS = "1";
+// 「有界」这条性质只能由**实测**证着（评审实测默认 attempts 下 3 发）：所以上界也一起钉住——
+// 只写 `>= 2` 的话，「重试通道变成无限重试」这种回归不会被任何用例拦住。
+const SILENT_MAX_CALLS = Number(SILENT_RETRY_ATTEMPTS) + 1;
 
-/** 静默上游：`mode` 决定「哪一条相位截止」该先响。`calls` 记每一次真实请求。 */
+/** 静默上游：`mode` 决定「哪一条截止」该先响。`calls` 记每一次真实请求。 */
 function createSilentUpstream({ mode }) {
   const calls = [];
   const fetchImpl = async (url, init) => {
@@ -215,13 +225,14 @@ function createSilentUpstream({ mode }) {
         headers: { "content-type": "text/event-stream" },
       });
     }
-    // 连响应头都不回 ⇒ 非流式（`erix chat` 的默认形态）唯一的那条 request 相位。
+    // 连响应头都不回 ⇒ 非流式（`erix chat` 的默认形态）：它的 legacy 截止（默认 300s）与 idle 看门狗
+    // 赛跑，而 idle 的起点更早 ⇒ 同值时必然 idle 先响（不可重试）。这就是本节第一格要钉的事实。
     return new Promise(() => {});
   };
   return { fetchImpl, calls };
 }
 
-/** 跑一次「静默上游」的 chat，返回抛出的错误（run 必须以 `failed` 收尾，不是 `idle_timeout`）。 */
+/** 跑一次「静默上游」的 chat，返回抛出的错误。 */
 async function runSilentChat({ dir, mode }) {
   const upstream = createSilentUpstream({ mode });
   const previous = process.env.ERIX_RETRY_ATTEMPTS;
@@ -255,25 +266,23 @@ async function runSilentChat({ dir, mode }) {
     if (previous === undefined) delete process.env.ERIX_RETRY_ATTEMPTS;
     else process.env.ERIX_RETRY_ATTEMPTS = previous;
   }
-  assert.ok(error, "静默上游的 run 必须抛错（重试用尽 ⇒ failed），不许静默返回");
+  assert.ok(error, "静默上游的 run 必须抛错，不许静默返回");
   return { error, upstream };
 }
 
-test("chat: a silent upstream is retried on the retryable phase deadline (issue #441)", { timeout: 30_000 }, async () => {
+test("chat: non-streaming silence still ends on the idle watchdog — intentional (issue #441/#433)", { timeout: 30_000 }, async () => {
   const dir = await makeTmp("erix-cli-silent-retry-");
   try {
-    // 非流式：`erix chat` 的默认形态，走 `provider.chat()` 的 request 相位。
+    // **这一格是有意的**，别把它改成 `>= 2`：非流式截止保持 legacy（`config.timeout ?? 300_000`），
+    // 不派生 ⌊idle×3/4⌋ —— 那条派生会把 `[225s, 300s)` 这条以前成功的带变成必死带（见本节头注释）。
+    // 所以「非流式静默」今天仍然只发 1 发、由 idle 看门狗收尾（`idle_timeout`，没有 `termination`）；
+    // 要让它可重试，正解是 #433 fix 1「判死后重试」，不是提前掐死。
     const { error, upstream } = await runSilentChat({ dir, mode: "nonstream" });
-    // 接线前这里是 `idle_timeout`（`IdleTimeoutError`，没有 `termination`）：idle 走的是不可重试的 abort。
-    assert.notEqual(error?.code, "idle_timeout");
-    assert.equal(error?.code, "timeout");
-    assert.equal(error?.termination?.reason, "failed");
-    assert.equal(error?.termination?.errorCode, "timeout");
-    // 真的走了重试通道：上游被请求了不止一次。
-    assert.ok(
-      upstream.calls.length >= 2,
-      `静默必须落到重试通道上（实测只发了 ${upstream.calls.length} 发）`,
-    );
+    assert.equal(error?.code, "idle_timeout");
+    assert.equal(error?.name, "IdleTimeoutError");
+    assert.match(error.message, new RegExp(`${SILENT_IDLE_SECONDS} 秒无进展`, "u"));
+    assert.equal(error?.termination, undefined);
+    assert.equal(upstream.calls.length, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -288,9 +297,16 @@ test("chat --stream: a silent stream body is retried on the firstByte deadline (
     assert.equal(error?.code, "timeout");
     assert.equal(error?.termination?.reason, "failed");
     assert.equal(error?.termination?.errorCode, "timeout");
+    // 真的走了重试通道（下界），而且**有界**（上界 = attempts + 1）：只钉下界的话，重试退化成
+    // 无限重试也不会有用例变红。实测默认 attempts=2 时是 3 发。
     assert.ok(
       upstream.calls.length >= 2,
-      `流式静默同样必须走重试通道（实测只发了 ${upstream.calls.length} 发）`,
+      `流式静默必须走重试通道（实测只发了 ${upstream.calls.length} 发）`,
+    );
+    assert.ok(
+      upstream.calls.length <= SILENT_MAX_CALLS,
+      `重试必须是有界的（attempts=${SILENT_RETRY_ATTEMPTS} ⇒ 上界 ${SILENT_MAX_CALLS} 发，`
+      + `实测 ${upstream.calls.length} 发）`,
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

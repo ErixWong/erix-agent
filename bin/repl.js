@@ -474,8 +474,9 @@ export async function runRepl(argv, io = {}) {
   const execCeilingMs = resolveExecCeiling(options.idleTimeout, {
     warn: (line) => writeLine(errorOutput, line),
   });
-  // issue #441：与 `bin/cli.js` 同构——静默相位截止按 `--idle-timeout` 派生。repl 默认 idle=0（不启用）
-  // ⇒ 这里是空对象，provider 装配与接线前逐字一致（`stream: true` 的相位截止仍归引擎默认值）。
+  // issue #441：与 `bin/cli.js` 同构——两个**流式**静默相位截止按 `--idle-timeout` 派生。repl 默认 idle=0
+  // （不启用）⇒ 这里是空对象，provider 装配与接线前逐字一致。非流式的 `requestTimeoutMs` **不派生**
+  // （保持 legacy 截止；理由与实测数见 bin/provider-timeouts.js 头注释第 3 条）。
   const providerPhaseTimeouts = resolveProviderPhaseTimeouts({
     idleSeconds: options.idleTimeout,
     config,
