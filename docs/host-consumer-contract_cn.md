@@ -822,7 +822,11 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
 
 - **形状：** `{ round, messages: [{ role: "user", content: [{ type: "text",
   text }] }], dedupKey, roundKey, ts }`，`ts` 为 ISO-8601 字符串
-  （`new Date().toISOString()`）。
+  （`new Date().toISOString()`）。预写行**不得**带 `kind` / `seq`——这两个字段是
+  引擎逐条消息行的标记（`kind: "message"` + 安全整数 `seq`）；带上它们的行会被
+  恢复侧的 `restoreResume`（`src/loop/resume-manager.js`）判成引擎行并算进**崩溃
+  现场**（补跑结果因此排到它之后、`tool_use` 与 `tool_result` 不再相邻 ⇒
+  `invalid_messages`）。
 - **round：** 复用 `load` 结果中的现有最大 round（`Math.max(0, ...rounds)`，空
   store 为 `0`）。引擎从该最大 round 续起并把自身记录落在更后的 round；预写不得推
   进它。空 `load` 结果是种子路径：在 round `0` 预写该轮；内置 CLI 则在没有既有记录
@@ -1216,7 +1220,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 
 | `termination.reason` | 触发机制（file:line） | 在优先级链中的位置 | 宿主开关 | 推荐宿主动作 |
 |---|---|---|---|---|
-| `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js:118`）或兜底 stop `complete`（`src/reflection/governor.js:134`），均由 `terminationReasonForAction` 映射（`src/loop/termination.js:111`）。输入：`shouldContinue`（`src/loop/orchestrator.js`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js:3159-3163`、`3164-3218`）） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`src/loop/orchestrator.js:3357-3365`） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
+| `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js:118`）或兜底 stop `complete`（`src/reflection/governor.js:134`），均由 `terminationReasonForAction` 映射（`src/loop/termination.js:111`）。输入：`shouldContinue`（`src/loop/orchestrator.js`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js` 的 end-turn 收尾块，内部调 `normalizeWrapupText`（`src/reflection/wrapup.js`））） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`src/loop/orchestrator.js:3357-3365`） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
 | `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`src/loop/orchestrator.js:3357-3365`，`isEndTurn` 在 3053），映射在 `src/loop/termination.js:94` | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`src/loop/reflection.js:8`） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
 | `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js:122`），门在 `noToolRound`（`src/loop/orchestrator.js`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
 | `stall` | 同一工具调用签名在处理窗口内重复（`src/loop/orchestrator.js:2712-2726`）叠加 streak 累加（`src/loop/orchestrator.js:2763-2770`），stop 在 `src/reflection/governor.js:67-70`，`STALL_STREAK_LIMIT = 3`（`src/reflection/governor.js:3`），映射在 `src/loop/termination.js:97` | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死（`src/reflection/governor.js:65`） | `stallDetection:false` 使其**不可达**（`errorHashes`，`src/loop/orchestrator.js`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
@@ -1264,8 +1268,8 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    `completion` stop（`src/reflection/governor.js:118`），又使 `noToolRound`
    为假（`src/loop/orchestrator.js:3230-3233`）。**声明完成与 `no_tool` 因此互斥。**
 4. **completion 关键词兜底**——同样这个信号，在没解析出信封时来自
-   `completion.signals` 命中终答文本（`src/loop/orchestrator.js:3159-3163`），或来自
-   end-turn 轮完全拿不到 JSON 时的 LLM 归一化器（`3164-3218`，开关是
+   `completion.signals` 命中终答文本（`src/loop/orchestrator.js` 的 end-turn 收尾块），或来自
+   end-turn 轮完全拿不到 JSON **且文本非空**时的 LLM 归一化器（`src/loop/orchestrator.js` 的 end-turn 收尾块，开关是
    `reflection.wrapupNormalize` / `ERIX_WRAPUP_NORMALIZE=1`）。
 5. **`no_tool` stop**——只在什么都没声明完成且本轮没调工具时可达
    （`src/loop/orchestrator.js:3230-3233`）。
@@ -1565,6 +1569,43 @@ if (completed.repaired.rule !== "truncation") throw new Error("opting in must be
 校验配置文件，所以把这条路径放进热循环的宿主每次调用都要付一次文件 I/O。最后：provider 抛错时是
 **抛异常**出 `normalizeModelJson`，**不会**折进那三个失败态。宿主需要自己的成本 / 失败上限，就在
 调用点包一层。
+
+#### 引擎的收尾归一化走的就是这个入口（issue #406 B2-b）
+
+循环自己那条收尾归一化——`end_turn` 轮、无工具调用、解析不出信封时触发的兜底，开关是
+`reflection.wrapupNormalize` / `ERIX_WRAPUP_NORMALIZE=1`——不再自己拼一份请求。它调
+`normalizeWrapupText`（在 `src/reflection/wrapup.js`），后者转调 `normalizeModelJson`，
+`thinking: "none"`、信封形状作为 `schema` 示例；公开入口 `normalizeWrapupWithLlm` 是同一个
+函数的薄壳。一个实现 = 两个调用方共用同一份提示词、同一道闸门、同一个「不思考」取值、同一份
+失败事实。五条宿主可观察的后果：
+
+- **只有一份提示词，上下文也少了。** 旧的内联提示词（任务目标、已运行轮数、
+  `JSON.stringify(text)`）与旧的收尾专用提示词都删了。留下来的请求是本入口的通用「把原始
+  文本归一化」提示词 + 信封形状示例，所以归一化器看到的是原文与形状——**不是**任务目标或
+  轮数。**这是一条质量风险，按风险写**：`done` 剩下的唯一线索是那个形状示例（它的 `done` 是
+  `false`），因为旧内联那句判据（「已给出明确结论 / 产物就绪 ⇒ `done=true`；中途停下或放弃 ⇒
+  判断产出是否可判定」）随那份提示词一起删了，而**没有任何测试钉住统一提示词下的 `done` 语义**。
+- **闸门共享，而且判的是 agent 自己的原文。** 每个 `findings` 值必须逐字出现在 agent 的原文
+  里；不在的条目**在本入口静默丢弃**——`dropped` 清单只在下一层（`normalizeModelJson` / `wrapupGate`
+  的返回值）可见，收尾归一化的返回值上**没有**它——而不是把整个信封拒收。这道判据从不拿归一化
+  器自己的回答当 `source`——那等于让它给自己的改写作证。公开入口现在也过这道闸门；B2-b 之前
+  它对一条被改写的值（例如 agent 原文写 `gold-417`、归一化器答 `gold-4173`）**一点检查都没
+  有**。
+- **确定性修复命中就不发请求。** L1 规则修得动的形状——尾逗号、加倍的非法转义——用**零**次
+  模型调用就归一化完，字符串值的字节保持原样。B2-b 之前这些形状要花一次模型调用。
+- **空文本 / 纯空白原文一次请求都不发。** 候选集为空，本入口不花这次调用（见上面 L2 那一
+  节）。循环随后走它普通的无工具路径，终稿就是模型这一轮的真实输出（可能是空串）。B2-b 之前
+  内联路径对空文本也会发一次请求。
+- **失败是结构化的。** 入口返回 `{ ok: false, error }`；循环在第一次失败后仍然把本 run 的归一
+  化开关就地关断（与之前同一语义——不会每轮重试），provider 抛错仍走循环的 `catch` 降级。
+  `normalizeWrapupWithLlm` 在归一化失败时返回 `null`，evaluator 自己抛的错照旧抛出来。
+
+公开入口就是同一个函数，所以上面这些后果对它同样成立：原文本身就是可解析信封、或 L1 规则修
+得动的输入 ⇒ **不发模型请求**直接返回；空 / 纯空白输入 ⇒ 一次请求都不发、返回 `null`（以前
+会发一次）。归一化器自己的回答也过同一套 L1 规则（`{"done":true,}` 以前算失败并关断本 run 的
+归一化，现在会被修好）。
+
+`summary` / `output` 是给用户看的散文、不是声明的事实，所以**不**做逐字核验；只核 `findings`。
 
 ## 可复用的归一化原语
 
@@ -2440,7 +2481,8 @@ scope 目录数，`purged` 为删除的记录文件数）。可选 `before` 参�
 当 loop 必须用 LLM 把散文终答归一化成信封时（`ERIX_WRAPUP_NORMALIZE=1` 或
 `reflection.wrapupNormalize`），归一化器只许搬运：每个归一化后的 finding 值都必须逐字
 出现在模型自己的终答文本里，否则该条在 guard 看到之前就被丢弃。LLM 不得在通往核验的
-路上“修好”模型的值，那会让核验不可复现。
+路上“修好”模型的值，那会让核验不可复现。这道闸门就是 `normalizeModelJson` 给收尾信封的
+同一道（issue #406 B2-b）——引擎与公开归一化器不可能对「什么叫逐字」各持一说。
 
 ## 取回与 request-view 折叠
 

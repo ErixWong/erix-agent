@@ -987,6 +987,11 @@ test("resumes folded checkpoints from the persisted transcript anchor", async ()
     // 1（种子行）+ 2（round 1）+ 2（round 2）+ **1（round 3 已落盘的 assistant）**= 6。
     // 这一条不是可以动的装饰：少 1 就是把崩溃轮那条带 pending tool_use 的 assistant 切进
     // 尾队列，补跑结果将找不到对应的 tool_use（`validateMessages` 当场 invalid_messages）。
+    // ⚠ issue #425 注记（上面这段原文保留）：这句断言的**对象**是**写侧增量账**
+    // （`persistedTranscriptLength`）——写侧自增点一字未动，6 仍然正确；但上面描述的那个**失效模式**
+    // 已由恢复侧**现算**接管：恢复不再读这个采样值，锚点由 `countResumeAnchor(records)`
+    // 在账本上现算（`src/loop/resume-manager.js`）。所以「少 1 ⇒ 切进尾队列」不再随这个数字发生，
+    // 数字与恢复正确性已经解耦：改它是改写侧口径，不会把崩溃轮 assistant 挤进尾队列。
     assert.equal(checkpoint.persistedTranscriptLength, 6);
     await store.appendRound(`fold-${keepRounds}`, {
       round: 2,

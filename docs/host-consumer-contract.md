@@ -1006,7 +1006,12 @@ A correct pre-written `RoundRecord` must satisfy:
 
 - **Shape:** `{ round, messages: [{ role: "user", content: [{ type: "text",
   text }] }], dedupKey, roundKey, ts }` with `ts` an ISO-8601 string
-  (`new Date().toISOString()`).
+  (`new Date().toISOString()`). A pre-write row **must not** carry `kind` / `seq`:
+  those two fields mark engine per-message rows (`kind: "message"` + a safe-integer
+  `seq`), and a row carrying them is judged an engine row by
+  `restoreResume` (`src/loop/resume-manager.js`) and counted into the **crash
+  site** (replayed results then land after it, so `tool_use` and `tool_result`
+  are no longer adjacent ⇒ `invalid_messages`).
 - **Round:** reuse the existing maximum round across `load` results
   (`Math.max(0, ...rounds)`, `0` for an empty store). The engine resumes from
   that maximum round and writes its own records at later rounds; pre-writes
@@ -1548,7 +1553,7 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 
 | `termination.reason` | Triggering mechanism (file:line) | Position in the precedence chain | Host switch | Recommended host action |
 |---|---|---|---|---|
-| `end_turn` | governance stop `completion` (`src/reflection/governor.js:118`) or the fall-through stop `complete` (`src/reflection/governor.js:134`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:111`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3159-3163`, `3164-3218`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
+| `end_turn` | governance stop `completion` (`src/reflection/governor.js:118`) or the fall-through stop `complete` (`src/reflection/governor.js:134`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:111`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (the end-turn wrap-up block in `src/loop/orchestrator.js`, which calls `normalizeWrapupText` (`src/reflection/wrapup.js`)) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
 | `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3357-3365`, `isEndTurn` at `3053`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
 | `no_tool` | governance stop `noTool` (`src/reflection/governor.js:122`), gated by `noToolRound` (`src/loop/orchestrator.js`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
 | `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2712-2726`), streak accumulation (`src/loop/orchestrator.js:2763-2770`), stop at `src/reflection/governor.js:67-70` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`errorHashes` at `src/loop/orchestrator.js`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
@@ -1604,9 +1609,10 @@ Within one round, exactly one mechanism gets to decide, in this order
    completion and `no_tool` are therefore mutually exclusive.
 4. **completion keyword fallback** — the same signal with no parseable envelope
    comes from `completion.signals` matching the final text
-   (`src/loop/orchestrator.js:3159-3163`), or from the LLM normalizer when an
-   end-turn round produced no envelope at all (`3164-3218`, opt-in via
-   `reflection.wrapupNormalize` / `ERIX_WRAPUP_NORMALIZE=1`).
+   the end-turn wrap-up block in `src/loop/orchestrator.js`), or from the LLM normalizer when an
+   end-turn round produced no envelope at all **and the text is not empty**
+   (the end-turn wrap-up block in `src/loop/orchestrator.js`, opt-in via `reflection.wrapupNormalize` /
+   `ERIX_WRAPUP_NORMALIZE=1`).
 5. **`no_tool` stop** — reachable only when nothing declared completion and the
    round produced no tool call (`src/loop/orchestrator.js:3230-3233`).
 6. **round judge end-turn evaluation** — `judge_done` is evaluated *before* the
@@ -1972,6 +1978,56 @@ with `loadModelSlot`, which reads and validates the config file before any reque
 provider that throws **propagates the exception** out of `normalizeModelJson`; it is not
 folded into the three failure states. Wrap the call if the host needs a cost or failure
 ceiling of its own.
+
+#### The engine's wrap-up normalization uses this entry (issue #406 B2-b)
+
+The loop's own end-of-turn normalization — the fallback that fires on an `end_turn` round
+with no tool use and no parseable envelope, opt-in via `reflection.wrapupNormalize` /
+`ERIX_WRAPUP_NORMALIZE=1` — no longer builds a private request. It calls
+`normalizeWrapupText` in `src/reflection/wrapup.js`, which delegates to `normalizeModelJson`
+with `thinking: "none"` and the envelope shape as the `schema` example; the public
+`normalizeWrapupWithLlm` is a thin shell over the same function. One implementation means
+one prompt, one gate, one non-thinking value and one failure fact for both callers. Five
+consequences are host-observable:
+
+- **One prompt, less context.** The old inline prompt (task brief, round count,
+  `JSON.stringify(text)`) and the old wrap-up-specific prompt are gone. The surviving
+  request is this entry's generic "normalize the raw text" prompt plus the envelope shape
+  example, so the normalizer sees the raw text and the shape — **not** the task brief or
+  the round count. **This is a quality risk, stated as a risk:** the only remaining cue for
+  `done` is the shape example (whose `done` is `false`), because the old inline rule ("a clear
+  conclusion / the artifact is ready ⇒ `done=true`; stopped or gave up ⇒ judge whether the output is
+  decidable") was deleted with that prompt, and **no test pins `done` under the unified prompt**.
+- **The gate is shared, and it judges the agent's own text.** Every `findings` value must
+  occur verbatim in the agent's original text; entries that do not are dropped **silently at this
+  entry** — the `dropped` list is only visible one level down, on the return value of
+  `normalizeModelJson` / `wrapupGate`, never on the wrap-up return value — instead of rejecting the whole envelope. The check never uses the
+  normalizer's own answer as the source — that would let the normalizer certify its own
+  rewrites. The public entry now applies this gate too; before B2-b it accepted a rewritten
+  value (e.g. `gold-4173` for an agent text that said `gold-417`) with no check at all.
+- **Deterministic repair can answer without a request.** Shapes the L1 rules can fix — a
+  trailing comma, a doubled illegal escape — are normalized with **zero** model calls, and
+  their string values keep their original bytes. Before B2-b those shapes went to the
+  model.
+- **Empty or whitespace-only agent text makes zero requests.** The candidate set is empty,
+  so this entry does not spend a call (see the L2 section above). The loop then takes its
+  ordinary no-tool path and the final text stays exactly what the model produced
+  (possibly empty). Before B2-b the inline path sent one request even for empty text.
+- **Failures are structured.** The entry returns `{ ok: false, error }`; the loop still
+  turns the normalization switch off for the rest of the run after the first failure (the
+  same semantics as before — it is not retried every round), and a provider that throws
+  still degrades through the loop's catch. `normalizeWrapupWithLlm` returns `null` for a
+  failed normalization and still propagates evaluator exceptions.
+
+Because the public entry is the same function, these consequences apply to it too: an
+input that is already a parseable envelope, or one the L1 rules can repair, comes back
+**without a model call**, and empty/whitespace-only input returns `null` without a request
+(it used to send one). The normalizer's own answer also goes through the same L1 rules
+(`{"done":true,}` used to count as a failure and switch normalization off for the run; it
+is now repaired).
+
+`summary` and `output` are prose for the user, not declared facts, so they are **not**
+verbatim-checked; only `findings` is.
 
 ## Reusable normalization primitives
 
@@ -3114,7 +3170,9 @@ normalizer is only allowed to transcribe: every normalized finding value
 must appear verbatim in the model's own final text, otherwise that entry is
 dropped before the guard sees it. An LLM must not be able to "repair" a
 model's value on the way to verification, which would make the check
-irreproducible.
+irreproducible. That gate is the same one the wrap-up envelope gets from
+`normalizeModelJson` (issue #406 B2-b), so the engine and the public normalizer cannot
+disagree about what counts as verbatim.
 
 ## Retrieval and request-view folding
 
