@@ -4,8 +4,8 @@ import { KitError } from "../providers/errors.js";
 import {
   normalizeOpenAIStopReason,
   normalizeOpenAIUsage,
-  parseOpenAIToolArguments,
 } from "./openai-normalization.js";
+import { parseToolArguments } from "./tool-arguments.js";
 
 /**
  * A canonical content block.
@@ -468,11 +468,14 @@ export function openAIResponseToCanonical(json) {
 
   for (const toolCall of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
     const rawArguments = toolCall?.function?.arguments;
+    const { input, parseError } = parseToolArguments(rawArguments);
     content.push({
       type: "tool_use",
       id: toolCall?.id,
       name: toolCall?.function?.name,
-      input: parseOpenAIToolArguments(rawArguments),
+      input,
+      // issue #409：解析判词挂在块上（additive 可选键），执行层据它决定「不执行这个工具」。
+      ...(parseError === undefined ? {} : { erix: { argumentsParseError: parseError } }),
       ...Object.fromEntries(
         Object.entries(toolCall ?? {}).filter(
           ([key]) => !["id", "type", "function"].includes(key),
@@ -486,11 +489,13 @@ export function openAIResponseToCanonical(json) {
 
   if (hasFunctionCall) {
     const rawArguments = legacyFunctionCall.arguments;
+    const { input, parseError } = parseToolArguments(rawArguments);
     content.push({
       type: "tool_use",
       id: legacyFunctionCall.id ?? "call_legacy",
       name: legacyFunctionCall.name,
-      input: parseOpenAIToolArguments(rawArguments),
+      input,
+      ...(parseError === undefined ? {} : { erix: { argumentsParseError: parseError } }),
     });
   }
 

@@ -590,7 +590,12 @@ const READ_LINE_CAPACITY_ROLES = [
   // （均行 26.8 → 46.2），容量 9,772 → 5,671，已经不是「一次装得最多」那一个。样本里现在最大的是
   // `src/messages/openai-normalization.js`（5,496 B / 201 行 ⇒ 27.34 B/line ⇒ 9,587 行），描述里那一档随之
   // `most 9,772 (26.8)` → `most 9,587 (27.3)`（同位数 ⇒ 对本文件字节数中性）。
-  { role: "most", file: "src/messages/openai-normalization.js", recorded: { bytes: 5_496, lines: 201, bytesPerLine: 27.3433, capacity: 9_587, cjkShare: 0 } },
+  // 2026-10-23 第七刷（issue #409）：`most` 又**换了文件**——`src/messages/openai-normalization.js` 这一刀把
+  // 引数解析换成共享入口 `parseToolArguments`（`src/messages/tool-arguments.js`），从 5,496 B / 201 行
+  // 长到 6,232 B / 207 行（均行 27.34 → 30.11），容量 9,587 → 8,707，已不是「一次装得最多」那一个。
+  // 样本里现在最大的是 `src/loop/abort.js`（1,031 B / 37 行 ⇒ 27.86 B/line ⇒ 9,407 行），描述里那一档随之
+  // `most 9,587 (27.3)` → `most 9,407 (27.9)`（同位数 ⇒ 对本文件字节数中性）。
+  { role: "most", file: "src/loop/abort.js", recorded: { bytes: 1_031, lines: 37, bytesPerLine: 27.8649, capacity: 9_407, cjkShare: 0 } },
   // self 这一行在 PR #291 返工（必修 4）里重测过：`classifyFileToolResult` 的 JSDoc 改成按 `kind`
   // 关联的判别联合（工单明说改它的 JSDoc 是允许的，生成的 `.d.ts` 里 `kind:"bytes"` 那一支的
   // `bytes` 必须是 `number`），而本行原本记录的 89,537 字节与当时 1,718 行已经被此前几个单

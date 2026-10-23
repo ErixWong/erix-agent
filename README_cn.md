@@ -157,6 +157,7 @@ src/
     anthropic.js                   Anthropic 协议转换与流组装
     canonical.js                    规范消息/工具转换
     openai-normalization.js         OpenAI-compatible 归一化原语
+    tool-arguments.js               工具引数解析：先 L0 再 L1 修复，修不出来给解析器原判词（issue #409）
     rounds.js                       消息校验与轮次分组
   compact/
     budget.js                       上下文预算计算
@@ -197,6 +198,7 @@ src/
   text/
     json-candidates.js              顶层平衡 JSON 对象扫描（wrapup 与 reflection 共用）
     parse-model-json.js             统一的「模型文本抠 JSON」入口：三态失败、无 repair（issue #307）
+    repair-json.js                  L1 确定性修复规则：只动结构字符，绝不动值的字节（issue #409）
     label.js                        note/findings label 归一化
   tools/
     file-tools.js                    文件工具规范实现：readFile/searchText/rg/grep/tree/edit/writeFile

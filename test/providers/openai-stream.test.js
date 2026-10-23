@@ -270,12 +270,24 @@ test("preserves invalid streamed tool arguments as raw input", async () => {
 
   const response = await makeProvider(fetchImpl).chatStream(request);
 
-  assert.deepEqual(response.content, [{
+  const [block] = response.content;
+  assert.deepEqual(block, {
     type: "tool_use",
     id: "call_invalid",
     name: "lookup",
     input: { _truncatedArguments: '{"city":Paris', _raw: '{"city":Paris' },
-  }]);
+    // issue #409：判词挂在块上（additive 可选键），`input` 形状逐字未变。
+    erix: {
+      argumentsParseError: {
+        reason: "unparsable",
+        message: block.erix.argumentsParseError.message,
+        text: '{"city":Paris',
+      },
+    },
+  });
+  // 解析器原话逐字透传（V8 的文案随输入变化，这里只钉「非空 + 确实来自 JSON.parse」）。
+  assert.equal(typeof block.erix.argumentsParseError.message, "string");
+  assert.match(block.erix.argumentsParseError.message, /JSON|token|position/);
 });
 
 test("keeps multiple streamed tool calls in index slots", async () => {

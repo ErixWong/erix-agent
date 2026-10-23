@@ -169,7 +169,8 @@ test("preserves legacy coercion for object arguments and numeric names", () => {
     name: 42,
     arguments: "[object Object]",
   }]);
-  assert.deepEqual(accumulator.getToolUseBlocks(), [{
+  const [objectBlock] = accumulator.getToolUseBlocks();
+  assert.deepEqual(objectBlock, {
     type: "tool_use",
     id: "call_object",
     name: 42,
@@ -177,5 +178,14 @@ test("preserves legacy coercion for object arguments and numeric names", () => {
       _truncatedArguments: "[object Object]",
       _raw: "[object Object]",
     },
-  }]);
+    // issue #409：判词挂在块上（additive 可选键），`input` 形状逐字未变。
+    erix: {
+      argumentsParseError: {
+        reason: "unparsable",
+        message: objectBlock.erix.argumentsParseError.message,
+        text: "[object Object]",
+      },
+    },
+  });
+  assert.equal(typeof objectBlock.erix.argumentsParseError.message, "string");
 });

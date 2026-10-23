@@ -436,7 +436,9 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const spec = constant.engine.fields.executionStatus;
     assert.equal(spec.writtenFor, "special states only",
       "常量必须标出存在条件，否则只读常量的消费者会把它当恒存在字段");
-    assert.deepEqual(spec.presentValues, ["intercepted", "interrupted"]);
+    // issue #409 追加第三档 `rejected`：引数解析失败 ⇒ 工具从未执行，判词经 `is_error` 的
+    // `tool_result` 回给模型（见下面矩阵里那一条）。取值面扩展 = 契约新增，所以这里必须逐值手写。
+    assert.deepEqual(spec.presentValues, ["intercepted", "interrupted", "rejected"]);
 
     // 普通结果块：**无条件**断言它不存在（不是「有就查」）
     const plain = buildToolResultFact({
@@ -824,6 +826,56 @@ export function toolResultEnvelopeContract(label, getEntry) {
     }
     assert.deepEqual(Object.keys(intercepted).sort(), ["content", "erix", "tool_use_id", "type"],
       "拦截块的顶层只剩协议字段与引擎命名空间（本例没有宿主扩展，连 metadata 也不该有）");
+  });
+
+  // ── 引数解析失败：工具从未执行 ⇒ 有身份与状态、无 round/durationMs/success ────
+  test(`${label}: 引数解析失败的事实带 rejected 与判词，且工具从未执行（issue #409）`, async () => {
+    // 归一化层（`src/messages/tool-arguments.js`）把判词挂在 `tool_use` 块的
+    // `erix.argumentsParseError` 上；这里直接按那个形状喂给执行层（provider 契约是 canonical
+    // 内容块，真 run 里这一步由 OpenAI/Anthropic 两侧的归一化完成）。
+    const parseError = {
+      reason: "unparsable",
+      message: "Unexpected end of JSON input",
+      text: "{\"path\":",
+    };
+    const badRound = {
+      content: [{
+        type: "tool_use",
+        id: "bad-1",
+        name: "readFile",
+        input: { _truncatedArguments: "{\"path\":", _raw: "{\"path\":" },
+        erix: { argumentsParseError: parseError },
+      }],
+      stopReason: "tool_use",
+    };
+    const executed = [];
+    const { toolResultFacts } = await runCase(
+      async ({ input }) => {
+        executed.push(input);
+        return "should not run";
+      },
+      { script: [badRound, DONE] },
+    );
+    assert.deepEqual(executed, [], "引数解析不了 ⇒ 工具**一次都不许**被调用");
+    assert.equal(toolResultFacts.length, 1);
+    const rejected = toolResultFacts[0];
+    assert.equal(rejected.is_error, true);
+    assert.equal(rejected.erix.executionStatus, "rejected");
+    assert.deepEqual(
+      Object.keys(rejected.erix).sort(),
+      expectedEngineFields("toolCallKey", "executionStatus"),
+      "被拒的调用只该带身份键与状态两件事（没跑过 ⇒ 没有 round / durationMs / success）",
+    );
+    assert.equal(rejected.erix.round, undefined, "没执行就没有执行轮");
+    assert.equal(rejected.erix.durationMs, undefined, "没执行，耗时是未知而不是 0");
+    assert.equal(rejected.erix.success, undefined, "没执行就没有成败可言");
+    // 判词里必须有解析器原话与正确形状示例（模型下一轮据此自己改）
+    assert.match(rejected.content, /Unexpected end of JSON input/u, "解析器原话必须逐字回给模型");
+    assert.match(rejected.content, /正确形状/u, "判词必须带正确形状示例");
+    for (const key of RETIRED_TOP_LEVEL_KEYS) {
+      assert.equal(Object.hasOwn(rejected, key), false,
+        `被拒事实的顶层不得出现退役旧名 \`${key}\`：${JSON.stringify(rejected)}`);
+    }
   });
 
   // ── resume 的 unsafe 中断重放：有身份、无耗时 ─────────────────────────────────

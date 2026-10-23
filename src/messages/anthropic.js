@@ -3,6 +3,7 @@
  */
 
 import { applyProviderPayloadOptions } from "../providers/payload.js";
+import { parseToolArguments } from "./tool-arguments.js";
 
 function hasOwn(value, key) {
   return Object.prototype.hasOwnProperty.call(value, key);
@@ -490,15 +491,18 @@ export function anthropicResponseToCanonical(json) {
   return response;
 }
 
-function parsedInput(partialJson) {
-  try {
-    return JSON.parse(partialJson);
-  } catch {
-    return {
-      _truncatedArguments: partialJson,
-      _raw: partialJson,
-    };
-  }
+/**
+ * 把流式拼出来的引数文本解析进 `state.block`（issue #409：解析走共享入口
+ * `parseToolArguments`（`src/messages/tool-arguments.js`），与 OpenAI 侧同一份 L0 + L1；
+ * 判词挂在块的 `erix.argumentsParseError` 上，additive 可选键）。
+ *
+ * @param {{block: any, partialJson: string}} state
+ */
+function applyParsedToolArguments(state) {
+  const { input, parseError } = parseToolArguments(state.partialJson);
+  state.block.input = input;
+  if (parseError === undefined) delete state.block.erix;
+  else state.block.erix = { ...(state.block.erix ?? {}), argumentsParseError: parseError };
 }
 
 /**
@@ -715,7 +719,7 @@ export function createAnthropicStreamAssembler(callbacks) {
       const index = blockIndex(data);
       const state = blockStates[index];
       if (state?.type === "tool_use" && state.hasJsonDelta) {
-        state.block.input = parsedInput(state.partialJson);
+        applyParsedToolArguments(state);
       }
       if (state?.type === "reasoning" && data.signature !== undefined) {
         state.block.signature = data.signature;
@@ -740,7 +744,7 @@ export function createAnthropicStreamAssembler(callbacks) {
   function finish() {
     for (const state of blockStates) {
       if (state?.type === "tool_use" && state.hasJsonDelta) {
-        state.block.input = parsedInput(state.partialJson);
+        applyParsedToolArguments(state);
       }
     }
     const content = blockStates

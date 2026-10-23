@@ -278,6 +278,14 @@ test("parses text and tool calls, preserving invalid arguments as raw input", ()
           id: "call-bad",
           name: "bad",
           input: { _truncatedArguments: '{"value":', _raw: '{"value":' },
+          // issue #409：判词挂在块上（additive 可选键），`input` 形状逐字未变。
+          erix: {
+            argumentsParseError: {
+              reason: "unparsable",
+              message: "Unexpected end of JSON input",
+              text: '{"value":',
+            },
+          },
         },
       ],
       stopReason: "tool_use",
