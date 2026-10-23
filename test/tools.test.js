@@ -480,6 +480,14 @@ const INSTALL_HEAD_CASES = [
   "set -e; pip install x",
   "/usr/local/bin/pip3 install x",
   "make -j4 && make install",
+  // 下面两条是**变异保护**（评审单点变异实测两个存活 ⇒ 补格；它们守的是「机制」不是「今天的结果」）：
+  // ① 剥前缀必须**循环**：`sudo` 剥掉之后段首还是路径前缀，一轮不够（把 `segmentHead` 的循环改成
+  //    `round < 1` ⇒ 本格 120000，红）；`sudo -E apt-get install` 那种一条就够的写法给不了这层保护。
+  "sudo -E /usr/local/bin/pip3 install x",
+  // ② `;` 必须真的参与切段：段首是 `echo` 的那一段不吃掉 `;` 就整条都是 `echo` 的参数
+  //    （分隔符集合去掉 `;` ⇒ 本格 120000，红）；`dropShortOptions` 会把 `-e;` 连分号一起吃掉，
+  //    所以「段首照样是 `pip install x`」的写法（`set -e; pip install x`）给不了这层保护。
+  "echo hi; apt-get install -y x",
 ];
 
 const NON_INSTALL_HEAD_CASES = [
