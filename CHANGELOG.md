@@ -79,6 +79,28 @@
 
 ### Changed
 
+- **收尾归一化收口到同一个入口：引擎内联那条改调 `normalizeWrapupText` → `normalizeModelJson`，公开入口 `normalizeWrapupWithLlm` 改成同一函数的薄壳（issue #406 B2-b；`src/loop/orchestrator.js`（只碰内联归一化那一段）、`src/reflection/wrapup.js`、`test/wrapup-normalization-unified.test.js`（新）、`test/wrapup.test.js`（一格改钉新事实）；零依赖、纯 ESM，**不删任何导出**）。**
+  - **现场（改前实测，别重复调查）**：真在跑的收尾归一化是 `src/loop/orchestrator.js` 里那条内联请求（自带一份提示词：任务目标 + 轮数 + `JSON.stringify(responseText).slice(0, 2000)`），而公开入口 `normalizeWrapupWithLlm` 全仓没人调用、另有一份提示词 ⇒ **两份提示词、两套行为**。内联那份**没有闸门**（`summary`/`output` 从不核验），公开入口连 findings 的逐字核验都没有。
+  - **改法**：`src/reflection/wrapup.js` 新增 `normalizeWrapupText`（唯一的 L2 实现）→ 调 `normalizeModelJson({validate: wrapupGate(text), llm: true, provider, thinking: "none", schema: WRAPUP_SHAPE_SCHEMA})`；引擎与薄壳都只调它。闸门闭包捕获 **agent 原文**（不是候选字节、不是归一化器的回答），findings 非逐字条目逐条丢弃（`dropped`），`summary`/`output` 是散文不核。删掉内联请求与 `filterFindingsBySource`（同一件事只剩一处实现）。
+  - **行为变化（宿主可观察，逐条实测；假 provider，零真实 LLM）**：
+
+    | 输入（agent 终答） | 改前 | 改后 |
+    |---|---|---|
+    | 散文前后缀 + 合法信封 | 0 次归一化请求，`done:true`，终稿 `o` | 同 |
+    | 非法转义 `http\.request` | 2 次请求（归一化器答 done:false），终稿是原文 | **0 次请求**（`invalid-escape` 加倍反斜杠），终稿 `http\.request`（字节逐字保留） |
+    | 截断 `{"done":true,…`（缺右括号） | 2 次请求 | 2 次请求（`truncateCompletion` 默认关，行为不变） |
+    | 尾逗号 `{…,}` | 2 次请求 | **0 次请求**（`trailing-comma`），终稿 `o` |
+    | 纯散文 `做完了` | 2 次请求 | 2 次请求（提示词换成统一那份） |
+    | 空文本 | 1 次请求 + 归一化器的输出成为终稿 | **0 次请求**，终稿就是空串 |
+    | 公开入口 + 归一化器改写 findings（`gold-417` → `gold-4173`） | 改写值被**接受** | 该条被丢弃（`findings` 不出现） |
+
+  - **提示词份数**：改前 **3 份**「归一化器」提示词（内联 `【归一化】…`、`WRAPUP_NORMALIZATION_PROMPT`、`buildL2Request`）与 **3 处** system 字面量；改后 **1 份**（`buildL2Request`）+ **1 处** system 字面量。`grep -rF` 计数：`【归一化】判断 agent 是否完成任务` 1→0、`请把下面模型的最终文本归一化为结束协议 JSON` 1→0、`你是输出协议归一化器，只输出有效 JSON。` 3→1。
+  - **公开入口同样继承入口语义（行为变化）**：原文本身就是可解析信封、或 L1 规则修得动的输入 ⇒ **0 次请求**直接返回（以前总是发一次）；空 / 纯空白 ⇒ 0 次请求 + `null`；归一化器自己的回答也过同一套 L1 规则（`{"done":true,}` 以前算失败并关断本 run 的归一化，现在修好）。
+  - **代价（如实登记）**：统一提示词**不再包含任务目标与轮数**（旧内联那份有），归一化器只看到原文 + 信封形状示例；`summary`/`output` 的逐字性仍不核（它们是给用户看的散文，不是声明的事实）；归一化器的回答改走统一入口的候选集，**围栏块体排在 L0 扫描之前**（B2-a 已公开的优先级）⇒ 回答里同时有围栏信封与更早的裸对象时，围栏那个胜出（旧内联只认裸对象扫描的第一个）。
+  - **测试**：新增 `test/wrapup-normalization-unified.test.js` 5 格（先红格：两条路径请求体 `deepEqual` + 同一回答得到逐字相同信封；闸门对原文判；思考恒关两条路径；失败可见（请求停在 1 条、loop 不崩、终稿仍是原文）；L1 命中不发请求）。**先红后绿**：同一份测试在 `git archive HEAD`（`78d28a0`）的副本上 **3 格红 / 2 格绿**（红的是「同一份请求」「闸门」「L1 不发请求」），本树 **5/5 绿**。`test/wrapup.test.js` 的「空文本也归一化」一格按新事实改钉（断言没放宽：请求数从 1 **收紧**成 0，轮数/终稿/停机原因逐字钉住）——旧断言钉的是重复实现「空原文也照发一次」的副作用。
+  - **文档**：契约中英新增 `#### The engine's wrap-up normalization uses this entry (issue #406 B2-b)` / `#### 引擎的收尾归一化走的就是这个入口（issue #406 B2-b）`（五条宿主可观察后果 + `summary`/`output` 不核的理由）；`end_turn` 输入说明补「文本非空」；guard 的「只许搬运」段补「与 `normalizeModelJson` 同一道闸门」。`tryParseWrapupJson` 不迁 `parseModelJson` 的理由**复核仍成立**（对拍用例仍绿：`parseModelJson` 在第一个候选上停下，返回 `{"done":"true"}`），源码注释补了「异步那条是另一层」的差异说明。
+  - **门禁**：`npm test` → **tests 2,139 / pass 2,130 / fail 0 / skipped 9**（改前同树 2,134 / 2,125 / 0 / 9；+5 是新文件的 5 格，另一格是改钉不是新增）；`check:syntax`（311 文件）、`check:docs`（71 项，中英契约 **88** 节）、`check:docs:strict`、`check:docs-examples`、`check:tests`、`check:types`（**113** < 基线 116）、`check:types -- --with-tools`（**149** < 基线 152）、`check:exports`、`check:exports --self-test`、`check:pack-links`、`docs-drift-check --self-test`、`test-hygiene --self-test`、`node --test test/static-guards.test.js` 逐个 exit 0；符号锚点 `--verbose` 实测 **125 组 / 385 处**（本单没有新增/删除契约符号锚点，下限不动）。
+
 - **工具引数解析失败 ⇒ 不再执行那个工具，改为把解析器原判词作为 `is_error` 的 `tool_result` 退给模型；新增 `runToolLoop` 选项 `invalidArguments`（默认 `"reject"`，`"execute"` 逐字节回退旧行为）与 `erix.executionStatus` 的新取值 `"rejected"`（issue #409；`src/messages/tool-arguments.js`（新）、`src/text/repair-json.js`（新）、`src/messages/openai-normalization.js`、`src/messages/canonical.js`、`src/messages/anthropic.js`、`src/loop/run-snapshot-executor.js`、`src/loop/orchestrator.js`、`src/loop/option-normalization.js`、`src/tool-fact.js`；零依赖、纯 ESM、`package.json` 未动）。**
   - **现场（已实测，别重复调查）**：`parseOpenAIToolArguments` 的 `catch {}` 把**解析器原话整句丢掉**，返回 `{_truncatedArguments, _raw}` 假对象；参数变成假对象之后**工具照样被执行**，模型看到的是「缺 path 参数」这种**二次错误**而不是「第 37 个字符少个引号」；宿主也分不出「模型写坏了 JSON」与「工具真的失败了」。Anthropic 侧的孪生逻辑（流式组装的 `parsedInput`）另写了一遍同款假对象。`_truncatedArguments` 在本仓历史 transcript 里出现 **0 次** = 无消费者（删除它是第三张单的活，**本单一个导出都不删**）。
   - **L1 修复层（新内部件，**不进包根**）**：`src/text/repair-json.js` 的规则表按裁定落地——默认**开**：代码围栏剥离 / 单引号与裸键 / **非法转义反斜杠加倍**（`\.` → `\\.`）/ Python 字面量 `True`/`False`/`None` / 尾逗号；默认**关**：截断补全（实测 110 份 transcript / 312 条真实终答里截断类需求 = 0 条 ⇒ 依据是「零需求」而不是「有风险」）。**承重墙是一条不变量**：修复产出的每一个字符串值必须仍是原始文本里逐字存在的一段——它是「值可信闸门」的判据，同时是修复器的验收标准，于是「各场景该默认开还是关」被消解成一条机器检查（`test/text/repair-json.test.js` 的「规则 × fixture」通用用例逐格断言 `原文.includes(每个修后的字符串值)`，另加覆盖面守门：每条规则都必须在至少一个 fixture 上真的改过文本）。

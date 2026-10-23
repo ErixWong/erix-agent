@@ -1465,8 +1465,9 @@ Within one round, exactly one mechanism gets to decide, in this order
 4. **completion keyword fallback** — the same signal with no parseable envelope
    comes from `completion.signals` matching the final text
    (`src/loop/orchestrator.js:3159-3163`), or from the LLM normalizer when an
-   end-turn round produced no envelope at all (`3164-3218`, opt-in via
-   `reflection.wrapupNormalize` / `ERIX_WRAPUP_NORMALIZE=1`).
+   end-turn round produced no envelope at all **and the text is not empty**
+   (`3164-3218`, opt-in via `reflection.wrapupNormalize` /
+   `ERIX_WRAPUP_NORMALIZE=1`).
 5. **`no_tool` stop** — reachable only when nothing declared completion and the
    round produced no tool call (`src/loop/orchestrator.js:3230-3233`).
 6. **round judge end-turn evaluation** — `judge_done` is evaluated *before* the
@@ -1832,6 +1833,52 @@ with `loadModelSlot`, which reads and validates the config file before any reque
 provider that throws **propagates the exception** out of `normalizeModelJson`; it is not
 folded into the three failure states. Wrap the call if the host needs a cost or failure
 ceiling of its own.
+
+#### The engine's wrap-up normalization uses this entry (issue #406 B2-b)
+
+The loop's own end-of-turn normalization — the fallback that fires on an `end_turn` round
+with no tool use and no parseable envelope, opt-in via `reflection.wrapupNormalize` /
+`ERIX_WRAPUP_NORMALIZE=1` — no longer builds a private request. It calls
+`normalizeWrapupText` in `src/reflection/wrapup.js`, which delegates to `normalizeModelJson`
+with `thinking: "none"` and the envelope shape as the `schema` example; the public
+`normalizeWrapupWithLlm` is a thin shell over the same function. One implementation means
+one prompt, one gate, one non-thinking value and one failure fact for both callers. Five
+consequences are host-observable:
+
+- **One prompt, less context.** The old inline prompt (task brief, round count,
+  `JSON.stringify(text)`) and the old wrap-up-specific prompt are gone. The surviving
+  request is this entry's generic "normalize the raw text" prompt plus the envelope shape
+  example, so the normalizer sees the raw text and the shape — **not** the task brief or
+  the round count.
+- **The gate is shared, and it judges the agent's own text.** Every `findings` value must
+  occur verbatim in the agent's original text; entries that do not are dropped (reported
+  as `dropped`) instead of rejecting the whole envelope. The check never uses the
+  normalizer's own answer as the source — that would let the normalizer certify its own
+  rewrites. The public entry now applies this gate too; before B2-b it accepted a rewritten
+  value (e.g. `gold-4173` for an agent text that said `gold-417`) with no check at all.
+- **Deterministic repair can answer without a request.** Shapes the L1 rules can fix — a
+  trailing comma, a doubled illegal escape — are normalized with **zero** model calls, and
+  their string values keep their original bytes. Before B2-b those shapes went to the
+  model.
+- **Empty or whitespace-only agent text makes zero requests.** The candidate set is empty,
+  so this entry does not spend a call (see the L2 section above). The loop then takes its
+  ordinary no-tool path and the final text stays exactly what the model produced
+  (possibly empty). Before B2-b the inline path sent one request even for empty text.
+- **Failures are structured.** The entry returns `{ ok: false, error }`; the loop still
+  turns the normalization switch off for the rest of the run after the first failure (the
+  same semantics as before — it is not retried every round), and a provider that throws
+  still degrades through the loop's catch. `normalizeWrapupWithLlm` returns `null` for a
+  failed normalization and still propagates evaluator exceptions.
+
+Because the public entry is the same function, these consequences apply to it too: an
+input that is already a parseable envelope, or one the L1 rules can repair, comes back
+**without a model call**, and empty/whitespace-only input returns `null` without a request
+(it used to send one). The normalizer's own answer also goes through the same L1 rules
+(`{"done":true,}` used to count as a failure and switch normalization off for the run; it
+is now repaired).
+
+`summary` and `output` are prose for the user, not declared facts, so they are **not**
+verbatim-checked; only `findings` is.
 
 ## Reusable normalization primitives
 
@@ -2974,7 +3021,9 @@ normalizer is only allowed to transcribe: every normalized finding value
 must appear verbatim in the model's own final text, otherwise that entry is
 dropped before the guard sees it. An LLM must not be able to "repair" a
 model's value on the way to verification, which would make the check
-irreproducible.
+irreproducible. That gate is the same one the wrap-up envelope gets from
+`normalizeModelJson` (issue #406 B2-b), so the engine and the public normalizer cannot
+disagree about what counts as verbatim.
 
 ## Retrieval and request-view folding
 

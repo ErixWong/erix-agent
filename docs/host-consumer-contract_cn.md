@@ -1169,7 +1169,7 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    为假（`src/loop/orchestrator.js:3230-3233`）。**声明完成与 `no_tool` 因此互斥。**
 4. **completion 关键词兜底**——同样这个信号，在没解析出信封时来自
    `completion.signals` 命中终答文本（`src/loop/orchestrator.js:3159-3163`），或来自
-   end-turn 轮完全拿不到 JSON 时的 LLM 归一化器（`3164-3218`，开关是
+   end-turn 轮完全拿不到 JSON **且文本非空**时的 LLM 归一化器（`3164-3218`，开关是
    `reflection.wrapupNormalize` / `ERIX_WRAPUP_NORMALIZE=1`）。
 5. **`no_tool` stop**——只在什么都没声明完成且本轮没调工具时可达
    （`src/loop/orchestrator.js:3230-3233`）。
@@ -1469,6 +1469,40 @@ if (completed.repaired.rule !== "truncation") throw new Error("opting in must be
 校验配置文件，所以把这条路径放进热循环的宿主每次调用都要付一次文件 I/O。最后：provider 抛错时是
 **抛异常**出 `normalizeModelJson`，**不会**折进那三个失败态。宿主需要自己的成本 / 失败上限，就在
 调用点包一层。
+
+#### 引擎的收尾归一化走的就是这个入口（issue #406 B2-b）
+
+循环自己那条收尾归一化——`end_turn` 轮、无工具调用、解析不出信封时触发的兜底，开关是
+`reflection.wrapupNormalize` / `ERIX_WRAPUP_NORMALIZE=1`——不再自己拼一份请求。它调
+`normalizeWrapupText`（在 `src/reflection/wrapup.js`），后者转调 `normalizeModelJson`，
+`thinking: "none"`、信封形状作为 `schema` 示例；公开入口 `normalizeWrapupWithLlm` 是同一个
+函数的薄壳。一个实现 = 两个调用方共用同一份提示词、同一道闸门、同一个「不思考」取值、同一份
+失败事实。五条宿主可观察的后果：
+
+- **只有一份提示词，上下文也少了。** 旧的内联提示词（任务目标、已运行轮数、
+  `JSON.stringify(text)`）与旧的收尾专用提示词都删了。留下来的请求是本入口的通用「把原始
+  文本归一化」提示词 + 信封形状示例，所以归一化器看到的是原文与形状——**不是**任务目标或
+  轮数。
+- **闸门共享，而且判的是 agent 自己的原文。** 每个 `findings` 值必须逐字出现在 agent 的原文
+  里；不在的条目被**丢弃**（通过 `dropped` 声明），不是把整个信封拒收。这道判据从不拿归一化
+  器自己的回答当 `source`——那等于让它给自己的改写作证。公开入口现在也过这道闸门；B2-b 之前
+  它对一条被改写的值（例如 agent 原文写 `gold-417`、归一化器答 `gold-4173`）**一点检查都没
+  有**。
+- **确定性修复命中就不发请求。** L1 规则修得动的形状——尾逗号、加倍的非法转义——用**零**次
+  模型调用就归一化完，字符串值的字节保持原样。B2-b 之前这些形状要花一次模型调用。
+- **空文本 / 纯空白原文一次请求都不发。** 候选集为空，本入口不花这次调用（见上面 L2 那一
+  节）。循环随后走它普通的无工具路径，终稿就是模型这一轮的真实输出（可能是空串）。B2-b 之前
+  内联路径对空文本也会发一次请求。
+- **失败是结构化的。** 入口返回 `{ ok: false, error }`；循环在第一次失败后仍然把本 run 的归一
+  化开关就地关断（与之前同一语义——不会每轮重试），provider 抛错仍走循环的 `catch` 降级。
+  `normalizeWrapupWithLlm` 在归一化失败时返回 `null`，evaluator 自己抛的错照旧抛出来。
+
+公开入口就是同一个函数，所以上面这些后果对它同样成立：原文本身就是可解析信封、或 L1 规则修
+得动的输入 ⇒ **不发模型请求**直接返回；空 / 纯空白输入 ⇒ 一次请求都不发、返回 `null`（以前
+会发一次）。归一化器自己的回答也过同一套 L1 规则（`{"done":true,}` 以前算失败并关断本 run 的
+归一化，现在会被修好）。
+
+`summary` / `output` 是给用户看的散文、不是声明的事实，所以**不**做逐字核验；只核 `findings`。
 
 ## 可复用的归一化原语
 
@@ -2344,7 +2378,8 @@ scope 目录数，`purged` 为删除的记录文件数）。可选 `before` 参�
 当 loop 必须用 LLM 把散文终答归一化成信封时（`ERIX_WRAPUP_NORMALIZE=1` 或
 `reflection.wrapupNormalize`），归一化器只许搬运：每个归一化后的 finding 值都必须逐字
 出现在模型自己的终答文本里，否则该条在 guard 看到之前就被丢弃。LLM 不得在通往核验的
-路上“修好”模型的值，那会让核验不可复现。
+路上“修好”模型的值，那会让核验不可复现。这道闸门就是 `normalizeModelJson` 给收尾信封的
+同一道（issue #406 B2-b）——引擎与公开归一化器不可能对「什么叫逐字」各持一说。
 
 ## 取回与 request-view 折叠
 
