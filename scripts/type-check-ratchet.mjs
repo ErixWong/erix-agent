@@ -41,9 +41,36 @@
 //   node scripts/type-check-ratchet.mjs --baseline                  # 只打印基线常量与复现命令
 //   node scripts/type-check-ratchet.mjs --print-count               # 只打印实测错误总数（脚本化下调基线用）
 //   node scripts/type-check-ratchet.mjs --ignore-stale-declarations # 明知 src/ 下有 .d.ts 生成物仍强行跑
+//   node scripts/type-check-ratchet.mjs --strict-report             # strict 观测点（issue #416）：同一张依赖图加 `--strict`，只打印分布
+//
+// ── strict 观测点（issue #416）：把「最宽松口径」那笔债变成每次都能看见 ──────────────
+// 病根：上面那对基线（116 / 152）是**不带 `--strict`** 量出来的。同一棵树、同一条命令只加一个
+//   `--strict`，总数就从三位数跳到四位数（构成：TS7006 隐式 any 参数最多、其次 TS2339、TS7005、TS7031、
+//   TS7034、TS7053 ……）—— 这个数**从来没出现在任何门禁或 CI 日志里**。
+//   后果可复证：`types:build` 生成的 75 个 `.d.ts` 在场时，同一条 `--strict` 命令报 **0 个错**（声明里的
+//   `any` 把一切吞了，宿主侧 `tsc --strict` 因此能过）。
+// ⚠ **strict 这个数不是门禁、不钉、会漂——命令输出是唯一真值。** 它随代码改动而变，也随**树**而变：
+//   2026-10-23 在 #416 分支（`feat-261023-08-strict-report`）上实测 **1690 个错 / 65 个文件**，同一天
+//   集成树上同一命令实测 **1687 个 / 65 个文件**（主 agent 实测；两者都是真值，差的是树不是命令）。所以：
+//   · 任何文档 / 注释 / 测试里的字面量都只是「**某棵树某一天**」的快照，带日期与树名才有意义；
+//   · 不同步这字面量（改了也没门禁验它，同步本身只会制造新的谎言）——要现值就跑命令；
+//   · 不要在 CI 或测试里断言某个具体数字（那条断言一定会腐烂；本观测点存在的意义是「看得见」，不是「钉住」）。
+// 本开关**只观测、不判定**：
+//   · 用 `TSC_ARGS` + `--strict`（**同一张依赖图**：入口、module、target 一字不改）跑一次，打印
+//     **总数 + 按文件 + 按错误码**的分布，外加口径说明（入口 / tsc 与 @types 版本 / 逐字复现命令）；
+//   · **观测到的数不影响退出码**：无论 strict 报多少还是 0，只要这次测量本身成立就 exit 0。
+//     ⚠ 但「只观测」不等于「exit 恒 0」：仍有**三条硬失败路径**——tsc 起不来、tsc 非 0 退出却一条错都
+//     没解析出来、`src/**/*.d.ts` 残留（下面那条守卫）。实测：`npm run types:build` 之后直接跑本开关 ⇒
+//     **exit 1**。所以 CI 那一步是 `continue-on-error: true`（红得对，但不阻塞流水线）。
+//   · 棘轮那一侧（`TSC_ARGS` / 两个基线常量 / 判定与退出码）**一字不动**：本开关不新增、也不改动
+//     `TSC_ARGS` 里的任何 flag，`--strict` 只出现在观测路径的数组副本里。
+//   · 复用**陈旧声明守卫**：`src/**/*.d.ts` 在场时观测到的不是实现（实测就是 0），所以与棘轮同样
+//     拒绝运行并报错——「strict 报 0」在那种情形下是假绿，不是好消息。
+// 为什么不卡：strict 那笔（上记的实测值）是**待还的债**（issue #417），不是本轮能清零的东西；先把它摆到
+//   日志里、让每一次 CI 都看得见，再谈还债。等 #417 把它降下来，是否升级成门禁是那一单的决定，不是这一单的。
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -165,6 +192,7 @@ const WITH_TOOLS = argv.includes("--with-tools");
 const VERBOSE = argv.includes("--verbose");
 const PRINT_ONLY = argv.includes("--print-count");
 const IGNORE_STALE = argv.includes("--ignore-stale-declarations");
+const STRICT_REPORT = argv.includes("--strict-report");
 const SHOW_ERRORS = (() => {
   const i = argv.indexOf("--show-errors");
   return i >= 0 && argv[i + 1] !== undefined ? Number(argv[i + 1]) : 0;
@@ -187,6 +215,10 @@ const TSC_ARGS = [
   ...ENTRIES,
 ];
 const MODE = WITH_TOOLS ? "含 ./tools 入口" : "包根入口";
+
+// strict 观测路径专用：**追加**在 `TSC_ARGS` 之后的数组副本，绝不写进 `TSC_ARGS` 本身（issue #416 红线）。
+// 单独一个常量而不是 `[...TSC_ARGS, "--strict"]` 内联，是为了让「棘轮那侧不带 strict」这件事在文本里可搜。
+const STRICT_ONLY_ARGS = ["--strict"];
 
 if (argv.includes("--baseline")) {
   console.log(
@@ -250,7 +282,9 @@ if (stale.n > 0) {
     + "（2026-10-21 那轮是 70 个生成物 / 117 个错、2026-10-15 那轮是 65 个生成物 / 119 个错，都属**历史值**）\n"
     + "  清掉再生成（生成物不入库、随时可重建）：`find src -name '*.d.ts' -delete`\n"
     + "    （PowerShell：`Get-ChildItem src -Recurse -Filter *.d.ts | Remove-Item`）\n"
-    + "  确需带着生成物跑（例如刚 `npm pack` 完的目录）：加 `--ignore-stale-declarations`，但那样的数字**不能**用来下调基线。";
+    + "  确需带着生成物跑（例如刚 `npm pack` 完的目录）：加 `--ignore-stale-declarations`，但那样的数字**不能**用来下调基线。\n"
+    + "  （strict 观测点 `--strict-report` 同样被这道守卫拦下：2026-10-23 实测 75 个 `.d.ts` 在场时 strict 也报 **0 个错**、tsc exit 0——"
+    + "同一个假绿，所以那里也拒绝运行，而不是把 0 当成「strict 已经干净了」。）";
   if (!IGNORE_STALE) {
     console.error(`check:types: 失败 — ${msg}`);
     process.exit(1);
@@ -258,11 +292,143 @@ if (stale.n > 0) {
   console.error(`check:types: ⚠ ${msg}\n  （--ignore-stale-declarations 生效：继续跑）`);
 }
 
-const tscRun = spawnSync(process.execPath, [tscPath, ...TSC_ARGS], {
-  cwd: ROOT,
-  encoding: "utf8",
-  maxBuffer: 64 * 1024 * 1024,
-});
+// ── 两条路共用的 tsc 调用与输出解析（棘轮 + strict 观测）───────────────────────────
+// 一行错误的形状固定：`<file>(<line>,<col>): error TS<code>: <message>`。
+// 只有这一行**算一个错误**；缩进的续行（`  Type '…' is not assignable to …`）是同一条错误的说明，不能重复计数。
+const ERROR_LINE = /^(?<file>[^\r\n]+?)\((?<line>\d+),(?<col>\d+)\): error TS(?<code>\d+): (?<msg>.*)$/;
+
+/**
+ * 把 tsc 的原始输出拆成「一行一个错误」的数组。棘轮与 strict 观测走**同一个**解析器：
+ * 两条路各写一份正则的话，「按错误码/按文件」的分布迟早两边对不上，而这里正是拿分布当证据的地方。
+ *
+ * @param {string} output tsc 的 stdout+stderr 合并文本
+ * @returns {{errors: {file: string, line: number, col: number, code: string, msg: string}[], unparsed: string[]}}
+ */
+function parseTscErrors(output) {
+  const seen = new Set();
+  const errors = [];
+  const unparsed = [];
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) continue;
+    const m = ERROR_LINE.exec(line);
+    if (!m) {
+      // tsc 的自由文本（版本横幅、`Found N errors…` 汇总）留作「一条都没解析出来」时的兜底证据
+      if (/error TS\d+:/.test(line)) unparsed.push(line.trim());
+      continue;
+    }
+    const rel = m.groups.file.replaceAll("\\", "/").replace(/^\.\//, "");
+    const key = `${rel}:${m.groups.line}:${m.groups.col}:${m.groups.code}`;
+    if (seen.has(key)) continue; // stdout/stderr 交错时同一条错误可能重复出现
+    seen.add(key);
+    errors.push({ file: rel, line: Number(m.groups.line), col: Number(m.groups.col), code: m.groups.code, msg: m.groups.msg });
+  }
+  return { errors, unparsed };
+}
+
+/**
+ * 跑一次 tsc：`TSC_ARGS`（棘轮口径，逐字不动）+ 调用方追加的参数。
+ * strict 观测只通过 `extraArgs` 追加 `--strict`，**从不**改写 `TSC_ARGS` 本身（issue #416 红线）。
+ *
+ * @param {string[]} extraArgs 追加在棘轮参数之后的 flag（棘轮那条路传空数组）
+ * @returns {{error?: Error, status: number|null, stdout?: string, stderr?: string}}
+ */
+function runTsc(extraArgs) {
+  return spawnSync(process.execPath, [tscPath, ...TSC_ARGS, ...extraArgs], {
+    cwd: ROOT,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+}
+
+/**
+ * 读 devDependency 的版本号，用于口径自述（读不到就写 `unknown`，不因此失败）。
+ *
+ * @param {string} rel `node_modules` 下的相对目录，如 `typescript` / `@types/node`
+ * @returns {string}
+ */
+function depVersion(rel) {
+  try {
+    const pkg = JSON.parse(readFileSync(path.join(ROOT, "node_modules", rel, "package.json"), "utf8"));
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+// ── strict 观测点（issue #416）：同一张依赖图 + `--strict`，只打印分布，**不参与 exit code** ──
+// 放在陈旧声明守卫**之后**、棘轮那次 tsc 之前：守卫已经在上面把 `src/**/*.d.ts` 在场的情形拦成 exit 1，
+// 于是「strict 报 0」在这里只有一种含义（真的 0），不会混进「声明把实现遮住了」那种假绿。
+if (STRICT_REPORT) {
+  const strictArgs = [...TSC_ARGS, ...STRICT_ONLY_ARGS];
+  const strictRun = runTsc(STRICT_ONLY_ARGS);
+  if (strictRun.error) {
+    console.error(`check:types:strict — 启动 tsc 失败：${strictRun.error.message}`);
+    process.exit(1);
+  }
+  const strictOutput = `${strictRun.stdout ?? ""}\n${strictRun.stderr ?? ""}`;
+  const strictParsed = parseTscErrors(strictOutput);
+
+  // 与棘轮同一条口径：**没解析到错误 + tsc 非 0 退出 = 跑都没跑成**，不是「strict 已经干净了」。
+  // 这一格是「脚本自己出错」，所以它才允许非 0（观测的数本身永远不影响退出码）。
+  if (strictParsed.errors.length === 0 && strictRun.status !== 0) {
+    console.error(
+      `check:types:strict — 失败 — tsc 退出码 ${strictRun.status}，但没解析到任何 \`error TS…\` 行`
+      + "（不是「0 个 strict 错误」，是跑都没跑成；本命令只在**脚本自己出错**时才非 0）。\n"
+      + `  tsc 命令：${process.execPath} ${[tscPath, ...strictArgs].join(" ")}\n`
+      + "  tsc 原始输出（末尾 40 行）：\n"
+      + strictOutput.trimEnd().split(/\r?\n/).slice(-40).map((l) => `    ${l}`).join("\n"),
+    );
+    process.exit(1);
+  }
+  if (strictParsed.unparsed.length) {
+    // 形状变了就喊出来：正则失配等于观测静默失去检查面（与棘轮那侧的告警同一口径）。
+    console.error(
+      `check:types:strict — ⚠ 有 ${strictParsed.unparsed.length} 行含 \`error TS…\` 但没匹配预期的定位形状，`
+      + "它们**没有计入下面的分布**（tsc 输出格式变了？请同步本脚本的 ERROR_LINE）：\n"
+      + strictParsed.unparsed.slice(0, 10).map((l) => `    ${l}`).join("\n"),
+    );
+  }
+
+  const strictByFile = new Map();
+  const strictByCode = new Map();
+  for (const e of strictParsed.errors) {
+    strictByFile.set(e.file, (strictByFile.get(e.file) ?? 0) + 1);
+    strictByCode.set(e.code, (strictByCode.get(e.code) ?? 0) + 1);
+  }
+  const strictFiles = [...strictByFile.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const strictCodes = [...strictByCode.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const strictTotal = strictParsed.errors.length;
+  const fileRows = VERBOSE ? strictFiles : strictFiles.slice(0, 10);
+  const codeRows = VERBOSE ? strictCodes : strictCodes.slice(0, 8);
+
+  console.log(
+    "check:types:strict — strict 观测点（issue #416；**只观测、不判定**：观测到的数不影响退出码，不卡任何门禁；只有脚本自己跑不成时才非 0）\n"
+    + `  入口：${ENTRIES.join(" + ")}（${MODE}；与 \`npm run check:types\` **同一张依赖图**——输入文件、target、module 一字不改，只多一个 \`--strict\`）\n`
+    + `  tsc：typescript@${depVersion("typescript")} + @types/node@${depVersion("@types/node")}（devDependencies；与棘轮那条路是同一对）\n`
+    + `  参数：${strictArgs.join(" ")}\n`
+    + `  复现：node node_modules/typescript/bin/tsc ${strictArgs.join(" ")}\n`
+    + `  对照：**非 strict 才是棘轮量的那个数**——\`npm run check:types\` 的基线是 ${BASELINE} 个 --checkJs 错误（${MODE}）；`
+    + "strict 这一档没有基线、不参与判定，两个数不可互相比、也不许拿 strict 的数去下调基线。",
+  );
+  console.log(`strict 实测：${strictTotal} 个错误 / ${strictFiles.length} 个文件`);
+  console.log(
+    `  每文件${VERBOSE ? `（${strictFiles.length} 个）` : `（前 ${fileRows.length}，共 ${strictFiles.length} 个）`}：\n`
+    + fileRows.map(([f, n]) => `    ${String(n).padStart(4)}  ${f}`).join("\n"),
+  );
+  console.log(
+    `  每错误码${VERBOSE ? `（${strictCodes.length} 种）` : `（前 ${codeRows.length}，共 ${strictCodes.length} 种）`}：`
+    + codeRows.map(([c, n]) => `TS${c}×${n}`).join("、"),
+  );
+  if (!VERBOSE && (strictFiles.length > fileRows.length || strictCodes.length > codeRows.length)) {
+    console.log("  （要完整分布：加 --verbose；要单条定位：本命令目前只给聚合，逐条定位请直接跑上面的复现命令）");
+  }
+  // 观测路径到此结束：**观测到的数（多少都一样）不影响退出码**（issue #416：只观测，不改判定）。
+  // 非 0 只发生在上面那三条「脚本自己跑不成」的路径上，与 strict 报多少无关。
+  process.exit(0);
+}
+
+const tscRun = runTsc([]);
 
 if (tscRun.error) {
   console.error(`check:types: 启动 tsc 失败：${tscRun.error.message}`);
@@ -271,27 +437,7 @@ if (tscRun.error) {
 
 const tscOutput = `${tscRun.stdout ?? ""}\n${tscRun.stderr ?? ""}`;
 
-// 一行错误的形状固定：`<file>(<line>,<col>): error TS<code>: <message>`。
-// 只有这一行**算一个错误**；缩进的续行（`  Type '…' is not assignable to …`）是同一条错误的说明，不能重复计数。
-const ERROR_LINE = /^(?<file>[^\r\n]+?)\((?<line>\d+),(?<col>\d+)\): error TS(?<code>\d+): (?<msg>.*)$/;
-const seen = new Set();
-const errors = [];
-const unparsed = [];
-for (const rawLine of tscOutput.split(/\r?\n/)) {
-  const line = rawLine.trimEnd();
-  if (!line.trim()) continue;
-  const m = ERROR_LINE.exec(line);
-  if (!m) {
-    // tsc 的自由文本（版本横幅、`Found N errors…` 汇总）留作「一条都没解析出来」时的兜底证据
-    if (/error TS\d+:/.test(line)) unparsed.push(line.trim());
-    continue;
-  }
-  const rel = m.groups.file.replaceAll("\\", "/").replace(/^\.\//, "");
-  const key = `${rel}:${m.groups.line}:${m.groups.col}:${m.groups.code}`;
-  if (seen.has(key)) continue; // stdout/stderr 交错时同一条错误可能重复出现
-  seen.add(key);
-  errors.push({ file: rel, line: Number(m.groups.line), col: Number(m.groups.col), code: m.groups.code, msg: m.groups.msg });
-}
+const { errors, unparsed } = parseTscErrors(tscOutput);
 
 // ⚠ 「没解析到错误」+「tsc 非 0 退出」= 跑都没跑成（参数写错、缺 lib、tsc 自己崩了），
 //   此时「0 个错 < 基线」是假的干净，必须变红。
