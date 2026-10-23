@@ -105,6 +105,14 @@ export async function normalizeWrapupWithLlm(
         text: `${WRAPUP_NORMALIZATION_PROMPT}${String(text ?? "")}`,
       }],
     }],
+    // issue #419 ①：归一化只输出一段 JSON，与 judge 同口径——**总是**不思考（这是本函数的
+    // 语义，不是选项：对外签名/选项/返回值一字未改）。思考开着的模型上小预算会被思考吃光：
+    // 2026-10-23 真上游实测（qwen3.8-flash-next，maxTokens:120、temperature:0、同一段输入）
+    // 默认 ⇒ 正文 0 字 / 思考 198 字 / output_tokens 顶格 120 / 本函数返回 null；带
+    // reasoning_effort:"none" ⇒ 正文 228 字 / 思考 0 字。写法逐字照
+    // `src/loop/orchestrator.js` 的 judge 请求（那里注释写的「统一语义=不思考」）；GLM 系模型
+    // 由 provider 载荷层把 "none" 转译成 "low"（见 `src/providers/payload.js`）。
+    reasoning_effort: "none",
   };
   if (signal !== undefined) request.signal = signal;
   if (maxTokens !== undefined) request.maxTokens = maxTokens;
