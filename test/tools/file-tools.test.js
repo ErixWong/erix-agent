@@ -580,7 +580,13 @@ const READ_LINE_CAPACITY_ROLES = [
   // `4,072 → 3,960`、`64.4 → 66.2`、`27% → 32%`（三处都是同位数替换 ⇒ 对本文件字节中性，`self` 那一行
   // 不用再刷）。`median` / `most` / `densest` 三个角色当场复测未变（样本中位仍是 `src/tools/notes.js`
   // 6,952，样本最大仍是 `src/loop/abort.js` 9,407，CJK 最密仍是 `src/loop/state-view.js` 37.31%）。
-  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 32_231, lines: 487, bytesPerLine: 66.1828, capacity: 3_960, cjkShare: 0.3194 } },
+  // 2026-10-24 第十刷（issue #425 第二轮评审）：`src/loop/resume-manager.js` 只删了一个 token（引擎独占
+  // 命名空间收成 `:engine:`）加改注释，+247 字节 / +1 行，均行字节 66.1828 → **66.5533**、容量
+  // 3,960 → **3,938**、CJK 占比 31.94% → **32.08%**；描述里 floor / 均行字节随之 `3,960 → 3,938`、
+  // `66.2 → 66.6`（同位数 ⇒ 对本文件字节中性），CJK 仍是 32%。本文件自己也多了一段 ⚠ 复测注
+  // （+489 字节 / +4 行）⇒ `self` 那一行按同口径重测：107,772 → **108,261** 字节 / 1,991 → **1,995** 行 /
+  // 容量 4,842 → **4,830**，描述里「this tool's own source fits」随之 4,842 → 4,830（同位数 ⇒ 字节中性）。
+  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 32_478, lines: 488, bytesPerLine: 66.5533, capacity: 3_938, cjkShare: 0.3208 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
@@ -650,7 +656,7 @@ const READ_LINE_CAPACITY_ROLES = [
   // 当场红、按同口径复测后同步。
   // 2026-10-23（issue #404）：描述里的 floor / 均行字节 / 自身容量三处数字同步（同位数 ⇒ 字节中性），
   // 记录值按本测试口径复测：107,620 → **107,772** 字节 / 1,989 → **1,991** 行 / 容量 4,844 → **4,842**。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 107_772, lines: 1_991, bytesPerLine: 54.1296, capacity: 4_842, cjkShare: 0.2683 } },
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 108_261, lines: 1_995, bytesPerLine: 54.2662, capacity: 4_830, cjkShare: 0.2688 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];
