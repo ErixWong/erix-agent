@@ -20,6 +20,7 @@ import { createCliAssemblyRoot } from "./assembly-root.js";
 import {
   DEFAULT_CHAT_IDLE_TIMEOUT_SECONDS as DEFAULT_IDLE_TIMEOUT_SECONDS,
   createIdleTimeout,
+  idleTimeoutFailure,
   withToolHeartbeat,
 } from "./idle.js";
 import { buildCompactionContext, loadCliConfig, normalizeCompactionOption } from "./config.js";
@@ -153,14 +154,6 @@ class CliError extends Error {
     super(message);
     this.name = "CliError";
     this.showHelp = showHelp;
-  }
-}
-
-class IdleTimeoutError extends Error {
-  constructor(seconds) {
-    super(`任务 ${seconds} 秒无进展，已中止`);
-    this.name = "IdleTimeoutError";
-    this.code = "idle_timeout";
   }
 }
 
@@ -1087,7 +1080,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     return result;
   } catch (error) {
     if (idle?.timedOut()) {
-      thrown = new IdleTimeoutError(idleTimeout);
+      // issue #440：看门狗命中时**不能**把引擎刚抛的那个已注解错误顶掉——
+      // `termination` / `usage` / `rounds` / `finalText` 四件载荷在它身上，丢了宿主/bench 就只能
+      // 拿到「超时了」。构造入口只有 `bin/idle.js#idleTimeoutFailure` 一份（判别面逐字不变）。
+      thrown = idleTimeoutFailure(idleTimeout, error);
       throw thrown;
     }
     thrown = error;

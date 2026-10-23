@@ -9,6 +9,11 @@
 //  - `controller.abort()` **不带 reason**。
 //  - `seconds` 不是正整数（含 0）⇒ 返回 `null`，调用方靠 `idle?.` 全套短路。
 //
+// issue #440：**判死之后抛哪个错误**也归这里（`IdleTimeoutError` / `idleTimeoutFailure`）。
+// 此前两个入口各自 `new IdleTimeoutError(…)` 顶掉引擎抛出的错误，把 #176/#180 的终局载荷
+// （`termination` / `usage` / `rounds` / `finalText`）整片丢掉；现在只有这一份构造入口，
+// 「改一处、另一处照旧」不再可能。
+//
 // 零依赖、纯 ESM（只用 node: 内置的定时器/AbortController）。
 
 /** `chat` 的 idle 默认窗口（秒）。`repl` 默认 0 = 不启用，见 DEFAULT_REPL_IDLE_TIMEOUT_SECONDS。 */
@@ -53,6 +58,70 @@ export function createIdleTimeout(seconds) {
     touch,
     dispose: () => clearTimeout(timer),
   };
+}
+
+/**
+ * idle 中止的判别面（`error.code`）。
+ *
+ * **这个值是契约，不是实现细节**：`bin/cli.js` 的顶层 catch（决定打印哪条文案）、`bin/repl.js`
+ * 的行处理（决定 `printError` 还是 `writeLine`）、以及外部的 bench 统计都按它分流。
+ * 改名/换值等于同时改三处判别面，属别的票。
+ */
+export const IDLE_TIMEOUT_CODE = "idle_timeout";
+
+/**
+ * idle 看门狗命中时抛的错误。`name` / `code` / `message` 都是既有面，别顺手改。
+ */
+export class IdleTimeoutError extends Error {
+  /**
+   * @param {number} seconds 静默窗口（秒），只进面向人的消息。
+   * @param {unknown} [cause] 引擎抛出的原始错误：保留成因链（`error.cause`），不影响判别面。
+   */
+  constructor(seconds, cause) {
+    super(`任务 ${seconds} 秒无进展，已中止`, cause === undefined ? undefined : { cause });
+    this.name = "IdleTimeoutError";
+    this.code = IDLE_TIMEOUT_CODE;
+  }
+}
+
+/**
+ * 引擎在终局 `fail()` 路径上挂到**抛出的错误**上的载荷键（issue #176 / #180）。
+ *
+ * 注意 `partial` **不在**这一层：契约里没有顶层 `error.partial`，标记位是 `termination.partial`
+ * （恒 `true`）。别在这里凭空造一个顶层 `partial` 去「对齐」想象中的形状。
+ */
+export const TERMINATION_PAYLOAD_KEYS = Object.freeze([
+  "termination",
+  "usage",
+  "rounds",
+  "finalText",
+]);
+
+/**
+ * idle 看门狗命中时**唯一**的错误构造入口（issue #440）。
+ *
+ * 现场：两个入口原先都是 `throw new IdleTimeoutError(seconds)`，把引擎刚抛出的那个**已注解**的
+ * 错误整个顶掉 ⇒ `error.termination` / `error.usage` / `error.rounds` / `error.finalText` 全变
+ * `undefined`，宿主与 bench 只拿得到「超时了」，拿不到「这个 run 死之前烧了多少 token、跑到第几轮、
+ * 有没有半成品」。
+ *
+ * 修法：判别面（`name` / `code` / `message`）逐字不变，只把**原始错误上已经有的**载荷键原样搬过来
+ * （同一个对象，所以 `termination.usage === usage` 这条契约自然成立），并保留 `cause`。
+ *
+ * **不伪造**：原始错误没有该键时（例如 run 还没进 `fail()`、抛的是别的东西），这个键**不出现**——
+ * 不写 `undefined`、更不写零值。
+ *
+ * @param {number} seconds 静默窗口（秒）
+ * @param {unknown} [cause] 引擎抛出的原始错误
+ * @returns {IdleTimeoutError}
+ */
+export function idleTimeoutFailure(seconds, cause) {
+  const thrown = new IdleTimeoutError(seconds, cause);
+  if (cause === null || typeof cause !== "object") return thrown;
+  for (const key of TERMINATION_PAYLOAD_KEYS) {
+    if (cause[key] !== undefined) thrown[key] = cause[key];
+  }
+  return thrown;
 }
 
 /**

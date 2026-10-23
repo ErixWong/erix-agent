@@ -382,7 +382,8 @@ CLI 现在在**一处**从 `--idle-timeout` 派生**其中两个**（解析器�
   `termination.errorCode: "timeout"`，不再是 `reason: "aborted"` 且没有 `errorCode`。这**不是**
   契约扩展：`failed` 本来就带 `errorCode`（issue #176），也没有任何别的 reason 因此新增该字段。
   把 `aborted` 当「静默被杀」判断的宿主，对流式 run 要改判 `failed` + `errorCode: "timeout"`；
-  **非流式静默没有变化**，仍以 `idle_timeout` 收尾。
+  **非流式静默没有变化**，仍以 `idle_timeout` 收尾——issue #440 之后那个错误保留引擎的终局载荷
+  （见「CLI 的 idle 判死保留载荷」）。
 - CLI 用 `attempt` 与 `recovering` 事件喂 idle 表，所以一次重试（含它的退避）算**进展**而不是
   「无进展」。不喂的话 idle 窗口会把退避切断，静默又回到 abort 那条路。
 
@@ -1033,6 +1034,40 @@ abort 载荷的存在理由：用户点「停止」的 run 真的花了 token。
 多出 `errorCode`、`partial` 或嵌套 `usage` 字段。要不要重跑、要不要告警、怎么记账，仍然是
 宿主的决策（reason 枚举见下文「终答核验」，终态另见运行状态一节）。
 
+### CLI 的 idle 判死保留载荷（issue #440）
+
+CLI 自己也是一个宿主，它自己的看门狗（`--idle-timeout`）是能把一个 run 收成 `aborted` 的
+两个东西之一——另一个是宿主自己的 `signal.abort()`。issue #440 之前，看门狗抛的是一个新造的
+`IdleTimeoutError`，把上面整份载荷**全丢了**：驱动 CLI 的宿主 / bench 只拿得到「超时了」，
+拿不到「这个 run 死之前烧了多少 token、跑到第几轮、有没有半成品」——这正是「一次超时无法
+从外部复盘」的形状。
+
+现在抛出的错误携带什么：
+
+| 事实 | CLI idle 错误上的值 | 说明 |
+|---|---|---|
+| `error.code` | `"idle_timeout"` | **判别面，一字不变**——CLI 最外层 `catch`、repl 的行处理、外部 bench 统计都按它分流。它的唯一声明是 `IDLE_TIMEOUT_CODE`（`bin/idle.js`） |
+| `error.name` / `error.message` | `"IdleTimeoutError"` / `任务 <N> 秒无进展，已中止` | 不变（面向人的文案） |
+| `error.termination` | 引擎自己那份 `aborted` 终局 | `reason: "aborted"`、`partial: true`，且它的 `usage` / `rounds` 与下面两个字段相同 |
+| `error.usage`、`error.rounds`、`error.finalText` | 引擎的累计量 | **同一个对象**，不是拷贝——`termination.usage === error.usage` 成立 |
+| `error.cause` | 引擎原本抛的那个错误 | 抵达终局 `fail()` 的那个 `AbortError` |
+| `error.partial` | **不存在** | 本契约里没有顶层 `partial`；标记位是 `termination.partial` |
+
+两条边界，都是实测口径而不是假设：
+
+- **不伪造。** 载荷长在引擎的错误上，是因为终局 `fail()` 给它盖了注解
+  （`annotateTermination`（`src/loop/termination.js`））。如果看门狗命中时在飞的是**别的**
+  东西、而不是那条终局路径，这些键就是**不出现**——不是值为 `undefined` 的键，更不是零值。
+  所以宿主必须把它们当可选字段处理，与上表对「运行开始前的错误」的说法一致。
+- **在哪里可观测。** `erix chat` 把这个错误抛给调用方，宿主 / bench 从它身上读载荷。交互式
+  `erix repl` 把它变成一行文案、不向外抛，所以那里**观测不到**载荷——能观测到的是判别面。
+  两个入口都经唯一的 `idleTimeoutFailure`（`bin/idle.js`）构造这个错误，不存在会跑偏的第二份实现。
+
+可达性（在本树上实测，见「静默是一条可重试的截止」）：静默的 **`--stream`** run 先被 provider
+的相位截止收掉，重试用尽后终局是 `failed` / `errorCode: "timeout"`，所以 idle 判死**不是**那条
+路径上的常态；静默的**非流式** run 仍以 `idle_timeout` 收尾（legacy `requestTimeoutMs` 故意不派生），
+任何「provider 根本没有相位截止」（例如宿主注入的 provider）或「idle 窗口不大于重试退避」的 run 也一样。
+
 ### 终局前的增值调用在中止时的行为（issue #282）
 
 end-turn judge 与 finalGuard 都是卡在「最后一轮模型回答」与「终局判定」之间的**增值调用**：
@@ -1188,7 +1223,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2635）；治理层 stop `cap`（`src/reflection/governor.js:62-64` / `133-135`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:116`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
 | `max_rounds_cap` | (a) 治理层 stop `cap`：接近上限且不允许扩轮（`src/reflection/governor.js:147-149`）；(b) 轮循环自然跑完（`runToolLoop`，`src/loop/orchestrator.js`，收尾在 `3189-3207`） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`termination`，`src/loop/orchestrator.js`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
 | `final_guard_unverified` | 配了 `finalGuard` 且它没能认证：不可续跑降级（`src/loop/orchestrator.js:3529-3542`）、修订次数触顶（`3544-3559`）、或轮循环跑完的收尾（`3558-3578`）。只对 6 个 guard 适用 reason 生效（`src/loop/termination.js:14-21`），且仅当 `finalGuard` 是函数（`src/loop/orchestrator.js`） | 严格位于 stop 之后的**后阶段**：它替换 reason，不介入轮内治理 | 整体不传 `finalGuard`（此时 `verification` 为 `skipped` / `no_final_guard`，`src/loop/orchestrator.js:1663-1665`）；`finalGuardMaxRetries` 调修订上限（默认 2，`budgetRounds`，`src/loop/orchestrator.js`） | **不得当已验事实消费**：`verification.status === "unverified"`（`non_continuable` / `max_retries`）。转人工复核或测试系统 |
-| `aborted` | 终局 `fail()` 路径且宿主 signal 已 abort（`src/loop/orchestrator.js:1058-1116`；分类在 1061 与 1080-1085，注解在 1103-1108） | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效。issue #282 之后，同一个检查也跑到终局 `stop` 分支的入口以及 `finish(reason)` 之前，因此「终局前的增值调用」（end-turn judge / finalGuard）再也不能把用户的中止改写成 `judge_done` 或 `final_guard_unverified`——见「终局前的增值调用在中止时的行为（issue #282）」 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的。**静默** run 不再必然落到这一行：issue #441 之后 CLI 接上了引擎的可重试相位截止，静默在重试用尽后以 `failed` / `errorCode: "timeout"` 收尾（见「静默是一条可重试的截止」）；本行现在的含义是「信号真的被 abort 了」——宿主动的手，或者没有任何相位截止能先响时 idle 看门狗动的手 |
+| `aborted` | 终局 `fail()` 路径且宿主 signal 已 abort（`src/loop/orchestrator.js:1058-1116`；分类在 1061 与 1080-1085，注解在 1103-1108） | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效。issue #282 之后，同一个检查也跑到终局 `stop` 分支的入口以及 `finish(reason)` 之前，因此「终局前的增值调用」（end-turn judge / finalGuard）再也不能把用户的中止改写成 `judge_done` 或 `final_guard_unverified`——见「终局前的增值调用在中止时的行为（issue #282）」 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的。**静默** run 不再必然落到这一行：issue #441 之后 CLI 接上了引擎的可重试相位截止，静默在重试用尽后以 `failed` / `errorCode: "timeout"` 收尾（见「静默是一条可重试的截止」）；本行现在的含义是「信号真的被 abort 了」——宿主动的手，或者没有任何相位截止能先响时 idle 看门狗动的手；看门狗动的手时，载荷仍以 `code: "idle_timeout"` 挂在抛出的错误上（issue #440，见「CLI 的 idle 判死保留载荷」） |
 | `failed` | run 生命周期内抛出的任意错误，经 `fail()`（`src/loop/orchestrator.js:1058-1116`，循环 catch 在 `3576-3580`），并透传 `termination.errorCode`（`src/loop/termination.js:43-57`）；宿主观察者抛错不再是它的来源之一（issue #173） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`invalid_request` / `not_found` / `conflict`（issue #179）→ 去修请求体、模型名或冲突的资源，重发同一份 payload 帮不上忙；`unknown` → 转去查 `termination.detail` |
 | `persistence_failed` | 同一个 `fail()` 路径，在错误携带持久化信息时被选中（`src/loop/orchestrator.js:1080-1085`），并额外挂上 `operation` / `phase` / `sideEffect`（`src/loop/orchestrator.js`） | 替换 `failed`，不会反向发生；不带 `errorCode`（该字段为 `failed` 专属） | `persistence:"none"` 直接移除 transcript 写入路径；可选 store 能力是降级而非失败（见能力分级） | **告警**：副作用被跟踪过，所以这是完整性信号（ADR-013），不是重试候选 |
 

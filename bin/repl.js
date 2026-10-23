@@ -24,6 +24,7 @@ import { createCliAssemblyRoot } from "./assembly-root.js";
 import {
   DEFAULT_REPL_IDLE_TIMEOUT_SECONDS as DEFAULT_IDLE_TIMEOUT_SECONDS,
   createIdleTimeout,
+  idleTimeoutFailure,
   withToolHeartbeat,
 } from "./idle.js";
 import { safeRunId } from "../src/store/file.js";
@@ -119,14 +120,6 @@ class ReplUsageError extends Error {
     super(message);
     this.name = "ReplUsageError";
     this.showHelp = true;
-  }
-}
-
-class IdleTimeoutError extends Error {
-  constructor(seconds) {
-    super(`任务 ${seconds} 秒无进展，已中止`);
-    this.name = "IdleTimeoutError";
-    this.code = "idle_timeout";
   }
 }
 
@@ -861,7 +854,9 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         // issue #168 T2：不再 upsert 会话索引——transcript 文件本身就是可续跑名单，
         // `-c`/`-r` 由 bin/session-scan.js 现扫现算（见 bin/session-scan.js 头注释）。
       } catch (error) {
-        if (idle?.timedOut()) throw new IdleTimeoutError(options.idleTimeout);
+        // issue #440：与 `bin/cli.js` **同一个**构造入口——看门狗命中时保留引擎抛出的
+        // `termination` / `usage` / `rounds` / `finalText`（判别面 `code === "idle_timeout"` 不变）。
+        if (idle?.timedOut()) throw idleTimeoutFailure(options.idleTimeout, error);
         throw error;
       } finally {
         idle?.dispose();

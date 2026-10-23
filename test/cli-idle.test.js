@@ -275,13 +275,19 @@ test("chat: non-streaming silence still ends on the idle watchdog — intentiona
   try {
     // **这一格是有意的**，别把它改成 `>= 2`：非流式截止保持 legacy（`config.timeout ?? 300_000`），
     // 不派生 ⌊idle×3/4⌋ —— 那条派生会把 `[225s, 300s)` 这条以前成功的带变成必死带（见本节头注释）。
-    // 所以「非流式静默」今天仍然只发 1 发、由 idle 看门狗收尾（`idle_timeout`，没有 `termination`）；
-    // 要让它可重试，正解是 #433 fix 1「判死后重试」，不是提前掐死。
+    // 所以「非流式静默」今天仍然只发 1 发、由 idle 看门狗收尾（`idle_timeout`）。
+    // issue #440：idle 收尾**不再丢载荷**——这里的 run 一发都没答上来，所以载荷是**零值**
+    // （`{input_tokens: 0, output_tokens: 0}` / `rounds: 0` / `finalText: ""`），不是「没有字段」。
     const { error, upstream } = await runSilentChat({ dir, mode: "nonstream" });
     assert.equal(error?.code, "idle_timeout");
     assert.equal(error?.name, "IdleTimeoutError");
     assert.match(error.message, new RegExp(`${SILENT_IDLE_SECONDS} 秒无进展`, "u"));
-    assert.equal(error?.termination, undefined);
+    assert.equal(error?.termination?.reason, "aborted");
+    assert.equal(error?.termination?.partial, true);
+    assert.deepEqual(error?.usage, { input_tokens: 0, output_tokens: 0 });
+    assert.equal(error?.rounds, 0);
+    assert.equal(error?.finalText, "");
+    assert.equal(error?.termination?.usage, error?.usage);
     assert.equal(upstream.calls.length, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });

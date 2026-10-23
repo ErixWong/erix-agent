@@ -50,7 +50,7 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 122`（现测 122 组 / 346 处；issue #438 的逐轮用量分账小节让契约中英各多一处 `addUsage`（`src/loop/orchestrator.js`）锚点（+1 组 / +4 处），下限随之抬到 122；//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 125`（现测 125 组 / 385 处；#443 的归一化底座与 main 上的 #438 逐轮分账、#434 install 档合流之后在**合并后的树**上重测（下限不许取两支的最大值：合并树上同时挂着两支的锚点），下限随之抬到 125；PR #443 合并前评审的必修项让契约中英「可选调用的成本」一节 +1 组 / +5 处：新锚点 `DEFAULT_PROVIDER_TIMEOUT_MS`（`src/config/slot-provider.js`）在契约中英各一处 + AGENTS_cn 声称句一处，另有既有锚点 `jsonCandidates`（`src/text/json-candidates.js`）随候选一段的改写在中英契约各多一处，下限随之抬到 123；此前 issue #406 B2-a 的 `normalizeModelJson` 契约中英成对一节让锚点面 +2 组 / +9 处：`normalizeModelJson`（`src/normalization/parse-model-json.js`）与 `createProviderForSlot`（`src/config/slot-provider.js`），下限随之抬到 122；此前 issue #424 的升级路径守卫让契约中英各多两处既有锚点（+0 组 / +4 处），下限不变；此前 issue #420 的 A 集合入账此前 issue #430 的「分片锚点钉在首片」让契约中英各多一处锚点（+1 组 / +2 处）：`threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`，指向新的钉住用例），下限随之抬到 121（两支合流后实测 122 组 / 346 处：AGENTS.md 的声称句自己也因合并多了一处 `threeToolCrashScene` 锚点）；此前 issue #424 的升级路径守卫让契约中英各多两处既有锚点（+0 组 / +4 处），下限不变；此前 issue #420 的 A 集合入账
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 122`（现测 122 组 / 346 处；issue #438 的逐轮用量分账小节让契约中英各多一处 `addUsage`（`src/loop/orchestrator.js`）锚点（+1 组 / +4 处），下限随之抬到 122；//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 128`（现测 **128 组 / 391 处**；issue #440 的「CLI 的 idle 判死保留载荷」契约中英成对小节按同一条红线用符号锚点引用 `idleTimeoutFailure` / `IDLE_TIMEOUT_CODE`（`bin/idle.js`）与 `annotateTermination`（`src/loop/termination.js`），下限随之抬到 128（+3 组 / +6 处）；#443 的归一化底座与 main 上的 #438 逐轮分账、#434 install 档合流之后在**合并后的树**上重测（下限不许取两支的最大值：合并树上同时挂着两支的锚点），下限随之抬到 125；PR #443 合并前评审的必修项让契约中英「可选调用的成本」一节 +1 组 / +5 处：新锚点 `DEFAULT_PROVIDER_TIMEOUT_MS`（`src/config/slot-provider.js`）在契约中英各一处 + AGENTS_cn 声称句一处，另有既有锚点 `jsonCandidates`（`src/text/json-candidates.js`）随候选一段的改写在中英契约各多一处，下限随之抬到 123；此前 issue #406 B2-a 的 `normalizeModelJson` 契约中英成对一节让锚点面 +2 组 / +9 处：`normalizeModelJson`（`src/normalization/parse-model-json.js`）与 `createProviderForSlot`（`src/config/slot-provider.js`），下限随之抬到 122；此前 issue #424 的升级路径守卫让契约中英各多两处既有锚点（+0 组 / +4 处），下限不变；此前 issue #420 的 A 集合入账此前 issue #430 的「分片锚点钉在首片」让契约中英各多一处锚点（+1 组 / +2 处）：`threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`，指向新的钉住用例），下限随之抬到 121（两支合流后实测 122 组 / 346 处：AGENTS.md 的声称句自己也因合并多了一处 `threeToolCrashScene` 锚点）；此前 issue #424 的升级路径守卫让契约中英各多两处既有锚点（+0 组 / +4 处），下限不变；此前 issue #420 的 A 集合入账
 //                 +1 组 / +8 处：`journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`），契约中英各一处 + AGENTS_cn 声称句一处。
 //                 上一版 119 组 / 327 处是 issue #409 的工具引数判词
 //                 +5 组 / +10 处：`REPAIR_RULES`、`parseJsonWithRepair`（`src/text/repair-json.js`）、`parseToolArguments`、
@@ -2067,8 +2067,14 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`）——落点是契约中英
  *  「续跑后账本闭合」各一处。下限不跟着升，R1 的两例自测就会空转。
  *
-  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 125;
+  *  再升一次的理由（issue #440，125 → **128**，+3 组 / 385 → 391 处）：CLI 的 idle 判死不再丢掉引擎的终局载荷，
+ *  契约中英成对新增「CLI 的 idle 判死保留载荷」小节，按同一条红线用符号锚点引用 `idleTimeoutFailure` /
+ *  `IDLE_TIMEOUT_CODE`（`bin/idle.js`，前者是唯一的错误构造入口，后者是判别面 `code` 的唯一声明）与
+ *  `annotateTermination`（`src/loop/termination.js`，载荷是在那条终局路径上盖上去的）——`--verbose` 实测
+ *  **128 组 / 391 处**（契约 EN 104 → 107 / CN 99 → 102，其余不变）。
+ *
+ *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
+const SYMBOL_ANCHOR_MIN_UNIQUE = 128;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
