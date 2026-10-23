@@ -435,6 +435,57 @@ test("#439 foldLedgerMessages: 恢复路径按**规范化消息**读账本——
   assert.deepEqual(entries[1].message.content.map((block) => block.tool_use_id), ["a1", "a2"]);
 });
 
+// ── issue #439 回归：升级现场（旧版折叠产物 + 原始消息行）正文不许翻倍 ─────────────
+//
+// 「两份都留」（折好的载体 + 原始消息行）是契约明文承诺的安全形状（`docs/host-consumer-contract.md`
+// 的 `### The fold is public API, and the engine covers one fallback (issue #401)` 一节：
+// 「which is what keeps the “both copies” shape from doubling the body」）。而 #439 给折叠出的
+// 每条消息加了逐条 `ts`：上一版（≤0.24.0 或宿主自研折叠）折出来的**载体行里，消息没有这个键** ⇒
+// 若守卫按「逐字段深比较」，升级现场（旧载体 + 新消息行）会判不等 ⇒ 同一轮正文拼第二遍（实测
+// 2 条变 4 条：`assistant+user+assistant+user`，正是 #401 R3 治过的坏形状）。
+// 守卫判的是「同一段正文是否已折过」，**信封字段（`ts`）不该参与**——它答的是「这条消息什么时候
+// 落盘」，不是「这段正文是什么」。
+const LEGACY_CARRIER_TS = "2026-10-24T00:00:00.000Z";
+const LEGACY_MSG_TS = ["2026-10-24T00:00:01.000Z", "2026-10-24T00:00:02.000Z"];
+const textsOf = (record) => record.messages.map((message) => message.content[0].text);
+
+test("#439 升级现场：载体由**旧版折叠**产出（消息不带 `ts`）+ 原始消息行仍在 ⇒ load() 正文不翻倍", async () => {
+  const body = [msg("assistant", "正文"), msg("user", "工具结果")];
+  // 基线形状：同一份账本**没有**旧载体（消息行照常折）——正文就是这两条。
+  const baseline = foldMessageRows([
+    roundRow(1),
+    messageRow(1, 0, structuredClone(body[0]), { ts: LEGACY_MSG_TS[0] }),
+    messageRow(1, 1, structuredClone(body[1]), { ts: LEGACY_MSG_TS[1] }),
+  ]);
+  assert.deepEqual(baseline[0].messages.map((message) => message.role), ["assistant", "user"],
+    "前置：基线形状就是这两条（翻倍前的正确条数）");
+
+  // 升级现场：宿主手里是**上一版 `load()` 的产物**（每条消息都没有 `ts`），原始消息行也还在。
+  const legacyRows = [
+    roundRow(1, structuredClone(body), { ts: LEGACY_CARRIER_TS }),
+    messageRow(1, 0, structuredClone(body[0]), { ts: LEGACY_MSG_TS[0] }),
+    messageRow(1, 1, structuredClone(body[1]), { ts: LEGACY_MSG_TS[1] }),
+  ];
+  const folded = foldMessageRows(structuredClone(legacyRows));
+  assert.equal(folded.length, 1, "消息行折进载体行（当重复副本丢弃），只剩一条记录");
+  assert.deepEqual(folded[0].messages.map((message) => message.role), ["assistant", "user"],
+    `升级现场不得把正文拼第二遍；翻倍时是 assistant+user+assistant+user，实测：${JSON.stringify(folded[0].messages.map((message) => message.role))}`);
+  assert.deepEqual(textsOf(folded[0]), textsOf(baseline[0]), "正文与基线逐字相同（既不丢也不翻倍）");
+
+  // store 面：`load()` 才是宿主实际读到的那一层（file 与 memory 必须同答案）。
+  const memory = createMemoryTranscriptStore();
+  for (const row of structuredClone(legacyRows)) await memory.appendRound(RUN, row);
+  const file = createFileTranscriptStore({ dir: await makeTmp("fold-legacy-carrier-file") });
+  for (const row of structuredClone(legacyRows)) await file.appendRound(RUN, row);
+  const fromMemory = await memory.load(RUN);
+  const fromFile = await file.load(RUN);
+  assert.deepEqual(fromFile, fromMemory, "两个内置 store 必须给同一个答案");
+  assert.equal(fromMemory.length, 1);
+  assert.deepEqual(fromMemory[0].messages.map((message) => message.role), ["assistant", "user"],
+    `load() 的正文不得翻倍；实测：${JSON.stringify(fromMemory[0].messages.map((message) => message.role))}`);
+  assert.deepEqual(textsOf(fromMemory[0]), textsOf(baseline[0]));
+});
+
 // ── seq 播种（崩溃重跑幂等，写侧下一单要用） ─────────────────────────────────
 test("261021 fold: nextMessageSeqByRound 按轮取 max(seq)+1，忽略无 seq/无 round 的行", () => {
   const next = nextMessageSeqByRound([
