@@ -25,6 +25,11 @@ import {
 } from "../reflection/governor.js";
 import { extractL0Facts, parseL1Summary } from "../reflection/l0.js";
 import { tryParseWrapupJson, normalizeWrapupWithLlm } from "../reflection/wrapup.js";
+// issue #419 ① 后半段：循环里那份**内联**归一化请求（下面 `requestForJudge`）与
+// `normalizeWrapupWithLlm` 共用同一个「不思考」字面量，不许两处各写各的（否则日后必然漂移）。
+// ⚠ 单独一条 import 语句是**故意**的：上面那行 `normalizeWrapupWithLlm` 是死 import，
+//   它是删还是改成调用 `normalizeWrapupWithLlm` 属 #419 ③，**本票不动**（保持该行逐字不变）。
+import { NORMALIZATION_REASONING_EFFORT } from "../reflection/wrapup.js";
 import {
   buildJudgePrompt,
   buildTimeline,
@@ -295,7 +300,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -312,6 +317,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * @property {string} [stopReason] Canonical provider stop reason.
  * @property {"accept"|"skip"|"revise"|"degraded"|"error"} [action]
  * @property {string} [reason]
+ * @property {number} [count] issue #424（additive）：被跳过/涉及的消息条数（`resume_journal_skipped` 用它报 A 集合大小）
  */
 
 /**
@@ -1577,6 +1583,20 @@ export async function runToolLoop(options) {
   // guard 补跑桥绕回主循环时不会再注入一次。
   /** @type {{ text: string, slot: string, round: number } | undefined} */
   let resumeNotice;
+  // issue #420（A 集合入账）：`restoreResume` 从 run snapshot 接回来的那批「崩溃前**已执行完、结果已成型、
+  // 账本里没有对应 `tool_result` 行**」的结果（A 集合）。它同样是「已成型但未落盘」的消息，必须和补跑
+  // 跑出来的结果（B 集合）走**同一条写侧**（`appendMessageRowToTranscript` + `partOf`）。
+  // 写成**普通局部变量 + 一对访问器**（与紧邻的 `resumeNotice` / `taskBriefSource` 同一个先例）：
+  // `restoreResume` 的 resume 分支只读 transcript 账本；账本写入一律在本文件
+  // （`appendMessageRowToTranscript` / `persist`），失败语义与 `seq` 计数器只有一处。它只负责把批次
+  // 交出来，写入口是本文件的 `journalResumeUnpersistedToolResults`，由它在补跑段之前逐条入账。
+  /** @type {any[]} */
+  let resumeUnpersistedToolResults = [];
+  // issue #424（守卫）：崩溃轮的正文里**是否已有 assistant 行**（`restoreResume` 在已折叠的账本条目上算好
+  // 交过来）。`false` = 升级路径（崩溃轮的 assistant 正文只在快照里）⇒ A 集合整段不入账，退回修前的
+  // 「只进内存」语义。`undefined` = 本次不是崩溃现场恢复（没有 A 集合，走不到守卫）。
+  /** @type {boolean|undefined} */
+  let resumeCrashRoundAssistantPersisted;
   const messageRounds = new WeakMap();
   for (const message of messages) messageRounds.set(message, 0);
   // 双计数器约定（issue #32 #8）——改这两处语义前先读这里：
@@ -1650,6 +1670,18 @@ export async function runToolLoop(options) {
     },
     set resumeNotice(value) {
       resumeNotice = value;
+    },
+    get resumeUnpersistedToolResults() {
+      return resumeUnpersistedToolResults;
+    },
+    set resumeUnpersistedToolResults(value) {
+      resumeUnpersistedToolResults = value;
+    },
+    get resumeCrashRoundAssistantPersisted() {
+      return resumeCrashRoundAssistantPersisted;
+    },
+    set resumeCrashRoundAssistantPersisted(value) {
+      resumeCrashRoundAssistantPersisted = value;
     },
     messageRounds,
     get rounds() {
@@ -2311,6 +2343,58 @@ export async function runToolLoop(options) {
     // 分片只往已有那条逻辑消息里加 block，不新增消息 ⇒ 锥点计数不变。
     if (partOf === "") runLoopState.persistedTranscriptLength += 1;
     return dedupKey;
+  };
+
+  // issue #420（A 集合入账）：把 `restoreResume` 交回来的那批「崩溃前已执行完、结果已成型、账本里没有
+  // `tool_result` 行」的结果**逐条走与 B 集合同一条写侧**。
+  //
+  // 为什么写在这里（而不是让 `restoreResume` 自己写）：`restoreResume` 的 resume 分支只读 transcript 账本；
+  // 账本写入一律在本文件（`appendMessageRowToTranscript` / `persist`），失败语义（`ctx.fail`）与 `seq`
+  // 计数器只有一处。交接到主循环前由这一小段入账，与补跑段共用同一个 `resumeToolResultRowKey` 锚点。
+  //
+  // 锚点的两种情形（探查票点名的边界）：
+  //   · 崩溃轮**已有**结果行落盘（`resumeToolResultRowKey` 有值）⇒ 首片用 `partOf` 接回那条聚合消息；
+  //   · 崩溃轮**一条结果行都没落**（`resumeToolResultRowKey === undefined`）⇒ 首片不带 `partOf`，
+  //     它**自己**就是新起的那条聚合消息（在账本里也是一条独立逻辑消息，`persistedTranscriptLength`
+  //     随 `appendMessageRowToTranscript` 的 `partOf === ""` 分支 +1，与账本折叠后的逻辑消息数
+  //     （`foldLedgerMessages`）对齐），然后把它写回 `resumeToolResultRowKey` 当后续分片（含 B 集合）
+  //     的锚点。否则每个结果都会各起一条 user 消息：合法但形状变了，`#326` 的
+  //     `<runId>:msg:<round>:<seq>` 序号语义也跟着散掉。
+  //
+  // issue #424（守卫）：**崩溃轮的 assistant 正文不在账本里时，整段跳过入账**。升级路径（旧账本 +
+  // 快照补全）上崩溃轮的 assistant 正文只存在于 run snapshot，`restoreResume` 只把它补进内存
+  // `messages`（账本里没有那一行）；此时把 A 集合写成 `kind:"message"` 结果行，账本里就出现
+  // 「有 `tool_result`、没有配对 `assistant`」的孤儿 ⇒ 下一次恢复在第一次模型请求之前就
+  // `invalid_messages`（实测 issue #424）。跳过 ⇒ 账本内容与 #420 之前逐字一致（那批结果只进内存、
+  // 由快照兜住），不可能比修前更坏；判据事实由 `restoreResume` 从**已折叠的账本条目**里算好交过来。
+  const journalResumeUnpersistedToolResults = async () => {
+    const unpersisted = resumeUnpersistedToolResults;
+    if (!Array.isArray(unpersisted) || unpersisted.length === 0) return;
+    // 一次性交接：无论下面写不写成，这批都不得在本次 run 里被第二次入账（guard 补跑桥会回到主循环）。
+    resumeUnpersistedToolResults = [];
+    const crashRound = runLoopState.resumeRunSnapshot?.round;
+    if (resumeCrashRoundAssistantPersisted === false) {
+      // 可观测：走既有 `onEvent` 通道（不新造机制）。宿主可据此知道「这批结果只在本次上下文里、
+      // 没有入账」，下一次恢复仍要靠快照兜住。
+      emitEvent({
+        type: "resume_journal_skipped",
+        runId,
+        round: crashRound,
+        reason: "crash_round_assistant_not_in_ledger",
+        count: unpersisted.length,
+      });
+      return;
+    }
+    let rowKey = runLoopState.resumeToolResultRowKey;
+    for (const toolResult of unpersisted) {
+      const persistedRowKey = await appendMessageRowToTranscript(
+        { role: "user", content: [toolResult] },
+        crashRound,
+        rowKey === undefined ? {} : { partOf: rowKey },
+      );
+      if (persistedRowKey !== undefined) rowKey = persistedRowKey;
+    }
+    if (rowKey !== undefined) runLoopState.resumeToolResultRowKey = rowKey;
   };
 
   // issue #326（wo-C）：**引擎自产「上下文事实」的产生即入账**——沿用上面同一先例的形状与命名空间风格
@@ -3369,6 +3453,13 @@ export async function runToolLoop(options) {
     // 工单 261021（第三刀）：resume 补跑段新产生的**引擎控制正文**（方向提示 / 达成 advisory）在此
     // 暂存，由下面那条 `…:resume` 行带走（它是该轮的折叠载体）。工具结果不走这里。
     const resumeEngineText = [];
+    // issue #420：**A 集合先入账**（崩溃前已执行完、结果已成型、账本里没有 `tool_result` 行的那批）。
+    // 必须在补跑段（B 集合）之前：
+    //   · `seq` 顺序 = 崩溃那一刻的真实发生顺序（A 集合先于 B 集合被产出），折叠后聚合消息里的
+    //     block 顺序与内存里的 `messages` 一致；
+    //   · `resumeToolResultRowKey` 由本段向前推进（`resumeToolResultRowKey === undefined` 时首个 A 结果
+    //     就是新的聚合消息锚点），补跑段读到的正是推进后的值 ⇒ 两种集合接回**同一条**聚合消息。
+    await journalResumeUnpersistedToolResults();
     if (runLoopState.resumePendingTools.length > 0) {
       const resumedToolResults = [];
       // 工单 261021（第三刀）：**补跑跑出来的工具结果也逐条入账**，用 `partOf` 接回崩溃轮里
@@ -3842,6 +3933,10 @@ export async function runToolLoop(options) {
 只输出 JSON：{"done":true|false,"summary":"任务总结或当前进展","output":"给用户的最终结果","findings":{"label":"value"}}。findings 只做搬运：value 必须逐字摘自本轮 agent 原文（原样复制，不得改写/规整/补全/翻译，包括引号与标点）；原文里抄不到的值的就省略该条，宁可少写。` }],
           }],
           signal,
+          // issue #419 ① 后半段：这条内联请求才是**真在跑**的收尾归一化（`normalizeWrapupWithLlm`
+          // 全仓没人调用），所以「不思考」必须也发在这里，且取值与库函数共用同一个常量
+          // （`NORMALIZATION_REASONING_EFFORT`）——只修库函数不会让「正文 0 字」的症状消失。
+          reasoning_effort: NORMALIZATION_REASONING_EFFORT,
         };
         if (maxTokens !== undefined) requestForJudge.maxTokens = maxTokens;
         if (temperature !== undefined) requestForJudge.temperature = temperature;

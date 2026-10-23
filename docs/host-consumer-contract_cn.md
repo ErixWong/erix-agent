@@ -2308,8 +2308,29 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 - **续跑后账本闭合（工单 261021）。** 同一个 `runId` 再跑一次（`resume: true`）只从账本重建
   上下文，而账本是**追加式**的：已落盘的行不会被改写，续跑只在其后追加。因此 `load()` 折叠后
   每条逻辑消息**恰好出现一次**，一次工具调用也**恰好一份结果**（同 `erix.toolCallKey`、同
-  `tool_use_id`）——崩溃补跑出来的结果用 `partOf` 接回崩溃轮那条聚合 `tool_result` 消息，
-  不新增消息。宿主可见的顺序有一个细节：崩溃轮的载体行 `…:engine:round:<n>:resume` 写在宿主
+  `tool_use_id`）——**每一个**结果都会落成行，不只是续跑重新执行的那批：崩溃时**已经执行完**
+  （结果已成型、账本里还没有对应行）的那批结果，由
+  `journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`）在补跑段**之前**用同一条
+  写侧写下去。两类结果都用 `partOf` 接回崩溃轮那条聚合 `tool_result` 消息，不新增消息；锚点就是
+  `restoreResume`（`src/loop/resume-manager.js`）从账本里读出的 `resumeToolResultRowKey`。
+  崩溃轮**一条结果行都没落**时，首片自己就是那条聚合消息、并成为后续分片的锚点——于是**两条以内**
+  结果时形状仍是「一条聚合 `user` 消息」，绝不会变成「每条结果各一条 `user` 消息」，
+  `<runId>:msg:<round>:<seq>` 的序号语义也按 issue #326 保持。**三条及以上**结果时这条承诺**尚不**
+  成立：崩溃轮有三个工具调用时实测折成 `[[t1,t2],[t3]]`（补跑那批的 `partOf` 指向**上一片**而不是
+  首片，于是第三条结果折不回聚合消息），第二次恢复即 `invalid_messages`——那是 issue #430，
+  **本单不修**。
+  issue #420 之前这半批结果靠 `resumeUnpersistedToolResults` 交出去，
+  注释承诺「交给 orchestr 逐条入账」，而全仓没有读取方：它唯一的载体是 latest-only 覆盖写的 run
+  snapshot，下一轮真跑一个工具就被覆盖 ⇒ 那个 `runId` 从此不可恢复（第一次模型请求之前就
+  `invalid_messages`，0 次请求）。**升级路径的守卫（issue #424）**：逐条消息行出现之前写下的账本里，
+  崩溃轮的 `assistant` 正文只存在于 run snapshot，此时把那批结果入账就会留下「没有配对 `assistant`」
+  的 `tool_result` 行，下一次恢复同样 `invalid_messages`。因此
+  `journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`）先看一个由
+  `restoreResume`（`src/loop/resume-manager.js`）在**折叠后的**账本条目上算好的事实——崩溃轮的正文里
+  是否已有 `assistant` 消息；没有就**整段跳过**入账（退回 #420 之前的语义：只进内存、由快照兜住），
+  账本内容与 #420 之前的档案逐字一致，并在既有 `onEvent` 通道上恰好发一条
+  `resume_journal_skipped`（`{type, runId, round, reason, count}`）。宿主可见的顺序有一个细节：崩溃轮的载体行
+  `…:engine:round:<n>:resume` 写在宿主
   `:input:` 行**之后**，而折叠把正文挤到载体行的位置上（`load()` 按追加顺序返回），所以
   `load()` 里「续跑提示」可能排在崩溃轮正文之前；模型上下文不受这个顺序影响——
   `restoreResume`（`src/loop/resume-manager.js`）把 `:input:` 行当 tail，延后到补跑结果之后才拼。

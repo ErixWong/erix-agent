@@ -75,6 +75,7 @@
     "check:syntax": "node scripts/syntax-check.mjs",
     "types:build": "node scripts/build-types.mjs",
     "check:types": "node scripts/type-check-ratchet.mjs",
+    "check:types:strict": "node scripts/type-check-ratchet.mjs --strict-report",
     "check:types-build": "node scripts/build-types.mjs --check",
     "prepack": "node scripts/build-types.mjs",
     "check:docs": "node scripts/docs-drift-check.mjs && node scripts/docs-sync-check.mjs",

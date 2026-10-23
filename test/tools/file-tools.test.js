@@ -565,7 +565,12 @@ const READ_LINE_CAPACITY_ROLES = [
   // 但只剩 0.22% 的字节余量 ⇒ 按本测试自己的口径复测并同步记录值，**容差常量一个都没动**）；
   // 描述里的 floor 与均行字节随之同步（4,159 → **4,151**、63.0 → **63.1**、CJK 占比 25% → **26%**），
   // 三处都是同位数替换 ⇒ 对本文件字节中性。`self` 那一行也一并按实测复测（见下）。
-  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 24_373, lines: 386, bytesPerLine: 63.14, capacity: 4_151, cjkShare: 0.2569 } },
+  // 2026-10-23 第七刷（issue #424）：同一个文件又加了「升级路径守卫」的交接字段与注释
+  // （+1,055 字节 / +9 行，均行字节 63.14 → **64.3747**），容量 4,151 → **4,072**（−1.90%，仍在 ±2% 内，
+  // 但均行字节本身越过 ±1% ⇒ 描述里的 floor / 均行字节 / CJK 占比一起按实测同步：4,151 → **4,072**、
+  // 63.1 → **64.4**、26% → **27%**，三处都是同位数替换 ⇒ 对本文件字节中性，`self` 那一行不用再刷）；
+  // 记录值按本测试自己的口径复测，**容差常量一个都没动**。
+  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 25_428, lines: 395, bytesPerLine: 64.3747, capacity: 4_072, cjkShare: 0.2666 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
