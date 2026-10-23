@@ -230,6 +230,14 @@ export function foldLedgerMessages(records) {
   for (const record of Array.isArray(records) ? records : []) {
     const round = Number.isSafeInteger(record?.round) ? record.round : 0;
     const key = rowKey(record);
+    // ⚠ 陷阱（issue #430）：这里对**分片行**也登记了 key，但分片不新增 entry ⇒ 它的 key 被映射到
+    // 「**下一条**逻辑消息的下标」。所以分片行的 key **不是合法的 `partOf` 寻址目标**：写侧必须把锚点
+    // 钉在该聚合消息的**首片**上（`src/loop/orchestrator.js` 的三处写入口——
+    // `journalResumeUnpersistedToolResults`、resume 补跑段、主循环的工具结果入账——都只在首片落定时
+    // 记一次 key，之后不推进）。若有人把 `partOf` 链成「上一片」，第三片起 `entries[targetIndex]`
+    // 恒为 `undefined` ⇒ 新起一条消息（实测 `[[t1,t2],[t3]]`，第二次恢复永久 `invalid_messages`）。
+    // `foldMessageRows` 里同一个坑的形态略有不同（分片 key 根本不入 `parts`，链式 `partOf` 同样落空），
+    // 结论一样：`partOf` 只认首片。
     if (key !== "") keyToIndex.set(key, entries.length);
     const messages = Array.isArray(record?.messages) ? record.messages : [];
     const partOf = typeof record?.partOf === "string" ? record.partOf : "";
