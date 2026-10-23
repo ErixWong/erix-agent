@@ -50,7 +50,7 @@
 //                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 129`（现测 129 组 / 401 处；issue #440 的「CLI idle 判死保留载荷」契约中英成对小节 +3 组（`idleTimeoutFailure` / `IDLE_TIMEOUT_CODE`（`bin/idle.js`）、`annotateTermination`（`src/loop/termination.js`）），在合流 `main` 之后重测）；此前 126 组 / 389 处：PR #451（issue #406 B2-b）合并前的评审必修项把契约中英里指向 end-turn 收尾块的两处裸行号换成符号锚点 `normalizeWrapupText`（`src/reflection/wrapup.js`），中英各一处 ⇒ +1 组，下限随之抬到 126（在合并 `main` `7d0e9dd` 之后的树上重测，不取两支最大值）；
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 129`（现测 129 组 / 380 处；issue #440 的「CLI idle 判死保留载荷」契约中英成对小节 +3 组（`idleTimeoutFailure` / `IDLE_TIMEOUT_CODE`（`bin/idle.js`）、`annotateTermination`（`src/loop/termination.js`）），在合流 `main` 之后重测）；此前 126 组 / 389 处：PR #451（issue #406 B2-b）合并前的评审必修项把契约中英里指向 end-turn 收尾块的两处裸行号换成符号锚点 `normalizeWrapupText`（`src/reflection/wrapup.js`），中英各一处 ⇒ +1 组，下限随之抬到 126（在合并 `main` `7d0e9dd` 之后的树上重测，不取两支最大值）；
 //                 此前 125 组 / 385 处：#443 的归一化底座与 main 上的 #438 逐轮分账、#434 install 档合流之后在**合并后的树**上重测（下限不许取两支的最大值：合并树上同时挂着两支的锚点），下限随之抬到 125；此前 123 组 / 355 处：PR #443 合并前评审的必修项让契约中英「可选调用的成本」一节 +1 组 / +5 处（`DEFAULT_PROVIDER_TIMEOUT_MS`（`src/config/slot-provider.js`）在契约中英各一处 + AGENTS_cn 声称句一处，另有既有锚点 `jsonCandidates`（`src/text/json-candidates.js`）随候选一段的改写在中英契约各多一处），下限随之抬到 123；
 //                 此前 122 组 / 346 处：issue #438 的逐轮用量分账小节让契约中英各多一处 `addUsage`（`src/loop/orchestrator.js`）锚点（+1 组 / +4 处），下限随之抬到 122；此前 issue #406 B2-a 的 `normalizeModelJson` 契约中英成对一节让锚点面 +2 组 / +9 处（`normalizeModelJson`（`src/normalization/parse-model-json.js`）与 `createProviderForSlot`（`src/config/slot-provider.js`）），下限随之抬到 122；此前 issue #424 的升级路径守卫让契约中英各多两处既有锚点（+0 组 / +4 处），下限不变；
 //                 此前 issue #430 的「分片锚点钉在首片」让契约中英各多一处锚点（+1 组 / +2 处）：`threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`，指向新的钉住用例），下限随之抬到 121（两支合流后实测 122 组 / 346 处：AGENTS.md 的声称句自己也因合并多了一处 `threeToolCrashScene` 锚点）；此前 issue #420 的 A 集合入账
@@ -2076,10 +2076,11 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `annotateTermination`（`src/loop/termination.js`，载荷是在那条终局路径上盖上去的）——单支上 `--verbose`
  *  实测 **128 组 / 391 处**（契约 EN 104 → 107 / CN 99 → 102，其余不变）；128 / 391 是**历史值**，不是现值。
  *
- *  再升一次的理由（issue #440 合流 `main`，128 → **129**，+1 组 / 391 → 401 处）：合并进来的 PR #451 把契约中英
- *  指向 end-turn 收尾块的两处裸行号换成符号锚点 `normalizeWrapupText`（`src/reflection/wrapup.js`），中英各一处
+ *  再升一次的理由（issue #440 合流 `main`，128 → **129**，+1 组）：合并进来的 PR #451 把契约中英指向
+ *  end-turn 收尾块的两处裸行号换成符号锚点 `normalizeWrapupText`（`src/reflection/wrapup.js`），中英各一处
  *  ⇒ +1 组——下限不许取两支的最大值（合并树上同时挂着两支的锚点，128 + 1 = 129）；合并树上 `--verbose` 实测
- *  **129 组 / 401 处**（契约 EN 107 → 109 / CN 102 → 104、AGENTS.md 7、AGENTS_cn.md 49，其余不变）。
+ *  **129 组 / 380 处**（契约 EN 109 / CN 104、AGENTS.md 7、AGENTS_cn.md 28，其余不变）。处数从合流当天的
+ *  401 降到 380，是 #440 评审把 AGENTS_cn 里重复的声称句并成一份的结果（**组数一字未变**，只少了重复的处）。
  *
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
 const SYMBOL_ANCHOR_MIN_UNIQUE = 129;
