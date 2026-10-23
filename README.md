@@ -833,6 +833,10 @@ The shared CLI flags are:
   30s), so a command that really hangs still ends as a command timeout (240s by
   default, i.e. `300 − 60`) instead of being eaten by the watchdog. An explicit
   `ERIX_EXEC_TIMEOUT_MS` above that ceiling is warned about, never rewritten.
+  **That concession is bounded, but it is real**: for `idle ≤ 30s` the 30s
+  floor wins over `idle − 60s`, so the worst case during a tool run is
+  `30s + idle` — measured 30.8s at `idle=1`, 52.5s at `30`, 150s at `120`, and
+  an upper bound of 540s at the default `300` (= `240 + 300`).
 - `--compact-budget <tokens>` overrides the automatic compaction budget.
 - `--compaction <name>` selects the compaction strategy
   (`sliding-window | fold-statistical | fold-llm`, default `fold-statistical`, or the
