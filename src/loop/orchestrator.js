@@ -295,7 +295,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -312,6 +312,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * @property {string} [stopReason] Canonical provider stop reason.
  * @property {"accept"|"skip"|"revise"|"degraded"|"error"} [action]
  * @property {string} [reason]
+ * @property {number} [count] issue #424（additive）：被跳过/涉及的消息条数（`resume_journal_skipped` 用它报 A 集合大小）
  */
 
 /**
@@ -1581,10 +1582,16 @@ export async function runToolLoop(options) {
   // 账本里没有对应 `tool_result` 行**」的结果（A 集合）。它同样是「已成型但未落盘」的消息，必须和补跑
   // 跑出来的结果（B 集合）走**同一条写侧**（`appendMessageRowToTranscript` + `partOf`）。
   // 写成**普通局部变量 + 一对访问器**（与紧邻的 `resumeNotice` / `taskBriefSource` 同一个先例）：
-  // `restoreResume` 是**纯读侧**（`src/loop/resume-manager.js` 拿不到 `persist`），只负责把批次交出来；
-  // 写入口在本文件（`journalResumeUnpersistedToolResults`），由它在补跑段之前逐条入账。
+  // `restoreResume` 的 resume 分支只读 transcript 账本；账本写入一律在本文件
+  // （`appendMessageRowToTranscript` / `persist`），失败语义与 `seq` 计数器只有一处。它只负责把批次
+  // 交出来，写入口是本文件的 `journalResumeUnpersistedToolResults`，由它在补跑段之前逐条入账。
   /** @type {any[]} */
   let resumeUnpersistedToolResults = [];
+  // issue #424（守卫）：崩溃轮的正文里**是否已有 assistant 行**（`restoreResume` 在已折叠的账本条目上算好
+  // 交过来）。`false` = 升级路径（崩溃轮的 assistant 正文只在快照里）⇒ A 集合整段不入账，退回修前的
+  // 「只进内存」语义。`undefined` = 本次不是崩溃现场恢复（没有 A 集合，走不到守卫）。
+  /** @type {boolean|undefined} */
+  let resumeCrashRoundAssistantPersisted;
   const messageRounds = new WeakMap();
   for (const message of messages) messageRounds.set(message, 0);
   // 双计数器约定（issue #32 #8）——改这两处语义前先读这里：
@@ -1664,6 +1671,12 @@ export async function runToolLoop(options) {
     },
     set resumeUnpersistedToolResults(value) {
       resumeUnpersistedToolResults = value;
+    },
+    get resumeCrashRoundAssistantPersisted() {
+      return resumeCrashRoundAssistantPersisted;
+    },
+    set resumeCrashRoundAssistantPersisted(value) {
+      resumeCrashRoundAssistantPersisted = value;
     },
     messageRounds,
     get rounds() {
@@ -2330,25 +2343,43 @@ export async function runToolLoop(options) {
   // issue #420（A 集合入账）：把 `restoreResume` 交回来的那批「崩溃前已执行完、结果已成型、账本里没有
   // `tool_result` 行」的结果**逐条走与 B 集合同一条写侧**。
   //
-  // 为什么写在这里（而不是让 `restoreResume` 自己写）：那个函数是**纯读侧**——它的 `ctx` 里根本没有
-  // `persist`（只有 `store` 的读接口），失败语义也是「整次恢复失败」（`ctx.fail`）。给它开一个写口子 =
-  // 把「读一半账本 + 写一半账本」两种副作用缠在同一个 try 里，崩溃后哪条已写、哪条未写没有任何标记。
-  // 写侧本来就在本文件（`appendMessageRowToTranscript` / `persist`），交接到主循环前由这一小段入账，
-  // 与补跑段共用同一个 `resumeToolResultRowKey` 锚点与同一套 `seq` 计数器。
+  // 为什么写在这里（而不是让 `restoreResume` 自己写）：`restoreResume` 的 resume 分支只读 transcript 账本；
+  // 账本写入一律在本文件（`appendMessageRowToTranscript` / `persist`），失败语义（`ctx.fail`）与 `seq`
+  // 计数器只有一处。交接到主循环前由这一小段入账，与补跑段共用同一个 `resumeToolResultRowKey` 锚点。
   //
   // 锚点的两种情形（探查票点名的边界）：
   //   · 崩溃轮**已有**结果行落盘（`resumeToolResultRowKey` 有值）⇒ 首片用 `partOf` 接回那条聚合消息；
   //   · 崩溃轮**一条结果行都没落**（`resumeToolResultRowKey === undefined`）⇒ 首片不带 `partOf`，
   //     它**自己**就是新起的那条聚合消息（在账本里也是一条独立逻辑消息，`persistedTranscriptLength`
-  //     随 `appendMessageRowToTranscript` 的 `partOf === ""` 分支 +1，与内存里 push 的那条对齐），
-  //     然后把它写回 `resumeToolResultRowKey` 当后续分片（含 B 集合）的锚点。否则每个结果都会各起
-  //     一条 user 消息：合法但形状变了，`#326` 的 `<runId>:msg:<round>:<seq>` 序号语义也跟着散掉。
+  //     随 `appendMessageRowToTranscript` 的 `partOf === ""` 分支 +1，与账本折叠后的逻辑消息数
+  //     （`foldLedgerMessages`）对齐），然后把它写回 `resumeToolResultRowKey` 当后续分片（含 B 集合）
+  //     的锚点。否则每个结果都会各起一条 user 消息：合法但形状变了，`#326` 的
+  //     `<runId>:msg:<round>:<seq>` 序号语义也跟着散掉。
+  //
+  // issue #424（守卫）：**崩溃轮的 assistant 正文不在账本里时，整段跳过入账**。升级路径（旧账本 +
+  // 快照补全）上崩溃轮的 assistant 正文只存在于 run snapshot，`restoreResume` 只把它补进内存
+  // `messages`（账本里没有那一行）；此时把 A 集合写成 `kind:"message"` 结果行，账本里就出现
+  // 「有 `tool_result`、没有配对 `assistant`」的孤儿 ⇒ 下一次恢复在第一次模型请求之前就
+  // `invalid_messages`（实测 issue #424）。跳过 ⇒ 账本内容与 #420 之前逐字一致（那批结果只进内存、
+  // 由快照兜住），不可能比修前更坏；判据事实由 `restoreResume` 从**已折叠的账本条目**里算好交过来。
   const journalResumeUnpersistedToolResults = async () => {
     const unpersisted = resumeUnpersistedToolResults;
     if (!Array.isArray(unpersisted) || unpersisted.length === 0) return;
     // 一次性交接：无论下面写不写成，这批都不得在本次 run 里被第二次入账（guard 补跑桥会回到主循环）。
     resumeUnpersistedToolResults = [];
     const crashRound = runLoopState.resumeRunSnapshot?.round;
+    if (resumeCrashRoundAssistantPersisted === false) {
+      // 可观测：走既有 `onEvent` 通道（不新造机制）。宿主可据此知道「这批结果只在本次上下文里、
+      // 没有入账」，下一次恢复仍要靠快照兜住。
+      emitEvent({
+        type: "resume_journal_skipped",
+        runId,
+        round: crashRound,
+        reason: "crash_round_assistant_not_in_ledger",
+        count: unpersisted.length,
+      });
+      return;
+    }
     let rowKey = runLoopState.resumeToolResultRowKey;
     for (const toolResult of unpersisted) {
       const persistedRowKey = await appendMessageRowToTranscript(

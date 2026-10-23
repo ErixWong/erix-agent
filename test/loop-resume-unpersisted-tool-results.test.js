@@ -68,7 +68,7 @@ const ledgerResults = (records) => blocksOf(records.flatMap((record) => record.m
   .map((block) => `${String(block.tool_use_id)}=${String(block.content).split("\n")[0]}`);
 
 /** 跑一次 runToolLoop，把失败压成 `{ ok, error }`（崩溃注入与 `invalid_messages` 都是预期路径）。 */
-async function runLoop({ store, provider, executeTool, resume = true, initialUserMessage }) {
+async function runLoop({ store, provider, executeTool, resume = true, initialUserMessage, onEvent }) {
   try {
     const result = await runToolLoop({
       provider,
@@ -83,6 +83,7 @@ async function runLoop({ store, provider, executeTool, resume = true, initialUse
       // 的正文里，那会让「内容逐字相同」这条断言测到别的东西。
       maxRounds: 8,
       ...(initialUserMessage === undefined ? {} : { initialUserMessage }),
+      ...(onEvent === undefined ? {} : { onEvent }),
       executeTool,
     });
     return { ok: true, finalText: result.finalText };
@@ -322,4 +323,195 @@ test("#420 边界 · 零结果行 + 还有待补跑工具：A 集合首片当锚
   assert.equal(resultsFor(provider.requests[0].messages, "t1").length, 1);
   assert.equal(resultsFor(provider.requests[0].messages, "t2").length, 1);
   assert.deepEqual(aggregateResults(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1", "t2"] }]);
+});
+
+// ── issue #424（守卫）：升级路径上「崩溃轮的 assistant 正文只在快照里」────────────────────────────
+// 现场（独立评审 + 主 agent 复现）：旧账本（崩溃轮的正文从未落盘）+ 快照补全。`restoreResume` 把崩溃轮的
+// assistant 正文从快照补进内存 `messages`，但**账本里没有那一行**；#420 的 A 集合入账照样把结果写成
+// `kind:"message"` 行 ⇒ 账本里出现「有 `tool_result`、没有配对 `assistant`」的孤儿 ⇒ **下一次恢复**
+// 在第一次模型请求之前就 `invalid_messages: user tool_result has no matching assistant tool_use`（0 请求）。
+// 守卫：写 A 集合之前先确认崩溃轮在账本里已有 assistant 行（判据是**已折叠的账本条目**）；没有就整段跳过，
+// 退回 #420 之前「只进内存、由快照兜住」的语义 ⇒ 账本内容与修前逐字一致。
+//
+// 三态自证（本用例一次跑完）：
+//   ① 加守卫 ⇒ 绿：账本里一条结果行都没有、发一条 `resume_journal_skipped`、二次恢复成功；
+//   ② 去掉守卫 ⇒ 红：把守卫去掉时**真实会写**的那两行（实测原样，见下面 `msg:2:0` / `msg:2:1`）
+//      补回账本 ⇒ 同一个二次恢复当场 `invalid_messages`、0 请求（这就是 RED 的机理）；
+//   ③ 修前语义（完全不写）⇒ 也绿：①的账本必须与「只进内存」逐字一致（没有 round 2 正文行）。
+
+const toolResultBlock = (id) => ({ type: "tool_result", tool_use_id: id, content: `out-${id}` });
+
+/** 崩在「resume 段的引擎控制行」写入点：它排在 A 集合入账、`:resume` 载体行之后、第一次模型调用之前。 */
+function crashOnControlRow(inner) {
+  let fired = false;
+  return {
+    ...inner,
+    async appendRound(runId, record) {
+      const key = String(record?.dedupKey ?? record?.roundKey ?? "");
+      if (!fired && key.includes(":control:")) {
+        fired = true;
+        throw new Error("simulated crash after journaling, before first model call");
+      }
+      return inner.appendRound(runId, record);
+    },
+  };
+}
+
+/**
+ * 升级路径现场（issue #424）：旧账本只有 round 1 的载体行（崩溃轮的正文**从没落盘**），
+ * 崩溃轮的正文（assistant + t1/t2 两个 `tool_use`）与两个已成型的结果只在 run snapshot 里。
+ */
+async function upgradePathCrashScene(inner) {
+  const roundOneMessages = [
+    { role: "user", content: [text("任务")] },
+    { role: "assistant", content: [text("第一轮答复")] },
+  ];
+  await inner.appendRound(RUN_ID, {
+    round: 1,
+    roundKey: `${RUN_ID}:round:1`,
+    dedupKey: `${RUN_ID}:engine:round:1`,
+    messages: roundOneMessages,
+    summary: "missing",
+    ts: new Date().toISOString(),
+  });
+  await inner.saveRunSnapshot(RUN_ID, {
+    round: 2,
+    messages: [...roundOneMessages, {
+      role: "assistant",
+      content: [text("第二轮"), toolUse("t1"), toolUse("t2")],
+    }],
+    persistedTranscriptLength: roundOneMessages.length,
+    executedToolIds: ["t1", "t2"],
+    pendingToolUses: [toolUse("t1"), toolUse("t2")],
+    toolResults: [
+      { toolUseId: "t1", toolResult: toolResultBlock("t1") },
+      { toolUseId: "t2", toolResult: toolResultBlock("t2") },
+    ],
+    toolOutputs: [],
+    compactionStats: [],
+    ts: new Date().toISOString(),
+  });
+  return inner;
+}
+
+test("#424 升级路径 · 崩溃轮的 assistant 正文只在快照里 ⇒ A 集合整段不入账，二次恢复仍成功（三态自证）", async () => {
+  // ── ① 加守卫 ⇒ 绿 ────────────────────────────────────────────────────────────────
+  const inner = createMemoryTranscriptStore();
+  await upgradePathCrashScene(inner);
+  const events = [];
+  const first = await runLoop({
+    store: crashOnControlRow(inner),
+    provider: createFakeProvider([endTurn("第一次续接")]),
+    executeTool: async () => {
+      throw new Error("补跑不该发生：两个工具都已在 executedToolIds 里（A 集合）");
+    },
+    onEvent: (event) => events.push(event),
+  });
+  assert.equal(first.ok, false, "前置：第一次恢复必须真的崩在 `:control:` 行");
+  assert.match(first.error, /simulated crash after journaling/u);
+
+  const records = await inner.load(RUN_ID);
+  assert.deepEqual(ledgerResults(records), [],
+    "守卫必须让 A 集合**整段不入账**：账本里一条 tool_result 行都不该有（有就是孤儿）");
+  assert.equal(
+    records.some((record) => (record.round ?? 0) === 2
+      && (record.messages ?? []).some((message) => message?.role === "assistant")),
+    false,
+    "崩溃轮的 assistant 正文在账本里本就不存在（这是本用例的现场，守卫不许把它补出来）",
+  );
+  // ③ 修前语义（完全不写）⇒ 也绿：账本必须与 #420 之前逐字一致（round 2 只有那条空 `:resume` 载体行）。
+  assert.deepEqual(
+    records.map((record) => ({
+      round: record.round,
+      key: record.dedupKey,
+      roles: (record.messages ?? []).map((message) => message.role),
+    })),
+    [
+      { round: 1, key: `${RUN_ID}:engine:round:1`, roles: ["user", "assistant"] },
+      { round: 2, key: `${RUN_ID}:engine:round:2:resume`, roles: [] },
+    ],
+    "跳过之后账本内容必须与 #420 之前逐字一致（那批结果只进内存、由快照兜住 ⇒ 不可能比修前更坏）",
+  );
+  // 可观测：走既有 `onEvent` 通道，恰一条，说清跳过原因与批大小。
+  const skipEvents = events.filter((event) => event?.type === "resume_journal_skipped");
+  assert.equal(skipEvents.length, 1, "跳过必须发**一条** `resume_journal_skipped` 事件（既有 onEvent 通道）");
+  assert.deepEqual(
+    {
+      runId: skipEvents[0].runId,
+      round: skipEvents[0].round,
+      reason: skipEvents[0].reason,
+      count: skipEvents[0].count,
+    },
+    { runId: RUN_ID, round: 2, reason: "crash_round_assistant_not_in_ledger", count: 2 },
+    "事件必须点名轮号、跳过原因与 A 集合大小（宿主据此知道这批结果没入账）",
+  );
+
+  // 二次恢复：上下文仍由快照补全（与 #420 之前同一路径）⇒ 必须能起来，结果不丢不翻倍。
+  const provider = createFakeProvider([endTurn("第二次续接完成")]);
+  const second = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(second.ok, true, `二次恢复必须成功（实测：\`${String(second.error)}\`）`);
+  assert.equal(provider.requests.length, 1, "二次恢复必须真的发过一次模型请求（修前修后同一条路径）");
+  for (const id of ["t1", "t2"]) {
+    const blocks = resultsFor(provider.requests[0].messages, id);
+    assert.equal(blocks.length, 1, `${id} 的结果在上下文里必须恰好一份`);
+    assert.equal(blocks[0].content, `out-${id}`, `${id} 的内容必须逐字相同`);
+  }
+
+  // ── ② 去掉守卫 ⇒ 红（把守卫去掉时**真实会写**的那两行补回账本，实测原样）──────────────
+  // 两行的 dedupKey / seq / partOf 来自实测（`<runId>:msg:2:0` 首片无 `partOf`，`msg:2:1` 接在它后面），
+  // 不是手编的坏形状：去掉守卫的代码写的就是这两行。
+  const unguarded = createMemoryTranscriptStore();
+  for (const record of records) await unguarded.appendRound(RUN_ID, record);
+  await unguarded.appendRound(RUN_ID, {
+    round: 2,
+    roundKey: `${RUN_ID}:round:2`,
+    dedupKey: `${RUN_ID}:msg:2:0`,
+    kind: "message",
+    seq: 0,
+    messages: [{ role: "user", content: [toolResultBlock("t1")] }],
+    ts: new Date().toISOString(),
+  });
+  await unguarded.appendRound(RUN_ID, {
+    round: 2,
+    roundKey: `${RUN_ID}:round:2`,
+    dedupKey: `${RUN_ID}:msg:2:1`,
+    kind: "message",
+    seq: 1,
+    partOf: `${RUN_ID}:msg:2:0`,
+    messages: [{ role: "user", content: [toolResultBlock("t2")] }],
+    ts: new Date().toISOString(),
+  });
+  const orphanRecords = await unguarded.load(RUN_ID);
+  assert.deepEqual(ledgerResults(orphanRecords), ["t1=out-t1", "t2=out-t2"],
+    "去掉守卫后账本里就有这两行结果（孤儿：round 2 没有任何 assistant 正文）");
+  assert.equal(
+    orphanRecords.some((record) => (record.round ?? 0) === 2
+      && (record.messages ?? []).some((message) => message?.role === "assistant")),
+    false,
+    "孤儿判据：这两行所在的 round 2 在账本里没有 assistant 正文",
+  );
+  const deadProvider = createFakeProvider([endTurn("不该到达")]);
+  const third = await runLoop({ store: unguarded, provider: deadProvider, executeTool: async () => "unused" });
+  assert.equal(third.ok, false, "去掉守卫 ⇒ 二次恢复必须红（这就是 #424 的 RED）");
+  assert.match(third.error, /invalid_messages/u, `实测错误码：\`${String(third.error)}\``);
+  assert.match(third.error, /user tool_result has no matching assistant tool_use/u,
+    "红的原因必须正是「孤立的结果没有配对的 assistant」（判据在 `src/messages/rounds.js`）");
+  assert.equal(deadProvider.requests.length, 0, "红在第一次模型请求之前：0 次请求");
+});
+
+test("#424 守卫精度 · 新账本（崩溃轮 assistant 已落盘）照旧入账，不发跳过事件", async () => {
+  const inner = createMemoryTranscriptStore();
+  await crashWithUnpersistedResult(inner);
+  const events = [];
+  const resumed = await runLoop({
+    store: inner,
+    provider: createFakeProvider([endTurn("续接完成")]),
+    executeTool: async () => "unused",
+    onEvent: (event) => events.push(event),
+  });
+  assert.equal(resumed.ok, true, "前置：第一次恢复成功");
+  assert.equal(events.some((event) => event?.type === "resume_journal_skipped"), false,
+    "守卫不得误伤新账本路径：崩溃轮 assistant 已在账本里 ⇒ 照旧入账、不发跳过事件");
+  assert.deepEqual(ledgerResults(await inner.load(RUN_ID)), ["t1=out-t1", "t2=out-t2"],
+    "账本照旧闭合（#420 的行为一条都没变）");
 });
