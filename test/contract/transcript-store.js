@@ -278,33 +278,43 @@ export function transcriptStoreContract(label, createStore) {
   });
   // 一轮的真实形状：载体行（只留元数据）+ 三条消息行（assistant 带 tool_use、user 带 tool_result、
   // 第二条 tool_result 是**分片**：`partOf` 指认前一条消息行的 key）。
+  // issue #439 A：每条消息行有自己的 `ts`（引擎每条消息落盘时就写），折叠后的每条逻辑消息必须
+  // 带上**它自己那一行**的 `ts`（分片折回的那条取**首片**的），否则宿主拿 `load()` 做时间线/延迟
+  // 分析时，凡是被折叠过的消息都没有时间戳（载体行自己的 `ts` 是轮行落盘时刻）。
+  const foldTs = (second) => `2026-08-29T00:10:${String(second).padStart(2, "0")}.000Z`;
   const foldRound = (round) => {
     const useId = `tool-${String(round)}`;
     const rows = [
       foldCarrier(round),
-      foldMessageRow(round, 0, { role: "user", content: [textBlock("inspect files")] }),
+      foldMessageRow(round, 0, { role: "user", content: [textBlock("inspect files")] }, { ts: foldTs(1) }),
       foldMessageRow(round, 1, {
         role: "assistant",
         content: [{ type: "tool_use", id: useId, name: "list", input: { path: "." } }],
-      }),
+      }, { ts: foldTs(2) }),
       foldMessageRow(round, 2, {
         role: "user",
         content: [{ type: "tool_result", tool_use_id: useId, content: "README.md" }],
-      }),
+      }, { ts: foldTs(3) }),
       foldMessageRow(round, 3, {
         role: "user",
         content: [{ type: "tool_result", tool_use_id: `${useId}-b`, content: "src" }],
-      }, { partOf: `${foldRunId}:msg:${String(round)}:2` }),
+      }, { ts: foldTs(4), partOf: `${foldRunId}:msg:${String(round)}:2` }),
     ];
     const expected = [
-      { role: "user", content: [textBlock("inspect files")] },
-      { role: "assistant", content: [{ type: "tool_use", id: useId, name: "list", input: { path: "." } }] },
+      { role: "user", content: [textBlock("inspect files")], ts: foldTs(1) },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: useId, name: "list", input: { path: "." } }],
+        ts: foldTs(2),
+      },
       {
         role: "user",
         content: [
           { type: "tool_result", tool_use_id: useId, content: "README.md" },
           { type: "tool_result", tool_use_id: `${useId}-b`, content: "src" },
         ],
+        // 分片折回的那条聚合消息取**首片**（seq 2）的 ts，不是末片（seq 3）的 —— issue #439 A。
+        ts: foldTs(3),
       },
     ];
     return { rows, expected };

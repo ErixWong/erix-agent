@@ -401,6 +401,96 @@ counter, so a per-run total has to be assembled from events by the host. A
 durable retry counter is **not** promised today; treat `attempt` / `recovering`
 / `recovered` and `retry.sleepImpl` as the only supported observation points.
 
+### Silence is a retryable deadline — but only if someone wires it (issue #441)
+
+The engine ships its own **silence deadlines**: `firstByteTimeoutMs`,
+`streamIdleTimeoutMs`, `streamTotalTimeoutMs` and `requestTimeoutMs`. When one of
+them expires it throws `KitError("timeout", …, { retryable: true })`
+(`src/providers/timeout.js`), and `timeout` is in `RETRYABLE_CODES`
+(`src/providers/errors.js`) — so a silent provider is supposed to land on the
+retry loop above, not on a hard kill. Until 0.24.0 **no CLI code passed any of
+them** (`grep -rn 'firstByteTimeoutMs' bin/` had zero hits, and the CLI config
+whitelist did not carry them either), which left the CLI's idle watchdog as the
+only thing that could end a silent run — and that path aborts the run's
+`AbortSignal`, which is **not** retryable. That is the structural failure this
+section records the fix for.
+
+The CLI now derives **two of them** from `--idle-timeout` in one place (the
+resolver lives in `bin/provider-timeouts.js`; `bin/cli.js` and `bin/repl.js` use
+it identically):
+
+| `--idle-timeout` | what reaches the provider |
+|---|---|
+| `0` (`erix repl` default) | **nothing derived** — the pre-0.24.0 assembly, byte for byte: the legacy `timeoutMs` deadline only. Explicit phase keys in the config file still pass through (the engine then uses its phase model) |
+| `N > 0` (`erix chat` default `300`) | `firstByteTimeoutMs` = `streamIdleTimeoutMs` = `⌊N × 3/4⌋` ms, unless the user configured that key explicitly. `requestTimeoutMs` is **not** derived: the non-streaming deadline stays legacy (`config.timeout ?? 300_000`) |
+
+Four rules, in order:
+
+1. **The silence budget is strictly smaller than the idle window.** Equality is a
+   defect, not a preference: for a silent request both timers start at the same
+   moment and the idle one starts *earlier* (it is armed before the provider
+   call), so `deadline === idle` always resolves to the non-retryable abort. The
+   remaining quarter is the room a retry needs — the backoff
+   (`backoffBaseMs = 1500`, then `3000`) plus the next attempt.
+2. **`requestTimeoutMs` is deliberately not derived** — the non-streaming path
+   keeps its legacy deadline (`config.timeout ?? 300_000`). On that path
+   `requestTimeoutMs` measures the **whole generation**, not a silence
+   (`provider.chat()` has exactly one absolute deadline), so deriving it to
+   `⌊idle × 3/4⌋` turns the default `[⌊idle × 3/4⌋, idle)` = `[225s, 300s)` band
+   from *alive* into *always fatal*: measured against a real HTTP upstream with
+   `ERIX_RETRY_ATTEMPTS=2`, a request answered after **240s** ended `end_turn`
+   (exit **4**) in **240.29s** before the wiring and was killed at **225.21s**
+   with `failed` / `errorCode: "timeout"` after it. Retrying non-streaming
+   *silence* would need a deadline **strictly below** the idle window, and both
+   idle and the legacy `timeout` default to `300` — so any shrink kills that
+   band. The fix for non-streaming silence is "retry after declaring death"
+   (issue #433 fix 1), not an earlier kill; **until it lands, non-streaming
+   silence is not retryable** (one call, `idle_timeout`).
+3. **`streamTotalTimeoutMs` is not derived.** It is an absolute cap on one
+   stream, not a silence deadline, and while a stream is flowing the idle
+   watchdog is fed by `onDelta` and cannot fire anyway — deriving it from the
+   idle window would turn a long-but-healthy output into a retry that fails the
+   same way. The engine default (`300000`) stays. An explicit legacy `timeout`
+   **is** passed through as `streamTotalTimeoutMs`, because entering the phase
+   model disables the legacy absolute deadline (`hasExplicitPhase` in
+   `src/providers/payload.js`) and dropping it would silently lower a ceiling the
+   user asked for.
+4. **Explicit configuration wins and is never rewritten** (the same rule as
+   `ERIX_EXEC_TIMEOUT_MS`): a phase value ≥ the idle window is used verbatim and
+   only produces a one-line warning — the silence may then still be ended by the
+   non-retryable idle path. The four keys are also **validated at load**: a value
+   that is not a safe integer `>= 0` (`-1000`, `"abc"`, `true`, `1.5`) is a
+   config error that names the key, instead of reaching the engine as
+   `undefined` — where it used to mean "this phase deadline silently does not
+   exist" (stream) or "the request expires immediately, zero calls reach the
+   upstream" (non-streaming). `0` is legal and means "already expired". The legacy `timeout` / `timeoutMs` key is **not** covered by
+   this validation — it is still forwarded verbatim, so a non-numeric value reaches `setTimeout` and
+   behaves as "already expired"; only the four phase keys are load-validated, because they are the four
+   this change made load-bearing.
+
+Two host-observable consequences:
+
+- A silent **`--stream`** run now ends `termination.reason: "failed"` with
+  `termination.errorCode: "timeout"` once the retries are exhausted, instead of
+  `reason: "aborted"` with no `errorCode` at all. This is **not** a contract
+  extension: `failed` already carries `errorCode` (issue #176) and no other
+  reason gained the field. Hosts that branch on `aborted` for "silent kill" must
+  branch on `failed` + `errorCode: "timeout"` for streaming runs;
+  **non-streaming silence is unchanged** and still ends `idle_timeout`.
+- The CLI feeds its idle watchdog on the `attempt` and `recovering` events, so a
+  retry (including its backoff) is progress rather than "no progress". Without
+  that, the idle window would cut the backoff and the silence would fall back to
+  the abort path anyway.
+
+The budget guarantees that **one attempt's** silence deadline fires before the
+idle watchdog; it does not put the retry **backoff** inside the idle window. An
+`--idle-timeout` **smaller than or equal to** the backoff schedule
+(`backoffBaseMs = 1500`, then `3000`, `6000`, … capped at `backoffMaxMs = 10000`)
+can still be ended by the non-retryable idle path during a backoff — exactly as
+before this change; measured at `--idle-timeout 3`, where the second backoff is
+exactly `3000ms` = the window: 2 calls, 9.21s, `aborted`. With the defaults
+(`300`) that cannot happen.
+
 ## AssemblyPort
 
 Hosts that assemble a complete run can provide one validated composition root
@@ -1126,12 +1216,15 @@ depends on the model reading a hint:
 - `result.unpersisted` — the error bill (schema frozen as an array). Each
   entry carries `ts`, `kind`, `port`, `operation`, optional `phase`, `fatal`,
   `repeat`, optional `lastTs` (set when the entry absorbed a duplicate),
-  and `error: { name, message }` (message capped at 500 characters,
-  stack dropped). `delivery_failure` entries additionally carry `failedEvent`
+  and `error: { name, message }` plus the additive `error.phase` (issue #439;
+  present only when the error object carried one — see the `persistence_error`
+  entry shape below). Message capped at 500 characters, stack dropped.
+  `delivery_failure` entries additionally carry `failedEvent`
   (the identity of the event that could not be delivered). Identical failures —
-  same port/operation/phase/fatal/message, and for `delivery_failure` also the
-  same failed-event identity — are deduplicated into one entry with an
-  increasing `repeat` count instead of flooding the bill.
+  same port/operation/phase/fatal/message, same `error.phase` when the error
+  carries one, and for `delivery_failure` also the same failed-event identity —
+  are deduplicated into one entry with an increasing `repeat` count instead of
+  flooding the bill.
 - `diagnostics.error(event)` — the same identity as an event, delivered when
   the host configured a sink. A sink that throws is itself recorded as a
   `delivery_failure` entry.
@@ -1415,7 +1508,7 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 | `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:116`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
 | `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:147-149`); (b) the round loop simply runs out (`runToolLoop` at `src/loop/orchestrator.js`, tail handling at `3189-3207`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`termination` at `src/loop/orchestrator.js`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
 | `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3529-3542`), revision limit (`3544-3559`), or the budget-exhaustion tail (`3558-3578`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1663-1665`); `finalGuardMaxRetries` moves the revision limit (default 2, `budgetRounds` at `src/loop/orchestrator.js`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
-| `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:1058-1116`; classification at `1061` and `1080-1085`, annotation at `1103-1108`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop |
+| `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:1058-1116`; classification at `1061` and `1080-1085`, annotation at `1103-1108`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop. A **silent** run is no longer guaranteed to land here: since issue #441 the CLI wires the engine's retryable phase deadlines, so silence ends `failed` / `errorCode: "timeout"` once the retries are exhausted (see "Silence is a retryable deadline"); this row now means the signal was really aborted — by the host, or by the idle watchdog when no phase deadline could fire |
 | `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:1058-1116`, loop catch at `3576-3580`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `invalid_request` / `not_found` / `conflict` (issue #179) → fix the request, the model name, or the colliding resource — re-sending the same payload cannot help; `unknown` → inspect `termination.detail` |
 | `persistence_failed` | same `fail()` path, selected when the error carries persistence info (`src/loop/orchestrator.js:1080-1085`), which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
 
@@ -3065,11 +3158,20 @@ inference, keyword guessing, or similarity rules to it.
 
 An `Entry` is one of:
 
-- `persistence_error`: `{ kind, port, operation, phase?, fatal, error: {name, message}, ts }`
+- `persistence_error`: `{ kind, port, operation, phase?, fatal, error: {name, message, phase?}, ts }`
   where `port` is `"transcript"` (today; `"resource"`/`"notes"` arrive with
   their integration steps). `error` is normalized to `{name, message}` with
   the message capped at 500 chars (bounds the result payload; stack traces
-  are dropped).
+  are dropped). **Additive since issue #439:** `error.phase` is preserved
+  when the thrown error carries one (a non-empty string, whitespace collapsed
+  and capped at 32 chars — the same caliber as the run-state projection's
+  `safeText(entry.phase, 32)`); an error without it produces **no `phase` key**
+  at all (never `phase: undefined`, never a guessed value). This is what lets
+  a host tell "the request never went out" (`phase: "request"`) from "the
+  stream broke mid-way" (`phase: "stream"`) without parsing `message`; the
+  two are not equally retryable. It is a **different field** from the entry's
+  own `phase` (the persistence phase — `transcript` / `notes` /
+  `checkpoint_before_tool` / …), which keeps its meaning unchanged.
 - `delivery_failure`: a `diagnostics.error` (or `onPersistenceError`) sink
   itself threw — the error happened but the structured event was not
   delivered. `port` is always `"diagnostics"` (the failed channel); the
@@ -3199,13 +3301,50 @@ gone. `src/store/message-rows.js#foldMessageRows` (called by `load()` of both
 built-in stores) folds the message rows back into that round row, so the
 host-visible shape of `load()` — and therefore
 `records.flatMap((record) => record.messages ?? [])` — is byte-identical to a
-journal written before the change (golden: `scripts/message-journal-golden.mjs`).
+journal written before the change **except for the per-message `ts` added by
+issue #439** (next bullet; golden: `scripts/message-journal-golden.mjs`, whose
+fixture has no message rows and therefore pins the pre-#439 shape).
 
 Consequences for a host store and for host readers:
 
 - `kind`, `seq` and `partOf` are now **fidelity-bearing fields**: dropping them
   makes a message row unfoldable, which leaves it standing on its own in the
   `load()` array. Round grouping happens by `round`, ordering by `seq`.
+- **Every logical message folded out of message rows carries its own `ts`
+  (issue #439).** A message row stamps `ts` when the message is formed, so
+  folding puts that stamp **on the message object**: each logical message in
+  the `load()` result has `messages[i].ts`, taken from the **first slice's**
+  row (the row that started the message — the same "the anchor is the first
+  slice" caliber as issue #430; a `partOf` shard only appends content blocks
+  and never rewrites the stamp).
+  Without it a host doing timeline/latency analysis had **no timestamp for any
+  message that went through the fold**: the carrier row's own `ts` is when the
+  **round row** landed, not when the message formed. A row without `ts` (a
+  hand-written row, a host store that does not stamp one) produces **no `ts`
+  key** on the message — never `ts: undefined`.
+  **What the qualifier excludes (two real shapes).** The promise is about
+  messages *folded out of message rows*, so a `load()` message that never came
+  from a row has no `ts`: (a) a carrier already folded by an older version
+  (≤0.24.0, or a host's own fold) and (b) the engine-control body that a
+  carrier row carries itself (the control text of a `…:resume` row).
+  **The already-folded guard is deliberately blind to the stamp:** it asks
+  whether the **same body text** was already folded, and it compares both
+  sides with the envelope `ts` stripped (`withoutJournalTs`). So when the
+  carrier already carries that same body, the round is skipped **even if those
+  messages have no `ts` — or a different one**; they are **not backfilled**.
+  This is additive: it changes no existing key, and the engine's own resume
+  path deliberately reads the ledger
+  as canonical messages **without** the per-message `ts` (`foldLedgerMessages`),
+  so a fold input keeps one stable identity across a resume (the reuse key of
+  the fold summary, issue #326, is computed over those messages).
+  **Do not write a folded message back as a message row.** The `ts` on a folded
+  message is a **nested** payload field, not the top-level envelope `ts` that
+  the same-key digest drops: re-appending it under the same `dedupKey` is
+  judged a payload conflict (`code: dedup_payload_conflict`,
+  `differingFields: ["messages"]`; measured — the pre-#439 shape does not
+  collide). The four excluded names are exactly the top-level ones, as stated
+  in `### Same-key payload conflicts (issue #326)` (“nested `ts` values are
+  payload”).
 - Do not assume “round rows carry the messages”. The carrier may be
   `<runId>:engine:round:<n>`, `<runId>:round:<n>` (host default key) or
   `<runId>:engine:round:<n>:resume`; if a run crashed before its round row

@@ -332,6 +332,66 @@ await provider.chat({ messages });
 里拼。今天**不承诺**可持久化的重试计数器；请把 `attempt` / `recovering` / `recovered` 与
 `retry.sleepImpl` 当作受支持的观测点全集。
 
+### 静默是一条可重试的截止——前提是有人把它接上（issue #441）
+
+引擎自带**静默截止**：`firstByteTimeoutMs`、`streamIdleTimeoutMs`、`streamTotalTimeoutMs`、
+`requestTimeoutMs`。到点抛的是 `KitError("timeout", …, { retryable: true })`
+（`src/providers/timeout.js`），而 `timeout` 在 `RETRYABLE_CODES` 里
+（`src/providers/errors.js`）——也就是说「provider 静默」本来就该落到上面那条重试循环上，
+而不是硬杀。但 0.24.0 之前**没有任何 CLI 代码传过这四个键**（`grep -rn 'firstByteTimeoutMs' bin/`
+零命中，CLI 的配置白名单也不收），于是能终结一次静默 run 的只剩 CLI 的 idle 看门狗——而它 abort 的是
+run 的 `AbortSignal`，那条路**不可重试**。本节记录的就是这个结构性失效的修法。
+
+CLI 现在在**一处**从 `--idle-timeout` 派生**其中两个**（解析器在 `bin/provider-timeouts.js`，
+`bin/cli.js` 与 `bin/repl.js` 用的是同一份）：
+
+| `--idle-timeout` | 传给 provider 的东西 |
+|---|---|
+| `0`（`erix repl` 默认） | **不派生任何东西**——与 0.24.0 之前的装配逐字一致：只有 legacy `timeoutMs` 那条截止。配置文件里显式写的相位键照旧透传（那时语义归引擎的相位模型） |
+| `N > 0`（`erix chat` 默认 `300`） | `firstByteTimeoutMs` = `streamIdleTimeoutMs` = `⌊N × 3/4⌋` ms，除非用户显式配了那一个键。`requestTimeoutMs` **不派生**：非流式那条截止保持 legacy（`config.timeout ?? 300_000`） |
+
+四条规则，按顺序：
+
+1. **静默预算严格小于 idle 窗口。** 相等是缺陷而不是偏好：一次静默请求里两条截止同时起跑，
+   而 idle 的起点**更早**（provider 调用之前就武装了）⇒ `截止 === idle` 永远解成不可重试的 abort。
+   留出的四分之一是重试需要的空间——退避（`backoffBaseMs = 1500`，第二次 `3000`）加下一次尝试。
+2. **`requestTimeoutMs` 故意不派生**——非流式路径保持它的 legacy 截止（`config.timeout ?? 300_000`）。
+   那条路径上 `requestTimeoutMs` 量的是**整段生成**、不是静默（`provider.chat()` 只有一条绝对截止），
+   把它派生成 `⌊idle × 3/4⌋` 等于把默认配置下 `[⌊idle × 3/4⌋, idle)` = `[225s, 300s)` 这条带从
+   **活的**变成**必死**：真 HTTP 上游、`ERIX_RETRY_ATTEMPTS=2` 实测，**240s** 后才回的请求在接线前是
+   **240.29s / `end_turn` / 退码 4**，接线后变成 **225.21s 被杀 / `failed` / `errorCode: "timeout"`**。
+   要让非流式**静默**可重试，截止必须**严格小于** idle 窗口，而 idle 与 legacy `timeout` 默认**都是
+   `300`** ⇒ 任何收缩都会杀掉这条带。非流式静默的正解是「判死后重试」（issue #433 fix 1），不是提前
+   掐死；**在它落地之前，非流式静默不可重试**（1 发、`idle_timeout`）。
+3. **`streamTotalTimeoutMs` 不派生。** 它是单条流的**绝对上限**，不是静默截止；而流在吐字节时 idle
+   会被 `onDelta` 喂表、本来就不会响——拿 idle 窗口派生它，只会把「长但健康」的输出变成一次
+   注定重蹈覆辙的重试。引擎默认值（`300000`）保留。显式 legacy `timeout` **会**作为
+   `streamTotalTimeoutMs` 透传：相位模型一开，legacy 那条绝对截止就失效
+   （`src/providers/payload.js` 的 `hasExplicitPhase`），不透传等于把用户要的天花板悄悄降下来。
+4. **显式配置优先、不被隐式改写**（与 `ERIX_EXEC_TIMEOUT_MS` 同一口径）：相位值 ≥ idle 窗口时
+   原样使用，只打一行警告——那种静默仍可能被不可重试的 idle 路径收尾。这四个键还会在**加载时校验**：
+   不是「`>= 0` 的安全整数」（`-1000`、`"abc"`、`true`、`1.5`）就报错并**点名该键**，而不是以
+   `undefined` 的身份进引擎——在那里它要么意味着「这个相位的截止悄悄不存在」（流式），要么意味着
+   「请求立刻超时、上游 0 发」（非流式）。`0` 合法，意思是「已经到点」。
+   legacy `timeout` / `timeoutMs` **不在**这条校验面内——它照旧原样透传，所以非数值会一路进 `setTimeout`，
+   行为等同「已经到点」；加载期校验只覆盖这四个相位键，因为是本次改动让它们变成承重的。
+
+两个宿主可观测的后果：
+
+- 静默的 **`--stream`** run 在重试用尽后终局是 `termination.reason: "failed"` +
+  `termination.errorCode: "timeout"`，不再是 `reason: "aborted"` 且没有 `errorCode`。这**不是**
+  契约扩展：`failed` 本来就带 `errorCode`（issue #176），也没有任何别的 reason 因此新增该字段。
+  把 `aborted` 当「静默被杀」判断的宿主，对流式 run 要改判 `failed` + `errorCode: "timeout"`；
+  **非流式静默没有变化**，仍以 `idle_timeout` 收尾。
+- CLI 用 `attempt` 与 `recovering` 事件喂 idle 表，所以一次重试（含它的退避）算**进展**而不是
+  「无进展」。不喂的话 idle 窗口会把退避切断，静默又回到 abort 那条路。
+
+这条预算保证的是「**单次尝试**的静默截止先于 idle 看门狗响」；它**不**把重试的**退避**塞进 idle
+窗口。`--idle-timeout` **小于或等于**退避序列（`backoffBaseMs = 1500`，之后 `3000`、`6000`……上限
+`backoffMaxMs = 10000`）时，退避期仍可能被不可重试的 idle 路径收尾——与本次改动之前完全一样；
+实测 `--idle-timeout 3` 时第二次退避恰好 `3000ms`、**等于**窗口：2 发 / 9.21s / `aborted`。
+默认值（`300`）下不会发生。
+
 ## AssemblyPort
 
 装配完整 run 的宿主可以只提供一个经过校验的组合根，而不必重复逐项接线：
@@ -911,10 +971,11 @@ number 不是安全整数。命中记录自身 `round` 不是安全整数时，�
 
 - `result.unpersisted` —— 错误账单（数组，schema 冻结）。每条含 `ts`、`kind`、`port`、
   `operation`、可选 `phase`、`fatal`、`repeat`、可选 `lastTs`（吸收重复失败时更新）
-  与 `error: { name, message }`（message 截断到 500 字符、不带堆栈）；
+  与 `error: { name, message }`，外加加法键 `error.phase`（issue #439；只在错误对象自带它时
+  存在——见下面 `persistence_error` 的条目形状）。message 截断到 500 字符、不带堆栈；
   `delivery_failure` 条目额外带 `failedEvent`（没能送出去的事件身份）。完全相同的
-  失败——同 port/operation/phase/fatal/message，`delivery_failure` 还要同 failedEvent
-  身份——会去重成一条并累加 `repeat`，不会刷屏。
+  失败——同 port/operation/phase/fatal/message、错误自带 `phase` 时也同 `error.phase`，
+  `delivery_failure` 还要同 failedEvent 身份——会去重成一条并累加 `repeat`，不会刷屏。
 - `diagnostics.error(event)` —— 同一身份的事件；宿主编排了 sink 时投递。sink 自身抛错
   也会记成一条 `delivery_failure`。
 - 抛出的错误本身 —— 因落盘失败而死的 run 抛的是 `KitError`，两个出口的字段面相同：
@@ -1127,7 +1188,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2635）；治理层 stop `cap`（`src/reflection/governor.js:62-64` / `133-135`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:116`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
 | `max_rounds_cap` | (a) 治理层 stop `cap`：接近上限且不允许扩轮（`src/reflection/governor.js:147-149`）；(b) 轮循环自然跑完（`runToolLoop`，`src/loop/orchestrator.js`，收尾在 `3189-3207`） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`termination`，`src/loop/orchestrator.js`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
 | `final_guard_unverified` | 配了 `finalGuard` 且它没能认证：不可续跑降级（`src/loop/orchestrator.js:3529-3542`）、修订次数触顶（`3544-3559`）、或轮循环跑完的收尾（`3558-3578`）。只对 6 个 guard 适用 reason 生效（`src/loop/termination.js:14-21`），且仅当 `finalGuard` 是函数（`src/loop/orchestrator.js`） | 严格位于 stop 之后的**后阶段**：它替换 reason，不介入轮内治理 | 整体不传 `finalGuard`（此时 `verification` 为 `skipped` / `no_final_guard`，`src/loop/orchestrator.js:1663-1665`）；`finalGuardMaxRetries` 调修订上限（默认 2，`budgetRounds`，`src/loop/orchestrator.js`） | **不得当已验事实消费**：`verification.status === "unverified"`（`non_continuable` / `max_retries`）。转人工复核或测试系统 |
-| `aborted` | 终局 `fail()` 路径且宿主 signal 已 abort（`src/loop/orchestrator.js:1058-1116`；分类在 1061 与 1080-1085，注解在 1103-1108） | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效。issue #282 之后，同一个检查也跑到终局 `stop` 分支的入口以及 `finish(reason)` 之前，因此「终局前的增值调用」（end-turn judge / finalGuard）再也不能把用户的中止改写成 `judge_done` 或 `final_guard_unverified`——见「终局前的增值调用在中止时的行为（issue #282）」 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的 |
+| `aborted` | 终局 `fail()` 路径且宿主 signal 已 abort（`src/loop/orchestrator.js:1058-1116`；分类在 1061 与 1080-1085，注解在 1103-1108） | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效。issue #282 之后，同一个检查也跑到终局 `stop` 分支的入口以及 `finish(reason)` 之前，因此「终局前的增值调用」（end-turn judge / finalGuard）再也不能把用户的中止改写成 `judge_done` 或 `final_guard_unverified`——见「终局前的增值调用在中止时的行为（issue #282）」 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的。**静默** run 不再必然落到这一行：issue #441 之后 CLI 接上了引擎的可重试相位截止，静默在重试用尽后以 `failed` / `errorCode: "timeout"` 收尾（见「静默是一条可重试的截止」）；本行现在的含义是「信号真的被 abort 了」——宿主动的手，或者没有任何相位截止能先响时 idle 看门狗动的手 |
 | `failed` | run 生命周期内抛出的任意错误，经 `fail()`（`src/loop/orchestrator.js:1058-1116`，循环 catch 在 `3576-3580`），并透传 `termination.errorCode`（`src/loop/termination.js:43-57`）；宿主观察者抛错不再是它的来源之一（issue #173） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`invalid_request` / `not_found` / `conflict`（issue #179）→ 去修请求体、模型名或冲突的资源，重发同一份 payload 帮不上忙；`unknown` → 转去查 `termination.detail` |
 | `persistence_failed` | 同一个 `fail()` 路径，在错误携带持久化信息时被选中（`src/loop/orchestrator.js:1080-1085`），并额外挂上 `operation` / `phase` / `sideEffect`（`src/loop/orchestrator.js`） | 替换 `failed`，不会反向发生；不带 `errorCode`（该字段为 `failed` 专属） | `persistence:"none"` 直接移除 transcript 写入路径；可选 store 能力是降级而非失败（见能力分级） | **告警**：副作用被跟踪过，所以这是完整性信号（ADR-013），不是重试候选 |
 
@@ -2413,9 +2474,15 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 
 `Entry` 取值之一：
 
-- `persistence_error`：`{ kind, port, operation, phase?, fatal, error: {name, message}, ts }`，
+- `persistence_error`：`{ kind, port, operation, phase?, fatal, error: {name, message, phase?}, ts }`，
   其中今天 `port` 为 `"transcript"`；`"resource"`/`"notes"` 随各自接入步骤出现。`error`
   归一化为 `{name, message}`，message 截断到 500 字符（约束 result 体积；丢弃堆栈）。
+  **issue #439 起的加法面：** 错误对象自带 `phase` 时原样保留（非空字符串，压平空白并截到
+  32 字符——与 run-state 投影的 `safeText(entry.phase, 32)` 同一口径）；取不到就**完全没有
+  `phase` 键**（绝不写 `phase: undefined`，也不猜值）。这就是宿主不必解析 `message` 就能分出
+  「请求没发出去」（`phase: "request"`）与「流中间断了」（`phase: "stream"`）的字段，而这两类
+  可重试性不同。它与条目自身的 `phase`（持久化阶段——`transcript` / `notes` /
+  `checkpoint_before_tool` / …）是**两个字段**，后者的语义一字未改。
 - `delivery_failure`：`diagnostics.error`（或 `onPersistenceError`）sink 自己抛错——错误
   发生了但结构化事件没送达。`port` 恒为 `"diagnostics"`（坏掉的通道）；出事的端口在
   `failedEvent.port`。
@@ -2519,13 +2586,35 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 `runState`、`judge`、`wrapup`、`compactionStats`、`toolOutputs` … —— `messages` 字段已消失。
 `src/store/message-rows.js#foldMessageRows`（两个内置 store 的 `load()` 都会调它）把消息行
 折回那条轮行，因此 `load()` 的宿主可见形状——以及
-`records.flatMap((record) => record.messages ?? [])` 这条口径——与改造前写出的账本逐字一致
-（金样：`scripts/message-journal-golden.mjs`）。
+`records.flatMap((record) => record.messages ?? [])` 这条口径——与改造前写出的账本**除 #439 新增的
+逐条 `ts` 外**逐字一致（下一条；金样：`scripts/message-journal-golden.mjs`，夹具里没有消息行，
+因此它钉的正是 #439 之前的形状）。
 
 对宿主 store 与宿主读方的以下推论：
 
 - `kind`、`seq`、`partOf` 从此是**携带保真语义的字段**：丢了它们，消息行就折不回去，会
   以独立行的形式留在 `load()` 数组里。分组看 `round`，排序看 `seq`。
+- **从消息行折出来的每条逻辑消息都带自己的 `ts`（issue #439）。** 消息行在消息成型时就打了 `ts`，
+  所以折叠把它放到**消息对象上**：`load()` 结果里每条逻辑消息都有 `messages[i].ts`，
+  取值是**首片行**的（起头那条消息的那一行——与 issue #430 的「锚点钉在首片」同一口径；
+  `partOf` 分片只往后面接 content block，不改写这个戳）。没有它时，宿主做时间线/延迟分析
+  会**对每一条走过折叠的消息都没有时间戳**：载体行自己的 `ts` 是**轮行**落盘的时刻，不是
+  这条消息成型的时刻。行上没有 `ts`（手写行、不落 `ts` 的宿主 store）⇒ 消息上**完全没有
+  `ts` 键**，绝不是 `ts: undefined`。
+  **这个限定的边界（两个真实形状）：** 承诺只覆盖「**从消息行**折出来的」消息，因此没有经过
+  消息行的 `load()` 消息没有 `ts`——① 载体是**旧版折叠产物**（≤0.24.0，或宿主自研折叠）；
+  ② 载体行**自己**带的引擎控制正文（`…:resume` 行的控制文本）。
+  **「这一轮已折过」的守卫对逐条 `ts` 是盲的（刻意的）：** 它判的是**同一段正文**是否已折过，
+  比较时两侧都剥掉信封 `ts`（`withoutJournalTs`）。因此载体已带同一段正文时该轮跳过，**即便
+  载体里那些消息没有 `ts`、或者 `ts` 不同**——**不回填**。这是加法面：既有键一个未改；
+  引擎自己的恢复路径刻意按
+  **不含逐条 `ts`** 的规范化消息读账本（`foldLedgerMessages`），于是同一份折叠输入跨 resume
+  保持同一个身份（折叠摘要的复用键，issue #326，就是拿这些消息算的）。
+  **不要把 `load()` 折出来的消息回写成消息行。** 消息上的 `ts` 是**嵌套** payload 字段，不是
+  同 key 摘要会剥掉的那个**顶层**信封 `ts`：原样回写同一个 `dedupKey` 会判成 payload 冲突
+  （`code: dedup_payload_conflict`、`differingFields: ["messages"]`；实测如此——基点版本不撞）。
+  排除表就只剥四个**顶层**字段，见 `### 同 key 异 payload 的冲突（issue #326）` 一节
+  （「嵌套的 `ts` 算内容」）。
 - 不要假设「轮行携带正文」。载体可能是 `<runId>:engine:round:<n>`、`<runId>:round:<n>`
   （宿主默认键）或 `<runId>:engine:round:<n>:resume`；如果 run 崩在轮行落盘之前，消息行会
   原样留在数组里——这是崩溃恢复契约，不是 store 缺陷。
