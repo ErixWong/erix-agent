@@ -93,11 +93,14 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   · `6b604e7` 把 `parseOpenAIToolArguments` 里那句 `JSON.parse(value)`（`value` 是 `unknown`）换成共享入口
 //     `parseToolArguments(rawArguments).input` ⇒ `src/messages/openai-normalization.js` 的 `(60,23)` 那条
 //     `TS2345 Argument of type 'unknown' is not assignable to parameter of type 'string'` 消失（**1 → 0，该文件
-//     退出错误集合，带错文件数 29 → 28**）；但同一笔新增的 `src/messages/tool-arguments.js` 自己带进 1 条
+//     退出错误集合，−1 个带错文件**）；但同一笔新增的 `src/messages/tool-arguments.js` 自己带进 1 条
 //     `TS2339 Property 'error' does not exist on type …`（`(69,70)`——`--checkJs` 不带 `strict`，布尔字面量判别
-//     在那里不收窄），**净额 0**；
+//     在那里不收窄），**+1 个带错文件**——一进一出，所以这一笔是**错误数净额 0、带错文件数 29 → 29 不变**
+//     （⚠ 别把这笔记成 29 → 28：实测 `6b604e7^` 与 `6b604e7` 都是 **117 个 / 29 文件**，文件集合里只是
+//     `openai-normalization.js` 换成了 `tool-arguments.js`）；
 //   · `d9a0989`（同属 #409 的收尾刀）把 `src/text/repair-json.js` 里 `parseJsonWithRepair` 的 `@returns` 从判别联合
-//     改成「单形状 + 可选字段」，那条 `TS2339` 随之消失 ⇒ 净 **−1**。
+//     改成「单形状 + 可选字段」，`tool-arguments.js` 那条 `TS2339` 随之消失 ⇒ **错误数净 −1、带错文件数 29 → 28**
+//     （实测 `6b604e7` = **117 / 29**、`d9a0989` = **116 / 28**）；
 //   单提交对账：`git archive d9a0989^` 取到空目录、同一对 tsc/@types 跑同两条命令 = **117 个 / 29 文件** 与
 //   **153 个 / 31 文件**（与两档旧常量逐字相同），`d9a0989` 之后 = **116 / 28** 与 **152 / 30**；逐文件对比：
 //   **除上面那两个文件外其余 27 个带错文件的计数一字未动**，也没有别的文件进出错误集合。
