@@ -440,7 +440,11 @@ function parseErrorPosition(message) {
  *
  * @param {string} text
  * @param {{ rules?: readonly string[], truncation?: boolean }} [options]
- * @returns {{ ok: true, value: any, applied: string[] } | { ok: false, error: RepairParseFailure, applied: string[] }}
+ * @returns {{ ok: boolean, applied: string[], value?: any, error?: RepairParseFailure }}
+ *   `ok: true` 时只有 `value`，`ok: false` 时只有 `error`。**刻意不写成判别联合**：本仓的
+ *   `--checkJs` 不带 `strict`，布尔字面量判别在那里不收窄（实测 `if (parsed.ok)` 之后 `parsed.error`
+ *   仍是 TS2339）——写联合只会让调用点被迫加 `any` 转换，而 `parseModelJson` 的公共判别联合
+ *   （`ok: true` 字面量，宿主可收窄）不受影响，因为它是 `.d.ts` 里的公共面，本模块是内部件。
  */
 export function parseJsonWithRepair(text, options) {
   const original = String(text ?? "");
