@@ -79,6 +79,11 @@ jobs:
       - name: Type-error ratchet
         run: npm run check:types
 
+      # issue #416：strict 口径的**观测点**（不判定：命令自身 exit 恒 0，所以这一步永远不会把 CI 变红）。
+      # 棘轮量的 116/152 是**非 strict** 口径；加 --strict 实测 1690 条，这个数字此前从未出现在任何日志里。
+      - name: Type-error strict observation (observation only, gates nothing)
+        run: npm run check:types:strict
+
       - name: Declaration build assertion
         run: npm run check:types-build
 
