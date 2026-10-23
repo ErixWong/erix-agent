@@ -3171,18 +3171,30 @@ Consequences for a host store and for host readers:
 - `kind`, `seq` and `partOf` are now **fidelity-bearing fields**: dropping them
   makes a message row unfoldable, which leaves it standing on its own in the
   `load()` array. Round grouping happens by `round`, ordering by `seq`.
-- **Every folded message carries its own `ts` (issue #439).** A message row
-  stamps `ts` when the message is formed, so folding puts that stamp **on the
-  message object**: each logical message in the `load()` result has
-  `messages[i].ts`, taken from the **first slice's** row (the row that started
-  the message — the same "the anchor is the first slice" caliber as issue #430;
-  a `partOf` shard only appends content blocks and never rewrites the stamp).
+- **Every logical message folded out of message rows carries its own `ts`
+  (issue #439).** A message row stamps `ts` when the message is formed, so
+  folding puts that stamp **on the message object**: each logical message in
+  the `load()` result has `messages[i].ts`, taken from the **first slice's**
+  row (the row that started the message — the same "the anchor is the first
+  slice" caliber as issue #430; a `partOf` shard only appends content blocks
+  and never rewrites the stamp).
   Without it a host doing timeline/latency analysis had **no timestamp for any
   message that went through the fold**: the carrier row's own `ts` is when the
   **round row** landed, not when the message formed. A row without `ts` (a
   hand-written row, a host store that does not stamp one) produces **no `ts`
-  key** on the message — never `ts: undefined`. This is additive: it changes no
-  existing key, and the engine's own resume path deliberately reads the ledger
+  key** on the message — never `ts: undefined`.
+  **What the qualifier excludes (two real shapes).** The promise is about
+  messages *folded out of message rows*, so a `load()` message that never came
+  from a row has no `ts`: (a) a carrier already folded by an older version
+  (≤0.24.0, or a host's own fold) and (b) the engine-control body that a
+  carrier row carries itself (the control text of a `…:resume` row).
+  **The already-folded guard is deliberately blind to the stamp:** it asks
+  whether the **same body text** was already folded, and it compares both
+  sides with the envelope `ts` stripped (`withoutJournalTs`). So when the
+  carrier already carries that same body, the round is skipped **even if those
+  messages have no `ts` — or a different one**; they are **not backfilled**.
+  This is additive: it changes no existing key, and the engine's own resume
+  path deliberately reads the ledger
   as canonical messages **without** the per-message `ts` (`foldLedgerMessages`),
   so a fold input keeps one stable identity across a resume (the reuse key of
   the fold summary, issue #326, is computed over those messages).
