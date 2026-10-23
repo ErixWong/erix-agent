@@ -24,18 +24,18 @@
 //      实测都是这件事）。所以准入规则里的 `// @ts-check` 只是**声明这份文件愿意被检查**，真正的范围是 import 图。
 //   2. ⚠ **反过来，`src/index.js` 也不是全部**：`erix-agent/tools` 那条公共入口有**两个文件不在包根的 import
 //      图里**（`src/tools/file-tools.js`、`src/skills/loader.js`），它们的新错默认**卡不住**。见下面的
-//      `--with-tools` 与 `BASELINE_WITH_TOOLS`（实测两入口并集 = **153 个 / 31 文件**（2026-10-22 复测；同一天上一轮是 156、2026-10-21 那轮是 160、2026-10-15 是 162、2026-10-13 是 164），比单入口多 36 个：20 + 16）。
+//      `--with-tools` 与 `BASELINE_WITH_TOOLS`（实测两入口并集 = **152 个 / 30 文件**（2026-10-23 复测；再上一轮是 153、156、2026-10-21 那轮是 160、2026-10-15 是 162、2026-10-13 是 164），比单入口多 36 个：20 + 16）。
 //   3. ⚠ **`src/**/*.d.ts` 生成物在场时，本检查会静默变成空跑**（实测，见下面的「陈旧声明守卫」）：#213 的
 //      `types:build` 把声明**生成到 `src/` 里**，而 tsc 解析 `./x.js` 时**优先命中同目录的 `x.d.ts`**，于是
-//      被检查的是声明而不是实现——当前树上（2026-10-21 复测：`npm run types:build` 产出 **70** 个 `.d.ts`）70 个 `.d.ts` 在场时同一条命令报 **0 个错**（`--skipLibCheck` 跳过声明文件；2026-10-15 那轮量到的 65 个、2026-10-13 在 `39e96f1` 上量到的 63 个都是**历史值**），
+//      被检查的是声明而不是实现——当前树上（2026-10-23 复测：`npm run types:build` 产出 **75** 个 `.d.ts`）75 个 `.d.ts` 在场时同一条命令报 **0 个错**（`--skipLibCheck` 跳过声明文件；2026-10-21 那轮量到的 70 个、2026-10-15 的 65 个、2026-10-13 在 `39e96f1` 上量到的 63 个都是**历史值**），
 //      去掉 `--skipLibCheck` 则报 **13 个错且全部落在 `.d.ts` 上**。两个都不是我们要量的数，而
 //      「0 < 基线」在这里是**假绿**，所以守卫直接变红而不是放行。
 //   · 另：未装 `@types/node` 时错误数会**变多**（`TS2580`/`TS2307` 一类「缺 node 类型」），不是变干净；本门禁
 //     **必须在装了 devDependencies 的环境里跑**（`tsc` 取不到时下面直接给指路报错，不堆栈）。
 //
 // 用法：
-//   npm run check:types                       # 默认：包根入口 src/index.js，基线 117
-//   npm run check:types -- --with-tools       # 连 erix-agent/tools 入口一起卡，基线 153
+//   npm run check:types                       # 默认：包根入口 src/index.js，基线 116
+//   npm run check:types -- --with-tools       # 连 erix-agent/tools 入口一起卡，基线 152
 //   node scripts/type-check-ratchet.mjs --verbose                   # 额外打印每文件、每错误码分布
 //   node scripts/type-check-ratchet.mjs --show-errors 20            # 额外打印前 20 条错误定位（定位新错用）
 //   node scripts/type-check-ratchet.mjs --baseline                  # 只打印基线常量与复现命令
@@ -87,8 +87,28 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   「参数退化成 `any`」换成真类型之后，两处调用点**第一次真的被检查了**：这是补类型的代价，不是新债。
 //   现在最集中的文件：`src/store/notes.js` 27、`src/loop/orchestrator.js` 17、`src/run-state.js` 10、
 //   `src/display/projection.js` 9、`src/providers/anthropic.js` 9。**上面那段 218/190/28 的分布是 218 时代的
-//   历史记录**；**142 时代（2026-10-11 实测）**的口径是：公共面 114 个 / 20 个文件、实现侧 28 个 / 9 个文件（当前口径见下面那条 2026-10-21 的下调记录）。
-// 下调记录（最新一笔）：**156 → 153**（issue #376，2026-10-22 实测于当前树；**只动 `--with-tools` 一档**，
+//   历史记录**；**142 时代（2026-10-11 实测）**的口径是：公共面 114 个 / 20 个文件、实现侧 28 个 / 9 个文件（当前口径见下面那条 2026-10-23 的下调记录）。
+// 下调记录（最新一笔）：**117 → 116** 与 **153 → 152**（issue #413，2026-10-23 实测于当前树；**两档同刀各降 1**）。
+//   减掉的这 1 个**不在**基线时代的任何一个带错文件的账上——它是 issue #409（PR #410）**两笔**提交的净效果：
+//   · `6b604e7` 把 `parseOpenAIToolArguments` 里那句 `JSON.parse(value)`（`value` 是 `unknown`）换成共享入口
+//     `parseToolArguments(rawArguments).input` ⇒ `src/messages/openai-normalization.js` 的 `(60,23)` 那条
+//     `TS2345 Argument of type 'unknown' is not assignable to parameter of type 'string'` 消失（**1 → 0，该文件
+//     退出错误集合，带错文件数 29 → 28**）；但同一笔新增的 `src/messages/tool-arguments.js` 自己带进 1 条
+//     `TS2339 Property 'error' does not exist on type …`（`(69,70)`——`--checkJs` 不带 `strict`，布尔字面量判别
+//     在那里不收窄），**净额 0**；
+//   · `d9a0989`（同属 #409 的收尾刀）把 `src/text/repair-json.js` 里 `parseJsonWithRepair` 的 `@returns` 从判别联合
+//     改成「单形状 + 可选字段」，那条 `TS2339` 随之消失 ⇒ 净 **−1**。
+//   单提交对账：`git archive d9a0989^` 取到空目录、同一对 tsc/@types 跑同两条命令 = **117 个 / 29 文件** 与
+//   **153 个 / 31 文件**（与两档旧常量逐字相同），`d9a0989` 之后 = **116 / 28** 与 **152 / 30**；逐文件对比：
+//   **除上面那两个文件外其余 27 个带错文件的计数一字未动**，也没有别的文件进出错误集合。
+//   ⚠ 归因纠正（本单实测，别采信旧线索）：这 −1 **不是** PR #370 系——PR #370 是 issue #358 的读侧诚实性，动的是
+//   `src/tools/file-tools.js`（见下面 #376 那一笔），而本轮两档的 −1 全属 **issue #409 / PR #410**。
+//   `src/tools/file-tools.js` 仍 **20**、`src/skills/loader.js` 仍 **16**，所以 152 = 116 + 20 + 16 仍成立。
+//   **当前口径（2026-10-23 重算）**：宿主可达的公共面 **90 个 / 19 个文件**，宿主点不到名的纯实现内部文件
+//   **26 个 / 9 个文件**（2026-10-21 那轮是 91 + 26 = 117；本轮少掉的这 1 条在 `src/messages/openai-normalization.js`，
+//   而它**在公共面那半边**（`src/index.js` 直接 `export … from` 它）⇒ 可及份额自己从 91 掉到 90、可及文件 20 → 19，
+//   不可及那一半的 26 个 / 9 个文件一个没动）。两半仍是**重测**出来的：tsc 输出按文件聚合 + 从两个入口的分类闭包。
+//   上一笔：**156 → 153**（issue #376，2026-10-22 实测于当前树；**只动 `--with-tools` 一档**，
 //   包根入口同刀重测仍 117、一个错都没变，故 `BASELINE_ROOT` 不动）。减的 **3** 个**全部**来自
 //   `src/tools/file-tools.js` **23 → 20**：PR #370（issue #358 读侧诚实性——tree 非根首行可回放、readFile 参数
 //   改写留痕、路径文案去 errno）把 `"readParamAdjusted" | "readEof" | "editDiffTruncated"` 并进了那个 cause 联合类型，
@@ -114,13 +134,13 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   跑同两条命令 = **142 个 / 29 文件** 与 **185 个 / 31 文件**（与两档旧常量逐字相同），改后逐文件对账：
 //   **除 `src/store/notes.js` 外那 28 个带错文件的计数一字未动**，也没有文件进出错误集合。**两档在同一笔
 //   提交里一起下调**（#214 的那条教训：退役的 261 曾悄悄背着 #177 已还掉的那 1 个）。
-//   **当前口径（2026-10-21 重算）**：宿主可达的公共面 **91 个 / 20 个文件**，宿主点不到名的纯实现内部文件
+//   **那一轮的口径（2026-10-21 重算）**：宿主可达的公共面 **91 个 / 20 个文件**，宿主点不到名的纯实现内部文件
 //   **26 个 / 9 个文件**（2026-10-15 那轮是 93 + 26 = 119：减掉的 2 个全在 `src/compact/pipeline.js`，而它在不可及那一半 ⇒ 可及份额仍是 93；本轮减掉的 2 个全在 `src/display/projection.js`，**它在公共面那半边** ⇒ 可及份额自己从 93 掉到 91，不可及那一半 26 个一个没动）。两半分布是**重测**而不是减法推出来的：tsc 输出
 //   按文件聚合 + 从两个入口的分类闭包（见 `AGENTS.md` 里同一条），而那 21 个全落在公共面那半边（`notes.js` 本来就在闭包里）。
 //   现在最集中的文件：`src/loop/orchestrator.js` 17、`src/run-state.js` 10、`src/providers/anthropic.js` 9、
 //   `src/loop/run-snapshot-executor.js` 8、`src/display/projection.js` 7、`src/providers/openai.js` 7、`src/tools/notes.js` 7
 //   （`--with-tools` 一档再加 `src/tools/file-tools.js` 20、`src/skills/loader.js` 16）。
-const BASELINE_ROOT = 117;
+const BASELINE_ROOT = 116;
 
 // `--with-tools` 的基线：把第二个公共入口 `src/tools/index.js` 也喂给 tsc 后的并集。
 // 复现命令（逐字）：
@@ -128,14 +148,14 @@ const BASELINE_ROOT = 117;
 //     --module nodenext --moduleResolution nodenext --skipLibCheck src/index.js src/tools/index.js
 // 实测（2026-10-11，`59f3a72`）：**185 个错 / 31 个文件** = 单入口的 142 个，加上只有 `./tools` 才拉进来的
 //   `src/tools/file-tools.js` 27 个与 `src/skills/loader.js` 16 个（两个都是宿主直接可见的导出实现，
-//   `createFileTools` / `discoverSkills` 那一族）**当前值（2026-10-22 复测）= 153 个 / 31 个文件 = 117 + 20 + 16**；
-//   2026-10-22 上一轮的 156 个 = 117 + 23 + 16、2026-10-21 那轮的 160 个 = 117 + 27 + 16、2026-10-15 那轮的 162 个 = 119 + 27 + 16、2026-10-13 在同一棵 `39e96f1` 上复测的 164 个 = 121 + 27 + 16 都是**历史值**（与旧常量的差额逐个落在 `src/store/notes.js`、`src/display/projection.js` 与 `src/tools/file-tools.js`，同上面那些下调记录；
+//   `createFileTools` / `discoverSkills` 那一族）**当前值（2026-10-23 复测）= 152 个 / 30 个文件 = 116 + 20 + 16**；
+//   2026-10-22 那轮的 153 个 = 117 + 20 + 16、再上一轮的 156 个 = 117 + 23 + 16、2026-10-21 那轮的 160 个 = 117 + 27 + 16、2026-10-15 那轮的 162 个 = 119 + 27 + 16、2026-10-13 在同一棵 `39e96f1` 上复测的 164 个 = 121 + 27 + 16 都是**历史值**（与旧常量的差额逐个落在 `src/store/notes.js`、`src/display/projection.js`、`src/tools/file-tools.js` 与 `src/messages/openai-normalization.js`，同上面那些下调记录；
 //   `loader.js` 16 这个计数自 #214 起一字未动，本次也逐个复核过）。#214 时代入库的是 **261**，
 //   而它**从来没跟着 #177 刀 1 复测过**：同一对 tsc/@types 在改前树 `8f83375` 实测这一档是 **260**，
 //   于是 261 → 185 的 76 个 = #249 的 75 个 + #177 欠下的那 1 个（教训：下调基线要**两档一起复测**）。为什么默认不带它：#214 正文给的口径就是 `src/index.js`，
 //   默认值必须与规格逐字一致；但它**是**真实盲区，所以这里留一条可随时收紧的通道（收紧=把默认入口加上并
 //   把基线换成当前实测值，属 #214 之后的收紧动作，不要拿它当「反正卡不住」的理由）。
-const BASELINE_WITH_TOOLS = 153;
+const BASELINE_WITH_TOOLS = 152;
 
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");
@@ -167,7 +187,7 @@ const MODE = WITH_TOOLS ? "含 ./tools 入口" : "包根入口";
 
 if (argv.includes("--baseline")) {
   console.log(
-    `check:types: 基线 = ${BASELINE} 个 --checkJs 错误（${MODE}；issue #214 棘轮，2026-10-21 实测）\n`
+    `check:types: 基线 = ${BASELINE} 个 --checkJs 错误（${MODE}；issue #214 棘轮，2026-10-23 实测）\n`
     + `  两档基线：包根入口 ${BASELINE_ROOT}（默认）/ 含 ./tools 入口 ${BASELINE_WITH_TOOLS}（加 --with-tools）\n`
     + `  复现命令：node node_modules/typescript/bin/tsc ${TSC_ARGS.join(" ")}`,
   );
@@ -222,9 +242,9 @@ if (stale.n > 0) {
     + "  它们会让本门禁**静默量错东西**：tsc 解析 `./x.js` 时优先命中同目录的 `x.d.ts`，于是被检查的是声明而不是实现。\n"
     + "  实测（2026-10-11 在 #249 之后的那棵树上复测，同一棵工作树、同一条命令）：`.d.ts` 不在场 = **142 个错**；那棵树上 61 个 `.d.ts` 在场 = **0 个错**\n"
     + "    （`--skipLibCheck` 直接跳过声明文件）；再把 `--skipLibCheck` 去掉 = **13 个错且全落在 `.d.ts` 上**——三种读法里只有第一种是要卡的数，「0 个错」是**假绿**。\n"
-    + "  2026-10-21 在当前树（#339 之后；生成物数量是 **70** 个）上复测同一组对照：不在场 = **117 个错**；**70 个在场 = 0 个错**；"
-    + "（2026-10-15 那轮是 65 个生成物 / 119 个错，属**历史值**）"
-    + "去掉 `--skipLibCheck` = **13 个错且全落在 `.d.ts` 上**。\n"
+    + "  2026-10-23 在当前树（#409 之后；生成物数量是 **75** 个）上复测同一组对照：不在场 = **116 个错**；**75 个在场 = 0 个错**；"
+    + "去掉 `--skipLibCheck` = **13 个错且全落在 `.d.ts` 上**（`run-state.d.ts` 7、`providers/errors.d.ts` 3、`reflection/wrapup.d.ts` 3）。"
+    + "（2026-10-21 那轮是 70 个生成物 / 117 个错、2026-10-15 那轮是 65 个生成物 / 119 个错，都属**历史值**）\n"
     + "  清掉再生成（生成物不入库、随时可重建）：`find src -name '*.d.ts' -delete`\n"
     + "    （PowerShell：`Get-ChildItem src -Recurse -Filter *.d.ts | Remove-Item`）\n"
     + "  确需带着生成物跑（例如刚 `npm pack` 完的目录）：加 `--ignore-stale-declarations`，但那样的数字**不能**用来下调基线。";
@@ -333,7 +353,7 @@ if (total > BASELINE) {
   const top = files.slice(0, 5).map(([f, n]) => `${f} ${n}`).join("、");
   console.error(
     `check:types: 失败 — 实测 ${summary}${detail()}\n`
-    + `  基线 ${BASELINE}（issue #214 棘轮，2026-10-21 实测，${MODE}），**超出 ${total - BASELINE} 个**。\n`
+    + `  基线 ${BASELINE}（issue #214 棘轮，2026-10-23 实测，${MODE}），**超出 ${total - BASELINE} 个**。\n`
     + `  最多的文件：${top}\n`
     + "  怎么修：\n"
     + "    · 定位新错：`node scripts/type-check-ratchet.mjs --show-errors 40`；或改动前后各跑一次 `--verbose` 对比每文件计数；\n"
