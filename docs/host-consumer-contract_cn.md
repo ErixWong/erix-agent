@@ -1181,7 +1181,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 
 | `termination.reason` | 触发机制（file:line） | 在优先级链中的位置 | 宿主开关 | 推荐宿主动作 |
 |---|---|---|---|---|
-| `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js:118`）或兜底 stop `complete`（`src/reflection/governor.js:134`），均由 `terminationReasonForAction` 映射（`src/loop/termination.js:111`）。输入：`shouldContinue`（`src/loop/orchestrator.js`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js:3159-3163`、`3164-3218`）） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`src/loop/orchestrator.js:3357-3365`） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
+| `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js:118`）或兜底 stop `complete`（`src/reflection/governor.js:134`），均由 `terminationReasonForAction` 映射（`src/loop/termination.js:111`）。输入：`shouldContinue`（`src/loop/orchestrator.js`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js` 的 end-turn 收尾块，内部调 `normalizeWrapupText`（`src/reflection/wrapup.js`））） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`src/loop/orchestrator.js:3357-3365`） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
 | `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`src/loop/orchestrator.js:3357-3365`，`isEndTurn` 在 3053），映射在 `src/loop/termination.js:94` | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`src/loop/reflection.js:8`） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
 | `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js:122`），门在 `noToolRound`（`src/loop/orchestrator.js`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
 | `stall` | 同一工具调用签名在处理窗口内重复（`src/loop/orchestrator.js:2712-2726`）叠加 streak 累加（`src/loop/orchestrator.js:2763-2770`），stop 在 `src/reflection/governor.js:67-70`，`STALL_STREAK_LIMIT = 3`（`src/reflection/governor.js:3`），映射在 `src/loop/termination.js:97` | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死（`src/reflection/governor.js:65`） | `stallDetection:false` 使其**不可达**（`errorHashes`，`src/loop/orchestrator.js`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
@@ -1229,8 +1229,8 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    `completion` stop（`src/reflection/governor.js:118`），又使 `noToolRound`
    为假（`src/loop/orchestrator.js:3230-3233`）。**声明完成与 `no_tool` 因此互斥。**
 4. **completion 关键词兜底**——同样这个信号，在没解析出信封时来自
-   `completion.signals` 命中终答文本（`src/loop/orchestrator.js:3159-3163`），或来自
-   end-turn 轮完全拿不到 JSON **且文本非空**时的 LLM 归一化器（`3164-3218`，开关是
+   `completion.signals` 命中终答文本（`src/loop/orchestrator.js` 的 end-turn 收尾块），或来自
+   end-turn 轮完全拿不到 JSON **且文本非空**时的 LLM 归一化器（`src/loop/orchestrator.js` 的 end-turn 收尾块，开关是
    `reflection.wrapupNormalize` / `ERIX_WRAPUP_NORMALIZE=1`）。
 5. **`no_tool` stop**——只在什么都没声明完成且本轮没调工具时可达
    （`src/loop/orchestrator.js:3230-3233`）。
@@ -1543,9 +1543,12 @@ if (completed.repaired.rule !== "truncation") throw new Error("opting in must be
 - **只有一份提示词，上下文也少了。** 旧的内联提示词（任务目标、已运行轮数、
   `JSON.stringify(text)`）与旧的收尾专用提示词都删了。留下来的请求是本入口的通用「把原始
   文本归一化」提示词 + 信封形状示例，所以归一化器看到的是原文与形状——**不是**任务目标或
-  轮数。
+  轮数。**这是一条质量风险，按风险写**：`done` 剩下的唯一线索是那个形状示例（它的 `done` 是
+  `false`），因为旧内联那句判据（「已给出明确结论 / 产物就绪 ⇒ `done=true`；中途停下或放弃 ⇒
+  判断产出是否可判定」）随那份提示词一起删了，而**没有任何测试钉住统一提示词下的 `done` 语义**。
 - **闸门共享，而且判的是 agent 自己的原文。** 每个 `findings` 值必须逐字出现在 agent 的原文
-  里；不在的条目被**丢弃**（通过 `dropped` 声明），不是把整个信封拒收。这道判据从不拿归一化
+  里；不在的条目**在本入口静默丢弃**——`dropped` 清单只在下一层（`normalizeModelJson` / `wrapupGate`
+  的返回值）可见，收尾归一化的返回值上**没有**它——而不是把整个信封拒收。这道判据从不拿归一化
   器自己的回答当 `source`——那等于让它给自己的改写作证。公开入口现在也过这道闸门；B2-b 之前
   它对一条被改写的值（例如 agent 原文写 `gold-417`、归一化器答 `gold-4173`）**一点检查都没
   有**。

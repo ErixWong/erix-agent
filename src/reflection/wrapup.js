@@ -243,8 +243,8 @@ export async function normalizeWrapupText(text, { provider, temperature, signal,
  * 走同一个实现（同一份提示词 / 同一道闸门 / 同一个「思考恒关」）。保留本函数是因为它是
  * 公开导出 + 契约锚点 + 宿主在用；删除属 0.25.0 的 breaking 批次，不在本单。
  *
- * 对外签名与返回值一字未改：成功返回归一化后的信封，失败（归一化器的回答过不了形状门槛）
- * 返回 `null`；归一化器自己抛错照旧**抛出来**（不折进 `null`）。
+ * 对外签名与**返回值的形状**一字未改：成功返回归一化后的信封，失败（归一化器的回答过不了
+ * 形状门槛，或原文为空 / 纯空白 ⇒ 候选集为空、一次请求都不发）返回 `null`；归一化器自己抛错照旧**抛出来**（不折进 `null`）。
  *
  * @param {string} text
  * @param {{chat?: (request: object) => Promise<object>}|((request: object) => Promise<object>)} evaluator

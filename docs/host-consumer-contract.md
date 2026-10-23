@@ -1501,7 +1501,7 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 
 | `termination.reason` | Triggering mechanism (file:line) | Position in the precedence chain | Host switch | Recommended host action |
 |---|---|---|---|---|
-| `end_turn` | governance stop `completion` (`src/reflection/governor.js:118`) or the fall-through stop `complete` (`src/reflection/governor.js:134`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:111`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (`src/loop/orchestrator.js:3159-3163`, `3164-3218`) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
+| `end_turn` | governance stop `completion` (`src/reflection/governor.js:118`) or the fall-through stop `complete` (`src/reflection/governor.js:134`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:111`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (the end-turn wrap-up block in `src/loop/orchestrator.js`, which calls `normalizeWrapupText` (`src/reflection/wrapup.js`)) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
 | `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3357-3365`, `isEndTurn` at `3053`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
 | `no_tool` | governance stop `noTool` (`src/reflection/governor.js:122`), gated by `noToolRound` (`src/loop/orchestrator.js`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
 | `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2712-2726`), streak accumulation (`src/loop/orchestrator.js:2763-2770`), stop at `src/reflection/governor.js:67-70` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`errorHashes` at `src/loop/orchestrator.js`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
@@ -1557,9 +1557,9 @@ Within one round, exactly one mechanism gets to decide, in this order
    completion and `no_tool` are therefore mutually exclusive.
 4. **completion keyword fallback** — the same signal with no parseable envelope
    comes from `completion.signals` matching the final text
-   (`src/loop/orchestrator.js:3159-3163`), or from the LLM normalizer when an
+   the end-turn wrap-up block in `src/loop/orchestrator.js`), or from the LLM normalizer when an
    end-turn round produced no envelope at all **and the text is not empty**
-   (`3164-3218`, opt-in via `reflection.wrapupNormalize` /
+   (the end-turn wrap-up block in `src/loop/orchestrator.js`, opt-in via `reflection.wrapupNormalize` /
    `ERIX_WRAPUP_NORMALIZE=1`).
 5. **`no_tool` stop** — reachable only when nothing declared completion and the
    round produced no tool call (`src/loop/orchestrator.js:3230-3233`).
@@ -1942,10 +1942,14 @@ consequences are host-observable:
   `JSON.stringify(text)`) and the old wrap-up-specific prompt are gone. The surviving
   request is this entry's generic "normalize the raw text" prompt plus the envelope shape
   example, so the normalizer sees the raw text and the shape — **not** the task brief or
-  the round count.
+  the round count. **This is a quality risk, stated as a risk:** the only remaining cue for
+  `done` is the shape example (whose `done` is `false`), because the old inline rule ("a clear
+  conclusion / the artifact is ready ⇒ `done=true`; stopped or gave up ⇒ judge whether the output is
+  decidable") was deleted with that prompt, and **no test pins `done` under the unified prompt**.
 - **The gate is shared, and it judges the agent's own text.** Every `findings` value must
-  occur verbatim in the agent's original text; entries that do not are dropped (reported
-  as `dropped`) instead of rejecting the whole envelope. The check never uses the
+  occur verbatim in the agent's original text; entries that do not are dropped **silently at this
+  entry** — the `dropped` list is only visible one level down, on the return value of
+  `normalizeModelJson` / `wrapupGate`, never on the wrap-up return value — instead of rejecting the whole envelope. The check never uses the
   normalizer's own answer as the source — that would let the normalizer certify its own
   rewrites. The public entry now applies this gate too; before B2-b it accepted a rewritten
   value (e.g. `gold-4173` for an agent text that said `gold-417`) with no check at all.
