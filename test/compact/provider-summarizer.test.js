@@ -6,6 +6,9 @@ import {
   serializeFoldedMessages,
 } from "../../src/compact/provider-summarizer.js";
 import { SUMMARIZER_PROMPT_GUIDE } from "../../src/compact/fold-llm.js";
+import { NORMALIZATION_REASONING_EFFORT } from "../../src/reflection/wrapup.js";
+import { createOpenAIProvider } from "../../src/providers/openai.js";
+import { createMockFetch } from "../helpers/mock-fetch.js";
 
 test("serializeFoldedMessages renders roles, round range, tool calls, and results", () => {
   const text = serializeFoldedMessages([
@@ -101,4 +104,60 @@ test("a throwing host onUsage does not break the summary", async () => {
     onUsage: () => { throw new Error("host callback blew up"); },
   });
   assert.equal(await summarizer({}), "text");
+});
+
+// issue #419 ②：折叠摘要请求必须**恒定**带「不思考」，且要落到真 provider 的 HTTP 请求体上。
+// 与 #419 ① 同形（归一化那条），同一套两格写法：①请求对象上有该字段；②载荷层真把它写进 body。
+test("createProviderSummarizer always sends reasoning_effort:none (issue #419 ②)", async () => {
+  const requests = [];
+  const summarizer = createProviderSummarizer({
+    chat: async (request) => {
+      requests.push(request);
+      return { content: "摘要" };
+    },
+  });
+
+  await summarizer({ messages: [{ role: "user", content: "folded body" }] });
+  await summarizer({ promptGuide: "PER_CALL_GUIDE" });
+
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    // 取值走同一个内部常量（与归一化那两处共用），不是各写各的字面量
+    assert.equal(request.reasoning_effort, NORMALIZATION_REASONING_EFFORT);
+    assert.equal(request.reasoning_effort, "none");
+    // 反向钉：`temperature` 本票**有意不发**（改采样语义属另一件事），
+    // 也不该多出自创的思考开关（只跟 judge / 归一化的既有写法一致）。
+    assert.equal(Object.hasOwn(request, "temperature"), false);
+    assert.equal(Object.hasOwn(request, "thinking"), false);
+    assert.equal(Object.hasOwn(request, "enable_thinking"), false);
+    assert.equal(Object.hasOwn(request, "chat_template_kwargs"), false);
+  }
+});
+
+test("createProviderSummarizer lands reasoning_effort:none in the real provider request body (issue #419 ②)", async () => {
+  const fetchImpl = createMockFetch([{
+    json: {
+      choices: [{ message: { content: "## 阶段\n 摘要正文" }, finish_reason: "stop" }],
+    },
+  }]);
+  const provider = createOpenAIProvider({
+    endpoint: "https://api.example.test/v1",
+    apiKey: "test-key",
+    model: "qwen3.8-flash-next",
+    fetchImpl,
+  });
+
+  // 与引擎注入点同形：`chat` 把摘要请求原样转给本 run 的主力 provider。
+  const summarizer = createProviderSummarizer({ chat: (request) => provider.chat(request) });
+  const summary = await summarizer({
+    messages: [{ role: "user", content: "folded body" }],
+    roundRange: { from: 1, to: 2 },
+  });
+
+  assert.equal(summary, "## 阶段\n 摘要正文");
+  // 「发出的请求体里必须有那个字段」——这里读的是 fetch 真正收到的那份 body
+  const body = fetchImpl.calls[0].body;
+  assert.equal(body.reasoning_effort, "none");
+  // 反向钉：本票没有顺手动采样语义
+  assert.equal(Object.hasOwn(body, "temperature"), false);
 });
