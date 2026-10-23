@@ -865,8 +865,13 @@ The shared CLI flags are:
   9 attempts, backoffs `1, 2, 4, 8, 16, 30, 30, 30`s (the 30s cap binds after
   the fifth retry) — the attempt cap, not the budget, is what stops it at that
   window size. At the default `--idle-timeout 300` the budget binds instead:
-  ~903s from start (first kill at 300s, two retries, the third kill lands past
-  900s). The first retry starts ~2s in (1s window + 1s first backoff). When the budget runs out the run
+  **~1200s** from start — **computed, not measured** (300s first window + the
+  900s budget + the last window: kills at 300s / 601s / 903s / 1207s, the fourth
+  being where 907s of budget has elapsed). That model is verified by a
+  scaled-down measurement: `idle=2` / `budget=6` with a permanently silent
+  upstream ⇒ **9084ms**, three attempts, backoffs `[1000, 2000]`ms,
+  `exhausted: "budget"` (a "budget + start" model would predict 7s / two
+  attempts and is ruled out). The first retry starts ~2s in (1s window + 1s first backoff). When the budget runs out the run
   still ends `idle_timeout` with the issue #440 payload, and the accounting
   (retry count, each backoff, accumulated usage) rides the terminal payload as
   `result.idleRetry` / `error.idleRetry` plus one `type: "idle_retry"` record per

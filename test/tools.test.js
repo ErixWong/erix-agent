@@ -656,8 +656,10 @@ test("explicit ERIX_EXEC_TIMEOUT_MS above the idle ceiling is converged and logg
   }
 });
 
-// issue #433 fix 4 的第二条：`idle ≤ 下限 + 余量`（< 90s）时 `exec < idle` **物理上不可能**成立
-// （天花板有 30s 下限）。不能静默：要打一行说明「能兑付的是喂表、最坏 30s + idle」。
+// issue #433 fix 4 的第二条：`idle ≤ 下限`（≤ 30s）时 `exec < idle` **物理上不可能**成立
+// （天花板有 30s 下限：`execCeilingMsForIdle(idle) = max(30s, idle − 60s)` ⇒ `idle ≤ 30s` 时生效值
+// 30000ms ≥ idle；`idle > 30s`（含 31 / 50 / 90s）时天花板严格小于窗口、不变式成立）。
+// 不能静默：要打一行说明「能兑付的是喂表、最坏 30s + idle」。
 test("tiny idle windows log that exec < idle cannot hold and say what is actually guaranteed (issue #433 fix 4)", () => {
   const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
   try {

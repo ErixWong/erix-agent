@@ -1393,9 +1393,16 @@ the task:
   case** (permanently silent upstream, `--idle-timeout 1`, default budget):
   **130.3s** from start to exit, nine attempts, backoffs
   `1, 2, 4, 8, 16, 30, 30, 30`s — at that window size the attempt cap binds
-  first; at the default `--idle-timeout 300` the budget binds instead (~903s
-  from start). The first retry starts **~2s** in (1s window + 1s first
-  backoff).
+  first. At the default `--idle-timeout 300` the budget binds instead:
+  **~1200s** from start — **computed, not measured** (one 300s window + the
+  900s budget + the last window: kills land at 300s / 601s / 903s / 1207s, and
+  the fourth is where 907s of budget has elapsed). The model is verified by a
+  scaled-down measurement rather than by a 20-minute run: `idle=2` / `budget=6`
+  with a permanently silent upstream gives **9084ms**, three attempts, backoffs
+  `[1000, 2000]`ms and `exhausted: "budget"` — the "first window + budget +
+  one more window" model predicts 9.0s, whereas a "budget + start" model would
+  predict 7s / two attempts and is ruled out by that measurement. The first
+  retry starts **~2s** in (1s window + 1s first backoff).
 - Exponential backoff: `IDLE_RETRY_BASE_DELAY_MS` (`bin/idle.js`) = 1000,
   doubled per retry, capped at `IDLE_RETRY_MAX_DELAY_MS` = 30000; each backoff
   is also clamped to the remaining budget.
@@ -1453,16 +1460,22 @@ Two CLI-side behaviours, no `src/` change:
   that never returns is still collected — without that bound, feeding would turn
   fix 1 into "death is never declared". Evidence is observable: every fed execution logs
   `[idle-heartbeat] <tool>: fed the idle timer N times` (`N > 0` only) and
-  reaching the cap logs a second line.
+  reaching the cap logs a second line. The fed line also carries the effective
+  cap (`上限 <n>ms`) — that is what pins the wiring, so a test can assert the
+  assembled default without waiting 31s.
 - **Fix 4 — the ceiling.** The effective `exec` timeout is
   `min(configured, max(30s, idle − 60s))` — **including** an explicit
   `ERIX_EXEC_TIMEOUT_MS`, which used to be used verbatim. When the clamp
   actually lowers the value the CLI logs one loud line; it does **not** refuse
   to start, because `exec == idle` is a real benchmark configuration and the
-  criterion is "the run must not end `idle_timeout`". For `idle ≤ 90s` the 30s
-  floor wins and `exec < idle` cannot hold at all: that case is logged too, and
-  what is actually guaranteed there is the feeding above (worst case
-  `30s + idle`, measured in the CLI README).
+  criterion is "the run must not end `idle_timeout`". For `idle ≤ 30s` the 30s
+  floor wins (`execCeilingMsForIdle` = `max(30s, idle − 60s)`, so the effective
+  value is 30000ms ≥ idle) and `exec < idle` cannot hold at all; for
+  `idle > 30s` — including 31 / 50 / 90s — the ceiling is strictly below the
+  window and the invariant does hold. The `idle ≤ 30s` case is logged too (the
+  log's own trigger is `effectiveMs >= idleMs`, the same boundary), and what is
+  actually guaranteed there is the feeding above (worst case `30s + idle`,
+  measured in the CLI README).
 
 ### Value-added calls before the terminal decision (issue #282)
 
