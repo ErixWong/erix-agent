@@ -417,7 +417,7 @@ export function buildRecords(root, dirs = [...CONSUMER_DIRS, TEST_DIR, DOCS_DIR,
  * @returns {{total: number, names: Array<object>, candidates: Array<object>,
  *            warnings: Array<object>, errors: Array<object>, incomplete: boolean, exportStars: Array<object>}}
  */
-export function computeInventory(records, { entries = ENTRIES } = {}) {
+export function computeInventory(records, { entries = ENTRIES, root = null } = {}) {
   const errors = [];
   const warnings = [];
   const byRel = new Map(records.map((r) => [r.rel, r.text]));
@@ -503,12 +503,29 @@ export function computeInventory(records, { entries = ENTRIES } = {}) {
     names.push(row);
   }
 
-  // 定义文件存在性：读不出定义处 ⇒ 口径 1 的映射是假的
+  // 定义文件存在性：读不出定义处 ⇒ 口径 1 的映射是假的。
+  // 两种「不在扫描面里」必须分开：定义处**存在但在面外**（入口从 `../skills/loader.js` 转出的那 6 个名字）
+  // 只留痕——那不是漂移，是口径的边界；定义处**根本不存在**才是真红。
+  const outsideCorpus = new Map();   // def → [name…]
   for (const row of names) {
-    if (!byRel.has(row.def) && !existsSync(join(process.cwd(), row.def))) {
-      // 真树记录只覆盖消费者面/暴露面；定义文件一定在其中，缺了就是真缺
-      errors.push({ code: "DEFINITION_MISSING", message: `\`${row.name}\` 的定义文件 ${row.def} 不在扫描面里（或根本不存在）` });
+    if (byRel.has(row.def)) continue;
+    if (root && existsSync(join(root, row.def))) {
+      if (!outsideCorpus.has(row.def)) outsideCorpus.set(row.def, []);
+      outsideCorpus.get(row.def).push(row.name);
+      continue;
     }
+    errors.push({
+      code: "DEFINITION_MISSING",
+      message: `\`${row.name}\` 的定义文件 ${row.def} 读不到（不在扫描面里，且 ${root ? `--root ${root} 下也` : ""}不存在）——`
+        + "入口的 `from` 指到了不存在的文件，口径 1 的映射是假的",
+    });
+  }
+  for (const [def, list] of outsideCorpus) {
+    warnings.push({
+      code: "DEFINITION_OUTSIDE_CORPUS",
+      message: `${list.length} 个名字的定义处 ${def} 在扫描面之外（入口从扫描面外转出）：${list.join("、")}——`
+        + "它们的消费者只数到扫描面内（src/ bin/ examples/），该文件内部的用法与它自己目录里的消费者**不在口径内**",
+    });
   }
 
   const candidates = names.filter((r) => r.consumerHits === 0);
@@ -680,7 +697,7 @@ function runSelfTest() {
   // ── 例① 真树：删掉一个真消费者的那一处引用 ⇒ 候选数 +1；加回来 ⇒ 回到原值 ──
   {
     const records = buildRecords(DEFAULT_ROOT);
-    const baseline = computeInventory(records);
+    const baseline = computeInventory(records, { root: DEFAULT_ROOT });
     if (baseline.incomplete) {
       failures.push(`例①：真树清点本身就不完整（${baseline.errors.map((e) => e.code).join(",")}）——反向证的基线不是真值`);
     } else {
@@ -700,8 +717,8 @@ function runSelfTest() {
         if (missed) {
           failures.push(`例①：变异没落上——${missed}（反向证自身失效：靶子已与真树脱节）`);
         } else {
-          const after = computeInventory(mutated);
-          const restored = computeInventory(records);   // 记录没被改：这就是「加回来」
+          const after = computeInventory(mutated, { root: DEFAULT_ROOT });
+          const restored = computeInventory(records, { root: DEFAULT_ROOT });   // 记录没被改：这就是「加回来」
           const delta = after.candidates.length - baseline.candidates.length;
           const flipped = after.candidates.some((r) => r.name === target.name)
             && !baseline.candidates.some((r) => r.name === target.name);
@@ -838,6 +855,23 @@ function runSelfTest() {
     );
   }
 
+  // ── 例⑦ 定义处读不到必须红；「存在但在扫描面之外」只留痕（不判红）──
+  {
+    const broken = fakeTree({ "src/index.js": 'export { alpha } from "./nope.js";\n' });
+    const inv = computeInventory(broken);
+    const outside = computeInventory(
+      fakeTree({ "src/index.js": 'export { alpha } from "../package.json";\n' }),
+      { root: DEFAULT_ROOT },
+    );
+    expect(
+      inv.incomplete === true && inv.errors.some((e) => e.code === "DEFINITION_MISSING")
+        && outside.incomplete === false && outside.warnings.some((w) => w.code === "DEFINITION_OUTSIDE_CORPUS"),
+      `⑦ 定义处：读不到（\`./nope.js\`）⇒ incomplete=${inv.incomplete} 且点名 DEFINITION_MISSING；`
+        + `存在但在扫描面外（\`../package.json\`）⇒ incomplete=${outside.incomplete}，只留痕 ${outside.warnings.map((w) => w.code).join(",")}`,
+      `⑦ 定义处判据不对：读不到时 incomplete=${inv.incomplete}（期望 true）/ 面外时 incomplete=${outside.incomplete}（期望 false），warnings=${JSON.stringify(outside.warnings)}`,
+    );
+  }
+
   for (const p of passed) console.log(`  ✓ ${p}`);
   for (const f of failures) console.log(`  ✗ ${f}`);
   if (failures.length) {
@@ -877,7 +911,7 @@ export function main(argv = process.argv.slice(2)) {
     return 0;
   }
   const records = buildRecords(opts.root);
-  const inventory = computeInventory(records);
+  const inventory = computeInventory(records, { root: opts.root });
   const importedButUnused = scanImportedButUnused(records, "bin");
   if (opts.json) {
     const payload = {

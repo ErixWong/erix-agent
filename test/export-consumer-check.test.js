@@ -156,6 +156,17 @@ test("读不出真值就红：入口读不到时 exit 2，而不是静默报 0 �
   assert.equal(payload.total, 0, "此时 0 是假数，但已经被 incomplete 标住了");
 });
 
+test("读不出真值就红：定义文件读不到时 exit 2（`from` 指到不存在的文件）", async () => {
+  const root = await miniRepo({
+    "src/index.js": 'export { ghost } from "./nope.js";\n',
+    "src/tools/index.js": 'export { ghost } from "../nope.js";\n',
+  });
+  const result = runScript(["--root", root, "--json"]);
+  assert.equal(result.status, 2);
+  const payload = JSON.parse(result.stdout);
+  assert.ok(payload.errors.some((e) => e.code === "DEFINITION_MISSING"), "必须点名 DEFINITION_MISSING");
+});
+
 test("坑 2：花括号里的注释不会被当成名字；非法 token 抛 ExportParseError 而不是静默吞", () => {
   const text = [
     "export {",
