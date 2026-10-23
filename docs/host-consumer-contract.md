@@ -1621,12 +1621,43 @@ branch on the right one:
 | `unparsable` | candidates exist but every one threw — **prose lands here**, because the whole text is itself a candidate | candidates exist but every `JSON.parse` threw |
 | `shape_mismatch` | something parsed, but no candidate passed `validate` | something parsed, but no candidate satisfied `requireKeys` |
 
-One divergence inside `no_candidate` is disclosed rather than papered over: a **prose prefix
-followed by a truncated object** (`前言 {"a":1`) is `no_candidate` for `parseModelJson` (the
-braces never balance, so the scan yields nothing) but `unparsable` here — the candidate set
-reuses L0's scan, and none of the candidates it yields can be completed (completion requires
-the completed text to `JSON.parse`). Both entries are saying "there is no JSON here"; they
-count the attempts differently, and this is the one shape where that shows.
+Two divergences are disclosed here rather than papered over, because a host that reads either
+of them as "the same answer as `parseModelJson`" will mis-branch.
+
+**① `parseModelJson` can only ever return an object.** Its scan looks for balanced
+**objects**, and its value check drops anything else (`src/text/parse-model-json.js` skips a
+parsed array or non-object), so a top-level array or scalar is never a candidate: `[1,2]`,
+`123`, `"hello"`, `null` and `true` all come back `no_candidate` there, while this entry
+returns `ok` with that value — and **no** `repaired` key, because nothing was rewritten.
+Read `no_candidate` from this entry as exactly the two cases in the table above, never as
+"there is no JSON here".
+
+**② Truncation the completion rule cannot fix is a class, not a single shape.** For every
+shape in that class `parseModelJson` says `no_candidate` (the braces never balance, so its
+scan yields nothing) while this entry says `unparsable` (the candidate set reuses that scan,
+and none of the candidates it yields can be completed — completion requires the completed
+text to `JSON.parse`). Measured on this branch:
+
+- prose **before** the fragment — `前言 {"a":1`;
+- prose **after** it — `{"a":1 以上是结果。`;
+- the fragment is **not an object** — `前言 [1,2` (L0's scan only yields objects, so no
+  candidate survives);
+- prose after a truncation **inside a fence** — a `json` fence whose body is
+  `{"a":1 以上是结果。` (the fence body is the whole rest of the block, prose included);
+- the #406 scenario, a truncated **tool-argument** string whose value carries a **raw
+  newline** — `{"tool":"readFile","args":{"path":"a<newline>以上`: completion would have to
+  repair an illegal character, not just close a brace, so the text is not even
+  truncation-shaped.
+
+The last row has an edge worth naming: the same text with the newline written as the
+**two-character JSON escape** `\n` (`{"tool":"readFile","args":{"path":"a\n以上`) *is*
+truncation-shaped, completes to a parseable object, and is `no_candidate` on **both**
+entries. The divergence is about a raw newline byte, not about the tool-argument shape.
+
+Both entries are saying "there is no JSON here"; they count the attempts differently. This
+is a **class** of shapes — any truncation the completion rule cannot turn into parseable
+JSON — not one special case, and `test/normalization/parse-model-json.test.js` pins it with a
+case per row.
 
 **Provenance is `repaired`, and the key appears only when the text really changed.**
 `repaired: { rule, trusted }`: `rule` is the ids of the rules that actually fired, in
@@ -1658,19 +1689,24 @@ without its outer quotes — instead of doing a byte-for-byte search on the raw 
 **Candidates** are the whole input, every fenced block (including the remaining body of an
 **unclosed** fence), and every top-level balanced object L0's scan finds — in that order,
 each tried independently and then gated; the first candidate that parses **and** passes the
-gate wins. The third tier reuses L0's scan — `jsonCandidates`（`src/text/json-candidates.js`） —
-and exists because of design decision D1 ("call L0, do not copy the scan"): with only the
-whole input plus fences, this entry is **weaker** than the L0 it claims to wrap — measured
-7 of 9 real shapes came back `ok` from `parseModelJson` and `unparsable` here
+gate wins. **Order is load-bearing**: fences are tried **before** L0's scan, so a fenced
+object that appears later in the text outranks an earlier top-level object — `{"a":1}`
+followed by a `json` fence containing `{"b":2}` yields `{"b":2}` here while
+`parseModelJson` yields `{"a":1}`.
+The third tier reuses L0's scan — `jsonCandidates`（`src/text/json-candidates.js`） — and
+exists because of design decision D1 ("call L0, do not copy the scan"): with only the whole
+input plus fences, this entry would be **weaker** than the L0 it claims to wrap. Each shape
+pinned in the test file is a case where the whole input and every fence body fail to parse,
+so the only candidate that can win is the one L0's scan contributes
 (`好的，结果如下：{"done":true}`, `{"done":true} 以上是结果。`, `{"a":1}}extra{`,
-`前言 {"outer":{"done":true}} 后语`, a `~~~json` fence, …). With `repair.truncateCompletion`
+`前言 {"outer":{"done":true}} 后语`, a `~~~json` fence). With `repair.truncateCompletion`
 on, each candidate's completed form is appended as an **extra** candidate at the end.
 Completion is **chained with the rule table** (the enabled rules first, `truncation` last),
 which is what makes it actually rescue: a plain truncation, a truncation inside a fence
 (closed **or unclosed**), and a truncation combined with a structural defect
 (`{"a":"x\.y"` ⇒ `invalid-escape` doubles the escape, then the brace is closed) — and the
 provenance names every rule that fired (`invalid-escape+truncation`). It does **not** rescue
-a prose prefix followed by a truncation (the `no_candidate` note above), and it is off by
+a truncation it cannot fix (the class in the `no_candidate` note above), and it is off by
 default so a complete input never gains a `truncation` provenance.
 
 ```js
