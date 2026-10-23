@@ -282,6 +282,82 @@ test("已知边界：散文前缀 + 截断 ⇒ 本入口 unparsable，L0 no_cand
   assert.equal(completed.error, "unparsable", "补全要求「补完即 JSON.parse」，散文前缀不是结构字符");
 });
 
+// PR #443 复审（第二轮）：上面那格是**一类**形状的一个实例，不是单例。
+// 这两格钉住契约里的「按类别表述」：以后谁再把它写成「唯一形状」，这里就会红。
+test("已知边界是一类：散文在**后**、片段**不是对象** 同落一档（本入口 unparsable、L0 no_candidate）", async () => {
+  const cases = [
+    ["散文在截断片段**之后**", '{"a":1 以上是结果。'],
+    ["截断的片段**不是对象**（数组）", '前言 [1,2'],
+  ];
+  for (const [label, text] of cases) {
+    const strict = parseModelJson(text);
+    assert.equal(strict.ok, false, `${label}：L0 必须也判失败`);
+    assert.equal(strict.error, "no_candidate", `${label}：L0 的答案是 no_candidate`);
+    const plain = await normalizeModelJson(text);
+    assert.equal(plain.ok, false, label);
+    assert.equal(plain.error, "unparsable", `${label}：本入口是 unparsable —— ${JSON.stringify(plain)}`);
+    const completed = await normalizeModelJson(text, { repair: { truncateCompletion: true } });
+    assert.equal(completed.ok, false, label);
+    assert.equal(completed.error, "unparsable", `${label}：补全档也救不回`);
+  }
+});
+
+// PR #443 复审（第二轮）：此前未公开的另一处差异——`parseModelJson` 只可能返回对象，
+// 顶层数组 / 标量在这里是 `ok`、在那边是 `no_candidate`（不是「这里没有 JSON」）。
+test("顶层非对象：本入口 ok、L0 no_candidate（`parseModelJson` 只可能返回对象）", async () => {
+  const cases = [
+    ["数组", "[1,2]", [1, 2]],
+    ["数字", "123", 123],
+    ["字符串", '"hello"', "hello"],
+    ["null", "null", null],
+    ["布尔", "true", true],
+  ];
+  for (const [label, text, value] of cases) {
+    const strict = parseModelJson(text);
+    assert.equal(strict.ok, false, `${label}：L0 只认顶层对象`);
+    assert.equal(strict.error, "no_candidate", `${label}：L0 的答案是 no_candidate`);
+    const result = await normalizeModelJson(text);
+    assert.equal(result.ok, true, `${label}：本入口给 ok —— ${JSON.stringify(result)}`);
+    assert.deepEqual(result.value, value, label);
+    assert.equal("repaired" in result, false, `${label}：没改写就不许有 repaired 键`);
+  }
+});
+
+// 复审 S-2：伪造值看守原先只经 `value` 分支（`{"a":`）触发；`{"a"` 走的是 `colon` 分支
+// （补 `:null` 而不是补值），另一条补全路径、同一条不变量：闸门同样必须看到补全**前**原文。
+test("补全档的 colon 分支（`{\"a\"`）同样把**补全前**原文交给闸门", async () => {
+  const gate = verbatimGate(["a"]);
+  const result = await normalizeModelJson('{"a"', { validate: gate.validate, repair: { truncateCompletion: true } });
+  assert.equal(result.ok, true, `colon 分支补全后应当命中：${JSON.stringify(result)}`);
+  assert.equal(result.value.a, null, "补全给的是 null，不是编出来的字符串值");
+  assert.deepEqual(gate.seen, ['{"a"'], "闸门必须看到补全前的原文");
+  // 反向证：补全规则若伪造一个字符串值，补全后文本里有它、补全前原文里没有。
+  const fabricated = "__FABRICATED__";
+  assert.equal(gate.validate({ a: fabricated }, `{"a":"${fabricated}"}`).ok, true, "拿补全后文本当 source 会放行伪造值");
+  assert.equal(gate.validate({ a: fabricated }, '{"a"').ok, false, "拿补全前原文当 source 必须判掉");
+});
+
+// 复审 S-3：契约里原先那个「9 种真实形状里 7 种」**没有落盘、不可复核**（本仓红线：不留没出处的
+// 数字），已改成方向性表述 + 这张表。表里每一格都断言「整段原文解析不了、且没有任何 ``` 围栏候选」
+// ⇒ 唯一能胜出的候选只能来自 L0 的扫描（第三档）。扩覆盖面 = 往表里加一行，别再写比例。
+const L0_SCAN_ONLY_SHAPES = [
+  ["散文前缀", '好的，结果如下：{"done":true}'],
+  ["散文后缀", '{"done":true} 以上是结果。'],
+  ["对象后跟垃圾", '{"a":1}}extra{'],
+  ["嵌套对象夹散文", '前言 {"outer":{"done":true}} 后语'],
+  ["波浪号围栏（不是 ``` 围栏）", '~~~json\n{"done":true}\n~~~'],
+];
+
+test("候选第三档：这些形状的整段原文与围栏块体都解析不了，只有 L0 的扫描能救", async () => {
+  for (const [label, text] of L0_SCAN_ONLY_SHAPES) {
+    assert.equal(text.includes("```"), false, label + "：本表只收「没有三反引号围栏候选」的形状");
+    assert.throws(() => JSON.parse(text), `${label}：整段原文自己解析不了，否则它自己就胜出了`);
+    assert.equal(parseModelJson(text).ok, true, `${label}：L0 抠得出来`);
+    const result = await normalizeModelJson(text);
+    assert.equal(result.ok, true, `${label}：本入口不许比 L0 更弱 —— ${JSON.stringify(result)}`);
+  }
+});
+
 // 合并前评审 blocker 4：候选为空 ⇒ 一次请求都不发（原先空串会白烧 1 个请求 + `llmUsed:true`）。
 test("候选为空时一次请求都不发（空输入 / 纯空白 + llm:true）", async () => {
   for (const text of ["", "   \n\t "]) {
