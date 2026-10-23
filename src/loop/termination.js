@@ -581,7 +581,9 @@ export function createTerminationManager(ctx) {
     const response = await awaitWithAbort(ctx.provider.chat(request));
     const addUsage = ctx.addUsage;
     const estimateMessageTokens = ctx.estimateMessageTokens;
-    addUsage(response, estimateMessageTokens(ctx.messages));
+    // issue #438：强制收尾是**引擎自己发起**的调用（不是模型自己想说话）⇒ 只进 engine 桶。
+    // 它发生在最后一条轮记录落盘之后 ⇒ 这笔开销只出现在 run 级 `result.engineUsage` 上。
+    addUsage(response, estimateMessageTokens(ctx.messages), { account: "engine" });
     const content = blocksFor(response?.content);
     const assistant = { role: "assistant", content };
     ctx.messages.push(assistant);
@@ -623,6 +625,12 @@ export function createTerminationManager(ctx) {
         ? {}
         : { runState: cloneState(ctx.currentRunState) }),
       usage: ctx.usage,
+      // issue #438（新键，纯加法）：`usage` 的**分账**。`usage` = 两者逐字段相加（缺键当 0），
+      // 口径与形状一字未动。`modelUsage` = 主循环自己的响应（含续写每一发）；
+      // `engineUsage` = 引擎自发起的调用（judge / 收尾归一化 / 折叠摘要 / 强制收尾）。
+      // `finalGuard` 是宿主回调 ⇒ 两边都不计。
+      modelUsage: ctx.modelUsage,
+      engineUsage: ctx.engineUsage,
       compactionStats: ctx.compactionStats,
       // 错误账单（issue #109 第 1 步）：可靠交付通道之二；默认空数组（schema 冻结）。
       // completionErrors 由第 4 步接线（收尾失败不覆盖主结果）。

@@ -306,6 +306,11 @@ function recordMeta(record, extra = {}) {
     if (typeof record.response.stopReason === "string") {
       meta.stopReason = record.response.stopReason;
     }
+    // issue #438：`meta.usage` **刻意**仍是 `record.response.usage`——那一发的历史语义（本轮**最后一发**
+    // 响应的用量），issue #438 一个字都没换。逐轮账是 `record.usage`（本轮全部响应的累计），引擎开销是
+    // `record.engineUsage`；**不**在这里加 `meta.roundUsage`：那是加法键改动，本单不做（改投影的消费面
+    // 要单开一票）。口径见 `docs/host-consumer-contract.md`「Usage accounting: the round ledger vs
+    // engine overhead (issue #438)」。
     if (isObject(record.response.usage)) meta.usage = record.response.usage;
   }
   if (Number.isFinite(Number(record?.toolUses))) meta.toolUses = Number(record.toolUses);

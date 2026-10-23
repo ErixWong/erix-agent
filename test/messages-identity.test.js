@@ -424,13 +424,26 @@ test("D3 getOnly 视图的机制口径：整体赋值抛 TypeError，改内容�
 
 test("E1 返回载荷的键集合与相邻字段形状（防止接线时顺手改载荷）", async () => {
   const spy = spyStrategy();
-  const result = await runLoop({ script: toolScript(1), strategy: spy.strategy });
+  // issue #438（评审退回项）：这一格的 provider 必须**真的报用量**。`toolScript` 的步没有 `usage`，
+  // 于是 `usage` / `modelUsage` / `engineUsage` 三个对象全是 `{0,0}`，「`usage` = 两桶之和」那条断言
+  // 就恒真（改哪边都绿）——实测如此，故在此按步补上两个不同的用量，让那条等式名副其实。
+  const script = toolScript(1).map((step, index) => ({
+    ...step,
+    usage: index === 0
+      ? { input_tokens: 11, output_tokens: 5 }
+      : { input_tokens: 22, output_tokens: 7 },
+  }));
+  const result = await runLoop({ script, strategy: spy.strategy });
 
+  // issue #438：`modelUsage` / `engineUsage` 是**有意**新增的 run 级分账键（纯加法：`usage` 仍是两者之和，
+  // 形状与语义一字未动）。除这两个键以外，任何增删都是接线时顺手改载荷 ⇒ 本断言照样红。
   assert.deepEqual(Object.keys(result).slice().sort(), [
     "compactionStats",
     "completionErrors",
+    "engineUsage",
     "finalText",
     "messages",
+    "modelUsage",
     "rounds",
     "runState",
     "termination",
@@ -450,6 +463,21 @@ test("E1 返回载荷的键集合与相邻字段形状（防止接线时顺手�
   assert.equal(typeof result.verification.status, "string");
   assert.equal(typeof result.verification.metrics, "object");
   assert.deepEqual(Object.keys(result.usage).slice().sort(), ["input_tokens", "output_tokens"]);
+  assert.deepEqual(Object.keys(result.modelUsage).slice().sort(), ["input_tokens", "output_tokens"]);
+  assert.deepEqual(Object.keys(result.engineUsage).slice().sort(), ["input_tokens", "output_tokens"]);
+  // 上面那条等式**不许是恒真**：三个对象全 `{0,0}` 时 `0 + 0 === 0` 永远成立（评审实测：把
+  // `engineUsage` 接错成模型桶也照样绿）。先钉住「模型桶真的非零」，等式才有判别力。
+  assert.deepEqual(result.modelUsage, { input_tokens: 33, output_tokens: 12 },
+    "本格的假 provider 必须真报用量，否则下面那条「两桶之和」是空断言");
+  assert.equal(result.usage.output_tokens > 0, true);
+  // issue #438：`usage` = 两桶逐字段相加（缺键当 0）——这条等式是分账契约的核心断言。
+  for (const key of ["input_tokens", "output_tokens", "cacheRead", "cacheWrite"]) {
+    assert.equal(
+      (result.modelUsage[key] ?? 0) + (result.engineUsage[key] ?? 0),
+      result.usage[key] ?? 0,
+      `usage.${key} 必须等于 modelUsage + engineUsage`,
+    );
+  }
   assert.ok(Array.isArray(result.compactionStats));
   assert.ok(Array.isArray(result.unpersisted));
   assert.deepEqual(result.completionErrors, []);
