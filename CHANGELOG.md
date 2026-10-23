@@ -109,6 +109,12 @@
 
 ### Fixed
 
+- **`npm test` 的偶发「整文件级 `'test failed'`」找到根因并修掉：反向证不再原地改写仓内源码（issue #409 切片 B 追加轮；`examples/cross-version-real-e2e.test.mjs`；零依赖、判据一条没动）。**
+  - **症状**：全量并行跑时随机某个测试文件**整文件失败**——输出只有 `✖ <文件>` + `'test failed'`，没有任何断言红、没有超时、单独跑永远绿。
+  - **根因（已抓到现场）**：`examples/cross-version-real-e2e.test.mjs` 的反向证要**故意**破坏仓内源码 `src/store/message-rows.js` 来证明「判据不是永远红」，而 `writeFileSync` 的语义是**先截断再写**。实测那一小段是 **~0.07ms / 8 次观测（最小 0 字节）**，而全量 `npm test` 默认并发跑 149 个文件，其中 loop 系列的 import 图都经过 `src/loop/resume-manager.js` → 该文件：落在这段窗口里的子进程会读到 0 字节/半写的模块，ESM 抛 `SyntaxError: The requested module '../store/message-rows.js' does not provide an export named 'MESSAGE_ROW_KIND'`，**在跑任何用例之前就死掉**，runner 于是只报一行 `'test failed'`。`main` 干净树上抓到过完整现场（`1/25` 轮，失败文件 `test/loop-fold-count-cells.test.js`，同一轮里 cross-version 的 `[13] 反向证 … md5 前=7f65… 后=7f65…` 正在跑）。
+  - **修法**：破坏与还原都改成**同目录 + `rename`**（`replaceFileAtomically`）：读者只会看到「完整的旧文件」或「完整的新文件」，看不到中间态。实测修后同一口径观测到的截断/半写窗口 **8 次 → 0 次**；`main` 上 `1/25` 轮整文件失败，修后 `0/25` 轮（且 0 红）；X1–X3 / R1–R3 / L1–L3 的 PASS 行集合与修前**逐行相同**（覆盖面一条没少）。
+  - **剩下的是另一个缺陷（未修，写清）**：被改过的模块在 **~141ms** 的窗口里对并发读者可见（合法但行为不同）——要根除得把 `src/` 复制到临时目录再破坏副本，属另一张单。
+
 - **宿主「没折」的 store 在 resume 上不再掉成 `[pending]`：引擎侧折叠免疫（issue #401 R3；`src/loop/resume-manager.js`、`src/store/message-rows.js`；零依赖、纯 ESM、**不动任何裁决表**）。**
   - **症状（真机）**：宿主自研 store 的 `load()` 原样返回落盘行 ⇒ 恢复后治理时间线里该轮工具调用从 `[ok]` 掉成 **`[pending]`**（`tool_use` 与 `tool_result` 落在两条不同记录里，配不上对），同一轮还被计成多条历史条目（2 轮被计成 6 条 `addGovernorHistory`），污染 `l0Facts → recentErrors`。
   - **修法**：`restoreResume` 对 `store.load()` 的返回值**再折一次**（`foldMessageRows`，只在账本里还看得见 `kind:"message"` 行时才折——已折过的账本原样用，内置 store 这条路连一次额外遍历都不添）；守卫落在折叠层——某轮载体**已经带着这一轮折出来的正文**（逐字段深比较相等）时该轮跳过，于是宿主「两份都留」（折好的载体 + 原始消息行）也不会让正文翻倍。判据刻意**不是**「载体非空」：`…:engine:round:<n>:resume` 载体带的是方向提示那几条引擎控制正文，同轮消息行装的才是崩溃轮正文，按「非空就跳」会把崩溃轮正文整轮丢掉（实测同一组行：窄规则折出 3 条、「非空就跳」只剩 1 条）。

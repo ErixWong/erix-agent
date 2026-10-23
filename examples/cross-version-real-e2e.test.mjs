@@ -90,7 +90,8 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync,
+  unlinkSync, writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -508,6 +509,37 @@ const hashFileIfExists = (file) => (existsSync(file)
   : "（不存在）");
 
 /** 透传分支的原文与「破坏版」——反向证只换这一行（`foldable === 0` 时强制清空 `messages`）。 */
+/**
+ * **原子**替换一个「别的进程正在 import」的文件（issue #409 切片 B 追加轮，实测的偶发红根因）。
+ *
+ * 病根：本用例的反向证要**故意**改仓内源码（`ROWS_FILE`），而 `writeFileSync` 的语义是「先截断再写」。
+ * 那一小段（实测 ~0.07ms / 8 次观测，最小 0 字节）里，任何**并发**进程 import 到这个模块都会拿到
+ * 0 字节/半写的文件 ⇒ ESM 抛 `SyntaxError: The requested module … does not provide an export named …`
+ * ⇒ 那个测试文件的子进程在跑任何用例之前就死了，`node --test` 只报一行 `'test failed'`
+ * （整文件级失败，没有任何断言红）。`npm test` 默认并发跑 149 个文件，其中 loop 系列的 import 图
+ * 都经过 `src/loop/resume-manager.js` → 本文件（实测：并发 truncate 后 `test/loop-fr2.test.js` 当场
+ * 报 `'test failed'`），所以这条竞态会随机打中别的文件。
+ *
+ * 修法：**同目录 + `rename`**（同一文件系统上的原子替换）。读者只会看到「完整的旧文件」或
+ * 「完整的新文件」，看不到中间态。判据一条没动（X1–X3 仍按字节与 md5 判）。
+ * ⚠ 剩下的是**行为污染**（不是崩溃）：被改过的模块在 ~231ms 的窗口里对并发读者可见（实测）。
+ * 那要靠「把 src/ 复制到临时目录再破坏副本」才能根除，属另一张单（本文件不在这里改判据）。
+ */
+function replaceFileAtomically(target, bytes) {
+  const tmp = `${target}.${String(process.pid)}.${String(Date.now())}.tmp`;
+  try {
+    writeFileSync(tmp, bytes);
+    renameSync(tmp, target);
+  } catch (error) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // 临时文件没建起来也没关系：别让清理掩盖真正的原因
+    }
+    throw error;
+  }
+}
+
 const PASSTHROUGH_LINE = "  if (foldable === 0) return records;";
 const BROKEN_PASSTHROUGH_LINE = "  if (foldable === 0) return records.map((record) => ({ ...record, messages: [] }));";
 
@@ -848,8 +880,9 @@ test("跨版本 e2e：0.22.0 夹具账本 → 0.23.0 读（原样透传/恰好�
       assert.equal(hits, 1,
         `折叠层的透传分支定位失败（命中 ${hits} 次，期望 1 次）——源码变了就要更新本用例的破坏点，`
         + `不许静默跳过反向证：${PASSTHROUGH_LINE}`);
-      writeFileSync(ROWS_FILE, text.replace(PASSTHROUGH_LINE, BROKEN_PASSTHROUGH_LINE), "utf8");
-      pendingRestore = () => { writeFileSync(ROWS_FILE, originalBytes); };
+      // 破坏与还原都必须**原子**（见 `replaceFileAtomically` 的文件头）：并发 import 读到中间态会整文件死。
+      replaceFileAtomically(ROWS_FILE, text.replace(PASSTHROUGH_LINE, BROKEN_PASSTHROUGH_LINE));
+      pendingRestore = () => { replaceFileAtomically(ROWS_FILE, originalBytes); };
       process.once("exit", pendingRestore);
       brokenProbe = await probeInChild(probeArgs);
     } finally {
