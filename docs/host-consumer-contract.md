@@ -476,7 +476,9 @@ Two host-observable consequences:
   extension: `failed` already carries `errorCode` (issue #176) and no other
   reason gained the field. Hosts that branch on `aborted` for "silent kill" must
   branch on `failed` + `errorCode: "timeout"` for streaming runs;
-  **non-streaming silence is unchanged** and still ends `idle_timeout`.
+  **non-streaming silence is unchanged** and still ends `idle_timeout` — and
+  since issue #440 that error keeps the engine's termination payload (see "The
+  CLI's idle kill keeps the payload").
 - The CLI feeds its idle watchdog on the `attempt` and `recovering` events, so a
   retry (including its backoff) is progress rather than "no progress". Without
   that, the idle window would cut the backoff and the silence would fall back to
@@ -1312,6 +1314,59 @@ nested `usage` field. Whether to re-run, alert, or merely bill is the host's
 decision (see the termination-reason list under "Final-answer verification"
 and the run state section).
 
+### The CLI's idle kill keeps the payload (issue #440)
+
+The CLI is itself a host, and its own watchdog (`--idle-timeout`) is one of the
+two things that can end a run `aborted` — the other is the host's own
+`signal.abort()`. Until issue #440 the watchdog threw a freshly built
+`IdleTimeoutError` and **dropped everything above**, so a host or bench driving
+the CLI could only learn "it timed out": not how many tokens the dead run had
+burned, not which round it died in, not whether a partial draft existed — which
+is exactly what makes a timeout unreviewable from the outside.
+
+What the thrown error carries now:
+
+| Fact | Value on the CLI's idle error | Notes |
+|---|---|---|
+| `error.code` | `"idle_timeout"` | **the discriminator, unchanged** — the CLI's top-level `catch`, the repl line handler, and external bench accounting all branch on it. `IDLE_TIMEOUT_CODE` (`bin/idle.js`) is its single declaration |
+| `error.name` / `error.message` | `"IdleTimeoutError"` / `任务 <N> 秒无进展，已中止` | unchanged (human-facing text) |
+| `error.termination` | the engine's own `aborted` termination | `reason: "aborted"`, `partial: true`, and its `usage` / `rounds` equal to the two fields below |
+| `error.usage`, `error.rounds`, `error.finalText` | the engine's accumulated values | **the same objects**, not copies — `termination.usage === error.usage` holds, so treat both as **read-only**: mutating one mutates the other (that is already the engine's stance) |
+| `error.cause` | the engine's original error | the `AbortError` that reached the terminal `fail()` |
+| `error.partial` | **absent** | there is no top-level `partial` in this contract; the flag is `termination.partial` |
+
+Two boundaries, stated as measured rather than assumed:
+
+- **No fabrication.** The payload rides on the engine's error because `fail()`
+  annotates it (`annotateTermination` (`src/loop/termination.js`)). If the
+  watchdog fires while something *other* than that terminal path is in flight,
+  the keys are **absent** — not `undefined`-valued properties, and never zero
+  values. Hosts must therefore treat them as optional, exactly as the table
+  above already says for pre-execution errors.
+- **Where it is observable.** `erix chat` throws this error to its caller, so a
+  host / bench reads the payload off it. The interactive `erix repl` turns it
+  into one line of text and does not rethrow, so the payload is *not*
+  observable there — the discriminator (`code` / `message`) is. Two facts, and
+  they are **not** the same claim: ① **the construction entry point is single** —
+  the error class and the payload-carrying logic live in one place
+  (`idleTimeoutFailure` (`bin/idle.js`)), so there is no second implementation to
+  drift out of sync; ② **how far the payload is observable differs by entry
+  point** — on the `chat` side it is read off the error object thrown out of the
+  `process` layer, while on the `repl` side only the discriminator surface is
+  promised: there the error becomes one line of text and is never rethrown, so
+  payload retention rests on the shared construction entry point, the
+  argument-shape guard, and the observation-seam assertion in
+  `test/repl-idle-payload.test.js` — **not** on anything the repl hands to a host.
+
+Reachability, measured on this tree (see "Silence is a retryable deadline"): a
+silent **`--stream`** run is ended by the provider's phase deadline first and
+finishes `failed` / `errorCode: "timeout"` once the retries are exhausted, so
+the idle kill is *not* the normal outcome there; a silent **non-streaming** run
+still ends `idle_timeout` (the legacy `requestTimeoutMs` is deliberately not
+derived), and so does any run whose provider has no phase deadlines at all
+(e.g. a host-injected provider) or whose idle window is not larger than the
+retry backoff.
+
 ### Value-added calls before the terminal decision (issue #282)
 
 The round judge and the final guard are *value-added* calls sitting between the last
@@ -1513,7 +1568,7 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 | `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:116`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
 | `max_rounds_cap` | (a) governance stop `cap` when the limit is near and extension is not allowed (`src/reflection/governor.js:147-149`); (b) the round loop simply runs out (`runToolLoop` at `src/loop/orchestrator.js`, tail handling at `3189-3207`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`termination` at `src/loop/orchestrator.js`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
 | `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`src/loop/orchestrator.js:3529-3542`), revision limit (`3544-3559`), or the budget-exhaustion tail (`3558-3578`). Only reachable for the six guard-eligible reasons (`src/loop/termination.js:14-21`) and only when `finalGuard` is a function (`src/loop/orchestrator.js`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard`, `src/loop/orchestrator.js:1663-1665`); `finalGuardMaxRetries` moves the revision limit (default 2, `budgetRounds` at `src/loop/orchestrator.js`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
-| `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:1058-1116`; classification at `1061` and `1080-1085`, annotation at `1103-1108`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop. A **silent** run is no longer guaranteed to land here: since issue #441 the CLI wires the engine's retryable phase deadlines, so silence ends `failed` / `errorCode: "timeout"` once the retries are exhausted (see "Silence is a retryable deadline"); this row now means the signal was really aborted — by the host, or by the idle watchdog when no phase deadline could fire |
+| `aborted` | the terminal `fail()` path while the host signal is aborted (`src/loop/orchestrator.js:1058-1116`; classification at `1061` and `1080-1085`, annotation at `1103-1108`) | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop. A **silent** run is no longer guaranteed to land here: since issue #441 the CLI wires the engine's retryable phase deadlines, so silence ends `failed` / `errorCode: "timeout"` once the retries are exhausted (see "Silence is a retryable deadline"); this row now means the signal was really aborted — by the host, or by the idle watchdog when no phase deadline could fire. When the watchdog is the one that fired, the payload still rides on the thrown error under `code: "idle_timeout"` (issue #440, see "The CLI's idle kill keeps the payload") |
 | `failed` | any error thrown inside the run lifecycle, via `fail()` (`src/loop/orchestrator.js:1058-1116`, loop catch at `3576-3580`), with `termination.errorCode` passed through (`src/loop/termination.js:43-57`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `invalid_request` / `not_found` / `conflict` (issue #179) → fix the request, the model name, or the colliding resource — re-sending the same payload cannot help; `unknown` → inspect `termination.detail` |
 | `persistence_failed` | same `fail()` path, selected when the error carries persistence info (`src/loop/orchestrator.js:1080-1085`), which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
 
