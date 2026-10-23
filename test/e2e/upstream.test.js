@@ -514,18 +514,81 @@ test("真上游：503 → server / retryable=true，流式路径同样分类，�
 
 const SLOW_FRAMES = sseOpenAI(openAITextChunks(["慢"]), { done: false });
 
-test("真上游：header 迟迟不到 → timeout / retryable=true / phase=request，不发第二发（#257 T1）", async (t) => {
-  const { upstream, baseUrl } = await startUpstream(t, {
-    // 上游 45ms 才发 header，provider 20ms 就放弃：仍是毫秒级，不拖慢套件。
-    // undici 的 fetch() 要收到 header 才 resolve，所以这一路命中的是 **request** 阶段。
-    // 20ms 而不是 5ms：request 阶段的时钟从调用起就开着，5ms 会跟 TCP 连接建立赛跑，
-    // 请求可能根本没上线 → “不发第二发”退化成“一发也没发”的偶发红。
-    script: [sseResponse({ frames: SLOW_FRAMES, delayFirstByteMs: 45 })],
-  });
+// ---------------------------------------------------------------------------
+// 「截止线该定多长」不能拍脑袋（#412）
+//
+// `requestTimeoutMs` 的 request 阶段时钟**从 `chatStream()` 调用起就开着**
+// （`src/providers/timeout.js` 的 `startedAt`），它必须罩住 **TCP 连接建立 + 把请求写出去**。
+// 这一段耗时是负载的函数，不是常数——36 核机实测（#412，`/tmp/probe-412.mjs` 口径：
+// 「调用 → 上游真的收到这一发」）：
+//   · 空载 20 次：min 3.0 / p50 4.7 / max 29.0 ms
+//   · 72 个 busy loop（≈2× 核数）20 次：min 2.4 / p50 10.8 / p90 26.8 / max 123.1 ms
+// 所以写死 20ms 就是在跟调度器赛跑：负载下请求根本还没上线，`requestCount` 就是 0，
+// 「超时后绝不补发第二发」悄悄退化成「一发也没发」（#412 实测该用例 17/20 次红）。
+//
+// 本文件的口径：**截止线由当场实测的落地耗时派生**（8 倍，下限 60ms 只为量到的值接近 0 时
+// 不至于退化成 1ms 级竞速），header 延迟再由截止线派生。两个前提（请求先落地、header 后到）
+// 于是都由构造保证，而不是由某台机器此刻有多快保证。
+const REQUEST_TIMEOUT_RTT_FACTOR = 8;
+const REQUEST_TIMEOUT_FLOOR_MS = 60;
+const PROBE_FRAMES = sseOpenAI(openAITextChunks(["ok"]));
 
-  const { err } = await rejection(
-    openAIProvider(baseUrl).chatStream(providerRequest({ requestTimeoutMs: 20 })),
+/**
+ * 量「`chatStream()` 调用 → 上游真的收到这一发」的本机耗时（毫秒，取 n 次里最差的一次），
+ * 顺带把到该 origin 的 TCP 连接预热（undici 的全局 dispatcher 会复用连接，正式那一发因此更便宜）。
+ * 探针本身走的是与正式用例**同一条**代码路径（真 provider、真 socket、同一台上游）。
+ *
+ * 第一次单独丢掉（warmup）：它含模块初始化 + undici dispatcher 首建连接，是冷启动而非「这台机器此刻的
+ * 调度延迟」；把它算进去只会把截止线抬高到几百毫秒、白白拖慢套件（实测：不丢 533ms，丢掉 ~170ms）。
+ */
+async function measureRequestLandingMs(upstream, baseUrl, { warmups = 1, samples = 3 } = {}) {
+  let worst = 0;
+  for (let i = 0; i < warmups + samples; i += 1) {
+    upstream.reset();
+    const startedAt = performance.now();
+    const pending = rejection(openAIProvider(baseUrl).chatStream(providerRequest()));
+    const landed = await upstream.waitForRequests(1, 5_000);
+    const { threw, err } = await pending;
+    assert.equal(landed, true, `RTT 探针第 ${i + 1} 次没落地：这台机器此刻连一次请求都发不出去`);
+    assert.equal(threw, false, `RTT 探针第 ${i + 1} 次失败：${err?.message ?? err}`);
+    if (i >= warmups) worst = Math.max(worst, performance.now() - startedAt);
+  }
+  upstream.reset();
+  return worst;
+}
+
+test("真上游：header 迟迟不到 → timeout / retryable=true / phase=request，不发第二发（#257 T1）", async (t) => {
+  // 上游迟迟不发 header：undici 的 fetch() 要收到 header 才 resolve，所以这一路命中的是
+  // **request** 阶段。两个数字都由「当场实测 + 派生」给出，见上面的长注释。
+  const script = [];
+  const { upstream, baseUrl } = await startUpstream(t, { script });
+  script.push(sseResponse({ frames: PROBE_FRAMES }));
+  const landingMs = await measureRequestLandingMs(upstream, baseUrl);
+  const requestTimeoutMs = Math.max(
+    REQUEST_TIMEOUT_FLOOR_MS,
+    Math.ceil(landingMs * REQUEST_TIMEOUT_RTT_FACTOR),
   );
+  // 「header 迟到」由截止线派生：上游的 `delayFirstByteMs` 在**收完请求体之后**才起算
+  // （`fixtures/upstream.mjs` 里 `readRequestBody` 之后才 `await delay(...)`），所以
+  // 「调用 → header」≥ 这个延迟；只要它严格大于截止线，「header 一定晚于截止线」就是构造出来的，
+  // 不再是一场 45ms vs 20ms 的赌局。
+  const headerDelayMs = requestTimeoutMs + Math.max(30, Math.ceil(requestTimeoutMs / 2));
+  script.length = 0;
+  script.push(sseResponse({ frames: SLOW_FRAMES, delayFirstByteMs: headerDelayMs }));
+
+  const pending = rejection(
+    openAIProvider(baseUrl).chatStream(providerRequest({ requestTimeoutMs })),
+  );
+  // 「首发真的上线了」必须是**事件**，不是墙钟：截止线本身就是这条断言的兜底上限。
+  // 它没落地时下面两条断言会退化成「一发也没发」，所以先把这件事单独钉死并点名前提。
+  assert.equal(
+    await upstream.waitForRequests(1, requestTimeoutMs),
+    true,
+    `首发没能在 request 阶段截止线（${requestTimeoutMs}ms = ${REQUEST_TIMEOUT_RTT_FACTOR} × 实测落地`
+    + ` ${landingMs.toFixed(1)}ms）之前上线：这台机器此刻的调度延迟已经超出用例前提，`
+    + "下面两条断言会退化成「一发也没发」",
+  );
+  const { err } = await pending;
   assert.deepEqual(kitShape(err), {
     name: "KitError", code: "timeout", retryable: true, phase: "request",
   });
