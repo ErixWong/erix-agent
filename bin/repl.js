@@ -414,6 +414,30 @@ function buildExecuteTool(cliTools, skillTools, mcpProxy, notesAssembler) {
   };
 }
 
+/**
+ * repl 侧「构造 idle 失败」的那一步——issue #440 评审必修 2 的**观测缝**。
+ *
+ * 为什么需要它：`runRepl` 的轮级 catch 把 idle 错误变成**一行文案**
+ * （`writeLine(output, error.message)`）就结束，错误**不外抛**，所以「repl 这一侧到底有没有
+ * 保留引擎的四件载荷（`termination` / `usage` / `rounds` / `finalText`）」在运行期无法从外部观测。
+ * 评审实测过这条缝隙的两侧：把第二个实参丢掉（`idleTimeoutFailure(options.idleTimeout)`）时
+ * 全部用例照样绿，构造之后 `Object.assign(failure, {termination: undefined, …})` 也照样绿。
+ *
+ * 于是把这一步提成一个**能被测试直接调到**的名字：测试喂一个带四件载荷的 cause，断言返回的错误
+ * 四件齐全（且 `termination.usage === usage`、`cause` 仍在），再喂一份「构造后被抹掉」的等价形状，
+ * 断言那条判据**真的会红**——判据读的是载荷，不是源码里的正则。
+ *
+ * 这一层**不改人类可见输出**：`message` / `name` / `code` 逐字来自 `idleTimeoutFailure`，
+ * `writeLine` 那一侧一个字没动；它也不加新语义，只是 repl 侧给同一个构造入口起的名字。
+ *
+ * @param {{idleTimeout?: number}} options repl 的解析后选项（只读 `idleTimeout`）
+ * @param {unknown} cause 引擎抛出的原始错误
+ * @returns {import("./idle.js").IdleTimeoutError}
+ */
+export function replIdleFailure(options, cause) {
+  return idleTimeoutFailure(options.idleTimeout, cause);
+}
+
 export async function runRepl(argv, io = {}) {
   const cwd = process.cwd();
   const input = io.input ?? process.stdin;
@@ -856,7 +880,9 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       } catch (error) {
         // issue #440：与 `bin/cli.js` **同一个**构造入口——看门狗命中时保留引擎抛出的
         // `termination` / `usage` / `rounds` / `finalText`（判别面 `code === "idle_timeout"` 不变）。
-        if (idle?.timedOut()) throw idleTimeoutFailure(options.idleTimeout, error);
+        // 构造**就地**在 `throw` 里完成（`replIdleFailure`）：事后改写载荷的写法会让
+        // test/repl-idle-payload.test.js 的结构守卫立刻红（评审实测过那种变异形状）。
+        if (idle?.timedOut()) throw replIdleFailure(options, error);
         throw error;
       } finally {
         idle?.dispose();

@@ -1346,9 +1346,17 @@ Two boundaries, stated as measured rather than assumed:
 - **Where it is observable.** `erix chat` throws this error to its caller, so a
   host / bench reads the payload off it. The interactive `erix repl` turns it
   into one line of text and does not rethrow, so the payload is *not*
-  observable there — the discriminator is. Both entry points build the error
-  through the single `idleTimeoutFailure` (`bin/idle.js`), so there is no second
-  implementation to drift out of sync.
+  observable there — the discriminator (`code` / `message`) is. Two facts, and
+  they are **not** the same claim: ① **the construction entry point is single** —
+  the error class and the payload-carrying logic live in one place
+  (`idleTimeoutFailure` (`bin/idle.js`)), so there is no second implementation to
+  drift out of sync; ② **how far the payload is observable differs by entry
+  point** — on the `chat` side it is read off the error object thrown out of the
+  `process` layer, while on the `repl` side only the discriminator surface is
+  promised: there the error becomes one line of text and is never rethrown, so
+  payload retention rests on the shared construction entry point, the
+  argument-shape guard, and the observation-seam assertion in
+  `test/repl-idle-payload.test.js` — **not** on anything the repl hands to a host.
 
 Reachability, measured on this tree (see "Silence is a retryable deadline"): a
 silent **`--stream`** run is ended by the provider's phase deadline first and
