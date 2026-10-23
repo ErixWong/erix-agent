@@ -12,6 +12,53 @@ const rowKeyOf = (record) => {
   return typeof key === "string" ? key : "";
 };
 
+// issue #425：**恢复锚点必须在恢复时现算**，不能信快照里的 `persistedTranscriptLength`——
+// 那是 partialPersistence 定时器写快照**那一刻**的采样。之后工具结果行 / 终稿 assistant 行还会
+// 继续落盘（写侧「一条消息一成型就落盘」），于是快照里的值比账本少（实测 28/28 次快照当场
+// `write === read`，恢复时却少 2）⇒ `slice(0, anchor)` 把已经落盘的正文当成「崩溃之后宿主追加的」
+// 尾队列，终稿正文被喂给模型两遍。
+//
+// 现算口径按**引擎命名空间的行**统计折叠后的逻辑消息条数：
+//   · 引擎写的行：`<runId>:engine:…`（种子 / 轮记录 / `:resume` / `:control:` / 事实行）、
+//     `<runId>:msg:…`（一条消息一落盘）、老账本的 `<runId>:round:<n>`（0.16 及更早的轮记录，
+//     那时引擎自己就写这个键）以及没有任何身份键的远古轮行；
+//   · 宿主写的行：`<runId>:input:…`（`src/store/append-user-turn.js`）——它是崩溃**之后**才追加的
+//     追问，属于尾队列（补跑结果之后再接回），不属于崩溃现场。
+// 只排除**尾部**的宿主行：上一次恢复留下的追问行夹在中间时，它已经在模型的上下文里了，必须计入
+// （否则按条数切片会切在一条逻辑消息中间，或者把历史追问挤进尾队列）。
+const ENGINE_NAMESPACE_KEY = /:(?:engine|msg|round):/u;
+
+/** 这一行是不是引擎自己写的账本行（见上面 `ENGINE_NAMESPACE_KEY` 的三种形态）。
+ * @param {any} record
+ * @returns {boolean}
+ */
+function isEngineNamespaceRow(record) {
+  const key = rowKeyOf(record);
+  return key === "" || ENGINE_NAMESPACE_KEY.test(key);
+}
+
+/**
+ * 恢复锚点：账本里「崩溃那一刻**已经落盘**」的折叠逻辑消息条数（issue #425）。
+ *
+ * 纯函数，单一职责：输入账本行（`store.load()` 的折叠行或原始行都行），输出条数。
+ * 口径 = 去掉**尾部**宿主命名空间行之后，按 `foldLedgerMessages` 折出来的逻辑消息数
+ * （`partOf` 分片接回它指认的那条消息，分片不加）。
+ *
+ * 为什么不是「全账本条数」：宿主追问行（`…:input:…`）是崩溃之后才写的，把它算进崩溃现场
+ * 会让补跑结果插到它前面（`validateMessages` 当场 `invalid_messages`）。
+ * 为什么不是「只数引擎行」：上一次恢复留下的追问行夹在中间，只数引擎行会把条数压小，
+ * 切片同样会错位。
+ *
+ * @param {Array<object>} records
+ * @returns {number}
+ */
+export function countResumeAnchor(records) {
+  const rows = Array.isArray(records) ? records : [];
+  let end = rows.length;
+  while (end > 0 && !isEngineNamespaceRow(rows[end - 1])) end -= 1;
+  return foldLedgerMessages(rows.slice(0, end)).length;
+}
+
 export async function restoreResume(ctx) {
   if (!ctx.persistenceRequired) return;
 
@@ -217,16 +264,16 @@ export async function restoreResume(ctx) {
           || (typeof ctx.resumeRunSnapshot?.partialText === "string"
             && ctx.resumeRunSnapshot.partialText.length > 0);
         if (crashSiteRound) {
-          // 工单 261021（第三刀）·锚点的**新口径**：`persistedTranscriptLength` = 崩溃那一刻账本里
-          // **已落盘的折叠后逻辑消息数**（写侧逐条入账，见 `orchestrator.js#appendMessageRowToTranscript`）。
-          // 于是它直接作切片下标用：**它之内的正文就是崩溃现场（含本轮已落盘的 assistant 正文与已完成的
-          // 工具结果），它之外的行是崩溃**之后**由宿主追加的（`appendUserTurn` 的 `:input:` 行等），
-          // 必须延后到补跑结果之后再接回。**它不再需要与快照对齐**——过去那套「把快照正文逐条往账本上
-          // 匹配、匹配不上的当成『快照见过、账本没见过』」的逻辑随正文副本一起删除。
-          const anchor = Number.isSafeInteger(ctx.resumeRunSnapshot.persistedTranscriptLength)
-            && ctx.resumeRunSnapshot.persistedTranscriptLength >= 0
-            ? Math.min(ctx.resumeRunSnapshot.persistedTranscriptLength, ledgerMessages.length)
-            : ledgerMessages.length;
+          // 工单 261021（第三刀）·issue #425 ·锚点的**现算**口径：`persistedTranscriptLength` 过去
+          // 读的是快照里那份**采样**（`saveRunSnapshot` 写出的那一刻 write === read），而 partialPersistence
+          // 的定时器在流式正文成型之前就写了快照，之后工具结果行 / 终稿 assistant 行还会继续落盘 ⇒
+          // 恢复时锚点比账本少，`slice(0, anchor)` 把**已经落盘的**正文当成尾队列，终稿正文被喂两遍
+          // （实测 provider 上下文 4 条 vs 应有 3 条）。现在一律从账本现算：
+          // `countResumeAnchor(records)` = 去掉尾部宿主追问行之后折出来的逻辑消息条数。
+          // 于是「它之内的正文就是崩溃现场（含本轮已落盘的 assistant 正文与已完成的工具结果），
+          // 它之外的行是崩溃**之后**由宿主追加的（`appendUserTurn` 的 `:input:` 行等），
+          // 必须延后到补跑结果之后再接回」。
+          const anchor = countResumeAnchor(records);
           ctx.messages = ledgerEntries.slice(0, anchor).map((entry) => cloneState(entry.message));
           for (const [index, message] of ctx.messages.entries()) {
             ctx.messageRounds.set(message, ledgerEntries[index].round);
