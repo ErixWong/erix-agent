@@ -4,6 +4,10 @@ import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
+/** issue #439 A：`load()` 的折叠结果给每条逻辑消息带了行级 `ts`（落盘时刻），内存里的消息没有。
+ * 比较「档案 = 完整正文」时剥掉这个信封字段，并另有一句断言档案侧**真的**带 `ts`。 */
+const withoutJournalTs = (messages) => messages.map(({ ts, ...message }) => message);
+
 test("returns a single-turn final response", async () => {
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
@@ -317,10 +321,15 @@ test("stores each round snapshot and can rebuild the transcript", async () => {
 
   assert.equal(records.length, 3);
   assert.deepEqual(records.map((record) => record.round), [0, 1, 2]);
-  assert.deepEqual(records[0].messages, result.messages.slice(0, 1)); // round 0 种子 = 初始消息入档
+  assert.deepEqual(withoutJournalTs(records[0].messages), result.messages.slice(0, 1)); // round 0 种子 = 初始消息入档
   assert.equal(records[1].messages.at(-1).content[0].content, "worked");
   assert.equal(records[2].messages[0].content[0].text, "complete");
-  assert.deepEqual(result.messages, records.flatMap((record) => record.messages));
+  // issue #439 A：**从消息行折回来**的每条逻辑消息带行级 `ts`；正文与内存里的消息逐字相等（剥掉
+  // 信封字段后）。round 0 的种子行是轮行自带正文（不是折叠产物），没有这个字段。
+  const ledgerMessages = records.flatMap((record) => record.messages);
+  assert.ok(records.slice(1).flatMap((record) => record.messages)
+    .every((message) => typeof message.ts === "string"), "折叠后的逻辑消息必须带 `ts`（#439）");
+  assert.deepEqual(result.messages, withoutJournalTs(ledgerMessages));
 });
 
 test("accumulates input and output usage", async () => {

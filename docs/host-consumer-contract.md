@@ -1126,12 +1126,15 @@ depends on the model reading a hint:
 - `result.unpersisted` — the error bill (schema frozen as an array). Each
   entry carries `ts`, `kind`, `port`, `operation`, optional `phase`, `fatal`,
   `repeat`, optional `lastTs` (set when the entry absorbed a duplicate),
-  and `error: { name, message }` (message capped at 500 characters,
-  stack dropped). `delivery_failure` entries additionally carry `failedEvent`
+  and `error: { name, message }` plus the additive `error.phase` (issue #439;
+  present only when the error object carried one — see the `persistence_error`
+  entry shape below). Message capped at 500 characters, stack dropped.
+  `delivery_failure` entries additionally carry `failedEvent`
   (the identity of the event that could not be delivered). Identical failures —
-  same port/operation/phase/fatal/message, and for `delivery_failure` also the
-  same failed-event identity — are deduplicated into one entry with an
-  increasing `repeat` count instead of flooding the bill.
+  same port/operation/phase/fatal/message, same `error.phase` when the error
+  carries one, and for `delivery_failure` also the same failed-event identity —
+  are deduplicated into one entry with an increasing `repeat` count instead of
+  flooding the bill.
 - `diagnostics.error(event)` — the same identity as an event, delivered when
   the host configured a sink. A sink that throws is itself recorded as a
   `delivery_failure` entry.
@@ -3016,11 +3019,20 @@ inference, keyword guessing, or similarity rules to it.
 
 An `Entry` is one of:
 
-- `persistence_error`: `{ kind, port, operation, phase?, fatal, error: {name, message}, ts }`
+- `persistence_error`: `{ kind, port, operation, phase?, fatal, error: {name, message, phase?}, ts }`
   where `port` is `"transcript"` (today; `"resource"`/`"notes"` arrive with
   their integration steps). `error` is normalized to `{name, message}` with
   the message capped at 500 chars (bounds the result payload; stack traces
-  are dropped).
+  are dropped). **Additive since issue #439:** `error.phase` is preserved
+  when the thrown error carries one (a non-empty string, whitespace collapsed
+  and capped at 32 chars — the same caliber as the run-state projection's
+  `safeText(entry.phase, 32)`); an error without it produces **no `phase` key**
+  at all (never `phase: undefined`, never a guessed value). This is what lets
+  a host tell "the request never went out" (`phase: "request"`) from "the
+  stream broke mid-way" (`phase: "stream"`) without parsing `message`; the
+  two are not equally retryable. It is a **different field** from the entry's
+  own `phase` (the persistence phase — `transcript` / `notes` /
+  `checkpoint_before_tool` / …), which keeps its meaning unchanged.
 - `delivery_failure`: a `diagnostics.error` (or `onPersistenceError`) sink
   itself threw — the error happened but the structured event was not
   delivered. `port` is always `"diagnostics"` (the failed channel); the
@@ -3150,13 +3162,50 @@ gone. `src/store/message-rows.js#foldMessageRows` (called by `load()` of both
 built-in stores) folds the message rows back into that round row, so the
 host-visible shape of `load()` — and therefore
 `records.flatMap((record) => record.messages ?? [])` — is byte-identical to a
-journal written before the change (golden: `scripts/message-journal-golden.mjs`).
+journal written before the change **except for the per-message `ts` added by
+issue #439** (next bullet; golden: `scripts/message-journal-golden.mjs`, whose
+fixture has no message rows and therefore pins the pre-#439 shape).
 
 Consequences for a host store and for host readers:
 
 - `kind`, `seq` and `partOf` are now **fidelity-bearing fields**: dropping them
   makes a message row unfoldable, which leaves it standing on its own in the
   `load()` array. Round grouping happens by `round`, ordering by `seq`.
+- **Every logical message folded out of message rows carries its own `ts`
+  (issue #439).** A message row stamps `ts` when the message is formed, so
+  folding puts that stamp **on the message object**: each logical message in
+  the `load()` result has `messages[i].ts`, taken from the **first slice's**
+  row (the row that started the message — the same "the anchor is the first
+  slice" caliber as issue #430; a `partOf` shard only appends content blocks
+  and never rewrites the stamp).
+  Without it a host doing timeline/latency analysis had **no timestamp for any
+  message that went through the fold**: the carrier row's own `ts` is when the
+  **round row** landed, not when the message formed. A row without `ts` (a
+  hand-written row, a host store that does not stamp one) produces **no `ts`
+  key** on the message — never `ts: undefined`.
+  **What the qualifier excludes (two real shapes).** The promise is about
+  messages *folded out of message rows*, so a `load()` message that never came
+  from a row has no `ts`: (a) a carrier already folded by an older version
+  (≤0.24.0, or a host's own fold) and (b) the engine-control body that a
+  carrier row carries itself (the control text of a `…:resume` row).
+  **The already-folded guard is deliberately blind to the stamp:** it asks
+  whether the **same body text** was already folded, and it compares both
+  sides with the envelope `ts` stripped (`withoutJournalTs`). So when the
+  carrier already carries that same body, the round is skipped **even if those
+  messages have no `ts` — or a different one**; they are **not backfilled**.
+  This is additive: it changes no existing key, and the engine's own resume
+  path deliberately reads the ledger
+  as canonical messages **without** the per-message `ts` (`foldLedgerMessages`),
+  so a fold input keeps one stable identity across a resume (the reuse key of
+  the fold summary, issue #326, is computed over those messages).
+  **Do not write a folded message back as a message row.** The `ts` on a folded
+  message is a **nested** payload field, not the top-level envelope `ts` that
+  the same-key digest drops: re-appending it under the same `dedupKey` is
+  judged a payload conflict (`code: dedup_payload_conflict`,
+  `differingFields: ["messages"]`; measured — the pre-#439 shape does not
+  collide). The four excluded names are exactly the top-level ones, as stated
+  in `### Same-key payload conflicts (issue #326)` (“nested `ts` values are
+  payload”).
 - Do not assume “round rows carry the messages”. The carrier may be
   `<runId>:engine:round:<n>`, `<runId>:round:<n>` (host default key) or
   `<runId>:engine:round:<n>:resume`; if a run crashed before its round row

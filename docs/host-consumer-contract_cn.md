@@ -911,10 +911,11 @@ number 不是安全整数。命中记录自身 `round` 不是安全整数时，�
 
 - `result.unpersisted` —— 错误账单（数组，schema 冻结）。每条含 `ts`、`kind`、`port`、
   `operation`、可选 `phase`、`fatal`、`repeat`、可选 `lastTs`（吸收重复失败时更新）
-  与 `error: { name, message }`（message 截断到 500 字符、不带堆栈）；
+  与 `error: { name, message }`，外加加法键 `error.phase`（issue #439；只在错误对象自带它时
+  存在——见下面 `persistence_error` 的条目形状）。message 截断到 500 字符、不带堆栈；
   `delivery_failure` 条目额外带 `failedEvent`（没能送出去的事件身份）。完全相同的
-  失败——同 port/operation/phase/fatal/message，`delivery_failure` 还要同 failedEvent
-  身份——会去重成一条并累加 `repeat`，不会刷屏。
+  失败——同 port/operation/phase/fatal/message、错误自带 `phase` 时也同 `error.phase`，
+  `delivery_failure` 还要同 failedEvent 身份——会去重成一条并累加 `repeat`，不会刷屏。
 - `diagnostics.error(event)` —— 同一身份的事件；宿主编排了 sink 时投递。sink 自身抛错
   也会记成一条 `delivery_failure`。
 - 抛出的错误本身 —— 因落盘失败而死的 run 抛的是 `KitError`，两个出口的字段面相同：
@@ -2378,9 +2379,15 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 
 `Entry` 取值之一：
 
-- `persistence_error`：`{ kind, port, operation, phase?, fatal, error: {name, message}, ts }`，
+- `persistence_error`：`{ kind, port, operation, phase?, fatal, error: {name, message, phase?}, ts }`，
   其中今天 `port` 为 `"transcript"`；`"resource"`/`"notes"` 随各自接入步骤出现。`error`
   归一化为 `{name, message}`，message 截断到 500 字符（约束 result 体积；丢弃堆栈）。
+  **issue #439 起的加法面：** 错误对象自带 `phase` 时原样保留（非空字符串，压平空白并截到
+  32 字符——与 run-state 投影的 `safeText(entry.phase, 32)` 同一口径）；取不到就**完全没有
+  `phase` 键**（绝不写 `phase: undefined`，也不猜值）。这就是宿主不必解析 `message` 就能分出
+  「请求没发出去」（`phase: "request"`）与「流中间断了」（`phase: "stream"`）的字段，而这两类
+  可重试性不同。它与条目自身的 `phase`（持久化阶段——`transcript` / `notes` /
+  `checkpoint_before_tool` / …）是**两个字段**，后者的语义一字未改。
 - `delivery_failure`：`diagnostics.error`（或 `onPersistenceError`）sink 自己抛错——错误
   发生了但结构化事件没送达。`port` 恒为 `"diagnostics"`（坏掉的通道）；出事的端口在
   `failedEvent.port`。
@@ -2484,13 +2491,35 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 `runState`、`judge`、`wrapup`、`compactionStats`、`toolOutputs` … —— `messages` 字段已消失。
 `src/store/message-rows.js#foldMessageRows`（两个内置 store 的 `load()` 都会调它）把消息行
 折回那条轮行，因此 `load()` 的宿主可见形状——以及
-`records.flatMap((record) => record.messages ?? [])` 这条口径——与改造前写出的账本逐字一致
-（金样：`scripts/message-journal-golden.mjs`）。
+`records.flatMap((record) => record.messages ?? [])` 这条口径——与改造前写出的账本**除 #439 新增的
+逐条 `ts` 外**逐字一致（下一条；金样：`scripts/message-journal-golden.mjs`，夹具里没有消息行，
+因此它钉的正是 #439 之前的形状）。
 
 对宿主 store 与宿主读方的以下推论：
 
 - `kind`、`seq`、`partOf` 从此是**携带保真语义的字段**：丢了它们，消息行就折不回去，会
   以独立行的形式留在 `load()` 数组里。分组看 `round`，排序看 `seq`。
+- **从消息行折出来的每条逻辑消息都带自己的 `ts`（issue #439）。** 消息行在消息成型时就打了 `ts`，
+  所以折叠把它放到**消息对象上**：`load()` 结果里每条逻辑消息都有 `messages[i].ts`，
+  取值是**首片行**的（起头那条消息的那一行——与 issue #430 的「锚点钉在首片」同一口径；
+  `partOf` 分片只往后面接 content block，不改写这个戳）。没有它时，宿主做时间线/延迟分析
+  会**对每一条走过折叠的消息都没有时间戳**：载体行自己的 `ts` 是**轮行**落盘的时刻，不是
+  这条消息成型的时刻。行上没有 `ts`（手写行、不落 `ts` 的宿主 store）⇒ 消息上**完全没有
+  `ts` 键**，绝不是 `ts: undefined`。
+  **这个限定的边界（两个真实形状）：** 承诺只覆盖「**从消息行**折出来的」消息，因此没有经过
+  消息行的 `load()` 消息没有 `ts`——① 载体是**旧版折叠产物**（≤0.24.0，或宿主自研折叠）；
+  ② 载体行**自己**带的引擎控制正文（`…:resume` 行的控制文本）。
+  **「这一轮已折过」的守卫对逐条 `ts` 是盲的（刻意的）：** 它判的是**同一段正文**是否已折过，
+  比较时两侧都剥掉信封 `ts`（`withoutJournalTs`）。因此载体已带同一段正文时该轮跳过，**即便
+  载体里那些消息没有 `ts`、或者 `ts` 不同**——**不回填**。这是加法面：既有键一个未改；
+  引擎自己的恢复路径刻意按
+  **不含逐条 `ts`** 的规范化消息读账本（`foldLedgerMessages`），于是同一份折叠输入跨 resume
+  保持同一个身份（折叠摘要的复用键，issue #326，就是拿这些消息算的）。
+  **不要把 `load()` 折出来的消息回写成消息行。** 消息上的 `ts` 是**嵌套** payload 字段，不是
+  同 key 摘要会剥掉的那个**顶层**信封 `ts`：原样回写同一个 `dedupKey` 会判成 payload 冲突
+  （`code: dedup_payload_conflict`、`differingFields: ["messages"]`；实测如此——基点版本不撞）。
+  排除表就只剥四个**顶层**字段，见 `### 同 key 异 payload 的冲突（issue #326）` 一节
+  （「嵌套的 `ts` 算内容」）。
 - 不要假设「轮行携带正文」。载体可能是 `<runId>:engine:round:<n>`、`<runId>:round:<n>`
   （宿主默认键）或 `<runId>:engine:round:<n>:resume`；如果 run 崩在轮行落盘之前，消息行会
   原样留在数组里——这是崩溃恢复契约，不是 store 缺陷。
