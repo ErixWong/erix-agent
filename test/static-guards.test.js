@@ -698,6 +698,11 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
       return flagMentions({ rel, abs: resolve(ROOT, rel) }, accepted, retired);
     };
     try {
+      // 整目录不入库 ⇒ 干净检出（CI / 全新 clone）里 `docs/tasks/` 本来就不存在，第一笔 `writeFileSync`
+      // 直接 ENOENT（#461 的 CI 实测：本机有草稿所以看不见，#459 那轮 CI 同样是被它抬红的）。
+      // 上面 #286 那一格早就有这一步（见其注释「谁造的目录谁删」），这格漏了；目录自己造，
+      // 收尾的 `rmdirSync(dirAbs)` 与已记好的 `dirWasAbsent` 正好配对。
+      mkdirSync(dirAbs, { recursive: true });
       // ① 只有 argv 上下文、没有 erix 词 ⇒ 不红，但**计数**（不静默吞掉）
       const tool = probe("261024-457-tool-flag.mjs", [
         "export const argv = [\"rg\", \"--include-probe-261024\", \"src\"];",
