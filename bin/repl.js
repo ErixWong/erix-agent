@@ -764,11 +764,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         : AbortSignal.any([runController.signal, idle.controller.signal]);
       // issue #433 T0：工具执行期**周期性喂表**（理由与上限口径见 bin/idle.js#withToolHeartbeat）；
       // 返回后仍补一次 touch()，把工具尾部的静默一并抹平。
+      // issue #433 fix 3：`log` 让「执行期喂过 idle 计时器 N 次」有可观测证据（缺省 stderr）。
       const executeToolForLoop = (execution) => withToolHeartbeat(idle, async () => {
         const result = await executeTool(execution);
         idle?.touch();
         return result;
-      });
+      }, { label: execution?.name, log: (line) => console.error(line) });
       const loopOptions = {
         ...(context ? { context } : {}),
         provider,

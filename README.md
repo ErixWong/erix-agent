@@ -766,7 +766,7 @@ headless runtime's product interface.
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
 erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
@@ -834,15 +834,50 @@ The shared CLI flags are:
 - `--idle-timeout <seconds>` aborts after no progress; it defaults to 300
   for `chat` and 0 (disabled) for `repl`. **Tool execution time no longer
   counts toward the silence window** (issue #433): the watchdog is fed while a
-  tool runs, so a long install/build no longer kills the whole run. That
-  feeding is bounded — the `exec` ceiling is clamped to `idle − 60s` (floor
-  30s), so a command that really hangs still ends as a command timeout (240s by
-  default, i.e. `300 − 60`) instead of being eaten by the watchdog. An explicit
-  `ERIX_EXEC_TIMEOUT_MS` above that ceiling is warned about, never rewritten.
+  tool runs, so a long install/build no longer kills the whole run — and every
+  tool execution that was fed logs one line to stderr
+  (`[idle-heartbeat] <tool>: fed the idle timer N times`, `N > 0` only), which
+  is the observable evidence for that claim. That feeding is bounded — the
+  `exec` ceiling is clamped to `idle − 60s` (floor 30s), so a command that
+  really hangs still ends as a command timeout (240s by default, i.e.
+  `300 − 60`) instead of being eaten by the watchdog. An explicit
+  `ERIX_EXEC_TIMEOUT_MS` at or above that ceiling is **converged** to
+  `min(exec, idle − 60s)` and logged loudly (issue #433 fix 4); the CLI does
+  not refuse to start, because `exec == idle` is a real bench configuration and
+  the criterion is "the run must not end `idle_timeout`".
   **That concession is bounded, but it is real**: for `idle ≤ 30s` the 30s
-  floor wins over `idle − 60s`, so the worst case during a tool run is
-  `30s + idle` — measured 30.8s at `idle=1`, 52.5s at `30`, 150s at `120`, and
-  an upper bound of 540s at the default `300` (= `240 + 300`).
+  floor wins over `idle − 60s`, so `exec < idle` cannot hold at all and the
+  worst case during a tool run is `30s + idle` — measured 30.8s at `idle=1`,
+  52.5s at `30`, 150s at `120`, and an upper bound of 540s at the default `300`
+  (= `240 + 300`). The CLI logs that case as well.
+- `--idle-retry-budget <seconds>` (`chat` only, default 900) is the total budget
+  for **retrying a silent kill from the transcript** (issue #433 fix 1): after
+  the idle watchdog fires, the CLI backs off exponentially (`1s`, `2s`, `4s`, …
+  capped at 30s) and resumes the same run from its persisted transcript
+  (`resume`), instead of re-running the task from scratch — the rounds and
+  tokens already paid for are kept. **This changes the default wall clock of a
+  silent run**: a host that relied on "silence ⇒ quick exit" must pass
+  `--idle-retry-budget 0` (one `idle_timeout`, the pre-#433 shape). Two gates,
+  both required: the budget — **wall-clock elapsed since the first kill**
+  (backoffs *and* the retry attempts count), not just the sum of backoffs — and
+  a hard cap of 8 retries. **Measured worst case** (permanently silent
+  upstream, `--idle-timeout 1`, default budget): **130.3s** from start to exit,
+  9 attempts, backoffs `1, 2, 4, 8, 16, 30, 30, 30`s (the 30s cap binds after
+  the fifth retry) — the attempt cap, not the budget, is what stops it at that
+  window size. At the default `--idle-timeout 300` the budget binds instead:
+  **~1200s** from start — **computed, not measured** (300s first window + the
+  900s budget + the last window: kills at 300s / 601s / 903s / 1207s, the fourth
+  being where 907s of budget has elapsed). That model is verified by a
+  scaled-down measurement: `idle=2` / `budget=6` with a permanently silent
+  upstream ⇒ **9084ms**, three attempts, backoffs `[1000, 2000]`ms,
+  `exhausted: "budget"` (a "budget + start" model would predict 7s / two
+  attempts and is ruled out). The first retry starts ~2s in (1s window + 1s first backoff). When the budget runs out the run
+  still ends `idle_timeout` with the issue #440 payload, and the accounting
+  (retry count, each backoff, accumulated usage) rides the terminal payload as
+  `result.idleRetry` / `error.idleRetry` plus one `type: "idle_retry"` record per
+  step in `judge.log`. It does **not** rescue every silence: a `--stream` run
+  hits the provider's retryable phase deadline first (issue #441), and
+  `erix repl` has no retry.
 - `--compact-budget <tokens>` overrides the automatic compaction budget.
 - `--compaction <name>` selects the compaction strategy
   (`sliding-window | fold-statistical | fold-llm`, default `fold-statistical`, or the

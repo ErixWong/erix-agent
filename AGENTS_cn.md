@@ -103,8 +103,9 @@ scripts/          # 实验脚本和结果
   抽不到真值不许静默放行）。**字符串值**（终止原因、provider 错误码）是唯一弱一档的形态，只在
   `scripts/docs-drift-check.mjs` 的 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的那 4 个文件里被接受。 裸行号棘轮的唯一键是 (文档, 目标文件, 行区间)，**不含文档自己的行号**——于是把
   `` `符号`（`路径:1517-1531`） `` 改写成不带括号/链接的裸 `路径:1517-1531`，棘轮那个数一字不变，而符号校验整条消失。
-  因此 `symbols` 自带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 129`（**现值** **129 组** / **380 处**：
-  issue #440（CLI idle 判死保留引擎终局载荷）的契约中英成对小节用符号锚点引用 `idleTimeoutFailure` / `IDLE_TIMEOUT_CODE`（`bin/idle.js`）与 `annotateTermination`（`src/loop/termination.js`）⇒ **+3 组**，在合流 `main` 之后的树上重测；该单支上测得的 128 组 / 391 处按历史值留着，不当现值）；
+  因此 `symbols` 自带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 130`（**现值** **130 组** / **387 处**：
+  issue #433 fix 1（CLI 判死后从账本续跑）的契约中英成对小节用符号锚点引用 `IDLE_RETRY_BASE_DELAY_MS`（`bin/idle.js`，退避起点）并把既有的 `restoreResume`（`src/loop/resume-manager.js`）各多引一处 ⇒ **+1 组 / +4 处**，在 `main` `cf280d7` 之上重测）；
+  此前 129 组 / 380 处：issue #440（CLI idle 判死保留引擎终局载荷）的契约中英成对小节用符号锚点引用 `idleTimeoutFailure` / `IDLE_TIMEOUT_CODE`（`bin/idle.js`）与 `annotateTermination`（`src/loop/termination.js`）⇒ **+3 组**，在合流 `main` 之后的树上重测；该单支上测得的 128 组 / 391 处按历史值留着，不当现值；
   此前 PR #451（issue #406 B2-b）合并前的评审必修项把契约中英里指向 end-turn 收尾块的两处裸行号换成符号锚点 `normalizeWrapupText`（`src/reflection/wrapup.js`），中英各一处 ⇒ **+1 组**，在合并 `main` `7d0e9dd` 之后的树上重测 **126 组** / **389 处**，下限随之抬到 126；
   此前 PR #443 的归一化底座与 main 上的 #438 逐轮分账、#434 install 档合流之后在**合并后的树**上重测 **125 组** / **385 处**——下限不许取两支的最大值，合并树上同时挂着两支的锚点；
   此前 PR #443 合并前评审的必修项让契约中英「可选调用的成本」一节落地之后实测 **123 组** / **355 处**（+1 组 / +5 处：新锚点 `DEFAULT_PROVIDER_TIMEOUT_MS`（`src/config/slot-provider.js`）在契约中英各一处 + 本文件声称句一处，既有锚点 `jsonCandidates` 随候选一段的改写在中英契约各多一处；契约 EN 99 → 101 / CN 94 → 96），下限随之抬到 123；

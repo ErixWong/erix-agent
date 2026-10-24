@@ -132,11 +132,18 @@ test("bin/: the idle abort error has exactly one implementation and both entry p
       `${name} 必须从 ./idle.js 引入 idleTimeoutFailure`,
     );
   }
-  // ②-a cli 侧：赋值处必须两个实参齐全（`thrown = idleTimeoutFailure(idleTimeout, error);`）。
+  // ②-a cli 侧：构造处必须两个实参齐全。issue #433 fix 1 之后构造点从「最外层 catch 的赋值」搬到了
+  //    重试循环里（`const terminal = idleTimeoutFailure(idleTimeout, error)`，判死后先决定重试还是落终局），
+  //    判据跟着搬：仍然要求**这两个实参**，且终局必须**原样**抛这个对象（`throw terminal`）。
   assert.match(
     cliSource,
-    /^\s*thrown = idleTimeoutFailure\(\s*idleTimeout\s*,\s*error\s*\);\s*$/mu,
-    "bin/cli.js 必须是 `thrown = idleTimeoutFailure(idleTimeout, error)`——少一个实参就是把载荷丢掉",
+    /^\s*const terminal = idleTimeoutFailure\(\s*idleTimeout\s*,\s*error\s*\);\s*$/mu,
+    "bin/cli.js 必须是 `const terminal = idleTimeoutFailure(idleTimeout, error)`——少一个实参就是把载荷丢掉",
+  );
+  assert.match(
+    cliSource,
+    /^\s*throw terminal;\s*$/mu,
+    "bin/cli.js 必须原样抛那个 terminal（另造一个错误 = 载荷/重试记账一起丢）",
   );
   // ②-b repl 侧：构造**就地**写在 throw 里（`throw replIdleFailure(options, error);`）。
   //    这样「先赋给变量再改写载荷」的形状根本写不进来（要么改这行、要么多一行）。

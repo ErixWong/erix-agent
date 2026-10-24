@@ -32,6 +32,7 @@ import {
   execCeilingMsForIdle,
   toolHeartbeatCapMs,
   toolHeartbeatIntervalMs,
+  withToolHeartbeat,
 } from "../bin/idle.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
@@ -106,6 +107,53 @@ test("idle window / exec ceiling / heartbeat intervals are one口径 (issue #433
   assert.equal(toolHeartbeatCapMs(1), EXEC_CEILING_FLOOR_MS);
 });
 
+// ①' 喂表是**有界**的（issue #433 fix 3 的另一半，工单只写了「持续喂」）：
+// 到上限就停止喂表、静默窗口重新开始计时 ⇒ **永久挂住的工具仍然会被看门狗收掉**。
+// 没有这一条，fix 3 会把 fix 1 变成「永不判死」——一个 never-settling 的工具可以让整个 run 永远活着。
+//
+// 为什么在单元层钉、不跑 31s 的 CLI 级用例：缺省上限是 `toolHeartbeatCapMs(idle.seconds)`，它有
+// 30s 下限（`EXEC_CEILING_FLOOR_MS`），`idle=1` 时挂住的工具要 ~31s 才会被收掉——那会让全量套件
+// 的墙钟翻倍。所以这里注入 `capMs: 600` 走**同一条**代码路径（上限判据、停喂、日志都在里面）。
+//
+// ⚠️ 这一格单独**不承重**装配处（issue #433 评审必修 3-B）：把 `bin/idle.js` 装配处的
+// `: toolHeartbeatCapMs(idle.seconds)` 改成 `: Infinity` 时，这里注入的显式 `capMs: 600` 走不到
+// 缺省分支 ⇒ 本格照旧绿。承重的是下面 T0 的 CLI 级那一格：它在**真实装配**（`idle=1`、不传
+// `capMs`）下断言 `[idle-heartbeat] … 上限 …ms` 里的上限 == `toolHeartbeatCapMs(1)`。
+// 另一个纪律：本格给 `{ timeout: 5_000 }`——把上限判据（`Date.now() - startedAt >= capMs`）变异成
+// `false` 时，工具永不 settle、喂表永不停，**没有超时就会把整个套件钉 300s 挂死**（不是红）。
+test("withToolHeartbeat: feeding is bounded, so a tool that never returns is still collected (issue #433 fix 3)", { timeout: 5_000 }, async () => {
+  const idle = createIdleTimeout(1);
+  const lines = [];
+  let touched = 0;
+  const observed = {
+    seconds: idle.seconds,
+    touch: () => {
+      touched += 1;
+      idle.touch();
+    },
+  };
+  // 工具永久挂住：与被挂住的 exec 一样，这个 promise 永不 settle。
+  withToolHeartbeat(observed, () => new Promise(() => {}), {
+    label: "exec",
+    log: (line) => lines.push(line),
+    capMs: 600,
+  });
+  await new Promise((resolve) => {
+    idle.controller.signal.addEventListener("abort", resolve, { once: true });
+  });
+  assert.equal(
+    idle.timedOut(),
+    true,
+    "喂表到上限后必须停止喂表——否则一个永久挂住的工具会让看门狗永远不响（fix 3 把 fix 1 变成永不判死）",
+  );
+  assert.ok(touched >= 1, `上限之前必须真的喂过表（实测 ${touched} 次）`);
+  assert.ok(
+    lines.some((line) => /执行期喂表已到上限 600ms，停止喂表/u.test(line)),
+    `必须留下「停止喂表」的可观测证据：${JSON.stringify(lines)}`,
+  );
+  idle.dispose();
+});
+
 // ① 工具执行期喂表：一条**比 idle 窗口长 1.5 倍**的命令不许把 run 打死。
 // 先红后绿的方式见工单报告（把 cli.js 的 executeTool 包装还原成「await 之后再 touch」⇒ 本格红）。
 test("chat: a tool that outlives the idle window does not kill the run (issue #433 T0)", async () => {
@@ -118,6 +166,7 @@ test("chat: a tool that outlives the idle window does not kill the run (issue #4
       },
       { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
     ]);
+    const idleLines = [];
     const result = await runChat({
       prompt: "跑一条慢命令",
       session: "idle-tool-run",
@@ -131,12 +180,37 @@ test("chat: a tool that outlives the idle window does not kill the run (issue #4
       idleTimeout: 1,
       maxRounds: 2,
       toolOutput: () => {},
+      idleLog: (line) => idleLines.push(line),
     });
 
     // run 跑完了两轮（工具轮 + 终稿轮），没有以 aborted / idle 结束
     assert.equal(provider.requests.length, 2);
     assert.equal(result.rounds, 2);
     assert.notEqual(result.termination?.reason, "aborted");
+    // issue #433 fix 3 的验收原文：「日志里能看到工具执行期间喂过计时器的行」。
+    // 断言的是**真的喂过**（N > 0 且点名 exec），不是「日志里有 idle-heartbeat 这个词」。
+    const heartbeat = idleLines.find((line) => (
+      /^\[idle-heartbeat\] exec：执行期喂过 idle 计时器 (\d+) 次/u.test(line)
+    ));
+    assert.ok(
+      heartbeat,
+      `工具执行期喂表必须留下可观测证据，实测日志：${JSON.stringify(idleLines)}`,
+    );
+    assert.ok(
+      Number(/喂过 idle 计时器 (\d+) 次/u.exec(heartbeat)[1]) >= 1,
+      `喂表次数必须 ≥ 1：${heartbeat}`,
+    );
+    // issue #433 评审必修 3-B：**接线承重**。这格走的是真实装配（`bin/cli.js` 不传 `capMs` ⇒
+    // 缺省分支 `toolHeartbeatCapMs(idle.seconds)`），所以日志里的「上限」必须就是那个值。
+    // 把装配处换成 `: Infinity`（或把 `toolHeartbeatCapMs` 改成返回 `Infinity`）⇒ 这里必红；
+    // 而注入 `capMs: 600` 的单元格永远看不见缺省分支，钉不住这件事。
+    const loggedCap = /上限 (\d+)ms/u.exec(heartbeat);
+    assert.ok(loggedCap, `喂表日志必须带上生效的上限（接线证据）：${heartbeat}`);
+    assert.equal(
+      Number(loggedCap[1]),
+      toolHeartbeatCapMs(1),
+      `日志里的上限必须等于 toolHeartbeatCapMs(idle.seconds)（idle=1 ⇒ ${toolHeartbeatCapMs(1)}ms），实测：${heartbeat}`,
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -256,6 +330,10 @@ async function runSilentChat({ dir, mode }) {
         maxOutputTokens: 1000,
       },
       idleTimeout: SILENT_IDLE_SECONDS,
+      // issue #433 fix 1：本文件钉的是「哪些静默落到哪条截止上」——重试会把这些格子的调用次数
+      // 与终局形状都改掉，所以这里显式关掉续跑（预算 0 = 不重试）。续跑本身见
+      // test/cli-idle-retry.test.js。
+      idleRetryBudget: 0,
       maxRounds: 2,
       stream: mode === "stream",
       toolOutput: () => {},
@@ -337,6 +415,9 @@ test("chat: the idle watchdog still bites when the provider has no retryable dea
         provider,
         config: { model: "fake-model", maxOutputTokens: 1000 },
         idleTimeout: 1,
+        // 预算 0 = 不续跑：这条护栏问的是「看门狗还咬不咬」，重试属 #433 fix 1
+        // （见 test/cli-idle-retry.test.js 里「预算用尽」那格）。
+        idleRetryBudget: 0,
         maxRounds: 3,
         toolOutput: () => {},
       }),
@@ -349,6 +430,107 @@ test("chat: the idle watchdog still bites when the provider has no retryable dea
     // 没有可重试的截止 ⇒ 没有重试，只发一发。
     assert.equal(provider.calls.length, 1);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── issue #433 fix 3 + fix 4 的运行级验收 ───────────────────────────────────────────────
+//
+// 工单的验收原文是「把 exec 上限设为 idle 的 2 倍跑一个 sleep 装包任务 ⇒ 终局不得是 idle_timeout，
+// 且日志能看到 fix 3 的喂证据 + fix 4 的收敛日志」。为什么拆成两格（如实记，不合并冒充）：
+// `exec < idle` 这条不变式在 `idle ≤ 30s` 时**物理上不可能**成立（天花板有 30s 下限：
+// `execCeilingMsForIdle(idle) = max(30s, idle − 60s)` ⇒ `idle ≤ 30s` 时生效值是 30000ms ≥ idle；
+// 而 `idle > 30s` 时天花板严格小于 idle，包括 `idle=31/50/90`），而喂表间隔是
+// `idle/4`（长窗口下夹到 30s）——所以「一次 run 里同时看到真收敛与真喂表」需要 `idle > 30s` 且工具
+// 跑够 `idle/4`，单格就要 20+ 秒。两格各自钉住承重的那一半：
+//   ① exec 上限 = idle 的 2 倍 + 一条比 idle 长的命令 ⇒ 终局不是 idle_timeout，日志有喂表证据；
+//   ② exec 上限 ≥ idle ⇒ 真的收敛到 `min(exec, idle − 60s)` 并打 loud 日志，run 照常跑完。
+test("chat: exec cap = 2× idle with a long sleep still finishes, and the heartbeat is logged (issue #433 fix 3+4)", async () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  const dir = await makeTmp("erix-cli-idle-exec-suicide-");
+  try {
+    process.env.ERIX_EXEC_TIMEOUT_MS = "2000"; // exec 上限 = idle(1s) 的 2 倍
+    const provider = createFakeProvider([
+      {
+        content: [{ type: "tool_use", id: "install-1", name: "exec", input: { command: "sleep 1.5" } }],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "装好了" }], stopReason: "end_turn" },
+    ]);
+    const idleLines = [];
+    const result = await runChat({
+      prompt: "跑一个装包任务",
+      session: "idle-exec-suicide",
+      dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath: await writeEmptyMcpConfig(dir),
+      provider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      idleTimeout: 1,
+      maxRounds: 2,
+      toolOutput: () => {},
+      idleLog: (line) => idleLines.push(line),
+    });
+    // 判据（工单原文）：终局**不得**是 idle_timeout。runChat 成功返回就说明没走 idle 判死路径。
+    assert.notEqual(result.termination?.reason, "aborted");
+    assert.equal(result.finalText, "装好了");
+    assert.equal(provider.requests.length, 2);
+    // fix 3：喂表证据
+    assert.ok(
+      idleLines.some((line) => /^\[idle-heartbeat\] exec：执行期喂过 idle 计时器 \d+ 次/u.test(line)),
+      `缺 fix 3 的喂表日志：${JSON.stringify(idleLines)}`,
+    );
+    // fix 4：idle 太小、exec < idle 无法成立时也必须说（不静默失效）
+    assert.ok(
+      idleLines.some((line) => /仍 ≥ idle 窗口/u.test(line)),
+      `缺 fix 4 的不变式日志：${JSON.stringify(idleLines)}`,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("chat: an explicit exec cap at/above idle is converged to idle − 60s with a loud log (issue #433 fix 4)", async () => {
+  const previous = process.env.ERIX_EXEC_TIMEOUT_MS;
+  const dir = await makeTmp("erix-cli-idle-exec-ceiling-");
+  try {
+    // idle=100s ⇒ 天花板 = 40s；显式 200s ≥ 天花板 ⇒ 收敛到 40s（不启动即报错）。
+    process.env.ERIX_EXEC_TIMEOUT_MS = "200000";
+    const provider = createFakeProvider([
+      {
+        content: [{ type: "tool_use", id: "install-2", name: "exec", input: { command: "sleep 1.5" } }],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "装好了" }], stopReason: "end_turn" },
+    ]);
+    const idleLines = [];
+    const result = await runChat({
+      prompt: "跑一个装包任务",
+      session: "idle-exec-ceiling",
+      dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath: await writeEmptyMcpConfig(dir),
+      provider,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      idleTimeout: 100,
+      maxRounds: 2,
+      toolOutput: () => {},
+      idleLog: (line) => idleLines.push(line),
+    });
+    assert.notEqual(result.termination?.reason, "aborted");
+    assert.equal(result.finalText, "装好了");
+    const converged = idleLines.find((line) => /已收敛/u.test(line));
+    assert.ok(converged, `缺 fix 4 的收敛日志：${JSON.stringify(idleLines)}`);
+    // 收敛到的就是 min(exec, idle − 60s) = min(200000, 40000)
+    assert.match(converged, /40000ms/u);
+    assert.match(converged, /ERIX_EXEC_TIMEOUT_MS=200000/u);
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_EXEC_TIMEOUT_MS;
+    else process.env.ERIX_EXEC_TIMEOUT_MS = previous;
     await rm(dir, { recursive: true, force: true });
   }
 });

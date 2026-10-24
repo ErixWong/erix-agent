@@ -19,6 +19,8 @@ import { createCliAssemblyRoot } from "./assembly-root.js";
 // createIdleTimeout）。`DEFAULT_IDLE_TIMEOUT_SECONDS` 这个名字保留，真值来自共享模块。
 import {
   DEFAULT_CHAT_IDLE_TIMEOUT_SECONDS as DEFAULT_IDLE_TIMEOUT_SECONDS,
+  DEFAULT_IDLE_RETRY_BUDGET_SECONDS,
+  createIdleRetryState,
   createIdleTimeout,
   idleTimeoutFailure,
   withToolHeartbeat,
@@ -64,7 +66,7 @@ const DEFAULT_MAX_ROUNDS = 64;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--tools <逗号分隔工具名>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
@@ -105,6 +107,9 @@ const HELP_TEXT = `用法：
   --no-todo             彻底关闭 todo：内置 todo_* 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
+  --idle-retry-budget <秒>  idle 判死之后从 transcript 续跑的总预算（默认：900；0 = 不重试，
+                      直接落 idle_timeout）。预算从**第一次**判死起算，用尽才落终局；
+                      退避是指数的（1s、2s、4s…夹在 30s 内），另有次数硬上限 8 次（issue #433）
   --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL（默认：<归档目录>/judge.log）
   --error-log <path>   将持久化错误事件追加写入 JSONL（默认仅 stderr；也可用 ERIX_ERROR_LOG）
   --tools <名1,名2>    工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
@@ -286,6 +291,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
   let prompt;
   const options = {
     idleTimeout: DEFAULT_IDLE_TIMEOUT_SECONDS,
+    idleRetryBudget: DEFAULT_IDLE_RETRY_BUDGET_SECONDS,
     session: defaultSessionId(cwd, { unique: true }),
     dir: join(homedir(), ".erix", "transcripts"),
   };
@@ -389,6 +395,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       || argument === "--reflection"
       || argument === "--timeout"
       || argument === "--idle-timeout"
+      || argument === "--idle-retry-budget"
       || argument === "--judge-log"
       || argument === "--error-log"
       || argument === "--tools"
@@ -440,6 +447,8 @@ export function parseChatArgs(args, cwd = process.cwd()) {
         options.reflection = parseReflectionOption(rawValue);
       } else if (argument === "--timeout") {
         options.timeoutMs = parseIntegerOption(argument, rawValue, 1);
+      } else if (argument === "--idle-retry-budget") {
+        options.idleRetryBudget = parseIntegerOption(argument, rawValue, 0);
       } else if (argument === "--judge-log") {
         if (rawValue.trim() === "") usageError("--judge-log 不能为空");
         options.judgeLog = rawValue;
@@ -711,6 +720,8 @@ async function runChatWithNotes({
   stream,
   completion,
   idleTimeout = DEFAULT_IDLE_TIMEOUT_SECONDS,
+  idleRetryBudget = DEFAULT_IDLE_RETRY_BUDGET_SECONDS,
+  idleLog = (line) => console.error(line),
   session,
   sessionExplicit,
   cwd: cwdOption,
@@ -804,7 +815,10 @@ async function runChatWithNotes({
   const todoDisabled = noTodo === true || process.env.ERIX_NO_TODO?.trim() === "1";
   // issue #433 T0：exec 天花板按 idle 收口（install 档 300s 与 chat 默认 idle 300s 同值时，
   // idle 起点更早 ⇒ 那条「命令超时」事实上不可达）。口径与日志文案都在 resolveExecCeiling 里。
-  const execCeilingMs = resolveExecCeiling(idleTimeout);
+  // issue #433 fix 4：显式 `ERIX_EXEC_TIMEOUT_MS` 现在**也会**被收敛（`min(exec, idle − 60s)`）并打
+  // loud 日志——不启动即报错（bench 两臂就是 exec==idle，硬报错会把现成调用打断），判据是
+  // 「终局不得是 idle_timeout」。日志走 `idleLog`（测试可注入，缺省 stderr）。
+  const execCeilingMs = resolveExecCeiling(idleTimeout, { warn: (line) => idleLog(line) });
   const cliTools = createCliTools({ cwd, todo: !todoDisabled, execCeilingMs });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
   // 用户级 notes skill 经 excludeSkillIds 排除：notes 装配统一走工厂，否则会出现两套同名 note_* 工具
@@ -860,7 +874,9 @@ async function runChatWithNotes({
     ({ content }) => buildCaptureStub({ content }),
   );
   const context = baseContext;
-  const idle = createIdleTimeout(idleTimeout);
+  // issue #433 fix 1：判死之后从账本续跑的重试账本（预算 + 次数双闸；记账见 bin/idle.js）。
+  const idleRetry = createIdleRetryState({ budgetMs: idleRetryBudget * 1000 });
+  let idle = createIdleTimeout(idleTimeout);
   const executeTool = wrapExecuteTool(tools.executeTool, {
     output: toolOutput,
     getToolMetadata: cliTools.getLastToolMetadata,
@@ -923,7 +939,9 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   // 每轮先一句话声明计划再动手。
   systemPrompt += "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
 
-  const loopOptions = {
+  // `let`（不是 `const`）：issue #433 fix 1 的续跑会换一份 signal 并把 `resume` 置真（同一个对象
+  // 的浅拷贝），其余字段逐字不动。
+  let loopOptions = {
     ...(context ? { context } : {}),
     provider,
     system: systemPrompt,
@@ -945,11 +963,13 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     // issue #433 T0：工具执行期**周期性喂表**（不是「返回后补一次」——那样长命令执行期间静默表
     // 一直在走，到点把整个 run 打死）。喂表有上限（install 档 exec 天花板），口径与理由见
     // bin/idle.js#withToolHeartbeat；返回后仍补一次 touch()，把工具尾部的静默一并抹平。
+    // issue #433 fix 3：每次工具执行收尾时打一行「执行期喂过 idle 计时器 N 次」的日志（`idleLog`），
+    // 这是验收原文要求的可观测证据（`N > 0` 才打，短命令不刷屏）。
     executeTool: (execution) => withToolHeartbeat(idle, async () => {
       const result = await executeTool(execution);
       idle?.touch();
       return result;
-    }),
+    }, { label: execution?.name, log: idleLog }),
     maxRounds: resolvedMaxRounds,
     toolResultTtl: resolveToolResultTtl(config),
     toolResultFoldMinTokens: resolveToolResultFoldMinTokens(),
@@ -1033,11 +1053,96 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     onEvent,
   };
 
+  // issue #433 fix 1：判死 → 退避 → **从账本续跑**（`resume: true`），不是整单重跑——已经付过费的
+  // 轮次都在 transcript 里，引擎的 `restoreResume` 会把它们接回来（`rounds` / `usage` / 折叠状态
+  // 全部续上）。双闸：预算（`--idle-retry-budget`，默认 900s，从**第一次**判死起算）+ 次数
+  // （`IDLE_RETRY_MAX_ATTEMPTS`，理由见 bin/idle.js）。
+  // 记账（验收原文要求）：每次退避与最终结局都落 judge.log（`type: "idle_retry"`）并打一行 stderr；
+  // 汇总快照挂到终局载荷上——成功是 `result.idleRetry`、失败是 `error.idleRetry`（`bin/` 不碰引擎
+  // 的 run-state 文件：那是 `src/` 的契约面，本单红线）。
+  const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+  const recordIdleRetry = (phase, extra = {}) => {
+    appendJudgeLogRecord?.({
+      type: "idle_retry",
+      phase,
+      runId,
+      idleSeconds: idleTimeout,
+      ...idleRetry.snapshot(),
+      ...extra,
+    });
+  };
   let loopResult;
   let thrown;
   try {
-    const result = await (loopOverride ?? runToolLoop)(loopOptions);
-    loopResult = result;
+    for (;;) {
+      try {
+        loopResult = await (loopOverride ?? runToolLoop)(loopOptions);
+        break;
+      } catch (error) {
+        if (!idle?.timedOut()) {
+          thrown = error;
+          throw error;
+        }
+        // issue #440：看门狗命中时**不能**把引擎刚抛的那个已注解错误顶掉——
+        // `termination` / `usage` / `rounds` / `finalText` 四件载荷在它身上。构造入口只有
+        // `bin/idle.js#idleTimeoutFailure` 一份（判别面 name/code/message 逐字不变）。
+        const terminal = idleTimeoutFailure(idleTimeout, error);
+        idleRetry.markKilled(error?.usage);
+        const decision = idleRetry.next();
+        // 续跑必须有账本：一发现 transcript 是空的（例如持久化失败）就不重试，直接落终局——
+        // 否则 `restoreResume` 会以「resume: 无可恢复记录」把真正的终局原因盖掉。
+        let resumable = decision.retry === true;
+        if (resumable) {
+          try {
+            const records = await store.load(runId);
+            resumable = Array.isArray(records) && records.length > 0;
+          } catch {
+            resumable = false;
+          }
+        }
+        if (!resumable) {
+          const reason = decision.retry ? "no_transcript" : decision.reason;
+          recordIdleRetry("exhausted", { reason });
+          idleLog(
+            `⚠️ idle 判死，重试不再继续（${reason === "budget"
+              ? `预算 ${idleRetryBudget}s 用尽`
+              : reason === "max_attempts"
+                ? `次数上限 ${decision.maxAttempts} 次`
+                : "transcript 里没有可续跑的账本"}）：落 idle_timeout 终局`
+            + `（已重试 ${decision.retries} 次，累计 usage ${JSON.stringify(idleRetry.snapshot().usage)}）`,
+          );
+          terminal.idleRetry = idleRetry.snapshot();
+          thrown = terminal;
+          throw terminal;
+        }
+        idleLog(
+          `⚠️ idle 判死（${idleTimeout}s 无进展）：第 ${decision.retryIndex} 次重试，`
+          + `退避 ${decision.backoffMs}ms 后从 transcript 续跑`
+          + `（预算 ${idleRetryBudget}s，已用 ${decision.elapsedMs}ms）`,
+        );
+        recordIdleRetry("backoff", {
+          retryIndex: decision.retryIndex,
+          backoffMs: decision.backoffMs,
+        });
+        await sleep(decision.backoffMs);
+        idleRetry.recordBackoff(decision.backoffMs);
+        idle?.dispose();
+        // 新窗口：旧 controller 已经 abort 过了，`timedOut()` 又是单向的，所以只能造一个新的。
+        idle = createIdleTimeout(idleTimeout);
+        loopOptions = { ...loopOptions, resume: true, signal: idle?.controller.signal };
+      }
+    }
+    const result = loopResult;
+    idleRetry.recordUsage(result?.usage);
+    if (idleRetry.snapshot().retries > 0) {
+      const snapshot = idleRetry.snapshot();
+      idleLog(
+        `✅ idle 重试后跑完：重试 ${snapshot.retries} 次，`
+        + `退避 [${snapshot.backoffMs.join(", ")}]ms，累计 usage ${JSON.stringify(snapshot.usage)}`,
+      );
+      recordIdleRetry("recovered");
+      result.idleRetry = snapshot;
+    }
     const compacted = result.compactionStats.some((stat) => stat.compacted === true);
     const protectedDowngraded = result.compactionStats.reduce(
       (total, stat) => total + (Number.isSafeInteger(stat.protectedDowngraded)
@@ -1079,13 +1184,8 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     );
     return result;
   } catch (error) {
-    if (idle?.timedOut()) {
-      // issue #440：看门狗命中时**不能**把引擎刚抛的那个已注解错误顶掉——
-      // `termination` / `usage` / `rounds` / `finalText` 四件载荷在它身上，丢了宿主/bench 就只能
-      // 拿到「超时了」。构造入口只有 `bin/idle.js#idleTimeoutFailure` 一份（判别面逐字不变）。
-      thrown = idleTimeoutFailure(idleTimeout, error);
-      throw thrown;
-    }
+    // idle 判死已经在循环里构造成 `IdleTimeoutError`（载荷 + 重试记账都挂好了），这里只负责
+    // 原样上抛：**不再**重建一遍，否则 `error.idleRetry` 会被丢。
     thrown = error;
     throw error;
   } finally {

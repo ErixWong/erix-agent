@@ -95,6 +95,9 @@ test("chat: an idle-timeout kill keeps the engine's termination payload (issue #
         provider,
         config: { model: "fake-model", maxOutputTokens: 1000 },
         idleTimeout: 2,
+        // issue #433 fix 1：本文件钉的是「预算用尽后落 idle_timeout 终局」的那个形状 ⇒ 预算显式设 0
+        // （= 不重试）。重试路径（判死→退避→从账本续跑）有自己的用例，见 test/cli-idle-retry.test.js。
+        idleRetryBudget: 0,
         maxRounds: 5,
         toolOutput: () => {},
       });
