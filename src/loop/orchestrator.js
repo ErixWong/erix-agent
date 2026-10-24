@@ -5,6 +5,11 @@ import { resolveCompactionStrategy } from "../compact/strategy-resolution.js";
 import { createSlidingWindowStrategy } from "../compact/sliding-window.js";
 import { mergeFoldNavigationRecords } from "../compact/fold-statistical.js";
 import {
+  buildFoldedRecordArchive,
+  createFoldArchiveLedger,
+  payloadByteLength,
+} from "../compact/fold-archive.js";
+import {
   countEstimateCharacters,
   estimateMessageTokens,
   estimateTokensFromCharacterCounts,
@@ -3010,6 +3015,9 @@ export async function runToolLoop(options) {
     });
   };
 
+  // issue #460：会话级归档去重账本（同一份正文只往轮记录里写一次）。
+  // 它必须活在 run 作用域（`compactBeforeRound` 每次折叠都调），所以跟折叠入口同层声明。
+  const foldArchiveLedger = createFoldArchiveLedger({ store, runId });
   const compactBeforeRound = async (round = runLoopState.rounds + 1) => {
     normalizeMessages(messages);
     // 每次折叠前清空「引擎自产摘要现场」：只有本次 compact 真的调了摘要器才会重新赋值（#326 wo-C）。
@@ -3027,6 +3035,8 @@ export async function runToolLoop(options) {
       ? await configuredStrategy.shouldCompact(messages, budgetTokens)
       : false;
     let foldedPayload = [];
+    /** issue #460：写进轮记录的归档（差分 + 字节夹断后的那一份），与上面的内存全量分开。 */
+    let foldedArchive;
     let foldedRoundRange;
     let navigationRecord;
     let foldedRounds = 0;
@@ -3199,6 +3209,24 @@ export async function runToolLoop(options) {
       latestApiInputTokens = undefined;
       latestApiEstimatedTokens = undefined;
       runLoopState.hadToolUse = runLoopState.hadToolUse || hasToolUseInMessages(messages);
+      // issue #460：落进轮记录的归档 ≠ 内存里的全量原文。内容源仍是策略给的 `foldedPayload`
+      //（「被折轮原文」的权威口径），但落盘前过两道：
+      //   ① 去重 —— 真机那条放大链是 resume 把整段账本重灌回上下文 ⇒ 每次折叠从 round 1 重抄
+      //      一遍（差分总量 O(n²)），这里把「会话里已经归档过的正文」按指纹剔掉；
+      //   ② 字节上限 —— 默认 256 KiB，`context.maxFoldedPayloadBytes` /
+      //      `ERIX_FOLD_ARCHIVE_MAX_BYTES` 可调，保证「单条记录」这一维度对定界宿主有界。
+      if (runLoopState.foldedThrough > 0) {
+        // 只有 resume 过的会话才需要读账本把旧归档入账（一次 run 最多一次），且**只算早于
+        // 本轮的归档** —— 把本轮上一次尝试写的那份算进来会让崩溃重跑同 key 不同 payload，
+        // 被 store 的去重判据报成 `dedup_payload_conflict`（#460 review）。
+        await foldArchiveLedger.ensureSeeded(round);
+      }
+      foldedArchive = buildFoldedRecordArchive({
+        foldedPayload,
+        ledger: foldArchiveLedger,
+        stripHistoricalImages: compactionContext.stripHistoricalImages,
+        maxBytes: compactionContext.maxFoldedPayloadBytes,
+      });
       if (foldedRoundRange?.to !== undefined) {
         runLoopState.foldedThrough = Math.max(runLoopState.foldedThrough, foldedRoundRange.to);
       }
@@ -3293,7 +3321,10 @@ export async function runToolLoop(options) {
     normalizeMessages(messages);
     return {
       folded: compacted,
-      foldedPayload: compacted ? foldedPayload : undefined,
+      // issue #460：轮记录里那份是**有界差分**；`foldedPayload` 局部量（全量原文）继续喂给
+      // 指纹 / fidelity / 宿主折叠钩子这些内存侧消费者，语义一字未动。
+      foldedPayload: compacted ? foldedArchive?.payload : undefined,
+      foldedPayloadMeta: compacted ? foldedArchive?.meta : undefined,
       foldedRoundRange,
       navigationRecord,
       runState,
@@ -4250,19 +4281,60 @@ export async function runToolLoop(options) {
         }
         : {}),
     };
+    // issue #460：`record` 的字面量推断里没有折叠字段（`folded`/`foldedPayload`/`foldedRoundRange`/
+    // `navigationRecord` 本来就在 --checkJs 的名册里），用一个带显式类型的别名承载这些咨询性
+    // 字段，顺带把这批已有类型错一并减掉（#214 棘轮只许降不许升）。
+    /** @type {Record<string, any>} */
+    const roundRecord = record;
     if (compaction.folded) {
-      record.folded = true;
+      roundRecord.folded = true;
       if (compaction.foldedPayload !== undefined) {
-        record.foldedPayload = compaction.foldedPayload;
+        roundRecord.foldedPayload = compaction.foldedPayload;
+      }
+      // issue #460：丢了多少要留痕，否则「归档被夹断」与「本来就没折过」在账本上同形。
+      if (compaction.foldedPayloadMeta !== undefined) {
+        roundRecord.foldedPayloadMeta = compaction.foldedPayloadMeta;
       }
       if (compaction.foldedRoundRange !== undefined) {
-        record.foldedRoundRange = compaction.foldedRoundRange;
+        roundRecord.foldedRoundRange = compaction.foldedRoundRange;
       }
       if (compaction.navigationRecord !== undefined) {
-        record.navigationRecord = compaction.navigationRecord;
+        roundRecord.navigationRecord = compaction.navigationRecord;
       }
     }
-    const persisted = await persist("appendRound", runId, record);
+    // issue #460：宿主有权对**单条记录**定界（本站 1 MB）。归档是咨询性字段 —— 正文早已按轮
+    // 入账、resume 从不回读这一份 —— 所以「归档写不下」最多是取证面降级，不得升格成
+    // `persistence_failed` 整 run 终局（连带 `sideEffect=executed_uncommitted` 的副作用重复）。
+    // 判据：剥掉归档重试一次仍失败 ⇒ 才是真的存储故障，照旧终局。
+    let persisted;
+    try {
+      persisted = await persist("appendRound", runId, record);
+    } catch (archiveError) {
+      const droppedArchive = roundRecord.foldedPayload;
+      // 空归档不可能是尺寸元凶：剥它等于原样重试，直接交回原错（保住原始失败的判别面）。
+      if (!Array.isArray(droppedArchive) || droppedArchive.length === 0) throw archiveError;
+      /** @type {Record<string, any>} */
+      const leanRecord = { ...record };
+      leanRecord.foldedPayloadMeta = {
+        ...(roundRecord.foldedPayloadMeta ?? {}),
+        rejectedByHost: true,
+        droppedMessages: droppedArchive.length,
+        droppedBytes: payloadByteLength(droppedArchive),
+      };
+      delete leanRecord.foldedPayload;
+      // 非致命：记一笔降级事实（`fatal: false`），run 继续。
+      await reportPersistenceError(archiveError, persistenceErrorEvent({
+        operation: "appendRound",
+        phase: "transcript",
+        runId,
+        sideEffect: runLoopState.toolExecutedThisRound
+          ? "executed_uncommitted"
+          : "not_started",
+        error: archiveError,
+        fatal: false,
+      }));
+      persisted = await persist("appendRound", runId, leanRecord);
+    }
     // 工单 261021 写侧：正文的计数已跟着消息行走（`appendMessageRowToTranscript`），轮行只剩元数据。
     for (const entry of engineTextAfterRound) {
       await appendEngineMessagesToTranscript(entry.message, round, entry.slot);
