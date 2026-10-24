@@ -148,6 +148,40 @@ function localArchiveVerdict({ rel, line = "", header = "" }) {
 }
 
 /**
+ * 规则 3 的「别家工具旗标」口径（issue #457）。病根与 #286 同一条：`walk()` 不认 `.gitignore`，
+ * 而 `docs/tasks/` 里的工单草稿与 `docs/delivery/` 里的交付报告**整目录不入库**。草稿里写下
+ * `const argv = ["rg", "--include", …]` 这一类 JS 字符串时，那一行没有 `erix` 命令词、只靠
+ * `ARGV_CONTEXT_RE`（argv/args/push/spawn…）进到扫描面，于是 **ripgrep/tsc/npm 的旗标被当成
+ * 「erix 接受这个旗标」**而咬红。它最坑的地方是**只在作者机器上红**：干净检出里根本没有这两个
+ * 目录，CI 与刚合进来的 `main` 都是绿的 ⇒ 症状被误读成「合并带回了回归」。
+ *
+ * 口径（与 `LOCAL_ARCHIVE_DIRS` 同一思路，两道条件缺一不可）：
+ *   ① 路径在**已知本机档案/草稿目录**里（目录前缀，不放开整棵 docs/）；
+ *   ② 命中那一行**没有** `erix` 命令词——同一行真挂了 erix 就仍然是「声称 erix 接受」，照红。
+ * 放宽是**可数的**：命中进 `toolFlags` 桶（`status: "other-tool-flag"`），debug 口径与扫描面断言
+ * 都看得到处数，所以它不会悄悄长成「整目录免检」。档案目录里写了 `erix … --某旗标` 的行仍然要
+ * 档案声明（`localArchiveVerdict`），那条口径一字未动。
+ */
+const NON_ERIX_FLAG_DIRS = Object.freeze([
+  {
+    prefix: "docs/tasks/",
+    reason: "工单草稿目录：.gitignore 的目录型规则，草稿里的 argv 数组是当时那台机器上的工具命令行（rg/tsc/npm 居多），不是 erix 的旗标声称",
+  },
+  {
+    prefix: "docs/delivery/",
+    reason: "交付报告落点：与 docs/tasks/ 同口径不入库，报告里引用的复现命令行同样混着别家工具",
+  },
+]);
+
+/** 纯函数口径（反向证直接拿它问）：目录条件与「该行没有 erix 命令词」缺一不可。 */
+function nonErixToolFlagVerdict({ rel, erixLine }) {
+  if (erixLine) return { exempt: false, why: "同一行有 erix 命令词：那是真的在往 erix 命令行上挂旗标" };
+  const entry = NON_ERIX_FLAG_DIRS.find((e) => rel.startsWith(e.prefix));
+  if (entry === undefined) return { exempt: false, why: "不在本机档案/草稿目录里" };
+  return { exempt: true, why: entry.reason };
+}
+
+/**
  * 规则 3 的「已知不是 erix 旗标」豁免：同样只按**确切文件名**放行，逐条带理由，不允许 glob/目录。
  * 只收一类：提案 / 评审意见文档——它们写的是「建议加这个旗标」，不是「erix 接受这个旗标」。
  */
@@ -276,6 +310,7 @@ function flagMentions({ rel, abs }, accepted, retired) {
   const mentioned = [];
   const unknown = [];
   const localArchive = [];
+  const toolFlags = [];
   const isDoc = extOf(rel) === ".md";
   // 本机档案类的「文件头声明」信号：只看前 15 行（档案目录里的报告会把「本机不入库」写在开头）
   const allLines = readLines(abs);
@@ -304,6 +339,14 @@ function flagMentions({ rel, abs }, accepted, retired) {
         unknown.push({ flag, rel, line: index + 1, text: line.trim().slice(0, 160), retiredInDocs: true });
         continue;
       }
+      // issue #457：本机档案/草稿目录里、且同一行没有 erix 命令词的命中（只有 argv 上下文）
+      // 是别家工具的旗标，不算「erix 接受这个旗标」；仍然计数，不静默吞掉。
+      const toolFlag = nonErixToolFlagVerdict({ rel, erixLine });
+      if (toolFlag.exempt) {
+        mentioned.push({ flag, rel, line: index + 1, status: "other-tool-flag" });
+        toolFlags.push({ flag, rel, line: index + 1 });
+        continue;
+      }
       if (EXEMPT_UNKNOWN_FILES.some((e) => e.file === rel)) {
         mentioned.push({ flag, rel, line: index + 1, status: "exempted" });
         continue;
@@ -317,7 +360,7 @@ function flagMentions({ rel, abs }, accepted, retired) {
       unknown.push({ flag, rel, line: index + 1, text: line.trim().slice(0, 160) });
     }
   });
-  return { mentioned, unknown, localArchive };
+  return { mentioned, unknown, localArchive, toolFlags };
 }
 
 // ---------------------------------------------------------------------------
@@ -376,16 +419,19 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
   let mentions = [];
   let unknown = [];
   let localArchive = [];
+  let toolFlags = [];
 
   before(() => {
     accepted = parseAcceptedFlags();
     retired = deriveRetiredFlags(accepted);
     localArchive = [];
+    toolFlags = [];
     for (const file of listScannable(new Set([...CODE_EXTS, ".md"]), "examples", "docs", ...readmeEntries())) {
       const scan = flagMentions(file, accepted, retired);
       mentions.push(...scan.mentioned);
       unknown.push(...scan.unknown);
       localArchive.push(...(scan.localArchive ?? []));
+      toolFlags.push(...(scan.toolFlags ?? []));
     }
   });
 
@@ -615,6 +661,70 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
     }
     for (const want of ["docs"]) {
       assert.ok(hitDirs.has(want), `旗标扫描在 ${want} 上零命中（当前命中：${[...hitDirs].join(", ")}）：口径被改窄`);
+    }
+    // issue #457：放宽面必须是**可数的**——所有 other-tool-flag 命中都只能在已知草稿目录里
+    for (const hit of toolFlags) {
+      assert.ok(
+        NON_ERIX_FLAG_DIRS.some((e) => hit.rel.startsWith(e.prefix)),
+        `toolFlags 里出现草稿目录之外的命中：${hit.rel}:${hit.line}`,
+      );
+    }
+  });
+
+  it("规则 3 的「别家工具旗标」口径（issue #457）：草稿目录里 argv 里的 rg/tsc 旗标不咬红，写了 erix 的仍咬", () => {
+    assert.equal(
+      NON_ERIX_FLAG_DIRS.every((entry) => entry.reason.length >= 20), true,
+      "每条草稿目录口径都必须写清为什么（>=20 字符）",
+    );
+    // 纯函数口径：两道条件缺一不可
+    assert.equal(nonErixToolFlagVerdict({ rel: "docs/tasks/x.mjs", erixLine: false }).exempt, true);
+    assert.equal(
+      nonErixToolFlagVerdict({ rel: "docs/tasks/x.mjs", erixLine: true }).exempt, false,
+      "同一行有 erix 命令词 ⇒ 不放宽：那是真的在往 erix 命令行上挂旗标",
+    );
+    assert.equal(
+      nonErixToolFlagVerdict({ rel: "examples/x.mjs", erixLine: false }).exempt, false,
+      "只按目录前缀放宽：examples/ 与 docs/ 其他位置照旧红",
+    );
+    // 端到端探针：落在真被扫描、且整目录不入库的 docs/tasks/ 里跑一遍（与 #286 那一格同形）
+    const dirRel = "docs/tasks/";
+    const dirAbs = resolve(ROOT, dirRel);
+    const dirWasAbsent = !existsSync(dirAbs);
+    const written = [];
+    const probe = (name, lines) => {
+      const rel = `${dirRel}${name}`;
+      writeFileSync(resolve(ROOT, rel), `${lines.join("\n")}\n`, "utf8");
+      written.push(rel);
+      return flagMentions({ rel, abs: resolve(ROOT, rel) }, accepted, retired);
+    };
+    try {
+      // ① 只有 argv 上下文、没有 erix 词 ⇒ 不红，但**计数**（不静默吞掉）
+      const tool = probe("261024-457-tool-flag.mjs", [
+        "export const argv = [\"rg\", \"--include-probe-261024\", \"src\"];",
+      ]);
+      assert.equal(tool.unknown.length, 0, JSON.stringify(tool.unknown));
+      assert.equal(tool.toolFlags.length, 1, JSON.stringify(tool.toolFlags));
+      assert.equal(tool.toolFlags[0].flag, "--include-probe-261024");
+      // ② 反向证：同一行挂了 erix ⇒ 仍然红（放宽不等于整目录免检）
+      const erix = probe("261024-457-erix-line.mjs", [
+        "export const argv = [\"erix\", \"chat\", \"--erix-probe-261024\"];",
+      ]);
+      assert.equal(erix.toolFlags.length, 0, JSON.stringify(erix.toolFlags));
+      assert.equal(erix.unknown.length, 1, JSON.stringify(erix.unknown));
+      // ③ 反向证：同一个形状换个不在草稿目录里的路径 ⇒ 仍不放宽
+      assert.equal(
+        flagMentions(
+          { rel: "examples/261024-457-outside.mjs", abs: resolve(ROOT, "docs/tasks/261024-457-tool-flag.mjs") },
+          accepted, retired,
+        ).unknown.length,
+        1,
+        "同样的 argv 行换成 examples/ 路径必须仍红——否则放宽长到了目录外",
+      );
+    } finally {
+      for (const rel of written) {
+        try { rmSync(resolve(ROOT, rel), { force: true }); } catch { /* 探针没落盘，不用清理 */ }
+      }
+      if (dirWasAbsent) { try { rmdirSync(dirAbs); } catch { /* 里面有本机档案，不归本探针管 */ } }
     }
   });
 
