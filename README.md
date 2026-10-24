@@ -375,6 +375,8 @@ quoted blocks below against it):
   "docs/host-upgrade-guide-0.23.0_cn.md",
   "docs/host-upgrade-guide-0.24.0.md",
   "docs/host-upgrade-guide-0.24.0_cn.md",
+  "docs/host-upgrade-guide-0.25.0.md",
+  "docs/host-upgrade-guide-0.25.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -1040,8 +1042,14 @@ library-level controls
 - [docs/testing.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing.md) - test strategy and behavior metrics
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
+- [docs/host-upgrade-guide-0.25.0.md](docs/host-upgrade-guide-0.25.0.md) / [docs/host-upgrade-guide-0.25.0_cn.md](docs/host-upgrade-guide-0.25.0_cn.md) - the latest
+  host-facing migration guide (EN/CN pair), **0.24.0 → 0.25.0**: the "a fold stops re-billing you for bytes the ledger already
+  has" release. Purely additive: `record.foldedPayload` is de-duplicated per session and clamped to a byte budget (default
+  262144; `context.maxFoldedPayloadBytes` > env `ERIX_FOLD_ARCHIVE_MAX_BYTES` > default, `0` = pointers only),
+  `record.foldedPayloadMeta` reports what was deduplicated or clamped (`rejectedByHost` when the store rejected the record),
+  and one oversized round record now degrades instead of ending the run. No store signature, option, export or dependency moved.
 - [docs/host-upgrade-guide-0.24.0.md](docs/host-upgrade-guide-0.24.0.md) / [docs/host-upgrade-guide-0.24.0_cn.md](docs/host-upgrade-guide-0.24.0_cn.md) - the
-  latest host-facing migration guide (EN/CN pair), **0.23.0 → 0.24.0**: the "the runtime stops guessing on your
+  previous host-facing migration guide (EN/CN pair), **0.23.0 → 0.24.0**: the "the runtime stops guessing on your
   behalf" release. Two additive/fixed information surfaces — `<runId>.state.json` now reports
   `deterministic.compactionStatsWindow` (`{ limit, dropped, total }`), and `checkpoint_failed` carries `cause` /
   `errorCode` / `unpersisted` with the **same names and the same value types** as `persistence_failed` — plus four
@@ -1100,12 +1108,13 @@ current contract. And a path that points into **another** repository is written 
 
 The authoritative version is the `version` field of
 [`package.json`](package.json), and `npm run check:docs` verifies the release
-line below against it. Current release: **v0.24.0** (2026-10-22). The complete,
+line below against it. Current release: **v0.25.0** (2026-10-24). The complete,
 authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
 only the releases that changed how a host consumes the runtime. The 0.6.0
 migration steps remain in
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
+- **v0.25.0 (2026-10-24)**: the "a fold stops re-billing you for bytes the ledger already has" release — `record.foldedPayload` becomes a bounded, session-deduplicated archive (new `context.maxFoldedPayloadBytes`, env `ERIX_FOLD_ARCHIVE_MAX_BYTES`, default 256 KiB, `0` = pointer only) and truncation is now reported in the new `record.foldedPayloadMeta`; a host that rejects an oversized round record degrades that record instead of ending the run as `persistence_failed`. Purely additive: no store signature, option, export or dependency moved, so no host migration is required. Read-side context trimming is tracked separately as #462. See [CHANGELOG.md](CHANGELOG.md).
 - **v0.24.0 (2026-10-22)**: the "the runtime stops guessing on your behalf" release — the engine did not change
   what it does, it changed what it *says*. `<runId>.state.json` now reports its own compaction window
   (`deterministic.compactionStatsWindow = { limit, dropped, total }`, additive: a reader can tell a truncated
