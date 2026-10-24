@@ -3,6 +3,11 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Fixed
+
+- **CLI（issue #456）：`--idle-retry-budget 0` 回到 #433 之前的形状——一行重试行都不打。** `bin/cli.js` 的 `!resumable` 收尾分支此前**无条件**打「⚠️ idle 判死，重试不再继续（…）」，而 `planIdleRetry`（`bin/idle.js`）对 `budgetMs <= 0` 恒返回 `{ retry: false, reason: "budget" }` ⇒ 显式关掉重试的宿主（契约里写明依赖「静默 ⇒ 快速退出」的那批）每次判死都多吃一行 stderr。#433 修轮的报告声称这一行已改，但 `bin/cli.js` 当时一次都没被碰。修法是在那一格加一个只管日志的短路 `escapeValve = idleRetryBudget === 0 && reason === "budget"`：预算用尽（`budget > 0`）、撞次数闸（`max_attempts`）、账本为空（`no_transcript`）三种意外照旧各打一行；`judge.log` 的 `exhausted` 记账、`error.idleRetry` 快照、判别面 `name`/`code`/`message`、#440 的四件载荷、退出码与「顶层无 `partial`」一字未动。
+- **测试（同单）：第④格的 stderr 断言从「结构上断不到」变成能断。** `test/cli-idle-retry.test.js` 的 `--idle-retry-budget 0` 那一格原本传 `idleLog: () => {}`，stderr 整个被丢掉，所以「多打一行」在这棵树里既无法证伪也无处可断；现改成收集数组并断「含「重试」的行为空」。反证有效：临时撤回 `bin/cli.js` 的修复后这一格转红（现场多出的正是那一行）。`node --test test/cli-idle-retry.test.js` 4/4 绿，`npm run check:syntax`（317 个跟踪文件）与 `npm run check:docs`（71 项对账 + 中英 92 节骨架）全绿。
+
 ### Docs
 
 - **归因更正（issue #394）：`invalid_messages` 是本库自己抛的，不是 provider 拒的**。三处源码注释与契约中英各一处原写「provider 以 `invalid_messages` 拒掉整份历史」，2026-10-22 实测：同形状的请求打到实跑的 OpenAI 兼容中转（`qwen3.8-flash-next`）拿 **HTTP 200**（模型照常答，于是它会**自己编**一个调用结局），而失败那次的栈落在 `validateMessages`（`src/messages/rounds.js`）、**一次 HTTP 都没发**。规矩本身保留，理由改成如实的三条：本库说两种协议、按**最严的那一档**校验（Anthropic 形状对该形状回 400，本机 `/v1/messages` 不可达故未实测）；不告诉模型调用结局它就会编；本地早失败的错误信息可解释。
