@@ -3072,7 +3072,8 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 | `textPreview` | 展示 | 有界的 assistant 文本预览。可安全渲染；投影仅在 `response` 缺失（旧记录）时用它兜底。 |
 | `summary` | 展示 | 每轮的 `{ action, note }` 摘要（或 `"missing"`）。可安全渲染，通常作单行轮次注解。它**不是**折叠摘要。 |
 | `folded` / `foldedRoundRange` | 展示 | 标记早期上下文被折叠的轮次及被折叠的 round 区间。可安全渲染为“此段已折叠”横幅。 |
-| `foldedPayload` | 展示（有界） | 被折叠移除的原始消息。体积很大的归档；**不要**倒进聊天视图。投影只报 `meta.foldedPayloadMessages`（计数）。 |
+| `foldedPayload` | 展示（有界） | 被折叠移除的原始消息，**仅含本轮新折走的那部分**：引擎会对着本会话已归档的内容去重，并把归档夹到一个字节预算（默认 262144 字节，`context.maxFoldedPayloadBytes` > 环境变量 `ERIX_FOLD_ARCHIVE_MAX_BYTES` > 默认值，`0` = 只留指针）——issue #460。它仍然是归档而不是展示文本：**不要**倒进聊天视图。投影只报 `meta.foldedPayloadMessages`（计数）。 |
+| `foldedPayloadMeta` | 展示 / 取证 | `{ messages, bytes, capBytes, droppedMessages, droppedBytes, dedupedMessages, dedupedBytes }`——这份归档实际携带了本次折叠的多少，外加 `rejectedByHost: true`（宿主对单条记录定界、引擎剥掉归档重试后拿下的那条）。咨询性字段；可渲染为“归档已夹断”的标注。 |
 | `navigationRecord` | 展示 | 有界归档指针 `{ roundFrom, roundTo, artifacts[], truncated? }`，指向被恢复的工具输出。渲染为导航链接/指针，绝不作为消息内容。 |
 | `messages` | 模型 | 精确的模型上下文切片，含 `tool_use`/`tool_result` 块与折叠占位符。不要裸渲染；投影从中提取可展示文本与工具调用摘要。issue #335 起，投影里 assistant 条目的**正文正本也以这里为准**（消息一成型就落盘）；`response.content` 只是老账本与宿主手写行的回退。 |
 | `messages[].meta` | 模型 / 引擎 | 保留该对象及未知键。`meta.source` 是引擎保留标记，投影分类与 judge 可见性依赖它；不得复用它承载宿主自己的来源信息。 |
@@ -3104,6 +3105,12 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
   的折叠段 UI 提供信息（“此段已折叠，摘要如下”，外加归档链接）。
 - 宿主不得在聊天流中渲染 `foldedPayload` 内容。它是被折叠掉的原始材料，为恢复与锚点
   保留；展示它会破坏折叠，把模型已看不到的负载重新塞回来。
+- **归档是咨询性的、且有界（issue #460）。** 宿主有权对**单条记录**定界（本站 1 MB）。
+  宿主对超限记录回 `400` **不得**被换算成令 run 终局的 `persistence_failed`：引擎会剥掉
+  `foldedPayload`、重试一次 `appendRound`，并记一条非致命（`fatal: false`）的持久化事实；
+  降级那条记录带 `foldedPayloadMeta.rejectedByHost: true`。只有剥完仍失败才终局。宿主
+  不得把「归档缺失或被夹断」当成数据丢失：正文早已在各自那一行轮记录里，而
+  `foldedRoundRange` 与 `navigationRecord` 仍是那份有界指针。
 
 ### 推理文本
 

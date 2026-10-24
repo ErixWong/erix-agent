@@ -212,6 +212,7 @@ src/
     fold-llm.js                    LLM-assisted folding strategy
     fold-summary-journal.js          Fold-summary fact ledger: fingerprint, reuse memo, journal read-back
     fold-statistical.js            Statistical folding and navigation records
+    fold-archive.js                Bounded, de-duplicated fold archive for round records (issue #460)
     provider-summarizer.js         Default fold-llm summarizer backed by the run provider
     strategy-resolution.js         Built-in strategy name resolution for context.strategy
     anchors.js                     Mechanical anchor extraction (paths/SHAs/issues/URLs/errors)

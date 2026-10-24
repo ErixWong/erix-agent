@@ -3954,7 +3954,8 @@ records must remain unchanged.
 | `textPreview` | display | Bounded assistant text preview. Safe to render; the projection uses it only as a fallback when `response` is absent (legacy records). |
 | `summary` | display | Per-round `{ action, note }` summary (or `"missing"`). Safe to render, typically as a one-line round caption. It is **not** the fold summary. |
 | `folded` / `foldedRoundRange` | display | Marks a round whose earlier context was folded, and the folded round range. Safe to render as a "this span is collapsed" banner. |
-| `foldedPayload` | display (bounded) | The raw messages removed by folding. It is a large archive; do **not** dump it into the chat view. The projection reports only `meta.foldedPayloadMessages` (a count). |
+| `foldedPayload` | display (bounded) | The raw messages removed by folding **in this round only**: the engine de-duplicates against what the session already archived and clamps the archive to a byte budget (default 262144 bytes, `context.maxFoldedPayloadBytes` > env `ERIX_FOLD_ARCHIVE_MAX_BYTES` > default, `0` = pointers only) — issue #460. It is still an archive, not display text: do **not** dump it into the chat view. The projection reports only `meta.foldedPayloadMessages` (a count). |
+| `foldedPayloadMeta` | display / forensics | `{ messages, bytes, capBytes, droppedMessages, droppedBytes, dedupedMessages, dedupedBytes }` — how much of the fold this archive actually carries, plus `rejectedByHost: true` when the host bounded the single record, the engine dropped the archive and retried. Advisory; safe to render as a "archive truncated" caption. |
 | `navigationRecord` | display | Bounded archive pointers `{ roundFrom, roundTo, artifacts[], truncated? }` for recovered tool outputs. Render as navigation links/pointers, never as message content. |
 | `messages` | model | The exact model-context slice, including `tool_use`/`tool_result` blocks and fold placeholders. Do not render it raw; the projection extracts displayable text and tool-call summaries from it. Since issue #335 this is also the **canonical source of the projected assistant body** (a message is persisted the moment it forms); `response.content` is only the legacy/host-written fallback. |
 | `messages[].meta` | model / engine | Preserve this object, including unknown keys. `meta.source` is an engine-reserved marker used by projection classification and judge visibility; do not reuse it for host-owned source information. |
@@ -3995,6 +3996,15 @@ payload:
 - The host must not render `foldedPayload` content in the chat stream. It is the
   folded-away original material, kept for recovery and anchoring; showing it
   defeats the fold and re-introduces the payload the model no longer sees.
+- **The archive is advisory and bounded (issue #460).** A host may bound a single
+  record (this site: 1 MB). A host `400` on an oversized record must **not**
+  become a run-ending `persistence_failed`: the engine strips `foldedPayload`,
+  retries `appendRound` once, and records one non-fatal (`fatal: false`)
+  persistence fact; the degraded record carries
+  `foldedPayloadMeta.rejectedByHost: true`. Only a retry that fails too ends the
+  run. Hosts must not read a missing or truncated archive as data loss: the
+  originals are already persisted in their own round rows, and
+  `foldedRoundRange` plus `navigationRecord` remain the bounded pointers.
 
 ### Reasoning
 
