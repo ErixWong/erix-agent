@@ -362,6 +362,56 @@ export function transcriptStoreContract(label, createStore) {
     assert.equal(loaded.length, 1, "消息行是重复副本，不得作为独立行留在数组里");
   });
 
+  // issue #458：折叠层的**块类型无关性**。写侧一条消息一行是逐条落盘的，thinking 行与 tool_use 行
+  // 和 text 行走的是同一条路；但折叠实现只要偷一下懒（只把带 text 的行当正文），宿主与 resume
+  // 侧看到的就是一场“模型见过、档案里拼不出来”：thinking 与工具调用整块消失，而格数看起来还是“对了”。
+  // 本仓库没有「墓碑行」这个概念（`deleteMessage` 不在这层的职责里），因此本格只钉“不占行 + 块不丢”两条。
+  test(`${label}: 折叠——thinking/tool_use 行同样不占独立行且整块保留（issue #458）`, async () => {
+    const store = await createStore();
+    const round = 7;
+    const useId = `tool-${String(round)}`;
+    const rows = [
+      foldCarrier(round),
+      foldMessageRow(round, 0, { role: "user", content: [textBlock("go")] }, { ts: foldTs(11) }),
+      foldMessageRow(round, 1, {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "先看一下目录", signature: "sig-1" }],
+      }, { ts: foldTs(12) }),
+      foldMessageRow(round, 2, {
+        role: "assistant",
+        content: [{ type: "tool_use", id: useId, name: "list", input: { path: "src" } }],
+      }, { ts: foldTs(13) }),
+      foldMessageRow(round, 3, {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: useId, content: "ok" }],
+      }, { ts: foldTs(14) }),
+    ];
+    const expected = [
+      { role: "user", content: [textBlock("go")], ts: foldTs(11) },
+      { role: "assistant", content: [{ type: "thinking", thinking: "先看一下目录", signature: "sig-1" }], ts: foldTs(12) },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: useId, name: "list", input: { path: "src" } }],
+        ts: foldTs(13),
+      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: useId, content: "ok" }], ts: foldTs(14) },
+    ];
+    for (const row of rows) await store.appendRound(foldRunId, row);
+
+    const loaded = await store.load(foldRunId);
+    assert.equal(loaded.length, 1,
+      `四条消息行（含只有 thinking 与只有 tool_use 的两条）一律不得作为独立行留在数组里；实测 ${String(loaded.length)} 行：`
+      + JSON.stringify(loaded.map((record) => record.dedupKey)));
+    assert.deepEqual(loaded[0].messages, expected,
+      "thinking / tool_use / tool_result 整块必须按 seq 原样折回（不得只折 text 块、不得改字段形状）");
+    const blocks = loaded[0].messages.flatMap((message) => message.content.map((block) => block.type));
+    assert.ok(blocks.includes("thinking") && blocks.includes("tool_use"),
+      `thinking 与 tool_use 块不得在折叠层被丢掉（实测内容块序列：${blocks.join(" > ")}）`);
+    // 引擎与宿主拼时间线用的就是这一个口径：折叠后的总条数必须等于“一条逻辑消息一项”的条数。
+    assert.equal(loaded.flatMap((record) => record.messages ?? []).length, expected.length,
+      "折叠后 flatMap(record => record.messages) 的条数必须等于消息行数（不新增、不丢失）");
+  });
+
   test(`${label}: folded/foldedPayload 元数据往返`, async () => {
     const store = await createStore();
     const payload = [
