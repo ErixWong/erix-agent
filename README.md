@@ -857,7 +857,8 @@ The shared CLI flags are:
   (`resume`), instead of re-running the task from scratch — the rounds and
   tokens already paid for are kept. **This changes the default wall clock of a
   silent run**: a host that relied on "silence ⇒ quick exit" must pass
-  `--idle-retry-budget 0` (one `idle_timeout`, the pre-#433 shape). Two gates,
+  `--idle-retry-budget 0` (one `idle_timeout`, the pre-#433 shape — and with `0`
+  the CLI logs **no retry line on stderr at all**, issue #456). Two gates,
   both required: the budget — **wall-clock elapsed since the first kill**
   (backoffs *and* the retry attempts count), not just the sum of backoffs — and
   a hard cap of 8 retries. **Measured worst case** (permanently silent

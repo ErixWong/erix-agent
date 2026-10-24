@@ -333,6 +333,7 @@ test("chat: --idle-retry-budget 0 disables the retry path entirely (issue #433 f
   try {
     const provider = createAlwaysSilentProvider();
     const configPath = await writeEmptyMcpConfig(dir);
+    const idleLines = [];
     await assert.rejects(
       () => runChat({
         prompt: "永不返回",
@@ -347,7 +348,9 @@ test("chat: --idle-retry-budget 0 disables the retry path entirely (issue #433 f
         idleRetryBudget: 0,
         maxRounds: 2,
         toolOutput: () => {},
-        idleLog: () => {},
+        // issue #456：这一格原本传 `idleLog: () => {}`，**结构上观测不到 stderr**——「预算 0 还多打一行」
+        // 在这棵树里既断不到也证不伪。换成收集数组，与同文件另外三格同形。
+        idleLog: (line) => idleLines.push(line),
       }),
       (error) => {
         assert.equal(error?.code, "idle_timeout");
@@ -357,6 +360,13 @@ test("chat: --idle-retry-budget 0 disables the retry path entirely (issue #433 f
       },
     );
     assert.equal(provider.calls, 1, "预算 0 ⇒ 不重试，只发 1 发");
+    // issue #456：逃生阀的形状必须等于 #433 之前——**一行重试行都不打**。
+    // 只筛含「重试」的行（不断 stderr 全空）：`idleTimeout: 1` 时 exec 天花板那一格本就有自己的日志。
+    assert.deepEqual(
+      idleLines.filter((line) => /重试/u.test(line)),
+      [],
+      JSON.stringify(idleLines),
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

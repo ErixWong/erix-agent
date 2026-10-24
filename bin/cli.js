@@ -1103,14 +1103,22 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         if (!resumable) {
           const reason = decision.retry ? "no_transcript" : decision.reason;
           recordIdleRetry("exhausted", { reason });
-          idleLog(
-            `⚠️ idle 判死，重试不再继续（${reason === "budget"
-              ? `预算 ${idleRetryBudget}s 用尽`
-              : reason === "max_attempts"
-                ? `次数上限 ${decision.maxAttempts} 次`
-                : "transcript 里没有可续跑的账本"}）：落 idle_timeout 终局`
-            + `（已重试 ${decision.retries} 次，累计 usage ${JSON.stringify(idleRetry.snapshot().usage)}）`,
-          );
+          // issue #456：`--idle-retry-budget 0` 是「关掉重试」的逃生阀，它的形状必须回到 #433 之前——
+          // 一次 `idle_timeout`，**stderr 不多一行**。`planIdleRetry` 保证 `budgetMs <= 0` 时 `reason`
+          // 恒为 `"budget"`，所以这个谓词精确覆盖「用户显式不开重试」这一格：预算用尽（`budget > 0`）、
+          // 撞次数闸（`max_attempts`）、账本为空（`no_transcript`）三种意外照旧各打一行。
+          // 只静音日志：`judge.log` 的 `exhausted` 记账、`terminal.idleRetry`、判别面与四件载荷一字未动。
+          const escapeValve = idleRetryBudget === 0 && reason === "budget";
+          if (!escapeValve) {
+            idleLog(
+              `⚠️ idle 判死，重试不再继续（${reason === "budget"
+                ? `预算 ${idleRetryBudget}s 用尽`
+                : reason === "max_attempts"
+                  ? `次数上限 ${decision.maxAttempts} 次`
+                  : "transcript 里没有可续跑的账本"}）：落 idle_timeout 终局`
+              + `（已重试 ${decision.retries} 次，累计 usage ${JSON.stringify(idleRetry.snapshot().usage)}）`,
+            );
+          }
           terminal.idleRetry = idleRetry.snapshot();
           thrown = terminal;
           throw terminal;
